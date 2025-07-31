@@ -1,0 +1,34 @@
+extends: default
+
+rules:
+  # Allow longer lines for readability
+  line-length:
+    max: 120
+    level: warning
+
+  # Allow empty values in YAML (common in Kubernetes manifests)
+  empty-values:
+    forbid-in-block-mappings: false
+    forbid-in-flow-mappings: false
+
+  # Allow truthy values (yes/no, on/off, etc.)
+  truthy:
+    allowed-values: ['true', 'false', 'yes', 'no', 'on', 'off']
+    check-keys: false
+
+  # Allow comments to start at any column
+  comments:
+    min-spaces-from-content: 1
+
+  # Allow document start marker to be optional
+  document-start: disable
+
+  # Allow indentation inconsistencies (common in Helm templates)
+  indentation:
+    spaces: 2
+    indent-sequences: true
+    check-multi-line-strings: false
+
+ignore: |
+  charts/gitops-reverser/templates/
+  config/crd/bases/
