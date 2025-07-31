@@ -25,14 +25,38 @@ import (
 
 // GitRepoConfigSpec defines the desired state of GitRepoConfig
 type GitRepoConfigSpec struct {
-	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
-	// The following markers will use OpenAPI v3 schema to validate the value
-	// More info: https://book.kubebuilder.io/reference/markers/crd-validation.html
+	// RepoURL is the URL of the Git repository to commit to.
+	// +required
+	RepoURL string `json:"repoUrl"`
 
-	// foo is an example field of GitRepoConfig. Edit gitrepoconfig_types.go to remove/update
+	// Branch is the Git branch to commit to.
+	// +required
+	Branch string `json:"branch"`
+
+	// SecretName is the name of the secret containing Git credentials.
+	// +required
+	SecretName string `json:"secretName"`
+
+	// SecretNamespace is the namespace of the secret containing Git credentials.
+	// +required
+	SecretNamespace string `json:"secretNamespace"`
+
+	// Push defines the strategy for pushing commits to the remote.
 	// +optional
-	Foo *string `json:"foo,omitempty"`
+	Push *PushStrategy `json:"push,omitempty"`
+}
+
+// PushStrategy defines the rules for when to push commits.
+type PushStrategy struct {
+	// Interval is the maximum time to wait before pushing queued commits.
+	// Defaults to "1m".
+	// +optional
+	Interval *string `json:"interval,omitempty"`
+
+	// MaxCommits is the maximum number of commits to queue before pushing.
+	// Defaults to 20.
+	// +optional
+	MaxCommits *int `json:"maxCommits,omitempty"`
 }
 
 // GitRepoConfigStatus defines the observed state of GitRepoConfig.

@@ -25,14 +25,26 @@ import (
 
 // WatchRuleSpec defines the desired state of WatchRule
 type WatchRuleSpec struct {
-	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
-	// The following markers will use OpenAPI v3 schema to validate the value
-	// More info: https://book.kubebuilder.io/reference/markers/crd-validation.html
+	// GitRepoConfigRef is the name of the GitRepoConfig to use for this rule.
+	// +required
+	GitRepoConfigRef string `json:"gitRepoConfigRef"`
 
-	// foo is an example field of WatchRule. Edit watchrule_types.go to remove/update
+	// ExcludeLabels defines a set of labels that, if present on a resource,
+	// will cause the resource to be ignored by this watch rule.
 	// +optional
-	Foo *string `json:"foo,omitempty"`
+	ExcludeLabels *metav1.LabelSelector `json:"excludeLabels,omitempty"`
+
+	// Rules is a list of resource rules that define what to watch.
+	// +required
+	Rules []ResourceRule `json:"rules"`
+}
+
+// ResourceRule defines a set of resources to watch.
+type ResourceRule struct {
+	// Resources is a list of Kubernetes resource kinds to watch.
+	// e.g., ["deployments", "services", "ingresses.*"]
+	// +required
+	Resources []string `json:"resources"`
 }
 
 // WatchRuleStatus defines the observed state of WatchRule.
