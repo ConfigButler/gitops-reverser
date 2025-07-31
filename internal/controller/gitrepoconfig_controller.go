@@ -33,23 +33,28 @@ type GitRepoConfigReconciler struct {
 	Scheme *runtime.Scheme
 }
 
-// +kubebuilder:rbac:groups=configbutler.ai.configbutler.ai,resources=gitrepoconfigs,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=configbutler.ai.configbutler.ai,resources=gitrepoconfigs/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=configbutler.ai.configbutler.ai,resources=gitrepoconfigs/finalizers,verbs=update
+//+kubebuilder:rbac:groups=configbutler.ai,resources=gitrepoconfigs,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=configbutler.ai,resources=gitrepoconfigs/status,verbs=get;update;patch
+//+kubebuilder:rbac:groups=configbutler.ai,resources=gitrepoconfigs/finalizers,verbs=update
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
-// TODO(user): Modify the Reconcile function to compare the state specified by
-// the GitRepoConfig object against the actual cluster state, and then
-// perform operations to make the cluster state reflect the state specified by
-// the user.
-//
-// For more details, check Reconcile and its Result here:
-// - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.21.0/pkg/reconcile
 func (r *GitRepoConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	_ = logf.FromContext(ctx)
+	log := logf.FromContext(ctx)
 
-	// TODO(user): your logic here
+	log.V(1).Info("Reconciling GitRepoConfig")
+
+	// Fetch the GitRepoConfig instance
+	var gitRepoConfig configbutleraiv1alpha1.GitRepoConfig
+	if err := r.Get(ctx, req.NamespacedName, &gitRepoConfig); err != nil {
+		log.Error(err, "unable to fetch GitRepoConfig")
+		// we'll ignore not-found errors, since they can't be fixed by an immediate
+		// requeue (we'll need to wait for a new notification), and we can get them
+		// on deleted requests.
+		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+
+	log.Info("Successfully reconciled GitRepoConfig", "name", gitRepoConfig.Name, "repoUrl", gitRepoConfig.Spec.RepoURL)
 
 	return ctrl.Result{}, nil
 }

@@ -39,6 +39,8 @@ import (
 
 	configbutleraiv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 	"github.com/ConfigButler/gitops-reverser/internal/controller"
+	"github.com/ConfigButler/gitops-reverser/internal/leader"
+	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -53,6 +55,8 @@ func init() {
 	utilruntime.Must(configbutleraiv1alpha1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
+
+//+kubebuilder:rbac:groups=core,resources=pods,verbs=get;patch
 
 // nolint:gocyclo
 func main() {
@@ -209,14 +213,29 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "GitRepoConfig")
 		os.Exit(1)
 	}
+	ruleStore := rulestore.NewStore()
+
 	if err := (&controller.WatchRuleReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:    mgr.GetClient(),
+		Scheme:    mgr.GetScheme(),
+		RuleStore: ruleStore,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "WatchRule")
 		os.Exit(1)
 	}
 	// +kubebuilder:scaffold:builder
+
+	// Add the PodLabeler runnable to the manager.
+	// It will only be started for the leader.
+	if err := mgr.Add(&leader.PodLabeler{
+		Client:    mgr.GetClient(),
+		Log:       ctrl.Log.WithName("leader-labeler"),
+		PodName:   leader.GetPodName(),
+		Namespace: leader.GetPodNamespace(),
+	}); err != nil {
+		setupLog.Error(err, "unable to add leader labeler to manager")
+		os.Exit(1)
+	}
 
 	if metricsCertWatcher != nil {
 		setupLog.Info("Adding metrics certificate watcher to manager")
