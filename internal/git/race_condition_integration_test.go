@@ -14,10 +14,10 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 	admissionv1 "k8s.io/api/admission/v1"
 	authenticationv1 "k8s.io/api/authentication/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 	"sigs.k8s.io/yaml"
 )
 
@@ -106,7 +106,7 @@ func TestRaceConditionIntegration(t *testing.T) {
 
 		// Step 4: Attempt to push commits - this should trigger race condition resolution
 		err = repo.TryPushCommits(ctx, events)
-		
+
 		// The operation should succeed after conflict resolution
 		assert.NoError(t, err, "TryPushCommits should succeed after conflict resolution")
 
@@ -135,7 +135,7 @@ func TestRaceConditionIntegration(t *testing.T) {
 		// Step 6: Verify Git history
 		commits, err := getCommitHistory(localRepo)
 		require.NoError(t, err)
-		
+
 		// Should have at least: initial commit + remote update + our 2 commits
 		assert.GreaterOrEqual(t, len(commits), 4, "Should have multiple commits in history")
 
@@ -144,7 +144,7 @@ func TestRaceConditionIntegration(t *testing.T) {
 		for i, commit := range commits {
 			commitMessages[i] = commit.Message
 		}
-		
+
 		assert.Contains(t, commitMessages, "[CREATE] Pod/app-pod in ns/production by user/developer@company.com")
 		assert.Contains(t, commitMessages, "[UPDATE] Pod/cache-pod in ns/production by user/system:deployment-controller")
 	})
@@ -158,23 +158,23 @@ func TestRaceConditionIntegration(t *testing.T) {
 		newerPod := createTestPodWithResourceVersion("existing-pod", "default", "500")
 		filePath := GetFilePath(newerPod)
 		fullPath := filepath.Join(localRepoPath, filePath)
-		
+
 		err = os.MkdirAll(filepath.Dir(fullPath), 0755)
 		require.NoError(t, err)
-		
+
 		content, err := yaml.Marshal(newerPod.Object)
 		require.NoError(t, err)
-		
+
 		err = os.WriteFile(fullPath, content, 0644)
 		require.NoError(t, err)
 
 		// Commit this file
 		worktree, err := localRepo.Worktree()
 		require.NoError(t, err)
-		
+
 		_, err = worktree.Add(filePath)
 		require.NoError(t, err)
-		
+
 		_, err = worktree.Commit("Add existing pod with newer version", &git.CommitOptions{
 			Author: &object.Signature{
 				Name:  "Test",
@@ -212,7 +212,7 @@ func TestRaceConditionIntegration(t *testing.T) {
 		// Verify that only non-stale events were committed
 		existingPodContent, err := os.ReadFile(fullPath)
 		require.NoError(t, err)
-		
+
 		// Should have the newer version (600), not the stale one (300)
 		assert.Contains(t, string(existingPodContent), "resourceVersion: \"600\"")
 		assert.NotContains(t, string(existingPodContent), "resourceVersion: \"300\"")
@@ -224,7 +224,7 @@ func TestRaceConditionIntegration(t *testing.T) {
 
 	t.Run("error_handling", func(t *testing.T) {
 		// Test various error scenarios
-		
+
 		// Test with empty events
 		err := repo.TryPushCommits(ctx, []eventqueue.Event{})
 		assert.NoError(t, err, "Should handle empty events gracefully")
@@ -414,14 +414,14 @@ func TestRaceConditionEdgeCases(t *testing.T) {
 
 	t.Run("resource_version_parsing_edge_cases", func(t *testing.T) {
 		testCases := []struct {
-			name           string
+			name            string
 			resourceVersion string
-			expectError    bool
+			expectError     bool
 		}{
 			{"empty_version", "", true},
 			{"valid_number", "123", false},
 			{"invalid_string", "abc", true},
-			{"negative_number", "-1", false}, // Technically valid int64
+			{"negative_number", "-1", false},                    // Technically valid int64
 			{"very_large_number", "9223372036854775807", false}, // Max int64
 		}
 
@@ -440,7 +440,7 @@ func TestRaceConditionEdgeCases(t *testing.T) {
 	t.Run("generation_comparison_edge_cases", func(t *testing.T) {
 		// Test generation comparison with various metadata formats
 		pod := createTestPod("gen-test", "default")
-		
+
 		// Test with generation as different types in metadata
 		testCases := []struct {
 			name       string
@@ -461,13 +461,13 @@ func TestRaceConditionEdgeCases(t *testing.T) {
 
 				filePath := GetFilePath(pod)
 				fullPath := filepath.Join(tempDir, filePath)
-				
+
 				err := os.MkdirAll(filepath.Dir(fullPath), 0755)
 				require.NoError(t, err)
-				
+
 				content, err := yaml.Marshal(pod.Object)
 				require.NoError(t, err)
-				
+
 				err = os.WriteFile(fullPath, content, 0644)
 				require.NoError(t, err)
 
@@ -482,7 +482,7 @@ func TestRaceConditionEdgeCases(t *testing.T) {
 
 				valid, err := repo.isEventStillValid(ctx, event)
 				assert.NoError(t, err)
-				
+
 				if tc.expected > 1 {
 					assert.False(t, valid, "Event should be invalid when existing has higher generation")
 				} else {
@@ -516,13 +516,13 @@ func TestRaceConditionPerformance(t *testing.T) {
 			pod := createTestPodWithResourceVersion(fmt.Sprintf("existing-pod-%d", i), "default", "100")
 			filePath := GetFilePath(pod)
 			fullPath := filepath.Join(tempDir, filePath)
-			
+
 			err := os.MkdirAll(filepath.Dir(fullPath), 0755)
 			require.NoError(t, err)
-			
+
 			content, err := yaml.Marshal(pod.Object)
 			require.NoError(t, err)
-			
+
 			err = os.WriteFile(fullPath, content, 0644)
 			require.NoError(t, err)
 		}
@@ -557,7 +557,7 @@ func TestRaceConditionPerformance(t *testing.T) {
 		assert.Less(t, len(validEvents), numEvents, "Should filter out some stale events")
 		assert.Less(t, duration, 5*time.Second, "Re-evaluation should complete within reasonable time")
 
-		t.Logf("Re-evaluated %d events in %v, %d valid events remaining", 
+		t.Logf("Re-evaluated %d events in %v, %d valid events remaining",
 			numEvents, duration, len(validEvents))
 	})
 }

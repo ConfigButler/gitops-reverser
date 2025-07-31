@@ -82,7 +82,7 @@ func GetAuthMethod(privateKey, password string) (transport.AuthMethod, error) {
 // TryPushCommits implements the "Re-evaluate and Re-generate" strategy for conflict resolution.
 func (r *Repo) TryPushCommits(ctx context.Context, events []eventqueue.Event) error {
 	log := log.FromContext(ctx)
-	
+
 	if len(events) == 0 {
 		log.Info("No events to commit")
 		return nil
@@ -188,38 +188,79 @@ func (r *Repo) generateLocalCommits(ctx context.Context, events []eventqueue.Eve
 // hardResetToRemote performs a hard reset to the remote branch state.
 func (r *Repo) hardResetToRemote(ctx context.Context) error {
 	log := log.FromContext(ctx)
-	
-	// Fetch latest changes from remote
+
+	// Fetch latest changes from remote with force to ensure we get all updates
 	err := r.Fetch(&git.FetchOptions{
 		RemoteName: r.remoteName,
 		Auth:       r.auth,
+		Force:      true,
 	})
 	if err != nil && err != git.NoErrAlreadyUpToDate {
 		return fmt.Errorf("failed to fetch from remote: %w", err)
 	}
 
-	// Get the remote branch reference
+	// Try multiple strategies to get the target commit hash
+	var targetHash plumbing.Hash
+	var found bool
+
+	// Strategy 1: Try to get the remote branch reference
 	remoteBranchRef := plumbing.NewRemoteReferenceName(r.remoteName, r.branch)
-	ref, err := r.Reference(remoteBranchRef, true)
-	if err != nil {
-		return fmt.Errorf("failed to get remote branch reference: %w", err)
+	if ref, err := r.Reference(remoteBranchRef, true); err == nil {
+		targetHash = ref.Hash()
+		found = true
+		log.Info("Found remote branch reference", "branch", r.branch, "hash", targetHash.String())
 	}
 
-	// Get worktree and reset hard to remote branch
+	// Strategy 2: If remote branch doesn't exist, try local branch that tracks remote
+	if !found {
+		localBranchRef := plumbing.NewBranchReferenceName(r.branch)
+		if ref, err := r.Reference(localBranchRef, true); err == nil {
+			targetHash = ref.Hash()
+			found = true
+			log.Info("Using local branch reference", "branch", r.branch, "hash", targetHash.String())
+		}
+	}
+
+	// Strategy 3: If neither exists, try HEAD
+	if !found {
+		if ref, err := r.Head(); err == nil {
+			targetHash = ref.Hash()
+			found = true
+			log.Info("Using HEAD reference", "hash", targetHash.String())
+		}
+	}
+
+	if !found {
+		return fmt.Errorf("failed to find any valid reference for branch %s", r.branch)
+	}
+
+	// Get worktree and reset hard to target commit
 	worktree, err := r.Worktree()
 	if err != nil {
 		return fmt.Errorf("failed to get worktree: %w", err)
 	}
 
 	err = worktree.Reset(&git.ResetOptions{
-		Commit: ref.Hash(),
+		Commit: targetHash,
 		Mode:   git.HardReset,
 	})
 	if err != nil {
-		return fmt.Errorf("failed to reset to remote branch: %w", err)
+		return fmt.Errorf("failed to reset to target commit: %w", err)
 	}
 
-	log.Info("Successfully reset to remote state", "commit", ref.Hash().String())
+	// After reset, update the local branch to track the remote if it exists
+	if found {
+		// Try to update the local branch reference to point to the remote
+		localBranchRef := plumbing.NewBranchReferenceName(r.branch)
+		newRef := plumbing.NewHashReference(localBranchRef, targetHash)
+		err = r.Storer.SetReference(newRef)
+		if err != nil {
+			log.Info("Could not update local branch reference", "error", err)
+			// This is not critical, continue
+		}
+	}
+
+	log.Info("Successfully reset to remote state", "commit", targetHash.String())
 	return nil
 }
 
@@ -235,8 +276,8 @@ func (r *Repo) reEvaluateEvents(ctx context.Context, events []eventqueue.Event) 
 		} else if valid {
 			validEvents = append(validEvents, event)
 		} else {
-			log.Info("Discarding stale event for resource", 
-				"name", event.Object.GetName(), 
+			log.Info("Discarding stale event for resource",
+				"name", event.Object.GetName(),
 				"namespace", event.Object.GetNamespace(),
 				"kind", event.Object.GetKind())
 		}
@@ -287,7 +328,7 @@ func (r *Repo) isEventStillValid(ctx context.Context, event eventqueue.Event) (b
 	if eventResourceVersion != "" && existingResourceVersion != "" {
 		eventRV, eventErr := parseResourceVersion(eventResourceVersion)
 		existingRV, existingErr := parseResourceVersion(existingResourceVersion)
-		
+
 		// If both resource versions are valid numbers, compare them
 		if eventErr == nil && existingErr == nil {
 			// If the existing file has a newer or equal resource version, the event is stale
@@ -340,12 +381,12 @@ func (r *Repo) isEventStillValid(ctx context.Context, event eventqueue.Event) (b
 // Push pushes the local commits to the remote repository.
 func (r *Repo) Push(ctx context.Context) error {
 	log := log.FromContext(ctx)
-	
+
 	// Check if Repository is nil
 	if r.Repository == nil {
 		return fmt.Errorf("repository is not initialized")
 	}
-	
+
 	err := r.Repository.Push(&git.PushOptions{
 		RemoteName: r.remoteName,
 		Auth:       r.auth,
@@ -367,23 +408,23 @@ func isNonFastForwardError(err error) bool {
 	if err == nil {
 		return false
 	}
-	
+
 	errStr := err.Error()
 	return strings.Contains(errStr, "non-fast-forward") ||
-		   strings.Contains(errStr, "rejected") ||
-		   strings.Contains(errStr, "fetch first") ||
-		   strings.Contains(errStr, "updates were rejected")
+		strings.Contains(errStr, "rejected") ||
+		strings.Contains(errStr, "fetch first") ||
+		strings.Contains(errStr, "updates were rejected")
 }
 
 // Commit commits a set of files to the repository (legacy method for compatibility).
 func (r *Repo) Commit(files []CommitFile, message string) error {
 	log := log.FromContext(context.Background())
-	
+
 	// Check if Repository is nil
 	if r.Repository == nil {
 		return fmt.Errorf("repository is not initialized")
 	}
-	
+
 	worktree, err := r.Worktree()
 	if err != nil {
 		return fmt.Errorf("failed to get worktree: %w", err)
@@ -392,7 +433,7 @@ func (r *Repo) Commit(files []CommitFile, message string) error {
 	// Write and add files
 	for _, file := range files {
 		fullPath := filepath.Join(r.path, file.Path)
-		
+
 		// Ensure directory exists
 		if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
 			return fmt.Errorf("failed to create directory for %s: %w", file.Path, err)

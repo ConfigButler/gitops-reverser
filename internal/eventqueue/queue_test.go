@@ -5,13 +5,13 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	admissionv1 "k8s.io/api/admission/v1"
+	authenticationv1 "k8s.io/api/authentication/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
-	authenticationv1 "k8s.io/api/authentication/v1"
-	admissionv1 "k8s.io/api/admission/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 )
 
 func TestNewQueue(t *testing.T) {
@@ -24,12 +24,12 @@ func TestNewQueue(t *testing.T) {
 
 func TestEnqueue_SingleEvent(t *testing.T) {
 	queue := NewQueue()
-	
+
 	obj := &unstructured.Unstructured{}
 	obj.SetName("test-pod")
 	obj.SetNamespace("default")
 	obj.SetKind("Pod")
-	
+
 	event := Event{
 		Object: obj,
 		Request: admission.Request{
@@ -43,22 +43,22 @@ func TestEnqueue_SingleEvent(t *testing.T) {
 		},
 		GitRepoConfigRef: "test-repo-config",
 	}
-	
+
 	queue.Enqueue(event)
-	
+
 	assert.Equal(t, 1, queue.Size())
 }
 
 func TestEnqueue_MultipleEvents(t *testing.T) {
 	queue := NewQueue()
-	
+
 	// Create multiple events
 	for i := 0; i < 5; i++ {
 		obj := &unstructured.Unstructured{}
 		obj.SetName("test-pod-" + string(rune(i)))
 		obj.SetNamespace("default")
 		obj.SetKind("Pod")
-		
+
 		event := Event{
 			Object: obj,
 			Request: admission.Request{
@@ -69,16 +69,16 @@ func TestEnqueue_MultipleEvents(t *testing.T) {
 			},
 			GitRepoConfigRef: "test-repo-config",
 		}
-		
+
 		queue.Enqueue(event)
 	}
-	
+
 	assert.Equal(t, 5, queue.Size())
 }
 
 func TestDequeueAll_EmptyQueue(t *testing.T) {
 	queue := NewQueue()
-	
+
 	events := queue.DequeueAll()
 	assert.Nil(t, events)
 	assert.Equal(t, 0, queue.Size())
@@ -86,12 +86,12 @@ func TestDequeueAll_EmptyQueue(t *testing.T) {
 
 func TestDequeueAll_SingleEvent(t *testing.T) {
 	queue := NewQueue()
-	
+
 	obj := &unstructured.Unstructured{}
 	obj.SetName("test-pod")
 	obj.SetNamespace("default")
 	obj.SetKind("Pod")
-	
+
 	originalEvent := Event{
 		Object: obj,
 		Request: admission.Request{
@@ -105,15 +105,15 @@ func TestDequeueAll_SingleEvent(t *testing.T) {
 		},
 		GitRepoConfigRef: "test-repo-config",
 	}
-	
+
 	queue.Enqueue(originalEvent)
 	assert.Equal(t, 1, queue.Size())
-	
+
 	events := queue.DequeueAll()
 	assert.NotNil(t, events)
 	assert.Equal(t, 1, len(events))
 	assert.Equal(t, 0, queue.Size()) // Queue should be empty after dequeue
-	
+
 	// Verify the dequeued event
 	dequeuedEvent := events[0]
 	assert.Equal(t, "test-pod", dequeuedEvent.Object.GetName())
@@ -127,7 +127,7 @@ func TestDequeueAll_SingleEvent(t *testing.T) {
 
 func TestDequeueAll_MultipleEvents(t *testing.T) {
 	queue := NewQueue()
-	
+
 	// Enqueue multiple events
 	expectedEvents := make([]Event, 3)
 	for i := 0; i < 3; i++ {
@@ -135,7 +135,7 @@ func TestDequeueAll_MultipleEvents(t *testing.T) {
 		obj.SetName("test-pod-" + string(rune('0'+i)))
 		obj.SetNamespace("default")
 		obj.SetKind("Pod")
-		
+
 		event := Event{
 			Object: obj,
 			Request: admission.Request{
@@ -146,18 +146,18 @@ func TestDequeueAll_MultipleEvents(t *testing.T) {
 			},
 			GitRepoConfigRef: "test-repo-config-" + string(rune('0'+i)),
 		}
-		
+
 		expectedEvents[i] = event
 		queue.Enqueue(event)
 	}
-	
+
 	assert.Equal(t, 3, queue.Size())
-	
+
 	events := queue.DequeueAll()
 	assert.NotNil(t, events)
 	assert.Equal(t, 3, len(events))
 	assert.Equal(t, 0, queue.Size()) // Queue should be empty after dequeue
-	
+
 	// Verify all events are returned in order
 	for i, event := range events {
 		assert.Equal(t, "test-pod-"+string(rune('0'+i)), event.Object.GetName())
@@ -168,50 +168,50 @@ func TestDequeueAll_MultipleEvents(t *testing.T) {
 
 func TestDequeueAll_ConsecutiveCalls(t *testing.T) {
 	queue := NewQueue()
-	
+
 	// First batch
 	for i := 0; i < 2; i++ {
 		obj := &unstructured.Unstructured{}
 		obj.SetName("batch1-pod-" + string(rune('0'+i)))
-		
+
 		event := Event{
 			Object: obj,
 			Request: admission.Request{
 				AdmissionRequest: admissionv1.AdmissionRequest{
-					UID:       types.UID("batch1-uid-" + string(rune('0'+i))),
+					UID: types.UID("batch1-uid-" + string(rune('0'+i))),
 				},
 			},
 			GitRepoConfigRef: "batch1-repo",
 		}
 		queue.Enqueue(event)
 	}
-	
+
 	// Dequeue first batch
 	events1 := queue.DequeueAll()
 	assert.Equal(t, 2, len(events1))
 	assert.Equal(t, 0, queue.Size())
-	
+
 	// Second dequeue should return nil
 	events2 := queue.DequeueAll()
 	assert.Nil(t, events2)
-	
+
 	// Add second batch
 	for i := 0; i < 3; i++ {
 		obj := &unstructured.Unstructured{}
 		obj.SetName("batch2-pod-" + string(rune('0'+i)))
-		
+
 		event := Event{
 			Object: obj,
 			Request: admission.Request{
 				AdmissionRequest: admissionv1.AdmissionRequest{
-					UID:       types.UID("batch2-uid-" + string(rune('0'+i))),
+					UID: types.UID("batch2-uid-" + string(rune('0'+i))),
 				},
 			},
 			GitRepoConfigRef: "batch2-repo",
 		}
 		queue.Enqueue(event)
 	}
-	
+
 	// Dequeue second batch
 	events3 := queue.DequeueAll()
 	assert.Equal(t, 3, len(events3))
@@ -220,29 +220,29 @@ func TestDequeueAll_ConsecutiveCalls(t *testing.T) {
 
 func TestSize_Accuracy(t *testing.T) {
 	queue := NewQueue()
-	
+
 	// Initially empty
 	assert.Equal(t, 0, queue.Size())
-	
+
 	// Add events one by one
 	for i := 1; i <= 5; i++ {
 		obj := &unstructured.Unstructured{}
 		obj.SetName("test-pod-" + string(rune('0'+i-1)))
-		
+
 		event := Event{
 			Object: obj,
 			Request: admission.Request{
 				AdmissionRequest: admissionv1.AdmissionRequest{
-					UID:       types.UID("test-uid-" + string(rune('0'+i-1))),
+					UID: types.UID("test-uid-" + string(rune('0'+i-1))),
 				},
 			},
 			GitRepoConfigRef: "test-repo",
 		}
-		
+
 		queue.Enqueue(event)
 		assert.Equal(t, i, queue.Size())
 	}
-	
+
 	// Dequeue all
 	events := queue.DequeueAll()
 	assert.Equal(t, 5, len(events))
@@ -251,22 +251,22 @@ func TestSize_Accuracy(t *testing.T) {
 
 func TestConcurrentAccess(t *testing.T) {
 	queue := NewQueue()
-	
+
 	const numGoroutines = 10
 	const eventsPerGoroutine = 100
-	
+
 	var wg sync.WaitGroup
-	
+
 	// Start multiple producer goroutines
 	for g := 0; g < numGoroutines; g++ {
 		wg.Add(1)
 		go func(goroutineID int) {
 			defer wg.Done()
-			
+
 			for i := 0; i < eventsPerGoroutine; i++ {
 				obj := &unstructured.Unstructured{}
 				obj.SetName("pod-g" + string(rune('0'+goroutineID)) + "-e" + string(rune('0'+i)))
-				
+
 				event := Event{
 					Object: obj,
 					Request: admission.Request{
@@ -276,80 +276,80 @@ func TestConcurrentAccess(t *testing.T) {
 					},
 					GitRepoConfigRef: "repo-g" + string(rune('0'+goroutineID)),
 				}
-				
+
 				queue.Enqueue(event)
 			}
 		}(g)
 	}
-	
+
 	// Start a consumer goroutine
 	var totalDequeued int
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		
+
 		for {
 			events := queue.DequeueAll()
 			if events != nil {
 				totalDequeued += len(events)
 			}
-			
+
 			// Stop when we've dequeued all expected events
 			if totalDequeued >= numGoroutines*eventsPerGoroutine {
 				break
 			}
 		}
 	}()
-	
+
 	wg.Wait()
-	
+
 	// Verify all events were processed
 	assert.Equal(t, numGoroutines*eventsPerGoroutine, totalDequeued)
-	
+
 	// Final dequeue should be empty
 	finalEvents := queue.DequeueAll()
 	if finalEvents != nil {
 		totalDequeued += len(finalEvents)
 	}
-	
+
 	assert.Equal(t, numGoroutines*eventsPerGoroutine, totalDequeued)
 	assert.Equal(t, 0, queue.Size())
 }
 
 func TestConcurrentEnqueueDequeue(t *testing.T) {
 	queue := NewQueue()
-	
+
 	const numOperations = 1000
 	var enqueuedCount, dequeuedCount int
 	var mu sync.Mutex
-	
+
 	done := make(chan bool, 2)
-	
+
 	// Enqueue goroutine
 	go func() {
 		for i := 0; i < numOperations; i++ {
 			obj := &unstructured.Unstructured{}
 			obj.SetName("test-pod-" + string(rune('0'+i%10)))
-			
+
 			event := Event{
 				Object: obj,
 				Request: admission.Request{
 					AdmissionRequest: admissionv1.AdmissionRequest{
-						UID:       types.UID("test-uid-" + string(rune('0'+i%10))),
+						UID: types.UID("test-uid-" + string(rune('0'+i%10))),
 					},
 				},
 				GitRepoConfigRef: "test-repo",
 			}
-			
+
 			queue.Enqueue(event)
-			
+
 			mu.Lock()
 			enqueuedCount++
 			mu.Unlock()
 		}
 		done <- true
 	}()
-	
+
 	// Dequeue goroutine
 	go func() {
 		for {
@@ -359,7 +359,7 @@ func TestConcurrentEnqueueDequeue(t *testing.T) {
 				dequeuedCount += len(events)
 				shouldStop := dequeuedCount >= numOperations
 				mu.Unlock()
-				
+
 				if shouldStop {
 					break
 				}
@@ -367,11 +367,11 @@ func TestConcurrentEnqueueDequeue(t *testing.T) {
 		}
 		done <- true
 	}()
-	
+
 	// Wait for both goroutines
 	<-done
 	<-done
-	
+
 	// Verify counts
 	mu.Lock()
 	assert.Equal(t, numOperations, enqueuedCount)
@@ -402,7 +402,7 @@ func TestEventStructure(t *testing.T) {
 			},
 		},
 	}
-	
+
 	req := admission.Request{
 		AdmissionRequest: admissionv1.AdmissionRequest{
 			UID:       "test-admission-uid",
@@ -421,19 +421,19 @@ func TestEventStructure(t *testing.T) {
 			},
 		},
 	}
-	
+
 	event := Event{
 		Object:           obj,
 		Request:          req,
 		GitRepoConfigRef: "production-repo-config",
 	}
-	
+
 	// Verify all fields are accessible
 	assert.Equal(t, "test-pod", event.Object.GetName())
 	assert.Equal(t, "test-ns", event.Object.GetNamespace())
 	assert.Equal(t, "Pod", event.Object.GetKind())
 	assert.Equal(t, "test-app", event.Object.GetLabels()["app"])
-	
+
 	assert.Equal(t, "test-admission-uid", string(event.Request.UID))
 	assert.Equal(t, "test-pod", event.Request.Name)
 	assert.Equal(t, "test-ns", event.Request.Namespace)
@@ -441,22 +441,22 @@ func TestEventStructure(t *testing.T) {
 	assert.Equal(t, "test-user@example.com", event.Request.UserInfo.Username)
 	assert.Equal(t, "user-uid-123", event.Request.UserInfo.UID)
 	assert.Contains(t, event.Request.UserInfo.Groups, "system:authenticated")
-	
+
 	assert.Equal(t, "production-repo-config", event.GitRepoConfigRef)
 }
 
 func TestQueueBehaviorUnderLoad(t *testing.T) {
 	queue := NewQueue()
-	
+
 	// Simulate high load scenario
 	const batchSize = 1000
-	
+
 	// Enqueue a large batch
 	for i := 0; i < batchSize; i++ {
 		obj := &unstructured.Unstructured{}
 		obj.SetName("load-test-pod-" + string(rune('0'+i%10)))
 		obj.SetNamespace("load-test")
-		
+
 		event := Event{
 			Object: obj,
 			Request: admission.Request{
@@ -467,18 +467,18 @@ func TestQueueBehaviorUnderLoad(t *testing.T) {
 			},
 			GitRepoConfigRef: "load-test-repo",
 		}
-		
+
 		queue.Enqueue(event)
 	}
-	
+
 	assert.Equal(t, batchSize, queue.Size())
-	
+
 	// Dequeue all at once
 	events := queue.DequeueAll()
 	assert.Equal(t, batchSize, len(events))
 	assert.Equal(t, 0, queue.Size())
-	
+
 	// Verify first and last events
 	assert.Equal(t, "load-test-pod-0", events[0].Object.GetName())
-	assert.Equal(t, "load-test-pod-" + string(rune('0'+(batchSize-1)%10)), events[batchSize-1].Object.GetName())
+	assert.Equal(t, "load-test-pod-"+string(rune('0'+(batchSize-1)%10)), events[batchSize-1].Object.GetName())
 }

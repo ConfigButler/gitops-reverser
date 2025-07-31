@@ -3,13 +3,13 @@ package rulestore
 import (
 	"testing"
 
+	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
 func TestNewStore(t *testing.T) {
@@ -21,7 +21,7 @@ func TestNewStore(t *testing.T) {
 
 func TestAddOrUpdate_BasicRule(t *testing.T) {
 	store := NewStore()
-	
+
 	rule := configv1alpha1.WatchRule{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-rule",
@@ -40,11 +40,11 @@ func TestAddOrUpdate_BasicRule(t *testing.T) {
 	store.AddOrUpdate(rule)
 
 	assert.Equal(t, 1, len(store.rules))
-	
+
 	key := types.NamespacedName{Name: "test-rule", Namespace: "default"}
 	compiledRule, exists := store.rules[key]
 	require.True(t, exists)
-	
+
 	assert.Equal(t, key, compiledRule.Source)
 	assert.Equal(t, "my-repo-config", compiledRule.GitRepoConfigRef)
 	assert.Equal(t, []string{"Pod", "Service"}, compiledRule.Resources)
@@ -53,7 +53,7 @@ func TestAddOrUpdate_BasicRule(t *testing.T) {
 
 func TestAddOrUpdate_RuleWithExcludeLabels(t *testing.T) {
 	store := NewStore()
-	
+
 	rule := configv1alpha1.WatchRule{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-rule",
@@ -81,7 +81,7 @@ func TestAddOrUpdate_RuleWithExcludeLabels(t *testing.T) {
 
 	key := types.NamespacedName{Name: "test-rule", Namespace: "default"}
 	compiledRule := store.rules[key]
-	
+
 	require.NotNil(t, compiledRule.ExcludeLabels)
 	assert.Equal(t, 1, len(compiledRule.ExcludeLabels.MatchExpressions))
 	assert.Equal(t, "configbutler.ai/ignore", compiledRule.ExcludeLabels.MatchExpressions[0].Key)
@@ -89,7 +89,7 @@ func TestAddOrUpdate_RuleWithExcludeLabels(t *testing.T) {
 
 func TestAddOrUpdate_MultipleResourceRules(t *testing.T) {
 	store := NewStore()
-	
+
 	rule := configv1alpha1.WatchRule{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-rule",
@@ -112,7 +112,7 @@ func TestAddOrUpdate_MultipleResourceRules(t *testing.T) {
 
 	key := types.NamespacedName{Name: "test-rule", Namespace: "default"}
 	compiledRule := store.rules[key]
-	
+
 	// Should flatten all resources from all rules
 	expected := []string{"Pod", "Service", "Deployment", "ConfigMap"}
 	assert.Equal(t, expected, compiledRule.Resources)
@@ -120,7 +120,7 @@ func TestAddOrUpdate_MultipleResourceRules(t *testing.T) {
 
 func TestAddOrUpdate_UpdateExistingRule(t *testing.T) {
 	store := NewStore()
-	
+
 	// Add initial rule
 	rule1 := configv1alpha1.WatchRule{
 		ObjectMeta: metav1.ObjectMeta{
@@ -157,17 +157,17 @@ func TestAddOrUpdate_UpdateExistingRule(t *testing.T) {
 
 	// Should still have only one rule, but updated
 	assert.Equal(t, 1, len(store.rules))
-	
+
 	key := types.NamespacedName{Name: "test-rule", Namespace: "default"}
 	compiledRule := store.rules[key]
-	
+
 	assert.Equal(t, "repo-config-2", compiledRule.GitRepoConfigRef)
 	assert.Equal(t, []string{"Service", "Deployment"}, compiledRule.Resources)
 }
 
 func TestDelete(t *testing.T) {
 	store := NewStore()
-	
+
 	rule := configv1alpha1.WatchRule{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-rule",
@@ -193,9 +193,9 @@ func TestDelete(t *testing.T) {
 
 func TestDelete_NonExistentRule(t *testing.T) {
 	store := NewStore()
-	
+
 	key := types.NamespacedName{Name: "non-existent", Namespace: "default"}
-	
+
 	// Should not panic
 	store.Delete(key)
 	assert.Equal(t, 0, len(store.rules))
@@ -203,7 +203,7 @@ func TestDelete_NonExistentRule(t *testing.T) {
 
 func TestGetMatchingRules_ExactMatch(t *testing.T) {
 	store := NewStore()
-	
+
 	rule := configv1alpha1.WatchRule{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "pod-rule",
@@ -237,7 +237,7 @@ func TestGetMatchingRules_ExactMatch(t *testing.T) {
 
 func TestGetMatchingRules_WildcardMatch(t *testing.T) {
 	store := NewStore()
-	
+
 	rule := configv1alpha1.WatchRule{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "ingress-rule",
@@ -289,7 +289,7 @@ func TestGetMatchingRules_WildcardMatch(t *testing.T) {
 
 func TestGetMatchingRules_ExcludedByLabels(t *testing.T) {
 	store := NewStore()
-	
+
 	rule := configv1alpha1.WatchRule{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "pod-rule",
@@ -346,7 +346,7 @@ func TestGetMatchingRules_ExcludedByLabels(t *testing.T) {
 
 func TestGetMatchingRules_ComplexLabelSelector(t *testing.T) {
 	store := NewStore()
-	
+
 	rule := configv1alpha1.WatchRule{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "complex-rule",
@@ -437,7 +437,7 @@ func TestGetMatchingRules_ComplexLabelSelector(t *testing.T) {
 
 func TestGetMatchingRules_MultipleRules(t *testing.T) {
 	store := NewStore()
-	
+
 	// Add multiple rules
 	rule1 := configv1alpha1.WatchRule{
 		ObjectMeta: metav1.ObjectMeta{
@@ -453,7 +453,7 @@ func TestGetMatchingRules_MultipleRules(t *testing.T) {
 			},
 		},
 	}
-	
+
 	rule2 := configv1alpha1.WatchRule{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "all-rule",
@@ -468,7 +468,7 @@ func TestGetMatchingRules_MultipleRules(t *testing.T) {
 			},
 		},
 	}
-	
+
 	rule3 := configv1alpha1.WatchRule{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "service-rule",
@@ -500,7 +500,7 @@ func TestGetMatchingRules_MultipleRules(t *testing.T) {
 
 	matches := store.GetMatchingRules(obj)
 	assert.Equal(t, 2, len(matches))
-	
+
 	// Verify both rules are returned
 	ruleNames := make([]string, len(matches))
 	for i, match := range matches {
@@ -512,7 +512,7 @@ func TestGetMatchingRules_MultipleRules(t *testing.T) {
 
 func TestGetMatchingRules_NoMatches(t *testing.T) {
 	store := NewStore()
-	
+
 	rule := configv1alpha1.WatchRule{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "pod-rule",
@@ -562,9 +562,9 @@ func TestGetMatchingRules_EmptyStore(t *testing.T) {
 func TestCompiledRule_matches_InvalidLabelSelector(t *testing.T) {
 	// Test edge case where label selector is malformed
 	rule := &CompiledRule{
-		Source: types.NamespacedName{Name: "test", Namespace: "default"},
+		Source:           types.NamespacedName{Name: "test", Namespace: "default"},
 		GitRepoConfigRef: "repo",
-		Resources: []string{"Pod"},
+		Resources:        []string{"Pod"},
 		ExcludeLabels: &metav1.LabelSelector{
 			MatchExpressions: []metav1.LabelSelectorRequirement{
 				{
@@ -591,10 +591,10 @@ func TestCompiledRule_matches_InvalidLabelSelector(t *testing.T) {
 
 func TestConcurrentAccess(t *testing.T) {
 	store := NewStore()
-	
+
 	// Test concurrent reads and writes
 	done := make(chan bool)
-	
+
 	// Writer goroutine
 	go func() {
 		for i := 0; i < 100; i++ {
@@ -616,7 +616,7 @@ func TestConcurrentAccess(t *testing.T) {
 		}
 		done <- true
 	}()
-	
+
 	// Reader goroutine
 	go func() {
 		obj := &unstructured.Unstructured{}
@@ -627,17 +627,17 @@ func TestConcurrentAccess(t *testing.T) {
 		})
 		obj.SetName("test-pod")
 		obj.SetNamespace("default")
-		
+
 		for i := 0; i < 100; i++ {
 			store.GetMatchingRules(obj)
 		}
 		done <- true
 	}()
-	
+
 	// Wait for both goroutines to complete
 	<-done
 	<-done
-	
+
 	// Verify final state
 	assert.Equal(t, 100, len(store.rules))
 }
@@ -675,7 +675,7 @@ func TestWildcardMatching_EdgeCases(t *testing.T) {
 			})
 
 			matches := rule.matches(obj)
-			assert.Equal(t, tc.shouldMatch, matches, 
+			assert.Equal(t, tc.shouldMatch, matches,
 				"Pattern %s should match %s: %v", tc.pattern, tc.kind, tc.shouldMatch)
 		})
 	}

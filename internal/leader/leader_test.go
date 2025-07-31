@@ -398,7 +398,7 @@ func TestPodLabeler_getPod_NotFound(t *testing.T) {
 func TestGetPodName(t *testing.T) {
 	// Test with environment variable set
 	t.Setenv("POD_NAME", "test-pod-name")
-	
+
 	podName := GetPodName()
 	assert.Equal(t, "test-pod-name", podName)
 }
@@ -406,7 +406,7 @@ func TestGetPodName(t *testing.T) {
 func TestGetPodName_Empty(t *testing.T) {
 	// Test with environment variable unset
 	t.Setenv("POD_NAME", "")
-	
+
 	podName := GetPodName()
 	assert.Equal(t, "", podName)
 }
@@ -414,7 +414,7 @@ func TestGetPodName_Empty(t *testing.T) {
 func TestGetPodNamespace(t *testing.T) {
 	// Test with environment variable set
 	t.Setenv("POD_NAMESPACE", "test-namespace")
-	
+
 	podNamespace := GetPodNamespace()
 	assert.Equal(t, "test-namespace", podNamespace)
 }
@@ -422,7 +422,7 @@ func TestGetPodNamespace(t *testing.T) {
 func TestGetPodNamespace_Empty(t *testing.T) {
 	// Test with environment variable unset
 	t.Setenv("POD_NAMESPACE", "")
-	
+
 	podNamespace := GetPodNamespace()
 	assert.Equal(t, "", podNamespace)
 }
@@ -464,11 +464,11 @@ func TestPodLabeler_ConcurrentOperations(t *testing.T) {
 
 	// Execute concurrent add operations
 	done := make(chan error, 2)
-	
+
 	go func() {
 		done <- labeler.addLabel(ctx, logger)
 	}()
-	
+
 	go func() {
 		done <- labeler.addLabel(ctx, logger)
 	}()
@@ -604,10 +604,10 @@ func TestPodLabeler_WithExistingLabels(t *testing.T) {
 	require.NoError(t, err)
 
 	expectedLabels := map[string]string{
-		"app":            "my-app",
-		"version":        "v1.0.0",
-		"environment":    "production",
-		leaderLabelKey:   leaderLabelValue,
+		"app":          "my-app",
+		"version":      "v1.0.0",
+		"environment":  "production",
+		leaderLabelKey: leaderLabelValue,
 	}
 
 	assert.Equal(t, expectedLabels, updatedPod.Labels)

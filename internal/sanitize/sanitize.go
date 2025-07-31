@@ -33,7 +33,7 @@ func Sanitize(obj *unstructured.Unstructured) *unstructured.Unstructured {
 	// Clean up metadata by removing server-generated fields
 	if metadata, found, err := unstructured.NestedMap(obj.Object, "metadata"); found && err == nil {
 		cleanMetadata := make(map[string]interface{})
-		
+
 		// Copy only the fields we want to preserve
 		preservedFields := []string{"name", "namespace", "labels", "annotations"}
 		for _, field := range preservedFields {
@@ -41,7 +41,7 @@ func Sanitize(obj *unstructured.Unstructured) *unstructured.Unstructured {
 				cleanMetadata[field] = value
 			}
 		}
-		
+
 		// Set the cleaned metadata
 		if len(cleanMetadata) > 0 {
 			unstructured.SetNestedMap(sanitized.Object, cleanMetadata, "metadata")
@@ -65,16 +65,16 @@ func Sanitize(obj *unstructured.Unstructured) *unstructured.Unstructured {
 
 	// Preserve other common fields that represent desired state
 	preservedTopLevelFields := []string{
-		"rules",           // for RBAC resources
-		"subjects",        // for RoleBindings
-		"roleRef",         // for RoleBindings
-		"webhooks",        // for ValidatingWebhookConfiguration
-		"template",        // for various template-based resources
-		"involvedObject",  // for Events
-		"reason",          // for Events
-		"message",         // for Events
-		"type",            // for Events
-		"eventTime",       // for Events
+		"rules",          // for RBAC resources
+		"subjects",       // for RoleBindings
+		"roleRef",        // for RoleBindings
+		"webhooks",       // for ValidatingWebhookConfiguration
+		"template",       // for various template-based resources
+		"involvedObject", // for Events
+		"reason",         // for Events
+		"message",        // for Events
+		"type",           // for Events
+		"eventTime",      // for Events
 	}
 
 	for _, field := range preservedTopLevelFields {

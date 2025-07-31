@@ -9,17 +9,17 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/eventqueue"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 	admissionv1 "k8s.io/api/admission/v1"
 	authenticationv1 "k8s.io/api/authentication/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 	"sigs.k8s.io/yaml"
 )
 
 func TestTryPushCommits_Success(t *testing.T) {
 	// This test focuses on the logic components since we can't easily test real git operations
 	// We'll test the file path generation and event processing logic
-	
+
 	// Create test events
 	events := []eventqueue.Event{
 		{
@@ -41,7 +41,7 @@ func TestTryPushCommits_Success(t *testing.T) {
 		filePath := GetFilePath(event.Object)
 		expectedPath := "namespaces/default/Pod/test-pod.yaml"
 		assert.Equal(t, expectedPath, filePath)
-		
+
 		commitMessage := GetCommitMessage(event)
 		expectedMessage := "[CREATE] Pod/test-pod in ns/default by user/test-user"
 		assert.Equal(t, expectedMessage, commitMessage)
@@ -120,24 +120,24 @@ func TestIsEventStillValid(t *testing.T) {
 		// Create existing file with older resource version
 		existingPod := createTestPod("existing-pod", "default")
 		existingPod.SetResourceVersion("100")
-		
+
 		filePath := GetFilePath(existingPod)
 		fullPath := filepath.Join(tempDir, filePath)
-		
+
 		// Create directory and file
 		err := os.MkdirAll(filepath.Dir(fullPath), 0755)
 		require.NoError(t, err)
-		
+
 		content, err := yaml.Marshal(existingPod.Object)
 		require.NoError(t, err)
-		
+
 		err = os.WriteFile(fullPath, content, 0644)
 		require.NoError(t, err)
 
 		// Create event with newer resource version
 		newPod := createTestPod("existing-pod", "default")
 		newPod.SetResourceVersion("200")
-		
+
 		event := eventqueue.Event{
 			Object: newPod,
 		}
@@ -151,24 +151,24 @@ func TestIsEventStillValid(t *testing.T) {
 		// Create existing file with newer resource version
 		existingPod := createTestPod("stale-pod", "default")
 		existingPod.SetResourceVersion("300")
-		
+
 		filePath := GetFilePath(existingPod)
 		fullPath := filepath.Join(tempDir, filePath)
-		
+
 		// Create directory and file
 		err := os.MkdirAll(filepath.Dir(fullPath), 0755)
 		require.NoError(t, err)
-		
+
 		content, err := yaml.Marshal(existingPod.Object)
 		require.NoError(t, err)
-		
+
 		err = os.WriteFile(fullPath, content, 0644)
 		require.NoError(t, err)
 
 		// Create event with older resource version
 		oldPod := createTestPod("stale-pod", "default")
 		oldPod.SetResourceVersion("200")
-		
+
 		event := eventqueue.Event{
 			Object: oldPod,
 		}
@@ -184,17 +184,17 @@ func TestIsEventStillValid(t *testing.T) {
 		existingPod.SetGeneration(5)
 		// Explicitly clear resource version to ensure generation comparison is used
 		existingPod.SetResourceVersion("")
-		
+
 		filePath := GetFilePath(existingPod)
 		fullPath := filepath.Join(tempDir, filePath)
-		
+
 		// Create directory and file
 		err := os.MkdirAll(filepath.Dir(fullPath), 0755)
 		require.NoError(t, err)
-		
+
 		content, err := yaml.Marshal(existingPod.Object)
 		require.NoError(t, err)
-		
+
 		err = os.WriteFile(fullPath, content, 0644)
 		require.NoError(t, err)
 
@@ -202,7 +202,7 @@ func TestIsEventStillValid(t *testing.T) {
 		oldPod := createTestPod("gen-pod", "default")
 		oldPod.SetGeneration(3)
 		oldPod.SetResourceVersion("") // Explicitly clear to force generation comparison
-		
+
 		event := eventqueue.Event{
 			Object: oldPod,
 		}
@@ -217,7 +217,7 @@ func TestIsEventStillValid(t *testing.T) {
 		corruptedPath := filepath.Join(tempDir, "namespaces/default/Pod/corrupted-pod.yaml")
 		err := os.MkdirAll(filepath.Dir(corruptedPath), 0755)
 		require.NoError(t, err)
-		
+
 		err = os.WriteFile(corruptedPath, []byte("invalid yaml content {{{"), 0644)
 		require.NoError(t, err)
 
@@ -246,16 +246,16 @@ func TestReEvaluateEvents(t *testing.T) {
 	// Create some existing files to simulate Git state
 	existingPod := createTestPod("existing-pod", "default")
 	existingPod.SetResourceVersion("100")
-	
+
 	filePath := GetFilePath(existingPod)
 	fullPath := filepath.Join(tempDir, filePath)
-	
+
 	err = os.MkdirAll(filepath.Dir(fullPath), 0755)
 	require.NoError(t, err)
-	
+
 	content, err := yaml.Marshal(existingPod.Object)
 	require.NoError(t, err)
-	
+
 	err = os.WriteFile(fullPath, content, 0644)
 	require.NoError(t, err)
 
@@ -275,7 +275,7 @@ func TestReEvaluateEvents(t *testing.T) {
 	validEvents, err := repo.reEvaluateEvents(ctx, events)
 	assert.NoError(t, err)
 	assert.Len(t, validEvents, 2, "Should have 2 valid events")
-	
+
 	// Check that the stale event was filtered out
 	names := make([]string, len(validEvents))
 	for i, event := range validEvents {
@@ -288,7 +288,7 @@ func TestReEvaluateEvents(t *testing.T) {
 func TestConflictResolutionIntegration(t *testing.T) {
 	// This test simulates the full conflict resolution workflow
 	// Since we can't easily test with real Git operations, we test the logic components
-	
+
 	t.Run("conflict_resolution_workflow", func(t *testing.T) {
 		tempDir, err := os.MkdirTemp("", "git-conflict-test-*")
 		require.NoError(t, err)
@@ -306,13 +306,13 @@ func TestConflictResolutionIntegration(t *testing.T) {
 		existingPod := createTestPodWithResourceVersion("conflict-pod", "default", "100")
 		filePath := GetFilePath(existingPod)
 		fullPath := filepath.Join(tempDir, filePath)
-		
+
 		err = os.MkdirAll(filepath.Dir(fullPath), 0755)
 		require.NoError(t, err)
-		
+
 		content, err := yaml.Marshal(existingPod.Object)
 		require.NoError(t, err)
-		
+
 		err = os.WriteFile(fullPath, content, 0644)
 		require.NoError(t, err)
 
@@ -415,7 +415,7 @@ func TestGetFilePath_ConsistencyWithConflictResolution(t *testing.T) {
 func TestCommitMessageGeneration(t *testing.T) {
 	// Test commit message generation for conflict resolution scenarios
 	pod := createTestPod("test-pod", "default")
-	
+
 	event := eventqueue.Event{
 		Object: pod,
 		Request: admission.Request{

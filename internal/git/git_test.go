@@ -4,12 +4,12 @@ import (
 	"context"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
 	"github.com/ConfigButler/gitops-reverser/internal/eventqueue"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
+	"github.com/stretchr/testify/assert"
 	admissionv1 "k8s.io/api/admission/v1"
 	authenticationv1 "k8s.io/api/authentication/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 )
 
 func TestGetFilePath_NamespacedResource(t *testing.T) {
@@ -376,7 +376,7 @@ func TestClone_BasicCall(t *testing.T) {
 	// Test that Clone properly handles invalid repository URLs
 	// Since we're using a fake URL, we expect this to fail
 	repo, err := Clone("https://github.com/test/repo.git", "/tmp/test", nil)
-	
+
 	assert.Error(t, err) // Expect error with fake repository
 	assert.Nil(t, repo)  // Repo should be nil on error
 }
@@ -385,7 +385,7 @@ func TestRepo_Commit_BasicCall(t *testing.T) {
 	// Since Commit requires a real git repository, we expect this to fail
 	// when trying to call Worktree() on a nil Repository
 	repo := &Repo{path: "/tmp/test"}
-	
+
 	files := []CommitFile{
 		{
 			Path:    "test/file1.yaml",
@@ -396,9 +396,9 @@ func TestRepo_Commit_BasicCall(t *testing.T) {
 			Content: []byte("apiVersion: v1\nkind: Service"),
 		},
 	}
-	
+
 	message := "Test commit message"
-	
+
 	// Expect error since Repository is nil
 	err := repo.Commit(files, message)
 	assert.Error(t, err)
@@ -407,10 +407,10 @@ func TestRepo_Commit_BasicCall(t *testing.T) {
 func TestRepo_Commit_EmptyFiles(t *testing.T) {
 	// Since Commit requires a real git repository, we expect this to fail
 	repo := &Repo{path: "/tmp/test"}
-	
+
 	var files []CommitFile
 	message := "Empty commit"
-	
+
 	// Expect error since Repository is nil
 	err := repo.Commit(files, message)
 	assert.Error(t, err)
@@ -419,14 +419,14 @@ func TestRepo_Commit_EmptyFiles(t *testing.T) {
 func TestRepo_Commit_EmptyMessage(t *testing.T) {
 	// Since Commit requires a real git repository, we expect this to fail
 	repo := &Repo{path: "/tmp/test"}
-	
+
 	files := []CommitFile{
 		{
 			Path:    "test/file.yaml",
 			Content: []byte("content"),
 		},
 	}
-	
+
 	// Expect error since Repository is nil
 	err := repo.Commit(files, "")
 	assert.Error(t, err)
@@ -435,7 +435,7 @@ func TestRepo_Commit_EmptyMessage(t *testing.T) {
 func TestRepo_Push_BasicCall(t *testing.T) {
 	// Since Push requires a real git repository, we expect this to fail
 	repo := &Repo{path: "/tmp/test"}
-	
+
 	// Expect error since Repository is nil
 	err := repo.Push(context.Background())
 	assert.Error(t, err)
@@ -446,7 +446,7 @@ func TestCommitFile_Structure(t *testing.T) {
 		Path:    "namespaces/default/Pod/test-pod.yaml",
 		Content: []byte("apiVersion: v1\nkind: Pod\nmetadata:\n  name: test-pod"),
 	}
-	
+
 	assert.Equal(t, "namespaces/default/Pod/test-pod.yaml", file.Path)
 	assert.Contains(t, string(file.Content), "apiVersion: v1")
 	assert.Contains(t, string(file.Content), "kind: Pod")
@@ -500,7 +500,7 @@ func TestEdgeCases_NilObject(t *testing.T) {
 	// This will likely panic in the current implementation, but we're testing
 	// that we handle it gracefully in the future
 	var obj *unstructured.Unstructured
-	
+
 	// We expect this to panic currently, so we'll catch it
 	func() {
 		defer func() {

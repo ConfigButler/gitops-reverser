@@ -66,7 +66,7 @@ func TestSanitize_BasicPod(t *testing.T) {
 	metadata, found, err := unstructured.NestedMap(sanitized.Object, "metadata")
 	require.True(t, found)
 	require.NoError(t, err)
-	
+
 	_, exists := metadata["creationTimestamp"]
 	assert.False(t, exists, "creationTimestamp should be removed")
 	_, exists = metadata["uid"]
@@ -87,7 +87,7 @@ func TestSanitize_ConfigMapWithData(t *testing.T) {
 				"namespace": "my-ns",
 			},
 			"data": map[string]interface{}{
-				"config.yaml": "key: value",
+				"config.yaml":    "key: value",
 				"app.properties": "debug=true",
 			},
 			"binaryData": map[string]interface{}{
@@ -103,7 +103,7 @@ func TestSanitize_ConfigMapWithData(t *testing.T) {
 	assert.True(t, found)
 	assert.NoError(t, err)
 	assert.Equal(t, map[string]interface{}{
-		"config.yaml": "key: value",
+		"config.yaml":    "key: value",
 		"app.properties": "debug=true",
 	}, data)
 
@@ -311,20 +311,20 @@ func TestSanitize_ComplexNestedSpec(t *testing.T) {
 	assert.True(t, found)
 	assert.NoError(t, err)
 	assert.Len(t, containers, 1)
-	
+
 	// Access first container
 	container, ok := containers[0].(map[string]interface{})
 	assert.True(t, ok)
-	
+
 	// Access ports array
 	ports, ok := container["ports"].([]interface{})
 	assert.True(t, ok)
 	assert.Len(t, ports, 1)
-	
+
 	// Access first port
 	port, ok := ports[0].(map[string]interface{})
 	assert.True(t, ok)
-	
+
 	// Check containerPort
 	containerPort, ok := port["containerPort"].(int64)
 	assert.True(t, ok)

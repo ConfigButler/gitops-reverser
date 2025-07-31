@@ -4,20 +4,20 @@ import (
 	"context"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 	"github.com/ConfigButler/gitops-reverser/internal/eventqueue"
 	"github.com/ConfigButler/gitops-reverser/internal/metrics"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
-	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	admissionv1 "k8s.io/api/admission/v1"
+	authenticationv1 "k8s.io/api/authentication/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
-	admissionv1 "k8s.io/api/admission/v1"
-	authenticationv1 "k8s.io/api/authentication/v1"
 )
 
 func TestEventHandler_Handle_MatchingRule(t *testing.T) {
@@ -25,13 +25,13 @@ func TestEventHandler_Handle_MatchingRule(t *testing.T) {
 	ctx := context.Background()
 	_, err := metrics.InitOTLPExporter(ctx)
 	require.NoError(t, err)
-	
+
 	scheme := runtime.NewScheme()
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
-	
+
 	ruleStore := rulestore.NewStore()
 	eventQueue := eventqueue.NewQueue()
-	
+
 	// Add a rule that matches Pods
 	rule := configv1alpha1.WatchRule{
 		ObjectMeta: metav1.ObjectMeta{
@@ -48,17 +48,17 @@ func TestEventHandler_Handle_MatchingRule(t *testing.T) {
 		},
 	}
 	ruleStore.AddOrUpdate(rule)
-	
+
 	handler := &EventHandler{
 		Client:     client,
 		RuleStore:  ruleStore,
 		EventQueue: eventQueue,
 	}
-	
+
 	// Create decoder
 	decoder := admission.NewDecoder(scheme)
 	handler.Decoder = &decoder
-	
+
 	// Create admission request for a Pod
 	pod := &unstructured.Unstructured{
 		Object: map[string]interface{}{
@@ -78,10 +78,10 @@ func TestEventHandler_Handle_MatchingRule(t *testing.T) {
 			},
 		},
 	}
-	
+
 	podBytes, err := pod.MarshalJSON()
 	require.NoError(t, err)
-	
+
 	req := admission.Request{
 		AdmissionRequest: admissionv1.AdmissionRequest{
 			UID:       "test-uid",
@@ -94,19 +94,19 @@ func TestEventHandler_Handle_MatchingRule(t *testing.T) {
 			},
 		},
 	}
-	
+
 	// Execute
 	response := handler.Handle(ctx, req)
-	
+
 	// Verify
 	assert.True(t, response.Allowed)
 	assert.Equal(t, "request is allowed", response.Result.Message)
 	assert.Equal(t, 1, eventQueue.Size())
-	
+
 	// Verify the enqueued event
 	events := eventQueue.DequeueAll()
 	require.Equal(t, 1, len(events))
-	
+
 	event := events[0]
 	assert.Equal(t, "test-pod", event.Object.GetName())
 	assert.Equal(t, "default", event.Object.GetNamespace())
@@ -121,13 +121,13 @@ func TestEventHandler_Handle_NoMatchingRule(t *testing.T) {
 	ctx := context.Background()
 	_, err := metrics.InitOTLPExporter(ctx)
 	require.NoError(t, err)
-	
+
 	scheme := runtime.NewScheme()
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
-	
+
 	ruleStore := rulestore.NewStore()
 	eventQueue := eventqueue.NewQueue()
-	
+
 	// Add a rule that matches Services (not Pods)
 	rule := configv1alpha1.WatchRule{
 		ObjectMeta: metav1.ObjectMeta{
@@ -144,17 +144,17 @@ func TestEventHandler_Handle_NoMatchingRule(t *testing.T) {
 		},
 	}
 	ruleStore.AddOrUpdate(rule)
-	
+
 	handler := &EventHandler{
 		Client:     client,
 		RuleStore:  ruleStore,
 		EventQueue: eventQueue,
 	}
-	
+
 	// Create decoder
 	decoder := admission.NewDecoder(scheme)
 	handler.Decoder = &decoder
-	
+
 	// Create admission request for a Pod (which doesn't match the Service rule)
 	pod := &unstructured.Unstructured{
 		Object: map[string]interface{}{
@@ -166,10 +166,10 @@ func TestEventHandler_Handle_NoMatchingRule(t *testing.T) {
 			},
 		},
 	}
-	
+
 	podBytes, err := pod.MarshalJSON()
 	require.NoError(t, err)
-	
+
 	req := admission.Request{
 		AdmissionRequest: admissionv1.AdmissionRequest{
 			UID:       "test-uid",
@@ -182,10 +182,10 @@ func TestEventHandler_Handle_NoMatchingRule(t *testing.T) {
 			},
 		},
 	}
-	
+
 	// Execute
 	response := handler.Handle(ctx, req)
-	
+
 	// Verify
 	assert.True(t, response.Allowed)
 	assert.Equal(t, "request is allowed", response.Result.Message)
@@ -197,13 +197,13 @@ func TestEventHandler_Handle_MultipleMatchingRules(t *testing.T) {
 	ctx := context.Background()
 	_, err := metrics.InitOTLPExporter(ctx)
 	require.NoError(t, err)
-	
+
 	scheme := runtime.NewScheme()
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
-	
+
 	ruleStore := rulestore.NewStore()
 	eventQueue := eventqueue.NewQueue()
-	
+
 	// Add multiple rules that match Pods
 	rule1 := configv1alpha1.WatchRule{
 		ObjectMeta: metav1.ObjectMeta{
@@ -219,7 +219,7 @@ func TestEventHandler_Handle_MultipleMatchingRules(t *testing.T) {
 			},
 		},
 	}
-	
+
 	rule2 := configv1alpha1.WatchRule{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "pod-rule-2",
@@ -234,20 +234,20 @@ func TestEventHandler_Handle_MultipleMatchingRules(t *testing.T) {
 			},
 		},
 	}
-	
+
 	ruleStore.AddOrUpdate(rule1)
 	ruleStore.AddOrUpdate(rule2)
-	
+
 	handler := &EventHandler{
 		Client:     client,
 		RuleStore:  ruleStore,
 		EventQueue: eventQueue,
 	}
-	
+
 	// Create decoder
 	decoder := admission.NewDecoder(scheme)
 	handler.Decoder = &decoder
-	
+
 	// Create admission request for a Pod
 	pod := &unstructured.Unstructured{
 		Object: map[string]interface{}{
@@ -259,10 +259,10 @@ func TestEventHandler_Handle_MultipleMatchingRules(t *testing.T) {
 			},
 		},
 	}
-	
+
 	podBytes, err := pod.MarshalJSON()
 	require.NoError(t, err)
-	
+
 	req := admission.Request{
 		AdmissionRequest: admissionv1.AdmissionRequest{
 			UID:       "test-uid",
@@ -275,18 +275,18 @@ func TestEventHandler_Handle_MultipleMatchingRules(t *testing.T) {
 			},
 		},
 	}
-	
+
 	// Execute
 	response := handler.Handle(ctx, req)
-	
+
 	// Verify
 	assert.True(t, response.Allowed)
 	assert.Equal(t, 2, eventQueue.Size()) // Two events should be enqueued
-	
+
 	// Verify the enqueued events
 	events := eventQueue.DequeueAll()
 	require.Equal(t, 2, len(events))
-	
+
 	// Verify both events reference different repo configs
 	repoConfigs := make([]string, len(events))
 	for i, event := range events {
@@ -294,7 +294,7 @@ func TestEventHandler_Handle_MultipleMatchingRules(t *testing.T) {
 		assert.Equal(t, "Pod", event.Object.GetKind())
 		repoConfigs[i] = event.GitRepoConfigRef
 	}
-	
+
 	assert.Contains(t, repoConfigs, "repo-config-1")
 	assert.Contains(t, repoConfigs, "repo-config-2")
 }
@@ -304,13 +304,13 @@ func TestEventHandler_Handle_ExcludedByLabels(t *testing.T) {
 	ctx := context.Background()
 	_, err := metrics.InitOTLPExporter(ctx)
 	require.NoError(t, err)
-	
+
 	scheme := runtime.NewScheme()
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
-	
+
 	ruleStore := rulestore.NewStore()
 	eventQueue := eventqueue.NewQueue()
-	
+
 	// Add a rule that excludes resources with ignore label
 	rule := configv1alpha1.WatchRule{
 		ObjectMeta: metav1.ObjectMeta{
@@ -335,17 +335,17 @@ func TestEventHandler_Handle_ExcludedByLabels(t *testing.T) {
 		},
 	}
 	ruleStore.AddOrUpdate(rule)
-	
+
 	handler := &EventHandler{
 		Client:     client,
 		RuleStore:  ruleStore,
 		EventQueue: eventQueue,
 	}
-	
+
 	// Create decoder
 	decoder := admission.NewDecoder(scheme)
 	handler.Decoder = &decoder
-	
+
 	// Create admission request for a Pod with ignore label
 	pod := &unstructured.Unstructured{
 		Object: map[string]interface{}{
@@ -360,10 +360,10 @@ func TestEventHandler_Handle_ExcludedByLabels(t *testing.T) {
 			},
 		},
 	}
-	
+
 	podBytes, err := pod.MarshalJSON()
 	require.NoError(t, err)
-	
+
 	req := admission.Request{
 		AdmissionRequest: admissionv1.AdmissionRequest{
 			UID:       "test-uid",
@@ -376,10 +376,10 @@ func TestEventHandler_Handle_ExcludedByLabels(t *testing.T) {
 			},
 		},
 	}
-	
+
 	// Execute
 	response := handler.Handle(ctx, req)
-	
+
 	// Verify
 	assert.True(t, response.Allowed)
 	assert.Equal(t, 0, eventQueue.Size()) // No events should be enqueued due to exclusion
@@ -390,23 +390,23 @@ func TestEventHandler_Handle_InvalidJSON(t *testing.T) {
 	ctx := context.Background()
 	_, err := metrics.InitOTLPExporter(ctx)
 	require.NoError(t, err)
-	
+
 	scheme := runtime.NewScheme()
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
-	
+
 	ruleStore := rulestore.NewStore()
 	eventQueue := eventqueue.NewQueue()
-	
+
 	handler := &EventHandler{
 		Client:     client,
 		RuleStore:  ruleStore,
 		EventQueue: eventQueue,
 	}
-	
+
 	// Create decoder
 	decoder := admission.NewDecoder(scheme)
 	handler.Decoder = &decoder
-	
+
 	// Create admission request with invalid JSON
 	req := admission.Request{
 		AdmissionRequest: admissionv1.AdmissionRequest{
@@ -420,14 +420,14 @@ func TestEventHandler_Handle_InvalidJSON(t *testing.T) {
 			},
 		},
 	}
-	
+
 	// Execute
 	response := handler.Handle(ctx, req)
-	
+
 	// Verify
 	assert.False(t, response.Allowed)
 	assert.Equal(t, int32(400), response.Result.Code) // Bad Request
-	assert.Equal(t, 0, eventQueue.Size()) // No events should be enqueued
+	assert.Equal(t, 0, eventQueue.Size())             // No events should be enqueued
 }
 
 func TestEventHandler_Handle_WildcardMatching(t *testing.T) {
@@ -435,13 +435,13 @@ func TestEventHandler_Handle_WildcardMatching(t *testing.T) {
 	ctx := context.Background()
 	_, err := metrics.InitOTLPExporter(ctx)
 	require.NoError(t, err)
-	
+
 	scheme := runtime.NewScheme()
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
-	
+
 	ruleStore := rulestore.NewStore()
 	eventQueue := eventqueue.NewQueue()
-	
+
 	// Add a rule with wildcard matching
 	rule := configv1alpha1.WatchRule{
 		ObjectMeta: metav1.ObjectMeta{
@@ -458,17 +458,17 @@ func TestEventHandler_Handle_WildcardMatching(t *testing.T) {
 		},
 	}
 	ruleStore.AddOrUpdate(rule)
-	
+
 	handler := &EventHandler{
 		Client:     client,
 		RuleStore:  ruleStore,
 		EventQueue: eventQueue,
 	}
-	
+
 	// Create decoder
 	decoder := admission.NewDecoder(scheme)
 	handler.Decoder = &decoder
-	
+
 	// Create admission request for an IngressClass (should match Ingress*)
 	ingressClass := &unstructured.Unstructured{
 		Object: map[string]interface{}{
@@ -484,10 +484,10 @@ func TestEventHandler_Handle_WildcardMatching(t *testing.T) {
 		Version: "v1",
 		Kind:    "IngressClass",
 	})
-	
+
 	ingressClassBytes, err := ingressClass.MarshalJSON()
 	require.NoError(t, err)
-	
+
 	req := admission.Request{
 		AdmissionRequest: admissionv1.AdmissionRequest{
 			UID:       "test-uid",
@@ -500,18 +500,18 @@ func TestEventHandler_Handle_WildcardMatching(t *testing.T) {
 			},
 		},
 	}
-	
+
 	// Execute
 	response := handler.Handle(ctx, req)
-	
+
 	// Verify
 	assert.True(t, response.Allowed)
 	assert.Equal(t, 1, eventQueue.Size())
-	
+
 	// Verify the enqueued event
 	events := eventQueue.DequeueAll()
 	require.Equal(t, 1, len(events))
-	
+
 	event := events[0]
 	assert.Equal(t, "test-ingress-class", event.Object.GetName())
 	assert.Equal(t, "IngressClass", event.Object.GetKind())
@@ -523,20 +523,20 @@ func TestEventHandler_Handle_DifferentOperations(t *testing.T) {
 		admissionv1.Update,
 		admissionv1.Delete,
 	}
-	
+
 	for _, operation := range operations {
 		t.Run(string(operation), func(t *testing.T) {
 			// Setup
 			ctx := context.Background()
 			_, err := metrics.InitOTLPExporter(ctx)
 			require.NoError(t, err)
-			
+
 			scheme := runtime.NewScheme()
 			client := fake.NewClientBuilder().WithScheme(scheme).Build()
-			
+
 			ruleStore := rulestore.NewStore()
 			eventQueue := eventqueue.NewQueue()
-			
+
 			// Add a rule that matches Pods
 			rule := configv1alpha1.WatchRule{
 				ObjectMeta: metav1.ObjectMeta{
@@ -553,17 +553,17 @@ func TestEventHandler_Handle_DifferentOperations(t *testing.T) {
 				},
 			}
 			ruleStore.AddOrUpdate(rule)
-			
+
 			handler := &EventHandler{
 				Client:     client,
 				RuleStore:  ruleStore,
 				EventQueue: eventQueue,
 			}
-			
+
 			// Create decoder
 			decoder := admission.NewDecoder(scheme)
 			handler.Decoder = &decoder
-			
+
 			// Create admission request
 			pod := &unstructured.Unstructured{
 				Object: map[string]interface{}{
@@ -575,10 +575,10 @@ func TestEventHandler_Handle_DifferentOperations(t *testing.T) {
 					},
 				},
 			}
-			
+
 			podBytes, err := pod.MarshalJSON()
 			require.NoError(t, err)
-			
+
 			req := admission.Request{
 				AdmissionRequest: admissionv1.AdmissionRequest{
 					UID:       "test-uid",
@@ -591,18 +591,18 @@ func TestEventHandler_Handle_DifferentOperations(t *testing.T) {
 					},
 				},
 			}
-			
+
 			// Execute
 			response := handler.Handle(ctx, req)
-			
+
 			// Verify
 			assert.True(t, response.Allowed)
 			assert.Equal(t, 1, eventQueue.Size())
-			
+
 			// Verify the operation is preserved in the event
 			events := eventQueue.DequeueAll()
 			require.Equal(t, 1, len(events))
-			
+
 			event := events[0]
 			assert.Equal(t, operation, event.Request.Operation)
 		})
@@ -614,13 +614,13 @@ func TestEventHandler_Handle_ClusterScopedResource(t *testing.T) {
 	ctx := context.Background()
 	_, err := metrics.InitOTLPExporter(ctx)
 	require.NoError(t, err)
-	
+
 	scheme := runtime.NewScheme()
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
-	
+
 	ruleStore := rulestore.NewStore()
 	eventQueue := eventqueue.NewQueue()
-	
+
 	// Add a rule that matches Namespaces
 	rule := configv1alpha1.WatchRule{
 		ObjectMeta: metav1.ObjectMeta{
@@ -637,17 +637,17 @@ func TestEventHandler_Handle_ClusterScopedResource(t *testing.T) {
 		},
 	}
 	ruleStore.AddOrUpdate(rule)
-	
+
 	handler := &EventHandler{
 		Client:     client,
 		RuleStore:  ruleStore,
 		EventQueue: eventQueue,
 	}
-	
+
 	// Create decoder
 	decoder := admission.NewDecoder(scheme)
 	handler.Decoder = &decoder
-	
+
 	// Create admission request for a Namespace
 	namespace := &unstructured.Unstructured{
 		Object: map[string]interface{}{
@@ -658,10 +658,10 @@ func TestEventHandler_Handle_ClusterScopedResource(t *testing.T) {
 			},
 		},
 	}
-	
+
 	namespaceBytes, err := namespace.MarshalJSON()
 	require.NoError(t, err)
-	
+
 	req := admission.Request{
 		AdmissionRequest: admissionv1.AdmissionRequest{
 			UID:       "test-uid",
@@ -674,18 +674,18 @@ func TestEventHandler_Handle_ClusterScopedResource(t *testing.T) {
 			},
 		},
 	}
-	
+
 	// Execute
 	response := handler.Handle(ctx, req)
-	
+
 	// Verify
 	assert.True(t, response.Allowed)
 	assert.Equal(t, 1, eventQueue.Size())
-	
+
 	// Verify the enqueued event
 	events := eventQueue.DequeueAll()
 	require.Equal(t, 1, len(events))
-	
+
 	event := events[0]
 	assert.Equal(t, "test-namespace", event.Object.GetName())
 	assert.Equal(t, "", event.Object.GetNamespace()) // Cluster-scoped resources have no namespace
@@ -695,10 +695,10 @@ func TestEventHandler_Handle_ClusterScopedResource(t *testing.T) {
 
 func TestEventHandler_InjectDecoder(t *testing.T) {
 	handler := &EventHandler{}
-	
+
 	scheme := runtime.NewScheme()
 	decoder := admission.NewDecoder(scheme)
-	
+
 	err := handler.InjectDecoder(&decoder)
 	assert.NoError(t, err)
 	assert.NotNil(t, handler.Decoder)
@@ -710,13 +710,13 @@ func TestEventHandler_Handle_SanitizationApplied(t *testing.T) {
 	ctx := context.Background()
 	_, err := metrics.InitOTLPExporter(ctx)
 	require.NoError(t, err)
-	
+
 	scheme := runtime.NewScheme()
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
-	
+
 	ruleStore := rulestore.NewStore()
 	eventQueue := eventqueue.NewQueue()
-	
+
 	// Add a rule that matches Pods
 	rule := configv1alpha1.WatchRule{
 		ObjectMeta: metav1.ObjectMeta{
@@ -733,17 +733,17 @@ func TestEventHandler_Handle_SanitizationApplied(t *testing.T) {
 		},
 	}
 	ruleStore.AddOrUpdate(rule)
-	
+
 	handler := &EventHandler{
 		Client:     client,
 		RuleStore:  ruleStore,
 		EventQueue: eventQueue,
 	}
-	
+
 	// Create decoder
 	decoder := admission.NewDecoder(scheme)
 	handler.Decoder = &decoder
-	
+
 	// Create admission request for a Pod with status (should be sanitized)
 	pod := &unstructured.Unstructured{
 		Object: map[string]interface{}{
@@ -768,10 +768,10 @@ func TestEventHandler_Handle_SanitizationApplied(t *testing.T) {
 			},
 		},
 	}
-	
+
 	podBytes, err := pod.MarshalJSON()
 	require.NoError(t, err)
-	
+
 	req := admission.Request{
 		AdmissionRequest: admissionv1.AdmissionRequest{
 			UID:       "test-uid",
@@ -784,42 +784,42 @@ func TestEventHandler_Handle_SanitizationApplied(t *testing.T) {
 			},
 		},
 	}
-	
+
 	// Execute
 	response := handler.Handle(ctx, req)
-	
+
 	// Verify
 	assert.True(t, response.Allowed)
 	assert.Equal(t, 1, eventQueue.Size())
-	
+
 	// Verify the enqueued event has sanitized object
 	events := eventQueue.DequeueAll()
 	require.Equal(t, 1, len(events))
-	
+
 	event := events[0]
 	sanitizedObj := event.Object
-	
+
 	// Verify preserved fields
 	assert.Equal(t, "test-pod", sanitizedObj.GetName())
 	assert.Equal(t, "default", sanitizedObj.GetNamespace())
 	assert.Equal(t, "Pod", sanitizedObj.GetKind())
-	
+
 	// Verify spec is preserved
 	spec, found, err := unstructured.NestedMap(sanitizedObj.Object, "spec")
 	assert.True(t, found)
 	assert.NoError(t, err)
 	assert.NotNil(t, spec)
-	
+
 	// Verify status is removed
 	_, found, err = unstructured.NestedMap(sanitizedObj.Object, "status")
 	assert.False(t, found)
 	assert.NoError(t, err)
-	
+
 	// Verify server-generated metadata fields are removed
 	metadata, found, err := unstructured.NestedMap(sanitizedObj.Object, "metadata")
 	require.True(t, found)
 	require.NoError(t, err)
-	
+
 	_, exists := metadata["creationTimestamp"]
 	assert.False(t, exists, "creationTimestamp should be removed by sanitization")
 	_, exists = metadata["uid"]
