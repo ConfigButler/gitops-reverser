@@ -47,3 +47,15 @@ This document outlines the tasks required to build the GitOps Reverser tool as s
 - [x] Create a `Dockerfile` for building the application image.
 - [x] Create a basic Helm chart for deployment (`charts/gitops-reverser/`).
 - [x] Implement a GitHub Actions CI/CD pipeline for linting, testing, and building.
+
+
+--> Simons todo to make it real code that will work
+
+[ ] Run the CI stuff in GitHub without errors and weird versions
+[ ] Get all tests green, also the 'harder' integration tests with git. Why is that so difficult to get right?
+[ ] Get more clarity on why people would be comitting themselves: the last write should win is in interesting approach that feels right. Also for ConfigButler when we are a few steps further.
+[ ] Can we get this thing to run in our small k3s cluster?
+[ ] Do we really need to pull before each commit? That's not what was in my head before we started the whole conversation -> it should do a push/pull once a minute. Or perhaps a pull the first time an event is created? I would like to have a timeline, please let's be carefull with pushes and pulls
+[ ] Can we get a proper log on the number of euros that we spent on this thing?
+[ ] See if we can get more out of: https://github.com/RichardoC/kube-audit-rest?tab=readme-ov-file#known-limitations-and-warnings (since it's maintained and gives some exampels on how to maintain such an open tool).
+ 

@@ -2,8 +2,13 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {{ include "gitops-reverser.fullname" . }}
+  namespace: {{ .Release.Namespace }}
   labels:
     {{- include "gitops-reverser.labels" . | nindent 4 }}
+    app.kubernetes.io/component: manager
+    app.kubernetes.io/created-by: gitops-reverser
+    app.kubernetes.io/part-of: gitops-reverser
+    control-plane: controller-manager
 spec:
   replicas: {{ .Values.replicaCount }}
   selector:
@@ -11,10 +16,11 @@ spec:
       {{- include "gitops-reverser.selectorLabels" . | nindent 6 }}
   template:
     metadata:
-      {{- with .Values.podAnnotations }}
       annotations:
+        kubectl.kubernetes.io/default-container: manager
+        {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
-      {{- end }}
+        {{- end }}
       labels:
         {{- include "gitops-reverser.selectorLabels" . | nindent 8 }}
     spec:
@@ -25,26 +31,140 @@ spec:
       serviceAccountName: {{ include "gitops-reverser.serviceAccountName" . }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      terminationGracePeriodSeconds: 10
       containers:
-        - name: {{ .Chart.Name }}
+        - name: manager
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - --leader-elect={{ .Values.controllerManager.leaderElection }}
+            - --metrics-bind-address={{ .Values.controllerManager.metrics.bindAddress }}
+            - --health-probe-bind-address={{ .Values.controllerManager.healthProbe.bindAddress }}
+            {{- if .Values.controllerManager.enableHTTP2 }}
+            - --enable-http2
+            {{- end }}
+            {{- if .Values.webhook.enabled }}
+            {{- if .Values.certificates.certManager.enabled }}
+            - --webhook-cert-path={{ .Values.webhook.server.certPath }}
+            - --webhook-cert-name={{ .Values.webhook.server.certName }}
+            - --webhook-cert-key={{ .Values.webhook.server.certKey }}
+            {{- end }}
+            {{- if .Values.controllerManager.metrics.secure }}
+            - --metrics-secure
+            - --metrics-cert-path={{ .Values.controllerManager.metrics.certPath }}
+            - --metrics-cert-name={{ .Values.controllerManager.metrics.certName }}
+            - --metrics-cert-key={{ .Values.controllerManager.metrics.certKey }}
+            {{- end }}
+            {{- end }}
           ports:
-            - name: https
-              containerPort: 9443
+            - name: webhook-server
+              containerPort: {{ .Values.webhook.server.port }}
               protocol: TCP
+            {{- if ne .Values.controllerManager.metrics.bindAddress "0" }}
+            - name: metrics
+              containerPort: 8443
+              protocol: TCP
+            {{- end }}
+          env:
+            {{- if not .Values.webhook.enabled }}
+            - name: ENABLE_WEBHOOKS
+              value: "false"
+            {{- end }}
+            {{- with .Values.env }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           livenessProbe:
             httpGet:
               path: /healthz
-              port: 8081
+              port: {{ regexReplaceAll "^:" .Values.controllerManager.healthProbe.bindAddress "" }}
+              scheme: HTTP
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 1
+            failureThreshold: 3
+            successThreshold: 1
           readinessProbe:
             httpGet:
               path: /readyz
-              port: 8081
+              port: {{ regexReplaceAll "^:" .Values.controllerManager.healthProbe.bindAddress "" }}
+              scheme: HTTP
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 1
+            failureThreshold: 3
+            successThreshold: 1
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            {{- if .Values.webhook.enabled }}
+            {{- if .Values.certificates.certManager.enabled }}
+            - name: cert
+              mountPath: {{ .Values.webhook.server.certPath }}
+              readOnly: true
+            {{- end }}
+            {{- end }}
+            {{- if and .Values.controllerManager.metrics.secure (ne .Values.controllerManager.metrics.bindAddress "0") }}
+            - name: metrics-cert
+              mountPath: {{ .Values.controllerManager.metrics.certPath }}
+              readOnly: true
+            {{- end }}
+            {{- with .Values.volumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+        {{- if and .Values.controllerManager.metrics.secure (ne .Values.controllerManager.metrics.bindAddress "0") }}
+        - name: kube-rbac-proxy
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65532
+          image: gcr.io/kubebuilder/kube-rbac-proxy:v0.16.0
+          args:
+            - --secure-listen-address=0.0.0.0:8443
+            - --upstream=http://127.0.0.1:8080/
+            - --logtostderr=true
+            - --v=0
+            - --tls-cert-file={{ .Values.controllerManager.metrics.certPath }}/{{ .Values.controllerManager.metrics.certName }}
+            - --tls-private-key-file={{ .Values.controllerManager.metrics.certPath }}/{{ .Values.controllerManager.metrics.certKey }}
+          ports:
+            - containerPort: 8443
+              name: https
+              protocol: TCP
+          resources:
+            limits:
+              cpu: 500m
+              memory: 128Mi
+            requests:
+              cpu: 5m
+              memory: 64Mi
+          volumeMounts:
+            - name: metrics-cert
+              mountPath: {{ .Values.controllerManager.metrics.certPath }}
+              readOnly: true
+        {{- end }}
+      volumes:
+        {{- if .Values.webhook.enabled }}
+        {{- if and .Values.certificates.certManager.enabled (hasKey .Values.certificates "webhook") (hasKey .Values.certificates.webhook "secretName") }}
+        - name: cert
+          secret:
+            secretName: {{ .Values.certificates.webhook.secretName }}
+            defaultMode: 420
+        {{- end }}
+        {{- end }}
+        {{- if and .Values.controllerManager.metrics.secure (ne .Values.controllerManager.metrics.bindAddress "0") (hasKey .Values.certificates "metrics") (hasKey .Values.certificates.metrics "secretName") }}
+        - name: metrics-cert
+          secret:
+            secretName: {{ .Values.certificates.metrics.secretName }}
+            defaultMode: 420
+        {{- end }}
+        {{- with .Values.volumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

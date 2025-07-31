@@ -1,0 +1,46 @@
+{{- if and .Values.webhook.enabled .Values.webhook.validating.enabled }}
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionWebhookConfiguration
+metadata:
+  name: {{ include "gitops-reverser.fullname" . }}-validating-webhook-configuration
+  labels:
+    {{- include "gitops-reverser.labels" . | nindent 4 }}
+  {{- if and .Values.certificates.certManager.enabled (hasKey .Values.certificates "webhook") (hasKey .Values.certificates.webhook "secretName") }}
+  annotations:
+    cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/{{ .Values.certificates.webhook.secretName }}
+  {{- end }}
+webhooks:
+- name: validate.gitops-reverser.configbutler.ai
+  clientConfig:
+    service:
+      name: {{ include "gitops-reverser.fullname" . }}-webhook-service
+      namespace: {{ .Release.Namespace }}
+      path: /validate-v1-event
+    {{- if not .Values.certificates.certManager.enabled }}
+    caBundle: {{ .Values.webhook.caBundle | b64enc }}
+    {{- end }}
+  rules:
+  {{- range .Values.webhook.validating.rules }}
+  - operations: {{ .operations | toJson }}
+    apiGroups: {{ .apiGroups | toJson }}
+    apiVersions: {{ .apiVersions | toJson }}
+    resources: {{ .resources | toJson }}
+    {{- if .scope }}
+    scope: {{ .scope }}
+    {{- end }}
+  {{- end }}
+  failurePolicy: {{ .Values.webhook.validating.failurePolicy }}
+  sideEffects: {{ .Values.webhook.validating.sideEffects }}
+  admissionReviewVersions: {{ .Values.webhook.validating.admissionReviewVersions | toJson }}
+  {{- with .Values.webhook.validating.namespaceSelector }}
+  namespaceSelector:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with .Values.webhook.validating.objectSelector }}
+  objectSelector:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- if .Values.webhook.validating.timeoutSeconds }}
+  timeoutSeconds: {{ .Values.webhook.validating.timeoutSeconds }}
+  {{- end }}
+{{- end }}

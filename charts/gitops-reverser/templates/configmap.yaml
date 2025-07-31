@@ -1,0 +1,27 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "gitops-reverser.fullname" . }}-config
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "gitops-reverser.labels" . | nindent 4 }}
+data:
+  controller_manager_config.yaml: |
+    apiVersion: controller-runtime.sigs.k8s.io/v1alpha1
+    kind: ControllerManagerConfig
+    health:
+      healthProbeBindAddress: {{ .Values.controllerManager.healthProbe.bindAddress }}
+    metrics:
+      bindAddress: {{ .Values.controllerManager.metrics.bindAddress }}
+    webhook:
+      port: {{ .Values.webhook.server.port }}
+    leaderElection:
+      leaderElect: {{ .Values.controllerManager.leaderElection }}
+      resourceName: 9ed3440e.configbutler.ai
+    {{- if .Values.logging }}
+    logging:
+      level: {{ .Values.logging.level | default "info" }}
+      development: {{ .Values.logging.development | default false }}
+      encoder: {{ .Values.logging.encoder | default "json" }}
+      stacktraceLevel: {{ .Values.logging.stacktraceLevel | default "error" }}
+    {{- end }}

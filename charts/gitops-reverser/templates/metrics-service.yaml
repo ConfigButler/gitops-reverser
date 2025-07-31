@@ -1,0 +1,22 @@
+{{- if ne .Values.controllerManager.metrics.bindAddress "0" }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "gitops-reverser.fullname" . }}-metrics-service
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "gitops-reverser.labels" . | nindent 4 }}
+    app.kubernetes.io/component: kube-rbac-proxy
+    app.kubernetes.io/created-by: gitops-reverser
+    app.kubernetes.io/part-of: gitops-reverser
+    control-plane: controller-manager
+spec:
+  type: ClusterIP
+  ports:
+    - name: https
+      port: 8443
+      protocol: TCP
+      targetPort: 8443
+  selector:
+    {{- include "gitops-reverser.selectorLabels" . | nindent 4 }}
+{{- end }}

@@ -25,48 +25,226 @@ serviceAccount:
 
 podAnnotations: {}
 
-podSecurityContext: {}
-  # fsGroup: 2000
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
 
-securityContext: {}
-  # capabilities:
-  #   drop:
-  #   - ALL
-  # readOnlyRootFilesystem: true
-  # runAsNonRoot: true
-  # runAsUser: 1000
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+    - ALL
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 65532
 
+# Controller manager configuration
+controllerManager:
+  # Enable leader election for controller manager
+  leaderElection: true
+  # Metrics configuration
+  metrics:
+    bindAddress: "0"
+    secure: true
+    certPath: "/tmp/k8s-metrics-server/serving-certs"
+    certName: "tls.crt"
+    certKey: "tls.key"
+  # Health probe configuration
+  healthProbe:
+    bindAddress: ":8081"
+  # Enable HTTP/2 (disabled by default for security)
+  enableHTTP2: false
+
+# Webhook configuration
+webhook:
+  enabled: true
+  # Webhook server configuration
+  server:
+    port: 9443
+    certPath: "/tmp/k8s-webhook-server/serving-certs"
+    certName: "tls.crt"
+    certKey: "tls.key"
+  
+  # Mutating webhook configuration
+  mutating:
+    enabled: true
+    failurePolicy: Fail
+    sideEffects: None
+    admissionReviewVersions: ["v1", "v1beta1"]
+    # Rules for mutating webhook
+    rules:
+      - operations: ["CREATE", "UPDATE"]
+        apiGroups: [""]
+        apiVersions: ["v1"]
+        resources: ["pods", "configmaps", "secrets"]
+      - operations: ["CREATE", "UPDATE"]
+        apiGroups: ["apps"]
+        apiVersions: ["v1"]
+        resources: ["deployments", "replicasets", "daemonsets", "statefulsets"]
+      - operations: ["CREATE", "UPDATE"]
+        apiGroups: ["batch"]
+        apiVersions: ["v1", "v1beta1"]
+        resources: ["jobs", "cronjobs"]
+    # Namespace selector for mutating webhook
+    namespaceSelector:
+      matchExpressions:
+      - key: name
+        operator: NotIn
+        values: ["kube-system", "kube-public", "kube-node-lease"]
+    # Object selector for mutating webhook
+    objectSelector: {}
+  
+  # Validating webhook configuration
+  validating:
+    enabled: true
+    failurePolicy: Ignore
+    sideEffects: None
+    admissionReviewVersions: ["v1", "v1beta1"]
+    # Rules for validating webhook (watches all resources)
+    rules:
+      - operations: ["CREATE", "UPDATE", "DELETE"]
+        apiGroups: ["*"]
+        apiVersions: ["*"]
+        resources: ["*"]
+    # Namespace selector for validating webhook
+    namespaceSelector: {}
+    # Object selector for validating webhook
+    objectSelector: {}
+
+# Service configuration
 service:
   type: ClusterIP
   port: 443
+  targetPort: 9443
+  # Additional service annotations
+  annotations: {}
 
+# Webhook service configuration (separate from main service)
+webhookService:
+  type: ClusterIP
+  port: 443
+  targetPort: 9443
+  annotations: {}
+
+# TLS certificate management
+certificates:
+  # Use cert-manager for certificate management
+  certManager:
+    enabled: true
+    # Certificate issuer
+    issuer:
+      name: selfsigned-issuer
+      kind: Issuer
+      # Create a self-signed issuer if none exists
+      create: true
+    # Webhook certificate
+    webhook:
+      secretName: webhook-server-cert
+      dnsNames:
+        - webhook-service
+        - webhook-service.system.svc
+        - webhook-service.system.svc.cluster.local
+    # Metrics certificate
+    metrics:
+      secretName: metrics-server-cert
+      dnsNames:
+        - metrics-service
+        - metrics-service.system.svc
+        - metrics-service.system.svc.cluster.local
+
+# RBAC configuration
+rbac:
+  create: true
+  # Additional rules for the service account
+  rules:
+    - apiGroups: [""]
+      resources: ["pods"]
+      verbs: ["get", "patch"]
+    - apiGroups: [""]
+      resources: ["events"]
+      verbs: ["create"]
+    - apiGroups: ["coordination.k8s.io"]
+      resources: ["leases"]
+      verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+# Ingress configuration (typically not needed for webhooks)
 ingress:
   enabled: false
   annotations: {}
-    # kubernetes.io/ingress.class: nginx
-    # kubernetes.io/tls-acme: "true"
   hosts:
     - host: chart-example.local
       paths: []
   tls: []
-  #  - secretName: chart-example-tls
-  #    hosts:
-  #      - chart-example.local
 
-resources: {}
-  # We usually recommend not to specify default resources and to leave this as a conscious
-  # choice for the user. This also increases chances charts run on environments with little
-  # resources, such as Minikube. If you do want to specify resources, uncomment the
-  # following lines, adjust them as necessary, and remove the curly braces after 'resources:'.
-  # limits:
-  #   cpu: 100m
-  #   memory: 128Mi
-  # requests:
-  #   cpu: 100m
-  #   memory: 128Mi
+# Resource limits and requests
+resources:
+  limits:
+    cpu: 500m
+    memory: 128Mi
+  requests:
+    cpu: 10m
+    memory: 64Mi
 
+# Node selection
 nodeSelector: {}
 
+# Tolerations
 tolerations: []
 
+# Pod affinity/anti-affinity
 affinity: {}
+
+# Pod disruption budget
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1
+  # maxUnavailable: 1
+
+# Monitoring and observability
+monitoring:
+  # Enable ServiceMonitor for Prometheus
+  serviceMonitor:
+    enabled: false
+    namespace: ""
+    labels: {}
+    interval: 30s
+    scrapeTimeout: 10s
+    path: /metrics
+    port: https
+
+# Logging configuration
+logging:
+  level: info
+  development: false
+  encoder: json
+  # Additional logging configuration
+  stacktraceLevel: error
+  
+# Environment variables
+env: []
+  # - name: EXAMPLE_VAR
+  #   value: "example-value"
+
+# Additional volumes
+volumes: []
+  # - name: example-volume
+  #   configMap:
+  #     name: example-configmap
+
+# Additional volume mounts
+volumeMounts: []
+  # - name: example-volume
+  #   mountPath: /etc/example
+  #   readOnly: true
+
+# Network policies
+networkPolicy:
+  enabled: false
+  # Ingress rules
+  ingress: []
+  # Egress rules
+  egress: []

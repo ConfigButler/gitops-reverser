@@ -1,0 +1,25 @@
+{{- if .Values.monitoring.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "gitops-reverser.fullname" . }}-metrics
+  namespace: {{ .Values.monitoring.serviceMonitor.namespace | default .Release.Namespace }}
+  labels:
+    {{- include "gitops-reverser.labels" . | nindent 4 }}
+    {{- with .Values.monitoring.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  endpoints:
+  - path: {{ .Values.monitoring.serviceMonitor.path }}
+    port: {{ .Values.monitoring.serviceMonitor.port }}
+    interval: {{ .Values.monitoring.serviceMonitor.interval }}
+    scrapeTimeout: {{ .Values.monitoring.serviceMonitor.scrapeTimeout }}
+    scheme: https
+    tlsConfig:
+      insecureSkipVerify: true
+  selector:
+    matchLabels:
+      {{- include "gitops-reverser.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: kube-rbac-proxy
+{{- end }}
