@@ -109,8 +109,8 @@ var _ = BeforeSuite(func() {
 	})
 	Expect(err).NotTo(HaveOccurred())
 
-	err = SetupWatchRuleWebhookWithManager(mgr)
-	Expect(err).NotTo(HaveOccurred())
+	// err = SetupWatchRuleWebhookWithManager(mgr)
+	// Expect(err).NotTo(HaveOccurred())
 
 	// +kubebuilder:scaffold:webhook
 

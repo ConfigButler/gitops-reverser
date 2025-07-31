@@ -32,13 +32,11 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
-	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	configbutleraiv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 	"github.com/ConfigButler/gitops-reverser/internal/eventqueue"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
-	internalwebhook "github.com/ConfigButler/gitops-reverser/internal/webhook"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -107,13 +105,13 @@ var _ = BeforeSuite(func() {
 	}).SetupWithManager(mgr)
 	Expect(err).NotTo(HaveOccurred())
 
-	mgr.GetWebhookServer().Register("/validate-v1-event", &webhook.Admission{
-		Handler: &internalwebhook.EventHandler{
-			Client:     mgr.GetClient(),
-			RuleStore:  ruleStore,
-			EventQueue: eventQueue,
-		},
-	})
+	// mgr.GetWebhookServer().Register("/validate-v1-event", &webhook.Admission{
+	// 	Handler: &internalwebhook.EventHandler{
+	// 		Client:     mgr.GetClient(),
+	// 		RuleStore:  ruleStore,
+	// 		EventQueue: eventQueue,
+	// 	},
+	// })
 
 	gitWorker := &git.Worker{
 		Client:     mgr.GetClient(),

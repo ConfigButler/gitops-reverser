@@ -4,12 +4,12 @@ import (
 	"context"
 	"fmt"
 
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/metric"
-	"go.opentelemetry.io/otel/metric/global"
 )
 
 var (
-	meter                  = global.Meter("gitops-reverser")
+	meter                  = otel.Meter("gitops-reverser")
 	EventsReceivedTotal    metric.Int64Counter
 	EventsProcessedTotal   metric.Int64Counter
 	GitOperationsTotal     metric.Int64Counter

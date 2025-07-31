@@ -244,7 +244,7 @@ func main() {
 			Log:        ctrl.Log.WithName("git-worker"),
 			EventQueue: eventQueue,
 		}
-		go gitWorker.Run(context.Background())
+		go gitWorker.Start(context.Background())
 	}
 	// +kubebuilder:scaffold:builder
 

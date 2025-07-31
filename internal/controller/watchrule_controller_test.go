@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 
+	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -43,6 +44,21 @@ var _ = Describe("WatchRule Controller", func() {
 		watchrule := &configbutleraiv1alpha1.WatchRule{}
 
 		BeforeEach(func() {
+			By("creating the custom resource for the Kind GitRepoConfig")
+			gitRepoConfig := &configbutleraiv1alpha1.GitRepoConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-repo-config",
+					Namespace: "default",
+				},
+				Spec: configbutleraiv1alpha1.GitRepoConfigSpec{
+					RepoURL:         "https://github.com/test/repo.git",
+					Branch:          "main",
+					SecretName:      "git-credentials",
+					SecretNamespace: "default",
+				},
+			}
+			Expect(k8sClient.Create(ctx, gitRepoConfig)).To(Succeed())
+
 			By("creating the custom resource for the Kind WatchRule")
 			err := k8sClient.Get(ctx, typeNamespacedName, watchrule)
 			if err != nil && errors.IsNotFound(err) {
@@ -51,7 +67,14 @@ var _ = Describe("WatchRule Controller", func() {
 						Name:      resourceName,
 						Namespace: "default",
 					},
-					// TODO(user): Specify other spec details if needed.
+					Spec: configbutleraiv1alpha1.WatchRuleSpec{
+						GitRepoConfigRef: "test-repo-config",
+						Rules: []configbutleraiv1alpha1.ResourceRule{
+							{
+								Resources: []string{"Pod"},
+							},
+						},
+					},
 				}
 				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 			}
@@ -65,12 +88,20 @@ var _ = Describe("WatchRule Controller", func() {
 
 			By("Cleanup the specific resource instance WatchRule")
 			Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
+
+			gitRepoConfig := &configbutleraiv1alpha1.GitRepoConfig{}
+			err = k8sClient.Get(ctx, types.NamespacedName{Name: "test-repo-config", Namespace: "default"}, gitRepoConfig)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Cleanup the specific resource instance GitRepoConfig")
+			Expect(k8sClient.Delete(ctx, gitRepoConfig)).To(Succeed())
 		})
 		It("should successfully reconcile the resource", func() {
 			By("Reconciling the created resource")
 			controllerReconciler := &WatchRuleReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
+				Client:    k8sClient,
+				Scheme:    k8sClient.Scheme(),
+				RuleStore: rulestore.NewStore(),
 			}
 
 			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
