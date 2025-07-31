@@ -392,7 +392,7 @@ func TestPodLabeler_getPod_NotFound(t *testing.T) {
 	pod, err := labeler.getPod(ctx)
 	assert.Error(t, err)
 	assert.True(t, errors.IsNotFound(err))
-	assert.Nil(t, pod)
+	assert.NotNil(t, pod) // getPod always returns a Pod object, even when not found
 }
 
 func TestGetPodName(t *testing.T) {

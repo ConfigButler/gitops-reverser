@@ -86,9 +86,27 @@ func (r *CompiledRule) matches(obj client.Object) bool {
 	kind := obj.GetObjectKind().GroupVersionKind().Kind
 	kindMatch := false
 	for _, rk := range r.Resources {
-		if rk == kind || (rk[len(rk)-1] == '*' && strings.HasPrefix(kind, rk[:len(rk)-1])) {
+		if rk == "" {
+			// Empty pattern doesn't match anything
+			continue
+		}
+		if rk == "*" {
+			// Universal wildcard matches everything
 			kindMatch = true
 			break
+		}
+		if rk == kind {
+			// Exact match
+			kindMatch = true
+			break
+		}
+		if len(rk) > 1 && rk[len(rk)-1] == '*' {
+			// Prefix wildcard match (e.g., "Pod*" matches "PodDisruptionBudget")
+			prefix := rk[:len(rk)-1]
+			if strings.HasPrefix(kind, prefix) {
+				kindMatch = true
+				break
+			}
 		}
 	}
 	if !kindMatch {

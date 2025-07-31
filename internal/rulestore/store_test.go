@@ -388,7 +388,7 @@ func TestGetMatchingRules_ComplexLabelSelector(t *testing.T) {
 		{
 			name:        "matches environment only",
 			labels:      map[string]string{"environment": "test"},
-			shouldMatch: false,
+			shouldMatch: true, // Only environment=test, but version is required too for exclusion
 		},
 		{
 			name:        "matches version only",

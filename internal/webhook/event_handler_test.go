@@ -7,13 +7,13 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/ConfigButler/gitops-reverser/internal/eventqueue"
+	"github.com/ConfigButler/gitops-reverser/internal/metrics"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
 	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 	admissionv1 "k8s.io/api/admission/v1"
@@ -22,6 +22,10 @@ import (
 
 func TestEventHandler_Handle_MatchingRule(t *testing.T) {
 	// Setup
+	ctx := context.Background()
+	_, err := metrics.InitOTLPExporter(ctx)
+	require.NoError(t, err)
+	
 	scheme := runtime.NewScheme()
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 	
@@ -92,7 +96,6 @@ func TestEventHandler_Handle_MatchingRule(t *testing.T) {
 	}
 	
 	// Execute
-	ctx := context.Background()
 	response := handler.Handle(ctx, req)
 	
 	// Verify
@@ -115,6 +118,10 @@ func TestEventHandler_Handle_MatchingRule(t *testing.T) {
 
 func TestEventHandler_Handle_NoMatchingRule(t *testing.T) {
 	// Setup
+	ctx := context.Background()
+	_, err := metrics.InitOTLPExporter(ctx)
+	require.NoError(t, err)
+	
 	scheme := runtime.NewScheme()
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 	
@@ -177,7 +184,6 @@ func TestEventHandler_Handle_NoMatchingRule(t *testing.T) {
 	}
 	
 	// Execute
-	ctx := context.Background()
 	response := handler.Handle(ctx, req)
 	
 	// Verify
@@ -188,6 +194,10 @@ func TestEventHandler_Handle_NoMatchingRule(t *testing.T) {
 
 func TestEventHandler_Handle_MultipleMatchingRules(t *testing.T) {
 	// Setup
+	ctx := context.Background()
+	_, err := metrics.InitOTLPExporter(ctx)
+	require.NoError(t, err)
+	
 	scheme := runtime.NewScheme()
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 	
@@ -267,7 +277,6 @@ func TestEventHandler_Handle_MultipleMatchingRules(t *testing.T) {
 	}
 	
 	// Execute
-	ctx := context.Background()
 	response := handler.Handle(ctx, req)
 	
 	// Verify
@@ -292,6 +301,10 @@ func TestEventHandler_Handle_MultipleMatchingRules(t *testing.T) {
 
 func TestEventHandler_Handle_ExcludedByLabels(t *testing.T) {
 	// Setup
+	ctx := context.Background()
+	_, err := metrics.InitOTLPExporter(ctx)
+	require.NoError(t, err)
+	
 	scheme := runtime.NewScheme()
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 	
@@ -365,7 +378,6 @@ func TestEventHandler_Handle_ExcludedByLabels(t *testing.T) {
 	}
 	
 	// Execute
-	ctx := context.Background()
 	response := handler.Handle(ctx, req)
 	
 	// Verify
@@ -375,6 +387,10 @@ func TestEventHandler_Handle_ExcludedByLabels(t *testing.T) {
 
 func TestEventHandler_Handle_InvalidJSON(t *testing.T) {
 	// Setup
+	ctx := context.Background()
+	_, err := metrics.InitOTLPExporter(ctx)
+	require.NoError(t, err)
+	
 	scheme := runtime.NewScheme()
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 	
@@ -406,7 +422,6 @@ func TestEventHandler_Handle_InvalidJSON(t *testing.T) {
 	}
 	
 	// Execute
-	ctx := context.Background()
 	response := handler.Handle(ctx, req)
 	
 	// Verify
@@ -417,6 +432,10 @@ func TestEventHandler_Handle_InvalidJSON(t *testing.T) {
 
 func TestEventHandler_Handle_WildcardMatching(t *testing.T) {
 	// Setup
+	ctx := context.Background()
+	_, err := metrics.InitOTLPExporter(ctx)
+	require.NoError(t, err)
+	
 	scheme := runtime.NewScheme()
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 	
@@ -483,7 +502,6 @@ func TestEventHandler_Handle_WildcardMatching(t *testing.T) {
 	}
 	
 	// Execute
-	ctx := context.Background()
 	response := handler.Handle(ctx, req)
 	
 	// Verify
@@ -509,6 +527,10 @@ func TestEventHandler_Handle_DifferentOperations(t *testing.T) {
 	for _, operation := range operations {
 		t.Run(string(operation), func(t *testing.T) {
 			// Setup
+			ctx := context.Background()
+			_, err := metrics.InitOTLPExporter(ctx)
+			require.NoError(t, err)
+			
 			scheme := runtime.NewScheme()
 			client := fake.NewClientBuilder().WithScheme(scheme).Build()
 			
@@ -571,7 +593,6 @@ func TestEventHandler_Handle_DifferentOperations(t *testing.T) {
 			}
 			
 			// Execute
-			ctx := context.Background()
 			response := handler.Handle(ctx, req)
 			
 			// Verify
@@ -590,6 +611,10 @@ func TestEventHandler_Handle_DifferentOperations(t *testing.T) {
 
 func TestEventHandler_Handle_ClusterScopedResource(t *testing.T) {
 	// Setup
+	ctx := context.Background()
+	_, err := metrics.InitOTLPExporter(ctx)
+	require.NoError(t, err)
+	
 	scheme := runtime.NewScheme()
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 	
@@ -651,7 +676,6 @@ func TestEventHandler_Handle_ClusterScopedResource(t *testing.T) {
 	}
 	
 	// Execute
-	ctx := context.Background()
 	response := handler.Handle(ctx, req)
 	
 	// Verify
@@ -673,10 +697,9 @@ func TestEventHandler_InjectDecoder(t *testing.T) {
 	handler := &EventHandler{}
 	
 	scheme := runtime.NewScheme()
-	decoder, err := admission.NewDecoder(scheme)
-	require.NoError(t, err)
+	decoder := admission.NewDecoder(scheme)
 	
-	err = handler.InjectDecoder(&decoder)
+	err := handler.InjectDecoder(&decoder)
 	assert.NoError(t, err)
 	assert.NotNil(t, handler.Decoder)
 	assert.Equal(t, &decoder, handler.Decoder)
@@ -684,6 +707,10 @@ func TestEventHandler_InjectDecoder(t *testing.T) {
 
 func TestEventHandler_Handle_SanitizationApplied(t *testing.T) {
 	// Setup
+	ctx := context.Background()
+	_, err := metrics.InitOTLPExporter(ctx)
+	require.NoError(t, err)
+	
 	scheme := runtime.NewScheme()
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 	
@@ -759,7 +786,6 @@ func TestEventHandler_Handle_SanitizationApplied(t *testing.T) {
 	}
 	
 	// Execute
-	ctx := context.Background()
 	response := handler.Handle(ctx, req)
 	
 	// Verify

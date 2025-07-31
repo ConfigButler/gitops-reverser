@@ -306,10 +306,28 @@ func TestSanitize_ComplexNestedSpec(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, int64(3), replicas)
 
-	// Verify deeply nested fields
-	containerPort, found, err := unstructured.NestedInt64(sanitized.Object, "spec", "template", "spec", "containers", "0", "ports", "0", "containerPort")
+	// Verify deeply nested fields - access containers array manually
+	containers, found, err := unstructured.NestedSlice(sanitized.Object, "spec", "template", "spec", "containers")
 	assert.True(t, found)
 	assert.NoError(t, err)
+	assert.Len(t, containers, 1)
+	
+	// Access first container
+	container, ok := containers[0].(map[string]interface{})
+	assert.True(t, ok)
+	
+	// Access ports array
+	ports, ok := container["ports"].([]interface{})
+	assert.True(t, ok)
+	assert.Len(t, ports, 1)
+	
+	// Access first port
+	port, ok := ports[0].(map[string]interface{})
+	assert.True(t, ok)
+	
+	// Check containerPort
+	containerPort, ok := port["containerPort"].(int64)
+	assert.True(t, ok)
 	assert.Equal(t, int64(80), containerPort)
 
 	// Verify status is removed
