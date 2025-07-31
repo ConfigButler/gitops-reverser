@@ -1,11 +1,14 @@
 package rulestore
 
 import (
+	"strings"
 	"sync"
 
 	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 // CompiledRule represents a fully processed WatchRule, ready for quick lookups.
@@ -61,4 +64,92 @@ func (s *RuleStore) Delete(key types.NamespacedName) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.rules, key)
+}
+
+// GetMatchingRules returns all rules that match the given resource.
+func (s *RuleStore) GetMatchingRules(obj client.Object) []CompiledRule {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var matchingRules []CompiledRule
+	for _, rule := range s.rules {
+		if rule.matches(obj) {
+			matchingRules = append(matchingRules, rule)
+		}
+	}
+	return matchingRules
+}
+
+// matches checks if a single rule matches the given object.
+func (r *CompiledRule) matches(obj client.Object) bool {
+	// Check if the resource kind matches.
+	kind := obj.GetObjectKind().GroupVersionKind().Kind
+	kindMatch := false
+	for _, rk := range r.Resources {
+		if rk == kind || (rk[len(rk)-1] == '*' && strings.HasPrefix(kind, rk[:len(rk)-1])) {
+			kindMatch = true
+			break
+		}
+	}
+	if !kindMatch {
+		return false
+	}
+
+	// Check if the resource is excluded by labels.
+	if r.ExcludeLabels != nil {
+		selector, err := metav1.LabelSelectorAsSelector(r.ExcludeLabels)
+		if err != nil {
+			// This should not happen if validation is working.
+			return false
+		}
+		if selector.Matches(labels.Set(obj.GetLabels())) {
+			return false
+		}
+	}
+
+	return true
+}
+
+// GetMatchingRules returns all rules that match the given resource.
+func (s *RuleStore) GetMatchingRules(obj client.Object) []CompiledRule {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var matchingRules []CompiledRule
+	for _, rule := range s.rules {
+		if rule.matches(obj) {
+			matchingRules = append(matchingRules, rule)
+		}
+	}
+	return matchingRules
+}
+
+// matches checks if a single rule matches the given object.
+func (r *CompiledRule) matches(obj client.Object) bool {
+	// Check if the resource kind matches.
+	kind := obj.GetObjectKind().GroupVersionKind().Kind
+	kindMatch := false
+	for _, rk := range r.Resources {
+		if rk == kind || (len(rk) > 1 && rk[len(rk)-1] == '*' && strings.HasPrefix(kind, rk[:len(rk)-1])) {
+			kindMatch = true
+			break
+		}
+	}
+	if !kindMatch {
+		return false
+	}
+
+	// Check if the resource is excluded by labels.
+	if r.ExcludeLabels != nil {
+		selector, err := metav1.LabelSelectorAsSelector(r.ExcludeLabels)
+		if err != nil {
+			// This should not happen if validation is working.
+			return false
+		}
+		if selector.Matches(labels.Set(obj.GetLabels())) {
+			return false
+		}
+	}
+
+	return true
 }

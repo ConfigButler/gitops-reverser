@@ -17,6 +17,7 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"flag"
 	"os"
@@ -39,9 +40,12 @@ import (
 
 	configbutleraiv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 	"github.com/ConfigButler/gitops-reverser/internal/controller"
+	"github.com/ConfigButler/gitops-reverser/internal/eventqueue"
+	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/leader"
+	"github.com/ConfigButler/gitops-reverser/internal/metrics"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
-	webhookv1alpha1 "github.com/ConfigButler/gitops-reverser/internal/webhook/v1alpha1"
+	internalwebhook "github.com/ConfigButler/gitops-reverser/internal/webhook"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -226,10 +230,21 @@ func main() {
 	}
 	// nolint:goconst
 	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
-		if err := webhookv1alpha1.SetupWatchRuleWebhookWithManager(mgr); err != nil {
-			setupLog.Error(err, "unable to create webhook", "webhook", "WatchRule")
-			os.Exit(1)
+		eventQueue := eventqueue.NewQueue()
+		mgr.GetWebhookServer().Register("/validate-v1-event", &webhook.Admission{
+			Handler: &internalwebhook.EventHandler{
+				Client:     mgr.GetClient(),
+				RuleStore:  ruleStore,
+				EventQueue: eventQueue,
+			},
+		})
+
+		gitWorker := &git.Worker{
+			Client:     mgr.GetClient(),
+			Log:        ctrl.Log.WithName("git-worker"),
+			EventQueue: eventQueue,
 		}
+		go gitWorker.Run(context.Background())
 	}
 	// +kubebuilder:scaffold:builder
 
@@ -268,6 +283,18 @@ func main() {
 	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
 		setupLog.Error(err, "unable to set up ready check")
 		os.Exit(1)
+	}
+
+	// Initialize OTLP exporter
+	if shutdown, err := metrics.InitOTLPExporter(context.Background()); err != nil {
+		setupLog.Error(err, "unable to initialize OTLP exporter")
+		os.Exit(1)
+	} else {
+		defer func() {
+			if err := shutdown(context.Background()); err != nil {
+				setupLog.Error(err, "failed to shutdown OTLP exporter")
+			}
+		}()
 	}
 
 	setupLog.Info("starting manager")
