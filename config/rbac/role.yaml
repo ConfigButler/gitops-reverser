@@ -5,7 +5,14 @@ metadata:
   name: manager-role
 rules:
 - apiGroups:
-  - configbutler.ai.configbutler.ai
+  - ""
+  resources:
+  - pods
+  verbs:
+  - get
+  - patch
+- apiGroups:
+  - configbutler.ai
   resources:
   - gitrepoconfigs
   - watchrules
@@ -18,14 +25,14 @@ rules:
   - update
   - watch
 - apiGroups:
-  - configbutler.ai.configbutler.ai
+  - configbutler.ai
   resources:
   - gitrepoconfigs/finalizers
   - watchrules/finalizers
   verbs:
   - update
 - apiGroups:
-  - configbutler.ai.configbutler.ai
+  - configbutler.ai
   resources:
   - gitrepoconfigs/status
   - watchrules/status
