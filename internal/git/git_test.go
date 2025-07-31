@@ -1,6 +1,7 @@
 package git
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -372,16 +373,17 @@ func TestGetAuthMethod_EmptyKey(t *testing.T) {
 }
 
 func TestClone_BasicCall(t *testing.T) {
-	// Since Clone is currently a stub, we just test that it doesn't panic
-	// and returns expected dummy values
+	// Test that Clone properly handles invalid repository URLs
+	// Since we're using a fake URL, we expect this to fail
 	repo, err := Clone("https://github.com/test/repo.git", "/tmp/test", nil)
 	
-	assert.NoError(t, err)
-	assert.NotNil(t, repo)
-	assert.Equal(t, "/tmp/test", repo.path)
+	assert.Error(t, err) // Expect error with fake repository
+	assert.Nil(t, repo)  // Repo should be nil on error
 }
 
 func TestRepo_Commit_BasicCall(t *testing.T) {
+	// Since Commit requires a real git repository, we expect this to fail
+	// when trying to call Worktree() on a nil Repository
 	repo := &Repo{path: "/tmp/test"}
 	
 	files := []CommitFile{
@@ -397,22 +399,25 @@ func TestRepo_Commit_BasicCall(t *testing.T) {
 	
 	message := "Test commit message"
 	
-	// Since Commit is currently a stub, we just test that it doesn't panic
+	// Expect error since Repository is nil
 	err := repo.Commit(files, message)
-	assert.NoError(t, err)
+	assert.Error(t, err)
 }
 
 func TestRepo_Commit_EmptyFiles(t *testing.T) {
+	// Since Commit requires a real git repository, we expect this to fail
 	repo := &Repo{path: "/tmp/test"}
 	
 	var files []CommitFile
 	message := "Empty commit"
 	
+	// Expect error since Repository is nil
 	err := repo.Commit(files, message)
-	assert.NoError(t, err)
+	assert.Error(t, err)
 }
 
 func TestRepo_Commit_EmptyMessage(t *testing.T) {
+	// Since Commit requires a real git repository, we expect this to fail
 	repo := &Repo{path: "/tmp/test"}
 	
 	files := []CommitFile{
@@ -422,16 +427,18 @@ func TestRepo_Commit_EmptyMessage(t *testing.T) {
 		},
 	}
 	
+	// Expect error since Repository is nil
 	err := repo.Commit(files, "")
-	assert.NoError(t, err)
+	assert.Error(t, err)
 }
 
 func TestRepo_Push_BasicCall(t *testing.T) {
+	// Since Push requires a real git repository, we expect this to fail
 	repo := &Repo{path: "/tmp/test"}
 	
-	// Since Push is currently a stub, we just test that it doesn't panic
-	err := repo.Push()
-	assert.NoError(t, err)
+	// Expect error since Repository is nil
+	err := repo.Push(context.Background())
+	assert.Error(t, err)
 }
 
 func TestCommitFile_Structure(t *testing.T) {

@@ -163,6 +163,22 @@ The tool must be designed for zero-downtime operation. This is achieved through 
 
 * **Zero-Downtime Upgrades & Leader Transition:** The `Deployment` will use a `RollingUpdate` strategy. The application must handle `SIGTERM` gracefully, attempting to drain its in-memory queue of pending commits before exiting.
 
+#### Conflict Resolution & Race Conditions
+
+The tool must be resilient to race conditions where the remote Git branch is updated by another process after the tool has pulled but before it can push. This will result in a "non-fast-forward" push rejection.
+
+The tool must not attempt a complex git merge or git rebase as this can lead to unresolvable conflicts that would halt an automated process. Instead, it will follow a "Re-evaluate and Re-generate" strategy:
+
+**Detect Failure:** The application will specifically detect the non-fast-forward push error.
+
+**Log and Reset:** It will log a clear warning message and perform a hard reset to the latest state of the remote branch (e.g., git fetch followed by git reset --hard origin/<branch>). This discards the tool's local commits but preserves the original events in its in-memory queue.
+
+**Re-evaluate Queue:** The tool will then iterate through the events in its queue and compare them against the new state of the repository. If an event pertains to a resource that has a more recent change in the Git history, that stale event will be discarded to prevent overwriting newer changes.
+
+**Re-generate & Retry:** New commits will be generated only for the non-conflicting, still-relevant events from the queue. The tool will then attempt to push this new, smaller batch of commits.
+
+This strategy ensures the tool never gets stuck, prioritizes the most recent state in Git as the source of truth in a conflict, and gracefully handles race conditions without complex dependencies.
+
 ### 6. Key Assumptions & Limitations
 
 * **Works with Rendered Manifests Only:** This tool captures the final state of a Kubernetes object. It does not work on templated files.

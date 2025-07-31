@@ -117,7 +117,7 @@ func (w *Worker) processRepoEvents(ctx context.Context, repoName string, trigger
 				metrics.GitOperationsTotal.Add(ctx, 1)
 
 				pushStart := time.Now()
-				if err := repo.Push(); err != nil {
+				if err := repo.Push(ctx); err != nil {
 					log.Error(err, "failed to push changes")
 					continue
 				}
