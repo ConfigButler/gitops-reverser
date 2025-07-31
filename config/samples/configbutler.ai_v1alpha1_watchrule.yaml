@@ -1,0 +1,9 @@
+apiVersion: configbutler.ai.configbutler.ai/v1alpha1
+kind: WatchRule
+metadata:
+  labels:
+    app.kubernetes.io/name: gitops-reverser
+    app.kubernetes.io/managed-by: kustomize
+  name: watchrule-sample
+spec:
+  # TODO(user): Add fields here

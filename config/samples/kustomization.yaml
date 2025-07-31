@@ -1,4 +1,5 @@
 ## Append samples of your project ##
 resources:
 - configbutler.ai_v1alpha1_gitrepoconfig.yaml
+- configbutler.ai_v1alpha1_watchrule.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples

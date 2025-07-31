@@ -3,6 +3,7 @@
 # It should be run by config/default
 resources:
 - bases/configbutler.ai.configbutler.ai_gitrepoconfigs.yaml
+- bases/configbutler.ai.configbutler.ai_watchrules.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:

@@ -17,4 +17,13 @@ resources:
   kind: GitRepoConfig
   path: github.com/ConfigButler/gitops-reverser/api/v1alpha1
   version: v1alpha1
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: configbutler.ai
+  group: configbutler.ai
+  kind: WatchRule
+  path: github.com/ConfigButler/gitops-reverser/api/v1alpha1
+  version: v1alpha1
 version: "3"
