@@ -194,6 +194,7 @@ func (r *Repo) hardResetToRemote(ctx context.Context) error {
 		RemoteName: r.remoteName,
 		Auth:       r.auth,
 		Force:      true,
+		Progress:   os.Stdout,
 	})
 	if err != nil && err != git.NoErrAlreadyUpToDate {
 		return fmt.Errorf("failed to fetch from remote: %w", err)
@@ -204,8 +205,8 @@ func (r *Repo) hardResetToRemote(ctx context.Context) error {
 	var found bool
 
 	// Strategy 1: Try to get the remote branch reference
-	remoteBranchRef := plumbing.NewRemoteReferenceName(r.remoteName, r.branch)
-	if ref, err := r.Reference(remoteBranchRef, true); err == nil {
+	remoteBranchRefName := plumbing.NewRemoteReferenceName(r.remoteName, r.branch)
+	if ref, err := r.Reference(remoteBranchRefName, true); err == nil {
 		targetHash = ref.Hash()
 		found = true
 		log.Info("Found remote branch reference", "branch", r.branch, "hash", targetHash.String())

@@ -12,9 +12,5 @@ spec:
       port: {{ .Values.service.port }}
       targetPort: {{ .Values.webhook.server.port }}
       protocol: TCP
-    - name: metrics
-      port: 8443
-      targetPort: 8443
-      protocol: TCP
   selector:
     {{- include "gitops-reverser.selectorLabels" . | nindent 4 }}

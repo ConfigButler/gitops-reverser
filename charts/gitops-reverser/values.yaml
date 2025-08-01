@@ -48,14 +48,7 @@ controllerManager:
   leaderElection: true
   # Metrics configuration
   metrics:
-    bindAddress: "0"
-    secure: true
-    certPath: "/tmp/k8s-metrics-server/serving-certs"
-    certName: "tls.crt"
-    certKey: "tls.key"
-  # Health probe configuration
-  healthProbe:
-    bindAddress: ":8081"
+    port: 8080
   # Enable HTTP/2 (disabled by default for security)
   enableHTTP2: false
 

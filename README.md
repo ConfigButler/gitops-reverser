@@ -248,6 +248,9 @@ GitOps Reverser exports OpenTelemetry metrics:
 - **Sanitization**: Sensitive data is automatically sanitized before Git commits
 - **Audit Trail**: All operations are logged with user attribution
 
+### A Note on TLS Certificates
+
+When you install the gitops-reverser, you will see that it creates TLS certificates and a secure webhook endpoint. This is not optional; it is a fundamental security requirement from Kubernetes itself. To ensure that no malicious actor can intercept or impersonate communication between the Kubernetes API server and our webhook, all traffic must be encrypted over HTTPS. Our Helm chart handles this certificate management for you automatically.
 ## Troubleshooting
 
 ### Common Issues

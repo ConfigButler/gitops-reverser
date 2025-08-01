@@ -133,6 +133,17 @@ webhooks:
   # ...
 ```
 
+#### Endpoint Security & Ports
+
+The application must adhere to Kubernetes security best practices for admission webhooks.
+
+**Mandatory TLS for Webhook:** The Kubernetes API server requires that all communication with admission webhooks is secured via HTTPS. Therefore, the webhook endpoint must be served over a TLS-enabled port. The tool's deployment process will be responsible for generating or mounting the necessary TLS certificates.
+
+**Separate Ports for Services (Best Practice):** To separate concerns and simplify integration with in-cluster observability tools, the application will run on two distinct ports:
+
+*   **Webhook Port (e.g., 9443):** A secure port serving only the `/validate` webhook handler over HTTPS. The primary Kubernetes Service will route traffic from the API server to this port.
+
+*   **Metrics & Health Port (e.g., 8080):** An insecure, plain-HTTP port serving internal operational endpoints. This includes `/metrics` for Prometheus scraping and `/healthz` / `/readyz` for liveness and readiness probes. This separation prevents the need to configure complex TLS settings in observability tools.
 #### Architecture & Performance
 
 1. The `gitops-reverser` controller starts and watches for `GitRepoConfig` and `WatchRule` resources, building an in-memory model of all active rules.

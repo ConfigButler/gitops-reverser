@@ -40,8 +40,8 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args:
             - --leader-elect={{ .Values.controllerManager.leaderElection }}
-            - --metrics-bind-address={{ .Values.controllerManager.metrics.bindAddress }}
-            - --health-probe-bind-address={{ .Values.controllerManager.healthProbe.bindAddress }}
+            - --webhook-port={{ .Values.webhook.server.port }}
+            - --metrics-port={{ .Values.controllerManager.metrics.port }}
             {{- if .Values.controllerManager.enableHTTP2 }}
             - --enable-http2
             {{- end }}
@@ -51,19 +51,14 @@ spec:
             - --webhook-cert-name={{ .Values.webhook.server.certName }}
             - --webhook-cert-key={{ .Values.webhook.server.certKey }}
             {{- end }}
-            {{- if .Values.controllerManager.metrics.secure }}
-            - --metrics-secure
-            {{- end }}
             {{- end }}
           ports:
             - name: webhook-server
               containerPort: {{ .Values.webhook.server.port }}
               protocol: TCP
-            {{- if ne .Values.controllerManager.metrics.bindAddress "0" }}
             - name: metrics
-              containerPort: 8443
+              containerPort: {{ .Values.controllerManager.metrics.port }}
               protocol: TCP
-            {{- end }}
           env:
             {{- if not .Values.webhook.enabled }}
             - name: ENABLE_WEBHOOKS
@@ -75,7 +70,7 @@ spec:
           livenessProbe:
             httpGet:
               path: /healthz
-              port: {{ regexReplaceAll "^:" .Values.controllerManager.healthProbe.bindAddress "" }}
+              port: {{ .Values.controllerManager.metrics.port }}
               scheme: HTTP
             initialDelaySeconds: 15
             periodSeconds: 20
@@ -85,7 +80,7 @@ spec:
           readinessProbe:
             httpGet:
               path: /readyz
-              port: {{ regexReplaceAll "^:" .Values.controllerManager.healthProbe.bindAddress "" }}
+              port: {{ .Values.controllerManager.metrics.port }}
               scheme: HTTP
             initialDelaySeconds: 5
             periodSeconds: 10
@@ -105,40 +100,6 @@ spec:
             {{- with .Values.volumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
-        {{- if and .Values.controllerManager.metrics.secure (ne .Values.controllerManager.metrics.bindAddress "0") }}
-        - name: kube-rbac-proxy
-          securityContext:
-            allowPrivilegeEscalation: false
-            capabilities:
-              drop:
-              - ALL
-            readOnlyRootFilesystem: true
-            runAsNonRoot: true
-            runAsUser: 65532
-          image: gcr.io/kubebuilder/kube-rbac-proxy:v0.16.0
-          args:
-            - --secure-listen-address=0.0.0.0:8443
-            - --upstream=http://127.0.0.1:8080/
-            - --logtostderr=true
-            - --v=0
-            - --tls-cert-file={{ .Values.webhook.server.certPath }}/{{ .Values.webhook.server.certName }}
-            - --tls-private-key-file={{ .Values.webhook.server.certPath }}/{{ .Values.webhook.server.certKey }}
-          ports:
-            - containerPort: 8443
-              name: https
-              protocol: TCP
-          resources:
-            limits:
-              cpu: 500m
-              memory: 128Mi
-            requests:
-              cpu: 5m
-              memory: 64Mi
-          volumeMounts:
-            - name: cert
-              mountPath: {{ .Values.webhook.server.certPath }}
-              readOnly: true
-        {{- end }}
       volumes:
         {{- if .Values.webhook.enabled }}
         {{- if and .Values.certificates.certManager.enabled (hasKey .Values.certificates "webhook") (hasKey .Values.certificates.webhook "secretName") }}

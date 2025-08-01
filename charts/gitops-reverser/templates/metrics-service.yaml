@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "gitops-reverser.fullname" . }}-metrics
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "gitops-reverser.labels" . | nindent 4 }}
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "{{ .Values.controllerManager.metrics.port }}"
+spec:
+  type: ClusterIP
+  ports:
+    - name: metrics
+      port: {{ .Values.controllerManager.metrics.port }}
+      targetPort: {{ .Values.controllerManager.metrics.port }}
+      protocol: TCP
+  selector:
+    {{- include "gitops-reverser.selectorLabels" . | nindent 4 }}
