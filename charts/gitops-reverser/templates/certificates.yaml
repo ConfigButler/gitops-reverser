@@ -21,46 +21,14 @@ metadata:
     {{- include "gitops-reverser.labels" . | nindent 4 }}
 spec:
   dnsNames:
-  {{- if and (hasKey .Values.certificates "webhook") (hasKey .Values.certificates.webhook "dnsNames") }}
-  {{- range .Values.certificates.webhook.dnsNames }}
-  - {{ . | quote }}
-  {{- end }}
-  {{- end }}
-  - {{ include "gitops-reverser.fullname" . }}-webhook-service.{{ .Release.Namespace }}.svc
-  - {{ include "gitops-reverser.fullname" . }}-webhook-service.{{ .Release.Namespace }}.svc.cluster.local
+    - {{ include "gitops-reverser.fullname" . }}.{{ .Release.Namespace }}.svc
+    - {{ include "gitops-reverser.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local
   issuerRef:
     kind: {{ .Values.certificates.certManager.issuer.kind }}
     name: {{ .Values.certificates.certManager.issuer.name }}
-  secretName: {{ if and (hasKey .Values.certificates "webhook") (hasKey .Values.certificates.webhook "secretName") }}{{ .Values.certificates.webhook.secretName }}{{ else }}webhook-server-cert{{ end }}
+  secretName: {{ .Values.certificates.webhook.secretName }}
   usages:
-  - digital signature
-  - key encipherment
-  - server auth
-{{- if .Values.controllerManager.metrics.secure }}
----
-apiVersion: cert-manager.io/v1
-kind: Certificate
-metadata:
-  name: {{ include "gitops-reverser.fullname" . }}-metrics-cert
-  namespace: {{ .Release.Namespace }}
-  labels:
-    {{- include "gitops-reverser.labels" . | nindent 4 }}
-spec:
-  dnsNames:
-  {{- if and (hasKey .Values.certificates "metrics") (hasKey .Values.certificates.metrics "dnsNames") }}
-  {{- range .Values.certificates.metrics.dnsNames }}
-  - {{ . | quote }}
-  {{- end }}
-  {{- end }}
-  - {{ include "gitops-reverser.fullname" . }}-metrics-service.{{ .Release.Namespace }}.svc
-  - {{ include "gitops-reverser.fullname" . }}-metrics-service.{{ .Release.Namespace }}.svc.cluster.local
-  issuerRef:
-    kind: {{ .Values.certificates.certManager.issuer.kind }}
-    name: {{ .Values.certificates.certManager.issuer.name }}
-  secretName: {{ if and (hasKey .Values.certificates "metrics") (hasKey .Values.certificates.metrics "secretName") }}{{ .Values.certificates.metrics.secretName }}{{ else }}metrics-server-cert{{ end }}
-  usages:
-  - digital signature
-  - key encipherment
-  - server auth
-{{- end }}
+    - digital signature
+    - key encipherment
+    - server auth
 {{- end }}

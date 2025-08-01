@@ -13,22 +13,25 @@ webhooks:
 - name: mutate.gitops-reverser.configbutler.ai
   clientConfig:
     service:
-      name: {{ include "gitops-reverser.fullname" . }}-webhook-service
+      name: {{ include "gitops-reverser.fullname" . }}
       namespace: {{ .Release.Namespace }}
       path: /mutate
     {{- if not .Values.certificates.certManager.enabled }}
     caBundle: {{ .Values.webhook.caBundle | b64enc }}
     {{- end }}
   rules:
-  {{- range .Values.webhook.mutating.rules }}
-  - operations: {{ .operations | toJson }}
-    apiGroups: {{ .apiGroups | toJson }}
-    apiVersions: {{ .apiVersions | toJson }}
-    resources: {{ .resources | toJson }}
-    {{- if .scope }}
-    scope: {{ .scope }}
-    {{- end }}
-  {{- end }}
+    - operations: ["CREATE", "UPDATE"]
+      apiGroups: [""]
+      apiVersions: ["v1"]
+      resources: ["pods", "configmaps", "secrets"]
+    - operations: ["CREATE", "UPDATE"]
+      apiGroups: ["apps"]
+      apiVersions: ["v1"]
+      resources: ["deployments", "replicasets", "daemonsets", "statefulsets"]
+    - operations: ["CREATE", "UPDATE"]
+      apiGroups: ["batch"]
+      apiVersions: ["v1", "v1beta1"]
+      resources: ["jobs", "cronjobs"]
   failurePolicy: {{ .Values.webhook.mutating.failurePolicy }}
   sideEffects: {{ .Values.webhook.mutating.sideEffects }}
   admissionReviewVersions: {{ .Values.webhook.mutating.admissionReviewVersions | toJson }}

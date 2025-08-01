@@ -75,20 +75,7 @@ webhook:
     failurePolicy: Fail
     sideEffects: None
     admissionReviewVersions: ["v1", "v1beta1"]
-    # Rules for mutating webhook
-    rules:
-      - operations: ["CREATE", "UPDATE"]
-        apiGroups: [""]
-        apiVersions: ["v1"]
-        resources: ["pods", "configmaps", "secrets"]
-      - operations: ["CREATE", "UPDATE"]
-        apiGroups: ["apps"]
-        apiVersions: ["v1"]
-        resources: ["deployments", "replicasets", "daemonsets", "statefulsets"]
-      - operations: ["CREATE", "UPDATE"]
-        apiGroups: ["batch"]
-        apiVersions: ["v1", "v1beta1"]
-        resources: ["jobs", "cronjobs"]
+    # Rules for mutating webhook are now defined in the template
     # Namespace selector for mutating webhook
     namespaceSelector:
       matchExpressions:
@@ -120,15 +107,6 @@ service:
   type: ClusterIP
   port: 443
   targetPort: 9443
-  # Additional service annotations
-  annotations: {}
-
-# Webhook service configuration (separate from main service)
-webhookService:
-  type: ClusterIP
-  port: 443
-  targetPort: 9443
-  annotations: {}
 
 # TLS certificate management
 certificates:
@@ -148,13 +126,7 @@ certificates:
         - webhook-service
         - webhook-service.system.svc
         - webhook-service.system.svc.cluster.local
-    # Metrics certificate
-    metrics:
-      secretName: metrics-server-cert
-      dnsNames:
-        - metrics-service
-        - metrics-service.system.svc
-        - metrics-service.system.svc.cluster.local
+    # Metrics certificate is now part of the webhook certificate
 
 # RBAC configuration
 rbac:

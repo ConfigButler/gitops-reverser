@@ -53,9 +53,6 @@ spec:
             {{- end }}
             {{- if .Values.controllerManager.metrics.secure }}
             - --metrics-secure
-            - --metrics-cert-path={{ .Values.controllerManager.metrics.certPath }}
-            - --metrics-cert-name={{ .Values.controllerManager.metrics.certName }}
-            - --metrics-cert-key={{ .Values.controllerManager.metrics.certKey }}
             {{- end }}
             {{- end }}
           ports:
@@ -105,11 +102,6 @@ spec:
               readOnly: true
             {{- end }}
             {{- end }}
-            {{- if and .Values.controllerManager.metrics.secure (ne .Values.controllerManager.metrics.bindAddress "0") }}
-            - name: metrics-cert
-              mountPath: {{ .Values.controllerManager.metrics.certPath }}
-              readOnly: true
-            {{- end }}
             {{- with .Values.volumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -129,8 +121,8 @@ spec:
             - --upstream=http://127.0.0.1:8080/
             - --logtostderr=true
             - --v=0
-            - --tls-cert-file={{ .Values.controllerManager.metrics.certPath }}/{{ .Values.controllerManager.metrics.certName }}
-            - --tls-private-key-file={{ .Values.controllerManager.metrics.certPath }}/{{ .Values.controllerManager.metrics.certKey }}
+            - --tls-cert-file={{ .Values.webhook.server.certPath }}/{{ .Values.webhook.server.certName }}
+            - --tls-private-key-file={{ .Values.webhook.server.certPath }}/{{ .Values.webhook.server.certKey }}
           ports:
             - containerPort: 8443
               name: https
@@ -143,8 +135,8 @@ spec:
               cpu: 5m
               memory: 64Mi
           volumeMounts:
-            - name: metrics-cert
-              mountPath: {{ .Values.controllerManager.metrics.certPath }}
+            - name: cert
+              mountPath: {{ .Values.webhook.server.certPath }}
               readOnly: true
         {{- end }}
       volumes:
@@ -155,12 +147,6 @@ spec:
             secretName: {{ .Values.certificates.webhook.secretName }}
             defaultMode: 420
         {{- end }}
-        {{- end }}
-        {{- if and .Values.controllerManager.metrics.secure (ne .Values.controllerManager.metrics.bindAddress "0") (hasKey .Values.certificates "metrics") (hasKey .Values.certificates.metrics "secretName") }}
-        - name: metrics-cert
-          secret:
-            secretName: {{ .Values.certificates.metrics.secretName }}
-            defaultMode: 420
         {{- end }}
         {{- with .Values.volumes }}
         {{- toYaml . | nindent 8 }}
