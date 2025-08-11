@@ -277,13 +277,13 @@ jobs:
       uses: actions/checkout@v4
 
     - name: Download binary artifact
-      uses: actions/download-artifact@v3
+      uses: actions/download-artifact@v5
       with:
         name: gitops-reverser-binary
         path: ./bin
 
     - name: Download Helm chart artifact
-      uses: actions/download-artifact@v3
+      uses: actions/download-artifact@v5
       with:
         name: helm-chart
 
