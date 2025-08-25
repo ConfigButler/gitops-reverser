@@ -38,7 +38,7 @@ jobs:
     - name: Run golangci-lint
       uses: golangci/golangci-lint-action@v3
       with:
-        version: latest
+        version: v2
         args: --timeout=5m
 
     - name: Lint YAML files
@@ -139,14 +139,15 @@ jobs:
         go-version: ${{ env.GO_VERSION }}
 
     - name: Run Gosec Security Scanner
-      uses: securecodewarrior/github-action-gosec@master
+      uses: securego/gosec@master
       with:
-        args: '-fmt sarif -out gosec.sarif ./...'
-
+        # we let the report trigger content trigger a failure using the GitHub Security features.
+        args: '-no-fail -fmt sarif -out results.sarif ./...'
     - name: Upload SARIF file
       uses: github/codeql-action/upload-sarif@v2
       with:
-        sarif_file: gosec.sarif
+        # Path to SARIF file relative to the root of the repository
+        sarif_file: results.sarif
 
     - name: Run Trivy vulnerability scanner
       uses: aquasecurity/trivy-action@master
