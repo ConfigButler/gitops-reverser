@@ -60,3 +60,6 @@ This document outlines the tasks required to build the GitOps Reverser tool as s
 [ ] See if we can get more out of: https://github.com/RichardoC/kube-audit-rest?tab=readme-ov-file#known-limitations-and-warnings (since it's maintained and gives some exampels on how to maintain such an open tool).
 
 [ ] Should we also do a full reconicile on the folders? As in: check if all the yaml files are still usefull?
+    -> This last line is where it gets interesting: who wins? I guess we just push a new commit and throw away the files that don't exist in the cluster. Should we do a full reconcile every x minutes? How many resources can we handle before it gets tricky?
+
+
