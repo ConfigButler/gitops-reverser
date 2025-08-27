@@ -10,7 +10,6 @@ import (
 
 	"github.com/ConfigButler/gitops-reverser/internal/eventqueue"
 	"github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -38,17 +37,18 @@ func TestRaceConditionIntegration(t *testing.T) {
 	localRepoPath := filepath.Join(tempDir, "local")
 	remoteRepoPath := filepath.Join(tempDir, "remote")
 
-	// Initialize "remote" repository (bare repository)
-	_, err = git.PlainInit(remoteRepoPath, true)
+	// Initialize "remote" repository as a bare repo
+	remoteRepo, err := git.PlainInit(remoteRepoPath, false)
 	require.NoError(t, err)
 
-	// Clone the remote to create the local repo and set up tracking
+	err = createInitialCommit(remoteRepo, remoteRepoPath)
+	require.NoError(t, err)
+
+	// Now we can clone the 'local' repo that also has the initial commit
 	localRepo, err := git.PlainClone(localRepoPath, false, &git.CloneOptions{
 		URL: remoteRepoPath,
 	})
-	if err != nil && err.Error() != "remote repository is empty" {
-		require.NoError(t, err)
-	}
+	require.NoError(t, err)
 
 	// Create our Repo wrapper
 	repo := &Repo{
@@ -62,12 +62,6 @@ func TestRaceConditionIntegration(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("full_race_condition_workflow", func(t *testing.T) {
-		// Create an initial commit and push it to establish the main branch
-		err := createInitialCommit(localRepo, localRepoPath)
-		require.NoError(t, err)
-		err = repo.Push(ctx)
-		require.NoError(t, err)
-
 		// Step 2: Prepare events to be committed
 		events := []eventqueue.Event{
 			{
@@ -98,7 +92,7 @@ func TestRaceConditionIntegration(t *testing.T) {
 
 		// Step 3: Simulate another process updating the remote repository
 		// This creates the race condition scenario
-		err = simulateRemoteUpdate(t, remoteRepoPath, localRepoPath)
+		err = simulateRemoteUpdate(t, remoteRepoPath, remoteRepo)
 		require.NoError(t, err)
 
 		// Step 4: Attempt to push commits - this should trigger race condition resolution
@@ -148,7 +142,7 @@ func TestRaceConditionIntegration(t *testing.T) {
 
 	t.Run("stale_event_filtering", func(t *testing.T) {
 		// Reset repository state
-		err := resetToRemote(repo)
+		err = resetToRemote(repo)
 		require.NoError(t, err)
 
 		// Create a file with newer resource version in the repository
@@ -168,7 +162,6 @@ func TestRaceConditionIntegration(t *testing.T) {
 		// Commit this file
 		worktree, err := localRepo.Worktree()
 		require.NoError(t, err)
-
 		_, err = worktree.Add(filePath)
 		require.NoError(t, err)
 
@@ -199,7 +192,7 @@ func TestRaceConditionIntegration(t *testing.T) {
 		}
 
 		// Simulate remote update to trigger conflict resolution
-		err = simulateRemoteUpdate(t, remoteRepoPath, localRepoPath)
+		err = simulateRemoteUpdate(t, remoteRepoPath, remoteRepo)
 		require.NoError(t, err)
 
 		// Try to push - should succeed with filtered events
@@ -274,31 +267,7 @@ func createInitialCommit(repo *git.Repository, repoPath string) error {
 	return err
 }
 
-func simulateRemoteUpdate(t *testing.T, remoteRepoPath, _ string) error {
-	// Clone the remote repository to a temporary location
-	tempClonePath := remoteRepoPath + "-temp-clone"
-	defer func() {
-		require.NoError(t, os.RemoveAll(tempClonePath))
-	}()
-
-	tempRepo, err := git.PlainClone(tempClonePath, false, &git.CloneOptions{
-		URL: remoteRepoPath,
-	})
-	if err != nil {
-		return err
-	}
-
-	// Make sure we are on the main branch
-	worktree, err := tempRepo.Worktree()
-	if err != nil {
-		return err
-	}
-	err = worktree.Checkout(&git.CheckoutOptions{Branch: plumbing.NewBranchReferenceName("main")})
-	if err != nil {
-		return err
-	}
-
-	// Create a conflicting change
+func simulateRemoteUpdate(t *testing.T, remoteRepoPath string, remoteRepo *git.Repository) error {
 	conflictingService := &unstructured.Unstructured{
 		Object: map[string]interface{}{
 			"apiVersion": "v1",
@@ -323,9 +292,9 @@ func simulateRemoteUpdate(t *testing.T, remoteRepoPath, _ string) error {
 	}
 
 	filePath := GetFilePath(conflictingService)
-	fullPath := filepath.Join(tempClonePath, filePath)
+	fullPath := filepath.Join(remoteRepoPath, filePath)
 
-	err = os.MkdirAll(filepath.Dir(fullPath), 0755)
+	err := os.MkdirAll(filepath.Dir(fullPath), 0755)
 	if err != nil {
 		return err
 	}
@@ -341,7 +310,7 @@ func simulateRemoteUpdate(t *testing.T, remoteRepoPath, _ string) error {
 	}
 
 	// Commit and push the change
-	worktree, err = tempRepo.Worktree()
+	worktree, err := remoteRepo.Worktree()
 	if err != nil {
 		return err
 	}
@@ -358,11 +327,8 @@ func simulateRemoteUpdate(t *testing.T, remoteRepoPath, _ string) error {
 			When:  time.Now(),
 		},
 	})
-	if err != nil {
-		return err
-	}
 
-	return tempRepo.Push(&git.PushOptions{})
+	return err
 }
 
 func getCommitHistory(repo *git.Repository) ([]*object.Commit, error) {
