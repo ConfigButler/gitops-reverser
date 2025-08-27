@@ -5,17 +5,6 @@ import (
 )
 
 // serverGeneratedFields are metadata fields that should be removed during sanitization
-var serverGeneratedFields = []string{
-	"creationTimestamp",
-	"uid",
-	"resourceVersion",
-	"generation",
-	"managedFields",
-	"selfLink",
-	"deletionTimestamp",
-	"deletionGracePeriodSeconds",
-	"finalizers", // These can be user-managed, but often server-generated
-}
 
 // Sanitize removes server-side fields from a Kubernetes object,
 // leaving only the desired state.
@@ -44,23 +33,26 @@ func Sanitize(obj *unstructured.Unstructured) *unstructured.Unstructured {
 
 		// Set the cleaned metadata
 		if len(cleanMetadata) > 0 {
-			unstructured.SetNestedMap(sanitized.Object, cleanMetadata, "metadata")
+			if err := unstructured.SetNestedMap(sanitized.Object, cleanMetadata, "metadata"); err != nil {
+				// This should not happen with a freshly created map
+				return nil
+			}
 		}
 	}
 
 	// Preserve the spec field
 	if spec, found, err := unstructured.NestedFieldCopy(obj.Object, "spec"); found && err == nil {
-		unstructured.SetNestedField(sanitized.Object, spec, "spec")
+		setNestedField(sanitized, spec, "spec")
 	}
 
 	// Preserve the data field (for ConfigMaps, Secrets)
 	if data, found, err := unstructured.NestedFieldCopy(obj.Object, "data"); found && err == nil {
-		unstructured.SetNestedField(sanitized.Object, data, "data")
+		setNestedField(sanitized, data, "data")
 	}
 
 	// Preserve the binaryData field (for ConfigMaps, Secrets)
 	if binaryData, found, err := unstructured.NestedFieldCopy(obj.Object, "binaryData"); found && err == nil {
-		unstructured.SetNestedField(sanitized.Object, binaryData, "binaryData")
+		setNestedField(sanitized, binaryData, "binaryData")
 	}
 
 	// Preserve other common fields that represent desired state
@@ -79,9 +71,14 @@ func Sanitize(obj *unstructured.Unstructured) *unstructured.Unstructured {
 
 	for _, field := range preservedTopLevelFields {
 		if value, found, err := unstructured.NestedFieldCopy(obj.Object, field); found && err == nil {
-			unstructured.SetNestedField(sanitized.Object, value, field)
+			setNestedField(sanitized, value, field)
 		}
 	}
 
 	return sanitized
+}
+
+// setNestedField is a helper function to wrap unstructured.SetNestedField and handle errors.
+func setNestedField(obj *unstructured.Unstructured, value interface{}, fields ...string) {
+	_ = unstructured.SetNestedField(obj.Object, value, fields...)
 }

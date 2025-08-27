@@ -98,7 +98,9 @@ func TestIsEventStillValid(t *testing.T) {
 	// Create a temporary directory for the test
 	tempDir, err := os.MkdirTemp("", "git-valid-test-*")
 	require.NoError(t, err)
-	defer os.RemoveAll(tempDir)
+	defer func() {
+		require.NoError(t, os.RemoveAll(tempDir))
+	}()
 
 	repo := &Repo{
 		path: tempDir,
@@ -235,7 +237,9 @@ func TestReEvaluateEvents(t *testing.T) {
 	// Create a temporary directory for the test
 	tempDir, err := os.MkdirTemp("", "git-reevaluate-test-*")
 	require.NoError(t, err)
-	defer os.RemoveAll(tempDir)
+	defer func() {
+		require.NoError(t, os.RemoveAll(tempDir))
+	}()
 
 	repo := &Repo{
 		path: tempDir,
@@ -272,8 +276,7 @@ func TestReEvaluateEvents(t *testing.T) {
 		},
 	}
 
-	validEvents, err := repo.reEvaluateEvents(ctx, events)
-	assert.NoError(t, err)
+	validEvents := repo.reEvaluateEvents(ctx, events)
 	assert.Len(t, validEvents, 2, "Should have 2 valid events")
 
 	// Check that the stale event was filtered out
@@ -292,7 +295,9 @@ func TestConflictResolutionIntegration(t *testing.T) {
 	t.Run("conflict_resolution_workflow", func(t *testing.T) {
 		tempDir, err := os.MkdirTemp("", "git-conflict-test-*")
 		require.NoError(t, err)
-		defer os.RemoveAll(tempDir)
+		defer func() {
+			require.NoError(t, os.RemoveAll(tempDir))
+		}()
 
 		repo := &Repo{
 			path:       tempDir,
@@ -327,8 +332,7 @@ func TestConflictResolutionIntegration(t *testing.T) {
 		}
 
 		// Test re-evaluation (this is the core of conflict resolution)
-		validEvents, err := repo.reEvaluateEvents(ctx, events)
-		assert.NoError(t, err)
+		validEvents := repo.reEvaluateEvents(ctx, events)
 		assert.Len(t, validEvents, 1, "Should filter out stale events")
 		assert.Equal(t, "new-pod", validEvents[0].Object.GetName())
 	})

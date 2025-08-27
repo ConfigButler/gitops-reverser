@@ -43,8 +43,8 @@ type Repo struct {
 
 // Clone clones a Git repository to the specified directory.
 func Clone(url, path string, auth transport.AuthMethod) (*Repo, error) {
-	log := log.FromContext(context.Background())
-	log.Info("Cloning repository", "url", url, "path", path)
+	logger := log.FromContext(context.Background())
+	logger.Info("Cloning repository", "url", url, "path", path)
 
 	// Ensure the directory exists
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
@@ -70,6 +70,34 @@ func Clone(url, path string, auth transport.AuthMethod) (*Repo, error) {
 	}, nil
 }
 
+// Checkout checks out the specified branch.
+func (r *Repo) Checkout(branch string) error {
+	worktree, err := r.Worktree()
+	if err != nil {
+		return fmt.Errorf("failed to get worktree: %w", err)
+	}
+
+	// Check if the branch already exists.
+	_, err = r.Reference(plumbing.NewBranchReferenceName(branch), true)
+	if err != nil {
+		// If the branch doesn't exist, create it.
+		if err == plumbing.ErrReferenceNotFound {
+			return worktree.Checkout(&git.CheckoutOptions{
+				Branch: plumbing.NewBranchReferenceName(branch),
+				Create: true,
+				Force:  true,
+			})
+		}
+		return fmt.Errorf("failed to get reference for branch %s: %w", branch, err)
+	}
+
+	// If the branch exists, just check it out.
+	return worktree.Checkout(&git.CheckoutOptions{
+		Branch: plumbing.NewBranchReferenceName(branch),
+		Force:  true,
+	})
+}
+
 // GetAuthMethod returns an SSH public key authentication method from a private key.
 func GetAuthMethod(privateKey, password string) (transport.AuthMethod, error) {
 	if privateKey == "" {
@@ -81,10 +109,10 @@ func GetAuthMethod(privateKey, password string) (transport.AuthMethod, error) {
 
 // TryPushCommits implements the "Re-evaluate and Re-generate" strategy for conflict resolution.
 func (r *Repo) TryPushCommits(ctx context.Context, events []eventqueue.Event) error {
-	log := log.FromContext(ctx)
+	logger := log.FromContext(ctx)
 
 	if len(events) == 0 {
-		log.Info("No events to commit")
+		logger.Info("No events to commit")
 		return nil
 	}
 
@@ -96,13 +124,13 @@ func (r *Repo) TryPushCommits(ctx context.Context, events []eventqueue.Event) er
 	// 2. Attempt the push
 	err := r.Push(ctx)
 	if err == nil {
-		log.Info("Successfully pushed commits", "count", len(events))
+		logger.Info("Successfully pushed commits", "count", len(events))
 		return nil
 	}
 
 	// 3. Handle non-fast-forward error
 	if isNonFastForwardError(err) {
-		log.Info("Push rejected due to remote changes. Resyncing...")
+		logger.Info("Push rejected due to remote changes. Resyncing...")
 
 		// 4. Hard reset to remote state
 		if err := r.hardResetToRemote(ctx); err != nil {
@@ -110,20 +138,17 @@ func (r *Repo) TryPushCommits(ctx context.Context, events []eventqueue.Event) er
 		}
 
 		// 5. Re-evaluate the original events against the new state
-		validEvents, err := r.reEvaluateEvents(ctx, events)
-		if err != nil {
-			return fmt.Errorf("failed to re-evaluate events: %w", err)
-		}
+		validEvents := r.reEvaluateEvents(ctx, events)
 
 		// 6. Retry the push with only the valid events
 		if len(validEvents) > 0 {
-			log.Info("Retrying push with non-conflicting commits", "count", len(validEvents))
+			logger.Info("Retrying push with non-conflicting commits", "count", len(validEvents))
 			if err := r.generateLocalCommits(ctx, validEvents); err != nil {
 				return fmt.Errorf("failed to generate retry commits: %w", err)
 			}
 			return r.Push(ctx)
 		} else {
-			log.Info("No valid events remaining after conflict resolution")
+			logger.Info("No valid events remaining after conflict resolution")
 			return nil
 		}
 	}
@@ -134,10 +159,15 @@ func (r *Repo) TryPushCommits(ctx context.Context, events []eventqueue.Event) er
 
 // generateLocalCommits creates local commits for the given events.
 func (r *Repo) generateLocalCommits(ctx context.Context, events []eventqueue.Event) error {
-	log := log.FromContext(ctx)
+	logger := log.FromContext(ctx)
 	worktree, err := r.Worktree()
 	if err != nil {
 		return fmt.Errorf("failed to get worktree: %w", err)
+	}
+
+	// Ensure we are on the correct branch
+	if err := r.Checkout(r.branch); err != nil {
+		return fmt.Errorf("failed to checkout branch %s: %w", r.branch, err)
 	}
 
 	for _, event := range events {
@@ -179,7 +209,7 @@ func (r *Repo) generateLocalCommits(ctx context.Context, events []eventqueue.Eve
 			return fmt.Errorf("failed to commit %s: %w", filePath, err)
 		}
 
-		log.Info("Created commit", "file", filePath, "message", commitMessage)
+		logger.Info("Created commit", "file", filePath, "message", commitMessage)
 	}
 
 	return nil
@@ -187,16 +217,16 @@ func (r *Repo) generateLocalCommits(ctx context.Context, events []eventqueue.Eve
 
 // hardResetToRemote performs a hard reset to the remote branch state.
 func (r *Repo) hardResetToRemote(ctx context.Context) error {
-	log := log.FromContext(ctx)
+	logger := log.FromContext(ctx)
 
 	// Fetch latest changes from remote with force to ensure we get all updates
-	err := r.Fetch(&git.FetchOptions{
+	// Fetch latest changes from remote
+	if err := r.Fetch(&git.FetchOptions{
 		RemoteName: r.remoteName,
 		Auth:       r.auth,
-		Force:      true,
 		Progress:   os.Stdout,
-	})
-	if err != nil && err != git.NoErrAlreadyUpToDate {
+		Force:      true, // Force fetch to overwrite local refs
+	}); err != nil && err != git.NoErrAlreadyUpToDate {
 		return fmt.Errorf("failed to fetch from remote: %w", err)
 	}
 
@@ -209,7 +239,7 @@ func (r *Repo) hardResetToRemote(ctx context.Context) error {
 	if ref, err := r.Reference(remoteBranchRefName, true); err == nil {
 		targetHash = ref.Hash()
 		found = true
-		log.Info("Found remote branch reference", "branch", r.branch, "hash", targetHash.String())
+		logger.Info("Found remote branch reference", "branch", r.branch, "hash", targetHash.String())
 	}
 
 	// Strategy 2: If remote branch doesn't exist, try local branch that tracks remote
@@ -218,7 +248,7 @@ func (r *Repo) hardResetToRemote(ctx context.Context) error {
 		if ref, err := r.Reference(localBranchRef, true); err == nil {
 			targetHash = ref.Hash()
 			found = true
-			log.Info("Using local branch reference", "branch", r.branch, "hash", targetHash.String())
+			logger.Info("Using local branch reference", "branch", r.branch, "hash", targetHash.String())
 		}
 	}
 
@@ -227,7 +257,7 @@ func (r *Repo) hardResetToRemote(ctx context.Context) error {
 		if ref, err := r.Head(); err == nil {
 			targetHash = ref.Hash()
 			found = true
-			log.Info("Using HEAD reference", "hash", targetHash.String())
+			logger.Info("Using HEAD reference", "hash", targetHash.String())
 		}
 	}
 
@@ -254,37 +284,36 @@ func (r *Repo) hardResetToRemote(ctx context.Context) error {
 		// Try to update the local branch reference to point to the remote
 		localBranchRef := plumbing.NewBranchReferenceName(r.branch)
 		newRef := plumbing.NewHashReference(localBranchRef, targetHash)
-		err = r.Storer.SetReference(newRef)
-		if err != nil {
-			log.Info("Could not update local branch reference", "error", err)
+		if err := r.Storer.SetReference(newRef); err != nil {
+			logger.Info("Could not update local branch reference", "error", err)
 			// This is not critical, continue
 		}
 	}
 
-	log.Info("Successfully reset to remote state", "commit", targetHash.String())
+	logger.Info("Successfully reset to remote state", "commit", targetHash.String())
 	return nil
 }
 
 // reEvaluateEvents checks which events are still valid against the current repository state.
-func (r *Repo) reEvaluateEvents(ctx context.Context, events []eventqueue.Event) ([]eventqueue.Event, error) {
-	log := log.FromContext(ctx)
+func (r *Repo) reEvaluateEvents(ctx context.Context, events []eventqueue.Event) []eventqueue.Event {
+	logger := log.FromContext(ctx)
 	var validEvents []eventqueue.Event
 
 	for _, event := range events {
 		if valid, err := r.isEventStillValid(ctx, event); err != nil {
-			log.Error(err, "Failed to validate event", "resource", event.Object.GetName())
+			logger.Error(err, "Failed to validate event", "resource", event.Object.GetName())
 			continue
 		} else if valid {
 			validEvents = append(validEvents, event)
 		} else {
-			log.Info("Discarding stale event for resource",
+			logger.Info("Discarding stale event for resource",
 				"name", event.Object.GetName(),
 				"namespace", event.Object.GetNamespace(),
 				"kind", event.Object.GetKind())
 		}
 	}
 
-	return validEvents, nil
+	return validEvents
 }
 
 // isEventStillValid checks if an event is still relevant compared to the current Git state.
@@ -381,7 +410,7 @@ func (r *Repo) isEventStillValid(ctx context.Context, event eventqueue.Event) (b
 
 // Push pushes the local commits to the remote repository.
 func (r *Repo) Push(ctx context.Context) error {
-	log := log.FromContext(ctx)
+	logger := log.FromContext(ctx)
 
 	// Check if Repository is nil
 	if r.Repository == nil {
@@ -400,7 +429,21 @@ func (r *Repo) Push(ctx context.Context) error {
 		return fmt.Errorf("push failed: %w", err)
 	}
 
-	log.Info("Successfully pushed changes to remote")
+	// After a successful push, update the local reference to the remote's state
+	// to prevent race conditions where the local HEAD is behind the remote.
+	head, err := r.Head()
+	if err != nil {
+		return fmt.Errorf("failed to get HEAD: %w", err)
+	}
+
+	remoteBranchRefName := plumbing.NewRemoteReferenceName(r.remoteName, r.branch)
+	newRef := plumbing.NewHashReference(remoteBranchRefName, head.Hash())
+	if err := r.Storer.SetReference(newRef); err != nil {
+		// This is not a critical error, but it's good to log it.
+		logger.Info("Could not update remote tracking reference", "error", err)
+	}
+
+	logger.Info("Successfully pushed changes to remote")
 	return nil
 }
 
@@ -419,7 +462,7 @@ func isNonFastForwardError(err error) bool {
 
 // Commit commits a set of files to the repository (legacy method for compatibility).
 func (r *Repo) Commit(files []CommitFile, message string) error {
-	log := log.FromContext(context.Background())
+	logger := log.FromContext(context.Background())
 
 	// Check if Repository is nil
 	if r.Repository == nil {
@@ -463,7 +506,7 @@ func (r *Repo) Commit(files []CommitFile, message string) error {
 		return fmt.Errorf("failed to commit: %w", err)
 	}
 
-	log.Info("Created commit", "message", message, "files", len(files))
+	logger.Info("Created commit", "message", message, "files", len(files))
 	return nil
 }
 

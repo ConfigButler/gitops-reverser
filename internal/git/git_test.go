@@ -504,7 +504,7 @@ func TestEdgeCases_NilObject(t *testing.T) {
 	// We expect this to panic currently, so we'll catch it
 	func() {
 		defer func() {
-			recover() // Catch the panic
+			_ = recover() // Catch the panic
 		}()
 		GetFilePath(obj)
 	}()

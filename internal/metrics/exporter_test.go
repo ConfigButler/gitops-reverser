@@ -40,7 +40,7 @@ func TestMetricsInitialization(t *testing.T) {
 	require.NoError(t, err)
 	defer func() {
 		if shutdownFunc != nil {
-			shutdownFunc(ctx)
+			assert.NoError(t, shutdownFunc(ctx))
 		}
 	}()
 
@@ -85,7 +85,7 @@ func TestMetricNames(t *testing.T) {
 	require.NoError(t, err)
 	defer func() {
 		if shutdownFunc != nil {
-			shutdownFunc(ctx)
+			assert.NoError(t, shutdownFunc(ctx))
 		}
 	}()
 
@@ -115,7 +115,7 @@ func TestMetricsUsagePatterns(t *testing.T) {
 	require.NoError(t, err)
 	defer func() {
 		if shutdownFunc != nil {
-			shutdownFunc(ctx)
+			assert.NoError(t, shutdownFunc(ctx))
 		}
 	}()
 
@@ -166,7 +166,7 @@ func TestMetricsWithAttributes(t *testing.T) {
 	require.NoError(t, err)
 	defer func() {
 		if shutdownFunc != nil {
-			shutdownFunc(ctx)
+			assert.NoError(t, shutdownFunc(ctx))
 		}
 	}()
 
@@ -174,10 +174,13 @@ func TestMetricsWithAttributes(t *testing.T) {
 	// Note: The current implementation doesn't use attributes,
 	// but we test that the metrics work with context variations
 
+	type contextKey string
+	const operationKey contextKey = "operation"
+
 	t.Run("WithDifferentContexts", func(t *testing.T) {
-		ctx1 := context.WithValue(ctx, "operation", "create")
-		ctx2 := context.WithValue(ctx, "operation", "update")
-		ctx3 := context.WithValue(ctx, "operation", "delete")
+		ctx1 := context.WithValue(ctx, operationKey, "create")
+		ctx2 := context.WithValue(ctx, operationKey, "update")
+		ctx3 := context.WithValue(ctx, operationKey, "delete")
 
 		assert.NotPanics(t, func() {
 			EventsReceivedTotal.Add(ctx1, 1)
@@ -195,7 +198,7 @@ func TestConcurrentMetricsUsage(t *testing.T) {
 	require.NoError(t, err)
 	defer func() {
 		if shutdownFunc != nil {
-			shutdownFunc(ctx)
+			assert.NoError(t, shutdownFunc(ctx))
 		}
 	}()
 
@@ -243,7 +246,7 @@ func TestQueueSizeMetricBehavior(t *testing.T) {
 	require.NoError(t, err)
 	defer func() {
 		if shutdownFunc != nil {
-			shutdownFunc(ctx)
+			assert.NoError(t, shutdownFunc(ctx))
 		}
 	}()
 
@@ -277,7 +280,7 @@ func TestHistogramMetricBehavior(t *testing.T) {
 	require.NoError(t, err)
 	defer func() {
 		if shutdownFunc != nil {
-			shutdownFunc(ctx)
+			assert.NoError(t, shutdownFunc(ctx))
 		}
 	}()
 

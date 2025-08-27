@@ -61,7 +61,7 @@ func init() {
 	// +kubebuilder:scaffold:scheme
 }
 
-//+kubebuilder:rbac:groups=core,resources=pods,verbs=get;patch
+// +kubebuilder:rbac:groups=core,resources=pods,verbs=get;patch
 
 // nolint:gocyclo
 func main() {
@@ -209,7 +209,11 @@ func main() {
 			Log:        ctrl.Log.WithName("git-worker"),
 			EventQueue: eventQueue,
 		}
-		go gitWorker.Start(context.Background())
+		go func() {
+			if err := gitWorker.Start(context.Background()); err != nil {
+				setupLog.Error(err, "problem running git worker")
+			}
+		}()
 	}
 	// +kubebuilder:scaffold:builder
 
@@ -221,22 +225,19 @@ func main() {
 		PodName:   leader.GetPodName(),
 		Namespace: leader.GetPodNamespace(),
 	}); err != nil {
-		setupLog.Error(err, "unable to add leader labeler to manager")
-		os.Exit(1)
+		handleErr(err, "unable to add leader labeler to manager")
 	}
 
 	if webhookCertWatcher != nil {
 		setupLog.Info("Adding webhook certificate watcher to manager")
 		if err := mgr.Add(webhookCertWatcher); err != nil {
-			setupLog.Error(err, "unable to add webhook certificate watcher to manager")
-			os.Exit(1)
+			handleErr(err, "unable to add webhook certificate watcher to manager")
 		}
 	}
 
 	// Initialize OTLP exporter
 	if shutdown, err := metrics.InitOTLPExporter(context.Background()); err != nil {
-		setupLog.Error(err, "unable to initialize OTLP exporter")
-		os.Exit(1)
+		handleErr(err, "unable to initialize OTLP exporter")
 	} else {
 		defer func() {
 			if err := shutdown(context.Background()); err != nil {
@@ -247,7 +248,13 @@ func main() {
 
 	setupLog.Info("starting manager")
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
-		setupLog.Error(err, "problem running manager")
+		handleErr(err, "problem running manager")
+	}
+}
+
+func handleErr(err error, msg string) {
+	if err != nil {
+		setupLog.Error(err, msg)
 		os.Exit(1)
 	}
 }

@@ -31,13 +31,8 @@ import (
 const namespace = "gitops-reverser-system"
 
 // serviceAccountName created for the project
-const serviceAccountName = "gitops-reverser-controller-manager"
-
 // metricsServiceName is the name of the metrics service of the project
 const metricsServiceName = "gitops-reverser-controller-manager-metrics-service-metrics"
-
-// metricsRoleBindingName is the name of the RBAC that will be created to allow get the metrics data
-const metricsRoleBindingName = "gitops-reverser-metrics-binding"
 
 var _ = Describe("Manager", Ordered, func() {
 	var controllerPodName string

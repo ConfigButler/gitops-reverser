@@ -10,7 +10,7 @@ import (
 
 	"github.com/ConfigButler/gitops-reverser/internal/eventqueue"
 	"github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/config"
+	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -31,7 +31,9 @@ func TestRaceConditionIntegration(t *testing.T) {
 	// Create temporary directories for local and "remote" repositories
 	tempDir, err := os.MkdirTemp("", "race-condition-integration-*")
 	require.NoError(t, err)
-	defer os.RemoveAll(tempDir)
+	defer func() {
+		require.NoError(t, os.RemoveAll(tempDir))
+	}()
 
 	localRepoPath := filepath.Join(tempDir, "local")
 	remoteRepoPath := filepath.Join(tempDir, "remote")
@@ -40,16 +42,13 @@ func TestRaceConditionIntegration(t *testing.T) {
 	_, err = git.PlainInit(remoteRepoPath, true)
 	require.NoError(t, err)
 
-	// Initialize local repository first, then add remote
-	localRepo, err := git.PlainInit(localRepoPath, false)
-	require.NoError(t, err)
-
-	// Add remote origin
-	_, err = localRepo.CreateRemote(&config.RemoteConfig{
-		Name: "origin",
-		URLs: []string{remoteRepoPath},
+	// Clone the remote to create the local repo and set up tracking
+	localRepo, err := git.PlainClone(localRepoPath, false, &git.CloneOptions{
+		URL: remoteRepoPath,
 	})
-	require.NoError(t, err)
+	if err != nil && err.Error() != "remote repository is empty" {
+		require.NoError(t, err)
+	}
 
 	// Create our Repo wrapper
 	repo := &Repo{
@@ -63,12 +62,10 @@ func TestRaceConditionIntegration(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("full_race_condition_workflow", func(t *testing.T) {
-		// Step 1: Create initial commit in local repo to establish main branch
+		// Create an initial commit and push it to establish the main branch
 		err := createInitialCommit(localRepo, localRepoPath)
 		require.NoError(t, err)
-
-		// Push initial commit to remote
-		err = localRepo.Push(&git.PushOptions{})
+		err = repo.Push(ctx)
 		require.NoError(t, err)
 
 		// Step 2: Prepare events to be committed
@@ -101,7 +98,7 @@ func TestRaceConditionIntegration(t *testing.T) {
 
 		// Step 3: Simulate another process updating the remote repository
 		// This creates the race condition scenario
-		err = simulateRemoteUpdate(remoteRepoPath, localRepoPath)
+		err = simulateRemoteUpdate(t, remoteRepoPath, localRepoPath)
 		require.NoError(t, err)
 
 		// Step 4: Attempt to push commits - this should trigger race condition resolution
@@ -202,7 +199,7 @@ func TestRaceConditionIntegration(t *testing.T) {
 		}
 
 		// Simulate remote update to trigger conflict resolution
-		err = simulateRemoteUpdate(remoteRepoPath, localRepoPath)
+		err = simulateRemoteUpdate(t, remoteRepoPath, localRepoPath)
 		require.NoError(t, err)
 
 		// Try to push - should succeed with filtered events
@@ -277,14 +274,26 @@ func createInitialCommit(repo *git.Repository, repoPath string) error {
 	return err
 }
 
-func simulateRemoteUpdate(remoteRepoPath, localRepoPath string) error {
+func simulateRemoteUpdate(t *testing.T, remoteRepoPath, _ string) error {
 	// Clone the remote repository to a temporary location
 	tempClonePath := remoteRepoPath + "-temp-clone"
-	defer os.RemoveAll(tempClonePath)
+	defer func() {
+		require.NoError(t, os.RemoveAll(tempClonePath))
+	}()
 
 	tempRepo, err := git.PlainClone(tempClonePath, false, &git.CloneOptions{
 		URL: remoteRepoPath,
 	})
+	if err != nil {
+		return err
+	}
+
+	// Make sure we are on the main branch
+	worktree, err := tempRepo.Worktree()
+	if err != nil {
+		return err
+	}
+	err = worktree.Checkout(&git.CheckoutOptions{Branch: plumbing.NewBranchReferenceName("main")})
 	if err != nil {
 		return err
 	}
@@ -332,7 +341,7 @@ func simulateRemoteUpdate(remoteRepoPath, localRepoPath string) error {
 	}
 
 	// Commit and push the change
-	worktree, err := tempRepo.Worktree()
+	worktree, err = tempRepo.Worktree()
 	if err != nil {
 		return err
 	}
@@ -385,7 +394,9 @@ func resetToRemote(repo *Repo) error {
 func TestRaceConditionEdgeCases(t *testing.T) {
 	tempDir, err := os.MkdirTemp("", "race-condition-edge-cases-*")
 	require.NoError(t, err)
-	defer os.RemoveAll(tempDir)
+	defer func() {
+		require.NoError(t, os.RemoveAll(tempDir))
+	}()
 
 	repo := &Repo{
 		path: tempDir,
@@ -501,7 +512,9 @@ func TestRaceConditionPerformance(t *testing.T) {
 
 	tempDir, err := os.MkdirTemp("", "race-condition-perf-*")
 	require.NoError(t, err)
-	defer os.RemoveAll(tempDir)
+	defer func() {
+		require.NoError(t, os.RemoveAll(tempDir))
+	}()
 
 	repo := &Repo{
 		path: tempDir,
@@ -550,10 +563,9 @@ func TestRaceConditionPerformance(t *testing.T) {
 
 		// Measure re-evaluation performance
 		start := time.Now()
-		validEvents, err := repo.reEvaluateEvents(ctx, events)
+		validEvents := repo.reEvaluateEvents(ctx, events)
 		duration := time.Since(start)
 
-		assert.NoError(t, err)
 		assert.Less(t, len(validEvents), numEvents, "Should filter out some stale events")
 		assert.Less(t, duration, 5*time.Second, "Re-evaluation should complete within reasonable time")
 
