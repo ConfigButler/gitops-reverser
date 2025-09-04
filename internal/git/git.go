@@ -234,31 +234,11 @@ func (r *Repo) hardResetToRemote(ctx context.Context) error {
 	var targetHash plumbing.Hash
 	var found bool
 
-	// Strategy 1: Try to get the remote branch reference
 	remoteBranchRefName := plumbing.NewRemoteReferenceName(r.remoteName, r.branch)
 	if ref, err := r.Reference(remoteBranchRefName, true); err == nil {
 		targetHash = ref.Hash()
 		found = true
 		logger.Info("Found remote branch reference", "branch", r.branch, "hash", targetHash.String())
-	}
-
-	// Strategy 2: If remote branch doesn't exist, try local branch that tracks remote
-	if !found {
-		localBranchRef := plumbing.NewBranchReferenceName(r.branch)
-		if ref, err := r.Reference(localBranchRef, true); err == nil {
-			targetHash = ref.Hash()
-			found = true
-			logger.Info("Using local branch reference", "branch", r.branch, "hash", targetHash.String())
-		}
-	}
-
-	// Strategy 3: If neither exists, try HEAD
-	if !found {
-		if ref, err := r.Head(); err == nil {
-			targetHash = ref.Hash()
-			found = true
-			logger.Info("Using HEAD reference", "hash", targetHash.String())
-		}
 	}
 
 	if !found {
@@ -418,9 +398,7 @@ func (r *Repo) Push(ctx context.Context) error {
 	}
 
 	err := r.Repository.Push(&git.PushOptions{
-		RemoteName: r.remoteName,
-		Auth:       r.auth,
-	})
+		RemoteName: git})
 
 	if err != nil {
 		if isNonFastForwardError(err) {

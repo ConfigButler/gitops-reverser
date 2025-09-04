@@ -348,33 +348,6 @@ func (e *mockError) Error() string {
 	return e.msg
 }
 
-func createTestPod(name, namespace string) *unstructured.Unstructured {
-	return &unstructured.Unstructured{
-		Object: map[string]interface{}{
-			"apiVersion": "v1",
-			"kind":       "Pod",
-			"metadata": map[string]interface{}{
-				"name":      name,
-				"namespace": namespace,
-			},
-			"spec": map[string]interface{}{
-				"containers": []interface{}{
-					map[string]interface{}{
-						"name":  "test-container",
-						"image": "nginx:latest",
-					},
-				},
-			},
-		},
-	}
-}
-
-func createTestPodWithResourceVersion(name, namespace, resourceVersion string) *unstructured.Unstructured {
-	pod := createTestPod(name, namespace)
-	pod.SetResourceVersion(resourceVersion)
-	return pod
-}
-
 func TestErrNonFastForward(t *testing.T) {
 	// Test that our custom error is properly defined
 	assert.NotNil(t, ErrNonFastForward)

@@ -59,6 +59,13 @@ func init() {
 
 	utilruntime.Must(configbutleraiv1alpha1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
+
+	opts := zap.Options{
+		Development: true,
+	}
+	opts.BindFlags(flag.CommandLine)
+	flag.Parse()
+	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 }
 
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=get;patch
@@ -82,13 +89,6 @@ func main() {
 	flag.StringVar(&webhookCertKey, "webhook-cert-key", "tls.key", "The name of the webhook key file.")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
-	opts := zap.Options{
-		Development: true,
-	}
-	opts.BindFlags(flag.CommandLine)
-	flag.Parse()
-
-	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 
 	// if the enable-http2 flag is false (the default), http/2 should be disabled
 	// due to its vulnerabilities. More specifically, disabling http/2 will
@@ -209,11 +209,9 @@ func main() {
 			Log:        ctrl.Log.WithName("git-worker"),
 			EventQueue: eventQueue,
 		}
-		go func() {
-			if err := gitWorker.Start(context.Background()); err != nil {
-				setupLog.Error(err, "problem running git worker")
-			}
-		}()
+		if err := mgr.Add(gitWorker); err != nil {
+			handleErr(err, "unable to add git worker to manager")
+		}
 	}
 	// +kubebuilder:scaffold:builder
 

@@ -289,6 +289,7 @@ We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) f
 ## Roadmap
 
 - [ ] Support for custom Git commit message templates
+- [ ] Only write Secrets after they are encrypted (not sure yet which technology: SealedSecrets, SOPS or something else?)
 - [ ] Integration with popular GitOps tools (Argo CD, Flux)
 - [ ] Advanced filtering and transformation rules
 - [ ] Multi-repository support
