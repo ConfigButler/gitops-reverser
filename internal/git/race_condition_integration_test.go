@@ -39,10 +39,17 @@ func TestRaceConditionIntegration(t *testing.T) {
 
 	// Initialize "remote" repository
 	remoteRepo, err := git.PlainInitWithOptions(remoteRepoPath, &git.PlainInitOptions{
-		Bare: false,
+		Bare: false, // Must be non-bare to simulate a checked-out branch
 		InitOptions: git.InitOptions{
 			DefaultBranch: plumbing.Main,
 		}})
+	require.NoError(t, err)
+
+	// Allow push to the checked-out branch for this test remote
+	remoteConfig, err := remoteRepo.Config()
+	require.NoError(t, err)
+	remoteConfig.Raw.SetOption("receive", "", "denyCurrentBranch", "updateInstead")
+	err = remoteRepo.SetConfig(remoteConfig)
 	require.NoError(t, err)
 
 	err = createInitialCommit(remoteRepo, remoteRepoPath)
@@ -280,8 +287,4 @@ func getCommitHistory(repo *git.Repository) ([]*object.Commit, error) {
 	})
 
 	return commits, err
-}
-
-func resetToRemote(repo *Repo) error {
-	return repo.hardResetToRemote(context.Background())
 }

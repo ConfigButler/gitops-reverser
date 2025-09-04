@@ -397,8 +397,7 @@ func (r *Repo) Push(ctx context.Context) error {
 		return fmt.Errorf("repository is not initialized")
 	}
 
-	err := r.Repository.Push(&git.PushOptions{
-		RemoteName: git})
+	err := r.Repository.Push(&git.PushOptions{RemoteName: r.remoteName, Auth: r.auth, Progress: os.Stdout})
 
 	if err != nil {
 		if isNonFastForwardError(err) {
