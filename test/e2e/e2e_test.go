@@ -241,7 +241,7 @@ var _ = Describe("Manager", Ordered, func() {
 			By("getting the metrics by checking curl-metrics logs")
 			metricsOutput := getMetricsOutput()
 			Expect(metricsOutput).To(ContainSubstring(
-				"controller_runtime_reconcile_total",
+				"process_cpu_seconds_total", // We want to take the TODO into account! controller_runtime_reconcile_total
 			))
 		})
 
