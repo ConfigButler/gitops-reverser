@@ -20,10 +20,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Go
-        uses: actions/setup-go@v4
+        uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
@@ -32,6 +32,14 @@ jobs:
         run: |
           curl -s "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash
           sudo mv kustomize /usr/local/bin/
+        
+      - name: Cache golangci-lint
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/golangci-lint
+          key: golangci-lint-${{ runner.os }}-${{ env.GOLANGCI_LINT_VERSION }}
+          restore-keys: |
+            golangci-lint-${{ runner.os }}-
 
       - name: Set up controller-gen
         run: go install sigs.k8s.io/controller-tools/cmd/controller-gen@${{ env.CONTROLLER_TOOLS_VERSION }}
@@ -64,9 +72,10 @@ jobs:
 
       - name: Set up KinD
         uses: helm/kind-action@v1.12.0
+        with:
+          version: v0.30.0
 
       - name: Run E2E tests
-        # This command is expected to build and load the docker image into kind
         run: make test-e2e
 
   release:
@@ -79,7 +88,7 @@ jobs:
       packages: write
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
