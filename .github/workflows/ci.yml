@@ -39,12 +39,9 @@ jobs:
           path: |
             ~/.cache/golangci-lint
             ~/Library/Caches/golangci-lint
-          key: golangci-lint-${{ runner.os }}-${{ env.GOLANGCI_LINT_VERSION }}
+          key: golangci-lint-${{ runner.os }}
           restore-keys: |
-            golangci-lint-${{ runner.os }}-
-
-      - name: Create cache directory
-        run: mkdir -p ~/.cache/golangci-lint
+            golangci-lint-${{ runner.os }}
 
       - name: Run lint
         run: make lint

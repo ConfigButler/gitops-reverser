@@ -16,6 +16,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/go-git/go-git/v5/plumbing/transport/ssh"
+	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/yaml"
@@ -280,10 +281,7 @@ func (r *Repo) reEvaluateEvents(ctx context.Context, events []eventqueue.Event) 
 	var validEvents []eventqueue.Event
 
 	for _, event := range events {
-		if valid, err := r.isEventStillValid(ctx, event); err != nil {
-			logger.Error(err, "Failed to validate event", "resource", event.Object.GetName())
-			continue
-		} else if valid {
+		if r.isEventStillValid(ctx, event) {
 			validEvents = append(validEvents, event)
 		} else {
 			logger.Info("Discarding stale event for resource",
@@ -297,95 +295,132 @@ func (r *Repo) reEvaluateEvents(ctx context.Context, events []eventqueue.Event) 
 }
 
 // isEventStillValid checks if an event is still relevant compared to the current Git state.
-func (r *Repo) isEventStillValid(ctx context.Context, event eventqueue.Event) (bool, error) {
+func (r *Repo) isEventStillValid(ctx context.Context, event eventqueue.Event) bool {
+	logger := log.FromContext(ctx)
+
 	filePath := GetFilePath(event.Object)
 	fullPath := filepath.Join(r.path, filePath)
 
-	// Check if file exists in current Git state
-	if _, err := os.Stat(fullPath); err != nil {
-		if os.IsNotExist(err) {
-			// File doesn't exist in Git, so CREATE/UPDATE events are valid
-			return true, nil
-		}
-		return false, fmt.Errorf("failed to check file existence: %w", err)
+	if !fileExists(fullPath) {
+		return true // File doesn't exist, event is valid
 	}
 
-	// Read existing file content
+	existingObj, err := parseExistingObject(fullPath)
+	if err != nil {
+		return true // Can't parse, consider valid to allow fixing corrupted files
+	}
+
+	logObjectDetails(logger, existingObj)
+
+	if isStaleByResourceVersion(event.Object, existingObj) {
+		return false
+	}
+
+	if isStaleByGeneration(logger, event.Object, existingObj) {
+		return false
+	}
+
+	logger.Info("Event considered valid - no staleness detected")
+	return true
+}
+
+// fileExists checks if a file exists and handles errors appropriately.
+func fileExists(fullPath string) bool {
+	_, err := os.Stat(fullPath)
+	return !os.IsNotExist(err)
+}
+
+// parseExistingObject reads and parses the existing file content.
+func parseExistingObject(fullPath string) (*unstructured.Unstructured, error) {
 	existingContent, err := os.ReadFile(fullPath)
 	if err != nil {
-		return false, fmt.Errorf("failed to read existing file: %w", err)
+		return nil, fmt.Errorf("failed to read existing file: %w", err)
 	}
 
-	// Parse existing object
 	var existingObj unstructured.Unstructured
 	if err := yaml.Unmarshal(existingContent, &existingObj.Object); err != nil {
-		// If we can't parse the existing file, consider the event valid
-		// to allow fixing corrupted files
-		return true, nil
+		return nil, fmt.Errorf("failed to unmarshal existing object: %w", err)
 	}
 
-	// Debug: Check what we got after unmarshaling
-	logger := log.FromContext(ctx)
+	return &existingObj, nil
+}
+
+// logObjectDetails logs debug information about the unmarshaled object.
+func logObjectDetails(logger logr.Logger, existingObj *unstructured.Unstructured) {
 	logger.Info("Unmarshaled existing object",
 		"generation", existingObj.GetGeneration(),
 		"resourceVersion", existingObj.GetResourceVersion(),
 		"name", existingObj.GetName())
+}
 
-	// Compare resource versions if available
-	eventResourceVersion := event.Object.GetResourceVersion()
-	existingResourceVersion := existingObj.GetResourceVersion()
+// isStaleByResourceVersion compares resource versions to determine if event is stale.
+func isStaleByResourceVersion(eventObj, existingObj *unstructured.Unstructured) bool {
+	eventRV := eventObj.GetResourceVersion()
+	existingRV := existingObj.GetResourceVersion()
 
-	if eventResourceVersion != "" && existingResourceVersion != "" {
-		eventRV, eventErr := parseResourceVersion(eventResourceVersion)
-		existingRV, existingErr := parseResourceVersion(existingResourceVersion)
-
-		// If both resource versions are valid numbers, compare them
-		if eventErr == nil && existingErr == nil {
-			// If the existing file has a newer or equal resource version, the event is stale
-			if existingRV >= eventRV {
-				return false, nil
-			}
-		}
-		// If we can't parse resource versions, fall through to generation comparison
+	if eventRV == "" || existingRV == "" {
+		return false
 	}
 
-	// Compare generation for spec changes
-	eventGeneration := event.Object.GetGeneration()
-	existingGeneration := existingObj.GetGeneration()
+	eventRVNum, eventErr := parseResourceVersion(eventRV)
+	existingRVNum, existingErr := parseResourceVersion(existingRV)
 
-	// If GetGeneration() returns 0, try to get it directly from metadata
-	if existingGeneration == 0 {
-		if metadata, ok := existingObj.Object["metadata"].(map[string]interface{}); ok {
-			if gen, ok := metadata["generation"].(int64); ok {
-				existingGeneration = gen
-			} else if gen, ok := metadata["generation"].(int); ok {
-				existingGeneration = int64(gen)
-			} else if gen, ok := metadata["generation"].(float64); ok {
-				existingGeneration = int64(gen)
-			}
-		}
+	if eventErr != nil || existingErr != nil {
+		return false
 	}
 
-	// Debug logging for tests
+	return existingRVNum >= eventRVNum
+}
+
+// isStaleByGeneration compares generations to determine if event is stale.
+func isStaleByGeneration(logger logr.Logger, eventObj, existingObj *unstructured.Unstructured) bool {
+	eventGen := eventObj.GetGeneration()
+	existingGen := extractGeneration(existingObj)
+
 	logger.Info("Generation comparison debug",
-		"eventGeneration", eventGeneration,
-		"existingGeneration", existingGeneration,
-		"eventResourceVersion", eventResourceVersion,
-		"existingResourceVersion", existingResourceVersion)
+		"eventGeneration", eventGen,
+		"existingGeneration", existingGen,
+		"eventResourceVersion", eventObj.GetResourceVersion(),
+		"existingResourceVersion", existingObj.GetResourceVersion())
 
-	if eventGeneration > 0 && existingGeneration > 0 {
-		if existingGeneration >= eventGeneration {
-			logger.Info("Event is stale due to generation comparison",
-				"eventGeneration", eventGeneration,
-				"existingGeneration", existingGeneration)
-			return false, nil
+	if eventGen <= 0 || existingGen <= 0 {
+		return false
+	}
+
+	if existingGen >= eventGen {
+		logger.Info("Event is stale due to generation comparison",
+			"eventGeneration", eventGen,
+			"existingGeneration", existingGen)
+		return true
+	}
+
+	return false
+}
+
+// extractGeneration extracts the generation from an object, handling different types.
+func extractGeneration(obj *unstructured.Unstructured) int64 {
+	gen := obj.GetGeneration()
+	if gen != 0 {
+		return gen
+	}
+
+	metadata, ok := obj.Object["metadata"].(map[string]interface{})
+	if !ok {
+		return 0
+	}
+
+	if genVal, ok := metadata["generation"]; ok {
+		switch v := genVal.(type) {
+		case int64:
+			return v
+		case int:
+			return int64(v)
+		case float64:
+			return int64(v)
 		}
 	}
 
-	// If we can't determine staleness from metadata, consider the event valid
-	// This errs on the side of caution to avoid losing legitimate changes
-	logger.Info("Event considered valid - no staleness detected")
-	return true, nil
+	return 0
 }
 
 // Push pushes the local commits to the remote repository.

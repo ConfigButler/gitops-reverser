@@ -11,51 +11,56 @@ import (
 func Sanitize(obj *unstructured.Unstructured) *unstructured.Unstructured {
 	sanitized := &unstructured.Unstructured{Object: make(map[string]interface{})}
 
-	// Preserve the core identity fields.
+	setCoreIdentityFields(sanitized, obj)
+	setCleanMetadata(sanitized, obj)
+	preserveFields(sanitized, obj, []string{"spec", "data", "binaryData"})
+	preserveTopLevelFields(sanitized, obj)
+
+	return sanitized
+}
+
+// setCoreIdentityFields preserves the core identity fields of the object.
+func setCoreIdentityFields(sanitized, obj *unstructured.Unstructured) {
 	sanitized.SetAPIVersion(obj.GetAPIVersion())
 	sanitized.SetKind(obj.GetKind())
 	sanitized.SetName(obj.GetName())
 	sanitized.SetNamespace(obj.GetNamespace())
 	sanitized.SetLabels(obj.GetLabels())
 	sanitized.SetAnnotations(obj.GetAnnotations())
+}
 
-	// Clean up metadata by removing server-generated fields
-	if metadata, found, err := unstructured.NestedMap(obj.Object, "metadata"); found && err == nil {
-		cleanMetadata := make(map[string]interface{})
+// setCleanMetadata cleans up metadata by removing server-generated fields.
+func setCleanMetadata(sanitized, obj *unstructured.Unstructured) {
+	metadata, found, err := unstructured.NestedMap(obj.Object, "metadata")
+	if !found || err != nil {
+		return
+	}
 
-		// Copy only the fields we want to preserve
-		preservedFields := []string{"name", "namespace", "labels", "annotations"}
-		for _, field := range preservedFields {
-			if value, exists := metadata[field]; exists && value != nil {
-				cleanMetadata[field] = value
-			}
-		}
+	cleanMetadata := make(map[string]interface{})
+	preservedFields := []string{"name", "namespace", "labels", "annotations"}
 
-		// Set the cleaned metadata
-		if len(cleanMetadata) > 0 {
-			if err := unstructured.SetNestedMap(sanitized.Object, cleanMetadata, "metadata"); err != nil {
-				// This should not happen with a freshly created map
-				return nil
-			}
+	for _, field := range preservedFields {
+		if value, exists := metadata[field]; exists && value != nil {
+			cleanMetadata[field] = value
 		}
 	}
 
-	// Preserve the spec field
-	if spec, found, err := unstructured.NestedFieldCopy(obj.Object, "spec"); found && err == nil {
-		setNestedField(sanitized, spec, "spec")
+	if len(cleanMetadata) > 0 {
+		_ = unstructured.SetNestedMap(sanitized.Object, cleanMetadata, "metadata")
 	}
+}
 
-	// Preserve the data field (for ConfigMaps, Secrets)
-	if data, found, err := unstructured.NestedFieldCopy(obj.Object, "data"); found && err == nil {
-		setNestedField(sanitized, data, "data")
+// preserveFields preserves specified fields from the original object.
+func preserveFields(sanitized, obj *unstructured.Unstructured, fields []string) {
+	for _, field := range fields {
+		if value, found, err := unstructured.NestedFieldCopy(obj.Object, field); found && err == nil {
+			setNestedField(sanitized, value, field)
+		}
 	}
+}
 
-	// Preserve the binaryData field (for ConfigMaps, Secrets)
-	if binaryData, found, err := unstructured.NestedFieldCopy(obj.Object, "binaryData"); found && err == nil {
-		setNestedField(sanitized, binaryData, "binaryData")
-	}
-
-	// Preserve other common fields that represent desired state
+// preserveTopLevelFields preserves other common fields that represent desired state.
+func preserveTopLevelFields(sanitized, obj *unstructured.Unstructured) {
 	preservedTopLevelFields := []string{
 		"rules",          // for RBAC resources
 		"subjects",       // for RoleBindings
@@ -69,13 +74,7 @@ func Sanitize(obj *unstructured.Unstructured) *unstructured.Unstructured {
 		"eventTime",      // for Events
 	}
 
-	for _, field := range preservedTopLevelFields {
-		if value, found, err := unstructured.NestedFieldCopy(obj.Object, field); found && err == nil {
-			setNestedField(sanitized, value, field)
-		}
-	}
-
-	return sanitized
+	preserveFields(sanitized, obj, preservedTopLevelFields)
 }
 
 // setNestedField is a helper function to wrap unstructured.SetNestedField and handle errors.

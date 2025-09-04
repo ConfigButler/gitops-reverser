@@ -113,8 +113,7 @@ func TestIsEventStillValid(t *testing.T) {
 			Object: createTestPod("new-pod", "default"),
 		}
 
-		valid, err := repo.isEventStillValid(ctx, event)
-		assert.NoError(t, err)
+		valid := repo.isEventStillValid(ctx, event)
 		assert.True(t, valid, "Event should be valid when file doesn't exist")
 	})
 
@@ -144,8 +143,7 @@ func TestIsEventStillValid(t *testing.T) {
 			Object: newPod,
 		}
 
-		valid, err := repo.isEventStillValid(ctx, event)
-		assert.NoError(t, err)
+		valid := repo.isEventStillValid(ctx, event)
 		assert.True(t, valid, "Event should be valid when it has newer resource version")
 	})
 
@@ -175,8 +173,7 @@ func TestIsEventStillValid(t *testing.T) {
 			Object: oldPod,
 		}
 
-		valid, err := repo.isEventStillValid(ctx, event)
-		assert.NoError(t, err)
+		valid := repo.isEventStillValid(ctx, event)
 		assert.False(t, valid, "Event should be invalid when it has older resource version")
 	})
 
@@ -209,8 +206,7 @@ func TestIsEventStillValid(t *testing.T) {
 			Object: oldPod,
 		}
 
-		valid, err := repo.isEventStillValid(ctx, event)
-		assert.NoError(t, err)
+		valid := repo.isEventStillValid(ctx, event)
 		assert.False(t, valid, "Event should be invalid when it has older generation")
 	})
 
@@ -227,8 +223,7 @@ func TestIsEventStillValid(t *testing.T) {
 			Object: createTestPod("corrupted-pod", "default"),
 		}
 
-		valid, err := repo.isEventStillValid(ctx, event)
-		assert.NoError(t, err)
+		valid := repo.isEventStillValid(ctx, event)
 		assert.True(t, valid, "Event should be valid when existing file is corrupted")
 	})
 }
