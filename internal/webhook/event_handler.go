@@ -40,9 +40,10 @@ func (h *EventHandler) Handle(ctx context.Context, req admission.Request) admiss
 		for _, rule := range matchingRules {
 			sanitizedObj := sanitize.Sanitize(obj)
 			event := eventqueue.Event{
-				Object:           sanitizedObj,
-				Request:          req,
-				GitRepoConfigRef: rule.GitRepoConfigRef,
+				Object:                 sanitizedObj,
+				Request:                req,
+				GitRepoConfigRef:       rule.GitRepoConfigRef,
+				GitRepoConfigNamespace: rule.Source.Namespace, // Same namespace as the WatchRule
 			}
 			h.EventQueue.Enqueue(event)
 			metrics.EventsProcessedTotal.Add(ctx, 1)

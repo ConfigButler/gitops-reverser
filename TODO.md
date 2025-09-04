@@ -62,4 +62,9 @@ This document outlines the tasks required to build the GitOps Reverser tool as s
 [ ] Should we also do a full reconicile on the folders? As in: check if all the yaml files are still usefull?
     -> This last line is where it gets interesting: who wins? I guess we just push a new commit and throw away the files that don't exist in the cluster. Should we do a full reconcile every x minutes? How many resources can we handle before it gets tricky?
 
+---
+
+[ ] Should the repo config be namespaced or clustered? All that duplication is also ugly, how does flux do that part?
+[ ] Do we now actually make a commit in the end2end?
+
 

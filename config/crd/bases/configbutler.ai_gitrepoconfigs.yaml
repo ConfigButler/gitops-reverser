@@ -4,15 +4,15 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.19.0
-  name: gitrepoconfigs.configbutler.ai.configbutler.ai
+  name: gitrepoconfigs.configbutler.ai
 spec:
-  group: configbutler.ai.configbutler.ai
+  group: configbutler.ai
   names:
     kind: GitRepoConfig
     listKind: GitRepoConfigList
     plural: gitrepoconfigs
     singular: gitrepoconfig
-  scope: Cluster
+  scope: Namespaced
   versions:
   - name: v1alpha1
     schema:

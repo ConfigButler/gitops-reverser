@@ -4,9 +4,9 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.19.0
-  name: watchrules.configbutler.ai.configbutler.ai
+  name: watchrules.configbutler.ai
 spec:
-  group: configbutler.ai.configbutler.ai
+  group: configbutler.ai
   names:
     kind: WatchRule
     listKind: WatchRuleList

@@ -24,9 +24,11 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/wait"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -131,7 +133,7 @@ func (r *GitRepoConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	log.Info("GitRepoConfig validation successful", "name", gitRepoConfig.Name, "commit", commitHash[:8])
 
 	// Update status and schedule periodic revalidation
-	if err := r.Status().Update(ctx, &gitRepoConfig); err != nil {
+	if err := r.updateStatusWithRetry(ctx, &gitRepoConfig); err != nil {
 		log.Error(err, "Failed to update GitRepoConfig status")
 		return ctrl.Result{}, err
 	}
@@ -268,10 +270,46 @@ func (r *GitRepoConfigReconciler) setCondition(gitRepoConfig *configbutleraiv1al
 
 // updateStatusAndRequeue updates the status and returns requeue result
 func (r *GitRepoConfigReconciler) updateStatusAndRequeue(ctx context.Context, gitRepoConfig *configbutleraiv1alpha1.GitRepoConfig, requeueAfter time.Duration) (ctrl.Result, error) {
-	if err := r.Status().Update(ctx, gitRepoConfig); err != nil {
+	if err := r.updateStatusWithRetry(ctx, gitRepoConfig); err != nil {
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{RequeueAfter: requeueAfter}, nil
+}
+
+// updateStatusWithRetry updates the status with retry logic to handle race conditions
+func (r *GitRepoConfigReconciler) updateStatusWithRetry(ctx context.Context, gitRepoConfig *configbutleraiv1alpha1.GitRepoConfig) error {
+	return wait.ExponentialBackoff(wait.Backoff{
+		Duration: 100 * time.Millisecond,
+		Factor:   2.0,
+		Jitter:   0.1,
+		Steps:    5,
+	}, func() (bool, error) {
+		// Get the latest version of the resource
+		latest := &configbutleraiv1alpha1.GitRepoConfig{}
+		if err := r.Get(ctx, client.ObjectKeyFromObject(gitRepoConfig), latest); err != nil {
+			if errors.IsNotFound(err) {
+				// Resource was deleted, nothing to update
+				return true, nil
+			}
+			return false, err
+		}
+
+		// Copy our status to the latest version
+		latest.Status = gitRepoConfig.Status
+
+		// Attempt to update
+		if err := r.Status().Update(ctx, latest); err != nil {
+			if errors.IsConflict(err) {
+				// Resource version conflict, retry
+				return false, nil
+			}
+			// Other error, stop retrying
+			return false, err
+		}
+
+		// Success
+		return true, nil
+	})
 }
 
 // SetupWithManager sets up the controller with the Manager.

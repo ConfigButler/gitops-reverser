@@ -54,11 +54,13 @@ func (w *Worker) dispatchEvents(ctx context.Context, repoQueues map[string]chan 
 
 			for _, event := range events {
 				mu.Lock()
-				repoQueue, ok := repoQueues[event.GitRepoConfigRef]
+				// Use namespace/name as queue key to avoid conflicts
+				queueKey := event.GitRepoConfigNamespace + "/" + event.GitRepoConfigRef
+				repoQueue, ok := repoQueues[queueKey]
 				if !ok {
 					repoQueue = make(chan eventqueue.Event, 100)
-					repoQueues[event.GitRepoConfigRef] = repoQueue
-					go w.processRepoEvents(ctx, event.GitRepoConfigRef, repoQueue)
+					repoQueues[queueKey] = repoQueue
+					go w.processRepoEvents(ctx, queueKey, repoQueue)
 				}
 				mu.Unlock()
 				repoQueue <- event
@@ -68,14 +70,31 @@ func (w *Worker) dispatchEvents(ctx context.Context, repoQueues map[string]chan 
 }
 
 // processRepoEvents processes events for a single Git repository.
-func (w *Worker) processRepoEvents(ctx context.Context, repoName string, eventChan <-chan eventqueue.Event) {
-	log := w.Log.WithValues("repo", repoName)
+func (w *Worker) processRepoEvents(ctx context.Context, queueKey string, eventChan <-chan eventqueue.Event) {
+	log := w.Log.WithValues("queueKey", queueKey)
 	log.Info("Starting event processor for repo")
 
+	// Wait for the first event to get the namespace/name info
+	var firstEvent eventqueue.Event
 	var repoConfig v1alpha1.GitRepoConfig
-	if err := w.Client.Get(ctx, types.NamespacedName{Name: repoName}, &repoConfig); err != nil {
-		log.Error(err, "Failed to fetch GitRepoConfig")
-		return // Or handle retry
+	var eventBuffer []eventqueue.Event
+
+	select {
+	case firstEvent = <-eventChan:
+		namespacedName := types.NamespacedName{
+			Name:      firstEvent.GitRepoConfigRef,
+			Namespace: firstEvent.GitRepoConfigNamespace,
+		}
+
+		if err := w.Client.Get(ctx, namespacedName, &repoConfig); err != nil {
+			log.Error(err, "Failed to fetch GitRepoConfig", "namespacedName", namespacedName)
+			return // Or handle retry
+		}
+
+		// Add the first event to our buffer for processing
+		eventBuffer = append(eventBuffer, firstEvent)
+	case <-ctx.Done():
+		return
 	}
 
 	var pushInterval time.Duration
@@ -99,8 +118,6 @@ func (w *Worker) processRepoEvents(ctx context.Context, repoName string, eventCh
 
 	ticker := time.NewTicker(pushInterval)
 	defer ticker.Stop()
-
-	var eventBuffer []eventqueue.Event
 
 	for {
 		select {

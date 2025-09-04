@@ -1,4 +1,4 @@
-apiVersion: configbutler.ai.configbutler.ai/v1alpha1
+apiVersion: configbutler.ai/v1alpha1
 kind: WatchRule
 metadata:
   labels:

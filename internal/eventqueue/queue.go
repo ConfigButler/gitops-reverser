@@ -15,6 +15,8 @@ type Event struct {
 	Request admission.Request
 	// GitRepoConfigRef is the name of the GitRepoConfig to use for this event.
 	GitRepoConfigRef string
+	// GitRepoConfigNamespace is the namespace of the GitRepoConfig to use for this event.
+	GitRepoConfigNamespace string
 }
 
 // Queue is a simple, thread-safe, in-memory queue for events.

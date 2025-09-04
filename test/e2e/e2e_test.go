@@ -435,9 +435,9 @@ metadata:
 spec:
   repoUrl: %s
   branch: %s
-  secretName: %s
-  secretNamespace: %s
-`, name, namespace, repoURL, branch, secretName, namespace)
+  secretRef:
+    name: %s
+`, name, namespace, repoURL, branch, secretName)
 
 	cmd = exec.Command("kubectl", "apply", "-f", "-", "-n", namespace)
 	cmd.Stdin = strings.NewReader(gitRepoConfigYAML)

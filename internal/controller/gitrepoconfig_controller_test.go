@@ -68,14 +68,14 @@ var _ = Describe("GitRepoConfig Controller", func() {
 			})
 
 			It("should extract SSH credentials with passphrase", func() {
-				// For testing, use a simple unencrypted key with passphrase field
+				// For testing, use a simple unencrypted key with empty passphrase
 				privateKey, err := generateTestSSHKey()
 				Expect(err).NotTo(HaveOccurred())
 
 				secret := &corev1.Secret{
 					Data: map[string][]byte{
 						"ssh-privatekey": privateKey,
-						"ssh-passphrase": []byte("testpass"),
+						"ssh-passphrase": []byte(""), // Empty passphrase for unencrypted key
 					},
 				}
 
@@ -281,7 +281,8 @@ var _ = Describe("GitRepoConfig Controller", func() {
 		It("should fail when secret is not found", func() {
 			gitRepoConfig = &configbutleraiv1alpha1.GitRepoConfig{
 				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-config",
+					Name:      "test-config",
+					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha1.GitRepoConfigSpec{
 					RepoURL: "git@github.com:test/repo.git",
@@ -295,7 +296,8 @@ var _ = Describe("GitRepoConfig Controller", func() {
 
 			result, err := reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{
-					Name: gitRepoConfig.Name,
+					Name:      gitRepoConfig.Name,
+					Namespace: gitRepoConfig.Namespace,
 				},
 			})
 
@@ -304,7 +306,7 @@ var _ = Describe("GitRepoConfig Controller", func() {
 
 			// Verify the resource was updated with failure condition
 			updatedConfig := &configbutleraiv1alpha1.GitRepoConfig{}
-			err = k8sClient.Get(ctx, types.NamespacedName{Name: gitRepoConfig.Name}, updatedConfig)
+			err = k8sClient.Get(ctx, types.NamespacedName{Name: gitRepoConfig.Name, Namespace: gitRepoConfig.Namespace}, updatedConfig)
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(updatedConfig.Status.Conditions).To(HaveLen(1))
@@ -331,7 +333,8 @@ var _ = Describe("GitRepoConfig Controller", func() {
 
 			gitRepoConfig = &configbutleraiv1alpha1.GitRepoConfig{
 				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-config",
+					Name:      "test-config",
+					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha1.GitRepoConfigSpec{
 					RepoURL: "git@github.com:test/repo.git",
@@ -345,7 +348,8 @@ var _ = Describe("GitRepoConfig Controller", func() {
 
 			result, err := reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{
-					Name: gitRepoConfig.Name,
+					Name:      gitRepoConfig.Name,
+					Namespace: gitRepoConfig.Namespace,
 				},
 			})
 
@@ -354,7 +358,7 @@ var _ = Describe("GitRepoConfig Controller", func() {
 
 			// Verify the resource was updated with failure condition
 			updatedConfig := &configbutleraiv1alpha1.GitRepoConfig{}
-			err = k8sClient.Get(ctx, types.NamespacedName{Name: gitRepoConfig.Name}, updatedConfig)
+			err = k8sClient.Get(ctx, types.NamespacedName{Name: gitRepoConfig.Name, Namespace: gitRepoConfig.Namespace}, updatedConfig)
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(updatedConfig.Status.Conditions).To(HaveLen(1))
@@ -368,7 +372,8 @@ var _ = Describe("GitRepoConfig Controller", func() {
 			// Test reconciling a non-existent resource
 			result, err := reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{
-					Name: "nonexistent-config",
+					Name:      "nonexistent-config",
+					Namespace: "default",
 				},
 			})
 

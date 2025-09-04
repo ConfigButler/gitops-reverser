@@ -78,7 +78,7 @@ type GitRepoConfigStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:scope=Cluster
+// +kubebuilder:resource:scope=Namespaced
 
 // GitRepoConfig is the Schema for the gitrepoconfigs API
 type GitRepoConfig struct {

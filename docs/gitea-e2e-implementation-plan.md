@@ -177,7 +177,7 @@ echo "Access Token: $TOKEN"
 ### 4.1 Updated GitRepoConfig Sample
 **File**: `config/samples/configbutler.ai_v1alpha1_gitrepoconfig.yaml`
 ```yaml
-apiVersion: configbutler.ai.configbutler.ai/v1alpha1
+apiVersion: configbutler.ai/v1alpha1
 kind: GitRepoConfig
 metadata:
   labels:
