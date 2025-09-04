@@ -15,7 +15,7 @@ import (
 )
 
 // namespace where the project is deployed in
-const namespace = "gitops-reverser-system"
+const namespace = "dut"
 
 // serviceAccountName created for the project
 const serviceAccountName = "gitops-reverser-controller-manager"
@@ -36,7 +36,15 @@ var _ = Describe("Manager", Ordered, func() {
 		By("creating manager namespace")
 		cmd := exec.Command("kubectl", "create", "ns", namespace)
 		_, err := utils.Run(cmd)
-		Expect(err).NotTo(HaveOccurred(), "Failed to create namespace")
+		if err != nil {
+			// Namespace might already exist from Gitea setup - check if it's AlreadyExists error
+			By("checking if namespace already exists")
+			checkCmd := exec.Command("kubectl", "get", "ns", namespace)
+			_, checkErr := utils.Run(checkCmd)
+			if checkErr != nil {
+				Expect(err).NotTo(HaveOccurred(), "Failed to create namespace and namespace doesn't exist")
+			}
+		}
 
 		By("labeling the namespace to enforce the restricted security policy")
 		cmd = exec.Command("kubectl", "label", "--overwrite", "ns", namespace,
@@ -243,6 +251,100 @@ var _ = Describe("Manager", Ordered, func() {
 			Expect(metricsOutput).To(ContainSubstring(
 				"process_cpu_seconds_total", // We want to take the TODO into account! controller_runtime_reconcile_total
 			))
+		})
+
+		It("should reconcile a GitRepoConfig CR", func() {
+			By("ensuring Git credentials secret exists")
+			cmd := exec.Command("kubectl", "get", "secret", "git-ssh-key", "-n", namespace)
+			_, err := utils.Run(cmd)
+			if err != nil {
+				By("creating a dummy secret for Git")
+				cmd = exec.Command("kubectl", "create", "secret", "generic", "git-ssh-key",
+					"--from-literal=known_hosts=dummy",
+					"--from-literal=ssh-privatekey=dummykey",
+					"-n", namespace)
+				_, err = utils.Run(cmd)
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			By("creating a sample GitRepoConfig")
+			sampleFile := "config/samples/configbutler.ai_v1alpha1_gitrepoconfig.yaml"
+			cmd = exec.Command("kubectl", "apply", "-f", sampleFile, "-n", namespace)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying the GitRepoConfig is reconciled")
+			verifyReconciled := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "gitrepoconfig", "gitrepoconfig-sample", "-n", namespace, "-o", "jsonpath={.status.conditions[?(@.type=='Ready')].status}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("True"))
+			}
+			Eventually(verifyReconciled).Should(Succeed())
+		})
+
+		It("should reconcile a WatchRule CR", func() {
+			By("ensuring Git credentials secret exists")
+			cmd := exec.Command("kubectl", "get", "secret", "git-ssh-key", "-n", namespace)
+			_, err := utils.Run(cmd)
+			if err != nil {
+				By("creating a dummy secret for Git")
+				cmd = exec.Command("kubectl", "create", "secret", "generic", "git-ssh-key",
+					"--from-literal=known_hosts=dummy",
+					"--from-literal=ssh-privatekey=dummykey",
+					"-n", namespace)
+				_, err = utils.Run(cmd)
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			By("creating a sample GitRepoConfig")
+			gitSampleFile := "config/samples/configbutler.ai_v1alpha1_gitrepoconfig.yaml"
+			cmd = exec.Command("kubectl", "apply", "-f", gitSampleFile, "-n", namespace)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("creating a sample WatchRule")
+			sampleFile := "config/samples/configbutler.ai_v1alpha1_watchrule.yaml"
+			cmd = exec.Command("kubectl", "apply", "-f", sampleFile, "-n", namespace)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying the WatchRule is reconciled")
+			verifyReconciled := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "watchrule", "watchrule-sample", "-n", namespace, "-o", "jsonpath={.status.conditions[?(@.type=='Ready')].status}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("True"))
+			}
+			Eventually(verifyReconciled).Should(Succeed())
+
+			By("verifying basic webhook registration")
+			verifyWebhook := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "validatingwebhookconfigurations", "-o", "jsonpath={.items[?(@.metadata.name=='gitops-reverser-webhook')].webhooks[0].name}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(ContainSubstring("gitops-reverser.configbutler.ai"))
+			}
+			Eventually(verifyWebhook).Should(Succeed())
+		})
+
+		It("should detect resource change via logs", func() {
+			// Assuming CRs from previous tests or recreate if needed
+			By("creating a ConfigMap in the namespace")
+			cmd := exec.Command("kubectl", "create", "configmap", "test-cm",
+				"--namespace", namespace,
+				"--from-literal=key=value")
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("checking controller logs for event processing")
+			verifyLog := func(g Gomega) {
+				cmd := exec.Command("kubectl", "logs", controllerPodName, "-n", namespace, "--tail=100")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(MatchRegexp(`Processing event.*ConfigMap/test-cm`))
+			}
+			Eventually(verifyLog, time.Minute).Should(Succeed())
 		})
 
 		// +kubebuilder:scaffold:e2e-webhooks-checks

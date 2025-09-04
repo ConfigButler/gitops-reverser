@@ -258,7 +258,7 @@ When you install the gitops-reverser, you will see that it creates TLS certifica
 1. **Git Authentication Failures**
    ```bash
    # Verify SSH key format and permissions
-   kubectl logs -n gitops-reverser-system deployment/gitops-reverser-controller
+   kubectl logs -n sut deployment/gitops-reverser-controller
    ```
 
 2. **Webhook Not Triggering**

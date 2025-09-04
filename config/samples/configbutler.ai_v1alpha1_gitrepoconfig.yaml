@@ -6,4 +6,10 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
   name: gitrepoconfig-sample
 spec:
-  # TODO(user): Add fields here
+  repoUrl: "https://gitea-http.gitea-e2e.svc.cluster.local:3000/testorg/testrepo.git"
+  branch: "main"
+  secretName: "git-ssh-key"
+  secretNamespace: "sut"
+  push:
+    interval: "1m"
+    maxCommits: 20

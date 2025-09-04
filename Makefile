@@ -82,8 +82,9 @@ setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist
 	esac
 
 .PHONY: test-e2e
-test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e tests. Expected an isolated environment using Kind.
+test-e2e: setup-test-e2e setup-gitea-e2e manifests generate fmt vet ## Run the e2e tests with real Gitea. Expected an isolated environment using Kind.
 	KIND_CLUSTER=$(KIND_CLUSTER) go test ./test/e2e/ -v -ginkgo.v
+	$(MAKE) cleanup-gitea-e2e
 	$(MAKE) cleanup-test-e2e
 
 .PHONY: cleanup-test-e2e
@@ -179,12 +180,14 @@ $(LOCALBIN):
 ## Tool Binaries
 KUBECTL ?= kubectl
 KIND ?= kind
+HELM ?= $(LOCALBIN)/helm
 KUSTOMIZE ?= $(LOCALBIN)/kustomize
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
 ENVTEST ?= $(LOCALBIN)/setup-envtest
 GOLANGCI_LINT = $(LOCALBIN)/golangci-lint
 
 ## Tool Versions
+HELM_VERSION ?= v3.12.3
 KUSTOMIZE_VERSION ?= v5.7.1
 CONTROLLER_TOOLS_VERSION ?= v0.19.0
 #ENVTEST_VERSION is the version of controller-runtime release branch to fetch the envtest setup script (i.e. release-0.20)
@@ -192,6 +195,19 @@ ENVTEST_VERSION ?= $(shell go list -m -f "{{ .Version }}" sigs.k8s.io/controller
 #ENVTEST_K8S_VERSION is the version of Kubernetes to use for setting up ENVTEST binaries (i.e. 1.31)
 ENVTEST_K8S_VERSION ?= $(shell go list -m -f "{{ .Version }}" k8s.io/api | awk -F'[v.]' '{printf "1.%d", $$3}')
 GOLANGCI_LINT_VERSION ?= v2.4.0
+
+# Gitea E2E Configuration
+GITEA_NAMESPACE ?= gitea-e2e
+GITEA_CHART_VERSION ?= 10.4.0	# https://gitea.com/gitea/helm-gitea
+
+.PHONY: helm
+helm: $(HELM) ## Download helm locally if necessary.
+$(HELM): $(LOCALBIN)
+	@command -v helm >/dev/null 2>&1 && ln -sf $$(which helm) $(HELM) || { \
+		echo "Installing Helm $(HELM_VERSION)..."; \
+		curl -fsSL https://get.helm.sh/helm-$(HELM_VERSION)-linux-amd64.tar.gz | tar -xzO linux-amd64/helm > $(HELM); \
+		chmod +x $(HELM); \
+	}
 
 .PHONY: kustomize
 kustomize: $(KUSTOMIZE) ## Download kustomize locally if necessary.
@@ -220,6 +236,30 @@ $(ENVTEST): $(LOCALBIN)
 golangci-lint: $(GOLANGCI_LINT) ## Download golangci-lint locally if necessary.
 $(GOLANGCI_LINT): $(LOCALBIN)
 	$(call go-install-tool,$(GOLANGCI_LINT),github.com/golangci/golangci-lint/v2/cmd/golangci-lint,$(GOLANGCI_LINT_VERSION))
+
+##@ Gitea E2E Testing
+
+.PHONY: setup-gitea-e2e
+setup-gitea-e2e: helm ## Set up Gitea for e2e testing
+	@echo "🚀 Setting up Gitea for e2e testing..."
+	@$(HELM) repo add gitea-charts https://dl.gitea.com/charts/ 2>/dev/null || true
+	@$(HELM) repo update gitea-charts
+	@$(KUBECTL) create namespace $(GITEA_NAMESPACE) --dry-run=client -o yaml | $(KUBECTL) apply -f -
+	@$(HELM) upgrade --install gitea gitea-charts/gitea \
+		--namespace $(GITEA_NAMESPACE) \
+		--version $(GITEA_CHART_VERSION) \
+		--values test/e2e/gitea-values.yaml \
+		--wait --timeout=300s
+	@echo "⚙️  Initializing Gitea test environment..."
+	@GITEA_NAMESPACE=$(GITEA_NAMESPACE) ./test/e2e/scripts/setup-gitea.sh
+
+.PHONY: cleanup-gitea-e2e
+cleanup-gitea-e2e: helm ## Clean up Gitea e2e environment
+	@echo "🧹 Cleaning up Gitea e2e environment..."
+	@$(HELM) uninstall gitea --namespace $(GITEA_NAMESPACE) 2>/dev/null || true
+	@$(KUBECTL) delete namespace $(GITEA_NAMESPACE) 2>/dev/null || true
+	@echo "✅ Gitea cleanup completed"
+
 
 # go-install-tool will 'go install' any package with custom target and name of binary, if it doesn't exist
 # $1 - target path with name of binary
