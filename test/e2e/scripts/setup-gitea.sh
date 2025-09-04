@@ -123,15 +123,25 @@ fi
 echo "🏗️  Ensuring target namespace '$TARGET_NAMESPACE' exists..."
 kubectl create namespace "$TARGET_NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
 
-# Create Git credentials secret
-echo "🔐 Creating Git credentials secret..."
+# Create Git credentials secret for HTTP authentication (username/password)
+echo "🔐 Creating Git credentials secret for HTTP authentication..."
 kubectl create secret generic "$SECRET_NAME" \
     --namespace="$TARGET_NAMESPACE" \
-    --from-literal=ssh-privatekey="$TOKEN" \
-    --from-literal=known_hosts="gitea.$GITEA_NAMESPACE.svc.cluster.local" \
+    --from-literal=username="$ADMIN_USER" \
+    --from-literal=password="$TOKEN" \
     --dry-run=client -o yaml | kubectl apply -f -
 
 echo "✅ Git credentials secret created successfully"
+
+# Also create an invalid secret for failure testing
+echo "🔐 Creating invalid credentials secret for failure testing..."
+kubectl create secret generic "${SECRET_NAME}-invalid" \
+    --namespace="$TARGET_NAMESPACE" \
+    --from-literal=username="invaliduser" \
+    --from-literal=password="invalidpassword" \
+    --dry-run=client -o yaml | kubectl apply -f -
+
+echo "✅ Invalid credentials secret created for testing"
 
 # Repository information
 REPO_URL="https://gitea-http.$GITEA_NAMESPACE.svc.cluster.local:3000/$ORG_NAME/$REPO_NAME.git"

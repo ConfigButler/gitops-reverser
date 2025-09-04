@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -15,7 +16,7 @@ import (
 )
 
 // namespace where the project is deployed in
-const namespace = "dut"
+const namespace = "sut"
 
 // serviceAccountName created for the project
 const serviceAccountName = "gitops-reverser-controller-manager"
@@ -26,12 +27,15 @@ const metricsServiceName = "gitops-reverser-controller-manager-metrics-service"
 // metricsRoleBindingName is the name of the RBAC that will be created to allow get the metrics data
 const metricsRoleBindingName = "gitops-reverser-metrics-binding"
 
+// giteaRepoURL is the URL of the test Gitea repository
+const giteaRepoURL = "https://gitea-http.gitea-e2e.svc.cluster.local:3000/testorg/testrepo.git"
+
 var _ = Describe("Manager", Ordered, func() {
 	var controllerPodName string
 
 	// Before running the tests, set up the environment by creating the namespace,
 	// enforce the restricted security policy to the namespace, installing CRDs,
-	// and deploying the controller.
+	// deploying the controller, and setting up Gitea.
 	BeforeAll(func() {
 		By("creating manager namespace")
 		cmd := exec.Command("kubectl", "create", "ns", namespace)
@@ -61,6 +65,34 @@ var _ = Describe("Manager", Ordered, func() {
 		cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", projectImage))
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to deploy the controller-manager")
+
+		By("setting up Gitea test environment")
+		cmd = exec.Command("helm", "install", "gitea", "gitea/gitea",
+			"--create-namespace", "--namespace", "gitea-e2e",
+			"--values", "test/e2e/gitea-values.yaml",
+			"--wait", "--timeout", "5m")
+		_, err = utils.Run(cmd)
+		if err != nil {
+			// Try to add helm repo first if it fails
+			By("adding Gitea helm repository")
+			cmd = exec.Command("helm", "repo", "add", "gitea", "https://dl.gitea.com/charts/")
+			_, _ = utils.Run(cmd)
+			cmd = exec.Command("helm", "repo", "update")
+			_, _ = utils.Run(cmd)
+
+			// Retry installation
+			cmd = exec.Command("helm", "install", "gitea", "gitea/gitea",
+				"--create-namespace", "--namespace", "gitea-e2e",
+				"--values", "test/e2e/gitea-values.yaml",
+				"--wait", "--timeout", "5m")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to install Gitea")
+		}
+
+		By("running Gitea setup script")
+		cmd = exec.Command("bash", "test/e2e/scripts/setup-gitea.sh")
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to setup Gitea test environment")
 	})
 
 	// After all tests have been executed, clean up by undeploying the controller, uninstalling CRDs,
@@ -72,6 +104,12 @@ var _ = Describe("Manager", Ordered, func() {
 
 		By("cleaning up the curl pod for metrics")
 		cmd = exec.Command("kubectl", "delete", "pod", "curl-metrics", "-n", namespace)
+		_, _ = utils.Run(cmd)
+
+		By("cleaning up Gitea installation")
+		cmd = exec.Command("helm", "uninstall", "gitea", "-n", "gitea-e2e")
+		_, _ = utils.Run(cmd)
+		cmd = exec.Command("kubectl", "delete", "ns", "gitea-e2e")
 		_, _ = utils.Run(cmd)
 
 		By("undeploying the controller-manager")
@@ -253,34 +291,25 @@ var _ = Describe("Manager", Ordered, func() {
 			))
 		})
 
-		It("should reconcile a GitRepoConfig CR", func() {
-			By("ensuring Git credentials secret exists")
-			cmd := exec.Command("kubectl", "get", "secret", "git-ssh-key", "-n", namespace)
-			_, err := utils.Run(cmd)
-			if err != nil {
-				By("creating a dummy secret for Git")
-				cmd = exec.Command("kubectl", "create", "secret", "generic", "git-ssh-key",
-					"--from-literal=known_hosts=dummy",
-					"--from-literal=ssh-privatekey=dummykey",
-					"-n", namespace)
-				_, err = utils.Run(cmd)
-				Expect(err).NotTo(HaveOccurred())
-			}
+		It("should validate GitRepoConfig with real Gitea repository", func() {
+			gitRepoConfigName := "gitrepoconfig-e2e-test"
+			createGitRepoConfig(gitRepoConfigName, "main", "git-ssh-key")
+			verifyGitRepoConfigStatus(gitRepoConfigName, "True", "BranchFound", "Branch 'main' found and accessible")
+			cleanupGitRepoConfig(gitRepoConfigName)
+		})
 
-			By("creating a sample GitRepoConfig")
-			sampleFile := "config/samples/configbutler.ai_v1alpha1_gitrepoconfig.yaml"
-			cmd = exec.Command("kubectl", "apply", "-f", sampleFile, "-n", namespace)
-			_, err = utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred())
+		It("should handle GitRepoConfig with invalid credentials", func() {
+			gitRepoConfigName := "gitrepoconfig-invalid-test"
+			createGitRepoConfig(gitRepoConfigName, "main", "git-ssh-key-invalid")
+			verifyGitRepoConfigStatus(gitRepoConfigName, "False", "ConnectionFailed", "")
+			cleanupGitRepoConfig(gitRepoConfigName)
+		})
 
-			By("verifying the GitRepoConfig is reconciled")
-			verifyReconciled := func(g Gomega) {
-				cmd := exec.Command("kubectl", "get", "gitrepoconfig", "gitrepoconfig-sample", "-n", namespace, "-o", "jsonpath={.status.conditions[?(@.type=='Ready')].status}")
-				output, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(output).To(Equal("True"))
-			}
-			Eventually(verifyReconciled).Should(Succeed())
+		It("should handle GitRepoConfig with nonexistent branch", func() {
+			gitRepoConfigName := "gitrepoconfig-branch-test"
+			createGitRepoConfig(gitRepoConfigName, "nonexistent-branch", "git-ssh-key")
+			verifyGitRepoConfigStatus(gitRepoConfigName, "False", "BranchNotFound", "nonexistent-branch")
+			cleanupGitRepoConfig(gitRepoConfigName)
 		})
 
 		It("should reconcile a WatchRule CR", func() {
@@ -311,7 +340,8 @@ var _ = Describe("Manager", Ordered, func() {
 
 			By("verifying the WatchRule is reconciled")
 			verifyReconciled := func(g Gomega) {
-				cmd := exec.Command("kubectl", "get", "watchrule", "watchrule-sample", "-n", namespace, "-o", "jsonpath={.status.conditions[?(@.type=='Ready')].status}")
+				jsonPath := "jsonpath={.status.conditions[?(@.type=='Ready')].status}"
+				cmd := exec.Command("kubectl", "get", "watchrule", "watchrule-sample", "-n", namespace, "-o", jsonPath)
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(Equal("True"))
@@ -320,7 +350,8 @@ var _ = Describe("Manager", Ordered, func() {
 
 			By("verifying basic webhook registration")
 			verifyWebhook := func(g Gomega) {
-				cmd := exec.Command("kubectl", "get", "validatingwebhookconfigurations", "-o", "jsonpath={.items[?(@.metadata.name=='gitops-reverser-webhook')].webhooks[0].name}")
+				jsonPath := "jsonpath={.items[?(@.metadata.name=='gitops-reverser-webhook')].webhooks[0].name}"
+				cmd := exec.Command("kubectl", "get", "validatingwebhookconfigurations", "-o", jsonPath)
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(ContainSubstring("gitops-reverser.configbutler.ai"))
@@ -399,6 +430,65 @@ func serviceAccountToken() (string, error) {
 	Eventually(verifyTokenCreation).Should(Succeed())
 
 	return out, err
+}
+
+// createGitRepoConfig creates a GitRepoConfig resource with the specified parameters
+func createGitRepoConfig(name, branch, secretName string) {
+	By(fmt.Sprintf("creating a GitRepoConfig '%s' with branch '%s' and secret '%s'", name, branch, secretName))
+	gitRepoConfigYAML := fmt.Sprintf(`
+apiVersion: configbutler.ai/v1alpha1
+kind: GitRepoConfig
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  repoUrl: %s
+  branch: %s
+  secretName: %s
+  secretNamespace: %s
+`, name, namespace, giteaRepoURL, branch, secretName, namespace)
+
+	cmd := exec.Command("kubectl", "apply", "-f", "-", "-n", namespace)
+	cmd.Stdin = strings.NewReader(gitRepoConfigYAML)
+	_, err := utils.Run(cmd)
+	Expect(err).NotTo(HaveOccurred())
+}
+
+// verifyGitRepoConfigStatus verifies the GitRepoConfig status matches expected values
+func verifyGitRepoConfigStatus(name, expectedStatus, expectedReason, expectedMessageContains string) {
+	By(fmt.Sprintf("verifying GitRepoConfig '%s' status is '%s' with reason '%s'", name, expectedStatus, expectedReason))
+	verifyStatus := func(g Gomega) {
+		// Check status
+		statusJSONPath := `{.status.conditions[?(@.type=='Ready')].status}`
+		cmd := exec.Command("kubectl", "get", "gitrepoconfig", name, "-n", namespace, "-o", "jsonpath="+statusJSONPath)
+		status, err := utils.Run(cmd)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(status).To(Equal(expectedStatus))
+
+		// Check reason
+		reasonJSONPath := `{.status.conditions[?(@.type=='Ready')].reason}`
+		cmd = exec.Command("kubectl", "get", "gitrepoconfig", name, "-n", namespace, "-o", "jsonpath="+reasonJSONPath)
+		reason, err := utils.Run(cmd)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(reason).To(Equal(expectedReason))
+
+		// Check message contains expected text if specified
+		if expectedMessageContains != "" {
+			messageJSONPath := `{.status.conditions[?(@.type=='Ready')].message}`
+			cmd = exec.Command("kubectl", "get", "gitrepoconfig", name, "-n", namespace, "-o", "jsonpath="+messageJSONPath)
+			message, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(message).To(ContainSubstring(expectedMessageContains))
+		}
+	}
+	Eventually(verifyStatus, 2*time.Minute).Should(Succeed())
+}
+
+// cleanupGitRepoConfig deletes a GitRepoConfig resource
+func cleanupGitRepoConfig(name string) {
+	By(fmt.Sprintf("cleaning up GitRepoConfig '%s'", name))
+	cmd := exec.Command("kubectl", "delete", "gitrepoconfig", name, "-n", namespace)
+	_, _ = utils.Run(cmd)
 }
 
 // getMetricsOutput retrieves and returns the logs from the curl pod used to access the metrics endpoint.
