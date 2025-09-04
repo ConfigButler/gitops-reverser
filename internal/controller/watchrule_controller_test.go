@@ -51,10 +51,11 @@ var _ = Describe("WatchRule Controller", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha1.GitRepoConfigSpec{
-					RepoURL:         "https://github.com/test/repo.git",
-					Branch:          "main",
-					SecretName:      "git-credentials",
-					SecretNamespace: "default",
+					RepoURL: "https://github.com/test/repo.git",
+					Branch:  "main",
+					SecretRef: &configbutleraiv1alpha1.LocalObjectReference{
+						Name: "git-credentials",
+					},
 				},
 			}
 			Expect(k8sClient.Create(ctx, gitRepoConfig)).To(Succeed())

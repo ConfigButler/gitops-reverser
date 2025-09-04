@@ -164,11 +164,16 @@ func (w *Worker) commitAndPush(ctx context.Context, repoConfig v1alpha1.GitRepoC
 	}
 }
 
-// getAuthFromSecret fetches the SSH private key from the specified secret.
+// getAuthFromSecret fetches the authentication credentials from the specified secret.
 func (w *Worker) getAuthFromSecret(ctx context.Context, repoConfig v1alpha1.GitRepoConfig) (transport.AuthMethod, error) {
+	// If no secret reference is provided, return nil auth (for public repositories)
+	if repoConfig.Spec.SecretRef == nil {
+		return nil, nil
+	}
+
 	secretName := types.NamespacedName{
-		Name:      repoConfig.Spec.SecretName,
-		Namespace: repoConfig.Spec.SecretNamespace,
+		Name:      repoConfig.Spec.SecretRef.Name,
+		Namespace: repoConfig.Namespace, // Use the GitRepoConfig's namespace
 	}
 
 	var secret corev1.Secret

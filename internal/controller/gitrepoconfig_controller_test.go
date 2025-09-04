@@ -284,10 +284,11 @@ var _ = Describe("GitRepoConfig Controller", func() {
 					Name: "test-config",
 				},
 				Spec: configbutleraiv1alpha1.GitRepoConfigSpec{
-					RepoURL:         "git@github.com:test/repo.git",
-					Branch:          "main",
-					SecretName:      "nonexistent-secret",
-					SecretNamespace: "default",
+					RepoURL: "git@github.com:test/repo.git",
+					Branch:  "main",
+					SecretRef: &configbutleraiv1alpha1.LocalObjectReference{
+						Name: "nonexistent-secret",
+					},
 				},
 			}
 			Expect(k8sClient.Create(ctx, gitRepoConfig)).To(Succeed())
@@ -333,10 +334,11 @@ var _ = Describe("GitRepoConfig Controller", func() {
 					Name: "test-config",
 				},
 				Spec: configbutleraiv1alpha1.GitRepoConfigSpec{
-					RepoURL:         "git@github.com:test/repo.git",
-					Branch:          "main",
-					SecretName:      "malformed-secret",
-					SecretNamespace: "default",
+					RepoURL: "git@github.com:test/repo.git",
+					Branch:  "main",
+					SecretRef: &configbutleraiv1alpha1.LocalObjectReference{
+						Name: "malformed-secret",
+					},
 				},
 			}
 			Expect(k8sClient.Create(ctx, gitRepoConfig)).To(Succeed())

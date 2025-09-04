@@ -27,8 +27,9 @@ const metricsServiceName = "gitops-reverser-controller-manager-metrics-service"
 // metricsRoleBindingName is the name of the RBAC that will be created to allow get the metrics data
 const metricsRoleBindingName = "gitops-reverser-metrics-binding"
 
-// giteaRepoURL is the URL of the test Gitea repository
-const giteaRepoURL = "https://gitea-http.gitea-e2e.svc.cluster.local:3000/testorg/testrepo.git"
+// giteaRepoURLTemplate is the URL template for test Gitea repositories
+const giteaRepoURLTemplate = "https://gitea-http.gitea-e2e.svc.cluster.local:3000/testorg/%s.git"
+const giteaSSHURLTemplate = "ssh://git@gitea-ssh.gitea-e2e.svc.cluster.local:22/testorg/%s.git"
 
 var _ = Describe("Manager", Ordered, func() {
 	var controllerPodName string
@@ -66,30 +67,7 @@ var _ = Describe("Manager", Ordered, func() {
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to deploy the controller-manager")
 
-		By("setting up Gitea test environment")
-		cmd = exec.Command("helm", "install", "gitea", "gitea/gitea",
-			"--create-namespace", "--namespace", "gitea-e2e",
-			"--values", "test/e2e/gitea-values.yaml",
-			"--wait", "--timeout", "5m")
-		_, err = utils.Run(cmd)
-		if err != nil {
-			// Try to add helm repo first if it fails
-			By("adding Gitea helm repository")
-			cmd = exec.Command("helm", "repo", "add", "gitea", "https://dl.gitea.com/charts/")
-			_, _ = utils.Run(cmd)
-			cmd = exec.Command("helm", "repo", "update")
-			_, _ = utils.Run(cmd)
-
-			// Retry installation
-			cmd = exec.Command("helm", "install", "gitea", "gitea/gitea",
-				"--create-namespace", "--namespace", "gitea-e2e",
-				"--values", "test/e2e/gitea-values.yaml",
-				"--wait", "--timeout", "5m")
-			_, err = utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred(), "Failed to install Gitea")
-		}
-
-		By("running Gitea setup script")
+		By("setting up persistent Gitea test environment")
 		cmd = exec.Command("bash", "test/e2e/scripts/setup-gitea.sh")
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to setup Gitea test environment")
@@ -106,11 +84,7 @@ var _ = Describe("Manager", Ordered, func() {
 		cmd = exec.Command("kubectl", "delete", "pod", "curl-metrics", "-n", namespace)
 		_, _ = utils.Run(cmd)
 
-		By("cleaning up Gitea installation")
-		cmd = exec.Command("helm", "uninstall", "gitea", "-n", "gitea-e2e")
-		_, _ = utils.Run(cmd)
-		cmd = exec.Command("kubectl", "delete", "ns", "gitea-e2e")
-		_, _ = utils.Run(cmd)
+		// Note: We keep Gitea running for efficiency - it will be cleaned up by the test environment
 
 		By("undeploying the controller-manager")
 		cmd = exec.Command("make", "undeploy")
@@ -312,6 +286,13 @@ var _ = Describe("Manager", Ordered, func() {
 			cleanupGitRepoConfig(gitRepoConfigName)
 		})
 
+		It("should validate GitRepoConfig with SSH authentication", func() {
+			gitRepoConfigName := "gitrepoconfig-ssh-test"
+			createSSHGitRepoConfig(gitRepoConfigName, "main", "git-ssh-key-ssh")
+			verifyGitRepoConfigStatus(gitRepoConfigName, "True", "BranchFound", "Branch 'main' found and accessible")
+			cleanupGitRepoConfig(gitRepoConfigName)
+		})
+
 		It("should reconcile a WatchRule CR", func() {
 			By("ensuring Git credentials secret exists")
 			cmd := exec.Command("kubectl", "get", "secret", "git-ssh-key", "-n", namespace)
@@ -432,9 +413,19 @@ func serviceAccountToken() (string, error) {
 	return out, err
 }
 
-// createGitRepoConfig creates a GitRepoConfig resource with the specified parameters
-func createGitRepoConfig(name, branch, secretName string) {
-	By(fmt.Sprintf("creating a GitRepoConfig '%s' with branch '%s' and secret '%s'", name, branch, secretName))
+// createGitRepoConfigWithURL creates a GitRepoConfig resource with the specified URL template
+func createGitRepoConfigWithURL(name, branch, secretName, urlTemplate, repoPrefix string) {
+	By(fmt.Sprintf("creating GitRepoConfig '%s' with branch '%s' and secret '%s'", name, branch, secretName))
+
+	// Create unique repository name and setup the repo
+	uniqueRepoName := fmt.Sprintf("%s-%s", repoPrefix, name)
+	repoURL := fmt.Sprintf(urlTemplate, uniqueRepoName)
+
+	By(fmt.Sprintf("creating unique test repository '%s'", uniqueRepoName))
+	cmd := exec.Command("bash", "test/e2e/scripts/setup-gitea.sh", "create-repo", uniqueRepoName)
+	_, err := utils.Run(cmd)
+	Expect(err).NotTo(HaveOccurred(), "Failed to create test repository")
+
 	gitRepoConfigYAML := fmt.Sprintf(`
 apiVersion: configbutler.ai/v1alpha1
 kind: GitRepoConfig
@@ -446,12 +437,22 @@ spec:
   branch: %s
   secretName: %s
   secretNamespace: %s
-`, name, namespace, giteaRepoURL, branch, secretName, namespace)
+`, name, namespace, repoURL, branch, secretName, namespace)
 
-	cmd := exec.Command("kubectl", "apply", "-f", "-", "-n", namespace)
+	cmd = exec.Command("kubectl", "apply", "-f", "-", "-n", namespace)
 	cmd.Stdin = strings.NewReader(gitRepoConfigYAML)
-	_, err := utils.Run(cmd)
+	_, err = utils.Run(cmd)
 	Expect(err).NotTo(HaveOccurred())
+}
+
+// createGitRepoConfig creates a GitRepoConfig resource with HTTP URL
+func createGitRepoConfig(name, branch, secretName string) {
+	createGitRepoConfigWithURL(name, branch, secretName, giteaRepoURLTemplate, "testrepo")
+}
+
+// createSSHGitRepoConfig creates a GitRepoConfig resource with SSH URL
+func createSSHGitRepoConfig(name, branch, secretName string) {
+	createGitRepoConfigWithURL(name, branch, secretName, giteaSSHURLTemplate, "testrepo-ssh")
 }
 
 // verifyGitRepoConfigStatus verifies the GitRepoConfig status matches expected values

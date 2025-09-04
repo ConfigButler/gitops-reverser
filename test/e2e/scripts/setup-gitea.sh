@@ -7,151 +7,282 @@ GITEA_SERVICE="gitea-http"
 ADMIN_USER="giteaadmin"
 ADMIN_PASS="giteapassword123"
 ORG_NAME="testorg"
-REPO_NAME="testrepo"
+REPO_NAME="${2:-testrepo}"
 TARGET_NAMESPACE="sut"
 SECRET_NAME="git-ssh-key"
+SSH_SECRET_NAME="git-ssh-key-ssh"
+ACTION="${1:-setup}"
+SSH_KEY_PATH="/tmp/e2e-ssh-key"
+SSH_PUB_KEY_PATH="/tmp/e2e-ssh-key.pub"
 
-echo "🚀 Setting up Gitea test environment..."
+if [ "$ACTION" = "create-repo" ]; then
+    echo "🚀 Creating unique test repository: $REPO_NAME"
+else
+    echo "🚀 Setting up Gitea test environment..."
+fi
 
-# Wait for Gitea to be ready
-echo "⏳ Waiting for Gitea to be ready..."
-kubectl wait --for=condition=ready pod \
-    -l app.kubernetes.io/name=gitea \
-    -n "$GITEA_NAMESPACE" \
-    --timeout=300s
+# Function to setup Gitea installation
+setup_gitea() {
+    echo "🏗️ Setting up Gitea installation..."
+    
+    # Check if Gitea is already installed
+    if kubectl get namespace "$GITEA_NAMESPACE" >/dev/null 2>&1 && kubectl get deployment -n "$GITEA_NAMESPACE" gitea >/dev/null 2>&1; then
+        echo "ℹ️  Gitea is already installed"
+    else
+        echo "📦 Installing Gitea..."
+        
+        # Add Gitea helm repository
+        helm repo add gitea https://dl.gitea.com/charts/ || true
+        helm repo update
+        
+        # Install Gitea
+        helm install gitea gitea/gitea \
+            --create-namespace --namespace "$GITEA_NAMESPACE" \
+            --values test/e2e/gitea-values.yaml \
+            --wait --timeout 5m
+    fi
 
-echo "✅ Gitea pod is ready"
+    # Wait for Gitea to be ready
+    echo "⏳ Waiting for Gitea to be ready..."
+    kubectl wait --for=condition=ready pod \
+        -l app.kubernetes.io/name=gitea \
+        -n "$GITEA_NAMESPACE" \
+        --timeout=300s
 
-# Kill any existing port-forwards on port 3000
-echo "🔧 Cleaning up any existing port-forwards..."
-pkill -f "kubectl.*port-forward.*3000" 2>/dev/null || true
-sleep 2
-
-# Setup port-forward for API access
-echo "🔗 Setting up port-forward..."
-kubectl port-forward -n "$GITEA_NAMESPACE" "svc/$GITEA_SERVICE" 3000:3000 &
-PF_PID=$!
-
-# Function to cleanup port-forward
-cleanup() {
-    echo "🧹 Cleaning up port-forward..."
-    kill $PF_PID 2>/dev/null || true
-    wait $PF_PID 2>/dev/null || true
-    pkill -f "kubectl.*port-forward.*3000" 2>/dev/null || true
+    echo "✅ Gitea pod is ready"
 }
-trap cleanup EXIT
 
-# Wait for port-forward to be established
-sleep 5
-
-# API Base URL
-API_URL="http://localhost:3000/api/v1"
-
-# Test API connectivity
-echo "🔍 Testing API connectivity..."
-for i in {1..30}; do
-    if curl -s -f "$API_URL/version" >/dev/null 2>&1; then
-        echo "✅ API is accessible"
-        break
-    fi
-    if [ $i -eq 30 ]; then
-        echo "❌ Failed to connect to Gitea API after 30 attempts"
-        exit 1
-    fi
-    echo "⏳ Waiting for API... (attempt $i/30)"
+# Function to setup API connectivity
+setup_api_connectivity() {
+    # Kill any existing port-forwards on port 3000
+    echo "🔧 Cleaning up any existing port-forwards..."
+    pkill -f "kubectl.*port-forward.*3000" 2>/dev/null || true
     sleep 2
-done
 
-# Create organization
-echo "🏢 Creating test organization '$ORG_NAME'..."
-ORG_RESPONSE=$(curl -s -w "%{http_code}" -o /tmp/org_response.json \
-    -X POST "$API_URL/orgs" \
-    -H "Content-Type: application/json" \
-    -u "$ADMIN_USER:$ADMIN_PASS" \
-    -d "{\"username\":\"$ORG_NAME\",\"full_name\":\"Test Organization\",\"description\":\"E2E Test Organization\"}")
+    # Setup port-forward for API access
+    echo "🔗 Setting up port-forward..."
+    kubectl port-forward -n "$GITEA_NAMESPACE" "svc/$GITEA_SERVICE" 3000:3000 &
+    PF_PID=$!
 
-if [[ "$ORG_RESPONSE" == "201" ]]; then
-    echo "✅ Organization created successfully"
-elif [[ "$ORG_RESPONSE" == "409" ]]; then
-    echo "ℹ️  Organization already exists"
-else
-    echo "⚠️  Unexpected response creating organization: $ORG_RESPONSE"
-    cat /tmp/org_response.json
-fi
+    # Function to cleanup port-forward
+    cleanup() {
+        echo "🧹 Cleaning up port-forward..."
+        kill $PF_PID 2>/dev/null || true
+        wait $PF_PID 2>/dev/null || true
+        pkill -f "kubectl.*port-forward.*3000" 2>/dev/null || true
+    }
+    trap cleanup EXIT
 
-# Create repository
-echo "📁 Creating test repository '$REPO_NAME'..."
-REPO_RESPONSE=$(curl -s -w "%{http_code}" -o /tmp/repo_response.json \
-    -X POST "$API_URL/orgs/$ORG_NAME/repos" \
-    -H "Content-Type: application/json" \
-    -u "$ADMIN_USER:$ADMIN_PASS" \
-    -d "{\"name\":\"$REPO_NAME\",\"description\":\"E2E Test Repository\",\"private\":false,\"auto_init\":true}")
+    # Wait for port-forward to be established
+    sleep 5
 
-if [[ "$REPO_RESPONSE" == "201" ]]; then
-    echo "✅ Repository created successfully"
-elif [[ "$REPO_RESPONSE" == "409" ]]; then
-    echo "ℹ️  Repository already exists"
-else
-    echo "⚠️  Unexpected response creating repository: $REPO_RESPONSE"
-    cat /tmp/repo_response.json
-fi
+    # API Base URL
+    API_URL="http://localhost:3000/api/v1"
 
-# Generate access token
-echo "🔑 Generating access token..."
-TOKEN_RESPONSE=$(curl -s -w "%{http_code}" -o /tmp/token_response.json \
-    -X POST "$API_URL/users/$ADMIN_USER/tokens" \
-    -H "Content-Type: application/json" \
-    -u "$ADMIN_USER:$ADMIN_PASS" \
-    -d "{\"name\":\"e2e-test-token-$(date +%s)\",\"scopes\":[\"write:repository\",\"read:repository\",\"write:organization\",\"read:organization\"]}")
+    # Test API connectivity
+    echo "🔍 Testing API connectivity..."
+    for i in {1..30}; do
+        if curl -s -f "$API_URL/version" >/dev/null 2>&1; then
+            echo "✅ API is accessible"
+            break
+        fi
+        if [ $i -eq 30 ]; then
+            echo "❌ Failed to connect to Gitea API after 30 attempts"
+            exit 1
+        fi
+        echo "⏳ Waiting for API... (attempt $i/30)"
+        sleep 2
+    done
+}
 
-if [[ "$TOKEN_RESPONSE" == "201" ]]; then
-    echo "✅ Access token created successfully"
-    # Extract token from response
-    TOKEN=$(cat /tmp/token_response.json | grep -o '"sha1":"[^"]*"' | cut -d'"' -f4)
+# Function to create organization and get token
+setup_organization_and_token() {
+    echo "🏢 Creating test organization '$ORG_NAME'..."
+    ORG_RESPONSE=$(curl -s -w "%{http_code}" -o /tmp/org_response.json \
+        -X POST "$API_URL/orgs" \
+        -H "Content-Type: application/json" \
+        -u "$ADMIN_USER:$ADMIN_PASS" \
+        -d "{\"username\":\"$ORG_NAME\",\"full_name\":\"Test Organization\",\"description\":\"E2E Test Organization\"}")
+
+    if [[ "$ORG_RESPONSE" == "201" ]]; then
+        echo "✅ Organization created successfully"
+    elif [[ "$ORG_RESPONSE" == "409" ]]; then
+        echo "ℹ️  Organization already exists"
+    else
+        echo "⚠️  Unexpected response creating organization: $ORG_RESPONSE"
+        cat /tmp/org_response.json
+    fi
+
+    # Generate or reuse access token
+    echo "🔑 Getting access token..."
+    TOKEN_RESPONSE=$(curl -s -w "%{http_code}" -o /tmp/token_response.json \
+        -X POST "$API_URL/users/$ADMIN_USER/tokens" \
+        -H "Content-Type: application/json" \
+        -u "$ADMIN_USER:$ADMIN_PASS" \
+        -d "{\"name\":\"e2e-test-token-persistent\",\"scopes\":[\"write:repository\",\"read:repository\",\"write:organization\",\"read:organization\"]}")
+
+    if [[ "$TOKEN_RESPONSE" == "201" ]]; then
+        echo "✅ Access token created successfully"
+        TOKEN=$(cat /tmp/token_response.json | grep -o '"sha1":"[^"]*"' | cut -d'"' -f4)
+    elif [[ "$TOKEN_RESPONSE" == "422" ]]; then
+        echo "ℹ️  Token already exists, retrieving existing tokens..."
+        # Get existing tokens and use the first one
+        curl -s "$API_URL/users/$ADMIN_USER/tokens" \
+            -u "$ADMIN_USER:$ADMIN_PASS" > /tmp/token_list.json
+        TOKEN=$(cat /tmp/token_list.json | head -1 | grep -o '"sha1":"[^"]*"' | cut -d'"' -f4)
+        if [[ -z "$TOKEN" ]]; then
+            echo "⚠️  Using admin credentials directly"
+            TOKEN="$ADMIN_PASS"
+        fi
+    else
+        echo "⚠️  Using admin credentials as fallback"
+        TOKEN="$ADMIN_PASS"
+    fi
+
     if [[ -z "$TOKEN" ]]; then
-        echo "❌ Failed to extract token from response"
-        cat /tmp/token_response.json
+        echo "❌ Failed to get token"
         exit 1
     fi
+}
+
+# Function to create a specific repository
+create_repository() {
+    echo "📁 Creating test repository '$REPO_NAME'..."
+    REPO_RESPONSE=$(curl -s -w "%{http_code}" -o /tmp/repo_response.json \
+        -X POST "$API_URL/orgs/$ORG_NAME/repos" \
+        -H "Content-Type: application/json" \
+        -u "$ADMIN_USER:$ADMIN_PASS" \
+        -d "{\"name\":\"$REPO_NAME\",\"description\":\"E2E Test Repository\",\"private\":false,\"auto_init\":true}")
+
+    if [[ "$REPO_RESPONSE" == "201" ]]; then
+        echo "✅ Repository '$REPO_NAME' created successfully"
+    elif [[ "$REPO_RESPONSE" == "409" ]]; then
+        echo "ℹ️  Repository '$REPO_NAME' already exists"
+    else
+        echo "⚠️  Unexpected response creating repository: $REPO_RESPONSE"
+        cat /tmp/repo_response.json || true
+        # Don't exit on repo creation failure for individual repos
+    fi
+}
+
+# Function to generate SSH key pair
+generate_ssh_keys() {
+    echo "🔑 Generating SSH key pair for testing..."
+    
+    # Remove existing keys
+    rm -f "$SSH_KEY_PATH" "$SSH_PUB_KEY_PATH"
+    
+    # Generate new SSH key pair without passphrase for e2e testing
+    ssh-keygen -t rsa -b 2048 -f "$SSH_KEY_PATH" -N "" -C "e2e-test@gitops-reverser" >/dev/null 2>&1
+    
+    if [[ ! -f "$SSH_KEY_PATH" ]] || [[ ! -f "$SSH_PUB_KEY_PATH" ]]; then
+        echo "❌ Failed to generate SSH key pair"
+        exit 1
+    fi
+    
+    echo "✅ SSH key pair generated successfully"
+}
+
+# Function to configure SSH key in Gitea
+configure_ssh_key_in_gitea() {
+    echo "🔐 Configuring SSH key in Gitea..."
+    
+    if [[ ! -f "$SSH_PUB_KEY_PATH" ]]; then
+        echo "❌ SSH public key not found"
+        exit 1
+    fi
+    
+    SSH_PUB_KEY_CONTENT=$(cat "$SSH_PUB_KEY_PATH")
+    
+    # Add SSH key to admin user
+    SSH_KEY_RESPONSE=$(curl -s -w "%{http_code}" -o /tmp/ssh_key_response.json \
+        -X POST "$API_URL/user/keys" \
+        -H "Content-Type: application/json" \
+        -u "$ADMIN_USER:$ADMIN_PASS" \
+        -d "{\"title\":\"E2E Test Key\",\"key\":\"$SSH_PUB_KEY_CONTENT\"}")
+    
+    if [[ "$SSH_KEY_RESPONSE" == "201" ]]; then
+        echo "✅ SSH key configured successfully in Gitea"
+    elif [[ "$SSH_KEY_RESPONSE" == "422" ]]; then
+        echo "ℹ️  SSH key already exists in Gitea"
+    else
+        echo "⚠️  Unexpected response configuring SSH key: $SSH_KEY_RESPONSE"
+        cat /tmp/ssh_key_response.json || true
+        # Don't fail the setup for SSH key issues
+    fi
+}
+
+setup_credentials() {
+    # Create target namespace if it doesn't exist
+    echo "🏗️  Ensuring target namespace '$TARGET_NAMESPACE' exists..."
+    kubectl create namespace "$TARGET_NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
+
+    # Create Git credentials secret for HTTP authentication (username/password)
+    echo "🔐 Creating HTTP Git credentials secret..."
+    kubectl create secret generic "$SECRET_NAME" \
+        --namespace="$TARGET_NAMESPACE" \
+        --from-literal=username="$ADMIN_USER" \
+        --from-literal=password="$TOKEN" \
+        --dry-run=client -o yaml | kubectl apply -f -
+
+    echo "✅ HTTP Git credentials secret created successfully"
+
+    # Create SSH-based credentials secret
+    if [[ -f "$SSH_KEY_PATH" ]]; then
+        echo "🔐 Creating SSH Git credentials secret..."
+        kubectl create secret generic "$SSH_SECRET_NAME" \
+            --namespace="$TARGET_NAMESPACE" \
+            --from-file=ssh-privatekey="$SSH_KEY_PATH" \
+            --dry-run=client -o yaml | kubectl apply -f -
+        
+        echo "✅ SSH Git credentials secret created successfully"
+    else
+        echo "⚠️  SSH private key not found, skipping SSH secret creation"
+    fi
+
+    # Create an invalid secret for failure testing
+    echo "🔐 Creating invalid credentials secret for failure testing..."
+    kubectl create secret generic "${SECRET_NAME}-invalid" \
+        --namespace="$TARGET_NAMESPACE" \
+        --from-literal=username="invaliduser" \
+        --from-literal=password="invalidpassword" \
+        --dry-run=client -o yaml | kubectl apply -f -
+
+    echo "✅ Invalid credentials secret created for testing"
+}
+
+# Main execution logic
+if [ "$ACTION" = "create-repo" ]; then
+    # Only create individual repository - assume Gitea is already running
+    if ! kubectl get namespace "$GITEA_NAMESPACE" >/dev/null 2>&1; then
+        echo "❌ Gitea namespace not found. Please run full setup first."
+        exit 1
+    fi
+    
+    setup_api_connectivity
+    setup_organization_and_token
+    create_repository
+    
+    echo "✅ Repository '$REPO_NAME' setup completed!"
 else
-    echo "❌ Failed to create access token: $TOKEN_RESPONSE"
-    cat /tmp/token_response.json
-    exit 1
-fi
+    # Full setup - install Gitea if needed
+    setup_gitea
+    setup_api_connectivity
+    setup_organization_and_token
+    generate_ssh_keys
+    configure_ssh_key_in_gitea
+    create_repository
+    setup_credentials
+    
+    # Repository information
+    REPO_URL="https://gitea-http.$GITEA_NAMESPACE.svc.cluster.local:3000/$ORG_NAME/$REPO_NAME.git"
 
-# Create target namespace if it doesn't exist
-echo "🏗️  Ensuring target namespace '$TARGET_NAMESPACE' exists..."
-kubectl create namespace "$TARGET_NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
-
-# Create Git credentials secret for HTTP authentication (username/password)
-echo "🔐 Creating Git credentials secret for HTTP authentication..."
-kubectl create secret generic "$SECRET_NAME" \
-    --namespace="$TARGET_NAMESPACE" \
-    --from-literal=username="$ADMIN_USER" \
-    --from-literal=password="$TOKEN" \
-    --dry-run=client -o yaml | kubectl apply -f -
-
-echo "✅ Git credentials secret created successfully"
-
-# Also create an invalid secret for failure testing
-echo "🔐 Creating invalid credentials secret for failure testing..."
-kubectl create secret generic "${SECRET_NAME}-invalid" \
-    --namespace="$TARGET_NAMESPACE" \
-    --from-literal=username="invaliduser" \
-    --from-literal=password="invalidpassword" \
-    --dry-run=client -o yaml | kubectl apply -f -
-
-echo "✅ Invalid credentials secret created for testing"
-
-# Repository information
-REPO_URL="https://gitea-http.$GITEA_NAMESPACE.svc.cluster.local:3000/$ORG_NAME/$REPO_NAME.git"
-
-echo "
+    echo "
 🎉 Gitea setup completed successfully!
 
 📋 Configuration Details:
    • Namespace: $GITEA_NAMESPACE
-   • Organization: $ORG_NAME  
+   • Organization: $ORG_NAME
    • Repository: $REPO_NAME
    • Secret: $SECRET_NAME (in $TARGET_NAMESPACE namespace)
    • Repository URL: $REPO_URL
@@ -163,6 +294,7 @@ echo "
    
 ✨ Ready for e2e testing!
 "
+fi
 
 # Cleanup temporary files
-rm -f /tmp/org_response.json /tmp/repo_response.json /tmp/token_response.json
+rm -f /tmp/org_response.json /tmp/repo_response.json /tmp/token_response.json /tmp/token_list.json /tmp/ssh_key_response.json

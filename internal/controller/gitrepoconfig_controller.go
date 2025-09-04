@@ -82,20 +82,31 @@ func (r *GitRepoConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	r.setCondition(&gitRepoConfig, metav1.ConditionUnknown, ReasonChecking, "Validating repository connectivity...")
 
 	// Step 1: Fetch and validate secret
-	secret, err := r.fetchSecret(ctx, gitRepoConfig.Spec.SecretName, gitRepoConfig.Spec.SecretNamespace)
-	if err != nil {
-		log.Error(err, "Failed to fetch secret")
-		r.setCondition(&gitRepoConfig, metav1.ConditionFalse, ReasonSecretNotFound,
-			fmt.Sprintf("Secret '%s' not found in namespace '%s': %v", gitRepoConfig.Spec.SecretName, gitRepoConfig.Spec.SecretNamespace, err))
-		return r.updateStatusAndRequeue(ctx, &gitRepoConfig, time.Minute*5)
+	var secret *corev1.Secret
+	var err error
+
+	if gitRepoConfig.Spec.SecretRef != nil {
+		secret, err = r.fetchSecret(ctx, gitRepoConfig.Spec.SecretRef.Name, gitRepoConfig.Namespace)
+		if err != nil {
+			log.Error(err, "Failed to fetch secret")
+			r.setCondition(&gitRepoConfig, metav1.ConditionFalse, ReasonSecretNotFound,
+				fmt.Sprintf("Secret '%s' not found in namespace '%s': %v", gitRepoConfig.Spec.SecretRef.Name, gitRepoConfig.Namespace, err))
+			return r.updateStatusAndRequeue(ctx, &gitRepoConfig, time.Minute*5)
+		}
 	}
 
 	// Step 2: Extract credentials from secret
 	auth, err := r.extractCredentials(secret)
 	if err != nil {
 		log.Error(err, "Failed to extract credentials from secret")
+		var secretName string
+		if gitRepoConfig.Spec.SecretRef != nil {
+			secretName = gitRepoConfig.Spec.SecretRef.Name
+		} else {
+			secretName = "<none>"
+		}
 		r.setCondition(&gitRepoConfig, metav1.ConditionFalse, ReasonSecretMalformed,
-			fmt.Sprintf("Secret '%s' malformed: %v", gitRepoConfig.Spec.SecretName, err))
+			fmt.Sprintf("Secret '%s' malformed: %v", secretName, err))
 		return r.updateStatusAndRequeue(ctx, &gitRepoConfig, time.Minute*5)
 	}
 
@@ -146,6 +157,11 @@ func (r *GitRepoConfigReconciler) fetchSecret(ctx context.Context, secretName, s
 
 // extractCredentials extracts Git authentication from secret data
 func (r *GitRepoConfigReconciler) extractCredentials(secret *corev1.Secret) (transport.AuthMethod, error) {
+	// If no secret is provided, return nil auth (for public repositories)
+	if secret == nil {
+		return nil, nil
+	}
+
 	// Try SSH key authentication first
 	if privateKey, exists := secret.Data["ssh-privatekey"]; exists {
 		passphrase := ""

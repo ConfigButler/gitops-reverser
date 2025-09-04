@@ -8,8 +8,8 @@ metadata:
 spec:
   repoUrl: "https://gitea-http.gitea-e2e.svc.cluster.local:3000/testorg/testrepo.git"
   branch: "main"
-  secretName: "git-ssh-key"
-  secretNamespace: "sut"
+  secretRef:
+    name: "git-ssh-key"
   push:
     interval: "1m"
     maxCommits: 20

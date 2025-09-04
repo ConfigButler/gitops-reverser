@@ -23,6 +23,14 @@ import (
 // EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
 
+// LocalObjectReference contains enough information to let you locate a
+// referenced object inside the same namespace.
+type LocalObjectReference struct {
+	// Name is the name of the referent.
+	// +required
+	Name string `json:"name"`
+}
+
 // GitRepoConfigSpec defines the desired state of GitRepoConfig
 type GitRepoConfigSpec struct {
 	// RepoURL is the URL of the Git repository to commit to.
@@ -33,13 +41,13 @@ type GitRepoConfigSpec struct {
 	// +required
 	Branch string `json:"branch"`
 
-	// SecretName is the name of the secret containing Git credentials.
-	// +required
-	SecretName string `json:"secretName"`
-
-	// SecretNamespace is the namespace of the secret containing Git credentials.
-	// +required
-	SecretNamespace string `json:"secretNamespace"`
+	// SecretRef specifies the Secret containing Git credentials.
+	// For HTTPS repositories the Secret must contain 'username' and 'password'
+	// fields for basic auth or 'bearerToken' field for token auth.
+	// For SSH repositories the Secret must contain 'identity'
+	// and 'known_hosts' fields.
+	// +optional
+	SecretRef *LocalObjectReference `json:"secretRef,omitempty"`
 
 	// Push defines the strategy for pushing commits to the remote.
 	// +optional
