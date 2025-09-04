@@ -43,7 +43,7 @@ func TestPodLabeler_Start_AddLabel(t *testing.T) {
 		Namespace: "test-namespace",
 	}
 
-	// Create a context that will be cancelled after a short time
+	// Create a context that will be canceled after a short time
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
@@ -660,11 +660,11 @@ func TestPodLabeler_ContextCancellation(t *testing.T) {
 		Namespace: "test-namespace",
 	}
 
-	// Create a context that gets cancelled immediately
+	// Create a context that gets canceled immediately
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // Cancel immediately
 
-	// Execute - Start should handle the cancelled context gracefully
+	// Execute - Start should handle the canceled context gracefully
 	err = labeler.Start(ctx)
 	assert.NoError(t, err) // Should not error, just exit cleanly
 }

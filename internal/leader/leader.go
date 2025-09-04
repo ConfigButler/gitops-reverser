@@ -25,7 +25,7 @@ type PodLabeler struct {
 	Namespace string
 }
 
-// Start adds the leader label to the pod and blocks until the context is cancelled.
+// Start adds the leader label to the pod and blocks until the context is canceled.
 func (p *PodLabeler) Start(ctx context.Context) error {
 	log := p.Log.WithValues("pod", p.PodName, "namespace", p.Namespace)
 	log.Info("This pod is the leader, adding leader label.")
@@ -35,7 +35,7 @@ func (p *PodLabeler) Start(ctx context.Context) error {
 		return err
 	}
 
-	// The context is cancelled when the manager stops.
+	// The context is canceled when the manager stops.
 	<-ctx.Done()
 
 	log.Info("Leader is shutting down, removing leader label.")

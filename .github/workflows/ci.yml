@@ -36,16 +36,15 @@ jobs:
       - name: Cache golangci-lint
         uses: actions/cache@v4
         with:
-          path: ~/.cache/golangci-lint
+          path: |
+            ~/.cache/golangci-lint
+            ~/Library/Caches/golangci-lint
           key: golangci-lint-${{ runner.os }}-${{ env.GOLANGCI_LINT_VERSION }}
           restore-keys: |
             golangci-lint-${{ runner.os }}-
 
-      - name: Set up controller-gen
-        run: go install sigs.k8s.io/controller-tools/cmd/controller-gen@${{ env.CONTROLLER_TOOLS_VERSION }}
-
-      - name: Set up envtest
-        run: go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
+      - name: Create cache directory
+        run: mkdir -p ~/.cache/golangci-lint
 
       - name: Run lint
         run: make lint
