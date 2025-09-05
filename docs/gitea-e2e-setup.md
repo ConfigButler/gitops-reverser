@@ -87,7 +87,7 @@ service:
 apiVersion: v1
 kind: Secret
 metadata:
-  name: git-ssh-key
+  name: git-creds
   namespace: sut
 type: Opaque
 data:

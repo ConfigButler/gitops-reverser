@@ -9,7 +9,7 @@ spec:
   repoUrl: "https://gitea-http.gitea-e2e.svc.cluster.local:3000/testorg/testrepo.git"
   branch: "main"
   secretRef:
-    name: "git-ssh-key"
+    name: "git-creds"
   push:
     interval: "1m"
     maxCommits: 20

@@ -161,7 +161,7 @@ TOKEN=$(echo $TOKEN_RESPONSE | grep -o '"sha1":"[^"]*"' | cut -d'"' -f4)
 
 # Create Git credentials secret
 echo "Creating Git credentials secret..."
-kubectl create secret generic git-ssh-key \
+kubectl create secret generic git-creds \
   --namespace=sut \
   --from-literal=ssh-privatekey="$TOKEN" \
   --from-literal=known_hosts="gitea.gitea-e2e.svc.cluster.local" \
@@ -187,7 +187,7 @@ metadata:
 spec:
   repoUrl: "https://gitea.gitea-e2e.svc.cluster.local:3000/testorg/testrepo.git"
   branch: "main"
-  secretName: "git-ssh-key"
+  secretName: "git-creds"
   secretNamespace: "sut"
   push:
     interval: "1m"

@@ -69,7 +69,7 @@ The primary goal is to create a focused, reliable, and easy-to-use tool that per
     spec:
       repoUrl: "git@github.com:my-org/cluster-state.git"
       branch: "main"
-      secretName: "git-ssh-key"
+      secretName: "git-creds"
       secretNamespace: "configbutler-system"
       
       # Defines the strategy for pushing commits to the remote.

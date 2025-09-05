@@ -9,8 +9,8 @@ ADMIN_PASS="giteapassword123"
 ORG_NAME="testorg"
 REPO_NAME="${2:-testrepo}"
 TARGET_NAMESPACE="sut"
-SECRET_NAME="git-ssh-key"
-SSH_SECRET_NAME="git-ssh-key-ssh"
+SECRET_NAME="git-creds"
+SSH_SECRET_NAME="git-creds-ssh"
 ACTION="${1:-setup}"
 SSH_KEY_PATH="/tmp/e2e-ssh-key"
 SSH_PUB_KEY_PATH="/tmp/e2e-ssh-key.pub"
@@ -275,7 +275,7 @@ else
     setup_credentials
     
     # Repository information
-    REPO_URL="https://gitea-http.$GITEA_NAMESPACE.svc.cluster.local:3000/$ORG_NAME/$REPO_NAME.git"
+    REPO_URL="http://gitea-http.$GITEA_NAMESPACE.svc.cluster.local:3000/$ORG_NAME/$REPO_NAME.git"
 
     echo "
 🎉 Gitea setup completed successfully!

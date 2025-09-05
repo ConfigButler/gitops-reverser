@@ -28,7 +28,7 @@ const metricsServiceName = "gitops-reverser-controller-manager-metrics-service"
 const metricsRoleBindingName = "gitops-reverser-metrics-binding"
 
 // giteaRepoURLTemplate is the URL template for test Gitea repositories
-const giteaRepoURLTemplate = "https://gitea-http.gitea-e2e.svc.cluster.local:3000/testorg/%s.git"
+const giteaRepoURLTemplate = "http://gitea-http.gitea-e2e.svc.cluster.local:3000/testorg/%s.git"
 const giteaSSHURLTemplate = "ssh://git@gitea-ssh.gitea-e2e.svc.cluster.local:22/testorg/%s.git"
 
 var _ = Describe("Manager", Ordered, func() {
@@ -267,39 +267,51 @@ var _ = Describe("Manager", Ordered, func() {
 
 		It("should validate GitRepoConfig with real Gitea repository", func() {
 			gitRepoConfigName := "gitrepoconfig-e2e-test"
-			createGitRepoConfig(gitRepoConfigName, "main", "git-ssh-key")
+
+			By("showing initial controller logs")
+			showControllerLogs("before creating GitRepoConfig")
+
+			createGitRepoConfig(gitRepoConfigName, "main", "git-creds")
+
+			By("showing controller logs after GitRepoConfig creation")
+			showControllerLogs("after creating GitRepoConfig")
+
 			verifyGitRepoConfigStatus(gitRepoConfigName, "True", "BranchFound", "Branch 'main' found and accessible")
+
+			By("showing final controller logs")
+			showControllerLogs("after status verification")
+
 			cleanupGitRepoConfig(gitRepoConfigName)
 		})
 
 		It("should handle GitRepoConfig with invalid credentials", func() {
 			gitRepoConfigName := "gitrepoconfig-invalid-test"
-			createGitRepoConfig(gitRepoConfigName, "main", "git-ssh-key-invalid")
+			createGitRepoConfig(gitRepoConfigName, "main", "git-creds-invalid")
 			verifyGitRepoConfigStatus(gitRepoConfigName, "False", "ConnectionFailed", "")
 			cleanupGitRepoConfig(gitRepoConfigName)
 		})
 
 		It("should handle GitRepoConfig with nonexistent branch", func() {
 			gitRepoConfigName := "gitrepoconfig-branch-test"
-			createGitRepoConfig(gitRepoConfigName, "nonexistent-branch", "git-ssh-key")
+			createGitRepoConfig(gitRepoConfigName, "nonexistent-branch", "git-creds")
 			verifyGitRepoConfigStatus(gitRepoConfigName, "False", "BranchNotFound", "nonexistent-branch")
 			cleanupGitRepoConfig(gitRepoConfigName)
 		})
 
 		It("should validate GitRepoConfig with SSH authentication", func() {
 			gitRepoConfigName := "gitrepoconfig-ssh-test"
-			createSSHGitRepoConfig(gitRepoConfigName, "main", "git-ssh-key-ssh")
+			createSSHGitRepoConfig(gitRepoConfigName, "main", "git-creds-ssh")
 			verifyGitRepoConfigStatus(gitRepoConfigName, "True", "BranchFound", "Branch 'main' found and accessible")
 			cleanupGitRepoConfig(gitRepoConfigName)
 		})
 
 		It("should reconcile a WatchRule CR", func() {
 			By("ensuring Git credentials secret exists")
-			cmd := exec.Command("kubectl", "get", "secret", "git-ssh-key", "-n", namespace)
+			cmd := exec.Command("kubectl", "get", "secret", "git-creds", "-n", namespace)
 			_, err := utils.Run(cmd)
 			if err != nil {
 				By("creating a dummy secret for Git")
-				cmd = exec.Command("kubectl", "create", "secret", "generic", "git-ssh-key",
+				cmd = exec.Command("kubectl", "create", "secret", "generic", "git-creds",
 					"--from-literal=known_hosts=dummy",
 					"--from-literal=ssh-privatekey=dummykey",
 					"-n", namespace)
@@ -508,4 +520,36 @@ type tokenRequest struct {
 	Status struct {
 		Token string `json:"token"`
 	} `json:"status"`
+}
+
+// showControllerLogs displays the current controller logs to help with debugging during test execution
+func showControllerLogs(context string) {
+	By(fmt.Sprintf("📋 Controller logs %s:", context))
+
+	// Get the controller pod name dynamically
+	cmd := exec.Command("kubectl", "get", "pods", "-l", "control-plane=controller-manager",
+		"-o", "jsonpath={.items[0].metadata.name}", "-n", namespace)
+	podName, err := utils.Run(cmd)
+	if err != nil {
+		fmt.Printf("⚠️  Failed to get controller pod name: %v\n", err)
+		return
+	}
+
+	if strings.TrimSpace(podName) == "" {
+		fmt.Printf("⚠️  Controller pod not found yet\n")
+		return
+	}
+
+	// Get the logs
+	cmd = exec.Command("kubectl", "logs", strings.TrimSpace(podName), "-n", namespace, "--tail=20")
+	output, err := utils.Run(cmd)
+	if err != nil {
+		fmt.Printf("❌ Failed to get controller logs: %v\n", err)
+		return
+	}
+
+	fmt.Printf("🔍 Recent controller logs (%s):\n", context)
+	fmt.Printf("----------------------------------------\n")
+	fmt.Printf("%s\n", output)
+	fmt.Printf("----------------------------------------\n")
 }
