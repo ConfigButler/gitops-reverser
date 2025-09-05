@@ -67,20 +67,31 @@ type GitRepoConfigReconciler struct {
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
 func (r *GitRepoConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
+	log := logf.FromContext(ctx).WithName("GitRepoConfigReconciler")
 
-	log.V(1).Info("Reconciling GitRepoConfig")
+	log.Info("Starting reconciliation", "namespacedName", req.NamespacedName)
 
 	// Fetch the GitRepoConfig instance
 	var gitRepoConfig configbutleraiv1alpha1.GitRepoConfig
 	if err := r.Get(ctx, req.NamespacedName, &gitRepoConfig); err != nil {
-		log.Error(err, "unable to fetch GitRepoConfig")
-		return ctrl.Result{}, client.IgnoreNotFound(err)
+		if client.IgnoreNotFound(err) == nil {
+			log.Info("GitRepoConfig not found, was likely deleted", "namespacedName", req.NamespacedName)
+			return ctrl.Result{}, nil
+		}
+		log.Error(err, "unable to fetch GitRepoConfig", "namespacedName", req.NamespacedName)
+		return ctrl.Result{}, err
 	}
 
-	log.Info("Starting GitRepoConfig validation", "name", gitRepoConfig.Name, "repoUrl", gitRepoConfig.Spec.RepoURL)
+	log.Info("Starting GitRepoConfig validation",
+		"name", gitRepoConfig.Name,
+		"namespace", gitRepoConfig.Namespace,
+		"repoUrl", gitRepoConfig.Spec.RepoURL,
+		"branch", gitRepoConfig.Spec.Branch,
+		"generation", gitRepoConfig.Generation,
+		"resourceVersion", gitRepoConfig.ResourceVersion)
 
 	// Set initial checking status
+	log.Info("Setting initial checking status")
 	r.setCondition(&gitRepoConfig, metav1.ConditionUnknown, ReasonChecking, "Validating repository connectivity...")
 
 	// Step 1: Fetch and validate secret
@@ -88,16 +99,25 @@ func (r *GitRepoConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	var err error
 
 	if gitRepoConfig.Spec.SecretRef != nil {
+		log.Info("Fetching secret for authentication",
+			"secretName", gitRepoConfig.Spec.SecretRef.Name,
+			"namespace", gitRepoConfig.Namespace)
 		secret, err = r.fetchSecret(ctx, gitRepoConfig.Spec.SecretRef.Name, gitRepoConfig.Namespace)
 		if err != nil {
-			log.Error(err, "Failed to fetch secret")
+			log.Error(err, "Failed to fetch secret",
+				"secretName", gitRepoConfig.Spec.SecretRef.Name,
+				"namespace", gitRepoConfig.Namespace)
 			r.setCondition(&gitRepoConfig, metav1.ConditionFalse, ReasonSecretNotFound,
 				fmt.Sprintf("Secret '%s' not found in namespace '%s': %v", gitRepoConfig.Spec.SecretRef.Name, gitRepoConfig.Namespace, err))
 			return r.updateStatusAndRequeue(ctx, &gitRepoConfig, time.Minute*5)
 		}
+		log.Info("Successfully fetched secret", "secretName", gitRepoConfig.Spec.SecretRef.Name)
+	} else {
+		log.Info("No secret specified, using anonymous access")
 	}
 
 	// Step 2: Extract credentials from secret
+	log.Info("Extracting credentials from secret")
 	auth, err := r.extractCredentials(secret)
 	if err != nil {
 		log.Error(err, "Failed to extract credentials from secret")
@@ -111,11 +131,17 @@ func (r *GitRepoConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 			fmt.Sprintf("Secret '%s' malformed: %v", secretName, err))
 		return r.updateStatusAndRequeue(ctx, &gitRepoConfig, time.Minute*5)
 	}
+	log.Info("Successfully extracted credentials", "hasAuth", auth != nil)
 
 	// Step 3: Validate repository connectivity and branch
+	log.Info("Validating repository connectivity and branch",
+		"repoUrl", gitRepoConfig.Spec.RepoURL,
+		"branch", gitRepoConfig.Spec.Branch)
 	commitHash, err := r.validateRepository(ctx, gitRepoConfig.Spec.RepoURL, gitRepoConfig.Spec.Branch, auth)
 	if err != nil {
-		log.Error(err, "Repository validation failed")
+		log.Error(err, "Repository validation failed",
+			"repoUrl", gitRepoConfig.Spec.RepoURL,
+			"branch", gitRepoConfig.Spec.Branch)
 		if strings.Contains(err.Error(), "branch") {
 			r.setCondition(&gitRepoConfig, metav1.ConditionFalse, ReasonBranchNotFound,
 				fmt.Sprintf("Branch '%s' does not exist in repository: %v", gitRepoConfig.Spec.Branch, err))
@@ -127,17 +153,23 @@ func (r *GitRepoConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	// Step 4: Success - set ready condition
+	log.Info("Repository validation successful",
+		"commitHash", commitHash,
+		"shortCommit", commitHash[:8])
 	message := fmt.Sprintf("Branch '%s' found and accessible at commit %s", gitRepoConfig.Spec.Branch, commitHash[:8])
 	r.setCondition(&gitRepoConfig, metav1.ConditionTrue, ReasonBranchFound, message)
 
 	log.Info("GitRepoConfig validation successful", "name", gitRepoConfig.Name, "commit", commitHash[:8])
 
 	// Update status and schedule periodic revalidation
+	log.Info("Updating status with success condition")
 	if err := r.updateStatusWithRetry(ctx, &gitRepoConfig); err != nil {
 		log.Error(err, "Failed to update GitRepoConfig status")
 		return ctrl.Result{}, err
 	}
 
+	log.Info("Status update completed successfully, scheduling requeue",
+		"requeueAfter", time.Minute*10)
 	// Revalidate every 10 minutes
 	return ctrl.Result{RequeueAfter: time.Minute * 10}, nil
 }
@@ -206,15 +238,26 @@ func (r *GitRepoConfigReconciler) extractCredentials(secret *corev1.Secret) (tra
 }
 
 // validateRepository checks if the repository is accessible and branch exists
-func (r *GitRepoConfigReconciler) validateRepository(_ context.Context, repoURL, branch string, auth transport.AuthMethod) (string, error) {
+func (r *GitRepoConfigReconciler) validateRepository(ctx context.Context, repoURL, branch string, auth transport.AuthMethod) (string, error) {
+	log := logf.FromContext(ctx).WithName("validateRepository")
+
+	log.Info("Starting repository validation",
+		"repoURL", repoURL,
+		"branch", branch,
+		"hasAuth", auth != nil)
+
 	// Create a temporary directory for a minimal clone test
 	tempDir := fmt.Sprintf("/tmp/git-validation-%d", time.Now().Unix())
+	log.Info("Created temporary directory", "tempDir", tempDir)
+
 	defer func() {
 		// Clean up temp directory
+		log.Info("Cleaning up temporary directory", "tempDir", tempDir)
 		_ = os.RemoveAll(tempDir) // Ignore cleanup errors
 	}()
 
 	// Try to clone just the specified branch with depth 1 for validation
+	log.Info("Starting git clone", "options", fmt.Sprintf("URL=%s, Branch=%s, SingleBranch=true, Depth=1", repoURL, branch))
 	_, err := git.PlainClone(tempDir, false, &git.CloneOptions{
 		URL:           repoURL,
 		Auth:          auth,
@@ -225,6 +268,7 @@ func (r *GitRepoConfigReconciler) validateRepository(_ context.Context, repoURL,
 	})
 
 	if err != nil {
+		log.Error(err, "Git clone failed", "repoURL", repoURL, "branch", branch)
 		if strings.Contains(err.Error(), "couldn't find remote ref") ||
 			strings.Contains(err.Error(), "reference not found") {
 			return "", fmt.Errorf("branch '%s' not found in repository", branch)
@@ -232,19 +276,25 @@ func (r *GitRepoConfigReconciler) validateRepository(_ context.Context, repoURL,
 		return "", fmt.Errorf("failed to access repository: %w", err)
 	}
 
+	log.Info("Git clone successful, opening repository to get commit hash")
+
 	// If we got here, the repository and branch are accessible
 	// Open the temporary repo to get the commit hash
 	repo, err := git.PlainOpen(tempDir)
 	if err != nil {
+		log.Error(err, "Failed to open cloned repository", "tempDir", tempDir)
 		return "", fmt.Errorf("failed to open cloned repository: %w", err)
 	}
 
 	head, err := repo.Head()
 	if err != nil {
+		log.Error(err, "Failed to get HEAD reference")
 		return "", fmt.Errorf("failed to get HEAD reference: %w", err)
 	}
 
-	return head.Hash().String(), nil
+	commitHash := head.Hash().String()
+	log.Info("Repository validation completed successfully", "commitHash", commitHash)
+	return commitHash, nil
 }
 
 // setCondition sets or updates the Ready condition
@@ -261,11 +311,17 @@ func (r *GitRepoConfigReconciler) setCondition(gitRepoConfig *configbutleraiv1al
 	for i, existingCondition := range gitRepoConfig.Status.Conditions {
 		if existingCondition.Type == "Ready" {
 			gitRepoConfig.Status.Conditions[i] = condition
+			// Log condition update
+			fmt.Printf("Updated existing Ready condition: status=%s, reason=%s, message=%s\n",
+				status, reason, message)
 			return
 		}
 	}
 
 	gitRepoConfig.Status.Conditions = append(gitRepoConfig.Status.Conditions, condition)
+	// Log condition addition
+	fmt.Printf("Added new Ready condition: status=%s, reason=%s, message=%s\n",
+		status, reason, message)
 }
 
 // updateStatusAndRequeue updates the status and returns requeue result
@@ -278,36 +334,54 @@ func (r *GitRepoConfigReconciler) updateStatusAndRequeue(ctx context.Context, gi
 
 // updateStatusWithRetry updates the status with retry logic to handle race conditions
 func (r *GitRepoConfigReconciler) updateStatusWithRetry(ctx context.Context, gitRepoConfig *configbutleraiv1alpha1.GitRepoConfig) error {
+	log := logf.FromContext(ctx).WithName("updateStatusWithRetry")
+
+	log.Info("Starting status update with retry",
+		"name", gitRepoConfig.Name,
+		"namespace", gitRepoConfig.Namespace,
+		"conditionsCount", len(gitRepoConfig.Status.Conditions))
+
 	return wait.ExponentialBackoff(wait.Backoff{
 		Duration: 100 * time.Millisecond,
 		Factor:   2.0,
 		Jitter:   0.1,
 		Steps:    5,
 	}, func() (bool, error) {
+		log.Info("Attempting status update")
+
 		// Get the latest version of the resource
 		latest := &configbutleraiv1alpha1.GitRepoConfig{}
-		if err := r.Get(ctx, client.ObjectKeyFromObject(gitRepoConfig), latest); err != nil {
+		key := client.ObjectKeyFromObject(gitRepoConfig)
+		if err := r.Get(ctx, key, latest); err != nil {
 			if errors.IsNotFound(err) {
-				// Resource was deleted, nothing to update
+				log.Info("Resource was deleted, nothing to update")
 				return true, nil
 			}
+			log.Error(err, "Failed to get latest resource version")
 			return false, err
 		}
+
+		log.Info("Got latest resource version",
+			"generation", latest.Generation,
+			"resourceVersion", latest.ResourceVersion)
 
 		// Copy our status to the latest version
 		latest.Status = gitRepoConfig.Status
 
+		log.Info("Attempting to update status",
+			"conditionsCount", len(latest.Status.Conditions))
+
 		// Attempt to update
 		if err := r.Status().Update(ctx, latest); err != nil {
 			if errors.IsConflict(err) {
-				// Resource version conflict, retry
+				log.Info("Resource version conflict, retrying")
 				return false, nil
 			}
-			// Other error, stop retrying
+			log.Error(err, "Failed to update status")
 			return false, err
 		}
 
-		// Success
+		log.Info("Status update successful")
 		return true, nil
 	})
 }

@@ -8,6 +8,7 @@ import (
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
+	"go.uber.org/zap/zapcore"
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
 	"k8s.io/apimachinery/pkg/runtime"
@@ -20,6 +21,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
+
+	configbutleraiv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	"github.com/ConfigButler/gitops-reverser/internal/controller"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -31,6 +35,7 @@ var (
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 
+	utilruntime.Must(configbutleraiv1alpha1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 
@@ -63,6 +68,8 @@ func main() {
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
 	opts := zap.Options{
 		Development: true,
+		// Enable more detailed logging for debugging
+		Level: zapcore.InfoLevel, // Change to DebugLevel for even more verbose output
 	}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
@@ -182,6 +189,20 @@ func main() {
 		os.Exit(1)
 	}
 
+	if err = (&controller.GitRepoConfigReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "GitRepoConfig")
+		os.Exit(1)
+	}
+	if err = (&controller.WatchRuleReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "WatchRule")
+		os.Exit(1)
+	}
 	// +kubebuilder:scaffold:builder
 
 	if metricsCertWatcher != nil {
