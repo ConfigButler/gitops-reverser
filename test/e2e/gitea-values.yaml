@@ -28,6 +28,9 @@ gitea:
       HTTP_PORT: 3000
       DOMAIN: gitea-http.gitea-e2e.svc.cluster.local
       ROOT_URL: "http://gitea-http.gitea-e2e.svc.cluster.local:3000/"
+      SSH_DOMAIN: gitea-ssh.gitea-e2e.svc.cluster.local
+      SSH_PORT: 22
+      START_SSH_SERVER: true
     
     # Security settings
     security:
@@ -58,11 +61,14 @@ gitea:
     password: giteapassword123
     email: admin@example.com
 
-# Service configuration  
+# Service configuration
 service:
   http:
     type: ClusterIP
     port: 3000
+  ssh:
+    type: ClusterIP
+    port: 22
 
 # Resource limits for CI environments
 resources:

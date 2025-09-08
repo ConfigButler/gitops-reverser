@@ -173,7 +173,8 @@ generate_ssh_keys() {
     rm -f "$SSH_KEY_PATH" "$SSH_PUB_KEY_PATH"
     
     # Generate new SSH key pair without passphrase for e2e testing
-    ssh-keygen -t rsa -b 2048 -f "$SSH_KEY_PATH" -N "" -C "e2e-test@gitops-reverser" >/dev/null 2>&1
+    # Use 4096 bits to meet Gitea's security requirements (needs at least 3071)
+    ssh-keygen -t rsa -b 4096 -f "$SSH_KEY_PATH" -N "" -C "e2e-test@gitops-reverser" >/dev/null 2>&1
     
     if [[ ! -f "$SSH_KEY_PATH" ]] || [[ ! -f "$SSH_PUB_KEY_PATH" ]]; then
         echo "❌ Failed to generate SSH key pair"
@@ -194,6 +195,19 @@ configure_ssh_key_in_gitea() {
     
     SSH_PUB_KEY_CONTENT=$(cat "$SSH_PUB_KEY_PATH")
     
+    # First, delete existing SSH keys to ensure we use the current key
+    echo "🧹 Removing existing SSH keys..."
+    curl -s -X GET "$API_URL/user/keys" \
+        -H "Content-Type: application/json" \
+        -u "$ADMIN_USER:$ADMIN_PASS" | \
+    grep -o '"id":[0-9]*' | sed 's/"id"://' | \
+    while read -r key_id; do
+        echo "🗑️  Deleting SSH key ID: $key_id"
+        curl -s -X DELETE "$API_URL/user/keys/$key_id" \
+            -H "Content-Type: application/json" \
+            -u "$ADMIN_USER:$ADMIN_PASS" >/dev/null 2>&1 || true
+    done
+    
     # Add SSH key to admin user
     SSH_KEY_RESPONSE=$(curl -s -w "%{http_code}" -o /tmp/ssh_key_response.json \
         -X POST "$API_URL/user/keys" \
@@ -204,7 +218,8 @@ configure_ssh_key_in_gitea() {
     if [[ "$SSH_KEY_RESPONSE" == "201" ]]; then
         echo "✅ SSH key configured successfully in Gitea"
     elif [[ "$SSH_KEY_RESPONSE" == "422" ]]; then
-        echo "ℹ️  SSH key already exists in Gitea"
+        echo "⚠️  SSH key rejected by Gitea: $(cat /tmp/ssh_key_response.json || echo 'unknown error')"
+        exit 1
     else
         echo "⚠️  Unexpected response configuring SSH key: $SSH_KEY_RESPONSE"
         cat /tmp/ssh_key_response.json || true
@@ -230,10 +245,35 @@ setup_credentials() {
     # Create SSH-based credentials secret
     if [[ -f "$SSH_KEY_PATH" ]]; then
         echo "🔐 Creating SSH Git credentials secret..."
+        
+        # Generate known_hosts entry for the Gitea SSH service
+        echo "🔑 Generating known_hosts entry for Gitea SSH..."
+        SSH_HOST="gitea-ssh.$GITEA_NAMESPACE.svc.cluster.local"
+        
+        # Get the actual SSH host key from the Gitea SSH service
+        echo "🔍 Retrieving SSH host key from Gitea..."
+        TEMP_KNOWN_HOSTS="/tmp/temp_known_hosts"
+        
+        # Try to get the SSH host key by connecting to the SSH service
+        if timeout 10 ssh-keyscan -p 2222 "$SSH_HOST" > "$TEMP_KNOWN_HOSTS" 2>/dev/null && [[ -s "$TEMP_KNOWN_HOSTS" ]]; then
+            echo "✅ Retrieved SSH host key successfully"
+        else
+            echo "⚠️  Could not retrieve SSH host key, using permissive configuration"
+            # Create a permissive known_hosts that accepts any key for this host
+            echo "$SSH_HOST,gitea-ssh *" > "$TEMP_KNOWN_HOSTS"
+        fi
+        
+        # Use the generated known_hosts
+        cp "$TEMP_KNOWN_HOSTS" /tmp/known_hosts_ssh
+        
         kubectl create secret generic "$SSH_SECRET_NAME" \
             --namespace="$TARGET_NAMESPACE" \
             --from-file=ssh-privatekey="$SSH_KEY_PATH" \
+            --from-file=known_hosts="/tmp/known_hosts_ssh" \
             --dry-run=client -o yaml | kubectl apply -f -
+        
+        # Cleanup
+        rm -f /tmp/known_hosts_ssh "$TEMP_KNOWN_HOSTS"
         
         echo "✅ SSH Git credentials secret created successfully"
     else

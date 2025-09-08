@@ -29,7 +29,7 @@ const metricsRoleBindingName = "gitops-reverser-metrics-binding"
 
 // giteaRepoURLTemplate is the URL template for test Gitea repositories
 const giteaRepoURLTemplate = "http://gitea-http.gitea-e2e.svc.cluster.local:3000/testorg/%s.git"
-const giteaSSHURLTemplate = "ssh://git@gitea-ssh.gitea-e2e.svc.cluster.local:22/testorg/%s.git"
+const giteaSSHURLTemplate = "ssh://git@gitea-ssh.gitea-e2e.svc.cluster.local:2222/testorg/%s.git"
 
 var _ = Describe("Manager", Ordered, func() {
 	var controllerPodName string
@@ -300,8 +300,29 @@ var _ = Describe("Manager", Ordered, func() {
 
 		It("should validate GitRepoConfig with SSH authentication", func() {
 			gitRepoConfigName := "gitrepoconfig-ssh-test"
+
+			By("🔐 Starting SSH authentication test")
+			showControllerLogs("before SSH test")
+
+			By("📋 Checking SSH secret exists")
+			cmd := exec.Command("kubectl", "get", "secret", "git-creds-ssh", "-n", namespace, "-o", "yaml")
+			secretOutput, err := utils.Run(cmd)
+			if err != nil {
+				fmt.Printf("❌ SSH secret not found: %v\n", err)
+			} else {
+				fmt.Printf("✅ SSH secret exists - showing first 300 chars:\n%s...\n", secretOutput[:min(300, len(secretOutput))])
+			}
+
 			createSSHGitRepoConfig(gitRepoConfigName, "main", "git-creds-ssh")
+
+			By("🔍 Controller logs after SSH GitRepoConfig creation")
+			showControllerLogs("after SSH GitRepoConfig creation")
+
 			verifyGitRepoConfigStatus(gitRepoConfigName, "True", "BranchFound", "Branch 'main' found and accessible")
+
+			By("✅ Final SSH test logs")
+			showControllerLogs("SSH test completion")
+
 			cleanupGitRepoConfig(gitRepoConfigName)
 		})
 
@@ -552,4 +573,12 @@ func showControllerLogs(context string) {
 	fmt.Printf("----------------------------------------\n")
 	fmt.Printf("%s\n", output)
 	fmt.Printf("----------------------------------------\n")
+}
+
+// min returns the minimum of two integers
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

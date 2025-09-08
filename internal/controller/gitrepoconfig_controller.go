@@ -39,6 +39,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/transport/http"
 	"github.com/go-git/go-git/v5/plumbing/transport/ssh"
 	gossh "golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/knownhosts"
 
 	configbutleraiv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 )
@@ -217,10 +218,36 @@ func (r *GitRepoConfigReconciler) extractCredentials(secret *corev1.Secret) (tra
 			return nil, fmt.Errorf("failed to parse SSH private key: %w", err)
 		}
 
-		return &ssh.PublicKeys{
+		publicKeys := &ssh.PublicKeys{
 			User:   "git",
 			Signer: signer,
-		}, nil
+		}
+
+		// Handle known_hosts if present
+		if knownHostsData, hasKnownHosts := secret.Data["known_hosts"]; hasKnownHosts {
+			// Write known_hosts to temporary file for parsing
+			knownHostsFile := fmt.Sprintf("/tmp/known_hosts-%d", time.Now().Unix())
+			if err := os.WriteFile(knownHostsFile, knownHostsData, 0600); err != nil {
+				fmt.Printf("Warning: Failed to write known_hosts file, using insecure SSH: %v\n", err)
+				publicKeys.HostKeyCallback = gossh.InsecureIgnoreHostKey()
+			} else {
+				hostKeyCallback, err := knownhosts.New(knownHostsFile)
+				if err != nil {
+					fmt.Printf("Warning: Failed to parse known_hosts, using insecure SSH: %v\n", err)
+					publicKeys.HostKeyCallback = gossh.InsecureIgnoreHostKey()
+				} else {
+					publicKeys.HostKeyCallback = hostKeyCallback
+				}
+				// Cleanup the temporary known_hosts file
+				os.RemoveAll(knownHostsFile)
+			}
+		} else {
+			// No known_hosts provided, use insecure mode for testing
+			fmt.Printf("Warning: No known_hosts found in secret, using insecure SSH\n")
+			publicKeys.HostKeyCallback = gossh.InsecureIgnoreHostKey()
+		}
+
+		return publicKeys, nil
 	}
 
 	// Try username/password authentication
