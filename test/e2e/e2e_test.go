@@ -515,7 +515,7 @@ func verifyGitRepoConfigStatus(name, expectedStatus, expectedReason, expectedMes
 			g.Expect(message).To(ContainSubstring(expectedMessageContains))
 		}
 	}
-	Eventually(verifyStatus, 2*time.Minute).Should(Succeed())
+	Eventually(verifyStatus, time.Second*10).Should(Succeed())
 }
 
 // cleanupGitRepoConfig deletes a GitRepoConfig resource

@@ -6,7 +6,7 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
   name: gitrepoconfig-sample
 spec:
-  repoUrl: "https://gitea-http.gitea-e2e.svc.cluster.local:3000/testorg/testrepo.git"
+  repoUrl: "http://gitea-http.gitea-e2e.svc.cluster.local:3000/testorg/testrepo.git"
   branch: "main"
   secretRef:
     name: "git-creds"
