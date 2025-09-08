@@ -148,7 +148,7 @@ func (r *WatchRuleReconciler) getGitRepoConfig(ctx context.Context, gitRepoConfi
 // isGitRepoConfigReady checks if the GitRepoConfig has a Ready condition with status True
 func (r *WatchRuleReconciler) isGitRepoConfigReady(gitRepoConfig *configbutleraiv1alpha1.GitRepoConfig) bool {
 	for _, condition := range gitRepoConfig.Status.Conditions {
-		if condition.Type == "Ready" && condition.Status == metav1.ConditionTrue {
+		if condition.Type == ConditionTypeReady && condition.Status == metav1.ConditionTrue {
 			return true
 		}
 	}
@@ -158,7 +158,7 @@ func (r *WatchRuleReconciler) isGitRepoConfigReady(gitRepoConfig *configbutlerai
 // setCondition sets or updates the Ready condition
 func (r *WatchRuleReconciler) setCondition(watchRule *configbutleraiv1alpha1.WatchRule, status metav1.ConditionStatus, reason, message string) {
 	condition := metav1.Condition{
-		Type:               "Ready",
+		Type:               ConditionTypeReady,
 		Status:             status,
 		Reason:             reason,
 		Message:            message,
@@ -167,7 +167,7 @@ func (r *WatchRuleReconciler) setCondition(watchRule *configbutleraiv1alpha1.Wat
 
 	// Update existing condition or add new one
 	for i, existingCondition := range watchRule.Status.Conditions {
-		if existingCondition.Type == "Ready" {
+		if existingCondition.Type == ConditionTypeReady {
 			watchRule.Status.Conditions[i] = condition
 			return
 		}

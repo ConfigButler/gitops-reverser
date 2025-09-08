@@ -142,7 +142,7 @@ var _ = Describe("Manager", Ordered, func() {
 		}
 	})
 
-	SetDefaultEventuallyTimeout(2 * time.Minute)
+	SetDefaultEventuallyTimeout(10 * time.Second)
 	SetDefaultEventuallyPollingInterval(time.Second)
 
 	Context("Manager", func() {
@@ -327,40 +327,63 @@ var _ = Describe("Manager", Ordered, func() {
 		})
 
 		It("should reconcile a WatchRule CR", func() {
-			By("ensuring Git credentials secret exists")
+			gitRepoConfigName := "gitrepoconfig-watchrule-test"
+			watchRuleName := "watchrule-test"
+
+			By("ensuring valid Git credentials secret exists (git-creds should be set up by Gitea)")
 			cmd := exec.Command("kubectl", "get", "secret", "git-creds", "-n", namespace)
 			_, err := utils.Run(cmd)
-			if err != nil {
-				By("creating a dummy secret for Git")
-				cmd = exec.Command("kubectl", "create", "secret", "generic", "git-creds",
-					"--from-literal=known_hosts=dummy",
-					"--from-literal=ssh-privatekey=dummykey",
-					"-n", namespace)
-				_, err = utils.Run(cmd)
-				Expect(err).NotTo(HaveOccurred())
-			}
+			Expect(err).NotTo(HaveOccurred(), "git-creds secret should exist from Gitea setup")
 
-			By("creating a sample GitRepoConfig")
-			gitSampleFile := "config/samples/configbutler.ai_v1alpha1_gitrepoconfig.yaml"
-			cmd = exec.Command("kubectl", "apply", "-f", gitSampleFile, "-n", namespace)
-			_, err = utils.Run(cmd)
+			By("creating a working GitRepoConfig for the WatchRule test")
+			createGitRepoConfig(gitRepoConfigName, "main", "git-creds")
+
+			By("waiting for GitRepoConfig to be ready")
+			verifyGitRepoConfigStatus(gitRepoConfigName, "True", "BranchFound", "Branch 'main' found and accessible")
+
+			By("creating a WatchRule that references the working GitRepoConfig")
+			watchRuleYAML := "apiVersion: configbutler.ai/v1alpha1\n" +
+				"kind: WatchRule\n" +
+				"metadata:\n" +
+				"  name: " + watchRuleName + "\n" +
+				"  namespace: " + namespace + "\n" +
+				"spec:\n" +
+				"  gitRepoConfigRef: " + gitRepoConfigName + "\n" +
+				"  excludeLabels:\n" +
+				"    matchExpressions:\n" +
+				"    - key: \"configbutler.ai/ignore\"\n" +
+				"      operator: Exists\n" +
+				"  rules:\n" +
+				"  - resources: [\"deployments\", \"services\", \"configmaps\", \"secrets\"]\n" +
+				"  - resources: [\"ingresses.*\"]\n"
+
+			// Write YAML to temporary file to avoid stdin issues
+			tmpFile := fmt.Sprintf("/tmp/watchrule-%s.yaml", watchRuleName)
+			err = os.WriteFile(tmpFile, []byte(watchRuleYAML), 0644)
 			Expect(err).NotTo(HaveOccurred())
 
-			By("creating a sample WatchRule")
-			sampleFile := "config/samples/configbutler.ai_v1alpha1_watchrule.yaml"
-			cmd = exec.Command("kubectl", "apply", "-f", sampleFile, "-n", namespace)
+			defer func() {
+				_ = os.Remove(tmpFile)
+			}()
+
+			cmd = exec.Command("kubectl", "apply", "-f", tmpFile, "-n", namespace)
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 
 			By("verifying the WatchRule is reconciled")
 			verifyReconciled := func(g Gomega) {
 				jsonPath := "jsonpath={.status.conditions[?(@.type=='Ready')].status}"
-				cmd := exec.Command("kubectl", "get", "watchrule", "watchrule-sample", "-n", namespace, "-o", jsonPath)
+				cmd := exec.Command("kubectl", "get", "watchrule", watchRuleName, "-n", namespace, "-o", jsonPath)
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(Equal("True"))
 			}
 			Eventually(verifyReconciled).Should(Succeed())
+
+			By("cleaning up test resources")
+			cleanupGitRepoConfig(gitRepoConfigName)
+			cmd = exec.Command("kubectl", "delete", "watchrule", watchRuleName, "-n", namespace)
+			_, _ = utils.Run(cmd)
 
 			By("verifying basic webhook registration")
 			verifyWebhook := func(g Gomega) {
@@ -515,7 +538,7 @@ func verifyGitRepoConfigStatus(name, expectedStatus, expectedReason, expectedMes
 			g.Expect(message).To(ContainSubstring(expectedMessageContains))
 		}
 	}
-	Eventually(verifyStatus, time.Second*10).Should(Succeed())
+	Eventually(verifyStatus).Should(Succeed())
 }
 
 // cleanupGitRepoConfig deletes a GitRepoConfig resource

@@ -239,7 +239,9 @@ func (r *GitRepoConfigReconciler) extractCredentials(secret *corev1.Secret) (tra
 					publicKeys.HostKeyCallback = hostKeyCallback
 				}
 				// Cleanup the temporary known_hosts file
-				os.RemoveAll(knownHostsFile)
+				if err := os.RemoveAll(knownHostsFile); err != nil {
+					fmt.Printf("Warning: Failed to cleanup known_hosts file: %v\n", err)
+				}
 			}
 		} else {
 			// No known_hosts provided, use insecure mode for testing
@@ -327,7 +329,7 @@ func (r *GitRepoConfigReconciler) validateRepository(ctx context.Context, repoUR
 // setCondition sets or updates the Ready condition
 func (r *GitRepoConfigReconciler) setCondition(gitRepoConfig *configbutleraiv1alpha1.GitRepoConfig, status metav1.ConditionStatus, reason, message string) {
 	condition := metav1.Condition{
-		Type:               "Ready",
+		Type:               ConditionTypeReady,
 		Status:             status,
 		Reason:             reason,
 		Message:            message,
@@ -336,7 +338,7 @@ func (r *GitRepoConfigReconciler) setCondition(gitRepoConfig *configbutleraiv1al
 
 	// Update existing condition or add new one
 	for i, existingCondition := range gitRepoConfig.Status.Conditions {
-		if existingCondition.Type == "Ready" {
+		if existingCondition.Type == ConditionTypeReady {
 			gitRepoConfig.Status.Conditions[i] = condition
 			// Log condition update
 			fmt.Printf("Updated existing Ready condition: status=%s, reason=%s, message=%s\n",
