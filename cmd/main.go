@@ -231,6 +231,15 @@ func main() {
 		EventQueue: eventQueue,
 	}
 
+	// Create and inject decoder for generic Kubernetes resource handling
+	// This decoder uses unstructured.Unstructured to handle ANY K8s resource type
+	decoder := admission.NewDecoder(scheme)
+	if err := eventHandler.InjectDecoder(&decoder); err != nil {
+		setupLog.Error(err, "unable to inject decoder into webhook handler")
+		os.Exit(1)
+	}
+	setupLog.Info("Generic unstructured decoder injected - ready to handle all Kubernetes resource types")
+
 	// Create webhook with admission handler
 	validatingWebhook := &admission.Webhook{Handler: eventHandler}
 	mgr.GetWebhookServer().Register("/validate-v1-event", validatingWebhook)

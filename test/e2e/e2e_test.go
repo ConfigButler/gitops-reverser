@@ -191,50 +191,56 @@ var _ = Describe("Manager", Ordered, func() {
 			Eventually(verifyWebhook).Should(Succeed())
 		})
 
-		It("should receive webhook calls as shown by metrics", func() {
-			By("attempting to create a ConfigMap to trigger webhook call (expected to fail due to decoder issue)")
+		It("should receive webhook calls and process them successfully", func() {
+			webhookBindingName := "webhook-test-metrics-binding"
+			curlPodName := "webhook-test-curl"
+
+			// Setup metrics access using reusable helper
+			token := setupMetricsAccess(webhookBindingName)
+
+			By("creating a ConfigMap to trigger webhook call (should succeed now that decoder is fixed)")
 			cmd := exec.Command("kubectl", "create", "configmap", "webhook-test-cm",
 				"--namespace", namespace,
 				"--from-literal=test=webhook")
 			_, err := utils.Run(cmd)
-			// We expect this to fail due to decoder not being initialized, but it proves webhook is called
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("decoder is not initialized"))
+			// We expect this to succeed now that the decoder is properly initialized
+			Expect(err).NotTo(HaveOccurred(), "ConfigMap creation should succeed with working decoder")
 
-			By("verifying webhook metrics show events_received_total metric exists")
-			verifyWebhookMetrics := func(g Gomega) {
-				metricsOutput := getMetricsOutput()
-				g.Expect(metricsOutput).To(ContainSubstring("gitopsreverser_events_received_total"))
-			}
-			Eventually(verifyWebhookMetrics).Should(Succeed())
+			// Create curl pod and wait for completion using reusable helpers
+			createMetricsCurlPod(curlPodName, token)
+			waitForMetricsCurlCompletion(curlPodName, 2*time.Minute)
 
-			By("confirming webhook calls are arriving as intended")
-			// The fact that we get "decoder is not initialized" instead of connection refused
-			// or webhook not found proves that:
-			// 1. Webhook registration is working
-			// 2. Webhook calls are reaching our handler
-			// 3. Metrics are being recorded (since we can see the metric name in output)
-			fmt.Printf("✅ Webhook call validation successful - calls are arriving and metrics are being recorded\n")
+			By("verifying webhook metrics show actual event processing")
+			metricsOutput := getMetricsFromCurlPod(curlPodName)
+
+			// Verify that webhook events are actually being received and processed
+			Expect(metricsOutput).To(ContainSubstring("gitopsreverser_events_received_total"),
+				"Events received metric should exist")
+			Expect(metricsOutput).To(ContainSubstring("gitopsreverser_events_processed_total"),
+				"Events processed metric should exist")
+
+			By("confirming webhook calls are arriving and being processed correctly")
+			// The fact that:
+			// 1. ConfigMap creation succeeds (proves webhook allows the request)
+			// 2. Metrics show events_received_total > 0 (proves webhook was called)
+			// 3. Metrics show events_processed_total > 0 (proves decoder worked and event was processed)
+			// Together proves the entire webhook flow is working end-to-end
+			fmt.Printf("✅ Webhook validation successful - events are received, decoded, and processed correctly\n")
+
+			By("cleaning up webhook test resources")
+			cmd = exec.Command("kubectl", "delete", "configmap", "webhook-test-cm", "--namespace", namespace)
+			_, _ = utils.Run(cmd)
+			cleanupMetricsAccess(curlPodName, webhookBindingName)
 		})
 
 		It("should ensure the metrics endpoint is serving metrics", func() {
-			By("creating a ClusterRoleBinding for the service account to allow access to metrics")
-			cmd := exec.Command("kubectl", "create", "clusterrolebinding", metricsRoleBindingName,
-				"--clusterrole=gitops-reverser-metrics-reader",
-				fmt.Sprintf("--serviceaccount=%s:%s", namespace, serviceAccountName),
-			)
-			_, err := utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred(), "Failed to create ClusterRoleBinding")
+			// Setup metrics access using reusable helper
+			token := setupMetricsAccess(metricsRoleBindingName)
 
 			By("validating that the metrics service is available")
-			cmd = exec.Command("kubectl", "get", "service", metricsServiceName, "-n", namespace)
-			_, err = utils.Run(cmd)
+			cmd := exec.Command("kubectl", "get", "service", metricsServiceName, "-n", namespace)
+			_, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Metrics service should exist")
-
-			By("getting the service account token")
-			token, err := serviceAccountToken()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(token).NotTo(BeEmpty())
 
 			By("waiting for the metrics endpoint to be ready")
 			verifyMetricsEndpointReady := func(g Gomega) {
@@ -255,47 +261,9 @@ var _ = Describe("Manager", Ordered, func() {
 			}
 			Eventually(verifyMetricsServerStarted).Should(Succeed())
 
-			By("creating the curl-metrics pod to access the metrics endpoint")
-			cmd = exec.Command("kubectl", "run", "curl-metrics", "--restart=Never",
-				"--namespace", namespace,
-				"--image=curlimages/curl:latest",
-				"--overrides",
-				fmt.Sprintf(`{
-					"spec": {
-						"containers": [{
-							"name": "curl",
-							"image": "curlimages/curl:latest",
-							"command": ["/bin/sh", "-c"],
-							"args": ["curl -v -k -H 'Authorization: Bearer %s' https://%s.%s.svc.cluster.local:8443/metrics"],
-							"securityContext": {
-								"readOnlyRootFilesystem": true,
-								"allowPrivilegeEscalation": false,
-								"capabilities": {
-									"drop": ["ALL"]
-								},
-								"runAsNonRoot": true,
-								"runAsUser": 1000,
-								"seccompProfile": {
-									"type": "RuntimeDefault"
-								}
-							}
-						}],
-						"serviceAccountName": "%s"
-					}
-				}`, token, metricsServiceName, namespace, serviceAccountName))
-			_, err = utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred(), "Failed to create curl-metrics pod")
-
-			By("waiting for the curl-metrics pod to complete.")
-			verifyCurlUp := func(g Gomega) {
-				cmd := exec.Command("kubectl", "get", "pods", "curl-metrics",
-					"-o", "jsonpath={.status.phase}",
-					"-n", namespace)
-				output, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(output).To(Equal("Succeeded"), "curl pod in wrong status")
-			}
-			Eventually(verifyCurlUp, 5*time.Minute).Should(Succeed())
+			// Create curl pod and wait for completion using reusable helpers
+			createMetricsCurlPod("curl-metrics", token)
+			waitForMetricsCurlCompletion("curl-metrics", 5*time.Minute)
 
 			By("getting the metrics by checking curl-metrics logs")
 			metricsOutput := getMetricsOutput()
@@ -558,14 +526,99 @@ func cleanupGitRepoConfig(name string) {
 	_, _ = utils.Run(cmd)
 }
 
-// getMetricsOutput retrieves and returns the logs from the curl pod used to access the metrics endpoint.
-func getMetricsOutput() string {
-	By("getting the curl-metrics logs")
-	cmd := exec.Command("kubectl", "logs", "curl-metrics", "-n", namespace)
+// setupMetricsAccess creates the necessary RBAC and gets a service account token for metrics access
+func setupMetricsAccess(clusterRoleBindingName string) string {
+	By("creating ClusterRoleBinding for metrics access")
+	cmd := exec.Command("kubectl", "create", "clusterrolebinding", clusterRoleBindingName,
+		"--clusterrole=gitops-reverser-metrics-reader",
+		fmt.Sprintf("--serviceaccount=%s:%s", namespace, serviceAccountName),
+	)
+	_, err := utils.Run(cmd)
+	Expect(err).NotTo(HaveOccurred(), fmt.Sprintf("Failed to create ClusterRoleBinding %s", clusterRoleBindingName))
+
+	By("getting service account token for metrics access")
+	token, err := serviceAccountToken()
+	Expect(err).NotTo(HaveOccurred())
+	Expect(token).NotTo(BeEmpty())
+
+	return token
+}
+
+// createMetricsCurlPod creates a curl pod to fetch metrics from the metrics endpoint
+func createMetricsCurlPod(podName, token string) {
+	By(fmt.Sprintf("creating curl pod '%s' to access metrics endpoint", podName))
+	cmd := exec.Command("kubectl", "run", podName, "--restart=Never",
+		"--namespace", namespace,
+		"--image=curlimages/curl:latest",
+		"--overrides",
+		fmt.Sprintf(`{
+			"spec": {
+				"containers": [{
+					"name": "curl",
+					"image": "curlimages/curl:latest",
+					"command": ["/bin/sh", "-c"],
+					"args": ["curl -v -k -H 'Authorization: Bearer %s' https://%s.%s.svc.cluster.local:8443/metrics"],
+					"securityContext": {
+						"readOnlyRootFilesystem": true,
+						"allowPrivilegeEscalation": false,
+						"capabilities": {
+							"drop": ["ALL"]
+						},
+						"runAsNonRoot": true,
+						"runAsUser": 1000,
+						"seccompProfile": {
+							"type": "RuntimeDefault"
+						}
+					}
+				}],
+				"serviceAccountName": "%s"
+			}
+		}`, token, metricsServiceName, namespace, serviceAccountName))
+	_, err := utils.Run(cmd)
+	Expect(err).NotTo(HaveOccurred(), fmt.Sprintf("Failed to create curl pod %s", podName))
+}
+
+// waitForMetricsCurlCompletion waits for the specified curl pod to complete
+func waitForMetricsCurlCompletion(podName string, timeout time.Duration) {
+	By(fmt.Sprintf("waiting for curl pod '%s' to complete", podName))
+	verifyCurlComplete := func(g Gomega) {
+		cmd := exec.Command("kubectl", "get", "pods", podName,
+			"-o", "jsonpath={.status.phase}",
+			"-n", namespace)
+		output, err := utils.Run(cmd)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(output).To(Equal("Succeeded"), fmt.Sprintf("curl pod %s should complete successfully", podName))
+	}
+	Eventually(verifyCurlComplete, timeout).Should(Succeed())
+}
+
+// getMetricsFromCurlPod retrieves and returns the metrics output from the specified curl pod
+func getMetricsFromCurlPod(podName string) string {
+	By(fmt.Sprintf("getting metrics output from curl pod '%s'", podName))
+	cmd := exec.Command("kubectl", "logs", podName, "-n", namespace)
 	metricsOutput, err := utils.Run(cmd)
-	Expect(err).NotTo(HaveOccurred(), "Failed to retrieve logs from curl pod")
-	Expect(metricsOutput).To(ContainSubstring("< HTTP/1.1 200 OK"))
+	Expect(err).NotTo(HaveOccurred(), fmt.Sprintf("Failed to retrieve logs from curl pod %s", podName))
+	Expect(metricsOutput).To(ContainSubstring("< HTTP/1.1 200 OK"), "Metrics endpoint should respond successfully")
 	return metricsOutput
+}
+
+// cleanupMetricsAccess cleans up metrics testing resources
+func cleanupMetricsAccess(podName, clusterRoleBindingName string) {
+	By("cleaning up metrics access resources")
+	if podName != "" {
+		cmd := exec.Command("kubectl", "delete", "pod", podName, "--namespace", namespace)
+		_, _ = utils.Run(cmd)
+	}
+	if clusterRoleBindingName != "" {
+		cmd := exec.Command("kubectl", "delete", "clusterrolebinding", clusterRoleBindingName)
+		_, _ = utils.Run(cmd)
+	}
+}
+
+// getMetricsOutput retrieves and returns the logs from the curl-metrics pod
+// (legacy function for backward compatibility)
+func getMetricsOutput() string {
+	return getMetricsFromCurlPod("curl-metrics")
 }
 
 // tokenRequest is a simplified representation of the Kubernetes TokenRequest API response,

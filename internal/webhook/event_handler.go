@@ -27,17 +27,22 @@ type EventHandler struct {
 
 // Handle implements admission.Handler.
 func (h *EventHandler) Handle(ctx context.Context, req admission.Request) admission.Response {
+	log := logf.FromContext(ctx)
 	metrics.EventsReceivedTotal.Add(ctx, 1)
 
 	if h.Decoder == nil {
+		log.Error(fmt.Errorf("decoder is not initialized"), "Webhook handler received request but decoder is nil")
 		return admission.Errored(http.StatusInternalServerError, fmt.Errorf("decoder is not initialized"))
 	}
 
 	obj := &unstructured.Unstructured{}
 	err := (*h.Decoder).Decode(req, obj)
 	if err != nil {
+		log.Error(err, "Failed to decode admission request", "operation", req.Operation, "kind", req.Kind.Kind)
 		return admission.Errored(http.StatusBadRequest, err)
 	}
+
+	log.V(1).Info("Successfully decoded resource", "kind", obj.GetKind(), "name", obj.GetName(), "namespace", obj.GetNamespace(), "operation", req.Operation)
 
 	matchingRules := h.RuleStore.GetMatchingRules(obj)
 	if len(matchingRules) > 0 {
@@ -63,5 +68,7 @@ func (h *EventHandler) Handle(ctx context.Context, req admission.Request) admiss
 // InjectDecoder injects the decoder.
 func (h *EventHandler) InjectDecoder(d *admission.Decoder) error {
 	h.Decoder = d
+	log := logf.Log.WithName("webhook")
+	log.Info("Decoder successfully injected into EventHandler - ready to decode all Kubernetes resource types")
 	return nil
 }
