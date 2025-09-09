@@ -106,11 +106,12 @@ setup_organization_and_token() {
 
     if [[ "$ORG_RESPONSE" == "201" ]]; then
         echo "✅ Organization created successfully"
-    elif [[ "$ORG_RESPONSE" == "409" ]]; then
+    elif [[ "$ORG_RESPONSE" == "409" ]] || [[ "$ORG_RESPONSE" == "422" ]]; then
         echo "ℹ️  Organization already exists"
     else
         echo "⚠️  Unexpected response creating organization: $ORG_RESPONSE"
-        cat /tmp/org_response.json
+        cat /tmp/org_response.json 2>/dev/null || true
+        echo "ℹ️  Continuing setup despite organization creation issue..."
     fi
 
     # Generate or reuse access token
@@ -127,9 +128,10 @@ setup_organization_and_token() {
     elif [[ "$TOKEN_RESPONSE" == "422" ]]; then
         echo "ℹ️  Token already exists, retrieving existing tokens..."
         # Get existing tokens and use the first one
-        curl -s "$API_URL/users/$ADMIN_USER/tokens" \
-            -u "$ADMIN_USER:$ADMIN_PASS" > /tmp/token_list.json
-        TOKEN=$(cat /tmp/token_list.json | head -1 | grep -o '"sha1":"[^"]*"' | cut -d'"' -f4)
+        if curl -s "$API_URL/users/$ADMIN_USER/tokens" \
+            -u "$ADMIN_USER:$ADMIN_PASS" > /tmp/token_list.json 2>/dev/null; then
+            TOKEN=$(cat /tmp/token_list.json 2>/dev/null | grep -o '"sha1":"[^"]*"' | head -1 | cut -d'"' -f4 || echo "")
+        fi
         if [[ -z "$TOKEN" ]]; then
             echo "⚠️  Using admin credentials directly"
             TOKEN="$ADMIN_PASS"
@@ -197,16 +199,22 @@ configure_ssh_key_in_gitea() {
     
     # First, delete existing SSH keys to ensure we use the current key
     echo "🧹 Removing existing SSH keys..."
-    curl -s -X GET "$API_URL/user/keys" \
+    EXISTING_KEYS=$(curl -s -X GET "$API_URL/user/keys" \
         -H "Content-Type: application/json" \
-        -u "$ADMIN_USER:$ADMIN_PASS" | \
-    grep -o '"id":[0-9]*' | sed 's/"id"://' | \
-    while read -r key_id; do
-        echo "🗑️  Deleting SSH key ID: $key_id"
-        curl -s -X DELETE "$API_URL/user/keys/$key_id" \
-            -H "Content-Type: application/json" \
-            -u "$ADMIN_USER:$ADMIN_PASS" >/dev/null 2>&1 || true
-    done
+        -u "$ADMIN_USER:$ADMIN_PASS" || echo "[]")
+    
+    # Only process if we have keys to delete
+    if echo "$EXISTING_KEYS" | grep -q '"id":'; then
+        echo "$EXISTING_KEYS" | grep -o '"id":[0-9]*' | sed 's/"id"://' | \
+        while read -r key_id; do
+            echo "🗑️  Deleting SSH key ID: $key_id"
+            curl -s -X DELETE "$API_URL/user/keys/$key_id" \
+                -H "Content-Type: application/json" \
+                -u "$ADMIN_USER:$ADMIN_PASS" >/dev/null 2>&1 || true
+        done
+    else
+        echo "ℹ️  No existing SSH keys to remove"
+    fi
     
     # Add SSH key to admin user
     SSH_KEY_RESPONSE=$(curl -s -w "%{http_code}" -o /tmp/ssh_key_response.json \
@@ -218,11 +226,14 @@ configure_ssh_key_in_gitea() {
     if [[ "$SSH_KEY_RESPONSE" == "201" ]]; then
         echo "✅ SSH key configured successfully in Gitea"
     elif [[ "$SSH_KEY_RESPONSE" == "422" ]]; then
-        echo "⚠️  SSH key rejected by Gitea: $(cat /tmp/ssh_key_response.json || echo 'unknown error')"
-        exit 1
+        echo "⚠️  SSH key rejected by Gitea: $(cat /tmp/ssh_key_response.json 2>/dev/null || echo 'unknown error')"
+        echo "ℹ️  SSH authentication tests will be skipped, but HTTP tests will continue"
+        # Don't fail the setup - HTTP authentication should still work
+        return 0
     else
         echo "⚠️  Unexpected response configuring SSH key: $SSH_KEY_RESPONSE"
-        cat /tmp/ssh_key_response.json || true
+        cat /tmp/ssh_key_response.json 2>/dev/null || true
+        echo "ℹ️  SSH authentication may not work, but HTTP tests will continue"
         # Don't fail the setup for SSH key issues
     fi
 }

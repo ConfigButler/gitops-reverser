@@ -69,6 +69,7 @@ jobs:
       - name: Set up KinD
         uses: helm/kind-action@v1.12.0
         with:
+          cluster_name: gitops-reverser-test-e2e
           version: v0.30.0
 
       - name: Run E2E tests
