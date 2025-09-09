@@ -2,6 +2,7 @@ package webhook
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 
 	"github.com/ConfigButler/gitops-reverser/internal/eventqueue"
@@ -14,7 +15,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 )
 
-// +kubebuilder:webhook:path=/validate-v1-event,mutating=false,failurePolicy=ignore,sideEffects=None,groups="*",resources="*",verbs=create;update;delete,versions="*",name=vwatchrule.kb.io,admissionReviewVersions=v1
+// +kubebuilder:webhook:path=/validate-v1-event,mutating=false,failurePolicy=ignore,sideEffects=None,groups="*",resources="*",verbs=create;update;delete,versions="*",name=gitops-reverser.configbutler.ai,admissionReviewVersions=v1
 
 // EventHandler handles all incoming admission requests.
 type EventHandler struct {
@@ -27,6 +28,10 @@ type EventHandler struct {
 // Handle implements admission.Handler.
 func (h *EventHandler) Handle(ctx context.Context, req admission.Request) admission.Response {
 	metrics.EventsReceivedTotal.Add(ctx, 1)
+
+	if h.Decoder == nil {
+		return admission.Errored(http.StatusInternalServerError, fmt.Errorf("decoder is not initialized"))
+	}
 
 	obj := &unstructured.Unstructured{}
 	err := (*h.Decoder).Decode(req, obj)

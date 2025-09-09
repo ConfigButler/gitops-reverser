@@ -61,6 +61,18 @@ All code must be formatted with `goimports` and pass `golangci-lint` checks.
     make lint
     ```
 
+## Development Rules
+
+**Mandatory validation before PR submission:**
+
+```bash
+make lint      # Must pass golangci-lint checks
+make test      # Must pass all unit tests with >90% coverage
+make test-e2e  # Must pass end-to-end tests
+```
+
+For detailed implementation guidelines, see [`.kilocode/rules/implementation-rules.md`](.kilocode/rules/implementation-rules.md).
+
 ## Submitting a Pull Request
 
 1.  Create a new branch for your feature or bug fix.

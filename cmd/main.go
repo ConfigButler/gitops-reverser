@@ -21,9 +21,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
+	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	configbutleraiv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 	"github.com/ConfigButler/gitops-reverser/internal/controller"
+	"github.com/ConfigButler/gitops-reverser/internal/eventqueue"
+	"github.com/ConfigButler/gitops-reverser/internal/metrics"
+	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
+	webhookhandler "github.com/ConfigButler/gitops-reverser/internal/webhook"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -75,6 +80,14 @@ func main() {
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+
+	// Initialize metrics
+	setupCtx := ctrl.SetupSignalHandler()
+	_, err := metrics.InitOTLPExporter(setupCtx)
+	if err != nil {
+		setupLog.Error(err, "unable to initialize metrics exporter")
+		os.Exit(1)
+	}
 
 	// if the enable-http2 flag is false (the default), http/2 should be disabled
 	// due to its vulnerabilities. More specifically, disabling http/2 will
@@ -196,13 +209,33 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "GitRepoConfig")
 		os.Exit(1)
 	}
-	if err = (&controller.WatchRuleReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
+	// Initialize rule store and event queue for webhook handler
+	ruleStore := rulestore.NewStore()
+	eventQueue := eventqueue.NewQueue()
+
+	// Create WatchRule reconciler with rule store integration
+	watchRuleReconciler := &controller.WatchRuleReconciler{
+		Client:    mgr.GetClient(),
+		Scheme:    mgr.GetScheme(),
+		RuleStore: ruleStore,
+	}
+	if err = watchRuleReconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "WatchRule")
 		os.Exit(1)
 	}
+
+	// Register webhook handler
+	eventHandler := &webhookhandler.EventHandler{
+		Client:     mgr.GetClient(),
+		RuleStore:  ruleStore,
+		EventQueue: eventQueue,
+	}
+
+	// Create webhook with admission handler
+	validatingWebhook := &admission.Webhook{Handler: eventHandler}
+	mgr.GetWebhookServer().Register("/validate-v1-event", validatingWebhook)
+	setupLog.Info("Webhook handler registered", "path", "/validate-v1-event")
+
 	// +kubebuilder:scaffold:builder
 
 	if metricsCertWatcher != nil {
@@ -231,7 +264,7 @@ func main() {
 	}
 
 	setupLog.Info("starting manager")
-	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
+	if err := mgr.Start(setupCtx); err != nil {
 		setupLog.Error(err, "problem running manager")
 		os.Exit(1)
 	}

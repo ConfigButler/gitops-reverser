@@ -12,7 +12,7 @@ webhooks:
       namespace: system
       path: /validate-v1-event
   failurePolicy: Ignore
-  name: vwatchrule.kb.io
+  name: gitops-reverser.configbutler.ai
   rules:
   - apiGroups:
     - '*'

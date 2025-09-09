@@ -10,7 +10,7 @@ metadata:
     cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/{{ .Values.certificates.webhook.secretName }}
   {{- end }}
 webhooks:
-- name: validate.gitops-reverser.configbutler.ai
+- name: gitops-reverser.configbutler.ai
   clientConfig:
     service:
       name: {{ include "gitops-reverser.fullname" . }}-webhook-service
