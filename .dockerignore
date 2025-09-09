@@ -1,3 +1,13 @@
-# More info: https://docs.docker.com/engine/reference/builder/#dockerignore-file
-# Ignore build and test binaries.
-bin/
+# This .dockerignore file uses an "allowlist" approach for security and a minimal build context.
+# For more info: https://docs.docker.com/engine/reference/builder/#dockerignore-file
+
+# 1. Ignore everything by default.
+**
+
+# 2. Explicitly re-include only the files and directories needed for the build.
+# This is based on the COPY instructions in the Dockerfile.
+!go.mod
+!go.sum
+!cmd/
+!api/
+!internal/

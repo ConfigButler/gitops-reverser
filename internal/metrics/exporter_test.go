@@ -100,7 +100,7 @@ func TestMetricNames(t *testing.T) {
 
 func TestMeterInitialization(t *testing.T) {
 	// Verify the meter is initialized with the correct name
-	assert.NotNil(t, meter)
+	assert.NotNil(t, otelMeter)
 
 	// The meter should be from the global meter provider
 	globalMeter := otel.Meter("gitops-reverser")
