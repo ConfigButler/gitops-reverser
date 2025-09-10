@@ -1,0 +1,14 @@
+apiVersion: configbutler.ai/v1alpha1
+kind: WatchRule
+metadata:
+  name: {{.Name}}
+  namespace: {{.Namespace}}
+spec:
+  gitRepoConfigRef: {{.GitRepoConfigRef}}
+  excludeLabels:
+    matchExpressions:
+    - key: "configbutler.ai/ignore"
+      operator: Exists
+  rules:
+  - resources: ["deployments", "services", "configmaps", "secrets"]
+  - resources: ["ingresses.*"]

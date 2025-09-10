@@ -1,0 +1,24 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{.PodName}}
+spec:
+  restartPolicy: Never
+  serviceAccountName: {{.ServiceAccountName}}
+  containers:
+  - name: curl
+    image: curlimages/curl:latest
+    command:
+    - /bin/sh
+    - -c
+    args: ["curl -v -k -H 'Authorization: Bearer {{.Token}}' https://{{.ServiceName}}.{{.Namespace}}.svc.cluster.local:8443/metrics && sleep 3600"]
+    securityContext:
+      readOnlyRootFilesystem: true
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+        - ALL
+      runAsNonRoot: true
+      runAsUser: 1000
+      seccompProfile:
+        type: RuntimeDefault

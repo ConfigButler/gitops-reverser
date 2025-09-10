@@ -59,20 +59,17 @@ setup_api_connectivity() {
     pkill -f "kubectl.*port-forward.*3000" 2>/dev/null || true
     sleep 2
 
-    # Setup port-forward for API access
-    echo "🔗 Setting up port-forward..."
-    kubectl port-forward -n "$GITEA_NAMESPACE" "svc/$GITEA_SERVICE" 3000:3000 &
+    # Setup port-forward for API access (persistent for e2e testing)
+    echo "🔗 Setting up persistent port-forward to Gitea on localhost:3000..."
+    echo "💡 Note: Port-forward will remain active after script completion. Use 'pkill -f \"kubectl.*port-forward.*3000\"' to stop."
+    
+    # Start port-forward as a fully detached background process using nohup and disown
+    nohup kubectl port-forward -n "$GITEA_NAMESPACE" "svc/$GITEA_SERVICE" 3000:3000 >/dev/null 2>&1 &
     PF_PID=$!
-
-    # Function to cleanup port-forward
-    cleanup() {
-        echo "🧹 Cleaning up port-forward..."
-        kill $PF_PID 2>/dev/null || true
-        wait $PF_PID 2>/dev/null || true
-        pkill -f "kubectl.*port-forward.*3000" 2>/dev/null || true
-    }
-    trap cleanup EXIT
-
+    
+    # Detach the process from the current shell session
+    disown $PF_PID 2>/dev/null || true
+    
     # Wait for port-forward to be established
     sleep 5
 
@@ -315,6 +312,7 @@ if [ "$ACTION" = "create-repo" ]; then
     create_repository
     
     echo "✅ Repository '$REPO_NAME' setup completed!"
+    echo "💡 Port-forward to Gitea is active on localhost:3000 (if started previously)"
 else
     # Full setup - install Gitea if needed
     setup_gitea
@@ -342,8 +340,13 @@ else
    • Admin User: $ADMIN_USER
    • Admin Pass: $ADMIN_PASS
    • Access Token: ${TOKEN:0:8}...
-   
-✨ Ready for e2e testing!
+
+🌐 Access Gitea:
+   • Visit http://localhost:3000 in your browser
+   • Login: $ADMIN_USER / $ADMIN_PASS
+   • Stop port-forward: pkill -f 'kubectl.*port-forward.*3000'
+
+✨ Ready for e2e testing! Port-forward will stay active.
 "
 fi
 

@@ -84,11 +84,11 @@ setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist
 .PHONY: test-e2e
 test-e2e: setup-test-e2e setup-gitea-e2e manifests generate fmt vet ## Run the e2e tests with real Gitea. Expected an isolated environment using Kind.
 	KIND_CLUSTER=$(KIND_CLUSTER) go test ./test/e2e/ -v -ginkgo.v
-	$(MAKE) cleanup-gitea-e2e
 	$(MAKE) cleanup-test-e2e
 
 .PHONY: cleanup-test-e2e
 cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests
+	$(MAKE) cleanup-gitea-e2e
 	@$(KIND) delete cluster --name $(KIND_CLUSTER)
 
 .PHONY: lint
@@ -253,8 +253,13 @@ setup-gitea-e2e: helm ## Set up Gitea for e2e testing
 	@echo "⚙️  Initializing Gitea test environment..."
 	@GITEA_NAMESPACE=$(GITEA_NAMESPACE) ./test/e2e/scripts/setup-gitea.sh
 
+.PHONY: stop-gitea-pf
+stop-gitea-pf: helm ## Clean up Gitea e2e environment
+	@echo "🔌 Stopping persistent port-forward to Gitea..."
+	@pkill -f "kubectl.*port-forward.*3000" 2>/dev/null || true
+
 .PHONY: cleanup-gitea-e2e
-cleanup-gitea-e2e: helm ## Clean up Gitea e2e environment
+cleanup-gitea-e2e: helm stop-gitea-pf ## Clean up Gitea e2e environment
 	@echo "🧹 Cleaning up Gitea e2e environment..."
 	@$(HELM) uninstall gitea --namespace $(GITEA_NAMESPACE) 2>/dev/null || true
 	@$(KUBECTL) delete namespace $(GITEA_NAMESPACE) 2>/dev/null || true
