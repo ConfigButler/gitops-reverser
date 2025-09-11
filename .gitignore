@@ -28,3 +28,4 @@ go.work
 __debug*
 
 /.kilocode/mcp.json
+/node_modules

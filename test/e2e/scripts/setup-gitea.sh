@@ -7,79 +7,56 @@ GITEA_SERVICE="gitea-http"
 ADMIN_USER="giteaadmin"
 ADMIN_PASS="giteapassword123"
 ORG_NAME="testorg"
-REPO_NAME="${2:-testrepo}"
+REPO_NAME="${1:-}"
 TARGET_NAMESPACE="sut"
 SECRET_NAME="git-creds"
 SSH_SECRET_NAME="git-creds-ssh"
-ACTION="${1:-setup}"
 SSH_KEY_PATH="/tmp/e2e-ssh-key"
 SSH_PUB_KEY_PATH="/tmp/e2e-ssh-key.pub"
+API_URL="http://localhost:3000/api/v1"
 
-if [ "$ACTION" = "create-repo" ]; then
-    echo "🚀 Creating unique test repository: $REPO_NAME"
-else
-    echo "🚀 Setting up Gitea test environment..."
+if [ -z "$REPO_NAME" ]; then
+    echo "❌ Error: Repository name must be provided as first argument"
+    echo "Usage: $0 <repo-name>"
+    exit 1
 fi
 
-# Function to setup Gitea installation
-setup_gitea() {
-    echo "🏗️ Setting up Gitea installation..."
-    
-    # Check if Gitea is already installed
-    if kubectl get namespace "$GITEA_NAMESPACE" >/dev/null 2>&1 && kubectl get deployment -n "$GITEA_NAMESPACE" gitea >/dev/null 2>&1; then
-        echo "ℹ️  Gitea is already installed"
-    else
-        echo "📦 Installing Gitea..."
-        
-        # Add Gitea helm repository
-        helm repo add gitea https://dl.gitea.com/charts/ || true
-        helm repo update
-        
-        # Install Gitea
-        helm install gitea gitea/gitea \
-            --create-namespace --namespace "$GITEA_NAMESPACE" \
-            --values test/e2e/gitea-values.yaml \
-            --wait --timeout 5m
-    fi
+echo "🚀 Setting up Gitea test environment with repository: $REPO_NAME"
 
-    # Wait for Gitea to be ready
+# Function to setup Gitea installation
+wait_gitea() {
     echo "⏳ Waiting for Gitea to be ready..."
     kubectl wait --for=condition=ready pod \
         -l app.kubernetes.io/name=gitea \
         -n "$GITEA_NAMESPACE" \
         --timeout=300s
 
-    echo "✅ Gitea pod is ready"
+    echo "✅ Gitea is ready"
 }
 
 # Function to setup API connectivity
-setup_api_connectivity() {
+setup_persistant_port_forward() {
     # Kill any existing port-forwards on port 3000
     echo "🔧 Cleaning up any existing port-forwards..."
     pkill -f "kubectl.*port-forward.*3000" 2>/dev/null || true
     sleep 2
 
-    # Setup port-forward for API access
-    echo "🔗 Setting up port-forward..."
-    kubectl port-forward -n "$GITEA_NAMESPACE" "svc/$GITEA_SERVICE" 3000:3000 &
+    # Setup port-forward for API access (persistent for e2e testing)
+    echo "🔗 Setting up persistent port-forward to Gitea on localhost:3000..."
+    echo "💡 Note: Port-forward will remain active after script completion. Use 'pkill -f \"kubectl.*port-forward.*3000\"' to stop."
+    
+    # Start port-forward as a fully detached background process using nohup and disown
+    nohup kubectl port-forward -n "$GITEA_NAMESPACE" "svc/$GITEA_SERVICE" 3000:3000 >/dev/null 2>&1 &
     PF_PID=$!
-
-    # Function to cleanup port-forward
-    cleanup() {
-        echo "🧹 Cleaning up port-forward..."
-        kill $PF_PID 2>/dev/null || true
-        wait $PF_PID 2>/dev/null || true
-        pkill -f "kubectl.*port-forward.*3000" 2>/dev/null || true
-    }
-    trap cleanup EXIT
-
+    
+    # Detach the process from the current shell session
+    disown $PF_PID 2>/dev/null || true
+    
     # Wait for port-forward to be established
     sleep 5
+}
 
-    # API Base URL
-    API_URL="http://localhost:3000/api/v1"
-
-    # Test API connectivity
+test_api_connectivity() {
     echo "🔍 Testing API connectivity..."
     for i in {1..30}; do
         if curl -s -f "$API_URL/version" >/dev/null 2>&1; then
@@ -251,7 +228,7 @@ setup_credentials() {
         --from-literal=password="$TOKEN" \
         --dry-run=client -o yaml | kubectl apply -f -
 
-    echo "✅ HTTP Git credentials secret created successfully"
+    echo "✅ HTTP Git credentials secret ($TARGET_NAMESPACE/$SECRET_NAME) created successfully"
 
     # Create SSH-based credentials secret
     if [[ -f "$SSH_KEY_PATH" ]]; then
@@ -286,7 +263,7 @@ setup_credentials() {
         # Cleanup
         rm -f /tmp/known_hosts_ssh "$TEMP_KNOWN_HOSTS"
         
-        echo "✅ SSH Git credentials secret created successfully"
+        echo "✅ SSH Git credentials secret ($TARGET_NAMESPACE/$SSH_SECRET_NAME) created successfully"
     else
         echo "⚠️  SSH private key not found, skipping SSH secret creation"
     fi
@@ -299,36 +276,23 @@ setup_credentials() {
         --from-literal=password="invalidpassword" \
         --dry-run=client -o yaml | kubectl apply -f -
 
-    echo "✅ Invalid credentials secret created for testing"
+    echo "✅ Invalid credentials secret ($TARGET_NAMESPACE/${SECRET_NAME}-invalid) created for testing purposes"
 }
 
-# Main execution logic
-if [ "$ACTION" = "create-repo" ]; then
-    # Only create individual repository - assume Gitea is already running
-    if ! kubectl get namespace "$GITEA_NAMESPACE" >/dev/null 2>&1; then
-        echo "❌ Gitea namespace not found. Please run full setup first."
-        exit 1
-    fi
-    
-    setup_api_connectivity
-    setup_organization_and_token
-    create_repository
-    
-    echo "✅ Repository '$REPO_NAME' setup completed!"
-else
-    # Full setup - install Gitea if needed
-    setup_gitea
-    setup_api_connectivity
-    setup_organization_and_token
-    generate_ssh_keys
-    configure_ssh_key_in_gitea
-    create_repository
-    setup_credentials
-    
-    # Repository information
-    REPO_URL="http://gitea-http.$GITEA_NAMESPACE.svc.cluster.local:3000/$ORG_NAME/$REPO_NAME.git"
+# Main execution logic - full setup with specified repository
+wait_gitea
+setup_persistant_port_forward
+test_api_connectivity
+setup_organization_and_token
+generate_ssh_keys
+configure_ssh_key_in_gitea
+create_repository
+setup_credentials
 
-    echo "
+# Repository information
+REPO_URL="http://gitea-http.$GITEA_NAMESPACE.svc.cluster.local:3000/$ORG_NAME/$REPO_NAME.git"
+
+echo "
 🎉 Gitea setup completed successfully!
 
 📋 Configuration Details:
@@ -337,15 +301,19 @@ else
    • Repository: $REPO_NAME
    • Secret: $SECRET_NAME (in $TARGET_NAMESPACE namespace)
    • Repository URL: $REPO_URL
-   
+    
 🔧 For debugging:
    • Admin User: $ADMIN_USER
    • Admin Pass: $ADMIN_PASS
    • Access Token: ${TOKEN:0:8}...
-   
-✨ Ready for e2e testing!
+
+🌐 Access Gitea:
+   • Visit http://localhost:3000 in your browser
+   • Login: $ADMIN_USER / $ADMIN_PASS
+   • Stop port-forward: pkill -f 'kubectl.*port-forward.*3000'
+
+✨ Ready for e2e testing! Port-forward will stay active.
 "
-fi
 
 # Cleanup temporary files
 rm -f /tmp/org_response.json /tmp/repo_response.json /tmp/token_response.json /tmp/token_list.json /tmp/ssh_key_response.json

@@ -1,0 +1,9 @@
+apiVersion: configbutler.ai/v1alpha1
+kind: WatchRule
+metadata:
+  name: {{.Name}}
+  namespace: {{.Namespace}}
+spec:
+  gitRepoConfigRef: {{.GitRepoConfigRef}}
+  rules:
+  - resources: ["configmaps"]

@@ -30,6 +30,8 @@ func (h *EventHandler) Handle(ctx context.Context, req admission.Request) admiss
 	log := logf.FromContext(ctx)
 	metrics.EventsReceivedTotal.Add(ctx, 1)
 
+	log.Info("Received admission request", "operation", req.Operation, "kind", req.Kind.Kind, "name", req.Name, "namespace", req.Namespace)
+
 	if h.Decoder == nil {
 		log.Error(fmt.Errorf("decoder is not initialized"), "Webhook handler received request but decoder is nil")
 		return admission.Errored(http.StatusInternalServerError, fmt.Errorf("decoder is not initialized"))
