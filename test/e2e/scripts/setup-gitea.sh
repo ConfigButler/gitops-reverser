@@ -226,7 +226,7 @@ setup_credentials() {
         --from-literal=password="$TOKEN" \
         --dry-run=client -o yaml | kubectl apply -f -
 
-    echo "✅ HTTP Git credentials secret created successfully"
+    echo "✅ HTTP Git credentials secret ($TARGET_NAMESPACE/$SECRET_NAME) created successfully"
 
     # Create SSH-based credentials secret
     if [[ -f "$SSH_KEY_PATH" ]]; then
@@ -261,7 +261,7 @@ setup_credentials() {
         # Cleanup
         rm -f /tmp/known_hosts_ssh "$TEMP_KNOWN_HOSTS"
         
-        echo "✅ SSH Git credentials secret created successfully"
+        echo "✅ SSH Git credentials secret ($TARGET_NAMESPACE/$SSH_SECRET_NAME) created successfully"
     else
         echo "⚠️  SSH private key not found, skipping SSH secret creation"
     fi
@@ -274,7 +274,7 @@ setup_credentials() {
         --from-literal=password="invalidpassword" \
         --dry-run=client -o yaml | kubectl apply -f -
 
-    echo "✅ Invalid credentials secret created for testing"
+    echo "✅ Invalid credentials secret ($TARGET_NAMESPACE/${SECRET_NAME}-invalid) created for testing purposes"
 }
 
 # Main execution logic

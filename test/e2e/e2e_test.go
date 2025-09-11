@@ -118,7 +118,8 @@ var _ = Describe("Manager", Ordered, func() {
 	})
 
 	// After all tests have been executed, clean up by undeploying the controller, uninstalling CRDs,
-	// and deleting the namespace (we don't undeploy stuff, it's easier to have running stuff when you need to debug test failures)
+	// and deleting the namespace (we don't undeploy stuff,
+	// it's easier to have running stuff when you need to debug test failures)
 	AfterAll(func() {
 	})
 
