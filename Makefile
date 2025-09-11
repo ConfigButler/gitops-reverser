@@ -245,7 +245,7 @@ setup-gitea-e2e: helm ## Set up Gitea for e2e testing
 .PHONY: setup-cert-manager
 setup-cert-manager:
 	@echo "🚀 Setup cert-manager (no wait needed)"
-	kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.18.2/cert-manager.yaml | grep -v "unchanged$"
+	@$(KUBECTL) apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.18.2/cert-manager.yaml | grep -v "unchanged"
 
 .PHONY: stop-gitea-pf
 stop-gitea-pf: helm ## Clean up Gitea e2e environment
