@@ -7,19 +7,21 @@ GITEA_SERVICE="gitea-http"
 ADMIN_USER="giteaadmin"
 ADMIN_PASS="giteapassword123"
 ORG_NAME="testorg"
-REPO_NAME="${2:-testrepo}"
+REPO_NAME="${1:-}"
 TARGET_NAMESPACE="sut"
 SECRET_NAME="git-creds"
 SSH_SECRET_NAME="git-creds-ssh"
-ACTION="${1:-setup}"
 SSH_KEY_PATH="/tmp/e2e-ssh-key"
 SSH_PUB_KEY_PATH="/tmp/e2e-ssh-key.pub"
 API_URL="http://localhost:3000/api/v1"
-if [ "$ACTION" = "create-repo" ]; then
-    echo "🚀 Creating unique test repository: $REPO_NAME"
-else
-    echo "🚀 Setting up Gitea test environment..."
+
+if [ -z "$REPO_NAME" ]; then
+    echo "❌ Error: Repository name must be provided as first argument"
+    echo "Usage: $0 <repo-name>"
+    exit 1
 fi
+
+echo "🚀 Setting up Gitea test environment with repository: $REPO_NAME"
 
 # Function to setup Gitea installation
 wait_gitea() {
@@ -277,35 +279,20 @@ setup_credentials() {
     echo "✅ Invalid credentials secret ($TARGET_NAMESPACE/${SECRET_NAME}-invalid) created for testing purposes"
 }
 
-# Main execution logic
-if [ "$ACTION" = "create-repo" ]; then
-    # Only create individual repository - assume Gitea is already running
-    if ! kubectl get namespace "$GITEA_NAMESPACE" >/dev/null 2>&1; then
-        echo "❌ Gitea namespace not found. Please run full setup first."
-        exit 1
-    fi
-    
-    setup_persistant_port_forward
-    setup_organization_and_token
-    create_repository
-    
-    echo "✅ Repository '$REPO_NAME' setup completed!"
-    echo "💡 Port-forward to Gitea is active on localhost:3000 (if started previously)"
-else
-    # Full setup - install Gitea if needed
-    wait_gitea
-    setup_persistant_port_forward
-    test_api_connectivity
-    setup_organization_and_token
-    generate_ssh_keys
-    configure_ssh_key_in_gitea
-    create_repository
-    setup_credentials
-    
-    # Repository information
-    REPO_URL="http://gitea-http.$GITEA_NAMESPACE.svc.cluster.local:3000/$ORG_NAME/$REPO_NAME.git"
+# Main execution logic - full setup with specified repository
+wait_gitea
+setup_persistant_port_forward
+test_api_connectivity
+setup_organization_and_token
+generate_ssh_keys
+configure_ssh_key_in_gitea
+create_repository
+setup_credentials
 
-    echo "
+# Repository information
+REPO_URL="http://gitea-http.$GITEA_NAMESPACE.svc.cluster.local:3000/$ORG_NAME/$REPO_NAME.git"
+
+echo "
 🎉 Gitea setup completed successfully!
 
 📋 Configuration Details:
@@ -314,7 +301,7 @@ else
    • Repository: $REPO_NAME
    • Secret: $SECRET_NAME (in $TARGET_NAMESPACE namespace)
    • Repository URL: $REPO_URL
-   
+    
 🔧 For debugging:
    • Admin User: $ADMIN_USER
    • Admin Pass: $ADMIN_PASS
@@ -327,7 +314,6 @@ else
 
 ✨ Ready for e2e testing! Port-forward will stay active.
 "
-fi
 
 # Cleanup temporary files
 rm -f /tmp/org_response.json /tmp/repo_response.json /tmp/token_response.json /tmp/token_list.json /tmp/ssh_key_response.json

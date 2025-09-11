@@ -67,6 +67,18 @@ const metricsRoleBindingName = "gitops-reverser-metrics-binding"
 const giteaRepoURLTemplate = "http://gitea-http.gitea-e2e.svc.cluster.local:3000/testorg/%s.git"
 const giteaSSHURLTemplate = "ssh://git@gitea-ssh.gitea-e2e.svc.cluster.local:2222/testorg/%s.git"
 
+var testRepoName string
+
+// getRepoUrlHTTP returns the HTTP URL for the test repository
+func getRepoUrlHTTP() string {
+	return fmt.Sprintf(giteaRepoURLTemplate, testRepoName)
+}
+
+// getRepoUrlSSH returns the SSH URL for the test repository
+func getRepoUrlSSH() string {
+	return fmt.Sprintf(giteaSSHURLTemplate, testRepoName)
+}
+
 var _ = Describe("Manager", Ordered, func() {
 	var controllerPodName string
 
@@ -111,10 +123,13 @@ var _ = Describe("Manager", Ordered, func() {
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to deploy the controller-manager")
 
-		By("setting up Gitea test environment")
-		cmd = exec.Command("bash", "test/e2e/scripts/setup-gitea.sh")
+		By("setting up Gitea test environment with unique repository")
+		companyStart := time.Date(2025, 5, 12, 0, 0, 0, 0, time.UTC)
+		minutesSinceStart := int(time.Since(companyStart).Minutes())
+		testRepoName = fmt.Sprintf("e2e-test-repo-%d", minutesSinceStart)
+		cmd = exec.Command("bash", "test/e2e/scripts/setup-gitea.sh", testRepoName)
 		_, err = utils.Run(cmd)
-		Expect(err).NotTo(HaveOccurred(), "Failed to setup Gitea test environment")
+		Expect(err).NotTo(HaveOccurred(), "Failed to setup Gitea test environment with repository")
 	})
 
 	// After all tests have been executed, clean up by undeploying the controller, uninstalling CRDs,
@@ -398,17 +413,11 @@ var _ = Describe("Manager", Ordered, func() {
 			gitRepoConfigName := "gitrepoconfig-configmap-test"
 			watchRuleName := "watchrule-configmap-test"
 			configMapName := "test-configmap"
-			uniqueRepoName := fmt.Sprintf("testrepo-configmap-%s", watchRuleName)
-
-			By("creating unique test repository for ConfigMap test")
-			cmd := exec.Command("bash", "test/e2e/scripts/setup-gitea.sh", "create-repo", uniqueRepoName)
-			_, err := utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred(), "Failed to create test repository for ConfigMap test")
-
-			repoURL := fmt.Sprintf(giteaRepoURLTemplate, uniqueRepoName)
+			uniqueRepoName := testRepoName
+			repoURL := getRepoUrlHTTP()
 
 			By("creating GitRepoConfig for ConfigMap test")
-			createGitRepoConfigWithURL(gitRepoConfigName, "main", "git-creds", giteaRepoURLTemplate, "testrepo-configmap")
+			createGitRepoConfigWithURL(gitRepoConfigName, "main", "git-creds", repoURL)
 
 			By("waiting for GitRepoConfig to be ready")
 			verifyGitRepoConfigStatus(gitRepoConfigName, "True", "BranchFound", "Branch 'main' found and accessible")
@@ -424,8 +433,8 @@ var _ = Describe("Manager", Ordered, func() {
 				GitRepoConfigRef: gitRepoConfigName,
 			}
 
-			err = applyFromTemplate("test/e2e/templates/watchrule-configmap.tmpl", data, namespace)
-			Expect(err).NotTo(HaveOccurred(), "Failed to apply WatchRule")
+			err2 := applyFromTemplate("test/e2e/templates/watchrule-configmap.tmpl", data, namespace)
+			Expect(err2).NotTo(HaveOccurred(), "Failed to apply WatchRule")
 
 			By("verifying WatchRule is ready")
 			verifyReconciled := func(g Gomega) {
@@ -446,8 +455,8 @@ var _ = Describe("Manager", Ordered, func() {
 				Namespace: namespace,
 			}
 
-			err = applyFromTemplate("test/e2e/templates/configmap.tmpl", configMapData, namespace)
-			Expect(err).NotTo(HaveOccurred(), "Failed to apply ConfigMap")
+			err3 := applyFromTemplate("test/e2e/templates/configmap.tmpl", configMapData, namespace)
+			Expect(err3).NotTo(HaveOccurred(), "Failed to apply ConfigMap")
 
 			By("waiting for controller reconciliation of ConfigMap event")
 			verifyReconciliationLogs := func(g Gomega) {
@@ -518,6 +527,7 @@ var _ = Describe("Manager", Ordered, func() {
 			Eventually(verifyGitCommit, 3*time.Minute, 30*time.Second).Should(Succeed())
 
 			By("cleaning up test resources")
+			var cmd *exec.Cmd
 			cmd = exec.Command("kubectl", "delete", "configmap", configMapName, "-n", namespace)
 			_, _ = utils.Run(cmd)
 			cmd = exec.Command("kubectl", "delete", "watchrule", watchRuleName, "-n", namespace)
@@ -584,18 +594,10 @@ func serviceAccountToken() (string, error) {
 	return out, err
 }
 
-// createGitRepoConfigWithURL creates a GitRepoConfig resource with the specified URL template
-func createGitRepoConfigWithURL(name, branch, secretName, urlTemplate, repoPrefix string) {
-	By(fmt.Sprintf("creating GitRepoConfig '%s' with branch '%s' and secret '%s'", name, branch, secretName))
-
-	// Create unique repository name and setup the repo
-	uniqueRepoName := fmt.Sprintf("%s-%s", repoPrefix, name)
-	repoURL := fmt.Sprintf(urlTemplate, uniqueRepoName)
-
-	By(fmt.Sprintf("creating unique test repository '%s'", uniqueRepoName))
-	cmd := exec.Command("bash", "test/e2e/scripts/setup-gitea.sh", "create-repo", uniqueRepoName)
-	_, err := utils.Run(cmd)
-	Expect(err).NotTo(HaveOccurred(), "Failed to create test repository")
+// createGitRepoConfigWithURL creates a GitRepoConfig resource with the specified URL
+func createGitRepoConfigWithURL(name, branch, secretName, repoURL string) {
+	By(fmt.Sprintf("creating GitRepoConfig '%s' with branch '%s', secret '%s' and URL '%s'",
+		name, branch, secretName, repoURL))
 
 	data := struct {
 		Name       string
@@ -611,18 +613,18 @@ func createGitRepoConfigWithURL(name, branch, secretName, urlTemplate, repoPrefi
 		SecretName: secretName,
 	}
 
-	err = applyFromTemplate("test/e2e/templates/gitrepoconfig.tmpl", data, namespace)
+	err := applyFromTemplate("test/e2e/templates/gitrepoconfig.tmpl", data, namespace)
 	Expect(err).NotTo(HaveOccurred(), "Failed to apply GitRepoConfig")
 }
 
 // createGitRepoConfig creates a GitRepoConfig resource with HTTP URL
 func createGitRepoConfig(name, branch, secretName string) {
-	createGitRepoConfigWithURL(name, branch, secretName, giteaRepoURLTemplate, "testrepo")
+	createGitRepoConfigWithURL(name, branch, secretName, getRepoUrlHTTP())
 }
 
 // createSSHGitRepoConfig creates a GitRepoConfig resource with SSH URL
 func createSSHGitRepoConfig(name, branch, secretName string) {
-	createGitRepoConfigWithURL(name, branch, secretName, giteaSSHURLTemplate, "testrepo-ssh")
+	createGitRepoConfigWithURL(name, branch, secretName, getRepoUrlSSH())
 }
 
 // verifyGitRepoConfigStatus verifies the GitRepoConfig status matches expected values
