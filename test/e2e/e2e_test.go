@@ -74,8 +74,16 @@ var _ = Describe("Manager", Ordered, func() {
 	// enforce the restricted security policy to the namespace, installing CRDs,
 	// deploying the controller, and setting up Gitea.
 	BeforeAll(func() {
+		By("preventive namespace cleanup")
+		cmd := exec.Command("kubectl", "delete", "ns", namespace)
+		_, _ = utils.Run(cmd)
+
+		By("preventive clusterrolebinding cleanup")
+		cmd = exec.Command("kubectl", "delete", "clusterrolebinding", metricsRoleBindingName)
+		_, _ = utils.Run(cmd)
+
 		By("creating manager namespace")
-		cmd := exec.Command("kubectl", "create", "ns", namespace)
+		cmd = exec.Command("kubectl", "create", "ns", namespace)
 		_, err := utils.Run(cmd)
 		if err != nil {
 			// Namespace might already exist from Gitea setup - check if it's AlreadyExists error
@@ -103,34 +111,15 @@ var _ = Describe("Manager", Ordered, func() {
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to deploy the controller-manager")
 
-		By("setting up persistent Gitea test environment")
+		By("setting up Gitea test environment")
 		cmd = exec.Command("bash", "test/e2e/scripts/setup-gitea.sh")
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to setup Gitea test environment")
 	})
 
 	// After all tests have been executed, clean up by undeploying the controller, uninstalling CRDs,
-	// and deleting the namespace.
+	// and deleting the namespace (we don't undeploy stuff, it's easier to have running stuff when you need to debug test failures)
 	AfterAll(func() {
-		By("removing the created clusterrolebinding for metrics")
-		cmd := exec.Command("kubectl", "delete", "clusterrolebinding", metricsRoleBindingName)
-		_, _ = utils.Run(cmd)
-
-		// Note: We keep Gitea running for efficiency - it will be cleaned up by the test environment
-		// TODO: Keep all things running, so that we can debug easier whats happening at failures.
-		// We can also run the (potential) cleanup when starting the tests?
-
-		By("undeploying the controller-manager")
-		cmd = exec.Command("make", "undeploy")
-		_, _ = utils.Run(cmd)
-
-		By("uninstalling CRDs")
-		cmd = exec.Command("make", "uninstall")
-		_, _ = utils.Run(cmd)
-
-		By("removing manager namespace")
-		cmd = exec.Command("kubectl", "delete", "ns", namespace)
-		_, _ = utils.Run(cmd)
 	})
 
 	// After each test, check for failures and collect logs, events,

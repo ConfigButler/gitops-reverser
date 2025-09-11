@@ -14,7 +14,7 @@ SSH_SECRET_NAME="git-creds-ssh"
 ACTION="${1:-setup}"
 SSH_KEY_PATH="/tmp/e2e-ssh-key"
 SSH_PUB_KEY_PATH="/tmp/e2e-ssh-key.pub"
-
+API_URL="http://localhost:3000/api/v1"
 if [ "$ACTION" = "create-repo" ]; then
     echo "🚀 Creating unique test repository: $REPO_NAME"
 else
@@ -22,38 +22,18 @@ else
 fi
 
 # Function to setup Gitea installation
-setup_gitea() {
-    echo "🏗️ Setting up Gitea installation..."
-    
-    # Check if Gitea is already installed
-    if kubectl get namespace "$GITEA_NAMESPACE" >/dev/null 2>&1 && kubectl get deployment -n "$GITEA_NAMESPACE" gitea >/dev/null 2>&1; then
-        echo "ℹ️  Gitea is already installed"
-    else
-        echo "📦 Installing Gitea..."
-        
-        # Add Gitea helm repository
-        helm repo add gitea https://dl.gitea.com/charts/ || true
-        helm repo update
-        
-        # Install Gitea
-        helm install gitea gitea/gitea \
-            --create-namespace --namespace "$GITEA_NAMESPACE" \
-            --values test/e2e/gitea-values.yaml \
-            --wait --timeout 5m
-    fi
-
-    # Wait for Gitea to be ready
+wait_gitea() {
     echo "⏳ Waiting for Gitea to be ready..."
     kubectl wait --for=condition=ready pod \
         -l app.kubernetes.io/name=gitea \
         -n "$GITEA_NAMESPACE" \
         --timeout=300s
 
-    echo "✅ Gitea pod is ready"
+    echo "✅ Gitea is ready"
 }
 
 # Function to setup API connectivity
-setup_api_connectivity() {
+setup_persistant_port_forward() {
     # Kill any existing port-forwards on port 3000
     echo "🔧 Cleaning up any existing port-forwards..."
     pkill -f "kubectl.*port-forward.*3000" 2>/dev/null || true
@@ -72,11 +52,9 @@ setup_api_connectivity() {
     
     # Wait for port-forward to be established
     sleep 5
+}
 
-    # API Base URL
-    API_URL="http://localhost:3000/api/v1"
-
-    # Test API connectivity
+test_api_connectivity() {
     echo "🔍 Testing API connectivity..."
     for i in {1..30}; do
         if curl -s -f "$API_URL/version" >/dev/null 2>&1; then
@@ -307,7 +285,7 @@ if [ "$ACTION" = "create-repo" ]; then
         exit 1
     fi
     
-    setup_api_connectivity
+    setup_persistant_port_forward
     setup_organization_and_token
     create_repository
     
@@ -315,8 +293,9 @@ if [ "$ACTION" = "create-repo" ]; then
     echo "💡 Port-forward to Gitea is active on localhost:3000 (if started previously)"
 else
     # Full setup - install Gitea if needed
-    setup_gitea
-    setup_api_connectivity
+    wait_gitea
+    setup_persistant_port_forward
+    test_api_connectivity
     setup_organization_and_token
     generate_ssh_keys
     configure_ssh_key_in_gitea

@@ -78,8 +78,12 @@ setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist
 	esac
 
 .PHONY: test-e2e
-test-e2e: setup-test-e2e undeploy uninstall setup-gitea-e2e manifests generate fmt vet ## Runs the e2e cluster in a real kind cluster, undeploy and uninstall are ran so that we don't have to cleanup after running tests (which is very nice if you want to debug a failed test).
+test-e2e: setup-test-e2e cleanup-webhook setup-cert-manager setup-gitea-e2e manifests generate fmt vet ## Runs the e2e cluster in a real kind cluster, undeploy and uninstall are ran so that we don't have to cleanup after running tests (which is very nice if you want to debug a failed test).
 	KIND_CLUSTER=$(KIND_CLUSTER) go test ./test/e2e/ -v -ginkgo.v
+
+.PHONY: cleanup-webhook
+cleanup-webhook: ## Preventive cleanup of ValidatingWebhookConfiguration potenially left by previous test runs
+	$(KUBECTL) delete ValidatingWebhookConfiguration gitops-reverser-validating-webhook-configuration --ignore-not-found=true
 
 .PHONY: cleanup-test-e2e
 cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests
@@ -229,17 +233,40 @@ $(GOLANGCI_LINT): $(LOCALBIN)
 
 .PHONY: setup-gitea-e2e
 setup-gitea-e2e: helm ## Set up Gitea for e2e testing
-	@echo "🚀 Setting up Gitea for e2e testing..."
+	@echo "🚀 Setup Gitea for e2e testing..."
 	@$(HELM) repo add gitea-charts https://dl.gitea.com/charts/ 2>/dev/null || true
 	@$(HELM) repo update gitea-charts
 	@$(KUBECTL) create namespace $(GITEA_NAMESPACE) --dry-run=client -o yaml | $(KUBECTL) apply -f -
 	@$(HELM) upgrade --install gitea gitea-charts/gitea \
 		--namespace $(GITEA_NAMESPACE) \
 		--version $(GITEA_CHART_VERSION) \
-		--values test/e2e/gitea-values.yaml \
+		--values test/e2e/gitea-values.yaml
+
+.PHONY: setup-cert-manager
+setup-cert-manager:
+	@echo "🚀 Setup cert-manager (no wait needed)"
+	helm upgrade --install \
+		cert-manager oci://quay.io/jetstack/charts/cert-manager \
+   		--version v1.18.2 \
+   		--namespace cert-manager \
+   		--create-namespace \
+   		--set crds.enabled=true
+
+## Gitea Operator Configuration
+GITEA_OPERATOR_NAMESPACE ?= gitea-operator-system
+GITEA_OPERATOR_CHART_VERSION ?= 0.1.0  # Adjust based on latest release
+
+.PHONY: setup-gitea-operator
+setup-gitea-operator: helm ## Install Gitea Operator via Helm
+	@echo "🚀 Setting up Gitea Operator..."
+	@helm repo add gitea-operator https://hyperspike.github.io/gitea-operator || true
+	@helm repo update gitea-operator
+	@$(KUBECTL) create namespace $(GITEA_OPERATOR_NAMESPACE) --dry-run=client -o yaml | $(KUBECTL) apply -f -
+	@helm upgrade --install gitea-operator gitea-operator/gitea-operator \
+		--namespace $(GITEA_OPERATOR_NAMESPACE) \
+		--version $(GITEA_OPERATOR_CHART_VERSION) \
 		--wait --timeout=300s
-	@echo "⚙️  Initializing Gitea test environment..."
-	@GITEA_NAMESPACE=$(GITEA_NAMESPACE) ./test/e2e/scripts/setup-gitea.sh
+	@echo "✅ Gitea Operator installed successfully"
 
 .PHONY: stop-gitea-pf
 stop-gitea-pf: helm ## Clean up Gitea e2e environment
