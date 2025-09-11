@@ -245,28 +245,7 @@ setup-gitea-e2e: helm ## Set up Gitea for e2e testing
 .PHONY: setup-cert-manager
 setup-cert-manager:
 	@echo "🚀 Setup cert-manager (no wait needed)"
-	helm upgrade --install \
-		cert-manager oci://quay.io/jetstack/charts/cert-manager \
-   		--version v1.18.2 \
-   		--namespace cert-manager \
-   		--create-namespace \
-   		--set crds.enabled=true
-
-## Gitea Operator Configuration
-GITEA_OPERATOR_NAMESPACE ?= gitea-operator-system
-GITEA_OPERATOR_CHART_VERSION ?= 0.1.0  # Adjust based on latest release
-
-.PHONY: setup-gitea-operator
-setup-gitea-operator: helm ## Install Gitea Operator via Helm
-	@echo "🚀 Setting up Gitea Operator..."
-	@helm repo add gitea-operator https://hyperspike.github.io/gitea-operator || true
-	@helm repo update gitea-operator
-	@$(KUBECTL) create namespace $(GITEA_OPERATOR_NAMESPACE) --dry-run=client -o yaml | $(KUBECTL) apply -f -
-	@helm upgrade --install gitea-operator gitea-operator/gitea-operator \
-		--namespace $(GITEA_OPERATOR_NAMESPACE) \
-		--version $(GITEA_OPERATOR_CHART_VERSION) \
-		--wait --timeout=300s
-	@echo "✅ Gitea Operator installed successfully"
+	kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.18.2/cert-manager.yaml | grep -v "unchanged$"
 
 .PHONY: stop-gitea-pf
 stop-gitea-pf: helm ## Clean up Gitea e2e environment
