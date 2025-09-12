@@ -84,7 +84,7 @@ Run traditional GitOps on some resources (infrastructure, base applications) whi
 ## Getting Started
 
 ### Prerequisites
-- Go 1.24.0+
+- Go 1.25.1+
 - Docker 17.03+
 - kubectl v1.11.3+
 - Access to a Kubernetes v1.11.3+ cluster

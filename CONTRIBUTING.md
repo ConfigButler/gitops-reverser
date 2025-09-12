@@ -13,7 +13,7 @@ We welcome any type of contribution, not just code. You can help with:
 
 ### Prerequisites
 
-*   Go (version 1.24 or higher)
+*   Go (version 1.25 or higher)
 *   Docker
 *   `kubebuilder`
 *   A running Kubernetes cluster (like `kind` or `minikube`) to run tests against.
