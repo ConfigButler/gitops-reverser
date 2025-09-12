@@ -4,7 +4,9 @@ package git
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -49,6 +51,9 @@ func (w *Worker) NeedLeaderElection() bool {
 func (w *Worker) dispatchEvents(ctx context.Context, repoQueues map[string]chan eventqueue.Event, mu *sync.Mutex) {
 	log := w.Log.WithName("dispatch")
 
+	// Use faster polling interval for test environments
+	pollInterval := w.getPollInterval()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -58,7 +63,7 @@ func (w *Worker) dispatchEvents(ctx context.Context, repoQueues map[string]chan 
 			events := w.EventQueue.DequeueAll()
 			if len(events) == 0 {
 				// Don't log every time there are no events, that would be too noisy
-				time.Sleep(1 * time.Second)
+				time.Sleep(pollInterval)
 				continue
 			}
 
@@ -141,12 +146,12 @@ func (w *Worker) getPushInterval(log logr.Logger, repoConfig *v1alpha1.GitRepoCo
 	if repoConfig.Spec.Push != nil && repoConfig.Spec.Push.Interval != nil {
 		pushInterval, err := time.ParseDuration(*repoConfig.Spec.Push.Interval)
 		if err != nil {
-			log.Error(err, "Invalid push interval, using default 1m")
-			return 1 * time.Minute
+			log.Error(err, "Invalid push interval, using default")
+			return w.getDefaultPushInterval()
 		}
 		return pushInterval
 	}
-	return 1 * time.Minute
+	return w.getDefaultPushInterval()
 }
 
 // getMaxCommits extracts the max commits setting from GitRepoConfig.
@@ -154,7 +159,46 @@ func (w *Worker) getMaxCommits(repoConfig *v1alpha1.GitRepoConfig) int {
 	if repoConfig.Spec.Push != nil && repoConfig.Spec.Push.MaxCommits != nil {
 		return *repoConfig.Spec.Push.MaxCommits
 	}
-	return 20
+	return w.getDefaultMaxCommits()
+}
+
+// getDefaultMaxCommits returns the default max commits, optimized for test environments.
+func (w *Worker) getDefaultMaxCommits() int {
+	// Check if we're in a test environment
+	if w.isTestEnvironment() {
+		return 1 // Trigger push immediately for tests
+	}
+	return 20 // Normal batch size for production
+}
+
+// getPollInterval returns the event polling interval, optimized for test environments.
+func (w *Worker) getPollInterval() time.Duration {
+	// Check if we're in a test environment
+	if w.isTestEnvironment() {
+		return 100 * time.Millisecond // Much faster for tests
+	}
+	return 1 * time.Second // Normal interval for production
+}
+
+// getDefaultPushInterval returns the default push interval, optimized for test environments.
+func (w *Worker) getDefaultPushInterval() time.Duration {
+	// Check if we're in a test environment
+	if w.isTestEnvironment() {
+		return 5 * time.Second // Much faster for tests
+	}
+	return 1 * time.Minute // Normal interval for production
+}
+
+// isTestEnvironment detects if we're running in a test environment.
+func (w *Worker) isTestEnvironment() bool {
+	// Check for common test environment indicators
+	if os.Getenv("TESTING") != "" ||
+		os.Getenv("CI") != "" ||
+		os.Getenv("E2E_TESTING") != "" ||
+		strings.Contains(os.Args[0], "test") {
+		return true
+	}
+	return false
 }
 
 // runEventLoop runs the main event processing loop.

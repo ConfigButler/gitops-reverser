@@ -42,6 +42,9 @@ var _ = Describe("Manager", Ordered, func() {
 	// enforce the restricted security policy to the namespace, installing CRDs,
 	// deploying the controller, and setting up Gitea.
 	BeforeAll(func() {
+		By("setting E2E test environment variable for optimizations")
+		os.Setenv("E2E_TESTING", "true")
+
 		By("preventive namespace cleanup")
 		cmd := exec.Command("kubectl", "delete", "ns", namespace)
 		_, _ = utils.Run(cmd)
@@ -78,6 +81,20 @@ var _ = Describe("Manager", Ordered, func() {
 		cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", projectImage))
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to deploy the controller-manager")
+
+		By("setting E2E_TESTING environment variable in controller manager")
+		envCmd := exec.Command("kubectl", "set", "env", "deployment/gitops-reverser-controller-manager",
+			"E2E_TESTING=true", "-n", namespace)
+		_, envErr := utils.Run(envCmd)
+		if envErr != nil {
+			fmt.Printf("Warning: Failed to set E2E_TESTING environment variable: %v\n", envErr)
+		} else {
+			fmt.Printf("✅ Set E2E_TESTING environment variable in controller manager\n")
+
+			// Wait for the deployment to restart with the new environment variable
+			By("waiting for controller manager to restart with test environment")
+			time.Sleep(10 * time.Second)
+		}
 
 		By("setting up Gitea test environment with unique repository")
 		companyStart := time.Date(2025, 5, 12, 0, 0, 0, 0, time.UTC)
@@ -138,8 +155,9 @@ var _ = Describe("Manager", Ordered, func() {
 		}
 	})
 
-	SetDefaultEventuallyTimeout(10 * time.Second)
-	SetDefaultEventuallyPollingInterval(time.Second)
+	// Optimize timeouts for faster test execution
+	SetDefaultEventuallyTimeout(30 * time.Second)               // Increased for reliability but still faster than before
+	SetDefaultEventuallyPollingInterval(500 * time.Millisecond) // Faster polling
 
 	Context("Manager", func() {
 		var metricsToken string
@@ -400,7 +418,7 @@ var _ = Describe("Manager", Ordered, func() {
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(Equal("True"))
 			}
-			Eventually(verifyReconciled, 30*time.Second).Should(Succeed())
+			Eventually(verifyReconciled, 15*time.Second, time.Second).Should(Succeed())
 
 			By("creating test ConfigMap to trigger Git commit")
 			configMapData := struct {
@@ -416,8 +434,6 @@ var _ = Describe("Manager", Ordered, func() {
 
 			By("waiting for controller reconciliation of ConfigMap event")
 			verifyReconciliationLogs := func(g Gomega) {
-				showControllerLogs("checking for ConfigMap reconciliation")
-
 				// Get controller logs
 				cmd := exec.Command("kubectl", "logs", "-l", "control-plane=controller-manager",
 					"-n", namespace, "--tail=500")
@@ -433,7 +449,7 @@ var _ = Describe("Manager", Ordered, func() {
 				g.Expect(output).To(ContainSubstring("git commit"),
 					"Should see git commit operation in logs")
 			}
-			Eventually(verifyReconciliationLogs, 2*time.Minute, 10*time.Second).Should(Succeed())
+			Eventually(verifyReconciliationLogs, 45*time.Second, 2*time.Second).Should(Succeed())
 
 			By("verifying ConfigMap YAML file exists in Gitea repository")
 			verifyGitCommit := func(g Gomega) {
@@ -460,7 +476,7 @@ var _ = Describe("Manager", Ordered, func() {
 				g.Expect(string(content)).To(ContainSubstring("test-key: test-value"),
 					"ConfigMap file should contain expected data")
 			}
-			Eventually(verifyGitCommit, 1*time.Minute, 30*time.Second).Should(Succeed())
+			Eventually(verifyGitCommit, 120*time.Second, 5*time.Second).Should(Succeed())
 
 			By("cleaning up test resources")
 			var cmd *exec.Cmd

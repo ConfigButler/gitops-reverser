@@ -6,5 +6,8 @@ metadata:
 spec:
   repoUrl: {{.RepoURL}}
   branch: {{.Branch}}
+  push:
+    interval: "10s"
+    maxCommits: 1
   secretRef:
     name: {{.SecretName}}

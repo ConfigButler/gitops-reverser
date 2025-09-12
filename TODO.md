@@ -68,3 +68,10 @@ This document outlines the tasks required to build the GitOps Reverser tool as s
 [ ] Do we now actually make a commit in the end2end?
 
 
+---
+
+Other todos:
+
+* Remove the weird conversion between plurarl or capitlized kind names
+* Don't have different cloning strategies between test or production (remove all stuff that says test environment!)
+* Get more speed in pushing the changes to the git repo (where the default of 1 minute is a bit slow!)
