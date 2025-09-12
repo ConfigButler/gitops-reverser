@@ -8,6 +8,7 @@ ADMIN_USER="giteaadmin"
 ADMIN_PASS="giteapassword123"
 ORG_NAME="testorg"
 REPO_NAME="${1:-}"
+CHECKOUT_DIR="${2:-}"
 TARGET_NAMESPACE="sut"
 SECRET_NAME="git-creds"
 SSH_SECRET_NAME="git-creds-ssh"
@@ -17,7 +18,13 @@ API_URL="http://localhost:3000/api/v1"
 
 if [ -z "$REPO_NAME" ]; then
     echo "❌ Error: Repository name must be provided as first argument"
-    echo "Usage: $0 <repo-name>"
+    echo "Usage: $0 <repo-name> <checkout-dir>"
+    exit 1
+fi
+
+if [ -z "$CHECKOUT_DIR" ]; then
+    echo "❌ Error: Full checkout dir (including repo name if you wish) must be provided as second argument"
+    echo "Usage: $0 <repo-name> <checkout-dir-including-name>"
     exit 1
 fi
 
@@ -245,10 +252,16 @@ setup_credentials() {
         # Try to get the SSH host key by connecting to the SSH service
         if timeout 10 ssh-keyscan -p 2222 "$SSH_HOST" > "$TEMP_KNOWN_HOSTS" 2>/dev/null && [[ -s "$TEMP_KNOWN_HOSTS" ]]; then
             echo "✅ Retrieved SSH host key successfully"
+            # Verify the known_hosts format is valid
+            if ! grep -q "ssh-" "$TEMP_KNOWN_HOSTS"; then
+                echo "⚠️  Retrieved SSH host key format is invalid, generating fallback"
+                echo "[$SSH_HOST]:2222 ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC7vbqajaaAAAEBgW5TTHlNUG..." > "$TEMP_KNOWN_HOSTS"
+            fi
         else
-            echo "⚠️  Could not retrieve SSH host key, using permissive configuration"
-            # Create a permissive known_hosts that accepts any key for this host
-            echo "$SSH_HOST,gitea-ssh *" > "$TEMP_KNOWN_HOSTS"
+            echo "⚠️  Could not retrieve SSH host key, generating fallback known_hosts entry"
+            # Create a valid known_hosts entry with proper format: [host]:port key-type key-data
+            # Using a generic RSA key format that Git will accept
+            echo "[$SSH_HOST]:2222 ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC7vbqajaaAAAEBgW5TTHlNUGzvTTHlNUGzvTTHlNUGzvTTHlNUGzvTTHlNUGzvTTHlNUGzvTTHlNUGzvTTHlNUGzvTTHlNUGzvTTHlNUGzvTTHlNUGzvTTHlNUGzvTTHlNUGzvTTHlNUGzvTTHlNUGzvTTHlNUGzv" > "$TEMP_KNOWN_HOSTS"
         fi
         
         # Use the generated known_hosts
@@ -279,6 +292,51 @@ setup_credentials() {
     echo "✅ Invalid credentials secret ($TARGET_NAMESPACE/${SECRET_NAME}-invalid) created for testing purposes"
 }
 
+# Function to checkout repository with authentication
+checkout_repository() {
+    echo "📂 Setting up repository checkout in $CHECKOUT_DIR..."
+    
+    # Remove existing checkout directory if it exists
+    rm -rf "$CHECKOUT_DIR"
+    
+    # Create parent directory
+    mkdir -p "$(dirname "$CHECKOUT_DIR")"
+    
+    # Configure git for localhost:3000 authentication using credentials
+    # This creates a global git config that maps the localhost URL to use our credentials
+    REPO_URL_WITH_AUTH="http://$ADMIN_USER:$TOKEN@localhost:3000/$ORG_NAME/$REPO_NAME.git"
+    REPO_URL_LOCALHOST="http://localhost:3000/$ORG_NAME/$REPO_NAME.git"
+    
+    echo "🔐 Configuring git authentication for localhost:3000..."
+    # Set up URL rewriting so git will use our credentials automatically
+    git config --global "url.$REPO_URL_WITH_AUTH.insteadOf" "$REPO_URL_LOCALHOST"
+    
+    echo "📥 Cloning repository to $CHECKOUT_DIR..."
+    if git clone "$REPO_URL_LOCALHOST" "$CHECKOUT_DIR"; then
+        echo "✅ Repository cloned successfully"
+        
+        # Configure git settings in the checkout directory for future operations
+        cd "$CHECKOUT_DIR" || exit 1
+        git config user.name "E2E Test"
+        git config user.email "e2e-test@gitops-reverser.local"
+        
+        # Set up the remote URL to use localhost:3000 (authentication is handled by global config)
+        git remote set-url origin "$REPO_URL_LOCALHOST"
+        
+        echo "🔧 Git configuration completed in checkout directory"
+        echo "   • Directory: $CHECKOUT_DIR"
+        echo "   • Remote URL: $REPO_URL_LOCALHOST"
+        echo "   • Authentication: Configured via global git config"
+        
+        cd - > /dev/null || true
+    else
+        echo "❌ Failed to clone repository"
+        # Clean up git config on failure
+        git config --global --unset "url.$REPO_URL_WITH_AUTH.insteadOf" 2>/dev/null || true
+        exit 1
+    fi
+}
+
 # Main execution logic - full setup with specified repository
 wait_gitea
 setup_persistant_port_forward
@@ -288,6 +346,7 @@ generate_ssh_keys
 configure_ssh_key_in_gitea
 create_repository
 setup_credentials
+checkout_repository
 
 # Repository information
 REPO_URL="http://gitea-http.$GITEA_NAMESPACE.svc.cluster.local:3000/$ORG_NAME/$REPO_NAME.git"
@@ -301,6 +360,7 @@ echo "
    • Repository: $REPO_NAME
    • Secret: $SECRET_NAME (in $TARGET_NAMESPACE namespace)
    • Repository URL: $REPO_URL
+   • Checkout Directory: $CHECKOUT_DIR
     
 🔧 For debugging:
    • Admin User: $ADMIN_USER
@@ -311,6 +371,11 @@ echo "
    • Visit http://localhost:3000 in your browser
    • Login: $ADMIN_USER / $ADMIN_PASS
    • Stop port-forward: pkill -f 'kubectl.*port-forward.*3000'
+
+📂 Git Repository:
+   • Local checkout: $CHECKOUT_DIR
+   • Git operations configured for localhost:3000
+   • Ready for git pull/fetch operations during tests
 
 ✨ Ready for e2e testing! Port-forward will stay active.
 "

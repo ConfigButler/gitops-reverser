@@ -16,6 +16,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/plumbing/transport"
+	"github.com/go-git/go-git/v5/plumbing/transport/http"
 	"github.com/go-git/go-git/v5/plumbing/transport/ssh"
 	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -107,6 +108,21 @@ func GetAuthMethod(privateKey, password string) (transport.AuthMethod, error) {
 	}
 
 	return ssh.NewPublicKeys("git", []byte(privateKey), password)
+}
+
+// GetHTTPAuthMethod returns an HTTP basic authentication method from username and password.
+func GetHTTPAuthMethod(username, password string) (transport.AuthMethod, error) {
+	if username == "" {
+		return nil, errors.New("username cannot be empty")
+	}
+	if password == "" {
+		return nil, errors.New("password cannot be empty")
+	}
+
+	return &http.BasicAuth{
+		Username: username,
+		Password: password,
+	}, nil
 }
 
 // TryPushCommits implements the "Re-evaluate and Re-generate" strategy for conflict resolution.

@@ -23,6 +23,7 @@ const giteaRepoURLTemplate = "http://gitea-http.gitea-e2e.svc.cluster.local:3000
 const giteaSSHURLTemplate = "ssh://git@gitea-ssh.gitea-e2e.svc.cluster.local:2222/testorg/%s.git"
 
 var testRepoName string
+var checkoutDir string
 
 // getRepoUrlHTTP returns the HTTP URL for the test repository
 func getRepoUrlHTTP() string {
@@ -81,8 +82,9 @@ var _ = Describe("Manager", Ordered, func() {
 		By("setting up Gitea test environment with unique repository")
 		companyStart := time.Date(2025, 5, 12, 0, 0, 0, 0, time.UTC)
 		minutesSinceStart := int(time.Since(companyStart).Minutes())
-		testRepoName = fmt.Sprintf("e2e-test-repo-%d", minutesSinceStart)
-		cmd = exec.Command("bash", "test/e2e/scripts/setup-gitea.sh", testRepoName)
+		testRepoName = fmt.Sprintf("e2e-test-%d", minutesSinceStart)
+		checkoutDir = fmt.Sprintf("/tmp/gitops-reverser/%s", testRepoName)
+		cmd = exec.Command("bash", "test/e2e/scripts/setup-gitea.sh", testRepoName, checkoutDir)
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to setup Gitea test environment with repository")
 	})
@@ -364,7 +366,6 @@ var _ = Describe("Manager", Ordered, func() {
 		})
 
 		It("should create Git commit when ConfigMap is added via WatchRule", func() {
-			Skip("Disabled due to failing test")
 			gitRepoConfigName := "gitrepoconfig-configmap-test"
 			watchRuleName := "watchrule-configmap-test"
 			configMapName := "test-configmap"
@@ -416,59 +417,39 @@ var _ = Describe("Manager", Ordered, func() {
 			By("waiting for controller reconciliation of ConfigMap event")
 			verifyReconciliationLogs := func(g Gomega) {
 				showControllerLogs("checking for ConfigMap reconciliation")
-				// Check for reconciliation logs indicating ConfigMap processing
-				cmd := exec.Command("kubectl", "logs", "-l", "control-plane=controller-manager", "-n", namespace, "--tail=50")
+
+				// Get controller logs
+				cmd := exec.Command("kubectl", "logs", "-l", "control-plane=controller-manager",
+					"-n", namespace, "--tail=500")
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
-				expectedLog := fmt.Sprintf("ConfigMap/%s", configMapName)
-				g.Expect(output).To(ContainSubstring(expectedLog),
+
+				// Check for ConfigMap processing in logs
+				expectedConfigMapLog := fmt.Sprintf("ConfigMap/%s", configMapName)
+				g.Expect(output).To(ContainSubstring(expectedConfigMapLog),
 					"Should see ConfigMap reconciliation in logs")
-				g.Expect(output).To(ContainSubstring("git commit"), "Should see git commit operation in logs")
+
+				// Check for git commit operation in logs
+				g.Expect(output).To(ContainSubstring("git commit"),
+					"Should see git commit operation in logs")
 			}
 			Eventually(verifyReconciliationLogs, 2*time.Minute, 10*time.Second).Should(Succeed())
 
 			By("verifying ConfigMap YAML file exists in Gitea repository")
 			verifyGitCommit := func(g Gomega) {
-				// Clone the repository to verify the file was committed
-				cloneDir := fmt.Sprintf("/tmp/git-clone-%d", time.Now().Unix())
-				defer func() {
-					_ = os.RemoveAll(cloneDir)
-				}()
+				// Use the pre-checked out repository directory
+				By("using pre-checked out repository for verification")
 
-				// Get credentials from the git-creds secret for authenticated clone
-				By("extracting Git credentials for repository clone")
-				cmd := exec.Command("kubectl", "get", "secret", "git-creds", "-n", namespace, "-o",
-					"jsonpath='{.data.username}' | base64 -d")
-				usernameOutput, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred())
-				//nolint:unconvert // Necessary conversion from []byte to string for TrimSpace
-				username := strings.TrimSpace(string(usernameOutput))
-
-				cmd = exec.Command("kubectl", "get", "secret", "git-creds", "-n", namespace, "-o",
-					"jsonpath='{.data.password}' | base64 -d")
-				passwordOutput, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred())
-				//nolint:unconvert // Necessary conversion from []byte to string for TrimSpace
-				password := strings.TrimSpace(string(passwordOutput))
-
-				// Clone with authentication by setting git config
-				By("configuring git authentication for clone")
-				gitConfig := fmt.Sprintf("url.http://%s:%s@gitea-http.gitea-e2e.svc.cluster.local:3000/.git.insteadOf",
-					username, password)
-				cmd = exec.Command("git", "config", "--global", gitConfig, repoURL+"/.git")
-				_, err = utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred())
-
-				cloneCmd := exec.Command("git", "clone", repoURL, cloneDir)
-				_, cloneErr := utils.Run(cloneCmd)
-				g.Expect(cloneErr).NotTo(HaveOccurred(), "Should successfully clone the test repository")
-
-				// Cleanup git config after clone
-				cmd = exec.Command("git", "config", "--global", "--unset", gitConfig)
-				_, _ = utils.Run(cmd)
+				// Pull latest changes from the remote repository
+				By("pulling latest changes from remote repository")
+				pullCmd := exec.Command("git", "pull")
+				pullCmd.Dir = checkoutDir
+				_, pullErr := utils.Run(pullCmd)
+				g.Expect(pullErr).NotTo(HaveOccurred(), "Should successfully pull latest changes from the test repository")
 
 				// Check for the expected ConfigMap file
-				expectedFile := filepath.Join(cloneDir, fmt.Sprintf("namespaces/%s/configmaps/%s.yaml", namespace, configMapName))
+				expectedFile := filepath.Join(checkoutDir,
+					fmt.Sprintf("namespaces/%s/configmaps/%s.yaml", namespace, configMapName))
 				fileInfo, statErr := os.Stat(expectedFile)
 				g.Expect(statErr).NotTo(HaveOccurred(), fmt.Sprintf("ConfigMap file should exist at %s", expectedFile))
 				g.Expect(fileInfo.Size()).To(BeNumerically(">0"), "ConfigMap file should not be empty")
@@ -479,7 +460,7 @@ var _ = Describe("Manager", Ordered, func() {
 				g.Expect(string(content)).To(ContainSubstring("test-key: test-value"),
 					"ConfigMap file should contain expected data")
 			}
-			Eventually(verifyGitCommit, 3*time.Minute, 30*time.Second).Should(Succeed())
+			Eventually(verifyGitCommit, 1*time.Minute, 30*time.Second).Should(Succeed())
 
 			By("cleaning up test resources")
 			var cmd *exec.Cmd

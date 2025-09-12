@@ -26,6 +26,7 @@ import (
 	configbutleraiv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 	"github.com/ConfigButler/gitops-reverser/internal/controller"
 	"github.com/ConfigButler/gitops-reverser/internal/eventqueue"
+	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/metrics"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
 	webhookhandler "github.com/ConfigButler/gitops-reverser/internal/webhook"
@@ -244,6 +245,19 @@ func main() {
 	validatingWebhook := &admission.Webhook{Handler: eventHandler}
 	mgr.GetWebhookServer().Register("/validate-v1-event", validatingWebhook)
 	setupLog.Info("Webhook handler registered", "path", "/validate-v1-event")
+
+	// Start the Git worker to process events from the queue
+	gitWorker := &git.Worker{
+		Client:     mgr.GetClient(),
+		Log:        ctrl.Log.WithName("git-worker"),
+		EventQueue: eventQueue,
+	}
+
+	if err := mgr.Add(gitWorker); err != nil {
+		setupLog.Error(err, "unable to add git worker to manager")
+		os.Exit(1)
+	}
+	setupLog.Info("Git worker added to manager")
 
 	// +kubebuilder:scaffold:builder
 
