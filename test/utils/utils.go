@@ -1,3 +1,4 @@
+// Package utils provides utility functions for e2e testing.
 package utils
 
 import (

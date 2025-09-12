@@ -1,3 +1,7 @@
+/*
+Package metrics provides the OpenTelemetry-based metrics exporter for GitOps Reverser.
+It configures Prometheus-compatible metrics collection for monitoring controller operations.
+*/
 package metrics
 
 import (

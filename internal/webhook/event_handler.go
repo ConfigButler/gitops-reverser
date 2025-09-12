@@ -1,3 +1,4 @@
+// Package webhook handles admission webhook requests for the GitOps Reverser controller.
 package webhook
 
 import (

@@ -1,3 +1,7 @@
+/*
+Package leader provides leader election functionality for the GitOps Reverser controller.
+It manages pod labeling to identify the active leader instance in a multi-replica deployment.
+*/
 package leader
 
 import (

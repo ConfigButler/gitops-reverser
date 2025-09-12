@@ -1,3 +1,4 @@
+// Package git provides Git repository operations for the GitOps Reverser controller.
 package git
 
 import (

@@ -1,3 +1,7 @@
+/*
+Package sanitize removes server-generated fields from Kubernetes objects.
+It preserves only the desired state for Git commit operations.
+*/
 package sanitize
 
 import (

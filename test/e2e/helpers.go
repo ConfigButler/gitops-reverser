@@ -1,3 +1,7 @@
+/*
+Package e2e provides helper functions for end-to-end testing of the GitOps Reverser controller.
+It includes utilities for template rendering, kubectl operations, and metrics validation.
+*/
 package e2e
 
 import (
@@ -110,8 +114,8 @@ func cleanupPod(podName string) {
 	}
 }
 
-// fetchMetricsOverHttps creates a curl pod, fetches metrics over HTTPS, and returns the output
-func fetchMetricsOverHttps(token string) string {
+// fetchMetricsOverHTTPS creates a curl pod, fetches metrics over HTTPS, and returns the output
+func fetchMetricsOverHTTPS(token string) string {
 	const podName = "curl-metrics"
 	createMetricsCurlPod(podName, token)
 	waitForMetricsCurlCompletion(podName)

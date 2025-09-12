@@ -1,3 +1,4 @@
+// Package eventqueue provides a thread-safe queue for processing webhook events.
 package eventqueue
 
 import (
@@ -39,7 +40,7 @@ func (q *Queue) Enqueue(event Event) {
 	q.events = append(q.events, event)
 }
 
-// Dequeue removes and returns all events from the queue.
+// DequeueAll removes and returns all events from the queue.
 func (q *Queue) DequeueAll() []Event {
 	q.mu.Lock()
 	defer q.mu.Unlock()

@@ -216,7 +216,7 @@ var _ = Describe("Manager", Ordered, func() {
 			Eventually(verifyMetricsServerStarted).Should(Succeed())
 
 			// Create curl pod and wait for completion using reusable helpers
-			metricsOutput := fetchMetricsOverHttps(metricsToken)
+			metricsOutput := fetchMetricsOverHTTPS(metricsToken)
 			Expect(metricsOutput).To(ContainSubstring(
 				"process_cpu_seconds_total",
 			))
@@ -243,7 +243,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 			// Wait a moment for metrics to be updated
 			time.Sleep(2 * time.Second)
-			metricsOutput := fetchMetricsOverHttps(metricsToken)
+			metricsOutput := fetchMetricsOverHTTPS(metricsToken)
 
 			// Just check if the metric exists (don't worry about the actual value)
 			Expect(metricsOutput).To(ContainSubstring("gitopsreverser_events_received_total"),

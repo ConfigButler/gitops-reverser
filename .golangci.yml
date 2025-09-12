@@ -55,6 +55,10 @@ linters:
           - dupl
           - lll
         path: internal/*
+      - linters:
+          - staticcheck
+        text: "ST1001" # Allow dot imports in test files
+        path: test/
     paths:
       - third_party$
       - builtin$

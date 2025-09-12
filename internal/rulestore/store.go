@@ -1,3 +1,7 @@
+/*
+Package rulestore manages the in-memory cache of compiled WatchRule configurations.
+It provides efficient lookup and matching of Kubernetes resources against active watch rules.
+*/
 package rulestore
 
 import (

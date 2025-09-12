@@ -1,3 +1,4 @@
+// Package eventqueue provides a thread-safe queue for processing webhook events.
 package eventqueue
 
 import (
