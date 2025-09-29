@@ -118,7 +118,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Create Release
-        uses: softprops/action-gh-release@v2.2.1
+        uses: softprops/action-gh-release@v2.3.3
         with:
           generate_release_notes: true
           draft: false
