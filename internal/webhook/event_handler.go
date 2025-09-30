@@ -73,6 +73,7 @@ func (h *EventHandler) Handle(ctx context.Context, req admission.Request) admiss
 			event := eventqueue.Event{
 				Object:                 sanitizedObj,
 				Request:                req,
+				ResourcePlural:         req.Resource.Resource, // Use plural from admission request
 				GitRepoConfigRef:       rule.GitRepoConfigRef,
 				GitRepoConfigNamespace: rule.Source.Namespace, // Same namespace as the WatchRule
 			}

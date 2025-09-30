@@ -14,6 +14,8 @@ type Event struct {
 	Object *unstructured.Unstructured
 	// Request is the original admission request.
 	Request admission.Request
+	// ResourcePlural is the plural form of the resource (e.g., "pods", "deployments").
+	ResourcePlural string
 	// GitRepoConfigRef is the name of the GitRepoConfig to use for this event.
 	GitRepoConfigRef string
 	// GitRepoConfigNamespace is the namespace of the GitRepoConfig to use for this event.

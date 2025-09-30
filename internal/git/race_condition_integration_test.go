@@ -83,6 +83,7 @@ func TestRaceConditionIntegration(t *testing.T) {
 						},
 					},
 				},
+				ResourcePlural:   "pods",
 				GitRepoConfigRef: "production-repo",
 			},
 			{
@@ -95,6 +96,7 @@ func TestRaceConditionIntegration(t *testing.T) {
 						},
 					},
 				},
+				ResourcePlural:   "pods",
 				GitRepoConfigRef: "production-repo",
 			},
 		}
@@ -112,9 +114,9 @@ func TestRaceConditionIntegration(t *testing.T) {
 
 		// Step 5: Verify the final state
 		// Check that files were created correctly
-		appPodPath := filepath.Join(localRepoPath, "namespaces/production/Pod/app-pod.yaml")
-		cachePodPath := filepath.Join(localRepoPath, "namespaces/production/Pod/cache-pod.yaml")
-		conflictingFilePath := filepath.Join(localRepoPath, "namespaces/production/Service/conflicting-service.yaml")
+		appPodPath := filepath.Join(localRepoPath, "namespaces/production/pods/app-pod.yaml")
+		cachePodPath := filepath.Join(localRepoPath, "namespaces/production/pods/cache-pod.yaml")
+		conflictingFilePath := filepath.Join(localRepoPath, "namespaces/production/services/conflicting-service.yaml")
 
 		// All files should exist
 		assert.FileExists(t, appPodPath, "app-pod.yaml should exist")
@@ -167,6 +169,7 @@ func TestRaceConditionIntegration(t *testing.T) {
 					},
 				},
 			},
+			ResourcePlural: "testresources",
 		}
 
 		// This might fail, but shouldn't panic
@@ -228,7 +231,7 @@ func simulateRemoteUpdate(remoteRepoPath string, remoteRepo *git.Repository) err
 		},
 	}
 
-	filePath := GetFilePath(conflictingService)
+	filePath := GetFilePath(conflictingService, "services")
 	fullPath := filepath.Join(remoteRepoPath, filePath)
 
 	err := os.MkdirAll(filepath.Dir(fullPath), 0755)

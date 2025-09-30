@@ -14,34 +14,39 @@ import (
 
 func TestGetFilePath_NamespacedResource(t *testing.T) {
 	testCases := []struct {
-		name      string
-		namespace string
-		kind      string
-		expected  string
+		name           string
+		namespace      string
+		kind           string
+		resourcePlural string
+		expected       string
 	}{
 		{
-			name:      "test-pod",
-			namespace: "default",
-			kind:      "Pod",
-			expected:  "namespaces/default/Pod/test-pod.yaml",
+			name:           "test-pod",
+			namespace:      "default",
+			kind:           "Pod",
+			resourcePlural: "pods",
+			expected:       "namespaces/default/pods/test-pod.yaml",
 		},
 		{
-			name:      "my-service",
-			namespace: "production",
-			kind:      "Service",
-			expected:  "namespaces/production/Service/my-service.yaml",
+			name:           "my-service",
+			namespace:      "production",
+			kind:           "Service",
+			resourcePlural: "services",
+			expected:       "namespaces/production/services/my-service.yaml",
 		},
 		{
-			name:      "app-config",
-			namespace: "staging",
-			kind:      "ConfigMap",
-			expected:  "namespaces/staging/ConfigMap/app-config.yaml",
+			name:           "app-config",
+			namespace:      "staging",
+			kind:           "ConfigMap",
+			resourcePlural: "configmaps",
+			expected:       "namespaces/staging/configmaps/app-config.yaml",
 		},
 		{
-			name:      "complex-name-with-dashes",
-			namespace: "kube-system",
-			kind:      "Deployment",
-			expected:  "namespaces/kube-system/Deployment/complex-name-with-dashes.yaml",
+			name:           "complex-name-with-dashes",
+			namespace:      "kube-system",
+			kind:           "Deployment",
+			resourcePlural: "deployments",
+			expected:       "namespaces/kube-system/deployments/complex-name-with-dashes.yaml",
 		},
 	}
 
@@ -52,7 +57,7 @@ func TestGetFilePath_NamespacedResource(t *testing.T) {
 			obj.SetNamespace(tc.namespace)
 			obj.SetKind(tc.kind)
 
-			path := GetFilePath(obj)
+			path := GetFilePath(obj, tc.resourcePlural)
 			assert.Equal(t, tc.expected, path)
 		})
 	}
@@ -60,29 +65,34 @@ func TestGetFilePath_NamespacedResource(t *testing.T) {
 
 func TestGetFilePath_ClusterScopedResource(t *testing.T) {
 	testCases := []struct {
-		name     string
-		kind     string
-		expected string
+		name           string
+		kind           string
+		resourcePlural string
+		expected       string
 	}{
 		{
-			name:     "my-namespace",
-			kind:     "Namespace",
-			expected: "cluster-scoped/Namespace/my-namespace.yaml",
+			name:           "my-namespace",
+			kind:           "Namespace",
+			resourcePlural: "namespaces",
+			expected:       "cluster-scoped/namespaces/my-namespace.yaml",
 		},
 		{
-			name:     "cluster-admin",
-			kind:     "ClusterRole",
-			expected: "cluster-scoped/ClusterRole/cluster-admin.yaml",
+			name:           "cluster-admin",
+			kind:           "ClusterRole",
+			resourcePlural: "clusterroles",
+			expected:       "cluster-scoped/clusterroles/cluster-admin.yaml",
 		},
 		{
-			name:     "system-binding",
-			kind:     "ClusterRoleBinding",
-			expected: "cluster-scoped/ClusterRoleBinding/system-binding.yaml",
+			name:           "system-binding",
+			kind:           "ClusterRoleBinding",
+			resourcePlural: "clusterrolebindings",
+			expected:       "cluster-scoped/clusterrolebindings/system-binding.yaml",
 		},
 		{
-			name:     "my-pv",
-			kind:     "PersistentVolume",
-			expected: "cluster-scoped/PersistentVolume/my-pv.yaml",
+			name:           "my-pv",
+			kind:           "PersistentVolume",
+			resourcePlural: "persistentvolumes",
+			expected:       "cluster-scoped/persistentvolumes/my-pv.yaml",
 		},
 	}
 
@@ -93,7 +103,7 @@ func TestGetFilePath_ClusterScopedResource(t *testing.T) {
 			// No namespace for cluster-scoped resources
 			obj.SetKind(tc.kind)
 
-			path := GetFilePath(obj)
+			path := GetFilePath(obj, tc.resourcePlural)
 			assert.Equal(t, tc.expected, path)
 		})
 	}
@@ -105,35 +115,39 @@ func TestGetFilePath_EmptyNamespace(t *testing.T) {
 	obj.SetNamespace("") // Empty namespace
 	obj.SetKind("TestKind")
 
-	path := GetFilePath(obj)
-	assert.Equal(t, "cluster-scoped/TestKind/test-resource.yaml", path)
+	path := GetFilePath(obj, "testkinds")
+	assert.Equal(t, "cluster-scoped/testkinds/test-resource.yaml", path)
 }
 
 func TestGetFilePath_SpecialCharacters(t *testing.T) {
 	// Test with names that might have special characters
 	testCases := []struct {
-		name      string
-		namespace string
-		kind      string
-		expected  string
+		name           string
+		namespace      string
+		kind           string
+		resourcePlural string
+		expected       string
 	}{
 		{
-			name:      "test.resource",
-			namespace: "default",
-			kind:      "Pod",
-			expected:  "namespaces/default/Pod/test.resource.yaml",
+			name:           "test.resource",
+			namespace:      "default",
+			kind:           "Pod",
+			resourcePlural: "pods",
+			expected:       "namespaces/default/pods/test.resource.yaml",
 		},
 		{
-			name:      "test_resource",
-			namespace: "default",
-			kind:      "Service",
-			expected:  "namespaces/default/Service/test_resource.yaml",
+			name:           "test_resource",
+			namespace:      "default",
+			kind:           "Service",
+			resourcePlural: "services",
+			expected:       "namespaces/default/services/test_resource.yaml",
 		},
 		{
-			name:      "test-resource-123",
-			namespace: "test-ns-456",
-			kind:      "ConfigMap",
-			expected:  "namespaces/test-ns-456/ConfigMap/test-resource-123.yaml",
+			name:           "test-resource-123",
+			namespace:      "test-ns-456",
+			kind:           "ConfigMap",
+			resourcePlural: "configmaps",
+			expected:       "namespaces/test-ns-456/configmaps/test-resource-123.yaml",
 		},
 	}
 
@@ -144,7 +158,7 @@ func TestGetFilePath_SpecialCharacters(t *testing.T) {
 			obj.SetNamespace(tc.namespace)
 			obj.SetKind(tc.kind)
 
-			path := GetFilePath(obj)
+			path := GetFilePath(obj, tc.resourcePlural)
 			assert.Equal(t, tc.expected, path)
 		})
 	}
@@ -470,13 +484,14 @@ func TestIntegration_FilePathAndCommitMessage(t *testing.T) {
 				},
 			},
 		},
+		ResourcePlural:   "pods",
 		GitRepoConfigRef: "integration-repo",
 	}
 
-	filePath := GetFilePath(obj)
+	filePath := GetFilePath(obj, "pods")
 	commitMessage := GetCommitMessage(event)
 
-	expectedPath := "namespaces/integration-test/Pod/integration-test-pod.yaml"
+	expectedPath := "namespaces/integration-test/pods/integration-test-pod.yaml"
 	expectedMessage := "[CREATE] Pod/integration-test-pod in ns/integration-test by user/integration-test-user"
 
 	assert.Equal(t, expectedPath, filePath)
@@ -506,7 +521,7 @@ func TestEdgeCases_NilObject(t *testing.T) {
 		defer func() {
 			_ = recover() // Catch the panic
 		}()
-		GetFilePath(obj)
+		GetFilePath(obj, "testresources")
 	}()
 }
 
@@ -552,11 +567,11 @@ func TestPathGeneration_ConsistentOutput(t *testing.T) {
 	obj.SetNamespace("consistent-ns")
 	obj.SetKind("Pod")
 
-	path1 := GetFilePath(obj)
-	path2 := GetFilePath(obj)
-	path3 := GetFilePath(obj)
+	path1 := GetFilePath(obj, "pods")
+	path2 := GetFilePath(obj, "pods")
+	path3 := GetFilePath(obj, "pods")
 
 	assert.Equal(t, path1, path2)
 	assert.Equal(t, path2, path3)
-	assert.Equal(t, "namespaces/consistent-ns/Pod/consistent-test.yaml", path1)
+	assert.Equal(t, "namespaces/consistent-ns/pods/consistent-test.yaml", path1)
 }

@@ -238,7 +238,7 @@ func (r *Repo) generateLocalCommits(ctx context.Context, events []eventqueue.Eve
 
 	for _, event := range events {
 		// Generate file content
-		filePath := GetFilePath(event.Object)
+		filePath := GetFilePath(event.Object, event.ResourcePlural)
 		fullPath := filepath.Join(r.path, filePath)
 
 		// Ensure directory exists
@@ -408,7 +408,7 @@ func (r *Repo) reEvaluateEvents(ctx context.Context, events []eventqueue.Event) 
 func (r *Repo) isEventStillValid(ctx context.Context, event eventqueue.Event) bool {
 	logger := log.FromContext(ctx)
 
-	filePath := GetFilePath(event.Object)
+	filePath := GetFilePath(event.Object, event.ResourcePlural)
 	fullPath := filepath.Join(r.path, filePath)
 
 	if !fileExists(fullPath) {
@@ -633,33 +633,13 @@ func (r *Repo) Commit(files []CommitFile, message string) error {
 }
 
 // GetFilePath returns the path to a file in the repository for a given object.
-func GetFilePath(obj *unstructured.Unstructured) string {
-	// Convert Kind to lowercase, plural resource name
-	kind := obj.GetKind()
-	resourceName := strings.ToLower(kind) + "s" // Simple pluralization
-
-	// Handle special cases for Kubernetes resource pluralization
-	switch kind {
-	case "Ingress":
-		resourceName = "ingresses"
-	case "NetworkPolicy":
-		resourceName = "networkpolicies"
-	case "PodSecurityPolicy":
-		resourceName = "podsecuritypolicies"
-	case "StorageClass":
-		resourceName = "storageclasses"
-	case "PriorityClass":
-		resourceName = "priorityclasses"
-	case "IngressClass":
-		resourceName = "ingressclasses"
-	case "EndpointSlice":
-		resourceName = "endpointslices"
-	}
-
+// The resourcePlural should come from the admission request's Resource.Resource field,
+// which provides the correct plural form for both built-in and custom resources.
+func GetFilePath(obj *unstructured.Unstructured, resourcePlural string) string {
 	if obj.GetNamespace() != "" {
-		return fmt.Sprintf("namespaces/%s/%s/%s.yaml", obj.GetNamespace(), resourceName, obj.GetName())
+		return fmt.Sprintf("namespaces/%s/%s/%s.yaml", obj.GetNamespace(), resourcePlural, obj.GetName())
 	}
-	return fmt.Sprintf("cluster-scoped/%s/%s.yaml", resourceName, obj.GetName())
+	return fmt.Sprintf("cluster-scoped/%s/%s.yaml", resourcePlural, obj.GetName())
 }
 
 // GetCommitMessage returns a structured commit message for the given event.

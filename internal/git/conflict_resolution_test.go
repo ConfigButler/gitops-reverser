@@ -32,14 +32,15 @@ func TestTryPushCommits_Success(t *testing.T) {
 					},
 				},
 			},
+			ResourcePlural:   "pods",
 			GitRepoConfigRef: "test-repo",
 		},
 	}
 
 	// Test that we can generate the expected file paths
 	for _, event := range events {
-		filePath := GetFilePath(event.Object)
-		expectedPath := "namespaces/default/Pod/test-pod.yaml"
+		filePath := GetFilePath(event.Object, event.ResourcePlural)
+		expectedPath := "namespaces/default/pods/test-pod.yaml"
 		assert.Equal(t, expectedPath, filePath)
 
 		commitMessage := GetCommitMessage(event)
@@ -110,7 +111,8 @@ func TestIsEventStillValid(t *testing.T) {
 
 	t.Run("file_does_not_exist", func(t *testing.T) {
 		event := eventqueue.Event{
-			Object: createTestPod("new-pod", "default"),
+			Object:         createTestPod("new-pod", "default"),
+			ResourcePlural: "pods",
 		}
 
 		valid := repo.isEventStillValid(ctx, event)
@@ -122,7 +124,7 @@ func TestIsEventStillValid(t *testing.T) {
 		existingPod := createTestPod("existing-pod", "default")
 		existingPod.SetResourceVersion("100")
 
-		filePath := GetFilePath(existingPod)
+		filePath := GetFilePath(existingPod, "pods")
 		fullPath := filepath.Join(tempDir, filePath)
 
 		// Create directory and file
@@ -140,7 +142,8 @@ func TestIsEventStillValid(t *testing.T) {
 		newPod.SetResourceVersion("200")
 
 		event := eventqueue.Event{
-			Object: newPod,
+			Object:         newPod,
+			ResourcePlural: "pods",
 		}
 
 		valid := repo.isEventStillValid(ctx, event)
@@ -152,7 +155,7 @@ func TestIsEventStillValid(t *testing.T) {
 		existingPod := createTestPod("stale-pod", "default")
 		existingPod.SetResourceVersion("300")
 
-		filePath := GetFilePath(existingPod)
+		filePath := GetFilePath(existingPod, "pods")
 		fullPath := filepath.Join(tempDir, filePath)
 
 		// Create directory and file
@@ -170,7 +173,8 @@ func TestIsEventStillValid(t *testing.T) {
 		oldPod.SetResourceVersion("200")
 
 		event := eventqueue.Event{
-			Object: oldPod,
+			Object:         oldPod,
+			ResourcePlural: "pods",
 		}
 
 		valid := repo.isEventStillValid(ctx, event)
@@ -184,7 +188,7 @@ func TestIsEventStillValid(t *testing.T) {
 		// Explicitly clear resource version to ensure generation comparison is used
 		existingPod.SetResourceVersion("")
 
-		filePath := GetFilePath(existingPod)
+		filePath := GetFilePath(existingPod, "pods")
 		fullPath := filepath.Join(tempDir, filePath)
 
 		// Create directory and file
@@ -203,7 +207,8 @@ func TestIsEventStillValid(t *testing.T) {
 		oldPod.SetResourceVersion("") // Explicitly clear to force generation comparison
 
 		event := eventqueue.Event{
-			Object: oldPod,
+			Object:         oldPod,
+			ResourcePlural: "pods",
 		}
 
 		valid := repo.isEventStillValid(ctx, event)
@@ -220,7 +225,8 @@ func TestIsEventStillValid(t *testing.T) {
 		require.NoError(t, err)
 
 		event := eventqueue.Event{
-			Object: createTestPod("corrupted-pod", "default"),
+			Object:         createTestPod("corrupted-pod", "default"),
+			ResourcePlural: "pods",
 		}
 
 		valid := repo.isEventStillValid(ctx, event)
@@ -246,7 +252,7 @@ func TestReEvaluateEvents(t *testing.T) {
 	existingPod := createTestPod("existing-pod", "default")
 	existingPod.SetResourceVersion("100")
 
-	filePath := GetFilePath(existingPod)
+	filePath := GetFilePath(existingPod, "pods")
 	fullPath := filepath.Join(tempDir, filePath)
 
 	err = os.MkdirAll(filepath.Dir(fullPath), 0755)
@@ -261,13 +267,16 @@ func TestReEvaluateEvents(t *testing.T) {
 	// Create test events
 	events := []eventqueue.Event{
 		{
-			Object: createTestPodWithResourceVersion("new-pod", "default", "200"), // Should be valid (new)
+			Object:         createTestPodWithResourceVersion("new-pod", "default", "200"), // Should be valid (new)
+			ResourcePlural: "pods",
 		},
 		{
-			Object: createTestPodWithResourceVersion("existing-pod", "default", "50"), // Should be invalid (stale)
+			Object:         createTestPodWithResourceVersion("existing-pod", "default", "50"), // Should be invalid (stale)
+			ResourcePlural: "pods",
 		},
 		{
-			Object: createTestPodWithResourceVersion("existing-pod", "default", "150"), // Should be valid (newer)
+			Object:         createTestPodWithResourceVersion("existing-pod", "default", "150"), // Should be valid (newer)
+			ResourcePlural: "pods",
 		},
 	}
 
@@ -304,7 +313,7 @@ func TestConflictResolutionIntegration(t *testing.T) {
 
 		// Simulate existing state in Git
 		existingPod := createTestPodWithResourceVersion("conflict-pod", "default", "100")
-		filePath := GetFilePath(existingPod)
+		filePath := GetFilePath(existingPod, "pods")
 		fullPath := filepath.Join(tempDir, filePath)
 
 		err = os.MkdirAll(filepath.Dir(fullPath), 0755)
@@ -319,10 +328,12 @@ func TestConflictResolutionIntegration(t *testing.T) {
 		// Create events that would conflict
 		events := []eventqueue.Event{
 			{
-				Object: createTestPodWithResourceVersion("conflict-pod", "default", "50"), // Stale
+				Object:         createTestPodWithResourceVersion("conflict-pod", "default", "50"), // Stale
+				ResourcePlural: "pods",
 			},
 			{
-				Object: createTestPodWithResourceVersion("new-pod", "default", "200"), // Valid
+				Object:         createTestPodWithResourceVersion("new-pod", "default", "200"), // Valid
+				ResourcePlural: "pods",
 			},
 		}
 
@@ -352,22 +363,25 @@ func TestErrNonFastForward(t *testing.T) {
 func TestGetFilePath_ConsistencyWithConflictResolution(t *testing.T) {
 	// Ensure GetFilePath works consistently for conflict resolution
 	testCases := []struct {
-		name      string
-		namespace string
-		kind      string
-		expected  string
+		name           string
+		namespace      string
+		kind           string
+		resourcePlural string
+		expected       string
 	}{
 		{
-			name:      "test-pod",
-			namespace: "default",
-			kind:      "Pod",
-			expected:  "namespaces/default/Pod/test-pod.yaml",
+			name:           "test-pod",
+			namespace:      "default",
+			kind:           "Pod",
+			resourcePlural: "pods",
+			expected:       "namespaces/default/pods/test-pod.yaml",
 		},
 		{
-			name:      "cluster-role",
-			namespace: "", // cluster-scoped
-			kind:      "ClusterRole",
-			expected:  "cluster-scoped/ClusterRole/cluster-role.yaml",
+			name:           "cluster-role",
+			namespace:      "", // cluster-scoped
+			kind:           "ClusterRole",
+			resourcePlural: "clusterroles",
+			expected:       "cluster-scoped/clusterroles/cluster-role.yaml",
 		},
 	}
 
@@ -378,7 +392,7 @@ func TestGetFilePath_ConsistencyWithConflictResolution(t *testing.T) {
 			obj.SetNamespace(tc.namespace)
 			obj.SetKind(tc.kind)
 
-			path := GetFilePath(obj)
+			path := GetFilePath(obj, tc.resourcePlural)
 			assert.Equal(t, tc.expected, path)
 		})
 	}
@@ -398,6 +412,7 @@ func TestCommitMessageGeneration(t *testing.T) {
 				},
 			},
 		},
+		ResourcePlural:   "pods",
 		GitRepoConfigRef: "test-repo",
 	}
 

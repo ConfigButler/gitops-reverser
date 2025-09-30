@@ -43,7 +43,8 @@ var _ = Describe("Manager", Ordered, func() {
 	// deploying the controller, and setting up Gitea.
 	BeforeAll(func() {
 		By("setting E2E test environment variable for optimizations")
-		os.Setenv("E2E_TESTING", "true")
+		err := os.Setenv("E2E_TESTING", "true")
+		Expect(err).NotTo(HaveOccurred(), "Failed to set E2E_TESTING environment variable")
 
 		By("preventive namespace cleanup")
 		cmd := exec.Command("kubectl", "delete", "ns", namespace)
@@ -55,7 +56,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 		By("creating manager namespace")
 		cmd = exec.Command("kubectl", "create", "ns", namespace)
-		_, err := utils.Run(cmd)
+		_, err = utils.Run(cmd)
 		if err != nil {
 			// Namespace might already exist from Gitea setup - check if it's AlreadyExists error
 			By("checking if namespace already exists")
