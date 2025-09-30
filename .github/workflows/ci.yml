@@ -10,7 +10,6 @@ on:
 env:
   GO_VERSION: '1.25.1'
   KUSTOMIZE_VERSION: 'v5.4.1'
-  CONTROLLER_TOOLS_VERSION: 'v0.15.0'
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
 
