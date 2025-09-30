@@ -1,5 +1,10 @@
 # Build the manager binary
 FROM golang:1.25.1 AS builder
+
+# Automatic platform arguments provided by Docker BuildKit
+ARG TARGETOS
+ARG TARGETARCH
+
 WORKDIR /workspace
 
 # Copy the Go Modules manifests
@@ -13,8 +18,8 @@ COPY cmd/ cmd/
 COPY api/ api/
 COPY internal/ internal/
 
-# Build
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o manager cmd/main.go
+# Build for the target platform
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -o manager cmd/main.go
 
 # Use distroless as minimal base image to package the manager binary
 # Refer to https://github.com/GoogleContainerTools/distroless for more details
