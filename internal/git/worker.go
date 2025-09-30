@@ -162,43 +162,31 @@ func (w *Worker) getMaxCommits(repoConfig *v1alpha1.GitRepoConfig) int {
 	return w.getDefaultMaxCommits()
 }
 
-// getDefaultMaxCommits returns the default max commits, optimized for test environments.
+// getDefaultMaxCommits returns the default max commits.
 func (w *Worker) getDefaultMaxCommits() int {
-	// Check if we're in a test environment
-	if w.isTestEnvironment() {
-		return 1 // Trigger push immediately for tests
+	// Use faster defaults for unit tests
+	if strings.Contains(os.Args[0], "test") {
+		return 1
 	}
-	return 20 // Normal batch size for production
+	return 20
 }
 
-// getPollInterval returns the event polling interval, optimized for test environments.
+// getPollInterval returns the event polling interval.
 func (w *Worker) getPollInterval() time.Duration {
-	// Check if we're in a test environment
-	if w.isTestEnvironment() {
-		return 100 * time.Millisecond // Much faster for tests
+	// Use faster polling for unit tests
+	if strings.Contains(os.Args[0], "test") {
+		return 100 * time.Millisecond
 	}
-	return 1 * time.Second // Normal interval for production
+	return 1 * time.Second
 }
 
-// getDefaultPushInterval returns the default push interval, optimized for test environments.
+// getDefaultPushInterval returns the default push interval.
 func (w *Worker) getDefaultPushInterval() time.Duration {
-	// Check if we're in a test environment
-	if w.isTestEnvironment() {
-		return 5 * time.Second // Much faster for tests
+	// Use faster intervals for unit tests
+	if strings.Contains(os.Args[0], "test") {
+		return 5 * time.Second
 	}
-	return 1 * time.Minute // Normal interval for production
-}
-
-// isTestEnvironment detects if we're running in a test environment.
-func (w *Worker) isTestEnvironment() bool {
-	// Check for common test environment indicators
-	if os.Getenv("TESTING") != "" ||
-		os.Getenv("CI") != "" ||
-		os.Getenv("E2E_TESTING") != "" ||
-		strings.Contains(os.Args[0], "test") {
-		return true
-	}
-	return false
+	return 1 * time.Minute
 }
 
 // runEventLoop runs the main event processing loop.

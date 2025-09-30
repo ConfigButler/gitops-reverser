@@ -42,11 +42,8 @@ var _ = Describe("Manager", Ordered, func() {
 	// enforce the restricted security policy to the namespace, installing CRDs,
 	// deploying the controller, and setting up Gitea.
 	BeforeAll(func() {
-		By("setting E2E test environment variable for optimizations")
-		err := os.Setenv("E2E_TESTING", "true")
-		Expect(err).NotTo(HaveOccurred(), "Failed to set E2E_TESTING environment variable")
-
 		By("preventive namespace cleanup")
+		var err error
 		cmd := exec.Command("kubectl", "delete", "ns", namespace)
 		_, _ = utils.Run(cmd)
 
@@ -82,20 +79,6 @@ var _ = Describe("Manager", Ordered, func() {
 		cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", projectImage))
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to deploy the controller-manager")
-
-		By("setting E2E_TESTING environment variable in controller manager")
-		envCmd := exec.Command("kubectl", "set", "env", "deployment/gitops-reverser-controller-manager",
-			"E2E_TESTING=true", "-n", namespace)
-		_, envErr := utils.Run(envCmd)
-		if envErr != nil {
-			fmt.Printf("Warning: Failed to set E2E_TESTING environment variable: %v\n", envErr)
-		} else {
-			fmt.Printf("✅ Set E2E_TESTING environment variable in controller manager\n")
-
-			// Wait for the deployment to restart with the new environment variable
-			By("waiting for controller manager to restart with test environment")
-			time.Sleep(10 * time.Second)
-		}
 
 		By("setting up Gitea test environment with unique repository")
 		companyStart := time.Date(2025, 5, 12, 0, 0, 0, 0, time.UTC)
@@ -477,7 +460,7 @@ var _ = Describe("Manager", Ordered, func() {
 				g.Expect(string(content)).To(ContainSubstring("test-key: test-value"),
 					"ConfigMap file should contain expected data")
 			}
-			Eventually(verifyGitCommit, 120*time.Second, 5*time.Second).Should(Succeed())
+			Eventually(verifyGitCommit, 180*time.Second, 5*time.Second).Should(Succeed())
 
 			By("cleaning up test resources")
 			var cmd *exec.Cmd

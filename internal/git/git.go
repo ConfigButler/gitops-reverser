@@ -67,18 +67,12 @@ func Clone(url, path string, auth transport.AuthMethod) (*Repo, error) {
 			logger.Info("Warning: failed to remove existing directory", "path", path, "error", err)
 		}
 
-		// Clone fresh repository with optimized options
+		// Clone fresh repository with shallow clone for speed
 		cloneOptions := &git.CloneOptions{
-			URL:  url,
-			Auth: auth,
-		}
-
-		// Optimize for test environments
-		if isTestEnvironment() {
-			logger.Info("Using optimized clone for test environment")
-			cloneOptions.Depth = 1 // Shallow clone for speed
-		} else {
-			cloneOptions.Progress = os.Stdout
+			URL:      url,
+			Auth:     auth,
+			Depth:    1, // Shallow clone for speed
+			Progress: os.Stdout,
 		}
 
 		repo, err = git.PlainClone(path, false, cloneOptions)
@@ -334,55 +328,29 @@ func (r *Repo) hardResetToRemote(ctx context.Context) error {
 	return nil
 }
 
-// optimizedFetch performs an optimized fetch operation based on environment.
+// optimizedFetch performs a shallow fetch operation for speed.
 func (r *Repo) optimizedFetch(ctx context.Context) error {
 	logger := log.FromContext(ctx)
-
-	// Check if we're in a test environment for faster operations
-	isTest := isTestEnvironment()
 
 	fetchOptions := &git.FetchOptions{
 		RemoteName: r.remoteName,
 		Auth:       r.auth,
 		Force:      true,
+		Depth:      1, // Shallow fetch for speed
+		Progress:   os.Stdout,
 	}
 
-	// In test environments, disable progress output for speed
-	if !isTest {
-		fetchOptions.Progress = os.Stdout
-	}
-
-	// For test environments, try shallow fetch first
-	if isTest {
-		logger.Info("Using optimized fetch for test environment")
-		fetchOptions.Depth = 1 // Shallow fetch for speed
-
-		// Try shallow fetch first
-		if err := r.Fetch(fetchOptions); err != nil && err != git.NoErrAlreadyUpToDate {
-			// If shallow fetch fails, fall back to normal fetch
-			logger.Info("Shallow fetch failed, falling back to normal fetch", "error", err)
-			fetchOptions.Depth = 0
-			if err := r.Fetch(fetchOptions); err != nil && err != git.NoErrAlreadyUpToDate {
-				return err
-			}
-		}
-	} else {
-		// Normal fetch for production
+	// Try shallow fetch first
+	if err := r.Fetch(fetchOptions); err != nil && err != git.NoErrAlreadyUpToDate {
+		// If shallow fetch fails, fall back to normal fetch
+		logger.Info("Shallow fetch failed, falling back to normal fetch", "error", err)
+		fetchOptions.Depth = 0
 		if err := r.Fetch(fetchOptions); err != nil && err != git.NoErrAlreadyUpToDate {
 			return err
 		}
 	}
 
 	return nil
-}
-
-// isTestEnvironment detects if we're running in a test environment.
-func isTestEnvironment() bool {
-	// Check for common test environment indicators
-	return os.Getenv("TESTING") != "" ||
-		os.Getenv("CI") != "" ||
-		os.Getenv("E2E_TESTING") != "" ||
-		strings.Contains(os.Args[0], "test")
 }
 
 // reEvaluateEvents checks which events are still valid against the current repository state.
