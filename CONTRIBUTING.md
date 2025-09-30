@@ -143,6 +143,8 @@ When commits are pushed to the `main` branch:
 
 **Note:** Only conventional commit messages will trigger version bumps. Non-conventional commits are still recorded in the changelog but won't affect versioning.
 
+**For complete documentation:** See [`.github/RELEASES.md`](.github/RELEASES.md)
+
 ## Submitting a Pull Request
 
 1.  Create a new branch for your feature or bug fix.

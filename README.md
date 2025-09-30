@@ -290,6 +290,8 @@ We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) f
 
 GitOps Reverser uses automated semantic versioning based on [Conventional Commits](https://www.conventionalcommits.org/). Every push to `main` automatically creates releases when appropriate, all handled by a single unified CI workflow.
 
+> **Setup & Usage Guide:** See [`.github/RELEASES.md`](.github/RELEASES.md) for complete documentation.
+
 ### Release Workflow
 
 ```
