@@ -286,6 +286,135 @@ We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) f
 4. Run `make lint` to check code quality
 5. Submit a pull request
 
+## Automated Releases
+
+GitOps Reverser uses automated semantic versioning based on [Conventional Commits](https://www.conventionalcommits.org/). Every push to `main` automatically creates releases when appropriate, all handled by a single unified CI workflow.
+
+### Release Workflow
+
+```
+┌─────────────────┐
+│ Push to main    │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────────────────────┐
+│   CI Workflow (.github/workflows/ci.yml)   │
+├─────────────────────────────────┤
+│                                 │
+│  ┌──────────────┐  ┌──────────┐│
+│  │ Build & Test │  │ E2E Test ││
+│  │ • lint       │  │ • Kind   ││
+│  │ • unit tests │  │ • e2e    ││
+│  │ • build      │  │          ││
+│  └──────┬───────┘  └─────┬────┘│
+│         │                │     │
+│         └────────┬───────┘     │
+│                  ▼             │
+│         ┌────────────────┐     │
+│         │ Tests Passed?  │     │
+│         └────────┬───────┘     │
+│                  │             │
+│         ┌────────┴────────┐    │
+│        No               Yes   │
+│         │                 │    │
+│         ▼                 ▼    │
+│    ┌────────┐    ┌─────────────┐
+│    │  Stop  │    │release-please│
+│    └────────┘    │ analyzes    │
+│                  │ commits     │
+│                  └──────┬──────┘
+│                         │       │
+│                    ┌────┴────┐  │
+│                   Version    │  │
+│                   bump?      │  │
+│                    └────┬────┘  │
+│                         │       │
+│                    ┌────┴────┐  │
+│                   Yes      No  │
+│                    │        │   │
+│                    ▼        ▼   │
+│           ┌────────────┐  End  │
+│           │Create/Update│       │
+│           │ Release PR │       │
+│           └──────┬─────┘       │
+└──────────────────┼─────────────┘
+                   │
+                   ▼
+            ┌──────────┐
+            │Human     │
+            │Reviews PR│
+            └─────┬────┘
+                  │
+            ┌─────┴─────┐
+           No          Yes
+            │            │
+            ▼            ▼
+          End    ┌──────────────┐
+                 │ Merge PR     │
+                 └──────┬───────┘
+                        │
+                        ▼
+                ┌───────────────┐
+                │Create Release │
+                │+ Tag (v0.2.0) │
+                └───────┬───────┘
+                        │
+                        ▼
+                ┌───────────────┐
+                │ Build & Push  │
+                │Docker Images  │
+                │(amd64, arm64) │
+                └───────────────┘
+```
+
+### Commit Message Format
+
+Use conventional commit format to trigger automated releases:
+
+- `feat:` - New feature (minor version bump: 0.1.0 → 0.2.0)
+- `fix:` - Bug fix (patch version bump: 0.1.0 → 0.1.1)
+- `feat!:` or `BREAKING CHANGE:` - Breaking change (major version bump: 0.1.0 → 1.0.0)
+
+**Examples:**
+```bash
+# Minor version bump
+git commit -m "feat(controller): add multi-repository support"
+
+# Patch version bump
+git commit -m "fix(webhook): resolve race condition in event queue"
+
+# Major version bump
+git commit -m "feat!: redesign API structure
+
+BREAKING CHANGE: API now uses different authentication method"
+```
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for complete commit message guidelines.
+
+### Release Process
+
+1. **Developer pushes to main** with conventional commit
+2. **CI tests run automatically** (lint, unit tests, e2e)
+3. **If tests pass:** release-please creates/updates Release PR
+4. **Release PR includes:**
+   - Auto-generated changelog
+   - Version bump in `Chart.yaml`
+   - List of commits since last release
+5. **When Release PR is merged:**
+   - GitHub Release created with tag
+   - Docker images built for multiple platforms
+   - Images pushed to ghcr.io
+   - Release notes published
+
+### Testing Gate
+
+**Important:** Release PRs are only created if all CI tests pass. This ensures:
+- ✅ All code is linted and formatted correctly
+- ✅ Unit tests achieve >90% coverage
+- ✅ End-to-end tests validate full workflows
+- ✅ No broken code reaches production
+
 ## Roadmap
 
 - [ ] Support for custom Git commit message templates
