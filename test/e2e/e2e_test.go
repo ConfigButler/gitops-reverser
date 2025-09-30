@@ -444,15 +444,19 @@ var _ = Describe("Manager", Ordered, func() {
 				By("pulling latest changes from remote repository")
 				pullCmd := exec.Command("git", "pull")
 				pullCmd.Dir = checkoutDir
-				_, pullErr := utils.Run(pullCmd)
-				g.Expect(pullErr).NotTo(HaveOccurred(), "Should successfully pull latest changes from the test repository")
+				// Don't use utils.Run() here because it overwrites cmd.Dir with the project directory
+				pullOutput, pullErr := pullCmd.CombinedOutput()
+				if pullErr != nil {
+					g.Expect(pullErr).NotTo(HaveOccurred(),
+						fmt.Sprintf("Should successfully pull latest changes. Output: %s", string(pullOutput)))
+				}
 
 				// Check for the expected ConfigMap file
 				expectedFile := filepath.Join(checkoutDir,
 					fmt.Sprintf("namespaces/%s/configmaps/%s.yaml", namespace, configMapName))
 				fileInfo, statErr := os.Stat(expectedFile)
 				g.Expect(statErr).NotTo(HaveOccurred(), fmt.Sprintf("ConfigMap file should exist at %s", expectedFile))
-				g.Expect(fileInfo.Size()).To(BeNumerically(">0"), "ConfigMap file should not be empty")
+				g.Expect(fileInfo.Size()).To(BeNumerically(">", 0), "ConfigMap file should not be empty")
 
 				// Verify file content contains expected ConfigMap data
 				content, readErr := os.ReadFile(expectedFile)
