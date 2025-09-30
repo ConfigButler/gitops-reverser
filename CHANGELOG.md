@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.1.0...gitops-reverser-v0.2.0) (2025-09-30)
+
+
+### Features
+
+* Checks for repos / status updates ([12b0854](https://github.com/ConfigButler/gitops-reverser/commit/12b0854655a0f856bb1f3aab488085efc2a6088b))
+* Fixing the last test hopefully ([0aae945](https://github.com/ConfigButler/gitops-reverser/commit/0aae9452e39a5f99fc94f5650ff30149afd22914))
+* Fixing the ssh tests ([8165a23](https://github.com/ConfigButler/gitops-reverser/commit/8165a2323063405c1aefee0de089a378a7c02b8e))
+* Getting the linters happy ([a14b335](https://github.com/ConfigButler/gitops-reverser/commit/a14b335bc6b75d9363825dcde9a3f157f14ef4ef))
+* Let's allow releasing of this stuff ([a661dd2](https://github.com/ConfigButler/gitops-reverser/commit/a661dd23f3c174a90210a19e80abee83c5d65fc6))
+* Let's run a gitea server in our end2end ([4d6c505](https://github.com/ConfigButler/gitops-reverser/commit/4d6c50581c333cef3c0ead7b2b3fa810451cad01))
+* More clarity in naming and wrong url ([e223c09](https://github.com/ConfigButler/gitops-reverser/commit/e223c090de0e49b5c0b923a4fc8ea6ba81c39aa8))
+* Would this be the first time? ([956a3f0](https://github.com/ConfigButler/gitops-reverser/commit/956a3f0a9b832eb7e0a5a3cc4aa5ad86076bd4eb))
+* Would this finally get us a green end2end in github? ([b301353](https://github.com/ConfigButler/gitops-reverser/commit/b301353bada6e80bea98a7f709267eb97146d0fb))
+
+
+### Bug Fixes
+
+* Another fix ([d5e4f9d](https://github.com/ConfigButler/gitops-reverser/commit/d5e4f9d117ef96c673177b596432766a5737dc2e))
+* Let's see if we can make things faster ([8c6fdc4](https://github.com/ConfigButler/gitops-reverser/commit/8c6fdc4305877cf380bd758755f82d35dbd26d31))
+* Lower the cyclomatic complexity. ([2a8c6f4](https://github.com/ConfigButler/gitops-reverser/commit/2a8c6f460f29706e50037bb1c4d1d4c01edbd23d))
+* Mutating webhooks are now processed ([bbef5bd](https://github.com/ConfigButler/gitops-reverser/commit/bbef5bd2f97a995646899001f21928cf63d6585d))
+* Now the e2e test should work! ([47a986b](https://github.com/ConfigButler/gitops-reverser/commit/47a986b7349a3a8c6c1c94bd413911093cdaa672))
+* Remove the E2E_TESTING madness ([cc36d93](https://github.com/ConfigButler/gitops-reverser/commit/cc36d934fb73748188ecf201243589a31b576063))
+* resolve CI failures by fixing Kustomize setup and updating actions ([d12c4af](https://github.com/ConfigButler/gitops-reverser/commit/d12c4afaf6d923eb555a560cf37612ad08259433))
+* See if this fixes the troubles ([f00d566](https://github.com/ConfigButler/gitops-reverser/commit/f00d56603adf2c24570a2ac6649392ac15f9d793))
+* That should actually help the build to succeeed! ([517a13c](https://github.com/ConfigButler/gitops-reverser/commit/517a13c7f9f77bf22b17cd67ea303ae906c30c3e))
+
+
+### Documentation
+
+* More info on deploying this thing ([61eb197](https://github.com/ConfigButler/gitops-reverser/commit/61eb1975c3a59ed9e0138377312c4757cdd75956))
+
 ## [0.1.0] - 2025-01-31
 
 ### Features
