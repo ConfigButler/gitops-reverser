@@ -48,30 +48,9 @@ This document outlines the tasks required to build the GitOps Reverser tool as s
 - [x] Create a basic Helm chart for deployment (`charts/gitops-reverser/`).
 - [x] Implement a GitHub Actions CI/CD pipeline for linting, testing, and building.
 
---> Simons todo to make it real code that will work
-
-[ ] Run the CI stuff in GitHub without errors and weird versions
-[ ] Get all tests green, also the 'harder' integration tests with git. Why is that so difficult to get right?
-[ ] Get more clarity on why people would be comitting themselves: the last write should win is in interesting approach that feels right. Also for ConfigButler when we are a few steps further.
 [ ] Combine edits of the same person in the same minute (make that configurable): it doesnt make sense to have lot's of commits for one action. This is a hard one to get right, when does this stop? After x actions or x seconds of inactivity. Or if two persons change something in the same resource, that shouls also be immediatly be comitted. Can you check that effeciently on every incomming event?
-[ ] Can we get this thing to run in our small k3s cluster?
 [ ] Do we really need to pull before each commit? That's not what was in my head before we started the whole conversation -> it should do a push/pull once a minute. Or perhaps a pull the first time an event is created? I would like to have a timeline, please let's be carefull with pushes and pulls
-[ ] Can we get a proper log on the number of euros that we spent on this thing?
 [ ] See if we can get more out of: https://github.com/RichardoC/kube-audit-rest?tab=readme-ov-file#known-limitations-and-warnings (since it's maintained and gives some exampels on how to maintain such an open tool).
-
 [ ] Should we also do a full reconicile on the folders? As in: check if all the yaml files are still usefull?
     -> This last line is where it gets interesting: who wins? I guess we just push a new commit and throw away the files that don't exist in the cluster. Should we do a full reconcile every x minutes? How many resources can we handle before it gets tricky?
-
----
-
 [ ] Should the repo config be namespaced or clustered? All that duplication is also ugly, how does flux do that part?
-[ ] Do we now actually make a commit in the end2end?
-
-
----
-
-Other todos:
-
-* Remove the weird conversion between plurarl or capitlized kind names
-* Don't have different cloning strategies between test or production (remove all stuff that says test environment!)
-* Get more speed in pushing the changes to the git repo (where the default of 1 minute is a bit slow!)
