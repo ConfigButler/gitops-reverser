@@ -294,8 +294,11 @@ jobs:
               fi
               
               echo "--- Testing port connectivity ---"
-              API_PORT=$(kubectl config view -o jsonpath='{.clusters[0].cluster.server}' | sed 's/.*://')
-              echo "API Server Port: ${API_PORT}"
+              # IMPORTANT: Use internal Kubernetes API port (6443), not the external mapped port
+              # Kind maps 6443 to a random external port for localhost, but on Docker networks
+              # we connect directly to the container, so we must use the internal port 6443
+              API_PORT=6443
+              echo "Using internal Kubernetes API port: ${API_PORT}"
               
               if timeout 5 bash -c "cat < /dev/null > /dev/tcp/${KIND_IP}/${API_PORT}" 2>/dev/null; then
                 echo "✅ Port ${API_PORT} is reachable on ${KIND_IP}"
