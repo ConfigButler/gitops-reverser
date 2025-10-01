@@ -75,21 +75,10 @@ jobs:
         run: |
           git config --global --add safe.directory /__w/gitops-reverser/gitops-reverser
 
-      - name: Cache Go build
-        uses: actions/cache@v4
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v8
         with:
-          path: /root/.cache/go-build
-          key: ${{ runner.os }}-go-build-${{ hashFiles('**/go.sum') }}
-          restore-keys: |
-            ${{ runner.os }}-go-build-
-
-      - name: Cache golangci-lint
-        uses: actions/cache@v4
-        with:
-          path: /root/.cache/golangci-lint
-          key: ${{ runner.os }}-golangci-lint-${{ hashFiles('**/go.sum') }}
-          restore-keys: |
-            ${{ runner.os }}-golangci-lint-
+          install-mode: none
 
       - name: Verify dev container tools
         run: |
@@ -99,26 +88,6 @@ jobs:
           kubectl version --client
           kustomize version
           golangci-lint version
-
-      - name: Check cache status
-        run: |
-          echo "=== Cache Status ==="
-          if [ -d "/root/.cache/go-build" ] && [ "$(ls -A /root/.cache/go-build)" ]; then
-            echo "✓ Go build cache found:"
-            du -sh /root/.cache/go-build
-          else
-            echo "⚠️  WARNING: Go build cache is empty - first run will be slower"
-          fi
-          
-          if [ -d "/root/.cache/golangci-lint" ] && [ "$(ls -A /root/.cache/golangci-lint)" ]; then
-            echo "✓ golangci-lint cache found:"
-            du -sh /root/.cache/golangci-lint
-          else
-            echo "⚠️  WARNING: golangci-lint cache is empty - first run will be slower"
-          fi
-
-      - name: Run lint
-        run: make lint
 
       - name: Run tests
         run: make test
@@ -307,7 +276,15 @@ jobs:
               fi
               
               echo "--- Updating kubeconfig to use shared network IP ---"
-              kubectl config set-cluster kind-gitops-reverser-test-e2e --server=https://${KIND_IP}:${API_PORT}
+              # Update to use the shared network IP and skip TLS verification
+              # TLS verification must be skipped because the API server's certificate
+              # was created with SANs for the Kind network IP (172.19.0.2), not the
+              # GitHub network IP (172.18.0.3) that we're connecting through
+              kubectl config set-cluster kind-gitops-reverser-test-e2e \
+                --server=https://${KIND_IP}:${API_PORT} \
+                --insecure-skip-tls-verify=true
+              
+              echo "ℹ️  Note: TLS verification disabled for CI (certificate doesn't include shared network IP)"
             else
               echo "⚠️  WARNING: Could not get Kind IP on shared network"
               echo "Using Kind's default networking configuration"
