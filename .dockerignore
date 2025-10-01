@@ -11,3 +11,7 @@
 !cmd/
 !api/
 !internal/
+
+# Additional files needed for dev container build (.devcontainer/Dockerfile)
+!.golangci.yml
+!hack/
