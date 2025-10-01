@@ -154,16 +154,17 @@ jobs:
           # Create Kind cluster with default networking
           kind create cluster --name gitops-reverser-test-e2e --wait 5m
           
-          # Get the Kind container's IP address on the Docker network
-          KIND_CONTAINER_IP=$(docker inspect gitops-reverser-test-e2e-control-plane --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
-          echo "Kind container IP: ${KIND_CONTAINER_IP}"
+          # Get the Docker host port that Kind mapped the API server to
+          HOST_PORT=$(docker port gitops-reverser-test-e2e-control-plane 6443/tcp | cut -d: -f2)
+          echo "Kind API server mapped to host port: ${HOST_PORT}"
           
-          # Get the API server port
-          API_PORT=$(kubectl config view -o jsonpath='{.clusters[0].cluster.server}' | sed 's/.*://')
-          echo "API server port: ${API_PORT}"
+          # Get the gateway IP of the current container's network (Docker host IP)
+          CONTAINER_ID=$(hostname)
+          DOCKER_HOST_IP=$(docker inspect ${CONTAINER_ID} | jq -r '.[0].NetworkSettings.Networks | to_entries | .[0].value.Gateway')
+          echo "Docker host gateway IP: ${DOCKER_HOST_IP}"
           
-          # Update kubeconfig to use the container IP instead of localhost/127.0.0.1
-          kubectl config set-cluster kind-gitops-reverser-test-e2e --server=https://${KIND_CONTAINER_IP}:${API_PORT}
+          # Update kubeconfig to use the Docker host IP and mapped port
+          kubectl config set-cluster kind-gitops-reverser-test-e2e --server=https://${DOCKER_HOST_IP}:${HOST_PORT}
           
           # Verify the updated configuration
           KUBECONFIG_SERVER=$(kubectl config view -o jsonpath='{.clusters[0].cluster.server}')
