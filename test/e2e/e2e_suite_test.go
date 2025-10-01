@@ -2,6 +2,7 @@ package e2e
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"testing"
 
@@ -12,10 +13,19 @@ import (
 )
 
 var (
-	// projectImage is the name of the image which will be build and loaded
-	// with the code source changes to be tested.
-	projectImage = "example.com/gitops-reverser:v0.0.1"
+	// projectImage is the name of the image to be tested.
+	// In CI, this is provided via PROJECT_IMAGE environment variable.
+	// For local testing, defaults to locally built image.
+	projectImage = getProjectImage()
 )
+
+// getProjectImage returns the project image name from environment or default
+func getProjectImage() string {
+	if img := os.Getenv("PROJECT_IMAGE"); img != "" {
+		return img
+	}
+	return "example.com/gitops-reverser:v0.0.1"
+}
 
 // TestE2E runs the end-to-end (e2e) test suite for the project. These tests execute in an isolated,
 // temporary environment to validate project changes with the purpose of being used in CI jobs.
@@ -28,13 +38,19 @@ func TestE2E(t *testing.T) {
 }
 
 var _ = BeforeSuite(func() {
-	By("building the manager(Operator) image")
+	// Check if image is pre-built (CI environment)
+	if os.Getenv("PROJECT_IMAGE") != "" {
+		By(fmt.Sprintf("using pre-built image: %s", projectImage))
+		// Image is already built and loaded in CI pipeline
+		return
+	}
+
+	// Local testing: build and load image
+	By("building the manager(Operator) image for local testing")
 	cmd := exec.Command("make", "docker-build", fmt.Sprintf("IMG=%s", projectImage))
 	_, err := utils.Run(cmd)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build the manager(Operator) image")
 
-	// TODO(user): If you want to change the e2e test vendor from Kind, ensure the image is
-	// built and available before running the tests. Also, remove the following block.
 	By("loading the manager(Operator) image on Kind")
 	err = utils.LoadImageToKindClusterWithName(projectImage)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to load the manager(Operator) image into Kind")
