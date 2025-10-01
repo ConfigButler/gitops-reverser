@@ -151,23 +151,27 @@ jobs:
 
       - name: Set up KinD cluster
         run: |
-          # Create Kind config that binds API server to 0.0.0.0 (accessible from container)
-          cat <<EOF > /tmp/kind-config.yaml
-          kind: Cluster
-          apiVersion: kind.x-k8s.io/v1alpha4
-          networking:
-            apiServerAddress: "0.0.0.0"
-          EOF
+          # Create Kind cluster with default networking
+          kind create cluster --name gitops-reverser-test-e2e --wait 5m
           
-          # Create Kind cluster
-          kind create cluster --name gitops-reverser-test-e2e --config /tmp/kind-config.yaml --wait 5m
+          # Get the Kind container's IP address on the Docker network
+          KIND_CONTAINER_IP=$(docker inspect gitops-reverser-test-e2e-control-plane --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
+          echo "Kind container IP: ${KIND_CONTAINER_IP}"
           
-          # Get the actual API server endpoint
+          # Get the API server port
+          API_PORT=$(kubectl config view -o jsonpath='{.clusters[0].cluster.server}' | sed 's/.*://')
+          echo "API server port: ${API_PORT}"
+          
+          # Update kubeconfig to use the container IP instead of localhost/127.0.0.1
+          kubectl config set-cluster kind-gitops-reverser-test-e2e --server=https://${KIND_CONTAINER_IP}:${API_PORT}
+          
+          # Verify the updated configuration
           KUBECONFIG_SERVER=$(kubectl config view -o jsonpath='{.clusters[0].cluster.server}')
-          echo "Kind API server: ${KUBECONFIG_SERVER}"
+          echo "Updated Kind API server: ${KUBECONFIG_SERVER}"
           
           # Verify connection
           kubectl cluster-info
+          kubectl get nodes
 
       - name: Login to Docker registry
         run: |
