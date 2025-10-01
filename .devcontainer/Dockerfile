@@ -78,6 +78,16 @@ RUN go mod download
 RUN go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.19.0 \
     && go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
 
+# Pre-populate golangci-lint cache by running it once
+# This downloads all linter dependencies (~100+ packages)
+# Significantly speeds up subsequent lint runs
+RUN mkdir -p /tmp/golangci-test && \
+    cd /tmp/golangci-test && \
+    go mod init example.com/test && \
+    echo 'package main\nfunc main() {}' > main.go && \
+    golangci-lint run --timeout=5m || true && \
+    cd / && rm -rf /tmp/golangci-test
+
 # Verify installations
 RUN echo "=== Tool Versions ===" \
     && go version \

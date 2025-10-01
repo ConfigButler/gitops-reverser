@@ -126,7 +126,7 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-      options: --privileged -v /var/run/docker.sock:/var/run/docker.sock
+      options: --privileged --network=host -v /var/run/docker.sock:/var/run/docker.sock
     env:
       TEST_IMAGE: ${{ needs.docker-build.outputs.image }}
     steps:
