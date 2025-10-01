@@ -76,6 +76,8 @@ setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist
 			echo "Creating Kind cluster '$(KIND_CLUSTER)'..."; \
 			$(KIND) create cluster --name $(KIND_CLUSTER) ;; \
 	esac
+	@echo "Configuring kubeconfig for cluster '$(KIND_CLUSTER)'..."
+	@$(KIND) export kubeconfig --name $(KIND_CLUSTER)
 
 .PHONY: test-e2e
 test-e2e: setup-test-e2e cleanup-webhook setup-cert-manager setup-gitea-e2e manifests generate fmt vet ## Runs the e2e cluster in a real kind cluster, undeploy and uninstall are ran so that we don't have to cleanup after running tests (which is very nice if you want to debug a failed test).
