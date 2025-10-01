@@ -36,7 +36,7 @@ RUN apt-get update \
 # Tool versions - centralized for easy updates
 ENV KIND_VERSION=v0.30.0 \
     KUBECTL_VERSION=v1.32.3 \
-    KUSTOMIZE_VERSION=5.4.1 \
+    KUSTOMIZE_VERSION=5.7.1 \
     KUBEBUILDER_VERSION=4.4.0 \
     GOLANGCI_LINT_VERSION=v2.4.0 \
     HELM_VERSION=v3.12.3
