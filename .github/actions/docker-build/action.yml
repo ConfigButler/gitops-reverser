@@ -1,0 +1,56 @@
+name: 'Setup Docker and Build Image'
+description: 'Sets up Docker Buildx, logs in to registry, and builds/pushes image'
+inputs:
+  registry:
+    description: 'Container registry to login to'
+    required: true
+  username:
+    description: 'Registry username'
+    required: true
+  password:
+    description: 'Registry password'
+    required: true
+  platforms:
+    description: 'Target platforms (e.g., linux/amd64)'
+    required: true
+  tags:
+    description: 'Image tags'
+    required: false
+  labels:
+    description: 'Image labels'
+    required: false
+  outputs:
+    description: 'Build outputs (e.g., type=image,push=true or type=image,name=...,push-by-digest=true)'
+    required: true
+  cache-scope:
+    description: 'Cache scope name'
+    required: true
+outputs:
+  digest:
+    description: 'Image digest'
+    value: ${{ steps.build.outputs.digest }}
+runs:
+  using: 'composite'
+  steps:
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Log in to Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ inputs.registry }}
+        username: ${{ inputs.username }}
+        password: ${{ inputs.password }}
+
+    - name: Build and push Docker image
+      id: build
+      uses: docker/build-push-action@v6
+      with:
+        context: .
+        platforms: ${{ inputs.platforms }}
+        push: true
+        tags: ${{ inputs.tags }}
+        labels: ${{ inputs.labels }}
+        cache-from: type=gha,scope=${{ inputs.cache-scope }}
+        cache-to: type=gha,mode=max,scope=${{ inputs.cache-scope }}
+        outputs: ${{ inputs.outputs }}
