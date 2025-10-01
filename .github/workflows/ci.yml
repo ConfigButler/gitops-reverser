@@ -182,38 +182,176 @@ jobs:
           kind version
           kubectl version --client
 
-      - name: Set up KinD cluster
+      - name: Set up KinD cluster with diagnostics
         run: |
-          # Create Kind cluster with default networking
-          kind create cluster --name gitops-reverser-test-e2e --wait 5m
+          set -x  # Enable verbose command output
           
-          # Get the current container's network (GitHub Actions network)
+          echo "=========================================="
+          echo "PHASE 1: Docker Environment Analysis"
+          echo "=========================================="
+          
+          echo "--- Docker Version ---"
+          docker version
+          
+          echo "--- Docker Networks ---"
+          docker network ls
+          
+          echo "--- Docker Info ---"
+          docker info | grep -E "Server Version|Operating System|Kernel Version|CPUs|Total Memory"
+          
+          echo "=========================================="
+          echo "PHASE 2: Container Detection"
+          echo "=========================================="
+          
           CURRENT_CONTAINER=$(hostname)
-          GITHUB_NETWORK=$(docker inspect ${CURRENT_CONTAINER} -f '{{range $net,$v := .NetworkSettings.Networks}}{{$net}}{{end}}' | head -n1)
-          echo "Current container network: ${GITHUB_NETWORK}"
+          echo "Hostname: ${CURRENT_CONTAINER}"
           
-          # Connect Kind control-plane to the same network
-          echo "Connecting Kind container to ${GITHUB_NETWORK}..."
-          docker network connect ${GITHUB_NETWORK} gitops-reverser-test-e2e-control-plane
+          echo "--- Attempting to inspect current container ---"
+          if docker inspect ${CURRENT_CONTAINER} >/dev/null 2>&1; then
+            echo "✅ Successfully found current container: ${CURRENT_CONTAINER}"
+            
+            echo "--- Current Container Networks ---"
+            docker inspect ${CURRENT_CONTAINER} -f '{{range $net,$v := .NetworkSettings.Networks}}Network: {{$net}}, IP: {{$v.IPAddress}}{{"\n"}}{{end}}'
+            
+            echo "--- Current Container Full Network Info (JSON) ---"
+            docker inspect ${CURRENT_CONTAINER} -f '{{json .NetworkSettings.Networks}}' | jq -r '.' || echo "jq not available"
+          else
+            echo "❌ ERROR: Cannot inspect container with hostname '${CURRENT_CONTAINER}'"
+            echo "This likely means we're not running in a Docker container or hostname doesn't match container name"
+            echo "Listing all running containers:"
+            docker ps --format "table {{.ID}}\t{{.Names}}\t{{.Image}}"
+          fi
           
-          # Get Kind container's IP on the shared network
-          KIND_IP=$(docker inspect gitops-reverser-test-e2e-control-plane -f "{{.NetworkSettings.Networks.${GITHUB_NETWORK}.IPAddress}}")
-          echo "Kind container IP on shared network: ${KIND_IP}"
+          echo "=========================================="
+          echo "PHASE 3: Creating Kind Cluster"
+          echo "=========================================="
           
-          # Get the API server port
-          API_PORT=$(kubectl config view -o jsonpath='{.clusters[0].cluster.server}' | sed 's/.*://')
-          echo "API server port: ${API_PORT}"
+          kind create cluster --name gitops-reverser-test-e2e --wait 5m --verbosity 4
           
-          # Update kubeconfig to use the Kind container IP on shared network
-          kubectl config set-cluster kind-gitops-reverser-test-e2e --server=https://${KIND_IP}:${API_PORT}
+          echo "--- Kind Cluster Created ---"
+          kind get clusters
           
-          # Verify the updated configuration
+          echo "--- Kind Container Info ---"
+          docker ps -a | grep kind
+          
+          echo "=========================================="
+          echo "PHASE 4: Network Topology Analysis"
+          echo "=========================================="
+          
+          echo "--- Kind Control Plane Networks ---"
+          docker inspect gitops-reverser-test-e2e-control-plane -f '{{range $net,$v := .NetworkSettings.Networks}}Network: {{$net}}, IP: {{$v.IPAddress}}{{"\n"}}{{end}}'
+          
+          echo "--- Kind Control Plane Full Network Info (JSON) ---"
+          docker inspect gitops-reverser-test-e2e-control-plane -f '{{json .NetworkSettings.Networks}}' | jq -r '.' || docker inspect gitops-reverser-test-e2e-control-plane -f '{{json .NetworkSettings.Networks}}'
+          
+          echo "=========================================="
+          echo "PHASE 5: Network Connection Attempt"
+          echo "=========================================="
+          
+          # Try to detect GitHub Actions container network
+          GITHUB_NETWORK=$(docker inspect ${CURRENT_CONTAINER} -f '{{range $net,$v := .NetworkSettings.Networks}}{{$net}}{{end}}' 2>/dev/null | head -n1)
+          
+          if [ -z "${GITHUB_NETWORK}" ]; then
+            echo "⚠️  WARNING: Could not detect GitHub Actions container network"
+            echo "Possible reasons:"
+            echo "  1. Not running in a container"
+            echo "  2. Container name doesn't match hostname"
+            echo "  3. No network attached to container"
+            echo ""
+            echo "Attempting to continue with Kind's default networking..."
+            SKIP_NETWORK_BRIDGE=true
+          else
+            echo "✅ Detected network: ${GITHUB_NETWORK}"
+            
+            echo "--- Attempting to connect Kind to ${GITHUB_NETWORK} ---"
+            if docker network connect ${GITHUB_NETWORK} gitops-reverser-test-e2e-control-plane 2>&1; then
+              echo "✅ Successfully connected Kind to ${GITHUB_NETWORK}"
+              
+              echo "--- Updated Kind Container Networks ---"
+              docker inspect gitops-reverser-test-e2e-control-plane -f '{{range $net,$v := .NetworkSettings.Networks}}Network: {{$net}}, IP: {{$v.IPAddress}}{{"\n"}}{{end}}'
+            else
+              echo "❌ Failed to connect Kind to ${GITHUB_NETWORK}"
+              echo "Attempting to continue with Kind's default networking..."
+              SKIP_NETWORK_BRIDGE=true
+            fi
+          fi
+          
+          echo "=========================================="
+          echo "PHASE 6: Connectivity Testing"
+          echo "=========================================="
+          
+          if [ "${SKIP_NETWORK_BRIDGE}" != "true" ] && [ -n "${GITHUB_NETWORK}" ]; then
+            KIND_IP=$(docker inspect gitops-reverser-test-e2e-control-plane -f "{{.NetworkSettings.Networks.${GITHUB_NETWORK}.IPAddress}}" 2>/dev/null)
+            
+            if [ -n "${KIND_IP}" ] && [ "${KIND_IP}" != "<no value>" ]; then
+              echo "✅ Kind container IP on ${GITHUB_NETWORK}: ${KIND_IP}"
+              
+              echo "--- Testing ping to Kind container ---"
+              if ping -c 3 -W 2 ${KIND_IP} 2>&1; then
+                echo "✅ Successfully pinged Kind container"
+              else
+                echo "⚠️  WARNING: Cannot ping Kind container (may not be fatal)"
+              fi
+              
+              echo "--- Testing port connectivity ---"
+              API_PORT=$(kubectl config view -o jsonpath='{.clusters[0].cluster.server}' | sed 's/.*://')
+              echo "API Server Port: ${API_PORT}"
+              
+              if timeout 5 bash -c "cat < /dev/null > /dev/tcp/${KIND_IP}/${API_PORT}" 2>/dev/null; then
+                echo "✅ Port ${API_PORT} is reachable on ${KIND_IP}"
+              else
+                echo "⚠️  WARNING: Cannot connect to port ${API_PORT} on ${KIND_IP}"
+              fi
+              
+              echo "--- Updating kubeconfig to use shared network IP ---"
+              kubectl config set-cluster kind-gitops-reverser-test-e2e --server=https://${KIND_IP}:${API_PORT}
+            else
+              echo "⚠️  WARNING: Could not get Kind IP on shared network"
+              echo "Using Kind's default networking configuration"
+            fi
+          else
+            echo "ℹ️  INFO: Using Kind's default networking (no network bridge)"
+          fi
+          
+          echo "=========================================="
+          echo "PHASE 7: Kubeconfig Verification"
+          echo "=========================================="
+          
+          echo "--- Current Kubeconfig ---"
+          kubectl config view
+          
           KUBECONFIG_SERVER=$(kubectl config view -o jsonpath='{.clusters[0].cluster.server}')
-          echo "Updated Kind API server: ${KUBECONFIG_SERVER}"
+          echo "Configured API Server: ${KUBECONFIG_SERVER}"
           
-          # Verify connection
-          kubectl cluster-info
-          kubectl get nodes
+          echo "=========================================="
+          echo "PHASE 8: Cluster Connection Test"
+          echo "=========================================="
+          
+          echo "--- Testing cluster-info (with verbose logging) ---"
+          if kubectl cluster-info --v=6 2>&1; then
+            echo "✅ kubectl cluster-info succeeded"
+          else
+            echo "❌ kubectl cluster-info FAILED"
+            exit 1
+          fi
+          
+          echo "--- Testing get nodes (with verbose logging) ---"
+          if kubectl get nodes --v=6 2>&1; then
+            echo "✅ kubectl get nodes succeeded"
+          else
+            echo "❌ kubectl get nodes FAILED"
+            echo ""
+            echo "=========================================="
+            echo "FAILURE DIAGNOSIS"
+            echo "=========================================="
+            echo "The cluster was created but kubectl cannot connect."
+            echo "This indicates a networking or configuration issue."
+            exit 1
+          fi
+          
+          echo "=========================================="
+          echo "✅ SUCCESS: Kind cluster is ready and accessible"
+          echo "=========================================="
 
       - name: Login to Docker registry
         run: |
