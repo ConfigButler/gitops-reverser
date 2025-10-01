@@ -77,7 +77,7 @@ Push to main
 4. **When Release PR is Merged**:
    - GitHub Release created with tag (e.g., `v0.2.0`)
    - Docker images built for linux/amd64 and linux/arm64
-   - Images pushed to `ghcr.io` with tags: `v0.2.0`, `v0.2`, `v0`, `latest`
+   - Images pushed to `ghcr.io` with tags: `0.2.0`, `0.2`, `0`, `latest`
 
 ---
 
