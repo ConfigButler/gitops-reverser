@@ -78,15 +78,22 @@ RUN go mod download
 RUN go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.19.0 \
     && go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
 
-# Pre-populate golangci-lint cache by running it once
-# This downloads all linter dependencies (~100+ packages)
-# Significantly speeds up subsequent lint runs
-RUN mkdir -p /tmp/golangci-test && \
-    cd /tmp/golangci-test && \
-    go mod init example.com/test && \
-    echo 'package main\nfunc main() {}' > main.go && \
-    golangci-lint run --timeout=5m || true && \
-    cd / && rm -rf /tmp/golangci-test
+# Copy golangci config to populate its cache
+COPY .golangci.yml ./
+
+# Copy source code to pre-populate golangci-lint cache
+# This downloads all ~100 linter dependencies during build
+COPY api/ api/
+COPY cmd/ cmd/
+COPY internal/ internal/
+COPY hack/ hack/
+
+# Run golangci-lint to populate cache (will fail on code issues, that's ok)
+# The important part is downloading all linter dependencies
+RUN golangci-lint run --timeout=10m || true
+
+# Clean up source files (not needed in final image, only cache matters)
+RUN rm -rf api cmd internal hack .golangci.yml
 
 # Verify installations
 RUN echo "=== Tool Versions ===" \

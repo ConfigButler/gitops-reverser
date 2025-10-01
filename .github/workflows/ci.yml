@@ -126,7 +126,7 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-      options: --privileged --network=host -v /var/run/docker.sock:/var/run/docker.sock
+      options: --privileged -v /var/run/docker.sock:/var/run/docker.sock
     env:
       TEST_IMAGE: ${{ needs.docker-build.outputs.image }}
     steps:
@@ -151,8 +151,23 @@ jobs:
 
       - name: Set up KinD cluster
         run: |
-          # Create Kind cluster inside the dev container
-          kind create cluster --name gitops-reverser-test-e2e --wait 5m
+          # Create Kind config that binds API server to 0.0.0.0 (accessible from container)
+          cat <<EOF > /tmp/kind-config.yaml
+          kind: Cluster
+          apiVersion: kind.x-k8s.io/v1alpha4
+          networking:
+            apiServerAddress: "0.0.0.0"
+          EOF
+          
+          # Create Kind cluster
+          kind create cluster --name gitops-reverser-test-e2e --config /tmp/kind-config.yaml --wait 5m
+          
+          # Get the actual API server endpoint
+          KUBECONFIG_SERVER=$(kubectl config view -o jsonpath='{.clusters[0].cluster.server}')
+          echo "Kind API server: ${KUBECONFIG_SERVER}"
+          
+          # Verify connection
+          kubectl cluster-info
 
       - name: Login to Docker registry
         run: |
