@@ -6,7 +6,7 @@ GitOps Reverser is a Kubernetes operator that captures manual cluster changes an
 
 ## Overview
 
-Traditional GitOps flows from Git → Cluster. This tool reverses that flow: **Cluster → Git**.
+Traditional GitOps flows from Git → Cluster(s). This tool reverses that flow: **Cluster → Git**.
 
 When administrators make manual changes to your Kubernetes cluster (hotfixes, emergency patches, configuration tweaks), GitOps Reverser automatically:
 - Captures those changes in real-time via admission webhooks
