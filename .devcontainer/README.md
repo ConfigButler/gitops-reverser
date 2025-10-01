@@ -1,152 +1,205 @@
-# Dev Container Setup
+# Development Container Setup
 
-This directory contains the development container configuration for the GitOps Reverser project. It provides a consistent development environment both locally and in CI/CD pipelines.
+This directory contains the configuration for the GitOps Reverser development container, which provides a fully-configured environment with all necessary tools pre-installed.
 
-## 🏗️ Architecture
+## Overview
 
-### Separation of Concerns
+The devcontainer provides:
+- **Go 1.25.1** (on Debian Bookworm for Docker compatibility)
+- **Kubernetes tools**: kubectl, Kind, Kustomize, Kubebuilder, Helm
+- **Linting**: golangci-lint with pre-cached dependencies
+- **Docker-in-Docker** for running Kind clusters and e2e tests
 
-```
-.devcontainer/Dockerfile     → Development tools + cached dependencies
-Dockerfile (root)            → Minimal production image (distroless)
-```
+## Key Features
 
-**Why separate?**
-- **Dev container**: Includes Kind, kubectl, golangci-lint, Go modules, etc. (~2GB)
-- **Production image**: Only the compiled binary on distroless base (~20MB)
-- Mixing them would bloat production images unnecessarily
+### ✅ Local Development
+- Works with VS Code Dev Containers extension
+- Full IDE integration with Go language server
+- Pre-installed Kubernetes and Docker extensions
 
-## 📦 What's Included
+### ✅ GitHub Actions CI/CD
+- Same environment used in CI pipeline (`build-devcontainer` job)
+- Consistent behavior between local and CI
+- Registry caching for fast rebuilds
 
-The dev container comes pre-installed with:
+### ✅ Efficient Caching
+- **Go modules**: Cached via Docker layer (rebuilds only when `go.mod`/`go.sum` change)
+- **Go tools**: controller-gen and setup-envtest installed in separate layer
+- **golangci-lint**: Dependencies pre-cached without requiring source code
+- **Docker BuildKit**: Multi-stage builds with registry caching in CI
 
-- **Go 1.25.1** with all project dependencies cached
-- **Kubernetes Tools**:
-  - Kind v0.30.0
-  - kubectl v1.32.3
-  - Kustomize v5.4.1
-  - Kubebuilder 4.4.0
-  - Helm v3.12.3
-- **Development Tools**:
-  - golangci-lint v2.4.0
-  - controller-gen
-  - setup-envtest
-- **Docker-in-Docker** for Kind clusters
+## Local Usage
 
-## 🚀 Local Development
+### Prerequisites
+- Docker Desktop or Docker Engine
+- VS Code with [Dev Containers extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers)
 
-### Using with VS Code
+### Starting the Container
 
-1. Install the "Dev Containers" extension
-2. Open this project in VS Code
-3. Click "Reopen in Container" when prompted
-4. Wait for the container to build (first time only)
+1. **Open in VS Code**:
+   ```bash
+   code /home/simon/git/gitops-reverser
+   ```
 
-The container will:
-- Mount your workspace
-- Install all tools
-- Pre-download Go modules
-- Create the Kind network
+2. **Reopen in Container**:
+   - Press `F1` or `Ctrl+Shift+P`
+   - Select: `Dev Containers: Reopen in Container`
+   - Wait for container to build (first time takes ~5-10 minutes)
 
-### Manual Docker Usage
+3. **Verify Setup**:
+   ```bash
+   # Inside the container
+   go version
+   kind version
+   kubectl version --client
+   golangci-lint version
+   ```
+
+### Running Tests
 
 ```bash
-# Build the dev container
-docker build -f .devcontainer/Dockerfile -t gitops-reverser-dev .
-
-# Run interactively
-docker run -it --privileged -v $(pwd):/workspace gitops-reverser-dev bash
-
-# Inside the container
+# Unit tests (no Docker required)
 make test
+
+# Linting (uses cached dependencies)
 make lint
+
+# E2E tests (requires Docker)
 make test-e2e
 ```
 
-## 🔄 CI/CD Integration
+## GitHub Actions Integration
 
-### How It Works
-
-Every CI run follows this simple flow:
-
-1. **Build Dev Container** (first job in `.github/workflows/ci.yml`):
-   - Builds dev container for the current commit
-   - Uses Docker layer caching (rebuilds in ~1-2 min)
-   - Pushes with commit SHA tag and `latest` tag
-   - Self-contained and always correct
-
-2. **Use in Jobs**:
-   - `lint-and-test` job uses the built container
-   - `e2e-test` job uses the built container
-   - Tools are already installed → no setup time
-   - Go modules already cached → no download time
-
-**Key Benefits:**
-- ✅ Self-contained - no separate build workflow needed
-- ✅ Always sound - exact container for each commit
-- ✅ Fast - Docker layer caching keeps rebuilds quick
-- ✅ Simple - no fallback logic or edge cases
-
-### Cache Strategy
+The devcontainer is built once per CI run and reused across jobs:
 
 ```yaml
-cache-from: type=registry,ref=ghcr.io/.../gitops-reverser-devcontainer:buildcache
-cache-to: type=registry,ref=ghcr.io/.../gitops-reverser-devcontainer:buildcache,mode=max
+# .github/workflows/ci.yml
+jobs:
+  build-devcontainer:
+    # Builds and pushes to GHCR with caching
+    
+  lint-and-test:
+    needs: build-devcontainer
+    container:
+      image: ${{ needs.build-devcontainer.outputs.image }}
+    
+  e2e-test:
+    needs: build-devcontainer
+    container:
+      image: ${{ needs.build-devcontainer.outputs.image }}
+      options: --privileged -v /var/run/docker.sock:/var/run/docker.sock
 ```
 
-Docker BuildKit caches layers in the registry, making rebuilds extremely fast.
+### CI Caching Strategy
 
-## 🎯 Benefits
+1. **Registry Cache**: 
+   - `type=registry,ref=ghcr.io/configbutler/gitops-reverser-devcontainer:buildcache`
+   - Caches all Docker layers across CI runs
+   
+2. **Module Cache**:
+   - Go modules layer only rebuilds when `go.mod`/`go.sum` change
+   - Cached in registry for fast rebuilds
 
-### Local Development
-- ✅ Consistent environment across all developers
-- ✅ No manual tool installation
-- ✅ Works on any platform (Windows, Mac, Linux)
-- ✅ Isolated from host system
+3. **Tool Cache**:
+   - Go tools and golangci-lint dependencies cached in separate layers
+   - Rarely change, so highly cacheable
 
-### CI/CD Pipeline
-- ✅ **~3-5 minutes faster** per CI run (no tool installation)
-- ✅ **Consistent** with local dev environment
-- ✅ **Reliable** - no flaky package downloads during CI
-- ✅ **Cost-effective** - less CI minutes consumed
+## Architecture Decisions
 
-## 🔧 Maintenance
+### Why Debian Bookworm?
 
-### Updating Tool Versions
+The base image uses `golang:1.25.1-bookworm` instead of the latest `golang:1.25.1` because:
+- Latest uses Debian Trixie
+- Trixie removed `moby-cli` and related packages
+- Docker-in-Docker feature requires Bookworm compatibility
+- Setting `"moby": false` uses Docker CE instead
 
-Edit `.devcontainer/Dockerfile`:
+### Why Simplified golangci-lint Caching?
 
+Previous approach:
 ```dockerfile
-ENV KIND_VERSION=v0.30.0 \
-    KUBECTL_VERSION=v1.32.3 \
-    ...
+# ❌ Old approach - copied all source code
+COPY api/ cmd/ internal/ hack/ ./
+RUN golangci-lint run || true
+RUN rm -rf api cmd internal hack
 ```
 
-Push to trigger automatic rebuild.
+Problems:
+- Copied source code unnecessarily
+- Cache invalidated on any code change
+- Deleted code after linting (confusing)
 
-### Updating Go Dependencies
+New approach:
+```dockerfile
+# ✅ New approach - minimal initialization
+RUN mkdir -p /tmp/golangci-init && cd /tmp/golangci-init \
+    && go mod init example.com/init \
+    && echo 'package main\n\nfunc main() {}' > main.go \
+    && golangci-lint run --timeout=5m || true \
+    && cd / && rm -rf /tmp/golangci-init
+```
 
-When `go.mod` or `go.sum` changes:
-1. Next CI run rebuilds dev container with new deps
-2. New dependencies are cached in the image layer
-3. Subsequent CI runs use cached layers (fast)
+Benefits:
+- Pre-caches linter dependencies without source code
+- Cache stable (doesn't invalidate on code changes)
+- Cleaner and more maintainable
 
-### Troubleshooting
+### Why Docker-in-Docker?
 
-**Dev container build slow on first run:**
-- This is expected - downloading and caching all tools
-- Subsequent builds use Docker layer cache (~1-2 min)
+E2E tests require:
+- Kind clusters (Kubernetes in Docker)
+- Docker build for test images
+- Network isolation
 
-**Tools not working in dev container:**
-- Rebuild the container: Cmd+Shift+P → "Rebuild Container"
-- Check tool versions in Dockerfile
+The devcontainer feature `ghcr.io/devcontainers/features/docker-in-docker:2` provides this with:
+- `"moby": false` - Use Docker CE (compatible with Bookworm)
+- `"dockerDashComposeVersion": "v2"` - Modern Compose CLI
 
-**Kind cluster issues:**
-- Ensure Docker-in-Docker is enabled
-- Check that `--privileged` flag is set (required for Kind)
+## Troubleshooting
 
-## 📚 References
+### Container fails to build with Docker-in-Docker error
 
-- [Dev Containers Specification](https://containers.dev/)
-- [GitHub Actions: Running Jobs in Containers](https://docs.github.com/en/actions/using-jobs/running-jobs-in-a-container)
-- [Docker BuildKit Cache](https://docs.docker.com/build/cache/)
+**Error**:
+```
+(!) The 'moby' option is not supported on Debian 'trixie'
+```
+
+**Solution**: Ensure using `golang:1.25.1-bookworm` base image and `"moby": false` in `devcontainer.json`.
+
+### E2E tests fail with "Cannot connect to Docker"
+
+**Local**: Ensure Docker Desktop is running
+```bash
+docker info  # Should show Docker daemon info
+```
+
+**CI**: Job must include:
+```yaml
+container:
+  options: --privileged -v /var/run/docker.sock:/var/run/docker.sock
+```
+
+### Slow rebuild after changing code
+
+This is expected - only Go module cache is preserved. Code changes should not rebuild the entire container.
+
+If you need to rebuild from scratch:
+```bash
+# Local
+Ctrl+Shift+P → "Dev Containers: Rebuild Container Without Cache"
+
+# CI
+Clear registry cache by pushing with new tag
+```
+
+## Files
+
+- [`Dockerfile`](./Dockerfile) - Multi-stage build with tool installation
+- [`devcontainer.json`](./devcontainer.json) - VS Code devcontainer configuration
+- [`README.md`](./README.md) - This file
+
+## References
+
+- [VS Code Dev Containers](https://code.visualstudio.com/docs/devcontainers/containers)
+- [Docker-in-Docker Feature](https://github.com/devcontainers/features/tree/main/src/docker-in-docker)
+- [GitHub Actions Docker Build](https://docs.docker.com/build/ci/github-actions/)

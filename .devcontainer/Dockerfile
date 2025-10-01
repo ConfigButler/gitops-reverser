@@ -1,6 +1,7 @@
 # Development container with all tools pre-installed
 # This is NOT for production - see root Dockerfile for that
-FROM golang:1.25.1
+# Using bookworm instead of latest to ensure docker-in-docker compatibility
+FROM golang:1.25.1-bookworm
 
 # Avoid warnings by switching to noninteractive
 ENV DEBIAN_FRONTEND=noninteractive
@@ -68,32 +69,22 @@ RUN curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/i
 # Set working directory
 WORKDIR /workspace
 
-# Pre-download Go modules for caching (if go.mod exists)
+# Pre-download Go modules for caching
 # This layer will be cached and only rebuilt when go.mod/go.sum changes
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Install Go tools used by the project
-# These are cached in a separate layer
+# Install Go tools used by the project in a separate layer
 RUN go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.19.0 \
     && go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
 
-# Copy golangci config to populate its cache
-COPY .golangci.yml ./
-
-# Copy source code to pre-populate golangci-lint cache
-# This downloads all ~100 linter dependencies during build
-COPY api/ api/
-COPY cmd/ cmd/
-COPY internal/ internal/
-COPY hack/ hack/
-
-# Run golangci-lint to populate cache (will fail on code issues, that's ok)
-# The important part is downloading all linter dependencies
-RUN golangci-lint run --timeout=10m || true
-
-# Clean up source files (not needed in final image, only cache matters)
-RUN rm -rf api cmd internal hack .golangci.yml
+# Initialize golangci-lint cache by running it once on an empty directory
+# This downloads linter dependencies without needing source code
+RUN mkdir -p /tmp/golangci-init && cd /tmp/golangci-init \
+    && go mod init example.com/init \
+    && echo 'package main\n\nfunc main() {}' > main.go \
+    && golangci-lint run --timeout=5m || true \
+    && cd / && rm -rf /tmp/golangci-init
 
 # Verify installations
 RUN echo "=== Tool Versions ===" \
