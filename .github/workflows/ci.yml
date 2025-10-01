@@ -343,10 +343,63 @@ jobs:
           docker pull ${{ needs.docker-build.outputs.image }}
           kind load docker-image ${{ needs.docker-build.outputs.image }} --name gitops-reverser-test-e2e
 
+      - name: Reconfigure kubeconfig for network bridge
+        run: |
+          # The setup-test-e2e target in Makefile calls 'kind export kubeconfig'
+          # which overwrites our network configuration. We need to reapply it.
+          echo "Reconfiguring kubeconfig to use shared network IP..."
+          
+          CURRENT_CONTAINER=$(hostname)
+          GITHUB_NETWORK=$(docker inspect ${CURRENT_CONTAINER} -f '{{range $net,$v := .NetworkSettings.Networks}}{{$net}}{{end}}' 2>/dev/null | head -n1)
+          
+          if [ -n "${GITHUB_NETWORK}" ]; then
+            KIND_IP=$(docker inspect gitops-reverser-test-e2e-control-plane -f "{{.NetworkSettings.Networks.${GITHUB_NETWORK}.IPAddress}}" 2>/dev/null)
+            
+            if [ -n "${KIND_IP}" ] && [ "${KIND_IP}" != "<no value>" ]; then
+              echo "Updating kubeconfig to use Kind IP ${KIND_IP} on shared network"
+              kubectl config set-cluster kind-gitops-reverser-test-e2e \
+                --server=https://${KIND_IP}:6443 \
+                --insecure-skip-tls-verify=true
+              
+              # Verify it works
+              kubectl cluster-info
+              kubectl get nodes
+              
+              echo "✅ Kubeconfig reconfigured successfully"
+            else
+              echo "⚠️  WARNING: Could not detect Kind IP on shared network"
+              echo "Continuing with default Kind networking..."
+            fi
+          else
+            echo "⚠️  WARNING: Could not detect GitHub network"
+            echo "Continuing with default Kind networking..."
+          fi
+
       - name: Run E2E tests
         run: |
           export PROJECT_IMAGE="${{ needs.docker-build.outputs.image }}"
-          make test-e2e
+          
+          # Run test prerequisites without setup-test-e2e (cluster already exists)
+          # But run cleanup-webhook, setup-cert-manager, setup-gitea-e2e, manifests, generate, fmt, vet
+          make cleanup-webhook || true  # Ignore error if webhook doesn't exist
+          make setup-cert-manager
+          make setup-gitea-e2e
+          make manifests generate fmt vet
+          
+          # Reconfigure kubeconfig one more time in case any of the above steps changed it
+          CURRENT_CONTAINER=$(hostname)
+          GITHUB_NETWORK=$(docker inspect ${CURRENT_CONTAINER} -f '{{range $net,$v := .NetworkSettings.Networks}}{{$net}}{{end}}' 2>/dev/null | head -n1)
+          if [ -n "${GITHUB_NETWORK}" ]; then
+            KIND_IP=$(docker inspect gitops-reverser-test-e2e-control-plane -f "{{.NetworkSettings.Networks.${GITHUB_NETWORK}.IPAddress}}" 2>/dev/null)
+            if [ -n "${KIND_IP}" ] && [ "${KIND_IP}" != "<no value>" ]; then
+              kubectl config set-cluster kind-gitops-reverser-test-e2e \
+                --server=https://${KIND_IP}:6443 \
+                --insecure-skip-tls-verify=true
+            fi
+          fi
+          
+          # Run the actual e2e tests
+          KIND_CLUSTER=gitops-reverser-test-e2e go test ./test/e2e/ -v -ginkgo.v
 
   # Release job only runs on push to main after tests pass
   release-please:
