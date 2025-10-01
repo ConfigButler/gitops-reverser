@@ -75,6 +75,22 @@ jobs:
         run: |
           git config --global --add safe.directory /__w/gitops-reverser/gitops-reverser
 
+      - name: Cache Go build
+        uses: actions/cache@v4
+        with:
+          path: /root/.cache/go-build
+          key: ${{ runner.os }}-go-build-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-build-
+
+      - name: Cache golangci-lint
+        uses: actions/cache@v4
+        with:
+          path: /root/.cache/golangci-lint
+          key: ${{ runner.os }}-golangci-lint-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-golangci-lint-
+
       - name: Verify dev container tools
         run: |
           echo "=== Verifying pre-installed tools ==="
@@ -83,6 +99,23 @@ jobs:
           kubectl version --client
           kustomize version
           golangci-lint version
+
+      - name: Check cache status
+        run: |
+          echo "=== Cache Status ==="
+          if [ -d "/root/.cache/go-build" ] && [ "$(ls -A /root/.cache/go-build)" ]; then
+            echo "✓ Go build cache found:"
+            du -sh /root/.cache/go-build
+          else
+            echo "⚠️  WARNING: Go build cache is empty - first run will be slower"
+          fi
+          
+          if [ -d "/root/.cache/golangci-lint" ] && [ "$(ls -A /root/.cache/golangci-lint)" ]; then
+            echo "✓ golangci-lint cache found:"
+            du -sh /root/.cache/golangci-lint
+          else
+            echo "⚠️  WARNING: golangci-lint cache is empty - first run will be slower"
+          fi
 
       - name: Run lint
         run: make lint
