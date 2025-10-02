@@ -52,6 +52,7 @@ jobs:
           context: .
           file: .devcontainer/Dockerfile.ci
           push: true
+          load: true  # So that we can run the next step without pulling
           tags: |
             ${{ steps.image.outputs.name }}
             ${{ env.REGISTRY }}/configbutler/gitops-reverser-ci:latest
@@ -137,7 +138,6 @@ jobs:
           install-mode: none
           skip-cache: false
           skip-save-cache: false
-          # Only check new issues in PRs (huge performance boost)
           only-new-issues: ${{ github.event_name == 'pull_request' }}
           args: --timeout=5m --concurrency=4
 
