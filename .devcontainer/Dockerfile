@@ -1,7 +1,10 @@
 # Development container with all tools pre-installed including Docker and Kind
 # Extends the CI base image with Docker support for local development
 # This is NOT for production - see root Dockerfile for that
-FROM ghcr.io/configbutler/gitops-reverser-ci:latest AS ci-base
+# For local dev: builds CI base from local Dockerfile.ci
+# For CI: uses pre-built image from GHCR
+ARG CI_BASE_IMAGE=ci-base-local
+FROM ${CI_BASE_IMAGE} AS ci-base
 
 # Switch to noninteractive for Docker installation
 ENV DEBIAN_FRONTEND=noninteractive

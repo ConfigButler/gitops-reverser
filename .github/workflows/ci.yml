@@ -97,6 +97,7 @@ jobs:
           cache-from: type=registry,ref=${{ env.REGISTRY }}/configbutler/gitops-reverser-devcontainer:buildcache
           cache-to: type=registry,ref=${{ env.REGISTRY }}/configbutler/gitops-reverser-devcontainer:buildcache,mode=max
           build-args: |
+            CI_BASE_IMAGE=${{ needs.build-ci-container.outputs.image }}
             BUILDKIT_CONTEXT_KEEP_GIT_DIR=1
 
   lint-and-test:

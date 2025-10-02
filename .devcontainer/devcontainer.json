@@ -2,8 +2,13 @@
   "name": "GitOps Reverser DevContainer",
   "build": {
     "dockerfile": "Dockerfile",
-    "context": ".."
+    "context": "..",
+    "args": {
+      "CI_BASE_IMAGE": "ci-base-local"
+    },
+    "target": ""
   },
+  "initializeCommand": "cd .devcontainer && docker build -f Dockerfile.ci -t ci-base-local ..",
   "features": {
     "ghcr.io/devcontainers/features/docker-in-docker:2": {
       "moby": false,
