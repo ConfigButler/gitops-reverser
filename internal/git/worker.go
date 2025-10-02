@@ -1,8 +1,8 @@
-// Package git provides Git repository operations for the GitOps Reverser controller.
 package git
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,14 +10,31 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ConfigButler/gitops-reverser/api/v1alpha1"
-	"github.com/ConfigButler/gitops-reverser/internal/eventqueue"
-	"github.com/ConfigButler/gitops-reverser/internal/metrics"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	"github.com/ConfigButler/gitops-reverser/internal/eventqueue"
+	"github.com/ConfigButler/gitops-reverser/internal/metrics"
+)
+
+// Sentinel errors for worker operations.
+var (
+	ErrContextCanceled = errors.New("context was canceled during initialization")
+)
+
+// Worker configuration constants.
+const (
+	EventQueueBufferSize   = 100                    // Size of repo-specific event queue
+	DefaultMaxCommits      = 20                     // Default max commits before push
+	TestMaxCommits         = 1                      // Max commits in test mode
+	TestPollInterval       = 100 * time.Millisecond // Event polling interval for tests
+	ProductionPollInterval = 1 * time.Second        // Event polling interval for production
+	TestPushInterval       = 5 * time.Second        // Push interval for tests
+	ProductionPushInterval = 1 * time.Minute        // Push interval for production
 )
 
 // Worker processes events from the queue and commits them to Git.
@@ -42,7 +59,7 @@ func (w *Worker) Start(ctx context.Context) error {
 	return nil
 }
 
-// NeedLeaderElection implements manager.LeaderElectionRunnable
+// NeedLeaderElection implements manager.LeaderElectionRunnable.
 func (w *Worker) NeedLeaderElection() bool {
 	return true
 }
@@ -83,7 +100,7 @@ func (w *Worker) dispatchEvents(ctx context.Context, repoQueues map[string]chan 
 				queueKey := event.GitRepoConfigNamespace + "/" + event.GitRepoConfigRef
 				repoQueue, ok := repoQueues[queueKey]
 				if !ok {
-					repoQueue = make(chan eventqueue.Event, 100)
+					repoQueue = make(chan eventqueue.Event, EventQueueBufferSize)
 					repoQueues[queueKey] = repoQueue
 					log.Info("Starting new repo event processor", "queueKey", queueKey)
 					go w.processRepoEvents(ctx, queueKey, repoQueue)
@@ -107,9 +124,14 @@ func (w *Worker) processRepoEvents(ctx context.Context, queueKey string, eventCh
 	log := w.Log.WithValues("queueKey", queueKey)
 	log.Info("Starting event processor for repo")
 
-	repoConfig, eventBuffer := w.initializeProcessor(ctx, log, eventChan)
-	if repoConfig == nil {
-		return // Context canceled or initialization failed
+	repoConfig, eventBuffer, err := w.initializeProcessor(ctx, log, eventChan)
+	if err != nil {
+		if errors.Is(err, ErrContextCanceled) {
+			log.Info("Processor initialization canceled")
+		} else {
+			log.Error(err, "Failed to initialize processor")
+		}
+		return
 	}
 
 	pushInterval := w.getPushInterval(log, repoConfig)
@@ -119,7 +141,11 @@ func (w *Worker) processRepoEvents(ctx context.Context, queueKey string, eventCh
 }
 
 // initializeProcessor waits for the first event and initializes the GitRepoConfig.
-func (w *Worker) initializeProcessor(ctx context.Context, log logr.Logger, eventChan <-chan eventqueue.Event) (*v1alpha1.GitRepoConfig, []eventqueue.Event) {
+func (w *Worker) initializeProcessor(
+	ctx context.Context,
+	log logr.Logger,
+	eventChan <-chan eventqueue.Event,
+) (*v1alpha1.GitRepoConfig, []eventqueue.Event, error) {
 	var firstEvent eventqueue.Event
 	var repoConfig v1alpha1.GitRepoConfig
 
@@ -132,12 +158,12 @@ func (w *Worker) initializeProcessor(ctx context.Context, log logr.Logger, event
 
 		if err := w.Client.Get(ctx, namespacedName, &repoConfig); err != nil {
 			log.Error(err, "Failed to fetch GitRepoConfig", "namespacedName", namespacedName)
-			return nil, nil
+			return nil, nil, fmt.Errorf("failed to fetch GitRepoConfig: %w", err)
 		}
 
-		return &repoConfig, []eventqueue.Event{firstEvent}
+		return &repoConfig, []eventqueue.Event{firstEvent}, nil
 	case <-ctx.Done():
-		return nil, nil
+		return nil, nil, ErrContextCanceled
 	}
 }
 
@@ -166,33 +192,32 @@ func (w *Worker) getMaxCommits(repoConfig *v1alpha1.GitRepoConfig) int {
 func (w *Worker) getDefaultMaxCommits() int {
 	// Use faster defaults for unit tests
 	if strings.Contains(os.Args[0], "test") {
-		return 1
+		return TestMaxCommits
 	}
-	return 20
+	return DefaultMaxCommits
 }
 
 // getPollInterval returns the event polling interval.
 func (w *Worker) getPollInterval() time.Duration {
 	// Use faster polling for unit tests
 	if strings.Contains(os.Args[0], "test") {
-		return 100 * time.Millisecond
+		return TestPollInterval
 	}
-	return 1 * time.Second
+	return ProductionPollInterval
 }
 
 // getDefaultPushInterval returns the default push interval.
 func (w *Worker) getDefaultPushInterval() time.Duration {
 	// Use faster intervals for unit tests
 	if strings.Contains(os.Args[0], "test") {
-		return 5 * time.Second
+		return TestPushInterval
 	}
-	return 1 * time.Minute
+	return ProductionPushInterval
 }
 
 // runEventLoop runs the main event processing loop.
 func (w *Worker) runEventLoop(ctx context.Context, log logr.Logger, repoConfig *v1alpha1.GitRepoConfig,
 	eventChan <-chan eventqueue.Event, eventBuffer []eventqueue.Event, pushInterval time.Duration, maxCommits int) {
-
 	ticker := time.NewTicker(pushInterval)
 	defer ticker.Stop()
 
@@ -213,9 +238,16 @@ func (w *Worker) runEventLoop(ctx context.Context, log logr.Logger, repoConfig *
 }
 
 // handleNewEvent processes a new event and manages buffer limits.
-func (w *Worker) handleNewEvent(ctx context.Context, log logr.Logger, repoConfig v1alpha1.GitRepoConfig,
-	event eventqueue.Event, eventBuffer []eventqueue.Event, maxCommits int, ticker *time.Ticker, pushInterval time.Duration) []eventqueue.Event {
-
+func (w *Worker) handleNewEvent(
+	ctx context.Context,
+	log logr.Logger,
+	repoConfig v1alpha1.GitRepoConfig,
+	event eventqueue.Event,
+	eventBuffer []eventqueue.Event,
+	maxCommits int,
+	ticker *time.Ticker,
+	pushInterval time.Duration,
+) []eventqueue.Event {
 	eventBuffer = append(eventBuffer, event)
 	if len(eventBuffer) >= maxCommits {
 		log.Info("Max commits reached, triggering push")
@@ -227,7 +259,14 @@ func (w *Worker) handleNewEvent(ctx context.Context, log logr.Logger, repoConfig
 }
 
 // handleTicker processes timer-triggered pushes.
-func (w *Worker) handleTicker(ctx context.Context, log logr.Logger, repoConfig v1alpha1.GitRepoConfig, eventBuffer []eventqueue.Event) []eventqueue.Event {
+//
+//nolint:lll // Function signature
+func (w *Worker) handleTicker(
+	ctx context.Context,
+	log logr.Logger,
+	repoConfig v1alpha1.GitRepoConfig,
+	eventBuffer []eventqueue.Event,
+) []eventqueue.Event {
 	if len(eventBuffer) > 0 {
 		log.Info("Push interval reached, triggering push")
 		w.commitAndPush(ctx, repoConfig, eventBuffer)
@@ -289,15 +328,18 @@ func (w *Worker) commitAndPush(ctx context.Context, repoConfig v1alpha1.GitRepoC
 }
 
 // getAuthFromSecret fetches the authentication credentials from the specified secret.
-func (w *Worker) getAuthFromSecret(ctx context.Context, repoConfig v1alpha1.GitRepoConfig) (transport.AuthMethod, error) {
+func (w *Worker) getAuthFromSecret(
+	ctx context.Context,
+	repoConfig v1alpha1.GitRepoConfig,
+) (transport.AuthMethod, error) {
 	// If no secret reference is provided, return nil auth (for public repositories)
 	if repoConfig.Spec.SecretRef == nil {
-		return nil, nil
+		return nil, nil //nolint:nilnil // Returning nil auth for public repos is semantically correct
 	}
 
 	secretName := types.NamespacedName{
 		Name:      repoConfig.Spec.SecretRef.Name,
-		Namespace: repoConfig.Namespace, // Use the GitRepoConfig's namespace
+		Namespace: repoConfig.Namespace,
 	}
 
 	var secret corev1.Secret
@@ -307,7 +349,6 @@ func (w *Worker) getAuthFromSecret(ctx context.Context, repoConfig v1alpha1.GitR
 
 	// Check for SSH authentication first
 	if privateKey, ok := secret.Data["ssh-privatekey"]; ok {
-		// SSH authentication
 		keyPassword := ""
 		if passData, hasPass := secret.Data["ssh-password"]; hasPass {
 			keyPassword = string(passData)
@@ -323,5 +364,8 @@ func (w *Worker) getAuthFromSecret(ctx context.Context, repoConfig v1alpha1.GitR
 		return nil, fmt.Errorf("secret %s contains username but no password for HTTP auth", secretName)
 	}
 
-	return nil, fmt.Errorf("secret %s does not contain valid authentication data (ssh-privatekey or username/password)", secretName)
+	return nil, fmt.Errorf(
+		"secret %s does not contain valid authentication data (ssh-privatekey or username/password)",
+		secretName,
+	)
 }

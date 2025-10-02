@@ -19,7 +19,7 @@ var (
 	projectImage = getProjectImage()
 )
 
-// getProjectImage returns the project image name from environment or default
+// getProjectImage returns the project image name from environment or default.
 func getProjectImage() string {
 	if img := os.Getenv("PROJECT_IMAGE"); img != "" {
 		return img

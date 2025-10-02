@@ -1,4 +1,3 @@
-// Package eventqueue provides a thread-safe queue for processing webhook events.
 package eventqueue
 
 import (
@@ -19,7 +18,7 @@ func TestNewQueue(t *testing.T) {
 	queue := NewQueue()
 	assert.NotNil(t, queue)
 	assert.NotNil(t, queue.events)
-	assert.Equal(t, 0, len(queue.events))
+	assert.Empty(t, queue.events)
 	assert.Equal(t, 0, queue.Size())
 }
 
@@ -54,7 +53,7 @@ func TestEnqueue_MultipleEvents(t *testing.T) {
 	queue := NewQueue()
 
 	// Create multiple events
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		obj := &unstructured.Unstructured{}
 		obj.SetName("test-pod-" + string(rune(i)))
 		obj.SetNamespace("default")
@@ -112,7 +111,7 @@ func TestDequeueAll_SingleEvent(t *testing.T) {
 
 	events := queue.DequeueAll()
 	assert.NotNil(t, events)
-	assert.Equal(t, 1, len(events))
+	assert.Len(t, events, 1)
 	assert.Equal(t, 0, queue.Size()) // Queue should be empty after dequeue
 
 	// Verify the dequeued event
@@ -131,7 +130,7 @@ func TestDequeueAll_MultipleEvents(t *testing.T) {
 
 	// Enqueue multiple events
 	expectedEvents := make([]Event, 3)
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		obj := &unstructured.Unstructured{}
 		obj.SetName("test-pod-" + string(rune('0'+i)))
 		obj.SetNamespace("default")
@@ -156,7 +155,7 @@ func TestDequeueAll_MultipleEvents(t *testing.T) {
 
 	events := queue.DequeueAll()
 	assert.NotNil(t, events)
-	assert.Equal(t, 3, len(events))
+	assert.Len(t, events, 3)
 	assert.Equal(t, 0, queue.Size()) // Queue should be empty after dequeue
 
 	// Verify all events are returned in order
@@ -171,7 +170,7 @@ func TestDequeueAll_ConsecutiveCalls(t *testing.T) {
 	queue := NewQueue()
 
 	// First batch
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		obj := &unstructured.Unstructured{}
 		obj.SetName("batch1-pod-" + string(rune('0'+i)))
 
@@ -189,7 +188,7 @@ func TestDequeueAll_ConsecutiveCalls(t *testing.T) {
 
 	// Dequeue first batch
 	events1 := queue.DequeueAll()
-	assert.Equal(t, 2, len(events1))
+	assert.Len(t, events1, 2)
 	assert.Equal(t, 0, queue.Size())
 
 	// Second dequeue should return nil
@@ -197,7 +196,7 @@ func TestDequeueAll_ConsecutiveCalls(t *testing.T) {
 	assert.Nil(t, events2)
 
 	// Add second batch
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		obj := &unstructured.Unstructured{}
 		obj.SetName("batch2-pod-" + string(rune('0'+i)))
 
@@ -215,7 +214,7 @@ func TestDequeueAll_ConsecutiveCalls(t *testing.T) {
 
 	// Dequeue second batch
 	events3 := queue.DequeueAll()
-	assert.Equal(t, 3, len(events3))
+	assert.Len(t, events3, 3)
 	assert.Equal(t, 0, queue.Size())
 }
 
@@ -246,7 +245,7 @@ func TestSize_Accuracy(t *testing.T) {
 
 	// Dequeue all
 	events := queue.DequeueAll()
-	assert.Equal(t, 5, len(events))
+	assert.Len(t, events, 5)
 	assert.Equal(t, 0, queue.Size())
 }
 
@@ -259,12 +258,12 @@ func TestConcurrentAccess(t *testing.T) {
 	var wg sync.WaitGroup
 
 	// Start multiple producer goroutines
-	for g := 0; g < numGoroutines; g++ {
+	for g := range numGoroutines {
 		wg.Add(1)
 		go func(goroutineID int) {
 			defer wg.Done()
 
-			for i := 0; i < eventsPerGoroutine; i++ {
+			for i := range eventsPerGoroutine {
 				obj := &unstructured.Unstructured{}
 				obj.SetName("pod-g" + string(rune('0'+goroutineID)) + "-e" + string(rune('0'+i)))
 
@@ -328,7 +327,7 @@ func TestConcurrentEnqueueDequeue(t *testing.T) {
 
 	// Enqueue goroutine
 	go func() {
-		for i := 0; i < numOperations; i++ {
+		for i := range numOperations {
 			obj := &unstructured.Unstructured{}
 			obj.SetName("test-pod-" + string(rune('0'+i%10)))
 
@@ -453,7 +452,7 @@ func TestQueueBehaviorUnderLoad(t *testing.T) {
 	const batchSize = 1000
 
 	// Enqueue a large batch
-	for i := 0; i < batchSize; i++ {
+	for i := range batchSize {
 		obj := &unstructured.Unstructured{}
 		obj.SetName("load-test-pod-" + string(rune('0'+i%10)))
 		obj.SetNamespace("load-test")
@@ -476,7 +475,7 @@ func TestQueueBehaviorUnderLoad(t *testing.T) {
 
 	// Dequeue all at once
 	events := queue.DequeueAll()
-	assert.Equal(t, batchSize, len(events))
+	assert.Len(t, events, batchSize)
 	assert.Equal(t, 0, queue.Size())
 
 	// Verify first and last events

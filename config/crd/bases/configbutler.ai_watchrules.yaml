@@ -17,7 +17,7 @@ spec:
   - name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: WatchRule is the Schema for the watchrules API
+        description: WatchRule is the Schema for the watchrules API.
         properties:
           apiVersion:
             description: |-

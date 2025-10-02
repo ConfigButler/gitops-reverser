@@ -17,7 +17,7 @@ func TestInitOTLPExporter_Success(t *testing.T) {
 	shutdownFunc, err := InitOTLPExporter(ctx)
 
 	// Verify
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.NotNil(t, shutdownFunc)
 
 	// Verify all metrics are initialized
@@ -29,7 +29,7 @@ func TestInitOTLPExporter_Success(t *testing.T) {
 
 	// Test shutdown function
 	err = shutdownFunc(ctx)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 }
 
 func TestMetricsInitialization(t *testing.T) {
@@ -208,7 +208,7 @@ func TestConcurrentMetricsUsage(t *testing.T) {
 	// Goroutine 1: Events received
 	go func() {
 		defer func() { done <- true }()
-		for i := 0; i < 100; i++ {
+		for range 100 {
 			EventsReceivedTotal.Add(ctx, 1)
 		}
 	}()
@@ -216,7 +216,7 @@ func TestConcurrentMetricsUsage(t *testing.T) {
 	// Goroutine 2: Events processed
 	go func() {
 		defer func() { done <- true }()
-		for i := 0; i < 100; i++ {
+		for range 100 {
 			EventsProcessedTotal.Add(ctx, 1)
 		}
 	}()
@@ -224,7 +224,7 @@ func TestConcurrentMetricsUsage(t *testing.T) {
 	// Goroutine 3: Git operations
 	go func() {
 		defer func() { done <- true }()
-		for i := 0; i < 100; i++ {
+		for i := range 100 {
 			GitOperationsTotal.Add(ctx, 1)
 			GitPushDurationSeconds.Record(ctx, float64(i)*0.01)
 		}
@@ -353,11 +353,11 @@ func TestShutdownFunction(t *testing.T) {
 
 	// Test shutdown function
 	err = shutdownFunc(ctx)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// Test calling shutdown multiple times
 	err = shutdownFunc(ctx)
-	assert.NoError(t, err) // Should not error on multiple calls
+	require.NoError(t, err) // Should not error on multiple calls
 }
 
 func TestMetricsAfterShutdown(t *testing.T) {
@@ -374,7 +374,7 @@ func TestMetricsAfterShutdown(t *testing.T) {
 
 	// Shutdown
 	err = shutdownFunc(ctx)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// Metrics should still work after shutdown (they just won't be exported)
 	assert.NotPanics(t, func() {
@@ -391,7 +391,7 @@ func TestMeterProviderIntegration(t *testing.T) {
 
 	// Create a test counter
 	counter, err := testMeter.Int64Counter("test_counter")
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.NotNil(t, counter)
 
 	// Use the counter
@@ -416,7 +416,7 @@ func TestNoOpMeterProvider(t *testing.T) {
 
 	// Initialize with no-op provider
 	shutdownFunc, err := InitOTLPExporter(ctx)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.NotNil(t, shutdownFunc)
 
 	// Metrics should still work (but do nothing)
@@ -430,7 +430,7 @@ func TestNoOpMeterProvider(t *testing.T) {
 
 	// Shutdown should work
 	err = shutdownFunc(ctx)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 }
 
 func TestMetricNaming(t *testing.T) {
@@ -446,7 +446,8 @@ func TestMetricNaming(t *testing.T) {
 	// Verify naming conventions
 	for _, name := range expectedNames {
 		// Names should be lowercase
-		assert.Equal(t, name, name)
+		// Verify metric name is not empty
+		assert.NotEmpty(t, name)
 
 		// Names should use underscores
 		assert.Contains(t, name, "_")

@@ -9,10 +9,11 @@ import (
 	"fmt"
 	"testing"
 
-	configbutleraiv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 	"github.com/go-git/go-git/v5/plumbing/transport/ssh"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	configbutleraiv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -191,7 +192,9 @@ var _ = Describe("SSH Authentication", func() {
 				auth, err := reconciler.extractCredentials(emptySecret)
 
 				Expect(err).To(HaveOccurred())
-				Expect(err.Error()).To(ContainSubstring("must contain either 'ssh-privatekey' or both 'username' and 'password'"))
+				Expect(
+					err.Error(),
+				).To(ContainSubstring("must contain either 'ssh-privatekey' or both 'username' and 'password'"))
 				Expect(auth).To(BeNil())
 			})
 		})
@@ -231,7 +234,7 @@ var _ = Describe("SSH Authentication", func() {
 	})
 })
 
-// TestSSHCredentials tests SSH credential extraction functionality
+// TestSSHCredentials tests SSH credential extraction functionality.
 func TestSSHCredentials(t *testing.T) {
 	reconciler := &GitRepoConfigReconciler{}
 
@@ -314,7 +317,7 @@ func TestSSHCredentials(t *testing.T) {
 	})
 }
 
-// TestValidateRepository tests the repository validation logic
+// TestValidateRepository tests the repository validation logic.
 func TestValidateRepository(t *testing.T) {
 	reconciler := &GitRepoConfigReconciler{}
 	ctx := context.Background()
@@ -334,7 +337,12 @@ func TestValidateRepository(t *testing.T) {
 			t.Skip("Skipping network test in short mode")
 		}
 
-		commitHash, err := reconciler.validateRepository(ctx, "https://github.com/octocat/Hello-World.git", "master", nil)
+		commitHash, err := reconciler.validateRepository(
+			ctx,
+			"https://github.com/octocat/Hello-World.git",
+			"master",
+			nil,
+		)
 		if err != nil {
 			t.Logf("Public repository test failed (might be expected in CI): %v", err)
 		} else {
@@ -348,7 +356,7 @@ func TestValidateRepository(t *testing.T) {
 	})
 }
 
-// TestGitRepoConfigConditions tests the condition setting logic
+// TestGitRepoConfigConditions tests the condition setting logic.
 func TestGitRepoConfigConditions(t *testing.T) {
 	reconciler := &GitRepoConfigReconciler{}
 

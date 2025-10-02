@@ -45,7 +45,6 @@ func init() {
 	// +kubebuilder:scaffold:scheme
 }
 
-// nolint:gocyclo
 func main() {
 	var metricsAddr string
 	var metricsCertPath, metricsCertName, metricsCertKey string
@@ -113,7 +112,8 @@ func main() {
 
 	if len(webhookCertPath) > 0 {
 		setupLog.Info("Initializing webhook certificate watcher using provided certificates",
-			"webhook-cert-path", webhookCertPath, "webhook-cert-name", webhookCertName, "webhook-cert-key", webhookCertKey)
+			"webhook-cert-path", webhookCertPath, //nolint:lll // Structured log with many fields
+			"webhook-cert-name", webhookCertName, "webhook-cert-key", webhookCertKey)
 
 		var err error
 		webhookCertWatcher, err = certwatcher.New(
@@ -148,7 +148,7 @@ func main() {
 		// FilterProvider is used to protect the metrics endpoint with authn/authz.
 		// These configurations ensure that only authorized users and service accounts
 		// can access the metrics endpoint. The RBAC are configured in 'config/rbac/kustomization.yaml'. More info:
-		// https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.21.0/pkg/metrics/filters#WithAuthenticationAndAuthorization
+		// https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.21.0/pkg/metrics/filters#WithAuthenticationAndAuthorization //nolint:lll // URL
 		metricsServerOptions.FilterProvider = filters.WithAuthenticationAndAuthorization
 	}
 
@@ -162,7 +162,8 @@ func main() {
 	// - [PROMETHEUS-WITH-CERTS] at config/prometheus/kustomization.yaml for TLS certification.
 	if len(metricsCertPath) > 0 {
 		setupLog.Info("Initializing metrics certificate watcher using provided certificates",
-			"metrics-cert-path", metricsCertPath, "metrics-cert-name", metricsCertName, "metrics-cert-key", metricsCertKey)
+			"metrics-cert-path", metricsCertPath, //nolint:lll // Structured log with many fields
+			"metrics-cert-name", metricsCertName, "metrics-cert-key", metricsCertKey)
 
 		var err error
 		metricsCertWatcher, err = certwatcher.New(

@@ -49,7 +49,7 @@ func TestPodLabeler_Start_AddLabel(t *testing.T) {
 
 	// Execute
 	err = labeler.Start(ctx)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// Verify the label was added
 	updatedPod := &corev1.Pod{}
@@ -85,7 +85,7 @@ func TestPodLabeler_Start_PodNotFound(t *testing.T) {
 
 	// Execute
 	err = labeler.Start(ctx)
-	assert.Error(t, err)
+	require.Error(t, err)
 	assert.True(t, errors.IsNotFound(err))
 }
 
@@ -119,7 +119,7 @@ func TestPodLabeler_addLabel_NewLabel(t *testing.T) {
 	// Execute
 	ctx := context.Background()
 	err = labeler.addLabel(ctx, logger)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// Verify
 	updatedPod := &corev1.Pod{}
@@ -164,7 +164,7 @@ func TestPodLabeler_addLabel_ExistingLabel(t *testing.T) {
 	// Execute
 	ctx := context.Background()
 	err = labeler.addLabel(ctx, logger)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// Verify the label is still there (no error should occur)
 	updatedPod := &corev1.Pod{}
@@ -207,7 +207,7 @@ func TestPodLabeler_addLabel_NilLabels(t *testing.T) {
 	// Execute
 	ctx := context.Background()
 	err = labeler.addLabel(ctx, logger)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// Verify
 	updatedPod := &corev1.Pod{}
@@ -254,7 +254,7 @@ func TestPodLabeler_removeLabel_ExistingLabel(t *testing.T) {
 	// Execute
 	ctx := context.Background()
 	err = labeler.removeLabel(ctx, logger)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// Verify
 	updatedPod := &corev1.Pod{}
@@ -300,7 +300,7 @@ func TestPodLabeler_removeLabel_NoLabel(t *testing.T) {
 	// Execute
 	ctx := context.Background()
 	err = labeler.removeLabel(ctx, logger)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// Verify - should be no-op
 	updatedPod := &corev1.Pod{}
@@ -333,7 +333,7 @@ func TestPodLabeler_removeLabel_PodNotFound(t *testing.T) {
 	// Execute
 	ctx := context.Background()
 	err = labeler.removeLabel(ctx, logger)
-	assert.NoError(t, err) // Should not error when pod is not found during cleanup
+	require.NoError(t, err) // Should not error when pod is not found during cleanup
 }
 
 func TestPodLabeler_getPod_Success(t *testing.T) {
@@ -366,7 +366,7 @@ func TestPodLabeler_getPod_Success(t *testing.T) {
 	// Execute
 	ctx := context.Background()
 	pod, err := labeler.getPod(ctx)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.NotNil(t, pod)
 	assert.Equal(t, "test-pod", pod.Name)
 	assert.Equal(t, "test-namespace", pod.Namespace)
@@ -390,7 +390,7 @@ func TestPodLabeler_getPod_NotFound(t *testing.T) {
 	// Execute
 	ctx := context.Background()
 	pod, err := labeler.getPod(ctx)
-	assert.Error(t, err)
+	require.Error(t, err)
 	assert.True(t, errors.IsNotFound(err))
 	assert.NotNil(t, pod) // getPod always returns a Pod object, even when not found
 }
@@ -408,7 +408,7 @@ func TestGetPodName_Empty(t *testing.T) {
 	t.Setenv("POD_NAME", "")
 
 	podName := GetPodName()
-	assert.Equal(t, "", podName)
+	assert.Empty(t, podName)
 }
 
 func TestGetPodNamespace(t *testing.T) {
@@ -424,7 +424,7 @@ func TestGetPodNamespace_Empty(t *testing.T) {
 	t.Setenv("POD_NAMESPACE", "")
 
 	podNamespace := GetPodNamespace()
-	assert.Equal(t, "", podNamespace)
+	assert.Empty(t, podNamespace)
 }
 
 func TestLeaderLabelConstants(t *testing.T) {
@@ -522,7 +522,7 @@ func TestPodLabeler_AddRemoveCycle(t *testing.T) {
 
 	// Add label
 	err = labeler.addLabel(ctx, logger)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// Verify label was added
 	updatedPod := &corev1.Pod{}
@@ -535,7 +535,7 @@ func TestPodLabeler_AddRemoveCycle(t *testing.T) {
 
 	// Remove label
 	err = labeler.removeLabel(ctx, logger)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// Verify label was removed
 	err = client.Get(ctx, types.NamespacedName{
@@ -547,7 +547,7 @@ func TestPodLabeler_AddRemoveCycle(t *testing.T) {
 
 	// Add label again
 	err = labeler.addLabel(ctx, logger)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// Verify label was added again
 	err = client.Get(ctx, types.NamespacedName{
@@ -593,7 +593,7 @@ func TestPodLabeler_WithExistingLabels(t *testing.T) {
 
 	// Add leader label
 	err = labeler.addLabel(ctx, logger)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// Verify all labels are preserved
 	updatedPod := &corev1.Pod{}
@@ -614,7 +614,7 @@ func TestPodLabeler_WithExistingLabels(t *testing.T) {
 
 	// Remove leader label
 	err = labeler.removeLabel(ctx, logger)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// Verify only leader label was removed
 	err = client.Get(ctx, types.NamespacedName{
@@ -666,5 +666,5 @@ func TestPodLabeler_ContextCancellation(t *testing.T) {
 
 	// Execute - Start should handle the canceled context gracefully
 	err = labeler.Start(ctx)
-	assert.NoError(t, err) // Should not error, just exit cleanly
+	require.NoError(t, err) // Should not error, just exit cleanly
 }

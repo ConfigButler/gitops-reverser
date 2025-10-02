@@ -54,13 +54,13 @@ func TestSanitize_BasicPod(t *testing.T) {
 	// Verify spec is preserved
 	spec, found, err := unstructured.NestedMap(sanitized.Object, "spec")
 	assert.True(t, found)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.NotNil(t, spec)
 
 	// Verify status is removed
 	_, found, err = unstructured.NestedMap(sanitized.Object, "status")
 	assert.False(t, found)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// Verify server-generated metadata fields are not present
 	metadata, found, err := unstructured.NestedMap(sanitized.Object, "metadata")
@@ -101,7 +101,7 @@ func TestSanitize_ConfigMapWithData(t *testing.T) {
 	// Verify data is preserved
 	data, found, err := unstructured.NestedMap(sanitized.Object, "data")
 	assert.True(t, found)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, map[string]interface{}{
 		"config.yaml":    "key: value",
 		"app.properties": "debug=true",
@@ -110,7 +110,7 @@ func TestSanitize_ConfigMapWithData(t *testing.T) {
 	// Verify binaryData is preserved (it should be treated as part of data)
 	binaryData, found, err := unstructured.NestedMap(sanitized.Object, "binaryData")
 	assert.True(t, found)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, map[string]interface{}{
 		"binary-file": "base64encodeddata",
 	}, binaryData)
@@ -147,13 +147,13 @@ func TestSanitize_ClusterScopedResource(t *testing.T) {
 	// Verify spec is preserved
 	spec, found, err := unstructured.NestedMap(sanitized.Object, "spec")
 	assert.True(t, found)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.NotNil(t, spec)
 
 	// Verify status is removed
 	_, found, err = unstructured.NestedMap(sanitized.Object, "status")
 	assert.False(t, found)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 }
 
 func TestSanitize_EmptyLabelsAndAnnotations(t *testing.T) {
@@ -233,16 +233,16 @@ func TestSanitize_NoSpecOrData(t *testing.T) {
 	// Verify spec and data fields are not present
 	_, found, err := unstructured.NestedMap(sanitized.Object, "spec")
 	assert.False(t, found)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	_, found, err = unstructured.NestedMap(sanitized.Object, "data")
 	assert.False(t, found)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// Verify other fields are preserved
 	involvedObject, found, err := unstructured.NestedMap(sanitized.Object, "involvedObject")
 	assert.True(t, found)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, map[string]interface{}{
 		"kind": "Pod",
 		"name": "my-pod",
@@ -298,18 +298,18 @@ func TestSanitize_ComplexNestedSpec(t *testing.T) {
 	// Verify complex nested spec is preserved
 	_, found, err := unstructured.NestedMap(sanitized.Object, "spec")
 	assert.True(t, found)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// Verify nested structure is intact
 	replicas, found, err := unstructured.NestedInt64(sanitized.Object, "spec", "replicas")
 	assert.True(t, found)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, int64(3), replicas)
 
 	// Verify deeply nested fields - access containers array manually
 	containers, found, err := unstructured.NestedSlice(sanitized.Object, "spec", "template", "spec", "containers")
 	assert.True(t, found)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Len(t, containers, 1)
 
 	// Access first container
@@ -333,7 +333,7 @@ func TestSanitize_ComplexNestedSpec(t *testing.T) {
 	// Verify status is removed
 	_, found, err = unstructured.NestedMap(sanitized.Object, "status")
 	assert.False(t, found)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 }
 
 func TestSanitize_PreservesOriginalObject(t *testing.T) {

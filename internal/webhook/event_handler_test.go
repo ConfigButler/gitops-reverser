@@ -4,10 +4,6 @@ import (
 	"context"
 	"testing"
 
-	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
-	"github.com/ConfigButler/gitops-reverser/internal/eventqueue"
-	"github.com/ConfigButler/gitops-reverser/internal/metrics"
-	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	admissionv1 "k8s.io/api/admission/v1"
@@ -18,6 +14,11 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
+
+	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	"github.com/ConfigButler/gitops-reverser/internal/eventqueue"
+	"github.com/ConfigButler/gitops-reverser/internal/metrics"
+	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
 )
 
 func TestEventHandler_Handle_MatchingRule(t *testing.T) {
@@ -105,7 +106,7 @@ func TestEventHandler_Handle_MatchingRule(t *testing.T) {
 
 	// Verify the enqueued event
 	events := eventQueue.DequeueAll()
-	require.Equal(t, 1, len(events))
+	require.Len(t, events, 1)
 
 	event := events[0]
 	assert.Equal(t, "test-pod", event.Object.GetName())
@@ -285,7 +286,7 @@ func TestEventHandler_Handle_MultipleMatchingRules(t *testing.T) {
 
 	// Verify the enqueued events
 	events := eventQueue.DequeueAll()
-	require.Equal(t, 2, len(events))
+	require.Len(t, events, 2)
 
 	// Verify both events reference different repo configs
 	repoConfigs := make([]string, len(events))
@@ -510,7 +511,7 @@ func TestEventHandler_Handle_WildcardMatching(t *testing.T) {
 
 	// Verify the enqueued event
 	events := eventQueue.DequeueAll()
-	require.Equal(t, 1, len(events))
+	require.Len(t, events, 1)
 
 	event := events[0]
 	assert.Equal(t, "test-ingress-class", event.Object.GetName())
@@ -601,7 +602,7 @@ func TestEventHandler_Handle_DifferentOperations(t *testing.T) {
 
 			// Verify the operation is preserved in the event
 			events := eventQueue.DequeueAll()
-			require.Equal(t, 1, len(events))
+			require.Len(t, events, 1)
 
 			event := events[0]
 			assert.Equal(t, operation, event.Request.Operation)
@@ -684,11 +685,11 @@ func TestEventHandler_Handle_ClusterScopedResource(t *testing.T) {
 
 	// Verify the enqueued event
 	events := eventQueue.DequeueAll()
-	require.Equal(t, 1, len(events))
+	require.Len(t, events, 1)
 
 	event := events[0]
 	assert.Equal(t, "test-namespace", event.Object.GetName())
-	assert.Equal(t, "", event.Object.GetNamespace()) // Cluster-scoped resources have no namespace
+	assert.Empty(t, event.Object.GetNamespace()) // Cluster-scoped resources have no namespace
 	assert.Equal(t, "Namespace", event.Object.GetKind())
 	assert.Equal(t, "cluster-repo-config", event.GitRepoConfigRef)
 }
@@ -700,7 +701,7 @@ func TestEventHandler_InjectDecoder(t *testing.T) {
 	decoder := admission.NewDecoder(scheme)
 
 	err := handler.InjectDecoder(&decoder)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.NotNil(t, handler.Decoder)
 	assert.Equal(t, &decoder, handler.Decoder)
 }
@@ -794,7 +795,7 @@ func TestEventHandler_Handle_SanitizationApplied(t *testing.T) {
 
 	// Verify the enqueued event has sanitized object
 	events := eventQueue.DequeueAll()
-	require.Equal(t, 1, len(events))
+	require.Len(t, events, 1)
 
 	event := events[0]
 	sanitizedObj := event.Object
@@ -807,13 +808,13 @@ func TestEventHandler_Handle_SanitizationApplied(t *testing.T) {
 	// Verify spec is preserved
 	spec, found, err := unstructured.NestedMap(sanitizedObj.Object, "spec")
 	assert.True(t, found)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.NotNil(t, spec)
 
 	// Verify status is removed
 	_, found, err = unstructured.NestedMap(sanitizedObj.Object, "status")
 	assert.False(t, found)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// Verify server-generated metadata fields are removed
 	metadata, found, err := unstructured.NestedMap(sanitizedObj.Object, "metadata")

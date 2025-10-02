@@ -15,23 +15,23 @@ import (
 	"github.com/ConfigButler/gitops-reverser/test/utils"
 )
 
-// metricsRoleBindingName is the name of the RBAC that will be created to allow get the metrics data
+// metricsRoleBindingName is the name of the RBAC that will be created to allow get the metrics data.
 const metricsRoleBindingName = "gitops-reverser-metrics-binding"
 
-// giteaRepoURLTemplate is the URL template for test Gitea repositories
+// giteaRepoURLTemplate is the URL template for test Gitea repositories.
 const giteaRepoURLTemplate = "http://gitea-http.gitea-e2e.svc.cluster.local:3000/testorg/%s.git"
 const giteaSSHURLTemplate = "ssh://git@gitea-ssh.gitea-e2e.svc.cluster.local:2222/testorg/%s.git"
 
 var testRepoName string
 var checkoutDir string
 
-// getRepoUrlHTTP returns the HTTP URL for the test repository
-func getRepoUrlHTTP() string {
+// getRepoUrlHTTP returns the HTTP URL for the test repository.
+func getRepoURLHTTP() string {
 	return fmt.Sprintf(giteaRepoURLTemplate, testRepoName)
 }
 
-// getRepoUrlSSH returns the SSH URL for the test repository
-func getRepoUrlSSH() string {
+// getRepoUrlSSH returns the SSH URL for the test repository.
+func getRepoURLSSH() string {
 	return fmt.Sprintf(giteaSSHURLTemplate, testRepoName)
 }
 
@@ -140,7 +140,9 @@ var _ = Describe("Manager", Ordered, func() {
 	})
 
 	// Optimize timeouts for faster test execution
-	SetDefaultEventuallyTimeout(30 * time.Second)               // Increased for reliability but still faster than before
+	SetDefaultEventuallyTimeout(
+		30 * time.Second,
+	) // Increased for reliability but still faster than before
 	SetDefaultEventuallyPollingInterval(500 * time.Millisecond) // Faster polling
 
 	Context("Manager", func() {
@@ -242,7 +244,10 @@ var _ = Describe("Manager", Ordered, func() {
 				g.Expect(output).To(ContainSubstring("Received admission request"),
 					"Admission request not logged")
 			}
-			Eventually(verifyMetricsServerStarted).Should(Succeed()) // There is probably no need for eventually here since the
+			Eventually(
+				verifyMetricsServerStarted,
+			).Should(Succeed())
+			// There is probably no need for eventually here since the
 			// creation of the configmap already should have triggered the webhook.
 
 			// Wait a moment for metrics to be updated
@@ -306,7 +311,7 @@ var _ = Describe("Manager", Ordered, func() {
 			if err != nil {
 				fmt.Printf("❌ SSH secret not found: %v\n", err)
 			} else {
-				fmt.Printf("✅ SSH secret exists - showing first 300 chars:\n%s...\n", secretOutput[:min(300, len(secretOutput))])
+				fmt.Printf("✅ SSH secret exists - showing first 300 chars:\n%s...\n", secretOutput[:minInt(300, len(secretOutput))])
 			}
 
 			createSSHGitRepoConfig(gitRepoConfigName, "main", "git-creds-ssh")
@@ -372,7 +377,7 @@ var _ = Describe("Manager", Ordered, func() {
 			watchRuleName := "watchrule-configmap-test"
 			configMapName := "test-configmap"
 			uniqueRepoName := testRepoName
-			repoURL := getRepoUrlHTTP()
+			repoURL := getRepoURLHTTP()
 
 			By("creating GitRepoConfig for ConfigMap test")
 			createGitRepoConfigWithURL(gitRepoConfigName, "main", "git-creds", repoURL)
@@ -534,7 +539,7 @@ func serviceAccountToken() (string, error) {
 	return out, err
 }
 
-// createGitRepoConfigWithURL creates a GitRepoConfig resource with the specified URL
+// createGitRepoConfigWithURL creates a GitRepoConfig resource with the specified URL.
 func createGitRepoConfigWithURL(name, branch, secretName, repoURL string) {
 	By(fmt.Sprintf("creating GitRepoConfig '%s' with branch '%s', secret '%s' and URL '%s'",
 		name, branch, secretName, repoURL))
@@ -557,19 +562,26 @@ func createGitRepoConfigWithURL(name, branch, secretName, repoURL string) {
 	Expect(err).NotTo(HaveOccurred(), "Failed to apply GitRepoConfig")
 }
 
-// createGitRepoConfig creates a GitRepoConfig resource with HTTP URL
+// createGitRepoConfig creates a GitRepoConfig resource with HTTP URL.
 func createGitRepoConfig(name, branch, secretName string) {
-	createGitRepoConfigWithURL(name, branch, secretName, getRepoUrlHTTP())
+	createGitRepoConfigWithURL(name, branch, secretName, getRepoURLHTTP())
 }
 
-// createSSHGitRepoConfig creates a GitRepoConfig resource with SSH URL
+// createSSHGitRepoConfig creates a GitRepoConfig resource with SSH URL.
 func createSSHGitRepoConfig(name, branch, secretName string) {
-	createGitRepoConfigWithURL(name, branch, secretName, getRepoUrlSSH())
+	createGitRepoConfigWithURL(name, branch, secretName, getRepoURLSSH())
 }
 
-// verifyGitRepoConfigStatus verifies the GitRepoConfig status matches expected values
+// verifyGitRepoConfigStatus verifies the GitRepoConfig status matches expected values.
 func verifyGitRepoConfigStatus(name, expectedStatus, expectedReason, expectedMessageContains string) {
-	By(fmt.Sprintf("verifying GitRepoConfig '%s' status is '%s' with reason '%s'", name, expectedStatus, expectedReason))
+	By(
+		fmt.Sprintf(
+			"verifying GitRepoConfig '%s' status is '%s' with reason '%s'",
+			name,
+			expectedStatus,
+			expectedReason,
+		),
+	)
 	verifyStatus := func(g Gomega) {
 		// Check status
 		statusJSONPath := `{.status.conditions[?(@.type=='Ready')].status}`
@@ -588,7 +600,16 @@ func verifyGitRepoConfigStatus(name, expectedStatus, expectedReason, expectedMes
 		// Check message contains expected text if specified
 		if expectedMessageContains != "" {
 			messageJSONPath := `{.status.conditions[?(@.type=='Ready')].message}`
-			cmd = exec.Command("kubectl", "get", "gitrepoconfig", name, "-n", namespace, "-o", "jsonpath="+messageJSONPath)
+			cmd = exec.Command(
+				"kubectl",
+				"get",
+				"gitrepoconfig",
+				name,
+				"-n",
+				namespace,
+				"-o",
+				"jsonpath="+messageJSONPath,
+			)
 			message, err := utils.Run(cmd)
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(message).To(ContainSubstring(expectedMessageContains))
@@ -597,14 +618,14 @@ func verifyGitRepoConfigStatus(name, expectedStatus, expectedReason, expectedMes
 	Eventually(verifyStatus).Should(Succeed())
 }
 
-// cleanupGitRepoConfig deletes a GitRepoConfig resource
+// cleanupGitRepoConfig deletes a GitRepoConfig resource.
 func cleanupGitRepoConfig(name string) {
 	By(fmt.Sprintf("cleaning up GitRepoConfig '%s'", name))
 	cmd := exec.Command("kubectl", "delete", "gitrepoconfig", name, "-n", namespace)
 	_, _ = utils.Run(cmd)
 }
 
-// setupMetricsAccess creates the necessary RBAC and gets a service account token for metrics access
+// setupMetricsAccess creates the necessary RBAC and gets a service account token for metrics access.
 func setupMetricsAccess(clusterRoleBindingName string) string {
 	By("creating ClusterRoleBinding for metrics access")
 	data := struct {
@@ -636,7 +657,7 @@ type tokenRequest struct {
 	} `json:"status"`
 }
 
-// showControllerLogs displays the current controller logs to help with debugging during test execution
+// showControllerLogs displays the current controller logs to help with debugging during test execution.
 func showControllerLogs(context string) {
 	By(fmt.Sprintf("📋 Controller logs %s:", context))
 
@@ -668,8 +689,8 @@ func showControllerLogs(context string) {
 	fmt.Printf("----------------------------------------\n")
 }
 
-// min returns the minimum of two integers
-func min(a, b int) int {
+// minInt returns the minimum of two integers.
+func minInt(a, b int) int {
 	if a < b {
 		return a
 	}

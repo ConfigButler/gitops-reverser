@@ -3,20 +3,21 @@ package rulestore
 import (
 	"testing"
 
-	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+
+	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 )
 
 func TestNewStore(t *testing.T) {
 	store := NewStore()
 	assert.NotNil(t, store)
 	assert.NotNil(t, store.rules)
-	assert.Equal(t, 0, len(store.rules))
+	assert.Empty(t, store.rules)
 }
 
 func TestAddOrUpdate_BasicRule(t *testing.T) {
@@ -39,7 +40,7 @@ func TestAddOrUpdate_BasicRule(t *testing.T) {
 
 	store.AddOrUpdate(rule)
 
-	assert.Equal(t, 1, len(store.rules))
+	assert.Len(t, store.rules, 1)
 
 	key := types.NamespacedName{Name: "test-rule", Namespace: "default"}
 	compiledRule, exists := store.rules[key]
@@ -83,7 +84,7 @@ func TestAddOrUpdate_RuleWithExcludeLabels(t *testing.T) {
 	compiledRule := store.rules[key]
 
 	require.NotNil(t, compiledRule.ExcludeLabels)
-	assert.Equal(t, 1, len(compiledRule.ExcludeLabels.MatchExpressions))
+	assert.Len(t, compiledRule.ExcludeLabels.MatchExpressions, 1)
 	assert.Equal(t, "configbutler.ai/ignore", compiledRule.ExcludeLabels.MatchExpressions[0].Key)
 }
 
@@ -156,7 +157,7 @@ func TestAddOrUpdate_UpdateExistingRule(t *testing.T) {
 	store.AddOrUpdate(rule2)
 
 	// Should still have only one rule, but updated
-	assert.Equal(t, 1, len(store.rules))
+	assert.Len(t, store.rules, 1)
 
 	key := types.NamespacedName{Name: "test-rule", Namespace: "default"}
 	compiledRule := store.rules[key]
@@ -185,10 +186,10 @@ func TestDelete(t *testing.T) {
 	store.AddOrUpdate(rule)
 
 	key := types.NamespacedName{Name: "test-rule", Namespace: "default"}
-	assert.Equal(t, 1, len(store.rules))
+	assert.Len(t, store.rules, 1)
 
 	store.Delete(key)
-	assert.Equal(t, 0, len(store.rules))
+	assert.Empty(t, store.rules)
 }
 
 func TestDelete_NonExistentRule(t *testing.T) {
@@ -198,7 +199,7 @@ func TestDelete_NonExistentRule(t *testing.T) {
 
 	// Should not panic
 	store.Delete(key)
-	assert.Equal(t, 0, len(store.rules))
+	assert.Empty(t, store.rules)
 }
 
 func TestGetMatchingRules_ExactMatch(t *testing.T) {
@@ -231,7 +232,7 @@ func TestGetMatchingRules_ExactMatch(t *testing.T) {
 	obj.SetNamespace("default")
 
 	matches := store.GetMatchingRules(obj)
-	assert.Equal(t, 1, len(matches))
+	assert.Len(t, matches, 1)
 	assert.Equal(t, "pod-rule", matches[0].Source.Name)
 }
 
@@ -279,9 +280,9 @@ func TestGetMatchingRules_WildcardMatch(t *testing.T) {
 
 			matches := store.GetMatchingRules(obj)
 			if tc.shouldMatch {
-				assert.Equal(t, 1, len(matches), "Expected %s to match Ingress*", tc.kind)
+				assert.Len(t, matches, 1, "Expected %s to match Ingress*", tc.kind)
 			} else {
-				assert.Equal(t, 0, len(matches), "Expected %s not to match Ingress*", tc.kind)
+				assert.Empty(t, matches, "Expected %s not to match Ingress*", tc.kind)
 			}
 		})
 	}
@@ -325,7 +326,7 @@ func TestGetMatchingRules_ExcludedByLabels(t *testing.T) {
 	obj1.SetNamespace("default")
 
 	matches := store.GetMatchingRules(obj1)
-	assert.Equal(t, 1, len(matches))
+	assert.Len(t, matches, 1)
 
 	// Test Pod with ignore label - should not match
 	obj2 := &unstructured.Unstructured{}
@@ -341,7 +342,7 @@ func TestGetMatchingRules_ExcludedByLabels(t *testing.T) {
 	})
 
 	matches = store.GetMatchingRules(obj2)
-	assert.Equal(t, 0, len(matches))
+	assert.Empty(t, matches)
 }
 
 func TestGetMatchingRules_ComplexLabelSelector(t *testing.T) {
@@ -427,9 +428,9 @@ func TestGetMatchingRules_ComplexLabelSelector(t *testing.T) {
 
 			matches := store.GetMatchingRules(obj)
 			if tc.shouldMatch {
-				assert.Equal(t, 1, len(matches), "Expected pod with labels %v to match", tc.labels)
+				assert.Len(t, matches, 1, "Expected pod with labels %v to match", tc.labels)
 			} else {
-				assert.Equal(t, 0, len(matches), "Expected pod with labels %v to be excluded", tc.labels)
+				assert.Empty(t, matches, "Expected pod with labels %v to be excluded", tc.labels)
 			}
 		})
 	}
@@ -499,7 +500,7 @@ func TestGetMatchingRules_MultipleRules(t *testing.T) {
 	obj.SetNamespace("default")
 
 	matches := store.GetMatchingRules(obj)
-	assert.Equal(t, 2, len(matches))
+	assert.Len(t, matches, 2)
 
 	// Verify both rules are returned
 	ruleNames := make([]string, len(matches))
@@ -540,7 +541,7 @@ func TestGetMatchingRules_NoMatches(t *testing.T) {
 	obj.SetNamespace("default")
 
 	matches := store.GetMatchingRules(obj)
-	assert.Equal(t, 0, len(matches))
+	assert.Empty(t, matches)
 }
 
 func TestGetMatchingRules_EmptyStore(t *testing.T) {
@@ -556,7 +557,7 @@ func TestGetMatchingRules_EmptyStore(t *testing.T) {
 	obj.SetNamespace("default")
 
 	matches := store.GetMatchingRules(obj)
-	assert.Equal(t, 0, len(matches))
+	assert.Empty(t, matches)
 }
 
 func TestCompiledRule_matches_InvalidLabelSelector(t *testing.T) {
@@ -597,7 +598,7 @@ func TestConcurrentAccess(t *testing.T) {
 
 	// Writer goroutine
 	go func() {
-		for i := 0; i < 100; i++ {
+		for i := range 100 {
 			rule := configv1alpha1.WatchRule{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "rule-" + string(rune(i)),
@@ -628,7 +629,7 @@ func TestConcurrentAccess(t *testing.T) {
 		obj.SetName("test-pod")
 		obj.SetNamespace("default")
 
-		for i := 0; i < 100; i++ {
+		for range 100 {
 			store.GetMatchingRules(obj)
 		}
 		done <- true
@@ -639,7 +640,7 @@ func TestConcurrentAccess(t *testing.T) {
 	<-done
 
 	// Verify final state
-	assert.Equal(t, 100, len(store.rules))
+	assert.Len(t, store.rules, 100)
 }
 
 func TestWildcardMatching_EdgeCases(t *testing.T) {

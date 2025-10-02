@@ -31,7 +31,7 @@ type LocalObjectReference struct {
 	Name string `json:"name"`
 }
 
-// GitRepoConfigSpec defines the desired state of GitRepoConfig
+// GitRepoConfigSpec defines the desired state of GitRepoConfig.
 type GitRepoConfigSpec struct {
 	// RepoURL is the URL of the Git repository to commit to.
 	// +required
@@ -80,7 +80,7 @@ type GitRepoConfigStatus struct {
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Namespaced
 
-// GitRepoConfig is the Schema for the gitrepoconfigs API
+// GitRepoConfig is the Schema for the gitrepoconfigs API.
 type GitRepoConfig struct {
 	metav1.TypeMeta `json:",inline"`
 
@@ -99,11 +99,12 @@ type GitRepoConfig struct {
 
 // +kubebuilder:object:root=true
 
-// GitRepoConfigList contains a list of GitRepoConfig
+// GitRepoConfigList contains a list of GitRepoConfig.
 type GitRepoConfigList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []GitRepoConfig `json:"items"`
+
+	Items []GitRepoConfig `json:"items"`
 }
 
 func init() {

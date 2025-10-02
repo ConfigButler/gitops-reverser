@@ -1,9 +1,19 @@
 {
-  "name": "Kubebuilder DevContainer",
-  "image": "golang:1.25.1",
+  "name": "GitOps Reverser DevContainer",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": "..",
+    "args": {
+      "CI_BASE_IMAGE": "ci-base-local"
+    },
+    "target": ""
+  },
+  "initializeCommand": "cd .devcontainer && docker build -f Dockerfile.ci -t ci-base-local ..",
   "features": {
-    "ghcr.io/devcontainers/features/docker-in-docker:2": {},
-    "ghcr.io/devcontainers/features/git:1": {}
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {
+      "moby": false,
+      "dockerDashComposeVersion": "v2"
+    }
   },
 
   "runArgs": ["--network=host"],
@@ -11,15 +21,27 @@
   "customizations": {
     "vscode": {
       "settings": {
-        "terminal.integrated.shell.linux": "/bin/bash"
+        "terminal.integrated.shell.linux": "/bin/bash",
+        "go.toolsManagement.checkForUpdates": "local",
+        "go.useLanguageServer": true,
+        "go.gopath": "/go",
+        "go.goroot": "/usr/local/go"
       },
       "extensions": [
+        "golang.go",
         "ms-kubernetes-tools.vscode-kubernetes-tools",
-        "ms-azuretools.vscode-docker"
+        "ms-azuretools.vscode-docker",
+        "kilocode.kilo-code"
       ]
     }
   },
 
-  "onCreateCommand": "bash .devcontainer/post-install.sh"
+  "postCreateCommand": "docker network create -d=bridge --subnet=172.19.0.0/24 kind || true",
+
+  "remoteUser": "root",
+
+  "mounts": [
+    "source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind"
+  ]
 }
 

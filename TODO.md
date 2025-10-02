@@ -54,3 +54,26 @@ This document outlines the tasks required to build the GitOps Reverser tool as s
 [ ] Should we also do a full reconicile on the folders? As in: check if all the yaml files are still usefull?
     -> This last line is where it gets interesting: who wins? I guess we just push a new commit and throw away the files that don't exist in the cluster. Should we do a full reconcile every x minutes? How many resources can we handle before it gets tricky?
 [ ] Should the repo config be namespaced or clustered? All that duplication is also ugly, how does flux do that part?
+
+
+Why would I want to run my kind cluster from within the dev container? The only reason is that I would like to mimic my local machine as much as possible.
+
+For in the CI steps it will be sufficient to have golang and helm in the image. We might want to make a local dev container and a ci container. They could share a few parts: but getting support for the docker command within it is a bit tedious.
+
+For tomorrow I should grow my understanding on the nice step that is decribed here: 
+https://golangci-lint.run/docs/welcome/install/#ci-installation
+https://github.com/golangci/golangci-lint-action
+
+And I should try to only have the test runner use that slim ci-dev-container.
+
+Are there best practices written down for this? Could I do something on this? It will be very usefull to have a deeper understanding of docker and images if I'm going to want to have my configuration as image succesful at some point.
+
+
+This is what I had:
+      - name: Set up KinD
+        uses: helm/kind-action@v1.12.0
+        with:
+          cluster_name: gitops-reverser-test-e2e
+          version: v0.30.0
+
+          

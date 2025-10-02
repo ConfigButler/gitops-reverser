@@ -17,7 +17,7 @@ spec:
   - name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: GitRepoConfig is the Schema for the gitrepoconfigs API
+        description: GitRepoConfig is the Schema for the gitrepoconfigs API.
         properties:
           apiVersion:
             description: |-

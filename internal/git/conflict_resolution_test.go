@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/ConfigButler/gitops-reverser/internal/eventqueue"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	admissionv1 "k8s.io/api/admission/v1"
@@ -14,6 +13,8 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 	"sigs.k8s.io/yaml"
+
+	"github.com/ConfigButler/gitops-reverser/internal/eventqueue"
 )
 
 func TestTryPushCommits_Success(t *testing.T) {
@@ -97,11 +98,7 @@ func TestIsNonFastForwardError(t *testing.T) {
 
 func TestIsEventStillValid(t *testing.T) {
 	// Create a temporary directory for the test
-	tempDir, err := os.MkdirTemp("", "git-valid-test-*")
-	require.NoError(t, err)
-	defer func() {
-		require.NoError(t, os.RemoveAll(tempDir))
-	}()
+	tempDir := t.TempDir()
 
 	repo := &Repo{
 		path: tempDir,
@@ -128,13 +125,13 @@ func TestIsEventStillValid(t *testing.T) {
 		fullPath := filepath.Join(tempDir, filePath)
 
 		// Create directory and file
-		err := os.MkdirAll(filepath.Dir(fullPath), 0755)
+		err := os.MkdirAll(filepath.Dir(fullPath), 0750)
 		require.NoError(t, err)
 
 		content, err := yaml.Marshal(existingPod.Object)
 		require.NoError(t, err)
 
-		err = os.WriteFile(fullPath, content, 0644)
+		err = os.WriteFile(fullPath, content, 0600)
 		require.NoError(t, err)
 
 		// Create event with newer resource version
@@ -159,13 +156,13 @@ func TestIsEventStillValid(t *testing.T) {
 		fullPath := filepath.Join(tempDir, filePath)
 
 		// Create directory and file
-		err := os.MkdirAll(filepath.Dir(fullPath), 0755)
+		err := os.MkdirAll(filepath.Dir(fullPath), 0750)
 		require.NoError(t, err)
 
 		content, err := yaml.Marshal(existingPod.Object)
 		require.NoError(t, err)
 
-		err = os.WriteFile(fullPath, content, 0644)
+		err = os.WriteFile(fullPath, content, 0600)
 		require.NoError(t, err)
 
 		// Create event with older resource version
@@ -192,13 +189,13 @@ func TestIsEventStillValid(t *testing.T) {
 		fullPath := filepath.Join(tempDir, filePath)
 
 		// Create directory and file
-		err := os.MkdirAll(filepath.Dir(fullPath), 0755)
+		err := os.MkdirAll(filepath.Dir(fullPath), 0750)
 		require.NoError(t, err)
 
 		content, err := yaml.Marshal(existingPod.Object)
 		require.NoError(t, err)
 
-		err = os.WriteFile(fullPath, content, 0644)
+		err = os.WriteFile(fullPath, content, 0600)
 		require.NoError(t, err)
 
 		// Create event with older generation (no resource version)
@@ -218,10 +215,10 @@ func TestIsEventStillValid(t *testing.T) {
 	t.Run("corrupted_existing_file", func(t *testing.T) {
 		// Create corrupted file
 		corruptedPath := filepath.Join(tempDir, "namespaces/default/Pod/corrupted-pod.yaml")
-		err := os.MkdirAll(filepath.Dir(corruptedPath), 0755)
+		err := os.MkdirAll(filepath.Dir(corruptedPath), 0750)
 		require.NoError(t, err)
 
-		err = os.WriteFile(corruptedPath, []byte("invalid yaml content {{{"), 0644)
+		err = os.WriteFile(corruptedPath, []byte("invalid yaml content {{{"), 0600)
 		require.NoError(t, err)
 
 		event := eventqueue.Event{
@@ -236,11 +233,7 @@ func TestIsEventStillValid(t *testing.T) {
 
 func TestReEvaluateEvents(t *testing.T) {
 	// Create a temporary directory for the test
-	tempDir, err := os.MkdirTemp("", "git-reevaluate-test-*")
-	require.NoError(t, err)
-	defer func() {
-		require.NoError(t, os.RemoveAll(tempDir))
-	}()
+	tempDir := t.TempDir()
 
 	repo := &Repo{
 		path: tempDir,
@@ -255,13 +248,13 @@ func TestReEvaluateEvents(t *testing.T) {
 	filePath := GetFilePath(existingPod, "pods")
 	fullPath := filepath.Join(tempDir, filePath)
 
-	err = os.MkdirAll(filepath.Dir(fullPath), 0755)
+	err := os.MkdirAll(filepath.Dir(fullPath), 0750)
 	require.NoError(t, err)
 
 	content, err := yaml.Marshal(existingPod.Object)
 	require.NoError(t, err)
 
-	err = os.WriteFile(fullPath, content, 0644)
+	err = os.WriteFile(fullPath, content, 0600)
 	require.NoError(t, err)
 
 	// Create test events
@@ -271,11 +264,19 @@ func TestReEvaluateEvents(t *testing.T) {
 			ResourcePlural: "pods",
 		},
 		{
-			Object:         createTestPodWithResourceVersion("existing-pod", "default", "50"), // Should be invalid (stale)
+			Object: createTestPodWithResourceVersion(
+				"existing-pod",
+				"default",
+				"50",
+			), // Should be invalid (stale)
 			ResourcePlural: "pods",
 		},
 		{
-			Object:         createTestPodWithResourceVersion("existing-pod", "default", "150"), // Should be valid (newer)
+			Object: createTestPodWithResourceVersion(
+				"existing-pod",
+				"default",
+				"150",
+			), // Should be valid (newer)
 			ResourcePlural: "pods",
 		},
 	}
@@ -297,11 +298,7 @@ func TestConflictResolutionIntegration(t *testing.T) {
 	// Since we can't easily test with real Git operations, we test the logic components
 
 	t.Run("conflict_resolution_workflow", func(t *testing.T) {
-		tempDir, err := os.MkdirTemp("", "git-conflict-test-*")
-		require.NoError(t, err)
-		defer func() {
-			require.NoError(t, os.RemoveAll(tempDir))
-		}()
+		tempDir := t.TempDir()
 
 		repo := &Repo{
 			path:       tempDir,
@@ -316,13 +313,13 @@ func TestConflictResolutionIntegration(t *testing.T) {
 		filePath := GetFilePath(existingPod, "pods")
 		fullPath := filepath.Join(tempDir, filePath)
 
-		err = os.MkdirAll(filepath.Dir(fullPath), 0755)
+		err := os.MkdirAll(filepath.Dir(fullPath), 0750)
 		require.NoError(t, err)
 
 		content, err := yaml.Marshal(existingPod.Object)
 		require.NoError(t, err)
 
-		err = os.WriteFile(fullPath, content, 0644)
+		err = os.WriteFile(fullPath, content, 0600)
 		require.NoError(t, err)
 
 		// Create events that would conflict
@@ -356,7 +353,7 @@ func (e *mockError) Error() string {
 
 func TestErrNonFastForward(t *testing.T) {
 	// Test that our custom error is properly defined
-	assert.NotNil(t, ErrNonFastForward)
+	require.Error(t, ErrNonFastForward)
 	assert.Equal(t, "non-fast-forward push rejected", ErrNonFastForward.Error())
 }
 

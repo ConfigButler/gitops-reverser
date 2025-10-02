@@ -1,0 +1,83 @@
+# CI-focused base image with essential build tools
+# This is used in CI pipelines and as base for the full dev container
+FROM golang:1.25.1-bookworm
+
+# Avoid warnings by switching to noninteractive
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install essential packages (no Docker)
+RUN apt-get update \
+    && apt-get -y install --no-install-recommends \
+        git \
+        curl \
+        ca-certificates \
+        vim \
+        less \
+        jq \
+    && apt-get autoremove -y \
+    && apt-get clean -y \
+    && rm -rf /var/lib/apt/lists/*
+
+# Tool versions - centralized for easy updates
+ENV KUBECTL_VERSION=v1.32.3 \
+    KUSTOMIZE_VERSION=5.7.1 \
+    KUBEBUILDER_VERSION=4.4.0 \
+    GOLANGCI_LINT_VERSION=v2.5.0 \
+    HELM_VERSION=v3.12.3
+
+# Install kubectl
+RUN curl -LO "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl" \
+    && chmod +x kubectl \
+    && mv kubectl /usr/local/bin/
+
+# Install Kustomize
+RUN curl -s "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash -s ${KUSTOMIZE_VERSION} /usr/local/bin/
+
+# Install Kubebuilder
+RUN curl -L -o /usr/local/bin/kubebuilder "https://github.com/kubernetes-sigs/kubebuilder/releases/download/v${KUBEBUILDER_VERSION}/kubebuilder_linux_amd64" \
+    && chmod +x /usr/local/bin/kubebuilder
+
+# Install Helm
+RUN curl -fsSL https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz \
+    | tar -xzO linux-amd64/helm > /usr/local/bin/helm \
+    && chmod +x /usr/local/bin/helm
+
+# Install golangci-lint
+RUN curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh \
+    | sh -s -- -b /usr/local/bin ${GOLANGCI_LINT_VERSION}
+
+# Set working directory
+WORKDIR /workspace
+
+# Install Go tools used by the project (using @version doesn't need go.mod)
+RUN go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.19.0 \
+    && go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
+
+# Initialize golangci-lint cache by running it once on an empty directory
+# This downloads linter dependencies without needing source code
+RUN mkdir -p /tmp/golangci-init && cd /tmp/golangci-init \
+    && go mod init example.com/init \
+    && echo 'package main\n\nfunc main() {}' > main.go \
+    && golangci-lint run --timeout=5m || true \
+    && cd / && rm -rf /tmp/golangci-init
+
+# Pre-download Go modules for caching - placed AFTER tool installation
+# This layer will be cached and only rebuilt when go.mod/go.sum changes
+# Moving this down prevents tool reinstallation when dependencies change
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Verify installations
+RUN echo "=== Tool Versions ===" \
+    && go version \
+    && kubectl version --client \
+    && kustomize version \
+    && (kubebuilder version || echo "Kubebuilder: not available (optional)") \
+    && helm version \
+    && golangci-lint version
+
+# Switch back to dialog for any ad-hoc use of apt-get
+ENV DEBIAN_FRONTEND=dialog
+
+# Default command
+CMD ["/bin/bash"]

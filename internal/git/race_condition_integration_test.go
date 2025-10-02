@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ConfigButler/gitops-reverser/internal/eventqueue"
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
@@ -18,6 +17,8 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 	"sigs.k8s.io/yaml"
+
+	"github.com/ConfigButler/gitops-reverser/internal/eventqueue"
 )
 
 // TestRaceConditionIntegration tests the complete race condition resolution workflow
@@ -25,14 +26,10 @@ import (
 // 1. Multiple events are queued for commit
 // 2. The remote repository is updated by another process (simulating race condition)
 // 3. The push fails with non-fast-forward error
-// 4. The system performs conflict resolution and retries
+// 4. The system performs conflict resolution and retries.
 func TestRaceConditionIntegration(t *testing.T) {
 	// Create temporary directories for local and "remote" repositories
-	tempDir, err := os.MkdirTemp("", "race-condition-integration-*")
-	require.NoError(t, err)
-	defer func() {
-		require.NoError(t, os.RemoveAll(tempDir))
-	}()
+	tempDir := t.TempDir()
 
 	localRepoPath := filepath.Join(tempDir, "local")
 	remoteRepoPath := filepath.Join(tempDir, "remote")
@@ -110,7 +107,7 @@ func TestRaceConditionIntegration(t *testing.T) {
 		err = repo.TryPushCommits(ctx, events)
 
 		// The operation should succeed after conflict resolution
-		assert.NoError(t, err, "TryPushCommits should succeed after conflict resolution")
+		require.NoError(t, err, "TryPushCommits should succeed after conflict resolution")
 
 		// Step 5: Verify the final state
 		// Check that files were created correctly
@@ -148,7 +145,11 @@ func TestRaceConditionIntegration(t *testing.T) {
 		}
 
 		assert.Contains(t, commitMessages, "[CREATE] Pod/app-pod in ns/production by user/developer@company.com")
-		assert.Contains(t, commitMessages, "[UPDATE] Pod/cache-pod in ns/production by user/system:deployment-controller")
+		assert.Contains(
+			t,
+			commitMessages,
+			"[UPDATE] Pod/cache-pod in ns/production by user/system:deployment-controller",
+		)
 	})
 
 	t.Run("error_handling", func(t *testing.T) {
@@ -156,7 +157,7 @@ func TestRaceConditionIntegration(t *testing.T) {
 
 		// Test with empty events
 		err := repo.TryPushCommits(ctx, []eventqueue.Event{})
-		assert.NoError(t, err, "Should handle empty events gracefully")
+		require.NoError(t, err, "Should handle empty events gracefully")
 
 		// Test with invalid object (this should be handled gracefully)
 		invalidEvent := eventqueue.Event{
@@ -187,7 +188,7 @@ func createInitialCommit(repo *git.Repository, repoPath string) error {
 
 	// Create initial README
 	readmePath := filepath.Join(repoPath, "README.md")
-	err = os.WriteFile(readmePath, []byte("# GitOps Reverser Repository\n"), 0644)
+	err = os.WriteFile(readmePath, []byte("# GitOps Reverser Repository\n"), 0600)
 	if err != nil {
 		return err
 	}
@@ -234,7 +235,7 @@ func simulateRemoteUpdate(remoteRepoPath string, remoteRepo *git.Repository) err
 	filePath := GetFilePath(conflictingService, "services")
 	fullPath := filepath.Join(remoteRepoPath, filePath)
 
-	err := os.MkdirAll(filepath.Dir(fullPath), 0755)
+	err := os.MkdirAll(filepath.Dir(fullPath), 0750)
 	if err != nil {
 		return err
 	}
@@ -244,7 +245,7 @@ func simulateRemoteUpdate(remoteRepoPath string, remoteRepo *git.Repository) err
 		return err
 	}
 
-	err = os.WriteFile(fullPath, content, 0644)
+	err = os.WriteFile(fullPath, content, 0600)
 	if err != nil {
 		return err
 	}
