@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.2.1...gitops-reverser-v0.3.0) (2025-10-02)
+
+
+### Features
+
+* Time for devcontainers! ([#34](https://github.com/ConfigButler/gitops-reverser/issues/34)) ([09b1936](https://github.com/ConfigButler/gitops-reverser/commit/09b193604460f1d9f637e5b7b030ae5488bdb8b4))
+
+
+### Bug Fixes
+
+* Getting our todo a bit more cleaned, and see if this triggers a release proposal ([a5a6e4a](https://github.com/ConfigButler/gitops-reverser/commit/a5a6e4af4922562648d8d311f8ec52d72bc2b79b))
+
 ## [0.2.1](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.2.0...gitops-reverser-v0.2.1) (2025-09-30)
 
 
