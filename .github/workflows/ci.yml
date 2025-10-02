@@ -136,17 +136,37 @@ jobs:
         run: |
           git config --global --add safe.directory /__w/gitops-reverser/gitops-reverser
 
-      - name: golangci-lint
+      - name: golangci-lint (direct - fast)
+        id: lint-direct
+        run: |
+          echo "⏱️  Running direct golangci-lint execution..."
+          START_TIME=$(date +%s)
+          golangci-lint run --timeout=5m --concurrency=4
+          END_TIME=$(date +%s)
+          DURATION=$((END_TIME - START_TIME))
+          echo "✅ Direct execution completed in ${DURATION}s"
+          echo "duration=${DURATION}" >> $GITHUB_OUTPUT
+
+      - name: golangci-lint (GitHub Action - with PR comments)
+        id: lint-action
         uses: golangci/golangci-lint-action@v8
         with:
           install-mode: none
-          # Enable caching for faster subsequent runs
           skip-cache: false
           skip-save-cache: false
-          # Only check new issues in PRs to speed up PR checks
           only-new-issues: ${{ github.event_name == 'pull_request' }}
-          # Additional performance args
           args: --timeout=5m --concurrency=4
+        continue-on-error: true
+
+      - name: Compare linting performance
+        if: always()
+        run: |
+          echo "📊 Linting Performance Comparison:"
+          echo "Direct execution: ${{ steps.lint-direct.outputs.duration }}s"
+          echo "GitHub Action: Check step duration above"
+          echo ""
+          echo "💡 The direct execution leverages pre-warmed cache from CI container"
+          echo "💡 The GitHub Action adds PR comment functionality but has overhead"
 
       - name: Verify CI container tools
         run: |
