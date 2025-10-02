@@ -55,8 +55,8 @@ jobs:
           tags: |
             ${{ steps.image.outputs.name }}
             ${{ env.REGISTRY }}/configbutler/gitops-reverser-ci:latest
-          cache-from: type=registry,ref=${{ env.REGISTRY }}/configbutler/gitops-reverser-ci:buildcache
-          cache-to: type=registry,ref=${{ env.REGISTRY }}/configbutler/gitops-reverser-ci:buildcache,mode=max
+          cache-from: type=gha,scope=ci-container
+          cache-to: type=gha,mode=max,scope=ci-container
 
       - name: Validate CI container tools
         run: |
@@ -131,11 +131,6 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
-
-      - name: Configure Git safe directory
-        run: |
-          git config --global --add safe.directory /__w/gitops-reverser/gitops-reverser
-
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v8
         with:
