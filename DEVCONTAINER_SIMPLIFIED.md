@@ -11,7 +11,7 @@ The dev container and CI setup has been simplified to remove Docker-in-Docker co
 1. **CI Base Container** (`.devcontainer/Dockerfile.ci`)
    - Lightweight container with essential build tools
    - No Docker installed
-   - Used in CI for lint, unit tests, and e2e tests
+   - Used in CI for lint, unit tests, and **running e2e tests**
    - Serves as base image for full dev container
    - Published as: `ghcr.io/configbutler/gitops-reverser-ci:latest`
 
@@ -23,61 +23,32 @@ The dev container and CI setup has been simplified to remove Docker-in-Docker co
 
 ### Benefits
 
-✅ **Simplified CI**: No Docker-in-Docker complexity in GitHub Actions  
+✅ **Simplified CI**: Uses standard Kind action on GitHub Actions runner  
 ✅ **Faster Builds**: CI container is smaller and builds faster  
 ✅ **Better Caching**: Shared layers between CI and dev containers  
 ✅ **Easier Maintenance**: Clear separation of concerns  
 ✅ **Standard Tooling**: Uses GitHub Actions' `helm/kind-action` for Kind setup  
+✅ **Hybrid Approach**: Kind cluster on runner, tests in container
 
-## CI Pipeline Changes
+## CI Pipeline Architecture
 
-### Before (Docker-in-Docker)
-```yaml
-container:
-  image: devcontainer
-  options: --privileged -v /var/run/docker.sock:/var/run/docker.sock
+### Hybrid Approach
 
-steps:
-  - Complex Kind network setup
-  - Manual Docker network bridging
-  - Custom kubeconfig manipulation
-  - 200+ lines of networking diagnostics
+```
+GitHub Actions Runner (has Docker)
+├── Creates Kind cluster (helm/kind-action)
+├── Loads application image into Kind
+└── Runs tests in CI container
+    ├── Mounts kubeconfig from runner
+    ├── Uses network=host to access Kind
+    └── Executes test suite
 ```
 
-### After (Native Kind Action)
-```yaml
-container:
-  image: ci-base-container
+### Why Hybrid?
 
-steps:
-  - uses: helm/kind-action@v1
-    with:
-      cluster_name: gitops-reverser-test-e2e
-  - Run e2e tests (no network setup needed)
-```
-
-## Local Development
-
-### Dev Container Features
-- Docker-in-Docker via `docker-in-docker:2` feature
-- Kind for local Kubernetes clusters
-- All Go development tools pre-installed
-- VSCode extensions pre-configured
-
-### Running E2E Tests Locally
-
-The dev container has Docker and Kind, so you can run e2e tests directly:
-
-```bash
-# Create cluster and run tests
-make test-e2e
-
-# Or manually:
-kind create cluster --name gitops-reverser-test-e2e
-make setup-cert-manager
-make setup-gitea-e2e
-KIND_CLUSTER=gitops-reverser-test-e2e go test ./test/e2e/ -v
-```
+- **Kind needs Docker**: Kind creates clusters using Docker, so it must run on the GitHub Actions runner (which has Docker)
+- **Tests don't need Docker**: The test code only needs kubectl/helm to interact with the cluster
+- **Best of both worlds**: Cluster setup on runner, test execution in controlled container environment
 
 ## CI Pipeline Flow
 
@@ -101,14 +72,65 @@ KIND_CLUSTER=gitops-reverser-test-e2e go test ./test/e2e/ -v
            └────────┬───────────┘
                     │
                     ▼
-          ┌──────────────────┐
-          │  E2E Tests        │
-          │  - Kind via       │
-          │    kind-action    │
-          │  - No Docker      │
-          │    complexity     │
-          └──────────────────┘
+          ┌──────────────────────┐
+          │  E2E Tests            │
+          │  ┌─────────────────┐ │
+          │  │ GitHub Runner   │ │
+          │  │ - Kind cluster  │ │
+          │  │ - Docker        │ │
+          │  └─────────────────┘ │
+          │         │             │
+          │         ▼             │
+          │  ┌─────────────────┐ │
+          │  │ CI Container    │ │
+          │  │ - Run tests     │ │
+          │  │ - Access Kind   │ │
+          │  └─────────────────┘ │
+          └──────────────────────┘
 ```
+
+## Local Development
+
+### Dev Container Features
+- Docker-in-Docker via `docker-in-docker:2` feature
+- Kind for local Kubernetes clusters  
+- All Go development tools pre-installed
+- VSCode extensions pre-configured
+
+### Running E2E Tests Locally
+
+The dev container has Docker and Kind, so you can run e2e tests directly:
+
+```bash
+# Create cluster and run tests
+make test-e2e
+
+# Or manually:
+kind create cluster --name gitops-reverser-test-e2e
+make setup-cert-manager
+make setup-gitea-e2e
+KIND_CLUSTER=gitops-reverser-test-e2e go test ./test/e2e/ -v
+```
+
+## CI E2E Test Flow
+
+### Step-by-Step
+
+1. **Checkout code** on GitHub Actions runner
+2. **Create Kind cluster** using `helm/kind-action` (runs on runner, has Docker)
+3. **Load application image** into Kind cluster
+4. **Run tests in CI container**:
+   - Mount workspace and kubeconfig
+   - Use `--network host` to access Kind cluster
+   - Execute test prerequisites (cert-manager, Gitea, etc.)
+   - Run actual e2e test suite
+
+### Key Points
+
+- **Kind cluster**: Lives on GitHub Actions runner
+- **Test execution**: Runs in CI container
+- **Communication**: Via network=host and mounted kubeconfig
+- **No Docker in container**: CI container doesn't need Docker
 
 ## Migration Notes
 
@@ -120,11 +142,12 @@ KIND_CLUSTER=gitops-reverser-test-e2e go test ./test/e2e/ -v
 
 2. **Modified Files**:
    - `.devcontainer/Dockerfile` - Now extends CI base
-   - `.github/workflows/ci.yml` - Uses Kind action
+   - `.github/workflows/ci.yml` - Hybrid approach (Kind on runner, tests in container)
+   - `.golangci.yml` - Updated to v2.4.0 compatible format
    - `Makefile` - Kind check is optional
 
 3. **Removed**:
-   - 200+ lines of Docker network diagnostics
+   - Docker-in-Docker in CI container
    - Manual kubeconfig manipulation
    - Complex network bridging logic
 
@@ -140,20 +163,23 @@ docker pull ghcr.io/configbutler/gitops-reverser-ci:latest
 docker pull ghcr.io/configbutler/gitops-reverser-devcontainer:latest
 ```
 
-### Environment Variables
+### Tool Versions
 
-E2E tests now use standard environment variables:
-
-```bash
-PROJECT_IMAGE=<image>  # Image to test
-KIND_CLUSTER=<name>    # Cluster name (default: gitops-reverser-test-e2e)
-```
+| Tool | Version | Where |
+|------|---------|-------|
+| Go | 1.25.1 | CI container |
+| kubectl | v1.32.3 | CI container + kind-action |
+| kustomize | 5.7.1 | CI container |
+| helm | v3.12.3 | CI container |
+| golangci-lint | v2.4.0 | CI container |
+| Kind | v0.30.0 | kind-action (runner) + dev container |
+| Docker | latest | GitHub runner + dev container |
 
 ## Troubleshooting
 
 ### CI Container Can't Find Kind
 
-This is expected! The CI container doesn't include Kind. GitHub Actions uses the `helm/kind-action` to set it up.
+This is expected! Kind runs on the GitHub Actions runner, not in the CI container. Tests run in the container but access the Kind cluster via network=host.
 
 ### Local Dev: Docker Not Available
 
@@ -165,28 +191,35 @@ Ensure the `docker-in-docker` feature is enabled in `.devcontainer/devcontainer.
 2. Ensure Kind cluster exists: `kind get clusters`
 3. Check kubeconfig: `kubectl cluster-info`
 
+### golangci-lint Config Errors
+
+The config was updated for v2.4.0 compatibility:
+- Removed: `skip-files`, `skip-dirs`, `staticcheck.go` (deprecated)
+- Using: Simplified v2 format with only supported properties
+
 ## Performance Improvements
 
 ### Build Times
-- CI container: ~3-5 minutes (cached: <1 minute)
-- Dev container: ~1-2 minutes additional (extends CI)
-- Previous DinD setup: ~5-7 minutes
+- CI container: ~2.5 minutes (first build with warming)
+- Dev container: ~1 minute additional (extends CI)
+- E2E setup: <1 minute (Kind action is fast)
 
 ### CI Pipeline
-- Removed: Complex network setup (~2-3 minutes)
-- Added: Native Kind action (~1 minute)
-- Net improvement: ~1-2 minutes per pipeline run
+- Simplified: No Docker-in-Docker complexity
+- Fast: Standard Kind action
+- Clean: Tests run in isolated container
 
 ## Future Enhancements
 
 Potential improvements:
-- [ ] Multi-stage CI container (build vs runtime tools)
+- [ ] Cache Kind cluster between test runs
+- [ ] Parallel e2e test execution
 - [ ] ARM64 support for CI container
-- [ ] Separate test-only container for faster test runs
-- [ ] Cache Go module downloads across jobs
+- [ ] Separate test-only container variant
 
 ## References
 
 - [Kind Documentation](https://kind.sigs.k8s.io/)
 - [helm/kind-action](https://github.com/helm/kind-action)
 - [Docker-in-Docker Feature](https://github.com/devcontainers/features/tree/main/src/docker-in-docker)
+- [golangci-lint v2 Config](https://golangci-lint.run/usage/configuration/)

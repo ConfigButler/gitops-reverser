@@ -163,38 +163,21 @@ jobs:
     name: End-to-End Tests
     runs-on: ubuntu-latest
     needs: [build-ci-container, docker-build]
-    container:
-      image: ${{ needs.build-ci-container.outputs.image }}
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
     env:
       PROJECT_IMAGE: ${{ needs.docker-build.outputs.image }}
       KIND_CLUSTER: gitops-reverser-test-e2e
+      CI_CONTAINER: ${{ needs.build-ci-container.outputs.image }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
-
-      - name: Configure Git safe directory
-        run: |
-          git config --global --add safe.directory /__w/gitops-reverser/gitops-reverser
-
-      - name: Verify CI container tools
-        run: |
-          echo "=== Verifying pre-installed tools ==="
-          go version
-          kubectl version --client
-          kustomize version
-          helm version
 
       - name: Set up Kind cluster
         uses: helm/kind-action@v1.12.0
         with:
           cluster_name: ${{ env.KIND_CLUSTER }}
           version: v0.30.0
+          kubectl_version: v1.32.3
           wait: 5m
-          # Note: kubectl is already installed in CI container (v1.32.3)
-          # No need for kubectl_version parameter here
 
       - name: Verify cluster is ready
         run: |
@@ -212,16 +195,20 @@ jobs:
           docker pull ${{ env.PROJECT_IMAGE }}
           kind load docker-image ${{ env.PROJECT_IMAGE }} --name ${{ env.KIND_CLUSTER }}
 
-      - name: Run E2E tests
+      - name: Run E2E tests in CI container
         run: |
-          # Run test prerequisites
-          make cleanup-webhook || true
-          make setup-cert-manager
-          make setup-gitea-e2e
-          make manifests generate fmt vet
-          
-          # Run the actual e2e tests
-          go test ./test/e2e/ -v -ginkgo.v
+          docker run --rm \
+            --network host \
+            -v ${{ github.workspace }}:/workspace \
+            -v $HOME/.kube:/root/.kube \
+            -w /workspace \
+            -e PROJECT_IMAGE=${{ env.PROJECT_IMAGE }} \
+            -e KIND_CLUSTER=${{ env.KIND_CLUSTER }} \
+            ${{ env.CI_CONTAINER }} \
+            bash -c "
+              git config --global --add safe.directory /workspace
+              make test-e2e
+            "
 
   # Release job only runs on push to main after tests pass
   release-please:
