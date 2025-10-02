@@ -19,12 +19,13 @@ package controller
 import (
 	"context"
 
-	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+
+	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -91,7 +92,11 @@ var _ = Describe("WatchRule Controller", func() {
 			Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
 
 			gitRepoConfig := &configbutleraiv1alpha1.GitRepoConfig{}
-			err = k8sClient.Get(ctx, types.NamespacedName{Name: "test-repo-config", Namespace: "default"}, gitRepoConfig)
+			err = k8sClient.Get(
+				ctx,
+				types.NamespacedName{Name: "test-repo-config", Namespace: "default"},
+				gitRepoConfig,
+			)
 			Expect(err).NotTo(HaveOccurred())
 
 			By("Cleanup the specific resource instance GitRepoConfig")

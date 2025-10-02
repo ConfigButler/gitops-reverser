@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ConfigButler/gitops-reverser/internal/eventqueue"
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
@@ -22,10 +21,12 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/yaml"
+
+	"github.com/ConfigButler/gitops-reverser/internal/eventqueue"
 )
 
 var (
-	// ErrNonFastForward indicates a push was rejected due to non-fast-forward
+	// ErrNonFastForward indicates a push was rejected due to non-fast-forward.
 	ErrNonFastForward = errors.New("non-fast-forward push rejected")
 )
 
@@ -38,6 +39,7 @@ type CommitFile struct {
 // Repo represents a Git repository with conflict resolution capabilities.
 type Repo struct {
 	*git.Repository
+
 	path       string
 	auth       transport.AuthMethod
 	branch     string
@@ -50,7 +52,7 @@ func Clone(url, path string, auth transport.AuthMethod) (*Repo, error) {
 	logger.Info("Cloning repository", "url", url, "path", path)
 
 	// Ensure the directory exists
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0750); err != nil {
 		return nil, fmt.Errorf("failed to create directory: %w", err)
 	}
 
@@ -126,7 +128,7 @@ func (r *Repo) Checkout(branch string) error {
 	_, err = r.Reference(plumbing.NewBranchReferenceName(branch), true)
 	if err != nil {
 		// If the branch doesn't exist, create it.
-		if err == plumbing.ErrReferenceNotFound {
+		if errors.Is(err, plumbing.ErrReferenceNotFound) {
 			return worktree.Checkout(&git.CheckoutOptions{
 				Branch: plumbing.NewBranchReferenceName(branch),
 				Create: true,
@@ -207,10 +209,10 @@ func (r *Repo) TryPushCommits(ctx context.Context, events []eventqueue.Event) er
 				return fmt.Errorf("failed to generate retry commits: %w", err)
 			}
 			return r.Push(ctx)
-		} else {
-			logger.Info("No valid events remaining after conflict resolution")
-			return nil
 		}
+
+		logger.Info("No valid events remaining after conflict resolution")
+		return nil
 	}
 
 	// Handle other push errors (e.g., network, auth)
@@ -236,7 +238,7 @@ func (r *Repo) generateLocalCommits(ctx context.Context, events []eventqueue.Eve
 		fullPath := filepath.Join(r.path, filePath)
 
 		// Ensure directory exists
-		if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(fullPath), 0750); err != nil {
 			return fmt.Errorf("failed to create directory for %s: %w", filePath, err)
 		}
 
@@ -247,7 +249,7 @@ func (r *Repo) generateLocalCommits(ctx context.Context, events []eventqueue.Eve
 		}
 
 		// Write file
-		if err := os.WriteFile(fullPath, content, 0644); err != nil {
+		if err := os.WriteFile(fullPath, content, 0600); err != nil {
 			return fmt.Errorf("failed to write file %s: %w", filePath, err)
 		}
 
@@ -341,11 +343,11 @@ func (r *Repo) optimizedFetch(ctx context.Context) error {
 	}
 
 	// Try shallow fetch first
-	if err := r.Fetch(fetchOptions); err != nil && err != git.NoErrAlreadyUpToDate {
+	if err := r.Fetch(fetchOptions); err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
 		// If shallow fetch fails, fall back to normal fetch
 		logger.Info("Shallow fetch failed, falling back to normal fetch", "error", err)
 		fetchOptions.Depth = 0
-		if err := r.Fetch(fetchOptions); err != nil && err != git.NoErrAlreadyUpToDate {
+		if err := r.Fetch(fetchOptions); err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
 			return err
 		}
 	}
@@ -507,7 +509,7 @@ func (r *Repo) Push(ctx context.Context) error {
 
 	// Check if Repository is nil
 	if r.Repository == nil {
-		return fmt.Errorf("repository is not initialized")
+		return errors.New("repository is not initialized")
 	}
 
 	err := r.Repository.Push(&git.PushOptions{RemoteName: r.remoteName, Auth: r.auth, Progress: os.Stdout})
@@ -556,7 +558,7 @@ func (r *Repo) Commit(files []CommitFile, message string) error {
 
 	// Check if Repository is nil
 	if r.Repository == nil {
-		return fmt.Errorf("repository is not initialized")
+		return errors.New("repository is not initialized")
 	}
 
 	worktree, err := r.Worktree()
@@ -569,12 +571,12 @@ func (r *Repo) Commit(files []CommitFile, message string) error {
 		fullPath := filepath.Join(r.path, file.Path)
 
 		// Ensure directory exists
-		if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(fullPath), 0750); err != nil {
 			return fmt.Errorf("failed to create directory for %s: %w", file.Path, err)
 		}
 
 		// Write file
-		if err := os.WriteFile(fullPath, file.Content, 0644); err != nil {
+		if err := os.WriteFile(fullPath, file.Content, 0600); err != nil {
 			return fmt.Errorf("failed to write file %s: %w", file.Path, err)
 		}
 
@@ -624,7 +626,7 @@ func GetCommitMessage(event eventqueue.Event) string {
 // parseResourceVersion parses a Kubernetes resource version string to an integer.
 func parseResourceVersion(rv string) (int64, error) {
 	if rv == "" {
-		return 0, fmt.Errorf("empty resource version")
+		return 0, errors.New("empty resource version")
 	}
 	return strconv.ParseInt(rv, 10, 64)
 }

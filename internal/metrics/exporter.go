@@ -24,8 +24,8 @@ var (
 	GitCommitQueueSize     metric.Int64UpDownCounter
 )
 
-// InitOTLPExporter initializes the OTLP-to-Prometheus bridge
-func InitOTLPExporter(ctx context.Context) (func(context.Context) error, error) {
+// InitOTLPExporter initializes the OTLP-to-Prometheus bridge.
+func InitOTLPExporter(_ context.Context) (func(context.Context) error, error) {
 	fmt.Println("Initializing OTLP exporter")
 
 	// Create a Prometheus exporter that bridges OTLP metrics to Prometheus
@@ -66,7 +66,7 @@ func InitOTLPExporter(ctx context.Context) (func(context.Context) error, error) 
 		return nil, err
 	}
 
-	return func(ctx context.Context) error {
+	return func(_ context.Context) error {
 		fmt.Println("Shutting down OTLP exporter")
 		return nil
 	}, nil

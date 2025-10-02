@@ -23,7 +23,7 @@ import (
 // EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
 
-// WatchRuleSpec defines the desired state of WatchRule
+// WatchRuleSpec defines the desired state of WatchRule.
 type WatchRuleSpec struct {
 	// GitRepoConfigRef is the name of the GitRepoConfig to use for this rule.
 	// +required
@@ -59,7 +59,7 @@ type WatchRuleStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 
-// WatchRule is the Schema for the watchrules API
+// WatchRule is the Schema for the watchrules API.
 type WatchRule struct {
 	metav1.TypeMeta `json:",inline"`
 
@@ -78,11 +78,12 @@ type WatchRule struct {
 
 // +kubebuilder:object:root=true
 
-// WatchRuleList contains a list of WatchRule
+// WatchRuleList contains a list of WatchRule.
 type WatchRuleList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []WatchRule `json:"items"`
+
+	Items []WatchRule `json:"items"`
 }
 
 func init() {

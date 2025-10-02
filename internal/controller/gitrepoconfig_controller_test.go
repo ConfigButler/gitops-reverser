@@ -152,7 +152,9 @@ var _ = Describe("GitRepoConfig Controller", func() {
 
 				_, err := reconciler.extractCredentials(secret)
 				Expect(err).To(HaveOccurred())
-				Expect(err.Error()).To(ContainSubstring("secret must contain either 'ssh-privatekey' or both 'username' and 'password'"))
+				Expect(
+					err.Error(),
+				).To(ContainSubstring("secret must contain either 'ssh-privatekey' or both 'username' and 'password'"))
 			})
 
 			It("should fail with irrelevant data", func() {
@@ -164,7 +166,9 @@ var _ = Describe("GitRepoConfig Controller", func() {
 
 				_, err := reconciler.extractCredentials(secret)
 				Expect(err).To(HaveOccurred())
-				Expect(err.Error()).To(ContainSubstring("secret must contain either 'ssh-privatekey' or both 'username' and 'password'"))
+				Expect(
+					err.Error(),
+				).To(ContainSubstring("secret must contain either 'ssh-privatekey' or both 'username' and 'password'"))
 			})
 		})
 	})
@@ -306,7 +310,11 @@ var _ = Describe("GitRepoConfig Controller", func() {
 
 			// Verify the resource was updated with failure condition
 			updatedConfig := &configbutleraiv1alpha1.GitRepoConfig{}
-			err = k8sClient.Get(ctx, types.NamespacedName{Name: gitRepoConfig.Name, Namespace: gitRepoConfig.Namespace}, updatedConfig)
+			err = k8sClient.Get(
+				ctx,
+				types.NamespacedName{Name: gitRepoConfig.Name, Namespace: gitRepoConfig.Namespace},
+				updatedConfig,
+			)
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(updatedConfig.Status.Conditions).To(HaveLen(1))
@@ -358,7 +366,11 @@ var _ = Describe("GitRepoConfig Controller", func() {
 
 			// Verify the resource was updated with failure condition
 			updatedConfig := &configbutleraiv1alpha1.GitRepoConfig{}
-			err = k8sClient.Get(ctx, types.NamespacedName{Name: gitRepoConfig.Name, Namespace: gitRepoConfig.Namespace}, updatedConfig)
+			err = k8sClient.Get(
+				ctx,
+				types.NamespacedName{Name: gitRepoConfig.Name, Namespace: gitRepoConfig.Namespace},
+				updatedConfig,
+			)
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(updatedConfig.Status.Conditions).To(HaveLen(1))
@@ -383,7 +395,7 @@ var _ = Describe("GitRepoConfig Controller", func() {
 	})
 })
 
-// Helper functions for generating test SSH keys
+// Helper functions for generating test SSH keys.
 func generateTestSSHKey() ([]byte, error) {
 	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {

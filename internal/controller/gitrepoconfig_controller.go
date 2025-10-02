@@ -18,13 +18,14 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -38,13 +39,14 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/go-git/go-git/v5/plumbing/transport/http"
 	"github.com/go-git/go-git/v5/plumbing/transport/ssh"
+	"github.com/go-logr/logr"
 	gossh "golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/knownhosts"
 
 	configbutleraiv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 )
 
-// Status condition reasons
+// Status condition reasons.
 const (
 	ReasonChecking         = "Checking"
 	ReasonSecretNotFound   = "SecretNotFound"
@@ -54,9 +56,17 @@ const (
 	ReasonBranchFound      = "BranchFound"
 )
 
-// GitRepoConfigReconciler reconciles a GitRepoConfig object
+// Sentinel errors for credential extraction.
+var (
+	ErrInvalidSecretFormat = errors.New("secret must contain either 'ssh-privatekey' or both 'username' and 'password'")
+	ErrMissingPassword     = errors.New("secret contains username but missing password")
+	ErrFailedToParseSSHKey = errors.New("failed to parse SSH private key")
+)
+
+// GitRepoConfigReconciler reconciles a GitRepoConfig object.
 type GitRepoConfigReconciler struct {
 	client.Client
+
 	Scheme *runtime.Scheme
 }
 
@@ -69,7 +79,6 @@ type GitRepoConfigReconciler struct {
 // move the current state of the cluster closer to the desired state.
 func (r *GitRepoConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx).WithName("GitRepoConfigReconciler")
-
 	log.Info("Starting reconciliation", "namespacedName", req.NamespacedName)
 
 	// Fetch the GitRepoConfig instance
@@ -83,6 +92,15 @@ func (r *GitRepoConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, err
 	}
 
+	return r.reconcileGitRepoConfig(ctx, log, &gitRepoConfig)
+}
+
+// reconcileGitRepoConfig performs the main reconciliation logic.
+func (r *GitRepoConfigReconciler) reconcileGitRepoConfig(
+	ctx context.Context,
+	log logr.Logger,
+	gitRepoConfig *configbutleraiv1alpha1.GitRepoConfig,
+) (ctrl.Result, error) {
 	log.Info("Starting GitRepoConfig validation",
 		"name", gitRepoConfig.Name,
 		"namespace", gitRepoConfig.Namespace,
@@ -91,91 +109,133 @@ func (r *GitRepoConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		"generation", gitRepoConfig.Generation,
 		"resourceVersion", gitRepoConfig.ResourceVersion)
 
-	// Set initial checking status
-	log.Info("Setting initial checking status")
-	r.setCondition(&gitRepoConfig, metav1.ConditionUnknown, ReasonChecking, "Validating repository connectivity...")
+	r.setCondition(gitRepoConfig, metav1.ConditionUnknown, ReasonChecking, "Validating repository connectivity...")
 
-	// Step 1: Fetch and validate secret
-	var secret *corev1.Secret
-	var err error
-
-	if gitRepoConfig.Spec.SecretRef != nil {
-		log.Info("Fetching secret for authentication",
-			"secretName", gitRepoConfig.Spec.SecretRef.Name,
-			"namespace", gitRepoConfig.Namespace)
-		secret, err = r.fetchSecret(ctx, gitRepoConfig.Spec.SecretRef.Name, gitRepoConfig.Namespace)
-		if err != nil {
-			log.Error(err, "Failed to fetch secret",
-				"secretName", gitRepoConfig.Spec.SecretRef.Name,
-				"namespace", gitRepoConfig.Namespace)
-			r.setCondition(&gitRepoConfig, metav1.ConditionFalse, ReasonSecretNotFound, //nolint:lll // Error message
-				fmt.Sprintf("Secret '%s' not found in namespace '%s': %v", gitRepoConfig.Spec.SecretRef.Name, gitRepoConfig.Namespace, err))
-			return r.updateStatusAndRequeue(ctx, &gitRepoConfig, time.Minute*5)
-		}
-		log.Info("Successfully fetched secret", "secretName", gitRepoConfig.Spec.SecretRef.Name)
-	} else {
-		log.Info("No secret specified, using anonymous access")
+	// Fetch and validate secret
+	secret, result, shouldReturn := r.fetchAndValidateSecret(ctx, log, gitRepoConfig)
+	if shouldReturn {
+		return result, nil
 	}
 
-	// Step 2: Extract credentials from secret
+	// Extract credentials
+	auth, result, shouldReturn := r.getAuthFromSecret(ctx, log, gitRepoConfig, secret)
+	if shouldReturn {
+		return result, nil
+	}
+
+	// Validate repository
+	return r.validateAndUpdateStatus(ctx, log, gitRepoConfig, auth)
+}
+
+// fetchAndValidateSecret fetches the secret if specified.
+// Returns (secret, result, shouldReturn). If shouldReturn is true, caller should return the result immediately.
+func (r *GitRepoConfigReconciler) fetchAndValidateSecret(
+	ctx context.Context,
+	log logr.Logger,
+	gitRepoConfig *configbutleraiv1alpha1.GitRepoConfig,
+) (*corev1.Secret, ctrl.Result, bool) {
+	if gitRepoConfig.Spec.SecretRef == nil {
+		log.Info("No secret specified, using anonymous access")
+		return nil, ctrl.Result{}, false
+	}
+
+	log.Info("Fetching secret for authentication",
+		"secretName", gitRepoConfig.Spec.SecretRef.Name,
+		"namespace", gitRepoConfig.Namespace)
+
+	secret, err := r.fetchSecret(ctx, gitRepoConfig.Spec.SecretRef.Name, gitRepoConfig.Namespace)
+	if err != nil {
+		log.Error(err, "Failed to fetch secret",
+			"secretName", gitRepoConfig.Spec.SecretRef.Name,
+			"namespace", gitRepoConfig.Namespace)
+		r.setCondition(
+			gitRepoConfig,
+			metav1.ConditionFalse,
+			ReasonSecretNotFound, //nolint:lll // Error message
+			fmt.Sprintf(
+				"Secret '%s' not found in namespace '%s': %v",
+				gitRepoConfig.Spec.SecretRef.Name,
+				gitRepoConfig.Namespace,
+				err,
+			),
+		)
+		result, _ := r.updateStatusAndRequeue(ctx, gitRepoConfig, RequeueMediumInterval)
+		return nil, result, true
+	}
+
+	log.Info("Successfully fetched secret", "secretName", gitRepoConfig.Spec.SecretRef.Name)
+	return secret, ctrl.Result{}, false
+}
+
+// getAuthFromSecret extracts authentication from the secret.
+// Returns (auth, result, shouldReturn). If shouldReturn is true, caller should return the result immediately.
+func (r *GitRepoConfigReconciler) getAuthFromSecret(
+	ctx context.Context,
+	log logr.Logger,
+	gitRepoConfig *configbutleraiv1alpha1.GitRepoConfig,
+	secret *corev1.Secret,
+) (transport.AuthMethod, ctrl.Result, bool) {
 	log.Info("Extracting credentials from secret")
 	auth, err := r.extractCredentials(secret)
 	if err != nil {
 		log.Error(err, "Failed to extract credentials from secret")
-		var secretName string
+		secretName := "<none>"
 		if gitRepoConfig.Spec.SecretRef != nil {
 			secretName = gitRepoConfig.Spec.SecretRef.Name
-		} else {
-			secretName = "<none>"
 		}
-		r.setCondition(&gitRepoConfig, metav1.ConditionFalse, ReasonSecretMalformed,
+		r.setCondition(gitRepoConfig, metav1.ConditionFalse, ReasonSecretMalformed,
 			fmt.Sprintf("Secret '%s' malformed: %v", secretName, err))
-		return r.updateStatusAndRequeue(ctx, &gitRepoConfig, time.Minute*5)
+		result, _ := r.updateStatusAndRequeue(ctx, gitRepoConfig, RequeueMediumInterval)
+		return nil, result, true
 	}
-	log.Info("Successfully extracted credentials", "hasAuth", auth != nil)
 
-	// Step 3: Validate repository connectivity and branch
+	log.Info("Successfully extracted credentials", "hasAuth", auth != nil)
+	return auth, ctrl.Result{}, false
+}
+
+// validateAndUpdateStatus validates the repository and updates the status.
+func (r *GitRepoConfigReconciler) validateAndUpdateStatus(
+	ctx context.Context,
+	log logr.Logger,
+	gitRepoConfig *configbutleraiv1alpha1.GitRepoConfig,
+	auth transport.AuthMethod,
+) (ctrl.Result, error) {
 	log.Info("Validating repository connectivity and branch",
 		"repoUrl", gitRepoConfig.Spec.RepoURL,
 		"branch", gitRepoConfig.Spec.Branch)
+
 	commitHash, err := r.validateRepository(ctx, gitRepoConfig.Spec.RepoURL, gitRepoConfig.Spec.Branch, auth)
 	if err != nil {
 		log.Error(err, "Repository validation failed",
 			"repoUrl", gitRepoConfig.Spec.RepoURL,
 			"branch", gitRepoConfig.Spec.Branch)
 		if strings.Contains(err.Error(), "branch") {
-			r.setCondition(&gitRepoConfig, metav1.ConditionFalse, ReasonBranchNotFound,
+			r.setCondition(gitRepoConfig, metav1.ConditionFalse, ReasonBranchNotFound,
 				fmt.Sprintf("Branch '%s' does not exist in repository: %v", gitRepoConfig.Spec.Branch, err))
 		} else {
-			r.setCondition(&gitRepoConfig, metav1.ConditionFalse, ReasonConnectionFailed,
+			r.setCondition(gitRepoConfig, metav1.ConditionFalse, ReasonConnectionFailed,
 				fmt.Sprintf("Failed to connect to repository: %v", err))
 		}
-		return r.updateStatusAndRequeue(ctx, &gitRepoConfig, time.Minute*2)
+		return r.updateStatusAndRequeue(ctx, gitRepoConfig, RequeueShortInterval)
 	}
 
-	// Step 4: Success - set ready condition
-	log.Info("Repository validation successful",
-		"commitHash", commitHash,
-		"shortCommit", commitHash[:8])
+	log.Info("Repository validation successful", "commitHash", commitHash, "shortCommit", commitHash[:8])
 	message := fmt.Sprintf("Branch '%s' found and accessible at commit %s", gitRepoConfig.Spec.Branch, commitHash[:8])
-	r.setCondition(&gitRepoConfig, metav1.ConditionTrue, ReasonBranchFound, message)
+	r.setCondition(gitRepoConfig, metav1.ConditionTrue, ReasonBranchFound, message)
 
 	log.Info("GitRepoConfig validation successful", "name", gitRepoConfig.Name, "commit", commitHash[:8])
-
-	// Update status and schedule periodic revalidation
 	log.Info("Updating status with success condition")
-	if err := r.updateStatusWithRetry(ctx, &gitRepoConfig); err != nil {
+
+	if err := r.updateStatusWithRetry(ctx, gitRepoConfig); err != nil {
 		log.Error(err, "Failed to update GitRepoConfig status")
 		return ctrl.Result{}, err
 	}
 
-	log.Info("Status update completed successfully, scheduling requeue",
-		"requeueAfter", time.Minute*10)
-	// Revalidate every 10 minutes
-	return ctrl.Result{RequeueAfter: time.Minute * 10}, nil
+	log.Info("Status update completed successfully, scheduling requeue", "requeueAfter", RequeueLongInterval)
+	return ctrl.Result{RequeueAfter: RequeueLongInterval}, nil
 }
 
-// fetchSecret retrieves the secret containing Git credentials
+// fetchSecret retrieves the secret containing Git credentials.
 func (r *GitRepoConfigReconciler) fetchSecret( //nolint:lll // Function signature
 	ctx context.Context, secretName, secretNamespace string) (*corev1.Secret, error) {
 	var secret corev1.Secret
@@ -191,66 +251,16 @@ func (r *GitRepoConfigReconciler) fetchSecret( //nolint:lll // Function signatur
 	return &secret, nil
 }
 
-// extractCredentials extracts Git authentication from secret data
+// extractCredentials extracts Git authentication from secret data.
 func (r *GitRepoConfigReconciler) extractCredentials(secret *corev1.Secret) (transport.AuthMethod, error) {
 	// If no secret is provided, return nil auth (for public repositories)
 	if secret == nil {
-		return nil, nil
+		return nil, nil //nolint:nilnil // Returning nil auth for public repos is semantically correct
 	}
 
 	// Try SSH key authentication first
-	if privateKey, exists := secret.Data["ssh-privatekey"]; exists {
-		passphrase := ""
-		if passphraseData, hasPassphrase := secret.Data["ssh-passphrase"]; hasPassphrase {
-			passphrase = string(passphraseData)
-		}
-
-		// Parse private key with potential passphrase
-		var signer gossh.Signer
-		var err error
-
-		if passphrase != "" {
-			signer, err = gossh.ParsePrivateKeyWithPassphrase(privateKey, []byte(passphrase))
-		} else {
-			signer, err = gossh.ParsePrivateKey(privateKey)
-		}
-
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse SSH private key: %w", err)
-		}
-
-		publicKeys := &ssh.PublicKeys{
-			User:   "git",
-			Signer: signer,
-		}
-
-		// Handle known_hosts if present
-		if knownHostsData, hasKnownHosts := secret.Data["known_hosts"]; hasKnownHosts {
-			// Write known_hosts to temporary file for parsing
-			knownHostsFile := fmt.Sprintf("/tmp/known_hosts-%d", time.Now().Unix())
-			if err := os.WriteFile(knownHostsFile, knownHostsData, 0600); err != nil {
-				fmt.Printf("Warning: Failed to write known_hosts file, using insecure SSH: %v\n", err)
-				publicKeys.HostKeyCallback = gossh.InsecureIgnoreHostKey()
-			} else {
-				hostKeyCallback, err := knownhosts.New(knownHostsFile)
-				if err != nil {
-					fmt.Printf("Warning: Failed to parse known_hosts, using insecure SSH: %v\n", err)
-					publicKeys.HostKeyCallback = gossh.InsecureIgnoreHostKey()
-				} else {
-					publicKeys.HostKeyCallback = hostKeyCallback
-				}
-				// Cleanup the temporary known_hosts file
-				if err := os.RemoveAll(knownHostsFile); err != nil {
-					fmt.Printf("Warning: Failed to cleanup known_hosts file: %v\n", err)
-				}
-			}
-		} else {
-			// No known_hosts provided, use insecure mode for testing
-			fmt.Printf("Warning: No known_hosts found in secret, using insecure SSH\n")
-			publicKeys.HostKeyCallback = gossh.InsecureIgnoreHostKey()
-		}
-
-		return publicKeys, nil
+	if _, exists := secret.Data["ssh-privatekey"]; exists {
+		return r.extractSSHAuth(secret.Data)
 	}
 
 	// Try username/password authentication
@@ -261,13 +271,53 @@ func (r *GitRepoConfigReconciler) extractCredentials(secret *corev1.Secret) (tra
 				Password: string(password),
 			}, nil
 		}
-		return nil, fmt.Errorf("secret contains username but missing password")
+		return nil, ErrMissingPassword
 	}
 
-	return nil, fmt.Errorf("secret must contain either 'ssh-privatekey' or both 'username' and 'password'")
+	return nil, ErrInvalidSecretFormat
 }
 
-// validateRepository checks if the repository is accessible and branch exists
+// extractSSHAuth extracts SSH authentication from secret data.
+func (r *GitRepoConfigReconciler) extractSSHAuth(secretData map[string][]byte) (transport.AuthMethod, error) {
+	privateKey := secretData["ssh-privatekey"]
+	passphrase := ""
+	if passphraseData, hasPassphrase := secretData["ssh-passphrase"]; hasPassphrase {
+		passphrase = string(passphraseData)
+	}
+
+	signer, err := r.parsePrivateKey(privateKey, passphrase)
+	if err != nil {
+		return nil, err
+	}
+
+	publicKeys := &ssh.PublicKeys{
+		User:   "git",
+		Signer: signer,
+	}
+
+	publicKeys.HostKeyCallback = r.configureHostKeyCallback(secretData)
+	return publicKeys, nil
+}
+
+// parsePrivateKey parses an SSH private key with optional passphrase.
+func (r *GitRepoConfigReconciler) parsePrivateKey(privateKey []byte, passphrase string) (gossh.Signer, error) {
+	var signer gossh.Signer
+	var err error
+
+	if passphrase != "" {
+		signer, err = gossh.ParsePrivateKeyWithPassphrase(privateKey, []byte(passphrase))
+	} else {
+		signer, err = gossh.ParsePrivateKey(privateKey)
+	}
+
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrFailedToParseSSHKey, err)
+	}
+
+	return signer, nil
+}
+
+// validateRepository checks if the repository is accessible and branch exists.
 func (r *GitRepoConfigReconciler) validateRepository( //nolint:lll // Function signature
 	ctx context.Context, repoURL, branch string, auth transport.AuthMethod) (string, error) {
 	log := logf.FromContext(ctx).WithName("validateRepository")
@@ -329,7 +379,31 @@ func (r *GitRepoConfigReconciler) validateRepository( //nolint:lll // Function s
 	return commitHash, nil
 }
 
-// setCondition sets or updates the Ready condition
+// configureHostKeyCallback sets up SSH host key verification from secret data.
+func (r *GitRepoConfigReconciler) configureHostKeyCallback(secretData map[string][]byte) gossh.HostKeyCallback {
+	knownHostsData, hasKnownHosts := secretData["known_hosts"]
+	if !hasKnownHosts {
+		return gossh.InsecureIgnoreHostKey() //nolint:gosec // Development/testing fallback
+	}
+
+	knownHostsFile := fmt.Sprintf("/tmp/known_hosts-%d", time.Now().Unix())
+	if err := os.WriteFile(knownHostsFile, knownHostsData, 0600); err != nil {
+		return gossh.InsecureIgnoreHostKey() //nolint:gosec // Fallback on file write error
+	}
+
+	defer func() {
+		_ = os.RemoveAll(knownHostsFile) // Best effort cleanup
+	}()
+
+	hostKeyCallback, err := knownhosts.New(knownHostsFile)
+	if err != nil {
+		return gossh.InsecureIgnoreHostKey() //nolint:gosec // Fallback on parse error
+	}
+
+	return hostKeyCallback
+}
+
+// setCondition sets or updates the Ready condition.
 func (r *GitRepoConfigReconciler) setCondition( //nolint:lll // Function signature
 	gitRepoConfig *configbutleraiv1alpha1.GitRepoConfig, status metav1.ConditionStatus, reason, message string) {
 	condition := metav1.Condition{
@@ -344,22 +418,19 @@ func (r *GitRepoConfigReconciler) setCondition( //nolint:lll // Function signatu
 	for i, existingCondition := range gitRepoConfig.Status.Conditions {
 		if existingCondition.Type == ConditionTypeReady {
 			gitRepoConfig.Status.Conditions[i] = condition
-			// Log condition update
-			fmt.Printf("Updated existing Ready condition: status=%s, reason=%s, message=%s\n",
-				status, reason, message)
 			return
 		}
 	}
 
 	gitRepoConfig.Status.Conditions = append(gitRepoConfig.Status.Conditions, condition)
-	// Log condition addition
-	fmt.Printf("Added new Ready condition: status=%s, reason=%s, message=%s\n",
-		status, reason, message)
 }
 
-// updateStatusAndRequeue updates the status and returns requeue result
+// updateStatusAndRequeue updates the status and returns requeue result.
 func (r *GitRepoConfigReconciler) updateStatusAndRequeue( //nolint:lll // Function signature
-	ctx context.Context, gitRepoConfig *configbutleraiv1alpha1.GitRepoConfig, requeueAfter time.Duration) (ctrl.Result, error) {
+	ctx context.Context,
+	gitRepoConfig *configbutleraiv1alpha1.GitRepoConfig,
+	requeueAfter time.Duration,
+) (ctrl.Result, error) {
 	if err := r.updateStatusWithRetry(ctx, gitRepoConfig); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -369,7 +440,10 @@ func (r *GitRepoConfigReconciler) updateStatusAndRequeue( //nolint:lll // Functi
 // updateStatusWithRetry updates the status with retry logic to handle race conditions
 //
 //nolint:dupl // Similar retry logic pattern used across controllers
-func (r *GitRepoConfigReconciler) updateStatusWithRetry(ctx context.Context, gitRepoConfig *configbutleraiv1alpha1.GitRepoConfig) error {
+func (r *GitRepoConfigReconciler) updateStatusWithRetry(
+	ctx context.Context,
+	gitRepoConfig *configbutleraiv1alpha1.GitRepoConfig,
+) error {
 	log := logf.FromContext(ctx).WithName("updateStatusWithRetry")
 
 	log.Info("Starting status update with retry",
@@ -378,10 +452,10 @@ func (r *GitRepoConfigReconciler) updateStatusWithRetry(ctx context.Context, git
 		"conditionsCount", len(gitRepoConfig.Status.Conditions))
 
 	return wait.ExponentialBackoff(wait.Backoff{
-		Duration: 100 * time.Millisecond,
-		Factor:   2.0,
-		Jitter:   0.1,
-		Steps:    5,
+		Duration: RetryInitialDuration,
+		Factor:   RetryBackoffFactor,
+		Jitter:   RetryBackoffJitter,
+		Steps:    RetryMaxSteps,
 	}, func() (bool, error) {
 		log.Info("Attempting status update")
 
@@ -389,7 +463,7 @@ func (r *GitRepoConfigReconciler) updateStatusWithRetry(ctx context.Context, git
 		latest := &configbutleraiv1alpha1.GitRepoConfig{}
 		key := client.ObjectKeyFromObject(gitRepoConfig)
 		if err := r.Get(ctx, key, latest); err != nil {
-			if errors.IsNotFound(err) {
+			if apierrors.IsNotFound(err) {
 				log.Info("Resource was deleted, nothing to update")
 				return true, nil
 			}
@@ -409,7 +483,7 @@ func (r *GitRepoConfigReconciler) updateStatusWithRetry(ctx context.Context, git
 
 		// Attempt to update
 		if err := r.Status().Update(ctx, latest); err != nil {
-			if errors.IsConflict(err) {
+			if apierrors.IsConflict(err) {
 				log.Info("Resource version conflict, retrying")
 				return false, nil
 			}

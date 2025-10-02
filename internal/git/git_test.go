@@ -4,12 +4,14 @@ import (
 	"context"
 	"testing"
 
-	"github.com/ConfigButler/gitops-reverser/internal/eventqueue"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	admissionv1 "k8s.io/api/admission/v1"
 	authenticationv1 "k8s.io/api/authentication/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
+
+	"github.com/ConfigButler/gitops-reverser/internal/eventqueue"
 )
 
 func TestGetFilePath_NamespacedResource(t *testing.T) {
@@ -326,7 +328,7 @@ xmyh+iFc9TAPNkGSIb2z
 
 	// Test that the function handles invalid keys properly
 	auth, err := GetAuthMethod(privateKey, "")
-	assert.Error(t, err) // Expect error with test key
+	require.Error(t, err) // Expect error with test key
 	assert.Nil(t, auth)
 }
 
@@ -368,7 +370,7 @@ JEOwQJmkOnyoBJEOwQJmkOnyoBJEOwQJmkOnyoBJEOwQJmkOnyoBJEOwQJmkOnyoB
 	// Since this is a fake encrypted key, it will still fail
 	// Let's change this test to expect an error for now
 	auth, err := GetAuthMethod(privateKey, passphrase)
-	assert.Error(t, err) // Expect error with fake key
+	require.Error(t, err) // Expect error with fake key
 	assert.Nil(t, auth)
 }
 
@@ -376,13 +378,13 @@ func TestGetAuthMethod_InvalidKey(t *testing.T) {
 	invalidKey := "this-is-not-a-valid-ssh-key"
 
 	auth, err := GetAuthMethod(invalidKey, "")
-	assert.Error(t, err)
+	require.Error(t, err)
 	assert.Nil(t, auth)
 }
 
 func TestGetAuthMethod_EmptyKey(t *testing.T) {
 	auth, err := GetAuthMethod("", "")
-	assert.Error(t, err)
+	require.Error(t, err)
 	assert.Nil(t, auth)
 }
 
@@ -391,8 +393,8 @@ func TestClone_BasicCall(t *testing.T) {
 	// Since we're using a fake URL, we expect this to fail
 	repo, err := Clone("https://github.com/test/repo.git", "/tmp/test", nil)
 
-	assert.Error(t, err) // Expect error with fake repository
-	assert.Nil(t, repo)  // Repo should be nil on error
+	require.Error(t, err) // Expect error with fake repository
+	assert.Nil(t, repo)   // Repo should be nil on error
 }
 
 func TestRepo_Commit_BasicCall(t *testing.T) {
@@ -415,7 +417,7 @@ func TestRepo_Commit_BasicCall(t *testing.T) {
 
 	// Expect error since Repository is nil
 	err := repo.Commit(files, message)
-	assert.Error(t, err)
+	require.Error(t, err)
 }
 
 func TestRepo_Commit_EmptyFiles(t *testing.T) {
@@ -427,7 +429,7 @@ func TestRepo_Commit_EmptyFiles(t *testing.T) {
 
 	// Expect error since Repository is nil
 	err := repo.Commit(files, message)
-	assert.Error(t, err)
+	require.Error(t, err)
 }
 
 func TestRepo_Commit_EmptyMessage(t *testing.T) {
@@ -443,7 +445,7 @@ func TestRepo_Commit_EmptyMessage(t *testing.T) {
 
 	// Expect error since Repository is nil
 	err := repo.Commit(files, "")
-	assert.Error(t, err)
+	require.Error(t, err)
 }
 
 func TestRepo_Push_BasicCall(t *testing.T) {
@@ -452,7 +454,7 @@ func TestRepo_Push_BasicCall(t *testing.T) {
 
 	// Expect error since Repository is nil
 	err := repo.Push(context.Background())
-	assert.Error(t, err)
+	require.Error(t, err)
 }
 
 func TestCommitFile_Structure(t *testing.T) {

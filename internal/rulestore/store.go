@@ -8,11 +8,12 @@ import (
 	"strings"
 	"sync"
 
-	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 )
 
 // CompiledRule represents a fully processed WatchRule, ready for quick lookups.
