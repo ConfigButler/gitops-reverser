@@ -20,9 +20,48 @@ permissions:
   packages: write
 
 jobs:
-  build-devcontainer:
-    name: Build Dev Container
+  build-ci-container:
+    name: Build CI Base Container
     runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.image.outputs.name }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set image name
+        id: image
+        run: |
+          IMAGE="${{ env.REGISTRY }}/configbutler/gitops-reverser-ci:${{ github.sha }}"
+          echo "name=${IMAGE}" >> $GITHUB_OUTPUT
+          echo "Building CI base container: ${IMAGE}"
+
+      - name: Build and push CI base container
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: .devcontainer/Dockerfile.ci
+          push: true
+          tags: |
+            ${{ steps.image.outputs.name }}
+            ${{ env.REGISTRY }}/configbutler/gitops-reverser-ci:latest
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/configbutler/gitops-reverser-ci:buildcache
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/configbutler/gitops-reverser-ci:buildcache,mode=max
+
+  build-devcontainer:
+    name: Build Full Dev Container
+    runs-on: ubuntu-latest
+    needs: build-ci-container
     outputs:
       image: ${{ steps.image.outputs.name }}
     steps:
@@ -44,7 +83,7 @@ jobs:
         run: |
           IMAGE="${{ env.REGISTRY }}/configbutler/gitops-reverser-devcontainer:${{ github.sha }}"
           echo "name=${IMAGE}" >> $GITHUB_OUTPUT
-          echo "Building dev container: ${IMAGE}"
+          echo "Building full dev container: ${IMAGE}"
 
       - name: Build and push dev container
         uses: docker/build-push-action@v6
@@ -57,13 +96,15 @@ jobs:
             ${{ env.REGISTRY }}/configbutler/gitops-reverser-devcontainer:latest
           cache-from: type=registry,ref=${{ env.REGISTRY }}/configbutler/gitops-reverser-devcontainer:buildcache
           cache-to: type=registry,ref=${{ env.REGISTRY }}/configbutler/gitops-reverser-devcontainer:buildcache,mode=max
+          build-args: |
+            BUILDKIT_CONTEXT_KEEP_GIT_DIR=1
 
   lint-and-test:
     name: Lint and unit tests
     runs-on: ubuntu-latest
-    needs: build-devcontainer
+    needs: build-ci-container
     container:
-      image: ${{ needs.build-devcontainer.outputs.image }}
+      image: ${{ needs.build-ci-container.outputs.image }}
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
@@ -80,11 +121,10 @@ jobs:
         with:
           install-mode: none
 
-      - name: Verify dev container tools
+      - name: Verify CI container tools
         run: |
           echo "=== Verifying pre-installed tools ==="
           go version
-          kind version
           kubectl version --client
           kustomize version
           golangci-lint version
@@ -122,15 +162,15 @@ jobs:
   e2e-test:
     name: End-to-End Tests
     runs-on: ubuntu-latest
-    needs: [build-devcontainer, docker-build]
+    needs: [build-ci-container, docker-build]
     container:
-      image: ${{ needs.build-devcontainer.outputs.image }}
+      image: ${{ needs.build-ci-container.outputs.image }}
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-      options: --privileged -v /var/run/docker.sock:/var/run/docker.sock
     env:
-      TEST_IMAGE: ${{ needs.docker-build.outputs.image }}
+      PROJECT_IMAGE: ${{ needs.docker-build.outputs.image }}
+      KIND_CLUSTER: gitops-reverser-test-e2e
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
@@ -139,267 +179,49 @@ jobs:
         run: |
           git config --global --add safe.directory /__w/gitops-reverser/gitops-reverser
 
-      - name: Verify Docker is available
-        run: |
-          docker version
-          docker info
-
-      - name: Verify dev container tools
+      - name: Verify CI container tools
         run: |
           echo "=== Verifying pre-installed tools ==="
           go version
-          kind version
           kubectl version --client
+          kustomize version
+          helm version
 
-      - name: Set up KinD cluster with diagnostics
+      - name: Set up Kind cluster
+        uses: helm/kind-action@v1.12.0
+        with:
+          cluster_name: ${{ env.KIND_CLUSTER }}
+          version: v0.30.0
+          wait: 5m
+          # Note: kubectl is already installed in CI container (v1.32.3)
+          # No need for kubectl_version parameter here
+
+      - name: Verify cluster is ready
         run: |
-          set -x  # Enable verbose command output
-          
-          echo "=========================================="
-          echo "PHASE 1: Docker Environment Analysis"
-          echo "=========================================="
-          
-          echo "--- Docker Version ---"
-          docker version
-          
-          echo "--- Docker Networks ---"
-          docker network ls
-          
-          echo "--- Docker Info ---"
-          docker info | grep -E "Server Version|Operating System|Kernel Version|CPUs|Total Memory"
-          
-          echo "=========================================="
-          echo "PHASE 2: Container Detection"
-          echo "=========================================="
-          
-          CURRENT_CONTAINER=$(hostname)
-          echo "Hostname: ${CURRENT_CONTAINER}"
-          
-          echo "--- Attempting to inspect current container ---"
-          if docker inspect ${CURRENT_CONTAINER} >/dev/null 2>&1; then
-            echo "✅ Successfully found current container: ${CURRENT_CONTAINER}"
-            
-            echo "--- Current Container Networks ---"
-            docker inspect ${CURRENT_CONTAINER} -f '{{range $net,$v := .NetworkSettings.Networks}}Network: {{$net}}, IP: {{$v.IPAddress}}{{"\n"}}{{end}}'
-            
-            echo "--- Current Container Full Network Info (JSON) ---"
-            docker inspect ${CURRENT_CONTAINER} -f '{{json .NetworkSettings.Networks}}' | jq -r '.' || echo "jq not available"
-          else
-            echo "❌ ERROR: Cannot inspect container with hostname '${CURRENT_CONTAINER}'"
-            echo "This likely means we're not running in a Docker container or hostname doesn't match container name"
-            echo "Listing all running containers:"
-            docker ps --format "table {{.ID}}\t{{.Names}}\t{{.Image}}"
-          fi
-          
-          echo "=========================================="
-          echo "PHASE 3: Creating Kind Cluster"
-          echo "=========================================="
-          
-          kind create cluster --name gitops-reverser-test-e2e --wait 5m --verbosity 4
-          
-          echo "--- Kind Cluster Created ---"
-          kind get clusters
-          
-          echo "--- Kind Container Info ---"
-          docker ps -a | grep kind
-          
-          echo "=========================================="
-          echo "PHASE 4: Network Topology Analysis"
-          echo "=========================================="
-          
-          echo "--- Kind Control Plane Networks ---"
-          docker inspect gitops-reverser-test-e2e-control-plane -f '{{range $net,$v := .NetworkSettings.Networks}}Network: {{$net}}, IP: {{$v.IPAddress}}{{"\n"}}{{end}}'
-          
-          echo "--- Kind Control Plane Full Network Info (JSON) ---"
-          docker inspect gitops-reverser-test-e2e-control-plane -f '{{json .NetworkSettings.Networks}}' | jq -r '.' || docker inspect gitops-reverser-test-e2e-control-plane -f '{{json .NetworkSettings.Networks}}'
-          
-          echo "=========================================="
-          echo "PHASE 5: Network Connection Attempt"
-          echo "=========================================="
-          
-          # Try to detect GitHub Actions container network
-          GITHUB_NETWORK=$(docker inspect ${CURRENT_CONTAINER} -f '{{range $net,$v := .NetworkSettings.Networks}}{{$net}}{{end}}' 2>/dev/null | head -n1)
-          
-          if [ -z "${GITHUB_NETWORK}" ]; then
-            echo "⚠️  WARNING: Could not detect GitHub Actions container network"
-            echo "Possible reasons:"
-            echo "  1. Not running in a container"
-            echo "  2. Container name doesn't match hostname"
-            echo "  3. No network attached to container"
-            echo ""
-            echo "Attempting to continue with Kind's default networking..."
-            SKIP_NETWORK_BRIDGE=true
-          else
-            echo "✅ Detected network: ${GITHUB_NETWORK}"
-            
-            echo "--- Attempting to connect Kind to ${GITHUB_NETWORK} ---"
-            if docker network connect ${GITHUB_NETWORK} gitops-reverser-test-e2e-control-plane 2>&1; then
-              echo "✅ Successfully connected Kind to ${GITHUB_NETWORK}"
-              
-              echo "--- Updated Kind Container Networks ---"
-              docker inspect gitops-reverser-test-e2e-control-plane -f '{{range $net,$v := .NetworkSettings.Networks}}Network: {{$net}}, IP: {{$v.IPAddress}}{{"\n"}}{{end}}'
-            else
-              echo "❌ Failed to connect Kind to ${GITHUB_NETWORK}"
-              echo "Attempting to continue with Kind's default networking..."
-              SKIP_NETWORK_BRIDGE=true
-            fi
-          fi
-          
-          echo "=========================================="
-          echo "PHASE 6: Connectivity Testing"
-          echo "=========================================="
-          
-          if [ "${SKIP_NETWORK_BRIDGE}" != "true" ] && [ -n "${GITHUB_NETWORK}" ]; then
-            KIND_IP=$(docker inspect gitops-reverser-test-e2e-control-plane -f "{{.NetworkSettings.Networks.${GITHUB_NETWORK}.IPAddress}}" 2>/dev/null)
-            
-            if [ -n "${KIND_IP}" ] && [ "${KIND_IP}" != "<no value>" ]; then
-              echo "✅ Kind container IP on ${GITHUB_NETWORK}: ${KIND_IP}"
-              
-              echo "--- Testing ping to Kind container ---"
-              if ping -c 3 -W 2 ${KIND_IP} 2>&1; then
-                echo "✅ Successfully pinged Kind container"
-              else
-                echo "⚠️  WARNING: Cannot ping Kind container (may not be fatal)"
-              fi
-              
-              echo "--- Testing port connectivity ---"
-              # IMPORTANT: Use internal Kubernetes API port (6443), not the external mapped port
-              # Kind maps 6443 to a random external port for localhost, but on Docker networks
-              # we connect directly to the container, so we must use the internal port 6443
-              API_PORT=6443
-              echo "Using internal Kubernetes API port: ${API_PORT}"
-              
-              if timeout 5 bash -c "cat < /dev/null > /dev/tcp/${KIND_IP}/${API_PORT}" 2>/dev/null; then
-                echo "✅ Port ${API_PORT} is reachable on ${KIND_IP}"
-              else
-                echo "⚠️  WARNING: Cannot connect to port ${API_PORT} on ${KIND_IP}"
-              fi
-              
-              echo "--- Updating kubeconfig to use shared network IP ---"
-              # Update to use the shared network IP and skip TLS verification
-              # TLS verification must be skipped because the API server's certificate
-              # was created with SANs for the Kind network IP (172.19.0.2), not the
-              # GitHub network IP (172.18.0.3) that we're connecting through
-              kubectl config set-cluster kind-gitops-reverser-test-e2e \
-                --server=https://${KIND_IP}:${API_PORT} \
-                --insecure-skip-tls-verify=true
-              
-              echo "ℹ️  Note: TLS verification disabled for CI (certificate doesn't include shared network IP)"
-            else
-              echo "⚠️  WARNING: Could not get Kind IP on shared network"
-              echo "Using Kind's default networking configuration"
-            fi
-          else
-            echo "ℹ️  INFO: Using Kind's default networking (no network bridge)"
-          fi
-          
-          echo "=========================================="
-          echo "PHASE 7: Kubeconfig Verification"
-          echo "=========================================="
-          
-          echo "--- Current Kubeconfig ---"
-          kubectl config view
-          
-          KUBECONFIG_SERVER=$(kubectl config view -o jsonpath='{.clusters[0].cluster.server}')
-          echo "Configured API Server: ${KUBECONFIG_SERVER}"
-          
-          echo "=========================================="
-          echo "PHASE 8: Cluster Connection Test"
-          echo "=========================================="
-          
-          echo "--- Testing cluster-info (with verbose logging) ---"
-          if kubectl cluster-info --v=6 2>&1; then
-            echo "✅ kubectl cluster-info succeeded"
-          else
-            echo "❌ kubectl cluster-info FAILED"
-            exit 1
-          fi
-          
-          echo "--- Testing get nodes (with verbose logging) ---"
-          if kubectl get nodes --v=6 2>&1; then
-            echo "✅ kubectl get nodes succeeded"
-          else
-            echo "❌ kubectl get nodes FAILED"
-            echo ""
-            echo "=========================================="
-            echo "FAILURE DIAGNOSIS"
-            echo "=========================================="
-            echo "The cluster was created but kubectl cannot connect."
-            echo "This indicates a networking or configuration issue."
-            exit 1
-          fi
-          
-          echo "=========================================="
-          echo "✅ SUCCESS: Kind cluster is ready and accessible"
-          echo "=========================================="
+          kubectl cluster-info
+          kubectl get nodes
+          echo "✅ Kind cluster is ready"
 
       - name: Login to Docker registry
         run: |
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ${{ env.REGISTRY }} -u ${{ github.actor }} --password-stdin
 
-      - name: Pull and load image to KinD
+      - name: Pull and load image to Kind
         run: |
-          echo "Pulling image: ${{ needs.docker-build.outputs.image }}"
-          docker pull ${{ needs.docker-build.outputs.image }}
-          kind load docker-image ${{ needs.docker-build.outputs.image }} --name gitops-reverser-test-e2e
-
-      - name: Reconfigure kubeconfig for network bridge
-        run: |
-          # The setup-test-e2e target in Makefile calls 'kind export kubeconfig'
-          # which overwrites our network configuration. We need to reapply it.
-          echo "Reconfiguring kubeconfig to use shared network IP..."
-          
-          CURRENT_CONTAINER=$(hostname)
-          GITHUB_NETWORK=$(docker inspect ${CURRENT_CONTAINER} -f '{{range $net,$v := .NetworkSettings.Networks}}{{$net}}{{end}}' 2>/dev/null | head -n1)
-          
-          if [ -n "${GITHUB_NETWORK}" ]; then
-            KIND_IP=$(docker inspect gitops-reverser-test-e2e-control-plane -f "{{.NetworkSettings.Networks.${GITHUB_NETWORK}.IPAddress}}" 2>/dev/null)
-            
-            if [ -n "${KIND_IP}" ] && [ "${KIND_IP}" != "<no value>" ]; then
-              echo "Updating kubeconfig to use Kind IP ${KIND_IP} on shared network"
-              kubectl config set-cluster kind-gitops-reverser-test-e2e \
-                --server=https://${KIND_IP}:6443 \
-                --insecure-skip-tls-verify=true
-              
-              # Verify it works
-              kubectl cluster-info
-              kubectl get nodes
-              
-              echo "✅ Kubeconfig reconfigured successfully"
-            else
-              echo "⚠️  WARNING: Could not detect Kind IP on shared network"
-              echo "Continuing with default Kind networking..."
-            fi
-          else
-            echo "⚠️  WARNING: Could not detect GitHub network"
-            echo "Continuing with default Kind networking..."
-          fi
+          echo "Pulling image: ${{ env.PROJECT_IMAGE }}"
+          docker pull ${{ env.PROJECT_IMAGE }}
+          kind load docker-image ${{ env.PROJECT_IMAGE }} --name ${{ env.KIND_CLUSTER }}
 
       - name: Run E2E tests
         run: |
-          export PROJECT_IMAGE="${{ needs.docker-build.outputs.image }}"
-          
-          # Run test prerequisites without setup-test-e2e (cluster already exists)
-          # But run cleanup-webhook, setup-cert-manager, setup-gitea-e2e, manifests, generate, fmt, vet
-          make cleanup-webhook || true  # Ignore error if webhook doesn't exist
+          # Run test prerequisites
+          make cleanup-webhook || true
           make setup-cert-manager
           make setup-gitea-e2e
           make manifests generate fmt vet
           
-          # Reconfigure kubeconfig one more time in case any of the above steps changed it
-          CURRENT_CONTAINER=$(hostname)
-          GITHUB_NETWORK=$(docker inspect ${CURRENT_CONTAINER} -f '{{range $net,$v := .NetworkSettings.Networks}}{{$net}}{{end}}' 2>/dev/null | head -n1)
-          if [ -n "${GITHUB_NETWORK}" ]; then
-            KIND_IP=$(docker inspect gitops-reverser-test-e2e-control-plane -f "{{.NetworkSettings.Networks.${GITHUB_NETWORK}.IPAddress}}" 2>/dev/null)
-            if [ -n "${KIND_IP}" ] && [ "${KIND_IP}" != "<no value>" ]; then
-              kubectl config set-cluster kind-gitops-reverser-test-e2e \
-                --server=https://${KIND_IP}:6443 \
-                --insecure-skip-tls-verify=true
-            fi
-          fi
-          
           # Run the actual e2e tests
-          KIND_CLUSTER=gitops-reverser-test-e2e go test ./test/e2e/ -v -ginkgo.v
+          go test ./test/e2e/ -v -ginkgo.v
 
   # Release job only runs on push to main after tests pass
   release-please:

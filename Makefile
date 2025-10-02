@@ -65,22 +65,25 @@ KIND_CLUSTER ?= gitops-reverser-test-e2e
 
 .PHONY: setup-test-e2e
 setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist
-	@command -v $(KIND) >/dev/null 2>&1 || { \
-		echo "Kind is not installed. Please install Kind manually."; \
-		exit 1; \
-	}
+	@if ! command -v $(KIND) >/dev/null 2>&1; then \
+		echo "⚠️  Kind is not installed - skipping cluster creation (CI will use helm/kind-action)"; \
+		exit 0; \
+	fi
 	@case "$$($(KIND) get clusters)" in \
 		*"$(KIND_CLUSTER)"*) \
-			echo "Kind cluster '$(KIND_CLUSTER)' already exists. Skipping creation." ;; \
+			echo "✅ Kind cluster '$(KIND_CLUSTER)' already exists. Skipping creation." ;; \
 		*) \
-			echo "Creating Kind cluster '$(KIND_CLUSTER)'..."; \
-			$(KIND) create cluster --name $(KIND_CLUSTER) ;; \
+			echo "🚀 Creating Kind cluster '$(KIND_CLUSTER)'..."; \
+			$(KIND) create cluster --name $(KIND_CLUSTER) --wait 5m; \
+			echo "✅ Kind cluster created successfully" ;; \
 	esac
-	@echo "Configuring kubeconfig for cluster '$(KIND_CLUSTER)'..."
-	@$(KIND) export kubeconfig --name $(KIND_CLUSTER)
+	@if command -v $(KIND) >/dev/null 2>&1; then \
+		echo "📋 Configuring kubeconfig for cluster '$(KIND_CLUSTER)'..."; \
+		$(KIND) export kubeconfig --name $(KIND_CLUSTER); \
+	fi
 
 .PHONY: test-e2e
-test-e2e: setup-test-e2e cleanup-webhook setup-cert-manager setup-gitea-e2e manifests generate fmt vet ## Runs the e2e cluster in a real kind cluster, undeploy and uninstall are ran so that we don't have to cleanup after running tests (which is very nice if you want to debug a failed test).
+test-e2e: setup-test-e2e cleanup-webhook setup-cert-manager setup-gitea-e2e manifests generate fmt vet ## Run end-to-end tests in Kind cluster
 	KIND_CLUSTER=$(KIND_CLUSTER) go test ./test/e2e/ -v -ginkgo.v
 
 .PHONY: cleanup-webhook

@@ -33,6 +33,10 @@
 
   "postCreateCommand": "docker network create -d=bridge --subnet=172.19.0.0/24 kind || true",
 
-  "remoteUser": "root"
+  "remoteUser": "root",
+
+  "mounts": [
+    "source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind"
+  ]
 }
 
