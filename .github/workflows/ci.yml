@@ -119,8 +119,8 @@ jobs:
             echo '✅ All dev container tools verified'
           "
 
-  lint-and-test:
-    name: Lint and unit tests
+  lint:
+    name: Lint
     runs-on: ubuntu-latest
     needs: build-ci-container
     container:
@@ -136,45 +136,28 @@ jobs:
         run: |
           git config --global --add safe.directory /__w/gitops-reverser/gitops-reverser
 
-      - name: golangci-lint (direct - fast)
-        id: lint-direct
-        run: |
-          echo "⏱️  Running direct golangci-lint execution..."
-          START_TIME=$(date +%s)
-          golangci-lint run --timeout=5m --concurrency=4
-          END_TIME=$(date +%s)
-          DURATION=$((END_TIME - START_TIME))
-          echo "✅ Direct execution completed in ${DURATION}s"
-          echo "duration=${DURATION}" >> $GITHUB_OUTPUT
-
-      - name: golangci-lint (GitHub Action - with PR comments)
-        id: lint-action
+      - name: golangci-lint
         uses: golangci/golangci-lint-action@v8
         with:
           install-mode: none
           skip-cache: false
           skip-save-cache: false
+          # Only check new issues in PRs (huge performance boost)
           only-new-issues: ${{ github.event_name == 'pull_request' }}
           args: --timeout=5m --concurrency=4
-        continue-on-error: true
 
-      - name: Compare linting performance
-        if: always()
-        run: |
-          echo "📊 Linting Performance Comparison:"
-          echo "Direct execution: ${{ steps.lint-direct.outputs.duration }}s"
-          echo "GitHub Action: Check step duration above"
-          echo ""
-          echo "💡 The direct execution leverages pre-warmed cache from CI container"
-          echo "💡 The GitHub Action adds PR comment functionality but has overhead"
-
-      - name: Verify CI container tools
-        run: |
-          echo "=== Verifying pre-installed tools ==="
-          go version
-          kubectl version --client
-          kustomize version
-          golangci-lint version
+  test:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    needs: build-ci-container
+    container:
+      image: ${{ needs.build-ci-container.outputs.image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
 
       - name: Run tests
         run: make test
@@ -262,7 +245,7 @@ jobs:
     name: Release Please
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [lint-and-test, e2e-test, validate-devcontainer]
+    needs: [lint, test, e2e-test, validate-devcontainer]
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
