@@ -13,24 +13,32 @@ linters:
   default: none
   enable:
     - copyloopvar
+    - dupl
     - errcheck
     - ginkgolinter
     - goconst
     - gocyclo
     - govet
     - ineffassign
+    - lll
     - misspell
     - nakedret
     - prealloc
     - revive
+    - staticcheck
     - unconvert
     - unparam
     - unused
-    # Disabled temporarily to unblock CI:
-    # - dupl (found intentional code patterns in controllers)
-    # - lll (some kubebuilder annotations and logs are legitimately long)
-    # - staticcheck (ST1001 dot imports are standard for Ginkgo tests)
   settings:
+    lll:
+      # Reasonable limit that accommodates function signatures and structured logging
+      line-length: 160
+      tab-width: 4
+    dupl:
+      # Increase threshold to avoid flagging intentional similar patterns
+      threshold: 150
+    staticcheck:
+      checks: ["all"]
     revive:
       rules:
         - name: comment-spacings
@@ -39,3 +47,9 @@ linters:
       min-complexity: 15
     misspell:
       locale: US
+
+issues:
+  # Maximum issues count per one linter
+  max-issues-per-linter: 0
+  # Maximum count of issues with the same text
+  max-same-issues: 0

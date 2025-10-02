@@ -141,8 +141,7 @@ jobs:
           install-mode: none
           # Enable caching for faster subsequent runs
           skip-cache: false
-          skip-pkg-cache: false
-          skip-build-cache: false
+          skip-save-cache: false
           # Only check new issues in PRs to speed up PR checks
           only-new-issues: ${{ github.event_name == 'pull_request' }}
           # Additional performance args

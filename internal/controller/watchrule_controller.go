@@ -84,7 +84,8 @@ func (r *WatchRuleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	// Set initial validating status
 	log.Info("Setting initial validating status")
-	r.setCondition(&watchRule, metav1.ConditionUnknown, WatchRuleReasonValidating, "Validating WatchRule configuration...")
+	r.setCondition(&watchRule, metav1.ConditionUnknown, //nolint:lll // Descriptive message
+		WatchRuleReasonValidating, "Validating WatchRule configuration...")
 
 	// Step 1: Verify that the referenced GitRepoConfig exists and is ready
 	log.Info("Verifying GitRepoConfig reference", "gitRepoConfigRef", watchRule.Spec.GitRepoConfigRef)
@@ -113,7 +114,7 @@ func (r *WatchRuleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	// Step 4: Set ready condition
 	log.Info("WatchRule validation successful")
-	r.setCondition(&watchRule, metav1.ConditionTrue, WatchRuleReasonReady,
+	r.setCondition(&watchRule, metav1.ConditionTrue, WatchRuleReasonReady, //nolint:lll // Descriptive message
 		fmt.Sprintf("WatchRule is ready and monitoring resources with GitRepoConfig '%s'", watchRule.Spec.GitRepoConfigRef))
 
 	log.Info("WatchRule reconciliation successful", "name", watchRule.Name)
@@ -131,6 +132,8 @@ func (r *WatchRuleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 }
 
 // getGitRepoConfig retrieves the referenced GitRepoConfig
+//
+//nolint:lll // Function signature
 func (r *WatchRuleReconciler) getGitRepoConfig(ctx context.Context, gitRepoConfigName, namespace string) (*configbutleraiv1alpha1.GitRepoConfig, error) {
 	var gitRepoConfig configbutleraiv1alpha1.GitRepoConfig
 	gitRepoConfigKey := types.NamespacedName{
@@ -156,7 +159,8 @@ func (r *WatchRuleReconciler) isGitRepoConfigReady(gitRepoConfig *configbutlerai
 }
 
 // setCondition sets or updates the Ready condition
-func (r *WatchRuleReconciler) setCondition(watchRule *configbutleraiv1alpha1.WatchRule, status metav1.ConditionStatus, reason, message string) {
+func (r *WatchRuleReconciler) setCondition( //nolint:lll // Function signature
+	watchRule *configbutleraiv1alpha1.WatchRule, status metav1.ConditionStatus, reason, message string) {
 	condition := metav1.Condition{
 		Type:               ConditionTypeReady,
 		Status:             status,
@@ -177,7 +181,8 @@ func (r *WatchRuleReconciler) setCondition(watchRule *configbutleraiv1alpha1.Wat
 }
 
 // updateStatusAndRequeue updates the status and returns requeue result
-func (r *WatchRuleReconciler) updateStatusAndRequeue(ctx context.Context, watchRule *configbutleraiv1alpha1.WatchRule, requeueAfter time.Duration) (ctrl.Result, error) {
+func (r *WatchRuleReconciler) updateStatusAndRequeue( //nolint:lll // Function signature
+	ctx context.Context, watchRule *configbutleraiv1alpha1.WatchRule, requeueAfter time.Duration) (ctrl.Result, error) {
 	if err := r.updateStatusWithRetry(ctx, watchRule); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -185,6 +190,8 @@ func (r *WatchRuleReconciler) updateStatusAndRequeue(ctx context.Context, watchR
 }
 
 // updateStatusWithRetry updates the status with retry logic to handle race conditions
+//
+//nolint:dupl // Similar retry logic pattern used across controllers
 func (r *WatchRuleReconciler) updateStatusWithRetry(ctx context.Context, watchRule *configbutleraiv1alpha1.WatchRule) error {
 	log := logf.FromContext(ctx).WithName("updateStatusWithRetry")
 

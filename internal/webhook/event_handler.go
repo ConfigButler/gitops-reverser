@@ -16,6 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 )
 
+//nolint:lll // Kubebuilder webhook annotation
 // +kubebuilder:webhook:path=/validate-v1-event,mutating=false,failurePolicy=ignore,sideEffects=None,groups="*",resources="*",verbs=create;update;delete,versions="*",name=gitops-reverser.configbutler.ai,admissionReviewVersions=v1
 
 // EventHandler handles all incoming admission requests.
@@ -60,10 +61,12 @@ func (h *EventHandler) Handle(ctx context.Context, req admission.Request) admiss
 		return admission.Errored(http.StatusBadRequest, fmt.Errorf("failed to decode request: %w", err))
 	}
 
-	log.V(1).Info("Successfully decoded resource", "kind", obj.GetKind(), "name", obj.GetName(), "namespace", obj.GetNamespace(), "operation", req.Operation)
+	log.V(1).Info("Successfully decoded resource", //nolint:lll // Structured log
+		"kind", obj.GetKind(), "name", obj.GetName(), "namespace", obj.GetNamespace(), "operation", req.Operation)
 
 	matchingRules := h.RuleStore.GetMatchingRules(obj)
-	log.Info("Checking for matching rules", "kind", obj.GetKind(), "name", obj.GetName(), "namespace", obj.GetNamespace(), "matchingRulesCount", len(matchingRules))
+	log.Info("Checking for matching rules", //nolint:lll // Structured log
+		"kind", obj.GetKind(), "name", obj.GetName(), "namespace", obj.GetNamespace(), "matchingRulesCount", len(matchingRules))
 
 	if len(matchingRules) > 0 {
 		log.Info("Found matching rules, enqueueing events", "matchingRulesCount", len(matchingRules))
@@ -80,7 +83,8 @@ func (h *EventHandler) Handle(ctx context.Context, req admission.Request) admiss
 			h.EventQueue.Enqueue(event)
 			metrics.EventsProcessedTotal.Add(ctx, 1)
 			metrics.GitCommitQueueSize.Add(ctx, 1)
-			logf.FromContext(ctx).Info("Enqueued event for matched resource", "resource", sanitizedObj.GetName(), "namespace", sanitizedObj.GetNamespace(), "kind", sanitizedObj.GetKind(), "rule", rule.Source.Name)
+			logf.FromContext(ctx).Info("Enqueued event for matched resource", //nolint:lll // Structured log
+				"resource", sanitizedObj.GetName(), "namespace", sanitizedObj.GetNamespace(), "kind", sanitizedObj.GetKind(), "rule", rule.Source.Name)
 		}
 	} else {
 		// Only log for non-system resources to avoid spam

@@ -227,6 +227,8 @@ func (w *Worker) handleNewEvent(ctx context.Context, log logr.Logger, repoConfig
 }
 
 // handleTicker processes timer-triggered pushes.
+//
+//nolint:lll // Function signature
 func (w *Worker) handleTicker(ctx context.Context, log logr.Logger, repoConfig v1alpha1.GitRepoConfig, eventBuffer []eventqueue.Event) []eventqueue.Event {
 	if len(eventBuffer) > 0 {
 		log.Info("Push interval reached, triggering push")

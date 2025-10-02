@@ -26,12 +26,12 @@ var testRepoName string
 var checkoutDir string
 
 // getRepoUrlHTTP returns the HTTP URL for the test repository
-func getRepoUrlHTTP() string {
+func getRepoURLHTTP() string {
 	return fmt.Sprintf(giteaRepoURLTemplate, testRepoName)
 }
 
 // getRepoUrlSSH returns the SSH URL for the test repository
-func getRepoUrlSSH() string {
+func getRepoURLSSH() string {
 	return fmt.Sprintf(giteaSSHURLTemplate, testRepoName)
 }
 
@@ -372,7 +372,7 @@ var _ = Describe("Manager", Ordered, func() {
 			watchRuleName := "watchrule-configmap-test"
 			configMapName := "test-configmap"
 			uniqueRepoName := testRepoName
-			repoURL := getRepoUrlHTTP()
+			repoURL := getRepoURLHTTP()
 
 			By("creating GitRepoConfig for ConfigMap test")
 			createGitRepoConfigWithURL(gitRepoConfigName, "main", "git-creds", repoURL)
@@ -559,12 +559,12 @@ func createGitRepoConfigWithURL(name, branch, secretName, repoURL string) {
 
 // createGitRepoConfig creates a GitRepoConfig resource with HTTP URL
 func createGitRepoConfig(name, branch, secretName string) {
-	createGitRepoConfigWithURL(name, branch, secretName, getRepoUrlHTTP())
+	createGitRepoConfigWithURL(name, branch, secretName, getRepoURLHTTP())
 }
 
 // createSSHGitRepoConfig creates a GitRepoConfig resource with SSH URL
 func createSSHGitRepoConfig(name, branch, secretName string) {
-	createGitRepoConfigWithURL(name, branch, secretName, getRepoUrlSSH())
+	createGitRepoConfigWithURL(name, branch, secretName, getRepoURLSSH())
 }
 
 // verifyGitRepoConfigStatus verifies the GitRepoConfig status matches expected values

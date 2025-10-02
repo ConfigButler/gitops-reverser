@@ -108,7 +108,7 @@ func (r *GitRepoConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 			log.Error(err, "Failed to fetch secret",
 				"secretName", gitRepoConfig.Spec.SecretRef.Name,
 				"namespace", gitRepoConfig.Namespace)
-			r.setCondition(&gitRepoConfig, metav1.ConditionFalse, ReasonSecretNotFound,
+			r.setCondition(&gitRepoConfig, metav1.ConditionFalse, ReasonSecretNotFound, //nolint:lll // Error message
 				fmt.Sprintf("Secret '%s' not found in namespace '%s': %v", gitRepoConfig.Spec.SecretRef.Name, gitRepoConfig.Namespace, err))
 			return r.updateStatusAndRequeue(ctx, &gitRepoConfig, time.Minute*5)
 		}
@@ -176,7 +176,8 @@ func (r *GitRepoConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 }
 
 // fetchSecret retrieves the secret containing Git credentials
-func (r *GitRepoConfigReconciler) fetchSecret(ctx context.Context, secretName, secretNamespace string) (*corev1.Secret, error) {
+func (r *GitRepoConfigReconciler) fetchSecret( //nolint:lll // Function signature
+	ctx context.Context, secretName, secretNamespace string) (*corev1.Secret, error) {
 	var secret corev1.Secret
 	secretKey := types.NamespacedName{
 		Name:      secretName,
@@ -267,7 +268,8 @@ func (r *GitRepoConfigReconciler) extractCredentials(secret *corev1.Secret) (tra
 }
 
 // validateRepository checks if the repository is accessible and branch exists
-func (r *GitRepoConfigReconciler) validateRepository(ctx context.Context, repoURL, branch string, auth transport.AuthMethod) (string, error) {
+func (r *GitRepoConfigReconciler) validateRepository( //nolint:lll // Function signature
+	ctx context.Context, repoURL, branch string, auth transport.AuthMethod) (string, error) {
 	log := logf.FromContext(ctx).WithName("validateRepository")
 
 	log.Info("Starting repository validation",
@@ -286,7 +288,8 @@ func (r *GitRepoConfigReconciler) validateRepository(ctx context.Context, repoUR
 	}()
 
 	// Try to clone just the specified branch with depth 1 for validation
-	log.Info("Starting git clone", "options", fmt.Sprintf("URL=%s, Branch=%s, SingleBranch=true, Depth=1", repoURL, branch))
+	log.Info("Starting git clone", //nolint:lll // Structured log with many fields
+		"options", fmt.Sprintf("URL=%s, Branch=%s, SingleBranch=true, Depth=1", repoURL, branch))
 	_, err := git.PlainClone(tempDir, false, &git.CloneOptions{
 		URL:           repoURL,
 		Auth:          auth,
@@ -327,7 +330,8 @@ func (r *GitRepoConfigReconciler) validateRepository(ctx context.Context, repoUR
 }
 
 // setCondition sets or updates the Ready condition
-func (r *GitRepoConfigReconciler) setCondition(gitRepoConfig *configbutleraiv1alpha1.GitRepoConfig, status metav1.ConditionStatus, reason, message string) {
+func (r *GitRepoConfigReconciler) setCondition( //nolint:lll // Function signature
+	gitRepoConfig *configbutleraiv1alpha1.GitRepoConfig, status metav1.ConditionStatus, reason, message string) {
 	condition := metav1.Condition{
 		Type:               ConditionTypeReady,
 		Status:             status,
@@ -354,7 +358,8 @@ func (r *GitRepoConfigReconciler) setCondition(gitRepoConfig *configbutleraiv1al
 }
 
 // updateStatusAndRequeue updates the status and returns requeue result
-func (r *GitRepoConfigReconciler) updateStatusAndRequeue(ctx context.Context, gitRepoConfig *configbutleraiv1alpha1.GitRepoConfig, requeueAfter time.Duration) (ctrl.Result, error) {
+func (r *GitRepoConfigReconciler) updateStatusAndRequeue( //nolint:lll // Function signature
+	ctx context.Context, gitRepoConfig *configbutleraiv1alpha1.GitRepoConfig, requeueAfter time.Duration) (ctrl.Result, error) {
 	if err := r.updateStatusWithRetry(ctx, gitRepoConfig); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -362,6 +367,8 @@ func (r *GitRepoConfigReconciler) updateStatusAndRequeue(ctx context.Context, gi
 }
 
 // updateStatusWithRetry updates the status with retry logic to handle race conditions
+//
+//nolint:dupl // Similar retry logic pattern used across controllers
 func (r *GitRepoConfigReconciler) updateStatusWithRetry(ctx context.Context, gitRepoConfig *configbutleraiv1alpha1.GitRepoConfig) error {
 	log := logf.FromContext(ctx).WithName("updateStatusWithRetry")
 
