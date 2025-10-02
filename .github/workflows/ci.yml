@@ -96,6 +96,7 @@ jobs:
           context: .
           file: .devcontainer/Dockerfile
           push: false
+          load: true
           tags: gitops-reverser-devcontainer:test
           cache-from: type=gha,scope=devcontainer
           cache-to: type=gha,scope=devcontainer,mode=max
