@@ -14,3 +14,4 @@ spec:
   selector:
     control-plane: controller-manager
     app.kubernetes.io/name: gitops-reverser
+    role: leader

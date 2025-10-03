@@ -45,7 +45,8 @@ securityContext:
 # Controller manager configuration
 controllerManager:
   # Enable leader election for controller manager
-  leaderElection: true
+  # Set to false when running single replica to avoid unnecessary API calls
+  leaderElection: false
   # Metrics configuration
   metrics:
     port: 8080

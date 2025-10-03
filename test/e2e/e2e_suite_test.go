@@ -45,13 +45,13 @@ var _ = BeforeSuite(func() {
 		return
 	}
 
-	// Local testing: build and load image
-	By("building the manager(Operator) image for local testing")
+	// Local testing: ALWAYS rebuild to ensure latest code changes are included
+	By("building the manager(Operator) image for local testing (forcing rebuild)")
 	cmd := exec.Command("make", "docker-build", fmt.Sprintf("IMG=%s", projectImage))
 	_, err := utils.Run(cmd)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build the manager(Operator) image")
 
-	By("loading the manager(Operator) image on Kind")
+	By("loading the manager(Operator) image on Kind (forcing reload)")
 	err = utils.LoadImageToKindClusterWithName(projectImage)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to load the manager(Operator) image into Kind")
 })

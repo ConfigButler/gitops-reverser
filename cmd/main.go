@@ -27,6 +27,7 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/controller"
 	"github.com/ConfigButler/gitops-reverser/internal/eventqueue"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
+	"github.com/ConfigButler/gitops-reverser/internal/leader"
 	"github.com/ConfigButler/gitops-reverser/internal/metrics"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
 	webhookhandler "github.com/ConfigButler/gitops-reverser/internal/webhook"
@@ -202,6 +203,27 @@ func main() {
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
 		os.Exit(1)
+	}
+
+	// Add leader pod labeler if leader election is enabled
+	if enableLeaderElection {
+		podName := leader.GetPodName()
+		podNamespace := leader.GetPodNamespace()
+		if podName != "" && podNamespace != "" {
+			setupLog.Info("Adding leader pod labeler", "pod", podName, "namespace", podNamespace)
+			podLabeler := &leader.PodLabeler{
+				Client:    mgr.GetClient(),
+				Log:       ctrl.Log.WithName("leader-labeler"),
+				PodName:   podName,
+				Namespace: podNamespace,
+			}
+			if err := mgr.Add(podLabeler); err != nil {
+				setupLog.Error(err, "unable to add leader pod labeler")
+				os.Exit(1)
+			}
+		} else {
+			setupLog.Info("POD_NAME or POD_NAMESPACE not set, skipping leader pod labeler")
+		}
 	}
 
 	if err = (&controller.GitRepoConfigReconciler{

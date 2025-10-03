@@ -21,7 +21,7 @@ spec:
     matchLabels:
       control-plane: controller-manager
       app.kubernetes.io/name: gitops-reverser
-  replicas: 1
+  replicas: 2
   template:
     metadata:
       annotations:
@@ -65,6 +65,15 @@ spec:
           - --health-probe-bind-address=:8081
         image: controller:latest
         name: manager
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
         ports: []
         securityContext:
           readOnlyRootFilesystem: true
