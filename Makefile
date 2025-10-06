@@ -81,7 +81,7 @@ setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist
 	fi
 
 .PHONY: test-e2e
-test-e2e: setup-test-e2e cleanup-webhook setup-cert-manager setup-gitea-e2e setup-prometheus-e2e setup-port-forwards manifests generate fmt vet ## Run end-to-end tests in Kind cluster
+test-e2e: setup-test-e2e cleanup-webhook setup-cert-manager setup-gitea-e2e setup-prometheus-e2e setup-port-forwards manifests generate fmt ## Run end-to-end tests in Kind cluster
 	KIND_CLUSTER=$(KIND_CLUSTER) go test ./test/e2e/ -v -ginkgo.v
 
 .PHONY: cleanup-webhook
@@ -214,24 +214,7 @@ setup-cert-manager:
 
 .PHONY: setup-port-forwards
 setup-port-forwards: ## Start all port-forwards in background
-	@echo "🔌 Checking port-forwards..."
-	@if ps aux | grep -E "kubectl.*port-forward.*gitea.*3000" | grep -v grep >/dev/null 2>&1; then \
-		echo "✅ Gitea port-forward already running"; \
-	else \
-		echo "🔌 Starting Gitea port-forward..."; \
-		bash -c 'kubectl port-forward --address 0.0.0.0 -n gitea-e2e svc/gitea-http 3000:3000 >/dev/null 2>&1 & disown' || true; \
-		sleep 1; \
-	fi; \
-	if ps aux | grep -E "kubectl.*port-forward.*prometheus.*9090" | grep -v grep >/dev/null 2>&1; then \
-		echo "✅ Prometheus port-forward already running"; \
-	else \
-		echo "🔌 Starting Prometheus port-forward..."; \
-		bash -c 'kubectl port-forward --address 0.0.0.0 -n prometheus-e2e svc/prometheus 9090:9090 >/dev/null 2>&1 & disown' || true; \
-		sleep 1; \
-	fi; \
-	echo "📁 Gitea: http://localhost:3000"; \
-	echo "📊 Prometheus: http://localhost:9090"; \
-	echo "✅ Port-forwards ready"
+	@bash test/e2e/scripts/setup-port-forwards.sh
 
 .PHONY: cleanup-port-forwards
 cleanup-port-forwards: ## Stop all port-forwards
