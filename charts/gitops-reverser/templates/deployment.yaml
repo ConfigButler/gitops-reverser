@@ -39,19 +39,10 @@ spec:
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args:
-            - --leader-elect={{ .Values.controllerManager.leaderElection }}
-            - --webhook-port={{ .Values.webhook.server.port }}
-            - --metrics-port={{ .Values.controllerManager.metrics.port }}
-            {{- if .Values.controllerManager.enableHTTP2 }}
-            - --enable-http2
+            {{- if .Values.controllerManager.leaderElection }}
+            - --leader-elect
             {{- end }}
-            {{- if .Values.webhook.enabled }}
-            {{- if .Values.certificates.certManager.enabled }}
-            - --webhook-cert-path={{ .Values.webhook.server.certPath }}
-            - --webhook-cert-name={{ .Values.webhook.server.certName }}
-            - --webhook-cert-key={{ .Values.webhook.server.certKey }}
-            {{- end }}
-            {{- end }}
+            - --health-probe-bind-address=:8081
           ports:
             - name: webhook-server
               containerPort: {{ .Values.webhook.server.port }}
@@ -60,6 +51,14 @@ spec:
               containerPort: {{ .Values.controllerManager.metrics.port }}
               protocol: TCP
           env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
             {{- if not .Values.webhook.enabled }}
             - name: ENABLE_WEBHOOKS
               value: "false"
@@ -70,26 +69,20 @@ spec:
           livenessProbe:
             httpGet:
               path: /healthz
-              port: {{ .Values.controllerManager.metrics.port }}
-              scheme: HTTP
+              port: 8081
             initialDelaySeconds: 15
             periodSeconds: 20
-            timeoutSeconds: 1
-            failureThreshold: 3
-            successThreshold: 1
           readinessProbe:
             httpGet:
               path: /readyz
-              port: {{ .Values.controllerManager.metrics.port }}
-              scheme: HTTP
+              port: 8081
             initialDelaySeconds: 5
             periodSeconds: 10
-            timeoutSeconds: 1
-            failureThreshold: 3
-            successThreshold: 1
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:
+            - name: tmp-dir
+              mountPath: /tmp
             {{- if .Values.webhook.enabled }}
             {{- if .Values.certificates.certManager.enabled }}
             - name: cert
@@ -101,11 +94,13 @@ spec:
             {{- toYaml . | nindent 12 }}
             {{- end }}
       volumes:
+        - name: tmp-dir
+          emptyDir: {}
         {{- if .Values.webhook.enabled }}
-        {{- if and .Values.certificates.certManager.enabled (hasKey .Values.certificates "webhook") (hasKey .Values.certificates.webhook "secretName") }}
+        {{- if .Values.certificates.certManager.enabled }}
         - name: cert
           secret:
-            secretName: {{ .Values.certificates.webhook.secretName }}
+            secretName: {{ include "gitops-reverser.fullname" . }}-webhook-server-cert
             defaultMode: 420
         {{- end }}
         {{- end }}

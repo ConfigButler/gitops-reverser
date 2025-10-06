@@ -1,16 +1,17 @@
 {{- if and .Values.webhook.enabled .Values.webhook.validating.enabled }}
 apiVersion: admissionregistration.k8s.io/v1
-kind: ValidatingAdmissionWebhookConfiguration
+kind: ValidatingWebhookConfiguration
 metadata:
   name: {{ include "gitops-reverser.fullname" . }}-validating-webhook-configuration
   labels:
     {{- include "gitops-reverser.labels" . | nindent 4 }}
-  {{- if and .Values.certificates.certManager.enabled (hasKey .Values.certificates "webhook") (hasKey .Values.certificates.webhook "secretName") }}
+  {{- if .Values.certificates.certManager.enabled }}
   annotations:
-    cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/{{ .Values.certificates.webhook.secretName }}
+    cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/{{ include "gitops-reverser.fullname" . }}-serving-cert
   {{- end }}
 webhooks:
-- name: gitops-reverser.configbutler.ai
+- admissionReviewVersions:
+  - v1
   clientConfig:
     service:
       name: {{ include "gitops-reverser.fullname" . }}-webhook-service
@@ -19,6 +20,8 @@ webhooks:
     {{- if not .Values.certificates.certManager.enabled }}
     caBundle: {{ .Values.webhook.caBundle | b64enc }}
     {{- end }}
+  failurePolicy: {{ .Values.webhook.validating.failurePolicy }}
+  name: gitops-reverser.configbutler.ai
   rules:
   {{- range .Values.webhook.validating.rules }}
   - operations: {{ .operations | toJson }}
@@ -29,9 +32,7 @@ webhooks:
     scope: {{ .scope }}
     {{- end }}
   {{- end }}
-  failurePolicy: {{ .Values.webhook.validating.failurePolicy }}
   sideEffects: {{ .Values.webhook.validating.sideEffects }}
-  admissionReviewVersions: {{ .Values.webhook.validating.admissionReviewVersions | toJson }}
   {{- with .Values.webhook.validating.namespaceSelector }}
   namespaceSelector:
     {{- toYaml . | nindent 4 }}

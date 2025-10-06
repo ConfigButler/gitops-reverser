@@ -9,28 +9,13 @@ rules:
 - apiGroups:
   - ""
   resources:
-  - configmaps
-  verbs:
-  - get
-  - list
-  - watch
-  - create
-  - update
-  - patch
-  - delete
-- apiGroups:
-  - ""
-  resources:
-  - events
-  verbs:
-  - create
-- apiGroups:
-  - ""
-  resources:
   - pods
   verbs:
   - get
+  - list
   - patch
+  - update
+  - watch
 - apiGroups:
   - ""
   resources:
@@ -38,16 +23,6 @@ rules:
   verbs:
   - get
   - list
-  - watch
-- apiGroups:
-  - admissionregistration.k8s.io
-  resources:
-  - mutatingwebhookconfigurations
-  - validatingwebhookconfigurations
-  verbs:
-  - get
-  - list
-  - watch
 - apiGroups:
   - configbutler.ai
   resources:
@@ -100,18 +75,6 @@ rules:
   - get
   - patch
   - update
-- apiGroups:
-  - coordination.k8s.io
-  resources:
-  - leases
-  verbs:
-  - get
-  - list
-  - watch
-  - create
-  - update
-  - patch
-  - delete
 {{- with .Values.rbac.rules }}
 {{- toYaml . | nindent 0 }}
 {{- end }}
