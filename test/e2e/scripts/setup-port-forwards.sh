@@ -7,6 +7,27 @@ PROMETHEUS_NAMESPACE=${PROMETHEUS_NAMESPACE:-prometheus-e2e}
 
 echo "🔌 Setting up port-forwards for e2e testing..."
 
+# Wait for pods to be ready before attempting port-forwards
+echo "⏳ Waiting for Gitea pod to be ready..."
+kubectl wait --for=condition=ready pod \
+    -l app.kubernetes.io/name=gitea \
+    -n "$GITEA_NAMESPACE" \
+    --timeout=30s || {
+    echo "❌ Gitea pod failed to become ready"
+    exit 1
+}
+
+echo "⏳ Waiting for Prometheus pod to be ready..."
+kubectl wait --for=condition=ready pod \
+    -l app=prometheus \
+    -n "$PROMETHEUS_NAMESPACE" \
+    --timeout=30s || {
+    echo "❌ Prometheus pod failed to become ready"
+    exit 1
+}
+
+echo "✅ All pods are ready"
+
 # Generic function to setup a port-forward with verification
 # Args: service_name namespace service port health_check_url
 setup_port_forward() {
