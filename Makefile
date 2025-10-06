@@ -63,16 +63,16 @@ test: manifests generate fmt vet setup-envtest ## Run tests.
 
 KIND_CLUSTER ?= gitops-reverser-test-e2e
 
-.PHONY: setup-test-e2e
-setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist
+.PHONY: setup-cluster
+setup-cluster: ## Set up a Kind cluster for e2e tests if it does not exist
 	@if ! command -v $(KIND) >/dev/null 2>&1; then \
-		echo "⚠️  Kind is not installed - skipping cluster creation (CI will use helm/kind-action)"; \
+		echo "Kind is not installed - skipping Makefile cluster creation (expected in CI runs since we use helm/kind-action)"; \
 	else \
 		case "$$($(KIND) get clusters)" in \
 			*"$(KIND_CLUSTER)"*) \
-				echo "✅ Kind cluster '$(KIND_CLUSTER)' already exists. Skipping creation." ;; \
+				echo "✅ Cluster '$(KIND_CLUSTER)' already exists. Skipping creation." ;; \
 			*) \
-				echo "🚀 Creating Kind cluster '$(KIND_CLUSTER)'..."; \
+				echo "🚀 Creating cluster (with Kind) '$(KIND_CLUSTER)'..."; \
 				$(KIND) create cluster --name $(KIND_CLUSTER) --wait 5m; \
 				echo "✅ Kind cluster created successfully" ;; \
 		esac; \
@@ -80,17 +80,17 @@ setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist
 		$(KIND) export kubeconfig --name $(KIND_CLUSTER); \
 	fi
 
+.PHONY: cleanup-cluster
+cleanup-cluster: ## Tear down the Kind cluster used for e2e tests
+	@$(KIND) delete cluster --name $(KIND_CLUSTER)
+
 .PHONY: test-e2e
-test-e2e: setup-test-e2e cleanup-webhook setup-cert-manager setup-gitea-e2e setup-prometheus-e2e setup-port-forwards manifests generate fmt ## Run end-to-end tests in Kind cluster
+test-e2e: setup-cluster cleanup-webhook setup-e2e manifests setup-port-forwards ## Run end-to-end tests in Kind cluster, note that vet, fmt and generate are not run!
 	KIND_CLUSTER=$(KIND_CLUSTER) go test ./test/e2e/ -v -ginkgo.v
 
 .PHONY: cleanup-webhook
 cleanup-webhook: ## Preventive cleanup of ValidatingWebhookConfiguration potenially left by previous test runs
 	$(KUBECTL) delete ValidatingWebhookConfiguration gitops-reverser-validating-webhook-configuration --ignore-not-found=true
-
-.PHONY: cleanup-test-e2e
-cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests
-	@$(KIND) delete cluster --name $(KIND_CLUSTER)
 
 .PHONY: lint
 lint: ## Run golangci-lint linter
@@ -243,12 +243,6 @@ cleanup-prometheus-e2e: ## Clean up Prometheus e2e environment
 	@$(KUBECTL) delete namespace prometheus-e2e --ignore-not-found=true
 	@echo "✅ Prometheus cleanup completed"
 
-.PHONY: e2e-setup
-e2e-setup: setup-gitea-e2e setup-prometheus-e2e setup-port-forwards ## Setup all e2e test infrastructure
-	@echo "✅ E2E infrastructure ready"
-
-.PHONY: e2e-cleanup
-e2e-cleanup: cleanup-gitea-e2e cleanup-prometheus-e2e ## Clean up all e2e test infrastructure
-	@echo "✅ All e2e infrastructure cleaned up"
-
-
+.PHONY: setup-e2e
+setup-e2e: setup-cert-manager setup-gitea-e2e setup-prometheus-e2e ## Setup all e2e test infrastructure
+	@echo "✅ E2E infrastructure initialized"
