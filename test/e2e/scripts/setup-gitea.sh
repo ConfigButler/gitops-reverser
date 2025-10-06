@@ -41,29 +41,8 @@ wait_gitea() {
     echo "✅ Gitea is ready"
 }
 
-# Function to setup API connectivity
-setup_persistant_port_forward() {
-    # Kill any existing port-forwards on port 3000
-    echo "🔧 Cleaning up any existing port-forwards..."
-    pkill -f "kubectl.*port-forward.*3000" 2>/dev/null || true
-    sleep 2
-
-    # Setup port-forward for API access (persistent for e2e testing)
-    echo "🔗 Setting up persistent port-forward to Gitea on localhost:3000..."
-    echo "💡 Note: Port-forward will remain active after script completion. Use 'pkill -f \"kubectl.*port-forward.*3000\"' to stop."
-    
-    # Start port-forward as a fully detached background process using nohup and disown
-    nohup kubectl port-forward -n "$GITEA_NAMESPACE" "svc/$GITEA_SERVICE" 3000:3000 >/dev/null 2>&1 &
-    PF_PID=$!
-    
-    # Detach the process from the current shell session
-    disown $PF_PID 2>/dev/null || true
-    
-    # Wait for port-forward to be established
-    sleep 5
-}
-
 test_api_connectivity() {
+    # Port-forward should already be running via Makefile's setup-port-forwards
     echo "🔍 Testing API connectivity..."
     for i in {1..30}; do
         if curl -s -f "$API_URL/version" >/dev/null 2>&1; then
@@ -339,7 +318,6 @@ checkout_repository() {
 
 # Main execution logic - full setup with specified repository
 wait_gitea
-setup_persistant_port_forward
 test_api_connectivity
 setup_organization_and_token
 generate_ssh_keys

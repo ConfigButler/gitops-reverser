@@ -213,11 +213,12 @@ Each commit includes detailed metadata:
 The project includes comprehensive tests:
 
 - **Unit Tests**: 30+ tests covering core functionality
-- **Integration Tests**: Git operations and race condition handling  
+- **Integration Tests**: Git operations and race condition handling
 - **Controller Tests**: Kubernetes controller behavior
-- **E2E Tests**: Full workflow validation
+- **E2E Tests**: Full workflow validation with Prometheus-based metrics
 
-Run tests locally:
+### Running Tests
+
 ```bash
 # Unit tests (recommended for development)
 make test
@@ -228,6 +229,49 @@ make test-e2e
 # All tests with coverage
 go test $(go list ./... | grep -v /e2e) -coverprofile=coverage.out
 ```
+
+### E2E Test Infrastructure
+
+E2E tests use persistent infrastructure for debugging:
+
+**Setup infrastructure (one-time):**
+```bash
+make e2e-setup  # Deploys Gitea + Prometheus + starts port-forwards
+```
+
+**Run tests:**
+```bash
+make test-e2e  # Automatically starts port-forwards if needed
+```
+
+**Access services (for debugging):**
+```bash
+# Start port-forwards in background
+make setup-port-forwards
+
+# Access from your browser:
+# - Gitea UI: http://localhost:3000 (user: testorg, pass: gitea)
+# - Prometheus UI: http://localhost:9090
+
+# Stop port-forwards:
+make cleanup-port-forwards
+```
+
+**Cleanup:**
+```bash
+make e2e-cleanup  # Remove all e2e infrastructure
+```
+
+### E2E Debugging Features
+
+The e2e tests now use **Prometheus for metrics validation**, enabling:
+
+- ✅ **Multi-pod metric aggregation** - Test HA configurations with 2 controller replicas
+- ✅ **Leader election validation** - Verify only leader pod processes webhook events
+- ✅ **Post-test inspection** - Metrics persist after tests for debugging
+- ✅ **Clean PromQL queries** - Readable assertions like `sum(gitopsreverser_events_received_total{role="leader"})`
+
+See [`test/e2e/E2E_DEBUGGING.md`](test/e2e/E2E_DEBUGGING.md) for detailed debugging guide.
 
 See [TESTING.md](TESTING.md) for detailed testing information.
 

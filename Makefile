@@ -63,16 +63,16 @@ test: manifests generate fmt vet setup-envtest ## Run tests.
 
 KIND_CLUSTER ?= gitops-reverser-test-e2e
 
-.PHONY: setup-test-e2e
-setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist
+.PHONY: setup-cluster
+setup-cluster: ## Set up a Kind cluster for e2e tests if it does not exist
 	@if ! command -v $(KIND) >/dev/null 2>&1; then \
-		echo "⚠️  Kind is not installed - skipping cluster creation (CI will use helm/kind-action)"; \
+		echo "Kind is not installed - skipping Makefile cluster creation (expected in CI runs since we use helm/kind-action)"; \
 	else \
 		case "$$($(KIND) get clusters)" in \
 			*"$(KIND_CLUSTER)"*) \
-				echo "✅ Kind cluster '$(KIND_CLUSTER)' already exists. Skipping creation." ;; \
+				echo "✅ Cluster '$(KIND_CLUSTER)' already exists. Skipping creation." ;; \
 			*) \
-				echo "🚀 Creating Kind cluster '$(KIND_CLUSTER)'..."; \
+				echo "🚀 Creating cluster (with Kind) '$(KIND_CLUSTER)'..."; \
 				$(KIND) create cluster --name $(KIND_CLUSTER) --wait 5m; \
 				echo "✅ Kind cluster created successfully" ;; \
 		esac; \
@@ -80,17 +80,17 @@ setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist
 		$(KIND) export kubeconfig --name $(KIND_CLUSTER); \
 	fi
 
+.PHONY: cleanup-cluster
+cleanup-cluster: ## Tear down the Kind cluster used for e2e tests
+	@$(KIND) delete cluster --name $(KIND_CLUSTER)
+
 .PHONY: test-e2e
-test-e2e: setup-test-e2e cleanup-webhook setup-cert-manager setup-gitea-e2e manifests generate fmt vet ## Run end-to-end tests in Kind cluster
+test-e2e: setup-cluster cleanup-webhook setup-e2e manifests setup-port-forwards ## Run end-to-end tests in Kind cluster, note that vet, fmt and generate are not run!
 	KIND_CLUSTER=$(KIND_CLUSTER) go test ./test/e2e/ -v -ginkgo.v
 
 .PHONY: cleanup-webhook
 cleanup-webhook: ## Preventive cleanup of ValidatingWebhookConfiguration potenially left by previous test runs
 	$(KUBECTL) delete ValidatingWebhookConfiguration gitops-reverser-validating-webhook-configuration --ignore-not-found=true
-
-.PHONY: cleanup-test-e2e
-cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests
-	@$(KIND) delete cluster --name $(KIND_CLUSTER)
 
 .PHONY: lint
 lint: ## Run golangci-lint linter
@@ -194,7 +194,7 @@ setup-envtest: ## Setup envtest binaries for unit tests
 		exit 1; \
 	}
 
-##@ Gitea E2E Testing
+##@ E2E Test Infrastructure
 
 .PHONY: setup-gitea-e2e
 setup-gitea-e2e: ## Set up Gitea for e2e testing
@@ -212,16 +212,37 @@ setup-cert-manager:
 	@echo "🚀 Setup cert-manager (no wait needed)"
 	@$(KUBECTL) apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.18.2/cert-manager.yaml | grep -v "unchanged"
 
-.PHONY: stop-gitea-pf
-stop-gitea-pf: ## Stop Gitea port-forward
-	@echo "🔌 Stopping persistent port-forward to Gitea..."
-	@pkill -f "kubectl.*port-forward.*3000" 2>/dev/null || true
+.PHONY: setup-port-forwards
+setup-port-forwards: ## Start all port-forwards in background
+	@bash test/e2e/scripts/setup-port-forwards.sh
+
+.PHONY: cleanup-port-forwards
+cleanup-port-forwards: ## Stop all port-forwards
+	@echo "🛑 Stopping port-forwards..."
+	@-pkill -f "kubectl.*port-forward.*3000" 2>/dev/null || true
+	@-pkill -f "kubectl.*port-forward.*9090" 2>/dev/null || true
+	@echo "✅ Port-forwards stopped"
 
 .PHONY: cleanup-gitea-e2e
-cleanup-gitea-e2e: stop-gitea-pf ## Clean up Gitea e2e environment
+cleanup-gitea-e2e: cleanup-port-forwards ## Clean up Gitea e2e environment
 	@echo "🧹 Cleaning up Gitea e2e environment..."
 	@$(HELM) uninstall gitea --namespace $(GITEA_NAMESPACE) 2>/dev/null || true
 	@$(KUBECTL) delete namespace $(GITEA_NAMESPACE) 2>/dev/null || true
 	@echo "✅ Gitea cleanup completed"
 
+.PHONY: setup-prometheus-e2e
+setup-prometheus-e2e: ## Set up Prometheus for e2e metrics testing
+	@echo "🚀 Setup Prometheus for e2e testing..."
+	@bash test/e2e/scripts/setup-prometheus.sh
 
+.PHONY: cleanup-prometheus-e2e
+cleanup-prometheus-e2e: ## Clean up Prometheus e2e environment
+	@echo "🧹 Cleaning up Prometheus e2e environment..."
+	@$(KUBECTL) delete -f test/e2e/prometheus/deployment.yaml --ignore-not-found=true
+	@$(KUBECTL) delete -f test/e2e/prometheus/rbac.yaml --ignore-not-found=true
+	@$(KUBECTL) delete namespace prometheus-e2e --ignore-not-found=true
+	@echo "✅ Prometheus cleanup completed"
+
+.PHONY: setup-e2e
+setup-e2e: setup-cert-manager setup-gitea-e2e setup-prometheus-e2e ## Setup all e2e test infrastructure
+	@echo "✅ E2E infrastructure initialized"

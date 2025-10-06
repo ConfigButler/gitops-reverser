@@ -4,6 +4,8 @@ It manages pod labeling to identify the active leader instance in a multi-replic
 */
 package leader
 
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;update;patch
+
 import (
 	"context"
 	"os"
@@ -22,6 +24,7 @@ const (
 
 // PodLabeler is a Runnable that adds a label to the pod when it becomes the leader
 // and removes it when it stops being the leader.
+// It implements the LeaderElectionRunnable interface so it only runs on the leader.
 type PodLabeler struct {
 	Client    client.Client
 	Log       logr.Logger
@@ -29,15 +32,24 @@ type PodLabeler struct {
 	Namespace string
 }
 
+// NeedLeaderElection implements the LeaderElectionRunnable interface.
+// This ensures the PodLabeler only runs on the elected leader.
+func (p *PodLabeler) NeedLeaderElection() bool {
+	return true
+}
+
 // Start adds the leader label to the pod and blocks until the context is canceled.
+// This method is only called on the elected leader pod when NeedLeaderElection returns true.
 func (p *PodLabeler) Start(ctx context.Context) error {
 	log := p.Log.WithValues("pod", p.PodName, "namespace", p.Namespace)
-	log.Info("This pod is the leader, adding leader label.")
+	log.Info("🎯 PodLabeler.Start() called - This pod is the leader, adding leader label.")
 
 	if err := p.addLabel(ctx, log); err != nil {
-		log.Error(err, "failed to add leader label")
+		log.Error(err, "❌ Failed to add leader label")
 		return err
 	}
+
+	log.Info("✅ Leader label added successfully")
 
 	// The context is canceled when the manager stops.
 	<-ctx.Done()

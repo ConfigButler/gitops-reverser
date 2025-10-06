@@ -1,0 +1,130 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: prometheus
+  namespace: prometheus-e2e
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: prometheus-e2e
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 5s
+      evaluation_interval: 5s
+      scrape_timeout: 4s
+    
+    scrape_configs:
+      # Scrape gitops-reverser metrics from 'sut' namespace
+      - job_name: 'gitops-reverser-metrics'
+        scheme: https
+        tls_config:
+          insecure_skip_verify: true  # Self-signed certs in e2e
+        bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        
+        kubernetes_sd_configs:
+          - role: endpoints
+            namespaces:
+              names:
+                - sut  # Target test namespace
+        
+        relabel_configs:
+          # Keep only the metrics service
+          - source_labels: [__meta_kubernetes_service_name]
+            action: keep
+            regex: gitops-reverser-controller-manager-metrics-service
+          
+          # Keep only HTTPS port
+          - source_labels: [__meta_kubernetes_endpoint_port_name]
+            action: keep
+            regex: https
+          
+          # Add pod name label for per-pod metrics
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+            action: replace
+          
+          # Add role label from pod labels (leader/follower)
+          - source_labels: [__meta_kubernetes_pod_label_role]
+            target_label: role
+            action: replace
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  namespace: prometheus-e2e
+  labels:
+    app: prometheus
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prometheus
+  template:
+    metadata:
+      labels:
+        app: prometheus
+    spec:
+      serviceAccountName: prometheus
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        fsGroup: 65534
+      containers:
+      - name: prometheus
+        image: prom/prometheus:v2.48.0
+        args:
+          - '--config.file=/etc/prometheus/prometheus.yml'
+          - '--storage.tsdb.retention.time=2h'
+          - '--storage.tsdb.path=/prometheus'
+          - '--web.enable-lifecycle'
+        ports:
+        - name: http
+          containerPort: 9090
+        livenessProbe:
+          httpGet:
+            path: /-/healthy
+            port: 9090
+          initialDelaySeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /-/ready
+            port: 9090
+          initialDelaySeconds: 5
+        volumeMounts:
+        - name: config
+          mountPath: /etc/prometheus
+        - name: storage
+          mountPath: /prometheus
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+      volumes:
+      - name: config
+        configMap:
+          name: prometheus-config
+      - name: storage
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  namespace: prometheus-e2e
+  labels:
+    app: prometheus
+spec:
+  type: ClusterIP
+  selector:
+    app: prometheus
+  ports:
+  - name: http
+    port: 9090
+    targetPort: 9090

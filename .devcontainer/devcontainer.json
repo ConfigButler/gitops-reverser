@@ -18,6 +18,18 @@
 
   "runArgs": ["--network=host"],
 
+  "forwardPorts": [3000, 9090],
+  "portsAttributes": {
+    "3000": {
+      "label": "Gitea",
+      "onAutoForward": "notify"
+    },
+    "9090": {
+      "label": "Prometheus",
+      "onAutoForward": "notify"
+    }
+  },
+
   "customizations": {
     "vscode": {
       "settings": {
