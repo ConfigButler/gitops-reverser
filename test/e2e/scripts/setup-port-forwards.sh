@@ -8,21 +8,21 @@ PROMETHEUS_NAMESPACE=${PROMETHEUS_NAMESPACE:-prometheus-e2e}
 echo "🔌 Setting up port-forwards for e2e testing..."
 
 # Wait for pods to be ready before attempting port-forwards
-echo "⏳ Waiting for Gitea pod to be ready..."
-kubectl wait --for=condition=ready pod \
-    -l app.kubernetes.io/name=gitea \
-    -n "$GITEA_NAMESPACE" \
-    --timeout=30s || {
-    echo "❌ Gitea pod failed to become ready"
-    exit 1
-}
-
 echo "⏳ Waiting for Prometheus pod to be ready..."
 kubectl wait --for=condition=ready pod \
     -l app=prometheus \
     -n "$PROMETHEUS_NAMESPACE" \
-    --timeout=30s || {
+    --timeout=60s || {
     echo "❌ Prometheus pod failed to become ready"
+    exit 1
+}
+
+echo "⏳ Waiting for Gitea pod to be ready..."
+kubectl wait --for=condition=ready pod \
+    -l app.kubernetes.io/name=gitea \
+    -n "$GITEA_NAMESPACE" \
+    --timeout=60s || {
+    echo "❌ Gitea pod failed to become ready"
     exit 1
 }
 
@@ -68,10 +68,10 @@ setup_port_forward() {
 }
 
 # Setup port-forwards
-setup_port_forward "Gitea" "$GITEA_NAMESPACE" "gitea-http" "3000" "http://localhost:3000/api/v1/version"
 setup_port_forward "Prometheus" "$PROMETHEUS_NAMESPACE" "prometheus" "9090" "http://localhost:9090/-/ready"
+setup_port_forward "Gitea" "$GITEA_NAMESPACE" "gitea-http" "3000" "http://localhost:3000/api/v1/version"
 
 echo ""
-echo "📁 Gitea: http://localhost:3000"
 echo "📊 Prometheus: http://localhost:9090"
+echo "📁 Gitea: http://localhost:3000"
 echo "✅ Port-forwards ready for e2e testing"
