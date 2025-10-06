@@ -19,6 +19,36 @@ This Helm chart deploys the GitOps Reverser controller, which enables two-way sy
 - Helm 3.8+
 - cert-manager 1.13+ (for webhook TLS certificates)
 
+## High Availability Architecture
+
+The chart is designed for production HA deployments with 2 replicas by default. A critical feature for HA is the **leader-only service**:
+
+### Leader-Only Service
+
+When `leaderOnlyService.enabled` is `true` (default), the chart creates a dedicated service (`gitops-reverser-leader-only`) that routes traffic **only to the active leader pod**. This ensures:
+
+- ✅ **Consistent processing** - All requests handled by single leader instance
+- ✅ **No race conditions** - Prevents duplicate processing across replicas
+- ✅ **Automatic failover** - When leader changes, service automatically routes to new leader
+- ✅ **Webhook reliability** - Webhooks are processed by the leader for consistent state management
+
+The leader pod is identified by the `role: leader` label, which is dynamically added/removed by the controller's built-in leader election mechanism.
+
+**Service Architecture:**
+```
+Kubernetes API Server
+       │
+       │ webhook/leader requests
+       ▼
+gitops-reverser-leader-only (Service)
+       │
+       │ selector: role=leader
+       ▼
+Active Leader Pod (labeled role: leader)
+```
+
+**Note:** The regular `gitops-reverser` service routes to all pods for health checks and general communication.
+
 ## Custom Resource Definitions (CRDs)
 
 This chart automatically installs the following CRDs:
@@ -76,6 +106,7 @@ helm install gitops-reverser \
 | `namespaceCreation.labels` | Additional labels for namespace | `{}` |
 | `namespaceCreation.annotations` | Additional annotations for namespace | `{}` |
 | `replicaCount` | Number of controller replicas | `2` |
+| `leaderOnlyService.enabled` | Create dedicated service routing only to leader pod | `true` |
 | `image.repository` | Container image repository | `ghcr.io/configbutler/gitops-reverser` |
 | `image.tag` | Container image tag | Chart appVersion |
 | `controllerManager.leaderElection` | Enable leader election | `true` |

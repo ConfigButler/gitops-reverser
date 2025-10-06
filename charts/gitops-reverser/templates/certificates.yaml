@@ -21,12 +21,17 @@ metadata:
     {{- include "gitops-reverser.labels" . | nindent 4 }}
 spec:
   dnsNames:
-    - {{ include "gitops-reverser.fullname" . }}-webhook-service.{{ .Release.Namespace }}.svc
-    - {{ include "gitops-reverser.fullname" . }}-webhook-service.{{ .Release.Namespace }}.svc.cluster.local
+    {{- if .Values.leaderOnlyService.enabled }}
+    - {{ include "gitops-reverser.fullname" . }}-leader-only.{{ .Release.Namespace }}.svc
+    - {{ include "gitops-reverser.fullname" . }}-leader-only.{{ .Release.Namespace }}.svc.cluster.local
+    {{- else }}
+    - {{ include "gitops-reverser.fullname" . }}.{{ .Release.Namespace }}.svc
+    - {{ include "gitops-reverser.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local
+    {{- end }}
   issuerRef:
     kind: {{ .Values.certificates.certManager.issuer.kind }}
     name: {{ .Values.certificates.certManager.issuer.name }}
-  secretName: {{ include "gitops-reverser.fullname" . }}-webhook-server-cert
+  secretName: {{ include "gitops-reverser.fullname" . }}-leader-only-cert
   usages:
     - digital signature
     - key encipherment

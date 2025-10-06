@@ -14,7 +14,11 @@ webhooks:
   - v1
   clientConfig:
     service:
-      name: {{ include "gitops-reverser.fullname" . }}-webhook-service
+      {{- if .Values.leaderOnlyService.enabled }}
+      name: {{ include "gitops-reverser.fullname" . }}-leader-only
+      {{- else }}
+      name: {{ include "gitops-reverser.fullname" . }}
+      {{- end }}
       namespace: {{ .Release.Namespace }}
       path: /validate-v1-event
     {{- if not .Values.certificates.certManager.enabled }}

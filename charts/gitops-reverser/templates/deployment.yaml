@@ -100,7 +100,7 @@ spec:
         {{- if .Values.certificates.certManager.enabled }}
         - name: cert
           secret:
-            secretName: {{ include "gitops-reverser.fullname" . }}-webhook-server-cert
+            secretName: {{ include "gitops-reverser.fullname" . }}-leader-only-cert
             defaultMode: 420
         {{- end }}
         {{- end }}
