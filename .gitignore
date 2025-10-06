@@ -32,3 +32,6 @@ __debug*
 
 # Helm chart CRDs (generated from config/crd/bases during packaging)
 charts/gitops-reverser/crds/*.yaml
+
+# Keep the install.yaml for distribution
+!dist/install.yaml

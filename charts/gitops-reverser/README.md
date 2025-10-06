@@ -4,6 +4,7 @@ This Helm chart deploys the GitOps Reverser controller, which enables two-way sy
 
 ## Features
 
+- **Namespace Management**: Automatically creates namespace (can be disabled)
 - **High Availability**: Runs 2 replicas by default with pod anti-affinity
 - **Leader Election**: Automatic leader election for controller instances
 - **Webhook Support**: Validating webhook for watching all Kubernetes resources
@@ -71,6 +72,9 @@ helm install gitops-reverser \
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
+| `namespaceCreation.enabled` | Create namespace as part of installation | `true` |
+| `namespaceCreation.labels` | Additional labels for namespace | `{}` |
+| `namespaceCreation.annotations` | Additional annotations for namespace | `{}` |
 | `replicaCount` | Number of controller replicas | `2` |
 | `image.repository` | Container image repository | `ghcr.io/configbutler/gitops-reverser` |
 | `image.tag` | Container image tag | Chart appVersion |

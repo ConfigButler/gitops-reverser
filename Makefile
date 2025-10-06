@@ -148,10 +148,15 @@ docker-buildx: ## Build and push docker image for the manager for cross-platform
 	rm Dockerfile.cross
 
 .PHONY: build-installer
-build-installer: manifests generate ## Generate a consolidated YAML with CRDs and deployment.
-	mkdir -p dist
-	cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG}
-	$(KUSTOMIZE) build config/default > dist/install.yaml
+build-installer: manifests helm-sync-crds ## Generate a consolidated YAML from Helm chart for easy installation.
+	@echo "📦 Generating install.yaml from Helm chart..."
+	@mkdir -p dist
+	@$(HELM) template gitops-reverser charts/gitops-reverser \
+		--namespace gitops-reverser-system \
+		--set image.repository=$(shell echo ${IMG} | cut -d: -f1) \
+		--set image.tag=$(shell echo ${IMG} | cut -d: -f2 -s || echo "latest") \
+		--include-crds > dist/install.yaml
+	@echo "✅ Generated dist/install.yaml ($(shell wc -l < dist/install.yaml) lines)"
 
 ##@ Deployment
 

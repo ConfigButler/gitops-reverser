@@ -84,32 +84,60 @@ Run traditional GitOps on some resources (infrastructure, base applications) whi
 ## Getting Started
 
 ### Prerequisites
-- Go 1.25.1+
-- Docker 17.03+
 - kubectl v1.11.3+
 - Access to a Kubernetes v1.11.3+ cluster
 - Git repository for storing captured changes
+- cert-manager 1.13+ (for webhook TLS certificates)
+
+### Installation
+
+#### Option 1: Single YAML File (Quickest)
+
+Install everything in one command:
+
+```bash
+kubectl apply -f https://github.com/ConfigButler/gitops-reverser/releases/latest/download/install.yaml
+```
+
+This installs:
+- Custom Resource Definitions (CRDs)
+- Controller deployment with 2 replicas (HA)
+- RBAC roles and service accounts
+- Webhooks and certificates
+- Metrics service
+
+#### Option 2: Helm Chart (Recommended for Production)
+
+```bash
+# Install cert-manager (if not already installed)
+kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.16.2/cert-manager.yaml
+
+# Install GitOps Reverser
+helm install gitops-reverser \
+  oci://ghcr.io/configbutler/charts/gitops-reverser \
+  --namespace gitops-reverser-system \
+  --create-namespace
+```
+
+For production configuration options, see the [Helm Chart README](charts/gitops-reverser/README.md).
 
 ### Quick Start
 
-1. **Install the CRDs:**
-   ```bash
-   make install
-   ```
-
-2. **Configure your Git repository:**
+1. **Configure your Git repository:**
    ```bash
    kubectl create secret generic git-credentials \
+     --namespace gitops-reverser-system \
      --from-file=ssh-key=/path/to/your/ssh-key \
      --from-literal=known-hosts="$(ssh-keyscan github.com)"
    ```
 
-3. **Create a GitRepoConfig:**
+2. **Create a GitRepoConfig:**
    ```yaml
    apiVersion: configbutler.ai/v1alpha1
    kind: GitRepoConfig
    metadata:
      name: audit-repo
+     namespace: gitops-reverser-system
    spec:
      url: "git@github.com:yourorg/k8s-audit.git"
      branch: "main"
@@ -117,12 +145,13 @@ Run traditional GitOps on some resources (infrastructure, base applications) whi
        name: git-credentials
    ```
 
-4. **Create WatchRules to define what to capture:**
+3. **Create WatchRules to define what to capture:**
    ```yaml
    apiVersion: configbutler.ai/v1alpha1
    kind: WatchRule
    metadata:
      name: capture-configmaps
+     namespace: gitops-reverser-system
    spec:
      gitRepoConfigRef: audit-repo
      resources:
@@ -133,9 +162,10 @@ Run traditional GitOps on some resources (infrastructure, base applications) whi
          audit: "enabled"
    ```
 
-5. **Deploy the operator:**
+4. **Apply the configurations:**
    ```bash
-   make deploy IMG=ghcr.io/configbutler/gitops-reverser:latest
+   kubectl apply -f gitrepoconfig.yaml
+   kubectl apply -f watchrule.yaml
    ```
 
 ### Configuration Examples

@@ -397,6 +397,20 @@ jobs:
           append_body: true
           body: |
             
+            ## Installation
+            
+            ### Quick Install (Single YAML)
+            
+            ```bash
+            kubectl apply -f https://github.com/ConfigButler/gitops-reverser/releases/download/${{ needs.release-please.outputs.tag_name }}/install.yaml
+            ```
+            
+            ### Helm Chart
+            
+            ```bash
+            helm install gitops-reverser oci://${{ env.REGISTRY }}/${{ github.repository_owner }}/charts/gitops-reverser --version ${{ needs.release-please.outputs.version }}
+            ```
+            
             ## Docker Images
             
             This release is available as a Docker image:
@@ -407,22 +421,6 @@ jobs:
             ```
             
             **Platforms:** linux/amd64, linux/arm64
-
-            ## Helm Chart
-            
-            This release includes Helm chart version `${{ needs.release-please.outputs.version }}`.
-            
-            ### Installation
-            
-            ```bash
-            helm install gitops-reverser oci://${{ env.REGISTRY }}/${{ github.repository_owner }}/charts/gitops-reverser --version ${{ needs.release-please.outputs.version }}
-            ```
-            
-            ### Upgrade
-            
-            ```bash
-            helm upgrade gitops-reverser oci://${{ env.REGISTRY }}/${{ github.repository_owner }}/charts/gitops-reverser --version ${{ needs.release-please.outputs.version }}
-            ```
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -447,6 +445,10 @@ jobs:
         run: |
           cp config/crd/bases/*.yaml charts/gitops-reverser/crds/
 
+      - name: Generate install.yaml from Helm chart
+        run: |
+          make build-installer IMG=ghcr.io/${{ env.IMAGE_NAME }}:${{ needs.release-please.outputs.version }}
+
       - name: Login to GitHub Container Registry
         run: |
           echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ${{ env.REGISTRY }} --username ${{ github.actor }} --password-stdin
@@ -458,3 +460,11 @@ jobs:
       - name: Push Helm chart to GHCR
         run: |
           helm push .helm-charts/gitops-reverser-${{ needs.release-please.outputs.version }}.tgz oci://${{ env.REGISTRY }}/${{ github.repository_owner }}/charts
+
+      - name: Upload install.yaml as release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.release-please.outputs.tag_name }}
+          files: dist/install.yaml
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
