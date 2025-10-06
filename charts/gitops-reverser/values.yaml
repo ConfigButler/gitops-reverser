@@ -2,10 +2,11 @@
 # This is a YAML-formatted file.
 # Declare variables to be passed into your templates.
 
-replicaCount: 1
+# High Availability configuration - runs 2 replicas by default
+replicaCount: 2
 
 image:
-  repository: YOUR_IMAGE_REPOSITORY
+  repository: ghcr.io/configbutler/gitops-reverser
   pullPolicy: IfNotPresent
   # Overrides the image tag whose default is the chart appVersion.
   tag: ""
@@ -44,12 +45,15 @@ securityContext:
 
 # Controller manager configuration
 controllerManager:
-  # Enable leader election for controller manager
-  # Set to false when running single replica to avoid unnecessary API calls
-  leaderElection: false
+  # Enable leader election for controller manager (required for HA)
+  leaderElection: true
+  # Health probe configuration
+  healthProbe:
+    bindAddress: :8081
   # Metrics configuration
   metrics:
     port: 8080
+    bindAddress: 127.0.0.1:8080
   # Enable HTTP/2 (disabled by default for security)
   enableHTTP2: false
 
@@ -113,29 +117,13 @@ certificates:
       kind: Issuer
       # Create a self-signed issuer if none exists
       create: true
-    # Webhook certificate
-    webhook:
-      secretName: webhook-server-cert
-      dnsNames:
-        - webhook-service
-        - webhook-service.system.svc
-        - webhook-service.system.svc.cluster.local
     # Metrics certificate is now part of the webhook certificate
 
 # RBAC configuration
 rbac:
   create: true
-  # Additional rules for the service account
-  rules:
-    - apiGroups: [""]
-      resources: ["pods"]
-      verbs: ["get", "patch"]
-    - apiGroups: [""]
-      resources: ["events"]
-      verbs: ["create"]
-    - apiGroups: ["coordination.k8s.io"]
-      resources: ["leases"]
-      verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Additional rules can be added here if needed
+  rules: []
 
 # Ingress configuration (typically not needed for webhooks)
 ingress:
@@ -161,12 +149,20 @@ nodeSelector: {}
 # Tolerations
 tolerations: []
 
-# Pod affinity/anti-affinity
-affinity: {}
+# Pod affinity/anti-affinity (default anti-affinity for HA)
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: gitops-reverser
+          topologyKey: kubernetes.io/hostname
 
-# Pod disruption budget
+# Pod disruption budget (enabled by default for HA)
 podDisruptionBudget:
-  enabled: false
+  enabled: true
   minAvailable: 1
   # maxUnavailable: 1
 

@@ -1,245 +1,309 @@
 # GitOps Reverser Helm Chart
 
-This Helm chart deploys the GitOps Reverser application with comprehensive webhook support, security configurations, and monitoring capabilities.
+This Helm chart deploys the GitOps Reverser controller, which enables two-way synchronization between Kubernetes and Git repositories. The chart is production-ready with High Availability (HA) configuration by default.
 
 ## Features
 
-- **Comprehensive Webhook Support**: Both mutating and validating webhooks with configurable rules
-- **Security-First Design**: Pod security contexts, network policies, and RBAC
-- **TLS Certificate Management**: Automated certificate management with cert-manager
-- **Monitoring Integration**: Prometheus ServiceMonitor and metrics endpoints
-- **High Availability**: Pod disruption budgets and leader election
-- **Production Ready**: Resource limits, health checks, and proper logging
+- **High Availability**: Runs 2 replicas by default with pod anti-affinity
+- **Leader Election**: Automatic leader election for controller instances
+- **Webhook Support**: Validating webhook for watching all Kubernetes resources
+- **CRD Installation**: Automatically installs GitRepoConfig and WatchRule CRDs
+- **Security**: Pod security standards compliant with secure defaults
+- **Certificate Management**: Automatic TLS certificate management via cert-manager
+- **Pod Disruption Budget**: Ensures availability during cluster maintenance
 
 ## Prerequisites
 
-- Kubernetes 1.19+
-- Helm 3.0+
-- cert-manager (if using TLS certificates)
-- Prometheus Operator (if using ServiceMonitor)
+- Kubernetes 1.28+
+- Helm 3.8+
+- cert-manager 1.13+ (for webhook TLS certificates)
+
+## Custom Resource Definitions (CRDs)
+
+This chart automatically installs the following CRDs:
+
+- `gitrepoconfigs.configbutler.ai` - Defines Git repository configurations for synchronization
+- `watchrules.configbutler.ai` - Defines rules for watching Kubernetes resources
+
+**Important CRD Notes:**
+
+1. **Installation**: CRDs are installed automatically during `helm install`
+2. **Upgrade**: CRDs are upgraded automatically during `helm upgrade`
+3. **Deletion**: CRDs are **NOT** deleted during `helm uninstall` (Helm best practice to prevent data loss)
+4. **Manual Deletion**: If you need to remove CRDs, delete them manually after uninstalling the chart
 
 ## Installation
 
-### Basic Installation
+### Install cert-manager (if not already installed)
 
 ```bash
-helm install gitops-reverser ./charts/gitops-reverser
+kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.16.2/cert-manager.yaml
 ```
 
-### With Custom Values
+Wait for cert-manager to be ready:
 
 ```bash
-helm install gitops-reverser ./charts/gitops-reverser -f my-values.yaml
+kubectl wait --for=condition=ready pod -l app.kubernetes.io/instance=cert-manager -n cert-manager --timeout=300s
+```
+
+### Install from OCI Registry (Recommended)
+
+```bash
+helm install gitops-reverser \
+  oci://ghcr.io/configbutler/charts/gitops-reverser \
+  --namespace gitops-reverser-system \
+  --create-namespace
+```
+
+### Install with Custom Values
+
+```bash
+helm install gitops-reverser \
+  oci://ghcr.io/configbutler/charts/gitops-reverser \
+  --namespace gitops-reverser-system \
+  --create-namespace \
+  --values custom-values.yaml
 ```
 
 ## Configuration
 
-### Webhook Configuration
+### Key Configuration Options
 
-The chart supports both mutating and validating webhooks:
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `replicaCount` | Number of controller replicas | `2` |
+| `image.repository` | Container image repository | `ghcr.io/configbutler/gitops-reverser` |
+| `image.tag` | Container image tag | Chart appVersion |
+| `controllerManager.leaderElection` | Enable leader election | `true` |
+| `webhook.enabled` | Enable validating webhook | `true` |
+| `webhook.validating.failurePolicy` | Webhook failure policy | `Ignore` |
+| `certificates.certManager.enabled` | Use cert-manager for certificates | `true` |
+| `podDisruptionBudget.enabled` | Enable PodDisruptionBudget | `true` |
+| `podDisruptionBudget.minAvailable` | Minimum available pods | `1` |
+| `resources.requests.cpu` | CPU request | `10m` |
+| `resources.requests.memory` | Memory request | `64Mi` |
+| `resources.limits.cpu` | CPU limit | `500m` |
+| `resources.limits.memory` | Memory limit | `128Mi` |
+
+### Example: Minimal Installation
+
+For testing environments where HA is not required:
 
 ```yaml
-webhook:
+# minimal-values.yaml
+replicaCount: 1
+controllerManager:
+  leaderElection: false
+podDisruptionBudget:
+  enabled: false
+affinity: {}
+```
+
+```bash
+helm install gitops-reverser \
+  oci://ghcr.io/configbutler/charts/gitops-reverser \
+  --namespace gitops-reverser-system \
+  --create-namespace \
+  --values minimal-values.yaml
+```
+
+### Example: Production Configuration
+
+```yaml
+# production-values.yaml
+replicaCount: 3
+
+podDisruptionBudget:
   enabled: true
-  mutating:
-    enabled: true
-    failurePolicy: Fail
-    rules:
-      - operations: ["CREATE", "UPDATE"]
-        apiGroups: [""]
-        apiVersions: ["v1"]
-        resources: ["pods", "configmaps", "secrets"]
-  validating:
-    enabled: true
-    failurePolicy: Ignore
-    rules:
-      - operations: ["CREATE", "UPDATE", "DELETE"]
-        apiGroups: ["*"]
-        apiVersions: ["*"]
-        resources: ["*"]
-```
+  minAvailable: 2
 
-### Security Configuration
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 1000m
+    memory: 512Mi
 
-Enhanced security with proper contexts and policies:
-
-```yaml
-podSecurityContext:
-  runAsNonRoot: true
-  runAsUser: 65532
-  runAsGroup: 65532
-  fsGroup: 65532
-  seccompProfile:
-    type: RuntimeDefault
-
-securityContext:
-  allowPrivilegeEscalation: false
-  capabilities:
-    drop:
-    - ALL
-  readOnlyRootFilesystem: true
-  runAsNonRoot: true
-  runAsUser: 65532
-
-networkPolicy:
-  enabled: true
-```
-
-### TLS Certificate Management
-
-Automated certificate management with cert-manager:
-
-```yaml
-certificates:
-  certManager:
-    enabled: true
-    issuer:
-      name: selfsigned-issuer
-      kind: Issuer
-      create: true
-    webhook:
-      secretName: webhook-server-cert
-    metrics:
-      secretName: metrics-server-cert
-```
-
-### Monitoring
-
-Prometheus integration with ServiceMonitor:
-
-```yaml
 monitoring:
   serviceMonitor:
     enabled: true
     interval: 30s
-    scrapeTimeout: 10s
-    path: /metrics
-    port: https
+
+nodeSelector:
+  node-role.kubernetes.io/worker: ""
+
+tolerations:
+  - key: "dedicated"
+    operator: "Equal"
+    value: "gitops-reverser"
+    effect: "NoSchedule"
 ```
 
-### Resource Management
-
-Production-ready resource limits:
+### Example: Custom Webhook Configuration
 
 ```yaml
-resources:
-  limits:
-    cpu: 500m
-    memory: 128Mi
-  requests:
-    cpu: 10m
-    memory: 64Mi
-
-podDisruptionBudget:
-  enabled: true
-  minAvailable: 1
-```
-
-## Values Reference
-
-| Parameter | Description | Default |
-|-----------|-------------|---------|
-| `replicaCount` | Number of replicas | `1` |
-| `image.repository` | Container image repository | `YOUR_IMAGE_REPOSITORY` |
-| `image.tag` | Container image tag | `""` (uses appVersion) |
-| `image.pullPolicy` | Image pull policy | `IfNotPresent` |
-| `webhook.enabled` | Enable webhook functionality | `true` |
-| `webhook.mutating.enabled` | Enable mutating webhook | `true` |
-| `webhook.validating.enabled` | Enable validating webhook | `true` |
-| `certificates.certManager.enabled` | Use cert-manager for certificates | `true` |
-| `rbac.create` | Create RBAC resources | `true` |
-| `serviceAccount.create` | Create service account | `true` |
-| `monitoring.serviceMonitor.enabled` | Create ServiceMonitor | `false` |
-| `networkPolicy.enabled` | Create NetworkPolicy | `false` |
-| `podDisruptionBudget.enabled` | Create PodDisruptionBudget | `false` |
-
-## Webhook Rules Configuration
-
-### Mutating Webhook Rules
-
-The mutating webhook can be configured to intercept specific resources:
-
-```yaml
-webhook:
-  mutating:
-    rules:
-      - operations: ["CREATE", "UPDATE"]
-        apiGroups: [""]
-        apiVersions: ["v1"]
-        resources: ["pods", "configmaps", "secrets"]
-      - operations: ["CREATE", "UPDATE"]
-        apiGroups: ["apps"]
-        apiVersions: ["v1"]
-        resources: ["deployments", "replicasets", "daemonsets", "statefulsets"]
-    namespaceSelector:
-      matchExpressions:
-      - key: name
-        operator: NotIn
-        values: ["kube-system", "kube-public", "kube-node-lease"]
-```
-
-### Validating Webhook Rules
-
-The validating webhook watches all resources by default but can be customized:
-
-```yaml
+# webhook-values.yaml
 webhook:
   validating:
-    rules:
-      - operations: ["CREATE", "UPDATE", "DELETE"]
-        apiGroups: ["*"]
-        apiVersions: ["*"]
-        resources: ["*"]
-    failurePolicy: Ignore  # Don't block operations if webhook fails
+    # Use Fail policy for stricter validation
+    failurePolicy: Fail
+    # Only watch specific namespaces
+    namespaceSelector:
+      matchExpressions:
+        - key: gitops-reverser/watch
+          operator: In
+          values: ["enabled"]
 ```
 
-## Security Considerations
+## Usage
 
-1. **Pod Security**: The chart uses non-root user (65532) and drops all capabilities
-2. **Network Policies**: Optional network policies restrict ingress/egress traffic
-3. **RBAC**: Minimal required permissions with separate roles for different functions
-4. **TLS**: All webhook and metrics endpoints use TLS encryption
-5. **Read-only Filesystem**: Container filesystem is read-only for security
+### Verify Installation
 
-## Troubleshooting
-
-### Common Issues
-
-1. **Certificate Issues**: Ensure cert-manager is installed and running
-2. **Webhook Failures**: Check webhook service and certificate configuration
-3. **RBAC Errors**: Verify service account has required permissions
-4. **Network Connectivity**: Check network policies if enabled
-
-### Debug Commands
+Check that the controller is running:
 
 ```bash
-# Check webhook configuration
-kubectl get mutatingwebhookconfigurations
-kubectl get validatingwebhookconfigurations
+kubectl get pods -n gitops-reverser-system
+```
 
-# Check certificates
-kubectl get certificates -n <namespace>
-kubectl describe certificate <cert-name> -n <namespace>
+Check the ValidatingWebhookConfiguration:
 
-# Check service and endpoints
-kubectl get svc -n <namespace>
-kubectl get endpoints -n <namespace>
+```bash
+kubectl get validatingwebhookconfiguration -l app.kubernetes.io/name=gitops-reverser
+```
 
-# Check logs
-kubectl logs -n <namespace> deployment/gitops-reverser
+### View Controller Logs
+
+```bash
+kubectl logs -n gitops-reverser-system -l app.kubernetes.io/name=gitops-reverser -f
+```
+
+### Access Metrics
+
+The controller exposes Prometheus metrics on port 8080:
+
+```bash
+kubectl port-forward -n gitops-reverser-system svc/gitops-reverser-metrics-service 8080:8080
+curl http://localhost:8080/metrics
 ```
 
 ## Upgrading
 
-When upgrading the chart, review the changelog for breaking changes. Always test in a non-production environment first.
+### Standard Upgrade
 
 ```bash
-helm upgrade gitops-reverser ./charts/gitops-reverser
+helm upgrade gitops-reverser \
+  oci://ghcr.io/configbutler/charts/gitops-reverser \
+  --namespace gitops-reverser-system
 ```
 
-## Contributing
+### Upgrade with New Values
 
-Please refer to the main project's CONTRIBUTING.md for guidelines on contributing to this chart.
+```bash
+helm upgrade gitops-reverser \
+  oci://ghcr.io/configbutler/charts/gitops-reverser \
+  --namespace gitops-reverser-system \
+  --values new-values.yaml
+```
+
+## Uninstallation
+
+```bash
+helm uninstall gitops-reverser --namespace gitops-reverser-system
+```
+
+To also remove the namespace:
+
+```bash
+kubectl delete namespace gitops-reverser-system
+```
+
+**Note**: CRDs are not automatically deleted by Helm uninstall (by design). To remove them manually:
+
+```bash
+kubectl delete crd gitrepoconfigs.configbutler.ai watchrules.configbutler.ai
+```
+
+> ⚠️ **Warning**: Deleting CRDs will also delete all custom resources of those types!
+
+## Troubleshooting
+
+### Webhook Certificate Issues
+
+If the webhook is not working, check certificate status:
+
+```bash
+kubectl get certificate -n gitops-reverser-system
+kubectl describe certificate -n gitops-reverser-system
+```
+
+### Leader Election Issues
+
+Check which pod is the leader:
+
+```bash
+kubectl get lease -n gitops-reverser-system
+```
+
+### Pod Anti-Affinity Issues
+
+If pods are not scheduling, check node distribution:
+
+```bash
+kubectl get nodes --show-labels
+kubectl describe pod -n gitops-reverser-system
+```
+
+## Advanced Configuration
+
+### Using External Certificate Provider
+
+If you don't want to use cert-manager:
+
+```yaml
+certificates:
+  certManager:
+    enabled: false
+
+webhook:
+  caBundle: <base64-encoded-ca-bundle>
+```
+
+Then manually create the certificate secret:
+
+```bash
+kubectl create secret tls webhook-server-cert \
+  --cert=path/to/tls.crt \
+  --key=path/to/tls.key \
+  -n gitops-reverser-system
+```
+
+### Network Policies
+
+Enable network policies for additional security:
+
+```yaml
+networkPolicy:
+  enabled: true
+  ingress:
+    - from:
+      - namespaceSelector: {}
+      ports:
+      - protocol: TCP
+        port: 9443  # webhook port
+  egress:
+    - to:
+      - namespaceSelector: {}
+      ports:
+      - protocol: TCP
+        port: 443  # Kubernetes API
+```
+
+## Support
+
+For issues and questions:
+- GitHub Issues: https://github.com/configbutler/gitops-reverser/issues
+- Documentation: https://github.com/configbutler/gitops-reverser
 
 ## License
 
