@@ -4,6 +4,8 @@ It manages pod labeling to identify the active leader instance in a multi-replic
 */
 package leader
 
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;update;patch
+
 import (
 	"context"
 	"os"

@@ -206,6 +206,7 @@ func main() {
 	}
 
 	// Add leader pod labeler if leader election is enabled
+	// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;update;patch
 	if enableLeaderElection {
 		podName := leader.GetPodName()
 		podNamespace := leader.GetPodNamespace()

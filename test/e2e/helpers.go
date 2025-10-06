@@ -11,9 +11,13 @@ import (
 	"os/exec"
 	"strings"
 	"text/template"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2" //nolint:staticcheck // Ginkgo standard practice
 	. "github.com/onsi/gomega"    //nolint:staticcheck // Ginkgo standard practice
+	"github.com/prometheus/client_golang/api"
+	v1 "github.com/prometheus/client_golang/api/prometheus/v1"
+	"github.com/prometheus/common/model"
 
 	"github.com/ConfigButler/gitops-reverser/test/utils"
 )
@@ -21,11 +25,74 @@ import (
 // namespace where the project is deployed in.
 const namespace = "sut"
 
-// serviceAccountName created for the project.
-const serviceAccountName = "gitops-reverser-controller-manager"
-
 // metricsServiceName is the name of the metrics service of the project.
 const metricsServiceName = "gitops-reverser-controller-manager-metrics-service"
+
+// promAPI is the Prometheus API client instance
+var promAPI v1.API //nolint:gochecknoglobals // Shared across test functions
+
+// setupPrometheusClient initializes the Prometheus API client
+func setupPrometheusClient() {
+	By("setting up Prometheus API client")
+	client, err := api.NewClient(api.Config{
+		Address: getPrometheusURL(),
+	})
+	Expect(err).NotTo(HaveOccurred(), "Failed to create Prometheus client")
+	promAPI = v1.NewAPI(client)
+}
+
+// verifyPrometheusAvailable checks if Prometheus is accessible and ready
+// It also waits for Prometheus pods to be ready
+func verifyPrometheusAvailable() {
+	By("verifying Prometheus is available via port-forward")
+	Eventually(func(g Gomega) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second) //nolint:mnd // reasonable timeout
+		defer cancel()
+		_, err := promAPI.Config(ctx)
+		g.Expect(err).NotTo(HaveOccurred(), "Prometheus should be accessible via port-forward")
+	}, 30*time.Second, 2*time.Second).Should(Succeed()) //nolint:mnd // reasonable timeout and polling interval
+	By("✅ Prometheus is available and ready")
+}
+
+// queryPrometheus executes a PromQL query and returns the first scalar value
+// Returns 0 if no results found
+func queryPrometheus(query string) (float64, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second) //nolint:mnd // reasonable query timeout
+	defer cancel()
+
+	result, _, err := promAPI.Query(ctx, query, time.Now())
+	if err != nil {
+		return 0, fmt.Errorf("prometheus query failed: %w", err)
+	}
+
+	switch v := result.(type) {
+	case model.Vector:
+		if len(v) == 0 {
+			return 0, nil
+		}
+		return float64(v[0].Value), nil
+	case *model.Scalar:
+		return float64(v.Value), nil
+	default:
+		return 0, fmt.Errorf("unexpected result type: %T", result)
+	}
+}
+
+// waitForMetric waits for a Prometheus metric query to satisfy a condition
+func waitForMetric(query string, condition func(float64) bool, timeout time.Duration, description string) {
+	By(fmt.Sprintf("waiting for metric: %s", description))
+	Eventually(func(g Gomega) {
+		value, err := queryPrometheus(query)
+		g.Expect(err).NotTo(HaveOccurred(), "Failed to query Prometheus")
+		g.Expect(condition(value)).To(BeTrue(),
+			fmt.Sprintf("%s (query: %s, value: %.2f)", description, query, value))
+	}, timeout, 2*time.Second).Should(Succeed()) //nolint:mnd // standard polling interval
+}
+
+// getPrometheusURL returns the URL for accessing Prometheus UI
+func getPrometheusURL() string {
+	return "http://localhost:9090"
+}
 
 // renderTemplate loads and executes a Go template file with the given data
 // Returns the rendered string or an error if loading or execution fails.
@@ -43,6 +110,8 @@ func renderTemplate(templatePath string, data interface{}) (string, error) {
 
 // applyFromTemplate renders a template with data and applies it via kubectl using stdin streaming
 // Returns an error if rendering or kubectl execution fails.
+//
+//nolint:unparam // namespace may vary in future
 func applyFromTemplate(templatePath string, data interface{}, namespace string) error {
 	yamlContent, err := renderTemplate(templatePath, data)
 	if err != nil {
@@ -60,73 +129,4 @@ func applyFromTemplate(templatePath string, data interface{}, namespace string) 
 	cmd.Stdin = strings.NewReader(yamlContent)
 	_, err = utils.Run(cmd)
 	return err
-}
-
-// createMetricsCurlPod creates a curl pod to fetch metrics from the metrics endpoint.
-func createMetricsCurlPod(podName, token string) {
-	By(fmt.Sprintf("creating curl pod '%s' to access metrics endpoint", podName))
-	data := struct {
-		PodName            string
-		Token              string
-		ServiceName        string
-		Namespace          string
-		ServiceAccountName string
-	}{
-		PodName:            podName,
-		Token:              token,
-		ServiceName:        metricsServiceName,
-		Namespace:          namespace,
-		ServiceAccountName: serviceAccountName,
-	}
-
-	err := applyFromTemplate("test/e2e/templates/curl-pod.yaml.tmpl", data, namespace)
-	Expect(err).NotTo(HaveOccurred(), fmt.Sprintf("Failed to create curl pod %s", podName))
-}
-
-// waitForMetricsCurlCompletion waits for the specified curl pod to complete.
-func waitForMetricsCurlCompletion(podName string) {
-	By(fmt.Sprintf("waiting for curl pod '%s' to complete", podName))
-	ctx := context.Background()
-	verifyCurlComplete := func(g Gomega) {
-		cmd := exec.CommandContext(ctx, "kubectl", "get", "pods", podName,
-			"-o", "jsonpath={.status.phase}",
-			"-n", namespace)
-		output, err := utils.Run(cmd)
-		g.Expect(err).NotTo(HaveOccurred())
-		g.Expect(output).To(Equal("Succeeded"), fmt.Sprintf("curl pod %s should complete successfully", podName))
-	}
-	Eventually(verifyCurlComplete).Should(Succeed())
-}
-
-// getMetricsFromCurlPod retrieves and returns the metrics output from the specified curl pod.
-func getMetricsFromCurlPod(podName string) string {
-	By(fmt.Sprintf("getting metrics output from curl pod '%s'", podName))
-	ctx := context.Background()
-	cmd := exec.CommandContext(ctx, "kubectl", "logs", podName, "-n", namespace)
-	metricsOutput, err := utils.Run(cmd)
-	Expect(err).NotTo(HaveOccurred(), fmt.Sprintf("Failed to retrieve logs from curl pod %s", podName))
-	Expect(metricsOutput).To(ContainSubstring("< HTTP/1.1 200 OK"), "Metrics endpoint should respond successfully")
-	return metricsOutput
-}
-
-// cleanupPod deletes the specified curl pod.
-func cleanupPod(podName string) {
-	By(fmt.Sprintf("cleaning up curl pod %s", podName))
-	ctx := context.Background()
-	cmd := exec.CommandContext(ctx, "kubectl", "delete", "pod", podName, "--namespace", namespace)
-	if output, err := utils.Run(cmd); err != nil {
-		_, _ = fmt.Fprintf(GinkgoWriter, "Warning: failed to delete pod %s: %v\nOutput: %s\n", podName, err, output)
-	}
-}
-
-// fetchMetricsOverHTTPS creates a curl pod, fetches metrics over HTTPS, and returns the output.
-func fetchMetricsOverHTTPS(token string) string {
-	const podName = "curl-metrics"
-	createMetricsCurlPod(podName, token)
-	waitForMetricsCurlCompletion(podName)
-	By("getting the metrics by checking curl-metrics logs")
-	result := getMetricsFromCurlPod(podName)
-	defer cleanupPod(podName) // Ensure the pod is cleaned up after fetching metrics
-
-	return result
 }

@@ -1,7 +1,6 @@
 package e2e
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -14,9 +13,6 @@ import (
 
 	"github.com/ConfigButler/gitops-reverser/test/utils"
 )
-
-// metricsRoleBindingName is the name of the RBAC that will be created to allow get the metrics data.
-const metricsRoleBindingName = "gitops-reverser-metrics-binding"
 
 // giteaRepoURLTemplate is the URL template for test Gitea repositories.
 const giteaRepoURLTemplate = "http://gitea-http.gitea-e2e.svc.cluster.local:3000/testorg/%s.git"
@@ -45,10 +41,6 @@ var _ = Describe("Manager", Ordered, func() {
 		By("preventive namespace cleanup")
 		var err error
 		cmd := exec.Command("kubectl", "delete", "ns", namespace)
-		_, _ = utils.Run(cmd)
-
-		By("preventive clusterrolebinding cleanup")
-		cmd = exec.Command("kubectl", "delete", "clusterrolebinding", metricsRoleBindingName)
 		_, _ = utils.Run(cmd)
 
 		By("creating manager namespace")
@@ -88,12 +80,24 @@ var _ = Describe("Manager", Ordered, func() {
 		cmd = exec.Command("bash", "test/e2e/scripts/setup-gitea.sh", testRepoName, checkoutDir)
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to setup Gitea test environment with repository")
+
+		By("setting up Prometheus client for metrics testing")
+		setupPrometheusClient()
+		verifyPrometheusAvailable()
 	})
 
-	// After all tests have been executed, clean up by undeploying the controller, uninstalling CRDs,
-	// and deleting the namespace (we don't undeploy stuff,
-	// it's easier to have running stuff when you need to debug test failures)
+	// After all tests have been executed, infrastructure remains running for debugging
 	AfterAll(func() {
+		By("test infrastructure still running for debugging")
+		fmt.Printf("\n")
+		fmt.Printf("═══════════════════════════════════════════════════════════\n")
+		fmt.Printf("📊 E2E Infrastructure kept running for debugging purposes:\n")
+		fmt.Printf("═══════════════════════════════════════════════════════════\n")
+		fmt.Printf("  Prometheus: http://localhost:9090\n")
+		fmt.Printf("  Gitea:      http://localhost:3000\n")
+		fmt.Printf("\n")
+		fmt.Printf("═══════════════════════════════════════════════════════════\n")
+		fmt.Printf("\n")
 	})
 
 	// After each test, check for failures and collect logs, events,
@@ -119,15 +123,6 @@ var _ = Describe("Manager", Ordered, func() {
 				_, _ = fmt.Fprintf(GinkgoWriter, "Failed to get Kubernetes events: %s", err)
 			}
 
-			By("Fetching curl-metrics logs")
-			cmd = exec.Command("kubectl", "logs", "curl-metrics", "-n", namespace)
-			metricsOutput, err := utils.Run(cmd)
-			if err == nil {
-				_, _ = fmt.Fprintf(GinkgoWriter, "Metrics logs:\n %s", metricsOutput)
-			} else {
-				_, _ = fmt.Fprintf(GinkgoWriter, "Failed to get curl-metrics logs: %s", err)
-			}
-
 			By("Fetching controller manager pod description")
 			cmd = exec.Command("kubectl", "describe", "pod", controllerPodName, "-n", namespace)
 			podDescription, err := utils.Run(cmd)
@@ -146,10 +141,6 @@ var _ = Describe("Manager", Ordered, func() {
 	SetDefaultEventuallyPollingInterval(500 * time.Millisecond) // Faster polling
 
 	Context("Manager", func() {
-		var metricsToken string
-		It("should prepare metrics access", func() {
-			metricsToken = setupMetricsAccess(metricsRoleBindingName)
-		})
 
 		It("should run successfully", func() {
 			By("validating that the controller-manager pods are running as expected")
@@ -223,12 +214,25 @@ var _ = Describe("Manager", Ordered, func() {
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred(), "Failed to get webhook service endpoints")
 
+				// Filter out kubectl deprecation warnings from output
+				lines := utils.GetNonEmptyLines(output)
+				var podNames []string
+				for _, line := range lines {
+					// Skip warning lines
+					if !strings.HasPrefix(line, "Warning:") &&
+						!strings.Contains(line, "deprecated") &&
+						strings.Contains(line, "controller-manager") {
+						podNames = append(podNames, line)
+					}
+				}
+
 				// Should only have one endpoint (the leader pod)
-				endpointPods := strings.Fields(output)
-				g.Expect(endpointPods).To(HaveLen(1), "webhook service should route to exactly 1 pod (leader)")
+				g.Expect(podNames).To(HaveLen(1), "webhook service should route to exactly 1 pod (leader)")
 
 				// Verify it's the leader pod
-				g.Expect(endpointPods[0]).To(Equal(controllerPodName), "webhook should route to leader pod")
+				g.Expect(podNames[0]).To(Equal(controllerPodName), "webhook should route to leader pod")
+
+				By(fmt.Sprintf("✅ Webhook service correctly routes to leader pod: %s", controllerPodName))
 			}
 			Eventually(verifyWebhookService, 30*time.Second).Should(Succeed())
 		})
@@ -271,45 +275,75 @@ var _ = Describe("Manager", Ordered, func() {
 			}
 			Eventually(verifyMetricsServerStarted).Should(Succeed())
 
-			// Create curl pod and wait for completion using reusable helpers
-			metricsOutput := fetchMetricsOverHTTPS(metricsToken)
-			Expect(metricsOutput).To(ContainSubstring(
-				"process_cpu_seconds_total",
-			))
+			By("waiting for Prometheus to scrape controller metrics")
+			waitForMetric("up{job='gitops-reverser-metrics'}",
+				func(v float64) bool { return v == 1 },
+				30*time.Second,
+				"metrics endpoint should be up")
+
+			By("verifying basic process metrics are exposed")
+			waitForMetric("process_cpu_seconds_total{job='gitops-reverser-metrics'}",
+				func(v float64) bool { return v > 0 },
+				30*time.Second,
+				"process metrics should exist")
+
+			By("verifying metrics from both controller pods")
+			podCount, err := queryPrometheus("count(up{job='gitops-reverser-metrics'})")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(podCount).To(Equal(2.0), "Should scrape from 2 controller pods")
+
+			fmt.Printf("✅ Metrics collection verified from %.0f pods\n", podCount)
+			fmt.Printf("📊 Inspect metrics: %s\n", getPrometheusURL())
 		})
 
 		It("should receive webhook calls and process them successfully", func() {
+			By("recording baseline webhook event count")
+			baselineEvents, err := queryPrometheus("sum(gitopsreverser_events_received_total) or vector(0)")
+			Expect(err).NotTo(HaveOccurred())
+			fmt.Printf("📊 Baseline events: %.0f\n", baselineEvents)
+
 			By("creating a ConfigMap to trigger webhook call")
 			cmd := exec.Command("kubectl", "create", "configmap", "webhook-test-cm",
 				"--namespace", namespace,
 				"--from-literal=test=webhook")
-			_, err := utils.Run(cmd)
+			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "ConfigMap creation should succeed with working webhook")
 
 			By("verifying that the controller manager logged the webhook call")
-			verifyMetricsServerStarted := func(g Gomega) {
+			verifyWebhookLogged := func(g Gomega) {
 				cmd := exec.Command("kubectl", "logs", controllerPodName, "-n", namespace)
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(ContainSubstring("Received admission request"),
 					"Admission request not logged")
 			}
-			Eventually(
-				verifyMetricsServerStarted,
-			).Should(Succeed())
-			// There is probably no need for eventually here since the
-			// creation of the configmap already should have triggered the webhook.
+			Eventually(verifyWebhookLogged).Should(Succeed())
 
-			// Wait a moment for metrics to be updated
-			time.Sleep(2 * time.Second)
-			metricsOutput := fetchMetricsOverHTTPS(metricsToken)
+			By("waiting for webhook event metric to increment")
+			waitForMetric("sum(gitopsreverser_events_received_total) or vector(0)",
+				func(v float64) bool { return v > baselineEvents },
+				30*time.Second,
+				"webhook events should increment")
 
-			// Just check if the metric exists (don't worry about the actual value)
-			Expect(metricsOutput).To(ContainSubstring("gitopsreverser_events_received_total"),
-				"Events received metric should exist in metrics output")
+			By("verifying only leader pod received webhook events")
+			leaderEvents, err := queryPrometheus(
+				"sum(gitopsreverser_events_received_total{role='leader'}) or vector(0)",
+			)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(leaderEvents).To(BeNumerically(">", baselineEvents),
+				"Leader should have processed webhook events")
+			fmt.Printf("✅ Leader processed %.0f events\n", leaderEvents-baselineEvents)
 
-			By("confirming webhook is working - events are being received")
-			fmt.Printf("✅ Webhook validation successful - events are being received by the webhook\n")
+			By("confirming follower pod has no new webhook events")
+			followerEvents, err := queryPrometheus(
+				"sum(gitopsreverser_events_received_total{role!='leader'}) or vector(0)",
+			)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(followerEvents).To(Equal(0.0),
+				"Follower should not process webhook events")
+
+			fmt.Printf("✅ Webhook routing validated - only leader receives events\n")
+			fmt.Printf("📊 Inspect metrics: %s\n", getPrometheusURL())
 
 			By("cleaning up webhook test resources")
 			cmd = exec.Command("kubectl", "delete", "configmap", "webhook-test-cm", "--namespace", namespace)
@@ -536,58 +570,8 @@ var _ = Describe("Manager", Ordered, func() {
 		})
 
 		// +kubebuilder:scaffold:e2e-webhooks-checks
-
-		// TODO: Customize the e2e test suite with scenarios specific to your project.
-		// Consider applying sample/CR(s) and check their status and/or verifying
-		// the reconciliation by using the metrics, i.e.:
-		// metricsOutput := getMetricsOutput()
-		// Expect(metricsOutput).To(ContainSubstring(
-		//    fmt.Sprintf(`controller_runtime_reconcile_total{controller="%s",result="success"} 1`,
-		//    strings.ToLower(<Kind>),
-		// ))
 	})
 })
-
-// serviceAccountToken returns a token for the specified service account in the given namespace.
-// It uses the Kubernetes TokenRequest API to generate a token by directly sending a request
-// and parsing the resulting token from the API response.
-func serviceAccountToken() (string, error) {
-	const tokenRequestRawString = `{
-		"apiVersion": "authentication.k8s.io/v1",
-		"kind": "TokenRequest"
-	}`
-
-	// Temporary file to store the token request
-	secretName := fmt.Sprintf("%s-token-request", serviceAccountName)
-	tokenRequestFile := filepath.Join("/tmp", secretName)
-	err := os.WriteFile(tokenRequestFile, []byte(tokenRequestRawString), os.FileMode(0o644))
-	if err != nil {
-		return "", err
-	}
-
-	var out string
-	verifyTokenCreation := func(g Gomega) {
-		// Execute kubectl command to create the token
-		cmd := exec.Command("kubectl", "create", "--raw", fmt.Sprintf(
-			"/api/v1/namespaces/%s/serviceaccounts/%s/token",
-			namespace,
-			serviceAccountName,
-		), "-f", tokenRequestFile)
-
-		output, err := cmd.CombinedOutput()
-		g.Expect(err).NotTo(HaveOccurred())
-
-		// Parse the JSON output to extract the token
-		var token tokenRequest
-		err = json.Unmarshal(output, &token)
-		g.Expect(err).NotTo(HaveOccurred())
-
-		out = token.Status.Token
-	}
-	Eventually(verifyTokenCreation).Should(Succeed())
-
-	return out, err
-}
 
 // createGitRepoConfigWithURL creates a GitRepoConfig resource with the specified URL.
 func createGitRepoConfigWithURL(name, branch, secretName, repoURL string) {
@@ -673,38 +657,6 @@ func cleanupGitRepoConfig(name string) {
 	By(fmt.Sprintf("cleaning up GitRepoConfig '%s'", name))
 	cmd := exec.Command("kubectl", "delete", "gitrepoconfig", name, "-n", namespace)
 	_, _ = utils.Run(cmd)
-}
-
-// setupMetricsAccess creates the necessary RBAC and gets a service account token for metrics access.
-func setupMetricsAccess(clusterRoleBindingName string) string {
-	By("creating ClusterRoleBinding for metrics access")
-	data := struct {
-		Name               string
-		ServiceAccountName string
-		Namespace          string
-	}{
-		Name:               clusterRoleBindingName,
-		ServiceAccountName: serviceAccountName,
-		Namespace:          namespace,
-	}
-
-	err := applyFromTemplate("test/e2e/templates/clusterrolebinding.tmpl", data, "")
-	Expect(err).NotTo(HaveOccurred(), fmt.Sprintf("Failed to create ClusterRoleBinding %s", clusterRoleBindingName))
-
-	By("getting service account token for metrics access")
-	token, err := serviceAccountToken()
-	Expect(err).NotTo(HaveOccurred())
-	Expect(token).NotTo(BeEmpty())
-
-	return token
-}
-
-// tokenRequest is a simplified representation of the Kubernetes TokenRequest API response,
-// containing only the token field that we need to extract.
-type tokenRequest struct {
-	Status struct {
-		Token string `json:"token"`
-	} `json:"status"`
 }
 
 // showControllerLogs displays the current controller logs to help with debugging during test execution.

@@ -81,7 +81,7 @@ setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist
 	fi
 
 .PHONY: test-e2e
-test-e2e: setup-test-e2e cleanup-webhook setup-cert-manager setup-gitea-e2e manifests generate fmt vet ## Run end-to-end tests in Kind cluster
+test-e2e: setup-test-e2e cleanup-webhook setup-cert-manager setup-gitea-e2e setup-prometheus-e2e setup-port-forwards manifests generate fmt vet ## Run end-to-end tests in Kind cluster
 	KIND_CLUSTER=$(KIND_CLUSTER) go test ./test/e2e/ -v -ginkgo.v
 
 .PHONY: cleanup-webhook
@@ -194,7 +194,7 @@ setup-envtest: ## Setup envtest binaries for unit tests
 		exit 1; \
 	}
 
-##@ Gitea E2E Testing
+##@ E2E Test Infrastructure
 
 .PHONY: setup-gitea-e2e
 setup-gitea-e2e: ## Set up Gitea for e2e testing
@@ -212,16 +212,60 @@ setup-cert-manager:
 	@echo "🚀 Setup cert-manager (no wait needed)"
 	@$(KUBECTL) apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.18.2/cert-manager.yaml | grep -v "unchanged"
 
-.PHONY: stop-gitea-pf
-stop-gitea-pf: ## Stop Gitea port-forward
-	@echo "🔌 Stopping persistent port-forward to Gitea..."
-	@pkill -f "kubectl.*port-forward.*3000" 2>/dev/null || true
+.PHONY: setup-port-forwards
+setup-port-forwards: ## Start all port-forwards in background
+	@echo "🔌 Checking port-forwards..."
+	@if ps aux | grep -E "kubectl.*port-forward.*gitea.*3000" | grep -v grep >/dev/null 2>&1; then \
+		echo "✅ Gitea port-forward already running"; \
+	else \
+		echo "🔌 Starting Gitea port-forward..."; \
+		bash -c 'kubectl port-forward --address 0.0.0.0 -n gitea-e2e svc/gitea-http 3000:3000 >/dev/null 2>&1 & disown' || true; \
+		sleep 1; \
+	fi; \
+	if ps aux | grep -E "kubectl.*port-forward.*prometheus.*9090" | grep -v grep >/dev/null 2>&1; then \
+		echo "✅ Prometheus port-forward already running"; \
+	else \
+		echo "🔌 Starting Prometheus port-forward..."; \
+		bash -c 'kubectl port-forward --address 0.0.0.0 -n prometheus-e2e svc/prometheus 9090:9090 >/dev/null 2>&1 & disown' || true; \
+		sleep 1; \
+	fi; \
+	echo "📁 Gitea: http://localhost:3000"; \
+	echo "📊 Prometheus: http://localhost:9090"; \
+	echo "✅ Port-forwards ready"
+
+.PHONY: cleanup-port-forwards
+cleanup-port-forwards: ## Stop all port-forwards
+	@echo "🛑 Stopping port-forwards..."
+	@-pkill -f "kubectl.*port-forward.*3000" 2>/dev/null || true
+	@-pkill -f "kubectl.*port-forward.*9090" 2>/dev/null || true
+	@echo "✅ Port-forwards stopped"
 
 .PHONY: cleanup-gitea-e2e
-cleanup-gitea-e2e: stop-gitea-pf ## Clean up Gitea e2e environment
+cleanup-gitea-e2e: cleanup-port-forwards ## Clean up Gitea e2e environment
 	@echo "🧹 Cleaning up Gitea e2e environment..."
 	@$(HELM) uninstall gitea --namespace $(GITEA_NAMESPACE) 2>/dev/null || true
 	@$(KUBECTL) delete namespace $(GITEA_NAMESPACE) 2>/dev/null || true
 	@echo "✅ Gitea cleanup completed"
+
+.PHONY: setup-prometheus-e2e
+setup-prometheus-e2e: ## Set up Prometheus for e2e metrics testing
+	@echo "🚀 Setup Prometheus for e2e testing..."
+	@bash test/e2e/scripts/setup-prometheus.sh
+
+.PHONY: cleanup-prometheus-e2e
+cleanup-prometheus-e2e: ## Clean up Prometheus e2e environment
+	@echo "🧹 Cleaning up Prometheus e2e environment..."
+	@$(KUBECTL) delete -f test/e2e/prometheus/deployment.yaml --ignore-not-found=true
+	@$(KUBECTL) delete -f test/e2e/prometheus/rbac.yaml --ignore-not-found=true
+	@$(KUBECTL) delete namespace prometheus-e2e --ignore-not-found=true
+	@echo "✅ Prometheus cleanup completed"
+
+.PHONY: e2e-setup
+e2e-setup: setup-gitea-e2e setup-prometheus-e2e setup-port-forwards ## Setup all e2e test infrastructure
+	@echo "✅ E2E infrastructure ready"
+
+.PHONY: e2e-cleanup
+e2e-cleanup: cleanup-gitea-e2e cleanup-prometheus-e2e ## Clean up all e2e test infrastructure
+	@echo "✅ All e2e infrastructure cleaned up"
 
 
