@@ -1,4 +1,4 @@
-{{- if and .Values.webhook.enabled .Values.webhook.validating.enabled }}
+{{- if  .Values.webhook.validating.enabled }}
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingWebhookConfiguration
 metadata:
@@ -7,7 +7,7 @@ metadata:
     {{- include "gitops-reverser.labels" . | nindent 4 }}
   {{- if .Values.certificates.certManager.enabled }}
   annotations:
-    cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/{{ include "gitops-reverser.fullname" . }}-webhook-cert
+    cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/{{ include "gitops-reverser.fullname" . }}-webhook-server-tls-cert
   {{- end }}
 webhooks:
 - admissionReviewVersions:

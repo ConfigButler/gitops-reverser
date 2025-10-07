@@ -43,6 +43,9 @@ spec:
             - --leader-elect
             {{- end }}
             - --health-probe-bind-address=:8081
+            - --webhook-cert-path={{ .Values.webhook.server.certPath }}
+            - --webhook-cert-name={{ .Values.webhook.server.certName }}
+            - --webhook-cert-key={{ .Values.webhook.server.certKey }}
           ports:
             - name: webhook-server
               containerPort: {{ .Values.webhook.server.port }}
@@ -59,10 +62,6 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
-            {{- if not .Values.webhook.enabled }}
-            - name: ENABLE_WEBHOOKS
-              value: "false"
-            {{- end }}
             {{- with .Values.env }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -83,27 +82,19 @@ spec:
           volumeMounts:
             - name: tmp-dir
               mountPath: /tmp
-            {{- if .Values.webhook.enabled }}
-            {{- if .Values.certificates.certManager.enabled }}
             - name: cert
               mountPath: {{ .Values.webhook.server.certPath }}
               readOnly: true
-            {{- end }}
-            {{- end }}
             {{- with .Values.volumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
       volumes:
         - name: tmp-dir
           emptyDir: {}
-        {{- if .Values.webhook.enabled }}
-        {{- if .Values.certificates.certManager.enabled }}
         - name: cert
           secret:
-            secretName: {{ include "gitops-reverser.fullname" . }}-leader-only-cert
+            secretName: {{ include "gitops-reverser.fullname" . }}-webhook-server-tls-cert
             defaultMode: 420
-        {{- end }}
-        {{- end }}
         {{- with .Values.volumes }}
         {{- toYaml . | nindent 8 }}
         {{- end }}

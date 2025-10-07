@@ -130,3 +130,23 @@ func applyFromTemplate(templatePath string, data interface{}, namespace string) 
 	_, err = utils.Run(cmd)
 	return err
 }
+
+// waitForCertificateSecrets waits for cert-manager to create the required certificate secrets
+// This prevents race conditions where controller pods try to mount secrets before they exist
+func waitForCertificateSecrets() {
+	By("waiting for webhook certificate secret to be created by cert-manager")
+	Eventually(func(g Gomega) {
+		cmd := exec.Command("kubectl", "get", "secret", "webhook-server-cert", "-n", namespace)
+		_, err := utils.Run(cmd)
+		g.Expect(err).NotTo(HaveOccurred(), "webhook-server-cert secret should exist")
+	}, 60*time.Second, 2*time.Second).Should(Succeed()) //nolint:mnd // reasonable timeout for cert-manager
+
+	By("waiting for metrics certificate secret to be created by cert-manager")
+	Eventually(func(g Gomega) {
+		cmd := exec.Command("kubectl", "get", "secret", "metrics-server-cert", "-n", namespace)
+		_, err := utils.Run(cmd)
+		g.Expect(err).NotTo(HaveOccurred(), "metrics-server-cert secret should exist")
+	}, 60*time.Second, 2*time.Second).Should(Succeed()) //nolint:mnd // reasonable timeout for cert-manager
+
+	By("✅ All certificate secrets are ready")
+}

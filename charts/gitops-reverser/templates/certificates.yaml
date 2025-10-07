@@ -26,7 +26,7 @@ spec:
   issuerRef:
     kind: {{ .Values.certificates.certManager.issuer.kind }}
     name: {{ .Values.certificates.certManager.issuer.name }}
-  secretName: {{ include "gitops-reverser.fullname" . }}-webhook-cert
+  secretName: {{ include "gitops-reverser.fullname" . }}-webhook-server-tls-cert
   usages:
     - digital signature
     - key encipherment

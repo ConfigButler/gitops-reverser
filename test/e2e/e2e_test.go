@@ -72,6 +72,9 @@ var _ = Describe("Manager", Ordered, func() {
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to deploy the controller-manager")
 
+		By("waiting for certificate secrets to be created by cert-manager")
+		waitForCertificateSecrets()
+
 		By("setting up Gitea test environment with unique repository")
 		companyStart := time.Date(2025, 5, 12, 0, 0, 0, 0, time.UTC)
 		minutesSinceStart := int(time.Since(companyStart).Minutes())

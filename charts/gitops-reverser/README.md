@@ -240,7 +240,6 @@ webhook:
 | `leaderOnlyService.enabled` | Create service routing to leader only | `true` |
 | `image.repository` | Container image repository | `ghcr.io/configbutler/gitops-reverser` |
 | `controllerManager.leaderElection` | Enable leader election | `true` |
-| `webhook.enabled` | Enable validating webhook | `true` |
 | `webhook.validating.failurePolicy` | Webhook failure policy (Ignore/Fail) | `Ignore` |
 | `certificates.certManager.enabled` | Use cert-manager for certificates | `true` |
 | `podDisruptionBudget.enabled` | Enable PodDisruptionBudget | `true` |
@@ -358,7 +357,7 @@ Check certificate status:
 
 ```bash
 kubectl get certificate -n gitops-reverser-system
-kubectl describe certificate gitops-reverser-webhook-cert -n gitops-reverser-system
+kubectl describe certificate gitops-reverser-webhook-server-tls-cert -n gitops-reverser-system
 ```
 
 If cert-manager is not working:
