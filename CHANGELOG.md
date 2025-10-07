@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.3.0...gitops-reverser-v0.4.0) (2025-10-07)
+
+
+### Features
+
+* Deploy the helm chart ([#36](https://github.com/ConfigButler/gitops-reverser/issues/36)) ([797ff02](https://github.com/ConfigButler/gitops-reverser/commit/797ff025bf7e9436ed96d8c1896b4d16451c144c))
+
+
+### Bug Fixes
+
+* Allowing more control, and don't allow running without webhooks (altough you still can disable the ValidatingWebhookConfiguration). ([27ee09a](https://github.com/ConfigButler/gitops-reverser/commit/27ee09a678ca2a6ebe46aee17dc064a071cc96f5))
+* Improve the helm chart ([4001e8e](https://github.com/ConfigButler/gitops-reverser/commit/4001e8e20989c6711e92199a3cdb2c6056616a1c))
+* SA didnt had Namespace set ([6d83b28](https://github.com/ConfigButler/gitops-reverser/commit/6d83b28796d1eeb41c4ab29af99203ca9a42ed3e))
+* Simplify helm chart to start ([a0cc1cd](https://github.com/ConfigButler/gitops-reverser/commit/a0cc1cda6466c5d41de12da0ea7a89b2c40ac7d2))
+* Testing the HA behaviour (no edge cases yet, like deployments) ([#35](https://github.com/ConfigButler/gitops-reverser/issues/35)) ([41b17c2](https://github.com/ConfigButler/gitops-reverser/commit/41b17c209f1efaf590a5793bd8f959488da7b9eb))
+* Thanks linter ([b934475](https://github.com/ConfigButler/gitops-reverser/commit/b9344757197aa89abc73057dd1279cee7a42048e))
+
+
+### Documentation
+
+* **helm:** rewrite chart README for better user experience ([de4c9a1](https://github.com/ConfigButler/gitops-reverser/commit/de4c9a13ceafc9ab07b1dfc22cafb39fd54af593))
+
 ## [0.3.0](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.2.1...gitops-reverser-v0.3.0) (2025-10-02)
 
 

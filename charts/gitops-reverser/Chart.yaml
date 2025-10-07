@@ -1,9 +1,11 @@
 apiVersion: v2
 name: gitops-reverser
-description: A Kubernetes controller for two-way GitOps synchronization - reverse sync from Kubernetes to Git
+description: >-
+  A Kubernetes controller for two-way GitOps synchronization - reverse sync from
+  Kubernetes to Git
 type: application
-version: 0.3.0
-appVersion: 0.3.0
+version: 0.4.0
+appVersion: 0.4.0
 keywords:
   - gitops
   - kubernetes
@@ -18,11 +20,9 @@ maintainers:
   - name: ConfigButler Team
     url: https://github.com/configbutler
 annotations:
-  # OCI artifact annotations
-  org.opencontainers.image.description: "GitOps Reverser - Two-way GitOps synchronization for Kubernetes"
-  org.opencontainers.image.source: "https://github.com/configbutler/gitops-reverser"
-  org.opencontainers.image.vendor: "ConfigButler"
-  # Artifact Hub annotations
+  org.opencontainers.image.description: GitOps Reverser - Two-way GitOps synchronization for Kubernetes
+  org.opencontainers.image.source: https://github.com/configbutler/gitops-reverser
+  org.opencontainers.image.vendor: ConfigButler
   artifacthub.io/changes: |
     - kind: changed
       description: Updated to HA-ready configuration with 2 replicas by default
@@ -32,6 +32,6 @@ annotations:
       description: Pod disruption budget enabled by default
     - kind: added
       description: Pod anti-affinity for HA deployment
-  artifacthub.io/containsSecurityUpdates: "false"
-  artifacthub.io/prerelease: "false"
-  artifacthub.io/license: "Apache-2.0"
+  artifacthub.io/containsSecurityUpdates: 'false'
+  artifacthub.io/prerelease: 'false'
+  artifacthub.io/license: Apache-2.0
