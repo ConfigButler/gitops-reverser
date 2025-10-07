@@ -186,12 +186,14 @@ jobs:
           echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ${{ env.REGISTRY }} --username ${{ github.actor }} --password-stdin
 
       - name: Package Helm chart with CI version
+        shell: bash
         run: |
           CI_VERSION="0.4.0-ci-${GITHUB_SHA::7}"
           echo "📦 Packaging chart with version: ${CI_VERSION}"
           helm package charts/gitops-reverser --destination .helm-charts --version ${CI_VERSION} --app-version ${CI_VERSION}
 
       - name: Test push Helm chart to GHCR (verifies lowercase registry path)
+        shell: bash
         run: |
           CI_VERSION="0.4.0-ci-${GITHUB_SHA::7}"
           echo "🚀 Testing Helm chart push to: ${{ env.CHART_REGISTRY }}"
