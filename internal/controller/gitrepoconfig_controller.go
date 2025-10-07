@@ -107,7 +107,15 @@ func (r *GitRepoConfigReconciler) reconcileGitRepoConfig(
 		"repoUrl", gitRepoConfig.Spec.RepoURL,
 		"branch", gitRepoConfig.Spec.Branch,
 		"generation", gitRepoConfig.Generation,
+		"observedGeneration", gitRepoConfig.Status.ObservedGeneration,
 		"resourceVersion", gitRepoConfig.ResourceVersion)
+
+	// Skip validation if we've already validated this generation
+	if gitRepoConfig.Status.ObservedGeneration == gitRepoConfig.Generation {
+		log.Info("Skipping validation - already validated this generation",
+			"generation", gitRepoConfig.Generation)
+		return ctrl.Result{RequeueAfter: RequeueLongInterval}, nil
+	}
 
 	r.setCondition(gitRepoConfig, metav1.ConditionUnknown, ReasonChecking, "Validating repository connectivity...")
 
@@ -222,6 +230,9 @@ func (r *GitRepoConfigReconciler) validateAndUpdateStatus(
 	log.Info("Repository validation successful", "commitHash", commitHash, "shortCommit", commitHash[:8])
 	message := fmt.Sprintf("Branch '%s' found and accessible at commit %s", gitRepoConfig.Spec.Branch, commitHash[:8])
 	r.setCondition(gitRepoConfig, metav1.ConditionTrue, ReasonBranchFound, message)
+
+	// Update ObservedGeneration to mark this generation as validated
+	gitRepoConfig.Status.ObservedGeneration = gitRepoConfig.Generation
 
 	log.Info("GitRepoConfig validation successful", "name", gitRepoConfig.Name, "commit", commitHash[:8])
 	log.Info("Updating status with success condition")

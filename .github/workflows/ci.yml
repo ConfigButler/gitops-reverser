@@ -13,6 +13,7 @@ env:
   REGISTRY: ghcr.io
   IMAGE_NAME: configbutler/gitops-reverser
   IMAGE_TAG: ci-${{ github.sha }}
+  CHART_REGISTRY: ghcr.io/configbutler/charts
 
 permissions:
   contents: write
@@ -412,7 +413,7 @@ jobs:
             ### Helm Chart
             
             ```bash
-            helm install gitops-reverser oci://${{ env.REGISTRY }}/${{ github.repository_owner }}/charts/gitops-reverser --version ${{ needs.release-please.outputs.version }}
+            helm install gitops-reverser oci://${{ env.CHART_REGISTRY }}/gitops-reverser --version ${{ needs.release-please.outputs.version }}
             ```
             
             ## Docker Images
@@ -464,7 +465,7 @@ jobs:
 
       - name: Push Helm chart to GHCR
         run: |
-          helm push .helm-charts/gitops-reverser-${{ needs.release-please.outputs.version }}.tgz oci://${{ env.REGISTRY }}/${{ github.repository_owner }}/charts
+          helm push .helm-charts/gitops-reverser-${{ needs.release-please.outputs.version }}.tgz oci://${{ env.CHART_REGISTRY }}
 
       - name: Upload install.yaml as release asset
         uses: softprops/action-gh-release@v2

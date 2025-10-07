@@ -139,6 +139,11 @@ spec:
                   - type
                   type: object
                 type: array
+              observedGeneration:
+                description: ObservedGeneration is the last generation that was successfully
+                  validated
+                format: int64
+                type: integer
             type: object
         required:
         - spec

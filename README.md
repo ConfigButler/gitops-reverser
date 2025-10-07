@@ -123,12 +123,22 @@ For production configuration options, see the [Helm Chart README](charts/gitops-
 
 ### Quick Start
 
+> 📖 **Complete Setup Guide:** See [`docs/GITHUB_SETUP_GUIDE.md`](docs/GITHUB_SETUP_GUIDE.md) for detailed GitHub configuration with copy/paste commands.
+
 1. **Configure your Git repository:**
    ```bash
+   # Generate SSH key for authentication
+   ssh-keygen -t ed25519 -C "gitops-reverser" -f ~/.ssh/gitops-reverser/id_ed25519 -N ""
+   
+   # Add the public key as a GitHub deploy key (with write access)
+   cat ~/.ssh/gitops-reverser/id_ed25519.pub
+   
+   # Create Kubernetes secret
+   ssh-keyscan github.com > /tmp/known_hosts
    kubectl create secret generic git-credentials \
      --namespace gitops-reverser-system \
-     --from-file=ssh-key=/path/to/your/ssh-key \
-     --from-literal=known-hosts="$(ssh-keyscan github.com)"
+     --from-file=ssh-privatekey=$HOME/.ssh/gitops-reverser/id_ed25519 \
+     --from-file=known_hosts=/tmp/known_hosts
    ```
 
 2. **Create a GitRepoConfig:**
@@ -154,12 +164,11 @@ For production configuration options, see the [Helm Chart README](charts/gitops-
      namespace: gitops-reverser-system
    spec:
      gitRepoConfigRef: audit-repo
-     resources:
-     - apiVersion: "v1"
-       kind: "ConfigMap"
-     namespaceSelector:
+     rules:
+       - resources: ["configmaps"]
+     excludeLabels:
        matchLabels:
-         audit: "enabled"
+         "gitops-reverser/ignore": "true"
    ```
 
 4. **Apply the configurations:**
@@ -170,20 +179,17 @@ For production configuration options, see the [Helm Chart README](charts/gitops-
 
 ### Configuration Examples
 
-#### Capture All Changes in Production Namespaces
+#### Capture All Resource Types
 ```yaml
 apiVersion: configbutler.ai/v1alpha1
 kind: WatchRule
 metadata:
-  name: production-audit
+  name: capture-all
+  namespace: gitops-reverser-system
 spec:
   gitRepoConfigRef: audit-repo
-  resources:
-  - apiVersion: "*"
-    kind: "*"
-  namespaceSelector:
-    matchLabels:
-      environment: "production"
+  rules:
+    - resources: ["*"]
   excludeLabels:
     matchLabels:
       "gitops-reverser/ignore": "true"
@@ -195,13 +201,15 @@ apiVersion: configbutler.ai/v1alpha1
 kind: WatchRule
 metadata:
   name: config-audit
+  namespace: gitops-reverser-system
 spec:
   gitRepoConfigRef: audit-repo
-  resources:
-  - apiVersion: "v1"
-    kind: "Secret"
-  - apiVersion: "v1"
-    kind: "ConfigMap"
+  rules:
+    - resources: ["secrets", "configmaps"]
+  excludeLabels:
+    matchExpressions:
+      - key: "gitops-reverser/ignore"
+        operator: Exists
 ```
 
 ## Repository Structure
