@@ -136,14 +136,18 @@ func applyFromTemplate(templatePath string, data interface{}, namespace string) 
 func waitForCertificateSecrets() {
 	By("waiting for webhook certificate secret to be created by cert-manager")
 	Eventually(func(g Gomega) {
-		cmd := exec.Command("kubectl", "get", "secret", "webhook-server-cert", "-n", namespace)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second) //nolint:mnd // reasonable timeout
+		defer cancel()
+		cmd := exec.CommandContext(ctx, "kubectl", "get", "secret", "webhook-server-cert", "-n", namespace)
 		_, err := utils.Run(cmd)
 		g.Expect(err).NotTo(HaveOccurred(), "webhook-server-cert secret should exist")
 	}, 60*time.Second, 2*time.Second).Should(Succeed()) //nolint:mnd // reasonable timeout for cert-manager
 
 	By("waiting for metrics certificate secret to be created by cert-manager")
 	Eventually(func(g Gomega) {
-		cmd := exec.Command("kubectl", "get", "secret", "metrics-server-cert", "-n", namespace)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second) //nolint:mnd // reasonable timeout
+		defer cancel()
+		cmd := exec.CommandContext(ctx, "kubectl", "get", "secret", "metrics-server-cert", "-n", namespace)
 		_, err := utils.Run(cmd)
 		g.Expect(err).NotTo(HaveOccurred(), "metrics-server-cert secret should exist")
 	}, 60*time.Second, 2*time.Second).Should(Succeed()) //nolint:mnd // reasonable timeout for cert-manager
