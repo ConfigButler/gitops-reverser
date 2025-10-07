@@ -17,7 +17,7 @@ replicaCount: 2
 # Leader-only service configuration
 leaderOnlyService:
   # When true, creates a dedicated service that routes traffic only to the leader pod
-  # This is critical for HA deployments to ensure consistent processing (e.g., webhooks)
+  # This is critical for HA deployments to ensure consistent processing of incomming API server events
   enabled: true
 
 image:
@@ -26,7 +26,9 @@ image:
   # Overrides the image tag whose default is the chart appVersion.
   tag: ""
 
-imagePullSecrets: []
+imagePullSecrets:
+- name: ghcr-secret   # TODO: Remove when we are public
+
 nameOverride: ""
 fullnameOverride: ""
 
@@ -88,50 +90,36 @@ webhook:
     failurePolicy: Ignore
     sideEffects: None
     admissionReviewVersions: ["v1", "v1beta1"]
-    # Rules for validating webhook (watches all resources)
+    # Rules for validating webhook (by default watching all resources)
     rules:
       - operations: ["CREATE", "UPDATE", "DELETE"]
         apiGroups: ["*"]
         apiVersions: ["*"]
         resources: ["*"]
     # Namespace selector for validating webhook
-    namespaceSelector: {}
+    namespaceSelector:
+      matchExpressions:
+      - key: name
+        operator: NotIn
+        values: ["kube-system", "kube-public", "kube-node-lease"]
     # Object selector for validating webhook
     objectSelector: {}
 
-# Service configuration
-service:
-  type: ClusterIP
-  port: 443
-  targetPort: 9443
-
-# TLS certificate management
+# TLS certificate management (Kubernetes requires this for API server callbacks)
 certificates:
-  # Use cert-manager for certificate management
+  name: 
   certManager:
     enabled: true
-    # Certificate issuer
     issuer:
       name: selfsigned-issuer
       kind: Issuer
-      # Create a self-signed issuer if none exists
       create: true
-    # Metrics certificate is now part of the webhook certificate
 
 # RBAC configuration
 rbac:
   create: true
   # Additional rules can be added here if needed
   rules: []
-
-# Ingress configuration (typically not needed for webhooks)
-ingress:
-  enabled: false
-  annotations: {}
-  hosts:
-    - host: chart-example.local
-      paths: []
-  tls: []
 
 # Resource limits and requests
 resources:
@@ -184,28 +172,3 @@ logging:
   encoder: json
   # Additional logging configuration
   stacktraceLevel: error
-  
-# Environment variables
-env: []
-  # - name: EXAMPLE_VAR
-  #   value: "example-value"
-
-# Additional volumes
-volumes: []
-  # - name: example-volume
-  #   configMap:
-  #     name: example-configmap
-
-# Additional volume mounts
-volumeMounts: []
-  # - name: example-volume
-  #   mountPath: /etc/example
-  #   readOnly: true
-
-# Network policies
-networkPolicy:
-  enabled: false
-  # Ingress rules
-  ingress: []
-  # Egress rules
-  egress: []

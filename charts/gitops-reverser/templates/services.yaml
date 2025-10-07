@@ -1,0 +1,39 @@
+# We don't have a 'normal' API yet (a very simple one is running for our health probing): so there is no need yet for a generic service
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "gitops-reverser.fullname" . }}-leader-only
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "gitops-reverser.labels" . | nindent 4 }}
+    app.kubernetes.io/component: leader-only
+spec:
+  type: ClusterIP
+  ports:
+    - name: webhook-server
+      port: 443
+      targetPort: {{ .Values.webhook.server.port }}
+      protocol: TCP
+  selector:
+    {{- include "gitops-reverser.selectorLabels" . | nindent 4 }}
+    role: leader  # Pods get this label from within the operator source code: the Kube API lease mechanism is used to always have one active leader.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "gitops-reverser.fullname" . }}-metrics
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "gitops-reverser.labels" . | nindent 4 }}
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "{{ .Values.controllerManager.metrics.port }}"
+spec:
+  type: ClusterIP
+  ports:
+    - name: metrics
+      port: {{ .Values.controllerManager.metrics.port }}
+      targetPort: {{ .Values.controllerManager.metrics.port }}
+      protocol: TCP
+  selector:
+    {{- include "gitops-reverser.selectorLabels" . | nindent 4 }}

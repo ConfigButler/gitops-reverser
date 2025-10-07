@@ -7,18 +7,14 @@ metadata:
     {{- include "gitops-reverser.labels" . | nindent 4 }}
   {{- if .Values.certificates.certManager.enabled }}
   annotations:
-    cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/{{ include "gitops-reverser.fullname" . }}-serving-cert
+    cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/{{ include "gitops-reverser.fullname" . }}-webhook-cert
   {{- end }}
 webhooks:
 - admissionReviewVersions:
   - v1
   clientConfig:
     service:
-      {{- if .Values.leaderOnlyService.enabled }}
       name: {{ include "gitops-reverser.fullname" . }}-leader-only
-      {{- else }}
-      name: {{ include "gitops-reverser.fullname" . }}
-      {{- end }}
       namespace: {{ .Release.Namespace }}
       path: /validate-v1-event
     {{- if not .Values.certificates.certManager.enabled }}
