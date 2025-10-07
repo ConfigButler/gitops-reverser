@@ -34,12 +34,14 @@ Create chart name and version as used by the chart label.
 Common labels
 */}}
 {{- define "gitops-reverser.labels" -}}
+{{- if eq .Values.labels.managedBy "Helm" }}
 helm.sh/chart: {{ include "gitops-reverser.chart" . }}
+{{- end }}
 {{ include "gitops-reverser.selectorLabels" . }}
 {{- if .Chart.AppVersion }}
 app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 {{- end }}
-app.kubernetes.io/managed-by: {{ .Release.Service }}
+app.kubernetes.io/managed-by: {{ .Values.labels.managedBy | quote }}
 {{- end }}
 
 {{/*

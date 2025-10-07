@@ -35,3 +35,5 @@ charts/gitops-reverser/crds/*.yaml
 
 # Keep the install.yaml for distribution
 dist/install.yaml
+
+*.o.yaml

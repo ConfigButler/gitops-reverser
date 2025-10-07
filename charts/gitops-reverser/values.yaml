@@ -172,3 +172,6 @@ logging:
   encoder: json
   # Additional logging configuration
   stacktraceLevel: error
+
+labels:
+  managedBy: Helm   # Allows CI generated install.yaml creation (don't change when you are using Helm)
