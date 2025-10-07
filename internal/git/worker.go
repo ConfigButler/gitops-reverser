@@ -47,13 +47,18 @@ type Worker struct {
 // Start starts the worker loop.
 func (w *Worker) Start(ctx context.Context) error {
 	log := w.Log.WithName("git-worker")
-	log.Info("Starting Git worker")
+	log.Info("===== Git worker starting =====")
+	log.Info("Git worker configuration",
+		"pollInterval", w.getPollInterval(),
+		"defaultPushInterval", w.getDefaultPushInterval(),
+		"defaultMaxCommits", w.getDefaultMaxCommits())
 
 	repoQueues := make(map[string]chan eventqueue.Event)
 	var mu sync.Mutex
 
 	go w.dispatchEvents(ctx, repoQueues, &mu)
 
+	log.Info("===== Git worker ready - waiting for events =====")
 	<-ctx.Done()
 	log.Info("Stopping Git worker")
 	return nil
@@ -79,12 +84,12 @@ func (w *Worker) dispatchEvents(ctx context.Context, repoQueues map[string]chan 
 		default:
 			events := w.EventQueue.DequeueAll()
 			if len(events) == 0 {
-				// Don't log every time there are no events, that would be too noisy
 				time.Sleep(pollInterval)
 				continue
 			}
 
-			log.Info("Dispatching events from queue", "eventCount", len(events))
+			log.Info("===== Dispatching events from queue =====",
+				"eventCount", len(events))
 
 			for _, event := range events {
 				log.Info("Processing event",
@@ -278,7 +283,11 @@ func (w *Worker) handleTicker(
 // commitAndPush handles the git operations for a batch of events.
 func (w *Worker) commitAndPush(ctx context.Context, repoConfig v1alpha1.GitRepoConfig, events []eventqueue.Event) {
 	log := w.Log.WithValues("repo", repoConfig.Name)
-	log.Info("Starting git commit and push process", "eventCount", len(events))
+	log.Info("===== Starting git commit and push process =====",
+		"eventCount", len(events),
+		"repoName", repoConfig.Name,
+		"repoURL", repoConfig.Spec.RepoURL,
+		"branch", repoConfig.Spec.Branch)
 
 	// Log details about each event for debugging
 	for i, event := range events {
