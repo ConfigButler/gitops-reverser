@@ -34,16 +34,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	"github.com/go-git/go-git/v5"
+	gogit "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/go-git/go-git/v5/plumbing/transport/http"
-	"github.com/go-git/go-git/v5/plumbing/transport/ssh"
 	"github.com/go-logr/logr"
-	gossh "golang.org/x/crypto/ssh"
-	"golang.org/x/crypto/ssh/knownhosts"
 
 	configbutleraiv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	"github.com/ConfigButler/gitops-reverser/internal/ssh"
 )
 
 // Status condition reasons.
@@ -60,7 +58,6 @@ const (
 var (
 	ErrInvalidSecretFormat = errors.New("secret must contain either 'ssh-privatekey' or both 'username' and 'password'")
 	ErrMissingPassword     = errors.New("secret contains username but missing password")
-	ErrFailedToParseSSHKey = errors.New("failed to parse SSH private key")
 )
 
 // GitRepoConfigReconciler reconciles a GitRepoConfig object.
@@ -73,7 +70,7 @@ type GitRepoConfigReconciler struct {
 // +kubebuilder:rbac:groups=configbutler.ai,resources=gitrepoconfigs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=configbutler.ai,resources=gitrepoconfigs/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=configbutler.ai,resources=gitrepoconfigs/finalizers,verbs=update
-// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -270,8 +267,17 @@ func (r *GitRepoConfigReconciler) extractCredentials(secret *corev1.Secret) (tra
 	}
 
 	// Try SSH key authentication first
-	if _, exists := secret.Data["ssh-privatekey"]; exists {
-		return r.extractSSHAuth(secret.Data)
+	if privateKey, exists := secret.Data["ssh-privatekey"]; exists {
+		keyPassword := ""
+		if passData, hasPass := secret.Data["ssh-password"]; hasPass {
+			keyPassword = string(passData)
+		}
+		// Get known_hosts if available
+		knownHosts := ""
+		if knownHostsData, hasKnownHosts := secret.Data["known_hosts"]; hasKnownHosts {
+			knownHosts = string(knownHostsData)
+		}
+		return ssh.GetAuthMethod(string(privateKey), keyPassword, knownHosts)
 	}
 
 	// Try username/password authentication
@@ -286,46 +292,6 @@ func (r *GitRepoConfigReconciler) extractCredentials(secret *corev1.Secret) (tra
 	}
 
 	return nil, ErrInvalidSecretFormat
-}
-
-// extractSSHAuth extracts SSH authentication from secret data.
-func (r *GitRepoConfigReconciler) extractSSHAuth(secretData map[string][]byte) (transport.AuthMethod, error) {
-	privateKey := secretData["ssh-privatekey"]
-	passphrase := ""
-	if passphraseData, hasPassphrase := secretData["ssh-passphrase"]; hasPassphrase {
-		passphrase = string(passphraseData)
-	}
-
-	signer, err := r.parsePrivateKey(privateKey, passphrase)
-	if err != nil {
-		return nil, err
-	}
-
-	publicKeys := &ssh.PublicKeys{
-		User:   "git",
-		Signer: signer,
-	}
-
-	publicKeys.HostKeyCallback = r.configureHostKeyCallback(secretData)
-	return publicKeys, nil
-}
-
-// parsePrivateKey parses an SSH private key with optional passphrase.
-func (r *GitRepoConfigReconciler) parsePrivateKey(privateKey []byte, passphrase string) (gossh.Signer, error) {
-	var signer gossh.Signer
-	var err error
-
-	if passphrase != "" {
-		signer, err = gossh.ParsePrivateKeyWithPassphrase(privateKey, []byte(passphrase))
-	} else {
-		signer, err = gossh.ParsePrivateKey(privateKey)
-	}
-
-	if err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrFailedToParseSSHKey, err)
-	}
-
-	return signer, nil
 }
 
 // validateRepository checks if the repository is accessible and branch exists.
@@ -351,7 +317,7 @@ func (r *GitRepoConfigReconciler) validateRepository( //nolint:lll // Function s
 	// Try to clone just the specified branch with depth 1 for validation
 	log.Info("Starting git clone", //nolint:lll // Structured log with many fields
 		"options", fmt.Sprintf("URL=%s, Branch=%s, SingleBranch=true, Depth=1", repoURL, branch))
-	_, err := git.PlainClone(tempDir, false, &git.CloneOptions{
+	_, err := gogit.PlainClone(tempDir, false, &gogit.CloneOptions{
 		URL:           repoURL,
 		Auth:          auth,
 		ReferenceName: plumbing.NewBranchReferenceName(branch),
@@ -373,7 +339,7 @@ func (r *GitRepoConfigReconciler) validateRepository( //nolint:lll // Function s
 
 	// If we got here, the repository and branch are accessible
 	// Open the temporary repo to get the commit hash
-	repo, err := git.PlainOpen(tempDir)
+	repo, err := gogit.PlainOpen(tempDir)
 	if err != nil {
 		log.Error(err, "Failed to open cloned repository", "tempDir", tempDir)
 		return "", fmt.Errorf("failed to open cloned repository: %w", err)
@@ -388,30 +354,6 @@ func (r *GitRepoConfigReconciler) validateRepository( //nolint:lll // Function s
 	commitHash := head.Hash().String()
 	log.Info("Repository validation completed successfully", "commitHash", commitHash)
 	return commitHash, nil
-}
-
-// configureHostKeyCallback sets up SSH host key verification from secret data.
-func (r *GitRepoConfigReconciler) configureHostKeyCallback(secretData map[string][]byte) gossh.HostKeyCallback {
-	knownHostsData, hasKnownHosts := secretData["known_hosts"]
-	if !hasKnownHosts {
-		return gossh.InsecureIgnoreHostKey() //nolint:gosec // Development/testing fallback
-	}
-
-	knownHostsFile := fmt.Sprintf("/tmp/known_hosts-%d", time.Now().Unix())
-	if err := os.WriteFile(knownHostsFile, knownHostsData, 0600); err != nil {
-		return gossh.InsecureIgnoreHostKey() //nolint:gosec // Fallback on file write error
-	}
-
-	defer func() {
-		_ = os.RemoveAll(knownHostsFile) // Best effort cleanup
-	}()
-
-	hostKeyCallback, err := knownhosts.New(knownHostsFile)
-	if err != nil {
-		return gossh.InsecureIgnoreHostKey() //nolint:gosec // Fallback on parse error
-	}
-
-	return hostKeyCallback
 }
 
 // setCondition sets or updates the Ready condition.

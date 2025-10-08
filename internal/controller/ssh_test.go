@@ -124,7 +124,7 @@ var _ = Describe("SSH Authentication", func() {
 				auth, err := reconciler.extractCredentials(invalidSSHSecret)
 
 				Expect(err).To(HaveOccurred())
-				Expect(err.Error()).To(ContainSubstring("failed to parse SSH private key"))
+				Expect(err.Error()).To(ContainSubstring("failed to create SSH public keys"))
 				Expect(auth).To(BeNil())
 			})
 		})

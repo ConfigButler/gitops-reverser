@@ -63,6 +63,7 @@ spec:
         args:
           - --leader-elect
           - --health-probe-bind-address=:8081
+          - --enable-verbose-admission-logs=true
         image: controller:latest
         name: manager
         env:

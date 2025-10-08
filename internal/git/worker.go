@@ -19,6 +19,7 @@ import (
 	"github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 	"github.com/ConfigButler/gitops-reverser/internal/eventqueue"
 	"github.com/ConfigButler/gitops-reverser/internal/metrics"
+	"github.com/ConfigButler/gitops-reverser/internal/ssh"
 )
 
 // Sentinel errors for worker operations.
@@ -362,7 +363,12 @@ func (w *Worker) getAuthFromSecret(
 		if passData, hasPass := secret.Data["ssh-password"]; hasPass {
 			keyPassword = string(passData)
 		}
-		return GetAuthMethod(string(privateKey), keyPassword)
+		// Get known_hosts if available
+		knownHosts := ""
+		if knownHostsData, hasKnownHosts := secret.Data["known_hosts"]; hasKnownHosts {
+			knownHosts = string(knownHostsData)
+		}
+		return ssh.GetAuthMethod(string(privateKey), keyPassword, knownHosts)
 	}
 
 	// Check for HTTP basic authentication

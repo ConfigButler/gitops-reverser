@@ -16,7 +16,6 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/go-git/go-git/v5/plumbing/transport/http"
-	"github.com/go-git/go-git/v5/plumbing/transport/ssh"
 	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -143,15 +142,6 @@ func (r *Repo) Checkout(branch string) error {
 		Branch: plumbing.NewBranchReferenceName(branch),
 		Force:  true,
 	})
-}
-
-// GetAuthMethod returns an SSH public key authentication method from a private key.
-func GetAuthMethod(privateKey, password string) (transport.AuthMethod, error) {
-	if privateKey == "" {
-		return nil, errors.New("private key cannot be empty")
-	}
-
-	return ssh.NewPublicKeys("git", []byte(privateKey), password)
 }
 
 // GetHTTPAuthMethod returns an HTTP basic authentication method from username and password.

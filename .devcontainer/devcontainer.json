@@ -15,10 +15,13 @@
       "dockerDashComposeVersion": "v2"
     }
   },
-
-  "runArgs": ["--network=host"],
-
-  "forwardPorts": [3000, 9090],
+  "runArgs": [
+    "--network=host"
+  ],
+  "forwardPorts": [
+    3000,
+    9090
+  ],
   "portsAttributes": {
     "3000": {
       "label": "Gitea",
@@ -29,7 +32,6 @@
       "onAutoForward": "notify"
     }
   },
-
   "customizations": {
     "vscode": {
       "settings": {
@@ -37,7 +39,18 @@
         "go.toolsManagement.checkForUpdates": "local",
         "go.useLanguageServer": true,
         "go.gopath": "/go",
-        "go.goroot": "/usr/local/go"
+        "go.goroot": "/usr/local/go",
+        "go.testEnvVars": {
+          "KUBEBUILDER_ASSETS": "${workspaceFolder}/bin/k8s/current"
+        },
+        "go.testExplorer.enable": true,
+        "go.enableCodeLens": {
+          "runtest": true
+        },
+        "go.delveConfig": {
+          "apiVersion": 2,
+          "showGlobalVariables": false
+        }
       },
       "extensions": [
         "golang.go",
@@ -47,13 +60,9 @@
       ]
     }
   },
-
   "postCreateCommand": "docker network create -d=bridge --subnet=172.19.0.0/24 kind || true",
-
   "remoteUser": "root",
-
   "mounts": [
     "source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind"
   ]
 }
-

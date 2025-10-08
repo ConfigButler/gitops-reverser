@@ -12,6 +12,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	"github.com/ConfigButler/gitops-reverser/internal/eventqueue"
+	"github.com/ConfigButler/gitops-reverser/internal/ssh"
 )
 
 func TestGetFilePath_NamespacedResource(t *testing.T) {
@@ -327,7 +328,7 @@ xmyh+iFc9TAPNkGSIb2z
 -----END RSA PRIVATE KEY-----`
 
 	// Test that the function handles invalid keys properly
-	auth, err := GetAuthMethod(privateKey, "")
+	auth, err := ssh.GetAuthMethod(privateKey, "", "")
 	require.Error(t, err) // Expect error with test key
 	assert.Nil(t, auth)
 }
@@ -369,7 +370,7 @@ JEOwQJmkOnyoBJEOwQJmkOnyoBJEOwQJmkOnyoBJEOwQJmkOnyoBJEOwQJmkOnyoB
 
 	// Since this is a fake encrypted key, it will still fail
 	// Let's change this test to expect an error for now
-	auth, err := GetAuthMethod(privateKey, passphrase)
+	auth, err := ssh.GetAuthMethod(privateKey, passphrase, "")
 	require.Error(t, err) // Expect error with fake key
 	assert.Nil(t, auth)
 }
@@ -377,13 +378,13 @@ JEOwQJmkOnyoBJEOwQJmkOnyoBJEOwQJmkOnyoBJEOwQJmkOnyoBJEOwQJmkOnyoB
 func TestGetAuthMethod_InvalidKey(t *testing.T) {
 	invalidKey := "this-is-not-a-valid-ssh-key"
 
-	auth, err := GetAuthMethod(invalidKey, "")
+	auth, err := ssh.GetAuthMethod(invalidKey, "", "")
 	require.Error(t, err)
 	assert.Nil(t, auth)
 }
 
 func TestGetAuthMethod_EmptyKey(t *testing.T) {
-	auth, err := GetAuthMethod("", "")
+	auth, err := ssh.GetAuthMethod("", "", "")
 	require.Error(t, err)
 	assert.Nil(t, auth)
 }

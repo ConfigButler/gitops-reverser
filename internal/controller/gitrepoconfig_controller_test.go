@@ -93,7 +93,7 @@ var _ = Describe("GitRepoConfig Controller", func() {
 
 				_, err := reconciler.extractCredentials(secret)
 				Expect(err).To(HaveOccurred())
-				Expect(err.Error()).To(ContainSubstring("failed to parse SSH private key"))
+				Expect(err.Error()).To(ContainSubstring("failed to create SSH public keys"))
 			})
 
 			It("should handle empty passphrase gracefully", func() {

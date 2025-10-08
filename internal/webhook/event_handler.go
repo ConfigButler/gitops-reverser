@@ -23,10 +23,11 @@ import (
 
 // EventHandler handles all incoming admission requests.
 type EventHandler struct {
-	Client     client.Client
-	Decoder    *admission.Decoder
-	RuleStore  *rulestore.RuleStore
-	EventQueue *eventqueue.Queue
+	Client                     client.Client
+	Decoder                    *admission.Decoder
+	RuleStore                  *rulestore.RuleStore
+	EventQueue                 *eventqueue.Queue
+	EnableVerboseAdmissionLogs bool
 }
 
 // Handle implements admission.Handler.
@@ -34,17 +35,19 @@ func (h *EventHandler) Handle(ctx context.Context, req admission.Request) admiss
 	log := logf.FromContext(ctx)
 	metrics.EventsReceivedTotal.Add(ctx, 1)
 
-	log.Info(
-		"Received admission request",
-		"operation",
-		req.Operation,
-		"kind",
-		req.Kind.Kind,
-		"name",
-		req.Name,
-		"namespace",
-		req.Namespace,
-	)
+	if h.EnableVerboseAdmissionLogs {
+		log.Info(
+			"Received admission request",
+			"operation",
+			req.Operation,
+			"kind",
+			req.Kind.Kind,
+			"name",
+			req.Name,
+			"namespace",
+			req.Namespace,
+		)
+	}
 
 	if h.Decoder == nil {
 		log.Error(errors.New("decoder is not initialized"), "Webhook handler received request but decoder is nil")
@@ -78,17 +81,19 @@ func (h *EventHandler) Handle(ctx context.Context, req admission.Request) admiss
 		"kind", obj.GetKind(), "name", obj.GetName(), "namespace", obj.GetNamespace(), "operation", req.Operation)
 
 	matchingRules := h.RuleStore.GetMatchingRules(obj)
-	log.Info(
-		"Checking for matching rules", //nolint:lll // Structured log
-		"kind",
-		obj.GetKind(),
-		"name",
-		obj.GetName(),
-		"namespace",
-		obj.GetNamespace(),
-		"matchingRulesCount",
-		len(matchingRules),
-	)
+	if h.EnableVerboseAdmissionLogs {
+		log.Info(
+			"Checking for matching rules", //nolint:lll // Structured log
+			"kind",
+			obj.GetKind(),
+			"name",
+			obj.GetName(),
+			"namespace",
+			obj.GetNamespace(),
+			"matchingRulesCount",
+			len(matchingRules),
+		)
+	}
 
 	if len(matchingRules) > 0 {
 		log.Info("Found matching rules, enqueueing events", "matchingRulesCount", len(matchingRules))
