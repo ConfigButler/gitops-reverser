@@ -73,8 +73,6 @@ func (w *Worker) NeedLeaderElection() bool {
 // dispatchEvents reads from the central queue and dispatches events to the appropriate repo-specific queue.
 func (w *Worker) dispatchEvents(ctx context.Context, repoQueues map[string]chan eventqueue.Event, mu *sync.Mutex) {
 	log := w.Log.WithName("dispatch")
-
-	// Use faster polling interval for test environments
 	pollInterval := w.getPollInterval()
 
 	for {
@@ -89,40 +87,69 @@ func (w *Worker) dispatchEvents(ctx context.Context, repoQueues map[string]chan 
 				continue
 			}
 
-			log.Info("===== Dispatching events from queue =====",
-				"eventCount", len(events))
-
+			log.Info("===== Dispatching events from queue =====", "eventCount", len(events))
 			for _, event := range events {
-				log.Info("Processing event",
-					"kind", event.Object.GetKind(),
-					"name", event.Object.GetName(),
-					"namespace", event.Object.GetNamespace(),
-					"gitRepoConfigRef", event.GitRepoConfigRef,
-					"gitRepoConfigNamespace", event.GitRepoConfigNamespace,
-				)
-
-				mu.Lock()
-				// Use namespace/name as queue key to avoid conflicts
-				queueKey := event.GitRepoConfigNamespace + "/" + event.GitRepoConfigRef
-				repoQueue, ok := repoQueues[queueKey]
-				if !ok {
-					repoQueue = make(chan eventqueue.Event, EventQueueBufferSize)
-					repoQueues[queueKey] = repoQueue
-					log.Info("Starting new repo event processor", "queueKey", queueKey)
-					go w.processRepoEvents(ctx, queueKey, repoQueue)
-				}
-				mu.Unlock()
-
-				select {
-				case repoQueue <- event:
-					log.Info("Event dispatched to repo queue", "queueKey", queueKey)
-				case <-ctx.Done():
-					log.Info("Context canceled while dispatching event")
-					return
+				if err := w.dispatchEvent(ctx, event, repoQueues, mu); err != nil {
+					if errors.Is(err, context.Canceled) {
+						return
+					}
+					log.Error(err, "Failed to dispatch event")
 				}
 			}
 		}
 	}
+}
+
+// dispatchEvent dispatches a single event to the appropriate repo-specific queue.
+func (w *Worker) dispatchEvent(
+	ctx context.Context,
+	event eventqueue.Event,
+	repoQueues map[string]chan eventqueue.Event,
+	mu *sync.Mutex,
+) error {
+	log := w.Log.WithName("dispatch")
+	log.Info("Processing event",
+		"kind", event.Object.GetKind(),
+		"name", event.Object.GetName(),
+		"namespace", event.Object.GetNamespace(),
+		"gitRepoConfigRef", event.GitRepoConfigRef,
+		"gitRepoConfigNamespace", event.GitRepoConfigNamespace,
+	)
+
+	// Use namespace/name as queue key.
+	// NOTE: This means different GitRepoConfigs get separate queues, even if they
+	// point to the same repository URL. See TODO.md for discussion of this tradeoff.
+	queueKey := event.GitRepoConfigNamespace + "/" + event.GitRepoConfigRef
+	repoQueue := w.getOrCreateRepoQueue(ctx, queueKey, repoQueues, mu)
+
+	select {
+	case repoQueue <- event:
+		log.Info("Event dispatched to repo queue", "queueKey", queueKey)
+		return nil
+	case <-ctx.Done():
+		log.Info("Context canceled while dispatching event")
+		return context.Canceled
+	}
+}
+
+// getOrCreateRepoQueue gets or creates a repo-specific event queue.
+func (w *Worker) getOrCreateRepoQueue(
+	ctx context.Context,
+	queueKey string,
+	repoQueues map[string]chan eventqueue.Event,
+	mu *sync.Mutex,
+) chan eventqueue.Event {
+	mu.Lock()
+	defer mu.Unlock()
+
+	repoQueue, ok := repoQueues[queueKey]
+	if !ok {
+		repoQueue = make(chan eventqueue.Event, EventQueueBufferSize)
+		repoQueues[queueKey] = repoQueue
+		w.Log.Info("Starting new repo event processor", "queueKey", queueKey)
+		go w.processRepoEvents(ctx, queueKey, repoQueue)
+	}
+	return repoQueue
 }
 
 // processRepoEvents processes events for a single Git repository.

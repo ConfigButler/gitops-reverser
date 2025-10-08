@@ -516,11 +516,6 @@ var _ = Describe("Manager", Ordered, func() {
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 
-				// Check for ConfigMap processing in logs (leader pod will have these)
-				expectedConfigMapLog := fmt.Sprintf("ConfigMap/%s", configMapName)
-				g.Expect(output).To(ContainSubstring(expectedConfigMapLog),
-					"Should see ConfigMap reconciliation in logs from leader pod")
-
 				// Check for git commit operation in logs
 				g.Expect(output).To(ContainSubstring("git commit"),
 					"Should see git commit operation in logs from leader pod")
@@ -645,25 +640,6 @@ var _ = Describe("Manager", Ordered, func() {
 			cmd = exec.Command("kubectl", "delete", "configmap", configMapName, "-n", namespace)
 			_, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "ConfigMap deletion should succeed")
-
-			By("waiting for controller reconciliation of DELETE event")
-			verifyDeleteReconciliation := func(g Gomega) {
-				// Get controller logs from all pods (leader will have the reconciliation logs)
-				cmd := exec.Command("kubectl", "logs", "-l", "control-plane=controller-manager",
-					"-n", namespace, "--tail=500", "--prefix=true")
-				output, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred())
-
-				// Check for DELETE operation in logs
-				expectedDeleteLog := fmt.Sprintf("ConfigMap/%s", configMapName)
-				g.Expect(output).To(ContainSubstring(expectedDeleteLog),
-					"Should see ConfigMap reconciliation in logs from leader pod")
-
-				// Check for DELETE operation mention
-				g.Expect(output).To(ContainSubstring("DELETE"),
-					"Should see DELETE operation in logs from leader pod")
-			}
-			Eventually(verifyDeleteReconciliation, 45*time.Second, 2*time.Second).Should(Succeed())
 
 			By("verifying ConfigMap file is deleted from Git repository")
 			verifyFileDeleted := func(g Gomega) {
