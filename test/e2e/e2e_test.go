@@ -569,7 +569,140 @@ var _ = Describe("Manager", Ordered, func() {
 			By("✅ ConfigMap to Git commit E2E test passed - verified actual file creation and commit")
 			fmt.Printf("✅ ConfigMap '%s' successfully triggered Git commit with YAML file in repo '%s'\n",
 				configMapName, uniqueRepoName)
+		})
 
+		It("should delete Git file when ConfigMap is deleted via WatchRule", func() {
+			gitRepoConfigName := "gitrepoconfig-delete-test"
+			watchRuleName := "watchrule-delete-test"
+			configMapName := "test-configmap-to-delete"
+			uniqueRepoName := testRepoName
+			repoURL := getRepoURLHTTP()
+
+			By("creating GitRepoConfig for deletion test")
+			createGitRepoConfigWithURL(gitRepoConfigName, "main", "git-creds", repoURL)
+
+			By("waiting for GitRepoConfig to be ready")
+			verifyGitRepoConfigStatus(gitRepoConfigName, "True", "BranchFound", "Branch 'main' found and accessible")
+
+			By("creating WatchRule that monitors ConfigMaps")
+			data := struct {
+				Name             string
+				Namespace        string
+				GitRepoConfigRef string
+			}{
+				Name:             watchRuleName,
+				Namespace:        namespace,
+				GitRepoConfigRef: gitRepoConfigName,
+			}
+
+			err2 := applyFromTemplate("test/e2e/templates/watchrule-configmap.tmpl", data, namespace)
+			Expect(err2).NotTo(HaveOccurred(), "Failed to apply WatchRule")
+
+			By("verifying WatchRule is ready")
+			verifyReconciled := func(g Gomega) {
+				jsonPath := "jsonpath={.status.conditions[?(@.type=='Ready')].status}"
+				cmd := exec.Command("kubectl", "get", "watchrule", watchRuleName, "-n", namespace, "-o", jsonPath)
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("True"))
+			}
+			Eventually(verifyReconciled, 15*time.Second, time.Second).Should(Succeed())
+
+			By("creating test ConfigMap to trigger Git commit")
+			configMapData := struct {
+				Name      string
+				Namespace string
+			}{
+				Name:      configMapName,
+				Namespace: namespace,
+			}
+
+			err3 := applyFromTemplate("test/e2e/templates/configmap.tmpl", configMapData, namespace)
+			Expect(err3).NotTo(HaveOccurred(), "Failed to apply ConfigMap")
+
+			By("waiting for ConfigMap file to appear in Git repository")
+			verifyFileCreated := func(g Gomega) {
+				// Pull latest changes from the remote repository
+				pullCmd := exec.Command("git", "pull")
+				pullCmd.Dir = checkoutDir
+				pullOutput, pullErr := pullCmd.CombinedOutput()
+				if pullErr != nil {
+					g.Expect(pullErr).NotTo(HaveOccurred(),
+						fmt.Sprintf("Should successfully pull latest changes. Output: %s", string(pullOutput)))
+				}
+
+				// Check for the expected ConfigMap file
+				expectedFile := filepath.Join(checkoutDir,
+					fmt.Sprintf("namespaces/%s/configmaps/%s.yaml", namespace, configMapName))
+				fileInfo, statErr := os.Stat(expectedFile)
+				g.Expect(statErr).NotTo(HaveOccurred(), fmt.Sprintf("ConfigMap file should exist at %s", expectedFile))
+				g.Expect(fileInfo.Size()).To(BeNumerically(">", 0), "ConfigMap file should not be empty")
+			}
+			Eventually(verifyFileCreated, 180*time.Second, 5*time.Second).Should(Succeed())
+
+			By("deleting the ConfigMap to trigger DELETE operation")
+			var cmd *exec.Cmd
+			cmd = exec.Command("kubectl", "delete", "configmap", configMapName, "-n", namespace)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "ConfigMap deletion should succeed")
+
+			By("waiting for controller reconciliation of DELETE event")
+			verifyDeleteReconciliation := func(g Gomega) {
+				// Get controller logs from all pods (leader will have the reconciliation logs)
+				cmd := exec.Command("kubectl", "logs", "-l", "control-plane=controller-manager",
+					"-n", namespace, "--tail=500", "--prefix=true")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+
+				// Check for DELETE operation in logs
+				expectedDeleteLog := fmt.Sprintf("ConfigMap/%s", configMapName)
+				g.Expect(output).To(ContainSubstring(expectedDeleteLog),
+					"Should see ConfigMap reconciliation in logs from leader pod")
+
+				// Check for DELETE operation mention
+				g.Expect(output).To(ContainSubstring("DELETE"),
+					"Should see DELETE operation in logs from leader pod")
+			}
+			Eventually(verifyDeleteReconciliation, 45*time.Second, 2*time.Second).Should(Succeed())
+
+			By("verifying ConfigMap file is deleted from Git repository")
+			verifyFileDeleted := func(g Gomega) {
+				// Pull latest changes from the remote repository
+				By("pulling latest changes after deletion")
+				pullCmd := exec.Command("git", "pull")
+				pullCmd.Dir = checkoutDir
+				pullOutput, pullErr := pullCmd.CombinedOutput()
+				if pullErr != nil {
+					g.Expect(pullErr).NotTo(HaveOccurred(),
+						fmt.Sprintf("Should successfully pull latest changes. Output: %s", string(pullOutput)))
+				}
+
+				// Check that the ConfigMap file no longer exists
+				expectedFile := filepath.Join(checkoutDir,
+					fmt.Sprintf("namespaces/%s/configmaps/%s.yaml", namespace, configMapName))
+				_, statErr := os.Stat(expectedFile)
+				g.Expect(statErr).To(HaveOccurred(), fmt.Sprintf("ConfigMap file should NOT exist at %s", expectedFile))
+				g.Expect(os.IsNotExist(statErr)).To(BeTrue(), "Error should be 'file does not exist'")
+
+				// Verify git log shows DELETE commit
+				By("verifying git log shows DELETE operation")
+				gitLogCmd := exec.Command("git", "log", "--oneline", "-n", "5")
+				gitLogCmd.Dir = checkoutDir
+				logOutput, logErr := gitLogCmd.CombinedOutput()
+				g.Expect(logErr).NotTo(HaveOccurred(), "Should be able to read git log")
+				g.Expect(string(logOutput)).To(ContainSubstring("DELETE"),
+					"Git log should contain DELETE operation")
+			}
+			Eventually(verifyFileDeleted, 180*time.Second, 5*time.Second).Should(Succeed())
+
+			By("cleaning up test resources")
+			cmd = exec.Command("kubectl", "delete", "watchrule", watchRuleName, "-n", namespace)
+			_, _ = utils.Run(cmd)
+			cleanupGitRepoConfig(gitRepoConfigName)
+
+			By("✅ ConfigMap deletion E2E test passed - verified file removal from Git")
+			fmt.Printf("✅ ConfigMap '%s' deletion successfully triggered Git commit removing file from repo '%s'\n",
+				configMapName, uniqueRepoName)
 		})
 
 		// +kubebuilder:scaffold:e2e-webhooks-checks

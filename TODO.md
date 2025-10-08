@@ -76,4 +76,8 @@ This is what I had:
           cluster_name: gitops-reverser-test-e2e
           version: v0.30.0
 
-          
+---
+
+Get the RBAC updates in the helm chart automated
+Validate the git credentials every 10 minutes: only do a pull on the existing repo, don't clone the whole thing again
+Add tests for CRs"

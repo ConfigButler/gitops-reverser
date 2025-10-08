@@ -578,3 +578,236 @@ func TestPathGeneration_ConsistentOutput(t *testing.T) {
 	assert.Equal(t, path2, path3)
 	assert.Equal(t, "namespaces/consistent-ns/pods/consistent-test.yaml", path1)
 }
+
+func TestGenerateLocalCommits_DeleteOperation(t *testing.T) {
+	// Test DELETE operation logic (file removal)
+	obj := &unstructured.Unstructured{}
+	obj.SetName("test-configmap")
+	obj.SetNamespace("default")
+	obj.SetKind("ConfigMap")
+
+	event := eventqueue.Event{
+		Object: obj,
+		Request: admission.Request{
+			AdmissionRequest: admissionv1.AdmissionRequest{
+				Operation: admissionv1.Delete,
+				UserInfo: authenticationv1.UserInfo{
+					Username: "admin",
+				},
+			},
+		},
+		ResourcePlural:   "configmaps",
+		GitRepoConfigRef: "test-repo",
+	}
+
+	// Verify commit message includes DELETE
+	commitMessage := GetCommitMessage(event)
+	assert.Contains(t, commitMessage, "[DELETE]")
+	assert.Contains(t, commitMessage, "ConfigMap/test-configmap")
+}
+
+func TestGenerateLocalCommits_CreateUpdateDeleteMixed(t *testing.T) {
+	// Test that different operations generate appropriate commit messages
+	testCases := []struct {
+		name      string
+		operation admissionv1.Operation
+		objName   string
+		expected  string
+	}{
+		{
+			name:      "CREATE operation",
+			operation: admissionv1.Create,
+			objName:   "new-pod",
+			expected:  "[CREATE] Pod/new-pod",
+		},
+		{
+			name:      "UPDATE operation",
+			operation: admissionv1.Update,
+			objName:   "existing-pod",
+			expected:  "[UPDATE] Pod/existing-pod",
+		},
+		{
+			name:      "DELETE operation",
+			operation: admissionv1.Delete,
+			objName:   "old-pod",
+			expected:  "[DELETE] Pod/old-pod",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			obj := &unstructured.Unstructured{}
+			obj.SetName(tc.objName)
+			obj.SetNamespace("default")
+			obj.SetKind("Pod")
+
+			event := eventqueue.Event{
+				Object: obj,
+				Request: admission.Request{
+					AdmissionRequest: admissionv1.AdmissionRequest{
+						Operation: tc.operation,
+						UserInfo: authenticationv1.UserInfo{
+							Username: "test-user",
+						},
+					},
+				},
+				ResourcePlural:   "pods",
+				GitRepoConfigRef: "test-repo",
+			}
+
+			message := GetCommitMessage(event)
+			assert.Contains(t, message, tc.expected)
+		})
+	}
+}
+
+func TestGetFilePath_DeleteOperation(t *testing.T) {
+	// Test that file paths are consistent regardless of operation
+	obj := &unstructured.Unstructured{}
+	obj.SetName("test-resource")
+	obj.SetNamespace("production")
+	obj.SetKind("Secret")
+
+	// File path should be same for CREATE, UPDATE, and DELETE
+	path := GetFilePath(obj, "secrets")
+	expected := "namespaces/production/secrets/test-resource.yaml"
+
+	assert.Equal(t, expected, path)
+}
+
+func TestDeleteOperation_CommitMessageFormat(t *testing.T) {
+	// Test that DELETE operations have proper commit message format
+	testCases := []struct {
+		name      string
+		namespace string
+		kind      string
+		username  string
+		expected  string
+	}{
+		{
+			name:      "app-config",
+			namespace: "staging",
+			kind:      "ConfigMap",
+			username:  "developer",
+			expected:  "[DELETE] ConfigMap/app-config in ns/staging by user/developer",
+		},
+		{
+			name:      "db-secret",
+			namespace: "production",
+			kind:      "Secret",
+			username:  "admin",
+			expected:  "[DELETE] Secret/db-secret in ns/production by user/admin",
+		},
+		{
+			name:      "web-deployment",
+			namespace: "default",
+			kind:      "Deployment",
+			username:  "system:serviceaccount:kube-system:deployment-controller",
+			expected:  "[DELETE] Deployment/web-deployment in ns/default by user/system:serviceaccount:kube-system:deployment-controller",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			obj := &unstructured.Unstructured{}
+			obj.SetName(tc.name)
+			obj.SetNamespace(tc.namespace)
+			obj.SetKind(tc.kind)
+
+			event := eventqueue.Event{
+				Object: obj,
+				Request: admission.Request{
+					AdmissionRequest: admissionv1.AdmissionRequest{
+						Operation: admissionv1.Delete,
+						UserInfo: authenticationv1.UserInfo{
+							Username: tc.username,
+						},
+					},
+				},
+				GitRepoConfigRef: "test-repo",
+			}
+
+			message := GetCommitMessage(event)
+			assert.Equal(t, tc.expected, message)
+		})
+	}
+}
+
+func TestDeleteOperation_ClusterScoped(t *testing.T) {
+	// Test DELETE operation for cluster-scoped resources
+	obj := &unstructured.Unstructured{}
+	obj.SetName("test-namespace")
+	obj.SetKind("Namespace")
+	// No namespace for cluster-scoped resources
+
+	event := eventqueue.Event{
+		Object: obj,
+		Request: admission.Request{
+			AdmissionRequest: admissionv1.AdmissionRequest{
+				Operation: admissionv1.Delete,
+				UserInfo: authenticationv1.UserInfo{
+					Username: "cluster-admin",
+				},
+			},
+		},
+		ResourcePlural:   "namespaces",
+		GitRepoConfigRef: "cluster-repo",
+	}
+
+	// Verify file path
+	filePath := GetFilePath(obj, "namespaces")
+	assert.Equal(t, "cluster-scoped/namespaces/test-namespace.yaml", filePath)
+
+	// Verify commit message
+	commitMessage := GetCommitMessage(event)
+	assert.Equal(t, "[DELETE] Namespace/test-namespace in ns/ by user/cluster-admin", commitMessage)
+}
+
+func TestBatchOperations_MultipleDeletes(t *testing.T) {
+	// Test that multiple DELETE operations can be processed
+	resources := []struct {
+		name      string
+		namespace string
+		kind      string
+		plural    string
+	}{
+		{"pod-1", "default", "Pod", "pods"},
+		{"pod-2", "default", "Pod", "pods"},
+		{"service-1", "default", "Service", "services"},
+		{"configmap-1", "kube-system", "ConfigMap", "configmaps"},
+	}
+
+	var events []eventqueue.Event
+	for _, res := range resources {
+		obj := &unstructured.Unstructured{}
+		obj.SetName(res.name)
+		obj.SetNamespace(res.namespace)
+		obj.SetKind(res.kind)
+
+		event := eventqueue.Event{
+			Object: obj,
+			Request: admission.Request{
+				AdmissionRequest: admissionv1.AdmissionRequest{
+					Operation: admissionv1.Delete,
+					UserInfo: authenticationv1.UserInfo{
+						Username: "batch-delete-user",
+					},
+				},
+			},
+			ResourcePlural:   res.plural,
+			GitRepoConfigRef: "test-repo",
+		}
+		events = append(events, event)
+	}
+
+	// Verify each event has correct DELETE operation
+	for i, event := range events {
+		message := GetCommitMessage(event)
+		assert.Contains(t, message, "[DELETE]")
+		assert.Contains(t, message, resources[i].name)
+		assert.Contains(t, message, resources[i].namespace)
+	}
+
+	// Verify we have the expected number of events
+	assert.Len(t, events, 4)
+}

@@ -223,47 +223,112 @@ func (r *Repo) generateLocalCommits(ctx context.Context, events []eventqueue.Eve
 	}
 
 	for _, event := range events {
-		// Generate file content
 		filePath := GetFilePath(event.Object, event.ResourcePlural)
-		fullPath := filepath.Join(r.path, filePath)
 
-		// Ensure directory exists
-		if err := os.MkdirAll(filepath.Dir(fullPath), 0750); err != nil {
-			return fmt.Errorf("failed to create directory for %s: %w", filePath, err)
-		}
-
-		// Convert object to YAML
-		content, err := yaml.Marshal(event.Object.Object)
-		if err != nil {
-			return fmt.Errorf("failed to marshal object to YAML: %w", err)
-		}
-
-		// Write file
-		if err := os.WriteFile(fullPath, content, 0600); err != nil {
-			return fmt.Errorf("failed to write file %s: %w", filePath, err)
-		}
-
-		// Add to git
-		if _, err := worktree.Add(filePath); err != nil {
-			return fmt.Errorf("failed to add file %s to git: %w", filePath, err)
+		// Handle the event based on operation type
+		if err := r.handleEventOperation(ctx, event, filePath, worktree); err != nil {
+			return err
 		}
 
 		// Create individual commit for this event
-		commitMessage := GetCommitMessage(event)
-		_, err = worktree.Commit(commitMessage, &git.CommitOptions{
-			Author: &object.Signature{
-				Name:  "GitOps Reverser",
-				Email: "gitops-reverser@configbutler.ai",
-				When:  time.Now(),
-			},
-		})
-		if err != nil {
-			return fmt.Errorf("failed to commit %s: %w", filePath, err)
+		if err := r.createCommitForEvent(event, filePath, worktree); err != nil {
+			return err
 		}
 
-		logger.Info("Created commit", "file", filePath, "message", commitMessage)
+		logger.Info("Created commit", "file", filePath, "operation", event.Request.Operation)
 	}
 
+	return nil
+}
+
+// handleEventOperation processes an event based on its operation type (CREATE/UPDATE/DELETE).
+func (r *Repo) handleEventOperation(
+	ctx context.Context,
+	event eventqueue.Event,
+	filePath string,
+	worktree *git.Worktree,
+) error {
+	logger := log.FromContext(ctx)
+	fullPath := filepath.Join(r.path, filePath)
+
+	if event.Request.Operation == "DELETE" {
+		return r.handleDeleteOperation(logger, filePath, fullPath, worktree)
+	}
+
+	return r.handleCreateOrUpdateOperation(event, filePath, fullPath, worktree)
+}
+
+// handleDeleteOperation removes a file from the repository.
+func (r *Repo) handleDeleteOperation(logger logr.Logger, filePath, fullPath string, worktree *git.Worktree) error {
+	// Check if file exists before attempting deletion
+	_, statErr := os.Stat(fullPath)
+	if statErr == nil {
+		// Remove file from filesystem
+		if err := os.Remove(fullPath); err != nil {
+			return fmt.Errorf("failed to delete file %s: %w", filePath, err)
+		}
+
+		// Stage deletion in git
+		if _, err := worktree.Remove(filePath); err != nil {
+			return fmt.Errorf("failed to remove file %s from git: %w", filePath, err)
+		}
+
+		logger.Info("Deleted file from repository", "file", filePath)
+		return nil
+	}
+
+	if os.IsNotExist(statErr) {
+		// File doesn't exist, log and skip (already deleted or never committed)
+		logger.Info("File does not exist, skipping deletion", "file", filePath)
+		return nil
+	}
+
+	return fmt.Errorf("failed to check file status %s: %w", filePath, statErr)
+}
+
+// handleCreateOrUpdateOperation writes and stages a file in the repository.
+func (r *Repo) handleCreateOrUpdateOperation(
+	event eventqueue.Event,
+	filePath, fullPath string,
+	worktree *git.Worktree,
+) error {
+	// Ensure directory exists
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0750); err != nil {
+		return fmt.Errorf("failed to create directory for %s: %w", filePath, err)
+	}
+
+	// Convert object to YAML
+	content, err := yaml.Marshal(event.Object.Object)
+	if err != nil {
+		return fmt.Errorf("failed to marshal object to YAML: %w", err)
+	}
+
+	// Write file
+	if err := os.WriteFile(fullPath, content, 0600); err != nil {
+		return fmt.Errorf("failed to write file %s: %w", filePath, err)
+	}
+
+	// Add to git
+	if _, err := worktree.Add(filePath); err != nil {
+		return fmt.Errorf("failed to add file %s to git: %w", filePath, err)
+	}
+
+	return nil
+}
+
+// createCommitForEvent creates a git commit for the given event.
+func (r *Repo) createCommitForEvent(event eventqueue.Event, filePath string, worktree *git.Worktree) error {
+	commitMessage := GetCommitMessage(event)
+	_, err := worktree.Commit(commitMessage, &git.CommitOptions{
+		Author: &object.Signature{
+			Name:  "GitOps Reverser",
+			Email: "gitops-reverser@configbutler.ai",
+			When:  time.Now(),
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("failed to commit %s: %w", filePath, err)
+	}
 	return nil
 }
 
