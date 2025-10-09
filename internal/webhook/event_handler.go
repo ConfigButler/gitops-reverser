@@ -80,12 +80,17 @@ func (h *EventHandler) Handle(ctx context.Context, req admission.Request) admiss
 	log.V(1).Info("Successfully decoded resource", //nolint:lll // Structured log
 		"kind", obj.GetKind(), "name", obj.GetName(), "namespace", obj.GetNamespace(), "operation", req.Operation)
 
-	matchingRules := h.RuleStore.GetMatchingRules(obj)
+	// Extract the plural resource name from the admission request
+	resourcePlural := req.Resource.Resource
+
+	matchingRules := h.RuleStore.GetMatchingRules(obj, resourcePlural)
 	if h.EnableVerboseAdmissionLogs {
 		log.Info(
 			"Checking for matching rules", //nolint:lll // Structured log
 			"kind",
 			obj.GetKind(),
+			"resourcePlural",
+			resourcePlural,
 			"name",
 			obj.GetName(),
 			"namespace",

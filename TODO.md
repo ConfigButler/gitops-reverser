@@ -34,3 +34,11 @@ This is what I had:
 Get the RBAC updates in the helm chart automated
 Validate the git credentials every 10 minutes: only do a pull on the existing repo, don't clone the whole thing again
 Add tests for CRs"
+
+Somehow the trigger/filtering is not correct at the moment: I need to investigate better why my crd endpointchecker stuff is not safed, and how I would reference the k8s types in the correct way.
+
+There should also be some examples in the unit tests somewhow: I should be able to hunt down some of these things that come in, and why I'm not 'getting' them at this moment (so there is still some human work involved luckily enough).
+
+I'm not to happy with all the sanitize stuff: It's throwing away some metadata fields that could prove valuable as well. Isn't it going to be good enough to just throw away the status field? We don't want things to be to big, but also not be to small...
+
+Will we allow to keep status as well? Is it perhaps usefull for some usecases? It also depends where the API server will run: people could also choose the run this concept in their own cluster. It would be a backup.

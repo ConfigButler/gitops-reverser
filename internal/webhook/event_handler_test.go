@@ -43,7 +43,7 @@ func TestEventHandler_Handle_MatchingRule(t *testing.T) {
 			GitRepoConfigRef: "test-repo-config",
 			Rules: []configv1alpha1.ResourceRule{
 				{
-					Resources: []string{"Pod"},
+					Resources: []string{"pods"},
 				},
 			},
 		},
@@ -87,6 +87,11 @@ func TestEventHandler_Handle_MatchingRule(t *testing.T) {
 		AdmissionRequest: admissionv1.AdmissionRequest{
 			UID:       "test-uid",
 			Operation: admissionv1.Create,
+			Resource: metav1.GroupVersionResource{
+				Group:    "",
+				Version:  "v1",
+				Resource: "pods",
+			},
 			Object: runtime.RawExtension{
 				Raw: podBytes,
 			},
@@ -139,7 +144,7 @@ func TestEventHandler_Handle_NoMatchingRule(t *testing.T) {
 			GitRepoConfigRef: "test-repo-config",
 			Rules: []configv1alpha1.ResourceRule{
 				{
-					Resources: []string{"Service"},
+					Resources: []string{"services"},
 				},
 			},
 		},
@@ -175,6 +180,11 @@ func TestEventHandler_Handle_NoMatchingRule(t *testing.T) {
 		AdmissionRequest: admissionv1.AdmissionRequest{
 			UID:       "test-uid",
 			Operation: admissionv1.Create,
+			Resource: metav1.GroupVersionResource{
+				Group:    "",
+				Version:  "v1",
+				Resource: "pods",
+			},
 			Object: runtime.RawExtension{
 				Raw: podBytes,
 			},
@@ -215,7 +225,7 @@ func TestEventHandler_Handle_MultipleMatchingRules(t *testing.T) {
 			GitRepoConfigRef: "repo-config-1",
 			Rules: []configv1alpha1.ResourceRule{
 				{
-					Resources: []string{"Pod"},
+					Resources: []string{"pods"},
 				},
 			},
 		},
@@ -230,7 +240,7 @@ func TestEventHandler_Handle_MultipleMatchingRules(t *testing.T) {
 			GitRepoConfigRef: "repo-config-2",
 			Rules: []configv1alpha1.ResourceRule{
 				{
-					Resources: []string{"Pod", "Service"},
+					Resources: []string{"pods", "services"},
 				},
 			},
 		},
@@ -268,6 +278,11 @@ func TestEventHandler_Handle_MultipleMatchingRules(t *testing.T) {
 		AdmissionRequest: admissionv1.AdmissionRequest{
 			UID:       "test-uid",
 			Operation: admissionv1.Create,
+			Resource: metav1.GroupVersionResource{
+				Group:    "",
+				Version:  "v1",
+				Resource: "pods",
+			},
 			Object: runtime.RawExtension{
 				Raw: podBytes,
 			},
@@ -330,7 +345,7 @@ func TestEventHandler_Handle_ExcludedByLabels(t *testing.T) {
 			},
 			Rules: []configv1alpha1.ResourceRule{
 				{
-					Resources: []string{"Pod"},
+					Resources: []string{"pods"},
 				},
 			},
 		},
@@ -369,6 +384,11 @@ func TestEventHandler_Handle_ExcludedByLabels(t *testing.T) {
 		AdmissionRequest: admissionv1.AdmissionRequest{
 			UID:       "test-uid",
 			Operation: admissionv1.Create,
+			Resource: metav1.GroupVersionResource{
+				Group:    "",
+				Version:  "v1",
+				Resource: "pods",
+			},
 			Object: runtime.RawExtension{
 				Raw: podBytes,
 			},
@@ -453,7 +473,7 @@ func TestEventHandler_Handle_WildcardMatching(t *testing.T) {
 			GitRepoConfigRef: "test-repo-config",
 			Rules: []configv1alpha1.ResourceRule{
 				{
-					Resources: []string{"Ingress*"},
+					Resources: []string{"ingress*"},
 				},
 			},
 		},
@@ -493,6 +513,11 @@ func TestEventHandler_Handle_WildcardMatching(t *testing.T) {
 		AdmissionRequest: admissionv1.AdmissionRequest{
 			UID:       "test-uid",
 			Operation: admissionv1.Create,
+			Resource: metav1.GroupVersionResource{
+				Group:    "networking.k8s.io",
+				Version:  "v1",
+				Resource: "ingressclasses",
+			},
 			Object: runtime.RawExtension{
 				Raw: ingressClassBytes,
 			},
@@ -548,7 +573,7 @@ func TestEventHandler_Handle_DifferentOperations(t *testing.T) {
 					GitRepoConfigRef: "test-repo-config",
 					Rules: []configv1alpha1.ResourceRule{
 						{
-							Resources: []string{"Pod"},
+							Resources: []string{"pods"},
 						},
 					},
 				},
@@ -584,6 +609,11 @@ func TestEventHandler_Handle_DifferentOperations(t *testing.T) {
 				AdmissionRequest: admissionv1.AdmissionRequest{
 					UID:       "test-uid",
 					Operation: operation,
+					Resource: metav1.GroupVersionResource{
+						Group:    "",
+						Version:  "v1",
+						Resource: "pods",
+					},
 					Object: runtime.RawExtension{
 						Raw: podBytes,
 					},
@@ -632,7 +662,7 @@ func TestEventHandler_Handle_ClusterScopedResource(t *testing.T) {
 			GitRepoConfigRef: "cluster-repo-config",
 			Rules: []configv1alpha1.ResourceRule{
 				{
-					Resources: []string{"Namespace"},
+					Resources: []string{"namespaces"},
 				},
 			},
 		},
@@ -667,6 +697,11 @@ func TestEventHandler_Handle_ClusterScopedResource(t *testing.T) {
 		AdmissionRequest: admissionv1.AdmissionRequest{
 			UID:       "test-uid",
 			Operation: admissionv1.Create,
+			Resource: metav1.GroupVersionResource{
+				Group:    "",
+				Version:  "v1",
+				Resource: "namespaces",
+			},
 			Object: runtime.RawExtension{
 				Raw: namespaceBytes,
 			},
@@ -728,7 +763,7 @@ func TestEventHandler_Handle_SanitizationApplied(t *testing.T) {
 			GitRepoConfigRef: "test-repo-config",
 			Rules: []configv1alpha1.ResourceRule{
 				{
-					Resources: []string{"Pod"},
+					Resources: []string{"pods"},
 				},
 			},
 		},
@@ -777,6 +812,11 @@ func TestEventHandler_Handle_SanitizationApplied(t *testing.T) {
 		AdmissionRequest: admissionv1.AdmissionRequest{
 			UID:       "test-uid",
 			Operation: admissionv1.Create,
+			Resource: metav1.GroupVersionResource{
+				Group:    "",
+				Version:  "v1",
+				Resource: "pods",
+			},
 			Object: runtime.RawExtension{
 				Raw: podBytes,
 			},

@@ -32,7 +32,7 @@ func TestAddOrUpdate_BasicRule(t *testing.T) {
 			GitRepoConfigRef: "my-repo-config",
 			Rules: []configv1alpha1.ResourceRule{
 				{
-					Resources: []string{"Pod", "Service"},
+					Resources: []string{"pods", "services"},
 				},
 			},
 		},
@@ -48,7 +48,7 @@ func TestAddOrUpdate_BasicRule(t *testing.T) {
 
 	assert.Equal(t, key, compiledRule.Source)
 	assert.Equal(t, "my-repo-config", compiledRule.GitRepoConfigRef)
-	assert.Equal(t, []string{"Pod", "Service"}, compiledRule.Resources)
+	assert.Equal(t, []string{"pods", "services"}, compiledRule.Resources)
 	assert.Nil(t, compiledRule.ExcludeLabels)
 }
 
@@ -72,7 +72,7 @@ func TestAddOrUpdate_RuleWithExcludeLabels(t *testing.T) {
 			},
 			Rules: []configv1alpha1.ResourceRule{
 				{
-					Resources: []string{"Deployment"},
+					Resources: []string{"deployments"},
 				},
 			},
 		},
@@ -100,10 +100,10 @@ func TestAddOrUpdate_MultipleResourceRules(t *testing.T) {
 			GitRepoConfigRef: "my-repo-config",
 			Rules: []configv1alpha1.ResourceRule{
 				{
-					Resources: []string{"Pod", "Service"},
+					Resources: []string{"pods", "services"},
 				},
 				{
-					Resources: []string{"Deployment", "ConfigMap"},
+					Resources: []string{"deployments", "configmaps"},
 				},
 			},
 		},
@@ -115,7 +115,7 @@ func TestAddOrUpdate_MultipleResourceRules(t *testing.T) {
 	compiledRule := store.rules[key]
 
 	// Should flatten all resources from all rules
-	expected := []string{"Pod", "Service", "Deployment", "ConfigMap"}
+	expected := []string{"pods", "services", "deployments", "configmaps"}
 	assert.Equal(t, expected, compiledRule.Resources)
 }
 
@@ -132,7 +132,7 @@ func TestAddOrUpdate_UpdateExistingRule(t *testing.T) {
 			GitRepoConfigRef: "repo-config-1",
 			Rules: []configv1alpha1.ResourceRule{
 				{
-					Resources: []string{"Pod"},
+					Resources: []string{"pods"},
 				},
 			},
 		},
@@ -149,7 +149,7 @@ func TestAddOrUpdate_UpdateExistingRule(t *testing.T) {
 			GitRepoConfigRef: "repo-config-2",
 			Rules: []configv1alpha1.ResourceRule{
 				{
-					Resources: []string{"Service", "Deployment"},
+					Resources: []string{"services", "deployments"},
 				},
 			},
 		},
@@ -163,7 +163,7 @@ func TestAddOrUpdate_UpdateExistingRule(t *testing.T) {
 	compiledRule := store.rules[key]
 
 	assert.Equal(t, "repo-config-2", compiledRule.GitRepoConfigRef)
-	assert.Equal(t, []string{"Service", "Deployment"}, compiledRule.Resources)
+	assert.Equal(t, []string{"services", "deployments"}, compiledRule.Resources)
 }
 
 func TestDelete(t *testing.T) {
@@ -178,7 +178,7 @@ func TestDelete(t *testing.T) {
 			GitRepoConfigRef: "my-repo-config",
 			Rules: []configv1alpha1.ResourceRule{
 				{
-					Resources: []string{"Pod"},
+					Resources: []string{"pods"},
 				},
 			},
 		},
@@ -214,7 +214,7 @@ func TestGetMatchingRules_ExactMatch(t *testing.T) {
 			GitRepoConfigRef: "my-repo-config",
 			Rules: []configv1alpha1.ResourceRule{
 				{
-					Resources: []string{"Pod"},
+					Resources: []string{"pods"},
 				},
 			},
 		},
@@ -231,7 +231,7 @@ func TestGetMatchingRules_ExactMatch(t *testing.T) {
 	obj.SetName("test-pod")
 	obj.SetNamespace("default")
 
-	matches := store.GetMatchingRules(obj)
+	matches := store.GetMatchingRules(obj, "pods")
 	assert.Len(t, matches, 1)
 	assert.Equal(t, "pod-rule", matches[0].Source.Name)
 }
@@ -248,7 +248,7 @@ func TestGetMatchingRules_WildcardMatch(t *testing.T) {
 			GitRepoConfigRef: "my-repo-config",
 			Rules: []configv1alpha1.ResourceRule{
 				{
-					Resources: []string{"Ingress*"},
+					Resources: []string{"ingress*"},
 				},
 			},
 		},
@@ -257,14 +257,15 @@ func TestGetMatchingRules_WildcardMatch(t *testing.T) {
 
 	// Test various Ingress-related resources
 	testCases := []struct {
-		kind        string
-		shouldMatch bool
+		kind           string
+		resourcePlural string
+		shouldMatch    bool
 	}{
-		{"Ingress", true},
-		{"IngressClass", true},
-		{"IngressRoute", true},
-		{"Service", false},
-		{"Pod", false},
+		{"Ingress", "ingresses", true},
+		{"IngressClass", "ingressclasses", true},
+		{"IngressRoute", "ingressroutes", true},
+		{"Service", "services", false},
+		{"Pod", "pods", false},
 	}
 
 	for _, tc := range testCases {
@@ -278,11 +279,11 @@ func TestGetMatchingRules_WildcardMatch(t *testing.T) {
 			obj.SetName("test-resource")
 			obj.SetNamespace("default")
 
-			matches := store.GetMatchingRules(obj)
+			matches := store.GetMatchingRules(obj, tc.resourcePlural)
 			if tc.shouldMatch {
-				assert.Len(t, matches, 1, "Expected %s to match Ingress*", tc.kind)
+				assert.Len(t, matches, 1, "Expected %s to match ingress*", tc.resourcePlural)
 			} else {
-				assert.Empty(t, matches, "Expected %s not to match Ingress*", tc.kind)
+				assert.Empty(t, matches, "Expected %s not to match ingress*", tc.resourcePlural)
 			}
 		})
 	}
@@ -308,7 +309,7 @@ func TestGetMatchingRules_ExcludedByLabels(t *testing.T) {
 			},
 			Rules: []configv1alpha1.ResourceRule{
 				{
-					Resources: []string{"Pod"},
+					Resources: []string{"pods"},
 				},
 			},
 		},
@@ -325,7 +326,7 @@ func TestGetMatchingRules_ExcludedByLabels(t *testing.T) {
 	obj1.SetName("normal-pod")
 	obj1.SetNamespace("default")
 
-	matches := store.GetMatchingRules(obj1)
+	matches := store.GetMatchingRules(obj1, "pods")
 	assert.Len(t, matches, 1)
 
 	// Test Pod with ignore label - should not match
@@ -341,7 +342,7 @@ func TestGetMatchingRules_ExcludedByLabels(t *testing.T) {
 		"configbutler.ai/ignore": "true",
 	})
 
-	matches = store.GetMatchingRules(obj2)
+	matches = store.GetMatchingRules(obj2, "pods")
 	assert.Empty(t, matches)
 }
 
@@ -369,7 +370,7 @@ func TestGetMatchingRules_ComplexLabelSelector(t *testing.T) {
 			},
 			Rules: []configv1alpha1.ResourceRule{
 				{
-					Resources: []string{"Pod"},
+					Resources: []string{"pods"},
 				},
 			},
 		},
@@ -426,7 +427,7 @@ func TestGetMatchingRules_ComplexLabelSelector(t *testing.T) {
 			obj.SetNamespace("default")
 			obj.SetLabels(tc.labels)
 
-			matches := store.GetMatchingRules(obj)
+			matches := store.GetMatchingRules(obj, "pods")
 			if tc.shouldMatch {
 				assert.Len(t, matches, 1, "Expected pod with labels %v to match", tc.labels)
 			} else {
@@ -449,7 +450,7 @@ func TestGetMatchingRules_MultipleRules(t *testing.T) {
 			GitRepoConfigRef: "repo-config-1",
 			Rules: []configv1alpha1.ResourceRule{
 				{
-					Resources: []string{"Pod"},
+					Resources: []string{"pods"},
 				},
 			},
 		},
@@ -464,7 +465,7 @@ func TestGetMatchingRules_MultipleRules(t *testing.T) {
 			GitRepoConfigRef: "repo-config-2",
 			Rules: []configv1alpha1.ResourceRule{
 				{
-					Resources: []string{"Pod", "Service", "Deployment"},
+					Resources: []string{"pods", "services", "deployments"},
 				},
 			},
 		},
@@ -479,7 +480,7 @@ func TestGetMatchingRules_MultipleRules(t *testing.T) {
 			GitRepoConfigRef: "repo-config-3",
 			Rules: []configv1alpha1.ResourceRule{
 				{
-					Resources: []string{"Service"},
+					Resources: []string{"services"},
 				},
 			},
 		},
@@ -499,7 +500,7 @@ func TestGetMatchingRules_MultipleRules(t *testing.T) {
 	obj.SetName("test-pod")
 	obj.SetNamespace("default")
 
-	matches := store.GetMatchingRules(obj)
+	matches := store.GetMatchingRules(obj, "pods")
 	assert.Len(t, matches, 2)
 
 	// Verify both rules are returned
@@ -523,7 +524,7 @@ func TestGetMatchingRules_NoMatches(t *testing.T) {
 			GitRepoConfigRef: "my-repo-config",
 			Rules: []configv1alpha1.ResourceRule{
 				{
-					Resources: []string{"Pod"},
+					Resources: []string{"pods"},
 				},
 			},
 		},
@@ -540,7 +541,7 @@ func TestGetMatchingRules_NoMatches(t *testing.T) {
 	obj.SetName("test-service")
 	obj.SetNamespace("default")
 
-	matches := store.GetMatchingRules(obj)
+	matches := store.GetMatchingRules(obj, "services")
 	assert.Empty(t, matches)
 }
 
@@ -556,7 +557,7 @@ func TestGetMatchingRules_EmptyStore(t *testing.T) {
 	obj.SetName("test-pod")
 	obj.SetNamespace("default")
 
-	matches := store.GetMatchingRules(obj)
+	matches := store.GetMatchingRules(obj, "pods")
 	assert.Empty(t, matches)
 }
 
@@ -565,7 +566,7 @@ func TestCompiledRule_matches_InvalidLabelSelector(t *testing.T) {
 	rule := &CompiledRule{
 		Source:           types.NamespacedName{Name: "test", Namespace: "default"},
 		GitRepoConfigRef: "repo",
-		Resources:        []string{"Pod"},
+		Resources:        []string{"pods"},
 		ExcludeLabels: &metav1.LabelSelector{
 			MatchExpressions: []metav1.LabelSelectorRequirement{
 				{
@@ -586,7 +587,7 @@ func TestCompiledRule_matches_InvalidLabelSelector(t *testing.T) {
 	obj.SetNamespace("default")
 
 	// Should return false when label selector is invalid
-	matches := rule.matches(obj)
+	matches := rule.matches(obj, "pods")
 	assert.False(t, matches)
 }
 
@@ -608,7 +609,7 @@ func TestConcurrentAccess(t *testing.T) {
 					GitRepoConfigRef: "repo-config",
 					Rules: []configv1alpha1.ResourceRule{
 						{
-							Resources: []string{"Pod"},
+							Resources: []string{"pods"},
 						},
 					},
 				},
@@ -630,7 +631,7 @@ func TestConcurrentAccess(t *testing.T) {
 		obj.SetNamespace("default")
 
 		for range 100 {
-			store.GetMatchingRules(obj)
+			store.GetMatchingRules(obj, "pods")
 		}
 		done <- true
 	}()
@@ -645,25 +646,28 @@ func TestConcurrentAccess(t *testing.T) {
 
 func TestWildcardMatching_EdgeCases(t *testing.T) {
 	testCases := []struct {
-		pattern     string
-		kind        string
-		shouldMatch bool
+		pattern        string
+		resourcePlural string
+		shouldMatch    bool
 	}{
-		{"*", "Pod", true},
-		{"*", "Service", true},
+		{"*", "pods", true},
+		{"*", "services", true},
 		{"*", "", true},
-		{"Pod*", "Pod", true},
-		{"Pod*", "PodDisruptionBudget", true},
-		{"Pod*", "Service", false},
-		{"*Pod", "Pod", false}, // Only prefix wildcards supported
-		{"P*d", "Pod", false},  // Only suffix wildcards supported
-		{"", "Pod", false},     // Empty pattern
-		{"Pod", "Pod", true},   // Exact match
-		{"Pod", "pod", false},  // Case sensitive
+		{"pod*", "pods", true},
+		{"pod*", "poddisruptionbudgets", true},
+		{"pod*", "services", false},
+		{"*pods", "pods", true},                       // Prefix wildcard (suffix matching)
+		{"*.example.com", "myapps.example.com", true}, // Prefix wildcard for group
+		{"p*d", "pods", false},                        // Middle wildcards not supported
+		{"", "pods", false},                           // Empty pattern
+		{"pods", "pods", true},                        // Exact match
+		{"pods", "Pods", true},                        // Case insensitive
+		{"PODS", "pods", true},                        // Case insensitive
+		{"pods", "services", false},                   // Different resource
 	}
 
 	for _, tc := range testCases {
-		t.Run(tc.pattern+"_vs_"+tc.kind, func(t *testing.T) {
+		t.Run(tc.pattern+"_vs_"+tc.resourcePlural, func(t *testing.T) {
 			rule := &CompiledRule{
 				Resources: []string{tc.pattern},
 			}
@@ -672,12 +676,293 @@ func TestWildcardMatching_EdgeCases(t *testing.T) {
 			obj.SetGroupVersionKind(schema.GroupVersionKind{
 				Group:   "",
 				Version: "v1",
-				Kind:    tc.kind,
+				Kind:    "SomeKind", // Kind doesn't matter anymore
 			})
 
-			matches := rule.matches(obj)
+			matches := rule.matches(obj, tc.resourcePlural)
 			assert.Equal(t, tc.shouldMatch, matches,
-				"Pattern %s should match %s: %v", tc.pattern, tc.kind, tc.shouldMatch)
+				"Pattern %s should match %s: %v", tc.pattern, tc.resourcePlural, tc.shouldMatch)
+		})
+	}
+}
+
+func TestGetMatchingRules_CustomResources(t *testing.T) {
+	store := NewStore()
+
+	// Test matching custom resources using plural resource names
+	rule := configv1alpha1.WatchRule{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "myapp-rule",
+			Namespace: "default",
+		},
+		Spec: configv1alpha1.WatchRuleSpec{
+			GitRepoConfigRef: "my-repo-config",
+			Rules: []configv1alpha1.ResourceRule{
+				{
+					Resources: []string{"myapps.example.com"},
+				},
+			},
+		},
+	}
+	store.AddOrUpdate(rule)
+
+	// Create a MyApp custom resource object
+	obj := &unstructured.Unstructured{}
+	obj.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "example.com",
+		Version: "v1",
+		Kind:    "MyApp",
+	})
+	obj.SetName("test-myapp")
+	obj.SetNamespace("default")
+
+	// Test matching with the full group-qualified plural name
+	matches := store.GetMatchingRules(obj, "myapps.example.com")
+	assert.Len(t, matches, 1, "Expected custom resource to match using group-qualified plural")
+	assert.Equal(t, "myapp-rule", matches[0].Source.Name)
+
+	// Test that just the plural without group doesn't match
+	matches = store.GetMatchingRules(obj, "myapps")
+	assert.Empty(t, matches, "Expected no match without group qualifier")
+}
+
+func TestGetMatchingRules_MultipleCustomResources(t *testing.T) {
+	store := NewStore()
+
+	rule := configv1alpha1.WatchRule{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "crd-rule",
+			Namespace: "default",
+		},
+		Spec: configv1alpha1.WatchRuleSpec{
+			GitRepoConfigRef: "my-repo-config",
+			Rules: []configv1alpha1.ResourceRule{
+				{
+					Resources: []string{
+						"myapps.example.com",
+						"databases.db.example.com",
+						"queues.messaging.io",
+					},
+				},
+			},
+		},
+	}
+	store.AddOrUpdate(rule)
+
+	testCases := []struct {
+		name           string
+		group          string
+		kind           string
+		resourcePlural string
+		shouldMatch    bool
+	}{
+		{
+			name:           "MyApp matches",
+			group:          "example.com",
+			kind:           "MyApp",
+			resourcePlural: "myapps.example.com",
+			shouldMatch:    true,
+		},
+		{
+			name:           "Database matches",
+			group:          "db.example.com",
+			kind:           "Database",
+			resourcePlural: "databases.db.example.com",
+			shouldMatch:    true,
+		},
+		{
+			name:           "Queue matches",
+			group:          "messaging.io",
+			kind:           "Queue",
+			resourcePlural: "queues.messaging.io",
+			shouldMatch:    true,
+		},
+		{
+			name:           "Unrelated CRD doesn't match",
+			group:          "other.io",
+			kind:           "Other",
+			resourcePlural: "others.other.io",
+			shouldMatch:    false,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			obj := &unstructured.Unstructured{}
+			obj.SetGroupVersionKind(schema.GroupVersionKind{
+				Group:   tc.group,
+				Version: "v1",
+				Kind:    tc.kind,
+			})
+			obj.SetName("test-resource")
+			obj.SetNamespace("default")
+
+			matches := store.GetMatchingRules(obj, tc.resourcePlural)
+			if tc.shouldMatch {
+				assert.Len(t, matches, 1, "Expected %s to match", tc.resourcePlural)
+			} else {
+				assert.Empty(t, matches, "Expected %s not to match", tc.resourcePlural)
+			}
+		})
+	}
+}
+
+func TestGetMatchingRules_MixedCoreAndCustomResources(t *testing.T) {
+	store := NewStore()
+
+	rule := configv1alpha1.WatchRule{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "mixed-rule",
+			Namespace: "default",
+		},
+		Spec: configv1alpha1.WatchRuleSpec{
+			GitRepoConfigRef: "my-repo-config",
+			Rules: []configv1alpha1.ResourceRule{
+				{
+					// Mix core resources and custom resources
+					Resources: []string{
+						"configmaps",
+						"secrets",
+						"myapps.example.com",
+					},
+				},
+			},
+		},
+	}
+	store.AddOrUpdate(rule)
+
+	testCases := []struct {
+		name           string
+		group          string
+		kind           string
+		resourcePlural string
+		shouldMatch    bool
+	}{
+		{
+			name:           "ConfigMap matches",
+			group:          "",
+			kind:           "ConfigMap",
+			resourcePlural: "configmaps",
+			shouldMatch:    true,
+		},
+		{
+			name:           "Secret matches",
+			group:          "",
+			kind:           "Secret",
+			resourcePlural: "secrets",
+			shouldMatch:    true,
+		},
+		{
+			name:           "MyApp custom resource matches",
+			group:          "example.com",
+			kind:           "MyApp",
+			resourcePlural: "myapps.example.com",
+			shouldMatch:    true,
+		},
+		{
+			name:           "Pod doesn't match",
+			group:          "",
+			kind:           "Pod",
+			resourcePlural: "pods",
+			shouldMatch:    false,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			obj := &unstructured.Unstructured{}
+			obj.SetGroupVersionKind(schema.GroupVersionKind{
+				Group:   tc.group,
+				Version: "v1",
+				Kind:    tc.kind,
+			})
+			obj.SetName("test-resource")
+			obj.SetNamespace("default")
+
+			matches := store.GetMatchingRules(obj, tc.resourcePlural)
+			if tc.shouldMatch {
+				assert.Len(t, matches, 1, "Expected %s to match", tc.resourcePlural)
+			} else {
+				assert.Empty(t, matches, "Expected %s not to match", tc.resourcePlural)
+			}
+		})
+	}
+}
+
+func TestGetMatchingRules_CustomResourceWildcard(t *testing.T) {
+	store := NewStore()
+
+	rule := configv1alpha1.WatchRule{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "wildcard-crd-rule",
+			Namespace: "default",
+		},
+		Spec: configv1alpha1.WatchRuleSpec{
+			GitRepoConfigRef: "my-repo-config",
+			Rules: []configv1alpha1.ResourceRule{
+				{
+					// Wildcard to match all resources in example.com group
+					Resources: []string{"*.example.com"},
+				},
+			},
+		},
+	}
+	store.AddOrUpdate(rule)
+
+	testCases := []struct {
+		name           string
+		group          string
+		kind           string
+		resourcePlural string
+		shouldMatch    bool
+	}{
+		{
+			name:           "MyApps in example.com matches",
+			group:          "example.com",
+			kind:           "MyApp",
+			resourcePlural: "myapps.example.com",
+			shouldMatch:    true,
+		},
+		{
+			name:           "Databases in example.com matches",
+			group:          "example.com",
+			kind:           "Database",
+			resourcePlural: "databases.example.com",
+			shouldMatch:    true,
+		},
+		{
+			name:           "Resources in different group don't match",
+			group:          "other.io",
+			kind:           "Other",
+			resourcePlural: "others.other.io",
+			shouldMatch:    false,
+		},
+		{
+			name:           "Core resources don't match",
+			group:          "",
+			kind:           "Pod",
+			resourcePlural: "pods",
+			shouldMatch:    false,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			obj := &unstructured.Unstructured{}
+			obj.SetGroupVersionKind(schema.GroupVersionKind{
+				Group:   tc.group,
+				Version: "v1",
+				Kind:    tc.kind,
+			})
+			obj.SetName("test-resource")
+			obj.SetNamespace("default")
+
+			matches := store.GetMatchingRules(obj, tc.resourcePlural)
+			if tc.shouldMatch {
+				assert.Len(t, matches, 1, "Expected %s to match *.example.com", tc.resourcePlural)
+			} else {
+				assert.Empty(t, matches, "Expected %s not to match *.example.com", tc.resourcePlural)
+			}
 		})
 	}
 }

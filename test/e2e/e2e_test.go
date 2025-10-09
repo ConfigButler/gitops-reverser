@@ -681,6 +681,357 @@ var _ = Describe("Manager", Ordered, func() {
 				configMapName, uniqueRepoName)
 		})
 
+		It("should create Git commit when CRD instance is added via WatchRule", func() {
+			gitRepoConfigName := "gitrepoconfig-crd-test"
+			watchRuleName := "watchrule-crd-test"
+			crdInstanceName := "test-myapp"
+			uniqueRepoName := testRepoName
+			repoURL := getRepoURLHTTP()
+
+			By("installing the sample CRD")
+			cmd := exec.Command("kubectl", "apply", "-f", "test/e2e/templates/sample-crd.yaml")
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to install sample CRD")
+
+			By("waiting for CRD to be established")
+			verifyCRDEstablished := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "crd", "myapps.example.com",
+					"-o", "jsonpath={.status.conditions[?(@.type=='Established')].status}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("True"))
+			}
+			Eventually(verifyCRDEstablished, 30*time.Second, time.Second).Should(Succeed())
+
+			By("creating GitRepoConfig for CRD test")
+			createGitRepoConfigWithURL(gitRepoConfigName, "main", "git-creds", repoURL)
+
+			By("waiting for GitRepoConfig to be ready")
+			verifyGitRepoConfigStatus(gitRepoConfigName, "True", "BranchFound", "Branch 'main' found and accessible")
+
+			By("creating WatchRule that monitors custom resources")
+			data := struct {
+				Name             string
+				Namespace        string
+				GitRepoConfigRef string
+			}{
+				Name:             watchRuleName,
+				Namespace:        namespace,
+				GitRepoConfigRef: gitRepoConfigName,
+			}
+
+			err2 := applyFromTemplate("test/e2e/templates/watchrule-crd.tmpl", data, namespace)
+			Expect(err2).NotTo(HaveOccurred(), "Failed to apply WatchRule for CRDs")
+
+			By("verifying WatchRule is ready")
+			verifyReconciled := func(g Gomega) {
+				jsonPath := "jsonpath={.status.conditions[?(@.type=='Ready')].status}"
+				cmd := exec.Command("kubectl", "get", "watchrule", watchRuleName, "-n", namespace, "-o", jsonPath)
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("True"))
+			}
+			Eventually(verifyReconciled, 15*time.Second, time.Second).Should(Succeed())
+
+			By("creating CRD instance to trigger Git commit")
+			crdInstanceData := struct {
+				Name      string
+				Namespace string
+				Replicas  int
+				Image     string
+				Message   string
+			}{
+				Name:      crdInstanceName,
+				Namespace: namespace,
+				Replicas:  3,
+				Image:     "nginx:1.21",
+				Message:   "Initial CRD test instance",
+			}
+
+			err3 := applyFromTemplate("test/e2e/templates/myapp-instance.tmpl", crdInstanceData, namespace)
+			Expect(err3).NotTo(HaveOccurred(), "Failed to apply CRD instance")
+
+			By("waiting for controller reconciliation of CRD instance event")
+			verifyReconciliationLogs := func(g Gomega) {
+				cmd := exec.Command("kubectl", "logs", "-l", "control-plane=controller-manager",
+					"-n", namespace, "--tail=500", "--prefix=true")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(ContainSubstring("git commit"),
+					"Should see git commit operation in logs")
+			}
+			Eventually(verifyReconciliationLogs, 45*time.Second, 2*time.Second).Should(Succeed())
+
+			By("verifying CRD instance YAML file exists in Gitea repository")
+			verifyGitCommit := func(g Gomega) {
+				pullCmd := exec.Command("git", "pull")
+				pullCmd.Dir = checkoutDir
+				pullOutput, pullErr := pullCmd.CombinedOutput()
+				if pullErr != nil {
+					g.Expect(pullErr).NotTo(HaveOccurred(),
+						fmt.Sprintf("Should successfully pull latest changes. Output: %s", string(pullOutput)))
+				}
+
+				expectedFile := filepath.Join(checkoutDir,
+					fmt.Sprintf("namespaces/%s/myapps/%s.yaml", namespace, crdInstanceName))
+				fileInfo, statErr := os.Stat(expectedFile)
+				g.Expect(statErr).
+					NotTo(HaveOccurred(), fmt.Sprintf("CRD instance file should exist at %s", expectedFile))
+				g.Expect(fileInfo.Size()).To(BeNumerically(">", 0), "CRD instance file should not be empty")
+
+				content, readErr := os.ReadFile(expectedFile)
+				g.Expect(readErr).NotTo(HaveOccurred())
+				g.Expect(string(content)).To(ContainSubstring("kind: MyApp"),
+					"CRD instance file should contain MyApp kind")
+				g.Expect(string(content)).To(ContainSubstring("replicas: 3"),
+					"CRD instance file should contain expected spec")
+				g.Expect(string(content)).To(ContainSubstring("nginx:1.21"),
+					"CRD instance file should contain expected image")
+			}
+			Eventually(verifyGitCommit, 180*time.Second, 5*time.Second).Should(Succeed())
+
+			By("cleaning up test resources")
+			var cmd2 *exec.Cmd
+			cmd2 = exec.Command("kubectl", "delete", "myapp", crdInstanceName, "-n", namespace)
+			_, _ = utils.Run(cmd2)
+			cmd2 = exec.Command("kubectl", "delete", "watchrule", watchRuleName, "-n", namespace)
+			_, _ = utils.Run(cmd2)
+			cleanupGitRepoConfig(gitRepoConfigName)
+
+			By("✅ CRD instance to Git commit E2E test passed")
+			fmt.Printf("✅ CRD instance '%s' successfully triggered Git commit in repo '%s'\n",
+				crdInstanceName, uniqueRepoName)
+		})
+
+		It("should update Git file when CRD instance is modified via WatchRule", func() {
+			gitRepoConfigName := "gitrepoconfig-crd-update-test"
+			watchRuleName := "watchrule-crd-update-test"
+			crdInstanceName := "test-myapp-update"
+			uniqueRepoName := testRepoName
+			repoURL := getRepoURLHTTP()
+
+			By("creating GitRepoConfig for CRD update test")
+			createGitRepoConfigWithURL(gitRepoConfigName, "main", "git-creds", repoURL)
+
+			By("waiting for GitRepoConfig to be ready")
+			verifyGitRepoConfigStatus(gitRepoConfigName, "True", "BranchFound", "Branch 'main' found and accessible")
+
+			By("creating WatchRule that monitors custom resources")
+			data := struct {
+				Name             string
+				Namespace        string
+				GitRepoConfigRef string
+			}{
+				Name:             watchRuleName,
+				Namespace:        namespace,
+				GitRepoConfigRef: gitRepoConfigName,
+			}
+
+			err := applyFromTemplate("test/e2e/templates/watchrule-crd.tmpl", data, namespace)
+			Expect(err).NotTo(HaveOccurred(), "Failed to apply WatchRule for CRDs")
+
+			By("verifying WatchRule is ready")
+			verifyReconciled := func(g Gomega) {
+				jsonPath := "jsonpath={.status.conditions[?(@.type=='Ready')].status}"
+				cmd := exec.Command("kubectl", "get", "watchrule", watchRuleName, "-n", namespace, "-o", jsonPath)
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("True"))
+			}
+			Eventually(verifyReconciled, 15*time.Second, time.Second).Should(Succeed())
+
+			By("creating initial CRD instance")
+			crdInstanceData := struct {
+				Name      string
+				Namespace string
+				Replicas  int
+				Image     string
+				Message   string
+			}{
+				Name:      crdInstanceName,
+				Namespace: namespace,
+				Replicas:  2,
+				Image:     "nginx:1.20",
+				Message:   "Initial version",
+			}
+
+			err = applyFromTemplate("test/e2e/templates/myapp-instance.tmpl", crdInstanceData, namespace)
+			Expect(err).NotTo(HaveOccurred(), "Failed to apply initial CRD instance")
+
+			By("waiting for initial CRD instance file to appear in Git")
+			verifyInitialFile := func(g Gomega) {
+				pullCmd := exec.Command("git", "pull")
+				pullCmd.Dir = checkoutDir
+				_, _ = pullCmd.CombinedOutput()
+
+				expectedFile := filepath.Join(checkoutDir,
+					fmt.Sprintf("namespaces/%s/myapps/%s.yaml", namespace, crdInstanceName))
+				content, readErr := os.ReadFile(expectedFile)
+				g.Expect(readErr).NotTo(HaveOccurred())
+				g.Expect(string(content)).To(ContainSubstring("replicas: 2"))
+				g.Expect(string(content)).To(ContainSubstring("nginx:1.20"))
+			}
+			Eventually(verifyInitialFile, 180*time.Second, 5*time.Second).Should(Succeed())
+
+			By("updating CRD instance with new values")
+			updatedCRDData := struct {
+				Name      string
+				Namespace string
+				Replicas  int
+				Image     string
+				Message   string
+			}{
+				Name:      crdInstanceName,
+				Namespace: namespace,
+				Replicas:  5,
+				Image:     "nginx:1.22",
+				Message:   "Updated version with more replicas",
+			}
+
+			err = applyFromTemplate("test/e2e/templates/myapp-instance.tmpl", updatedCRDData, namespace)
+			Expect(err).NotTo(HaveOccurred(), "Failed to update CRD instance")
+
+			By("verifying updated CRD instance content in Git")
+			verifyUpdatedFile := func(g Gomega) {
+				pullCmd := exec.Command("git", "pull")
+				pullCmd.Dir = checkoutDir
+				_, _ = pullCmd.CombinedOutput()
+
+				expectedFile := filepath.Join(checkoutDir,
+					fmt.Sprintf("namespaces/%s/myapps/%s.yaml", namespace, crdInstanceName))
+				content, readErr := os.ReadFile(expectedFile)
+				g.Expect(readErr).NotTo(HaveOccurred())
+				g.Expect(string(content)).To(ContainSubstring("replicas: 5"),
+					"Updated file should contain new replica count")
+				g.Expect(string(content)).To(ContainSubstring("nginx:1.22"),
+					"Updated file should contain new image version")
+				g.Expect(string(content)).To(ContainSubstring("Updated version"),
+					"Updated file should contain new message")
+			}
+			Eventually(verifyUpdatedFile, 180*time.Second, 5*time.Second).Should(Succeed())
+
+			By("cleaning up test resources")
+			var cmd *exec.Cmd
+			cmd = exec.Command("kubectl", "delete", "myapp", crdInstanceName, "-n", namespace)
+			_, _ = utils.Run(cmd)
+			cmd = exec.Command("kubectl", "delete", "watchrule", watchRuleName, "-n", namespace)
+			_, _ = utils.Run(cmd)
+			cleanupGitRepoConfig(gitRepoConfigName)
+
+			By("✅ CRD instance update E2E test passed")
+			fmt.Printf("✅ CRD instance '%s' update successfully reflected in Git repo '%s'\n",
+				crdInstanceName, uniqueRepoName)
+		})
+
+		It("should delete Git file when CRD instance is deleted via WatchRule", func() {
+			gitRepoConfigName := "gitrepoconfig-crd-delete-test"
+			watchRuleName := "watchrule-crd-delete-test"
+			crdInstanceName := "test-myapp-to-delete"
+			uniqueRepoName := testRepoName
+			repoURL := getRepoURLHTTP()
+
+			By("creating GitRepoConfig for CRD deletion test")
+			createGitRepoConfigWithURL(gitRepoConfigName, "main", "git-creds", repoURL)
+
+			By("waiting for GitRepoConfig to be ready")
+			verifyGitRepoConfigStatus(gitRepoConfigName, "True", "BranchFound", "Branch 'main' found and accessible")
+
+			By("creating WatchRule that monitors custom resources")
+			data := struct {
+				Name             string
+				Namespace        string
+				GitRepoConfigRef string
+			}{
+				Name:             watchRuleName,
+				Namespace:        namespace,
+				GitRepoConfigRef: gitRepoConfigName,
+			}
+
+			err := applyFromTemplate("test/e2e/templates/watchrule-crd.tmpl", data, namespace)
+			Expect(err).NotTo(HaveOccurred(), "Failed to apply WatchRule for CRDs")
+
+			By("verifying WatchRule is ready")
+			verifyReconciled := func(g Gomega) {
+				jsonPath := "jsonpath={.status.conditions[?(@.type=='Ready')].status}"
+				cmd := exec.Command("kubectl", "get", "watchrule", watchRuleName, "-n", namespace, "-o", jsonPath)
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("True"))
+			}
+			Eventually(verifyReconciled, 15*time.Second, time.Second).Should(Succeed())
+
+			By("creating CRD instance")
+			crdInstanceData := struct {
+				Name      string
+				Namespace string
+				Replicas  int
+				Image     string
+				Message   string
+			}{
+				Name:      crdInstanceName,
+				Namespace: namespace,
+				Replicas:  3,
+				Image:     "nginx:1.21",
+				Message:   "To be deleted",
+			}
+
+			err = applyFromTemplate("test/e2e/templates/myapp-instance.tmpl", crdInstanceData, namespace)
+			Expect(err).NotTo(HaveOccurred(), "Failed to apply CRD instance")
+
+			By("waiting for CRD instance file to appear in Git repository")
+			verifyFileCreated := func(g Gomega) {
+				pullCmd := exec.Command("git", "pull")
+				pullCmd.Dir = checkoutDir
+				_, _ = pullCmd.CombinedOutput()
+
+				expectedFile := filepath.Join(checkoutDir,
+					fmt.Sprintf("namespaces/%s/myapps/%s.yaml", namespace, crdInstanceName))
+				fileInfo, statErr := os.Stat(expectedFile)
+				g.Expect(statErr).
+					NotTo(HaveOccurred(), fmt.Sprintf("CRD instance file should exist at %s", expectedFile))
+				g.Expect(fileInfo.Size()).To(BeNumerically(">", 0), "CRD instance file should not be empty")
+			}
+			Eventually(verifyFileCreated, 180*time.Second, 5*time.Second).Should(Succeed())
+
+			By("deleting the CRD instance to trigger DELETE operation")
+			var cmd *exec.Cmd
+			cmd = exec.Command("kubectl", "delete", "myapp", crdInstanceName, "-n", namespace)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "CRD instance deletion should succeed")
+
+			By("verifying CRD instance file is deleted from Git repository")
+			verifyFileDeleted := func(g Gomega) {
+				pullCmd := exec.Command("git", "pull")
+				pullCmd.Dir = checkoutDir
+				_, _ = pullCmd.CombinedOutput()
+
+				expectedFile := filepath.Join(checkoutDir,
+					fmt.Sprintf("namespaces/%s/myapps/%s.yaml", namespace, crdInstanceName))
+				_, statErr := os.Stat(expectedFile)
+				g.Expect(statErr).
+					To(HaveOccurred(), fmt.Sprintf("CRD instance file should NOT exist at %s", expectedFile))
+				g.Expect(os.IsNotExist(statErr)).To(BeTrue(), "Error should be 'file does not exist'")
+
+				By("verifying git log shows DELETE commit")
+				gitLogCmd := exec.Command("git", "log", "--oneline", "-n", "5")
+				gitLogCmd.Dir = checkoutDir
+				logOutput, logErr := gitLogCmd.CombinedOutput()
+				g.Expect(logErr).NotTo(HaveOccurred(), "Should be able to read git log")
+				g.Expect(string(logOutput)).To(ContainSubstring("DELETE"),
+					"Git log should contain DELETE operation")
+			}
+			Eventually(verifyFileDeleted, 180*time.Second, 5*time.Second).Should(Succeed())
+
+			By("cleaning up test resources")
+			cmd = exec.Command("kubectl", "delete", "watchrule", watchRuleName, "-n", namespace)
+			_, _ = utils.Run(cmd)
+			cleanupGitRepoConfig(gitRepoConfigName)
+
+			By("✅ CRD instance deletion E2E test passed")
+			fmt.Printf("✅ CRD instance '%s' deletion successfully removed file from Git repo '%s'\n",
+				crdInstanceName, uniqueRepoName)
+		})
+
 		// +kubebuilder:scaffold:e2e-webhooks-checks
 	})
 })

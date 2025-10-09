@@ -72,13 +72,14 @@ func (s *RuleStore) Delete(key types.NamespacedName) {
 }
 
 // GetMatchingRules returns all rules that match the given resource.
-func (s *RuleStore) GetMatchingRules(obj client.Object) []CompiledRule {
+// resourcePlural is the plural form of the resource (e.g., "pods", "deployments", "myapps").
+func (s *RuleStore) GetMatchingRules(obj client.Object, resourcePlural string) []CompiledRule {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	var matchingRules []CompiledRule
 	for _, rule := range s.rules {
-		if rule.matches(obj) {
+		if rule.matches(obj, resourcePlural) {
 			matchingRules = append(matchingRules, rule)
 		}
 	}
@@ -86,71 +87,75 @@ func (s *RuleStore) GetMatchingRules(obj client.Object) []CompiledRule {
 }
 
 // matches checks if a single rule matches the given object.
-func (r *CompiledRule) matches(obj client.Object) bool {
-	kind := obj.GetObjectKind().GroupVersionKind().Kind
-
-	if !r.kindMatches(kind) {
+func (r *CompiledRule) matches(obj client.Object, resourcePlural string) bool {
+	if !r.resourceMatches(resourcePlural) {
 		return false
 	}
 
 	return !r.isExcludedByLabels(obj)
 }
 
-// kindMatches checks if the resource kind matches any of the rule patterns.
-func (r *CompiledRule) kindMatches(kind string) bool {
-	for _, rk := range r.Resources {
-		if r.singleKindMatches(rk, kind) {
+// resourceMatches checks if the resource plural matches any of the rule patterns.
+func (r *CompiledRule) resourceMatches(resourcePlural string) bool {
+	for _, ruleResource := range r.Resources {
+		if r.singleResourceMatches(ruleResource, resourcePlural) {
 			return true
 		}
 	}
 	return false
 }
 
-// singleKindMatches checks if a single rule pattern matches the given kind.
-func (r *CompiledRule) singleKindMatches(ruleKind, kind string) bool {
-	if ruleKind == "" {
+// singleResourceMatches checks if a single rule pattern matches the given resource plural.
+// This supports exact matches, wildcard patterns, and group-qualified resources.
+func (r *CompiledRule) singleResourceMatches(ruleResource, resourcePlural string) bool {
+	if ruleResource == "" {
 		return false
 	}
 
-	if ruleKind == "*" {
+	// Match wildcard for all resources
+	if ruleResource == "*" {
 		return true
 	}
 
-	if ruleKind == kind {
+	// Exact match (case-insensitive for better compatibility)
+	if strings.EqualFold(ruleResource, resourcePlural) {
 		return true
 	}
 
-	if r.isPluralMatch(ruleKind, kind) {
+	// Wildcard prefix match (e.g., "ingress*" matches "ingresses.networking.k8s.io")
+	if r.isWildcardMatch(ruleResource, resourcePlural) {
 		return true
 	}
 
-	return r.isWildcardMatch(ruleKind, kind)
-}
-
-// isPluralMatch handles common Kubernetes resource plural forms.
-func (r *CompiledRule) isPluralMatch(ruleKind, kind string) bool {
-	pluralMappings := map[string]string{
-		"configmaps":  "ConfigMap",
-		"pods":        "Pod",
-		"services":    "Service",
-		"deployments": "Deployment",
-		"secrets":     "Secret",
-	}
-
-	if expectedKind, exists := pluralMappings[strings.ToLower(ruleKind)]; exists {
-		return strings.EqualFold(kind, expectedKind)
-	}
+	// Group-qualified match (e.g., "myapps.example.com" matches "myapps.example.com")
+	// This is already handled by exact match above, but explicitly documented here
 	return false
 }
 
-// isWildcardMatch handles prefix wildcard matching.
-func (r *CompiledRule) isWildcardMatch(ruleKind, kind string) bool {
-	if len(ruleKind) <= 1 || ruleKind[len(ruleKind)-1] != '*' {
+// isWildcardMatch handles wildcard matching for both prefix and suffix patterns.
+// Supports patterns like "prefix*" (matches anything starting with prefix)
+// and "*suffix" (matches anything ending with suffix).
+func (r *CompiledRule) isWildcardMatch(ruleResource, resourcePlural string) bool {
+	if len(ruleResource) <= 1 {
 		return false
 	}
 
-	prefix := ruleKind[:len(ruleKind)-1]
-	return strings.HasPrefix(strings.ToLower(kind), strings.ToLower(prefix))
+	lowerRule := strings.ToLower(ruleResource)
+	lowerResource := strings.ToLower(resourcePlural)
+
+	// Handle suffix wildcard: "prefix*"
+	if lowerRule[len(lowerRule)-1] == '*' {
+		prefix := lowerRule[:len(lowerRule)-1]
+		return strings.HasPrefix(lowerResource, prefix)
+	}
+
+	// Handle prefix wildcard: "*suffix"
+	if lowerRule[0] == '*' {
+		suffix := lowerRule[1:]
+		return strings.HasSuffix(lowerResource, suffix)
+	}
+
+	return false
 }
 
 // isExcludedByLabels checks if the resource is excluded by label selectors.
