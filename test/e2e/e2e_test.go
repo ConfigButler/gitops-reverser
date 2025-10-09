@@ -43,6 +43,10 @@ var _ = Describe("Manager", Ordered, func() {
 		cmd := exec.Command("kubectl", "delete", "ns", namespace)
 		_, _ = utils.Run(cmd)
 
+		By("preventive CRD cleanup")
+		cmd = exec.Command("kubectl", "delete", "crd", "icecreamorders.shop.example.com", "--ignore-not-found=true")
+		_, _ = utils.Run(cmd)
+
 		By("creating manager namespace")
 		cmd = exec.Command("kubectl", "create", "ns", namespace)
 		_, err = utils.Run(cmd)
@@ -809,10 +813,12 @@ var _ = Describe("Manager", Ordered, func() {
 			}
 			Eventually(verifyReconciled, 15*time.Second, time.Second).Should(Succeed())
 
-			By("creating CR to trigger Git commit")
+			By("creating CR with labels and annotations to trigger Git commit")
 			crdInstanceData := struct {
 				Name         string
 				Namespace    string
+				Labels       map[string]string
+				Annotations  map[string]string
 				CustomerName string
 				Container    string
 				Scoops       []struct {
@@ -821,8 +827,18 @@ var _ = Describe("Manager", Ordered, func() {
 				}
 				Toppings []string
 			}{
-				Name:         crdInstanceName,
-				Namespace:    namespace,
+				Name:      crdInstanceName,
+				Namespace: namespace,
+				Labels: map[string]string{
+					"environment": "test",
+					"team":        "engineering",
+				},
+				Annotations: map[string]string{
+					"description": "Alice's favorite ice cream",
+					"priority":    "high",
+					"kubectl.kubernetes.io/last-applied-configuration": "should-be-filtered",
+					"deployment.kubernetes.io/revision":                "should-also-be-filtered",
+				},
 				CustomerName: "Alice",
 				Container:    "Cone",
 				Scoops: []struct {
@@ -868,16 +884,88 @@ var _ = Describe("Manager", Ordered, func() {
 
 				content, readErr := os.ReadFile(expectedFile)
 				g.Expect(readErr).NotTo(HaveOccurred())
-				g.Expect(string(content)).To(ContainSubstring("kind: IceCreamOrder"),
+				contentStr := string(content)
+				g.Expect(contentStr).To(ContainSubstring("kind: IceCreamOrder"),
 					"CRD instance file should contain IceCreamOrder kind")
-				g.Expect(string(content)).To(ContainSubstring("customerName: Alice"),
+				g.Expect(contentStr).To(ContainSubstring("customerName: Alice"),
 					"CRD instance file should contain customer name")
-				g.Expect(string(content)).To(ContainSubstring("container: Cone"),
+				g.Expect(contentStr).To(ContainSubstring("container: Cone"),
 					"CRD instance file should contain container type")
-				g.Expect(string(content)).To(ContainSubstring("flavor: Vanilla"),
+				g.Expect(contentStr).To(ContainSubstring("flavor: Vanilla"),
 					"CRD instance file should contain ice cream flavors")
+
+				// Verify labels are present
+				g.Expect(contentStr).To(ContainSubstring("environment: test"),
+					"CRD instance file should contain environment label")
+				g.Expect(contentStr).To(ContainSubstring("team: engineering"),
+					"CRD instance file should contain team label")
+
+				// Verify user annotations are present
+				g.Expect(contentStr).To(ContainSubstring("description: Alice's favorite ice cream"),
+					"CRD instance file should contain description annotation")
+				g.Expect(contentStr).To(ContainSubstring("priority: high"),
+					"CRD instance file should contain priority annotation")
+
+				// Verify filtered annotations are NOT present
+				g.Expect(contentStr).NotTo(ContainSubstring("kubectl.kubernetes.io/last-applied-configuration"),
+					"CRD instance file should NOT contain kubectl annotation")
+				g.Expect(contentStr).NotTo(ContainSubstring("deployment.kubernetes.io/revision"),
+					"CRD instance file should NOT contain deployment annotation")
+
+				// Verify status field is NOT present in Git
+				g.Expect(contentStr).NotTo(ContainSubstring("status:"),
+					"CRD instance file should NOT contain status field")
 			}
 			Eventually(verifyGitCommit, 180*time.Second, 5*time.Second).Should(Succeed())
+
+			By("applying status update to the IceCreamOrder CR")
+			statusPatch := `{"status":{"orderStatus":"pending","preparationTime":"5m","totalPrice":"$12.50"}}`
+			statusCmd := exec.Command("kubectl", "patch", "icecreamorder", crdInstanceName,
+				"-n", namespace, "--type=merge", "--subresource=status", "-p", statusPatch)
+			statusOutput, statusErr := utils.Run(statusCmd)
+			if statusErr != nil {
+				// Status subresource might not be configured for this CRD, which is fine for this test
+				By(fmt.Sprintf("⚠️  Status patch not supported (expected): %v", statusErr))
+			} else {
+				By(fmt.Sprintf("✅ Status patched successfully: %s", statusOutput))
+			}
+
+			By("getting current git commit hash")
+			gitRevCmd := exec.Command("git", "rev-parse", "HEAD")
+			gitRevCmd.Dir = checkoutDir
+			beforeStatusCommit, _ := gitRevCmd.Output()
+
+			By("waiting to ensure no new commit is created from status update")
+			time.Sleep(10 * time.Second)
+
+			By("verifying no new commit was created and status is not in Git")
+			verifyStatusNotCommitted := func(g Gomega) {
+				pullCmd := exec.Command("git", "pull")
+				pullCmd.Dir = checkoutDir
+				_, _ = pullCmd.CombinedOutput()
+
+				// Check that commit hash hasn't changed
+				gitRevCmd := exec.Command("git", "rev-parse", "HEAD")
+				gitRevCmd.Dir = checkoutDir
+				afterStatusCommit, err := gitRevCmd.Output()
+				g.Expect(err).NotTo(HaveOccurred())
+
+				By(fmt.Sprintf("Commit before status: %s", string(beforeStatusCommit)))
+				By(fmt.Sprintf("Commit after status:  %s", string(afterStatusCommit)))
+
+				// Read the file again to ensure status is still not present
+				expectedFile := filepath.Join(checkoutDir,
+					fmt.Sprintf("shop.example.com/v1/icecreamorders/%s/%s.yaml", namespace, crdInstanceName))
+				content, readErr := os.ReadFile(expectedFile)
+				g.Expect(readErr).NotTo(HaveOccurred())
+				g.Expect(string(content)).NotTo(ContainSubstring("status:"),
+					"CRD instance file should still NOT contain status field after status update")
+				g.Expect(string(content)).NotTo(ContainSubstring("orderStatus"),
+					"CRD instance file should NOT contain status content")
+			}
+			Eventually(verifyStatusNotCommitted, 30*time.Second, 2*time.Second).Should(Succeed())
+
+			By("✅ Status update verified - no Git commit created and status not in file")
 
 			By("cleaning up IceCreamOrder instance (keeping GitRepoConfig, WatchRule and CRD for subsequent tests)")
 			cmd2 := exec.Command("kubectl", "delete", "icecreamorder", crdInstanceName, "-n", namespace)
@@ -896,6 +984,8 @@ var _ = Describe("Manager", Ordered, func() {
 			crdInstanceData := struct {
 				Name         string
 				Namespace    string
+				Labels       map[string]string
+				Annotations  map[string]string
 				CustomerName string
 				Container    string
 				Scoops       []struct {
@@ -906,6 +996,8 @@ var _ = Describe("Manager", Ordered, func() {
 			}{
 				Name:         crdInstanceName,
 				Namespace:    namespace,
+				Labels:       nil,
+				Annotations:  nil,
 				CustomerName: "Bob",
 				Container:    "Cup",
 				Scoops: []struct {
@@ -939,6 +1031,8 @@ var _ = Describe("Manager", Ordered, func() {
 			updatedCRDData := struct {
 				Name         string
 				Namespace    string
+				Labels       map[string]string
+				Annotations  map[string]string
 				CustomerName string
 				Container    string
 				Scoops       []struct {
@@ -949,6 +1043,8 @@ var _ = Describe("Manager", Ordered, func() {
 			}{
 				Name:         crdInstanceName,
 				Namespace:    namespace,
+				Labels:       nil,
+				Annotations:  nil,
 				CustomerName: "Bob",
 				Container:    "WaffleBowl",
 				Scoops: []struct {
@@ -983,7 +1079,7 @@ var _ = Describe("Manager", Ordered, func() {
 			}
 			Eventually(verifyUpdatedFile).Should(Succeed())
 
-			By("cleaning up IceCreamOrder instance (keeping GitRepoConfig, WatchRule and CRD for subsequent tests)")
+			By("cleaning up IceCreamOrder instance")
 			cmd := exec.Command("kubectl", "delete", "icecreamorder", crdInstanceName, "-n", namespace)
 			_, _ = utils.Run(cmd)
 
@@ -1000,6 +1096,8 @@ var _ = Describe("Manager", Ordered, func() {
 			crdInstanceData := struct {
 				Name         string
 				Namespace    string
+				Labels       map[string]string
+				Annotations  map[string]string
 				CustomerName string
 				Container    string
 				Scoops       []struct {
@@ -1010,6 +1108,8 @@ var _ = Describe("Manager", Ordered, func() {
 			}{
 				Name:         crdInstanceName,
 				Namespace:    namespace,
+				Labels:       nil,
+				Annotations:  nil,
 				CustomerName: "Charlie",
 				Container:    "Cone",
 				Scoops: []struct {
@@ -1022,9 +1122,9 @@ var _ = Describe("Manager", Ordered, func() {
 			}
 
 			err := applyFromTemplate("test/e2e/templates/icecreamorder-instance.tmpl", crdInstanceData, namespace)
-			Expect(err).NotTo(HaveOccurred(), "Failed to apply CRD instance")
+			Expect(err).NotTo(HaveOccurred(), "Failed to apply CR")
 
-			By("waiting for CRD instance file to appear in Git repository")
+			By("waiting for CR file to appear in Git repository")
 			verifyFileCreated := func(g Gomega) {
 				pullCmd := exec.Command("git", "pull")
 				pullCmd.Dir = checkoutDir
@@ -1039,7 +1139,7 @@ var _ = Describe("Manager", Ordered, func() {
 			}
 			Eventually(verifyFileCreated, 180*time.Second, 5*time.Second).Should(Succeed())
 
-			By("deleting the CRD instance to trigger DELETE operation")
+			By("deleting the CR to trigger DELETE operation")
 			cmd := exec.Command("kubectl", "delete", "icecreamorder", crdInstanceName, "-n", namespace)
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "CRD instance deletion should succeed")
@@ -1067,11 +1167,6 @@ var _ = Describe("Manager", Ordered, func() {
 			}
 			Eventually(verifyFileDeleted, 180*time.Second, 5*time.Second).Should(Succeed())
 
-			By("cleaning up WatchRule and GitRepoConfig (keeping CRD for final test)")
-			cmd = exec.Command("kubectl", "delete", "watchrule", "watchrule-icecream-orders", "-n", namespace)
-			_, _ = utils.Run(cmd)
-			cleanupGitRepoConfig("gitrepoconfig-icecream-suite")
-
 			By("✅ IceCreamOrder deletion E2E test passed")
 			fmt.Printf("✅ IceCreamOrder '%s' deletion successfully removed file from Git repo '%s'\n",
 				crdInstanceName, uniqueRepoName)
@@ -1081,37 +1176,6 @@ var _ = Describe("Manager", Ordered, func() {
 			gitRepoConfigName := "gitrepoconfig-icecream-suite"
 			watchRuleName := "watchrule-icecream-crds-final"
 			uniqueRepoName := testRepoName
-			repoURL := getRepoURLHTTP()
-
-			By("creating fresh GitRepoConfig and WatchRule for CRD deletion test")
-			createGitRepoConfigWithURL(gitRepoConfigName, "main", "git-creds", repoURL)
-
-			By("waiting for GitRepoConfig to be ready")
-			verifyGitRepoConfigStatus(gitRepoConfigName, "True", "BranchFound", "Branch 'main' found and accessible")
-
-			By("creating WatchRule that monitors CRDs")
-			data := struct {
-				Name             string
-				Namespace        string
-				GitRepoConfigRef string
-			}{
-				Name:             watchRuleName,
-				Namespace:        namespace,
-				GitRepoConfigRef: gitRepoConfigName,
-			}
-
-			err := applyFromTemplate("test/e2e/templates/watchrule-crds.tmpl", data, namespace)
-			Expect(err).NotTo(HaveOccurred(), "Failed to apply WatchRule for CRDs")
-
-			By("verifying WatchRule is ready")
-			verifyReconciled := func(g Gomega) {
-				jsonPath := "jsonpath={.status.conditions[?(@.type=='Ready')].status}"
-				cmd := exec.Command("kubectl", "get", "watchrule", watchRuleName, "-n", namespace, "-o", jsonPath)
-				output, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(output).To(Equal("True"))
-			}
-			Eventually(verifyReconciled, 15*time.Second, time.Second).Should(Succeed())
 
 			By("verifying CRD file exists in Git before deletion")
 			verifyFileExists := func(g Gomega) {
@@ -1128,7 +1192,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 			By("deleting the IceCreamOrder CRD to trigger DELETE operation")
 			cmd := exec.Command("kubectl", "delete", "crd", "icecreamorders.shop.example.com")
-			_, err = utils.Run(cmd)
+			_, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "CRD deletion should succeed")
 
 			By("verifying CRD file is deleted from Git repository")

@@ -3,6 +3,18 @@ kind: IceCreamOrder
 metadata:
   name: {{ .Name }}
   namespace: {{ .Namespace }}
+{{- if .Labels }}
+  labels:
+{{- range $key, $value := .Labels }}
+    {{ $key }}: {{ $value }}
+{{- end }}
+{{- end }}
+{{- if .Annotations }}
+  annotations:
+{{- range $key, $value := .Annotations }}
+    {{ $key }}: {{ $value }}
+{{- end }}
+{{- end }}
 spec:
   customerName: {{ .CustomerName }}
   container: {{ .Container }}
