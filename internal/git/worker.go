@@ -324,7 +324,7 @@ func (w *Worker) commitAndPush(ctx context.Context, repoConfig v1alpha1.GitRepoC
 			"kind", event.Object.GetKind(),
 			"name", event.Object.GetName(),
 			"namespace", event.Object.GetNamespace(),
-			"operation", event.Request.Operation,
+			"operation", event.Operation,
 		)
 	}
 

@@ -1,0 +1,108 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  # name must match the spec fields below, and be in the form: <plural>.<group>
+  name: icecreamorders.shop.example.com
+spec:
+  # group name to use for REST API: /apis/<group>/<version>
+  group: shop.example.com
+  # list of versions supported by this CRD
+  versions:
+    - name: v1
+      # Each version can be enabled/disabled by Served flag.
+      served: true
+      # One and only one version must be marked as the storage version.
+      storage: true
+      schema:
+        # openAPIV3Schema is the schema for validating custom objects.
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              description: "The desired state of the IceCreamOrder."
+              required: ["scoops", "container"]
+              properties:
+                customerName:
+                  type: string
+                  description: "Name of the person who placed the order."
+                container:
+                  type: string
+                  description: "The vessel for the ice cream."
+                  enum: ["Cup", "Cone", "WaffleBowl"]
+                scoops:
+                  type: array
+                  description: "A list of scoops to include."
+                  minItems: 1
+                  items:
+                    type: object
+                    required: ["flavor"]
+                    properties:
+                      flavor:
+                        type: string
+                        description: "The flavor of the ice cream scoop."
+                        enum:
+                          [
+                            "Vanilla",
+                            "Chocolate",
+                            "Strawberry",
+                            "RockyRoad",
+                            "MintChip",
+                          ]
+                      quantity:
+                        type: integer
+                        description: "How many scoops of this flavor."
+                        default: 1
+                        minimum: 1
+                toppings:
+                  type: array
+                  description: "Optional toppings."
+                  items:
+                    type: string
+                    enum: ["Sprinkles", "HotFudge", "Caramel", "WhippedCream"]
+            status:
+              type: object
+              description: "The observed state of the IceCreamOrder."
+              properties:
+                phase:
+                  type: string
+                  description: "The current phase of the order."
+                  enum: ["Pending", "Preparing", "Ready", "Delivered", "Failed"]
+                cost:
+                  type: number
+                  description: "The total calculated cost of the order."
+                readyBy:
+                  type: string
+                  format: date-time
+                  description: "The estimated time the order will be ready."
+                message:
+                  type: string
+                  description: "A human-readable message about the order's status."
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    required: ["type", "status"]
+                    properties:
+                      type:
+                        type: string
+                        description: "Type of condition e.g., IngredientsAvailable, PaymentProcessed."
+                      status:
+                        type: string
+                        enum: ["True", "False", "Unknown"]
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                      reason:
+                        type: string
+                      message:
+                        type: string
+  # Naming for our new resource kind
+  names:
+    kind: IceCreamOrder
+    plural: icecreamorders
+    singular: icecreamorder
+    shortNames:
+      - ico
+  # Scope can be Namespaced or Cluster
+  scope: Namespaced

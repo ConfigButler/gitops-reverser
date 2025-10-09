@@ -16,6 +16,7 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/metrics"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
 	"github.com/ConfigButler/gitops-reverser/internal/sanitize"
+	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
 //nolint:lll // Kubebuilder webhook annotation
@@ -101,22 +102,31 @@ func (h *EventHandler) Handle(ctx context.Context, req admission.Request) admiss
 	}
 
 	if len(matchingRules) > 0 {
-		log.Info("Found matching rules, enqueueing events", "matchingRulesCount", len(matchingRules))
+		identifier := types.FromAdmissionRequest(req)
+		log.Info(
+			fmt.Sprintf("Received %s for %s: matched %d watchrule(s)",
+				req.Operation,
+				identifier.String(),
+				len(matchingRules)),
+		)
+
 		// Enqueue an event for each matching rule.
 		for _, rule := range matchingRules {
 			sanitizedObj := sanitize.Sanitize(obj)
 			event := eventqueue.Event{
-				Object:                 sanitizedObj,
-				Request:                req,
-				ResourcePlural:         req.Resource.Resource, // Use plural from admission request
+				Object:     sanitizedObj,
+				Identifier: identifier,
+				Operation:  string(req.Operation),
+				UserInfo: eventqueue.UserInfo{
+					Username: req.UserInfo.Username,
+					UID:      req.UserInfo.UID,
+				},
 				GitRepoConfigRef:       rule.GitRepoConfigRef,
-				GitRepoConfigNamespace: rule.Source.Namespace, // Same namespace as the WatchRule
+				GitRepoConfigNamespace: rule.Source.Namespace,
 			}
 			h.EventQueue.Enqueue(event)
 			metrics.EventsProcessedTotal.Add(ctx, 1)
 			metrics.GitCommitQueueSize.Add(ctx, 1)
-			logf.FromContext(ctx).Info("Enqueued event for matched resource", //nolint:lll // Structured log
-				"resource", sanitizedObj.GetName(), "namespace", sanitizedObj.GetNamespace(), "kind", sanitizedObj.GetKind(), "rule", rule.Source.Name)
 		}
 	} else if obj.GetNamespace() != "kube-system" && obj.GetNamespace() != "kube-node-lease" && obj.GetKind() != "Lease" {
 		// Only log for non-system resources to avoid spam

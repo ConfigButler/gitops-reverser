@@ -12,13 +12,11 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	admissionv1 "k8s.io/api/admission/v1"
-	authenticationv1 "k8s.io/api/authentication/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 	"sigs.k8s.io/yaml"
 
 	"github.com/ConfigButler/gitops-reverser/internal/eventqueue"
+	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
 // TestRaceConditionIntegration tests the complete race condition resolution workflow
@@ -72,28 +70,32 @@ func TestRaceConditionIntegration(t *testing.T) {
 		events := []eventqueue.Event{
 			{
 				Object: createTestPodWithResourceVersion("app-pod", "production", "100"),
-				Request: admission.Request{
-					AdmissionRequest: admissionv1.AdmissionRequest{
-						Operation: admissionv1.Create,
-						UserInfo: authenticationv1.UserInfo{
-							Username: "developer@company.com",
-						},
-					},
+				Identifier: types.ResourceIdentifier{
+					Group:     "",
+					Version:   "v1",
+					Resource:  "pods",
+					Namespace: "production",
+					Name:      "app-pod",
 				},
-				ResourcePlural:   "pods",
+				Operation: "CREATE",
+				UserInfo: eventqueue.UserInfo{
+					Username: "developer@company.com",
+				},
 				GitRepoConfigRef: "production-repo",
 			},
 			{
 				Object: createTestPodWithResourceVersion("cache-pod", "production", "200"),
-				Request: admission.Request{
-					AdmissionRequest: admissionv1.AdmissionRequest{
-						Operation: admissionv1.Update,
-						UserInfo: authenticationv1.UserInfo{
-							Username: "system:deployment-controller",
-						},
-					},
+				Identifier: types.ResourceIdentifier{
+					Group:     "",
+					Version:   "v1",
+					Resource:  "pods",
+					Namespace: "production",
+					Name:      "cache-pod",
 				},
-				ResourcePlural:   "pods",
+				Operation: "UPDATE",
+				UserInfo: eventqueue.UserInfo{
+					Username: "system:deployment-controller",
+				},
 				GitRepoConfigRef: "production-repo",
 			},
 		}
@@ -111,9 +113,9 @@ func TestRaceConditionIntegration(t *testing.T) {
 
 		// Step 5: Verify the final state
 		// Check that files were created correctly
-		appPodPath := filepath.Join(localRepoPath, "namespaces/production/pods/app-pod.yaml")
-		cachePodPath := filepath.Join(localRepoPath, "namespaces/production/pods/cache-pod.yaml")
-		conflictingFilePath := filepath.Join(localRepoPath, "namespaces/production/services/conflicting-service.yaml")
+		appPodPath := filepath.Join(localRepoPath, "v1/pods/production/app-pod.yaml")
+		cachePodPath := filepath.Join(localRepoPath, "v1/pods/production/cache-pod.yaml")
+		conflictingFilePath := filepath.Join(localRepoPath, "v1/services/production/conflicting-service.yaml")
 
 		// All files should exist
 		assert.FileExists(t, appPodPath, "app-pod.yaml should exist")
@@ -124,12 +126,14 @@ func TestRaceConditionIntegration(t *testing.T) {
 		appPodContent, err := os.ReadFile(appPodPath)
 		require.NoError(t, err)
 		assert.Contains(t, string(appPodContent), "name: app-pod")
-		assert.Contains(t, string(appPodContent), "resourceVersion: \"100\"")
+		assert.Contains(t, string(appPodContent), "namespace: production")
+		// resourceVersion is correctly removed by sanitization
 
 		cachePodContent, err := os.ReadFile(cachePodPath)
 		require.NoError(t, err)
 		assert.Contains(t, string(cachePodContent), "name: cache-pod")
-		assert.Contains(t, string(cachePodContent), "resourceVersion: \"200\"")
+		assert.Contains(t, string(cachePodContent), "namespace: production")
+		// resourceVersion is correctly removed by sanitization
 
 		// Step 6: Verify Git history
 		commits, err := getCommitHistory(localRepo)
@@ -144,11 +148,11 @@ func TestRaceConditionIntegration(t *testing.T) {
 			commitMessages[i] = commit.Message
 		}
 
-		assert.Contains(t, commitMessages, "[CREATE] Pod/app-pod in ns/production by user/developer@company.com")
+		assert.Contains(t, commitMessages, "[CREATE] v1/pods/app-pod by user/developer@company.com")
 		assert.Contains(
 			t,
 			commitMessages,
-			"[UPDATE] Pod/cache-pod in ns/production by user/system:deployment-controller",
+			"[UPDATE] v1/pods/cache-pod by user/system:deployment-controller",
 		)
 	})
 
@@ -162,15 +166,17 @@ func TestRaceConditionIntegration(t *testing.T) {
 		// Test with invalid object (this should be handled gracefully)
 		invalidEvent := eventqueue.Event{
 			Object: &unstructured.Unstructured{}, // Empty object
-			Request: admission.Request{
-				AdmissionRequest: admissionv1.AdmissionRequest{
-					Operation: admissionv1.Create,
-					UserInfo: authenticationv1.UserInfo{
-						Username: "test-user",
-					},
-				},
+			Identifier: types.ResourceIdentifier{
+				Group:     "",
+				Version:   "v1",
+				Resource:  "testresources",
+				Namespace: "default",
+				Name:      "test",
 			},
-			ResourcePlural: "testresources",
+			Operation: "CREATE",
+			UserInfo: eventqueue.UserInfo{
+				Username: "test-user",
+			},
 		}
 
 		// This might fail, but shouldn't panic
@@ -232,7 +238,14 @@ func simulateRemoteUpdate(remoteRepoPath string, remoteRepo *git.Repository) err
 		},
 	}
 
-	filePath := GetFilePath(conflictingService, "services")
+	identifier := types.ResourceIdentifier{
+		Group:     "",
+		Version:   "v1",
+		Resource:  "services",
+		Namespace: "production",
+		Name:      "conflicting-service",
+	}
+	filePath := identifier.ToGitPath()
 	fullPath := filepath.Join(remoteRepoPath, filePath)
 
 	err := os.MkdirAll(filepath.Dir(fullPath), 0750)

@@ -1,0 +1,19 @@
+apiVersion: shop.example.com/v1
+kind: IceCreamOrder
+metadata:
+  name: {{ .Name }}
+  namespace: {{ .Namespace }}
+spec:
+  customerName: {{ .CustomerName }}
+  container: {{ .Container }}
+  scoops:
+{{- range .Scoops }}
+    - flavor: {{ .Flavor }}
+      quantity: {{ .Quantity }}
+{{- end }}
+{{- if .Toppings }}
+  toppings:
+{{- range .Toppings }}
+    - {{ . }}
+{{- end }}
+{{- end }}

@@ -254,7 +254,8 @@ linters:
     nolintlint:
       # Exclude following linters from requiring an explanation.
       # Default: []
-      allow-no-explanation: [ funlen, gocognit, golines, gocyclo, lll, revive, staticcheck, gosec ]
+      allow-no-explanation:
+        [funlen, gocognit, golines, gocyclo, lll, revive, staticcheck, gosec]
       # Enable to require an explanation of nonzero length after each nolint directive.
       # Default: false
       require-explanation: false
@@ -315,27 +316,27 @@ linters:
       - common-false-positives
     # Excluding configuration per-path, per-linter, per-text and per-source.
     rules:
-      - source: 'TODO'
-        linters: [ godot ]
-      - text: 'should have a package comment'
-        linters: [ revive ]
+      - source: "TODO"
+        linters: [godot]
+      - text: "should have a package comment"
+        linters: [revive]
       - text: 'exported \S+ \S+ should have comment( \(or a comment on this block\))? or be unexported'
-        linters: [ revive ]
+        linters: [revive]
       - text: 'package comment should be of the form ".+"'
-        source: '// ?(nolint|TODO)'
-        linters: [ revive ]
+        source: "// ?(nolint|TODO)"
+        linters: [revive]
       - text: 'comment on exported \S+ \S+ should be of the form ".+"'
-        source: '// ?(nolint|TODO)'
-        linters: [ revive, staticcheck ]
+        source: "// ?(nolint|TODO)"
+        linters: [revive, staticcheck]
       # Allow global variables in specific patterns (Kubernetes operator patterns)
-      - text: '(scheme|setupLog|GroupVersion|SchemeBuilder|AddToScheme) is a global variable'
-        linters: [ gochecknoglobals ]
+      - text: "(scheme|setupLog|GroupVersion|SchemeBuilder|AddToScheme) is a global variable"
+        linters: [gochecknoglobals]
       - path: 'api/v1alpha1/.*\.go'
-        linters: [ gochecknoglobals, gochecknoinits ]
+        linters: [gochecknoglobals, gochecknoinits]
       - path: 'cmd/main\.go'
-        linters: [ gochecknoglobals, cyclop, gochecknoinits, gocognit, funlen ]
+        linters: [gochecknoglobals, cyclop, gochecknoinits, gocognit, funlen]
       - path: 'internal/metrics/.*\.go'
-        linters: [ gochecknoglobals ]
+        linters: [gochecknoglobals]
       # Allow test suite global variables and patterns
       - path: '_test\.go'
         linters:
@@ -351,30 +352,34 @@ linters:
           - testpackage
           - fatcontext
       # Allow dot imports for Ginkgo/Gomega (standard practice)
-      - text: 'dot-imports: should not use dot imports'
+      - text: "dot-imports: should not use dot imports"
         source: 'github\.com/onsi/(ginkgo|gomega)'
-        linters: [ revive ]
-      - text: 'should not use dot imports'
+        linters: [revive]
+      - text: "should not use dot imports"
         path: 'test/utils/.*\.go'
-        linters: [ staticcheck ]
+        linters: [staticcheck]
       # Allow fmt.Print* in test/e2e (debugging outputs)
       - path: 'test/e2e/.*\.go'
-        linters: [ forbidigo ]
+        linters: [forbidigo]
       # Allow fmt.Printf for warnings in controller
       - path: 'internal/controller/.*\.go'
-        text: 'Warning:'
-        linters: [ forbidigo ]
+        text: "Warning:"
+        linters: [forbidigo]
       # Allow fmt.Println in metrics exporter (initialization logs)
       - path: 'internal/metrics/.*\.go'
-        linters: [ forbidigo ]
+        linters: [forbidigo]
       # Relax godot for test helpers and utility functions
       - path: '(test/|helpers\.go)'
-        linters: [ godot, godoclint ]
+        linters: [godot, godoclint]
       # Allow min function redefinition in e2e tests (Go 1.21+)
-      - text: 'redefines-builtin-id: redefinition of the built-in function min'
+      - text: "redefines-builtin-id: redefinition of the built-in function min"
         path: 'test/e2e/.*\.go'
-        linters: [ revive ]
+        linters: [revive]
       # Allow utils package name (standard pattern)
-      - text: 'var-naming: avoid meaningless package names'
+      - text: "var-naming: avoid meaningless package names"
         path: 'test/utils/.*\.go'
-        linters: [ revive ]
+        linters: [revive]
+      # Allow types package name (common Go pattern for shared types)
+      - text: "var-naming: avoid meaningless package names"
+        path: 'internal/types/.*\.go'
+        linters: [revive]

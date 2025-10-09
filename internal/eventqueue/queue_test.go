@@ -5,13 +5,9 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	admissionv1 "k8s.io/api/admission/v1"
-	authenticationv1 "k8s.io/api/authentication/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
-	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
+
+	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
 func TestNewQueue(t *testing.T) {
@@ -32,14 +28,17 @@ func TestEnqueue_SingleEvent(t *testing.T) {
 
 	event := Event{
 		Object: obj,
-		Request: admission.Request{
-			AdmissionRequest: admissionv1.AdmissionRequest{
-				UID:       "test-uid",
-				Operation: admissionv1.Create,
-				UserInfo: authenticationv1.UserInfo{
-					Username: "test-user",
-				},
-			},
+		Identifier: types.ResourceIdentifier{
+			Group:     "",
+			Version:   "v1",
+			Resource:  "pods",
+			Namespace: "default",
+			Name:      "test-pod",
+		},
+		Operation: "CREATE",
+		UserInfo: UserInfo{
+			Username: "test-user",
+			UID:      "test-uid",
 		},
 		GitRepoConfigRef: "test-repo-config",
 	}
@@ -61,11 +60,17 @@ func TestEnqueue_MultipleEvents(t *testing.T) {
 
 		event := Event{
 			Object: obj,
-			Request: admission.Request{
-				AdmissionRequest: admissionv1.AdmissionRequest{
-					UID:       types.UID("test-uid-" + string(rune(i))),
-					Operation: admissionv1.Create,
-				},
+			Identifier: types.ResourceIdentifier{
+				Group:     "",
+				Version:   "v1",
+				Resource:  "pods",
+				Namespace: "default",
+				Name:      "test-pod-" + string(rune(i)),
+			},
+			Operation: "CREATE",
+			UserInfo: UserInfo{
+				Username: "test-user",
+				UID:      "test-uid-" + string(rune(i)),
 			},
 			GitRepoConfigRef: "test-repo-config",
 		}
@@ -94,14 +99,17 @@ func TestDequeueAll_SingleEvent(t *testing.T) {
 
 	originalEvent := Event{
 		Object: obj,
-		Request: admission.Request{
-			AdmissionRequest: admissionv1.AdmissionRequest{
-				UID:       "test-uid",
-				Operation: admissionv1.Create,
-				UserInfo: authenticationv1.UserInfo{
-					Username: "test-user",
-				},
-			},
+		Identifier: types.ResourceIdentifier{
+			Group:     "",
+			Version:   "v1",
+			Resource:  "pods",
+			Namespace: "default",
+			Name:      "test-pod",
+		},
+		Operation: "CREATE",
+		UserInfo: UserInfo{
+			Username: "test-user",
+			UID:      "test-uid",
 		},
 		GitRepoConfigRef: "test-repo-config",
 	}
@@ -119,9 +127,9 @@ func TestDequeueAll_SingleEvent(t *testing.T) {
 	assert.Equal(t, "test-pod", dequeuedEvent.Object.GetName())
 	assert.Equal(t, "default", dequeuedEvent.Object.GetNamespace())
 	assert.Equal(t, "Pod", dequeuedEvent.Object.GetKind())
-	assert.Equal(t, "test-uid", string(dequeuedEvent.Request.UID))
-	assert.Equal(t, admissionv1.Create, dequeuedEvent.Request.Operation)
-	assert.Equal(t, "test-user", dequeuedEvent.Request.UserInfo.Username)
+	assert.Equal(t, "test-uid", dequeuedEvent.UserInfo.UID)
+	assert.Equal(t, "CREATE", dequeuedEvent.Operation)
+	assert.Equal(t, "test-user", dequeuedEvent.UserInfo.Username)
 	assert.Equal(t, "test-repo-config", dequeuedEvent.GitRepoConfigRef)
 }
 
@@ -138,11 +146,17 @@ func TestDequeueAll_MultipleEvents(t *testing.T) {
 
 		event := Event{
 			Object: obj,
-			Request: admission.Request{
-				AdmissionRequest: admissionv1.AdmissionRequest{
-					UID:       types.UID("test-uid-" + string(rune('0'+i))),
-					Operation: admissionv1.Create,
-				},
+			Identifier: types.ResourceIdentifier{
+				Group:     "",
+				Version:   "v1",
+				Resource:  "pods",
+				Namespace: "default",
+				Name:      "test-pod-" + string(rune('0'+i)),
+			},
+			Operation: "CREATE",
+			UserInfo: UserInfo{
+				Username: "test-user",
+				UID:      "test-uid-" + string(rune('0'+i)),
 			},
 			GitRepoConfigRef: "test-repo-config-" + string(rune('0'+i)),
 		}
@@ -161,7 +175,7 @@ func TestDequeueAll_MultipleEvents(t *testing.T) {
 	// Verify all events are returned in order
 	for i, event := range events {
 		assert.Equal(t, "test-pod-"+string(rune('0'+i)), event.Object.GetName())
-		assert.Equal(t, "test-uid-"+string(rune('0'+i)), string(event.Request.UID))
+		assert.Equal(t, "test-uid-"+string(rune('0'+i)), event.UserInfo.UID)
 		assert.Equal(t, "test-repo-config-"+string(rune('0'+i)), event.GitRepoConfigRef)
 	}
 }
@@ -176,10 +190,17 @@ func TestDequeueAll_ConsecutiveCalls(t *testing.T) {
 
 		event := Event{
 			Object: obj,
-			Request: admission.Request{
-				AdmissionRequest: admissionv1.AdmissionRequest{
-					UID: types.UID("batch1-uid-" + string(rune('0'+i))),
-				},
+			Identifier: types.ResourceIdentifier{
+				Group:     "",
+				Version:   "v1",
+				Resource:  "pods",
+				Namespace: "default",
+				Name:      "batch1-pod-" + string(rune('0'+i)),
+			},
+			Operation: "CREATE",
+			UserInfo: UserInfo{
+				Username: "test-user",
+				UID:      "batch1-uid-" + string(rune('0'+i)),
 			},
 			GitRepoConfigRef: "batch1-repo",
 		}
@@ -202,10 +223,17 @@ func TestDequeueAll_ConsecutiveCalls(t *testing.T) {
 
 		event := Event{
 			Object: obj,
-			Request: admission.Request{
-				AdmissionRequest: admissionv1.AdmissionRequest{
-					UID: types.UID("batch2-uid-" + string(rune('0'+i))),
-				},
+			Identifier: types.ResourceIdentifier{
+				Group:     "",
+				Version:   "v1",
+				Resource:  "pods",
+				Namespace: "default",
+				Name:      "batch2-pod-" + string(rune('0'+i)),
+			},
+			Operation: "CREATE",
+			UserInfo: UserInfo{
+				Username: "test-user",
+				UID:      "batch2-uid-" + string(rune('0'+i)),
 			},
 			GitRepoConfigRef: "batch2-repo",
 		}
@@ -231,10 +259,17 @@ func TestSize_Accuracy(t *testing.T) {
 
 		event := Event{
 			Object: obj,
-			Request: admission.Request{
-				AdmissionRequest: admissionv1.AdmissionRequest{
-					UID: types.UID("test-uid-" + string(rune('0'+i-1))),
-				},
+			Identifier: types.ResourceIdentifier{
+				Group:     "",
+				Version:   "v1",
+				Resource:  "pods",
+				Namespace: "default",
+				Name:      "test-pod-" + string(rune('0'+i-1)),
+			},
+			Operation: "CREATE",
+			UserInfo: UserInfo{
+				Username: "test-user",
+				UID:      "test-uid-" + string(rune('0'+i-1)),
 			},
 			GitRepoConfigRef: "test-repo",
 		}
@@ -269,10 +304,17 @@ func TestConcurrentAccess(t *testing.T) {
 
 				event := Event{
 					Object: obj,
-					Request: admission.Request{
-						AdmissionRequest: admissionv1.AdmissionRequest{
-							UID: types.UID("uid-g" + string(rune('0'+goroutineID)) + "-e" + string(rune('0'+i))),
-						},
+					Identifier: types.ResourceIdentifier{
+						Group:     "",
+						Version:   "v1",
+						Resource:  "pods",
+						Namespace: "default",
+						Name:      "pod-g" + string(rune('0'+goroutineID)) + "-e" + string(rune('0'+i)),
+					},
+					Operation: "CREATE",
+					UserInfo: UserInfo{
+						Username: "test-user",
+						UID:      "uid-g" + string(rune('0'+goroutineID)) + "-e" + string(rune('0'+i)),
 					},
 					GitRepoConfigRef: "repo-g" + string(rune('0'+goroutineID)),
 				}
@@ -333,10 +375,17 @@ func TestConcurrentEnqueueDequeue(t *testing.T) {
 
 			event := Event{
 				Object: obj,
-				Request: admission.Request{
-					AdmissionRequest: admissionv1.AdmissionRequest{
-						UID: types.UID("test-uid-" + string(rune('0'+i%10))),
-					},
+				Identifier: types.ResourceIdentifier{
+					Group:     "",
+					Version:   "v1",
+					Resource:  "pods",
+					Namespace: "default",
+					Name:      "test-pod-" + string(rune('0'+i%10)),
+				},
+				Operation: "CREATE",
+				UserInfo: UserInfo{
+					Username: "test-user",
+					UID:      "test-uid-" + string(rune('0'+i%10)),
 				},
 				GitRepoConfigRef: "test-repo",
 			}
@@ -403,28 +452,20 @@ func TestEventStructure(t *testing.T) {
 		},
 	}
 
-	req := admission.Request{
-		AdmissionRequest: admissionv1.AdmissionRequest{
-			UID:       "test-admission-uid",
-			Kind:      metav1.GroupVersionKind{Group: "", Version: "v1", Kind: "Pod"},
-			Resource:  metav1.GroupVersionResource{Group: "", Version: "v1", Resource: "pods"},
-			Name:      "test-pod",
-			Namespace: "test-ns",
-			Operation: admissionv1.Update,
-			UserInfo: authenticationv1.UserInfo{
-				Username: "test-user@example.com",
-				UID:      "user-uid-123",
-				Groups:   []string{"system:authenticated"},
-			},
-			Object: runtime.RawExtension{
-				Raw: []byte(`{"apiVersion":"v1","kind":"Pod","metadata":{"name":"test-pod"}}`),
-			},
-		},
-	}
-
 	event := Event{
-		Object:           obj,
-		Request:          req,
+		Object: obj,
+		Identifier: types.ResourceIdentifier{
+			Group:     "",
+			Version:   "v1",
+			Resource:  "pods",
+			Namespace: "test-ns",
+			Name:      "test-pod",
+		},
+		Operation: "UPDATE",
+		UserInfo: UserInfo{
+			Username: "test-user@example.com",
+			UID:      "user-uid-123",
+		},
 		GitRepoConfigRef: "production-repo-config",
 	}
 
@@ -434,13 +475,11 @@ func TestEventStructure(t *testing.T) {
 	assert.Equal(t, "Pod", event.Object.GetKind())
 	assert.Equal(t, "test-app", event.Object.GetLabels()["app"])
 
-	assert.Equal(t, "test-admission-uid", string(event.Request.UID))
-	assert.Equal(t, "test-pod", event.Request.Name)
-	assert.Equal(t, "test-ns", event.Request.Namespace)
-	assert.Equal(t, admissionv1.Update, event.Request.Operation)
-	assert.Equal(t, "test-user@example.com", event.Request.UserInfo.Username)
-	assert.Equal(t, "user-uid-123", event.Request.UserInfo.UID)
-	assert.Contains(t, event.Request.UserInfo.Groups, "system:authenticated")
+	assert.Equal(t, "test-pod", event.Identifier.Name)
+	assert.Equal(t, "test-ns", event.Identifier.Namespace)
+	assert.Equal(t, "UPDATE", event.Operation)
+	assert.Equal(t, "test-user@example.com", event.UserInfo.Username)
+	assert.Equal(t, "user-uid-123", event.UserInfo.UID)
 
 	assert.Equal(t, "production-repo-config", event.GitRepoConfigRef)
 }
@@ -459,11 +498,17 @@ func TestQueueBehaviorUnderLoad(t *testing.T) {
 
 		event := Event{
 			Object: obj,
-			Request: admission.Request{
-				AdmissionRequest: admissionv1.AdmissionRequest{
-					UID:       types.UID("load-test-uid-" + string(rune('0'+i%10))),
-					Operation: admissionv1.Create,
-				},
+			Identifier: types.ResourceIdentifier{
+				Group:     "",
+				Version:   "v1",
+				Resource:  "pods",
+				Namespace: "load-test",
+				Name:      "load-test-pod-" + string(rune('0'+i%10)),
+			},
+			Operation: "CREATE",
+			UserInfo: UserInfo{
+				Username: "test-user",
+				UID:      "load-test-uid-" + string(rune('0'+i%10)),
 			},
 			GitRepoConfigRef: "load-test-repo",
 		}

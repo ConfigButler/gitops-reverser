@@ -118,8 +118,8 @@ func TestEventHandler_Handle_MatchingRule(t *testing.T) {
 	assert.Equal(t, "default", event.Object.GetNamespace())
 	assert.Equal(t, "Pod", event.Object.GetKind())
 	assert.Equal(t, "test-repo-config", event.GitRepoConfigRef)
-	assert.Equal(t, "test-uid", string(event.Request.UID))
-	assert.Equal(t, "test-user", event.Request.UserInfo.Username)
+	assert.Equal(t, "test-user", event.UserInfo.Username)
+	assert.Equal(t, "CREATE", event.Operation)
 }
 
 func TestEventHandler_Handle_NoMatchingRule(t *testing.T) {
@@ -635,7 +635,7 @@ func TestEventHandler_Handle_DifferentOperations(t *testing.T) {
 			require.Len(t, events, 1)
 
 			event := events[0]
-			assert.Equal(t, operation, event.Request.Operation)
+			assert.Equal(t, string(operation), event.Operation)
 		})
 	}
 }

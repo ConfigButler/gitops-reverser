@@ -22,6 +22,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"github.com/ConfigButler/gitops-reverser/internal/eventqueue"
+	"github.com/ConfigButler/gitops-reverser/internal/sanitize"
 )
 
 var (
@@ -223,7 +224,7 @@ func (r *Repo) generateLocalCommits(ctx context.Context, events []eventqueue.Eve
 	}
 
 	for _, event := range events {
-		filePath := GetFilePath(event.Object, event.ResourcePlural)
+		filePath := event.Identifier.ToGitPath()
 
 		// Handle the event based on operation type
 		if err := r.handleEventOperation(ctx, event, filePath, worktree); err != nil {
@@ -235,7 +236,7 @@ func (r *Repo) generateLocalCommits(ctx context.Context, events []eventqueue.Eve
 			return err
 		}
 
-		logger.Info("Created commit", "file", filePath, "operation", event.Request.Operation)
+		logger.Info("Created commit", "file", filePath, "operation", event.Operation)
 	}
 
 	return nil
@@ -251,7 +252,7 @@ func (r *Repo) handleEventOperation(
 	logger := log.FromContext(ctx)
 	fullPath := filepath.Join(r.path, filePath)
 
-	if event.Request.Operation == "DELETE" {
+	if event.Operation == "DELETE" {
 		return r.handleDeleteOperation(logger, filePath, fullPath, worktree)
 	}
 
@@ -297,8 +298,8 @@ func (r *Repo) handleCreateOrUpdateOperation(
 		return fmt.Errorf("failed to create directory for %s: %w", filePath, err)
 	}
 
-	// Convert object to YAML
-	content, err := yaml.Marshal(event.Object.Object)
+	// Convert object to ordered YAML
+	content, err := sanitize.MarshalToOrderedYAML(event.Object)
 	if err != nil {
 		return fmt.Errorf("failed to marshal object to YAML: %w", err)
 	}
@@ -433,7 +434,7 @@ func (r *Repo) reEvaluateEvents(ctx context.Context, events []eventqueue.Event) 
 func (r *Repo) isEventStillValid(ctx context.Context, event eventqueue.Event) bool {
 	logger := log.FromContext(ctx)
 
-	filePath := GetFilePath(event.Object, event.ResourcePlural)
+	filePath := event.Identifier.ToGitPath()
 	fullPath := filepath.Join(r.path, filePath)
 
 	if !fileExists(fullPath) {
@@ -657,24 +658,12 @@ func (r *Repo) Commit(files []CommitFile, message string) error {
 	return nil
 }
 
-// GetFilePath returns the path to a file in the repository for a given object.
-// The resourcePlural should come from the admission request's Resource.Resource field,
-// which provides the correct plural form for both built-in and custom resources.
-func GetFilePath(obj *unstructured.Unstructured, resourcePlural string) string {
-	if obj.GetNamespace() != "" {
-		return fmt.Sprintf("namespaces/%s/%s/%s.yaml", obj.GetNamespace(), resourcePlural, obj.GetName())
-	}
-	return fmt.Sprintf("cluster-scoped/%s/%s.yaml", resourcePlural, obj.GetName())
-}
-
 // GetCommitMessage returns a structured commit message for the given event.
 func GetCommitMessage(event eventqueue.Event) string {
-	return fmt.Sprintf("[%s] %s/%s in ns/%s by user/%s",
-		event.Request.Operation,
-		event.Object.GetKind(),
-		event.Object.GetName(),
-		event.Object.GetNamespace(),
-		event.Request.UserInfo.Username,
+	return fmt.Sprintf("[%s] %s by user/%s",
+		event.Operation,
+		event.Identifier.String(),
+		event.UserInfo.Username,
 	)
 }
 
