@@ -1,0 +1,14 @@
+apiVersion: configbutler.ai/v1alpha1
+kind: GitRepoConfig
+metadata:
+  name: gitrepoconfig-with-policy
+  namespace: gitops-reverser-system
+spec:
+  repoUrl: "git@github.com:example/audit.git"
+  branch: "main"
+  secretRef:
+    name: git-credentials
+  accessPolicy:
+    namespacedRules:
+      mode: AllNamespaces
+    allowClusterRules: true

@@ -245,14 +245,15 @@ var _ = Describe("Manager", Ordered, func() {
 		})
 
 		It("should have webhook registration configured", func() {
-			By("verifying basic webhook registration")
+			By("verifying webhook registration for event handler")
 			verifyWebhook := func(g Gomega) {
 				jsonPath := "jsonpath={.items[?(@.metadata.name=='gitops-reverser-validating-webhook-configuration')]" +
 					".webhooks[0].name}"
 				cmd := exec.Command("kubectl", "get", "validatingwebhookconfigurations", "-o", jsonPath)
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(output).To(ContainSubstring("gitops-reverser.configbutler.ai"))
+				g.Expect(output).To(ContainSubstring("gitops-reverser.configbutler.ai"),
+					"Event webhook should be registered")
 			}
 			Eventually(verifyWebhook).Should(Succeed())
 		})
@@ -685,11 +686,90 @@ var _ = Describe("Manager", Ordered, func() {
 				configMapName, uniqueRepoName)
 		})
 
-		// SKIPPED: CRD watching test - requires ClusterWatchRule (cluster-scoped resources)
-		// CustomResourceDefinitions are cluster-scoped and cannot be watched by WatchRule
-		// This test will be re-enabled when ClusterWatchRule is implemented
-		PIt("should create Git commit when IceCreamOrder CRD is installed via ClusterWatchRule", func() {
-			Skip("CRD watching requires ClusterWatchRule (not yet implemented)")
+		It("should create Git commit when IceCreamOrder CRD is installed via ClusterWatchRule", func() {
+			gitRepoConfigName := "gitrepoconfig-crd-install-test"
+			clusterWatchRuleName := "clusterwatchrule-crd-install"
+			crdName := "icecreamorders.shop.example.com"
+
+			By("creating GitRepoConfig with allowClusterRules for CRD watching")
+			createGitRepoConfigWithClusterRules(gitRepoConfigName, "main", "git-creds", getRepoURLHTTP())
+
+			By("waiting for GitRepoConfig to be ready")
+			verifyGitRepoConfigStatus(gitRepoConfigName, "True", "BranchFound", "Branch 'main' found and accessible")
+
+			By("creating ClusterWatchRule with Cluster scope for CRDs")
+			clusterWatchRuleData := struct {
+				Name             string
+				GitRepoConfigRef string
+				Namespace        string
+			}{
+				Name:             clusterWatchRuleName,
+				GitRepoConfigRef: gitRepoConfigName,
+				Namespace:        namespace,
+			}
+
+			err := applyFromTemplate("test/e2e/templates/watchrule-crds.tmpl", clusterWatchRuleData, "")
+			Expect(err).NotTo(HaveOccurred(), "Failed to apply ClusterWatchRule for CRDs")
+
+			By("verifying ClusterWatchRule is ready")
+			verifyClusterWatchRuleReady := func(g Gomega) {
+				jsonPath := "jsonpath={.status.conditions[?(@.type=='Ready')].status}"
+				cmd := exec.Command("kubectl", "get", "clusterwatchrule", clusterWatchRuleName, "-o", jsonPath)
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("True"))
+			}
+			Eventually(verifyClusterWatchRuleReady, 15*time.Second, time.Second).Should(Succeed())
+
+			By("installing the IceCreamOrder CRD to trigger Git commit")
+			cmd := exec.Command("kubectl", "apply", "-f", "test/e2e/templates/icecreamorder-crd.yaml")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to install CRD")
+
+			By("waiting for CRD to be established")
+			verifyCRDEstablished := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "crd", crdName,
+					"-o", "jsonpath={.status.conditions[?(@.type=='Established')].status}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("True"))
+			}
+			Eventually(verifyCRDEstablished, 30*time.Second, time.Second).Should(Succeed())
+
+			By("verifying CRD YAML file exists in Git repository (NO namespace in path - cluster resource)")
+			verifyGitCommit := func(g Gomega) {
+				pullCmd := exec.Command("git", "pull")
+				pullCmd.Dir = checkoutDir
+				pullOutput, pullErr := pullCmd.CombinedOutput()
+				if pullErr != nil {
+					g.Expect(pullErr).NotTo(HaveOccurred(),
+						fmt.Sprintf("Should successfully pull latest changes. Output: %s", string(pullOutput)))
+				}
+
+				// CRDs are cluster-scoped, so path should NOT include namespace
+				expectedFile := filepath.Join(checkoutDir,
+					"apiextensions.k8s.io/v1/customresourcedefinitions/icecreamorders.shop.example.com.yaml")
+				fileInfo, statErr := os.Stat(expectedFile)
+				g.Expect(statErr).NotTo(HaveOccurred(), fmt.Sprintf("CRD file should exist at %s", expectedFile))
+				g.Expect(fileInfo.Size()).To(BeNumerically(">", 0), "CRD file should not be empty")
+
+				// Verify file content
+				content, readErr := os.ReadFile(expectedFile)
+				g.Expect(readErr).NotTo(HaveOccurred())
+				g.Expect(string(content)).To(ContainSubstring("kind: CustomResourceDefinition"),
+					"File should contain CRD kind")
+				g.Expect(string(content)).To(ContainSubstring("name: icecreamorders.shop.example.com"),
+					"File should contain CRD name")
+			}
+			Eventually(verifyGitCommit, 180*time.Second, 5*time.Second).Should(Succeed())
+
+			By("cleaning up test resources")
+			cmd = exec.Command("kubectl", "delete", "clusterwatchrule", clusterWatchRuleName)
+			_, _ = utils.Run(cmd)
+			cleanupGitRepoConfig(gitRepoConfigName)
+			// Keep CRD installed for subsequent tests
+
+			By("✅ CRD installation via ClusterWatchRule E2E test passed")
 		})
 
 		It("should create Git commit when IceCreamOrder is added via WatchRule", func() {
@@ -1102,11 +1182,87 @@ var _ = Describe("Manager", Ordered, func() {
 				crdInstanceName, uniqueRepoName)
 		})
 
-		// SKIPPED: CRD deletion test - requires ClusterWatchRule (cluster-scoped resources)
-		// CustomResourceDefinitions are cluster-scoped and cannot be watched by WatchRule
-		// This test will be re-enabled when ClusterWatchRule is implemented
-		PIt("should delete Git file when IceCreamOrder CRD is deleted via ClusterWatchRule", func() {
-			Skip("CRD watching requires ClusterWatchRule (not yet implemented)")
+		It("should delete Git file when IceCreamOrder CRD is deleted via ClusterWatchRule", func() {
+			gitRepoConfigName := "gitrepoconfig-crd-delete-test"
+			clusterWatchRuleName := "clusterwatchrule-crd-delete"
+			crdName := "icecreamorders.shop.example.com"
+
+			By("creating GitRepoConfig with allowClusterRules for CRD watching")
+			createGitRepoConfigWithClusterRules(gitRepoConfigName, "main", "git-creds", getRepoURLHTTP())
+
+			By("waiting for GitRepoConfig to be ready")
+			verifyGitRepoConfigStatus(gitRepoConfigName, "True", "BranchFound", "Branch 'main' found and accessible")
+
+			By("creating ClusterWatchRule with Cluster scope for CRDs")
+			clusterWatchRuleData := struct {
+				Name             string
+				GitRepoConfigRef string
+				Namespace        string
+			}{
+				Name:             clusterWatchRuleName,
+				GitRepoConfigRef: gitRepoConfigName,
+				Namespace:        namespace,
+			}
+
+			err := applyFromTemplate("test/e2e/templates/watchrule-crds.tmpl", clusterWatchRuleData, "")
+			Expect(err).NotTo(HaveOccurred(), "Failed to apply ClusterWatchRule for CRDs")
+
+			By("verifying ClusterWatchRule is ready")
+			verifyClusterWatchRuleReady := func(g Gomega) {
+				jsonPath := "jsonpath={.status.conditions[?(@.type=='Ready')].status}"
+				cmd := exec.Command("kubectl", "get", "clusterwatchrule", clusterWatchRuleName, "-o", jsonPath)
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("True"))
+			}
+			Eventually(verifyClusterWatchRuleReady, 15*time.Second, time.Second).Should(Succeed())
+
+			By("verifying CRD file exists in Git before deletion")
+			verifyFileExists := func(g Gomega) {
+				pullCmd := exec.Command("git", "pull")
+				pullCmd.Dir = checkoutDir
+				_, _ = pullCmd.CombinedOutput()
+
+				expectedFile := filepath.Join(checkoutDir,
+					"apiextensions.k8s.io/v1/customresourcedefinitions/icecreamorders.shop.example.com.yaml")
+				_, statErr := os.Stat(expectedFile)
+				g.Expect(statErr).NotTo(HaveOccurred(), "CRD file should exist before deletion")
+			}
+			Eventually(verifyFileExists, 30*time.Second, 2*time.Second).Should(Succeed())
+
+			By("deleting the CRD to trigger DELETE operation")
+			cmd := exec.Command("kubectl", "delete", "crd", crdName)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "CRD deletion should succeed")
+
+			By("verifying CRD file is deleted from Git repository")
+			verifyFileDeleted := func(g Gomega) {
+				pullCmd := exec.Command("git", "pull")
+				pullCmd.Dir = checkoutDir
+				_, _ = pullCmd.CombinedOutput()
+
+				expectedFile := filepath.Join(checkoutDir,
+					"apiextensions.k8s.io/v1/customresourcedefinitions/icecreamorders.shop.example.com.yaml")
+				_, statErr := os.Stat(expectedFile)
+				g.Expect(statErr).To(HaveOccurred(), "CRD file should NOT exist after deletion")
+				g.Expect(os.IsNotExist(statErr)).To(BeTrue(), "Error should be 'file does not exist'")
+
+				// Verify git log shows DELETE commit
+				gitLogCmd := exec.Command("git", "log", "--oneline", "-n", "5")
+				gitLogCmd.Dir = checkoutDir
+				logOutput, logErr := gitLogCmd.CombinedOutput()
+				g.Expect(logErr).NotTo(HaveOccurred(), "Should be able to read git log")
+				g.Expect(string(logOutput)).To(ContainSubstring("DELETE"),
+					"Git log should contain DELETE operation")
+			}
+			Eventually(verifyFileDeleted, 180*time.Second, 5*time.Second).Should(Succeed())
+
+			By("cleaning up test resources")
+			cmd = exec.Command("kubectl", "delete", "clusterwatchrule", clusterWatchRuleName)
+			_, _ = utils.Run(cmd)
+			cleanupGitRepoConfig(gitRepoConfigName)
+
+			By("✅ CRD deletion via ClusterWatchRule E2E test passed")
 		})
 
 		AfterAll(func() {
@@ -1151,6 +1307,28 @@ func createGitRepoConfig(name, branch, secretName string) {
 // createSSHGitRepoConfig creates a GitRepoConfig resource with SSH URL.
 func createSSHGitRepoConfig(name, branch, secretName string) {
 	createGitRepoConfigWithURL(name, branch, secretName, getRepoURLSSH())
+}
+
+// createGitRepoConfigWithClusterRules creates a GitRepoConfig with allowClusterRules enabled.
+func createGitRepoConfigWithClusterRules(name, branch, secretName, repoURL string) {
+	By(fmt.Sprintf("creating GitRepoConfig '%s' with allowClusterRules enabled", name))
+
+	data := struct {
+		Name       string
+		Namespace  string
+		RepoURL    string
+		Branch     string
+		SecretName string
+	}{
+		Name:       name,
+		Namespace:  namespace,
+		RepoURL:    repoURL,
+		Branch:     branch,
+		SecretName: secretName,
+	}
+
+	err := applyFromTemplate("test/e2e/templates/gitrepoconfig-with-cluster-access.tmpl", data, namespace)
+	Expect(err).NotTo(HaveOccurred(), "Failed to apply GitRepoConfig with cluster access")
 }
 
 // verifyGitRepoConfigStatus verifies the GitRepoConfig status matches expected values.

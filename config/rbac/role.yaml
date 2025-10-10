@@ -7,6 +7,15 @@ rules:
 - apiGroups:
   - ""
   resources:
+  - namespaces
+  - secrets
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
   - pods
   verbs:
   - get
@@ -15,16 +24,9 @@ rules:
   - update
   - watch
 - apiGroups:
-  - ""
-  resources:
-  - secrets
-  verbs:
-  - get
-  - list
-  - watch
-- apiGroups:
   - configbutler.ai
   resources:
+  - clusterwatchrules
   - gitrepoconfigs
   - watchrules
   verbs:
@@ -38,6 +40,7 @@ rules:
 - apiGroups:
   - configbutler.ai
   resources:
+  - clusterwatchrules/finalizers
   - gitrepoconfigs/finalizers
   - watchrules/finalizers
   verbs:
@@ -45,6 +48,7 @@ rules:
 - apiGroups:
   - configbutler.ai
   resources:
+  - clusterwatchrules/status
   - gitrepoconfigs/status
   - watchrules/status
   verbs:

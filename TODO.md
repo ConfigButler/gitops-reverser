@@ -42,3 +42,14 @@ There should also be some examples in the unit tests somewhow: I should be able 
 I'm not to happy with all the sanitize stuff: It's throwing away some metadata fields that could prove valuable as well. Isn't it going to be good enough to just throw away the status field? We don't want things to be to big, but also not be to small...
 
 Will we allow to keep status as well? Is it perhaps usefull for some usecases? It also depends where the API server will run: people could also choose the run this concept in their own cluster. It would be a backup.
+
+
+---
+
+New questions:
+
+* If the AccessPolicy is adjusted on the GitRepoConfig, are the existing watchrules also re-evaluated (if they can send in events).
+* For now we have a disabled webhook handler for the GitRepoConfig: do we really need that anyway? Do we want to stop deletions if events are still actively comming in or why?
+* Is there to much code duplication between clusterwatchrule and watchrule?
+* Should I rename the /validate-v1-event endpoint to be more clear? Something like process-audit-event?
+* Should NamespacedName object in clusterwatchrule be duplicated or not? (should probably be the GitRepoConfigRef).

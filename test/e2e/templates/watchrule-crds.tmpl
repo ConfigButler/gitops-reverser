@@ -1,9 +1,14 @@
 apiVersion: configbutler.ai/v1alpha1
-kind: WatchRule
+kind: ClusterWatchRule
 metadata:
   name: {{ .Name }}
-  namespace: {{ .Namespace }}
 spec:
-  gitRepoConfigRef: {{ .GitRepoConfigRef }}
+  gitRepoConfigRef:
+    name: {{ .GitRepoConfigRef }}
+    namespace: {{ .Namespace }}
   rules:
-  - resources: ["customresourcedefinitions"]
+  - scope: Cluster
+    operations: [CREATE, UPDATE, DELETE]
+    apiGroups: [apiextensions.k8s.io]
+    apiVersions: [v1]
+    resources: [customresourcedefinitions]

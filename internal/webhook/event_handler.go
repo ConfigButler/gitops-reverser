@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"net/http"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	apitypes "k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
@@ -93,7 +95,16 @@ func (h *EventHandler) Handle(ctx context.Context, req admission.Request) admiss
 	// Determine if resource is cluster-scoped (no namespace)
 	isClusterScoped := obj.GetNamespace() == ""
 
-	// Get matching rules with enhanced filtering
+	// Get namespace labels for ClusterWatchRule matching (only for namespaced resources)
+	var namespaceLabels map[string]string
+	if !isClusterScoped {
+		ns := &corev1.Namespace{}
+		if err := h.Client.Get(ctx, apitypes.NamespacedName{Name: obj.GetNamespace()}, ns); err == nil {
+			namespaceLabels = ns.Labels
+		}
+	}
+
+	// Get matching WatchRules
 	matchingRules := h.RuleStore.GetMatchingRules(
 		obj,
 		resourcePlural,
@@ -102,6 +113,19 @@ func (h *EventHandler) Handle(ctx context.Context, req admission.Request) admiss
 		apiVersion,
 		isClusterScoped,
 	)
+
+	// Get matching ClusterWatchRules
+	matchingClusterRules := h.RuleStore.GetMatchingClusterRules(
+		resourcePlural,
+		operation,
+		apiGroup,
+		apiVersion,
+		isClusterScoped,
+		namespaceLabels,
+	)
+
+	totalMatches := len(matchingRules) + len(matchingClusterRules)
+
 	if h.EnableVerboseAdmissionLogs {
 		log.Info(
 			"Checking for matching rules", //nolint:lll // Structured log
@@ -113,37 +137,31 @@ func (h *EventHandler) Handle(ctx context.Context, req admission.Request) admiss
 			obj.GetName(),
 			"namespace",
 			obj.GetNamespace(),
-			"matchingRulesCount",
+			"matchingWatchRules",
 			len(matchingRules),
+			"matchingClusterWatchRules",
+			len(matchingClusterRules),
 		)
 	}
 
-	if len(matchingRules) > 0 {
+	if totalMatches > 0 {
 		identifier := types.FromAdmissionRequest(req)
 		log.Info(
-			fmt.Sprintf("Received %s for %s: matched %d watchrule(s)",
+			fmt.Sprintf("Received %s for %s: matched %d watchrule(s) and %d clusterwatchrule(s)",
 				req.Operation,
 				identifier.String(),
-				len(matchingRules)),
+				len(matchingRules),
+				len(matchingClusterRules)),
 		)
 
-		// Enqueue an event for each matching rule.
+		// Enqueue events for WatchRule matches
 		for _, rule := range matchingRules {
-			sanitizedObj := sanitize.Sanitize(obj)
-			event := eventqueue.Event{
-				Object:     sanitizedObj,
-				Identifier: identifier,
-				Operation:  string(req.Operation),
-				UserInfo: eventqueue.UserInfo{
-					Username: req.UserInfo.Username,
-					UID:      req.UserInfo.UID,
-				},
-				GitRepoConfigRef:       rule.GitRepoConfigRef,
-				GitRepoConfigNamespace: rule.Source.Namespace,
-			}
-			h.EventQueue.Enqueue(event)
-			metrics.EventsProcessedTotal.Add(ctx, 1)
-			metrics.GitCommitQueueSize.Add(ctx, 1)
+			h.enqueueEvent(ctx, obj, identifier, req, rule.GitRepoConfigRef, rule.Source.Namespace)
+		}
+
+		// Enqueue events for ClusterWatchRule matches
+		for _, clusterRule := range matchingClusterRules {
+			h.enqueueEvent(ctx, obj, identifier, req, clusterRule.GitRepoConfigRef, clusterRule.GitRepoConfigNamespace)
 		}
 	} else if obj.GetNamespace() != "kube-system" && obj.GetNamespace() != "kube-node-lease" && obj.GetKind() != "Lease" {
 		// Only log for non-system resources to avoid spam
@@ -151,6 +169,32 @@ func (h *EventHandler) Handle(ctx context.Context, req admission.Request) admiss
 	}
 
 	return admission.Allowed("request is allowed")
+}
+
+// enqueueEvent creates and enqueues an event for processing.
+func (h *EventHandler) enqueueEvent(
+	ctx context.Context,
+	obj *unstructured.Unstructured,
+	identifier types.ResourceIdentifier,
+	req admission.Request,
+	gitRepoConfigRef string,
+	gitRepoConfigNamespace string,
+) {
+	sanitizedObj := sanitize.Sanitize(obj)
+	event := eventqueue.Event{
+		Object:     sanitizedObj,
+		Identifier: identifier,
+		Operation:  string(req.Operation),
+		UserInfo: eventqueue.UserInfo{
+			Username: req.UserInfo.Username,
+			UID:      req.UserInfo.UID,
+		},
+		GitRepoConfigRef:       gitRepoConfigRef,
+		GitRepoConfigNamespace: gitRepoConfigNamespace,
+	}
+	h.EventQueue.Enqueue(event)
+	metrics.EventsProcessedTotal.Add(ctx, 1)
+	metrics.GitCommitQueueSize.Add(ctx, 1)
 }
 
 // InjectDecoder injects the decoder.

@@ -237,6 +237,14 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "GitRepoConfig")
 		os.Exit(1)
 	}
+
+	// TODO: Re-enable GitRepoConfig validation webhook after fixing controller-runtime registration
+	// The webhook code exists and unit tests pass, but runtime registration needs debugging
+	// For now, CEL validation in the CRD provides validation
+	// if err = (&configbutleraiv1alpha1.GitRepoConfig{}).SetupWebhookWithManager(mgr); err != nil {
+	// 	setupLog.Error(err, "unable to create webhook", "webhook", "GitRepoConfig")
+	// 	os.Exit(1)
+	// }
 	// Initialize rule store and event queue for webhook handler
 	ruleStore := rulestore.NewStore()
 	eventQueue := eventqueue.NewQueue()
@@ -249,6 +257,17 @@ func main() {
 	}
 	if err = watchRuleReconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "WatchRule")
+		os.Exit(1)
+	}
+
+	// Create ClusterWatchRule reconciler with rule store integration
+	clusterWatchRuleReconciler := &controller.ClusterWatchRuleReconciler{
+		Client:    mgr.GetClient(),
+		Scheme:    mgr.GetScheme(),
+		RuleStore: ruleStore,
+	}
+	if err = clusterWatchRuleReconciler.SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "ClusterWatchRule")
 		os.Exit(1)
 	}
 

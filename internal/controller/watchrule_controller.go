@@ -18,11 +18,14 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
-	"k8s.io/apimachinery/pkg/api/errors"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -39,6 +42,7 @@ const (
 	WatchRuleReasonValidating            = "Validating"
 	WatchRuleReasonGitRepoConfigNotFound = "GitRepoConfigNotFound"
 	WatchRuleReasonGitRepoConfigNotReady = "GitRepoConfigNotReady"
+	WatchRuleReasonAccessDenied          = "AccessDenied"
 	WatchRuleReasonReady                 = "Ready"
 )
 
@@ -54,6 +58,7 @@ type WatchRuleReconciler struct {
 // +kubebuilder:rbac:groups=configbutler.ai,resources=watchrules/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=configbutler.ai,resources=watchrules/finalizers,verbs=update
 // +kubebuilder:rbac:groups=configbutler.ai,resources=gitrepoconfigs,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=namespaces,verbs=get
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -108,12 +113,22 @@ func (r *WatchRuleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return r.updateStatusAndRequeue(ctx, &watchRule, time.Minute)
 	}
 
-	log.Info("GitRepoConfig is ready, adding WatchRule to store", "gitRepoConfig", gitRepoConfig.Name)
+	log.Info("GitRepoConfig is ready, validating access policy", "gitRepoConfig", gitRepoConfig.Name)
 
-	// Step 3: Add or update the rule in the store
+	// Step 3: Validate access policy
+	if err := r.validateGitRepoConfigAccess(ctx, &watchRule, gitRepoConfig); err != nil {
+		log.Error(err, "Access denied to GitRepoConfig")
+		r.setCondition(&watchRule, metav1.ConditionFalse, WatchRuleReasonAccessDenied,
+			fmt.Sprintf("Access denied to GitRepoConfig '%s': %v", watchRule.Spec.GitRepoConfigRef, err))
+		return r.updateStatusAndRequeue(ctx, &watchRule, RequeueMediumInterval)
+	}
+
+	log.Info("Access policy validated, adding WatchRule to store", "gitRepoConfig", gitRepoConfig.Name)
+
+	// Step 4: Add or update the rule in the store
 	r.RuleStore.AddOrUpdateWatchRule(watchRule)
 
-	// Step 4: Set ready condition
+	// Step 5: Set ready condition
 	log.Info("WatchRule validation successful")
 	r.setCondition(
 		&watchRule,
@@ -225,7 +240,7 @@ func (r *WatchRuleReconciler) updateStatusWithRetry(
 		latest := &configbutleraiv1alpha1.WatchRule{}
 		key := client.ObjectKeyFromObject(watchRule)
 		if err := r.Get(ctx, key, latest); err != nil {
-			if errors.IsNotFound(err) {
+			if apierrors.IsNotFound(err) {
 				log.Info("Resource was deleted, nothing to update")
 				return true, nil
 			}
@@ -245,7 +260,7 @@ func (r *WatchRuleReconciler) updateStatusWithRetry(
 
 		// Attempt to update
 		if err := r.Status().Update(ctx, latest); err != nil {
-			if errors.IsConflict(err) {
+			if apierrors.IsConflict(err) {
 				log.Info("Resource version conflict, retrying")
 				return false, nil
 			}
@@ -256,6 +271,65 @@ func (r *WatchRuleReconciler) updateStatusWithRetry(
 		log.Info("Status update successful")
 		return true, nil
 	})
+}
+
+// validateGitRepoConfigAccess checks if WatchRule can access GitRepoConfig based on accessPolicy.
+func (r *WatchRuleReconciler) validateGitRepoConfigAccess(
+	ctx context.Context,
+	watchRule *configbutleraiv1alpha1.WatchRule,
+	gitRepoConfig *configbutleraiv1alpha1.GitRepoConfig,
+) error {
+	// Check access policy
+	if gitRepoConfig.Spec.AccessPolicy == nil {
+		// Default: SameNamespace
+		if gitRepoConfig.Namespace != watchRule.Namespace {
+			return errors.New("GitRepoConfig does not allow cross-namespace access (no accessPolicy)")
+		}
+		return nil
+	}
+
+	policy := gitRepoConfig.Spec.AccessPolicy.NamespacedRules
+	if policy == nil {
+		// Default: SameNamespace
+		if gitRepoConfig.Namespace != watchRule.Namespace {
+			return errors.New("GitRepoConfig does not allow cross-namespace access (no namespacedRules)")
+		}
+		return nil
+	}
+
+	switch policy.Mode {
+	case configbutleraiv1alpha1.AccessPolicyModeSameNamespace, "": // Empty string = default
+		if gitRepoConfig.Namespace != watchRule.Namespace {
+			return errors.New("GitRepoConfig only allows same-namespace access")
+		}
+
+	case configbutleraiv1alpha1.AccessPolicyModeAllNamespaces:
+		// Always allowed
+		return nil
+
+	case configbutleraiv1alpha1.AccessPolicyModeFromSelector:
+		// Get namespace object to check labels
+		ns := &corev1.Namespace{}
+		err := r.Get(ctx, types.NamespacedName{Name: watchRule.Namespace}, ns)
+		if err != nil {
+			return fmt.Errorf("failed to get namespace %s: %w", watchRule.Namespace, err)
+		}
+
+		// Check if namespace matches selector
+		selector, err := metav1.LabelSelectorAsSelector(policy.NamespaceSelector)
+		if err != nil {
+			return fmt.Errorf("invalid namespace selector: %w", err)
+		}
+
+		if !selector.Matches(labels.Set(ns.Labels)) {
+			return fmt.Errorf(
+				"namespace '%s' does not match GitRepoConfig selector",
+				watchRule.Namespace,
+			)
+		}
+	}
+
+	return nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
