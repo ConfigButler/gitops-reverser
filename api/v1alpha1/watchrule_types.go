@@ -20,30 +20,91 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
-// NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
+// OperationType specifies the type of operation that triggers a watch event.
+// +kubebuilder:validation:Enum=CREATE;UPDATE;DELETE;*
+type OperationType string
+
+const (
+	// OperationCreate matches resource creation events.
+	OperationCreate OperationType = "CREATE"
+	// OperationUpdate matches resource update events.
+	OperationUpdate OperationType = "UPDATE"
+	// OperationDelete matches resource deletion events.
+	OperationDelete OperationType = "DELETE"
+	// OperationAll matches all operation types.
+	OperationAll OperationType = "*"
+)
 
 // WatchRuleSpec defines the desired state of WatchRule.
+// WatchRule watches resources ONLY within its own namespace.
 type WatchRuleSpec struct {
 	// GitRepoConfigRef is the name of the GitRepoConfig to use for this rule.
+	// The GitRepoConfig must exist in the same namespace as this WatchRule.
 	// +required
 	GitRepoConfigRef string `json:"gitRepoConfigRef"`
 
-	// ExcludeLabels defines a set of labels that, if present on a resource,
-	// will cause the resource to be ignored by this watch rule.
+	// ObjectSelector filters resources by labels (like objectSelector in webhooks).
+	// If specified, only resources matching this selector are watched.
+	// Use matchExpressions with NotIn/DoesNotExist operators to exclude resources.
+	// This follows Kubernetes standard label selector semantics.
 	// +optional
-	ExcludeLabels *metav1.LabelSelector `json:"excludeLabels,omitempty"`
+	ObjectSelector *metav1.LabelSelector `json:"objectSelector,omitempty"`
 
-	// Rules is a list of resource rules that define what to watch.
+	// Rules define which resources to watch within this namespace.
+	// Multiple rules create a logical OR - a resource matching ANY rule is watched.
+	// Each rule can specify operations, API groups, versions, and resource types.
 	// +required
+	// +kubebuilder:validation:MinItems=1
 	Rules []ResourceRule `json:"rules"`
 }
 
-// ResourceRule defines a set of resources to watch.
+// ResourceRule defines a set of namespaced resources to watch.
+// This follows Kubernetes admission control semantics but simplified for our use case.
+// All fields except Resources are optional and default to matching all when not specified.
 type ResourceRule struct {
-	// Resources is a list of Kubernetes resource kinds to watch.
-	// e.g., ["deployments", "services", "ingresses.*"]
+	// Operations to watch. If empty, watches all operations (CREATE, UPDATE, DELETE).
+	// Supports: CREATE, UPDATE, DELETE, or * (wildcard for all operations).
+	// Examples:
+	//   - ["CREATE", "UPDATE"] watches only creation and updates, ignoring deletions
+	//   - ["*"] or [] watches all operations
+	// +optional
+	Operations []OperationType `json:"operations,omitempty"`
+
+	// APIGroups to match. Empty string ("") matches the core API group.
+	// If empty, matches all API groups.
+	// Wildcards supported: "*" matches all groups.
+	// Examples:
+	//   - [""] matches core API (pods, services, configmaps)
+	//   - ["apps"] matches apps API group (deployments, statefulsets)
+	//   - ["", "apps"] matches both core and apps groups
+	//   - ["*"] or [] matches all groups
+	// +optional
+	APIGroups []string `json:"apiGroups,omitempty"`
+
+	// APIVersions to match. If empty, matches all versions.
+	// Wildcards supported: "*" matches all versions.
+	// Examples:
+	//   - ["v1"] matches only v1 version
+	//   - ["v1", "v1beta1"] matches both versions
+	//   - ["*"] or [] matches all versions
+	// +optional
+	APIVersions []string `json:"apiVersions,omitempty"`
+
+	// Resources to match (plural names like "pods", "configmaps").
+	// This field is required and determines which resource types trigger this rule.
+	// Wildcard semantics follow Kubernetes admission webhook patterns:
+	//   - "*" matches all resources
+	//   - "pods" matches exactly pods (case-insensitive)
+	//   - "pods/*" matches all pod subresources (e.g., pods/log, pods/status)
+	//   - "pods/log" matches specific subresource
+	//
+	// For custom resources, use exact group-qualified names:
+	//   - "myapps.example.com" matches MyApp CRD
+	//
+	// Note: Prefix/suffix wildcards like "pod*" or "*.example.com" are NOT supported.
+	// Use exact matches or the "*" wildcard for broad matching.
 	// +required
+	// +kubebuilder:validation:MinItems=1
 	Resources []string `json:"resources"`
 }
 
@@ -58,14 +119,25 @@ type WatchRuleStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:resource:scope=Namespaced
+// +kubebuilder:printcolumn:name="GitRepoConfig",type=string,JSONPath=`.spec.gitRepoConfigRef`
+// +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
+// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
-// WatchRule is the Schema for the watchrules API.
+// WatchRule watches namespaced resources within its own namespace.
+// It provides fine-grained control over which resources trigger Git commits,
+// with filtering by operation type, API group, version, and labels.
+//
+// Security model:
+//   - WatchRule is namespace-scoped and can only watch resources in its own namespace
+//   - Use ClusterWatchRule for watching cluster-scoped resources (Nodes, ClusterRoles, etc.)
+//   - RBAC controls who can create/modify WatchRules per namespace
 type WatchRule struct {
 	metav1.TypeMeta `json:",inline"`
 
 	// metadata is a standard object metadata
 	// +optional
-	metav1.ObjectMeta `json:"metadata,omitempty,omitzero"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
 
 	// spec defines the desired state of WatchRule
 	// +required
@@ -73,7 +145,7 @@ type WatchRule struct {
 
 	// status defines the observed state of WatchRule
 	// +optional
-	Status WatchRuleStatus `json:"status,omitempty,omitzero"`
+	Status WatchRuleStatus `json:"status,omitempty"`
 }
 
 // +kubebuilder:object:root=true

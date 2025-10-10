@@ -685,45 +685,20 @@ var _ = Describe("Manager", Ordered, func() {
 				configMapName, uniqueRepoName)
 		})
 
-		It("should create Git commit when IceCreamOrder CRD is installed via WatchRule", func() {
+		// SKIPPED: CRD watching test - requires ClusterWatchRule (cluster-scoped resources)
+		// CustomResourceDefinitions are cluster-scoped and cannot be watched by WatchRule
+		// This test will be re-enabled when ClusterWatchRule is implemented
+		PIt("should create Git commit when IceCreamOrder CRD is installed via ClusterWatchRule", func() {
+			Skip("CRD watching requires ClusterWatchRule (not yet implemented)")
+		})
+
+		It("should create Git commit when IceCreamOrder is added via WatchRule", func() {
 			gitRepoConfigName := "gitrepoconfig-icecream-suite"
-			watchRuleName := "watchrule-icecream-crds"
-			uniqueRepoName := testRepoName
-			repoURL := getRepoURLHTTP()
+			watchRuleName := "watchrule-icecream-orders"
 
-			By("creating shared GitRepoConfig for IceCreamOrder test suite")
-			createGitRepoConfigWithURL(gitRepoConfigName, "main", "git-creds", repoURL)
-
-			By("waiting for GitRepoConfig to be ready")
-			verifyGitRepoConfigStatus(gitRepoConfigName, "True", "BranchFound", "Branch 'main' found and accessible")
-
-			By("creating WatchRule that monitors CRDs")
-			data := struct {
-				Name             string
-				Namespace        string
-				GitRepoConfigRef string
-			}{
-				Name:             watchRuleName,
-				Namespace:        namespace,
-				GitRepoConfigRef: gitRepoConfigName,
-			}
-
-			err := applyFromTemplate("test/e2e/templates/watchrule-crds.tmpl", data, namespace)
-			Expect(err).NotTo(HaveOccurred(), "Failed to apply WatchRule for CRDs")
-
-			By("verifying WatchRule is ready")
-			verifyReconciled := func(g Gomega) {
-				jsonPath := "jsonpath={.status.conditions[?(@.type=='Ready')].status}"
-				cmd := exec.Command("kubectl", "get", "watchrule", watchRuleName, "-n", namespace, "-o", jsonPath)
-				output, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(output).To(Equal("True"))
-			}
-			Eventually(verifyReconciled, 15*time.Second, time.Second).Should(Succeed())
-
-			By("installing the IceCreamOrder CRD to trigger Git commit")
+			By("installing the IceCreamOrder CRD first (needed for custom resource tests)")
 			cmd := exec.Command("kubectl", "apply", "-f", "test/e2e/templates/icecreamorder-crd.yaml")
-			_, err = utils.Run(cmd)
+			_, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to install sample CRD")
 
 			By("waiting for CRD to be established")
@@ -736,56 +711,11 @@ var _ = Describe("Manager", Ordered, func() {
 			}
 			Eventually(verifyCRDEstablished, 30*time.Second, time.Second).Should(Succeed())
 
-			By("waiting for controller reconciliation of CRD event")
-			verifyReconciliationLogs := func(g Gomega) {
-				cmd := exec.Command("kubectl", "logs", "-l", "control-plane=controller-manager",
-					"-n", namespace, "--tail=500", "--prefix=true")
-				output, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(output).To(ContainSubstring("git commit"),
-					"Should see git commit operation in logs")
-			}
-			Eventually(verifyReconciliationLogs, 45*time.Second, 2*time.Second).Should(Succeed())
+			By("creating GitRepoConfig for IceCreamOrder test")
+			createGitRepoConfigWithURL(gitRepoConfigName, "main", "git-creds", getRepoURLHTTP())
 
-			By("verifying IceCreamOrder CRD YAML file exists in Gitea repository")
-			verifyGitCommit := func(g Gomega) {
-				pullCmd := exec.Command("git", "pull")
-				pullCmd.Dir = checkoutDir
-				pullOutput, pullErr := pullCmd.CombinedOutput()
-				if pullErr != nil {
-					g.Expect(pullErr).NotTo(HaveOccurred(),
-						fmt.Sprintf("Should successfully pull latest changes. Output: %s", string(pullOutput)))
-				}
-
-				expectedFile := filepath.Join(checkoutDir,
-					"apiextensions.k8s.io/v1/customresourcedefinitions/icecreamorders.shop.example.com.yaml")
-				fileInfo, statErr := os.Stat(expectedFile)
-				g.Expect(statErr).
-					NotTo(HaveOccurred(), fmt.Sprintf("CRD file should exist at %s", expectedFile))
-				g.Expect(fileInfo.Size()).To(BeNumerically(">", 0), "CRD file should not be empty")
-
-				content, readErr := os.ReadFile(expectedFile)
-				g.Expect(readErr).NotTo(HaveOccurred())
-				g.Expect(string(content)).To(ContainSubstring("kind: CustomResourceDefinition"),
-					"CRD file should contain CustomResourceDefinition kind")
-				g.Expect(string(content)).To(ContainSubstring("icecreamorders.shop.example.com"),
-					"CRD file should contain the CRD name")
-				g.Expect(string(content)).To(ContainSubstring("IceCreamOrder"),
-					"CRD file should contain IceCreamOrder kind")
-			}
-			Eventually(verifyGitCommit, 180*time.Second, 5*time.Second).Should(Succeed())
-
-			By("cleaning up CRD WatchRule (keeping GitRepoConfig and CRD for subsequent tests)")
-			cmd = exec.Command("kubectl", "delete", "watchrule", watchRuleName, "-n", namespace)
-			_, _ = utils.Run(cmd)
-
-			By("✅ IceCreamOrder CRD installation E2E test passed")
-			fmt.Printf("✅ IceCreamOrder CRD successfully triggered Git commit in repo '%s'\n", uniqueRepoName)
-		})
-
-		It("should create Git commit when IceCreamOrder is added via WatchRule", func() {
-			gitRepoConfigName := "gitrepoconfig-icecream-suite"
-			watchRuleName := "watchrule-icecream-orders"
+			By("waiting for GitRepoConfig to be ready")
+			verifyGitRepoConfigStatus(gitRepoConfigName, "True", "BranchFound", "Branch 'main' found and accessible")
 			crdInstanceName := "alices-order"
 			uniqueRepoName := testRepoName
 
@@ -1172,59 +1102,18 @@ var _ = Describe("Manager", Ordered, func() {
 				crdInstanceName, uniqueRepoName)
 		})
 
-		It("should delete Git file when IceCreamOrder CRD is deleted via WatchRule", func() {
-			gitRepoConfigName := "gitrepoconfig-icecream-suite"
-			watchRuleName := "watchrule-icecream-crds-final"
-			uniqueRepoName := testRepoName
+		// SKIPPED: CRD deletion test - requires ClusterWatchRule (cluster-scoped resources)
+		// CustomResourceDefinitions are cluster-scoped and cannot be watched by WatchRule
+		// This test will be re-enabled when ClusterWatchRule is implemented
+		PIt("should delete Git file when IceCreamOrder CRD is deleted via ClusterWatchRule", func() {
+			Skip("CRD watching requires ClusterWatchRule (not yet implemented)")
+		})
 
-			By("verifying CRD file exists in Git before deletion")
-			verifyFileExists := func(g Gomega) {
-				pullCmd := exec.Command("git", "pull")
-				pullCmd.Dir = checkoutDir
-				_, _ = pullCmd.CombinedOutput()
-
-				expectedFile := filepath.Join(checkoutDir,
-					"apiextensions.k8s.io/v1/customresourcedefinitions/icecreamorders.shop.example.com.yaml")
-				_, statErr := os.Stat(expectedFile)
-				g.Expect(statErr).NotTo(HaveOccurred(), "CRD file should exist before deletion")
-			}
-			Eventually(verifyFileExists, 30*time.Second, 2*time.Second).Should(Succeed())
-
-			By("deleting the IceCreamOrder CRD to trigger DELETE operation")
-			cmd := exec.Command("kubectl", "delete", "crd", "icecreamorders.shop.example.com")
-			_, err := utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred(), "CRD deletion should succeed")
-
-			By("verifying CRD file is deleted from Git repository")
-			verifyFileDeleted := func(g Gomega) {
-				pullCmd := exec.Command("git", "pull")
-				pullCmd.Dir = checkoutDir
-				_, _ = pullCmd.CombinedOutput()
-
-				expectedFile := filepath.Join(checkoutDir,
-					"apiextensions.k8s.io/v1/customresourcedefinitions/icecreamorders.shop.example.com.yaml")
-				_, statErr := os.Stat(expectedFile)
-				g.Expect(statErr).
-					To(HaveOccurred(), fmt.Sprintf("CRD file should NOT exist at %s", expectedFile))
-				g.Expect(os.IsNotExist(statErr)).To(BeTrue(), "Error should be 'file does not exist'")
-
-				By("verifying git log shows DELETE commit")
-				gitLogCmd := exec.Command("git", "log", "--oneline", "-n", "5")
-				gitLogCmd.Dir = checkoutDir
-				logOutput, logErr := gitLogCmd.CombinedOutput()
-				g.Expect(logErr).NotTo(HaveOccurred(), "Should be able to read git log")
-				g.Expect(string(logOutput)).To(ContainSubstring("DELETE"),
-					"Git log should contain DELETE operation")
-			}
-			Eventually(verifyFileDeleted, 180*time.Second, 5*time.Second).Should(Succeed())
-
-			By("cleaning up all IceCreamOrder test resources")
-			cmd = exec.Command("kubectl", "delete", "watchrule", watchRuleName, "-n", namespace)
+		AfterAll(func() {
+			By("cleaning up IceCreamOrder CRD")
+			cmd := exec.Command("kubectl", "delete", "crd",
+				"icecreamorders.shop.example.com", "--ignore-not-found=true")
 			_, _ = utils.Run(cmd)
-			cleanupGitRepoConfig(gitRepoConfigName)
-
-			By("✅ IceCreamOrder CRD deletion E2E test passed")
-			fmt.Printf("✅ IceCreamOrder CRD deletion successfully removed file from Git repo '%s'\n", uniqueRepoName)
 		})
 
 		// +kubebuilder:scaffold:e2e-webhooks-checks

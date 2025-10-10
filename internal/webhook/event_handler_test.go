@@ -327,7 +327,7 @@ func TestEventHandler_Handle_ExcludedByLabels(t *testing.T) {
 	ruleStore := rulestore.NewStore()
 	eventQueue := eventqueue.NewQueue()
 
-	// Add a rule that excludes resources with ignore label
+	// Add a rule that excludes resources with ignore label using ObjectSelector
 	rule := configv1alpha1.WatchRule{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "pod-rule",
@@ -335,11 +335,11 @@ func TestEventHandler_Handle_ExcludedByLabels(t *testing.T) {
 		},
 		Spec: configv1alpha1.WatchRuleSpec{
 			GitRepoConfigRef: "test-repo-config",
-			ExcludeLabels: &metav1.LabelSelector{
+			ObjectSelector: &metav1.LabelSelector{
 				MatchExpressions: []metav1.LabelSelectorRequirement{
 					{
 						Key:      "configbutler.ai/ignore",
-						Operator: metav1.LabelSelectorOpExists,
+						Operator: metav1.LabelSelectorOpDoesNotExist,
 					},
 				},
 			},
@@ -451,7 +451,7 @@ func TestEventHandler_Handle_InvalidJSON(t *testing.T) {
 	assert.Equal(t, 0, eventQueue.Size())             // No events should be enqueued
 }
 
-func TestEventHandler_Handle_WildcardMatching(t *testing.T) {
+func TestEventHandler_Handle_NamespacedIngressResource(t *testing.T) {
 	// Setup
 	ctx := context.Background()
 	_, err := metrics.InitOTLPExporter(ctx)
@@ -463,7 +463,7 @@ func TestEventHandler_Handle_WildcardMatching(t *testing.T) {
 	ruleStore := rulestore.NewStore()
 	eventQueue := eventqueue.NewQueue()
 
-	// Add a rule with wildcard matching
+	// Add a rule matching Ingress resources (namespace-scoped)
 	rule := configv1alpha1.WatchRule{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "ingress-rule",
@@ -473,12 +473,12 @@ func TestEventHandler_Handle_WildcardMatching(t *testing.T) {
 			GitRepoConfigRef: "test-repo-config",
 			Rules: []configv1alpha1.ResourceRule{
 				{
-					Resources: []string{"ingress*"},
+					Resources: []string{"ingresses"},
 				},
 			},
 		},
 	}
-	ruleStore.AddOrUpdate(rule)
+	ruleStore.AddOrUpdateWatchRule(rule)
 
 	handler := &EventHandler{
 		Client:     client,
@@ -490,23 +490,27 @@ func TestEventHandler_Handle_WildcardMatching(t *testing.T) {
 	decoder := admission.NewDecoder(scheme)
 	handler.Decoder = &decoder
 
-	// Create admission request for an IngressClass (should match Ingress*)
-	ingressClass := &unstructured.Unstructured{
+	// Create admission request for an Ingress (namespace-scoped resource)
+	ingress := &unstructured.Unstructured{
 		Object: map[string]interface{}{
 			"apiVersion": "networking.k8s.io/v1",
-			"kind":       "IngressClass",
+			"kind":       "Ingress",
 			"metadata": map[string]interface{}{
-				"name": "test-ingress-class",
+				"name":      "test-ingress",
+				"namespace": "default",
+			},
+			"spec": map[string]interface{}{
+				"rules": []interface{}{},
 			},
 		},
 	}
-	ingressClass.SetGroupVersionKind(schema.GroupVersionKind{
+	ingress.SetGroupVersionKind(schema.GroupVersionKind{
 		Group:   "networking.k8s.io",
 		Version: "v1",
-		Kind:    "IngressClass",
+		Kind:    "Ingress",
 	})
 
-	ingressClassBytes, err := ingressClass.MarshalJSON()
+	ingressBytes, err := ingress.MarshalJSON()
 	require.NoError(t, err)
 
 	req := admission.Request{
@@ -516,10 +520,10 @@ func TestEventHandler_Handle_WildcardMatching(t *testing.T) {
 			Resource: metav1.GroupVersionResource{
 				Group:    "networking.k8s.io",
 				Version:  "v1",
-				Resource: "ingressclasses",
+				Resource: "ingresses",
 			},
 			Object: runtime.RawExtension{
-				Raw: ingressClassBytes,
+				Raw: ingressBytes,
 			},
 			UserInfo: authenticationv1.UserInfo{
 				Username: "test-user",
@@ -539,8 +543,9 @@ func TestEventHandler_Handle_WildcardMatching(t *testing.T) {
 	require.Len(t, events, 1)
 
 	event := events[0]
-	assert.Equal(t, "test-ingress-class", event.Object.GetName())
-	assert.Equal(t, "IngressClass", event.Object.GetKind())
+	assert.Equal(t, "test-ingress", event.Object.GetName())
+	assert.Equal(t, "Ingress", event.Object.GetKind())
+	assert.Equal(t, "default", event.Object.GetNamespace())
 }
 
 func TestEventHandler_Handle_DifferentOperations(t *testing.T) {
@@ -652,7 +657,9 @@ func TestEventHandler_Handle_ClusterScopedResource(t *testing.T) {
 	ruleStore := rulestore.NewStore()
 	eventQueue := eventqueue.NewQueue()
 
-	// Add a rule that matches Namespaces
+	// Add a WatchRule for namespaces (namespace-scoped rule watching cluster-scoped resource)
+	// Note: WatchRule cannot watch cluster-scoped resources per the new design,
+	// so this test should verify that NO events are enqueued
 	rule := configv1alpha1.WatchRule{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "namespace-rule",
@@ -667,7 +674,7 @@ func TestEventHandler_Handle_ClusterScopedResource(t *testing.T) {
 			},
 		},
 	}
-	ruleStore.AddOrUpdate(rule)
+	ruleStore.AddOrUpdateWatchRule(rule)
 
 	handler := &EventHandler{
 		Client:     client,
@@ -679,7 +686,7 @@ func TestEventHandler_Handle_ClusterScopedResource(t *testing.T) {
 	decoder := admission.NewDecoder(scheme)
 	handler.Decoder = &decoder
 
-	// Create admission request for a Namespace
+	// Create admission request for a Namespace (cluster-scoped resource)
 	namespace := &unstructured.Unstructured{
 		Object: map[string]interface{}{
 			"apiVersion": "v1",
@@ -714,19 +721,9 @@ func TestEventHandler_Handle_ClusterScopedResource(t *testing.T) {
 	// Execute
 	response := handler.Handle(ctx, req)
 
-	// Verify
+	// Verify - WatchRule CANNOT watch cluster-scoped resources
 	assert.True(t, response.Allowed)
-	assert.Equal(t, 1, eventQueue.Size())
-
-	// Verify the enqueued event
-	events := eventQueue.DequeueAll()
-	require.Len(t, events, 1)
-
-	event := events[0]
-	assert.Equal(t, "test-namespace", event.Object.GetName())
-	assert.Empty(t, event.Object.GetNamespace()) // Cluster-scoped resources have no namespace
-	assert.Equal(t, "Namespace", event.Object.GetKind())
-	assert.Equal(t, "cluster-repo-config", event.GitRepoConfigRef)
+	assert.Equal(t, 0, eventQueue.Size()) // No events should be enqueued - WatchRule can't watch cluster resources
 }
 
 func TestEventHandler_InjectDecoder(t *testing.T) {

@@ -111,7 +111,7 @@ func (r *WatchRuleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	log.Info("GitRepoConfig is ready, adding WatchRule to store", "gitRepoConfig", gitRepoConfig.Name)
 
 	// Step 3: Add or update the rule in the store
-	r.RuleStore.AddOrUpdate(watchRule)
+	r.RuleStore.AddOrUpdateWatchRule(watchRule)
 
 	// Step 4: Set ready condition
 	log.Info("WatchRule validation successful")

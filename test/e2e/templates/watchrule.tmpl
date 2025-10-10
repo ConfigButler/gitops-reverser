@@ -5,10 +5,10 @@ metadata:
   namespace: {{.Namespace}}
 spec:
   gitRepoConfigRef: {{.GitRepoConfigRef}}
-  excludeLabels:
+  objectSelector:
     matchExpressions:
     - key: "configbutler.ai/ignore"
-      operator: Exists
+      operator: DoesNotExist
   rules:
   - resources: ["deployments", "services", "configmaps", "secrets"]
-  - resources: ["ingresses.*"]
+  - resources: ["ingresses"]

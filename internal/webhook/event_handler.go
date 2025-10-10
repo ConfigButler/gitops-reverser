@@ -12,6 +12,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
+	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 	"github.com/ConfigButler/gitops-reverser/internal/eventqueue"
 	"github.com/ConfigButler/gitops-reverser/internal/metrics"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
@@ -32,6 +33,8 @@ type EventHandler struct {
 }
 
 // Handle implements admission.Handler.
+//
+//nolint:funlen // Complex admission handler with multiple validation steps
 func (h *EventHandler) Handle(ctx context.Context, req admission.Request) admission.Response {
 	log := logf.FromContext(ctx)
 	metrics.EventsReceivedTotal.Add(ctx, 1)
@@ -81,10 +84,24 @@ func (h *EventHandler) Handle(ctx context.Context, req admission.Request) admiss
 	log.V(1).Info("Successfully decoded resource", //nolint:lll // Structured log
 		"kind", obj.GetKind(), "name", obj.GetName(), "namespace", obj.GetNamespace(), "operation", req.Operation)
 
-	// Extract the plural resource name from the admission request
+	// Extract filtering parameters from admission request
 	resourcePlural := req.Resource.Resource
+	operation := configv1alpha1.OperationType(req.Operation)
+	apiGroup := req.Resource.Group
+	apiVersion := req.Resource.Version
 
-	matchingRules := h.RuleStore.GetMatchingRules(obj, resourcePlural)
+	// Determine if resource is cluster-scoped (no namespace)
+	isClusterScoped := obj.GetNamespace() == ""
+
+	// Get matching rules with enhanced filtering
+	matchingRules := h.RuleStore.GetMatchingRules(
+		obj,
+		resourcePlural,
+		operation,
+		apiGroup,
+		apiVersion,
+		isClusterScoped,
+	)
 	if h.EnableVerboseAdmissionLogs {
 		log.Info(
 			"Checking for matching rules", //nolint:lll // Structured log

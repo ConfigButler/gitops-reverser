@@ -1,16 +1,36 @@
 apiVersion: configbutler.ai/v1alpha1
 kind: WatchRule
 metadata:
-  labels:
-    app.kubernetes.io/name: gitops-reverser
-    app.kubernetes.io/managed-by: kustomize
   name: watchrule-sample
+  namespace: default
 spec:
-  gitRepoConfigRef: "gitrepoconfig-sample"
-  excludeLabels:
+  # Reference to GitRepoConfig (must be in same namespace)
+  gitRepoConfigRef: gitrepoconfig-sample
+
+  # Optional: Filter resources by labels
+  # This example includes resources with app=production and excludes those with ignore label
+  objectSelector:
     matchExpressions:
-      - key: "configbutler.ai/ignore"
-        operator: Exists
+      - key: app
+        operator: In
+        values: [production]
+      - key: gitops-reverser.io/ignore
+        operator: DoesNotExist
+
+  # Define which resources to watch (logical OR - matching ANY rule triggers watch)
   rules:
-    - resources: ["deployments", "services", "configmaps", "secrets"]
-    - resources: ["ingresses.*"]
+    # Watch config resources on CREATE and UPDATE (ignore DELETE)
+    - operations: [CREATE, UPDATE]
+      apiGroups: [""] # Core API group
+      apiVersions: ["v1"]
+      resources: [configmaps, secrets]
+
+    # Watch all operations for app resources
+    - operations: [CREATE, UPDATE, DELETE]
+      apiGroups: [apps]
+      apiVersions: ["v1"]
+      resources: [deployments, statefulsets]
+
+    # Watch custom resources (all operations, all versions)
+    - apiGroups: [example.com]
+      resources: [myapps]

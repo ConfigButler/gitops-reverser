@@ -24,10 +24,10 @@ image:
   repository: ghcr.io/configbutler/gitops-reverser
   pullPolicy: IfNotPresent
   # Overrides the image tag whose default is the chart appVersion.
-  tag: ""
+  tag: "ci-e29988b7a48e232e2f862f3944e4a72d94417f88"
 
 imagePullSecrets:
-- name: ghcr-secret   # TODO: Remove when we are public
+  - name: ghcr-secret # TODO: Remove when we are public
 
 nameOverride: ""
 fullnameOverride: ""
@@ -55,7 +55,7 @@ securityContext:
   allowPrivilegeEscalation: false
   capabilities:
     drop:
-    - ALL
+      - ALL
   readOnlyRootFilesystem: true
   runAsNonRoot: true
   runAsUser: 65532
@@ -83,7 +83,7 @@ webhook:
     certPath: "/tmp/k8s-webhook-server/serving-certs"
     certName: "tls.crt"
     certKey: "tls.key"
-  
+
   # Validating webhook configuration
   validating:
     enabled: true
@@ -99,15 +99,18 @@ webhook:
     # Namespace selector for validating webhook
     namespaceSelector:
       matchExpressions:
-      - key: name
-        operator: NotIn
-        values: ["kube-system", "kube-public", "kube-node-lease"]
+        - key: kubernetes.io/metadata.name
+          operator: NotIn
+          values:
+            - kube-system
+            - kube-public
+            - kube-node-lease
     # Object selector for validating webhook
     objectSelector: {}
 
 # TLS certificate management (Kubernetes requires this for API server callbacks)
 certificates:
-  name: 
+  name:
   certManager:
     enabled: true
     issuer:
@@ -174,4 +177,4 @@ logging:
   stacktraceLevel: error
 
 labels:
-  managedBy: Helm   # Allows CI generated install.yaml creation (don't change when you are using Helm)
+  managedBy: Helm # Allows CI generated install.yaml creation (don't change when you are using Helm)

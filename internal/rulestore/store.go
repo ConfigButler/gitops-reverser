@@ -22,9 +22,27 @@ type CompiledRule struct {
 	Source types.NamespacedName
 	// GitRepoConfigRef is the name of the GitRepoConfig to use.
 	GitRepoConfigRef string
-	// ExcludeLabels is the selector to filter out resources.
-	ExcludeLabels *metav1.LabelSelector
-	// Resources is a list of resource kinds to watch.
+	// GitRepoConfigNamespace is the namespace containing the GitRepoConfig.
+	// For WatchRule, this is the same as Source.Namespace.
+	GitRepoConfigNamespace string
+	// IsClusterScoped indicates if this rule watches cluster-scoped resources.
+	// Always false for WatchRule (namespace-scoped).
+	IsClusterScoped bool
+	// ObjectSelector is the label selector for filtering resources.
+	ObjectSelector *metav1.LabelSelector
+	// ResourceRules contains the compiled resource matching rules.
+	ResourceRules []CompiledResourceRule
+}
+
+// CompiledResourceRule represents a single resource matching rule with all its filters.
+type CompiledResourceRule struct {
+	// Operations specifies which operations trigger this rule.
+	Operations []configv1alpha1.OperationType
+	// APIGroups specifies which API groups this rule matches.
+	APIGroups []string
+	// APIVersions specifies which API versions this rule matches.
+	APIVersions []string
+	// Resources specifies which resource types this rule matches.
 	Resources []string
 }
 
@@ -42,8 +60,8 @@ func NewStore() *RuleStore {
 	}
 }
 
-// AddOrUpdate adds or updates a rule in the store.
-func (s *RuleStore) AddOrUpdate(rule configv1alpha1.WatchRule) {
+// AddOrUpdateWatchRule adds or updates a namespace-scoped WatchRule in the store.
+func (s *RuleStore) AddOrUpdateWatchRule(rule configv1alpha1.WatchRule) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -53,15 +71,30 @@ func (s *RuleStore) AddOrUpdate(rule configv1alpha1.WatchRule) {
 	}
 
 	compiled := CompiledRule{
-		Source:           key,
-		GitRepoConfigRef: rule.Spec.GitRepoConfigRef,
-		ExcludeLabels:    rule.Spec.ExcludeLabels,
+		Source:                 key,
+		GitRepoConfigRef:       rule.Spec.GitRepoConfigRef,
+		GitRepoConfigNamespace: rule.Namespace, // Same namespace as WatchRule
+		IsClusterScoped:        false,          // WatchRule is namespace-scoped
+		ObjectSelector:         rule.Spec.ObjectSelector,
+		ResourceRules:          make([]CompiledResourceRule, 0, len(rule.Spec.Rules)),
 	}
+
 	for _, r := range rule.Spec.Rules {
-		compiled.Resources = append(compiled.Resources, r.Resources...)
+		compiled.ResourceRules = append(compiled.ResourceRules, CompiledResourceRule{
+			Operations:  r.Operations,
+			APIGroups:   r.APIGroups,
+			APIVersions: r.APIVersions,
+			Resources:   r.Resources,
+		})
 	}
 
 	s.rules[key] = compiled
+}
+
+// AddOrUpdate is deprecated. Use AddOrUpdateWatchRule instead.
+// Kept temporarily for compatibility during migration.
+func (s *RuleStore) AddOrUpdate(rule configv1alpha1.WatchRule) {
+	s.AddOrUpdateWatchRule(rule)
 }
 
 // Delete removes a rule from the store.
@@ -71,32 +104,151 @@ func (s *RuleStore) Delete(key types.NamespacedName) {
 	delete(s.rules, key)
 }
 
-// GetMatchingRules returns all rules that match the given resource.
-// resourcePlural is the plural form of the resource (e.g., "pods", "deployments", "myapps").
-func (s *RuleStore) GetMatchingRules(obj client.Object, resourcePlural string) []CompiledRule {
+// GetMatchingRules returns all rules that match the given resource with enhanced filtering.
+// Parameters:
+//   - obj: The Kubernetes object to match
+//   - resourcePlural: The plural form of the resource (e.g., "pods", "deployments")
+//   - operation: The operation type (CREATE, UPDATE, DELETE)
+//   - apiGroup: The API group of the resource (empty string for core API)
+//   - apiVersion: The API version of the resource
+//   - isClusterScoped: Whether the resource is cluster-scoped
+func (s *RuleStore) GetMatchingRules(
+	obj client.Object,
+	resourcePlural string,
+	operation configv1alpha1.OperationType,
+	apiGroup string,
+	apiVersion string,
+	isClusterScoped bool,
+) []CompiledRule {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	var matchingRules []CompiledRule
 	for _, rule := range s.rules {
-		if rule.matches(obj, resourcePlural) {
+		// First check: Does rule scope match resource scope?
+		if rule.IsClusterScoped != isClusterScoped {
+			continue // WatchRule can't match cluster resources
+		}
+
+		// For namespace-scoped rules, check namespace match
+		if !rule.IsClusterScoped && obj.GetNamespace() != rule.Source.Namespace {
+			continue // WatchRule only watches its own namespace
+		}
+
+		if rule.matches(obj, resourcePlural, operation, apiGroup, apiVersion) {
 			matchingRules = append(matchingRules, rule)
 		}
 	}
 	return matchingRules
 }
 
-// matches checks if a single rule matches the given object.
-func (r *CompiledRule) matches(obj client.Object, resourcePlural string) bool {
-	if !r.resourceMatches(resourcePlural) {
+// matches checks if a single rule matches the given object and filters.
+func (r *CompiledRule) matches(
+	obj client.Object,
+	resourcePlural string,
+	operation configv1alpha1.OperationType,
+	apiGroup string,
+	apiVersion string,
+) bool {
+	// Check object selector (label-based filtering)
+	if !r.matchesObjectSelector(obj) {
 		return false
 	}
 
-	return !r.isExcludedByLabels(obj)
+	// Check if any resource rule matches (logical OR)
+	for _, rule := range r.ResourceRules {
+		if rule.matches(resourcePlural, operation, apiGroup, apiVersion) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// matchesObjectSelector checks if the object matches the label selector.
+func (r *CompiledRule) matchesObjectSelector(obj client.Object) bool {
+	if r.ObjectSelector == nil {
+		return true // No selector = match all
+	}
+
+	selector, err := metav1.LabelSelectorAsSelector(r.ObjectSelector)
+	if err != nil {
+		return false // Invalid selector = exclude for safety
+	}
+
+	return selector.Matches(labels.Set(obj.GetLabels()))
+}
+
+// matches checks if a resource rule matches the given filters.
+func (r *CompiledResourceRule) matches(
+	resourcePlural string,
+	operation configv1alpha1.OperationType,
+	apiGroup string,
+	apiVersion string,
+) bool {
+	// Match operations (empty = match all)
+	if !r.matchesOperations(operation) {
+		return false
+	}
+
+	// Match API groups (empty = match all)
+	if !r.matchesAPIGroups(apiGroup) {
+		return false
+	}
+
+	// Match API versions (empty = match all)
+	if !r.matchesAPIVersions(apiVersion) {
+		return false
+	}
+
+	// Match resource plural (required)
+	return r.resourceMatches(resourcePlural)
+}
+
+// matchesOperations checks if the operation matches any in the rule.
+func (r *CompiledResourceRule) matchesOperations(operation configv1alpha1.OperationType) bool {
+	if len(r.Operations) == 0 {
+		return true // Empty = match all
+	}
+
+	for _, op := range r.Operations {
+		if op == configv1alpha1.OperationAll || op == operation {
+			return true
+		}
+	}
+	return false
+}
+
+// matchesAPIGroups checks if the API group matches any in the rule.
+func (r *CompiledResourceRule) matchesAPIGroups(apiGroup string) bool {
+	if len(r.APIGroups) == 0 {
+		return true // Empty = match all
+	}
+
+	for _, group := range r.APIGroups {
+		if group == "*" || group == apiGroup {
+			return true
+		}
+	}
+	return false
+}
+
+// matchesAPIVersions checks if the API version matches any in the rule.
+func (r *CompiledResourceRule) matchesAPIVersions(apiVersion string) bool {
+	if len(r.APIVersions) == 0 {
+		return true // Empty = match all
+	}
+
+	for _, version := range r.APIVersions {
+		if version == "*" || version == apiVersion {
+			return true
+		}
+	}
+	return false
 }
 
 // resourceMatches checks if the resource plural matches any of the rule patterns.
-func (r *CompiledRule) resourceMatches(resourcePlural string) bool {
+func (r *CompiledResourceRule) resourceMatches(resourcePlural string) bool {
 	for _, ruleResource := range r.Resources {
 		if r.singleResourceMatches(ruleResource, resourcePlural) {
 			return true
@@ -106,8 +258,16 @@ func (r *CompiledRule) resourceMatches(resourcePlural string) bool {
 }
 
 // singleResourceMatches checks if a single rule pattern matches the given resource plural.
-// This supports exact matches, wildcard patterns, and group-qualified resources.
-func (r *CompiledRule) singleResourceMatches(ruleResource, resourcePlural string) bool {
+// Supports:
+//   - "*" - matches all resources
+//   - "pods" - exact match (case-insensitive)
+//   - "pods/*" - matches all pod subresources (pods/log, pods/status, etc.)
+//   - "pods/log" - matches specific subresource
+//
+// Does NOT support:
+//   - Prefix wildcards: "pod*" (removed per enhancement plan)
+//   - Suffix wildcards: "*.example.com" (removed per enhancement plan)
+func (r *CompiledResourceRule) singleResourceMatches(ruleResource, resourcePlural string) bool {
 	if ruleResource == "" {
 		return false
 	}
@@ -117,57 +277,16 @@ func (r *CompiledRule) singleResourceMatches(ruleResource, resourcePlural string
 		return true
 	}
 
-	// Exact match (case-insensitive for better compatibility)
+	// Exact match (case-insensitive)
 	if strings.EqualFold(ruleResource, resourcePlural) {
 		return true
 	}
 
-	// Wildcard prefix match (e.g., "ingress*" matches "ingresses.networking.k8s.io")
-	if r.isWildcardMatch(ruleResource, resourcePlural) {
-		return true
-	}
-
-	// Group-qualified match (e.g., "myapps.example.com" matches "myapps.example.com")
-	// This is already handled by exact match above, but explicitly documented here
-	return false
-}
-
-// isWildcardMatch handles wildcard matching for both prefix and suffix patterns.
-// Supports patterns like "prefix*" (matches anything starting with prefix)
-// and "*suffix" (matches anything ending with suffix).
-func (r *CompiledRule) isWildcardMatch(ruleResource, resourcePlural string) bool {
-	if len(ruleResource) <= 1 {
-		return false
-	}
-
-	lowerRule := strings.ToLower(ruleResource)
-	lowerResource := strings.ToLower(resourcePlural)
-
-	// Handle suffix wildcard: "prefix*"
-	if lowerRule[len(lowerRule)-1] == '*' {
-		prefix := lowerRule[:len(lowerRule)-1]
-		return strings.HasPrefix(lowerResource, prefix)
-	}
-
-	// Handle prefix wildcard: "*suffix"
-	if lowerRule[0] == '*' {
-		suffix := lowerRule[1:]
-		return strings.HasSuffix(lowerResource, suffix)
+	// Subresource wildcard: "pods/*" matches "pods/log", "pods/status", etc.
+	if strings.HasSuffix(ruleResource, "/*") {
+		prefix := ruleResource[:len(ruleResource)-2] // Remove "/*"
+		return strings.HasPrefix(strings.ToLower(resourcePlural), strings.ToLower(prefix)+"/")
 	}
 
 	return false
-}
-
-// isExcludedByLabels checks if the resource is excluded by label selectors.
-func (r *CompiledRule) isExcludedByLabels(obj client.Object) bool {
-	if r.ExcludeLabels == nil {
-		return false
-	}
-
-	selector, err := metav1.LabelSelectorAsSelector(r.ExcludeLabels)
-	if err != nil {
-		return true // Treat invalid selectors as exclusions for safety
-	}
-
-	return selector.Matches(labels.Set(obj.GetLabels()))
 }

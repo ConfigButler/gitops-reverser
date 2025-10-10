@@ -20,7 +20,7 @@ func TestNewStore(t *testing.T) {
 	assert.Empty(t, store.rules)
 }
 
-func TestAddOrUpdate_BasicRule(t *testing.T) {
+func TestAddOrUpdateWatchRule_BasicRule(t *testing.T) {
 	store := NewStore()
 
 	rule := configv1alpha1.WatchRule{
@@ -38,7 +38,7 @@ func TestAddOrUpdate_BasicRule(t *testing.T) {
 		},
 	}
 
-	store.AddOrUpdate(rule)
+	store.AddOrUpdateWatchRule(rule)
 
 	assert.Len(t, store.rules, 1)
 
@@ -48,11 +48,14 @@ func TestAddOrUpdate_BasicRule(t *testing.T) {
 
 	assert.Equal(t, key, compiledRule.Source)
 	assert.Equal(t, "my-repo-config", compiledRule.GitRepoConfigRef)
-	assert.Equal(t, []string{"pods", "services"}, compiledRule.Resources)
-	assert.Nil(t, compiledRule.ExcludeLabels)
+	assert.Equal(t, "default", compiledRule.GitRepoConfigNamespace)
+	assert.False(t, compiledRule.IsClusterScoped)
+	assert.Nil(t, compiledRule.ObjectSelector)
+	assert.Len(t, compiledRule.ResourceRules, 1)
+	assert.Equal(t, []string{"pods", "services"}, compiledRule.ResourceRules[0].Resources)
 }
 
-func TestAddOrUpdate_RuleWithExcludeLabels(t *testing.T) {
+func TestAddOrUpdateWatchRule_RuleWithObjectSelector(t *testing.T) {
 	store := NewStore()
 
 	rule := configv1alpha1.WatchRule{
@@ -62,11 +65,11 @@ func TestAddOrUpdate_RuleWithExcludeLabels(t *testing.T) {
 		},
 		Spec: configv1alpha1.WatchRuleSpec{
 			GitRepoConfigRef: "my-repo-config",
-			ExcludeLabels: &metav1.LabelSelector{
+			ObjectSelector: &metav1.LabelSelector{
 				MatchExpressions: []metav1.LabelSelectorRequirement{
 					{
 						Key:      "configbutler.ai/ignore",
-						Operator: metav1.LabelSelectorOpExists,
+						Operator: metav1.LabelSelectorOpDoesNotExist,
 					},
 				},
 			},
@@ -78,17 +81,17 @@ func TestAddOrUpdate_RuleWithExcludeLabels(t *testing.T) {
 		},
 	}
 
-	store.AddOrUpdate(rule)
+	store.AddOrUpdateWatchRule(rule)
 
 	key := types.NamespacedName{Name: "test-rule", Namespace: "default"}
 	compiledRule := store.rules[key]
 
-	require.NotNil(t, compiledRule.ExcludeLabels)
-	assert.Len(t, compiledRule.ExcludeLabels.MatchExpressions, 1)
-	assert.Equal(t, "configbutler.ai/ignore", compiledRule.ExcludeLabels.MatchExpressions[0].Key)
+	require.NotNil(t, compiledRule.ObjectSelector)
+	assert.Len(t, compiledRule.ObjectSelector.MatchExpressions, 1)
+	assert.Equal(t, "configbutler.ai/ignore", compiledRule.ObjectSelector.MatchExpressions[0].Key)
 }
 
-func TestAddOrUpdate_MultipleResourceRules(t *testing.T) {
+func TestAddOrUpdateWatchRule_MultipleResourceRules(t *testing.T) {
 	store := NewStore()
 
 	rule := configv1alpha1.WatchRule{
@@ -109,17 +112,18 @@ func TestAddOrUpdate_MultipleResourceRules(t *testing.T) {
 		},
 	}
 
-	store.AddOrUpdate(rule)
+	store.AddOrUpdateWatchRule(rule)
 
 	key := types.NamespacedName{Name: "test-rule", Namespace: "default"}
 	compiledRule := store.rules[key]
 
-	// Should flatten all resources from all rules
-	expected := []string{"pods", "services", "deployments", "configmaps"}
-	assert.Equal(t, expected, compiledRule.Resources)
+	// Should have 2 separate resource rules (not flattened)
+	assert.Len(t, compiledRule.ResourceRules, 2)
+	assert.Equal(t, []string{"pods", "services"}, compiledRule.ResourceRules[0].Resources)
+	assert.Equal(t, []string{"deployments", "configmaps"}, compiledRule.ResourceRules[1].Resources)
 }
 
-func TestAddOrUpdate_UpdateExistingRule(t *testing.T) {
+func TestAddOrUpdateWatchRule_UpdateExistingRule(t *testing.T) {
 	store := NewStore()
 
 	// Add initial rule
@@ -137,7 +141,7 @@ func TestAddOrUpdate_UpdateExistingRule(t *testing.T) {
 			},
 		},
 	}
-	store.AddOrUpdate(rule1)
+	store.AddOrUpdateWatchRule(rule1)
 
 	// Update with different spec
 	rule2 := configv1alpha1.WatchRule{
@@ -154,7 +158,7 @@ func TestAddOrUpdate_UpdateExistingRule(t *testing.T) {
 			},
 		},
 	}
-	store.AddOrUpdate(rule2)
+	store.AddOrUpdateWatchRule(rule2)
 
 	// Should still have only one rule, but updated
 	assert.Len(t, store.rules, 1)
@@ -163,7 +167,8 @@ func TestAddOrUpdate_UpdateExistingRule(t *testing.T) {
 	compiledRule := store.rules[key]
 
 	assert.Equal(t, "repo-config-2", compiledRule.GitRepoConfigRef)
-	assert.Equal(t, []string{"services", "deployments"}, compiledRule.Resources)
+	assert.Len(t, compiledRule.ResourceRules, 1)
+	assert.Equal(t, []string{"services", "deployments"}, compiledRule.ResourceRules[0].Resources)
 }
 
 func TestDelete(t *testing.T) {
@@ -183,7 +188,7 @@ func TestDelete(t *testing.T) {
 			},
 		},
 	}
-	store.AddOrUpdate(rule)
+	store.AddOrUpdateWatchRule(rule)
 
 	key := types.NamespacedName{Name: "test-rule", Namespace: "default"}
 	assert.Len(t, store.rules, 1)
@@ -219,7 +224,7 @@ func TestGetMatchingRules_ExactMatch(t *testing.T) {
 			},
 		},
 	}
-	store.AddOrUpdate(rule)
+	store.AddOrUpdateWatchRule(rule)
 
 	// Create a Pod object
 	obj := &unstructured.Unstructured{}
@@ -231,79 +236,123 @@ func TestGetMatchingRules_ExactMatch(t *testing.T) {
 	obj.SetName("test-pod")
 	obj.SetNamespace("default")
 
-	matches := store.GetMatchingRules(obj, "pods")
+	matches := store.GetMatchingRules(obj, "pods", configv1alpha1.OperationCreate, "", "v1", false)
 	assert.Len(t, matches, 1)
 	assert.Equal(t, "pod-rule", matches[0].Source.Name)
 }
 
-func TestGetMatchingRules_WildcardMatch(t *testing.T) {
+func TestGetMatchingRules_OperationFiltering(t *testing.T) {
 	store := NewStore()
 
 	rule := configv1alpha1.WatchRule{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "ingress-rule",
+			Name:      "create-update-only",
 			Namespace: "default",
 		},
 		Spec: configv1alpha1.WatchRuleSpec{
 			GitRepoConfigRef: "my-repo-config",
 			Rules: []configv1alpha1.ResourceRule{
 				{
-					Resources: []string{"ingress*"},
+					Operations: []configv1alpha1.OperationType{
+						configv1alpha1.OperationCreate,
+						configv1alpha1.OperationUpdate,
+					},
+					Resources: []string{"pods"},
 				},
 			},
 		},
 	}
-	store.AddOrUpdate(rule)
+	store.AddOrUpdateWatchRule(rule)
 
-	// Test various Ingress-related resources
-	testCases := []struct {
-		kind           string
-		resourcePlural string
-		shouldMatch    bool
-	}{
-		{"Ingress", "ingresses", true},
-		{"IngressClass", "ingressclasses", true},
-		{"IngressRoute", "ingressroutes", true},
-		{"Service", "services", false},
-		{"Pod", "pods", false},
-	}
+	obj := &unstructured.Unstructured{}
+	obj.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "",
+		Version: "v1",
+		Kind:    "Pod",
+	})
+	obj.SetName("test-pod")
+	obj.SetNamespace("default")
 
-	for _, tc := range testCases {
-		t.Run(tc.kind, func(t *testing.T) {
-			obj := &unstructured.Unstructured{}
-			obj.SetGroupVersionKind(schema.GroupVersionKind{
-				Group:   "networking.k8s.io",
-				Version: "v1",
-				Kind:    tc.kind,
-			})
-			obj.SetName("test-resource")
-			obj.SetNamespace("default")
+	// CREATE should match
+	matches := store.GetMatchingRules(obj, "pods", configv1alpha1.OperationCreate, "", "v1", false)
+	assert.Len(t, matches, 1)
 
-			matches := store.GetMatchingRules(obj, tc.resourcePlural)
-			if tc.shouldMatch {
-				assert.Len(t, matches, 1, "Expected %s to match ingress*", tc.resourcePlural)
-			} else {
-				assert.Empty(t, matches, "Expected %s not to match ingress*", tc.resourcePlural)
-			}
-		})
-	}
+	// UPDATE should match
+	matches = store.GetMatchingRules(obj, "pods", configv1alpha1.OperationUpdate, "", "v1", false)
+	assert.Len(t, matches, 1)
+
+	// DELETE should NOT match
+	matches = store.GetMatchingRules(obj, "pods", configv1alpha1.OperationDelete, "", "v1", false)
+	assert.Empty(t, matches)
 }
 
-func TestGetMatchingRules_ExcludedByLabels(t *testing.T) {
+func TestGetMatchingRules_APIGroupFiltering(t *testing.T) {
 	store := NewStore()
 
 	rule := configv1alpha1.WatchRule{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "pod-rule",
+			Name:      "apps-only",
 			Namespace: "default",
 		},
 		Spec: configv1alpha1.WatchRuleSpec{
 			GitRepoConfigRef: "my-repo-config",
-			ExcludeLabels: &metav1.LabelSelector{
+			Rules: []configv1alpha1.ResourceRule{
+				{
+					APIGroups: []string{"apps"},
+					Resources: []string{"deployments"},
+				},
+			},
+		},
+	}
+	store.AddOrUpdateWatchRule(rule)
+
+	// Deployment in apps group should match
+	deployment := &unstructured.Unstructured{}
+	deployment.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "apps",
+		Version: "v1",
+		Kind:    "Deployment",
+	})
+	deployment.SetName("test-deployment")
+	deployment.SetNamespace("default")
+
+	matches := store.GetMatchingRules(deployment, "deployments", configv1alpha1.OperationCreate, "apps", "v1", false)
+	assert.Len(t, matches, 1)
+
+	// Pod in core group should NOT match
+	pod := &unstructured.Unstructured{}
+	pod.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "",
+		Version: "v1",
+		Kind:    "Pod",
+	})
+	pod.SetName("test-pod")
+	pod.SetNamespace("default")
+
+	matches = store.GetMatchingRules(pod, "pods", configv1alpha1.OperationCreate, "", "v1", false)
+	assert.Empty(t, matches)
+}
+
+func TestGetMatchingRules_ObjectSelectorFiltering(t *testing.T) {
+	store := NewStore()
+
+	rule := configv1alpha1.WatchRule{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "labeled-pods",
+			Namespace: "default",
+		},
+		Spec: configv1alpha1.WatchRuleSpec{
+			GitRepoConfigRef: "my-repo-config",
+			ObjectSelector: &metav1.LabelSelector{
 				MatchExpressions: []metav1.LabelSelectorRequirement{
 					{
+						Key:      "app",
+						Operator: metav1.LabelSelectorOpIn,
+						Values:   []string{"myapp"},
+					},
+					{
 						Key:      "configbutler.ai/ignore",
-						Operator: metav1.LabelSelectorOpExists,
+						Operator: metav1.LabelSelectorOpDoesNotExist,
 					},
 				},
 			},
@@ -314,60 +363,64 @@ func TestGetMatchingRules_ExcludedByLabels(t *testing.T) {
 			},
 		},
 	}
-	store.AddOrUpdate(rule)
+	store.AddOrUpdateWatchRule(rule)
 
-	// Test Pod without ignore label - should match
+	// Pod with app=myapp should match
 	obj1 := &unstructured.Unstructured{}
 	obj1.SetGroupVersionKind(schema.GroupVersionKind{
 		Group:   "",
 		Version: "v1",
 		Kind:    "Pod",
 	})
-	obj1.SetName("normal-pod")
+	obj1.SetName("matching-pod")
 	obj1.SetNamespace("default")
+	obj1.SetLabels(map[string]string{"app": "myapp"})
 
-	matches := store.GetMatchingRules(obj1, "pods")
+	matches := store.GetMatchingRules(obj1, "pods", configv1alpha1.OperationCreate, "", "v1", false)
 	assert.Len(t, matches, 1)
 
-	// Test Pod with ignore label - should not match
+	// Pod without app label should NOT match
 	obj2 := &unstructured.Unstructured{}
 	obj2.SetGroupVersionKind(schema.GroupVersionKind{
 		Group:   "",
 		Version: "v1",
 		Kind:    "Pod",
 	})
-	obj2.SetName("ignored-pod")
+	obj2.SetName("non-matching-pod")
 	obj2.SetNamespace("default")
-	obj2.SetLabels(map[string]string{
+
+	matches = store.GetMatchingRules(obj2, "pods", configv1alpha1.OperationCreate, "", "v1", false)
+	assert.Empty(t, matches)
+
+	// Pod with ignore label should NOT match
+	obj3 := &unstructured.Unstructured{}
+	obj3.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "",
+		Version: "v1",
+		Kind:    "Pod",
+	})
+	obj3.SetName("ignored-pod")
+	obj3.SetNamespace("default")
+	obj3.SetLabels(map[string]string{
+		"app":                    "myapp",
 		"configbutler.ai/ignore": "true",
 	})
 
-	matches = store.GetMatchingRules(obj2, "pods")
+	matches = store.GetMatchingRules(obj3, "pods", configv1alpha1.OperationCreate, "", "v1", false)
 	assert.Empty(t, matches)
 }
 
-func TestGetMatchingRules_ComplexLabelSelector(t *testing.T) {
+func TestGetMatchingRules_NamespaceIsolation(t *testing.T) {
 	store := NewStore()
 
+	// Rule in namespace "team-a"
 	rule := configv1alpha1.WatchRule{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "complex-rule",
-			Namespace: "default",
+			Name:      "team-a-rule",
+			Namespace: "team-a",
 		},
 		Spec: configv1alpha1.WatchRuleSpec{
 			GitRepoConfigRef: "my-repo-config",
-			ExcludeLabels: &metav1.LabelSelector{
-				MatchLabels: map[string]string{
-					"environment": "test",
-				},
-				MatchExpressions: []metav1.LabelSelectorRequirement{
-					{
-						Key:      "version",
-						Operator: metav1.LabelSelectorOpIn,
-						Values:   []string{"v1", "v2"},
-					},
-				},
-			},
 			Rules: []configv1alpha1.ResourceRule{
 				{
 					Resources: []string{"pods"},
@@ -375,66 +428,80 @@ func TestGetMatchingRules_ComplexLabelSelector(t *testing.T) {
 			},
 		},
 	}
-	store.AddOrUpdate(rule)
+	store.AddOrUpdateWatchRule(rule)
 
-	testCases := []struct {
-		name        string
-		labels      map[string]string
-		shouldMatch bool
-	}{
-		{
-			name:        "no matching labels",
-			labels:      map[string]string{"app": "myapp"},
-			shouldMatch: true,
+	// Pod in team-a namespace should match
+	obj1 := &unstructured.Unstructured{}
+	obj1.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "",
+		Version: "v1",
+		Kind:    "Pod",
+	})
+	obj1.SetName("team-a-pod")
+	obj1.SetNamespace("team-a")
+
+	matches := store.GetMatchingRules(obj1, "pods", configv1alpha1.OperationCreate, "", "v1", false)
+	assert.Len(t, matches, 1)
+
+	// Pod in team-b namespace should NOT match
+	obj2 := &unstructured.Unstructured{}
+	obj2.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "",
+		Version: "v1",
+		Kind:    "Pod",
+	})
+	obj2.SetName("team-b-pod")
+	obj2.SetNamespace("team-b")
+
+	matches = store.GetMatchingRules(obj2, "pods", configv1alpha1.OperationCreate, "", "v1", false)
+	assert.Empty(t, matches)
+}
+
+func TestGetMatchingRules_ClusterScopedFiltering(t *testing.T) {
+	store := NewStore()
+
+	// Namespace-scoped rule
+	rule := configv1alpha1.WatchRule{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "namespaced-rule",
+			Namespace: "default",
 		},
-		{
-			name:        "matches environment only",
-			labels:      map[string]string{"environment": "test"},
-			shouldMatch: true, // Only environment=test, but version is required too for exclusion
-		},
-		{
-			name:        "matches version only",
-			labels:      map[string]string{"version": "v1"},
-			shouldMatch: true, // Only environment=test would exclude
-		},
-		{
-			name: "matches both conditions",
-			labels: map[string]string{
-				"environment": "test",
-				"version":     "v1",
+		Spec: configv1alpha1.WatchRuleSpec{
+			GitRepoConfigRef: "my-repo-config",
+			Rules: []configv1alpha1.ResourceRule{
+				{
+					Resources: []string{"*"},
+				},
 			},
-			shouldMatch: false,
-		},
-		{
-			name: "matches environment but not version",
-			labels: map[string]string{
-				"environment": "test",
-				"version":     "v3",
-			},
-			shouldMatch: true, // version v3 not in [v1, v2], so selector doesn't match
 		},
 	}
+	store.AddOrUpdateWatchRule(rule)
 
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			obj := &unstructured.Unstructured{}
-			obj.SetGroupVersionKind(schema.GroupVersionKind{
-				Group:   "",
-				Version: "v1",
-				Kind:    "Pod",
-			})
-			obj.SetName("test-pod")
-			obj.SetNamespace("default")
-			obj.SetLabels(tc.labels)
+	// Namespaced Pod should match
+	pod := &unstructured.Unstructured{}
+	pod.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "",
+		Version: "v1",
+		Kind:    "Pod",
+	})
+	pod.SetName("test-pod")
+	pod.SetNamespace("default")
 
-			matches := store.GetMatchingRules(obj, "pods")
-			if tc.shouldMatch {
-				assert.Len(t, matches, 1, "Expected pod with labels %v to match", tc.labels)
-			} else {
-				assert.Empty(t, matches, "Expected pod with labels %v to be excluded", tc.labels)
-			}
-		})
-	}
+	matches := store.GetMatchingRules(pod, "pods", configv1alpha1.OperationCreate, "", "v1", false)
+	assert.Len(t, matches, 1)
+
+	// Cluster-scoped Node should NOT match (WatchRule can't watch cluster resources)
+	node := &unstructured.Unstructured{}
+	node.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "",
+		Version: "v1",
+		Kind:    "Node",
+	})
+	node.SetName("test-node")
+	// No namespace - cluster-scoped
+
+	matches = store.GetMatchingRules(node, "nodes", configv1alpha1.OperationCreate, "", "v1", true)
+	assert.Empty(t, matches)
 }
 
 func TestGetMatchingRules_MultipleRules(t *testing.T) {
@@ -486,11 +553,11 @@ func TestGetMatchingRules_MultipleRules(t *testing.T) {
 		},
 	}
 
-	store.AddOrUpdate(rule1)
-	store.AddOrUpdate(rule2)
-	store.AddOrUpdate(rule3)
+	store.AddOrUpdateWatchRule(rule1)
+	store.AddOrUpdateWatchRule(rule2)
+	store.AddOrUpdateWatchRule(rule3)
 
-	// Test Pod - should match rule1 and rule2
+	// Test Pod in default namespace - should match rule1 and rule2
 	obj := &unstructured.Unstructured{}
 	obj.SetGroupVersionKind(schema.GroupVersionKind{
 		Group:   "",
@@ -500,7 +567,7 @@ func TestGetMatchingRules_MultipleRules(t *testing.T) {
 	obj.SetName("test-pod")
 	obj.SetNamespace("default")
 
-	matches := store.GetMatchingRules(obj, "pods")
+	matches := store.GetMatchingRules(obj, "pods", configv1alpha1.OperationCreate, "", "v1", false)
 	assert.Len(t, matches, 2)
 
 	// Verify both rules are returned
@@ -529,7 +596,7 @@ func TestGetMatchingRules_NoMatches(t *testing.T) {
 			},
 		},
 	}
-	store.AddOrUpdate(rule)
+	store.AddOrUpdateWatchRule(rule)
 
 	// Test Service - should not match
 	obj := &unstructured.Unstructured{}
@@ -541,7 +608,7 @@ func TestGetMatchingRules_NoMatches(t *testing.T) {
 	obj.SetName("test-service")
 	obj.SetNamespace("default")
 
-	matches := store.GetMatchingRules(obj, "services")
+	matches := store.GetMatchingRules(obj, "services", configv1alpha1.OperationCreate, "", "v1", false)
 	assert.Empty(t, matches)
 }
 
@@ -557,17 +624,23 @@ func TestGetMatchingRules_EmptyStore(t *testing.T) {
 	obj.SetName("test-pod")
 	obj.SetNamespace("default")
 
-	matches := store.GetMatchingRules(obj, "pods")
+	matches := store.GetMatchingRules(obj, "pods", configv1alpha1.OperationCreate, "", "v1", false)
 	assert.Empty(t, matches)
 }
 
 func TestCompiledRule_matches_InvalidLabelSelector(t *testing.T) {
 	// Test edge case where label selector is malformed
 	rule := &CompiledRule{
-		Source:           types.NamespacedName{Name: "test", Namespace: "default"},
-		GitRepoConfigRef: "repo",
-		Resources:        []string{"pods"},
-		ExcludeLabels: &metav1.LabelSelector{
+		Source:                 types.NamespacedName{Name: "test", Namespace: "default"},
+		GitRepoConfigRef:       "repo",
+		GitRepoConfigNamespace: "default",
+		IsClusterScoped:        false,
+		ResourceRules: []CompiledResourceRule{
+			{
+				Resources: []string{"pods"},
+			},
+		},
+		ObjectSelector: &metav1.LabelSelector{
 			MatchExpressions: []metav1.LabelSelectorRequirement{
 				{
 					Key:      "invalid-key-with-invalid-chars!@#",
@@ -587,7 +660,7 @@ func TestCompiledRule_matches_InvalidLabelSelector(t *testing.T) {
 	obj.SetNamespace("default")
 
 	// Should return false when label selector is invalid
-	matches := rule.matches(obj, "pods")
+	matches := rule.matches(obj, "pods", configv1alpha1.OperationCreate, "", "v1")
 	assert.False(t, matches)
 }
 
@@ -614,7 +687,7 @@ func TestConcurrentAccess(t *testing.T) {
 					},
 				},
 			}
-			store.AddOrUpdate(rule)
+			store.AddOrUpdateWatchRule(rule)
 		}
 		done <- true
 	}()
@@ -631,7 +704,7 @@ func TestConcurrentAccess(t *testing.T) {
 		obj.SetNamespace("default")
 
 		for range 100 {
-			store.GetMatchingRules(obj, "pods")
+			store.GetMatchingRules(obj, "pods", configv1alpha1.OperationCreate, "", "v1", false)
 		}
 		done <- true
 	}()
@@ -653,33 +726,26 @@ func TestWildcardMatching_EdgeCases(t *testing.T) {
 		{"*", "pods", true},
 		{"*", "services", true},
 		{"*", "", true},
-		{"pod*", "pods", true},
-		{"pod*", "poddisruptionbudgets", true},
-		{"pod*", "services", false},
-		{"*pods", "pods", true},                       // Prefix wildcard (suffix matching)
-		{"*.example.com", "myapps.example.com", true}, // Prefix wildcard for group
-		{"p*d", "pods", false},                        // Middle wildcards not supported
-		{"", "pods", false},                           // Empty pattern
-		{"pods", "pods", true},                        // Exact match
-		{"pods", "Pods", true},                        // Case insensitive
-		{"PODS", "pods", true},                        // Case insensitive
-		{"pods", "services", false},                   // Different resource
+		{"", "pods", false},         // Empty pattern
+		{"pods", "pods", true},      // Exact match
+		{"pods", "Pods", true},      // Case insensitive
+		{"PODS", "pods", true},      // Case insensitive
+		{"pods", "services", false}, // Different resource
+		// Subresource support
+		{"pods/*", "pods/log", true},
+		{"pods/*", "pods/status", true},
+		{"pods/*", "pods", false}, // Not a subresource
+		{"pods/log", "pods/log", true},
+		{"pods/log", "pods/status", false},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.pattern+"_vs_"+tc.resourcePlural, func(t *testing.T) {
-			rule := &CompiledRule{
+			rule := &CompiledResourceRule{
 				Resources: []string{tc.pattern},
 			}
 
-			obj := &unstructured.Unstructured{}
-			obj.SetGroupVersionKind(schema.GroupVersionKind{
-				Group:   "",
-				Version: "v1",
-				Kind:    "SomeKind", // Kind doesn't matter anymore
-			})
-
-			matches := rule.matches(obj, tc.resourcePlural)
+			matches := rule.resourceMatches(tc.resourcePlural)
 			assert.Equal(t, tc.shouldMatch, matches,
 				"Pattern %s should match %s: %v", tc.pattern, tc.resourcePlural, tc.shouldMatch)
 		})
@@ -704,7 +770,7 @@ func TestGetMatchingRules_CustomResources(t *testing.T) {
 			},
 		},
 	}
-	store.AddOrUpdate(rule)
+	store.AddOrUpdateWatchRule(rule)
 
 	// Create a MyApp custom resource object
 	obj := &unstructured.Unstructured{}
@@ -717,252 +783,103 @@ func TestGetMatchingRules_CustomResources(t *testing.T) {
 	obj.SetNamespace("default")
 
 	// Test matching with the full group-qualified plural name
-	matches := store.GetMatchingRules(obj, "myapps.example.com")
+	matches := store.GetMatchingRules(
+		obj, "myapps.example.com",
+		configv1alpha1.OperationCreate,
+		"example.com", "v1", false,
+	)
 	assert.Len(t, matches, 1, "Expected custom resource to match using group-qualified plural")
 	assert.Equal(t, "myapp-rule", matches[0].Source.Name)
 
 	// Test that just the plural without group doesn't match
-	matches = store.GetMatchingRules(obj, "myapps")
+	matches = store.GetMatchingRules(obj, "myapps", configv1alpha1.OperationCreate, "example.com", "v1", false)
 	assert.Empty(t, matches, "Expected no match without group qualifier")
 }
 
-func TestGetMatchingRules_MultipleCustomResources(t *testing.T) {
+func TestGetMatchingRules_ComplexScenario(t *testing.T) {
 	store := NewStore()
 
 	rule := configv1alpha1.WatchRule{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "crd-rule",
+			Name:      "complex-rule",
 			Namespace: "default",
 		},
 		Spec: configv1alpha1.WatchRuleSpec{
 			GitRepoConfigRef: "my-repo-config",
+			ObjectSelector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{
+					"environment": "production",
+				},
+			},
 			Rules: []configv1alpha1.ResourceRule{
 				{
-					Resources: []string{
-						"myapps.example.com",
-						"databases.db.example.com",
-						"queues.messaging.io",
+					Operations: []configv1alpha1.OperationType{
+						configv1alpha1.OperationCreate,
+						configv1alpha1.OperationUpdate,
 					},
+					APIGroups:   []string{"apps"},
+					APIVersions: []string{"v1"},
+					Resources:   []string{"deployments", "statefulsets"},
 				},
 			},
 		},
 	}
-	store.AddOrUpdate(rule)
+	store.AddOrUpdateWatchRule(rule)
 
-	testCases := []struct {
-		name           string
-		group          string
-		kind           string
-		resourcePlural string
-		shouldMatch    bool
-	}{
-		{
-			name:           "MyApp matches",
-			group:          "example.com",
-			kind:           "MyApp",
-			resourcePlural: "myapps.example.com",
-			shouldMatch:    true,
-		},
-		{
-			name:           "Database matches",
-			group:          "db.example.com",
-			kind:           "Database",
-			resourcePlural: "databases.db.example.com",
-			shouldMatch:    true,
-		},
-		{
-			name:           "Queue matches",
-			group:          "messaging.io",
-			kind:           "Queue",
-			resourcePlural: "queues.messaging.io",
-			shouldMatch:    true,
-		},
-		{
-			name:           "Unrelated CRD doesn't match",
-			group:          "other.io",
-			kind:           "Other",
-			resourcePlural: "others.other.io",
-			shouldMatch:    false,
-		},
-	}
+	// Deployment that matches all criteria
+	matchingDeployment := &unstructured.Unstructured{}
+	matchingDeployment.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "apps",
+		Version: "v1",
+		Kind:    "Deployment",
+	})
+	matchingDeployment.SetName("prod-deployment")
+	matchingDeployment.SetNamespace("default")
+	matchingDeployment.SetLabels(map[string]string{"environment": "production"})
 
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			obj := &unstructured.Unstructured{}
-			obj.SetGroupVersionKind(schema.GroupVersionKind{
-				Group:   tc.group,
-				Version: "v1",
-				Kind:    tc.kind,
-			})
-			obj.SetName("test-resource")
-			obj.SetNamespace("default")
+	matches := store.GetMatchingRules(
+		matchingDeployment, "deployments",
+		configv1alpha1.OperationCreate,
+		"apps", "v1", false,
+	)
+	assert.Len(t, matches, 1)
 
-			matches := store.GetMatchingRules(obj, tc.resourcePlural)
-			if tc.shouldMatch {
-				assert.Len(t, matches, 1, "Expected %s to match", tc.resourcePlural)
-			} else {
-				assert.Empty(t, matches, "Expected %s not to match", tc.resourcePlural)
-			}
-		})
-	}
-}
+	// Deployment missing label - should NOT match
+	noLabelDeployment := &unstructured.Unstructured{}
+	noLabelDeployment.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "apps",
+		Version: "v1",
+		Kind:    "Deployment",
+	})
+	noLabelDeployment.SetName("dev-deployment")
+	noLabelDeployment.SetNamespace("default")
 
-func TestGetMatchingRules_MixedCoreAndCustomResources(t *testing.T) {
-	store := NewStore()
+	matches = store.GetMatchingRules(
+		noLabelDeployment, "deployments",
+		configv1alpha1.OperationCreate,
+		"apps", "v1", false,
+	)
+	assert.Empty(t, matches)
 
-	rule := configv1alpha1.WatchRule{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "mixed-rule",
-			Namespace: "default",
-		},
-		Spec: configv1alpha1.WatchRuleSpec{
-			GitRepoConfigRef: "my-repo-config",
-			Rules: []configv1alpha1.ResourceRule{
-				{
-					// Mix core resources and custom resources
-					Resources: []string{
-						"configmaps",
-						"secrets",
-						"myapps.example.com",
-					},
-				},
-			},
-		},
-	}
-	store.AddOrUpdate(rule)
+	// Deployment with DELETE operation - should NOT match
+	matches = store.GetMatchingRules(
+		matchingDeployment, "deployments",
+		configv1alpha1.OperationDelete,
+		"apps", "v1", false,
+	)
+	assert.Empty(t, matches)
 
-	testCases := []struct {
-		name           string
-		group          string
-		kind           string
-		resourcePlural string
-		shouldMatch    bool
-	}{
-		{
-			name:           "ConfigMap matches",
-			group:          "",
-			kind:           "ConfigMap",
-			resourcePlural: "configmaps",
-			shouldMatch:    true,
-		},
-		{
-			name:           "Secret matches",
-			group:          "",
-			kind:           "Secret",
-			resourcePlural: "secrets",
-			shouldMatch:    true,
-		},
-		{
-			name:           "MyApp custom resource matches",
-			group:          "example.com",
-			kind:           "MyApp",
-			resourcePlural: "myapps.example.com",
-			shouldMatch:    true,
-		},
-		{
-			name:           "Pod doesn't match",
-			group:          "",
-			kind:           "Pod",
-			resourcePlural: "pods",
-			shouldMatch:    false,
-		},
-	}
+	// Pod (different resource) - should NOT match
+	pod := &unstructured.Unstructured{}
+	pod.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "",
+		Version: "v1",
+		Kind:    "Pod",
+	})
+	pod.SetName("prod-pod")
+	pod.SetNamespace("default")
+	pod.SetLabels(map[string]string{"environment": "production"})
 
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			obj := &unstructured.Unstructured{}
-			obj.SetGroupVersionKind(schema.GroupVersionKind{
-				Group:   tc.group,
-				Version: "v1",
-				Kind:    tc.kind,
-			})
-			obj.SetName("test-resource")
-			obj.SetNamespace("default")
-
-			matches := store.GetMatchingRules(obj, tc.resourcePlural)
-			if tc.shouldMatch {
-				assert.Len(t, matches, 1, "Expected %s to match", tc.resourcePlural)
-			} else {
-				assert.Empty(t, matches, "Expected %s not to match", tc.resourcePlural)
-			}
-		})
-	}
-}
-
-func TestGetMatchingRules_CustomResourceWildcard(t *testing.T) {
-	store := NewStore()
-
-	rule := configv1alpha1.WatchRule{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "wildcard-crd-rule",
-			Namespace: "default",
-		},
-		Spec: configv1alpha1.WatchRuleSpec{
-			GitRepoConfigRef: "my-repo-config",
-			Rules: []configv1alpha1.ResourceRule{
-				{
-					// Wildcard to match all resources in example.com group
-					Resources: []string{"*.example.com"},
-				},
-			},
-		},
-	}
-	store.AddOrUpdate(rule)
-
-	testCases := []struct {
-		name           string
-		group          string
-		kind           string
-		resourcePlural string
-		shouldMatch    bool
-	}{
-		{
-			name:           "MyApps in example.com matches",
-			group:          "example.com",
-			kind:           "MyApp",
-			resourcePlural: "myapps.example.com",
-			shouldMatch:    true,
-		},
-		{
-			name:           "Databases in example.com matches",
-			group:          "example.com",
-			kind:           "Database",
-			resourcePlural: "databases.example.com",
-			shouldMatch:    true,
-		},
-		{
-			name:           "Resources in different group don't match",
-			group:          "other.io",
-			kind:           "Other",
-			resourcePlural: "others.other.io",
-			shouldMatch:    false,
-		},
-		{
-			name:           "Core resources don't match",
-			group:          "",
-			kind:           "Pod",
-			resourcePlural: "pods",
-			shouldMatch:    false,
-		},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			obj := &unstructured.Unstructured{}
-			obj.SetGroupVersionKind(schema.GroupVersionKind{
-				Group:   tc.group,
-				Version: "v1",
-				Kind:    tc.kind,
-			})
-			obj.SetName("test-resource")
-			obj.SetNamespace("default")
-
-			matches := store.GetMatchingRules(obj, tc.resourcePlural)
-			if tc.shouldMatch {
-				assert.Len(t, matches, 1, "Expected %s to match *.example.com", tc.resourcePlural)
-			} else {
-				assert.Empty(t, matches, "Expected %s not to match *.example.com", tc.resourcePlural)
-			}
-		})
-	}
+	matches = store.GetMatchingRules(pod, "pods", configv1alpha1.OperationCreate, "", "v1", false)
+	assert.Empty(t, matches)
 }

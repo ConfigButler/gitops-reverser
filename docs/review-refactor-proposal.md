@@ -1,172 +1,216 @@
-Architectural Guideline: Reverse GitOps Audit Logger
+# GitOps Reverser Architecture
 
-This document outlines the architecture for a tool that uses a Kubernetes Admission Webhook to capture resource configurations and store them as a sanitized, declarative audit log in a Git repository.
+This document outlines the architecture for a Kubernetes operator that captures resource configurations and stores them as sanitized audit logs in Git.
 
-1. Distilled Requirements
-Based on our discussion, the core requirements for this tool are:
+## Core Concepts
 
-Functionality: Intercept Kubernetes resource creations and updates using a ValidatingAdmissionWebhook.
+### Purpose
 
-Identification: Generate a unique, human-readable, and API-consistent file path for each resource stored in Git.
+Intercept Kubernetes resource changes using admission webhooks and store them as clean, declarative YAML in Git repositories.
 
-Sanitization: Ensure that stored manifests represent the declarative intent, not the live operational state. This means stripping fields like status and other system-managed metadata.
+### Key Requirements
 
-Genericity: The solution must be robust enough to handle any Kubernetes resource kind, including standard types (Pod, ConfigMap) and Custom Resource Definitions (CRDs), without prior knowledge of their structure.
+1. **Generic**: Handle any Kubernetes resource (core types and CRDs) without prior knowledge
+2. **Sanitized**: Store declarative intent, not operational state (no status, server-managed fields)
+3. **Auditable**: Maintain complete history with user attribution
+4. **Efficient**: Handle race conditions and conflicts intelligently
 
-Implementation: The core logic must be implemented in Go, leveraging the sigs.k8s.io/controller-runtime/pkg/webhook/admission package.
+## Architecture Components
 
-Formatting: The final YAML files committed to Git must be clean and follow the conventional field order (apiVersion, kind, metadata, etc.).
+### 1. Resource Identification
 
-2. Key Architectural Decisions
-A. Resource Identification Strategy
-To create a unique and intuitive file path for each object in Git, we will mirror the Kubernetes REST API path structure. The admission.Request object conveniently provides all the necessary components.
+Git file paths mirror Kubernetes API structure:
 
-Decision: Use the format {group}/{version}/{resource}/{namespace}/{name} for the Git file path.
+**Format**: `<group>/<version>/<resources>/<namespace>/<name>.yaml`
 
-Source Fields from admission.Request:
+**Examples:**
+- Deployment: `apps/v1/deployments/production/my-app.yaml`
+- Pod (core): `v1/pods/default/nginx-pod.yaml`
+- Custom Resource: `example.com/v1/myapps/production/my-app.yaml`
 
-Group: req.Resource.Group
+**Source**: Admission request provides all components:
+- Group: `req.Resource.Group`
+- Version: `req.Resource.Version`
+- Resource: `req.Resource.Resource` (plural form)
+- Namespace: `req.Namespace`
+- Name: `req.Name`
 
-Version: req.Resource.Version
+### 2. Manifest Sanitization
 
-Resource (Plural): req.Resource.Resource
+**Goal**: Store "what" (desired state), discard "how" (operational state)
 
-Namespace: req.Namespace
+**Removed Fields:**
+- `status` - Operational state
+- `metadata.uid` - Server-generated
+- `metadata.resourceVersion` - Server-generated
+- `metadata.generation` - Server-generated
+- `metadata.creationTimestamp` - Server-generated
+- `metadata.managedFields` - Server-generated
+- `kubectl.kubernetes.io/last-applied-configuration` - Annotation
+- Other server-managed annotations
 
-Name: req.Name
+**Implementation**: See [`internal/sanitize/`](../internal/sanitize/) package
 
-Rationale: This approach is highly effective because it's directly aligned with how the Kubernetes API itself is structured. It's unambiguous, requires no extra lookups, and is easily understood by anyone familiar with kubectl or the Kubernetes API.
+### 3. Watch Rules
 
-Example Paths:
+**WatchRule**: Namespace-scoped CRD that defines which resources to capture
 
-Deployment: apps/v1/deployments/production/my-app-deployment
+**Key Features:**
+- **Operation filtering**: Watch only CREATE, UPDATE, or DELETE
+- **API group filtering**: Target specific groups (core, apps, custom)
+- **Version filtering**: Watch specific API versions
+- **Label filtering**: Include/exclude based on labels
+- **Namespace isolation**: Can only watch resources in its own namespace
 
-Pod (Core Group): v1/pods/default/my-nginx-pod
+**Example:**
+```yaml
+apiVersion: configbutler.ai/v1alpha1
+kind: WatchRule
+metadata:
+  name: production-configs
+  namespace: production
+spec:
+  gitRepoConfigRef: audit-repo
+  objectSelector:
+    matchExpressions:
+    - key: environment
+      operator: In
+      values: [production]
+  rules:
+  - operations: [CREATE, UPDATE]
+    apiGroups: [""]
+    resources: [configmaps, secrets]
+```
 
-ClusterRole (Cluster-Scoped): rbac.authorization.k8s.io/v1/clusterroles/system/node-viewer
+**Security Model:**
+- WatchRule watches **only namespace-scoped resources** in **its own namespace**
+- Enforces multi-tenancy (team-a cannot watch team-b resources)
+- RBAC controls WatchRule creation per namespace
 
-B. Manifest Sanitization Strategy
-The core principle is to store the "what" (the user's desired state) and discard the "how" (the cluster's live operational state).
+**Future**: ClusterWatchRule for cluster-scoped resources (Nodes, ClusterRoles)
 
-Decision: Programmatically remove all non-declarative fields from the object before serialization.
+### 4. Git Operations
 
-Fields to Remove:
+**Conflict Resolution**: "Last Writer Wins"
 
-Live State: status
+- Cluster change newer than Git → Cluster wins (push succeeds)
+- Git change newer than cluster → Git wins (push backs off)
 
-System-Managed Metadata: metadata.uid, metadata.resourceVersion, metadata.generation, metadata.creationTimestamp, metadata.managedFields, metadata.ownerReferences.
+**Race Condition Handling:**
+- Retry with exponential backoff
+- Re-evaluate and re-generate on conflicts
+- Eventual consistency guaranteed
 
-Injected Spec Fields: System-populated fields within the spec, such as spec.clusterIP on a Service.
+**Implementation**: See [`internal/git/`](../internal/git/) package
 
-Contextual Annotations: Non-declarative annotations like kubectl.kubernetes.io/last-applied-configuration.
+### 5. Event Processing
 
-3. Go Implementation Guide
-To achieve both genericity and well-structured output, we will use a two-pass decode and re-assembly pattern. This allows us to handle any object structure while maintaining control over the final YAML format and order.
+**Flow:**
+```
+Webhook → Event Queue → Git Worker → Git Repository
+```
 
-Core Logic:
-Decode to a Generic Map: First, unmarshal the raw object into a map[string]interface{}. This gives us a flexible structure to work with.
+1. **Webhook** captures admission requests
+2. **Event Queue** buffers and batches changes
+3. **Git Worker** processes queue, handles conflicts
+4. **Git Repository** stores final YAML
 
-Extract and Sanitize Typed Data: Extract the metadata into a custom PartialObjectMeta struct. This lets us easily and safely manipulate the metadata fields we want to keep while discarding the rest.
+## Component Details
 
-Clean the Generic Map: Remove the unwanted top-level keys (status, metadata, etc.) from the generic map. What remains is the object's core declarative payload (e.g., spec, data, rules).
+### Admission Webhook
 
-Re-assemble into an Ordered Struct: Populate a final, purpose-built struct that defines the field order explicitly (apiVersion, kind, metadata). This struct uses a json:",inline" tag to embed the remaining payload from the cleaned map.
+**Path**: `/validate-v1-event`
+**Type**: ValidatingWebhook (non-mutating)
+**Failure Policy**: Ignore (don't block cluster operations)
 
-Marshal to YAML: Serialize the final, ordered struct into YAML for storage.
+**Processing:**
+1. Decode admission request
+2. Extract resource metadata
+3. Match against WatchRules
+4. Sanitize object
+5. Enqueue event
 
-Final Go Implementation
-This code provides a robust and generic solution that fulfills all the requirements.
+**Implementation**: [`internal/webhook/event_handler.go`](../internal/webhook/event_handler.go)
 
-Go
+### Rule Store
 
-package main
+In-memory cache of compiled WatchRules for efficient matching.
 
-import (
-	"context"
-	"encoding/json"
-	"net/http"
+**Features:**
+- Thread-safe concurrent access
+- O(n) matching complexity (where n = number of rules)
+- Namespace-aware filtering
+- Operation/group/version filtering
 
-	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
-	"sigs.k8s.io/yaml"
-)
+**Implementation**: [`internal/rulestore/store.go`](../internal/rulestore/store.go)
 
-// MyWebhookHandler is a placeholder for your webhook handler implementation.
-type MyWebhookHandler struct{}
+### Controllers
 
-// PartialObjectMeta defines a subset of the standard ObjectMeta, containing only
-// the fields we want to preserve in our GitOps repository.
-type PartialObjectMeta struct {
-	Name        string            `json:"name,omitempty"`
-	Namespace   string            `json:"namespace,omitempty"`
-	Labels      map[string]string `json:"labels,omitempty"`
-	Annotations map[string]string `json:"annotations,omitempty"`
-}
+**GitRepoConfigReconciler**: Validates Git repository access
+**WatchRuleReconciler**: Validates WatchRule configuration and GitRepoConfig references
 
-// FinalGitOpsObject defines the final structure for the clean YAML.
-// The order of fields here dictates the order in the marshalled output, ensuring
-// a conventional and readable GitOps manifest.
-type FinalGitOpsObject struct {
-	APIVersion string `json:"apiVersion"`
-	Kind       string `json:"kind"`
-	Metadata   PartialObjectMeta `json:"metadata"`
+**Implementation**: [`internal/controller/`](../internal/controller/)
 
-	// The ",inline" tag is a powerful tool that embeds the rest of the object's
-	// fields (spec, data, rules, etc.) at this top level, preserving the
-	// original structure without needing to know the field names in advance.
-	Payload map[string]interface{} `json:",inline"`
-}
+## YAML Formatting
 
-// Handle is the core logic for the admission webhook. It receives, sanitizes,
-// and prepares the Kubernetes object for storage.
-func (h *MyWebhookHandler) Handle(ctx context.Context, req admission.Request) admission.Response {
-	// --- Step 1: Decode the full object into a generic map ---
-	// This provides a flexible way to manipulate the object's fields.
-	var fullObject map[string]interface{}
-	if err := json.Unmarshal(req.Object.Raw, &fullObject); err != nil {
-		return admission.Errored(http.StatusBadRequest, err)
-	}
+**Two-pass approach** for clean, ordered YAML:
 
-	// --- Step 2: Extract and sanitize the metadata you care about ---
-	// We unmarshal just the metadata portion into our typed `PartialObjectMeta` struct.
-	// This automatically filters out fields we don't want, like uid, resourceVersion, etc.
-	var metadata PartialObjectMeta
-	if metaBytes, err := json.Marshal(fullObject["metadata"]); err == nil {
-		_ = json.Unmarshal(metaBytes, &metadata)
-	}
-	// As a final sanitization step, remove common operational annotations.
-	delete(metadata.Annotations, "kubectl.kubernetes.io/last-applied-configuration")
+1. **Decode** to `map[string]interface{}` for flexibility
+2. **Extract** typed metadata into `PartialObjectMeta`
+3. **Clean** map by removing unwanted fields
+4. **Re-assemble** into ordered struct:
+   ```go
+   type FinalGitOpsObject struct {
+       APIVersion string
+       Kind       string
+       Metadata   PartialObjectMeta
+       Payload    map[string]interface{} `json:",inline"`
+   }
+   ```
+5. **Marshal** to YAML
 
+**Result**: Clean YAML with conventional field ordering (apiVersion, kind, metadata, spec/data)
 
-	// --- Step 3: Clean the map by removing unwanted top-level fields ---
-	// This is the core of the sanitization. What remains in `fullObject`
-	// is the pure declarative payload of the resource.
-	delete(fullObject, "apiVersion")
-	delete(fullObject, "kind")
-	delete(fullObject, "metadata")
-	delete(fullObject, "status")
+**Implementation**: [`internal/sanitize/marshal.go`](../internal/sanitize/marshal.go)
 
+## Security Considerations
 
-	// --- Step 4: Assemble the final, ORDERED object using our new struct ---
-	// This step ensures the output YAML is clean and conventionally formatted.
-	cleanObject := FinalGitOpsObject{
-		APIVersion: req.Kind.GroupVersion().String(),
-		Kind:       req.Kind.Kind,
-		Metadata:   metadata,
-		Payload:    fullObject, // What's left in the map is the payload
-	}
+### Git Credentials
 
+Store SSH keys in Kubernetes Secrets:
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: git-credentials
+type: Opaque
+data:
+  ssh-privatekey: <base64-encoded-key>
+  known_hosts: <base64-encoded-hosts>
+```
 
-	// --- Step 5: Convert to YAML for storage ---
-	// The `sigs.k8s.io/yaml` package is recommended as it handles Kubernetes-specific
-	// YAML conventions better than standard packages.
-	yamlBytes, err := yaml.Marshal(cleanObject)
-	if err != nil {
-		return admission.Errored(http.StatusInternalServerError, err)
-	}
+### RBAC
 
-	// At this point, `yamlBytes` can be committed to the Git repository using the
-	// path derived from the admission request.
-	// For example: fmt.Println(string(yamlBytes))
+Controller requires:
+- Cluster-wide read access (for webhooks)
+- Webhook configuration permissions
+- Namespace-scoped access to GitRepoConfig/WatchRule CRDs
 
-	return admission.Allowed("request processed and sanitized for GitOps audit")
-}
+### TLS Certificates
+
+Webhook communication requires HTTPS. Certificates managed by cert-manager automatically.
+
+## Testing
+
+- **Unit Tests**: Core logic validation (>90% coverage required)
+- **Integration Tests**: Git operations, race conditions
+- **E2E Tests**: Full workflow with real Git repository (Gitea)
+
+See [`TESTING.md`](../TESTING.md) for details.
+
+## References
+
+- WatchRule API: [`api/v1alpha1/watchrule_types.go`](../api/v1alpha1/watchrule_types.go)
+- Event Handler: [`internal/webhook/event_handler.go`](../internal/webhook/event_handler.go)
+- Sanitization: [`internal/sanitize/`](../internal/sanitize/)
+- Git Worker: [`internal/git/worker.go`](../internal/git/worker.go)
