@@ -119,7 +119,7 @@ Webhook → Event Queue → Git Worker → Git Repository
 
 ### Admission Webhook
 
-**Path**: `/validate-v1-event`
+**Path**: `/process-audit-webhook-calls`
 **Type**: ValidatingWebhook (non-mutating)
 **Failure Policy**: Ignore (don't block cluster operations)
 

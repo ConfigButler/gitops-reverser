@@ -283,8 +283,8 @@ func main() {
 
 	// Create webhook with admission handler
 	validatingWebhook := &admission.Webhook{Handler: eventHandler}
-	mgr.GetWebhookServer().Register("/validate-v1-event", validatingWebhook)
-	setupLog.Info("Webhook handler registered", "path", "/validate-v1-event")
+	mgr.GetWebhookServer().Register("/process-audit-webhook-calls", validatingWebhook)
+	setupLog.Info("Webhook handler registered", "path", "/process-audit-webhook-calls")
 
 	// Start the Git worker to process events from the queue
 	gitWorker := &git.Worker{
