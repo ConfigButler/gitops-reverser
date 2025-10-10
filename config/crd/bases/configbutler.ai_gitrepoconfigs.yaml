@@ -168,6 +168,9 @@ spec:
               rule: '!has(self.accessPolicy) || !has(self.accessPolicy.namespacedRules)
                 || !has(self.accessPolicy.namespacedRules.namespaceSelector) || self.accessPolicy.namespacedRules.mode
                 == ''FromSelector'''
+            - message: namespaceSelector is required when mode is 'FromSelector'
+              rule: '!has(self.accessPolicy) || !has(self.accessPolicy.namespacedRules)
+                || self.accessPolicy.namespacedRules.mode != ''FromSelector'' || has(self.accessPolicy.namespacedRules.namespaceSelector)'
           status:
             description: status defines the observed state of GitRepoConfig
             properties:

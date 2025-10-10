@@ -238,13 +238,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	// TODO: Re-enable GitRepoConfig validation webhook after fixing controller-runtime registration
-	// The webhook code exists and unit tests pass, but runtime registration needs debugging
-	// For now, CEL validation in the CRD provides validation
-	// if err = (&configbutleraiv1alpha1.GitRepoConfig{}).SetupWebhookWithManager(mgr); err != nil {
-	// 	setupLog.Error(err, "unable to create webhook", "webhook", "GitRepoConfig")
-	// 	os.Exit(1)
-	// }
 	// Initialize rule store and event queue for webhook handler
 	ruleStore := rulestore.NewStore()
 	eventQueue := eventqueue.NewQueue()

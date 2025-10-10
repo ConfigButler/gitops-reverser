@@ -49,7 +49,6 @@ Will we allow to keep status as well? Is it perhaps usefull for some usecases? I
 New questions:
 
 * If the AccessPolicy is adjusted on the GitRepoConfig, are the existing watchrules also re-evaluated (if they can send in events).
-* For now we have a disabled webhook handler for the GitRepoConfig: do we really need that anyway? Do we want to stop deletions if events are still actively comming in or why?
 * Is there to much code duplication between clusterwatchrule and watchrule?
 * Should I rename the /validate-v1-event endpoint to be more clear? Something like process-audit-event?
 * Should NamespacedName object in clusterwatchrule be duplicated or not? (should probably be the same GitRepoConfigRef, which hopefully already container the namespace name).

@@ -33,6 +33,7 @@ type LocalObjectReference struct {
 
 // GitRepoConfigSpec defines the desired state of GitRepoConfig.
 // +kubebuilder:validation:XValidation:rule="!has(self.accessPolicy) || !has(self.accessPolicy.namespacedRules) || !has(self.accessPolicy.namespacedRules.namespaceSelector) || self.accessPolicy.namespacedRules.mode == 'FromSelector'",message="namespaceSelector can only be set when mode is 'FromSelector'"
+// +kubebuilder:validation:XValidation:rule="!has(self.accessPolicy) || !has(self.accessPolicy.namespacedRules) || self.accessPolicy.namespacedRules.mode != 'FromSelector' || has(self.accessPolicy.namespacedRules.namespaceSelector)",message="namespaceSelector is required when mode is 'FromSelector'"
 type GitRepoConfigSpec struct {
 	// RepoURL is the URL of the Git repository to commit to.
 	// +required
