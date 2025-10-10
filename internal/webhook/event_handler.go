@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -13,6 +14,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 
 	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 	"github.com/ConfigButler/gitops-reverser/internal/eventqueue"
@@ -39,7 +43,10 @@ type EventHandler struct {
 //nolint:funlen // Complex admission handler with multiple validation steps
 func (h *EventHandler) Handle(ctx context.Context, req admission.Request) admission.Response {
 	log := logf.FromContext(ctx)
-	metrics.EventsReceivedTotal.Add(ctx, 1)
+
+	// Add metrics with role label - check if this pod is the leader
+	roleAttr := h.getPodRoleAttribute(ctx)
+	metrics.EventsReceivedTotal.Add(ctx, 1, metric.WithAttributes(roleAttr))
 
 	if h.EnableVerboseAdmissionLogs {
 		log.Info(
@@ -193,8 +200,32 @@ func (h *EventHandler) enqueueEvent(
 		GitRepoConfigNamespace: gitRepoConfigNamespace,
 	}
 	h.EventQueue.Enqueue(event)
-	metrics.EventsProcessedTotal.Add(ctx, 1)
-	metrics.GitCommitQueueSize.Add(ctx, 1)
+	roleAttr := h.getPodRoleAttribute(ctx)
+	metrics.EventsProcessedTotal.Add(ctx, 1, metric.WithAttributes(roleAttr))
+	metrics.GitCommitQueueSize.Add(ctx, 1, metric.WithAttributes(roleAttr))
+}
+
+// getPodRoleAttribute returns the role attribute for metrics based on pod labels.
+func (h *EventHandler) getPodRoleAttribute(ctx context.Context) attribute.KeyValue {
+	podName := os.Getenv("POD_NAME")
+	podNamespace := os.Getenv("POD_NAMESPACE")
+
+	if podName == "" || podNamespace == "" {
+		return attribute.String("role", "unknown")
+	}
+
+	pod := &corev1.Pod{}
+	err := h.Client.Get(ctx, apitypes.NamespacedName{Name: podName, Namespace: podNamespace}, pod)
+	if err != nil {
+		return attribute.String("role", "unknown")
+	}
+
+	// Check if pod has the leader label
+	if role, ok := pod.Labels["role"]; ok && role == "leader" {
+		return attribute.String("role", "leader")
+	}
+
+	return attribute.String("role", "follower")
 }
 
 // InjectDecoder injects the decoder.

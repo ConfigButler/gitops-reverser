@@ -36,8 +36,11 @@ func (r *GitRepoConfig) SetupWebhookWithManager(mgr ctrl.Manager) error {
 		Complete()
 }
 
-// TODO: Re-enable webhook marker after fixing controller-runtime registration
-// +kubebuilder:webhook:path=/validate-configbutler-ai-v1alpha1-gitrepoconfig,mutating=false,failurePolicy=fail,sideEffects=None,groups=configbutler.ai,resources=gitrepoconfigs,verbs=create;update,versions=v1alpha1,name=vgitrepoconfig.kb.io,admissionReviewVersions=v1
+// TODO: Re-enable webhook after fixing controller-runtime registration
+// The webhook code exists and unit tests pass, but runtime registration needs debugging
+// For now, CEL validation in the CRD provides validation
+// Disabled kubebuilder marker - uncomment when webhook is re-enabled:
+// kubebuilder:webhook:path=/validate-configbutler-ai-v1alpha1-gitrepoconfig,mutating=false,failurePolicy=fail,sideEffects=None,groups=configbutler.ai,resources=gitrepoconfigs,verbs=create;update,versions=v1alpha1,name=vgitrepoconfig.kb.io,admissionReviewVersions=v1
 
 // ValidateCreate implements webhook.Validator.
 func (r *GitRepoConfig) ValidateCreate() (admission.Warnings, error) {

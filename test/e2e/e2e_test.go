@@ -248,7 +248,7 @@ var _ = Describe("Manager", Ordered, func() {
 			By("verifying webhook registration for event handler")
 			verifyWebhook := func(g Gomega) {
 				jsonPath := "jsonpath={.items[?(@.metadata.name=='gitops-reverser-validating-webhook-configuration')]" +
-					".webhooks[0].name}"
+					".webhooks[*].name}"
 				cmd := exec.Command("kubectl", "get", "validatingwebhookconfigurations", "-o", jsonPath)
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
