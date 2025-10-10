@@ -59,9 +59,22 @@ spec:
             properties:
               gitRepoConfigRef:
                 description: |-
-                  GitRepoConfigRef is the name of the GitRepoConfig to use for this rule.
-                  The GitRepoConfig must exist in the same namespace as this WatchRule.
-                type: string
+                  GitRepoConfigRef references the GitRepoConfig to use for this rule.
+                  If namespace is not specified, defaults to the WatchRule's namespace.
+                properties:
+                  name:
+                    description: Name of the GitRepoConfig.
+                    minLength: 1
+                    type: string
+                  namespace:
+                    description: |-
+                      Namespace containing the GitRepoConfig.
+                      For WatchRule: Optional, defaults to WatchRule's namespace if not specified.
+                      For ClusterWatchRule: Required, must be explicitly specified.
+                    type: string
+                required:
+                - name
+                type: object
               objectSelector:
                 description: |-
                   ObjectSelector filters resources by labels (like objectSelector in webhooks).

@@ -78,12 +78,13 @@ spec:
                     minLength: 1
                     type: string
                   namespace:
-                    description: Namespace containing the GitRepoConfig.
-                    minLength: 1
+                    description: |-
+                      Namespace containing the GitRepoConfig.
+                      For WatchRule: Optional, defaults to WatchRule's namespace if not specified.
+                      For ClusterWatchRule: Required, must be explicitly specified.
                     type: string
                 required:
                 - name
-                - namespace
                 type: object
               rules:
                 description: |-

@@ -32,21 +32,6 @@ const (
 	ResourceScopeNamespaced ResourceScope = "Namespaced"
 )
 
-// NamespacedName represents a reference to a namespaced resource.
-// This is used by ClusterWatchRule (cluster-scoped) to reference
-// GitRepoConfig (namespace-scoped).
-type NamespacedName struct {
-	// Name of the GitRepoConfig.
-	// +required
-	// +kubebuilder:validation:MinLength=1
-	Name string `json:"name"`
-
-	// Namespace containing the GitRepoConfig.
-	// +required
-	// +kubebuilder:validation:MinLength=1
-	Namespace string `json:"namespace"`
-}
-
 // ClusterWatchRuleSpec defines the desired state of ClusterWatchRule.
 type ClusterWatchRuleSpec struct {
 	// GitRepoConfigRef references the GitRepoConfig to use.

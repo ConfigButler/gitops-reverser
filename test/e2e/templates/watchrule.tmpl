@@ -4,7 +4,8 @@ metadata:
   name: {{.Name}}
   namespace: {{.Namespace}}
 spec:
-  gitRepoConfigRef: {{.GitRepoConfigRef}}
+  gitRepoConfigRef:
+    name: {{.GitRepoConfigRef}}
   objectSelector:
     matchExpressions:
     - key: "configbutler.ai/ignore"

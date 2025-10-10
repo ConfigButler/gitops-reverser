@@ -68,7 +68,7 @@ var _ = Describe("WatchRule Controller", func() {
 						Namespace: "default",
 					},
 					Spec: configbutleraiv1alpha1.WatchRuleSpec{
-						GitRepoConfigRef: "test-repo-config",
+						GitRepoConfigRef: configbutleraiv1alpha1.NamespacedName{Name: "test-repo-config"},
 						Rules: []configbutleraiv1alpha1.ResourceRule{
 							{
 								Resources: []string{"Pod"},
@@ -162,7 +162,7 @@ var _ = Describe("WatchRule Controller", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha1.WatchRuleSpec{
-					GitRepoConfigRef: "local-config",
+					GitRepoConfigRef: configbutleraiv1alpha1.NamespacedName{Name: "local-config"},
 					Rules: []configbutleraiv1alpha1.ResourceRule{
 						{
 							Resources: []string{"pods"},

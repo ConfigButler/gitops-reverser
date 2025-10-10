@@ -100,11 +100,17 @@ func (s *RuleStore) AddOrUpdateWatchRule(rule configv1alpha1.WatchRule) {
 		Namespace: rule.Namespace,
 	}
 
+	// Default GitRepoConfig namespace to WatchRule's namespace if not specified
+	gitRepoConfigNamespace := rule.Spec.GitRepoConfigRef.Namespace
+	if gitRepoConfigNamespace == "" {
+		gitRepoConfigNamespace = rule.Namespace
+	}
+
 	compiled := CompiledRule{
 		Source:                 key,
-		GitRepoConfigRef:       rule.Spec.GitRepoConfigRef,
-		GitRepoConfigNamespace: rule.Namespace, // Same namespace as WatchRule
-		IsClusterScoped:        false,          // WatchRule is namespace-scoped
+		GitRepoConfigRef:       rule.Spec.GitRepoConfigRef.Name,
+		GitRepoConfigNamespace: gitRepoConfigNamespace,
+		IsClusterScoped:        false, // WatchRule is namespace-scoped
 		ObjectSelector:         rule.Spec.ObjectSelector,
 		ResourceRules:          make([]CompiledResourceRule, 0, len(rule.Spec.Rules)),
 	}

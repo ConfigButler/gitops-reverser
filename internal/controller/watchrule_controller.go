@@ -94,12 +94,23 @@ func (r *WatchRuleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		WatchRuleReasonValidating, "Validating WatchRule configuration...")
 
 	// Step 1: Verify that the referenced GitRepoConfig exists and is ready
-	log.Info("Verifying GitRepoConfig reference", "gitRepoConfigRef", watchRule.Spec.GitRepoConfigRef)
-	gitRepoConfig, err := r.getGitRepoConfig(ctx, watchRule.Spec.GitRepoConfigRef, watchRule.Namespace)
+	// Default namespace to WatchRule's namespace if not specified
+	gitRepoConfigNamespace := watchRule.Spec.GitRepoConfigRef.Namespace
+	if gitRepoConfigNamespace == "" {
+		gitRepoConfigNamespace = watchRule.Namespace
+	}
+
+	log.Info("Verifying GitRepoConfig reference",
+		"gitRepoConfigName", watchRule.Spec.GitRepoConfigRef.Name,
+		"gitRepoConfigNamespace", gitRepoConfigNamespace)
+	gitRepoConfig, err := r.getGitRepoConfig(ctx, watchRule.Spec.GitRepoConfigRef.Name, gitRepoConfigNamespace)
 	if err != nil {
-		log.Error(err, "Failed to get referenced GitRepoConfig", "gitRepoConfigRef", watchRule.Spec.GitRepoConfigRef)
+		log.Error(err, "Failed to get referenced GitRepoConfig",
+			"gitRepoConfigName", watchRule.Spec.GitRepoConfigRef.Name,
+			"gitRepoConfigNamespace", gitRepoConfigNamespace)
 		r.setCondition(&watchRule, metav1.ConditionFalse, WatchRuleReasonGitRepoConfigNotFound,
-			fmt.Sprintf("Referenced GitRepoConfig '%s' not found: %v", watchRule.Spec.GitRepoConfigRef, err))
+			fmt.Sprintf("Referenced GitRepoConfig '%s/%s' not found: %v",
+				gitRepoConfigNamespace, watchRule.Spec.GitRepoConfigRef.Name, err))
 		return r.updateStatusAndRequeue(ctx, &watchRule, RequeueShortInterval)
 	}
 
@@ -109,7 +120,8 @@ func (r *WatchRuleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	if !r.isGitRepoConfigReady(gitRepoConfig) {
 		log.Info("Referenced GitRepoConfig is not ready", "gitRepoConfig", gitRepoConfig.Name)
 		r.setCondition(&watchRule, metav1.ConditionFalse, WatchRuleReasonGitRepoConfigNotReady,
-			fmt.Sprintf("Referenced GitRepoConfig '%s' is not ready", watchRule.Spec.GitRepoConfigRef))
+			fmt.Sprintf("Referenced GitRepoConfig '%s/%s' is not ready",
+				gitRepoConfigNamespace, watchRule.Spec.GitRepoConfigRef.Name))
 		return r.updateStatusAndRequeue(ctx, &watchRule, time.Minute)
 	}
 
@@ -119,7 +131,8 @@ func (r *WatchRuleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	if err := r.validateGitRepoConfigAccess(ctx, &watchRule, gitRepoConfig); err != nil {
 		log.Error(err, "Access denied to GitRepoConfig")
 		r.setCondition(&watchRule, metav1.ConditionFalse, WatchRuleReasonAccessDenied,
-			fmt.Sprintf("Access denied to GitRepoConfig '%s': %v", watchRule.Spec.GitRepoConfigRef, err))
+			fmt.Sprintf("Access denied to GitRepoConfig '%s/%s': %v",
+				gitRepoConfigNamespace, watchRule.Spec.GitRepoConfigRef.Name, err))
 		return r.updateStatusAndRequeue(ctx, &watchRule, RequeueMediumInterval)
 	}
 
@@ -135,8 +148,9 @@ func (r *WatchRuleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		metav1.ConditionTrue,
 		WatchRuleReasonReady, //nolint:lll // Descriptive message
 		fmt.Sprintf(
-			"WatchRule is ready and monitoring resources with GitRepoConfig '%s'",
-			watchRule.Spec.GitRepoConfigRef,
+			"WatchRule is ready and monitoring resources with GitRepoConfig '%s/%s'",
+			gitRepoConfigNamespace,
+			watchRule.Spec.GitRepoConfigRef.Name,
 		),
 	)
 

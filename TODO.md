@@ -51,4 +51,4 @@ New questions:
 * If the AccessPolicy is adjusted on the GitRepoConfig, are the existing watchrules also re-evaluated (if they can send in events).
 * Is there to much code duplication between clusterwatchrule and watchrule?
 * Should I rename the /validate-v1-event endpoint to be more clear? Something like process-audit-event?
-* Should NamespacedName object in clusterwatchrule be duplicated or not? (should probably be the same GitRepoConfigRef, which hopefully already container the namespace name).
+* 

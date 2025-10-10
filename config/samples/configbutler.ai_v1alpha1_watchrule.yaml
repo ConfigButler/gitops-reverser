@@ -4,8 +4,11 @@ metadata:
   name: watchrule-sample
   namespace: default
 spec:
-  # Reference to GitRepoConfig (must be in same namespace)
-  gitRepoConfigRef: gitrepoconfig-sample
+  # Reference to GitRepoConfig
+  # If namespace is not specified, defaults to WatchRule's namespace
+  gitRepoConfigRef:
+    name: gitrepoconfig-sample
+    # namespace: default  # Optional - defaults to WatchRule's namespace
 
   # Optional: Filter resources by labels
   # This example includes resources with app=production and excludes those with ignore label

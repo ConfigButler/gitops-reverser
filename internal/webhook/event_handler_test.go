@@ -40,7 +40,7 @@ func TestEventHandler_Handle_MatchingRule(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: configv1alpha1.WatchRuleSpec{
-			GitRepoConfigRef: "test-repo-config",
+			GitRepoConfigRef: configv1alpha1.NamespacedName{Name: "test-repo-config"},
 			Rules: []configv1alpha1.ResourceRule{
 				{
 					Resources: []string{"pods"},
@@ -141,7 +141,7 @@ func TestEventHandler_Handle_NoMatchingRule(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: configv1alpha1.WatchRuleSpec{
-			GitRepoConfigRef: "test-repo-config",
+			GitRepoConfigRef: configv1alpha1.NamespacedName{Name: "test-repo-config"},
 			Rules: []configv1alpha1.ResourceRule{
 				{
 					Resources: []string{"services"},
@@ -222,7 +222,7 @@ func TestEventHandler_Handle_MultipleMatchingRules(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: configv1alpha1.WatchRuleSpec{
-			GitRepoConfigRef: "repo-config-1",
+			GitRepoConfigRef: configv1alpha1.NamespacedName{Name: "repo-config-1"},
 			Rules: []configv1alpha1.ResourceRule{
 				{
 					Resources: []string{"pods"},
@@ -237,7 +237,7 @@ func TestEventHandler_Handle_MultipleMatchingRules(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: configv1alpha1.WatchRuleSpec{
-			GitRepoConfigRef: "repo-config-2",
+			GitRepoConfigRef: configv1alpha1.NamespacedName{Name: "repo-config-2"},
 			Rules: []configv1alpha1.ResourceRule{
 				{
 					Resources: []string{"pods", "services"},
@@ -334,7 +334,7 @@ func TestEventHandler_Handle_ExcludedByLabels(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: configv1alpha1.WatchRuleSpec{
-			GitRepoConfigRef: "test-repo-config",
+			GitRepoConfigRef: configv1alpha1.NamespacedName{Name: "test-repo-config"},
 			ObjectSelector: &metav1.LabelSelector{
 				MatchExpressions: []metav1.LabelSelectorRequirement{
 					{
@@ -470,7 +470,7 @@ func TestEventHandler_Handle_NamespacedIngressResource(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: configv1alpha1.WatchRuleSpec{
-			GitRepoConfigRef: "test-repo-config",
+			GitRepoConfigRef: configv1alpha1.NamespacedName{Name: "test-repo-config"},
 			Rules: []configv1alpha1.ResourceRule{
 				{
 					Resources: []string{"ingresses"},
@@ -575,7 +575,7 @@ func TestEventHandler_Handle_DifferentOperations(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: configv1alpha1.WatchRuleSpec{
-					GitRepoConfigRef: "test-repo-config",
+					GitRepoConfigRef: configv1alpha1.NamespacedName{Name: "test-repo-config"},
 					Rules: []configv1alpha1.ResourceRule{
 						{
 							Resources: []string{"pods"},
@@ -666,7 +666,7 @@ func TestEventHandler_Handle_ClusterScopedResource(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: configv1alpha1.WatchRuleSpec{
-			GitRepoConfigRef: "cluster-repo-config",
+			GitRepoConfigRef: configv1alpha1.NamespacedName{Name: "cluster-repo-config"},
 			Rules: []configv1alpha1.ResourceRule{
 				{
 					Resources: []string{"namespaces"},
@@ -757,7 +757,7 @@ func TestEventHandler_Handle_SanitizationApplied(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: configv1alpha1.WatchRuleSpec{
-			GitRepoConfigRef: "test-repo-config",
+			GitRepoConfigRef: configv1alpha1.NamespacedName{Name: "test-repo-config"},
 			Rules: []configv1alpha1.ResourceRule{
 				{
 					Resources: []string{"pods"},

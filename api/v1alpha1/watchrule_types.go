@@ -38,10 +38,10 @@ const (
 // WatchRuleSpec defines the desired state of WatchRule.
 // WatchRule watches resources ONLY within its own namespace.
 type WatchRuleSpec struct {
-	// GitRepoConfigRef is the name of the GitRepoConfig to use for this rule.
-	// The GitRepoConfig must exist in the same namespace as this WatchRule.
+	// GitRepoConfigRef references the GitRepoConfig to use for this rule.
+	// If namespace is not specified, defaults to the WatchRule's namespace.
 	// +required
-	GitRepoConfigRef string `json:"gitRepoConfigRef"`
+	GitRepoConfigRef NamespacedName `json:"gitRepoConfigRef"`
 
 	// ObjectSelector filters resources by labels (like objectSelector in webhooks).
 	// If specified, only resources matching this selector are watched.
