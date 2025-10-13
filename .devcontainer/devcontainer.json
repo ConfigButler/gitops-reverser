@@ -39,7 +39,6 @@
         "go.toolsManagement.checkForUpdates": "local",
         "go.useLanguageServer": true,
         "go.gopath": "/go",
-        "go.goroot": "/usr/local/go",
         "go.testEnvVars": {
           "KUBEBUILDER_ASSETS": "${workspaceFolder}/bin/k8s/current"
         },

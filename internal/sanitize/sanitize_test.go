@@ -377,3 +377,293 @@ func TestSanitize_PreservesOriginalObject(t *testing.T) {
 	_, found, _ = unstructured.NestedMap(sanitized.Object, "status")
 	assert.False(t, found, "Sanitized should not have status")
 }
+
+func TestSanitize_RemoveAutoGenMetadata(t *testing.T) {
+	obj := &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "v1",
+			"kind":       "Pod",
+			"metadata": map[string]interface{}{
+				"name":                       "test-pod",
+				"namespace":                  "default",
+				"uid":                        "12345-67890",
+				"resourceVersion":            "999",
+				"generation":                 int64(5),
+				"creationTimestamp":          "2025-01-01T00:00:00Z",
+				"deletionTimestamp":          "2025-01-02T00:00:00Z",
+				"deletionGracePeriodSeconds": int64(30),
+				"selfLink":                   "/api/v1/namespaces/default/pods/test-pod",
+				"managedFields": []interface{}{
+					map[string]interface{}{"manager": "kubectl"},
+				},
+				"ownerReferences": []interface{}{
+					map[string]interface{}{
+						"apiVersion": "apps/v1",
+						"kind":       "ReplicaSet",
+						"name":       "my-rs",
+					},
+				},
+				"labels": map[string]interface{}{
+					"app": "test",
+				},
+			},
+			"spec": map[string]interface{}{
+				"containers": []interface{}{
+					map[string]interface{}{"name": "nginx", "image": "nginx:latest"},
+				},
+			},
+		},
+	}
+
+	sanitized := Sanitize(obj)
+
+	metadata, found, err := unstructured.NestedMap(sanitized.Object, "metadata")
+	require.True(t, found)
+	require.NoError(t, err)
+
+	// All auto-generated fields should be removed
+	assert.NotContains(t, metadata, "uid")
+	assert.NotContains(t, metadata, "resourceVersion")
+	assert.NotContains(t, metadata, "generation")
+	assert.NotContains(t, metadata, "creationTimestamp")
+	assert.NotContains(t, metadata, "deletionTimestamp")
+	assert.NotContains(t, metadata, "deletionGracePeriodSeconds")
+	assert.NotContains(t, metadata, "selfLink")
+	assert.NotContains(t, metadata, "managedFields")
+	assert.NotContains(t, metadata, "ownerReferences")
+
+	// User-defined fields should be preserved
+	assert.Contains(t, metadata, "name")
+	assert.Contains(t, metadata, "namespace")
+	assert.Contains(t, metadata, "labels")
+}
+
+func TestSanitize_Service_RemoveClusterIPFields(t *testing.T) {
+	obj := &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "v1",
+			"kind":       "Service",
+			"metadata": map[string]interface{}{
+				"name":      "my-service",
+				"namespace": "default",
+			},
+			"spec": map[string]interface{}{
+				"selector": map[string]interface{}{
+					"app": "my-app",
+				},
+				"ports": []interface{}{
+					map[string]interface{}{
+						"port":       int64(80),
+						"targetPort": int64(8080),
+					},
+				},
+				"clusterIP":             "10.96.0.1",
+				"clusterIPs":            []interface{}{"10.96.0.1"},
+				"healthCheckNodePort":   int64(30000),
+				"ipFamilies":            []interface{}{"IPv4"},
+				"ipFamilyPolicy":        "SingleStack",
+				"internalTrafficPolicy": "Cluster",
+			},
+		},
+	}
+
+	sanitized := Sanitize(obj)
+
+	spec, found, err := unstructured.NestedMap(sanitized.Object, "spec")
+	require.True(t, found)
+	require.NoError(t, err)
+
+	// All cluster-assigned fields should be removed
+	assert.NotContains(t, spec, "clusterIP")
+	assert.NotContains(t, spec, "clusterIPs")
+	assert.NotContains(t, spec, "healthCheckNodePort")
+	assert.NotContains(t, spec, "ipFamilies")
+	assert.NotContains(t, spec, "ipFamilyPolicy")
+	assert.NotContains(t, spec, "internalTrafficPolicy")
+
+	// User-defined fields should be preserved
+	assert.Contains(t, spec, "selector")
+	assert.Contains(t, spec, "ports")
+}
+
+func TestSanitize_Pod_RemoveNodeName(t *testing.T) {
+	obj := &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "v1",
+			"kind":       "Pod",
+			"metadata": map[string]interface{}{
+				"name":      "my-pod",
+				"namespace": "default",
+			},
+			"spec": map[string]interface{}{
+				"containers": []interface{}{
+					map[string]interface{}{
+						"name":  "nginx",
+						"image": "nginx:latest",
+					},
+				},
+				"nodeName": "worker-node-1", // Should be removed
+			},
+		},
+	}
+
+	sanitized := Sanitize(obj)
+
+	spec, found, err := unstructured.NestedMap(sanitized.Object, "spec")
+	require.True(t, found)
+	require.NoError(t, err)
+
+	// nodeName should be removed
+	assert.NotContains(t, spec, "nodeName")
+
+	// containers should be preserved
+	assert.Contains(t, spec, "containers")
+}
+
+func TestSanitize_PVC_RemoveVolumeFields(t *testing.T) {
+	obj := &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "v1",
+			"kind":       "PersistentVolumeClaim",
+			"metadata": map[string]interface{}{
+				"name":      "my-pvc",
+				"namespace": "default",
+			},
+			"spec": map[string]interface{}{
+				"accessModes": []interface{}{"ReadWriteOnce"},
+				"resources": map[string]interface{}{
+					"requests": map[string]interface{}{
+						"storage": "10Gi",
+					},
+				},
+				"volumeName": "pvc-abc123", // Should be removed
+				"volumeMode": "Filesystem", // Should be removed
+			},
+		},
+	}
+
+	sanitized := Sanitize(obj)
+
+	spec, found, err := unstructured.NestedMap(sanitized.Object, "spec")
+	require.True(t, found)
+	require.NoError(t, err)
+
+	// Volume-specific fields should be removed
+	assert.NotContains(t, spec, "volumeName")
+	assert.NotContains(t, spec, "volumeMode")
+
+	// User-defined fields should be preserved
+	assert.Contains(t, spec, "accessModes")
+	assert.Contains(t, spec, "resources")
+}
+
+func TestSanitize_OperationalAnnotations(t *testing.T) {
+	obj := &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "apps/v1",
+			"kind":       "Deployment",
+			"metadata": map[string]interface{}{
+				"name":      "my-deployment",
+				"namespace": "default",
+				"annotations": map[string]interface{}{
+					"kubectl.kubernetes.io/last-applied-configuration": "should-be-removed",
+					"control-plane.alpha.kubernetes.io/leader":         "should-be-removed",
+					"deployment.kubernetes.io/revision":                "should-be-removed",
+					"autoscaling.alpha.kubernetes.io/conditions":       "should-be-removed",
+					"autoscaling.alpha.kubernetes.io/current-metrics":  "should-be-removed",
+					"app.kubernetes.io/name":                           "should-be-kept",
+					"example.com/custom":                               "should-be-kept",
+				},
+			},
+			"spec": map[string]interface{}{
+				"replicas": int64(3),
+			},
+		},
+	}
+
+	sanitized := Sanitize(obj)
+
+	annotations := sanitized.GetAnnotations()
+
+	// Operational annotations should be removed
+	assert.NotContains(t, annotations, "kubectl.kubernetes.io/last-applied-configuration")
+	assert.NotContains(t, annotations, "control-plane.alpha.kubernetes.io/leader")
+	assert.NotContains(t, annotations, "deployment.kubernetes.io/revision")
+	assert.NotContains(t, annotations, "autoscaling.alpha.kubernetes.io/conditions")
+	assert.NotContains(t, annotations, "autoscaling.alpha.kubernetes.io/current-metrics")
+
+	// User annotations should be preserved
+	assert.Equal(t, "should-be-kept", annotations["app.kubernetes.io/name"])
+	assert.Equal(t, "should-be-kept", annotations["example.com/custom"])
+}
+
+func TestSanitize_AllOperationalAnnotationsRemoved(t *testing.T) {
+	obj := &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "v1",
+			"kind":       "Pod",
+			"metadata": map[string]interface{}{
+				"name":      "test-pod",
+				"namespace": "default",
+				"annotations": map[string]interface{}{
+					"kubectl.kubernetes.io/last-applied-configuration": "removed",
+					"deployment.kubernetes.io/revision":                "removed",
+				},
+			},
+			"spec": map[string]interface{}{
+				"containers": []interface{}{
+					map[string]interface{}{"name": "nginx", "image": "nginx:latest"},
+				},
+			},
+		},
+	}
+
+	sanitized := Sanitize(obj)
+
+	// If all annotations are operational, the map should be nil
+	annotations := sanitized.GetAnnotations()
+	assert.Nil(t, annotations)
+}
+
+func TestSanitize_CustomResource(t *testing.T) {
+	obj := &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "example.com/v1alpha1",
+			"kind":       "MyApp",
+			"metadata": map[string]interface{}{
+				"name":            "my-app-instance",
+				"namespace":       "prod",
+				"uid":             "auto-generated-uid",
+				"resourceVersion": "12345",
+			},
+			"spec": map[string]interface{}{
+				"replicas": int64(3),
+				"version":  "1.0.0",
+			},
+			"status": map[string]interface{}{
+				"phase": "Running",
+			},
+		},
+	}
+
+	sanitized := Sanitize(obj)
+
+	// Verify spec is preserved (entire spec is user-defined for CRDs)
+	spec, found, err := unstructured.NestedMap(sanitized.Object, "spec")
+	require.True(t, found)
+	require.NoError(t, err)
+	assert.Equal(t, int64(3), spec["replicas"])
+	assert.Equal(t, "1.0.0", spec["version"])
+
+	// Verify status is removed (observed state)
+	_, found, err = unstructured.NestedMap(sanitized.Object, "status")
+	assert.False(t, found)
+	require.NoError(t, err)
+
+	// Verify auto-generated metadata is removed
+	metadata, found, err := unstructured.NestedMap(sanitized.Object, "metadata")
+	require.True(t, found)
+	require.NoError(t, err)
+	assert.NotContains(t, metadata, "uid")
+	assert.NotContains(t, metadata, "resourceVersion")
+}

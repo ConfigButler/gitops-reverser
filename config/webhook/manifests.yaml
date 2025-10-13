@@ -10,7 +10,7 @@ webhooks:
     service:
       name: webhook-service
       namespace: system
-      path: /validate-v1-event
+      path: /process-audit-webhook-calls
   failurePolicy: Ignore
   name: gitops-reverser.configbutler.ai
   rules:

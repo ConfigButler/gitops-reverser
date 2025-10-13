@@ -110,8 +110,6 @@ func renderTemplate(templatePath string, data interface{}) (string, error) {
 
 // applyFromTemplate renders a template with data and applies it via kubectl using stdin streaming
 // Returns an error if rendering or kubectl execution fails.
-//
-//nolint:unparam // namespace may vary in future
 func applyFromTemplate(templatePath string, data interface{}, namespace string) error {
 	yamlContent, err := renderTemplate(templatePath, data)
 	if err != nil {

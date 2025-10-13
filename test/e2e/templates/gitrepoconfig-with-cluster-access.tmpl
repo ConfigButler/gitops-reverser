@@ -1,0 +1,14 @@
+apiVersion: configbutler.ai/v1alpha1
+kind: GitRepoConfig
+metadata:
+  name: {{ .Name }}
+  namespace: {{ .Namespace }}
+spec:
+  repoUrl: "{{ .RepoURL }}"
+  branch: "{{ .Branch }}"
+  secretRef:
+    name: {{ .SecretName }}
+  accessPolicy:
+    allowClusterRules: true
+    namespacedRules:
+      mode: SameNamespace

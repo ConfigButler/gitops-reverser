@@ -23,14 +23,20 @@ leaderOnlyService:
 image:
   repository: ghcr.io/configbutler/gitops-reverser
   pullPolicy: IfNotPresent
-  # Overrides the image tag whose default is the chart appVersion.
-  tag: ""
+  tag: "ci-13594591ef24e91c684a31bf2f239ce8a5a7229a"
 
-imagePullSecrets:
-- name: ghcr-secret   # TODO: Remove when we are public
-
+imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""
+
+# Create example configuration for a quick start
+examples:
+  create: true
+  namespace: default # Is placed in a seperate ns to demonstrate the usage
+  github:
+    owner: your-handle # Replace with your own github handle or org name
+    repoName: cluster-audit
+    secretName: git-credentials # Create and fill that secret yourself: see README.md
 
 serviceAccount:
   # Specifies whether a service account should be created
@@ -55,7 +61,7 @@ securityContext:
   allowPrivilegeEscalation: false
   capabilities:
     drop:
-    - ALL
+      - ALL
   readOnlyRootFilesystem: true
   runAsNonRoot: true
   runAsUser: 65532
@@ -83,7 +89,7 @@ webhook:
     certPath: "/tmp/k8s-webhook-server/serving-certs"
     certName: "tls.crt"
     certKey: "tls.key"
-  
+
   # Validating webhook configuration
   validating:
     enabled: true
@@ -99,15 +105,18 @@ webhook:
     # Namespace selector for validating webhook
     namespaceSelector:
       matchExpressions:
-      - key: name
-        operator: NotIn
-        values: ["kube-system", "kube-public", "kube-node-lease"]
+        - key: kubernetes.io/metadata.name
+          operator: NotIn
+          values:
+            - kube-system
+            - kube-public
+            - kube-node-lease
     # Object selector for validating webhook
     objectSelector: {}
 
 # TLS certificate management (Kubernetes requires this for API server callbacks)
 certificates:
-  name: 
+  name:
   certManager:
     enabled: true
     issuer:
@@ -118,8 +127,6 @@ certificates:
 # RBAC configuration
 rbac:
   create: true
-  # Additional rules can be added here if needed
-  rules: []
 
 # Resource limits and requests
 resources:
@@ -174,4 +181,4 @@ logging:
   stacktraceLevel: error
 
 labels:
-  managedBy: Helm   # Allows CI generated install.yaml creation (don't change when you are using Helm)
+  managedBy: Helm # Allows CI generated install.yaml creation (don't change when you are using Helm)

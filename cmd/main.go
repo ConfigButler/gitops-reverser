@@ -237,6 +237,7 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "GitRepoConfig")
 		os.Exit(1)
 	}
+
 	// Initialize rule store and event queue for webhook handler
 	ruleStore := rulestore.NewStore()
 	eventQueue := eventqueue.NewQueue()
@@ -249,6 +250,17 @@ func main() {
 	}
 	if err = watchRuleReconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "WatchRule")
+		os.Exit(1)
+	}
+
+	// Create ClusterWatchRule reconciler with rule store integration
+	clusterWatchRuleReconciler := &controller.ClusterWatchRuleReconciler{
+		Client:    mgr.GetClient(),
+		Scheme:    mgr.GetScheme(),
+		RuleStore: ruleStore,
+	}
+	if err = clusterWatchRuleReconciler.SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "ClusterWatchRule")
 		os.Exit(1)
 	}
 
@@ -271,8 +283,8 @@ func main() {
 
 	// Create webhook with admission handler
 	validatingWebhook := &admission.Webhook{Handler: eventHandler}
-	mgr.GetWebhookServer().Register("/validate-v1-event", validatingWebhook)
-	setupLog.Info("Webhook handler registered", "path", "/validate-v1-event")
+	mgr.GetWebhookServer().Register("/process-audit-webhook-calls", validatingWebhook)
+	setupLog.Info("Webhook handler registered", "path", "/process-audit-webhook-calls")
 
 	// Start the Git worker to process events from the queue
 	gitWorker := &git.Worker{

@@ -1,4 +1,6 @@
 {{- if .Values.rbac.create -}}
+{{- $roleFile := .Files.Get "config/role.yaml" | fromYaml }}
+
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -6,79 +8,7 @@ metadata:
   labels:
     {{- include "gitops-reverser.labels" . | nindent 4 }}
 rules:
-- apiGroups:
-  - ""
-  resources:
-  - pods
-  verbs:
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - ""
-  resources:
-  - secrets
-  verbs:
-  - get
-  - list
-  - watch
-- apiGroups:
-  - configbutler.ai
-  resources:
-  - gitrepoconfigs
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - configbutler.ai
-  resources:
-  - gitrepoconfigs/finalizers
-  verbs:
-  - update
-- apiGroups:
-  - configbutler.ai
-  resources:
-  - gitrepoconfigs/status
-  verbs:
-  - get
-  - patch
-  - update
-- apiGroups:
-  - configbutler.ai
-  resources:
-  - watchrules
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - configbutler.ai
-  resources:
-  - watchrules/finalizers
-  verbs:
-  - update
-- apiGroups:
-  - configbutler.ai
-  resources:
-  - watchrules/status
-  verbs:
-  - get
-  - patch
-  - update
-{{- with .Values.rbac.rules }}
-{{- toYaml . | nindent 0 }}
-{{- end }}
+{{- toYaml $roleFile.rules | nindent 0 }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

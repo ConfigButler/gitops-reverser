@@ -1,0 +1,10 @@
+apiVersion: configbutler.ai/v1alpha1
+kind: WatchRule
+metadata:
+  name: {{ .Name }}
+  namespace: {{ .Namespace }}
+spec:
+  gitRepoConfigRef:
+    name: {{ .GitRepoConfigRef }}
+  rules:
+  - resources: ["icecreamorders"]

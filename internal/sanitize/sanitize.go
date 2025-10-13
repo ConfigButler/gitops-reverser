@@ -16,9 +16,17 @@ func Sanitize(obj *unstructured.Unstructured) *unstructured.Unstructured {
 	sanitized := &unstructured.Unstructured{Object: make(map[string]interface{})}
 
 	setCoreIdentityFields(sanitized, obj)
-	setCleanMetadata(sanitized, obj)
 	preserveFields(sanitized, obj, []string{"spec", "data", "binaryData"})
 	preserveTopLevelFields(sanitized, obj)
+
+	// Remove auto-generated metadata fields (adapted from Kyverno)
+	if metadata, found, _ := unstructured.NestedMap(sanitized.Object, "metadata"); found {
+		removeAutoGenMetadata(metadata)
+		_ = unstructured.SetNestedMap(sanitized.Object, metadata, "metadata")
+	}
+
+	// Remove nested server-generated fields based on resource kind
+	removeNestedServerFields(sanitized)
 
 	return sanitized
 }
@@ -30,28 +38,8 @@ func setCoreIdentityFields(sanitized, obj *unstructured.Unstructured) {
 	sanitized.SetName(obj.GetName())
 	sanitized.SetNamespace(obj.GetNamespace())
 	sanitized.SetLabels(obj.GetLabels())
-	sanitized.SetAnnotations(obj.GetAnnotations())
-}
-
-// setCleanMetadata cleans up metadata by removing server-generated fields.
-func setCleanMetadata(sanitized, obj *unstructured.Unstructured) {
-	metadata, found, err := unstructured.NestedMap(obj.Object, "metadata")
-	if !found || err != nil {
-		return
-	}
-
-	cleanMetadata := make(map[string]interface{})
-	preservedFields := []string{"name", "namespace", "labels", "annotations"}
-
-	for _, field := range preservedFields {
-		if value, exists := metadata[field]; exists && value != nil {
-			cleanMetadata[field] = value
-		}
-	}
-
-	if len(cleanMetadata) > 0 {
-		_ = unstructured.SetNestedMap(sanitized.Object, cleanMetadata, "metadata")
-	}
+	// Clean annotations using the cleanAnnotations function from types.go
+	sanitized.SetAnnotations(cleanAnnotations(obj.GetAnnotations()))
 }
 
 // preserveFields preserves specified fields from the original object.
@@ -84,4 +72,57 @@ func preserveTopLevelFields(sanitized, obj *unstructured.Unstructured) {
 // setNestedField is a helper function to wrap unstructured.SetNestedField and handle errors.
 func setNestedField(obj *unstructured.Unstructured, value interface{}, fields ...string) {
 	_ = unstructured.SetNestedField(obj.Object, value, fields...)
+}
+
+// removeAutoGenMetadata removes server-generated metadata fields.
+// Adapted from Kyverno's excludeAutoGenMetadata function.
+func removeAutoGenMetadata(metadata map[string]interface{}) {
+	// Fields that are always removed
+	delete(metadata, "uid")
+	delete(metadata, "resourceVersion")
+	delete(metadata, "generation")
+	delete(metadata, "creationTimestamp")
+	delete(metadata, "deletionTimestamp")
+	delete(metadata, "deletionGracePeriodSeconds")
+	delete(metadata, "selfLink")
+	delete(metadata, "managedFields")
+	delete(metadata, "ownerReferences")
+}
+
+// removeNestedServerFields removes nested server-generated fields from spec
+// based on resource kind.
+func removeNestedServerFields(obj *unstructured.Unstructured) {
+	kind := obj.GetKind()
+
+	switch kind {
+	case "Service":
+		removeServiceFields(obj)
+	case "Pod":
+		removePodFields(obj)
+	case "PersistentVolumeClaim":
+		removePVCFields(obj)
+	}
+}
+
+// removeServiceFields removes Service-specific server-generated fields.
+func removeServiceFields(obj *unstructured.Unstructured) {
+	unstructured.RemoveNestedField(obj.Object, "spec", "clusterIP")
+	unstructured.RemoveNestedField(obj.Object, "spec", "clusterIPs")
+	unstructured.RemoveNestedField(obj.Object, "spec", "healthCheckNodePort")
+	unstructured.RemoveNestedField(obj.Object, "spec", "ipFamilies")
+	unstructured.RemoveNestedField(obj.Object, "spec", "ipFamilyPolicy")
+	unstructured.RemoveNestedField(obj.Object, "spec", "internalTrafficPolicy")
+}
+
+// removePodFields removes Pod-specific server-generated fields.
+func removePodFields(obj *unstructured.Unstructured) {
+	unstructured.RemoveNestedField(obj.Object, "spec", "nodeName")
+	// serviceAccountName is often auto-injected, but we keep it if explicitly set
+	// The distinction is hard to make, so we keep it for now
+}
+
+// removePVCFields removes PersistentVolumeClaim-specific server-generated fields.
+func removePVCFields(obj *unstructured.Unstructured) {
+	unstructured.RemoveNestedField(obj.Object, "spec", "volumeName")
+	unstructured.RemoveNestedField(obj.Object, "spec", "volumeMode")
 }

@@ -22,14 +22,12 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
-
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-
 	configbutleraiv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
 )
 
 var _ = Describe("WatchRule Controller", func() {
@@ -40,7 +38,7 @@ var _ = Describe("WatchRule Controller", func() {
 
 		typeNamespacedName := types.NamespacedName{
 			Name:      resourceName,
-			Namespace: "default", // TODO(user):Modify as needed
+			Namespace: "default",
 		}
 		watchrule := &configbutleraiv1alpha1.WatchRule{}
 
@@ -70,7 +68,7 @@ var _ = Describe("WatchRule Controller", func() {
 						Namespace: "default",
 					},
 					Spec: configbutleraiv1alpha1.WatchRuleSpec{
-						GitRepoConfigRef: "test-repo-config",
+						GitRepoConfigRef: configbutleraiv1alpha1.NamespacedName{Name: "test-repo-config"},
 						Rules: []configbutleraiv1alpha1.ResourceRule{
 							{
 								Resources: []string{"Pod"},
@@ -83,7 +81,6 @@ var _ = Describe("WatchRule Controller", func() {
 		})
 
 		AfterEach(func() {
-			// TODO(user): Cleanup logic after each test, like removing the resource instance.
 			resource := &configbutleraiv1alpha1.WatchRule{}
 			err := k8sClient.Get(ctx, typeNamespacedName, resource)
 			Expect(err).NotTo(HaveOccurred())
@@ -114,8 +111,95 @@ var _ = Describe("WatchRule Controller", func() {
 				NamespacedName: typeNamespacedName,
 			})
 			Expect(err).NotTo(HaveOccurred())
-			// TODO(user): Add more specific assertions depending on your controller's reconciliation logic.
-			// Example: If you expect a certain status condition after reconciliation, verify it here.
+		})
+	})
+
+	Context("When testing access policy validation with direct reconcile calls", func() {
+		var (
+			ctx        context.Context
+			reconciler *WatchRuleReconciler
+		)
+
+		BeforeEach(func() {
+			ctx = context.Background()
+			reconciler = &WatchRuleReconciler{
+				Client:    k8sClient,
+				Scheme:    k8sClient.Scheme(),
+				RuleStore: testRuleStore,
+			}
+		})
+
+		It("should work with same namespace (default behavior)", func() {
+			By("Creating GitRepoConfig with no access policy")
+			gitRepoConfig := &configbutleraiv1alpha1.GitRepoConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "local-config",
+					Namespace: "default",
+				},
+				Spec: configbutleraiv1alpha1.GitRepoConfigSpec{
+					RepoURL: "git@github.com:test/repo.git",
+					Branch:  "main",
+				},
+			}
+			Expect(k8sClient.Create(ctx, gitRepoConfig)).Should(Succeed())
+
+			// Set to Ready
+			gitRepoConfig.Status.Conditions = []metav1.Condition{
+				{
+					Type:               ConditionTypeReady,
+					Status:             metav1.ConditionTrue,
+					LastTransitionTime: metav1.Now(),
+					Reason:             "TestReady",
+					Message:            "Manually set to ready for testing",
+				},
+			}
+			Expect(k8sClient.Status().Update(ctx, gitRepoConfig)).Should(Succeed())
+
+			By("Creating WatchRule in same namespace")
+			watchRule := &configbutleraiv1alpha1.WatchRule{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "local-rule",
+					Namespace: "default",
+				},
+				Spec: configbutleraiv1alpha1.WatchRuleSpec{
+					GitRepoConfigRef: configbutleraiv1alpha1.NamespacedName{Name: "local-config"},
+					Rules: []configbutleraiv1alpha1.ResourceRule{
+						{
+							Resources: []string{"pods"},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, watchRule)).Should(Succeed())
+
+			By("Reconciling the WatchRule directly")
+			result, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      "local-rule",
+					Namespace: "default",
+				},
+			})
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(BeNumerically(">", 0))
+
+			By("Verifying WatchRule is Ready")
+			updatedRule := &configbutleraiv1alpha1.WatchRule{}
+			err = k8sClient.Get(ctx, types.NamespacedName{
+				Name:      "local-rule",
+				Namespace: "default",
+			}, updatedRule)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(updatedRule.Status.Conditions).To(HaveLen(1))
+			condition := updatedRule.Status.Conditions[0]
+			Expect(condition.Type).To(Equal(ConditionTypeReady))
+			Expect(condition.Status).To(Equal(metav1.ConditionTrue))
+			Expect(condition.Reason).To(Equal(WatchRuleReasonReady))
+
+			// Cleanup
+			Expect(k8sClient.Delete(ctx, watchRule)).Should(Succeed())
+			Expect(k8sClient.Delete(ctx, gitRepoConfig)).Should(Succeed())
 		})
 	})
 })

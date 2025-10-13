@@ -4,6 +4,7 @@ metadata:
   name: {{.Name}}
   namespace: {{.Namespace}}
 spec:
-  gitRepoConfigRef: {{.GitRepoConfigRef}}
+  gitRepoConfigRef:
+    name: {{.GitRepoConfigRef}}
   rules:
   - resources: ["configmaps"]

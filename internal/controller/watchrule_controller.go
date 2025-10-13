@@ -18,11 +18,14 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
-	"k8s.io/apimachinery/pkg/api/errors"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -39,6 +42,7 @@ const (
 	WatchRuleReasonValidating            = "Validating"
 	WatchRuleReasonGitRepoConfigNotFound = "GitRepoConfigNotFound"
 	WatchRuleReasonGitRepoConfigNotReady = "GitRepoConfigNotReady"
+	WatchRuleReasonAccessDenied          = "AccessDenied"
 	WatchRuleReasonReady                 = "Ready"
 )
 
@@ -54,6 +58,7 @@ type WatchRuleReconciler struct {
 // +kubebuilder:rbac:groups=configbutler.ai,resources=watchrules/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=configbutler.ai,resources=watchrules/finalizers,verbs=update
 // +kubebuilder:rbac:groups=configbutler.ai,resources=gitrepoconfigs,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=namespaces,verbs=get
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -89,12 +94,23 @@ func (r *WatchRuleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		WatchRuleReasonValidating, "Validating WatchRule configuration...")
 
 	// Step 1: Verify that the referenced GitRepoConfig exists and is ready
-	log.Info("Verifying GitRepoConfig reference", "gitRepoConfigRef", watchRule.Spec.GitRepoConfigRef)
-	gitRepoConfig, err := r.getGitRepoConfig(ctx, watchRule.Spec.GitRepoConfigRef, watchRule.Namespace)
+	// Default namespace to WatchRule's namespace if not specified
+	gitRepoConfigNamespace := watchRule.Spec.GitRepoConfigRef.Namespace
+	if gitRepoConfigNamespace == "" {
+		gitRepoConfigNamespace = watchRule.Namespace
+	}
+
+	log.Info("Verifying GitRepoConfig reference",
+		"gitRepoConfigName", watchRule.Spec.GitRepoConfigRef.Name,
+		"gitRepoConfigNamespace", gitRepoConfigNamespace)
+	gitRepoConfig, err := r.getGitRepoConfig(ctx, watchRule.Spec.GitRepoConfigRef.Name, gitRepoConfigNamespace)
 	if err != nil {
-		log.Error(err, "Failed to get referenced GitRepoConfig", "gitRepoConfigRef", watchRule.Spec.GitRepoConfigRef)
+		log.Error(err, "Failed to get referenced GitRepoConfig",
+			"gitRepoConfigName", watchRule.Spec.GitRepoConfigRef.Name,
+			"gitRepoConfigNamespace", gitRepoConfigNamespace)
 		r.setCondition(&watchRule, metav1.ConditionFalse, WatchRuleReasonGitRepoConfigNotFound,
-			fmt.Sprintf("Referenced GitRepoConfig '%s' not found: %v", watchRule.Spec.GitRepoConfigRef, err))
+			fmt.Sprintf("Referenced GitRepoConfig '%s/%s' not found: %v",
+				gitRepoConfigNamespace, watchRule.Spec.GitRepoConfigRef.Name, err))
 		return r.updateStatusAndRequeue(ctx, &watchRule, RequeueShortInterval)
 	}
 
@@ -104,24 +120,37 @@ func (r *WatchRuleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	if !r.isGitRepoConfigReady(gitRepoConfig) {
 		log.Info("Referenced GitRepoConfig is not ready", "gitRepoConfig", gitRepoConfig.Name)
 		r.setCondition(&watchRule, metav1.ConditionFalse, WatchRuleReasonGitRepoConfigNotReady,
-			fmt.Sprintf("Referenced GitRepoConfig '%s' is not ready", watchRule.Spec.GitRepoConfigRef))
+			fmt.Sprintf("Referenced GitRepoConfig '%s/%s' is not ready",
+				gitRepoConfigNamespace, watchRule.Spec.GitRepoConfigRef.Name))
 		return r.updateStatusAndRequeue(ctx, &watchRule, time.Minute)
 	}
 
-	log.Info("GitRepoConfig is ready, adding WatchRule to store", "gitRepoConfig", gitRepoConfig.Name)
+	log.Info("GitRepoConfig is ready, validating access policy", "gitRepoConfig", gitRepoConfig.Name)
 
-	// Step 3: Add or update the rule in the store
-	r.RuleStore.AddOrUpdate(watchRule)
+	// Step 3: Validate access policy
+	if err := r.validateGitRepoConfigAccess(ctx, &watchRule, gitRepoConfig); err != nil {
+		log.Error(err, "Access denied to GitRepoConfig")
+		r.setCondition(&watchRule, metav1.ConditionFalse, WatchRuleReasonAccessDenied,
+			fmt.Sprintf("Access denied to GitRepoConfig '%s/%s': %v",
+				gitRepoConfigNamespace, watchRule.Spec.GitRepoConfigRef.Name, err))
+		return r.updateStatusAndRequeue(ctx, &watchRule, RequeueMediumInterval)
+	}
 
-	// Step 4: Set ready condition
+	log.Info("Access policy validated, adding WatchRule to store", "gitRepoConfig", gitRepoConfig.Name)
+
+	// Step 4: Add or update the rule in the store
+	r.RuleStore.AddOrUpdateWatchRule(watchRule)
+
+	// Step 5: Set ready condition
 	log.Info("WatchRule validation successful")
 	r.setCondition(
 		&watchRule,
 		metav1.ConditionTrue,
 		WatchRuleReasonReady, //nolint:lll // Descriptive message
 		fmt.Sprintf(
-			"WatchRule is ready and monitoring resources with GitRepoConfig '%s'",
-			watchRule.Spec.GitRepoConfigRef,
+			"WatchRule is ready and monitoring resources with GitRepoConfig '%s/%s'",
+			gitRepoConfigNamespace,
+			watchRule.Spec.GitRepoConfigRef.Name,
 		),
 	)
 
@@ -225,7 +254,7 @@ func (r *WatchRuleReconciler) updateStatusWithRetry(
 		latest := &configbutleraiv1alpha1.WatchRule{}
 		key := client.ObjectKeyFromObject(watchRule)
 		if err := r.Get(ctx, key, latest); err != nil {
-			if errors.IsNotFound(err) {
+			if apierrors.IsNotFound(err) {
 				log.Info("Resource was deleted, nothing to update")
 				return true, nil
 			}
@@ -245,7 +274,7 @@ func (r *WatchRuleReconciler) updateStatusWithRetry(
 
 		// Attempt to update
 		if err := r.Status().Update(ctx, latest); err != nil {
-			if errors.IsConflict(err) {
+			if apierrors.IsConflict(err) {
 				log.Info("Resource version conflict, retrying")
 				return false, nil
 			}
@@ -256,6 +285,65 @@ func (r *WatchRuleReconciler) updateStatusWithRetry(
 		log.Info("Status update successful")
 		return true, nil
 	})
+}
+
+// validateGitRepoConfigAccess checks if WatchRule can access GitRepoConfig based on accessPolicy.
+func (r *WatchRuleReconciler) validateGitRepoConfigAccess(
+	ctx context.Context,
+	watchRule *configbutleraiv1alpha1.WatchRule,
+	gitRepoConfig *configbutleraiv1alpha1.GitRepoConfig,
+) error {
+	// Check access policy
+	if gitRepoConfig.Spec.AccessPolicy == nil {
+		// Default: SameNamespace
+		if gitRepoConfig.Namespace != watchRule.Namespace {
+			return errors.New("GitRepoConfig does not allow cross-namespace access (no accessPolicy)")
+		}
+		return nil
+	}
+
+	policy := gitRepoConfig.Spec.AccessPolicy.NamespacedRules
+	if policy == nil {
+		// Default: SameNamespace
+		if gitRepoConfig.Namespace != watchRule.Namespace {
+			return errors.New("GitRepoConfig does not allow cross-namespace access (no namespacedRules)")
+		}
+		return nil
+	}
+
+	switch policy.Mode {
+	case configbutleraiv1alpha1.AccessPolicyModeSameNamespace, "": // Empty string = default
+		if gitRepoConfig.Namespace != watchRule.Namespace {
+			return errors.New("GitRepoConfig only allows same-namespace access")
+		}
+
+	case configbutleraiv1alpha1.AccessPolicyModeAllNamespaces:
+		// Always allowed
+		return nil
+
+	case configbutleraiv1alpha1.AccessPolicyModeFromSelector:
+		// Get namespace object to check labels
+		ns := &corev1.Namespace{}
+		err := r.Get(ctx, types.NamespacedName{Name: watchRule.Namespace}, ns)
+		if err != nil {
+			return fmt.Errorf("failed to get namespace %s: %w", watchRule.Namespace, err)
+		}
+
+		// Check if namespace matches selector
+		selector, err := metav1.LabelSelectorAsSelector(policy.NamespaceSelector)
+		if err != nil {
+			return fmt.Errorf("invalid namespace selector: %w", err)
+		}
+
+		if !selector.Matches(labels.Set(ns.Labels)) {
+			return fmt.Errorf(
+				"namespace '%s' does not match GitRepoConfig selector",
+				watchRule.Namespace,
+			)
+		}
+	}
+
+	return nil
 }
 
 // SetupWithManager sets up the controller with the Manager.

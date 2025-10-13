@@ -1,0 +1,27 @@
+{{- if .Values.examples.create -}}
+---
+apiVersion: configbutler.ai/v1alpha1
+kind: GitRepoConfig
+metadata:
+  name: github-audit-repo
+  namespace: {{ .Values.examples.namespace }}
+spec:
+  repoUrl: "git@github.com:{{ .Values.examples.github.owner }}/{{ .Values.examples.github.repoName }}.git"
+  branch: "main"
+  secretRef:
+    name: {{ .Values.examples.github.secretName }}
+  push:
+    interval: "1m"
+    maxCommits: 30
+---
+apiVersion: configbutler.ai/v1alpha1
+kind: WatchRule
+metadata:
+  name: config-audit
+  namespace: {{ .Values.examples.namespace }}
+spec:
+  gitRepoConfigRef:
+    name: github-audit-repo
+  rules:
+    - resources: ["configmaps", "secrets"]
+{{- end }}

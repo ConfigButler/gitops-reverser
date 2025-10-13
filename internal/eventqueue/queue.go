@@ -5,21 +5,35 @@ import (
 	"sync"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
+
+	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
 // Event represents a single resource change to be processed.
 type Event struct {
 	// Object is the sanitized Kubernetes object.
 	Object *unstructured.Unstructured
-	// Request is the original admission request.
-	Request admission.Request
-	// ResourcePlural is the plural form of the resource (e.g., "pods", "deployments").
-	ResourcePlural string
+
+	// Identifier contains all resource identification information
+	Identifier types.ResourceIdentifier
+
+	// Operation is the admission operation (CREATE, UPDATE, DELETE)
+	Operation string
+
+	// UserInfo contains relevant user information for commit messages
+	UserInfo UserInfo
+
 	// GitRepoConfigRef is the name of the GitRepoConfig to use for this event.
 	GitRepoConfigRef string
+
 	// GitRepoConfigNamespace is the namespace of the GitRepoConfig to use for this event.
 	GitRepoConfigNamespace string
+}
+
+// UserInfo contains relevant user information for commit messages.
+type UserInfo struct {
+	Username string
+	UID      string
 }
 
 // Queue is a simple, thread-safe, in-memory queue for events.

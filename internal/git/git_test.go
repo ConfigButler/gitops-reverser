@@ -6,162 +6,173 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	admissionv1 "k8s.io/api/admission/v1"
-	authenticationv1 "k8s.io/api/authentication/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	"github.com/ConfigButler/gitops-reverser/internal/eventqueue"
 	"github.com/ConfigButler/gitops-reverser/internal/ssh"
+	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
-func TestGetFilePath_NamespacedResource(t *testing.T) {
+func TestToGitPath_NamespacedResource(t *testing.T) {
 	testCases := []struct {
 		name           string
 		namespace      string
-		kind           string
+		group          string
+		version        string
 		resourcePlural string
 		expected       string
 	}{
 		{
 			name:           "test-pod",
 			namespace:      "default",
-			kind:           "Pod",
+			group:          "",
+			version:        "v1",
 			resourcePlural: "pods",
-			expected:       "namespaces/default/pods/test-pod.yaml",
+			expected:       "v1/pods/default/test-pod.yaml",
 		},
 		{
 			name:           "my-service",
 			namespace:      "production",
-			kind:           "Service",
+			group:          "",
+			version:        "v1",
 			resourcePlural: "services",
-			expected:       "namespaces/production/services/my-service.yaml",
+			expected:       "v1/services/production/my-service.yaml",
 		},
 		{
 			name:           "app-config",
 			namespace:      "staging",
-			kind:           "ConfigMap",
+			group:          "",
+			version:        "v1",
 			resourcePlural: "configmaps",
-			expected:       "namespaces/staging/configmaps/app-config.yaml",
+			expected:       "v1/configmaps/staging/app-config.yaml",
 		},
 		{
 			name:           "complex-name-with-dashes",
 			namespace:      "kube-system",
-			kind:           "Deployment",
+			group:          "apps",
+			version:        "v1",
 			resourcePlural: "deployments",
-			expected:       "namespaces/kube-system/deployments/complex-name-with-dashes.yaml",
+			expected:       "apps/v1/deployments/kube-system/complex-name-with-dashes.yaml",
 		},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			obj := &unstructured.Unstructured{}
-			obj.SetName(tc.name)
-			obj.SetNamespace(tc.namespace)
-			obj.SetKind(tc.kind)
-
-			path := GetFilePath(obj, tc.resourcePlural)
+			identifier := types.ResourceIdentifier{
+				Group:     tc.group,
+				Version:   tc.version,
+				Resource:  tc.resourcePlural,
+				Namespace: tc.namespace,
+				Name:      tc.name,
+			}
+			path := identifier.ToGitPath()
 			assert.Equal(t, tc.expected, path)
 		})
 	}
 }
 
-func TestGetFilePath_ClusterScopedResource(t *testing.T) {
+func TestToGitPath_ClusterScopedResource(t *testing.T) {
 	testCases := []struct {
 		name           string
-		kind           string
+		group          string
+		version        string
 		resourcePlural string
 		expected       string
 	}{
 		{
 			name:           "my-namespace",
-			kind:           "Namespace",
+			group:          "",
+			version:        "v1",
 			resourcePlural: "namespaces",
-			expected:       "cluster-scoped/namespaces/my-namespace.yaml",
+			expected:       "v1/namespaces/my-namespace.yaml",
 		},
 		{
 			name:           "cluster-admin",
-			kind:           "ClusterRole",
+			group:          "rbac.authorization.k8s.io",
+			version:        "v1",
 			resourcePlural: "clusterroles",
-			expected:       "cluster-scoped/clusterroles/cluster-admin.yaml",
+			expected:       "rbac.authorization.k8s.io/v1/clusterroles/cluster-admin.yaml",
 		},
 		{
 			name:           "system-binding",
-			kind:           "ClusterRoleBinding",
+			group:          "rbac.authorization.k8s.io",
+			version:        "v1",
 			resourcePlural: "clusterrolebindings",
-			expected:       "cluster-scoped/clusterrolebindings/system-binding.yaml",
+			expected:       "rbac.authorization.k8s.io/v1/clusterrolebindings/system-binding.yaml",
 		},
 		{
 			name:           "my-pv",
-			kind:           "PersistentVolume",
+			group:          "",
+			version:        "v1",
 			resourcePlural: "persistentvolumes",
-			expected:       "cluster-scoped/persistentvolumes/my-pv.yaml",
+			expected:       "v1/persistentvolumes/my-pv.yaml",
 		},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			obj := &unstructured.Unstructured{}
-			obj.SetName(tc.name)
-			// No namespace for cluster-scoped resources
-			obj.SetKind(tc.kind)
-
-			path := GetFilePath(obj, tc.resourcePlural)
+			identifier := types.ResourceIdentifier{
+				Group:     tc.group,
+				Version:   tc.version,
+				Resource:  tc.resourcePlural,
+				Namespace: "",
+				Name:      tc.name,
+			}
+			path := identifier.ToGitPath()
 			assert.Equal(t, tc.expected, path)
 		})
 	}
 }
 
-func TestGetFilePath_EmptyNamespace(t *testing.T) {
-	obj := &unstructured.Unstructured{}
-	obj.SetName("test-resource")
-	obj.SetNamespace("") // Empty namespace
-	obj.SetKind("TestKind")
-
-	path := GetFilePath(obj, "testkinds")
-	assert.Equal(t, "cluster-scoped/testkinds/test-resource.yaml", path)
+func TestToGitPath_EmptyNamespace(t *testing.T) {
+	identifier := types.ResourceIdentifier{
+		Group:     "",
+		Version:   "v1",
+		Resource:  "testkinds",
+		Namespace: "", // Empty namespace means cluster-scoped
+		Name:      "test-resource",
+	}
+	path := identifier.ToGitPath()
+	assert.Equal(t, "v1/testkinds/test-resource.yaml", path)
 }
 
-func TestGetFilePath_SpecialCharacters(t *testing.T) {
-	// Test with names that might have special characters
+func TestToGitPath_SpecialCharacters(t *testing.T) {
 	testCases := []struct {
 		name           string
 		namespace      string
-		kind           string
 		resourcePlural string
 		expected       string
 	}{
 		{
 			name:           "test.resource",
 			namespace:      "default",
-			kind:           "Pod",
 			resourcePlural: "pods",
-			expected:       "namespaces/default/pods/test.resource.yaml",
+			expected:       "v1/pods/default/test.resource.yaml",
 		},
 		{
 			name:           "test_resource",
 			namespace:      "default",
-			kind:           "Service",
 			resourcePlural: "services",
-			expected:       "namespaces/default/services/test_resource.yaml",
+			expected:       "v1/services/default/test_resource.yaml",
 		},
 		{
 			name:           "test-resource-123",
 			namespace:      "test-ns-456",
-			kind:           "ConfigMap",
 			resourcePlural: "configmaps",
-			expected:       "namespaces/test-ns-456/configmaps/test-resource-123.yaml",
+			expected:       "v1/configmaps/test-ns-456/test-resource-123.yaml",
 		},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			obj := &unstructured.Unstructured{}
-			obj.SetName(tc.name)
-			obj.SetNamespace(tc.namespace)
-			obj.SetKind(tc.kind)
-
-			path := GetFilePath(obj, tc.resourcePlural)
+			identifier := types.ResourceIdentifier{
+				Group:     "",
+				Version:   "v1",
+				Resource:  tc.resourcePlural,
+				Namespace: tc.namespace,
+				Name:      tc.name,
+			}
+			path := identifier.ToGitPath()
 			assert.Equal(t, tc.expected, path)
 		})
 	}
@@ -175,19 +186,22 @@ func TestGetCommitMessage_CreateOperation(t *testing.T) {
 
 	event := eventqueue.Event{
 		Object: obj,
-		Request: admission.Request{
-			AdmissionRequest: admissionv1.AdmissionRequest{
-				Operation: admissionv1.Create,
-				UserInfo: authenticationv1.UserInfo{
-					Username: "john.doe@example.com",
-				},
-			},
+		Identifier: types.ResourceIdentifier{
+			Group:     "",
+			Version:   "v1",
+			Resource:  "pods",
+			Namespace: "default",
+			Name:      "test-pod",
+		},
+		Operation: "CREATE",
+		UserInfo: eventqueue.UserInfo{
+			Username: "john.doe@example.com",
 		},
 		GitRepoConfigRef: "test-repo",
 	}
 
 	message := GetCommitMessage(event)
-	expected := "[CREATE] Pod/test-pod in ns/default by user/john.doe@example.com"
+	expected := "[CREATE] v1/pods/test-pod by user/john.doe@example.com"
 	assert.Equal(t, expected, message)
 }
 
@@ -199,19 +213,22 @@ func TestGetCommitMessage_UpdateOperation(t *testing.T) {
 
 	event := eventqueue.Event{
 		Object: obj,
-		Request: admission.Request{
-			AdmissionRequest: admissionv1.AdmissionRequest{
-				Operation: admissionv1.Update,
-				UserInfo: authenticationv1.UserInfo{
-					Username: "system:serviceaccount:kube-system:deployment-controller",
-				},
-			},
+		Identifier: types.ResourceIdentifier{
+			Group:     "",
+			Version:   "v1",
+			Resource:  "services",
+			Namespace: "production",
+			Name:      "my-service",
+		},
+		Operation: "UPDATE",
+		UserInfo: eventqueue.UserInfo{
+			Username: "system:serviceaccount:kube-system:deployment-controller",
 		},
 		GitRepoConfigRef: "prod-repo",
 	}
 
 	message := GetCommitMessage(event)
-	expected := "[UPDATE] Service/my-service in ns/production by user/system:serviceaccount:kube-system:deployment-controller"
+	expected := "[UPDATE] v1/services/my-service by user/system:serviceaccount:kube-system:deployment-controller"
 	assert.Equal(t, expected, message)
 }
 
@@ -223,19 +240,22 @@ func TestGetCommitMessage_DeleteOperation(t *testing.T) {
 
 	event := eventqueue.Event{
 		Object: obj,
-		Request: admission.Request{
-			AdmissionRequest: admissionv1.AdmissionRequest{
-				Operation: admissionv1.Delete,
-				UserInfo: authenticationv1.UserInfo{
-					Username: "admin",
-				},
-			},
+		Identifier: types.ResourceIdentifier{
+			Group:     "",
+			Version:   "v1",
+			Resource:  "configmaps",
+			Namespace: "staging",
+			Name:      "old-config",
+		},
+		Operation: "DELETE",
+		UserInfo: eventqueue.UserInfo{
+			Username: "admin",
 		},
 		GitRepoConfigRef: "staging-repo",
 	}
 
 	message := GetCommitMessage(event)
-	expected := "[DELETE] ConfigMap/old-config in ns/staging by user/admin"
+	expected := "[DELETE] v1/configmaps/old-config by user/admin"
 	assert.Equal(t, expected, message)
 }
 
@@ -243,23 +263,25 @@ func TestGetCommitMessage_ClusterScopedResource(t *testing.T) {
 	obj := &unstructured.Unstructured{}
 	obj.SetName("my-namespace")
 	obj.SetKind("Namespace")
-	// No namespace for cluster-scoped resources
 
 	event := eventqueue.Event{
 		Object: obj,
-		Request: admission.Request{
-			AdmissionRequest: admissionv1.AdmissionRequest{
-				Operation: admissionv1.Create,
-				UserInfo: authenticationv1.UserInfo{
-					Username: "cluster-admin",
-				},
-			},
+		Identifier: types.ResourceIdentifier{
+			Group:     "",
+			Version:   "v1",
+			Resource:  "namespaces",
+			Namespace: "",
+			Name:      "my-namespace",
+		},
+		Operation: "CREATE",
+		UserInfo: eventqueue.UserInfo{
+			Username: "cluster-admin",
 		},
 		GitRepoConfigRef: "cluster-repo",
 	}
 
 	message := GetCommitMessage(event)
-	expected := "[CREATE] Namespace/my-namespace in ns/ by user/cluster-admin"
+	expected := "[CREATE] v1/namespaces/my-namespace by user/cluster-admin"
 	assert.Equal(t, expected, message)
 }
 
@@ -271,19 +293,22 @@ func TestGetCommitMessage_EmptyUsername(t *testing.T) {
 
 	event := eventqueue.Event{
 		Object: obj,
-		Request: admission.Request{
-			AdmissionRequest: admissionv1.AdmissionRequest{
-				Operation: admissionv1.Create,
-				UserInfo: authenticationv1.UserInfo{
-					Username: "", // Empty username
-				},
-			},
+		Identifier: types.ResourceIdentifier{
+			Group:     "",
+			Version:   "v1",
+			Resource:  "pods",
+			Namespace: "default",
+			Name:      "test-pod",
+		},
+		Operation: "CREATE",
+		UserInfo: eventqueue.UserInfo{
+			Username: "", // Empty username
 		},
 		GitRepoConfigRef: "test-repo",
 	}
 
 	message := GetCommitMessage(event)
-	expected := "[CREATE] Pod/test-pod in ns/default by user/"
+	expected := "[CREATE] v1/pods/test-pod by user/"
 	assert.Equal(t, expected, message)
 }
 
@@ -295,19 +320,22 @@ func TestGetCommitMessage_SpecialCharactersInNames(t *testing.T) {
 
 	event := eventqueue.Event{
 		Object: obj,
-		Request: admission.Request{
-			AdmissionRequest: admissionv1.AdmissionRequest{
-				Operation: admissionv1.Update,
-				UserInfo: authenticationv1.UserInfo{
-					Username: "user@domain.com",
-				},
-			},
+		Identifier: types.ResourceIdentifier{
+			Group:     "",
+			Version:   "v1",
+			Resource:  "pods",
+			Namespace: "test-ns_with_underscores",
+			Name:      "test-pod.with.dots",
+		},
+		Operation: "UPDATE",
+		UserInfo: eventqueue.UserInfo{
+			Username: "user@domain.com",
 		},
 		GitRepoConfigRef: "test-repo",
 	}
 
 	message := GetCommitMessage(event)
-	expected := "[UPDATE] Pod/test-pod.with.dots in ns/test-ns_with_underscores by user/user@domain.com"
+	expected := "[UPDATE] v1/pods/test-pod.with.dots by user/user@domain.com"
 	assert.Equal(t, expected, message)
 }
 
@@ -477,25 +505,29 @@ func TestIntegration_FilePathAndCommitMessage(t *testing.T) {
 	obj.SetNamespace("integration-test")
 	obj.SetKind("Pod")
 
+	identifier := types.ResourceIdentifier{
+		Group:     "",
+		Version:   "v1",
+		Resource:  "pods",
+		Namespace: "integration-test",
+		Name:      "integration-test-pod",
+	}
+
 	event := eventqueue.Event{
-		Object: obj,
-		Request: admission.Request{
-			AdmissionRequest: admissionv1.AdmissionRequest{
-				Operation: admissionv1.Create,
-				UserInfo: authenticationv1.UserInfo{
-					Username: "integration-test-user",
-				},
-			},
+		Object:     obj,
+		Identifier: identifier,
+		Operation:  "CREATE",
+		UserInfo: eventqueue.UserInfo{
+			Username: "integration-test-user",
 		},
-		ResourcePlural:   "pods",
 		GitRepoConfigRef: "integration-repo",
 	}
 
-	filePath := GetFilePath(obj, "pods")
+	filePath := identifier.ToGitPath()
 	commitMessage := GetCommitMessage(event)
 
-	expectedPath := "namespaces/integration-test/pods/integration-test-pod.yaml"
-	expectedMessage := "[CREATE] Pod/integration-test-pod in ns/integration-test by user/integration-test-user"
+	expectedPath := "v1/pods/integration-test/integration-test-pod.yaml"
+	expectedMessage := "[CREATE] v1/pods/integration-test-pod by user/integration-test-user"
 
 	assert.Equal(t, expectedPath, filePath)
 	assert.Equal(t, expectedMessage, commitMessage)
@@ -504,28 +536,14 @@ func TestIntegration_FilePathAndCommitMessage(t *testing.T) {
 	assert.Contains(t, filePath, "integration-test-pod")
 	assert.Contains(t, commitMessage, "integration-test-pod")
 	assert.Contains(t, filePath, "integration-test")
-	assert.Contains(t, commitMessage, "integration-test")
 }
 
-func TestEdgeCases_NilObject(t *testing.T) {
-	// Test behavior with nil object - should not panic
-	defer func() {
-		if r := recover(); r != nil {
-			t.Errorf("GetFilePath panicked with nil object: %v", r)
-		}
-	}()
-
-	// This will likely panic in the current implementation, but we're testing
-	// that we handle it gracefully in the future
-	var obj *unstructured.Unstructured
-
-	// We expect this to panic currently, so we'll catch it
-	func() {
-		defer func() {
-			_ = recover() // Catch the panic
-		}()
-		GetFilePath(obj, "testresources")
-	}()
+func TestEdgeCases_NilIdentifier(t *testing.T) {
+	// Test behavior with empty identifier
+	identifier := types.ResourceIdentifier{}
+	path := identifier.ToGitPath()
+	// Empty identifier will produce minimal path
+	assert.NotEmpty(t, path)
 }
 
 func TestCommitMessage_AllOperations(t *testing.T) {
@@ -534,30 +552,28 @@ func TestCommitMessage_AllOperations(t *testing.T) {
 	obj.SetNamespace("test-ns")
 	obj.SetKind("TestKind")
 
-	operations := []admissionv1.Operation{
-		admissionv1.Create,
-		admissionv1.Update,
-		admissionv1.Delete,
-		admissionv1.Connect,
-	}
+	operations := []string{"CREATE", "UPDATE", "DELETE", "CONNECT"}
 
 	for _, op := range operations {
-		t.Run(string(op), func(t *testing.T) {
+		t.Run(op, func(t *testing.T) {
 			event := eventqueue.Event{
 				Object: obj,
-				Request: admission.Request{
-					AdmissionRequest: admissionv1.AdmissionRequest{
-						Operation: op,
-						UserInfo: authenticationv1.UserInfo{
-							Username: "test-user",
-						},
-					},
+				Identifier: types.ResourceIdentifier{
+					Group:     "",
+					Version:   "v1",
+					Resource:  "testkinds",
+					Namespace: "test-ns",
+					Name:      "test-resource",
+				},
+				Operation: op,
+				UserInfo: eventqueue.UserInfo{
+					Username: "test-user",
 				},
 				GitRepoConfigRef: "test-repo",
 			}
 
 			message := GetCommitMessage(event)
-			expected := "[" + string(op) + "] TestKind/test-resource in ns/test-ns by user/test-user"
+			expected := "[" + op + "] v1/testkinds/test-resource by user/test-user"
 			assert.Equal(t, expected, message)
 		})
 	}
@@ -565,18 +581,21 @@ func TestCommitMessage_AllOperations(t *testing.T) {
 
 func TestPathGeneration_ConsistentOutput(t *testing.T) {
 	// Test that the same input always produces the same output
-	obj := &unstructured.Unstructured{}
-	obj.SetName("consistent-test")
-	obj.SetNamespace("consistent-ns")
-	obj.SetKind("Pod")
+	identifier := types.ResourceIdentifier{
+		Group:     "",
+		Version:   "v1",
+		Resource:  "pods",
+		Namespace: "consistent-ns",
+		Name:      "consistent-test",
+	}
 
-	path1 := GetFilePath(obj, "pods")
-	path2 := GetFilePath(obj, "pods")
-	path3 := GetFilePath(obj, "pods")
+	path1 := identifier.ToGitPath()
+	path2 := identifier.ToGitPath()
+	path3 := identifier.ToGitPath()
 
 	assert.Equal(t, path1, path2)
 	assert.Equal(t, path2, path3)
-	assert.Equal(t, "namespaces/consistent-ns/pods/consistent-test.yaml", path1)
+	assert.Equal(t, "v1/pods/consistent-ns/consistent-test.yaml", path1)
 }
 
 func TestGenerateLocalCommits_DeleteOperation(t *testing.T) {
@@ -588,49 +607,51 @@ func TestGenerateLocalCommits_DeleteOperation(t *testing.T) {
 
 	event := eventqueue.Event{
 		Object: obj,
-		Request: admission.Request{
-			AdmissionRequest: admissionv1.AdmissionRequest{
-				Operation: admissionv1.Delete,
-				UserInfo: authenticationv1.UserInfo{
-					Username: "admin",
-				},
-			},
+		Identifier: types.ResourceIdentifier{
+			Group:     "",
+			Version:   "v1",
+			Resource:  "configmaps",
+			Namespace: "default",
+			Name:      "test-configmap",
 		},
-		ResourcePlural:   "configmaps",
+		Operation: "DELETE",
+		UserInfo: eventqueue.UserInfo{
+			Username: "admin",
+		},
 		GitRepoConfigRef: "test-repo",
 	}
 
 	// Verify commit message includes DELETE
 	commitMessage := GetCommitMessage(event)
 	assert.Contains(t, commitMessage, "[DELETE]")
-	assert.Contains(t, commitMessage, "ConfigMap/test-configmap")
+	assert.Contains(t, commitMessage, "configmaps/test-configmap")
 }
 
 func TestGenerateLocalCommits_CreateUpdateDeleteMixed(t *testing.T) {
 	// Test that different operations generate appropriate commit messages
 	testCases := []struct {
 		name      string
-		operation admissionv1.Operation
+		operation string
 		objName   string
 		expected  string
 	}{
 		{
 			name:      "CREATE operation",
-			operation: admissionv1.Create,
+			operation: "CREATE",
 			objName:   "new-pod",
-			expected:  "[CREATE] Pod/new-pod",
+			expected:  "[CREATE] v1/pods/new-pod",
 		},
 		{
 			name:      "UPDATE operation",
-			operation: admissionv1.Update,
+			operation: "UPDATE",
 			objName:   "existing-pod",
-			expected:  "[UPDATE] Pod/existing-pod",
+			expected:  "[UPDATE] v1/pods/existing-pod",
 		},
 		{
 			name:      "DELETE operation",
-			operation: admissionv1.Delete,
+			operation: "DELETE",
 			objName:   "old-pod",
-			expected:  "[DELETE] Pod/old-pod",
+			expected:  "[DELETE] v1/pods/old-pod",
 		},
 	}
 
@@ -643,15 +664,17 @@ func TestGenerateLocalCommits_CreateUpdateDeleteMixed(t *testing.T) {
 
 			event := eventqueue.Event{
 				Object: obj,
-				Request: admission.Request{
-					AdmissionRequest: admissionv1.AdmissionRequest{
-						Operation: tc.operation,
-						UserInfo: authenticationv1.UserInfo{
-							Username: "test-user",
-						},
-					},
+				Identifier: types.ResourceIdentifier{
+					Group:     "",
+					Version:   "v1",
+					Resource:  "pods",
+					Namespace: "default",
+					Name:      tc.objName,
 				},
-				ResourcePlural:   "pods",
+				Operation: tc.operation,
+				UserInfo: eventqueue.UserInfo{
+					Username: "test-user",
+				},
 				GitRepoConfigRef: "test-repo",
 			}
 
@@ -661,16 +684,19 @@ func TestGenerateLocalCommits_CreateUpdateDeleteMixed(t *testing.T) {
 	}
 }
 
-func TestGetFilePath_DeleteOperation(t *testing.T) {
+func TestToGitPath_DeleteOperation(t *testing.T) {
 	// Test that file paths are consistent regardless of operation
-	obj := &unstructured.Unstructured{}
-	obj.SetName("test-resource")
-	obj.SetNamespace("production")
-	obj.SetKind("Secret")
+	identifier := types.ResourceIdentifier{
+		Group:     "",
+		Version:   "v1",
+		Resource:  "secrets",
+		Namespace: "production",
+		Name:      "test-resource",
+	}
 
 	// File path should be same for CREATE, UPDATE, and DELETE
-	path := GetFilePath(obj, "secrets")
-	expected := "namespaces/production/secrets/test-resource.yaml"
+	path := identifier.ToGitPath()
+	expected := "v1/secrets/production/test-resource.yaml"
 
 	assert.Equal(t, expected, path)
 }
@@ -680,30 +706,30 @@ func TestDeleteOperation_CommitMessageFormat(t *testing.T) {
 	testCases := []struct {
 		name      string
 		namespace string
-		kind      string
+		resource  string
 		username  string
 		expected  string
 	}{
 		{
 			name:      "app-config",
 			namespace: "staging",
-			kind:      "ConfigMap",
+			resource:  "configmaps",
 			username:  "developer",
-			expected:  "[DELETE] ConfigMap/app-config in ns/staging by user/developer",
+			expected:  "[DELETE] v1/configmaps/app-config by user/developer",
 		},
 		{
 			name:      "db-secret",
 			namespace: "production",
-			kind:      "Secret",
+			resource:  "secrets",
 			username:  "admin",
-			expected:  "[DELETE] Secret/db-secret in ns/production by user/admin",
+			expected:  "[DELETE] v1/secrets/db-secret by user/admin",
 		},
 		{
 			name:      "web-deployment",
 			namespace: "default",
-			kind:      "Deployment",
+			resource:  "deployments",
 			username:  "system:serviceaccount:kube-system:deployment-controller",
-			expected:  "[DELETE] Deployment/web-deployment in ns/default by user/system:serviceaccount:kube-system:deployment-controller",
+			expected:  "[DELETE] apps/v1/deployments/web-deployment by user/system:serviceaccount:kube-system:deployment-controller",
 		},
 	}
 
@@ -712,17 +738,24 @@ func TestDeleteOperation_CommitMessageFormat(t *testing.T) {
 			obj := &unstructured.Unstructured{}
 			obj.SetName(tc.name)
 			obj.SetNamespace(tc.namespace)
-			obj.SetKind(tc.kind)
+
+			group := ""
+			if tc.resource == "deployments" {
+				group = "apps"
+			}
 
 			event := eventqueue.Event{
 				Object: obj,
-				Request: admission.Request{
-					AdmissionRequest: admissionv1.AdmissionRequest{
-						Operation: admissionv1.Delete,
-						UserInfo: authenticationv1.UserInfo{
-							Username: tc.username,
-						},
-					},
+				Identifier: types.ResourceIdentifier{
+					Group:     group,
+					Version:   "v1",
+					Resource:  tc.resource,
+					Namespace: tc.namespace,
+					Name:      tc.name,
+				},
+				Operation: "DELETE",
+				UserInfo: eventqueue.UserInfo{
+					Username: tc.username,
 				},
 				GitRepoConfigRef: "test-repo",
 			}
@@ -738,29 +771,32 @@ func TestDeleteOperation_ClusterScoped(t *testing.T) {
 	obj := &unstructured.Unstructured{}
 	obj.SetName("test-namespace")
 	obj.SetKind("Namespace")
-	// No namespace for cluster-scoped resources
+
+	identifier := types.ResourceIdentifier{
+		Group:     "",
+		Version:   "v1",
+		Resource:  "namespaces",
+		Namespace: "",
+		Name:      "test-namespace",
+	}
 
 	event := eventqueue.Event{
-		Object: obj,
-		Request: admission.Request{
-			AdmissionRequest: admissionv1.AdmissionRequest{
-				Operation: admissionv1.Delete,
-				UserInfo: authenticationv1.UserInfo{
-					Username: "cluster-admin",
-				},
-			},
+		Object:     obj,
+		Identifier: identifier,
+		Operation:  "DELETE",
+		UserInfo: eventqueue.UserInfo{
+			Username: "cluster-admin",
 		},
-		ResourcePlural:   "namespaces",
 		GitRepoConfigRef: "cluster-repo",
 	}
 
 	// Verify file path
-	filePath := GetFilePath(obj, "namespaces")
-	assert.Equal(t, "cluster-scoped/namespaces/test-namespace.yaml", filePath)
+	filePath := identifier.ToGitPath()
+	assert.Equal(t, "v1/namespaces/test-namespace.yaml", filePath)
 
 	// Verify commit message
 	commitMessage := GetCommitMessage(event)
-	assert.Equal(t, "[DELETE] Namespace/test-namespace in ns/ by user/cluster-admin", commitMessage)
+	assert.Equal(t, "[DELETE] v1/namespaces/test-namespace by user/cluster-admin", commitMessage)
 }
 
 func TestBatchOperations_MultipleDeletes(t *testing.T) {
@@ -768,13 +804,12 @@ func TestBatchOperations_MultipleDeletes(t *testing.T) {
 	resources := []struct {
 		name      string
 		namespace string
-		kind      string
 		plural    string
 	}{
-		{"pod-1", "default", "Pod", "pods"},
-		{"pod-2", "default", "Pod", "pods"},
-		{"service-1", "default", "Service", "services"},
-		{"configmap-1", "kube-system", "ConfigMap", "configmaps"},
+		{"pod-1", "default", "pods"},
+		{"pod-2", "default", "pods"},
+		{"service-1", "default", "services"},
+		{"configmap-1", "kube-system", "configmaps"},
 	}
 
 	var events []eventqueue.Event
@@ -782,19 +817,20 @@ func TestBatchOperations_MultipleDeletes(t *testing.T) {
 		obj := &unstructured.Unstructured{}
 		obj.SetName(res.name)
 		obj.SetNamespace(res.namespace)
-		obj.SetKind(res.kind)
 
 		event := eventqueue.Event{
 			Object: obj,
-			Request: admission.Request{
-				AdmissionRequest: admissionv1.AdmissionRequest{
-					Operation: admissionv1.Delete,
-					UserInfo: authenticationv1.UserInfo{
-						Username: "batch-delete-user",
-					},
-				},
+			Identifier: types.ResourceIdentifier{
+				Group:     "",
+				Version:   "v1",
+				Resource:  res.plural,
+				Namespace: res.namespace,
+				Name:      res.name,
 			},
-			ResourcePlural:   res.plural,
+			Operation: "DELETE",
+			UserInfo: eventqueue.UserInfo{
+				Username: "batch-delete-user",
+			},
 			GitRepoConfigRef: "test-repo",
 		}
 		events = append(events, event)
@@ -805,7 +841,6 @@ func TestBatchOperations_MultipleDeletes(t *testing.T) {
 		message := GetCommitMessage(event)
 		assert.Contains(t, message, "[DELETE]")
 		assert.Contains(t, message, resources[i].name)
-		assert.Contains(t, message, resources[i].namespace)
 	}
 
 	// Verify we have the expected number of events

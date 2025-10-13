@@ -45,10 +45,10 @@ help: ## Display this help.
 manifests: ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects.
 	$(CONTROLLER_GEN) rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases
 
-.PHONY: helm-sync-crds
-helm-sync-crds: ## Sync CRDs from config/crd/bases to Helm chart crds directory (for packaging)
-	@mkdir -p charts/gitops-reverser/crds
+.PHONY: helm-sync
+helm-sync: ## Sync CRDs and roles from config/crd/bases to Helm chart crds directory (for packaging)
 	@cp config/crd/bases/*.yaml charts/gitops-reverser/crds/
+	@cp config/rbac/role.yaml charts/gitops-reverser/config
 
 .PHONY: generate
 generate: ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
@@ -148,7 +148,7 @@ docker-buildx: ## Build and push docker image for the manager for cross-platform
 	rm Dockerfile.cross
 
 .PHONY: build-installer
-build-installer: manifests helm-sync-crds ## Generate a consolidated YAML from Helm chart for easy installation.
+build-installer: manifests helm-sync ## Generate a consolidated YAML from Helm chart for easy installation.
 	@echo "📦 Generating install.yaml from Helm chart..."
 	@mkdir -p dist
 	@$(HELM) template gitops-reverser charts/gitops-reverser \

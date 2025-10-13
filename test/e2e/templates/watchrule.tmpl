@@ -4,11 +4,12 @@ metadata:
   name: {{.Name}}
   namespace: {{.Namespace}}
 spec:
-  gitRepoConfigRef: {{.GitRepoConfigRef}}
-  excludeLabels:
+  gitRepoConfigRef:
+    name: {{.GitRepoConfigRef}}
+  objectSelector:
     matchExpressions:
     - key: "configbutler.ai/ignore"
-      operator: Exists
+      operator: DoesNotExist
   rules:
   - resources: ["deployments", "services", "configmaps", "secrets"]
-  - resources: ["ingresses.*"]
+  - resources: ["ingresses"]

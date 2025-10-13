@@ -1,0 +1,9 @@
+apiVersion: example.com/v1
+kind: MyApp
+metadata:
+  name: {{ .Name }}
+  namespace: {{ .Namespace }}
+spec:
+  replicas: {{ .Replicas }}
+  image: {{ .Image }}
+  message: "{{ .Message }}"

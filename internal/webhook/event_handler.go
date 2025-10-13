@@ -6,20 +6,28 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	apitypes "k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
+
+	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 	"github.com/ConfigButler/gitops-reverser/internal/eventqueue"
 	"github.com/ConfigButler/gitops-reverser/internal/metrics"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
 	"github.com/ConfigButler/gitops-reverser/internal/sanitize"
+	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
 //nolint:lll // Kubebuilder webhook annotation
-// +kubebuilder:webhook:path=/validate-v1-event,mutating=false,failurePolicy=ignore,sideEffects=None,groups="*",resources="*",verbs=create;update;delete,versions="*",name=gitops-reverser.configbutler.ai,admissionReviewVersions=v1
+// +kubebuilder:webhook:path=/process-audit-webhook-calls,mutating=false,failurePolicy=ignore,sideEffects=None,groups="*",resources="*",verbs=create;update;delete,versions="*",name=gitops-reverser.configbutler.ai,admissionReviewVersions=v1
 
 // EventHandler handles all incoming admission requests.
 type EventHandler struct {
@@ -31,9 +39,14 @@ type EventHandler struct {
 }
 
 // Handle implements admission.Handler.
+//
+//nolint:funlen // Complex admission handler with multiple validation steps
 func (h *EventHandler) Handle(ctx context.Context, req admission.Request) admission.Response {
 	log := logf.FromContext(ctx)
-	metrics.EventsReceivedTotal.Add(ctx, 1)
+
+	// Add metrics with role label - check if this pod is the leader
+	roleAttr := h.getPodRoleAttribute(ctx)
+	metrics.EventsReceivedTotal.Add(ctx, 1, metric.WithAttributes(roleAttr))
 
 	if h.EnableVerboseAdmissionLogs {
 		log.Info(
@@ -80,38 +93,82 @@ func (h *EventHandler) Handle(ctx context.Context, req admission.Request) admiss
 	log.V(1).Info("Successfully decoded resource", //nolint:lll // Structured log
 		"kind", obj.GetKind(), "name", obj.GetName(), "namespace", obj.GetNamespace(), "operation", req.Operation)
 
-	matchingRules := h.RuleStore.GetMatchingRules(obj)
+	// Extract filtering parameters from admission request
+	resourcePlural := req.Resource.Resource
+	operation := configv1alpha1.OperationType(req.Operation)
+	apiGroup := req.Resource.Group
+	apiVersion := req.Resource.Version
+
+	// Determine if resource is cluster-scoped (no namespace)
+	isClusterScoped := obj.GetNamespace() == ""
+
+	// Get namespace labels for ClusterWatchRule matching (only for namespaced resources)
+	var namespaceLabels map[string]string
+	if !isClusterScoped {
+		ns := &corev1.Namespace{}
+		if err := h.Client.Get(ctx, apitypes.NamespacedName{Name: obj.GetNamespace()}, ns); err == nil {
+			namespaceLabels = ns.Labels
+		}
+	}
+
+	// Get matching WatchRules
+	matchingRules := h.RuleStore.GetMatchingRules(
+		obj,
+		resourcePlural,
+		operation,
+		apiGroup,
+		apiVersion,
+		isClusterScoped,
+	)
+
+	// Get matching ClusterWatchRules
+	matchingClusterRules := h.RuleStore.GetMatchingClusterRules(
+		resourcePlural,
+		operation,
+		apiGroup,
+		apiVersion,
+		isClusterScoped,
+		namespaceLabels,
+	)
+
+	totalMatches := len(matchingRules) + len(matchingClusterRules)
+
 	if h.EnableVerboseAdmissionLogs {
 		log.Info(
 			"Checking for matching rules", //nolint:lll // Structured log
 			"kind",
 			obj.GetKind(),
+			"resourcePlural",
+			resourcePlural,
 			"name",
 			obj.GetName(),
 			"namespace",
 			obj.GetNamespace(),
-			"matchingRulesCount",
+			"matchingWatchRules",
 			len(matchingRules),
+			"matchingClusterWatchRules",
+			len(matchingClusterRules),
 		)
 	}
 
-	if len(matchingRules) > 0 {
-		log.Info("Found matching rules, enqueueing events", "matchingRulesCount", len(matchingRules))
-		// Enqueue an event for each matching rule.
+	if totalMatches > 0 {
+		identifier := types.FromAdmissionRequest(req)
+		log.Info(
+			fmt.Sprintf("Received %s for %s: matched %d watchrule(s) and %d clusterwatchrule(s)",
+				req.Operation,
+				identifier.String(),
+				len(matchingRules),
+				len(matchingClusterRules)),
+		)
+
+		// Enqueue events for WatchRule matches
 		for _, rule := range matchingRules {
-			sanitizedObj := sanitize.Sanitize(obj)
-			event := eventqueue.Event{
-				Object:                 sanitizedObj,
-				Request:                req,
-				ResourcePlural:         req.Resource.Resource, // Use plural from admission request
-				GitRepoConfigRef:       rule.GitRepoConfigRef,
-				GitRepoConfigNamespace: rule.Source.Namespace, // Same namespace as the WatchRule
-			}
-			h.EventQueue.Enqueue(event)
-			metrics.EventsProcessedTotal.Add(ctx, 1)
-			metrics.GitCommitQueueSize.Add(ctx, 1)
-			logf.FromContext(ctx).Info("Enqueued event for matched resource", //nolint:lll // Structured log
-				"resource", sanitizedObj.GetName(), "namespace", sanitizedObj.GetNamespace(), "kind", sanitizedObj.GetKind(), "rule", rule.Source.Name)
+			h.enqueueEvent(ctx, obj, identifier, req, rule.GitRepoConfigRef, rule.Source.Namespace)
+		}
+
+		// Enqueue events for ClusterWatchRule matches
+		for _, clusterRule := range matchingClusterRules {
+			h.enqueueEvent(ctx, obj, identifier, req, clusterRule.GitRepoConfigRef, clusterRule.GitRepoConfigNamespace)
 		}
 	} else if obj.GetNamespace() != "kube-system" && obj.GetNamespace() != "kube-node-lease" && obj.GetKind() != "Lease" {
 		// Only log for non-system resources to avoid spam
@@ -119,6 +176,56 @@ func (h *EventHandler) Handle(ctx context.Context, req admission.Request) admiss
 	}
 
 	return admission.Allowed("request is allowed")
+}
+
+// enqueueEvent creates and enqueues an event for processing.
+func (h *EventHandler) enqueueEvent(
+	ctx context.Context,
+	obj *unstructured.Unstructured,
+	identifier types.ResourceIdentifier,
+	req admission.Request,
+	gitRepoConfigRef string,
+	gitRepoConfigNamespace string,
+) {
+	sanitizedObj := sanitize.Sanitize(obj)
+	event := eventqueue.Event{
+		Object:     sanitizedObj,
+		Identifier: identifier,
+		Operation:  string(req.Operation),
+		UserInfo: eventqueue.UserInfo{
+			Username: req.UserInfo.Username,
+			UID:      req.UserInfo.UID,
+		},
+		GitRepoConfigRef:       gitRepoConfigRef,
+		GitRepoConfigNamespace: gitRepoConfigNamespace,
+	}
+	h.EventQueue.Enqueue(event)
+	roleAttr := h.getPodRoleAttribute(ctx)
+	metrics.EventsProcessedTotal.Add(ctx, 1, metric.WithAttributes(roleAttr))
+	metrics.GitCommitQueueSize.Add(ctx, 1, metric.WithAttributes(roleAttr))
+}
+
+// getPodRoleAttribute returns the role attribute for metrics based on pod labels.
+func (h *EventHandler) getPodRoleAttribute(ctx context.Context) attribute.KeyValue {
+	podName := os.Getenv("POD_NAME")
+	podNamespace := os.Getenv("POD_NAMESPACE")
+
+	if podName == "" || podNamespace == "" {
+		return attribute.String("role", "unknown")
+	}
+
+	pod := &corev1.Pod{}
+	err := h.Client.Get(ctx, apitypes.NamespacedName{Name: podName, Namespace: podNamespace}, pod)
+	if err != nil {
+		return attribute.String("role", "unknown")
+	}
+
+	// Check if pod has the leader label
+	if role, ok := pod.Labels["role"]; ok && role == "leader" {
+		return attribute.String("role", "leader")
+	}
+
+	return attribute.String("role", "follower")
 }
 
 // InjectDecoder injects the decoder.

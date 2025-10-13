@@ -14,10 +14,28 @@ spec:
     singular: watchrule
   scope: Namespaced
   versions:
-  - name: v1alpha1
+  - additionalPrinterColumns:
+    - jsonPath: .spec.gitRepoConfigRef
+      name: GitRepoConfig
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: WatchRule is the Schema for the watchrules API.
+        description: |-
+          WatchRule watches namespaced resources within its own namespace.
+          It provides fine-grained control over which resources trigger Git commits,
+          with filtering by operation type, API group, version, and labels.
+
+          Security model:
+            - WatchRule is namespace-scoped and can only watch resources in its own namespace
+            - Use ClusterWatchRule for watching cluster-scoped resources (Nodes, ClusterRoles, etc.)
+            - RBAC controls who can create/modify WatchRules per namespace
         properties:
           apiVersion:
             description: |-
@@ -39,10 +57,30 @@ spec:
           spec:
             description: spec defines the desired state of WatchRule
             properties:
-              excludeLabels:
+              gitRepoConfigRef:
                 description: |-
-                  ExcludeLabels defines a set of labels that, if present on a resource,
-                  will cause the resource to be ignored by this watch rule.
+                  GitRepoConfigRef references the GitRepoConfig to use for this rule.
+                  If namespace is not specified, defaults to the WatchRule's namespace.
+                properties:
+                  name:
+                    description: Name of the GitRepoConfig.
+                    minLength: 1
+                    type: string
+                  namespace:
+                    description: |-
+                      Namespace containing the GitRepoConfig.
+                      For WatchRule: Optional, defaults to WatchRule's namespace if not specified.
+                      For ClusterWatchRule: Required, must be explicitly specified.
+                    type: string
+                required:
+                - name
+                type: object
+              objectSelector:
+                description: |-
+                  ObjectSelector filters resources by labels (like objectSelector in webhooks).
+                  If specified, only resources matching this selector are watched.
+                  Use matchExpressions with NotIn/DoesNotExist operators to exclude resources.
+                  This follows Kubernetes standard label selector semantics.
                 properties:
                   matchExpressions:
                     description: matchExpressions is a list of label selector requirements.
@@ -87,26 +125,81 @@ spec:
                     type: object
                 type: object
                 x-kubernetes-map-type: atomic
-              gitRepoConfigRef:
-                description: GitRepoConfigRef is the name of the GitRepoConfig to
-                  use for this rule.
-                type: string
               rules:
-                description: Rules is a list of resource rules that define what to
-                  watch.
+                description: |-
+                  Rules define which resources to watch within this namespace.
+                  Multiple rules create a logical OR - a resource matching ANY rule is watched.
+                  Each rule can specify operations, API groups, versions, and resource types.
                 items:
-                  description: ResourceRule defines a set of resources to watch.
+                  description: |-
+                    ResourceRule defines a set of namespaced resources to watch.
+                    This follows Kubernetes admission control semantics but simplified for our use case.
+                    All fields except Resources are optional and default to matching all when not specified.
                   properties:
-                    resources:
+                    apiGroups:
                       description: |-
-                        Resources is a list of Kubernetes resource kinds to watch.
-                        e.g., ["deployments", "services", "ingresses.*"]
+                        APIGroups to match. Empty string ("") matches the core API group.
+                        If empty, matches all API groups.
+                        Wildcards supported: "*" matches all groups.
+                        Examples:
+                          - [""] matches core API (pods, services, configmaps)
+                          - ["apps"] matches apps API group (deployments, statefulsets)
+                          - ["", "apps"] matches both core and apps groups
+                          - ["*"] or [] matches all groups
                       items:
                         type: string
+                      type: array
+                    apiVersions:
+                      description: |-
+                        APIVersions to match. If empty, matches all versions.
+                        Wildcards supported: "*" matches all versions.
+                        Examples:
+                          - ["v1"] matches only v1 version
+                          - ["v1", "v1beta1"] matches both versions
+                          - ["*"] or [] matches all versions
+                      items:
+                        type: string
+                      type: array
+                    operations:
+                      description: |-
+                        Operations to watch. If empty, watches all operations (CREATE, UPDATE, DELETE).
+                        Supports: CREATE, UPDATE, DELETE, or * (wildcard for all operations).
+                        Examples:
+                          - ["CREATE", "UPDATE"] watches only creation and updates, ignoring deletions
+                          - ["*"] or [] watches all operations
+                      items:
+                        description: OperationType specifies the type of operation
+                          that triggers a watch event.
+                        enum:
+                        - CREATE
+                        - UPDATE
+                        - DELETE
+                        - '*'
+                        type: string
+                      type: array
+                    resources:
+                      description: |-
+                        Resources to match (plural names like "pods", "configmaps").
+                        This field is required and determines which resource types trigger this rule.
+                        Wildcard semantics follow Kubernetes admission webhook patterns:
+                          - "*" matches all resources
+                          - "pods" matches exactly pods (case-insensitive)
+                          - "pods/*" matches all pod subresources (e.g., pods/log, pods/status)
+                          - "pods/log" matches specific subresource
+
+                        For custom resources, use exact group-qualified names:
+                          - "myapps.example.com" matches MyApp CRD
+
+                        Note: Prefix/suffix wildcards like "pod*" or "*.example.com" are NOT supported.
+                        Use exact matches or the "*" wildcard for broad matching.
+                      items:
+                        type: string
+                      minItems: 1
                       type: array
                   required:
                   - resources
                   type: object
+                minItems: 1
                 type: array
             required:
             - gitRepoConfigRef

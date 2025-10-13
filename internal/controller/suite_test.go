@@ -43,12 +43,13 @@ import (
 // http://onsi.github.io/ginkgo/ to learn more about Ginkgo.
 
 var (
-	cfg       *rest.Config
-	k8sClient client.Client
-	testEnv   *envtest.Environment
-	ctx       context.Context
-	cancel    context.CancelFunc
-	mgr       manager.Manager
+	cfg           *rest.Config
+	k8sClient     client.Client
+	testEnv       *envtest.Environment
+	ctx           context.Context
+	cancel        context.CancelFunc
+	mgr           manager.Manager
+	testRuleStore *rulestore.RuleStore
 )
 
 func TestControllers(t *testing.T) {
@@ -88,7 +89,7 @@ var _ = BeforeSuite(func() {
 	})
 	Expect(err).NotTo(HaveOccurred())
 
-	ruleStore := rulestore.NewStore()
+	testRuleStore = rulestore.NewStore()
 	eventQueue := eventqueue.NewQueue()
 
 	err = (&GitRepoConfigReconciler{
@@ -100,11 +101,18 @@ var _ = BeforeSuite(func() {
 	err = (&WatchRuleReconciler{
 		Client:    mgr.GetClient(),
 		Scheme:    mgr.GetScheme(),
-		RuleStore: ruleStore,
+		RuleStore: testRuleStore,
 	}).SetupWithManager(mgr)
 	Expect(err).NotTo(HaveOccurred())
 
-	// mgr.GetWebhookServer().Register("/validate-v1-event", &webhook.Admission{
+	err = (&ClusterWatchRuleReconciler{
+		Client:    mgr.GetClient(),
+		Scheme:    mgr.GetScheme(),
+		RuleStore: testRuleStore,
+	}).SetupWithManager(mgr)
+	Expect(err).NotTo(HaveOccurred())
+
+	// mgr.GetWebhookServer().Register("/process-audit-webhook-calls", &webhook.Admission{
 	// 	Handler: &internalwebhook.EventHandler{
 	// 		Client:     mgr.GetClient(),
 	// 		RuleStore:  ruleStore,
