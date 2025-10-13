@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.5.0...gitops-reverser-v0.6.0) (2025-10-13)
+
+
+### Features
+
+* Build on arm64 infra to speed it up (since we are now open source). ([f3a59f3](https://github.com/ConfigButler/gitops-reverser/commit/f3a59f318ef1addfbeb2437091cf72bceebd67ad))
+
 ## [0.5.0](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.4.0...gitops-reverser-v0.5.0) (2025-10-13)
 
 
