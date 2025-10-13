@@ -148,7 +148,7 @@ docker-buildx: ## Build and push docker image for the manager for cross-platform
 	rm Dockerfile.cross
 
 .PHONY: build-installer
-build-installer: manifests helm-sync-crds ## Generate a consolidated YAML from Helm chart for easy installation.
+build-installer: manifests helm-sync ## Generate a consolidated YAML from Helm chart for easy installation.
 	@echo "📦 Generating install.yaml from Helm chart..."
 	@mkdir -p dist
 	@$(HELM) template gitops-reverser charts/gitops-reverser \
