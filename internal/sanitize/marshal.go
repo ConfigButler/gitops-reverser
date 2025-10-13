@@ -31,59 +31,90 @@ import (
 func MarshalToOrderedYAML(obj *unstructured.Unstructured) ([]byte, error) {
 	var buf bytes.Buffer
 
-	// 1. apiVersion (first)
-	apiVersion, err := yaml.Marshal(map[string]interface{}{"apiVersion": obj.GetAPIVersion()})
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal apiVersion: %w", err)
-	}
-	buf.Write(apiVersion)
-
-	// 2. kind (second)
-	kind, err := yaml.Marshal(map[string]interface{}{"kind": obj.GetKind()})
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal kind: %w", err)
-	}
-	buf.Write(kind)
-
-	// 3. metadata (third) - use PartialObjectMeta for type safety and cleaning
-	var metadata PartialObjectMeta
-	metadata.FromUnstructured(obj)
-
-	metadataMap := make(map[string]interface{})
-	if metadata.Name != "" {
-		metadataMap["name"] = metadata.Name
-	}
-	if metadata.Namespace != "" {
-		metadataMap["namespace"] = metadata.Namespace
-	}
-	if len(metadata.Labels) > 0 {
-		metadataMap["labels"] = metadata.Labels
-	}
-	if len(metadata.Annotations) > 0 {
-		metadataMap["annotations"] = metadata.Annotations
+	// Header: apiVersion, kind, metadata
+	if err := marshalHeader(&buf, obj); err != nil {
+		return nil, err
 	}
 
-	metadataYAML, err := yaml.Marshal(map[string]interface{}{"metadata": metadataMap})
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal metadata: %w", err)
-	}
-	buf.Write(metadataYAML)
-
-	// 4. payload fields (spec, data, rules, etc.) - everything except apiVersion, kind, metadata, status
-	payload := make(map[string]interface{})
-	for k, v := range obj.Object {
-		if k != "apiVersion" && k != "kind" && k != "metadata" && k != "status" {
-			payload[k] = v
-		}
-	}
-
-	if len(payload) > 0 {
-		payloadYAML, err := yaml.Marshal(payload)
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal payload: %w", err)
-		}
-		buf.Write(payloadYAML)
+	// Payload: everything except apiVersion, kind, metadata, status
+	payload := extractPayload(obj)
+	if err := marshalPayload(&buf, payload); err != nil {
+		return nil, err
 	}
 
 	return buf.Bytes(), nil
+}
+
+// marshalHeader writes apiVersion, kind, and metadata in order.
+func marshalHeader(buf *bytes.Buffer, obj *unstructured.Unstructured) error {
+	if err := writeYAMLMap(buf, map[string]interface{}{"apiVersion": obj.GetAPIVersion()}); err != nil {
+		return fmt.Errorf("failed to marshal apiVersion: %w", err)
+	}
+	if err := writeYAMLMap(buf, map[string]interface{}{"kind": obj.GetKind()}); err != nil {
+		return fmt.Errorf("failed to marshal kind: %w", err)
+	}
+
+	var metadata PartialObjectMeta
+	metadata.FromUnstructured(obj)
+	metadataMap := buildMetadataMap(metadata)
+
+	if err := writeYAMLMap(buf, map[string]interface{}{"metadata": metadataMap}); err != nil {
+		return fmt.Errorf("failed to marshal metadata: %w", err)
+	}
+	return nil
+}
+
+// marshalPayload writes the payload map if present.
+func marshalPayload(buf *bytes.Buffer, payload map[string]interface{}) error {
+	if len(payload) == 0 {
+		return nil
+	}
+	b, err := yaml.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal payload: %w", err)
+	}
+	buf.Write(b)
+	return nil
+}
+
+// writeYAMLMap marshals a map to YAML and writes it to the buffer.
+func writeYAMLMap(buf *bytes.Buffer, m map[string]interface{}) error {
+	b, err := yaml.Marshal(m)
+	if err != nil {
+		return err
+	}
+	buf.Write(b)
+	return nil
+}
+
+// buildMetadataMap constructs the metadata map with only non-empty fields.
+func buildMetadataMap(md PartialObjectMeta) map[string]interface{} {
+	out := make(map[string]interface{})
+	if md.Name != "" {
+		out["name"] = md.Name
+	}
+	if md.Namespace != "" {
+		out["namespace"] = md.Namespace
+	}
+	if len(md.Labels) > 0 {
+		out["labels"] = md.Labels
+	}
+	if len(md.Annotations) > 0 {
+		out["annotations"] = md.Annotations
+	}
+	return out
+}
+
+// extractPayload returns the subset of top-level fields to be included in the payload.
+func extractPayload(obj *unstructured.Unstructured) map[string]interface{} {
+	payload := make(map[string]interface{})
+	for k, v := range obj.Object {
+		switch k {
+		case "apiVersion", "kind", "metadata", "status":
+			// skip
+		default:
+			payload[k] = v
+		}
+	}
+	return payload
 }

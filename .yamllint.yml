@@ -13,7 +13,7 @@ rules:
 
   # Allow truthy values (yes/no, on/off, etc.)
   truthy:
-    allowed-values: ['true', 'false', 'yes', 'no', 'on', 'off']
+    allowed-values: ["true", "false", "yes", "no", "on", "off"]
     check-keys: false
 
   # Allow comments to start at any column

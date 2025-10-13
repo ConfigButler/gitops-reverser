@@ -64,51 +64,171 @@ func init() {
 }
 
 func main() {
-	var metricsAddr string
-	var metricsCertPath, metricsCertName, metricsCertKey string
-	var webhookCertPath, webhookCertName, webhookCertKey string
-	var enableLeaderElection bool
-	var probeAddr string
-	var secureMetrics bool
-	var enableHTTP2 bool
-	var enableVerboseAdmissionLogs bool
-	var tlsOpts []func(*tls.Config)
-	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
-		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
-	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
-	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
-		"Enable leader election for controller manager. "+
-			"Enabling this will ensure there is only one active controller manager.")
-	flag.BoolVar(&secureMetrics, "metrics-secure", true,
-		"If set, the metrics endpoint is served securely via HTTPS. Use --metrics-secure=false to use HTTP instead.")
-	flag.StringVar(&webhookCertPath, "webhook-cert-path", "", "The directory that contains the webhook certificate.")
-	flag.StringVar(&webhookCertName, "webhook-cert-name", "tls.crt", "The name of the webhook certificate file.")
-	flag.StringVar(&webhookCertKey, "webhook-cert-key", "tls.key", "The name of the webhook key file.")
-	flag.StringVar(&metricsCertPath, "metrics-cert-path", "",
-		"The directory that contains the metrics server certificate.")
-	flag.StringVar(&metricsCertName, "metrics-cert-name", "tls.crt", "The name of the metrics server certificate file.")
-	flag.StringVar(&metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
-	flag.BoolVar(&enableHTTP2, "enable-http2", false,
-		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
-	flag.BoolVar(&enableVerboseAdmissionLogs, "enable-verbose-admission-logs", false,
-		"If set, enables verbose logging for admission requests and rule matching")
-	opts := zap.Options{
-		Development: true,
-		// Enable more detailed logging for debugging
-		Level: zapcore.InfoLevel, // Change to DebugLevel for even more verbose output
-	}
-	opts.BindFlags(flag.CommandLine)
-	flag.Parse()
-
-	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+	// Parse flags and configure logger
+	cfg := parseFlags()
+	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&cfg.zapOpts)))
 
 	// Initialize metrics
 	setupCtx := ctrl.SetupSignalHandler()
 	_, err := metrics.InitOTLPExporter(setupCtx)
+	fatalIfErr(err, "unable to initialize metrics exporter")
+
+	// TLS/options
+	tlsOpts := buildTLSOptions(cfg.enableHTTP2)
+
+	// Servers and cert watchers
+	webhookServer, webhookCertWatcher := initWebhookServer(
+		cfg.webhookCertPath, cfg.webhookCertName, cfg.webhookCertKey, tlsOpts,
+	)
+	metricsServerOptions, metricsCertWatcher := buildMetricsServerOptions(
+		cfg.metricsAddr, cfg.secureMetrics,
+		cfg.metricsCertPath, cfg.metricsCertName, cfg.metricsCertKey,
+		tlsOpts,
+	)
+
+	// Manager
+	mgr := newManager(metricsServerOptions, webhookServer, cfg.probeAddr, cfg.enableLeaderElection)
+
+	// Leader labeler (if elected)
+	addLeaderPodLabeler(mgr, cfg.enableLeaderElection)
+
+	// Controllers
+	fatalIfErr((&controller.GitRepoConfigReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr), "unable to create controller", "controller", "GitRepoConfig")
+
+	// Initialize rule store and event queue for webhook handler
+	ruleStore := rulestore.NewStore()
+	eventQueue := eventqueue.NewQueue()
+
+	// WatchRule controller
+	fatalIfErr((&controller.WatchRuleReconciler{
+		Client:    mgr.GetClient(),
+		Scheme:    mgr.GetScheme(),
+		RuleStore: ruleStore,
+	}).SetupWithManager(mgr), "unable to create controller", "controller", "WatchRule")
+
+	// ClusterWatchRule controller
+	fatalIfErr((&controller.ClusterWatchRuleReconciler{
+		Client:    mgr.GetClient(),
+		Scheme:    mgr.GetScheme(),
+		RuleStore: ruleStore,
+	}).SetupWithManager(mgr), "unable to create controller", "controller", "ClusterWatchRule")
+
+	// Webhook handler
+	eventHandler := &webhookhandler.EventHandler{
+		Client:                     mgr.GetClient(),
+		RuleStore:                  ruleStore,
+		EventQueue:                 eventQueue,
+		EnableVerboseAdmissionLogs: cfg.enableVerboseAdmissionLogs,
+	}
+
+	// Create and inject decoder for generic Kubernetes resource handling
+	decoder := admission.NewDecoder(scheme)
+	fatalIfErr(eventHandler.InjectDecoder(&decoder), "unable to inject decoder into webhook handler")
+	setupLog.Info("Generic unstructured decoder injected - ready to handle all Kubernetes resource types")
+
+	// Register webhook
+	validatingWebhook := &admission.Webhook{Handler: eventHandler}
+	mgr.GetWebhookServer().Register("/process-audit-webhook-calls", validatingWebhook)
+	setupLog.Info("Webhook handler registered", "path", "/process-audit-webhook-calls")
+
+	// Git worker
+	gitWorker := &git.Worker{
+		Client:     mgr.GetClient(),
+		Log:        ctrl.Log.WithName("git-worker"),
+		EventQueue: eventQueue,
+	}
+	fatalIfErr(mgr.Add(gitWorker), "unable to add git worker to manager")
+	setupLog.Info("Git worker added to manager")
+
+	// +kubebuilder:scaffold:builder
+
+	// Cert watchers
+	addCertWatchersToManager(mgr, metricsCertWatcher, webhookCertWatcher)
+
+	// Health checks
+	addHealthChecks(mgr)
+
+	// Start manager
+	setupLog.Info("starting manager")
+	fatalIfErr(mgr.Start(setupCtx), "problem running manager")
+}
+
+// appConfig holds parsed CLI flags and logging options.
+type appConfig struct {
+	metricsAddr                string
+	metricsCertPath            string
+	metricsCertName            string
+	metricsCertKey             string
+	webhookCertPath            string
+	webhookCertName            string
+	webhookCertKey             string
+	enableLeaderElection       bool
+	probeAddr                  string
+	secureMetrics              bool
+	enableHTTP2                bool
+	enableVerboseAdmissionLogs bool
+	zapOpts                    zap.Options
+}
+
+// parseFlags parses CLI flags and returns the application configuration.
+func parseFlags() appConfig {
+	var cfg appConfig
+
+	flag.StringVar(&cfg.metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
+		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
+	flag.StringVar(&cfg.probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
+	flag.BoolVar(&cfg.enableLeaderElection, "leader-elect", false,
+		"Enable leader election for controller manager. "+
+			"Enabling this will ensure there is only one active controller manager.")
+	flag.BoolVar(&cfg.secureMetrics, "metrics-secure", true,
+		"If set, the metrics endpoint is served securely via HTTPS. Use --metrics-secure=false to use HTTP instead.")
+	flag.StringVar(
+		&cfg.webhookCertPath,
+		"webhook-cert-path",
+		"",
+		"The directory that contains the webhook certificate.",
+	)
+	flag.StringVar(&cfg.webhookCertName, "webhook-cert-name", "tls.crt", "The name of the webhook certificate file.")
+	flag.StringVar(&cfg.webhookCertKey, "webhook-cert-key", "tls.key", "The name of the webhook key file.")
+	flag.StringVar(&cfg.metricsCertPath, "metrics-cert-path", "",
+		"The directory that contains the metrics server certificate.")
+	flag.StringVar(
+		&cfg.metricsCertName,
+		"metrics-cert-name",
+		"tls.crt",
+		"The name of the metrics server certificate file.",
+	)
+	flag.StringVar(&cfg.metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
+	flag.BoolVar(&cfg.enableHTTP2, "enable-http2", false,
+		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
+	flag.BoolVar(&cfg.enableVerboseAdmissionLogs, "enable-verbose-admission-logs", false,
+		"If set, enables verbose logging for admission requests and rule matching")
+
+	cfg.zapOpts = zap.Options{
+		Development: true,
+		// Enable more detailed logging for debugging
+		Level: zapcore.InfoLevel, // Change to DebugLevel for even more verbose output
+	}
+	cfg.zapOpts.BindFlags(flag.CommandLine)
+
+	flag.Parse()
+	return cfg
+}
+
+// fatalIfErr logs and exits the process if err is not nil.
+func fatalIfErr(err error, msg string, keysAndValues ...any) {
 	if err != nil {
-		setupLog.Error(err, "unable to initialize metrics exporter")
+		setupLog.Error(err, msg, keysAndValues...)
 		os.Exit(1)
 	}
+}
+
+// buildTLSOptions constructs TLS options, disabling HTTP/2 unless explicitly enabled.
+func buildTLSOptions(enableHTTP2 bool) []func(*tls.Config) {
+	var tlsOpts []func(*tls.Config)
 
 	// if the enable-http2 flag is false (the default), http/2 should be disabled
 	// due to its vulnerabilities. More specifically, disabling http/2 will
@@ -116,53 +236,55 @@ func main() {
 	// Rapid Reset CVEs. For more information see:
 	// - https://github.com/advisories/GHSA-qppj-fm5r-hxr3
 	// - https://github.com/advisories/GHSA-4374-p667-p6c8
-	disableHTTP2 := func(c *tls.Config) {
-		setupLog.Info("disabling http/2")
-		c.NextProtos = []string{"http/1.1"}
-	}
-
 	if !enableHTTP2 {
-		tlsOpts = append(tlsOpts, disableHTTP2)
+		tlsOpts = append(tlsOpts, func(c *tls.Config) {
+			setupLog.Info("disabling http/2")
+			c.NextProtos = []string{"http/1.1"}
+		})
 	}
+	return tlsOpts
+}
 
-	// Create watchers for metrics and webhooks certificates
-	var metricsCertWatcher, webhookCertWatcher *certwatcher.CertWatcher
+// initWebhookServer initializes the webhook server and, if configured, a cert watcher.
+func initWebhookServer(
+	certPath, certName, certKey string,
+	baseTLS []func(*tls.Config),
+) (webhook.Server, *certwatcher.CertWatcher) {
+	webhookTLSOpts := append([]func(*tls.Config){}, baseTLS...)
+	var webhookCertWatcher *certwatcher.CertWatcher
 
-	// Initial webhook TLS options
-	webhookTLSOpts := tlsOpts
-
-	if len(webhookCertPath) > 0 {
+	if len(certPath) > 0 {
 		setupLog.Info("Initializing webhook certificate watcher using provided certificates",
-			"webhook-cert-path", webhookCertPath, //nolint:lll // Structured log with many fields
-			"webhook-cert-name", webhookCertName, "webhook-cert-key", webhookCertKey)
+			"webhook-cert-path", certPath, //nolint:lll // Structured log with many fields
+			"webhook-cert-name", certName, "webhook-cert-key", certKey)
 
 		var err error
 		webhookCertWatcher, err = certwatcher.New(
-			filepath.Join(webhookCertPath, webhookCertName),
-			filepath.Join(webhookCertPath, webhookCertKey),
+			filepath.Join(certPath, certName),
+			filepath.Join(certPath, certKey),
 		)
-		if err != nil {
-			setupLog.Error(err, "Failed to initialize webhook certificate watcher")
-			os.Exit(1)
-		}
+		fatalIfErr(err, "Failed to initialize webhook certificate watcher")
 
 		webhookTLSOpts = append(webhookTLSOpts, func(config *tls.Config) {
 			config.GetCertificate = webhookCertWatcher.GetCertificate
 		})
 	}
 
-	webhookServer := webhook.NewServer(webhook.Options{
-		TLSOpts: webhookTLSOpts,
-	})
+	server := webhook.NewServer(webhook.Options{TLSOpts: webhookTLSOpts})
+	return server, webhookCertWatcher
+}
 
-	// Metrics endpoint is enabled in 'config/default/kustomization.yaml'. The Metrics options configure the server.
-	// More info:
-	// - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.21.0/pkg/metrics/server
-	// - https://book.kubebuilder.io/reference/metrics.html
-	metricsServerOptions := metricsserver.Options{
+// buildMetricsServerOptions configures metrics server options and an optional cert watcher.
+func buildMetricsServerOptions(
+	metricsAddr string,
+	secureMetrics bool,
+	certPath, certName, certKey string,
+	baseTLS []func(*tls.Config),
+) (metricsserver.Options, *certwatcher.CertWatcher) {
+	opts := metricsserver.Options{
 		BindAddress:   metricsAddr,
 		SecureServing: secureMetrics,
-		TLSOpts:       tlsOpts,
+		TLSOpts:       baseTLS,
 	}
 
 	if secureMetrics {
@@ -170,182 +292,90 @@ func main() {
 		// These configurations ensure that only authorized users and service accounts
 		// can access the metrics endpoint. The RBAC are configured in 'config/rbac/kustomization.yaml'. More info:
 		// https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.21.0/pkg/metrics/filters#WithAuthenticationAndAuthorization //nolint:lll // URL
-		metricsServerOptions.FilterProvider = filters.WithAuthenticationAndAuthorization
+		opts.FilterProvider = filters.WithAuthenticationAndAuthorization
 	}
 
-	// If the certificate is not specified, controller-runtime will automatically
-	// generate self-signed certificates for the metrics server. While convenient for development and testing,
-	// this setup is not recommended for production.
-	//
-	// TODO(user): If you enable certManager, uncomment the following lines:
-	// - [METRICS-WITH-CERTS] at config/default/kustomization.yaml to generate and use certificates
-	// managed by cert-manager for the metrics server.
-	// - [PROMETHEUS-WITH-CERTS] at config/prometheus/kustomization.yaml for TLS certification.
-	if len(metricsCertPath) > 0 {
+	var metricsCertWatcher *certwatcher.CertWatcher
+	if len(certPath) > 0 {
 		setupLog.Info("Initializing metrics certificate watcher using provided certificates",
-			"metrics-cert-path", metricsCertPath, //nolint:lll // Structured log with many fields
-			"metrics-cert-name", metricsCertName, "metrics-cert-key", metricsCertKey)
+			"metrics-cert-path", certPath, //nolint:lll // Structured log with many fields
+			"metrics-cert-name", certName, "metrics-cert-key", certKey)
 
 		var err error
 		metricsCertWatcher, err = certwatcher.New(
-			filepath.Join(metricsCertPath, metricsCertName),
-			filepath.Join(metricsCertPath, metricsCertKey),
+			filepath.Join(certPath, certName),
+			filepath.Join(certPath, certKey),
 		)
-		if err != nil {
-			setupLog.Error(err, "to initialize metrics certificate watcher", "error", err)
-			os.Exit(1)
-		}
+		fatalIfErr(err, "to initialize metrics certificate watcher", "error", err)
 
-		metricsServerOptions.TLSOpts = append(metricsServerOptions.TLSOpts, func(config *tls.Config) {
+		opts.TLSOpts = append(opts.TLSOpts, func(config *tls.Config) {
 			config.GetCertificate = metricsCertWatcher.GetCertificate
 		})
 	}
 
+	return opts, metricsCertWatcher
+}
+
+// newManager creates a new controller-runtime Manager with common options.
+func newManager(
+	metricsOptions metricsserver.Options,
+	webhookServer webhook.Server,
+	probeAddr string,
+	enableLeaderElection bool,
+) ctrl.Manager {
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                 scheme,
-		Metrics:                metricsServerOptions,
+		Metrics:                metricsOptions,
 		WebhookServer:          webhookServer,
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
 		LeaderElectionID:       "9ed3440e.configbutler.ai",
-		// LeaderElectionReleaseOnCancel defines if the leader should step down voluntarily
-		// when the Manager ends. This requires the binary to immediately end when the
-		// Manager is stopped, otherwise, this setting is unsafe. Setting this significantly
-		// speeds up voluntary leader transitions as the new leader don't have to wait
-		// LeaseDuration time first.
-		//
-		// In the default scaffold provided, the program ends immediately after
-		// the manager stops, so would be fine to enable this option. However,
-		// if you are doing or is intended to do any operation such as perform cleanups
-		// after the manager stops then its usage might be unsafe.
 		// LeaderElectionReleaseOnCancel: true,
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
 		os.Exit(1)
 	}
+	return mgr
+}
 
-	// Add leader pod labeler if leader election is enabled
-	// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;update;patch
-	if enableLeaderElection {
-		podName := leader.GetPodName()
-		podNamespace := leader.GetPodNamespace()
-		if podName != "" && podNamespace != "" {
-			setupLog.Info("Adding leader pod labeler", "pod", podName, "namespace", podNamespace)
-			podLabeler := &leader.PodLabeler{
-				Client:    mgr.GetClient(),
-				Log:       ctrl.Log.WithName("leader-labeler"),
-				PodName:   podName,
-				Namespace: podNamespace,
-			}
-			if err := mgr.Add(podLabeler); err != nil {
-				setupLog.Error(err, "unable to add leader pod labeler")
-				os.Exit(1)
-			}
-		} else {
-			setupLog.Info("POD_NAME or POD_NAMESPACE not set, skipping leader pod labeler")
+// addLeaderPodLabeler adds the leader pod labeler runnable when leader election is enabled.
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;update;patch
+func addLeaderPodLabeler(mgr ctrl.Manager, enabled bool) {
+	if !enabled {
+		return
+	}
+
+	podName := leader.GetPodName()
+	podNamespace := leader.GetPodNamespace()
+	if podName != "" && podNamespace != "" {
+		setupLog.Info("Adding leader pod labeler", "pod", podName, "namespace", podNamespace)
+		podLabeler := &leader.PodLabeler{
+			Client:    mgr.GetClient(),
+			Log:       ctrl.Log.WithName("leader-labeler"),
+			PodName:   podName,
+			Namespace: podNamespace,
 		}
+		fatalIfErr(mgr.Add(podLabeler), "unable to add leader pod labeler")
+	} else {
+		setupLog.Info("POD_NAME or POD_NAMESPACE not set, skipping leader pod labeler")
 	}
+}
 
-	if err = (&controller.GitRepoConfigReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "GitRepoConfig")
-		os.Exit(1)
-	}
-
-	// Initialize rule store and event queue for webhook handler
-	ruleStore := rulestore.NewStore()
-	eventQueue := eventqueue.NewQueue()
-
-	// Create WatchRule reconciler with rule store integration
-	watchRuleReconciler := &controller.WatchRuleReconciler{
-		Client:    mgr.GetClient(),
-		Scheme:    mgr.GetScheme(),
-		RuleStore: ruleStore,
-	}
-	if err = watchRuleReconciler.SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "WatchRule")
-		os.Exit(1)
-	}
-
-	// Create ClusterWatchRule reconciler with rule store integration
-	clusterWatchRuleReconciler := &controller.ClusterWatchRuleReconciler{
-		Client:    mgr.GetClient(),
-		Scheme:    mgr.GetScheme(),
-		RuleStore: ruleStore,
-	}
-	if err = clusterWatchRuleReconciler.SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "ClusterWatchRule")
-		os.Exit(1)
-	}
-
-	// Register webhook handler
-	eventHandler := &webhookhandler.EventHandler{
-		Client:                     mgr.GetClient(),
-		RuleStore:                  ruleStore,
-		EventQueue:                 eventQueue,
-		EnableVerboseAdmissionLogs: enableVerboseAdmissionLogs,
-	}
-
-	// Create and inject decoder for generic Kubernetes resource handling
-	// This decoder uses unstructured.Unstructured to handle ANY K8s resource type
-	decoder := admission.NewDecoder(scheme)
-	if err := eventHandler.InjectDecoder(&decoder); err != nil {
-		setupLog.Error(err, "unable to inject decoder into webhook handler")
-		os.Exit(1)
-	}
-	setupLog.Info("Generic unstructured decoder injected - ready to handle all Kubernetes resource types")
-
-	// Create webhook with admission handler
-	validatingWebhook := &admission.Webhook{Handler: eventHandler}
-	mgr.GetWebhookServer().Register("/process-audit-webhook-calls", validatingWebhook)
-	setupLog.Info("Webhook handler registered", "path", "/process-audit-webhook-calls")
-
-	// Start the Git worker to process events from the queue
-	gitWorker := &git.Worker{
-		Client:     mgr.GetClient(),
-		Log:        ctrl.Log.WithName("git-worker"),
-		EventQueue: eventQueue,
-	}
-
-	if err := mgr.Add(gitWorker); err != nil {
-		setupLog.Error(err, "unable to add git worker to manager")
-		os.Exit(1)
-	}
-	setupLog.Info("Git worker added to manager")
-
-	// +kubebuilder:scaffold:builder
-
+// addCertWatchersToManager attaches optional certificate watchers to the manager.
+func addCertWatchersToManager(mgr ctrl.Manager, metricsCertWatcher, webhookCertWatcher *certwatcher.CertWatcher) {
 	if metricsCertWatcher != nil {
 		setupLog.Info("Adding metrics certificate watcher to manager")
-		if err := mgr.Add(metricsCertWatcher); err != nil {
-			setupLog.Error(err, "unable to add metrics certificate watcher to manager")
-			os.Exit(1)
-		}
+		fatalIfErr(mgr.Add(metricsCertWatcher), "unable to add metrics certificate watcher to manager")
 	}
-
 	if webhookCertWatcher != nil {
 		setupLog.Info("Adding webhook certificate watcher to manager")
-		if err := mgr.Add(webhookCertWatcher); err != nil {
-			setupLog.Error(err, "unable to add webhook certificate watcher to manager")
-			os.Exit(1)
-		}
+		fatalIfErr(mgr.Add(webhookCertWatcher), "unable to add webhook certificate watcher to manager")
 	}
+}
 
-	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
-		setupLog.Error(err, "unable to set up health check")
-		os.Exit(1)
-	}
-	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
-		setupLog.Error(err, "unable to set up ready check")
-		os.Exit(1)
-	}
-
-	setupLog.Info("starting manager")
-	if err := mgr.Start(setupCtx); err != nil {
-		setupLog.Error(err, "problem running manager")
-		os.Exit(1)
-	}
+// addHealthChecks registers health and readiness checks.
+func addHealthChecks(mgr ctrl.Manager) {
+	fatalIfErr(mgr.AddHealthzCheck("healthz", healthz.Ping), "unable to set up health check")
+	fatalIfErr(mgr.AddReadyzCheck("readyz", healthz.Ping), "unable to set up ready check")
 }
