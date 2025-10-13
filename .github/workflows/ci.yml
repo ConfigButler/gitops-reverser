@@ -51,13 +51,13 @@ jobs:
           echo "name=${IMAGE}" >> $GITHUB_OUTPUT
           echo "Building CI base container: ${IMAGE}"
 
-      - name: Build and push CI base container (multi-arch)
+      - name: Build and push CI base container
         uses: docker/build-push-action@v6
         with:
           context: .
           file: .devcontainer/Dockerfile.ci
           push: true
-          platforms: linux/amd64,linux/arm64
+          load: true # So that we can run the next step without pulling
           tags: |
             ${{ steps.image.outputs.name }}
             ${{ env.REGISTRY }}/configbutler/gitops-reverser-ci:latest
