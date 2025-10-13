@@ -58,7 +58,6 @@ jobs:
           file: .devcontainer/Dockerfile.ci
           push: true
           platforms: linux/amd64,linux/arm64
-          load: true # So that we can run the next step without pulling
           tags: |
             ${{ steps.image.outputs.name }}
             ${{ env.REGISTRY }}/configbutler/gitops-reverser-ci:latest
