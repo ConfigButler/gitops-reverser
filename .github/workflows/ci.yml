@@ -51,12 +51,13 @@ jobs:
           echo "name=${IMAGE}" >> $GITHUB_OUTPUT
           echo "Building CI base container: ${IMAGE}"
 
-      - name: Build and push CI base container
+      - name: Build and push CI base container (multi-arch)
         uses: docker/build-push-action@v6
         with:
           context: .
           file: .devcontainer/Dockerfile.ci
           push: true
+          platforms: linux/amd64,linux/arm64
           load: true # So that we can run the next step without pulling
           tags: |
             ${{ steps.image.outputs.name }}
@@ -304,12 +305,16 @@ jobs:
   # Build and push Docker images in parallel for each platform
   publish:
     name: Build ${{ matrix.platform }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runs_on }}
     needs: release-please
     if: needs.release-please.outputs.release_created == 'true'
     strategy:
       matrix:
-        platform: [linux/amd64, linux/arm64]
+        include:
+          - platform: linux/amd64
+            runs_on: ubuntu-latest
+          - platform: linux/arm64
+            runs_on: ubuntu-24.04-arm64
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
