@@ -1,6 +1,6 @@
 # CI-focused base image with essential build tools
 # This is used in CI pipelines and as base for the full dev container
-FROM golang:1.25.1-bookworm
+FROM golang:1.25.2-bookworm
 
 # Avoid warnings by switching to noninteractive
 ENV DEBIAN_FRONTEND=noninteractive
@@ -19,11 +19,11 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 # Tool versions - centralized for easy updates
-ENV KUBECTL_VERSION=v1.32.3 \
+ENV KUBECTL_VERSION=v1.34.1 \
     KUSTOMIZE_VERSION=5.7.1 \
-    KUBEBUILDER_VERSION=4.4.0 \
+    KUBEBUILDER_VERSION=4.9.0 \
     GOLANGCI_LINT_VERSION=v2.5.0 \
-    HELM_VERSION=v3.12.3
+    HELM_VERSION=v3.19.0
 
 # Install kubectl
 RUN curl -LO "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl" \
