@@ -1,6 +1,6 @@
 # GitOps Reverser
 
-GitOps Reverser is a Kubernetes operator that turns live API activity into clean, versioned YAML in Git. It receives events from the Kubernetes API server by admission webhook calls, sanitizes them, and commits to your repository with rich metadata—providing an immediate, human‑readable audit trail while keeping Git as the source of truth.
+GitOps Reverser is a Kubernetes operator that turns live API activity into clean, versioned YAML in Git. It receives events from the Kubernetes API server by admission webhook calls, sanitizes them, and commits to your repository with rich metadata. By doing so it's providing an immediate, human‑readable audit trail while keeping Git as the source of truth.
 
 ## Why
 
@@ -51,7 +51,7 @@ graph LR
     style k8s_api fill:#fff,stroke:#326ce5,stroke-width:2px
 ```
 
-## How it works (high level)
+## How it works
 
 - Capture: Validating/Admission webhook receives Kubernetes API requests.
 - Sanitize: Remove status and server‑managed fields; format as clean YAML.
