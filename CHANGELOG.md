@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.6.0...gitops-reverser-v0.7.0) (2025-10-13)
+
+
+### Features
+
+* Adding badges and a LICENSE (which already was in most source files, so nothing new) ([5ac944e](https://github.com/ConfigButler/gitops-reverser/commit/5ac944eeae63e7fd893ad94a6dc5b080a55ce52d))
+
 ## [0.6.0](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.5.0...gitops-reverser-v0.6.0) (2025-10-13)
 
 
