@@ -2,14 +2,14 @@ name: CI
 
 on:
   push:
-    branches: [ main, develop ]
-    tags: [ 'v*' ]
+    branches: [main, develop]
+    tags: ["v*"]
   pull_request:
-    branches: [ main, develop ]
+    branches: [main, develop]
 
 env:
-  GO_VERSION: '1.25.1'
-  KUSTOMIZE_VERSION: 'v5.4.1'
+  GO_VERSION: "1.25.1"
+  KUSTOMIZE_VERSION: "v5.4.1"
   REGISTRY: ghcr.io
   IMAGE_NAME: configbutler/gitops-reverser
   IMAGE_TAG: ci-${{ github.sha }}
@@ -57,7 +57,7 @@ jobs:
           context: .
           file: .devcontainer/Dockerfile.ci
           push: true
-          load: true  # So that we can run the next step without pulling
+          load: true # So that we can run the next step without pulling
           tags: |
             ${{ steps.image.outputs.name }}
             ${{ env.REGISTRY }}/configbutler/gitops-reverser-ci:latest
@@ -141,9 +141,9 @@ jobs:
       - name: Configure Git safe directory
         run: git config --global --add safe.directory /__w/gitops-reverser/gitops-reverser
 
-      - name: Copy CRDs to Helm chart
+      - name: Copy generated things from /config
         run: |
-          cp config/crd/bases/*.yaml charts/gitops-reverser/crds/
+          make helm-sync
 
       - name: Helm lint
         run: |
@@ -401,30 +401,21 @@ jobs:
           tag_name: ${{ needs.release-please.outputs.tag_name }}
           append_body: true
           body: |
-            
             ## Installation
-            
             ### Quick Install (Single YAML)
-            
             ```bash
             kubectl apply -f https://github.com/ConfigButler/gitops-reverser/releases/download/${{ needs.release-please.outputs.tag_name }}/install.yaml
             ```
-            
             ### Helm Chart
-            
             ```bash
             helm install gitops-reverser oci://${{ env.CHART_REGISTRY }}/gitops-reverser --version ${{ needs.release-please.outputs.version }}
             ```
-            
             ## Docker Images
-            
             This release is available as a Docker image:
-            
             ```bash
             docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.release-please.outputs.version }}
             docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
             ```
-            
             **Platforms:** linux/amd64, linux/arm64
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -447,9 +438,9 @@ jobs:
       - name: Configure Git safe directory
         run: git config --global --add safe.directory /__w/gitops-reverser/gitops-reverser
 
-      - name: Copy CRDs to Helm chart
+      - name: Copy generated things from /config
         run: |
-          cp config/crd/bases/*.yaml charts/gitops-reverser/crds/
+          make helm-sync
 
       - name: Generate install.yaml from Helm chart
         run: |

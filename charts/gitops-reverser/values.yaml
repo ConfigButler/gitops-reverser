@@ -23,7 +23,7 @@ leaderOnlyService:
 image:
   repository: ghcr.io/configbutler/gitops-reverser
   pullPolicy: IfNotPresent
-  tag: ""
+  tag: "ci-13594591ef24e91c684a31bf2f239ce8a5a7229a"
 
 imagePullSecrets: []
 nameOverride: ""
@@ -118,8 +118,6 @@ certificates:
 # RBAC configuration
 rbac:
   create: true
-  # Additional rules can be added here if needed
-  rules: []
 
 # Resource limits and requests
 resources:
