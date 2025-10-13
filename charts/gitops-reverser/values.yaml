@@ -23,12 +23,9 @@ leaderOnlyService:
 image:
   repository: ghcr.io/configbutler/gitops-reverser
   pullPolicy: IfNotPresent
-  # Overrides the image tag whose default is the chart appVersion.
-  tag: "ci-e29988b7a48e232e2f862f3944e4a72d94417f88"
+  tag: ""
 
-imagePullSecrets:
-  - name: ghcr-secret # TODO: Remove when we are public
-
+imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""
 

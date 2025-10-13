@@ -1,8 +1,44 @@
 # GitOps Reverser
 
-**Automatically capture manual Kubernetes changes in Git**
+GitOps Reverser is a Kubernetes operator that captures cluster changes (through a ValidatingWebhookConfiguration). The operator commits them to Git as yaml files, creating a file based reprentation of your current desired state. Every change becomes an annotated commit, giving you an audit trail.
 
-GitOps Reverser is a Kubernetes operator that captures manual cluster changes and commits them to Git, creating a complete audit trail.
+# Why?
+
+We love GitOps. It gives us a single source of truth, an audit trail, and safe, automated deployments. We also love the Kubernetes API. It's a universal, battle-tested control plane that gives us a powerful, declarative interface for managing any kind resources.
+
+But today, we are forced to choose between them:
+
+* The Pure GitOps Flow: Developers make changes exclusively in Git. This is safe but can be slow and cumbersome for simple configuration updates, often requiring developers to be YAML and Git experts.
+
+* The API-First Flow: Developers or UIs make changes directly to the cluster. This is fast and interactive but breaks the "Git as the source of truth" principle, creating a "Wild West" of untracked changes.
+
+How can we get the interactive, immediate feedback of an API without sacrificing the safety and transparency of a Git-based workflow?
+
+GitOps-Reverser is the bridge. It's a lightweight Kubernetes admission webhook that implements a powerful "Reverse GitOps" pattern. It lets you use the Kubernetes API as the user-friendly "frontend" for a rock-solid GitOps backend.
+
+# How?
+
+GitOps-Reverser intercepts them and translates them into a safe, auditable Git workflow.
+
+How It Works: The "Sandbox-First" Workflow
+Propose a Change: A developer (or a UI) makes a configuration change using the standard Kubernetes API (kubectl edit, or a PATCH request).
+
+Intercept & Fork: GitOps-Reverser intercepts the API call. Instead of applying it, it automatically creates a new Git branch and opens a Pull Request with the proposed change.
+
+Test in Isolation: The new PR triggers a CI pipeline (using tools like Tekton) that spins up an ephemeral "sandbox" namespace. The proposed configuration is deployed and tested in complete isolation.
+
+Review & Merge: The team reviews the PR, which now includes the successful test results. Once approved, the change is merged into the main branch.
+
+Deploy with Confidence: A standard GitOps tool (like Flux or Argo CD) detects the merge and safely reconciles the change to your production environment.
+
+The Benefits
+The Best of Both Worlds: Get the interactive, user-friendly experience of an API and the safety, audit trail, and peer-review process of Git.
+
+Enhanced Developer Experience: Developers can make changes in safe, temporary sandboxes without needing deep Git expertise for every small update.
+
+Unlock Automation and AI: By creating a standard, API-driven contract for configuration, we pave the way for a future where AI agents and interoperable tools can safely and declaratively manage our systems.
+
+In short, GitOps-Reverser lets you stop choosing between speed and safety, giving you a truly cloud-native way to manage your application's configuration.
 
 ## What It Does
 
@@ -12,10 +48,23 @@ When you make manual changes to your Kubernetes cluster (hotfixes, emergency pat
 - Commits them to your Git repository with detailed metadata
 - Handles conflicts intelligently
 
+## 🚨 Early Stage Software 🚨
+
+
+> **Heads up!** This operator is currently in a very early stage of development. It is intended for evaluation and testing purposes in non-critical environments.
+>
+> Please be aware of the following:
+>
+> - The Custom Resource APIs (`GitRepoConfig`, `WatchRule`, etc.) are **not stable** and may have breaking changes in future releases.
+> - The software has not been thoroughly tested and likely contains bugs.
+> - It is **NOT yet recommended for production use**.
+>
+> I enthusiastically welcome feedback, bug reports, and contributions! Please feel free to open an issue to share your thoughts.
+
 ## Quick Start
 
 ### Prerequisites
-- Kubernetes cluster (v1.11.3+)
+- Kubernetes cluster
 - kubectl configured
 - Git repository for storing changes
 - cert-manager installed for webhook TLS
@@ -219,9 +268,7 @@ spec:
 
 ### Cluster-Scoped Resources
 
-Cluster-scoped resources (Nodes, ClusterRoles, Namespaces, etc.) require ClusterWatchRule:
-
-> 🚧 **ClusterWatchRule is not yet implemented**. Currently, only namespace-scoped resources are supported.
+Cluster-scoped resources (Nodes, ClusterRoles, Namespaces, etc.) require ClusterWatchRule (docs to be added)
 
 ## Important: Avoiding Infinite Loops
 
@@ -268,19 +315,6 @@ make build
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`TESTING.md`](TESTING.md) for detailed development information.
 
-## Architecture
-
-```
-┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
-│   Kubernetes    │    │  GitOps Reverser │    │   Git Repository│
-│     Cluster     │───▶│    Operator      │───▶│                 │
-│                 │    │                  │    │  <group>/<ver>/ │
-│ Manual Changes  │    │ • Webhooks       │    │  ├─ pods/       │
-│ Admin Actions   │    │ • Sanitization   │    │  ├─ configmaps/ │
-│ Hotfixes        │    │ • Conflict Mgmt  │    │  └─ ...         │
-└─────────────────┘    └──────────────────┘    └─────────────────┘
-```
-
 ### Key Components
 
 - **Admission Webhooks**: Capture changes in real-time
@@ -321,25 +355,24 @@ kubectl get watchrule -A
 kubectl describe watchrule <name> -n <namespace>
 ```
 
+## Other tools
+
+| **Tool** | **How it Works** | **Key Difference from GitOps Reverser** | 
+|---|---|---|
+| [RichardoC/kube-audit-rest](https://github.com/RichardoC/kube-audit-rest) | An admission webhook that receives audit events and exposes them over a REST API. | **Action vs. Transport:** `kube-audit-rest` is a transport layer. GitOps Reverser is an *action* layer that consumes the event and commits it to Git. | 
+| https://github.com/robusta-dev/robusta | A broad observability and automation platform. | **Focused Tool vs. Broad Platform:** Robusta is a large platform. GitOps Reverser is a small, single-purpose utility focused on simplicity and low overhead. | 
+| [bpineau/katafygio](https://github.com/bpineau/katafygio) | Periodically scans the cluster and dumps all resources to a Git repository. | **Event-Driven vs. Snapshot:** Katafygio is a backup tool. GitOps Reverser is event-driven, providing a real-time audit trail. | 
+
 ## Contributing
-
-We welcome contributions! Key areas:
-
-- ClusterWatchRule implementation (for cluster-scoped resources)
-- Enhanced filtering and transformation rules
-- Multi-repository support
-- Integration with GitOps tools
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for guidelines.
 
 ## License
 
-Apache License 2.0 - See [LICENSE](LICENSE) for details.
+Apache License 2.0
 
 ---
 
 **Need Help?**
 
-- 📖 [Documentation](https://github.com/ConfigButler/gitops-reverser/wiki)
 - 🐛 [Report Issues](https://github.com/ConfigButler/gitops-reverser/issues)
-- 💬 [Discussions](https://github.com/ConfigButler/gitops-reverser/discussions)
