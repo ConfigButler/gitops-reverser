@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.4.0...gitops-reverser-v0.5.0) (2025-10-13)
+
+
+### Features
+
+* Adding examples in helm chart and install.yaml ([fce3da5](https://github.com/ConfigButler/gitops-reverser/commit/fce3da59dd1503413f895d16757198e311415403))
+* Allows safe reuse of GitRepoConfig and adds ClusterWatchRule ([148eb08](https://github.com/ConfigButler/gitops-reverser/commit/148eb08875f17e2a4018ce06dd031ec44152ef53))
+* Doing a first throw on clusterwatchrule ([fc73048](https://github.com/ConfigButler/gitops-reverser/commit/fc730484a9377602231582da55e0b31d1cd1938b))
+* Fix helm pushing ([#40](https://github.com/ConfigButler/gitops-reverser/issues/40)) ([639edba](https://github.com/ConfigButler/gitops-reverser/commit/639edbaf4f98b4b4cd604cd24e88130231c68bba))
+* Have the same gitRepoConfigRef for both WatchRule and ClusterWatchRule. ([b592130](https://github.com/ConfigButler/gitops-reverser/commit/b592130f1ac4e69c7ba4b2426fe6a64b4d165fc4))
+* Implementing various improvements ([8fad173](https://github.com/ConfigButler/gitops-reverser/commit/8fad1737d6484f14ec259c651edb80d26b41ac40))
+* Working on new designs and other improvements ([109a71d](https://github.com/ConfigButler/gitops-reverser/commit/109a71d1fc15fd9c613530f8ebb94c6e99f98e64))
+
+
+### Bug Fixes
+
+* Failing pushes to GH (improving SSH key handling). Less verbose on events that we don't act upon, allowing debug inside devcontainer. ([5739420](https://github.com/ConfigButler/gitops-reverser/commit/573942027fe934a3253351ec6617744c965506ae))
+* Getting the end2end tests at least running ([ad7de89](https://github.com/ConfigButler/gitops-reverser/commit/ad7de89e528b026bc733716f24a1354860239cf4))
+* Let's cleanup the webhook stuff ([99dd4f9](https://github.com/ConfigButler/gitops-reverser/commit/99dd4f9202850a6e7e4a8a002e81b75b8b686df8))
+* Make more explicit which generated files are used in helm chart (don't want to forget it again). ([3621133](https://github.com/ConfigButler/gitops-reverser/commit/362113379d0b2fd7932f8ce7b22dce250c013e94))
+* Support resource deletion ([9ae3ca6](https://github.com/ConfigButler/gitops-reverser/commit/9ae3ca63f225f92bb046046962ecc8ecd9de2e15))
+
+
+### Documentation
+
+* Simpler readme for now ([bdc2ccd](https://github.com/ConfigButler/gitops-reverser/commit/bdc2ccdafe64796e43e03ae0786abff143ea57d9))
+
 ## [0.4.0](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.3.0...gitops-reverser-v0.4.0) (2025-10-07)
 
 
