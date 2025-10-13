@@ -316,18 +316,10 @@ linters:
       - common-false-positives
     # Excluding configuration per-path, per-linter, per-text and per-source.
     rules:
-      - source: "TODO"
-        linters: [godot]
       - text: "should have a package comment"
         linters: [revive]
       - text: 'exported \S+ \S+ should have comment( \(or a comment on this block\))? or be unexported'
         linters: [revive]
-      - text: 'package comment should be of the form ".+"'
-        source: "// ?(nolint|TODO)"
-        linters: [revive]
-      - text: 'comment on exported \S+ \S+ should be of the form ".+"'
-        source: "// ?(nolint|TODO)"
-        linters: [revive, staticcheck]
       # Allow global variables in specific patterns (Kubernetes operator patterns)
       - text: "(scheme|setupLog|GroupVersion|SchemeBuilder|AddToScheme) is a global variable"
         linters: [gochecknoglobals]
@@ -361,20 +353,12 @@ linters:
       # Allow fmt.Print* in test/e2e (debugging outputs)
       - path: 'test/e2e/.*\.go'
         linters: [forbidigo]
-      # Allow fmt.Printf for warnings in controller
-      - path: 'internal/controller/.*\.go'
-        text: "Warning:"
-        linters: [forbidigo]
       # Allow fmt.Println in metrics exporter (initialization logs)
       - path: 'internal/metrics/.*\.go'
         linters: [forbidigo]
       # Relax godot for test helpers and utility functions
       - path: '(test/|helpers\.go)'
         linters: [godot, godoclint]
-      # Allow min function redefinition in e2e tests (Go 1.21+)
-      - text: "redefines-builtin-id: redefinition of the built-in function min"
-        path: 'test/e2e/.*\.go'
-        linters: [revive]
       # Allow utils package name (standard pattern)
       - text: "var-naming: avoid meaningless package names"
         path: 'test/utils/.*\.go'

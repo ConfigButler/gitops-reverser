@@ -26,6 +26,7 @@ RUN apt-get update \
     containerd.io \
     docker-buildx-plugin \
     docker-compose-plugin \
+    bash-completion \
     && apt-get autoremove -y \
     && apt-get clean -y \
     && rm -rf /var/lib/apt/lists/*
@@ -41,6 +42,8 @@ RUN go install github.com/go-delve/delve/cmd/dlv@latest
 # Install VSCode Go extension tools (gopls and staticcheck)
 RUN go install golang.org/x/tools/gopls@latest \
     && go install honnef.co/go/tools/cmd/staticcheck@latest
+
+RUN echo ". /usr/share/bash-completion/bash_completion" >> /root/.bashrc
 
 # Verify Docker and Kind installations
 RUN echo "=== Additional Dev Tools ===" \
