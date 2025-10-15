@@ -573,6 +573,21 @@ var _ = Describe("Manager", Ordered, func() {
 				g.Expect(readErr).NotTo(HaveOccurred())
 				g.Expect(string(content)).To(ContainSubstring("test-key: test-value"),
 					"ConfigMap file should contain expected data")
+				// Verify latest commit message contains operation, resource path, and "by user/"
+				gitLogCmd := exec.Command("git", "log", "-1", "--pretty=%B")
+				gitLogCmd.Dir = checkoutDir
+				commitMsg, commitErr := gitLogCmd.CombinedOutput()
+				if commitErr != nil {
+					g.Expect(commitErr).NotTo(HaveOccurred(),
+						fmt.Sprintf("Should read latest commit message. Output: %s", string(commitMsg)))
+				}
+				msg := string(commitMsg)
+				g.Expect(msg).To(ContainSubstring("[CREATE]"),
+					"Latest commit message should include operation [CREATE]")
+				g.Expect(msg).To(ContainSubstring("by user/"),
+					"Latest commit message should include the admission username trailer")
+				g.Expect(msg).To(ContainSubstring(fmt.Sprintf("v1/configmaps/%s", configMapName)),
+					"Latest commit message should include resource path")
 			}
 			Eventually(verifyGitCommit, 180*time.Second, 5*time.Second).Should(Succeed())
 

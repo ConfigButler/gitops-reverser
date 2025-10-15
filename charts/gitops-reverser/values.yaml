@@ -79,6 +79,9 @@ controllerManager:
     bindAddress: 127.0.0.1:8080
   # Enable HTTP/2 (disabled by default for security)
   enableHTTP2: false
+  # Enable watch-based ingestion (List+Watch). When true, the Deployment
+  # will pass --enable-watch-ingestion to the controller binary.
+  enableWatchIngestion: false
 
 # Webhook configuration
 webhook:

@@ -33,6 +33,7 @@ import (
 
 	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 	"github.com/ConfigButler/gitops-reverser/internal/eventqueue"
+	"github.com/ConfigButler/gitops-reverser/internal/metrics"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
 	"github.com/ConfigButler/gitops-reverser/internal/sanitize"
 	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
@@ -118,12 +119,6 @@ func (m *Manager) pollConfigMaps(ctx context.Context) {
 	ticker := time.NewTicker(configMapPollInterval)
 	defer ticker.Stop()
 
-	const (
-		apiGroup       = ""   // core
-		apiVersion     = "v1" // core/v1
-		resourcePlural = "configmaps"
-	)
-
 	for {
 		select {
 		case <-ctx.Done():
@@ -135,35 +130,55 @@ func (m *Manager) pollConfigMaps(ctx context.Context) {
 				log.Error(err, "failed to list ConfigMaps")
 				continue
 			}
-
-			for i := range items {
-				cm := &items[i]
-
-				u, err := toUnstructured(cm)
-				if err != nil {
-					log.Error(
-						err,
-						"failed to convert configmap to unstructured",
-						"name", cm.Name,
-						"namespace", cm.Namespace,
-					)
-					continue
-				}
-
-				id := buildIdentifierFromCM(apiGroup, apiVersion, resourcePlural, cm)
-
-				nsLabels := m.getNamespaceLabels(ctx, cm.Namespace)
-				isClusterScoped := false
-
-				wrRules, cwrRules := m.matchRules(u, resourcePlural, apiGroup, apiVersion, isClusterScoped, nsLabels)
-				if len(wrRules) == 0 && len(cwrRules) == 0 {
-					continue
-				}
-
-				sanitized := sanitize.Sanitize(u)
-				m.enqueueMatches(sanitized, id, wrRules, cwrRules)
-			}
+			// Metrics: count scanned objects in polling path.
+			metrics.ObjectsScannedTotal.Add(ctx, int64(len(items)))
+			m.processConfigMapBatch(ctx, items, log)
 		}
+	}
+}
+
+// processConfigMapBatch handles a batch of ConfigMaps and delegates to the single-item handler.
+func (m *Manager) processConfigMapBatch(ctx context.Context, items []corev1.ConfigMap, log logr.Logger) {
+	for i := range items {
+		m.processSingleConfigMap(ctx, &items[i], log)
+	}
+}
+
+// processSingleConfigMap converts, matches rules, sanitizes, enqueues, and records metrics for one ConfigMap.
+func (m *Manager) processSingleConfigMap(ctx context.Context, cm *corev1.ConfigMap, log logr.Logger) {
+	const (
+		apiGroup       = ""   // core
+		apiVersion     = "v1" // core/v1
+		resourcePlural = "configmaps"
+	)
+
+	u, err := toUnstructured(cm)
+	if err != nil {
+		log.Error(
+			err,
+			"failed to convert configmap to unstructured",
+			"name", cm.Name,
+			"namespace", cm.Namespace,
+		)
+		return
+	}
+
+	id := buildIdentifierFromCM(apiGroup, apiVersion, resourcePlural, cm)
+	nsLabels := m.getNamespaceLabels(ctx, cm.Namespace)
+
+	const isClusterScoped = false
+	wrRules, cwrRules := m.matchRules(u, resourcePlural, apiGroup, apiVersion, isClusterScoped, nsLabels)
+	if len(wrRules) == 0 && len(cwrRules) == 0 {
+		return
+	}
+
+	sanitized := sanitize.Sanitize(u)
+	m.enqueueMatches(sanitized, id, wrRules, cwrRules)
+
+	// Metrics: track enqueued events count for polling path.
+	if enq := int64(len(wrRules) + len(cwrRules)); enq > 0 {
+		metrics.EventsProcessedTotal.Add(ctx, enq)
+		metrics.GitCommitQueueSize.Add(ctx, enq)
 	}
 }
 

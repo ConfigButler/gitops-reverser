@@ -1,4 +1,12 @@
 # GitOps Reverser: Cluster-as-Source-of-Truth with watch-based ingestion and baseFolder ownership
+> Update: Retain validating webhook for username capture (permanent)
+>
+> We will keep a minimal validating webhook operational to capture the admission username for commit metadata. Concretely:
+> - Keep the validating webhook registered at path /process-validating-webhook (see [cmd/main.go](cmd/main.go))
+> - Keep Helm ValidatingWebhookConfiguration and Kustomize webhook manifests in place
+> - Keep FailurePolicy=Ignore and leader-only service routing
+> - Continue watch-based ingestion work behind --enable-watch-ingestion
+> - No decommission is planned; the webhook is required to capture user identity reliably
 
 This document is a single, cohesive plan for evolving gitops-reverser to:
 - Treat the live Kubernetes cluster as the authoritative source of truth for a configured scope.
@@ -6,7 +14,7 @@ This document is a single, cohesive plan for evolving gitops-reverser to:
 - Own a baseFolder (baseFolder) per destination, writing directly to Git branches without PR gating.
 - Simplify repository configuration by introducing GitDestination and slimming GitRepoConfig.
 - Focus by default on “desired-state” resources (e.g., Deployments, Services, RBAC, CRDs), excluding runtime-heavy objects (e.g., Pods, Events).
-- Remove all MutatingWebhookConfiguration-based ingestion, including code, Helm charts, and tests.
+- Retain a minimal ValidatingWebhookConfiguration for username capture; primary state ingestion is via List + Watch.
 
 References (current code and charts)
 - CRDs: [api/v1alpha1/watchrule_types.go](api/v1alpha1/watchrule_types.go), [api/v1alpha1/clusterwatchrule_types.go](api/v1alpha1/clusterwatchrule_types.go), [api/v1alpha1/gitrepoconfig_types.go](api/v1alpha1/gitrepoconfig_types.go)
@@ -20,7 +28,7 @@ References (current code and charts)
 
 ## Executive summary
 
-- Ingestion: adopt watch-only ingestion with discovery-driven List + Watch per selected GVK; deprecate and remove the MutatingWebhookConfiguration path.
+- Ingestion: adopt watch-based ingestion (List + Watch) per selected GVK; retain a minimal validating webhook solely for username capture (not for object ingestion).
 - Scope and ownership: a rule selects resources; a destination defines repo branch and base folder (baseFolder). The controller writes files under /{baseFolder}/{identifierPath} using canonicalization and semantic diffing.
 - Git model: direct pushes (no PR gating). Support multiple branches in a single repository via multiple destinations. repo-branch worker with a dedicated clone, batching writes and commits.
 - Defaults: performance-oriented parallelism with safety caps, leases for coordination, advisory repo marker, and robust metrics.
@@ -52,7 +60,7 @@ flowchart TD
 
 ## Core decisions
 
-- Replace MutatingWebhookConfiguration ingestion with List + Watch. Remove webhook code, chart templates, and tests.
+- Adopt List + Watch for object ingestion. Retain the minimal validating webhook solely for username capture; keep webhook code, chart templates, and tests.
 - Default to desired-state resources. Provide explicit inclusion/exclusion semantics aligned with experienced Kubernetes users’ expectations.
 - GitDestination (namespaced) configures repo branch and baseFolder (baseFolder), and access policy. GitRepoConfig becomes a connectivity/auth resource and gatekeeper for allowed branches.
 - Direct push, multi-branch capable, repo-branch worker with dedicated clone. Last-writer-wins at Git level (with coordination measures).
@@ -99,7 +107,7 @@ flowchart TD
   - Trails changes reliably via Watch resourceVersion.
   - Eliminates webhook permissions, network exposure, and admission timing concerns.
   - Aligns with how controllers observe state rather than intercepting mutating requests.
-- Decision: remove MutatingWebhookConfiguration ingestion entirely.
+- Decision: retain a minimal validating webhook exclusively for username capture; object ingestion uses List + Watch.
 
 ### Discovery
 - Use server discovery to enumerate resources with list/watch verbs.
@@ -157,14 +165,14 @@ flowchart TD
 
 ## Destinations, queues, and Git operations
 
-- repo-branch worker key: (repoURL, branch, baseFolder).
-- Working directory: dedicated clone per destination (no branch switching).
-  - Base path: /var/cache/gitops-reverser/{hash(repoURL,branch,baseFolder)}
+- repo-branch worker key: (repoURL, branch).
+- Working directory: dedicated clone per repo-branch worker (no branch switching).
+  - Base path: /var/cache/gitops-reverser/{hash(repoURL,branch)}
   - Garbage-collect stale clones by last-used TTL policy.
 - Batching: flush by thresholds (files, bytes) and time-based backstop.
 - Git ops:
-  - Fetch base, rebase if needed, fast-forward pushes only; retry on non-fast-forward with refreshed base.
-  - Serialize writes per destination; read paths can be parallel.
+  - Fetch base, fast-forward pushes only; on reject: fetch/reset --hard, reapply, push.
+  - Serialize writes within the worker; reads can be parallel across baseFolder trees.
 - Multi-branch: handled by independent workers per branch for the same repo.
 - Loop avoidance with Flux/Argo:
   - Commit only on semantic deltas.
@@ -173,8 +181,8 @@ flowchart TD
 
 ## Ownership and anti-conflict safeguards
 
-- Kubernetes Lease per destination:
-  - Name: hash(repoURL|branch|baseFolder)
+- Kubernetes Lease per repo-branch worker:
+  - Name: hash(repoURL|branch)
   - Acquire before writes; renew periodically.
   - If lease is held by another identity, set Ready=False on associated rules/destinations (OwnershipConflict) and skip writes (policy-configurable).
 - Repo marker file (optional; created once):
@@ -193,7 +201,7 @@ flowchart TD
   - objects_scanned_total, objects_written_total, files_deleted_total
   - commits_total, commit_bytes_total, rebase_retries_total
   - ownership_conflicts_total, lease_acquire_failures_total, marker_conflicts_total
-  - destination_active_workers, destination_queue_depth
+  - repo_branch_active_workers, repo_branch_queue_depth
 - Logs: include object identifiers, destinations, commit SHAs.
 - Kubernetes Events: major actions and conflicts.
 - ServiceMonitor and TLS: keep existing chart support (metrics path unchanged).
@@ -215,23 +223,20 @@ flowchart TD
   - GitRepoConfig.allowedBranches enforces branch allowlist for destinations.
   - Commit identity: bot user configured via values; trailers included.
 
-## Decommission MutatingWebhookConfiguration
+## Webhook retention policy (authoritative)
 
-Remove webhook-based ingestion entirely:
-- Code to delete:
-  - [internal/webhook/event_handler.go](internal/webhook/event_handler.go)
-  - [internal/webhook/event_handler_test.go](internal/webhook/event_handler_test.go)
-- Kustomize and manifests to delete:
-  - [config/webhook/](config/webhook/kustomization.yaml) (entire directory)
-- Helm chart templates to delete or disable:
-  - [charts/gitops-reverser/templates/validating-webhook.yaml](charts/gitops-reverser/templates/validating-webhook.yaml)
-  - Any webhook Service/Certificate templates: [charts/gitops-reverser/templates/certificates.yaml](charts/gitops-reverser/templates/certificates.yaml) if webhook-only; otherwise adjust if shared with metrics.
-- RBAC:
-  - Remove webhook-related RBAC if present; keep Leases, Events, and CRD RBAC.
-- Tests:
-  - Remove webhook-focused tests and adjust e2e to rely on watch-only ingestion.
-- Docs:
-  - Remove webhook setup instructions; update README to describe watch-based ingestion and defaults.
+We retain a minimal validating webhook permanently to capture the admission username for commit metadata. The webhook is not used for object ingestion; all object ingestion is through List + Watch.
+- Path and handler:
+  - Registered at /process-validating-webhook (see [cmd/main.go](cmd/main.go))
+  - Handler: [internal/webhook/event_handler.go](internal/webhook/event_handler.go)
+- Charts and manifests:
+  - Keep: [charts/gitops-reverser/templates/validating-webhook.yaml](charts/gitops-reverser/templates/validating-webhook.yaml)
+  - Keep: [config/webhook/](config/webhook/kustomization.yaml) and related service/cert wiring
+- Reliability and safety:
+  - FailurePolicy=Ignore
+  - Leader-only service routing
+- Tests and docs:
+  - Keep webhook-focused tests; document that webhook exists solely for username capture while watch-based ingestion handles state
 
 ## Testing and acceptance criteria
 
@@ -248,7 +253,7 @@ Remove webhook-based ingestion entirely:
   - Desired-state defaults: verify Pods and Events excluded by default; Deployments/Services included.
   - Overlap scenarios across rules and destinations produce expected last-writer behavior (with warnings).
 - Acceptance
-  - No webhooks installed.
+  - Validating webhook installed (FailurePolicy=Ignore; leader-only routing) and used solely for username capture.
   - Direct pushes only, multiple branches via destinations.
   - Immediate deletes under safety cap.
   - Metrics emitted as specified.
@@ -263,7 +268,7 @@ Remove webhook-based ingestion entirely:
 - Leases: renewSec=8, leaseSec=24
 - workDir base: /var/cache/gitops-reverser
 - Watch config: bookmarks=true, rvMatch=NotOlderThan, backoff=exp 500ms..30s
-- Checkout strategy: dedicated clone per destination
+- Checkout strategy: dedicated clone per repo-branch worker
 
 ## Implementation plan (sequenced)
 
@@ -279,13 +284,14 @@ Remove webhook-based ingestion entirely:
 - Encode “Desired-state” defaults; document “watch all” flag and default exclusions
 
 3) Destination workers and git ops
-- Implement repo-branch worker pool keyed by (repoURL, branch, baseFolder)
-- Dedicated clones; batching; commit/push logic; safety caps
+- Implement repo-branch worker pool keyed by (repoURL, branch)
+- Dedicated clones per repo-branch worker; batching; commit/push logic; safety caps
 - Leases + optional marker; commit trailers
 
-4) Remove webhook ingestion
-- Delete webhook code and manifests as listed
-- Remove Helm webhook templates; ensure chart installs only watch-based controller
+4) Webhook retention
+- Keep webhook code and manifests; ensure FailurePolicy=Ignore and leader-only routing
+- Admission path is used only to capture username; watch-based ingestion handles object state
+- Ensure Helm/Kustomize templates and RBAC remain consistent with permanent webhook
 
 5) RBAC and Helm
 - Update RBAC to include Leases, Events, CRDs, Secrets get; remove webhook RBAC
@@ -338,28 +344,16 @@ Rule defaults aligned with desired-state focus
   - ClusterWatchRule defaults to the Desired-state set across the chosen scope (Cluster/Namespaced)
 - Explicit inclusion required for runtime objects (e.g., “pods”); these are not included by default
 
-## Webhook decommission clarifications (scope of removal)
+## Webhook retention clarifications (scope and purpose)
 
-Remove all Mutating/Validating webhook-based ingestion from code and charts:
-- Code to delete:
-  - [internal/webhook/event_handler.go](internal/webhook/event_handler.go)
-  - [internal/webhook/event_handler_test.go](internal/webhook/event_handler_test.go)
-- Kustomize/manifests to delete:
-  - Entire [config/webhook/](config/webhook/kustomization.yaml) directory
-  - Cert-manager assets used for webhook serving:
-    - [config/certmanager/certificate-webhook.yaml](config/certmanager/certificate-webhook.yaml)
-    - [config/webhook/service.yaml](config/webhook/service.yaml)
-- Helm chart templates to delete/disable:
-  - [charts/gitops-reverser/templates/validating-webhook.yaml](charts/gitops-reverser/templates/validating-webhook.yaml)
-  - Remove webhook Service/Certificate wiring from [charts/gitops-reverser/templates/certificates.yaml](charts/gitops-reverser/templates/certificates.yaml) if it only existed for webhook; retain metrics certificates if present and separate
-- RBAC:
-  - Remove webhook-specific RBAC; retain Leases, Events, CRDs, Secrets get and status update permissions
-- Tests:
-  - Remove webhook E2E coverage; ensure E2E uses watch-only ingestion
-- Docs:
-  - Remove webhook setup; update [README.md](README.md) and chart docs to reflect watch-based ingestion and desired-state defaults
+Retain the validating webhook and related assets:
+- Code/tests: keep [internal/webhook/event_handler.go](internal/webhook/event_handler.go) and tests
+- Manifests: keep [config/webhook/](config/webhook/kustomization.yaml), [config/webhook/service.yaml](config/webhook/service.yaml), and related cert-manager assets
+- Charts: keep [charts/gitops-reverser/templates/validating-webhook.yaml](charts/gitops-reverser/templates/validating-webhook.yaml) and necessary certificate wiring
+- RBAC: keep webhook-related RBAC as required by the validating webhook; also retain Leases, Events, CRDs, Secrets get and status update permissions
+- Docs/tests: document and validate that webhook is used only for username capture; watch-based ingestion handles object state
 
-These defaults and removals make watch-based ingestion a first-class, central part of the design, focusing on declarative desired-state resources and leaving runtime noise out by default. References for mapping, rules, and controllers remain: [internal/types/identifier.go](internal/types/identifier.go), [api/v1alpha1/watchrule_types.go](api/v1alpha1/watchrule_types.go), [api/v1alpha1/clusterwatchrule_types.go](api/v1alpha1/clusterwatchrule_types.go), and the controller setup in [internal/controller/watchrule_controller.go](internal/controller/watchrule_controller.go) and [internal/controller/clusterwatchrule_controller.go](internal/controller/clusterwatchrule_controller.go).
+These defaults make watch-based ingestion a first-class, central part of the design (focusing on declarative desired-state resources and leaving runtime noise out by default) while retaining a validating webhook solely for username capture. References for mapping, rules, and controllers remain: [internal/types/identifier.go](internal/types/identifier.go), [api/v1alpha1/watchrule_types.go](api/v1alpha1/watchrule_types.go), [api/v1alpha1/clusterwatchrule_types.go](api/v1alpha1/clusterwatchrule_types.go), and the controller setup in [internal/controller/watchrule_controller.go](internal/controller/watchrule_controller.go) and [internal/controller/clusterwatchrule_controller.go](internal/controller/clusterwatchrule_controller.go).
 
 ## Finalized clarifications and CRD specification summary
 
@@ -441,7 +435,7 @@ Focus on declarative desired-state resources and exclude runtime-noisy types by 
   - controllerrevisions.apps, flowschemas.flowcontrol.apiserver.k8s.io, prioritylevelconfigurations.flowcontrol.apiserver.k8s.io
   - jobs.batch, cronjobs.batch (excluded by default per decision)
 
-Watch-only ingestion remains the default; MutatingWebhookConfiguration is removed entirely.
+Watch-based ingestion remains the default for object ingestion; the MutatingWebhookConfiguration is retained solely for username capture.
 
 ### Planned CRDs and fields (MVP surfaces)
 
@@ -626,3 +620,290 @@ Startup and deletion model recap
 
 Git conflict handling recap
 - Push after batching; on reject do fetch and reset --hard to remote tip, reapply pending changes, re-commit, and push again; no merge conflict resolution is attempted due to go-git limitations
+
+## Addendum: webhook retention and decommission sequencing
+
+This plan keeps the validating webhook temporarily to capture admission usernames for commit metadata while watch-based ingestion matures. Clarifications for sequencing:
+- Retained now (FailurePolicy=Ignore; leader-only routing):
+  - [charts/gitops-reverser/templates/validating-webhook.yaml](charts/gitops-reverser/templates/validating-webhook.yaml)
+  - [config/webhook/kustomization.yaml](config/webhook/kustomization.yaml)
+  - Controller handler bound at /process-validating-webhook (see [cmd/main.go](cmd/main.go))
+- Removal stays planned but is gated on watch-only parity (see “Testing and acceptance criteria”). Decommission steps in this document are to be executed only after:
+  - Watch-based ingestion reaches functional parity for targeted scopes
+  - E2E passes in watch-only mode
+  - RBAC/chart/docs are updated
+
+Until then, both paths can co-exist with the watch path guarded by --enable-watch-ingestion.
+
+## MVP deltas vs earlier bullets in this plan
+
+- Worker key correction (supersedes earlier “repo-branch+baseFolder” wording):
+  - Single worker per (repoURL, branch). Multiple baseFolder trees are serialized within that worker’s queue. See “Finalized clarifications.”
+- Access policy scope for MVP:
+  - Spec keeps early mention of accessPolicy at both GitRepoConfig and GitDestination for future capability; however, MVP can ship without enforcing these policies in controllers. Documentation here maintains the full surface, with enforcement introduced progressively.
+
+## Near-term implementation checklist (engineer’s view)
+
+Tracking immediate, concrete work items to reach watch-only parity. Files referenced are authoritative entry points for each task.
+
+- Discovery and selection
+  - [ ] Encode Desired-state include/exclude presets and apply during discovery ([internal/watch/discovery.go](internal/watch/discovery.go), [internal/watch/gvr.go](internal/watch/gvr.go))
+  - [ ] Periodic discovery refresh (5m default) with backoff and metrics ([internal/watch/discovery.go](internal/watch/discovery.go))
+
+- Reconciliation seed and trailing (List + Watch)
+  - [ ] Implement startup List per selected GVK to compute S_live and enqueue upserts ([internal/watch/manager.go](internal/watch/manager.go))
+  - [ ] Implement per-destination orphan detection (S_orphan = S_git − S_live) with deleteCapPerCycle ([internal/git/worker.go](internal/git/worker.go))
+  - [ ] Switch polling validation path to informer Watch continuity, re-list on Expired ([internal/watch/informers.go](internal/watch/informers.go))
+
+- Canonicalization and stable write path
+  - [ ] Ensure sanitizer drop-set and stable YAML rendering align with watch ingestion ([internal/sanitize/marshal.go](internal/sanitize/marshal.go))
+  - [ ] Preserve identifierPath mapping for namespaced/cluster scopes ([internal/types/identifier.go](internal/types/identifier.go))
+
+- Git worker behavior and batching
+  - [ ] Enforce batch flush caps: files, bytes, time ([internal/git/worker.go](internal/git/worker.go))
+  - [ ] Keep non-fast-forward retry policy: fetch, reset --hard, reapply, push ([internal/git/git.go](internal/git/git.go))
+
+- Ownership and safeguards
+  - [ ] Add per repo-branch Kubernetes Lease acquire/renew before writes ([internal/leader/leader.go](internal/leader/leader.go))
+  - [ ] Implement optional per-destination marker {baseFolder}/.configbutler/owner.yaml; honor exclusiveMode ([internal/git/worker.go](internal/git/worker.go))
+
+- Observability and RBAC
+  - [ ] Extend metrics (objects_scanned_total, objects_written_total, files_deleted_total, commits_total, commit_bytes_total, rebase_retries_total, ownership_conflicts_total, lease_acquire_failures_total, marker_conflicts_total, repo_branch_active_workers, repo_branch_queue_depth) ([internal/metrics/exporter.go](internal/metrics/exporter.go))
+  - [ ] Update ClusterRole for list/watch across selected resources and Leases verbs ([charts/gitops-reverser/templates/rbac.yaml](charts/gitops-reverser/templates/rbac.yaml))
+
+- Charts and packaging
+  - [ ] Add values for discovery refresh, excludes, concurrency caps ([charts/gitops-reverser/values.yaml](charts/gitops-reverser/values.yaml))
+  - [ ] Keep webhook templates active; add a note about deferral in chart README ([charts/gitops-reverser/README.md](charts/gitops-reverser/README.md))
+
+## Appendix A: Canonicalization and YAML rendering details (MVP)
+
+Goal: produce stable, semantically minimal YAML that prevents unnecessary churn.
+
+- Field drop/normalize set (applied during sanitize before diffing):
+  - metadata: managedFields, resourceVersion, uid, generation? (keep), creationTimestamp, deletionTimestamp, annotations/labels only when explicitly configured to ignore (MVP: no field-level ignore beyond managedFields/timestamps)
+  - status: drop entirely
+  - observedGeneration: drop if present under status
+- Defaulted-fields policy (v1):
+  - Do not remove defaulted fields unless deterministically safe across clusters/versions. MVP keeps server-defaulted fields intact to avoid drift.
+- Rendering and formatting:
+  - Deterministic key order, stable list ordering where defined by API sorting
+  - YAML: single-document per file, .yaml suffix, final newline at EOF, LF newlines
+- Utilities reference: [internal/sanitize/marshal.go](internal/sanitize/marshal.go), [internal/sanitize/sanitize.go](internal/sanitize/sanitize.go)
+
+## Appendix B: File layout and write policy
+
+- Path template: /{baseFolder}/{group-or-core}/{version}/{resource}/{namespace?}/{name}.yaml (see [internal/types/identifier.go](internal/types/identifier.go))
+- Namespacing:
+  - Namespaced resources include namespace segment
+  - Cluster-scoped omit namespace segment
+- Write policy:
+  - Compute semantic diff; if unchanged → no-op
+  - Atomic write: temp file + rename; ensure parent dirs exist
+  - Always include trailing newline; preserve Unix LF endings
+  - One K8s object per file (no multi-doc YAML)
+- Orphan handling:
+  - S_orphan = S_git − S_live per baseFolder; deletes respect deleteCapPerCycle
+
+## Appendix C: Secret handling (MVP stance)
+
+- Included in Desired-state by default (as-is sync) with data preserved base64-encoded (as stored by Kubernetes)
+- No redaction or encryption at rest performed by the controller in MVP
+- Future option: pluggable secret transformations (e.g., SOPS/KSOPS) via destination policy; out-of-scope for MVP
+
+## Appendix D: RBAC deltas to chart (must-have)
+
+Update ClusterRole(s) in [charts/gitops-reverser/templates/rbac.yaml](charts/gitops-reverser/templates/rbac.yaml):
+
+- Core verbs:
+  - get, list, watch for all selected resources per discovery filters
+- Leases (coordination.k8s.io):
+  - get, list, watch, create, update, patch, delete
+- Events (events.k8s.io/core):
+  - create, patch
+- CRDs (configbutler.ai):
+  - get, list, watch for watchrules, clusterwatchrules, gitrepoconfigs, gitdestinations
+  - status: get, update, patch for rules where status is updated
+- Secrets:
+  - get for repo credential Secret referenced by GitRepoConfig
+
+## Appendix E: Helm values (new keys for watch ingestion and caps)
+
+Add or confirm the following keys in [charts/gitops-reverser/values.yaml](charts/gitops-reverser/values.yaml):
+
+- controller:
+  - enableWatchIngestion: false
+  - discovery:
+    - refresh: 5m
+    - watchAll: false
+    - exclusions:
+      - [ "pods", "events", "events.events.k8s.io", "leases.coordination.k8s.io", "endpoints", "endpointslices.discovery.k8s.io", "controllerrevisions.apps", "flowschemas.flowcontrol.apiserver.k8s.io", "prioritylevelconfigurations.flowcontrol.apiserver.k8s.io", "jobs.batch", "cronjobs.batch" ]
+  - workers:
+    - maxGlobal: 24
+    - maxPerRepo: 5
+  - git:
+    - batch:
+      - maxFiles: 200
+      - maxBytesMiB: 10
+      - maxWaitSec: 20
+  - deletes:
+    - capPerCycle: 500
+  - leases:
+    - renewSec: 8
+    - leaseSec: 24
+  - workDir: "/var/cache/gitops-reverser"
+
+Charts TODO:
+- Template flags to Deployment args (enable-watch-ingestion)
+- Expose discovery caps and exclusions via env/args
+- Document defaults in [charts/gitops-reverser/README.md](charts/gitops-reverser/README.md)
+
+## Appendix F: Test matrix and CI gates (must pass)
+
+Required per project rules:
+- make lint (golangci-lint)
+- make test (>90% coverage for new packages)
+- make test-e2e (Docker/Kind required)
+
+Scenarios:
+- Unit
+  - identifier mapping deterministic paths
+  - sanitize golden outputs (stable YAML)
+  - discovery include/exclude logic
+- Integration
+  - Startup seed → writes + orphan deletes; second run → no-op
+  - Multi-branch repo workers; concurrency caps respected
+  - Non-fast-forward retry path (fetch/reset/reapply) remains stable
+- E2E
+  - Watch-only ingestion with Desired-state defaults (Jobs/CronJobs excluded)
+  - Lease contention simulation (single-writer semantics)
+  - Marker exclusiveMode on/off behavior
+
+## Appendix G: Metrics dimensions (cardinality-safe)
+
+Emit counters/gauges with low-cardinality labels:
+- objects_scanned_total{gvk, scope}
+- objects_written_total{gvk, scope}
+- files_deleted_total{destination}
+- commits_total{repo, branch}
+- commit_bytes_total{repo, branch}
+- rebase_retries_total{repo, branch}
+- ownership_conflicts_total{destination}
+- lease_acquire_failures_total{worker}
+- marker_conflicts_total{destination}
+- repo_branch_active_workers{repo, branch}
+- repo_branch_queue_depth{repo, branch}
+
+Implementation notes:
+- Reuse exporter in [internal/metrics/exporter.go](internal/metrics/exporter.go)
+- Avoid per-object labels; prefer per-destination/worker aggregation
+
+## Documentation status marker
+
+As of 2025-10-15 (UTC), this plan reflects:
+- Watch ingestion: feature-gated path implemented (aggregation, discovery with built-in exclusions, dynamic informers) with a minimal polling validator; commits go through existing event queue and git worker.
+- Webhook path: retained permanently for username capture with FailurePolicy=Ignore and leader-only routing.
+- Worker identity: clarified to repo-branch workers (per (repoURL, branch)), handling multiple baseFolder trees safely.
+- Next actions: implement startup seed + orphan deletion, lease/marker safeguards, batch caps, and extend metrics as listed; validate watch-only e2e flows with webhook retained.
+
+## Appendix H: Worked examples (rules, destinations, and path mapping)
+
+These concise examples illustrate how objects are selected and where they are written in Git.
+
+Example repo and destination
+- GitRepoConfig (namespaced)
+  - repoUrl: https://git.example.com/infrastructure/configs.git
+  - allowedBranches: ["main"]
+  - secretRef: repo-cred
+- GitDestination (namespaced)
+  - repoRef: {name: repo, namespace: configbutler-system}
+  - branch: main
+  - baseFolder: clusters/prod
+  - exclusiveMode: true
+
+Example WatchRule (namespaced)
+- Namespace: shop
+- destinationRef: configbutler-system/production
+- rules.resources: ["deployments", "services", "configmaps"]
+- Path mapping examples (baseFolder = clusters/prod):
+  - Deployment apps/v1 shop/web → /clusters/prod/apps/v1/deployments/shop/web.yaml
+  - Service v1 shop/api → /clusters/prod/core/v1/services/shop/api.yaml
+  - ConfigMap v1 shop/system-config → /clusters/prod/core/v1/configmaps/shop/system-config.yaml
+
+Example ClusterWatchRule (cluster-scoped)
+- destinationRef: configbutler-system/production
+- rules.resources: ["clusterroles.rbac.authorization.k8s.io", "clusterrolebindings.rbac.authorization.k8s.io"]
+- Path mapping (baseFolder = clusters/prod):
+  - ClusterRole rbac.authorization.k8s.io/v1 viewer → /clusters/prod/rbac.authorization.k8s.io/v1/clusterroles/viewer.yaml
+  - ClusterRoleBinding rbac.authorization.k8s.io/v1 viewer-binding → /clusters/prod/rbac.authorization.k8s.io/v1/clusterrolebindings/viewer-binding.yaml
+
+Notes
+- The “core” group is represented as core in paths (e.g., core/v1/services).
+- Identifiers and path logic reference: [internal/types/identifier.go](internal/types/identifier.go)
+- Sanitization for stable YAML: [internal/sanitize/marshal.go](internal/sanitize/marshal.go)
+
+## Appendix I: Failure modes and remediation playbook (MVP)
+
+Discovery issues
+- Symptom: some requested GVRs don’t start informers; logs show discovery errors.
+- Handling: exponential backoff (1s..60s with jitter) and periodic refresh (default 5m).
+- Remediation:
+  - Verify CRDs are installed and served
+  - Check RBAC for list/watch on those resources
+  - Inspect controller logs and metrics (discovery_errors_total)
+
+Watch stream expiration
+- Symptom: watch returns “Expired” or “too old resource version”.
+- Handling: perform re-list, capture new resourceVersion, recompute S_live and S_orphan, resume Trail.
+- Remediation: none usually required; verify API server health if persistent.
+
+Non-fast-forward push rejects
+- Symptom: remote updated; push rejected.
+- Handling: fetch remote tip, reset --hard, reapply pending changes, re-commit, push.
+- Remediation: ensure only a single writer (lease/marker). If multiple writers are expected, coordinate branches or baseFolder splits.
+- References: [internal/git/git.go](internal/git/git.go), [internal/git/worker.go](internal/git/worker.go)
+
+Lease conflicts
+- Symptom: lease held by another instance; writes skipped; Ready=False with OwnershipConflict.
+- Handling: no writes until lease can be acquired.
+- Remediation:
+  - Ensure only one active controller instance per repo-branch worker key (repoURL, branch)
+  - Adjust leader election and pod replicas, or split branches
+
+Ownership marker conflicts
+- Symptom: marker at {baseFolder}/.configbutler/owner.yaml does not match identity.
+- Handling:
+  - exclusiveMode=false → warn and continue
+  - exclusiveMode=true → refuse writes; Ready=False
+- Remediation: reconcile ownership policy, migrate or change baseFolder, or update exclusiveMode
+
+Filesystem/IO errors
+- Symptom: write failures, ENOSPC, permissions errors in workDir (/var/cache/gitops-reverser).
+- Handling: retries limited; batch aborted.
+- Remediation: increase disk space, verify container fs permissions and securityContext
+
+Missing/invalid Git credentials
+- Symptom: authentication failures on fetch/push.
+- Handling: worker logs push/fetch errors.
+- Remediation: verify Secret referenced by GitRepoConfig.secretRef; validate URL scheme; update [charts/gitops-reverser/templates/rbac.yaml](charts/gitops-reverser/templates/rbac.yaml) if secret namespaces are restricted.
+
+RBAC denials for target resources
+- Symptom: list/watch failures for certain GVRs.
+- Handling: those GVRs are skipped; warnings logged.
+- Remediation: extend ClusterRole as in Appendix D and redeploy
+
+## Implementation iteration marker — update 3 (2025-10-15, UTC)
+
+Scope of this iteration
+- Implemented built-in discovery exclusions for runtime/noisy resources (pods, events, endpoints, endpointslices, leases, controllerrevisions, flowschemas, prioritylevelconfigurations, jobs, cronjobs) in [internal/watch/discovery.go](internal/watch/discovery.go)
+- Added watch ingestion and worker metrics (objects_scanned_total, objects_written_total, files_deleted_total, commits_total, commit_bytes_total, rebase_retries_total, ownership_conflicts_total, lease_acquire_failures_total, marker_conflicts_total, repo_branch_active_workers, repo_branch_queue_depth) in [internal/metrics/exporter.go](internal/metrics/exporter.go), with increments wired in [internal/watch/manager.go](internal/watch/manager.go), [internal/watch/informers.go](internal/watch/informers.go), and [internal/git/worker.go](internal/git/worker.go)
+- Exposed Helm value to enable watch ingestion and wired controller arg in [charts/gitops-reverser/values.yaml](charts/gitops-reverser/values.yaml) and [charts/gitops-reverser/templates/deployment.yaml](charts/gitops-reverser/templates/deployment.yaml)
+- Reduced cognitive complexity in watch manager polling path; added unit tests for helper routines [internal/watch/helpers_test.go](internal/watch/helpers_test.go)
+
+Current implementation state
+- Feature-gated watch ingestion present (aggregation, discovery with exclusions, informers) with minimal polling validator; pipeline and git workers reused:
+  - [cmd/main.go](cmd/main.go), [internal/watch/manager.go](internal/watch/manager.go), [internal/watch/gvr.go](internal/watch/gvr.go), [internal/watch/discovery.go](internal/watch/discovery.go), [internal/watch/informers.go](internal/watch/informers.go), [internal/eventqueue/queue.go](internal/eventqueue/queue.go), [internal/git/worker.go](internal/git/worker.go), [internal/types/identifier.go](internal/types/identifier.go)
+- Webhook retained permanently for username capture with FailurePolicy=Ignore and leader-only routing.
+- Worker identity: one worker per (repoURL, branch), serializing multiple baseFolder trees.
+
+Next concrete actions
+- Implement List-based seed + S_orphan deletion, enforce batch caps, add Leases/marker, extend metrics and RBAC, validate watch-only e2e flows with webhook retained.

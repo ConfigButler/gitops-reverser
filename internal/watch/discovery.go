@@ -64,8 +64,29 @@ func (m *Manager) FilterDiscoverableGVRs(_ context.Context, in []GVR) []GVR {
 
 	index := buildDiscoveryIndex(preferred)
 
+	// Build default exclusion set locally (MVP) to avoid global state.
+	// Keys use the form "group|resource" where group is empty string for core.
+	exKey := func(group, resource string) string { return group + "|" + resource }
+	defaultExclusions := map[string]struct{}{
+		exKey("", "pods"):                                                    {},
+		exKey("", "events"):                                                  {},
+		exKey("events.k8s.io", "events"):                                     {},
+		exKey("", "endpoints"):                                               {},
+		exKey("discovery.k8s.io", "endpointslices"):                          {},
+		exKey("coordination.k8s.io", "leases"):                               {},
+		exKey("apps", "controllerrevisions"):                                 {},
+		exKey("flowcontrol.apiserver.k8s.io", "flowschemas"):                 {},
+		exKey("flowcontrol.apiserver.k8s.io", "prioritylevelconfigurations"): {},
+		exKey("batch", "jobs"):                                               {},
+		exKey("batch", "cronjobs"):                                           {},
+	}
+
 	var out []GVR
 	for _, g := range in {
+		// Apply built-in default exclusions for runtime/noisy resources (MVP).
+		if _, skip := defaultExclusions[exKey(g.Group, g.Resource)]; skip {
+			continue
+		}
 		if ent, ok := index[key(g.Group, g.Version, g.Resource)]; ok && matchesScope(ent.namespaced, g.Scope) {
 			out = append(out, g)
 		}

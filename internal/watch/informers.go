@@ -127,6 +127,8 @@ func (m *Manager) handleEvent(obj interface{}, g GVR, op configv1alpha1.Operatio
 
 	// Emit basic metrics for watcher path (mirrors webhook semantics).
 	ctx := context.Background()
+	// Count each watched object processed by the informer path.
+	metrics.ObjectsScannedTotal.Add(ctx, 1)
 	enqueueCount := int64(len(wrRules) + len(cwrRules))
 	if enqueueCount > 0 {
 		metrics.EventsProcessedTotal.Add(ctx, enqueueCount)

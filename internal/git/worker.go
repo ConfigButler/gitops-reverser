@@ -143,6 +143,8 @@ func (w *Worker) dispatchEvent(
 	select {
 	case repoQueue <- event:
 		log.Info("Event dispatched to repo queue", "queueKey", queueKey)
+		// Track queue depth growth (global gauge, MVP without labels).
+		metrics.RepoBranchQueueDepth.Add(ctx, 1)
 		return nil
 	case <-ctx.Done():
 		log.Info("Context canceled while dispatching event")
@@ -165,6 +167,8 @@ func (w *Worker) getOrCreateRepoQueue(
 		repoQueue = make(chan eventqueue.Event, EventQueueBufferSize)
 		repoQueues[queueKey] = repoQueue
 		w.Log.Info("Starting new repo event processor", "queueKey", queueKey)
+		// Track active workers (global up/down gauge, MVP without labels).
+		metrics.RepoBranchActiveWorkers.Add(ctx, 1)
 		go w.processRepoEvents(ctx, queueKey, repoQueue)
 	}
 	return repoQueue
@@ -174,6 +178,8 @@ func (w *Worker) getOrCreateRepoQueue(
 func (w *Worker) processRepoEvents(ctx context.Context, queueKey string, eventChan <-chan eventqueue.Event) {
 	log := w.Log.WithValues("queueKey", queueKey)
 	log.Info("Starting event processor for repo")
+	// Ensure active worker gauge is decremented when this goroutine exits.
+	defer metrics.RepoBranchActiveWorkers.Add(ctx, -1)
 
 	repoConfig, eventBuffer, err := w.initializeProcessor(ctx, log, eventChan)
 	if err != nil {
@@ -281,6 +287,8 @@ func (w *Worker) runEventLoop(ctx context.Context, log logr.Logger, repoConfig *
 			}
 			return
 		case event := <-eventChan:
+			// Queue depth decreases when consumer receives an event.
+			metrics.RepoBranchQueueDepth.Add(ctx, -1)
 			eventBuffer = w.handleNewEvent(ctx, log, *repoConfig, event, eventBuffer, maxCommits, ticker, pushInterval)
 		case <-ticker.C:
 			eventBuffer = w.handleTicker(ctx, log, *repoConfig, eventBuffer)
@@ -376,9 +384,30 @@ func (w *Worker) commitAndPush(ctx context.Context, repoConfig v1alpha1.GitRepoC
 	if err := repo.TryPushCommits(ctx, events); err != nil {
 		log.Error(err, "Failed to push commits")
 	} else {
-		log.Info("Successfully completed git commit and push", "eventCount", len(events), "duration", time.Since(pushStart))
+		// Approximate commit byte size from enqueued objects (sanitized upstream).
+		var approxBytes int64
+		for _, ev := range events {
+			if ev.Object != nil {
+				if b, err := ev.Object.MarshalJSON(); err == nil {
+					approxBytes += int64(len(b))
+				}
+			}
+		}
+
+		log.Info("Successfully completed git commit and push",
+			"eventCount", len(events),
+			"duration", time.Since(pushStart),
+			"approxBytes", approxBytes)
+
+		// Metrics (commit batch)
 		metrics.GitOperationsTotal.Add(ctx, int64(len(events)))
 		metrics.GitPushDurationSeconds.Record(ctx, time.Since(pushStart).Seconds())
+		metrics.CommitsTotal.Add(ctx, 1)
+		if approxBytes > 0 {
+			metrics.CommitBytesTotal.Add(ctx, approxBytes)
+		}
+		// Treat each event in the batch as an object written for MVP accounting.
+		metrics.ObjectsWrittenTotal.Add(ctx, int64(len(events)))
 	}
 }
 

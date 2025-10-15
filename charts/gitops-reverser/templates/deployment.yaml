@@ -46,6 +46,9 @@ spec:
             - --webhook-cert-path={{ .Values.webhook.server.certPath }}
             - --webhook-cert-name={{ .Values.webhook.server.certName }}
             - --webhook-cert-key={{ .Values.webhook.server.certKey }}
+            {{- if .Values.controllerManager.enableWatchIngestion }}
+            - --enable-watch-ingestion
+            {{- end }}
           ports:
             - name: webhook-server
               containerPort: {{ .Values.webhook.server.port }}
