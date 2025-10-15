@@ -26,7 +26,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	k8stypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
@@ -56,11 +55,8 @@ type Manager struct {
 	EventQueue *eventqueue.Queue
 }
 
-// Lint-friendly timing constants (avoid magic numbers).
 const (
 	heartbeatInterval = 30 * time.Second
-	// poll interval for the initial seed/trailing implementation for ConfigMaps.
-	configMapPollInterval = 20 * time.Second
 )
 
 // Start begins the watch ingestion manager and blocks until context cancellation.
@@ -71,9 +67,6 @@ func (m *Manager) Start(ctx context.Context) error {
 	log := m.Log.WithName("watch")
 	log.Info("watch ingestion manager starting (scaffold)")
 	defer log.Info("watch ingestion manager stopping")
-
-	// Start minimal polling loop for ConfigMaps (disabled effects unless rules match).
-	go m.pollConfigMaps(ctx)
 
 	// Compute concrete GVRs from active rules (aggregation step).
 	if m.RuleStore != nil {
@@ -113,112 +106,6 @@ func (m *Manager) Start(ctx context.Context) error {
 // NeedLeaderElection ensures only the elected leader runs the watchers.
 func (m *Manager) NeedLeaderElection() bool {
 	return true
-}
-
-// pollConfigMaps periodically lists ConfigMaps cluster-wide and enqueues UPDATE events
-// for rules that match. This validates the ingestion path without requiring admission webhooks.
-// NOTE: This is intentionally simple (no RV tracking or deletes) and will be replaced
-// by discovery-driven informers and proper trailing logic in subsequent steps.
-func (m *Manager) pollConfigMaps(ctx context.Context) {
-	log := m.Log.WithName("configmaps")
-	ticker := time.NewTicker(configMapPollInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			log.Info("stopping configmap poller")
-			return
-		case <-ticker.C:
-			items, err := m.listConfigMaps(ctx)
-			if err != nil {
-				log.Error(err, "failed to list ConfigMaps")
-				continue
-			}
-			// Metrics: count scanned objects in polling path.
-			metrics.ObjectsScannedTotal.Add(ctx, int64(len(items)))
-			m.processConfigMapBatch(ctx, items, log)
-		}
-	}
-}
-
-// processConfigMapBatch handles a batch of ConfigMaps and delegates to the single-item handler.
-func (m *Manager) processConfigMapBatch(ctx context.Context, items []corev1.ConfigMap, log logr.Logger) {
-	for i := range items {
-		m.processSingleConfigMap(ctx, &items[i], log)
-	}
-}
-
-// processSingleConfigMap converts, matches rules, sanitizes, enqueues, and records metrics for one ConfigMap.
-func (m *Manager) processSingleConfigMap(ctx context.Context, cm *corev1.ConfigMap, log logr.Logger) {
-	const (
-		apiGroup       = ""   // core
-		apiVersion     = "v1" // core/v1
-		resourcePlural = "configmaps"
-	)
-
-	u, err := toUnstructured(cm)
-	if err != nil {
-		log.Error(
-			err,
-			"failed to convert configmap to unstructured",
-			"name", cm.Name,
-			"namespace", cm.Namespace,
-		)
-		return
-	}
-
-	id := buildIdentifierFromCM(apiGroup, apiVersion, resourcePlural, cm)
-	nsLabels := m.getNamespaceLabels(ctx, cm.Namespace)
-
-	const isClusterScoped = false
-	wrRules, cwrRules := m.matchRules(u, resourcePlural, apiGroup, apiVersion, isClusterScoped, nsLabels)
-	if len(wrRules) == 0 && len(cwrRules) == 0 {
-		return
-	}
-
-	sanitized := sanitize.Sanitize(u)
-	m.enqueueMatches(sanitized, id, wrRules, cwrRules)
-
-	// Metrics: track enqueued events count for polling path.
-	if enq := int64(len(wrRules) + len(cwrRules)); enq > 0 {
-		metrics.EventsProcessedTotal.Add(ctx, enq)
-		metrics.GitCommitQueueSize.Add(ctx, enq)
-	}
-}
-
-// listConfigMaps retrieves all ConfigMaps in the cluster.
-func (m *Manager) listConfigMaps(ctx context.Context) ([]corev1.ConfigMap, error) {
-	var list corev1.ConfigMapList
-	if err := m.Client.List(ctx, &list); err != nil {
-		return nil, err
-	}
-	return list.Items, nil
-}
-
-// toUnstructured converts a typed ConfigMap to an Unstructured object.
-func toUnstructured(cm *corev1.ConfigMap) (*unstructured.Unstructured, error) {
-	obj := &unstructured.Unstructured{}
-	objMap, err := runtime.DefaultUnstructuredConverter.ToUnstructured(cm)
-	if err != nil {
-		return nil, err
-	}
-	obj.Object = objMap
-	return obj, nil
-}
-
-// buildIdentifierFromCM constructs a ResourceIdentifier for a ConfigMap.
-func buildIdentifierFromCM(
-	apiGroup, apiVersion, resourcePlural string,
-	cm *corev1.ConfigMap,
-) itypes.ResourceIdentifier {
-	return itypes.NewResourceIdentifier(
-		apiGroup,
-		apiVersion,
-		resourcePlural,
-		cm.Namespace,
-		cm.Name,
-	)
 }
 
 // getNamespaceLabels fetches the labels of a namespace, returning nil if unavailable.

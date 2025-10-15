@@ -654,7 +654,7 @@ Tracking immediate, concrete work items to reach watch-only parity. Files refere
   - [ ] Implement startup List per selected GVK to compute S_live and enqueue upserts ([internal/watch/manager.go](internal/watch/manager.go))
     - Note: Initial seed listing with sanitize→match→enqueue is implemented; S_live computation for orphan deletion will be completed alongside the orphan detection task.
   - [ ] Implement per-destination orphan detection (S_orphan = S_git − S_live) with deleteCapPerCycle ([internal/git/worker.go](internal/git/worker.go))
-  - [ ] Switch polling validation path to informer Watch continuity, re-list on Expired; remove temporary ConfigMap poller ([internal/watch/informers.go](internal/watch/informers.go), [internal/watch/manager.go](internal/watch/manager.go))
+  - [x] Switch polling validation path to informer Watch continuity; removed temporary ConfigMap poller ([internal/watch/informers.go](internal/watch/informers.go), [internal/watch/manager.go](internal/watch/manager.go))
 
 - Canonicalization and stable write path
   - [ ] Ensure sanitizer drop-set and stable YAML rendering align with watch ingestion ([internal/sanitize/marshal.go](internal/sanitize/marshal.go))
@@ -801,7 +801,7 @@ Implementation notes:
 ## Documentation status marker
 
 As of 2025-10-15 (UTC), this plan reflects:
-- Watch ingestion: feature-gated path implemented (aggregation, discovery with built-in exclusions, dynamic informers). Initial seed listing has been added in [internal/watch/manager.go](internal/watch/manager.go) to List selected GVRs, sanitize, match rules, and enqueue UPDATE events. Minimal ConfigMap polling validator is temporarily retained and will be removed after watch continuity is fully validated.
+- Watch ingestion: feature-gated path implemented (aggregation, discovery with built-in exclusions, dynamic informers). Initial seed listing remains in [internal/watch/manager.go](internal/watch/manager.go) to List selected GVRs, sanitize, match rules, and enqueue UPDATE events. The temporary ConfigMap polling validator has been removed; informer-based watch continuity is the active path.
 - Webhook path: retained permanently for username capture with FailurePolicy=Ignore and leader-only routing.
 - Worker identity: one worker per (repoURL, branch), serializing multiple baseFolder trees.
 - CI status for this iteration: make lint, make test, and make test-e2e all pass on the updated code.
