@@ -647,28 +647,29 @@ Until then, both paths can co-exist with the watch path guarded by --enable-watc
 Tracking immediate, concrete work items to reach watch-only parity. Files referenced are authoritative entry points for each task.
 
 - Discovery and selection
-  - [ ] Encode Desired-state include/exclude presets and apply during discovery ([internal/watch/discovery.go](internal/watch/discovery.go), [internal/watch/gvr.go](internal/watch/gvr.go))
+  - [x] Encode Desired-state include/exclude presets and apply during discovery ([internal/watch/discovery.go](internal/watch/discovery.go), [internal/watch/gvr.go](internal/watch/gvr.go))
   - [ ] Periodic discovery refresh (5m default) with backoff and metrics ([internal/watch/discovery.go](internal/watch/discovery.go))
 
 - Reconciliation seed and trailing (List + Watch)
   - [ ] Implement startup List per selected GVK to compute S_live and enqueue upserts ([internal/watch/manager.go](internal/watch/manager.go))
+    - Note: Initial seed listing with sanitize→match→enqueue is implemented; S_live computation for orphan deletion will be completed alongside the orphan detection task.
   - [ ] Implement per-destination orphan detection (S_orphan = S_git − S_live) with deleteCapPerCycle ([internal/git/worker.go](internal/git/worker.go))
-  - [ ] Switch polling validation path to informer Watch continuity, re-list on Expired ([internal/watch/informers.go](internal/watch/informers.go))
+  - [ ] Switch polling validation path to informer Watch continuity, re-list on Expired; remove temporary ConfigMap poller ([internal/watch/informers.go](internal/watch/informers.go), [internal/watch/manager.go](internal/watch/manager.go))
 
 - Canonicalization and stable write path
   - [ ] Ensure sanitizer drop-set and stable YAML rendering align with watch ingestion ([internal/sanitize/marshal.go](internal/sanitize/marshal.go))
-  - [ ] Preserve identifierPath mapping for namespaced/cluster scopes ([internal/types/identifier.go](internal/types/identifier.go))
+  - [x] Preserve identifierPath mapping for namespaced/cluster scopes ([internal/types/identifier.go](internal/types/identifier.go))
 
 - Git worker behavior and batching
   - [ ] Enforce batch flush caps: files, bytes, time ([internal/git/worker.go](internal/git/worker.go))
-  - [ ] Keep non-fast-forward retry policy: fetch, reset --hard, reapply, push ([internal/git/git.go](internal/git/git.go))
+  - [x] Keep non-fast-forward retry policy: fetch, reset --hard, reapply, push ([internal/git/git.go](internal/git/git.go))
 
 - Ownership and safeguards
   - [ ] Add per repo-branch Kubernetes Lease acquire/renew before writes ([internal/leader/leader.go](internal/leader/leader.go))
   - [ ] Implement optional per-destination marker {baseFolder}/.configbutler/owner.yaml; honor exclusiveMode ([internal/git/worker.go](internal/git/worker.go))
 
 - Observability and RBAC
-  - [ ] Extend metrics (objects_scanned_total, objects_written_total, files_deleted_total, commits_total, commit_bytes_total, rebase_retries_total, ownership_conflicts_total, lease_acquire_failures_total, marker_conflicts_total, repo_branch_active_workers, repo_branch_queue_depth) ([internal/metrics/exporter.go](internal/metrics/exporter.go))
+  - [x] Extend metrics (objects_scanned_total, objects_written_total, files_deleted_total, commits_total, commit_bytes_total, rebase_retries_total, ownership_conflicts_total, lease_acquire_failures_total, marker_conflicts_total, repo_branch_active_workers, repo_branch_queue_depth) ([internal/metrics/exporter.go](internal/metrics/exporter.go))
   - [ ] Update ClusterRole for list/watch across selected resources and Leases verbs ([charts/gitops-reverser/templates/rbac.yaml](charts/gitops-reverser/templates/rbac.yaml))
 
 - Charts and packaging
@@ -800,10 +801,11 @@ Implementation notes:
 ## Documentation status marker
 
 As of 2025-10-15 (UTC), this plan reflects:
-- Watch ingestion: feature-gated path implemented (aggregation, discovery with built-in exclusions, dynamic informers) with a minimal polling validator; commits go through existing event queue and git worker.
+- Watch ingestion: feature-gated path implemented (aggregation, discovery with built-in exclusions, dynamic informers). Initial seed listing has been added in [internal/watch/manager.go](internal/watch/manager.go) to List selected GVRs, sanitize, match rules, and enqueue UPDATE events. Minimal ConfigMap polling validator is temporarily retained and will be removed after watch continuity is fully validated.
 - Webhook path: retained permanently for username capture with FailurePolicy=Ignore and leader-only routing.
-- Worker identity: clarified to repo-branch workers (per (repoURL, branch)), handling multiple baseFolder trees safely.
-- Next actions: implement startup seed + orphan deletion, lease/marker safeguards, batch caps, and extend metrics as listed; validate watch-only e2e flows with webhook retained.
+- Worker identity: one worker per (repoURL, branch), serializing multiple baseFolder trees.
+- CI status for this iteration: make lint, make test, and make test-e2e all pass on the updated code.
+- Next actions: implement orphan detection (S_orphan), batch caps, per-repo-branch Leases and optional marker, periodic discovery refresh, and RBAC/chart value updates; validate watch-only flows with webhook retained.
 
 ## Appendix H: Worked examples (rules, destinations, and path mapping)
 

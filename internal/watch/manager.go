@@ -24,9 +24,12 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	k8stypes "k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/dynamic"
 
 	"github.com/go-logr/logr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -85,6 +88,8 @@ func (m *Manager) Start(ctx context.Context) error {
 			if len(discoverable) > 0 {
 				// Start dynamic informers for discoverable GVRs (best-effort).
 				m.maybeStartInformers(ctx)
+				// Perform initial seed listing to enqueue upserts and compute initial live state.
+				go m.seedSelectedResources(ctx)
 			}
 		} else {
 			log.Info("no concrete GVRs from active rules yet")
@@ -288,4 +293,67 @@ func (m *Manager) enqueueMatches(
 		}
 		m.EventQueue.Enqueue(ev)
 	}
+}
+
+// seedSelectedResources performs a one-time List across all discoverable GVRs derived from active rules,
+// sanitizes objects, matches rules, and enqueues UPDATE events to bootstrap the repository state.
+// Orphan detection will be added in a subsequent step.
+func (m *Manager) seedSelectedResources(ctx context.Context) {
+	log := m.Log.WithName("seed")
+	log.Info("starting initial seed listing")
+
+	cfg := m.restConfig()
+	if cfg == nil {
+		log.Info("skipping seed - no rest config available")
+		return
+	}
+	dc, err := dynamic.NewForConfig(cfg)
+	if err != nil {
+		log.Error(err, "failed to construct dynamic client for seed")
+		return
+	}
+
+	requested := m.ComputeRequestedGVRs()
+	discoverable := m.FilterDiscoverableGVRs(ctx, requested)
+	if len(discoverable) == 0 {
+		log.Info("no discoverable GVRs to seed")
+		return
+	}
+
+	for _, g := range discoverable {
+		res := schema.GroupVersionResource{Group: g.Group, Version: g.Version, Resource: g.Resource}
+		list, err := dc.Resource(res).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			log.Error(err, "seed list failed", "group", g.Group, "version", g.Version, "resource", g.Resource)
+			continue
+		}
+		// Metrics: count objects scanned by seed
+		metrics.ObjectsScannedTotal.Add(ctx, int64(len(list.Items)))
+
+		for i := range list.Items {
+			u := list.Items[i].DeepCopy()
+			id := itypes.NewResourceIdentifier(g.Group, g.Version, g.Resource, u.GetNamespace(), u.GetName())
+
+			var nsLabels map[string]string
+			if ns := id.Namespace; ns != "" {
+				nsLabels = m.getNamespaceLabels(ctx, ns)
+			}
+			isClusterScoped := id.IsClusterScoped()
+			wrRules, cwrRules := m.matchRules(u, g.Resource, g.Group, g.Version, isClusterScoped, nsLabels)
+			if len(wrRules) == 0 && len(cwrRules) == 0 {
+				continue
+			}
+
+			sanitized := sanitize.Sanitize(u)
+			m.enqueueMatches(sanitized, id, wrRules, cwrRules)
+
+			enq := int64(len(wrRules) + len(cwrRules))
+			if enq > 0 {
+				metrics.EventsProcessedTotal.Add(ctx, enq)
+				metrics.GitCommitQueueSize.Add(ctx, enq)
+			}
+		}
+	}
+
+	log.Info("seed listing completed", "gvrCount", len(discoverable))
 }

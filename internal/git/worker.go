@@ -383,32 +383,33 @@ func (w *Worker) commitAndPush(ctx context.Context, repoConfig v1alpha1.GitRepoC
 	pushStart := time.Now()
 	if err := repo.TryPushCommits(ctx, events); err != nil {
 		log.Error(err, "Failed to push commits")
-	} else {
-		// Approximate commit byte size from enqueued objects (sanitized upstream).
-		var approxBytes int64
-		for _, ev := range events {
-			if ev.Object != nil {
-				if b, err := ev.Object.MarshalJSON(); err == nil {
-					approxBytes += int64(len(b))
-				}
+		return
+	}
+
+	// Approximate commit byte size from enqueued objects (sanitized upstream).
+	var approxBytes int64
+	for _, ev := range events {
+		if ev.Object != nil {
+			if b, err := ev.Object.MarshalJSON(); err == nil {
+				approxBytes += int64(len(b))
 			}
 		}
-
-		log.Info("Successfully completed git commit and push",
-			"eventCount", len(events),
-			"duration", time.Since(pushStart),
-			"approxBytes", approxBytes)
-
-		// Metrics (commit batch)
-		metrics.GitOperationsTotal.Add(ctx, int64(len(events)))
-		metrics.GitPushDurationSeconds.Record(ctx, time.Since(pushStart).Seconds())
-		metrics.CommitsTotal.Add(ctx, 1)
-		if approxBytes > 0 {
-			metrics.CommitBytesTotal.Add(ctx, approxBytes)
-		}
-		// Treat each event in the batch as an object written for MVP accounting.
-		metrics.ObjectsWrittenTotal.Add(ctx, int64(len(events)))
 	}
+
+	log.Info("Successfully completed git commit and push",
+		"eventCount", len(events),
+		"duration", time.Since(pushStart),
+		"approxBytes", approxBytes)
+
+	// Metrics (commit batch)
+	metrics.GitOperationsTotal.Add(ctx, int64(len(events)))
+	metrics.GitPushDurationSeconds.Record(ctx, time.Since(pushStart).Seconds())
+	metrics.CommitsTotal.Add(ctx, 1)
+	if approxBytes > 0 {
+		metrics.CommitBytesTotal.Add(ctx, approxBytes)
+	}
+	// Treat each event in the batch as an object written for MVP accounting.
+	metrics.ObjectsWrittenTotal.Add(ctx, int64(len(events)))
 }
 
 // getAuthFromSecret fetches the authentication credentials from the specified secret.
