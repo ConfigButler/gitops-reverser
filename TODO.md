@@ -7,48 +7,26 @@
 [ ] Combine edits of the same person in the same minute (make that configurable): it doesnt make sense to have lot's of commits for one action. This is a hard one to get right, when does this stop? After x actions or x seconds of inactivity. Or if two persons change something in the same resource, that shouls also be immediatly be comitted. Can you check that effeciently on every incomming event?
 [ ] Do we really need to pull before each commit? That's not what was in my head before we started the whole conversation -> it should do a push/pull once a minute. Or perhaps a pull the first time an event is created? I would like to have a timeline, please let's be carefull with pushes and pulls
 [ ] See if we can get more out of: https://github.com/RichardoC/kube-audit-rest?tab=readme-ov-file#known-limitations-and-warnings (since it's maintained and gives some exampels on how to maintain such an open tool).
-[ ] Should we also do a full reconicile on the folders? As in: check if all the yaml files are still usefull?
-    -> This last line is where it gets interesting: who wins? I guess we just push a new commit and throw away the files that don't exist in the cluster. Should we do a full reconcile every x minutes? How many resources can we handle before it gets tricky?
-[ ] Should the repo config be namespaced or clustered? All that duplication is also ugly, how does flux do that part?
 
 
 
-For tomorrow I should grow my understanding on the nice step that is decribed here: 
-https://golangci-lint.run/docs/welcome/install/#ci-installation
-https://github.com/golangci/golangci-lint-action
-
-And I should try to only have the test runner use that slim ci-dev-container.
-
-Are there best practices written down for this? Could I do something on this? It will be very usefull to have a deeper understanding of docker and images if I'm going to want to have my configuration as image succesful at some point.
 
 
-This is what I had:
-      - name: Set up KinD
-        uses: helm/kind-action@v1.12.0
-        with:
-          cluster_name: gitops-reverser-test-e2e
-          version: v0.30.0
-
----
-
-Get the RBAC updates in the helm chart automated
-Validate the git credentials every 10 minutes: only do a pull on the existing repo, don't clone the whole thing again
-Add tests for CRs"
-
-Somehow the trigger/filtering is not correct at the moment: I need to investigate better why my crd endpointchecker stuff is not safed, and how I would reference the k8s types in the correct way.
-
-There should also be some examples in the unit tests somewhow: I should be able to hunt down some of these things that come in, and why I'm not 'getting' them at this moment (so there is still some human work involved luckily enough).
-
-I'm not to happy with all the sanitize stuff: It's throwing away some metadata fields that could prove valuable as well. Isn't it going to be good enough to just throw away the status field? We don't want things to be to big, but also not be to small...
-
-Will we allow to keep status as well? Is it perhaps usefull for some usecases? It also depends where the API server will run: people could also choose the run this concept in their own cluster. It would be a backup.
 
 
 ---
 
 New questions:
 
+* If the gitops-reverser starts: it should itterate all kubernetes objects to see if files need to be adjusted/deleted. It should take ownership of a context/namespace/folder whatever: it could have missed changes. The cluster dictates/writes the source of truth: at this moment configbutler can't do syncing in two ways (would it become an option someday? What if we just hooked up flux or argocd? -> it would need to detect that the file already is there in the exact state, or almost exact state, the ethernal syncing loop would be stopped then).
+* Perhaps we should have a owner file in the root of that context/ns/folder -> the current pod name that is leading, the last change etc. -> it would be an unimportant file for the user, but would allow us to prevent two pods from fighting over the state.
 * If the AccessPolicy is adjusted on the GitRepoConfig, are the existing watchrules also re-evaluated (if they can send in events).
 * Is there to much code duplication between clusterwatchrule and watchrule?
-* Should I rename the /process-audit-webhook-calls endpoint to be more clear? Something like process-audit-event?
-* 
+* Add a default business rule that Config resources are not written to disk: these should never be in git. Have an example on the frontpage on how to use sealedSecrets for now: that's a nice start and will just make sure that it's safe (perhaps something better later). We could add an exception as a commandline flag: people that want to do bad should not be blocked in doing so. :-)
+* Check if we are still in line witht the [Kubebuilder stuff](https://book.kubebuilder.io/architecture), I noticed that my PROJECT file does not seem up2date. Should it be gone at some point in time?
+* Have a way to influence where files resources are stored (why not having multiple resources in one file?)
+* Improve README.m
+  * Better explaination of configuration of this tool: one GitRepoConfig per repo, security considerations (namespace or non namespace etc), storeRawConfigmaps (default false).
+* There is no time in the admission request: we should add the time received as soon as possible and also put that as commit time (if we can override that).
+* Would it be nice to add a [on-behalf-of](https://docs.github.com/en/pull-requests/committing-changes-to-your-project/creating-and-editing-commits/creating-a-commit-on-behalf-of-an-organization) notice in the commit message? That would also implicate that we can deduce this from the admission webhook.
+* Can we be more carefull with for example comments? If we edit a file in git? Also keep the same ordering? That is going to be a hard, so not for now.

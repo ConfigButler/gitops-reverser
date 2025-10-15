@@ -16,7 +16,7 @@ webhooks:
     service:
       name: {{ include "gitops-reverser.fullname" . }}-leader-only
       namespace: {{ .Release.Namespace }}
-      path: /process-audit-webhook-calls
+      path: /process-validating-webhook
     {{- if not .Values.certificates.certManager.enabled }}
     caBundle: {{ .Values.webhook.caBundle | b64enc }}
     {{- end }}

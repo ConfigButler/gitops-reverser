@@ -114,7 +114,7 @@ var _ = BeforeSuite(func() {
 	}).SetupWithManager(mgr)
 	Expect(err).NotTo(HaveOccurred())
 
-	// mgr.GetWebhookServer().Register("/process-audit-webhook-calls", &webhook.Admission{
+	// mgr.GetWebhookServer().Register("/process-validating-webhook", &webhook.Admission{
 	// 	Handler: &internalwebhook.EventHandler{
 	// 		Client:     mgr.GetClient(),
 	// 		RuleStore:  ruleStore,

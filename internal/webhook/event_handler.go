@@ -45,7 +45,7 @@ import (
 )
 
 //nolint:lll // Kubebuilder webhook annotation
-// +kubebuilder:webhook:path=/process-audit-webhook-calls,mutating=false,failurePolicy=ignore,sideEffects=None,groups="*",resources="*",verbs=create;update;delete,versions="*",name=gitops-reverser.configbutler.ai,admissionReviewVersions=v1
+// +kubebuilder:webhook:path=/process-validating-webhook,mutating=false,failurePolicy=ignore,sideEffects=None,groups="*",resources="*",verbs=create;update;delete,versions="*",name=gitops-reverser.configbutler.ai,admissionReviewVersions=v1
 
 // EventHandler handles all incoming admission requests.
 type EventHandler struct {
