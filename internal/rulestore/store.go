@@ -572,3 +572,51 @@ func (r *CompiledClusterResourceRule) singleResourceMatches(ruleResource, resour
 
 	return false
 }
+
+// SnapshotWatchRules returns a deep-copied slice of compiled WatchRule entries.
+// Safe for concurrent use; the returned slice can be freely modified by callers.
+func (s *RuleStore) SnapshotWatchRules() []CompiledRule {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	out := make([]CompiledRule, 0, len(s.rules))
+	for _, r := range s.rules {
+		out = append(out, deepCopyCompiledRule(r))
+	}
+	return out
+}
+
+// SnapshotClusterWatchRules returns a deep-copied slice of compiled ClusterWatchRule entries.
+// Safe for concurrent use; the returned slice can be freely modified by callers.
+func (s *RuleStore) SnapshotClusterWatchRules() []CompiledClusterRule {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	out := make([]CompiledClusterRule, 0, len(s.clusterRules))
+	for _, r := range s.clusterRules {
+		out = append(out, deepCopyCompiledClusterRule(r))
+	}
+	return out
+}
+
+// deepCopyCompiledRule creates a defensive copy of a CompiledRule including its slices.
+func deepCopyCompiledRule(in CompiledRule) CompiledRule {
+	cp := in
+	if len(in.ResourceRules) > 0 {
+		cp.ResourceRules = make([]CompiledResourceRule, len(in.ResourceRules))
+		copy(cp.ResourceRules, in.ResourceRules)
+	}
+	// ObjectSelector is a pointer to a metav1.LabelSelector. We do a shallow copy of the pointer;
+	// consumers should not mutate it. If a deep copy is needed later, we can add it here.
+	return cp
+}
+
+// deepCopyCompiledClusterRule creates a defensive copy of a CompiledClusterRule including its slices.
+func deepCopyCompiledClusterRule(in CompiledClusterRule) CompiledClusterRule {
+	cp := in
+	if len(in.Rules) > 0 {
+		cp.Rules = make([]CompiledClusterResourceRule, len(in.Rules))
+		copy(cp.Rules, in.Rules)
+	}
+	return cp
+}

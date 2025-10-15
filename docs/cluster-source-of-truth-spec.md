@@ -195,4 +195,115 @@ Batching and limits
 - PR‑first mode or conflict‑policy customization
 - Defaulted‑field omission driven by schema for tighter semantic diffs
 
+12. Implementation status and next steps (MVP)
+
+This section documents the current implementation progress toward the watch-based, cluster-as-source-of-truth MVP, and outlines the next steps to complete the plan in this spec.
+
+12.1 What is implemented
+
+- Feature-gated watch ingestion
+  - Controller flag to enable watch-based ingestion alongside the existing webhook path (default: disabled).
+  - Files: [cmd/main.go](cmd/main.go), [internal/watch/manager.go](internal/watch/manager.go)
+
+- Rule-driven GVR aggregation
+  - Aggregates concrete GVRs (group, version, resource) from active WatchRule/ClusterWatchRule via the in-memory RuleStore.
+  - Deduplicates, is scope-aware (Namespaced vs Cluster), and intentionally ignores wildcards and subresources for MVP.
+  - File: [internal/watch/gvr.go](internal/watch/gvr.go)
+
+- Discovery filtering
+  - Filters requested GVRs using API discovery (list+watch only), and retains only resources matching the requested scope.
+  - Resilient to partial discovery failures (common in clusters).
+  - File: [internal/watch/discovery.go](internal/watch/discovery.go)
+
+- Dynamic informers (best-effort)
+  - Starts SharedInformers for discoverable GVRs; handles add/update/delete and enqueues sanitized objects into the existing git worker path.
+  - Emits basic watcher metrics via the existing metrics exporter.
+  - File: [internal/watch/informers.go](internal/watch/informers.go)
+
+- Minimal polling path for early validation
+  - Retained a periodic polling loop for ConfigMaps (core/v1) to validate end-to-end commit flow during transition to full informers.
+  - File: [internal/watch/manager.go](internal/watch/manager.go)
+
+- Identifier helper for watch events
+  - Helper to build canonical REST-style storage paths for watch-based ingestion:
+  - File: [internal/types/identifier.go](internal/types/identifier.go)
+
+- Reuse of the existing pipeline
+  - Existing queue and git worker remain authoritative for batching and committing:
+  - Files: [internal/eventqueue/queue.go](internal/eventqueue/queue.go), [internal/git/worker.go](internal/git/worker.go)
+
+- Validation status (mandatory pre-completion)
+  - make lint → pass (0 issues)
+  - make test → pass (all packages)
+  - make test-e2e → pass (18/18; webhook path preserved; watch flag kept disabled by default)
+
+12.2 How to run it (for experiments)
+
+- Deploy as usual, with the existing webhook path still in place.
+- To enable watch ingestion:
+  - Add the controller argument: --enable-watch-ingestion
+  - The manager will:
+    - Aggregate requested GVRs from rules
+    - Filter using discovery (list+watch, scope-aligned)
+    - Start dynamic informers for discoverable GVRs
+    - Retain the ConfigMap polling path for MVP validation
+
+12.3 Next steps to complete the MVP (tracked against spec sections)
+
+- Reconciliation path from spec §4
+  - Startup seed (per GVK):
+    - Perform List() to compute S_live for all selected resources
+    - Map objects to canonical paths using [internal/types/identifier.go](internal/types/identifier.go)
+    - Enqueue upserts (no-op if unchanged on disk)
+  - Orphan detection (per baseFolder):
+    - Compute S_git (tracked files under destination baseFolder, excluding ownership marker)
+    - Compute S_orphan = S_git − S_live and enqueue deletes (respect delete caps)
+  - Trailing changes:
+    - Switch to informer Watch() deltas with resourceVersion continuity
+    - On Expired, re-list and recompute S_orphan
+
+- Desired-state defaults (spec §3.1, §3.2)
+  - Introduce Desired-state include/exclude presets and discovery defaults
+  - Apply built-in excludes for lifecycle-heavy/noisy resources (e.g., jobs.batch, cronjobs.batch)
+
+- Batching and limits (spec §4, §5)
+  - Implement commit flush caps: maxFiles, maxBytes, maxWait
+  - Add deleteCapPerCycle for safe orphan clearing
+  - Ensure rebase-like retry behavior on non-fast-forward remains unchanged
+
+- Ownership and leases (spec §6)
+  - Add per repo-branch leader Lease acquisition/renewal before writes
+  - Implement per-destination marker at {baseFolder}/.configbutler/owner.yaml
+  - Enforce exclusiveMode (warn vs refuse writes) semantics
+
+- Observability (spec §7)
+  - Extend metrics with objects_scanned_total, objects_written_total, files_deleted_total, commits_total, commit_bytes_total, rebase_retries_total, ownership_conflicts_total, lease_acquire_failures_total, marker_conflicts_total, repo_branch_active_workers, repo_branch_queue_depth
+  - Continue reusing current OTEL exporter; add labels where appropriate
+
+- Security and RBAC (spec §8)
+  - Update ClusterRole(s) to include discovery, list, watch for all selected resources and Leases verbs
+  - Adjust Helm RBAC templates: [charts/gitops-reverser/templates/rbac.yaml](charts/gitops-reverser/templates/rbac.yaml)
+
+- Packaging and removal of webhooks (spec §9)
+  - After watcher path is feature-complete and validated, remove:
+    - Code: [internal/webhook/event_handler.go](internal/webhook/event_handler.go)
+    - Kustomize manifests: config/webhook/*
+    - Helm templates: [charts/gitops-reverser/templates/validating-webhook.yaml](charts/gitops-reverser/templates/validating-webhook.yaml)
+  - Update certificates template if it was webhook-only
+
+- Documentation and examples
+  - Update README and chart docs to describe watch-only mode, defaults, and resource scoping
+  - Provide sample WatchRule/ClusterWatchRule that exercise common desired-state resources
+
+12.4 Risk management and rollout plan
+
+- Keep webhook path until watcher path matches or exceeds parity for targeted scopes
+- Use feature flag to enable gradual rollout and A/B testing
+- Gate removal of webhooks on:
+  - Successful e2e runs in watch-only mode
+  - Metrics parity and stability under load
+  - RBAC/chart/doc updates finalized
+
+End of status section.
+
 End of specification.

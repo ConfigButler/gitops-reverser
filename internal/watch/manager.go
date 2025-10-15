@@ -71,6 +71,25 @@ func (m *Manager) Start(ctx context.Context) error {
 	// Start minimal polling loop for ConfigMaps (disabled effects unless rules match).
 	go m.pollConfigMaps(ctx)
 
+	// Compute concrete GVRs from active rules (aggregation step).
+	if m.RuleStore != nil {
+		gvrList := m.ComputeRequestedGVRs()
+		if len(gvrList) > 0 {
+			discoverable := m.FilterDiscoverableGVRs(ctx, gvrList)
+			log.Info(
+				"aggregated requested GVRs from rules",
+				"requested", len(gvrList),
+				"discoverable", len(discoverable),
+			)
+			if len(discoverable) > 0 {
+				// Start dynamic informers for discoverable GVRs (best-effort).
+				m.maybeStartInformers(ctx)
+			}
+		} else {
+			log.Info("no concrete GVRs from active rules yet")
+		}
+	}
+
 	// Heartbeat ticker to make liveness observable in logs and tests.
 	ticker := time.NewTicker(heartbeatInterval)
 	defer ticker.Stop()
