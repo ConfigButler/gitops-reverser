@@ -47,6 +47,7 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/leader"
 	"github.com/ConfigButler/gitops-reverser/internal/metrics"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
+	"github.com/ConfigButler/gitops-reverser/internal/watch"
 	webhookhandler "github.com/ConfigButler/gitops-reverser/internal/webhook"
 	// +kubebuilder:scaffold:imports
 )
@@ -143,6 +144,18 @@ func main() {
 	fatalIfErr(mgr.Add(gitWorker), "unable to add git worker to manager")
 	setupLog.Info("Git worker added to manager")
 
+	// Watch ingestion manager (feature gated by --enable-watch-ingestion)
+	if cfg.enableWatchIngestion {
+		watchMgr := &watch.Manager{
+			Client:     mgr.GetClient(),
+			Log:        ctrl.Log.WithName("watch"),
+			RuleStore:  ruleStore,
+			EventQueue: eventQueue,
+		}
+		fatalIfErr(mgr.Add(watchMgr), "unable to add watch ingestion manager")
+		setupLog.Info("Watch ingestion manager added", "enabled", true)
+	}
+
 	// +kubebuilder:scaffold:builder
 
 	// Cert watchers
@@ -170,6 +183,7 @@ type appConfig struct {
 	secureMetrics              bool
 	enableHTTP2                bool
 	enableVerboseAdmissionLogs bool
+	enableWatchIngestion       bool
 	zapOpts                    zap.Options
 }
 
@@ -206,6 +220,12 @@ func parseFlags() appConfig {
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
 	flag.BoolVar(&cfg.enableVerboseAdmissionLogs, "enable-verbose-admission-logs", false,
 		"If set, enables verbose logging for admission requests and rule matching")
+	flag.BoolVar(
+		&cfg.enableWatchIngestion,
+		"enable-watch-ingestion",
+		false,
+		"Enable watch-based ingestion (List+Watch). When set, starts the watch manager alongside the existing webhook path.",
+	)
 
 	cfg.zapOpts = zap.Options{
 		Development: true,
