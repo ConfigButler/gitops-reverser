@@ -38,8 +38,6 @@ Current state (as of 2025-10-16 post-CRD-simplification)
 - ✓ **Feature gate removed**: Watch ingestion always enabled (cluster-as-source-of-truth mode)
 
 **Remaining gaps:**
-- ⚠️ **Batch bytes cap**: Implemented but defaults to 10 MiB ([worker.go:62](internal/git/worker.go:62)), spec mandates fixed 1 MiB
-- ⚠️ **Orphan deletes**: Implemented but capped at 500/cycle ([worker.go:72](internal/git/worker.go:72)), spec says "uncapped"
 - ❌ **Periodic discovery refresh**: No 5-minute loop to add/remove informers dynamically
 
 Dual-signal correlation design (authoritative)
@@ -151,17 +149,17 @@ Key references
 - Git push: [git.Repo.TryPushCommits()](internal/git/git.go:181)
 - Webhook: [webhook.event_handler()](internal/webhook/event_handler.go:1), charts: [charts/validating-webhook.yaml](charts/gitops-reverser/templates/validating-webhook.yaml:1)
 
-Status marker (updated 2025-10-16 post-CRD-simplification)
+Status marker (updated 2025-10-16 post-spec-alignment)
 - **CRDs**: ✓ Simplified per MVP spec; GitRepoConfig.allowedBranches, AccessPolicy removed, branch validation active
 - Watch ingestion: ✓ Always enabled (cluster-as-source-of-truth); dynamic informers and seed listing
 - Webhook: ✓ Retained for username capture at /process-validating-webhook
 - Feature gate: ✓ Removed --enable-watch-ingestion flag (watch is now default behavior)
 - Branch handling: ✓ Flows GitDestination.branch → Event.Branch → git.Worker (validated against allowedBranches)
 - BaseFolder: ✓ Fully wired from rules → destination → worker
-- Orphan detection: ✓ Implemented with SEED_SYNC control events (currently capped at 500/cycle)
-- Byte batching: ✓ Tracking implemented (currently defaults to 10 MiB vs spec's 1 MiB)
+- Orphan detection: ✓ Implemented with SEED_SYNC control events, **uncapped per spec**
+- Byte batching: ✓ **Fixed at 1 MiB per spec** ([worker.go:63](internal/git/worker.go:63))
 - Correlation: ✓ Dual-signal enrichment fully implemented with webhook Put and watch GetAndDelete
-- **Next critical work**: Align batch bytes to 1 MiB, remove orphan caps, implement periodic discovery refresh
+- **Next critical work**: Implement periodic discovery refresh (5-minute loop)
 
 ## Execution checklist and work‑order template
 
@@ -223,17 +221,18 @@ Backlog of parts (prioritized by criticality and dependencies)
     - ✓ Thread-safety under concurrent load
     - ⚠️ Integration/E2E tests for webhook→watch enrichment still pending
 
-- [ ] **Fix batch bytes cap to 1 MiB** (ALIGNMENT - spec compliance)
-  - **Current**: DefaultMaxBytesMiB = 10, TestMaxBytesMiB = 1 in [worker.go:62-64](internal/git/worker.go:62)
-  - **Required**: Change DefaultMaxBytesMiB to 1 (spec mandates "fixed batching bytes trigger = 1 MiB")
-  - **Location**: [git.Worker.getMaxBytesMiB()](internal/git/worker.go:291)
-  - **Tests**: Verify production flush at ~1 MiB in integration tests
+- [x] **Fix batch bytes cap to 1 MiB** (COMPLETED 2025-10-16 - spec alignment)
+  - Changed MaxBytesMiB constant to 1 in [worker.go:63](internal/git/worker.go:63)
+  - Removed helper functions; now uses fixed `maxBytesBytes` constant (1 MiB)
+  - Simplified implementation per spec: "fixed batching bytes trigger = 1 MiB"
+  - All tests pass with new 1 MiB cap
 
-- [ ] **Remove orphan delete cap** (ALIGNMENT - spec compliance)
-  - **Current**: Capped at DefaultDeleteCapPerCycle=500 in [worker.go:72](internal/git/worker.go:72)
-  - **Required**: Remove cap (spec: "Delete S_git − S_live (uncapped; Git history allows revert)")
-  - **Location**: [git.Worker.computeOrphanDeletes()](internal/git/worker.go:599) and [git.Worker.getDeleteCapPerCycle()](internal/git/worker.go:591)
-  - **Tests**: Integration test with >500 orphans; verify all deleted in single cycle
+- [x] **Remove orphan delete cap** (COMPLETED 2025-10-16 - spec alignment)
+  - Removed DefaultDeleteCapPerCycle and TestDeleteCapPerCycle constants
+  - Removed getDeleteCapPerCycle() helper function
+  - Updated [git.Worker.computeOrphanDeletes()](internal/git/worker.go:597) to be uncapped
+  - Spec requirement: "Delete S_git − S_live (uncapped; Git history allows revert)"
+  - All tests pass with uncapped orphan deletion
 
 ### Medium Priority (Operational Robustness)
 - [ ] **Periodic discovery refresh** (5m interval)
@@ -305,21 +304,23 @@ Backlog of parts (prioritized by criticality and dependencies)
 
 ---
 
-### Phase 2: Spec Alignment (Medium Priority)
+### Phase 2: Spec Alignment ✓ COMPLETED (2025-10-16)
 **Goal**: Align implementation defaults with specification
 
-5. **Fix batch bytes cap to 1 MiB**
-   - Change [`DefaultMaxBytesMiB`](internal/git/worker.go:62) from 10 to 1
-   - Keep `TestMaxBytesMiB = 1` for test consistency
-   - Update integration tests to verify 1 MiB production flush threshold
+5. ✓ **Fix batch bytes cap to 1 MiB**
+   - Changed `MaxBytesMiB` constant to 1 in [`worker.go:63`](internal/git/worker.go:63)
+   - Removed getMaxBytesMiB() and getMaxBytesBytes() helper functions
+   - Now uses fixed `maxBytesBytes` constant (1 MiB in bytes)
+   - All tests pass; production code flushes at ~1 MiB
 
-6. **Remove orphan delete cap**
-   - Remove cap logic from [`computeOrphanDeletes()`](internal/git/worker.go:599)
-   - Remove [`getDeleteCapPerCycle()`](internal/git/worker.go:591) or set to unlimited
-   - Update tests to handle >500 orphan deletes in single SEED_SYNC cycle
-   - Document Git history as revert safety mechanism
+6. ✓ **Remove orphan delete cap**
+   - Removed DefaultDeleteCapPerCycle and TestDeleteCapPerCycle constants
+   - Removed getDeleteCapPerCycle() function
+   - Updated [`computeOrphanDeletes()`](internal/git/worker.go:597) signature and logic
+   - Orphan deletion now uncapped per spec requirement
+   - All tests pass with uncapped behavior
 
-**Success criteria**: Batching flushes at ~1 MiB; orphan deletion handles thousands of files in single cycle
+**Success criteria**: ✓ Batching flushes at ~1 MiB; ✓ orphan deletion uncapped (handles thousands of files in single cycle)
 
 ---
 

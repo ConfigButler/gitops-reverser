@@ -58,20 +58,16 @@ const (
 	TestPushInterval       = 5 * time.Second        // Push interval for tests
 	ProductionPushInterval = 1 * time.Minute        // Push interval for production
 
-	// DefaultMaxBytesMiB is the approximate MiB cap for a batch; exceeding this triggers a push.
-	DefaultMaxBytesMiB = 10
-	// TestMaxBytesMiB is the reduced MiB cap used during unit tests for faster flushing.
-	TestMaxBytesMiB = 1
+	// MaxBytesMiB is the approximate MiB cap for a batch; exceeding this triggers a push.
+	// Fixed at 1 MiB per cluster-source-of-truth spec section "Defaults and caps".
+	MaxBytesMiB int64 = 1
 
 	// bytesPerKiB defines the number of bytes in a KiB (2^10).
 	bytesPerKiB int64 = 1024
 	// bytesPerMiB defines the number of bytes in a MiB (2^20).
 	bytesPerMiB int64 = bytesPerKiB * 1024
-
-	// DefaultDeleteCapPerCycle is the maximum number of orphan deletions applied per SEED_SYNC cycle.
-	DefaultDeleteCapPerCycle = 500
-	// TestDeleteCapPerCycle is the reduced deletion cap during tests to speed up feedback.
-	TestDeleteCapPerCycle = 50
+	// maxBytesBytes is the byte cap for batching (1 MiB in bytes).
+	maxBytesBytes int64 = MaxBytesMiB * bytesPerMiB
 
 	// Path part counts for identifier parsing (avoid magic numbers).
 	minCoreClusterParts                 = 3
@@ -287,20 +283,6 @@ func (w *Worker) getDefaultMaxCommits() int {
 	return DefaultMaxCommits
 }
 
-// getMaxBytesMiB returns the approximate byte cap (in MiB) for batching.
-func (w *Worker) getMaxBytesMiB() int64 {
-	// Use smaller cap for unit tests for quicker flush behavior
-	if strings.Contains(os.Args[0], "test") {
-		return int64(TestMaxBytesMiB)
-	}
-	return int64(DefaultMaxBytesMiB)
-}
-
-// getMaxBytesBytes returns the approximate byte cap in bytes for batching.
-func (w *Worker) getMaxBytesBytes() int64 {
-	return w.getMaxBytesMiB() * bytesPerMiB
-}
-
 // getPollInterval returns the event polling interval.
 func (w *Worker) getPollInterval() time.Duration {
 	// Use faster polling for unit tests
@@ -326,7 +308,6 @@ func (w *Worker) runEventLoop(ctx context.Context, log logr.Logger, repoConfig *
 	defer ticker.Stop()
 
 	var bufferByteCount int64
-	maxBytes := w.getMaxBytesBytes()
 
 	// Track live paths observed during seed listing (until a SEED_SYNC control event is processed).
 	sLivePaths := make(map[string]struct{})
@@ -348,7 +329,6 @@ func (w *Worker) runEventLoop(ctx context.Context, log logr.Logger, repoConfig *
 				ticker,
 				pushInterval,
 				bufferByteCount,
-				maxBytes,
 				sLivePaths,
 			)
 		case <-ticker.C:
@@ -392,13 +372,12 @@ func (w *Worker) handleIncomingEvent(
 	ticker *time.Ticker,
 	pushInterval time.Duration,
 	bufferByteCount int64,
-	maxBytes int64,
 	sLivePaths map[string]struct{},
 ) ([]eventqueue.Event, int64) {
 	// Handle control event for orphan detection.
 	if strings.EqualFold(event.Operation, "SEED_SYNC") {
-		// Compute deletes and commit (capped), then reset buffer and S_live.
-		deletes := w.computeOrphanDeletes(ctx, log, repoConfig, sLivePaths, w.getDeleteCapPerCycle())
+		// Compute deletes and commit (uncapped per spec), then reset buffer and S_live.
+		deletes := w.computeOrphanDeletes(ctx, log, repoConfig, sLivePaths)
 		if len(deletes) > 0 {
 			// Combine current buffer with deletes and flush.
 			eventBuffer = append(eventBuffer, deletes...)
@@ -433,10 +412,10 @@ func (w *Worker) handleIncomingEvent(
 		bufferByteCount += int64(approxSize)
 	}
 
-	// Enforce byte-based cap.
-	if bufferByteCount >= maxBytes {
+	// Enforce byte-based cap (fixed at 1 MiB per spec).
+	if bufferByteCount >= maxBytesBytes {
 		log.Info("Byte cap reached, triggering push",
-			"bufferByteCount", bufferByteCount, "maxBytes", maxBytes, "bufferEvents", len(eventBuffer))
+			"bufferByteCount", bufferByteCount, "maxBytes", maxBytesBytes, "bufferEvents", len(eventBuffer))
 		w.commitAndPush(ctx, repoConfig, eventBuffer)
 		// Reset state after push
 		ticker.Reset(pushInterval)
@@ -593,21 +572,13 @@ func (w *Worker) commitAndPush(ctx context.Context, repoConfig v1alpha1.GitRepoC
 	metrics.ObjectsWrittenTotal.Add(ctx, int64(len(events)))
 }
 
-// getDeleteCapPerCycle returns the maximum number of orphan deletions to apply per cycle.
-func (w *Worker) getDeleteCapPerCycle() int {
-	if strings.Contains(os.Args[0], "test") {
-		return TestDeleteCapPerCycle
-	}
-	return DefaultDeleteCapPerCycle
-}
-
-// computeOrphanDeletes calculates S_orphan = S_git − S_live and creates DELETE events (capped).
+// computeOrphanDeletes calculates S_orphan = S_git − S_live and creates DELETE events (uncapped).
+// Per cluster-source-of-truth spec: "Delete S_git − S_live (uncapped; Git history allows revert)".
 func (w *Worker) computeOrphanDeletes(
 	ctx context.Context,
 	log logr.Logger,
 	repoConfig v1alpha1.GitRepoConfig,
 	sLive map[string]struct{},
-	deleteCap int,
 ) []eventqueue.Event {
 	paths, err := w.listRepoYAMLPaths(ctx, repoConfig)
 	if err != nil {
@@ -626,11 +597,8 @@ func (w *Worker) computeOrphanDeletes(
 		return nil
 	}
 
-	// Deterministic order and cap
+	// Deterministic order (uncapped per spec)
 	sort.Strings(orphans)
-	if deleteCap > 0 && len(orphans) > deleteCap {
-		orphans = orphans[:deleteCap]
-	}
 
 	// Convert to DELETE events
 	evs := make([]eventqueue.Event, 0, len(orphans))
