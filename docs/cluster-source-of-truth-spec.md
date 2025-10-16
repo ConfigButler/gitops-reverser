@@ -22,17 +22,15 @@ Why both ValidatingWebhook and Watch (authoritative rationale)
   - spec.repoRef: NamespacedName (to GitRepoConfig)
   - spec.branch: string (∈ allowedBranches)
   - spec.baseFolder: string (POSIX-like, relative)
-  - spec.exclusiveMode: bool (default false)
-  - Status: conditions (e.g., Ready, OwnershipConflict)
+  - Status: conditions (e.g., Ready)
 - WatchRule (Namespaced) — select namespaced resources in its own namespace
   - spec.destinationRef: NamespacedName (to GitDestination)
   - spec.rules[]: { operations?, apiGroups?, apiVersions?, resources }
 - ClusterWatchRule (Cluster) — select cluster-scoped and/or namespaced resources
   - spec.destinationRef: NamespacedName (to GitDestination)
-  - spec.rules[]: as above + scope=Cluster|Namespaced (and optional namespaceSelector in future)
-
+  - spec.rules[]: as above + scope=Cluster|Namespaced
 Notes
-- Access policies are omitted in MVP for simplicity; future-compatible
+- No accessPolicy, no objectSelector, and no namespaceSelector in MVP (kept simple on purpose)
 - Defaults fill in desired-state resource selection when resources are omitted
 
 2. Ingestion and discovery (watch-only for objects)
@@ -42,7 +40,7 @@ Notes
 - Watch config: resourceVersionMatch=NotOlderThan; allowWatchBookmarks=true; restart backoff 500ms..30s; re-list on Expired
 - Periodic discovery refresh: 5m default (start new informers, stop removed ones)
 
-3. Signal correlation (sanitization-based; in-memory KV with TTL)
+3. Signal correlation (sanitization-based; in-memory KV with TTL/LRU)
 - Sanitization first for both signals: produce stable YAML/spec via [sanitize.MarshalToOrderedYAML()](internal/sanitize/marshal.go:31) and drop fields in [sanitize.Sanitize()](internal/sanitize/sanitize.go:1)
 - Keying: ResourceIdentifier (GVK/ns/name) + Operation + short hash of sanitized spec; identifier via [types.ResourceIdentifier.ToGitPath()](internal/types/identifier.go:62)
 - Store (webhook path): on admission, Put(key → {username, ts}) into an in-memory KV (TTL ~60s, LRU bounded)
@@ -58,8 +56,8 @@ Notes
   - Enqueue upsert events (semantic no-op if unchanged on disk)
 - Orphans (per baseFolder)
   - S_live = paths from current List()
-  - S_git = tracked *.yaml under baseFolder (excluding marker)
-  - Delete S_git − S_live (no cap)
+  - S_git = tracked *.yaml under baseFolder
+  - Delete S_git − S_live (uncapped; Git history allows revert)
 - Trail
   - Start Watch() from captured resourceVersion; sanitize; KV-enrich; enqueue upserts/deletes
   - On Expired: re-list, rebuild S_live, recompute deletes
@@ -79,48 +77,45 @@ Notes
 - No merges; rebase-like replay; commit trailers:
   - X-ConfigButler-ClusterUID, X-ConfigButler-ControllerNS, X-ConfigButler-ControllerName, X-ConfigButler-InstanceID
 
-7. Ownership and conflict controls
-- Lease per repo-branch worker (single-writer): acquire/renew around commit; to be added in [leader.Lease helper](internal/leader/leader.go:1) and invoked in [git.Worker.commitAndPush()](internal/git/worker.go:338)
-- Optional per-destination repo marker at {baseFolder}/.configbutler/owner.yaml
-  - exclusiveMode=false: warn on mismatch
-  - exclusiveMode=true: refuse writes, set Ready=False on referencing rules
-
-8. Observability (cardinality-safe)
+7. Observability (cardinality-safe)
 - Metrics via [internal/metrics/exporter.go](internal/metrics/exporter.go:1):
   - objects_scanned_total, objects_written_total, files_deleted_total
   - commits_total, commit_bytes_total, rebase_retries_total
   - repo_branch_active_workers, repo_branch_queue_depth
-  - ownership_conflicts_total, lease_acquire_failures_total, marker_conflicts_total
   - enrich_hits_total, enrich_misses_total, kv_evictions_total
 - Logs: identifiers, destination, commit SHAs; Events for major actions with enrichment result
 
-9. Security and RBAC (chart)
+8. Security and RBAC (chart)
 - Selected resources: get, list, watch (desired-state baseline)
-- coordination.k8s.io/leases: get, list, watch, create, update, patch, delete
 - events: create, patch
-- configbutler.ai: watchrules, clusterwatchrules, gitrepoconfigs, gitdestinations (get, list, watch); status updates for rules
+- configbutler.ai: watchrules, clusterwatchrules, gitrepoconfigs, gitdestinations (get, list, watch); status updates for rules (if any)
 - secrets: get (repo credentials)
 - Templates: [charts.git rbac](charts/gitops-reverser/templates/rbac.yaml:1)
 
-10. Helm flags (minimal)
+9. Helm flags (minimal)
 - --enable-watch-ingestion
 - --discovery-refresh=5m, --watch-all=false, repeated --discovery-exclude=...
 - --git-batch-max-files=200, --git-batch-max-bytes-mib=1, --git-batch-max-wait-sec=20
 - --workers-max-global=24, --workers-max-per-repo=5
-- --leases-renew-sec=8, --leases-lease-sec=24, --work-dir=/var/cache/gitops-reverser
+- --work-dir=/var/cache/gitops-reverser
 - Values wiring: [charts.deployment](charts/gitops-reverser/templates/deployment.yaml:1), [charts.values](charts/gitops-reverser/values.yaml:1)
 
-11. Testing and CI gates (mandatory)
+10. Testing and CI gates (mandatory)
 - make lint (golangci-lint), make test (>90% coverage for new code), make test-e2e (Docker/Kind); see [Makefile](Makefile:1)
 - Core scenarios:
   - Seed → writes + deletes; second run → no-op
   - Desired-state default filters: Pods/Events excluded; Deployments/Services included
   - Non-fast-forward retry path remains stable
-  - Two replicas → only one writer via Lease; exclusiveMode marker blocks writes on mismatch
 - Correlation tests:
   - Unit: sanitize equivalence (webhook vs watch), key determinism, TTL/LRU behavior, no reliance on resourceVersion ordering
   - Integration: webhook put then watch hit under load; dropped webhook → miss and metrics; commit trailers reflect username on hits
   - E2E: high-rate updates; enrichment hit rate within TTL; stable throughput; no deadlocks
+
+11. Out of scope (MVP)
+- Ownership/conflict control of the target repo (e.g., Kubernetes Lease per repo-branch worker, repo ownership marker files, commit blocking on ownership), and any exclusiveMode
+- CRD accessPolicy and policy-based authorization for referencing repos/destinations
+- Selectors (objectSelector on WatchRule, namespaceSelector on ClusterWatchRule)
+- Migration/compatibility concerns (alpha project; no migration path is maintained)
 
 References (authoritative anchors)
 - Manager lifecycle: [watch.Manager.Start()](internal/watch/manager.go:66), seed: [watch.Manager.seedSelectedResources()](internal/watch/manager.go:185)
@@ -132,4 +127,4 @@ References (authoritative anchors)
 Status marker (2025-10-16)
 - Watch ingestion active with dynamic informers; seed enqueues UPDATEs
 - Validating webhook retained permanently for username capture; leader-only, FailurePolicy=Ignore
-- Fixed 1 MiB batch bytes trigger; deletes uncapped; correlation design specified (sanitize+KV) with tests outlined
+- Fixed 1 MiB batch bytes trigger; deletes uncapped; correlation design specified (sanitize+KV) with tests outlined; ownership and access policy explicitly out of scope
