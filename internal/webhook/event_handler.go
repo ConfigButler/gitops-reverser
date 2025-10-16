@@ -201,7 +201,16 @@ func (h *EventHandler) processRuleMatches(
 
 	// Enqueue events for WatchRule matches
 	for _, rule := range matchingRules {
-		h.enqueueEvent(ctx, obj, identifier, req, rule.GitRepoConfigRef, rule.Source.Namespace, rule.BaseFolder)
+		h.enqueueEvent(
+			ctx,
+			obj,
+			identifier,
+			req,
+			rule.GitRepoConfigRef,
+			rule.Source.Namespace,
+			rule.Branch,
+			rule.BaseFolder,
+		)
 	}
 
 	// Enqueue events for ClusterWatchRule matches
@@ -213,6 +222,7 @@ func (h *EventHandler) processRuleMatches(
 			req,
 			clusterRule.GitRepoConfigRef,
 			clusterRule.GitRepoConfigNamespace,
+			clusterRule.Branch,
 			clusterRule.BaseFolder,
 		)
 	}
@@ -226,6 +236,7 @@ func (h *EventHandler) enqueueEvent(
 	req admission.Request,
 	gitRepoConfigRef string,
 	gitRepoConfigNamespace string,
+	branch string,
 	baseFolder string,
 ) {
 	sanitizedObj := sanitize.Sanitize(obj)
@@ -239,6 +250,7 @@ func (h *EventHandler) enqueueEvent(
 		},
 		GitRepoConfigRef:       gitRepoConfigRef,
 		GitRepoConfigNamespace: gitRepoConfigNamespace,
+		Branch:                 branch,
 		BaseFolder:             baseFolder,
 	}
 	h.EventQueue.Enqueue(event)

@@ -52,8 +52,8 @@ var _ = Describe("WatchRule Controller", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha1.GitRepoConfigSpec{
-					RepoURL: "https://github.com/test/repo.git",
-					Branch:  "main",
+					RepoURL:         "https://github.com/test/repo.git",
+					AllowedBranches: []string{"main"},
 					SecretRef: &configbutleraiv1alpha1.LocalObjectReference{
 						Name: "git-credentials",
 					},
@@ -164,8 +164,8 @@ var _ = Describe("WatchRule Controller", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha1.GitRepoConfigSpec{
-					RepoURL: "git@github.com:test/repo.git",
-					Branch:  "main",
+					RepoURL:         "git@github.com:test/repo.git",
+					AllowedBranches: []string{"main"},
 				},
 			}
 			Expect(k8sClient.Create(ctx, gitRepoConfig)).Should(Succeed())

@@ -387,7 +387,7 @@ var _ = Describe("Manager", Ordered, func() {
 			By("showing controller logs after GitRepoConfig creation")
 			showControllerLogs("after creating GitRepoConfig")
 
-			verifyGitRepoConfigStatus(gitRepoConfigName, "True", "BranchFound", "Branch 'main' found and accessible")
+			verifyGitRepoConfigStatus(gitRepoConfigName, "True", "BranchFound", "All 1 branches validated")
 
 			By("showing final controller logs")
 			showControllerLogs("after status verification")
@@ -429,7 +429,7 @@ var _ = Describe("Manager", Ordered, func() {
 			By("🔍 Controller logs after SSH GitRepoConfig creation")
 			showControllerLogs("after SSH GitRepoConfig creation")
 
-			verifyGitRepoConfigStatus(gitRepoConfigName, "True", "BranchFound", "Branch 'main' found and accessible")
+			verifyGitRepoConfigStatus(gitRepoConfigName, "True", "BranchFound", "All 1 branches validated")
 
 			By("✅ Final SSH test logs")
 			showControllerLogs("SSH test completion")
@@ -450,7 +450,7 @@ var _ = Describe("Manager", Ordered, func() {
 			createGitRepoConfig(gitRepoConfigName, "main", "git-creds")
 
 			By("waiting for GitRepoConfig to be ready")
-			verifyGitRepoConfigStatus(gitRepoConfigName, "True", "BranchFound", "Branch 'main' found and accessible")
+			verifyGitRepoConfigStatus(gitRepoConfigName, "True", "BranchFound", "All 1 branches validated")
 
 			By("creating a WatchRule that references the working GitRepoConfig")
 			destName := watchRuleName + "-dest"
@@ -496,7 +496,7 @@ var _ = Describe("Manager", Ordered, func() {
 			createGitRepoConfigWithURL(gitRepoConfigName, "main", "git-creds", repoURL)
 
 			By("waiting for GitRepoConfig to be ready")
-			verifyGitRepoConfigStatus(gitRepoConfigName, "True", "BranchFound", "Branch 'main' found and accessible")
+			verifyGitRepoConfigStatus(gitRepoConfigName, "True", "BranchFound", "All 1 branches validated")
 
 			By("creating WatchRule that monitors ConfigMaps")
 			destName := watchRuleName + "-dest"
@@ -622,7 +622,7 @@ var _ = Describe("Manager", Ordered, func() {
 			createGitRepoConfigWithURL(gitRepoConfigName, "main", "git-creds", repoURL)
 
 			By("waiting for GitRepoConfig to be ready")
-			verifyGitRepoConfigStatus(gitRepoConfigName, "True", "BranchFound", "Branch 'main' found and accessible")
+			verifyGitRepoConfigStatus(gitRepoConfigName, "True", "BranchFound", "All 1 branches validated")
 
 			By("creating WatchRule that monitors ConfigMaps")
 			destName := watchRuleName + "-dest"
@@ -739,7 +739,7 @@ var _ = Describe("Manager", Ordered, func() {
 			createGitRepoConfigWithClusterRules(gitRepoConfigName, "main", "git-creds", getRepoURLHTTP())
 
 			By("waiting for GitRepoConfig to be ready")
-			verifyGitRepoConfigStatus(gitRepoConfigName, "True", "BranchFound", "Branch 'main' found and accessible")
+			verifyGitRepoConfigStatus(gitRepoConfigName, "True", "BranchFound", "All 1 branches validated")
 
 			By("creating ClusterWatchRule with Cluster scope for CRDs")
 			destName := clusterWatchRuleName + "-dest"
@@ -843,7 +843,7 @@ var _ = Describe("Manager", Ordered, func() {
 			createGitRepoConfigWithURL(gitRepoConfigName, "main", "git-creds", getRepoURLHTTP())
 
 			By("waiting for GitRepoConfig to be ready")
-			verifyGitRepoConfigStatus(gitRepoConfigName, "True", "BranchFound", "Branch 'main' found and accessible")
+			verifyGitRepoConfigStatus(gitRepoConfigName, "True", "BranchFound", "All 1 branches validated")
 			crdInstanceName := "alices-order"
 			uniqueRepoName := testRepoName
 
@@ -1248,7 +1248,7 @@ var _ = Describe("Manager", Ordered, func() {
 			createGitRepoConfigWithClusterRules(gitRepoConfigName, "main", "git-creds", getRepoURLHTTP())
 
 			By("waiting for GitRepoConfig to be ready")
-			verifyGitRepoConfigStatus(gitRepoConfigName, "True", "BranchFound", "Branch 'main' found and accessible")
+			verifyGitRepoConfigStatus(gitRepoConfigName, "True", "BranchFound", "All 1 branches validated")
 
 			By("creating ClusterWatchRule with Cluster scope for CRDs")
 			destName := clusterWatchRuleName + "-dest"

@@ -504,11 +504,17 @@ func (w *Worker) handleTicker(
 // commitAndPush handles the git operations for a batch of events.
 func (w *Worker) commitAndPush(ctx context.Context, repoConfig v1alpha1.GitRepoConfig, events []eventqueue.Event) {
 	log := w.Log.WithValues("repo", repoConfig.Name)
+	// Extract branch from first event (all events in batch share same repo config)
+	branch := ""
+	if len(events) > 0 {
+		branch = events[0].Branch
+	}
+
 	log.Info("===== Starting git commit and push process =====",
 		"eventCount", len(events),
 		"repoName", repoConfig.Name,
 		"repoURL", repoConfig.Spec.RepoURL,
-		"branch", repoConfig.Spec.Branch)
+		"branch", branch)
 
 	// Log details about each event for debugging (guard nil objects/control events)
 	for i, event := range events {
@@ -547,8 +553,8 @@ func (w *Worker) commitAndPush(ctx context.Context, repoConfig v1alpha1.GitRepoC
 	}
 
 	// 3. Checkout the correct branch
-	log.Info("Checking out branch", "branch", repoConfig.Spec.Branch)
-	if err := repo.Checkout(repoConfig.Spec.Branch); err != nil {
+	log.Info("Checking out branch", "branch", branch)
+	if err := repo.Checkout(branch); err != nil {
 		log.Error(err, "Failed to checkout branch")
 		return
 	}
@@ -661,7 +667,15 @@ func (w *Worker) listRepoYAMLPaths(ctx context.Context, repoConfig v1alpha1.GitR
 	if err != nil {
 		return nil, err
 	}
-	if err := repo.Checkout(repoConfig.Spec.Branch); err != nil {
+	// For orphan detection, we need to get branch from somewhere.
+	// Since this is called during SEED_SYNC, we don't have an event with Branch.
+	// We'll need to pass the branch explicitly.
+	// For now, use the first allowed branch as a fallback.
+	branch := ""
+	if len(repoConfig.Spec.AllowedBranches) > 0 {
+		branch = repoConfig.Spec.AllowedBranches[0]
+	}
+	if err := repo.Checkout(branch); err != nil {
 		return nil, err
 	}
 

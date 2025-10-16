@@ -144,6 +144,8 @@ func (m *Manager) handleEvent(obj interface{}, g GVR, op configv1alpha1.Operatio
 			UserInfo:               eventqueue.UserInfo{},
 			GitRepoConfigRef:       rule.GitRepoConfigRef,
 			GitRepoConfigNamespace: rule.Source.Namespace,
+			Branch:                 rule.Branch,
+			BaseFolder:             rule.BaseFolder,
 		}
 		m.EventQueue.Enqueue(ev)
 	}
@@ -157,6 +159,8 @@ func (m *Manager) handleEvent(obj interface{}, g GVR, op configv1alpha1.Operatio
 			UserInfo:               eventqueue.UserInfo{},
 			GitRepoConfigRef:       cr.GitRepoConfigRef,
 			GitRepoConfigNamespace: cr.GitRepoConfigNamespace,
+			Branch:                 cr.Branch,
+			BaseFolder:             cr.BaseFolder,
 		}
 		m.EventQueue.Enqueue(ev)
 	}

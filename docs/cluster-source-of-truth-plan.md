@@ -19,18 +19,19 @@ Executive summary
 - One worker per (repoURL,branch), dedicated clone, batching by count, time, and bytes (1 MiB)
 - Minimal configuration; orphan deletes are immediate (no caps) — Git history provides revert safety
 
-Current state (as of 2025-10-16 analysis)
+Current state (as of 2025-10-16 post-CRD-simplification)
 
 **Implemented (verified in codebase):**
+- ✓ **CRD Simplification**: GitRepoConfig uses allowedBranches (array), AccessPolicy removed; all controllers updated
 - ✓ Dynamic informers for discovered GVRs: [watch.startDynamicInformers()](internal/watch/informers.go:48), [watch.addHandlers()](internal/watch/informers.go:82), [watch.handleEvent()](internal/watch/informers.go:105)
 - ✓ Initial List-based seed enqueues UPDATEs: [watch.Manager.seedSelectedResources()](internal/watch/manager.go:190)
 - ✓ Worker and Git pipeline: [git.Worker.dispatchEvents()](internal/git/worker.go:115), [git.Worker.processRepoEvents()](internal/git/worker.go:211), [git.Repo.TryPushCommits()](internal/git/git.go:181)
 - ✓ Username capture via webhook at /process-validating-webhook: [webhook.event_handler()](internal/webhook/event_handler.go:62)
-- ✓ GitDestination DestinationRef wiring with baseFolder: events carry BaseFolder, paths use /{baseFolder}/{identifierPath}
+- ✓ GitDestination DestinationRef wiring: Branch + BaseFolder flow from GitDestination → CompiledRule → Event
 - ✓ Orphan detection implemented: [git.Worker.computeOrphanDeletes()](internal/git/worker.go:599) with SEED_SYNC control events
 - ✓ Byte-based batching tracking: [git.Worker.handleIncomingEvent()](internal/git/worker.go:385) accumulates bufferByteCount
 
-**Gaps identified:**
+**Remaining gaps:**
 - ❌ **Correlation KV store**: No implementation exists; webhook captures username but watch path has no enrichment logic
 - ⚠️ **Batch bytes cap**: Implemented but defaults to 10 MiB ([worker.go:62](internal/git/worker.go:62)), spec mandates fixed 1 MiB
 - ⚠️ **Orphan deletes**: Implemented but capped at 500/cycle ([worker.go:72](internal/git/worker.go:72)), spec says "uncapped"
@@ -146,9 +147,11 @@ Key references
 - Git push: [git.Repo.TryPushCommits()](internal/git/git.go:181)
 - Webhook: [webhook.event_handler()](internal/webhook/event_handler.go:1), charts: [charts/validating-webhook.yaml](charts/gitops-reverser/templates/validating-webhook.yaml:1)
 
-Status marker (updated 2025-10-16)
+Status marker (updated 2025-10-16 post-CRD-simplification)
+- **CRDs**: ✓ Simplified per MVP spec; GitRepoConfig.allowedBranches, AccessPolicy removed, branch validation active
 - Watch ingestion: ✓ Active with dynamic informers and seed listing
 - Webhook: ✓ Retained for username capture at /process-validating-webhook
+- Branch handling: ✓ Flows GitDestination.branch → Event.Branch → git.Worker (validated against allowedBranches)
 - BaseFolder: ✓ Fully wired from rules → destination → worker
 - Orphan detection: ✓ Implemented with SEED_SYNC control events (currently capped at 500/cycle)
 - Byte batching: ✓ Tracking implemented (currently defaults to 10 MiB vs spec's 1 MiB)
@@ -185,6 +188,21 @@ Backlog of parts (prioritized by criticality and dependencies)
   - BaseFolder propagated via [eventqueue.Event](internal/eventqueue/queue.go:1)
   - Path prefixing in [git.Repo.generateLocalCommits()](internal/git/git.go:231)
   - Legacy GitRepoConfigRef fallback maintained for compatibility
+
+- [x] **GitRepoConfig CRD Simplification** (COMPLETED 2025-10-16 - MVP alignment)
+  - Removed AccessPolicy field and all related types (AccessPolicy, NamespacedRulesPolicy, AccessPolicyMode)
+  - Removed CEL validation rules for accessPolicy
+  - Changed `branch: string` → `allowedBranches: []string` per spec section 1
+  - Kept PushStrategy for batching configuration
+  - Removed accessPolicy validation from [WatchRuleReconciler](internal/controller/watchrule_controller.go:175) and [ClusterWatchRuleReconciler](internal/controller/clusterwatchrule_controller.go:170)
+  - Added branch validation in [GitDestinationReconciler](internal/controller/gitdestination_controller.go:107): validates `branch ∈ allowedBranches`
+  - Added Branch field to [eventqueue.Event](internal/eventqueue/queue.go:48), [CompiledRule](internal/rulestore/store.go:41), [CompiledClusterRule](internal/rulestore/store.go:71)
+  - Updated [git.Worker.commitAndPush()](internal/git/worker.go:505) to use event.Branch instead of repoConfig.Spec.Branch
+  - Updated all templates: [gitrepoconfig.tmpl](test/e2e/templates/gitrepoconfig.tmpl:8), [gitrepoconfig-with-cluster-access.tmpl](test/e2e/templates/gitrepoconfig-with-cluster-access.tmpl:8)
+  - Updated samples: [configbutler.ai_v1alpha1_gitrepoconfig.yaml](config/samples/configbutler.ai_v1alpha1_gitrepoconfig.yaml:10)
+  - Regenerated CRD manifests via `make manifests`
+  - All tests pass: `make lint && make test` ✓
+  - **Impact**: Breaking change acceptable under alpha posture; fully MVP-spec-aligned
 
 ### High Priority (Core Functionality)
 - [ ] **Correlation KV store** (CRITICAL - dual-signal core)

@@ -39,6 +39,7 @@ import (
 const (
 	GitDestinationReasonValidating            = "Validating"
 	GitDestinationReasonGitRepoConfigNotFound = "GitRepoConfigNotFound"
+	GitDestinationReasonBranchNotAllowed      = "BranchNotAllowed"
 	GitDestinationReasonReady                 = "Ready"
 )
 
@@ -103,7 +104,23 @@ func (r *GitDestinationReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, err
 	}
 
-	// All validations passed for MVP (no connectivity/branch checks here).
+	// Validate that the branch is in the allowedBranches list
+	branchAllowed := false
+	for _, allowedBranch := range grc.Spec.AllowedBranches {
+		if dest.Spec.Branch == allowedBranch {
+			branchAllowed = true
+			break
+		}
+	}
+	if !branchAllowed {
+		msg := fmt.Sprintf("Branch '%s' is not in allowedBranches list %v of GitRepoConfig '%s/%s'",
+			dest.Spec.Branch, grc.Spec.AllowedBranches, repoNS, dest.Spec.RepoRef.Name)
+		log.Info("Branch validation failed", "branch", dest.Spec.Branch, "allowedBranches", grc.Spec.AllowedBranches)
+		r.setCondition(&dest, metav1.ConditionFalse, GitDestinationReasonBranchNotAllowed, msg)
+		return r.updateStatusAndRequeue(ctx, &dest, RequeueShortInterval)
+	}
+
+	// All validations passed
 	msg := fmt.Sprintf("GitDestination is ready. Repo='%s/%s', Branch='%s', BaseFolder='%s'",
 		repoNS, dest.Spec.RepoRef.Name, dest.Spec.Branch, dest.Spec.BaseFolder)
 

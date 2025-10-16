@@ -164,6 +164,7 @@ func (m *Manager) enqueueMatches(
 			UserInfo:               eventqueue.UserInfo{}, // no admission user in watch-based ingestion
 			GitRepoConfigRef:       rule.GitRepoConfigRef,
 			GitRepoConfigNamespace: rule.Source.Namespace,
+			Branch:                 rule.Branch,
 			BaseFolder:             rule.BaseFolder,
 		}
 		m.EventQueue.Enqueue(ev)
@@ -178,6 +179,7 @@ func (m *Manager) enqueueMatches(
 			UserInfo:               eventqueue.UserInfo{},
 			GitRepoConfigRef:       cr.GitRepoConfigRef,
 			GitRepoConfigNamespace: cr.GitRepoConfigNamespace,
+			Branch:                 cr.Branch,
 			BaseFolder:             cr.BaseFolder,
 		}
 		m.EventQueue.Enqueue(ev)

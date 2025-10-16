@@ -163,28 +163,17 @@ func (r *ClusterWatchRuleReconciler) reconcileClusterWatchRuleViaDestination(
 		return r.updateStatusAndRequeue(ctx, clusterRule, time.Minute)
 	}
 
-	// Access policy: cluster rules must be explicitly allowed
-	if gitRepoConfig.Spec.AccessPolicy == nil || !gitRepoConfig.Spec.AccessPolicy.AllowClusterRules {
-		log.Info("GitRepoConfig does not allow cluster rules", "gitRepoConfig", gitRepoConfig.Name)
+	// MVP: No access policy validation (simplified per spec)
+	log.Info("GitRepoConfig validation passed", "gitRepoConfig", gitRepoConfig.Name, "namespace", grcNS)
 
-		message := fmt.Sprintf(
-			"GitRepoConfig '%s/%s' does not allow cluster rules "+
-				"(accessPolicy.allowClusterRules is false or missing)",
-			grcNS,
-			dest.Spec.RepoRef.Name,
-		)
-
-		r.setCondition(
-			clusterRule,
-			metav1.ConditionFalse,
-			ClusterWatchRuleReasonAccessDenied,
-			message,
-		)
-		return r.updateStatusAndRequeue(ctx, clusterRule, RequeueMediumInterval)
-	}
-
-	// Add or update in store with resolved values (including baseFolder)
-	r.RuleStore.AddOrUpdateClusterWatchRuleResolved(*clusterRule, gitRepoConfig.Name, grcNS, dest.Spec.BaseFolder)
+	// Add or update in store with resolved values (including branch and baseFolder)
+	r.RuleStore.AddOrUpdateClusterWatchRuleResolved(
+		*clusterRule,
+		gitRepoConfig.Name,
+		grcNS,
+		dest.Spec.Branch,
+		dest.Spec.BaseFolder,
+	)
 
 	log.Info("ClusterWatchRule reconciliation via GitDestination successful", "name", clusterRule.Name)
 	return r.setReadyAndUpdateStatusWithDestination(ctx, clusterRule)

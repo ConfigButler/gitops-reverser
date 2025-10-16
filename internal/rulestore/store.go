@@ -40,6 +40,8 @@ type CompiledRule struct {
 	GitRepoConfigRef string
 	// GitRepoConfigNamespace is the namespace containing the resolved GitRepoConfig.
 	GitRepoConfigNamespace string
+	// Branch is the Git branch to write to (from GitDestination).
+	Branch string
 	// BaseFolder is the POSIX-like relative prefix under which files are written for this rule's destination.
 	BaseFolder string
 	// IsClusterScoped indicates if this rule watches cluster-scoped resources.
@@ -69,6 +71,8 @@ type CompiledClusterRule struct {
 	GitRepoConfigRef string
 	// GitRepoConfigNamespace is the namespace containing the resolved GitRepoConfig.
 	GitRepoConfigNamespace string
+	// Branch is the Git branch to write to (from GitDestination).
+	Branch string
 	// BaseFolder is the POSIX-like relative prefix under which files are written for this rule's destination.
 	BaseFolder string
 	// Rules contains the compiled cluster resource rules with per-rule scope.
@@ -142,11 +146,13 @@ func (s *RuleStore) AddOrUpdateWatchRule(rule configv1alpha1.WatchRule) {
 // Parameters:
 //   - gitRepoConfigName: the name of the resolved GitRepoConfig
 //   - gitRepoConfigNamespace: the namespace containing the resolved GitRepoConfig
+//   - branch: the Git branch to write to (from GitDestination)
 //   - baseFolder: POSIX-like relative path prefix for writes (sanitized upstream)
 func (s *RuleStore) AddOrUpdateWatchRuleResolved(
 	rule configv1alpha1.WatchRule,
 	gitRepoConfigName string,
 	gitRepoConfigNamespace string,
+	branch string,
 	baseFolder string,
 ) {
 	s.mu.Lock()
@@ -161,6 +167,7 @@ func (s *RuleStore) AddOrUpdateWatchRuleResolved(
 		Source:                 key,
 		GitRepoConfigRef:       gitRepoConfigName,
 		GitRepoConfigNamespace: gitRepoConfigNamespace,
+		Branch:                 branch,
 		BaseFolder:             baseFolder,
 		IsClusterScoped:        false,
 		ResourceRules:          make([]CompiledResourceRule, 0, len(rule.Spec.Rules)),
@@ -220,11 +227,13 @@ func (s *RuleStore) AddOrUpdateClusterWatchRule(rule configv1alpha1.ClusterWatch
 // Parameters:
 //   - gitRepoConfigName: the name of the resolved GitRepoConfig
 //   - gitRepoConfigNamespace: the namespace containing the resolved GitRepoConfig
+//   - branch: the Git branch to write to (from GitDestination)
 //   - baseFolder: POSIX-like relative path prefix for writes (sanitized upstream)
 func (s *RuleStore) AddOrUpdateClusterWatchRuleResolved(
 	rule configv1alpha1.ClusterWatchRule,
 	gitRepoConfigName string,
 	gitRepoConfigNamespace string,
+	branch string,
 	baseFolder string,
 ) {
 	s.mu.Lock()
@@ -239,6 +248,7 @@ func (s *RuleStore) AddOrUpdateClusterWatchRuleResolved(
 		Source:                 key,
 		GitRepoConfigRef:       gitRepoConfigName,
 		GitRepoConfigNamespace: gitRepoConfigNamespace,
+		Branch:                 branch,
 		BaseFolder:             baseFolder,
 		Rules:                  make([]CompiledClusterResourceRule, 0, len(rule.Spec.Rules)),
 	}

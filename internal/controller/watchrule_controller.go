@@ -20,22 +20,17 @@ package controller
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
-	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
-
-	"github.com/go-logr/logr"
 
 	configbutleraiv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
@@ -177,42 +172,14 @@ func (r *WatchRuleReconciler) reconcileWatchRuleViaDestination(
 		return r.updateStatusAndRequeue(ctx, watchRule, time.Minute)
 	}
 
-	// Access policy validation against the resolved GitRepoConfig
-	if err := r.validateGitRepoConfigAccess(ctx, watchRule, grc); err != nil {
-		log.Error(err, "Access denied to resolved GitRepoConfig")
-		r.setCondition(
-			watchRule,
-			metav1.ConditionFalse,
-			WatchRuleReasonAccessDenied,
-			fmt.Sprintf(
-				"Access denied to GitRepoConfig '%s/%s' (from GitDestination): %v",
-				grcNS,
-				dest.Spec.RepoRef.Name,
-				err,
-			),
-		)
-		return r.updateStatusAndRequeue(ctx, watchRule, RequeueMediumInterval)
-	}
+	// MVP: No access policy validation (simplified per spec)
+	log.Info("GitRepoConfig validation passed", "gitRepoConfig", grc.Name, "namespace", grcNS)
 
-	// Optional: warn on branch mismatch (do not fail)
-	r.warnBranchMismatch(log, dest.Spec.Branch, grc.Spec.Branch)
-
-	// Add resolved entry with baseFolder
-	r.RuleStore.AddOrUpdateWatchRuleResolved(*watchRule, grc.Name, grcNS, dest.Spec.BaseFolder)
+	// Add resolved entry with branch and baseFolder
+	r.RuleStore.AddOrUpdateWatchRuleResolved(*watchRule, grc.Name, grcNS, dest.Spec.Branch, dest.Spec.BaseFolder)
 
 	log.Info("WatchRule reconciliation via GitDestination successful", "name", watchRule.Name)
 	return r.setReadyAndUpdateStatusWithDestination(ctx, watchRule, destNS)
-}
-
-// warnBranchMismatch logs a warning if destination branch differs from GitRepoConfig branch.
-func (r *WatchRuleReconciler) warnBranchMismatch(log logr.Logger, destBranch, grcBranch string) {
-	if destBranch != "" && destBranch != grcBranch {
-		log.Info(
-			"GitDestination branch differs from GitRepoConfig branch; GitRepoConfig branch will be used",
-			"destinationBranch", destBranch,
-			"gitRepoConfigBranch", grcBranch,
-		)
-	}
 }
 
 // setReadyAndUpdateStatusWithDestination sets Ready with destination message and updates status with retry.
@@ -356,65 +323,6 @@ func (r *WatchRuleReconciler) updateStatusWithRetry(
 		log.Info("Status update successful")
 		return true, nil
 	})
-}
-
-// validateGitRepoConfigAccess checks if WatchRule can access GitRepoConfig based on accessPolicy.
-func (r *WatchRuleReconciler) validateGitRepoConfigAccess(
-	ctx context.Context,
-	watchRule *configbutleraiv1alpha1.WatchRule,
-	gitRepoConfig *configbutleraiv1alpha1.GitRepoConfig,
-) error {
-	// Check access policy
-	if gitRepoConfig.Spec.AccessPolicy == nil {
-		// Default: SameNamespace
-		if gitRepoConfig.Namespace != watchRule.Namespace {
-			return errors.New("GitRepoConfig does not allow cross-namespace access (no accessPolicy)")
-		}
-		return nil
-	}
-
-	policy := gitRepoConfig.Spec.AccessPolicy.NamespacedRules
-	if policy == nil {
-		// Default: SameNamespace
-		if gitRepoConfig.Namespace != watchRule.Namespace {
-			return errors.New("GitRepoConfig does not allow cross-namespace access (no namespacedRules)")
-		}
-		return nil
-	}
-
-	switch policy.Mode {
-	case configbutleraiv1alpha1.AccessPolicyModeSameNamespace, "": // Empty string = default
-		if gitRepoConfig.Namespace != watchRule.Namespace {
-			return errors.New("GitRepoConfig only allows same-namespace access")
-		}
-
-	case configbutleraiv1alpha1.AccessPolicyModeAllNamespaces:
-		// Always allowed
-		return nil
-
-	case configbutleraiv1alpha1.AccessPolicyModeFromSelector:
-		// Get namespace object to check labels
-		ns := &corev1.Namespace{}
-		err := r.Get(ctx, types.NamespacedName{Name: watchRule.Namespace}, ns)
-		if err != nil {
-			return fmt.Errorf("failed to get namespace %s: %w", watchRule.Namespace, err)
-		}
-
-		// Check if namespace matches selector
-		selector, err := metav1.LabelSelectorAsSelector(policy.NamespaceSelector)
-		if err != nil {
-			return fmt.Errorf("invalid namespace selector: %w", err)
-		}
-
-		if !selector.Matches(labels.Set(ns.Labels)) {
-			return fmt.Errorf(
-				"namespace '%s' does not match GitRepoConfig selector",
-				watchRule.Namespace,
-			)
-		}
-	}
-
-	return nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
