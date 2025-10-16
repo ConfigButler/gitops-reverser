@@ -24,6 +24,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -62,6 +63,10 @@ type Repo struct {
 	auth       transport.AuthMethod
 	branch     string
 	remoteName string
+
+	// baseFolder is an optional POSIX-like relative path prefix under which files will be written.
+	// When empty, files are written at the repository root using the identifier path layout.
+	baseFolder string
 }
 
 // Clone clones a Git repository to the specified directory or reuses existing one.
@@ -107,6 +112,7 @@ func Clone(url, path string, auth transport.AuthMethod) (*Repo, error) {
 		auth:       auth,
 		branch:     "main", // Default branch
 		remoteName: "origin",
+		baseFolder: "",
 	}, nil
 }
 
@@ -228,6 +234,30 @@ func (r *Repo) TryPushCommits(ctx context.Context, events []eventqueue.Event) er
 	return fmt.Errorf("push failed: %w", err)
 }
 
+// sanitizeBaseFolder validates and normalizes a baseFolder value to a safe POSIX-like relative path.
+// Returns empty string when the input is unsafe or empty.
+func sanitizeBaseFolder(base string) string {
+	trimmed := strings.TrimSpace(base)
+	if trimmed == "" {
+		return ""
+	}
+	// Reject absolute paths and backslashes (Windows separators)
+	if strings.HasPrefix(trimmed, "/") || strings.ContainsAny(trimmed, "\\") {
+		return ""
+	}
+	// Reject path traversal
+	if strings.Contains(trimmed, "..") {
+		return ""
+	}
+	// Normalize and strip leading/trailing slashes
+	cleaned := path.Clean(trimmed)
+	cleaned = strings.Trim(cleaned, "/")
+	if cleaned == "" || cleaned == "." {
+		return ""
+	}
+	return cleaned
+}
+
 // generateLocalCommits creates local commits for the given events.
 func (r *Repo) generateLocalCommits(ctx context.Context, events []eventqueue.Event) error {
 	logger := log.FromContext(ctx)
@@ -242,7 +272,14 @@ func (r *Repo) generateLocalCommits(ctx context.Context, events []eventqueue.Eve
 	}
 
 	for _, event := range events {
+		// Build the repository-relative file path:
+		// optional baseFolder prefix + identifier path.
 		filePath := event.Identifier.ToGitPath()
+		if r.baseFolder != "" {
+			if bf := sanitizeBaseFolder(r.baseFolder); bf != "" {
+				filePath = path.Join(bf, filePath)
+			}
+		}
 
 		// Handle the event based on operation type
 		if err := r.handleEventOperation(ctx, event, filePath, worktree); err != nil {
