@@ -43,7 +43,6 @@ Local dev builds CI base automatically (`initializeCommand`), no GHCR pulls need
 ## Troubleshooting
 
 **Container won't build** → Ensure Docker is running  
-**E2E tests fail** → Check `docker info` works  
 **Slow rebuild** → Normal, only rebuilds when tools/deps change
 
 See [`docs/COMPLETE_SOLUTION.md`](../docs/COMPLETE_SOLUTION.md) for details.

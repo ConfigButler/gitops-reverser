@@ -4,20 +4,37 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.19.0
-  name: gitrepoconfigs.configbutler.ai
+  name: gitdestinations.configbutler.ai
 spec:
   group: configbutler.ai
   names:
-    kind: GitRepoConfig
-    listKind: GitRepoConfigList
-    plural: gitrepoconfigs
-    singular: gitrepoconfig
+    kind: GitDestination
+    listKind: GitDestinationList
+    plural: gitdestinations
+    singular: gitdestination
   scope: Namespaced
   versions:
-  - name: v1alpha1
+  - additionalPrinterColumns:
+    - jsonPath: .spec.repoRef.name
+      name: Repo
+      type: string
+    - jsonPath: .spec.branch
+      name: Branch
+      type: string
+    - jsonPath: .spec.baseFolder
+      name: BaseFolder
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: GitRepoConfig is the Schema for the gitrepoconfigs API.
+        description: GitDestination binds repo+branch+baseFolder for a write subtree
+          in Git.
         properties:
           apiVersion:
             description: |-
@@ -37,56 +54,46 @@ spec:
           metadata:
             type: object
           spec:
-            description: spec defines the desired state of GitRepoConfig
+            description: spec defines the desired state of GitDestination
             properties:
-              allowedBranches:
+              baseFolder:
                 description: |-
-                  AllowedBranches is the list of Git branches that GitDestinations may reference.
-                  This provides a simple allowlist mechanism for branch validation.
-                  GitDestination resources referencing this GitRepoConfig must specify a branch
-                  from this list.
-                items:
-                  type: string
-                minItems: 1
-                type: array
-              push:
-                description: Push defines the strategy for pushing commits to the
-                  remote.
-                properties:
-                  interval:
-                    description: |-
-                      Interval is the maximum time to wait before pushing queued commits.
-                      Defaults to "1m".
-                    type: string
-                  maxCommits:
-                    description: |-
-                      MaxCommits is the maximum number of commits to queue before pushing.
-                      Defaults to 20.
-                    type: integer
-                type: object
-              repoUrl:
-                description: RepoURL is the URL of the Git repository to commit to.
+                  BaseFolder is the relative POSIX-like path under which files will be written.
+                  It must not start with "/" and must not contain ".." path traversal segments.
+                  Examples: "clusters/prod", "audit/cluster-a"
+                  Note: Additional path traversal checks are enforced at runtime; CEL rules removed for compatibility.
+                minLength: 1
+                pattern: ^([A-Za-z0-9._-]+/)*[A-Za-z0-9._-]+$
                 type: string
-              secretRef:
+              branch:
                 description: |-
-                  SecretRef specifies the Secret containing Git credentials.
-                  For HTTPS repositories the Secret must contain 'username' and 'password'
-                  fields for basic auth or 'bearerToken' field for token auth.
-                  For SSH repositories the Secret must contain 'identity'
-                  and 'known_hosts' fields.
+                  Branch is the Git branch to write to for this destination.
+                  In MVP, no allowlist is enforced here; controllers may validate existence later.
+                minLength: 1
+                type: string
+              repoRef:
+                description: RepoRef references the GitRepoConfig to use (namespaced).
                 properties:
                   name:
-                    description: Name is the name of the referent.
+                    description: Name of the GitRepoConfig.
+                    minLength: 1
+                    type: string
+                  namespace:
+                    description: |-
+                      Namespace containing the GitRepoConfig.
+                      For WatchRule: Optional, defaults to WatchRule's namespace if not specified.
+                      For ClusterWatchRule: Required, must be explicitly specified.
                     type: string
                 required:
                 - name
                 type: object
             required:
-            - allowedBranches
-            - repoUrl
+            - baseFolder
+            - branch
+            - repoRef
             type: object
           status:
-            description: status defines the observed state of GitRepoConfig
+            description: status defines the observed state of GitDestination
             properties:
               conditions:
                 description: Conditions represent the latest available observations
@@ -147,8 +154,7 @@ spec:
                   type: object
                 type: array
               observedGeneration:
-                description: ObservedGeneration is the last generation that was successfully
-                  validated
+                description: ObservedGeneration is the last generation that was reconciled
                 format: int64
                 type: integer
             type: object

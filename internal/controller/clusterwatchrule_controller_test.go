@@ -55,15 +55,15 @@ var _ = Describe("ClusterWatchRule Controller", func() {
 			Expect(result.RequeueAfter).To(BeZero())
 		})
 
-		It("should fail when GitRepoConfig not found", func() {
-			By("Creating a ClusterWatchRule referencing non-existent GitRepoConfig")
+		It("should fail when GitDestination not found", func() {
+			By("Creating a ClusterWatchRule referencing non-existent GitDestination")
 			clusterRule := &configbutleraiv1alpha1.ClusterWatchRule{
 				ObjectMeta: metav1.ObjectMeta{
-					Name: "missing-grc-rule",
+					Name: "missing-dest-rule",
 				},
 				Spec: configbutleraiv1alpha1.ClusterWatchRuleSpec{
-					GitRepoConfigRef: configbutleraiv1alpha1.NamespacedName{
-						Name:      "nonexistent-grc",
+					DestinationRef: &configbutleraiv1alpha1.NamespacedName{
+						Name:      "nonexistent-dest",
 						Namespace: "default",
 					},
 					Rules: []configbutleraiv1alpha1.ClusterResourceRule{
@@ -78,22 +78,22 @@ var _ = Describe("ClusterWatchRule Controller", func() {
 
 			By("Reconciling the ClusterWatchRule")
 			result, err := reconciler.Reconcile(ctx, reconcile.Request{
-				NamespacedName: types.NamespacedName{Name: "missing-grc-rule"},
+				NamespacedName: types.NamespacedName{Name: "missing-dest-rule"},
 			})
 
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.RequeueAfter).To(BeNumerically(">", 0))
 
-			By("Verifying the ClusterWatchRule has GitRepoConfigNotFound condition")
+			By("Verifying the ClusterWatchRule has GitDestinationNotFound condition")
 			updatedRule := &configbutleraiv1alpha1.ClusterWatchRule{}
-			err = k8sClient.Get(ctx, types.NamespacedName{Name: "missing-grc-rule"}, updatedRule)
+			err = k8sClient.Get(ctx, types.NamespacedName{Name: "missing-dest-rule"}, updatedRule)
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(updatedRule.Status.Conditions).To(HaveLen(1))
 			condition := updatedRule.Status.Conditions[0]
 			Expect(condition.Type).To(Equal(ConditionTypeReady))
 			Expect(condition.Status).To(Equal(metav1.ConditionFalse))
-			Expect(condition.Reason).To(Equal(ClusterWatchRuleReasonGitRepoConfigNotFound))
+			Expect(condition.Reason).To(Equal(ClusterWatchRuleReasonGitDestinationNotFound))
 
 			// Cleanup
 			Expect(k8sClient.Delete(ctx, clusterRule)).Should(Succeed())

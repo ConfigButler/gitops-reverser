@@ -82,13 +82,6 @@ Since there's **no public release yet**:
 - Breaking changes are acceptable
 - Focus on getting it right, not maintaining old behavior
 
-### Docker Requirement
-
-E2E tests require Docker to run Kind cluster:
-```bash
-docker info  # Verify Docker is running before `make test-e2e`
-```
-
 ---
 
 ## 📋 Pre-Implementation Setup
@@ -727,11 +720,6 @@ docker info  # Verify Docker is running before `make test-e2e`
 
 ### Step 3.6: Phase 3 Validation
 
-- [ ] Check Docker is running:
-  ```bash
-  docker info
-  ```
-
 - [ ] Run e2e tests:
   ```bash
   make test-e2e
@@ -848,12 +836,6 @@ docker info  # Verify Docker is running before `make test-e2e`
   make test
   ```
   - Must pass with >90% coverage
-
-- [ ] Check Docker is running:
-  ```bash
-  docker info
-  ```
-  - If not running, start Docker daemon
 
 - [ ] **Run e2e tests (MANDATORY)**:
   ```bash

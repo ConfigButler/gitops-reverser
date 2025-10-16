@@ -15,11 +15,8 @@ spec:
   scope: Cluster
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .spec.gitRepoConfigRef.name
-      name: GitRepoConfig
-      type: string
-    - jsonPath: .spec.gitRepoConfigRef.namespace
-      name: Namespace
+    - jsonPath: .spec.destinationRef.name
+      name: Destination
       type: string
     - jsonPath: .status.conditions[?(@.type=="Ready")].status
       name: Ready
@@ -67,11 +64,13 @@ spec:
           spec:
             description: spec defines the desired state of ClusterWatchRule.
             properties:
-              gitRepoConfigRef:
+              destinationRef:
                 description: |-
-                  GitRepoConfigRef references the GitRepoConfig to use.
-                  Since ClusterWatchRule is cluster-scoped and GitRepoConfig is namespace-scoped,
-                  both name and namespace must be specified.
+                  DestinationRef references a GitDestination that encapsulates repo+branch+baseFolder.
+                  When set, DestinationRef takes precedence over GitRepoConfigRef.
+                  Namespace must be specified for cluster-scoped rules.
+                  Pointer is used so that omitempty truly omits the field when unset to avoid
+                  API validation on zero-value structs.
                 properties:
                   name:
                     description: Name of the GitRepoConfig.
@@ -119,57 +118,6 @@ spec:
                       items:
                         type: string
                       type: array
-                    namespaceSelector:
-                      description: |-
-                        NamespaceSelector filters which namespaces to watch.
-                        Only evaluated when Scope is "Namespaced".
-                        If omitted for Namespaced scope, watches resources in ALL namespaces.
-                        If specified, only watches resources in namespaces matching the selector.
-                        Ignored when Scope is "Cluster".
-                      properties:
-                        matchExpressions:
-                          description: matchExpressions is a list of label selector
-                            requirements. The requirements are ANDed.
-                          items:
-                            description: |-
-                              A label selector requirement is a selector that contains values, a key, and an operator that
-                              relates the key and values.
-                            properties:
-                              key:
-                                description: key is the label key that the selector
-                                  applies to.
-                                type: string
-                              operator:
-                                description: |-
-                                  operator represents a key's relationship to a set of values.
-                                  Valid operators are In, NotIn, Exists and DoesNotExist.
-                                type: string
-                              values:
-                                description: |-
-                                  values is an array of string values. If the operator is In or NotIn,
-                                  the values array must be non-empty. If the operator is Exists or DoesNotExist,
-                                  the values array must be empty. This array is replaced during a strategic
-                                  merge patch.
-                                items:
-                                  type: string
-                                type: array
-                                x-kubernetes-list-type: atomic
-                            required:
-                            - key
-                            - operator
-                            type: object
-                          type: array
-                          x-kubernetes-list-type: atomic
-                        matchLabels:
-                          additionalProperties:
-                            type: string
-                          description: |-
-                            matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
-                            map is equivalent to an element of matchExpressions, whose key field is "key", the
-                            operator is "In", and the values array contains only "value". The requirements are ANDed.
-                          type: object
-                      type: object
-                      x-kubernetes-map-type: atomic
                     operations:
                       description: |-
                         Operations to watch. If empty, watches all operations (CREATE, UPDATE, DELETE).
@@ -222,7 +170,6 @@ spec:
                 minItems: 1
                 type: array
             required:
-            - gitRepoConfigRef
             - rules
             type: object
           status:

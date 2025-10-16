@@ -18,10 +18,12 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"flag"
 	"os"
 	"path/filepath"
+	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -42,11 +44,13 @@ import (
 
 	configbutleraiv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 	"github.com/ConfigButler/gitops-reverser/internal/controller"
+	"github.com/ConfigButler/gitops-reverser/internal/correlation"
 	"github.com/ConfigButler/gitops-reverser/internal/eventqueue"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/leader"
 	"github.com/ConfigButler/gitops-reverser/internal/metrics"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
+	"github.com/ConfigButler/gitops-reverser/internal/watch"
 	webhookhandler "github.com/ConfigButler/gitops-reverser/internal/webhook"
 	// +kubebuilder:scaffold:imports
 )
@@ -54,6 +58,13 @@ import (
 var (
 	scheme   = runtime.NewScheme()
 	setupLog = ctrl.Log.WithName("setup")
+)
+
+const (
+	// Correlation store configuration.
+	correlationTTLSeconds = 60
+	correlationMaxEntries = 10000
+	correlationTTL        = correlationTTLSeconds * time.Second
 )
 
 func init() {
@@ -98,6 +109,12 @@ func main() {
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr), "unable to create controller", "controller", "GitRepoConfig")
 
+	// GitDestination controller
+	fatalIfErr((&controller.GitDestinationReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr), "unable to create controller", "controller", "GitDestination")
+
 	// Initialize rule store and event queue for webhook handler
 	ruleStore := rulestore.NewStore()
 	eventQueue := eventqueue.NewQueue()
@@ -116,11 +133,19 @@ func main() {
 		RuleStore: ruleStore,
 	}).SetupWithManager(mgr), "unable to create controller", "controller", "ClusterWatchRule")
 
-	// Webhook handler
+	// Initialize correlation store for webhook→watch enrichment
+	correlationStore := correlation.NewStore(correlationTTL, correlationMaxEntries)
+	correlationStore.SetEvictionCallback(func() {
+		metrics.KVEvictionsTotal.Add(context.Background(), 1)
+	})
+	setupLog.Info("Correlation store initialized",
+		"ttl", correlationTTL,
+		"maxEntries", correlationMaxEntries)
+
+	// Webhook handler (correlation storage only - stores ALL resources, watch filters by rules)
 	eventHandler := &webhookhandler.EventHandler{
 		Client:                     mgr.GetClient(),
-		RuleStore:                  ruleStore,
-		EventQueue:                 eventQueue,
+		CorrelationStore:           correlationStore,
 		EnableVerboseAdmissionLogs: cfg.enableVerboseAdmissionLogs,
 	}
 
@@ -142,6 +167,17 @@ func main() {
 	}
 	fatalIfErr(mgr.Add(gitWorker), "unable to add git worker to manager")
 	setupLog.Info("Git worker added to manager")
+
+	// Watch ingestion manager (always enabled - cluster-as-source-of-truth)
+	watchMgr := &watch.Manager{
+		Client:           mgr.GetClient(),
+		Log:              ctrl.Log.WithName("watch"),
+		RuleStore:        ruleStore,
+		EventQueue:       eventQueue,
+		CorrelationStore: correlationStore,
+	}
+	fatalIfErr(mgr.Add(watchMgr), "unable to add watch ingestion manager")
+	setupLog.Info("Watch ingestion manager added (cluster-as-source-of-truth mode)")
 
 	// +kubebuilder:scaffold:builder
 

@@ -1,0 +1,13 @@
+apiVersion: configbutler.ai/v1alpha1
+kind: GitDestination
+metadata:
+  name: {{ .Name }}
+  namespace: {{ .Namespace }}
+spec:
+  repoRef:
+    name: {{ .RepoConfigName }}
+    {{- if .RepoConfigNamespace }}
+    namespace: {{ .RepoConfigNamespace }}
+    {{- end }}
+  branch: {{ .Branch }}
+  baseFolder: {{ .BaseFolder }}

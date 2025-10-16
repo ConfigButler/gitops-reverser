@@ -36,11 +36,14 @@ const (
 
 // ClusterWatchRuleSpec defines the desired state of ClusterWatchRule.
 type ClusterWatchRuleSpec struct {
-	// GitRepoConfigRef references the GitRepoConfig to use.
-	// Since ClusterWatchRule is cluster-scoped and GitRepoConfig is namespace-scoped,
-	// both name and namespace must be specified.
-	// +required
-	GitRepoConfigRef NamespacedName `json:"gitRepoConfigRef"`
+
+	// DestinationRef references a GitDestination that encapsulates repo+branch+baseFolder.
+	// When set, DestinationRef takes precedence over GitRepoConfigRef.
+	// Namespace must be specified for cluster-scoped rules.
+	// Pointer is used so that omitempty truly omits the field when unset to avoid
+	// API validation on zero-value structs.
+	// +optional
+	DestinationRef *NamespacedName `json:"destinationRef,omitempty"`
 
 	// Rules define which resources to watch.
 	// Multiple rules create a logical OR - a resource matching ANY rule is watched.
@@ -99,14 +102,6 @@ type ClusterResourceRule struct {
 	// +required
 	// +kubebuilder:validation:Enum=Cluster;Namespaced
 	Scope ResourceScope `json:"scope"`
-
-	// NamespaceSelector filters which namespaces to watch.
-	// Only evaluated when Scope is "Namespaced".
-	// If omitted for Namespaced scope, watches resources in ALL namespaces.
-	// If specified, only watches resources in namespaces matching the selector.
-	// Ignored when Scope is "Cluster".
-	// +optional
-	NamespaceSelector *metav1.LabelSelector `json:"namespaceSelector,omitempty"`
 }
 
 // ClusterWatchRuleStatus defines the observed state of ClusterWatchRule.
@@ -121,8 +116,7 @@ type ClusterWatchRuleStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Cluster
-// +kubebuilder:printcolumn:name="GitRepoConfig",type=string,JSONPath=`.spec.gitRepoConfigRef.name`
-// +kubebuilder:printcolumn:name="Namespace",type=string,JSONPath=`.spec.gitRepoConfigRef.namespace`
+// +kubebuilder:printcolumn:name="Destination",type=string,JSONPath=`.spec.destinationRef.name`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 

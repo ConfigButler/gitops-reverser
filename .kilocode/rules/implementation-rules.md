@@ -88,13 +88,6 @@ make test-e2e  # Must pass end-to-end tests
 - If e2e fails: Check Kind cluster setup and Docker availability
 - If Docker not available: Ask user to start Docker daemon before running e2e tests
 
-## DOCKER REQUIREMENTS
-
-- E2e tests require Docker for Kind cluster setup
-- Always check `docker info` before running `make test-e2e`
-- If Docker command not found, ask user to start Docker daemon
-- Alternative: Run only unit tests with `make test` if Docker unavailable
-
 ## REFERENCES
 
 - Full guidelines: [`DEVELOPMENT_RULES.md`](../../DEVELOPMENT_RULES.md)

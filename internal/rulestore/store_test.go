@@ -1,3 +1,6 @@
+//go:build legacy_selectors
+// +build legacy_selectors
+
 /*
 SPDX-License-Identifier: Apache-2.0
 

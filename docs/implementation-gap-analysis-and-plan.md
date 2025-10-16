@@ -393,7 +393,6 @@ See detailed checklist in [`implementation-checklist.md`](implementation-checkli
 - [ ] `make vet` - Static analysis
 - [ ] **`make lint`** - MUST PASS
 - [ ] **`make test`** - MUST PASS (>90% coverage)
-- [ ] Check Docker: `docker info`
 - [ ] **`make test-e2e`** - MUST PASS
 
 ---

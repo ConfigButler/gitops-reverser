@@ -5,7 +5,8 @@ metadata:
   namespace: {{.Namespace}}
 spec:
   repoUrl: {{.RepoURL}}
-  branch: {{.Branch}}
+  allowedBranches:
+    - "{{.Branch}}"
   push:
     interval: "10s"
     maxCommits: 1

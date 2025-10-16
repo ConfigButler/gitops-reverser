@@ -47,6 +47,18 @@ func FromAdmissionRequest(req admission.Request) ResourceIdentifier {
 	}
 }
 
+// NewResourceIdentifier creates a ResourceIdentifier from explicit parts.
+// Useful for watch-based ingestion where we know group/version/resource.
+func NewResourceIdentifier(group, version, resource, namespace, name string) ResourceIdentifier {
+	return ResourceIdentifier{
+		Group:     group,
+		Version:   version,
+		Resource:  resource,
+		Namespace: namespace,
+		Name:      name,
+	}
+}
+
 // ToGitPath generates the Git repository file path following Kubernetes API structure.
 func (r ResourceIdentifier) ToGitPath() string {
 	var basePath string

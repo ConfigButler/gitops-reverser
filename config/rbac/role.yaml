@@ -27,6 +27,7 @@ rules:
   - configbutler.ai
   resources:
   - clusterwatchrules
+  - gitdestinations
   - gitrepoconfigs
   - watchrules
   verbs:
@@ -41,6 +42,7 @@ rules:
   - configbutler.ai
   resources:
   - clusterwatchrules/finalizers
+  - gitdestinations/finalizers
   - gitrepoconfigs/finalizers
   - watchrules/finalizers
   verbs:
@@ -49,6 +51,7 @@ rules:
   - configbutler.ai
   resources:
   - clusterwatchrules/status
+  - gitdestinations/status
   - gitrepoconfigs/status
   - watchrules/status
   verbs:

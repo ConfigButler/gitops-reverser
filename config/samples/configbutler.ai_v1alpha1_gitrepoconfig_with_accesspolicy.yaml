@@ -1,14 +1,13 @@
 apiVersion: configbutler.ai/v1alpha1
 kind: GitRepoConfig
 metadata:
-  name: gitrepoconfig-with-policy
+  name: gitrepoconfig-multibranchs
   namespace: gitops-reverser-system
 spec:
   repoUrl: "git@github.com:example/audit.git"
-  branch: "main"
+  allowedBranches:
+    - "main"
+    - "staging"
+    - "production"
   secretRef:
     name: git-credentials
-  accessPolicy:
-    namespacedRules:
-      mode: AllNamespaces
-    allowClusterRules: true

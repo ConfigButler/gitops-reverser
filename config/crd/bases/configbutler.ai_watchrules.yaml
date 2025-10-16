@@ -15,8 +15,8 @@ spec:
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .spec.gitRepoConfigRef
-      name: GitRepoConfig
+    - jsonPath: .spec.destinationRef.name
+      name: Destination
       type: string
     - jsonPath: .status.conditions[?(@.type=="Ready")].status
       name: Ready
@@ -57,10 +57,13 @@ spec:
           spec:
             description: spec defines the desired state of WatchRule
             properties:
-              gitRepoConfigRef:
+              destinationRef:
                 description: |-
-                  GitRepoConfigRef references the GitRepoConfig to use for this rule.
+                  DestinationRef references a GitDestination that encapsulates repo+branch+baseFolder.
+                  When set, DestinationRef takes precedence over GitRepoConfigRef.
                   If namespace is not specified, defaults to the WatchRule's namespace.
+                  Pointer is used so that omitempty truly omits the field when unset to avoid
+                  API validation on zero-value structs.
                 properties:
                   name:
                     description: Name of the GitRepoConfig.
@@ -75,56 +78,6 @@ spec:
                 required:
                 - name
                 type: object
-              objectSelector:
-                description: |-
-                  ObjectSelector filters resources by labels (like objectSelector in webhooks).
-                  If specified, only resources matching this selector are watched.
-                  Use matchExpressions with NotIn/DoesNotExist operators to exclude resources.
-                  This follows Kubernetes standard label selector semantics.
-                properties:
-                  matchExpressions:
-                    description: matchExpressions is a list of label selector requirements.
-                      The requirements are ANDed.
-                    items:
-                      description: |-
-                        A label selector requirement is a selector that contains values, a key, and an operator that
-                        relates the key and values.
-                      properties:
-                        key:
-                          description: key is the label key that the selector applies
-                            to.
-                          type: string
-                        operator:
-                          description: |-
-                            operator represents a key's relationship to a set of values.
-                            Valid operators are In, NotIn, Exists and DoesNotExist.
-                          type: string
-                        values:
-                          description: |-
-                            values is an array of string values. If the operator is In or NotIn,
-                            the values array must be non-empty. If the operator is Exists or DoesNotExist,
-                            the values array must be empty. This array is replaced during a strategic
-                            merge patch.
-                          items:
-                            type: string
-                          type: array
-                          x-kubernetes-list-type: atomic
-                      required:
-                      - key
-                      - operator
-                      type: object
-                    type: array
-                    x-kubernetes-list-type: atomic
-                  matchLabels:
-                    additionalProperties:
-                      type: string
-                    description: |-
-                      matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
-                      map is equivalent to an element of matchExpressions, whose key field is "key", the
-                      operator is "In", and the values array contains only "value". The requirements are ANDed.
-                    type: object
-                type: object
-                x-kubernetes-map-type: atomic
               rules:
                 description: |-
                   Rules define which resources to watch within this namespace.
@@ -202,7 +155,6 @@ spec:
                 minItems: 1
                 type: array
             required:
-            - gitRepoConfigRef
             - rules
             type: object
           status:

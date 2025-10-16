@@ -5,10 +5,7 @@ metadata:
   namespace: {{ .Namespace }}
 spec:
   repoUrl: "{{ .RepoURL }}"
-  branch: "{{ .Branch }}"
+  allowedBranches:
+    - "{{ .Branch }}"
   secretRef:
     name: {{ .SecretName }}
-  accessPolicy:
-    allowClusterRules: true
-    namespacedRules:
-      mode: SameNamespace

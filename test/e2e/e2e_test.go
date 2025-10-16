@@ -387,7 +387,7 @@ var _ = Describe("Manager", Ordered, func() {
 			By("showing controller logs after GitRepoConfig creation")
 			showControllerLogs("after creating GitRepoConfig")
 
-			verifyGitRepoConfigStatus(gitRepoConfigName, "True", "BranchFound", "Branch 'main' found and accessible")
+			verifyGitRepoConfigStatus(gitRepoConfigName, "True", "BranchFound", "All 1 branches validated")
 
 			By("showing final controller logs")
 			showControllerLogs("after status verification")
@@ -429,7 +429,7 @@ var _ = Describe("Manager", Ordered, func() {
 			By("🔍 Controller logs after SSH GitRepoConfig creation")
 			showControllerLogs("after SSH GitRepoConfig creation")
 
-			verifyGitRepoConfigStatus(gitRepoConfigName, "True", "BranchFound", "Branch 'main' found and accessible")
+			verifyGitRepoConfigStatus(gitRepoConfigName, "True", "BranchFound", "All 1 branches validated")
 
 			By("✅ Final SSH test logs")
 			showControllerLogs("SSH test completion")
@@ -450,17 +450,20 @@ var _ = Describe("Manager", Ordered, func() {
 			createGitRepoConfig(gitRepoConfigName, "main", "git-creds")
 
 			By("waiting for GitRepoConfig to be ready")
-			verifyGitRepoConfigStatus(gitRepoConfigName, "True", "BranchFound", "Branch 'main' found and accessible")
+			verifyGitRepoConfigStatus(gitRepoConfigName, "True", "BranchFound", "All 1 branches validated")
 
 			By("creating a WatchRule that references the working GitRepoConfig")
+			destName := watchRuleName + "-dest"
+			createGitDestination(destName, namespace, gitRepoConfigName, getBaseFolder(), "main")
+
 			data := struct {
-				Name             string
-				Namespace        string
-				GitRepoConfigRef string
+				Name            string
+				Namespace       string
+				DestinationName string
 			}{
-				Name:             watchRuleName,
-				Namespace:        namespace,
-				GitRepoConfigRef: gitRepoConfigName,
+				Name:            watchRuleName,
+				Namespace:       namespace,
+				DestinationName: destName,
 			}
 
 			err = applyFromTemplate("test/e2e/templates/watchrule.tmpl", data, namespace)
@@ -493,17 +496,20 @@ var _ = Describe("Manager", Ordered, func() {
 			createGitRepoConfigWithURL(gitRepoConfigName, "main", "git-creds", repoURL)
 
 			By("waiting for GitRepoConfig to be ready")
-			verifyGitRepoConfigStatus(gitRepoConfigName, "True", "BranchFound", "Branch 'main' found and accessible")
+			verifyGitRepoConfigStatus(gitRepoConfigName, "True", "BranchFound", "All 1 branches validated")
 
 			By("creating WatchRule that monitors ConfigMaps")
+			destName := watchRuleName + "-dest"
+			createGitDestination(destName, namespace, gitRepoConfigName, getBaseFolder(), "main")
+
 			data := struct {
-				Name             string
-				Namespace        string
-				GitRepoConfigRef string
+				Name            string
+				Namespace       string
+				DestinationName string
 			}{
-				Name:             watchRuleName,
-				Namespace:        namespace,
-				GitRepoConfigRef: gitRepoConfigName,
+				Name:            watchRuleName,
+				Namespace:       namespace,
+				DestinationName: destName,
 			}
 
 			err2 := applyFromTemplate("test/e2e/templates/watchrule-configmap.tmpl", data, namespace)
@@ -563,6 +569,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 				// Check for the expected ConfigMap file (new API-aligned path)
 				expectedFile := filepath.Join(checkoutDir,
+					getBaseFolder(),
 					fmt.Sprintf("v1/configmaps/%s/%s.yaml", namespace, configMapName))
 				fileInfo, statErr := os.Stat(expectedFile)
 				g.Expect(statErr).NotTo(HaveOccurred(), fmt.Sprintf("ConfigMap file should exist at %s", expectedFile))
@@ -573,6 +580,21 @@ var _ = Describe("Manager", Ordered, func() {
 				g.Expect(readErr).NotTo(HaveOccurred())
 				g.Expect(string(content)).To(ContainSubstring("test-key: test-value"),
 					"ConfigMap file should contain expected data")
+				// Verify latest commit message contains operation, resource path, and "by user/"
+				gitLogCmd := exec.Command("git", "log", "-1", "--pretty=%B")
+				gitLogCmd.Dir = checkoutDir
+				commitMsg, commitErr := gitLogCmd.CombinedOutput()
+				if commitErr != nil {
+					g.Expect(commitErr).NotTo(HaveOccurred(),
+						fmt.Sprintf("Should read latest commit message. Output: %s", string(commitMsg)))
+				}
+				msg := string(commitMsg)
+				g.Expect(msg).To(ContainSubstring("[CREATE]"),
+					"Latest commit message should include operation [CREATE]")
+				g.Expect(msg).To(ContainSubstring("by user/"),
+					"Latest commit message should include the admission username trailer")
+				g.Expect(msg).To(ContainSubstring(fmt.Sprintf("v1/configmaps/%s", configMapName)),
+					"Latest commit message should include resource path")
 			}
 			Eventually(verifyGitCommit, 180*time.Second, 5*time.Second).Should(Succeed())
 
@@ -600,17 +622,19 @@ var _ = Describe("Manager", Ordered, func() {
 			createGitRepoConfigWithURL(gitRepoConfigName, "main", "git-creds", repoURL)
 
 			By("waiting for GitRepoConfig to be ready")
-			verifyGitRepoConfigStatus(gitRepoConfigName, "True", "BranchFound", "Branch 'main' found and accessible")
+			verifyGitRepoConfigStatus(gitRepoConfigName, "True", "BranchFound", "All 1 branches validated")
 
 			By("creating WatchRule that monitors ConfigMaps")
+			destName := watchRuleName + "-dest"
+			createGitDestination(destName, namespace, gitRepoConfigName, getBaseFolder(), "main")
 			data := struct {
-				Name             string
-				Namespace        string
-				GitRepoConfigRef string
+				Name            string
+				Namespace       string
+				DestinationName string
 			}{
-				Name:             watchRuleName,
-				Namespace:        namespace,
-				GitRepoConfigRef: gitRepoConfigName,
+				Name:            watchRuleName,
+				Namespace:       namespace,
+				DestinationName: destName,
 			}
 
 			err2 := applyFromTemplate("test/e2e/templates/watchrule-configmap.tmpl", data, namespace)
@@ -651,6 +675,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 				// Check for the expected ConfigMap file (new API-aligned path)
 				expectedFile := filepath.Join(checkoutDir,
+					getBaseFolder(),
 					fmt.Sprintf("v1/configmaps/%s/%s.yaml", namespace, configMapName))
 				fileInfo, statErr := os.Stat(expectedFile)
 				g.Expect(statErr).NotTo(HaveOccurred(), fmt.Sprintf("ConfigMap file should exist at %s", expectedFile))
@@ -678,6 +703,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 				// Check that the ConfigMap file no longer exists (new API-aligned path)
 				expectedFile := filepath.Join(checkoutDir,
+					getBaseFolder(),
 					fmt.Sprintf("v1/configmaps/%s/%s.yaml", namespace, configMapName))
 				_, statErr := os.Stat(expectedFile)
 				g.Expect(statErr).To(HaveOccurred(), fmt.Sprintf("ConfigMap file should NOT exist at %s", expectedFile))
@@ -713,17 +739,20 @@ var _ = Describe("Manager", Ordered, func() {
 			createGitRepoConfigWithClusterRules(gitRepoConfigName, "main", "git-creds", getRepoURLHTTP())
 
 			By("waiting for GitRepoConfig to be ready")
-			verifyGitRepoConfigStatus(gitRepoConfigName, "True", "BranchFound", "Branch 'main' found and accessible")
+			verifyGitRepoConfigStatus(gitRepoConfigName, "True", "BranchFound", "All 1 branches validated")
 
 			By("creating ClusterWatchRule with Cluster scope for CRDs")
+			destName := clusterWatchRuleName + "-dest"
+			createGitDestination(destName, namespace, gitRepoConfigName, getBaseFolder(), "main")
+
 			clusterWatchRuleData := struct {
-				Name             string
-				GitRepoConfigRef string
-				Namespace        string
+				Name            string
+				DestinationName string
+				Namespace       string
 			}{
-				Name:             clusterWatchRuleName,
-				GitRepoConfigRef: gitRepoConfigName,
-				Namespace:        namespace,
+				Name:            clusterWatchRuleName,
+				DestinationName: destName,
+				Namespace:       namespace,
 			}
 
 			err := applyFromTemplate("test/e2e/templates/watchrule-crds.tmpl", clusterWatchRuleData, "")
@@ -766,6 +795,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 				// CRDs are cluster-scoped, so path should NOT include namespace
 				expectedFile := filepath.Join(checkoutDir,
+					getBaseFolder(),
 					"apiextensions.k8s.io/v1/customresourcedefinitions/icecreamorders.shop.example.com.yaml")
 				fileInfo, statErr := os.Stat(expectedFile)
 				g.Expect(statErr).NotTo(HaveOccurred(), fmt.Sprintf("CRD file should exist at %s", expectedFile))
@@ -813,19 +843,22 @@ var _ = Describe("Manager", Ordered, func() {
 			createGitRepoConfigWithURL(gitRepoConfigName, "main", "git-creds", getRepoURLHTTP())
 
 			By("waiting for GitRepoConfig to be ready")
-			verifyGitRepoConfigStatus(gitRepoConfigName, "True", "BranchFound", "Branch 'main' found and accessible")
+			verifyGitRepoConfigStatus(gitRepoConfigName, "True", "BranchFound", "All 1 branches validated")
 			crdInstanceName := "alices-order"
 			uniqueRepoName := testRepoName
 
 			By("creating WatchRule that monitors IceCreamOrder resources")
+			destName := watchRuleName + "-dest"
+			createGitDestination(destName, namespace, gitRepoConfigName, getBaseFolder(), "main")
+
 			data := struct {
-				Name             string
-				Namespace        string
-				GitRepoConfigRef string
+				Name            string
+				Namespace       string
+				DestinationName string
 			}{
-				Name:             watchRuleName,
-				Namespace:        namespace,
-				GitRepoConfigRef: gitRepoConfigName,
+				Name:            watchRuleName,
+				Namespace:       namespace,
+				DestinationName: destName,
 			}
 
 			err2 := applyFromTemplate("test/e2e/templates/watchrule-crd.tmpl", data, namespace)
@@ -904,6 +937,7 @@ var _ = Describe("Manager", Ordered, func() {
 				}
 
 				expectedFile := filepath.Join(checkoutDir,
+					getBaseFolder(),
 					fmt.Sprintf("shop.example.com/v1/icecreamorders/%s/%s.yaml", namespace, crdInstanceName))
 				fileInfo, statErr := os.Stat(expectedFile)
 				g.Expect(statErr).
@@ -983,6 +1017,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 				// Read the file again to ensure status is still not present
 				expectedFile := filepath.Join(checkoutDir,
+					getBaseFolder(),
 					fmt.Sprintf("shop.example.com/v1/icecreamorders/%s/%s.yaml", namespace, crdInstanceName))
 				content, readErr := os.ReadFile(expectedFile)
 				g.Expect(readErr).NotTo(HaveOccurred())
@@ -1047,6 +1082,7 @@ var _ = Describe("Manager", Ordered, func() {
 				_, _ = pullCmd.CombinedOutput()
 
 				expectedFile := filepath.Join(checkoutDir,
+					getBaseFolder(),
 					fmt.Sprintf("shop.example.com/v1/icecreamorders/%s/%s.yaml", namespace, crdInstanceName))
 				content, readErr := os.ReadFile(expectedFile)
 				g.Expect(readErr).NotTo(HaveOccurred())
@@ -1095,6 +1131,7 @@ var _ = Describe("Manager", Ordered, func() {
 				_, _ = pullCmd.CombinedOutput()
 
 				expectedFile := filepath.Join(checkoutDir,
+					getBaseFolder(),
 					fmt.Sprintf("shop.example.com/v1/icecreamorders/%s/%s.yaml", namespace, crdInstanceName))
 				content, readErr := os.ReadFile(expectedFile)
 				g.Expect(readErr).NotTo(HaveOccurred())
@@ -1159,6 +1196,7 @@ var _ = Describe("Manager", Ordered, func() {
 				_, _ = pullCmd.CombinedOutput()
 
 				expectedFile := filepath.Join(checkoutDir,
+					getBaseFolder(),
 					fmt.Sprintf("shop.example.com/v1/icecreamorders/%s/%s.yaml", namespace, crdInstanceName))
 				fileInfo, statErr := os.Stat(expectedFile)
 				g.Expect(statErr).
@@ -1179,6 +1217,7 @@ var _ = Describe("Manager", Ordered, func() {
 				_, _ = pullCmd.CombinedOutput()
 
 				expectedFile := filepath.Join(checkoutDir,
+					getBaseFolder(),
 					fmt.Sprintf("shop.example.com/v1/icecreamorders/%s/%s.yaml", namespace, crdInstanceName))
 				_, statErr := os.Stat(expectedFile)
 				g.Expect(statErr).
@@ -1209,17 +1248,19 @@ var _ = Describe("Manager", Ordered, func() {
 			createGitRepoConfigWithClusterRules(gitRepoConfigName, "main", "git-creds", getRepoURLHTTP())
 
 			By("waiting for GitRepoConfig to be ready")
-			verifyGitRepoConfigStatus(gitRepoConfigName, "True", "BranchFound", "Branch 'main' found and accessible")
+			verifyGitRepoConfigStatus(gitRepoConfigName, "True", "BranchFound", "All 1 branches validated")
 
 			By("creating ClusterWatchRule with Cluster scope for CRDs")
+			destName := clusterWatchRuleName + "-dest"
+			createGitDestination(destName, namespace, gitRepoConfigName, getBaseFolder(), "main")
 			clusterWatchRuleData := struct {
-				Name             string
-				GitRepoConfigRef string
-				Namespace        string
+				Name            string
+				DestinationName string
+				Namespace       string
 			}{
-				Name:             clusterWatchRuleName,
-				GitRepoConfigRef: gitRepoConfigName,
-				Namespace:        namespace,
+				Name:            clusterWatchRuleName,
+				DestinationName: destName,
+				Namespace:       namespace,
 			}
 
 			err := applyFromTemplate("test/e2e/templates/watchrule-crds.tmpl", clusterWatchRuleData, "")
@@ -1242,6 +1283,7 @@ var _ = Describe("Manager", Ordered, func() {
 				_, _ = pullCmd.CombinedOutput()
 
 				expectedFile := filepath.Join(checkoutDir,
+					getBaseFolder(),
 					"apiextensions.k8s.io/v1/customresourcedefinitions/icecreamorders.shop.example.com.yaml")
 				_, statErr := os.Stat(expectedFile)
 				g.Expect(statErr).NotTo(HaveOccurred(), "CRD file should exist before deletion")
@@ -1260,6 +1302,7 @@ var _ = Describe("Manager", Ordered, func() {
 				_, _ = pullCmd.CombinedOutput()
 
 				expectedFile := filepath.Join(checkoutDir,
+					getBaseFolder(),
 					"apiextensions.k8s.io/v1/customresourcedefinitions/icecreamorders.shop.example.com.yaml")
 				_, statErr := os.Stat(expectedFile)
 				g.Expect(statErr).To(HaveOccurred(), "CRD file should NOT exist after deletion")

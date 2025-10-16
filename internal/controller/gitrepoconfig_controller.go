@@ -104,7 +104,7 @@ func (r *GitRepoConfigReconciler) reconcileGitRepoConfig(
 		"name", gitRepoConfig.Name,
 		"namespace", gitRepoConfig.Namespace,
 		"repoUrl", gitRepoConfig.Spec.RepoURL,
-		"branch", gitRepoConfig.Spec.Branch,
+		"allowedBranches", gitRepoConfig.Spec.AllowedBranches,
 		"generation", gitRepoConfig.Generation,
 		"observedGeneration", gitRepoConfig.Status.ObservedGeneration,
 		"resourceVersion", gitRepoConfig.ResourceVersion)
@@ -207,33 +207,43 @@ func (r *GitRepoConfigReconciler) validateAndUpdateStatus(
 	gitRepoConfig *configbutleraiv1alpha1.GitRepoConfig,
 	auth transport.AuthMethod,
 ) (ctrl.Result, error) {
-	log.Info("Validating repository connectivity and branch",
+	log.Info("Validating repository connectivity and branches",
 		"repoUrl", gitRepoConfig.Spec.RepoURL,
-		"branch", gitRepoConfig.Spec.Branch)
+		"allowedBranches", gitRepoConfig.Spec.AllowedBranches)
 
-	commitHash, err := r.validateRepository(ctx, gitRepoConfig.Spec.RepoURL, gitRepoConfig.Spec.Branch, auth)
-	if err != nil {
-		log.Error(err, "Repository validation failed",
-			"repoUrl", gitRepoConfig.Spec.RepoURL,
-			"branch", gitRepoConfig.Spec.Branch)
-		if strings.Contains(err.Error(), "branch") {
-			r.setCondition(gitRepoConfig, metav1.ConditionFalse, ReasonBranchNotFound,
-				fmt.Sprintf("Branch '%s' does not exist in repository: %v", gitRepoConfig.Spec.Branch, err))
-		} else {
-			r.setCondition(gitRepoConfig, metav1.ConditionFalse, ReasonConnectionFailed,
-				fmt.Sprintf("Failed to connect to repository: %v", err))
+	// Validate all allowed branches
+	validatedBranches := make(map[string]string) // branch -> commit hash
+	for _, branch := range gitRepoConfig.Spec.AllowedBranches {
+		commitHash, err := r.validateRepository(ctx, gitRepoConfig.Spec.RepoURL, branch, auth)
+		if err != nil {
+			log.Error(err, "Repository validation failed",
+				"repoUrl", gitRepoConfig.Spec.RepoURL,
+				"branch", branch)
+			if strings.Contains(err.Error(), "branch") {
+				r.setCondition(gitRepoConfig, metav1.ConditionFalse, ReasonBranchNotFound,
+					fmt.Sprintf("Branch '%s' does not exist in repository: %v", branch, err))
+			} else {
+				r.setCondition(gitRepoConfig, metav1.ConditionFalse, ReasonConnectionFailed,
+					fmt.Sprintf("Failed to connect to repository: %v", err))
+			}
+			return r.updateStatusAndRequeue(ctx, gitRepoConfig, RequeueShortInterval)
 		}
-		return r.updateStatusAndRequeue(ctx, gitRepoConfig, RequeueShortInterval)
+		validatedBranches[branch] = commitHash
+		log.Info("Branch validated successfully", "branch", branch, "commitHash", commitHash[:8])
 	}
 
-	log.Info("Repository validation successful", "commitHash", commitHash, "shortCommit", commitHash[:8])
-	message := fmt.Sprintf("Branch '%s' found and accessible at commit %s", gitRepoConfig.Spec.Branch, commitHash[:8])
+	log.Info("All branches validated successfully", "branchCount", len(validatedBranches))
+	var branchSummaries []string
+	for branch, hash := range validatedBranches {
+		branchSummaries = append(branchSummaries, fmt.Sprintf("%s@%s", branch, hash[:8]))
+	}
+	message := fmt.Sprintf("All %d branches validated: %s", len(validatedBranches), strings.Join(branchSummaries, ", "))
 	r.setCondition(gitRepoConfig, metav1.ConditionTrue, ReasonBranchFound, message)
 
 	// Update ObservedGeneration to mark this generation as validated
 	gitRepoConfig.Status.ObservedGeneration = gitRepoConfig.Generation
 
-	log.Info("GitRepoConfig validation successful", "name", gitRepoConfig.Name, "commit", commitHash[:8])
+	log.Info("GitRepoConfig validation successful", "name", gitRepoConfig.Name, "branchCount", len(validatedBranches))
 	log.Info("Updating status with success condition")
 
 	if err := r.updateStatusWithRetry(ctx, gitRepoConfig); err != nil {
