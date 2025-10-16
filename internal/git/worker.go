@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -37,7 +38,9 @@ import (
 	"github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 	"github.com/ConfigButler/gitops-reverser/internal/eventqueue"
 	"github.com/ConfigButler/gitops-reverser/internal/metrics"
+	"github.com/ConfigButler/gitops-reverser/internal/sanitize"
 	"github.com/ConfigButler/gitops-reverser/internal/ssh"
+	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
 // Sentinel errors for worker operations.
@@ -54,6 +57,26 @@ const (
 	ProductionPollInterval = 1 * time.Second        // Event polling interval for production
 	TestPushInterval       = 5 * time.Second        // Push interval for tests
 	ProductionPushInterval = 1 * time.Minute        // Push interval for production
+
+	// DefaultMaxBytesMiB is the approximate MiB cap for a batch; exceeding this triggers a push.
+	DefaultMaxBytesMiB = 10
+	// TestMaxBytesMiB is the reduced MiB cap used during unit tests for faster flushing.
+	TestMaxBytesMiB = 1
+
+	// bytesPerKiB defines the number of bytes in a KiB (2^10).
+	bytesPerKiB int64 = 1024
+	// bytesPerMiB defines the number of bytes in a MiB (2^20).
+	bytesPerMiB int64 = bytesPerKiB * 1024
+
+	// DefaultDeleteCapPerCycle is the maximum number of orphan deletions applied per SEED_SYNC cycle.
+	DefaultDeleteCapPerCycle = 500
+	// TestDeleteCapPerCycle is the reduced deletion cap during tests to speed up feedback.
+	TestDeleteCapPerCycle = 50
+
+	// Path part counts for identifier parsing (avoid magic numbers).
+	minCoreClusterParts                 = 3
+	groupedClusterOrCoreNamespacedParts = 4
+	groupedNamespacedParts              = 5
 )
 
 // Worker processes events from the queue and commits them to Git.
@@ -126,13 +149,23 @@ func (w *Worker) dispatchEvent(
 	mu *sync.Mutex,
 ) error {
 	log := w.Log.WithName("dispatch")
-	log.Info("Processing event",
-		"kind", event.Object.GetKind(),
-		"name", event.Object.GetName(),
-		"namespace", event.Object.GetNamespace(),
-		"gitRepoConfigRef", event.GitRepoConfigRef,
-		"gitRepoConfigNamespace", event.GitRepoConfigNamespace,
-	)
+	// Guard against control events with nil Object (e.g., SEED_SYNC).
+	if event.Object != nil {
+		log.Info("Processing event",
+			"kind", event.Object.GetKind(),
+			"name", event.Object.GetName(),
+			"namespace", event.Object.GetNamespace(),
+			"operation", event.Operation,
+			"gitRepoConfigRef", event.GitRepoConfigRef,
+			"gitRepoConfigNamespace", event.GitRepoConfigNamespace,
+		)
+	} else {
+		log.Info("Processing control event",
+			"operation", event.Operation,
+			"gitRepoConfigRef", event.GitRepoConfigRef,
+			"gitRepoConfigNamespace", event.GitRepoConfigNamespace,
+		)
+	}
 
 	// Use namespace/name as queue key.
 	// NOTE: This means different GitRepoConfigs get separate queues, even if they
@@ -254,6 +287,20 @@ func (w *Worker) getDefaultMaxCommits() int {
 	return DefaultMaxCommits
 }
 
+// getMaxBytesMiB returns the approximate byte cap (in MiB) for batching.
+func (w *Worker) getMaxBytesMiB() int64 {
+	// Use smaller cap for unit tests for quicker flush behavior
+	if strings.Contains(os.Args[0], "test") {
+		return int64(TestMaxBytesMiB)
+	}
+	return int64(DefaultMaxBytesMiB)
+}
+
+// getMaxBytesBytes returns the approximate byte cap in bytes for batching.
+func (w *Worker) getMaxBytesBytes() int64 {
+	return w.getMaxBytesMiB() * bytesPerMiB
+}
+
 // getPollInterval returns the event polling interval.
 func (w *Worker) getPollInterval() time.Duration {
 	// Use faster polling for unit tests
@@ -278,22 +325,142 @@ func (w *Worker) runEventLoop(ctx context.Context, log logr.Logger, repoConfig *
 	ticker := time.NewTicker(pushInterval)
 	defer ticker.Stop()
 
+	var bufferByteCount int64
+	maxBytes := w.getMaxBytesBytes()
+
+	// Track live paths observed during seed listing (until a SEED_SYNC control event is processed).
+	sLivePaths := make(map[string]struct{})
+
 	for {
 		select {
 		case <-ctx.Done():
-			log.Info("Stopping event processor for repo")
-			if len(eventBuffer) > 0 {
-				w.commitAndPush(ctx, *repoConfig, eventBuffer)
-			}
+			w.handleContextDone(ctx, log, *repoConfig, eventBuffer)
 			return
 		case event := <-eventChan:
-			// Queue depth decreases when consumer receives an event.
 			metrics.RepoBranchQueueDepth.Add(ctx, -1)
-			eventBuffer = w.handleNewEvent(ctx, log, *repoConfig, event, eventBuffer, maxCommits, ticker, pushInterval)
+			eventBuffer, bufferByteCount = w.handleIncomingEvent(
+				ctx,
+				log,
+				*repoConfig,
+				event,
+				eventBuffer,
+				maxCommits,
+				ticker,
+				pushInterval,
+				bufferByteCount,
+				maxBytes,
+				sLivePaths,
+			)
 		case <-ticker.C:
-			eventBuffer = w.handleTicker(ctx, log, *repoConfig, eventBuffer)
+			eventBuffer, bufferByteCount = w.handleTickerCase(ctx, log, *repoConfig, eventBuffer, bufferByteCount)
 		}
 	}
+}
+
+// estimateEventSizeBytes approximates the serialized YAML size for an event's object.
+func (w *Worker) estimateEventSizeBytes(ev eventqueue.Event) int {
+	if ev.Object == nil {
+		return 0
+	}
+	if b, err := sanitize.MarshalToOrderedYAML(ev.Object); err == nil {
+		return len(b)
+	}
+	return 0
+}
+
+// handleContextDone finalizes processing when the context is canceled.
+func (w *Worker) handleContextDone(
+	ctx context.Context,
+	log logr.Logger,
+	repoConfig v1alpha1.GitRepoConfig,
+	eventBuffer []eventqueue.Event,
+) {
+	log.Info("Stopping event processor for repo")
+	if len(eventBuffer) > 0 {
+		w.commitAndPush(ctx, repoConfig, eventBuffer)
+	}
+}
+
+// handleIncomingEvent processes a single incoming event, enforcing count and byte caps.
+func (w *Worker) handleIncomingEvent(
+	ctx context.Context,
+	log logr.Logger,
+	repoConfig v1alpha1.GitRepoConfig,
+	event eventqueue.Event,
+	eventBuffer []eventqueue.Event,
+	maxCommits int,
+	ticker *time.Ticker,
+	pushInterval time.Duration,
+	bufferByteCount int64,
+	maxBytes int64,
+	sLivePaths map[string]struct{},
+) ([]eventqueue.Event, int64) {
+	// Handle control event for orphan detection.
+	if strings.EqualFold(event.Operation, "SEED_SYNC") {
+		// Compute deletes and commit (capped), then reset buffer and S_live.
+		deletes := w.computeOrphanDeletes(ctx, log, repoConfig, sLivePaths, w.getDeleteCapPerCycle())
+		if len(deletes) > 0 {
+			// Combine current buffer with deletes and flush.
+			eventBuffer = append(eventBuffer, deletes...)
+			w.commitAndPush(ctx, repoConfig, eventBuffer)
+			ticker.Reset(pushInterval)
+			eventBuffer = nil
+			bufferByteCount = 0
+		}
+		// Reset S_live after seed cycle completes.
+		for k := range sLivePaths {
+			delete(sLivePaths, k)
+		}
+		return eventBuffer, bufferByteCount
+	}
+
+	// Track S_live path during seed (UPDATE events with objects).
+	if event.Object != nil && (event.Operation == "UPDATE" || event.Operation == "CREATE") {
+		idPath := event.Identifier.ToGitPath()
+		sLivePaths[idPath] = struct{}{}
+	}
+
+	approxSize := w.estimateEventSizeBytes(event)
+
+	prevLen := len(eventBuffer)
+	eventBuffer = w.handleNewEvent(ctx, log, repoConfig, event, eventBuffer, maxCommits, ticker, pushInterval)
+
+	// If a count-based flush happened inside handleNewEvent (buffer reset), also reset byte counter.
+	if prevLen > 0 && len(eventBuffer) == 0 {
+		bufferByteCount = 0
+	} else {
+		// Accumulate byte count only when the event remained in the buffer.
+		bufferByteCount += int64(approxSize)
+	}
+
+	// Enforce byte-based cap.
+	if bufferByteCount >= maxBytes {
+		log.Info("Byte cap reached, triggering push",
+			"bufferByteCount", bufferByteCount, "maxBytes", maxBytes, "bufferEvents", len(eventBuffer))
+		w.commitAndPush(ctx, repoConfig, eventBuffer)
+		// Reset state after push
+		ticker.Reset(pushInterval)
+		eventBuffer = nil
+		bufferByteCount = 0
+	}
+	return eventBuffer, bufferByteCount
+}
+
+// handleTickerCase flushes buffered events on timer and resets byte counter if needed.
+func (w *Worker) handleTickerCase(
+	ctx context.Context,
+	log logr.Logger,
+	repoConfig v1alpha1.GitRepoConfig,
+	eventBuffer []eventqueue.Event,
+	bufferByteCount int64,
+) ([]eventqueue.Event, int64) {
+	prevLen := len(eventBuffer)
+	eventBuffer = w.handleTicker(ctx, log, repoConfig, eventBuffer)
+	if prevLen > 0 && len(eventBuffer) == 0 {
+		// A timer-based flush occurred; reset byte counter
+		bufferByteCount = 0
+	}
+	return eventBuffer, bufferByteCount
 }
 
 // handleNewEvent processes a new event and manages buffer limits.
@@ -343,15 +510,23 @@ func (w *Worker) commitAndPush(ctx context.Context, repoConfig v1alpha1.GitRepoC
 		"repoURL", repoConfig.Spec.RepoURL,
 		"branch", repoConfig.Spec.Branch)
 
-	// Log details about each event for debugging
+	// Log details about each event for debugging (guard nil objects/control events)
 	for i, event := range events {
-		log.Info("git commit processing event",
-			"eventIndex", i+1,
-			"kind", event.Object.GetKind(),
-			"name", event.Object.GetName(),
-			"namespace", event.Object.GetNamespace(),
-			"operation", event.Operation,
-		)
+		if event.Object != nil {
+			log.Info("git commit processing event",
+				"eventIndex", i+1,
+				"kind", event.Object.GetKind(),
+				"name", event.Object.GetName(),
+				"namespace", event.Object.GetNamespace(),
+				"operation", event.Operation,
+			)
+		} else {
+			log.Info("git commit processing event (no object)",
+				"eventIndex", i+1,
+				"identifierPath", event.Identifier.ToGitPath(),
+				"operation", event.Operation,
+			)
+		}
 	}
 
 	// 1. Get auth credentials from the secret
@@ -410,6 +585,165 @@ func (w *Worker) commitAndPush(ctx context.Context, repoConfig v1alpha1.GitRepoC
 	}
 	// Treat each event in the batch as an object written for MVP accounting.
 	metrics.ObjectsWrittenTotal.Add(ctx, int64(len(events)))
+}
+
+// getDeleteCapPerCycle returns the maximum number of orphan deletions to apply per cycle.
+func (w *Worker) getDeleteCapPerCycle() int {
+	if strings.Contains(os.Args[0], "test") {
+		return TestDeleteCapPerCycle
+	}
+	return DefaultDeleteCapPerCycle
+}
+
+// computeOrphanDeletes calculates S_orphan = S_git − S_live and creates DELETE events (capped).
+func (w *Worker) computeOrphanDeletes(
+	ctx context.Context,
+	log logr.Logger,
+	repoConfig v1alpha1.GitRepoConfig,
+	sLive map[string]struct{},
+	deleteCap int,
+) []eventqueue.Event {
+	paths, err := w.listRepoYAMLPaths(ctx, repoConfig)
+	if err != nil {
+		log.Error(err, "failed to list repository YAML paths for orphan detection")
+		return nil
+	}
+
+	// Build S_orphan
+	var orphans []string
+	for _, p := range paths {
+		if _, ok := sLive[p]; !ok {
+			orphans = append(orphans, p)
+		}
+	}
+	if len(orphans) == 0 {
+		return nil
+	}
+
+	// Deterministic order and cap
+	sort.Strings(orphans)
+	if deleteCap > 0 && len(orphans) > deleteCap {
+		orphans = orphans[:deleteCap]
+	}
+
+	// Convert to DELETE events
+	evs := make([]eventqueue.Event, 0, len(orphans))
+	for _, p := range orphans {
+		id, ok := parseIdentifierFromPath(p)
+		if !ok {
+			log.Info("skipping orphan path with unrecognized layout", "path", p)
+			continue
+		}
+		evs = append(evs, eventqueue.Event{
+			Object:                 nil,
+			Identifier:             id,
+			Operation:              "DELETE",
+			UserInfo:               eventqueue.UserInfo{},
+			GitRepoConfigRef:       repoConfig.Name,
+			GitRepoConfigNamespace: repoConfig.Namespace,
+		})
+	}
+
+	// Metrics for deletes (count staged; commit will do actual writes).
+	metrics.FilesDeletedTotal.Add(ctx, int64(len(evs)))
+	return evs
+}
+
+// listRepoYAMLPaths clones or opens the repo and lists YAML file paths under the branch head.
+func (w *Worker) listRepoYAMLPaths(ctx context.Context, repoConfig v1alpha1.GitRepoConfig) ([]string, error) {
+	// Acquire auth for clone/open.
+	auth, err := w.getAuthFromSecret(ctx, repoConfig)
+	if err != nil {
+		return nil, err
+	}
+	repoPath := filepath.Join("/tmp", "gitops-reverser", repoConfig.Name)
+	repo, err := Clone(repoConfig.Spec.RepoURL, repoPath, auth)
+	if err != nil {
+		return nil, err
+	}
+	if err := repo.Checkout(repoConfig.Spec.Branch); err != nil {
+		return nil, err
+	}
+
+	var out []string
+	err = filepath.Walk(repoPath, func(path string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if info.IsDir() {
+			return nil
+		}
+		rel, relErr := filepath.Rel(repoPath, path)
+		if relErr != nil {
+			return relErr
+		}
+		// Exclude marker file and only include .yaml
+		if strings.HasSuffix(rel, string(filepath.Separator)+".configbutler"+string(filepath.Separator)+"owner.yaml") {
+			return nil
+		}
+		if strings.EqualFold(filepath.Ext(rel), ".yaml") {
+			// Normalize to slash-separated paths for git path comparison
+			out = append(out, filepath.ToSlash(rel))
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// parseIdentifierFromPath parses "{group-or-core?}/{version}/{resource}/{namespace?}/{name}.yaml"
+// into a ResourceIdentifier. For core group, the path starts with version (e.g., "v1/...").
+func parseIdentifierFromPath(p string) (itypes.ResourceIdentifier, bool) {
+	parts := strings.Split(p, "/")
+	// Minimum cluster-scoped core: v1/{resource}/{name}.yaml => 3 parts
+	// Minimum cluster-scoped grouped: {group}/{version}/{resource}/{name}.yaml => 4 parts
+	if len(parts) < minCoreClusterParts {
+		return itypes.ResourceIdentifier{}, false
+	}
+	last := parts[len(parts)-1]
+	name := strings.TrimSuffix(last, filepath.Ext(last))
+
+	var group, version, resource, namespace string
+	switch len(parts) {
+	case minCoreClusterParts: // core cluster-scoped: v1/resource/name.yaml
+		group = ""
+		version = parts[0]
+		resource = parts[1]
+		namespace = ""
+	case groupedClusterOrCoreNamespacedParts: // grouped cluster-scoped OR core namespaced
+		// Heuristic: if parts[0] looks like "v1" (starts with 'v' and digits), assume core namespaced is not possible with 4 parts.
+		// For our current mapping, core namespaced has 4 parts: v1/resource/namespace/name.yaml
+		// so handle that first.
+		if strings.HasPrefix(parts[0], "v") { // v1/...
+			group = ""
+			version = parts[0]
+			resource = parts[1]
+			namespace = parts[2]
+		} else {
+			group = parts[0]
+			version = parts[1]
+			resource = parts[2]
+			namespace = "" // cluster-scoped grouped
+		}
+	case groupedNamespacedParts: // grouped namespaced: group/version/resource/namespace/name.yaml
+		group = parts[0]
+		version = parts[1]
+		resource = parts[2]
+		namespace = parts[3]
+	default:
+		// Longer paths are not expected in current mapping
+		return itypes.ResourceIdentifier{}, false
+	}
+
+	return itypes.ResourceIdentifier{
+		Group:     group,
+		Version:   version,
+		Resource:  resource,
+		Namespace: namespace,
+		Name:      name,
+	}, true
 }
 
 // getAuthFromSecret fetches the authentication credentials from the specified secret.

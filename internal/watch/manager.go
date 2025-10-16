@@ -189,58 +189,123 @@ func (m *Manager) seedSelectedResources(ctx context.Context) {
 	log := m.Log.WithName("seed")
 	log.Info("starting initial seed listing")
 
-	cfg := m.restConfig()
-	if cfg == nil {
-		log.Info("skipping seed - no rest config available")
-		return
-	}
-	dc, err := dynamic.NewForConfig(cfg)
-	if err != nil {
-		log.Error(err, "failed to construct dynamic client for seed")
+	dc := m.dynamicClientFromConfig(log)
+	if dc == nil {
+		// Reason already logged.
 		return
 	}
 
-	requested := m.ComputeRequestedGVRs()
-	discoverable := m.FilterDiscoverableGVRs(ctx, requested)
+	discoverable := m.discoverableGVRs(ctx)
 	if len(discoverable) == 0 {
 		log.Info("no discoverable GVRs to seed")
 		return
 	}
 
+	// Collect unique GitRepoConfig refs seen during seed to emit a SEED_SYNC control event per repo.
+	repoKeys := make(map[k8stypes.NamespacedName]struct{})
+
 	for _, g := range discoverable {
-		res := schema.GroupVersionResource{Group: g.Group, Version: g.Version, Resource: g.Resource}
-		list, err := dc.Resource(res).List(ctx, metav1.ListOptions{})
-		if err != nil {
-			log.Error(err, "seed list failed", "group", g.Group, "version", g.Version, "resource", g.Resource)
-			continue
-		}
-		// Metrics: count objects scanned by seed
-		metrics.ObjectsScannedTotal.Add(ctx, int64(len(list.Items)))
-
-		for i := range list.Items {
-			u := list.Items[i].DeepCopy()
-			id := itypes.NewResourceIdentifier(g.Group, g.Version, g.Resource, u.GetNamespace(), u.GetName())
-
-			var nsLabels map[string]string
-			if ns := id.Namespace; ns != "" {
-				nsLabels = m.getNamespaceLabels(ctx, ns)
-			}
-			isClusterScoped := id.IsClusterScoped()
-			wrRules, cwrRules := m.matchRules(u, g.Resource, g.Group, g.Version, isClusterScoped, nsLabels)
-			if len(wrRules) == 0 && len(cwrRules) == 0 {
-				continue
-			}
-
-			sanitized := sanitize.Sanitize(u)
-			m.enqueueMatches(sanitized, id, wrRules, cwrRules)
-
-			enq := int64(len(wrRules) + len(cwrRules))
-			if enq > 0 {
-				metrics.EventsProcessedTotal.Add(ctx, enq)
-				metrics.GitCommitQueueSize.Add(ctx, enq)
-			}
-		}
+		m.seedListAndProcess(ctx, dc, g, repoKeys)
 	}
 
-	log.Info("seed listing completed", "gvrCount", len(discoverable))
+	m.emitSeedSyncControls(repoKeys)
+
+	log.Info("seed listing completed", "gvrCount", len(discoverable), "repoKeys", len(repoKeys))
+}
+
+// dynamicClientFromConfig builds a dynamic client from the controller's REST config.
+func (m *Manager) dynamicClientFromConfig(log logr.Logger) dynamic.Interface {
+	cfg := m.restConfig()
+	if cfg == nil {
+		log.Info("skipping seed - no rest config available")
+		return nil
+	}
+	dc, err := dynamic.NewForConfig(cfg)
+	if err != nil {
+		log.Error(err, "failed to construct dynamic client for seed")
+		return nil
+	}
+	return dc
+}
+
+// discoverableGVRs returns the filtered list of GVRs to seed.
+func (m *Manager) discoverableGVRs(ctx context.Context) []GVR {
+	requested := m.ComputeRequestedGVRs()
+	return m.FilterDiscoverableGVRs(ctx, requested)
+}
+
+// seedListAndProcess lists objects for a GVR and processes them into enqueue operations.
+func (m *Manager) seedListAndProcess(
+	ctx context.Context,
+	dc dynamic.Interface,
+	g GVR,
+	repoKeys map[k8stypes.NamespacedName]struct{},
+) {
+	log := m.Log.WithName("seed").WithValues("group", g.Group, "version", g.Version, "resource", g.Resource)
+
+	res := schema.GroupVersionResource{Group: g.Group, Version: g.Version, Resource: g.Resource}
+	list, err := dc.Resource(res).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		log.Error(err, "seed list failed")
+		return
+	}
+
+	// Metrics: count objects scanned by seed (per GVR batch).
+	metrics.ObjectsScannedTotal.Add(ctx, int64(len(list.Items)))
+
+	for i := range list.Items {
+		m.processListedObject(ctx, &list.Items[i], g, repoKeys)
+	}
+}
+
+// processListedObject evaluates rules, tracks repo keys, sanitizes, and enqueues events for one item.
+func (m *Manager) processListedObject(
+	ctx context.Context,
+	u *unstructured.Unstructured,
+	g GVR,
+	repoKeys map[k8stypes.NamespacedName]struct{},
+) {
+	id := itypes.NewResourceIdentifier(g.Group, g.Version, g.Resource, u.GetNamespace(), u.GetName())
+
+	var nsLabels map[string]string
+	if ns := id.Namespace; ns != "" {
+		nsLabels = m.getNamespaceLabels(ctx, ns)
+	}
+	isClusterScoped := id.IsClusterScoped()
+
+	wrRules, cwrRules := m.matchRules(u, g.Resource, g.Group, g.Version, isClusterScoped, nsLabels)
+	if len(wrRules) == 0 && len(cwrRules) == 0 {
+		return
+	}
+
+	// Track GitRepoConfig keys for SEED_SYNC control emission (orphan detection) after seed.
+	for _, r := range wrRules {
+		repoKeys[k8stypes.NamespacedName{Name: r.GitRepoConfigRef, Namespace: r.Source.Namespace}] = struct{}{}
+	}
+	for _, cr := range cwrRules {
+		repoKeys[k8stypes.NamespacedName{Name: cr.GitRepoConfigRef, Namespace: cr.GitRepoConfigNamespace}] = struct{}{}
+	}
+
+	sanitized := sanitize.Sanitize(u)
+	m.enqueueMatches(sanitized, id, wrRules, cwrRules)
+
+	enq := int64(len(wrRules) + len(cwrRules))
+	if enq > 0 {
+		metrics.EventsProcessedTotal.Add(ctx, enq)
+		metrics.GitCommitQueueSize.Add(ctx, enq)
+	}
+}
+
+// emitSeedSyncControls enqueues one SEED_SYNC control event per repository key.
+func (m *Manager) emitSeedSyncControls(repoKeys map[k8stypes.NamespacedName]struct{}) {
+	for key := range repoKeys {
+		m.EventQueue.Enqueue(eventqueue.Event{
+			Object:                 nil,
+			Identifier:             itypes.ResourceIdentifier{},
+			Operation:              "SEED_SYNC",
+			UserInfo:               eventqueue.UserInfo{},
+			GitRepoConfigRef:       key.Name,
+			GitRepoConfigNamespace: key.Namespace,
+		})
+	}
 }

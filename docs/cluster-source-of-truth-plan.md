@@ -909,3 +909,1074 @@ Current implementation state
 
 Next concrete actions
 - Implement List-based seed + S_orphan deletion, enforce batch caps, add Leases/marker, extend metrics and RBAC, validate watch-only e2e flows with webhook retained.
+
+## Implementation iteration marker — update 4 (2025-10-16, UTC)
+
+This update captures code that has landed since the prior iteration, clarifies current gaps vs the plan, and prioritizes next actions. All references below point to authoritative entry points.
+
+What landed in code
+- Dynamic informers wired for CREATE/UPDATE/DELETE across discovered GVRs
+  - Factory setup and start: [watch.startDynamicInformers()](internal/watch/informers.go:48)
+  - Handler registration: [watch.addHandlers()](internal/watch/informers.go:82)
+  - Event translation + sanitization + enqueue: [watch.handleEvent()](internal/watch/informers.go:105)
+- Initial List-based seed is active and enqueues UPDATEs for matched objects
+  - Seed loop: [watch.Manager.seedSelectedResources()](internal/watch/manager.go:185)
+  - Rule matching and enqueue path reused from watch handlers
+- Discovery filtering with built-in default exclusions (Desired-state focus)
+  - Filter entry-point: [watch.FilterDiscoverableGVRs()](internal/watch/discovery.go:44)
+  - Default exclusions (pods, events, endpoints, endpointslices, leases, controllerrevisions, flowcontrol*, jobs, cronjobs): see map in lines ~70–82 of [internal/watch/discovery.go](internal/watch/discovery.go)
+- Manager lifecycle and leader gating
+  - Manager start + heartbeat: [watch.Manager.Start()](internal/watch/manager.go:66)
+  - Leader-only runnable: [watch.Manager.NeedLeaderElection()](internal/watch/manager.go:106)
+  - Pod leader labeling helper (separate concern): [leader.PodLabeler.Start()](internal/leader/leader.go:61)
+- Queue and Git worker pipeline (reuse)
+  - Central dispatch to per-repo queues: [git.Worker.dispatchEvents()](internal/git/worker.go:92)
+  - Per-repo processor loop: [git.Worker.processRepoEvents()](internal/git/worker.go:178)
+  - Commit batching by count/time (MVP), push with conflict retry: [git.Repo.TryPushCommits()](internal/git/git.go:181)
+- Helm wiring for watch ingestion feature flag
+  - Values flag: [charts/gitops-reverser/values.yaml](charts/gitops-reverser/values.yaml)
+  - Controller arg template: [charts/gitops-reverser/templates/deployment.yaml](charts/gitops-reverser/templates/deployment.yaml)
+
+Current gaps vs plan (to close in next iterations)
+- Orphan detection and deletes (S_orphan)
+  - Not yet implemented in worker; seed computes and enqueues UPDATEs only. No per-destination S_git vs S_live diff and no delete batching yet.
+- Per repo-branch Kubernetes Lease and optional repo marker
+  - Leases (coordination.k8s.io) for (repoURL,branch) worker not yet present; marker {baseFolder}/.configbutler/owner.yaml enforcement not implemented.
+- Base path ownership (baseFolder) and GitDestination CRD
+  - Path mapping currently writes to identifier-only paths (no baseFolder prefix): [types.ResourceIdentifier.ToGitPath()](internal/types/identifier.go:62) and usage in [git.Repo.generateLocalCommits()](internal/git/git.go:245)
+  - GitDestination CRD is not yet introduced; events still flow via GitRepoConfig only.
+- Batch flush caps by files/bytes/time
+  - Worker currently uses maxCommits + timer; file/byte caps and backstop from the plan are not yet enforced.
+- Periodic discovery refresh and backoff metrics
+  - Discovery runs on start only; no 5m periodic refresh, no discovery_errors_total metric yet.
+- Helm values and RBAC deltas
+  - Only enableWatchIngestion is wired. Values for discovery refresh/exclusions, concurrency caps, batch/deletes caps, leases, and workDir are not yet exposed. RBAC should be extended for broad list/watch + Leases per Appendix D. Chart currently loads a role from a file template: [charts/gitops-reverser/templates/rbac.yaml](charts/gitops-reverser/templates/rbac.yaml)
+
+Checklist delta for update 4
+- Discovery and selection
+  - [x] Encode Desired-state include/exclude presets and apply during discovery ([internal/watch/discovery.go](internal/watch/discovery.go))
+  - [ ] Periodic discovery refresh (5m) with backoff and metrics
+- Reconciliation seed and trailing (List + Watch)
+  - [-] Startup List to enqueue upserts is implemented; S_live/S_orphan computation and deletes still pending ([internal/watch/manager.go](internal/watch/manager.go))
+  - [x] Replace polling path with informer Watch continuity ([internal/watch/informers.go](internal/watch/informers.go))
+- Canonicalization and stable write path
+  - [ ] Reconfirm sanitizer drop-set vs watch ingestion and golden tests alignment ([internal/sanitize/marshal.go](internal/sanitize/marshal.go))
+- Git worker behavior and batching
+  - [ ] Enforce batch flush caps (files, bytes, time)
+- Ownership and safeguards
+  - [ ] Per repo-branch Lease acquire/renew before writes
+  - [ ] Optional per-destination marker {baseFolder}/.configbutler/owner.yaml; honor exclusiveMode
+- Observability and RBAC
+  - [ ] Update ClusterRole to include broad list/watch for discovered resources and Leases verbs ([charts/gitops-reverser/templates/rbac.yaml](charts/gitops-reverser/templates/rbac.yaml))
+- Charts and packaging
+  - [ ] Add values for discovery refresh, exclusions, concurrency caps, batch/deletes caps, leases, workDir and template them into args/env ([charts/gitops-reverser/values.yaml](charts/gitops-reverser/values.yaml), [charts/gitops-reverser/templates/deployment.yaml](charts/gitops-reverser/templates/deployment.yaml))
+
+Prioritized next actions (implementation)
+1) Orphan detection and deletes
+- Compute S_live during seed and on watch Expired; derive S_git from working tree under destination baseFolder; enqueue deletes with deleteCapPerCycle
+- Wire metrics: files_deleted_total and delete batching counters
+
+2) Base path ownership and GitDestination surface
+- Introduce GitDestination CRD and controller usage (namespaced ref to GitRepoConfig + branch + baseFolder)
+- Pass destination/baseFolder through event pipeline; change path writer to prefix baseFolder before identifier path
+- Guard with access policy placeholders as per CRD spec (enforcement can come later)
+
+3) Per-repo-branch Lease
+- Acquire/renew Lease keyed by hash(repoURL,branch) before writing; skip writes if not owner; surface Ready=False on conflicts
+
+4) Helm values and RBAC
+- Expose discovery/worker/git caps in values.yaml and template to args/env
+- Extend RBAC to include Leases verbs and list/watch for selected resources (dynamic discovery-aware, conservative defaults)
+
+5) Periodic discovery refresh
+- Run 5m periodic refresh with exponential backoff 1s..60s+jitter; on changes, start/stop informers; add discovery_errors_total metric
+
+Documentation status marker (as of 2025-10-16 UTC)
+- Watch ingestion: Dynamic informers active with CREATE/UPDATE/DELETE; initial List seed enqueues UPDATEs. Orphans/deletes pending.
+- Webhook: Retained permanently for username capture with FailurePolicy=Ignore and leader-only routing.
+- Worker identity: One worker per (repoURL, branch); multiple baseFolder trees to be serialized once GitDestination/baseFolder is introduced.
+- Helm: enableWatchIngestion wired; remaining values to be added in upcoming iteration.
+- Next actions: orphan detection, baseFolder + GitDestination, per-repo-branch Leases, values/RBAC exposure, periodic discovery refresh.
+
+## Implementation iteration marker — update 5 (2025-10-16, UTC)
+
+This update extends the plan with detailed, implementation-ready specs for orphan detection, per-repo-branch leases and markers, GitDestination CRD, Helm values/flags, RBAC deltas, event contract changes, and periodic discovery refresh. It is aligned with the current code base and indicates precise integration points.
+
+Cross-references to current code
+- Seed and enqueue (List path): [watch.Manager.seedSelectedResources()](internal/watch/manager.go:185)
+- Dynamic informers (Watch path) and handlers: [watch.startDynamicInformers()](internal/watch/informers.go:48), [watch.addHandlers()](internal/watch/informers.go:82), [watch.handleEvent()](internal/watch/informers.go:105)
+- Discovery filtering and default exclusions: [watch.FilterDiscoverableGVRs()](internal/watch/discovery.go:44)
+- Worker dispatch and per-repo processors: [git.Worker.dispatchEvents()](internal/git/worker.go:92), [git.Worker.processRepoEvents()](internal/git/worker.go:178)
+- Commit/push path (conflict retry): [git.Repo.TryPushCommits()](internal/git/git.go:181)
+- Current path mapping (identifier only): [types.ResourceIdentifier.ToGitPath()](internal/types/identifier.go:62)
+- Event contract (to be extended): [eventqueue.Event](internal/eventqueue/queue.go:30)
+- Helm wiring for enableWatchIngestion and args: [charts/gitops-reverser/templates/deployment.yaml](charts/gitops-reverser/templates/deployment.yaml)
+
+Appendix J: Orphan detection and delete batching (S_orphan detailed)
+Goal
+- Ensure repository subtree under each destination baseFolder converges to the live set S_live; delete files in S_git that don’t correspond to a currently listed object, capped per cycle.
+
+Definitions
+- S_live (per destination): set of relative repository paths derived from current K8s objects in scope after sanitize + identifier mapping, prefixed with destination baseFolder.
+- S_git (per destination): set of tracked .yaml files currently present under baseFolder in the worker’s working tree, excluding ownership marker at {baseFolder}/.configbutler/owner.yaml and non-managed files.
+- S_orphan = S_git − S_live
+
+Integration points (phased)
+1) Seed phase (List + initial compute)
+   - During seed, build S_live while iterating discoverable GVRs and enqueuing UPDATE events. Extend [watch.Manager.seedSelectedResources()](internal/watch/manager.go:185) to:
+     - Compute identifier path via [types.ResourceIdentifier.ToGitPath()](internal/types/identifier.go:62)
+     - If Event contract includes BaseFolder (see Appendix O), compute effectivePath = baseFolder + "/" + identifierPath
+     - Accumulate S_live[dest] with effectivePath
+   - Emit a “seed-complete” control message per destination into the repo-branch worker queue to trigger orphan computation (no-op commit allowed if nothing to delete).
+
+2) Worker-side orphan calculation
+   - At repo-branch worker level, maintain map destination -> lastSeedLiveSet (S_live) for the current cycle.
+   - On seed-complete control message, compute S_git by walking the working tree under baseFolder (only .yaml files, ignore .configbutler/owner.yaml).
+   - Compute S_orphan = S_git − S_live, order deterministically (e.g., lexical), take up to deleteCapPerCycle, emit DELETE events locally (bypassing Kubernetes) into the same commit batch.
+   - Clear lastSeedLiveSet after commit.
+
+3) Watch Expired recovery
+   - On a watch Expired or resync trigger, re-run a partial seed for affected GVRs to rebuild S_live and re-run orphan detection as above.
+
+Operational details
+- Delete cap default: deletes.capPerCycle=500 (configurable via Helm; see Appendix M).
+- Metrics:
+  - files_deleted_total += len(deletes applied)
+  - objects_scanned_total counts List’d items contributing to S_live
+- Safety:
+  - Prefer atomic write/delete staging; honor “one K8s object per file” invariant.
+
+Appendix K: Per repo-branch Lease and repository ownership marker
+Leases (first-line coordination)
+- Purpose: ensure single writer per (repoURL, branch) worker across replicas/clusters.
+- Key: hash(repoURL,branch) as name, coordination.k8s.io/v1 Lease in controller namespace.
+- Policy:
+  - Attempt acquire before file ops; renew every renewSec (default 8s), lease duration leaseSec (default 24s).
+  - On failure to acquire/renew:
+    - Skip writes, increment ownership_conflicts_total or lease_acquire_failures_total
+    - Surface Ready=False (OwnershipConflict) on referencing rules/destinations (status controller later).
+- Integration point:
+  - Acquire/renew immediately before commit cycles in [git.Worker.commitAndPush()](internal/git/worker.go:338) and hold during write/commit/push section. Release on exit. Helper proposed file: internal/leader/lease.go (new).
+- RBAC: coordination.k8s.io Leases get/list/watch/create/update/patch/delete (Appendix N).
+
+Repository ownership marker (optional, per destination)
+- Path: {baseFolder}/.configbutler/owner.yaml
+- Fields: clusterUID, controller namespace/name, instanceID, timestamp
+- Behavior:
+  - exclusiveMode=false (default): warn on mismatch, proceed
+  - exclusiveMode=true: if exists and does not match, refuse writes for that destination; Ready=False OwnershipConflict
+- Integration:
+  - On first successful write per destination, ensure marker exists/updated.
+  - Check before staging changes within [git.Worker.commitAndPush()](internal/git/worker.go:338)
+- Metrics: marker_conflicts_total++
+
+Appendix L: GitDestination CRD (type surface and validations)
+Purpose
+- Bind a GitRepoConfig to branch + baseFolder, carry destination-level access policy, and exclusiveMode for marker semantics.
+
+Planned API (Kubebuilder Go types)
+- Group/Version: configbutler.ai/v1alpha1, Kind: GitDestination (Namespaced)
+- File: [api/v1alpha1/gitdestination_types.go](api/v1alpha1/gitdestination_types.go)
+- Type surface (summary; validations via kubebuilder tags):
+  - spec.repoRef: NamespacedName (required) → references GitRepoConfig in explicit namespace
+  - spec.branch: string (required) → must be in GitRepoConfig.spec.allowedBranches
+  - spec.baseFolder: string (required) → non-empty, POSIX-like relative path, no “..”
+  - spec.accessPolicy: AccessPolicy (optional) → same shape used in GitRepoConfig (namespacedRules, allowClusterRules not relevant here)
+  - spec.exclusiveMode: bool (default false)
+  - status.conditions: []Condition (Ready, OwnershipConflict, AccessDenied, etc.)
+- Controller interactions:
+  - Rules (WatchRule/ClusterWatchRule) reference destinationRef (namespace/name)
+  - Event pipeline obtains baseFolder and passes it through (Appendix O)
+  - Worker prefixes baseFolder to identifierPath for effective write path
+
+Appendix M: Helm values and controller flags mapping
+New values under controller and git sections in [charts/gitops-reverser/values.yaml](charts/gitops-reverser/values.yaml)
+- controller.enableWatchIngestion: bool (already present; maps to --enable-watch-ingestion)
+- controller.discovery:
+  - refresh: duration (default 5m) → --discovery-refresh=5m
+  - watchAll: bool (default false) → --watch-all
+  - exclusions: []string of “group/resource” or “resource” (group “” means core) → --discovery-exclude=...
+- controller.workers:
+  - maxGlobal: int (default 24) → --workers-max-global=24
+  - maxPerRepo: int (default 5) → --workers-max-per-repo=5
+- controller.git.batch:
+  - maxFiles: int (default 200) → --git-batch-max-files=200
+  - maxBytesMiB: int (default 10) → --git-batch-max-bytes-mib=10
+  - maxWaitSec: int (default 20) → --git-batch-max-wait-sec=20
+- controller.deletes:
+  - capPerCycle: int (default 500) → --deletes-cap-per-cycle=500
+- controller.leases:
+  - renewSec: int (default 8) → --leases-renew-sec=8
+  - leaseSec: int (default 24) → --leases-lease-sec=24
+- controller.workDir: string (default “/var/cache/gitops-reverser”) → --work-dir=/var/cache/gitops-reverser
+
+Templating
+- Add args to container in [charts/gitops-reverser/templates/deployment.yaml](charts/gitops-reverser/templates/deployment.yaml) similar to the existing enableWatchIngestion path.
+- Document in chart README (new section “Watch ingestion values” in [charts/gitops-reverser/README.md](charts/gitops-reverser/README.md)).
+
+Appendix N: RBAC deltas for watch ingestion, leases, and CRD status
+ClusterRole (manager)
+- list/watch of selected resources (broad by default, discovery-aware). Practical chart strategy:
+  - Provide conservative baseline verbs:
+    - Core: configmaps, secrets (get/list/watch)
+    - apps: deployments/statefulsets/daemonsets (get/list/watch)
+    - networking.k8s.io: ingresses, networkpolicies (get/list/watch)
+    - rbac.authorization.k8s.io: roles, rolebindings, clusterroles, clusterrolebindings (get/list/watch)
+    - policy: poddisruptionbudgets (get/list/watch)
+    - apiextensions.k8s.io: customresourcedefinitions (get/list/watch)
+    - apiregistration.k8s.io: apiservices (get/list/watch)
+    - storage.k8s.io: storageclasses (get/list/watch)
+  - events: events (create, patch)
+  - coordination.k8s.io: leases (get, list, watch, create, update, patch, delete)
+  - configbutler.ai: watchrules, clusterwatchrules, gitrepoconfigs, gitdestinations (get, list, watch)
+  - status subresources for rules: watchrules/status, clusterwatchrules/status (get, update, patch)
+- Update [charts/gitops-reverser/templates/rbac.yaml](charts/gitops-reverser/templates/rbac.yaml) to include the above or to load from an updated embedded config/role.yaml that includes these resources.
+
+Appendix O: Event pipeline contract changes (to support destinations)
+Extend [eventqueue.Event](internal/eventqueue/queue.go:30)
+- Add:
+  - DestinationNamespace string
+  - DestinationName string
+  - BaseFolder string
+- Flow:
+  - Matchers in manager path populate destinationRef and baseFolder per rule match.
+  - Dispatcher key changes from GitRepoConfig (namespace/name) to worker key derived from (repoURL, branch) at runtime (requires resolving GitRepoConfig in worker initialization).
+  - Effective file path for write: BaseFolder + "/" + Identifier.ToGitPath()
+- Backward-compat considerations:
+  - Continue populating GitRepoConfigRef/GitRepoConfigNamespace for transition, but prefer destination-first routing.
+  - Worker initializeProcessor resolves GitRepoConfig from destination (repoRef) to fetch repoUrl/branch/secretRef.
+
+Appendix P: Periodic discovery refresh and backoff metrics
+Behavior
+- Periodically (default 5m) refresh ServerPreferredResources, recompute discoverable GVRs, and start new informers; stop informers for GVRs no longer discoverable.
+- On discovery failures:
+  - Exponential backoff 1s..60s with jitter; log with rate limit.
+  - Metric discovery_errors_total++.
+
+Integration
+- Add a goroutine in manager Start after initial setup: ticker(Values.controller.discovery.refresh), call a refresh method that:
+  - Rebuilds discovery index, diffs current set, adds/removes informers via the same [watch.startDynamicInformers()](internal/watch/informers.go:48) plumbing (refactor to handle incremental add/remove).
+- Flags mapped from Helm as per Appendix M.
+
+Appendix Q: Batch caps semantics and commit strategy
+- Flush triggers:
+  - Count-based: maxFiles
+  - Size-based: maxBytesMiB
+  - Time-based: maxWaitSec backstop
+- Strategy:
+  - Accumulate approximate bytes using serialized YAML sizes (we already estimate in [git.Repo.TryPushCommits()](internal/git/git.go:389))
+  - When any cap exceeds, commit/push and reset timers
+- Metrics:
+  - commit_batches_total++
+  - commit_bytes_total accumulate per batch
+- Integration:
+  - Extend [git.Worker.handleNewEvent()](internal/git/worker.go:300) to track bytes and count; add size cap checks alongside count cap
+  - Extend [git.Worker.handleTicker()](internal/git/worker.go:323) for time backstop logic (already present, adjust to caps)
+
+Iteration checklist (delta)
+- Orphan detection
+  - [ ] Compute S_live during seed; send seed-complete per destination ([watch.Manager.seedSelectedResources()](internal/watch/manager.go:185))
+  - [ ] Worker compute S_git and S_orphan; enqueue deletes capped; metrics files_deleted_total ([git.Worker.processRepoEvents()](internal/git/worker.go:178), [git.Worker.commitAndPush()](internal/git/worker.go:338))
+- Destinations and baseFolder
+  - [ ] Add CRD types and CRDs: [api/v1alpha1/gitdestination_types.go](api/v1alpha1/gitdestination_types.go)
+  - [ ] Extend Event contract: [eventqueue.Event](internal/eventqueue/queue.go:30)
+  - [ ] Prefix baseFolder in effective path write: [git.Repo.generateLocalCommits()](internal/git/git.go:231) and callers
+- Leases and marker
+  - [ ] Implement lease helper (internal/leader/lease.go), acquire/renew in [git.Worker.commitAndPush()](internal/git/worker.go:338)
+  - [ ] Create/check marker file per destination; honor exclusiveMode
+- Batch caps
+  - [ ] Enforce files/bytes/time caps in worker loop
+- Discovery refresh
+  - [ ] Implement periodic refresh and discovery error metrics
+- Helm and RBAC
+  - [ ] Expose values and template flags ([charts/gitops-reverser/values.yaml](charts/gitops-reverser/values.yaml), [charts/gitops-reverser/templates/deployment.yaml](charts/gitops-reverser/templates/deployment.yaml))
+  - [ ] Update ClusterRole verbs/resources ([charts/gitops-reverser/templates/rbac.yaml](charts/gitops-reverser/templates/rbac.yaml))
+
+Acceptance guardrails reminder
+- Keep validating webhook permanently for username capture (FailurePolicy=Ignore; leader-only routing).
+- CI gates unchanged: make lint, make test, make test-e2e; ensure Docker/Kind for e2e.
+- Idempotency: second run after seed+orphan delete must be a no-op.
+
+## Implementation iteration marker — update 6 (2025-10-16, UTC)
+
+This update adds implementation-ready specs: controller flags, example CRDs, RBAC deltas, event contract changes, test plans, and migration notes to accelerate the next iteration without ambiguity.
+
+Cross-check: current anchors in code
+- Manager lifecycle and seed: [watch.Manager.Start()](internal/watch/manager.go:66), [watch.Manager.seedSelectedResources()](internal/watch/manager.go:185)
+- Dynamic informers pipeline: [watch.startDynamicInformers()](internal/watch/informers.go:48), [watch.addHandlers()](internal/watch/informers.go:82), [watch.handleEvent()](internal/watch/informers.go:105)
+- Discovery and exclusions: [watch.FilterDiscoverableGVRs()](internal/watch/discovery.go:44)
+- Event queue and worker loop: [git.Worker.dispatchEvents()](internal/git/worker.go:92), [git.Worker.dispatchEvent()](internal/git/worker.go:121), [git.Worker.processRepoEvents()](internal/git/worker.go:178), [git.Worker.handleNewEvent()](internal/git/worker.go:300), [git.Worker.handleTicker()](internal/git/worker.go:323), [git.Worker.commitAndPush()](internal/git/worker.go:338)
+- Path mapping: [types.ResourceIdentifier.ToGitPath()](internal/types/identifier.go:62)
+- Event type (to extend): [eventqueue.Event](internal/eventqueue/queue.go:30)
+
+Appendix R: Controller flags and Helm wiring (exhaustive)
+Flags (controller binary)
+- --enable-watch-ingestion (bool) → already wired in chart
+- --discovery-refresh=5m
+- --watch-all=false
+- --discovery-exclude=group/resource (repeatable)
+- --workers-max-global=24
+- --workers-max-per-repo=5
+- --git-batch-max-files=200
+- --git-batch-max-bytes-mib=10
+- --git-batch-max-wait-sec=20
+- --deletes-cap-per-cycle=500
+- --leases-renew-sec=8
+- --leases-lease-sec=24
+- --work-dir=/var/cache/gitops-reverser
+
+Helm values to args mapping (template these in [templates/deployment.yaml](charts/gitops-reverser/templates/deployment.yaml))
+- .Values.controllerManager.enableWatchIngestion → --enable-watch-ingestion
+- .Values.controller.discovery.refresh → --discovery-refresh
+- .Values.controller.discovery.watchAll → --watch-all
+- .Values.controller.discovery.exclusions[] → repeat --discovery-exclude
+- .Values.controller.workers.maxGlobal → --workers-max-global
+- .Values.controller.workers.maxPerRepo → --workers-max-per-repo
+- .Values.controller.git.batch.maxFiles → --git-batch-max-files
+- .Values.controller.git.batch.maxBytesMiB → --git-batch-max-bytes-mib
+- .Values.controller.git.batch.maxWaitSec → --git-batch-max-wait-sec
+- .Values.controller.deletes.capPerCycle → --deletes-cap-per-cycle
+- .Values.controller.leases.renewSec → --leases-renew-sec
+- .Values.controller.leases.leaseSec → --leases-lease-sec
+- .Values.controller.workDir → --work-dir
+
+Documentation note: add a “Watch ingestion values” section to [charts/README.md](charts/gitops-reverser/README.md) listing each value and default.
+
+Appendix S: CRD examples (YAML) for GitDestination and updated GitRepoConfig
+GitRepoConfig (slimmed) example
+- Key changes: remove spec.branch, add spec.allowedBranches
+
+Example manifest (user-facing doc)
+- apiVersion: configbutler.ai/v1alpha1
+- kind: GitRepoConfig
+- metadata:
+  - name: repo
+  - namespace: configbutler-system
+- spec:
+  - repoUrl: https://git.example.com/infra/configs.git
+  - allowedBranches: ["main", "staging"]
+  - secretRef:
+    - name: repo-cred
+  - accessPolicy:
+    - namespacedRules:
+      - mode: SameNamespace
+    - allowClusterRules: true
+
+GitDestination (new) example
+- apiVersion: configbutler.ai/v1alpha1
+- kind: GitDestination
+- metadata:
+  - name: prod
+  - namespace: configbutler-system
+- spec:
+  - repoRef:
+    - name: repo
+    - namespace: configbutler-system
+  - branch: main
+  - baseFolder: clusters/prod
+  - exclusiveMode: true
+
+Appendix T: RBAC chart deltas (concrete checklist)
+Update [templates/rbac.yaml](charts/gitops-reverser/templates/rbac.yaml)
+- Ensure ClusterRole includes:
+  - coordination.k8s.io/leases: get, list, watch, create, update, patch, delete
+  - events ("" and/or events.k8s.io depending on use): create, patch
+  - configbutler.ai resources:
+    - watchrules, clusterwatchrules, gitrepoconfigs, gitdestinations: get, list, watch
+    - watchrules/status, clusterwatchrules/status: get, update, patch
+  - Discovery baseline for desired-state sets (conservative allowlist). If chart continues to “include from config/role.yaml”, update that file accordingly.
+- Note: webhook RBAC remains (validating webhook retained), plus existing leader election Role/RoleBinding.
+
+Appendix U: Event contract and worker key migration
+Extend [eventqueue.Event](internal/eventqueue/queue.go:30)
+- Add fields:
+  - DestinationNamespace string
+  - DestinationName string
+  - BaseFolder string
+- Populate in manager path when matching rules:
+  - For WatchRule/ClusterWatchRule → resolve destinationRef to baseFolder; add to Event
+- Worker queue key migration:
+  - Current: namespace/name of GitRepoConfig in [git.Worker.dispatchEvent()](internal/git/worker.go:121)
+  - Target: (repoURL, branch) → worker key hash(repoURL,branch). Implementation path:
+    1) On first event for a destination, resolve GitRepoConfig via destination (repoRef) during [git.Worker.initializeProcessor()](internal/git/worker.go:202)
+    2) Determine repoURL + branch from GitDestination/GitRepoConfig combo
+    3) Derive queue key = hash(repoURL,branch); re-route into correct per-repo-branch queue (may require an internal dispatch indirection)
+- Effective path for writes:
+  - effectivePath = BaseFolder + "/" + [types.ResourceIdentifier.ToGitPath()](internal/types/identifier.go:62)
+  - Apply in [git.Repo.generateLocalCommits()](internal/git/git.go:231) when computing filePath
+
+Appendix V: Lease helper integration (per repo-branch)
+- Introduce internal helper: internal/leader/lease.go with:
+  - leader.NewRepoBranchLease(client, ns, nameHash, renewSec, leaseSec)
+  - lease.AcquireOrRenew(ctx) → bool, error
+- Call prior to batching in [git.Worker.commitAndPush()](internal/git/worker.go:338)
+  - If not acquired: skip write/push; metrics.lease_acquire_failures_total++
+- Metrics increments and Ready=False surfacing reserved for future status controllers; not required to block MVP implementation.
+
+Appendix W: Orphan detection wiring details (control messages)
+- Seed path: after finishing S_live per destination, send a control event:
+  - Event.Operation = "SEED_SYNC"
+  - Event.BaseFolder set; no Object; Identifier empty
+- Worker behavior:
+  - On SEED_SYNC, compute S_git under BaseFolder and then S_orphan; enqueue synthetic DELETE events (internal) limited by deletes cap; proceed to regular commit logic
+- This avoids tight coupling between manager and worker for filesystem reads and keeps delete policy centralized in the worker.
+
+Appendix X: Batch caps exact semantics
+- Count cap: when buffered events count >= maxFiles → flush
+- Size cap: when approxBytes >= maxBytesMiB*MiB → flush
+  - Use the approximation logic already present in [git.Repo.TryPushCommits()](internal/git/git.go:389)
+- Time cap: when ticker fires (maxWaitSec) and buffer non-empty → flush
+- Implement in:
+  - [git.Worker.handleNewEvent()](internal/git/worker.go:300): track size in parallel with count
+  - [git.Worker.handleTicker()](internal/git/worker.go:323): unchanged, triggers flush when non-empty
+- Metrics:
+  - commits_total++ per batch
+  - commit_bytes_total accumulate actual approxBytes
+  - repo_branch_queue_depth gauge decrease/increase unchanged
+
+Appendix Y: Test plan expansions (unit/integration/e2e)
+Unit
+- Event contract backward-compat: ensure events with/without BaseFolder behave (temporary if staged)
+- Orphan diff logic: provide synthetic S_live and working tree files; verify S_orphan and delete cap
+- Path prefixing: verify effectivePath generation
+- Lease helper: simulate acquire/renew and failure paths
+- Targets:
+  - [watch/helpers_test.go](internal/watch/helpers_test.go)
+  - New tests in internal/git for delete batching and path prefixing
+
+Integration
+- Seed → UPDATEs + orphan DELETEs; second run → no-op
+- Non-fast-forward retry remains functional with mixed CREATE/DELETE batch
+- Multiple destinations under same (repoURL,branch): serialized writes, isolated baseFolder subtrees
+
+E2E (requires Docker/Kind)
+- Watch-only ingestion with Desired-state defaults; Jobs/CronJobs excluded by default
+- Lease contention: deploy two replicas; only one writes
+- Marker exclusiveMode=true blocks write; Ready False surfaced later (log check/metric ok for MVP)
+
+Appendix Z: Migration notes (breaking surfaces)
+- GitRepoConfig: spec.branch → removed; spec.allowedBranches → required once any GitDestination references this repo
+- New GitDestination CRD: rules must reference destinationRef instead of GitRepoConfig
+- Chart values: new controller.discovery/workers/git/deletes/leases/workDir keys; set sane defaults
+- Backward-compatible grace (transition period):
+  - Keep populating GitRepoConfigRef/Namespace in Event for a few iterations
+  - Allow WatchRule to accept either gitRepoConfigRef (legacy) or destinationRef (new) for a transition period (documentation only; code can move straight to destinationRef for MVP to reduce complexity)
+
+Execution checklist (next)
+- [ ] Add flags → wire args in [deployment](charts/gitops-reverser/templates/deployment.yaml)
+- [ ] Extend Event type → adapt manager enqueue and worker initialization
+- [ ] Implement effectivePath prefixing and orphan control messages
+- [ ] Introduce lease helper and guard commit path
+- [ ] Update RBAC and values; document in chart README
+- [ ] Implement periodic discovery refresh loop
+- [ ] Tests: unit for orphan/lease/path; integration re-run no-op; e2e watch-only flow
+
+Status gate reminder
+- Project CI gates (lint/test/e2e) remain mandatory
+- Webhook retained permanently for username capture (FailurePolicy=Ignore; leader-only service routing)
+
+## Implementation iteration marker — update 7 (2025-10-16, UTC)
+
+This update sequences concrete PRs, adds rollout and safety toggles, clarifies metrics attachment points, and defines a migration-and-compat plan for introducing GitDestination and baseFolder without breaking current flows.
+
+Cross-checked anchors (current code)
+- Seed + heartbeat: [watch.Manager.Start()](internal/watch/manager.go:66), [watch.Manager.seedSelectedResources()](internal/watch/manager.go:185)
+- Informers path: [watch.startDynamicInformers()](internal/watch/informers.go:48), [watch.addHandlers()](internal/watch/informers.go:82), [watch.handleEvent()](internal/watch/informers.go:105)
+- Discovery + exclusions: [watch.FilterDiscoverableGVRs()](internal/watch/discovery.go:44)
+- Queue/Worker pipeline: [git.Worker.dispatchEvents()](internal/git/worker.go:92), [git.Worker.processRepoEvents()](internal/git/worker.go:178), [git.Worker.handleNewEvent()](internal/git/worker.go:300), [git.Worker.handleTicker()](internal/git/worker.go:323), [git.Worker.commitAndPush()](internal/git/worker.go:338)
+- Git conflict retry + byte estimation: [git.Repo.TryPushCommits()](internal/git/git.go:181)
+- Path mapping (pre-baseFolder): [types.ResourceIdentifier.ToGitPath()](internal/types/identifier.go:62)
+- Event type (will be extended): [eventqueue.Event](internal/eventqueue/queue.go:30)
+
+Sequenced PR plan (bite-sized, safe to merge incrementally)
+- PR1: Batch caps and metrics tightening in worker
+  - Add file/byte caps alongside existing count/time backstop in [git.Worker.handleNewEvent()](internal/git/worker.go:300) and [git.Worker.handleTicker()](internal/git/worker.go:323)
+  - Use existing byte-approx logic from [git.Repo.TryPushCommits()](internal/git/git.go:389) for buffer accounting
+  - Metrics increments: commits_total, commit_bytes_total already available; wire commit_batches_total via [git.Worker.commitAndPush()](internal/git/worker.go:338)
+- PR2: Periodic discovery refresh loop
+  - Manager goroutine: every .Values.controller.discovery.refresh → recompute discoverable GVRs; start new informers, stop stale ones via internal registry
+  - Add discovery_errors_total and backoff 1s..60s+jitter; reuse logging pattern from [watch.FilterDiscoverableGVRs()](internal/watch/discovery.go:44)
+- PR3: Orphan detection (seed-complete control event + worker-side deletes)
+  - Seed accumulates S_live per destination; emit control Event(Operation="SEED_SYNC")
+  - Worker maps BaseFolder → list S_git, compute S_orphan, enqueue synthetic DELETEs (cap per deletes.capPerCycle)
+  - Apply deletes atomically in existing commit batch within [git.Repo.generateLocalCommits()](internal/git/git.go:231)
+- PR4: Per-(repoURL,branch) Lease
+  - Lease helper (new file): internal/leader/lease.go; acquire/renew wrapped around [git.Worker.commitAndPush()](internal/git/worker.go:338)
+  - On failure to acquire/renew → skip write, metrics.lease_acquire_failures_total++
+- PR5: GitDestination CRD + baseFolder pipeline
+  - Add API types and CRD
+  - Extend [eventqueue.Event](internal/eventqueue/queue.go:30) with BaseFolder + destinationRef fields
+  - Update path computation to prefix BaseFolder before [types.ResourceIdentifier.ToGitPath()](internal/types/identifier.go:62)
+  - Temporary compatibility: if BaseFolder empty, default to repo root
+- PR6: Repo marker (exclusiveMode) and warnings
+  - When exclusiveMode true → read {baseFolder}/.configbutler/owner.yaml; mismatch → refuse writes for that destination, metrics.marker_conflicts_total++
+  - exclusiveMode false → log warning only
+- PR7: Helm values and RBAC deltas
+  - Template controller flags in [templates/deployment.yaml](charts/gitops-reverser/templates/deployment.yaml)
+  - Expand ClusterRole verb/resource set in [templates/rbac.yaml](charts/gitops-reverser/templates/rbac.yaml) per Appendix N/T
+  - Document values in [charts/README.md](charts/gitops-reverser/README.md)
+
+Rollout and safety toggles
+- Feature gate (keep): --enable-watch-ingestion; default false in chart
+- New guardrails (values → flags)
+  - --deletes-cap-per-cycle (int, default 500). Set to 0 to fully disable orphan deletes during initial rollout
+  - --watch-all (bool, default false). Strongly discouraged unless RBAC widened; still subject to exclusion list
+  - --git-batch-max-bytes-mib (default 10). Start conservative to avoid large pushes
+  - --work-dir path: ensure writeable even with readOnlyRootFilesystem; mount writable emptyDir if needed via chart
+- Preflight warnings (log-only, MVP)
+  - If workDir not writeable, log error and skip run section
+  - If secrets missing for repo, log and skip pushes; do not crash the worker
+
+Repository layout invariants (with baseFolder)
+- Effective path: baseFolder + "/" + [types.ResourceIdentifier.ToGitPath()](internal/types/identifier.go:62)
+- Directory/symlink safety
+  - baseFolder must be a normalized relative path without “..” segments
+  - Only write .yaml suffix; single-document per file
+  - Ignore .configbutler/owner.yaml from S_git scans
+- Atomicity: write temp file + rename; ensure parent dirs exist; preserve LF and trailing newline
+
+Metrics attachment points (cardinality-safe)
+- objects_scanned_total
+  - Seed: increment per object listed in [watch.Manager.seedSelectedResources()](internal/watch/manager.go:217)
+  - Watch: increment per informer-processed object in [watch.handleEvent()](internal/watch/informers.go:131)
+- events_processed_total (git queue enqueue count)
+  - Seed/watch enqueue sites: [watch.Manager.enqueueMatches()](internal/watch/manager.go:151), [watch.handleEvent()](internal/watch/informers.go:138)
+- repo_branch_queue_depth
+  - +1 dispatch enqueue in [git.Worker.dispatchEvent()](internal/git/worker.go:121)
+  - -1 consume in [git.Worker.runEventLoop()](internal/git/worker.go:276)
+- commits_total, commit_bytes_total
+  - After successful push in [git.Worker.commitAndPush()](internal/git/worker.go:399)
+- rebase_retries_total (non-fast-forward retries)
+  - Increment when [git.Repo.TryPushCommits()](internal/git/git.go:203) enters reset/reapply branch
+- files_deleted_total
+  - Increment after delete staging within commit batch (to be added with PR3)
+- ownership_conflicts_total, lease_acquire_failures_total, marker_conflicts_total
+  - Lease failures around [git.Worker.commitAndPush()](internal/git/worker.go:338)
+  - Marker conflicts in path pre-check before staging writes
+
+Compatibility and migration plan
+- Phase A (current): Events carry GitRepoConfigRef only; path lacks baseFolder prefix
+- Phase B (dual-write contract):
+  - Extend Event with BaseFolder and destinationRef but keep GitRepoConfigRef for fallback
+  - Worker supports both; if BaseFolder empty, default to repo root; queueKey remains GitRepoConfig-based
+- Phase C (final):
+  - Worker queueKey migrates to (repoURL,branch) identity; destinationRef becomes primary
+  - Deprecate GitRepoConfigRef in Event after N minor releases (doc-only; no code fallback then)
+- Docs + samples:
+  - Add GitDestination examples; mark legacy WatchRule fields as deprecated in README/samples; update chart examples accordingly
+
+Risk register and mitigations
+- Risk: orphan delete removing unmanaged files
+  - Mitigation: cap per cycle; dry-run mode toggle (deletes.capPerCycle=0); optional marker ensures ownership strictly under baseFolder; consider denylist of protected subpaths in future
+- Risk: multi-writer pushes causing flip-flop
+  - Mitigation: Lease acquire/renew; last-writer-wins with fetch/reset/reapply; explicit warnings if marker mismatch (exclusiveMode)
+- Risk: excessive informer count on huge clusters
+  - Mitigation: caps (maxGVKs, maxConcurrentInformers) documented; watchAll disabled by default; discovery refresh defers absent GVRs
+
+Test matrix additions (must pass per project rules)
+- Unit
+  - Event extension serialization defaults (zero BaseFolder) in [internal/eventqueue/queue.go](internal/eventqueue/queue.go)
+  - Byte-cap flushing unit tests around [git.Worker.handleNewEvent()](internal/git/worker.go:300)
+- Integration
+  - Seed → S_orphan deletes (capped), second run no-op
+  - Non-fast-forward with mixed CREATE/DELETE batch still converges via [git.Repo.TryPushCommits()](internal/git/git.go:181)
+- E2E
+  - enableWatchIngestion=true, deletes.capPerCycle=0 initially (safety), then >0 to exercise deletes
+  - Two replicas: verify only leader writes (Lease path)
+  - exclusiveMode=true marker conflict blocks writes and logs conflict metric
+
+Operational playbook (SRE-facing)
+- Enable watch ingestion:
+  - helm upgrade ... --set controllerManager.enableWatchIngestion=true
+- Stage deletes safely:
+  - helm upgrade ... --set controller.deletes.capPerCycle=0 (observe), then raise to 100, then 500
+- Investigate stuck pushes:
+  - Check lease conflicts (metrics, logs around [git.Worker.commitAndPush()](internal/git/worker.go:338))
+  - Validate repo credentials Secret and network reachability
+- Troubleshoot informer gaps:
+  - Inspect discovery logs around [watch.FilterDiscoverableGVRs()](internal/watch/discovery.go:44)
+  - Ensure RBAC widened for selected groups
+
+Acceptance refinement (for this tranche)
+- PR1–PR3 merged with unit/integration tests and chart docs updated; lint/test pass locally
+- e2e runs with deletes disabled first, then enabled with cap; webhook remains installed and leader-only routing validated
+- No regressions in webhook path tests (username capture retained)
+
+## Implementation iteration marker — update 8 (2025-10-16, UTC)
+
+This update provides line-anchored change briefs to accelerate PRs with minimal ambiguity. Each item references exact insertion points and interim compatibility steps.
+
+PR1 — Batch caps (files/bytes/time) in worker
+- Goals
+  - Enforce count cap (existing), add bytes cap, keep time backstop
+  - Reuse YAML size approximation to avoid expensive diffs during buffering
+
+- Edits
+  - Introduce a local byte counter alongside eventBuffer in the repo loop:
+    - Accumulator lives within the loop around [git.Worker.runEventLoop()](internal/git/worker.go:275)
+  - On new event buffering:
+    - In [git.Worker.handleNewEvent()](internal/git/worker.go:300) compute approx size for the event:
+      - Marshal sanitized object similarly to commit path using [sanitize.MarshalToOrderedYAML()](internal/sanitize/marshal.go:31)
+      - Increment bufferByteCount; if bufferByteCount >= (maxBytesMiB * 1024 * 1024) → flush (call commitAndPush and reset counter)
+  - On timer tick:
+    - Keep existing behavior in [git.Worker.handleTicker()](internal/git/worker.go:323) and reset bufferByteCount when a flush occurs
+  - After successful push:
+    - Metrics already updated in [git.Worker.commitAndPush()](internal/git/worker.go:399); also increment commit_batches_total counter if available in exporter (follow existing pattern used for commits_total)
+
+- Notes
+  - When computing size, guard nil Object
+  - Maintain repo_branch_queue_depth increments/decrements already present in dispatch/run loop
+
+PR2 — Periodic discovery refresh (+ backoff + metrics)
+- Goals
+  - Refresh discoverable GVRs every controller.discovery.refresh (default 5m)
+  - Start informers for new GVRs, stop for removed GVRs
+  - Backoff on discovery failures; increment discovery_errors_total
+
+- Edits
+  - Manager Start loop:
+    - After initial setup in [watch.Manager.Start()](internal/watch/manager.go:66), spawn a goroutine with a ticker for refresh
+  - Implement a refresh function (new method in manager.go) that:
+    - Recomputes requested GVRs (ComputeRequestedGVRs), filters via [watch.FilterDiscoverableGVRs()](internal/watch/discovery.go:44)
+    - Diffs against a local registry of active informers; start/stop accordingly by calling [watch.startDynamicInformers()](internal/watch/informers.go:48) for adds and stopping specific informers for removals
+  - On discovery errors (non fatal group failures):
+    - Apply exponential backoff 1s..60s with jitter; increment a new metric discovery_errors_total
+
+- Flags/values (chart → args)
+  - --discovery-refresh=${.Values.controller.discovery.refresh}
+  - --watch-all=${.Values.controller.discovery.watchAll}
+  - --discovery-exclude repeated for each item in .Values.controller.discovery.exclusions
+
+PR3 — Orphan detection via control event (seed-complete → worker deletes)
+- Interim compatibility (pre-GitDestination)
+  - Use current grouping (per GitRepoConfig) to run orphan deletes under repo root (no baseFolder prefix yet)
+
+- Seed path
+  - After seed loops finish in [watch.Manager.seedSelectedResources()](internal/watch/manager.go:185), enqueue a control event:
+    - Event fields:
+      - Operation: "SEED_SYNC"
+      - Object: nil
+      - Identifier: zero value
+      - GitRepoConfigRef/GitRepoConfigNamespace: same as matched events in this seed pass
+      - BaseFolder: empty (until GitDestination lands)
+    - Use [watch.Manager.enqueueMatches()](internal/watch/manager.go:151) equivalent logic or a small helper to emit one control event per unique repo key seen during seed
+
+- Worker behavior
+  - In [git.Worker.processRepoEvents()](internal/git/worker.go:178)/run loop, when an event with Operation == "SEED_SYNC" is received:
+    - Compute S_git by walking the working tree under the effective base path (repo root for now), filtering to *.yaml and excluding .configbutler/owner.yaml
+    - Compute S_orphan = S_git − S_live (S_live maintained per repo for the current cycle; initially assemble from paths seen in the seed’s UPDATE events)
+    - Enqueue synthetic DELETE events (internal only) for up to deletes.capPerCycle and let the normal commit path handle them via [git.Repo.handleDeleteOperation()](internal/git/git.go:281)
+    - Increment files_deleted_total by number of staged deletions
+
+- Safety toggles (flags/values)
+  - --deletes-cap-per-cycle=${.Values.controller.deletes.capPerCycle} (0 disables deletes)
+
+PR4 — Per-(repoURL,branch) Lease guarding commit path
+- Acquire/renew Lease around the batch commit/push in [git.Worker.commitAndPush()](internal/git/worker.go:338)
+  - Helper (new file): internal/leader/lease.go
+    - API: leader.NewRepoBranchLease(client, namespace, hash(repoURL,branch), renewSec, leaseSec)
+    - Method: AcquireOrRenew(ctx) (bool, error)
+  - If lease cannot be acquired:
+    - Skip writes; metrics.lease_acquire_failures_total++
+    - Log OwnershipConflict; do not crash
+
+- RBAC:
+  - Ensure coordination.k8s.io Leases verbs present in chart (see PR7)
+
+PR5 — GitDestination CRD + baseFolder pipeline (staged)
+- API types
+  - New file: api/v1alpha1/gitdestination_types.go
+  - Fields per plan (repoRef, branch, baseFolder, accessPolicy, exclusiveMode, status.conditions)
+
+- Event contract extension
+  - Add to [eventqueue.Event](internal/eventqueue/queue.go:30):
+    - DestinationNamespace, DestinationName, BaseFolder
+  - Manager match path populates BaseFolder from resolved destinationRef
+
+- Path prefixing
+  - In [git.Repo.generateLocalCommits()](internal/git/git.go:231), compute:
+    - identifierPath := event.Identifier.ToGitPath()
+    - filePath := effectiveBaseFolderJoin(event.BaseFolder, identifierPath)
+
+- Worker queue key migration (post-CRD)
+  - First event resolves destination → GitRepoConfig → (repoURL, branch), switch to (repoURL,branch) keyed queue (hash)
+  - Maintain temporary compatibility by continuing to accept GitRepoConfigRef/GitRepoConfigNamespace until the migration completes
+
+PR6 — Repo ownership marker (exclusiveMode) enforcement
+- Pre-commit checks (per destination or baseFolder)
+  - Path: {baseFolder}/.configbutler/owner.yaml
+  - exclusiveMode=true: mismatch → refuse writes for that destination this cycle; metrics.marker_conflicts_total++
+  - exclusiveMode=false: warn only
+- Implement check at start of [git.Worker.commitAndPush()](internal/git/worker.go:338) after lease acquisition
+
+PR7 — Helm args wiring + RBAC deltas
+- Deployment args (extend block at [charts/gitops-reverser/templates/deployment.yaml](charts/gitops-reverser/templates/deployment.yaml:41))
+  - Add templated args for:
+    - --discovery-refresh
+    - --watch-all
+    - repeatable --discovery-exclude
+    - --workers-max-global
+    - --workers-max-per-repo
+    - --git-batch-max-files
+    - --git-batch-max-bytes-mib
+    - --git-batch-max-wait-sec
+    - --deletes-cap-per-cycle
+    - --leases-renew-sec
+    - --leases-lease-sec
+    - --work-dir
+- RBAC (extend ClusterRole in [charts/gitops-reverser/templates/rbac.yaml](charts/gitops-reverser/templates/rbac.yaml))
+  - coordination.k8s.io/leases: get, list, watch, create, update, patch, delete
+  - events: create, patch
+  - configbutler.ai:
+    - watchrules, clusterwatchrules, gitrepoconfigs, gitdestinations: get, list, watch
+    - watchrules/status, clusterwatchrules/status: get, update, patch
+  - Baseline desired-state resources (get, list, watch): core/configmaps,secrets; apps/deployments,statefulsets,daemonsets; networking.k8s.io/ingresses,networkpolicies; rbac.authorization.k8s.io roles,rolebindings,clusterroles,clusterrolebindings; policy/poddisruptionbudgets; apiextensions.k8s.io/customresourcedefinitions; apiregistration.k8s.io/apiservices; storage.k8s.io/storageclasses
+
+Testing matrix deltas (must pass)
+- Unit
+  - Byte-cap flush threshold tests around [git.Worker.handleNewEvent()](internal/git/worker.go:300) using small synthetic objects
+  - SEED_SYNC control handling paths in repo loop (simulate S_live → S_orphan computation)
+- Integration
+  - Seed → writes + capped deletes; re-run → no-op
+- E2E (with Docker/Kind)
+  - enableWatchIngestion=true; deletes.capPerCycle=0→100; confirm no unmanaged deletions; Jobs/CronJobs excluded by default
+  - Two replicas: lease allows single writer; marker exclusiveMode=true blocks writes on mismatch
+
+Migration notes
+- Keep validating webhook installed and routed to leader-only service; it captures username only, ingestion is List+Watch
+- Backward compatibility period: events continue to carry GitRepoConfigRef/Namespace while destinationRef/BaseFolder are introduced
+
+## Implementation iteration marker — update 9 (2025-10-16, UTC)
+
+This update adds actionable, copy-ready specs for chart values, RBAC deltas, migration flow, and release/test checklists to accelerate the next engineering PRs while retaining strict safety toggles.
+
+Anchors to current code
+- Manager seed and lifecycle: [internal/watch/manager.go](internal/watch/manager.go)
+- Informers pipeline: [internal/watch/informers.go](internal/watch/informers.go)
+- Discovery and defaults: [internal/watch/discovery.go](internal/watch/discovery.go)
+- Queue and worker processing: [internal/git/worker.go](internal/git/worker.go)
+- Git operations and conflict strategy: [internal/git/git.go](internal/git/git.go)
+- Path mapping (identifier only, pre-baseFolder): [internal/types/identifier.go](internal/types/identifier.go)
+- Event type (to be extended in vNext): [internal/eventqueue/queue.go](internal/eventqueue/queue.go)
+- Charts wiring and RBAC shell: [charts/gitops-reverser/templates/deployment.yaml](charts/gitops-reverser/templates/deployment.yaml), [charts/gitops-reverser/templates/rbac.yaml](charts/gitops-reverser/templates/rbac.yaml), [charts/gitops-reverser/values.yaml](charts/gitops-reverser/values.yaml)
+
+Appendix AA: Concrete Helm values (to template into controller args)
+Add/extend in [charts/gitops-reverser/values.yaml](charts/gitops-reverser/values.yaml):
+```yaml
+controller:
+  enableWatchIngestion: false
+  discovery:
+    refresh: 5m
+    watchAll: false
+    exclusions:
+      - "pods"
+      - "events"
+      - "events.events.k8s.io"
+      - "leases.coordination.k8s.io"
+      - "endpoints"
+      - "endpointslices.discovery.k8s.io"
+      - "controllerrevisions.apps"
+      - "flowschemas.flowcontrol.apiserver.k8s.io"
+      - "prioritylevelconfigurations.flowcontrol.apiserver.k8s.io"
+      - "jobs.batch"
+      - "cronjobs.batch"
+  workers:
+    maxGlobal: 24
+    maxPerRepo: 5
+  git:
+    batch:
+      maxFiles: 200
+      maxBytesMiB: 10
+      maxWaitSec: 20
+  deletes:
+    capPerCycle: 500   # 0 disables delete application (safe rollout)
+  leases:
+    renewSec: 8
+    leaseSec: 24
+  workDir: "/var/cache/gitops-reverser"
+```
+
+Templating mapping in [charts/gitops-reverser/templates/deployment.yaml](charts/gitops-reverser/templates/deployment.yaml):
+- When .Values.controller.enableWatchIngestion → add arg: --enable-watch-ingestion
+- Add args:
+  - --discovery-refresh={{ .Values.controller.discovery.refresh }}
+  - --watch-all={{ .Values.controller.discovery.watchAll }}
+  - For each item in .Values.controller.discovery.exclusions: --discovery-exclude={{ . }}
+  - --workers-max-global={{ .Values.controller.workers.maxGlobal }}
+  - --workers-max-per-repo={{ .Values.controller.workers.maxPerRepo }}
+  - --git-batch-max-files={{ .Values.controller.git.batch.maxFiles }}
+  - --git-batch-max-bytes-mib={{ .Values.controller.git.batch.maxBytesMiB }}
+  - --git-batch-max-wait-sec={{ .Values.controller.git.batch.maxWaitSec }}
+  - --deletes-cap-per-cycle={{ .Values.controller.deletes.capPerCycle }}
+  - --leases-renew-sec={{ .Values.controller.leases.renewSec }}
+  - --leases-lease-sec={{ .Values.controller.leases.leaseSec }}
+  - --work-dir={{ .Values.controller.workDir }}
+
+Appendix AB: RBAC ClusterRole deltas (chart-ready list)
+Extend the manager ClusterRole in [charts/gitops-reverser/templates/rbac.yaml](charts/gitops-reverser/templates/rbac.yaml):
+- coordination.k8s.io
+  - resources: leases
+  - verbs: get, list, watch, create, update, patch, delete
+- "" (core)
+  - resources: configmaps, secrets
+  - verbs: get, list, watch
+  - resources: events
+  - verbs: create, patch
+- apps
+  - resources: deployments, statefulsets, daemonsets
+  - verbs: get, list, watch
+- networking.k8s.io
+  - resources: ingresses, networkpolicies
+  - verbs: get, list, watch
+- rbac.authorization.k8s.io
+  - resources: roles, rolebindings, clusterroles, clusterrolebindings
+  - verbs: get, list, watch
+- policy
+  - resources: poddisruptionbudgets
+  - verbs: get, list, watch
+- apiextensions.k8s.io
+  - resources: customresourcedefinitions
+  - verbs: get, list, watch
+- apiregistration.k8s.io
+  - resources: apiservices
+  - verbs: get, list, watch
+- configbutler.ai
+  - resources: watchrules, clusterwatchrules, gitrepoconfigs, gitdestinations
+  - verbs: get, list, watch
+  - resources: watchrules/status, clusterwatchrules/status
+  - verbs: get, update, patch
+
+Appendix AC: GitDestination and slimmed GitRepoConfig — YAML examples
+GitRepoConfig (remove spec.branch; add spec.allowedBranches)
+```yaml
+apiVersion: configbutler.ai/v1alpha1
+kind: GitRepoConfig
+metadata:
+  name: repo
+  namespace: configbutler-system
+spec:
+  repoUrl: https://git.example.com/infrastructure/configs.git
+  allowedBranches:
+    - main
+    - staging
+  secretRef:
+    name: repo-cred
+  accessPolicy:
+    namespacedRules:
+      mode: SameNamespace
+    allowClusterRules: true
+```
+
+GitDestination (new; binds repoRef+branch+baseFolder)
+```yaml
+apiVersion: configbutler.ai/v1alpha1
+kind: GitDestination
+metadata:
+  name: production
+  namespace: configbutler-system
+spec:
+  repoRef:
+    name: repo
+    namespace: configbutler-system
+  branch: main
+  baseFolder: clusters/prod
+  exclusiveMode: true
+```
+
+Appendix AD: Migration plan (compatibility)
+Phases
+- A (current): Events carry GitRepoConfigRef only; writes go to identifierPath (repo root).
+- B (dual contract): Extend Event with destinationRef and baseFolder, still include GitRepoConfigRef for fallback. Worker prefixes baseFolder when set; queue key remains GitRepoConfigRef.
+- C (final): Queue key becomes (repoURL,branch) worker identity; destinationRef authoritative; deprecate GitRepoConfigRef in Event after documented grace period.
+
+Safety toggles
+- Keep deletes.capPerCycle=0 during first rollout of orphan logic; then raise gradually (100 → 500).
+- Keep watchAll=false; advise operators to widen RBAC only when enabling watchAll.
+- Lease gating: do not push without successful lease acquire/renew; log and surface metrics.
+
+Appendix AE: Release and CI checklist (must pass)
+- Pre-merge local gates:
+  - [Makefile](Makefile): make fmt, make generate (if API), make manifests (if CRDs), make vet
+  - make lint (golangci-lint) — mandatory
+  - make test (unit >90% for new code) — mandatory
+- E2E preparation:
+  - Verify Docker daemon is available (docker info) before make test-e2e
+  - If Docker unavailable, run unit tests only and skip e2e in local smoke
+- E2E gates:
+  - make test-e2e with enableWatchIngestion=true
+  - First pass with deletes.capPerCycle=0; second pass with small cap (e.g., 100)
+  - Validate webhook still present and leader-only routing functional
+
+Appendix AF: Operational playbook (SRE quick actions)
+- Enable watch ingestion:
+  - helm upgrade gitops-reverser oci://ghcr.io/configbutler/charts/gitops-reverser \
+    --namespace gitops-reverser-system \
+    --set controllerManager.enableWatchIngestion=true
+- Staged orphan deletes:
+  - helm upgrade ... --set controller.deletes.capPerCycle=0 (observe), then 100, then 500
+- Lease/ownership issues:
+  - Inspect logs around repo-branch write section; look for OwnershipConflict or lease acquire failures; check coordination.k8s.io leases and metrics
+- Discovery issues:
+  - Examine discovery logs; ensure CRDs installed; check ClusterRole verbs match targets above
+
+Appendix AG: Risk controls and fallback
+- Unintended deletions (orphan logic)
+  - Keep cap at 0 initially; require explicit opt-in
+  - Consider repository branch protection (server-side) during first rollout
+- Multi-writer contention
+  - Lease gating required; marker enforcement optional but recommended with exclusiveMode=true
+- Repository IO constraints
+  - Ensure writable workDir; chart can provide an emptyDir mount if running with readOnlyRootFilesystem
+
+Execution summary for next PRs (tie-back to earlier sections)
+- Batch caps in worker (count+bytes+time)
+- Periodic discovery refresh + backoff + metrics
+- Seed-complete control event and worker-side orphan deletes (capped)
+- Per-(repoURL,branch) lease guard around commit path
+- GitDestination CRD + baseFolder pipeline (event contract, path prefix)
+- Repo ownership marker (exclusiveMode)
+- Helm values templating and RBAC deltas; chart README updates
+
+All changes remain consistent with the permanent retention of the validating webhook (username capture only, FailurePolicy=Ignore, leader-only routing) and the shift to List+Watch as the primary ingestion path.
+
+## Implementation iteration marker — update 10 (2025-10-16, UTC)
+
+Developer edit recipes (line-anchored) to implement the next tranche safely and incrementally. Each item points to exact files/functions to touch and outlines acceptance checks.
+
+A) Batch caps (files/bytes/time) in worker
+- Where to edit
+  - Queue consumer and buffering:
+    - Append byte counter state alongside eventBuffer in loop: [git.Worker.runEventLoop()](internal/git/worker.go:275)
+  - On enqueue of a new event:
+    - Compute approx YAML size and enforce byte cap: [git.Worker.handleNewEvent()](internal/git/worker.go:300)
+      - Use [sanitize.MarshalToOrderedYAML()](internal/sanitize/marshal.go:31) on event.Object when non-nil
+  - On ticker flush:
+    - After flush, reset the byte counter: [git.Worker.handleTicker()](internal/git/worker.go:323)
+  - Batch metrics:
+    - commits_total and commit_bytes_total already covered after push: [git.Worker.commitAndPush()](internal/git/worker.go:399)
+- Flags/values to add (templated via chart; see Section E below)
+  - --git-batch-max-files, --git-batch-max-bytes-mib, --git-batch-max-wait-sec
+- Acceptance
+  - Unit tests: generate N small events to exceed file cap; generate fewer large events to exceed byte cap; ensure push triggered
+
+B) Periodic discovery refresh with backoff
+- Where to edit
+  - Manager Start: spawn refresh goroutine after initial setup: [watch.Manager.Start()](internal/watch/manager.go:66)
+  - New manager method: refreshDiscoverables()
+    - Recompute requested → [watch.Manager.ComputeRequestedGVRs()](internal/watch/manager.go:72)
+    - Filter discoverable → [watch.FilterDiscoverableGVRs()](internal/watch/discovery.go:44)
+    - Diff current vs new; for adds, start informer via [watch.startDynamicInformers()](internal/watch/informers.go:48) or a per-GVR starter; for removals, stop informer (maintain registry)
+  - Metrics: increment discovery_errors_total on failures; exponential backoff 1s..60s+jitter
+- Flags/values
+  - --discovery-refresh, --watch-all, repeated --discovery-exclude
+- Acceptance
+  - Simulate new CRD install → informer starts without restart; removing CRD stops informer; no panics
+
+C) Orphan detection with SEED_SYNC control event
+- Where to edit
+  - Seed path: at end of seeding, send one control event per repo key:
+    - Seed loop: [watch.Manager.seedSelectedResources()](internal/watch/manager.go:185)
+    - Emit event with Operation="SEED_SYNC", no Object; reuse [watch.Manager.enqueueMatches()](internal/watch/manager.go:151) logic or a new helper
+  - Worker path: handle control event inside repo loop:
+    - Consumer loop entry: [git.Worker.processRepoEvents()](internal/git/worker.go:178)
+    - When Operation == "SEED_SYNC":
+      - Build S_git by walking working tree (repo root for now; baseFolder lands with GitDestination)
+      - Maintain S_live map collected from seed UPDATEs this cycle
+      - Compute S_orphan = S_git − S_live; enqueue synthetic DELETE events (capped) for commit
+      - Stage deletes via [git.Repo.handleDeleteOperation()](internal/git/git.go:281)
+      - Increment files_deleted_total metric
+- Flags/values
+  - --deletes-cap-per-cycle (0 to disable on first rollout)
+- Acceptance
+  - Integration test: first run → deletes orphans (capped), second run → no-op diff
+
+D) Per-(repoURL,branch) Lease around commit
+- Where to edit
+  - New helper: internal/leader/lease.go with AcquireOrRenew()
+  - Wrap commit path:
+    - Guard at start of [git.Worker.commitAndPush()](internal/git/worker.go:338)
+      - If cannot acquire/renew → skip write/push, increment lease_acquire_failures_total, log OwnershipConflict
+- RBAC
+  - Ensure Leases verbs present in chart ClusterRole (see Section E)
+- Acceptance
+  - E2E with two replicas: only leader pushes; metrics reflect lease behavior
+
+E) Helm values and RBAC templating (copy-ready)
+- values.yaml additions (under controller; append if missing)
+  - discovery.refresh, discovery.watchAll, discovery.exclusions[]
+  - workers.maxGlobal, workers.maxPerRepo
+  - git.batch.maxFiles, git.batch.maxBytesMiB, git.batch.maxWaitSec
+  - deletes.capPerCycle
+  - leases.renewSec, leases.leaseSec
+  - workDir
+  - Reference implementation: [charts/gitops-reverser/values.yaml](charts/gitops-reverser/values.yaml)
+- deployment args (append under args block): [helm.deployment args block](charts/gitops-reverser/templates/deployment.yaml:41)
+  - --discovery-refresh, --watch-all, repeat --discovery-exclude
+  - --workers-max-global, --workers-max-per-repo
+  - --git-batch-max-files, --git-batch-max-bytes-mib, --git-batch-max-wait-sec
+  - --deletes-cap-per-cycle
+  - --leases-renew-sec, --leases-lease-sec
+  - --work-dir
+- RBAC deltas to ClusterRole: [charts/gitops-reverser/templates/rbac.yaml](charts/gitops-reverser/templates/rbac.yaml)
+  - coordination.k8s.io/leases: get, list, watch, create, update, patch, delete
+  - events (core or events.k8s.io): create, patch
+  - configbutler.ai: watchrules, clusterwatchrules, gitrepoconfigs, gitdestinations (get, list, watch); status updates for watchrules/clusterwatchrules
+  - Baseline desired-state resource verbs (get, list, watch) across core/apps/networking/rbac/policy/apiextensions/apiregistration/storage
+
+F) GitDestination CRD and baseFolder pipeline (staged)
+- Types
+  - New file: api/v1alpha1/gitdestination_types.go (kubebuilder)
+  - Fields: repoRef, branch, baseFolder, accessPolicy (optional), exclusiveMode (bool), status.conditions
+- Event contract extension: [eventqueue.Event](internal/eventqueue/queue.go:30)
+  - Add DestinationNamespace, DestinationName, BaseFolder
+- Manager enqueue paths:
+  - Include BaseFolder when constructing events in [watch.handleEvent()](internal/watch/informers.go:105) and [watch.Manager.enqueueMatches()](internal/watch/manager.go:151)
+- Effective path write:
+  - Prefix BaseFolder before identifier path inside [git.Repo.generateLocalCommits()](internal/git/git.go:231)
+    - identifierPath := event.Identifier.ToGitPath()
+    - filePath := join(BaseFolder, identifierPath)
+- Worker key migration (post-CRD)
+  - Initialize processor: resolve destination → GitRepoConfig → (repoURL, branch) in [git.Worker.initializeProcessor()](internal/git/worker.go:202)
+  - Use hash(repoURL,branch) queue key thereafter; keep GitRepoConfigRef for transitional compatibility
+- Acceptance
+  - Unit tests: ensure BaseFolder prefixing; ensure empty BaseFolder preserves legacy behavior
+
+G) Repo ownership marker (exclusiveMode) per destination
+- Where to edit
+  - Pre-check at start of commit path: [git.Worker.commitAndPush()](internal/git/worker.go:338)
+  - Path: {baseFolder}/.configbutler/owner.yaml; on mismatch:
+    - exclusiveMode=true: refuse writes, increment marker_conflicts_total
+    - exclusiveMode=false: warn and continue
+- Acceptance
+  - Integration: exclusiveMode=true with mismatched marker blocks writes; logs and metrics confirm
+
+H) Documentation and examples (chart README and samples)
+- Chart README sections to extend: [charts/README.md](charts/gitops-reverser/README.md)
+  - Add “Watch ingestion values” with each arg and default
+  - Add “Staged orphan deletes rollout guide”
+  - Add “Lease and marker semantics”
+- Example manifests
+  - Provide GitDestination example alongside existing samples (keep webhook docs stating it’s retained for username capture only)
+
+I) Testing checklist tied to CI gates
+- Lint: make lint
+- Unit: make test (ensure >90% coverage for new code paths)
+- E2E: make test-e2e
+  - Pre-check Docker daemon (docker info)
+  - Run two passes: deletes.capPerCycle=0 then a small cap (100)
+  - Validate desired-state default filters: Pods/Events excluded; Deployments/Services included
+- Non-fast-forward retry remains green: [git.Repo.TryPushCommits()](internal/git/git.go:181)
+
+J) Migration and safety toggles (operator guidance)
+- Phased rollout (recommended)
+  - Phase 1: enableWatchIngestion=true; deletes.capPerCycle=0
+  - Phase 2: raise deletes cap (100 → 500), monitor files_deleted_total and repo diffs
+  - Phase 3: introduce GitDestination and BaseFolder; keep legacy GitRepoConfigRef populated during transition
+- Keep webhook installed (FailurePolicy=Ignore; leader-only routing) for username capture; object ingestion remains via List+Watch exclusively
+
+Open items (tracked)
+- Discovery registry for incremental informer add/remove (helper struct)
+- discovery_errors_total metric definition and export
+- marker file schema/versioning for future evolutions
+
+This iteration keeps plan and implementation tightly aligned, adds precise edit points for engineers, and preserves safety during rollout.
