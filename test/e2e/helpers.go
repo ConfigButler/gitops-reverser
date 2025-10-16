@@ -170,3 +170,36 @@ func waitForCertificateSecrets() {
 
 	By("✅ All certificate secrets are ready")
 }
+
+// getBaseFolder returns the baseFolder used by GitDestination in e2e tests.
+// Must satisfy the CRD validation (POSIX-like relative path, no traversal).
+func getBaseFolder() string {
+	return "e2e"
+}
+
+// createGitDestination creates a GitDestination that binds a GitRepoConfig, branch and baseFolder.
+//
+//nolint:unparam // in e2e helpers we accept constant namespace ("sut"); keep signature for clarity in template calls
+func createGitDestination(name, namespace, repoConfigName, baseFolder, branch string) {
+	By(fmt.Sprintf("creating GitDestination '%s' in ns '%s' for GitRepoConfig '%s' with baseFolder '%s'",
+		name, namespace, repoConfigName, baseFolder))
+
+	data := struct {
+		Name                string
+		Namespace           string
+		RepoConfigName      string
+		RepoConfigNamespace string
+		Branch              string
+		BaseFolder          string
+	}{
+		Name:                name,
+		Namespace:           namespace,
+		RepoConfigName:      repoConfigName,
+		RepoConfigNamespace: namespace,
+		Branch:              branch,
+		BaseFolder:          baseFolder,
+	}
+
+	err := applyFromTemplate("test/e2e/templates/gitdestination.tmpl", data, namespace)
+	Expect(err).NotTo(HaveOccurred(), "Failed to apply GitDestination")
+}
