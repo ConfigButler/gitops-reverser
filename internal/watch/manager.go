@@ -34,6 +34,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	"github.com/ConfigButler/gitops-reverser/internal/correlation"
 	"github.com/ConfigButler/gitops-reverser/internal/eventqueue"
 	"github.com/ConfigButler/gitops-reverser/internal/metrics"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
@@ -53,6 +54,8 @@ type Manager struct {
 	RuleStore *rulestore.RuleStore
 	// EventQueue is where sanitized events will be enqueued for git workers.
 	EventQueue *eventqueue.Queue
+	// CorrelationStore enables webhook→watch username enrichment.
+	CorrelationStore *correlation.Store
 }
 
 const (
@@ -149,19 +152,24 @@ func (m *Manager) matchRules(
 }
 
 // enqueueMatches pushes sanitized events to the shared event queue for both rule types.
+// It attempts to enrich events with webhook-captured username via correlation store.
 func (m *Manager) enqueueMatches(
+	ctx context.Context,
 	sanitized *unstructured.Unstructured,
 	id itypes.ResourceIdentifier,
 	watchRules []rulestore.CompiledRule,
 	clusterRules []rulestore.CompiledClusterRule,
 ) {
+	// Attempt correlation enrichment
+	userInfo := m.tryEnrichFromCorrelation(ctx, sanitized, id, "UPDATE")
+
 	// WatchRule matches.
 	for _, rule := range watchRules {
 		ev := eventqueue.Event{
 			Object:                 sanitized.DeepCopy(),
 			Identifier:             id,
 			Operation:              "UPDATE",
-			UserInfo:               eventqueue.UserInfo{}, // no admission user in watch-based ingestion
+			UserInfo:               userInfo,
 			GitRepoConfigRef:       rule.GitRepoConfigRef,
 			GitRepoConfigNamespace: rule.Source.Namespace,
 			Branch:                 rule.Branch,
@@ -176,7 +184,7 @@ func (m *Manager) enqueueMatches(
 			Object:                 sanitized.DeepCopy(),
 			Identifier:             id,
 			Operation:              "UPDATE",
-			UserInfo:               eventqueue.UserInfo{},
+			UserInfo:               userInfo,
 			GitRepoConfigRef:       cr.GitRepoConfigRef,
 			GitRepoConfigNamespace: cr.GitRepoConfigNamespace,
 			Branch:                 cr.Branch,
@@ -184,6 +192,43 @@ func (m *Manager) enqueueMatches(
 		}
 		m.EventQueue.Enqueue(ev)
 	}
+}
+
+// tryEnrichFromCorrelation attempts to enrich an event with username from the correlation store.
+func (m *Manager) tryEnrichFromCorrelation(
+	ctx context.Context,
+	sanitized *unstructured.Unstructured,
+	id itypes.ResourceIdentifier,
+	operation string,
+) eventqueue.UserInfo {
+	userInfo := eventqueue.UserInfo{} // default: no username
+
+	if m.CorrelationStore == nil {
+		return userInfo
+	}
+
+	log := m.Log.WithName("correlation")
+	sanitizedYAML, err := sanitize.MarshalToOrderedYAML(sanitized)
+	if err != nil {
+		log.Error(err, "Failed to marshal for correlation", "identifier", id.String())
+		return userInfo
+	}
+
+	key := correlation.GenerateKey(id, operation, sanitizedYAML)
+	entry, found := m.CorrelationStore.GetAndDelete(key)
+	if !found {
+		metrics.EnrichMissesTotal.Add(ctx, 1)
+		log.V(1).Info("No correlation match", "identifier", id.String(), "key", key)
+		return userInfo
+	}
+
+	userInfo.Username = entry.Username
+	metrics.EnrichHitsTotal.Add(ctx, 1)
+	log.V(1).Info("Enriched with username",
+		"identifier", id.String(),
+		"username", entry.Username,
+		"key", key)
+	return userInfo
 }
 
 // seedSelectedResources performs a one-time List across all discoverable GVRs derived from active rules,
@@ -291,7 +336,7 @@ func (m *Manager) processListedObject(
 	}
 
 	sanitized := sanitize.Sanitize(u)
-	m.enqueueMatches(sanitized, id, wrRules, cwrRules)
+	m.enqueueMatches(ctx, sanitized, id, wrRules, cwrRules)
 
 	enq := int64(len(wrRules) + len(cwrRules))
 	if enq > 0 {

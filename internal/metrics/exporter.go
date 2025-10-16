@@ -64,6 +64,13 @@ var (
 	RepoBranchActiveWorkers metric.Int64UpDownCounter
 	// RepoBranchQueueDepth is a gauge for per-repo-branch queue depth.
 	RepoBranchQueueDepth metric.Int64UpDownCounter
+
+	// EnrichHitsTotal counts successful webhook→watch correlation enrichments.
+	EnrichHitsTotal metric.Int64Counter
+	// EnrichMissesTotal counts failed webhook→watch correlations (no match found).
+	EnrichMissesTotal metric.Int64Counter
+	// KVEvictionsTotal counts correlation store evictions (TTL or LRU).
+	KVEvictionsTotal metric.Int64Counter
 )
 
 // InitOTLPExporter initializes the OTLP-to-Prometheus bridge.
@@ -113,6 +120,9 @@ func InitOTLPExporter(_ context.Context) (func(context.Context) error, error) {
 		{"gitopsreverser_ownership_conflicts_total", &OwnershipConflictsTotal},
 		{"gitopsreverser_lease_acquire_failures_total", &LeaseAcquireFailuresTotal},
 		{"gitopsreverser_marker_conflicts_total", &MarkerConflictsTotal},
+		{"gitopsreverser_enrich_hits_total", &EnrichHitsTotal},
+		{"gitopsreverser_enrich_misses_total", &EnrichMissesTotal},
+		{"gitopsreverser_kv_evictions_total", &KVEvictionsTotal},
 	}
 	for _, s := range counters {
 		v, err := otelMeter.Int64Counter(s.name)

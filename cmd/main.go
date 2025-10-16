@@ -18,10 +18,12 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"flag"
 	"os"
 	"path/filepath"
+	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -42,6 +44,7 @@ import (
 
 	configbutleraiv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 	"github.com/ConfigButler/gitops-reverser/internal/controller"
+	"github.com/ConfigButler/gitops-reverser/internal/correlation"
 	"github.com/ConfigButler/gitops-reverser/internal/eventqueue"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/leader"
@@ -55,6 +58,13 @@ import (
 var (
 	scheme   = runtime.NewScheme()
 	setupLog = ctrl.Log.WithName("setup")
+)
+
+const (
+	// Correlation store configuration.
+	correlationTTLSeconds = 60
+	correlationMaxEntries = 10000
+	correlationTTL        = correlationTTLSeconds * time.Second
 )
 
 func init() {
@@ -123,11 +133,21 @@ func main() {
 		RuleStore: ruleStore,
 	}).SetupWithManager(mgr), "unable to create controller", "controller", "ClusterWatchRule")
 
+	// Initialize correlation store for webhook→watch enrichment
+	correlationStore := correlation.NewStore(correlationTTL, correlationMaxEntries)
+	correlationStore.SetEvictionCallback(func() {
+		metrics.KVEvictionsTotal.Add(context.Background(), 1)
+	})
+	setupLog.Info("Correlation store initialized",
+		"ttl", correlationTTL,
+		"maxEntries", correlationMaxEntries)
+
 	// Webhook handler
 	eventHandler := &webhookhandler.EventHandler{
 		Client:                     mgr.GetClient(),
 		RuleStore:                  ruleStore,
 		EventQueue:                 eventQueue,
+		CorrelationStore:           correlationStore,
 		EnableVerboseAdmissionLogs: cfg.enableVerboseAdmissionLogs,
 	}
 
@@ -150,17 +170,16 @@ func main() {
 	fatalIfErr(mgr.Add(gitWorker), "unable to add git worker to manager")
 	setupLog.Info("Git worker added to manager")
 
-	// Watch ingestion manager (feature gated by --enable-watch-ingestion)
-	if cfg.enableWatchIngestion {
-		watchMgr := &watch.Manager{
-			Client:     mgr.GetClient(),
-			Log:        ctrl.Log.WithName("watch"),
-			RuleStore:  ruleStore,
-			EventQueue: eventQueue,
-		}
-		fatalIfErr(mgr.Add(watchMgr), "unable to add watch ingestion manager")
-		setupLog.Info("Watch ingestion manager added", "enabled", true)
+	// Watch ingestion manager (always enabled - cluster-as-source-of-truth)
+	watchMgr := &watch.Manager{
+		Client:           mgr.GetClient(),
+		Log:              ctrl.Log.WithName("watch"),
+		RuleStore:        ruleStore,
+		EventQueue:       eventQueue,
+		CorrelationStore: correlationStore,
 	}
+	fatalIfErr(mgr.Add(watchMgr), "unable to add watch ingestion manager")
+	setupLog.Info("Watch ingestion manager added (cluster-as-source-of-truth mode)")
 
 	// +kubebuilder:scaffold:builder
 
@@ -189,7 +208,6 @@ type appConfig struct {
 	secureMetrics              bool
 	enableHTTP2                bool
 	enableVerboseAdmissionLogs bool
-	enableWatchIngestion       bool
 	zapOpts                    zap.Options
 }
 
@@ -226,12 +244,6 @@ func parseFlags() appConfig {
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
 	flag.BoolVar(&cfg.enableVerboseAdmissionLogs, "enable-verbose-admission-logs", false,
 		"If set, enables verbose logging for admission requests and rule matching")
-	flag.BoolVar(
-		&cfg.enableWatchIngestion,
-		"enable-watch-ingestion",
-		false,
-		"Enable watch-based ingestion (List+Watch). When set, starts the watch manager alongside the existing webhook path.",
-	)
 
 	cfg.zapOpts = zap.Options{
 		Development: true,

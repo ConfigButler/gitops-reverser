@@ -101,12 +101,14 @@ func (m *Manager) addHandlers(inf cache.SharedIndexInformer, g GVR) {
 }
 
 // handleEvent converts an informer object to Unstructured, matches rules, sanitizes,
-// and enqueues commit events.
+// enriches with correlation username, and enqueues commit events.
 func (m *Manager) handleEvent(obj interface{}, g GVR, op configv1alpha1.OperationType) {
 	u := toUnstructuredFromInformer(obj)
 	if u == nil {
 		return
 	}
+
+	ctx := context.Background()
 
 	// Identifier from GVR + object metadata
 	id := itypes.NewResourceIdentifier(g.Group, g.Version, g.Resource, u.GetNamespace(), u.GetName())
@@ -114,7 +116,7 @@ func (m *Manager) handleEvent(obj interface{}, g GVR, op configv1alpha1.Operatio
 	// Namespace labels for namespaced scope
 	var nsLabels map[string]string
 	if id.Namespace != "" {
-		nsLabels = m.getNamespaceLabels(context.Background(), id.Namespace)
+		nsLabels = m.getNamespaceLabels(ctx, id.Namespace)
 	}
 
 	isClusterScoped := id.IsClusterScoped()
@@ -125,8 +127,10 @@ func (m *Manager) handleEvent(obj interface{}, g GVR, op configv1alpha1.Operatio
 
 	sanitized := sanitize.Sanitize(u)
 
+	// Attempt correlation enrichment
+	userInfo := m.tryEnrichFromCorrelation(ctx, sanitized, id, string(op))
+
 	// Emit basic metrics for watcher path (mirrors webhook semantics).
-	ctx := context.Background()
 	// Count each watched object processed by the informer path.
 	metrics.ObjectsScannedTotal.Add(ctx, 1)
 	enqueueCount := int64(len(wrRules) + len(cwrRules))
@@ -141,7 +145,7 @@ func (m *Manager) handleEvent(obj interface{}, g GVR, op configv1alpha1.Operatio
 			Object:                 sanitized.DeepCopy(),
 			Identifier:             id,
 			Operation:              string(op),
-			UserInfo:               eventqueue.UserInfo{},
+			UserInfo:               userInfo,
 			GitRepoConfigRef:       rule.GitRepoConfigRef,
 			GitRepoConfigNamespace: rule.Source.Namespace,
 			Branch:                 rule.Branch,
@@ -156,7 +160,7 @@ func (m *Manager) handleEvent(obj interface{}, g GVR, op configv1alpha1.Operatio
 			Object:                 sanitized.DeepCopy(),
 			Identifier:             id,
 			Operation:              string(op),
-			UserInfo:               eventqueue.UserInfo{},
+			UserInfo:               userInfo,
 			GitRepoConfigRef:       cr.GitRepoConfigRef,
 			GitRepoConfigNamespace: cr.GitRepoConfigNamespace,
 			Branch:                 cr.Branch,

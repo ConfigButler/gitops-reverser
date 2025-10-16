@@ -37,6 +37,7 @@ import (
 	"go.opentelemetry.io/otel/metric"
 
 	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	"github.com/ConfigButler/gitops-reverser/internal/correlation"
 	"github.com/ConfigButler/gitops-reverser/internal/eventqueue"
 	"github.com/ConfigButler/gitops-reverser/internal/metrics"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
@@ -53,6 +54,7 @@ type EventHandler struct {
 	Decoder                    *admission.Decoder
 	RuleStore                  *rulestore.RuleStore
 	EventQueue                 *eventqueue.Queue
+	CorrelationStore           *correlation.Store
 	EnableVerboseAdmissionLogs bool
 }
 
@@ -239,7 +241,25 @@ func (h *EventHandler) enqueueEvent(
 	branch string,
 	baseFolder string,
 ) {
+	log := logf.FromContext(ctx)
 	sanitizedObj := sanitize.Sanitize(obj)
+
+	// Store correlation entry for watch path enrichment
+	if h.CorrelationStore != nil {
+		sanitizedYAML, err := sanitize.MarshalToOrderedYAML(sanitizedObj)
+		if err != nil {
+			log.Error(err, "Failed to marshal sanitized object for correlation", "identifier", identifier.String())
+		} else {
+			key := correlation.GenerateKey(identifier, string(req.Operation), sanitizedYAML)
+			h.CorrelationStore.Put(key, req.UserInfo.Username)
+			log.V(1).Info("Stored correlation entry",
+				"key", key,
+				"username", req.UserInfo.Username,
+				"operation", req.Operation,
+				"identifier", identifier.String())
+		}
+	}
+
 	event := eventqueue.Event{
 		Object:     sanitizedObj,
 		Identifier: identifier,
