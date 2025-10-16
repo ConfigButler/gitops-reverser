@@ -24,6 +24,7 @@ package webhook
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -52,7 +53,7 @@ func TestEventHandler_Handle_MatchingRule(t *testing.T) {
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 
 	ruleStore := rulestore.NewStore()
-	eventQueue := eventqueue.NewQueue()
+	correlationStore := correlation.NewStore(60*time.Second, 1000)
 
 	// Add a rule that matches Pods
 	rule := configv1alpha1.WatchRule{
@@ -72,9 +73,9 @@ func TestEventHandler_Handle_MatchingRule(t *testing.T) {
 	ruleStore.AddOrUpdate(rule)
 
 	handler := &EventHandler{
-		Client:     client,
-		RuleStore:  ruleStore,
-		EventQueue: eventQueue,
+		Client:           client,
+		RuleStore:        ruleStore,
+		CorrelationStore: correlationStore,
 	}
 
 	// Create decoder
@@ -125,22 +126,14 @@ func TestEventHandler_Handle_MatchingRule(t *testing.T) {
 	// Execute
 	response := handler.Handle(ctx, req)
 
-	// Verify
+	// Verify webhook allows the request
 	assert.True(t, response.Allowed)
 	assert.Equal(t, "request is allowed", response.Result.Message)
-	assert.Equal(t, 1, eventQueue.Size())
 
-	// Verify the enqueued event
-	events := eventQueue.DequeueAll()
-	require.Len(t, events, 1)
+	// Verify correlation entry was stored (webhook's sole responsibility)
+	assert.Equal(t, 1, correlationStore.Size(), "correlation entry should be stored")
 
-	event := events[0]
-	assert.Equal(t, "test-pod", event.Object.GetName())
-	assert.Equal(t, "default", event.Object.GetNamespace())
-	assert.Equal(t, "Pod", event.Object.GetKind())
-	assert.Equal(t, "test-repo-config", event.GitRepoConfigRef)
-	assert.Equal(t, "test-user", event.UserInfo.Username)
-	assert.Equal(t, "CREATE", event.Operation)
+	// NOTE: Webhook does NOT enqueue events - that is the watch path's responsibility
 }
 
 func TestEventHandler_Handle_NoMatchingRule(t *testing.T) {
@@ -153,7 +146,7 @@ func TestEventHandler_Handle_NoMatchingRule(t *testing.T) {
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 
 	ruleStore := rulestore.NewStore()
-	eventQueue := eventqueue.NewQueue()
+	correlationStore := correlation.NewStore(60*time.Second, 1000)
 
 	// Add a rule that matches Services (not Pods)
 	rule := configv1alpha1.WatchRule{
@@ -173,9 +166,9 @@ func TestEventHandler_Handle_NoMatchingRule(t *testing.T) {
 	ruleStore.AddOrUpdate(rule)
 
 	handler := &EventHandler{
-		Client:     client,
-		RuleStore:  ruleStore,
-		EventQueue: eventQueue,
+		Client:           client,
+		RuleStore:        ruleStore,
+		CorrelationStore: correlationStore,
 	}
 
 	// Create decoder
@@ -221,7 +214,7 @@ func TestEventHandler_Handle_NoMatchingRule(t *testing.T) {
 	// Verify
 	assert.True(t, response.Allowed)
 	assert.Equal(t, "request is allowed", response.Result.Message)
-	assert.Equal(t, 0, eventQueue.Size()) // No events should be enqueued
+	assert.Equal(t, 0, correlationStore.Size(), "no correlation entry for non-matching rule")
 }
 
 func TestEventHandler_Handle_MultipleMatchingRules(t *testing.T) {
@@ -234,7 +227,7 @@ func TestEventHandler_Handle_MultipleMatchingRules(t *testing.T) {
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 
 	ruleStore := rulestore.NewStore()
-	eventQueue := eventqueue.NewQueue()
+	correlationStore := correlation.NewStore(60*time.Second, 1000)
 
 	// Add multiple rules that match Pods
 	rule1 := configv1alpha1.WatchRule{
@@ -271,9 +264,9 @@ func TestEventHandler_Handle_MultipleMatchingRules(t *testing.T) {
 	ruleStore.AddOrUpdate(rule2)
 
 	handler := &EventHandler{
-		Client:     client,
-		RuleStore:  ruleStore,
-		EventQueue: eventQueue,
+		Client:           client,
+		RuleStore:        ruleStore,
+		CorrelationStore: correlationStore,
 	}
 
 	// Create decoder
@@ -318,22 +311,10 @@ func TestEventHandler_Handle_MultipleMatchingRules(t *testing.T) {
 
 	// Verify
 	assert.True(t, response.Allowed)
-	assert.Equal(t, 2, eventQueue.Size()) // Two events should be enqueued
 
-	// Verify the enqueued events
-	events := eventQueue.DequeueAll()
-	require.Len(t, events, 2)
-
-	// Verify both events reference different repo configs
-	repoConfigs := make([]string, len(events))
-	for i, event := range events {
-		assert.Equal(t, "test-pod", event.Object.GetName())
-		assert.Equal(t, "Pod", event.Object.GetKind())
-		repoConfigs[i] = event.GitRepoConfigRef
-	}
-
-	assert.Contains(t, repoConfigs, "repo-config-1")
-	assert.Contains(t, repoConfigs, "repo-config-2")
+	// Webhook stores ONE correlation entry per resource change
+	// (not one per matching rule - that's the watch path's job to create multiple events)
+	assert.Equal(t, 1, correlationStore.Size(), "single correlation entry for resource")
 }
 
 func TestEventHandler_Handle_ExcludedByLabels(t *testing.T) {

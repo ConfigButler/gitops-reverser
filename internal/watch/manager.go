@@ -21,6 +21,7 @@ package watch
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -30,6 +31,7 @@ import (
 	k8stypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
 
+	"github.com/cespare/xxhash/v2"
 	"github.com/go-logr/logr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -44,7 +46,7 @@ import (
 
 // Manager is a controller-runtime Runnable that will host dynamic informers
 // and translate List+Watch deltas into gitops-reverser events.
-// This is a minimal scaffold used to progressively implement the spec.
+// Implements deduplication to prevent status-only changes from creating redundant commits.
 type Manager struct {
 	// Client provides cluster access.
 	Client client.Client
@@ -56,6 +58,10 @@ type Manager struct {
 	EventQueue *eventqueue.Queue
 	// CorrelationStore enables webhook→watch username enrichment.
 	CorrelationStore *correlation.Store
+
+	// Deduplication: tracks last seen content hash per resource to skip status-only changes
+	lastSeenMu   sync.RWMutex
+	lastSeenHash map[string]uint64 // resourceKey → content hash
 }
 
 const (
@@ -153,6 +159,7 @@ func (m *Manager) matchRules(
 
 // enqueueMatches pushes sanitized events to the shared event queue for both rule types.
 // It attempts to enrich events with webhook-captured username via correlation store.
+// Implements deduplication: skips enqueuing if sanitized content is identical to last seen.
 func (m *Manager) enqueueMatches(
 	ctx context.Context,
 	sanitized *unstructured.Unstructured,
@@ -160,6 +167,14 @@ func (m *Manager) enqueueMatches(
 	watchRules []rulestore.CompiledRule,
 	clusterRules []rulestore.CompiledClusterRule,
 ) {
+	// Check for duplicate content (status-only changes)
+	if m.isDuplicateContent(ctx, sanitized, id) {
+		m.Log.V(1).Info("Skipping duplicate sanitized content (likely status-only change)",
+			"identifier", id.String())
+		metrics.WatchDuplicatesSkippedTotal.Add(ctx, 1)
+		return
+	}
+
 	// Attempt correlation enrichment
 	userInfo := m.tryEnrichFromCorrelation(ctx, sanitized, id, "UPDATE")
 
@@ -192,6 +207,49 @@ func (m *Manager) enqueueMatches(
 		}
 		m.EventQueue.Enqueue(ev)
 	}
+}
+
+// isDuplicateContent checks if the sanitized content is identical to the last seen version.
+// Returns true if content is duplicate (should skip), false if new content (should process).
+func (m *Manager) isDuplicateContent(
+	_ context.Context,
+	sanitized *unstructured.Unstructured,
+	id itypes.ResourceIdentifier,
+) bool {
+	// Initialize dedup map if needed
+	m.lastSeenMu.Lock()
+	if m.lastSeenHash == nil {
+		m.lastSeenHash = make(map[string]uint64)
+	}
+	m.lastSeenMu.Unlock()
+
+	// Compute content hash
+	yaml, err := sanitize.MarshalToOrderedYAML(sanitized)
+	if err != nil {
+		// Can't compute hash - assume not duplicate to be safe
+		return false
+	}
+	currentHash := xxhash.Sum64(yaml)
+
+	// Resource key: namespace/name (or just name for cluster-scoped)
+	resourceKey := id.String()
+
+	// Check against last seen
+	m.lastSeenMu.RLock()
+	lastHash, exists := m.lastSeenHash[resourceKey]
+	m.lastSeenMu.RUnlock()
+
+	if exists && lastHash == currentHash {
+		// Duplicate content
+		return true
+	}
+
+	// New content - update tracking
+	m.lastSeenMu.Lock()
+	m.lastSeenHash[resourceKey] = currentHash
+	m.lastSeenMu.Unlock()
+
+	return false
 }
 
 // tryEnrichFromCorrelation attempts to enrich an event with username from the correlation store.

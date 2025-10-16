@@ -102,6 +102,7 @@ func (m *Manager) addHandlers(inf cache.SharedIndexInformer, g GVR) {
 
 // handleEvent converts an informer object to Unstructured, matches rules, sanitizes,
 // enriches with correlation username, and enqueues commit events.
+// Implements deduplication to skip status-only changes.
 func (m *Manager) handleEvent(obj interface{}, g GVR, op configv1alpha1.OperationType) {
 	u := toUnstructuredFromInformer(obj)
 	if u == nil {
@@ -126,6 +127,14 @@ func (m *Manager) handleEvent(obj interface{}, g GVR, op configv1alpha1.Operatio
 	}
 
 	sanitized := sanitize.Sanitize(u)
+
+	// Check for duplicate content (status-only changes) - use shared deduplication logic
+	if m.isDuplicateContent(ctx, sanitized, id) {
+		m.Log.V(1).Info("Skipping duplicate sanitized content (likely status-only change)",
+			"identifier", id.String())
+		metrics.WatchDuplicatesSkippedTotal.Add(ctx, 1)
+		return
+	}
 
 	// Attempt correlation enrichment
 	userInfo := m.tryEnrichFromCorrelation(ctx, sanitized, id, string(op))

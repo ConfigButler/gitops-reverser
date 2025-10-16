@@ -142,11 +142,9 @@ func main() {
 		"ttl", correlationTTL,
 		"maxEntries", correlationMaxEntries)
 
-	// Webhook handler
+	// Webhook handler (correlation storage only - stores ALL resources, watch filters by rules)
 	eventHandler := &webhookhandler.EventHandler{
 		Client:                     mgr.GetClient(),
-		RuleStore:                  ruleStore,
-		EventQueue:                 eventQueue,
 		CorrelationStore:           correlationStore,
 		EnableVerboseAdmissionLogs: cfg.enableVerboseAdmissionLogs,
 	}
