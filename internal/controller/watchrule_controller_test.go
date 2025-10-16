@@ -61,6 +61,20 @@ var _ = Describe("WatchRule Controller", func() {
 			}
 			Expect(k8sClient.Create(ctx, gitRepoConfig)).To(Succeed())
 
+			By("creating a GitDestination referencing the GitRepoConfig")
+			dest := &configbutleraiv1alpha1.GitDestination{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-destination",
+					Namespace: "default",
+				},
+				Spec: configbutleraiv1alpha1.GitDestinationSpec{
+					RepoRef:    configbutleraiv1alpha1.NamespacedName{Name: "test-repo-config"},
+					Branch:     "main",
+					BaseFolder: "default/test",
+				},
+			}
+			Expect(k8sClient.Create(ctx, dest)).To(Succeed())
+
 			By("creating the custom resource for the Kind WatchRule")
 			err := k8sClient.Get(ctx, typeNamespacedName, watchrule)
 			if err != nil && errors.IsNotFound(err) {
@@ -70,7 +84,7 @@ var _ = Describe("WatchRule Controller", func() {
 						Namespace: "default",
 					},
 					Spec: configbutleraiv1alpha1.WatchRuleSpec{
-						GitRepoConfigRef: configbutleraiv1alpha1.NamespacedName{Name: "test-repo-config"},
+						DestinationRef: &configbutleraiv1alpha1.NamespacedName{Name: "test-destination"},
 						Rules: []configbutleraiv1alpha1.ResourceRule{
 							{
 								Resources: []string{"Pod"},
@@ -89,6 +103,17 @@ var _ = Describe("WatchRule Controller", func() {
 
 			By("Cleanup the specific resource instance WatchRule")
 			Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
+
+			dest := &configbutleraiv1alpha1.GitDestination{}
+			err = k8sClient.Get(
+				ctx,
+				types.NamespacedName{Name: "test-destination", Namespace: "default"},
+				dest,
+			)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Cleanup the specific resource instance GitDestination")
+			Expect(k8sClient.Delete(ctx, dest)).To(Succeed())
 
 			gitRepoConfig := &configbutleraiv1alpha1.GitRepoConfig{}
 			err = k8sClient.Get(
@@ -157,14 +182,28 @@ var _ = Describe("WatchRule Controller", func() {
 			}
 			Expect(k8sClient.Status().Update(ctx, gitRepoConfig)).Should(Succeed())
 
-			By("Creating WatchRule in same namespace")
+			By("Creating GitDestination in same namespace referencing the GitRepoConfig")
+			dest := &configbutleraiv1alpha1.GitDestination{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "local-dest",
+					Namespace: "default",
+				},
+				Spec: configbutleraiv1alpha1.GitDestinationSpec{
+					RepoRef:    configbutleraiv1alpha1.NamespacedName{Name: "local-config"},
+					Branch:     "main",
+					BaseFolder: "ns/default",
+				},
+			}
+			Expect(k8sClient.Create(ctx, dest)).Should(Succeed())
+
+			By("Creating WatchRule in same namespace referencing DestinationRef")
 			watchRule := &configbutleraiv1alpha1.WatchRule{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "local-rule",
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha1.WatchRuleSpec{
-					GitRepoConfigRef: configbutleraiv1alpha1.NamespacedName{Name: "local-config"},
+					DestinationRef: &configbutleraiv1alpha1.NamespacedName{Name: "local-dest"},
 					Rules: []configbutleraiv1alpha1.ResourceRule{
 						{
 							Resources: []string{"pods"},
@@ -201,6 +240,7 @@ var _ = Describe("WatchRule Controller", func() {
 
 			// Cleanup
 			Expect(k8sClient.Delete(ctx, watchRule)).Should(Succeed())
+			Expect(k8sClient.Delete(ctx, dest)).Should(Succeed())
 			Expect(k8sClient.Delete(ctx, gitRepoConfig)).Should(Succeed())
 		})
 	})

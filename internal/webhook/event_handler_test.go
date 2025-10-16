@@ -1,3 +1,6 @@
+//go:build legacy_crd
+// +build legacy_crd
+
 /*
 SPDX-License-Identifier: Apache-2.0
 

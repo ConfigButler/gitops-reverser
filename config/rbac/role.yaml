@@ -8,11 +8,8 @@ rules:
   - ""
   resources:
   - namespaces
-  - secrets
   verbs:
   - get
-  - list
-  - watch
 - apiGroups:
   - ""
   resources:
@@ -22,6 +19,14 @@ rules:
   - list
   - patch
   - update
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - get
+  - list
   - watch
 - apiGroups:
   - configbutler.ai

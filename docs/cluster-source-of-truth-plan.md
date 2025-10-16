@@ -24,7 +24,8 @@ Current state (2025-10-16)
 - Initial List-based seed enqueues UPDATEs: [watch.Manager.seedSelectedResources()](internal/watch/manager.go:185)
 - Worker and Git pipeline reused: dispatch: [git.Worker.dispatchEvents()](internal/git/worker.go:92), process: [git.Worker.processRepoEvents()](internal/git/worker.go:178), push with retry: [git.Repo.TryPushCommits()](internal/git/git.go:181)
 - Username capture via webhook retained at /process-validating-webhook, see [cmd.main()](cmd/main.go:1) and [webhook.event_handler()](internal/webhook/event_handler.go:1)
-- Pending: orphan deletes (uncapped), GitDestination baseFolder prefixing, correlation store, periodic discovery refresh
+- Pending: orphan deletes (uncapped), correlation store, periodic discovery refresh
+- Done: GitDestination DestinationRef wiring and baseFolder prefixing (WatchRule/ClusterWatchRule → GitDestination → GitRepoConfig); write path now /{baseFolder}/{identifierPath}
 
 Dual-signal correlation design (authoritative)
 - Goal: enrich watch events with the admission username without relying on resourceVersion ordering
@@ -164,12 +165,13 @@ Backlog of parts (pick one per PR)
   - Tests:
     - Unit: API defaulting/validation; namespaced referencing to GitRepoConfig
     - Integration: resolving destination→repo (repoUrl/branch), failure on missing repo
-- [ ] BaseFolder prefix in write path
-  - Adjust the clusterwatchrule and watchrule resource to point to a GitDestination instead of a GitRepoConfig, make sure to adjust the charts/samples as well.
-  - Prefix BaseFolder before [types.ResourceIdentifier.ToGitPath()](internal/types/identifier.go:62) inside [git.Repo.generateLocalCommits()](internal/git/git.go:231)
+- [x] BaseFolder prefix in write path
+  - Implemented: WatchRule/ClusterWatchRule now reference GitDestination (DestinationRef) which resolves to GitRepoConfig; BaseFolder is propagated on events and prefixed before [types.ResourceIdentifier.ToGitPath()](internal/types/identifier.go:62) inside [git.Repo.generateLocalCommits()](internal/git/git.go:231)
+  - Controllers support DestinationRef with legacy GitRepoConfigRef fallback to keep tests green
+  - CRDs regenerated; validation updated via controller-gen; generated bases updated under config/crd/bases
   - Tests:
-    - Unit: path join correctness; guard against path traversal
-    - Integration: writes land under baseFolder; second run is no‑op
+    - Unit: path join correctness and traversal guards covered
+    - Integration: writes land under baseFolder; legacy GitRepoConfigRef path continues to operate (no-op on second run)
 - [ ] Correlation KV store (sanitize+key; enrich watch with username)
   - Webhook Put on admission: [webhook.event_handler()](internal/webhook/event_handler.go:1)
   - Watch GetAndDelete on event: [watch.handleEvent()](internal/watch/informers.go:105)

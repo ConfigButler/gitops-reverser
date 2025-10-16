@@ -201,12 +201,20 @@ func (h *EventHandler) processRuleMatches(
 
 	// Enqueue events for WatchRule matches
 	for _, rule := range matchingRules {
-		h.enqueueEvent(ctx, obj, identifier, req, rule.GitRepoConfigRef, rule.Source.Namespace)
+		h.enqueueEvent(ctx, obj, identifier, req, rule.GitRepoConfigRef, rule.Source.Namespace, rule.BaseFolder)
 	}
 
 	// Enqueue events for ClusterWatchRule matches
 	for _, clusterRule := range matchingClusterRules {
-		h.enqueueEvent(ctx, obj, identifier, req, clusterRule.GitRepoConfigRef, clusterRule.GitRepoConfigNamespace)
+		h.enqueueEvent(
+			ctx,
+			obj,
+			identifier,
+			req,
+			clusterRule.GitRepoConfigRef,
+			clusterRule.GitRepoConfigNamespace,
+			clusterRule.BaseFolder,
+		)
 	}
 }
 
@@ -218,6 +226,7 @@ func (h *EventHandler) enqueueEvent(
 	req admission.Request,
 	gitRepoConfigRef string,
 	gitRepoConfigNamespace string,
+	baseFolder string,
 ) {
 	sanitizedObj := sanitize.Sanitize(obj)
 	event := eventqueue.Event{
@@ -230,6 +239,7 @@ func (h *EventHandler) enqueueEvent(
 		},
 		GitRepoConfigRef:       gitRepoConfigRef,
 		GitRepoConfigNamespace: gitRepoConfigNamespace,
+		BaseFolder:             baseFolder,
 	}
 	h.EventQueue.Enqueue(event)
 	roleAttr := h.getPodRoleAttribute(ctx)

@@ -273,10 +273,10 @@ func (r *Repo) generateLocalCommits(ctx context.Context, events []eventqueue.Eve
 
 	for _, event := range events {
 		// Build the repository-relative file path:
-		// optional baseFolder prefix + identifier path.
+		// optional event-scoped baseFolder prefix + identifier path.
 		filePath := event.Identifier.ToGitPath()
-		if r.baseFolder != "" {
-			if bf := sanitizeBaseFolder(r.baseFolder); bf != "" {
+		if event.BaseFolder != "" {
+			if bf := sanitizeBaseFolder(event.BaseFolder); bf != "" {
 				filePath = path.Join(bf, filePath)
 			}
 		}

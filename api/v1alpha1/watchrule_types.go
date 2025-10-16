@@ -40,17 +40,14 @@ const (
 // WatchRuleSpec defines the desired state of WatchRule.
 // WatchRule watches resources ONLY within its own namespace.
 type WatchRuleSpec struct {
-	// GitRepoConfigRef references the GitRepoConfig to use for this rule.
-	// If namespace is not specified, defaults to the WatchRule's namespace.
-	// +required
-	GitRepoConfigRef NamespacedName `json:"gitRepoConfigRef"`
 
-	// ObjectSelector filters resources by labels (like objectSelector in webhooks).
-	// If specified, only resources matching this selector are watched.
-	// Use matchExpressions with NotIn/DoesNotExist operators to exclude resources.
-	// This follows Kubernetes standard label selector semantics.
+	// DestinationRef references a GitDestination that encapsulates repo+branch+baseFolder.
+	// When set, DestinationRef takes precedence over GitRepoConfigRef.
+	// If namespace is not specified, defaults to the WatchRule's namespace.
+	// Pointer is used so that omitempty truly omits the field when unset to avoid
+	// API validation on zero-value structs.
 	// +optional
-	ObjectSelector *metav1.LabelSelector `json:"objectSelector,omitempty"`
+	DestinationRef *NamespacedName `json:"destinationRef,omitempty"`
 
 	// Rules define which resources to watch within this namespace.
 	// Multiple rules create a logical OR - a resource matching ANY rule is watched.
@@ -122,7 +119,7 @@ type WatchRuleStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Namespaced
-// +kubebuilder:printcolumn:name="GitRepoConfig",type=string,JSONPath=`.spec.gitRepoConfigRef`
+// +kubebuilder:printcolumn:name="Destination",type=string,JSONPath=`.spec.destinationRef.name`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 

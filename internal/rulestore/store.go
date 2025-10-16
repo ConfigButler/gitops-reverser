@@ -26,8 +26,6 @@ import (
 	"strings"
 	"sync"
 
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -38,16 +36,15 @@ import (
 type CompiledRule struct {
 	// Source is the NamespacedName of the WatchRule CR.
 	Source types.NamespacedName
-	// GitRepoConfigRef is the name of the GitRepoConfig to use.
+	// GitRepoConfigRef is the name of the resolved GitRepoConfig to use.
 	GitRepoConfigRef string
-	// GitRepoConfigNamespace is the namespace containing the GitRepoConfig.
-	// For WatchRule, this is the same as Source.Namespace.
+	// GitRepoConfigNamespace is the namespace containing the resolved GitRepoConfig.
 	GitRepoConfigNamespace string
+	// BaseFolder is the POSIX-like relative prefix under which files are written for this rule's destination.
+	BaseFolder string
 	// IsClusterScoped indicates if this rule watches cluster-scoped resources.
 	// Always false for WatchRule (namespace-scoped).
 	IsClusterScoped bool
-	// ObjectSelector is the label selector for filtering resources.
-	ObjectSelector *metav1.LabelSelector
 	// ResourceRules contains the compiled resource matching rules.
 	ResourceRules []CompiledResourceRule
 }
@@ -68,15 +65,17 @@ type CompiledResourceRule struct {
 type CompiledClusterRule struct {
 	// Source is the NamespacedName of the ClusterWatchRule CR (namespace will be empty).
 	Source types.NamespacedName
-	// GitRepoConfigRef is the name of the GitRepoConfig to use.
+	// GitRepoConfigRef is the name of the resolved GitRepoConfig to use.
 	GitRepoConfigRef string
-	// GitRepoConfigNamespace is the namespace containing the GitRepoConfig.
+	// GitRepoConfigNamespace is the namespace containing the resolved GitRepoConfig.
 	GitRepoConfigNamespace string
+	// BaseFolder is the POSIX-like relative prefix under which files are written for this rule's destination.
+	BaseFolder string
 	// Rules contains the compiled cluster resource rules with per-rule scope.
 	Rules []CompiledClusterResourceRule
 }
 
-// CompiledClusterResourceRule represents a single cluster resource rule with scope and namespace selector.
+// CompiledClusterResourceRule represents a single cluster resource rule with scope.
 type CompiledClusterResourceRule struct {
 	// Operations specifies which operations trigger this rule.
 	Operations []configv1alpha1.OperationType
@@ -88,8 +87,6 @@ type CompiledClusterResourceRule struct {
 	Resources []string
 	// Scope indicates whether this rule watches Cluster or Namespaced resources.
 	Scope configv1alpha1.ResourceScope
-	// NamespaceSelector filters which namespaces to watch (only for Namespaced scope).
-	NamespaceSelector *metav1.LabelSelector
 }
 
 // RuleStore holds the in-memory representation of all active watch rules.
@@ -109,6 +106,8 @@ func NewStore() *RuleStore {
 }
 
 // AddOrUpdateWatchRule adds or updates a namespace-scoped WatchRule in the store.
+// Legacy pathway (without DestinationRef resolution) retained for compatibility;
+// BaseFolder will be empty and GitRepoConfigRef taken from the CR (if present).
 func (s *RuleStore) AddOrUpdateWatchRule(rule configv1alpha1.WatchRule) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -118,18 +117,52 @@ func (s *RuleStore) AddOrUpdateWatchRule(rule configv1alpha1.WatchRule) {
 		Namespace: rule.Namespace,
 	}
 
-	// Default GitRepoConfig namespace to WatchRule's namespace if not specified
-	gitRepoConfigNamespace := rule.Spec.GitRepoConfigRef.Namespace
-	if gitRepoConfigNamespace == "" {
-		gitRepoConfigNamespace = rule.Namespace
+	compiled := CompiledRule{
+		Source:                 key,
+		GitRepoConfigRef:       "",    // legacy path removed in CRD; left empty
+		GitRepoConfigNamespace: "",    // legacy path removed
+		BaseFolder:             "",    // no destination provided via legacy path
+		IsClusterScoped:        false, // WatchRule is namespace-scoped
+		ResourceRules:          make([]CompiledResourceRule, 0, len(rule.Spec.Rules)),
+	}
+
+	for _, r := range rule.Spec.Rules {
+		compiled.ResourceRules = append(compiled.ResourceRules, CompiledResourceRule{
+			Operations:  r.Operations,
+			APIGroups:   r.APIGroups,
+			APIVersions: r.APIVersions,
+			Resources:   r.Resources,
+		})
+	}
+
+	s.rules[key] = compiled
+}
+
+// AddOrUpdateWatchRuleResolved adds or updates a WatchRule with a pre-resolved destination.
+// Parameters:
+//   - gitRepoConfigName: the name of the resolved GitRepoConfig
+//   - gitRepoConfigNamespace: the namespace containing the resolved GitRepoConfig
+//   - baseFolder: POSIX-like relative path prefix for writes (sanitized upstream)
+func (s *RuleStore) AddOrUpdateWatchRuleResolved(
+	rule configv1alpha1.WatchRule,
+	gitRepoConfigName string,
+	gitRepoConfigNamespace string,
+	baseFolder string,
+) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	key := types.NamespacedName{
+		Name:      rule.Name,
+		Namespace: rule.Namespace,
 	}
 
 	compiled := CompiledRule{
 		Source:                 key,
-		GitRepoConfigRef:       rule.Spec.GitRepoConfigRef.Name,
+		GitRepoConfigRef:       gitRepoConfigName,
 		GitRepoConfigNamespace: gitRepoConfigNamespace,
-		IsClusterScoped:        false, // WatchRule is namespace-scoped
-		ObjectSelector:         rule.Spec.ObjectSelector,
+		BaseFolder:             baseFolder,
+		IsClusterScoped:        false,
 		ResourceRules:          make([]CompiledResourceRule, 0, len(rule.Spec.Rules)),
 	}
 
@@ -146,12 +179,13 @@ func (s *RuleStore) AddOrUpdateWatchRule(rule configv1alpha1.WatchRule) {
 }
 
 // AddOrUpdate is deprecated. Use AddOrUpdateWatchRule instead.
-// Kept temporarily for compatibility during migration.
 func (s *RuleStore) AddOrUpdate(rule configv1alpha1.WatchRule) {
 	s.AddOrUpdateWatchRule(rule)
 }
 
 // AddOrUpdateClusterWatchRule adds or updates a cluster-scoped ClusterWatchRule in the store.
+// Legacy pathway (without DestinationRef resolution) retained for compatibility;
+// BaseFolder will be empty and GitRepoConfigRef taken from the CR (if present).
 func (s *RuleStore) AddOrUpdateClusterWatchRule(rule configv1alpha1.ClusterWatchRule) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -163,19 +197,59 @@ func (s *RuleStore) AddOrUpdateClusterWatchRule(rule configv1alpha1.ClusterWatch
 
 	compiled := CompiledClusterRule{
 		Source:                 key,
-		GitRepoConfigRef:       rule.Spec.GitRepoConfigRef.Name,
-		GitRepoConfigNamespace: rule.Spec.GitRepoConfigRef.Namespace,
+		GitRepoConfigRef:       "", // legacy field removed from CRD
+		GitRepoConfigNamespace: "",
+		BaseFolder:             "", // legacy path has no destination
 		Rules:                  make([]CompiledClusterResourceRule, 0, len(rule.Spec.Rules)),
 	}
 
 	for _, r := range rule.Spec.Rules {
 		compiled.Rules = append(compiled.Rules, CompiledClusterResourceRule{
-			Operations:        r.Operations,
-			APIGroups:         r.APIGroups,
-			APIVersions:       r.APIVersions,
-			Resources:         r.Resources,
-			Scope:             r.Scope,
-			NamespaceSelector: r.NamespaceSelector,
+			Operations:  r.Operations,
+			APIGroups:   r.APIGroups,
+			APIVersions: r.APIVersions,
+			Resources:   r.Resources,
+			Scope:       r.Scope,
+		})
+	}
+
+	s.clusterRules[key] = compiled
+}
+
+// AddOrUpdateClusterWatchRuleResolved adds or updates a ClusterWatchRule with a pre-resolved destination.
+// Parameters:
+//   - gitRepoConfigName: the name of the resolved GitRepoConfig
+//   - gitRepoConfigNamespace: the namespace containing the resolved GitRepoConfig
+//   - baseFolder: POSIX-like relative path prefix for writes (sanitized upstream)
+func (s *RuleStore) AddOrUpdateClusterWatchRuleResolved(
+	rule configv1alpha1.ClusterWatchRule,
+	gitRepoConfigName string,
+	gitRepoConfigNamespace string,
+	baseFolder string,
+) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	key := types.NamespacedName{
+		Name:      rule.Name,
+		Namespace: "", // cluster-scoped
+	}
+
+	compiled := CompiledClusterRule{
+		Source:                 key,
+		GitRepoConfigRef:       gitRepoConfigName,
+		GitRepoConfigNamespace: gitRepoConfigNamespace,
+		BaseFolder:             baseFolder,
+		Rules:                  make([]CompiledClusterResourceRule, 0, len(rule.Spec.Rules)),
+	}
+
+	for _, r := range rule.Spec.Rules {
+		compiled.Rules = append(compiled.Rules, CompiledClusterResourceRule{
+			Operations:  r.Operations,
+			APIGroups:   r.APIGroups,
+			APIVersions: r.APIVersions,
+			Resources:   r.Resources,
+			Scope:       r.Scope,
 		})
 	}
 
@@ -198,14 +272,14 @@ func (s *RuleStore) DeleteClusterWatchRule(key types.NamespacedName) {
 
 // GetMatchingRules returns all rules that match the given resource with enhanced filtering.
 // Parameters:
-//   - obj: The Kubernetes object to match
+//   - obj: The Kubernetes object to match (unused now; kept for signature stability)
 //   - resourcePlural: The plural form of the resource (e.g., "pods", "deployments")
 //   - operation: The operation type (CREATE, UPDATE, DELETE)
 //   - apiGroup: The API group of the resource (empty string for core API)
 //   - apiVersion: The API version of the resource
 //   - isClusterScoped: Whether the resource is cluster-scoped
 func (s *RuleStore) GetMatchingRules(
-	obj client.Object,
+	_ client.Object,
 	resourcePlural string,
 	operation configv1alpha1.OperationType,
 	apiGroup string,
@@ -223,11 +297,10 @@ func (s *RuleStore) GetMatchingRules(
 		}
 
 		// For namespace-scoped rules, check namespace match
-		if !rule.IsClusterScoped && obj.GetNamespace() != rule.Source.Namespace {
-			continue // WatchRule only watches its own namespace
-		}
+		// Note: WatchRule only watches its own namespace; caller is responsible for namespace scoping
+		// based on Source.Namespace when using this result.
 
-		if rule.matches(obj, resourcePlural, operation, apiGroup, apiVersion) {
+		if rule.matches(resourcePlural, operation, apiGroup, apiVersion) {
 			matchingRules = append(matchingRules, rule)
 		}
 	}
@@ -242,16 +315,14 @@ func (s *RuleStore) GetMatchingRules(
 //   - apiGroup: The API group of the resource (empty string for core API)
 //   - apiVersion: The API version of the resource
 //   - isClusterScoped: Whether the resource is cluster-scoped
-//   - namespaceLabels: Labels of the namespace (for namespaced resources only)
-//
-
+//   - namespaceLabels: Labels of the namespace (ignored in simplified MVP)
 func (s *RuleStore) GetMatchingClusterRules(
 	resourcePlural string,
 	operation configv1alpha1.OperationType,
 	apiGroup string,
 	apiVersion string,
 	isClusterScoped bool,
-	namespaceLabels map[string]string,
+	_ map[string]string,
 ) []CompiledClusterRule {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -265,7 +336,6 @@ func (s *RuleStore) GetMatchingClusterRules(
 			apiGroup,
 			apiVersion,
 			isClusterScoped,
-			namespaceLabels,
 		) {
 			matchingRules = append(matchingRules, clusterRule)
 		}
@@ -281,10 +351,9 @@ func (s *RuleStore) clusterRuleMatches(
 	apiGroup string,
 	apiVersion string,
 	isClusterScoped bool,
-	namespaceLabels map[string]string,
 ) bool {
 	for _, rule := range clusterRule.Rules {
-		if s.ruleMatchesScope(rule, isClusterScoped, namespaceLabels) &&
+		if s.ruleMatchesScope(rule, isClusterScoped) &&
 			rule.matchesCluster(resourcePlural, operation, apiGroup, apiVersion) {
 			return true
 		}
@@ -293,47 +362,27 @@ func (s *RuleStore) clusterRuleMatches(
 }
 
 // ruleMatchesScope checks if a rule's scope matches the resource scope.
+// Simplified MVP: Namespaced scope matches all namespaces (no NamespaceSelector).
 func (s *RuleStore) ruleMatchesScope(
 	rule CompiledClusterResourceRule,
 	isClusterScoped bool,
-	namespaceLabels map[string]string,
 ) bool {
 	// For cluster-scoped resources, only match Cluster scope rules
 	if isClusterScoped {
 		return rule.Scope == configv1alpha1.ResourceScopeCluster
 	}
 
-	// For namespaced resources, only match Namespaced scope rules
-	if rule.Scope != configv1alpha1.ResourceScopeNamespaced {
-		return false
-	}
-
-	// Check namespace selector for Namespaced scope
-	if rule.NamespaceSelector != nil {
-		selector, err := metav1.LabelSelectorAsSelector(rule.NamespaceSelector)
-		if err != nil {
-			return false // Invalid selector, skip
-		}
-		return selector.Matches(labels.Set(namespaceLabels))
-	}
-
-	// If no selector, matches all namespaces
-	return true
+	// For namespaced resources, match Namespaced scope (all namespaces)
+	return rule.Scope == configv1alpha1.ResourceScopeNamespaced
 }
 
-// matches checks if a single rule matches the given object and filters.
+// matches checks if a single rule matches the given filters.
 func (r *CompiledRule) matches(
-	obj client.Object,
 	resourcePlural string,
 	operation configv1alpha1.OperationType,
 	apiGroup string,
 	apiVersion string,
 ) bool {
-	// Check object selector (label-based filtering)
-	if !r.matchesObjectSelector(obj) {
-		return false
-	}
-
 	// Check if any resource rule matches (logical OR)
 	for _, rule := range r.ResourceRules {
 		if rule.matches(resourcePlural, operation, apiGroup, apiVersion) {
@@ -342,20 +391,6 @@ func (r *CompiledRule) matches(
 	}
 
 	return false
-}
-
-// matchesObjectSelector checks if the object matches the label selector.
-func (r *CompiledRule) matchesObjectSelector(obj client.Object) bool {
-	if r.ObjectSelector == nil {
-		return true // No selector = match all
-	}
-
-	selector, err := metav1.LabelSelectorAsSelector(r.ObjectSelector)
-	if err != nil {
-		return false // Invalid selector = exclude for safety
-	}
-
-	return selector.Matches(labels.Set(obj.GetLabels()))
 }
 
 // matches checks if a resource rule matches the given filters.
@@ -606,8 +641,6 @@ func deepCopyCompiledRule(in CompiledRule) CompiledRule {
 		cp.ResourceRules = make([]CompiledResourceRule, len(in.ResourceRules))
 		copy(cp.ResourceRules, in.ResourceRules)
 	}
-	// ObjectSelector is a pointer to a metav1.LabelSelector. We do a shallow copy of the pointer;
-	// consumers should not mutate it. If a deep copy is needed later, we can add it here.
 	return cp
 }
 

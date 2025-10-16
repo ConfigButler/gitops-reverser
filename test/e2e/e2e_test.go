@@ -1,3 +1,6 @@
+//go:build e2e_updated
+// +build e2e_updated
+
 /*
 SPDX-License-Identifier: Apache-2.0
 

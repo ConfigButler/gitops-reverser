@@ -46,6 +46,10 @@ type Event struct {
 
 	// GitRepoConfigNamespace is the namespace of the GitRepoConfig to use for this event.
 	GitRepoConfigNamespace string
+
+	// BaseFolder is an optional POSIX-like relative path prefix under which files will be written.
+	// When empty, files are written at the repository root using the identifier path layout.
+	BaseFolder string
 }
 
 // UserInfo contains relevant user information for commit messages.
