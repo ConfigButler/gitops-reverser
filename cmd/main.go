@@ -99,6 +99,12 @@ func main() {
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr), "unable to create controller", "controller", "GitRepoConfig")
 
+	// GitDestination controller
+	fatalIfErr((&controller.GitDestinationReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr), "unable to create controller", "controller", "GitDestination")
+
 	// Initialize rule store and event queue for webhook handler
 	ruleStore := rulestore.NewStore()
 	eventQueue := eventqueue.NewQueue()

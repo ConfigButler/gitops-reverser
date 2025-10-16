@@ -4,4 +4,5 @@ resources:
   - configbutler.ai_v1alpha1_gitrepoconfig_with_accesspolicy.yaml
   - configbutler.ai_v1alpha1_watchrule.yaml
   - configbutler.ai_v1alpha1_clusterwatchrule.yaml
+  - configbutler.ai_v1alpha1_gitdestination.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples

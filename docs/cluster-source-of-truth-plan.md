@@ -157,13 +157,15 @@ Per delivery checklist (tick all before merge)
 - [ ] Links verified: function/file anchors remain clickable (e.g., [watch.Manager.seedSelectedResources()](internal/watch/manager.go:185), [types.ResourceIdentifier.ToGitPath()](internal/types/identifier.go:62))
 
 Backlog of parts (pick one per PR)
-- [ ] GitDestination CRD (prioritized)
+- [x] GitDestination CRD (prioritized)
   - Types + CRD: repoRef, branch, baseFolder only (no exclusiveMode)
+  - Use kubebuilder to scaffold!
   - Samples in charts/examples
   - Tests:
     - Unit: API defaulting/validation; namespaced referencing to GitRepoConfig
     - Integration: resolving destination→repo (repoUrl/branch), failure on missing repo
 - [ ] BaseFolder prefix in write path
+  - Adjust the clusterwatchrule and watchrule resource to point to a GitDestination instead of a GitRepoConfig, make sure to adjust the charts/samples as well.
   - Prefix BaseFolder before [types.ResourceIdentifier.ToGitPath()](internal/types/identifier.go:62) inside [git.Repo.generateLocalCommits()](internal/git/git.go:231)
   - Tests:
     - Unit: path join correctness; guard against path traversal
@@ -193,27 +195,6 @@ Backlog of parts (pick one per PR)
   - Chart args wired for existing flags; RBAC allow desired‑state baseline + events
   - Tests:
     - E2E: controller starts with flags; can list/watch baseline resources
-
-Work‑order template (paste into your request to execute one part)
-- Title: Implement &lt;Part Name&gt; (single‑scope PR)
-- Code edits:
-  - Files/functions to touch:
-    - (e.g.) [git.Repo.generateLocalCommits()](internal/git/git.go:231), [watch.handleEvent()](internal/watch/informers.go:105), [webhook.event_handler()](internal/webhook/event_handler.go:1)
-  - Acceptance behavior:
-    - Describe the precise observable outcome for this part
-- Tests (deliver with PR):
-  - Unit:
-    - List concrete cases and expected outcomes
-  - Integration:
-    - Describe the scenario across components and expected repository side‑effects
-  - E2E (when applicable):
-    - Outline the end‑to‑end behavior to validate in [test.e2e](test/e2e/e2e_test.go:1)
-- Docs:
-  - Update this plan (check off the backlog item) and the spec (scope and anchors)
-- Gates:
-  - make lint; make test (&gt;90% coverage for new code); make test-e2e (Docker/Kind)
-- Link check:
-  - Verify all anchors in this plan/spec remain valid (e.g., [watch.startDynamicInformers()](internal/watch/informers.go:48), [git.Worker.processRepoEvents()](internal/git/worker.go:178))
 
 Usage pattern
 - Pick one unchecked backlog item

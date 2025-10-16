@@ -5,9 +5,10 @@ resources:
   - bases/configbutler.ai_gitrepoconfigs.yaml
   - bases/configbutler.ai_watchrules.yaml
   - bases/configbutler.ai_clusterwatchrules.yaml
+  - bases/configbutler.ai_gitdestinations.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
-patches:
+patches: []
 # [WEBHOOK] To enable webhook, uncomment all the sections with [WEBHOOK] prefix.
 # patches here are for enabling the conversion webhook for each CRD
 # +kubebuilder:scaffold:crdkustomizewebhookpatch
