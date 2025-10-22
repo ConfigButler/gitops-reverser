@@ -1,3 +1,7 @@
+> **📋 DOCUMENT STATUS: REFERENCE**
+> **Current Focus:** See [DESIGN_STATUS.md](DESIGN_STATUS.md) for implementation status and [IMPLEMENTATION_ROADMAP.md](IMPLEMENTATION_ROADMAP.md) for active work.
+> **Last Updated:** 2025-10-20
+
 # GitOps Reverser: Cluster-as-Source-of-Truth — concise plan
 
 Purpose

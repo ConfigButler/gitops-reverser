@@ -81,21 +81,33 @@ func (m *Manager) gvrFromCompiledRule(
 ) []GVR {
 	var out []GVR
 	for _, rr := range cr.ResourceRules {
-		groups, ok := singleConcrete(rr.APIGroups)
+		// Default empty apiGroups to core API
+		groups := rr.APIGroups
+		if len(groups) == 0 {
+			groups = []string{""} // Core API group
+		}
+		groupsConcrete, ok := singleConcrete(groups)
 		if !ok {
 			continue
 		}
-		versions, ok := singleConcrete(rr.APIVersions)
+
+		// Default empty apiVersions to v1 (most common for core resources)
+		versions := rr.APIVersions
+		if len(versions) == 0 {
+			versions = []string{"v1"} // Default version for core API
+		}
+		versionsConcrete, ok := singleConcrete(versions)
 		if !ok {
 			continue
 		}
+
 		// Concrete resources only (skip "*" and subresources)
 		for _, res := range rr.Resources {
 			r := normalizeResource(res)
 			if r == "" || r == "*" || strings.Contains(r, "/") {
 				continue
 			}
-			addGVR(groups[0], versions[0], r, scope, &out, seen)
+			addGVR(groupsConcrete[0], versionsConcrete[0], r, scope, &out, seen)
 		}
 	}
 	return out
@@ -107,33 +119,48 @@ func gvrFromClusterRule(
 	seen map[string]struct{},
 ) []GVR {
 	var out []GVR
-	groups, ok := singleConcrete(rr.APIGroups)
+
+	// Default empty apiGroups to core API
+	groups := rr.APIGroups
+	if len(groups) == 0 {
+		groups = []string{""} // Core API group
+	}
+	groupsConcrete, ok := singleConcrete(groups)
 	if !ok {
 		return out
 	}
-	versions, ok := singleConcrete(rr.APIVersions)
+
+	// Default empty apiVersions to v1
+	versions := rr.APIVersions
+	if len(versions) == 0 {
+		versions = []string{"v1"} // Default version for core API
+	}
+	versionsConcrete, ok := singleConcrete(versions)
 	if !ok {
 		return out
 	}
+
 	for _, res := range rr.Resources {
 		r := normalizeResource(res)
 		if r == "" || r == "*" || strings.Contains(r, "/") {
 			continue
 		}
-		addGVR(groups[0], versions[0], r, rr.Scope, &out, seen)
+		addGVR(groupsConcrete[0], versionsConcrete[0], r, rr.Scope, &out, seen)
 	}
 	return out
 }
 
 // singleConcrete returns a single-element slice if the input means a concrete set:
 // - len==1 AND value != "*"
+// - Note: Empty string "" is valid for apiGroup (means core API), so it's considered concrete
 // - len==0 is treated as wildcard (not concrete) and returns false.
 func singleConcrete(vals []string) ([]string, bool) {
 	if len(vals) != 1 {
 		return nil, false
 	}
 	v := strings.TrimSpace(vals[0])
-	if v == "*" || v == "" {
+	// Only reject wildcard "*", not empty string (empty string is valid for core API group)
+	if v == "*" {
 		return nil, false
 	}
 	return []string{v}, true

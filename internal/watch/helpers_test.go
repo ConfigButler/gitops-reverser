@@ -38,7 +38,8 @@ func TestSingleConcrete(t *testing.T) {
 		{name: "single value", in: []string{"apps"}, wantOK: true, wantVal: "apps"},
 		{name: "star wildcard", in: []string{"*"}, wantOK: false},
 		{name: "empty slice", in: []string{}, wantOK: false},
-		{name: "empty string", in: []string{""}, wantOK: false},
+		// Empty string is valid (represents core API group)
+		{name: "empty string for core API", in: []string{""}, wantOK: true, wantVal: ""},
 	}
 
 	for _, tt := range tests {

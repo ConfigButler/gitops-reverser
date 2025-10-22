@@ -20,13 +20,9 @@ package watch
 
 import (
 	"context"
-	"time"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/client-go/dynamic"
-	"k8s.io/client-go/dynamic/dynamicinformer"
 	"k8s.io/client-go/tools/cache"
 
 	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
@@ -36,48 +32,8 @@ import (
 	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
-// Lint-friendly constants.
-const (
-	defaultResync = 0 * time.Second
-)
-
-// startDynamicInformers computes requested GVRs from rules, filters to those discoverable on the
-// current API server (list+watch), and starts dynamic informers for them. Deltas are translated
-// into enqueue operations using the existing sanitization and RuleStore matching logic.
-// This is an MVP implementation; batching/orphan detection is handled elsewhere.
-func (m *Manager) startDynamicInformers(ctx context.Context) error {
-	cfg := m.restConfig()
-	if cfg == nil {
-		// In tests without a running control plane this may be nil; no-op.
-		return nil
-	}
-	client, err := dynamic.NewForConfig(cfg)
-	if err != nil {
-		return err
-	}
-
-	// Aggregate and filter GVRs
-	requested := m.ComputeRequestedGVRs()
-	discoverable := m.FilterDiscoverableGVRs(ctx, requested)
-	if len(discoverable) == 0 {
-		return nil
-	}
-
-	// Shared factory with no resync; we rely on watch events
-	factory := dynamicinformer.NewDynamicSharedInformerFactory(client, defaultResync)
-
-	// Register informers per GVR
-	for _, g := range discoverable {
-		resource := schema.GroupVersionResource{Group: g.Group, Version: g.Version, Resource: g.Resource}
-		informer := factory.ForResource(resource).Informer()
-		m.addHandlers(informer, g)
-	}
-
-	// Start informers and wait for cache sync
-	factory.Start(ctx.Done())
-	factory.WaitForCacheSync(ctx.Done())
-	return nil
-}
+// Note: startDynamicInformers removed - replaced by startInformersForGVRs in manager.go
+// which provides better lifecycle management per GVR.
 
 // addHandlers wires add/update/delete handlers for a single GVR to enqueue events.
 func (m *Manager) addHandlers(inf cache.SharedIndexInformer, g GVR) {
@@ -205,9 +161,5 @@ func toUnstructuredFromInformer(obj interface{}) *unstructured.Unstructured {
 	return nil
 }
 
-// Replace the existing configmap polling with dynamic informers when available.
-// This keeps the MVP polling in place while we roll out informers progressively.
-func (m *Manager) maybeStartInformers(ctx context.Context) {
-	// Best-effort; errors are logged at the call site if needed.
-	_ = m.startDynamicInformers(ctx)
-}
+// Note: maybeStartInformers removed - replaced by ReconcileForRuleChange
+// which is called explicitly by controllers when rules change.

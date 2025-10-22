@@ -1,3 +1,7 @@
+> **📜 DOCUMENT STATUS: AUTHORITATIVE SPECIFICATION**
+> **This is the definitive MVP specification. Implementation tracked in [DESIGN_STATUS.md](DESIGN_STATUS.md).**
+> **Last Updated:** 2025-10-20
+
 # GitOps Reverser: Cluster-as-Source-of-Truth — concise specification (MVP)
 
 Scope
@@ -124,7 +128,10 @@ References (authoritative anchors)
 - Identifier mapping: [types.ResourceIdentifier.ToGitPath()](internal/types/identifier.go:62)
 - Webhook assets: [charts.validating-webhook](charts/gitops-reverser/templates/validating-webhook.yaml:1), [config.webhook kustomization](config/webhook/kustomization.yaml:1)
 
-Status marker (2025-10-16)
-- Watch ingestion active with dynamic informers; seed enqueues UPDATEs
-- Validating webhook retained permanently for username capture; leader-only, FailurePolicy=Ignore
-- Fixed 1 MiB batch bytes trigger; deletes uncapped; correlation design specified (sanitize+KV) with tests outlined; ownership and access policy explicitly out of scope
+Status marker (2025-10-20)
+- ✅ Core architecture implemented: List+Watch, webhook correlation, Git operations
+- ⚠️ Dynamic informers: Partial (starts at pod startup, needs controller integration)
+- ✅ Fixed 1 MiB batching, uncapped deletes, 91.6% correlation test coverage
+- 🚧 **In Progress:** Controller→WatchManager integration for dynamic reconciliation (see IMPLEMENTATION_ROADMAP.md)
+- ✅ Single-pod MVP documented; multi-pod coordination is future work
+- ✅ Ownership and access policy explicitly out of scope per MVP

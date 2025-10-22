@@ -119,20 +119,6 @@ func main() {
 	ruleStore := rulestore.NewStore()
 	eventQueue := eventqueue.NewQueue()
 
-	// WatchRule controller
-	fatalIfErr((&controller.WatchRuleReconciler{
-		Client:    mgr.GetClient(),
-		Scheme:    mgr.GetScheme(),
-		RuleStore: ruleStore,
-	}).SetupWithManager(mgr), "unable to create controller", "controller", "WatchRule")
-
-	// ClusterWatchRule controller
-	fatalIfErr((&controller.ClusterWatchRuleReconciler{
-		Client:    mgr.GetClient(),
-		Scheme:    mgr.GetScheme(),
-		RuleStore: ruleStore,
-	}).SetupWithManager(mgr), "unable to create controller", "controller", "ClusterWatchRule")
-
 	// Initialize correlation store for webhook→watch enrichment
 	correlationStore := correlation.NewStore(correlationTTL, correlationMaxEntries)
 	correlationStore.SetEvictionCallback(func() {
@@ -141,6 +127,31 @@ func main() {
 	setupLog.Info("Correlation store initialized",
 		"ttl", correlationTTL,
 		"maxEntries", correlationMaxEntries)
+
+	// Watch ingestion manager (create early so controllers can reference it)
+	watchMgr := &watch.Manager{
+		Client:           mgr.GetClient(),
+		Log:              ctrl.Log.WithName("watch"),
+		RuleStore:        ruleStore,
+		EventQueue:       eventQueue,
+		CorrelationStore: correlationStore,
+	}
+
+	// WatchRule controller (with WatchManager reference for dynamic reconciliation)
+	fatalIfErr((&controller.WatchRuleReconciler{
+		Client:       mgr.GetClient(),
+		Scheme:       mgr.GetScheme(),
+		RuleStore:    ruleStore,
+		WatchManager: watchMgr,
+	}).SetupWithManager(mgr), "unable to create controller", "controller", "WatchRule")
+
+	// ClusterWatchRule controller (with WatchManager reference for dynamic reconciliation)
+	fatalIfErr((&controller.ClusterWatchRuleReconciler{
+		Client:       mgr.GetClient(),
+		Scheme:       mgr.GetScheme(),
+		RuleStore:    ruleStore,
+		WatchManager: watchMgr,
+	}).SetupWithManager(mgr), "unable to create controller", "controller", "ClusterWatchRule")
 
 	// Webhook handler (correlation storage only - stores ALL resources, watch filters by rules)
 	eventHandler := &webhookhandler.EventHandler{
@@ -168,14 +179,8 @@ func main() {
 	fatalIfErr(mgr.Add(gitWorker), "unable to add git worker to manager")
 	setupLog.Info("Git worker added to manager")
 
-	// Watch ingestion manager (always enabled - cluster-as-source-of-truth)
-	watchMgr := &watch.Manager{
-		Client:           mgr.GetClient(),
-		Log:              ctrl.Log.WithName("watch"),
-		RuleStore:        ruleStore,
-		EventQueue:       eventQueue,
-		CorrelationStore: correlationStore,
-	}
+	// Setup watch manager (must be after controllers are set up)
+	fatalIfErr(watchMgr.SetupWithManager(mgr), "unable to setup watch ingestion manager")
 	fatalIfErr(mgr.Add(watchMgr), "unable to add watch ingestion manager")
 	setupLog.Info("Watch ingestion manager added (cluster-as-source-of-truth mode)")
 

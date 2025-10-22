@@ -51,8 +51,9 @@ const (
 type WatchRuleReconciler struct {
 	client.Client
 
-	Scheme    *runtime.Scheme
-	RuleStore *rulestore.RuleStore
+	Scheme       *runtime.Scheme
+	RuleStore    *rulestore.RuleStore
+	WatchManager WatchManagerInterface
 }
 
 // +kubebuilder:rbac:groups=configbutler.ai,resources=watchrules,verbs=get;list;watch;create;update;patch;delete
@@ -70,12 +71,22 @@ func (r *WatchRuleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	// Fetch the WatchRule instance
 	var watchRule configbutleraiv1alpha1.WatchRule
+	//nolint:nestif // Deletion handling requires nested error checks
 	if err := r.Get(ctx, req.NamespacedName, &watchRule); err != nil {
 		if client.IgnoreNotFound(err) == nil {
 			log.Info("WatchRule not found, was likely deleted", "namespacedName", req.NamespacedName)
 			// Resource was deleted. Remove it from the store.
 			r.RuleStore.Delete(req.NamespacedName)
 			log.Info("WatchRule deleted, removed from store", "name", req.Name, "namespace", req.Namespace)
+
+			// Trigger WatchManager reconciliation for deletion
+			if r.WatchManager != nil {
+				if err := r.WatchManager.ReconcileForRuleChange(ctx); err != nil {
+					log.Error(err, "Failed to reconcile watch manager after rule deletion")
+					// Don't fail the reconciliation - log and continue
+				}
+			}
+
 			return ctrl.Result{}, nil
 		}
 		log.Error(err, "unable to fetch WatchRule", "namespacedName", req.NamespacedName)
@@ -177,6 +188,14 @@ func (r *WatchRuleReconciler) reconcileWatchRuleViaDestination(
 
 	// Add resolved entry with branch and baseFolder
 	r.RuleStore.AddOrUpdateWatchRuleResolved(*watchRule, grc.Name, grcNS, dest.Spec.Branch, dest.Spec.BaseFolder)
+
+	// Trigger WatchManager reconciliation for new/updated rule
+	if r.WatchManager != nil {
+		if err := r.WatchManager.ReconcileForRuleChange(ctx); err != nil {
+			log.Error(err, "Failed to reconcile watch manager after rule update")
+			// Don't fail the reconciliation - the rule is valid, just log the watch manager issue
+		}
+	}
 
 	log.Info("WatchRule reconciliation via GitDestination successful", "name", watchRule.Name)
 	return r.setReadyAndUpdateStatusWithDestination(ctx, watchRule, destNS)

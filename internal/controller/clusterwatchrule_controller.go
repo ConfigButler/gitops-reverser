@@ -51,8 +51,9 @@ const (
 type ClusterWatchRuleReconciler struct {
 	client.Client
 
-	Scheme    *runtime.Scheme
-	RuleStore *rulestore.RuleStore
+	Scheme       *runtime.Scheme
+	RuleStore    *rulestore.RuleStore
+	WatchManager WatchManagerInterface
 }
 
 // +kubebuilder:rbac:groups=configbutler.ai,resources=clusterwatchrules,verbs=get;list;watch;create;update;patch;delete
@@ -69,12 +70,22 @@ func (r *ClusterWatchRuleReconciler) Reconcile(ctx context.Context, req ctrl.Req
 
 	// Fetch the ClusterWatchRule instance
 	var clusterRule configbutleraiv1alpha1.ClusterWatchRule
+	//nolint:nestif // Deletion handling requires nested error checks
 	if err := r.Get(ctx, req.NamespacedName, &clusterRule); err != nil {
 		if client.IgnoreNotFound(err) == nil {
 			log.Info("ClusterWatchRule not found, was likely deleted", "name", req.Name)
 			// Resource was deleted. Remove it from the store.
 			r.RuleStore.DeleteClusterWatchRule(req.NamespacedName)
 			log.Info("ClusterWatchRule deleted, removed from store", "name", req.Name)
+
+			// Trigger WatchManager reconciliation for deletion
+			if r.WatchManager != nil {
+				if err := r.WatchManager.ReconcileForRuleChange(ctx); err != nil {
+					log.Error(err, "Failed to reconcile watch manager after cluster rule deletion")
+					// Don't fail the reconciliation - log and continue
+				}
+			}
+
 			return ctrl.Result{}, nil
 		}
 		log.Error(err, "unable to fetch ClusterWatchRule", "name", req.Name)
@@ -174,6 +185,14 @@ func (r *ClusterWatchRuleReconciler) reconcileClusterWatchRuleViaDestination(
 		dest.Spec.Branch,
 		dest.Spec.BaseFolder,
 	)
+
+	// Trigger WatchManager reconciliation for new/updated rule
+	if r.WatchManager != nil {
+		if err := r.WatchManager.ReconcileForRuleChange(ctx); err != nil {
+			log.Error(err, "Failed to reconcile watch manager after cluster rule update")
+			// Don't fail the reconciliation - the rule is valid, just log the watch manager issue
+		}
+	}
 
 	log.Info("ClusterWatchRule reconciliation via GitDestination successful", "name", clusterRule.Name)
 	return r.setReadyAndUpdateStatusWithDestination(ctx, clusterRule)
