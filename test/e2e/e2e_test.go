@@ -335,16 +335,6 @@ var _ = Describe("Manager", Ordered, func() {
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "ConfigMap creation should succeed with working webhook")
 
-			By("verifying that the controller manager logged the webhook call")
-			verifyWebhookLogged := func(g Gomega) {
-				cmd := exec.Command("kubectl", "logs", controllerPodName, "-n", namespace)
-				output, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(output).To(ContainSubstring("Received admission request"),
-					"Admission request not logged")
-			}
-			Eventually(verifyWebhookLogged).Should(Succeed())
-
 			By("waiting for webhook event metric to increment")
 			waitForMetric("sum(gitopsreverser_events_received_total) or vector(0)",
 				func(v float64) bool { return v > baselineEvents },

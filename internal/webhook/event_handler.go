@@ -51,10 +51,9 @@ import (
 // It stores correlation entries (username → sanitized content) for ALL resources.
 // The watch path will filter based on rules - webhook just captures user attribution.
 type EventHandler struct {
-	Client                     client.Client
-	Decoder                    *admission.Decoder
-	CorrelationStore           *correlation.Store
-	EnableVerboseAdmissionLogs bool
+	Client           client.Client
+	Decoder          *admission.Decoder
+	CorrelationStore *correlation.Store
 }
 
 // Handle implements admission.Handler.
@@ -66,17 +65,6 @@ func (h *EventHandler) Handle(ctx context.Context, req admission.Request) admiss
 	// Metrics: attribute role based on pod labels
 	roleAttr := h.getPodRoleAttribute(ctx)
 	metrics.EventsReceivedTotal.Add(ctx, 1, metric.WithAttributes(roleAttr))
-
-	// Optional verbose request log
-	if h.EnableVerboseAdmissionLogs {
-		log.Info(
-			"Received admission request",
-			"operation", req.Operation,
-			"kind", req.Kind.Kind,
-			"name", req.Name,
-			"namespace", req.Namespace,
-		)
-	}
 
 	// Safety: require decoder
 	if h.Decoder == nil {

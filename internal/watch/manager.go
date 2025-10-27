@@ -517,7 +517,8 @@ func (m *Manager) seedListAndProcess(
 	g GVR,
 	repoKeys map[k8stypes.NamespacedName]struct{},
 ) {
-	log := m.Log.WithName("seed").WithValues("group", g.Group, "version", g.Version, "resource", g.Resource, "scope", g.Scope)
+	log := m.Log.WithName("seed").
+		WithValues("group", g.Group, "version", g.Version, "resource", g.Resource, "scope", g.Scope)
 
 	res := schema.GroupVersionResource{Group: g.Group, Version: g.Version, Resource: g.Resource}
 

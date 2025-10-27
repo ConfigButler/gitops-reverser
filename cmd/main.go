@@ -155,9 +155,8 @@ func main() {
 
 	// Webhook handler (correlation storage only - stores ALL resources, watch filters by rules)
 	eventHandler := &webhookhandler.EventHandler{
-		Client:                     mgr.GetClient(),
-		CorrelationStore:           correlationStore,
-		EnableVerboseAdmissionLogs: cfg.enableVerboseAdmissionLogs,
+		Client:           mgr.GetClient(),
+		CorrelationStore: correlationStore,
 	}
 
 	// Create and inject decoder for generic Kubernetes resource handling
@@ -199,19 +198,18 @@ func main() {
 
 // appConfig holds parsed CLI flags and logging options.
 type appConfig struct {
-	metricsAddr                string
-	metricsCertPath            string
-	metricsCertName            string
-	metricsCertKey             string
-	webhookCertPath            string
-	webhookCertName            string
-	webhookCertKey             string
-	enableLeaderElection       bool
-	probeAddr                  string
-	secureMetrics              bool
-	enableHTTP2                bool
-	enableVerboseAdmissionLogs bool
-	zapOpts                    zap.Options
+	metricsAddr          string
+	metricsCertPath      string
+	metricsCertName      string
+	metricsCertKey       string
+	webhookCertPath      string
+	webhookCertName      string
+	webhookCertKey       string
+	enableLeaderElection bool
+	probeAddr            string
+	secureMetrics        bool
+	enableHTTP2          bool
+	zapOpts              zap.Options
 }
 
 // parseFlags parses CLI flags and returns the application configuration.
@@ -245,8 +243,6 @@ func parseFlags() appConfig {
 	flag.StringVar(&cfg.metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
 	flag.BoolVar(&cfg.enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
-	flag.BoolVar(&cfg.enableVerboseAdmissionLogs, "enable-verbose-admission-logs", false,
-		"If set, enables verbose logging for admission requests and rule matching")
 
 	cfg.zapOpts = zap.Options{
 		Development: true,
