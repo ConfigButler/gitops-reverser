@@ -203,3 +203,34 @@ func createGitDestination(name, namespace, repoConfigName, baseFolder, branch st
 	err := applyFromTemplate("test/e2e/templates/gitdestination.tmpl", data, namespace)
 	Expect(err).NotTo(HaveOccurred(), "Failed to apply GitDestination")
 }
+
+// cleanupGitDestination deletes a GitDestination resource.
+//
+//nolint:unparam // in e2e helpers we accept constant namespace ("sut"); keep signature for clarity
+func cleanupGitDestination(name, namespace string) {
+	By(fmt.Sprintf("cleaning up GitDestination '%s' in ns '%s'", name, namespace))
+	ctx := context.Background()
+	cmd := exec.CommandContext(ctx, "kubectl", "delete", "gitdestination", name,
+		"-n", namespace, "--ignore-not-found=true")
+	_, _ = utils.Run(cmd)
+}
+
+// cleanupWatchRule deletes a WatchRule resource.
+//
+//nolint:unparam // in e2e helpers we accept constant namespace ("sut"); keep signature for clarity
+func cleanupWatchRule(name, namespace string) {
+	By(fmt.Sprintf("cleaning up WatchRule '%s' in ns '%s'", name, namespace))
+	ctx := context.Background()
+	cmd := exec.CommandContext(ctx, "kubectl", "delete", "watchrule", name,
+		"-n", namespace, "--ignore-not-found=true")
+	_, _ = utils.Run(cmd)
+}
+
+// cleanupClusterWatchRule deletes a ClusterWatchRule resource.
+func cleanupClusterWatchRule(name string) {
+	By(fmt.Sprintf("cleaning up ClusterWatchRule '%s'", name))
+	ctx := context.Background()
+	cmd := exec.CommandContext(ctx, "kubectl", "delete", "clusterwatchrule", name,
+		"--ignore-not-found=true")
+	_, _ = utils.Run(cmd)
+}

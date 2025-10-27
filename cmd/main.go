@@ -172,10 +172,15 @@ func main() {
 	fatalIfErr(eventHandler.InjectDecoder(&decoder), "unable to inject decoder into webhook handler")
 	setupLog.Info("Generic unstructured decoder injected - ready to handle all Kubernetes resource types")
 
-	// Register webhook
+	// Register event correlation webhook
 	validatingWebhook := &admission.Webhook{Handler: eventHandler}
 	mgr.GetWebhookServer().Register("/process-validating-webhook", validatingWebhook)
-	setupLog.Info("Webhook handler registered", "path", "/process-validating-webhook")
+	setupLog.Info("Event correlation webhook handler registered", "path", "/process-validating-webhook")
+
+	// Register GitDestination validator webhook (prevents duplicate destinations)
+	fatalIfErr(webhookhandler.SetupGitDestinationValidatorWebhook(mgr),
+		"unable to setup GitDestination validator webhook")
+	setupLog.Info("GitDestination validator webhook registered - enforcing uniqueness constraint")
 
 	// NOTE: Old git.Worker has been replaced by WorkerManager + BranchWorker architecture
 	// The new system is already initialized above and wired through EventRouter

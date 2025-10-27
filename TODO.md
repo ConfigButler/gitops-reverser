@@ -30,3 +30,8 @@ New questions:
 * There is no time in the admission request: we should add the time received as soon as possible and also put that as commit time (if we can override that).
 * Would it be nice to add a [on-behalf-of](https://docs.github.com/en/pull-requests/committing-changes-to-your-project/creating-and-editing-commits/creating-a-commit-on-behalf-of-an-organization) notice in the commit message? That would also implicate that we can deduce this from the admission webhook.
 * Can we be more carefull with for example comments? If we edit a file in git? Also keep the same ordering? That is going to be a hard, so not for now.
+
+
+---
+
+* Can we create the race condition if we have the same GitDestionation in a test: there is a very small chance that we run into that despite the validatingwebhook.

@@ -470,9 +470,9 @@ var _ = Describe("Manager", Ordered, func() {
 			Eventually(verifyReconciled).Should(Succeed())
 
 			By("cleaning up test resources")
+			cleanupWatchRule(watchRuleName, namespace)
+			cleanupGitDestination(destName, namespace)
 			cleanupGitRepoConfig(gitRepoConfigName)
-			cmd = exec.Command("kubectl", "delete", "watchrule", watchRuleName, "-n", namespace)
-			_, _ = utils.Run(cmd)
 		})
 
 		It("should create Git commit when ConfigMap is added via WatchRule", func() {
@@ -490,7 +490,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 			By("creating WatchRule that monitors ConfigMaps")
 			destName := watchRuleName + "-dest"
-			createGitDestination(destName, namespace, gitRepoConfigName, getBaseFolder(), "main")
+			createGitDestination(destName, namespace, gitRepoConfigName, "e2e/configmap-test", "main")
 
 			data := struct {
 				Name            string
@@ -559,7 +559,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 				// Check for the expected ConfigMap file (new API-aligned path)
 				expectedFile := filepath.Join(checkoutDir,
-					getBaseFolder(),
+					"e2e/configmap-test",
 					fmt.Sprintf("v1/configmaps/%s/%s.yaml", namespace, configMapName))
 				fileInfo, statErr := os.Stat(expectedFile)
 				g.Expect(statErr).NotTo(HaveOccurred(), fmt.Sprintf("ConfigMap file should exist at %s", expectedFile))
@@ -589,11 +589,10 @@ var _ = Describe("Manager", Ordered, func() {
 			Eventually(verifyGitCommit, 180*time.Second, 5*time.Second).Should(Succeed())
 
 			By("cleaning up test resources")
-			var cmd *exec.Cmd
-			cmd = exec.Command("kubectl", "delete", "configmap", configMapName, "-n", namespace)
+			cmd := exec.Command("kubectl", "delete", "configmap", configMapName, "-n", namespace)
 			_, _ = utils.Run(cmd)
-			cmd = exec.Command("kubectl", "delete", "watchrule", watchRuleName, "-n", namespace)
-			_, _ = utils.Run(cmd)
+			cleanupWatchRule(watchRuleName, namespace)
+			cleanupGitDestination(destName, namespace)
 			cleanupGitRepoConfig(gitRepoConfigName)
 
 			By("✅ ConfigMap to Git commit E2E test passed - verified actual file creation and commit")
@@ -616,7 +615,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 			By("creating WatchRule that monitors ConfigMaps")
 			destName := watchRuleName + "-dest"
-			createGitDestination(destName, namespace, gitRepoConfigName, getBaseFolder(), "main")
+			createGitDestination(destName, namespace, gitRepoConfigName, "e2e/delete-test", "main")
 			data := struct {
 				Name            string
 				Namespace       string
@@ -665,7 +664,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 				// Check for the expected ConfigMap file (new API-aligned path)
 				expectedFile := filepath.Join(checkoutDir,
-					getBaseFolder(),
+					"e2e/delete-test",
 					fmt.Sprintf("v1/configmaps/%s/%s.yaml", namespace, configMapName))
 				fileInfo, statErr := os.Stat(expectedFile)
 				g.Expect(statErr).NotTo(HaveOccurred(), fmt.Sprintf("ConfigMap file should exist at %s", expectedFile))
@@ -674,8 +673,7 @@ var _ = Describe("Manager", Ordered, func() {
 			Eventually(verifyFileCreated, 180*time.Second, 5*time.Second).Should(Succeed())
 
 			By("deleting the ConfigMap to trigger DELETE operation")
-			var cmd *exec.Cmd
-			cmd = exec.Command("kubectl", "delete", "configmap", configMapName, "-n", namespace)
+			cmd := exec.Command("kubectl", "delete", "configmap", configMapName, "-n", namespace)
 			_, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "ConfigMap deletion should succeed")
 
@@ -711,8 +709,8 @@ var _ = Describe("Manager", Ordered, func() {
 			Eventually(verifyFileDeleted, 180*time.Second, 5*time.Second).Should(Succeed())
 
 			By("cleaning up test resources")
-			cmd = exec.Command("kubectl", "delete", "watchrule", watchRuleName, "-n", namespace)
-			_, _ = utils.Run(cmd)
+			cleanupWatchRule(watchRuleName, namespace)
+			cleanupGitDestination(destName, namespace)
 			cleanupGitRepoConfig(gitRepoConfigName)
 
 			By("✅ ConfigMap deletion E2E test passed - verified file removal from Git")
@@ -733,7 +731,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 			By("creating ClusterWatchRule with Cluster scope for CRDs")
 			destName := clusterWatchRuleName + "-dest"
-			createGitDestination(destName, namespace, gitRepoConfigName, getBaseFolder(), "main")
+			createGitDestination(destName, namespace, gitRepoConfigName, "e2e/crd-install-test", "main")
 
 			clusterWatchRuleData := struct {
 				Name            string
@@ -785,7 +783,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 				// CRDs are cluster-scoped, so path should NOT include namespace
 				expectedFile := filepath.Join(checkoutDir,
-					getBaseFolder(),
+					"e2e/crd-install-test",
 					"apiextensions.k8s.io/v1/customresourcedefinitions/icecreamorders.shop.example.com.yaml")
 				fileInfo, statErr := os.Stat(expectedFile)
 				g.Expect(statErr).NotTo(HaveOccurred(), fmt.Sprintf("CRD file should exist at %s", expectedFile))
@@ -802,8 +800,8 @@ var _ = Describe("Manager", Ordered, func() {
 			Eventually(verifyGitCommit, 180*time.Second, 5*time.Second).Should(Succeed())
 
 			By("cleaning up test resources")
-			cmd = exec.Command("kubectl", "delete", "clusterwatchrule", clusterWatchRuleName)
-			_, _ = utils.Run(cmd)
+			cleanupClusterWatchRule(clusterWatchRuleName)
+			cleanupGitDestination(destName, namespace)
 			cleanupGitRepoConfig(gitRepoConfigName)
 			// Keep CRD installed for subsequent tests
 
@@ -839,7 +837,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 			By("creating WatchRule that monitors IceCreamOrder resources")
 			destName := watchRuleName + "-dest"
-			createGitDestination(destName, namespace, gitRepoConfigName, getBaseFolder(), "main")
+			createGitDestination(destName, namespace, gitRepoConfigName, "e2e/icecream-test", "main")
 
 			data := struct {
 				Name            string
@@ -927,7 +925,7 @@ var _ = Describe("Manager", Ordered, func() {
 				}
 
 				expectedFile := filepath.Join(checkoutDir,
-					getBaseFolder(),
+					"e2e/icecream-test",
 					fmt.Sprintf("shop.example.com/v1/icecreamorders/%s/%s.yaml", namespace, crdInstanceName))
 				fileInfo, statErr := os.Stat(expectedFile)
 				g.Expect(statErr).
@@ -1020,9 +1018,11 @@ var _ = Describe("Manager", Ordered, func() {
 
 			By("✅ Status update verified - no Git commit created and status not in file")
 
-			By("cleaning up IceCreamOrder instance (keeping GitRepoConfig, WatchRule and CRD for subsequent tests)")
+			By("cleaning up IceCreamOrder instance")
 			cmd2 := exec.Command("kubectl", "delete", "icecreamorder", crdInstanceName, "-n", namespace)
 			_, _ = utils.Run(cmd2)
+
+			By("Note: GitDestination, WatchRule, GitRepoConfig, and CRD kept for subsequent tests")
 
 			By("✅ IceCreamOrder to Git commit E2E test passed")
 			fmt.Printf("✅ IceCreamOrder '%s' successfully triggered Git commit in repo '%s'\n",
@@ -1072,7 +1072,7 @@ var _ = Describe("Manager", Ordered, func() {
 				_, _ = pullCmd.CombinedOutput()
 
 				expectedFile := filepath.Join(checkoutDir,
-					getBaseFolder(),
+					"e2e/icecream-test",
 					fmt.Sprintf("shop.example.com/v1/icecreamorders/%s/%s.yaml", namespace, crdInstanceName))
 				content, readErr := os.ReadFile(expectedFile)
 				g.Expect(readErr).NotTo(HaveOccurred())
@@ -1121,7 +1121,7 @@ var _ = Describe("Manager", Ordered, func() {
 				_, _ = pullCmd.CombinedOutput()
 
 				expectedFile := filepath.Join(checkoutDir,
-					getBaseFolder(),
+					"e2e/icecream-test",
 					fmt.Sprintf("shop.example.com/v1/icecreamorders/%s/%s.yaml", namespace, crdInstanceName))
 				content, readErr := os.ReadFile(expectedFile)
 				g.Expect(readErr).NotTo(HaveOccurred())
@@ -1137,6 +1137,8 @@ var _ = Describe("Manager", Ordered, func() {
 			By("cleaning up IceCreamOrder instance")
 			cmd := exec.Command("kubectl", "delete", "icecreamorder", crdInstanceName, "-n", namespace)
 			_, _ = utils.Run(cmd)
+
+			By("Note: GitDestination, WatchRule, GitRepoConfig, and CRD kept for subsequent tests")
 
 			By("✅ IceCreamOrder update E2E test passed")
 			fmt.Printf("✅ IceCreamOrder '%s' update successfully reflected in Git repo '%s'\n",
@@ -1186,7 +1188,7 @@ var _ = Describe("Manager", Ordered, func() {
 				_, _ = pullCmd.CombinedOutput()
 
 				expectedFile := filepath.Join(checkoutDir,
-					getBaseFolder(),
+					"e2e/icecream-test",
 					fmt.Sprintf("shop.example.com/v1/icecreamorders/%s/%s.yaml", namespace, crdInstanceName))
 				fileInfo, statErr := os.Stat(expectedFile)
 				g.Expect(statErr).
@@ -1207,7 +1209,7 @@ var _ = Describe("Manager", Ordered, func() {
 				_, _ = pullCmd.CombinedOutput()
 
 				expectedFile := filepath.Join(checkoutDir,
-					getBaseFolder(),
+					"e2e/icecream-test",
 					fmt.Sprintf("shop.example.com/v1/icecreamorders/%s/%s.yaml", namespace, crdInstanceName))
 				_, statErr := os.Stat(expectedFile)
 				g.Expect(statErr).
@@ -1242,7 +1244,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 			By("creating ClusterWatchRule with Cluster scope for CRDs")
 			destName := clusterWatchRuleName + "-dest"
-			createGitDestination(destName, namespace, gitRepoConfigName, getBaseFolder(), "main")
+			createGitDestination(destName, namespace, gitRepoConfigName, "e2e/crd-delete-test", "main")
 			clusterWatchRuleData := struct {
 				Name            string
 				DestinationName string
@@ -1273,7 +1275,7 @@ var _ = Describe("Manager", Ordered, func() {
 				_, _ = pullCmd.CombinedOutput()
 
 				expectedFile := filepath.Join(checkoutDir,
-					getBaseFolder(),
+					"e2e/crd-delete-test",
 					"apiextensions.k8s.io/v1/customresourcedefinitions/icecreamorders.shop.example.com.yaml")
 				_, statErr := os.Stat(expectedFile)
 				g.Expect(statErr).NotTo(HaveOccurred(), "CRD file should exist before deletion")
@@ -1292,7 +1294,7 @@ var _ = Describe("Manager", Ordered, func() {
 				_, _ = pullCmd.CombinedOutput()
 
 				expectedFile := filepath.Join(checkoutDir,
-					getBaseFolder(),
+					"e2e/crd-delete-test",
 					"apiextensions.k8s.io/v1/customresourcedefinitions/icecreamorders.shop.example.com.yaml")
 				_, statErr := os.Stat(expectedFile)
 				g.Expect(statErr).To(HaveOccurred(), "CRD file should NOT exist after deletion")
@@ -1309,15 +1311,26 @@ var _ = Describe("Manager", Ordered, func() {
 			Eventually(verifyFileDeleted, 180*time.Second, 5*time.Second).Should(Succeed())
 
 			By("cleaning up test resources")
-			cmd = exec.Command("kubectl", "delete", "clusterwatchrule", clusterWatchRuleName)
-			_, _ = utils.Run(cmd)
+			cleanupClusterWatchRule(clusterWatchRuleName)
+			cleanupGitDestination(destName, namespace)
 			cleanupGitRepoConfig(gitRepoConfigName)
 
 			By("✅ CRD deletion via ClusterWatchRule E2E test passed")
 		})
 
 		AfterAll(func() {
-			By("cleaning up IceCreamOrder CRD")
+			By("cleaning up shared test resources")
+
+			// Clean up WatchRule from IceCreamOrder tests
+			cleanupWatchRule("watchrule-icecream-orders", namespace)
+
+			// Clean up GitDestination from IceCreamOrder tests
+			cleanupGitDestination("watchrule-icecream-orders-dest", namespace)
+
+			// Clean up GitRepoConfig from IceCreamOrder tests
+			cleanupGitRepoConfig("gitrepoconfig-icecream-suite")
+
+			// Clean up IceCreamOrder CRD
 			cmd := exec.Command("kubectl", "delete", "crd",
 				"icecreamorders.shop.example.com", "--ignore-not-found=true")
 			_, _ = utils.Run(cmd)

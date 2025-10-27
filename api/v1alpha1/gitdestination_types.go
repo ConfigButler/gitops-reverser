@@ -79,6 +79,9 @@ type GitDestinationStatus struct {
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // GitDestination binds repo+branch+baseFolder for a write subtree in Git.
+// Each GitDestination must have a unique combination of (resolved_repo_url, branch, baseFolder)
+// to prevent conflicts when writing to Git. This uniqueness constraint is enforced via
+// an admission webhook.
 type GitDestination struct {
 	metav1.TypeMeta `json:",inline"`
 

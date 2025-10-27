@@ -197,44 +197,64 @@ func (r *Repo) TryPushCommits(ctx context.Context, branch string, events []Event
 	r.branch = branch
 
 	// 1. Generate local commits from the event queue
-	if err := r.generateLocalCommits(ctx, events); err != nil {
+	// Returns the number of actual commits created
+	commitsCreated, err := r.generateLocalCommits(ctx, events)
+	if err != nil {
 		return fmt.Errorf("failed to generate local commits: %w", err)
 	}
 
+	// If no commits were created (all events resulted in no changes), skip push
+	if commitsCreated == 0 {
+		logger.Info("No commits created, skipping push", "eventsProcessed", len(events))
+		return nil
+	}
+
 	// 2. Attempt the push
-	err := r.Push(ctx)
+	err = r.Push(ctx)
 	if err == nil {
-		logger.Info("Successfully pushed commits", "count", len(events))
+		logger.Info("Successfully pushed commits", "count", commitsCreated)
 		return nil
 	}
 
 	// 3. Handle non-fast-forward error
 	if isNonFastForwardError(err) {
-		logger.Info("Push rejected due to remote changes. Resyncing...")
-
-		// 4. Hard reset to remote state
-		if err := r.hardResetToRemote(ctx); err != nil {
-			return fmt.Errorf("failed to reset to remote state: %w", err)
-		}
-
-		// 5. Re-evaluate the original events against the new state
-		validEvents := r.reEvaluateEvents(ctx, events)
-
-		// 6. Retry the push with only the valid events
-		if len(validEvents) > 0 {
-			logger.Info("Retrying push with non-conflicting commits", "count", len(validEvents))
-			if err := r.generateLocalCommits(ctx, validEvents); err != nil {
-				return fmt.Errorf("failed to generate retry commits: %w", err)
-			}
-			return r.Push(ctx)
-		}
-
-		logger.Info("No valid events remaining after conflict resolution")
-		return nil
+		return r.handleNonFastForwardError(ctx, events)
 	}
 
 	// Handle other push errors (e.g., network, auth)
 	return fmt.Errorf("push failed: %w", err)
+}
+
+// handleNonFastForwardError handles push conflicts by re-syncing and retrying.
+func (r *Repo) handleNonFastForwardError(ctx context.Context, events []Event) error {
+	logger := log.FromContext(ctx)
+	logger.Info("Push rejected due to remote changes. Resyncing...")
+
+	// Hard reset to remote state
+	if err := r.hardResetToRemote(ctx); err != nil {
+		return fmt.Errorf("failed to reset to remote state: %w", err)
+	}
+
+	// Re-evaluate the original events against the new state
+	validEvents := r.reEvaluateEvents(ctx, events)
+	if len(validEvents) == 0 {
+		logger.Info("No valid events remaining after conflict resolution")
+		return nil
+	}
+
+	// Retry the push with only the valid events
+	logger.Info("Retrying push with non-conflicting commits", "count", len(validEvents))
+	retryCommits, err := r.generateLocalCommits(ctx, validEvents)
+	if err != nil {
+		return fmt.Errorf("failed to generate retry commits: %w", err)
+	}
+
+	if retryCommits == 0 {
+		logger.Info("No commits created on retry, skipping push")
+		return nil
+	}
+
+	return r.Push(ctx)
 }
 
 // sanitizeBaseFolder validates and normalizes a baseFolder value to a safe POSIX-like relative path.
@@ -262,18 +282,20 @@ func sanitizeBaseFolder(base string) string {
 }
 
 // generateLocalCommits creates local commits for the given events.
-func (r *Repo) generateLocalCommits(ctx context.Context, events []Event) error {
+// Returns the number of commits actually created.
+func (r *Repo) generateLocalCommits(ctx context.Context, events []Event) (int, error) {
 	logger := log.FromContext(ctx)
 	worktree, err := r.Worktree()
 	if err != nil {
-		return fmt.Errorf("failed to get worktree: %w", err)
+		return 0, fmt.Errorf("failed to get worktree: %w", err)
 	}
 
 	// Ensure we are on the correct branch
 	if err := r.Checkout(r.branch); err != nil {
-		return fmt.Errorf("failed to checkout branch %s: %w", r.branch, err)
+		return 0, fmt.Errorf("failed to checkout branch %s: %w", r.branch, err)
 	}
 
+	commitsCreated := 0
 	for _, event := range events {
 		// Build the repository-relative file path:
 		// optional event-scoped baseFolder prefix + identifier path.
@@ -285,28 +307,35 @@ func (r *Repo) generateLocalCommits(ctx context.Context, events []Event) error {
 		}
 
 		// Handle the event based on operation type
-		if err := r.handleEventOperation(ctx, event, filePath, worktree); err != nil {
-			return err
+		// Returns true if changes were made to the worktree
+		changesApplied, err := r.handleEventOperation(ctx, event, filePath, worktree)
+		if err != nil {
+			return commitsCreated, err
 		}
 
-		// Create individual commit for this event
-		if err := r.createCommitForEvent(event, filePath, worktree); err != nil {
-			return err
+		// Only create a commit if changes were actually applied
+		if changesApplied {
+			if err := r.createCommitForEvent(event, filePath, worktree); err != nil {
+				return commitsCreated, err
+			}
+			commitsCreated++
+			logger.Info("Created commit", "file", filePath, "operation", event.Operation)
+		} else {
+			logger.V(1).Info("No changes to commit, desired state already achieved", "file", filePath, "operation", event.Operation)
 		}
-
-		logger.Info("Created commit", "file", filePath, "operation", event.Operation)
 	}
 
-	return nil
+	return commitsCreated, nil
 }
 
 // handleEventOperation processes an event based on its operation type (CREATE/UPDATE/DELETE).
+// Returns true if changes were made to the worktree, false if no changes were needed.
 func (r *Repo) handleEventOperation(
 	ctx context.Context,
 	event Event,
 	filePath string,
 	worktree *git.Worktree,
-) error {
+) (bool, error) {
 	logger := log.FromContext(ctx)
 	fullPath := filepath.Join(r.path, filePath)
 
@@ -318,61 +347,75 @@ func (r *Repo) handleEventOperation(
 }
 
 // handleDeleteOperation removes a file from the repository.
-func (r *Repo) handleDeleteOperation(logger logr.Logger, filePath, fullPath string, worktree *git.Worktree) error {
+// Returns true if the file was deleted, false if it didn't exist.
+func (r *Repo) handleDeleteOperation(
+	logger logr.Logger,
+	filePath, fullPath string,
+	worktree *git.Worktree,
+) (bool, error) {
 	// Check if file exists before attempting deletion
 	_, statErr := os.Stat(fullPath)
 	if statErr == nil {
 		// Remove file from filesystem
 		if err := os.Remove(fullPath); err != nil {
-			return fmt.Errorf("failed to delete file %s: %w", filePath, err)
+			return false, fmt.Errorf("failed to delete file %s: %w", filePath, err)
 		}
 
 		// Stage deletion in git
 		if _, err := worktree.Remove(filePath); err != nil {
-			return fmt.Errorf("failed to remove file %s from git: %w", filePath, err)
+			return false, fmt.Errorf("failed to remove file %s from git: %w", filePath, err)
 		}
 
 		logger.Info("Deleted file from repository", "file", filePath)
-		return nil
+		return true, nil
 	}
 
 	if os.IsNotExist(statErr) {
 		// File doesn't exist, log and skip (already deleted or never committed)
 		logger.Info("File does not exist, skipping deletion", "file", filePath)
-		return nil
+		return false, nil
 	}
 
-	return fmt.Errorf("failed to check file status %s: %w", filePath, statErr)
+	return false, fmt.Errorf("failed to check file status %s: %w", filePath, statErr)
 }
 
 // handleCreateOrUpdateOperation writes and stages a file in the repository.
+// Returns true if changes were made, false if the file already has the desired content.
 func (r *Repo) handleCreateOrUpdateOperation(
 	event Event,
 	filePath, fullPath string,
 	worktree *git.Worktree,
-) error {
-	// Ensure directory exists
-	if err := os.MkdirAll(filepath.Dir(fullPath), 0750); err != nil {
-		return fmt.Errorf("failed to create directory for %s: %w", filePath, err)
-	}
-
+) (bool, error) {
 	// Convert object to ordered YAML
 	content, err := sanitize.MarshalToOrderedYAML(event.Object)
 	if err != nil {
-		return fmt.Errorf("failed to marshal object to YAML: %w", err)
+		return false, fmt.Errorf("failed to marshal object to YAML: %w", err)
+	}
+
+	// Check if file already exists with same content
+	if existingContent, err := os.ReadFile(fullPath); err == nil {
+		if string(existingContent) == string(content) {
+			// File already has the desired content, no changes needed
+			return false, nil
+		}
+	}
+
+	// Ensure directory exists
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0750); err != nil {
+		return false, fmt.Errorf("failed to create directory for %s: %w", filePath, err)
 	}
 
 	// Write file
 	if err := os.WriteFile(fullPath, content, 0600); err != nil {
-		return fmt.Errorf("failed to write file %s: %w", filePath, err)
+		return false, fmt.Errorf("failed to write file %s: %w", filePath, err)
 	}
 
 	// Add to git
 	if _, err := worktree.Add(filePath); err != nil {
-		return fmt.Errorf("failed to add file %s to git: %w", filePath, err)
+		return false, fmt.Errorf("failed to add file %s to git: %w", filePath, err)
 	}
 
-	return nil
+	return true, nil
 }
 
 // createCommitForEvent creates a git commit for the given event.

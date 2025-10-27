@@ -33,8 +33,11 @@ spec:
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: GitDestination binds repo+branch+baseFolder for a write subtree
-          in Git.
+        description: |-
+          GitDestination binds repo+branch+baseFolder for a write subtree in Git.
+          Each GitDestination must have a unique combination of (resolved_repo_url, branch, baseFolder)
+          to prevent conflicts when writing to Git. This uniqueness constraint is enforced via
+          an admission webhook.
         properties:
           apiVersion:
             description: |-
