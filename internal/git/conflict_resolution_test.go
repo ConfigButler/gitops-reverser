@@ -28,7 +28,6 @@ import (
 	"github.com/stretchr/testify/require"
 	"sigs.k8s.io/yaml"
 
-	"github.com/ConfigButler/gitops-reverser/internal/eventqueue"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
@@ -37,7 +36,7 @@ func TestTryPushCommits_Success(t *testing.T) {
 	// We'll test the file path generation and event processing logic
 
 	// Create test events
-	events := []eventqueue.Event{
+	events := []Event{
 		{
 			Object: createTestPod("test-pod", "default"),
 			Identifier: types.ResourceIdentifier{
@@ -48,10 +47,10 @@ func TestTryPushCommits_Success(t *testing.T) {
 				Name:      "test-pod",
 			},
 			Operation: "CREATE",
-			UserInfo: eventqueue.UserInfo{
+			UserInfo: UserInfo{
 				Username: "test-user",
 			},
-			GitRepoConfigRef: "test-repo",
+			BaseFolder: "",
 		},
 	}
 
@@ -124,7 +123,7 @@ func TestIsEventStillValid(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("file_does_not_exist", func(t *testing.T) {
-		event := eventqueue.Event{
+		event := Event{
 			Object: createTestPod("new-pod", "default"),
 			Identifier: types.ResourceIdentifier{
 				Group:     "",
@@ -169,7 +168,7 @@ func TestIsEventStillValid(t *testing.T) {
 		newPod := createTestPod("existing-pod", "default")
 		newPod.SetResourceVersion("200")
 
-		event := eventqueue.Event{
+		event := Event{
 			Object: newPod,
 			Identifier: types.ResourceIdentifier{
 				Group:     "",
@@ -214,7 +213,7 @@ func TestIsEventStillValid(t *testing.T) {
 		oldPod := createTestPod("stale-pod", "default")
 		oldPod.SetResourceVersion("200")
 
-		event := eventqueue.Event{
+		event := Event{
 			Object: oldPod,
 			Identifier: types.ResourceIdentifier{
 				Group:     "",
@@ -262,7 +261,7 @@ func TestIsEventStillValid(t *testing.T) {
 		oldPod.SetGeneration(3)
 		oldPod.SetResourceVersion("") // Explicitly clear to force generation comparison
 
-		event := eventqueue.Event{
+		event := Event{
 			Object: oldPod,
 			Identifier: types.ResourceIdentifier{
 				Group:     "",
@@ -287,7 +286,7 @@ func TestIsEventStillValid(t *testing.T) {
 		err = os.WriteFile(corruptedPath, []byte("invalid yaml content {{{"), 0600)
 		require.NoError(t, err)
 
-		event := eventqueue.Event{
+		event := Event{
 			Object: createTestPod("corrupted-pod", "default"),
 			Identifier: types.ResourceIdentifier{
 				Group:     "",
@@ -338,7 +337,7 @@ func TestReEvaluateEvents(t *testing.T) {
 	require.NoError(t, err)
 
 	// Create test events
-	events := []eventqueue.Event{
+	events := []Event{
 		{
 			Object: createTestPodWithResourceVersion("new-pod", "default", "200"),
 			Identifier: types.ResourceIdentifier{
@@ -423,7 +422,7 @@ func TestConflictResolutionIntegration(t *testing.T) {
 		require.NoError(t, err)
 
 		// Create events that would conflict
-		events := []eventqueue.Event{
+		events := []Event{
 			{
 				Object: createTestPodWithResourceVersion("conflict-pod", "default", "50"),
 				Identifier: types.ResourceIdentifier{
@@ -515,7 +514,7 @@ func TestCommitMessageGeneration(t *testing.T) {
 	// Test commit message generation for conflict resolution scenarios
 	pod := createTestPod("test-pod", "default")
 
-	event := eventqueue.Event{
+	event := Event{
 		Object: pod,
 		Identifier: types.ResourceIdentifier{
 			Group:     "",
@@ -525,10 +524,10 @@ func TestCommitMessageGeneration(t *testing.T) {
 			Name:      "test-pod",
 		},
 		Operation: "UPDATE",
-		UserInfo: eventqueue.UserInfo{
+		UserInfo: UserInfo{
 			Username: "conflict-resolver",
 		},
-		GitRepoConfigRef: "test-repo",
+		BaseFolder: "",
 	}
 
 	message := GetCommitMessage(event)

@@ -26,7 +26,6 @@ import (
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
-	"github.com/ConfigButler/gitops-reverser/internal/eventqueue"
 	"github.com/ConfigButler/gitops-reverser/internal/ssh"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
@@ -202,7 +201,7 @@ func TestGetCommitMessage_CreateOperation(t *testing.T) {
 	obj.SetNamespace("default")
 	obj.SetKind("Pod")
 
-	event := eventqueue.Event{
+	event := Event{
 		Object: obj,
 		Identifier: types.ResourceIdentifier{
 			Group:     "",
@@ -212,10 +211,10 @@ func TestGetCommitMessage_CreateOperation(t *testing.T) {
 			Name:      "test-pod",
 		},
 		Operation: "CREATE",
-		UserInfo: eventqueue.UserInfo{
+		UserInfo: UserInfo{
 			Username: "john.doe@example.com",
 		},
-		GitRepoConfigRef: "test-repo",
+		BaseFolder: "",
 	}
 
 	message := GetCommitMessage(event)
@@ -229,7 +228,7 @@ func TestGetCommitMessage_UpdateOperation(t *testing.T) {
 	obj.SetNamespace("production")
 	obj.SetKind("Service")
 
-	event := eventqueue.Event{
+	event := Event{
 		Object: obj,
 		Identifier: types.ResourceIdentifier{
 			Group:     "",
@@ -239,10 +238,10 @@ func TestGetCommitMessage_UpdateOperation(t *testing.T) {
 			Name:      "my-service",
 		},
 		Operation: "UPDATE",
-		UserInfo: eventqueue.UserInfo{
+		UserInfo: UserInfo{
 			Username: "system:serviceaccount:kube-system:deployment-controller",
 		},
-		GitRepoConfigRef: "prod-repo",
+		BaseFolder: "prod-repo",
 	}
 
 	message := GetCommitMessage(event)
@@ -256,7 +255,7 @@ func TestGetCommitMessage_DeleteOperation(t *testing.T) {
 	obj.SetNamespace("staging")
 	obj.SetKind("ConfigMap")
 
-	event := eventqueue.Event{
+	event := Event{
 		Object: obj,
 		Identifier: types.ResourceIdentifier{
 			Group:     "",
@@ -266,10 +265,10 @@ func TestGetCommitMessage_DeleteOperation(t *testing.T) {
 			Name:      "old-config",
 		},
 		Operation: "DELETE",
-		UserInfo: eventqueue.UserInfo{
+		UserInfo: UserInfo{
 			Username: "admin",
 		},
-		GitRepoConfigRef: "staging-repo",
+		BaseFolder: "staging-repo",
 	}
 
 	message := GetCommitMessage(event)
@@ -282,7 +281,7 @@ func TestGetCommitMessage_ClusterScopedResource(t *testing.T) {
 	obj.SetName("my-namespace")
 	obj.SetKind("Namespace")
 
-	event := eventqueue.Event{
+	event := Event{
 		Object: obj,
 		Identifier: types.ResourceIdentifier{
 			Group:     "",
@@ -292,10 +291,10 @@ func TestGetCommitMessage_ClusterScopedResource(t *testing.T) {
 			Name:      "my-namespace",
 		},
 		Operation: "CREATE",
-		UserInfo: eventqueue.UserInfo{
+		UserInfo: UserInfo{
 			Username: "cluster-admin",
 		},
-		GitRepoConfigRef: "cluster-repo",
+		BaseFolder: "cluster-repo",
 	}
 
 	message := GetCommitMessage(event)
@@ -309,7 +308,7 @@ func TestGetCommitMessage_EmptyUsername(t *testing.T) {
 	obj.SetNamespace("default")
 	obj.SetKind("Pod")
 
-	event := eventqueue.Event{
+	event := Event{
 		Object: obj,
 		Identifier: types.ResourceIdentifier{
 			Group:     "",
@@ -319,10 +318,10 @@ func TestGetCommitMessage_EmptyUsername(t *testing.T) {
 			Name:      "test-pod",
 		},
 		Operation: "CREATE",
-		UserInfo: eventqueue.UserInfo{
+		UserInfo: UserInfo{
 			Username: "", // Empty username
 		},
-		GitRepoConfigRef: "test-repo",
+		BaseFolder: "",
 	}
 
 	message := GetCommitMessage(event)
@@ -336,7 +335,7 @@ func TestGetCommitMessage_SpecialCharactersInNames(t *testing.T) {
 	obj.SetNamespace("test-ns_with_underscores")
 	obj.SetKind("Pod")
 
-	event := eventqueue.Event{
+	event := Event{
 		Object: obj,
 		Identifier: types.ResourceIdentifier{
 			Group:     "",
@@ -346,10 +345,10 @@ func TestGetCommitMessage_SpecialCharactersInNames(t *testing.T) {
 			Name:      "test-pod.with.dots",
 		},
 		Operation: "UPDATE",
-		UserInfo: eventqueue.UserInfo{
+		UserInfo: UserInfo{
 			Username: "user@domain.com",
 		},
-		GitRepoConfigRef: "test-repo",
+		BaseFolder: "",
 	}
 
 	message := GetCommitMessage(event)
@@ -531,14 +530,14 @@ func TestIntegration_FilePathAndCommitMessage(t *testing.T) {
 		Name:      "integration-test-pod",
 	}
 
-	event := eventqueue.Event{
+	event := Event{
 		Object:     obj,
 		Identifier: identifier,
 		Operation:  "CREATE",
-		UserInfo: eventqueue.UserInfo{
+		UserInfo: UserInfo{
 			Username: "integration-test-user",
 		},
-		GitRepoConfigRef: "integration-repo",
+		BaseFolder: "integration-repo",
 	}
 
 	filePath := identifier.ToGitPath()
@@ -574,7 +573,7 @@ func TestCommitMessage_AllOperations(t *testing.T) {
 
 	for _, op := range operations {
 		t.Run(op, func(t *testing.T) {
-			event := eventqueue.Event{
+			event := Event{
 				Object: obj,
 				Identifier: types.ResourceIdentifier{
 					Group:     "",
@@ -584,10 +583,10 @@ func TestCommitMessage_AllOperations(t *testing.T) {
 					Name:      "test-resource",
 				},
 				Operation: op,
-				UserInfo: eventqueue.UserInfo{
+				UserInfo: UserInfo{
 					Username: "test-user",
 				},
-				GitRepoConfigRef: "test-repo",
+				BaseFolder: "",
 			}
 
 			message := GetCommitMessage(event)
@@ -623,7 +622,7 @@ func TestGenerateLocalCommits_DeleteOperation(t *testing.T) {
 	obj.SetNamespace("default")
 	obj.SetKind("ConfigMap")
 
-	event := eventqueue.Event{
+	event := Event{
 		Object: obj,
 		Identifier: types.ResourceIdentifier{
 			Group:     "",
@@ -633,10 +632,10 @@ func TestGenerateLocalCommits_DeleteOperation(t *testing.T) {
 			Name:      "test-configmap",
 		},
 		Operation: "DELETE",
-		UserInfo: eventqueue.UserInfo{
+		UserInfo: UserInfo{
 			Username: "admin",
 		},
-		GitRepoConfigRef: "test-repo",
+		BaseFolder: "",
 	}
 
 	// Verify commit message includes DELETE
@@ -680,7 +679,7 @@ func TestGenerateLocalCommits_CreateUpdateDeleteMixed(t *testing.T) {
 			obj.SetNamespace("default")
 			obj.SetKind("Pod")
 
-			event := eventqueue.Event{
+			event := Event{
 				Object: obj,
 				Identifier: types.ResourceIdentifier{
 					Group:     "",
@@ -690,10 +689,10 @@ func TestGenerateLocalCommits_CreateUpdateDeleteMixed(t *testing.T) {
 					Name:      tc.objName,
 				},
 				Operation: tc.operation,
-				UserInfo: eventqueue.UserInfo{
+				UserInfo: UserInfo{
 					Username: "test-user",
 				},
-				GitRepoConfigRef: "test-repo",
+				BaseFolder: "",
 			}
 
 			message := GetCommitMessage(event)
@@ -762,7 +761,7 @@ func TestDeleteOperation_CommitMessageFormat(t *testing.T) {
 				group = "apps"
 			}
 
-			event := eventqueue.Event{
+			event := Event{
 				Object: obj,
 				Identifier: types.ResourceIdentifier{
 					Group:     group,
@@ -772,10 +771,10 @@ func TestDeleteOperation_CommitMessageFormat(t *testing.T) {
 					Name:      tc.name,
 				},
 				Operation: "DELETE",
-				UserInfo: eventqueue.UserInfo{
+				UserInfo: UserInfo{
 					Username: tc.username,
 				},
-				GitRepoConfigRef: "test-repo",
+				BaseFolder: "",
 			}
 
 			message := GetCommitMessage(event)
@@ -798,14 +797,14 @@ func TestDeleteOperation_ClusterScoped(t *testing.T) {
 		Name:      "test-namespace",
 	}
 
-	event := eventqueue.Event{
+	event := Event{
 		Object:     obj,
 		Identifier: identifier,
 		Operation:  "DELETE",
-		UserInfo: eventqueue.UserInfo{
+		UserInfo: UserInfo{
 			Username: "cluster-admin",
 		},
-		GitRepoConfigRef: "cluster-repo",
+		BaseFolder: "cluster-repo",
 	}
 
 	// Verify file path
@@ -830,13 +829,13 @@ func TestBatchOperations_MultipleDeletes(t *testing.T) {
 		{"configmap-1", "kube-system", "configmaps"},
 	}
 
-	var events []eventqueue.Event
+	var events []Event
 	for _, res := range resources {
 		obj := &unstructured.Unstructured{}
 		obj.SetName(res.name)
 		obj.SetNamespace(res.namespace)
 
-		event := eventqueue.Event{
+		event := Event{
 			Object: obj,
 			Identifier: types.ResourceIdentifier{
 				Group:     "",
@@ -846,10 +845,10 @@ func TestBatchOperations_MultipleDeletes(t *testing.T) {
 				Name:      res.name,
 			},
 			Operation: "DELETE",
-			UserInfo: eventqueue.UserInfo{
+			UserInfo: UserInfo{
 				Username: "batch-delete-user",
 			},
-			GitRepoConfigRef: "test-repo",
+			BaseFolder: "",
 		}
 		events = append(events, event)
 	}

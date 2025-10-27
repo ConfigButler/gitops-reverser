@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	corev1 "k8s.io/api/core/v1"
@@ -32,6 +33,29 @@ import (
 	"github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 	"github.com/ConfigButler/gitops-reverser/internal/ssh"
 	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
+)
+
+// Worker configuration constants shared across implementations.
+const (
+	DefaultMaxCommits      = 20              // Default max commits before push
+	TestMaxCommits         = 1               // Max commits in test mode
+	TestPushInterval       = 5 * time.Second // Push interval for tests
+	ProductionPushInterval = 1 * time.Minute // Push interval for production
+
+	// MaxBytesMiB is the approximate MiB cap for a batch.
+	MaxBytesMiB int64 = 1
+
+	// bytesPerKiB defines the number of bytes in a KiB (2^10).
+	bytesPerKiB int64 = 1024
+	// bytesPerMiB defines the number of bytes in a MiB (2^20).
+	bytesPerMiB int64 = bytesPerKiB * 1024
+	// maxBytesBytes is the byte cap for batching (1 MiB in bytes).
+	maxBytesBytes int64 = MaxBytesMiB * bytesPerMiB
+
+	// Path part counts for identifier parsing (avoid magic numbers).
+	minCoreClusterParts                 = 3
+	groupedClusterOrCoreNamespacedParts = 4
+	groupedNamespacedParts              = 5
 )
 
 // parseIdentifierFromPath parses "{group-or-core?}/{version}/{resource}/{namespace?}/{name}.yaml"

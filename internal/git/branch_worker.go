@@ -33,7 +33,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
-	"github.com/ConfigButler/gitops-reverser/internal/eventqueue"
 	"github.com/ConfigButler/gitops-reverser/internal/metrics"
 	"github.com/ConfigButler/gitops-reverser/internal/sanitize"
 )
@@ -61,7 +60,7 @@ type BranchWorker struct {
 	activeDestinations map[types.NamespacedName]string // destination name → baseFolder
 
 	// Event processing
-	eventQueue chan SimplifiedEvent
+	eventQueue chan Event
 	ctx        context.Context
 	cancelFunc context.CancelFunc
 	wg         sync.WaitGroup
@@ -87,7 +86,7 @@ func NewBranchWorker(
 			"branch", branch,
 		),
 		activeDestinations: make(map[types.NamespacedName]string),
-		eventQueue:         make(chan SimplifiedEvent, branchWorkerQueueSize),
+		eventQueue:         make(chan Event, branchWorkerQueueSize),
 	}
 }
 
@@ -163,7 +162,7 @@ func (w *BranchWorker) Stop() {
 }
 
 // Enqueue adds an event to this worker's queue.
-func (w *BranchWorker) Enqueue(event SimplifiedEvent) {
+func (w *BranchWorker) Enqueue(event Event) {
 	select {
 	case w.eventQueue <- event:
 		w.Log.V(1).Info("Event enqueued",
@@ -193,7 +192,7 @@ func (w *BranchWorker) processEvents() {
 	ticker := time.NewTicker(pushInterval)
 	defer ticker.Stop()
 
-	var eventBuffer []SimplifiedEvent
+	var eventBuffer []Event
 	var bufferByteCount int64
 
 	// Track live paths PER baseFolder for orphan detection
@@ -247,7 +246,7 @@ func (w *BranchWorker) processEvents() {
 // handleSeedSync processes SEED_SYNC and computes orphans for all registered baseFolders.
 func (w *BranchWorker) handleSeedSync(
 	repoConfig *configv1alpha1.GitRepoConfig,
-	eventBuffer []SimplifiedEvent,
+	eventBuffer []Event,
 	sLivePathsByFolder map[string]map[string]struct{},
 ) {
 	// Get all registered baseFolders
@@ -259,7 +258,7 @@ func (w *BranchWorker) handleSeedSync(
 	w.destMu.RUnlock()
 
 	// Compute orphans for each baseFolder
-	var allDeletes []SimplifiedEvent
+	var allDeletes []Event
 	for _, baseFolder := range baseFolders {
 		sLive := sLivePathsByFolder[baseFolder]
 		if sLive == nil {
@@ -283,7 +282,7 @@ func (w *BranchWorker) computeOrphanDeletes(
 	repoConfig *configv1alpha1.GitRepoConfig,
 	baseFolder string,
 	sLive map[string]struct{},
-) []SimplifiedEvent {
+) []Event {
 	// List files in THIS worker's branch
 	paths, err := w.listRepoYAMLPaths(w.ctx, repoConfig)
 	if err != nil {
@@ -312,18 +311,18 @@ func (w *BranchWorker) computeOrphanDeletes(
 		}
 	}
 
-	// Convert to SimplifiedEvents with baseFolder
-	events := make([]SimplifiedEvent, 0, len(orphans))
+	// Convert to Events with baseFolder
+	events := make([]Event, 0, len(orphans))
 	for _, p := range orphans {
 		id, ok := parseIdentifierFromPath(p)
 		if !ok {
 			continue
 		}
-		events = append(events, SimplifiedEvent{
+		events = append(events, Event{
 			Object:     nil,
 			Identifier: id,
 			Operation:  "DELETE",
-			UserInfo:   eventqueue.UserInfo{},
+			UserInfo:   UserInfo{},
 			BaseFolder: baseFolder, // Keep folder context
 		})
 	}
@@ -335,7 +334,7 @@ func (w *BranchWorker) computeOrphanDeletes(
 // Events may have different baseFolders but all go to same branch.
 func (w *BranchWorker) commitAndPush(
 	repoConfig *configv1alpha1.GitRepoConfig,
-	events []SimplifiedEvent,
+	events []Event,
 ) {
 	log := w.Log.WithValues("eventCount", len(events))
 
@@ -365,10 +364,8 @@ func (w *BranchWorker) commitAndPush(
 		return
 	}
 
-	// Convert to full events (add branch from worker context)
-	fullEvents := w.convertToFullEvents(events)
-
-	if err := repo.TryPushCommits(w.ctx, fullEvents); err != nil {
+	// Pass branch from worker context directly to git operations
+	if err := repo.TryPushCommits(w.ctx, w.Branch, events); err != nil {
 		log.Error(err, "Failed to push commits")
 		return
 	}
@@ -381,28 +378,10 @@ func (w *BranchWorker) commitAndPush(
 	metrics.ObjectsWrittenTotal.Add(w.ctx, int64(len(events)))
 }
 
-// convertToFullEvents adds branch from worker context.
-func (w *BranchWorker) convertToFullEvents(simplified []SimplifiedEvent) []eventqueue.Event {
-	full := make([]eventqueue.Event, len(simplified))
-	for i, s := range simplified {
-		full[i] = eventqueue.Event{
-			Object:                 s.Object,
-			Identifier:             s.Identifier,
-			Operation:              s.Operation,
-			UserInfo:               s.UserInfo,
-			GitRepoConfigRef:       w.GitRepoConfigRef,
-			GitRepoConfigNamespace: w.GitRepoConfigNamespace,
-			Branch:                 w.Branch,     // Worker context!
-			BaseFolder:             s.BaseFolder, // Event carries this
-		}
-	}
-	return full
-}
-
 // handleShutdown finalizes processing when context is canceled.
 func (w *BranchWorker) handleShutdown(
 	repoConfig *configv1alpha1.GitRepoConfig,
-	eventBuffer []SimplifiedEvent,
+	eventBuffer []Event,
 ) {
 	w.Log.Info("Handling shutdown, flushing buffer")
 	if len(eventBuffer) > 0 {
@@ -411,7 +390,7 @@ func (w *BranchWorker) handleShutdown(
 }
 
 // estimateEventSize approximates the serialized YAML size for an event's object.
-func (w *BranchWorker) estimateEventSize(ev SimplifiedEvent) int64 {
+func (w *BranchWorker) estimateEventSize(ev Event) int64 {
 	if ev.Object == nil {
 		return 0
 	}

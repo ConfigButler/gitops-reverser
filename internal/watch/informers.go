@@ -106,7 +106,7 @@ func (m *Manager) handleEvent(obj interface{}, g GVR, op configv1alpha1.Operatio
 
 	// WatchRule matches - route to workers
 	for _, rule := range wrRules {
-		ev := git.SimplifiedEvent{
+		ev := git.Event{
 			Object:     sanitized.DeepCopy(),
 			Identifier: id,
 			Operation:  string(op),
@@ -126,7 +126,7 @@ func (m *Manager) handleEvent(obj interface{}, g GVR, op configv1alpha1.Operatio
 
 	// ClusterWatchRule matches - route to workers
 	for _, cr := range cwrRules {
-		ev := git.SimplifiedEvent{
+		ev := git.Event{
 			Object:     sanitized.DeepCopy(),
 			Identifier: id,
 			Operation:  string(op),

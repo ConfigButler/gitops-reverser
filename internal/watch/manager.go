@@ -39,7 +39,6 @@ import (
 
 	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 	"github.com/ConfigButler/gitops-reverser/internal/correlation"
-	"github.com/ConfigButler/gitops-reverser/internal/eventqueue"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/metrics"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
@@ -225,7 +224,7 @@ func (m *Manager) enqueueMatches(
 
 	// WatchRule matches - route to workers
 	for _, rule := range watchRules {
-		ev := git.SimplifiedEvent{
+		ev := git.Event{
 			Object:     sanitized.DeepCopy(),
 			Identifier: id,
 			Operation:  "UPDATE",
@@ -245,7 +244,7 @@ func (m *Manager) enqueueMatches(
 
 	// ClusterWatchRule matches - route to workers
 	for _, cr := range clusterRules {
-		ev := git.SimplifiedEvent{
+		ev := git.Event{
 			Object:     sanitized.DeepCopy(),
 			Identifier: id,
 			Operation:  "UPDATE",
@@ -313,8 +312,8 @@ func (m *Manager) tryEnrichFromCorrelation(
 	sanitized *unstructured.Unstructured,
 	id itypes.ResourceIdentifier,
 	operation string,
-) eventqueue.UserInfo {
-	userInfo := eventqueue.UserInfo{} // default: no username
+) git.UserInfo {
+	userInfo := git.UserInfo{} // default: no username
 
 	if m.CorrelationStore == nil {
 		return userInfo
@@ -622,7 +621,7 @@ func (m *Manager) processListedObject(
 // Each worker handles orphan detection for all baseFolders it manages.
 func (m *Manager) emitSeedSyncControls(branchKeys map[git.BranchKey]struct{}) {
 	for key := range branchKeys {
-		ev := git.SimplifiedEvent{
+		ev := git.Event{
 			Operation:  "SEED_SYNC",
 			BaseFolder: "", // Empty = all baseFolders for this branch
 		}

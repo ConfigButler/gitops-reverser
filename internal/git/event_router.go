@@ -45,7 +45,7 @@ func NewEventRouter(workerManager *WorkerManager, log logr.Logger) *EventRouter 
 func (r *EventRouter) RouteEvent(
 	repoName, repoNamespace string,
 	branch string,
-	event SimplifiedEvent,
+	event Event,
 ) error {
 	worker, exists := r.WorkerManager.GetWorkerForDestination(
 		repoName, repoNamespace, branch,

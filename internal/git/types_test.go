@@ -23,7 +23,6 @@ import (
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
-	"github.com/ConfigButler/gitops-reverser/internal/eventqueue"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
@@ -110,8 +109,8 @@ func TestBranchKeyEquality(t *testing.T) {
 	}
 }
 
-// TestSimplifiedEventIsControlEvent verifies control event detection.
-func TestSimplifiedEventIsControlEvent(t *testing.T) {
+// TestEventIsControlEvent verifies control event detection.
+func TestEventIsControlEvent(t *testing.T) {
 	tests := []struct {
 		name      string
 		operation string
@@ -141,7 +140,7 @@ func TestSimplifiedEventIsControlEvent(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			event := SimplifiedEvent{
+			event := Event{
 				Operation: tt.operation,
 			}
 			result := event.IsControlEvent()
@@ -153,14 +152,14 @@ func TestSimplifiedEventIsControlEvent(t *testing.T) {
 	}
 }
 
-// TestSimplifiedEventWithObject verifies event creation with objects.
-func TestSimplifiedEventWithObject(t *testing.T) {
+// TestEventWithObject verifies event creation with objects.
+func TestEventWithObject(t *testing.T) {
 	obj := &unstructured.Unstructured{}
 	obj.SetName("test-pod")
 	obj.SetNamespace("default")
 	obj.SetKind("Pod")
 
-	event := SimplifiedEvent{
+	event := Event{
 		Object: obj,
 		Identifier: types.ResourceIdentifier{
 			Group:     "",
@@ -170,7 +169,7 @@ func TestSimplifiedEventWithObject(t *testing.T) {
 			Name:      "test-pod",
 		},
 		Operation: "CREATE",
-		UserInfo: eventqueue.UserInfo{
+		UserInfo: UserInfo{
 			Username: "admin",
 			UID:      "12345",
 		},
@@ -191,9 +190,9 @@ func TestSimplifiedEventWithObject(t *testing.T) {
 	}
 }
 
-// TestSimplifiedEventNilObject verifies events can have nil objects (for control events).
-func TestSimplifiedEventNilObject(t *testing.T) {
-	event := SimplifiedEvent{
+// TestEventNilObject verifies events can have nil objects (for control events).
+func TestEventNilObject(t *testing.T) {
+	event := Event{
 		Object:     nil,
 		Operation:  "SEED_SYNC",
 		BaseFolder: "",

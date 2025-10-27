@@ -23,7 +23,6 @@ import (
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
-	"github.com/ConfigButler/gitops-reverser/internal/eventqueue"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
@@ -46,10 +45,16 @@ func (k BranchKey) String() string {
 	return fmt.Sprintf("%s/%s/%s", k.RepoNamespace, k.RepoName, k.Branch)
 }
 
-// SimplifiedEvent is an event with minimal context for branch workers.
+// UserInfo contains relevant user information for commit messages.
+type UserInfo struct {
+	Username string
+	UID      string
+}
+
+// Event represents a resource change event to be processed by a branch worker.
 // Branch comes from the worker context (not stored in event).
 // BaseFolder comes from the GitDestination that created this event.
-type SimplifiedEvent struct {
+type Event struct {
 	// Object is the sanitized Kubernetes object (nil for control events like SEED_SYNC).
 	Object *unstructured.Unstructured
 
@@ -60,7 +65,7 @@ type SimplifiedEvent struct {
 	Operation string
 
 	// UserInfo contains user information for commit messages.
-	UserInfo eventqueue.UserInfo
+	UserInfo UserInfo
 
 	// BaseFolder is the POSIX-like relative path prefix for this event's files.
 	// This comes from the GitDestination that triggered this event.
@@ -70,6 +75,6 @@ type SimplifiedEvent struct {
 
 // IsControlEvent returns true for control events that don't represent actual resources.
 // Control events include SEED_SYNC for orphan detection.
-func (e SimplifiedEvent) IsControlEvent() bool {
+func (e Event) IsControlEvent() bool {
 	return e.Operation == "SEED_SYNC"
 }

@@ -33,7 +33,6 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/yaml"
 
-	"github.com/ConfigButler/gitops-reverser/internal/eventqueue"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
@@ -85,7 +84,7 @@ func TestRaceConditionIntegration(t *testing.T) {
 
 	t.Run("full_race_condition_workflow", func(t *testing.T) {
 		// Step 2: Prepare events to be committed
-		events := []eventqueue.Event{
+		events := []Event{
 			{
 				Object: createTestPodWithResourceVersion("app-pod", "production", "100"),
 				Identifier: types.ResourceIdentifier{
@@ -96,10 +95,10 @@ func TestRaceConditionIntegration(t *testing.T) {
 					Name:      "app-pod",
 				},
 				Operation: "CREATE",
-				UserInfo: eventqueue.UserInfo{
+				UserInfo: UserInfo{
 					Username: "developer@company.com",
 				},
-				GitRepoConfigRef: "production-repo",
+				BaseFolder: "",
 			},
 			{
 				Object: createTestPodWithResourceVersion("cache-pod", "production", "200"),
@@ -111,10 +110,10 @@ func TestRaceConditionIntegration(t *testing.T) {
 					Name:      "cache-pod",
 				},
 				Operation: "UPDATE",
-				UserInfo: eventqueue.UserInfo{
+				UserInfo: UserInfo{
 					Username: "system:deployment-controller",
 				},
-				GitRepoConfigRef: "production-repo",
+				BaseFolder: "",
 			},
 		}
 
@@ -124,7 +123,7 @@ func TestRaceConditionIntegration(t *testing.T) {
 		require.NoError(t, err)
 
 		// Step 4: Attempt to push commits - this should trigger race condition resolution
-		err = repo.TryPushCommits(ctx, events)
+		err = repo.TryPushCommits(ctx, "main", events)
 
 		// The operation should succeed after conflict resolution
 		require.NoError(t, err, "TryPushCommits should succeed after conflict resolution")
@@ -178,11 +177,11 @@ func TestRaceConditionIntegration(t *testing.T) {
 		// Test various error scenarios
 
 		// Test with empty events
-		err := repo.TryPushCommits(ctx, []eventqueue.Event{})
+		err := repo.TryPushCommits(ctx, "main", []Event{})
 		require.NoError(t, err, "Should handle empty events gracefully")
 
 		// Test with invalid object (this should be handled gracefully)
-		invalidEvent := eventqueue.Event{
+		invalidEvent := Event{
 			Object: &unstructured.Unstructured{}, // Empty object
 			Identifier: types.ResourceIdentifier{
 				Group:     "",
@@ -192,13 +191,13 @@ func TestRaceConditionIntegration(t *testing.T) {
 				Name:      "test",
 			},
 			Operation: "CREATE",
-			UserInfo: eventqueue.UserInfo{
+			UserInfo: UserInfo{
 				Username: "test-user",
 			},
 		}
 
 		// This might fail, but shouldn't panic
-		_ = repo.TryPushCommits(ctx, []eventqueue.Event{invalidEvent})
+		_ = repo.TryPushCommits(ctx, "main", []Event{invalidEvent})
 	})
 }
 

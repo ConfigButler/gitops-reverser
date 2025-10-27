@@ -40,7 +40,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/yaml"
 
-	"github.com/ConfigButler/gitops-reverser/internal/eventqueue"
 	"github.com/ConfigButler/gitops-reverser/internal/sanitize"
 )
 
@@ -185,13 +184,17 @@ func GetHTTPAuthMethod(username, password string) (transport.AuthMethod, error) 
 }
 
 // TryPushCommits implements the "Re-evaluate and Re-generate" strategy for conflict resolution.
-func (r *Repo) TryPushCommits(ctx context.Context, events []eventqueue.Event) error {
+// Branch is passed explicitly from worker context.
+func (r *Repo) TryPushCommits(ctx context.Context, branch string, events []Event) error {
 	logger := log.FromContext(ctx)
 
 	if len(events) == 0 {
 		logger.Info("No events to commit")
 		return nil
 	}
+
+	// Store branch in repo for this operation
+	r.branch = branch
 
 	// 1. Generate local commits from the event queue
 	if err := r.generateLocalCommits(ctx, events); err != nil {
@@ -259,7 +262,7 @@ func sanitizeBaseFolder(base string) string {
 }
 
 // generateLocalCommits creates local commits for the given events.
-func (r *Repo) generateLocalCommits(ctx context.Context, events []eventqueue.Event) error {
+func (r *Repo) generateLocalCommits(ctx context.Context, events []Event) error {
 	logger := log.FromContext(ctx)
 	worktree, err := r.Worktree()
 	if err != nil {
@@ -300,7 +303,7 @@ func (r *Repo) generateLocalCommits(ctx context.Context, events []eventqueue.Eve
 // handleEventOperation processes an event based on its operation type (CREATE/UPDATE/DELETE).
 func (r *Repo) handleEventOperation(
 	ctx context.Context,
-	event eventqueue.Event,
+	event Event,
 	filePath string,
 	worktree *git.Worktree,
 ) error {
@@ -344,7 +347,7 @@ func (r *Repo) handleDeleteOperation(logger logr.Logger, filePath, fullPath stri
 
 // handleCreateOrUpdateOperation writes and stages a file in the repository.
 func (r *Repo) handleCreateOrUpdateOperation(
-	event eventqueue.Event,
+	event Event,
 	filePath, fullPath string,
 	worktree *git.Worktree,
 ) error {
@@ -373,7 +376,7 @@ func (r *Repo) handleCreateOrUpdateOperation(
 }
 
 // createCommitForEvent creates a git commit for the given event.
-func (r *Repo) createCommitForEvent(event eventqueue.Event, filePath string, worktree *git.Worktree) error {
+func (r *Repo) createCommitForEvent(event Event, filePath string, worktree *git.Worktree) error {
 	commitMessage := GetCommitMessage(event)
 	_, err := worktree.Commit(commitMessage, &git.CommitOptions{
 		Author: &object.Signature{
@@ -467,9 +470,9 @@ func (r *Repo) optimizedFetch(ctx context.Context) error {
 }
 
 // reEvaluateEvents checks which events are still valid against the current repository state.
-func (r *Repo) reEvaluateEvents(ctx context.Context, events []eventqueue.Event) []eventqueue.Event {
+func (r *Repo) reEvaluateEvents(ctx context.Context, events []Event) []Event {
 	logger := log.FromContext(ctx)
-	var validEvents []eventqueue.Event
+	var validEvents []Event
 
 	for _, event := range events {
 		if r.isEventStillValid(ctx, event) {
@@ -486,7 +489,7 @@ func (r *Repo) reEvaluateEvents(ctx context.Context, events []eventqueue.Event) 
 }
 
 // isEventStillValid checks if an event is still relevant compared to the current Git state.
-func (r *Repo) isEventStillValid(ctx context.Context, event eventqueue.Event) bool {
+func (r *Repo) isEventStillValid(ctx context.Context, event Event) bool {
 	logger := log.FromContext(ctx)
 
 	filePath := event.Identifier.ToGitPath()
@@ -714,7 +717,7 @@ func (r *Repo) Commit(files []CommitFile, message string) error {
 }
 
 // GetCommitMessage returns a structured commit message for the given event.
-func GetCommitMessage(event eventqueue.Event) string {
+func GetCommitMessage(event Event) string {
 	return fmt.Sprintf("[%s] %s by user/%s",
 		event.Operation,
 		event.Identifier.String(),
