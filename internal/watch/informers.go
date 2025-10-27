@@ -26,7 +26,7 @@ import (
 	"k8s.io/client-go/tools/cache"
 
 	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
-	"github.com/ConfigButler/gitops-reverser/internal/eventqueue"
+	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/metrics"
 	"github.com/ConfigButler/gitops-reverser/internal/sanitize"
 	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
@@ -104,34 +104,44 @@ func (m *Manager) handleEvent(obj interface{}, g GVR, op configv1alpha1.Operatio
 		metrics.GitCommitQueueSize.Add(ctx, enqueueCount)
 	}
 
-	// WatchRule matches.
+	// WatchRule matches - route to workers
 	for _, rule := range wrRules {
-		ev := eventqueue.Event{
-			Object:                 sanitized.DeepCopy(),
-			Identifier:             id,
-			Operation:              string(op),
-			UserInfo:               userInfo,
-			GitRepoConfigRef:       rule.GitRepoConfigRef,
-			GitRepoConfigNamespace: rule.Source.Namespace,
-			Branch:                 rule.Branch,
-			BaseFolder:             rule.BaseFolder,
+		ev := git.SimplifiedEvent{
+			Object:     sanitized.DeepCopy(),
+			Identifier: id,
+			Operation:  string(op),
+			UserInfo:   userInfo,
+			BaseFolder: rule.BaseFolder,
 		}
-		m.EventQueue.Enqueue(ev)
+
+		if err := m.EventRouter.RouteEvent(
+			rule.GitRepoConfigRef,
+			rule.GitRepoConfigNamespace,
+			rule.Branch,
+			ev,
+		); err != nil {
+			m.Log.V(1).Info("Failed to route event", "error", err)
+		}
 	}
 
-	// ClusterWatchRule matches.
+	// ClusterWatchRule matches - route to workers
 	for _, cr := range cwrRules {
-		ev := eventqueue.Event{
-			Object:                 sanitized.DeepCopy(),
-			Identifier:             id,
-			Operation:              string(op),
-			UserInfo:               userInfo,
-			GitRepoConfigRef:       cr.GitRepoConfigRef,
-			GitRepoConfigNamespace: cr.GitRepoConfigNamespace,
-			Branch:                 cr.Branch,
-			BaseFolder:             cr.BaseFolder,
+		ev := git.SimplifiedEvent{
+			Object:     sanitized.DeepCopy(),
+			Identifier: id,
+			Operation:  string(op),
+			UserInfo:   userInfo,
+			BaseFolder: cr.BaseFolder,
 		}
-		m.EventQueue.Enqueue(ev)
+
+		if err := m.EventRouter.RouteEvent(
+			cr.GitRepoConfigRef,
+			cr.GitRepoConfigNamespace,
+			cr.Branch,
+			ev,
+		); err != nil {
+			m.Log.V(1).Info("Failed to route event", "error", err)
+		}
 	}
 }
 

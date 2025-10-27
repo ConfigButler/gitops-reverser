@@ -177,11 +177,11 @@ func (r *ClusterWatchRuleReconciler) reconcileClusterWatchRuleViaDestination(
 	// MVP: No access policy validation (simplified per spec)
 	log.Info("GitRepoConfig validation passed", "gitRepoConfig", gitRepoConfig.Name, "namespace", grcNS)
 
-	// Add rule to store with resolved GitDestination values (branch and baseFolder)
+	// Add rule to store with GitDestination reference and resolved values
 	r.RuleStore.AddOrUpdateClusterWatchRule(
 		*clusterRule,
-		gitRepoConfig.Name,
-		grcNS,
+		dest.Name, destNS, // GitDestination reference
+		gitRepoConfig.Name, grcNS, // GitRepoConfig reference
 		dest.Spec.Branch,
 		dest.Spec.BaseFolder,
 	)

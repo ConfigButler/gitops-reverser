@@ -61,7 +61,7 @@ func TestAddOrUpdateWatchRule(t *testing.T) {
 	rule.Namespace = "default"
 
 	// Add rule
-	store.AddOrUpdateWatchRule(rule, "test-repo", "gitops-system", "main", "clusters/prod")
+	store.AddOrUpdateWatchRule(rule, "test-dest", "default", "test-repo", "gitops-system", "main", "clusters/prod")
 
 	// Verify it was added
 	key := types.NamespacedName{Name: "test-rule", Namespace: "default"}
@@ -94,7 +94,15 @@ func TestAddOrUpdateWatchRule(t *testing.T) {
 	}
 
 	// Update rule with different values
-	store.AddOrUpdateWatchRule(rule, "updated-repo", "gitops-system", "develop", "clusters/staging")
+	store.AddOrUpdateWatchRule(
+		rule,
+		"test-dest",
+		"default",
+		"updated-repo",
+		"gitops-system",
+		"develop",
+		"clusters/staging",
+	)
 
 	compiled, exists = store.rules[key]
 	if !exists {
@@ -131,7 +139,15 @@ func TestAddOrUpdateClusterWatchRule(t *testing.T) {
 	rule.Name = "test-cluster-rule"
 
 	// Add rule
-	store.AddOrUpdateClusterWatchRule(rule, "cluster-repo", "gitops-system", "main", "cluster/audit")
+	store.AddOrUpdateClusterWatchRule(
+		rule,
+		"test-cluster-dest",
+		"gitops-system",
+		"cluster-repo",
+		"gitops-system",
+		"main",
+		"cluster/audit",
+	)
 
 	// Verify it was added
 	key := types.NamespacedName{Name: "test-cluster-rule", Namespace: ""}
@@ -178,7 +194,7 @@ func TestDelete(t *testing.T) {
 	key := types.NamespacedName{Name: "delete-test", Namespace: "default"}
 
 	// Add rule
-	store.AddOrUpdateWatchRule(rule, "test-repo", "gitops-system", "main", "test")
+	store.AddOrUpdateWatchRule(rule, "test-dest", "default", "test-repo", "gitops-system", "main", "test")
 
 	// Verify it exists
 	if _, exists := store.rules[key]; !exists {
@@ -213,7 +229,7 @@ func TestDeleteClusterWatchRule(t *testing.T) {
 	key := types.NamespacedName{Name: "delete-cluster-test", Namespace: ""}
 
 	// Add rule
-	store.AddOrUpdateClusterWatchRule(rule, "test-repo", "gitops-system", "main", "test")
+	store.AddOrUpdateClusterWatchRule(rule, "test-dest", "gitops-system", "test-repo", "gitops-system", "main", "test")
 
 	// Verify it exists
 	if _, exists := store.clusterRules[key]; !exists {
@@ -264,8 +280,8 @@ func TestGetMatchingRules(t *testing.T) {
 	rule2.Name = "deployment-rule"
 	rule2.Namespace = "default"
 
-	store.AddOrUpdateWatchRule(rule1, "repo1", "gitops-system", "main", "test1")
-	store.AddOrUpdateWatchRule(rule2, "repo2", "gitops-system", "main", "test2")
+	store.AddOrUpdateWatchRule(rule1, "dest1", "default", "repo1", "gitops-system", "main", "test1")
+	store.AddOrUpdateWatchRule(rule2, "dest2", "default", "repo2", "gitops-system", "main", "test2")
 
 	tests := []struct {
 		name            string
@@ -396,8 +412,24 @@ func TestGetMatchingClusterRules(t *testing.T) {
 	}
 	namespacedRule.Name = "pod-cluster-rule"
 
-	store.AddOrUpdateClusterWatchRule(clusterRule, "repo1", "gitops-system", "main", "cluster")
-	store.AddOrUpdateClusterWatchRule(namespacedRule, "repo2", "gitops-system", "main", "namespaced")
+	store.AddOrUpdateClusterWatchRule(
+		clusterRule,
+		"dest1",
+		"gitops-system",
+		"repo1",
+		"gitops-system",
+		"main",
+		"cluster",
+	)
+	store.AddOrUpdateClusterWatchRule(
+		namespacedRule,
+		"dest2",
+		"gitops-system",
+		"repo2",
+		"gitops-system",
+		"main",
+		"namespaced",
+	)
 
 	tests := []struct {
 		name            string
@@ -647,8 +679,8 @@ func TestSnapshotWatchRules(t *testing.T) {
 	rule2.Name = "rule2"
 	rule2.Namespace = "default"
 
-	store.AddOrUpdateWatchRule(rule1, "repo1", "gitops-system", "main", "test1")
-	store.AddOrUpdateWatchRule(rule2, "repo2", "gitops-system", "main", "test2")
+	store.AddOrUpdateWatchRule(rule1, "dest1", "default", "repo1", "gitops-system", "main", "test1")
+	store.AddOrUpdateWatchRule(rule2, "dest2", "default", "repo2", "gitops-system", "main", "test2")
 
 	// Get snapshot
 	snapshot := store.SnapshotWatchRules()
@@ -685,7 +717,7 @@ func TestSnapshotClusterWatchRules(t *testing.T) {
 	}
 	rule1.Name = "cluster-rule1"
 
-	store.AddOrUpdateClusterWatchRule(rule1, "repo1", "gitops-system", "main", "cluster")
+	store.AddOrUpdateClusterWatchRule(rule1, "dest1", "gitops-system", "repo1", "gitops-system", "main", "cluster")
 
 	snapshot := store.SnapshotClusterWatchRules()
 
@@ -725,7 +757,7 @@ func TestConcurrentAccess(t *testing.T) {
 				rule.Name = "concurrent-rule"
 				rule.Namespace = "default"
 
-				store.AddOrUpdateWatchRule(rule, "repo", "gitops-system", "main", "test")
+				store.AddOrUpdateWatchRule(rule, "dest", "default", "repo", "gitops-system", "main", "test")
 			}
 		}(i)
 	}
@@ -772,7 +804,7 @@ func TestMultipleResourceRules(t *testing.T) {
 	rule.Name = "multi-rule"
 	rule.Namespace = "default"
 
-	store.AddOrUpdateWatchRule(rule, "repo", "gitops-system", "main", "test")
+	store.AddOrUpdateWatchRule(rule, "dest", "default", "repo", "gitops-system", "main", "test")
 
 	// Should match pod CREATE
 	matches := store.GetMatchingRules(nil, "pods", configv1alpha1.OperationCreate, "", "v1", false)

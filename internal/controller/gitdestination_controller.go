@@ -33,6 +33,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	configbutleraiv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	"github.com/ConfigButler/gitops-reverser/internal/git"
 )
 
 // GitDestination status condition reasons.
@@ -47,7 +48,8 @@ const (
 type GitDestinationReconciler struct {
 	client.Client
 
-	Scheme *runtime.Scheme
+	Scheme        *runtime.Scheme
+	WorkerManager *git.WorkerManager
 }
 
 // +kubebuilder:rbac:groups=configbutler.ai,resources=gitdestinations,verbs=get;list;watch;create;update;patch;delete
@@ -65,6 +67,7 @@ func (r *GitDestinationReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	if err := r.Get(ctx, req.NamespacedName, &dest); err != nil {
 		if client.IgnoreNotFound(err) == nil {
 			log.Info("GitDestination not found, was likely deleted", "namespacedName", req.NamespacedName)
+			// Note: Worker cleanup happens on pod restart (no active users, simple lifecycle)
 			return ctrl.Result{}, nil
 		}
 		log.Error(err, "unable to fetch GitDestination", "namespacedName", req.NamespacedName)
@@ -127,6 +130,24 @@ func (r *GitDestinationReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	r.setCondition(&dest, metav1.ConditionTrue, GitDestinationReasonReady, msg)
 	dest.Status.ObservedGeneration = dest.Generation
 
+	// Register with branch worker (idempotent - safe to call on every reconcile)
+	if r.WorkerManager != nil {
+		if err := r.WorkerManager.RegisterDestination(
+			ctx,
+			dest.Name, dest.Namespace,
+			dest.Spec.RepoRef.Name, repoNS,
+			dest.Spec.Branch,
+			dest.Spec.BaseFolder,
+		); err != nil {
+			log.Error(err, "Failed to register destination with worker")
+		} else {
+			log.Info("Registered destination with branch worker",
+				"repo", dest.Spec.RepoRef.Name,
+				"branch", dest.Spec.Branch,
+				"baseFolder", dest.Spec.BaseFolder)
+		}
+	}
+
 	log.Info("Updating status with success condition")
 	if err := r.updateStatusWithRetry(ctx, &dest); err != nil {
 		log.Error(err, "Failed to update GitDestination status")
@@ -136,6 +157,10 @@ func (r *GitDestinationReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	log.Info("Reconciliation successful", "name", dest.Name)
 	return ctrl.Result{RequeueAfter: RequeueLongInterval}, nil
 }
+
+// Note: Worker registration is idempotent - calling RegisterDestination multiple times
+// for the same destination is safe. Workers are cleaned up on pod restart.
+// Since we have no active users, this simplified lifecycle approach is acceptable.
 
 // setCondition sets or updates the Ready condition.
 func (r *GitDestinationReconciler) setCondition(dest *configbutleraiv1alpha1.GitDestination,

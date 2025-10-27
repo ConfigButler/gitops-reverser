@@ -40,6 +40,7 @@ import (
 	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 	"github.com/ConfigButler/gitops-reverser/internal/correlation"
 	"github.com/ConfigButler/gitops-reverser/internal/eventqueue"
+	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/metrics"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
 	"github.com/ConfigButler/gitops-reverser/internal/sanitize"
@@ -59,8 +60,8 @@ type Manager struct {
 	Log logr.Logger
 	// RuleStore gives access to compiled WatchRule/ClusterWatchRule.
 	RuleStore *rulestore.RuleStore
-	// EventQueue is where sanitized events will be enqueued for git workers.
-	EventQueue *eventqueue.Queue
+	// EventRouter dispatches events to branch workers (replaces EventQueue).
+	EventRouter *git.EventRouter
 	// CorrelationStore enables webhook→watch username enrichment.
 	CorrelationStore *correlation.Store
 
@@ -201,7 +202,7 @@ func (m *Manager) matchRules(
 	return wrRules, cwrRules
 }
 
-// enqueueMatches pushes sanitized events to the shared event queue for both rule types.
+// enqueueMatches pushes sanitized events to branch workers via event router.
 // It attempts to enrich events with webhook-captured username via correlation store.
 // Implements deduplication: skips enqueuing if sanitized content is identical to last seen.
 func (m *Manager) enqueueMatches(
@@ -222,35 +223,44 @@ func (m *Manager) enqueueMatches(
 	// Attempt correlation enrichment
 	userInfo := m.tryEnrichFromCorrelation(ctx, sanitized, id, "UPDATE")
 
-	// WatchRule matches.
-	// TODO: We enque the same event in all the watchrules/clusterwatchrules that match: we only want to queue them in every branch/repo combination. This way it will be to much.
+	// WatchRule matches - route to workers
 	for _, rule := range watchRules {
-		ev := eventqueue.Event{
-			Object:                 sanitized.DeepCopy(),
-			Identifier:             id,
-			Operation:              "UPDATE",
-			UserInfo:               userInfo,
-			GitRepoConfigRef:       rule.GitRepoConfigRef,
-			GitRepoConfigNamespace: rule.Source.Namespace,
-			Branch:                 rule.Branch,
-			BaseFolder:             rule.BaseFolder,
+		ev := git.SimplifiedEvent{
+			Object:     sanitized.DeepCopy(),
+			Identifier: id,
+			Operation:  "UPDATE",
+			UserInfo:   userInfo,
+			BaseFolder: rule.BaseFolder,
 		}
-		m.EventQueue.Enqueue(ev)
+
+		if err := m.EventRouter.RouteEvent(
+			rule.GitRepoConfigRef,
+			rule.GitRepoConfigNamespace,
+			rule.Branch,
+			ev,
+		); err != nil {
+			m.Log.V(1).Info("Failed to route event", "error", err)
+		}
 	}
 
-	// ClusterWatchRule matches.
+	// ClusterWatchRule matches - route to workers
 	for _, cr := range clusterRules {
-		ev := eventqueue.Event{
-			Object:                 sanitized.DeepCopy(),
-			Identifier:             id,
-			Operation:              "UPDATE",
-			UserInfo:               userInfo,
-			GitRepoConfigRef:       cr.GitRepoConfigRef,
-			GitRepoConfigNamespace: cr.GitRepoConfigNamespace,
-			Branch:                 cr.Branch,
-			BaseFolder:             cr.BaseFolder,
+		ev := git.SimplifiedEvent{
+			Object:     sanitized.DeepCopy(),
+			Identifier: id,
+			Operation:  "UPDATE",
+			UserInfo:   userInfo,
+			BaseFolder: cr.BaseFolder,
 		}
-		m.EventQueue.Enqueue(ev)
+
+		if err := m.EventRouter.RouteEvent(
+			cr.GitRepoConfigRef,
+			cr.GitRepoConfigNamespace,
+			cr.Branch,
+			ev,
+		); err != nil {
+			m.Log.V(1).Info("Failed to route event", "error", err)
+		}
 	}
 }
 
@@ -336,7 +346,7 @@ func (m *Manager) tryEnrichFromCorrelation(
 
 // seedSelectedResources performs a one-time List across all discoverable GVRs derived from active rules,
 // sanitizes objects, matches rules, and enqueues UPDATE events to bootstrap the repository state.
-// Orphan detection will be added in a subsequent step.
+// Orphan detection happens via SEED_SYNC control events per branch.
 func (m *Manager) seedSelectedResources(ctx context.Context) {
 	log := m.Log.WithName("seed")
 	log.Info("starting initial seed listing")
@@ -353,16 +363,16 @@ func (m *Manager) seedSelectedResources(ctx context.Context) {
 		return
 	}
 
-	// Collect unique GitRepoConfig refs seen during seed to emit a SEED_SYNC control event per repo.
-	repoKeys := make(map[k8stypes.NamespacedName]struct{})
+	// Track unique (repo, branch) combinations seen during seed to emit SEED_SYNC per branch
+	branchKeys := make(map[git.BranchKey]struct{})
 
 	for _, g := range discoverable {
-		m.seedListAndProcess(ctx, dc, g, repoKeys)
+		m.seedListAndProcess(ctx, dc, g, branchKeys)
 	}
 
-	m.emitSeedSyncControls(repoKeys)
+	m.emitSeedSyncControls(branchKeys)
 
-	log.Info("seed listing completed", "gvrCount", len(discoverable), "repoKeys", len(repoKeys))
+	log.Info("seed listing completed", "gvrCount", len(discoverable), "branchKeys", len(branchKeys))
 }
 
 // dynamicClientFromConfig builds a dynamic client from the controller's REST config.
@@ -520,7 +530,7 @@ func (m *Manager) seedListAndProcess(
 	ctx context.Context,
 	dc dynamic.Interface,
 	g GVR,
-	repoKeys map[k8stypes.NamespacedName]struct{},
+	branchKeys map[git.BranchKey]struct{},
 ) {
 	log := m.Log.WithName("seed").
 		WithValues("group", g.Group, "version", g.Version, "resource", g.Resource, "scope", g.Scope)
@@ -540,7 +550,7 @@ func (m *Manager) seedListAndProcess(
 
 		metrics.ObjectsScannedTotal.Add(ctx, int64(len(list.Items)))
 		for i := range list.Items {
-			m.processListedObject(ctx, &list.Items[i], g, repoKeys)
+			m.processListedObject(ctx, &list.Items[i], g, branchKeys)
 		}
 	} else {
 		// Namespaced resource from WatchRule(s) - list per namespace
@@ -554,7 +564,7 @@ func (m *Manager) seedListAndProcess(
 
 			totalItems += len(list.Items)
 			for i := range list.Items {
-				m.processListedObject(ctx, &list.Items[i], g, repoKeys)
+				m.processListedObject(ctx, &list.Items[i], g, branchKeys)
 			}
 		}
 		metrics.ObjectsScannedTotal.Add(ctx, int64(totalItems))
@@ -562,12 +572,12 @@ func (m *Manager) seedListAndProcess(
 	}
 }
 
-// processListedObject evaluates rules, tracks repo keys, sanitizes, and enqueues events for one item.
+// processListedObject evaluates rules, tracks branch keys, sanitizes, and enqueues events for one item.
 func (m *Manager) processListedObject(
 	ctx context.Context,
 	u *unstructured.Unstructured,
 	g GVR,
-	repoKeys map[k8stypes.NamespacedName]struct{},
+	branchKeys map[git.BranchKey]struct{},
 ) {
 	id := itypes.NewResourceIdentifier(g.Group, g.Version, g.Resource, u.GetNamespace(), u.GetName())
 
@@ -582,12 +592,20 @@ func (m *Manager) processListedObject(
 		return
 	}
 
-	// Track GitRepoConfig keys for SEED_SYNC control emission (orphan detection) after seed.
+	// Track (repo, branch) keys for SEED_SYNC control emission (orphan detection) after seed
 	for _, r := range wrRules {
-		repoKeys[k8stypes.NamespacedName{Name: r.GitRepoConfigRef, Namespace: r.Source.Namespace}] = struct{}{}
+		branchKeys[git.BranchKey{
+			RepoNamespace: r.GitRepoConfigNamespace,
+			RepoName:      r.GitRepoConfigRef,
+			Branch:        r.Branch,
+		}] = struct{}{}
 	}
 	for _, cr := range cwrRules {
-		repoKeys[k8stypes.NamespacedName{Name: cr.GitRepoConfigRef, Namespace: cr.GitRepoConfigNamespace}] = struct{}{}
+		branchKeys[git.BranchKey{
+			RepoNamespace: cr.GitRepoConfigNamespace,
+			RepoName:      cr.GitRepoConfigRef,
+			Branch:        cr.Branch,
+		}] = struct{}{}
 	}
 
 	sanitized := sanitize.Sanitize(u)
@@ -600,17 +618,23 @@ func (m *Manager) processListedObject(
 	}
 }
 
-// emitSeedSyncControls enqueues one SEED_SYNC control event per repository key.
-func (m *Manager) emitSeedSyncControls(repoKeys map[k8stypes.NamespacedName]struct{}) {
-	for key := range repoKeys {
-		m.EventQueue.Enqueue(eventqueue.Event{
-			Object:                 nil,
-			Identifier:             itypes.ResourceIdentifier{},
-			Operation:              "SEED_SYNC",
-			UserInfo:               eventqueue.UserInfo{},
-			GitRepoConfigRef:       key.Name,
-			GitRepoConfigNamespace: key.Namespace,
-		})
+// emitSeedSyncControls enqueues one SEED_SYNC control event per (repo, branch) combination.
+// Each worker handles orphan detection for all baseFolders it manages.
+func (m *Manager) emitSeedSyncControls(branchKeys map[git.BranchKey]struct{}) {
+	for key := range branchKeys {
+		ev := git.SimplifiedEvent{
+			Operation:  "SEED_SYNC",
+			BaseFolder: "", // Empty = all baseFolders for this branch
+		}
+
+		if err := m.EventRouter.RouteEvent(
+			key.RepoName,
+			key.RepoNamespace,
+			key.Branch,
+			ev,
+		); err != nil {
+			m.Log.Error(err, "Failed to route SEED_SYNC", "key", key.String())
+		}
 	}
 }
 

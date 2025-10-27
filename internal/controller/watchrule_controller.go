@@ -186,8 +186,14 @@ func (r *WatchRuleReconciler) reconcileWatchRuleViaDestination(
 	// MVP: No access policy validation (simplified per spec)
 	log.Info("GitRepoConfig validation passed", "gitRepoConfig", grc.Name, "namespace", grcNS)
 
-	// Add rule to store with resolved GitDestination values (branch and baseFolder)
-	r.RuleStore.AddOrUpdateWatchRule(*watchRule, grc.Name, grcNS, dest.Spec.Branch, dest.Spec.BaseFolder)
+	// Add rule to store with GitDestination reference and resolved values
+	r.RuleStore.AddOrUpdateWatchRule(
+		*watchRule,
+		dest.Name, destNS, // GitDestination reference
+		grc.Name, grcNS, // GitRepoConfig reference
+		dest.Spec.Branch,
+		dest.Spec.BaseFolder,
+	)
 
 	// Trigger WatchManager reconciliation for new/updated rule
 	if r.WatchManager != nil {

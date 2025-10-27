@@ -45,7 +45,6 @@ import (
 	configbutleraiv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 	"github.com/ConfigButler/gitops-reverser/internal/controller"
 	"github.com/ConfigButler/gitops-reverser/internal/correlation"
-	"github.com/ConfigButler/gitops-reverser/internal/eventqueue"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/leader"
 	"github.com/ConfigButler/gitops-reverser/internal/metrics"
@@ -109,15 +108,20 @@ func main() {
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr), "unable to create controller", "controller", "GitRepoConfig")
 
-	// GitDestination controller
-	fatalIfErr((&controller.GitDestinationReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr), "unable to create controller", "controller", "GitDestination")
-
-	// Initialize rule store and event queue for webhook handler
+	// Initialize rule store for watch rules
 	ruleStore := rulestore.NewStore()
-	eventQueue := eventqueue.NewQueue()
+
+	// Initialize WorkerManager (manages branch workers)
+	workerManager := git.NewWorkerManager(mgr.GetClient(), ctrl.Log.WithName("worker-manager"))
+	fatalIfErr(mgr.Add(workerManager), "unable to add worker manager to manager")
+	setupLog.Info("WorkerManager initialized and added to manager")
+
+	// GitDestination controller (with WorkerManager)
+	fatalIfErr((&controller.GitDestinationReconciler{
+		Client:        mgr.GetClient(),
+		Scheme:        mgr.GetScheme(),
+		WorkerManager: workerManager,
+	}).SetupWithManager(mgr), "unable to create controller", "controller", "GitDestination")
 
 	// Initialize correlation store for webhook→watch enrichment
 	correlationStore := correlation.NewStore(correlationTTL, correlationMaxEntries)
@@ -128,12 +132,16 @@ func main() {
 		"ttl", correlationTTL,
 		"maxEntries", correlationMaxEntries)
 
-	// Watch ingestion manager (create early so controllers can reference it)
+	// Initialize EventRouter (replaces old EventQueue)
+	eventRouter := git.NewEventRouter(workerManager, ctrl.Log.WithName("event-router"))
+	setupLog.Info("EventRouter initialized")
+
+	// Watch ingestion manager (uses EventRouter instead of EventQueue)
 	watchMgr := &watch.Manager{
 		Client:           mgr.GetClient(),
 		Log:              ctrl.Log.WithName("watch"),
 		RuleStore:        ruleStore,
-		EventQueue:       eventQueue,
+		EventRouter:      eventRouter,
 		CorrelationStore: correlationStore,
 	}
 
@@ -169,14 +177,9 @@ func main() {
 	mgr.GetWebhookServer().Register("/process-validating-webhook", validatingWebhook)
 	setupLog.Info("Webhook handler registered", "path", "/process-validating-webhook")
 
-	// Git worker
-	gitWorker := &git.Worker{
-		Client:     mgr.GetClient(),
-		Log:        ctrl.Log.WithName("git-worker"),
-		EventQueue: eventQueue,
-	}
-	fatalIfErr(mgr.Add(gitWorker), "unable to add git worker to manager")
-	setupLog.Info("Git worker added to manager")
+	// NOTE: Old git.Worker has been replaced by WorkerManager + BranchWorker architecture
+	// The new system is already initialized above and wired through EventRouter
+	setupLog.Info("Using new BranchWorker architecture (per-branch workers)")
 
 	// Setup watch manager (must be after controllers are set up)
 	fatalIfErr(watchMgr.SetupWithManager(mgr), "unable to setup watch ingestion manager")
