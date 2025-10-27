@@ -109,46 +109,15 @@ func NewStore() *RuleStore {
 	}
 }
 
-// AddOrUpdateWatchRule adds or updates a namespace-scoped WatchRule in the store.
-// Legacy pathway (without DestinationRef resolution) retained for compatibility;
-// BaseFolder will be empty and GitRepoConfigRef taken from the CR (if present).
-func (s *RuleStore) AddOrUpdateWatchRule(rule configv1alpha1.WatchRule) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	key := types.NamespacedName{
-		Name:      rule.Name,
-		Namespace: rule.Namespace,
-	}
-
-	compiled := CompiledRule{
-		Source:                 key,
-		GitRepoConfigRef:       "",    // legacy path removed in CRD; left empty
-		GitRepoConfigNamespace: "",    // legacy path removed
-		BaseFolder:             "",    // no destination provided via legacy path
-		IsClusterScoped:        false, // WatchRule is namespace-scoped
-		ResourceRules:          make([]CompiledResourceRule, 0, len(rule.Spec.Rules)),
-	}
-
-	for _, r := range rule.Spec.Rules {
-		compiled.ResourceRules = append(compiled.ResourceRules, CompiledResourceRule{
-			Operations:  r.Operations,
-			APIGroups:   r.APIGroups,
-			APIVersions: r.APIVersions,
-			Resources:   r.Resources,
-		})
-	}
-
-	s.rules[key] = compiled
-}
-
-// AddOrUpdateWatchRuleResolved adds or updates a WatchRule with a pre-resolved destination.
+// AddOrUpdateWatchRule adds or updates a WatchRule with a resolved destination from GitDestination.
+// The chain is: WatchRule -> GitDestination -> GitRepoConfig
 // Parameters:
-//   - gitRepoConfigName: the name of the resolved GitRepoConfig
+//   - rule: the WatchRule to add or update
+//   - gitRepoConfigName: the name of the resolved GitRepoConfig (from GitDestination.Spec.RepoRef)
 //   - gitRepoConfigNamespace: the namespace containing the resolved GitRepoConfig
-//   - branch: the Git branch to write to (from GitDestination)
-//   - baseFolder: POSIX-like relative path prefix for writes (sanitized upstream)
-func (s *RuleStore) AddOrUpdateWatchRuleResolved(
+//   - branch: the Git branch to write to (from GitDestination.Spec.Branch)
+//   - baseFolder: POSIX-like relative path prefix for writes (from GitDestination.Spec.BaseFolder, sanitized upstream)
+func (s *RuleStore) AddOrUpdateWatchRule(
 	rule configv1alpha1.WatchRule,
 	gitRepoConfigName string,
 	gitRepoConfigNamespace string,
@@ -185,51 +154,15 @@ func (s *RuleStore) AddOrUpdateWatchRuleResolved(
 	s.rules[key] = compiled
 }
 
-// AddOrUpdate is deprecated. Use AddOrUpdateWatchRule instead.
-func (s *RuleStore) AddOrUpdate(rule configv1alpha1.WatchRule) {
-	s.AddOrUpdateWatchRule(rule)
-}
-
-// AddOrUpdateClusterWatchRule adds or updates a cluster-scoped ClusterWatchRule in the store.
-// Legacy pathway (without DestinationRef resolution) retained for compatibility;
-// BaseFolder will be empty and GitRepoConfigRef taken from the CR (if present).
-func (s *RuleStore) AddOrUpdateClusterWatchRule(rule configv1alpha1.ClusterWatchRule) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	key := types.NamespacedName{
-		Name:      rule.Name,
-		Namespace: "", // Empty for cluster-scoped resources
-	}
-
-	compiled := CompiledClusterRule{
-		Source:                 key,
-		GitRepoConfigRef:       "", // legacy field removed from CRD
-		GitRepoConfigNamespace: "",
-		BaseFolder:             "", // legacy path has no destination
-		Rules:                  make([]CompiledClusterResourceRule, 0, len(rule.Spec.Rules)),
-	}
-
-	for _, r := range rule.Spec.Rules {
-		compiled.Rules = append(compiled.Rules, CompiledClusterResourceRule{
-			Operations:  r.Operations,
-			APIGroups:   r.APIGroups,
-			APIVersions: r.APIVersions,
-			Resources:   r.Resources,
-			Scope:       r.Scope,
-		})
-	}
-
-	s.clusterRules[key] = compiled
-}
-
-// AddOrUpdateClusterWatchRuleResolved adds or updates a ClusterWatchRule with a pre-resolved destination.
+// AddOrUpdateClusterWatchRule adds or updates a ClusterWatchRule with a resolved destination from GitDestination.
+// The chain is: ClusterWatchRule -> GitDestination -> GitRepoConfig
 // Parameters:
-//   - gitRepoConfigName: the name of the resolved GitRepoConfig
+//   - rule: the ClusterWatchRule to add or update
+//   - gitRepoConfigName: the name of the resolved GitRepoConfig (from GitDestination.Spec.RepoRef)
 //   - gitRepoConfigNamespace: the namespace containing the resolved GitRepoConfig
-//   - branch: the Git branch to write to (from GitDestination)
-//   - baseFolder: POSIX-like relative path prefix for writes (sanitized upstream)
-func (s *RuleStore) AddOrUpdateClusterWatchRuleResolved(
+//   - branch: the Git branch to write to (from GitDestination.Spec.Branch)
+//   - baseFolder: POSIX-like relative path prefix for writes (from GitDestination.Spec.BaseFolder, sanitized upstream)
+func (s *RuleStore) AddOrUpdateClusterWatchRule(
 	rule configv1alpha1.ClusterWatchRule,
 	gitRepoConfigName string,
 	gitRepoConfigNamespace string,

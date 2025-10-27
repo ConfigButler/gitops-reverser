@@ -395,57 +395,8 @@ func (m *Manager) getNamespacesForGVR(g GVR) []string {
 		return nil
 	}
 
-	// For namespaced resources, check if they come from WatchRules
-	// WatchRules only watch their own namespace
-	wrRules := m.RuleStore.SnapshotWatchRules()
-	namespacesSet := make(map[string]struct{})
-
-	for _, rule := range wrRules {
-		// Check if this rule watches this GVR
-		for _, rr := range rule.ResourceRules {
-			// Match API group
-			groups := rr.APIGroups
-			if len(groups) == 0 {
-				groups = []string{""}
-			}
-			groupMatch := false
-			for _, grp := range groups {
-				if grp == "*" || grp == g.Group {
-					groupMatch = true
-					break
-				}
-			}
-			if !groupMatch {
-				continue
-			}
-
-			// Match API version
-			versions := rr.APIVersions
-			if len(versions) == 0 {
-				versions = []string{"v1"}
-			}
-			versionMatch := false
-			for _, ver := range versions {
-				if ver == "*" || ver == g.Version {
-					versionMatch = true
-					break
-				}
-			}
-			if !versionMatch {
-				continue
-			}
-
-			// Match resource
-			for _, res := range rr.Resources {
-				normalized := normalizeResource(res)
-				if normalized == "*" || normalized == g.Resource {
-					// This rule watches this GVR in its namespace
-					namespacesSet[rule.Source.Namespace] = struct{}{}
-					break
-				}
-			}
-		}
-	}
+	// Collect namespaces from WatchRules
+	namespacesSet := m.collectWatchRuleNamespaces(g)
 
 	// Convert set to slice
 	namespaces := make([]string, 0, len(namespacesSet))
@@ -453,59 +404,113 @@ func (m *Manager) getNamespacesForGVR(g GVR) []string {
 		namespaces = append(namespaces, ns)
 	}
 
-	// If no WatchRules matched, check for ClusterWatchRules with Namespaced scope
-	// ClusterWatchRules with Namespaced scope list cluster-wide (all namespaces)
-	if len(namespaces) == 0 {
-		cwrRules := m.RuleStore.SnapshotClusterWatchRules()
-		for _, cwrRule := range cwrRules {
-			for _, rr := range cwrRule.Rules {
-				if rr.Scope != configv1alpha1.ResourceScopeNamespaced {
-					continue
-				}
-				// Check if this ClusterWatchRule rule watches this GVR
-				// (Similar matching logic as above)
-				groups := rr.APIGroups
-				if len(groups) == 0 {
-					groups = []string{""}
-				}
-				groupMatch := false
-				for _, grp := range groups {
-					if grp == "*" || grp == g.Group {
-						groupMatch = true
-						break
-					}
-				}
-				if !groupMatch {
-					continue
-				}
+	// Check ClusterWatchRules if no WatchRules matched
+	if len(namespaces) == 0 && m.hasMatchingClusterWatchRule(g) {
+		return nil // ClusterWatchRule with Namespaced scope - list cluster-wide
+	}
 
-				versions := rr.APIVersions
-				if len(versions) == 0 {
-					versions = []string{"v1"}
-				}
-				versionMatch := false
-				for _, ver := range versions {
-					if ver == "*" || ver == g.Version {
-						versionMatch = true
-						break
-					}
-				}
-				if !versionMatch {
-					continue
-				}
+	return namespaces
+}
 
-				for _, res := range rr.Resources {
-					normalized := normalizeResource(res)
-					if normalized == "*" || normalized == g.Resource {
-						// ClusterWatchRule with Namespaced scope - list cluster-wide
-						return nil
-					}
-				}
+// collectWatchRuleNamespaces collects namespaces from WatchRules that match the given GVR.
+func (m *Manager) collectWatchRuleNamespaces(g GVR) map[string]struct{} {
+	wrRules := m.RuleStore.SnapshotWatchRules()
+	namespacesSet := make(map[string]struct{})
+
+	for _, rule := range wrRules {
+		if m.compiledRuleMatchesGVR(rule.ResourceRules, g) {
+			namespacesSet[rule.Source.Namespace] = struct{}{}
+		}
+	}
+
+	return namespacesSet
+}
+
+// hasMatchingClusterWatchRule checks if any ClusterWatchRule with Namespaced scope matches the GVR.
+func (m *Manager) hasMatchingClusterWatchRule(g GVR) bool {
+	cwrRules := m.RuleStore.SnapshotClusterWatchRules()
+
+	for _, cwrRule := range cwrRules {
+		for _, rr := range cwrRule.Rules {
+			if rr.Scope != configv1alpha1.ResourceScopeNamespaced {
+				continue
+			}
+			if m.clusterResourceRuleMatchesGVR(rr, g) {
+				return true
 			}
 		}
 	}
 
-	return namespaces
+	return false
+}
+
+// compiledRuleMatchesGVR checks if any CompiledResourceRule in the slice matches the given GVR.
+func (m *Manager) compiledRuleMatchesGVR(resourceRules []rulestore.CompiledResourceRule, g GVR) bool {
+	for _, rr := range resourceRules {
+		if m.compiledResourceRuleMatchesGVR(rr, g) {
+			return true
+		}
+	}
+	return false
+}
+
+// compiledResourceRuleMatchesGVR checks if a CompiledResourceRule matches the given GVR.
+func (m *Manager) compiledResourceRuleMatchesGVR(rr rulestore.CompiledResourceRule, g GVR) bool {
+	if !m.matchesAPIGroups(rr.APIGroups, g.Group) {
+		return false
+	}
+	if !m.matchesAPIVersions(rr.APIVersions, g.Version) {
+		return false
+	}
+	return m.matchesResources(rr.Resources, g.Resource)
+}
+
+// clusterResourceRuleMatchesGVR checks if a CompiledClusterResourceRule matches the given GVR.
+func (m *Manager) clusterResourceRuleMatchesGVR(rr rulestore.CompiledClusterResourceRule, g GVR) bool {
+	if !m.matchesAPIGroups(rr.APIGroups, g.Group) {
+		return false
+	}
+	if !m.matchesAPIVersions(rr.APIVersions, g.Version) {
+		return false
+	}
+	return m.matchesResources(rr.Resources, g.Resource)
+}
+
+// matchesAPIGroups checks if the rule's API groups match the target group.
+func (m *Manager) matchesAPIGroups(groups []string, targetGroup string) bool {
+	if len(groups) == 0 {
+		groups = []string{""}
+	}
+	for _, grp := range groups {
+		if grp == "*" || grp == targetGroup {
+			return true
+		}
+	}
+	return false
+}
+
+// matchesAPIVersions checks if the rule's API versions match the target version.
+func (m *Manager) matchesAPIVersions(versions []string, targetVersion string) bool {
+	if len(versions) == 0 {
+		versions = []string{"v1"}
+	}
+	for _, ver := range versions {
+		if ver == "*" || ver == targetVersion {
+			return true
+		}
+	}
+	return false
+}
+
+// matchesResources checks if the rule's resources match the target resource.
+func (m *Manager) matchesResources(resources []string, targetResource string) bool {
+	for _, res := range resources {
+		normalized := normalizeResource(res)
+		if normalized == "*" || normalized == targetResource {
+			return true
+		}
+	}
+	return false
 }
 
 // seedListAndProcess lists objects for a GVR and processes them into enqueue operations.
@@ -673,7 +678,6 @@ func (m *Manager) ReconcileForRuleChange(ctx context.Context) error {
 // compareGVRs returns (added, removed) GVRs compared to current active set.
 // Now handles GVR+namespace combinations properly.
 func (m *Manager) compareGVRs(desired []GVR) ([]GVR, []GVR) {
-	var added, removed []GVR
 	m.informersMu.Lock()
 	defer m.informersMu.Unlock()
 
@@ -683,57 +687,82 @@ func (m *Manager) compareGVRs(desired []GVR) ([]GVR, []GVR) {
 	}
 
 	// Build map of desired GVR -> namespaces
+	desiredGVRNamespaces := m.buildDesiredGVRNamespaces(desired)
+
+	// Find added and removed GVRs
+	added := m.findAddedGVRs(desiredGVRNamespaces)
+	removed := m.findRemovedGVRs(desiredGVRNamespaces)
+
+	return added, removed
+}
+
+// buildDesiredGVRNamespaces constructs a map of desired GVR to their namespaces.
+func (m *Manager) buildDesiredGVRNamespaces(desired []GVR) map[GVR]map[string]bool {
 	desiredGVRNamespaces := make(map[GVR]map[string]bool)
+
 	for _, gvr := range desired {
 		namespaces := m.getNamespacesForGVRUnlocked(gvr)
+
+		if desiredGVRNamespaces[gvr] == nil {
+			desiredGVRNamespaces[gvr] = make(map[string]bool)
+		}
+
 		if len(namespaces) == 0 {
 			// Cluster-wide
-			if desiredGVRNamespaces[gvr] == nil {
-				desiredGVRNamespaces[gvr] = make(map[string]bool)
-			}
 			desiredGVRNamespaces[gvr][""] = true
 		} else {
-			if desiredGVRNamespaces[gvr] == nil {
-				desiredGVRNamespaces[gvr] = make(map[string]bool)
-			}
 			for _, ns := range namespaces {
 				desiredGVRNamespaces[gvr][ns] = true
 			}
 		}
 	}
 
-	// Find GVRs that need informers added (any new GVR or new namespace for existing GVR)
+	return desiredGVRNamespaces
+}
+
+// findAddedGVRs identifies GVRs that need informers added.
+func (m *Manager) findAddedGVRs(desiredGVRNamespaces map[GVR]map[string]bool) []GVR {
+	var added []GVR
 	seenGVRs := make(map[GVR]bool)
+
 	for gvr, desiredNS := range desiredGVRNamespaces {
-		activeNS, gvrExists := m.activeInformers[gvr]
-
-		// Check if this is a completely new GVR or if it has new namespaces
-		hasNewNamespaces := false
-		if !gvrExists {
-			hasNewNamespaces = true
-		} else {
-			for ns := range desiredNS {
-				if _, nsExists := activeNS[ns]; !nsExists {
-					hasNewNamespaces = true
-					break
-				}
-			}
-		}
-
-		if hasNewNamespaces && !seenGVRs[gvr] {
+		if m.hasNewNamespaces(gvr, desiredNS) && !seenGVRs[gvr] {
 			added = append(added, gvr)
 			seenGVRs[gvr] = true
 		}
 	}
 
-	// Find GVRs that should be removed (GVR not in desired set at all)
+	return added
+}
+
+// hasNewNamespaces checks if a GVR has new namespaces compared to active informers.
+func (m *Manager) hasNewNamespaces(gvr GVR, desiredNS map[string]bool) bool {
+	activeNS, gvrExists := m.activeInformers[gvr]
+
+	if !gvrExists {
+		return true
+	}
+
+	for ns := range desiredNS {
+		if _, nsExists := activeNS[ns]; !nsExists {
+			return true
+		}
+	}
+
+	return false
+}
+
+// findRemovedGVRs identifies GVRs that should be removed.
+func (m *Manager) findRemovedGVRs(desiredGVRNamespaces map[GVR]map[string]bool) []GVR {
+	var removed []GVR
+
 	for gvr := range m.activeInformers {
 		if _, exists := desiredGVRNamespaces[gvr]; !exists {
 			removed = append(removed, gvr)
 		}
 	}
 
-	return added, removed
+	return removed
 }
 
 // getNamespacesForGVRUnlocked is like getNamespacesForGVR but assumes informersMu is already held.
@@ -781,39 +810,55 @@ func (m *Manager) startInformersForGVRs(ctx context.Context, gvrs []GVR) error {
 	}
 
 	m.informersMu.Lock()
+	defer m.informersMu.Unlock()
 
-	// Initialize if needed
+	m.initializeInformerMaps()
+
+	toStart := m.collectInformersToStart(gvrs)
+
+	if len(toStart) == 0 {
+		log.Info("All informers already running")
+		return nil
+	}
+
+	log.Info("Starting new informers", "count", len(toStart))
+	return m.startCollectedInformers(ctx, client, toStart)
+}
+
+// initializeInformerMaps ensures informer tracking maps are initialized.
+func (m *Manager) initializeInformerMaps() {
 	if m.activeInformers == nil {
 		m.activeInformers = make(map[GVR]map[string]context.CancelFunc)
 	}
 	if m.informerFactories == nil {
 		m.informerFactories = make(map[string]dynamicinformer.DynamicSharedInformerFactory)
 	}
+}
 
-	// Group GVRs by namespace to start informers efficiently
-	type gvrNamespace struct {
-		gvr GVR
-		ns  string
-	}
+// gvrNamespace represents a GVR and its target namespace.
+type gvrNamespace struct {
+	gvr GVR
+	ns  string
+}
+
+// collectInformersToStart identifies which informers need to be started.
+func (m *Manager) collectInformersToStart(gvrs []GVR) []gvrNamespace {
 	var toStart []gvrNamespace
 
 	for _, gvr := range gvrs {
-		// Determine namespaces for this GVR
 		namespaces := m.getNamespacesForGVR(gvr)
+
+		if m.activeInformers[gvr] == nil {
+			m.activeInformers[gvr] = make(map[string]context.CancelFunc)
+		}
 
 		if len(namespaces) == 0 {
 			// Cluster-wide informer
-			if m.activeInformers[gvr] == nil {
-				m.activeInformers[gvr] = make(map[string]context.CancelFunc)
-			}
 			if _, exists := m.activeInformers[gvr][""]; !exists {
 				toStart = append(toStart, gvrNamespace{gvr: gvr, ns: ""})
 			}
 		} else {
 			// Namespace-scoped informers
-			if m.activeInformers[gvr] == nil {
-				m.activeInformers[gvr] = make(map[string]context.CancelFunc)
-			}
 			for _, ns := range namespaces {
 				if _, exists := m.activeInformers[gvr][ns]; !exists {
 					toStart = append(toStart, gvrNamespace{gvr: gvr, ns: ns})
@@ -822,24 +867,18 @@ func (m *Manager) startInformersForGVRs(ctx context.Context, gvrs []GVR) error {
 		}
 	}
 
-	if len(toStart) == 0 {
-		m.informersMu.Unlock()
-		log.Info("All informers already running")
-		return nil
-	}
+	return toStart
+}
 
-	log.Info("Starting new informers", "count", len(toStart))
-
-	// Start informers
+// startCollectedInformers starts all the collected informers.
+func (m *Manager) startCollectedInformers(ctx context.Context, client dynamic.Interface, toStart []gvrNamespace) error {
 	for _, item := range toStart {
 		if err := m.startSingleInformer(ctx, client, item.gvr, item.ns); err != nil {
-			m.informersMu.Unlock()
 			return err
 		}
 	}
 
-	m.informersMu.Unlock()
-	log.Info("All informers started and synced")
+	m.Log.WithName("reconcile").Info("All informers started and synced")
 	return nil
 }
 
