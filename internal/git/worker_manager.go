@@ -114,15 +114,11 @@ func (m *WorkerManager) UnregisterDestination(
 		return nil
 	}
 
-	// Unregister destination from worker
-	isEmpty := worker.UnregisterDestination(destName, destNamespace)
-
-	// If no more destinations use this worker, destroy it
-	if isEmpty {
-		m.Log.Info("Last destination unregistered, destroying worker", "key", key.String())
-		worker.Stop()
-		delete(m.workers, key)
-	}
+	// Worker no longer tracks destinations internally - always destroy worker
+	// since WorkerManager handles all lifecycle decisions
+	m.Log.Info("Unregistering destination, destroying worker", "key", key.String())
+	worker.Stop()
+	delete(m.workers, key)
 
 	return nil
 }

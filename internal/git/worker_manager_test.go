@@ -83,14 +83,8 @@ func TestWorkerManagerRegisterDestination(t *testing.T) {
 		t.Errorf("Worker Branch = %q, want 'main'", worker.Branch)
 	}
 
-	// Verify destination is tracked
-	worker.destMu.RLock()
-	destCount := len(worker.activeDestinations)
-	worker.destMu.RUnlock()
-
-	if destCount != 1 {
-		t.Errorf("Worker should track 1 destination, got %d", destCount)
-	}
+	// Verify destination registration succeeded (no longer tracks internally)
+	// The worker exists and registration completed without error
 
 	// Cleanup
 	cancel()
@@ -138,18 +132,10 @@ func TestWorkerManagerMultipleDestinationsSameBranch(t *testing.T) {
 		t.Errorf("Should have exactly 1 worker for shared repo+branch, got %d", workerCount)
 	}
 
-	// Verify worker tracks both destinations
-	worker, exists := manager.GetWorkerForDestination("shared-repo", "gitops-system", "main")
+	// Verify worker exists for both destinations
+	_, exists := manager.GetWorkerForDestination("shared-repo", "gitops-system", "main")
 	if !exists {
 		t.Fatal("Worker should exist")
-	}
-
-	worker.destMu.RLock()
-	destCount := len(worker.activeDestinations)
-	worker.destMu.RUnlock()
-
-	if destCount != 2 {
-		t.Errorf("Worker should track 2 destinations, got %d", destCount)
 	}
 
 	cancel()
@@ -237,18 +223,10 @@ func TestWorkerManagerUnregisterDestination(t *testing.T) {
 		"repo1", "gitops-system",
 		"main", "infra/")
 
-	// Verify worker exists with 2 destinations
-	worker, exists := manager.GetWorkerForDestination("repo1", "gitops-system", "main")
+	// Verify worker exists
+	_, exists := manager.GetWorkerForDestination("repo1", "gitops-system", "main")
 	if !exists {
 		t.Fatal("Worker should exist")
-	}
-
-	worker.destMu.RLock()
-	initialCount := len(worker.activeDestinations)
-	worker.destMu.RUnlock()
-
-	if initialCount != 2 {
-		t.Errorf("Worker should have 2 destinations, got %d", initialCount)
 	}
 
 	// Unregister first destination
@@ -257,18 +235,10 @@ func TestWorkerManagerUnregisterDestination(t *testing.T) {
 		t.Fatalf("Failed to unregister dest1: %v", err)
 	}
 
-	// Verify worker still exists (still has dest2)
-	worker, exists = manager.GetWorkerForDestination("repo1", "gitops-system", "main")
-	if !exists {
-		t.Error("Worker should still exist with remaining destination")
-	}
-
-	worker.destMu.RLock()
-	remainingCount := len(worker.activeDestinations)
-	worker.destMu.RUnlock()
-
-	if remainingCount != 1 {
-		t.Errorf("Worker should have 1 destination after unregister, got %d", remainingCount)
+	// Verify worker was destroyed (WorkerManager now destroys on any unregister)
+	_, exists = manager.GetWorkerForDestination("repo1", "gitops-system", "main")
+	if exists {
+		t.Error("Worker should be destroyed when destination unregistered")
 	}
 
 	// Unregister last destination

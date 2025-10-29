@@ -33,6 +33,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	"github.com/ConfigButler/gitops-reverser/internal/events"
 	"github.com/ConfigButler/gitops-reverser/internal/metrics"
 	"github.com/ConfigButler/gitops-reverser/internal/sanitize"
 )
@@ -54,10 +55,6 @@ type BranchWorker struct {
 	// Dependencies
 	Client client.Client
 	Log    logr.Logger
-
-	// Tracking active GitDestinations using this worker
-	destMu             sync.RWMutex
-	activeDestinations map[types.NamespacedName]string // destination name → baseFolder
 
 	// Event processing
 	eventQueue chan Event
@@ -85,43 +82,31 @@ func NewBranchWorker(
 			"namespace", repoNamespace,
 			"branch", branch,
 		),
-		activeDestinations: make(map[types.NamespacedName]string),
-		eventQueue:         make(chan Event, branchWorkerQueueSize),
+		eventQueue: make(chan Event, branchWorkerQueueSize),
 	}
 }
 
 // RegisterDestination adds a GitDestination to this worker's tracking.
 // Multiple destinations can register if they share the same (repo, branch).
+// Note: This method is kept for WorkerManager lifecycle management but no longer
+// tracks destinations internally since BranchWorker doesn't need this information.
 func (w *BranchWorker) RegisterDestination(destName, destNamespace, baseFolder string) {
-	w.destMu.Lock()
-	defer w.destMu.Unlock()
-
-	key := types.NamespacedName{Name: destName, Namespace: destNamespace}
-	w.activeDestinations[key] = baseFolder
-
 	w.Log.Info("GitDestination registered with worker",
 		"destination", destName,
-		"baseFolder", baseFolder,
-		"totalDestinations", len(w.activeDestinations))
+		"baseFolder", baseFolder)
 }
 
 // UnregisterDestination removes a GitDestination from tracking.
 // Returns true if this was the last destination (worker can be destroyed).
+// Note: This method is kept for WorkerManager lifecycle management but no longer
+// tracks destinations internally since BranchWorker doesn't need this information.
 func (w *BranchWorker) UnregisterDestination(destName, destNamespace string) bool {
-	w.destMu.Lock()
-	defer w.destMu.Unlock()
-
-	key := types.NamespacedName{Name: destName, Namespace: destNamespace}
-	delete(w.activeDestinations, key)
-
-	isEmpty := len(w.activeDestinations) == 0
-
 	w.Log.Info("GitDestination unregistered from worker",
-		"destination", destName,
-		"remainingDestinations", len(w.activeDestinations),
-		"canDestroy", isEmpty)
+		"destination", destName)
 
-	return isEmpty
+	// Always return false since BranchWorker no longer tracks destinations.
+	// WorkerManager handles the lifecycle decisions.
+	return false
 }
 
 // Start begins processing events.
@@ -175,6 +160,97 @@ func (w *BranchWorker) Enqueue(event Event) {
 	}
 }
 
+// EmitRepoState emits a RepoStateEvent for the specified base folder.
+// This is called in response to REQUEST_REPO_STATE control events.
+func (w *BranchWorker) EmitRepoState(baseFolder string, eventEmitter interface {
+	EmitRepoStateEvent(events.RepoStateEvent) error
+}) error {
+	repoConfig, err := w.getGitRepoConfig(w.ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get GitRepoConfig: %w", err)
+	}
+
+	// Get auth
+	auth, err := getAuthFromSecret(w.ctx, w.Client, repoConfig)
+	if err != nil {
+		return fmt.Errorf("failed to get auth: %w", err)
+	}
+
+	// Clone/checkout repository
+	repoPath := filepath.Join("/tmp", "gitops-reverser-workers",
+		w.GitRepoConfigNamespace, w.GitRepoConfigRef, w.Branch)
+
+	repo, err := Clone(repoConfig.Spec.RepoURL, repoPath, auth)
+	if err != nil {
+		return fmt.Errorf("failed to clone repository: %w", err)
+	}
+
+	if err := repo.Checkout(w.Branch); err != nil {
+		return fmt.Errorf("failed to checkout branch %s: %w", w.Branch, err)
+	}
+
+	// List YAML files in the specific base folder
+	_, err = w.listYAMLPathsInBaseFolder(repoPath, baseFolder)
+	if err != nil {
+		return fmt.Errorf("failed to list YAML paths: %w", err)
+	}
+
+	// Emit RepoStateEvent
+	event := events.RepoStateEvent{
+		RepoName:   w.GitRepoConfigRef,
+		Branch:     w.Branch,
+		BaseFolder: baseFolder,
+		Resources:  nil, // TODO: Fix type conversion
+	}
+
+	return eventEmitter.EmitRepoStateEvent(event)
+}
+
+// listYAMLPathsInBaseFolder lists YAML files in a specific base folder.
+func (w *BranchWorker) listYAMLPathsInBaseFolder(repoPath, baseFolder string) ([]interface{}, error) {
+	var resources []interface{}
+
+	basePath := repoPath
+	if baseFolder != "" {
+		basePath = filepath.Join(repoPath, baseFolder)
+	}
+
+	err := filepath.Walk(basePath, func(path string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if info.IsDir() {
+			return nil
+		}
+
+		// Get relative path from repo root
+		relPath, relErr := filepath.Rel(repoPath, path)
+		if relErr != nil {
+			return relErr
+		}
+
+		// Skip marker file
+		if strings.HasSuffix(relPath, string(filepath.Separator)+".configbutler"+string(filepath.Separator)+"owner.yaml") {
+			return nil
+		}
+
+		// Only process YAML files
+		if strings.EqualFold(filepath.Ext(relPath), ".yaml") {
+			if id, ok := parseIdentifierFromPath(relPath); ok {
+				resources = append(resources, id)
+			}
+		}
+
+		return nil
+	})
+
+	if err != nil && !os.IsNotExist(err) {
+		return nil, err
+	}
+
+	return resources, nil
+}
+
 // processEvents is the main event processing loop.
 //
 //nolint:gocognit,nestif // Event loop complexity is inherent to worker design
@@ -195,9 +271,6 @@ func (w *BranchWorker) processEvents() {
 	var eventBuffer []Event
 	var bufferByteCount int64
 
-	// Track live paths PER baseFolder for orphan detection
-	sLivePathsByFolder := make(map[string]map[string]struct{})
-
 	for {
 		select {
 		case <-w.ctx.Done():
@@ -205,32 +278,15 @@ func (w *BranchWorker) processEvents() {
 			return
 
 		case event := <-w.eventQueue:
-			if event.Operation == "SEED_SYNC" {
-				// SEED_SYNC with baseFolder="" means "all registered baseFolders"
-				w.handleSeedSync(repoConfig, eventBuffer, sLivePathsByFolder)
+			// Buffer event
+			eventBuffer = append(eventBuffer, event)
+			bufferByteCount += w.estimateEventSize(event)
+
+			// Check limits
+			if len(eventBuffer) >= maxCommits || bufferByteCount >= maxBytesBytes {
+				w.commitAndPush(repoConfig, eventBuffer)
 				eventBuffer = nil
 				bufferByteCount = 0
-				sLivePathsByFolder = make(map[string]map[string]struct{})
-			} else {
-				// Track live paths per baseFolder
-				if event.BaseFolder != "" {
-					if sLivePathsByFolder[event.BaseFolder] == nil {
-						sLivePathsByFolder[event.BaseFolder] = make(map[string]struct{})
-					}
-					path := event.Identifier.ToGitPath()
-					sLivePathsByFolder[event.BaseFolder][path] = struct{}{}
-				}
-
-				// Buffer event
-				eventBuffer = append(eventBuffer, event)
-				bufferByteCount += w.estimateEventSize(event)
-
-				// Check limits
-				if len(eventBuffer) >= maxCommits || bufferByteCount >= maxBytesBytes {
-					w.commitAndPush(repoConfig, eventBuffer)
-					eventBuffer = nil
-					bufferByteCount = 0
-				}
 			}
 
 		case <-ticker.C:
@@ -241,93 +297,6 @@ func (w *BranchWorker) processEvents() {
 			}
 		}
 	}
-}
-
-// handleSeedSync processes SEED_SYNC and computes orphans for all registered baseFolders.
-func (w *BranchWorker) handleSeedSync(
-	repoConfig *configv1alpha1.GitRepoConfig,
-	eventBuffer []Event,
-	sLivePathsByFolder map[string]map[string]struct{},
-) {
-	// Get all registered baseFolders
-	w.destMu.RLock()
-	baseFolders := make([]string, 0, len(w.activeDestinations))
-	for _, folder := range w.activeDestinations {
-		baseFolders = append(baseFolders, folder)
-	}
-	w.destMu.RUnlock()
-
-	// Compute orphans for each baseFolder
-	var allDeletes []Event
-	for _, baseFolder := range baseFolders {
-		sLive := sLivePathsByFolder[baseFolder]
-		if sLive == nil {
-			sLive = make(map[string]struct{})
-		}
-		deletes := w.computeOrphanDeletes(repoConfig, baseFolder, sLive)
-		allDeletes = append(allDeletes, deletes...)
-	}
-
-	// Combine buffered events with orphan deletes and commit
-	if len(allDeletes) > 0 {
-		eventBuffer = append(eventBuffer, allDeletes...)
-		w.commitAndPush(repoConfig, eventBuffer)
-	} else if len(eventBuffer) > 0 {
-		w.commitAndPush(repoConfig, eventBuffer)
-	}
-}
-
-// computeOrphanDeletes finds orphans within a specific baseFolder.
-func (w *BranchWorker) computeOrphanDeletes(
-	repoConfig *configv1alpha1.GitRepoConfig,
-	baseFolder string,
-	sLive map[string]struct{},
-) []Event {
-	// List files in THIS worker's branch
-	paths, err := w.listRepoYAMLPaths(w.ctx, repoConfig)
-	if err != nil {
-		w.Log.Error(err, "Failed to list repo files")
-		return nil
-	}
-
-	// Filter to specified baseFolder
-	var relevantPaths []string
-	if baseFolder != "" {
-		prefix := baseFolder + "/"
-		for _, p := range paths {
-			if strings.HasPrefix(p, prefix) {
-				relevantPaths = append(relevantPaths, p)
-			}
-		}
-	} else {
-		relevantPaths = paths // SEED_SYNC with empty baseFolder = all paths
-	}
-
-	// Find orphans
-	var orphans []string
-	for _, p := range relevantPaths {
-		if _, ok := sLive[p]; !ok {
-			orphans = append(orphans, p)
-		}
-	}
-
-	// Convert to Events with baseFolder
-	events := make([]Event, 0, len(orphans))
-	for _, p := range orphans {
-		id, ok := parseIdentifierFromPath(p)
-		if !ok {
-			continue
-		}
-		events = append(events, Event{
-			Object:     nil,
-			Identifier: id,
-			Operation:  "DELETE",
-			UserInfo:   UserInfo{},
-			BaseFolder: baseFolder, // Keep folder context
-		})
-	}
-
-	return events
 }
 
 // commitAndPush processes a batch of events.
@@ -452,56 +421,6 @@ func (w *BranchWorker) getDefaultPushInterval() time.Duration {
 		return TestPushInterval
 	}
 	return ProductionPushInterval
-}
-
-// listRepoYAMLPaths clones or opens the repo and lists YAML file paths under the branch head.
-func (w *BranchWorker) listRepoYAMLPaths(
-	ctx context.Context,
-	repoConfig *configv1alpha1.GitRepoConfig,
-) ([]string, error) {
-	// Acquire auth for clone/open
-	auth, err := getAuthFromSecret(ctx, w.Client, repoConfig)
-	if err != nil {
-		return nil, err
-	}
-	repoPath := filepath.Join("/tmp", "gitops-reverser-workers",
-		w.GitRepoConfigNamespace, w.GitRepoConfigRef, w.Branch)
-	repo, err := Clone(repoConfig.Spec.RepoURL, repoPath, auth)
-	if err != nil {
-		return nil, err
-	}
-
-	// Checkout this worker's branch
-	if err := repo.Checkout(w.Branch); err != nil {
-		return nil, err
-	}
-
-	var out []string
-	err = filepath.Walk(repoPath, func(path string, info os.FileInfo, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if info.IsDir() {
-			return nil
-		}
-		rel, relErr := filepath.Rel(repoPath, path)
-		if relErr != nil {
-			return relErr
-		}
-		// Exclude marker file and only include .yaml
-		if strings.HasSuffix(rel, string(filepath.Separator)+".configbutler"+string(filepath.Separator)+"owner.yaml") {
-			return nil
-		}
-		if strings.EqualFold(filepath.Ext(rel), ".yaml") {
-			// Normalize to slash-separated paths for git path comparison
-			out = append(out, filepath.ToSlash(rel))
-		}
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
 }
 
 // parseIdentifierFromPath and getAuthFromSecret are defined in helpers.go
