@@ -73,6 +73,9 @@ type Event struct {
 	BaseFolder string
 }
 
+// Note: Event types have been moved to internal/events package to avoid import cycles.
+// See internal/events/events.go for ClusterStateEvent, RepoStateEvent, and ControlEvent.
+
 // IsControlEvent returns true for control events that don't represent actual resources.
 // Control events include SEED_SYNC for orphan detection.
 func (e Event) IsControlEvent() bool {
