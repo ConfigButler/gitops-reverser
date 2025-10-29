@@ -79,7 +79,6 @@ const (
 	periodicReconcileInterval = 30 * time.Second
 	minResourceKeyParts       = 3
 	resourceKeyCapacity       = 5
-	cacheWarmupDelay          = 500 * time.Millisecond
 )
 
 // Start begins the watch ingestion manager and blocks until context cancellation.

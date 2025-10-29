@@ -93,21 +93,22 @@ type RepoStateEvent struct {
 
 ## Component Responsibilities
 
-### WatchManager (Real-time Events + Reconciliation Safety)
-**Responsibility**: Fast, low-latency processing of live cluster changes + reconciliation safety
+### WatchManager (Real-time Events)
+**Responsibility**: Fast, low-latency processing of live cluster changes
 - Processes Kubernetes watch events immediately
-- **Updates `lastEventTimes` for race condition prevention**
-- **Applies time-based filtering to reconciliation CREATE/DELETE events** from BaseFolderReconciler
-- Forwards events to BranchWorkers for immediate Git commits
-- **Does NOT** handle reconciliation logic or snapshots
+- Forwards events to GitDestinationEventStreams (not directly to BranchWorkers)
+- Provides cluster state snapshots on request
+- **Does NOT** handle reconciliation logic, snapshots, or time-based filtering
 
-### GitDestination Controller (BaseFolderReconciler Lifecycle)
-**Responsibility**: Manages BaseFolderReconciler instances
+### GitDestination Controller (BaseFolderReconciler + GitDestinationEventStream Lifecycle)
+**Responsibility**: Manages BaseFolderReconciler and GitDestinationEventStream instances
 - Creates BaseFolderReconciler when GitDestination becomes Ready
+- Creates GitDestinationEventStream when GitDestination becomes Ready
 - One BaseFolderReconciler per (repo, branch, baseFolder) combination
-- Registers BaseFolderReconciler with EventRouter
+- One GitDestinationEventStream per GitDestination
+- Registers components with EventRouter
 - **Cleanup behavior**: Currently only `Retain` (leave Git files untouched)
-- Destroys BaseFolderReconciler when destination is deleted
+- Destroys components when destination is deleted
 
 ### BranchWorker (Simplified)
 **Before**: 4 responsibilities (process events + list files + compute orphans + generate deletes)
@@ -141,29 +142,47 @@ func (w *BranchWorker) emitRepoState(repoConfig *configv1alpha1.GitRepoConfig, b
 }
 ```
 
+**Note**: This method has been implemented in the BranchWorker. The `listYAMLPathsInBaseFolder` and `parseIdentifierFromPath` functions are implemented, and the event emission is handled through the EventRouter.
+
+### GitDestinationEventStream (New Component)
+**Responsibility**: Synchronize live event stream with reconciliation process (deterministic state machine)
+- **State Machine**: STARTUP_RECONCILE → LIVE_PROCESSING
+- **Event Buffering**: Buffers live events during initial reconciliation
+- **Completion Signaling**: Tracks when BaseFolderReconciler finishes reconciliation
+- **Event Hash Deduplication**: Tracks event hashes per ResourceIdentifier to prevent duplicate processing
+- **Direct to BranchWorker**: Forwards processed events directly to BranchWorker for commits
+
 ### BaseFolderReconciler (New Component)
-**Responsibility**: Reconcile Git base folder to match cluster state (time-aware safety delegated to WatchManager)
+**Responsibility**: Reconcile Git base folder to match cluster state (deterministic safety via GitDestinationEventStream)
 
 ```go
 type BaseFolderReconciler struct {
-    repoName   string
-    branch     string
-    baseFolder string
+	repoName   string
+	branch     string
+	baseFolder string
 
-    // No time tracking - delegated to WatchManager for consistency
-    // Focus purely on reconciliation logic
+	// Current state snapshots
+	clusterResources []types.ResourceIdentifier
+	gitResources     []types.ResourceIdentifier
+
+	// Dependencies for event emission
+	eventEmitter events.ReconcileEventEmitter
+	logger       logr.Logger
 }
+```
 
 func (r *BaseFolderReconciler) OnClusterState(event ClusterStateEvent) {
-    // Update cluster state snapshot
-    r.clusterResources = event.Resources
-    r.reconcileIfSafe()
+    if r.matchesEvent(event) {
+        r.clusterResources = event.Resources
+        r.reconcile()
+    }
 }
 
 func (r *BaseFolderReconciler) OnRepoState(event RepoStateEvent) {
-    // Update Git state snapshot
-    r.gitResources = event.Resources
-    r.reconcileIfSafe()
+    if r.matchesEvent(event) {
+        r.gitResources = event.Resources
+        r.reconcile()
+    }
 }
 
 func (r *BaseFolderReconciler) reconcile() {
@@ -173,20 +192,31 @@ func (r *BaseFolderReconciler) reconcile() {
     }
 
     // Compute reconciliation actions (pure logic, no time concerns)
-    toCreate := r.findMissingInGit(r.clusterResources, r.gitResources)
-    toDelete := r.findOrphansInGit(r.clusterResources, r.gitResources)
+    toCreate, toDelete, existingInBoth := r.findDifferences(r.clusterResources, r.gitResources)
+
+    r.logger.V(1).Info("Reconciliation computed",
+        "toCreate", len(toCreate),
+        "toDelete", len(toDelete),
+        "existingInBoth", len(existingInBoth))
 
     // Emit reconciliation events (time filtering happens in WatchManager)
     for _, resource := range toCreate {
-        r.emitCreateEvent(resource) // WatchManager applies time filtering
-    }
-    for _, resource := range toDelete {
-        r.emitDeleteEvent(resource) // WatchManager applies time filtering
+        if err := r.eventEmitter.EmitCreateEvent(resource); err != nil {
+            r.logger.Error(err, "Failed to emit create event", "resource", resource.String())
+        }
     }
 
-    // For updates and complex reconciliation, emit high-level event
-    if r.needsFullReconciliation(r.clusterResources, r.gitResources) {
-        r.emitReconcileToClusterEvent() // WatchManager decides if needed
+    for _, resource := range toDelete {
+        if err := r.eventEmitter.EmitDeleteEvent(resource); err != nil {
+            r.logger.Error(err, "Failed to emit delete event", "resource", resource.String())
+        }
+    }
+
+    // For resources that exist in both places, emit reconcile event immediately
+    for _, resource := range existingInBoth {
+        if err := r.eventEmitter.EmitReconcileResourceEvent(resource); err != nil {
+            r.logger.Error(err, "Failed to emit reconcile resource event", "resource", resource.String())
+        }
     }
 }
 ```
@@ -204,6 +234,11 @@ func (r *EventRouter) SendClusterState(event ClusterStateEvent) error {
     // Route cluster snapshots to reconcilers
     return r.routeToReconcilers(event)
 }
+
+func (r *EventRouter) SendToGitDestinationEventStream(event WatchEvent, gitDestName string) error {
+    // Route live events to specific GitDestinationEventStream
+    return r.routeToEventStream(event, gitDestName)
+}
 ```
 
 ## Event Flow
@@ -216,9 +251,9 @@ func (r *EventRouter) SendClusterState(event ClusterStateEvent) error {
 4. EventRouter → BranchWorker for (repo, branch)
 5. BranchWorker → RepoStateEvent("apps", resources) → EventRouter
 6. EventRouter → BaseFolderReconciler for ("repo", "branch", "apps")
-7. BaseFolderReconciler → compares cluster vs Git → CREATE/DELETE/RECONCILE_RESOURCE events → WatchManager
-8. WatchManager → applies time filtering to CREATE/DELETE events → injects all events into watch pipeline
-9. Watch pipeline → processes events, ignores RECONCILE_RESOURCE if not applicable → BranchWorker → executes Git operations
+7. BaseFolderReconciler → compares cluster vs Git → CREATE/DELETE/RECONCILE_RESOURCE events → GitDestinationEventStream
+8. GitDestinationEventStream → buffers events during STARTUP_RECONCILE, forwards immediately during LIVE_PROCESSING → BranchWorker
+9. BranchWorker → executes Git operations (reconciliation events get combined into single commit if possible)
 ```
 
 ### Comparison with Current Flow
@@ -229,7 +264,7 @@ WatchManager → SEED_SYNC → BranchWorker lists ALL files → computes ALL orp
 
 **New (Targeted, Event-Based):**
 ```
-OrphanDetector → REQUEST_REPO_STATE("apps") → BranchWorker lists apps/ files → RepoStateEvent → OrphanDetector compares → targeted DELETEs
+BaseFolderReconciler → REQUEST_REPO_STATE("apps") → BranchWorker lists apps/ files → RepoStateEvent → BaseFolderReconciler compares → targeted CREATE/DELETE/RECONCILE_RESOURCE events
 ```
 
 ## Base Folder Scoping
@@ -241,12 +276,12 @@ OrphanDetector → REQUEST_REPO_STATE("apps") → BranchWorker lists apps/ files
 
 ### Implementation
 - One `RepoStateEvent` per base folder
-- One `OrphanDetector` per (repo, branch, baseFolder) combination
+- One `BaseFolderReconciler` per (repo, branch, baseFolder) combination
 - Targeted `emitRepoState(baseFolder)` method
 
 ## Migration Strategy
 
-### Phase 1: Add Event Types & BaseFolderReconciler Package
+### Phase 1: Add Event Types & BaseFolderReconciler Package ✅ COMPLETED
 - Define `RepoStateEvent` and `ClusterStateEvent` structs (uses existing `types.ResourceIdentifier`)
 - Add `REQUEST_CLUSTER_STATE` and `REQUEST_REPO_STATE` control events
 - **Create `internal/reconcile/` package** (separate from existing code)
@@ -255,31 +290,37 @@ OrphanDetector → REQUEST_REPO_STATE("apps") → BranchWorker lists apps/ files
 - **Write integration tests** (test event handling and state management)
 - **Get feedback on interfaces and tests** before integration
 
-### Phase 2: Implement BaseFolderReconciler Lifecycle Management
+### Phase 2: Implement BaseFolderReconciler Lifecycle Management ✅ COMPLETED
 - **GitDestination Controller creates BaseFolderReconciler instances** when destinations become Ready
 - One BaseFolderReconciler per (repo, branch, baseFolder) combination
 - Register with EventRouter for event delivery
 - Handle cleanup when destinations are deleted
 
-### Phase 3: Modify WatchManager for Reconciliation Events
-- Add time-based filtering for reconciliation CREATE/DELETE events
-- Update `lastEventTimes` tracking for race condition prevention
-- Inject filtered reconciliation events into watch pipeline
+### Phase 3: Implement GitDestinationEventStream Component
+- Create `internal/reconcile/git_destination_event_stream.go`
+- Implement state machine: STARTUP_RECONCILE → LIVE_PROCESSING
+- Add event buffering during reconciliation phase
+- Add completion signaling from BaseFolderReconciler
+- Route events directly to BranchWorker (bypass WatchManager time filtering)
+- Combine reconciliation events into single commit when possible
 
 ### Phase 4: Modify BranchWorker
-- Add `emitRepoState(baseFolder)` method
+- Add `emitRepoState(baseFolder)` method ✅ COMPLETED
 - Replace `handleSeedSync` with event-based triggering
 - Keep existing functionality during transition
 
 ### Phase 5: Update EventRouter
 - Add routing for `RepoStateEvent`s and `ClusterStateEvent`s
 - Support per-baseFolder event delivery to BaseFolderReconcilers
+- Add routing to GitDestinationEventStreams
 
 ### Phase 6: Integration Testing
-- Test end-to-end event flow
+- Test end-to-end event flow with GitDestinationEventStream
 - Verify orphan detection accuracy
+- Test state machine transitions (STARTUP_RECONCILE → LIVE_PROCESSING)
+- Test event buffering and replay
 - Performance testing with multiple base folders
-- Test BaseFolderReconciler lifecycle (create/destroy)
+- Test component lifecycle (create/destroy)
 
 ### Phase 7: Remove Legacy Code
 - Remove old SEED_SYNC handling
@@ -302,11 +343,11 @@ func TestBaseFolderReconciler_FindDifferences(t *testing.T) {
         {Group: "", Version: "v1", Resource: "configmaps", Name: "old-config"}, // orphan
     }
 
-    toCreate, toDelete, needsReconciliation := reconciler.FindDifferences(clusterResources, gitResources)
+    toCreate, toDelete, existingInBoth := reconciler.FindDifferences(clusterResources, gitResources)
 
     assert.Contains(t, toCreate, clusterResources[1]) // service missing from Git
     assert.Contains(t, toDelete, gitResources[1])     // configmap orphan in Git
-    assert.True(t, needsReconciliation) // Resources exist in both but may need updates
+    assert.Contains(t, existingInBoth, clusterResources[0]) // pod exists in both
 }
 
 func TestBaseFolderReconciler_GenerateEvents(t *testing.T) {
@@ -321,11 +362,8 @@ func TestBaseFolderReconciler_GenerateEvents(t *testing.T) {
     }
     needsReconciliation := true
 
-    events := reconciler.GenerateEvents(toCreate, toDelete, needsReconciliation)
-
-    assert.Contains(t, events, expectedCreateEvent)
-    assert.Contains(t, events, expectedDeleteEvent)
-    assert.Contains(t, events, expectedReconcileResourceEvent)
+    // Events are emitted directly in reconcile(), not through GenerateEvents
+    // Test would verify that the correct events were emitted via the eventEmitter
 }
 
 func TestBaseFolderReconciler_OnStateEvents(t *testing.T) {
@@ -371,11 +409,11 @@ func TestBaseFolderReconciler_EventEmission(t *testing.T) {
         {Group: "", Version: "v1", Resource: "pods", Name: "app-pod"}, // exists in both
     }
 
-    toCreate, toDelete, needsReconciliation := reconciler.FindDifferences(clusterResources, gitResources)
+    toCreate, toDelete, existingInBoth := reconciler.FindDifferences(clusterResources, gitResources)
 
     assert.Empty(t, toCreate)     // Nothing to create
     assert.Empty(t, toDelete)     // Nothing to delete
-    assert.True(t, needsReconciliation) // RECONCILE_RESOURCE event will be emitted
+    assert.Contains(t, existingInBoth, clusterResources[0]) // RECONCILE_RESOURCE event will be emitted for this resource
 }
 ```
 
@@ -387,23 +425,28 @@ func TestBaseFolderReconciler_EventEmission(t *testing.T) {
 ## Benefits Summary
 
 1. **Architectural Clarity**: Single responsibility per component
-2. **Testability**: Isolated unit testing of each concern
-3. **Maintainability**: Changes to orphan logic don't affect Git operations
-4. **Scalability**: Independent scaling of components
-5. **Observability**: Event-based audit trail
-6. **Safety**: Per-base-folder isolation prevents cross-contamination
-7. **Performance**: Targeted operations instead of global scans
+2. **Deterministic Behavior**: State machine eliminates race conditions and timing issues
+3. **Event Buffering**: Clean separation between reconciliation and live processing
+4. **Testability**: Isolated unit testing of each concern
+5. **Maintainability**: Changes to orphan logic don't affect Git operations
+6. **Scalability**: Independent scaling of components
+7. **Observability**: Event-based audit trail with state machine visibility
+8. **Safety**: Per-base-folder isolation prevents cross-contamination
+9. **Performance**: Targeted operations instead of global scans, combined reconciliation commits
 
 ## Risk Mitigation
 
+- **No Persistence**: MVP approach - pod restart means reconciliation restart (acceptable for initial implementation)
+- **Deterministic State Machine**: GitDestinationEventStream provides predictable behavior instead of time-based filtering
+- **Event Hash Deduplication**: GitDestinationEventStream tracks event hashes per ResourceIdentifier to prevent duplicate event processing
+- **Push Rate Limiting**: Keep existing `pushInterval` and `maxCommits` configuration to prevent excessive Git operations
 - **Backward Compatibility**: Keep existing SEED_SYNC during transition
 - **Gradual Rollout**: Phase implementation with feature flags
 - **Comprehensive Testing**: Extensive test coverage before removing legacy code
-- **Monitoring**: Add metrics for event flow and performance
+- **Monitoring**: Add metrics for event flow, state transitions, buffering, and deduplication
 
 ## Future Extensions
 
-- **Git Metadata**: Add commit author, timestamp to `ResourceIdentifier`
 - **Selective Sync**: Sync only changed base folders
 - **Parallel Processing**: Multiple BaseFolderReconcilers per branch
 - **Caching**: Cache repo state to reduce Git operations

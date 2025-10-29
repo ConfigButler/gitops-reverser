@@ -41,12 +41,12 @@ func (k ReconcilerKey) String() string {
 // ReconcilerManager manages the lifecycle of BaseFolderReconciler instances.
 type ReconcilerManager struct {
 	reconcilers  map[ReconcilerKey]*BaseFolderReconciler
-	eventEmitter events.EventEmitter
+	eventEmitter events.ReconcileEventEmitter
 	logger       logr.Logger
 }
 
 // NewReconcilerManager creates a new ReconcilerManager.
-func NewReconcilerManager(eventEmitter events.EventEmitter, logger logr.Logger) *ReconcilerManager {
+func NewReconcilerManager(eventEmitter events.ReconcileEventEmitter, logger logr.Logger) *ReconcilerManager {
 	return &ReconcilerManager{
 		reconcilers:  make(map[ReconcilerKey]*BaseFolderReconciler),
 		eventEmitter: eventEmitter,

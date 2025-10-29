@@ -70,8 +70,8 @@ type ControlEvent struct {
 	Resource *types.ResourceIdentifier
 }
 
-// EventEmitter interface for emitting reconciliation events.
-type EventEmitter interface {
+// ReconcileEventEmitter interface for emitting reconciliation events.
+type ReconcileEventEmitter interface {
 	EmitCreateEvent(resource types.ResourceIdentifier) error
 	EmitDeleteEvent(resource types.ResourceIdentifier) error
 	EmitReconcileResourceEvent(resource types.ResourceIdentifier) error
