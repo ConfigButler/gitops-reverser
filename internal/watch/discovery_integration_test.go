@@ -256,7 +256,7 @@ func TestReconcileAfterRuleCreation(t *testing.T) {
 	// Track reconciliation calls
 	reconciledChan := make(chan struct{}, 1)
 	mockManager := &mockWatchManager{
-		reconcileFn: func(ctx context.Context) error {
+		reconcileFn: func(_ context.Context) error {
 			select {
 			case reconciledChan <- struct{}{}:
 			default:

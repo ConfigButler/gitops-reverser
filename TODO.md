@@ -34,4 +34,8 @@ New questions:
 
 ---
 
-* Can we create the race condition if we have the same GitDestionation in a test: there is a very small chance that we run into that despite the validatingwebhook.
+* Can we create the race condition if we have the same GitDestionation in a test: there is a very small chance that we run into that despite the validatingwebhook. Apprently we also should be checking the current status for it according to best prqctices
+* Also implement the check on repo level: it's very annoying if two git objects are pushing to the same repo (I think that I had troubles with that today).
+  * How can I now if it's the same repo? Only be adding a file? There should be a lock of some kind.
+* I would like better metrics and a visual of the current queues / how full they are. Also more tests on high load.
+* Create a single commit for the first reconcile: e.g. when the repo has been disconnected from realiy for a while.

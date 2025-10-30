@@ -1331,28 +1331,6 @@ func createSSHGitRepoConfig(name, branch, secretName string) {
 	createGitRepoConfigWithURL(name, branch, secretName, getRepoURLSSH())
 }
 
-// createGitRepoConfigWithClusterRules creates a GitRepoConfig with allowClusterRules enabled.
-func createGitRepoConfigWithClusterRules(name, branch, secretName, repoURL string) {
-	By(fmt.Sprintf("creating GitRepoConfig '%s' with allowClusterRules enabled", name))
-
-	data := struct {
-		Name       string
-		Namespace  string
-		RepoURL    string
-		Branch     string
-		SecretName string
-	}{
-		Name:       name,
-		Namespace:  namespace,
-		RepoURL:    repoURL,
-		Branch:     branch,
-		SecretName: secretName,
-	}
-
-	err := applyFromTemplate("test/e2e/templates/gitrepoconfig-with-cluster-access.tmpl", data, namespace)
-	Expect(err).NotTo(HaveOccurred(), "Failed to apply GitRepoConfig with cluster access")
-}
-
 // verifyGitRepoConfigStatus verifies the GitRepoConfig status matches expected values.
 func verifyGitRepoConfigStatus(name, expectedStatus, expectedReason, expectedMessageContains string) {
 	By(

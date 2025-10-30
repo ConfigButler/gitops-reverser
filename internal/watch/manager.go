@@ -87,6 +87,7 @@ const (
 	periodicReconcileInterval = 30 * time.Second
 	crdDiscoveryRetryInterval = 2 * time.Second
 	crdDiscoveryMaxRetries    = 3
+	maxRetryShift             = 8 // Max bit shift for exponential backoff to prevent overflow
 	minResourceKeyParts       = 3
 	resourceKeyCapacity       = 5
 )
@@ -919,83 +920,139 @@ func (m *Manager) updateUnavailableGVRTracking(
 	m.unavailableGVRsMu.Lock()
 	defer m.unavailableGVRsMu.Unlock()
 
-	// Initialize maps if needed
+	m.initializeUnavailableMaps()
+	discoverableSet := m.buildDiscoverableSet(discoverable)
+	newlyUnavailable := m.processRequestedGVRs(requested, discoverableSet, log)
+	m.cleanupUnrequestedGVRs(requested)
+	m.scheduleRetries(newlyUnavailable, log)
+}
+
+// initializeUnavailableMaps ensures unavailable tracking maps are initialized.
+func (m *Manager) initializeUnavailableMaps() {
 	if m.unavailableGVRs == nil {
 		m.unavailableGVRs = make(map[GVR]int)
 	}
 	if m.unavailableGVRsLastTry == nil {
 		m.unavailableGVRsLastTry = make(map[GVR]time.Time)
 	}
+}
 
-	// Build set of discoverable GVRs for fast lookup
+// buildDiscoverableSet creates a set of discoverable GVRs for fast lookup.
+func (m *Manager) buildDiscoverableSet(discoverable []GVR) map[GVR]bool {
 	discoverableSet := make(map[GVR]bool)
 	for _, gvr := range discoverable {
 		discoverableSet[gvr] = true
 	}
+	return discoverableSet
+}
 
-	// Collect newly unavailable GVRs for immediate retry
+// processRequestedGVRs checks each requested GVR and returns newly unavailable ones.
+func (m *Manager) processRequestedGVRs(requested []GVR, discoverableSet map[GVR]bool, log logr.Logger) []GVR {
 	var newlyUnavailable []GVR
 
-	// Check each requested GVR
 	for _, gvr := range requested {
 		if discoverableSet[gvr] {
-			// GVR is now available - remove from unavailable tracking
-			if _, wasUnavailable := m.unavailableGVRs[gvr]; wasUnavailable {
-				delete(m.unavailableGVRs, gvr)
-				delete(m.unavailableGVRsLastTry, gvr)
-				log.Info("GVR became available",
-					"group", gvr.Group,
-					"version", gvr.Version,
-					"resource", gvr.Resource)
-			}
+			m.handleAvailableGVR(gvr, log)
 		} else {
-			// GVR is unavailable
-			retryCount, exists := m.unavailableGVRs[gvr]
-			if !exists {
-				// Newly unavailable - track and schedule immediate retry
-				m.unavailableGVRs[gvr] = 0
-				m.unavailableGVRsLastTry[gvr] = time.Now()
+			if shouldRetry := m.handleUnavailableGVR(gvr, log); shouldRetry {
 				newlyUnavailable = append(newlyUnavailable, gvr)
-				log.Info("New unavailable GVR detected - scheduling retry",
-					"group", gvr.Group,
-					"version", gvr.Version,
-					"resource", gvr.Resource)
-			} else if retryCount < crdDiscoveryMaxRetries {
-				// Previously unavailable - check if retry is due
-				lastTry := m.unavailableGVRsLastTry[gvr]
-				delay := crdDiscoveryRetryInterval * time.Duration(1<<uint(retryCount))
-				if time.Since(lastTry) >= delay {
-					m.unavailableGVRs[gvr] = retryCount + 1
-					m.unavailableGVRsLastTry[gvr] = time.Now()
-					newlyUnavailable = append(newlyUnavailable, gvr)
-					log.Info("Retrying unavailable GVR",
-						"group", gvr.Group,
-						"version", gvr.Version,
-						"resource", gvr.Resource,
-						"attempt", retryCount+1)
-				}
 			}
 		}
 	}
 
-	// Clean up GVRs that are no longer requested
+	return newlyUnavailable
+}
+
+// handleAvailableGVR processes a GVR that became available.
+func (m *Manager) handleAvailableGVR(gvr GVR, log logr.Logger) {
+	if _, wasUnavailable := m.unavailableGVRs[gvr]; wasUnavailable {
+		delete(m.unavailableGVRs, gvr)
+		delete(m.unavailableGVRsLastTry, gvr)
+		log.Info("GVR became available",
+			"group", gvr.Group,
+			"version", gvr.Version,
+			"resource", gvr.Resource)
+	}
+}
+
+// handleUnavailableGVR processes an unavailable GVR and returns whether to retry.
+func (m *Manager) handleUnavailableGVR(gvr GVR, log logr.Logger) bool {
+	retryCount, exists := m.unavailableGVRs[gvr]
+
+	if !exists {
+		return m.handleNewlyUnavailableGVR(gvr, log)
+	}
+
+	return m.handlePreviouslyUnavailableGVR(gvr, retryCount, log)
+}
+
+// handleNewlyUnavailableGVR processes a newly unavailable GVR.
+func (m *Manager) handleNewlyUnavailableGVR(gvr GVR, log logr.Logger) bool {
+	m.unavailableGVRs[gvr] = 0
+	m.unavailableGVRsLastTry[gvr] = time.Now()
+	log.Info("New unavailable GVR detected - scheduling retry",
+		"group", gvr.Group,
+		"version", gvr.Version,
+		"resource", gvr.Resource)
+	return true
+}
+
+// handlePreviouslyUnavailableGVR processes a previously unavailable GVR.
+func (m *Manager) handlePreviouslyUnavailableGVR(gvr GVR, retryCount int, log logr.Logger) bool {
+	if retryCount >= crdDiscoveryMaxRetries {
+		return false
+	}
+
+	lastTry := m.unavailableGVRsLastTry[gvr]
+	delay := m.calculateRetryDelay(retryCount)
+
+	if time.Since(lastTry) < delay {
+		return false
+	}
+
+	m.unavailableGVRs[gvr] = retryCount + 1
+	m.unavailableGVRsLastTry[gvr] = time.Now()
+	log.Info("Retrying unavailable GVR",
+		"group", gvr.Group,
+		"version", gvr.Version,
+		"resource", gvr.Resource,
+		"attempt", retryCount+1)
+	return true
+}
+
+// calculateRetryDelay calculates exponential backoff delay with overflow protection.
+func (m *Manager) calculateRetryDelay(retryCount int) time.Duration {
+	// Cap shift to prevent overflow
+	shiftAmount := retryCount
+	if shiftAmount > maxRetryShift {
+		shiftAmount = maxRetryShift
+	}
+	return crdDiscoveryRetryInterval * time.Duration(1<<shiftAmount)
+}
+
+// cleanupUnrequestedGVRs removes GVRs that are no longer requested.
+func (m *Manager) cleanupUnrequestedGVRs(requested []GVR) {
 	for gvr := range m.unavailableGVRs {
-		found := false
-		for _, req := range requested {
-			if req == gvr {
-				found = true
-				break
-			}
-		}
-		if !found {
+		if !m.isGVRRequested(gvr, requested) {
 			delete(m.unavailableGVRs, gvr)
 			delete(m.unavailableGVRsLastTry, gvr)
 		}
 	}
+}
 
-	// Schedule retries for newly unavailable or retry-due GVRs
+// isGVRRequested checks if a GVR is in the requested list.
+func (m *Manager) isGVRRequested(gvr GVR, requested []GVR) bool {
+	for _, req := range requested {
+		if req == gvr {
+			return true
+		}
+	}
+	return false
+}
+
+// scheduleRetries schedules retry reconciliation for newly unavailable GVRs.
+func (m *Manager) scheduleRetries(newlyUnavailable []GVR, log logr.Logger) {
 	if len(newlyUnavailable) > 0 {
-		// Must capture ctx for goroutine
 		ctxCopy := context.Background()
 		go m.retryDiscoveryAfterDelay(ctxCopy, newlyUnavailable, log)
 	}
