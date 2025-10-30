@@ -97,10 +97,15 @@ func (m *Manager) FilterDiscoverableGVRs(_ context.Context, in []GVR) []GVR {
 }
 
 // restConfig acquires the controller runtime REST config.
+// Returns nil if no config is available (e.g., in unit tests without a cluster).
 func (m *Manager) restConfig() *rest.Config {
-	// ctrl.GetConfigOrDie reads KUBECONFIG or in-cluster config.
+	// ctrl.GetConfig reads KUBECONFIG or in-cluster config.
 	// In tests/e2e this is set up by the test harness/Kind.
-	cfg := ctrl.GetConfigOrDie()
+	// In unit tests without a cluster, this returns an error which we handle gracefully.
+	cfg, err := ctrl.GetConfig()
+	if err != nil {
+		return nil
+	}
 	return cfg
 }
 
