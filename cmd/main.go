@@ -133,7 +133,7 @@ func main() {
 		"maxEntries", correlationMaxEntries)
 
 	// Initialize EventRouter (replaces old EventQueue)
-	eventRouter := git.NewEventRouter(workerManager, ctrl.Log.WithName("event-router"))
+	eventRouter := watch.NewEventRouter(workerManager, ctrl.Log.WithName("event-router"))
 	setupLog.Info("EventRouter initialized")
 
 	// Watch ingestion manager (uses EventRouter instead of EventQueue)

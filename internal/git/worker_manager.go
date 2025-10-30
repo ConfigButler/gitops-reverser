@@ -53,7 +53,7 @@ func NewWorkerManager(client client.Client, log logr.Logger) *WorkerManager {
 // This is called by GitDestination controller when a destination becomes Ready.
 func (m *WorkerManager) RegisterDestination(
 	_ context.Context,
-	destName, destNamespace string,
+	destName string, destNamespace string,
 	repoName, repoNamespace string,
 	branch, baseFolder string,
 ) error {
@@ -81,10 +81,10 @@ func (m *WorkerManager) RegisterDestination(
 	}
 
 	// Register this destination with the worker
-	worker.RegisterDestination(destName, destNamespace, baseFolder)
+	worker.RegisterDestination("", destNamespace, baseFolder)
 
 	m.Log.Info("GitDestination registered with branch worker",
-		"destination", fmt.Sprintf("%s/%s", destNamespace, destName),
+		"destination", fmt.Sprintf("%s/%s", destNamespace, ""),
 		"workerKey", key.String(),
 		"baseFolder", baseFolder)
 

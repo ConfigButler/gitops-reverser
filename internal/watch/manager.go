@@ -60,7 +60,7 @@ type Manager struct {
 	// RuleStore gives access to compiled WatchRule/ClusterWatchRule.
 	RuleStore *rulestore.RuleStore
 	// EventRouter dispatches events to branch workers (replaces EventQueue).
-	EventRouter *git.EventRouter
+	EventRouter *EventRouter
 	// CorrelationStore enables webhook→watch username enrichment.
 	CorrelationStore *correlation.Store
 

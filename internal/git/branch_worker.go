@@ -90,7 +90,7 @@ func NewBranchWorker(
 // Multiple destinations can register if they share the same (repo, branch).
 // Note: This method is kept for WorkerManager lifecycle management but no longer
 // tracks destinations internally since BranchWorker doesn't need this information.
-func (w *BranchWorker) RegisterDestination(destName, destNamespace, baseFolder string) {
+func (w *BranchWorker) RegisterDestination(destName, _ string, baseFolder string) {
 	w.Log.Info("GitDestination registered with worker",
 		"destination", destName,
 		"baseFolder", baseFolder)
@@ -100,7 +100,7 @@ func (w *BranchWorker) RegisterDestination(destName, destNamespace, baseFolder s
 // Returns true if this was the last destination (worker can be destroyed).
 // Note: This method is kept for WorkerManager lifecycle management but no longer
 // tracks destinations internally since BranchWorker doesn't need this information.
-func (w *BranchWorker) UnregisterDestination(destName, destNamespace string) bool {
+func (w *BranchWorker) UnregisterDestination(destName, _ string) bool {
 	w.Log.Info("GitDestination unregistered from worker",
 		"destination", destName)
 
@@ -230,7 +230,10 @@ func (w *BranchWorker) listYAMLPathsInBaseFolder(repoPath, baseFolder string) ([
 		}
 
 		// Skip marker file
-		if strings.HasSuffix(relPath, string(filepath.Separator)+".configbutler"+string(filepath.Separator)+"owner.yaml") {
+		if strings.HasSuffix(
+			relPath,
+			string(filepath.Separator)+".configbutler"+string(filepath.Separator)+"owner.yaml",
+		) {
 			return nil
 		}
 
@@ -252,8 +255,6 @@ func (w *BranchWorker) listYAMLPathsInBaseFolder(repoPath, baseFolder string) ([
 }
 
 // processEvents is the main event processing loop.
-//
-//nolint:gocognit,nestif // Event loop complexity is inherent to worker design
 func (w *BranchWorker) processEvents() {
 	// Get GitRepoConfig
 	repoConfig, err := w.getGitRepoConfig(w.ctx)

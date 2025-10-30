@@ -31,7 +31,7 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/events"
 )
 
-// mockRepoStateEmitter implements the interface needed for EmitRepoState
+// mockRepoStateEmitter implements the interface needed for EmitRepoState.
 type mockRepoStateEmitter struct {
 	emittedEvents []events.RepoStateEvent
 }
@@ -61,7 +61,7 @@ func setupBranchWorkerTest() (*BranchWorker, *mockRepoStateEmitter, func()) {
 	return worker, emitter, cleanup
 }
 
-// TestEmitRepoState_BasicFunctionality verifies EmitRepoState can be called without error
+// TestEmitRepoState_BasicFunctionality verifies EmitRepoState can be called without error.
 func TestEmitRepoState_BasicFunctionality(t *testing.T) {
 	worker, emitter, cleanup := setupBranchWorkerTest()
 	defer cleanup()
@@ -78,7 +78,7 @@ func TestEmitRepoState_BasicFunctionality(t *testing.T) {
 	}
 }
 
-// TestEmitRepoState_EventEmission verifies that events are properly emitted
+// TestEmitRepoState_EventEmission verifies that events are properly emitted.
 func TestEmitRepoState_EventEmission(t *testing.T) {
 	worker, emitter, cleanup := setupBranchWorkerTest()
 	defer cleanup()
@@ -113,7 +113,7 @@ func TestEmitRepoState_EventEmission(t *testing.T) {
 	}
 }
 
-// TestEmitRepoState_DifferentBaseFolders verifies different base folders are handled
+// TestEmitRepoState_DifferentBaseFolders verifies different base folders are handled.
 func TestEmitRepoState_DifferentBaseFolders(t *testing.T) {
 	worker, emitter, cleanup := setupBranchWorkerTest()
 	defer cleanup()
@@ -162,7 +162,7 @@ func TestEmitRepoState_DifferentBaseFolders(t *testing.T) {
 	}
 }
 
-// TestEmitRepoState_MissingGitRepoConfig verifies proper error when GitRepoConfig is missing
+// TestEmitRepoState_MissingGitRepoConfig verifies proper error when GitRepoConfig is missing.
 func TestEmitRepoState_MissingGitRepoConfig(t *testing.T) {
 	worker, emitter, cleanup := setupBranchWorkerTest()
 	defer cleanup()
@@ -180,7 +180,7 @@ func TestEmitRepoState_MissingGitRepoConfig(t *testing.T) {
 	}
 }
 
-// TestBranchWorker_RegisterUnregister verifies the simplified register/unregister behavior
+// TestBranchWorker_RegisterUnregister verifies the simplified register/unregister behavior.
 func TestBranchWorker_RegisterUnregister(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = clientgoscheme.AddToScheme(scheme)
@@ -206,7 +206,7 @@ func TestBranchWorker_RegisterUnregister(t *testing.T) {
 	}
 }
 
-// TestBranchWorker_IdentityFields verifies worker identity is set correctly
+// TestBranchWorker_IdentityFields verifies worker identity is set correctly.
 func TestBranchWorker_IdentityFields(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = clientgoscheme.AddToScheme(scheme)

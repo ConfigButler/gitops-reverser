@@ -165,7 +165,7 @@ var _ = Describe("GitDestinationEventStream", func() {
 	})
 })
 
-// mockBranchWorker implements EventEnqueuer interface for testing
+// mockBranchWorker implements EventEnqueuer interface for testing.
 type mockBranchWorker struct {
 	events []git.Event
 }
@@ -174,7 +174,7 @@ func (m *mockBranchWorker) Enqueue(event git.Event) {
 	m.events = append(m.events, event)
 }
 
-// createTestEvent creates a test event with minimal required fields
+// createTestEvent creates a test event with minimal required fields.
 func createTestEvent(resourceType, name, operation string) git.Event {
 	obj := &unstructured.Unstructured{}
 	obj.SetAPIVersion("v1")

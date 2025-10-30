@@ -16,7 +16,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package reconcile provides GitDestinationEventStream for deterministic event processing.
+// Package reconcile provides components for cluster-as-source-of-truth reconciliation.
 package reconcile
 
 import (
@@ -60,7 +60,7 @@ type GitDestinationEventStream struct {
 	logger       logr.Logger
 }
 
-// EventEnqueuer interface for enqueuing events (allows mocking)
+// EventEnqueuer interface for enqueuing events (allows mocking).
 type EventEnqueuer interface {
 	Enqueue(event git.Event)
 }
@@ -88,7 +88,8 @@ func (s *GitDestinationEventStream) OnWatchEvent(event git.Event) {
 	case StartupReconcile:
 		// Buffer all events during reconciliation (no deduplication)
 		s.bufferedEvents = append(s.bufferedEvents, event)
-		s.logger.V(1).Info("Buffered event during reconciliation", "resource", event.Identifier.String(), "bufferSize", len(s.bufferedEvents))
+		s.logger.V(1).
+			Info("Buffered event during reconciliation", "resource", event.Identifier.String(), "bufferSize", len(s.bufferedEvents))
 
 	case LiveProcessing:
 		// Check for duplicates using event hash
@@ -108,7 +109,11 @@ func (s *GitDestinationEventStream) OnWatchEvent(event git.Event) {
 // OnReconciliationComplete signals that initial reconciliation has finished.
 func (s *GitDestinationEventStream) OnReconciliationComplete() {
 	if s.state != StartupReconcile {
-		s.logger.Info("Reconciliation complete signal received but not in STARTUP_RECONCILE state", "currentState", s.state)
+		s.logger.Info(
+			"Reconciliation complete signal received but not in STARTUP_RECONCILE state",
+			"currentState",
+			s.state,
+		)
 		return
 	}
 
