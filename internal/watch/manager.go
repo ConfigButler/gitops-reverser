@@ -21,6 +21,7 @@ package watch
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -39,10 +40,12 @@ import (
 
 	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 	"github.com/ConfigButler/gitops-reverser/internal/correlation"
+	"github.com/ConfigButler/gitops-reverser/internal/events"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/metrics"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
 	"github.com/ConfigButler/gitops-reverser/internal/sanitize"
+	"github.com/ConfigButler/gitops-reverser/internal/types"
 	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
@@ -221,7 +224,7 @@ func (m *Manager) enqueueMatches(
 	// Attempt correlation enrichment
 	userInfo := m.tryEnrichFromCorrelation(ctx, sanitized, id, "UPDATE")
 
-	// WatchRule matches - route to workers
+	// WatchRule matches - route to GitDestinationEventStreams
 	for _, rule := range watchRules {
 		ev := git.Event{
 			Object:     sanitized.DeepCopy(),
@@ -231,17 +234,19 @@ func (m *Manager) enqueueMatches(
 			BaseFolder: rule.BaseFolder,
 		}
 
-		if err := m.EventRouter.RouteEvent(
-			rule.GitRepoConfigRef,
-			rule.GitRepoConfigNamespace,
-			rule.Branch,
+		// Route to GitDestinationEventStream for buffering and deduplication
+		if err := m.EventRouter.RouteToGitDestinationEventStream(
 			ev,
+			rule.GitDestinationRef,
+			rule.GitDestinationNamespace,
 		); err != nil {
-			m.Log.V(1).Info("Failed to route event", "error", err)
+			m.Log.Error(err, "Failed to route event to GitDestinationEventStream - dropping event",
+				"gitDest", fmt.Sprintf("%s/%s", rule.GitDestinationNamespace, rule.GitDestinationRef),
+				"resource", id.String())
 		}
 	}
 
-	// ClusterWatchRule matches - route to workers
+	// ClusterWatchRule matches - route to GitDestinationEventStreams
 	for _, cr := range clusterRules {
 		ev := git.Event{
 			Object:     sanitized.DeepCopy(),
@@ -251,13 +256,15 @@ func (m *Manager) enqueueMatches(
 			BaseFolder: cr.BaseFolder,
 		}
 
-		if err := m.EventRouter.RouteEvent(
-			cr.GitRepoConfigRef,
-			cr.GitRepoConfigNamespace,
-			cr.Branch,
+		// Route to GitDestinationEventStream for buffering and deduplication
+		if err := m.EventRouter.RouteToGitDestinationEventStream(
 			ev,
+			cr.GitDestinationRef,
+			cr.GitDestinationNamespace,
 		); err != nil {
-			m.Log.V(1).Info("Failed to route event", "error", err)
+			m.Log.Error(err, "Failed to route event to GitDestinationEventStream - dropping event",
+				"gitDest", fmt.Sprintf("%s/%s", cr.GitDestinationNamespace, cr.GitDestinationRef),
+				"resource", id.String())
 		}
 	}
 }
@@ -634,6 +641,53 @@ func (m *Manager) emitSeedSyncControls(branchKeys map[git.BranchKey]struct{}) {
 			m.Log.Error(err, "Failed to route SEED_SYNC", "key", key.String())
 		}
 	}
+}
+
+// EmitClusterStateSnapshot emits a ClusterStateEvent for a specific base folder scope.
+// This is called in response to REQUEST_CLUSTER_STATE control events.
+func (m *Manager) EmitClusterStateSnapshot(
+	ctx context.Context,
+	repoName, repoNamespace, branch, baseFolder string,
+) error {
+	log := m.Log.WithName("cluster-state").WithValues(
+		"repo", repoName,
+		"namespace", repoNamespace,
+		"branch", branch,
+		"baseFolder", baseFolder,
+	)
+
+	// Get current cluster state for this scope
+	resources, err := m.getCurrentClusterState(ctx, repoName, repoNamespace, branch, baseFolder)
+	if err != nil {
+		log.Error(err, "Failed to get cluster state")
+		return err
+	}
+
+	// Emit ClusterStateEvent
+	event := events.ClusterStateEvent{
+		RepoName:   repoName,
+		Branch:     branch,
+		BaseFolder: baseFolder,
+		Resources:  resources,
+	}
+
+	if err := m.EventRouter.RouteClusterStateEvent(event); err != nil {
+		log.Error(err, "Failed to route cluster state event")
+		return err
+	}
+
+	log.Info("Emitted cluster state snapshot", "resourceCount", len(resources))
+	return nil
+}
+
+// getCurrentClusterState retrieves current cluster resources for a specific scope.
+func (m *Manager) getCurrentClusterState(
+	ctx context.Context,
+	repoName, repoNamespace, branch, baseFolder string,
+) ([]types.ResourceIdentifier, error) {
+	// This will be implemented to query the current cluster state
+	// For now, return empty slice
+	return []types.ResourceIdentifier{}, nil
 }
 
 // ReconcileForRuleChange reconciles the watch manager when rules change.

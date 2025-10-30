@@ -22,8 +22,6 @@ import (
 	"fmt"
 
 	"github.com/go-logr/logr"
-
-	"github.com/ConfigButler/gitops-reverser/internal/events"
 )
 
 // ReconcilerKey uniquely identifies a BaseFolderReconciler.
@@ -41,12 +39,12 @@ func (k ReconcilerKey) String() string {
 // ReconcilerManager manages the lifecycle of BaseFolderReconciler instances.
 type ReconcilerManager struct {
 	reconcilers  map[ReconcilerKey]*BaseFolderReconciler
-	eventEmitter events.ReconcileEventEmitter
+	eventEmitter EventEmitter
 	logger       logr.Logger
 }
 
 // NewReconcilerManager creates a new ReconcilerManager.
-func NewReconcilerManager(eventEmitter events.ReconcileEventEmitter, logger logr.Logger) *ReconcilerManager {
+func NewReconcilerManager(eventEmitter EventEmitter, logger logr.Logger) *ReconcilerManager {
 	return &ReconcilerManager{
 		reconcilers:  make(map[ReconcilerKey]*BaseFolderReconciler),
 		eventEmitter: eventEmitter,

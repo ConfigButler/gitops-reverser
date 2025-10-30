@@ -25,21 +25,27 @@ import (
 
 	"github.com/ConfigButler/gitops-reverser/internal/events"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
+	"github.com/ConfigButler/gitops-reverser/internal/reconcile"
 )
 
 // EventRouter dispatches events to the correct BranchWorker based on (repo, branch).
 // This replaces the old central EventQueue with intelligent routing.
 // It also handles routing of RepoStateEvents to BaseFolderReconcilers.
+// Now also routes to GitDestinationEventStreams for event buffering and deduplication.
 type EventRouter struct {
 	WorkerManager *git.WorkerManager
 	Log           logr.Logger
+
+	// Registry of GitDestinationEventStreams by (gitDestName, gitDestNamespace)
+	gitDestStreams map[string]*reconcile.GitDestinationEventStream
 }
 
 // NewEventRouter creates a new event router.
 func NewEventRouter(workerManager *git.WorkerManager, log logr.Logger) *EventRouter {
 	return &EventRouter{
-		WorkerManager: workerManager,
-		Log:           log,
+		WorkerManager:  workerManager,
+		Log:            log,
+		gitDestStreams: make(map[string]*reconcile.GitDestinationEventStream),
 	}
 }
 
@@ -98,5 +104,42 @@ func (r *EventRouter) RouteClusterStateEvent(event events.ClusterStateEvent) err
 		"resourceCount", len(event.Resources))
 
 	// TODO: Route to BaseFolderReconciler when integration is complete
+	return nil
+}
+
+// RegisterGitDestinationEventStream registers a GitDestinationEventStream with the router.
+// This allows routing events to specific GitDestinationEventStreams for buffering and deduplication.
+func (r *EventRouter) RegisterGitDestinationEventStream(
+	gitDestName, gitDestNamespace string,
+	stream *reconcile.GitDestinationEventStream,
+) {
+	key := fmt.Sprintf("%s/%s", gitDestNamespace, gitDestName)
+	r.gitDestStreams[key] = stream
+	r.Log.Info("Registered GitDestinationEventStream",
+		"gitDest", key,
+		"stream", stream.String())
+}
+
+// RouteToGitDestinationEventStream routes an event to a specific GitDestinationEventStream.
+// This replaces direct routing to BranchWorkers, enabling event buffering and deduplication.
+func (r *EventRouter) RouteToGitDestinationEventStream(
+	event git.Event,
+	gitDestName, gitDestNamespace string,
+) error {
+	key := fmt.Sprintf("%s/%s", gitDestNamespace, gitDestName)
+	stream, exists := r.gitDestStreams[key]
+
+	if !exists {
+		return fmt.Errorf("no GitDestinationEventStream registered for %s", key)
+	}
+
+	stream.OnWatchEvent(event)
+
+	r.Log.V(1).Info("Event routed to GitDestinationEventStream",
+		"gitDest", key,
+		"operation", event.Operation,
+		"baseFolder", event.BaseFolder,
+		"resource", event.Identifier.String())
+
 	return nil
 }

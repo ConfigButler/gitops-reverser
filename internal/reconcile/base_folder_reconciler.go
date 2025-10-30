@@ -41,14 +41,14 @@ type BaseFolderReconciler struct {
 	gitResources     []types.ResourceIdentifier
 
 	// Dependencies for event emission
-	eventEmitter events.ReconcileEventEmitter
+	eventEmitter EventEmitter
 	logger       logr.Logger
 }
 
 // NewBaseFolderReconciler creates a new BaseFolderReconciler.
 func NewBaseFolderReconciler(
 	repoName, branch, baseFolder string,
-	eventEmitter events.ReconcileEventEmitter,
+	eventEmitter EventEmitter,
 	logger logr.Logger,
 ) *BaseFolderReconciler {
 	return &BaseFolderReconciler{

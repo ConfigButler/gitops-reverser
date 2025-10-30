@@ -34,6 +34,8 @@ import (
 
 	configbutleraiv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
+	"github.com/ConfigButler/gitops-reverser/internal/reconcile"
+	"github.com/ConfigButler/gitops-reverser/internal/watch"
 )
 
 // GitDestination status condition reasons.
@@ -50,6 +52,7 @@ type GitDestinationReconciler struct {
 
 	Scheme        *runtime.Scheme
 	WorkerManager *git.WorkerManager
+	EventRouter   *watch.EventRouter
 }
 
 // +kubebuilder:rbac:groups=configbutler.ai,resources=gitdestinations,verbs=get;list;watch;create;update;patch;delete
@@ -142,6 +145,33 @@ func (r *GitDestinationReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 			log.Error(err, "Failed to register destination with worker")
 		} else {
 			log.Info("Registered destination with branch worker",
+				"repo", dest.Spec.RepoRef.Name,
+				"branch", dest.Spec.Branch,
+				"baseFolder", dest.Spec.BaseFolder)
+		}
+	}
+
+	// Register GitDestinationEventStream with EventRouter for event buffering and deduplication
+	if r.EventRouter != nil {
+		// Get the BranchWorker for this destination to use as the event sink
+		branchWorker, exists := r.WorkerManager.GetWorkerForDestination(
+			dest.Spec.RepoRef.Name, repoNS, dest.Spec.Branch,
+		)
+		if !exists {
+			log.Error(nil, "BranchWorker not found for GitDestinationEventStream registration",
+				"repo", dest.Spec.RepoRef.Name,
+				"namespace", repoNS,
+				"branch", dest.Spec.Branch)
+		} else {
+			// Create and register GitDestinationEventStream
+			stream := reconcile.NewGitDestinationEventStream(
+				dest.Name, dest.Namespace,
+				branchWorker,
+				log,
+			)
+			r.EventRouter.RegisterGitDestinationEventStream(dest.Name, dest.Namespace, stream)
+			log.Info("Registered GitDestinationEventStream with EventRouter",
+				"gitDest", fmt.Sprintf("%s/%s", dest.Namespace, dest.Name),
 				"repo", dest.Spec.RepoRef.Name,
 				"branch", dest.Spec.Branch,
 				"baseFolder", dest.Spec.BaseFolder)
