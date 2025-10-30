@@ -23,23 +23,19 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
-// ClusterStateEvent reports cluster resources for a specific base folder scope.
+// ClusterStateEvent reports cluster resources for a specific GitDestination.
 type ClusterStateEvent struct {
-	// Repository identity (for routing)
-	RepoName   string
-	Branch     string
-	BaseFolder string
+	// GitDestination reference (for routing)
+	GitDest types.ResourceReference
 
-	// Resources currently in cluster for this base folder
+	// Resources currently in cluster for this GitDestination
 	Resources []types.ResourceIdentifier
 }
 
-// RepoStateEvent reports what Kubernetes resources exist in a Git repository branch.
+// RepoStateEvent reports what Kubernetes resources exist in a Git repository for a GitDestination.
 type RepoStateEvent struct {
-	// Repository identity
-	RepoName   string
-	Branch     string
-	BaseFolder string
+	// GitDestination reference
+	GitDest types.ResourceReference
 
 	// Resources found in Git (parsed from YAML files)
 	Resources []types.ResourceIdentifier
@@ -51,7 +47,7 @@ type ControlEventType string
 const (
 	// RequestClusterState requests cluster snapshot from WatchManager.
 	RequestClusterState ControlEventType = "REQUEST_CLUSTER_STATE"
-	// RequestRepoState triggers RepoStateEvent emission for specific base folder.
+	// RequestRepoState triggers RepoStateEvent emission for specific GitDestination.
 	RequestRepoState ControlEventType = "REQUEST_REPO_STATE"
 	// ReconcileResource is a reminder event for individual resources that exist in both cluster and Git.
 	ReconcileResource ControlEventType = "RECONCILE_RESOURCE"
@@ -61,13 +57,16 @@ const (
 type ControlEvent struct {
 	Type ControlEventType
 
-	// Repository identity
-	RepoName   string
-	Branch     string
-	BaseFolder string
+	// GitDestination reference
+	GitDest types.ResourceReference
 
-	// Additional context based on event type
+	// Optional resource context for ReconcileResource events
 	Resource *types.ResourceIdentifier
+}
+
+// ControlEventEmitter emits control events for orchestration.
+type ControlEventEmitter interface {
+	EmitControlEvent(event ControlEvent) error
 }
 
 // EventEmitter interface for emitting reconciliation events.

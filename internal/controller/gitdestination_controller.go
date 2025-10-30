@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/go-logr/logr"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -35,6 +36,7 @@ import (
 	configbutleraiv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/reconcile"
+	"github.com/ConfigButler/gitops-reverser/internal/types"
 	"github.com/ConfigButler/gitops-reverser/internal/watch"
 )
 
@@ -68,13 +70,7 @@ func (r *GitDestinationReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	// Fetch the GitDestination instance
 	var dest configbutleraiv1alpha1.GitDestination
 	if err := r.Get(ctx, req.NamespacedName, &dest); err != nil {
-		if client.IgnoreNotFound(err) == nil {
-			log.Info("GitDestination not found, was likely deleted", "namespacedName", req.NamespacedName)
-			// Note: Worker cleanup happens on pod restart (no active users, simple lifecycle)
-			return ctrl.Result{}, nil
-		}
-		log.Error(err, "unable to fetch GitDestination", "namespacedName", req.NamespacedName)
-		return ctrl.Result{}, err
+		return r.handleFetchError(err, log, req.NamespacedName)
 	}
 
 	log.Info("Validating GitDestination",
@@ -90,93 +86,22 @@ func (r *GitDestinationReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	r.setCondition(&dest, metav1.ConditionUnknown,
 		GitDestinationReasonValidating, "Validating GitDestination configuration...")
 
-	// Determine namespace for GitRepoConfig (default to GitDestination namespace if empty)
+	// Validate GitRepoConfig and branch
 	repoNS := dest.Spec.RepoRef.Namespace
 	if repoNS == "" {
 		repoNS = dest.Namespace
 	}
 
-	// Verify that the referenced GitRepoConfig exists
-	var grc configbutleraiv1alpha1.GitRepoConfig
-	grcKey := k8stypes.NamespacedName{Name: dest.Spec.RepoRef.Name, Namespace: repoNS}
-	if err := r.Get(ctx, grcKey, &grc); err != nil {
-		if apierrors.IsNotFound(err) {
-			msg := fmt.Sprintf("Referenced GitRepoConfig '%s/%s' not found", repoNS, dest.Spec.RepoRef.Name)
-			log.Info("GitRepoConfig not found", "message", msg)
-			r.setCondition(&dest, metav1.ConditionFalse, GitDestinationReasonGitRepoConfigNotFound, msg)
-			return r.updateStatusAndRequeue(ctx, &dest, RequeueShortInterval)
-		}
-		log.Error(err, "Failed to get referenced GitRepoConfig", "gitRepoConfig", grcKey.String())
-		return ctrl.Result{}, err
+	validationResult, validationErr := r.validateGitRepoConfig(ctx, &dest, repoNS, log)
+	if validationErr != nil {
+		return ctrl.Result{}, validationErr
+	}
+	if validationResult != nil {
+		return *validationResult, nil
 	}
 
-	// Validate that the branch is in the allowedBranches list
-	branchAllowed := false
-	for _, allowedBranch := range grc.Spec.AllowedBranches {
-		if dest.Spec.Branch == allowedBranch {
-			branchAllowed = true
-			break
-		}
-	}
-	if !branchAllowed {
-		msg := fmt.Sprintf("Branch '%s' is not in allowedBranches list %v of GitRepoConfig '%s/%s'",
-			dest.Spec.Branch, grc.Spec.AllowedBranches, repoNS, dest.Spec.RepoRef.Name)
-		log.Info("Branch validation failed", "branch", dest.Spec.Branch, "allowedBranches", grc.Spec.AllowedBranches)
-		r.setCondition(&dest, metav1.ConditionFalse, GitDestinationReasonBranchNotAllowed, msg)
-		return r.updateStatusAndRequeue(ctx, &dest, RequeueShortInterval)
-	}
-
-	// All validations passed
-	msg := fmt.Sprintf("GitDestination is ready. Repo='%s/%s', Branch='%s', BaseFolder='%s'",
-		repoNS, dest.Spec.RepoRef.Name, dest.Spec.Branch, dest.Spec.BaseFolder)
-
-	r.setCondition(&dest, metav1.ConditionTrue, GitDestinationReasonReady, msg)
-	dest.Status.ObservedGeneration = dest.Generation
-
-	// Register with branch worker (idempotent - safe to call on every reconcile)
-	if r.WorkerManager != nil {
-		if err := r.WorkerManager.RegisterDestination(
-			ctx,
-			dest.Name, dest.Namespace,
-			dest.Spec.RepoRef.Name, repoNS,
-			dest.Spec.Branch,
-			dest.Spec.BaseFolder,
-		); err != nil {
-			log.Error(err, "Failed to register destination with worker")
-		} else {
-			log.Info("Registered destination with branch worker",
-				"repo", dest.Spec.RepoRef.Name,
-				"branch", dest.Spec.Branch,
-				"baseFolder", dest.Spec.BaseFolder)
-		}
-	}
-
-	// Register GitDestinationEventStream with EventRouter for event buffering and deduplication
-	if r.EventRouter != nil {
-		// Get the BranchWorker for this destination to use as the event sink
-		branchWorker, exists := r.WorkerManager.GetWorkerForDestination(
-			dest.Spec.RepoRef.Name, repoNS, dest.Spec.Branch,
-		)
-		if !exists {
-			log.Error(nil, "BranchWorker not found for GitDestinationEventStream registration",
-				"repo", dest.Spec.RepoRef.Name,
-				"namespace", repoNS,
-				"branch", dest.Spec.Branch)
-		} else {
-			// Create and register GitDestinationEventStream
-			stream := reconcile.NewGitDestinationEventStream(
-				dest.Name, dest.Namespace,
-				branchWorker,
-				log,
-			)
-			r.EventRouter.RegisterGitDestinationEventStream(dest.Name, dest.Namespace, stream)
-			log.Info("Registered GitDestinationEventStream with EventRouter",
-				"gitDest", fmt.Sprintf("%s/%s", dest.Namespace, dest.Name),
-				"repo", dest.Spec.RepoRef.Name,
-				"branch", dest.Spec.Branch,
-				"baseFolder", dest.Spec.BaseFolder)
-		}
-	}
+	// Register with worker and event stream
+	r.registerWithWorkerAndEventStream(ctx, &dest, repoNS, log)
 
 	log.Info("Updating status with success condition")
 	if err := r.updateStatusWithRetry(ctx, &dest); err != nil {
@@ -186,6 +111,161 @@ func (r *GitDestinationReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 	log.Info("Reconciliation successful", "name", dest.Name)
 	return ctrl.Result{RequeueAfter: RequeueLongInterval}, nil
+}
+
+// handleFetchError handles errors from fetching GitDestination.
+func (r *GitDestinationReconciler) handleFetchError(
+	err error,
+	log logr.Logger,
+	namespacedName k8stypes.NamespacedName,
+) (ctrl.Result, error) {
+	if client.IgnoreNotFound(err) == nil {
+		log.Info("GitDestination not found, was likely deleted", "namespacedName", namespacedName)
+		return ctrl.Result{}, nil
+	}
+	log.Error(err, "unable to fetch GitDestination", "namespacedName", namespacedName)
+	return ctrl.Result{}, err
+}
+
+// validateGitRepoConfig validates the GitRepoConfig reference and branch.
+// Returns a result pointer if validation failed (caller should return it), nil if validation passed.
+func (r *GitDestinationReconciler) validateGitRepoConfig(
+	ctx context.Context,
+	dest *configbutleraiv1alpha1.GitDestination,
+	repoNS string,
+	log logr.Logger,
+) (*ctrl.Result, error) {
+	var grc configbutleraiv1alpha1.GitRepoConfig
+	grcKey := k8stypes.NamespacedName{Name: dest.Spec.RepoRef.Name, Namespace: repoNS}
+	if err := r.Get(ctx, grcKey, &grc); err != nil {
+		if apierrors.IsNotFound(err) {
+			msg := fmt.Sprintf("Referenced GitRepoConfig '%s/%s' not found", repoNS, dest.Spec.RepoRef.Name)
+			log.Info("GitRepoConfig not found", "message", msg)
+			r.setCondition(dest, metav1.ConditionFalse, GitDestinationReasonGitRepoConfigNotFound, msg)
+			result, updateErr := r.updateStatusAndRequeue(ctx, dest, RequeueShortInterval)
+			return &result, updateErr
+		}
+		log.Error(err, "Failed to get referenced GitRepoConfig", "gitRepoConfig", grcKey.String())
+		result := ctrl.Result{}
+		return &result, err
+	}
+
+	// Validate branch
+	if result := r.validateBranch(ctx, dest, &grc, repoNS, log); result != nil {
+		return result, nil
+	}
+
+	// All validations passed
+	msg := fmt.Sprintf("GitDestination is ready. Repo='%s/%s', Branch='%s', BaseFolder='%s'",
+		repoNS, dest.Spec.RepoRef.Name, dest.Spec.Branch, dest.Spec.BaseFolder)
+	r.setCondition(dest, metav1.ConditionTrue, GitDestinationReasonReady, msg)
+	dest.Status.ObservedGeneration = dest.Generation
+
+	return nil, nil //nolint:nilnil // Valid case: no result needed, validation passed
+}
+
+// validateBranch validates that the branch is in the allowedBranches list.
+func (r *GitDestinationReconciler) validateBranch(
+	ctx context.Context,
+	dest *configbutleraiv1alpha1.GitDestination,
+	grc *configbutleraiv1alpha1.GitRepoConfig,
+	repoNS string,
+	log logr.Logger,
+) *ctrl.Result {
+	branchAllowed := false
+	for _, allowedBranch := range grc.Spec.AllowedBranches {
+		if dest.Spec.Branch == allowedBranch {
+			branchAllowed = true
+			break
+		}
+	}
+
+	if !branchAllowed {
+		msg := fmt.Sprintf("Branch '%s' is not in allowedBranches list %v of GitRepoConfig '%s/%s'",
+			dest.Spec.Branch, grc.Spec.AllowedBranches, repoNS, dest.Spec.RepoRef.Name)
+		log.Info("Branch validation failed", "branch", dest.Spec.Branch, "allowedBranches", grc.Spec.AllowedBranches)
+		r.setCondition(dest, metav1.ConditionFalse, GitDestinationReasonBranchNotAllowed, msg)
+		result, _ := r.updateStatusAndRequeue(ctx, dest, RequeueShortInterval)
+		return &result
+	}
+
+	return nil
+}
+
+// registerWithWorkerAndEventStream registers the GitDestination with worker and event stream.
+func (r *GitDestinationReconciler) registerWithWorkerAndEventStream(
+	ctx context.Context,
+	dest *configbutleraiv1alpha1.GitDestination,
+	repoNS string,
+	log logr.Logger,
+) {
+	// Register with branch worker
+	r.registerWithWorker(ctx, dest, repoNS, log)
+
+	// Register event stream
+	r.registerEventStream(dest, repoNS, log)
+}
+
+// registerWithWorker registers the destination with branch worker.
+func (r *GitDestinationReconciler) registerWithWorker(
+	ctx context.Context,
+	dest *configbutleraiv1alpha1.GitDestination,
+	repoNS string,
+	log logr.Logger,
+) {
+	if r.WorkerManager == nil {
+		return
+	}
+
+	if err := r.WorkerManager.RegisterDestination(
+		ctx,
+		dest.Name, dest.Namespace,
+		dest.Spec.RepoRef.Name, repoNS,
+		dest.Spec.Branch,
+		dest.Spec.BaseFolder,
+	); err != nil {
+		log.Error(err, "Failed to register destination with worker")
+	} else {
+		log.Info("Registered destination with branch worker",
+			"repo", dest.Spec.RepoRef.Name,
+			"branch", dest.Spec.Branch,
+			"baseFolder", dest.Spec.BaseFolder)
+	}
+}
+
+// registerEventStream registers the GitDestinationEventStream with EventRouter.
+func (r *GitDestinationReconciler) registerEventStream(
+	dest *configbutleraiv1alpha1.GitDestination,
+	repoNS string,
+	log logr.Logger,
+) {
+	if r.EventRouter == nil {
+		return
+	}
+
+	branchWorker, exists := r.WorkerManager.GetWorkerForDestination(
+		dest.Spec.RepoRef.Name, repoNS, dest.Spec.Branch,
+	)
+	if !exists {
+		log.Error(nil, "BranchWorker not found for GitDestinationEventStream registration",
+			"repo", dest.Spec.RepoRef.Name,
+			"namespace", repoNS,
+			"branch", dest.Spec.Branch)
+		return
+	}
+
+	gitDest := types.NewResourceReference(dest.Name, dest.Namespace)
+	stream := reconcile.NewGitDestinationEventStream(
+		dest.Name, dest.Namespace,
+		branchWorker,
+		log,
+	)
+	r.EventRouter.RegisterGitDestinationEventStream(gitDest, stream)
+	log.Info("Registered GitDestinationEventStream with EventRouter",
+		"gitDest", gitDest.String(),
+		"repo", dest.Spec.RepoRef.Name,
+		"branch", dest.Spec.Branch,
+		"baseFolder", dest.Spec.BaseFolder)
 }
 
 // Note: Worker registration is idempotent - calling RegisterDestination multiple times

@@ -16,7 +16,6 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package reconcile provides components for cluster-as-source-of-truth reconciliation.
 package reconcile
 
 import (

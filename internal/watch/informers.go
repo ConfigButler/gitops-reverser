@@ -84,8 +84,9 @@ func (m *Manager) handleEvent(obj interface{}, g GVR, op configv1alpha1.Operatio
 
 	sanitized := sanitize.Sanitize(u)
 
-	// Check for duplicate content (status-only changes) - use shared deduplication logic
-	if m.isDuplicateContent(ctx, sanitized, id) {
+	// Check for duplicate content (status-only changes) - SKIP deduplication for DELETE operations
+	// DELETE events must always be processed even if content is identical
+	if op != configv1alpha1.OperationDelete && m.isDuplicateContent(ctx, sanitized, id) {
 		m.Log.V(1).Info("Skipping duplicate sanitized content (likely status-only change)",
 			"identifier", id.String())
 		metrics.WatchDuplicatesSkippedTotal.Add(ctx, 1)

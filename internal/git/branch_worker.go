@@ -33,9 +33,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
-	"github.com/ConfigButler/gitops-reverser/internal/events"
 	"github.com/ConfigButler/gitops-reverser/internal/metrics"
 	"github.com/ConfigButler/gitops-reverser/internal/sanitize"
+	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
 const (
@@ -160,55 +160,39 @@ func (w *BranchWorker) Enqueue(event Event) {
 	}
 }
 
-// EmitRepoState emits a RepoStateEvent for the specified base folder.
-// This is called in response to REQUEST_REPO_STATE control events.
-func (w *BranchWorker) EmitRepoState(baseFolder string, eventEmitter interface {
-	EmitRepoStateEvent(events.RepoStateEvent) error
-}) error {
+// ListResourcesInBaseFolder returns resource identifiers found in a Git folder.
+// This is a synchronous service method called by EventRouter.
+func (w *BranchWorker) ListResourcesInBaseFolder(baseFolder string) ([]itypes.ResourceIdentifier, error) {
 	repoConfig, err := w.getGitRepoConfig(w.ctx)
 	if err != nil {
-		return fmt.Errorf("failed to get GitRepoConfig: %w", err)
+		return nil, fmt.Errorf("failed to get GitRepoConfig: %w", err)
 	}
 
-	// Get auth
 	auth, err := getAuthFromSecret(w.ctx, w.Client, repoConfig)
 	if err != nil {
-		return fmt.Errorf("failed to get auth: %w", err)
+		return nil, fmt.Errorf("failed to get auth: %w", err)
 	}
 
-	// Clone/checkout repository
 	repoPath := filepath.Join("/tmp", "gitops-reverser-workers",
 		w.GitRepoConfigNamespace, w.GitRepoConfigRef, w.Branch)
 
 	repo, err := Clone(repoConfig.Spec.RepoURL, repoPath, auth)
 	if err != nil {
-		return fmt.Errorf("failed to clone repository: %w", err)
+		return nil, fmt.Errorf("failed to clone repository: %w", err)
 	}
 
 	if err := repo.Checkout(w.Branch); err != nil {
-		return fmt.Errorf("failed to checkout branch %s: %w", w.Branch, err)
+		return nil, fmt.Errorf("failed to checkout branch: %w", err)
 	}
 
-	// List YAML files in the specific base folder
-	_, err = w.listYAMLPathsInBaseFolder(repoPath, baseFolder)
-	if err != nil {
-		return fmt.Errorf("failed to list YAML paths: %w", err)
-	}
-
-	// Emit RepoStateEvent
-	event := events.RepoStateEvent{
-		RepoName:   w.GitRepoConfigRef,
-		Branch:     w.Branch,
-		BaseFolder: baseFolder,
-		Resources:  nil, // TODO: Fix type conversion
-	}
-
-	return eventEmitter.EmitRepoStateEvent(event)
+	return w.listResourceIdentifiersInBaseFolder(repoPath, baseFolder)
 }
 
-// listYAMLPathsInBaseFolder lists YAML files in a specific base folder.
-func (w *BranchWorker) listYAMLPathsInBaseFolder(repoPath, baseFolder string) ([]interface{}, error) {
-	var resources []interface{}
+// listResourceIdentifiersInBaseFolder lists resource identifiers in a specific base folder.
+func (w *BranchWorker) listResourceIdentifiersInBaseFolder(
+	repoPath, baseFolder string,
+) ([]itypes.ResourceIdentifier, error) {
+	var resources []itypes.ResourceIdentifier
 
 	basePath := repoPath
 	if baseFolder != "" {
@@ -223,22 +207,19 @@ func (w *BranchWorker) listYAMLPathsInBaseFolder(repoPath, baseFolder string) ([
 			return nil
 		}
 
-		// Get relative path from repo root
 		relPath, relErr := filepath.Rel(repoPath, path)
 		if relErr != nil {
 			return relErr
 		}
 
-		// Skip marker file
-		if strings.HasSuffix(
-			relPath,
-			string(filepath.Separator)+".configbutler"+string(filepath.Separator)+"owner.yaml",
-		) {
+		// Skip marker files
+		if strings.Contains(relPath, ".configbutler") {
 			return nil
 		}
 
-		// Only process YAML files
-		if strings.EqualFold(filepath.Ext(relPath), ".yaml") {
+		// Process YAML files
+		ext := filepath.Ext(relPath)
+		if strings.EqualFold(ext, ".yaml") || strings.EqualFold(ext, ".yml") {
 			if id, ok := parseIdentifierFromPath(relPath); ok {
 				resources = append(resources, id)
 			}

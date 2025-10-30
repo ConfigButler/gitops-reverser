@@ -53,7 +53,7 @@ func NewWorkerManager(client client.Client, log logr.Logger) *WorkerManager {
 // This is called by GitDestination controller when a destination becomes Ready.
 func (m *WorkerManager) RegisterDestination(
 	_ context.Context,
-	destName string, destNamespace string,
+	_ string, destNamespace string,
 	repoName, repoNamespace string,
 	branch, baseFolder string,
 ) error {
@@ -95,7 +95,7 @@ func (m *WorkerManager) RegisterDestination(
 // Destroys the worker if it was the last destination using it.
 // This is called by GitDestination controller when a destination is deleted.
 func (m *WorkerManager) UnregisterDestination(
-	destName, destNamespace string,
+	_, _ string,
 	repoName, repoNamespace string,
 	branch string,
 ) error {

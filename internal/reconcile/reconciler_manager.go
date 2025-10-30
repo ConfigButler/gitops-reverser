@@ -19,94 +19,85 @@ limitations under the License.
 package reconcile
 
 import (
-	"fmt"
+	"context"
+	"errors"
 
 	"github.com/go-logr/logr"
+
+	"github.com/ConfigButler/gitops-reverser/internal/events"
+	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
-// ReconcilerKey uniquely identifies a BaseFolderReconciler.
-type ReconcilerKey struct {
-	RepoName   string
-	Branch     string
-	BaseFolder string
-}
-
-// String returns a string representation for logging and debugging.
-func (k ReconcilerKey) String() string {
-	return fmt.Sprintf("%s/%s/%s", k.RepoName, k.Branch, k.BaseFolder)
-}
-
-// ReconcilerManager manages the lifecycle of BaseFolderReconciler instances.
+// ReconcilerManager manages the lifecycle of FolderReconciler instances.
 type ReconcilerManager struct {
-	reconcilers  map[ReconcilerKey]*BaseFolderReconciler
-	eventEmitter EventEmitter
-	logger       logr.Logger
+	reconcilers map[string]*FolderReconciler // key = gitDest.Key() = "namespace/name"
+	eventRouter interface {
+		ProcessControlEvent(ctx context.Context, event events.ControlEvent) error
+	}
+	logger logr.Logger
 }
 
 // NewReconcilerManager creates a new ReconcilerManager.
-func NewReconcilerManager(eventEmitter EventEmitter, logger logr.Logger) *ReconcilerManager {
+func NewReconcilerManager(
+	eventRouter interface {
+		ProcessControlEvent(ctx context.Context, event events.ControlEvent) error
+	},
+	logger logr.Logger,
+) *ReconcilerManager {
 	return &ReconcilerManager{
-		reconcilers:  make(map[ReconcilerKey]*BaseFolderReconciler),
-		eventEmitter: eventEmitter,
-		logger:       logger,
+		reconcilers: make(map[string]*FolderReconciler),
+		eventRouter: eventRouter,
+		logger:      logger,
 	}
 }
 
-// CreateReconciler creates or retrieves a BaseFolderReconciler for the given scope.
+// CreateReconciler creates or retrieves a FolderReconciler for the given GitDestination.
 func (m *ReconcilerManager) CreateReconciler(
-	repoName, branch, baseFolder string,
-) *BaseFolderReconciler {
-	key := ReconcilerKey{
-		RepoName:   repoName,
-		Branch:     branch,
-		BaseFolder: baseFolder,
-	}
+	gitDest types.ResourceReference,
+	eventEmitter EventEmitter,
+) *FolderReconciler {
+	key := gitDest.Key()
 
 	if reconciler, exists := m.reconcilers[key]; exists {
-		m.logger.V(1).Info("Reconciler already exists", "key", key.String())
+		m.logger.V(1).Info("Reconciler already exists", "gitDest", gitDest.String())
 		return reconciler
 	}
 
-	reconciler := NewBaseFolderReconciler(repoName, branch, baseFolder, m.eventEmitter, m.logger)
+	reconciler := NewFolderReconciler(gitDest, eventEmitter, m, m.logger)
 	m.reconcilers[key] = reconciler
-
-	m.logger.Info("Created new BaseFolderReconciler", "key", key.String())
+	m.logger.Info("Created new FolderReconciler", "gitDest", gitDest.String())
 	return reconciler
 }
 
-// GetReconciler retrieves a BaseFolderReconciler for the given scope.
-func (m *ReconcilerManager) GetReconciler(repoName, branch, baseFolder string) (*BaseFolderReconciler, bool) {
-	key := ReconcilerKey{
-		RepoName:   repoName,
-		Branch:     branch,
-		BaseFolder: baseFolder,
-	}
-
-	reconciler, exists := m.reconcilers[key]
+// GetReconciler retrieves a FolderReconciler for the given GitDestination.
+func (m *ReconcilerManager) GetReconciler(gitDest types.ResourceReference) (*FolderReconciler, bool) {
+	reconciler, exists := m.reconcilers[gitDest.Key()]
 	return reconciler, exists
 }
 
-// DeleteReconciler removes a BaseFolderReconciler from management.
-func (m *ReconcilerManager) DeleteReconciler(repoName, branch, baseFolder string) bool {
-	key := ReconcilerKey{
-		RepoName:   repoName,
-		Branch:     branch,
-		BaseFolder: baseFolder,
-	}
-
+// DeleteReconciler removes a FolderReconciler from management.
+func (m *ReconcilerManager) DeleteReconciler(gitDest types.ResourceReference) bool {
+	key := gitDest.Key()
 	if _, exists := m.reconcilers[key]; !exists {
-		m.logger.V(1).Info("Reconciler not found for deletion", "key", key.String())
+		m.logger.V(1).Info("Reconciler not found", "gitDest", gitDest.String())
 		return false
 	}
-
 	delete(m.reconcilers, key)
-	m.logger.Info("Deleted BaseFolderReconciler", "key", key.String())
+	m.logger.Info("Deleted FolderReconciler", "gitDest", gitDest.String())
 	return true
 }
 
+// EmitControlEvent implements ControlEventEmitter interface.
+func (m *ReconcilerManager) EmitControlEvent(event events.ControlEvent) error {
+	if m.eventRouter == nil {
+		return errors.New("eventRouter not set")
+	}
+	return m.eventRouter.ProcessControlEvent(context.Background(), event)
+}
+
 // ListReconcilers returns all managed reconcilers.
-func (m *ReconcilerManager) ListReconcilers() []*BaseFolderReconciler {
-	var reconcilers []*BaseFolderReconciler
+func (m *ReconcilerManager) ListReconcilers() []*FolderReconciler {
+	var reconcilers []*FolderReconciler
 	for _, reconciler := range m.reconcilers {
 		reconcilers = append(reconcilers, reconciler)
 	}

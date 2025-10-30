@@ -28,27 +28,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
-	"github.com/ConfigButler/gitops-reverser/internal/events"
 )
 
-// mockRepoStateEmitter implements the interface needed for EmitRepoState.
-type mockRepoStateEmitter struct {
-	emittedEvents []events.RepoStateEvent
-}
-
-func (m *mockRepoStateEmitter) EmitRepoStateEvent(event events.RepoStateEvent) error {
-	m.emittedEvents = append(m.emittedEvents, event)
-	return nil
-}
-
-func setupBranchWorkerTest() (*BranchWorker, *mockRepoStateEmitter, func()) {
+func setupBranchWorkerTest() (*BranchWorker, func()) {
 	scheme := runtime.NewScheme()
 	_ = clientgoscheme.AddToScheme(scheme)
 	_ = configv1alpha1.AddToScheme(scheme)
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 	log := logr.Discard()
-
-	emitter := &mockRepoStateEmitter{}
 
 	worker := NewBranchWorker(client, log, "test-repo", "gitops-system", "main")
 
@@ -58,18 +45,18 @@ func setupBranchWorkerTest() (*BranchWorker, *mockRepoStateEmitter, func()) {
 		}
 	}
 
-	return worker, emitter, cleanup
+	return worker, cleanup
 }
 
-// TestEmitRepoState_BasicFunctionality verifies EmitRepoState can be called without error.
-func TestEmitRepoState_BasicFunctionality(t *testing.T) {
-	worker, emitter, cleanup := setupBranchWorkerTest()
+// TestListResourcesInBaseFolder_BasicFunctionality verifies ListResourcesInBaseFolder can be called.
+func TestListResourcesInBaseFolder_BasicFunctionality(t *testing.T) {
+	worker, cleanup := setupBranchWorkerTest()
 	defer cleanup()
 
 	// This test verifies the method can be called without panicking
 	// In a real scenario, this would require setting up a Git repository
 	// For now, we just ensure the method signature and basic flow work
-	err := worker.EmitRepoState("apps", emitter)
+	_, err := worker.ListResourcesInBaseFolder("apps")
 
 	// We expect an error since no GitRepoConfig exists in the fake client
 	// But the important thing is that the method doesn't panic
@@ -78,9 +65,9 @@ func TestEmitRepoState_BasicFunctionality(t *testing.T) {
 	}
 }
 
-// TestEmitRepoState_EventEmission verifies that events are properly emitted.
-func TestEmitRepoState_EventEmission(t *testing.T) {
-	worker, emitter, cleanup := setupBranchWorkerTest()
+// TestListResourcesInBaseFolder_WithGitRepoConfig verifies resources are listed correctly.
+func TestListResourcesInBaseFolder_WithGitRepoConfig(t *testing.T) {
+	worker, cleanup := setupBranchWorkerTest()
 	defer cleanup()
 
 	// Create a GitRepoConfig in the fake client
@@ -98,24 +85,18 @@ func TestEmitRepoState_EventEmission(t *testing.T) {
 		t.Fatalf("Failed to create GitRepoConfig: %v", err)
 	}
 
-	// Call EmitRepoState - this will fail due to Git operations, but should emit events
-	err = worker.EmitRepoState("apps", emitter)
+	// Call ListResourcesInBaseFolder - will fail due to Git operations
+	_, err = worker.ListResourcesInBaseFolder("apps")
 
-	// We expect an error due to Git operations, but the event emission should work
+	// We expect an error due to Git operations
 	if err == nil {
 		t.Error("Expected error due to Git operations, but got nil")
 	}
-
-	// Verify that an event was attempted to be emitted
-	// (In a real test with proper Git setup, this would succeed)
-	if len(emitter.emittedEvents) == 0 {
-		t.Log("No events emitted - this is expected in test environment without Git repo")
-	}
 }
 
-// TestEmitRepoState_DifferentBaseFolders verifies different base folders are handled.
-func TestEmitRepoState_DifferentBaseFolders(t *testing.T) {
-	worker, emitter, cleanup := setupBranchWorkerTest()
+// TestListResourcesInBaseFolder_DifferentBaseFolders verifies different base folders are handled.
+func TestListResourcesInBaseFolder_DifferentBaseFolders(t *testing.T) {
+	worker, cleanup := setupBranchWorkerTest()
 	defer cleanup()
 
 	// Create a GitRepoConfig in the fake client
@@ -137,46 +118,25 @@ func TestEmitRepoState_DifferentBaseFolders(t *testing.T) {
 	baseFolders := []string{"apps", "infra", "", "clusters/prod"}
 
 	for _, baseFolder := range baseFolders {
-		emitter.emittedEvents = nil // Reset events
-
-		err := worker.EmitRepoState(baseFolder, emitter)
+		_, err := worker.ListResourcesInBaseFolder(baseFolder)
 
 		// Should fail due to Git operations, but method should handle different base folders
 		if err == nil {
 			t.Errorf("Expected error for base folder %q, but got nil", baseFolder)
 		}
-
-		// Verify event structure if emitted
-		if len(emitter.emittedEvents) > 0 {
-			event := emitter.emittedEvents[0]
-			if event.RepoName != "test-repo" {
-				t.Errorf("Expected RepoName 'test-repo', got %q", event.RepoName)
-			}
-			if event.Branch != "main" {
-				t.Errorf("Expected Branch 'main', got %q", event.Branch)
-			}
-			if event.BaseFolder != baseFolder {
-				t.Errorf("Expected BaseFolder %q, got %q", baseFolder, event.BaseFolder)
-			}
-		}
 	}
 }
 
-// TestEmitRepoState_MissingGitRepoConfig verifies proper error when GitRepoConfig is missing.
-func TestEmitRepoState_MissingGitRepoConfig(t *testing.T) {
-	worker, emitter, cleanup := setupBranchWorkerTest()
+// TestListResourcesInBaseFolder_MissingGitRepoConfig verifies proper error when GitRepoConfig is missing.
+func TestListResourcesInBaseFolder_MissingGitRepoConfig(t *testing.T) {
+	worker, cleanup := setupBranchWorkerTest()
 	defer cleanup()
 
 	// Don't create GitRepoConfig - should fail
-	err := worker.EmitRepoState("apps", emitter)
+	_, err := worker.ListResourcesInBaseFolder("apps")
 
 	if err == nil {
 		t.Error("Expected error when GitRepoConfig is missing, but got nil")
-	}
-
-	// Should contain information about missing config
-	if len(emitter.emittedEvents) != 0 {
-		t.Errorf("Expected no events when GitRepoConfig missing, got %d", len(emitter.emittedEvents))
 	}
 }
 

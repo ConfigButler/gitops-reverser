@@ -427,20 +427,15 @@ var _ = Describe("Manager", Ordered, func() {
 			cleanupGitRepoConfig(gitRepoConfigName)
 		})
 
-		It("should reconcile a WatchRule CR", func() {
-			gitRepoConfigName := "gitrepoconfig-watchrule-test"
-			watchRuleName := "watchrule-test"
-
-			By("ensuring valid Git credentials secret exists (git-creds should be set up by Gitea)")
-			cmd := exec.Command("kubectl", "get", "secret", "git-creds", "-n", namespace)
-			_, err := utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred(), "git-creds secret should exist from Gitea setup")
-
-			By("creating a working GitRepoConfig for the WatchRule test")
+		It("should handle a normal and healthy GitRepoConfig", func() {
+			gitRepoConfigName := "gitrepoconfig-normal"
 			createGitRepoConfig(gitRepoConfigName, "main", "git-creds")
-
-			By("waiting for GitRepoConfig to be ready")
 			verifyGitRepoConfigStatus(gitRepoConfigName, "True", "BranchFound", "All 1 branches validated")
+		})
+
+		It("should reconcile a WatchRule CR", func() {
+			gitRepoConfigName := "gitrepoconfig-normal"
+			watchRuleName := "watchrule-test"
 
 			By("creating a WatchRule that references the working GitRepoConfig")
 			destName := watchRuleName + "-dest"
@@ -456,7 +451,7 @@ var _ = Describe("Manager", Ordered, func() {
 				DestinationName: destName,
 			}
 
-			err = applyFromTemplate("test/e2e/templates/watchrule.tmpl", data, namespace)
+			err := applyFromTemplate("test/e2e/templates/watchrule.tmpl", data, namespace)
 			Expect(err).NotTo(HaveOccurred(), "Failed to apply WatchRule")
 
 			By("verifying the WatchRule is reconciled")
@@ -472,21 +467,13 @@ var _ = Describe("Manager", Ordered, func() {
 			By("cleaning up test resources")
 			cleanupWatchRule(watchRuleName, namespace)
 			cleanupGitDestination(destName, namespace)
-			cleanupGitRepoConfig(gitRepoConfigName)
 		})
 
 		It("should create Git commit when ConfigMap is added via WatchRule", func() {
-			gitRepoConfigName := "gitrepoconfig-configmap-test"
+			gitRepoConfigName := "gitrepoconfig-normal"
 			watchRuleName := "watchrule-configmap-test"
 			configMapName := "test-configmap"
 			uniqueRepoName := testRepoName
-			repoURL := getRepoURLHTTP()
-
-			By("creating GitRepoConfig for ConfigMap test")
-			createGitRepoConfigWithURL(gitRepoConfigName, "main", "git-creds", repoURL)
-
-			By("waiting for GitRepoConfig to be ready")
-			verifyGitRepoConfigStatus(gitRepoConfigName, "True", "BranchFound", "All 1 branches validated")
 
 			By("creating WatchRule that monitors ConfigMaps")
 			destName := watchRuleName + "-dest"
@@ -593,7 +580,6 @@ var _ = Describe("Manager", Ordered, func() {
 			_, _ = utils.Run(cmd)
 			cleanupWatchRule(watchRuleName, namespace)
 			cleanupGitDestination(destName, namespace)
-			cleanupGitRepoConfig(gitRepoConfigName)
 
 			By("✅ ConfigMap to Git commit E2E test passed - verified actual file creation and commit")
 			fmt.Printf("✅ ConfigMap '%s' successfully triggered Git commit with YAML file in repo '%s'\n",
@@ -601,17 +587,10 @@ var _ = Describe("Manager", Ordered, func() {
 		})
 
 		It("should delete Git file when ConfigMap is deleted via WatchRule", func() {
-			gitRepoConfigName := "gitrepoconfig-delete-test"
+			gitRepoConfigName := "gitrepoconfig-normal"
 			watchRuleName := "watchrule-delete-test"
 			configMapName := "test-configmap-to-delete"
 			uniqueRepoName := testRepoName
-			repoURL := getRepoURLHTTP()
-
-			By("creating GitRepoConfig for deletion test")
-			createGitRepoConfigWithURL(gitRepoConfigName, "main", "git-creds", repoURL)
-
-			By("waiting for GitRepoConfig to be ready")
-			verifyGitRepoConfigStatus(gitRepoConfigName, "True", "BranchFound", "All 1 branches validated")
 
 			By("creating WatchRule that monitors ConfigMaps")
 			destName := watchRuleName + "-dest"
@@ -670,7 +649,7 @@ var _ = Describe("Manager", Ordered, func() {
 				g.Expect(statErr).NotTo(HaveOccurred(), fmt.Sprintf("ConfigMap file should exist at %s", expectedFile))
 				g.Expect(fileInfo.Size()).To(BeNumerically(">", 0), "ConfigMap file should not be empty")
 			}
-			Eventually(verifyFileCreated, 180*time.Second, 5*time.Second).Should(Succeed())
+			Eventually(verifyFileCreated, 30*time.Second, 5*time.Second).Should(Succeed())
 
 			By("deleting the ConfigMap to trigger DELETE operation")
 			cmd := exec.Command("kubectl", "delete", "configmap", configMapName, "-n", namespace)
@@ -706,12 +685,11 @@ var _ = Describe("Manager", Ordered, func() {
 				g.Expect(string(logOutput)).To(ContainSubstring("DELETE"),
 					"Git log should contain DELETE operation")
 			}
-			Eventually(verifyFileDeleted, 180*time.Second, 5*time.Second).Should(Succeed())
+			Eventually(verifyFileDeleted, 30*time.Second, 5*time.Second).Should(Succeed())
 
 			By("cleaning up test resources")
 			cleanupWatchRule(watchRuleName, namespace)
 			cleanupGitDestination(destName, namespace)
-			cleanupGitRepoConfig(gitRepoConfigName)
 
 			By("✅ ConfigMap deletion E2E test passed - verified file removal from Git")
 			fmt.Printf("✅ ConfigMap '%s' deletion successfully triggered Git commit removing file from repo '%s'\n",
@@ -719,15 +697,9 @@ var _ = Describe("Manager", Ordered, func() {
 		})
 
 		It("should create Git commit when IceCreamOrder CRD is installed via ClusterWatchRule", func() {
-			gitRepoConfigName := "gitrepoconfig-crd-install-test"
+			gitRepoConfigName := "gitrepoconfig-normal"
 			clusterWatchRuleName := "clusterwatchrule-crd-install"
 			crdName := "icecreamorders.shop.example.com"
-
-			By("creating GitRepoConfig with allowClusterRules for CRD watching")
-			createGitRepoConfigWithClusterRules(gitRepoConfigName, "main", "git-creds", getRepoURLHTTP())
-
-			By("waiting for GitRepoConfig to be ready")
-			verifyGitRepoConfigStatus(gitRepoConfigName, "True", "BranchFound", "All 1 branches validated")
 
 			By("creating ClusterWatchRule with Cluster scope for CRDs")
 			destName := clusterWatchRuleName + "-dest"
@@ -802,14 +774,13 @@ var _ = Describe("Manager", Ordered, func() {
 			By("cleaning up test resources")
 			cleanupClusterWatchRule(clusterWatchRuleName)
 			cleanupGitDestination(destName, namespace)
-			cleanupGitRepoConfig(gitRepoConfigName)
 			// Keep CRD installed for subsequent tests
 
 			By("✅ CRD installation via ClusterWatchRule E2E test passed")
 		})
 
 		It("should create Git commit when IceCreamOrder is added via WatchRule", func() {
-			gitRepoConfigName := "gitrepoconfig-icecream-suite"
+			gitRepoConfigName := "gitrepoconfig-normal"
 			watchRuleName := "watchrule-icecream-orders"
 
 			By("installing the IceCreamOrder CRD first (needed for custom resource tests)")
@@ -827,11 +798,6 @@ var _ = Describe("Manager", Ordered, func() {
 			}
 			Eventually(verifyCRDEstablished, 30*time.Second, time.Second).Should(Succeed())
 
-			By("creating GitRepoConfig for IceCreamOrder test")
-			createGitRepoConfigWithURL(gitRepoConfigName, "main", "git-creds", getRepoURLHTTP())
-
-			By("waiting for GitRepoConfig to be ready")
-			verifyGitRepoConfigStatus(gitRepoConfigName, "True", "BranchFound", "All 1 branches validated")
 			crdInstanceName := "alices-order"
 			uniqueRepoName := testRepoName
 
@@ -1195,7 +1161,7 @@ var _ = Describe("Manager", Ordered, func() {
 					NotTo(HaveOccurred(), fmt.Sprintf("CRD instance file should exist at %s", expectedFile))
 				g.Expect(fileInfo.Size()).To(BeNumerically(">", 0), "CRD instance file should not be empty")
 			}
-			Eventually(verifyFileCreated, 180*time.Second, 5*time.Second).Should(Succeed())
+			Eventually(verifyFileCreated, 30*time.Second, 5*time.Second).Should(Succeed())
 
 			By("deleting the CR to trigger DELETE operation")
 			cmd := exec.Command("kubectl", "delete", "icecreamorder", crdInstanceName, "-n", namespace)
@@ -1224,7 +1190,7 @@ var _ = Describe("Manager", Ordered, func() {
 				g.Expect(string(logOutput)).To(ContainSubstring("DELETE"),
 					"Git log should contain DELETE operation")
 			}
-			Eventually(verifyFileDeleted, 180*time.Second, 5*time.Second).Should(Succeed())
+			Eventually(verifyFileDeleted, 30*time.Second, 5*time.Second).Should(Succeed())
 
 			By("✅ IceCreamOrder deletion E2E test passed")
 			fmt.Printf("✅ IceCreamOrder '%s' deletion successfully removed file from Git repo '%s'\n",
@@ -1308,7 +1274,7 @@ var _ = Describe("Manager", Ordered, func() {
 				g.Expect(string(logOutput)).To(ContainSubstring("DELETE"),
 					"Git log should contain DELETE operation")
 			}
-			Eventually(verifyFileDeleted, 180*time.Second, 5*time.Second).Should(Succeed())
+			Eventually(verifyFileDeleted, 30*time.Second, 5*time.Second).Should(Succeed())
 
 			By("cleaning up test resources")
 			cleanupClusterWatchRule(clusterWatchRuleName)
@@ -1328,7 +1294,7 @@ var _ = Describe("Manager", Ordered, func() {
 			cleanupGitDestination("watchrule-icecream-orders-dest", namespace)
 
 			// Clean up GitRepoConfig from IceCreamOrder tests
-			cleanupGitRepoConfig("gitrepoconfig-icecream-suite")
+			cleanupGitRepoConfig("gitrepoconfig-normal")
 
 			// Clean up IceCreamOrder CRD
 			cmd := exec.Command("kubectl", "delete", "crd",

@@ -28,7 +28,7 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
-func TestBaseFolderReconciler_FindDifferences(t *testing.T) {
+func TestFolderReconciler_FindDifferences(t *testing.T) {
 	tests := []struct {
 		name                   string
 		clusterResources       []types.ResourceIdentifier
@@ -138,11 +138,13 @@ func TestBaseFolderReconciler_FindDifferences(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Create mock event emitter
+			// Create mock emitters
 			mockEmitter := &MockEventEmitter{}
+			mockControlEmitter := &MockControlEventEmitter{}
 
-			// Create reconciler
-			reconciler := NewBaseFolderReconciler("test-repo", "main", "apps", mockEmitter, log.Log)
+			// Create reconciler with new API
+			gitDest := types.NewResourceReference("test-gitdest", "default")
+			reconciler := NewFolderReconciler(gitDest, mockEmitter, mockControlEmitter, log.Log)
 
 			// Call findDifferences
 			toCreate, toDelete, existingInBoth := reconciler.findDifferences(tt.clusterResources, tt.gitResources)
@@ -166,14 +168,14 @@ func TestBaseFolderReconciler_FindDifferences(t *testing.T) {
 	}
 }
 
-func TestBaseFolderReconciler_OnClusterState(t *testing.T) {
+func TestFolderReconciler_OnClusterState(t *testing.T) {
 	mockEmitter := &MockEventEmitter{}
-	reconciler := NewBaseFolderReconciler("test-repo", "main", "apps", mockEmitter, log.Log)
+	mockControlEmitter := &MockControlEventEmitter{}
+	gitDest := types.NewResourceReference("test-gitdest", "default")
+	reconciler := NewFolderReconciler(gitDest, mockEmitter, mockControlEmitter, log.Log)
 
 	clusterEvent := events.ClusterStateEvent{
-		RepoName:   "test-repo",
-		Branch:     "main",
-		BaseFolder: "apps",
+		GitDest: gitDest,
 		Resources: []types.ResourceIdentifier{
 			{Group: "", Version: "v1", Resource: "pods", Name: "app-pod"},
 		},
@@ -185,11 +187,10 @@ func TestBaseFolderReconciler_OnClusterState(t *testing.T) {
 	assert.Len(t, reconciler.clusterResources, 1, "Should have one cluster resource")
 
 	// Should not process non-matching event
+	otherGitDest := types.NewResourceReference("other-gitdest", "default")
 	otherEvent := events.ClusterStateEvent{
-		RepoName:   "other-repo",
-		Branch:     "main",
-		BaseFolder: "apps",
-		Resources:  []types.ResourceIdentifier{},
+		GitDest:   otherGitDest,
+		Resources: []types.ResourceIdentifier{},
 	}
 
 	reconciler.OnClusterState(otherEvent)
@@ -197,14 +198,14 @@ func TestBaseFolderReconciler_OnClusterState(t *testing.T) {
 	assert.Len(t, reconciler.clusterResources, 1, "Should not update cluster resources for non-matching event")
 }
 
-func TestBaseFolderReconciler_OnRepoState(t *testing.T) {
+func TestFolderReconciler_OnRepoState(t *testing.T) {
 	mockEmitter := &MockEventEmitter{}
-	reconciler := NewBaseFolderReconciler("test-repo", "main", "apps", mockEmitter, log.Log)
+	mockControlEmitter := &MockControlEventEmitter{}
+	gitDest := types.NewResourceReference("test-gitdest", "default")
+	reconciler := NewFolderReconciler(gitDest, mockEmitter, mockControlEmitter, log.Log)
 
 	repoEvent := events.RepoStateEvent{
-		RepoName:   "test-repo",
-		Branch:     "main",
-		BaseFolder: "apps",
+		GitDest: gitDest,
 		Resources: []types.ResourceIdentifier{
 			{Group: "", Version: "v1", Resource: "pods", Name: "app-pod"},
 		},
@@ -216,11 +217,10 @@ func TestBaseFolderReconciler_OnRepoState(t *testing.T) {
 	assert.Len(t, reconciler.gitResources, 1, "Should have one Git resource")
 
 	// Should not process non-matching event
+	otherGitDest := types.NewResourceReference("other-gitdest", "default")
 	otherEvent := events.RepoStateEvent{
-		RepoName:   "test-repo",
-		Branch:     "other-branch",
-		BaseFolder: "apps",
-		Resources:  []types.ResourceIdentifier{},
+		GitDest:   otherGitDest,
+		Resources: []types.ResourceIdentifier{},
 	}
 
 	reconciler.OnRepoState(otherEvent)
@@ -228,9 +228,11 @@ func TestBaseFolderReconciler_OnRepoState(t *testing.T) {
 	assert.Len(t, reconciler.gitResources, 1, "Should not update Git resources for non-matching event")
 }
 
-func TestBaseFolderReconciler_HasBothStates(t *testing.T) {
+func TestFolderReconciler_HasBothStates(t *testing.T) {
 	mockEmitter := &MockEventEmitter{}
-	reconciler := NewBaseFolderReconciler("test-repo", "main", "apps", mockEmitter, log.Log)
+	mockControlEmitter := &MockControlEventEmitter{}
+	gitDest := types.NewResourceReference("test-gitdest", "default")
+	reconciler := NewFolderReconciler(gitDest, mockEmitter, mockControlEmitter, log.Log)
 
 	// Initially should have no states
 	assert.False(t, reconciler.HasBothStates(), "Should not have both states initially")
@@ -252,38 +254,20 @@ func TestBaseFolderReconciler_HasBothStates(t *testing.T) {
 	assert.True(t, reconciler.HasBothStates(), "Should have both states when both are set")
 }
 
-func TestBaseFolderReconciler_UtilityMethods(t *testing.T) {
+func TestFolderReconciler_GetGitDest(t *testing.T) {
 	mockEmitter := &MockEventEmitter{}
-	reconciler := NewBaseFolderReconciler("test-repo", "main", "apps", mockEmitter, log.Log)
+	mockControlEmitter := &MockControlEventEmitter{}
+	gitDest := types.NewResourceReference("test-gitdest", "default")
+	reconciler := NewFolderReconciler(gitDest, mockEmitter, mockControlEmitter, log.Log)
 
-	// Test getter methods
-	assert.Equal(t, "test-repo", reconciler.GetRepoName(), "RepoName should match")
-	assert.Equal(t, "main", reconciler.GetBranch(), "Branch should match")
-	assert.Equal(t, "apps", reconciler.GetBaseFolder(), "BaseFolder should match")
+	// Test getter method
+	result := reconciler.GetGitDest()
+	assert.Equal(t, gitDest, result, "GetGitDest should return the GitDest reference")
+	assert.Equal(t, "test-gitdest", result.Name, "Name should match")
+	assert.Equal(t, "default", result.Namespace, "Namespace should match")
 
 	// Test String method
-	assert.Contains(t, reconciler.String(), "test-repo", "String should contain repo name")
-	assert.Contains(t, reconciler.String(), "main", "String should contain branch name")
-	assert.Contains(t, reconciler.String(), "apps", "String should contain base folder")
-}
-
-func TestBaseFolderReconciler_RequestEvents(t *testing.T) {
-	mockEmitter := &MockEventEmitter{}
-	reconciler := NewBaseFolderReconciler("test-repo", "main", "apps", mockEmitter, log.Log)
-
-	// Test RequestClusterState
-	clusterReq := reconciler.RequestClusterState()
-	assert.Equal(t, events.RequestClusterState, clusterReq.Type, "Should request cluster state")
-	assert.Equal(t, "test-repo", clusterReq.RepoName, "Should have correct repo name")
-	assert.Equal(t, "main", clusterReq.Branch, "Should have correct branch")
-	assert.Equal(t, "apps", clusterReq.BaseFolder, "Should have correct base folder")
-
-	// Test RequestRepoState
-	repoReq := reconciler.RequestRepoState()
-	assert.Equal(t, events.RequestRepoState, repoReq.Type, "Should request repo state")
-	assert.Equal(t, "test-repo", repoReq.RepoName, "Should have correct repo name")
-	assert.Equal(t, "main", repoReq.Branch, "Should have correct branch")
-	assert.Equal(t, "apps", repoReq.BaseFolder, "Should have correct base folder")
+	assert.Contains(t, reconciler.String(), "default/test-gitdest", "String should contain gitDest reference")
 }
 
 // MockEventEmitter is a mock implementation of EventEmitter for testing.
@@ -318,4 +302,18 @@ func (m *MockEventEmitter) GetDeleteEvents() []types.ResourceIdentifier {
 
 func (m *MockEventEmitter) GetReconcileEvents() []types.ResourceIdentifier {
 	return m.reconcileEvents
+}
+
+// MockControlEventEmitter is a mock implementation of ControlEventEmitter for testing.
+type MockControlEventEmitter struct {
+	controlEvents []events.ControlEvent
+}
+
+func (m *MockControlEventEmitter) EmitControlEvent(event events.ControlEvent) error {
+	m.controlEvents = append(m.controlEvents, event)
+	return nil
+}
+
+func (m *MockControlEventEmitter) GetControlEvents() []events.ControlEvent {
+	return m.controlEvents
 }

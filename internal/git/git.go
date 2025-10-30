@@ -196,65 +196,64 @@ func (r *Repo) TryPushCommits(ctx context.Context, branch string, events []Event
 	// Store branch in repo for this operation
 	r.branch = branch
 
-	// 1. Generate local commits from the event queue
-	// Returns the number of actual commits created
-	commitsCreated, err := r.generateLocalCommits(ctx, events)
-	if err != nil {
-		return fmt.Errorf("failed to generate local commits: %w", err)
+	// Retry loop for handling multiple conflicts
+	const maxRetries = 3
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		// 1. Generate local commits from the event queue
+		// Returns the number of actual commits created
+		commitsCreated, err := r.generateLocalCommits(ctx, events)
+		if err != nil {
+			return fmt.Errorf("failed to generate local commits: %w", err)
+		}
+
+		// If no commits were created (all events resulted in no changes), skip push
+		if commitsCreated == 0 {
+			logger.Info("No commits created, skipping push", "eventsProcessed", len(events))
+			return nil
+		}
+
+		// 2. Attempt the push
+		err = r.Push(ctx)
+		if err == nil {
+			if attempt > 0 {
+				logger.Info("Successfully pushed commits after retries", "count", commitsCreated, "attempt", attempt+1)
+			} else {
+				logger.Info("Successfully pushed commits", "count", commitsCreated)
+			}
+			return nil
+		}
+
+		// 3. Handle non-fast-forward error with retry
+		if isNonFastForwardError(err) {
+			if attempt < maxRetries {
+				logger.Info("Push rejected due to remote changes. Resyncing...", "attempt", attempt+1, "maxRetries", maxRetries)
+
+				// Hard reset to remote state
+				if err := r.hardResetToRemote(ctx); err != nil {
+					return fmt.Errorf("failed to reset to remote state: %w", err)
+				}
+
+				// Re-evaluate the original events against the new state
+				events = r.reEvaluateEvents(ctx, events)
+				if len(events) == 0 {
+					logger.Info("No valid events remaining after conflict resolution")
+					return nil
+				}
+
+				logger.Info("Retrying push with non-conflicting commits", "count", len(events), "attempt", attempt+1)
+				// Continue to next iteration of retry loop
+				continue
+			}
+			// Max retries exceeded
+			return fmt.Errorf("push failed after %d retries: %w", maxRetries, ErrNonFastForward)
+		}
+
+		// Handle other push errors (e.g., network, auth)
+		return fmt.Errorf("push failed: %w", err)
 	}
 
-	// If no commits were created (all events resulted in no changes), skip push
-	if commitsCreated == 0 {
-		logger.Info("No commits created, skipping push", "eventsProcessed", len(events))
-		return nil
-	}
-
-	// 2. Attempt the push
-	err = r.Push(ctx)
-	if err == nil {
-		logger.Info("Successfully pushed commits", "count", commitsCreated)
-		return nil
-	}
-
-	// 3. Handle non-fast-forward error
-	if isNonFastForwardError(err) {
-		return r.handleNonFastForwardError(ctx, events)
-	}
-
-	// Handle other push errors (e.g., network, auth)
-	return fmt.Errorf("push failed: %w", err)
-}
-
-// handleNonFastForwardError handles push conflicts by re-syncing and retrying.
-func (r *Repo) handleNonFastForwardError(ctx context.Context, events []Event) error {
-	logger := log.FromContext(ctx)
-	logger.Info("Push rejected due to remote changes. Resyncing...")
-
-	// Hard reset to remote state
-	if err := r.hardResetToRemote(ctx); err != nil {
-		return fmt.Errorf("failed to reset to remote state: %w", err)
-	}
-
-	// Re-evaluate the original events against the new state
-	validEvents := r.reEvaluateEvents(ctx, events)
-	if len(validEvents) == 0 {
-		logger.Info("No valid events remaining after conflict resolution")
-		return nil
-	}
-
-	// Retry the push with only the valid events
-	logger.Info("Retrying push with non-conflicting commits", "count", len(validEvents))
-	retryCommits, err := r.generateLocalCommits(ctx, validEvents)
-	if err != nil {
-		return fmt.Errorf("failed to generate retry commits: %w", err)
-	}
-
-	if retryCommits == 0 {
-		logger.Info("No commits created on retry, skipping push")
-		return nil
-	}
-
-	return r.Push(ctx)
+	// Should never reach here
+	return fmt.Errorf("push failed after %d retries", maxRetries)
 }
 
 // sanitizeBaseFolder validates and normalizes a baseFolder value to a safe POSIX-like relative path.
@@ -297,6 +296,12 @@ func (r *Repo) generateLocalCommits(ctx context.Context, events []Event) (int, e
 
 	commitsCreated := 0
 	for _, event := range events {
+		// Skip control events (e.g., SEED_SYNC) - they don't represent actual resources
+		if event.IsControlEvent() {
+			logger.V(1).Info("Skipping control event", "operation", event.Operation)
+			continue
+		}
+
 		// Build the repository-relative file path:
 		// optional event-scoped baseFolder prefix + identifier path.
 		filePath := event.Identifier.ToGitPath()
@@ -706,7 +711,9 @@ func isNonFastForwardError(err error) bool {
 	return strings.Contains(errStr, "non-fast-forward") ||
 		strings.Contains(errStr, "rejected") ||
 		strings.Contains(errStr, "fetch first") ||
-		strings.Contains(errStr, "updates were rejected")
+		strings.Contains(errStr, "updates were rejected") ||
+		strings.Contains(errStr, "cannot lock ref") ||
+		strings.Contains(errStr, "failed to update ref")
 }
 
 // Commit commits a set of files to the repository (legacy method for compatibility).

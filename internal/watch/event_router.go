@@ -19,33 +19,48 @@ limitations under the License.
 package watch
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/go-logr/logr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 	"github.com/ConfigButler/gitops-reverser/internal/events"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/reconcile"
+	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
-// EventRouter dispatches events to the correct BranchWorker based on (repo, branch).
-// This replaces the old central EventQueue with intelligent routing.
-// It also handles routing of RepoStateEvents to BaseFolderReconcilers.
-// Now also routes to GitDestinationEventStreams for event buffering and deduplication.
+// EventRouter orchestrates control flow between components.
+// It dispatches events to BranchWorkers, calls services synchronously,
+// and routes state events to reconcilers.
 type EventRouter struct {
-	WorkerManager *git.WorkerManager
-	Log           logr.Logger
+	WorkerManager     *git.WorkerManager
+	ReconcilerManager *reconcile.ReconcilerManager
+	WatchManager      *Manager
+	Client            client.Client
+	Log               logr.Logger
 
-	// Registry of GitDestinationEventStreams by (gitDestName, gitDestNamespace)
+	// Registry of GitDestinationEventStreams by gitDest key
 	gitDestStreams map[string]*reconcile.GitDestinationEventStream
 }
 
 // NewEventRouter creates a new event router.
-func NewEventRouter(workerManager *git.WorkerManager, log logr.Logger) *EventRouter {
+func NewEventRouter(
+	workerManager *git.WorkerManager,
+	reconcilerManager *reconcile.ReconcilerManager,
+	watchManager *Manager,
+	client client.Client,
+	log logr.Logger,
+) *EventRouter {
 	return &EventRouter{
-		WorkerManager:  workerManager,
-		Log:            log,
-		gitDestStreams: make(map[string]*reconcile.GitDestinationEventStream),
+		WorkerManager:     workerManager,
+		ReconcilerManager: reconcilerManager,
+		WatchManager:      watchManager,
+		Client:            client,
+		Log:               log,
+		gitDestStreams:    make(map[string]*reconcile.GitDestinationEventStream),
 	}
 }
 
@@ -78,45 +93,111 @@ func (r *EventRouter) RouteEvent(
 	return nil
 }
 
-// RouteRepoStateEvent routes RepoStateEvents to the appropriate BaseFolderReconciler.
-// This is called when a BranchWorker emits a RepoStateEvent in response to REQUEST_REPO_STATE.
-func (r *EventRouter) RouteRepoStateEvent(event events.RepoStateEvent) error {
-	// For now, we need to get the reconciler manager from somewhere
-	// This will be injected when we integrate with the main application
-	// For the refactor, we'll add this method signature and implement it later
-	r.Log.V(1).Info("RepoStateEvent received - routing needed",
-		"repo", event.RepoName,
-		"branch", event.Branch,
-		"baseFolder", event.BaseFolder,
-		"resourceCount", len(event.Resources))
+// ProcessControlEvent handles control events from reconcilers.
+func (r *EventRouter) ProcessControlEvent(ctx context.Context, event events.ControlEvent) error {
+	r.Log.V(1).Info("Processing control event", "type", event.Type, "gitDest", event.GitDest.String())
 
-	// TODO: Route to BaseFolderReconciler when integration is complete
+	switch event.Type {
+	case events.RequestClusterState:
+		return r.handleRequestClusterState(ctx, event)
+	case events.RequestRepoState:
+		return r.handleRequestRepoState(ctx, event)
+	case events.ReconcileResource:
+		return r.handleReconcileResource(ctx, event)
+	default:
+		return fmt.Errorf("unknown control event type: %s", event.Type)
+	}
+}
+
+// handleRequestClusterState processes RequestClusterState control events.
+func (r *EventRouter) handleRequestClusterState(ctx context.Context, event events.ControlEvent) error {
+	// Call WatchManager service (synchronous)
+	resources, err := r.WatchManager.GetClusterStateForGitDest(ctx, event.GitDest)
+	if err != nil {
+		return fmt.Errorf("failed to get cluster state: %w", err)
+	}
+
+	// Wrap in event and route
+	return r.RouteClusterStateEvent(events.ClusterStateEvent{
+		GitDest:   event.GitDest,
+		Resources: resources,
+	})
+}
+
+// handleRequestRepoState processes RequestRepoState control events.
+func (r *EventRouter) handleRequestRepoState(ctx context.Context, event events.ControlEvent) error {
+	// Look up GitDestination
+	var gitDest configv1alpha1.GitDestination
+	if err := r.Client.Get(ctx, client.ObjectKey{
+		Name:      event.GitDest.Name,
+		Namespace: event.GitDest.Namespace,
+	}, &gitDest); err != nil {
+		return fmt.Errorf("failed to get GitDestination: %w", err)
+	}
+
+	// Get BranchWorker
+	worker, exists := r.WorkerManager.GetWorkerForDestination(
+		gitDest.Spec.RepoRef.Name,
+		gitDest.Spec.RepoRef.Namespace,
+		gitDest.Spec.Branch,
+	)
+	if !exists {
+		return fmt.Errorf("no worker for %s", event.GitDest.String())
+	}
+
+	// Call BranchWorker service (synchronous)
+	resources, err := worker.ListResourcesInBaseFolder(gitDest.Spec.BaseFolder)
+	if err != nil {
+		return fmt.Errorf("failed to list resources: %w", err)
+	}
+
+	// Wrap in event and route
+	return r.RouteRepoStateEvent(events.RepoStateEvent{
+		GitDest:   event.GitDest,
+		Resources: resources,
+	})
+}
+
+// handleReconcileResource processes ReconcileResource control events.
+func (r *EventRouter) handleReconcileResource(_ context.Context, event events.ControlEvent) error {
+	// This would handle individual resource reconciliation
+	// For now, just log it
+	r.Log.V(1).Info("ReconcileResource event", "gitDest", event.GitDest.String(), "resource", event.Resource)
 	return nil
 }
 
-// RouteClusterStateEvent routes ClusterStateEvents to the appropriate BaseFolderReconciler.
-// This is called when WatchManager emits cluster state snapshots.
-func (r *EventRouter) RouteClusterStateEvent(event events.ClusterStateEvent) error {
-	r.Log.V(1).Info("ClusterStateEvent received - routing needed",
-		"repo", event.RepoName,
-		"branch", event.Branch,
-		"baseFolder", event.BaseFolder,
-		"resourceCount", len(event.Resources))
+// RouteRepoStateEvent routes RepoStateEvents to the appropriate FolderReconciler.
+func (r *EventRouter) RouteRepoStateEvent(event events.RepoStateEvent) error {
+	reconciler, exists := r.ReconcilerManager.GetReconciler(event.GitDest)
+	if !exists {
+		r.Log.V(1).Info("No reconciler found", "gitDest", event.GitDest.String())
+		return nil
+	}
+	reconciler.OnRepoState(event)
+	return nil
+}
 
-	// TODO: Route to BaseFolderReconciler when integration is complete
+// RouteClusterStateEvent routes ClusterStateEvents to the appropriate FolderReconciler.
+func (r *EventRouter) RouteClusterStateEvent(event events.ClusterStateEvent) error {
+	reconciler, exists := r.ReconcilerManager.GetReconciler(event.GitDest)
+	if !exists {
+		r.Log.V(1).Info("No reconciler found", "gitDest", event.GitDest.String())
+		return nil
+	}
+	reconciler.OnClusterState(event)
 	return nil
 }
 
 // RegisterGitDestinationEventStream registers a GitDestinationEventStream with the router.
 // This allows routing events to specific GitDestinationEventStreams for buffering and deduplication.
 func (r *EventRouter) RegisterGitDestinationEventStream(
-	gitDestName, gitDestNamespace string,
+	gitDest types.ResourceReference,
 	stream *reconcile.GitDestinationEventStream,
 ) {
-	key := fmt.Sprintf("%s/%s", gitDestNamespace, gitDestName)
+	key := gitDest.Key()
 	r.gitDestStreams[key] = stream
 	r.Log.Info("Registered GitDestinationEventStream",
-		"gitDest", key,
+		"gitDest", gitDest.String(),
 		"stream", stream.String())
 }
 
@@ -124,9 +205,9 @@ func (r *EventRouter) RegisterGitDestinationEventStream(
 // This replaces direct routing to BranchWorkers, enabling event buffering and deduplication.
 func (r *EventRouter) RouteToGitDestinationEventStream(
 	event git.Event,
-	gitDestName, gitDestNamespace string,
+	gitDest types.ResourceReference,
 ) error {
-	key := fmt.Sprintf("%s/%s", gitDestNamespace, gitDestName)
+	key := gitDest.Key()
 	stream, exists := r.gitDestStreams[key]
 
 	if !exists {
@@ -136,7 +217,7 @@ func (r *EventRouter) RouteToGitDestinationEventStream(
 	stream.OnWatchEvent(event)
 
 	r.Log.V(1).Info("Event routed to GitDestinationEventStream",
-		"gitDest", key,
+		"gitDest", gitDest.String(),
 		"operation", event.Operation,
 		"baseFolder", event.BaseFolder,
 		"resource", event.Identifier.String())

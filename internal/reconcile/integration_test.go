@@ -28,17 +28,17 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
-// TestBaseFolderReconciler_FullReconciliationCycle tests the complete reconciliation cycle
+// TestFolderReconciler_FullReconciliationCycle tests the complete reconciliation cycle
 // with both cluster and Git state events.
-func TestBaseFolderReconciler_FullReconciliationCycle(t *testing.T) {
+func TestFolderReconciler_FullReconciliationCycle(t *testing.T) {
 	mockEmitter := &MockEventEmitter{}
-	reconciler := NewBaseFolderReconciler("test-repo", "main", "apps", mockEmitter, log.Log)
+	mockControlEmitter := &MockControlEventEmitter{}
+	gitDest := types.NewResourceReference("test-gitdest", "default")
+	reconciler := NewFolderReconciler(gitDest, mockEmitter, mockControlEmitter, log.Log)
 
 	// Initial state - should not reconcile yet
 	reconciler.OnClusterState(events.ClusterStateEvent{
-		RepoName:   "test-repo",
-		Branch:     "main",
-		BaseFolder: "apps",
+		GitDest: gitDest,
 		Resources: []types.ResourceIdentifier{
 			{Group: "", Version: "v1", Resource: "pods", Name: "app-pod"},
 		},
@@ -50,9 +50,7 @@ func TestBaseFolderReconciler_FullReconciliationCycle(t *testing.T) {
 
 	// Provide Git state - should now reconcile
 	reconciler.OnRepoState(events.RepoStateEvent{
-		RepoName:   "test-repo",
-		Branch:     "main",
-		BaseFolder: "apps",
+		GitDest: gitDest,
 		Resources: []types.ResourceIdentifier{
 			{Group: "", Version: "v1", Resource: "pods", Name: "app-pod"},
 			{Group: "", Version: "v1", Resource: "services", Name: "old-service"}, // Orphan
@@ -68,16 +66,16 @@ func TestBaseFolderReconciler_FullReconciliationCycle(t *testing.T) {
 	assert.Len(t, mockEmitter.GetReconcileEvents(), 1, "Should emit reconcile event for existing resource")
 }
 
-// TestBaseFolderReconciler_MissingInGit tests reconciliation when cluster has resources not in Git.
-func TestBaseFolderReconciler_MissingInGit(t *testing.T) {
+// TestFolderReconciler_MissingInGit tests reconciliation when cluster has resources not in Git.
+func TestFolderReconciler_MissingInGit(t *testing.T) {
 	mockEmitter := &MockEventEmitter{}
-	reconciler := NewBaseFolderReconciler("test-repo", "main", "apps", mockEmitter, log.Log)
+	mockControlEmitter := &MockControlEventEmitter{}
+	gitDest := types.NewResourceReference("test-gitdest", "default")
+	reconciler := NewFolderReconciler(gitDest, mockEmitter, mockControlEmitter, log.Log)
 
 	// Cluster has resources, Git has subset
 	reconciler.OnClusterState(events.ClusterStateEvent{
-		RepoName:   "test-repo",
-		Branch:     "main",
-		BaseFolder: "apps",
+		GitDest: gitDest,
 		Resources: []types.ResourceIdentifier{
 			{Group: "", Version: "v1", Resource: "pods", Name: "app-pod"},
 			{Group: "", Version: "v1", Resource: "services", Name: "app-svc"}, // Missing in Git
@@ -85,9 +83,7 @@ func TestBaseFolderReconciler_MissingInGit(t *testing.T) {
 	})
 
 	reconciler.OnRepoState(events.RepoStateEvent{
-		RepoName:   "test-repo",
-		Branch:     "main",
-		BaseFolder: "apps",
+		GitDest: gitDest,
 		Resources: []types.ResourceIdentifier{
 			{Group: "", Version: "v1", Resource: "pods", Name: "app-pod"},
 		},
@@ -104,25 +100,23 @@ func TestBaseFolderReconciler_MissingInGit(t *testing.T) {
 	assert.Equal(t, "app-pod", reconcileEvents[0].Name, "Should reconcile existing pod")
 }
 
-// TestBaseFolderReconciler_OrphansInGit tests reconciliation when Git has orphaned resources.
-func TestBaseFolderReconciler_OrphansInGit(t *testing.T) {
+// TestFolderReconciler_OrphansInGit tests reconciliation when Git has orphaned resources.
+func TestFolderReconciler_OrphansInGit(t *testing.T) {
 	mockEmitter := &MockEventEmitter{}
-	reconciler := NewBaseFolderReconciler("test-repo", "main", "apps", mockEmitter, log.Log)
+	mockControlEmitter := &MockControlEventEmitter{}
+	gitDest := types.NewResourceReference("test-gitdest", "default")
+	reconciler := NewFolderReconciler(gitDest, mockEmitter, mockControlEmitter, log.Log)
 
 	// Git has resources not in cluster
 	reconciler.OnClusterState(events.ClusterStateEvent{
-		RepoName:   "test-repo",
-		Branch:     "main",
-		BaseFolder: "apps",
+		GitDest: gitDest,
 		Resources: []types.ResourceIdentifier{
 			{Group: "", Version: "v1", Resource: "pods", Name: "app-pod"},
 		},
 	})
 
 	reconciler.OnRepoState(events.RepoStateEvent{
-		RepoName:   "test-repo",
-		Branch:     "main",
-		BaseFolder: "apps",
+		GitDest: gitDest,
 		Resources: []types.ResourceIdentifier{
 			{Group: "", Version: "v1", Resource: "pods", Name: "app-pod"},
 			{Group: "", Version: "v1", Resource: "configmaps", Name: "old-config"}, // Orphan
@@ -140,25 +134,23 @@ func TestBaseFolderReconciler_OrphansInGit(t *testing.T) {
 	assert.Equal(t, "app-pod", reconcileEvents[0].Name, "Should reconcile existing pod")
 }
 
-// TestBaseFolderReconciler_OrderIndependence tests that event order doesn't matter.
-func TestBaseFolderReconciler_OrderIndependence(t *testing.T) {
+// TestFolderReconciler_OrderIndependence tests that event order doesn't matter.
+func TestFolderReconciler_OrderIndependence(t *testing.T) {
 	// Test 1: Git state first, then cluster state
 	mockEmitter1 := &MockEventEmitter{}
-	reconciler1 := NewBaseFolderReconciler("test-repo", "main", "apps", mockEmitter1, log.Log)
+	mockControlEmitter1 := &MockControlEventEmitter{}
+	gitDest1 := types.NewResourceReference("test-gitdest", "default")
+	reconciler1 := NewFolderReconciler(gitDest1, mockEmitter1, mockControlEmitter1, log.Log)
 
 	reconciler1.OnRepoState(events.RepoStateEvent{
-		RepoName:   "test-repo",
-		Branch:     "main",
-		BaseFolder: "apps",
+		GitDest: gitDest1,
 		Resources: []types.ResourceIdentifier{
 			{Group: "", Version: "v1", Resource: "pods", Name: "app-pod"},
 		},
 	})
 
 	reconciler1.OnClusterState(events.ClusterStateEvent{
-		RepoName:   "test-repo",
-		Branch:     "main",
-		BaseFolder: "apps",
+		GitDest: gitDest1,
 		Resources: []types.ResourceIdentifier{
 			{Group: "", Version: "v1", Resource: "pods", Name: "app-pod"},
 			{Group: "", Version: "v1", Resource: "services", Name: "app-svc"},
@@ -167,12 +159,12 @@ func TestBaseFolderReconciler_OrderIndependence(t *testing.T) {
 
 	// Test 2: Cluster state first, then Git state
 	mockEmitter2 := &MockEventEmitter{}
-	reconciler2 := NewBaseFolderReconciler("test-repo", "main", "apps", mockEmitter2, log.Log)
+	mockControlEmitter2 := &MockControlEventEmitter{}
+	gitDest2 := types.NewResourceReference("test-gitdest", "default")
+	reconciler2 := NewFolderReconciler(gitDest2, mockEmitter2, mockControlEmitter2, log.Log)
 
 	reconciler2.OnClusterState(events.ClusterStateEvent{
-		RepoName:   "test-repo",
-		Branch:     "main",
-		BaseFolder: "apps",
+		GitDest: gitDest2,
 		Resources: []types.ResourceIdentifier{
 			{Group: "", Version: "v1", Resource: "pods", Name: "app-pod"},
 			{Group: "", Version: "v1", Resource: "services", Name: "app-svc"},
@@ -180,9 +172,7 @@ func TestBaseFolderReconciler_OrderIndependence(t *testing.T) {
 	})
 
 	reconciler2.OnRepoState(events.RepoStateEvent{
-		RepoName:   "test-repo",
-		Branch:     "main",
-		BaseFolder: "apps",
+		GitDest: gitDest2,
 		Resources: []types.ResourceIdentifier{
 			{Group: "", Version: "v1", Resource: "pods", Name: "app-pod"},
 		},
@@ -200,28 +190,28 @@ func TestBaseFolderReconciler_OrderIndependence(t *testing.T) {
 	}
 }
 
-// TestBaseFolderReconciler_ScopeIsolation tests that different scopes don't interfere.
-func TestBaseFolderReconciler_ScopeIsolation(t *testing.T) {
+// TestFolderReconciler_ScopeIsolation tests that different scopes don't interfere.
+func TestFolderReconciler_ScopeIsolation(t *testing.T) {
 	mockEmitter1 := &MockEventEmitter{}
-	reconciler1 := NewBaseFolderReconciler("test-repo", "main", "apps", mockEmitter1, log.Log)
+	mockControlEmitter1 := &MockControlEventEmitter{}
+	gitDest1 := types.NewResourceReference("gitdest-apps", "default")
+	reconciler1 := NewFolderReconciler(gitDest1, mockEmitter1, mockControlEmitter1, log.Log)
 
 	mockEmitter2 := &MockEventEmitter{}
-	reconciler2 := NewBaseFolderReconciler("test-repo", "main", "infrastructure", mockEmitter2, log.Log)
+	mockControlEmitter2 := &MockControlEventEmitter{}
+	gitDest2 := types.NewResourceReference("gitdest-infra", "default")
+	reconciler2 := NewFolderReconciler(gitDest2, mockEmitter2, mockControlEmitter2, log.Log)
 
 	// Send events to first reconciler (apps)
 	reconciler1.OnClusterState(events.ClusterStateEvent{
-		RepoName:   "test-repo",
-		Branch:     "main",
-		BaseFolder: "apps",
+		GitDest: gitDest1,
 		Resources: []types.ResourceIdentifier{
 			{Group: "apps", Version: "v1", Resource: "deployments", Name: "app-deployment"},
 		},
 	})
 
 	reconciler1.OnRepoState(events.RepoStateEvent{
-		RepoName:   "test-repo",
-		Branch:     "main",
-		BaseFolder: "apps",
+		GitDest: gitDest1,
 		Resources: []types.ResourceIdentifier{
 			{Group: "apps", Version: "v1", Resource: "deployments", Name: "app-deployment"},
 		},
@@ -229,18 +219,14 @@ func TestBaseFolderReconciler_ScopeIsolation(t *testing.T) {
 
 	// Send events to second reconciler (infrastructure)
 	reconciler2.OnClusterState(events.ClusterStateEvent{
-		RepoName:   "test-repo",
-		Branch:     "main",
-		BaseFolder: "infrastructure",
+		GitDest: gitDest2,
 		Resources: []types.ResourceIdentifier{
 			{Group: "", Version: "v1", Resource: "nodes", Name: "worker-node"},
 		},
 	})
 
 	reconciler2.OnRepoState(events.RepoStateEvent{
-		RepoName:   "test-repo",
-		Branch:     "main",
-		BaseFolder: "infrastructure",
+		GitDest: gitDest2,
 		Resources: []types.ResourceIdentifier{
 			{Group: "", Version: "v1", Resource: "nodes", Name: "worker-node"},
 			{Group: "", Version: "v1", Resource: "configmaps", Name: "orphan-cm"}, // Orphan
@@ -269,16 +255,16 @@ func TestBaseFolderReconciler_ScopeIsolation(t *testing.T) {
 	assert.Equal(t, "worker-node", reconcileEvents2[0].Name, "Should reconcile worker-node")
 }
 
-// TestBaseFolderReconciler_ComplexScenario tests a complex real-world scenario.
-func TestBaseFolderReconciler_ComplexScenario(t *testing.T) {
+// TestFolderReconciler_ComplexScenario tests a complex real-world scenario.
+func TestFolderReconciler_ComplexScenario(t *testing.T) {
 	mockEmitter := &MockEventEmitter{}
-	reconciler := NewBaseFolderReconciler("my-app", "feature/new-ui", "k8s", mockEmitter, log.Log)
+	mockControlEmitter := &MockControlEventEmitter{}
+	gitDest := types.NewResourceReference("my-app-gitdest", "production")
+	reconciler := NewFolderReconciler(gitDest, mockEmitter, mockControlEmitter, log.Log)
 
 	// Initial cluster state
 	reconciler.OnClusterState(events.ClusterStateEvent{
-		RepoName:   "my-app",
-		Branch:     "feature/new-ui",
-		BaseFolder: "k8s",
+		GitDest: gitDest,
 		Resources: []types.ResourceIdentifier{
 			{Group: "apps", Version: "v1", Resource: "deployments", Name: "frontend"},
 			{Group: "apps", Version: "v1", Resource: "deployments", Name: "backend"},
@@ -290,9 +276,7 @@ func TestBaseFolderReconciler_ComplexScenario(t *testing.T) {
 
 	// Current Git state (missing some resources, has some orphans)
 	reconciler.OnRepoState(events.RepoStateEvent{
-		RepoName:   "my-app",
-		Branch:     "feature/new-ui",
-		BaseFolder: "k8s",
+		GitDest: gitDest,
 		Resources: []types.ResourceIdentifier{
 			{Group: "apps", Version: "v1", Resource: "deployments", Name: "frontend"},
 			{Group: "", Version: "v1", Resource: "services", Name: "frontend-svc"},

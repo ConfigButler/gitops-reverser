@@ -21,6 +21,7 @@ package watch
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -32,6 +33,7 @@ import (
 	k8stypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/dynamic/dynamicinformer"
+	"k8s.io/client-go/tools/cache"
 	ctrl "sigs.k8s.io/controller-runtime"
 
 	"github.com/cespare/xxhash/v2"
@@ -40,13 +42,11 @@ import (
 
 	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 	"github.com/ConfigButler/gitops-reverser/internal/correlation"
-	"github.com/ConfigButler/gitops-reverser/internal/events"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/metrics"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
 	"github.com/ConfigButler/gitops-reverser/internal/sanitize"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
-	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
 // RBAC permissions for dynamic watch manager - read-only access to watch all (also future ones!) resource types
@@ -209,7 +209,7 @@ func (m *Manager) matchRules(
 func (m *Manager) enqueueMatches(
 	ctx context.Context,
 	sanitized *unstructured.Unstructured,
-	id itypes.ResourceIdentifier,
+	id types.ResourceIdentifier,
 	watchRules []rulestore.CompiledRule,
 	clusterRules []rulestore.CompiledClusterRule,
 ) {
@@ -234,14 +234,12 @@ func (m *Manager) enqueueMatches(
 			BaseFolder: rule.BaseFolder,
 		}
 
+		gitDest := types.NewResourceReference(rule.GitDestinationRef, rule.GitDestinationNamespace)
+
 		// Route to GitDestinationEventStream for buffering and deduplication
-		if err := m.EventRouter.RouteToGitDestinationEventStream(
-			ev,
-			rule.GitDestinationRef,
-			rule.GitDestinationNamespace,
-		); err != nil {
+		if err := m.EventRouter.RouteToGitDestinationEventStream(ev, gitDest); err != nil {
 			m.Log.Error(err, "Failed to route event to GitDestinationEventStream - dropping event",
-				"gitDest", fmt.Sprintf("%s/%s", rule.GitDestinationNamespace, rule.GitDestinationRef),
+				"gitDest", gitDest.String(),
 				"resource", id.String())
 		}
 	}
@@ -256,14 +254,12 @@ func (m *Manager) enqueueMatches(
 			BaseFolder: cr.BaseFolder,
 		}
 
+		gitDest := types.NewResourceReference(cr.GitDestinationRef, cr.GitDestinationNamespace)
+
 		// Route to GitDestinationEventStream for buffering and deduplication
-		if err := m.EventRouter.RouteToGitDestinationEventStream(
-			ev,
-			cr.GitDestinationRef,
-			cr.GitDestinationNamespace,
-		); err != nil {
+		if err := m.EventRouter.RouteToGitDestinationEventStream(ev, gitDest); err != nil {
 			m.Log.Error(err, "Failed to route event to GitDestinationEventStream - dropping event",
-				"gitDest", fmt.Sprintf("%s/%s", cr.GitDestinationNamespace, cr.GitDestinationRef),
+				"gitDest", gitDest.String(),
 				"resource", id.String())
 		}
 	}
@@ -274,7 +270,7 @@ func (m *Manager) enqueueMatches(
 func (m *Manager) isDuplicateContent(
 	_ context.Context,
 	sanitized *unstructured.Unstructured,
-	id itypes.ResourceIdentifier,
+	id types.ResourceIdentifier,
 ) bool {
 	// Initialize dedup map if needed
 	m.lastSeenMu.Lock()
@@ -316,7 +312,7 @@ func (m *Manager) isDuplicateContent(
 func (m *Manager) tryEnrichFromCorrelation(
 	ctx context.Context,
 	sanitized *unstructured.Unstructured,
-	id itypes.ResourceIdentifier,
+	id types.ResourceIdentifier,
 	operation string,
 ) git.UserInfo {
 	userInfo := git.UserInfo{} // default: no username
@@ -584,7 +580,7 @@ func (m *Manager) processListedObject(
 	g GVR,
 	branchKeys map[git.BranchKey]struct{},
 ) {
-	id := itypes.NewResourceIdentifier(g.Group, g.Version, g.Resource, u.GetNamespace(), u.GetName())
+	id := types.NewResourceIdentifier(g.Group, g.Version, g.Resource, u.GetNamespace(), u.GetName())
 
 	var nsLabels map[string]string
 	if ns := id.Namespace; ns != "" {
@@ -643,51 +639,202 @@ func (m *Manager) emitSeedSyncControls(branchKeys map[git.BranchKey]struct{}) {
 	}
 }
 
-// EmitClusterStateSnapshot emits a ClusterStateEvent for a specific base folder scope.
-// This is called in response to REQUEST_CLUSTER_STATE control events.
+// EmitClusterStateSnapshot is deprecated in favor of GetClusterStateForGitDest.
+// Kept for backward compatibility but should not be used in new code.
 func (m *Manager) EmitClusterStateSnapshot(
-	ctx context.Context,
-	repoName, repoNamespace, branch, baseFolder string,
+	_ context.Context,
+	_, _, _, _ string,
 ) error {
-	log := m.Log.WithName("cluster-state").WithValues(
-		"repo", repoName,
-		"namespace", repoNamespace,
-		"branch", branch,
-		"baseFolder", baseFolder,
-	)
-
-	// Get current cluster state for this scope
-	resources, err := m.getCurrentClusterState(ctx, repoName, repoNamespace, branch, baseFolder)
-	if err != nil {
-		log.Error(err, "Failed to get cluster state")
-		return err
-	}
-
-	// Emit ClusterStateEvent
-	event := events.ClusterStateEvent{
-		RepoName:   repoName,
-		Branch:     branch,
-		BaseFolder: baseFolder,
-		Resources:  resources,
-	}
-
-	if err := m.EventRouter.RouteClusterStateEvent(event); err != nil {
-		log.Error(err, "Failed to route cluster state event")
-		return err
-	}
-
-	log.Info("Emitted cluster state snapshot", "resourceCount", len(resources))
+	// Deprecated - use GetClusterStateForGitDest instead
 	return nil
 }
 
-// getCurrentClusterState retrieves current cluster resources for a specific scope.
-func (m *Manager) getCurrentClusterState(
+// GetClusterStateForGitDest returns cluster resources for a GitDestination.
+// This is a synchronous service method called by EventRouter.
+func (m *Manager) GetClusterStateForGitDest(
 	ctx context.Context,
-	repoName, repoNamespace, branch, baseFolder string,
+	gitDest types.ResourceReference,
 ) ([]types.ResourceIdentifier, error) {
-	// This will be implemented to query the current cluster state
-	// For now, return empty slice
-	return []types.ResourceIdentifier{}, nil
+	log := m.Log.WithValues("gitDest", gitDest.String())
+
+	// Look up GitDestination to get baseFolder
+	var gitDestObj configv1alpha1.GitDestination
+	if err := m.Client.Get(ctx, client.ObjectKey{
+		Name:      gitDest.Name,
+		Namespace: gitDest.Namespace,
+	}, &gitDestObj); err != nil {
+		return nil, fmt.Errorf("failed to get GitDestination: %w", err)
+	}
+
+	baseFolder := gitDestObj.Spec.BaseFolder
+	log = log.WithValues("baseFolder", baseFolder)
+
+	// Get matching rules
+	wrRules := m.RuleStore.SnapshotWatchRules()
+	cwrRules := m.RuleStore.SnapshotClusterWatchRules()
+
+	// Build GVR set from rules that reference this GitDestination
+	gvrSet := make(map[schema.GroupVersionResource]struct{})
+
+	for _, rule := range wrRules {
+		if rule.GitDestinationRef == gitDestObj.Name &&
+			rule.GitDestinationNamespace == gitDestObj.Namespace {
+			for _, rr := range rule.ResourceRules {
+				m.addGVRsFromResourceRule(rr, gvrSet)
+			}
+		}
+	}
+
+	for _, cwrRule := range cwrRules {
+		if cwrRule.GitDestinationRef == gitDestObj.Name &&
+			cwrRule.GitDestinationNamespace == gitDestObj.Namespace {
+			for _, rr := range cwrRule.Rules {
+				m.addGVRsFromClusterResourceRule(rr, gvrSet)
+			}
+		}
+	}
+
+	// Query cluster for these GVRs
+	dc := m.dynamicClientFromConfig(log)
+	if dc == nil {
+		return nil, errors.New("no dynamic client available")
+	}
+
+	var resources []types.ResourceIdentifier
+	for gvr := range gvrSet {
+		gvrResources, err := m.listResourcesForGVR(ctx, dc, gvr, &gitDestObj)
+		if err != nil {
+			log.Error(err, "Failed to list GVR", "gvr", gvr)
+			continue
+		}
+		resources = append(resources, gvrResources...)
+	}
+
+	log.Info("Retrieved cluster state", "resourceCount", len(resources))
+	return resources, nil
+}
+
+// addGVRsFromResourceRule adds GVRs from a CompiledResourceRule to the set.
+func (m *Manager) addGVRsFromResourceRule(
+	rr rulestore.CompiledResourceRule,
+	gvrSet map[schema.GroupVersionResource]struct{},
+) {
+	groups := rr.APIGroups
+	if len(groups) == 0 {
+		groups = []string{""}
+	}
+	versions := rr.APIVersions
+	if len(versions) == 0 {
+		versions = []string{"v1"}
+	}
+
+	for _, group := range groups {
+		if group == "*" {
+			continue // Skip wildcards for now
+		}
+		for _, version := range versions {
+			if version == "*" {
+				continue // Skip wildcards
+			}
+			for _, resource := range rr.Resources {
+				normalized := normalizeResource(resource)
+				if normalized == "*" {
+					continue // Skip wildcards
+				}
+				gvr := schema.GroupVersionResource{
+					Group:    group,
+					Version:  version,
+					Resource: normalized,
+				}
+				gvrSet[gvr] = struct{}{}
+			}
+		}
+	}
+}
+
+// addGVRsFromClusterResourceRule adds GVRs from a CompiledClusterResourceRule to the set.
+func (m *Manager) addGVRsFromClusterResourceRule(
+	rr rulestore.CompiledClusterResourceRule,
+	gvrSet map[schema.GroupVersionResource]struct{},
+) {
+	groups := rr.APIGroups
+	if len(groups) == 0 {
+		groups = []string{""}
+	}
+	versions := rr.APIVersions
+	if len(versions) == 0 {
+		versions = []string{"v1"}
+	}
+
+	for _, group := range groups {
+		if group == "*" {
+			continue // Skip wildcards for now
+		}
+		for _, version := range versions {
+			if version == "*" {
+				continue // Skip wildcards
+			}
+			for _, resource := range rr.Resources {
+				normalized := normalizeResource(resource)
+				if normalized == "*" {
+					continue // Skip wildcards
+				}
+				gvr := schema.GroupVersionResource{
+					Group:    group,
+					Version:  version,
+					Resource: normalized,
+				}
+				gvrSet[gvr] = struct{}{}
+			}
+		}
+	}
+}
+
+// listResourcesForGVR lists all resources for a specific GVR that match the GitDestination criteria.
+func (m *Manager) listResourcesForGVR(
+	ctx context.Context,
+	dc dynamic.Interface,
+	gvr schema.GroupVersionResource,
+	gitDest *configv1alpha1.GitDestination,
+) ([]types.ResourceIdentifier, error) {
+	var resources []types.ResourceIdentifier
+
+	// List resources (cluster-wide for now, namespace filtering would go here)
+	list, err := dc.Resource(gvr).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list %v: %w", gvr, err)
+	}
+
+	// Convert to ResourceIdentifiers, filtering by labels/selectors if needed
+	for i := range list.Items {
+		obj := &list.Items[i]
+
+		// Check if object matches GitDestination criteria
+		if !m.objectMatchesGitDest(obj, gitDest) {
+			continue
+		}
+
+		id := types.NewResourceIdentifier(
+			gvr.Group,
+			gvr.Version,
+			gvr.Resource,
+			obj.GetNamespace(),
+			obj.GetName(),
+		)
+		resources = append(resources, id)
+	}
+
+	return resources, nil
+}
+
+// objectMatchesGitDest checks if an object should be included for a GitDestination.
+func (m *Manager) objectMatchesGitDest(
+	_ *unstructured.Unstructured,
+	_ *configv1alpha1.GitDestination,
+) bool {
+	// For now, simple match - in the future could filter by namespace, labels, etc.
+	// based on the rules that reference this GitDestination
+	return true
 }
 
 // ReconcileForRuleChange reconciles the watch manager when rules change.
@@ -968,8 +1115,8 @@ func (m *Manager) startSingleInformer(ctx context.Context, client dynamic.Interf
 		"namespace", ns)
 
 	// Get or create factory for this namespace
-	factory, exists := m.informerFactories[ns]
-	if !exists {
+	factory, factoryExists := m.informerFactories[ns]
+	if !factoryExists {
 		if ns == "" {
 			factory = dynamicinformer.NewDynamicSharedInformerFactory(client, 0)
 			log.Info("Created cluster-wide informer factory")
@@ -979,9 +1126,6 @@ func (m *Manager) startSingleInformer(ctx context.Context, client dynamic.Interf
 			log.Info("Created namespace-scoped informer factory", "namespace", ns)
 		}
 		m.informerFactories[ns] = factory
-
-		// Start the factory
-		factory.Start(ctx.Done())
 	}
 
 	// Create informer for this GVR
@@ -992,7 +1136,7 @@ func (m *Manager) startSingleInformer(ctx context.Context, client dynamic.Interf
 	}
 	informer := factory.ForResource(resource).Informer()
 
-	// Add event handlers
+	// Add event handlers BEFORE starting the factory
 	m.addHandlers(informer, gvr)
 
 	// Track the informer
@@ -1006,19 +1150,20 @@ func (m *Manager) startSingleInformer(ctx context.Context, client dynamic.Interf
 
 	log.Info("Registered new informer")
 
-	// Wait for cache sync for this specific informer
-	if !exists {
-		// New factory - wait for all informers in it to sync
-		log.Info("Waiting for factory cache sync")
-		synced := factory.WaitForCacheSync(ctx.Done())
-		syncCount := 0
-		for _, isSynced := range synced {
-			if isSynced {
-				syncCount++
-			}
-		}
-		log.Info("Factory cache synced", "syncedCount", syncCount)
+	// Start the factory (idempotent - starts new informers if factory already running)
+	if !factoryExists {
+		log.Info("Starting informer factory")
+	} else {
+		log.Info("Factory already running, starting new informer")
 	}
+	factory.Start(ctx.Done())
+
+	// ALWAYS wait for this specific informer to sync
+	log.Info("Waiting for informer cache sync")
+	if !cache.WaitForCacheSync(ctx.Done(), informer.HasSynced) {
+		return fmt.Errorf("failed to sync cache for %v in namespace %s", resource, ns)
+	}
+	log.Info("Informer cache synced")
 
 	return nil
 }

@@ -48,6 +48,7 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/leader"
 	"github.com/ConfigButler/gitops-reverser/internal/metrics"
+	"github.com/ConfigButler/gitops-reverser/internal/reconcile"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
 	"github.com/ConfigButler/gitops-reverser/internal/watch"
 	webhookhandler "github.com/ConfigButler/gitops-reverser/internal/webhook"
@@ -116,13 +117,6 @@ func main() {
 	fatalIfErr(mgr.Add(workerManager), "unable to add worker manager to manager")
 	setupLog.Info("WorkerManager initialized and added to manager")
 
-	// GitDestination controller (with WorkerManager)
-	fatalIfErr((&controller.GitDestinationReconciler{
-		Client:        mgr.GetClient(),
-		Scheme:        mgr.GetScheme(),
-		WorkerManager: workerManager,
-	}).SetupWithManager(mgr), "unable to create controller", "controller", "GitDestination")
-
 	// Initialize correlation store for webhook→watch enrichment
 	correlationStore := correlation.NewStore(correlationTTL, correlationMaxEntries)
 	correlationStore.SetEvictionCallback(func() {
@@ -132,18 +126,42 @@ func main() {
 		"ttl", correlationTTL,
 		"maxEntries", correlationMaxEntries)
 
-	// Initialize EventRouter (replaces old EventQueue)
-	eventRouter := watch.NewEventRouter(workerManager, ctrl.Log.WithName("event-router"))
-	setupLog.Info("EventRouter initialized")
+	// Create ReconcilerManager (will be set up as ControlEventEmitter)
+	reconcilerManager := reconcile.NewReconcilerManager(
+		nil, // eventRouter will be set after EventRouter is created
+		ctrl.Log.WithName("reconciler-manager"),
+	)
+	setupLog.Info("ReconcilerManager initialized")
 
-	// Watch ingestion manager (uses EventRouter instead of EventQueue)
+	// Watch ingestion manager (placeholder, will get EventRouter set later)
 	watchMgr := &watch.Manager{
 		Client:           mgr.GetClient(),
 		Log:              ctrl.Log.WithName("watch"),
 		RuleStore:        ruleStore,
-		EventRouter:      eventRouter,
+		EventRouter:      nil, // Will be set below
 		CorrelationStore: correlationStore,
 	}
+
+	// Initialize EventRouter with all dependencies
+	eventRouter := watch.NewEventRouter(
+		workerManager,
+		reconcilerManager,
+		watchMgr,
+		mgr.GetClient(),
+		ctrl.Log.WithName("event-router"),
+	)
+	setupLog.Info("EventRouter initialized")
+
+	// Set EventRouter reference in WatchManager
+	watchMgr.EventRouter = eventRouter
+
+	// GitDestination controller (with WorkerManager and EventRouter)
+	fatalIfErr((&controller.GitDestinationReconciler{
+		Client:        mgr.GetClient(),
+		Scheme:        mgr.GetScheme(),
+		WorkerManager: workerManager,
+		EventRouter:   eventRouter,
+	}).SetupWithManager(mgr), "unable to create controller", "controller", "GitDestination")
 
 	// WatchRule controller (with WatchManager reference for dynamic reconciliation)
 	fatalIfErr((&controller.WatchRuleReconciler{
