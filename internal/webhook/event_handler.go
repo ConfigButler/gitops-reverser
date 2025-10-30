@@ -17,6 +17,8 @@ limitations under the License.
 */
 
 // Package webhook handles admission webhook requests for the GitOps Reverser controller.
+// The webhook serves as a correlation store only - it captures user attribution but does NOT
+// enqueue events. The watch path (informers) is the sole source of events to the queue.
 package webhook
 
 import (
@@ -36,10 +38,8 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 
-	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
-	"github.com/ConfigButler/gitops-reverser/internal/eventqueue"
+	"github.com/ConfigButler/gitops-reverser/internal/correlation"
 	"github.com/ConfigButler/gitops-reverser/internal/metrics"
-	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
 	"github.com/ConfigButler/gitops-reverser/internal/sanitize"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
@@ -48,12 +48,12 @@ import (
 // +kubebuilder:webhook:path=/process-validating-webhook,mutating=false,failurePolicy=ignore,sideEffects=None,groups="*",resources="*",verbs=create;update;delete,versions="*",name=gitops-reverser.configbutler.ai,admissionReviewVersions=v1
 
 // EventHandler handles all incoming admission requests.
+// It stores correlation entries (username → sanitized content) for ALL resources.
+// The watch path will filter based on rules - webhook just captures user attribution.
 type EventHandler struct {
-	Client                     client.Client
-	Decoder                    *admission.Decoder
-	RuleStore                  *rulestore.RuleStore
-	EventQueue                 *eventqueue.Queue
-	EnableVerboseAdmissionLogs bool
+	Client           client.Client
+	Decoder          *admission.Decoder
+	CorrelationStore *correlation.Store
 }
 
 // Handle implements admission.Handler.
@@ -65,17 +65,6 @@ func (h *EventHandler) Handle(ctx context.Context, req admission.Request) admiss
 	// Metrics: attribute role based on pod labels
 	roleAttr := h.getPodRoleAttribute(ctx)
 	metrics.EventsReceivedTotal.Add(ctx, 1, metric.WithAttributes(roleAttr))
-
-	// Optional verbose request log
-	if h.EnableVerboseAdmissionLogs {
-		log.Info(
-			"Received admission request",
-			"operation", req.Operation,
-			"kind", req.Kind.Kind,
-			"name", req.Name,
-			"namespace", req.Namespace,
-		)
-	}
 
 	// Safety: require decoder
 	if h.Decoder == nil {
@@ -94,26 +83,9 @@ func (h *EventHandler) Handle(ctx context.Context, req admission.Request) admiss
 	log.V(1).Info("Successfully decoded resource", //nolint:lll // Structured log
 		"kind", obj.GetKind(), "name", obj.GetName(), "namespace", obj.GetNamespace(), "operation", req.Operation)
 
-	// Extract request parameters
-	resourcePlural := req.Resource.Resource
-	operation := configv1alpha1.OperationType(req.Operation)
-	apiGroup := req.Resource.Group
-	apiVersion := req.Resource.Version
-
-	// Determine scope and any namespace labels
-	isClusterScoped := obj.GetNamespace() == ""
-	namespaceLabels := h.getNamespaceLabels(ctx, obj, isClusterScoped)
-
-	// Rule matching
-	matchingRules := h.RuleStore.GetMatchingRules(
-		obj, resourcePlural, operation, apiGroup, apiVersion, isClusterScoped,
-	)
-	matchingClusterRules := h.RuleStore.GetMatchingClusterRules(
-		resourcePlural, operation, apiGroup, apiVersion, isClusterScoped, namespaceLabels,
-	)
-
-	// Process results: logging and enqueue
-	h.processRuleMatches(ctx, obj, req, matchingRules, matchingClusterRules)
+	// Store correlation for ALL resources (watch path will filter based on rules)
+	identifier := types.FromAdmissionRequest(req)
+	h.storeCorrelation(ctx, obj, identifier, req)
 
 	return admission.Allowed("request is allowed")
 }
@@ -144,97 +116,40 @@ func (h *EventHandler) decodeObject(ctx context.Context, req admission.Request) 
 	return obj, nil
 }
 
-// getNamespaceLabels returns namespace labels for namespaced resources, or nil for cluster-scoped.
-func (h *EventHandler) getNamespaceLabels(
-	ctx context.Context,
-	obj *unstructured.Unstructured,
-	isClusterScoped bool,
-) map[string]string {
-	if isClusterScoped {
-		return nil
-	}
-	ns := &corev1.Namespace{}
-	if err := h.Client.Get(ctx, apitypes.NamespacedName{Name: obj.GetNamespace()}, ns); err == nil {
-		return ns.Labels
-	}
-	return nil
-}
-
-// processRuleMatches logs match details and enqueues events for WatchRule and ClusterWatchRule matches.
-func (h *EventHandler) processRuleMatches(
-	ctx context.Context,
-	obj *unstructured.Unstructured,
-	req admission.Request,
-	matchingRules []rulestore.CompiledRule,
-	matchingClusterRules []rulestore.CompiledClusterRule,
-) {
-	log := logf.FromContext(ctx)
-
-	totalMatches := len(matchingRules) + len(matchingClusterRules)
-
-	if h.EnableVerboseAdmissionLogs {
-		log.Info(
-			"Checking for matching rules", //nolint:lll // Structured log
-			"kind", obj.GetKind(),
-			"resourcePlural", req.Resource.Resource,
-			"name", obj.GetName(),
-			"namespace", obj.GetNamespace(),
-			"matchingWatchRules", len(matchingRules),
-			"matchingClusterWatchRules", len(matchingClusterRules),
-		)
-	}
-
-	if totalMatches == 0 {
-		// Only log for non-system resources to avoid spam
-		if obj.GetNamespace() != "kube-system" && obj.GetNamespace() != "kube-node-lease" && obj.GetKind() != "Lease" {
-			log.Info("No matching rules found for resource",
-				"kind", obj.GetKind(), "name", obj.GetName(), "namespace", obj.GetNamespace())
-		}
-		return
-	}
-
-	identifier := types.FromAdmissionRequest(req)
-	log.Info(
-		fmt.Sprintf("Received %s for %s: matched %d watchrule(s) and %d clusterwatchrule(s)",
-			req.Operation, identifier.String(), len(matchingRules), len(matchingClusterRules)),
-	)
-
-	// Enqueue events for WatchRule matches
-	for _, rule := range matchingRules {
-		h.enqueueEvent(ctx, obj, identifier, req, rule.GitRepoConfigRef, rule.Source.Namespace)
-	}
-
-	// Enqueue events for ClusterWatchRule matches
-	for _, clusterRule := range matchingClusterRules {
-		h.enqueueEvent(ctx, obj, identifier, req, clusterRule.GitRepoConfigRef, clusterRule.GitRepoConfigNamespace)
-	}
-}
-
-// enqueueEvent creates and enqueues an event for processing.
-func (h *EventHandler) enqueueEvent(
+// storeCorrelation stores a correlation entry for ALL resources.
+// Watch path will filter based on rules - webhook just captures user attribution.
+func (h *EventHandler) storeCorrelation(
 	ctx context.Context,
 	obj *unstructured.Unstructured,
 	identifier types.ResourceIdentifier,
 	req admission.Request,
-	gitRepoConfigRef string,
-	gitRepoConfigNamespace string,
 ) {
-	sanitizedObj := sanitize.Sanitize(obj)
-	event := eventqueue.Event{
-		Object:     sanitizedObj,
-		Identifier: identifier,
-		Operation:  string(req.Operation),
-		UserInfo: eventqueue.UserInfo{
-			Username: req.UserInfo.Username,
-			UID:      req.UserInfo.UID,
-		},
-		GitRepoConfigRef:       gitRepoConfigRef,
-		GitRepoConfigNamespace: gitRepoConfigNamespace,
+	log := logf.FromContext(ctx)
+
+	if h.CorrelationStore == nil {
+		return
 	}
-	h.EventQueue.Enqueue(event)
+
+	sanitizedObj := sanitize.Sanitize(obj)
+	sanitizedYAML, err := sanitize.MarshalToOrderedYAML(sanitizedObj)
+	if err != nil {
+		log.Error(err, "Failed to marshal sanitized object for correlation", "identifier", identifier.String())
+		return
+	}
+
+	key := correlation.GenerateKey(identifier, string(req.Operation), sanitizedYAML)
+	h.CorrelationStore.Put(key, req.UserInfo.Username)
+
+	// Increment webhook-specific correlation metric
 	roleAttr := h.getPodRoleAttribute(ctx)
-	metrics.EventsProcessedTotal.Add(ctx, 1, metric.WithAttributes(roleAttr))
-	metrics.GitCommitQueueSize.Add(ctx, 1, metric.WithAttributes(roleAttr))
+	metrics.WebhookCorrelationsTotal.Add(ctx, 1, metric.WithAttributes(roleAttr))
+
+	log.V(1).Info("Stored correlation entry (unfiltered)",
+		"kind", obj.GetKind(),
+		"name", obj.GetName(),
+		"namespace", obj.GetNamespace(),
+		"username", req.UserInfo.Username,
+		"operation", req.Operation)
 }
 
 // getPodRoleAttribute returns the role attribute for metrics based on pod labels.

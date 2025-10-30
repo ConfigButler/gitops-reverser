@@ -18,10 +18,12 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"flag"
 	"os"
 	"path/filepath"
+	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -42,11 +44,13 @@ import (
 
 	configbutleraiv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 	"github.com/ConfigButler/gitops-reverser/internal/controller"
-	"github.com/ConfigButler/gitops-reverser/internal/eventqueue"
+	"github.com/ConfigButler/gitops-reverser/internal/correlation"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/leader"
 	"github.com/ConfigButler/gitops-reverser/internal/metrics"
+	"github.com/ConfigButler/gitops-reverser/internal/reconcile"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
+	"github.com/ConfigButler/gitops-reverser/internal/watch"
 	webhookhandler "github.com/ConfigButler/gitops-reverser/internal/webhook"
 	// +kubebuilder:scaffold:imports
 )
@@ -54,6 +58,13 @@ import (
 var (
 	scheme   = runtime.NewScheme()
 	setupLog = ctrl.Log.WithName("setup")
+)
+
+const (
+	// Correlation store configuration.
+	correlationTTLSeconds = 60
+	correlationMaxEntries = 10000
+	correlationTTL        = correlationTTLSeconds * time.Second
 )
 
 func init() {
@@ -98,30 +109,80 @@ func main() {
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr), "unable to create controller", "controller", "GitRepoConfig")
 
-	// Initialize rule store and event queue for webhook handler
+	// Initialize rule store for watch rules
 	ruleStore := rulestore.NewStore()
-	eventQueue := eventqueue.NewQueue()
 
-	// WatchRule controller
+	// Initialize WorkerManager (manages branch workers)
+	workerManager := git.NewWorkerManager(mgr.GetClient(), ctrl.Log.WithName("worker-manager"))
+	fatalIfErr(mgr.Add(workerManager), "unable to add worker manager to manager")
+	setupLog.Info("WorkerManager initialized and added to manager")
+
+	// Initialize correlation store for webhook→watch enrichment
+	correlationStore := correlation.NewStore(correlationTTL, correlationMaxEntries)
+	correlationStore.SetEvictionCallback(func() {
+		metrics.KVEvictionsTotal.Add(context.Background(), 1)
+	})
+	setupLog.Info("Correlation store initialized",
+		"ttl", correlationTTL,
+		"maxEntries", correlationMaxEntries)
+
+	// Create ReconcilerManager (will be set up as ControlEventEmitter)
+	reconcilerManager := reconcile.NewReconcilerManager(
+		nil, // eventRouter will be set after EventRouter is created
+		ctrl.Log.WithName("reconciler-manager"),
+	)
+	setupLog.Info("ReconcilerManager initialized")
+
+	// Watch ingestion manager (placeholder, will get EventRouter set later)
+	watchMgr := &watch.Manager{
+		Client:           mgr.GetClient(),
+		Log:              ctrl.Log.WithName("watch"),
+		RuleStore:        ruleStore,
+		EventRouter:      nil, // Will be set below
+		CorrelationStore: correlationStore,
+	}
+
+	// Initialize EventRouter with all dependencies
+	eventRouter := watch.NewEventRouter(
+		workerManager,
+		reconcilerManager,
+		watchMgr,
+		mgr.GetClient(),
+		ctrl.Log.WithName("event-router"),
+	)
+	setupLog.Info("EventRouter initialized")
+
+	// Set EventRouter reference in WatchManager
+	watchMgr.EventRouter = eventRouter
+
+	// GitDestination controller (with WorkerManager and EventRouter)
+	fatalIfErr((&controller.GitDestinationReconciler{
+		Client:        mgr.GetClient(),
+		Scheme:        mgr.GetScheme(),
+		WorkerManager: workerManager,
+		EventRouter:   eventRouter,
+	}).SetupWithManager(mgr), "unable to create controller", "controller", "GitDestination")
+
+	// WatchRule controller (with WatchManager reference for dynamic reconciliation)
 	fatalIfErr((&controller.WatchRuleReconciler{
-		Client:    mgr.GetClient(),
-		Scheme:    mgr.GetScheme(),
-		RuleStore: ruleStore,
+		Client:       mgr.GetClient(),
+		Scheme:       mgr.GetScheme(),
+		RuleStore:    ruleStore,
+		WatchManager: watchMgr,
 	}).SetupWithManager(mgr), "unable to create controller", "controller", "WatchRule")
 
-	// ClusterWatchRule controller
+	// ClusterWatchRule controller (with WatchManager reference for dynamic reconciliation)
 	fatalIfErr((&controller.ClusterWatchRuleReconciler{
-		Client:    mgr.GetClient(),
-		Scheme:    mgr.GetScheme(),
-		RuleStore: ruleStore,
+		Client:       mgr.GetClient(),
+		Scheme:       mgr.GetScheme(),
+		RuleStore:    ruleStore,
+		WatchManager: watchMgr,
 	}).SetupWithManager(mgr), "unable to create controller", "controller", "ClusterWatchRule")
 
-	// Webhook handler
+	// Webhook handler (correlation storage only - stores ALL resources, watch filters by rules)
 	eventHandler := &webhookhandler.EventHandler{
-		Client:                     mgr.GetClient(),
-		RuleStore:                  ruleStore,
-		EventQueue:                 eventQueue,
-		EnableVerboseAdmissionLogs: cfg.enableVerboseAdmissionLogs,
+		Client:           mgr.GetClient(),
+		CorrelationStore: correlationStore,
 	}
 
 	// Create and inject decoder for generic Kubernetes resource handling
@@ -129,19 +190,24 @@ func main() {
 	fatalIfErr(eventHandler.InjectDecoder(&decoder), "unable to inject decoder into webhook handler")
 	setupLog.Info("Generic unstructured decoder injected - ready to handle all Kubernetes resource types")
 
-	// Register webhook
+	// Register event correlation webhook
 	validatingWebhook := &admission.Webhook{Handler: eventHandler}
 	mgr.GetWebhookServer().Register("/process-validating-webhook", validatingWebhook)
-	setupLog.Info("Webhook handler registered", "path", "/process-validating-webhook")
+	setupLog.Info("Event correlation webhook handler registered", "path", "/process-validating-webhook")
 
-	// Git worker
-	gitWorker := &git.Worker{
-		Client:     mgr.GetClient(),
-		Log:        ctrl.Log.WithName("git-worker"),
-		EventQueue: eventQueue,
-	}
-	fatalIfErr(mgr.Add(gitWorker), "unable to add git worker to manager")
-	setupLog.Info("Git worker added to manager")
+	// Register GitDestination validator webhook (prevents duplicate destinations)
+	fatalIfErr(webhookhandler.SetupGitDestinationValidatorWebhook(mgr),
+		"unable to setup GitDestination validator webhook")
+	setupLog.Info("GitDestination validator webhook registered - enforcing uniqueness constraint")
+
+	// NOTE: Old git.Worker has been replaced by WorkerManager + BranchWorker architecture
+	// The new system is already initialized above and wired through EventRouter
+	setupLog.Info("Using new BranchWorker architecture (per-branch workers)")
+
+	// Setup watch manager (must be after controllers are set up)
+	fatalIfErr(watchMgr.SetupWithManager(mgr), "unable to setup watch ingestion manager")
+	fatalIfErr(mgr.Add(watchMgr), "unable to add watch ingestion manager")
+	setupLog.Info("Watch ingestion manager added (cluster-as-source-of-truth mode)")
 
 	// +kubebuilder:scaffold:builder
 
@@ -158,19 +224,18 @@ func main() {
 
 // appConfig holds parsed CLI flags and logging options.
 type appConfig struct {
-	metricsAddr                string
-	metricsCertPath            string
-	metricsCertName            string
-	metricsCertKey             string
-	webhookCertPath            string
-	webhookCertName            string
-	webhookCertKey             string
-	enableLeaderElection       bool
-	probeAddr                  string
-	secureMetrics              bool
-	enableHTTP2                bool
-	enableVerboseAdmissionLogs bool
-	zapOpts                    zap.Options
+	metricsAddr          string
+	metricsCertPath      string
+	metricsCertName      string
+	metricsCertKey       string
+	webhookCertPath      string
+	webhookCertName      string
+	webhookCertKey       string
+	enableLeaderElection bool
+	probeAddr            string
+	secureMetrics        bool
+	enableHTTP2          bool
+	zapOpts              zap.Options
 }
 
 // parseFlags parses CLI flags and returns the application configuration.
@@ -204,8 +269,6 @@ func parseFlags() appConfig {
 	flag.StringVar(&cfg.metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
 	flag.BoolVar(&cfg.enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
-	flag.BoolVar(&cfg.enableVerboseAdmissionLogs, "enable-verbose-admission-logs", false,
-		"If set, enables verbose logging for admission requests and rule matching")
 
 	cfg.zapOpts = zap.Options{
 		Development: true,

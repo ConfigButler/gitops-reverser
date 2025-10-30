@@ -3,8 +3,8 @@ kind: ClusterWatchRule
 metadata:
   name: {{ .Name }}
 spec:
-  gitRepoConfigRef:
-    name: {{ .GitRepoConfigRef }}
+  destinationRef:
+    name: {{ .DestinationName }}
     namespace: {{ .Namespace }}
   rules:
   - scope: Cluster

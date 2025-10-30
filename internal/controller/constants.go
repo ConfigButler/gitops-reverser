@@ -19,7 +19,16 @@ limitations under the License.
 // Package controller contains shared constants for all controllers.
 package controller
 
-import "time"
+import (
+	"context"
+	"time"
+)
+
+// WatchManagerInterface defines the interface for watch manager reconciliation.
+// This allows for easier testing by enabling mock implementations.
+type WatchManagerInterface interface {
+	ReconcileForRuleChange(ctx context.Context) error
+}
 
 const (
 	// ConditionTypeReady indicates whether the resource is ready.

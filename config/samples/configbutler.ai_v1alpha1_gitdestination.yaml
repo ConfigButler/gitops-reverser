@@ -1,0 +1,13 @@
+apiVersion: configbutler.ai/v1alpha1
+kind: GitDestination
+metadata:
+  labels:
+    app.kubernetes.io/name: gitops-reverser
+    app.kubernetes.io/managed-by: kustomize
+  name: gitdestination-sample
+  namespace: default
+spec:
+  repoRef:
+    name: gitrepoconfig-sample
+  branch: main
+  baseFolder: clusters/default

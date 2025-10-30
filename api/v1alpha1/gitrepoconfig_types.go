@@ -31,16 +31,18 @@ type LocalObjectReference struct {
 }
 
 // GitRepoConfigSpec defines the desired state of GitRepoConfig.
-// +kubebuilder:validation:XValidation:rule="!has(self.accessPolicy) || !has(self.accessPolicy.namespacedRules) || !has(self.accessPolicy.namespacedRules.namespaceSelector) || self.accessPolicy.namespacedRules.mode == 'FromSelector'",message="namespaceSelector can only be set when mode is 'FromSelector'"
-// +kubebuilder:validation:XValidation:rule="!has(self.accessPolicy) || !has(self.accessPolicy.namespacedRules) || self.accessPolicy.namespacedRules.mode != 'FromSelector' || has(self.accessPolicy.namespacedRules.namespaceSelector)",message="namespaceSelector is required when mode is 'FromSelector'"
 type GitRepoConfigSpec struct {
 	// RepoURL is the URL of the Git repository to commit to.
 	// +required
 	RepoURL string `json:"repoUrl"`
 
-	// Branch is the Git branch to commit to.
+	// AllowedBranches is the list of Git branches that GitDestinations may reference.
+	// This provides a simple allowlist mechanism for branch validation.
+	// GitDestination resources referencing this GitRepoConfig must specify a branch
+	// from this list.
 	// +required
-	Branch string `json:"branch"`
+	// +kubebuilder:validation:MinItems=1
+	AllowedBranches []string `json:"allowedBranches"`
 
 	// SecretRef specifies the Secret containing Git credentials.
 	// For HTTPS repositories the Secret must contain 'username' and 'password'
@@ -53,11 +55,6 @@ type GitRepoConfigSpec struct {
 	// Push defines the strategy for pushing commits to the remote.
 	// +optional
 	Push *PushStrategy `json:"push,omitempty"`
-
-	// AccessPolicy controls which WatchRules can reference this GitRepoConfig.
-	// If not specified, defaults to SameNamespace mode (most restrictive).
-	// +optional
-	AccessPolicy *AccessPolicy `json:"accessPolicy,omitempty"`
 }
 
 // PushStrategy defines the rules for when to push commits.
@@ -116,54 +113,6 @@ type GitRepoConfigList struct {
 
 	Items []GitRepoConfig `json:"items"`
 }
-
-// AccessPolicy defines access control rules for GitRepoConfig.
-type AccessPolicy struct {
-	// NamespacedRules controls access from namespace-scoped WatchRules.
-	// If not specified, defaults to SameNamespace mode.
-	// +optional
-	NamespacedRules *NamespacedRulesPolicy `json:"namespacedRules,omitempty"`
-
-	// AllowClusterRules controls whether cluster-scoped ClusterWatchRules
-	// can reference this GitRepoConfig.
-	// Defaults to false for security (explicit opt-in required).
-	// +optional
-	// +kubebuilder:default=false
-	AllowClusterRules bool `json:"allowClusterRules,omitempty"`
-}
-
-// NamespacedRulesPolicy defines which namespaces can access this GitRepoConfig.
-type NamespacedRulesPolicy struct {
-	// Mode determines the access control mode.
-	// - SameNamespace (default): Only WatchRules in the same namespace
-	// - AllNamespaces: WatchRules from any namespace can access
-	// - FromSelector: Only namespaces matching the selector
-	// +optional
-	// +kubebuilder:default=SameNamespace
-	// +kubebuilder:validation:Enum=SameNamespace;AllNamespaces;FromSelector
-	Mode AccessPolicyMode `json:"mode,omitempty"`
-
-	// NamespaceSelector selects which namespaces can access this GitRepoConfig.
-	// ONLY evaluated when Mode is "FromSelector".
-	// MUST be nil when Mode is NOT "FromSelector".
-	// +optional
-	NamespaceSelector *metav1.LabelSelector `json:"namespaceSelector,omitempty"`
-}
-
-// AccessPolicyMode defines the access control mode.
-// +kubebuilder:validation:Enum=SameNamespace;AllNamespaces;FromSelector
-type AccessPolicyMode string
-
-const (
-	// AccessPolicyModeSameNamespace allows only same namespace access (default, most secure).
-	AccessPolicyModeSameNamespace AccessPolicyMode = "SameNamespace"
-
-	// AccessPolicyModeAllNamespaces allows access from any namespace.
-	AccessPolicyModeAllNamespaces AccessPolicyMode = "AllNamespaces"
-
-	// AccessPolicyModeFromSelector allows access from matching namespaces only.
-	AccessPolicyModeFromSelector AccessPolicyMode = "FromSelector"
-)
 
 func init() {
 	SchemeBuilder.Register(&GitRepoConfig{}, &GitRepoConfigList{})

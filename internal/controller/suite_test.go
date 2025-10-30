@@ -35,7 +35,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
 	configbutleraiv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
-	"github.com/ConfigButler/gitops-reverser/internal/eventqueue"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
 	// +kubebuilder:scaffold:imports
@@ -92,11 +91,22 @@ var _ = BeforeSuite(func() {
 	Expect(err).NotTo(HaveOccurred())
 
 	testRuleStore = rulestore.NewStore()
-	eventQueue := eventqueue.NewQueue()
+
+	// Initialize WorkerManager for new architecture
+	workerManager := git.NewWorkerManager(mgr.GetClient(), logf.Log.WithName("worker-manager"))
+	err = mgr.Add(workerManager)
+	Expect(err).NotTo(HaveOccurred())
 
 	err = (&GitRepoConfigReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr)
+	Expect(err).NotTo(HaveOccurred())
+
+	err = (&GitDestinationReconciler{
+		Client:        mgr.GetClient(),
+		Scheme:        mgr.GetScheme(),
+		WorkerManager: workerManager,
 	}).SetupWithManager(mgr)
 	Expect(err).NotTo(HaveOccurred())
 
@@ -114,21 +124,8 @@ var _ = BeforeSuite(func() {
 	}).SetupWithManager(mgr)
 	Expect(err).NotTo(HaveOccurred())
 
-	// mgr.GetWebhookServer().Register("/process-validating-webhook", &webhook.Admission{
-	// 	Handler: &internalwebhook.EventHandler{
-	// 		Client:     mgr.GetClient(),
-	// 		RuleStore:  ruleStore,
-	// 		EventQueue: eventQueue,
-	// 	},
-	// })
-
-	gitWorker := &git.Worker{
-		Client:     mgr.GetClient(),
-		Log:        logf.Log.WithName("git-worker"),
-		EventQueue: eventQueue,
-	}
-	err = mgr.Add(gitWorker)
-	Expect(err).NotTo(HaveOccurred())
+	// Note: Old git.Worker has been replaced by WorkerManager + BranchWorker architecture
+	// Webhook tests are handled separately in webhook package
 
 	go func() {
 		defer GinkgoRecover()

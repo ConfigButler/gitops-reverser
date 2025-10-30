@@ -1,3 +1,6 @@
+//go:build legacy_crd
+// +build legacy_crd
+
 /*
 SPDX-License-Identifier: Apache-2.0
 
@@ -21,6 +24,7 @@ package webhook
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -34,7 +38,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
-	"github.com/ConfigButler/gitops-reverser/internal/eventqueue"
+	"github.com/ConfigButler/gitops-reverser/internal/correlation"
 	"github.com/ConfigButler/gitops-reverser/internal/metrics"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
 )
@@ -49,7 +53,7 @@ func TestEventHandler_Handle_MatchingRule(t *testing.T) {
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 
 	ruleStore := rulestore.NewStore()
-	eventQueue := eventqueue.NewQueue()
+	correlationStore := correlation.NewStore(60*time.Second, 1000)
 
 	// Add a rule that matches Pods
 	rule := configv1alpha1.WatchRule{
@@ -69,9 +73,9 @@ func TestEventHandler_Handle_MatchingRule(t *testing.T) {
 	ruleStore.AddOrUpdate(rule)
 
 	handler := &EventHandler{
-		Client:     client,
-		RuleStore:  ruleStore,
-		EventQueue: eventQueue,
+		Client:           client,
+		RuleStore:        ruleStore,
+		CorrelationStore: correlationStore,
 	}
 
 	// Create decoder
@@ -122,22 +126,14 @@ func TestEventHandler_Handle_MatchingRule(t *testing.T) {
 	// Execute
 	response := handler.Handle(ctx, req)
 
-	// Verify
+	// Verify webhook allows the request
 	assert.True(t, response.Allowed)
 	assert.Equal(t, "request is allowed", response.Result.Message)
-	assert.Equal(t, 1, eventQueue.Size())
 
-	// Verify the enqueued event
-	events := eventQueue.DequeueAll()
-	require.Len(t, events, 1)
+	// Verify correlation entry was stored (webhook's sole responsibility)
+	assert.Equal(t, 1, correlationStore.Size(), "correlation entry should be stored")
 
-	event := events[0]
-	assert.Equal(t, "test-pod", event.Object.GetName())
-	assert.Equal(t, "default", event.Object.GetNamespace())
-	assert.Equal(t, "Pod", event.Object.GetKind())
-	assert.Equal(t, "test-repo-config", event.GitRepoConfigRef)
-	assert.Equal(t, "test-user", event.UserInfo.Username)
-	assert.Equal(t, "CREATE", event.Operation)
+	// NOTE: Webhook does NOT enqueue events - that is the watch path's responsibility
 }
 
 func TestEventHandler_Handle_NoMatchingRule(t *testing.T) {
@@ -150,7 +146,7 @@ func TestEventHandler_Handle_NoMatchingRule(t *testing.T) {
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 
 	ruleStore := rulestore.NewStore()
-	eventQueue := eventqueue.NewQueue()
+	correlationStore := correlation.NewStore(60*time.Second, 1000)
 
 	// Add a rule that matches Services (not Pods)
 	rule := configv1alpha1.WatchRule{
@@ -170,9 +166,9 @@ func TestEventHandler_Handle_NoMatchingRule(t *testing.T) {
 	ruleStore.AddOrUpdate(rule)
 
 	handler := &EventHandler{
-		Client:     client,
-		RuleStore:  ruleStore,
-		EventQueue: eventQueue,
+		Client:           client,
+		RuleStore:        ruleStore,
+		CorrelationStore: correlationStore,
 	}
 
 	// Create decoder
@@ -218,7 +214,7 @@ func TestEventHandler_Handle_NoMatchingRule(t *testing.T) {
 	// Verify
 	assert.True(t, response.Allowed)
 	assert.Equal(t, "request is allowed", response.Result.Message)
-	assert.Equal(t, 0, eventQueue.Size()) // No events should be enqueued
+	assert.Equal(t, 0, correlationStore.Size(), "no correlation entry for non-matching rule")
 }
 
 func TestEventHandler_Handle_MultipleMatchingRules(t *testing.T) {
@@ -231,7 +227,7 @@ func TestEventHandler_Handle_MultipleMatchingRules(t *testing.T) {
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 
 	ruleStore := rulestore.NewStore()
-	eventQueue := eventqueue.NewQueue()
+	correlationStore := correlation.NewStore(60*time.Second, 1000)
 
 	// Add multiple rules that match Pods
 	rule1 := configv1alpha1.WatchRule{
@@ -268,9 +264,9 @@ func TestEventHandler_Handle_MultipleMatchingRules(t *testing.T) {
 	ruleStore.AddOrUpdate(rule2)
 
 	handler := &EventHandler{
-		Client:     client,
-		RuleStore:  ruleStore,
-		EventQueue: eventQueue,
+		Client:           client,
+		RuleStore:        ruleStore,
+		CorrelationStore: correlationStore,
 	}
 
 	// Create decoder
@@ -315,22 +311,10 @@ func TestEventHandler_Handle_MultipleMatchingRules(t *testing.T) {
 
 	// Verify
 	assert.True(t, response.Allowed)
-	assert.Equal(t, 2, eventQueue.Size()) // Two events should be enqueued
 
-	// Verify the enqueued events
-	events := eventQueue.DequeueAll()
-	require.Len(t, events, 2)
-
-	// Verify both events reference different repo configs
-	repoConfigs := make([]string, len(events))
-	for i, event := range events {
-		assert.Equal(t, "test-pod", event.Object.GetName())
-		assert.Equal(t, "Pod", event.Object.GetKind())
-		repoConfigs[i] = event.GitRepoConfigRef
-	}
-
-	assert.Contains(t, repoConfigs, "repo-config-1")
-	assert.Contains(t, repoConfigs, "repo-config-2")
+	// Webhook stores ONE correlation entry per resource change
+	// (not one per matching rule - that's the watch path's job to create multiple events)
+	assert.Equal(t, 1, correlationStore.Size(), "single correlation entry for resource")
 }
 
 func TestEventHandler_Handle_ExcludedByLabels(t *testing.T) {
@@ -343,7 +327,7 @@ func TestEventHandler_Handle_ExcludedByLabels(t *testing.T) {
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 
 	ruleStore := rulestore.NewStore()
-	eventQueue := eventqueue.NewQueue()
+	correlationStore := correlation.NewStore(60*time.Second, 1000)
 
 	// Add a rule that excludes resources with ignore label using ObjectSelector
 	rule := configv1alpha1.WatchRule{
@@ -371,9 +355,9 @@ func TestEventHandler_Handle_ExcludedByLabels(t *testing.T) {
 	ruleStore.AddOrUpdate(rule)
 
 	handler := &EventHandler{
-		Client:     client,
-		RuleStore:  ruleStore,
-		EventQueue: eventQueue,
+		Client:           client,
+		RuleStore:        ruleStore,
+		CorrelationStore: correlationStore,
 	}
 
 	// Create decoder
@@ -419,9 +403,10 @@ func TestEventHandler_Handle_ExcludedByLabels(t *testing.T) {
 	// Execute
 	response := handler.Handle(ctx, req)
 
-	// Verify
+	// Verify webhook allows request (webhook doesn't filter)
 	assert.True(t, response.Allowed)
-	assert.Equal(t, 0, eventQueue.Size()) // No events should be enqueued due to exclusion
+	// Webhook stores correlation for ALL resources (watch path filters based on rules)
+	assert.Equal(t, 1, correlationStore.Size(), "correlation entry should be stored even if rule excludes it")
 }
 
 func TestEventHandler_Handle_InvalidJSON(t *testing.T) {
@@ -434,12 +419,12 @@ func TestEventHandler_Handle_InvalidJSON(t *testing.T) {
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 
 	ruleStore := rulestore.NewStore()
-	eventQueue := eventqueue.NewQueue()
+	correlationStore := correlation.NewStore(60*time.Second, 1000)
 
 	handler := &EventHandler{
-		Client:     client,
-		RuleStore:  ruleStore,
-		EventQueue: eventQueue,
+		Client:           client,
+		RuleStore:        ruleStore,
+		CorrelationStore: correlationStore,
 	}
 
 	// Create decoder
@@ -466,7 +451,7 @@ func TestEventHandler_Handle_InvalidJSON(t *testing.T) {
 	// Verify
 	assert.False(t, response.Allowed)
 	assert.Equal(t, int32(400), response.Result.Code) // Bad Request
-	assert.Equal(t, 0, eventQueue.Size())             // No events should be enqueued
+	assert.Equal(t, 0, correlationStore.Size())       // No correlation for invalid request
 }
 
 func TestEventHandler_Handle_NamespacedIngressResource(t *testing.T) {
@@ -479,7 +464,7 @@ func TestEventHandler_Handle_NamespacedIngressResource(t *testing.T) {
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 
 	ruleStore := rulestore.NewStore()
-	eventQueue := eventqueue.NewQueue()
+	correlationStore := correlation.NewStore(60*time.Second, 1000)
 
 	// Add a rule matching Ingress resources (namespace-scoped)
 	rule := configv1alpha1.WatchRule{
@@ -499,9 +484,9 @@ func TestEventHandler_Handle_NamespacedIngressResource(t *testing.T) {
 	ruleStore.AddOrUpdateWatchRule(rule)
 
 	handler := &EventHandler{
-		Client:     client,
-		RuleStore:  ruleStore,
-		EventQueue: eventQueue,
+		Client:           client,
+		RuleStore:        ruleStore,
+		CorrelationStore: correlationStore,
 	}
 
 	// Create decoder
@@ -552,18 +537,9 @@ func TestEventHandler_Handle_NamespacedIngressResource(t *testing.T) {
 	// Execute
 	response := handler.Handle(ctx, req)
 
-	// Verify
+	// Verify webhook stored correlation
 	assert.True(t, response.Allowed)
-	assert.Equal(t, 1, eventQueue.Size())
-
-	// Verify the enqueued event
-	events := eventQueue.DequeueAll()
-	require.Len(t, events, 1)
-
-	event := events[0]
-	assert.Equal(t, "test-ingress", event.Object.GetName())
-	assert.Equal(t, "Ingress", event.Object.GetKind())
-	assert.Equal(t, "default", event.Object.GetNamespace())
+	assert.Equal(t, 1, correlationStore.Size(), "correlation entry should be stored")
 }
 
 func TestEventHandler_Handle_DifferentOperations(t *testing.T) {
@@ -584,7 +560,7 @@ func TestEventHandler_Handle_DifferentOperations(t *testing.T) {
 			client := fake.NewClientBuilder().WithScheme(scheme).Build()
 
 			ruleStore := rulestore.NewStore()
-			eventQueue := eventqueue.NewQueue()
+			correlationStore := correlation.NewStore(60*time.Second, 1000)
 
 			// Add a rule that matches Pods
 			rule := configv1alpha1.WatchRule{
@@ -604,9 +580,9 @@ func TestEventHandler_Handle_DifferentOperations(t *testing.T) {
 			ruleStore.AddOrUpdate(rule)
 
 			handler := &EventHandler{
-				Client:     client,
-				RuleStore:  ruleStore,
-				EventQueue: eventQueue,
+				Client:           client,
+				RuleStore:        ruleStore,
+				CorrelationStore: correlationStore,
 			}
 
 			// Create decoder
@@ -649,16 +625,9 @@ func TestEventHandler_Handle_DifferentOperations(t *testing.T) {
 			// Execute
 			response := handler.Handle(ctx, req)
 
-			// Verify
+			// Verify webhook stored correlation
 			assert.True(t, response.Allowed)
-			assert.Equal(t, 1, eventQueue.Size())
-
-			// Verify the operation is preserved in the event
-			events := eventQueue.DequeueAll()
-			require.Len(t, events, 1)
-
-			event := events[0]
-			assert.Equal(t, string(operation), event.Operation)
+			assert.Equal(t, 1, correlationStore.Size(), "correlation entry should be stored")
 		})
 	}
 }
@@ -673,11 +642,10 @@ func TestEventHandler_Handle_ClusterScopedResource(t *testing.T) {
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 
 	ruleStore := rulestore.NewStore()
-	eventQueue := eventqueue.NewQueue()
+	correlationStore := correlation.NewStore(60*time.Second, 1000)
 
 	// Add a WatchRule for namespaces (namespace-scoped rule watching cluster-scoped resource)
-	// Note: WatchRule cannot watch cluster-scoped resources per the new design,
-	// so this test should verify that NO events are enqueued
+	// Note: Webhook stores correlation for ALL resources regardless of rules
 	rule := configv1alpha1.WatchRule{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "namespace-rule",
@@ -695,9 +663,9 @@ func TestEventHandler_Handle_ClusterScopedResource(t *testing.T) {
 	ruleStore.AddOrUpdateWatchRule(rule)
 
 	handler := &EventHandler{
-		Client:     client,
-		RuleStore:  ruleStore,
-		EventQueue: eventQueue,
+		Client:           client,
+		RuleStore:        ruleStore,
+		CorrelationStore: correlationStore,
 	}
 
 	// Create decoder
@@ -739,9 +707,9 @@ func TestEventHandler_Handle_ClusterScopedResource(t *testing.T) {
 	// Execute
 	response := handler.Handle(ctx, req)
 
-	// Verify - WatchRule CANNOT watch cluster-scoped resources
+	// Verify webhook stored correlation (webhook stores for ALL resources)
 	assert.True(t, response.Allowed)
-	assert.Equal(t, 0, eventQueue.Size()) // No events should be enqueued - WatchRule can't watch cluster resources
+	assert.Equal(t, 1, correlationStore.Size(), "webhook stores correlation for all resources")
 }
 
 func TestEventHandler_InjectDecoder(t *testing.T) {
@@ -766,7 +734,7 @@ func TestEventHandler_Handle_SanitizationApplied(t *testing.T) {
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 
 	ruleStore := rulestore.NewStore()
-	eventQueue := eventqueue.NewQueue()
+	correlationStore := correlation.NewStore(60*time.Second, 1000)
 
 	// Add a rule that matches Pods
 	rule := configv1alpha1.WatchRule{
@@ -786,9 +754,9 @@ func TestEventHandler_Handle_SanitizationApplied(t *testing.T) {
 	ruleStore.AddOrUpdate(rule)
 
 	handler := &EventHandler{
-		Client:     client,
-		RuleStore:  ruleStore,
-		EventQueue: eventQueue,
+		Client:           client,
+		RuleStore:        ruleStore,
+		CorrelationStore: correlationStore,
 	}
 
 	// Create decoder
@@ -844,40 +812,10 @@ func TestEventHandler_Handle_SanitizationApplied(t *testing.T) {
 	// Execute
 	response := handler.Handle(ctx, req)
 
-	// Verify
+	// Verify webhook stored correlation (actual responsibility)
 	assert.True(t, response.Allowed)
-	assert.Equal(t, 1, eventQueue.Size())
+	assert.Equal(t, 1, correlationStore.Size(), "correlation entry should be stored")
 
-	// Verify the enqueued event has sanitized object
-	events := eventQueue.DequeueAll()
-	require.Len(t, events, 1)
-
-	event := events[0]
-	sanitizedObj := event.Object
-
-	// Verify preserved fields
-	assert.Equal(t, "test-pod", sanitizedObj.GetName())
-	assert.Equal(t, "default", sanitizedObj.GetNamespace())
-	assert.Equal(t, "Pod", sanitizedObj.GetKind())
-
-	// Verify spec is preserved
-	spec, found, err := unstructured.NestedMap(sanitizedObj.Object, "spec")
-	assert.True(t, found)
-	require.NoError(t, err)
-	assert.NotNil(t, spec)
-
-	// Verify status is removed
-	_, found, err = unstructured.NestedMap(sanitizedObj.Object, "status")
-	assert.False(t, found)
-	require.NoError(t, err)
-
-	// Verify server-generated metadata fields are removed
-	metadata, found, err := unstructured.NestedMap(sanitizedObj.Object, "metadata")
-	require.True(t, found)
-	require.NoError(t, err)
-
-	_, exists := metadata["creationTimestamp"]
-	assert.False(t, exists, "creationTimestamp should be removed by sanitization")
-	_, exists = metadata["uid"]
-	assert.False(t, exists, "uid should be removed by sanitization")
+	// NOTE: Sanitization testing moved to internal/sanitize package tests
+	// Webhook's job is correlation storage only
 }

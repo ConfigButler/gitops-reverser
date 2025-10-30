@@ -24,6 +24,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -39,7 +40,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/yaml"
 
-	"github.com/ConfigButler/gitops-reverser/internal/eventqueue"
 	"github.com/ConfigButler/gitops-reverser/internal/sanitize"
 )
 
@@ -62,6 +62,10 @@ type Repo struct {
 	auth       transport.AuthMethod
 	branch     string
 	remoteName string
+
+	// baseFolder is an optional POSIX-like relative path prefix under which files will be written.
+	// When empty, files are written at the repository root using the identifier path layout.
+	baseFolder string
 }
 
 // Clone clones a Git repository to the specified directory or reuses existing one.
@@ -107,6 +111,7 @@ func Clone(url, path string, auth transport.AuthMethod) (*Repo, error) {
 		auth:       auth,
 		branch:     "main", // Default branch
 		remoteName: "origin",
+		baseFolder: "",
 	}, nil
 }
 
@@ -179,7 +184,8 @@ func GetHTTPAuthMethod(username, password string) (transport.AuthMethod, error) 
 }
 
 // TryPushCommits implements the "Re-evaluate and Re-generate" strategy for conflict resolution.
-func (r *Repo) TryPushCommits(ctx context.Context, events []eventqueue.Event) error {
+// Branch is passed explicitly from worker context.
+func (r *Repo) TryPushCommits(ctx context.Context, branch string, events []Event) error {
 	logger := log.FromContext(ctx)
 
 	if len(events) == 0 {
@@ -187,86 +193,203 @@ func (r *Repo) TryPushCommits(ctx context.Context, events []eventqueue.Event) er
 		return nil
 	}
 
-	// 1. Generate local commits from the event queue
-	if err := r.generateLocalCommits(ctx, events); err != nil {
-		return fmt.Errorf("failed to generate local commits: %w", err)
+	// Store branch in repo for this operation
+	r.branch = branch
+
+	// Retry loop for handling multiple conflicts
+	const maxRetries = 3
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		result, newEvents, err := r.attemptPushWithConflictResolution(ctx, events, attempt, maxRetries)
+
+		// Update events for next retry if needed
+		events = newEvents
+
+		// Handle the result
+		switch result {
+		case pushSuccess:
+			return nil
+		case pushRetry:
+			continue
+		case pushFailure:
+			return err
+		}
 	}
 
-	// 2. Attempt the push
-	err := r.Push(ctx)
+	// Should never reach here
+	return fmt.Errorf("push failed after %d retries", maxRetries)
+}
+
+// pushResult represents the outcome of a push attempt.
+type pushResult int
+
+const (
+	pushSuccess pushResult = iota
+	pushRetry
+	pushFailure
+)
+
+// attemptPushWithConflictResolution attempts to generate commits and push, handling conflicts.
+func (r *Repo) attemptPushWithConflictResolution(
+	ctx context.Context,
+	events []Event,
+	attempt, maxRetries int,
+) (pushResult, []Event, error) {
+	logger := log.FromContext(ctx)
+
+	// Generate local commits
+	commitsCreated, err := r.generateLocalCommits(ctx, events)
+	if err != nil {
+		return pushFailure, events, fmt.Errorf("failed to generate local commits: %w", err)
+	}
+
+	if commitsCreated == 0 {
+		logger.Info("No commits created, skipping push", "eventsProcessed", len(events))
+		return pushSuccess, events, nil
+	}
+
+	// Attempt the push
+	err = r.Push(ctx)
 	if err == nil {
-		logger.Info("Successfully pushed commits", "count", len(events))
-		return nil
+		r.logPushSuccess(logger, commitsCreated, attempt)
+		return pushSuccess, events, nil
 	}
 
-	// 3. Handle non-fast-forward error
-	if isNonFastForwardError(err) {
-		logger.Info("Push rejected due to remote changes. Resyncing...")
+	// Handle push errors
+	return r.handlePushError(ctx, err, events, attempt, maxRetries)
+}
 
-		// 4. Hard reset to remote state
-		if err := r.hardResetToRemote(ctx); err != nil {
-			return fmt.Errorf("failed to reset to remote state: %w", err)
-		}
+// logPushSuccess logs successful push with appropriate messaging.
+func (r *Repo) logPushSuccess(logger logr.Logger, commitsCreated, attempt int) {
+	if attempt > 0 {
+		logger.Info("Successfully pushed commits after retries", "count", commitsCreated, "attempt", attempt+1)
+	} else {
+		logger.Info("Successfully pushed commits", "count", commitsCreated)
+	}
+}
 
-		// 5. Re-evaluate the original events against the new state
-		validEvents := r.reEvaluateEvents(ctx, events)
+// handlePushError determines how to handle a push error (retry or fail).
+func (r *Repo) handlePushError(
+	ctx context.Context,
+	err error,
+	events []Event,
+	attempt, maxRetries int,
+) (pushResult, []Event, error) {
+	logger := log.FromContext(ctx)
 
-		// 6. Retry the push with only the valid events
-		if len(validEvents) > 0 {
-			logger.Info("Retrying push with non-conflicting commits", "count", len(validEvents))
-			if err := r.generateLocalCommits(ctx, validEvents); err != nil {
-				return fmt.Errorf("failed to generate retry commits: %w", err)
-			}
-			return r.Push(ctx)
-		}
+	if !isNonFastForwardError(err) {
+		return pushFailure, events, fmt.Errorf("push failed: %w", err)
+	}
 
+	// Non-fast-forward error
+	if attempt >= maxRetries {
+		return pushFailure, events, fmt.Errorf("push failed after %d retries: %w", maxRetries, ErrNonFastForward)
+	}
+
+	logger.Info("Push rejected due to remote changes. Resyncing...", "attempt", attempt+1, "maxRetries", maxRetries)
+
+	// Reset to remote and re-evaluate events
+	newEvents, retryErr := r.resyncAndReEvaluate(ctx, events)
+	if retryErr != nil {
+		return pushFailure, events, retryErr
+	}
+
+	if len(newEvents) == 0 {
 		logger.Info("No valid events remaining after conflict resolution")
-		return nil
+		return pushSuccess, newEvents, nil
 	}
 
-	// Handle other push errors (e.g., network, auth)
-	return fmt.Errorf("push failed: %w", err)
+	logger.Info("Retrying push with non-conflicting commits", "count", len(newEvents), "attempt", attempt+1)
+	return pushRetry, newEvents, nil
+}
+
+// resyncAndReEvaluate resets to remote state and re-evaluates events.
+func (r *Repo) resyncAndReEvaluate(ctx context.Context, events []Event) ([]Event, error) {
+	if err := r.hardResetToRemote(ctx); err != nil {
+		return events, fmt.Errorf("failed to reset to remote state: %w", err)
+	}
+
+	return r.reEvaluateEvents(ctx, events), nil
+}
+
+// sanitizeBaseFolder validates and normalizes a baseFolder value to a safe POSIX-like relative path.
+// Returns empty string when the input is unsafe or empty.
+func sanitizeBaseFolder(base string) string {
+	trimmed := strings.TrimSpace(base)
+	if trimmed == "" {
+		return ""
+	}
+	// Reject absolute paths and backslashes (Windows separators)
+	if strings.HasPrefix(trimmed, "/") || strings.ContainsAny(trimmed, "\\") {
+		return ""
+	}
+	// Reject path traversal
+	if strings.Contains(trimmed, "..") {
+		return ""
+	}
+	// Normalize and strip leading/trailing slashes
+	cleaned := path.Clean(trimmed)
+	cleaned = strings.Trim(cleaned, "/")
+	if cleaned == "" || cleaned == "." {
+		return ""
+	}
+	return cleaned
 }
 
 // generateLocalCommits creates local commits for the given events.
-func (r *Repo) generateLocalCommits(ctx context.Context, events []eventqueue.Event) error {
+// Returns the number of commits actually created.
+func (r *Repo) generateLocalCommits(ctx context.Context, events []Event) (int, error) {
 	logger := log.FromContext(ctx)
 	worktree, err := r.Worktree()
 	if err != nil {
-		return fmt.Errorf("failed to get worktree: %w", err)
+		return 0, fmt.Errorf("failed to get worktree: %w", err)
 	}
 
 	// Ensure we are on the correct branch
 	if err := r.Checkout(r.branch); err != nil {
-		return fmt.Errorf("failed to checkout branch %s: %w", r.branch, err)
+		return 0, fmt.Errorf("failed to checkout branch %s: %w", r.branch, err)
 	}
 
+	commitsCreated := 0
 	for _, event := range events {
+		// Build the repository-relative file path:
+		// optional event-scoped baseFolder prefix + identifier path.
 		filePath := event.Identifier.ToGitPath()
+		if event.BaseFolder != "" {
+			if bf := sanitizeBaseFolder(event.BaseFolder); bf != "" {
+				filePath = path.Join(bf, filePath)
+			}
+		}
 
 		// Handle the event based on operation type
-		if err := r.handleEventOperation(ctx, event, filePath, worktree); err != nil {
-			return err
+		// Returns true if changes were made to the worktree
+		changesApplied, err := r.handleEventOperation(ctx, event, filePath, worktree)
+		if err != nil {
+			return commitsCreated, err
 		}
 
-		// Create individual commit for this event
-		if err := r.createCommitForEvent(event, filePath, worktree); err != nil {
-			return err
+		// Only create a commit if changes were actually applied
+		if changesApplied {
+			if err := r.createCommitForEvent(event, filePath, worktree); err != nil {
+				return commitsCreated, err
+			}
+			commitsCreated++
+			logger.Info("Created commit", "file", filePath, "operation", event.Operation)
+		} else {
+			logger.V(1).Info("No changes to commit, desired state already achieved", "file", filePath, "operation", event.Operation)
 		}
-
-		logger.Info("Created commit", "file", filePath, "operation", event.Operation)
 	}
 
-	return nil
+	return commitsCreated, nil
 }
 
 // handleEventOperation processes an event based on its operation type (CREATE/UPDATE/DELETE).
+// Returns true if changes were made to the worktree, false if no changes were needed.
 func (r *Repo) handleEventOperation(
 	ctx context.Context,
-	event eventqueue.Event,
+	event Event,
 	filePath string,
 	worktree *git.Worktree,
-) error {
+) (bool, error) {
 	logger := log.FromContext(ctx)
 	fullPath := filepath.Join(r.path, filePath)
 
@@ -278,65 +401,79 @@ func (r *Repo) handleEventOperation(
 }
 
 // handleDeleteOperation removes a file from the repository.
-func (r *Repo) handleDeleteOperation(logger logr.Logger, filePath, fullPath string, worktree *git.Worktree) error {
+// Returns true if the file was deleted, false if it didn't exist.
+func (r *Repo) handleDeleteOperation(
+	logger logr.Logger,
+	filePath, fullPath string,
+	worktree *git.Worktree,
+) (bool, error) {
 	// Check if file exists before attempting deletion
 	_, statErr := os.Stat(fullPath)
 	if statErr == nil {
 		// Remove file from filesystem
 		if err := os.Remove(fullPath); err != nil {
-			return fmt.Errorf("failed to delete file %s: %w", filePath, err)
+			return false, fmt.Errorf("failed to delete file %s: %w", filePath, err)
 		}
 
 		// Stage deletion in git
 		if _, err := worktree.Remove(filePath); err != nil {
-			return fmt.Errorf("failed to remove file %s from git: %w", filePath, err)
+			return false, fmt.Errorf("failed to remove file %s from git: %w", filePath, err)
 		}
 
 		logger.Info("Deleted file from repository", "file", filePath)
-		return nil
+		return true, nil
 	}
 
 	if os.IsNotExist(statErr) {
 		// File doesn't exist, log and skip (already deleted or never committed)
 		logger.Info("File does not exist, skipping deletion", "file", filePath)
-		return nil
+		return false, nil
 	}
 
-	return fmt.Errorf("failed to check file status %s: %w", filePath, statErr)
+	return false, fmt.Errorf("failed to check file status %s: %w", filePath, statErr)
 }
 
 // handleCreateOrUpdateOperation writes and stages a file in the repository.
+// Returns true if changes were made, false if the file already has the desired content.
 func (r *Repo) handleCreateOrUpdateOperation(
-	event eventqueue.Event,
+	event Event,
 	filePath, fullPath string,
 	worktree *git.Worktree,
-) error {
-	// Ensure directory exists
-	if err := os.MkdirAll(filepath.Dir(fullPath), 0750); err != nil {
-		return fmt.Errorf("failed to create directory for %s: %w", filePath, err)
-	}
-
+) (bool, error) {
 	// Convert object to ordered YAML
 	content, err := sanitize.MarshalToOrderedYAML(event.Object)
 	if err != nil {
-		return fmt.Errorf("failed to marshal object to YAML: %w", err)
+		return false, fmt.Errorf("failed to marshal object to YAML: %w", err)
+	}
+
+	// Check if file already exists with same content
+	if existingContent, err := os.ReadFile(fullPath); err == nil {
+		if string(existingContent) == string(content) {
+			// File already has the desired content, no changes needed
+			return false, nil
+		}
+	}
+
+	// Ensure directory exists
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0750); err != nil {
+		return false, fmt.Errorf("failed to create directory for %s: %w", filePath, err)
 	}
 
 	// Write file
 	if err := os.WriteFile(fullPath, content, 0600); err != nil {
-		return fmt.Errorf("failed to write file %s: %w", filePath, err)
+		return false, fmt.Errorf("failed to write file %s: %w", filePath, err)
 	}
 
 	// Add to git
 	if _, err := worktree.Add(filePath); err != nil {
-		return fmt.Errorf("failed to add file %s to git: %w", filePath, err)
+		return false, fmt.Errorf("failed to add file %s to git: %w", filePath, err)
 	}
 
-	return nil
+	return true, nil
 }
 
 // createCommitForEvent creates a git commit for the given event.
-func (r *Repo) createCommitForEvent(event eventqueue.Event, filePath string, worktree *git.Worktree) error {
+func (r *Repo) createCommitForEvent(event Event, filePath string, worktree *git.Worktree) error {
 	commitMessage := GetCommitMessage(event)
 	_, err := worktree.Commit(commitMessage, &git.CommitOptions{
 		Author: &object.Signature{
@@ -430,9 +567,9 @@ func (r *Repo) optimizedFetch(ctx context.Context) error {
 }
 
 // reEvaluateEvents checks which events are still valid against the current repository state.
-func (r *Repo) reEvaluateEvents(ctx context.Context, events []eventqueue.Event) []eventqueue.Event {
+func (r *Repo) reEvaluateEvents(ctx context.Context, events []Event) []Event {
 	logger := log.FromContext(ctx)
-	var validEvents []eventqueue.Event
+	var validEvents []Event
 
 	for _, event := range events {
 		if r.isEventStillValid(ctx, event) {
@@ -449,7 +586,7 @@ func (r *Repo) reEvaluateEvents(ctx context.Context, events []eventqueue.Event) 
 }
 
 // isEventStillValid checks if an event is still relevant compared to the current Git state.
-func (r *Repo) isEventStillValid(ctx context.Context, event eventqueue.Event) bool {
+func (r *Repo) isEventStillValid(ctx context.Context, event Event) bool {
 	logger := log.FromContext(ctx)
 
 	filePath := event.Identifier.ToGitPath()
@@ -623,7 +760,9 @@ func isNonFastForwardError(err error) bool {
 	return strings.Contains(errStr, "non-fast-forward") ||
 		strings.Contains(errStr, "rejected") ||
 		strings.Contains(errStr, "fetch first") ||
-		strings.Contains(errStr, "updates were rejected")
+		strings.Contains(errStr, "updates were rejected") ||
+		strings.Contains(errStr, "cannot lock ref") ||
+		strings.Contains(errStr, "failed to update ref")
 }
 
 // Commit commits a set of files to the repository (legacy method for compatibility).
@@ -677,7 +816,7 @@ func (r *Repo) Commit(files []CommitFile, message string) error {
 }
 
 // GetCommitMessage returns a structured commit message for the given event.
-func GetCommitMessage(event eventqueue.Event) string {
+func GetCommitMessage(event Event) string {
 	return fmt.Sprintf("[%s] %s by user/%s",
 		event.Operation,
 		event.Identifier.String(),

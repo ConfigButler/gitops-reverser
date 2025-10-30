@@ -40,6 +40,41 @@ var (
 	GitOperationsTotal     metric.Int64Counter
 	GitPushDurationSeconds metric.Float64Histogram
 	GitCommitQueueSize     metric.Int64UpDownCounter
+
+	// ObjectsScannedTotal counts objects scanned by list/polling/informer paths.
+	ObjectsScannedTotal metric.Int64Counter
+	// ObjectsWrittenTotal counts objects that resulted in file writes.
+	ObjectsWrittenTotal metric.Int64Counter
+	// FilesDeletedTotal counts deleted files during orphan cleanup.
+	FilesDeletedTotal metric.Int64Counter
+	// CommitsTotal counts commit batches pushed to git.
+	CommitsTotal metric.Int64Counter
+	// CommitBytesTotal counts approximate bytes written across commits.
+	CommitBytesTotal metric.Int64Counter
+	// RebaseRetriesTotal counts retries due to non fast-forward push errors.
+	RebaseRetriesTotal metric.Int64Counter
+	// OwnershipConflictsTotal counts ownership conflicts (marker/lease).
+	OwnershipConflictsTotal metric.Int64Counter
+	// LeaseAcquireFailuresTotal counts failures to acquire/renew leases.
+	LeaseAcquireFailuresTotal metric.Int64Counter
+	// MarkerConflictsTotal counts repository marker conflicts.
+	MarkerConflictsTotal metric.Int64Counter
+
+	// RepoBranchActiveWorkers is a gauge for active repo-branch workers.
+	RepoBranchActiveWorkers metric.Int64UpDownCounter
+	// RepoBranchQueueDepth is a gauge for per-repo-branch queue depth.
+	RepoBranchQueueDepth metric.Int64UpDownCounter
+
+	// WebhookCorrelationsTotal counts correlation entries created by webhook.
+	WebhookCorrelationsTotal metric.Int64Counter
+	// EnrichHitsTotal counts successful webhook→watch correlation enrichments.
+	EnrichHitsTotal metric.Int64Counter
+	// EnrichMissesTotal counts failed webhook→watch correlations (no match found).
+	EnrichMissesTotal metric.Int64Counter
+	// KVEvictionsTotal counts correlation store evictions (TTL or LRU).
+	KVEvictionsTotal metric.Int64Counter
+	// WatchDuplicatesSkippedTotal counts watch events skipped due to duplicate sanitized content.
+	WatchDuplicatesSkippedTotal metric.Int64Counter
 )
 
 // InitOTLPExporter initializes the OTLP-to-Prometheus bridge.
@@ -47,7 +82,7 @@ func InitOTLPExporter(_ context.Context) (func(context.Context) error, error) {
 	fmt.Println("Initializing OTLP exporter")
 
 	// Create a Prometheus exporter that bridges OTLP metrics to Prometheus
-	// Configure it to use the controller-runtime registry
+	// Configure it to use the controller-runtime registry.
 	exporter, err := prometheus.New(
 		prometheus.WithRegisterer(metrics.Registry),
 	)
@@ -55,33 +90,76 @@ func InitOTLPExporter(_ context.Context) (func(context.Context) error, error) {
 		return nil, fmt.Errorf("failed to create Prometheus exporter: %w", err)
 	}
 
-	// Create a meter provider with the Prometheus exporter
+	// Create a meter provider with the Prometheus exporter.
 	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(exporter))
 	otel.SetMeterProvider(provider)
 
-	// Get the meter from the new provider
+	// Get the meter from the new provider.
 	otelMeter = provider.Meter("gitops-reverser")
 
-	// Create all the metrics
-	EventsReceivedTotal, err = otelMeter.Int64Counter("gitopsreverser_events_received_total")
-	if err != nil {
-		return nil, err
+	// Register instruments in compact loops to keep complexity low.
+	type cSpec struct {
+		name string
+		dest *metric.Int64Counter
 	}
-	EventsProcessedTotal, err = otelMeter.Int64Counter("gitopsreverser_events_processed_total")
-	if err != nil {
-		return nil, err
+	type hSpec struct {
+		name string
+		dest *metric.Float64Histogram
 	}
-	GitOperationsTotal, err = otelMeter.Int64Counter("gitopsreverser_git_operations_total")
-	if err != nil {
-		return nil, err
+	type uSpec struct {
+		name string
+		dest *metric.Int64UpDownCounter
 	}
-	GitPushDurationSeconds, err = otelMeter.Float64Histogram("gitopsreverser_git_push_duration_seconds")
-	if err != nil {
-		return nil, err
+
+	counters := []cSpec{
+		{"gitopsreverser_events_received_total", &EventsReceivedTotal},
+		{"gitopsreverser_events_processed_total", &EventsProcessedTotal},
+		{"gitopsreverser_git_operations_total", &GitOperationsTotal},
+		{"gitopsreverser_objects_scanned_total", &ObjectsScannedTotal},
+		{"gitopsreverser_objects_written_total", &ObjectsWrittenTotal},
+		{"gitopsreverser_files_deleted_total", &FilesDeletedTotal},
+		{"gitopsreverser_commits_total", &CommitsTotal},
+		{"gitopsreverser_commit_bytes_total", &CommitBytesTotal},
+		{"gitopsreverser_rebase_retries_total", &RebaseRetriesTotal},
+		{"gitopsreverser_ownership_conflicts_total", &OwnershipConflictsTotal},
+		{"gitopsreverser_lease_acquire_failures_total", &LeaseAcquireFailuresTotal},
+		{"gitopsreverser_marker_conflicts_total", &MarkerConflictsTotal},
+		{"gitopsreverser_webhook_correlations_total", &WebhookCorrelationsTotal},
+		{"gitopsreverser_enrich_hits_total", &EnrichHitsTotal},
+		{"gitopsreverser_enrich_misses_total", &EnrichMissesTotal},
+		{"gitopsreverser_kv_evictions_total", &KVEvictionsTotal},
+		{"gitopsreverser_watch_duplicates_skipped_total", &WatchDuplicatesSkippedTotal},
 	}
-	GitCommitQueueSize, err = otelMeter.Int64UpDownCounter("gitopsreverser_git_commit_queue_size")
-	if err != nil {
-		return nil, err
+	for _, s := range counters {
+		v, err := otelMeter.Int64Counter(s.name)
+		if err != nil {
+			return nil, err
+		}
+		*s.dest = v
+	}
+
+	hists := []hSpec{
+		{"gitopsreverser_git_push_duration_seconds", &GitPushDurationSeconds},
+	}
+	for _, s := range hists {
+		v, err := otelMeter.Float64Histogram(s.name)
+		if err != nil {
+			return nil, err
+		}
+		*s.dest = v
+	}
+
+	upDowns := []uSpec{
+		{"gitopsreverser_git_commit_queue_size", &GitCommitQueueSize},
+		{"gitopsreverser_repo_branch_active_workers", &RepoBranchActiveWorkers},
+		{"gitopsreverser_repo_branch_queue_depth", &RepoBranchQueueDepth},
+	}
+	for _, s := range upDowns {
+		v, err := otelMeter.Int64UpDownCounter(s.name)
+		if err != nil {
+			return nil, err
+		}
+		*s.dest = v
 	}
 
 	return func(_ context.Context) error {

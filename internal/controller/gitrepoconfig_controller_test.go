@@ -291,8 +291,8 @@ var _ = Describe("GitRepoConfig Controller", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha1.GitRepoConfigSpec{
-					RepoURL: "git@github.com:test/repo.git",
-					Branch:  "main",
+					RepoURL:         "git@github.com:test/repo.git",
+					AllowedBranches: []string{"main"},
 					SecretRef: &configbutleraiv1alpha1.LocalObjectReference{
 						Name: "nonexistent-secret",
 					},
@@ -347,8 +347,8 @@ var _ = Describe("GitRepoConfig Controller", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha1.GitRepoConfigSpec{
-					RepoURL: "git@github.com:test/repo.git",
-					Branch:  "main",
+					RepoURL:         "git@github.com:test/repo.git",
+					AllowedBranches: []string{"main"},
 					SecretRef: &configbutleraiv1alpha1.LocalObjectReference{
 						Name: "malformed-secret",
 					},
