@@ -355,7 +355,7 @@ func (m *Manager) tryEnrichFromCorrelation(
 
 // seedSelectedResources performs a one-time List across all discoverable GVRs derived from active rules,
 // sanitizes objects, matches rules, and enqueues UPDATE events to bootstrap the repository state.
-// Orphan detection happens via SEED_SYNC control events per branch.
+// Orphan detection is now handled by FolderReconciler comparing cluster vs git state.
 func (m *Manager) seedSelectedResources(ctx context.Context) {
 	log := m.Log.WithName("seed")
 	log.Info("starting initial seed listing")
@@ -372,16 +372,11 @@ func (m *Manager) seedSelectedResources(ctx context.Context) {
 		return
 	}
 
-	// Track unique (repo, branch) combinations seen during seed to emit SEED_SYNC per branch
-	branchKeys := make(map[git.BranchKey]struct{})
-
 	for _, g := range discoverable {
-		m.seedListAndProcess(ctx, dc, g, branchKeys)
+		m.seedListAndProcess(ctx, dc, g)
 	}
 
-	m.emitSeedSyncControls(branchKeys)
-
-	log.Info("seed listing completed", "gvrCount", len(discoverable), "branchKeys", len(branchKeys))
+	log.Info("seed listing completed", "gvrCount", len(discoverable))
 }
 
 // dynamicClientFromConfig builds a dynamic client from the controller's REST config.
@@ -539,7 +534,6 @@ func (m *Manager) seedListAndProcess(
 	ctx context.Context,
 	dc dynamic.Interface,
 	g GVR,
-	branchKeys map[git.BranchKey]struct{},
 ) {
 	log := m.Log.WithName("seed").
 		WithValues("group", g.Group, "version", g.Version, "resource", g.Resource, "scope", g.Scope)
@@ -559,7 +553,7 @@ func (m *Manager) seedListAndProcess(
 
 		metrics.ObjectsScannedTotal.Add(ctx, int64(len(list.Items)))
 		for i := range list.Items {
-			m.processListedObject(ctx, &list.Items[i], g, branchKeys)
+			m.processListedObject(ctx, &list.Items[i], g)
 		}
 	} else {
 		// Namespaced resource from WatchRule(s) - list per namespace
@@ -573,7 +567,7 @@ func (m *Manager) seedListAndProcess(
 
 			totalItems += len(list.Items)
 			for i := range list.Items {
-				m.processListedObject(ctx, &list.Items[i], g, branchKeys)
+				m.processListedObject(ctx, &list.Items[i], g)
 			}
 		}
 		metrics.ObjectsScannedTotal.Add(ctx, int64(totalItems))
@@ -581,12 +575,11 @@ func (m *Manager) seedListAndProcess(
 	}
 }
 
-// processListedObject evaluates rules, tracks branch keys, sanitizes, and enqueues events for one item.
+// processListedObject evaluates rules, sanitizes, and enqueues events for one item.
 func (m *Manager) processListedObject(
 	ctx context.Context,
 	u *unstructured.Unstructured,
 	g GVR,
-	branchKeys map[git.BranchKey]struct{},
 ) {
 	id := types.NewResourceIdentifier(g.Group, g.Version, g.Resource, u.GetNamespace(), u.GetName())
 
@@ -601,22 +594,6 @@ func (m *Manager) processListedObject(
 		return
 	}
 
-	// Track (repo, branch) keys for SEED_SYNC control emission (orphan detection) after seed
-	for _, r := range wrRules {
-		branchKeys[git.BranchKey{
-			RepoNamespace: r.GitRepoConfigNamespace,
-			RepoName:      r.GitRepoConfigRef,
-			Branch:        r.Branch,
-		}] = struct{}{}
-	}
-	for _, cr := range cwrRules {
-		branchKeys[git.BranchKey{
-			RepoNamespace: cr.GitRepoConfigNamespace,
-			RepoName:      cr.GitRepoConfigRef,
-			Branch:        cr.Branch,
-		}] = struct{}{}
-	}
-
 	sanitized := sanitize.Sanitize(u)
 	m.enqueueMatches(ctx, sanitized, id, wrRules, cwrRules)
 
@@ -625,36 +602,6 @@ func (m *Manager) processListedObject(
 		metrics.EventsProcessedTotal.Add(ctx, enq)
 		metrics.GitCommitQueueSize.Add(ctx, enq)
 	}
-}
-
-// emitSeedSyncControls enqueues one SEED_SYNC control event per (repo, branch) combination.
-// Each worker handles orphan detection for all baseFolders it manages.
-func (m *Manager) emitSeedSyncControls(branchKeys map[git.BranchKey]struct{}) {
-	for key := range branchKeys {
-		ev := git.Event{
-			Operation:  "SEED_SYNC",
-			BaseFolder: "", // Empty = all baseFolders for this branch
-		}
-
-		if err := m.EventRouter.RouteEvent(
-			key.RepoName,
-			key.RepoNamespace,
-			key.Branch,
-			ev,
-		); err != nil {
-			m.Log.Error(err, "Failed to route SEED_SYNC", "key", key.String())
-		}
-	}
-}
-
-// EmitClusterStateSnapshot is deprecated in favor of GetClusterStateForGitDest.
-// Kept for backward compatibility but should not be used in new code.
-func (m *Manager) EmitClusterStateSnapshot(
-	_ context.Context,
-	_, _, _, _ string,
-) error {
-	// Deprecated - use GetClusterStateForGitDest instead
-	return nil
 }
 
 // GetClusterStateForGitDest returns cluster resources for a GitDestination.

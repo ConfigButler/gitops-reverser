@@ -351,12 +351,6 @@ func (r *Repo) generateLocalCommits(ctx context.Context, events []Event) (int, e
 
 	commitsCreated := 0
 	for _, event := range events {
-		// Skip control events (e.g., SEED_SYNC) - they don't represent actual resources
-		if event.IsControlEvent() {
-			logger.V(1).Info("Skipping control event", "operation", event.Operation)
-			continue
-		}
-
 		// Build the repository-relative file path:
 		// optional event-scoped baseFolder prefix + identifier path.
 		filePath := event.Identifier.ToGitPath()

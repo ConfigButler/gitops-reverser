@@ -55,13 +55,13 @@ type UserInfo struct {
 // Branch comes from the worker context (not stored in event).
 // BaseFolder comes from the GitDestination that created this event.
 type Event struct {
-	// Object is the sanitized Kubernetes object (nil for control events like SEED_SYNC).
+	// Object is the sanitized Kubernetes object.
 	Object *unstructured.Unstructured
 
 	// Identifier contains resource identification information.
 	Identifier types.ResourceIdentifier
 
-	// Operation is the admission operation (CREATE, UPDATE, DELETE, SEED_SYNC).
+	// Operation is the admission operation (CREATE, UPDATE, DELETE).
 	Operation string
 
 	// UserInfo contains user information for commit messages.
@@ -75,9 +75,3 @@ type Event struct {
 
 // Note: Event types have been moved to internal/events package to avoid import cycles.
 // See internal/events/events.go for ClusterStateEvent, RepoStateEvent, and ControlEvent.
-
-// IsControlEvent returns true for control events that don't represent actual resources.
-// Control events include SEED_SYNC for orphan detection.
-func (e Event) IsControlEvent() bool {
-	return e.Operation == "SEED_SYNC"
-}

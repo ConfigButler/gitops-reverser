@@ -109,49 +109,6 @@ func TestBranchKeyEquality(t *testing.T) {
 	}
 }
 
-// TestEventIsControlEvent verifies control event detection.
-func TestEventIsControlEvent(t *testing.T) {
-	tests := []struct {
-		name      string
-		operation string
-		isControl bool
-	}{
-		{
-			name:      "SEED_SYNC is control event",
-			operation: "SEED_SYNC",
-			isControl: true,
-		},
-		{
-			name:      "CREATE is not control event",
-			operation: "CREATE",
-			isControl: false,
-		},
-		{
-			name:      "UPDATE is not control event",
-			operation: "UPDATE",
-			isControl: false,
-		},
-		{
-			name:      "DELETE is not control event",
-			operation: "DELETE",
-			isControl: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			event := Event{
-				Operation: tt.operation,
-			}
-			result := event.IsControlEvent()
-			if result != tt.isControl {
-				t.Errorf("IsControlEvent() = %v, want %v for operation %q",
-					result, tt.isControl, tt.operation)
-			}
-		})
-	}
-}
-
 // TestEventWithObject verifies event creation with objects.
 func TestEventWithObject(t *testing.T) {
 	obj := &unstructured.Unstructured{}
@@ -182,26 +139,10 @@ func TestEventWithObject(t *testing.T) {
 	if event.Object.GetName() != "test-pod" {
 		t.Errorf("Object name = %q, want 'test-pod'", event.Object.GetName())
 	}
+	if event.Operation != "CREATE" {
+		t.Errorf("Operation = %q, want 'CREATE'", event.Operation)
+	}
 	if event.BaseFolder != "clusters/prod" {
 		t.Errorf("BaseFolder = %q, want 'clusters/prod'", event.BaseFolder)
-	}
-	if event.IsControlEvent() {
-		t.Error("CREATE event should not be a control event")
-	}
-}
-
-// TestEventNilObject verifies events can have nil objects (for control events).
-func TestEventNilObject(t *testing.T) {
-	event := Event{
-		Object:     nil,
-		Operation:  "SEED_SYNC",
-		BaseFolder: "",
-	}
-
-	if event.Object != nil {
-		t.Error("Expected Object to be nil for control event")
-	}
-	if !event.IsControlEvent() {
-		t.Error("SEED_SYNC should be a control event")
 	}
 }

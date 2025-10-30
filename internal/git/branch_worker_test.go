@@ -140,32 +140,6 @@ func TestListResourcesInBaseFolder_MissingGitRepoConfig(t *testing.T) {
 	}
 }
 
-// TestBranchWorker_RegisterUnregister verifies the simplified register/unregister behavior.
-func TestBranchWorker_RegisterUnregister(t *testing.T) {
-	scheme := runtime.NewScheme()
-	_ = clientgoscheme.AddToScheme(scheme)
-	_ = configv1alpha1.AddToScheme(scheme)
-	client := fake.NewClientBuilder().WithScheme(scheme).Build()
-	log := logr.Discard()
-
-	worker := NewBranchWorker(client, log, "test-repo", "gitops-system", "main")
-
-	// Register should not panic and should not track destinations
-	worker.RegisterDestination("dest1", "default", "apps")
-	worker.RegisterDestination("dest2", "default", "infra")
-
-	// Unregister should always return false (no tracking)
-	result := worker.UnregisterDestination("dest1", "default")
-	if result {
-		t.Error("UnregisterDestination should return false (no internal tracking)")
-	}
-
-	result = worker.UnregisterDestination("dest2", "default")
-	if result {
-		t.Error("UnregisterDestination should return false (no internal tracking)")
-	}
-}
-
 // TestBranchWorker_IdentityFields verifies worker identity is set correctly.
 func TestBranchWorker_IdentityFields(t *testing.T) {
 	scheme := runtime.NewScheme()

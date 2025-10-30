@@ -67,10 +67,9 @@ func (m *WorkerManager) RegisterDestination(
 	}
 
 	// Get or create worker for this (repo, branch)
-	worker, exists := m.workers[key]
-	if !exists {
+	if _, exists := m.workers[key]; !exists {
 		m.Log.Info("Creating new branch worker", "key", key.String())
-		worker = NewBranchWorker(m.Client, m.Log.WithName("branch-worker"),
+		worker := NewBranchWorker(m.Client, m.Log.WithName("branch-worker"),
 			repoName, repoNamespace, branch)
 
 		if err := worker.Start(m.ctx); err != nil {
@@ -79,9 +78,6 @@ func (m *WorkerManager) RegisterDestination(
 
 		m.workers[key] = worker
 	}
-
-	// Register this destination with the worker
-	worker.RegisterDestination("", destNamespace, baseFolder)
 
 	m.Log.Info("GitDestination registered with branch worker",
 		"destination", fmt.Sprintf("%s/%s", destNamespace, ""),

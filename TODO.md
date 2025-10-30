@@ -39,3 +39,5 @@ New questions:
   * How can I now if it's the same repo? Only be adding a file? There should be a lock of some kind.
 * I would like better metrics and a visual of the current queues / how full they are. Also more tests on high load.
 * Create a single commit for the first reconcile: e.g. when the repo has been disconnected from realiy for a while.
+* Improve seeding as written here: [](docs/seed-removal-and-reconciler-triggers-plan.md), potenially also send the hash in the event so that we don't need to do it on multiple places
+* The clenup of gitdestination in memory is not really working as expected (I still logs in the end2end test end).

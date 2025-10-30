@@ -86,29 +86,6 @@ func NewBranchWorker(
 	}
 }
 
-// RegisterDestination adds a GitDestination to this worker's tracking.
-// Multiple destinations can register if they share the same (repo, branch).
-// Note: This method is kept for WorkerManager lifecycle management but no longer
-// tracks destinations internally since BranchWorker doesn't need this information.
-func (w *BranchWorker) RegisterDestination(destName, _ string, baseFolder string) {
-	w.Log.Info("GitDestination registered with worker",
-		"destination", destName,
-		"baseFolder", baseFolder)
-}
-
-// UnregisterDestination removes a GitDestination from tracking.
-// Returns true if this was the last destination (worker can be destroyed).
-// Note: This method is kept for WorkerManager lifecycle management but no longer
-// tracks destinations internally since BranchWorker doesn't need this information.
-func (w *BranchWorker) UnregisterDestination(destName, _ string) bool {
-	w.Log.Info("GitDestination unregistered from worker",
-		"destination", destName)
-
-	// Always return false since BranchWorker no longer tracks destinations.
-	// WorkerManager handles the lifecycle decisions.
-	return false
-}
-
 // Start begins processing events.
 func (w *BranchWorker) Start(parentCtx context.Context) error {
 	w.mu.Lock()
