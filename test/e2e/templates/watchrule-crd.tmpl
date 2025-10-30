@@ -7,4 +7,6 @@ spec:
   destinationRef:
     name: {{ .DestinationName }}
   rules:
-  - resources: ["icecreamorders"]
+  - apiGroups: ["shop.example.com"]
+    apiVersions: ["v1"]
+    resources: ["icecreamorders"]

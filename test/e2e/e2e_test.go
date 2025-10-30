@@ -971,7 +971,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 				// Read the file again to ensure status is still not present
 				expectedFile := filepath.Join(checkoutDir,
-					getBaseFolder(),
+					"e2e/icecream-test",
 					fmt.Sprintf("shop.example.com/v1/icecreamorders/%s/%s.yaml", namespace, crdInstanceName))
 				content, readErr := os.ReadFile(expectedFile)
 				g.Expect(readErr).NotTo(HaveOccurred())
@@ -1198,15 +1198,9 @@ var _ = Describe("Manager", Ordered, func() {
 		})
 
 		It("should delete Git file when IceCreamOrder CRD is deleted via ClusterWatchRule", func() {
-			gitRepoConfigName := "gitrepoconfig-crd-delete-test"
+			gitRepoConfigName := "gitrepoconfig-normal"
 			clusterWatchRuleName := "clusterwatchrule-crd-delete"
 			crdName := "icecreamorders.shop.example.com"
-
-			By("creating GitRepoConfig with allowClusterRules for CRD watching")
-			createGitRepoConfigWithClusterRules(gitRepoConfigName, "main", "git-creds", getRepoURLHTTP())
-
-			By("waiting for GitRepoConfig to be ready")
-			verifyGitRepoConfigStatus(gitRepoConfigName, "True", "BranchFound", "All 1 branches validated")
 
 			By("creating ClusterWatchRule with Cluster scope for CRDs")
 			destName := clusterWatchRuleName + "-dest"
@@ -1232,7 +1226,7 @@ var _ = Describe("Manager", Ordered, func() {
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(Equal("True"))
 			}
-			Eventually(verifyClusterWatchRuleReady, 15*time.Second, time.Second).Should(Succeed())
+			Eventually(verifyClusterWatchRuleReady, 30*time.Second, time.Second).Should(Succeed())
 
 			By("verifying CRD file exists in Git before deletion")
 			verifyFileExists := func(g Gomega) {
@@ -1246,13 +1240,12 @@ var _ = Describe("Manager", Ordered, func() {
 				_, statErr := os.Stat(expectedFile)
 				g.Expect(statErr).NotTo(HaveOccurred(), "CRD file should exist before deletion")
 			}
-			Eventually(verifyFileExists, 30*time.Second, 2*time.Second).Should(Succeed())
+			Eventually(verifyFileExists, 30*time.Second, 1*time.Second).Should(Succeed())
 
 			By("deleting the CRD to trigger DELETE operation")
-			cmd := exec.Command("kubectl", "delete", "crd", crdName)
-			_, err = utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred(), "CRD deletion should succeed")
-
+			deleteCmd := exec.Command("kubectl", "delete", "crd", crdName)
+			_, deleteErr := utils.Run(deleteCmd)
+			Expect(deleteErr).NotTo(HaveOccurred(), "CRD deletion should succeed")
 			By("verifying CRD file is deleted from Git repository")
 			verifyFileDeleted := func(g Gomega) {
 				pullCmd := exec.Command("git", "pull")
@@ -1279,7 +1272,6 @@ var _ = Describe("Manager", Ordered, func() {
 			By("cleaning up test resources")
 			cleanupClusterWatchRule(clusterWatchRuleName)
 			cleanupGitDestination(destName, namespace)
-			cleanupGitRepoConfig(gitRepoConfigName)
 
 			By("✅ CRD deletion via ClusterWatchRule E2E test passed")
 		})
