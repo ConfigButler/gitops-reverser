@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.7.0...gitops-reverser-v0.8.0) (2025-10-31)
+
+
+### Features
+
+* Add reconcile so that the cluster state is really reflected in git ([906045e](https://github.com/ConfigButler/gitops-reverser/commit/906045eea1de4a274a97ad579f6cb7183c51b4b0))
+
+
+### Bug Fixes
+
+* **watch:** handle missing kubeconfig gracefully in discovery ([4a7f3a5](https://github.com/ConfigButler/gitops-reverser/commit/4a7f3a5394afc066bc5e43b45788030a5bd16cfb))
+
+
+### Documentation
+
+* Improve visuals and fix quick start ([#52](https://github.com/ConfigButler/gitops-reverser/issues/52)) ([1e6e950](https://github.com/ConfigButler/gitops-reverser/commit/1e6e950f0fee0d3ad6413eedc1a322e7a79ec81f))
+
 ## [0.7.0](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.6.0...gitops-reverser-v0.7.0) (2025-10-13)
 
 
