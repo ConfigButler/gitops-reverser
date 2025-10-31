@@ -29,15 +29,6 @@ imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""
 
-# Create example configuration for a quick start
-examples:
-  create: true
-  namespace: default # Is placed in a seperate ns to demonstrate the usage
-  github:
-    owner: your-handle # Replace with your own github handle or org name
-    repoName: cluster-audit
-    secretName: git-credentials # Create and fill that secret yourself: see README.md
-
 serviceAccount:
   # Specifies whether a service account should be created
   create: true
