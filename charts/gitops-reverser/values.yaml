@@ -1,45 +1,22 @@
-# Default values for gitops-reverser.
-# This is a YAML-formatted file.
-# Declare variables to be passed into your templates.
-
-# Namespace creation configuration
 namespaceCreation:
-  # Whether to create the namespace as part of the chart installation
   enabled: true
-  # Additional labels for the namespace
   labels: {}
-  # Additional annotations for the namespace
   annotations: {}
-
-# High Availability configuration - runs 2 replicas by default
 replicaCount: 2
-
-# Leader-only service configuration
 leaderOnlyService:
-  # When true, creates a dedicated service that routes traffic only to the leader pod
-  # This is critical for HA deployments to ensure consistent processing of incomming API server events
   enabled: true
-
 image:
   repository: ghcr.io/configbutler/gitops-reverser
   pullPolicy: IfNotPresent
-  tag: "ci-13594591ef24e91c684a31bf2f239ce8a5a7229a"
-
+  tag: 0.8.1
 imagePullSecrets: []
-nameOverride: ""
-fullnameOverride: ""
-
+nameOverride: ''
+fullnameOverride: ''
 serviceAccount:
-  # Specifies whether a service account should be created
   create: true
-  # Annotations to add to the service account
   annotations: {}
-  # The name of the service account to use.
-  # If not set and create is true, a name is generated using the fullname template
-  name: ""
-
+  name: ''
 podAnnotations: {}
-
 podSecurityContext:
   runAsNonRoot: true
   runAsUser: 65532
@@ -47,7 +24,6 @@ podSecurityContext:
   fsGroup: 65532
   seccompProfile:
     type: RuntimeDefault
-
 securityContext:
   allowPrivilegeEscalation: false
   capabilities:
@@ -56,44 +32,39 @@ securityContext:
   readOnlyRootFilesystem: true
   runAsNonRoot: true
   runAsUser: 65532
-
-# Controller manager configuration
 controllerManager:
-  # Enable leader election for controller manager (required for HA)
   leaderElection: true
-  # Health probe configuration
   healthProbe:
-    bindAddress: :8081
-  # Metrics configuration
+    bindAddress: ':8081'
   metrics:
     port: 8080
     bindAddress: 127.0.0.1:8080
-  # Enable HTTP/2 (disabled by default for security)
   enableHTTP2: false
-
-# Webhook configuration
 webhook:
   enabled: true
-  # Webhook server configuration
   server:
     port: 9443
-    certPath: "/tmp/k8s-webhook-server/serving-certs"
-    certName: "tls.crt"
-    certKey: "tls.key"
-
-  # Validating webhook configuration
+    certPath: /tmp/k8s-webhook-server/serving-certs
+    certName: tls.crt
+    certKey: tls.key
   validating:
     enabled: true
     failurePolicy: Ignore
     sideEffects: None
-    admissionReviewVersions: ["v1", "v1beta1"]
-    # Rules for validating webhook (by default watching all resources)
+    admissionReviewVersions:
+      - v1
+      - v1beta1
     rules:
-      - operations: ["CREATE", "UPDATE", "DELETE"]
-        apiGroups: ["*"]
-        apiVersions: ["*"]
-        resources: ["*"]
-    # Namespace selector for validating webhook
+      - operations:
+          - CREATE
+          - UPDATE
+          - DELETE
+        apiGroups:
+          - '*'
+        apiVersions:
+          - '*'
+        resources:
+          - '*'
     namespaceSelector:
       matchExpressions:
         - key: kubernetes.io/metadata.name
@@ -102,24 +73,17 @@ webhook:
             - kube-system
             - kube-public
             - kube-node-lease
-    # Object selector for validating webhook
     objectSelector: {}
-
-# TLS certificate management (Kubernetes requires this for API server callbacks)
 certificates:
-  name:
+  name: null
   certManager:
     enabled: true
     issuer:
       name: selfsigned-issuer
       kind: Issuer
       create: true
-
-# RBAC configuration
 rbac:
   create: true
-
-# Resource limits and requests
 resources:
   limits:
     cpu: 500m
@@ -127,14 +91,8 @@ resources:
   requests:
     cpu: 10m
     memory: 64Mi
-
-# Node selection
 nodeSelector: {}
-
-# Tolerations
 tolerations: []
-
-# Pod affinity/anti-affinity (default anti-affinity for HA)
 affinity:
   podAntiAffinity:
     preferredDuringSchedulingIgnoredDuringExecution:
@@ -144,32 +102,22 @@ affinity:
             matchLabels:
               app.kubernetes.io/name: gitops-reverser
           topologyKey: kubernetes.io/hostname
-
-# Pod disruption budget (enabled by default for HA)
 podDisruptionBudget:
   enabled: true
   minAvailable: 1
-  # maxUnavailable: 1
-
-# Monitoring and observability
 monitoring:
-  # Enable ServiceMonitor for Prometheus
   serviceMonitor:
     enabled: false
-    namespace: ""
+    namespace: ''
     labels: {}
     interval: 30s
     scrapeTimeout: 10s
     path: /metrics
     port: https
-
-# Logging configuration
 logging:
   level: info
   development: false
   encoder: json
-  # Additional logging configuration
   stacktraceLevel: error
-
 labels:
-  managedBy: Helm # Allows CI generated install.yaml creation (don't change when you are using Helm)
+  managedBy: Helm

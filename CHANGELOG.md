@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.1](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.8.0...gitops-reverser-v0.8.1) (2025-10-31)
+
+
+### Bug Fixes
+
+* That should give us a working installation yaml ([f7ec9d4](https://github.com/ConfigButler/gitops-reverser/commit/f7ec9d4c08c5a1de58017dd6be042da3cec99daa))
+
+
+### Documentation
+
+* Aligning docs ([dc665b1](https://github.com/ConfigButler/gitops-reverser/commit/dc665b1ad1ccd3632eb9b8def1b41fb4a87dbe6c))
+
 ## [0.8.0](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.7.0...gitops-reverser-v0.8.0) (2025-10-31)
 
 
