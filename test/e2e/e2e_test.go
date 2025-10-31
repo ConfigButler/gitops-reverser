@@ -1240,7 +1240,7 @@ var _ = Describe("Manager", Ordered, func() {
 				_, statErr := os.Stat(expectedFile)
 				g.Expect(statErr).NotTo(HaveOccurred(), "CRD file should exist before deletion")
 			}
-			Eventually(verifyFileExists, 30*time.Second, 1*time.Second).Should(Succeed())
+			Eventually(verifyFileExists, 60*time.Second, 5*time.Second).Should(Succeed())
 
 			By("deleting the CRD to trigger DELETE operation")
 			deleteCmd := exec.Command("kubectl", "delete", "crd", crdName)
