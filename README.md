@@ -19,6 +19,8 @@ Today teams have to choose between workflows:
 
 Reverse GitOps gives you both: the interactivity of the Kubernetes API with Git’s safety and traceability. Users, CLIs, and automations talk to a lightweight control plane; the operator immediately reflects desired state to Git.
 
+![](docs/overview.excalidraw.svg)
+
 ```mermaid
 graph LR
     direction LR
