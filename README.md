@@ -74,14 +74,14 @@ Reconciliation sources and targets are configured by three types of custom resou
 ![](docs/images/config-basics.excalidraw.svg)
 
 ```bash
-# Edit to match your repository
+# NOTE: Edit the line with YOUR_USERNAME to match your repository
 cat <<EOF | kubectl apply -f -
 apiVersion: configbutler.ai/v1alpha1
 kind: GitRepoConfig
 metadata:
   name: your-repo
 spec:
-  repoUrl: "git@github.com:yourorg/yourrepo.git"
+  repoUrl: "git@github.com:YOUR_USERNAME/my-k8s-audit.git"
   allowedBranches: ["test-gitops-reverser"]
   secretRef:
     name: git-creds
