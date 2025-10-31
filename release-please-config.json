@@ -67,9 +67,8 @@
           "jsonpath": "$.appVersion"
         },
         {
-          "type": "yaml",
-          "path": "charts/gitops-reverser/values.yaml",
-          "jsonpath": "$.image.tag"
+          "type": "generic",
+          "path": "charts/gitops-reverser/values.yaml"
         }
       ]
     }
