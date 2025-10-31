@@ -9,7 +9,7 @@
 
 # GitOps Reverser
 
-GitOps Reverser is a Kubernetes operator that turns live API activity into clean, versioned YAML in Git. It receives events from the Kubernetes API server by admission webhook calls, sanitizes them, and commits to your repository with rich metadata. By doing so it's providing an immediate, human‑readable audit trail while keeping Git as the source of truth.
+GitOps Reverser is a Kubernetes operator that turns live API activity into clean, versioned YAML in Git. It receives events from the Kubernetes API server, sanitizes them, and commits them to your repository with rich metadata. This results in a folder with YAML files that can be deployed to any cluster. The commit history is your perfect audit trail.
 
 ## Why
 
@@ -31,25 +31,9 @@ Reverse GitOps gives you both: the interactivity of the Kubernetes API with Git'
 - Commit: Annotate with user, operation, namespace, timestamp; commit to Git.
 - Push: It's now in your git repo
 
-## Configuration
-
-GitOps Reverser uses three Custom Resources:
-
-![](docs/images/config-basic.excalidraw.svg)
-
-1. **GitRepoConfig** - Repository URL, credentials, push settings
-2. **GitDestination** - Branch and folder where files are written  
-3. **WatchRule** - Which resources to watch (namespace-scoped)
-
-For cluster-wide resources, use **ClusterWatchRule** instead:
-
-![](docs/images/config-cluster.excalidraw.svg)
-
-See full examples in [`config/samples/`](config/samples/).
-
 ## Status
 
-🚨 Early stage software. CRDs and behavior may change; not recommended for production yet. Feedback and contributions are very welcome!
+🚨 This is early stage software. CRDs and behavior may change; not recommended for production yet. Feedback and contributions are very welcome!
 
 On short term I'm planning to implement a listener for the [Kubernetes audit webhook](https://kubernetes.io/docs/tasks/debug/debug-cluster/audit/#webhook-backend). That will replace the watcher / webhook combination. It turns out that it's not possible to combine the watch events with their validatingwebhook in all edge cases.
 
@@ -62,7 +46,7 @@ Prerequisites:
 
 **1. Install GitOps Reverser:**
 ```bash
-kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.16.2/cert-manager.yaml
+kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.19.1/cert-manager.yaml
 kubectl apply -f https://github.com/ConfigButler/gitops-reverser/releases/latest/download/install.yaml
 ```
 
@@ -85,9 +69,9 @@ See [`docs/GITHUB_SETUP_GUIDE.md`](docs/GITHUB_SETUP_GUIDE.md) for detailed setu
 
 **3. Configure what to reconcile:**
 
-![](docs/images/config-basic.excalidraw.svg)
+Reconciliation sources and targets are configured by three types of custom resources (shown in blue). Create these to start watch configmaps:
 
-Create three resources to start watching ConfigMaps:
+![](docs/images/config-basics.excalidraw.svg)
 
 ```bash
 # Edit to match your repository

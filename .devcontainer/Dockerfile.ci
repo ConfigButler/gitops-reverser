@@ -1,6 +1,6 @@
 # CI-focused base image with essential build tools
 # This is used in CI pipelines and as base for the full dev container
-FROM golang:1.25.2-bookworm
+FROM golang:1.25.3-bookworm
 
 # Avoid warnings by switching to noninteractive
 ENV DEBIAN_FRONTEND=noninteractive
@@ -72,7 +72,7 @@ RUN echo "=== Tool Versions ===" \
     && go version \
     && kubectl version --client \
     && kustomize version \
-    && (kubebuilder version || echo "Kubebuilder: not available (optional)") \
+    && kubebuilder version \
     && helm version \
     && golangci-lint version
 

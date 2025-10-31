@@ -12,7 +12,7 @@ Quick-start development environment with all tools pre-installed.
 
 ### Verify
 ```bash
-go version        # 1.25.2
+go version        # 1.25.3
 kind version      # v0.30.0
 kubectl version   # v1.32.3
 golangci-lint version  # v2.4.0

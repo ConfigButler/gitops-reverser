@@ -43,14 +43,11 @@ git@github.com:YOUR_USERNAME/my-k8s-audit.git
 Generate an SSH key pair for GitOps Reverser to authenticate with GitHub:
 
 ```bash
-# Create a directory for keys
-mkdir -p ~/.ssh/gitops-reverser
-
 # Generate SSH key (no passphrase for automated use)
-ssh-keygen -t ed25519 -C "gitops-reverser" -f ~/.ssh/gitops-reverser/id_ed25519 -N ""
+ssh-keygen -t ed25519 -C "gitops-reverser" -f /tmp/gitops-reverser-key -N ""
 
 # Display the public key (you'll need this for GitHub)
-cat ~/.ssh/gitops-reverser/id_ed25519.pub
+cat /tmp/gitops-reverser-key.pub
 ```
 
 **Copy the public key output** (starts with `ssh-ed25519`).
@@ -63,7 +60,7 @@ If you have `gh` CLI installed:
 
 ```bash
 # Add deploy key with write access
-gh repo deploy-key add ~/.ssh/gitops-reverser/id_ed25519.pub \
+gh repo deploy-key add /tmp/gitops-reverser-key.pub \
   --repo YOUR_USERNAME/my-k8s-audit \
   --title "gitops-reverser" \
   --allow-write
@@ -109,239 +106,32 @@ Create a Kubernetes secret containing the SSH private key:
 ssh-keyscan github.com > /tmp/known_hosts
 
 # Generate secret YAML (doesn't apply to cluster yet)
-kubectl create secret generic git-credentials \
+kubectl create secret generic git-creds \
   --namespace gitops-reverser-system \
-  --from-file=ssh-privatekey=$HOME/.ssh/gitops-reverser/id_ed25519 \
+  --from-file=ssh-privatekey=/tmp/gitops-reverser-key \
   --from-file=known_hosts=/tmp/known_hosts \
-  --dry-run=client -o yaml > git-credentials-secret.yaml
+  --dry-run=client -o yaml > git-creds-secret.yaml
 
 # Review the generated YAML
-cat git-credentials-secret.yaml
+cat git-creds-secret.yaml
 
 # Apply the secret to the cluster
-kubectl apply -f git-credentials-secret.yaml
+kubectl apply -f git-creds-secret.yaml
 
 # Verify the secret was created
-kubectl get secret git-credentials -n gitops-reverser-system
+kubectl get secret git-creds -n gitops-reverser-system
 ```
 
 **Expected output:**
 ```
 NAME              TYPE     DATA   AGE
-git-credentials   Opaque   2      5s
+git-creds         Opaque   2      5s
 ```
 
 **Note:** The `--dry-run=client -o yaml` flags generate YAML without applying to the cluster. This is useful for:
 - Reviewing before applying
 - Committing to Git for GitOps workflows
 - Storing in version control (without the actual secrets!)
-
-## Step 5: Create GitRepoConfig
-
-Create a configuration file to tell GitOps Reverser about your repository.
-
-**Save this as `gitrepoconfig.yaml`** (replace `YOUR_USERNAME` with your GitHub username):
-
-```yaml
-apiVersion: configbutler.ai/v1alpha1
-kind: GitRepoConfig
-metadata:
-  name: github-audit-repo
-  namespace: gitops-reverser-system
-spec:
-  # Replace YOUR_USERNAME with your GitHub username
-  repoUrl: "git@github.com:YOUR_USERNAME/my-k8s-audit.git"
-  branch: "main"
-  
-  # Reference to the secret created in Step 4
-  secretRef:
-    name: git-credentials
-  
-  # Push settings
-  push:
-    interval: "2m"      # Push changes every 2 minutes
-    maxCommits: 50      # Bundle up to 50 changes per push
-```
-
-Apply the configuration:
-
-```bash
-kubectl apply -f gitrepoconfig.yaml
-```
-
-## Step 6: Create WatchRule
-
-Create rules to define what resources to capture. Here are common examples:
-
-### Option A: Capture Multiple Resource Types
-
-**Save as `watchrule-common-resources.yaml`:**
-
-```yaml
-apiVersion: configbutler.ai/v1alpha1
-kind: WatchRule
-metadata:
-  name: common-resources-audit
-  namespace: gitops-reverser-system
-spec:
-  # Reference to GitRepoConfig from Step 5
-  gitRepoConfigRef: github-audit-repo
-  
-  # Watch multiple resource types
-  rules:
-    - resources: ["deployments", "services", "configmaps", "secrets"]
-    - resources: ["ingresses.*"]  # Wildcard for all ingress versions
-  
-  # Exclude resources with this label
-  excludeLabels:
-    matchExpressions:
-      - key: "gitops-reverser/ignore"
-        operator: Exists
-```
-
-Apply it:
-```bash
-kubectl apply -f watchrule-common-resources.yaml
-```
-
-### Option B: Capture Only ConfigMaps and Secrets
-
-**Save as `watchrule-configs.yaml`:**
-
-```yaml
-apiVersion: configbutler.ai/v1alpha1
-kind: WatchRule
-metadata:
-  name: config-audit
-  namespace: gitops-reverser-system
-spec:
-  gitRepoConfigRef: github-audit-repo
-  
-  # Only watch ConfigMaps and Secrets
-  rules:
-    - resources: ["configmaps", "secrets"]
-  
-  # Exclude resources with specific labels
-  excludeLabels:
-    matchLabels:
-      "gitops-reverser/ignore": "true"
-```
-
-Apply it:
-```bash
-kubectl apply -f watchrule-configs.yaml
-```
-
-### Option C: Capture All Resources (Wildcard)
-
-**Save as `watchrule-all.yaml`:**
-
-```yaml
-apiVersion: configbutler.ai/v1alpha1
-kind: WatchRule
-metadata:
-  name: audit-all
-  namespace: gitops-reverser-system
-spec:
-  gitRepoConfigRef: github-audit-repo
-  
-  # Watch all resource types (use with caution - generates many events!)
-  rules:
-    - resources: ["*"]
-  
-  # Exclude system resources
-  excludeLabels:
-    matchExpressions:
-      - key: "app.kubernetes.io/managed-by"
-        operator: In
-        values: ["kube-controller-manager", "kube-scheduler"]
-```
-
-Apply it:
-```bash
-kubectl apply -f watchrule-all.yaml
-```
-
-**Note:** WatchRule does NOT have `namespaceSelector` or `resourceSelector` fields. To filter by namespace or labels, you need to:
-- Use the webhook's namespace selector (configured during installation)
-- Use `excludeLabels` to exclude specific resources
-- The operator processes ALL resources matching the rules across all namespaces
-
-## Step 7: Test the Setup
-
-Create a test ConfigMap to verify the setup:
-
-```bash
-# Create a test ConfigMap
-kubectl create configmap test-config \
-  --namespace default \
-  --from-literal=key1=value1 \
-  --from-literal=key2=value2
-
-# Optionally, label it to exclude from capture (testing excludeLabels)
-# kubectl label configmap test-config gitops-reverser/ignore=true -n default
-
-# Wait 2-3 minutes for the push interval
-sleep 180
-
-# Check if changes were pushed to GitHub
-# Go to: https://github.com/YOUR_USERNAME/my-k8s-audit
-```
-
-## Step 8: Verify
-
-Check the GitRepoConfig status:
-
-```bash
-kubectl get gitrepoconfig github-audit-repo -n gitops-reverser-system -o yaml
-```
-
-Check the WatchRule status:
-
-```bash
-kubectl get watchrule -n gitops-reverser-system
-```
-
-Check GitOps Reverser logs:
-
-```bash
-kubectl logs -n gitops-reverser-system deployment/gitops-reverser -f
-```
-
-## Expected Repository Structure
-
-After setup, your GitHub repository will contain:
-
-```
-my-k8s-audit/
-├── namespaces/
-│   ├── default/
-│   │   ├── ConfigMap/
-│   │   │   └── test-config.yaml
-│   │   ├── Service/
-│   │   └── Deployment/
-│   └── production/
-│       └── ...
-└── cluster-scoped/
-    ├── ClusterRole/
-    ├── Namespace/
-    └── ...
-```
-
-## Commit Message Format
-
-Each commit will include detailed metadata:
-
-```
-[CREATE] ConfigMap/test-config in ns/default by user/admin@example.com
-
-- Resource: ConfigMap/test-config
-- Namespace: default
-- Operation: CREATE
-- User: admin@example.com
-- Timestamp: 2025-01-31T18:30:00Z
-- Resource Version: 12345
-```
 
 ## Troubleshooting
 
@@ -365,14 +155,14 @@ This error occurs when the repository is part of an organization that has **disa
 2. **Create secret with PAT instead of SSH:**
    ```bash
    # Generate secret YAML with token (save token securely first!)
-   kubectl create secret generic git-credentials \
+   kubectl create secret generic git-creds \
      --namespace gitops-reverser-system \
      --from-literal=username=git \
      --from-literal=password=YOUR_GITHUB_TOKEN_HERE \
-     --dry-run=client -o yaml > git-credentials-secret.yaml
+     --dry-run=client -o yaml > git-creds-secret.yaml
    
    # Apply to cluster
-   kubectl apply -f git-credentials-secret.yaml
+   kubectl apply -f git-creds-secret.yaml
    ```
 
 3. **Update GitRepoConfig to use HTTPS:**
@@ -387,7 +177,7 @@ This error occurs when the repository is part of an organization that has **disa
      repoUrl: "https://github.com/ConfigButler/my-first-k8s-trail.git"
      branch: "main"
      secretRef:
-       name: git-credentials
+       name: git-creds
      push:
        interval: "2m"
        maxCommits: 50
@@ -415,11 +205,11 @@ This provides better audit trails and doesn't tie automation to personal account
 
 **Check SSH key permissions:**
 ```bash
-ls -la ~/.ssh/gitops-reverser/
+ls -la /tmp/gitops-reverser-key
 # Should show: -rw------- (600) for private key
 
 # Fix if needed:
-chmod 600 ~/.ssh/gitops-reverser/id_ed25519
+chmod 600 /tmp/gitops-reverser-key
 ```
 
 **Verify GitHub deploy key:**
@@ -451,7 +241,7 @@ kubectl describe gitrepoconfig github-audit-repo -n gitops-reverser-system
 # ❌ Wrong: https://github.com/username/repo.git
 
 # Test SSH connection
-ssh -T git@github.com -i ~/.ssh/gitops-reverser/id_ed25519
+ssh -T git@github.com -i /tmp/gitops-reverser-key
 # Should output: "Hi username! You've successfully authenticated..."
 ```
 
@@ -459,83 +249,24 @@ ssh -T git@github.com -i ~/.ssh/gitops-reverser/id_ed25519
 
 **Verify known_hosts:**
 ```bash
-kubectl get secret git-credentials -n gitops-reverser-system -o yaml | \
+kubectl get secret git-creds -n gitops-reverser-system -o yaml | \
   grep known_hosts -A 5
 ```
 
 **Recreate secret if needed:**
 ```bash
-kubectl delete secret git-credentials -n gitops-reverser-system
+kubectl delete secret git-creds -n gitops-reverser-system
 ssh-keyscan github.com > /tmp/known_hosts
 
 # Generate new secret YAML
-kubectl create secret generic git-credentials \
+kubectl create secret generic git-creds \
   --namespace gitops-reverser-system \
-  --from-file=ssh-privatekey=$HOME/.ssh/gitops-reverser/id_ed25519 \
+  --from-file=ssh-privatekey=/tmp/gitops-reverser-key \
   --from-file=known_hosts=/tmp/known_hosts \
-  --dry-run=client -o yaml > git-credentials-secret.yaml
+  --dry-run=client -o yaml > git-creds-secret.yaml
 
 # Apply to cluster
-kubectl apply -f git-credentials-secret.yaml
-```
-
-## Advanced Configuration
-
-### Multiple Repositories
-
-You can configure multiple GitRepoConfig resources for different purposes:
-
-```yaml
-# Audit repository
----
-apiVersion: configbutler.ai/v1alpha1
-kind: GitRepoConfig
-metadata:
-  name: audit-repo
-  namespace: gitops-reverser-system
-spec:
-  repoUrl: "git@github.com:yourorg/k8s-audit.git"
-  branch: "main"
-  secretRef:
-    name: git-credentials
-
-# Config backup repository
----
-apiVersion: configbutler.ai/v1alpha1
-kind: GitRepoConfig
-metadata:
-  name: config-backup-repo
-  namespace: gitops-reverser-system
-spec:
-  repoUrl: "git@github.com:yourorg/k8s-configs.git"
-  branch: "main"
-  secretRef:
-    name: git-credentials
-```
-
-### Different SSH Keys per Repository
-
-```bash
-# Generate separate key for each repository
-ssh-keygen -t ed25519 -C "audit-repo" -f ~/.ssh/gitops-reverser/audit-key -N ""
-ssh-keygen -t ed25519 -C "config-repo" -f ~/.ssh/gitops-reverser/config-key -N ""
-
-# Generate secret YAML files
-kubectl create secret generic audit-repo-credentials \
-  --namespace gitops-reverser-system \
-  --from-file=ssh-privatekey=$HOME/.ssh/gitops-reverser/audit-key \
-  --from-file=known_hosts=/tmp/known_hosts \
-  --dry-run=client -o yaml > audit-repo-secret.yaml
-
-kubectl create secret generic config-repo-credentials \
-  --namespace gitops-reverser-system \
-  --from-file=ssh-privatekey=$HOME/.ssh/gitops-reverser/config-key \
-  --from-file=known_hosts=/tmp/known_hosts \
-  --dry-run=client -o yaml > config-repo-secret.yaml
-
-# Apply to cluster
-kubectl apply -f audit-repo-secret.yaml
-kubectl apply -f config-repo-secret.yaml
+kubectl apply -f git-creds-secret.yaml
 ```
 
 ## Security Best Practices
@@ -552,7 +283,7 @@ kubectl apply -f config-repo-secret.yaml
 3. **Rotate Keys Regularly**
    ```bash
    # Generate new key
-   ssh-keygen -t ed25519 -C "gitops-reverser-$(date +%Y%m)" -f ~/.ssh/gitops-reverser/id_ed25519_new -N ""
+   ssh-keygen -t ed25519 -C "gitops-reverser-$(date +%Y%m)" -f /tmp/gitops-reverser-key-new -N ""
    
    # Add to GitHub as new deploy key
    # Update Kubernetes secret
@@ -590,7 +321,7 @@ kubectl get watchrule -n gitops-reverser-system
 kubectl logs -n gitops-reverser-system deployment/gitops-reverser -f
 
 # Test SSH connection
-ssh -T git@github.com -i ~/.ssh/gitops-reverser/id_ed25519
+ssh -T git@github.com -i /tmp/gitops-reverser-key
 
 # Force immediate push (restart pod)
 kubectl rollout restart deployment gitops-reverser -n gitops-reverser-system
