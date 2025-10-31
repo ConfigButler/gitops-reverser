@@ -441,13 +441,9 @@ jobs:
       - name: Configure Git safe directory
         run: git config --global --add safe.directory /__w/gitops-reverser/gitops-reverser
 
-      - name: Copy generated things from /config
+      - name: Generate install.yaml from Helm chart (also does helm-sync)
         run: |
-          make helm-sync
-
-      - name: Generate install.yaml from Helm chart
-        run: |
-          make build-installer IMG=ghcr.io/${{ env.IMAGE_NAME }}:${{ needs.release-please.outputs.version }}
+          make build-installer
 
       - name: Login to GitHub Container Registry
         run: |
@@ -455,7 +451,7 @@ jobs:
 
       - name: Package Helm chart
         run: |
-          helm package charts/gitops-reverser --destination .helm-charts --version ${{ needs.release-please.outputs.version }} --app-version ${{ needs.release-please.outputs.version }}
+          helm package charts/gitops-reverser --destination .helm-charts
 
       - name: Push Helm chart to GHCR
         run: |
