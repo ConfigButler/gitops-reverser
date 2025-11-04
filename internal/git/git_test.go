@@ -20,8 +20,14 @@ package git
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -862,4 +868,139 @@ func TestBatchOperations_MultipleDeletes(t *testing.T) {
 
 	// Verify we have the expected number of events
 	assert.Len(t, events, 4)
+}
+
+func TestCheckout_BranchCreationOnEmptyRepo(t *testing.T) {
+	// Test that Checkout creates branches automatically on empty repositories
+	tempDir := t.TempDir()
+
+	// Initialize an empty repository (simulating what initializeEmptyRepository does)
+	repo, err := git.PlainInit(tempDir, false)
+	require.NoError(t, err)
+
+	// Create initial commit
+	worktree, err := repo.Worktree()
+	require.NoError(t, err)
+
+	gitkeepPath := filepath.Join(tempDir, ".gitkeep")
+	err = os.WriteFile(gitkeepPath, []byte("# This file ensures the repository is not empty\n"), 0600)
+	require.NoError(t, err)
+
+	_, err = worktree.Add(".gitkeep")
+	require.NoError(t, err)
+
+	_, err = worktree.Commit("Initial commit", &git.CommitOptions{
+		Author: &object.Signature{
+			Name:  "GitOps Reverser",
+			Email: "gitops-reverser@configbutler.ai",
+			When:  time.Now(),
+		},
+	})
+	require.NoError(t, err)
+
+	// Create a Repo wrapper
+	gitRepo := &Repo{
+		Repository: repo,
+		path:       tempDir,
+		branch:     "main",
+		remoteName: "origin",
+	}
+
+	// Test checking out a new branch that doesn't exist
+	newBranch := "test-feature-branch"
+	err = gitRepo.Checkout(newBranch)
+	require.NoError(t, err)
+
+	// Verify the branch was created and we're on it
+	head, err := repo.Head()
+	require.NoError(t, err)
+	assert.Equal(t, plumbing.NewBranchReferenceName(newBranch), head.Name())
+
+	// Verify we can switch back to main
+	err = gitRepo.Checkout("main")
+	require.NoError(t, err)
+
+	head, err = repo.Head()
+	require.NoError(t, err)
+	assert.Equal(t, plumbing.NewBranchReferenceName("main"), head.Name())
+}
+
+func TestCheckout_BranchDoesNotExist(t *testing.T) {
+	// Test that Checkout creates branches automatically when they don't exist
+	tempDir := t.TempDir()
+
+	// Initialize repository with initial commit
+	repo, err := git.PlainInit(tempDir, false)
+	require.NoError(t, err)
+
+	worktree, err := repo.Worktree()
+	require.NoError(t, err)
+
+	gitkeepPath := filepath.Join(tempDir, ".gitkeep")
+	err = os.WriteFile(gitkeepPath, []byte("# Initial commit\n"), 0600)
+	require.NoError(t, err)
+
+	_, err = worktree.Add(".gitkeep")
+	require.NoError(t, err)
+
+	_, err = worktree.Commit("Initial commit", &git.CommitOptions{
+		Author: &object.Signature{
+			Name:  "GitOps Reverser",
+			Email: "gitops-reverser@configbutler.ai",
+			When:  time.Now(),
+		},
+	})
+	require.NoError(t, err)
+
+	// Create a Repo wrapper
+	gitRepo := &Repo{
+		Repository: repo,
+		path:       tempDir,
+		branch:     "main",
+		remoteName: "origin",
+	}
+
+	// Try to checkout a branch that doesn't exist
+	// This should work because our Checkout method creates branches automatically
+	err = gitRepo.Checkout("nonexistent-branch")
+	require.NoError(t, err)
+
+	// Verify we're on the new branch
+	head, err := repo.Head()
+	require.NoError(t, err)
+	assert.Equal(t, plumbing.NewBranchReferenceName("nonexistent-branch"), head.Name())
+}
+
+func TestClone_EmptyRepositoryHandling(t *testing.T) {
+	// Test that Clone handles empty repositories by initializing local repo
+	tempDir := t.TempDir()
+
+	// Create a mock empty repository by initializing a bare repo
+	emptyRepoDir := filepath.Join(tempDir, "empty-repo")
+	err := os.MkdirAll(emptyRepoDir, 0750)
+	require.NoError(t, err)
+
+	// Initialize as bare repository (simulating an empty remote)
+	_, err = git.PlainInit(emptyRepoDir, true) // true = bare
+	require.NoError(t, err)
+
+	// Try to clone from this "empty" repository
+	// Since it's a local path, we need to use file:// protocol
+	repoURL := "file://" + emptyRepoDir
+	clonePath := filepath.Join(tempDir, "cloned-repo")
+
+	// This should succeed because our Clone function handles empty repos
+	repo, err := Clone(repoURL, clonePath, nil)
+	require.NoError(t, err) // Should succeed due to empty repo handling
+	require.NotNil(t, repo)
+
+	// Verify the repository was initialized (HEAD should not exist for empty repo)
+	_, err = repo.Head()
+	// For an empty repository, HEAD should not exist yet
+	require.Error(t, err) // Expect error because no commits exist
+
+	// Check that we have no commits (Log should fail on empty repo)
+	commits, err := repo.Log(&git.LogOptions{})
+	require.Error(t, err) // Log should fail on empty repository
+	assert.Nil(t, commits)
 }

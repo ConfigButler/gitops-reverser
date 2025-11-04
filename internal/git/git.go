@@ -69,6 +69,7 @@ type Repo struct {
 }
 
 // Clone clones a Git repository to the specified directory or reuses existing one.
+// If the remote repository is empty (no commits), initializes a local repository instead.
 func Clone(url, path string, auth transport.AuthMethod) (*Repo, error) {
 	logger := log.FromContext(context.Background())
 	logger.Info("Cloning repository", "url", url, "path", path)
@@ -82,7 +83,8 @@ func Clone(url, path string, auth transport.AuthMethod) (*Repo, error) {
 	var err error
 
 	// Check if repository already exists and is valid
-	if existingRepo := tryOpenExistingRepo(path, logger); existingRepo != nil {
+	existingRepo := tryOpenExistingRepo(path, logger)
+	if existingRepo != nil {
 		logger.Info("Reusing existing repository", "path", path)
 		repo = existingRepo
 	} else {
@@ -91,17 +93,9 @@ func Clone(url, path string, auth transport.AuthMethod) (*Repo, error) {
 			logger.Info("Warning: failed to remove existing directory", "path", path, "error", err)
 		}
 
-		// Clone fresh repository with shallow clone for speed
-		cloneOptions := &git.CloneOptions{
-			URL:      url,
-			Auth:     auth,
-			Depth:    1, // Shallow clone for speed
-			Progress: os.Stdout,
-		}
-
-		repo, err = git.PlainClone(path, false, cloneOptions)
+		repo, err = cloneOrInitializeRepository(url, path, auth, logger)
 		if err != nil {
-			return nil, fmt.Errorf("failed to clone repository: %w", err)
+			return nil, err
 		}
 	}
 
@@ -115,6 +109,41 @@ func Clone(url, path string, auth transport.AuthMethod) (*Repo, error) {
 	}, nil
 }
 
+// cloneOrInitializeRepository attempts to clone the repository, falling back to initialization if empty.
+func cloneOrInitializeRepository(
+	url, path string,
+	auth transport.AuthMethod,
+	logger logr.Logger,
+) (*git.Repository, error) {
+	// Clone fresh repository with shallow clone for speed
+	cloneOptions := &git.CloneOptions{
+		URL:      url,
+		Auth:     auth,
+		Depth:    1, // Shallow clone for speed
+		Progress: os.Stdout,
+	}
+
+	repo, err := git.PlainClone(path, false, cloneOptions)
+	if err != nil {
+		// If clone fails, check if it's because the repository is empty
+		if isEmptyRepositoryError(err) {
+			logger.Info(
+				"Remote repository appears to be empty, initializing local repository",
+				"url",
+				url,
+			)
+			repo, err = initializeEmptyRepository(path, logger)
+			if err != nil {
+				return nil, fmt.Errorf("failed to initialize empty repository: %w", err)
+			}
+		} else {
+			return nil, fmt.Errorf("failed to clone repository: %w", err)
+		}
+	}
+
+	return repo, nil
+}
+
 // tryOpenExistingRepo attempts to open and validate an existing repository.
 func tryOpenExistingRepo(path string, logger logr.Logger) *git.Repository {
 	// Check if .git directory exists
@@ -126,7 +155,13 @@ func tryOpenExistingRepo(path string, logger logr.Logger) *git.Repository {
 	// Try to open the repository
 	repo, err := git.PlainOpen(path)
 	if err != nil {
-		logger.Info("Failed to open existing repository, will clone fresh", "path", path, "error", err)
+		logger.Info(
+			"Failed to open existing repository, will clone fresh",
+			"path",
+			path,
+			"error",
+			err,
+		)
 		return nil
 	}
 
@@ -138,6 +173,33 @@ func tryOpenExistingRepo(path string, logger logr.Logger) *git.Repository {
 	}
 
 	return repo
+}
+
+// isEmptyRepositoryError checks if the error indicates an empty repository.
+func isEmptyRepositoryError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := err.Error()
+	return strings.Contains(errStr, "empty repository") ||
+		strings.Contains(errStr, "repository is empty") ||
+		strings.Contains(errStr, "no commits") ||
+		strings.Contains(errStr, "does not have any commits yet")
+}
+
+// initializeEmptyRepository creates a new git repository without an initial commit.
+// The first commit will be created when the first event arrives.
+func initializeEmptyRepository(path string, logger logr.Logger) (*git.Repository, error) {
+	logger.Info("Initializing empty repository", "path", path)
+
+	// Initialize the repository
+	repo, err := git.PlainInit(path, false)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize repository: %w", err)
+	}
+
+	logger.Info("Successfully initialized empty repository")
+	return repo, nil
 }
 
 // Checkout checks out the specified branch.
@@ -199,7 +261,12 @@ func (r *Repo) TryPushCommits(ctx context.Context, branch string, events []Event
 	// Retry loop for handling multiple conflicts
 	const maxRetries = 3
 	for attempt := 0; attempt <= maxRetries; attempt++ {
-		result, newEvents, err := r.attemptPushWithConflictResolution(ctx, events, attempt, maxRetries)
+		result, newEvents, err := r.attemptPushWithConflictResolution(
+			ctx,
+			events,
+			attempt,
+			maxRetries,
+		)
 
 		// Update events for next retry if needed
 		events = newEvents
@@ -261,7 +328,13 @@ func (r *Repo) attemptPushWithConflictResolution(
 // logPushSuccess logs successful push with appropriate messaging.
 func (r *Repo) logPushSuccess(logger logr.Logger, commitsCreated, attempt int) {
 	if attempt > 0 {
-		logger.Info("Successfully pushed commits after retries", "count", commitsCreated, "attempt", attempt+1)
+		logger.Info(
+			"Successfully pushed commits after retries",
+			"count",
+			commitsCreated,
+			"attempt",
+			attempt+1,
+		)
 	} else {
 		logger.Info("Successfully pushed commits", "count", commitsCreated)
 	}
@@ -282,10 +355,20 @@ func (r *Repo) handlePushError(
 
 	// Non-fast-forward error
 	if attempt >= maxRetries {
-		return pushFailure, events, fmt.Errorf("push failed after %d retries: %w", maxRetries, ErrNonFastForward)
+		return pushFailure, events, fmt.Errorf(
+			"push failed after %d retries: %w",
+			maxRetries,
+			ErrNonFastForward,
+		)
 	}
 
-	logger.Info("Push rejected due to remote changes. Resyncing...", "attempt", attempt+1, "maxRetries", maxRetries)
+	logger.Info(
+		"Push rejected due to remote changes. Resyncing...",
+		"attempt",
+		attempt+1,
+		"maxRetries",
+		maxRetries,
+	)
 
 	// Reset to remote and re-evaluate events
 	newEvents, retryErr := r.resyncAndReEvaluate(ctx, events)
@@ -298,7 +381,13 @@ func (r *Repo) handlePushError(
 		return pushSuccess, newEvents, nil
 	}
 
-	logger.Info("Retrying push with non-conflicting commits", "count", len(newEvents), "attempt", attempt+1)
+	logger.Info(
+		"Retrying push with non-conflicting commits",
+		"count",
+		len(newEvents),
+		"attempt",
+		attempt+1,
+	)
 	return pushRetry, newEvents, nil
 }
 
@@ -505,7 +594,13 @@ func (r *Repo) hardResetToRemote(ctx context.Context) error {
 	if ref, err := r.Reference(remoteBranchRefName, true); err == nil {
 		targetHash = ref.Hash()
 		found = true
-		logger.Info("Found remote branch reference", "branch", r.branch, "hash", targetHash.String())
+		logger.Info(
+			"Found remote branch reference",
+			"branch",
+			r.branch,
+			"hash",
+			targetHash.String(),
+		)
 	}
 
 	if !found {
@@ -664,7 +759,10 @@ func isStaleByResourceVersion(eventObj, existingObj *unstructured.Unstructured) 
 }
 
 // isStaleByGeneration compares generations to determine if event is stale.
-func isStaleByGeneration(logger logr.Logger, eventObj, existingObj *unstructured.Unstructured) bool {
+func isStaleByGeneration(
+	logger logr.Logger,
+	eventObj, existingObj *unstructured.Unstructured,
+) bool {
 	eventGen := eventObj.GetGeneration()
 	existingGen := extractGeneration(existingObj)
 
@@ -723,7 +821,9 @@ func (r *Repo) Push(ctx context.Context) error {
 		return errors.New("repository is not initialized")
 	}
 
-	err := r.Repository.Push(&git.PushOptions{RemoteName: r.remoteName, Auth: r.auth, Progress: os.Stdout})
+	err := r.Repository.Push(
+		&git.PushOptions{RemoteName: r.remoteName, Auth: r.auth, Progress: os.Stdout},
+	)
 
 	if err != nil {
 		if isNonFastForwardError(err) {
