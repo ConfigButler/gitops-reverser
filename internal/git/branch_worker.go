@@ -276,7 +276,7 @@ func (w *BranchWorker) commitAndPush(
 		return
 	}
 
-	// Clone to worker-specific path (one per branch for isolation)
+	// Clone to worker-specific path (stable across pod restarts)
 	repoPath := filepath.Join("/tmp", "gitops-reverser-workers",
 		w.GitRepoConfigNamespace, w.GitRepoConfigRef, w.Branch)
 

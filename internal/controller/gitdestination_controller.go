@@ -21,7 +21,6 @@ package controller
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 	"time"
 
@@ -33,7 +32,6 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	configbutleraiv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
@@ -52,9 +50,6 @@ const (
 	GitDestinationReasonReady                 = "Ready"
 )
 
-// FinalizerName is the finalizer added to GitDestination resources.
-const FinalizerName = "gitdestination.configbutler.ai/finalizer"
-
 // GitDestinationReconciler reconciles a GitDestination object.
 type GitDestinationReconciler struct {
 	client.Client
@@ -66,10 +61,10 @@ type GitDestinationReconciler struct {
 
 // +kubebuilder:rbac:groups=configbutler.ai,resources=gitdestinations,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=configbutler.ai,resources=gitdestinations/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=configbutler.ai,resources=gitdestinations/finalizers,verbs=update
 // +kubebuilder:rbac:groups=configbutler.ai,resources=gitrepoconfigs,verbs=get;list;watch
 
 // Reconcile validates GitDestination references and updates status conditions.
+// Cleanup of workers and event streams is handled by ReconcileWorkers, not finalizers.
 func (r *GitDestinationReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx).WithName("GitDestinationReconciler")
 	log.Info("Starting reconciliation", "namespacedName", req.NamespacedName)
@@ -78,22 +73,6 @@ func (r *GitDestinationReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	var dest configbutleraiv1alpha1.GitDestination
 	if err := r.Get(ctx, req.NamespacedName, &dest); err != nil {
 		return r.handleFetchError(err, log, req.NamespacedName)
-	}
-
-	// Handle deletion with finalizer
-	if !dest.ObjectMeta.DeletionTimestamp.IsZero() {
-		return r.handleDeletion(ctx, &dest, log)
-	}
-
-	// Add finalizer if not present
-	if !controllerutil.ContainsFinalizer(&dest, FinalizerName) {
-		controllerutil.AddFinalizer(&dest, FinalizerName)
-		if err := r.Update(ctx, &dest); err != nil {
-			log.Error(err, "Failed to add finalizer")
-			return ctrl.Result{}, err
-		}
-		log.Info("Added finalizer")
-		return ctrl.Result{Requeue: true}, nil
 	}
 
 	log.Info("Validating GitDestination",
@@ -314,61 +293,6 @@ func (r *GitDestinationReconciler) registerEventStream(
 		"baseFolder", dest.Spec.BaseFolder)
 }
 
-// handleDeletion handles the deletion of a GitDestination with cleanup.
-func (r *GitDestinationReconciler) handleDeletion(
-	ctx context.Context,
-	dest *configbutleraiv1alpha1.GitDestination,
-	log logr.Logger,
-) (ctrl.Result, error) {
-	if !controllerutil.ContainsFinalizer(dest, FinalizerName) {
-		return ctrl.Result{}, nil
-	}
-
-	log.Info("Handling GitDestination deletion")
-
-	// Cleanup: unregister from worker manager
-	repoNS := dest.Spec.RepoRef.Namespace
-	if repoNS == "" {
-		repoNS = dest.Namespace
-	}
-
-	if r.WorkerManager != nil {
-		if err := r.WorkerManager.UnregisterDestination(
-			dest.Name, dest.Namespace,
-			dest.Spec.RepoRef.Name, repoNS,
-			dest.Spec.Branch,
-		); err != nil {
-			log.Error(err, "Failed to unregister from worker manager")
-			// Continue with cleanup anyway
-		}
-	}
-
-	// Cleanup: unregister from event router
-	if r.EventRouter != nil {
-		gitDest := types.NewResourceReference(dest.Name, dest.Namespace)
-		r.EventRouter.UnregisterGitDestinationEventStream(gitDest)
-		log.Info("Unregistered from event router")
-	}
-
-	// Cleanup: remove local repository directory
-	workDir := filepath.Join("/tmp", "gitops-reverser-status",
-		dest.Namespace, dest.Name)
-	if err := os.RemoveAll(workDir); err != nil {
-		log.Info("Failed to remove local repository directory", "error", err, "path", workDir)
-		// Non-fatal, continue
-	}
-
-	// Remove finalizer
-	controllerutil.RemoveFinalizer(dest, FinalizerName)
-	if err := r.Update(ctx, dest); err != nil {
-		log.Error(err, "Failed to remove finalizer")
-		return ctrl.Result{}, err
-	}
-
-	log.Info("Finalizer removed, deletion complete")
-	return ctrl.Result{}, nil
-}
-
 // updateRepositoryStatus checks repository and branch status, updating GitDestination status fields.
 func (r *GitDestinationReconciler) updateRepositoryStatus(
 	ctx context.Context,
@@ -391,9 +315,8 @@ func (r *GitDestinationReconciler) updateRepositoryStatus(
 		return err
 	}
 
-	// Build work directory for status checking
-	workDir := filepath.Join("/tmp", "gitops-reverser-status",
-		dest.Namespace, dest.Name)
+	// Build work directory for status checking (using UID for uniqueness)
+	workDir := filepath.Join("/tmp", "gitops-reverser-status", string(dest.UID))
 
 	// Get branch status
 	status, err := git.GetBranchStatus(grc.Spec.RepoURL, dest.Spec.Branch, auth, workDir)
@@ -420,8 +343,8 @@ func (r *GitDestinationReconciler) updateRepositoryStatus(
 }
 
 // Note: Worker registration is idempotent - calling RegisterDestination multiple times
-// for the same destination is safe. Workers are cleaned up on pod restart.
-// Since we have no active users, this simplified lifecycle approach is acceptable.
+// for the same destination is safe. Cleanup happens via ReconcileWorkers() which detects
+// and removes orphaned workers when GitDestinations are deleted.
 
 // setCondition sets or updates the Ready condition.
 func (r *GitDestinationReconciler) setCondition(dest *configbutleraiv1alpha1.GitDestination,

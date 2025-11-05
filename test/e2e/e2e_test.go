@@ -392,10 +392,34 @@ var _ = Describe("Manager", Ordered, func() {
 			cleanupGitRepoConfig(gitRepoConfigName)
 		})
 
-		It("should handle GitRepoConfig with nonexistent branch", func() {
+		It("should handle GitDestination with nonexistent branch pattern", func() {
 			gitRepoConfigName := "gitrepoconfig-branch-test"
+
+			// GitRepoConfig should be Ready=True (validates connectivity, not branch existence)
 			createGitRepoConfig(gitRepoConfigName, "nonexistent-branch", "git-creds")
-			verifyGitRepoConfigStatus(gitRepoConfigName, "False", "BranchNotFound", "nonexistent-branch")
+			verifyGitRepoConfigStatus(gitRepoConfigName, "True", "Ready", "Repository connectivity validated")
+
+			// GitDestination with branch not matching any pattern should fail
+			destName := "dest-invalid-branch"
+			createGitDestination(destName, namespace, gitRepoConfigName, "test/invalid", "different-branch")
+
+			By("verifying GitDestination fails branch validation")
+			verifyDestStatus := func(g Gomega) {
+				jsonPath := "jsonpath={.status.conditions[?(@.type=='Ready')].status}"
+				cmd := exec.Command("kubectl", "get", "gitdestination", destName, "-n", namespace, "-o", jsonPath)
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("False"), "GitDestination should be not ready for invalid branch")
+
+				reasonPath := "jsonpath={.status.conditions[?(@.type=='Ready')].reason}"
+				cmd = exec.Command("kubectl", "get", "gitdestination", destName, "-n", namespace, "-o", reasonPath)
+				reason, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(reason).To(Equal("BranchNotAllowed"), "Reason should be BranchNotAllowed")
+			}
+			Eventually(verifyDestStatus, 30*time.Second).Should(Succeed())
+
+			cleanupGitDestination(destName, namespace)
 			cleanupGitRepoConfig(gitRepoConfigName)
 		})
 

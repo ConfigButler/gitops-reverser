@@ -25,6 +25,8 @@ import (
 
 	"github.com/go-logr/logr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 )
 
 // WorkerManager manages BranchWorkers.
@@ -106,7 +108,6 @@ func (m *WorkerManager) UnregisterDestination(
 
 	worker, exists := m.workers[key]
 	if !exists {
-		// Worker already gone - this is fine (idempotent cleanup)
 		return nil
 	}
 
@@ -137,6 +138,57 @@ func (m *WorkerManager) GetWorkerForDestination(
 
 	worker, exists := m.workers[key]
 	return worker, exists
+}
+
+// ReconcileWorkers checks active GitDestinations and cleans up orphaned workers.
+// This ensures workers are removed when their GitDestinations are deleted outside
+// of normal finalizer cleanup (e.g., namespace deletion, force deletion).
+func (m *WorkerManager) ReconcileWorkers(ctx context.Context) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Get all GitDestinations
+	var destList configv1alpha1.GitDestinationList
+	if err := m.Client.List(ctx, &destList); err != nil {
+		return fmt.Errorf("failed to list GitDestinations: %w", err)
+	}
+
+	// Build set of needed workers from active GitDestinations
+	neededWorkers := make(map[BranchKey]bool)
+	for _, dest := range destList.Items {
+		// Skip deleted destinations
+		if !dest.DeletionTimestamp.IsZero() {
+			continue
+		}
+
+		// Determine namespace
+		repoNS := dest.Spec.RepoRef.Namespace
+		if repoNS == "" {
+			repoNS = dest.Namespace
+		}
+
+		key := BranchKey{
+			RepoNamespace: repoNS,
+			RepoName:      dest.Spec.RepoRef.Name,
+			Branch:        dest.Spec.Branch,
+		}
+		neededWorkers[key] = true
+	}
+
+	// Cleanup orphaned workers
+	for key, worker := range m.workers {
+		if !neededWorkers[key] {
+			m.Log.Info("Cleaning up orphaned worker", "key", key.String())
+			worker.Stop()
+			delete(m.workers, key)
+		}
+	}
+
+	m.Log.V(1).Info("Worker reconciliation complete",
+		"activeWorkers", len(m.workers),
+		"neededWorkers", len(neededWorkers))
+
+	return nil
 }
 
 // Start implements manager.Runnable interface.
