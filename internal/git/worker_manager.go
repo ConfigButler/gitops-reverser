@@ -141,7 +141,7 @@ func (m *WorkerManager) GetWorkerForDestination(
 }
 
 // ReconcileWorkers checks active GitDestinations and cleans up orphaned workers.
-// This ensures workers are removed when their GitDestinations are deleted
+// This ensures workers are removed when their GitDestinations are deleted.
 func (m *WorkerManager) ReconcileWorkers(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

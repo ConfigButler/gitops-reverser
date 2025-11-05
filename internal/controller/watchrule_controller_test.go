@@ -164,23 +164,25 @@ var _ = Describe("WatchRule Controller", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha1.GitRepoConfigSpec{
-					RepoURL:         "git@github.com:test/repo.git",
+					RepoURL:         "https://github.com/octocat/Hello-World",
 					AllowedBranches: []string{"main"},
 				},
 			}
 			Expect(k8sClient.Create(ctx, gitRepoConfig)).Should(Succeed())
 
-			// Set to Ready
-			gitRepoConfig.Status.Conditions = []metav1.Condition{
-				{
-					Type:               ConditionTypeReady,
-					Status:             metav1.ConditionTrue,
-					LastTransitionTime: metav1.Now(),
-					Reason:             "TestReady",
-					Message:            "Manually set to ready for testing",
-				},
-			}
-			Expect(k8sClient.Status().Update(ctx, gitRepoConfig)).Should(Succeed())
+			// Wait for GitRepoConfig to be ready (it should become ready with the real GitHub repo)
+			Eventually(func() bool {
+				err := k8sClient.Get(ctx, types.NamespacedName{Name: "local-config", Namespace: "default"}, gitRepoConfig)
+				if err != nil {
+					return false
+				}
+				for _, condition := range gitRepoConfig.Status.Conditions {
+					if condition.Type == ConditionTypeReady && condition.Status == metav1.ConditionTrue {
+						return true
+					}
+				}
+				return false
+			}, "60s", "2s").Should(BeTrue())
 
 			By("Creating GitDestination in same namespace referencing the GitRepoConfig")
 			dest := &configbutleraiv1alpha1.GitDestination{
@@ -232,6 +234,7 @@ var _ = Describe("WatchRule Controller", func() {
 			}, updatedRule)
 			Expect(err).NotTo(HaveOccurred())
 
+			By("Verifying WatchRule is Ready")
 			Expect(updatedRule.Status.Conditions).To(HaveLen(1))
 			condition := updatedRule.Status.Conditions[0]
 			Expect(condition.Type).To(Equal(ConditionTypeReady))
