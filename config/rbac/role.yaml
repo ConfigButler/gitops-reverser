@@ -50,7 +50,6 @@ rules:
   - configbutler.ai
   resources:
   - clusterwatchrules/finalizers
-  - gitdestinations/finalizers
   - gitrepoconfigs/finalizers
   - watchrules/finalizers
   verbs:
