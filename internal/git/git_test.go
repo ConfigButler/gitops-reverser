@@ -1004,3 +1004,305 @@ func TestClone_EmptyRepositoryHandling(t *testing.T) {
 	require.Error(t, err) // Log should fail on empty repository
 	assert.Nil(t, commits)
 }
+
+func TestGenerateLocalCommits_FirstCommitOnEmptyRepo(t *testing.T) {
+	// Test that the system can create the first Kubernetes resource commit
+	// after repository initialization (lazy initialization scenario)
+	tempDir := t.TempDir()
+
+	// Initialize repository with minimal .gitkeep commit (standard for empty repos)
+	repo, err := git.PlainInit(tempDir, false)
+	require.NoError(t, err)
+
+	worktree, err := repo.Worktree()
+	require.NoError(t, err)
+
+	// Create minimal initial commit (standard practice for new repos)
+	gitkeepPath := filepath.Join(tempDir, ".gitkeep")
+	err = os.WriteFile(gitkeepPath, []byte(""), 0600)
+	require.NoError(t, err)
+
+	_, err = worktree.Add(".gitkeep")
+	require.NoError(t, err)
+
+	_, err = worktree.Commit("Initial commit", &git.CommitOptions{
+		Author: &object.Signature{
+			Name:  "GitOps Reverser",
+			Email: "gitops-reverser@configbutler.ai",
+			When:  time.Now(),
+		},
+	})
+	require.NoError(t, err)
+
+	// Create a Repo wrapper
+	gitRepo := &Repo{
+		Repository: repo,
+		path:       tempDir,
+		branch:     "main",
+		remoteName: "origin",
+	}
+
+	// Create first event
+	obj := &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "v1",
+			"kind":       "ConfigMap",
+			"metadata": map[string]interface{}{
+				"name":            "first-config",
+				"namespace":       "default",
+				"resourceVersion": "1",
+			},
+			"data": map[string]interface{}{
+				"key": "value",
+			},
+		},
+	}
+
+	event := Event{
+		Object: obj,
+		Identifier: types.ResourceIdentifier{
+			Group:     "",
+			Version:   "v1",
+			Resource:  "configmaps",
+			Namespace: "default",
+			Name:      "first-config",
+		},
+		Operation: "CREATE",
+		UserInfo: UserInfo{
+			Username: "admin",
+			UID:      "admin-uid",
+		},
+		BaseFolder: "",
+	}
+
+	ctx := context.Background()
+
+	// Generate local commits (should create the first commit)
+	commitsCreated, err := gitRepo.generateLocalCommits(ctx, []Event{event})
+	require.NoError(t, err, "Should successfully create first commit on empty repo")
+	assert.Equal(t, 1, commitsCreated, "Should create exactly 1 commit")
+
+	// Verify repository now has a commit
+	head, err := repo.Head()
+	require.NoError(t, err, "Repository should now have HEAD after first commit")
+	assert.NotNil(t, head)
+
+	// Verify file was created
+	filePath := filepath.Join(tempDir, "v1/configmaps/default/first-config.yaml")
+	assert.FileExists(t, filePath, "File should exist after commit")
+
+	// Verify file content
+	content, err := os.ReadFile(filePath)
+	require.NoError(t, err)
+	assert.Contains(t, string(content), "name: first-config")
+	assert.Contains(t, string(content), "namespace: default")
+	assert.Contains(t, string(content), "key: value")
+
+	// Verify commit message
+	commitObj, err := repo.CommitObject(head.Hash())
+	require.NoError(t, err)
+	assert.Equal(t, "[CREATE] v1/configmaps/first-config by user/admin", commitObj.Message)
+
+	// Verify we're on the main branch
+	assert.Equal(t, plumbing.NewBranchReferenceName("main"), head.Name())
+}
+
+func TestGenerateLocalCommits_MultipleEventsOnEmptyRepo(t *testing.T) {
+	// Test that multiple events can be committed successfully on a newly initialized repository
+	tempDir := t.TempDir()
+
+	// Initialize repository with initial commit
+	repo, err := git.PlainInit(tempDir, false)
+	require.NoError(t, err)
+
+	worktree, err := repo.Worktree()
+	require.NoError(t, err)
+
+	gitkeepPath := filepath.Join(tempDir, ".gitkeep")
+	err = os.WriteFile(gitkeepPath, []byte(""), 0600)
+	require.NoError(t, err)
+
+	_, err = worktree.Add(".gitkeep")
+	require.NoError(t, err)
+
+	_, err = worktree.Commit("Initial commit", &git.CommitOptions{
+		Author: &object.Signature{
+			Name:  "GitOps Reverser",
+			Email: "gitops-reverser@configbutler.ai",
+			When:  time.Now(),
+		},
+	})
+	require.NoError(t, err)
+
+	gitRepo := &Repo{
+		Repository: repo,
+		path:       tempDir,
+		branch:     "main",
+		remoteName: "origin",
+	}
+
+	// Create multiple events
+	events := []Event{
+		{
+			Object: createTestPodWithResourceVersion("pod-1", "default", "1"),
+			Identifier: types.ResourceIdentifier{
+				Group:     "",
+				Version:   "v1",
+				Resource:  "pods",
+				Namespace: "default",
+				Name:      "pod-1",
+			},
+			Operation: "CREATE",
+			UserInfo:  UserInfo{Username: "user1", UID: "uid1"},
+		},
+		{
+			Object: createTestPodWithResourceVersion("pod-2", "default", "2"),
+			Identifier: types.ResourceIdentifier{
+				Group:     "",
+				Version:   "v1",
+				Resource:  "pods",
+				Namespace: "default",
+				Name:      "pod-2",
+			},
+			Operation: "CREATE",
+			UserInfo:  UserInfo{Username: "user2", UID: "uid2"},
+		},
+		{
+			Object: createTestPodWithResourceVersion("service-1", "kube-system", "3"),
+			Identifier: types.ResourceIdentifier{
+				Group:     "",
+				Version:   "v1",
+				Resource:  "services",
+				Namespace: "kube-system",
+				Name:      "service-1",
+			},
+			Operation: "CREATE",
+			UserInfo:  UserInfo{Username: "user3", UID: "uid3"},
+		},
+	}
+
+	ctx := context.Background()
+
+	// Generate commits
+	commitsCreated, err := gitRepo.generateLocalCommits(ctx, events)
+	require.NoError(t, err)
+	assert.Equal(t, 3, commitsCreated, "Should create 3 commits")
+
+	// Verify repository has commits
+	_, err = repo.Head()
+	require.NoError(t, err)
+
+	// Verify all files exist
+	assert.FileExists(t, filepath.Join(tempDir, "v1/pods/default/pod-1.yaml"))
+	assert.FileExists(t, filepath.Join(tempDir, "v1/pods/default/pod-2.yaml"))
+	assert.FileExists(t, filepath.Join(tempDir, "v1/services/kube-system/service-1.yaml"))
+
+	// Verify commit history (3 resource commits + 1 initial commit)
+	commits, err := getCommitHistory(repo)
+	require.NoError(t, err)
+	assert.Len(t, commits, 4, "Should have 3 resource commits + 1 initial commit")
+
+	// Verify commit messages
+	commitMessages := make([]string, len(commits))
+	for i, commit := range commits {
+		commitMessages[i] = commit.Message
+	}
+	assert.Contains(t, commitMessages, "[CREATE] v1/pods/pod-1 by user/user1")
+	assert.Contains(t, commitMessages, "[CREATE] v1/pods/pod-2 by user/user2")
+	assert.Contains(t, commitMessages, "[CREATE] v1/services/service-1 by user/user3")
+}
+
+func TestTryPushCommits_FirstCommitOnEmptyRepoWithBranchCreation(t *testing.T) {
+	// Test the complete flow: initialized repo + first event + branch creation + commit + push
+	tempDir := t.TempDir()
+
+	// Create "remote" repository with initial commit
+	remoteRepoPath := filepath.Join(tempDir, "remote")
+	remoteRepo, err := git.PlainInit(remoteRepoPath, false) // non-bare for easier testing
+	require.NoError(t, err)
+
+	// Create initial commit in remote
+	err = createInitialCommitHelper(remoteRepo, remoteRepoPath)
+	require.NoError(t, err)
+
+	// Clone to local
+	localRepoPath := filepath.Join(tempDir, "local")
+	localRepo, err := git.PlainClone(localRepoPath, false, &git.CloneOptions{
+		URL: remoteRepoPath,
+	})
+	require.NoError(t, err)
+
+	gitRepo := &Repo{
+		Repository: localRepo,
+		path:       localRepoPath,
+		auth:       nil, // No auth for local test
+		branch:     "feature/first",
+		remoteName: "origin",
+	}
+
+	// Create first event
+	event := Event{
+		Object: createTestPodWithResourceVersion("initial-pod", "default", "1"),
+		Identifier: types.ResourceIdentifier{
+			Group:     "",
+			Version:   "v1",
+			Resource:  "pods",
+			Namespace: "default",
+			Name:      "initial-pod",
+		},
+		Operation: "CREATE",
+		UserInfo:  UserInfo{Username: "first-user", UID: "uid-1"},
+	}
+
+	ctx := context.Background()
+
+	// This should:
+	// 1. Create the branch "feature/first" (doesn't exist yet)
+	// 2. Create the first commit
+	// 3. Push to remote successfully
+	err = gitRepo.TryPushCommits(ctx, "feature/first", []Event{event})
+	require.NoError(t, err, "Should successfully create & push first commit on empty repo")
+
+	// Verify local state
+	head, err := localRepo.Head()
+	require.NoError(t, err, "Should have HEAD after first commit")
+	assert.Equal(t, plumbing.NewBranchReferenceName("feature/first"), head.Name())
+
+	// Verify file exists
+	filePath := filepath.Join(localRepoPath, "v1/pods/default/initial-pod.yaml")
+	assert.FileExists(t, filePath)
+
+	// Verify remote has the branch and commit
+	remoteBranchRef := plumbing.NewRemoteReferenceName("origin", "feature/first")
+	ref, err := localRepo.Reference(remoteBranchRef, true)
+	require.NoError(t, err, "Remote should have the pushed branch")
+	assert.Equal(t, head.Hash(), ref.Hash(), "Remote and local should have same commit")
+}
+
+// createInitialCommitHelper creates an initial commit in a repository for testing.
+func createInitialCommitHelper(repo *git.Repository, repoPath string) error {
+	worktree, err := repo.Worktree()
+	if err != nil {
+		return err
+	}
+
+	gitkeepPath := filepath.Join(repoPath, ".gitkeep")
+	err = os.WriteFile(gitkeepPath, []byte(""), 0600)
+	if err != nil {
+		return err
+	}
+
+	_, err = worktree.Add(".gitkeep")
+	if err != nil {
+		return err
+	}
+
+	_, err = worktree.Commit("Initial commit", &git.CommitOptions{
+		Author: &object.Signature{
+			Name:  "GitOps Reverser",
+			Email: "gitops-reverser@configbutler.ai",
+			When:  time.Now(),
+		},
+	})
+	return err
+}

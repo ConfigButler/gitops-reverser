@@ -47,6 +47,7 @@ const (
 	GitDestinationReasonGitRepoConfigNotFound = "GitRepoConfigNotFound"
 	GitDestinationReasonBranchNotAllowed      = "BranchNotAllowed"
 	GitDestinationReasonRepositoryUnavailable = "RepositoryUnavailable"
+	GitDestinationReasonConflict              = "Conflict"
 	GitDestinationReasonReady                 = "Ready"
 )
 
@@ -102,12 +103,17 @@ func (r *GitDestinationReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return *validationResult, nil
 	}
 
-	// Get GitRepoConfig for repository status checking
+	// Get GitRepoConfig for conflict checking and repository status
 	var grc configbutleraiv1alpha1.GitRepoConfig
 	grcKey := k8stypes.NamespacedName{Name: dest.Spec.RepoRef.Name, Namespace: repoNS}
 	if err := r.Get(ctx, grcKey, &grc); err != nil {
 		log.Error(err, "Failed to get GitRepoConfig for status checking")
 		return ctrl.Result{RequeueAfter: RequeueShortInterval}, nil
+	}
+
+	// Check for conflicts with other GitDestinations (defense-in-depth)
+	if conflictResult := r.checkForConflicts(ctx, &dest, repoNS, log); conflictResult != nil {
+		return *conflictResult, nil
 	}
 
 	// Update repository status (branch existence, SHA tracking)
@@ -214,6 +220,72 @@ func (r *GitDestinationReconciler) validateBranch(
 		return &result
 	}
 
+	return nil
+}
+
+// checkForConflicts checks if this GitDestination conflicts with other GitDestinations.
+// This provides defense-in-depth alongside webhook validation.
+// Returns a result pointer if conflict detected, nil if no conflict.
+func (r *GitDestinationReconciler) checkForConflicts(
+	ctx context.Context,
+	dest *configbutleraiv1alpha1.GitDestination,
+	repoNS string,
+	log logr.Logger,
+) *ctrl.Result {
+	// List all GitDestinations in the cluster
+	var allDestinations configbutleraiv1alpha1.GitDestinationList
+	if err := r.List(ctx, &allDestinations); err != nil {
+		log.Error(err, "Failed to list GitDestinations for conflict checking")
+		// Don't fail reconciliation due to listing error, just continue
+		return nil
+	}
+
+	// Check each destination for conflicts
+	for i := range allDestinations.Items {
+		existing := &allDestinations.Items[i]
+
+		// Skip self (same namespace and name)
+		if existing.Namespace == dest.Namespace && existing.Name == dest.Name {
+			continue
+		}
+
+		// Skip if not referencing the same GitRepoConfig
+		existingRepoNS := existing.Spec.RepoRef.Namespace
+		if existingRepoNS == "" {
+			existingRepoNS = existing.Namespace
+		}
+		if existingRepoNS != repoNS || existing.Spec.RepoRef.Name != dest.Spec.RepoRef.Name {
+			continue
+		}
+
+		// Check if branch and baseFolder match (conflict condition)
+		if existing.Spec.Branch == dest.Spec.Branch && existing.Spec.BaseFolder == dest.Spec.BaseFolder {
+			// Conflict detected! Elect winner by creationTimestamp
+			if dest.CreationTimestamp.After(existing.CreationTimestamp.Time) {
+				// Current destination is the loser
+				msg := fmt.Sprintf(
+					"Conflict detected. Another GitDestination '%s/%s' (created at %s) "+
+						"is already using GitRepoConfig '%s/%s', branch '%s', baseFolder '%s'. "+
+						"This GitDestination was created later and will not be processed.",
+					existing.Namespace, existing.Name,
+					existing.CreationTimestamp.Format(time.RFC3339),
+					repoNS, dest.Spec.RepoRef.Name,
+					dest.Spec.Branch, dest.Spec.BaseFolder,
+				)
+				log.Info("Conflict detected, this GitDestination is the loser",
+					"winner", fmt.Sprintf("%s/%s", existing.Namespace, existing.Name),
+					"winnerCreated", existing.CreationTimestamp.Format(time.RFC3339),
+					"loserCreated", dest.CreationTimestamp.Format(time.RFC3339))
+
+				r.setCondition(dest, metav1.ConditionFalse, GitDestinationReasonConflict, msg)
+				result, _ := r.updateStatusAndRequeue(ctx, dest, RequeueShortInterval)
+				return &result
+			}
+			// Current destination is the winner or equal timestamp - continue
+		}
+	}
+
+	// No conflicts detected
 	return nil
 }
 
