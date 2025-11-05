@@ -15,7 +15,7 @@ GitOps Reverser is a Kubernetes operator that turns live API activity into clean
 
 Today teams have to choose between workflows:
 - Pure GitOps: safe and auditable, but unfriendly to non‑git users.
-- API‑first: fast and interactive, but databases often don't offer the auditability that git provides.
+- API‑first: fast and interactive, but databases don't come (by default) with a way to deploy or test high-risk changesets.
 
 Reverse GitOps gives you both: the interactivity of the Kubernetes API with Git's safety and traceability. Users, CLIs, and automations talk to a lightweight control plane; the operator immediately reflects desired state to Git.
 
@@ -29,24 +29,23 @@ Reverse GitOps gives you both: the interactivity of the Kubernetes API with Git'
 - Sanitize: Remove status and server‑managed fields; format as clean YAML.
 - Queue: Buffer events to handle spikes reliably.
 - Commit: Annotate with user, operation, namespace, timestamp; commit to Git.
-- Push: It's now in your git repo
+- Push: It's now in your git repo.
 
 ## Status
 
 🚨 This is early stage software. CRDs and behavior may change; not recommended for production yet. Feedback and contributions are very welcome!
 
-On short term I'm planning to implement a listener for the [Kubernetes audit webhook](https://kubernetes.io/docs/tasks/debug/debug-cluster/audit/#webhook-backend). That will replace the watcher / webhook combination. It turns out that it's not possible to combine the watch events with their validatingwebhook in all edge cases.
+In the short term, I'm planning to implement a listener for the [Kubernetes audit webhook](https://kubernetes.io/docs/tasks/debug/debug-cluster/audit/#webhook-backend). That will replace the watcher / webhook combination. It turns out that it's not possible to combine the watch events with their validatingwebhook in all edge cases.
 
 ## Quick start
 
 Prerequisites:
 - A Kubernetes cluster with kubectl configured
-- A Git repository with write access
-- cert‑manager for webhook TLS
+- cert-manager to create the webhook certificates (run `kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.19.1/cert-manager.yaml`)
+- A test git repository with write access
 
 **1. Install GitOps Reverser:**
 ```bash
-kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.19.1/cert-manager.yaml
 kubectl apply -f https://github.com/ConfigButler/gitops-reverser/releases/latest/download/install.yaml
 ```
 
@@ -69,7 +68,7 @@ See [`docs/GITHUB_SETUP_GUIDE.md`](docs/GITHUB_SETUP_GUIDE.md) for detailed setu
 
 **3. Configure what to reconcile:**
 
-Reconciliation sources and targets are configured by three types of custom resources (shown in blue). Create these to start watch configmaps:
+Reconciliation sources and targets are configured by three types of custom resources (shown in blue). Create these to start reconciling ConfigMaps:
 
 ![](docs/images/config-basics.excalidraw.svg)
 
@@ -122,7 +121,7 @@ kubectl create configmap test-config --from-literal=key=value -n default
 # Check your Git repository - you should see a new commit with the ConfigMap YAML
 ```
 
-For cluster-wide resources (nodes, CRDs, etc.) or watching multiple namespaces, use [`ClusterWatchRule`](config/samples/). More examples in [`config/samples/`](config/samples/).
+For cluster-wide resources (nodes, CRDs, etc.) or watching multiple namespaces, use [`ClusterWatchRule`](config/samples/configbutler.ai_v1alpha1_clusterwatchrule.yaml). More examples in [`config/samples/`](config/samples/).
 
 ## Usage guidance
 
@@ -134,13 +133,7 @@ Avoid infinite loops: Do not point GitOps (Argo CD/Flux) and GitOps Reverser at 
 
 ## Monitoring
 
-Exposes basic OpenTelemetry metrics. See config/prometheus/ for example manifests.
-
-## Learn more
-
-- Design overviews and deeper docs are under docs/.
-- Sample CRs: config/samples/
-- Development: CONTRIBUTING.md and TESTING.md
+Exposes basic OpenTelemetry metrics. See `config/prometheus/` for example manifests.
 
 ## Other options to consider
 

@@ -58,7 +58,8 @@ var _ = Describe("Manager", Ordered, func() {
 	BeforeAll(func() {
 		By("preventive namespace cleanup")
 		var err error
-		cmd := exec.Command("kubectl", "delete", "ns", namespace)
+		// Wait for the namespace to be fully deleted to prevent race conditions with lingering pods
+		cmd := exec.Command("kubectl", "delete", "ns", namespace, "--wait=true", "--ignore-not-found=true")
 		_, _ = utils.Run(cmd)
 
 		By("preventive CRD cleanup")
