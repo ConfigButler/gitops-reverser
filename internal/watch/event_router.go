@@ -201,6 +201,16 @@ func (r *EventRouter) RegisterGitDestinationEventStream(
 		"stream", stream.String())
 }
 
+// UnregisterGitDestinationEventStream removes a GitDestinationEventStream from the router.
+// This is called during GitDestination deletion cleanup.
+func (r *EventRouter) UnregisterGitDestinationEventStream(gitDest types.ResourceReference) {
+	key := gitDest.Key()
+	if _, exists := r.gitDestStreams[key]; exists {
+		delete(r.gitDestStreams, key)
+		r.Log.Info("Unregistered GitDestinationEventStream", "gitDest", gitDest.String())
+	}
+}
+
 // RouteToGitDestinationEventStream routes an event to a specific GitDestinationEventStream.
 // This replaces direct routing to BranchWorkers, enabling event buffering and deduplication.
 func (r *EventRouter) RouteToGitDestinationEventStream(

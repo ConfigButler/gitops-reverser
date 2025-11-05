@@ -377,7 +377,7 @@ var _ = Describe("Manager", Ordered, func() {
 			By("showing controller logs after GitRepoConfig creation")
 			showControllerLogs("after creating GitRepoConfig")
 
-			verifyGitRepoConfigStatus(gitRepoConfigName, "True", "BranchFound", "All 1 branches validated")
+			verifyGitRepoConfigStatus(gitRepoConfigName, "True", "Ready", "Repository connectivity validated")
 
 			By("showing final controller logs")
 			showControllerLogs("after status verification")
@@ -419,7 +419,7 @@ var _ = Describe("Manager", Ordered, func() {
 			By("🔍 Controller logs after SSH GitRepoConfig creation")
 			showControllerLogs("after SSH GitRepoConfig creation")
 
-			verifyGitRepoConfigStatus(gitRepoConfigName, "True", "BranchFound", "All 1 branches validated")
+			verifyGitRepoConfigStatus(gitRepoConfigName, "True", "Ready", "Repository connectivity validated")
 
 			By("✅ Final SSH test logs")
 			showControllerLogs("SSH test completion")
@@ -430,7 +430,7 @@ var _ = Describe("Manager", Ordered, func() {
 		It("should handle a normal and healthy GitRepoConfig", func() {
 			gitRepoConfigName := "gitrepoconfig-normal"
 			createGitRepoConfig(gitRepoConfigName, "main", "git-creds")
-			verifyGitRepoConfigStatus(gitRepoConfigName, "True", "BranchFound", "All 1 branches validated")
+			verifyGitRepoConfigStatus(gitRepoConfigName, "True", "Ready", "Repository connectivity validated")
 		})
 
 		It("should reconcile a WatchRule CR", func() {

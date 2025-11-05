@@ -211,12 +211,12 @@ var _ = Describe("GitRepoConfig Controller", func() {
 			reconciler.setCondition(gitRepoConfig, metav1.ConditionUnknown, ReasonChecking, "Checking...")
 
 			// Update condition
-			reconciler.setCondition(gitRepoConfig, metav1.ConditionTrue, ReasonBranchFound, "Success!")
+			reconciler.setCondition(gitRepoConfig, metav1.ConditionTrue, "Ready", "Success!")
 
 			Expect(gitRepoConfig.Status.Conditions).To(HaveLen(1))
 			condition := gitRepoConfig.Status.Conditions[0]
 			Expect(condition.Status).To(Equal(metav1.ConditionTrue))
-			Expect(condition.Reason).To(Equal(ReasonBranchFound))
+			Expect(condition.Reason).To(Equal("Ready"))
 			Expect(condition.Message).To(Equal("Success!"))
 		})
 
@@ -228,7 +228,6 @@ var _ = Describe("GitRepoConfig Controller", func() {
 				{ReasonSecretNotFound, "Secret not found"},
 				{ReasonSecretMalformed, "Secret malformed"},
 				{ReasonConnectionFailed, "Connection failed"},
-				{ReasonBranchNotFound, "Branch not found"},
 			}
 
 			for _, tc := range testCases {

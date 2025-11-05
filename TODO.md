@@ -41,3 +41,5 @@ New questions:
 * Create a single commit for the first reconcile: e.g. when the repo has been disconnected from realiy for a while.
 * Improve seeding as written here: [](docs/seed-removal-and-reconciler-triggers-plan.md), potenially also send the hash in the event so that we don't need to do it on multiple places
 * The clenup of gitdestination in memory is not really working as expected (I still logs in the end2end test end).
+* https://www.bestpractices.dev/en
+  * Analyse better what porch was doing, and mention it as alternative: 

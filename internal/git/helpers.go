@@ -112,6 +112,16 @@ func parseIdentifierFromPath(p string) (itypes.ResourceIdentifier, bool) {
 	}, true
 }
 
+// GetAuthFromSecret fetches authentication credentials from the specified secret.
+// This is a public wrapper that can be used by controllers.
+func GetAuthFromSecret(
+	ctx context.Context,
+	k8sClient client.Client,
+	repoConfig *v1alpha1.GitRepoConfig,
+) (transport.AuthMethod, error) {
+	return getAuthFromSecret(ctx, k8sClient, repoConfig)
+}
+
 // getAuthFromSecret fetches authentication credentials from the specified secret.
 // Shared helper used by both old and new worker implementations.
 func getAuthFromSecret(

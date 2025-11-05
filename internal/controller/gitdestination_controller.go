@@ -21,6 +21,8 @@ package controller
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -31,6 +33,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	configbutleraiv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
@@ -45,8 +48,12 @@ const (
 	GitDestinationReasonValidating            = "Validating"
 	GitDestinationReasonGitRepoConfigNotFound = "GitRepoConfigNotFound"
 	GitDestinationReasonBranchNotAllowed      = "BranchNotAllowed"
+	GitDestinationReasonRepositoryUnavailable = "RepositoryUnavailable"
 	GitDestinationReasonReady                 = "Ready"
 )
+
+// FinalizerName is the finalizer added to GitDestination resources.
+const FinalizerName = "gitdestination.configbutler.ai/finalizer"
 
 // GitDestinationReconciler reconciles a GitDestination object.
 type GitDestinationReconciler struct {
@@ -71,6 +78,22 @@ func (r *GitDestinationReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	var dest configbutleraiv1alpha1.GitDestination
 	if err := r.Get(ctx, req.NamespacedName, &dest); err != nil {
 		return r.handleFetchError(err, log, req.NamespacedName)
+	}
+
+	// Handle deletion with finalizer
+	if !dest.ObjectMeta.DeletionTimestamp.IsZero() {
+		return r.handleDeletion(ctx, &dest, log)
+	}
+
+	// Add finalizer if not present
+	if !controllerutil.ContainsFinalizer(&dest, FinalizerName) {
+		controllerutil.AddFinalizer(&dest, FinalizerName)
+		if err := r.Update(ctx, &dest); err != nil {
+			log.Error(err, "Failed to add finalizer")
+			return ctrl.Result{}, err
+		}
+		log.Info("Added finalizer")
+		return ctrl.Result{Requeue: true}, nil
 	}
 
 	log.Info("Validating GitDestination",
@@ -98,6 +121,20 @@ func (r *GitDestinationReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	}
 	if validationResult != nil {
 		return *validationResult, nil
+	}
+
+	// Get GitRepoConfig for repository status checking
+	var grc configbutleraiv1alpha1.GitRepoConfig
+	grcKey := k8stypes.NamespacedName{Name: dest.Spec.RepoRef.Name, Namespace: repoNS}
+	if err := r.Get(ctx, grcKey, &grc); err != nil {
+		log.Error(err, "Failed to get GitRepoConfig for status checking")
+		return ctrl.Result{RequeueAfter: RequeueShortInterval}, nil
+	}
+
+	// Update repository status (branch existence, SHA tracking)
+	if err := r.updateRepositoryStatus(ctx, &dest, &grc, log); err != nil {
+		log.Error(err, "Failed to update repository status")
+		// Don't fail reconciliation, just log and continue
 	}
 
 	// Register with worker and event stream
@@ -164,7 +201,8 @@ func (r *GitDestinationReconciler) validateGitRepoConfig(
 	return nil, nil //nolint:nilnil // Valid case: no result needed, validation passed
 }
 
-// validateBranch validates that the branch is in the allowedBranches list.
+// validateBranch validates that the branch matches at least one pattern in allowedBranches.
+// Supports glob patterns like "main", "feature/*", "release/v*".
 func (r *GitDestinationReconciler) validateBranch(
 	ctx context.Context,
 	dest *configbutleraiv1alpha1.GitDestination,
@@ -173,18 +211,26 @@ func (r *GitDestinationReconciler) validateBranch(
 	log logr.Logger,
 ) *ctrl.Result {
 	branchAllowed := false
-	for _, allowedBranch := range grc.Spec.AllowedBranches {
-		if dest.Spec.Branch == allowedBranch {
+	for _, pattern := range grc.Spec.AllowedBranches {
+		if match, err := filepath.Match(pattern, dest.Spec.Branch); match {
 			branchAllowed = true
 			break
+		} else if err != nil {
+			// Log malformed pattern but continue checking other patterns
+			log.Info("Invalid glob pattern in allowedBranches", "pattern", pattern, "error", err)
 		}
 	}
 
 	if !branchAllowed {
-		msg := fmt.Sprintf("Branch '%s' is not in allowedBranches list %v of GitRepoConfig '%s/%s'",
+		msg := fmt.Sprintf("Branch '%s' does not match any pattern in allowedBranches list %v of GitRepoConfig '%s/%s'",
 			dest.Spec.Branch, grc.Spec.AllowedBranches, repoNS, dest.Spec.RepoRef.Name)
 		log.Info("Branch validation failed", "branch", dest.Spec.Branch, "allowedBranches", grc.Spec.AllowedBranches)
 		r.setCondition(dest, metav1.ConditionFalse, GitDestinationReasonBranchNotAllowed, msg)
+		// Security requirement: Clear BranchExists and LastCommitSHA when branch not allowed
+		dest.Status.BranchExists = false
+		dest.Status.LastCommitSHA = ""
+		dest.Status.LastSyncTime = nil
+		dest.Status.SyncStatus = ""
 		result, _ := r.updateStatusAndRequeue(ctx, dest, RequeueShortInterval)
 		return &result
 	}
@@ -266,6 +312,111 @@ func (r *GitDestinationReconciler) registerEventStream(
 		"repo", dest.Spec.RepoRef.Name,
 		"branch", dest.Spec.Branch,
 		"baseFolder", dest.Spec.BaseFolder)
+}
+
+// handleDeletion handles the deletion of a GitDestination with cleanup.
+func (r *GitDestinationReconciler) handleDeletion(
+	ctx context.Context,
+	dest *configbutleraiv1alpha1.GitDestination,
+	log logr.Logger,
+) (ctrl.Result, error) {
+	if !controllerutil.ContainsFinalizer(dest, FinalizerName) {
+		return ctrl.Result{}, nil
+	}
+
+	log.Info("Handling GitDestination deletion")
+
+	// Cleanup: unregister from worker manager
+	repoNS := dest.Spec.RepoRef.Namespace
+	if repoNS == "" {
+		repoNS = dest.Namespace
+	}
+
+	if r.WorkerManager != nil {
+		if err := r.WorkerManager.UnregisterDestination(
+			dest.Name, dest.Namespace,
+			dest.Spec.RepoRef.Name, repoNS,
+			dest.Spec.Branch,
+		); err != nil {
+			log.Error(err, "Failed to unregister from worker manager")
+			// Continue with cleanup anyway
+		}
+	}
+
+	// Cleanup: unregister from event router
+	if r.EventRouter != nil {
+		gitDest := types.NewResourceReference(dest.Name, dest.Namespace)
+		r.EventRouter.UnregisterGitDestinationEventStream(gitDest)
+		log.Info("Unregistered from event router")
+	}
+
+	// Cleanup: remove local repository directory
+	workDir := filepath.Join("/tmp", "gitops-reverser-status",
+		dest.Namespace, dest.Name)
+	if err := os.RemoveAll(workDir); err != nil {
+		log.Info("Failed to remove local repository directory", "error", err, "path", workDir)
+		// Non-fatal, continue
+	}
+
+	// Remove finalizer
+	controllerutil.RemoveFinalizer(dest, FinalizerName)
+	if err := r.Update(ctx, dest); err != nil {
+		log.Error(err, "Failed to remove finalizer")
+		return ctrl.Result{}, err
+	}
+
+	log.Info("Finalizer removed, deletion complete")
+	return ctrl.Result{}, nil
+}
+
+// updateRepositoryStatus checks repository and branch status, updating GitDestination status fields.
+func (r *GitDestinationReconciler) updateRepositoryStatus(
+	ctx context.Context,
+	dest *configbutleraiv1alpha1.GitDestination,
+	grc *configbutleraiv1alpha1.GitRepoConfig,
+	log logr.Logger,
+) error {
+	log.Info("Updating repository status", "repo", grc.Spec.RepoURL, "branch", dest.Spec.Branch)
+
+	// Mark sync as in progress
+	dest.Status.SyncStatus = "syncing"
+
+	// Get authentication
+	auth, err := git.GetAuthFromSecret(ctx, r.Client, grc)
+	if err != nil {
+		log.Error(err, "Failed to get authentication for repository")
+		dest.Status.SyncStatus = "error"
+		r.setCondition(dest, metav1.ConditionFalse, GitDestinationReasonRepositoryUnavailable,
+			fmt.Sprintf("Failed to get authentication: %v", err))
+		return err
+	}
+
+	// Build work directory for status checking
+	workDir := filepath.Join("/tmp", "gitops-reverser-status",
+		dest.Namespace, dest.Name)
+
+	// Get branch status
+	status, err := git.GetBranchStatus(grc.Spec.RepoURL, dest.Spec.Branch, auth, workDir)
+	if err != nil {
+		log.Error(err, "Failed to get branch status")
+		dest.Status.SyncStatus = "error"
+		dest.Status.LastSyncTime = &metav1.Time{Time: time.Now()}
+		r.setCondition(dest, metav1.ConditionFalse, GitDestinationReasonRepositoryUnavailable,
+			fmt.Sprintf("Failed to check repository: %v", err))
+		return err
+	}
+
+	// Update status fields
+	dest.Status.BranchExists = status.BranchExists
+	dest.Status.LastCommitSHA = status.LastCommitSHA
+	dest.Status.LastSyncTime = &metav1.Time{Time: time.Now()}
+	dest.Status.SyncStatus = "idle"
+
+	log.Info("Repository status updated",
+		"branchExists", status.BranchExists,
+		"lastCommitSHA", status.LastCommitSHA)
+
+	return nil
 }
 
 // Note: Worker registration is idempotent - calling RegisterDestination multiple times

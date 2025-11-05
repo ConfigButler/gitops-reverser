@@ -22,8 +22,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
-	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -36,10 +34,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	gogit "github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/go-git/go-git/v5/plumbing/transport/http"
+	"github.com/go-git/go-git/v5/storage/memory"
 	"github.com/go-logr/logr"
 
 	configbutleraiv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
@@ -52,8 +51,6 @@ const (
 	ReasonSecretNotFound   = "SecretNotFound"
 	ReasonSecretMalformed  = "SecretMalformed"
 	ReasonConnectionFailed = "ConnectionFailed"
-	ReasonBranchNotFound   = "BranchNotFound"
-	ReasonBranchFound      = "BranchFound"
 )
 
 // Sentinel errors for credential extraction.
@@ -130,7 +127,7 @@ func (r *GitRepoConfigReconciler) reconcileGitRepoConfig(
 		return result, nil
 	}
 
-	// Validate repository
+	// Validate repository connectivity
 	return r.validateAndUpdateStatus(ctx, log, gitRepoConfig, auth)
 }
 
@@ -200,50 +197,34 @@ func (r *GitRepoConfigReconciler) getAuthFromSecret(
 	return auth, ctrl.Result{}, false
 }
 
-// validateAndUpdateStatus validates the repository and updates the status.
+// validateAndUpdateStatus validates repository connectivity and updates the status.
 func (r *GitRepoConfigReconciler) validateAndUpdateStatus(
 	ctx context.Context,
 	log logr.Logger,
 	gitRepoConfig *configbutleraiv1alpha1.GitRepoConfig,
 	auth transport.AuthMethod,
 ) (ctrl.Result, error) {
-	log.Info("Validating repository connectivity and branches",
-		"repoUrl", gitRepoConfig.Spec.RepoURL,
-		"allowedBranches", gitRepoConfig.Spec.AllowedBranches)
+	log.Info("Validating repository connectivity",
+		"repoUrl", gitRepoConfig.Spec.RepoURL)
 
-	// Validate all allowed branches
-	validatedBranches := make(map[string]string) // branch -> commit hash
-	for _, branch := range gitRepoConfig.Spec.AllowedBranches {
-		commitHash, err := r.validateRepository(ctx, gitRepoConfig.Spec.RepoURL, branch, auth)
-		if err != nil {
-			log.Error(err, "Repository validation failed",
-				"repoUrl", gitRepoConfig.Spec.RepoURL,
-				"branch", branch)
-			if strings.Contains(err.Error(), "branch") {
-				r.setCondition(gitRepoConfig, metav1.ConditionFalse, ReasonBranchNotFound,
-					fmt.Sprintf("Branch '%s' does not exist in repository: %v", branch, err))
-			} else {
-				r.setCondition(gitRepoConfig, metav1.ConditionFalse, ReasonConnectionFailed,
-					fmt.Sprintf("Failed to connect to repository: %v", err))
-			}
-			return r.updateStatusAndRequeue(ctx, gitRepoConfig, RequeueShortInterval)
-		}
-		validatedBranches[branch] = commitHash
-		log.Info("Branch validated successfully", "branch", branch, "commitHash", commitHash[:8])
+	// Check repository connectivity using lightweight remote listing
+	err := r.checkRemoteConnectivity(ctx, gitRepoConfig.Spec.RepoURL, auth)
+	if err != nil {
+		log.Error(err, "Repository connectivity check failed",
+			"repoUrl", gitRepoConfig.Spec.RepoURL)
+		r.setCondition(gitRepoConfig, metav1.ConditionFalse, ReasonConnectionFailed,
+			fmt.Sprintf("Failed to connect to repository: %v", err))
+		return r.updateStatusAndRequeue(ctx, gitRepoConfig, RequeueShortInterval)
 	}
 
-	log.Info("All branches validated successfully", "branchCount", len(validatedBranches))
-	var branchSummaries []string
-	for branch, hash := range validatedBranches {
-		branchSummaries = append(branchSummaries, fmt.Sprintf("%s@%s", branch, hash[:8]))
-	}
-	message := fmt.Sprintf("All %d branches validated: %s", len(validatedBranches), strings.Join(branchSummaries, ", "))
-	r.setCondition(gitRepoConfig, metav1.ConditionTrue, ReasonBranchFound, message)
+	log.Info("Repository connectivity validated successfully")
+	message := fmt.Sprintf("Repository connectivity validated for %s", gitRepoConfig.Spec.RepoURL)
+	r.setCondition(gitRepoConfig, metav1.ConditionTrue, "Ready", message)
 
 	// Update ObservedGeneration to mark this generation as validated
 	gitRepoConfig.Status.ObservedGeneration = gitRepoConfig.Generation
 
-	log.Info("GitRepoConfig validation successful", "name", gitRepoConfig.Name, "branchCount", len(validatedBranches))
+	log.Info("GitRepoConfig validation successful", "name", gitRepoConfig.Name)
 	log.Info("Updating status with success condition")
 
 	if err := r.updateStatusWithRetry(ctx, gitRepoConfig); err != nil {
@@ -306,66 +287,32 @@ func (r *GitRepoConfigReconciler) extractCredentials(secret *corev1.Secret) (tra
 	return nil, ErrInvalidSecretFormat
 }
 
-// validateRepository checks if the repository is accessible and branch exists.
-func (r *GitRepoConfigReconciler) validateRepository( //nolint:lll // Function signature
-	ctx context.Context, repoURL, branch string, auth transport.AuthMethod) (string, error) {
-	log := logf.FromContext(ctx).WithName("validateRepository")
+// checkRemoteConnectivity performs a lightweight check of repository connectivity.
+func (r *GitRepoConfigReconciler) checkRemoteConnectivity(
+	ctx context.Context, repoURL string, auth transport.AuthMethod,
+) error {
+	log := logf.FromContext(ctx).WithName("checkRemoteConnectivity")
 
-	log.Info("Starting repository validation",
-		"repoURL", repoURL,
-		"branch", branch,
-		"hasAuth", auth != nil)
+	log.Info("Checking remote repository connectivity", "repoURL", repoURL)
 
-	// Create a temporary directory for a minimal clone test
-	tempDir := fmt.Sprintf("/tmp/git-validation-%d", time.Now().Unix())
-	log.Info("Created temporary directory", "tempDir", tempDir)
+	// Create a new "dummy" remote object in memory for lightweight checking
+	remote := git.NewRemote(memory.NewStorage(), &config.RemoteConfig{
+		Name: "origin",
+		URLs: []string{repoURL},
+	})
 
-	defer func() {
-		// Clean up temp directory
-		log.Info("Cleaning up temporary directory", "tempDir", tempDir)
-		_ = os.RemoveAll(tempDir) // Ignore cleanup errors
-	}()
-
-	// Try to clone just the specified branch with depth 1 for validation
-	log.Info("Starting git clone", //nolint:lll // Structured log with many fields
-		"options", fmt.Sprintf("URL=%s, Branch=%s, SingleBranch=true, Depth=1", repoURL, branch))
-	_, err := gogit.PlainClone(tempDir, false, &gogit.CloneOptions{
-		URL:           repoURL,
-		Auth:          auth,
-		ReferenceName: plumbing.NewBranchReferenceName(branch),
-		SingleBranch:  true,
-		Depth:         1,
-		NoCheckout:    true, // Don't checkout files, just verify connectivity
+	// Call .List() on the remote - this is the lightweight check
+	_, err := remote.List(&git.ListOptions{
+		Auth: auth,
 	})
 
 	if err != nil {
-		log.Error(err, "Git clone failed", "repoURL", repoURL, "branch", branch)
-		if strings.Contains(err.Error(), "couldn't find remote ref") ||
-			strings.Contains(err.Error(), "reference not found") {
-			return "", fmt.Errorf("branch '%s' not found in repository", branch)
-		}
-		return "", fmt.Errorf("failed to access repository: %w", err)
+		log.Error(err, "Remote connectivity check failed", "repoURL", repoURL)
+		return fmt.Errorf("failed to connect to repository: %w", err)
 	}
 
-	log.Info("Git clone successful, opening repository to get commit hash")
-
-	// If we got here, the repository and branch are accessible
-	// Open the temporary repo to get the commit hash
-	repo, err := gogit.PlainOpen(tempDir)
-	if err != nil {
-		log.Error(err, "Failed to open cloned repository", "tempDir", tempDir)
-		return "", fmt.Errorf("failed to open cloned repository: %w", err)
-	}
-
-	head, err := repo.Head()
-	if err != nil {
-		log.Error(err, "Failed to get HEAD reference")
-		return "", fmt.Errorf("failed to get HEAD reference: %w", err)
-	}
-
-	commitHash := head.Hash().String()
-	log.Info("Repository validation completed successfully", "commitHash", commitHash)
-	return commitHash, nil
+	log.Info("Remote connectivity check successful", "repoURL", repoURL)
+	return nil
 }
 
 // setCondition sets or updates the Ready condition.
