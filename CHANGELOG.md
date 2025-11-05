@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.8.2...gitops-reverser-v0.9.0) (2025-11-05)
+
+
+### Features
+
+* Automatically create branch and handle empty repos ([8a6115a](https://github.com/ConfigButler/gitops-reverser/commit/8a6115a2d33e4a69d7629ee9a613ca7d2f597acf))
+* GitDestination now truly handles the branch. ([aac4f3b](https://github.com/ConfigButler/gitops-reverser/commit/aac4f3bcabfd013476a8281d1925ad1046597f74))
+
 ## [0.8.2](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.8.1...gitops-reverser-v0.8.2) (2025-10-31)
 
 

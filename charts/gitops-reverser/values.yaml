@@ -23,7 +23,7 @@ leaderOnlyService:
 image:
   repository: ghcr.io/configbutler/gitops-reverser
   pullPolicy: IfNotPresent
-  tag: 0.8.2 # x-release-please-version
+  tag: 0.9.0 # x-release-please-version
 
 imagePullSecrets: []
 nameOverride: ""
