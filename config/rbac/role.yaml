@@ -49,14 +49,6 @@ rules:
 - apiGroups:
   - configbutler.ai
   resources:
-  - clusterwatchrules/finalizers
-  - gitrepoconfigs/finalizers
-  - watchrules/finalizers
-  verbs:
-  - update
-- apiGroups:
-  - configbutler.ai
-  resources:
   - clusterwatchrules/status
   - gitdestinations/status
   - gitrepoconfigs/status
