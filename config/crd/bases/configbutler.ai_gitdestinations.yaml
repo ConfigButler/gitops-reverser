@@ -98,6 +98,10 @@ spec:
           status:
             description: status defines the observed state of GitDestination
             properties:
+              branchExists:
+                description: BranchExists indicates whether the branch exists on the
+                  remote repository.
+                type: boolean
               conditions:
                 description: Conditions represent the latest available observations
                   of an object's state
@@ -156,10 +160,24 @@ spec:
                   - type
                   type: object
                 type: array
+              lastCommitSHA:
+                description: |-
+                  LastCommitSHA is the SHA of the latest commit on the branch.
+                  Shows HEAD SHA when branch doesn't exist, branch SHA after creation.
+                type: string
+              lastSyncTime:
+                description: LastSyncTime is the timestamp of the last successful
+                  sync with the remote repository.
+                format: date-time
+                type: string
               observedGeneration:
                 description: ObservedGeneration is the last generation that was reconciled
                 format: int64
                 type: integer
+              syncStatus:
+                description: 'SyncStatus indicates the current sync state: "idle",
+                  "syncing", or "error".'
+                type: string
             type: object
         required:
         - spec

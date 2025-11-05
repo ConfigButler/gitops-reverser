@@ -335,14 +335,14 @@ func TestSSHCredentials(t *testing.T) {
 	})
 }
 
-// TestValidateRepository tests the repository validation logic.
-func TestValidateRepository(t *testing.T) {
+// TestCheckRemoteConnectivity tests the lightweight remote connectivity check.
+func TestCheckRemoteConnectivity(t *testing.T) {
 	reconciler := &GitRepoConfigReconciler{}
 	ctx := context.Background()
 
 	// Test with invalid URL (this will fail but should handle gracefully)
 	t.Run("Invalid Repository URL", func(t *testing.T) {
-		_, err := reconciler.validateRepository(ctx, "invalid-url", "main", nil)
+		err := reconciler.checkRemoteConnectivity(ctx, "invalid-url", nil)
 		if err == nil {
 			t.Error("Expected error for invalid repository URL")
 		}
@@ -355,21 +355,13 @@ func TestValidateRepository(t *testing.T) {
 			t.Skip("Skipping network test in short mode")
 		}
 
-		commitHash, err := reconciler.validateRepository(
+		err := reconciler.checkRemoteConnectivity(
 			ctx,
 			"https://github.com/octocat/Hello-World.git",
-			"master",
 			nil,
 		)
 		if err != nil {
 			t.Logf("Public repository test failed (might be expected in CI): %v", err)
-		} else {
-			if commitHash == "" {
-				t.Error("Expected non-empty commit hash")
-			}
-			if len(commitHash) != 40 { // SHA-1 hash length
-				t.Errorf("Expected 40 character commit hash, got %d", len(commitHash))
-			}
 		}
 	})
 }
@@ -387,8 +379,7 @@ func TestGitRepoConfigConditions(t *testing.T) {
 		reason  string
 		message string
 	}{
-		{metav1.ConditionTrue, ReasonBranchFound, "Branch 'main' found"},
-		{metav1.ConditionFalse, ReasonBranchNotFound, "Branch 'invalid' not found"},
+		{metav1.ConditionTrue, "Ready", "Repository connectivity validated"},
 		{metav1.ConditionFalse, ReasonConnectionFailed, "Failed to connect"},
 		{metav1.ConditionFalse, ReasonSecretNotFound, "Secret not found"},
 		{metav1.ConditionUnknown, ReasonChecking, "Checking repository"},

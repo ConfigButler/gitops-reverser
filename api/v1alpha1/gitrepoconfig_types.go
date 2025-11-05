@@ -38,8 +38,11 @@ type GitRepoConfigSpec struct {
 
 	// AllowedBranches is the list of Git branches that GitDestinations may reference.
 	// This provides a simple allowlist mechanism for branch validation.
+	// Each entry supports glob patterns (e.g., "main", "feature/*", "release/v*").
+	// A branch is allowed if it matches ANY pattern in this list (OR logic).
+	// Invalid glob patterns are logged as warnings but don't prevent validation.
 	// GitDestination resources referencing this GitRepoConfig must specify a branch
-	// from this list.
+	// that matches at least one pattern in this list.
 	// +required
 	// +kubebuilder:validation:MinItems=1
 	AllowedBranches []string `json:"allowedBranches"`

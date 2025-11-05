@@ -67,6 +67,23 @@ type GitDestinationStatus struct {
 	// ObservedGeneration is the last generation that was reconciled
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
+	// LastCommitSHA is the SHA of the latest commit on the branch.
+	// Shows HEAD SHA when branch doesn't exist, branch SHA after creation.
+	// +optional
+	LastCommitSHA string `json:"lastCommitSHA,omitempty"`
+
+	// BranchExists indicates whether the branch exists on the remote repository.
+	// +optional
+	BranchExists bool `json:"branchExists,omitempty"`
+
+	// LastSyncTime is the timestamp of the last successful sync with the remote repository.
+	// +optional
+	LastSyncTime *metav1.Time `json:"lastSyncTime,omitempty"`
+
+	// SyncStatus indicates the current sync state: "idle", "syncing", or "error".
+	// +optional
+	SyncStatus string `json:"syncStatus,omitempty"`
 }
 
 // +kubebuilder:object:root=true
