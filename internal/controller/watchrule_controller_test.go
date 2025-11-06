@@ -172,7 +172,14 @@ var _ = Describe("WatchRule Controller", func() {
 
 			// Wait for GitRepoConfig to be ready (it should become ready with the real GitHub repo)
 			Eventually(func() bool {
-				err := k8sClient.Get(ctx, types.NamespacedName{Name: "local-config", Namespace: "default"}, gitRepoConfig)
+				err := k8sClient.Get(
+					ctx,
+					types.NamespacedName{
+						Name:      "local-config",
+						Namespace: "default",
+					},
+					gitRepoConfig,
+				)
 				if err != nil {
 					return false
 				}
