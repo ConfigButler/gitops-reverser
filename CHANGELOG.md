@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.0](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.9.0...gitops-reverser-v0.10.0) (2025-11-06)
+
+
+### Features
+
+* **controller:** add defense-in-depth conflict detection for GitDestinations ([d8454e3](https://github.com/ConfigButler/gitops-reverser/commit/d8454e3c88c05d960eb2c9f9375c1183f9565759))
+
+
+### Bug Fixes
+
+* Get the linter and tests running again ([2df347c](https://github.com/ConfigButler/gitops-reverser/commit/2df347ccddc3e0e8c329e8acccd50b5505b4f190))
+* Yes linting is important ([a24f2ca](https://github.com/ConfigButler/gitops-reverser/commit/a24f2ca4c1fecc0bc3ebc194ffea8b8b61c33703))
+
+
+### Documentation
+
+* Removing finished things ([f2619e6](https://github.com/ConfigButler/gitops-reverser/commit/f2619e6f70b76812c6be4b8ed9d31299738823f6))
+* update README, docs images, and e2e test cleanup ([8a3c4e7](https://github.com/ConfigButler/gitops-reverser/commit/8a3c4e70a2f0227b366c2d2961745ea967f4e073))
+
 ## [0.9.0](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.8.2...gitops-reverser-v0.9.0) (2025-11-05)
 
 
