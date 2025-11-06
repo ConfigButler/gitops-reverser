@@ -342,7 +342,7 @@ func TestCheckRemoteConnectivity(t *testing.T) {
 
 	// Test with invalid URL (this will fail but should handle gracefully)
 	t.Run("Invalid Repository URL", func(t *testing.T) {
-		err := reconciler.checkRemoteConnectivity(ctx, "invalid-url", nil)
+		_, err := reconciler.checkRemoteConnectivity(ctx, "invalid-url", nil)
 		if err == nil {
 			t.Error("Expected error for invalid repository URL")
 		}
@@ -355,7 +355,7 @@ func TestCheckRemoteConnectivity(t *testing.T) {
 			t.Skip("Skipping network test in short mode")
 		}
 
-		err := reconciler.checkRemoteConnectivity(
+		_, err := reconciler.checkRemoteConnectivity(
 			ctx,
 			"https://github.com/octocat/Hello-World.git",
 			nil,

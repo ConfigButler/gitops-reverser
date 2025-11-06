@@ -22,6 +22,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -51,6 +52,20 @@ const (
 	ReasonSecretNotFound   = "SecretNotFound"
 	ReasonSecretMalformed  = "SecretMalformed"
 	ReasonConnectionFailed = "ConnectionFailed"
+)
+
+// Connection secret status values.
+const (
+	ConnectionSecretValid   = "Valid"
+	ConnectionSecretInvalid = "Invalid"
+	ConnectionSecretMissing = "Missing"
+	ConnectionSecretNotSet  = "NotSet"
+)
+
+// Connection check status values.
+const (
+	ConnectionCheckSuccessful = "Successful"
+	ConnectionCheckFailed     = "Failed"
 )
 
 // Sentinel errors for credential extraction.
@@ -113,10 +128,15 @@ func (r *GitRepoConfigReconciler) reconcileGitRepoConfig(
 	}
 
 	r.setCondition(gitRepoConfig, metav1.ConditionUnknown, ReasonChecking, "Validating repository connectivity...")
+	// Initialize status fields
+	gitRepoConfig.Status.ConnectionSecret = ""
+	gitRepoConfig.Status.ConnectionCheck = ""
+	gitRepoConfig.Status.RemoteBranchCount = 0
 
 	// Fetch and validate secret
-	secret, result, shouldReturn := r.fetchAndValidateSecret(ctx, log, gitRepoConfig)
+	secret, shouldReturn := r.fetchAndValidateSecret(ctx, log, gitRepoConfig)
 	if shouldReturn {
+		result, _ := r.updateStatusAndRequeue(ctx, gitRepoConfig, RequeueMediumInterval)
 		return result, nil
 	}
 
@@ -131,15 +151,15 @@ func (r *GitRepoConfigReconciler) reconcileGitRepoConfig(
 }
 
 // fetchAndValidateSecret fetches the secret if specified.
-// Returns (secret, result, shouldReturn). If shouldReturn is true, caller should return the result immediately.
+// Returns (secret, shouldReturn). If shouldReturn is true, caller should return immediately.
 func (r *GitRepoConfigReconciler) fetchAndValidateSecret(
 	ctx context.Context,
 	log logr.Logger,
 	gitRepoConfig *configbutleraiv1alpha1.GitRepoConfig,
-) (*corev1.Secret, ctrl.Result, bool) {
+) (*corev1.Secret, bool) {
 	if gitRepoConfig.Spec.SecretRef == nil {
 		log.Info("No secret specified, using anonymous access")
-		return nil, ctrl.Result{}, false
+		return nil, false
 	}
 
 	log.Info("Fetching secret for authentication",
@@ -162,12 +182,12 @@ func (r *GitRepoConfigReconciler) fetchAndValidateSecret(
 				err,
 			),
 		)
-		result, _ := r.updateStatusAndRequeue(ctx, gitRepoConfig, RequeueMediumInterval)
-		return nil, result, true
+		gitRepoConfig.Status.ConnectionSecret = ConnectionSecretMissing
+		return nil, true
 	}
 
 	log.Info("Successfully fetched secret", "secretName", gitRepoConfig.Spec.SecretRef.Name)
-	return secret, ctrl.Result{}, false
+	return secret, false
 }
 
 // getAuthFromSecret extracts authentication from the secret.
@@ -188,6 +208,7 @@ func (r *GitRepoConfigReconciler) getAuthFromSecret(
 		}
 		r.setCondition(gitRepoConfig, metav1.ConditionFalse, ReasonSecretMalformed,
 			fmt.Sprintf("Secret '%s' malformed: %v", secretName, err))
+		gitRepoConfig.Status.ConnectionSecret = ConnectionSecretInvalid
 		result, _ := r.updateStatusAndRequeue(ctx, gitRepoConfig, RequeueMediumInterval)
 		return nil, result, true
 	}
@@ -206,19 +227,30 @@ func (r *GitRepoConfigReconciler) validateAndUpdateStatus(
 	log.Info("Validating repository connectivity",
 		"repoUrl", gitRepoConfig.Spec.RepoURL)
 
-	// Check repository connectivity using lightweight remote listing
-	err := r.checkRemoteConnectivity(ctx, gitRepoConfig.Spec.RepoURL, auth)
+	// Set connection secret status
+	if auth != nil {
+		gitRepoConfig.Status.ConnectionSecret = ConnectionSecretValid
+	} else {
+		gitRepoConfig.Status.ConnectionSecret = ConnectionSecretNotSet
+	}
+
+	// Check repository connectivity and get branch count
+	branchCount, err := r.checkRemoteConnectivity(ctx, gitRepoConfig.Spec.RepoURL, auth)
 	if err != nil {
 		log.Error(err, "Repository connectivity check failed",
 			"repoUrl", gitRepoConfig.Spec.RepoURL)
 		r.setCondition(gitRepoConfig, metav1.ConditionFalse, ReasonConnectionFailed,
 			fmt.Sprintf("Failed to connect to repository: %v", err))
+		gitRepoConfig.Status.ConnectionCheck = ConnectionCheckFailed
+		gitRepoConfig.Status.RemoteBranchCount = 0
 		return r.updateStatusAndRequeue(ctx, gitRepoConfig, RequeueShortInterval)
 	}
 
-	log.Info("Repository connectivity validated successfully")
+	log.Info("Repository connectivity validated successfully", "branchCount", branchCount)
 	message := fmt.Sprintf("Repository connectivity validated for %s", gitRepoConfig.Spec.RepoURL)
 	r.setCondition(gitRepoConfig, metav1.ConditionTrue, "Ready", message)
+	gitRepoConfig.Status.ConnectionCheck = ConnectionCheckSuccessful
+	gitRepoConfig.Status.RemoteBranchCount = branchCount
 
 	// Update ObservedGeneration to mark this generation as validated
 	gitRepoConfig.Status.ObservedGeneration = gitRepoConfig.Generation
@@ -286,10 +318,10 @@ func (r *GitRepoConfigReconciler) extractCredentials(secret *corev1.Secret) (tra
 	return nil, ErrInvalidSecretFormat
 }
 
-// checkRemoteConnectivity performs a lightweight check of repository connectivity.
+// checkRemoteConnectivity performs a lightweight check of repository connectivity and returns branch count.
 func (r *GitRepoConfigReconciler) checkRemoteConnectivity(
 	ctx context.Context, repoURL string, auth transport.AuthMethod,
-) error {
+) (int, error) {
 	log := logf.FromContext(ctx).WithName("checkRemoteConnectivity")
 
 	log.Info("Checking remote repository connectivity", "repoURL", repoURL)
@@ -301,17 +333,25 @@ func (r *GitRepoConfigReconciler) checkRemoteConnectivity(
 	})
 
 	// Call .List() on the remote - this is the lightweight check
-	_, err := remote.List(&git.ListOptions{
+	refs, err := remote.List(&git.ListOptions{
 		Auth: auth,
 	})
 
 	if err != nil {
 		log.Error(err, "Remote connectivity check failed", "repoURL", repoURL)
-		return fmt.Errorf("failed to connect to repository: %w", err)
+		return 0, fmt.Errorf("failed to connect to repository: %w", err)
 	}
 
-	log.Info("Remote connectivity check successful", "repoURL", repoURL)
-	return nil
+	// Count branches (refs that look like branches)
+	branchCount := 0
+	for _, ref := range refs {
+		if strings.HasPrefix(ref.Name().String(), "refs/heads/") {
+			branchCount++
+		}
+	}
+
+	log.Info("Remote connectivity check successful", "repoURL", repoURL, "branchCount", branchCount)
+	return branchCount, nil
 }
 
 // setCondition sets or updates the Ready condition.
