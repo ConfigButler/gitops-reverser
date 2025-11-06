@@ -324,6 +324,7 @@ var _ = Describe("GitRepoConfig Controller", func() {
 			Expect(condition.Status).To(Equal(metav1.ConditionFalse))
 			Expect(condition.Reason).To(Equal(ReasonSecretNotFound))
 			Expect(condition.Message).To(ContainSubstring("Secret 'nonexistent-secret' not found"))
+			Expect(updatedConfig.Status.ConnectionSecret).To(Equal(ConnectionSecretMissing))
 		})
 
 		It("should fail when secret is malformed", func() {
@@ -379,6 +380,7 @@ var _ = Describe("GitRepoConfig Controller", func() {
 			Expect(condition.Status).To(Equal(metav1.ConditionFalse))
 			Expect(condition.Reason).To(Equal(ReasonSecretMalformed))
 			Expect(condition.Message).To(ContainSubstring("Secret 'malformed-secret' malformed"))
+			Expect(updatedConfig.Status.ConnectionSecret).To(Equal(ConnectionSecretInvalid))
 		})
 
 		It("should handle resource deletion gracefully", func() {

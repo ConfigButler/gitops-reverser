@@ -149,10 +149,24 @@ spec:
                   - type
                   type: object
                 type: array
+              connectionCheck:
+                description: |-
+                  ConnectionCheck indicates the result of the repository connectivity check.
+                  Possible values: "Successful", "Failed"
+                type: string
+              connectionSecret:
+                description: |-
+                  ConnectionSecret indicates the status of the connection secret.
+                  Possible values: "Valid", "Invalid", "Missing", "NotSet"
+                type: string
               observedGeneration:
                 description: ObservedGeneration is the last generation that was successfully
                   validated
                 format: int64
+                type: integer
+              remoteBranchCount:
+                description: RemoteBranchCount indicates the number of branches found
+                  in the repository.
                 type: integer
             type: object
         required:

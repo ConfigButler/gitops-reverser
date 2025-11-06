@@ -84,6 +84,20 @@ type GitRepoConfigStatus struct {
 	// ObservedGeneration is the last generation that was successfully validated
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
+	// ConnectionSecret indicates the status of the connection secret.
+	// Possible values: "Valid", "Invalid", "Missing", "NotSet"
+	// +optional
+	ConnectionSecret string `json:"connectionSecret,omitempty"`
+
+	// ConnectionCheck indicates the result of the repository connectivity check.
+	// Possible values: "Successful", "Failed"
+	// +optional
+	ConnectionCheck string `json:"connectionCheck,omitempty"`
+
+	// RemoteBranchCount indicates the number of branches found in the repository.
+	// +optional
+	RemoteBranchCount int `json:"remoteBranchCount,omitempty"`
 }
 
 // +kubebuilder:object:root=true

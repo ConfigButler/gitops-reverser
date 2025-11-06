@@ -87,7 +87,13 @@ spec:
   push:
     interval: "1m"
     maxCommits: 10
----
+EOF
+```
+
+Check the status to see if it's able to connect: `kubectl get `
+
+```bash
+cat <<EOF | kubectl apply -f -
 apiVersion: configbutler.ai/v1alpha1
 kind: GitDestination
 metadata:
