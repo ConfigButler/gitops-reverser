@@ -109,7 +109,7 @@ func waitForMetric(query string, condition func(float64) bool, timeout time.Dura
 
 // getPrometheusURL returns the URL for accessing Prometheus UI
 func getPrometheusURL() string {
-	return "http://localhost:9090"
+	return "http://localhost:19090"
 }
 
 // renderTemplate loads and executes a Go template file with the given data

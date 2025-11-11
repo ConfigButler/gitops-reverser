@@ -151,7 +151,8 @@ RUN usermod -aG docker vscode
 # Ensure vscode user owns Go directories and has proper permissions
 RUN mkdir -p /go && chown -R vscode:vscode /go
 
-# Fix Docker socket permissions for non-root access
+# Fix Docker socket permissions for non-root access (will be applied at runtime)
+# Note: This is set in devcontainer.json postCreateCommand as well
 RUN chmod 666 /var/run/docker.sock || true
 
 # Switch back to vscode user for development

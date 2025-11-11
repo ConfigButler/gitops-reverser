@@ -21,15 +21,15 @@
     "--group-add=docker"
   ],
   "forwardPorts": [
-    3000,
-    9090
+    13000,
+    19090
   ],
   "portsAttributes": {
-    "3000": {
+    "13000": {
       "label": "Gitea",
       "onAutoForward": "notify"
     },
-    "9090": {
+    "19090": {
       "label": "Prometheus",
       "onAutoForward": "notify"
     }
@@ -61,7 +61,7 @@
       ]
     }
   },
-  "postCreateCommand": "docker network create -d=bridge --subnet=172.19.0.0/24 kind || true",
+  "postCreateCommand": "sudo chmod 666 /var/run/docker.sock || true && docker network create -d=bridge --subnet=172.19.0.0/24 kind || true",
   "remoteUser": "vscode",
   "mounts": [
     "source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind"
