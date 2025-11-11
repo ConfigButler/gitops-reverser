@@ -144,8 +144,14 @@ RUN groupadd --gid 1000 vscode \
     && echo 'vscode ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers.d/vscode \
     && chmod 0440 /etc/sudoers.d/vscode
 
+# Add vscode user to docker group for non-root Docker access
+RUN usermod -aG docker vscode
+
 # Ensure vscode user owns Go directories and has proper permissions
 RUN mkdir -p /go && chown -R vscode:vscode /go
+
+# Fix Docker socket permissions for non-root access
+RUN chmod 666 /var/run/docker.sock || true
 
 # Switch back to vscode user for development
 USER vscode
