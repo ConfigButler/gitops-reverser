@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.1](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.10.0...gitops-reverser-v0.10.1) (2025-11-11)
+
+
+### Bug Fixes
+
+* consolidate CI and dev Dockerfiles into multi-stage build ([0f5fc61](https://github.com/ConfigButler/gitops-reverser/commit/0f5fc61db5c6fdcac559ee7d73e6011715de2866))
+* Does this resolve our build? ([2927a2a](https://github.com/ConfigButler/gitops-reverser/commit/2927a2accfca44b53398159449e131803a48d02f))
+* Move the port forwards to higher ports to avoid conflicts with existing services ([189bee2](https://github.com/ConfigButler/gitops-reverser/commit/189bee2ac7ceccefbf4829ea456c26aafddd1f49))
+* Slowly but truly getting there ([38d7275](https://github.com/ConfigButler/gitops-reverser/commit/38d7275daa87f6e41b0a455ec6a5081227276a84))
+
 ## [0.10.0](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.9.0...gitops-reverser-v0.10.0) (2025-11-06)
 
 
