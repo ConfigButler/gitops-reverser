@@ -17,7 +17,8 @@
     }
   },
   "runArgs": [
-    "--network=host"
+    "--network=host",
+    "--group-add=docker"
   ],
   "forwardPorts": [
     3000,
