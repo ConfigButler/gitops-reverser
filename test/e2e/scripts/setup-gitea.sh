@@ -14,7 +14,7 @@ SECRET_NAME="git-creds"
 SSH_SECRET_NAME="git-creds-ssh"
 SSH_KEY_PATH="/tmp/e2e-ssh-key"
 SSH_PUB_KEY_PATH="/tmp/e2e-ssh-key.pub"
-API_URL="http://localhost:3000/api/v1"
+API_URL="http://localhost:13000/api/v1"
 
 if [ -z "$REPO_NAME" ]; then
     echo "❌ Error: Repository name must be provided as first argument"
@@ -281,12 +281,12 @@ checkout_repository() {
     # Create parent directory
     mkdir -p "$(dirname "$CHECKOUT_DIR")"
     
-    # Configure git for localhost:3000 authentication using credentials
+    # Configure git for localhost:13000 authentication using credentials
     # This creates a global git config that maps the localhost URL to use our credentials
-    REPO_URL_WITH_AUTH="http://$ADMIN_USER:$TOKEN@localhost:3000/$ORG_NAME/$REPO_NAME.git"
-    REPO_URL_LOCALHOST="http://localhost:3000/$ORG_NAME/$REPO_NAME.git"
+    REPO_URL_WITH_AUTH="http://$ADMIN_USER:$TOKEN@localhost:13000/$ORG_NAME/$REPO_NAME.git"
+    REPO_URL_LOCALHOST="http://localhost:13000/$ORG_NAME/$REPO_NAME.git"
     
-    echo "🔐 Configuring git authentication for localhost:3000..."
+    echo "🔐 Configuring git authentication for localhost:13000..."
     # Set up URL rewriting so git will use our credentials automatically
     git config --global "url.$REPO_URL_WITH_AUTH.insteadOf" "$REPO_URL_LOCALHOST"
     
@@ -299,7 +299,7 @@ checkout_repository() {
         git config user.name "E2E Test"
         git config user.email "e2e-test@gitops-reverser.local"
         
-        # Set up the remote URL to use localhost:3000 (authentication is handled by global config)
+        # Set up the remote URL to use localhost:13000 (authentication is handled by global config)
         git remote set-url origin "$REPO_URL_LOCALHOST"
         
         echo "🔧 Git configuration completed in checkout directory"
@@ -327,7 +327,7 @@ setup_credentials
 checkout_repository
 
 # Repository information
-REPO_URL="http://gitea-http.$GITEA_NAMESPACE.svc.cluster.local:3000/$ORG_NAME/$REPO_NAME.git"
+REPO_URL="http://gitea-http.$GITEA_NAMESPACE.svc.cluster.local:13000/$ORG_NAME/$REPO_NAME.git"
 
 echo "
 🎉 Gitea setup completed successfully!
@@ -346,13 +346,13 @@ echo "
    • Access Token: ${TOKEN:0:8}...
 
 🌐 Access Gitea:
-   • Visit http://localhost:3000 in your browser
+   • Visit http://localhost:13000 in your browser
    • Login: $ADMIN_USER / $ADMIN_PASS
-   • Stop port-forward: pkill -f 'kubectl.*port-forward.*3000'
+   • Stop port-forward: pkill -f 'kubectl.*port-forward.*13000'
 
 📂 Git Repository:
    • Local checkout: $CHECKOUT_DIR
-   • Git operations configured for localhost:3000
+   • Git operations configured for localhost:13000
    • Ready for git pull/fetch operations during tests
 
 ✨ Ready for e2e testing! Port-forward will stay active.

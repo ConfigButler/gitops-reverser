@@ -14,8 +14,8 @@ make setup-port-forwards
 ```
 
 This exposes:
-- **Prometheus**: http://localhost:9090
-- **Gitea**: http://localhost:3000 (Username: `testorg`, Password: `gitea`)
+- **Prometheus**: http://localhost:19090
+- **Gitea**: http://localhost:13000 (Username: `testorg`, Password: `gitea`)
 
 **Stop port-forwards:**
 ```bash
@@ -60,7 +60,7 @@ go_goroutines{job="gitops-reverser-metrics"}
 ## Network Architecture
 
 ```
-Host Machine (port 3000, 9090)
+Host Machine (port 13000, 19090)
     ↕ (exposed via --network=host)
 DevContainer
     ↕ (kubectl port-forward)
@@ -82,12 +82,12 @@ Kind Cluster
 
 2. **Check Prometheus for metrics history:**
    ```bash
-   # Visit http://localhost:9090
+   # Visit http://localhost:19090
    ```
 
 3. **Check Gitea for repository state:**
    ```bash
-   # Visit http://localhost:3000
+   # Visit http://localhost:13000
    # Username: testorg, Password: gitea
    ```
 
@@ -97,7 +97,7 @@ Kind Cluster
    ```
 
 5. **Check Prometheus scrape status:**
-   Visit http://localhost:9090/targets
+   Visit http://localhost:19090/targets
 
 ## Cleanup
 
@@ -113,7 +113,7 @@ make cleanup-gitea-e2e
 ## Available Make Targets
 
 ```bash
-make setup-port-forwards    # Start port-forwards (Gitea:3000, Prometheus:9090)
+make setup-port-forwards    # Start port-forwards (Gitea:13000, Prometheus:19090)
 make cleanup-port-forwards  # Stop all port-forwards
 make e2e-setup             # Setup Gitea + Prometheus + port-forwards
 make test-e2e              # Run e2e tests (includes port-forwards)

@@ -33,7 +33,7 @@ import (
 )
 
 // giteaRepoURLTemplate is the URL template for test Gitea repositories.
-const giteaRepoURLTemplate = "http://gitea-http.gitea-e2e.svc.cluster.local:3000/testorg/%s.git"
+const giteaRepoURLTemplate = "http://gitea-http.gitea-e2e.svc.cluster.local:13000/testorg/%s.git"
 const giteaSSHURLTemplate = "ssh://git@gitea-ssh.gitea-e2e.svc.cluster.local:2222/testorg/%s.git"
 
 var testRepoName string
@@ -119,8 +119,8 @@ var _ = Describe("Manager", Ordered, func() {
 		fmt.Printf("═══════════════════════════════════════════════════════════\n")
 		fmt.Printf("📊 E2E Infrastructure kept running for debugging purposes:\n")
 		fmt.Printf("═══════════════════════════════════════════════════════════\n")
-		fmt.Printf("  Prometheus: http://localhost:9090\n")
-		fmt.Printf("  Gitea:      http://localhost:3000\n")
+		fmt.Printf("  Prometheus: http://localhost:19090\n")
+		fmt.Printf("  Gitea:      http://localhost:13000\n")
 		fmt.Printf("\n")
 		fmt.Printf("═══════════════════════════════════════════════════════════\n")
 		fmt.Printf("\n")

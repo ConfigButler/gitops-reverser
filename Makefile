@@ -228,8 +228,8 @@ setup-port-forwards: ## Start all port-forwards in background
 .PHONY: cleanup-port-forwards
 cleanup-port-forwards: ## Stop all port-forwards
 	@echo "🛑 Stopping port-forwards..."
-	@-pkill -f "kubectl.*port-forward.*3000" 2>/dev/null || true
-	@-pkill -f "kubectl.*port-forward.*9090" 2>/dev/null || true
+	@-pkill -f "kubectl.*port-forward.*13000" 2>/dev/null || true
+	@-pkill -f "kubectl.*port-forward.*19090" 2>/dev/null || true
 	@echo "✅ Port-forwards stopped"
 
 .PHONY: cleanup-gitea-e2e

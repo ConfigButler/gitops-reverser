@@ -87,12 +87,12 @@ spec:
         livenessProbe:
           httpGet:
             path: /-/healthy
-            port: 9090
+            port: http
           initialDelaySeconds: 10
         readinessProbe:
           httpGet:
             path: /-/ready
-            port: 9090
+            port: http
           initialDelaySeconds: 5
         volumeMounts:
         - name: config
@@ -126,5 +126,5 @@ spec:
     app: prometheus
   ports:
   - name: http
-    port: 9090
-    targetPort: 9090
+    port: 19090
+    targetPort: http
