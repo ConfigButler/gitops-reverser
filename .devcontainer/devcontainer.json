@@ -6,6 +6,11 @@
     "target": "dev"
   },
   "features": {
+    "ghcr.io/devcontainers/features/common-utils:2": {
+      "userUid": "automatic",
+      "userGid": "automatic",
+      "username": "vscode"
+    },
     "ghcr.io/devcontainers/features/docker-in-docker:2": {
       "moby": false,
       "dockerDashComposeVersion": "v2"

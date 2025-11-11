@@ -19,15 +19,6 @@ RUN apt-get update \
     && apt-get clean -y \
     && rm -rf /var/lib/apt/lists/*
 
-# Create vscode user for non-root development
-RUN groupadd --gid 1000 vscode \
-    && useradd --uid 1000 --gid vscode --shell /bin/bash --create-home vscode \
-    && echo 'vscode ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers.d/vscode \
-    && chmod 0440 /etc/sudoers.d/vscode
-
-# Ensure vscode user owns Go directories and has proper permissions
-RUN mkdir -p /go && chown -R vscode:vscode /go
-
 # Tool versions - centralized for easy updates
 ENV KUBECTL_VERSION=v1.34.1 \
     KUSTOMIZE_VERSION=5.7.1 \
@@ -89,9 +80,6 @@ RUN echo "=== Tool Versions ===" \
     && helm version \
     && golangci-lint version
 
-# Switch to vscode user for development
-USER vscode
-
 # Switch back to dialog for any ad-hoc use of apt-get
 ENV DEBIAN_FRONTEND=dialog
 
@@ -101,7 +89,6 @@ CMD ["/bin/bash"]
 # Stage 2: Development container with all tools including Docker and Kind
 FROM ci AS dev
 
-# Switch back to root for installations that require root privileges
 USER root
 
 # Switch to noninteractive for Docker installation
@@ -150,6 +137,15 @@ RUN echo "=== Additional Dev Tools ===" \
     && dlv version \
     && gopls version \
     && staticcheck -version
+
+# Create vscode user for non-root development
+RUN groupadd --gid 1000 vscode \
+    && useradd --uid 1000 --gid vscode --shell /bin/bash --create-home vscode \
+    && echo 'vscode ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers.d/vscode \
+    && chmod 0440 /etc/sudoers.d/vscode
+
+# Ensure vscode user owns Go directories and has proper permissions
+RUN mkdir -p /go && chown -R vscode:vscode /go
 
 # Switch back to vscode user for development
 USER vscode
