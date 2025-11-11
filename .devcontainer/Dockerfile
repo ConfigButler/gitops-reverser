@@ -86,37 +86,16 @@ ENV DEBIAN_FRONTEND=dialog
 # Default command
 CMD ["/bin/bash"]
 
-# Stage 2: Development container with all tools including Docker and Kind
+# Stage 2: Development container with Kind and debugging tools
 FROM ci AS dev
 
 USER root
 
-# Switch to noninteractive for Docker installation
+# Switch to noninteractive for package installation
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install Docker (for local development and Kind cluster management)
-RUN apt-get update \
-    && apt-get -y install --no-install-recommends \
-    apt-transport-https \
-    gnupg \
-    lsb-release \
-    && install -m 0755 -d /etc/apt/keyrings \
-    && curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc \
-    && chmod a+r /etc/apt/keyrings/docker.asc \
-    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian bookworm stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null \
-    && apt-get update \
-    && apt-get -y install --no-install-recommends \
-    docker-ce \
-    docker-ce-cli \
-    containerd.io \
-    docker-buildx-plugin \
-    docker-compose-plugin \
-    bash-completion \
-    && apt-get autoremove -y \
-    && apt-get clean -y \
-    && rm -rf /var/lib/apt/lists/*
-
 # Install Kind (for local Kubernetes clusters)
+# Docker is provided by devcontainer.json docker-in-docker feature
 ENV KIND_VERSION=v0.30.0
 RUN curl -Lo /usr/local/bin/kind https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64 \
     && chmod +x /usr/local/bin/kind
@@ -127,14 +106,11 @@ RUN go install github.com/go-delve/delve/cmd/dlv@latest
 # Install VSCode Go extension tools (gopls and staticcheck)
 RUN go install golang.org/x/tools/gopls@latest \
     && go install honnef.co/go/tools/cmd/staticcheck@latest
-
-# Verify Docker and Kind installations
+# Verify Kind and Delve installations
 RUN echo "=== Additional Dev Tools ===" \
     && kind version \
-    && docker --version \
     && dlv version \
-    && gopls version \
-    && staticcheck -version
+    && echo "✅ Docker will be available at runtime via devcontainer feature"
 
 # Create vscode user for non-root development
 RUN groupadd --gid 1000 vscode \
@@ -142,18 +118,8 @@ RUN groupadd --gid 1000 vscode \
     && echo 'vscode ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers.d/vscode \
     && chmod 0440 /etc/sudoers.d/vscode
 
-# Configure bash completion for vscode user
-RUN echo ". /usr/share/bash-completion/bash_completion" >> /home/vscode/.bashrc
-
-# Add vscode user to docker group for non-root Docker access
-RUN usermod -aG docker vscode
-
 # Ensure vscode user owns Go directories and has proper permissions
 RUN mkdir -p /go && chown -R vscode:vscode /go
-
-# Fix Docker socket permissions for non-root access (will be applied at runtime)
-# Note: This is set in devcontainer.json postCreateCommand as well
-RUN chmod 666 /var/run/docker.sock || true
 
 # Switch back to vscode user for development
 USER vscode
