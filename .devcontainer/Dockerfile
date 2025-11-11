@@ -128,8 +128,6 @@ RUN go install github.com/go-delve/delve/cmd/dlv@latest
 RUN go install golang.org/x/tools/gopls@latest \
     && go install honnef.co/go/tools/cmd/staticcheck@latest
 
-RUN echo ". /usr/share/bash-completion/bash_completion" >> /home/vscode/.bashrc
-
 # Verify Docker and Kind installations
 RUN echo "=== Additional Dev Tools ===" \
     && kind version \
@@ -143,6 +141,9 @@ RUN groupadd --gid 1000 vscode \
     && useradd --uid 1000 --gid vscode --shell /bin/bash --create-home vscode \
     && echo 'vscode ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers.d/vscode \
     && chmod 0440 /etc/sudoers.d/vscode
+
+# Configure bash completion for vscode user
+RUN echo ". /usr/share/bash-completion/bash_completion" >> /home/vscode/.bashrc
 
 # Add vscode user to docker group for non-root Docker access
 RUN usermod -aG docker vscode
