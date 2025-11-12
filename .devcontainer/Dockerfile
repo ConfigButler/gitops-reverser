@@ -1,6 +1,6 @@
 # Multi-stage Dockerfile for GitOps Reverser
 # Stage 1: CI base image with essential build tools
-FROM golang:1.25.3-bookworm AS ci
+FROM golang:1.25.4-bookworm AS ci
 
 # Avoid warnings by switching to noninteractive
 ENV DEBIAN_FRONTEND=noninteractive
@@ -15,6 +15,7 @@ RUN apt-get update \
     less \
     jq \
     sudo \
+    acl \
     && apt-get autoremove -y \
     && apt-get clean -y \
     && rm -rf /var/lib/apt/lists/*
@@ -57,6 +58,10 @@ WORKDIR /workspace
 RUN go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.19.0 \
     && go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
 
+# Create godev group for shared Go development directory access
+# This allows both root (during build) and vscode user (during dev) to write to /go
+RUN groupadd --gid 2000 godev
+
 # Initialize golangci-lint cache by running it once on an empty directory
 # This downloads linter dependencies without needing source code
 RUN mkdir -p /tmp/golangci-init && cd /tmp/golangci-init \
@@ -68,8 +73,14 @@ RUN mkdir -p /tmp/golangci-init && cd /tmp/golangci-init \
 # Pre-download Go modules for caching - placed AFTER tool installation
 # This layer will be cached and only rebuilt when go.mod/go.sum changes
 # Moving this down prevents tool reinstallation when dependencies change
+# Set group permissions BEFORE go mod download so downloaded files inherit gomod group
 COPY go.mod go.sum ./
-RUN go mod download
+RUN chgrp -R godev /go && \
+    chmod -R 2775 /go && \
+    setfacl -d -m g:godev:rwx /go && \
+    setfacl -d -m u::rwx /go && \
+    setfacl -d -m o::rx /go && \
+    go mod download
 
 # Verify installations
 RUN echo "=== Tool Versions ===" \
@@ -112,14 +123,21 @@ RUN echo "=== Additional Dev Tools ===" \
     && dlv version \
     && echo "✅ Docker will be available at runtime via devcontainer feature"
 
-# Create vscode user for non-root development
+# Create vscode user for non-root development and add to godev group
 RUN groupadd --gid 1000 vscode \
     && useradd --uid 1000 --gid vscode --shell /bin/bash --create-home vscode \
     && echo 'vscode ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers.d/vscode \
-    && chmod 0440 /etc/sudoers.d/vscode
+    && chmod 0440 /etc/sudoers.d/vscode \
+    && usermod -aG godev vscode
 
-# Ensure vscode user owns Go directories and has proper permissions
-RUN mkdir -p /go && chown -R vscode:vscode /go
+# Ensure docker group exists and add vscode user to it
+# This works with the docker-in-docker feature
+RUN groupadd -f docker && usermod -aG docker vscode
+
+# Ensure vscode user can write to workspace (empty, so fast)
+# Note: /go permissions are already set in CI stage and preserved here
+RUN chown -R vscode:vscode /workspace && \
+    chmod -R 755 /workspace
 
 # Switch back to vscode user for development
 USER vscode
