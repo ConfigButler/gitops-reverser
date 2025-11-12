@@ -61,7 +61,7 @@
       ]
     }
   },
-  "postCreateCommand": "sudo chmod 666 /var/run/docker.sock || true && docker network create -d=bridge --subnet=172.19.0.0/24 kind || true",
+  "postCreateCommand": "sudo chmod 666 /var/run/docker.sock || true && docker network create -d=bridge --subnet=172.19.0.0/24 kind || true && sudo chown -R vscode:vscode /workspace || true",
   "remoteUser": "vscode",
   "mounts": [
     "source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind"
