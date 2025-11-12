@@ -28,8 +28,19 @@ Reverse GitOps gives you both: the interactivity of the Kubernetes API with Git'
 - Capture: Admission webhook receives Kubernetes API requests.
 - Sanitize: Remove status and server‑managed fields; format as clean YAML.
 - Queue: Buffer events to handle spikes reliably.
-- Commit: Annotate with user, operation, namespace, timestamp; commit to Git.
+- Commit: Annotate with user, operation, namespace, timestamp; commit to Git using single-clone architecture for efficiency.
 - Push: It's now in your git repo.
+
+## Architecture
+
+GitOps Reverser uses a single-clone architecture for efficient Git operations:
+
+- **Single Clone per Branch**: Each `(GitRepository, Branch)` combination maintains exactly one Git clone to eliminate redundant operations and improve performance.
+- **Branch Metadata Caching**: Branch existence, commit SHAs, and fetch times are cached to avoid repeated repository scans.
+- **Resource Optimization**: Reduces disk space usage, network bandwidth consumption, and Git operation latency.
+- **Empty Repository Support**: Properly handles empty repositories (no commits) during initial setup and branch creation.
+
+This architecture ensures scalable and efficient operation even with many repositories and branches.
 
 ## Status
 

@@ -80,10 +80,6 @@ type GitDestinationStatus struct {
 	// LastSyncTime is the timestamp of the last successful sync with the remote repository.
 	// +optional
 	LastSyncTime *metav1.Time `json:"lastSyncTime,omitempty"`
-
-	// SyncStatus indicates the current sync state: "idle", "syncing", or "error".
-	// +optional
-	SyncStatus string `json:"syncStatus,omitempty"`
 }
 
 // +kubebuilder:object:root=true

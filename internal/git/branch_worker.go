@@ -28,6 +28,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -63,6 +65,12 @@ type BranchWorker struct {
 	wg         sync.WaitGroup
 	started    bool
 	mu         sync.Mutex
+
+	// Branch metadata (protected by metaMu)
+	metaMu        sync.RWMutex
+	branchExists  bool
+	lastCommitSHA string
+	lastFetchTime time.Time
 }
 
 // NewBranchWorker creates a worker for a (repo, branch) combination.
@@ -99,6 +107,18 @@ func (w *BranchWorker) Start(parentCtx context.Context) error {
 
 	w.Log.Info("Starting branch worker")
 
+	// Initialize repository and metadata in background
+	w.wg.Add(1)
+	go func() {
+		defer w.wg.Done()
+		if err := w.ensureRepositoryInitialized(w.ctx); err != nil {
+			w.Log.Error(err, "Failed to initialize repository")
+		} else {
+			w.Log.V(1).Info("Repository initialized successfully")
+		}
+	}()
+
+	// Start event processing
 	w.wg.Add(1)
 	go func() {
 		defer w.wg.Done()
@@ -139,6 +159,7 @@ func (w *BranchWorker) Enqueue(event Event) {
 
 // ListResourcesInBaseFolder returns resource identifiers found in a Git folder.
 // This is a synchronous service method called by EventRouter.
+// CRITICAL: This method uses the worker's managed repository to avoid multiple clones.
 func (w *BranchWorker) ListResourcesInBaseFolder(baseFolder string) ([]itypes.ResourceIdentifier, error) {
 	repoConfig, err := w.getGitRepoConfig(w.ctx)
 	if err != nil {
@@ -160,6 +181,11 @@ func (w *BranchWorker) ListResourcesInBaseFolder(baseFolder string) ([]itypes.Re
 
 	if err := repo.Checkout(w.Branch); err != nil {
 		return nil, fmt.Errorf("failed to checkout branch: %w", err)
+	}
+
+	// Update metadata after repository operations
+	if err := w.updateBranchMetadataFromRepo(repo.Repository); err != nil {
+		w.Log.V(1).Error(err, "Failed to update branch metadata after list")
 	}
 
 	return w.listResourceIdentifiersInBaseFolder(repoPath, baseFolder)
@@ -300,6 +326,11 @@ func (w *BranchWorker) commitAndPush(
 
 	log.Info("Successfully pushed commits")
 
+	// Update metadata after successful push
+	if err := w.updateBranchMetadataFromRepo(repo.Repository); err != nil {
+		log.V(1).Error(err, "Failed to update branch metadata after push")
+	}
+
 	// Metrics
 	metrics.GitOperationsTotal.Add(w.ctx, int64(len(events)))
 	metrics.CommitsTotal.Add(w.ctx, 1)
@@ -380,6 +411,96 @@ func (w *BranchWorker) getDefaultPushInterval() time.Duration {
 		return TestPushInterval
 	}
 	return ProductionPushInterval
+}
+
+// GetBranchMetadata returns current branch status without cloning.
+// This is a fast operation that uses cached metadata.
+func (w *BranchWorker) GetBranchMetadata() (bool, string, time.Time) {
+	w.metaMu.RLock()
+	defer w.metaMu.RUnlock()
+	return w.branchExists, w.lastCommitSHA, w.lastFetchTime
+}
+
+// ensureRepositoryInitialized ensures the worker's repository is cloned and ready.
+// This is called before any repository operations to avoid multiple clones.
+func (w *BranchWorker) ensureRepositoryInitialized(ctx context.Context) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	// Build the expected repository path
+	repoPath := filepath.Join("/tmp", "gitops-reverser-workers",
+		w.GitRepoConfigNamespace, w.GitRepoConfigRef, w.Branch)
+
+	// Check if repository already exists and is valid
+	existingRepo := tryOpenExistingRepo(repoPath, w.Log)
+	if existingRepo != nil {
+		// Update metadata from existing repository
+		return w.updateBranchMetadataFromRepo(existingRepo)
+	}
+
+	// Repository doesn't exist, need to clone
+	repoConfig, err := w.getGitRepoConfig(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get GitRepoConfig for initialization: %w", err)
+	}
+
+	auth, err := getAuthFromSecret(ctx, w.Client, repoConfig)
+	if err != nil {
+		return fmt.Errorf("failed to get auth for initialization: %w", err)
+	}
+
+	// Clone repository
+	_, err = Clone(repoConfig.Spec.RepoURL, repoPath, auth)
+	if err != nil {
+		return fmt.Errorf("failed to clone repository during initialization: %w", err)
+	}
+
+	// Open the newly created repository and update metadata
+	repo, err := git.PlainOpen(repoPath)
+	if err != nil {
+		return fmt.Errorf("failed to open cloned repository: %w", err)
+	}
+
+	return w.updateBranchMetadataFromRepo(repo)
+}
+
+// updateBranchMetadataFromRepo updates cached metadata from a repository (internal use only).
+func (w *BranchWorker) updateBranchMetadataFromRepo(repo *git.Repository) error {
+	w.metaMu.Lock()
+	defer w.metaMu.Unlock()
+
+	// Try to get HEAD
+	head, err := repo.Head()
+	if err != nil {
+		// Repository might be empty (no commits yet)
+		if errors.Is(err, plumbing.ErrReferenceNotFound) {
+			w.branchExists = false
+			w.lastCommitSHA = ""
+			w.lastFetchTime = time.Now()
+			return nil
+		}
+		return fmt.Errorf("failed to get HEAD: %w", err)
+	}
+
+	// Check if branch exists on remote
+	remoteBranchRef := plumbing.NewRemoteReferenceName("origin", w.Branch)
+	ref, err := repo.Reference(remoteBranchRef, true)
+
+	switch {
+	case err == nil:
+		// Branch exists on remote
+		w.branchExists = true
+		w.lastCommitSHA = ref.Hash().String()
+	case errors.Is(err, plumbing.ErrReferenceNotFound):
+		// Branch doesn't exist yet, use HEAD
+		w.branchExists = false
+		w.lastCommitSHA = head.Hash().String()
+	default:
+		return fmt.Errorf("failed to check branch reference: %w", err)
+	}
+
+	w.lastFetchTime = time.Now()
+	return nil
 }
 
 // parseIdentifierFromPath and getAuthFromSecret are defined in helpers.go
