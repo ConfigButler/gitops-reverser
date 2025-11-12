@@ -27,16 +27,15 @@ make test-e2e     # E2E tests (creates Kind cluster)
 
 ## Architecture
 
-Two containers:
-- **`Dockerfile.ci`** - CI base (Go tools, no Docker) - Used in GitHub Actions
-- **`Dockerfile`** - Full dev (extends CI base, adds Docker+Kind) - Local only
+Multi-stage Dockerfile:
+- **`ci` stage** - CI base (Go tools, no Docker) - Used in GitHub Actions
+- **`dev` stage** - Full dev (extends ci stage, adds Docker+Kind) - Local only
 
-Local dev builds CI base automatically (`initializeCommand`), no GHCR pulls needed.
+Local dev builds directly from dev stage, no separate initialization needed.
 
 ## Files
 
-- `Dockerfile.ci` - CI base container
-- `Dockerfile` - Full dev container  
+- `Dockerfile` - Multi-stage container (ci and dev stages)
 - `devcontainer.json` - VS Code configuration
 - `README.md` - This file
 

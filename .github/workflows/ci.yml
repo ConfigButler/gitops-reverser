@@ -54,7 +54,8 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: .devcontainer/Dockerfile.ci
+          file: .devcontainer/Dockerfile
+          target: ci
           push: true
           load: true # So that we can run the next step without pulling
           tags: |
@@ -106,7 +107,6 @@ jobs:
           cache-from: type=gha,scope=devcontainer
           cache-to: type=gha,scope=devcontainer,mode=max
           build-args: |
-            CI_BASE_IMAGE=${{ needs.build-ci-container.outputs.image }}
             BUILDKIT_CONTEXT_KEEP_GIT_DIR=1
 
       - name: Validate dev container tools
@@ -176,7 +176,7 @@ jobs:
         run: git config --global --add safe.directory /__w/gitops-reverser/gitops-reverser
 
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v8
+        uses: golangci/golangci-lint-action@v9
         with:
           install-mode: none
           skip-cache: false

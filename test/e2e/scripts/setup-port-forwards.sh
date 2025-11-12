@@ -5,6 +5,12 @@ set -euo pipefail
 GITEA_NAMESPACE=${GITEA_NAMESPACE:-gitea-e2e}
 PROMETHEUS_NAMESPACE=${PROMETHEUS_NAMESPACE:-prometheus-e2e}
 
+# Cleanup old port-forwards
+echo "🧹 Cleaning up old port-forwards..."
+pkill -f "kubectl port-forward.*19090" || true
+pkill -f "kubectl port-forward.*13000" || true
+sleep 1
+
 echo "🔌 Setting up port-forwards for e2e testing..."
 
 # Wait for pods to be ready before attempting port-forwards
@@ -44,34 +50,47 @@ setup_port_forward() {
     fi
 
     echo "🔌 Starting ${service_name} port-forward..."
-    nohup kubectl port-forward --address 0.0.0.0 -n "$namespace" "svc/${service}" "${port}:${port}" >/dev/null 2>&1 &
+    local pf_log="/tmp/${service_name}-pf.log"
+    kubectl port-forward --address 127.0.0.1 -n "$namespace" "svc/${service}" "${port}:${port}" > "$pf_log" 2>&1 &
+    local pf_pid=$!
     
     # Give it time to establish
-    sleep 3
+    sleep 2
     
     # Verify port-forward is working
     echo "⏳ Verifying ${service_name} port-forward..."
-    for i in {1..5}; do
-        if curl -s -f "$health_url" >/dev/null 2>&1; then
+    for i in {1..10}; do
+        # Check if port-forward process is still alive
+        if ! kill -0 $pf_pid 2>/dev/null; then
+            echo "❌ ${service_name} port-forward process died"
+            if [ -f "$pf_log" ]; then
+                echo "   Error log:"
+                cat "$pf_log" | sed 's/^/   /'
+            fi
+            return 1
+        fi
+        
+        # Try to connect to the port
+        if timeout 2 bash -c "echo >/dev/tcp/localhost/${port}" 2>/dev/null; then
             echo "✅ ${service_name} port-forward verified and working"
             return 0
         fi
         
-        if [ $i -eq 5 ]; then
-            echo "❌ Failed to verify ${service_name} port-forward after 5 attempts"
+        if [ $i -eq 10 ]; then
+            echo "❌ Failed to verify ${service_name} port-forward after 10 attempts"
             return 1
         fi
         
-        echo "   Attempt $i/5 failed, retrying in 2 seconds..."
-        sleep 2
+        echo "   Attempt $i/10 failed, retrying in 1 second..."
+        sleep 1
     done
 }
 
 # Setup port-forwards
-setup_port_forward "Prometheus" "$PROMETHEUS_NAMESPACE" "prometheus" "9090" "http://localhost:9090/-/ready"
-setup_port_forward "Gitea" "$GITEA_NAMESPACE" "gitea-http" "3000" "http://localhost:3000/api/v1/version"
+setup_port_forward "Prometheus" "$PROMETHEUS_NAMESPACE" "prometheus" "19090" "http://localhost:19090/-/ready"
+setup_port_forward "Gitea" "$GITEA_NAMESPACE" "gitea-http" "13000" "http://localhost:13000/api/v1/version"
 
 echo ""
-echo "📊 Prometheus: http://localhost:9090"
-echo "📁 Gitea: http://localhost:3000"
+echo "📊 Prometheus: http://localhost:19090"
+echo "📁 Gitea: http://localhost:13000"
 echo "✅ Port-forwards ready for e2e testing"

@@ -3,31 +3,33 @@
   "build": {
     "dockerfile": "Dockerfile",
     "context": "..",
-    "args": {
-      "CI_BASE_IMAGE": "ci-base-local"
-    },
-    "target": ""
+    "target": "dev"
   },
-  "initializeCommand": "cd .devcontainer && docker build -f Dockerfile.ci -t ci-base-local ..",
   "features": {
+    "ghcr.io/devcontainers/features/common-utils:2": {
+      "userUid": "automatic",
+      "userGid": "automatic",
+      "username": "vscode"
+    },
     "ghcr.io/devcontainers/features/docker-in-docker:2": {
       "moby": false,
       "dockerDashComposeVersion": "v2"
     }
   },
   "runArgs": [
-    "--network=host"
+    "--network=host",
+    "--group-add=docker"
   ],
   "forwardPorts": [
-    3000,
-    9090
+    13000,
+    19090
   ],
   "portsAttributes": {
-    "3000": {
+    "13000": {
       "label": "Gitea",
       "onAutoForward": "notify"
     },
-    "9090": {
+    "19090": {
       "label": "Prometheus",
       "onAutoForward": "notify"
     }
@@ -59,8 +61,8 @@
       ]
     }
   },
-  "postCreateCommand": "docker network create -d=bridge --subnet=172.19.0.0/24 kind || true",
-  "remoteUser": "root",
+  "postCreateCommand": "sudo chmod 666 /var/run/docker.sock || true && docker network create -d=bridge --subnet=172.19.0.0/24 kind || true",
+  "remoteUser": "vscode",
   "mounts": [
     "source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind"
   ]
