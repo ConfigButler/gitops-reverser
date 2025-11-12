@@ -149,6 +149,24 @@ Exposes basic OpenTelemetry metrics. See `config/prometheus/` for example manife
 | [robusta-dev/robusta](https://github.com/robusta-dev/robusta) | A broad observability and automation platform. | **Focused Tool vs. Broad Platform:** Robusta is a large platform. GitOps Reverser is a small, single-purpose utility focused on simplicity and low overhead. | 
 | [bpineau/katafygio](https://github.com/bpineau/katafygio) | Periodically scans the cluster and dumps all resources to a Git repository. | **Event-Driven vs. Snapshot:** Katafygio is a backup tool. GitOps Reverser is event-driven, providing a real-time audit trail. | 
 
+## Development
+
+### DevContainer Setup
+
+This project includes a DevContainer for consistent development environments.
+
+**Linux/macOS:** Works out of the box with Docker Desktop or Docker Engine.
+
+**Windows:** See [`docs/WINDOWS_DEVCONTAINER_SETUP.md`](docs/WINDOWS_DEVCONTAINER_SETUP.md) for Windows-specific setup instructions. TL;DR: Use WSL2 for the best experience, or the devcontainer will automatically fix workspace permissions on startup.
+
+### Running Tests
+
+```bash
+make test        # Unit tests
+make test-e2e    # End-to-end tests (requires Docker)
+make lint        # Linting
+```
+
 ## Contributing
 
 Contributions, issues, and discussions are welcome.

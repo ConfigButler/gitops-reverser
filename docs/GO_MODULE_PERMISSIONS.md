@@ -7,6 +7,17 @@
 **Solution:** Set group permissions with setgid + ACLs on `/go` **before** any Go operations
 **Key Insight:** Both root and vscode users must be in shared `godev` group
 
+## Windows Users: Important Note
+
+**If you're on Windows and experiencing permission issues with the workspace directory**, see [`WINDOWS_DEVCONTAINER_SETUP.md`](WINDOWS_DEVCONTAINER_SETUP.md) for Windows-specific guidance.
+
+The ACL solution described in this document works perfectly for the `/go` directory (container filesystem) but **does not apply to the `/workspace` directory when mounted from Windows**. Windows filesystems don't support Linux ACLs, so a different approach is needed for the workspace.
+
+**TL;DR for Windows users:**
+- The `/go` directory (Go modules cache) works fine with ACLs ✅
+- The `/workspace` directory (your code) needs the `postCreateCommand` fix ✅
+- Best solution: Use WSL2 and clone the repo inside WSL2 for full Linux compatibility
+
 ## Correct Implementation Order
 
 ```dockerfile
