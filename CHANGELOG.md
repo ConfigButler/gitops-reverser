@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.2](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.10.1...gitops-reverser-v0.10.2) (2025-11-12)
+
+
+### Bug Fixes
+
+* Getting the right status ([7b26b6c](https://github.com/ConfigButler/gitops-reverser/commit/7b26b6c26a2a07546b9d47fe0a501f9447949457))
+* Let's see if we can get back window support for windows devs ([98e6f26](https://github.com/ConfigButler/gitops-reverser/commit/98e6f26439806efab39ab2b1dd3d1b5d0010628a))
+* Now it starts to make sense ([8e3e036](https://github.com/ConfigButler/gitops-reverser/commit/8e3e036044c85655f96a3644151478df86af0536))
+
 ## [0.10.1](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.10.0...gitops-reverser-v0.10.1) (2025-11-11)
 
 
