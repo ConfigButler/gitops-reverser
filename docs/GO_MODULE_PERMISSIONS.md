@@ -1,5 +1,35 @@
 # Go Development Directory Permissions Solution
 
+## Summary
+
+**Problem:** Permission errors when running `go mod tidy` in devcontainer
+**Root Cause:** Go operations run as root during build, creating root-owned files in `/go`
+**Solution:** Set group permissions with setgid + ACLs on `/go` **before** any Go operations
+**Key Insight:** Both root and vscode users must be in shared `godev` group
+
+## Correct Implementation Order
+
+```dockerfile
+# 1. Create shared group
+RUN groupadd --gid 2000 godev
+
+# 2. Set permissions BEFORE any Go operations
+RUN chgrp -R godev /go && \
+    chmod -R 2775 /go && \
+    setfacl -d -m g:godev:rwx /go && \
+    setfacl -d -m u::rwx /go && \
+    setfacl -d -m o::rx /go
+
+# 3. Now run Go operations - they inherit correct permissions
+RUN go install <tools>...
+RUN go mod download
+
+# 4. In dev stage, add vscode user to godev group
+RUN usermod -aG godev vscode
+```
+
+**Critical:** Permissions must be set **before** the first Go operation that writes to `/go`.
+
 ## Problem
 
 When running `go mod tidy` or other Go module commands in the devcontainer, permission errors occurred:
@@ -37,16 +67,26 @@ Instead of changing ownership of all files, we use **group permissions** with th
 RUN groupadd --gid 2000 godev
 ```
 
-#### 2. Set Group Permissions Before Download (CI Stage)
+#### 2. Set Group Permissions Before Any Go Operations (CI Stage)
+
+**CRITICAL:** Permissions must be set **before** any `go install`, `go mod download`, or other Go operations that write to `/go`.
 
 ```dockerfile
-# Set group permissions BEFORE go mod download
+# Create godev group first
+RUN groupadd --gid 2000 godev
+
+# Set group permissions BEFORE any Go operations
 RUN chgrp -R godev /go && \
     chmod -R 2775 /go && \
     setfacl -d -m g:godev:rwx /go && \
     setfacl -d -m u::rwx /go && \
-    setfacl -d -m o::rx /go && \
-    go mod download
+    setfacl -d -m o::rx /go
+
+# Now all Go operations will inherit correct permissions
+RUN go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.19.0 \
+    && go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
+
+# ... other Go operations like go mod download
 ```
 
 Key flags:
@@ -66,9 +106,23 @@ RUN groupadd --gid 1000 vscode \
     && usermod -aG godev vscode
 ```
 
-#### 4. Permissions Preserved in Dev Stage
+#### 4. Dev Stage Inherits Permissions
 
-The permissions set in the CI stage are automatically preserved when building the dev stage (since it uses `FROM ci AS dev`). No additional permission commands are needed in the dev stage - the setgid bit and default ACLs continue to work for any new files created by `go install` commands or during development.
+When building the dev stage with `FROM ci AS dev`, the filesystem state from the CI stage is preserved, including:
+- The `/go` directory structure
+- Group ownership (godev)
+- The setgid bit (2775 permissions)
+- Default ACLs
+
+**No need to re-apply ACLs in the dev stage** - they are automatically inherited from the CI stage. Any `go install` commands in the dev stage will automatically use the ACLs already set on `/go`.
+
+```dockerfile
+# Install Delve debugger for Go debugging in VSCode
+# ACLs from CI stage are preserved, so no need to re-apply
+RUN go install github.com/go-delve/delve/cmd/dlv@latest
+```
+
+**Important Note:** The original documentation incorrectly stated that ACLs need to be re-applied in each Docker stage. This is not true - Docker multi-stage builds preserve filesystem metadata including ACLs when using `FROM <stage> AS <newstage>`.
 
 The `2775` permission means:
 - `2` - Setgid bit (new files inherit group)
@@ -76,7 +130,9 @@ The `2775` permission means:
 - `7` - Group has rwx
 - `5` - Others have rx (read, execute only)
 
-**Important:** The key insight is to apply permissions to the entire `/go` directory tree **BEFORE** running `go mod download`. This way, all subdirectories created during the download automatically inherit both the setgid bit and the default ACLs.
+**Important:** The key insight is to apply permissions to the entire `/go` directory tree **BEFORE** running any Go operations (`go install`, `go mod download`, etc.). This way, all subdirectories created automatically inherit both the setgid bit and the default ACLs.
+
+**Common Mistake:** Setting permissions after some Go operations have already run. This leaves some files/directories with incorrect permissions. Always set permissions first, then run all Go operations.
 
 **Why This Works:**
 1. `chmod -R 2775 /go` - Recursively sets the setgid bit on all existing directories, which is then inherited by new subdirectories
