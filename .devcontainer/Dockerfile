@@ -54,13 +54,22 @@ RUN curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/i
 # Set working directory
 WORKDIR /workspace
 
-# Install Go tools used by the project (using @version doesn't need go.mod)
-RUN go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.19.0 \
-    && go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
-
 # Create godev group for shared Go development directory access
 # This allows both root (during build) and vscode user (during dev) to write to /go
 RUN groupadd --gid 2000 godev
+
+# Set group permissions on /go directory for shared access
+# This MUST be done BEFORE any go mod download or go install operations
+RUN chgrp -R godev /go && \
+    chmod -R 2775 /go && \
+    setfacl -d -m g:godev:rwx /go && \
+    setfacl -d -m u::rwx /go && \
+    setfacl -d -m o::rx /go
+
+# Install Go tools used by the project (using @version doesn't need go.mod)
+# These run AFTER permissions are set to ensure proper group ownership
+RUN go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.19.0 \
+    && go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
 
 # Initialize golangci-lint cache by running it once on an empty directory
 # This downloads linter dependencies without needing source code
@@ -73,14 +82,8 @@ RUN mkdir -p /tmp/golangci-init && cd /tmp/golangci-init \
 # Pre-download Go modules for caching - placed AFTER tool installation
 # This layer will be cached and only rebuilt when go.mod/go.sum changes
 # Moving this down prevents tool reinstallation when dependencies change
-# Set group permissions BEFORE go mod download so downloaded files inherit gomod group
 COPY go.mod go.sum ./
-RUN chgrp -R godev /go && \
-    chmod -R 2775 /go && \
-    setfacl -d -m g:godev:rwx /go && \
-    setfacl -d -m u::rwx /go && \
-    setfacl -d -m o::rx /go && \
-    go mod download
+RUN go mod download
 
 # Verify installations
 RUN echo "=== Tool Versions ===" \
@@ -112,6 +115,7 @@ RUN curl -Lo /usr/local/bin/kind https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kin
     && chmod +x /usr/local/bin/kind
 
 # Install Delve debugger for Go debugging in VSCode
+# ACLs from CI stage should be preserved, so no need to re-apply
 RUN go install github.com/go-delve/delve/cmd/dlv@latest
 
 # Install VSCode Go extension tools (gopls and staticcheck)
