@@ -116,8 +116,6 @@ var _ = Describe("GitDestination Controller Security", func() {
 				"LastCommitSHA MUST be empty when branch is not allowed (security requirement)")
 			Expect(createdGitDest.Status.LastSyncTime).To(BeNil(),
 				"LastSyncTime MUST be nil when branch is not allowed")
-			Expect(createdGitDest.Status.SyncStatus).To(BeEmpty(),
-				"SyncStatus MUST be empty when branch is not allowed")
 
 			// Cleanup
 			Expect(k8sClient.Delete(ctx, gitDestination)).Should(Succeed())

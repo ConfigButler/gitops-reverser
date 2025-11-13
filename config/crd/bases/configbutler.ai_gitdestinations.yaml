@@ -174,10 +174,6 @@ spec:
                 description: ObservedGeneration is the last generation that was reconciled
                 format: int64
                 type: integer
-              syncStatus:
-                description: 'SyncStatus indicates the current sync state: "idle",
-                  "syncing", or "error".'
-                type: string
             type: object
         required:
         - spec

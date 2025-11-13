@@ -117,7 +117,7 @@ create_repository() {
         -X POST "$API_URL/orgs/$ORG_NAME/repos" \
         -H "Content-Type: application/json" \
         -u "$ADMIN_USER:$ADMIN_PASS" \
-        -d "{\"name\":\"$REPO_NAME\",\"description\":\"E2E Test Repository\",\"private\":false,\"auto_init\":true}")
+        -d "{\"name\":\"$REPO_NAME\",\"description\":\"E2E Test Repository\",\"private\":false,\"auto_init\":false}")
 
     if [[ "$REPO_RESPONSE" == "201" ]]; then
         echo "✅ Repository '$REPO_NAME' created successfully"
