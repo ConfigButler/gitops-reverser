@@ -20,9 +20,13 @@ package git
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 
+	"github.com/go-git/go-git/v5"
 	"github.com/go-logr/logr"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -138,6 +142,60 @@ func TestListResourcesInBaseFolder_MissingGitRepoConfig(t *testing.T) {
 	if err == nil {
 		t.Error("Expected error when GitRepoConfig is missing, but got nil")
 	}
+}
+
+// TestBranchWorker_EmptyRepository tests that BranchWorker properly handles empty repositories
+// that have no commits yet. This is a critical scenario for bootstrapping new repositories.
+func TestBranchWorker_EmptyRepository(t *testing.T) {
+	ctx := context.Background()
+
+	// Create a temporary directory for the empty repository
+	tempDir := t.TempDir()
+	repoPath := filepath.Join(tempDir, "empty-repo")
+
+	// Initialize an empty git repository (no initial commit)
+	_, err := git.PlainInit(repoPath, false)
+	require.NoError(t, err)
+
+	// Create a BranchWorker for this empty repository
+	scheme := runtime.NewScheme()
+	_ = clientgoscheme.AddToScheme(scheme)
+	_ = configv1alpha1.AddToScheme(scheme)
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	logger := logr.Discard()
+	worker := NewBranchWorker(client, logger, "test-repo", "default", "main")
+
+	// Create a GitRepoConfig in the fake client pointing to our empty repo
+	repoConfig := &configv1alpha1.GitRepoConfig{
+		Spec: configv1alpha1.GitRepoConfigSpec{
+			RepoURL: "file://" + repoPath,
+		},
+	}
+	repoConfig.Name = "test-repo"
+	repoConfig.Namespace = "default"
+	err = client.Create(ctx, repoConfig)
+	require.NoError(t, err)
+
+	// Test ensureRepositoryInitialized with empty repo
+	err = worker.ensureRepositoryInitialized(ctx)
+	require.NoError(t, err, "ensureRepositoryInitialized should succeed with empty repository")
+
+	// Test GetBranchMetadata - should return branchExists=false for empty repo
+	exists, sha, fetchTime := worker.GetBranchMetadata()
+	assert.False(t, exists, "Branch should not exist in empty repository")
+	assert.Empty(t, sha, "SHA should be empty for empty repository")
+	assert.False(t, fetchTime.IsZero(), "Fetch time should be set")
+
+	// Test ListResourcesInBaseFolder - should work with empty repo
+	resources, err := worker.ListResourcesInBaseFolder("")
+	require.NoError(t, err, "ListResourcesInBaseFolder should succeed with empty repository")
+	assert.Empty(t, resources, "Should return empty resources list for empty repository")
+
+	// Verify metadata was updated after ListResourcesInBaseFolder
+	exists2, sha2, fetchTime2 := worker.GetBranchMetadata()
+	assert.False(t, exists2, "Branch should still not exist after listing")
+	assert.Empty(t, sha2, "SHA should still be empty after listing")
+	assert.True(t, fetchTime2.After(fetchTime), "Fetch time should be updated after listing")
 }
 
 // TestBranchWorker_IdentityFields verifies worker identity is set correctly.

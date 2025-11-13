@@ -117,10 +117,7 @@ func (r *GitDestinationReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	}
 
 	// Update repository status (branch existence, SHA tracking)
-	if err := r.updateRepositoryStatus(ctx, &dest, &grc, log); err != nil {
-		log.Error(err, "Failed to update repository status")
-		// Don't fail reconciliation, just log and continue
-	}
+	r.updateRepositoryStatus(ctx, &dest, &grc, log)
 
 	// Register with worker and event stream
 	r.registerWithWorkerAndEventStream(ctx, &dest, repoNS, log)
@@ -215,7 +212,6 @@ func (r *GitDestinationReconciler) validateBranch(
 		dest.Status.BranchExists = false
 		dest.Status.LastCommitSHA = ""
 		dest.Status.LastSyncTime = nil
-		dest.Status.SyncStatus = ""
 		result, _ := r.updateStatusAndRequeue(ctx, dest, RequeueShortInterval)
 		return &result
 	}
@@ -367,51 +363,41 @@ func (r *GitDestinationReconciler) registerEventStream(
 
 // updateRepositoryStatus checks repository and branch status, updating GitDestination status fields.
 func (r *GitDestinationReconciler) updateRepositoryStatus(
-	ctx context.Context,
+	_ context.Context,
 	dest *configbutleraiv1alpha1.GitDestination,
-	grc *configbutleraiv1alpha1.GitRepoConfig,
+	_ *configbutleraiv1alpha1.GitRepoConfig,
 	log logr.Logger,
-) error {
-	log.Info("Updating repository status", "repo", grc.Spec.RepoURL, "branch", dest.Spec.Branch)
+) {
+	log.Info("Updating repository status from BranchWorker")
 
-	// Mark sync as in progress
-	dest.Status.SyncStatus = "syncing"
-
-	// Get authentication
-	auth, err := git.GetAuthFromSecret(ctx, r.Client, grc)
-	if err != nil {
-		log.Error(err, "Failed to get authentication for repository")
-		dest.Status.SyncStatus = "error"
-		r.setCondition(dest, metav1.ConditionFalse, GitDestinationReasonRepositoryUnavailable,
-			fmt.Sprintf("Failed to get authentication: %v", err))
-		return err
+	// Get the branch worker for this destination
+	repoNS := dest.Spec.RepoRef.Namespace
+	if repoNS == "" {
+		repoNS = dest.Namespace
 	}
 
-	// Build work directory for status checking (using UID for uniqueness)
-	workDir := filepath.Join("/tmp", "gitops-reverser-status", string(dest.UID))
+	worker, exists := r.WorkerManager.GetWorkerForDestination(
+		dest.Spec.RepoRef.Name, repoNS, dest.Spec.Branch,
+	)
 
-	// Get branch status
-	status, err := git.GetBranchStatus(grc.Spec.RepoURL, dest.Spec.Branch, auth, workDir)
-	if err != nil {
-		log.Error(err, "Failed to get branch status")
-		dest.Status.SyncStatus = "error"
-		dest.Status.LastSyncTime = &metav1.Time{Time: time.Now()}
-		r.setCondition(dest, metav1.ConditionFalse, GitDestinationReasonRepositoryUnavailable,
-			fmt.Sprintf("Failed to check repository: %v", err))
-		return err
+	if !exists {
+		// Worker not yet created - this is normal during initial reconciliation
+		log.V(1).Info("Worker not yet available, will update status on next reconcile")
+		return
 	}
+
+	// Get cached metadata from worker
+	branchExists, lastCommitSHA, lastFetch := worker.GetBranchMetadata()
 
 	// Update status fields
-	dest.Status.BranchExists = status.BranchExists
-	dest.Status.LastCommitSHA = status.LastCommitSHA
-	dest.Status.LastSyncTime = &metav1.Time{Time: time.Now()}
-	dest.Status.SyncStatus = "idle"
+	dest.Status.BranchExists = branchExists
+	dest.Status.LastCommitSHA = lastCommitSHA
+	dest.Status.LastSyncTime = &metav1.Time{Time: lastFetch}
 
-	log.Info("Repository status updated",
-		"branchExists", status.BranchExists,
-		"lastCommitSHA", status.LastCommitSHA)
-
-	return nil
+	log.Info("Repository status updated from worker cache",
+		"branchExists", branchExists,
+		"lastCommitSHA", lastCommitSHA,
+		"lastFetch", lastFetch)
 }
 
 // Note: Worker registration is idempotent - calling RegisterDestination multiple times

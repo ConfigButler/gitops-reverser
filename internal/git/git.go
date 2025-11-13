@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/plumbing/transport"
@@ -70,6 +71,7 @@ type Repo struct {
 
 // Clone clones a Git repository to the specified directory or reuses existing one.
 // If the remote repository is empty (no commits), initializes a local repository instead.
+// Note that go-git has this weird behavior of not beeing able to normally clone an empty repo: https://github.com/go-git/go-git/issues/118#issuecomment-1759167978 (so we wrap around it to 'fix' it)
 func Clone(url, path string, auth transport.AuthMethod) (*Repo, error) {
 	logger := log.FromContext(context.Background())
 	logger.Info("Cloning repository", "url", url, "path", path)
@@ -117,12 +119,14 @@ func cloneOrInitializeRepository(
 ) (*git.Repository, error) {
 	// Clone fresh repository with shallow clone for speed
 	cloneOptions := &git.CloneOptions{
-		URL:      url,
-		Auth:     auth,
-		Depth:    1, // Shallow clone for speed
-		Progress: os.Stdout,
+		URL:        url,
+		Auth:       auth,
+		Depth:      1, // Shallow clone for speed
+		Progress:   os.Stdout,
+		NoCheckout: true, // So now we can always clone! Also if it's empty. But we need to be carefull: if there is no head we should just checkout an orphan branched. And we should off course checkout at the moment that we want to do something.
 	}
 
+	git.Clone()
 	repo, err := git.PlainClone(path, false, cloneOptions)
 	if err != nil {
 		// If clone fails, check if it's because the repository is empty
@@ -132,7 +136,7 @@ func cloneOrInitializeRepository(
 				"url",
 				url,
 			)
-			repo, err = initializeEmptyRepository(path, logger)
+			repo, err = initializeEmptyRepository(url, path, auth, logger)
 			if err != nil {
 				return nil, fmt.Errorf("failed to initialize empty repository: %w", err)
 			}
@@ -189,13 +193,22 @@ func isEmptyRepositoryError(err error) bool {
 
 // initializeEmptyRepository creates a new git repository without an initial commit.
 // The first commit will be created when the first event arrives.
-func initializeEmptyRepository(path string, logger logr.Logger) (*git.Repository, error) {
+func initializeEmptyRepository(url, path string, auth transport.AuthMethod, logger logr.Logger) (*git.Repository, error) {
 	logger.Info("Initializing empty repository", "path", path)
 
 	// Initialize the repository
 	repo, err := git.PlainInit(path, false)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize repository: %w", err)
+	}
+
+	// Add the remote for the empty repository
+	_, err = repo.CreateRemote(&config.RemoteConfig{
+		Name: "origin",
+		URLs: []string{url},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to add remote to empty repository: %w", err)
 	}
 
 	logger.Info("Successfully initialized empty repository")
@@ -434,9 +447,17 @@ func (r *Repo) generateLocalCommits(ctx context.Context, events []Event) (int, e
 	}
 
 	// Ensure we are on the correct branch
-	if err := r.Checkout(r.branch); err != nil {
-		return 0, fmt.Errorf("failed to checkout branch %s: %w", r.branch, err)
+	// For empty repositories, skip checkout as the first commit will create the branch
+	if _, headErr := r.Head(); headErr == nil {
+		// Repository has commits, ensure we're on the correct branch
+		if err := r.Checkout(r.branch); err != nil {
+			return 0, fmt.Errorf("failed to checkout branch %s: %w", r.branch, err)
+		}
+	} else if !errors.Is(headErr, plumbing.ErrReferenceNotFound) {
+		// Unexpected error getting HEAD
+		return 0, fmt.Errorf("failed to get HEAD: %w", headErr)
 	}
+	// If HEAD doesn't exist (empty repo), proceed without checkout - first commit will create branch
 
 	commitsCreated := 0
 	for _, event := range events {
@@ -821,9 +842,21 @@ func (r *Repo) Push(ctx context.Context) error {
 		return errors.New("repository is not initialized")
 	}
 
-	err := r.Repository.Push(
-		&git.PushOptions{RemoteName: r.remoteName, Auth: r.auth, Progress: os.Stdout},
-	)
+	pushOptions := &git.PushOptions{
+		RemoteName: r.remoteName,
+		Auth:       r.auth,
+		Progress:   os.Stdout,
+	}
+
+	// For empty repositories or new branches, specify the refspec explicitly
+	// This ensures the branch gets pushed even if it's the first branch in the repository
+	localRef := plumbing.NewBranchReferenceName(r.branch)
+	remoteRef := plumbing.NewRemoteReferenceName(r.remoteName, r.branch)
+	pushOptions.RefSpecs = []config.RefSpec{
+		config.RefSpec(fmt.Sprintf("%s:%s", localRef.String(), remoteRef.String())),
+	}
+
+	err := r.Repository.Push(pushOptions)
 
 	if err != nil {
 		if isNonFastForwardError(err) {

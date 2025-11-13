@@ -338,6 +338,20 @@ func (r *GitRepoConfigReconciler) checkRemoteConnectivity(
 	})
 
 	if err != nil {
+		// Check if this is an empty repository (which is valid for GitOps Reverser to bootstrap)
+		errStr := err.Error()
+		if strings.Contains(errStr, "empty repository") ||
+			strings.Contains(errStr, "repository is empty") ||
+			strings.Contains(errStr, "no commits") ||
+			strings.Contains(errStr, "does not have any commits yet") {
+			log.Info(
+				"Repository is empty but accessible - this is valid for GitOps Reverser bootstrap",
+				"repoURL",
+				repoURL,
+			)
+			return 0, nil
+		}
+
 		log.Error(err, "Remote connectivity check failed", "repoURL", repoURL)
 		return 0, fmt.Errorf("failed to connect to repository: %w", err)
 	}
