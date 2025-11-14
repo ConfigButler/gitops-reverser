@@ -26,7 +26,7 @@ import (
 	"time"
 
 	"github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -49,25 +49,31 @@ func TestRaceConditionIntegration(t *testing.T) {
 	localRepoPath := filepath.Join(tempDir, "local")
 	remoteRepoPath := filepath.Join(tempDir, "remote")
 
-	// Initialize "remote" repository
-	remoteRepo, err := git.PlainInitWithOptions(remoteRepoPath, &git.PlainInitOptions{
-		Bare: false, // Must be non-bare to simulate a checked-out branch
-		InitOptions: git.InitOptions{
-			DefaultBranch: plumbing.Main,
-		}})
+	// Initialize "remote" repository as bare
+	_, err := git.PlainInit(remoteRepoPath, true) // bare repo
 	require.NoError(t, err)
 
-	// Allow push to the checked-out branch for this test remote
-	remoteConfig, err := remoteRepo.Config()
-	require.NoError(t, err)
-	remoteConfig.Raw.SetOption("receive", "", "denyCurrentBranch", "updateInstead")
-	err = remoteRepo.SetConfig(remoteConfig)
+	// Create a temp repo to initialize the remote
+	tempRepoPath := filepath.Join(tempDir, "temp")
+	tempRepo, err := git.PlainInit(tempRepoPath, false)
 	require.NoError(t, err)
 
-	err = createInitialCommit(remoteRepo, remoteRepoPath)
+	err = createInitialCommit(tempRepo, tempRepoPath)
 	require.NoError(t, err)
 
-	// Now we can clone the 'local' repo that also has the initial commit
+	// Push to remote
+	_, err = tempRepo.CreateRemote(&config.RemoteConfig{
+		Name: "origin",
+		URLs: []string{remoteRepoPath},
+	})
+	require.NoError(t, err)
+
+	err = tempRepo.Push(&git.PushOptions{
+		RemoteName: "origin",
+	})
+	require.NoError(t, err)
+
+	// Now clone the 'local' repo from the remote
 	localRepo, err := git.PlainClone(localRepoPath, false, &git.CloneOptions{
 		URL: remoteRepoPath,
 	})
@@ -119,14 +125,17 @@ func TestRaceConditionIntegration(t *testing.T) {
 
 		// Step 3: Simulate another process updating the remote repository
 		// This creates the race condition scenario
-		err = simulateRemoteUpdate(remoteRepoPath, remoteRepo)
+		err = simulateRemoteUpdate(remoteRepoPath)
 		require.NoError(t, err)
 
 		// Step 4: Attempt to push commits - this should trigger race condition resolution
-		err = repo.TryPushCommits(ctx, "main", events)
+		result, err := WriteEvents(ctx, repo.path, "main", "main", events, repo.auth)
 
 		// The operation should succeed after conflict resolution
-		require.NoError(t, err, "TryPushCommits should succeed after conflict resolution")
+		require.NoError(t, err, "WriteEvents should succeed after conflict resolution")
+		require.Equal(t, 2, result.CommitsCreated)
+		require.GreaterOrEqual(t, result.Failures, 1)
+		require.GreaterOrEqual(t, len(result.ConflictPulls), 1)
 
 		// Step 5: Verify the final state
 		// Check that files were created correctly
@@ -177,7 +186,7 @@ func TestRaceConditionIntegration(t *testing.T) {
 		// Test various error scenarios
 
 		// Test with empty events
-		err := repo.TryPushCommits(ctx, "main", []Event{})
+		_, err := WriteEvents(ctx, repo.path, "main", "main", []Event{}, repo.auth)
 		require.NoError(t, err, "Should handle empty events gracefully")
 
 		// Test with invalid object (this should be handled gracefully)
@@ -197,7 +206,8 @@ func TestRaceConditionIntegration(t *testing.T) {
 		}
 
 		// This might fail, but shouldn't panic
-		_ = repo.TryPushCommits(ctx, "main", []Event{invalidEvent})
+		_, err = WriteEvents(ctx, repo.path, "main", "main", []Event{invalidEvent}, repo.auth)
+		_ = err
 	})
 }
 
@@ -231,7 +241,16 @@ func createInitialCommit(repo *git.Repository, repoPath string) error {
 	return err
 }
 
-func simulateRemoteUpdate(remoteRepoPath string, remoteRepo *git.Repository) error {
+func simulateRemoteUpdate(remoteRepoPath string) error {
+	// Create a temp repo to simulate remote update
+	tempRepoPath := filepath.Join(filepath.Dir(remoteRepoPath), "temp-remote")
+	tempRepo, err := git.PlainClone(tempRepoPath, false, &git.CloneOptions{
+		URL: remoteRepoPath,
+	})
+	if err != nil {
+		return err
+	}
+
 	conflictingService := &unstructured.Unstructured{
 		Object: map[string]interface{}{
 			"apiVersion": "v1",
@@ -263,9 +282,9 @@ func simulateRemoteUpdate(remoteRepoPath string, remoteRepo *git.Repository) err
 		Name:      "conflicting-service",
 	}
 	filePath := identifier.ToGitPath()
-	fullPath := filepath.Join(remoteRepoPath, filePath)
+	fullPath := filepath.Join(tempRepoPath, filePath)
 
-	err := os.MkdirAll(filepath.Dir(fullPath), 0750)
+	err = os.MkdirAll(filepath.Dir(fullPath), 0750)
 	if err != nil {
 		return err
 	}
@@ -281,7 +300,7 @@ func simulateRemoteUpdate(remoteRepoPath string, remoteRepo *git.Repository) err
 	}
 
 	// Commit and push the change
-	worktree, err := remoteRepo.Worktree()
+	worktree, err := tempRepo.Worktree()
 	if err != nil {
 		return err
 	}
@@ -298,7 +317,14 @@ func simulateRemoteUpdate(remoteRepoPath string, remoteRepo *git.Repository) err
 			When:  time.Now(),
 		},
 	})
+	if err != nil {
+		return err
+	}
 
+	// Push to remote
+	err = tempRepo.Push(&git.PushOptions{
+		RemoteName: "origin",
+	})
 	return err
 }
 
