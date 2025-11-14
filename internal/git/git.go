@@ -16,7 +16,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package git provides Git repository operations for the GitOps Reverser controller.
+// Package git provides Git repository operations and abstractions for the GitOps Reverser controller.
 package git
 
 import (
@@ -71,7 +71,7 @@ type Repo struct {
 
 // Clone clones a Git repository to the specified directory or reuses existing one.
 // If the remote repository is empty (no commits), initializes a local repository instead.
-// Note that go-git has this weird behavior of not beeing able to normally clone an empty repo: https://github.com/go-git/go-git/issues/118#issuecomment-1759167978 (so we wrap around it to 'fix' it)
+// Note that go-git has this weird behavior of not beeing able to normally clone an empty repo: https://github.com/go-git/go-git/issues/118#issuecomment-1759167978 (so we wrap around it to 'fix' it).
 func Clone(url, path string, auth transport.AuthMethod) (*Repo, error) {
 	logger := log.FromContext(context.Background())
 	logger.Info("Cloning repository", "url", url, "path", path)
@@ -126,7 +126,6 @@ func cloneOrInitializeRepository(
 		NoCheckout: true, // So now we can always clone! Also if it's empty. But we need to be carefull: if there is no head we should just checkout an orphan branched. And we should off course checkout at the moment that we want to do something.
 	}
 
-	git.Clone()
 	repo, err := git.PlainClone(path, false, cloneOptions)
 	if err != nil {
 		// If clone fails, check if it's because the repository is empty
@@ -193,7 +192,11 @@ func isEmptyRepositoryError(err error) bool {
 
 // initializeEmptyRepository creates a new git repository without an initial commit.
 // The first commit will be created when the first event arrives.
-func initializeEmptyRepository(url, path string, auth transport.AuthMethod, logger logr.Logger) (*git.Repository, error) {
+func initializeEmptyRepository(
+	url, path string,
+	_ transport.AuthMethod,
+	logger logr.Logger,
+) (*git.Repository, error) {
 	logger.Info("Initializing empty repository", "path", path)
 
 	// Initialize the repository
