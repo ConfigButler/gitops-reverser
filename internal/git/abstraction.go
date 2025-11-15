@@ -46,8 +46,8 @@ var (
 
 type BranchInfo struct {
 	ShortName string // e.g., "main"
-	Sha       string // commit hash (can be empty for an unborn branch)
-	Unborn    bool   // true for empty repos / or that don't have commits on the default branch: pushing this branch to remote will create an orphaned branch
+	Sha       string // commit hash, normally the tip of the default branch. But will be empty ("") for an unborn branch that is going to be orphaned branch (if the default branch does not exist)
+	Unborn    bool   // Is true for branches that don't have commits yet: only HEAD is configured to it
 }
 
 // RepoInfo represents high-level repository information.
@@ -145,25 +145,13 @@ func PrepareBranch(ctx context.Context, repoURL, repoPath, targetBranchName stri
 		logger.Info("Reusing existing repository", "path", repoPath)
 		repo = existingRepo
 	} else {
-		repo, err = initEmptyRepo(repoURL, repoPath, logger)
+		repo, err = initEmptyRepo(repoURL, repoPath, targetBranchName, logger)
 		if err != nil {
 			return nil, err
 		}
 	}
 
-	// Run the lightweigh check so that we know the defaultbranch
-	repoInfo, err := CheckRepo(ctx, repoURL, auth)
-	if err != nil {
-		return nil, fmt.Errorf("failed to run CheckRepo: %w", err)
-	}
-
-	// This works: but if we could drop the name from the pull report... -> it woudl require a bit of fidling with the code but other than that I don't see a problem. Perhaps with checkout? We only need the origin HEAD to base a new feature branch on
-	defaultBranchName := ""
-	if repoInfo.DefaultBranch != nil {
-		defaultBranchName = repoInfo.DefaultBranch.ShortName
-	}
-
-	return flexPull(ctx, repo, targetBranchName, defaultBranchName, auth, logger, repoPath)
+	return flexPull(ctx, repo, targetBranchName, auth)
 }
 
 // GetDefaultBranch reads the locally cached default branch
@@ -191,7 +179,7 @@ func GetDefaultBranch(r *git.Repository, remoteName string) (plumbing.ReferenceN
 }
 
 // getPreviousHeadSha retrieves the current HEAD SHA before operations.
-func getHEADCommitHash(repo *git.Repository) (plumbing.Hash, error) {
+func getHeadCommitHash(repo *git.Repository) (plumbing.Hash, error) {
 	head, err := repo.Head()
 	if err != nil {
 		return plumbing.ZeroHash, err
@@ -200,69 +188,54 @@ func getHEADCommitHash(repo *git.Repository) (plumbing.Hash, error) {
 	return head.Hash(), nil
 }
 
-// flexPull does everything it can to bring the repo in a state where you can push events (checking different remotes, creating feature branches and even creation of root branches)
-func flexPull(ctx context.Context, repo *git.Repository, targetBranch, defaultBranch string, auth transport.AuthMethod, logger logr.Logger, repoPath string) (*PullReport, error) {
-	// Get the current sha (only if possible: &plumbing.ZeroHash if it's not possible)
-	revisionBefore, err := getHEADCommitHash(repo)
-	if err != nil && !errors.Is(err, plumbing.ErrReferenceNotFound) {
-		return nil, fmt.Errorf("failed to get current revision: %w", err)
-	}
-
-	// See if you can find the target branch
-	unborn := false
-	existsOnRemote := true
-	revisionAfter, err := shallowPull(ctx, repo, targetBranch, auth)
-	if err != nil {
-		if errors.Is(err, ErrRemoteRefNotFoundEmptyRepo) || defaultBranch == targetBranch {
-			// No use to continue on an empty repo
-			revisionAfter, err = createRootBranch(ctx, repo, targetBranch)
-			if err != nil {
-				return nil, fmt.Errorf("failed to create root branch: %w", err)
-			}
-
-			unborn = true
-			existsOnRemote = false
-		} else {
-			if errors.Is(err, ErrRemoteRefNotFound) && targetBranch != defaultBranch {
-				// This remote is not found, so let's try to fetch default
-				revisionAfter, err = shallowPull(ctx, repo, defaultBranch, auth)
-				if errors.Is(err, ErrRemoteRefNotFound) {
-					// Oh dear we don't have default, so still going to create rootbranch
-					revisionAfter, err = createRootBranch(ctx, repo, targetBranch)
-					if err != nil {
-						return nil, fmt.Errorf("failed to create root branch: %w", err)
-					}
-
-					unborn = true
-					existsOnRemote = false
-				} else {
-					err = createFeatureBranch(ctx, repo, targetBranch, revisionAfter)
-					existsOnRemote = false
-					if err != nil {
-						return nil, fmt.Errorf("failed to create new feature branch: %w", err)
-					}
-				}
-			}
-		}
-
-	}
-
+func createPullReport(targetBranch string, before, after plumbing.Hash, remoteExists, unborn bool) *PullReport {
 	// Make sure that a non existing SHA prints as ""
 	printedSha := ""
-	if !plumbing.Hash.IsZero(revisionAfter) {
-		printedSha = revisionAfter.String()
+	if !plumbing.Hash.IsZero(after) {
+		printedSha = after.String()
 	}
 
-	logger.Info("Branch preparation completed", "path", repoPath, "branch", targetBranch)
 	return &PullReport{
-		ExistsOnRemote:  existsOnRemote,
-		IncomingChanges: revisionBefore != revisionAfter,
+		ExistsOnRemote:  remoteExists,
+		IncomingChanges: before != after,
 		HEAD: BranchInfo{
 			ShortName: targetBranch,
 			Sha:       printedSha,
 			Unborn:    unborn,
 		},
-	}, nil
+	}
+}
+
+// flexPull does everything it can to bring the repo in a state where you can push events (checking different remotes, creating feature branches or even create a root/orphaned branch)
+func flexPull(ctx context.Context, repo *git.Repository, targetBranch string, auth transport.AuthMethod) (*PullReport, error) {
+	// Get the current sha (only if possible: &plumbing.ZeroHash if it's not possible)
+	revisionBefore, err := getHeadCommitHash(repo)
+	if err != nil && !errors.Is(err, plumbing.ErrReferenceNotFound) {
+		return nil, fmt.Errorf("failed to get current revision: %w", err)
+	}
+
+	// See if you can find the target branch
+	refSpecSource := fmt.Sprintf("+refs/heads/%s", targetBranch)
+	revisionAfter, err := shallowPull(ctx, repo, refSpecSource, targetBranch, auth)
+	if err == nil {
+		return createPullReport(targetBranch, revisionBefore, revisionAfter, true, false), nil
+	}
+
+	if errors.Is(err, ErrRemoteRefNotFound) {
+		// Let's see if we can fetch HEAD into our target, that would become our feature branch
+		revisionAfter, err = shallowPull(ctx, repo, "+HEAD", targetBranch, auth)
+		if err == nil {
+			return createPullReport(targetBranch, revisionBefore, revisionAfter, false, false), nil
+		}
+	}
+
+	// Failed to fetch from both sources, so let's configure head to be unborn.
+	revisionAfter, err = makeHeadUnborn(ctx, repo)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create root branch: %w", err)
+	}
+
+	return createPullReport(targetBranch, revisionBefore, revisionAfter, false, true), nil
 }
 
 // resolveDefaultBranch uses the List output to find out all the required info of the default branch
@@ -289,7 +262,7 @@ func resolveDefaultBranch(
 }
 
 // initEmptyRepo clones the repository or initializes if empty.
-func initEmptyRepo(repoURL, repoPath string, logger logr.Logger) (*git.Repository, error) {
+func initEmptyRepo(repoURL, repoPath, targetBranchName string, logger logr.Logger) (*git.Repository, error) {
 	// We don't use clone because we might not be allowed to because go-git does not support cloning empty repos, so let's just do the manul thing
 	logger.Info("Initializing empty repository", "path", repoPath)
 
@@ -308,16 +281,35 @@ func initEmptyRepo(repoURL, repoPath string, logger logr.Logger) (*git.Repositor
 		return nil, fmt.Errorf("failed to add remote to empty repository: %w", err)
 	}
 
+	// Create the local targetBranch (for now not pointing at anything)
+	if err := setHead(repo, targetBranchName); err != nil {
+		return nil, err
+	}
+
 	logger.Info("Successfully initialized empty repository")
 	return repo, nil
 }
 
-// createRootBranch is created when there is no default branch to base it on, this happens in repos that don't have a default branch.
-func createRootBranch(_ context.Context, r *git.Repository, branchName string) (plumbing.Hash, error) {
-	if err := setHEAD(r, branchName); err != nil {
-		return plumbing.ZeroHash, err
+// makeHeadUnborn is called when there are no remote branches to base upon, all is cleared and new commits are created as orphaned branch
+func makeHeadUnborn(ctx context.Context, r *git.Repository) (plumbing.Hash, error) {
+	logger := log.FromContext(ctx)
+	logger.Info("Only a computer can do this: undoing birth")
+
+	// Check the reference that HEAD is poiting at: if it exists it should be removed
+	headRef, err := r.Reference(plumbing.HEAD, false)
+	if err != nil {
+		return plumbing.ZeroHash, nil
 	}
 
+	headTarget := headRef.Target()
+	_, err = r.Reference(headTarget, true)
+	if err == nil {
+		logger.Info("Removing reference for HEAD so that branch really becomes unborn")
+		r.Storer.RemoveReference(headTarget)
+	}
+
+	// Also clear the working dir
+	logger.Info("Cleaning working dir")
 	if err := clearIndex(r); err != nil {
 		return plumbing.ZeroHash, err
 	}
@@ -329,14 +321,10 @@ func createRootBranch(_ context.Context, r *git.Repository, branchName string) (
 	return plumbing.ZeroHash, nil // Returning ZeroHash might look weird: but this branch does not get a base commit, so it's actually correct until we have created our first commit
 }
 
-// setHEAD adjusts the HEAD, is used to create unborn branches.
-func setHEAD(r *git.Repository, branchName string) error {
+// setHead adjusts the HEAD, is used to create unborn branches.
+func setHead(r *git.Repository, branchName string) error {
 	newHeadRef := plumbing.NewSymbolicReference(plumbing.HEAD, plumbing.NewBranchReferenceName(branchName))
-	if err := r.Storer.SetReference(newHeadRef); err != nil {
-		return fmt.Errorf("failed to set HEAD for new branch: %w", err)
-	}
-
-	return nil
+	return r.Storer.SetReference(newHeadRef)
 }
 
 // clearIndex empties the staging area
@@ -374,28 +362,12 @@ func cleanWorktree(r *git.Repository) error {
 	return nil
 }
 
-// createBranch will create the branch based upon the last default branch state (or an orhpaned branch if the default branch does not exist)
-func createFeatureBranch(_ context.Context, repo *git.Repository, branchName string, baseCommitHash plumbing.Hash) error {
-	worktree, err := repo.Worktree()
-	if err != nil {
-		return fmt.Errorf("failed to get worktree: %w", err)
-	}
-
-	err = worktree.Checkout(&git.CheckoutOptions{
-		Branch: plumbing.NewBranchReferenceName(branchName),
-		Create: true,
-		Hash:   baseCommitHash,
-		Force:  true,
-	})
-	if err != nil {
-		return fmt.Errorf("failed to create feature branch %s: %w", branchName, err)
-	}
-
-	return nil
-}
-
 // shallowPull pulls (and checks out) new content from remote
-func shallowPull(_ context.Context, repo *git.Repository, shortBranchName string, auth transport.AuthMethod) (plumbing.Hash, error) {
+func shallowPull(ctx context.Context, repo *git.Repository, refSpecSource, targetBranch string, auth transport.AuthMethod) (plumbing.Hash, error) {
+	// Resolve the remote-tracking branch name to its SHA
+	// This is the reference your Fetch command just updated.
+	dest := plumbing.NewRemoteReferenceName("origin", targetBranch) //refs/remotes/origin/%s
+
 	// See if we can fetch a new version of the branch
 	fetchOptions := &git.FetchOptions{
 		RemoteName: "origin",
@@ -404,61 +376,92 @@ func shallowPull(_ context.Context, repo *git.Repository, shortBranchName string
 		Depth:      1,    // Shallow fetch
 		Prune:      true, // Also clean up local branche if the remote is gone! Write tests to check what happens if we have that branch checked out! We might need to reset our working copy every time
 		RefSpecs: []config.RefSpec{
-			config.RefSpec(fmt.Sprintf("+refs/heads/%s:refs/remotes/origin/%s", shortBranchName, shortBranchName)),
+			config.RefSpec(fmt.Sprintf("%s:%s", refSpecSource, dest)),
 		},
 	}
 
 	err := repo.Fetch(fetchOptions)
 	if errors.Is(err, git.NoErrAlreadyUpToDate) {
 		// Nothing changed: that's actually expected in most cases, so we continue :-)
-	} else {
-		if errors.Is(err, transport.ErrEmptyRemoteRepository) {
-			return plumbing.ZeroHash, ErrRemoteRefNotFoundEmptyRepo
-		}
-		if errors.Is(err, git.NoMatchingRefSpecError{}) {
-			return plumbing.ZeroHash, ErrRemoteRefNotFound
-		}
-		if err != nil {
-			return plumbing.ZeroHash, fmt.Errorf("fetch failed: %w", err)
-		}
-
-		// Checkout out fetched branch
-		err = checkoutWithForce(repo, shortBranchName)
+		headCommitHash, err := getHeadCommitHash(repo)
 		if err != nil {
 			return plumbing.ZeroHash, err
 		}
+
+		return headCommitHash, nil
 	}
 
-	// Now get the ref
-	headRef, err := repo.Head()
+	if errors.Is(err, transport.ErrEmptyRemoteRepository) {
+		return plumbing.ZeroHash, ErrRemoteRefNotFoundEmptyRepo
+	}
+	if errors.Is(err, git.NoMatchingRefSpecError{}) {
+		return plumbing.ZeroHash, ErrRemoteRefNotFound
+	}
 	if err != nil {
-		return plumbing.ZeroHash, fmt.Errorf("resolving of HEAD failed after succesful checkout, that should never happen: %w", err)
+		return plumbing.ZeroHash, fmt.Errorf("fetch failed: %w", err)
 	}
 
-	return headRef.Hash(), nil
+	// The 'true' argument resolves any symbolic links and gives you
+	// the final HashReference.
+	destRef, err := repo.Reference(dest, true)
+	if err != nil {
+		return plumbing.ZeroHash, err
+	}
+
+	// Checkout out fetched branch
+	err = resetHard(ctx, repo, destRef.Hash())
+	if err != nil {
+		return plumbing.ZeroHash, err
+	}
+
+	return destRef.Hash(), nil
 }
 
-func checkoutWithForce(repo *git.Repository, shortBranchName string) error {
+func resetHard(ctx context.Context, repo *git.Repository, dest plumbing.Hash) error {
+	logger := log.FromContext(ctx)
+	logger.Info("entering resetHard")
+
 	worktree, err := repo.Worktree()
 	if err != nil {
 		return fmt.Errorf("failed to get worktree: %w", err)
 	}
 
-	checkoutOptions := &git.CheckoutOptions{
-		Branch: plumbing.NewRemoteReferenceName("origin", shortBranchName),
-		Force:  true,
-	}
-	err = worktree.Checkout(checkoutOptions)
+	// 1. Check if the local branch reference already exists
+	headRef, err := repo.Reference(plumbing.HEAD, false)
 	if err != nil {
-		return fmt.Errorf("checkout failed: %w", err)
+		return err
 	}
+	headTarget := headRef.Target()
+	headHash, err := repo.Reference(headTarget, true)
+	if err != nil {
+		// The actual branch doesn't exist locally. We must create it (otherwise it throws an error)
+		logger.Info("Local HEAD references unborn branche: giving birth to local branch", "destHash", dest, "headValue", headTarget.Short())
+		newRef := plumbing.NewHashReference(headTarget, dest)
+		err = repo.Storer.SetReference(newRef)
+		if err != nil {
+			return err
+		}
+	} else {
+		logger.Info("Found local branch reference, performing reset", "destHash", dest, "headValue", headTarget.Short(), "currentHash", headHash)
+	}
+
+	// But will the reset now remove files if they are there if I'm alrady there?
+	err = worktree.Reset(&git.ResetOptions{
+		Commit: dest,
+		Mode:   git.HardReset,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to reset to target commit: %w", err)
+	}
+
 	return nil
 }
 
 // WriteEvents handles the complete write workflow: checkout, commit, push with conflict resolution.
+// Should we check if head matches targetBranch? Or will we just remove the argument?
 func WriteEvents(
 	ctx context.Context,
-	repoPath, targetBranch, defaultBranch string,
+	repoPath, targetBranch string,
 	events []Event,
 	auth transport.AuthMethod,
 ) (*WriteEventsResult, error) {
@@ -477,11 +480,11 @@ func WriteEvents(
 	}
 
 	const maxRetries = 3
-	for attempt := 0; result.Failures < maxRetries; result.Failures++ {
+	for ; result.Failures < maxRetries; result.Failures++ {
 		// If this is not the first time: then we should be trying to resolve problems (most likely it's a new commit on the remote)
-		if attempt > 0 {
-			logger.Info("Previous attempt failed, starting new attempt", "attempts", attempt, "maxRetries", maxRetries)
-			pullReport, err := flexPull(ctx, repo, targetBranch, defaultBranch, auth, logger, repoPath)
+		if result.Failures > 0 {
+			logger.Info("Previous attempt failed, starting new attempt", "failures", result.Failures, "maxRetries", maxRetries)
+			pullReport, err := flexPull(ctx, repo, targetBranch, auth)
 			if pullReport != nil {
 				result.ConflictPulls = append(result.ConflictPulls, pullReport)
 			}

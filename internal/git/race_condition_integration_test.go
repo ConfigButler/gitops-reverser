@@ -129,7 +129,7 @@ func TestRaceConditionIntegration(t *testing.T) {
 		require.NoError(t, err)
 
 		// Step 4: Attempt to push commits - this should trigger race condition resolution
-		result, err := WriteEvents(ctx, repo.path, "main", "main", events, repo.auth)
+		result, err := WriteEvents(ctx, repo.path, "main", events, repo.auth)
 
 		// The operation should succeed after conflict resolution
 		require.NoError(t, err, "WriteEvents should succeed after conflict resolution")
@@ -186,7 +186,7 @@ func TestRaceConditionIntegration(t *testing.T) {
 		// Test various error scenarios
 
 		// Test with empty events
-		_, err := WriteEvents(ctx, repo.path, "main", "main", []Event{}, repo.auth)
+		_, err := WriteEvents(ctx, repo.path, "main", []Event{}, repo.auth)
 		require.NoError(t, err, "Should handle empty events gracefully")
 
 		// Test with invalid object (this should be handled gracefully)
@@ -206,7 +206,7 @@ func TestRaceConditionIntegration(t *testing.T) {
 		}
 
 		// This might fail, but shouldn't panic
-		_, err = WriteEvents(ctx, repo.path, "main", "main", []Event{invalidEvent}, repo.auth)
+		_, err = WriteEvents(ctx, repo.path, "main", []Event{invalidEvent}, repo.auth)
 		_ = err
 	})
 }
