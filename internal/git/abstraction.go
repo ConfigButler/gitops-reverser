@@ -104,7 +104,7 @@ func CheckRepo(ctx context.Context, repoURL string, auth transport.AuthMethod) (
 
 	// Scan refs for branches and HEAD
 	for _, ref := range refs {
-		if ref.Name() == plumbing.HEAD { //|| ref.Name().String() == "refs/remotes/origin/HEAD" {
+		if ref.Name() == plumbing.HEAD { // || ref.Name().String() == "refs/remotes/origin/HEAD" {
 			headRef = ref
 		}
 		if ref.Name().IsBranch() {
@@ -126,8 +126,12 @@ func CheckRepo(ctx context.Context, repoURL string, auth transport.AuthMethod) (
 	return repoInfo, nil
 }
 
-// PrepareBranch clones repository immediately when GitDestination is created, optimized for single branch usage. It tries to fetch the usefull branch: either target or default
-func PrepareBranch(ctx context.Context, repoURL, repoPath, targetBranchName string, auth transport.AuthMethod) (*PullReport, error) {
+// PrepareBranch clones repository immediately when GitDestination is created, optimized for single branch usage. It tries to fetch the usefull branch: either target or default.
+func PrepareBranch(
+	ctx context.Context,
+	repoURL, repoPath, targetBranchName string,
+	auth transport.AuthMethod,
+) (*PullReport, error) {
 	logger := log.FromContext(ctx)
 	logger.Info("Preparing branch for operations", "url", repoURL, "path", repoPath, "branch", targetBranchName)
 
@@ -145,37 +149,84 @@ func PrepareBranch(ctx context.Context, repoURL, repoPath, targetBranchName stri
 		logger.Info("Reusing existing repository", "path", repoPath)
 		repo = existingRepo
 	} else {
-		repo, err = initEmptyRepo(repoURL, repoPath, targetBranchName, logger)
+		// Initialize the repository: it's always empty since an empty repo throws an error, what's the use of clone if I need to do the manual work anywhow
+		repo, err = git.PlainInit(repoPath, false)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to initialize repository: %w", err)
 		}
 	}
 
-	return flexPull(ctx, repo, targetBranchName, auth)
+	// Ensure the remote origin is set correctly
+	if err := ensureRemoteOrigin(ctx, repo, repoURL); err != nil {
+		return nil, fmt.Errorf("failed to ensure remote origin: %w", err)
+	}
+
+	// Always perform a setHead, manual changes are not expected/allowed
+	if err := setHead(repo, targetBranchName); err != nil {
+		return nil, err
+	}
+
+	return flexPull(ctx, repo, auth)
+}
+
+// ensureRemoteOrigin ensures the remote "origin" exists with the correct URL, updating if necessary.
+func ensureRemoteOrigin(ctx context.Context, repo *git.Repository, repoURL string) error {
+	logger := log.FromContext(ctx)
+
+	remote, err := repo.Remote("origin")
+	if err != nil {
+		// Remote doesn't exist, create it
+		logger.Info("Creating remote origin", "url", repoURL)
+		_, err = repo.CreateRemote(&config.RemoteConfig{
+			Name: "origin",
+			URLs: []string{repoURL},
+		})
+		return err
+	}
+
+	// Remote exists, check if URL matches
+	cfg := remote.Config()
+	if len(cfg.URLs) > 0 && cfg.URLs[0] == repoURL {
+		logger.Info("Remote origin URL is correct")
+		return nil
+	}
+
+	// URL is different, delete and recreate
+	logger.Info("Updating remote origin URL", "old", cfg.URLs, "new", repoURL)
+	err = repo.DeleteRemote("origin")
+	if err != nil {
+		return fmt.Errorf("failed to delete remote: %w", err)
+	}
+	_, err = repo.CreateRemote(&config.RemoteConfig{
+		Name: "origin",
+		URLs: []string{repoURL},
+	})
+	return err
 }
 
 // GetDefaultBranch reads the locally cached default branch
 // for a remote. It does NOT connect to the network.
-func GetDefaultBranch(r *git.Repository, remoteName string) (plumbing.ReferenceName, error) {
-	// 1. Construct the name of the ref we want to read
-	// This is typically "refs/remotes/origin/HEAD"
-	refName := plumbing.NewRemoteReferenceName(remoteName, "HEAD")
-
-	// 2. Read the reference from the local repo
-	// 'false' means don't resolve it yet, just get the ref object
-	ref, err := r.Reference(refName, false)
+func GetDefaultBranch(r *git.Repository) (plumbing.ReferenceName, plumbing.Hash, error) {
+	symbolicRef, err := r.Reference(plumbing.HEAD, false)
 	if err != nil {
-		return "", fmt.Errorf("could not find local HEAD for remote %q (have you fetched?): %w", remoteName, err)
+		return "", plumbing.ZeroHash, err
 	}
 
-	// 3. Ensure it's a symbolic ref (it should be)
-	if ref.Type() != plumbing.SymbolicReference {
-		return "", fmt.Errorf("remote HEAD %q is not symbolic", refName)
+	if symbolicRef.Type() != plumbing.SymbolicReference {
+		return "", plumbing.ZeroHash, errors.New("HEAD is not symbolic")
 	}
 
-	// 4. Get its target! This is the answer.
-	// The target is the actual default branch ref, e.g., "refs/remotes/origin/main"
-	return ref.Target(), nil
+	// Try if a commit exists for the reference
+	commitRef, err := r.Reference(symbolicRef.Target(), false)
+	if err != nil {
+		return symbolicRef.Target(), plumbing.ZeroHash, nil // This can happen, so it's not an error in our usecase
+	}
+
+	if commitRef.Type() != plumbing.HashReference {
+		return "", plumbing.ZeroHash, errors.New("HEAD does not point at hash reference")
+	}
+
+	return symbolicRef.Target(), commitRef.Hash(), nil
 }
 
 // getPreviousHeadSha retrieves the current HEAD SHA before operations.
@@ -206,26 +257,25 @@ func createPullReport(targetBranch string, before, after plumbing.Hash, remoteEx
 	}
 }
 
-// flexPull does everything it can to bring the repo in a state where you can push events (checking different remotes, creating feature branches or even create a root/orphaned branch)
-func flexPull(ctx context.Context, repo *git.Repository, targetBranch string, auth transport.AuthMethod) (*PullReport, error) {
-	// Get the current sha (only if possible: &plumbing.ZeroHash if it's not possible)
-	revisionBefore, err := getHeadCommitHash(repo)
-	if err != nil && !errors.Is(err, plumbing.ErrReferenceNotFound) {
-		return nil, fmt.Errorf("failed to get current revision: %w", err)
+// flexPull does everything it can to bring the repo in a state where you can push events (checking different remotes, creating feature branches or even create a root/orphaned branch). It depends on the HEAD of the repo, it must be configure to your working branch.
+func flexPull(ctx context.Context, repo *git.Repository, auth transport.AuthMethod) (*PullReport, error) {
+	branch, revisionBefore, err := GetDefaultBranch(repo)
+	if err != nil {
+		return nil, err
 	}
 
 	// See if you can find the target branch
-	refSpecSource := fmt.Sprintf("+refs/heads/%s", targetBranch)
-	revisionAfter, err := shallowPull(ctx, repo, refSpecSource, targetBranch, auth)
+	refSpecSource := fmt.Sprintf("+refs/heads/%s", branch.Short())
+	revisionAfter, err := shallowPull(ctx, repo, refSpecSource, branch.Short(), auth)
 	if err == nil {
-		return createPullReport(targetBranch, revisionBefore, revisionAfter, true, false), nil
+		return createPullReport(branch.Short(), revisionBefore, revisionAfter, true, false), nil
 	}
 
 	if errors.Is(err, ErrRemoteRefNotFound) {
 		// Let's see if we can fetch HEAD into our target, that would become our feature branch
-		revisionAfter, err = shallowPull(ctx, repo, "+HEAD", targetBranch, auth)
+		revisionAfter, err = shallowPull(ctx, repo, "+HEAD", branch.Short(), auth)
 		if err == nil {
-			return createPullReport(targetBranch, revisionBefore, revisionAfter, false, false), nil
+			return createPullReport(branch.Short(), revisionBefore, revisionAfter, false, false), nil
 		}
 	}
 
@@ -235,10 +285,10 @@ func flexPull(ctx context.Context, repo *git.Repository, targetBranch string, au
 		return nil, fmt.Errorf("failed to create root branch: %w", err)
 	}
 
-	return createPullReport(targetBranch, revisionBefore, revisionAfter, false, true), nil
+	return createPullReport(branch.Short(), revisionBefore, revisionAfter, false, true), nil
 }
 
-// resolveDefaultBranch uses the List output to find out all the required info of the default branch
+// resolveDefaultBranch uses the List output to find out all the required info of the default branch.
 func resolveDefaultBranch(
 	HEAD *plumbing.Reference,
 	refLookup map[string]*plumbing.Reference,
@@ -261,36 +311,7 @@ func resolveDefaultBranch(
 	}
 }
 
-// initEmptyRepo clones the repository or initializes if empty.
-func initEmptyRepo(repoURL, repoPath, targetBranchName string, logger logr.Logger) (*git.Repository, error) {
-	// We don't use clone because we might not be allowed to because go-git does not support cloning empty repos, so let's just do the manul thing
-	logger.Info("Initializing empty repository", "path", repoPath)
-
-	// Initialize the repository
-	repo, err := git.PlainInit(repoPath, false)
-	if err != nil {
-		return nil, fmt.Errorf("failed to initialize repository: %w", err)
-	}
-
-	// Add the remote for the empty repository
-	_, err = repo.CreateRemote(&config.RemoteConfig{
-		Name: "origin",
-		URLs: []string{repoURL},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to add remote to empty repository: %w", err)
-	}
-
-	// Create the local targetBranch (for now not pointing at anything)
-	if err := setHead(repo, targetBranchName); err != nil {
-		return nil, err
-	}
-
-	logger.Info("Successfully initialized empty repository")
-	return repo, nil
-}
-
-// makeHeadUnborn is called when there are no remote branches to base upon, all is cleared and new commits are created as orphaned branch
+// makeHeadUnborn is called when there are no remote branches to base upon, all is cleared and new commits are created as orphaned branch.
 func makeHeadUnborn(ctx context.Context, r *git.Repository) (plumbing.Hash, error) {
 	logger := log.FromContext(ctx)
 	logger.Info("Only a computer can do this: undoing birth")
@@ -327,7 +348,7 @@ func setHead(r *git.Repository, branchName string) error {
 	return r.Storer.SetReference(newHeadRef)
 }
 
-// clearIndex empties the staging area
+// clearIndex empties the staging area.
 func clearIndex(r *git.Repository) error {
 	// Get the index
 	idx, err := r.Storer.Index()
@@ -362,11 +383,16 @@ func cleanWorktree(r *git.Repository) error {
 	return nil
 }
 
-// shallowPull pulls (and checks out) new content from remote
-func shallowPull(ctx context.Context, repo *git.Repository, refSpecSource, targetBranch string, auth transport.AuthMethod) (plumbing.Hash, error) {
+// shallowPull pulls (and checks out) new content from remote.
+func shallowPull(
+	ctx context.Context,
+	repo *git.Repository,
+	refSpecSource, targetBranch string,
+	auth transport.AuthMethod,
+) (plumbing.Hash, error) {
 	// Resolve the remote-tracking branch name to its SHA
 	// This is the reference your Fetch command just updated.
-	dest := plumbing.NewRemoteReferenceName("origin", targetBranch) //refs/remotes/origin/%s
+	dest := plumbing.NewRemoteReferenceName("origin", targetBranch) // refs/remotes/origin/%s
 
 	// See if we can fetch a new version of the branch
 	fetchOptions := &git.FetchOptions{
@@ -435,7 +461,13 @@ func resetHard(ctx context.Context, repo *git.Repository, dest plumbing.Hash) er
 	headHash, err := repo.Reference(headTarget, true)
 	if err != nil {
 		// The actual branch doesn't exist locally. We must create it (otherwise it throws an error)
-		logger.Info("Local HEAD references unborn branche: giving birth to local branch", "destHash", dest, "headValue", headTarget.Short())
+		logger.Info(
+			"Local HEAD references unborn branche: giving birth to local branch",
+			"destHash",
+			dest,
+			"headValue",
+			headTarget.Short(),
+		)
 		newRef := plumbing.NewHashReference(headTarget, dest)
 		err = repo.Storer.SetReference(newRef)
 		if err != nil {
@@ -458,15 +490,14 @@ func resetHard(ctx context.Context, repo *git.Repository, dest plumbing.Hash) er
 }
 
 // WriteEvents handles the complete write workflow: checkout, commit, push with conflict resolution.
-// Should we check if head matches targetBranch? Or will we just remove the argument?
 func WriteEvents(
 	ctx context.Context,
-	repoPath, targetBranch string,
+	repoPath string,
 	events []Event,
 	auth transport.AuthMethod,
 ) (*WriteEventsResult, error) {
 	logger := log.FromContext(ctx)
-	logger.Info("Starting writeEvents operation", "path", repoPath, "branch", targetBranch, "events", len(events))
+	logger.Info("Starting writeEvents operation", "path", repoPath, "events", len(events))
 
 	repo, err := git.PlainOpen(repoPath)
 	if err != nil {
@@ -483,8 +514,14 @@ func WriteEvents(
 	for ; result.Failures < maxRetries; result.Failures++ {
 		// If this is not the first time: then we should be trying to resolve problems (most likely it's a new commit on the remote)
 		if result.Failures > 0 {
-			logger.Info("Previous attempt failed, starting new attempt", "failures", result.Failures, "maxRetries", maxRetries)
-			pullReport, err := flexPull(ctx, repo, targetBranch, auth)
+			logger.Info(
+				"Previous attempt failed, starting new attempt",
+				"failures",
+				result.Failures,
+				"maxRetries",
+				maxRetries,
+			)
+			pullReport, err := flexPull(ctx, repo, auth)
 			if pullReport != nil {
 				result.ConflictPulls = append(result.ConflictPulls, pullReport)
 			}
@@ -509,7 +546,7 @@ func WriteEvents(
 		// Attempt push with conflict resolution
 		err = push(ctx, repo, auth)
 		if err == nil {
-			logger.Info("All events pushed to remote", "branch", targetBranch, "failureCount", result.Failures)
+			logger.Info("All events pushed to remote", "failureCount", result.Failures)
 			result.CommitsCreated = commitsCreated
 			break
 		}
@@ -650,7 +687,7 @@ func createCommitForEvent(worktree *git.Worktree, event Event) error {
 	return err
 }
 
-// push does a simple attempt to push the changes
+// push does a simple attempt to push the changes.
 func push(
 	ctx context.Context,
 	repo *git.Repository,
