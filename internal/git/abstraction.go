@@ -224,7 +224,7 @@ func GetDefaultBranch(r *git.Repository) (plumbing.ReferenceName, plumbing.Hash,
 		if errors.Is(err, plumbing.ErrReferenceNotFound) {
 			return symbolicRef.Target(), plumbing.ZeroHash, nil
 		}
-		
+
 		return "", plumbing.ZeroHash, fmt.Errorf("unexpected error getting branch reference: %w", err)
 	}
 
