@@ -16,6 +16,7 @@ RUN apt-get update \
     jq \
     sudo \
     acl \
+    rsync \
     && apt-get autoremove -y \
     && apt-get clean -y \
     && rm -rf /var/lib/apt/lists/*
