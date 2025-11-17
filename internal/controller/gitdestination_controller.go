@@ -361,14 +361,14 @@ func (r *GitDestinationReconciler) registerEventStream(
 		"baseFolder", dest.Spec.BaseFolder)
 }
 
-// updateRepositoryStatus checks repository and branch status, updating GitDestination status fields.
+// updateRepositoryStatus synchronously fetches and updates repository status.
 func (r *GitDestinationReconciler) updateRepositoryStatus(
-	_ context.Context,
+	ctx context.Context,
 	dest *configbutleraiv1alpha1.GitDestination,
 	_ *configbutleraiv1alpha1.GitRepoConfig,
 	log logr.Logger,
 ) {
-	log.Info("Updating repository status from BranchWorker")
+	log.Info("Syncing repository status from remote")
 
 	// Get the branch worker for this destination
 	repoNS := dest.Spec.RepoRef.Namespace
@@ -386,18 +386,23 @@ func (r *GitDestinationReconciler) updateRepositoryStatus(
 		return
 	}
 
-	// Get cached metadata from worker
-	branchExists, lastCommitSHA, lastFetch := worker.GetBranchMetadata()
+	// SYNCHRONOUS: Block and fetch fresh metadata (or use 30s cache)
+	report, err := worker.SyncAndGetMetadata(ctx)
+	if err != nil {
+		log.Error(err, "Failed to sync repository metadata")
+		// Don't fail reconcile, just skip status update
+		return
+	}
 
-	// Update status fields
-	dest.Status.BranchExists = branchExists
-	dest.Status.LastCommitSHA = lastCommitSHA
-	dest.Status.LastSyncTime = &metav1.Time{Time: lastFetch}
+	// Update status with FRESH data from PullReport
+	dest.Status.BranchExists = report.ExistsOnRemote
+	dest.Status.LastCommitSHA = report.HEAD.Sha
+	dest.Status.LastSyncTime = &metav1.Time{Time: time.Now()}
 
-	log.Info("Repository status updated from worker cache",
-		"branchExists", branchExists,
-		"lastCommitSHA", lastCommitSHA,
-		"lastFetch", lastFetch)
+	log.Info("Repository status updated from remote",
+		"branchExists", report.ExistsOnRemote,
+		"lastCommitSHA", report.HEAD.Sha,
+		"incomingChanges", report.IncomingChanges)
 }
 
 // Note: Worker registration is idempotent - calling RegisterDestination multiple times

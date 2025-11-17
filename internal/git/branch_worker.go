@@ -41,6 +41,11 @@ import (
 const (
 	// branchWorkerQueueSize is the size of the event queue for each branch worker.
 	branchWorkerQueueSize = 100
+
+	// metadataCacheDuration is how long metadata is considered fresh before re-fetching.
+	// This optimization prevents redundant Git fetches when multiple GitDestinations
+	// share the same branch and reconcile within a short time window.
+	metadataCacheDuration = 30 * time.Second
 )
 
 // BranchWorker processes events for a single (GitRepoConfig, Branch) combination.
@@ -227,11 +232,6 @@ func (w *BranchWorker) processEvents() {
 	pushTicker := time.NewTicker(pushInterval)
 	defer pushTicker.Stop()
 
-	// Setup periodic sync to detect external changes (1 minute default)
-	syncInterval := w.getSyncInterval()
-	syncTicker := time.NewTicker(syncInterval)
-	defer syncTicker.Stop()
-
 	var eventBuffer []Event
 	var bufferByteCount int64
 
@@ -258,18 +258,6 @@ func (w *BranchWorker) processEvents() {
 				w.commitAndPush(repoConfig, eventBuffer)
 				eventBuffer = nil
 				bufferByteCount = 0
-			}
-
-		case <-syncTicker.C:
-			// Periodic sync to detect external changes to the repository
-			if report, err := w.syncWithRemote(w.ctx); err != nil {
-				w.Log.Error(err, "Failed to sync with remote")
-			} else if report.IncomingChanges {
-				w.Log.Info("External changes detected, metadata updated",
-					"branch", report.HEAD.ShortName,
-					"newSHA", report.HEAD.Sha)
-				// Note: Full reconciliation trigger would go here in future
-				// For now, metadata is updated which is sufficient
 			}
 		}
 	}
@@ -395,30 +383,51 @@ func (w *BranchWorker) getDefaultPushInterval() time.Duration {
 	return ProductionPushInterval
 }
 
-// getSyncInterval returns the interval for syncing with remote to detect external changes.
-func (w *BranchWorker) getSyncInterval() time.Duration {
-	const (
-		testSyncInterval       = 5 * time.Second // Fast sync for tests
-		productionSyncInterval = 1 * time.Minute // 1 minute default for production
-	)
-
-	// Use faster intervals for unit tests
-	if strings.Contains(os.Args[0], "test") {
-		return testSyncInterval
-	}
-	return productionSyncInterval
-}
-
-// GetBranchMetadata returns current branch status without cloning.
+// GetBranchMetadata returns current branch status without syncing.
+// This is primarily used for quick status checks without triggering Git operations.
 func (w *BranchWorker) GetBranchMetadata() (bool, string, time.Time) {
 	w.metaMu.RLock()
 	defer w.metaMu.RUnlock()
 	return w.branchExists, w.lastCommitSHA, w.lastFetchTime
 }
 
+// SyncAndGetMetadata fetches latest metadata from remote Git repository.
+// Uses caching to avoid redundant fetches within 30 seconds (optimization for
+// multiple GitDestinations sharing the same branch).
+// Returns PullReport containing branch existence, HEAD SHA, and other metadata.
+func (w *BranchWorker) SyncAndGetMetadata(ctx context.Context) (*PullReport, error) {
+	w.metaMu.RLock()
+	// Use cached data if fetched recently (< 30 seconds ago)
+	if time.Since(w.lastFetchTime) < metadataCacheDuration {
+		// Return cached metadata as a minimal PullReport
+		report := &PullReport{
+			ExistsOnRemote: w.branchExists,
+			HEAD: BranchInfo{
+				Sha:       w.lastCommitSHA,
+				ShortName: w.Branch,
+				Unborn:    w.lastCommitSHA == "",
+			},
+			IncomingChanges: false, // No fetch occurred
+		}
+		w.metaMu.RUnlock()
+		w.Log.V(1).Info("Using cached metadata", "age", time.Since(w.lastFetchTime))
+		return report, nil
+	}
+	w.metaMu.RUnlock()
+
+	// Cache is stale, fetch fresh data
+	w.Log.Info("Fetching fresh metadata from remote")
+	report, err := w.syncWithRemote(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to sync with remote: %w", err)
+	}
+
+	// Return fresh PullReport (metadata already updated by syncWithRemote)
+	return report, nil
+}
+
 // syncWithRemote fetches latest changes from remote to detect drift.
-// This is called periodically by the reconciliation loop to ensure
-// the local state matches the remote repository.
+// This is now called by SyncAndGetMetadata() during controller reconciliation.
 func (w *BranchWorker) syncWithRemote(ctx context.Context) (*PullReport, error) {
 	repoConfig, err := w.getGitRepoConfig(ctx)
 	if err != nil {
