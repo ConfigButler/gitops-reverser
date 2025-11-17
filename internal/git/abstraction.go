@@ -219,7 +219,13 @@ func GetDefaultBranch(r *git.Repository) (plumbing.ReferenceName, plumbing.Hash,
 	// Try if a commit exists for the reference
 	commitRef, err := r.Reference(symbolicRef.Target(), false)
 	if err != nil {
-		return symbolicRef.Target(), plumbing.ZeroHash, nil // This can happen, so it's not an error in our usecase
+		// If the branch reference doesn't exist, this is an unborn branch (no commits yet)
+		// This is expected when HEAD points to a branch with no commits
+		if errors.Is(err, plumbing.ErrReferenceNotFound) {
+			return symbolicRef.Target(), plumbing.ZeroHash, nil
+		}
+		
+		return "", plumbing.ZeroHash, fmt.Errorf("unexpected error getting branch reference: %w", err)
 	}
 
 	if commitRef.Type() != plumbing.HashReference {
@@ -290,24 +296,24 @@ func flexPull(ctx context.Context, repo *git.Repository, auth transport.AuthMeth
 
 // resolveDefaultBranch uses the List output to find out all the required info of the default branch.
 func resolveDefaultBranch(
-	HEAD *plumbing.Reference,
+	head *plumbing.Reference,
 	refLookup map[string]*plumbing.Reference,
 	logger logr.Logger,
 ) *BranchInfo {
-	branchName := HEAD.Target().Short()
+	branchName := head.Target().Short()
 	if branchRef, exists := refLookup[branchName]; exists {
 		return &BranchInfo{
 			ShortName: branchName,
 			Sha:       branchRef.Hash().String(),
 			Unborn:    false,
 		}
-	} else {
-		logger.Info("HEAD points to branch not in refs, marking as unborn", "branch", branchName)
-		return &BranchInfo{
-			ShortName: branchName,
-			Sha:       "",
-			Unborn:    true,
-		}
+	}
+
+	logger.Info("HEAD points to branch not in refs, marking as unborn", "branch", branchName)
+	return &BranchInfo{
+		ShortName: branchName,
+		Sha:       "",
+		Unborn:    true,
 	}
 }
 
@@ -316,17 +322,20 @@ func makeHeadUnborn(ctx context.Context, r *git.Repository) (plumbing.Hash, erro
 	logger := log.FromContext(ctx)
 	logger.Info("Only a computer can do this: undoing birth")
 
-	// Check the reference that HEAD is poiting at: if it exists it should be removed
+	// Check the reference that HEAD is pointing at: if it exists it should be removed
 	headRef, err := r.Reference(plumbing.HEAD, false)
 	if err != nil {
-		return plumbing.ZeroHash, nil
+		return plumbing.ZeroHash, fmt.Errorf("failed to get HEAD reference: %w", err)
 	}
 
 	headTarget := headRef.Target()
 	_, err = r.Reference(headTarget, true)
 	if err == nil {
 		logger.Info("Removing reference for HEAD so that branch really becomes unborn")
-		r.Storer.RemoveReference(headTarget)
+		err = r.Storer.RemoveReference(headTarget)
+		if err != nil {
+			return plumbing.ZeroHash, err
+		}
 	}
 
 	// Also clear the working dir

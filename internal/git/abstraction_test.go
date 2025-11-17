@@ -28,13 +28,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-git/go-billy/v5/memfs"
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/plumbing/transport"
-	"github.com/go-git/go-git/v5/storage/memory"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -235,10 +233,6 @@ func TestCheckRepo_OrphanBranches(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, 2, repoInfo.RemoteBranchCount)
-	// At this moment we don't detect the default branch: that's not what I expected. Is that a local file repo thing?
-	//assert.Equal(t, "main", repoInfo.DefaultBranch.ShortName, "Default branch name should be main")
-	//assert.Empty(t, repoInfo.DefaultBranch.Sha)
-	//assert.True(t, repoInfo.DefaultBranch.Unborn, "Default branch should be unborn since no commits exist")
 }
 
 func TestPrepareBranch_CheckoutNew(t *testing.T) {
@@ -290,7 +284,6 @@ func countDepth(t *testing.T, r *git.Repository, start plumbing.Hash) int {
 		count++
 	}
 
-	fmt.Printf("The branch has %d commit(s)\n", count)
 	return count
 }
 
@@ -342,7 +335,7 @@ func TestWriteEvents_FirstCommitOnEmptyRepo(t *testing.T) {
 	require.True(t, pullReport.HEAD.Unborn)
 
 	// Create test event
-	event := createTestEvent("test-pod", "default")
+	event := createTestEvent("test-pod")
 
 	// Test WriteEvents
 	result, err := WriteEvents(context.Background(), localPath, []Event{event}, nil)
@@ -441,7 +434,7 @@ func TestWriteEvents_ConflictResolution(t *testing.T) {
 	simulateClientCommitOnDisk(t, "file://"+serverPath, "main", "README.md", "This is our conflicting readme")
 
 	// Test WriteEventss
-	event := createTestEvent("some-resource", "default")
+	event := createTestEvent("some-resource")
 	result, err := WriteEvents(context.Background(), localPath, []Event{event}, nil)
 	require.NoError(t, err)
 
@@ -479,7 +472,7 @@ func TestWriteEvents_ConcurrentOperations(t *testing.T) {
 				return
 			}
 
-			event := createTestEvent(fmt.Sprintf("pod-worker-%d", workerID), "default")
+			event := createTestEvent(fmt.Sprintf("pod-worker-%d", workerID))
 			_, err = WriteEvents(context.Background(), localPath, []Event{event}, nil)
 			results <- err
 		}(i)
@@ -552,7 +545,12 @@ func TestPullBranch_BranchLifecycleDetection(t *testing.T) {
 	assert.False(t, pullReport.ExistsOnRemote)
 	assert.Equal(t, hash.String(), pullReport.HEAD.Sha)
 
-	// TODO: Check if the my-file.txt is there!
+	// Verify my-file.txt exists and has the expected content
+	filePath := filepath.Join(localPath, "my-file.txt")
+	assert.FileExists(t, filePath)
+	fileContent, err := os.ReadFile(filePath)
+	require.NoError(t, err)
+	assert.Equal(t, "This is cool!", string(fileContent))
 }
 
 // setHeadToMain configures HEAD reference to main.
@@ -615,22 +613,7 @@ func TestPullBranch_MergeToDefaultScenario(t *testing.T) {
 	simulateClientCommitOnDisk(t, remoteURL, defaultBranchname, "some-file.txt", "Some file")
 	setHead(serverRepo, defaultBranchname) // Now it's also default branch: that's what is returned as HEAD to clients
 
-	// Print addresses and values before
-	fmt.Printf("\n=== BEFORE ===\n")
-	fmt.Printf("tempDir address: %p\n", &tempDir)
-	fmt.Printf("tempDir value: %q\n", tempDir)
-	fmt.Printf("localPath: %q\n", localPath)
-	fmt.Printf("serverPath: %q\n", serverPath)
-
 	pullReport, err := PrepareBranch(context.Background(), remoteURL, localPath, "feature", nil)
-
-	// Print after first prepare
-	fmt.Printf("\n=== AFTER FIRST PREPARE ===\n")
-	fmt.Printf("tempDir address: %p\n", &tempDir)
-	fmt.Printf("tempDir value: %q\n", tempDir)
-	fmt.Printf("localPath: %q\n", localPath)
-	fmt.Printf("serverPath: %q\n", serverPath)
-
 	require.NoError(t, err)
 	assert.False(t, pullReport.ExistsOnRemote)
 	assert.True(
@@ -644,15 +627,8 @@ func TestPullBranch_MergeToDefaultScenario(t *testing.T) {
 	assert.False(t, pullReport.IncomingChanges)
 	assert.Equal(t, "feature", pullReport.HEAD.ShortName)
 
-	event := createTestEvent("resource1", "default")
+	event := createTestEvent("resource1")
 	writeEventsResult, err := WriteEvents(context.Background(), localPath, []Event{event}, nil)
-
-	fmt.Printf("\n=== AFTER WRITEEVENTS ===\n")
-	fmt.Printf("tempDir address: %p\n", &tempDir)
-	fmt.Printf("tempDir value: %q\n", tempDir)
-	fmt.Printf("localPath: %q\n", localPath)
-	fmt.Printf("serverPath: %q\n", serverPath)
-
 	require.NoError(t, err)
 	assert.Equal(t, 1, writeEventsResult.CommitsCreated)
 
@@ -703,7 +679,7 @@ func TestPullBranch_WhipedRepo(t *testing.T) {
 	assert.False(t, pullReport.IncomingChanges)
 
 	// Now we just recreate main, let's see if this works
-	event := createTestEvent("resource1", "default")
+	event := createTestEvent("resource1")
 	writeEventsResult, err := WriteEvents(context.Background(), localPath, []Event{event}, nil)
 	require.NoError(t, err)
 	assert.Equal(t, 1, writeEventsResult.CommitsCreated)
@@ -722,11 +698,30 @@ func TestPullBranch_WhipedRepo(t *testing.T) {
 	assert.Empty(t, pullReport.HEAD.Sha)
 	assert.Equal(t, "feature", pullReport.HEAD.ShortName)
 
-	// TODO: Also check if the working copy is now clean! Do we have any files?
+	// Verify working copy is clean after switching to empty remote
+	worktree, err := git.PlainOpen(localPath)
+	require.NoError(t, err)
+	wt, err := worktree.Worktree()
+	require.NoError(t, err)
+	status, err := wt.Status()
+	require.NoError(t, err)
+	assert.True(t, status.IsClean(), "Working copy should be clean after switching to empty remote")
+
+	// Verify no tracked files remain (except .git directory)
+	entries, err := os.ReadDir(localPath)
+	require.NoError(t, err)
+	var nonGitFiles []string
+	for _, entry := range entries {
+		if entry.Name() != ".git" {
+			nonGitFiles = append(nonGitFiles, entry.Name())
+		}
+	}
+	assert.Empty(t, nonGitFiles, "No files should exist in working copy except .git directory")
 }
 
 // Helper function to create test events.
-func createTestEvent(name, namespace string) Event {
+func createTestEvent(name string) Event {
+	namespace := "default"
 	obj := &unstructured.Unstructured{
 		Object: map[string]interface{}{
 			"apiVersion": "v1",
@@ -820,35 +815,6 @@ func createBareRepo(t *testing.T, path string) *git.Repository {
 	setHeadToMain(repo)
 
 	return repo
-}
-
-// createRepo initializes a non-bare repository at the given path.
-func createRepo(t *testing.T, path string) *git.Repository {
-	err := os.MkdirAll(path, 0750)
-	require.NoError(t, err)
-
-	repo, err := git.PlainInit(path, false)
-	require.NoError(t, err)
-
-	return repo
-}
-
-// createCommit creates a commit in a non-bare repository.
-func createCommit(t *testing.T, repo *git.Repository, file, content, message string) {
-	worktree, err := repo.Worktree()
-	require.NoError(t, err)
-
-	repoPath := worktree.Filesystem.Root()
-	err = os.WriteFile(filepath.Join(repoPath, file), []byte(content), 0600)
-	require.NoError(t, err)
-
-	_, err = worktree.Add(file)
-	require.NoError(t, err)
-
-	_, err = worktree.Commit(message, &git.CommitOptions{
-		Author: &object.Signature{Name: "Test", Email: "test@example.com", When: time.Now()},
-	})
-	require.NoError(t, err)
 }
 
 // simulateSimpleMerge merges source content into destination, pushes the destination,
@@ -953,72 +919,6 @@ func simulateSimpleMerge(t *testing.T, repoURL, sourceBranch, destinationBranch 
 	return head.Hash()
 }
 
-// simulateClientCommitInMemory simulates a client cloning, committing, and pushing to a remote using in-memory storage.
-func simulateClientCommitInMemory(t *testing.T, remoteURL, branch, file, content string) plumbing.Hash {
-	storer := memory.NewStorage()
-	fs := memfs.New()
-	emptyRepoCreated := false
-
-	repo, err := git.Init(storer, fs)
-	require.NoError(t, err)
-
-	_, err = repo.CreateRemote(&config.RemoteConfig{
-		Name: "origin",
-		URLs: []string{remoteURL},
-	})
-	require.NoError(t, err)
-
-	err = repo.Fetch(&git.FetchOptions{})
-	if errors.Is(err, transport.ErrEmptyRemoteRepository) {
-		setHead(repo, branch)
-		emptyRepoCreated = true
-	} else {
-		require.NoError(t, err)
-	}
-
-	worktree, err := repo.Worktree()
-	require.NoError(t, err)
-
-	// Only do checkout if its not an empty repo (otherwise error)
-	if !emptyRepoCreated {
-		err = worktree.Checkout(&git.CheckoutOptions{
-			Branch: plumbing.NewBranchReferenceName(branch),
-			//Create: true,	// Can we omit this and expect it to always work?
-		})
-	}
-
-	// Create file in memory filesystem
-	dir := filepath.Dir(file)
-	if dir != "." {
-		err = fs.MkdirAll(dir, 0755)
-		require.NoError(t, err)
-	}
-	f, err := fs.OpenFile(file, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
-	require.NoError(t, err)
-	_, err = f.Write([]byte(content))
-	require.NoError(t, err)
-	f.Close()
-
-	_, err = worktree.Add(file)
-	require.NoError(t, err)
-
-	// Commit
-	createdHash, err := worktree.Commit("Client commit", &git.CommitOptions{
-		Author: &object.Signature{
-			Name:  "Client",
-			Email: "client@example.com",
-			When:  time.Date(2023, 1, 1, 0, 0, 0, 0, time.UTC),
-		},
-	})
-	require.NoError(t, err)
-
-	// Push
-	err = repo.Push(&git.PushOptions{})
-	require.NoError(t, err)
-
-	return createdHash
-}
-
 // simulateClientCommitOnDisk simulates a client cloning, committing, and pushing to a remote using disk storage.
 func simulateClientCommitOnDisk(t *testing.T, remoteURL, branch, file, content string) plumbing.Hash {
 	tempDir := t.TempDir()
@@ -1054,8 +954,8 @@ func simulateClientCommitOnDisk(t *testing.T, remoteURL, branch, file, content s
 	if !emptyRepoCreated {
 		err = worktree.Checkout(&git.CheckoutOptions{
 			Branch: plumbing.NewBranchReferenceName(branch),
-			//Create: true,	// Can we omit this and expect it to always work?
 		})
+		require.NoError(t, err)
 	}
 
 	// Create file
