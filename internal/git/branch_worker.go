@@ -224,8 +224,13 @@ func (w *BranchWorker) processEvents() {
 	// Setup timing
 	pushInterval := w.getPushInterval(repoConfig)
 	maxCommits := w.getMaxCommits(repoConfig)
-	ticker := time.NewTicker(pushInterval)
-	defer ticker.Stop()
+	pushTicker := time.NewTicker(pushInterval)
+	defer pushTicker.Stop()
+
+	// Setup periodic sync to detect external changes (1 minute default)
+	syncInterval := w.getSyncInterval()
+	syncTicker := time.NewTicker(syncInterval)
+	defer syncTicker.Stop()
 
 	var eventBuffer []Event
 	var bufferByteCount int64
@@ -248,11 +253,23 @@ func (w *BranchWorker) processEvents() {
 				bufferByteCount = 0
 			}
 
-		case <-ticker.C:
+		case <-pushTicker.C:
 			if len(eventBuffer) > 0 {
 				w.commitAndPush(repoConfig, eventBuffer)
 				eventBuffer = nil
 				bufferByteCount = 0
+			}
+
+		case <-syncTicker.C:
+			// Periodic sync to detect external changes to the repository
+			if report, err := w.syncWithRemote(w.ctx); err != nil {
+				w.Log.Error(err, "Failed to sync with remote")
+			} else if report.IncomingChanges {
+				w.Log.Info("External changes detected, metadata updated",
+					"branch", report.HEAD.ShortName,
+					"newSHA", report.HEAD.Sha)
+				// Note: Full reconciliation trigger would go here in future
+				// For now, metadata is updated which is sufficient
 			}
 		}
 	}
@@ -378,6 +395,20 @@ func (w *BranchWorker) getDefaultPushInterval() time.Duration {
 	return ProductionPushInterval
 }
 
+// getSyncInterval returns the interval for syncing with remote to detect external changes.
+func (w *BranchWorker) getSyncInterval() time.Duration {
+	const (
+		testSyncInterval       = 5 * time.Second // Fast sync for tests
+		productionSyncInterval = 1 * time.Minute // 1 minute default for production
+	)
+
+	// Use faster intervals for unit tests
+	if strings.Contains(os.Args[0], "test") {
+		return testSyncInterval
+	}
+	return productionSyncInterval
+}
+
 // GetBranchMetadata returns current branch status without cloning.
 func (w *BranchWorker) GetBranchMetadata() (bool, string, time.Time) {
 	w.metaMu.RLock()
@@ -388,8 +419,6 @@ func (w *BranchWorker) GetBranchMetadata() (bool, string, time.Time) {
 // syncWithRemote fetches latest changes from remote to detect drift.
 // This is called periodically by the reconciliation loop to ensure
 // the local state matches the remote repository.
-//
-//nolint:unused // Method ready for reconciliation loop integration
 func (w *BranchWorker) syncWithRemote(ctx context.Context) (*PullReport, error) {
 	repoConfig, err := w.getGitRepoConfig(ctx)
 	if err != nil {

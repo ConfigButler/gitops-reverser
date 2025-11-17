@@ -149,18 +149,10 @@ func PrepareBranch(
 		logger.Info("Reusing existing repository", "path", repoPath)
 		repo = existingRepo
 	} else {
-		// If directory exists but repo is invalid, remove it
-		if _, err := os.Stat(filepath.Join(repoPath, ".git")); err == nil {
-			logger.Info("Removing corrupted repository", "path", repoPath)
-			if err := os.RemoveAll(repoPath); err != nil {
-				logger.Info("Warning: failed to remove existing directory", "path", repoPath, "error", err)
-			}
-		}
-
-		// Initialize the repository
-		repo, err = git.PlainInit(repoPath, false)
+		// Clean up corrupted repository if exists
+		repo, err = initializeCleanRepository(repoPath, logger)
 		if err != nil {
-			return nil, fmt.Errorf("failed to initialize repository: %w", err)
+			return nil, err
 		}
 	}
 
@@ -725,4 +717,24 @@ func push(
 
 	// TODO: We should indicate if it's usefull to retry (altough I wouldnt know by heart in what siutations it's not usefull?)
 	return fmt.Errorf("failed to push: %w", err)
+}
+
+// initializeCleanRepository removes corrupted repos and initializes a fresh one.
+func initializeCleanRepository(repoPath string, logger logr.Logger) (*git.Repository, error) {
+	// If directory exists but repo is invalid, remove it
+	gitDir := filepath.Join(repoPath, ".git")
+	if _, err := os.Stat(gitDir); err == nil {
+		logger.Info("Removing corrupted repository", "path", repoPath)
+		if err := os.RemoveAll(repoPath); err != nil {
+			logger.Info("Warning: failed to remove existing directory", "path", repoPath, "error", err)
+		}
+	}
+
+	// Initialize the repository
+	repo, err := git.PlainInit(repoPath, false)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize repository: %w", err)
+	}
+
+	return repo, nil
 }
