@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.0](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.10.1...gitops-reverser-v0.11.0) (2025-11-17)
+
+
+### Features
+
+* Connected to the new abstraction, and now also working with empty git repos ([526b08e](https://github.com/ConfigButler/gitops-reverser/commit/526b08e75fe5ffbf5f1a6ec7aaedce2d81c128f8))
+* Let's also run the pull every minute ([2006620](https://github.com/ConfigButler/gitops-reverser/commit/2006620b9789ab129ccd8b44e37742a1e043778a))
+* Signs of getting this right are here ([54191e7](https://github.com/ConfigButler/gitops-reverser/commit/54191e77f5b1421b23c70bdca7cd22524c27494e))
+* We are getting close to not even needing that default branch anymore. And it's way simpler. ([2973fc8](https://github.com/ConfigButler/gitops-reverser/commit/2973fc8dc81ca9ad23d328af2b59d9ef62d78d9c))
+
+
+### Bug Fixes
+
+* All abstraction tests are now green ([a72b1a6](https://github.com/ConfigButler/gitops-reverser/commit/a72b1a6ae0d4abd97fd50953b5a03ce6491aa4c8))
+* Fixing more tests and linter ([1a46519](https://github.com/ConfigButler/gitops-reverser/commit/1a465192dac00edfb3d61de7712e92ff4c9e688e))
+* Getting the right status ([7b26b6c](https://github.com/ConfigButler/gitops-reverser/commit/7b26b6c26a2a07546b9d47fe0a501f9447949457))
+* Last tests removed as wel ([0ec4116](https://github.com/ConfigButler/gitops-reverser/commit/0ec4116f9aa7786aa5213c3acadb2cc10e03b8f4))
+* Let's get our abstraction back into git :-) ([b25571f](https://github.com/ConfigButler/gitops-reverser/commit/b25571f9ae24183cec3a53db81328c32e057219b))
+* Let's see if we can get back window support for windows devs ([98e6f26](https://github.com/ConfigButler/gitops-reverser/commit/98e6f26439806efab39ab2b1dd3d1b5d0010628a))
+* Now it starts to make sense ([8e3e036](https://github.com/ConfigButler/gitops-reverser/commit/8e3e036044c85655f96a3644151478df86af0536))
+
+
+### Documentation
+
+* Adding plans for branch refactor ([a7cde4b](https://github.com/ConfigButler/gitops-reverser/commit/a7cde4b26aeb61e13e9bf87c7b6043820e25fe17))
+* Last tuning on plan ([21954ab](https://github.com/ConfigButler/gitops-reverser/commit/21954ab76e2799a00b4acc559674aab0b2f0f8fe))
+
 ## [0.10.1](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.10.0...gitops-reverser-v0.10.1) (2025-11-11)
 
 
