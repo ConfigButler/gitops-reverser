@@ -25,6 +25,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/go-git/go-git/v5"
@@ -694,6 +695,70 @@ func createCommitForEvent(worktree *git.Worktree, event Event) error {
 		},
 	})
 	return err
+}
+
+// GetCommitMessage returns a structured commit message for the given event.
+func GetCommitMessage(event Event) string {
+	return fmt.Sprintf("[%s] %s by user/%s",
+		event.Operation,
+		event.Identifier.String(),
+		event.UserInfo.Username,
+	)
+}
+
+// sanitizeBaseFolder validates and normalizes a baseFolder value to a safe POSIX-like relative path.
+// Returns empty string when the input is unsafe or empty.
+func sanitizeBaseFolder(base string) string {
+	trimmed := strings.TrimSpace(base)
+	if trimmed == "" {
+		return ""
+	}
+	// Reject absolute paths and backslashes (Windows separators)
+	if strings.HasPrefix(trimmed, "/") || strings.ContainsAny(trimmed, "\\") {
+		return ""
+	}
+	// Reject path traversal
+	if strings.Contains(trimmed, "..") {
+		return ""
+	}
+	// Normalize and strip leading/trailing slashes
+	cleaned := path.Clean(trimmed)
+	cleaned = strings.Trim(cleaned, "/")
+	if cleaned == "" || cleaned == "." {
+		return ""
+	}
+	return cleaned
+}
+
+// tryOpenExistingRepo attempts to open and validate an existing repository.
+func tryOpenExistingRepo(path string, logger logr.Logger) *git.Repository {
+	// Check if .git directory exists
+	gitDir := filepath.Join(path, ".git")
+	if _, err := os.Stat(gitDir); os.IsNotExist(err) {
+		return nil
+	}
+
+	// Try to open the repository
+	repo, err := git.PlainOpen(path)
+	if err != nil {
+		logger.Info(
+			"Failed to open existing repository, will clone fresh",
+			"path",
+			path,
+			"error",
+			err,
+		)
+		return nil
+	}
+
+	// Verify repository is valid by checking HEAD
+	_, err = repo.Head()
+	if err != nil {
+		logger.Info("Existing repository is invalid, will clone fresh", "path", path, "error", err)
+		return nil
+	}
+
+	return repo
 }
 
 // push does a simple attempt to push the changes.
