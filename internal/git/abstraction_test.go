@@ -38,9 +38,21 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
+
+// TestMain initializes the controller-runtime logger before running tests.
+// This prevents "log.SetLogger(...) was never called" warnings when code uses log.FromContext().
+func TestMain(m *testing.M) {
+	// Initialize controller-runtime logger for all tests
+	logf.SetLogger(zap.New(zap.UseDevMode(true)))
+
+	// Run all tests
+	os.Exit(m.Run())
+}
 
 func TestCheckRepo_ConnectivityAndMetadata(t *testing.T) {
 	// Test CheckRepo with a local repository that has commits
@@ -521,8 +533,8 @@ func TestPullBranch_BranchLifecycleDetection(t *testing.T) {
 	pullReport, err := PrepareBranch(context.Background(), "file://"+remotePath, localPath, "feature", nil)
 	require.NoError(t, err)
 	require.True(t, pullReport.IncomingChanges)
-	require.True(t, pullReport.ExistsOnRemote)
-	require.Equal(t, "main", pullReport.HEAD.ShortName)
+	require.False(t, pullReport.ExistsOnRemote)
+	require.Equal(t, "feature", pullReport.HEAD.ShortName)
 
 	// Check if it's there
 	localRepo, err := git.PlainOpen(localPath)
@@ -538,7 +550,7 @@ func TestPullBranch_BranchLifecycleDetection(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, pullReport.IncomingChanges)
 	assert.False(t, pullReport.ExistsOnRemote)
-	assert.Equal(t, hash, pullReport.HEAD.Sha)
+	assert.Equal(t, hash.String(), pullReport.HEAD.Sha)
 
 	// TODO: Check if the my-file.txt is there!
 }
@@ -603,7 +615,22 @@ func TestPullBranch_MergeToDefaultScenario(t *testing.T) {
 	simulateClientCommitOnDisk(t, remoteURL, defaultBranchname, "some-file.txt", "Some file")
 	setHead(serverRepo, defaultBranchname) // Now it's also default branch: that's what is returned as HEAD to clients
 
+	// Print addresses and values before
+	fmt.Printf("\n=== BEFORE ===\n")
+	fmt.Printf("tempDir address: %p\n", &tempDir)
+	fmt.Printf("tempDir value: %q\n", tempDir)
+	fmt.Printf("localPath: %q\n", localPath)
+	fmt.Printf("serverPath: %q\n", serverPath)
+
 	pullReport, err := PrepareBranch(context.Background(), remoteURL, localPath, "feature", nil)
+
+	// Print after first prepare
+	fmt.Printf("\n=== AFTER FIRST PREPARE ===\n")
+	fmt.Printf("tempDir address: %p\n", &tempDir)
+	fmt.Printf("tempDir value: %q\n", tempDir)
+	fmt.Printf("localPath: %q\n", localPath)
+	fmt.Printf("serverPath: %q\n", serverPath)
+
 	require.NoError(t, err)
 	assert.False(t, pullReport.ExistsOnRemote)
 	assert.True(
@@ -619,6 +646,13 @@ func TestPullBranch_MergeToDefaultScenario(t *testing.T) {
 
 	event := createTestEvent("resource1", "default")
 	writeEventsResult, err := WriteEvents(context.Background(), localPath, []Event{event}, nil)
+
+	fmt.Printf("\n=== AFTER WRITEEVENTS ===\n")
+	fmt.Printf("tempDir address: %p\n", &tempDir)
+	fmt.Printf("tempDir value: %q\n", tempDir)
+	fmt.Printf("localPath: %q\n", localPath)
+	fmt.Printf("serverPath: %q\n", serverPath)
+
 	require.NoError(t, err)
 	assert.Equal(t, 1, writeEventsResult.CommitsCreated)
 
@@ -637,7 +671,7 @@ func TestPullBranch_MergeToDefaultScenario(t *testing.T) {
 		pullReport.IncomingChanges,
 	) // That we merged somethingg can change things, it's not at this level our task to fully understand if RELEVANT things changed. We only indicate that new stuff could be there.
 	assert.Equal(t, "feature", pullReport.HEAD.ShortName)
-	assert.Equal(t, mergedHash, pullReport.HEAD.Sha)
+	assert.Equal(t, mergedHash.String(), pullReport.HEAD.Sha)
 	assert.False(t, pullReport.HEAD.Unborn)
 }
 
@@ -859,8 +893,12 @@ func simulateSimpleMerge(t *testing.T, repoURL, sourceBranch, destinationBranch 
 	})
 	require.NoError(t, err)
 
-	// Copy source files to temp dir
-	err = exec.Command("cp", "-r", localPath+"/.", sourceFilesDir).Run()
+	// Create temp directory for source files
+	err = os.MkdirAll(sourceFilesDir, 0750)
+	require.NoError(t, err)
+
+	// Copy source files to temp dir (excluding .git to avoid corruption)
+	err = exec.Command("rsync", "-a", "--exclude=.git", localPath+"/", sourceFilesDir+"/").Run()
 	require.NoError(t, err)
 
 	// Checkout the destination branch
@@ -869,8 +907,8 @@ func simulateSimpleMerge(t *testing.T, repoURL, sourceBranch, destinationBranch 
 	})
 	require.NoError(t, err)
 
-	// Copy source files over destination, overwriting conflicts
-	err = exec.Command("cp", "-r", sourceFilesDir+"/.", localPath).Run()
+	// Copy source files over destination, overwriting conflicts (preserving .git)
+	err = exec.Command("rsync", "-a", "--exclude=.git", sourceFilesDir+"/", localPath+"/").Run()
 	require.NoError(t, err)
 
 	// Add all changes

@@ -19,11 +19,24 @@ limitations under the License.
 package ssh
 
 import (
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 )
+
+// TestMain initializes the controller-runtime logger before running tests.
+// This prevents "log.SetLogger(...) was never called" warnings when code uses log.FromContext().
+func TestMain(m *testing.M) {
+	// Initialize controller-runtime logger for all tests
+	logf.SetLogger(zap.New(zap.UseDevMode(true)))
+
+	// Run all tests
+	os.Exit(m.Run())
+}
 
 // testSSHPrivateKey is a test RSA private key (not for production use).
 const testSSHPrivateKey = `-----BEGIN RSA PRIVATE KEY-----
