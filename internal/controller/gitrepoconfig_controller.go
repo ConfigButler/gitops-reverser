@@ -22,7 +22,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -35,14 +34,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	"github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/go-git/go-git/v5/plumbing/transport/http"
-	"github.com/go-git/go-git/v5/storage/memory"
 	"github.com/go-logr/logr"
 
 	configbutleraiv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	gitpkg "github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/ssh"
 )
 
@@ -326,46 +323,15 @@ func (r *GitRepoConfigReconciler) checkRemoteConnectivity(
 
 	log.Info("Checking remote repository connectivity", "repoURL", repoURL)
 
-	// Create a new "dummy" remote object in memory for lightweight checking
-	remote := git.NewRemote(memory.NewStorage(), &config.RemoteConfig{
-		Name: "origin",
-		URLs: []string{repoURL},
-	})
-
-	// Call .List() on the remote - this is the lightweight check
-	refs, err := remote.List(&git.ListOptions{
-		Auth: auth,
-	})
-
+	// Use new CheckRepo abstraction from git package
+	repoInfo, err := gitpkg.CheckRepo(ctx, repoURL, auth)
 	if err != nil {
-		// Check if this is an empty repository (which is valid for GitOps Reverser to bootstrap)
-		errStr := err.Error()
-		if strings.Contains(errStr, "empty repository") ||
-			strings.Contains(errStr, "repository is empty") ||
-			strings.Contains(errStr, "no commits") ||
-			strings.Contains(errStr, "does not have any commits yet") {
-			log.Info(
-				"Repository is empty but accessible - this is valid for GitOps Reverser bootstrap",
-				"repoURL",
-				repoURL,
-			)
-			return 0, nil
-		}
-
 		log.Error(err, "Remote connectivity check failed", "repoURL", repoURL)
 		return 0, fmt.Errorf("failed to connect to repository: %w", err)
 	}
 
-	// Count branches (refs that look like branches)
-	branchCount := 0
-	for _, ref := range refs {
-		if strings.HasPrefix(ref.Name().String(), "refs/heads/") {
-			branchCount++
-		}
-	}
-
-	log.Info("Remote connectivity check successful", "repoURL", repoURL, "branchCount", branchCount)
-	return branchCount, nil
+	log.Info("Remote connectivity check successful", "repoURL", repoURL, "branchCount", repoInfo.RemoteBranchCount)
+	return repoInfo.RemoteBranchCount, nil
 }
 
 // setCondition sets or updates the Ready condition.

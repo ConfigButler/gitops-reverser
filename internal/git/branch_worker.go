@@ -28,8 +28,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -155,7 +153,7 @@ func (w *BranchWorker) Enqueue(event Event) {
 // ListResourcesInBaseFolder returns resource identifiers found in a Git folder.
 // This is a synchronous service method called by EventRouter.
 func (w *BranchWorker) ListResourcesInBaseFolder(baseFolder string) ([]itypes.ResourceIdentifier, error) {
-	// Ensure repository is initialized using worker's managed clone
+	// Ensure repository is initialized and up-to-date
 	if err := w.ensureRepositoryInitialized(w.ctx); err != nil {
 		return nil, fmt.Errorf("failed to initialize repository: %w", err)
 	}
@@ -163,20 +161,6 @@ func (w *BranchWorker) ListResourcesInBaseFolder(baseFolder string) ([]itypes.Re
 	// Use the worker's managed repository path
 	repoPath := filepath.Join("/tmp", "gitops-reverser-workers",
 		w.GitRepoConfigNamespace, w.GitRepoConfigRef, w.Branch)
-
-	// Open existing repository instead of cloning
-	gitRepo, err := git.PlainOpen(repoPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open managed repository: %w", err)
-	}
-
-	// Wrap in our Repo type for metadata update
-	repo := &Repo{Repository: gitRepo}
-
-	// Update metadata after repository operations
-	if err := w.updateBranchMetadata(repo); err != nil {
-		w.Log.V(1).Error(err, "Failed to update branch metadata after list")
-	}
 
 	return w.listResourceIdentifiersInBaseFolder(repoPath, baseFolder)
 }
@@ -283,49 +267,33 @@ func (w *BranchWorker) commitAndPush(
 	log := w.Log.WithValues("eventCount", len(events))
 
 	log.Info("Starting git commit and push",
-		"branch", w.Branch) // Branch from worker context
+		"branch", w.Branch)
 
-	// Get auth
 	auth, err := getAuthFromSecret(w.ctx, w.Client, repoConfig)
 	if err != nil {
 		log.Error(err, "Failed to get auth")
 		return
 	}
 
-	// Clone to worker-specific path (stable across pod restarts)
 	repoPath := filepath.Join("/tmp", "gitops-reverser-workers",
 		w.GitRepoConfigNamespace, w.GitRepoConfigRef, w.Branch)
 
-	repo, err := Clone(repoConfig.Spec.RepoURL, repoPath, auth)
+	// Use new WriteEvents abstraction
+	result, err := WriteEvents(w.ctx, repoPath, events, auth)
 	if err != nil {
-		log.Error(err, "Failed to clone repository")
+		log.Error(err, "Failed to write events")
 		return
 	}
 
-	// Checkout THIS worker's branch (explicit, no guessing!)
-	// For empty repositories, checkout will fail because there's no HEAD yet.
-	// In that case, we proceed without checkout - the first commit will create the branch.
-	if err := repo.Checkout(w.Branch); err != nil {
-		// Check if this is an empty repository (no HEAD yet)
-		if _, headErr := repo.Head(); errors.Is(headErr, plumbing.ErrReferenceNotFound) {
-			log.Info("Repository is empty, proceeding without checkout - first commit will create branch")
-		} else {
-			log.Error(err, "Failed to checkout branch", "branch", w.Branch)
-			return
-		}
-	}
+	log.Info("Successfully pushed commits",
+		"commitsCreated", result.CommitsCreated,
+		"conflictPulls", len(result.ConflictPulls),
+		"failures", result.Failures)
 
-	// Pass branch from worker context directly to git operations
-	if err := repo.TryPushCommits(w.ctx, w.Branch, events); err != nil {
-		log.Error(err, "Failed to push commits")
-		return
-	}
-
-	log.Info("Successfully pushed commits")
-
-	// Update metadata after successful push
-	if err := w.updateBranchMetadata(repo); err != nil {
-		log.V(1).Error(err, "Failed to update branch metadata after push")
+	// Update metadata if conflicts were resolved
+	if len(result.ConflictPulls) > 0 {
+		lastPull := result.ConflictPulls[len(result.ConflictPulls)-1]
+		w.updateBranchMetadataFromPullReport(lastPull)
 	}
 
 	// Metrics
@@ -417,6 +385,43 @@ func (w *BranchWorker) GetBranchMetadata() (bool, string, time.Time) {
 	return w.branchExists, w.lastCommitSHA, w.lastFetchTime
 }
 
+// syncWithRemote fetches latest changes from remote to detect drift.
+// This is called periodically by the reconciliation loop to ensure
+// the local state matches the remote repository.
+//
+//nolint:unused // Method ready for reconciliation loop integration
+func (w *BranchWorker) syncWithRemote(ctx context.Context) (*PullReport, error) {
+	repoConfig, err := w.getGitRepoConfig(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get GitRepoConfig: %w", err)
+	}
+
+	auth, err := getAuthFromSecret(ctx, w.Client, repoConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get auth: %w", err)
+	}
+
+	repoPath := filepath.Join("/tmp", "gitops-reverser-workers",
+		w.GitRepoConfigNamespace, w.GitRepoConfigRef, w.Branch)
+
+	// PrepareBranch handles both initial and update cases
+	report, err := PrepareBranch(ctx, repoConfig.Spec.RepoURL, repoPath, w.Branch, auth)
+	if err != nil {
+		return nil, fmt.Errorf("failed to sync with remote: %w", err)
+	}
+
+	w.updateBranchMetadataFromPullReport(report)
+
+	// Log if incoming changes were detected
+	if report.IncomingChanges {
+		w.Log.Info("Detected remote changes during sync",
+			"branch", report.HEAD.ShortName,
+			"newSHA", report.HEAD.Sha)
+	}
+
+	return report, nil
+}
+
 // ensureRepositoryInitialized ensures the worker's repository is cloned and ready.
 func (w *BranchWorker) ensureRepositoryInitialized(ctx context.Context) error {
 	repoConfig, err := w.getGitRepoConfig(ctx)
@@ -432,67 +437,31 @@ func (w *BranchWorker) ensureRepositoryInitialized(ctx context.Context) error {
 	repoPath := filepath.Join("/tmp", "gitops-reverser-workers",
 		w.GitRepoConfigNamespace, w.GitRepoConfigRef, w.Branch)
 
-	repo, err := Clone(repoConfig.Spec.RepoURL, repoPath, auth)
+	// Use new PrepareBranch abstraction
+	pullReport, err := PrepareBranch(ctx, repoConfig.Spec.RepoURL, repoPath, w.Branch, auth)
 	if err != nil {
-		return fmt.Errorf("failed to clone repository: %w", err)
+		return fmt.Errorf("failed to prepare repository: %w", err)
 	}
 
-	// Try to checkout the branch, but don't fail if it doesn't exist (empty repo case)
-	if err := repo.Checkout(w.Branch); err != nil {
-		// Check if this is an empty repository (no HEAD yet)
-		if _, headErr := repo.Head(); errors.Is(headErr, plumbing.ErrReferenceNotFound) {
-			// Empty repository - this is expected, don't treat as error
-			w.Log.V(1).Info("Repository is empty, branch checkout skipped")
-		} else {
-			return fmt.Errorf("failed to checkout branch: %w", err)
-		}
-	}
-
-	// Update metadata after repository initialization
-	if err := w.updateBranchMetadata(repo); err != nil {
-		w.Log.V(1).Error(err, "Failed to update branch metadata after initialization")
-	}
+	// Update metadata from pull report
+	w.updateBranchMetadataFromPullReport(pullReport)
 
 	return nil
 }
 
-// updateBranchMetadata updates cached metadata after git operations (internal use only).
-func (w *BranchWorker) updateBranchMetadata(repo *Repo) error {
+// updateBranchMetadataFromPullReport updates metadata from a PullReport.
+func (w *BranchWorker) updateBranchMetadataFromPullReport(report *PullReport) {
 	w.metaMu.Lock()
 	defer w.metaMu.Unlock()
 
-	// Try to get HEAD
-	head, err := repo.Head()
-	if err != nil {
-		// Repository might be empty (no commits yet)
-		if errors.Is(err, plumbing.ErrReferenceNotFound) {
-			w.branchExists = false
-			w.lastCommitSHA = ""
-			w.lastFetchTime = time.Now()
-			return nil
-		}
-		return fmt.Errorf("failed to get HEAD: %w", err)
-	}
-
-	// Check if branch exists on remote
-	remoteBranchRef := plumbing.NewRemoteReferenceName("origin", w.Branch)
-	ref, err := repo.Reference(remoteBranchRef, true)
-
-	switch {
-	case err == nil:
-		// Branch exists on remote
-		w.branchExists = true
-		w.lastCommitSHA = ref.Hash().String()
-	case errors.Is(err, plumbing.ErrReferenceNotFound):
-		// Branch doesn't exist yet, use HEAD
-		w.branchExists = false
-		w.lastCommitSHA = head.Hash().String()
-	default:
-		return fmt.Errorf("failed to check branch reference: %w", err)
-	}
-
+	w.branchExists = report.ExistsOnRemote
+	w.lastCommitSHA = report.HEAD.Sha
 	w.lastFetchTime = time.Now()
-	return nil
+
+	// Log if this was an unborn branch
+	if report.HEAD.Unborn {
+		w.Log.Info("Branch is unborn (no commits yet)", "branch", report.HEAD.ShortName)
+	}
 }
 
 // parseIdentifierFromPath and getAuthFromSecret are defined in helpers.go

@@ -22,6 +22,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
+//nolint:unparam // namespace parameter kept for API consistency even though tests use "default"
 func createTestPodWithResourceVersion(name, namespace, resourceVersion string) *unstructured.Unstructured {
 	pod := createTestPod(name, namespace)
 	pod.SetResourceVersion(resourceVersion)
