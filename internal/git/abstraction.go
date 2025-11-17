@@ -149,7 +149,15 @@ func PrepareBranch(
 		logger.Info("Reusing existing repository", "path", repoPath)
 		repo = existingRepo
 	} else {
-		// Initialize the repository: it's always empty since an empty repo throws an error, what's the use of clone if I need to do the manual work anywhow
+		// If directory exists but repo is invalid, remove it
+		if _, err := os.Stat(filepath.Join(repoPath, ".git")); err == nil {
+			logger.Info("Removing corrupted repository", "path", repoPath)
+			if err := os.RemoveAll(repoPath); err != nil {
+				logger.Info("Warning: failed to remove existing directory", "path", repoPath, "error", err)
+			}
+		}
+
+		// Initialize the repository
 		repo, err = git.PlainInit(repoPath, false)
 		if err != nil {
 			return nil, fmt.Errorf("failed to initialize repository: %w", err)
