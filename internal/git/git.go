@@ -215,7 +215,7 @@ func WriteEvents(
 			break
 		}
 
-		// Attempt push with conflict resolution
+		// Attempt push with atomic verification
 		err = push(ctx, repo, auth)
 		if err == nil {
 			logger.Info("All events pushed to remote", "failureCount", result.Failures)
@@ -389,22 +389,23 @@ func createPullReport(targetBranch string, before, after plumbing.Hash, remoteEx
 // flexPull does everything it can to bring the repo in a state where you can push events (checking different remotes, creating feature branches or even create a root/orphaned branch). It depends on the HEAD of the repo, it must be configure to your working branch.
 func flexPull(ctx context.Context, repo *git.Repository, auth transport.AuthMethod) (*PullReport, error) {
 	branch, revisionBefore, err := GetDefaultBranch(repo)
+	branchShort := branch.Short()
 	if err != nil {
 		return nil, err
 	}
 
 	// See if you can find the target branch
 	refSpecSource := fmt.Sprintf("+refs/heads/%s", branch.Short())
-	revisionAfter, err := shallowPull(ctx, repo, refSpecSource, branch.Short(), auth)
+	revisionAfter, err := shallowPull(ctx, repo, refSpecSource, branchShort, auth)
 	if err == nil {
-		return createPullReport(branch.Short(), revisionBefore, revisionAfter, true, false), nil
+		return createPullReport(branchShort, revisionBefore, revisionAfter, true, false), nil
 	}
 
 	if errors.Is(err, ErrRemoteRefNotFound) {
 		// Let's see if we can fetch HEAD into our target, that would become our feature branch
-		revisionAfter, err = shallowPull(ctx, repo, "+HEAD", branch.Short(), auth)
+		revisionAfter, err = shallowPull(ctx, repo, "+HEAD", branchShort, auth)
 		if err == nil {
-			return createPullReport(branch.Short(), revisionBefore, revisionAfter, false, false), nil
+			return createPullReport(branchShort, revisionBefore, revisionAfter, false, false), nil
 		}
 	}
 
@@ -414,7 +415,7 @@ func flexPull(ctx context.Context, repo *git.Repository, auth transport.AuthMeth
 		return nil, fmt.Errorf("failed to create root branch: %w", err)
 	}
 
-	return createPullReport(branch.Short(), revisionBefore, revisionAfter, false, true), nil
+	return createPullReport(branchShort, revisionBefore, revisionAfter, false, true), nil
 }
 
 // resolveDefaultBranch uses the List output to find out all the required info of the default branch.
@@ -474,7 +475,7 @@ func makeHeadUnborn(ctx context.Context, r *git.Repository) (plumbing.Hash, erro
 	return plumbing.ZeroHash, nil // Returning ZeroHash might look weird: but this branch does not get a base commit, so it's actually correct until we have created our first commit
 }
 
-// setHead adjusts the HEAD, is used to create unborn branches.
+// setHead adjusts the HEAD, is used to create unborn branches. The actual local branch reference is not toutched
 func setHead(r *git.Repository, branchName string) error {
 	newHeadRef := plumbing.NewSymbolicReference(plumbing.HEAD, plumbing.NewBranchReferenceName(branchName))
 	return r.Storer.SetReference(newHeadRef)
@@ -531,8 +532,8 @@ func shallowPull(
 		RemoteName: "origin",
 		Auth:       auth,
 		Force:      true,
-		Depth:      1,    // Shallow fetch
-		Prune:      true, // Also clean up local branche if the remote is gone! Write tests to check what happens if we have that branch checked out! We might need to reset our working copy every time
+		Depth:      1, // Shallow fetch
+		Prune:      true,
 		RefSpecs: []config.RefSpec{
 			config.RefSpec(fmt.Sprintf("%s:%s", refSpecSource, dest)),
 		},
@@ -751,29 +752,6 @@ func createCommitForEvent(worktree *git.Worktree, event Event) error {
 		},
 	})
 	return err
-}
-
-// push does a simple attempt to push the changes.
-func push(
-	ctx context.Context,
-	repo *git.Repository,
-	auth transport.AuthMethod,
-) error {
-	logger := log.FromContext(ctx)
-
-	pushOptions := &git.PushOptions{
-		RemoteName: "origin",
-		Auth:       auth,
-	}
-
-	err := repo.Push(pushOptions)
-	if err == nil {
-		logger.Info("Push successful")
-		return nil
-	}
-
-	// TODO: We should indicate if it's usefull to retry (altough I wouldnt know by heart in what siutations it's not usefull?)
-	return fmt.Errorf("failed to push: %w", err)
 }
 
 // initializeCleanRepository removes corrupted repos and initializes a fresh one.
