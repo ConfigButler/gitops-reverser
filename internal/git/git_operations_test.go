@@ -645,10 +645,80 @@ func TestPullBranch_MergeToDefaultScenario(t *testing.T) {
 	assert.True(
 		t,
 		pullReport.IncomingChanges,
-	) // That we merged somethingg can change things, it's not at this level our task to fully understand if RELEVANT things changed. We only indicate that new stuff could be there.
+	) // That we merged something can change things, it's not at this level our task to fully understand if RELEVANT things changed. We only indicate that new stuff could be there.
 	assert.Equal(t, "feature", pullReport.HEAD.ShortName)
 	assert.Equal(t, mergedHash.String(), pullReport.HEAD.Sha)
 	assert.False(t, pullReport.HEAD.Unborn)
+
+	// Now we do another change: and we should see that it's based upon the default branch
+	event = createTestEvent("resource2")
+	writeEventsResult, err = WriteEvents(context.Background(), localPath, []Event{event}, nil)
+	require.NoError(t, err)
+	assert.Equal(t, 1, writeEventsResult.CommitsCreated)
+
+	pullReport, err = PrepareBranch(context.Background(), remoteURL, localPath, "feature", nil)
+	require.NoError(t, err)
+	assert.True(t, pullReport.ExistsOnRemote)
+	assert.False(t, pullReport.IncomingChanges)
+	assert.Equal(t, "feature", pullReport.HEAD.ShortName)
+	assert.False(t, pullReport.HEAD.Unborn)
+
+	// This is important: initial change + two event commits + merge = we must have 4 commits.
+	assert.Equal(t, 4, countDepth(t, serverRepo, plumbing.NewHash(pullReport.HEAD.Sha)))
+}
+
+func TestPullBranch_UnexpectedMergeScenario(t *testing.T) {
+	tempDir := t.TempDir()
+	serverPath := filepath.Join(tempDir, "server")
+	remoteURL := "file://" + serverPath
+	localPath := filepath.Join(tempDir, "local")
+
+	// Create bare remote repository
+	serverRepo := createBareRepo(t, serverPath)
+
+	// Simulate client creating initial commit on myuniquedefault
+	setHeadToMain(serverRepo)
+	simulateClientCommitOnDisk(t, remoteURL, "main", "some-file.txt", "Some file")
+
+	pullReport, err := PrepareBranch(context.Background(), remoteURL, localPath, "feature", nil)
+	require.NoError(t, err)
+	assert.False(t, pullReport.ExistsOnRemote)
+	assert.True(
+		t,
+		pullReport.IncomingChanges,
+	) // This is the first time we start on main: so that is certainly new content
+
+	pullReport, err = PrepareBranch(context.Background(), remoteURL, localPath, "feature", nil)
+	require.NoError(t, err)
+	assert.False(t, pullReport.ExistsOnRemote)
+	assert.False(t, pullReport.IncomingChanges)
+	assert.Equal(t, "feature", pullReport.HEAD.ShortName)
+
+	event := createTestEvent("resource1")
+	writeEventsResult, err := WriteEvents(context.Background(), localPath, []Event{event}, nil)
+	require.NoError(t, err)
+	assert.Equal(t, 1, writeEventsResult.CommitsCreated)
+
+	_ = simulateSimpleMerge(t, remoteURL, "feature", "main")
+
+	// Now we just do a change: without calling PrepareBranch (you never new when something gets merged)
+	event = createTestEvent("resource2")
+	writeEventsResult, err = WriteEvents(context.Background(), localPath, []Event{event}, nil)
+	require.NoError(t, err)
+	assert.Equal(t, 1, writeEventsResult.CommitsCreated)
+	assert.Len(t, writeEventsResult.ConflictPulls, 1)
+	assert.True(t, writeEventsResult.ConflictPulls[0].IncomingChanges)
+	assert.False(t, writeEventsResult.ConflictPulls[0].ExistsOnRemote)
+	//assert.Equal(t, mergedHash.String(), writeEventsResult.ConflictPulls[0].HEAD.Sha) // This is probably not true anymore? -> there is no way to get the last commit
+	assert.Equal(t, "feature", writeEventsResult.ConflictPulls[0].HEAD.Sha)
+
+	pullReport, err = PrepareBranch(context.Background(), remoteURL, localPath, "feature", nil)
+	require.NoError(t, err)
+	assert.True(t, pullReport.ExistsOnRemote)
+	assert.False(t, pullReport.IncomingChanges)
+	assert.Equal(t, "feature", pullReport.HEAD.ShortName)
+	assert.False(t, pullReport.HEAD.Unborn)
+	assert.Equal(t, 3, countDepth(t, serverRepo, plumbing.NewHash(pullReport.HEAD.Sha)))
 }
 
 func TestPullBranch_WhipedRepo(t *testing.T) {
@@ -819,7 +889,7 @@ func createBareRepo(t *testing.T, path string) *git.Repository {
 
 // simulateSimpleMerge merges source content into destination, pushes the destination,
 // and deletes the source branch ref locally and remotely.
-func simulateSimpleMerge(t *testing.T, repoURL, sourceBranch, destinationBranch string) plumbing.Hash {
+func simulateSimpleMerge(t *testing.T, repoURL, srcBranchShort, dstBranchShort string) plumbing.Hash {
 	t.Helper()
 
 	tempDir := t.TempDir()
@@ -836,18 +906,20 @@ func simulateSimpleMerge(t *testing.T, repoURL, sourceBranch, destinationBranch 
 	require.NoError(t, err)
 
 	// Ensure local branch for source exists
-	if _, err := repo.Reference(plumbing.NewBranchReferenceName(sourceBranch), true); err != nil {
+	srcBranch := plumbing.NewBranchReferenceName(srcBranchShort)
+	if _, err := repo.Reference(srcBranch, true); err != nil {
 		err = worktree.Checkout(&git.CheckoutOptions{
-			Branch: plumbing.NewBranchReferenceName(sourceBranch),
+			Branch: srcBranch,
 			Create: true,
 		})
 		require.NoError(t, err)
 	}
 
 	// Ensure local branch for destination exists
-	if _, err := repo.Reference(plumbing.NewBranchReferenceName(destinationBranch), true); err != nil {
+	dstBranch := plumbing.NewBranchReferenceName(dstBranchShort)
+	if _, err := repo.Reference(dstBranch, true); err != nil {
 		err = worktree.Checkout(&git.CheckoutOptions{
-			Branch: plumbing.NewBranchReferenceName(destinationBranch),
+			Branch: dstBranch,
 			Create: true,
 		})
 		require.NoError(t, err)
@@ -855,7 +927,7 @@ func simulateSimpleMerge(t *testing.T, repoURL, sourceBranch, destinationBranch 
 
 	// Checkout the source branch and copy its files
 	err = worktree.Checkout(&git.CheckoutOptions{
-		Branch: plumbing.NewBranchReferenceName(sourceBranch),
+		Branch: srcBranch,
 	})
 	require.NoError(t, err)
 
@@ -869,7 +941,7 @@ func simulateSimpleMerge(t *testing.T, repoURL, sourceBranch, destinationBranch 
 
 	// Checkout the destination branch
 	err = worktree.Checkout(&git.CheckoutOptions{
-		Branch: plumbing.NewBranchReferenceName(destinationBranch),
+		Branch: dstBranch,
 	})
 	require.NoError(t, err)
 
@@ -883,7 +955,7 @@ func simulateSimpleMerge(t *testing.T, repoURL, sourceBranch, destinationBranch 
 
 	// Commit the merge
 	_, err = worktree.Commit(
-		fmt.Sprintf("Simple 'rebase' of branch '%s' into '%s'", sourceBranch, destinationBranch),
+		fmt.Sprintf("Simple 'rebase' of branch '%s' into '%s'", srcBranchShort, dstBranchShort),
 		&git.CommitOptions{
 			Author: &object.Signature{
 				Name:  "Client",
@@ -898,22 +970,13 @@ func simulateSimpleMerge(t *testing.T, repoURL, sourceBranch, destinationBranch 
 	// Push the updated destination branch
 	err = repo.Push(&git.PushOptions{
 		RefSpecs: []config.RefSpec{
-			config.RefSpec(fmt.Sprintf("refs/heads/%s:refs/heads/%s", destinationBranch, destinationBranch)),
+			config.RefSpec(fmt.Sprintf("+%s:%s", dstBranch, dstBranch)),
+			config.RefSpec(":" + srcBranch), // empty local source means delete
 		},
 	})
 	require.NoError(t, err)
 
-	// Delete the source branch ref from the remote
-	err = repo.Push(&git.PushOptions{
-		RefSpecs: []config.RefSpec{config.RefSpec(":" + plumbing.NewBranchReferenceName(sourceBranch))},
-	})
-	require.NoError(t, err)
-
-	// Delete the source branch ref locally
-	err = repo.Storer.RemoveReference(plumbing.NewBranchReferenceName(sourceBranch))
-	require.NoError(t, err)
-
-	// Return the current HEAD hash
+	// Return the newly create commit hash
 	head, err := repo.Head()
 	require.NoError(t, err)
 	return head.Hash()
