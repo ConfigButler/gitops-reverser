@@ -129,13 +129,13 @@ func TestCheckRepo_PublicConnectivity(t *testing.T) {
 	ctx := context.Background()
 	remoteURL := "https://github.com/octocat/Hello-World.git"
 	repoInfo, err := CheckRepo(ctx, remoteURL, nil)
+	tempDir := t.TempDir()
 
 	require.NoError(t, err)
 	assert.NotNil(t, repoInfo)
 	assert.Equal(t, "master", repoInfo.DefaultBranch.ShortName)
 	assert.Positive(t, repoInfo.RemoteBranchCount)
 
-	tempDir := t.TempDir()
 	localPath := filepath.Join(tempDir, "local")
 	pullReport, err := PrepareBranch(context.Background(), remoteURL, localPath, "cool-test", nil)
 	require.NoError(t, err)
@@ -165,14 +165,15 @@ func TestCheckRepo_PublicConnectivity(t *testing.T) {
 func TestCheckRepo_PublicConnectivityEmpty(t *testing.T) {
 	// Test CheckRepo with empty repository URL
 	ctx := context.Background()
+	tempDir := t.TempDir()
 	remoteURL := "https://github.com/ConfigButler/empty.git"
+
 	repoInfo, err := CheckRepo(ctx, remoteURL, nil)
 
 	require.NoError(t, err)
 	assert.Empty(t, repoInfo.DefaultBranch)
 	assert.Equal(t, 0, repoInfo.RemoteBranchCount)
 
-	tempDir := t.TempDir()
 	localPath := filepath.Join(tempDir, "local")
 	pullReport, err := PrepareBranch(context.Background(), remoteURL, localPath, "cool-test", nil)
 	require.NoError(t, err)
@@ -982,8 +983,24 @@ func simulateSimpleMerge(t *testing.T, repoURL, srcBranchShort, dstBranchShort s
 	return head.Hash()
 }
 
+func commitFileChange(t *testing.T, worktree *git.Worktree, repoFolder, file, content string) plumbing.Hash {
+	// Create file
+	err := os.WriteFile(filepath.Join(repoFolder, file), []byte(content), 0600)
+	require.NoError(t, err)
+
+	_, err = worktree.Add(file)
+	require.NoError(t, err)
+
+	// Commit
+	createdHash, err := worktree.Commit("Client commit", &git.CommitOptions{
+		Author: &object.Signature{Name: "Client", Email: "client@example.com", When: time.Now()},
+	})
+	require.NoError(t, err)
+	return createdHash
+}
+
 // simulateClientCommitOnDisk simulates a client cloning, committing, and pushing to a remote using disk storage.
-func simulateClientCommitOnDisk(t *testing.T, remoteURL, branch, file, content string) plumbing.Hash {
+func simulateClientCommitOnDisk(t *testing.T, remoteURL, branchShort, file, content string) plumbing.Hash {
 	tempDir := t.TempDir()
 	clientPath := filepath.Join(tempDir, "client")
 	emptyRepoCreated := false
@@ -1002,7 +1019,7 @@ func simulateClientCommitOnDisk(t *testing.T, remoteURL, branch, file, content s
 			URLs: []string{remoteURL},
 		})
 		require.NoError(t, err)
-		setHead(repo, branch)
+		setHead(repo, branchShort)
 		emptyRepoCreated = true
 	}
 
@@ -1015,23 +1032,29 @@ func simulateClientCommitOnDisk(t *testing.T, remoteURL, branch, file, content s
 
 	// Only do checkout if its not an empty repo (otherwise error)
 	if !emptyRepoCreated {
-		err = worktree.Checkout(&git.CheckoutOptions{
-			Branch: plumbing.NewBranchReferenceName(branch),
-		})
+		// Check if branch exists
+		branchName := plumbing.NewBranchReferenceName(branchShort)
+		lastCommit, err := TryReference(repo, branchName)
 		require.NoError(t, err)
+		if lastCommit != plumbing.ZeroHash {
+			err = worktree.Checkout(&git.CheckoutOptions{
+				//Hash:   lastCommit,
+				Branch: branchName,
+			})
+			require.NoError(t, err)
+		} else {
+			lastCommit, err := repo.Reference(plumbing.HEAD, true)
+			require.NoError(t, err)
+			err = worktree.Checkout(&git.CheckoutOptions{
+				Hash:   lastCommit.Hash(),
+				Branch: branchName,
+				Create: true,
+			})
+			require.NoError(t, err)
+		}
 	}
 
-	// Create file
-	err = os.WriteFile(filepath.Join(clientPath, file), []byte(content), 0600)
-	require.NoError(t, err)
-
-	_, err = worktree.Add(file)
-	require.NoError(t, err)
-
-	// Commit
-	createdHash, err := worktree.Commit("Client commit", &git.CommitOptions{
-		Author: &object.Signature{Name: "Client", Email: "client@example.com", When: time.Now()},
-	})
+	createdHash := commitFileChange(t, worktree, clientPath, file, content)
 	require.NoError(t, err)
 
 	// Push

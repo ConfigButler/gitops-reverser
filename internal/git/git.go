@@ -154,11 +154,31 @@ func PrepareBranch(
 	}
 
 	// Always perform a setHead, manual changes are not expected/allowed
+	targetBranch := plumbing.NewBranchReferenceName(targetBranchName)
 	if err := setHead(repo, targetBranchName); err != nil {
 		return nil, err
 	}
 
-	return flexPull(ctx, repo, auth)
+	// Try if a commit exists for the reference (plumbing.ZeroHash is returned when not found)
+	hash, err := TryReference(repo, targetBranch)
+	if err != nil {
+		return nil, err
+	}
+
+	return flexPull(ctx, repo, targetBranch, hash, auth)
+}
+
+// TryRefernce will resolve in all likely scenarios, if it's there and if it's not. In that case you get plumbing.ZeroHash and no error.
+func TryReference(repo *git.Repository, targetBranch plumbing.ReferenceName) (plumbing.Hash, error) {
+	result, err := repo.Reference(targetBranch, false)
+	if err != nil {
+		if errors.Is(err, plumbing.ErrReferenceNotFound) {
+			return plumbing.ZeroHash, nil
+		}
+
+		return plumbing.ZeroHash, fmt.Errorf("unexpected error getting branch reference: %w", err)
+	}
+	return result.Hash(), nil
 }
 
 // WriteEvents handles the complete write workflow: checkout, commit, push with conflict resolution.
@@ -174,6 +194,16 @@ func WriteEvents(
 	repo, err := git.PlainOpen(repoPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open repository: %w", err)
+	}
+
+	branch, _, err := GetCurrentBranch(repo)
+	if err != nil {
+		return nil, err
+	}
+
+	baseBranch, baseHash, err := getBase(repo)
+	if err != nil {
+		return nil, err
 	}
 
 	result := &WriteEventsResult{
@@ -193,7 +223,7 @@ func WriteEvents(
 				"maxRetries",
 				maxRetries,
 			)
-			pullReport, err := flexPull(ctx, repo, auth)
+			pullReport, err := flexPull(ctx, repo, branch, baseHash, auth)
 			if pullReport != nil {
 				result.ConflictPulls = append(result.ConflictPulls, pullReport)
 			}
@@ -202,29 +232,56 @@ func WriteEvents(
 				logger.Error(err, "Conflict resolution with flexPull failed")
 				continue
 			}
+
+			baseBranch, baseHash, err = getBase(repo)
+			if err != nil {
+				return nil, err
+			}
 		}
 
-		commitsCreated, err := generateCommitsFromEvents(ctx, repo, events)
+		commitsCreated, lastHash, err := generateCommitsFromEvents(ctx, repo, events)
 		if err != nil {
 			return nil, fmt.Errorf("failed to generate commits: %w", err)
 		}
 
 		// You never know what is pushed on origin: perhaps we now have a working copy that exactly is like it should be (todo: create a nice test)
+		result.CommitsCreated = commitsCreated
+		result.LastHash = lastHash.String() // TODO also return "" if it's empty?
 		if commitsCreated == 0 {
 			logger.Info("No commits created, no need to push it")
 			break
 		}
 
 		// Attempt push with atomic verification
-		err = push(ctx, repo, auth)
+		err = PushAtomic(ctx, repo, baseHash, baseBranch, auth)
 		if err == nil {
 			logger.Info("All events pushed to remote", "failureCount", result.Failures)
-			result.CommitsCreated = commitsCreated
 			break
 		}
 	}
 
 	return result, nil
+}
+
+func getBase(repo *git.Repository) (plumbing.ReferenceName, plumbing.Hash, error) {
+	currentBranch, baseHash, err := GetCurrentBranch(repo)
+	baseBranch := currentBranch
+	if err != nil {
+		return "", plumbing.ZeroHash, fmt.Errorf("failed to get current branch: %w", err)
+	}
+
+	remoteHeadCommit, err := getRemoteHeadCommit(repo) // How should we reference that? It's probably just head?
+
+	// TODO: We now failed in this test because we can't find the HEAD branch: there is no way for me to now that it's based upon HEAD! Should we only create the branch we are going to push? So that we state reflects the right thing?
+	// Enough for now...
+	if err != nil {
+		return "", plumbing.ZeroHash, err
+	}
+
+	if remoteHeadCommit == baseHash {
+		baseBranch = "HEAD" // The remote branch might nog be there since it's never pushed
+	}
+	return baseBranch, baseHash, nil
 }
 
 // GetCommitMessage returns a structured commit message for the given event.
@@ -271,9 +328,8 @@ func ensureRemoteOrigin(ctx context.Context, repo *git.Repository, repoURL strin
 	return err
 }
 
-// GetDefaultBranch reads the locally cached default branch
-// for a remote. It does NOT connect to the network.
-func GetDefaultBranch(r *git.Repository) (plumbing.ReferenceName, plumbing.Hash, error) {
+// GetCurrentBranch gets the branch that is active
+func GetCurrentBranch(r *git.Repository) (plumbing.ReferenceName, plumbing.Hash, error) {
 	symbolicRef, err := r.Reference(plumbing.HEAD, false)
 	if err != nil {
 		return "", plumbing.ZeroHash, err
@@ -368,6 +424,21 @@ func getHeadCommitHash(repo *git.Repository) (plumbing.Hash, error) {
 	return head.Hash(), nil
 }
 
+// getRemoteHeadCommit will return the local reference to head
+func getRemoteHeadCommit(repo *git.Repository) (plumbing.Hash, error) {
+	remoteHead := plumbing.NewRemoteHEADReferenceName("origin")
+	remoteHeadCommit, err := repo.Reference(remoteHead, true)
+	if errors.Is(err, plumbing.ErrReferenceNotFound) {
+		return plumbing.ZeroHash, nil
+	}
+
+	if err != nil {
+		return plumbing.ZeroHash, err
+	}
+
+	return remoteHeadCommit.Hash(), nil
+}
+
 func createPullReport(targetBranch string, before, after plumbing.Hash, remoteExists, unborn bool) *PullReport {
 	// Make sure that a non existing SHA prints as ""
 	printedSha := ""
@@ -387,35 +458,31 @@ func createPullReport(targetBranch string, before, after plumbing.Hash, remoteEx
 }
 
 // flexPull does everything it can to bring the repo in a state where you can push events (checking different remotes, creating feature branches or even create a root/orphaned branch). It depends on the HEAD of the repo, it must be configure to your working branch.
-func flexPull(ctx context.Context, repo *git.Repository, auth transport.AuthMethod) (*PullReport, error) {
-	branch, revisionBefore, err := GetDefaultBranch(repo)
+func flexPull(ctx context.Context, repo *git.Repository, branch plumbing.ReferenceName, currentHash plumbing.Hash, auth transport.AuthMethod) (*PullReport, error) {
 	branchShort := branch.Short()
-	if err != nil {
-		return nil, err
-	}
 
 	// See if you can find the target branch
-	refSpecSource := fmt.Sprintf("+refs/heads/%s", branch.Short())
-	revisionAfter, err := shallowPull(ctx, repo, refSpecSource, branchShort, auth)
+	refSpecSource := fmt.Sprintf("+refs/heads/%s", branchShort)
+	newHash, err := shallowPull(ctx, repo, refSpecSource, branchShort, auth)
 	if err == nil {
-		return createPullReport(branchShort, revisionBefore, revisionAfter, true, false), nil
+		return createPullReport(branchShort, currentHash, newHash, true, false), nil
 	}
 
 	if errors.Is(err, ErrRemoteRefNotFound) {
 		// Let's see if we can fetch HEAD into our target, that would become our feature branch
-		revisionAfter, err = shallowPull(ctx, repo, "+HEAD", branchShort, auth)
+		newHash, err = shallowPull(ctx, repo, "+HEAD", branchShort, auth)
 		if err == nil {
-			return createPullReport(branchShort, revisionBefore, revisionAfter, false, false), nil
+			return createPullReport(branchShort, currentHash, newHash, false, false), nil
 		}
 	}
 
 	// Failed to fetch from both sources, so let's configure head to be unborn.
-	revisionAfter, err = makeHeadUnborn(ctx, repo)
+	newHash, err = makeHeadUnborn(ctx, repo)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create root branch: %w", err)
 	}
 
-	return createPullReport(branchShort, revisionBefore, revisionAfter, false, true), nil
+	return createPullReport(branchShort, currentHash, newHash, false, true), nil
 }
 
 // resolveDefaultBranch uses the List output to find out all the required info of the default branch.
@@ -623,30 +690,32 @@ func resetHard(ctx context.Context, repo *git.Repository, dest plumbing.Hash) er
 }
 
 // generateCommitsFromEvents creates commits from the provided events.
-func generateCommitsFromEvents(ctx context.Context, repo *git.Repository, events []Event) (int, error) {
+func generateCommitsFromEvents(ctx context.Context, repo *git.Repository, events []Event) (int, plumbing.Hash, error) {
 	logger := log.FromContext(ctx)
+	lastHash := plumbing.ZeroHash
 	worktree, err := repo.Worktree()
 	if err != nil {
-		return 0, fmt.Errorf("failed to get worktree: %w", err)
+		return 0, lastHash, fmt.Errorf("failed to get worktree: %w", err)
 	}
 
 	commitsCreated := 0
 	for _, event := range events {
 		changesApplied, err := applyEventToWorktree(ctx, worktree, event)
 		if err != nil {
-			return commitsCreated, err
+			return commitsCreated, lastHash, err
 		}
 
 		if changesApplied {
-			if err := createCommitForEvent(worktree, event); err != nil {
-				return commitsCreated, err
+			lastHash, err = createCommitForEvent(worktree, event)
+			if err != nil {
+				return commitsCreated, lastHash, err
 			}
 			commitsCreated++
 			logger.Info("Created commit", "operation", event.Operation, "resource", event.Identifier.String())
 		}
 	}
 
-	return commitsCreated, nil
+	return commitsCreated, lastHash, nil
 }
 
 // applyEventToWorktree applies an event to the worktree, returning true if changes were made.
@@ -742,16 +811,15 @@ func handleCreateOrUpdateOperation(
 }
 
 // createCommitForEvent creates a commit for the given event.
-func createCommitForEvent(worktree *git.Worktree, event Event) error {
+func createCommitForEvent(worktree *git.Worktree, event Event) (plumbing.Hash, error) {
 	commitMessage := GetCommitMessage(event)
-	_, err := worktree.Commit(commitMessage, &git.CommitOptions{
+	return worktree.Commit(commitMessage, &git.CommitOptions{
 		Author: &object.Signature{
 			Name:  "GitOps Reverser",
 			Email: "gitops-reverser@configbutler.ai",
 			When:  time.Now(),
 		},
 	})
-	return err
 }
 
 // initializeCleanRepository removes corrupted repos and initializes a fresh one.
