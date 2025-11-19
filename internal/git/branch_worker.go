@@ -284,7 +284,7 @@ func (w *BranchWorker) commitAndPush(
 		w.GitRepoConfigNamespace, w.GitRepoConfigRef, w.Branch)
 
 	// Use new WriteEvents abstraction
-	result, err := WriteEvents(w.ctx, repoPath, events, auth)
+	result, err := WriteEvents(w.ctx, repoPath, events, w.Branch, auth)
 	if err != nil {
 		log.Error(err, "Failed to write events")
 		return
