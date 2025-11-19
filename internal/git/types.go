@@ -55,6 +55,7 @@ type PullReport struct {
 // WriteEventsResult provides detailed writeEvents operation results.
 type WriteEventsResult struct {
 	CommitsCreated int           // Number of succesfuly pushed commits (0 if no changes)
+	LastHash       string        // SHA of the last created event commit
 	ConflictPulls  []*PullReport // List of PullReports: one for each conflict resolution attempt
 	Failures       int           // Number of failures while attempting to push commits (0 in ideal situation)
 }

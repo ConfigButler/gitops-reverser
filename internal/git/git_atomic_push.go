@@ -32,32 +32,73 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/revlist"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/go-git/go-git/v5/plumbing/transport/client"
-	"github.com/go-git/go-git/v5/storage"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
-// push performs an atomic push operation in a single network session.
-// It checks if the remote branch exists before pushing to prevent creating diverged branches.
-func push(
+// TODO We should move this as well
+func CheckWriteAccess(ctx context.Context, path string, repoUrl string, auth transport.AuthMethod) error {
+	logger := log.FromContext(ctx)
+	repo, err := initializeCleanRepository(path, logger)
+	if err != nil {
+		return err
+	}
+
+	// Ensure the remote origin is set correctly
+	if err := ensureRemoteOrigin(ctx, repo, repoUrl); err != nil {
+		return fmt.Errorf("failed to ensure remote origin: %w", err)
+	}
+
+	// Get remote configuration
+	remote, err := repo.Remote("origin")
+	if err != nil {
+		return fmt.Errorf("failed to get remote: %w", err)
+	}
+
+	// Establish transport endpoint
+	endpoint, err := transport.NewEndpoint(remote.Config().URLs[0])
+	if err != nil {
+		return fmt.Errorf("failed to create endpoint: %w", err)
+	}
+
+	// Get the transport client
+	transportClient, err := client.NewClient(endpoint)
+	if err != nil {
+		return fmt.Errorf("failed to create transport client: %w", err)
+	}
+
+	// Create receive-pack session (single session for verification and push)
+	session, err := transportClient.NewReceivePackSession(endpoint, auth)
+	if err != nil {
+		return fmt.Errorf("failed to create receive-pack session: %w", err)
+	}
+	defer session.Close()
+
+	// Phase 1: Get advertised references (remote state)
+	refs, err := session.AdvertisedReferences() // So in that case it WILL return the head value?! In case of GH it does not... But this is a great idea to validate that we have write access as well!
+	if err != nil {
+		return fmt.Errorf("failed to get advertised references: %w", err)
+	}
+
+	return fmt.Errorf("failed to get advertised references: %s", refs.Head)
+}
+
+// PushAtomic performs an atomic PushAtomic operation in a single network session.
+// It checks if the remote branch is not touched before pushing to prevent creating diverged branches.
+// An explcit error is returned if it failed: I don't plan to use these, we can always retry...
+func PushAtomic(
 	ctx context.Context,
 	repo *git.Repository,
+	rootHash plumbing.Hash,
+	rootBranch plumbing.ReferenceName, // we need this to check if the rootbranch is still set the roothash: could be HEAD or the feature branch for now, but perhaps more in the future
 	auth transport.AuthMethod,
 ) error {
 	logger := log.FromContext(ctx)
-
-	// Get current branch name and local commit
-	headRef, err := repo.Reference(plumbing.HEAD, false)
+	branch, localHash, err := GetCurrentBranch(repo)
 	if err != nil {
-		return fmt.Errorf("failed to get HEAD reference: %w", err)
+		return fmt.Errorf("failed to get current branch: %w", err)
 	}
-	branch := headRef.Target()
+
 	branchName := branch.Short()
-
-	localBranchRef, err := repo.Reference(headRef.Target(), true)
-	if err != nil {
-		return fmt.Errorf("failed to get local branch reference: %w", err)
-	}
-	localHash := localBranchRef.Hash()
 
 	// Get remote configuration
 	remote, err := repo.Remote("origin")
@@ -90,83 +131,55 @@ func push(
 		return fmt.Errorf("failed to get advertised references: %w", err)
 	}
 
-	// Check if target branch exists on remote
+	// Determine the "old" hash for the push command and validate state
+	var oldHash plumbing.Hash
 	remoteHash, found := refs.References[branch.String()]
 
-	if !found {
-		// Remote branch doesn't exist - check if our parent commit exists on remote
-		// If yes, we're creating a new branch from an existing commit (safe)
-		// If no, we're trying to resurrect a deleted diverged branch (unsafe)
-		logger.Info("Remote branch not found, checking if based on existing remote commit", "branch", branchName)
+	if found {
+		// Branch exists on remote
+		oldHash = remoteHash
 
-		commit, err := repo.CommitObject(localHash)
-		if err != nil {
-			return fmt.Errorf("failed to get local commit: %w", err)
+		// Check if we are already up2date
+		if localHash == remoteHash {
+			logger.Info("remote already up2date", "branch", branchName, "hash", localHash)
+			return nil
 		}
 
-		// Check if parent commit exists on remote
-		if len(commit.ParentHashes) > 0 {
-			parentHash := commit.ParentHashes[0]
-			parentExists := false
-			for _, remoteRef := range refs.References {
-				if remoteRef == parentHash {
-					parentExists = true
-					break
-				}
-			}
-
-			if !parentExists {
-				logger.Info("Parent commit not found on remote, aborting to prevent divergence",
-					"branch", branchName, "parent", parentHash)
-				return fmt.Errorf("remote branch %s does not exist and parent commit not on remote (may have been merged)", branchName)
-			}
-
-			logger.Info("Parent commit found on remote, allowing branch creation",
-				"branch", branchName, "parent", parentHash)
-		} else {
-			// No parent = orphan/root commit, allow it
-			logger.Info("Creating orphan branch", "branch", branchName)
+		// Check if the remoteHash is what we based our work on
+		if rootHash != remoteHash {
+			logger.Info("Remote branch not in expected state", "branch", branchName)
+			return fmt.Errorf("remote received unknown updates")
 		}
 	} else {
-		// Phase 2: Branch exists on remote - validate we have that commit locally
-		_, err = repo.CommitObject(remoteHash)
-		if err != nil {
-			logger.Info("Remote hash not found locally, cannot calculate packfile",
-				"remoteHash", remoteHash, "localHash", localHash)
-			return fmt.Errorf("remote commit %s not in local shallow history: %w", remoteHash, err)
-		}
+		// Branch does NOT exist on remote
 
-		// If local == remote, we're already up to date
-		if localHash == remoteHash {
-			logger.Info("Already up to date", "branch", branchName, "hash", localHash)
-			return nil
+		// Is the intent to create an orphaned/root bracnh?
+		if rootHash.IsZero() {
+			// Use ZeroHash as "old" in Git push protocol to create new root branch
+			oldHash = plumbing.ZeroHash
+			logger.Info("Remote branch not found: pushing new orphan branch", "branch", branchName)
+		} else {
+			return fmt.Errorf("remote went missing")
 		}
 	}
 
 	// Phase 3: Calculate packfile using revlist and push in same session
-	var oldHash plumbing.Hash
-	if found {
-		oldHash = remoteHash
-	} else {
-		oldHash = plumbing.ZeroHash // Creating new branch
-	}
-
 	// Use revlist.Objects to calculate objects to send
-	// Pass localHash as 'ignore' (start) and oldHash as 'limit' (stop)
+	// Pass localHash as 'ignore' (start) and parentHash as 'limit' (stop)
 	var objectsToSend []plumbing.Hash
-	if oldHash == plumbing.ZeroHash {
+	if rootHash.IsZero() {
 		// Creating new branch - send all reachable objects from localHash
 		objectsToSend, err = revlist.Objects(repo.Storer, []plumbing.Hash{localHash}, nil)
 	} else {
-		// Updating existing branch - send objects between oldHash and localHash
+		// Updating existing branch - send objects between parentHash and localHash
 		// revlist.Objects(storer, commits to traverse, commits to stop at)
-		objectsToSend, err = revlist.Objects(repo.Storer, []plumbing.Hash{localHash}, []plumbing.Hash{oldHash})
+		objectsToSend, err = revlist.Objects(repo.Storer, []plumbing.Hash{localHash}, []plumbing.Hash{rootHash})
 	}
 	if err != nil {
 		return fmt.Errorf("failed to calculate objects using revlist: %w", err)
 	}
 
-	logger.Info("Calculated objects to send using revlist", "count", len(objectsToSend), "from", oldHash, "to", localHash)
+	logger.Info("Calculated objects to send using revlist", "count", len(objectsToSend), "from", rootHash, "to", localHash)
 
 	// Create packfile
 	packfileData, err := createPackfile(repo, objectsToSend)
@@ -179,6 +192,8 @@ func push(
 	req.Capabilities.Set(capability.ReportStatus)
 	req.Packfile = packfileData
 
+	// Use oldHash (either remoteHash or ZeroHash) as the expected "old" value
+	// This tells Git what we expect the current state to be
 	cmd := &packp.Command{
 		Name: branch,
 		Old:  oldHash,
@@ -218,12 +233,7 @@ func push(
 func createPackfile(repo *git.Repository, objects []plumbing.Hash) (io.ReadCloser, error) {
 	var buf bytes.Buffer
 
-	storer, ok := repo.Storer.(storage.Storer)
-	if !ok {
-		return nil, fmt.Errorf("repository storer does not implement storage.Storer")
-	}
-
-	encoder := packfile.NewEncoder(&buf, storer, false)
+	encoder := packfile.NewEncoder(&buf, repo.Storer, false)
 
 	// Encode the list of object hashes
 	_, err := encoder.Encode(objects, 0)
