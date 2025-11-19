@@ -316,7 +316,7 @@ func TestPrepareBranch_CheckoutDefault(t *testing.T) {
 }
 
 func TestWriteEvents_InvalidRepoPath(t *testing.T) {
-	_, err := WriteEvents(context.Background(), "/nonexistent/path", []Event{}, nil)
+	_, err := WriteEvents(context.Background(), "/nonexistent/path", []Event{}, "main", nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to open repository")
 }
@@ -339,7 +339,7 @@ func TestWriteEvents_FirstCommitOnEmptyRepo(t *testing.T) {
 	event := createTestEvent("test-pod")
 
 	// Test WriteEvents
-	result, err := WriteEvents(context.Background(), localPath, []Event{event}, nil)
+	result, err := WriteEvents(context.Background(), localPath, []Event{event}, "main", nil)
 	require.NoError(t, err)
 	assert.Equal(t, 1, result.CommitsCreated)
 	assert.Empty(t, result.ConflictPulls)
@@ -402,7 +402,7 @@ func TestWriteEvents_BranchCreationAndPush(t *testing.T) {
 	}
 
 	// Test WriteEvents with new branch
-	result, err := WriteEvents(context.Background(), localPath, []Event{event}, nil)
+	result, err := WriteEvents(context.Background(), localPath, []Event{event}, "feature", nil)
 	require.NoError(t, err)
 	assert.Equal(t, 1, result.CommitsCreated)
 	assert.Empty(t, result.ConflictPulls)
@@ -436,7 +436,7 @@ func TestWriteEvents_ConflictResolution(t *testing.T) {
 
 	// Test WriteEventss
 	event := createTestEvent("some-resource")
-	result, err := WriteEvents(context.Background(), localPath, []Event{event}, nil)
+	result, err := WriteEvents(context.Background(), localPath, []Event{event}, "main", nil)
 	require.NoError(t, err)
 
 	// Verify operation succeeded
@@ -474,7 +474,7 @@ func TestWriteEvents_ConcurrentOperations(t *testing.T) {
 			}
 
 			event := createTestEvent(fmt.Sprintf("pod-worker-%d", workerID))
-			_, err = WriteEvents(context.Background(), localPath, []Event{event}, nil)
+			_, err = WriteEvents(context.Background(), localPath, []Event{event}, "main", nil)
 			results <- err
 		}(i)
 	}
@@ -629,7 +629,7 @@ func TestPullBranch_MergeToDefaultScenario(t *testing.T) {
 	assert.Equal(t, "feature", pullReport.HEAD.ShortName)
 
 	event := createTestEvent("resource1")
-	writeEventsResult, err := WriteEvents(context.Background(), localPath, []Event{event}, nil)
+	writeEventsResult, err := WriteEvents(context.Background(), localPath, []Event{event}, "feature", nil)
 	require.NoError(t, err)
 	assert.Equal(t, 1, writeEventsResult.CommitsCreated)
 
@@ -653,7 +653,7 @@ func TestPullBranch_MergeToDefaultScenario(t *testing.T) {
 
 	// Now we do another change: and we should see that it's based upon the default branch
 	event = createTestEvent("resource2")
-	writeEventsResult, err = WriteEvents(context.Background(), localPath, []Event{event}, nil)
+	writeEventsResult, err = WriteEvents(context.Background(), localPath, []Event{event}, "feature", nil)
 	require.NoError(t, err)
 	assert.Equal(t, 1, writeEventsResult.CommitsCreated)
 
@@ -696,7 +696,7 @@ func TestPullBranch_UnexpectedMergeScenario(t *testing.T) {
 	assert.Equal(t, "feature", pullReport.HEAD.ShortName)
 
 	event := createTestEvent("resource1")
-	writeEventsResult, err := WriteEvents(context.Background(), localPath, []Event{event}, nil)
+	writeEventsResult, err := WriteEvents(context.Background(), localPath, []Event{event}, "feature", nil)
 	require.NoError(t, err)
 	assert.Equal(t, 1, writeEventsResult.CommitsCreated)
 
@@ -704,7 +704,7 @@ func TestPullBranch_UnexpectedMergeScenario(t *testing.T) {
 
 	// Now we just do a change: without calling PrepareBranch (you never new when something gets merged)
 	event = createTestEvent("resource2")
-	writeEventsResult, err = WriteEvents(context.Background(), localPath, []Event{event}, nil)
+	writeEventsResult, err = WriteEvents(context.Background(), localPath, []Event{event}, "feature", nil)
 	require.NoError(t, err)
 	assert.Equal(t, 1, writeEventsResult.CommitsCreated)
 	assert.Len(t, writeEventsResult.ConflictPulls, 1)
@@ -751,7 +751,7 @@ func TestPullBranch_WhipedRepo(t *testing.T) {
 
 	// Now we just recreate main, let's see if this works
 	event := createTestEvent("resource1")
-	writeEventsResult, err := WriteEvents(context.Background(), localPath, []Event{event}, nil)
+	writeEventsResult, err := WriteEvents(context.Background(), localPath, []Event{event}, "feature", nil)
 	require.NoError(t, err)
 	assert.Equal(t, 1, writeEventsResult.CommitsCreated)
 
