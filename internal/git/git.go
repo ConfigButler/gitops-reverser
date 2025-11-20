@@ -118,7 +118,7 @@ func CheckRepo(ctx context.Context, repoURL string, auth transport.AuthMethod) (
 	return repoInfo, nil
 }
 
-// PrepareBranch clones repository immediately when GitDestination is created, optimized for single branch usage. It tries to fetch the usefull branch: either target or default.
+// PrepareBranch clones repository immediately when GitDestination is created, optimized for single branch usage. It tries to fetch the useful branch: either target or default.
 func PrepareBranch(
 	ctx context.Context,
 	repoURL, repoPath, targetBranchName string,
@@ -157,7 +157,7 @@ func PrepareBranch(
 	return syncToRemote(ctx, repo, targetBranch, auth)
 }
 
-// TryRefernce will resolve in all likely scenarios, if it's there and if it's not. In that case you get plumbing.ZeroHash and no error.
+// TryReference will resolve in all likely scenarios, if it's there and if it's not. In that case you get plumbing.ZeroHash and no error.
 func TryReference(repo *git.Repository, targetBranch plumbing.ReferenceName) (plumbing.Hash, error) {
 	result, err := repo.Reference(targetBranch, false)
 	if err != nil {
@@ -171,6 +171,8 @@ func TryReference(repo *git.Repository, targetBranch plumbing.ReferenceName) (pl
 }
 
 // WriteEvents handles the complete write workflow: lightweight switch to branch if needed, commit, push with conflict resolution.
+//
+//nolint:gocognit
 func WriteEvents(
 	ctx context.Context,
 	repoPath string,
@@ -224,9 +226,8 @@ func WriteEvents(
 
 		// If we are not on targetBranch: time to create it
 		if baseBranch != targetBranch {
-			result1, err1 := switchOrCreateBranch(repo, targetBranch, logger, targetBranchName, baseHash)
-			if err1 != nil {
-				return result1, err1
+			if err1 := switchOrCreateBranch(repo, targetBranch, logger, targetBranchName, baseHash); err1 != nil {
+				return nil, err1
 			}
 		}
 
@@ -254,10 +255,16 @@ func WriteEvents(
 	return result, nil
 }
 
-func switchOrCreateBranch(repo *git.Repository, targetBranch plumbing.ReferenceName, logger logr.Logger, targetBranchName string, baseHash plumbing.Hash) (*WriteEventsResult, error) {
+func switchOrCreateBranch(
+	repo *git.Repository,
+	targetBranch plumbing.ReferenceName,
+	logger logr.Logger,
+	targetBranchName string,
+	baseHash plumbing.Hash,
+) error {
 	w, err := repo.Worktree()
 	if err != nil {
-		return nil, fmt.Errorf("failed to get worktree: %w", err)
+		return fmt.Errorf("failed to get worktree: %w", err)
 	}
 
 	// Strategy: "git checkout -B targetBranch"
@@ -290,9 +297,9 @@ func switchOrCreateBranch(repo *git.Repository, targetBranch plumbing.ReferenceN
 	}
 
 	if err != nil {
-		return nil, fmt.Errorf("failed to prepare branch %s: %w", targetBranchName, err)
+		return fmt.Errorf("failed to prepare branch %s: %w", targetBranchName, err)
 	}
-	return nil, nil
+	return nil
 }
 
 // GetCommitMessage returns a structured commit message for the given event.
@@ -339,7 +346,7 @@ func ensureRemoteOrigin(ctx context.Context, repo *git.Repository, repoURL strin
 	return err
 }
 
-// GetCurrentBranch gets the branch that is active
+// GetCurrentBranch gets the branch that is active.
 func GetCurrentBranch(r *git.Repository) (plumbing.ReferenceName, plumbing.Hash, error) {
 	symbolicRef, err := r.Reference(plumbing.HEAD, false)
 	if err != nil {
@@ -424,21 +431,6 @@ func tryOpenExistingRepo(path string, logger logr.Logger) *git.Repository {
 	return repo
 }
 
-// getRemoteHeadCommit will return the local reference to head
-func getRemoteHeadCommit(repo *git.Repository) (plumbing.Hash, error) {
-	remoteHead := plumbing.NewRemoteHEADReferenceName("origin")
-	remoteHeadCommit, err := repo.Reference(remoteHead, true)
-	if errors.Is(err, plumbing.ErrReferenceNotFound) {
-		return plumbing.ZeroHash, nil
-	}
-
-	if err != nil {
-		return plumbing.ZeroHash, err
-	}
-
-	return remoteHeadCommit.Hash(), nil
-}
-
 func createPullReport(targetBranch string, before, after plumbing.Hash, remoteExists, unborn bool) *PullReport {
 	// Make sure that a non existing SHA prints as ""
 	printedSha := ""
@@ -458,7 +450,12 @@ func createPullReport(targetBranch string, before, after plumbing.Hash, remoteEx
 }
 
 // syncToRemote does everything it can to bring the repo in a state where you can push events (checking different remotes, creating feature branches or even create a root/orphaned branch). It depends on the HEAD of the repo, it must be configure to your working branch.
-func syncToRemote(ctx context.Context, repo *git.Repository, branch plumbing.ReferenceName, auth transport.AuthMethod) (*PullReport, error) {
+func syncToRemote(
+	ctx context.Context,
+	repo *git.Repository,
+	branch plumbing.ReferenceName,
+	auth transport.AuthMethod,
+) (*PullReport, error) {
 	_, currentHash, err := GetCurrentBranch(repo)
 	if err != nil {
 		return nil, fmt.Errorf("unexpected fail to read HEAD: %w", err)
@@ -584,7 +581,7 @@ func checkoutAndReset(ctx context.Context, repo *git.Repository, branch plumbing
 	}
 
 	// Handle case: Local branch does not exist yet
-	if err == plumbing.ErrReferenceNotFound {
+	if errors.Is(err, plumbing.ErrReferenceNotFound) {
 		// Create the branch and point it immediately to the target Hash
 		logger.Info("Branch does not exist locally, creating it", "branch", branch, "hash", branchRemoteRef.Hash())
 		err = w.Checkout(&git.CheckoutOptions{
@@ -801,6 +798,8 @@ func initializeCleanRepository(repoPath string, logger logr.Logger) (*git.Reposi
 // - "refs/heads/feature", nil: Target found on remote, fetched, ready to checkout.
 // - "refs/heads/main", nil:    Target missing on remote, fell back to default branch.
 // - "", nil:                   No valid branches found (empty repo).
+//
+//nolint:gocognit,cyclop,funlen
 func smartFetch(
 	ctx context.Context,
 	repo *git.Repository,
@@ -886,15 +885,16 @@ func smartFetch(
 	// --- Step 4: Determine Return Value (Local Reference) ---
 	var result plumbing.ReferenceName
 
-	if targetExists {
+	switch {
+	case targetExists:
 		// Scenario 1: Target found. We return the target itself.
 		// e.g. "refs/heads/feature"
 		result = target
-	} else if defaultBranchFull != "" {
+	case defaultBranchFull != "":
 		// Scenario 2: Target missing, fallback to default.
 		// e.g. "refs/heads/main"
 		result = plumbing.ReferenceName(defaultBranchFull)
-	} else {
+	default:
 		// Scenario 3: Nothing found.
 		return "", nil
 	}
