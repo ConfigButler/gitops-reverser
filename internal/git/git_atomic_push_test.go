@@ -20,14 +20,10 @@ package git
 
 import (
 	"context"
-	"errors"
 	"path/filepath"
 	"testing"
 
-	"github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
-	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -53,51 +49,22 @@ func TestAtomicPush_PushOnEmpty(t *testing.T) {
 	remoteRepo := createBareRepo(t, serverPath)
 
 	// Clone that repo and do a first commit on main
-	localRepo, worktree := initLocalRepo(t, localPath, remoteURL, "main")
+	localRepo, worktree := initLocalRepo(t, localPath, remoteURL, "main", nil)
 	createdHash := commitFileChange(t, worktree, localPath, "README.md", "This is cool")
 
 	// New branch in empty repo, so rootHash is plumbing.ZeroHash (let's also include the assumption that we merge to main, so that we can detect if it 'updated')
-	err := PushAtomic(ctx, localRepo, plumbing.ZeroHash, plumbing.HEAD, nil)
+	branch := plumbing.NewBranchReferenceName("main")
+	err := PushAtomic(ctx, localRepo, plumbing.ZeroHash, branch, nil)
 	require.NoError(t, err)
 
 	// Verify branch exists on server
-	ref, err := remoteRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
+	ref, err := remoteRepo.Reference(branch, true)
 	require.NoError(t, err)
 	assert.NotNil(t, ref)
 	require.Equal(t, createdHash, ref.Hash())
 }
 
-func initLocalRepo(t *testing.T, localPath, remoteURL, checkoutBranch string) (*git.Repository, *git.Worktree) {
-	// Create local repository
-	localRepo, err := git.PlainInit(localPath, false)
-	require.NoError(t, err)
-
-	// Add remote
-	_, err = localRepo.CreateRemote(&config.RemoteConfig{
-		Name: "origin",
-		URLs: []string{remoteURL},
-	})
-	require.NoError(t, err)
-
-	err = setHead(localRepo, checkoutBranch)
-	require.NoError(t, err)
-
-	worktree, err := localRepo.Worktree()
-	require.NoError(t, err)
-	if checkoutBranch != "" {
-		err = worktree.Pull(&git.PullOptions{
-			RemoteName:    "origin",
-			ReferenceName: plumbing.NewBranchReferenceName(checkoutBranch),
-		})
-		if !errors.Is(err, transport.ErrEmptyRemoteRepository) {
-			require.NoError(t, err)
-		}
-	}
-
-	return localRepo, worktree
-}
-
-func TestAtomicPush_Push(t *testing.T) {
+func TestAtomicPush_PushToMain(t *testing.T) {
 	ctx := context.Background()
 	tempDir := t.TempDir()
 	serverPath := filepath.Join(tempDir, "server")
@@ -109,15 +76,41 @@ func TestAtomicPush_Push(t *testing.T) {
 	firstCommit := simulateClientCommitOnDisk(t, remoteURL, "main", "README.md", "This is an initialized remote repo")
 
 	// Check it out and create a commit based on that
-	localRepo, worktree := initLocalRepo(t, localPath, remoteURL, "main")
+	localRepo, worktree := initLocalRepo(t, localPath, remoteURL, "main", nil)
 	createdCommit := commitFileChange(t, worktree, localPath, "README.md", "This is cool")
 
-	// New branch in empty repo, so rootHash is plumbing.ZeroHash (let's also include the assumption that we merge to main, so that we can detect if it 'updated')
-	err := PushAtomic(ctx, localRepo, firstCommit, "main", nil)
+	branch := plumbing.NewBranchReferenceName("main")
+	err := PushAtomic(ctx, localRepo, firstCommit, branch, nil)
 	require.NoError(t, err)
 
 	// Verify branch exists on server
-	ref, err := remoteRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
+	ref, err := remoteRepo.Reference(branch, true)
+	require.NoError(t, err)
+	assert.NotNil(t, ref)
+	require.Equal(t, createdCommit, ref.Hash())
+}
+
+func TestAtomicPush_PushToOther(t *testing.T) {
+	ctx := context.Background()
+	tempDir := t.TempDir()
+	serverPath := filepath.Join(tempDir, "server")
+	remoteURL := "file://" + serverPath
+
+	// Create a remote with two commits
+	localPath := filepath.Join(tempDir, "local")
+	remoteRepo := createBareRepo(t, serverPath)
+	firstCommit := simulateClientCommitOnDisk(t, remoteURL, "main", "README.md", "This is an initialized remote repo")
+
+	// Check it out and create a commit based on that
+	localRepo, worktree := initLocalRepo(t, localPath, remoteURL, "feature", nil)
+	createdCommit := commitFileChange(t, worktree, localPath, "README.md", "This is cool")
+
+	// Now we expect this to error out
+	rootBranch := plumbing.NewBranchReferenceName("main")
+	featureBranch := plumbing.NewBranchReferenceName("feature")
+	err := PushAtomic(ctx, localRepo, firstCommit, rootBranch, nil)
+	require.NoError(t, err)
+	ref, err := remoteRepo.Reference(featureBranch, true)
 	require.NoError(t, err)
 	assert.NotNil(t, ref)
 	require.Equal(t, createdCommit, ref.Hash())
@@ -137,7 +130,7 @@ func TestAtomicPush_DetectsMissingBranch(t *testing.T) {
 	featureCommit := simulateClientCommitOnDisk(t, remoteURL, "feature", "README.md", "Some change")
 
 	// Check it out and create a commit based on that
-	localRepo, worktree := initLocalRepo(t, localPath, remoteURL, "feature")
+	localRepo, worktree := initLocalRepo(t, localPath, remoteURL, "feature", nil)
 	createdCommit := commitFileChange(t, worktree, localPath, "README.md", "This is cool")
 	require.Equal(t, 3, countDepth(t, localRepo, createdCommit))
 
@@ -165,13 +158,13 @@ func TestAtomicPush_DetectsUpdatedRemote(t *testing.T) {
 	firstCommit := simulateClientCommitOnDisk(t, remoteURL, "main", "README.md", "This is an initialized remote repo")
 
 	// Check it out and create a commit based on that
-	localRepo, worktree := initLocalRepo(t, localPath, remoteURL, "main")
+	localRepo, worktree := initLocalRepo(t, localPath, remoteURL, "main", nil)
 	commitFileChange(t, worktree, localPath, "README.md", "This is cool")
 
 	simulateClientCommitOnDisk(t, remoteURL, "main", "README.md", "Another change on remote!")
 
 	// Now we expect this to error out
-	err := PushAtomic(ctx, localRepo, firstCommit, "main", nil)
+	err := PushAtomic(ctx, localRepo, firstCommit, "refs/heads/main", nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "remote received unknown updates")
 }

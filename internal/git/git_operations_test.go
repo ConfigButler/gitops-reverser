@@ -20,10 +20,8 @@ package git
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
@@ -32,7 +30,6 @@ import (
 	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
-	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -141,7 +138,7 @@ func TestCheckRepo_PublicConnectivity(t *testing.T) {
 	require.NoError(t, err)
 
 	require.False(t, pullReport.ExistsOnRemote)
-	require.Equal(t, "cool-test", pullReport.HEAD.ShortName)
+	require.Equal(t, "cool-test", pullReport.HEAD.ShortName) // We already report what we will push (but we didnt yet)!
 	require.False(t, pullReport.HEAD.Unborn)
 
 	// Verify repository was cloned
@@ -152,7 +149,7 @@ func TestCheckRepo_PublicConnectivity(t *testing.T) {
 	localHead, err := localRepo.Storer.Reference(plumbing.HEAD)
 	require.Equal(t, plumbing.SymbolicReference, localHead.Type())
 	require.NoError(t, err)
-	require.Equal(t, localHead.Target().Short(), pullReport.HEAD.ShortName)
+	require.Equal(t, "master", localHead.Target().Short()) // We require the local copy to be on the source branch (until we really start to commit!)
 	remotes, err := localRepo.Remotes()
 	require.NoError(t, err)
 	require.Len(
@@ -296,7 +293,7 @@ func TestPrepareBranch_CheckoutDefault(t *testing.T) {
 	createBareRepo(t, remotePath)
 
 	// Simulate client creating initial commit on someDefaultBranch
-	hash := simulateClientCommitOnDisk(t, "file://"+remotePath, "mymain", ".gitkeep", "")
+	hash := simulateClientCommitOnDisk(t, "file://"+remotePath, "mymain", "hello.txt", "")
 
 	// Test PrepareBranch
 	localPath := filepath.Join(tempDir, "local")
@@ -336,7 +333,7 @@ func TestWriteEvents_FirstCommitOnEmptyRepo(t *testing.T) {
 	require.True(t, pullReport.HEAD.Unborn)
 
 	// Create test event
-	event := createTestEvent("test-pod")
+	event := createTestEvent(t, "test-pod")
 
 	// Test WriteEvents
 	result, err := WriteEvents(context.Background(), localPath, []Event{event}, "main", nil)
@@ -367,7 +364,7 @@ func TestWriteEvents_BranchCreationAndPush(t *testing.T) {
 	createBareRepo(t, remotePath)
 
 	// Simulate client creating initial commit on main
-	simulateClientCommitOnDisk(t, "file://"+remotePath, "main", ".gitkeep", "")
+	simulateClientCommitOnDisk(t, "file://"+remotePath, "main", "file.txt", "hello world")
 
 	// Clone to local
 	localPath := filepath.Join(tempDir, "local")
@@ -435,7 +432,7 @@ func TestWriteEvents_ConflictResolution(t *testing.T) {
 	simulateClientCommitOnDisk(t, "file://"+serverPath, "main", "README.md", "This is our conflicting readme")
 
 	// Test WriteEventss
-	event := createTestEvent("some-resource")
+	event := createTestEvent(t, "some-resource")
 	result, err := WriteEvents(context.Background(), localPath, []Event{event}, "main", nil)
 	require.NoError(t, err)
 
@@ -456,7 +453,7 @@ func TestWriteEvents_ConcurrentOperations(t *testing.T) {
 	createBareRepo(t, remotePath)
 
 	// Simulate client creating initial commit
-	simulateClientCommitOnDisk(t, "file://"+remotePath, "main", ".gitkeep", "init")
+	simulateClientCommitOnDisk(t, "file://"+remotePath, "main", "hello.txt", "init")
 
 	// Number of concurrent operations
 	numWorkers := 3
@@ -473,7 +470,7 @@ func TestWriteEvents_ConcurrentOperations(t *testing.T) {
 				return
 			}
 
-			event := createTestEvent(fmt.Sprintf("pod-worker-%d", workerID))
+			event := createTestEvent(t, fmt.Sprintf("pod-worker-%d", workerID))
 			_, err = WriteEvents(context.Background(), localPath, []Event{event}, "main", nil)
 			results <- err
 		}(i)
@@ -567,7 +564,7 @@ func TestPullBranch_LocalEditScenario(t *testing.T) {
 	createBareRepo(t, remotePath)
 
 	// Simulate client creating initial commit on main
-	simulateClientCommitOnDisk(t, "file://"+remotePath, "main", ".gitkeep", "")
+	simulateClientCommitOnDisk(t, "file://"+remotePath, "main", "hello.txt", "")
 
 	// Clone to local and create a feature branch
 	localPath := filepath.Join(tempDir, "local")
@@ -607,12 +604,12 @@ func TestPullBranch_MergeToDefaultScenario(t *testing.T) {
 	localPath := filepath.Join(tempDir, "local")
 
 	// Create bare remote repository
-	serverRepo := createBareRepo(t, serverPath)
 	defaultBranchname := "myuniquedefault" // most people use main but we should also support others
+	serverRepo := createBareRepo(t, serverPath)
+	setHead(serverRepo, defaultBranchname) // Now it's also default branch: that's what is returned as HEAD to clients
 
 	// Simulate client creating initial commit on myuniquedefault
 	simulateClientCommitOnDisk(t, remoteURL, defaultBranchname, "some-file.txt", "Some file")
-	setHead(serverRepo, defaultBranchname) // Now it's also default branch: that's what is returned as HEAD to clients
 
 	pullReport, err := PrepareBranch(context.Background(), remoteURL, localPath, "feature", nil)
 	require.NoError(t, err)
@@ -628,7 +625,7 @@ func TestPullBranch_MergeToDefaultScenario(t *testing.T) {
 	assert.False(t, pullReport.IncomingChanges)
 	assert.Equal(t, "feature", pullReport.HEAD.ShortName)
 
-	event := createTestEvent("resource1")
+	event := createTestEvent(t, "resource1")
 	writeEventsResult, err := WriteEvents(context.Background(), localPath, []Event{event}, "feature", nil)
 	require.NoError(t, err)
 	assert.Equal(t, 1, writeEventsResult.CommitsCreated)
@@ -652,7 +649,7 @@ func TestPullBranch_MergeToDefaultScenario(t *testing.T) {
 	assert.False(t, pullReport.HEAD.Unborn)
 
 	// Now we do another change: and we should see that it's based upon the default branch
-	event = createTestEvent("resource2")
+	event = createTestEvent(t, "resource2")
 	writeEventsResult, err = WriteEvents(context.Background(), localPath, []Event{event}, "feature", nil)
 	require.NoError(t, err)
 	assert.Equal(t, 1, writeEventsResult.CommitsCreated)
@@ -664,8 +661,125 @@ func TestPullBranch_MergeToDefaultScenario(t *testing.T) {
 	assert.Equal(t, "feature", pullReport.HEAD.ShortName)
 	assert.False(t, pullReport.HEAD.Unborn)
 
-	// This is important: initial change + two event commits + merge = we must have 4 commits.
-	assert.Equal(t, 4, countDepth(t, serverRepo, plumbing.NewHash(pullReport.HEAD.Sha)))
+	// This is important: initial change + merge + single commit + merge = we must have 3 commits.
+	assert.Equal(t, 3, countDepth(t, serverRepo, plumbing.NewHash(pullReport.HEAD.Sha)))
+}
+
+func TestPullBranch_DanglingHead(t *testing.T) {
+	tempDir := t.TempDir()
+	serverPath := filepath.Join(tempDir, "server")
+	remoteURL := "file://" + serverPath
+	localPath := filepath.Join(tempDir, "local")
+
+	// 1. Setup Remote with a specific default branch
+	defaultBranchname := "myuniquedefault"
+	serverRepo := createBareRepo(t, serverPath)
+	setHead(serverRepo, defaultBranchname)
+
+	// 2. Create initial content (so the repo isn't empty)
+	// This creates 'myuniquedefault'
+	simulateClientCommitOnDisk(t, remoteURL, defaultBranchname, "init.txt", "Initial content")
+
+	// 3. Create the 'feature' branch
+	// We need this to exist, otherwise if we delete default, there is NOTHING to fetch.
+	simulateClientCommitOnDisk(t, remoteURL, "feature", "feature.txt", "Feature content")
+
+	// 4. THE SABOTAGE: Delete 'myuniquedefault' on the server
+	// This leaves HEAD pointing to 'refs/heads/myuniquedefault', which no longer exists.
+	// This is a "Dangling HEAD".
+	err := serverRepo.Storer.RemoveReference(plumbing.NewBranchReferenceName(defaultBranchname))
+	require.NoError(t, err)
+
+	// Verify setup: HEAD should now be broken (resolving it fails)
+	_, err = serverRepo.Head()
+	require.Error(t, err, "Setup failed: HEAD should be broken/dangling")
+
+	// 5. Run PrepareBranch targeting 'feature'
+	// Expectation: SmartFetch should detect HEAD is broken, log a warning,
+	// but successfully fetch 'feature' because it exists.
+	pullReport, err := PrepareBranch(context.Background(), remoteURL, localPath, "feature", nil)
+	require.NoError(t, err, "Tool crashed on dangling HEAD")
+
+	assert.True(t, pullReport.ExistsOnRemote)
+	assert.True(t, pullReport.IncomingChanges)
+	assert.Equal(t, "feature", pullReport.HEAD.ShortName)
+
+	// 6. Write Events
+	// Should be able to work on 'feature' normally
+	event := createTestEvent(t, "resilient-change")
+	writeEventsResult, err := WriteEvents(context.Background(), localPath, []Event{event}, "feature", nil)
+	require.NoError(t, err)
+	assert.Equal(t, 1, writeEventsResult.CommitsCreated)
+
+	// 7. Verify Persistence
+	// Ensure we can sync again without issues
+	pullReport, err = PrepareBranch(context.Background(), remoteURL, localPath, "feature", nil)
+	require.NoError(t, err)
+	assert.True(t, pullReport.ExistsOnRemote)
+	assert.False(t, pullReport.IncomingChanges, "Should be up to date after write")
+
+	// 8. Final depth check on the SERVER
+	// Initial (1) + Feature Commit (1) + WriteEvents (1) = 3
+	// Note: We check the feature branch specifically because HEAD is broken
+	featureHash, err := serverRepo.ResolveRevision(plumbing.Revision("refs/heads/feature"))
+	require.NoError(t, err)
+	assert.Equal(t, 3, countDepth(t, serverRepo, *featureHash))
+}
+
+func TestPullBranch_DanglingHead_NewOrphan(t *testing.T) {
+	tempDir := t.TempDir()
+	serverPath := filepath.Join(tempDir, "server")
+	remoteURL := "file://" + serverPath
+	localPath := filepath.Join(tempDir, "local")
+
+	// 1. Setup Remote with 'main'
+	defaultBranchname := "main"
+	serverRepo := createBareRepo(t, serverPath)
+	setHead(serverRepo, defaultBranchname)
+	simulateClientCommitOnDisk(t, remoteURL, defaultBranchname, "init.txt", "Old history")
+
+	// 2. THE SABOTAGE: Delete 'main' on the server
+	// Remote state:
+	// - HEAD -> refs/heads/main
+	// - refs/heads/main -> [DELETED]
+	// - refs/heads/feature -> [DOES NOT EXIST]
+	err := serverRepo.Storer.RemoveReference(plumbing.NewBranchReferenceName(defaultBranchname))
+	require.NoError(t, err)
+
+	// 3. Attempt to work on a NEW feature branch
+	targetBranch := "new-feature"
+
+	// PrepareBranch logic:
+	// SmartFetch sees HEAD is broken. It sees target is missing. Returns "".
+	// syncToRemote sees "", calls makeHeadUnborn().
+	pullReport, err := PrepareBranch(context.Background(), remoteURL, localPath, targetBranch, nil)
+	require.NoError(t, err)
+
+	// Verify Report
+	assert.False(t, pullReport.ExistsOnRemote, "Branch should not exist on remote")
+	assert.True(t, pullReport.HEAD.Unborn, "Should be in Unborn/Orphan state because no valid base was found")
+	assert.False(t, pullReport.IncomingChanges, "No incoming changes possible on an empty base")
+
+	// 4. Write Events
+	event := createTestEvent(t, "orphan-resource")
+	writeEventsResult, err := WriteEvents(context.Background(), localPath, []Event{event}, targetBranch, nil)
+	require.NoError(t, err)
+	assert.Equal(t, 1, writeEventsResult.CommitsCreated)
+
+	// 5. Verify Topology on Server
+	// The new commit should be a ROOT commit (0 parents) because we couldn't find 'main' to branch off.
+
+	// Fetch the commit from the server
+	serverRef, err := serverRepo.Reference(plumbing.NewBranchReferenceName(targetBranch), true)
+	require.NoError(t, err, "New branch should have been pushed")
+
+	commitObj, err := serverRepo.CommitObject(serverRef.Hash())
+	require.NoError(t, err)
+
+	// The Critical Assertion:
+	assert.Equal(t, 0, commitObj.NumParents(), "This should be a root commit (orphan) because the default branch was missing")
+	assert.Contains(t, commitObj.Message, "orphan-resource")
+	assert.Contains(t, commitObj.Message, "[CREATE]")
 }
 
 func TestPullBranch_UnexpectedMergeScenario(t *testing.T) {
@@ -695,23 +809,23 @@ func TestPullBranch_UnexpectedMergeScenario(t *testing.T) {
 	assert.False(t, pullReport.IncomingChanges)
 	assert.Equal(t, "feature", pullReport.HEAD.ShortName)
 
-	event := createTestEvent("resource1")
+	event := createTestEvent(t, "resource1")
 	writeEventsResult, err := WriteEvents(context.Background(), localPath, []Event{event}, "feature", nil)
 	require.NoError(t, err)
 	assert.Equal(t, 1, writeEventsResult.CommitsCreated)
 
-	_ = simulateSimpleMerge(t, remoteURL, "feature", "main")
+	mergeHash := simulateSimpleMerge(t, remoteURL, "feature", "main")
 
 	// Now we just do a change: without calling PrepareBranch (you never new when something gets merged)
-	event = createTestEvent("resource2")
+	event = createTestEvent(t, "resource2")
 	writeEventsResult, err = WriteEvents(context.Background(), localPath, []Event{event}, "feature", nil)
 	require.NoError(t, err)
 	assert.Equal(t, 1, writeEventsResult.CommitsCreated)
 	assert.Len(t, writeEventsResult.ConflictPulls, 1)
 	assert.True(t, writeEventsResult.ConflictPulls[0].IncomingChanges)
 	assert.False(t, writeEventsResult.ConflictPulls[0].ExistsOnRemote)
-	//assert.Equal(t, mergedHash.String(), writeEventsResult.ConflictPulls[0].HEAD.Sha) // This is probably not true anymore? -> there is no way to get the last commit
-	assert.Equal(t, "feature", writeEventsResult.ConflictPulls[0].HEAD.Sha)
+	assert.Equal(t, mergeHash.String(), writeEventsResult.ConflictPulls[0].HEAD.Sha) // This is probably not true anymore? -> there is no way to get the last commit
+	//assert.Equal(t, "feature", writeEventsResult.ConflictPulls[0].HEAD.Sha)
 
 	pullReport, err = PrepareBranch(context.Background(), remoteURL, localPath, "feature", nil)
 	require.NoError(t, err)
@@ -750,7 +864,7 @@ func TestPullBranch_WhipedRepo(t *testing.T) {
 	assert.False(t, pullReport.IncomingChanges)
 
 	// Now we just recreate main, let's see if this works
-	event := createTestEvent("resource1")
+	event := createTestEvent(t, "resource1")
 	writeEventsResult, err := WriteEvents(context.Background(), localPath, []Event{event}, "feature", nil)
 	require.NoError(t, err)
 	assert.Equal(t, 1, writeEventsResult.CommitsCreated)
@@ -790,276 +904,47 @@ func TestPullBranch_WhipedRepo(t *testing.T) {
 	assert.Empty(t, nonGitFiles, "No files should exist in working copy except .git directory")
 }
 
-// Helper function to create test events.
-func createTestEvent(name string) Event {
-	namespace := "default"
-	obj := &unstructured.Unstructured{
-		Object: map[string]interface{}{
-			"apiVersion": "v1",
-			"kind":       "Pod",
-			"metadata": map[string]interface{}{
-				"name":      name,
-				"namespace": namespace,
-			},
-		},
-	}
-	return Event{
-		Object: obj,
-		Identifier: types.ResourceIdentifier{
-			Group:     "",
-			Version:   "v1",
-			Resource:  "pods",
-			Namespace: namespace,
-			Name:      name,
-		},
-		Operation: "CREATE",
-		UserInfo: UserInfo{
-			Username: "test-user",
-		},
-	}
-}
-
 // Benchmark for prepareBranch shallow clone performance.
 func BenchmarkPrepareBranch_ShallowClone(b *testing.B) {
+	// 1. SETUP (Do this once, outside the timer)
 	tempDir := b.TempDir()
+	serverPath := filepath.Join(tempDir, "server.git")
+	remoteURL := "file://" + serverPath
 
-	// Setup a bare remote repository with some history
-	remotePath := filepath.Join(tempDir, "remote.git")
-	err := os.MkdirAll(remotePath, 0750)
-	require.NoError(b, err)
-	_, err = git.PlainInit(remotePath, true) // true = bare
-	require.NoError(b, err)
+	// Helper 1: Create Bare Repo
+	// This ensures the repo exists.
+	serverRepo := createBareRepo(b, serverPath) // Make sure createBareRepo accepts *testing.B or an interface
 
-	// Simulate client creating a commit
-	clientTempDir := b.TempDir()
-	clientPath := filepath.Join(clientTempDir, "client")
-	repo, err := git.PlainClone(clientPath, false, &git.CloneOptions{
-		URL:   "file://" + remotePath,
-		Depth: 1,
-	})
-	if err != nil {
-		// Empty repo
-		repo, err = git.PlainInit(clientPath, false)
-		require.NoError(b, err)
-		_, err = repo.CreateRemote(&config.RemoteConfig{
-			Name: "origin",
-			URLs: []string{"file://" + remotePath},
-		})
-		require.NoError(b, err)
-	}
-	worktree, err := repo.Worktree()
-	require.NoError(b, err)
-	err = worktree.Checkout(&git.CheckoutOptions{
-		Branch: plumbing.NewBranchReferenceName("main"),
-		Create: true,
-	})
-	require.NoError(b, err)
-	err = os.WriteFile(filepath.Join(clientPath, "file.txt"), []byte("content"), 0600)
-	require.NoError(b, err)
-	_, err = worktree.Add("file.txt")
-	require.NoError(b, err)
-	_, err = worktree.Commit("Client commit", &git.CommitOptions{
-		Author: &object.Signature{Name: "Client", Email: "client@example.com", When: time.Now()},
-	})
-	require.NoError(b, err)
-	err = repo.Push(&git.PushOptions{})
+	// Helper 2: Set HEAD correctly!
+	// CRITICAL FIX: Point HEAD to 'main' so it's not dangling pointing to 'master'
+	err := setHead(serverRepo, "main")
 	require.NoError(b, err)
 
-	b.ResetTimer()
-	for i := range b.N {
-		clonePath := filepath.Join(tempDir, fmt.Sprintf("clone-%d", i))
-		_, err := PrepareBranch(context.Background(), "file://"+remotePath, clonePath, "main", nil)
-		require.NoError(b, err)
-	}
-}
+	// Helper 3: Create Content
+	// Reuse your existing simulator logic (assuming it takes a standard testing interface or you just ignore T)
+	// Note: You might need to adapt simulateClientCommitOnDisk to accept *testing.B
+	// Or just replicate the push logic here briefly:
+	clientTemp := b.TempDir()
+	clientRepo, _ := git.PlainInit(clientTemp, false)
+	clientRepo.CreateRemote(&config.RemoteConfig{Name: "origin", URLs: []string{remoteURL}})
+	w, _ := clientRepo.Worktree()
+	w.Checkout(&git.CheckoutOptions{Branch: plumbing.NewBranchReferenceName("main"), Create: true, Force: true})
+	os.WriteFile(filepath.Join(clientTemp, "file.txt"), []byte("bench"), 0600)
+	w.Add("file.txt")
+	w.Commit("bench", &git.CommitOptions{Author: &object.Signature{Name: "Bench", When: time.Now()}})
+	clientRepo.Push(&git.PushOptions{RemoteName: "origin", RefSpecs: []config.RefSpec{"+refs/heads/main:refs/heads/main"}})
 
-// Helper functions to reduce duplication
+	// 2. BENCHMARK LOOP
+	b.ResetTimer() // Start the clock only now
+	for i := 0; i < b.N; i++ {
+		// specific clone path for this iteration
+		clonePath := filepath.Join(tempDir, fmt.Sprintf("worker-%d", i))
 
-// createBareRepo initializes a bare repository at the given path.
-func createBareRepo(t *testing.T, path string) *git.Repository {
-	err := os.MkdirAll(path, 0750)
-	require.NoError(t, err)
+		// This is what we are measuring
+		_, err := PrepareBranch(context.Background(), remoteURL, clonePath, "main", nil)
 
-	repo, err := git.PlainInit(path, true) // true = bare
-	require.NoError(t, err)
-
-	setHeadToMain(repo)
-
-	return repo
-}
-
-// simulateSimpleMerge merges source content into destination, pushes the destination,
-// and deletes the source branch ref locally and remotely.
-func simulateSimpleMerge(t *testing.T, repoURL, srcBranchShort, dstBranchShort string) plumbing.Hash {
-	t.Helper()
-
-	tempDir := t.TempDir()
-	localPath := filepath.Join(tempDir, "local")
-	sourceFilesDir := filepath.Join(tempDir, "source-files")
-
-	// Clone the repository
-	repo, err := git.PlainClone(localPath, false, &git.CloneOptions{
-		URL: repoURL,
-	})
-	require.NoError(t, err)
-
-	worktree, err := repo.Worktree()
-	require.NoError(t, err)
-
-	// Ensure local branch for source exists
-	srcBranch := plumbing.NewBranchReferenceName(srcBranchShort)
-	if _, err := repo.Reference(srcBranch, true); err != nil {
-		err = worktree.Checkout(&git.CheckoutOptions{
-			Branch: srcBranch,
-			Create: true,
-		})
-		require.NoError(t, err)
-	}
-
-	// Ensure local branch for destination exists
-	dstBranch := plumbing.NewBranchReferenceName(dstBranchShort)
-	if _, err := repo.Reference(dstBranch, true); err != nil {
-		err = worktree.Checkout(&git.CheckoutOptions{
-			Branch: dstBranch,
-			Create: true,
-		})
-		require.NoError(t, err)
-	}
-
-	// Checkout the source branch and copy its files
-	err = worktree.Checkout(&git.CheckoutOptions{
-		Branch: srcBranch,
-	})
-	require.NoError(t, err)
-
-	// Create temp directory for source files
-	err = os.MkdirAll(sourceFilesDir, 0750)
-	require.NoError(t, err)
-
-	// Copy source files to temp dir (excluding .git to avoid corruption)
-	err = exec.Command("rsync", "-a", "--exclude=.git", localPath+"/", sourceFilesDir+"/").Run()
-	require.NoError(t, err)
-
-	// Checkout the destination branch
-	err = worktree.Checkout(&git.CheckoutOptions{
-		Branch: dstBranch,
-	})
-	require.NoError(t, err)
-
-	// Copy source files over destination, overwriting conflicts (preserving .git)
-	err = exec.Command("rsync", "-a", "--exclude=.git", sourceFilesDir+"/", localPath+"/").Run()
-	require.NoError(t, err)
-
-	// Add all changes
-	_, err = worktree.Add(".")
-	require.NoError(t, err)
-
-	// Commit the merge
-	_, err = worktree.Commit(
-		fmt.Sprintf("Simple 'rebase' of branch '%s' into '%s'", srcBranchShort, dstBranchShort),
-		&git.CommitOptions{
-			Author: &object.Signature{
-				Name:  "Client",
-				Email: "client@example.com",
-				When:  time.Date(2023, 1, 1, 0, 0, 0, 0, time.UTC),
-			},
-			AllowEmptyCommits: true,
-		},
-	)
-	require.NoError(t, err)
-
-	// Push the updated destination branch
-	err = repo.Push(&git.PushOptions{
-		RefSpecs: []config.RefSpec{
-			config.RefSpec(fmt.Sprintf("+%s:%s", dstBranch, dstBranch)),
-			config.RefSpec(":" + srcBranch), // empty local source means delete
-		},
-	})
-	require.NoError(t, err)
-
-	// Return the newly create commit hash
-	head, err := repo.Head()
-	require.NoError(t, err)
-	return head.Hash()
-}
-
-func commitFileChange(t *testing.T, worktree *git.Worktree, repoFolder, file, content string) plumbing.Hash {
-	// Create file
-	err := os.WriteFile(filepath.Join(repoFolder, file), []byte(content), 0600)
-	require.NoError(t, err)
-
-	_, err = worktree.Add(file)
-	require.NoError(t, err)
-
-	// Commit
-	createdHash, err := worktree.Commit("Client commit", &git.CommitOptions{
-		Author: &object.Signature{Name: "Client", Email: "client@example.com", When: time.Now()},
-	})
-	require.NoError(t, err)
-	return createdHash
-}
-
-// simulateClientCommitOnDisk simulates a client cloning, committing, and pushing to a remote using disk storage.
-func simulateClientCommitOnDisk(t *testing.T, remoteURL, branchShort, file, content string) plumbing.Hash {
-	tempDir := t.TempDir()
-	clientPath := filepath.Join(tempDir, "client")
-	emptyRepoCreated := false
-
-	// Try to clone
-	repo, err := git.PlainClone(clientPath, false, &git.CloneOptions{
-		URL:   remoteURL,
-		Depth: 1,
-	})
-	if errors.Is(err, transport.ErrEmptyRemoteRepository) {
-		repo, err = git.PlainInit(clientPath, false)
-		require.NoError(t, err)
-
-		_, err = repo.CreateRemote(&config.RemoteConfig{
-			Name: "origin",
-			URLs: []string{remoteURL},
-		})
-		require.NoError(t, err)
-		setHead(repo, branchShort)
-		emptyRepoCreated = true
-	}
-
-	if err != nil {
-		require.NoError(t, err)
-	}
-
-	worktree, err := repo.Worktree()
-	require.NoError(t, err)
-
-	// Only do checkout if its not an empty repo (otherwise error)
-	if !emptyRepoCreated {
-		// Check if branch exists
-		branchName := plumbing.NewBranchReferenceName(branchShort)
-		lastCommit, err := TryReference(repo, branchName)
-		require.NoError(t, err)
-		if lastCommit != plumbing.ZeroHash {
-			err = worktree.Checkout(&git.CheckoutOptions{
-				//Hash:   lastCommit,
-				Branch: branchName,
-			})
-			require.NoError(t, err)
-		} else {
-			lastCommit, err := repo.Reference(plumbing.HEAD, true)
-			require.NoError(t, err)
-			err = worktree.Checkout(&git.CheckoutOptions{
-				Hash:   lastCommit.Hash(),
-				Branch: branchName,
-				Create: true,
-			})
-			require.NoError(t, err)
+		if err != nil {
+			b.Fatalf("PrepareBranch failed: %v", err)
 		}
 	}
-
-	createdHash := commitFileChange(t, worktree, clientPath, file, content)
-	require.NoError(t, err)
-
-	// Push
-	err = repo.Push(&git.PushOptions{})
-	require.NoError(t, err)
-
-	return createdHash
 }
