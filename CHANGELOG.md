@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.0](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.11.0...gitops-reverser-v0.12.0) (2025-11-20)
+
+
+### Features
+
+* Detect resurect during push ([5559982](https://github.com/ConfigButler/gitops-reverser/commit/5559982aa7234af3a398c478d9ef6329e27fd7a2))
+
+
+### Bug Fixes
+
+* Happy linter is happy Simon ([20b304a](https://github.com/ConfigButler/gitops-reverser/commit/20b304ac0bb3da0cfca85dd713deed9f4d066cd9))
+* More linter fixing ([69b98cd](https://github.com/ConfigButler/gitops-reverser/commit/69b98cd37c98ae6080ecc49515d15a9ec45dfaf7))
+* Resolving last problems with dagling head ([b5f12dd](https://github.com/ConfigButler/gitops-reverser/commit/b5f12dd1ff2198263c63323b7d7c00203f32e60a))
+
 ## [0.11.0](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.10.1...gitops-reverser-v0.11.0) (2025-11-17)
 
 
