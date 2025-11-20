@@ -149,7 +149,11 @@ func TestCheckRepo_PublicConnectivity(t *testing.T) {
 	localHead, err := localRepo.Storer.Reference(plumbing.HEAD)
 	require.Equal(t, plumbing.SymbolicReference, localHead.Type())
 	require.NoError(t, err)
-	require.Equal(t, "master", localHead.Target().Short()) // We require the local copy to be on the source branch (until we really start to commit!)
+	require.Equal(
+		t,
+		"master",
+		localHead.Target().Short(),
+	) // We require the local copy to be on the source branch (until we really start to commit!)
 	remotes, err := localRepo.Remotes()
 	require.NoError(t, err)
 	require.Len(
@@ -777,7 +781,12 @@ func TestPullBranch_DanglingHead_NewOrphan(t *testing.T) {
 	require.NoError(t, err)
 
 	// The Critical Assertion:
-	assert.Equal(t, 0, commitObj.NumParents(), "This should be a root commit (orphan) because the default branch was missing")
+	assert.Equal(
+		t,
+		0,
+		commitObj.NumParents(),
+		"This should be a root commit (orphan) because the default branch was missing",
+	)
 	assert.Contains(t, commitObj.Message, "orphan-resource")
 	assert.Contains(t, commitObj.Message, "[CREATE]")
 }
@@ -824,8 +833,12 @@ func TestPullBranch_UnexpectedMergeScenario(t *testing.T) {
 	assert.Len(t, writeEventsResult.ConflictPulls, 1)
 	assert.True(t, writeEventsResult.ConflictPulls[0].IncomingChanges)
 	assert.False(t, writeEventsResult.ConflictPulls[0].ExistsOnRemote)
-	assert.Equal(t, mergeHash.String(), writeEventsResult.ConflictPulls[0].HEAD.Sha) // This is probably not true anymore? -> there is no way to get the last commit
-	//assert.Equal(t, "feature", writeEventsResult.ConflictPulls[0].HEAD.Sha)
+	assert.Equal(
+		t,
+		mergeHash.String(),
+		writeEventsResult.ConflictPulls[0].HEAD.Sha,
+	) // This is probably not true anymore? -> there is no way to get the last commit
+	// assert.Equal(t, "feature", writeEventsResult.ConflictPulls[0].HEAD.Sha)
 
 	pullReport, err = PrepareBranch(context.Background(), remoteURL, localPath, "feature", nil)
 	require.NoError(t, err)
@@ -932,11 +945,13 @@ func BenchmarkPrepareBranch_ShallowClone(b *testing.B) {
 	os.WriteFile(filepath.Join(clientTemp, "file.txt"), []byte("bench"), 0600)
 	w.Add("file.txt")
 	w.Commit("bench", &git.CommitOptions{Author: &object.Signature{Name: "Bench", When: time.Now()}})
-	clientRepo.Push(&git.PushOptions{RemoteName: "origin", RefSpecs: []config.RefSpec{"+refs/heads/main:refs/heads/main"}})
+	clientRepo.Push(
+		&git.PushOptions{RemoteName: "origin", RefSpecs: []config.RefSpec{"+refs/heads/main:refs/heads/main"}},
+	)
 
 	// 2. BENCHMARK LOOP
 	b.ResetTimer() // Start the clock only now
-	for i := 0; i < b.N; i++ {
+	for i := range b.N {
 		// specific clone path for this iteration
 		clonePath := filepath.Join(tempDir, fmt.Sprintf("worker-%d", i))
 

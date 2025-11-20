@@ -54,7 +54,7 @@ type PullReport struct {
 
 // WriteEventsResult provides detailed writeEvents operation results.
 type WriteEventsResult struct {
-	CommitsCreated int           // Number of succesfuly pushed commits (0 if no changes)
+	CommitsCreated int           // Number of successfully pushed commits (0 if no changes)
 	LastHash       string        // SHA of the last created event commit
 	ConflictPulls  []*PullReport // List of PullReports: one for each conflict resolution attempt
 	Failures       int           // Number of failures while attempting to push commits (0 in ideal situation)
@@ -106,6 +106,3 @@ type Event struct {
 	// Empty string means write to repository root.
 	BaseFolder string
 }
-
-// Note: Event types have been moved to internal/events package to avoid import cycles.
-// See internal/events/events.go for ClusterStateEvent, RepoStateEvent, and ControlEvent.

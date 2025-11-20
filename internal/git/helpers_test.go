@@ -27,7 +27,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ConfigButler/gitops-reverser/internal/types"
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
@@ -35,6 +34,8 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+
+	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
 // initLocalRepo sets up a test workspace by cloning a remote.
@@ -43,13 +44,15 @@ import (
 // 2. Empty Remote Repositories (fall back to Init + Add Remote).
 // 3. Switching branches (handling "unborn" HEADs vs existing history).
 // 4. Creating new branches based on Remote versions (if they exist) or local HEAD.
-func initLocalRepo(tb testing.TB, localPath, remoteURL, checkoutBranch string, auth transport.AuthMethod) (*git.Repository, *git.Worktree) {
+func initLocalRepo(
+	tb testing.TB,
+	localPath, remoteURL, checkoutBranch string,
+) (*git.Repository, *git.Worktree) {
 	tb.Helper()
 
 	// --- 1. Clone or Init ---
 	repo, err := git.PlainClone(localPath, false, &git.CloneOptions{
-		URL:  remoteURL,
-		Auth: auth,
+		URL: remoteURL,
 	})
 
 	// Handle the "Remote is empty" edge case
@@ -97,7 +100,6 @@ func initLocalRepo(tb testing.TB, localPath, remoteURL, checkoutBranch string, a
 
 	// Try B: Local branch missing -> We must create it.
 	if errors.Is(err, plumbing.ErrReferenceNotFound) {
-
 		var startPointHash plumbing.Hash
 
 		// Logic: Do we track an existing remote branch (origin/feature), or branch off HEAD (main)?
@@ -158,7 +160,7 @@ func simulateClientCommitOnDisk(tb testing.TB, remoteURL, branchShort, file, con
 	// - Cloning (getting 'main' by default)
 	// - Handling empty repos (initing if needed)
 	// - creating the new branch 'branchShort' based on 'main' (if 'branchShort' doesn't exist yet)
-	repo, worktree := initLocalRepo(tb, clientPath, remoteURL, branchShort, nil)
+	repo, worktree := initLocalRepo(tb, clientPath, remoteURL, branchShort)
 
 	// 3. Commit the change
 	createdHash := commitFileChange(tb, worktree, clientPath, file, content)
@@ -173,7 +175,6 @@ func simulateClientCommitOnDisk(tb testing.TB, remoteURL, branchShort, file, con
 	require.NoError(tb, err)
 
 	return createdHash
-
 }
 
 // createBareRepo initializes a bare repository at the given path.
