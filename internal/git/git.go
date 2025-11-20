@@ -171,8 +171,6 @@ func TryReference(repo *git.Repository, targetBranch plumbing.ReferenceName) (pl
 }
 
 // WriteEvents handles the complete write workflow: lightweight switch to branch if needed, commit, push with conflict resolution.
-//
-//nolint:gocognit
 func WriteEvents(
 	ctx context.Context,
 	repoPath string,
@@ -200,21 +198,7 @@ func WriteEvents(
 	for ; result.Failures < maxRetries; result.Failures++ {
 		// If this is not the first time: then we should be trying to resolve problems (most likely it's a new commit on the remote)
 		if result.Failures > 0 {
-			logger.Info(
-				"Previous attempt failed, starting new attempt",
-				"failures",
-				result.Failures,
-				"maxRetries",
-				maxRetries,
-			)
-			pullReport, err := syncToRemote(ctx, repo, targetBranch, auth)
-
-			if pullReport != nil {
-				result.ConflictPulls = append(result.ConflictPulls, pullReport)
-			}
-
-			if err != nil {
-				logger.Error(err, "Conflict resolution with flexPull failed")
+			if err := tryResolve(ctx, logger, result, repo, targetBranch, auth); err != nil {
 				continue
 			}
 		}
@@ -238,7 +222,7 @@ func WriteEvents(
 
 		// You never know what is pushed on origin: perhaps we now have a working copy that exactly is like it should be (todo: create a nice test)
 		result.CommitsCreated = commitsCreated
-		result.LastHash = lastHash.String() // TODO also return "" if it's empty?
+		result.LastHash = printSha(lastHash)
 		if commitsCreated == 0 {
 			logger.Info("No commits created, no need to push it")
 			break
@@ -253,6 +237,28 @@ func WriteEvents(
 	}
 
 	return result, nil
+}
+
+func tryResolve(
+	ctx context.Context,
+	logger logr.Logger,
+	result *WriteEventsResult,
+	repo *git.Repository,
+	targetBranch plumbing.ReferenceName,
+	auth transport.AuthMethod,
+) error {
+	logger.Info(
+		"Previous attempt failed, starting new attempt",
+		"failures",
+		result.Failures,
+	)
+	pullReport, err := syncToRemote(ctx, repo, targetBranch, auth)
+	if pullReport != nil {
+		result.ConflictPulls = append(result.ConflictPulls, pullReport)
+		result.LastHash = pullReport.HEAD.Sha
+	}
+
+	return err
 }
 
 func switchOrCreateBranch(
@@ -432,21 +438,24 @@ func tryOpenExistingRepo(path string, logger logr.Logger) *git.Repository {
 }
 
 func createPullReport(targetBranch string, before, after plumbing.Hash, remoteExists, unborn bool) *PullReport {
-	// Make sure that a non existing SHA prints as ""
-	printedSha := ""
-	if !plumbing.Hash.IsZero(after) {
-		printedSha = after.String()
-	}
-
 	return &PullReport{
 		ExistsOnRemote:  remoteExists,
 		IncomingChanges: before != after,
 		HEAD: BranchInfo{
 			ShortName: targetBranch,
-			Sha:       printedSha,
+			Sha:       printSha(after),
 			Unborn:    unborn,
 		},
 	}
+}
+
+// printSha makes sure than an empty hash returns "" instead of a lot of zeros.
+func printSha(after plumbing.Hash) string {
+	printedSha := ""
+	if !plumbing.Hash.IsZero(after) {
+		printedSha = after.String()
+	}
+	return printedSha
 }
 
 // syncToRemote does everything it can to bring the repo in a state where you can push events (checking different remotes, creating feature branches or even create a root/orphaned branch). It depends on the HEAD of the repo, it must be configure to your working branch.
@@ -461,7 +470,7 @@ func syncToRemote(
 		return nil, fmt.Errorf("unexpected fail to read HEAD: %w", err)
 	}
 
-	availableBranch, err := smartFetch(ctx, repo, branch, auth)
+	availableBranch, err := SmartFetch(ctx, repo, branch, auth)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch: %w", err)
 	}
@@ -789,140 +798,4 @@ func initializeCleanRepository(repoPath string, logger logr.Logger) (*git.Reposi
 	}
 
 	return repo, nil
-}
-
-// smartFetch performs a network sync and returns the best available LOCAL branch reference.
-// It prioritizes the target branch but always fetches the default branch as a safety net.
-//
-// Return values (example with target="refs/heads/feature"):
-// - "refs/heads/feature", nil: Target found on remote, fetched, ready to checkout.
-// - "refs/heads/main", nil:    Target missing on remote, fell back to default branch.
-// - "", nil:                   No valid branches found (empty repo).
-//
-//nolint:gocognit,cyclop,funlen
-func smartFetch(
-	ctx context.Context,
-	repo *git.Repository,
-	target plumbing.ReferenceName, // e.g. "refs/heads/feature" or "HEAD"
-	auth transport.AuthMethod,
-) (plumbing.ReferenceName, error) {
-	logger := log.FromContext(ctx)
-	remoteName := "origin"
-
-	remote, err := repo.Remote(remoteName)
-	if err != nil {
-		return "", fmt.Errorf("failed to get remote %s: %w", remoteName, err)
-	}
-
-	// --- Step 1: Audit (Lightweight) ---
-	refs, err := remote.List(&git.ListOptions{Auth: auth})
-	if errors.Is(err, transport.ErrEmptyRemoteRepository) || len(refs) == 0 {
-		return "", nil
-	}
-	if err != nil {
-		return "", fmt.Errorf("failed to list remote refs: %w", err)
-	}
-
-	// --- Step 2: Analyze & Validate ---
-	existingRefs := make(map[string]bool)
-	for _, ref := range refs {
-		existingRefs[ref.Name().String()] = true
-	}
-
-	var (
-		defaultBranchFull  string // e.g. "refs/heads/main"
-		defaultBranchShort string // e.g. "main"
-		targetExists       bool
-	)
-
-	// We compare full strings: "refs/heads/feature"
-	targetFullStr := target.String()
-
-	for _, ref := range refs {
-		// 1. Identify Default Branch (HEAD)
-		if ref.Name() == plumbing.HEAD && ref.Type() == plumbing.SymbolicReference {
-			symTarget := ref.Target().String()
-
-			// Validate: Does HEAD point to a real branch?
-			if existingRefs[symTarget] {
-				defaultBranchFull = symTarget
-				defaultBranchShort = ref.Target().Short()
-
-				// Clean up "origin/main" -> "main" if Short() included remote
-				if len(defaultBranchShort) > 7 && defaultBranchShort[:7] == "origin/" {
-					defaultBranchShort = defaultBranchShort[7:]
-				}
-			} else {
-				logger.Info("Remote HEAD is broken (points to missing ref)", "target", symTarget)
-			}
-		}
-
-		// 2. Check if Target exists
-		if ref.Name().String() == targetFullStr {
-			targetExists = true
-		}
-	}
-
-	// --- Step 3: Build RefSpecs ---
-	var refSpecs []config.RefSpec
-
-	// A. Always fetch Default (Safety Net)
-	if defaultBranchFull != "" {
-		// +refs/heads/main:refs/remotes/origin/main
-		spec := config.RefSpec(fmt.Sprintf("+%s:refs/remotes/%s/%s", defaultBranchFull, remoteName, defaultBranchShort))
-		refSpecs = append(refSpecs, spec)
-	}
-
-	// B. Fetch Target (If valid and different)
-	if targetExists {
-		if defaultBranchFull != targetFullStr {
-			// +refs/heads/feature:refs/remotes/origin/feature
-			spec := config.RefSpec(fmt.Sprintf("+%s:refs/remotes/%s/%s", targetFullStr, remoteName, target.Short()))
-			refSpecs = append(refSpecs, spec)
-		}
-	}
-
-	// --- Step 4: Determine Return Value (Local Reference) ---
-	var result plumbing.ReferenceName
-
-	switch {
-	case targetExists:
-		// Scenario 1: Target found. We return the target itself.
-		// e.g. "refs/heads/feature"
-		result = target
-	case defaultBranchFull != "":
-		// Scenario 2: Target missing, fallback to default.
-		// e.g. "refs/heads/main"
-		result = plumbing.ReferenceName(defaultBranchFull)
-	default:
-		// Scenario 3: Nothing found.
-		return "", nil
-	}
-
-	// --- Step 5: Execute Fetch ---
-	if len(refSpecs) > 0 {
-		err = repo.Fetch(&git.FetchOptions{
-			RemoteName: remoteName,
-			Auth:       auth,
-			RefSpecs:   refSpecs,
-			Depth:      1,
-			Force:      true,
-			Prune:      true,
-		})
-
-		if err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
-			return "", fmt.Errorf("smart fetch failed: %w", err)
-		}
-	}
-
-	// --- Step 6: Repair Symbolic Link (Politeness) ---
-	if defaultBranchShort != "" {
-		symRef := plumbing.NewSymbolicReference(
-			plumbing.NewRemoteReferenceName(remoteName, "HEAD"),
-			plumbing.NewRemoteReferenceName(remoteName, defaultBranchShort),
-		)
-		_ = repo.Storer.SetReference(symRef)
-	}
-
-	return result, nil
 }
