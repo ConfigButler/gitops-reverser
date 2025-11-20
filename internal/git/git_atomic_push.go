@@ -89,9 +89,13 @@ func PushAtomic(
 	ctx context.Context,
 	repo *git.Repository,
 	rootHash plumbing.Hash,
-	rootBranch plumbing.ReferenceName, // we need this to check if the rootbranch is still set the roothash: could be HEAD or the feature branch for now, but perhaps more in the future
+	rootBranch plumbing.ReferenceName, // only pushes if this branch is in exact same state, e.g. refs/heads/main (HEAD not allowed since a ReceivePackSession never returns it)
 	auth transport.AuthMethod,
 ) error {
+	if !rootBranch.IsBranch() {
+		return fmt.Errorf("rootBranch is not a branch")
+	}
+
 	logger := log.FromContext(ctx)
 	branch, localHash, err := GetCurrentBranch(repo)
 	if err != nil {
@@ -132,11 +136,15 @@ func PushAtomic(
 	}
 
 	// Determine the "old" hash for the push command and validate state
-	var oldHash plumbing.Hash
-	remoteHash, found := refs.References[branch.String()]
+	var oldHash plumbing.Hash = plumbing.ZeroHash
+	remoteHash, found := refs.References[string(branch)]
+	currentRootHash, rootFound := refs.References[string(rootBranch)]
+	if !rootFound && !rootHash.IsZero() {
+		return fmt.Errorf("remote went missing")
+	}
 
 	if found {
-		// Branch exists on remote
+		// Target branch exists on remote
 		oldHash = remoteHash
 
 		// Check if we are already up2date
@@ -146,20 +154,9 @@ func PushAtomic(
 		}
 
 		// Check if the remoteHash is what we based our work on
-		if rootHash != remoteHash {
+		if rootHash != currentRootHash {
 			logger.Info("Remote branch not in expected state", "branch", branchName)
 			return fmt.Errorf("remote received unknown updates")
-		}
-	} else {
-		// Branch does NOT exist on remote
-
-		// Is the intent to create an orphaned/root bracnh?
-		if rootHash.IsZero() {
-			// Use ZeroHash as "old" in Git push protocol to create new root branch
-			oldHash = plumbing.ZeroHash
-			logger.Info("Remote branch not found: pushing new orphan branch", "branch", branchName)
-		} else {
-			return fmt.Errorf("remote went missing")
 		}
 	}
 

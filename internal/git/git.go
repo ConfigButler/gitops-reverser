@@ -187,28 +187,6 @@ func WriteEvents(
 	}
 
 	targetBranch := plumbing.NewBranchReferenceName(targetBranchName)
-	baseBranch, baseHash, err := GetCurrentBranch(repo)
-	if err != nil {
-		return nil, err
-	}
-
-	// We are not yet on targetBranch: time to create it
-	if baseBranch != targetBranch {
-		w, err := repo.Worktree()
-		if err != nil {
-			return nil, fmt.Errorf("failed to get worktree: %w", err)
-		}
-
-		err = w.Checkout(&git.CheckoutOptions{
-			Hash:   baseHash,
-			Branch: targetBranch,
-			Create: true,
-			Force:  true,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("failed to create branch: %w", err)
-		}
-	}
 
 	result := &WriteEventsResult{
 		CommitsCreated: 0,
@@ -228,6 +206,7 @@ func WriteEvents(
 				maxRetries,
 			)
 			pullReport, err := syncToRemote(ctx, repo, targetBranch, auth)
+
 			if pullReport != nil {
 				result.ConflictPulls = append(result.ConflictPulls, pullReport)
 			}
@@ -236,10 +215,18 @@ func WriteEvents(
 				logger.Error(err, "Conflict resolution with flexPull failed")
 				continue
 			}
+		}
 
-			baseBranch, baseHash, err = getBase(repo)
-			if err != nil {
-				return nil, err
+		baseBranch, baseHash, err := GetCurrentBranch(repo)
+		if err != nil {
+			return nil, err
+		}
+
+		// If we are not on targetBranch: time to create it
+		if baseBranch != targetBranch {
+			result1, err1 := switchOrCreateBranch(repo, targetBranch, logger, targetBranchName, baseHash)
+			if err1 != nil {
+				return result1, err1
 			}
 		}
 
@@ -267,25 +254,45 @@ func WriteEvents(
 	return result, nil
 }
 
-func getBase(repo *git.Repository) (plumbing.ReferenceName, plumbing.Hash, error) {
-	currentBranch, baseHash, err := GetCurrentBranch(repo)
-	baseBranch := currentBranch
+func switchOrCreateBranch(repo *git.Repository, targetBranch plumbing.ReferenceName, logger logr.Logger, targetBranchName string, baseHash plumbing.Hash) (*WriteEventsResult, error) {
+	w, err := repo.Worktree()
 	if err != nil {
-		return "", plumbing.ZeroHash, fmt.Errorf("failed to get current branch: %w", err)
+		return nil, fmt.Errorf("failed to get worktree: %w", err)
 	}
 
-	remoteHeadCommit, err := getRemoteHeadCommit(repo) // How should we reference that? It's probably just head?
+	// Strategy: "git checkout -B targetBranch"
+	// 1. Try to switch to it (assuming it exists locally)
+	err = w.Checkout(&git.CheckoutOptions{
+		Branch: targetBranch,
+		Force:  true,
+	})
 
-	// TODO: We now failed in this test because we can't find the HEAD branch: there is no way for me to now that it's based upon HEAD! Should we only create the branch we are going to push? So that we state reflects the right thing? -> the only way to get it in sync in the right way
-	// Enough for now...
+	if err == nil {
+		// CASE A: Local branch existed.
+		// We successfully switched to it, BUT it might point to old history.
+		// We want to start fresh from 'baseHash' (the default branch tip we were just on).
+		// So we Hard Reset the existing branch to match baseHash.
+		logger.Info("Resetting existing local branch to start fresh", "branch", targetBranchName)
+		err = w.Reset(&git.ResetOptions{
+			Commit: baseHash,
+			Mode:   git.HardReset,
+		})
+	} else if errors.Is(err, plumbing.ErrReferenceNotFound) {
+		// CASE B: Local branch did not exist.
+		// Create it pointing to baseHash.
+		logger.Info("Creating new local branch", "branch", targetBranchName)
+		err = w.Checkout(&git.CheckoutOptions{
+			Hash:   baseHash,
+			Branch: targetBranch,
+			Create: true,
+			Force:  true,
+		})
+	}
+
 	if err != nil {
-		return "", plumbing.ZeroHash, err
+		return nil, fmt.Errorf("failed to prepare branch %s: %w", targetBranchName, err)
 	}
-
-	if remoteHeadCommit == baseHash {
-		baseBranch = "HEAD" // The remote branch might nog be there since it's never pushed
-	}
-	return baseBranch, baseHash, nil
+	return nil, nil
 }
 
 // GetCommitMessage returns a structured commit message for the given event.
@@ -457,66 +464,59 @@ func syncToRemote(ctx context.Context, repo *git.Repository, branch plumbing.Ref
 		return nil, fmt.Errorf("unexpected fail to read HEAD: %w", err)
 	}
 
-	err = SmartFetch(ctx, repo, branch.Short(), auth)
+	availableBranch, err := smartFetch(ctx, repo, branch, auth)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch: %w", err)
 	}
 
-	// See if you can find the target branch
-	newHash, err := resetToRemote(ctx, repo, branch)
-	if err == nil {
-		return createPullReport(branch.Short(), currentHash, newHash, true, false), nil
-	}
-
-	if errors.Is(err, plumbing.ErrReferenceNotFound) {
-		// Fall back to the default branch, note that we report it as the targetbranch (which is true at the moment that we commit)
-		newHash, err = resetToRemote(ctx, repo, "HEAD")
-		if err == nil {
-			return createPullReport(branch.Short(), currentHash, newHash, false, false), nil
+	if availableBranch != "" {
+		newHash, err := checkoutAndReset(ctx, repo, availableBranch)
+		if err != nil {
+			return nil, fmt.Errorf("failed to checkoutAndReset: %w", err)
 		}
+
+		remoteExists := availableBranch.Short() == branch.Short()
+		return createPullReport(branch.Short(), currentHash, newHash, remoteExists, false), nil
 	}
 
 	// Failed to fetch from both sources, so let's configure head to be unborn at targetbranch.
-	newHash, err = makeHeadUnborn(ctx, repo)
+	err = makeHeadUnborn(ctx, repo, branch)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create root branch: %w", err)
 	}
 
-	return createPullReport(branch.Short(), currentHash, newHash, false, true), nil
+	return createPullReport(branch.Short(), currentHash, plumbing.ZeroHash, false, true), nil
 }
 
 // makeHeadUnborn is called when there are no remote branches to base upon, all is cleared and new commits are created as orphaned branch.
-func makeHeadUnborn(ctx context.Context, r *git.Repository) (plumbing.Hash, error) {
+func makeHeadUnborn(ctx context.Context, r *git.Repository, branch plumbing.ReferenceName) error {
 	logger := log.FromContext(ctx)
 	logger.Info("Only a computer can do this: undoing birth")
 
-	// Check the reference that HEAD is pointing at: if it exists it should be removed
-	headRef, err := r.Reference(plumbing.HEAD, false)
+	err := setHead(r, branch.Short())
 	if err != nil {
-		return plumbing.ZeroHash, fmt.Errorf("failed to get HEAD reference: %w", err)
+		return fmt.Errorf("failed set HEAD: %w", err)
 	}
 
-	headTarget := headRef.Target()
-	_, err = r.Reference(headTarget, true)
-	if err == nil {
-		logger.Info("Removing reference for HEAD so that branch really becomes unborn")
-		err = r.Storer.RemoveReference(headTarget)
-		if err != nil {
-			return plumbing.ZeroHash, err
-		}
+	err = r.Storer.RemoveReference(branch)
+	if err != nil && !errors.Is(err, plumbing.ErrReferenceNotFound) {
+		return fmt.Errorf("failed to remove branch reference: %w", err)
 	}
 
-	// Also clear the working dir
-	logger.Info("Cleaning working dir")
+	if !errors.Is(err, plumbing.ErrReferenceNotFound) {
+		logger.Info("makeHeadUnborn removed branch reference")
+	}
+
+	logger.Info("cleaning index and worktree")
 	if err := clearIndex(r); err != nil {
-		return plumbing.ZeroHash, err
+		return err
 	}
 
 	if err := cleanWorktree(r); err != nil {
-		return plumbing.ZeroHash, err
+		return err
 	}
 
-	return plumbing.ZeroHash, nil // Returning ZeroHash might look weird: but this branch does not get a base commit, so it's actually correct until we have created our first commit
+	return nil
 }
 
 // clearIndex empties the staging area.
@@ -554,75 +554,62 @@ func cleanWorktree(r *git.Repository) error {
 	return nil
 }
 
-// resetToRemote fetches the specific branch and forces the local worktree to match it exactly.
-// Discards all local changes and commits!
-func resetToRemote(
-	ctx context.Context,
-	repo *git.Repository,
-	branchLocalRef plumbing.ReferenceName,
-) (plumbing.Hash, error) {
-	branchRemoteRef := plumbing.NewRemoteReferenceName("origin", branchLocalRef.Short()) // refs/remotes/origin/%s
-
-	// 3. Resolve the Hash of the branch we just fetched
-	destRef, err := repo.Reference(branchRemoteRef, true)
-	if err != nil {
-		return plumbing.ZeroHash, err
-	}
-
-	// 4. Perform the Worktree operations
-	err = checkoutAndReset(ctx, repo, branchLocalRef, destRef.Hash())
-	if err != nil {
-		return plumbing.ZeroHash, err
-	}
-
-	return destRef.Hash(), nil
-}
-
-func checkoutAndReset(ctx context.Context, repo *git.Repository, branchLocalRef plumbing.ReferenceName, targetHash plumbing.Hash) error {
+func checkoutAndReset(ctx context.Context, repo *git.Repository, branch plumbing.ReferenceName) (plumbing.Hash, error) {
 	logger := log.FromContext(ctx)
 
-	logger.Info("Switching worktree to match remote", "branch", branchLocalRef)
+	// Resolve the hash that we want to checkout
+	branchRemote := plumbing.NewRemoteReferenceName("origin", branch.Short())
+	branchRemoteRef, err := repo.Reference(branchRemote, true)
+	if err != nil {
+		return plumbing.ZeroHash, fmt.Errorf("failed to get branch reference: %w", err)
+	}
+
+	logger.Info("Switching worktree to match remote", "branch", branchRemote)
 
 	w, err := repo.Worktree()
 	if err != nil {
-		return fmt.Errorf("failed to get worktree: %w", err)
+		return plumbing.ZeroHash, fmt.Errorf("failed to get worktree: %w", err)
 	}
 
 	// --- Step A: Ensure HEAD points to the correct Branch Name ---
 	// We try to Checkout. If the branch exists, this switches HEAD to it.
 	// If we are already on it, it's a no-op for HEAD, but Force cleans dirty files.
 	err = w.Checkout(&git.CheckoutOptions{
-		Branch: branchLocalRef,
+		Branch: branch,
 		Force:  true,
 	})
+
+	if err != nil && !errors.Is(err, plumbing.ErrReferenceNotFound) {
+		return plumbing.ZeroHash, fmt.Errorf("checkout failed for %s: %w", branchRemote, err)
+	}
 
 	// Handle case: Local branch does not exist yet
 	if err == plumbing.ErrReferenceNotFound {
 		// Create the branch and point it immediately to the target Hash
-		logger.Info("Branch does not exist locally, creating it", "branch", branchLocalRef)
+		logger.Info("Branch does not exist locally, creating it", "branch", branch, "hash", branchRemoteRef.Hash())
 		err = w.Checkout(&git.CheckoutOptions{
-			Hash:   targetHash,     // Initialize at the correct commit
-			Branch: branchLocalRef, // Name it correctly
-			Create: true,           // Create it
-			Force:  true,           // Force clean files
+			Hash:   branchRemoteRef.Hash(), // Initialize at the correct commit
+			Branch: branch,                 // Name it correctly
+			Create: true,                   // Create it
+			Force:  true,                   // Force clean files
 		})
+
+		if err != nil {
+			return plumbing.ZeroHash, fmt.Errorf("create branch failed: %w", err)
+		}
+	} else {
+		logger.Info("Reset hard to match remote", "branch", branch, "hash", branchRemoteRef.Hash())
+		err = w.Reset(&git.ResetOptions{
+			Commit: branchRemoteRef.Hash(),
+			Mode:   git.HardReset,
+		})
+
+		if err != nil {
+			return plumbing.ZeroHash, fmt.Errorf("reset failed: %w", err)
+		}
 	}
 
-	if err != nil {
-		return fmt.Errorf("checkout failed for %s: %w", branchLocalRef, err)
-	}
-
-	logger.Info("Reset hard to match remote", "branch", branchLocalRef, "hash", targetHash.String())
-	err = w.Reset(&git.ResetOptions{
-		Commit: targetHash,
-		Mode:   git.HardReset,
-	})
-	if err != nil {
-		return fmt.Errorf("reset hard failed: %w", err)
-	}
-
-	return nil
-
+	return branchRemoteRef.Hash(), nil
 }
 
 // resolveDefaultBranch uses the List output to find out all the required info of the default branch.
@@ -648,7 +635,7 @@ func resolveDefaultBranch(
 	}
 }
 
-// setHead adjusts the HEAD, is used to create unborn branches. The actual local branch reference is not toutched
+// setHead adjusts the HEAD, is used to create unborn branches. Note that the worktree is not adjusted!
 func setHead(r *git.Repository, branchName string) error {
 	newHeadRef := plumbing.NewSymbolicReference(plumbing.HEAD, plumbing.NewBranchReferenceName(branchName))
 	return r.Storer.SetReference(newHeadRef)
@@ -807,119 +794,135 @@ func initializeCleanRepository(repoPath string, logger logr.Logger) (*git.Reposi
 	return repo, nil
 }
 
-// SmartFetch performs a network sync optimized for specific branches.
-// It swallows "Empty Remote" errors, treating them as a valid state (nothing to fetch).
-func SmartFetch(
+// smartFetch performs a network sync and returns the best available LOCAL branch reference.
+// It prioritizes the target branch but always fetches the default branch as a safety net.
+//
+// Return values (example with target="refs/heads/feature"):
+// - "refs/heads/feature", nil: Target found on remote, fetched, ready to checkout.
+// - "refs/heads/main", nil:    Target missing on remote, fell back to default branch.
+// - "", nil:                   No valid branches found (empty repo).
+func smartFetch(
 	ctx context.Context,
 	repo *git.Repository,
-	targetBranchName string, // e.g. "feature/login" or "HEAD"
+	target plumbing.ReferenceName, // e.g. "refs/heads/feature" or "HEAD"
 	auth transport.AuthMethod,
-) error {
+) (plumbing.ReferenceName, error) {
 	logger := log.FromContext(ctx)
 	remoteName := "origin"
 
 	remote, err := repo.Remote(remoteName)
 	if err != nil {
-		return fmt.Errorf("failed to get remote %s: %w", remoteName, err)
+		return "", fmt.Errorf("failed to get remote %s: %w", remoteName, err)
 	}
 
 	// --- Step 1: Audit (Lightweight) ---
-	// Ask the server what it has.
 	refs, err := remote.List(&git.ListOptions{Auth: auth})
-
-	// CASE 1: Remote is completely empty (git init --bare)
-	// go-git might return ErrEmptyRemoteRepository OR just an empty list.
-	// Both are valid states. We return nil (success) so the caller proceeds to "Unborn" logic.
-	if errors.Is(err, transport.ErrEmptyRemoteRepository) {
-		logger.Info("Remote repository is empty (valid state)")
-		return nil
+	if errors.Is(err, transport.ErrEmptyRemoteRepository) || len(refs) == 0 {
+		return "", nil
 	}
 	if err != nil {
-		return fmt.Errorf("failed to list remote refs: %w", err)
-	}
-	if len(refs) == 0 {
-		logger.Info("Remote repository has 0 references (valid state)")
-		return nil
+		return "", fmt.Errorf("failed to list remote refs: %w", err)
 	}
 
-	// --- Step 2: Analyze & Plan ---
+	// --- Step 2: Analyze & Validate ---
+	existingRefs := make(map[string]bool)
+	for _, ref := range refs {
+		existingRefs[ref.Name().String()] = true
+	}
+
 	var (
-		defaultBranchTarget string // e.g. "refs/heads/main"
-		targetExists        bool
-		refSpecs            []config.RefSpec
+		defaultBranchFull  string // e.g. "refs/heads/main"
+		defaultBranchShort string // e.g. "main"
+		targetExists       bool
 	)
 
-	targetFullRef := plumbing.NewBranchReferenceName(targetBranchName).String()
+	// We compare full strings: "refs/heads/feature"
+	targetFullStr := target.String()
 
 	for _, ref := range refs {
-		name := ref.Name().String()
+		// 1. Identify Default Branch (HEAD)
+		if ref.Name() == plumbing.HEAD && ref.Type() == plumbing.SymbolicReference {
+			symTarget := ref.Target().String()
 
-		// Identify Default Branch (HEAD)
-		if ref.Name() == plumbing.HEAD {
-			if ref.Type() == plumbing.SymbolicReference {
-				defaultBranchTarget = ref.Target().String()
+			// Validate: Does HEAD point to a real branch?
+			if existingRefs[symTarget] {
+				defaultBranchFull = symTarget
+				defaultBranchShort = ref.Target().Short()
+
+				// Clean up "origin/main" -> "main" if Short() included remote
+				if len(defaultBranchShort) > 7 && defaultBranchShort[:7] == "origin/" {
+					defaultBranchShort = defaultBranchShort[7:]
+				}
 			} else {
-				// Detached HEAD on remote. Rare, but valid.
-				refSpecs = append(refSpecs, config.RefSpec(fmt.Sprintf("+HEAD:refs/remotes/%s/HEAD", remoteName)))
+				logger.Info("Remote HEAD is broken (points to missing ref)", "target", symTarget)
 			}
 		}
-		// Check if target exists
-		if name == targetFullRef {
+
+		// 2. Check if Target exists
+		if ref.Name().String() == targetFullStr {
 			targetExists = true
 		}
 	}
 
 	// --- Step 3: Build RefSpecs ---
+	var refSpecs []config.RefSpec
 
-	// A. Default Branch (if found)
-	if defaultBranchTarget != "" {
-		shortName := plumbing.ReferenceName(defaultBranchTarget).Short()
-		spec := config.RefSpec(fmt.Sprintf("+%s:refs/remotes/%s/%s", defaultBranchTarget, remoteName, shortName))
+	// A. Always fetch Default (Safety Net)
+	if defaultBranchFull != "" {
+		// +refs/heads/main:refs/remotes/origin/main
+		spec := config.RefSpec(fmt.Sprintf("+%s:refs/remotes/%s/%s", defaultBranchFull, remoteName, defaultBranchShort))
 		refSpecs = append(refSpecs, spec)
 	}
 
-	// B. Target Branch (if different from default AND exists)
-	if targetBranchName != "HEAD" && targetExists {
-		isDefault := defaultBranchTarget != "" && plumbing.ReferenceName(defaultBranchTarget).Short() == targetBranchName
-		if !isDefault {
-			spec := config.RefSpec(fmt.Sprintf("+refs/heads/%s:refs/remotes/%s/%s", targetBranchName, remoteName, targetBranchName))
+	// B. Fetch Target (If valid and different)
+	if targetExists {
+		if defaultBranchFull != targetFullStr {
+			// +refs/heads/feature:refs/remotes/origin/feature
+			spec := config.RefSpec(fmt.Sprintf("+%s:refs/remotes/%s/%s", targetFullStr, remoteName, target.Short()))
 			refSpecs = append(refSpecs, spec)
 		}
 	}
 
-	// CASE 2: Nothing to Fetch
-	// The remote has refs, but neither a HEAD nor our target.
-	// e.g. Remote only has "dev", but we want "main".
-	if len(refSpecs) == 0 {
-		logger.Info("Nothing relevant to fetch (default branch or target not found on remote)")
-		return nil
+	// --- Step 4: Determine Return Value (Local Reference) ---
+	var result plumbing.ReferenceName
+
+	if targetExists {
+		// Scenario 1: Target found. We return the target itself.
+		// e.g. "refs/heads/feature"
+		result = target
+	} else if defaultBranchFull != "" {
+		// Scenario 2: Target missing, fallback to default.
+		// e.g. "refs/heads/main"
+		result = plumbing.ReferenceName(defaultBranchFull)
+	} else {
+		// Scenario 3: Nothing found.
+		return "", nil
 	}
 
-	// --- Step 4: Execute Fetch ---
-	logger.Info("SmartFetch executing", "specs", len(refSpecs))
+	// --- Step 5: Execute Fetch ---
+	if len(refSpecs) > 0 {
+		err = repo.Fetch(&git.FetchOptions{
+			RemoteName: remoteName,
+			Auth:       auth,
+			RefSpecs:   refSpecs,
+			Depth:      1,
+			Force:      true,
+			Prune:      true,
+		})
 
-	err = repo.Fetch(&git.FetchOptions{
-		RemoteName: remoteName,
-		Auth:       auth,
-		RefSpecs:   refSpecs,
-		Depth:      1,
-		Force:      true,
-		Prune:      true, // Will delete local refs that are excluded by the RefSpec if they match
-	})
-
-	if err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
-		return fmt.Errorf("smart fetch failed: %w", err)
+		if err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
+			return "", fmt.Errorf("smart fetch failed: %w", err)
+		}
 	}
 
-	// --- Step 5: Repair Symbolic Link ---
-	if defaultBranchTarget != "" {
-		shortName := plumbing.ReferenceName(defaultBranchTarget).Short()
+	// --- Step 6: Repair Symbolic Link (Politeness) ---
+	if defaultBranchShort != "" {
 		symRef := plumbing.NewSymbolicReference(
 			plumbing.NewRemoteReferenceName(remoteName, "HEAD"),
-			plumbing.NewRemoteReferenceName(remoteName, shortName),
+			plumbing.NewRemoteReferenceName(remoteName, defaultBranchShort),
 		)
 		_ = repo.Storer.SetReference(symRef)
 	}
 
-	return nil
+	return result, nil
 }
