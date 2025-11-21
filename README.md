@@ -6,6 +6,7 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/ConfigButler/gitops-reverser)](https://goreportcard.com/report/github.com/ConfigButler/gitops-reverser)
 [![Container](https://img.shields.io/badge/container-ghcr.io%2Fconfigbutler%2Fgitops--reverser-2ea44f?logo=docker)](https://github.com/ConfigButler/gitops-reverser/pkgs/container/gitops-reverser)
 [![Open Issues](https://img.shields.io/github/issues/ConfigButler/gitops-reverser)](https://github.com/ConfigButler/gitops-reverser/issues)
+[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/ConfigButler/gitops-reverser)
 
 # GitOps Reverser
 
@@ -61,7 +62,8 @@ Create a Kubernetes Secret with the private key:
 ```bash
 kubectl create secret generic git-creds \
   --from-file=ssh-privatekey=/tmp/gitops-reverser-key \
-  --from-literal=known_hosts="$(ssh-keyscan github.com)"
+  --from-literal=known_hosts="$(ssh-keyscan github.com)" \
+  --dry-run=client -o yaml | kubectl apply -f -
 ```
 
 See [`docs/GITHUB_SETUP_GUIDE.md`](docs/GITHUB_SETUP_GUIDE.md) for detailed setup instructions.
@@ -81,11 +83,11 @@ metadata:
   name: your-repo
 spec:
   repoUrl: "git@github.com:YOUR_USERNAME/my-k8s-audit.git"
-  allowedBranches: ["test-gitops-reverser"]
+  allowedBranches: ["*"]
   secretRef:
     name: git-creds
   push:
-    interval: "1m"
+    interval: "5s"
     maxCommits: 10
 EOF
 ```
