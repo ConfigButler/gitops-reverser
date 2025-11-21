@@ -21,6 +21,7 @@ package sanitize
 import (
 	"bytes"
 	"fmt"
+	"sort"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/yaml"
@@ -64,12 +65,24 @@ func marshalHeader(buf *bytes.Buffer, obj *unstructured.Unstructured) error {
 	return nil
 }
 
-// marshalPayload writes the payload map if present.
+// marshalPayload writes the payload map if present, with keys sorted for consistency.
 func marshalPayload(buf *bytes.Buffer, payload map[string]interface{}) error {
 	if len(payload) == 0 {
 		return nil
 	}
-	b, err := yaml.Marshal(payload)
+
+	// Sort keys for consistent ordering
+	sortedPayload := make(map[string]interface{})
+	keys := make([]string, 0, len(payload))
+	for k := range payload {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		sortedPayload[k] = payload[k]
+	}
+
+	b, err := yaml.Marshal(sortedPayload)
 	if err != nil {
 		return fmt.Errorf("failed to marshal payload: %w", err)
 	}

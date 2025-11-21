@@ -128,20 +128,29 @@ func renderTemplate(templatePath string, data interface{}) (string, error) {
 
 // applyFromTemplate renders a template with data and applies it via kubectl using stdin streaming
 // Returns an error if rendering or kubectl execution fails.
-func applyFromTemplate(templatePath string, data interface{}, namespace string) error {
+// extraArgs allows passing additional kubectl arguments (e.g., "--dry-run", "--server-side")
+func applyFromTemplate(templatePath string, data interface{}, namespace string, extraArgs ...string) error {
 	yamlContent, err := renderTemplate(templatePath, data)
 	if err != nil {
 		return err
 	}
 
-	ctx := context.Background()
-	if namespace != "" {
-		cmd := exec.CommandContext(ctx, "kubectl", "apply", "-f", "-", "-n", namespace)
-		cmd.Stdin = strings.NewReader(yamlContent)
-		_, err = utils.Run(cmd)
-		return err
+	// 1. Define the binary explicitly
+	const binary = "kubectl"
+
+	args := []string{
+		"apply", "-f", "-",
 	}
-	cmd := exec.CommandContext(ctx, "kubectl", "apply", "-f", "-")
+
+	// Add extra arguments
+	args = append(args, extraArgs...)
+
+	if namespace != "" {
+		args = append(args, "-n", namespace)
+	}
+
+	ctx := context.Background()
+	cmd := exec.CommandContext(ctx, binary, args...)
 	cmd.Stdin = strings.NewReader(yamlContent)
 	_, err = utils.Run(cmd)
 	return err

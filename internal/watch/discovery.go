@@ -92,7 +92,11 @@ func (m *Manager) FilterDiscoverableGVRs(_ context.Context, in []GVR) []GVR {
 		}
 	}
 
-	log.Info("discovery filter applied", "requested", len(in), "discoverable", len(out))
+	removed := len(in) - len(out)
+	if removed > 0 {
+		log.Info("discovery filter removed items", "in", len(in), "out", len(out))
+	}
+
 	return out
 }
 

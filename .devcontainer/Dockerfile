@@ -122,11 +122,6 @@ RUN go install github.com/go-delve/delve/cmd/dlv@latest
 # Install VSCode Go extension tools (gopls and staticcheck)
 RUN go install golang.org/x/tools/gopls@latest \
     && go install honnef.co/go/tools/cmd/staticcheck@latest
-# Verify Kind and Delve installations
-RUN echo "=== Additional Dev Tools ===" \
-    && kind version \
-    && dlv version \
-    && echo "✅ Docker will be available at runtime via devcontainer feature"
 
 # Create vscode user for non-root development and add to godev group
 RUN groupadd --gid 1000 vscode \

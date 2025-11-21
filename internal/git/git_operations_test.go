@@ -963,3 +963,84 @@ func BenchmarkPrepareBranch_ShallowClone(b *testing.B) {
 		}
 	}
 }
+
+// Benchmark for writing the first commit to an empty repository.
+func BenchmarkWriteEvents_FirstCommit(b *testing.B) {
+	for range b.N {
+		b.StopTimer()
+		tempDir := b.TempDir()
+		serverPath := filepath.Join(tempDir, "server.git")
+		remoteURL := "file://" + serverPath
+		clonePath := filepath.Join(tempDir, "worker")
+		createBareRepo(b, serverPath)
+		_, err := PrepareBranch(context.Background(), remoteURL, clonePath, "main", nil)
+		require.NoError(b, err)
+		event := createTestEvent(b, "pod-1")
+		b.StartTimer()
+
+		_, err = WriteEvents(context.Background(), clonePath, []Event{event}, "main", nil)
+		if err != nil {
+			b.Fatalf("WriteEvents failed: %v", err)
+		}
+	}
+}
+
+// Benchmark for writing a single commit to an existing branch.
+func BenchmarkWriteEvents_SingleCommit(b *testing.B) {
+	tempDir := b.TempDir()
+	serverPath := filepath.Join(tempDir, "server.git")
+	remoteURL := "file://" + serverPath
+	createBareRepo(b, serverPath)
+	simulateClientCommitOnDisk(b, remoteURL, "main", "init.txt", "hello")
+
+	b.ResetTimer()
+	for i := range b.N {
+		b.StopTimer()
+		clonePath := filepath.Join(tempDir, fmt.Sprintf("worker-%d", i))
+		_, err := PrepareBranch(context.Background(), remoteURL, clonePath, "main", nil)
+		require.NoError(b, err)
+		event := createTestEvent(b, fmt.Sprintf("pod-%d", i))
+		b.StartTimer()
+
+		_, err = WriteEvents(context.Background(), clonePath, []Event{event}, "main", nil)
+		if err != nil {
+			b.Fatalf("WriteEvents failed: %v", err)
+		}
+	}
+}
+
+// Benchmark for the conflict resolution path in WriteEvents.
+func BenchmarkWriteEvents_WithConflict(b *testing.B) {
+	for range b.N {
+		b.StopTimer()
+		// Full setup for each iteration to ensure a clean state
+		tempDir := b.TempDir()
+		serverPath := filepath.Join(tempDir, "server.git")
+		remoteURL := "file://" + serverPath
+		clonePath := filepath.Join(tempDir, "worker")
+
+		createBareRepo(b, serverPath)
+		simulateClientCommitOnDisk(b, remoteURL, "main", "init.txt", "base")
+
+		// Prepare the local clone
+		_, err := PrepareBranch(context.Background(), remoteURL, clonePath, "main", nil)
+		require.NoError(b, err)
+
+		// Introduce a conflicting commit on the remote *after* we've cloned
+		simulateClientCommitOnDisk(b, remoteURL, "main", "conflict.txt", "someone else was here")
+
+		event := createTestEvent(b, "my-pod")
+
+		b.StartTimer()
+
+		// This WriteEvents call should hit the non-fast-forward error,
+		// trigger the internal pull, and succeed on the retry.
+		result, err := WriteEvents(context.Background(), clonePath, []Event{event}, "main", nil)
+		if err != nil {
+			b.Fatalf("WriteEvents with conflict failed: %v", err)
+		}
+		if result.Failures == 0 || len(result.ConflictPulls) == 0 {
+			b.Fatal("WriteEvents did not report a conflict as expected")
+		}
+	}
+}

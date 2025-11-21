@@ -19,6 +19,7 @@ limitations under the License.
 package e2e
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -28,6 +29,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	"github.com/ConfigButler/gitops-reverser/test/utils"
 )
@@ -132,19 +134,19 @@ var _ = Describe("Manager", Ordered, func() {
 		specReport := CurrentSpecReport()
 		if specReport.Failed() {
 			By("Fetching controller manager pod logs")
-			cmd := exec.Command("kubectl", "logs", controllerPodName, "-n", namespace)
+			cmd := exec.Command("kubectl", "logs", controllerPodName, "-n", namespace, "--tail=200")
 			controllerLogs, err := utils.Run(cmd)
 			if err == nil {
-				_, _ = fmt.Fprintf(GinkgoWriter, "Controller logs:\n %s", controllerLogs)
+				_, _ = fmt.Fprintf(GinkgoWriter, "Last 200 lines of controller logs:\n %s", controllerLogs)
 			} else {
 				_, _ = fmt.Fprintf(GinkgoWriter, "Failed to get Controller logs: %s", err)
 			}
 
 			By("Fetching Kubernetes events")
-			cmd = exec.Command("kubectl", "get", "events", "-n", namespace, "--sort-by=.lastTimestamp")
+			cmd = exec.Command("kubectl", "get", "events", "-n", namespace, "--sort-by=.metadata.creationTimestamp")
 			eventsOutput, err := utils.Run(cmd)
 			if err == nil {
-				_, _ = fmt.Fprintf(GinkgoWriter, "Kubernetes events:\n%s", eventsOutput)
+				_, _ = fmt.Fprintf(GinkgoWriter, "Kubernetes events (newest last):\n%s", eventsOutput)
 			} else {
 				_, _ = fmt.Fprintf(GinkgoWriter, "Failed to get Kubernetes events: %s", err)
 			}
@@ -153,9 +155,9 @@ var _ = Describe("Manager", Ordered, func() {
 			cmd = exec.Command("kubectl", "describe", "pod", controllerPodName, "-n", namespace)
 			podDescription, err := utils.Run(cmd)
 			if err == nil {
-				fmt.Println("Pod description:\n", podDescription)
+				_, _ = fmt.Fprintf(GinkgoWriter, "Pod description:\n%s", podDescription)
 			} else {
-				fmt.Println("Failed to describe controller pod")
+				_, _ = fmt.Fprintf(GinkgoWriter, "Failed to describe controller pod: %s", err)
 			}
 		}
 	})
@@ -405,20 +407,7 @@ var _ = Describe("Manager", Ordered, func() {
 			createGitDestination(destName, namespace, gitRepoConfigName, "test/invalid", "different-branch")
 
 			By("verifying GitDestination fails branch validation")
-			verifyDestStatus := func(g Gomega) {
-				jsonPath := "jsonpath={.status.conditions[?(@.type=='Ready')].status}"
-				cmd := exec.Command("kubectl", "get", "gitdestination", destName, "-n", namespace, "-o", jsonPath)
-				output, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(output).To(Equal("False"), "GitDestination should be not ready for invalid branch")
-
-				reasonPath := "jsonpath={.status.conditions[?(@.type=='Ready')].reason}"
-				cmd = exec.Command("kubectl", "get", "gitdestination", destName, "-n", namespace, "-o", reasonPath)
-				reason, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(reason).To(Equal("BranchNotAllowed"), "Reason should be BranchNotAllowed")
-			}
-			Eventually(verifyDestStatus, 30*time.Second).Should(Succeed())
+			verifyResourceStatus("gitdestination", destName, namespace, "False", "BranchNotAllowed", "")
 
 			cleanupGitDestination(destName, namespace)
 			cleanupGitRepoConfig(gitRepoConfigName)
@@ -480,14 +469,7 @@ var _ = Describe("Manager", Ordered, func() {
 			Expect(err).NotTo(HaveOccurred(), "Failed to apply WatchRule")
 
 			By("verifying the WatchRule is reconciled")
-			verifyReconciled := func(g Gomega) {
-				jsonPath := "jsonpath={.status.conditions[?(@.type=='Ready')].status}"
-				cmd := exec.Command("kubectl", "get", "watchrule", watchRuleName, "-n", namespace, "-o", jsonPath)
-				output, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(output).To(Equal("True"))
-			}
-			Eventually(verifyReconciled).Should(Succeed())
+			verifyResourceStatus("watchrule", watchRuleName, namespace, "True", "Ready", "")
 
 			By("cleaning up test resources")
 			cleanupWatchRule(watchRuleName, namespace)
@@ -518,14 +500,7 @@ var _ = Describe("Manager", Ordered, func() {
 			Expect(err2).NotTo(HaveOccurred(), "Failed to apply WatchRule")
 
 			By("verifying WatchRule is ready")
-			verifyReconciled := func(g Gomega) {
-				jsonPath := "jsonpath={.status.conditions[?(@.type=='Ready')].status}"
-				cmd := exec.Command("kubectl", "get", "watchrule", watchRuleName, "-n", namespace, "-o", jsonPath)
-				output, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(output).To(Equal("True"))
-			}
-			Eventually(verifyReconciled, 15*time.Second, time.Second).Should(Succeed())
+			verifyResourceStatus("watchrule", watchRuleName, namespace, "True", "Ready", "")
 
 			By("creating test ConfigMap to trigger Git commit")
 			configMapData := struct {
@@ -536,7 +511,12 @@ var _ = Describe("Manager", Ordered, func() {
 				Namespace: namespace,
 			}
 
-			err3 := applyFromTemplate("test/e2e/templates/configmap.tmpl", configMapData, namespace)
+			err3 := applyFromTemplate(
+				"test/e2e/templates/configmap.tmpl",
+				configMapData,
+				namespace,
+				"--as=jane.dev@configbutler.ai", // Important: we validate later if the user is included in the git commit!
+			)
 			Expect(err3).NotTo(HaveOccurred(), "Failed to apply ConfigMap")
 
 			By("waiting for controller reconciliation of ConfigMap event")
@@ -593,7 +573,7 @@ var _ = Describe("Manager", Ordered, func() {
 				msg := string(commitMsg)
 				g.Expect(msg).To(ContainSubstring("[CREATE]"),
 					"Latest commit message should include operation [CREATE]")
-				g.Expect(msg).To(ContainSubstring("by user/"),
+				g.Expect(msg).To(ContainSubstring("by user/jane.dev@configbutler.ai"),
 					"Latest commit message should include the admission username trailer")
 				g.Expect(msg).To(ContainSubstring(fmt.Sprintf("v1/configmaps/%s", configMapName)),
 					"Latest commit message should include resource path")
@@ -634,14 +614,7 @@ var _ = Describe("Manager", Ordered, func() {
 			Expect(err2).NotTo(HaveOccurred(), "Failed to apply WatchRule")
 
 			By("verifying WatchRule is ready")
-			verifyReconciled := func(g Gomega) {
-				jsonPath := "jsonpath={.status.conditions[?(@.type=='Ready')].status}"
-				cmd := exec.Command("kubectl", "get", "watchrule", watchRuleName, "-n", namespace, "-o", jsonPath)
-				output, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(output).To(Equal("True"))
-			}
-			Eventually(verifyReconciled, 15*time.Second, time.Second).Should(Succeed())
+			verifyResourceStatus("watchrule", watchRuleName, namespace, "True", "Ready", "")
 
 			By("creating test ConfigMap to trigger Git commit")
 			configMapData := struct {
@@ -740,18 +713,11 @@ var _ = Describe("Manager", Ordered, func() {
 				Namespace:       namespace,
 			}
 
-			err := applyFromTemplate("test/e2e/templates/watchrule-crds.tmpl", clusterWatchRuleData, "")
+			err := applyFromTemplate("test/e2e/templates/clusterwatchrule-crd.tmpl", clusterWatchRuleData, "")
 			Expect(err).NotTo(HaveOccurred(), "Failed to apply ClusterWatchRule for CRDs")
 
 			By("verifying ClusterWatchRule is ready")
-			verifyClusterWatchRuleReady := func(g Gomega) {
-				jsonPath := "jsonpath={.status.conditions[?(@.type=='Ready')].status}"
-				cmd := exec.Command("kubectl", "get", "clusterwatchrule", clusterWatchRuleName, "-o", jsonPath)
-				output, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(output).To(Equal("True"))
-			}
-			Eventually(verifyClusterWatchRuleReady, 15*time.Second, time.Second).Should(Succeed())
+			verifyResourceStatus("clusterwatchrule", clusterWatchRuleName, "", "True", "Ready", "")
 
 			By("installing the IceCreamOrder CRD to trigger Git commit")
 			cmd := exec.Command("kubectl", "apply", "-f", "test/e2e/templates/icecreamorder-crd.yaml")
@@ -844,14 +810,7 @@ var _ = Describe("Manager", Ordered, func() {
 			Expect(err2).NotTo(HaveOccurred(), "Failed to apply WatchRule for CRDs")
 
 			By("verifying WatchRule is ready")
-			verifyReconciled := func(g Gomega) {
-				jsonPath := "jsonpath={.status.conditions[?(@.type=='Ready')].status}"
-				cmd := exec.Command("kubectl", "get", "watchrule", watchRuleName, "-n", namespace, "-o", jsonPath)
-				output, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(output).To(Equal("True"))
-			}
-			Eventually(verifyReconciled, 15*time.Second, time.Second).Should(Succeed())
+			verifyResourceStatus("watchrule", watchRuleName, namespace, "True", "Ready", "")
 
 			By("creating CR with labels and annotations to trigger Git commit")
 			crdInstanceData := struct {
@@ -1240,18 +1199,11 @@ var _ = Describe("Manager", Ordered, func() {
 				Namespace:       namespace,
 			}
 
-			err := applyFromTemplate("test/e2e/templates/watchrule-crds.tmpl", clusterWatchRuleData, "")
+			err := applyFromTemplate("test/e2e/templates/clusterwatchrule-crd.tmpl", clusterWatchRuleData, "")
 			Expect(err).NotTo(HaveOccurred(), "Failed to apply ClusterWatchRule for CRDs")
 
 			By("verifying ClusterWatchRule is ready")
-			verifyClusterWatchRuleReady := func(g Gomega) {
-				jsonPath := "jsonpath={.status.conditions[?(@.type=='Ready')].status}"
-				cmd := exec.Command("kubectl", "get", "clusterwatchrule", clusterWatchRuleName, "-o", jsonPath)
-				output, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(output).To(Equal("True"))
-			}
-			Eventually(verifyClusterWatchRuleReady, 30*time.Second, time.Second).Should(Succeed())
+			verifyResourceStatus("clusterwatchrule", clusterWatchRuleName, "", "True", "Ready", "")
 
 			By("verifying CRD file exists in Git before deletion")
 			verifyFileExists := func(g Gomega) {
@@ -1358,55 +1310,67 @@ func createSSHGitRepoConfig(name, branch, secretName string) {
 
 // verifyGitRepoConfigStatus verifies the GitRepoConfig status matches expected values.
 func verifyGitRepoConfigStatus(name, expectedStatus, expectedReason, expectedMessageContains string) {
+	verifyResourceStatus("gitrepoconfig", name, namespace, expectedStatus, expectedReason, expectedMessageContains)
+}
+
+// verifyResourceStatus verifies a resource's status conditions match expected values.
+// For cluster-scoped resources, provide an empty namespace.
+func verifyResourceStatus(resourceType, name, ns, expectedStatus, expectedReason, expectedMessageContains string) {
 	By(
 		fmt.Sprintf(
-			"verifying GitRepoConfig '%s' status is '%s' with reason '%s'",
+			"verifying %s '%s' in ns '%s' status is '%s' with reason '%s'",
+			resourceType,
 			name,
+			ns,
 			expectedStatus,
 			expectedReason,
 		),
 	)
 	verifyStatus := func(g Gomega) {
-		// Check status
-		statusJSONPath := `{.status.conditions[?(@.type=='Ready')].status}`
-		cmd := exec.Command("kubectl", "get", "gitrepoconfig", name, "-n", namespace, "-o", "jsonpath="+statusJSONPath)
-		status, err := utils.Run(cmd)
-		g.Expect(err).NotTo(HaveOccurred())
-		g.Expect(status).To(Equal(expectedStatus))
+		args := []string{"get", resourceType, name, "-o", "json"}
+		if ns != "" {
+			args = append(args, "-n", ns)
+		}
 
-		// Check reason
-		reasonJSONPath := `{.status.conditions[?(@.type=='Ready')].reason}`
-		cmd = exec.Command("kubectl", "get", "gitrepoconfig", name, "-n", namespace, "-o", "jsonpath="+reasonJSONPath)
-		reason, err := utils.Run(cmd)
+		cmd := exec.Command("kubectl", args...)
+		output, err := utils.Run(cmd)
 		g.Expect(err).NotTo(HaveOccurred())
-		g.Expect(reason).To(Equal(expectedReason))
 
-		// Check message contains expected text if specified
+		var obj unstructured.Unstructured
+		g.Expect(json.Unmarshal([]byte(output), &obj)).To(Succeed())
+
+		conditions, found, _ := unstructured.NestedSlice(obj.Object, "status", "conditions")
+		g.Expect(found).To(BeTrue(), "status.conditions not found")
+
+		var readyStatus, readyReason, readyMessage string
+		for _, cond := range conditions {
+			condMap, ok := cond.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if condMap["type"] == "Ready" {
+				readyStatus, _ = condMap["status"].(string)
+				readyReason, _ = condMap["reason"].(string)
+				readyMessage, _ = condMap["message"].(string)
+				break
+			}
+		}
+
+		g.Expect(readyStatus).To(Equal(expectedStatus))
+		g.Expect(readyReason).To(Equal(expectedReason))
 		if expectedMessageContains != "" {
-			messageJSONPath := `{.status.conditions[?(@.type=='Ready')].message}`
-			cmd = exec.Command(
-				"kubectl",
-				"get",
-				"gitrepoconfig",
-				name,
-				"-n",
-				namespace,
-				"-o",
-				"jsonpath="+messageJSONPath,
-			)
-			message, err := utils.Run(cmd)
-			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(message).To(ContainSubstring(expectedMessageContains))
+			g.Expect(readyMessage).To(ContainSubstring(expectedMessageContains))
 		}
 	}
-	Eventually(verifyStatus).Should(Succeed())
+	Eventually(verifyStatus, 30*time.Second).Should(Succeed())
 }
 
 // cleanupGitRepoConfig deletes a GitRepoConfig resource.
 func cleanupGitRepoConfig(name string) {
 	By(fmt.Sprintf("cleaning up GitRepoConfig '%s'", name))
-	cmd := exec.Command("kubectl", "delete", "gitrepoconfig", name, "-n", namespace)
-	_, _ = utils.Run(cmd)
+	cmd := exec.Command("kubectl", "delete", "gitrepoconfig", name, "-n", namespace, "--ignore-not-found=true")
+	_, err := utils.Run(cmd)
+	Expect(err).NotTo(HaveOccurred())
 }
 
 // showControllerLogs displays the current controller logs to help with debugging during test execution.
