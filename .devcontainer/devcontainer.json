@@ -65,5 +65,8 @@
   "remoteUser": "vscode",
   "mounts": [
     "source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind"
-  ]
+  ],
+  "containerEnv": {
+    "DOCKER_API_VERSION": "1.43"
+  }
 }
