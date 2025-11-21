@@ -6,7 +6,6 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/ConfigButler/gitops-reverser)](https://goreportcard.com/report/github.com/ConfigButler/gitops-reverser)
 [![Container](https://img.shields.io/badge/container-ghcr.io%2Fconfigbutler%2Fgitops--reverser-2ea44f?logo=docker)](https://github.com/ConfigButler/gitops-reverser/pkgs/container/gitops-reverser)
 [![Open Issues](https://img.shields.io/github/issues/ConfigButler/gitops-reverser)](https://github.com/ConfigButler/gitops-reverser/issues)
-[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/ConfigButler/gitops-reverser)
 
 # GitOps Reverser
 
@@ -156,6 +155,8 @@ Exposes basic OpenTelemetry metrics. See `config/prometheus/` for example manife
 ### DevContainer Setup
 
 This project includes a DevContainer for consistent development environments.
+
+[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/ConfigButler/gitops-reverser)
 
 **Linux/macOS:** Works out of the box with Docker Desktop or Docker Engine.
 
