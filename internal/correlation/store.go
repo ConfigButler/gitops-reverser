@@ -22,8 +22,10 @@ package correlation
 
 import (
 	"container/list"
+	"context"
 	"encoding/binary"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -38,20 +40,14 @@ type Entry struct {
 	Timestamp time.Time
 }
 
-// entryQueue holds multiple entries for the same key in FIFO order.
-// This handles rapid changes to the same content by different users.
-type entryQueue struct {
-	entries []*Entry
-}
-
 // Store is an in-memory key-value store with TTL and LRU eviction.
 // It correlates webhook admission events with watch events using sanitized object identity.
-// Each key maintains a FIFO queue of entries to handle rapid changes to same content.
+// Each key stores a single entry.
 type Store struct {
 	mu sync.Mutex
 
-	// entries maps correlation keys to their entry queues
-	entries map[string]*entryQueue
+	// entries maps correlation keys to entries
+	entries map[string]*Entry
 
 	// lruList maintains insertion order for LRU eviction
 	lruList *list.List
@@ -65,25 +61,24 @@ type Store struct {
 	// maxEntries is the maximum number of entries before LRU eviction
 	maxEntries int
 
-	// maxQueueDepth is the maximum number of entries per key
-	maxQueueDepth int
+	// logger for warnings
+	logger *slog.Logger
 
 	// metrics callbacks (optional)
 	onEviction func() // called when an entry is evicted (LRU or TTL)
 }
 
 // NewStore creates a new correlation store with the specified TTL and maximum entries.
-// ttl: duration after which entries expire (typically 60 seconds).
+// ttl: duration after which entries expire (typically 5 minutes).
 // maxEntries: maximum number of entries before LRU eviction (typically 10,000).
 func NewStore(ttl time.Duration, maxEntries int) *Store {
-	const defaultMaxQueueDepth = 10 // Max webhook events per key before dropping oldest
 	return &Store{
-		entries:       make(map[string]*entryQueue),
-		lruList:       list.New(),
-		lruMap:        make(map[string]*list.Element),
-		ttl:           ttl,
-		maxEntries:    maxEntries,
-		maxQueueDepth: defaultMaxQueueDepth,
+		entries:    make(map[string]*Entry),
+		lruList:    list.New(),
+		lruMap:     make(map[string]*list.Element),
+		ttl:        ttl,
+		maxEntries: maxEntries,
+		logger:     slog.Default(),
 	}
 }
 
@@ -139,9 +134,8 @@ func GenerateKey(id types.ResourceIdentifier, operation string, sanitizedYAML []
 }
 
 // Put stores a correlation entry for the given key.
-// Entries are queued in FIFO order to handle rapid changes to the same content.
-// If the queue for this key is at max depth, the oldest entry is dropped.
-// If the store is at capacity, it evicts the least recently used key.
+// If the key already exists with a different username, logs a warning.
+// Overwrites the existing entry.
 func (s *Store) Put(key string, username string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -152,20 +146,22 @@ func (s *Store) Put(key string, username string) {
 		Timestamp: now,
 	}
 
-	// Check if key already has a queue
-	if queue, exists := s.entries[key]; exists {
-		// Append to existing queue (FIFO)
-		queue.entries = append(queue.entries, entry)
-
-		// Enforce max queue depth per key
-		if len(queue.entries) > s.maxQueueDepth {
-			// Drop oldest entry from queue
-			queue.entries = queue.entries[1:]
-			if s.onEviction != nil {
-				s.onEviction()
-			}
+	// Check if key already exists
+	if existing, exists := s.entries[key]; exists {
+		if existing.Username != username {
+			s.logger.WarnContext(
+				context.Background(),
+				"wrong user might be added",
+				"key",
+				key,
+				"old_user",
+				existing.Username,
+				"new_user",
+				username,
+			)
 		}
-
+		// Overwrite existing entry
+		s.entries[key] = entry
 		// Move to front of LRU list (this key was accessed)
 		s.lruList.MoveToFront(s.lruMap[key])
 		return
@@ -176,35 +172,29 @@ func (s *Store) Put(key string, username string) {
 		s.evictLRU()
 	}
 
-	// Create new queue for this key
-	s.entries[key] = &entryQueue{
-		entries: []*Entry{entry},
-	}
+	// Create new entry for this key
+	s.entries[key] = entry
 
 	// Add to LRU list
 	elem := s.lruList.PushFront(key)
 	s.lruMap[key] = elem
 }
 
-// GetAndDelete retrieves and removes the oldest correlation entry for the given key.
-// Uses FIFO ordering: the first entry enqueued is the first retrieved.
+// Get retrieves the correlation entry for the given key.
 // Returns the entry and true if found and not expired, or nil and false otherwise.
 // Expired entries are automatically removed during lookup.
-func (s *Store) GetAndDelete(key string) (*Entry, bool) {
+func (s *Store) Get(key string) (*Entry, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	queue, exists := s.entries[key]
-	if !exists || len(queue.entries) == 0 {
+	entry, exists := s.entries[key]
+	if !exists {
 		return nil, false
 	}
 
-	// Get oldest entry from queue (FIFO)
-	entry := queue.entries[0]
-
 	// Check TTL
 	if time.Since(entry.Timestamp) > s.ttl {
-		// Entry expired, remove entire queue for this key
+		// Entry expired, remove it
 		s.removeEntry(key)
 		if s.onEviction != nil {
 			s.onEviction()
@@ -212,14 +202,7 @@ func (s *Store) GetAndDelete(key string) (*Entry, bool) {
 		return nil, false
 	}
 
-	// Remove entry from queue
-	queue.entries = queue.entries[1:]
-
-	// If queue is now empty, remove the key entirely
-	if len(queue.entries) == 0 {
-		s.removeEntry(key)
-	}
-
+	// Return entry without removing it
 	return entry, true
 }
 
@@ -232,38 +215,25 @@ func (s *Store) EvictExpired() int {
 	now := time.Now()
 	evicted := 0
 
-	// Iterate through all queues and remove expired ones
-	for key, queue := range s.entries {
-		if len(queue.entries) == 0 {
-			continue
-		}
-		// Check oldest entry in queue
-		if now.Sub(queue.entries[0].Timestamp) > s.ttl {
+	// Iterate through all entries and remove expired ones
+	for key, entry := range s.entries {
+		if now.Sub(entry.Timestamp) > s.ttl {
 			s.removeEntry(key)
 			if s.onEviction != nil {
-				// Count all entries in the queue as evicted
-				evicted += len(queue.entries)
-				for range queue.entries {
-					s.onEviction()
-				}
-			} else {
-				evicted += len(queue.entries)
+				s.onEviction()
 			}
+			evicted++
 		}
 	}
 
 	return evicted
 }
 
-// Size returns the current number of entries in the store (across all queues).
+// Size returns the current number of entries in the store.
 func (s *Store) Size() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	total := 0
-	for _, queue := range s.entries {
-		total += len(queue.entries)
-	}
-	return total
+	return len(s.entries)
 }
 
 // Clear removes all entries from the store.
@@ -271,7 +241,7 @@ func (s *Store) Clear() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.entries = make(map[string]*entryQueue)
+	s.entries = make(map[string]*Entry)
 	s.lruList = list.New()
 	s.lruMap = make(map[string]*list.Element)
 }

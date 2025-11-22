@@ -62,9 +62,8 @@ var (
 
 const (
 	// Correlation store configuration.
-	correlationTTLSeconds = 60
 	correlationMaxEntries = 10000
-	correlationTTL        = correlationTTLSeconds * time.Second
+	correlationTTL        = 5 * time.Minute
 )
 
 func init() {
@@ -78,6 +77,11 @@ func main() {
 	// Parse flags and configure logger
 	cfg := parseFlags()
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&cfg.zapOpts)))
+
+	// Log metrics configuration for debugging
+	setupLog.Info("Metrics configuration",
+		"metrics-bind-address", cfg.metricsAddr,
+		"metrics-secure", cfg.secureMetrics)
 
 	// Initialize metrics
 	setupCtx := ctrl.SetupSignalHandler()

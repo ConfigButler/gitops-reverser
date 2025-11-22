@@ -88,7 +88,7 @@ func TestEnrichment_WebhookToWatch_FullPipeline(t *testing.T) {
 	assert.Equal(t, webhookKey, watchKey, "Webhook and watch should generate identical keys")
 
 	// Attempt enrichment
-	entry, found := store.GetAndDelete(watchKey)
+	entry, found := store.Get(watchKey)
 	require.True(t, found, "Watch should find correlation entry")
 	assert.Equal(t, webhookUsername, entry.Username, "Username should match webhook user")
 
@@ -104,11 +104,11 @@ func TestEnrichment_WebhookToWatch_FullPipeline(t *testing.T) {
 	assert.Equal(t, int64(0), misses.Load(), "Should have 0 enrichment misses")
 	assert.Equal(t, int64(0), evictions.Load(), "Should have 0 evictions")
 
-	// Second lookup should fail (entry consumed)
-	_, found = store.GetAndDelete(watchKey)
-	assert.False(t, found, "Second lookup should fail (entry already consumed)")
-	misses.Add(1)
-	assert.Equal(t, int64(1), misses.Load(), "Should now have 1 miss")
+	// Second lookup should succeed (entry not consumed)
+	entry2, found2 := store.Get(watchKey)
+	require.True(t, found2, "Second lookup should succeed (entry not consumed)")
+	assert.Equal(t, webhookUsername, entry2.Username, "Username should still match")
+	assert.Equal(t, int64(1), hits.Load(), "Should still have 1 hit")
 }
 
 // TestEnrichment_DroppedWebhook validates graceful degradation when webhook is dropped.
@@ -141,7 +141,7 @@ func TestEnrichment_DroppedWebhook(t *testing.T) {
 	require.NoError(t, err)
 
 	watchKey := GenerateKey(id, "CREATE", watchYAML)
-	entry, found := store.GetAndDelete(watchKey)
+	entry, found := store.Get(watchKey)
 
 	// Should gracefully handle missing correlation
 	assert.False(t, found, "Should not find correlation (webhook was dropped)")
@@ -189,7 +189,7 @@ func TestEnrichment_ExpiredEntry(t *testing.T) {
 	time.Sleep(ttl + 50*time.Millisecond)
 
 	// Watch event arrives after expiration
-	entry, found := store.GetAndDelete(key)
+	entry, found := store.Get(key)
 	assert.False(t, found, "Should not find correlation (TTL expired)")
 	assert.Nil(t, entry)
 	assert.Equal(t, int64(1), evictions.Load(), "Should record eviction on expired lookup")
@@ -233,7 +233,7 @@ func TestEnrichment_HighRateUpdates(t *testing.T) {
 		store.Put(key, username)
 
 		// Watch event (immediate - within TTL)
-		entry, found := store.GetAndDelete(key)
+		entry, found := store.Get(key)
 		if found {
 			hits.Add(1)
 			assert.Equal(t, username, entry.Username, "Username should match for update %d", i)
@@ -249,7 +249,7 @@ func TestEnrichment_HighRateUpdates(t *testing.T) {
 	t.Logf("Processed %d high-rate updates with 100%% enrichment", numUpdates)
 }
 
-// TestEnrichment_RapidContentOscillation validates FIFO queue with rapid changes.
+// TestEnrichment_RapidContentOscillation validates single entry with rapid changes.
 func TestEnrichment_RapidContentOscillation(t *testing.T) {
 	store := NewStore(60*time.Second, 100)
 
@@ -291,10 +291,10 @@ func TestEnrichment_RapidContentOscillation(t *testing.T) {
 	// 2. bob sets replicas=5
 	key5 := generateAndStore(t, store, objReplicas5, id, "UPDATE", "bob")
 
-	// 3. charlie sets replicas=3 (back to first state!)
+	// 3. charlie sets replicas=3 (back to first state, overwrites alice)
 	key3Again := generateAndStore(t, store, objReplicas3, id, "UPDATE", "charlie")
 
-	// 4. dave sets replicas=5 (back to second state!)
+	// 4. dave sets replicas=5 (back to second state, overwrites bob)
 	key5Again := generateAndStore(t, store, objReplicas5, id, "UPDATE", "dave")
 
 	// Keys should be reused
@@ -302,27 +302,27 @@ func TestEnrichment_RapidContentOscillation(t *testing.T) {
 	assert.Equal(t, key5, key5Again, "Same content should produce same key")
 
 	// Watch events arrive in order (delayed processing)
-	// Watch 1: replicas=3 (first time)
-	entry1, found1 := store.GetAndDelete(key3)
+	// Watch 1: replicas=3 (gets the last user for this key)
+	entry1, found1 := store.Get(key3)
 	require.True(t, found1, "First watch should find correlation")
-	assert.Equal(t, "alice", entry1.Username, "FIFO: first replicas=3 should be alice")
+	assert.Equal(t, "charlie", entry1.Username, "Should get the last user for replicas=3")
 
-	// Watch 2: replicas=5 (first time)
-	entry2, found2 := store.GetAndDelete(key5)
+	// Watch 2: replicas=5 (gets the last user for this key)
+	entry2, found2 := store.Get(key5)
 	require.True(t, found2, "Second watch should find correlation")
-	assert.Equal(t, "bob", entry2.Username, "FIFO: first replicas=5 should be bob")
+	assert.Equal(t, "dave", entry2.Username, "Should get the last user for replicas=5")
 
-	// Watch 3: replicas=3 (second time)
-	entry3, found3 := store.GetAndDelete(key3)
-	require.True(t, found3, "Third watch should find correlation")
-	assert.Equal(t, "charlie", entry3.Username, "FIFO: second replicas=3 should be charlie")
+	// Watch 3: replicas=3 (can be accessed multiple times)
+	entry3, found3 := store.Get(key3)
+	require.True(t, found3, "Third watch should still find correlation")
+	assert.Equal(t, "charlie", entry3.Username, "Should still get the last user for replicas=3")
 
-	// Watch 4: replicas=5 (second time)
-	entry4, found4 := store.GetAndDelete(key5)
-	require.True(t, found4, "Fourth watch should find correlation")
-	assert.Equal(t, "dave", entry4.Username, "FIFO: second replicas=5 should be dave")
+	// Watch 4: replicas=5 (can be accessed multiple times)
+	entry4, found4 := store.Get(key5)
+	require.True(t, found4, "Fourth watch should still find correlation")
+	assert.Equal(t, "dave", entry4.Username, "Should still get the last user for replicas=5")
 
-	t.Log("✓ All 4 watch events correctly attributed via FIFO queues")
+	t.Log("✓ Watch events get the last user per key, single entry behavior with multiple access")
 }
 
 // TestEnrichment_MixedHitsAndMisses validates metrics tracking.
@@ -352,7 +352,7 @@ func TestEnrichment_MixedHitsAndMisses(t *testing.T) {
 
 	// Scenario 1: Webhook + Watch within TTL (HIT)
 	key1 := generateAndStore(t, store, obj, id, "UPDATE", "user1")
-	entry1, found1 := store.GetAndDelete(key1)
+	entry1, found1 := store.Get(key1)
 	if found1 {
 		hits.Add(1)
 		assert.Equal(t, "user1", entry1.Username)
@@ -360,9 +360,11 @@ func TestEnrichment_MixedHitsAndMisses(t *testing.T) {
 		misses.Add(1)
 	}
 
-	// Scenario 2: Watch without webhook (MISS)
-	key2 := generateKey(t, obj, id, "UPDATE")
-	_, found2 := store.GetAndDelete(key2)
+	// Scenario 2: Watch without webhook (MISS) - different content
+	obj2 := obj.DeepCopy()
+	unstructured.SetNestedField(obj2.Object, "different-value", "data", "config")
+	key2 := generateKey(t, obj2, id, "UPDATE")
+	_, found2 := store.Get(key2)
 	if found2 {
 		hits.Add(1)
 	} else {
@@ -372,7 +374,7 @@ func TestEnrichment_MixedHitsAndMisses(t *testing.T) {
 	// Scenario 3: Webhook + Watch after TTL expiry (MISS with eviction)
 	key3 := generateAndStore(t, store, obj, id, "CREATE", "user3")
 	time.Sleep(250 * time.Millisecond) // Wait for TTL expiry
-	_, found3 := store.GetAndDelete(key3)
+	_, found3 := store.Get(key3)
 	if found3 {
 		hits.Add(1)
 	} else {
@@ -457,7 +459,7 @@ func TestEnrichment_ConcurrentWebhookAndWatch(t *testing.T) {
 				yaml, _ := sanitize.MarshalToOrderedYAML(sanitized)
 				key := GenerateKey(id, "UPDATE", yaml)
 
-				if _, found := store.GetAndDelete(key); found {
+				if _, found := store.Get(key); found {
 					hits.Add(1)
 				} else {
 					misses.Add(1)

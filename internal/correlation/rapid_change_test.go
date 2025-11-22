@@ -28,18 +28,17 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
-// TestStore_RapidChangesWithContentReuse validates the critical scenario where:
+// TestStore_RapidChangesWithContentReuse validates the scenario where:
 // - User B changes spec to {"cool": false}
 // - User B changes spec to {"cool": true}
 // - User A changes spec to {"cool": false} (same content as first change)
 //
-// When watch events are delayed and arrive after all webhooks, we need to ensure:
-// - Watch event 1 (false) -> attributed to user B (FIFO: first in queue)
+// With single entry per key, the last user wins.
+// - Watch event 1 (false) -> attributed to user A (last for that key)
 // - Watch event 2 (true) -> attributed to user B
-// - Watch event 3 (false) -> attributed to user A (FIFO: second in queue)
+// - Watch event 3 (false) -> miss (already consumed)
 //
-// This tests the store's FIFO queue handling of multiple changes to the same content
-// by different users in rapid succession.
+// This tests the store's single entry handling of rapid changes.
 func TestStore_RapidChangesWithContentReuse(t *testing.T) {
 	store := NewStore(60*time.Second, 100)
 	id := types.NewResourceIdentifier("apps", "v1", "deployments", "default", "my-app")
@@ -72,35 +71,30 @@ spec:
 	key2 := GenerateKey(id, "UPDATE", specTrue)
 	store.Put(key2, "userB")
 
-	// 3. User A changes to false (same content as step 1, same key!)
+	// 3. User A changes to false (same content as step 1, overwrites userB)
 	key3 := GenerateKey(id, "UPDATE", specFalse)
-	store.Put(key3, "userA") // With FIFO queue: appends to queue[key_false]
+	store.Put(key3, "userA")
 
 	// Verify keys
 	assert.Equal(t, key1, key3, "Same content should produce same key")
 	assert.NotEqual(t, key1, key2, "Different content should produce different keys")
 
 	// Watch events arrive (delayed, in order):
-	// Watch event 1: spec changed to false (first time)
-	entry1, found1 := store.GetAndDelete(key1)
+	// Watch event 1: spec changed to false
+	entry1, found1 := store.Get(key1)
 	require.True(t, found1, "First watch event should find correlation entry")
-	assert.Equal(t, "userB", entry1.Username,
-		"FIFO: First webhook to false should be attributed to userB")
+	assert.Equal(t, "userA", entry1.Username,
+		"Should get the last user for false")
 
 	// Watch event 2: spec changed to true
-	entry2, found2 := store.GetAndDelete(key2)
+	entry2, found2 := store.Get(key2)
 	require.True(t, found2, "Second watch event should find correlation entry")
 	assert.Equal(t, "userB", entry2.Username, "userB should be attributed")
 
-	// Watch event 3: spec changed to false (second time)
-	entry3, found3 := store.GetAndDelete(key3)
-	require.True(t, found3, "Third watch event should find correlation entry")
-	assert.Equal(t, "userA", entry3.Username,
-		"FIFO: Second webhook to false should be attributed to userA")
-
-	// Verify queue is now empty
-	_, found4 := store.GetAndDelete(key1)
-	assert.False(t, found4, "All entries should be consumed")
+	// Watch event 3: spec changed to false (can be accessed multiple times)
+	entry3, found3 := store.Get(key3)
+	require.True(t, found3, "Third watch should still find correlation")
+	assert.Equal(t, "userA", entry3.Username, "Should still get userA")
 }
 
 // TestStore_QueueSolution demonstrates a potential solution using multi-value queues.
