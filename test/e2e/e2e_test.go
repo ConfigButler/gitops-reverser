@@ -562,23 +562,35 @@ var _ = Describe("Manager", Ordered, func() {
 				g.Expect(readErr).NotTo(HaveOccurred())
 				g.Expect(string(content)).To(ContainSubstring("test-key: test-value"),
 					"ConfigMap file should contain expected data")
-				// Verify latest commit message contains operation, resource path, and "by user/"
+
+				// Verify latest commit message contains operation, resource path
 				gitLogCmd := exec.Command("git", "log", "-1", "--pretty=%B")
 				gitLogCmd.Dir = checkoutDir
 				commitMsg, commitErr := gitLogCmd.CombinedOutput()
+
 				if commitErr != nil {
 					g.Expect(commitErr).NotTo(HaveOccurred(),
 						fmt.Sprintf("Should read latest commit message. Output: %s", string(commitMsg)))
 				}
+
 				msg := string(commitMsg)
 				g.Expect(msg).To(ContainSubstring("[CREATE]"),
 					"Latest commit message should include operation [CREATE]")
-				g.Expect(msg).To(ContainSubstring("by user/jane.dev@configbutler.ai"),
-					"Latest commit message should include the admission username trailer")
 				g.Expect(msg).To(ContainSubstring(fmt.Sprintf("v1/configmaps/%s", configMapName)),
 					"Latest commit message should include resource path")
+
+				gitLogCmd = exec.Command("git", "log", "-1", "--pretty=%an")
+				gitLogCmd.Dir = checkoutDir
+				authorMsg, commitErr := gitLogCmd.CombinedOutput()
+				if commitErr != nil {
+					g.Expect(commitErr).NotTo(HaveOccurred(),
+						fmt.Sprintf("Should read latest commit author. Output: %s", string(authorMsg)))
+				}
+
+				author := string(authorMsg)
+				g.Expect(author).To(ContainSubstring("jane.dev@configbutler.ai"))
 			}
-			Eventually(verifyGitCommit, 180*time.Second, 5*time.Second).Should(Succeed())
+			Eventually(verifyGitCommit, 10*time.Second, 1*time.Second).Should(Succeed())
 
 			By("cleaning up test resources")
 			cmd := exec.Command("kubectl", "delete", "configmap", configMapName, "-n", namespace)
