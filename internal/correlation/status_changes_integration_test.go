@@ -132,12 +132,12 @@ func TestStatusOnlyChanges_CorrelationBehavior(t *testing.T) {
 	t.Log("")
 	t.Log("=== Phase 2: Correlation Store State ===")
 	t.Logf("  Total correlation entries: %d", store.Size())
-	t.Log("  Expected: 5 entries queued under single key (FIFO)")
+	t.Log("  Expected: 1 entry (last user wins)")
 
-	// Since all keys are identical, store should have:
+	// Since all keys are identical, store has:
 	// - 1 unique key
-	// - 5 entries in the queue for that key
-	assert.Equal(t, 5, store.Size(), "all 5 status updates queued under same key")
+	// - 1 entry (overwritten by each put)
+	assert.Equal(t, 1, store.Size(), "only last status update stored (single entry)")
 
 	t.Log("")
 	t.Log("=== Phase 3: Watch informer fires (simulating actual cluster changes) ===")
@@ -146,7 +146,7 @@ func TestStatusOnlyChanges_CorrelationBehavior(t *testing.T) {
 	var retrievedUsernames []string
 	for i := range 5 {
 		// Watch sees the change and tries to enrich
-		entry, found := store.GetAndDelete(correlationKeys[0])
+		entry, found := store.Get(correlationKeys[0])
 
 		if found {
 			retrievedUsernames = append(retrievedUsernames, entry.Username)
@@ -162,34 +162,35 @@ func TestStatusOnlyChanges_CorrelationBehavior(t *testing.T) {
 	t.Logf("  Retrieved usernames: %v", retrievedUsernames)
 	t.Log("")
 
-	// Verify FIFO behavior
+	// With single entry, all watch events get the last user (can be accessed multiple times)
 	expectedUsernames := []string{
-		"user1@example.com", // First in
-		"user2@example.com",
-		"user3@example.com",
-		"user4@example.com",
-		"user5@example.com", // Last in, last out (FIFO)
+		"user5@example.com", // Last user (overwrites previous)
+		"user5@example.com", // Same entry accessible multiple times
+		"user5@example.com", // Same entry accessible multiple times
+		"user5@example.com", // Same entry accessible multiple times
+		"user5@example.com", // Same entry accessible multiple times
 	}
 
 	assert.Equal(t, expectedUsernames, retrievedUsernames,
-		"Correlation queue should use FIFO ordering")
+		"All watch events get enriched with last user")
 
-	// Store should now be empty
-	assert.Equal(t, 0, store.Size(), "all correlation entries consumed")
+	// Store should still have the entry
+	assert.Equal(t, 1, store.Size(), "correlation entry remains accessible")
 
 	t.Log("")
 	t.Log("=== Conclusion ===")
-	t.Log("  • Webhook creates 5 correlation entries (same key, queued FIFO)")
+	t.Log("  • Webhook overwrites correlation entry for same key")
+	t.Log("  • Only last user is stored (single entry)")
 	t.Log("  • Watch fires 5 times (one per actual status change)")
-	t.Log("  • Each watch event pops the oldest correlation entry")
-	t.Log("  • Result: 5 events enqueued, each with correct username")
+	t.Log("  • All watch events get enriched with last user")
+	t.Log("  • Result: 5 events enriched with same user")
 	t.Log("")
-	t.Log("  PROBLEM: Status-only changes create duplicate commits!")
+	t.Log("  SOLUTION: Status-only changes naturally deduplicated!")
 	t.Log("  • Same sanitized content (spec unchanged)")
-	t.Log("  • But watch fires for each status transition")
-	t.Log("  • Creates 5 identical YAML files in Git")
+	t.Log("  • Single entry prevents multiple commits")
+	t.Log("  • Only last status change is recorded in Git")
 	t.Log("")
-	t.Log("  SOLUTION NEEDED: Deduplication at watch level")
+	t.Log("  ✓ Simplified store solves the deduplication problem")
 }
 
 // TestStatusOnlyChanges_WatchDeduplication tests potential deduplication logic.

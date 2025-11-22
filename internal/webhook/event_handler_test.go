@@ -815,7 +815,4 @@ func TestEventHandler_Handle_SanitizationApplied(t *testing.T) {
 	// Verify webhook stored correlation (actual responsibility)
 	assert.True(t, response.Allowed)
 	assert.Equal(t, 1, correlationStore.Size(), "correlation entry should be stored")
-
-	// NOTE: Sanitization testing moved to internal/sanitize package tests
-	// Webhook's job is correlation storage only
 }

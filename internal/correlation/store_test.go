@@ -118,35 +118,30 @@ func TestStore_BasicPutAndGet(t *testing.T) {
 	assert.Equal(t, 1, store.Size(), "Store should have one entry")
 
 	// Get entry
-	entry, found := store.GetAndDelete(key)
+	entry, found := store.Get(key)
 	require.True(t, found, "Entry should be found")
 	assert.Equal(t, username, entry.Username, "Username should match")
-	assert.Equal(t, 0, store.Size(), "Store should be empty after GetAndDelete")
+	assert.Equal(t, 1, store.Size(), "Store should still have the entry after Get")
 
-	// Get again should fail
-	_, found = store.GetAndDelete(key)
-	assert.False(t, found, "Entry should not be found after deletion")
+	// Get again should succeed
+	entry2, found2 := store.Get(key)
+	require.True(t, found2, "Entry should still be found")
+	assert.Equal(t, username, entry2.Username, "Username should still match")
 }
 
-// TestStore_UpdateExisting verifies FIFO queue behavior for same key.
+// TestStore_UpdateExisting verifies overwrite behavior for same key.
 func TestStore_UpdateExisting(t *testing.T) {
 	store := NewStore(60*time.Second, 100)
 	key := "test/key"
 
 	store.Put(key, "alice")
-	store.Put(key, "bob") // Appends to queue (FIFO)
+	store.Put(key, "bob") // Overwrites with warning log
 
-	// First GetAndDelete returns first entry (FIFO)
-	entry1, found1 := store.GetAndDelete(key)
-	require.True(t, found1, "First entry should be found")
-	assert.Equal(t, "alice", entry1.Username, "FIFO: first entry should be alice")
-	assert.Equal(t, 1, store.Size(), "One entry should remain in queue")
-
-	// Second GetAndDelete returns second entry
-	entry2, found2 := store.GetAndDelete(key)
-	require.True(t, found2, "Second entry should be found")
-	assert.Equal(t, "bob", entry2.Username, "FIFO: second entry should be bob")
-	assert.Equal(t, 0, store.Size(), "Queue should be empty after consuming all entries")
+	// Get returns the overwritten entry
+	entry, found := store.Get(key)
+	require.True(t, found, "Entry should be found")
+	assert.Equal(t, "bob", entry.Username, "Should return the overwritten username")
+	assert.Equal(t, 1, store.Size(), "Store should still have the entry after Get")
 }
 
 // TestStore_TTLExpiry verifies entries expire after TTL.
@@ -158,7 +153,7 @@ func TestStore_TTLExpiry(t *testing.T) {
 	store.Put(key, "alice")
 
 	// Immediate get should succeed
-	entry, found := store.GetAndDelete(key)
+	entry, found := store.Get(key)
 	require.True(t, found, "Entry should be found immediately")
 	assert.Equal(t, "alice", entry.Username)
 
@@ -167,7 +162,7 @@ func TestStore_TTLExpiry(t *testing.T) {
 	time.Sleep(ttl + 50*time.Millisecond) // Wait longer than TTL
 
 	// Should be expired
-	_, found = store.GetAndDelete(key)
+	_, found = store.Get(key)
 	assert.False(t, found, "Entry should be expired after TTL")
 	assert.Equal(t, 0, store.Size(), "Expired entry should be removed")
 }
@@ -195,15 +190,15 @@ func TestStore_LRUEviction(t *testing.T) {
 	assert.Equal(t, 1, evictionCount, "One eviction should have occurred")
 
 	// key1 should be evicted
-	_, found := store.GetAndDelete("key1")
+	_, found := store.Get("key1")
 	assert.False(t, found, "Oldest entry should have been evicted")
 
 	// Others should still exist
-	_, found = store.GetAndDelete("key2")
+	_, found = store.Get("key2")
 	assert.True(t, found, "Second entry should still exist")
-	_, found = store.GetAndDelete("key3")
+	_, found = store.Get("key3")
 	assert.True(t, found, "Third entry should still exist")
-	_, found = store.GetAndDelete("key4")
+	_, found = store.Get("key4")
 	assert.True(t, found, "New entry should exist")
 }
 
@@ -221,13 +216,13 @@ func TestStore_LRUUpdateRefreshes(t *testing.T) {
 	// Add key3 - should evict key2 (oldest), not key1
 	store.Put("key3", "user3")
 
-	_, found := store.GetAndDelete("key1")
+	_, found := store.Get("key1")
 	assert.True(t, found, "Updated entry should still exist")
 
-	_, found = store.GetAndDelete("key2")
+	_, found = store.Get("key2")
 	assert.False(t, found, "Oldest entry should have been evicted")
 
-	_, found = store.GetAndDelete("key3")
+	_, found = store.Get("key3")
 	assert.True(t, found, "New entry should exist")
 }
 
@@ -253,10 +248,10 @@ func TestStore_EvictExpired(t *testing.T) {
 	assert.Equal(t, 1, evictionCount, "Eviction callback should be called")
 	assert.Equal(t, 1, store.Size(), "One entry should remain")
 
-	_, found := store.GetAndDelete("key1")
+	_, found := store.Get("key1")
 	assert.False(t, found, "Expired entry should be removed")
 
-	_, found = store.GetAndDelete("key2")
+	_, found = store.Get("key2")
 	assert.True(t, found, "Non-expired entry should remain")
 }
 
@@ -272,7 +267,7 @@ func TestStore_Clear(t *testing.T) {
 	store.Clear()
 	assert.Equal(t, 0, store.Size(), "Store should be empty after clear")
 
-	_, found := store.GetAndDelete("key1")
+	_, found := store.Get("key1")
 	assert.False(t, found, "No entries should exist after clear")
 }
 
@@ -295,7 +290,7 @@ func TestStore_ConcurrentAccess(_ *testing.T) {
 					[]byte("test content"),
 				)
 				store.Put(key, "user")
-				store.GetAndDelete(key)
+				store.Get(key) // Can be called multiple times
 			}
 		}(i)
 	}
@@ -320,9 +315,9 @@ func TestStore_EvictionCallback(t *testing.T) {
 	store.Put("key3", "user3") // Evicts key1
 	assert.Equal(t, 1, evictionCount, "LRU eviction should trigger callback")
 
-	// TTL eviction via GetAndDelete
+	// TTL eviction via Get (expired entry accessed)
 	time.Sleep(ttl + 20*time.Millisecond)
-	_, found := store.GetAndDelete("key2") // Should be expired
+	_, found := store.Get("key2") // Should be expired and trigger eviction
 	assert.False(t, found)
 	assert.Equal(t, 2, evictionCount, "TTL eviction should trigger callback")
 

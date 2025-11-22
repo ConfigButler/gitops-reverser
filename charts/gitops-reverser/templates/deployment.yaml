@@ -43,6 +43,8 @@ spec:
             - --leader-elect
             {{- end }}
             - --health-probe-bind-address=:8081
+            - --metrics-bind-address=:8080
+            - --metrics-secure=false
             - --webhook-cert-path={{ .Values.webhook.server.certPath }}
             - --webhook-cert-name={{ .Values.webhook.server.certName }}
             - --webhook-cert-key={{ .Values.webhook.server.certKey }}

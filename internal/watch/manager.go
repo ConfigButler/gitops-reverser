@@ -337,7 +337,7 @@ func (m *Manager) tryEnrichFromCorrelation(
 	}
 
 	key := correlation.GenerateKey(id, operation, sanitizedYAML)
-	entry, found := m.CorrelationStore.GetAndDelete(key)
+	entry, found := m.CorrelationStore.Get(key)
 	if !found {
 		metrics.EnrichMissesTotal.Add(ctx, 1)
 		log.V(1).Info("No correlation match", "identifier", id.String(), "key", key)
