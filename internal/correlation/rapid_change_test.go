@@ -33,10 +33,10 @@ import (
 // - User B changes spec to {"cool": true}
 // - User A changes spec to {"cool": false} (same content as first change)
 //
-// With single entry per key, the last user wins.
-// - Watch event 1 (false) -> attributed to user A (last for that key)
+// With single entry per key, the first user wins.
+// - Watch event 1 (false) -> attributed to user B (first for that key)
 // - Watch event 2 (true) -> attributed to user B
-// - Watch event 3 (false) -> miss (already consumed)
+// - Watch event 3 (false) -> attributed to user B (same entry)
 //
 // This tests the store's single entry handling of rapid changes.
 func TestStore_RapidChangesWithContentReuse(t *testing.T) {
@@ -83,8 +83,8 @@ spec:
 	// Watch event 1: spec changed to false
 	entry1, found1 := store.Get(key1)
 	require.True(t, found1, "First watch event should find correlation entry")
-	assert.Equal(t, "userA", entry1.Username,
-		"Should get the last user for false")
+	assert.Equal(t, "userB", entry1.Username,
+		"Should get the first user for false")
 
 	// Watch event 2: spec changed to true
 	entry2, found2 := store.Get(key2)
@@ -94,7 +94,7 @@ spec:
 	// Watch event 3: spec changed to false (can be accessed multiple times)
 	entry3, found3 := store.Get(key3)
 	require.True(t, found3, "Third watch should still find correlation")
-	assert.Equal(t, "userA", entry3.Username, "Should still get userA")
+	assert.Equal(t, "userB", entry3.Username, "Should still get userB")
 }
 
 // TestStore_QueueSolution demonstrates a potential solution using multi-value queues.

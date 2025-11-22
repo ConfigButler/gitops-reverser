@@ -129,18 +129,18 @@ func TestStore_BasicPutAndGet(t *testing.T) {
 	assert.Equal(t, username, entry2.Username, "Username should still match")
 }
 
-// TestStore_UpdateExisting verifies overwrite behavior for same key.
+// TestStore_UpdateExisting verifies that existing entries are not overwritten with different users.
 func TestStore_UpdateExisting(t *testing.T) {
 	store := NewStore(60*time.Second, 100)
 	key := "test/key"
 
 	store.Put(key, "alice")
-	store.Put(key, "bob") // Overwrites with warning log
+	store.Put(key, "bob") // Does not overwrite, logs info
 
-	// Get returns the overwritten entry
+	// Get returns the original entry
 	entry, found := store.Get(key)
 	require.True(t, found, "Entry should be found")
-	assert.Equal(t, "bob", entry.Username, "Should return the overwritten username")
+	assert.Equal(t, "alice", entry.Username, "Should return the original username")
 	assert.Equal(t, 1, store.Size(), "Store should still have the entry after Get")
 }
 
@@ -210,8 +210,8 @@ func TestStore_LRUUpdateRefreshes(t *testing.T) {
 	store.Put("key1", "user1")
 	store.Put("key2", "user2")
 
-	// Update key1 - should move it to front
-	store.Put("key1", "user1-updated")
+	// Update key1 with same user - should move it to front
+	store.Put("key1", "user1")
 
 	// Add key3 - should evict key2 (oldest), not key1
 	store.Put("key3", "user3")

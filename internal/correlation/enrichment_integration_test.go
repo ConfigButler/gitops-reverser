@@ -302,27 +302,27 @@ func TestEnrichment_RapidContentOscillation(t *testing.T) {
 	assert.Equal(t, key5, key5Again, "Same content should produce same key")
 
 	// Watch events arrive in order (delayed processing)
-	// Watch 1: replicas=3 (gets the last user for this key)
+	// Watch 1: replicas=3 (gets the first user for this key)
 	entry1, found1 := store.Get(key3)
 	require.True(t, found1, "First watch should find correlation")
-	assert.Equal(t, "charlie", entry1.Username, "Should get the last user for replicas=3")
+	assert.Equal(t, "alice", entry1.Username, "Should get the first user for replicas=3")
 
-	// Watch 2: replicas=5 (gets the last user for this key)
+	// Watch 2: replicas=5 (gets the first user for this key)
 	entry2, found2 := store.Get(key5)
 	require.True(t, found2, "Second watch should find correlation")
-	assert.Equal(t, "dave", entry2.Username, "Should get the last user for replicas=5")
+	assert.Equal(t, "bob", entry2.Username, "Should get the first user for replicas=5")
 
 	// Watch 3: replicas=3 (can be accessed multiple times)
 	entry3, found3 := store.Get(key3)
 	require.True(t, found3, "Third watch should still find correlation")
-	assert.Equal(t, "charlie", entry3.Username, "Should still get the last user for replicas=3")
+	assert.Equal(t, "alice", entry3.Username, "Should still get the first user for replicas=3")
 
 	// Watch 4: replicas=5 (can be accessed multiple times)
 	entry4, found4 := store.Get(key5)
 	require.True(t, found4, "Fourth watch should still find correlation")
-	assert.Equal(t, "dave", entry4.Username, "Should still get the last user for replicas=5")
+	assert.Equal(t, "bob", entry4.Username, "Should still get the first user for replicas=5")
 
-	t.Log("✓ Watch events get the last user per key, single entry behavior with multiple access")
+	t.Log("✓ Watch events get the first user per key, single entry behavior with multiple access")
 }
 
 // TestEnrichment_MixedHitsAndMisses validates metrics tracking.

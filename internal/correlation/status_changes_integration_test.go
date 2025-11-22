@@ -132,12 +132,12 @@ func TestStatusOnlyChanges_CorrelationBehavior(t *testing.T) {
 	t.Log("")
 	t.Log("=== Phase 2: Correlation Store State ===")
 	t.Logf("  Total correlation entries: %d", store.Size())
-	t.Log("  Expected: 1 entry (last user wins)")
+	t.Log("  Expected: 1 entry (first user wins)")
 
 	// Since all keys are identical, store has:
 	// - 1 unique key
-	// - 1 entry (overwritten by each put)
-	assert.Equal(t, 1, store.Size(), "only last status update stored (single entry)")
+	// - 1 entry (first put wins, subsequent ignored)
+	assert.Equal(t, 1, store.Size(), "only first status update stored (single entry)")
 
 	t.Log("")
 	t.Log("=== Phase 3: Watch informer fires (simulating actual cluster changes) ===")
@@ -162,33 +162,33 @@ func TestStatusOnlyChanges_CorrelationBehavior(t *testing.T) {
 	t.Logf("  Retrieved usernames: %v", retrievedUsernames)
 	t.Log("")
 
-	// With single entry, all watch events get the last user (can be accessed multiple times)
+	// With single entry, all watch events get the first user (can be accessed multiple times)
 	expectedUsernames := []string{
-		"user5@example.com", // Last user (overwrites previous)
-		"user5@example.com", // Same entry accessible multiple times
-		"user5@example.com", // Same entry accessible multiple times
-		"user5@example.com", // Same entry accessible multiple times
-		"user5@example.com", // Same entry accessible multiple times
+		"user1@example.com", // First user (subsequent puts ignored)
+		"user1@example.com", // Same entry accessible multiple times
+		"user1@example.com", // Same entry accessible multiple times
+		"user1@example.com", // Same entry accessible multiple times
+		"user1@example.com", // Same entry accessible multiple times
 	}
 
 	assert.Equal(t, expectedUsernames, retrievedUsernames,
-		"All watch events get enriched with last user")
+		"All watch events get enriched with first user")
 
 	// Store should still have the entry
 	assert.Equal(t, 1, store.Size(), "correlation entry remains accessible")
 
 	t.Log("")
 	t.Log("=== Conclusion ===")
-	t.Log("  • Webhook overwrites correlation entry for same key")
-	t.Log("  • Only last user is stored (single entry)")
+	t.Log("  • Webhook ignores correlation entry for same key if already claimed")
+	t.Log("  • Only first user is stored (single entry)")
 	t.Log("  • Watch fires 5 times (one per actual status change)")
-	t.Log("  • All watch events get enriched with last user")
+	t.Log("  • All watch events get enriched with first user")
 	t.Log("  • Result: 5 events enriched with same user")
 	t.Log("")
 	t.Log("  SOLUTION: Status-only changes naturally deduplicated!")
 	t.Log("  • Same sanitized content (spec unchanged)")
 	t.Log("  • Single entry prevents multiple commits")
-	t.Log("  • Only last status change is recorded in Git")
+	t.Log("  • Only first status change is recorded in Git")
 	t.Log("")
 	t.Log("  ✓ Simplified store solves the deduplication problem")
 }

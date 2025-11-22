@@ -134,8 +134,12 @@ func GenerateKey(id types.ResourceIdentifier, operation string, sanitizedYAML []
 }
 
 // Put stores a correlation entry for the given key.
-// If the key already exists with a different username, logs a warning.
-// Overwrites the existing entry.
+// If the key already exists and is not expired:
+//   - If the username matches, updates the timestamp.
+//   - If the username differs, logs an info message and ignores the update.
+//
+// If the key exists but is expired, overwrites the entry.
+// If the key does not exist, creates a new entry.
 func (s *Store) Put(key string, username string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -148,21 +152,31 @@ func (s *Store) Put(key string, username string) {
 
 	// Check if key already exists
 	if existing, exists := s.entries[key]; exists {
+		if time.Since(existing.Timestamp) > s.ttl {
+			// Entry is expired, overwrite
+			s.entries[key] = entry
+			s.lruList.MoveToFront(s.lruMap[key])
+			return
+		}
+		// Entry is not expired
 		if existing.Username != username {
-			s.logger.WarnContext(
+			// Different user, ignore and log info
+			s.logger.InfoContext(
 				context.Background(),
-				"wrong user might be added",
+				"ignoring user attribution since it was already claimed",
 				"key",
 				key,
-				"old_user",
+				"existing_user",
 				existing.Username,
-				"new_user",
+				"attempted_user",
 				username,
 			)
+			// Still move to front for LRU
+			s.lruList.MoveToFront(s.lruMap[key])
+			return
 		}
-		// Overwrite existing entry
+		// Same user, update timestamp
 		s.entries[key] = entry
-		// Move to front of LRU list (this key was accessed)
 		s.lruList.MoveToFront(s.lruMap[key])
 		return
 	}
