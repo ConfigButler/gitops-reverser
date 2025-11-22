@@ -9,4 +9,4 @@ roleRef:
 subjects:
 - apiGroup: rbac.authorization.k8s.io
   kind: User
-  name: jane.dev@configbutler.ai
+  name: jane@acme.com

@@ -515,7 +515,7 @@ var _ = Describe("Manager", Ordered, func() {
 				"test/e2e/templates/configmap.tmpl",
 				configMapData,
 				namespace,
-				"--as=jane.dev@configbutler.ai", // Important: we validate later if the user is included in the git commit!
+				"--as=jane@acme.com", // Important: we validate later if the user is included in the git commit!
 			)
 			Expect(err3).NotTo(HaveOccurred(), "Failed to apply ConfigMap")
 
@@ -588,7 +588,7 @@ var _ = Describe("Manager", Ordered, func() {
 				}
 
 				author := string(authorMsg)
-				g.Expect(author).To(ContainSubstring("jane.dev@configbutler.ai"))
+				g.Expect(author).To(ContainSubstring("jane@acme.com"))
 			}
 			Eventually(verifyGitCommit, 10*time.Second, 1*time.Second).Should(Succeed())
 

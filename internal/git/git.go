@@ -774,7 +774,7 @@ func createCommitForEvent(worktree *git.Worktree, event Event) (plumbing.Hash, e
 	return worktree.Commit(commitMessage, &git.CommitOptions{
 		Author: &object.Signature{
 			Name:  event.UserInfo.Username,
-			Email: ConstructSafeEmail(event.UserInfo.Username, "configbutler.ai"),
+			Email: ConstructSafeEmail(event.UserInfo.Username, "cluster.local"),
 			When:  time.Now(),
 		},
 		Committer: &object.Signature{
@@ -808,6 +808,12 @@ func initializeCleanRepository(repoPath string, logger logr.Logger) (*git.Reposi
 // ConstructSafeEmail takes a raw username and a domain and creates a valid
 // git-compliant email address.
 func ConstructSafeEmail(username string, domain string) string {
+	// Check if username is already a valid email address
+	emailRegex := regexp.MustCompile(`^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$`)
+	if emailRegex.MatchString(username) {
+		return username
+	}
+
 	// 1. Convert to lowercase
 	clean := strings.ToLower(username)
 
