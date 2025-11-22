@@ -26,6 +26,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -310,10 +311,9 @@ func switchOrCreateBranch(
 
 // GetCommitMessage returns a structured commit message for the given event.
 func GetCommitMessage(event Event) string {
-	return fmt.Sprintf("[%s] %s by user/%s",
+	return fmt.Sprintf("[%s] %s",
 		event.Operation,
 		event.Identifier.String(),
-		event.UserInfo.Username,
 	)
 }
 
@@ -773,8 +773,13 @@ func createCommitForEvent(worktree *git.Worktree, event Event) (plumbing.Hash, e
 	commitMessage := GetCommitMessage(event)
 	return worktree.Commit(commitMessage, &git.CommitOptions{
 		Author: &object.Signature{
+			Name:  event.UserInfo.Username,
+			Email: ConstructSafeEmail(event.UserInfo.Username, "configbutler.ai"),
+			When:  time.Now(),
+		},
+		Committer: &object.Signature{
 			Name:  "GitOps Reverser",
-			Email: "gitops-reverser@configbutler.ai",
+			Email: "noreply@configbutler.ai",
 			When:  time.Now(),
 		},
 	})
@@ -798,4 +803,26 @@ func initializeCleanRepository(repoPath string, logger logr.Logger) (*git.Reposi
 	}
 
 	return repo, nil
+}
+
+// ConstructSafeEmail takes a raw username and a domain and creates a valid
+// git-compliant email address.
+func ConstructSafeEmail(username string, domain string) string {
+	// 1. Convert to lowercase
+	clean := strings.ToLower(username)
+
+	// 2. Remove anything that isn't alphanumeric, a dot, or a hyphen.
+	// This prevents spaces or weird symbols from breaking the Git header.
+	reg := regexp.MustCompile(`[^a-z0-9\.\-]`)
+	clean = reg.ReplaceAllString(clean, "")
+
+	// 3. Fallback: If the username was entirely special chars (e.g. "!!!"),
+	// provide a fallback so the email isn't empty.
+	if clean == "" {
+		clean = "unknown-user"
+	}
+
+	// 4. Construct the email
+	// Using "noreply" is a standard convention for system-generated attribution.
+	return fmt.Sprintf("%s@noreply.%s", clean, domain)
 }

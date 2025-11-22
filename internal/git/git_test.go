@@ -217,7 +217,7 @@ func TestGetCommitMessage_CreateOperation(t *testing.T) {
 	}
 
 	message := GetCommitMessage(event)
-	expected := "[CREATE] v1/pods/test-pod by user/john.doe@example.com"
+	expected := "[CREATE] v1/pods/test-pod"
 	assert.Equal(t, expected, message)
 }
 
@@ -244,7 +244,7 @@ func TestGetCommitMessage_UpdateOperation(t *testing.T) {
 	}
 
 	message := GetCommitMessage(event)
-	expected := "[UPDATE] v1/services/my-service by user/system:serviceaccount:kube-system:deployment-controller"
+	expected := "[UPDATE] v1/services/my-service"
 	assert.Equal(t, expected, message)
 }
 
@@ -271,7 +271,7 @@ func TestGetCommitMessage_DeleteOperation(t *testing.T) {
 	}
 
 	message := GetCommitMessage(event)
-	expected := "[DELETE] v1/configmaps/old-config by user/admin"
+	expected := "[DELETE] v1/configmaps/old-config"
 	assert.Equal(t, expected, message)
 }
 
@@ -297,7 +297,7 @@ func TestGetCommitMessage_ClusterScopedResource(t *testing.T) {
 	}
 
 	message := GetCommitMessage(event)
-	expected := "[CREATE] v1/namespaces/my-namespace by user/cluster-admin"
+	expected := "[CREATE] v1/namespaces/my-namespace"
 	assert.Equal(t, expected, message)
 }
 
@@ -324,7 +324,7 @@ func TestGetCommitMessage_EmptyUsername(t *testing.T) {
 	}
 
 	message := GetCommitMessage(event)
-	expected := "[CREATE] v1/pods/test-pod by user/"
+	expected := "[CREATE] v1/pods/test-pod"
 	assert.Equal(t, expected, message)
 }
 
@@ -351,7 +351,7 @@ func TestGetCommitMessage_SpecialCharactersInNames(t *testing.T) {
 	}
 
 	message := GetCommitMessage(event)
-	expected := "[UPDATE] v1/pods/test-pod.with.dots by user/user@domain.com"
+	expected := "[UPDATE] v1/pods/test-pod.with.dots"
 	assert.Equal(t, expected, message)
 }
 
@@ -474,7 +474,7 @@ func TestIntegration_FilePathAndCommitMessage(t *testing.T) {
 	commitMessage := GetCommitMessage(event)
 
 	expectedPath := "v1/pods/integration-test/integration-test-pod.yaml"
-	expectedMessage := "[CREATE] v1/pods/integration-test-pod by user/integration-test-user"
+	expectedMessage := "[CREATE] v1/pods/integration-test-pod"
 
 	assert.Equal(t, expectedPath, filePath)
 	assert.Equal(t, expectedMessage, commitMessage)
@@ -520,7 +520,7 @@ func TestCommitMessage_AllOperations(t *testing.T) {
 			}
 
 			message := GetCommitMessage(event)
-			expected := "[" + op + "] v1/testkinds/test-resource by user/test-user"
+			expected := "[" + op + "] v1/testkinds/test-resource"
 			assert.Equal(t, expected, message)
 		})
 	}
@@ -662,21 +662,21 @@ func TestDeleteOperation_CommitMessageFormat(t *testing.T) {
 			namespace: "staging",
 			resource:  "configmaps",
 			username:  "developer",
-			expected:  "[DELETE] v1/configmaps/app-config by user/developer",
+			expected:  "[DELETE] v1/configmaps/app-config",
 		},
 		{
 			name:      "db-secret",
 			namespace: "production",
 			resource:  "secrets",
 			username:  "admin",
-			expected:  "[DELETE] v1/secrets/db-secret by user/admin",
+			expected:  "[DELETE] v1/secrets/db-secret",
 		},
 		{
 			name:      "web-deployment",
 			namespace: "default",
 			resource:  "deployments",
 			username:  "system:serviceaccount:kube-system:deployment-controller",
-			expected:  "[DELETE] apps/v1/deployments/web-deployment by user/system:serviceaccount:kube-system:deployment-controller",
+			expected:  "[DELETE] apps/v1/deployments/web-deployment",
 		},
 	}
 
@@ -743,7 +743,7 @@ func TestDeleteOperation_ClusterScoped(t *testing.T) {
 
 	// Verify commit message
 	commitMessage := GetCommitMessage(event)
-	assert.Equal(t, "[DELETE] v1/namespaces/test-namespace by user/cluster-admin", commitMessage)
+	assert.Equal(t, "[DELETE] v1/namespaces/test-namespace", commitMessage)
 }
 
 func TestBatchOperations_MultipleDeletes(t *testing.T) {
