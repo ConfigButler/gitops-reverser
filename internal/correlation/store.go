@@ -26,6 +26,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -136,7 +137,7 @@ func GenerateKey(id types.ResourceIdentifier, operation string, sanitizedYAML []
 // Put stores a correlation entry for the given key.
 // If the key already exists and is not expired:
 //   - If the username matches, updates the timestamp.
-//   - If the username differs, logs an info message and ignores the update.
+//   - If the username differs and existing is not empty or system:node, logs an info message and ignores the update.
 //
 // If the key exists but is expired, overwrites the entry.
 // If the key does not exist, creates a new entry.
@@ -159,8 +160,9 @@ func (s *Store) Put(key string, username string) {
 			return
 		}
 		// Entry is not expired
-		if existing.Username != username && existing.Username != "" {
-			// Different user and existing is not empty, ignore and log info
+		if existing.Username != username && existing.Username != "" &&
+			!strings.HasPrefix(existing.Username, "system:node") {
+			// Different user and existing is not empty or system:node, ignore and log info
 			s.logger.InfoContext(
 				context.Background(),
 				"ignoring user attribution since it was already claimed",
@@ -175,7 +177,7 @@ func (s *Store) Put(key string, username string) {
 			s.lruList.MoveToFront(s.lruMap[key])
 			return
 		}
-		// Same user or existing is empty, update/overwrite
+		// Same user or existing is empty or system:node, update/overwrite
 		s.entries[key] = entry
 		s.lruList.MoveToFront(s.lruMap[key])
 		return
