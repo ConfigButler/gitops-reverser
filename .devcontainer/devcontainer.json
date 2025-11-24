@@ -14,7 +14,8 @@
     "ghcr.io/devcontainers/features/docker-in-docker:2": {
       "moby": false,
       "dockerDashComposeVersion": "v2"
-    }
+    },
+    "ghcr.io/devcontainers/features/git:1": {}
   },
   "runArgs": [
     "--network=host",
@@ -67,6 +68,5 @@
     "source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind"
   ],
   "containerEnv": {
-    "DOCKER_API_VERSION": "1.43"
   }
 }
