@@ -45,4 +45,3 @@ Recent tests shown:
 * We need a nice way to filder the configmap that k8s creates in every namespace: the public key thingy. Or should we meak the neat functonality better for this? Detect specials that are not cluster independent.
 * Think about a mechanism to influence the folder where the resources are written; also support multiple resources per file?
 * Create a single commit for the first reconcile: e.g. when the repo has been disconnected from realiy for a while.
-
