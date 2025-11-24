@@ -144,6 +144,30 @@ func TestStore_UpdateExisting(t *testing.T) {
 	assert.Equal(t, 1, store.Size(), "Store should still have the entry after Get")
 }
 
+// TestStore_OverwriteEmptyUsername verifies that empty username attributions can be overwritten.
+func TestStore_OverwriteEmptyUsername(t *testing.T) {
+	store := NewStore(60*time.Second, 100)
+	key := "test/key"
+
+	// Put empty username first
+	store.Put(key, "")
+	entry1, found1 := store.Get(key)
+	require.True(t, found1, "Entry should be found")
+	assert.Empty(t, entry1.Username, "Should have empty username")
+
+	// Put real username - should overwrite
+	store.Put(key, "alice")
+	entry2, found2 := store.Get(key)
+	require.True(t, found2, "Entry should still be found")
+	assert.Equal(t, "alice", entry2.Username, "Should be overwritten with real username")
+
+	// Now that it's claimed by alice, bob should not overwrite
+	store.Put(key, "bob")
+	entry3, found3 := store.Get(key)
+	require.True(t, found3, "Entry should still be found")
+	assert.Equal(t, "alice", entry3.Username, "Should not be overwritten by different user")
+}
+
 // TestStore_TTLExpiry verifies entries expire after TTL.
 func TestStore_TTLExpiry(t *testing.T) {
 	ttl := 100 * time.Millisecond

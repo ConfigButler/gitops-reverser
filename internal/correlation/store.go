@@ -159,8 +159,8 @@ func (s *Store) Put(key string, username string) {
 			return
 		}
 		// Entry is not expired
-		if existing.Username != username {
-			// Different user, ignore and log info
+		if existing.Username != username && existing.Username != "" {
+			// Different user and existing is not empty, ignore and log info
 			s.logger.InfoContext(
 				context.Background(),
 				"ignoring user attribution since it was already claimed",
@@ -175,7 +175,7 @@ func (s *Store) Put(key string, username string) {
 			s.lruList.MoveToFront(s.lruMap[key])
 			return
 		}
-		// Same user, update timestamp
+		// Same user or existing is empty, update/overwrite
 		s.entries[key] = entry
 		s.lruList.MoveToFront(s.lruMap[key])
 		return
