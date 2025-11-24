@@ -9,7 +9,12 @@
 
 # GitOps Reverser
 
-GitOps Reverser is a Kubernetes operator that turns live API activity into clean, versioned YAML in Git. It receives events from the Kubernetes API server, sanitizes them, and commits them to your repository with rich metadata. This results in a folder with YAML files that can be deployed to any cluster. The commit history is your perfect audit trail.
+GitOps Reverser is a Kubernetes operator that turns live API activity into clean, versioned YAML in Git. It results in a folder with YAML files that can be deployed to any cluster. The commit history is your perfect audit trail.
+
+<div align="center"> <img src="docs/demo/demo.gif" alt="GitOps Reverser Demo" width="100%"> </div>
+<p>
+
+Want to see the evidence? You can find the [commit](https://github.com/ConfigButler/example-audit/commit/800a51e5a8edcccbc85c94d5fef7ef7cc8381b7b) in [ConfigButler/example-audit](https://github.com/ConfigButler/example-audit).
 
 ## Why
 
