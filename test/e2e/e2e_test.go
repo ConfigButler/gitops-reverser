@@ -1199,6 +1199,8 @@ var _ = Describe("Manager", Ordered, func() {
 			By("creating ClusterWatchRule with Cluster scope for CRDs")
 			destName := clusterWatchRuleName + "-dest"
 			createGitDestination(destName, namespace, gitRepoConfigName, "e2e/crd-delete-test", "main")
+			verifyResourceStatus("gitdestination", destName, namespace, "True", "Ready", "")
+
 			clusterWatchRuleData := struct {
 				Name            string
 				DestinationName string
@@ -1213,6 +1215,7 @@ var _ = Describe("Manager", Ordered, func() {
 			Expect(err).NotTo(HaveOccurred(), "Failed to apply ClusterWatchRule for CRDs")
 
 			By("verifying ClusterWatchRule is ready")
+
 			verifyResourceStatus("clusterwatchrule", clusterWatchRuleName, "", "True", "Ready", "")
 
 			By("verifying CRD file exists in Git before deletion")
