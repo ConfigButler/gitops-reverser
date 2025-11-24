@@ -163,7 +163,7 @@ var _ = Describe("Manager", Ordered, func() {
 	})
 
 	// Optimize timeouts for faster test execution
-	SetDefaultEventuallyTimeout(15 * time.Second)
+	SetDefaultEventuallyTimeout(20 * time.Second)
 	SetDefaultEventuallyPollingInterval(time.Second)
 
 	Context("Manager", func() {

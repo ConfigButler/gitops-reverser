@@ -168,6 +168,30 @@ func TestStore_OverwriteEmptyUsername(t *testing.T) {
 	assert.Equal(t, "alice", entry3.Username, "Should not be overwritten by different user")
 }
 
+// TestStore_OverwriteSystemNodeUsername verifies that system:node username attributions can be overwritten.
+func TestStore_OverwriteSystemNodeUsername(t *testing.T) {
+	store := NewStore(60*time.Second, 100)
+	key := "test/key"
+
+	// Put system:node username first
+	store.Put(key, "system:node:worker-1")
+	entry1, found1 := store.Get(key)
+	require.True(t, found1, "Entry should be found")
+	assert.Equal(t, "system:node:worker-1", entry1.Username, "Should have system:node username")
+
+	// Put real username - should overwrite
+	store.Put(key, "alice")
+	entry2, found2 := store.Get(key)
+	require.True(t, found2, "Entry should still be found")
+	assert.Equal(t, "alice", entry2.Username, "Should be overwritten with real username")
+
+	// Now that it's claimed by alice, bob should not overwrite
+	store.Put(key, "bob")
+	entry3, found3 := store.Get(key)
+	require.True(t, found3, "Entry should still be found")
+	assert.Equal(t, "alice", entry3.Username, "Should not be overwritten by different user")
+}
+
 // TestStore_TTLExpiry verifies entries expire after TTL.
 func TestStore_TTLExpiry(t *testing.T) {
 	ttl := 100 * time.Millisecond
