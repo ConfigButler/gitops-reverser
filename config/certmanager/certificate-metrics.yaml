@@ -18,3 +18,5 @@ spec:
     kind: Issuer
     name: selfsigned-issuer
   secretName: metrics-server-cert
+  privateKey:
+    rotationPolicy: Always

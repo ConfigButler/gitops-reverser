@@ -31,4 +31,6 @@ spec:
     - digital signature
     - key encipherment
     - server auth
+  privateKey:
+    rotationPolicy: Always
 {{- end }}
