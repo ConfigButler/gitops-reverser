@@ -86,15 +86,6 @@ RUN mkdir -p /tmp/golangci-init && cd /tmp/golangci-init \
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Verify installations
-RUN echo "=== Tool Versions ===" \
-    && go version \
-    && kubectl version --client \
-    && kustomize version \
-    && kubebuilder version \
-    && helm version \
-    && golangci-lint version
-
 # Switch back to dialog for any ad-hoc use of apt-get
 ENV DEBIAN_FRONTEND=dialog
 
@@ -112,8 +103,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 # Install Kind (for local Kubernetes clusters)
 # Docker is provided by devcontainer.json docker-in-docker feature
 ENV KIND_VERSION=v0.30.0
-RUN curl -Lo /usr/local/bin/kind https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64 \
-    && chmod +x /usr/local/bin/kind
+RUN curl -Lo /usr/local/bin/kind https://github.com/kubernetes-sigs/kind/releases/download/${KIND_VERSION}/kind-linux-amd64                                 
+RUN chmod +x /usr/local/bin/kind
 
 # Install Delve debugger for Go debugging in VSCode
 # ACLs from CI stage should be preserved, so no need to re-apply

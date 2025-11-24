@@ -210,6 +210,7 @@ func createGitDestination(name, namespace, repoConfigName, baseFolder, branch st
 	}
 
 	err := applyFromTemplate("test/e2e/templates/gitdestination.tmpl", data, namespace)
+
 	Expect(err).NotTo(HaveOccurred(), "Failed to apply GitDestination")
 }
 

@@ -17,7 +17,6 @@ New questions:
 * Is there to much code duplication between clusterwatchrule and watchrule?
 * Add a default business rule that Config resources are not written to disk: these should never be in git. Have an example on the frontpage on how to use sealedSecrets for now: that's a nice start and will just make sure that it's safe (perhaps something better later). We could add an exception as a commandline flag: people that want to do bad should not be blocked in doing so. :-)
 * Check if we are still in line witht the [Kubebuilder stuff](https://book.kubebuilder.io/architecture), I noticed that my PROJECT file does not seem up2date. Should it be gone at some point in time?
-* Have a way to influence where files resources are stored (why not having multiple resources in one file?)
 * Improve README.m
   * Better explaination of configuration of this tool: one GitRepoConfig per repo, security considerations (namespace or non namespace etc), storeRawConfigmaps (default false).
 * There is no time in the admission request: we should add the time received as soon as possible and also put that as commit time (if we can override that).
@@ -31,8 +30,18 @@ New questions:
 * Also implement the check on repo level: it's very annoying if two git objects are pushing to the same repo (I think that I had troubles with that today).
   * How can I now if it's the same repo? Only be adding a file? There should be a lock of some kind.
 * I would like better metrics and a visual of the current queues / how full they are. Also more tests on high load.
-* Create a single commit for the first reconcile: e.g. when the repo has been disconnected from realiy for a while.
 * Improve seeding as written here: [](docs/seed-removal-and-reconciler-triggers-plan.md), potenially also send the hash in the event so that we don't need to do it on multiple places
 * The clenup of gitdestination in memory is not really working as expected (I still logs in the end2end test end).
 * https://www.bestpractices.dev/en
   * Analyse better what porch was doing, and mention it as alternative: 
+
+---
+
+Recent tests shown:
+
+* It's really hard to get the username for the rescaling: I can't get it to work properly on k3s -> I had to removed the advancd queue stuff, since it's useless if multiple calls are done anyway.
+  * So it's really time to replace the mechanisms
+* The gitdestination is not handling the first sync very well: I still notice an error the first time new events have to be pushed (tehnically it's designed to work and not loose things, but it would be nicer to do the right init).
+* We need a nice way to filder the configmap that k8s creates in every namespace: the public key thingy. Or should we meak the neat functonality better for this? Detect specials that are not cluster independent.
+* Think about a mechanism to influence the folder where the resources are written; also support multiple resources per file?
+* Create a single commit for the first reconcile: e.g. when the repo has been disconnected from realiy for a while.
