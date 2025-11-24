@@ -164,7 +164,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 	// Optimize timeouts for faster test execution
 	SetDefaultEventuallyTimeout(
-		30 * time.Second,
+		10 * time.Second,
 	) // Increased for reliability but still faster than before
 	SetDefaultEventuallyPollingInterval(500 * time.Millisecond) // Faster polling
 
@@ -531,7 +531,7 @@ var _ = Describe("Manager", Ordered, func() {
 				g.Expect(output).To(ContainSubstring("git commit"),
 					"Should see git commit operation in logs from leader pod")
 			}
-			Eventually(verifyReconciliationLogs, 45*time.Second, 2*time.Second).Should(Succeed())
+			Eventually(verifyReconciliationLogs).Should(Succeed())
 
 			By("verifying ConfigMap YAML file exists in Gitea repository")
 			verifyGitCommit := func(g Gomega) {
@@ -590,7 +590,7 @@ var _ = Describe("Manager", Ordered, func() {
 				author := string(authorMsg)
 				g.Expect(author).To(ContainSubstring("jane@acme.com"))
 			}
-			Eventually(verifyGitCommit, 10*time.Second, 1*time.Second).Should(Succeed())
+			Eventually(verifyGitCommit).Should(Succeed())
 
 			By("cleaning up test resources")
 			cmd := exec.Command("kubectl", "delete", "configmap", configMapName, "-n", namespace)
@@ -659,7 +659,7 @@ var _ = Describe("Manager", Ordered, func() {
 				g.Expect(statErr).NotTo(HaveOccurred(), fmt.Sprintf("ConfigMap file should exist at %s", expectedFile))
 				g.Expect(fileInfo.Size()).To(BeNumerically(">", 0), "ConfigMap file should not be empty")
 			}
-			Eventually(verifyFileCreated, 30*time.Second, 5*time.Second).Should(Succeed())
+			Eventually(verifyFileCreated).Should(Succeed())
 
 			By("deleting the ConfigMap to trigger DELETE operation")
 			cmd := exec.Command("kubectl", "delete", "configmap", configMapName, "-n", namespace)
@@ -695,7 +695,7 @@ var _ = Describe("Manager", Ordered, func() {
 				g.Expect(string(logOutput)).To(ContainSubstring("DELETE"),
 					"Git log should contain DELETE operation")
 			}
-			Eventually(verifyFileDeleted, 30*time.Second, 5*time.Second).Should(Succeed())
+			Eventually(verifyFileDeleted).Should(Succeed())
 
 			By("cleaning up test resources")
 			cleanupWatchRule(watchRuleName, namespace)
@@ -744,7 +744,7 @@ var _ = Describe("Manager", Ordered, func() {
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(Equal("True"))
 			}
-			Eventually(verifyCRDEstablished, 30*time.Second, time.Second).Should(Succeed())
+			Eventually(verifyCRDEstablished).Should(Succeed())
 
 			By("verifying CRD YAML file exists in Git repository (NO namespace in path - cluster resource)")
 			verifyGitCommit := func(g Gomega) {
@@ -772,7 +772,7 @@ var _ = Describe("Manager", Ordered, func() {
 				g.Expect(string(content)).To(ContainSubstring("name: icecreamorders.shop.example.com"),
 					"File should contain CRD name")
 			}
-			Eventually(verifyGitCommit, 180*time.Second, 5*time.Second).Should(Succeed())
+			Eventually(verifyGitCommit).Should(Succeed())
 
 			By("cleaning up test resources")
 			cleanupClusterWatchRule(clusterWatchRuleName)
@@ -928,7 +928,7 @@ var _ = Describe("Manager", Ordered, func() {
 				g.Expect(contentStr).NotTo(ContainSubstring("status:"),
 					"CRD instance file should NOT contain status field")
 			}
-			Eventually(verifyGitCommit, 180*time.Second, 5*time.Second).Should(Succeed())
+			Eventually(verifyGitCommit).Should(Succeed())
 
 			By("applying status update to the IceCreamOrder CR")
 			statusPatch := `{"status":{"orderStatus":"pending","preparationTime":"5m","totalPrice":"$12.50"}}`
@@ -976,7 +976,7 @@ var _ = Describe("Manager", Ordered, func() {
 				g.Expect(string(content)).NotTo(ContainSubstring("orderStatus"),
 					"CRD instance file should NOT contain status content")
 			}
-			Eventually(verifyStatusNotCommitted, 30*time.Second, 2*time.Second).Should(Succeed())
+			Eventually(verifyStatusNotCommitted).Should(Succeed())
 
 			By("✅ Status update verified - no Git commit created and status not in file")
 
@@ -1157,7 +1157,7 @@ var _ = Describe("Manager", Ordered, func() {
 					NotTo(HaveOccurred(), fmt.Sprintf("CRD instance file should exist at %s", expectedFile))
 				g.Expect(fileInfo.Size()).To(BeNumerically(">", 0), "CRD instance file should not be empty")
 			}
-			Eventually(verifyFileCreated, 30*time.Second, 5*time.Second).Should(Succeed())
+			Eventually(verifyFileCreated).Should(Succeed())
 
 			By("deleting the CR to trigger DELETE operation")
 			cmd := exec.Command("kubectl", "delete", "icecreamorder", crdInstanceName, "-n", namespace)
@@ -1186,7 +1186,7 @@ var _ = Describe("Manager", Ordered, func() {
 				g.Expect(string(logOutput)).To(ContainSubstring("DELETE"),
 					"Git log should contain DELETE operation")
 			}
-			Eventually(verifyFileDeleted, 30*time.Second, 5*time.Second).Should(Succeed())
+			Eventually(verifyFileDeleted).Should(Succeed())
 
 			By("✅ IceCreamOrder deletion E2E test passed")
 			fmt.Printf("✅ IceCreamOrder '%s' deletion successfully removed file from Git repo '%s'\n",
@@ -1229,7 +1229,7 @@ var _ = Describe("Manager", Ordered, func() {
 				_, statErr := os.Stat(expectedFile)
 				g.Expect(statErr).NotTo(HaveOccurred(), "CRD file should exist before deletion")
 			}
-			Eventually(verifyFileExists, 60*time.Second, 5*time.Second).Should(Succeed())
+			Eventually(verifyFileExists).Should(Succeed())
 
 			By("deleting the CRD to trigger DELETE operation")
 			deleteCmd := exec.Command("kubectl", "delete", "crd", crdName)
@@ -1256,7 +1256,7 @@ var _ = Describe("Manager", Ordered, func() {
 				g.Expect(string(logOutput)).To(ContainSubstring("DELETE"),
 					"Git log should contain DELETE operation")
 			}
-			Eventually(verifyFileDeleted, 30*time.Second, 5*time.Second).Should(Succeed())
+			Eventually(verifyFileDeleted).Should(Succeed())
 
 			By("cleaning up test resources")
 			cleanupClusterWatchRule(clusterWatchRuleName)
@@ -1374,7 +1374,7 @@ func verifyResourceStatus(resourceType, name, ns, expectedStatus, expectedReason
 			g.Expect(readyMessage).To(ContainSubstring(expectedMessageContains))
 		}
 	}
-	Eventually(verifyStatus, 30*time.Second).Should(Succeed())
+	Eventually(verifyStatus).Should(Succeed())
 }
 
 // cleanupGitRepoConfig deletes a GitRepoConfig resource.
