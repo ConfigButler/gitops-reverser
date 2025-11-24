@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.1](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.13.0...gitops-reverser-v0.13.1) (2025-11-24)
+
+
+### Bug Fixes
+
+* Improving e2e test stability in pipeline by better aligned timings ([c607be9](https://github.com/ConfigButler/gitops-reverser/commit/c607be988ad2b2cb5c7437a5c019d3248dd68392))
+* prevent cert-manager warning during default deployment ([c12e9e6](https://github.com/ConfigButler/gitops-reverser/commit/c12e9e6c773edcd1c11708faaf9babb30129e541))
+
+
+### Documentation
+
+* Have a demo as teaser ([c8693e6](https://github.com/ConfigButler/gitops-reverser/commit/c8693e68d7e12a2c326fc9f42b765ec1d4b939fe))
+
 ## [0.13.0](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.12.1...gitops-reverser-v0.13.0) (2025-11-22)
 
 
