@@ -75,6 +75,8 @@ var (
 	KVEvictionsTotal metric.Int64Counter
 	// WatchDuplicatesSkippedTotal counts watch events skipped due to duplicate sanitized content.
 	WatchDuplicatesSkippedTotal metric.Int64Counter
+	// AuditEventsReceivedTotal counts audit events received from Kubernetes API server.
+	AuditEventsReceivedTotal metric.Int64Counter
 )
 
 // InitOTLPExporter initializes the OTLP-to-Prometheus bridge.
@@ -129,6 +131,7 @@ func InitOTLPExporter(_ context.Context) (func(context.Context) error, error) {
 		{"gitopsreverser_enrich_misses_total", &EnrichMissesTotal},
 		{"gitopsreverser_kv_evictions_total", &KVEvictionsTotal},
 		{"gitopsreverser_watch_duplicates_skipped_total", &WatchDuplicatesSkippedTotal},
+		{"gitopsreverser_audit_events_received_total", &AuditEventsReceivedTotal},
 	}
 	for _, s := range counters {
 		v, err := otelMeter.Int64Counter(s.name)
