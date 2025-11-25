@@ -16,9 +16,10 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package webhook handles admission webhook requests for the GitOps Reverser controller.
-// The webhook serves as a correlation store only - it captures user attribution but does NOT
+// Package webhook handles admission webhook requests and experimental audit webhook for the GitOps Reverser controller.
+// The admission webhook serves as a correlation store only - it captures user attribution but does NOT
 // enqueue events. The watch path (informers) is the sole source of events to the queue.
+// The audit webhook collects experimental metrics from Kubernetes audit events.
 package webhook
 
 import (

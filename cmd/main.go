@@ -204,6 +204,11 @@ func main() {
 		"unable to setup GitDestination validator webhook")
 	setupLog.Info("GitDestination validator webhook registered - enforcing uniqueness constraint")
 
+	// Register experimental audit webhook for metrics collection
+	auditHandler := &webhookhandler.AuditHandler{}
+	mgr.GetWebhookServer().Register("/audit-webhook", auditHandler)
+	setupLog.Info("Experimental audit webhook handler registered", "path", "/audit-webhook")
+
 	// NOTE: Old git.Worker has been replaced by WorkerManager + BranchWorker architecture
 	// The new system is already initialized above and wired through EventRouter
 	setupLog.Info("Using new BranchWorker architecture (per-branch workers)")
