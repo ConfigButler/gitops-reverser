@@ -1,0 +1,20 @@
+# /etc/rancher/k3s/audit/policy.yaml
+apiVersion: audit.k8s.io/v1
+kind: Policy
+rules:
+  # First let's remove noise (and secrets)
+  - level: None
+    resources:
+    - group: ""
+      resources: ["secrets", "pods", "events", "endpoints", "nodes"] # No support for naked pods yet
+    - group: "coordination.k8s.io"
+      resources: ["leases"]
+    - resources: ["*/status"]
+  - level: RequestResponse
+    omitManagedFields: true
+    verbs:  # (only mutating actions)
+    - create
+    - update
+    - patch
+    - delete
+    - deletecollection
