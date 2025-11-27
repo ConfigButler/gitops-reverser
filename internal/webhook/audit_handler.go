@@ -83,7 +83,13 @@ func (h *AuditHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		user := auditEvent.User.Username
 		if auditEvent.ImpersonatedUser != nil {
-			log.Info("Audit event impersonated", "authUser", auditEvent.User.Username, "impersonatedUser", auditEvent.ImpersonatedUser)
+			log.Info(
+				"Audit event impersonated",
+				"authUser",
+				auditEvent.User.Username,
+				"impersonatedUser",
+				auditEvent.ImpersonatedUser,
+			)
 			user = auditEvent.ImpersonatedUser.Username
 		}
 
