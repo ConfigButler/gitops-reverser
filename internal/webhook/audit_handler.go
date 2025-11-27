@@ -81,17 +81,26 @@ func (h *AuditHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		gvr := h.extractGVR(&auditEvent)
 		action := auditEvent.Verb
 
+		user := auditEvent.User.Username
+		if auditEvent.ImpersonatedUser != nil {
+			log.Info("Audit event impersonated", "authUser", auditEvent.User.Username, "impersonatedUser", auditEvent.ImpersonatedUser)
+			user = auditEvent.ImpersonatedUser.Username
+		}
+
 		// Increment metrics
 		metrics.AuditEventsReceivedTotal.Add(ctx, 1, metric.WithAttributes(
 			attribute.String("gvr", gvr),
 			attribute.String("action", action),
+			attribute.String("user", user),
 		))
 
 		log.Info("Processed audit event",
 			"gvr", gvr,
 			"action", action,
 			"auditID", auditEvent.AuditID,
-			"user", auditEvent.User.Username)
+			"user", user,
+			"ips", auditEvent.SourceIPs,
+			"userAgent", auditEvent.UserAgent)
 	}
 
 	// Return success
