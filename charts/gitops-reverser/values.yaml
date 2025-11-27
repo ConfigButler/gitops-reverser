@@ -115,6 +115,10 @@ certificates:
       kind: Issuer
       create: true
 
+# Settings for receiving audit events from the kubernetes api (the best way to run this)
+audit:
+  clusterIP: 10.43.200.200  # Make sure that it's free, most clusters won't have a problem with this (it's in the default range and it's a high number)
+
 # RBAC configuration
 rbac:
   create: true

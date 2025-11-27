@@ -1,0 +1,24 @@
+# /etc/rancher/k3s/audit/webhook-config.yaml
+apiVersion: v1
+kind: Config
+preferences: {}
+clusters:
+- name: audit-webhook
+  cluster:
+    # Use the ClusterIP, but with HTTPS
+    server: https://10.43.200.200:443/audit-webhook
+    # OPTION 1: If your "configbutler" uses a public cert (Let's Encrypt), 
+    # you might not need this line if the OS trusts it.
+    # OPTION 2: If it's a self-signed cert or internal CA:
+    insecure-skip-tls-verify: true 
+    # ^ ONLY use "true" for testing. For prod, delete this line and use:
+    # certificate-authority: /etc/rancher/k3s/audit/ca.crt
+contexts:
+- name: webhook
+  context:
+    cluster: audit-webhook
+    user: kube-apiserver
+current-context: webhook
+users:
+- name: kube-apiserver
+  user: {}

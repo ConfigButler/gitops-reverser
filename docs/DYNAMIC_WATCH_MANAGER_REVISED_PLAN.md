@@ -199,8 +199,7 @@ func (m *Manager) ReconcileForRule(
     ruleKey types.NamespacedName,
 ) (*ReconcileResult, error) {
     log := m.Log.WithValues("rule", ruleKey)
-    log.Info("Reconciling watch manager for rule change")
-    
+        
     // Compute desired state from current rules in API
     desiredGVRs := m.ComputeRequestedGVRs()
     discoverable := m.FilterDiscoverableGVRs(ctx, desiredGVRs)

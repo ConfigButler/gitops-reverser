@@ -48,6 +48,18 @@ spec:
             - --webhook-cert-path={{ .Values.webhook.server.certPath }}
             - --webhook-cert-name={{ .Values.webhook.server.certName }}
             - --webhook-cert-key={{ .Values.webhook.server.certKey }}
+            {{- if .Values.logging.level }}
+            - --zap-log-level={{ .Values.logging.level }}
+            {{- end }}
+            {{- if .Values.logging.development }}
+            - --zap-development={{ .Values.logging.development }}
+            {{- end }}
+            {{- if .Values.logging.encoder }}
+            - --zap-encoder={{ .Values.logging.encoder }}
+            {{- end }}
+            {{- if .Values.logging.stacktraceLevel }}
+            - --zap-stacktrace-level={{ .Values.logging.stacktraceLevel }}
+            {{- end }}
           ports:
             - name: webhook-server
               containerPort: {{ .Values.webhook.server.port }}
