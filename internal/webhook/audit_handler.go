@@ -66,7 +66,7 @@ func (h *AuditHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Check if we have any items
 	if len(eventList.Items) == 0 {
-		log.V(1).Info("Received empty audit event list")
+		log.Info("Received empty audit event list")
 		w.WriteHeader(http.StatusOK)
 		_, err = w.Write([]byte("Empty event list processed"))
 		if err != nil {
@@ -87,7 +87,7 @@ func (h *AuditHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			attribute.String("action", action),
 		))
 
-		log.V(1).Info("Processed audit event",
+		log.Info("Processed audit event",
 			"gvr", gvr,
 			"action", action,
 			"auditID", auditEvent.AuditID,

@@ -10,6 +10,9 @@ metadata:
     app.kubernetes.io/component: leader-only
 spec:
   type: ClusterIP
+  {{- if .Values.audit.clusterIP }}
+  clusterIP: {{ .Values.audit.clusterIP }}
+  {{- end }}
   ports:
     - name: webhook-server
       port: 443

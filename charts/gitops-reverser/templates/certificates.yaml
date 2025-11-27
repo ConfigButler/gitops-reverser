@@ -20,6 +20,10 @@ metadata:
   labels:
     {{- include "gitops-reverser.labels" . | nindent 4 }}
 spec:
+{{- if .Values.audit.clusterIP }}
+  ipAddresses:
+    - {{ .Values.audit.clusterIP }}
+{{- end }}
   dnsNames:
     - {{ include "gitops-reverser.fullname" . }}-leader-only.{{ .Release.Namespace }}.svc
     - {{ include "gitops-reverser.fullname" . }}-leader-only.{{ .Release.Namespace }}.svc.cluster.local
