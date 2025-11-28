@@ -6,10 +6,14 @@ rules:
   - level: None
     resources:
     - group: ""
-      resources: ["secrets", "pods", "events", "endpoints", "nodes"] # No support for naked pods yet
+      resources: ["secrets", "pods", "events", "endpoints", "nodes"] # No support for naked pods or secrets (technically yes, but not ok without encryption)
+    - group: "authentication.k8s.io"
+      resources: ["tokenreviews"]      
+    - group: "authorization.k8s.io"
+      resources: ["subjectaccessreviews", "selfsubjectaccessreviews", "localsubjectaccessreviews"]
     - group: "coordination.k8s.io"
       resources: ["leases"]
-    - resources: ["*/status"]
+    - resources: ["*/status", "*/", "*/"]
   - level: RequestResponse
     omitManagedFields: true
     verbs:  # (only mutating actions)
@@ -18,3 +22,4 @@ rules:
     - patch
     - delete
     - deletecollection
+ 
