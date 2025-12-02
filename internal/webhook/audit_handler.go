@@ -26,6 +26,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
@@ -148,8 +149,9 @@ func (h *AuditHandler) processEvents(ctx context.Context, events []auditv1.Event
 			return fmt.Errorf("failed to convert audit event: %w", err)
 		}
 
-		if err := h.validateEvent(&auditEvent); err != nil {
-			return err
+		process, err := h.checkEvent(&auditEvent)
+		if err != nil {
+			return fmt.Errorf("failed to check audit event: %w", err)
 		}
 
 		gvr := h.extractGVR(&auditEvent)
@@ -171,17 +173,21 @@ func (h *AuditHandler) processEvents(ctx context.Context, events []auditv1.Event
 			attribute.String("gvr", gvr),
 			attribute.String("action", action),
 			attribute.String("user", user),
+			attribute.String("processed", strconv.FormatBool(process)),
 		))
 
-		log.Info("Processed audit event",
-			"gvr", gvr,
-			"action", action,
-			"auditID", auditEvent.AuditID,
-			"user", user,
-			"ips", auditEvent.SourceIPs,
-			"userAgent", auditEvent.UserAgent)
+		if process {
+			// For now we hardly do a thing
+			log.Info("Processed audit event",
+				"gvr", gvr,
+				"action", action,
+				"auditID", auditEvent.AuditID,
+				"user", user,
+				"ips", auditEvent.SourceIPs,
+				"userAgent", auditEvent.UserAgent)
 
-		h.writeAuditEventToFile(&auditEvent)
+			h.writeAuditEventToFile(&auditEvent)
+		}
 	}
 
 	return nil
@@ -212,12 +218,14 @@ func (h *AuditHandler) extractGVR(event *audit.Event) string {
 	return fmt.Sprintf("%s/%s/%s", gvr.Group, gvr.Version, gvr.Resource)
 }
 
-// validateEvent validates an audit event before processing.
-func (h *AuditHandler) validateEvent(event *audit.Event) error {
+// checkEvent validates an audit event before processing.
+func (h *AuditHandler) checkEvent(event *audit.Event) (bool, error) {
+	process := event.ObjectRef.Subresource != "status"
 	if string(event.AuditID) == "" {
-		return errors.New("invalid audit event: auditID cannot be empty")
+		return process, errors.New("invalid audit event: auditID cannot be empty")
 	}
-	return nil
+
+	return process, nil
 }
 
 // writeAuditEventToFile writes an audit event to a YAML file for debugging and testing.

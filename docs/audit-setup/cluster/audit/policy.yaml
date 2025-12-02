@@ -1,38 +1,48 @@
-# sudo nano /etc/rancher/k3s/audit/policy.yaml
 apiVersion: audit.k8s.io/v1
 kind: Policy
 omitStages:
   - "RequestReceived"
 rules:
-  # Removes noise
+  # -----------------------------------------------------------
+  # 1. NOISE & SECURITY FILTER (Level: None)
+  # -----------------------------------------------------------
   - level: None
     resources:
-    # CORE: Drop runtime noise, naked pods, and secrets (let's not write them as long as we don't support encrypting)
+    # CORE: Drop runtime noise
     - group: ""
-      resources: ["events", "endpoints", "nodes", "pods", "secrets"]
+      resources: ["events", "endpoints", "nodes", "pods", "secrets", "bindings", "componentstatuses", "*/status"]
 
-    # AUTH: Drop ephemeral checks (Token/Access Reviews are never stored in Etcd)
+    # AUTH: Drop ephemeral checks
     - group: "authentication.k8s.io"
       resources: ["tokenreviews"]
     - group: "authorization.k8s.io"
       resources: ["subjectaccessreviews", "selfsubjectaccessreviews", "localsubjectaccessreviews", "selfsubjectrulesreviews"]
 
-    # SYSTEM: Drop high-frequency heartbeat updates
+    # SYSTEM: Drop heartbeats
     - group: "coordination.k8s.io"
       resources: ["leases"]
 
-    # UNIVERSAL: Drop "Status" updates for EVERY resource (Core + CRDs)
-    - resources: ["*/status"]
+    # APPS: Drop status updates for Deployments, StatefulSets, DaemonSets
+    - group: "apps"
+      resources: ["*/status"]
+    
+    # NETWORKING: Drop status updates for Ingresses (Load Balancer IP updates)
+    - group: "networking.k8s.io"
+      resources: ["*/status"]
 
-  # Remove HPA actions (also noise, since it's not user intent)
+  # -----------------------------------------------------------
+  # 2. HPA NOISE FILTER (Level: None)
+  # -----------------------------------------------------------
   - level: None
     users: ["system:serviceaccount:kube-system:horizontal-pod-autoscaler"]
     verbs: ["update", "patch"]
     resources:
-    - resources: ["*/scale"]
+    - group: "apps" # Deployments & StatefulSets live here
+      resources: ["*/scale"]
 
-  # Captures intent
-  # No resources listed -> Matches everything not dropped in earlier rules
+  # -----------------------------------------------------------
+  # 3. INTENT CAPTURE (Level: RequestResponse)
+  # -----------------------------------------------------------
   - level: RequestResponse
     omitManagedFields: true
     verbs:
@@ -41,3 +51,4 @@ rules:
     - patch
     - delete
     - deletecollection
+    # No resources listed = Matches everything else (including CRDs)
