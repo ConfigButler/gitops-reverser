@@ -178,7 +178,7 @@ func TestAuditHandler_FileDump(t *testing.T) {
 	require.NoError(t, err)
 
 	// 1. Read the YAML file
-	yamlContent, err := os.ReadFile("testdata/audit-events/example-audit-event.yaml")
+	yamlContent, err := os.ReadFile("testdata/audit-events/config-update.yaml")
 	require.NoError(t, err)
 
 	// 2. Unmarshal into the v1 Event struct
