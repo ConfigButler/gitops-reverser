@@ -290,23 +290,43 @@ func TestAuditHandler_validateEvent(t *testing.T) {
 	require.NoError(t, err)
 
 	tests := []struct {
-		name        string
-		event       audit.Event
-		expectedErr string
+		name              string
+		event             audit.Event
+		expectedErr       string
+		expectedProcessed bool
 	}{
 		{
 			name: "valid event",
 			event: audit.Event{
 				AuditID: "valid-id",
 				Verb:    "create",
+				ObjectRef: &audit.ObjectReference{
+					Subresource: "",
+				},
 			},
-			expectedErr: "",
+			expectedErr:       "",
+			expectedProcessed: true,
+		},
+		{
+			name: "valid status event",
+			event: audit.Event{
+				AuditID: "some-status",
+				Verb:    "update",
+				ObjectRef: &audit.ObjectReference{
+					Subresource: "status",
+				},
+			},
+			expectedErr:       "",
+			expectedProcessed: false,
 		},
 		{
 			name: "empty auditID",
 			event: audit.Event{
 				AuditID: "",
 				Verb:    "create",
+				ObjectRef: &audit.ObjectReference{
+					Subresource: "",
+				},
 			},
 			expectedErr: "invalid audit event: auditID cannot be empty",
 		},
@@ -314,10 +334,10 @@ func TestAuditHandler_validateEvent(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := handler.validateEvent(&tt.event)
-
+			processed, err := handler.checkEvent(&tt.event)
 			if tt.expectedErr == "" {
 				require.NoError(t, err, "Valid event should not return error")
+				require.Equal(t, tt.expectedProcessed, processed)
 			} else {
 				require.Error(t, err, "Invalid event should return error")
 				assert.Contains(t, err.Error(), tt.expectedErr, "Error message should match expected")
@@ -328,7 +348,7 @@ func TestAuditHandler_validateEvent(t *testing.T) {
 
 func TestAuditHandler_ReadYAMLToJSON(t *testing.T) {
 	// Read the YAML file
-	yamlContent, err := os.ReadFile("testdata/audit-events/example-audit-event.yaml")
+	yamlContent, err := os.ReadFile("testdata/audit-events/config-update.yaml")
 	require.NoError(t, err, "Should be able to read YAML file")
 
 	// Convert YAML to JSON

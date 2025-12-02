@@ -1,11 +1,12 @@
 {
     "yaml.schemas": {
+        ".vscode/schemas/audit-policy.json": "**/policy.yaml",
         "https://json.schemastore.org/composer": "compose.yaml",
         "kubernetes": [
-            "**/manifests/*.yaml",
-            "config/**.yaml"
+            "manifests/*.yaml",
+            "config/**/*.yaml"
         ],  
-        ".vscode/audit-event-schema.json": [
+        ".vscode/schemas/audit-event-schema.json": [
             "**/audit-events/*.yaml"
         ]
     }

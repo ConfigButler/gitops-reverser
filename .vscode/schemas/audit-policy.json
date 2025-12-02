@@ -1,0 +1,96 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Kubernetes Audit Policy (audit.k8s.io/v1)",
+  "type": "object",
+  "required": ["apiVersion", "kind", "rules"],
+  "properties": {
+    "apiVersion": {
+      "type": "string",
+      "const": "audit.k8s.io/v1",
+      "description": "Must be audit.k8s.io/v1"
+    },
+    "kind": {
+      "type": "string",
+      "const": "Policy",
+      "description": "Must be Policy"
+    },
+    "omitStages": {
+      "type": "array",
+      "description": "Stages to omit from logging (optimization)",
+      "items": {
+        "type": "string",
+        "enum": ["RequestReceived", "ResponseStarted", "ResponseComplete", "Panic"]
+      }
+    },
+    "omitManagedFields": {
+      "type": "boolean",
+      "default": true,
+      "description": "Global setting to strip managedFields from the body."
+    },
+    "rules": {
+      "type": "array",
+      "description": "Ordered list of rules. First matching rule wins.",
+      "items": {
+        "type": "object",
+        "required": ["level"],
+        "properties": {
+          "level": {
+            "type": "string",
+            "enum": ["None", "Metadata", "Request", "RequestResponse"],
+            "description": "The auditing level."
+          },
+          "users": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Whitelisting specific users (e.g. HPA controller)"
+          },
+          "userGroups": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "verbs": {
+            "type": "array",
+            "description": "Specific verbs to match.",
+            "items": {
+              "type": "string",
+              "enum": [
+                "create", "update", "patch", "delete", "deletecollection",
+                "get", "list", "watch", "proxy"
+              ]
+            }
+          },
+          "omitManagedFields": {
+            "type": "boolean",
+            "description": "Override global setting for this specific rule."
+          },
+          "resources": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "group": {
+                  "type": "string",
+                  "description": "API Group. Use empty string \"\" for Core. Use \"*\" for ALL groups."
+                },
+                "resources": {
+                  "type": "array",
+                  "items": { "type": "string" },
+                  "description": "Resources to match. Supports wildcards (e.g., \"*/status\")."
+                },
+                "resourceNames": {
+                  "type": "array",
+                  "items": { "type": "string" },
+                  "description": "Match specific object names (e.g. \"config-map-lock\")."
+                },
+                "namespaces": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
