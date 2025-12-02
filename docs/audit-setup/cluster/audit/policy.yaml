@@ -15,7 +15,7 @@ rules:
     - group: "authentication.k8s.io"
       resources: ["tokenreviews"]
     - group: "authorization.k8s.io"
-      resources: ["subjectaccessreviews", "selfsubjectaccessreviews", "localsubjectaccessreviews"]
+      resources: ["subjectaccessreviews", "selfsubjectaccessreviews", "localsubjectaccessreviews", "selfsubjectrulesreviews"]
 
     # SYSTEM: Drop high-frequency heartbeat updates
     - group: "coordination.k8s.io"
