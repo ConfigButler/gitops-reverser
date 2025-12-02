@@ -1,0 +1,38 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["apiVersion", "kind", "level", "auditID", "stage", "requestReceivedTimestamp"],
+  "properties": {
+    "apiVersion": { "const": "audit.k8s.io/v1" },
+    "kind": { "const": "Event" },
+    "level": { "enum": ["None", "Metadata", "Request", "RequestResponse"] },
+    "auditID": { "type": "string" },
+    "stage": { "enum": ["RequestReceived", "ResponseStarted", "ResponseComplete", "Panic"] },
+    "requestURI": { "type": "string" },
+    "verb": { "type": "string" },
+    "user": {
+      "type": "object",
+      "properties": {
+        "username": { "type": "string" },
+        "uid": { "type": "string" },
+        "groups": { "type": "array", "items": { "type": "string" } },
+        "extra": { "type": "object" }
+      }
+    },
+    "sourceIPs": { "type": "array", "items": { "type": "string" } },
+    "userAgent": { "type": "string" },
+    "objectRef": { "type": "object" },
+    "responseStatus": { "type": "object" },
+    "requestObject": { 
+      "anyOf": [
+        { "type": "object" }, 
+        { "type": "array" },
+        { "type": "null" }
+      ]
+    },
+    "responseObject": { "type": "object" },
+    "requestReceivedTimestamp": { "type": "string" },
+    "stageTimestamp": { "type": "string" },
+    "annotations": { "type": "object" }
+  }
+}
