@@ -5,8 +5,8 @@
             "**/manifests/*.yaml",
             "config/**.yaml"
         ],  
-        ".vscode/audit-schema.json": [
-            "**/event-manifests/*.yaml"
+        ".vscode/audit-event-schema.json": [
+            "**/audit-events/*.yaml"
         ]
     }
 }
