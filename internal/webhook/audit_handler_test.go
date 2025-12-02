@@ -24,6 +24,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 
 	"github.com/ConfigButler/gitops-reverser/internal/metrics"
@@ -64,13 +65,13 @@ func TestAuditHandler_ServeHTTP(t *testing.T) {
 		{
 			name:           "multiple events in batch",
 			method:         http.MethodPost,
-			body:           `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[{"verb":"create","user":{"username":"test-user"},"objectRef":{"resource":"configmaps","apiVersion":"v1"}},{"verb":"update","user":{"username":"test-user"},"objectRef":{"resource":"deployments","apiVersion":"apps/v1"}}]}`,
+			body:           `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[{"kind":"Event","auditID":"batch-event-1","verb":"create","user":{"username":"test-user"},"objectRef":{"resource":"configmaps","apiVersion":"v1"}},{"kind":"Event","auditID":"batch-event-2","verb":"update","user":{"username":"test-user"},"objectRef":{"resource":"deployments","apiVersion":"apps/v1"}}]}`,
 			expectedStatus: http.StatusOK,
 		},
 		{
 			name:           "invalid method",
 			method:         http.MethodGet,
-			body:           `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[{"verb":"create","user":{"username":"test-user"},"objectRef":{"resource":"configmaps","apiVersion":"v1"}}]}`,
+			body:           `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[{"kind":"Event","auditID":"invalid-method-test","verb":"create","user":{"username":"test-user"},"objectRef":{"resource":"configmaps","apiVersion":"v1"}}]}`,
 			expectedStatus: http.StatusMethodNotAllowed,
 		},
 		{
@@ -156,4 +157,64 @@ func TestAuditHandler_InvalidJSON(t *testing.T) {
 
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 	assert.Contains(t, w.Body.String(), "Invalid audit event list JSON")
+}
+
+func TestAuditHandler_FileDump(t *testing.T) {
+	handler := &AuditHandler{}
+
+	// Test event JSON that should be written to file
+	eventJSON := `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[{"kind":"Event","level":"RequestResponse","auditID":"test-file-dump","stage":"ResponseComplete","requestURI":"/api/v1/namespaces/default/configmaps","verb":"create","user":{"username":"test-user"},"objectRef":{"resource":"configmaps","namespace":"default","name":"test-config","apiVersion":"v1"},"responseStatus":{"code":200}}]}`
+
+	req := httptest.NewRequest(http.MethodPost, "/audit-webhook", bytes.NewReader([]byte(eventJSON)))
+	w := httptest.NewRecorder()
+
+	// Call handler
+	handler.ServeHTTP(w, req)
+
+	// Verify successful processing
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	// Check that the file was created and contains valid JSON
+	filePath := "/tmp/audit-events/test-file-dump.json"
+	fileContent, err := os.ReadFile(filePath)
+	assert.NoError(t, err, "File should be created successfully")
+
+	// Verify the file contains valid JSON that can be unmarshaled back to audit.Event
+	var dumpedEvent audit.Event
+	err = json.Unmarshal(fileContent, &dumpedEvent)
+	assert.NoError(t, err, "File content should be valid audit.Event JSON")
+
+	// Verify the auditID matches
+	assert.Equal(t, "test-file-dump", string(dumpedEvent.AuditID), "AuditID should match")
+
+	// Verify key fields are preserved
+	assert.Equal(t, "create", dumpedEvent.Verb)
+	assert.Equal(t, "test-user", dumpedEvent.User.Username)
+	assert.Equal(t, "configmaps", dumpedEvent.ObjectRef.Resource)
+
+	// Clean up
+	err = os.Remove(filePath)
+	assert.NoError(t, err, "File cleanup should succeed")
+
+	// Test that events with empty auditID are properly rejected
+	t.Run("empty auditID should not create file", func(t *testing.T) {
+		handler := &AuditHandler{}
+
+		// Test event JSON with empty auditID
+		eventJSON := `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[{"kind":"Event","auditID":"","verb":"create","user":{"username":"test-user"},"objectRef":{"resource":"configmaps","apiVersion":"v1"}}]}`
+
+		req := httptest.NewRequest(http.MethodPost, "/audit-webhook", bytes.NewReader([]byte(eventJSON)))
+		w := httptest.NewRecorder()
+
+		// Call handler
+		handler.ServeHTTP(w, req)
+
+		// Verify successful processing (empty auditID should not break processing)
+		assert.Equal(t, http.StatusOK, w.Code)
+
+		// Verify that no file was created for empty auditID
+		emptyAuditIDFile := "/tmp/audit-events/.json"
+		_, err := os.Stat(emptyAuditIDFile)
+		assert.True(t, os.IsNotExist(err), "File should not be created for empty auditID")
+	})
 }
