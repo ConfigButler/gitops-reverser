@@ -23,6 +23,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -107,6 +109,9 @@ func (h *AuditHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"user", user,
 			"ips", auditEvent.SourceIPs,
 			"userAgent", auditEvent.UserAgent)
+
+		// Write audit event to file for debugging and testing
+		h.writeAuditEventToFile(&auditEvent)
 	}
 
 	// Return success
@@ -144,4 +149,41 @@ func (h *AuditHandler) extractGVR(event *audit.Event) string {
 		return fmt.Sprintf("/%s/%s", version, resource)
 	}
 	return fmt.Sprintf("%s/%s/%s", group, version, resource)
+}
+
+// writeAuditEventToFile writes an audit event to a JSON file for debugging and testing purposes.
+// The file is written to /tmp/audit-events/{auditID}.json and contains the complete audit.Event object.
+// Fails fast if auditID is empty as this should never happen in practice.
+func (h *AuditHandler) writeAuditEventToFile(event *audit.Event) {
+	// Validate auditID is not empty - this should never happen in practice
+	if string(event.AuditID) == "" {
+		logf.Log.Error(nil, "Audit event has empty auditID - this should never happen", "event", event)
+		return
+	}
+
+	// Create the directory if it doesn't exist
+	dumpDir := "/tmp/audit-events"
+	if err := os.MkdirAll(dumpDir, 0750); err != nil {
+		logf.Log.Error(err, "Failed to create audit events dump directory", "directory", dumpDir)
+		return
+	}
+
+	// Create filename based on auditID
+	filename := fmt.Sprintf("%s.json", event.AuditID)
+	filePath := filepath.Join(dumpDir, filename)
+
+	// Marshal the event to JSON
+	eventJSON, err := json.MarshalIndent(event, "", "  ")
+	if err != nil {
+		logf.Log.Error(err, "Failed to marshal audit event to JSON", "auditID", event.AuditID)
+		return
+	}
+
+	// Write to file
+	if err := os.WriteFile(filePath, eventJSON, 0600); err != nil {
+		logf.Log.Error(err, "Failed to write audit event to file", "file", filePath, "auditID", event.AuditID)
+		return
+	}
+
+	logf.Log.Info("Audit event written to file", "file", filePath, "auditID", event.AuditID)
 }
