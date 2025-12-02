@@ -205,9 +205,19 @@ func main() {
 	setupLog.Info("GitDestination validator webhook registered - enforcing uniqueness constraint")
 
 	// Register experimental audit webhook for metrics collection
-	auditHandler := &webhookhandler.AuditHandler{}
+	auditHandler, err := webhookhandler.NewAuditHandler(webhookhandler.AuditHandlerConfig{
+		DumpDir: cfg.auditDumpDir,
+	})
+	fatalIfErr(err, "unable to create audit handler")
 	mgr.GetWebhookServer().Register("/audit-webhook", auditHandler)
-	setupLog.Info("Experimental audit webhook handler registered", "path", "/audit-webhook")
+	if cfg.auditDumpDir != "" {
+		setupLog.Info("Experimental audit webhook handler registered with file dumping",
+			"path", "/audit-webhook",
+			"dump-dir", cfg.auditDumpDir)
+	} else {
+		setupLog.Info("Experimental audit webhook handler registered (file dumping disabled)",
+			"path", "/audit-webhook")
+	}
 
 	// NOTE: Old git.Worker has been replaced by WorkerManager + BranchWorker architecture
 	// The new system is already initialized above and wired through EventRouter
@@ -244,6 +254,7 @@ type appConfig struct {
 	probeAddr            string
 	secureMetrics        bool
 	enableHTTP2          bool
+	auditDumpDir         string
 	zapOpts              zap.Options
 }
 
@@ -278,6 +289,8 @@ func parseFlags() appConfig {
 	flag.StringVar(&cfg.metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
 	flag.BoolVar(&cfg.enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
+	flag.StringVar(&cfg.auditDumpDir, "audit-dump-dir", "",
+		"Directory to write audit events for debugging. If empty, audit event file dumping is disabled.")
 
 	cfg.zapOpts = zap.Options{
 		Development: true,

@@ -88,8 +88,10 @@ func TestAuditHandler_ServeHTTP(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Create handler
-			handler := &AuditHandler{}
+			handler, err := NewAuditHandler(AuditHandlerConfig{
+				DumpDir: "/tmp/audit-events",
+			})
+			require.NoError(t, err)
 
 			// Create request
 			req := httptest.NewRequest(tt.method, "/audit-webhook", bytes.NewReader([]byte(tt.body)))
@@ -105,7 +107,10 @@ func TestAuditHandler_ServeHTTP(t *testing.T) {
 }
 
 func TestAuditHandler_extractGVR(t *testing.T) {
-	handler := &AuditHandler{}
+	handler, err := NewAuditHandler(AuditHandlerConfig{
+		DumpDir: "/tmp/audit-events",
+	})
+	require.NoError(t, err)
 
 	tests := []struct {
 		name      string
@@ -152,7 +157,10 @@ func TestAuditHandler_extractGVR(t *testing.T) {
 }
 
 func TestAuditHandler_InvalidJSON(t *testing.T) {
-	handler := &AuditHandler{}
+	handler, err := NewAuditHandler(AuditHandlerConfig{
+		DumpDir: "/tmp/audit-events",
+	})
+	require.NoError(t, err)
 
 	req := httptest.NewRequest(http.MethodPost, "/audit-webhook", bytes.NewReader([]byte("invalid json")))
 	w := httptest.NewRecorder()
@@ -164,7 +172,10 @@ func TestAuditHandler_InvalidJSON(t *testing.T) {
 }
 
 func TestAuditHandler_FileDump(t *testing.T) {
-	handler := &AuditHandler{}
+	handler, err := NewAuditHandler(AuditHandlerConfig{
+		DumpDir: "/tmp/audit-events",
+	})
+	require.NoError(t, err)
 
 	// 1. Read the YAML file
 	yamlContent, err := os.ReadFile("testdata/audit-events/example-audit-event.yaml")
@@ -217,13 +228,17 @@ func TestAuditHandler_FileDump(t *testing.T) {
 	assert.Equal(t, "system:admin", dumpedEvent.User.Username)
 	assert.Equal(t, "configmaps", dumpedEvent.ObjectRef.Resource)
 
-	// Clean up
+	// Clean up file
 	err = os.Remove(filePath)
 	require.NoError(t, err, "File cleanup should succeed")
 
 	// Test that events with empty auditID are properly rejected
 	t.Run("empty auditID should not create file", func(t *testing.T) {
-		handler := &AuditHandler{}
+		os.RemoveAll("/tmp/audit-events")
+		handler, err := NewAuditHandler(AuditHandlerConfig{
+			DumpDir: "/tmp/audit-events",
+		})
+		require.NoError(t, err)
 
 		// Create proper event with empty auditID
 		event := auditv1.Event{
@@ -269,7 +284,10 @@ func TestAuditHandler_FileDump(t *testing.T) {
 }
 
 func TestAuditHandler_validateEvent(t *testing.T) {
-	handler := &AuditHandler{}
+	handler, err := NewAuditHandler(AuditHandlerConfig{
+		DumpDir: "/tmp/audit-events",
+	})
+	require.NoError(t, err)
 
 	tests := []struct {
 		name        string
