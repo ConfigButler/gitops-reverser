@@ -1,0 +1,58 @@
+kind: Event
+apiVersion: audit.k8s.io/v1
+level: RequestResponse
+auditID: 89e50d9e-7963-4836-87ab-a18685930369
+stage: ResponseComplete
+requestURI: /api/v1/namespaces/new-config-ns/configmaps/test-config3
+verb: patch
+user:
+  username: system:admin
+  groups:
+    - system:masters
+    - system:authenticated
+  extra:
+    authentication.kubernetes.io/credential-id:
+      - X509SHA256=b01a3aad9718ef70bace66ad1b9d577055510e60e4c043de79a791c99ddf7370
+impersonatedUser: null
+sourceIPs:
+  - 127.0.0.1
+  - 192.168.65.207
+userAgent: node-fetch
+objectRef:
+  resource: configmaps
+  namespace: new-config-ns
+  name: test-config3
+  uid: ""
+  apiGroup: ""
+  apiVersion: v1
+  resourceVersion: ""
+  subresource: ""
+responseStatus:
+  metadata: {}
+  code: 200
+requestObject:
+  - op: replace
+    path: /data/key
+    value: value21
+  - op: add
+    path: /metadata/annotations
+    value:
+      freelens.app/resource-version: v1
+responseObject:
+  kind: ConfigMap
+  apiVersion: v1
+  metadata:
+    name: test-config3
+    namespace: new-config-ns
+    uid: 271ee126-790e-4ee3-a7f8-f8451c550e8d
+    resourceVersion: "13772844"
+    creationTimestamp: 2025-11-27T16:30:31Z
+    annotations:
+      freelens.app/resource-version: v1
+  data:
+    key: value21
+requestReceivedTimestamp: 2025-12-02T11:19:13.937551Z
+stageTimestamp: 2025-12-02T11:19:13.941570Z
+annotations:
+  authorization.k8s.io/decision: allow
+  authorization.k8s.io/reason: ""
