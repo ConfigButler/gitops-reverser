@@ -73,16 +73,7 @@ setup-cluster: ## Set up a Kind cluster for e2e tests if it does not exist
 	@if ! command -v $(KIND) >/dev/null 2>&1; then \
 		echo "Kind is not installed - skipping Makefile cluster creation (expected in CI runs since we use helm/kind-action)"; \
 	else \
-		case "$$($(KIND) get clusters)" in \
-			*"$(KIND_CLUSTER)"*) \
-				echo "✅ Cluster '$(KIND_CLUSTER)' already exists. Skipping creation." ;; \
-			*) \
-				echo "🚀 Creating cluster (with Kind) '$(KIND_CLUSTER)'..."; \
-				$(KIND) create cluster --name $(KIND_CLUSTER) --wait 5m; \
-				echo "✅ Kind cluster created successfully" ;; \
-		esac; \
-		echo "📋 Configuring kubeconfig for cluster '$(KIND_CLUSTER)'..."; \
-		$(KIND) export kubeconfig --name $(KIND_CLUSTER); \
+		KIND_CLUSTER=$(KIND_CLUSTER) bash test/e2e/kind/start-cluster.sh; \
 	fi
 
 .PHONY: cleanup-cluster

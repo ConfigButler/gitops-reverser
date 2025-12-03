@@ -1,0 +1,23 @@
+# Kubernetes audit webhook configuration for Kind cluster
+# This configures the kube-apiserver to send audit events to the gitops-reverser webhook
+apiVersion: v1
+kind: Config
+preferences: {}
+clusters:
+- name: audit-webhook
+  cluster:
+    # IMPORTANT: Use fixed ClusterIP instead of DNS name
+    # kube-apiserver starts before CoreDNS, so DNS resolution fails at startup
+    # The ClusterIP is set in test/e2e/manifests/webhook-service-fixed-ip.yaml
+    server: https://10.96.200.200:443/audit-webhook
+    # Skip TLS verification for testing (webhook uses self-signed cert from cert-manager)
+    insecure-skip-tls-verify: true
+contexts:
+- name: webhook
+  context:
+    cluster: audit-webhook
+    user: kube-apiserver
+current-context: webhook
+users:
+- name: kube-apiserver
+  user: {}

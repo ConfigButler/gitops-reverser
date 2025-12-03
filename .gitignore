@@ -22,7 +22,6 @@ go.work
 
 # editor and IDE paraphernalia
 .idea
-.vscode
 *.swp
 *.swo
 *~
@@ -39,3 +38,4 @@ charts/gitops-reverser/config/*.yaml
 dist/install.yaml
 
 *.o.yaml
+*.ignore.*

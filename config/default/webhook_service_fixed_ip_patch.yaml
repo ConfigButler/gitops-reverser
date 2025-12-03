@@ -1,0 +1,11 @@
+# Patch to set fixed ClusterIP for webhook service
+# This is required for audit webhook to work because kube-apiserver
+# starts before CoreDNS, so DNS resolution (.svc.cluster.local) fails.
+# Using a fixed IP allows kube-apiserver to connect on startup.
+apiVersion: v1
+kind: Service
+metadata:
+  name: webhook-service
+  namespace: system
+spec:
+  clusterIP: 10.96.200.200
