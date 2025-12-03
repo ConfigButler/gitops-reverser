@@ -97,14 +97,14 @@ func queryPrometheus(query string) (float64, error) {
 }
 
 // waitForMetric waits for a Prometheus metric query to satisfy a condition
-func waitForMetric(query string, condition func(float64) bool, timeout time.Duration, description string) {
+func waitForMetric(query string, condition func(float64) bool, description string) {
 	By(fmt.Sprintf("waiting for metric: %s", description))
 	Eventually(func(g Gomega) {
 		value, err := queryPrometheus(query)
 		g.Expect(err).NotTo(HaveOccurred(), "Failed to query Prometheus")
 		g.Expect(condition(value)).To(BeTrue(),
 			fmt.Sprintf("%s (query: %s, value: %.2f)", description, query, value))
-	}, timeout, 2*time.Second).Should(Succeed()) //nolint:mnd // standard polling interval
+	}, 30*time.Second, 2*time.Second).Should(Succeed()) //nolint:mnd // reasonable timeout and polling interval
 }
 
 // getPrometheusURL returns the URL for accessing Prometheus UI
