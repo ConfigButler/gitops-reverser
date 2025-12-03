@@ -236,8 +236,7 @@ func (h *AuditHandler) writeAuditEventToFile(event *audit.Event) {
 		return
 	}
 
-	// #nosec G301 - Relaxed permissions (0755) for debugging directory to avoid requiring sudo access
-	if err := os.MkdirAll(h.config.DumpDir, 0755); err != nil {
+	if err := os.MkdirAll(h.config.DumpDir, 0750); err != nil {
 		logf.Log.Error(err, "Failed to create audit events dump directory", "directory", h.config.DumpDir)
 		return
 	}
@@ -260,8 +259,7 @@ func (h *AuditHandler) writeAuditEventToFile(event *audit.Event) {
 		return
 	}
 
-	// #nosec G306 - Relaxed permissions (0644) for debugging files to avoid requiring sudo access
-	if err := os.WriteFile(filePath, eventYAML, 0644); err != nil {
+	if err := os.WriteFile(filePath, eventYAML, 0600); err != nil {
 		logf.Log.Error(err, "Failed to write audit event to file", "file", filePath, "auditID", event.AuditID)
 		return
 	}

@@ -305,13 +305,11 @@ var _ = Describe("Manager", Ordered, func() {
 			By("waiting for Prometheus to scrape controller metrics")
 			waitForMetric("up{job='gitops-reverser-metrics'}",
 				func(v float64) bool { return v == 1 },
-				30*time.Second,
 				"metrics endpoint should be up")
 
 			By("verifying basic process metrics are exposed")
 			waitForMetric("process_cpu_seconds_total{job='gitops-reverser-metrics'}",
 				func(v float64) bool { return v > 0 },
-				30*time.Second,
 				"process metrics should exist")
 
 			By("verifying metrics from both controller pods")
@@ -339,7 +337,6 @@ var _ = Describe("Manager", Ordered, func() {
 			By("waiting for webhook event metric to increment")
 			waitForMetric("sum(gitopsreverser_events_received_total) or vector(0)",
 				func(v float64) bool { return v > baselineEvents },
-				30*time.Second,
 				"webhook events should increment")
 
 			By("verifying only leader pod received webhook events")
@@ -383,7 +380,6 @@ var _ = Describe("Manager", Ordered, func() {
 			By("waiting for audit event metric to increment")
 			waitForMetric("sum(gitopsreverser_audit_events_received_total) or vector(0)",
 				func(v float64) bool { return v > baselineAuditEvents },
-				30*time.Second,
 				"audit events should increment")
 
 			By("verifying audit events were received")
