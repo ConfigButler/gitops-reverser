@@ -367,6 +367,40 @@ var _ = Describe("Manager", Ordered, func() {
 			_, _ = utils.Run(cmd)
 		})
 
+		It("should receive audit webhook events from kube-apiserver", func() {
+			By("recording baseline audit event count")
+			baselineAuditEvents, err := queryPrometheus("sum(gitopsreverser_audit_events_received_total) or vector(0)")
+			Expect(err).NotTo(HaveOccurred())
+			fmt.Printf("📊 Baseline audit events: %.0f\n", baselineAuditEvents)
+
+			By("creating a ConfigMap to trigger audit events")
+			cmd := exec.Command("kubectl", "create", "configmap", "audit-test-cm",
+				"--namespace", namespace,
+				"--from-literal=test=audit")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "ConfigMap creation should succeed")
+
+			By("waiting for audit event metric to increment")
+			waitForMetric("sum(gitopsreverser_audit_events_received_total) or vector(0)",
+				func(v float64) bool { return v > baselineAuditEvents },
+				30*time.Second,
+				"audit events should increment")
+
+			By("verifying audit events were received")
+			currentAuditEvents, err := queryPrometheus("sum(gitopsreverser_audit_events_received_total) or vector(0)")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(currentAuditEvents).To(BeNumerically(">", baselineAuditEvents),
+				"Should have received audit events from kube-apiserver")
+
+			newEvents := currentAuditEvents - baselineAuditEvents
+			fmt.Printf("✅ Received %.0f new audit events from kube-apiserver\n", newEvents)
+			fmt.Printf("📊 Total audit events: %.0f\n", currentAuditEvents)
+
+			By("cleaning up audit test resources")
+			cmd = exec.Command("kubectl", "delete", "configmap", "audit-test-cm", "--namespace", namespace)
+			_, _ = utils.Run(cmd)
+		})
+
 		It("should validate GitRepoConfig with real Gitea repository", func() {
 			gitRepoConfigName := "gitrepoconfig-e2e-test"
 

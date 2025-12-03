@@ -41,6 +41,12 @@ patches:
   target:
     kind: Deployment
 
+# [AUDIT-WEBHOOK] Set fixed ClusterIP for webhook service so kube-apiserver can connect before CoreDNS is ready
+- path: webhook_service_fixed_ip_patch.yaml
+  target:
+    kind: Service
+    name: webhook-service
+
 # Uncomment the patches line if you enable Metrics and CertManager
 # [METRICS-WITH-CERTS] To enable metrics protected with certManager, uncomment the following line.
 # This patch will protect the metrics with certManager self-signed certs.

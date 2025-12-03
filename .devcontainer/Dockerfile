@@ -17,6 +17,7 @@ RUN apt-get update \
     sudo \
     acl \
     rsync \
+    gettext-base \
     && apt-get autoremove -y \
     && apt-get clean -y \
     && rm -rf /var/lib/apt/lists/*

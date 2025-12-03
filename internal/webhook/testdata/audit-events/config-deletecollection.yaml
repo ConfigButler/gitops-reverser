@@ -1,0 +1,100 @@
+kind: Event
+apiVersion: audit.k8s.io/v1
+annotations:
+  authorization.k8s.io/decision: allow
+  authorization.k8s.io/reason: ""
+auditID: db66e325-c427-4fe7-89ee-b65673b9e167
+level: RequestResponse
+objectRef:
+  apiVersion: v1
+  namespace: new-config-ns
+  resource: configmaps
+requestReceivedTimestamp: "2025-12-03T09:26:48.504655Z"
+requestURI: /api/v1/namespaces/new-config-ns/configmaps
+responseObject:
+  apiVersion: v1
+  items:
+  - data:
+      ca.crt: |
+        -----BEGIN CERTIFICATE-----
+        MIIBdzCCAR2gAwIBAgIBADAKBggqhkjOPQQDAjAjMSEwHwYDVQQDDBhrM3Mtc2Vy
+        dmVyLWNhQDE3NjA5NjM1MjYwHhcNMjUxMDIwMTIzMjA2WhcNMzUxMDE4MTIzMjA2
+        WjAjMSEwHwYDVQQDDBhrM3Mtc2VydmVyLWNhQDE3NjA5NjM1MjYwWTATBgcqhkjO
+        PQIBBggqhkjOPQMBBwNCAARL+9q46ijPRqqq4jumgsQZZYZ0my3Dn/z7Ex5ENVZr
+        1bolQpnmsyY31pmRW3tZSkvo00hZGnVQR6JCju7CjdWvo0IwQDAOBgNVHQ8BAf8E
+        BAMCAqQwDwYDVR0TAQH/BAUwAwEB/zAdBgNVHQ4EFgQUNEABQtbD5Pja88z90Fu3
+        HBQ4Xt4wCgYIKoZIzj0EAwIDSAAwRQIgKib7bkQ5hWGE/33XvMaOIfm+ugACIK63
+        /U5uwffVA1gCIQDcWJmJAfoRM8Mn0iacnI4VZfIM7Y5OOvMPvFGanlRcOg==
+        -----END CERTIFICATE-----
+    metadata:
+      annotations:
+        kubernetes.io/description: Contains a CA bundle that can be used to verify
+          the kube-apiserver when using internal endpoints such as the internal service
+          IP or kubernetes.default.svc. No other usage is guaranteed across distributions
+          of Kubernetes clusters.
+      creationTimestamp: "2025-12-03T09:21:28Z"
+      name: kube-root-ca.crt
+      namespace: new-config-ns
+      resourceVersion: "14095157"
+      uid: 4015879e-2f93-4368-8e25-8ba3807cba02
+  - data:
+      key: value
+    metadata:
+      creationTimestamp: "2025-12-03T09:25:48Z"
+      name: test-map-1
+      namespace: new-config-ns
+      resourceVersion: "14096216"
+      uid: 39c1b9fc-d8b1-4108-843c-9529963b1744
+  - data:
+      key: value
+    metadata:
+      creationTimestamp: "2025-12-03T09:25:48Z"
+      name: test-map-2
+      namespace: new-config-ns
+      resourceVersion: "14096217"
+      uid: 82d7711c-78fc-4180-97c2-740bfc64f0c5
+  - data:
+      key: value
+    metadata:
+      creationTimestamp: "2025-12-03T09:25:48Z"
+      name: test-map-3
+      namespace: new-config-ns
+      resourceVersion: "14096218"
+      uid: f57e336b-1bbb-404b-9013-5123795941a5
+  - data:
+      key: value
+    metadata:
+      creationTimestamp: "2025-12-03T09:25:48Z"
+      name: test-map-4
+      namespace: new-config-ns
+      resourceVersion: "14096219"
+      uid: c92a3c2b-702e-43ed-bf9f-53d2e280dbe7
+  - data:
+      key: value
+    metadata:
+      creationTimestamp: "2025-12-03T09:25:48Z"
+      name: test-map-5
+      namespace: new-config-ns
+      resourceVersion: "14096221"
+      uid: 5aba884c-1d31-4ff2-b55b-17d76e0bf2a7
+  kind: ConfigMapList
+  metadata:
+    resourceVersion: "14096468"
+responseStatus:
+  code: 200
+  metadata: {}
+sourceIPs:
+- 127.0.0.1
+- 192.168.65.207
+stage: ResponseComplete
+stageTimestamp: "2025-12-03T09:26:48.537056Z"
+user:
+  extra:
+    authentication.kubernetes.io/credential-id:
+    - X509SHA256=b01a3aad9718ef70bace66ad1b9d577055510e60e4c043de79a791c99ddf7370
+  groups:
+  - system:masters
+  - system:authenticated
+  username: system:admin
+userAgent: curl/8.5.0
+verb: deletecollection
