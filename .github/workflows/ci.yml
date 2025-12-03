@@ -238,14 +238,14 @@ jobs:
       PROJECT_IMAGE: ${{ needs.docker-build.outputs.image }}
       KIND_CLUSTER: gitops-reverser-test-e2e
       CI_CONTAINER: ${{ needs.build-ci-container.outputs.image }}
-      # CRITICAL: Set HOST_PROJECT_PATH for audit webhook file mounting
-      # In CI, github.workspace IS the host path (Docker runs on host)
-      HOST_PROJECT_PATH: ${{ github.workspace }}
+      
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
 
       - name: Generate Kind cluster config from template
+        env:
+          HOST_PROJECT_PATH: ${{ github.workspace }}  # docker in docker, so we need to pass the host path
         run: |
           echo "🔧 Generating cluster config with HOST_PROJECT_PATH=${HOST_PROJECT_PATH}"
           envsubst < test/e2e/kind/cluster-template.yaml > test/e2e/kind/cluster.yaml
@@ -266,12 +266,6 @@ jobs:
           kubectl cluster-info
           kubectl get nodes
           echo "✅ Kind cluster is ready"
-          
-          # Verify audit files are mounted correctly
-          docker exec ${KIND_CLUSTER}-control-plane ls -la /etc/kubernetes/audit/ || echo "⚠️  Audit directory not found"
-          
-          # Check kube-apiserver for audit webhook configuration
-          docker exec ${KIND_CLUSTER}-control-plane ps aux | grep kube-apiserver | grep -o '\-\-audit[^ ]*' || echo "⚠️  Audit flags not found"
 
       - name: Login to Docker registry
         run: |
@@ -292,7 +286,6 @@ jobs:
             -w /workspace \
             -e PROJECT_IMAGE=${{ env.PROJECT_IMAGE }} \
             -e KIND_CLUSTER=${{ env.KIND_CLUSTER }} \
-            -e HOST_PROJECT_PATH=${{ env.HOST_PROJECT_PATH }} \
             ${{ env.CI_CONTAINER }} \
             bash -c "
               git config --global --add safe.directory /workspace
