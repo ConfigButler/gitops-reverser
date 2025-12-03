@@ -54,7 +54,7 @@ This injects the physical host path (e.g., `/home/user/projects/gitops-reverser2
 
 #### 2. Created Template Configuration
 
-**File:** [`test/e2e/kind/cluster.yaml.template`](../test/e2e/kind/cluster.yaml.template)
+**File:** [`test/e2e/kind/cluster-template.yaml`](../test/e2e/kind/cluster-template.yaml)
 
 ```yaml
 kind: Cluster
@@ -160,6 +160,41 @@ clusters:
 - ClusterIPs are handled by `kube-proxy` which runs as a static pod (starts with kube-apiserver)
 - No DNS lookup required - direct IP routing
 - Same solution used in production k3s clusters
+
+## CI/CD Configuration
+
+The same setup works in GitHub Actions CI using `helm/kind-action` with our custom config:
+
+**File:** [`.github/workflows/ci.yml`](../.github/workflows/ci.yml)
+
+```yaml
+env:
+  # In CI, github.workspace IS the host path (Docker runs on host)
+  HOST_PROJECT_PATH: ${{ github.workspace }}
+
+steps:
+  # Generate cluster.yaml from template with HOST_PROJECT_PATH substitution
+  - name: Generate Kind cluster config from template
+    run: |
+      envsubst < test/e2e/kind/cluster-template.yaml > test/e2e/kind/cluster.yaml
+      cat test/e2e/kind/cluster.yaml
+
+  # Use helm/kind-action with our custom config
+  - name: Set up Kind cluster with audit webhook support
+    uses: helm/kind-action@v1.13.0
+    with:
+      cluster_name: gitops-reverser-test-e2e
+      config: test/e2e/kind/cluster.yaml  # Our generated config
+      wait: 5m
+```
+
+**Key Differences from Devcontainer:**
+- In CI: GitHub Actions runner is the "host", so `github.workspace` is already the host path
+- In Devcontainer: VSCode maps `localWorkspaceFolder` (your machine) to container's `/workspaces/...`
+
+Both scenarios work because:
+1. CI: `github.workspace` → `/home/runner/work/...` (host path) ✅
+2. Dev: `localWorkspaceFolder` → `/home/user/...` (user's machine) ✅
 
 ## Testing Instructions
 
@@ -276,7 +311,7 @@ The test **"should receive audit webhook events from kube-apiserver"** should pa
 ┌──────────────────────────────────────────────────┐
 │ 2. start-cluster.sh runs                         │
 │    envsubst replaces ${HOST_PROJECT_PATH}        │
-│    in cluster.yaml.template                      │
+│    in cluster-template.yaml                      │
 └────────────────┬─────────────────────────────────┘
                  │
                  ▼
@@ -342,7 +377,7 @@ docker exec gitops-reverser-test-e2e-control-plane crictl logs $(docker exec git
 ## Files Modified
 
 - [`.devcontainer/devcontainer.json`](../.devcontainer/devcontainer.json) - Added `HOST_PROJECT_PATH` env var
-- [`test/e2e/kind/cluster.yaml.template`](../test/e2e/kind/cluster.yaml.template) - Template with placeholder
+- [`test/e2e/kind/cluster-template.yaml`](../test/e2e/kind/cluster-template.yaml) - Template with placeholder
 - [`test/e2e/kind/start-cluster.sh`](../test/e2e/kind/start-cluster.sh) - Script to substitute and create cluster
 - [`Makefile`](../Makefile) - Updated `setup-cluster` target
 - [`test/e2e/e2e_test.go`](../test/e2e/e2e_test.go) - Added audit webhook test

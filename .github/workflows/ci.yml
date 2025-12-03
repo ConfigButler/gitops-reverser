@@ -238,23 +238,40 @@ jobs:
       PROJECT_IMAGE: ${{ needs.docker-build.outputs.image }}
       KIND_CLUSTER: gitops-reverser-test-e2e
       CI_CONTAINER: ${{ needs.build-ci-container.outputs.image }}
+      # CRITICAL: Set HOST_PROJECT_PATH for audit webhook file mounting
+      # In CI, github.workspace IS the host path (Docker runs on host)
+      HOST_PROJECT_PATH: ${{ github.workspace }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
 
-      - name: Set up Kind cluster
+      - name: Generate Kind cluster config from template
+        run: |
+          echo "🔧 Generating cluster config with HOST_PROJECT_PATH=${HOST_PROJECT_PATH}"
+          envsubst < test/e2e/kind/cluster-template.yaml > test/e2e/kind/cluster.yaml
+          echo "✅ Generated configuration:"
+          cat test/e2e/kind/cluster.yaml
+
+      - name: Set up Kind cluster with audit webhook support
         uses: helm/kind-action@v1.13.0
         with:
           cluster_name: ${{ env.KIND_CLUSTER }}
           version: v0.30.0
           kubectl_version: v1.32.3
+          config: test/e2e/kind/cluster.yaml
           wait: 5m
 
-      - name: Verify cluster is ready
+      - name: Verify cluster and audit setup
         run: |
           kubectl cluster-info
           kubectl get nodes
           echo "✅ Kind cluster is ready"
+          
+          # Verify audit files are mounted correctly
+          docker exec ${KIND_CLUSTER}-control-plane ls -la /etc/kubernetes/audit/ || echo "⚠️  Audit directory not found"
+          
+          # Check kube-apiserver for audit webhook configuration
+          docker exec ${KIND_CLUSTER}-control-plane ps aux | grep kube-apiserver | grep -o '\-\-audit[^ ]*' || echo "⚠️  Audit flags not found"
 
       - name: Login to Docker registry
         run: |
@@ -275,6 +292,7 @@ jobs:
             -w /workspace \
             -e PROJECT_IMAGE=${{ env.PROJECT_IMAGE }} \
             -e KIND_CLUSTER=${{ env.KIND_CLUSTER }} \
+            -e HOST_PROJECT_PATH=${{ env.HOST_PROJECT_PATH }} \
             ${{ env.CI_CONTAINER }} \
             bash -c "
               git config --global --add safe.directory /workspace
