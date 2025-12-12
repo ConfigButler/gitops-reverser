@@ -14,6 +14,8 @@ kube-apiserver-arg:
 
 Do the upgrade in order on your contorl plane nodes:
 
+Also copy in the [policy file](/test/e2e/kind/audit/policy.yaml)
+
 sudo systemctl restart k3s
 # Wait 30 seconds
 sudo k3s kubectl get nodes # Verify API is responding

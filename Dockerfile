@@ -1,5 +1,5 @@
 # Build the manager binary
-FROM golang:1.25.4 AS builder
+FROM golang:1.25.5 AS builder
 
 # Automatic platform arguments provided by Docker BuildKit
 ARG TARGETOS
