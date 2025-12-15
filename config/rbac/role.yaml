@@ -35,9 +35,7 @@ rules:
   - configbutler.ai
   resources:
   - clusterwatchrules
-  - gitdestinations
   - gitproviders
-  - gitrepoconfigs
   - gittargets
   - watchrules
   verbs:
@@ -52,9 +50,7 @@ rules:
   - configbutler.ai
   resources:
   - clusterwatchrules/status
-  - gitdestinations/status
   - gitproviders/status
-  - gitrepoconfigs/status
   - gittargets/status
   - watchrules/status
   verbs:

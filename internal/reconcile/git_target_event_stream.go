@@ -40,12 +40,12 @@ const (
 	LiveProcessing EventStreamState = "LIVE_PROCESSING"
 )
 
-// GitDestinationEventStream synchronizes live event stream with reconciliation process.
+// GitTargetEventStream synchronizes live event stream with reconciliation process.
 // It provides deterministic state machine behavior and event deduplication.
-type GitDestinationEventStream struct {
+type GitTargetEventStream struct {
 	// Identity
-	gitDestName      string
-	gitDestNamespace string
+	gitTargetName      string
+	gitTargetNamespace string
 
 	// State machine
 	state EventStreamState
@@ -73,25 +73,25 @@ type EventEmitter interface {
 	EmitReconcileResourceEvent(resource types.ResourceIdentifier) error
 }
 
-// NewGitDestinationEventStream creates a new event stream for a GitDestination.
-func NewGitDestinationEventStream(
-	gitDestName, gitDestNamespace string,
+// NewGitTargetEventStream creates a new event stream for a GitTarget.
+func NewGitTargetEventStream(
+	gitTargetName, gitTargetNamespace string,
 	branchWorker EventEnqueuer,
 	logger logr.Logger,
-) *GitDestinationEventStream {
-	return &GitDestinationEventStream{
-		gitDestName:          gitDestName,
-		gitDestNamespace:     gitDestNamespace,
-		state:                StartupReconcile,
+) *GitTargetEventStream {
+	return &GitTargetEventStream{
+		gitTargetName:        gitTargetName,
+		gitTargetNamespace:   gitTargetNamespace,
+		state:                LiveProcessing, // Start in LiveProcessing for now to ensure events are processed
 		bufferedEvents:       make([]git.Event, 0),
 		processedEventHashes: make(map[string]string),
 		branchWorker:         branchWorker,
-		logger:               logger.WithValues("gitDestination", fmt.Sprintf("%s/%s", gitDestNamespace, gitDestName)),
+		logger:               logger.WithValues("gitTarget", fmt.Sprintf("%s/%s", gitTargetNamespace, gitTargetName)),
 	}
 }
 
 // OnWatchEvent processes incoming watch events from the cluster.
-func (s *GitDestinationEventStream) OnWatchEvent(event git.Event) {
+func (s *GitTargetEventStream) OnWatchEvent(event git.Event) {
 	switch s.state {
 	case StartupReconcile:
 		// Buffer all events during reconciliation (no deduplication)
@@ -115,7 +115,7 @@ func (s *GitDestinationEventStream) OnWatchEvent(event git.Event) {
 }
 
 // OnReconciliationComplete signals that initial reconciliation has finished.
-func (s *GitDestinationEventStream) OnReconciliationComplete() {
+func (s *GitTargetEventStream) OnReconciliationComplete() {
 	if s.state != StartupReconcile {
 		s.logger.Info(
 			"Reconciliation complete signal received but not in STARTUP_RECONCILE state",
@@ -143,7 +143,7 @@ func (s *GitDestinationEventStream) OnReconciliationComplete() {
 }
 
 // processEvent forwards the event to BranchWorker and updates deduplication state.
-func (s *GitDestinationEventStream) processEvent(event git.Event, eventHash, resourceKey string) {
+func (s *GitTargetEventStream) processEvent(event git.Event, eventHash, resourceKey string) {
 	// Forward to BranchWorker
 	s.branchWorker.Enqueue(event)
 
@@ -154,7 +154,7 @@ func (s *GitDestinationEventStream) processEvent(event git.Event, eventHash, res
 }
 
 // computeEventHash calculates a hash of the event content that would be written to Git.
-func (s *GitDestinationEventStream) computeEventHash(event git.Event) string {
+func (s *GitTargetEventStream) computeEventHash(event git.Event) string {
 	if event.Object == nil {
 		// Control events - hash the operation and identifier
 		content := fmt.Sprintf("%s:%s", event.Operation, event.Identifier.String())
@@ -177,28 +177,28 @@ func (s *GitDestinationEventStream) computeEventHash(event git.Event) string {
 }
 
 // GetState returns the current state of the event stream.
-func (s *GitDestinationEventStream) GetState() EventStreamState {
+func (s *GitTargetEventStream) GetState() EventStreamState {
 	return s.state
 }
 
 // GetBufferedEventCount returns the number of events currently buffered.
-func (s *GitDestinationEventStream) GetBufferedEventCount() int {
+func (s *GitTargetEventStream) GetBufferedEventCount() int {
 	return len(s.bufferedEvents)
 }
 
 // GetProcessedEventCount returns the number of unique events processed.
-func (s *GitDestinationEventStream) GetProcessedEventCount() int {
+func (s *GitTargetEventStream) GetProcessedEventCount() int {
 	return len(s.processedEventHashes)
 }
 
 // String returns a string representation for debugging.
-func (s *GitDestinationEventStream) String() string {
-	return fmt.Sprintf("GitDestinationEventStream(gitDest=%s/%s, state=%s, buffered=%d, processed=%d)",
-		s.gitDestNamespace, s.gitDestName, s.state, len(s.bufferedEvents), len(s.processedEventHashes))
+func (s *GitTargetEventStream) String() string {
+	return fmt.Sprintf("GitTargetEventStream(gitTarget=%s/%s, state=%s, buffered=%d, processed=%d)",
+		s.gitTargetNamespace, s.gitTargetName, s.state, len(s.bufferedEvents), len(s.processedEventHashes))
 }
 
 // EmitCreateEvent emits a CREATE event for reconciliation.
-func (s *GitDestinationEventStream) EmitCreateEvent(resource types.ResourceIdentifier) error {
+func (s *GitTargetEventStream) EmitCreateEvent(resource types.ResourceIdentifier) error {
 	event := git.Event{
 		Operation:  "CREATE",
 		Identifier: resource,
@@ -209,7 +209,7 @@ func (s *GitDestinationEventStream) EmitCreateEvent(resource types.ResourceIdent
 }
 
 // EmitDeleteEvent emits a DELETE event for reconciliation.
-func (s *GitDestinationEventStream) EmitDeleteEvent(resource types.ResourceIdentifier) error {
+func (s *GitTargetEventStream) EmitDeleteEvent(resource types.ResourceIdentifier) error {
 	event := git.Event{
 		Operation:  "DELETE",
 		Identifier: resource,
@@ -220,7 +220,7 @@ func (s *GitDestinationEventStream) EmitDeleteEvent(resource types.ResourceIdent
 }
 
 // EmitReconcileResourceEvent emits a RECONCILE_RESOURCE event for reconciliation.
-func (s *GitDestinationEventStream) EmitReconcileResourceEvent(resource types.ResourceIdentifier) error {
+func (s *GitTargetEventStream) EmitReconcileResourceEvent(resource types.ResourceIdentifier) error {
 	event := git.Event{
 		Operation:  string(events.ReconcileResource),
 		Identifier: resource,

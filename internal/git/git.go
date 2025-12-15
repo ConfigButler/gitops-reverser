@@ -382,9 +382,9 @@ func GetCurrentBranch(r *git.Repository) (plumbing.ReferenceName, plumbing.Hash,
 	return symbolicRef.Target(), commitRef.Hash(), nil
 }
 
-// sanitizeBaseFolder validates and normalizes a baseFolder value to a safe POSIX-like relative path.
+// sanitizePath validates and normalizes a path value to a safe POSIX-like relative path.
 // Returns empty string when the input is unsafe or empty.
-func sanitizeBaseFolder(base string) string {
+func sanitizePath(base string) string {
 	trimmed := strings.TrimSpace(base)
 	if trimmed == "" {
 		return ""
@@ -681,8 +681,8 @@ func applyEventToWorktree(ctx context.Context, worktree *git.Worktree, event Eve
 	logger := log.FromContext(ctx)
 
 	filePath := event.Identifier.ToGitPath()
-	if event.BaseFolder != "" {
-		if bf := sanitizeBaseFolder(event.BaseFolder); bf != "" {
+	if event.Path != "" {
+		if bf := sanitizePath(event.Path); bf != "" {
 			filePath = path.Join(bf, filePath)
 		}
 	}

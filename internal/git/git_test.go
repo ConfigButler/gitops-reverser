@@ -213,7 +213,7 @@ func TestGetCommitMessage_CreateOperation(t *testing.T) {
 		UserInfo: UserInfo{
 			Username: "john.doe@example.com",
 		},
-		BaseFolder: "",
+		Path: "",
 	}
 
 	message := GetCommitMessage(event)
@@ -240,7 +240,7 @@ func TestGetCommitMessage_UpdateOperation(t *testing.T) {
 		UserInfo: UserInfo{
 			Username: "system:serviceaccount:kube-system:deployment-controller",
 		},
-		BaseFolder: "prod-repo",
+		Path: "prod-repo",
 	}
 
 	message := GetCommitMessage(event)
@@ -267,7 +267,7 @@ func TestGetCommitMessage_DeleteOperation(t *testing.T) {
 		UserInfo: UserInfo{
 			Username: "admin",
 		},
-		BaseFolder: "staging-repo",
+		Path: "staging-repo",
 	}
 
 	message := GetCommitMessage(event)
@@ -293,7 +293,7 @@ func TestGetCommitMessage_ClusterScopedResource(t *testing.T) {
 		UserInfo: UserInfo{
 			Username: "cluster-admin",
 		},
-		BaseFolder: "cluster-repo",
+		Path: "cluster-repo",
 	}
 
 	message := GetCommitMessage(event)
@@ -320,7 +320,7 @@ func TestGetCommitMessage_EmptyUsername(t *testing.T) {
 		UserInfo: UserInfo{
 			Username: "", // Empty username
 		},
-		BaseFolder: "",
+		Path: "",
 	}
 
 	message := GetCommitMessage(event)
@@ -347,7 +347,7 @@ func TestGetCommitMessage_SpecialCharactersInNames(t *testing.T) {
 		UserInfo: UserInfo{
 			Username: "user@domain.com",
 		},
-		BaseFolder: "",
+		Path: "",
 	}
 
 	message := GetCommitMessage(event)
@@ -467,7 +467,7 @@ func TestIntegration_FilePathAndCommitMessage(t *testing.T) {
 		UserInfo: UserInfo{
 			Username: "integration-test-user",
 		},
-		BaseFolder: "integration-repo",
+		Path: "integration-repo",
 	}
 
 	filePath := identifier.ToGitPath()
@@ -516,7 +516,7 @@ func TestCommitMessage_AllOperations(t *testing.T) {
 				UserInfo: UserInfo{
 					Username: "test-user",
 				},
-				BaseFolder: "",
+				Path: "",
 			}
 
 			message := GetCommitMessage(event)
@@ -565,7 +565,7 @@ func TestGenerateLocalCommits_DeleteOperation(t *testing.T) {
 		UserInfo: UserInfo{
 			Username: "admin",
 		},
-		BaseFolder: "",
+		Path: "",
 	}
 
 	// Verify commit message includes DELETE
@@ -622,7 +622,7 @@ func TestGenerateLocalCommits_CreateUpdateDeleteMixed(t *testing.T) {
 				UserInfo: UserInfo{
 					Username: "test-user",
 				},
-				BaseFolder: "",
+				Path: "",
 			}
 
 			message := GetCommitMessage(event)
@@ -704,7 +704,7 @@ func TestDeleteOperation_CommitMessageFormat(t *testing.T) {
 				UserInfo: UserInfo{
 					Username: tc.username,
 				},
-				BaseFolder: "",
+				Path: "",
 			}
 
 			message := GetCommitMessage(event)
@@ -734,7 +734,7 @@ func TestDeleteOperation_ClusterScoped(t *testing.T) {
 		UserInfo: UserInfo{
 			Username: "cluster-admin",
 		},
-		BaseFolder: "cluster-repo",
+		Path: "cluster-repo",
 	}
 
 	// Verify file path
@@ -778,7 +778,7 @@ func TestBatchOperations_MultipleDeletes(t *testing.T) {
 			UserInfo: UserInfo{
 				Username: "batch-delete-user",
 			},
-			BaseFolder: "",
+			Path: "",
 		}
 		events = append(events, event)
 	}

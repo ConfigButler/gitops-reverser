@@ -50,29 +50,29 @@ func NewWorkerManager(client client.Client, log logr.Logger) *WorkerManager {
 	}
 }
 
-// RegisterDestination ensures a worker exists for the destination's (repo, branch)
-// and registers the destination with that worker.
-// This is called by GitDestination controller when a destination becomes Ready.
-func (m *WorkerManager) RegisterDestination(
+// RegisterTarget ensures a worker exists for the target's (provider, branch)
+// and registers the target with that worker.
+// This is called by GitTarget controller when a target becomes Ready.
+func (m *WorkerManager) RegisterTarget(
 	_ context.Context,
-	_ string, destNamespace string,
-	repoName, repoNamespace string,
-	branch, baseFolder string,
+	_ string, targetNamespace string,
+	providerName, providerNamespace string,
+	branch, path string,
 ) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	key := BranchKey{
-		RepoNamespace: repoNamespace,
-		RepoName:      repoName,
+		RepoNamespace: providerNamespace,
+		RepoName:      providerName,
 		Branch:        branch,
 	}
 
-	// Get or create worker for this (repo, branch)
+	// Get or create worker for this (provider, branch)
 	if _, exists := m.workers[key]; !exists {
 		m.Log.Info("Creating new branch worker", "key", key.String())
 		worker := NewBranchWorker(m.Client, m.Log.WithName("branch-worker"),
-			repoName, repoNamespace, branch)
+			providerName, providerNamespace, branch)
 
 		if err := worker.Start(m.ctx); err != nil {
 			return fmt.Errorf("failed to start worker for %s: %w", key.String(), err)
@@ -81,28 +81,28 @@ func (m *WorkerManager) RegisterDestination(
 		m.workers[key] = worker
 	}
 
-	m.Log.Info("GitDestination registered with branch worker",
-		"destination", fmt.Sprintf("%s/%s", destNamespace, ""),
+	m.Log.Info("GitTarget registered with branch worker",
+		"target", fmt.Sprintf("%s/%s", targetNamespace, ""),
 		"workerKey", key.String(),
-		"baseFolder", baseFolder)
+		"path", path)
 
 	return nil
 }
 
-// UnregisterDestination removes a GitDestination from its worker.
-// Destroys the worker if it was the last destination using it.
-// This is called by GitDestination controller when a destination is deleted.
-func (m *WorkerManager) UnregisterDestination(
+// UnregisterTarget removes a GitTarget from its worker.
+// Destroys the worker if it was the last target using it.
+// This is called by GitTarget controller when a target is deleted.
+func (m *WorkerManager) UnregisterTarget(
 	_, _ string,
-	repoName, repoNamespace string,
+	providerName, providerNamespace string,
 	branch string,
 ) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	key := BranchKey{
-		RepoNamespace: repoNamespace,
-		RepoName:      repoName,
+		RepoNamespace: providerNamespace,
+		RepoName:      providerName,
 		Branch:        branch,
 	}
 
@@ -111,28 +111,28 @@ func (m *WorkerManager) UnregisterDestination(
 		return nil
 	}
 
-	// Worker no longer tracks destinations internally - always destroy worker
+	// Worker no longer tracks targets internally - always destroy worker
 	// since WorkerManager handles all lifecycle decisions
-	m.Log.Info("Unregistering destination, destroying worker", "key", key.String())
+	m.Log.Info("Unregistering target, destroying worker", "key", key.String())
 	worker.Stop()
 	delete(m.workers, key)
 
 	return nil
 }
 
-// GetWorkerForDestination finds the worker for a destination's (repo, branch).
+// GetWorkerForTarget finds the worker for a target's (provider, branch).
 // Returns the worker and true if found, nil and false otherwise.
 // This is used by EventRouter to dispatch events to the correct worker.
-func (m *WorkerManager) GetWorkerForDestination(
-	repoName, repoNamespace string,
+func (m *WorkerManager) GetWorkerForTarget(
+	providerName, providerNamespace string,
 	branch string,
 ) (*BranchWorker, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
 	key := BranchKey{
-		RepoNamespace: repoNamespace,
-		RepoName:      repoName,
+		RepoNamespace: providerNamespace,
+		RepoName:      providerName,
 		Branch:        branch,
 	}
 
@@ -140,36 +140,33 @@ func (m *WorkerManager) GetWorkerForDestination(
 	return worker, exists
 }
 
-// ReconcileWorkers checks active GitDestinations and cleans up orphaned workers.
-// This ensures workers are removed when their GitDestinations are deleted.
+// ReconcileWorkers checks active GitTargets and cleans up orphaned workers.
+// This ensures workers are removed when their GitTargets are deleted.
 func (m *WorkerManager) ReconcileWorkers(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// Get all GitDestinations
-	var destList configv1alpha1.GitDestinationList
-	if err := m.Client.List(ctx, &destList); err != nil {
-		return fmt.Errorf("failed to list GitDestinations: %w", err)
+	// Get all GitTargets
+	var targetList configv1alpha1.GitTargetList
+	if err := m.Client.List(ctx, &targetList); err != nil {
+		return fmt.Errorf("failed to list GitTargets: %w", err)
 	}
 
-	// Build set of needed workers from active GitDestinations
+	// Build set of needed workers from active GitTargets
 	neededWorkers := make(map[BranchKey]bool)
-	for _, dest := range destList.Items {
-		// Skip deleted destinations
-		if !dest.DeletionTimestamp.IsZero() {
+	for _, target := range targetList.Items {
+		// Skip deleted targets
+		if !target.DeletionTimestamp.IsZero() {
 			continue
 		}
 
-		// Determine namespace
-		repoNS := dest.Spec.RepoRef.Namespace
-		if repoNS == "" {
-			repoNS = dest.Namespace
-		}
+		// Determine namespace (Provider is always in same namespace as Target)
+		providerNS := target.Namespace
 
 		key := BranchKey{
-			RepoNamespace: repoNS,
-			RepoName:      dest.Spec.RepoRef.Name,
-			Branch:        dest.Spec.Branch,
+			RepoNamespace: providerNS,
+			RepoName:      target.Spec.Provider.Name,
+			Branch:        target.Spec.Branch,
 		}
 		neededWorkers[key] = true
 	}

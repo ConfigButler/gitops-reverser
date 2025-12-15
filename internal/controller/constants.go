@@ -21,6 +21,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"time"
 )
 
@@ -49,4 +50,20 @@ const (
 	RetryBackoffJitter = 0.1
 	// RetryMaxSteps is the maximum number of retry attempts.
 	RetryMaxSteps = 5
+
+	// ReasonChecking indicates that the controller is checking the resource status.
+	ReasonChecking = "Checking"
+	// ReasonSecretNotFound indicates that the referenced secret was not found.
+	ReasonSecretNotFound = "SecretNotFound"
+	// ReasonSecretMalformed indicates that the referenced secret is invalid.
+	ReasonSecretMalformed = "SecretMalformed"
+	// ReasonConnectionFailed indicates that the connection to the provider failed.
+	ReasonConnectionFailed = "ConnectionFailed"
+)
+
+var (
+	// ErrMissingPassword indicates that the password field is missing in the secret.
+	ErrMissingPassword = errors.New("secret contains username but missing password")
+	// ErrInvalidSecretFormat indicates that the secret format is invalid.
+	ErrInvalidSecretFormat = errors.New("secret must contain either 'ssh-privatekey' or both 'username' and 'password'")
 )

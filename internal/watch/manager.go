@@ -239,34 +239,34 @@ func (m *Manager) enqueueMatches(
 			Identifier: id,
 			Operation:  "UPDATE",
 			UserInfo:   userInfo,
-			BaseFolder: rule.BaseFolder,
+			Path:       rule.Path,
 		}
 
-		gitDest := types.NewResourceReference(rule.GitDestinationRef, rule.GitDestinationNamespace)
+		gitDest := types.NewResourceReference(rule.GitTargetRef, rule.GitTargetNamespace)
 
-		// Route to GitDestinationEventStream for buffering and deduplication
-		if err := m.EventRouter.RouteToGitDestinationEventStream(ev, gitDest); err != nil {
-			m.Log.Error(err, "Failed to route event to GitDestinationEventStream - dropping event",
+		// Route to GitTargetEventStream for buffering and deduplication
+		if err := m.EventRouter.RouteToGitTargetEventStream(ev, gitDest); err != nil {
+			m.Log.Error(err, "Failed to route event to GitTargetEventStream - dropping event",
 				"gitDest", gitDest.String(),
 				"resource", id.String())
 		}
 	}
 
-	// ClusterWatchRule matches - route to GitDestinationEventStreams
+	// ClusterWatchRule matches - route to GitTargetEventStreams
 	for _, cr := range clusterRules {
 		ev := git.Event{
 			Object:     sanitized.DeepCopy(),
 			Identifier: id,
 			Operation:  "UPDATE",
 			UserInfo:   userInfo,
-			BaseFolder: cr.BaseFolder,
+			Path:       cr.Path,
 		}
 
-		gitDest := types.NewResourceReference(cr.GitDestinationRef, cr.GitDestinationNamespace)
+		gitDest := types.NewResourceReference(cr.GitTargetRef, cr.GitTargetNamespace)
 
-		// Route to GitDestinationEventStream for buffering and deduplication
-		if err := m.EventRouter.RouteToGitDestinationEventStream(ev, gitDest); err != nil {
-			m.Log.Error(err, "Failed to route event to GitDestinationEventStream - dropping event",
+		// Route to GitTargetEventStream for buffering and deduplication
+		if err := m.EventRouter.RouteToGitTargetEventStream(ev, gitDest); err != nil {
+			m.Log.Error(err, "Failed to route event to GitTargetEventStream - dropping event",
 				"gitDest", gitDest.String(),
 				"resource", id.String())
 		}
@@ -604,7 +604,7 @@ func (m *Manager) processListedObject(
 	}
 }
 
-// GetClusterStateForGitDest returns cluster resources for a GitDestination.
+// GetClusterStateForGitDest returns cluster resources for a GitTarget.
 // This is a synchronous service method called by EventRouter.
 func (m *Manager) GetClusterStateForGitDest(
 	ctx context.Context,
@@ -612,28 +612,28 @@ func (m *Manager) GetClusterStateForGitDest(
 ) ([]types.ResourceIdentifier, error) {
 	log := m.Log.WithValues("gitDest", gitDest.String())
 
-	// Look up GitDestination to get baseFolder
-	var gitDestObj configv1alpha1.GitDestination
+	// Look up GitTarget to get path
+	var gitTargetObj configv1alpha1.GitTarget
 	if err := m.Client.Get(ctx, client.ObjectKey{
 		Name:      gitDest.Name,
 		Namespace: gitDest.Namespace,
-	}, &gitDestObj); err != nil {
-		return nil, fmt.Errorf("failed to get GitDestination: %w", err)
+	}, &gitTargetObj); err != nil {
+		return nil, fmt.Errorf("failed to get GitTarget: %w", err)
 	}
 
-	baseFolder := gitDestObj.Spec.BaseFolder
-	log = log.WithValues("baseFolder", baseFolder)
+	path := gitTargetObj.Spec.Path
+	log = log.WithValues("path", path)
 
 	// Get matching rules
 	wrRules := m.RuleStore.SnapshotWatchRules()
 	cwrRules := m.RuleStore.SnapshotClusterWatchRules()
 
-	// Build GVR set from rules that reference this GitDestination
+	// Build GVR set from rules that reference this GitTarget
 	gvrSet := make(map[schema.GroupVersionResource]struct{})
 
 	for _, rule := range wrRules {
-		if rule.GitDestinationRef == gitDestObj.Name &&
-			rule.GitDestinationNamespace == gitDestObj.Namespace {
+		if rule.GitTargetRef == gitTargetObj.Name &&
+			rule.GitTargetNamespace == gitTargetObj.Namespace {
 			for _, rr := range rule.ResourceRules {
 				m.addGVRsFromResourceRule(rr, gvrSet)
 			}
@@ -641,8 +641,8 @@ func (m *Manager) GetClusterStateForGitDest(
 	}
 
 	for _, cwrRule := range cwrRules {
-		if cwrRule.GitDestinationRef == gitDestObj.Name &&
-			cwrRule.GitDestinationNamespace == gitDestObj.Namespace {
+		if cwrRule.GitTargetRef == gitTargetObj.Name &&
+			cwrRule.GitTargetNamespace == gitTargetObj.Namespace {
 			for _, rr := range cwrRule.Rules {
 				m.addGVRsFromClusterResourceRule(rr, gvrSet)
 			}
@@ -657,7 +657,7 @@ func (m *Manager) GetClusterStateForGitDest(
 
 	var resources []types.ResourceIdentifier
 	for gvr := range gvrSet {
-		gvrResources, err := m.listResourcesForGVR(ctx, dc, gvr, &gitDestObj)
+		gvrResources, err := m.listResourcesForGVR(ctx, dc, gvr, &gitTargetObj)
 		if err != nil {
 			log.Error(err, "Failed to list GVR", "gvr", gvr)
 			continue
@@ -745,12 +745,12 @@ func (m *Manager) addGVRsFromClusterResourceRule(
 	}
 }
 
-// listResourcesForGVR lists all resources for a specific GVR that match the GitDestination criteria.
+// listResourcesForGVR lists all resources for a specific GVR that match the GitTarget criteria.
 func (m *Manager) listResourcesForGVR(
 	ctx context.Context,
 	dc dynamic.Interface,
 	gvr schema.GroupVersionResource,
-	gitDest *configv1alpha1.GitDestination,
+	gitTarget *configv1alpha1.GitTarget,
 ) ([]types.ResourceIdentifier, error) {
 	var resources []types.ResourceIdentifier
 
@@ -764,8 +764,8 @@ func (m *Manager) listResourcesForGVR(
 	for i := range list.Items {
 		obj := &list.Items[i]
 
-		// Check if object matches GitDestination criteria
-		if !m.objectMatchesGitDest(obj, gitDest) {
+		// Check if object matches GitTarget criteria
+		if !m.objectMatchesGitTarget(obj, gitTarget) {
 			continue
 		}
 
@@ -782,13 +782,13 @@ func (m *Manager) listResourcesForGVR(
 	return resources, nil
 }
 
-// objectMatchesGitDest checks if an object should be included for a GitDestination.
-func (m *Manager) objectMatchesGitDest(
+// objectMatchesGitTarget checks if an object should be included for a GitTarget.
+func (m *Manager) objectMatchesGitTarget(
 	_ *unstructured.Unstructured,
-	_ *configv1alpha1.GitDestination,
+	_ *configv1alpha1.GitTarget,
 ) bool {
 	// For now, simple match - in the future could filter by namespace, labels, etc.
-	// based on the rules that reference this GitDestination
+	// based on the rules that reference this GitTarget
 	return true
 }
 

@@ -107,12 +107,6 @@ func main() {
 	// Leader labeler (if elected)
 	addLeaderPodLabeler(mgr, cfg.enableLeaderElection)
 
-	// Controllers
-	fatalIfErr((&controller.GitRepoConfigReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr), "unable to create controller", "controller", "GitRepoConfig")
-
 	// Initialize rule store for watch rules
 	ruleStore := rulestore.NewStore()
 
@@ -159,14 +153,6 @@ func main() {
 	// Set EventRouter reference in WatchManager
 	watchMgr.EventRouter = eventRouter
 
-	// GitDestination controller (with WorkerManager and EventRouter)
-	fatalIfErr((&controller.GitDestinationReconciler{
-		Client:        mgr.GetClient(),
-		Scheme:        mgr.GetScheme(),
-		WorkerManager: workerManager,
-		EventRouter:   eventRouter,
-	}).SetupWithManager(mgr), "unable to create controller", "controller", "GitDestination")
-
 	// WatchRule controller (with WatchManager reference for dynamic reconciliation)
 	fatalIfErr((&controller.WatchRuleReconciler{
 		Client:       mgr.GetClient(),
@@ -199,10 +185,10 @@ func main() {
 	mgr.GetWebhookServer().Register("/process-validating-webhook", validatingWebhook)
 	setupLog.Info("Event correlation webhook handler registered", "path", "/process-validating-webhook")
 
-	// Register GitDestination validator webhook (prevents duplicate destinations)
-	fatalIfErr(webhookhandler.SetupGitDestinationValidatorWebhook(mgr),
-		"unable to setup GitDestination validator webhook")
-	setupLog.Info("GitDestination validator webhook registered - enforcing uniqueness constraint")
+	// Register GitTarget validator webhook (prevents duplicate targets)
+	fatalIfErr(webhookhandler.SetupGitTargetValidatorWebhook(mgr),
+		"unable to setup GitTarget validator webhook")
+	setupLog.Info("GitTarget validator webhook registered - enforcing uniqueness constraint")
 
 	// Register experimental audit webhook for metrics collection
 	auditHandler, err := webhookhandler.NewAuditHandler(webhookhandler.AuditHandlerConfig{

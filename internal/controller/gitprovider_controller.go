@@ -232,7 +232,7 @@ func (r *GitProviderReconciler) fetchSecret(
 func (r *GitProviderReconciler) extractCredentials(secret *corev1.Secret) (transport.AuthMethod, error) {
 	// If no secret is provided, return nil auth (for public repositories)
 	if secret == nil {
-		return nil, nil
+		return nil, nil //nolint:nilnil // nil auth means public repository
 	}
 
 	// Try SSH key authentication first
@@ -316,7 +316,9 @@ func (r *GitProviderReconciler) updateStatusAndRequeue(
 	return ctrl.Result{RequeueAfter: requeueAfter}, nil
 }
 
-// updateStatusWithRetry updates the status with retry logic to handle race conditions
+// updateStatusWithRetry updates the status with retry logic to handle race conditions.
+//
+//nolint:dupl // Similar retry logic pattern used across controllers
 func (r *GitProviderReconciler) updateStatusWithRetry(
 	ctx context.Context,
 	gitProvider *configbutleraiv1alpha1.GitProvider,
