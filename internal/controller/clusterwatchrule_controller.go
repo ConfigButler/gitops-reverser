@@ -93,7 +93,7 @@ func (r *ClusterWatchRuleReconciler) Reconcile(ctx context.Context, req ctrl.Req
 
 	log.Info("Starting ClusterWatchRule validation",
 		"name", clusterRule.Name,
-		"target", clusterRule.Spec.Target,
+		"target", clusterRule.Spec.TargetRef,
 		"generation", clusterRule.Generation,
 		"resourceVersion", clusterRule.ResourceVersion)
 
@@ -114,14 +114,14 @@ func (r *ClusterWatchRuleReconciler) reconcileClusterWatchRuleViaTarget(
 	log := logf.FromContext(ctx).WithName("reconcileClusterWatchRuleViaTarget")
 
 	// Target is required
-	if clusterRule.Spec.Target.Name == "" {
+	if clusterRule.Spec.TargetRef.Name == "" {
 		r.setCondition(clusterRule, metav1.ConditionFalse, ClusterWatchRuleReasonGitDestinationInvalid,
 			"Target.name must be specified for ClusterWatchRule")
 		return r.updateStatusAndRequeue(ctx, clusterRule)
 	}
 
 	// For ClusterWatchRule, target namespace must be specified
-	targetNS := clusterRule.Spec.Target.Namespace
+	targetNS := clusterRule.Spec.TargetRef.Namespace
 	if targetNS == "" {
 		r.setCondition(clusterRule, metav1.ConditionFalse, ClusterWatchRuleReasonGitDestinationInvalid,
 			"Target.namespace must be specified for ClusterWatchRule")
@@ -130,23 +130,23 @@ func (r *ClusterWatchRuleReconciler) reconcileClusterWatchRuleViaTarget(
 
 	// Fetch GitTarget
 	var target configbutleraiv1alpha1.GitTarget
-	targetKey := types.NamespacedName{Name: clusterRule.Spec.Target.Name, Namespace: targetNS}
+	targetKey := types.NamespacedName{Name: clusterRule.Spec.TargetRef.Name, Namespace: targetNS}
 	if err := r.Get(ctx, targetKey, &target); err != nil {
 		log.Error(err, "Failed to get referenced GitTarget",
-			"gitTargetName", clusterRule.Spec.Target.Name,
+			"gitTargetName", clusterRule.Spec.TargetRef.Name,
 			"gitTargetNamespace", targetNS)
 		r.setCondition(
 			clusterRule,
 			metav1.ConditionFalse,
 			ClusterWatchRuleReasonGitDestinationNotFound,
 			fmt.Sprintf("Referenced GitTarget '%s/%s' not found: %v",
-				targetNS, clusterRule.Spec.Target.Name, err),
+				targetNS, clusterRule.Spec.TargetRef.Name, err),
 		)
 		return r.updateStatusAndRequeue(ctx, clusterRule)
 	}
 
 	// Resolve GitProvider from target
-	providerName := target.Spec.Provider.Name
+	providerName := target.Spec.ProviderRef.Name
 	providerNS := target.Namespace // Same as GitTarget
 
 	var provider configbutleraiv1alpha1.GitProvider
@@ -195,8 +195,8 @@ func (r *ClusterWatchRuleReconciler) setReadyAndUpdateStatusWithTarget(
 ) (ctrl.Result, error) {
 	msg := fmt.Sprintf(
 		"ClusterWatchRule is ready and monitoring resources via GitTarget '%s/%s'",
-		clusterRule.Spec.Target.Namespace,
-		clusterRule.Spec.Target.Name,
+		clusterRule.Spec.TargetRef.Namespace,
+		clusterRule.Spec.TargetRef.Name,
 	)
 	r.setCondition(
 		clusterRule,

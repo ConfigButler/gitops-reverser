@@ -37,13 +37,24 @@ const (
 	OperationAll OperationType = "*"
 )
 
+type LocalTargetReference struct {
+	// API Group of the referent.
+	// +kubebuilder:default=configbutler.ai
+	Group string `json:"group,omitempty"`
+
+	// +kubebuilder:validation:Enum=GitTarget
+	// +kubebuilder:default=GitTarget
+	Kind string `json:"kind"`
+	Name string `json:"name"`
+}
+
 // WatchRuleSpec defines the desired state of WatchRule.
 // WatchRule watches resources ONLY within its own namespace.
 type WatchRuleSpec struct {
-	// Target references the GitTarget to use.
+	// TargetRef references the GitTarget to use.
 	// Must be in the same namespace.
 	// +required
-	Target LocalTargetReference `json:"target"`
+	TargetRef LocalTargetReference `json:"targetRef"`
 
 	// Rules define which resources to watch within this namespace.
 	// Multiple rules create a logical OR - a resource matching ANY rule is watched.

@@ -65,7 +65,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha1.GitTargetSpec{
-					Provider: configbutleraiv1alpha1.GitProviderReference{
+					ProviderRef: configbutleraiv1alpha1.GitProviderReference{
 						Name: "test-provider-security",
 						Kind: "GitProvider",
 					},
@@ -150,7 +150,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha1.GitTargetSpec{
-					Provider: configbutleraiv1alpha1.GitProviderReference{
+					ProviderRef: configbutleraiv1alpha1.GitProviderReference{
 						Name: "test-provider-allowed",
 						Kind: "GitProvider",
 					},
@@ -260,7 +260,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 						Namespace: "default",
 					},
 					Spec: configbutleraiv1alpha1.GitTargetSpec{
-						Provider: configbutleraiv1alpha1.GitProviderReference{
+						ProviderRef: configbutleraiv1alpha1.GitProviderReference{
 							Name: "test-provider-glob",
 							Kind: "GitProvider",
 						},
@@ -347,7 +347,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha1.GitTargetSpec{
-					Provider: configbutleraiv1alpha1.GitProviderReference{
+					ProviderRef: configbutleraiv1alpha1.GitProviderReference{
 						Name: "test-provider-conflict",
 						Kind: "GitProvider",
 					},
@@ -383,7 +383,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha1.GitTargetSpec{
-					Provider: configbutleraiv1alpha1.GitProviderReference{
+					ProviderRef: configbutleraiv1alpha1.GitProviderReference{
 						Name: "test-provider-conflict",
 						Kind: "GitProvider",
 					},
@@ -458,7 +458,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha1.GitTargetSpec{
-					Provider: configbutleraiv1alpha1.GitProviderReference{
+					ProviderRef: configbutleraiv1alpha1.GitProviderReference{
 						Name: "test-provider-no-conflict",
 						Kind: "GitProvider",
 					},
@@ -475,7 +475,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha1.GitTargetSpec{
-					Provider: configbutleraiv1alpha1.GitProviderReference{
+					ProviderRef: configbutleraiv1alpha1.GitProviderReference{
 						Name: "test-provider-no-conflict",
 						Kind: "GitProvider",
 					},

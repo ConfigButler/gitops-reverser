@@ -25,11 +25,13 @@ import (
 // GitProviderReference references the GitProvider or Flux GitRepository.
 type GitProviderReference struct {
 	// API Group of the referent.
-	// +kubebuilder:default="configbutler.ai"
+	// +kubebuilder:enum=configbutler.ai,source.toolkit.fluxcd.io
+	// +kubebuilder:default=configbutler.ai
 	Group string `json:"group,omitempty"`
 
 	// Kind of the referent.
-	// Supported values: "GitProvider", "GitRepository" (Flux)
+	// NOTE: Support for reading from Flux GitRepository is not yet implemented!
+	// +kubebuilder:enum=GitProvider,GitRepository
 	// +kubebuilder:default=GitProvider
 	Kind string `json:"kind"`
 
@@ -40,9 +42,9 @@ type GitProviderReference struct {
 
 // GitTargetSpec defines the desired state of GitTarget.
 type GitTargetSpec struct {
-	// Provider references the GitProvider or Flux GitRepository.
+	// ProviderRef references the GitProvider or Flux GitRepository.
 	// +required
-	Provider GitProviderReference `json:"provider"`
+	ProviderRef GitProviderReference `json:"providerRef"`
 
 	// Branch to use for this target.
 	// Must be one of the allowed branches in the provider.

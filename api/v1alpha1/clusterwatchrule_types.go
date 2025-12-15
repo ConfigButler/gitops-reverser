@@ -34,12 +34,30 @@ const (
 	ResourceScopeNamespaced ResourceScope = "Namespaced"
 )
 
+type NamespacedTargetReference struct {
+	// API Group of the referent.
+	// Kind of the referrer.
+	// +kubebuilder:validation:Enum=configbutler.ai
+	// +kubebuilder:default=configbutler.ai
+	Group string `json:"group,omitempty"`
+
+	// Kind of the referrer.
+	// +kubebuilder:validation:Enum=GitTarget
+	// +kubebuilder:default=GitTarget
+	Kind string `json:"kind"`
+	Name string `json:"name"`
+
+	// Required because ClusterWatchRule has no namespace.
+	// +required
+	Namespace string `json:"namespace"`
+}
+
 // ClusterWatchRuleSpec defines the desired state of ClusterWatchRule.
 type ClusterWatchRuleSpec struct {
-	// Target references the GitTarget to use.
+	// TargetRef references the GitTarget to use.
 	// Must specify namespace.
 	// +required
-	Target NamespacedTargetReference `json:"target"`
+	TargetRef NamespacedTargetReference `json:"targetRef"`
 
 	// Rules define which resources to watch.
 	// Multiple rules create a logical OR - a resource matching ANY rule is watched.
