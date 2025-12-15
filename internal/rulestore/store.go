@@ -37,15 +37,15 @@ type CompiledRule struct {
 	// Source is the NamespacedName of the WatchRule CR.
 	Source types.NamespacedName
 
-	// GitDestination reference (for event routing)
-	GitDestinationRef       string
-	GitDestinationNamespace string
+	// GitTarget reference (for event routing)
+	GitTargetRef       string
+	GitTargetNamespace string
 
-	// Resolved values (from GitDestination)
-	GitRepoConfigRef       string
-	GitRepoConfigNamespace string
-	Branch                 string
-	BaseFolder             string
+	// Resolved values (from GitTarget)
+	GitProviderRef       string
+	GitProviderNamespace string
+	Branch               string
+	Path                 string
 
 	// IsClusterScoped indicates if this rule watches cluster-scoped resources.
 	// Always false for WatchRule (namespace-scoped).
@@ -71,15 +71,15 @@ type CompiledClusterRule struct {
 	// Source is the NamespacedName of the ClusterWatchRule CR (namespace will be empty).
 	Source types.NamespacedName
 
-	// GitDestination reference (for event routing)
-	GitDestinationRef       string
-	GitDestinationNamespace string
+	// GitTarget reference (for event routing)
+	GitTargetRef       string
+	GitTargetNamespace string
 
-	// Resolved values (from GitDestination)
-	GitRepoConfigRef       string
-	GitRepoConfigNamespace string
-	Branch                 string
-	BaseFolder             string
+	// Resolved values (from GitTarget)
+	GitProviderRef       string
+	GitProviderNamespace string
+	Branch               string
+	Path                 string
 
 	// Rules contains the compiled cluster resource rules with per-rule scope.
 	Rules []CompiledClusterResourceRule
@@ -115,24 +115,24 @@ func NewStore() *RuleStore {
 	}
 }
 
-// AddOrUpdateWatchRule adds or updates a WatchRule with a resolved destination from GitDestination.
-// The chain is: WatchRule -> GitDestination -> GitRepoConfig
+// AddOrUpdateWatchRule adds or updates a WatchRule with a resolved target from GitTarget.
+// The chain is: WatchRule -> GitTarget -> GitProvider
 // Parameters:
 //   - rule: the WatchRule to add or update
-//   - gitDestinationName: the name of the GitDestination
-//   - gitDestinationNamespace: the namespace containing the GitDestination
-//   - gitRepoConfigName: the name of the resolved GitRepoConfig (from GitDestination.Spec.RepoRef)
-//   - gitRepoConfigNamespace: the namespace containing the resolved GitRepoConfig
-//   - branch: the Git branch to write to (from GitDestination.Spec.Branch)
-//   - baseFolder: POSIX-like relative path prefix for writes (from GitDestination.Spec.BaseFolder, sanitized upstream)
+//   - gitTargetName: the name of the GitTarget
+//   - gitTargetNamespace: the namespace containing the GitTarget
+//   - gitProviderName: the name of the resolved GitProvider (from GitTarget.Spec.Provider)
+//   - gitProviderNamespace: the namespace containing the resolved GitProvider
+//   - branch: the Git branch to write to (from GitTarget.Spec.Branch)
+//   - path: POSIX-like relative path prefix for writes (from GitTarget.Spec.Path, sanitized upstream)
 func (s *RuleStore) AddOrUpdateWatchRule(
 	rule configv1alpha1.WatchRule,
-	gitDestinationName string,
-	gitDestinationNamespace string,
-	gitRepoConfigName string,
-	gitRepoConfigNamespace string,
+	gitTargetName string,
+	gitTargetNamespace string,
+	gitProviderName string,
+	gitProviderNamespace string,
 	branch string,
-	baseFolder string,
+	path string,
 ) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -143,15 +143,15 @@ func (s *RuleStore) AddOrUpdateWatchRule(
 	}
 
 	compiled := CompiledRule{
-		Source:                  key,
-		GitDestinationRef:       gitDestinationName,
-		GitDestinationNamespace: gitDestinationNamespace,
-		GitRepoConfigRef:        gitRepoConfigName,
-		GitRepoConfigNamespace:  gitRepoConfigNamespace,
-		Branch:                  branch,
-		BaseFolder:              baseFolder,
-		IsClusterScoped:         false,
-		ResourceRules:           make([]CompiledResourceRule, 0, len(rule.Spec.Rules)),
+		Source:               key,
+		GitTargetRef:         gitTargetName,
+		GitTargetNamespace:   gitTargetNamespace,
+		GitProviderRef:       gitProviderName,
+		GitProviderNamespace: gitProviderNamespace,
+		Branch:               branch,
+		Path:                 path,
+		IsClusterScoped:      false,
+		ResourceRules:        make([]CompiledResourceRule, 0, len(rule.Spec.Rules)),
 	}
 
 	for _, r := range rule.Spec.Rules {
@@ -166,24 +166,24 @@ func (s *RuleStore) AddOrUpdateWatchRule(
 	s.rules[key] = compiled
 }
 
-// AddOrUpdateClusterWatchRule adds or updates a ClusterWatchRule with a resolved destination from GitDestination.
-// The chain is: ClusterWatchRule -> GitDestination -> GitRepoConfig
+// AddOrUpdateClusterWatchRule adds or updates a ClusterWatchRule with a resolved target from GitTarget.
+// The chain is: ClusterWatchRule -> GitTarget -> GitProvider
 // Parameters:
 //   - rule: the ClusterWatchRule to add or update
-//   - gitDestinationName: the name of the GitDestination
-//   - gitDestinationNamespace: the namespace containing the GitDestination
-//   - gitRepoConfigName: the name of the resolved GitRepoConfig (from GitDestination.Spec.RepoRef)
-//   - gitRepoConfigNamespace: the namespace containing the resolved GitRepoConfig
-//   - branch: the Git branch to write to (from GitDestination.Spec.Branch)
-//   - baseFolder: POSIX-like relative path prefix for writes (from GitDestination.Spec.BaseFolder, sanitized upstream)
+//   - gitTargetName: the name of the GitTarget
+//   - gitTargetNamespace: the namespace containing the GitTarget
+//   - gitProviderName: the name of the resolved GitProvider (from GitTarget.Spec.Provider)
+//   - gitProviderNamespace: the namespace containing the resolved GitProvider
+//   - branch: the Git branch to write to (from GitTarget.Spec.Branch)
+//   - path: POSIX-like relative path prefix for writes (from GitTarget.Spec.Path, sanitized upstream)
 func (s *RuleStore) AddOrUpdateClusterWatchRule(
 	rule configv1alpha1.ClusterWatchRule,
-	gitDestinationName string,
-	gitDestinationNamespace string,
-	gitRepoConfigName string,
-	gitRepoConfigNamespace string,
+	gitTargetName string,
+	gitTargetNamespace string,
+	gitProviderName string,
+	gitProviderNamespace string,
 	branch string,
-	baseFolder string,
+	path string,
 ) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -194,14 +194,14 @@ func (s *RuleStore) AddOrUpdateClusterWatchRule(
 	}
 
 	compiled := CompiledClusterRule{
-		Source:                  key,
-		GitDestinationRef:       gitDestinationName,
-		GitDestinationNamespace: gitDestinationNamespace,
-		GitRepoConfigRef:        gitRepoConfigName,
-		GitRepoConfigNamespace:  gitRepoConfigNamespace,
-		Branch:                  branch,
-		BaseFolder:              baseFolder,
-		Rules:                   make([]CompiledClusterResourceRule, 0, len(rule.Spec.Rules)),
+		Source:               key,
+		GitTargetRef:         gitTargetName,
+		GitTargetNamespace:   gitTargetNamespace,
+		GitProviderRef:       gitProviderName,
+		GitProviderNamespace: gitProviderNamespace,
+		Branch:               branch,
+		Path:                 path,
+		Rules:                make([]CompiledClusterResourceRule, 0, len(rule.Spec.Rules)),
 	}
 
 	for _, r := range rule.Spec.Rules {

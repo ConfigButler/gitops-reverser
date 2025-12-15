@@ -52,32 +52,32 @@ func setupBranchWorkerTest() (*BranchWorker, func()) {
 	return worker, cleanup
 }
 
-// TestListResourcesInBaseFolder_BasicFunctionality verifies ListResourcesInBaseFolder can be called.
-func TestListResourcesInBaseFolder_BasicFunctionality(t *testing.T) {
+// TestListResourcesInPath_BasicFunctionality verifies ListResourcesInPath can be called.
+func TestListResourcesInPath_BasicFunctionality(t *testing.T) {
 	worker, cleanup := setupBranchWorkerTest()
 	defer cleanup()
 
 	// This test verifies the method can be called without panicking
 	// In a real scenario, this would require setting up a Git repository
 	// For now, we just ensure the method signature and basic flow work
-	_, err := worker.ListResourcesInBaseFolder("apps")
+	_, err := worker.ListResourcesInPath("apps")
 
-	// We expect an error since no GitRepoConfig exists in the fake client
+	// We expect an error since no GitProvider exists in the fake client
 	// But the important thing is that the method doesn't panic
 	if err == nil {
-		t.Error("Expected error due to missing GitRepoConfig, but got nil")
+		t.Error("Expected error due to missing GitProvider, but got nil")
 	}
 }
 
-// TestListResourcesInBaseFolder_WithGitRepoConfig verifies resources are listed correctly.
-func TestListResourcesInBaseFolder_WithGitRepoConfig(t *testing.T) {
+// TestListResourcesInPath_WithGitProvider verifies resources are listed correctly.
+func TestListResourcesInPath_WithGitProvider(t *testing.T) {
 	worker, cleanup := setupBranchWorkerTest()
 	defer cleanup()
 
-	// Create a GitRepoConfig in the fake client
-	repoConfig := &configv1alpha1.GitRepoConfig{
-		Spec: configv1alpha1.GitRepoConfigSpec{
-			RepoURL:         "https://github.com/test/repo.git",
+	// Create a GitProvider in the fake client
+	repoConfig := &configv1alpha1.GitProvider{
+		Spec: configv1alpha1.GitProviderSpec{
+			URL:             "https://github.com/test/repo.git",
 			AllowedBranches: []string{"main"},
 		},
 	}
@@ -86,12 +86,12 @@ func TestListResourcesInBaseFolder_WithGitRepoConfig(t *testing.T) {
 
 	err := worker.Client.Create(context.Background(), repoConfig)
 	if err != nil {
-		t.Fatalf("Failed to create GitRepoConfig: %v", err)
+		t.Fatalf("Failed to create GitProvider: %v", err)
 	}
 
-	// Call ListResourcesInBaseFolder - with new abstraction, initialization succeeds
+	// Call ListResourcesInPath - with new abstraction, initialization succeeds
 	// but listing resources will return empty list for fake repo
-	resources, err := worker.ListResourcesInBaseFolder("apps")
+	resources, err := worker.ListResourcesInPath("apps")
 
 	// With the new abstraction, we expect success but empty resource list
 	if err != nil {
@@ -102,15 +102,15 @@ func TestListResourcesInBaseFolder_WithGitRepoConfig(t *testing.T) {
 	}
 }
 
-// TestListResourcesInBaseFolder_DifferentBaseFolders verifies different base folders are handled.
-func TestListResourcesInBaseFolder_DifferentBaseFolders(t *testing.T) {
+// TestListResourcesInPath_DifferentPaths verifies different paths are handled.
+func TestListResourcesInPath_DifferentPaths(t *testing.T) {
 	worker, cleanup := setupBranchWorkerTest()
 	defer cleanup()
 
-	// Create a GitRepoConfig in the fake client
-	repoConfig := &configv1alpha1.GitRepoConfig{
-		Spec: configv1alpha1.GitRepoConfigSpec{
-			RepoURL:         "https://github.com/test/repo.git",
+	// Create a GitProvider in the fake client
+	repoConfig := &configv1alpha1.GitProvider{
+		Spec: configv1alpha1.GitProviderSpec{
+			URL:             "https://github.com/test/repo.git",
 			AllowedBranches: []string{"main"},
 		},
 	}
@@ -119,35 +119,35 @@ func TestListResourcesInBaseFolder_DifferentBaseFolders(t *testing.T) {
 
 	err := worker.Client.Create(context.Background(), repoConfig)
 	if err != nil {
-		t.Fatalf("Failed to create GitRepoConfig: %v", err)
+		t.Fatalf("Failed to create GitProvider: %v", err)
 	}
 
-	// Test different base folders - with new abstraction, method handles them gracefully
-	baseFolders := []string{"apps", "infra", "", "clusters/prod"}
+	// Test different paths - with new abstraction, method handles them gracefully
+	paths := []string{"apps", "infra", "", "clusters/prod"}
 
-	for _, baseFolder := range baseFolders {
-		resources, err := worker.ListResourcesInBaseFolder(baseFolder)
+	for _, path := range paths {
+		resources, err := worker.ListResourcesInPath(path)
 
 		// With new abstraction, we either get an error during fetch or empty list
 		if err != nil {
-			t.Logf("Got expected error for base folder %q: %v", baseFolder, err)
+			t.Logf("Got expected error for path %q: %v", path, err)
 		} else {
 			// Method succeeded - verify it returns empty list for fake repo
-			assert.Empty(t, resources, "Should return empty list for base folder %q", baseFolder)
+			assert.Empty(t, resources, "Should return empty list for path %q", path)
 		}
 	}
 }
 
-// TestListResourcesInBaseFolder_MissingGitRepoConfig verifies proper error when GitRepoConfig is missing.
-func TestListResourcesInBaseFolder_MissingGitRepoConfig(t *testing.T) {
+// TestListResourcesInPath_MissingGitProvider verifies proper error when GitProvider is missing.
+func TestListResourcesInPath_MissingGitProvider(t *testing.T) {
 	worker, cleanup := setupBranchWorkerTest()
 	defer cleanup()
 
-	// Don't create GitRepoConfig - should fail
-	_, err := worker.ListResourcesInBaseFolder("apps")
+	// Don't create GitProvider - should fail
+	_, err := worker.ListResourcesInPath("apps")
 
 	if err == nil {
-		t.Error("Expected error when GitRepoConfig is missing, but got nil")
+		t.Error("Expected error when GitProvider is missing, but got nil")
 	}
 }
 
@@ -172,10 +172,10 @@ func TestBranchWorker_EmptyRepository(t *testing.T) {
 	logger := logr.Discard()
 	worker := NewBranchWorker(client, logger, "test-repo", "default", "main")
 
-	// Create a GitRepoConfig in the fake client pointing to our empty repo
-	repoConfig := &configv1alpha1.GitRepoConfig{
-		Spec: configv1alpha1.GitRepoConfigSpec{
-			RepoURL: "file://" + repoPath,
+	// Create a GitProvider in the fake client pointing to our empty repo
+	repoConfig := &configv1alpha1.GitProvider{
+		Spec: configv1alpha1.GitProviderSpec{
+			URL: "file://" + repoPath,
 		},
 	}
 	repoConfig.Name = "test-repo"
@@ -193,12 +193,12 @@ func TestBranchWorker_EmptyRepository(t *testing.T) {
 	assert.Empty(t, sha, "SHA should be empty for empty repository")
 	assert.False(t, fetchTime.IsZero(), "Fetch time should be set")
 
-	// Test ListResourcesInBaseFolder - should work with empty repo
-	resources, err := worker.ListResourcesInBaseFolder("")
-	require.NoError(t, err, "ListResourcesInBaseFolder should succeed with empty repository")
+	// Test ListResourcesInPath - should work with empty repo
+	resources, err := worker.ListResourcesInPath("")
+	require.NoError(t, err, "ListResourcesInPath should succeed with empty repository")
 	assert.Empty(t, resources, "Should return empty resources list for empty repository")
 
-	// Verify metadata was updated after ListResourcesInBaseFolder
+	// Verify metadata was updated after ListResourcesInPath
 	exists2, sha2, fetchTime2 := worker.GetBranchMetadata()
 	assert.False(t, exists2, "Branch should still not exist after listing")
 	assert.Empty(t, sha2, "SHA should still be empty after listing")
@@ -215,11 +215,11 @@ func TestBranchWorker_IdentityFields(t *testing.T) {
 
 	worker := NewBranchWorker(client, log, "my-repo", "my-namespace", "develop")
 
-	if worker.GitRepoConfigRef != "my-repo" {
-		t.Errorf("Expected GitRepoConfigRef 'my-repo', got %q", worker.GitRepoConfigRef)
+	if worker.GitProviderRef != "my-repo" {
+		t.Errorf("Expected GitProviderRef 'my-repo', got %q", worker.GitProviderRef)
 	}
-	if worker.GitRepoConfigNamespace != "my-namespace" {
-		t.Errorf("Expected GitRepoConfigNamespace 'my-namespace', got %q", worker.GitRepoConfigNamespace)
+	if worker.GitProviderNamespace != "my-namespace" {
+		t.Errorf("Expected GitProviderNamespace 'my-namespace', got %q", worker.GitProviderNamespace)
 	}
 	if worker.Branch != "develop" {
 		t.Errorf("Expected Branch 'develop', got %q", worker.Branch)

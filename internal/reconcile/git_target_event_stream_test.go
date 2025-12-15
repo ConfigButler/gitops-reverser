@@ -30,24 +30,24 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
-func TestGitDestinationEventStream(t *testing.T) {
+func TestGitTargetEventStream(t *testing.T) {
 	RegisterFailHandler(Fail)
-	RunSpecs(t, "GitDestinationEventStream Suite")
+	RunSpecs(t, "GitTargetEventStream Suite")
 }
 
-var _ = Describe("GitDestinationEventStream", func() {
+var _ = Describe("GitTargetEventStream", func() {
 	var (
-		stream      *GitDestinationEventStream
-		mockWorker  *mockBranchWorker
-		logger      logr.Logger
-		gitDestName = "test-gitdest"
-		gitDestNS   = "test-ns"
+		stream        *GitTargetEventStream
+		mockWorker    *mockBranchWorker
+		logger        logr.Logger
+		gitTargetName = "test-gittarget"
+		gitTargetNS   = "test-ns"
 	)
 
 	BeforeEach(func() {
 		mockWorker = &mockBranchWorker{events: make([]git.Event, 0)}
 		logger = logr.Discard()
-		stream = NewGitDestinationEventStream(gitDestName, gitDestNS, mockWorker, logger)
+		stream = NewGitTargetEventStream(gitTargetName, gitTargetNS, mockWorker, logger)
 	})
 
 	Describe("Initial State", func() {
@@ -195,6 +195,6 @@ func createTestEvent(resourceType, name, operation string) git.Event {
 		Identifier: identifier,
 		Operation:  operation,
 		UserInfo:   git.UserInfo{Username: "test-user", UID: "test-uid"},
-		BaseFolder: "test-folder",
+		Path:       "test-folder",
 	}
 }

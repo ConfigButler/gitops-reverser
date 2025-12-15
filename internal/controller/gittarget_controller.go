@@ -159,6 +159,7 @@ func (r *GitTargetReconciler) validateGitProvider(
 		// But since we are porting existing logic, we assume GitProvider.
 		// If user provides GitRepository, it will fail here or we should handle it.
 		// Given the task is to fix e2e tests which use GitProvider, we focus on that.
+		log.Info("Unsupported provider kind", "kind", target.Spec.Provider.Kind)
 	}
 
 	var gp configbutleraiv1alpha1.GitProvider
@@ -187,7 +188,7 @@ func (r *GitTargetReconciler) validateGitProvider(
 	r.setCondition(target, metav1.ConditionTrue, GitTargetReasonReady, msg)
 	// target.Status.ObservedGeneration = target.Generation // Not in struct
 
-	return nil, nil
+	return nil, nil //nolint:nilnil // nil result means validation passed
 }
 
 // validateBranch validates that the branch matches at least one pattern in allowedBranches.
@@ -313,7 +314,7 @@ func (r *GitTargetReconciler) registerWithWorker(
 		return
 	}
 
-	if err := r.WorkerManager.RegisterDestination(
+	if err := r.WorkerManager.RegisterTarget(
 		ctx,
 		target.Name, target.Namespace,
 		target.Spec.Provider.Name, providerNS,
@@ -339,7 +340,7 @@ func (r *GitTargetReconciler) registerEventStream(
 		return
 	}
 
-	branchWorker, exists := r.WorkerManager.GetWorkerForDestination(
+	branchWorker, exists := r.WorkerManager.GetWorkerForTarget(
 		target.Spec.Provider.Name, providerNS, target.Spec.Branch,
 	)
 	if !exists {
@@ -351,20 +352,12 @@ func (r *GitTargetReconciler) registerEventStream(
 	}
 
 	gitDest := types.NewResourceReference(target.Name, target.Namespace)
-	// We need to adapt NewGitDestinationEventStream to work with GitTarget or create a new one.
-	// Assuming NewGitDestinationEventStream is generic enough or we need to update it.
-	// Let's assume we can use it for now, but the name suggests it's for GitDestination.
-	// If the underlying struct is just holding the name/namespace, it should be fine.
-	// But if it expects GitDestination type, we might have issues.
-	// Let's check internal/reconcile/event_stream.go if possible, but for now I'll use it.
-	// Wait, I should probably rename/update it. But I can't easily change internal packages without reading them.
-	// I'll assume it works for now.
-	stream := reconcile.NewGitDestinationEventStream(
+	stream := reconcile.NewGitTargetEventStream(
 		target.Name, target.Namespace,
 		branchWorker,
 		log,
 	)
-	r.EventRouter.RegisterGitDestinationEventStream(gitDest, stream)
+	r.EventRouter.RegisterGitTargetEventStream(gitDest, stream)
 	log.Info("Registered GitTargetEventStream with EventRouter",
 		"gitDest", gitDest.String(),
 		"provider", target.Spec.Provider.Name,
@@ -389,7 +382,7 @@ func (r *GitTargetReconciler) updateRepositoryStatus(
 		return
 	}
 
-	worker, exists := r.WorkerManager.GetWorkerForDestination(
+	worker, exists := r.WorkerManager.GetWorkerForTarget(
 		target.Spec.Provider.Name, providerNS, target.Spec.Branch,
 	)
 
@@ -452,6 +445,8 @@ func (r *GitTargetReconciler) updateStatusAndRequeue(
 }
 
 // updateStatusWithRetry updates the status with retry logic to handle race conditions.
+//
+//nolint:dupl // Similar retry logic pattern used across controllers
 func (r *GitTargetReconciler) updateStatusWithRetry(
 	ctx context.Context, target *configbutleraiv1alpha1.GitTarget,
 ) error {

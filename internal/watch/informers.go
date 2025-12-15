@@ -112,14 +112,14 @@ func (m *Manager) handleEvent(obj interface{}, g GVR, op configv1alpha1.Operatio
 			Identifier: id,
 			Operation:  string(op),
 			UserInfo:   userInfo,
-			BaseFolder: rule.BaseFolder,
+			Path:       rule.Path,
 		}
 
-		if err := m.EventRouter.RouteEvent(
-			rule.GitRepoConfigRef,
-			rule.GitRepoConfigNamespace,
-			rule.Branch,
+		gitDest := itypes.NewResourceReference(rule.GitTargetRef, rule.GitTargetNamespace)
+
+		if err := m.EventRouter.RouteToGitTargetEventStream(
 			ev,
+			gitDest,
 		); err != nil {
 			m.Log.V(1).Info("Failed to route event", "error", err)
 		}
@@ -132,14 +132,14 @@ func (m *Manager) handleEvent(obj interface{}, g GVR, op configv1alpha1.Operatio
 			Identifier: id,
 			Operation:  string(op),
 			UserInfo:   userInfo,
-			BaseFolder: cr.BaseFolder,
+			Path:       cr.Path,
 		}
 
-		if err := m.EventRouter.RouteEvent(
-			cr.GitRepoConfigRef,
-			cr.GitRepoConfigNamespace,
-			cr.Branch,
+		gitDest := itypes.NewResourceReference(cr.GitTargetRef, cr.GitTargetNamespace)
+
+		if err := m.EventRouter.RouteToGitTargetEventStream(
 			ev,
+			gitDest,
 		); err != nil {
 			m.Log.V(1).Info("Failed to route event", "error", err)
 		}

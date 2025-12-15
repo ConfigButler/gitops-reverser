@@ -61,7 +61,15 @@ func TestAddOrUpdateWatchRule(t *testing.T) {
 	rule.Namespace = "default"
 
 	// Add rule
-	store.AddOrUpdateWatchRule(rule, "test-dest", "default", "test-repo", "gitops-system", "main", "clusters/prod")
+	store.AddOrUpdateWatchRule(
+		rule,
+		"test-target",
+		"default",
+		"test-provider",
+		"gitops-system",
+		"main",
+		"clusters/prod",
+	)
 
 	// Verify it was added
 	key := types.NamespacedName{Name: "test-rule", Namespace: "default"}
@@ -74,17 +82,17 @@ func TestAddOrUpdateWatchRule(t *testing.T) {
 	if compiled.Source != key {
 		t.Errorf("Source mismatch: got %v, want %v", compiled.Source, key)
 	}
-	if compiled.GitRepoConfigRef != "test-repo" {
-		t.Errorf("GitRepoConfigRef mismatch: got %s, want test-repo", compiled.GitRepoConfigRef)
+	if compiled.GitProviderRef != "test-provider" {
+		t.Errorf("GitProviderRef mismatch: got %s, want test-provider", compiled.GitProviderRef)
 	}
-	if compiled.GitRepoConfigNamespace != "gitops-system" {
-		t.Errorf("GitRepoConfigNamespace mismatch: got %s, want gitops-system", compiled.GitRepoConfigNamespace)
+	if compiled.GitProviderNamespace != "gitops-system" {
+		t.Errorf("GitProviderNamespace mismatch: got %s, want gitops-system", compiled.GitProviderNamespace)
 	}
 	if compiled.Branch != "main" {
 		t.Errorf("Branch mismatch: got %s, want main", compiled.Branch)
 	}
-	if compiled.BaseFolder != "clusters/prod" {
-		t.Errorf("BaseFolder mismatch: got %s, want clusters/prod", compiled.BaseFolder)
+	if compiled.Path != "clusters/prod" {
+		t.Errorf("Path mismatch: got %s, want clusters/prod", compiled.Path)
 	}
 	if compiled.IsClusterScoped {
 		t.Error("IsClusterScoped should be false for WatchRule")
@@ -96,9 +104,9 @@ func TestAddOrUpdateWatchRule(t *testing.T) {
 	// Update rule with different values
 	store.AddOrUpdateWatchRule(
 		rule,
-		"test-dest",
+		"test-target",
 		"default",
-		"updated-repo",
+		"updated-provider",
 		"gitops-system",
 		"develop",
 		"clusters/staging",
@@ -108,14 +116,14 @@ func TestAddOrUpdateWatchRule(t *testing.T) {
 	if !exists {
 		t.Fatal("Rule was deleted instead of updated")
 	}
-	if compiled.GitRepoConfigRef != "updated-repo" {
-		t.Errorf("GitRepoConfigRef not updated: got %s, want updated-repo", compiled.GitRepoConfigRef)
+	if compiled.GitProviderRef != "updated-provider" {
+		t.Errorf("GitProviderRef not updated: got %s, want updated-provider", compiled.GitProviderRef)
 	}
 	if compiled.Branch != "develop" {
 		t.Errorf("Branch not updated: got %s, want develop", compiled.Branch)
 	}
-	if compiled.BaseFolder != "clusters/staging" {
-		t.Errorf("BaseFolder not updated: got %s, want clusters/staging", compiled.BaseFolder)
+	if compiled.Path != "clusters/staging" {
+		t.Errorf("Path not updated: got %s, want clusters/staging", compiled.Path)
 	}
 }
 
@@ -141,9 +149,9 @@ func TestAddOrUpdateClusterWatchRule(t *testing.T) {
 	// Add rule
 	store.AddOrUpdateClusterWatchRule(
 		rule,
-		"test-cluster-dest",
+		"test-cluster-target",
 		"gitops-system",
-		"cluster-repo",
+		"cluster-provider",
 		"gitops-system",
 		"main",
 		"cluster/audit",
@@ -160,14 +168,14 @@ func TestAddOrUpdateClusterWatchRule(t *testing.T) {
 	if compiled.Source != key {
 		t.Errorf("Source mismatch: got %v, want %v", compiled.Source, key)
 	}
-	if compiled.GitRepoConfigRef != "cluster-repo" {
-		t.Errorf("GitRepoConfigRef mismatch: got %s, want cluster-repo", compiled.GitRepoConfigRef)
+	if compiled.GitProviderRef != "cluster-provider" {
+		t.Errorf("GitProviderRef mismatch: got %s, want cluster-provider", compiled.GitProviderRef)
 	}
 	if compiled.Branch != "main" {
 		t.Errorf("Branch mismatch: got %s, want main", compiled.Branch)
 	}
-	if compiled.BaseFolder != "cluster/audit" {
-		t.Errorf("BaseFolder mismatch: got %s, want cluster/audit", compiled.BaseFolder)
+	if compiled.Path != "cluster/audit" {
+		t.Errorf("Path mismatch: got %s, want cluster/audit", compiled.Path)
 	}
 	if len(compiled.Rules) != 1 {
 		t.Errorf("Expected 1 rule, got %d", len(compiled.Rules))

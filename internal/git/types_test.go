@@ -130,7 +130,7 @@ func TestEventWithObject(t *testing.T) {
 			Username: "admin",
 			UID:      "12345",
 		},
-		BaseFolder: "clusters/prod",
+		Path: "clusters/prod",
 	}
 
 	if event.Object == nil {
@@ -142,7 +142,7 @@ func TestEventWithObject(t *testing.T) {
 	if event.Operation != "CREATE" {
 		t.Errorf("Operation = %q, want 'CREATE'", event.Operation)
 	}
-	if event.BaseFolder != "clusters/prod" {
-		t.Errorf("BaseFolder = %q, want 'clusters/prod'", event.BaseFolder)
+	if event.Path != "clusters/prod" {
+		t.Errorf("Path = %q, want 'clusters/prod'", event.Path)
 	}
 }

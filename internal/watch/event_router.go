@@ -42,8 +42,8 @@ type EventRouter struct {
 	Client            client.Client
 	Log               logr.Logger
 
-	// Registry of GitDestinationEventStreams by gitDest key
-	gitDestStreams map[string]*reconcile.GitDestinationEventStream
+	// Registry of GitTargetEventStreams by gitDest key
+	gitTargetStreams map[string]*reconcile.GitTargetEventStream
 }
 
 // NewEventRouter creates a new event router.
@@ -60,35 +60,35 @@ func NewEventRouter(
 		WatchManager:      watchManager,
 		Client:            client,
 		Log:               log,
-		gitDestStreams:    make(map[string]*reconcile.GitDestinationEventStream),
+		gitTargetStreams:  make(map[string]*reconcile.GitTargetEventStream),
 	}
 }
 
-// RouteEvent sends an event to the worker for (repo, branch).
-// The destination info is used to lookup the worker, then the event is queued.
-// Returns an error if no worker exists for the given (repo, branch) combination.
+// RouteEvent sends an event to the worker for (provider, branch).
+// The target info is used to lookup the worker, then the event is queued.
+// Returns an error if no worker exists for the given (provider, branch) combination.
 func (r *EventRouter) RouteEvent(
-	repoName, repoNamespace string,
+	providerName, providerNamespace string,
 	branch string,
 	event git.Event,
 ) error {
-	worker, exists := r.WorkerManager.GetWorkerForDestination(
-		repoName, repoNamespace, branch,
+	worker, exists := r.WorkerManager.GetWorkerForTarget(
+		providerName, providerNamespace, branch,
 	)
 
 	if !exists {
-		return fmt.Errorf("no worker for repo=%s/%s branch=%s",
-			repoNamespace, repoName, branch)
+		return fmt.Errorf("no worker for provider=%s/%s branch=%s",
+			providerNamespace, providerName, branch)
 	}
 
 	worker.Enqueue(event)
 
 	r.Log.V(1).Info("Event routed to worker",
-		"repo", repoName,
-		"namespace", repoNamespace,
+		"provider", providerName,
+		"namespace", providerNamespace,
 		"branch", branch,
 		"operation", event.Operation,
-		"baseFolder", event.BaseFolder)
+		"path", event.Path)
 
 	return nil
 }
@@ -126,27 +126,27 @@ func (r *EventRouter) handleRequestClusterState(ctx context.Context, event event
 
 // handleRequestRepoState processes RequestRepoState control events.
 func (r *EventRouter) handleRequestRepoState(ctx context.Context, event events.ControlEvent) error {
-	// Look up GitDestination
-	var gitDest configv1alpha1.GitDestination
+	// Look up GitTarget
+	var gitTarget configv1alpha1.GitTarget
 	if err := r.Client.Get(ctx, client.ObjectKey{
 		Name:      event.GitDest.Name,
 		Namespace: event.GitDest.Namespace,
-	}, &gitDest); err != nil {
-		return fmt.Errorf("failed to get GitDestination: %w", err)
+	}, &gitTarget); err != nil {
+		return fmt.Errorf("failed to get GitTarget: %w", err)
 	}
 
 	// Get BranchWorker
-	worker, exists := r.WorkerManager.GetWorkerForDestination(
-		gitDest.Spec.RepoRef.Name,
-		gitDest.Spec.RepoRef.Namespace,
-		gitDest.Spec.Branch,
+	worker, exists := r.WorkerManager.GetWorkerForTarget(
+		gitTarget.Spec.Provider.Name,
+		gitTarget.Namespace, // Provider is in same namespace
+		gitTarget.Spec.Branch,
 	)
 	if !exists {
 		return fmt.Errorf("no worker for %s", event.GitDest.String())
 	}
 
 	// Call BranchWorker service (synchronous)
-	resources, err := worker.ListResourcesInBaseFolder(gitDest.Spec.BaseFolder)
+	resources, err := worker.ListResourcesInPath(gitTarget.Spec.Path)
 	if err != nil {
 		return fmt.Errorf("failed to list resources: %w", err)
 	}
@@ -188,48 +188,48 @@ func (r *EventRouter) RouteClusterStateEvent(event events.ClusterStateEvent) err
 	return nil
 }
 
-// RegisterGitDestinationEventStream registers a GitDestinationEventStream with the router.
-// This allows routing events to specific GitDestinationEventStreams for buffering and deduplication.
-func (r *EventRouter) RegisterGitDestinationEventStream(
+// RegisterGitTargetEventStream registers a GitTargetEventStream with the router.
+// This allows routing events to specific GitTargetEventStreams for buffering and deduplication.
+func (r *EventRouter) RegisterGitTargetEventStream(
 	gitDest types.ResourceReference,
-	stream *reconcile.GitDestinationEventStream,
+	stream *reconcile.GitTargetEventStream,
 ) {
 	key := gitDest.Key()
-	r.gitDestStreams[key] = stream
-	r.Log.Info("Registered GitDestinationEventStream",
+	r.gitTargetStreams[key] = stream
+	r.Log.Info("Registered GitTargetEventStream",
 		"gitDest", gitDest.String(),
 		"stream", stream.String())
 }
 
-// UnregisterGitDestinationEventStream removes a GitDestinationEventStream from the router.
-// This is called during GitDestination deletion cleanup.
-func (r *EventRouter) UnregisterGitDestinationEventStream(gitDest types.ResourceReference) {
+// UnregisterGitTargetEventStream removes a GitTargetEventStream from the router.
+// This is called during GitTarget deletion cleanup.
+func (r *EventRouter) UnregisterGitTargetEventStream(gitDest types.ResourceReference) {
 	key := gitDest.Key()
-	if _, exists := r.gitDestStreams[key]; exists {
-		delete(r.gitDestStreams, key)
-		r.Log.Info("Unregistered GitDestinationEventStream", "gitDest", gitDest.String())
+	if _, exists := r.gitTargetStreams[key]; exists {
+		delete(r.gitTargetStreams, key)
+		r.Log.Info("Unregistered GitTargetEventStream", "gitDest", gitDest.String())
 	}
 }
 
-// RouteToGitDestinationEventStream routes an event to a specific GitDestinationEventStream.
+// RouteToGitTargetEventStream routes an event to a specific GitTargetEventStream.
 // This replaces direct routing to BranchWorkers, enabling event buffering and deduplication.
-func (r *EventRouter) RouteToGitDestinationEventStream(
+func (r *EventRouter) RouteToGitTargetEventStream(
 	event git.Event,
 	gitDest types.ResourceReference,
 ) error {
 	key := gitDest.Key()
-	stream, exists := r.gitDestStreams[key]
+	stream, exists := r.gitTargetStreams[key]
 
 	if !exists {
-		return fmt.Errorf("no GitDestinationEventStream registered for %s", key)
+		return fmt.Errorf("no GitTargetEventStream registered for %s", key)
 	}
 
 	stream.OnWatchEvent(event)
 
-	r.Log.V(1).Info("Event routed to GitDestinationEventStream",
+	r.Log.V(1).Info("Event routed to GitTargetEventStream",
 		"gitDest", gitDest.String(),
 		"operation", event.Operation,
-		"baseFolder", event.BaseFolder,
+		"path", event.Path,
 		"resource", event.Identifier.String())
 
 	return nil

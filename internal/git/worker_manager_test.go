@@ -38,8 +38,8 @@ func setupScheme() *runtime.Scheme {
 	return scheme
 }
 
-// TestWorkerManagerRegisterDestination verifies worker registration.
-func TestWorkerManagerRegisterDestination(t *testing.T) {
+// TestWorkerManagerRegisterTarget verifies worker registration.
+func TestWorkerManagerRegisterTarget(t *testing.T) {
 	scheme := setupScheme()
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 	log := logr.Discard()
@@ -54,17 +54,17 @@ func TestWorkerManagerRegisterDestination(t *testing.T) {
 	}()
 	time.Sleep(100 * time.Millisecond) // Allow manager to start
 
-	// Register first destination
-	err := manager.RegisterDestination(ctx,
-		"dest1", "default",
+	// Register first target
+	err := manager.RegisterTarget(ctx,
+		"target1", "default",
 		"repo1", "gitops-system",
 		"main", "clusters/prod")
 	if err != nil {
-		t.Fatalf("Failed to register destination: %v", err)
+		t.Fatalf("Failed to register target: %v", err)
 	}
 
 	// Verify worker was created
-	worker, exists := manager.GetWorkerForDestination("repo1", "gitops-system", "main")
+	worker, exists := manager.GetWorkerForTarget("repo1", "gitops-system", "main")
 	if !exists {
 		t.Fatal("Worker should exist after registration")
 	}
@@ -73,17 +73,17 @@ func TestWorkerManagerRegisterDestination(t *testing.T) {
 	}
 
 	// Verify worker has correct identity
-	if worker.GitRepoConfigRef != "repo1" {
-		t.Errorf("Worker RepoRef = %q, want 'repo1'", worker.GitRepoConfigRef)
+	if worker.GitProviderRef != "repo1" {
+		t.Errorf("Worker RepoRef = %q, want 'repo1'", worker.GitProviderRef)
 	}
-	if worker.GitRepoConfigNamespace != "gitops-system" {
-		t.Errorf("Worker Namespace = %q, want 'gitops-system'", worker.GitRepoConfigNamespace)
+	if worker.GitProviderNamespace != "gitops-system" {
+		t.Errorf("Worker Namespace = %q, want 'gitops-system'", worker.GitProviderNamespace)
 	}
 	if worker.Branch != "main" {
 		t.Errorf("Worker Branch = %q, want 'main'", worker.Branch)
 	}
 
-	// Verify destination registration succeeded (no longer tracks internally)
+	// Verify target registration succeeded (no longer tracks internally)
 	// The worker exists and registration completed without error
 
 	// Cleanup
@@ -91,8 +91,8 @@ func TestWorkerManagerRegisterDestination(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 }
 
-// TestWorkerManagerMultipleDestinationsSameBranch verifies multiple destinations can share a worker.
-func TestWorkerManagerMultipleDestinationsSameBranch(t *testing.T) {
+// TestWorkerManagerMultipleTargetsSameBranch verifies multiple targets can share a worker.
+func TestWorkerManagerMultipleTargetsSameBranch(t *testing.T) {
 	scheme := setupScheme()
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 	log := logr.Discard()
@@ -106,21 +106,21 @@ func TestWorkerManagerMultipleDestinationsSameBranch(t *testing.T) {
 	}()
 	time.Sleep(100 * time.Millisecond)
 
-	// Register two destinations for same repo+branch, different baseFolders
-	err := manager.RegisterDestination(ctx,
-		"dest-apps", "default",
+	// Register two targets for same repo+branch, different paths
+	err := manager.RegisterTarget(ctx,
+		"target-apps", "default",
 		"shared-repo", "gitops-system",
 		"main", "apps/")
 	if err != nil {
-		t.Fatalf("Failed to register dest-apps: %v", err)
+		t.Fatalf("Failed to register target-apps: %v", err)
 	}
 
-	err = manager.RegisterDestination(ctx,
-		"dest-infra", "default",
+	err = manager.RegisterTarget(ctx,
+		"target-infra", "default",
 		"shared-repo", "gitops-system",
 		"main", "infra/")
 	if err != nil {
-		t.Fatalf("Failed to register dest-infra: %v", err)
+		t.Fatalf("Failed to register target-infra: %v", err)
 	}
 
 	// Verify only one worker exists
@@ -132,8 +132,8 @@ func TestWorkerManagerMultipleDestinationsSameBranch(t *testing.T) {
 		t.Errorf("Should have exactly 1 worker for shared repo+branch, got %d", workerCount)
 	}
 
-	// Verify worker exists for both destinations
-	_, exists := manager.GetWorkerForDestination("shared-repo", "gitops-system", "main")
+	// Verify worker exists for both targets
+	_, exists := manager.GetWorkerForTarget("shared-repo", "gitops-system", "main")
 	if !exists {
 		t.Fatal("Worker should exist")
 	}
@@ -157,21 +157,21 @@ func TestWorkerManagerDifferentBranches(t *testing.T) {
 	}()
 	time.Sleep(100 * time.Millisecond)
 
-	// Register destinations for same repo, different branches
-	err := manager.RegisterDestination(ctx,
-		"dest-main", "default",
+	// Register targets for same repo, different branches
+	err := manager.RegisterTarget(ctx,
+		"target-main", "default",
 		"repo1", "gitops-system",
 		"main", "base/")
 	if err != nil {
-		t.Fatalf("Failed to register dest-main: %v", err)
+		t.Fatalf("Failed to register target-main: %v", err)
 	}
 
-	err = manager.RegisterDestination(ctx,
-		"dest-dev", "default",
+	err = manager.RegisterTarget(ctx,
+		"target-dev", "default",
 		"repo1", "gitops-system",
 		"develop", "base/")
 	if err != nil {
-		t.Fatalf("Failed to register dest-dev: %v", err)
+		t.Fatalf("Failed to register target-dev: %v", err)
 	}
 
 	// Verify two workers exist
@@ -184,12 +184,12 @@ func TestWorkerManagerDifferentBranches(t *testing.T) {
 	}
 
 	// Verify each worker exists and has correct branch
-	workerMain, exists := manager.GetWorkerForDestination("repo1", "gitops-system", "main")
+	workerMain, exists := manager.GetWorkerForTarget("repo1", "gitops-system", "main")
 	if !exists || workerMain.Branch != "main" {
 		t.Error("Main branch worker not found or has wrong branch")
 	}
 
-	workerDev, exists := manager.GetWorkerForDestination("repo1", "gitops-system", "develop")
+	workerDev, exists := manager.GetWorkerForTarget("repo1", "gitops-system", "develop")
 	if !exists || workerDev.Branch != "develop" {
 		t.Error("Develop branch worker not found or has wrong branch")
 	}
@@ -198,8 +198,8 @@ func TestWorkerManagerDifferentBranches(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 }
 
-// TestWorkerManagerUnregisterDestination verifies destination unregistration.
-func TestWorkerManagerUnregisterDestination(t *testing.T) {
+// TestWorkerManagerUnregisterTarget verifies target unregistration.
+func TestWorkerManagerUnregisterTarget(t *testing.T) {
 	scheme := setupScheme()
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 	log := logr.Discard()
@@ -213,44 +213,44 @@ func TestWorkerManagerUnregisterDestination(t *testing.T) {
 	}()
 	time.Sleep(100 * time.Millisecond)
 
-	// Register two destinations
-	_ = manager.RegisterDestination(ctx,
-		"dest1", "default",
+	// Register two targets
+	_ = manager.RegisterTarget(ctx,
+		"target1", "default",
 		"repo1", "gitops-system",
 		"main", "apps/")
-	_ = manager.RegisterDestination(ctx,
-		"dest2", "default",
+	_ = manager.RegisterTarget(ctx,
+		"target2", "default",
 		"repo1", "gitops-system",
 		"main", "infra/")
 
 	// Verify worker exists
-	_, exists := manager.GetWorkerForDestination("repo1", "gitops-system", "main")
+	_, exists := manager.GetWorkerForTarget("repo1", "gitops-system", "main")
 	if !exists {
 		t.Fatal("Worker should exist")
 	}
 
-	// Unregister first destination
-	err := manager.UnregisterDestination("dest1", "default", "repo1", "gitops-system", "main")
+	// Unregister first target
+	err := manager.UnregisterTarget("target1", "default", "repo1", "gitops-system", "main")
 	if err != nil {
-		t.Fatalf("Failed to unregister dest1: %v", err)
+		t.Fatalf("Failed to unregister target1: %v", err)
 	}
 
 	// Verify worker was destroyed (WorkerManager now destroys on any unregister)
-	_, exists = manager.GetWorkerForDestination("repo1", "gitops-system", "main")
+	_, exists = manager.GetWorkerForTarget("repo1", "gitops-system", "main")
 	if exists {
-		t.Error("Worker should be destroyed when destination unregistered")
+		t.Error("Worker should be destroyed when target unregistered")
 	}
 
-	// Unregister last destination
-	err = manager.UnregisterDestination("dest2", "default", "repo1", "gitops-system", "main")
+	// Unregister last target
+	err = manager.UnregisterTarget("target2", "default", "repo1", "gitops-system", "main")
 	if err != nil {
-		t.Fatalf("Failed to unregister dest2: %v", err)
+		t.Fatalf("Failed to unregister target2: %v", err)
 	}
 
 	// Verify worker was destroyed
-	_, exists = manager.GetWorkerForDestination("repo1", "gitops-system", "main")
+	_, exists = manager.GetWorkerForTarget("repo1", "gitops-system", "main")
 	if exists {
-		t.Error("Worker should be destroyed when last destination unregistered")
+		t.Error("Worker should be destroyed when last target unregistered")
 	}
 
 	manager.mu.RLock()
@@ -280,17 +280,17 @@ func TestWorkerManagerConcurrentRegistration(t *testing.T) {
 	}()
 	time.Sleep(100 * time.Millisecond)
 
-	// Concurrently register multiple destinations
+	// Concurrently register multiple targets
 	done := make(chan bool, 10)
 	for i := range 10 {
 		go func(index int) {
-			destName := "dest"
-			err := manager.RegisterDestination(ctx,
-				destName, "default",
+			targetName := "target"
+			err := manager.RegisterTarget(ctx,
+				targetName, "default",
 				"repo1", "gitops-system",
 				"main", "base/")
 			if err != nil {
-				t.Errorf("Failed to register destination %d: %v", index, err)
+				t.Errorf("Failed to register target %d: %v", index, err)
 			}
 			done <- true
 		}(i)
@@ -322,7 +322,7 @@ func TestWorkerManagerGetNonexistentWorker(t *testing.T) {
 
 	manager := NewWorkerManager(client, log)
 
-	worker, exists := manager.GetWorkerForDestination("nonexistent", "default", "main")
+	worker, exists := manager.GetWorkerForTarget("nonexistent", "default", "main")
 	if exists {
 		t.Error("Should return exists=false for nonexistent worker")
 	}
@@ -331,7 +331,7 @@ func TestWorkerManagerGetNonexistentWorker(t *testing.T) {
 	}
 }
 
-// TestWorkerManagerUnregisterNonexistent verifies unregistering nonexistent destination is safe.
+// TestWorkerManagerUnregisterNonexistent verifies unregistering nonexistent target is safe.
 func TestWorkerManagerUnregisterNonexistent(t *testing.T) {
 	scheme := setupScheme()
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
@@ -340,7 +340,7 @@ func TestWorkerManagerUnregisterNonexistent(t *testing.T) {
 	manager := NewWorkerManager(client, log)
 
 	// Unregister should be idempotent and not error
-	err := manager.UnregisterDestination("nonexistent", "default", "repo1", "gitops-system", "main")
+	err := manager.UnregisterTarget("nonexistent", "default", "repo1", "gitops-system", "main")
 	if err != nil {
 		t.Errorf("Unregister nonexistent should not error: %v", err)
 	}

@@ -60,21 +60,21 @@ type WriteEventsResult struct {
 	Failures       int           // Number of failures while attempting to push commits (0 in ideal situation)
 }
 
-// BranchKey uniquely identifies a (GitRepoConfig, Branch) combination.
+// BranchKey uniquely identifies a (GitProvider, Branch) combination.
 // This is the unit of worker ownership to prevent merge conflicts.
-// Multiple GitDestinations can share the same BranchKey (same repo+branch)
-// but write to different baseFolders within that branch.
+// Multiple GitTargets can share the same BranchKey (same provider+branch)
+// but write to different paths within that branch.
 type BranchKey struct {
-	// RepoNamespace is the namespace containing the GitRepoConfig.
+	// RepoNamespace is the namespace containing the GitProvider.
 	RepoNamespace string
-	// RepoName is the name of the GitRepoConfig.
+	// RepoName is the name of the GitProvider.
 	RepoName string
 	// Branch is the Git branch name.
 	Branch string
 }
 
 // String returns a string representation for logging and debugging.
-// Format: "namespace/repo-name/branch".
+// Format: "namespace/provider-name/branch".
 func (k BranchKey) String() string {
 	return fmt.Sprintf("%s/%s/%s", k.RepoNamespace, k.RepoName, k.Branch)
 }
@@ -87,7 +87,7 @@ type UserInfo struct {
 
 // Event represents a resource change event to be processed by a branch worker.
 // Branch comes from the worker context (not stored in event).
-// BaseFolder comes from the GitDestination that created this event.
+// Path comes from the GitTarget that created this event.
 type Event struct {
 	// Object is the sanitized Kubernetes object.
 	Object *unstructured.Unstructured
@@ -101,8 +101,8 @@ type Event struct {
 	// UserInfo contains user information for commit messages.
 	UserInfo UserInfo
 
-	// BaseFolder is the POSIX-like relative path prefix for this event's files.
-	// This comes from the GitDestination that triggered this event.
+	// Path is the POSIX-like relative path prefix for this event's files.
+	// This comes from the GitTarget that triggered this event.
 	// Empty string means write to repository root.
-	BaseFolder string
+	Path string
 }

@@ -186,27 +186,25 @@ func getBaseFolder() string {
 	return "e2e"
 }
 
-// createGitTarget creates a GitTarget that binds a GitProvider, branch and baseFolder.
+// createGitTarget creates a GitTarget that binds a GitProvider, branch and path.
 //
 //nolint:unparam // in e2e helpers we accept constant namespace ("sut"); keep signature for clarity in template calls
-func createGitTarget(name, namespace, repoConfigName, baseFolder, branch string) {
-	By(fmt.Sprintf("creating GitTarget '%s' in ns '%s' for GitProvider '%s' with baseFolder '%s'",
-		name, namespace, repoConfigName, baseFolder))
+func createGitTarget(name, namespace, providerName, path, branch string) {
+	By(fmt.Sprintf("creating GitTarget '%s' in ns '%s' for GitProvider '%s' with path '%s'",
+		name, namespace, providerName, path))
 
 	data := struct {
-		Name                string
-		Namespace           string
-		RepoConfigName      string
-		RepoConfigNamespace string
-		Branch              string
-		BaseFolder          string
+		Name         string
+		Namespace    string
+		ProviderName string
+		Branch       string
+		Path         string
 	}{
-		Name:                name,
-		Namespace:           namespace,
-		RepoConfigName:      repoConfigName,
-		RepoConfigNamespace: namespace,
-		Branch:              branch,
-		BaseFolder:          baseFolder,
+		Name:         name,
+		Namespace:    namespace,
+		ProviderName: providerName,
+		Branch:       branch,
+		Path:         path,
 	}
 
 	err := applyFromTemplate("test/e2e/templates/gittarget.tmpl", data, namespace)

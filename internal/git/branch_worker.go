@@ -147,17 +147,17 @@ func (w *BranchWorker) Enqueue(event Event) {
 	case w.eventQueue <- event:
 		w.Log.V(1).Info("Event enqueued",
 			"operation", event.Operation,
-			"baseFolder", event.BaseFolder)
+			"path", event.Path)
 	default:
 		w.Log.Error(nil, "Event queue full, event dropped",
 			"operation", event.Operation,
-			"baseFolder", event.BaseFolder)
+			"path", event.Path)
 	}
 }
 
-// ListResourcesInBaseFolder returns resource identifiers found in a Git folder.
+// ListResourcesInPath returns resource identifiers found in a Git folder.
 // This is a synchronous service method called by EventRouter.
-func (w *BranchWorker) ListResourcesInBaseFolder(baseFolder string) ([]itypes.ResourceIdentifier, error) {
+func (w *BranchWorker) ListResourcesInPath(path string) ([]itypes.ResourceIdentifier, error) {
 	// Ensure repository is initialized and up-to-date
 	if err := w.ensureRepositoryInitialized(w.ctx); err != nil {
 		return nil, fmt.Errorf("failed to initialize repository: %w", err)
@@ -167,18 +167,18 @@ func (w *BranchWorker) ListResourcesInBaseFolder(baseFolder string) ([]itypes.Re
 	repoPath := filepath.Join("/tmp", "gitops-reverser-workers",
 		w.GitProviderNamespace, w.GitProviderRef, w.Branch)
 
-	return w.listResourceIdentifiersInBaseFolder(repoPath, baseFolder)
+	return w.listResourceIdentifiersInPath(repoPath, path)
 }
 
-// listResourceIdentifiersInBaseFolder lists resource identifiers in a specific base folder.
-func (w *BranchWorker) listResourceIdentifiersInBaseFolder(
-	repoPath, baseFolder string,
+// listResourceIdentifiersInPath lists resource identifiers in a specific path.
+func (w *BranchWorker) listResourceIdentifiersInPath(
+	repoPath, path string,
 ) ([]itypes.ResourceIdentifier, error) {
 	var resources []itypes.ResourceIdentifier
 
 	basePath := repoPath
-	if baseFolder != "" {
-		basePath = filepath.Join(repoPath, baseFolder)
+	if path != "" {
+		basePath = filepath.Join(repoPath, path)
 	}
 
 	err := filepath.Walk(basePath, func(path string, info os.FileInfo, walkErr error) error {

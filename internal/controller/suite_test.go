@@ -97,13 +97,13 @@ var _ = BeforeSuite(func() {
 	err = mgr.Add(workerManager)
 	Expect(err).NotTo(HaveOccurred())
 
-	err = (&GitRepoConfigReconciler{
+	err = (&GitProviderReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr)
 	Expect(err).NotTo(HaveOccurred())
 
-	err = (&GitDestinationReconciler{
+	err = (&GitTargetReconciler{
 		Client:        mgr.GetClient(),
 		Scheme:        mgr.GetScheme(),
 		WorkerManager: workerManager,

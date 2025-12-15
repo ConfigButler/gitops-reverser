@@ -39,7 +39,7 @@ import (
 
 var _ = Describe("SSH Authentication", func() {
 	var (
-		reconciler       *GitRepoConfigReconciler
+		reconciler       *GitProviderReconciler
 		privateKey       []byte
 		knownHosts       []byte
 		validSSHSecret   *corev1.Secret
@@ -47,7 +47,7 @@ var _ = Describe("SSH Authentication", func() {
 	)
 
 	BeforeEach(func() {
-		reconciler = &GitRepoConfigReconciler{}
+		reconciler = &GitProviderReconciler{}
 
 		// Generate a test RSA key pair (4096 bits to meet Gitea's security requirements)
 		rsaKey, err := rsa.GenerateKey(rand.Reader, 4096)
@@ -254,7 +254,7 @@ var _ = Describe("SSH Authentication", func() {
 
 // TestSSHCredentials tests SSH credential extraction functionality.
 func TestSSHCredentials(t *testing.T) {
-	reconciler := &GitRepoConfigReconciler{}
+	reconciler := &GitProviderReconciler{}
 
 	// Test with valid SSH key
 	t.Run("Valid SSH Key", func(t *testing.T) {
@@ -337,7 +337,7 @@ func TestSSHCredentials(t *testing.T) {
 
 // TestCheckRemoteConnectivity tests the lightweight remote connectivity check.
 func TestCheckRemoteConnectivity(t *testing.T) {
-	reconciler := &GitRepoConfigReconciler{}
+	reconciler := &GitProviderReconciler{}
 	ctx := context.Background()
 
 	// Test with invalid URL (this will fail but should handle gracefully)
@@ -366,12 +366,12 @@ func TestCheckRemoteConnectivity(t *testing.T) {
 	})
 }
 
-// TestGitRepoConfigConditions tests the condition setting logic.
-func TestGitRepoConfigConditions(t *testing.T) {
-	reconciler := &GitRepoConfigReconciler{}
+// TestGitProviderConditions tests the condition setting logic.
+func TestGitProviderConditions(t *testing.T) {
+	reconciler := &GitProviderReconciler{}
 
-	// Mock GitRepoConfig
-	gitRepoConfig := &configbutleraiv1alpha1.GitRepoConfig{}
+	// Mock GitProvider
+	gitProvider := &configbutleraiv1alpha1.GitProvider{}
 
 	// Test setting various conditions
 	testCases := []struct {
@@ -387,14 +387,14 @@ func TestGitRepoConfigConditions(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.reason, func(t *testing.T) {
-			reconciler.setCondition(gitRepoConfig, tc.status, tc.reason, tc.message)
+			reconciler.setCondition(gitProvider, tc.status, tc.reason, tc.message)
 
-			if len(gitRepoConfig.Status.Conditions) == 0 {
+			if len(gitProvider.Status.Conditions) == 0 {
 				t.Error("Expected at least one condition")
 				return
 			}
 
-			condition := gitRepoConfig.Status.Conditions[len(gitRepoConfig.Status.Conditions)-1]
+			condition := gitProvider.Status.Conditions[len(gitProvider.Status.Conditions)-1]
 			if condition.Type != ConditionTypeReady {
 				t.Errorf("Expected condition type 'Ready', got '%s'", condition.Type)
 			}
