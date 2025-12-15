@@ -1,10 +1,10 @@
 apiVersion: configbutler.ai/v1alpha1
-kind: GitRepoConfig
+kind: GitProvider
 metadata:
   name: {{.Name}}
   namespace: {{.Namespace}}
 spec:
-  repoUrl: {{.RepoURL}}
+  url: {{.RepoURL}}
   allowedBranches:
     - "{{.Branch}}"
   push:

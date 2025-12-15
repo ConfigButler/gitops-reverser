@@ -43,19 +43,19 @@ const (
 	branchWorkerQueueSize = 100
 
 	// metadataCacheDuration is how long metadata is considered fresh before re-fetching.
-	// This optimization prevents redundant Git fetches when multiple GitDestinations
+	// This optimization prevents redundant Git fetches when multiple GitTargets
 	// share the same branch and reconcile within a short time window.
 	metadataCacheDuration = 30 * time.Second
 )
 
-// BranchWorker processes events for a single (GitRepoConfig, Branch) combination.
-// It can serve multiple GitDestinations that write to different baseFolders in the same branch.
+// BranchWorker processes events for a single (GitProvider, Branch) combination.
+// It can serve multiple GitTargets that write to different paths in the same branch.
 // This design ensures serialized commits per branch, preventing merge conflicts.
 type BranchWorker struct {
 	// Identity (immutable after creation)
-	GitRepoConfigRef       string
-	GitRepoConfigNamespace string
-	Branch                 string
+	GitProviderRef       string
+	GitProviderNamespace string
+	Branch               string
 
 	// Dependencies
 	Client client.Client
@@ -76,21 +76,21 @@ type BranchWorker struct {
 	lastFetchTime time.Time
 }
 
-// NewBranchWorker creates a worker for a (repo, branch) combination.
+// NewBranchWorker creates a worker for a (provider, branch) combination.
 func NewBranchWorker(
 	client client.Client,
 	log logr.Logger,
-	repoName, repoNamespace string,
+	providerName, providerNamespace string,
 	branch string,
 ) *BranchWorker {
 	return &BranchWorker{
-		GitRepoConfigRef:       repoName,
-		GitRepoConfigNamespace: repoNamespace,
-		Branch:                 branch,
-		Client:                 client,
+		GitProviderRef:       providerName,
+		GitProviderNamespace: providerNamespace,
+		Branch:               branch,
+		Client:               client,
 		Log: log.WithValues(
-			"repo", repoName,
-			"namespace", repoNamespace,
+			"provider", providerName,
+			"namespace", providerNamespace,
 			"branch", branch,
 		),
 		eventQueue: make(chan Event, branchWorkerQueueSize),
@@ -165,7 +165,7 @@ func (w *BranchWorker) ListResourcesInBaseFolder(baseFolder string) ([]itypes.Re
 
 	// Use the worker's managed repository path
 	repoPath := filepath.Join("/tmp", "gitops-reverser-workers",
-		w.GitRepoConfigNamespace, w.GitRepoConfigRef, w.Branch)
+		w.GitProviderNamespace, w.GitProviderRef, w.Branch)
 
 	return w.listResourceIdentifiersInBaseFolder(repoPath, baseFolder)
 }
@@ -219,16 +219,16 @@ func (w *BranchWorker) listResourceIdentifiersInBaseFolder(
 
 // processEvents is the main event processing loop.
 func (w *BranchWorker) processEvents() {
-	// Get GitRepoConfig
-	repoConfig, err := w.getGitRepoConfig(w.ctx)
+	// Get GitProvider
+	provider, err := w.getGitProvider(w.ctx)
 	if err != nil {
-		w.Log.Error(err, "Failed to get GitRepoConfig, worker exiting")
+		w.Log.Error(err, "Failed to get GitProvider, worker exiting")
 		return
 	}
 
 	// Setup timing
-	pushInterval := w.getPushInterval(repoConfig)
-	maxCommits := w.getMaxCommits(repoConfig)
+	pushInterval := w.getPushInterval(provider)
+	maxCommits := w.getMaxCommits(provider)
 	pushTicker := time.NewTicker(pushInterval)
 	defer pushTicker.Stop()
 
@@ -238,7 +238,7 @@ func (w *BranchWorker) processEvents() {
 	for {
 		select {
 		case <-w.ctx.Done():
-			w.handleShutdown(repoConfig, eventBuffer)
+			w.handleShutdown(provider, eventBuffer)
 			return
 
 		case event := <-w.eventQueue:
@@ -248,14 +248,14 @@ func (w *BranchWorker) processEvents() {
 
 			// Check limits
 			if len(eventBuffer) >= maxCommits || bufferByteCount >= maxBytesBytes {
-				w.commitAndPush(repoConfig, eventBuffer)
+				w.commitAndPush(provider, eventBuffer)
 				eventBuffer = nil
 				bufferByteCount = 0
 			}
 
 		case <-pushTicker.C:
 			if len(eventBuffer) > 0 {
-				w.commitAndPush(repoConfig, eventBuffer)
+				w.commitAndPush(provider, eventBuffer)
 				eventBuffer = nil
 				bufferByteCount = 0
 			}
@@ -264,9 +264,9 @@ func (w *BranchWorker) processEvents() {
 }
 
 // commitAndPush processes a batch of events.
-// Events may have different baseFolders but all go to same branch.
+// Events may have different paths but all go to same branch.
 func (w *BranchWorker) commitAndPush(
-	repoConfig *configv1alpha1.GitRepoConfig,
+	provider *configv1alpha1.GitProvider,
 	events []Event,
 ) {
 	log := w.Log.WithValues("eventCount", len(events))
@@ -274,14 +274,14 @@ func (w *BranchWorker) commitAndPush(
 	log.Info("Starting git commit and push",
 		"branch", w.Branch)
 
-	auth, err := getAuthFromSecret(w.ctx, w.Client, repoConfig)
+	auth, err := getAuthFromSecret(w.ctx, w.Client, provider)
 	if err != nil {
 		log.Error(err, "Failed to get auth")
 		return
 	}
 
 	repoPath := filepath.Join("/tmp", "gitops-reverser-workers",
-		w.GitRepoConfigNamespace, w.GitRepoConfigRef, w.Branch)
+		w.GitProviderNamespace, w.GitProviderRef, w.Branch)
 
 	// Use new WriteEvents abstraction
 	result, err := WriteEvents(w.ctx, repoPath, events, w.Branch, auth)
@@ -309,12 +309,12 @@ func (w *BranchWorker) commitAndPush(
 
 // handleShutdown finalizes processing when context is canceled.
 func (w *BranchWorker) handleShutdown(
-	repoConfig *configv1alpha1.GitRepoConfig,
+	provider *configv1alpha1.GitProvider,
 	eventBuffer []Event,
 ) {
 	w.Log.Info("Handling shutdown, flushing buffer")
 	if len(eventBuffer) > 0 {
-		w.commitAndPush(repoConfig, eventBuffer)
+		w.commitAndPush(provider, eventBuffer)
 	}
 }
 
@@ -329,25 +329,25 @@ func (w *BranchWorker) estimateEventSize(ev Event) int64 {
 	return 0
 }
 
-// getGitRepoConfig fetches the GitRepoConfig for this worker.
-func (w *BranchWorker) getGitRepoConfig(ctx context.Context) (*configv1alpha1.GitRepoConfig, error) {
-	var repoConfig configv1alpha1.GitRepoConfig
+// getGitProvider fetches the GitProvider for this worker.
+func (w *BranchWorker) getGitProvider(ctx context.Context) (*configv1alpha1.GitProvider, error) {
+	var provider configv1alpha1.GitProvider
 	namespacedName := types.NamespacedName{
-		Name:      w.GitRepoConfigRef,
-		Namespace: w.GitRepoConfigNamespace,
+		Name:      w.GitProviderRef,
+		Namespace: w.GitProviderNamespace,
 	}
 
-	if err := w.Client.Get(ctx, namespacedName, &repoConfig); err != nil {
-		return nil, fmt.Errorf("failed to fetch GitRepoConfig: %w", err)
+	if err := w.Client.Get(ctx, namespacedName, &provider); err != nil {
+		return nil, fmt.Errorf("failed to fetch GitProvider: %w", err)
 	}
 
-	return &repoConfig, nil
+	return &provider, nil
 }
 
-// getPushInterval extracts and validates the push interval from GitRepoConfig.
-func (w *BranchWorker) getPushInterval(repoConfig *configv1alpha1.GitRepoConfig) time.Duration {
-	if repoConfig.Spec.Push != nil && repoConfig.Spec.Push.Interval != nil {
-		pushInterval, err := time.ParseDuration(*repoConfig.Spec.Push.Interval)
+// getPushInterval extracts and validates the push interval from GitProvider.
+func (w *BranchWorker) getPushInterval(provider *configv1alpha1.GitProvider) time.Duration {
+	if provider.Spec.Push != nil && provider.Spec.Push.Interval != nil {
+		pushInterval, err := time.ParseDuration(*provider.Spec.Push.Interval)
 		if err != nil {
 			w.Log.Error(err, "Invalid push interval, using default")
 			return w.getDefaultPushInterval()
@@ -357,10 +357,10 @@ func (w *BranchWorker) getPushInterval(repoConfig *configv1alpha1.GitRepoConfig)
 	return w.getDefaultPushInterval()
 }
 
-// getMaxCommits extracts the max commits setting from GitRepoConfig.
-func (w *BranchWorker) getMaxCommits(repoConfig *configv1alpha1.GitRepoConfig) int {
-	if repoConfig.Spec.Push != nil && repoConfig.Spec.Push.MaxCommits != nil {
-		return *repoConfig.Spec.Push.MaxCommits
+// getMaxCommits extracts the max commits setting from GitProvider.
+func (w *BranchWorker) getMaxCommits(provider *configv1alpha1.GitProvider) int {
+	if provider.Spec.Push != nil && provider.Spec.Push.MaxCommits != nil {
+		return *provider.Spec.Push.MaxCommits
 	}
 	return w.getDefaultMaxCommits()
 }
@@ -393,7 +393,7 @@ func (w *BranchWorker) GetBranchMetadata() (bool, string, time.Time) {
 
 // SyncAndGetMetadata fetches latest metadata from remote Git repository.
 // Uses caching to avoid redundant fetches within 30 seconds (optimization for
-// multiple GitDestinations sharing the same branch).
+// multiple GitTargets sharing the same branch).
 // Returns PullReport containing branch existence, HEAD SHA, and other metadata.
 func (w *BranchWorker) SyncAndGetMetadata(ctx context.Context) (*PullReport, error) {
 	w.metaMu.RLock()
@@ -429,21 +429,21 @@ func (w *BranchWorker) SyncAndGetMetadata(ctx context.Context) (*PullReport, err
 // syncWithRemote fetches latest changes from remote to detect drift.
 // This is now called by SyncAndGetMetadata() during controller reconciliation.
 func (w *BranchWorker) syncWithRemote(ctx context.Context) (*PullReport, error) {
-	repoConfig, err := w.getGitRepoConfig(ctx)
+	provider, err := w.getGitProvider(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get GitRepoConfig: %w", err)
+		return nil, fmt.Errorf("failed to get GitProvider: %w", err)
 	}
 
-	auth, err := getAuthFromSecret(ctx, w.Client, repoConfig)
+	auth, err := getAuthFromSecret(ctx, w.Client, provider)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get auth: %w", err)
 	}
 
 	repoPath := filepath.Join("/tmp", "gitops-reverser-workers",
-		w.GitRepoConfigNamespace, w.GitRepoConfigRef, w.Branch)
+		w.GitProviderNamespace, w.GitProviderRef, w.Branch)
 
 	// PrepareBranch handles both initial and update cases
-	report, err := PrepareBranch(ctx, repoConfig.Spec.RepoURL, repoPath, w.Branch, auth)
+	report, err := PrepareBranch(ctx, provider.Spec.URL, repoPath, w.Branch, auth)
 	if err != nil {
 		return nil, fmt.Errorf("failed to sync with remote: %w", err)
 	}
@@ -462,21 +462,21 @@ func (w *BranchWorker) syncWithRemote(ctx context.Context) (*PullReport, error) 
 
 // ensureRepositoryInitialized ensures the worker's repository is cloned and ready.
 func (w *BranchWorker) ensureRepositoryInitialized(ctx context.Context) error {
-	repoConfig, err := w.getGitRepoConfig(ctx)
+	provider, err := w.getGitProvider(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to get GitRepoConfig: %w", err)
+		return fmt.Errorf("failed to get GitProvider: %w", err)
 	}
 
-	auth, err := getAuthFromSecret(ctx, w.Client, repoConfig)
+	auth, err := getAuthFromSecret(ctx, w.Client, provider)
 	if err != nil {
 		return fmt.Errorf("failed to get auth: %w", err)
 	}
 
 	repoPath := filepath.Join("/tmp", "gitops-reverser-workers",
-		w.GitRepoConfigNamespace, w.GitRepoConfigRef, w.Branch)
+		w.GitProviderNamespace, w.GitProviderRef, w.Branch)
 
 	// Use new PrepareBranch abstraction
-	pullReport, err := PrepareBranch(ctx, repoConfig.Spec.RepoURL, repoPath, w.Branch, auth)
+	pullReport, err := PrepareBranch(ctx, provider.Spec.URL, repoPath, w.Branch, auth)
 	if err != nil {
 		return fmt.Errorf("failed to prepare repository: %w", err)
 	}

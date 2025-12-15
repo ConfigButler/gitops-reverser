@@ -65,6 +65,5 @@ rules:
   - configbutler.ai
   resources:
   - gitproviders/finalizers
-  - gittargets/finalizers
   verbs:
   - update
