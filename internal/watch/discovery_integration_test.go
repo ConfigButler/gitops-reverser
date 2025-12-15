@@ -66,9 +66,8 @@ func TestCRDDiscoveryLifecycle(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: configv1alpha1.WatchRuleSpec{
-			DestinationRef: &configv1alpha1.NamespacedName{
-				Name:      "test-dest",
-				Namespace: "default",
+			Target: configv1alpha1.LocalTargetReference{
+				Name: "test-dest",
 			},
 			Rules: []configv1alpha1.ResourceRule{
 				{
@@ -194,7 +193,7 @@ func TestUnavailableGVRTracking(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: configv1alpha1.WatchRuleSpec{
-			DestinationRef: &configv1alpha1.NamespacedName{
+			Target: configv1alpha1.LocalTargetReference{
 				Name: "test-dest",
 			},
 			Rules: []configv1alpha1.ResourceRule{
@@ -275,7 +274,7 @@ func TestReconcileAfterRuleCreation(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: configv1alpha1.WatchRuleSpec{
-			DestinationRef: &configv1alpha1.NamespacedName{
+			Target: configv1alpha1.LocalTargetReference{
 				Name: "test-dest",
 			},
 			Rules: []configv1alpha1.ResourceRule{

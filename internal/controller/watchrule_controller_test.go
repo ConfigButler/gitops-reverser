@@ -23,6 +23,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -45,35 +46,36 @@ var _ = Describe("WatchRule Controller", func() {
 		watchrule := &configbutleraiv1alpha1.WatchRule{}
 
 		BeforeEach(func() {
-			By("creating the custom resource for the Kind GitRepoConfig")
-			gitRepoConfig := &configbutleraiv1alpha1.GitRepoConfig{
+			By("creating the custom resource for the Kind GitProvider")
+			gitProvider := &configbutleraiv1alpha1.GitProvider{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-repo-config",
+					Name:      "test-provider",
 					Namespace: "default",
 				},
-				Spec: configbutleraiv1alpha1.GitRepoConfigSpec{
-					RepoURL:         "https://github.com/test/repo.git",
-					AllowedBranches: []string{"main"},
-					SecretRef: &configbutleraiv1alpha1.LocalObjectReference{
+				Spec: configbutleraiv1alpha1.GitProviderSpec{
+					URL: "https://github.com/test/repo.git",
+					SecretRef: corev1.LocalObjectReference{
 						Name: "git-credentials",
 					},
 				},
 			}
-			Expect(k8sClient.Create(ctx, gitRepoConfig)).To(Succeed())
+			Expect(k8sClient.Create(ctx, gitProvider)).To(Succeed())
 
-			By("creating a GitDestination referencing the GitRepoConfig")
-			dest := &configbutleraiv1alpha1.GitDestination{
+			By("creating a GitTarget referencing the GitProvider")
+			target := &configbutleraiv1alpha1.GitTarget{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-destination",
+					Name:      "test-target",
 					Namespace: "default",
 				},
-				Spec: configbutleraiv1alpha1.GitDestinationSpec{
-					RepoRef:    configbutleraiv1alpha1.NamespacedName{Name: "test-repo-config"},
-					Branch:     "main",
-					BaseFolder: "default/test",
+				Spec: configbutleraiv1alpha1.GitTargetSpec{
+					Provider: configbutleraiv1alpha1.GitProviderReference{
+						Name: "test-provider",
+					},
+					Branch: "main",
+					Path:   "default/test",
 				},
 			}
-			Expect(k8sClient.Create(ctx, dest)).To(Succeed())
+			Expect(k8sClient.Create(ctx, target)).To(Succeed())
 
 			By("creating the custom resource for the Kind WatchRule")
 			err := k8sClient.Get(ctx, typeNamespacedName, watchrule)
@@ -84,7 +86,7 @@ var _ = Describe("WatchRule Controller", func() {
 						Namespace: "default",
 					},
 					Spec: configbutleraiv1alpha1.WatchRuleSpec{
-						DestinationRef: &configbutleraiv1alpha1.NamespacedName{Name: "test-destination"},
+						Target: configbutleraiv1alpha1.LocalTargetReference{Name: "test-target"},
 						Rules: []configbutleraiv1alpha1.ResourceRule{
 							{
 								Resources: []string{"Pod"},
@@ -104,27 +106,27 @@ var _ = Describe("WatchRule Controller", func() {
 			By("Cleanup the specific resource instance WatchRule")
 			Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
 
-			dest := &configbutleraiv1alpha1.GitDestination{}
+			target := &configbutleraiv1alpha1.GitTarget{}
 			err = k8sClient.Get(
 				ctx,
-				types.NamespacedName{Name: "test-destination", Namespace: "default"},
-				dest,
+				types.NamespacedName{Name: "test-target", Namespace: "default"},
+				target,
 			)
 			Expect(err).NotTo(HaveOccurred())
 
-			By("Cleanup the specific resource instance GitDestination")
-			Expect(k8sClient.Delete(ctx, dest)).To(Succeed())
+			By("Cleanup the specific resource instance GitTarget")
+			Expect(k8sClient.Delete(ctx, target)).To(Succeed())
 
-			gitRepoConfig := &configbutleraiv1alpha1.GitRepoConfig{}
+			gitProvider := &configbutleraiv1alpha1.GitProvider{}
 			err = k8sClient.Get(
 				ctx,
-				types.NamespacedName{Name: "test-repo-config", Namespace: "default"},
-				gitRepoConfig,
+				types.NamespacedName{Name: "test-provider", Namespace: "default"},
+				gitProvider,
 			)
 			Expect(err).NotTo(HaveOccurred())
 
-			By("Cleanup the specific resource instance GitRepoConfig")
-			Expect(k8sClient.Delete(ctx, gitRepoConfig)).To(Succeed())
+			By("Cleanup the specific resource instance GitProvider")
+			Expect(k8sClient.Delete(ctx, gitProvider)).To(Succeed())
 		})
 		It("should successfully reconcile the resource", func() {
 			By("Reconciling the created resource")
@@ -157,62 +159,44 @@ var _ = Describe("WatchRule Controller", func() {
 		})
 
 		It("should work with same namespace (default behavior)", func() {
-			By("Creating GitRepoConfig with no access policy")
-			gitRepoConfig := &configbutleraiv1alpha1.GitRepoConfig{
+			By("Creating GitProvider")
+			gitProvider := &configbutleraiv1alpha1.GitProvider{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "local-config",
+					Name:      "local-provider",
 					Namespace: "default",
 				},
-				Spec: configbutleraiv1alpha1.GitRepoConfigSpec{
-					RepoURL:         "https://github.com/octocat/Hello-World",
-					AllowedBranches: []string{"main"},
+				Spec: configbutleraiv1alpha1.GitProviderSpec{
+					URL: "https://github.com/octocat/Hello-World",
 				},
 			}
-			Expect(k8sClient.Create(ctx, gitRepoConfig)).Should(Succeed())
+			Expect(k8sClient.Create(ctx, gitProvider)).Should(Succeed())
 
-			// Wait for GitRepoConfig to be ready (it should become ready with the real GitHub repo)
-			Eventually(func() bool {
-				err := k8sClient.Get(
-					ctx,
-					types.NamespacedName{
-						Name:      "local-config",
-						Namespace: "default",
+			// TODO: Wait for GitProvider to be ready (if we implement status update for it)
+
+			By("Creating GitTarget in same namespace referencing the GitProvider")
+			target := &configbutleraiv1alpha1.GitTarget{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "local-target",
+					Namespace: "default",
+				},
+				Spec: configbutleraiv1alpha1.GitTargetSpec{
+					Provider: configbutleraiv1alpha1.GitProviderReference{
+						Name: "local-provider",
 					},
-					gitRepoConfig,
-				)
-				if err != nil {
-					return false
-				}
-				for _, condition := range gitRepoConfig.Status.Conditions {
-					if condition.Type == ConditionTypeReady && condition.Status == metav1.ConditionTrue {
-						return true
-					}
-				}
-				return false
-			}, "60s", "2s").Should(BeTrue())
-
-			By("Creating GitDestination in same namespace referencing the GitRepoConfig")
-			dest := &configbutleraiv1alpha1.GitDestination{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "local-dest",
-					Namespace: "default",
-				},
-				Spec: configbutleraiv1alpha1.GitDestinationSpec{
-					RepoRef:    configbutleraiv1alpha1.NamespacedName{Name: "local-config"},
-					Branch:     "main",
-					BaseFolder: "ns/default",
+					Branch: "main",
+					Path:   "ns/default",
 				},
 			}
-			Expect(k8sClient.Create(ctx, dest)).Should(Succeed())
+			Expect(k8sClient.Create(ctx, target)).Should(Succeed())
 
-			By("Creating WatchRule in same namespace referencing DestinationRef")
+			By("Creating WatchRule in same namespace referencing Target")
 			watchRule := &configbutleraiv1alpha1.WatchRule{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "local-rule",
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha1.WatchRuleSpec{
-					DestinationRef: &configbutleraiv1alpha1.NamespacedName{Name: "local-dest"},
+					Target: configbutleraiv1alpha1.LocalTargetReference{Name: "local-target"},
 					Rules: []configbutleraiv1alpha1.ResourceRule{
 						{
 							Resources: []string{"pods"},
@@ -250,8 +234,8 @@ var _ = Describe("WatchRule Controller", func() {
 
 			// Cleanup
 			Expect(k8sClient.Delete(ctx, watchRule)).Should(Succeed())
-			Expect(k8sClient.Delete(ctx, dest)).Should(Succeed())
-			Expect(k8sClient.Delete(ctx, gitRepoConfig)).Should(Succeed())
+			Expect(k8sClient.Delete(ctx, target)).Should(Succeed())
+			Expect(k8sClient.Delete(ctx, gitProvider)).Should(Succeed())
 		})
 	})
 })

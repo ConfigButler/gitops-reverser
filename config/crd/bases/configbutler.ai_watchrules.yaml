@@ -57,27 +57,6 @@ spec:
           spec:
             description: spec defines the desired state of WatchRule
             properties:
-              destinationRef:
-                description: |-
-                  DestinationRef references a GitDestination that encapsulates repo+branch+baseFolder.
-                  When set, DestinationRef takes precedence over GitRepoConfigRef.
-                  If namespace is not specified, defaults to the WatchRule's namespace.
-                  Pointer is used so that omitempty truly omits the field when unset to avoid
-                  API validation on zero-value structs.
-                properties:
-                  name:
-                    description: Name of the GitRepoConfig.
-                    minLength: 1
-                    type: string
-                  namespace:
-                    description: |-
-                      Namespace containing the GitRepoConfig.
-                      For WatchRule: Optional, defaults to WatchRule's namespace if not specified.
-                      For ClusterWatchRule: Required, must be explicitly specified.
-                    type: string
-                required:
-                - name
-                type: object
               rules:
                 description: |-
                   Rules define which resources to watch within this namespace.
@@ -154,8 +133,27 @@ spec:
                   type: object
                 minItems: 1
                 type: array
+              target:
+                description: |-
+                  Target references the GitTarget to use.
+                  Must be in the same namespace.
+                properties:
+                  group:
+                    default: configbutler.ai
+                    description: API Group of the referent.
+                    type: string
+                  kind:
+                    default: GitTarget
+                    type: string
+                  name:
+                    type: string
+                required:
+                - kind
+                - name
+                type: object
             required:
             - rules
+            - target
             type: object
           status:
             description: status defines the observed state of WatchRule

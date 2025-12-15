@@ -21,7 +21,6 @@ package controller
 import (
 	"context"
 	"fmt"
-	"time"
 
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -58,7 +57,8 @@ type ClusterWatchRuleReconciler struct {
 
 // +kubebuilder:rbac:groups=configbutler.ai,resources=clusterwatchrules,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=configbutler.ai,resources=clusterwatchrules/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=configbutler.ai,resources=gitrepoconfigs,verbs=get;list;watch
+// +kubebuilder:rbac:groups=configbutler.ai,resources=gittargets,verbs=get;list;watch
+// +kubebuilder:rbac:groups=configbutler.ai,resources=gitproviders,verbs=get;list;watch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -93,7 +93,7 @@ func (r *ClusterWatchRuleReconciler) Reconcile(ctx context.Context, req ctrl.Req
 
 	log.Info("Starting ClusterWatchRule validation",
 		"name", clusterRule.Name,
-		"destinationRef", clusterRule.Spec.DestinationRef,
+		"target", clusterRule.Spec.Target,
 		"generation", clusterRule.Generation,
 		"resourceVersion", clusterRule.ResourceVersion)
 
@@ -102,87 +102,78 @@ func (r *ClusterWatchRuleReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	r.setCondition(&clusterRule, metav1.ConditionUnknown,
 		ClusterWatchRuleReasonValidating, "Validating ClusterWatchRule configuration...")
 
-	// Delegate to destination-based reconciliation
-	return r.reconcileClusterWatchRuleViaDestination(ctx, &clusterRule)
+	// Delegate to target-based reconciliation
+	return r.reconcileClusterWatchRuleViaTarget(ctx, &clusterRule)
 }
 
-// reconcileClusterWatchRuleViaDestination validates and stores a ClusterWatchRule that references a GitDestination.
-func (r *ClusterWatchRuleReconciler) reconcileClusterWatchRuleViaDestination(
+// reconcileClusterWatchRuleViaTarget validates and stores a ClusterWatchRule that references a GitTarget.
+func (r *ClusterWatchRuleReconciler) reconcileClusterWatchRuleViaTarget(
 	ctx context.Context,
 	clusterRule *configbutleraiv1alpha1.ClusterWatchRule,
 ) (ctrl.Result, error) {
-	log := logf.FromContext(ctx).WithName("reconcileClusterWatchRuleViaDestination")
+	log := logf.FromContext(ctx).WithName("reconcileClusterWatchRuleViaTarget")
 
-	// DestinationRef is required
-	if clusterRule.Spec.DestinationRef == nil || clusterRule.Spec.DestinationRef.Name == "" {
+	// Target is required
+	if clusterRule.Spec.Target.Name == "" {
 		r.setCondition(clusterRule, metav1.ConditionFalse, ClusterWatchRuleReasonGitDestinationInvalid,
-			"DestinationRef.name must be specified for ClusterWatchRule")
-		return r.updateStatusAndRequeue(ctx, clusterRule, RequeueShortInterval)
+			"Target.name must be specified for ClusterWatchRule")
+		return r.updateStatusAndRequeue(ctx, clusterRule)
 	}
 
-	// For ClusterWatchRule, destination namespace must be specified
-	destNS := clusterRule.Spec.DestinationRef.Namespace
-	if destNS == "" {
+	// For ClusterWatchRule, target namespace must be specified
+	targetNS := clusterRule.Spec.Target.Namespace
+	if targetNS == "" {
 		r.setCondition(clusterRule, metav1.ConditionFalse, ClusterWatchRuleReasonGitDestinationInvalid,
-			"DestinationRef.namespace must be specified for ClusterWatchRule")
-		return r.updateStatusAndRequeue(ctx, clusterRule, RequeueShortInterval)
+			"Target.namespace must be specified for ClusterWatchRule")
+		return r.updateStatusAndRequeue(ctx, clusterRule)
 	}
 
-	// Fetch GitDestination
-	var dest configbutleraiv1alpha1.GitDestination
-	destKey := types.NamespacedName{Name: clusterRule.Spec.DestinationRef.Name, Namespace: destNS}
-	if err := r.Get(ctx, destKey, &dest); err != nil {
-		log.Error(err, "Failed to get referenced GitDestination",
-			"gitDestinationName", clusterRule.Spec.DestinationRef.Name,
-			"gitDestinationNamespace", destNS)
+	// Fetch GitTarget
+	var target configbutleraiv1alpha1.GitTarget
+	targetKey := types.NamespacedName{Name: clusterRule.Spec.Target.Name, Namespace: targetNS}
+	if err := r.Get(ctx, targetKey, &target); err != nil {
+		log.Error(err, "Failed to get referenced GitTarget",
+			"gitTargetName", clusterRule.Spec.Target.Name,
+			"gitTargetNamespace", targetNS)
 		r.setCondition(
 			clusterRule,
 			metav1.ConditionFalse,
 			ClusterWatchRuleReasonGitDestinationNotFound,
-			fmt.Sprintf("Referenced GitDestination '%s/%s' not found: %v",
-				destNS, clusterRule.Spec.DestinationRef.Name, err),
+			fmt.Sprintf("Referenced GitTarget '%s/%s' not found: %v",
+				targetNS, clusterRule.Spec.Target.Name, err),
 		)
-		return r.updateStatusAndRequeue(ctx, clusterRule, RequeueShortInterval)
+		return r.updateStatusAndRequeue(ctx, clusterRule)
 	}
 
-	// Resolve GitRepoConfig from destination
-	grcNS := dest.Spec.RepoRef.Namespace
-	if grcNS == "" {
-		grcNS = dest.Namespace
-	}
-	grcKey := configbutleraiv1alpha1.NamespacedName{Name: dest.Spec.RepoRef.Name, Namespace: grcNS}
-	gitRepoConfig, err := r.getGitRepoConfig(ctx, grcKey)
-	if err != nil {
-		log.Error(err, "Failed to resolve GitRepoConfig from GitDestination",
-			"gitRepoConfigName", dest.Spec.RepoRef.Name, "gitRepoConfigNamespace", grcNS)
+	// Resolve GitProvider from target
+	providerName := target.Spec.Provider.Name
+	providerNS := target.Namespace // Same as GitTarget
+
+	var provider configbutleraiv1alpha1.GitProvider
+	providerKey := types.NamespacedName{Name: providerName, Namespace: providerNS}
+	if err := r.Get(ctx, providerKey, &provider); err != nil {
+		log.Error(err, "Failed to resolve GitProvider from GitTarget",
+			"gitProviderName", providerName, "gitProviderNamespace", providerNS)
 		r.setCondition(
 			clusterRule,
 			metav1.ConditionFalse,
 			ClusterWatchRuleReasonGitRepoConfigNotFound,
-			fmt.Sprintf("GitRepoConfig '%s/%s' (from GitDestination) not found: %v",
-				grcNS, dest.Spec.RepoRef.Name, err),
+			fmt.Sprintf("GitProvider '%s/%s' (from GitTarget) not found: %v",
+				providerNS, providerName, err),
 		)
-		return r.updateStatusAndRequeue(ctx, clusterRule, RequeueShortInterval)
+		return r.updateStatusAndRequeue(ctx, clusterRule)
 	}
 
 	// Ready check
-	if !r.isGitRepoConfigReady(gitRepoConfig) {
-		log.Info("Resolved GitRepoConfig is not ready", "gitRepoConfig", gitRepoConfig.Name)
-		r.setCondition(clusterRule, metav1.ConditionFalse, ClusterWatchRuleReasonGitRepoConfigNotReady,
-			fmt.Sprintf("Resolved GitRepoConfig '%s/%s' is not ready", grcNS, dest.Spec.RepoRef.Name))
-		return r.updateStatusAndRequeue(ctx, clusterRule, time.Minute)
-	}
+	// TODO: Check GitProvider readiness
 
-	// MVP: No access policy validation (simplified per spec)
-	log.Info("GitRepoConfig validation passed", "gitRepoConfig", gitRepoConfig.Name, "namespace", grcNS)
-
-	// Add rule to store with GitDestination reference and resolved values
+	// Add rule to store with GitTarget reference and resolved values
 	r.RuleStore.AddOrUpdateClusterWatchRule(
 		*clusterRule,
-		dest.Name, destNS, // GitDestination reference
-		gitRepoConfig.Name, grcNS, // GitRepoConfig reference
-		dest.Spec.Branch,
-		dest.Spec.BaseFolder,
+		target.Name, targetNS, // GitTarget reference
+		provider.Name, providerNS, // GitProvider reference
+		target.Spec.Branch,
+		target.Spec.Path,
 	)
 
 	// Trigger WatchManager reconciliation for new/updated rule
@@ -193,19 +184,19 @@ func (r *ClusterWatchRuleReconciler) reconcileClusterWatchRuleViaDestination(
 		}
 	}
 
-	log.Info("ClusterWatchRule reconciliation via GitDestination successful", "name", clusterRule.Name)
-	return r.setReadyAndUpdateStatusWithDestination(ctx, clusterRule)
+	log.Info("ClusterWatchRule reconciliation via GitTarget successful", "name", clusterRule.Name)
+	return r.setReadyAndUpdateStatusWithTarget(ctx, clusterRule)
 }
 
-// setReadyAndUpdateStatusWithDestination sets Ready with destination message and updates status with retry.
-func (r *ClusterWatchRuleReconciler) setReadyAndUpdateStatusWithDestination(
+// setReadyAndUpdateStatusWithTarget sets Ready with target message and updates status with retry.
+func (r *ClusterWatchRuleReconciler) setReadyAndUpdateStatusWithTarget(
 	ctx context.Context,
 	clusterRule *configbutleraiv1alpha1.ClusterWatchRule,
 ) (ctrl.Result, error) {
 	msg := fmt.Sprintf(
-		"ClusterWatchRule is ready and monitoring resources via GitDestination '%s/%s'",
-		clusterRule.Spec.DestinationRef.Namespace,
-		clusterRule.Spec.DestinationRef.Name,
+		"ClusterWatchRule is ready and monitoring resources via GitTarget '%s/%s'",
+		clusterRule.Spec.Target.Namespace,
+		clusterRule.Spec.Target.Name,
 	)
 	r.setCondition(
 		clusterRule,
@@ -217,36 +208,6 @@ func (r *ClusterWatchRuleReconciler) setReadyAndUpdateStatusWithDestination(
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{RequeueAfter: RequeueMediumInterval}, nil
-}
-
-// getGitRepoConfig retrieves the referenced GitRepoConfig.
-func (r *ClusterWatchRuleReconciler) getGitRepoConfig(
-	ctx context.Context,
-	ref configbutleraiv1alpha1.NamespacedName,
-) (*configbutleraiv1alpha1.GitRepoConfig, error) {
-	var gitRepoConfig configbutleraiv1alpha1.GitRepoConfig
-	gitRepoConfigKey := types.NamespacedName{
-		Name:      ref.Name,
-		Namespace: ref.Namespace,
-	}
-
-	if err := r.Get(ctx, gitRepoConfigKey, &gitRepoConfig); err != nil {
-		return nil, err
-	}
-
-	return &gitRepoConfig, nil
-}
-
-// isGitRepoConfigReady checks if the GitRepoConfig has a Ready condition with status True.
-func (r *ClusterWatchRuleReconciler) isGitRepoConfigReady(
-	gitRepoConfig *configbutleraiv1alpha1.GitRepoConfig,
-) bool {
-	for _, condition := range gitRepoConfig.Status.Conditions {
-		if condition.Type == ConditionTypeReady && condition.Status == metav1.ConditionTrue {
-			return true
-		}
-	}
-	return false
 }
 
 // setCondition sets or updates the Ready condition.
@@ -278,12 +239,11 @@ func (r *ClusterWatchRuleReconciler) setCondition(
 func (r *ClusterWatchRuleReconciler) updateStatusAndRequeue(
 	ctx context.Context,
 	clusterRule *configbutleraiv1alpha1.ClusterWatchRule,
-	requeueAfter time.Duration,
 ) (ctrl.Result, error) {
 	if err := r.updateStatusWithRetry(ctx, clusterRule); err != nil {
 		return ctrl.Result{}, err
 	}
-	return ctrl.Result{RequeueAfter: requeueAfter}, nil
+	return ctrl.Result{RequeueAfter: RequeueShortInterval}, nil
 }
 
 // updateStatusWithRetry updates the status with retry logic to handle race conditions.

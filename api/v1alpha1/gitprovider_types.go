@@ -19,32 +19,29 @@ limitations under the License.
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
-// NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
-
-// GitProviderSpec defines the desired state of GitProvider
+// GitProviderSpec defines the desired state of GitProvider.
 type GitProviderSpec struct {
-	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
-	// The following markers will use OpenAPI v3 schema to validate the value
-	// More info: https://book.kubebuilder.io/reference/markers/crd-validation.html
+	// URL of the repository (HTTP/SSH)
+	URL string `json:"url"`
 
-	// foo is an example field of GitProvider. Edit gitprovider_types.go to remove/update
+	// SecretRef for authentication credentials
+	SecretRef corev1.LocalObjectReference `json:"secretRef"`
+
+	// AllowedBranches restricts which branches can be written to.
 	// +optional
-	Foo *string `json:"foo,omitempty"`
+	AllowedBranches []string `json:"allowedBranches,omitempty"`
+
+	// Push defines the strategy for pushing commits (batching).
+	// +optional
+	Push *PushStrategy `json:"push,omitempty"`
 }
 
 // GitProviderStatus defines the observed state of GitProvider.
 type GitProviderStatus struct {
-	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
-
-	// For Kubernetes API conventions, see:
-	// https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md#typical-status-properties
-
 	// conditions represent the current state of the GitProvider resource.
 	// Each condition has a unique type and reflects the status of a specific aspect of the resource.
 	//
@@ -63,7 +60,7 @@ type GitProviderStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 
-// GitProvider is the Schema for the gitproviders API
+// GitProvider is the Schema for the gitproviders API.
 type GitProvider struct {
 	metav1.TypeMeta `json:",inline"`
 
@@ -82,11 +79,12 @@ type GitProvider struct {
 
 // +kubebuilder:object:root=true
 
-// GitProviderList contains a list of GitProvider
+// GitProviderList contains a list of GitProvider.
 type GitProviderList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []GitProvider `json:"items"`
+
+	Items []GitProvider `json:"items"`
 }
 
 func init() {

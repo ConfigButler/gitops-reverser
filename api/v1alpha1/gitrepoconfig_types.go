@@ -60,19 +60,6 @@ type GitRepoConfigSpec struct {
 	Push *PushStrategy `json:"push,omitempty"`
 }
 
-// PushStrategy defines the rules for when to push commits.
-type PushStrategy struct {
-	// Interval is the maximum time to wait before pushing queued commits.
-	// Defaults to "1m".
-	// +optional
-	Interval *string `json:"interval,omitempty"`
-
-	// MaxCommits is the maximum number of commits to queue before pushing.
-	// Defaults to 20.
-	// +optional
-	MaxCommits *int `json:"maxCommits,omitempty"`
-}
-
 // GitRepoConfigStatus defines the observed state of GitRepoConfig.
 type GitRepoConfigStatus struct {
 	// Conditions represent the latest available observations of an object's state

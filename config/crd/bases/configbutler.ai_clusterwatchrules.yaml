@@ -64,27 +64,6 @@ spec:
           spec:
             description: spec defines the desired state of ClusterWatchRule.
             properties:
-              destinationRef:
-                description: |-
-                  DestinationRef references a GitDestination that encapsulates repo+branch+baseFolder.
-                  When set, DestinationRef takes precedence over GitRepoConfigRef.
-                  Namespace must be specified for cluster-scoped rules.
-                  Pointer is used so that omitempty truly omits the field when unset to avoid
-                  API validation on zero-value structs.
-                properties:
-                  name:
-                    description: Name of the GitRepoConfig.
-                    minLength: 1
-                    type: string
-                  namespace:
-                    description: |-
-                      Namespace containing the GitRepoConfig.
-                      For WatchRule: Optional, defaults to WatchRule's namespace if not specified.
-                      For ClusterWatchRule: Required, must be explicitly specified.
-                    type: string
-                required:
-                - name
-                type: object
               rules:
                 description: |-
                   Rules define which resources to watch.
@@ -169,9 +148,31 @@ spec:
                   type: object
                 minItems: 1
                 type: array
+              target:
+                description: |-
+                  Target references the GitTarget to use.
+                  Must specify namespace.
+                properties:
+                  group:
+                    default: configbutler.ai
+                    description: API Group of the referent.
+                    type: string
+                  kind:
+                    default: GitTarget
+                    type: string
+                  name:
+                    type: string
+                  namespace:
+                    description: Required because ClusterWatchRule has no namespace.
+                    type: string
+                required:
+                - kind
+                - name
+                - namespace
+                type: object
             required:
-            - destinationRef
             - rules
+            - target
             type: object
           status:
             description: status defines the observed state of ClusterWatchRule.

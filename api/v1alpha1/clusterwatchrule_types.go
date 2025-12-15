@@ -36,14 +36,10 @@ const (
 
 // ClusterWatchRuleSpec defines the desired state of ClusterWatchRule.
 type ClusterWatchRuleSpec struct {
-
-	// DestinationRef references a GitDestination that encapsulates repo+branch+baseFolder.
-	// When set, DestinationRef takes precedence over GitRepoConfigRef.
-	// Namespace must be specified for cluster-scoped rules.
-	// Pointer is used so that omitempty truly omits the field when unset to avoid
-	// API validation on zero-value structs.
+	// Target references the GitTarget to use.
+	// Must specify namespace.
 	// +required
-	DestinationRef *NamespacedName `json:"destinationRef,omitempty"`
+	Target NamespacedTargetReference `json:"target"`
 
 	// Rules define which resources to watch.
 	// Multiple rules create a logical OR - a resource matching ANY rule is watched.

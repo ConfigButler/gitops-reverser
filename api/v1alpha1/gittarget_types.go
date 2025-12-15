@@ -22,48 +22,59 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
-// NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
+// GitProviderReference references the GitProvider or Flux GitRepository.
+type GitProviderReference struct {
+	// API Group of the referent.
+	// +kubebuilder:default="configbutler.ai"
+	Group string `json:"group,omitempty"`
 
-// GitTargetSpec defines the desired state of GitTarget
+	// Kind of the referent.
+	// Supported values: "GitProvider", "GitRepository" (Flux)
+	// +kubebuilder:default=GitProvider
+	Kind string `json:"kind"`
+
+	// Name of the referent.
+	// +required
+	Name string `json:"name"`
+}
+
+// GitTargetSpec defines the desired state of GitTarget.
 type GitTargetSpec struct {
-	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
-	// The following markers will use OpenAPI v3 schema to validate the value
-	// More info: https://book.kubebuilder.io/reference/markers/crd-validation.html
+	// Provider references the GitProvider or Flux GitRepository.
+	// +required
+	Provider GitProviderReference `json:"provider"`
 
-	// foo is an example field of GitTarget. Edit gittarget_types.go to remove/update
+	// Branch to use for this target.
+	// Must be one of the allowed branches in the provider.
+	// +required
+	Branch string `json:"branch"`
+
+	// Path within the repository to write resources to.
 	// +optional
-	Foo *string `json:"foo,omitempty"`
+	Path string `json:"path,omitempty"`
 }
 
 // GitTargetStatus defines the observed state of GitTarget.
 type GitTargetStatus struct {
-	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
-
-	// For Kubernetes API conventions, see:
-	// https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md#typical-status-properties
-
-	// conditions represent the current state of the GitTarget resource.
-	// Each condition has a unique type and reflects the status of a specific aspect of the resource.
-	//
-	// Standard condition types include:
-	// - "Available": the resource is fully functional
-	// - "Progressing": the resource is being created or updated
-	// - "Degraded": the resource failed to reach or maintain its desired state
-	//
-	// The status of each condition is one of True, False, or Unknown.
-	// +listType=map
-	// +listMapKey=type
+	// Conditions represent the latest available observations of an object's state
 	// +optional
-	Conditions []metav1.Condition `json:"conditions,omitempty"`
+	// +patchMergeKey=type
+	// +patchStrategy=merge
+	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
+
+	// LastCommit is the SHA of the last commit processed.
+	// +optional
+	LastCommit string `json:"lastCommit,omitempty"`
+
+	// LastPushTime is the timestamp of the last successful push.
+	// +optional
+	LastPushTime *metav1.Time `json:"lastPushTime,omitempty"`
 }
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 
-// GitTarget is the Schema for the gittargets API
+// GitTarget is the Schema for the gittargets API.
 type GitTarget struct {
 	metav1.TypeMeta `json:",inline"`
 
@@ -82,11 +93,12 @@ type GitTarget struct {
 
 // +kubebuilder:object:root=true
 
-// GitTargetList contains a list of GitTarget
+// GitTargetList contains a list of GitTarget.
 type GitTargetList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []GitTarget `json:"items"`
+
+	Items []GitTarget `json:"items"`
 }
 
 func init() {

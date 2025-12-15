@@ -17,7 +17,7 @@ spec:
   - name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: GitProvider is the Schema for the gitproviders API
+        description: GitProvider is the Schema for the gitproviders API.
         properties:
           apiVersion:
             description: |-
@@ -39,10 +39,46 @@ spec:
           spec:
             description: spec defines the desired state of GitProvider
             properties:
-              foo:
-                description: foo is an example field of GitProvider. Edit gitprovider_types.go
-                  to remove/update
+              allowedBranches:
+                description: AllowedBranches restricts which branches can be written
+                  to.
+                items:
+                  type: string
+                type: array
+              push:
+                description: Push defines the strategy for pushing commits (batching).
+                properties:
+                  interval:
+                    description: |-
+                      Interval is the maximum time to wait before pushing queued commits.
+                      Defaults to "1m".
+                    type: string
+                  maxCommits:
+                    description: |-
+                      MaxCommits is the maximum number of commits to queue before pushing.
+                      Defaults to 20.
+                    type: integer
+                type: object
+              secretRef:
+                description: SecretRef for authentication credentials
+                properties:
+                  name:
+                    default: ""
+                    description: |-
+                      Name of the referent.
+                      This field is effectively required, but due to backwards compatibility is
+                      allowed to be empty. Instances of this type with an empty value here are
+                      almost certainly wrong.
+                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                    type: string
+                type: object
+                x-kubernetes-map-type: atomic
+              url:
+                description: URL of the repository (HTTP/SSH)
                 type: string
+            required:
+            - secretRef
+            - url
             type: object
           status:
             description: status defines the observed state of GitProvider
