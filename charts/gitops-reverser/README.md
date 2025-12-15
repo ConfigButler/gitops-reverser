@@ -70,63 +70,6 @@ You can also install using the single YAML manifest:
 kubectl apply -f https://github.com/ConfigButler/gitops-reverser/releases/latest/download/install.yaml
 ```
 
-## Getting Started
-
-### 1. Create a GitRepoConfig
-
-Define a Git repository to synchronize:
-
-```yaml
-apiVersion: configbutler.ai/v1alpha1
-kind: GitRepoConfig
-metadata:
-  name: my-gitops-config
-  namespace: gitops-reverser-system
-spec:
-  url: https://github.com/yourorg/yourrepo.git
-  branch: main
-  path: cluster-state
-  interval: 5m
-  auth:
-    secretRef:
-      name: git-credentials
-```
-
-### 2. Create a WatchRule
-
-Define which Kubernetes resources to watch:
-
-```yaml
-apiVersion: configbutler.ai/v1alpha1
-kind: WatchRule
-metadata:
-  name: watch-configmaps
-  namespace: gitops-reverser-system
-spec:
-  gitRepoConfigRef:
-    name: my-gitops-config
-  watchConfig:
-    - apiVersion: v1
-      kind: ConfigMap
-      namespaces:
-        - default
-        - production
-```
-
-### 3. Watch It Work
-
-When you create or modify a ConfigMap in the watched namespaces, the controller automatically commits the changes to your Git repository!
-
-```bash
-# Create a test ConfigMap
-kubectl create configmap test-config --from-literal=key=value -n default
-
-# Check the controller logs
-kubectl logs -n gitops-reverser-system -l app.kubernetes.io/name=gitops-reverser -f
-
-# Your Git repository will now contain the ConfigMap YAML!
-```
-
 ## Architecture
 
 ### High Availability Setup
