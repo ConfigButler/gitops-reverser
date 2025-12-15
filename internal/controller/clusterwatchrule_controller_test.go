@@ -63,6 +63,7 @@ var _ = Describe("ClusterWatchRule Controller", func() {
 				},
 				Spec: configbutleraiv1alpha1.ClusterWatchRuleSpec{
 					TargetRef: configbutleraiv1alpha1.NamespacedTargetReference{
+						Kind:      "GitTarget",
 						Name:      "nonexistent-target",
 						Namespace: "default",
 					},

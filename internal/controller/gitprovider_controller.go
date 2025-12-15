@@ -114,15 +114,8 @@ func (r *GitProviderReconciler) fetchAndValidateSecret(
 	log logr.Logger,
 	gitProvider *configbutleraiv1alpha1.GitProvider,
 ) (*corev1.Secret, bool) {
-	// SecretRef is not a pointer in GitProviderSpec, it's a struct.
-	// But we should check if Name is empty if it's optional, but it seems required in the struct definition?
-	// type GitProviderSpec struct {
-	//     SecretRef corev1.LocalObjectReference `json:"secretRef"`
-	// }
-	// LocalObjectReference has Name. If Name is empty, it might mean no secret?
-	// But usually it's required. Let's assume it's required for now or check if Name is empty.
-	if gitProvider.Spec.SecretRef.Name == "" {
-		log.Info("No secret specified (empty name), using anonymous access")
+	if gitProvider.Spec.SecretRef == nil {
+		log.Info("No secret specified, using anonymous access")
 		return nil, false
 	}
 

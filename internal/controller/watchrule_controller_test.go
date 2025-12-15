@@ -23,7 +23,6 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -53,8 +52,9 @@ var _ = Describe("WatchRule Controller", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha1.GitProviderSpec{
-					URL: "https://github.com/test/repo.git",
-					SecretRef: corev1.LocalObjectReference{
+					URL:             "https://github.com/test/repo.git",
+					AllowedBranches: []string{"*"},
+					SecretRef: &configbutleraiv1alpha1.LocalSecretReference{
 						Name: "git-credentials",
 					},
 				},
@@ -86,7 +86,10 @@ var _ = Describe("WatchRule Controller", func() {
 						Namespace: "default",
 					},
 					Spec: configbutleraiv1alpha1.WatchRuleSpec{
-						TargetRef: configbutleraiv1alpha1.LocalTargetReference{Name: "test-target"},
+						TargetRef: configbutleraiv1alpha1.LocalTargetReference{
+							Kind: "GitTarget",
+							Name: "test-target",
+						},
 						Rules: []configbutleraiv1alpha1.ResourceRule{
 							{
 								Resources: []string{"Pod"},
@@ -166,7 +169,8 @@ var _ = Describe("WatchRule Controller", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha1.GitProviderSpec{
-					URL: "https://github.com/octocat/Hello-World",
+					URL:             "https://github.com/octocat/Hello-World",
+					AllowedBranches: []string{"main"},
 				},
 			}
 			Expect(k8sClient.Create(ctx, gitProvider)).Should(Succeed())
@@ -196,7 +200,10 @@ var _ = Describe("WatchRule Controller", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha1.WatchRuleSpec{
-					TargetRef: configbutleraiv1alpha1.LocalTargetReference{Name: "local-target"},
+					TargetRef: configbutleraiv1alpha1.LocalTargetReference{
+						Kind: "GitTarget",
+						Name: "local-target",
+					},
 					Rules: []configbutleraiv1alpha1.ResourceRule{
 						{
 							Resources: []string{"pods"},

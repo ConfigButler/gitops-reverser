@@ -1,10 +1,10 @@
 apiVersion: configbutler.ai/v1alpha1
-kind: GitRepoConfig
+kind: GitProvider
 metadata:
   labels:
     app.kubernetes.io/name: gitops-reverser
     app.kubernetes.io/managed-by: kustomize
-  name: gitrepoconfig-sample
+  name: sample
 spec:
   repoUrl: "http://gitea-http.gitea-e2e.svc.cluster.local:13000/testorg/testrepo.git"
   allowedBranches:

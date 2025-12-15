@@ -24,7 +24,6 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
@@ -50,7 +49,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 				Spec: configbutleraiv1alpha1.GitProviderSpec{
 					URL:             "https://github.com/test-org/test-repo.git",
 					AllowedBranches: []string{"main", "develop"},
-					SecretRef: corev1.LocalObjectReference{
+					SecretRef: &configbutleraiv1alpha1.LocalSecretReference{
 						Name: "test-secret", // Dummy secret
 					},
 				},
@@ -136,7 +135,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 				Spec: configbutleraiv1alpha1.GitProviderSpec{
 					URL:             "https://github.com/test-org/test-repo.git",
 					AllowedBranches: []string{"main", "feature/*"},
-					SecretRef: corev1.LocalObjectReference{
+					SecretRef: &configbutleraiv1alpha1.LocalSecretReference{
 						Name: "test-secret",
 					},
 				},
@@ -228,7 +227,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 						"feature/*",
 						"release/v*",
 					},
-					SecretRef: corev1.LocalObjectReference{
+					SecretRef: &configbutleraiv1alpha1.LocalSecretReference{
 						Name: "test-secret",
 					},
 				},
@@ -333,7 +332,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 				Spec: configbutleraiv1alpha1.GitProviderSpec{
 					URL:             "https://github.com/test-org/test-repo.git",
 					AllowedBranches: []string{"main", "develop"},
-					SecretRef: corev1.LocalObjectReference{
+					SecretRef: &configbutleraiv1alpha1.LocalSecretReference{
 						Name: "test-secret",
 					},
 				},
@@ -444,7 +443,7 @@ var _ = Describe("GitTarget Controller Security", func() {
 				Spec: configbutleraiv1alpha1.GitProviderSpec{
 					URL:             "https://github.com/test-org/test-repo.git",
 					AllowedBranches: []string{"main"},
-					SecretRef: corev1.LocalObjectReference{
+					SecretRef: &configbutleraiv1alpha1.LocalSecretReference{
 						Name: "test-secret",
 					},
 				},

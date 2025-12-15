@@ -60,7 +60,8 @@ spec:
                     type: integer
                 type: object
               secretRef:
-                description: SecretRef for authentication credentials
+                description: SecretRef for authentication credentials (may be nil
+                  for public repos)
                 properties:
                   group:
                     default: ""
@@ -83,7 +84,7 @@ spec:
                 description: URL of the repository (HTTP/SSH)
                 type: string
             required:
-            - secretRef
+            - allowedBranches
             - url
             type: object
           status:
