@@ -11,10 +11,10 @@ repo: github.com/ConfigButler/gitops-reverser
 resources:
 - api:
     crdVersion: v1
+    namespaced: true
   controller: true
   domain: configbutler.ai
-  group: configbutler.ai
-  kind: GitRepoConfig
+  kind: GitProvider
   path: github.com/ConfigButler/gitops-reverser/api/v1alpha1
   version: v1alpha1
 - api:
@@ -22,12 +22,7 @@ resources:
     namespaced: true
   controller: true
   domain: configbutler.ai
-  group: configbutler.ai
-  kind: WatchRule
+  kind: GitTarget
   path: github.com/ConfigButler/gitops-reverser/api/v1alpha1
   version: v1alpha1
-  webhooks:
-    defaulting: true
-    validation: true
-    webhookVersion: v1
 version: "3"

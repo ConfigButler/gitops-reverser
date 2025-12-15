@@ -42,7 +42,7 @@ type ClusterWatchRuleSpec struct {
 	// Namespace must be specified for cluster-scoped rules.
 	// Pointer is used so that omitempty truly omits the field when unset to avoid
 	// API validation on zero-value structs.
-	// +optional
+	// +required
 	DestinationRef *NamespacedName `json:"destinationRef,omitempty"`
 
 	// Rules define which resources to watch.

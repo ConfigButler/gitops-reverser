@@ -5,4 +5,6 @@ resources:
   - configbutler.ai_v1alpha1_watchrule.yaml
   - configbutler.ai_v1alpha1_clusterwatchrule.yaml
   - configbutler.ai_v1alpha1_gitdestination.yaml
+  - v1alpha1_gitprovider.yaml
+  - v1alpha1_gittarget.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples

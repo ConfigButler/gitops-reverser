@@ -170,6 +170,7 @@ spec:
                 minItems: 1
                 type: array
             required:
+            - destinationRef
             - rules
             type: object
           status:

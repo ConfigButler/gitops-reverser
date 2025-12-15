@@ -201,7 +201,7 @@ Ensure your Operator's ServiceAccount has the minimal necessary permissions.
 
 | Feature | Recommendation |
 | :--- | :--- |
-| **Field Type** | Never use strings. Use a struct with Kind, Name, APIGroup. |
+| **Field Type** | Never use strings. Use a struct with Kind, Name, Group. |
 | **Validation** | Use `+kubebuilder:validation:Enum` to restrict allowed Kinds. |
 | **Immutability** | Use CEL rules (`self == oldSelf`) if hot-swapping targets is risky. |
 | **Lifecycle** | Set OwnerReferences on generated child resources for automatic GC. |

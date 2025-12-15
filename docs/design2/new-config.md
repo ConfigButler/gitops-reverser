@@ -89,7 +89,7 @@ type PushStrategy struct {
 
 ### B. The Logic Layer (The Target)
 
-**Primary Object:** `GitTarget` (formerly `AuditSink`)
+**Primary Object:** `GitTarget`
 This object manages the logic of "Writing." It is the bridge between your rules and the git provider.
 
 **Crucial Change:** The `providerRef` is now polymorphic.
@@ -111,11 +111,13 @@ type GitTargetSpec struct {
 }
 
 type GitProviderReference struct {
-    // APIGroup is required to distinguish between Your API and Flux API
+    // Group is the API Group of the referent.
+    // Defaults to "configbutler.ai" if not specified.
     // +optional
-    APIGroup *string `json:"apiGroup,omitempty"`
+    Group string `json:"group,omitempty"`
 
     // +kubebuilder:validation:Enum=GitProvider;GitRepository
+    // +kubebuilder:default="GitProvider"
     Kind string `json:"kind"`
 
     Name string `json:"name"`
@@ -176,7 +178,7 @@ type NamespacedTargetReference struct {
 
 ## 5. Status & Conditions (Robust Implementation)
 
-We implement a robust Status struct compatible with `kstatus` and Flux.
+We implement a robust Status struct compatible with `kstatus` and Flux, following Kubernetes best practices (state-based conditions, positive polarity).
 
 ### Constants & Types
 
@@ -186,20 +188,50 @@ import (
 )
 
 const (
-    // TypeReady indicates the object is fully reconciled and working.
+    // TypeReady is the summary condition - check this first for overall health
+    // True: GitTarget is properly configured and operational
     TypeReady = "Ready"
 
-    // TypeStalled indicates the controller cannot proceed (e.g. config error).
-    TypeStalled = "Stalled"
+    // TypeAvailable indicates repository accessibility
+    // True: Git repository is accessible and operations can proceed
+    TypeAvailable = "Available"
 
-    // ReasonReconciling indicates the controller is working.
-    ReasonReconciling = "Reconciling"
+    // TypeActive indicates worker operational state
+    // True: BranchWorker is running and can process events
+    TypeActive = "Active"
 
-    // ReasonSynced indicates success.
-    ReasonSynced = "Synced"
+    // TypeSynced indicates synchronization state with Git
+    // True: All events have been successfully pushed to Git
+    TypeSynced = "Synced"
+)
 
-    // ReasonAuthenticationFailed indicates credential issues.
-    ReasonAuthenticationFailed = "AuthenticationFailed"
+// Condition Reasons
+const (
+    // Ready reasons
+    ReasonReady                  = "Ready"
+    ReasonValidating             = "Validating"
+    ReasonBranchNotAllowed       = "BranchNotAllowed"
+    ReasonInvalidConfiguration   = "InvalidConfiguration"
+
+    // Available reasons
+    ReasonAvailable              = "Available"
+    ReasonAuthenticationFailed   = "AuthenticationFailed"
+    ReasonRepositoryNotFound     = "RepositoryNotFound"
+    ReasonNetworkError           = "NetworkError"
+    ReasonGitOperationFailed     = "GitOperationFailed"
+    ReasonChecking               = "Checking"
+
+    // Active reasons
+    ReasonActive                 = "Active"
+    ReasonIdle                   = "Idle"
+    ReasonWorkerNotStarted       = "WorkerNotStarted"
+    ReasonWorkerStopped          = "WorkerStopped"
+
+    // Synced reasons
+    ReasonSynced                 = "Synced"
+    ReasonSyncInProgress         = "SyncInProgress"
+    ReasonSyncFailed             = "SyncFailed"
+    ReasonEventsQueued           = "EventsQueued"
 )
 ```
 
@@ -208,6 +240,7 @@ const (
 ```go
 type GitTargetStatus struct {
     // Conditions represent the latest available observations of an object's state
+    // Types: Ready (summary), Available, Active, Synced
     // +optional
     // +patchMergeKey=type
     // +patchStrategy=merge
@@ -217,9 +250,47 @@ type GitTargetStatus struct {
     // +optional
     ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
-    // LastCommitID is the SHA of the latest commit pushed to the branch.
+    // GitStatus contains Git repository metadata
+    // Only populated when Available=True
     // +optional
-    LastCommitID string `json:"lastCommitID,omitempty"`
+    GitStatus *GitStatus `json:"gitStatus,omitempty"`
+
+    // WorkerStatus contains BranchWorker operational state
+    // Only populated when Active condition exists
+    // +optional
+    WorkerStatus *WorkerStatus `json:"workerStatus,omitempty"`
+}
+
+// GitStatus contains Git repository metadata
+type GitStatus struct {
+    // BranchExists indicates if the branch exists on remote
+    BranchExists bool `json:"branchExists"`
+
+    // LastCommitSHA is the SHA of the latest commit
+    // Empty if branch doesn't exist yet
+    LastCommitSHA string `json:"lastCommitSHA,omitempty"`
+
+    // LastChecked is when we last verified this information
+    LastChecked metav1.Time `json:"lastChecked"`
+}
+
+// WorkerStatus contains BranchWorker operational state
+type WorkerStatus struct {
+    // Active indicates if the worker is running
+    Active bool `json:"active"`
+
+    // QueuedEvents is the number of events waiting to be processed
+    // +optional
+    QueuedEvents int `json:"queuedEvents,omitempty"`
+
+    // LastPushTime is when we last successfully pushed to Git
+    // +optional
+    LastPushTime *metav1.Time `json:"lastPushTime,omitempty"`
+
+    // LastPushStatus indicates the result of the last push attempt
+    // Values: "Success", "Failed", "Pending"
+    // +optional
+    LastPushStatus string `json:"lastPushStatus,omitempty"`
 }
 ```
 
@@ -236,40 +307,34 @@ func (s *GitTarget) SetConditions(conditions []metav1.Condition) {
     s.Status.Conditions = conditions
 }
 
-// SetReady sets the Ready condition with a reason and message.
-// It updates the LastTransitionTime only if the status changes.
-func (s *GitTarget) SetReady(status metav1.ConditionStatus, reason, message string) {
-    newCondition := metav1.Condition{
-        Type:    TypeReady,
-        Status:  status,
-        Reason:  reason,
-        Message: message,
-    }
+// updateReadyCondition sets the Ready condition based on other conditions.
+// Ready is True only when:
+// 1. Configuration is valid (implied by reaching this point without early return)
+// 2. Available is True
+// 3. Active is True (or Unknown if worker starting)
+func (r *GitTargetReconciler) updateReadyCondition(target *GitTarget) {
+    available := meta.FindStatusCondition(target.Status.Conditions, TypeAvailable)
+    active := meta.FindStatusCondition(target.Status.Conditions, TypeActive)
 
-    // Find existing condition
-    existingCondition := meta.FindStatusCondition(s.Status.Conditions, TypeReady)
-    if existingCondition != nil &&
-        existingCondition.Status == newCondition.Status &&
-        existingCondition.Reason == newCondition.Reason &&
-        existingCondition.Message == newCondition.Message {
-        // No change, return to avoid updating LastTransitionTime
-        return
-    }
-
-    // Update or append
-    meta.SetStatusCondition(&s.Status.Conditions, newCondition)
-}
-
-// NewGitTarget creates a new GitTarget with initialized conditions.
-func NewGitTarget(name, namespace string) *GitTarget {
-    return &GitTarget{
-        ObjectMeta: metav1.ObjectMeta{
-            Name:      name,
-            Namespace: namespace,
-        },
-        Status: GitTargetStatus{
-            Conditions: []metav1.Condition{},
-        },
+    if available != nil && available.Status == metav1.ConditionTrue &&
+       active != nil && (active.Status == metav1.ConditionTrue || active.Status == metav1.ConditionUnknown) {
+        meta.SetStatusCondition(&target.Status.Conditions, metav1.Condition{
+            Type:    TypeReady,
+            Status:  metav1.ConditionTrue,
+            Reason:  ReasonReady,
+            Message: "GitTarget is operational",
+        })
+    } else {
+        // Logic to determine specific failure reason would go here
+        // For now, default to generic not ready if not explicitly set otherwise
+        if meta.FindStatusCondition(target.Status.Conditions, TypeReady) == nil {
+             meta.SetStatusCondition(&target.Status.Conditions, metav1.Condition{
+                Type:    TypeReady,
+                Status:  metav1.ConditionFalse,
+                Reason:  ReasonValidating,
+                Message: "Waiting for checks to complete",
+            })
+        }
     }
 }
 ```
@@ -300,8 +365,13 @@ Flux `GitRepository` objects often reference **read-only** deploy keys. For this
     *   Our requirement is *write* access.
 2.  **Independent Verification:** The `GitTarget` controller must perform its own lightweight check (e.g., `git ls-remote` with credentials, or a dry-run push) to verify it has write permissions.
 3.  **Reporting:**
-    *   If the check succeeds: Set `GitTarget` condition `Ready=True` with `Reason=Synced`.
-    *   If the check fails (e.g., read-only key): Set `Ready=False` with `Reason=AuthenticationFailed` and a clear message ("Secret allows read but not write").
+    *   **Connection Check:**
+        *   If the check succeeds: Set `Available=True` with `Reason=Available`. Populate `GitStatus` with branch info.
+        *   If the check fails (e.g., read-only key): Set `Available=False` with `Reason=AuthenticationFailed` (or `NetworkError`, `RepositoryNotFound`) and a clear message.
+    *   **Worker Status:**
+        *   If the worker is running: Set `Active=True` with `Reason=Active`. Populate `WorkerStatus`.
+    *   **Overall Health:**
+        *   The `Ready` condition aggregates these states. It is `True` only if `Available=True` AND `Active=True`.
 
 This approach ensures that `GitTarget` status is always a truthful reflection of the operator's ability to function, regardless of whether the underlying config comes from Flux or our own Provider.
 
@@ -317,4 +387,4 @@ This approach ensures that `GitTarget` status is always a truthful reflection of
     *   Update your Reconcile loop to switch logic based on `providerRef.Kind`.
     *   **Note:** Ensure you add RBAC permissions to your operator to get/list/watch Flux `GitRepositories`.
 4.  **Status & Conditions:**
-    *   Update `GitTarget` to report `.status.lastCommitID` and use the new Condition helpers.
+    *   Update `GitTarget` to populate `GitStatus` and `WorkerStatus` structs and use the new Condition helpers.
