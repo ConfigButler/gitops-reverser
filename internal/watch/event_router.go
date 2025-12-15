@@ -201,6 +201,12 @@ func (r *EventRouter) RegisterGitTargetEventStream(
 		"stream", stream.String())
 }
 
+// GetGitTargetEventStream returns the registered GitTargetEventStream for a GitTarget.
+func (r *EventRouter) GetGitTargetEventStream(gitDest types.ResourceReference) *reconcile.GitTargetEventStream {
+	key := gitDest.Key()
+	return r.gitTargetStreams[key]
+}
+
 // UnregisterGitTargetEventStream removes a GitTargetEventStream from the router.
 // This is called during GitTarget deletion cleanup.
 func (r *EventRouter) UnregisterGitTargetEventStream(gitDest types.ResourceReference) {

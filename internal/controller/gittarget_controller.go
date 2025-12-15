@@ -120,6 +120,14 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// Register with worker and event stream
 	r.registerWithWorkerAndEventStream(ctx, &target, providerNS, log)
 
+	// Signal reconciliation complete to enable event processing
+	if r.EventRouter != nil {
+		gitDest := types.NewResourceReference(target.Name, target.Namespace)
+		if stream := r.EventRouter.GetGitTargetEventStream(gitDest); stream != nil {
+			stream.OnReconciliationComplete()
+		}
+	}
+
 	log.Info("Updating status with success condition")
 	if err := r.updateStatusWithRetry(ctx, &target); err != nil {
 		log.Error(err, "Failed to update GitTarget status")
@@ -352,6 +360,12 @@ func (r *GitTargetReconciler) registerEventStream(
 	}
 
 	gitDest := types.NewResourceReference(target.Name, target.Namespace)
+
+	// Check if already registered
+	if existingStream := r.EventRouter.GetGitTargetEventStream(gitDest); existingStream != nil {
+		return
+	}
+
 	stream := reconcile.NewGitTargetEventStream(
 		target.Name, target.Namespace,
 		branchWorker,
