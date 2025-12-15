@@ -36,7 +36,9 @@ rules:
   resources:
   - clusterwatchrules
   - gitdestinations
+  - gitproviders
   - gitrepoconfigs
+  - gittargets
   - watchrules
   verbs:
   - create
@@ -51,9 +53,18 @@ rules:
   resources:
   - clusterwatchrules/status
   - gitdestinations/status
+  - gitproviders/status
   - gitrepoconfigs/status
+  - gittargets/status
   - watchrules/status
   verbs:
   - get
   - patch
+  - update
+- apiGroups:
+  - configbutler.ai
+  resources:
+  - gitproviders/finalizers
+  - gittargets/finalizers
+  verbs:
   - update

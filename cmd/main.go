@@ -228,6 +228,20 @@ func main() {
 	fatalIfErr(mgr.Add(watchMgr), "unable to add watch ingestion manager")
 	setupLog.Info("Watch ingestion manager added (cluster-as-source-of-truth mode)")
 
+	if err := (&controller.GitProviderReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "GitProvider")
+		os.Exit(1)
+	}
+	if err := (&controller.GitTargetReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "GitTarget")
+		os.Exit(1)
+	}
 	// +kubebuilder:scaffold:builder
 
 	// Cert watchers
