@@ -17,7 +17,7 @@ spec:
   - name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: GitTarget is the Schema for the gittargets API
+        description: GitTarget is the Schema for the gittargets API.
         properties:
           apiVersion:
             description: |-
@@ -39,25 +39,44 @@ spec:
           spec:
             description: spec defines the desired state of GitTarget
             properties:
-              foo:
-                description: foo is an example field of GitTarget. Edit gittarget_types.go
-                  to remove/update
+              branch:
+                description: |-
+                  Branch to use for this target.
+                  Must be one of the allowed branches in the provider.
                 type: string
+              path:
+                description: Path within the repository to write resources to.
+                type: string
+              provider:
+                description: Provider references the GitProvider or Flux GitRepository.
+                properties:
+                  group:
+                    default: configbutler.ai
+                    description: API Group of the referent.
+                    type: string
+                  kind:
+                    default: GitProvider
+                    description: |-
+                      Kind of the referent.
+                      Supported values: "GitProvider", "GitRepository" (Flux)
+                    type: string
+                  name:
+                    description: Name of the referent.
+                    type: string
+                required:
+                - kind
+                - name
+                type: object
+            required:
+            - branch
+            - provider
             type: object
           status:
             description: status defines the observed state of GitTarget
             properties:
               conditions:
-                description: |-
-                  conditions represent the current state of the GitTarget resource.
-                  Each condition has a unique type and reflects the status of a specific aspect of the resource.
-
-                  Standard condition types include:
-                  - "Available": the resource is fully functional
-                  - "Progressing": the resource is being created or updated
-                  - "Degraded": the resource failed to reach or maintain its desired state
-
-                  The status of each condition is one of True, False, or Unknown.
+                description: Conditions represent the latest available observations
+                  of an object's state
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -113,9 +132,14 @@ spec:
                   - type
                   type: object
                 type: array
-                x-kubernetes-list-map-keys:
-                - type
-                x-kubernetes-list-type: map
+              lastCommit:
+                description: LastCommit is the SHA of the last commit processed.
+                type: string
+              lastPushTime:
+                description: LastPushTime is the timestamp of the last successful
+                  push.
+                format: date-time
+                type: string
             type: object
         required:
         - spec

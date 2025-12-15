@@ -29,14 +29,14 @@ resources:
   - gitrepoconfig_admin_role.yaml
   - gitrepoconfig_editor_role.yaml
   - gitrepoconfig_viewer_role.yaml
-# For each CRD, "Admin", "Editor" and "Viewer" roles are scaffolded by
-# default, aiding admins in cluster management. Those roles are
-# not used by the gitops-reverser itself. You can comment the following lines
-# if you do not want those helpers be installed with your Project.
-- gittarget_admin_role.yaml
-- gittarget_editor_role.yaml
-- gittarget_viewer_role.yaml
-- gitprovider_admin_role.yaml
-- gitprovider_editor_role.yaml
-- gitprovider_viewer_role.yaml
+  # For each CRD, "Admin", "Editor" and "Viewer" roles are scaffolded by
+  # default, aiding admins in cluster management. Those roles are
+  # not used by the gitops-reverser itself. You can comment the following lines
+  # if you do not want those helpers be installed with your Project.
+  - gittarget_admin_role.yaml
+  - gittarget_editor_role.yaml
+  - gittarget_viewer_role.yaml
+  - gitprovider_admin_role.yaml
+  - gitprovider_editor_role.yaml
+  - gitprovider_viewer_role.yaml
 

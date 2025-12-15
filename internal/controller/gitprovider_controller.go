@@ -29,9 +29,10 @@ import (
 	configbutleraiv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 )
 
-// GitProviderReconciler reconciles a GitProvider object
+// GitProviderReconciler reconciles a GitProvider object.
 type GitProviderReconciler struct {
 	client.Client
+
 	Scheme *runtime.Scheme
 }
 
@@ -48,7 +49,7 @@ type GitProviderReconciler struct {
 //
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.22.1/pkg/reconcile
-func (r *GitProviderReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *GitProviderReconciler) Reconcile(ctx context.Context, _ ctrl.Request) (ctrl.Result, error) {
 	_ = logf.FromContext(ctx)
 
 	// TODO(user): your logic here

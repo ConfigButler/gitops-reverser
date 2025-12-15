@@ -4,10 +4,11 @@
         "https://json.schemastore.org/composer": "compose.yaml",
         "kubernetes": [
             "manifests/*.yaml",
-            "config/**/*.yaml"
-        ],  
+            "config/crd/bases/*.yaml"
+        ],
         ".vscode/schemas/audit-event-schema.json": [
             "**/audit-events/*.yaml"
-        ]
+        ],
+        "https://raw.githubusercontent.com/yannh/kubernetes-json-schema/master/v1.32.1-standalone-strict/all.json": "file:///workspaces/gitops-reverser2/config/crd/bases/configbutler.ai_clusterwatchrules.yaml"
     }
 }

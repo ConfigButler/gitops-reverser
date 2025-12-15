@@ -6,8 +6,8 @@ resources:
   - bases/configbutler.ai_watchrules.yaml
   - bases/configbutler.ai_clusterwatchrules.yaml
   - bases/configbutler.ai_gitdestinations.yaml
-- bases/configbutler.ai_gitproviders.yaml
-- bases/configbutler.ai_gittargets.yaml
+  - bases/configbutler.ai_gitproviders.yaml
+  - bases/configbutler.ai_gittargets.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches: []

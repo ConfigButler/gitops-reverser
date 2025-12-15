@@ -32,3 +32,40 @@ type NamespacedName struct {
 	// +optional
 	Namespace string `json:"namespace,omitempty"`
 }
+
+// PushStrategy defines the rules for when to push commits.
+type PushStrategy struct {
+	// Interval is the maximum time to wait before pushing queued commits.
+	// Defaults to "1m".
+	// +optional
+	Interval *string `json:"interval,omitempty"`
+
+	// MaxCommits is the maximum number of commits to queue before pushing.
+	// Defaults to 20.
+	// +optional
+	MaxCommits *int `json:"maxCommits,omitempty"`
+}
+
+type LocalTargetReference struct {
+	// API Group of the referent.
+	// +kubebuilder:default="configbutler.ai"
+	Group string `json:"group,omitempty"`
+
+	// +kubebuilder:default=GitTarget
+	Kind string `json:"kind"`
+	Name string `json:"name"`
+}
+
+type NamespacedTargetReference struct {
+	// API Group of the referent.
+	// +kubebuilder:default="configbutler.ai"
+	Group string `json:"group,omitempty"`
+
+	// +kubebuilder:default=GitTarget
+	Kind string `json:"kind"`
+	Name string `json:"name"`
+
+	// Required because ClusterWatchRule has no namespace.
+	// +required
+	Namespace string `json:"namespace"`
+}

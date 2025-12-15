@@ -55,15 +55,15 @@ var _ = Describe("ClusterWatchRule Controller", func() {
 			Expect(result.RequeueAfter).To(BeZero())
 		})
 
-		It("should fail when GitDestination not found", func() {
-			By("Creating a ClusterWatchRule referencing non-existent GitDestination")
+		It("should fail when GitTarget not found", func() {
+			By("Creating a ClusterWatchRule referencing non-existent GitTarget")
 			clusterRule := &configbutleraiv1alpha1.ClusterWatchRule{
 				ObjectMeta: metav1.ObjectMeta{
-					Name: "missing-dest-rule",
+					Name: "missing-target-rule",
 				},
 				Spec: configbutleraiv1alpha1.ClusterWatchRuleSpec{
-					DestinationRef: &configbutleraiv1alpha1.NamespacedName{
-						Name:      "nonexistent-dest",
+					Target: configbutleraiv1alpha1.NamespacedTargetReference{
+						Name:      "nonexistent-target",
 						Namespace: "default",
 					},
 					Rules: []configbutleraiv1alpha1.ClusterResourceRule{
@@ -78,7 +78,7 @@ var _ = Describe("ClusterWatchRule Controller", func() {
 
 			By("Reconciling the ClusterWatchRule")
 			result, err := reconciler.Reconcile(ctx, reconcile.Request{
-				NamespacedName: types.NamespacedName{Name: "missing-dest-rule"},
+				NamespacedName: types.NamespacedName{Name: "missing-target-rule"},
 			})
 
 			Expect(err).NotTo(HaveOccurred())
@@ -86,7 +86,7 @@ var _ = Describe("ClusterWatchRule Controller", func() {
 
 			By("Verifying the ClusterWatchRule has GitDestinationNotFound condition")
 			updatedRule := &configbutleraiv1alpha1.ClusterWatchRule{}
-			err = k8sClient.Get(ctx, types.NamespacedName{Name: "missing-dest-rule"}, updatedRule)
+			err = k8sClient.Get(ctx, types.NamespacedName{Name: "missing-target-rule"}, updatedRule)
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(updatedRule.Status.Conditions).To(HaveLen(1))
