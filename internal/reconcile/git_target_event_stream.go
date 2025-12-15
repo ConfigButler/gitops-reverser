@@ -82,7 +82,7 @@ func NewGitTargetEventStream(
 	return &GitTargetEventStream{
 		gitTargetName:        gitTargetName,
 		gitTargetNamespace:   gitTargetNamespace,
-		state:                LiveProcessing, // Start in LiveProcessing for now to ensure events are processed
+		state:                StartupReconcile,
 		bufferedEvents:       make([]git.Event, 0),
 		processedEventHashes: make(map[string]string),
 		branchWorker:         branchWorker,
