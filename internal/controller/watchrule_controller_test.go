@@ -68,7 +68,7 @@ var _ = Describe("WatchRule Controller", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha1.GitTargetSpec{
-					Provider: configbutleraiv1alpha1.GitProviderReference{
+					ProviderRef: configbutleraiv1alpha1.GitProviderReference{
 						Name: "test-provider",
 					},
 					Branch: "main",
@@ -86,7 +86,7 @@ var _ = Describe("WatchRule Controller", func() {
 						Namespace: "default",
 					},
 					Spec: configbutleraiv1alpha1.WatchRuleSpec{
-						Target: configbutleraiv1alpha1.LocalTargetReference{Name: "test-target"},
+						TargetRef: configbutleraiv1alpha1.LocalTargetReference{Name: "test-target"},
 						Rules: []configbutleraiv1alpha1.ResourceRule{
 							{
 								Resources: []string{"Pod"},
@@ -180,7 +180,7 @@ var _ = Describe("WatchRule Controller", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha1.GitTargetSpec{
-					Provider: configbutleraiv1alpha1.GitProviderReference{
+					ProviderRef: configbutleraiv1alpha1.GitProviderReference{
 						Name: "local-provider",
 					},
 					Branch: "main",
@@ -196,7 +196,7 @@ var _ = Describe("WatchRule Controller", func() {
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha1.WatchRuleSpec{
-					Target: configbutleraiv1alpha1.LocalTargetReference{Name: "local-target"},
+					TargetRef: configbutleraiv1alpha1.LocalTargetReference{Name: "local-target"},
 					Rules: []configbutleraiv1alpha1.ResourceRule{
 						{
 							Resources: []string{"pods"},

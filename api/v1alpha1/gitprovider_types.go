@@ -19,7 +19,6 @@ limitations under the License.
 package v1alpha1
 
 import (
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -29,7 +28,7 @@ type GitProviderSpec struct {
 	URL string `json:"url"`
 
 	// SecretRef for authentication credentials
-	SecretRef corev1.LocalObjectReference `json:"secretRef"`
+	SecretRef LocalSecretReference `json:"secretRef"`
 
 	// AllowedBranches restricts which branches can be written to.
 	// +optional
@@ -38,6 +37,24 @@ type GitProviderSpec struct {
 	// Push defines the strategy for pushing commits (batching).
 	// +optional
 	Push *PushStrategy `json:"push,omitempty"`
+}
+
+// LocalSecretReference is a typed reference to a Secret in the same namespace.
+type LocalSecretReference struct {
+	// Group of the referent.
+	// +kubebuilder:default=""
+	// +optional
+	Group string `json:"group,omitempty"`
+
+	// Kind of the referent.
+	// +kubebuilder:validation:Enum=Secret
+	// +kubebuilder:default=Secret
+	// +optional
+	Kind string `json:"kind,omitempty"`
+
+	// Name of the Secret.
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
 }
 
 // GitProviderStatus defines the observed state of GitProvider.

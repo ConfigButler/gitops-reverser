@@ -137,7 +137,7 @@ func (r *EventRouter) handleRequestRepoState(ctx context.Context, event events.C
 
 	// Get BranchWorker
 	worker, exists := r.WorkerManager.GetWorkerForTarget(
-		gitTarget.Spec.Provider.Name,
+		gitTarget.Spec.ProviderRef.Name,
 		gitTarget.Namespace, // Provider is in same namespace
 		gitTarget.Spec.Branch,
 	)

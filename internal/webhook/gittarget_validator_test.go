@@ -130,7 +130,7 @@ func TestGitTargetValidator_ValidateCreate_AllowsUnique(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: configbutleraiv1alpha1.GitTargetSpec{
-			Provider: configbutleraiv1alpha1.GitProviderReference{
+			ProviderRef: configbutleraiv1alpha1.GitProviderReference{
 				Name: "test-provider",
 				Kind: "GitProvider",
 			},
@@ -166,7 +166,7 @@ func TestGitTargetValidator_ValidateCreate_RejectsDuplicate(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: configbutleraiv1alpha1.GitTargetSpec{
-			Provider: configbutleraiv1alpha1.GitProviderReference{
+			ProviderRef: configbutleraiv1alpha1.GitProviderReference{
 				Name: "test-provider",
 				Kind: "GitProvider",
 			},
@@ -192,7 +192,7 @@ func TestGitTargetValidator_ValidateCreate_RejectsDuplicate(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: configbutleraiv1alpha1.GitTargetSpec{
-			Provider: configbutleraiv1alpha1.GitProviderReference{
+			ProviderRef: configbutleraiv1alpha1.GitProviderReference{
 				Name: "test-provider",
 				Kind: "GitProvider",
 			},
@@ -230,7 +230,7 @@ func TestGitTargetValidator_ValidateCreate_AllowsDifferentPath(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: configbutleraiv1alpha1.GitTargetSpec{
-			Provider: configbutleraiv1alpha1.GitProviderReference{
+			ProviderRef: configbutleraiv1alpha1.GitProviderReference{
 				Name: "test-provider",
 				Kind: "GitProvider",
 			},
@@ -256,7 +256,7 @@ func TestGitTargetValidator_ValidateCreate_AllowsDifferentPath(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: configbutleraiv1alpha1.GitTargetSpec{
-			Provider: configbutleraiv1alpha1.GitProviderReference{
+			ProviderRef: configbutleraiv1alpha1.GitProviderReference{
 				Name: "test-provider",
 				Kind: "GitProvider",
 			},
@@ -292,7 +292,7 @@ func TestGitTargetValidator_ValidateUpdate_AllowsNonConflicting(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: configbutleraiv1alpha1.GitTargetSpec{
-			Provider: configbutleraiv1alpha1.GitProviderReference{
+			ProviderRef: configbutleraiv1alpha1.GitProviderReference{
 				Name: "test-provider",
 				Kind: "GitProvider",
 			},
@@ -341,7 +341,7 @@ func TestGitTargetValidator_ValidateUpdate_RejectsConflicting(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: configbutleraiv1alpha1.GitTargetSpec{
-			Provider: configbutleraiv1alpha1.GitProviderReference{
+			ProviderRef: configbutleraiv1alpha1.GitProviderReference{
 				Name: "test-provider",
 				Kind: "GitProvider",
 			},
@@ -356,7 +356,7 @@ func TestGitTargetValidator_ValidateUpdate_RejectsConflicting(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: configbutleraiv1alpha1.GitTargetSpec{
-			Provider: configbutleraiv1alpha1.GitProviderReference{
+			ProviderRef: configbutleraiv1alpha1.GitProviderReference{
 				Name: "test-provider",
 				Kind: "GitProvider",
 			},
@@ -421,7 +421,7 @@ func TestGitTargetValidator_ValidateCreate_MissingProvider(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: configbutleraiv1alpha1.GitTargetSpec{
-			Provider: configbutleraiv1alpha1.GitProviderReference{
+			ProviderRef: configbutleraiv1alpha1.GitProviderReference{
 				Name: "missing-provider",
 				Kind: "GitProvider",
 			},
@@ -512,7 +512,7 @@ func TestGitTargetValidator_ListError(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: configbutleraiv1alpha1.GitTargetSpec{
-			Provider: configbutleraiv1alpha1.GitProviderReference{
+			ProviderRef: configbutleraiv1alpha1.GitProviderReference{
 				Name: "test-provider",
 				Kind: "GitProvider",
 			},

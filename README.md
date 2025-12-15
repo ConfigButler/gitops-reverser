@@ -74,7 +74,7 @@ See [`docs/GITHUB_SETUP_GUIDE.md`](docs/GITHUB_SETUP_GUIDE.md) for detailed setu
 
 **3. Configure what to reconcile:**
 
-Reconciliation sources and targets are configured by three types of custom resources (shown in blue). Create these to start reconciling ConfigMaps:
+Reconciliation sources and targets are configured by three types of custom resources. Create these to start reconciling ConfigMaps:
 
 ![](docs/images/config-basics.excalidraw.svg)
 
@@ -82,11 +82,11 @@ Reconciliation sources and targets are configured by three types of custom resou
 # NOTE: Edit the line with YOUR_USERNAME to match your repository
 cat <<EOF | kubectl apply -f -
 apiVersion: configbutler.ai/v1alpha1
-kind: GitRepoConfig
+kind: GitProvider
 metadata:
   name: your-repo
 spec:
-  repoUrl: "git@github.com:YOUR_USERNAME/my-k8s-audit.git"
+  url: "git@github.com:YOUR_USERNAME/my-k8s-audit.git"
   allowedBranches: ["*"]
   secretRef:
     name: git-creds
@@ -96,16 +96,16 @@ spec:
 EOF
 ```
 
-Check the status to see if it's able to connect: `kubectl get `
+Check the status to see if it's able to connect: `kubectl get gitprovider your-repo`
 
 ```bash
 cat <<EOF | kubectl apply -f -
 apiVersion: configbutler.ai/v1alpha1
-kind: GitDestination
+kind: GitTarget
 metadata:
   name: to-folder-live-cluster
 spec:
-  repoRef:
+  providerRef:
     name: your-repo
   branch: test-gitops-reverser
   baseFolder: live-cluster
@@ -115,7 +115,7 @@ kind: WatchRule
 metadata:
   name: only-configmaps
 spec:
-  destinationRef:
+  targetRef:
     name: to-folder-live-cluster
   rules:
     - operations: [CREATE, UPDATE, DELETE]

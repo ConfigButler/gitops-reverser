@@ -65,7 +65,7 @@ func (v *GitTargetValidator) ValidateCreate(ctx context.Context, obj runtime.Obj
 	log.Info("Validating GitTarget creation",
 		"name", target.Name,
 		"namespace", target.Namespace,
-		"providerRef", target.Spec.Provider.Name,
+		"providerRef", target.Spec.ProviderRef.Name,
 		"branch", target.Spec.Branch,
 		"path", target.Spec.Path)
 
@@ -92,7 +92,7 @@ func (v *GitTargetValidator) ValidateUpdate(
 	log.Info("Validating GitTarget update",
 		"name", newTarget.Name,
 		"namespace", newTarget.Namespace,
-		"providerRef", newTarget.Spec.Provider.Name,
+		"providerRef", newTarget.Spec.ProviderRef.Name,
 		"branch", newTarget.Spec.Branch,
 		"path", newTarget.Spec.Path)
 
@@ -119,7 +119,7 @@ func (v *GitTargetValidator) validateUniqueness(
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve provider '%s/%s': %w",
 			target.Namespace, // Provider is always in same namespace
-			target.Spec.Provider.Name,
+			target.Spec.ProviderRef.Name,
 			err)
 	}
 
@@ -203,7 +203,7 @@ func (v *GitTargetValidator) getRepoURL(
 	ctx context.Context,
 	target *configbutleraiv1alpha1.GitTarget,
 ) (string, error) {
-	providerRef := target.Spec.Provider
+	providerRef := target.Spec.ProviderRef
 	namespace := target.Namespace // Provider must be in same namespace
 
 	// Default Kind to GitProvider if not specified

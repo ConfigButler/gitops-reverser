@@ -96,7 +96,7 @@ func (r *WatchRuleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	log.Info("Starting WatchRule validation",
 		"name", watchRule.Name,
 		"namespace", watchRule.Namespace,
-		"target", watchRule.Spec.Target,
+		"target", watchRule.Spec.TargetRef,
 		"generation", watchRule.Generation,
 		"resourceVersion", watchRule.ResourceVersion)
 
@@ -106,7 +106,7 @@ func (r *WatchRuleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		WatchRuleReasonValidating, "Validating WatchRule configuration...")
 
 	// Route by configuration surface (Target is required now)
-	if watchRule.Spec.Target.Name == "" {
+	if watchRule.Spec.TargetRef.Name == "" {
 		r.setCondition(
 			&watchRule,
 			metav1.ConditionFalse,
@@ -130,10 +130,10 @@ func (r *WatchRuleReconciler) reconcileWatchRuleViaTarget(
 
 	// Fetch GitTarget
 	var target configbutleraiv1alpha1.GitTarget
-	targetKey := types.NamespacedName{Name: watchRule.Spec.Target.Name, Namespace: targetNS}
+	targetKey := types.NamespacedName{Name: watchRule.Spec.TargetRef.Name, Namespace: targetNS}
 	if err := r.Get(ctx, targetKey, &target); err != nil {
 		log.Error(err, "Failed to get referenced GitTarget",
-			"gitTargetName", watchRule.Spec.Target.Name,
+			"gitTargetName", watchRule.Spec.TargetRef.Name,
 			"gitTargetNamespace", targetNS)
 		r.setCondition(
 			watchRule,
@@ -142,7 +142,7 @@ func (r *WatchRuleReconciler) reconcileWatchRuleViaTarget(
 			fmt.Sprintf(
 				"Referenced GitTarget '%s/%s' not found: %v",
 				targetNS,
-				watchRule.Spec.Target.Name,
+				watchRule.Spec.TargetRef.Name,
 				err,
 			),
 		)
@@ -151,13 +151,13 @@ func (r *WatchRuleReconciler) reconcileWatchRuleViaTarget(
 
 	// Resolve GitProvider from target.Provider
 	// TODO: Handle Flux GitRepository
-	if target.Spec.Provider.Kind != "GitProvider" {
+	if target.Spec.ProviderRef.Kind != "GitProvider" {
 		// For now, only GitProvider is supported
-		log.Info("Unsupported provider kind", "kind", target.Spec.Provider.Kind)
+		log.Info("Unsupported provider kind", "kind", target.Spec.ProviderRef.Kind)
 		// Continue for now, assuming GitProvider if not specified or default
 	}
 
-	providerName := target.Spec.Provider.Name
+	providerName := target.Spec.ProviderRef.Name
 	// Provider is cluster-scoped (or namespaced? GitProvider is Namespaced in my implementation? No, let's check)
 	// GitProvider is Namespaced in my implementation (api/v1alpha1/gitprovider_types.go says +kubebuilder:resource:scope=Namespaced)
 	// But wait, GitProvider is usually cluster scoped in many systems, but here it seems namespaced.
@@ -220,7 +220,7 @@ func (r *WatchRuleReconciler) setReadyAndUpdateStatusWithTarget(
 	msg := fmt.Sprintf(
 		"WatchRule is ready and monitoring resources via GitTarget '%s/%s'",
 		targetNS,
-		watchRule.Spec.Target.Name,
+		watchRule.Spec.TargetRef.Name,
 	)
 	r.setCondition(
 		watchRule,

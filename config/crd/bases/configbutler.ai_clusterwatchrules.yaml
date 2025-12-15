@@ -148,17 +148,24 @@ spec:
                   type: object
                 minItems: 1
                 type: array
-              target:
+              targetRef:
                 description: |-
-                  Target references the GitTarget to use.
+                  TargetRef references the GitTarget to use.
                   Must specify namespace.
                 properties:
                   group:
                     default: configbutler.ai
-                    description: API Group of the referent.
+                    description: |-
+                      API Group of the referent.
+                      Kind of the referrer.
+                    enum:
+                    - configbutler.ai
                     type: string
                   kind:
                     default: GitTarget
+                    description: Kind of the referrer.
+                    enum:
+                    - GitTarget
                     type: string
                   name:
                     type: string
@@ -172,7 +179,7 @@ spec:
                 type: object
             required:
             - rules
-            - target
+            - targetRef
             type: object
           status:
             description: status defines the observed state of ClusterWatchRule.

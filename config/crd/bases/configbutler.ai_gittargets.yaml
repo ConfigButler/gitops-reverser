@@ -47,8 +47,8 @@ spec:
               path:
                 description: Path within the repository to write resources to.
                 type: string
-              provider:
-                description: Provider references the GitProvider or Flux GitRepository.
+              providerRef:
+                description: ProviderRef references the GitProvider or Flux GitRepository.
                 properties:
                   group:
                     default: configbutler.ai
@@ -58,7 +58,7 @@ spec:
                     default: GitProvider
                     description: |-
                       Kind of the referent.
-                      Supported values: "GitProvider", "GitRepository" (Flux)
+                      NOTE: Support for reading from Flux GitRepository is not yet implemented!
                     type: string
                   name:
                     description: Name of the referent.
@@ -69,7 +69,7 @@ spec:
                 type: object
             required:
             - branch
-            - provider
+            - providerRef
             type: object
           status:
             description: status defines the observed state of GitTarget

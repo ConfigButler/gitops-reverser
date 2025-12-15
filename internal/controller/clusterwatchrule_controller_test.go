@@ -62,7 +62,7 @@ var _ = Describe("ClusterWatchRule Controller", func() {
 					Name: "missing-target-rule",
 				},
 				Spec: configbutleraiv1alpha1.ClusterWatchRuleSpec{
-					Target: configbutleraiv1alpha1.NamespacedTargetReference{
+					TargetRef: configbutleraiv1alpha1.NamespacedTargetReference{
 						Name:      "nonexistent-target",
 						Namespace: "default",
 					},

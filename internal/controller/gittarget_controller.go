@@ -79,7 +79,7 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	log.Info("Validating GitTarget",
 		"name", target.Name,
 		"namespace", target.Namespace,
-		"provider", target.Spec.Provider,
+		"provider", target.Spec.ProviderRef,
 		"branch", target.Spec.Branch,
 		"path", target.Spec.Path,
 		"generation", target.Generation,
@@ -103,7 +103,7 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	// Get GitProvider for conflict checking and repository status
 	var gp configbutleraiv1alpha1.GitProvider
-	gpKey := k8stypes.NamespacedName{Name: target.Spec.Provider.Name, Namespace: providerNS}
+	gpKey := k8stypes.NamespacedName{Name: target.Spec.ProviderRef.Name, Namespace: providerNS}
 	if err := r.Get(ctx, gpKey, &gp); err != nil {
 		log.Error(err, "Failed to get GitProvider for status checking")
 		return ctrl.Result{RequeueAfter: RequeueShortInterval}, nil
@@ -161,20 +161,20 @@ func (r *GitTargetReconciler) validateGitProvider(
 	log logr.Logger,
 ) (*ctrl.Result, error) {
 	// TODO: Handle Flux GitRepository support
-	if target.Spec.Provider.Kind != "GitProvider" {
+	if target.Spec.ProviderRef.Kind != "GitProvider" {
 		// For now, we only support GitProvider.
 		// In future, we would fetch GitRepository here.
 		// But since we are porting existing logic, we assume GitProvider.
 		// If user provides GitRepository, it will fail here or we should handle it.
 		// Given the task is to fix e2e tests which use GitProvider, we focus on that.
-		log.Info("Unsupported provider kind", "kind", target.Spec.Provider.Kind)
+		log.Info("Unsupported provider kind", "kind", target.Spec.ProviderRef.Kind)
 	}
 
 	var gp configbutleraiv1alpha1.GitProvider
-	gpKey := k8stypes.NamespacedName{Name: target.Spec.Provider.Name, Namespace: providerNS}
+	gpKey := k8stypes.NamespacedName{Name: target.Spec.ProviderRef.Name, Namespace: providerNS}
 	if err := r.Get(ctx, gpKey, &gp); err != nil {
 		if apierrors.IsNotFound(err) {
-			msg := fmt.Sprintf("Referenced GitProvider '%s/%s' not found", providerNS, target.Spec.Provider.Name)
+			msg := fmt.Sprintf("Referenced GitProvider '%s/%s' not found", providerNS, target.Spec.ProviderRef.Name)
 			log.Info("GitProvider not found", "message", msg)
 			r.setCondition(target, metav1.ConditionFalse, GitTargetReasonGitProviderNotFound, msg)
 			result, updateErr := r.updateStatusAndRequeue(ctx, target, RequeueShortInterval)
@@ -192,7 +192,7 @@ func (r *GitTargetReconciler) validateGitProvider(
 
 	// All validations passed
 	msg := fmt.Sprintf("GitTarget is ready. Provider='%s/%s', Branch='%s', Path='%s'",
-		providerNS, target.Spec.Provider.Name, target.Spec.Branch, target.Spec.Path)
+		providerNS, target.Spec.ProviderRef.Name, target.Spec.Branch, target.Spec.Path)
 	r.setCondition(target, metav1.ConditionTrue, GitTargetReasonReady, msg)
 	// target.Status.ObservedGeneration = target.Generation // Not in struct
 
@@ -221,7 +221,7 @@ func (r *GitTargetReconciler) validateBranch(
 
 	if !branchAllowed {
 		msg := fmt.Sprintf("Branch '%s' does not match any pattern in allowedBranches list %v of GitProvider '%s/%s'",
-			target.Spec.Branch, gp.Spec.AllowedBranches, providerNS, target.Spec.Provider.Name)
+			target.Spec.Branch, gp.Spec.AllowedBranches, providerNS, target.Spec.ProviderRef.Name)
 		log.Info("Branch validation failed", "branch", target.Spec.Branch, "allowedBranches", gp.Spec.AllowedBranches)
 		r.setCondition(target, metav1.ConditionFalse, GitTargetReasonBranchNotAllowed, msg)
 		// Security requirement: Clear LastCommit when branch not allowed
@@ -262,7 +262,7 @@ func (r *GitTargetReconciler) checkForConflicts(
 
 		// Skip if not referencing the same GitProvider
 		// GitProvider is always in the same namespace as GitTarget
-		if existing.Namespace != providerNS || existing.Spec.Provider.Name != target.Spec.Provider.Name {
+		if existing.Namespace != providerNS || existing.Spec.ProviderRef.Name != target.Spec.ProviderRef.Name {
 			continue
 		}
 
@@ -277,7 +277,7 @@ func (r *GitTargetReconciler) checkForConflicts(
 						"This GitTarget was created later and will not be processed.",
 					existing.Namespace, existing.Name,
 					existing.CreationTimestamp.Format(time.RFC3339),
-					providerNS, target.Spec.Provider.Name,
+					providerNS, target.Spec.ProviderRef.Name,
 					target.Spec.Branch, target.Spec.Path,
 				)
 				log.Info("Conflict detected, this GitTarget is the loser",
@@ -325,14 +325,14 @@ func (r *GitTargetReconciler) registerWithWorker(
 	if err := r.WorkerManager.RegisterTarget(
 		ctx,
 		target.Name, target.Namespace,
-		target.Spec.Provider.Name, providerNS,
+		target.Spec.ProviderRef.Name, providerNS,
 		target.Spec.Branch,
 		target.Spec.Path,
 	); err != nil {
 		log.Error(err, "Failed to register target with worker")
 	} else {
 		log.Info("Registered target with branch worker",
-			"provider", target.Spec.Provider.Name,
+			"provider", target.Spec.ProviderRef.Name,
 			"branch", target.Spec.Branch,
 			"path", target.Spec.Path)
 	}
@@ -349,11 +349,11 @@ func (r *GitTargetReconciler) registerEventStream(
 	}
 
 	branchWorker, exists := r.WorkerManager.GetWorkerForTarget(
-		target.Spec.Provider.Name, providerNS, target.Spec.Branch,
+		target.Spec.ProviderRef.Name, providerNS, target.Spec.Branch,
 	)
 	if !exists {
 		log.Error(nil, "BranchWorker not found for GitTargetEventStream registration",
-			"provider", target.Spec.Provider.Name,
+			"provider", target.Spec.ProviderRef.Name,
 			"namespace", providerNS,
 			"branch", target.Spec.Branch)
 		return
@@ -374,7 +374,7 @@ func (r *GitTargetReconciler) registerEventStream(
 	r.EventRouter.RegisterGitTargetEventStream(gitDest, stream)
 	log.Info("Registered GitTargetEventStream with EventRouter",
 		"gitDest", gitDest.String(),
-		"provider", target.Spec.Provider.Name,
+		"provider", target.Spec.ProviderRef.Name,
 		"branch", target.Spec.Branch,
 		"path", target.Spec.Path)
 }
@@ -397,7 +397,7 @@ func (r *GitTargetReconciler) updateRepositoryStatus(
 	}
 
 	worker, exists := r.WorkerManager.GetWorkerForTarget(
-		target.Spec.Provider.Name, providerNS, target.Spec.Branch,
+		target.Spec.ProviderRef.Name, providerNS, target.Spec.Branch,
 	)
 
 	if !exists {

@@ -165,7 +165,7 @@ func (m *WorkerManager) ReconcileWorkers(ctx context.Context) error {
 
 		key := BranchKey{
 			RepoNamespace: providerNS,
-			RepoName:      target.Spec.Provider.Name,
+			RepoName:      target.Spec.ProviderRef.Name,
 			Branch:        target.Spec.Branch,
 		}
 		neededWorkers[key] = true

@@ -3,8 +3,7 @@ kind: ClusterWatchRule
 metadata:
   name: {{ .Name }}
 spec:
-  target:
-    kind: GitTarget
+  targetRef:
     name: {{ .DestinationName }}
     namespace: {{ .Namespace }}
   rules:
