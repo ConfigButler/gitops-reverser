@@ -117,9 +117,9 @@ func parseIdentifierFromPath(p string) (itypes.ResourceIdentifier, bool) {
 func GetAuthFromSecret(
 	ctx context.Context,
 	k8sClient client.Client,
-	repoConfig *v1alpha1.GitRepoConfig,
+	provider *v1alpha1.GitProvider,
 ) (transport.AuthMethod, error) {
-	return getAuthFromSecret(ctx, k8sClient, repoConfig)
+	return getAuthFromSecret(ctx, k8sClient, provider)
 }
 
 // getAuthFromSecret fetches authentication credentials from the specified secret.
@@ -127,16 +127,16 @@ func GetAuthFromSecret(
 func getAuthFromSecret(
 	ctx context.Context,
 	k8sClient client.Client,
-	repoConfig *v1alpha1.GitRepoConfig,
+	provider *v1alpha1.GitProvider,
 ) (transport.AuthMethod, error) {
 	// If no secret reference is provided, return nil auth (for public repositories)
-	if repoConfig.Spec.SecretRef == nil {
+	if provider.Spec.SecretRef.Name == "" {
 		return nil, nil //nolint:nilnil // Returning nil auth for public repos is semantically correct
 	}
 
 	secretName := types.NamespacedName{
-		Name:      repoConfig.Spec.SecretRef.Name,
-		Namespace: repoConfig.Namespace,
+		Name:      provider.Spec.SecretRef.Name,
+		Namespace: provider.Namespace,
 	}
 
 	var secret corev1.Secret

@@ -236,8 +236,10 @@ func main() {
 		os.Exit(1)
 	}
 	if err := (&controller.GitTargetReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:        mgr.GetClient(),
+		Scheme:        mgr.GetScheme(),
+		WorkerManager: workerManager,
+		EventRouter:   eventRouter,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "GitTarget")
 		os.Exit(1)

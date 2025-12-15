@@ -397,52 +397,52 @@ var _ = Describe("Manager", Ordered, func() {
 			_, _ = utils.Run(cmd)
 		})
 
-		It("should validate GitRepoConfig with real Gitea repository", func() {
-			gitRepoConfigName := "gitrepoconfig-e2e-test"
+		It("should validate GitProvider with real Gitea repository", func() {
+			gitProviderName := "gitprovider-e2e-test"
 
 			By("showing initial controller logs")
-			showControllerLogs("before creating GitRepoConfig")
+			showControllerLogs("before creating GitProvider")
 
-			createGitRepoConfig(gitRepoConfigName, "main", "git-creds")
+			createGitProvider(gitProviderName, "main", "git-creds")
 
-			By("showing controller logs after GitRepoConfig creation")
-			showControllerLogs("after creating GitRepoConfig")
+			By("showing controller logs after GitProvider creation")
+			showControllerLogs("after creating GitProvider")
 
-			verifyGitRepoConfigStatus(gitRepoConfigName, "True", "Ready", "Repository connectivity validated")
+			verifyGitProviderStatus(gitProviderName, "True", "Ready", "Repository connectivity validated")
 
 			By("showing final controller logs")
 			showControllerLogs("after status verification")
 
-			cleanupGitRepoConfig(gitRepoConfigName)
+			cleanupGitProvider(gitProviderName)
 		})
 
-		It("should handle GitRepoConfig with invalid credentials", func() {
-			gitRepoConfigName := "gitrepoconfig-invalid-test"
-			createGitRepoConfig(gitRepoConfigName, "main", "git-creds-invalid")
-			verifyGitRepoConfigStatus(gitRepoConfigName, "False", "ConnectionFailed", "")
-			cleanupGitRepoConfig(gitRepoConfigName)
+		It("should handle GitProvider with invalid credentials", func() {
+			gitProviderName := "gitprovider-invalid-test"
+			createGitProvider(gitProviderName, "main", "git-creds-invalid")
+			verifyGitProviderStatus(gitProviderName, "False", "ConnectionFailed", "")
+			cleanupGitProvider(gitProviderName)
 		})
 
-		It("should handle GitDestination with nonexistent branch pattern", func() {
-			gitRepoConfigName := "gitrepoconfig-branch-test"
+		It("should handle GitTarget with nonexistent branch pattern", func() {
+			gitProviderName := "gitprovider-branch-test"
 
-			// GitRepoConfig should be Ready=True (validates connectivity, not branch existence)
-			createGitRepoConfig(gitRepoConfigName, "nonexistent-branch", "git-creds")
-			verifyGitRepoConfigStatus(gitRepoConfigName, "True", "Ready", "Repository connectivity validated")
+			// GitProvider should be Ready=True (validates connectivity, not branch existence)
+			createGitProvider(gitProviderName, "nonexistent-branch", "git-creds")
+			verifyGitProviderStatus(gitProviderName, "True", "Ready", "Repository connectivity validated")
 
-			// GitDestination with branch not matching any pattern should fail
+			// GitTarget with branch not matching any pattern should fail
 			destName := "dest-invalid-branch"
-			createGitDestination(destName, namespace, gitRepoConfigName, "test/invalid", "different-branch")
+			createGitTarget(destName, namespace, gitProviderName, "test/invalid", "different-branch")
 
-			By("verifying GitDestination fails branch validation")
-			verifyResourceStatus("gitdestination", destName, namespace, "False", "BranchNotAllowed", "")
+			By("verifying GitTarget fails branch validation")
+			verifyResourceStatus("gittarget", destName, namespace, "False", "BranchNotAllowed", "")
 
-			cleanupGitDestination(destName, namespace)
-			cleanupGitRepoConfig(gitRepoConfigName)
+			cleanupGitTarget(destName, namespace)
+			cleanupGitProvider(gitProviderName)
 		})
 
-		It("should validate GitRepoConfig with SSH authentication", func() {
-			gitRepoConfigName := "gitrepoconfig-ssh-test"
+		It("should validate GitProvider with SSH authentication", func() {
+			gitProviderName := "gitprovider-ssh-test"
 
 			By("🔐 Starting SSH authentication test")
 			showControllerLogs("before SSH test")
@@ -456,32 +456,32 @@ var _ = Describe("Manager", Ordered, func() {
 				fmt.Printf("✅ SSH secret exists - showing first 300 chars:\n%s...\n", secretOutput[:minInt(300, len(secretOutput))])
 			}
 
-			createSSHGitRepoConfig(gitRepoConfigName, "main", "git-creds-ssh")
+			createSSHGitProvider(gitProviderName, "main", "git-creds-ssh")
 
-			By("🔍 Controller logs after SSH GitRepoConfig creation")
-			showControllerLogs("after SSH GitRepoConfig creation")
+			By("🔍 Controller logs after SSH GitProvider creation")
+			showControllerLogs("after SSH GitProvider creation")
 
-			verifyGitRepoConfigStatus(gitRepoConfigName, "True", "Ready", "Repository connectivity validated")
+			verifyGitProviderStatus(gitProviderName, "True", "Ready", "Repository connectivity validated")
 
 			By("✅ Final SSH test logs")
 			showControllerLogs("SSH test completion")
 
-			cleanupGitRepoConfig(gitRepoConfigName)
+			cleanupGitProvider(gitProviderName)
 		})
 
-		It("should handle a normal and healthy GitRepoConfig", func() {
-			gitRepoConfigName := "gitrepoconfig-normal"
-			createGitRepoConfig(gitRepoConfigName, "main", "git-creds")
-			verifyGitRepoConfigStatus(gitRepoConfigName, "True", "Ready", "Repository connectivity validated")
+		It("should handle a normal and healthy GitProvider", func() {
+			gitProviderName := "gitprovider-normal"
+			createGitProvider(gitProviderName, "main", "git-creds")
+			verifyGitProviderStatus(gitProviderName, "True", "Ready", "Repository connectivity validated")
 		})
 
 		It("should reconcile a WatchRule CR", func() {
-			gitRepoConfigName := "gitrepoconfig-normal"
+			gitProviderName := "gitprovider-normal"
 			watchRuleName := "watchrule-test"
 
-			By("creating a WatchRule that references the working GitRepoConfig")
+			By("creating a WatchRule that references the working GitProvider")
 			destName := watchRuleName + "-dest"
-			createGitDestination(destName, namespace, gitRepoConfigName, getBaseFolder(), "main")
+			createGitTarget(destName, namespace, gitProviderName, getBaseFolder(), "main")
 
 			data := struct {
 				Name            string
@@ -501,18 +501,18 @@ var _ = Describe("Manager", Ordered, func() {
 
 			By("cleaning up test resources")
 			cleanupWatchRule(watchRuleName, namespace)
-			cleanupGitDestination(destName, namespace)
+			cleanupGitTarget(destName, namespace)
 		})
 
 		It("should create Git commit when ConfigMap is added via WatchRule", func() {
-			gitRepoConfigName := "gitrepoconfig-normal"
+			gitProviderName := "gitprovider-normal"
 			watchRuleName := "watchrule-configmap-test"
 			configMapName := "test-configmap"
 			uniqueRepoName := testRepoName
 
 			By("creating WatchRule that monitors ConfigMaps")
 			destName := watchRuleName + "-dest"
-			createGitDestination(destName, namespace, gitRepoConfigName, "e2e/configmap-test", "main")
+			createGitTarget(destName, namespace, gitProviderName, "e2e/configmap-test", "main")
 
 			data := struct {
 				Name            string
@@ -624,7 +624,7 @@ var _ = Describe("Manager", Ordered, func() {
 			cmd := exec.Command("kubectl", "delete", "configmap", configMapName, "-n", namespace)
 			_, _ = utils.Run(cmd)
 			cleanupWatchRule(watchRuleName, namespace)
-			cleanupGitDestination(destName, namespace)
+			cleanupGitTarget(destName, namespace)
 
 			By("✅ ConfigMap to Git commit E2E test passed - verified actual file creation and commit")
 			fmt.Printf("✅ ConfigMap '%s' successfully triggered Git commit with YAML file in repo '%s'\n",
@@ -632,14 +632,14 @@ var _ = Describe("Manager", Ordered, func() {
 		})
 
 		It("should delete Git file when ConfigMap is deleted via WatchRule", func() {
-			gitRepoConfigName := "gitrepoconfig-normal"
+			gitProviderName := "gitprovider-normal"
 			watchRuleName := "watchrule-delete-test"
 			configMapName := "test-configmap-to-delete"
 			uniqueRepoName := testRepoName
 
 			By("creating WatchRule that monitors ConfigMaps")
 			destName := watchRuleName + "-dest"
-			createGitDestination(destName, namespace, gitRepoConfigName, "e2e/delete-test", "main")
+			createGitTarget(destName, namespace, gitProviderName, "e2e/delete-test", "main")
 			data := struct {
 				Name            string
 				Namespace       string
@@ -727,7 +727,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 			By("cleaning up test resources")
 			cleanupWatchRule(watchRuleName, namespace)
-			cleanupGitDestination(destName, namespace)
+			cleanupGitTarget(destName, namespace)
 
 			By("✅ ConfigMap deletion E2E test passed - verified file removal from Git")
 			fmt.Printf("✅ ConfigMap '%s' deletion successfully triggered Git commit removing file from repo '%s'\n",
@@ -735,13 +735,13 @@ var _ = Describe("Manager", Ordered, func() {
 		})
 
 		It("should create Git commit when IceCreamOrder CRD is installed via ClusterWatchRule", func() {
-			gitRepoConfigName := "gitrepoconfig-normal"
+			gitProviderName := "gitprovider-normal"
 			clusterWatchRuleName := "clusterwatchrule-crd-install"
 			crdName := "icecreamorders.shop.example.com"
 
 			By("creating ClusterWatchRule with Cluster scope for CRDs")
 			destName := clusterWatchRuleName + "-dest"
-			createGitDestination(destName, namespace, gitRepoConfigName, "e2e/crd-install-test", "main")
+			createGitTarget(destName, namespace, gitProviderName, "e2e/crd-install-test", "main")
 
 			clusterWatchRuleData := struct {
 				Name            string
@@ -804,14 +804,14 @@ var _ = Describe("Manager", Ordered, func() {
 
 			By("cleaning up test resources")
 			cleanupClusterWatchRule(clusterWatchRuleName)
-			cleanupGitDestination(destName, namespace)
+			cleanupGitTarget(destName, namespace)
 			// Keep CRD installed for subsequent tests
 
 			By("✅ CRD installation via ClusterWatchRule E2E test passed")
 		})
 
 		It("should create Git commit when IceCreamOrder is added via WatchRule", func() {
-			gitRepoConfigName := "gitrepoconfig-normal"
+			gitProviderName := "gitprovider-normal"
 			watchRuleName := "watchrule-icecream-orders"
 
 			By("installing the IceCreamOrder CRD first (needed for custom resource tests)")
@@ -834,7 +834,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 			By("creating WatchRule that monitors IceCreamOrder resources")
 			destName := watchRuleName + "-dest"
-			createGitDestination(destName, namespace, gitRepoConfigName, "e2e/icecream-test", "main")
+			createGitTarget(destName, namespace, gitProviderName, "e2e/icecream-test", "main")
 
 			data := struct {
 				Name            string
@@ -1012,7 +1012,7 @@ var _ = Describe("Manager", Ordered, func() {
 			cmd2 := exec.Command("kubectl", "delete", "icecreamorder", crdInstanceName, "-n", namespace)
 			_, _ = utils.Run(cmd2)
 
-			By("Note: GitDestination, WatchRule, GitRepoConfig, and CRD kept for subsequent tests")
+			By("Note: GitTarget, WatchRule, GitProvider, and CRD kept for subsequent tests")
 
 			By("✅ IceCreamOrder to Git commit E2E test passed")
 			fmt.Printf("✅ IceCreamOrder '%s' successfully triggered Git commit in repo '%s'\n",
@@ -1128,7 +1128,7 @@ var _ = Describe("Manager", Ordered, func() {
 			cmd := exec.Command("kubectl", "delete", "icecreamorder", crdInstanceName, "-n", namespace)
 			_, _ = utils.Run(cmd)
 
-			By("Note: GitDestination, WatchRule, GitRepoConfig, and CRD kept for subsequent tests")
+			By("Note: GitTarget, WatchRule, GitProvider, and CRD kept for subsequent tests")
 
 			By("✅ IceCreamOrder update E2E test passed")
 			fmt.Printf("✅ IceCreamOrder '%s' update successfully reflected in Git repo '%s'\n",
@@ -1222,14 +1222,14 @@ var _ = Describe("Manager", Ordered, func() {
 		})
 
 		It("should delete Git file when IceCreamOrder CRD is deleted via ClusterWatchRule", func() {
-			gitRepoConfigName := "gitrepoconfig-normal"
+			gitProviderName := "gitprovider-normal"
 			clusterWatchRuleName := "clusterwatchrule-crd-delete"
 			crdName := "icecreamorders.shop.example.com"
 
 			By("creating ClusterWatchRule with Cluster scope for CRDs")
 			destName := clusterWatchRuleName + "-dest"
-			createGitDestination(destName, namespace, gitRepoConfigName, "e2e/crd-delete-test", "main")
-			verifyResourceStatus("gitdestination", destName, namespace, "True", "Ready", "")
+			createGitTarget(destName, namespace, gitProviderName, "e2e/crd-delete-test", "main")
+			verifyResourceStatus("gittarget", destName, namespace, "True", "Ready", "")
 
 			clusterWatchRuleData := struct {
 				Name            string
@@ -1291,7 +1291,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 			By("cleaning up test resources")
 			cleanupClusterWatchRule(clusterWatchRuleName)
-			cleanupGitDestination(destName, namespace)
+			cleanupGitTarget(destName, namespace)
 
 			By("✅ CRD deletion via ClusterWatchRule E2E test passed")
 		})
@@ -1302,11 +1302,11 @@ var _ = Describe("Manager", Ordered, func() {
 			// Clean up WatchRule from IceCreamOrder tests
 			cleanupWatchRule("watchrule-icecream-orders", namespace)
 
-			// Clean up GitDestination from IceCreamOrder tests
-			cleanupGitDestination("watchrule-icecream-orders-dest", namespace)
+			// Clean up GitTarget from IceCreamOrder tests
+			cleanupGitTarget("watchrule-icecream-orders-dest", namespace)
 
-			// Clean up GitRepoConfig from IceCreamOrder tests
-			cleanupGitRepoConfig("gitrepoconfig-normal")
+			// Clean up GitProvider from IceCreamOrder tests
+			cleanupGitProvider("gitprovider-normal")
 
 			// Clean up IceCreamOrder CRD
 			cmd := exec.Command("kubectl", "delete", "crd",
@@ -1318,9 +1318,9 @@ var _ = Describe("Manager", Ordered, func() {
 	})
 })
 
-// createGitRepoConfigWithURL creates a GitRepoConfig resource with the specified URL.
-func createGitRepoConfigWithURL(name, branch, secretName, repoURL string) {
-	By(fmt.Sprintf("creating GitRepoConfig '%s' with branch '%s', secret '%s' and URL '%s'",
+// createGitProviderWithURL creates a GitProvider resource with the specified URL.
+func createGitProviderWithURL(name, branch, secretName, repoURL string) {
+	By(fmt.Sprintf("creating GitProvider '%s' with branch '%s', secret '%s' and URL '%s'",
 		name, branch, secretName, repoURL))
 
 	data := struct {
@@ -1337,23 +1337,23 @@ func createGitRepoConfigWithURL(name, branch, secretName, repoURL string) {
 		SecretName: secretName,
 	}
 
-	err := applyFromTemplate("test/e2e/templates/gitrepoconfig.tmpl", data, namespace)
-	Expect(err).NotTo(HaveOccurred(), "Failed to apply GitRepoConfig")
+	err := applyFromTemplate("test/e2e/templates/gitprovider.tmpl", data, namespace)
+	Expect(err).NotTo(HaveOccurred(), "Failed to apply GitProvider")
 }
 
-// createGitRepoConfig creates a GitRepoConfig resource with HTTP URL.
-func createGitRepoConfig(name, branch, secretName string) {
-	createGitRepoConfigWithURL(name, branch, secretName, getRepoURLHTTP())
+// createGitProvider creates a GitProvider resource with HTTP URL.
+func createGitProvider(name, branch, secretName string) {
+	createGitProviderWithURL(name, branch, secretName, getRepoURLHTTP())
 }
 
-// createSSHGitRepoConfig creates a GitRepoConfig resource with SSH URL.
-func createSSHGitRepoConfig(name, branch, secretName string) {
-	createGitRepoConfigWithURL(name, branch, secretName, getRepoURLSSH())
+// createSSHGitProvider creates a GitProvider resource with SSH URL.
+func createSSHGitProvider(name, branch, secretName string) {
+	createGitProviderWithURL(name, branch, secretName, getRepoURLSSH())
 }
 
-// verifyGitRepoConfigStatus verifies the GitRepoConfig status matches expected values.
-func verifyGitRepoConfigStatus(name, expectedStatus, expectedReason, expectedMessageContains string) {
-	verifyResourceStatus("gitrepoconfig", name, namespace, expectedStatus, expectedReason, expectedMessageContains)
+// verifyGitProviderStatus verifies the GitProvider status matches expected values.
+func verifyGitProviderStatus(name, expectedStatus, expectedReason, expectedMessageContains string) {
+	verifyResourceStatus("gitprovider", name, namespace, expectedStatus, expectedReason, expectedMessageContains)
 }
 
 // verifyResourceStatus verifies a resource's status conditions match expected values.
@@ -1408,10 +1408,10 @@ func verifyResourceStatus(resourceType, name, ns, expectedStatus, expectedReason
 	Eventually(verifyStatus).Should(Succeed())
 }
 
-// cleanupGitRepoConfig deletes a GitRepoConfig resource.
-func cleanupGitRepoConfig(name string) {
-	By(fmt.Sprintf("cleaning up GitRepoConfig '%s'", name))
-	cmd := exec.Command("kubectl", "delete", "gitrepoconfig", name, "-n", namespace, "--ignore-not-found=true")
+// cleanupGitProvider deletes a GitProvider resource.
+func cleanupGitProvider(name string) {
+	By(fmt.Sprintf("cleaning up GitProvider '%s'", name))
+	cmd := exec.Command("kubectl", "delete", "gitprovider", name, "-n", namespace, "--ignore-not-found=true")
 	_, err := utils.Run(cmd)
 	Expect(err).NotTo(HaveOccurred())
 }

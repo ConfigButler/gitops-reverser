@@ -4,7 +4,8 @@ metadata:
   name: {{ .Name }}
   namespace: {{ .Namespace }}
 spec:
-  destinationRef:
+  target:
+    kind: GitTarget
     name: {{ .DestinationName }}
   rules:
   - apiGroups: ["shop.example.com"]

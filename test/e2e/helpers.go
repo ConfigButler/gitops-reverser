@@ -186,11 +186,11 @@ func getBaseFolder() string {
 	return "e2e"
 }
 
-// createGitDestination creates a GitDestination that binds a GitRepoConfig, branch and baseFolder.
+// createGitTarget creates a GitTarget that binds a GitProvider, branch and baseFolder.
 //
 //nolint:unparam // in e2e helpers we accept constant namespace ("sut"); keep signature for clarity in template calls
-func createGitDestination(name, namespace, repoConfigName, baseFolder, branch string) {
-	By(fmt.Sprintf("creating GitDestination '%s' in ns '%s' for GitRepoConfig '%s' with baseFolder '%s'",
+func createGitTarget(name, namespace, repoConfigName, baseFolder, branch string) {
+	By(fmt.Sprintf("creating GitTarget '%s' in ns '%s' for GitProvider '%s' with baseFolder '%s'",
 		name, namespace, repoConfigName, baseFolder))
 
 	data := struct {
@@ -209,18 +209,18 @@ func createGitDestination(name, namespace, repoConfigName, baseFolder, branch st
 		BaseFolder:          baseFolder,
 	}
 
-	err := applyFromTemplate("test/e2e/templates/gitdestination.tmpl", data, namespace)
+	err := applyFromTemplate("test/e2e/templates/gittarget.tmpl", data, namespace)
 
-	Expect(err).NotTo(HaveOccurred(), "Failed to apply GitDestination")
+	Expect(err).NotTo(HaveOccurred(), "Failed to apply GitTarget")
 }
 
-// cleanupGitDestination deletes a GitDestination resource.
+// cleanupGitTarget deletes a GitTarget resource.
 //
 //nolint:unparam // in e2e helpers we accept constant namespace ("sut"); keep signature for clarity
-func cleanupGitDestination(name, namespace string) {
-	By(fmt.Sprintf("cleaning up GitDestination '%s' in ns '%s'", name, namespace))
+func cleanupGitTarget(name, namespace string) {
+	By(fmt.Sprintf("cleaning up GitTarget '%s' in ns '%s'", name, namespace))
 	ctx := context.Background()
-	cmd := exec.CommandContext(ctx, "kubectl", "delete", "gitdestination", name,
+	cmd := exec.CommandContext(ctx, "kubectl", "delete", "gittarget", name,
 		"-n", namespace, "--ignore-not-found=true")
 	_, _ = utils.Run(cmd)
 }
