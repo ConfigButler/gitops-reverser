@@ -3,8 +3,8 @@ kind: ClusterWatchRule
 metadata:
   name: clusterwatchrule-sample
 spec:
-  gitRepoConfigRef:
-    name: gitrepoconfig-sample
+  gitProviderRef:
+    name: sample
     namespace: gitops-reverser-system
   rules:
     # Rule 1: Watch cluster-scoped resources (Nodes)

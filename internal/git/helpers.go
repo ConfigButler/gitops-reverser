@@ -130,7 +130,7 @@ func getAuthFromSecret(
 	provider *v1alpha1.GitProvider,
 ) (transport.AuthMethod, error) {
 	// If no secret reference is provided, return nil auth (for public repositories)
-	if provider.Spec.SecretRef.Name == "" {
+	if provider.Spec.SecretRef == nil || provider.Spec.SecretRef.Name == "" {
 		return nil, nil //nolint:nilnil // Returning nil auth for public repos is semantically correct
 	}
 

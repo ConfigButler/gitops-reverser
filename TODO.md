@@ -16,7 +16,6 @@ New questions:
 * If the AccessPolicy is adjusted on the GitRepoConfig, are the existing watchrules also re-evaluated (if they can send in events).
 * Is there to much code duplication between clusterwatchrule and watchrule?
 * Add a default business rule that Config resources are not written to disk: these should never be in git. Have an example on the frontpage on how to use sealedSecrets for now: that's a nice start and will just make sure that it's safe (perhaps something better later). We could add an exception as a commandline flag: people that want to do bad should not be blocked in doing so. :-)
-* Check if we are still in line witht the [Kubebuilder stuff](https://book.kubebuilder.io/architecture), I noticed that my PROJECT file does not seem up2date. Should it be gone at some point in time?
 * Improve README.m
   * Better explaination of configuration of this tool: one GitRepoConfig per repo, security considerations (namespace or non namespace etc), storeRawConfigmaps (default false).
 * There is no time in the admission request: we should add the time received as soon as possible and also put that as commit time (if we can override that).

@@ -27,12 +27,12 @@ type GitProviderSpec struct {
 	// URL of the repository (HTTP/SSH)
 	URL string `json:"url"`
 
-	// SecretRef for authentication credentials
-	SecretRef LocalSecretReference `json:"secretRef"`
+	// SecretRef for authentication credentials (may be nil for public repos)
+	SecretRef *LocalSecretReference `json:"secretRef,omitempty"`
 
 	// AllowedBranches restricts which branches can be written to.
-	// +optional
-	AllowedBranches []string `json:"allowedBranches,omitempty"`
+	// +required
+	AllowedBranches []string `json:"allowedBranches"`
 
 	// Push defines the strategy for pushing commits (batching).
 	// +optional
