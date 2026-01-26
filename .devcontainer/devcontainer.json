@@ -68,6 +68,7 @@
     "source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind"
   ],
   "containerEnv": {
-    "HOST_PROJECT_PATH": "${localWorkspaceFolder}"
+    "HOST_PROJECT_PATH": "${localWorkspaceFolder}",
+    "DOCKER_API_VERSION": "1.43"
   }
 }
