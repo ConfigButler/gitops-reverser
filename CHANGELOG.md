@@ -5,6 +5,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.0](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.13.1...gitops-reverser-v0.14.0) (2026-01-26)
+
+
+### Features
+
+* add experimental audit webhook for metrics collection ([a5b8655](https://github.com/ConfigButler/gitops-reverser/commit/a5b8655434034bedd3f9724bd93e1c4063da3ff0))
+* All reference end with Ref and custom types ([a7092a2](https://github.com/ConfigButler/gitops-reverser/commit/a7092a243d629b5bb85d5dfce4561eb08d0469d7))
+* **e2e:** add Kind cluster audit webhook support ([5253765](https://github.com/ConfigButler/gitops-reverser/commit/52537653e69e64f0a4cb5789686977e20402724c))
+* Scafold 'new' types ([bd8688c](https://github.com/ConfigButler/gitops-reverser/commit/bd8688cb560caecae0e36509e9429ebba8eddb6e))
+* Support setting audit-dump-dir so that we can analyse what the k8s api is sending us ([1867f21](https://github.com/ConfigButler/gitops-reverser/commit/1867f219dadd89830a2ba630032b0e811a6f48d4))
+
+
+### Bug Fixes
+
+* Also converting unit tests and ask for deleteion ([00c5974](https://github.com/ConfigButler/gitops-reverser/commit/00c5974490cfad490ea8c5687c9baeefe757c155))
+* **devcontainer:** pin DOCKER_API_VERSION to 1.43 ([181f9ca](https://github.com/ConfigButler/gitops-reverser/commit/181f9ca547c2a6a6d3e0f34ad0f3ed59a0df3a7c))
+* end2end testa are now working ([b6bc194](https://github.com/ConfigButler/gitops-reverser/commit/b6bc1942583449cd0c0655e06b42877667c4fa96))
+* Fixing all tests ([7e786dc](https://github.com/ConfigButler/gitops-reverser/commit/7e786dc4b4146abd6c7595b8f5a9cbe7ca90fa4c))
+* Get the all tests green ([fdb8d8f](https://github.com/ConfigButler/gitops-reverser/commit/fdb8d8f260207194f15ed1c1fccf488ca5064de2))
+* Getting tests green and refining contracts ([66faefa](https://github.com/ConfigButler/gitops-reverser/commit/66faefa2cbb11aed36aaa59668e7bfb74f677ed9))
+* Ironing out last details ([5c16998](https://github.com/ConfigButler/gitops-reverser/commit/5c16998dc53004a5e073fffaaf51dc2c63aaaee0))
+* Let's also improve security since we are now in the tmp folder ([0a418a3](https://github.com/ConfigButler/gitops-reverser/commit/0a418a3138ada3768ce41af150e953bdeca9d3bb))
+* Remove more ([ec0ad99](https://github.com/ConfigButler/gitops-reverser/commit/ec0ad995605e26100d5907c2a35988a6d6f0e173))
+* Run kind config in GH as well ([9231f04](https://github.com/ConfigButler/gitops-reverser/commit/9231f04c6999b2d78f0397e1b16f84e79573d6c7))
+
+
+### Documentation
+
+* And adjust asciiart ([b283142](https://github.com/ConfigButler/gitops-reverser/commit/b28314290e808d3cc490c36fa03816acf8296e98))
+* Saturday redesign of new-config ([25f8a3d](https://github.com/ConfigButler/gitops-reverser/commit/25f8a3d923be54013a136499de10de599497c1a9))
+* Setup apiserver audit hook ([c0fa483](https://github.com/ConfigButler/gitops-reverser/commit/c0fa483d86bc0cdf3635b9e9343a1612d45d5ca9))
+
 ## [0.13.1](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.13.0...gitops-reverser-v0.13.1) (2025-11-24)
 
 
