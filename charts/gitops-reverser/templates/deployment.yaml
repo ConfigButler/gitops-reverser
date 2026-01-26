@@ -60,6 +60,9 @@ spec:
             {{- if .Values.logging.stacktraceLevel }}
             - --zap-stacktrace-level={{ .Values.logging.stacktraceLevel }}
             {{- end }}
+            {{- if .Values.webhook.audit.debugDumps }}
+            - --audit-dump-path=/var/run/audit-dumps
+            {{- end }}
           ports:
             - name: webhook-server
               containerPort: {{ .Values.webhook.server.port }}
@@ -94,6 +97,10 @@ spec:
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:
+            {{- if .Values.webhook.audit.debugDumps }}
+            - name: audit-dumps
+              mountPath: /var/run/audit-dumps
+            {{- end }}
             - name: tmp-dir
               mountPath: /tmp
             - name: cert
@@ -103,6 +110,10 @@ spec:
             {{- toYaml . | nindent 12 }}
             {{- end }}
       volumes:
+        {{- if .Values.webhook.audit.debugDumps }}
+        - name: audit-dumps
+          emptyDir: {}
+        {{- end }}
         - name: tmp-dir
           emptyDir: {}
         - name: cert

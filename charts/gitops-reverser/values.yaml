@@ -81,6 +81,10 @@ webhook:
     certName: "tls.crt"
     certKey: "tls.key"
 
+  audit:
+    # Set to true if you want to write events to /var/run/audit-dumps
+    debugDumps: false
+
   # Validating webhook configuration
   validating:
     enabled: true
