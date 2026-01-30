@@ -44,14 +44,14 @@ Reverse GitOps gives you both: the interactivity of the Kubernetes API with Git'
 
 I have been thinking about the idea behind GitOps Reverser for several years (I've given up my fulltime job to work on it). Some of the hardest parts, especially writing to Git efficiently and safely under load, were designed and implemented manually. The rest is vibe coded, and needs more refinement before I would run it in production.
 
-** The operator itself is fully deterministic and does not use AI or heuristics at runtime. Given the same inputs, it produces the same Git output. **
+**The operator itself is fully deterministic and does not use AI or heuristics at runtime. Given the same inputs, it produces the same Git output.**
 
 Feedback, issues, and pull requests are very welcome!
 
 ### Planned work
 
 - Do something will pull requests (at this moment I can only push to a branch)
-- Implement a listener for the [Kubernetes audit webhook](https://kubernetes.io/docs/tasks/debug/debug-cluster/audit/#webhook-backend) to replace the watcher/webhook combination. This is not implemented yet; see design exploration in [`docs/audit-webhook-experimental-design.md`](docs/audit-webhook-experimental-design.md).
+- Fully migrate to the [Kubernetes audit webhook](https://kubernetes.io/docs/tasks/debug/debug-cluster/audit/#webhook-backend) to replace the watcher/webhook combination; see design exploration in [`docs/audit-webhook-experimental-design.md`](docs/audit-webhook-experimental-design.md).
 
 ### Current priorities
 
