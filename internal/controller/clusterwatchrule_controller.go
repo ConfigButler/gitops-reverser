@@ -37,13 +37,13 @@ import (
 
 // ClusterWatchRule status condition reasons.
 const (
-	ClusterWatchRuleReasonValidating             = "Validating"
-	ClusterWatchRuleReasonGitRepoConfigNotFound  = "GitRepoConfigNotFound"
-	ClusterWatchRuleReasonGitRepoConfigNotReady  = "GitRepoConfigNotReady"
-	ClusterWatchRuleReasonAccessDenied           = "AccessDenied"
-	ClusterWatchRuleReasonGitDestinationNotFound = "GitDestinationNotFound"
-	ClusterWatchRuleReasonGitDestinationInvalid  = "GitDestinationInvalid"
-	ClusterWatchRuleReasonReady                  = "Ready"
+	ClusterWatchRuleReasonValidating            = "Validating"
+	ClusterWatchRuleReasonGitProviderNotFound   = "GitRepoConfigNotFound"
+	ClusterWatchRuleReasonGitRepoConfigNotReady = "GitRepoConfigNotReady"
+	ClusterWatchRuleReasonAccessDenied          = "AccessDenied"
+	ClusterWatchRuleReasonGitTargetNotFound     = "GitTargetNotFound"
+	ClusterWatchRuleReasonGitDestinationInvalid = "GitDestinationInvalid"
+	ClusterWatchRuleReasonReady                 = "Ready"
 )
 
 // ClusterWatchRuleReconciler reconciles a ClusterWatchRule object.
@@ -138,7 +138,7 @@ func (r *ClusterWatchRuleReconciler) reconcileClusterWatchRuleViaTarget(
 		r.setCondition(
 			clusterRule,
 			metav1.ConditionFalse,
-			ClusterWatchRuleReasonGitDestinationNotFound,
+			ClusterWatchRuleReasonGitTargetNotFound,
 			fmt.Sprintf("Referenced GitTarget '%s/%s' not found: %v",
 				targetNS, clusterRule.Spec.TargetRef.Name, err),
 		)
@@ -157,7 +157,7 @@ func (r *ClusterWatchRuleReconciler) reconcileClusterWatchRuleViaTarget(
 		r.setCondition(
 			clusterRule,
 			metav1.ConditionFalse,
-			ClusterWatchRuleReasonGitRepoConfigNotFound,
+			ClusterWatchRuleReasonGitProviderNotFound,
 			fmt.Sprintf("GitProvider '%s/%s' (from GitTarget) not found: %v",
 				providerNS, providerName, err),
 		)

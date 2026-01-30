@@ -48,15 +48,12 @@ I have been thinking about the idea behind GitOps Reverser for several years (I'
 
 Feedback, issues, and pull requests are very welcome!
 
-### Planned work
+### Planned Improvements
 
-- Do something will pull requests (at this moment I can only push to a branch)
-- Fully migrate to the [Kubernetes audit webhook](https://kubernetes.io/docs/tasks/debug/debug-cluster/audit/#webhook-backend) to replace the watcher/webhook combination; see design exploration in [`docs/audit-webhook-experimental-design.md`](docs/audit-webhook-experimental-design.md).
-
-### Current priorities
-
-- Dynamic watch manager + e2e test pass (see [`docs/IMPLEMENTATION_ROADMAP.md`](docs/IMPLEMENTATION_ROADMAP.md))
-- Backlog triage (see [`TODO.md`](TODO.md))
+- Signed git commits
+- Full HA support by introducing [Valkey](https://valkey.io/)
+- More refined behavior in edge cases (especially with newly added CRDs)
+- Migrate to the [Kubernetes audit webhook](https://kubernetes.io/docs/tasks/debug/debug-cluster/audit/#webhook-backend) to replace the watcher/webhook combination; see [`docs/past/audit-webhook-experimental-design.md`](docs/past/audit-webhook-experimental-design.md).
 
 ## Quick start
 
@@ -149,7 +146,7 @@ kubectl create configmap test-config --from-literal=key=value -n default
 # Check your Git repository - you should see a new commit with the ConfigMap YAML
 ```
 
-For cluster-wide resources (nodes, CRDs, etc.) or watching multiple namespaces, use [`ClusterWatchRule`](config/samples/configbutler.ai_v1alpha1_clusterwatchrule.yaml). More examples in [`config/samples/`](config/samples/).
+For cluster-wide resources (nodes, CRDs, etc.) or watching multiple namespaces, use [`ClusterWatchRule`](config/samples/clusterwatchrule.yaml). More examples in [`config/samples/`](config/samples/).
 
 ## Usage guidance
 
@@ -161,7 +158,7 @@ Avoid infinite loops: Do not point GitOps (Argo CD/Flux) and GitOps Reverser at 
 
 ## Known limitations
 
-- Avoid multiple GitProvider configurations pointing at the same repo to prevent queue collisions (see [`TODO.md`](TODO.md)).
+- Avoid multiple GitProvider configurations pointing at the same repo to prevent queue collisions (see [`docs/TODO.md`](docs/TODO.md)).
 - Queue collisions are possible when multiple configs target the same repository; mitigation is planned.
 
 ## Monitoring
@@ -186,7 +183,7 @@ This project includes a DevContainer for consistent development environments.
 
 **Linux/macOS:** Works out of the box with Docker Desktop or Docker Engine.
 
-**Windows:** See [`docs/WINDOWS_DEVCONTAINER_SETUP.md`](docs/WINDOWS_DEVCONTAINER_SETUP.md) for Windows-specific setup instructions. TL;DR: Use WSL2 for the best experience, or the devcontainer will automatically fix workspace permissions on startup.
+**Windows:** See [`docs/ci/WINDOWS_DEVCONTAINER_SETUP.md`](docs/ci/WINDOWS_DEVCONTAINER_SETUP.md) for Windows-specific setup instructions. TL;DR: Use WSL2 for the best experience, or the devcontainer will automatically fix workspace permissions on startup.
 
 ### Running Tests
 

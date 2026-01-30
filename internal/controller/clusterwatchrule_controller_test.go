@@ -85,7 +85,7 @@ var _ = Describe("ClusterWatchRule Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.RequeueAfter).To(BeNumerically(">", 0))
 
-			By("Verifying the ClusterWatchRule has GitDestinationNotFound condition")
+			By("Verifying the ClusterWatchRule has GitTargetNotFound condition")
 			updatedRule := &configbutleraiv1alpha1.ClusterWatchRule{}
 			err = k8sClient.Get(ctx, types.NamespacedName{Name: "missing-target-rule"}, updatedRule)
 			Expect(err).NotTo(HaveOccurred())
@@ -94,7 +94,7 @@ var _ = Describe("ClusterWatchRule Controller", func() {
 			condition := updatedRule.Status.Conditions[0]
 			Expect(condition.Type).To(Equal(ConditionTypeReady))
 			Expect(condition.Status).To(Equal(metav1.ConditionFalse))
-			Expect(condition.Reason).To(Equal(ClusterWatchRuleReasonGitDestinationNotFound))
+			Expect(condition.Reason).To(Equal(ClusterWatchRuleReasonGitTargetNotFound))
 
 			// Cleanup
 			Expect(k8sClient.Delete(ctx, clusterRule)).Should(Succeed())

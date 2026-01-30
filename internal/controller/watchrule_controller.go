@@ -38,13 +38,13 @@ import (
 
 // WatchRule status condition reasons.
 const (
-	WatchRuleReasonValidating             = "Validating"
-	WatchRuleReasonGitRepoConfigNotFound  = "GitRepoConfigNotFound"
-	WatchRuleReasonGitRepoConfigNotReady  = "GitRepoConfigNotReady"
-	WatchRuleReasonAccessDenied           = "AccessDenied"
-	WatchRuleReasonGitDestinationNotFound = "GitDestinationNotFound"
-	WatchRuleReasonGitDestinationInvalid  = "GitDestinationInvalid"
-	WatchRuleReasonReady                  = "Ready"
+	WatchRuleReasonValidating            = "Validating"
+	WatchRuleReasonGitProviderNotFound   = "GitRepoConfigNotFound"
+	WatchRuleReasonGitRepoConfigNotReady = "GitRepoConfigNotReady"
+	WatchRuleReasonAccessDenied          = "AccessDenied"
+	WatchRuleReasonGitTargetNotFound     = "GitTargetNotFound"
+	WatchRuleReasonGitDestinationInvalid = "GitDestinationInvalid"
+	WatchRuleReasonReady                 = "Ready"
 )
 
 // WatchRuleReconciler reconciles a WatchRule object.
@@ -138,7 +138,7 @@ func (r *WatchRuleReconciler) reconcileWatchRuleViaTarget(
 		r.setCondition(
 			watchRule,
 			metav1.ConditionFalse,
-			WatchRuleReasonGitDestinationNotFound,
+			WatchRuleReasonGitTargetNotFound,
 			fmt.Sprintf(
 				"Referenced GitTarget '%s/%s' not found: %v",
 				targetNS,
@@ -175,7 +175,7 @@ func (r *WatchRuleReconciler) reconcileWatchRuleViaTarget(
 		r.setCondition(
 			watchRule,
 			metav1.ConditionFalse,
-			WatchRuleReasonGitRepoConfigNotFound, // Reuse reason for now
+			WatchRuleReasonGitProviderNotFound, // Reuse reason for now
 			fmt.Sprintf(
 				"GitProvider '%s/%s' (from GitTarget) not found: %v",
 				providerNS,
