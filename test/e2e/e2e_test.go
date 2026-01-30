@@ -453,7 +453,12 @@ var _ = Describe("Manager", Ordered, func() {
 			if err != nil {
 				fmt.Printf("❌ SSH secret not found: %v\n", err)
 			} else {
-				fmt.Printf("✅ SSH secret exists - showing first 300 chars:\n%s...\n", secretOutput[:minInt(300, len(secretOutput))])
+				previewLen := minInt(300, len(secretOutput))
+				fmt.Printf(
+					"✅ SSH secret exists - showing first %d chars:\n%s...\n",
+					previewLen,
+					secretOutput[:previewLen],
+				)
 			}
 
 			createSSHGitProvider(gitProviderName, "main", "git-creds-ssh")
