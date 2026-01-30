@@ -30,7 +30,7 @@ The project has several types of tests:
 
 ### Prerequisites
 
-1. **Go 1.25.5+**
+1. **Go 1.25.6+**
    ```bash
    go version
    ```

@@ -186,7 +186,7 @@ If organizational policy requires non-root CI, here's the implementation strateg
 #### Option 1: Hybrid Approach (Recommended)
 ```dockerfile
 # Build stage: root for tool installation
-FROM golang:1.25.5 AS ci-builder
+FROM golang:1.25.6 AS ci-builder
 RUN apt-get update && apt-get install...
 RUN curl -LO kubectl...
 
@@ -200,7 +200,7 @@ USER ciuser
 #### Option 2: Rootless with Capabilities
 ```dockerfile
 # Install tools as root
-FROM golang:1.25.5 AS ci
+FROM golang:1.25.6 AS ci
 RUN apt-get update...
 
 # Create non-root user with specific capabilities

@@ -19,6 +19,7 @@ limitations under the License.
 package correlation
 
 import (
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -398,11 +399,13 @@ func TestEnrichment_ConcurrentWebhookAndWatch(t *testing.T) {
 	concurrency := 10
 	updatesPerGoroutine := 50
 
-	done := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(concurrency * 2)
 
 	// Webhook goroutines
 	for i := range concurrency {
 		go func(workerID int) {
+			defer wg.Done()
 			for j := range updatesPerGoroutine {
 				obj := &unstructured.Unstructured{
 					Object: map[string]interface{}{
@@ -430,13 +433,9 @@ func TestEnrichment_ConcurrentWebhookAndWatch(t *testing.T) {
 	}
 
 	// Watch goroutines
-	for i := range concurrency {
-		go func(workerID int) {
-			defer func() {
-				if workerID == 0 {
-					close(done)
-				}
-			}()
+	for range concurrency {
+		go func() {
+			defer wg.Done()
 
 			for j := range updatesPerGoroutine {
 				obj := &unstructured.Unstructured{
@@ -465,12 +464,12 @@ func TestEnrichment_ConcurrentWebhookAndWatch(t *testing.T) {
 					misses.Add(1)
 				}
 			}
-		}(i)
+		}()
 	}
 
-	// Wait for completion
-	<-done
-	time.Sleep(100 * time.Millisecond) // Allow goroutines to finish
+	// Wait for all webhook + watch goroutines to finish.
+	// The test is intentionally concurrent; misses are expected when the watch beats the webhook.
+	wg.Wait()
 
 	totalEvents := int64(concurrency * updatesPerGoroutine)
 	totalProcessed := hits.Load() + misses.Load()
