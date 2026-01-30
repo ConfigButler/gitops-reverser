@@ -40,7 +40,23 @@ Reverse GitOps gives you both: the interactivity of the Kubernetes API with Git'
 
 🚨 This is early stage software. CRDs and behavior may change; not recommended for production yet. Feedback and contributions are very welcome!
 
-In the short term, I'm planning to implement a listener for the [Kubernetes audit webhook](https://kubernetes.io/docs/tasks/debug/debug-cluster/audit/#webhook-backend). That will replace the watcher / webhook combination. It turns out that it's not possible to combine the watch events with their validatingwebhook in all edge cases.
+### Use of AI
+
+I have been thinking about the idea behind GitOps Reverser for several years (I've given up my fulltime job to work on it). Some of the hardest parts, especially writing to Git efficiently and safely under load, were designed and implemented manually. The rest is vibe coded, and needs more refinement before I would run it in production.
+
+** The operator itself is fully deterministic and does not use AI or heuristics at runtime. Given the same inputs, it produces the same Git output. **
+
+Feedback, issues, and pull requests are very welcome!
+
+### Planned work
+
+- Do something will pull requests (at this moment I can only push to a branch)
+- Implement a listener for the [Kubernetes audit webhook](https://kubernetes.io/docs/tasks/debug/debug-cluster/audit/#webhook-backend) to replace the watcher/webhook combination. This is not implemented yet; see design exploration in [`docs/audit-webhook-experimental-design.md`](docs/audit-webhook-experimental-design.md).
+
+### Current priorities
+
+- Dynamic watch manager + e2e test pass (see [`docs/IMPLEMENTATION_ROADMAP.md`](docs/IMPLEMENTATION_ROADMAP.md))
+- Backlog triage (see [`TODO.md`](TODO.md))
 
 ## Quick start
 
@@ -142,6 +158,11 @@ Avoid infinite loops: Do not point GitOps (Argo CD/Flux) and GitOps Reverser at 
 - Human‑in‑the‑loop (hotfix in cluster, capture to Git, review/merge)
 - Drift detection (use commits as alert inputs)
 - Hybrid (traditional GitOps for infra; Reverser for app/config changes)
+
+## Known limitations
+
+- Avoid multiple GitProvider configurations pointing at the same repo to prevent queue collisions (see [`TODO.md`](TODO.md)).
+- Queue collisions are possible when multiple configs target the same repository; mitigation is planned.
 
 ## Monitoring
 

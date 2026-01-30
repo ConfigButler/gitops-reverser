@@ -2,17 +2,8 @@
 # This is a YAML-formatted file.
 # Declare variables to be passed into your templates.
 
-# Namespace creation configuration
-namespaceCreation:
-  # Whether to create the namespace as part of the chart installation
-  enabled: true
-  # Additional labels for the namespace
-  labels: {}
-  # Additional annotations for the namespace
-  annotations: {}
-
-# High Availability configuration - runs 2 replicas by default
-replicaCount: 2
+# High Availability configuration - runs 1 replicas by default (HA support is not good enough yet)
+replicaCount: 1
 
 # Leader-only service configuration
 leaderOnlyService:
