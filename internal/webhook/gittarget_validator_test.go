@@ -436,18 +436,28 @@ func TestGitTargetValidator_ValidateCreate_MissingProvider(t *testing.T) {
 	assert.Contains(t, err.Error(), "failed to resolve provider")
 }
 
-func TestGitTargetValidator_InvalidObject(t *testing.T) {
+func TestGitTargetValidator_NilObject(t *testing.T) {
 	validator := &GitTargetValidator{
 		Client: fake.NewClientBuilder().Build(),
 	}
 
-	// Pass wrong type of object
-	invalidObj := &configbutleraiv1alpha1.GitProvider{}
+	t.Run("ValidateCreate", func(t *testing.T) {
+		warnings, err := validator.ValidateCreate(context.Background(), nil)
+		require.Error(t, err)
+		assert.Nil(t, warnings)
+	})
 
-	warnings, err := validator.ValidateCreate(context.Background(), invalidObj)
-	require.Error(t, err)
-	assert.Nil(t, warnings)
-	assert.Contains(t, err.Error(), "expected GitTarget")
+	t.Run("ValidateUpdate", func(t *testing.T) {
+		warnings, err := validator.ValidateUpdate(context.Background(), nil, nil)
+		require.Error(t, err)
+		assert.Nil(t, warnings)
+	})
+
+	t.Run("ValidateDelete", func(t *testing.T) {
+		warnings, err := validator.ValidateDelete(context.Background(), nil)
+		require.Error(t, err)
+		assert.Nil(t, warnings)
+	})
 }
 
 // Mock client that returns errors for testing error paths.

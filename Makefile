@@ -183,7 +183,7 @@ ENVTEST_K8S_VERSION ?= $(shell go list -m -f "{{ .Version }}" k8s.io/api | awk -
 
 # Gitea E2E Configuration
 GITEA_NAMESPACE ?= gitea-e2e
-GITEA_CHART_VERSION ?= 10.4.0	# https://gitea.com/gitea/helm-gitea
+ GITEA_CHART_VERSION ?= 12.5.0	# https://gitea.com/gitea/helm-gitea
 
 .PHONY: setup-envtest
 setup-envtest: ## Setup envtest binaries for unit tests
@@ -210,7 +210,7 @@ setup-gitea-e2e: ## Set up Gitea for e2e testing
 .PHONY: setup-cert-manager
 setup-cert-manager:
 	@echo "🚀 Setup cert-manager (no wait needed)"
-	@$(KUBECTL) apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.18.2/cert-manager.yaml | grep -v "unchanged"
+	@$(KUBECTL) apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.19.1/cert-manager.yaml | grep -v "unchanged"
 
 .PHONY: setup-port-forwards
 setup-port-forwards: ## Start all port-forwards in background

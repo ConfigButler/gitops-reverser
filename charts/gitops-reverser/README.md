@@ -6,7 +6,7 @@ GitOps Reverser enables synchronization from Kubernetes to one or more Git repos
 
 ```bash
 # 1. Install cert-manager (if not already installed)
-kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.16.2/cert-manager.yaml
+kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.19.1/cert-manager.yaml
 
 # 2. Wait for cert-manager to be ready
 kubectl wait --for=condition=ready pod -l app.kubernetes.io/instance=cert-manager -n cert-manager --timeout=300s

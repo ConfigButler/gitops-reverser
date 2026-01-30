@@ -28,7 +28,6 @@ import (
 	"strings"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -41,25 +40,25 @@ import (
 
 // GitTargetValidator validates GitTarget resources to prevent duplicates.
 type GitTargetValidator struct {
-	Client  client.Client
-	Decoder *admission.Decoder
+	Client client.Client
 }
 
 // SetupGitTargetValidatorWebhook registers the GitTarget validator webhook with the manager.
 func SetupGitTargetValidatorWebhook(mgr ctrl.Manager) error {
-	return ctrl.NewWebhookManagedBy(mgr).
-		For(&configbutleraiv1alpha1.GitTarget{}).
+	return ctrl.NewWebhookManagedBy(mgr, &configbutleraiv1alpha1.GitTarget{}).
 		WithValidator(&GitTargetValidator{Client: mgr.GetClient()}).
 		Complete()
 }
 
 // ValidateCreate validates creation of a GitTarget.
-func (v *GitTargetValidator) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
-	log := logf.FromContext(ctx).WithName("GitTargetValidator")
 
-	target, ok := obj.(*configbutleraiv1alpha1.GitTarget)
-	if !ok {
-		return nil, fmt.Errorf("expected GitTarget but got %T", obj)
+func (v *GitTargetValidator) ValidateCreate(
+	ctx context.Context,
+	target *configbutleraiv1alpha1.GitTarget,
+) (admission.Warnings, error) {
+	log := logf.FromContext(ctx).WithName("GitTargetValidator")
+	if target == nil {
+		return nil, errors.New("GitTarget cannot be nil")
 	}
 
 	log.Info("Validating GitTarget creation",
@@ -75,18 +74,11 @@ func (v *GitTargetValidator) ValidateCreate(ctx context.Context, obj runtime.Obj
 // ValidateUpdate validates update of a GitTarget.
 func (v *GitTargetValidator) ValidateUpdate(
 	ctx context.Context,
-	oldObj, newObj runtime.Object,
+	oldTarget, newTarget *configbutleraiv1alpha1.GitTarget,
 ) (admission.Warnings, error) {
 	log := logf.FromContext(ctx).WithName("GitTargetValidator")
-
-	newTarget, ok := newObj.(*configbutleraiv1alpha1.GitTarget)
-	if !ok {
-		return nil, fmt.Errorf("expected GitTarget but got %T", newObj)
-	}
-
-	oldTarget, ok := oldObj.(*configbutleraiv1alpha1.GitTarget)
-	if !ok {
-		return nil, fmt.Errorf("expected GitTarget but got %T", oldObj)
+	if oldTarget == nil || newTarget == nil {
+		return nil, errors.New("GitTarget cannot be nil")
 	}
 
 	log.Info("Validating GitTarget update",
@@ -100,7 +92,13 @@ func (v *GitTargetValidator) ValidateUpdate(
 }
 
 // ValidateDelete validates deletion of a GitTarget (always allowed).
-func (v *GitTargetValidator) ValidateDelete(_ context.Context, _ runtime.Object) (admission.Warnings, error) {
+func (v *GitTargetValidator) ValidateDelete(
+	_ context.Context,
+	target *configbutleraiv1alpha1.GitTarget,
+) (admission.Warnings, error) {
+	if target == nil {
+		return nil, errors.New("GitTarget cannot be nil")
+	}
 	// Deletion is always allowed
 	return nil, nil
 }

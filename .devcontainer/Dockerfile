@@ -103,8 +103,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # Install Kind (for local Kubernetes clusters)
 # Docker is provided by devcontainer.json docker-in-docker feature
-ENV KIND_VERSION=v0.30.0
-RUN curl -Lo /usr/local/bin/kind https://github.com/kubernetes-sigs/kind/releases/download/${KIND_VERSION}/kind-linux-amd64                                 
+ENV KIND_VERSION=v0.31.0
+RUN curl -Lo /usr/local/bin/kind https://github.com/kubernetes-sigs/kind/releases/download/${KIND_VERSION}/kind-linux-amd64
 RUN chmod +x /usr/local/bin/kind
 
 # Install Delve debugger for Go debugging in VSCode
