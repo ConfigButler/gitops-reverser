@@ -163,7 +163,10 @@ spec:
                     type: string
                   kind:
                     default: GitTarget
-                    description: Kind of the referrer.
+                    description: |-
+                      Kind of the referrer.
+                      Optional because this reference currently only supports a single kind (GitTarget).
+                      Keeping it optional allows users to omit it while still benefiting from CRD defaulting.
                     enum:
                     - GitTarget
                     type: string
@@ -173,7 +176,6 @@ spec:
                     description: Required because ClusterWatchRule has no namespace.
                     type: string
                 required:
-                - kind
                 - name
                 - namespace
                 type: object

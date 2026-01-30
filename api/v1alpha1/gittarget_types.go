@@ -31,9 +31,10 @@ type GitProviderReference struct {
 
 	// Kind of the referent.
 	// NOTE: Support for reading from Flux GitRepository is not yet implemented!
+	// +optional
 	// +kubebuilder:enum=GitProvider,GitRepository
 	// +kubebuilder:default=GitProvider
-	Kind string `json:"kind"`
+	Kind string `json:"kind,omitempty"`
 
 	// Name of the referent.
 	// +required

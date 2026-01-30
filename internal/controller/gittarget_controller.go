@@ -161,7 +161,7 @@ func (r *GitTargetReconciler) validateGitProvider(
 	log logr.Logger,
 ) (*ctrl.Result, error) {
 	// TODO: Handle Flux GitRepository support
-	if target.Spec.ProviderRef.Kind != "GitProvider" {
+	if target.Spec.ProviderRef.Kind != "" && target.Spec.ProviderRef.Kind != "GitProvider" {
 		// For now, we only support GitProvider.
 		// In future, we would fetch GitRepository here.
 		// But since we are porting existing logic, we assume GitProvider.

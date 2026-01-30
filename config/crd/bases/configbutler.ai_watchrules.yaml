@@ -144,13 +144,16 @@ spec:
                     type: string
                   kind:
                     default: GitTarget
+                    description: |-
+                      Kind of the referent.
+                      Optional because this reference currently only supports a single kind (GitTarget).
+                      Keeping it optional allows users to omit it while still benefiting from CRD defaulting.
                     enum:
                     - GitTarget
                     type: string
                   name:
                     type: string
                 required:
-                - kind
                 - name
                 type: object
             required:

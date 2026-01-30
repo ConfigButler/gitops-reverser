@@ -1,5 +1,9 @@
 {{- if .Values.rbac.create -}}
-{{- $roleFile := .Files.Get "config/role.yaml" | fromYaml }}
+{{- $roleYaml := .Files.Get "config/role.yaml" -}}
+{{- if eq $roleYaml "" -}}
+{{- fail "charts/gitops-reverser/config/role.yaml is missing. Run `make helm-sync` to regenerate chart RBAC artifacts before templating/installing." -}}
+{{- end -}}
+{{- $roleFile := $roleYaml | fromYaml }}
 
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
@@ -8,7 +12,7 @@ metadata:
   labels:
     {{- include "gitops-reverser.labels" . | nindent 4 }}
 rules:
-{{- toYaml $roleFile.rules | nindent 0 }}
+{{- toYaml $roleFile.rules | nindent 2 }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

@@ -64,7 +64,6 @@ spec:
                     description: Name of the referent.
                     type: string
                 required:
-                - kind
                 - name
                 type: object
             required:

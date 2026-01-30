@@ -42,9 +42,13 @@ type LocalTargetReference struct {
 	// +kubebuilder:default=configbutler.ai
 	Group string `json:"group,omitempty"`
 
+	// Kind of the referent.
+	// Optional because this reference currently only supports a single kind (GitTarget).
+	// Keeping it optional allows users to omit it while still benefiting from CRD defaulting.
+	// +optional
 	// +kubebuilder:validation:Enum=GitTarget
 	// +kubebuilder:default=GitTarget
-	Kind string `json:"kind"`
+	Kind string `json:"kind,omitempty"`
 	Name string `json:"name"`
 }
 

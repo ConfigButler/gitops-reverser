@@ -151,7 +151,7 @@ func (r *WatchRuleReconciler) reconcileWatchRuleViaTarget(
 
 	// Resolve GitProvider from target.Provider
 	// TODO: Handle Flux GitRepository
-	if target.Spec.ProviderRef.Kind != "GitProvider" {
+	if target.Spec.ProviderRef.Kind != "" && target.Spec.ProviderRef.Kind != "GitProvider" {
 		// For now, only GitProvider is supported
 		log.Info("Unsupported provider kind", "kind", target.Spec.ProviderRef.Kind)
 		// Continue for now, assuming GitProvider if not specified or default
