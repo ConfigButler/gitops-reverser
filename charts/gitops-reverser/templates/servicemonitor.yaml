@@ -10,16 +10,13 @@ metadata:
     {{- toYaml . | nindent 4 }}
     {{- end }}
 spec:
-  endpoints:
-  - path: {{ .Values.monitoring.serviceMonitor.path }}
-    port: {{ .Values.monitoring.serviceMonitor.port }}
-    interval: {{ .Values.monitoring.serviceMonitor.interval }}
-    scrapeTimeout: {{ .Values.monitoring.serviceMonitor.scrapeTimeout }}
-    scheme: https
-    tlsConfig:
-      insecureSkipVerify: true
   selector:
     matchLabels:
       {{- include "gitops-reverser.selectorLabels" . | nindent 6 }}
-      app.kubernetes.io/component: kube-rbac-proxy
+  endpoints:
+    - port: {{ .Values.monitoring.serviceMonitor.port | default "metrics" }}
+      path: {{ .Values.monitoring.serviceMonitor.path | default "/metrics" }}
+      scheme: {{ .Values.monitoring.serviceMonitor.scheme | default "http" }}
+      interval: {{ .Values.monitoring.serviceMonitor.interval }}
+      scrapeTimeout: {{ .Values.monitoring.serviceMonitor.scrapeTimeout }}
 {{- end }}

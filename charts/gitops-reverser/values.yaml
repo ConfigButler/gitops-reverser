@@ -152,7 +152,6 @@ podDisruptionBudget:
 
 # Monitoring and observability
 monitoring:
-  # Enable ServiceMonitor for Prometheus
   serviceMonitor:
     enabled: false
     namespace: ""
@@ -160,7 +159,10 @@ monitoring:
     interval: 30s
     scrapeTimeout: 10s
     path: /metrics
-    port: https
+    # Port name on the metrics Service (see templates/services.yaml)
+    port: metrics
+    # Plain HTTP by default (--metrics-secure=false)
+    scheme: http
 
 # Logging configuration
 logging:
