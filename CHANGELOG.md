@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.2](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.14.1...gitops-reverser-v0.14.2) (2026-01-30)
+
+
+### Bug Fixes
+
+* Adjusting gittea stuff for the latest version ([454c948](https://github.com/ConfigButler/gitops-reverser/commit/454c94879e23a6f1b601179823331260582fd73a))
+* Get the defaults right so that the examples work ([d304f7c](https://github.com/ConfigButler/gitops-reverser/commit/d304f7c8c85e25a9c971fa9a9e48098c55d2a8a3))
+* Getting weird concurrency out ([160deca](https://github.com/ConfigButler/gitops-reverser/commit/160deca43719e93805ef4b1185393726ccb26321))
+* Linting mistake ([2b0c399](https://github.com/ConfigButler/gitops-reverser/commit/2b0c399db56621437bf209daec4dbad9d2ea75e1))
+
+
+### Documentation
+
+* Small adjustements ([4289070](https://github.com/ConfigButler/gitops-reverser/commit/4289070111412075c52006600cee30c56ddcd7e6))
+
 ## [0.14.1](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.14.0...gitops-reverser-v0.14.1) (2026-01-30)
 
 
