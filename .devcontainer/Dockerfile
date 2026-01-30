@@ -23,11 +23,11 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 # Tool versions - centralized for easy updates
-ENV KUBECTL_VERSION=v1.34.1 \
-    KUSTOMIZE_VERSION=5.7.1 \
-    KUBEBUILDER_VERSION=4.9.0 \
-    GOLANGCI_LINT_VERSION=v2.5.0 \
-    HELM_VERSION=v3.19.0
+ENV KUBECTL_VERSION=v1.35.0 \
+    KUSTOMIZE_VERSION=5.8.0 \
+    KUBEBUILDER_VERSION=4.11.1 \
+    GOLANGCI_LINT_VERSION=v2.8.0 \
+    HELM_VERSION=v4.0.0
 
 # Install kubectl
 RUN curl -LO "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl" \

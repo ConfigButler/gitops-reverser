@@ -69,6 +69,6 @@
   ],
   "containerEnv": {
     "HOST_PROJECT_PATH": "${localWorkspaceFolder}",
-    "DOCKER_API_VERSION": "1.43"
+    "DOCKER_API_VERSION": "1.44"
   }
 }
