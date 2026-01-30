@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.3](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.14.2...gitops-reverser-v0.14.3) (2026-01-30)
+
+
+### Bug Fixes
+
+* Servicemonitor in helm chart was not flexible enough ([20d4b7c](https://github.com/ConfigButler/gitops-reverser/commit/20d4b7c1bfb71d20ad172d46c6d563d1d99361db))
+
+
+### Documentation
+
+* Cleaning docs and polishing ([632bff1](https://github.com/ConfigButler/gitops-reverser/commit/632bff11fa82fa24cc1d2031053e17396d3c30b0))
+
 ## [0.14.2](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.14.1...gitops-reverser-v0.14.2) (2026-01-30)
 
 
