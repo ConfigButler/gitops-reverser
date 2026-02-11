@@ -85,7 +85,12 @@ The chart deploys 2 replicas by default with leader election:
                ▼
 ┌──────────────────────────────────────────┐
 │  gitops-reverser-leader-only (Service)   │
-│  Routes to: role=leader                  │
+│  Admission webhook: /process-validating-webhook │
+└──────────────┬───────────────────────────┘
+               │
+┌──────────────────────────────────────────┐
+│    gitops-reverser-audit (Service)      │
+│  Audit webhook: /audit-webhook/{clusterID} │
 └──────────────┬───────────────────────────┘
                │
      ┌─────────┴─────────┐
@@ -99,6 +104,7 @@ The chart deploys 2 replicas by default with leader election:
 
 **Key Features:**
 - **Leader-only service**: Routes webhook traffic only to the active leader pod
+- **Dedicated audit service**: Separates audit ingress from admission webhook traffic
 - **Automatic failover**: Standby pod takes over if leader fails
 - **Pod anti-affinity**: Pods spread across different nodes
 - **Pod disruption budget**: Ensures at least 1 pod available during maintenance
@@ -178,12 +184,18 @@ webhook:
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `namespaceCreation.enabled` | Create namespace automatically | `true` |
-| `replicaCount` | Number of controller replicas | `2` |
+| `replicaCount` | Number of controller replicas | `1` |
 | `leaderOnlyService.enabled` | Create service routing to leader only | `true` |
 | `image.repository` | Container image repository | `ghcr.io/configbutler/gitops-reverser` |
 | `controllerManager.leaderElection` | Enable leader election | `true` |
 | `webhook.validating.failurePolicy` | Webhook failure policy (Ignore/Fail) | `Ignore` |
+| `auditIngress.enabled` | Enable dedicated audit HTTPS ingress server | `true` |
+| `auditIngress.port` | Dedicated audit container port | `9444` |
+| `auditIngress.maxRequestBodyBytes` | Max accepted audit request size | `10485760` |
+| `auditIngress.timeouts.read` | Audit server read timeout | `15s` |
+| `auditIngress.timeouts.write` | Audit server write timeout | `30s` |
+| `auditIngress.timeouts.idle` | Audit server idle timeout | `60s` |
+| `auditIngress.tls.secretName` | Secret name for audit TLS cert/key | `<release>-audit-server-tls-cert` |
 | `certificates.certManager.enabled` | Use cert-manager for certificates | `true` |
 | `podDisruptionBudget.enabled` | Enable PodDisruptionBudget | `true` |
 | `resources.requests.cpu` | CPU request | `10m` |
@@ -192,6 +204,14 @@ webhook:
 | `resources.limits.memory` | Memory limit | `128Mi` |
 
 See [`values.yaml`](values.yaml) for complete configuration options.
+
+### Audit Webhook URL Contract
+
+Source clusters must target:
+
+`https://<audit-service>:443/audit-webhook/<cluster-id>`
+
+The bare path `/audit-webhook` is rejected. Use a non-empty cluster ID segment.
 
 ## Custom Resource Definitions (CRDs)
 

@@ -27,6 +27,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
@@ -45,6 +46,12 @@ import (
 const (
 	// DefaultAuditDumpDir is the default directory for audit event dumps.
 	DefaultAuditDumpDir = "/tmp/audit-events"
+	// DefaultAuditMaxRequestBodyBytes limits incoming audit payload size.
+	DefaultAuditMaxRequestBodyBytes = int64(10 * 1024 * 1024)
+	// MaxClusterIDMetricLabelLength constrains label cardinality impact.
+	MaxClusterIDMetricLabelLength = 63
+	// UnknownClusterIDMetricValue is used when cluster ID cannot be labeled safely.
+	UnknownClusterIDMetricValue = "unknown"
 )
 
 // AuditHandlerConfig contains configuration for the audit handler.
@@ -52,6 +59,8 @@ type AuditHandlerConfig struct {
 	// DumpDir is the directory where audit events are written for debugging.
 	// If empty, defaults to DefaultAuditDumpDir.
 	DumpDir string
+	// MaxRequestBodyBytes is the maximum accepted HTTP request body size.
+	MaxRequestBodyBytes int64
 }
 
 // AuditHandler handles incoming audit events and collects metrics.
@@ -64,6 +73,10 @@ type AuditHandler struct {
 // NewAuditHandler creates a new audit handler with the given configuration.
 // If config.DumpDir is empty, file dumping is disabled.
 func NewAuditHandler(config AuditHandlerConfig) (*AuditHandler, error) {
+	if config.MaxRequestBodyBytes <= 0 {
+		config.MaxRequestBodyBytes = DefaultAuditMaxRequestBodyBytes
+	}
+
 	scheme := runtime.NewScheme()
 	if err := audit.AddToScheme(scheme); err != nil {
 		return nil, fmt.Errorf("failed to initialize scheme: %w", err)
@@ -85,50 +98,67 @@ func NewAuditHandler(config AuditHandlerConfig) (*AuditHandler, error) {
 // ServeHTTP implements http.Handler for audit event processing.
 func (h *AuditHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	log := logf.FromContext(ctx)
+	log := logf.Log.WithName("audit-handler")
 
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
+	clusterID, err := extractClusterID(r.URL.Path)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	reqLog := log.WithValues(
+		"clusterID", clusterID,
+		"remoteAddr", r.RemoteAddr,
+		"path", r.URL.Path,
+	)
+
 	eventListV1, err := h.decodeEventList(r)
 	if err != nil {
-		log.Error(err, "Failed to decode audit event list")
+		reqLog.Error(err, "Failed to decode audit event list")
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
 	if len(eventListV1.Items) == 0 {
-		log.Info("Received empty audit event list")
+		reqLog.Info("Received empty audit event list", "eventCount", 0, "processingOutcome", "empty")
 		w.WriteHeader(http.StatusOK)
 		_, err = w.Write([]byte("Empty event list processed"))
 		if err != nil {
-			log.Error(err, "Failed to write response")
+			reqLog.Error(err, "Failed to write response")
 		}
 		return
 	}
 
-	if err := h.processEvents(ctx, eventListV1.Items); err != nil {
-		log.Error(err, "Failed to process audit events")
+	if err := h.processEvents(ctx, clusterID, eventListV1.Items); err != nil {
+		reqLog.Error(err, "Failed to process audit events")
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	reqLog.Info("Processed audit request", "eventCount", len(eventListV1.Items), "processingOutcome", "success")
 
 	w.WriteHeader(http.StatusOK)
 	_, err = w.Write([]byte("Audit event processed"))
 	if err != nil {
-		log.Error(err, "Failed to write response")
+		reqLog.Error(err, "Failed to write response")
 	}
 }
 
 // decodeEventList reads and decodes the audit event list from the request.
 func (h *AuditHandler) decodeEventList(r *http.Request) (*auditv1.EventList, error) {
-	body, err := io.ReadAll(r.Body)
+	limited := io.LimitReader(r.Body, h.config.MaxRequestBodyBytes+1)
+	body, err := io.ReadAll(limited)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read body: %w", err)
 	}
 	defer r.Body.Close()
+	if int64(len(body)) > h.config.MaxRequestBodyBytes {
+		return nil, fmt.Errorf("request body too large: max %d bytes", h.config.MaxRequestBodyBytes)
+	}
 
 	var eventListV1 auditv1.EventList
 	_, _, err = h.deserializer.Decode(body, nil, &eventListV1)
@@ -140,8 +170,9 @@ func (h *AuditHandler) decodeEventList(r *http.Request) (*auditv1.EventList, err
 }
 
 // processEvents processes a list of audit events.
-func (h *AuditHandler) processEvents(ctx context.Context, events []auditv1.Event) error {
-	log := logf.FromContext(ctx)
+func (h *AuditHandler) processEvents(ctx context.Context, clusterID string, events []auditv1.Event) error {
+	log := logf.Log.WithName("audit-handler")
+	clusterIDMetric := sanitizeClusterIDForMetric(clusterID)
 
 	for _, auditEventV1 := range events {
 		var auditEvent audit.Event
@@ -161,6 +192,8 @@ func (h *AuditHandler) processEvents(ctx context.Context, events []auditv1.Event
 		if auditEvent.ImpersonatedUser != nil {
 			log.Info(
 				"Audit event impersonated",
+				"clusterID",
+				clusterID,
 				"authUser",
 				auditEvent.User.Username,
 				"impersonatedUser",
@@ -170,6 +203,7 @@ func (h *AuditHandler) processEvents(ctx context.Context, events []auditv1.Event
 		}
 
 		metrics.AuditEventsReceivedTotal.Add(ctx, 1, metric.WithAttributes(
+			attribute.String("cluster_id", clusterIDMetric),
 			attribute.String("gvr", gvr),
 			attribute.String("action", action),
 			attribute.String("user", user),
@@ -179,6 +213,7 @@ func (h *AuditHandler) processEvents(ctx context.Context, events []auditv1.Event
 		if process {
 			// For now we hardly do a thing
 			log.Info("Processed audit event",
+				"clusterID", clusterID,
 				"gvr", gvr,
 				"action", action,
 				"auditID", auditEvent.AuditID,
@@ -191,6 +226,61 @@ func (h *AuditHandler) processEvents(ctx context.Context, events []auditv1.Event
 	}
 
 	return nil
+}
+
+func extractClusterID(path string) (string, error) {
+	const auditPrefix = "/audit-webhook/"
+	if path == "/audit-webhook" {
+		return "", errors.New("missing cluster ID in path; expected /audit-webhook/{clusterID}")
+	}
+	if !strings.HasPrefix(path, auditPrefix) {
+		return "", errors.New("invalid path; expected /audit-webhook/{clusterID}")
+	}
+
+	clusterID := strings.TrimPrefix(path, auditPrefix)
+	clusterID = strings.TrimSuffix(clusterID, "/")
+	if clusterID == "" {
+		return "", errors.New("missing cluster ID in path; expected /audit-webhook/{clusterID}")
+	}
+	if strings.Contains(clusterID, "/") {
+		return "", errors.New("invalid path; expected single segment cluster ID in /audit-webhook/{clusterID}")
+	}
+
+	return clusterID, nil
+}
+
+func sanitizeClusterIDForMetric(clusterID string) string {
+	clusterID = strings.TrimSpace(clusterID)
+	if clusterID == "" {
+		return UnknownClusterIDMetricValue
+	}
+
+	var builder strings.Builder
+	builder.Grow(len(clusterID))
+	for _, r := range clusterID {
+		if isAllowedClusterIDRune(r) {
+			builder.WriteRune(r)
+			continue
+		}
+		builder.WriteByte('_')
+	}
+
+	sanitized := builder.String()
+	if len(sanitized) > MaxClusterIDMetricLabelLength {
+		sanitized = sanitized[:MaxClusterIDMetricLabelLength]
+	}
+	if sanitized == "" {
+		return UnknownClusterIDMetricValue
+	}
+
+	return sanitized
+}
+
+func isAllowedClusterIDRune(r rune) bool {
+	return (r >= 'a' && r <= 'z') ||
+		(r >= 'A' && r <= 'Z') ||
+		(r >= '0' && r <= '9') ||
+		r == '-' || r == '_' || r == '.'
 }
 
 // extractGVR constructs the Group/Version/Resource string from the audit event

@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -51,37 +52,64 @@ func TestAuditHandler_ServeHTTP(t *testing.T) {
 	tests := []struct {
 		name           string
 		method         string
+		path           string
 		body           string
 		expectedStatus int
 	}{
 		{
 			name:           "valid audit event - create configmap",
 			method:         http.MethodPost,
+			path:           "/audit-webhook/cluster-a",
 			body:           `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[{"kind":"Event","level":"RequestResponse","auditID":"test-id","stage":"ResponseComplete","requestURI":"/api/v1/namespaces/default/configmaps","verb":"create","user":{"username":"test-user"},"objectRef":{"resource":"configmaps","namespace":"default","name":"test-config","apiVersion":"v1"},"responseStatus":{"code":200}}]}`,
 			expectedStatus: http.StatusOK,
 		},
 		{
 			name:           "valid audit event - update deployment",
 			method:         http.MethodPost,
+			path:           "/audit-webhook/cluster-a",
 			body:           `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[{"kind":"Event","level":"RequestResponse","auditID":"test-id","stage":"ResponseComplete","requestURI":"/apis/apps/v1/namespaces/default/deployments/test-deploy","verb":"update","user":{"username":"test-user"},"objectRef":{"resource":"deployments","namespace":"default","name":"test-deploy","apiVersion":"apps/v1"},"responseStatus":{"code":200}}]}`,
 			expectedStatus: http.StatusOK,
 		},
 		{
 			name:           "multiple events in batch",
 			method:         http.MethodPost,
+			path:           "/audit-webhook/cluster-a",
 			body:           `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[{"kind":"Event","auditID":"batch-event-1","verb":"create","user":{"username":"test-user"},"objectRef":{"resource":"configmaps","apiVersion":"v1"}},{"kind":"Event","auditID":"batch-event-2","verb":"update","user":{"username":"test-user"},"objectRef":{"resource":"deployments","apiVersion":"apps/v1"}}]}`,
+			expectedStatus: http.StatusOK,
+		},
+		{
+			name:           "newly seen cluster ID is accepted",
+			method:         http.MethodPost,
+			path:           "/audit-webhook/new-cluster-42",
+			body:           `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[{"kind":"Event","auditID":"new-cluster-test","verb":"create","user":{"username":"test-user"},"objectRef":{"resource":"configmaps","apiVersion":"v1"}}]}`,
 			expectedStatus: http.StatusOK,
 		},
 		{
 			name:           "invalid method",
 			method:         http.MethodGet,
+			path:           "/audit-webhook/cluster-a",
 			body:           `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[{"kind":"Event","auditID":"invalid-method-test","verb":"create","user":{"username":"test-user"},"objectRef":{"resource":"configmaps","apiVersion":"v1"}}]}`,
 			expectedStatus: http.StatusMethodNotAllowed,
 		},
 		{
 			name:           "invalid JSON",
 			method:         http.MethodPost,
+			path:           "/audit-webhook/cluster-a",
 			body:           "invalid json",
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
+			name:           "missing cluster ID path",
+			method:         http.MethodPost,
+			path:           "/audit-webhook",
+			body:           `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[{"kind":"Event","auditID":"missing-cluster","verb":"create","user":{"username":"test-user"},"objectRef":{"resource":"configmaps","apiVersion":"v1"}}]}`,
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
+			name:           "extra path segments are rejected",
+			method:         http.MethodPost,
+			path:           "/audit-webhook/cluster-a/extra",
+			body:           `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[{"kind":"Event","auditID":"missing-cluster","verb":"create","user":{"username":"test-user"},"objectRef":{"resource":"configmaps","apiVersion":"v1"}}]}`,
 			expectedStatus: http.StatusBadRequest,
 		},
 	}
@@ -94,7 +122,7 @@ func TestAuditHandler_ServeHTTP(t *testing.T) {
 			require.NoError(t, err)
 
 			// Create request
-			req := httptest.NewRequest(tt.method, "/audit-webhook", bytes.NewReader([]byte(tt.body)))
+			req := httptest.NewRequest(tt.method, tt.path, bytes.NewReader([]byte(tt.body)))
 			w := httptest.NewRecorder()
 
 			// Call handler
@@ -162,7 +190,7 @@ func TestAuditHandler_InvalidJSON(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	req := httptest.NewRequest(http.MethodPost, "/audit-webhook", bytes.NewReader([]byte("invalid json")))
+	req := httptest.NewRequest(http.MethodPost, "/audit-webhook/cluster-a", bytes.NewReader([]byte("invalid json")))
 	w := httptest.NewRecorder()
 
 	handler.ServeHTTP(w, req)
@@ -201,7 +229,7 @@ func TestAuditHandler_FileDump(t *testing.T) {
 	body, err := json.Marshal(eventList)
 	require.NoError(t, err)
 
-	req := httptest.NewRequest(http.MethodPost, "/audit-webhook", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/audit-webhook/cluster-a", bytes.NewReader(body))
 	w := httptest.NewRecorder()
 
 	// Call handler
@@ -266,7 +294,7 @@ func TestAuditHandler_FileDump(t *testing.T) {
 		eventJSON, err := json.Marshal(eventList)
 		require.NoError(t, err)
 
-		req := httptest.NewRequest(http.MethodPost, "/audit-webhook", bytes.NewReader(eventJSON))
+		req := httptest.NewRequest(http.MethodPost, "/audit-webhook/cluster-a", bytes.NewReader(eventJSON))
 		w := httptest.NewRecorder()
 
 		// Call handler
@@ -372,4 +400,77 @@ func TestAuditHandler_ReadYAMLToJSON(t *testing.T) {
 
 	// Log the JSON for verification
 	t.Logf("Converted JSON: %s", jsonString)
+}
+
+func TestAuditHandler_RejectsOversizedBody(t *testing.T) {
+	handler, err := NewAuditHandler(AuditHandlerConfig{
+		DumpDir:             "/tmp/audit-events",
+		MaxRequestBodyBytes: 32,
+	})
+	require.NoError(t, err)
+
+	oversizedBody := `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[]}`
+	req := httptest.NewRequest(http.MethodPost, "/audit-webhook/cluster-a", bytes.NewReader([]byte(oversizedBody)))
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Body.String(), "request body too large")
+}
+
+func TestExtractClusterID(t *testing.T) {
+	tests := []struct {
+		name        string
+		path        string
+		expectedID  string
+		expectError bool
+	}{
+		{
+			name:       "valid cluster ID",
+			path:       "/audit-webhook/cluster-a",
+			expectedID: "cluster-a",
+		},
+		{
+			name:       "valid cluster ID with trailing slash",
+			path:       "/audit-webhook/cluster-a/",
+			expectedID: "cluster-a",
+		},
+		{
+			name:        "missing cluster ID",
+			path:        "/audit-webhook",
+			expectError: true,
+		},
+		{
+			name:        "extra segment",
+			path:        "/audit-webhook/cluster-a/extra",
+			expectError: true,
+		},
+		{
+			name:        "invalid prefix",
+			path:        "/wrong/cluster-a",
+			expectError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			clusterID, err := extractClusterID(tt.path)
+			if tt.expectError {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.expectedID, clusterID)
+		})
+	}
+}
+
+func TestSanitizeClusterIDForMetric(t *testing.T) {
+	assert.Equal(t, "cluster-a", sanitizeClusterIDForMetric("cluster-a"))
+	assert.Equal(t, "cluster_a", sanitizeClusterIDForMetric("cluster/a"))
+	assert.Equal(t, "unknown", sanitizeClusterIDForMetric("   "))
+
+	longID := strings.Repeat("a", MaxClusterIDMetricLabelLength+5)
+	assert.Len(t, sanitizeClusterIDForMetric(longID), MaxClusterIDMetricLabelLength)
 }

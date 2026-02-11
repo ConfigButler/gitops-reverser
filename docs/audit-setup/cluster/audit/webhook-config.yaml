@@ -6,7 +6,7 @@ clusters:
 - name: audit-webhook
   cluster:
     # Use the ClusterIP, but with HTTPS
-    server: https://10.43.200.200:443/audit-webhook
+    server: https://10.43.200.200:443/audit-webhook/my-cluster
     # We could also configure an network wide ingress with it's own cert, but it's better if it has a small surface
     insecure-skip-tls-verify: true 
     # base64content = kubectl get secret -n <namespace> <cert-name> -o jsonpath='{.data.ca\.crt}'

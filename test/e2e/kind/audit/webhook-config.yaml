@@ -8,8 +8,8 @@ clusters:
   cluster:
     # IMPORTANT: Use fixed ClusterIP instead of DNS name
     # kube-apiserver starts before CoreDNS, so DNS resolution fails at startup
-    # The ClusterIP is set in test/e2e/manifests/webhook-service-fixed-ip.yaml
-    server: https://10.96.200.200:443/audit-webhook
+    # The ClusterIP is set in config/default/audit_webhook_service_fixed_ip_patch.yaml
+    server: https://10.96.200.200:443/audit-webhook/kind-e2e
     # Skip TLS verification for testing (webhook uses self-signed cert from cert-manager)
     insecure-skip-tls-verify: true
 contexts:

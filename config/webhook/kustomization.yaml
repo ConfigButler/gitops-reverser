@@ -1,6 +1,7 @@
 resources:
 - manifests.yaml
 - service.yaml
+- audit-service.yaml
 
 configurations:
 - kustomizeconfig.yaml

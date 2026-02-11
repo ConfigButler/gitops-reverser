@@ -263,6 +263,40 @@ var _ = Describe("Manager", Ordered, func() {
 			Eventually(verifyWebhookService, 30*time.Second).Should(Succeed())
 		})
 
+		It("should expose both admission and audit leader-only services", func() {
+			By("verifying admission webhook service exists")
+			cmd := exec.Command("kubectl", "get", "svc", "gitops-reverser-webhook-service", "-n", namespace)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Admission webhook service should exist")
+
+			By("verifying audit webhook service exists")
+			cmd = exec.Command("kubectl", "get", "svc", "gitops-reverser-audit-webhook-service", "-n", namespace)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Audit webhook service should exist")
+
+			By("verifying audit service routes only to leader pod")
+			Eventually(func(g Gomega) {
+				endpointsCmd := exec.Command("kubectl", "get", "endpoints",
+					"gitops-reverser-audit-webhook-service", "-n", namespace,
+					"-o", "jsonpath={.subsets[*].addresses[*].targetRef.name}")
+				output, endpointsErr := utils.Run(endpointsCmd)
+				g.Expect(endpointsErr).NotTo(HaveOccurred(), "Failed to get audit service endpoints")
+
+				lines := utils.GetNonEmptyLines(output)
+				var podNames []string
+				for _, line := range lines {
+					if !strings.HasPrefix(line, "Warning:") &&
+						!strings.Contains(line, "deprecated") &&
+						strings.Contains(line, "controller-manager") {
+						podNames = append(podNames, line)
+					}
+				}
+
+				g.Expect(podNames).To(HaveLen(1), "audit service should route to exactly 1 pod (leader)")
+				g.Expect(podNames[0]).To(Equal(controllerPodName), "audit service should route to leader pod")
+			}, 30*time.Second).Should(Succeed())
+		})
+
 		It("should have webhook registration configured", func() {
 			By("verifying webhook registration for event handler")
 			verifyWebhook := func(g Gomega) {
@@ -369,6 +403,11 @@ var _ = Describe("Manager", Ordered, func() {
 			baselineAuditEvents, err := queryPrometheus("sum(gitopsreverser_audit_events_received_total) or vector(0)")
 			Expect(err).NotTo(HaveOccurred())
 			fmt.Printf("📊 Baseline audit events: %.0f\n", baselineAuditEvents)
+			baselineClusterAuditEvents, err := queryPrometheus(
+				"sum(gitopsreverser_audit_events_received_total{cluster_id='kind-e2e'}) or vector(0)",
+			)
+			Expect(err).NotTo(HaveOccurred())
+			fmt.Printf("📊 Baseline kind-e2e audit events: %.0f\n", baselineClusterAuditEvents)
 
 			By("creating a ConfigMap to trigger audit events")
 			cmd := exec.Command("kubectl", "create", "configmap", "audit-test-cm",
@@ -376,11 +415,22 @@ var _ = Describe("Manager", Ordered, func() {
 				"--from-literal=test=audit")
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "ConfigMap creation should succeed")
+			cmd = exec.Command("kubectl", "patch", "configmap", "audit-test-cm",
+				"--namespace", namespace,
+				"--type=merge",
+				"--patch", `{"data":{"test":"audit-updated"}}`)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "ConfigMap update should succeed")
 
 			By("waiting for audit event metric to increment")
-			waitForMetric("sum(gitopsreverser_audit_events_received_total) or vector(0)",
+			waitForMetricWithTimeout("sum(gitopsreverser_audit_events_received_total) or vector(0)",
 				func(v float64) bool { return v > baselineAuditEvents },
-				"audit events should increment")
+				"audit events should increment", 2*time.Minute)
+			waitForMetricWithTimeout(
+				"sum(gitopsreverser_audit_events_received_total{cluster_id='kind-e2e'}) or vector(0)",
+				func(v float64) bool { return v > baselineClusterAuditEvents },
+				"audit events should increment for cluster_id=kind-e2e", 2*time.Minute,
+			)
 
 			By("verifying audit events were received")
 			currentAuditEvents, err := queryPrometheus("sum(gitopsreverser_audit_events_received_total) or vector(0)")
