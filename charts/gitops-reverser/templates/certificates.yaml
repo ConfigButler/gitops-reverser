@@ -21,8 +21,8 @@ metadata:
     {{- include "gitops-reverser.labels" . | nindent 4 }}
 spec:
   dnsNames:
-    - {{ include "gitops-reverser.fullname" . }}-webhook.{{ .Release.Namespace }}.svc
-    - {{ include "gitops-reverser.fullname" . }}-webhook.{{ .Release.Namespace }}.svc.cluster.local
+    - {{ include "gitops-reverser.fullname" . }}.{{ .Release.Namespace }}.svc
+    - {{ include "gitops-reverser.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local
   issuerRef:
     kind: {{ .Values.certificates.certManager.issuer.kind }}
     name: {{ .Values.certificates.certManager.issuer.name }}
@@ -33,7 +33,7 @@ spec:
     - server auth
   privateKey:
     rotationPolicy: Always
-{{- if .Values.auditIngress.enabled }}
+{{- if and .Values.servers.audit.enabled .Values.servers.audit.tls.enabled }}
 ---
 apiVersion: cert-manager.io/v1
 kind: Certificate
@@ -43,17 +43,17 @@ metadata:
   labels:
     {{- include "gitops-reverser.labels" . | nindent 4 }}
 spec:
-{{- if .Values.auditIngress.clusterIP }}
+{{- if .Values.service.clusterIP }}
   ipAddresses:
-    - {{ .Values.auditIngress.clusterIP }}
+    - {{ .Values.service.clusterIP }}
 {{- end }}
   dnsNames:
-    - {{ include "gitops-reverser.fullname" . }}-audit.{{ .Release.Namespace }}.svc
-    - {{ include "gitops-reverser.fullname" . }}-audit.{{ .Release.Namespace }}.svc.cluster.local
+    - {{ include "gitops-reverser.fullname" . }}.{{ .Release.Namespace }}.svc
+    - {{ include "gitops-reverser.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local
   issuerRef:
     kind: {{ .Values.certificates.certManager.issuer.kind }}
     name: {{ .Values.certificates.certManager.issuer.name }}
-  secretName: {{ .Values.auditIngress.tls.secretName | default (printf "%s-audit-server-tls-cert" (include "gitops-reverser.fullname" .)) }}
+  secretName: {{ .Values.servers.audit.tls.secretName | default (printf "%s-audit-server-tls-cert" (include "gitops-reverser.fullname" .)) }}
   usages:
     - digital signature
     - key encipherment

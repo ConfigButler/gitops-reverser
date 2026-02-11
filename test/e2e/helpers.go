@@ -44,8 +44,8 @@ import (
 const namespace = "sut"
 const metricWaitDefaultTimeout = 30 * time.Second
 
-// metricsServiceName is the name of the metrics service of the project.
-const metricsServiceName = "gitops-reverser-controller-manager-metrics-service"
+// controllerServiceName is the single Service name used by the controller.
+const controllerServiceName = "gitops-reverser-service"
 
 // promAPI is the Prometheus API client instance
 var promAPI v1.API //nolint:gochecknoglobals // Shared across test functions

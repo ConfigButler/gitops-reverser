@@ -22,31 +22,10 @@
     name: webhook-server
     protocol: TCP
 
-# Add the dedicated audit ingress server arguments.
-- op: add
-  path: /spec/template/spec/containers/0/args/-
-  value: --audit-ingress-enabled=true
-- op: add
-  path: /spec/template/spec/containers/0/args/-
-  value: --audit-listen-address=0.0.0.0
-- op: add
-  path: /spec/template/spec/containers/0/args/-
-  value: --audit-port=9444
+# Add the dedicated audit ingress certificate path.
 - op: add
   path: /spec/template/spec/containers/0/args/-
   value: --audit-cert-path=/tmp/k8s-audit-webhook-server/serving-certs
-- op: add
-  path: /spec/template/spec/containers/0/args/-
-  value: --audit-max-request-body-bytes=10485760
-- op: add
-  path: /spec/template/spec/containers/0/args/-
-  value: --audit-read-timeout=15s
-- op: add
-  path: /spec/template/spec/containers/0/args/-
-  value: --audit-write-timeout=30s
-- op: add
-  path: /spec/template/spec/containers/0/args/-
-  value: --audit-idle-timeout=60s
 
 # Add the volumeMount for dedicated audit webhook certificates.
 - op: add

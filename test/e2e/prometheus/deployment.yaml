@@ -17,39 +17,15 @@ data:
       scrape_timeout: 4s
     
     scrape_configs:
-      # Scrape gitops-reverser metrics from 'sut' namespace
+      # Scrape gitops-reverser metrics from the single controller Service in 'sut'
       - job_name: 'gitops-reverser-metrics'
         scheme: https
         tls_config:
           insecure_skip_verify: true  # Self-signed certs in e2e
         bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
-        
-        kubernetes_sd_configs:
-          - role: endpoints
-            namespaces:
-              names:
-                - sut  # Target test namespace
-        
-        relabel_configs:
-          # Keep only the metrics service
-          - source_labels: [__meta_kubernetes_service_name]
-            action: keep
-            regex: gitops-reverser-controller-manager-metrics-service
-          
-          # Keep only HTTPS port
-          - source_labels: [__meta_kubernetes_endpoint_port_name]
-            action: keep
-            regex: https
-          
-          # Add pod name label for per-pod metrics
-          - source_labels: [__meta_kubernetes_pod_name]
-            target_label: pod
-            action: replace
-          
-          # Add role label from pod labels (leader/follower)
-          - source_labels: [__meta_kubernetes_pod_label_role]
-            target_label: role
-            action: replace
+        static_configs:
+          - targets:
+              - gitops-reverser-service.sut.svc.cluster.local:8443
 ---
 apiVersion: apps/v1
 kind: Deployment

@@ -81,16 +81,11 @@ The chart deploys 1 replica by default:
 │         Kubernetes API Server           │
 └──────────────┬──────────────────────────┘
                │
-               │ webhook requests
+               │ webhook + audit + metrics requests
                ▼
 ┌──────────────────────────────────────────┐
-│  gitops-reverser-webhook (Service)   │
-│  Admission webhook: /process-validating-webhook │
-└──────────────┬───────────────────────────┘
-               │
-┌──────────────────────────────────────────┐
-│    gitops-reverser-audit (Service)      │
-│  Audit webhook: /audit-webhook/{clusterID} │
+│        gitops-reverser (Service)         │
+│  Ports: admission(443), audit(9444), metrics(8080) |
 └──────────────┬───────────────────────────┘
                │
                ▼
@@ -103,7 +98,7 @@ The chart deploys 1 replica by default:
 
 **Key Features:**
 - **Single-pod operation**: Minimal moving parts while HA work is deferred
-- **Dedicated audit service**: Separates audit ingress from admission webhook traffic
+- **Single Service topology**: Admission, audit, and metrics on one Service
 - **Pod anti-affinity**: Pods spread across different nodes
 - **Pod disruption budget**: Ensures at least 1 pod available during maintenance
 
@@ -184,13 +179,21 @@ webhook:
 | `replicaCount` | Number of controller replicas | `1` |
 | `image.repository` | Container image repository | `ghcr.io/configbutler/gitops-reverser` |
 | `webhook.validating.failurePolicy` | Webhook failure policy (Ignore/Fail) | `Ignore` |
-| `auditIngress.enabled` | Enable dedicated audit HTTPS ingress server | `true` |
-| `auditIngress.port` | Dedicated audit container port | `9444` |
-| `auditIngress.maxRequestBodyBytes` | Max accepted audit request size | `10485760` |
-| `auditIngress.timeouts.read` | Audit server read timeout | `15s` |
-| `auditIngress.timeouts.write` | Audit server write timeout | `30s` |
-| `auditIngress.timeouts.idle` | Audit server idle timeout | `60s` |
-| `auditIngress.tls.secretName` | Secret name for audit TLS cert/key | `<release>-audit-server-tls-cert` |
+| `servers.admission.tls.enabled` | Serve admission webhook with TLS (disable only for local/testing) | `true` |
+| `servers.audit.enabled` | Enable dedicated audit ingress listener | `true` |
+| `servers.audit.port` | Audit container port | `9444` |
+| `servers.audit.tls.enabled` | Serve audit ingress with TLS | `true` |
+| `servers.audit.maxRequestBodyBytes` | Max accepted audit request size | `10485760` |
+| `servers.audit.timeouts.read` | Audit server read timeout | `15s` |
+| `servers.audit.timeouts.write` | Audit server write timeout | `30s` |
+| `servers.audit.timeouts.idle` | Audit server idle timeout | `60s` |
+| `servers.audit.tls.secretName` | Secret name for audit TLS cert/key | `<release>-audit-server-tls-cert` |
+| `servers.metrics.bindAddress` | Metrics listener bind address | `:8080` |
+| `servers.metrics.tls.enabled` | Serve metrics with TLS | `true` |
+| `service.clusterIP` | Optional fixed ClusterIP for single controller Service | `""` |
+| `service.ports.admission` | Service port for admission webhook | `443` |
+| `service.ports.audit` | Service port for audit ingress | `9444` |
+| `service.ports.metrics` | Service port for metrics | `8080` |
 | `certificates.certManager.enabled` | Use cert-manager for certificates | `true` |
 | `podDisruptionBudget.enabled` | Enable PodDisruptionBudget | `true` |
 | `resources.requests.cpu` | CPU request | `10m` |
@@ -204,7 +207,7 @@ See [`values.yaml`](values.yaml) for complete configuration options.
 
 Source clusters must target:
 
-`https://<audit-service>:443/audit-webhook/<cluster-id>`
+`https://<service>:9444/audit-webhook/<cluster-id>`
 
 The bare path `/audit-webhook` is rejected. Use a non-empty cluster ID segment.
 
@@ -258,8 +261,8 @@ kubectl logs -n gitops-reverser-system -l app.kubernetes.io/name=gitops-reverser
 ### Access Metrics
 
 ```bash
-kubectl port-forward -n gitops-reverser-system svc/gitops-reverser-metrics-service 8080:8080
-curl http://localhost:8080/metrics
+kubectl port-forward -n gitops-reverser-system svc/gitops-reverser 8080:8080
+curl -k https://localhost:8080/metrics
 ```
 
 ## Upgrading
@@ -285,7 +288,7 @@ helm upgrade gitops-reverser \
 
 If upgrading from earlier chart versions:
 
-- Default replicas changed from 1 to 2 (adjust `replicaCount` if needed)
+- Single-replica is the default during the current simplified topology phase
 - Leader election now enabled by default (required for HA)
 - Health probe port changed to 8081
 - Certificate secret names are auto-generated
@@ -381,7 +384,7 @@ webhook:
 Create certificate secret manually:
 
 ```bash
-kubectl create secret tls webhook-server-cert \
+kubectl create secret tls gitops-reverser-webhook-server-tls-cert \
   --cert=path/to/tls.crt \
   --key=path/to/tls.key \
   -n gitops-reverser-system

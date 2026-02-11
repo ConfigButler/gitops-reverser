@@ -203,67 +203,70 @@ var _ = Describe("Manager", Ordered, func() {
 		})
 
 		It("should route webhook traffic to the running controller pod", func() {
-			By("verifying webhook service selects the running controller pod")
+			By("verifying controller service selects the running controller pod")
 			verifyWebhookService := func(g Gomega) {
-				// Get webhook service endpoints
+				// Get controller service endpoints
 				cmd := exec.Command("kubectl", "get", "endpoints",
-					"gitops-reverser-webhook-service", "-n", namespace,
+					controllerServiceName, "-n", namespace,
 					"-o", "jsonpath={.subsets[*].addresses[*].targetRef.name}")
 				output, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred(), "Failed to get webhook service endpoints")
+				g.Expect(err).NotTo(HaveOccurred(), "Failed to get controller service endpoints")
 
 				// Filter out kubectl deprecation warnings from output
 				lines := utils.GetNonEmptyLines(output)
-				var podNames []string
+				podSet := map[string]struct{}{}
 				for _, line := range lines {
 					// Skip warning lines
 					if !strings.HasPrefix(line, "Warning:") &&
 						!strings.Contains(line, "deprecated") &&
 						strings.Contains(line, "controller-manager") {
-						podNames = append(podNames, line)
+						podSet[line] = struct{}{}
 					}
+				}
+				var podNames []string
+				for podName := range podSet {
+					podNames = append(podNames, podName)
 				}
 
 				// Should only have one endpoint in single-pod mode.
-				g.Expect(podNames).To(HaveLen(1), "webhook service should route to exactly 1 pod")
-				g.Expect(podNames[0]).To(Equal(controllerPodName), "webhook should route to controller pod")
+				g.Expect(podNames).To(HaveLen(1), "controller service should route to exactly 1 pod")
+				g.Expect(podNames[0]).To(Equal(controllerPodName), "controller service should route to controller pod")
 
-				By(fmt.Sprintf("✅ Webhook service correctly routes to pod: %s", controllerPodName))
+				By(fmt.Sprintf("✅ Controller service correctly routes to pod: %s", controllerPodName))
 			}
 			Eventually(verifyWebhookService, 30*time.Second).Should(Succeed())
 		})
 
-		It("should expose both admission and audit services", func() {
-			By("verifying admission webhook service exists")
-			cmd := exec.Command("kubectl", "get", "svc", "gitops-reverser-webhook-service", "-n", namespace)
+		It("should expose admission and audit ports on one controller service", func() {
+			By("verifying controller service exists")
+			cmd := exec.Command("kubectl", "get", "svc", controllerServiceName, "-n", namespace)
 			_, err := utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred(), "Admission webhook service should exist")
+			Expect(err).NotTo(HaveOccurred(), "Controller service should exist")
 
-			By("verifying audit webhook service exists")
-			cmd = exec.Command("kubectl", "get", "svc", "gitops-reverser-audit-webhook-service", "-n", namespace)
-			_, err = utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred(), "Audit webhook service should exist")
-
-			By("verifying audit service routes to the controller pod")
+			By("verifying controller service routes to the controller pod")
 			Eventually(func(g Gomega) {
 				endpointsCmd := exec.Command("kubectl", "get", "endpoints",
-					"gitops-reverser-audit-webhook-service", "-n", namespace,
+					controllerServiceName, "-n", namespace,
 					"-o", "jsonpath={.subsets[*].addresses[*].targetRef.name}")
 				output, endpointsErr := utils.Run(endpointsCmd)
-				g.Expect(endpointsErr).NotTo(HaveOccurred(), "Failed to get audit service endpoints")
+				g.Expect(endpointsErr).NotTo(HaveOccurred(), "Failed to get controller service endpoints")
 
 				lines := utils.GetNonEmptyLines(output)
-				var podNames []string
+				podSet := map[string]struct{}{}
 				for _, line := range lines {
 					if !strings.HasPrefix(line, "Warning:") &&
 						!strings.Contains(line, "deprecated") &&
 						strings.Contains(line, "controller-manager") {
-						podNames = append(podNames, line)
+						podSet[line] = struct{}{}
 					}
 				}
+				var podNames []string
+				for podName := range podSet {
+					podNames = append(podNames, podName)
+				}
 
-				g.Expect(podNames).To(HaveLen(1), "audit service should route to exactly 1 pod")
-				g.Expect(podNames[0]).To(Equal(controllerPodName), "audit service should route to controller pod")
+				g.Expect(podNames).To(HaveLen(1), "controller service should route to exactly 1 pod")
+				g.Expect(podNames[0]).To(Equal(controllerPodName), "controller service should route to controller pod")
 			}, 30*time.Second).Should(Succeed())
 		})
 
@@ -282,14 +285,14 @@ var _ = Describe("Manager", Ordered, func() {
 		})
 
 		It("should ensure the metrics endpoint is serving metrics", func() {
-			By("validating that the metrics service is available")
-			cmd := exec.Command("kubectl", "get", "service", metricsServiceName, "-n", namespace)
+			By("validating that the controller service is available for metrics")
+			cmd := exec.Command("kubectl", "get", "service", controllerServiceName, "-n", namespace)
 			_, err := utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred(), "Metrics service should exist")
+			Expect(err).NotTo(HaveOccurred(), "Controller service should exist")
 
 			By("waiting for the metrics endpoint to be ready")
 			verifyMetricsEndpointReady := func(g Gomega) {
-				cmd := exec.Command("kubectl", "get", "endpoints", metricsServiceName, "-n", namespace)
+				cmd := exec.Command("kubectl", "get", "endpoints", controllerServiceName, "-n", namespace)
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(ContainSubstring("8443"), "Metrics endpoint is not ready")

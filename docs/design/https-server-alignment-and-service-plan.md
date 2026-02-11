@@ -20,6 +20,7 @@ Run with **a single pod** for the current phase.
 - [ ] HA-specific behavior is disabled/ignored by default.
 - [ ] Leader-only Service has been removed from active topology.
 - [ ] HA reintroduction is explicitly deferred to the planned rewrite.
+- [ ] Service exposure is consolidated to a single Service named only `{{ include "gitops-reverser.fullname" . }}`.
 
 ## Current Constraints
 
@@ -46,6 +47,51 @@ Use **one Service with three ports**:
 
 This minimizes moving parts for the interim single-pod phase.
 
+### Service naming decision
+
+Use a single Service with the base release fullname only:
+
+- target name: `{{ include "gitops-reverser.fullname" . }}`
+- avoid suffixes such as `-webhook`, `-audit`, `-metrics` for the primary Service
+- keep distinct named ports for routing/monitoring clarity
+
+## Single Service Necessity Analysis
+
+### Is a single Service still needed?
+
+Yes for this phase, and there is no strong technical reason to keep separate Services right now.
+
+### Why this still makes sense now
+
+- Current services all select the same controller Pod labels, so they do not provide workload isolation.
+- Single-replica mode removes the previous leader-vs-all selector split that justified separate routing.
+- Operationally, one stable Service name simplifies client configuration and day-2 debugging.
+- The design already requires one endpoint surface with different ports, which matches Service named ports well.
+
+### What currently depends on split service names (implementation impact)
+
+- `charts/gitops-reverser/templates/validating-webhook.yaml` references the `-webhook` service name.
+- `charts/gitops-reverser/templates/certificates.yaml` SANs include `-webhook` and `-audit` DNS names.
+- `charts/gitops-reverser/templates/servicemonitor.yaml` and e2e checks currently expect a dedicated metrics service identity.
+- `test/e2e/e2e_test.go` asserts `gitops-reverser-webhook-service` and `gitops-reverser-audit-webhook-service`.
+
+### Conclusion
+
+- Keep the plan to converge to **one Service**.
+- Use one canonical Service name only (release fullname).
+- Keep multiple ports; do not keep multiple Services unless HA/service-isolation requirements return.
+
+## No-Compatibility Decision
+
+For this refactor, use a direct switch without migration compatibility measures.
+
+Rationale:
+
+- The old settings layout is already causing conceptual drift (`webhook.server`, `auditIngress`, `controllerManager.metrics`).
+- A compatibility layer would preserve that drift and increase implementation/testing complexity.
+- The project is intentionally converging on one topology and one config model for this phase.
+- A hard cut keeps behavior deterministic and easier to reason about during rapid iteration.
+
 ## Alignment Plan
 
 ## 1. Unify server config model
@@ -55,7 +101,9 @@ This minimizes moving parts for the interim single-pod phase.
   - cert path/name/key
   - read/write/idle timeout
   - TLS enabled/insecure mode guard
+- Define baseline defaults in source code, not in Helm values.
 - Map flags into this model for all three servers.
+- Keep one parser/defaulting path for all listeners (no per-listener parsing forks).
 
 ## 2. Unify TLS/cert watcher bootstrap
 
@@ -65,20 +113,19 @@ This minimizes moving parts for the interim single-pod phase.
   - wires `GetCertificate`
   - applies shared TLS defaults (minimum version + HTTP/2 policy)
 - Use same helper for metrics, admission, and audit.
+- Keep TLS-off behavior in the same helper path (no duplicate conditional logic per server).
 
 ## 3. Unify server lifecycle wiring
 
 - Keep all servers manager-managed.
 - Reuse one runnable pattern for startup/shutdown + timeout.
 - Standardize startup/shutdown logs and error paths.
+- Build servers through one reusable constructor/builder function that accepts a typed server config.
 
 ## 4. Align Helm values and args
 
-- Keep existing keys for compatibility, but normalize structure:
-  - `webhook.server`
-  - `auditIngress`
-  - `controllerManager.metrics`
-- Ensure timeout and cert naming is consistent across all three blocks.
+- Replace legacy split keys with one canonical settings structure.
+- Ensure timeout and cert naming is consistent across all three listeners.
 
 ## 5. Simplify deployment model now
 
@@ -89,7 +136,8 @@ This minimizes moving parts for the interim single-pod phase.
 ## 6. Service simplification (single service)
 
 - Merge admission, audit, and metrics onto one Service with three target ports.
-- Update cert SANs and docs accordingly.
+- Name the Service as release fullname only (no role suffix).
+- Update validating webhook client config, cert SANs, ServiceMonitor selector/port, and docs accordingly.
 
 ## 7. Tests and rollout checks
 
@@ -118,6 +166,7 @@ The chart should converge on:
 - One shared server settings shape reused by all three listeners.
 - Per-surface overrides only where behavior is genuinely different.
 - Per-server TLS can be enabled/disabled independently.
+- Defaults are centralized in source code; Helm values provide explicit overrides only.
 
 ### Proposed Helm Values Shape
 
@@ -127,6 +176,7 @@ replicaCount: 1
 network:
   service:
     enabled: true
+    name: "" # defaults to {{ include "gitops-reverser.fullname" . }}
     type: ClusterIP
     ports:
       admission: 443
@@ -134,23 +184,11 @@ network:
       metrics: 8443
 
 servers:
-  defaults:
-    enableHTTP2: false
-    timeouts:
-      read: 15s
-      write: 30s
-      idle: 60s
-    tls:
-      enabled: true
-      certPath: ""
-      certName: tls.crt
-      certKey: tls.key
-      minVersion: VersionTLS12
-
   admission:
     enabled: true
     bindAddress: :9443
-    timeouts: {}   # optional override
+    enableHTTP2: false # optional override
+    timeouts: {}       # optional override
     tls:
       enabled: true   # may be set false for local/dev scenarios
       secretName: ""  # optional if cert-manager manages mount/secret
@@ -159,6 +197,7 @@ servers:
     enabled: true
     bindAddress: :9444
     maxRequestBodyBytes: 10485760
+    enableHTTP2: false
     timeouts: {}
     tls:
       enabled: true
@@ -167,37 +206,35 @@ servers:
   metrics:
     enabled: true
     bindAddress: :8080
-    secure: true
+    enableHTTP2: false
     timeouts: {}
     tls:
       enabled: true
       secretName: ""
 ```
-
-If `servers.<name>.tls.enabled` is omitted, inherit from `servers.defaults.tls.enabled`.
+If `servers.<name>.tls.enabled` (or timeout/http2 overrides) is omitted, source-code defaults apply.
 
 ### Settings Responsibilities
 
 | Area | Purpose | Notes |
 |---|---|---|
-| `servers.defaults` | Shared defaults for all HTTPS listeners | Single source of truth for TLS + timeout defaults, including TLS default on/off |
 | `servers.admission` | Admission-specific listener settings | Keeps webhook behavior settings separate under `webhook.validating` |
 | `servers.audit` | Audit ingress listener settings | Retains audit payload controls like `maxRequestBodyBytes` |
 | `servers.metrics` | Metrics listener settings | Supports secure metrics endpoint consistently, but can be intentionally downgraded per environment |
-| `network.service` | Cluster Service exposure | Owns externally reachable ports only, not container bind ports |
+| `network.service` | Cluster Service exposure | Owns service name and externally reachable ports (not container bind ports) |
+| Source code defaults | Runtime baseline behavior | Holds canonical defaults for timeouts, TLS baseline, and HTTP/2 policy |
 
-### Compatibility Mapping (Current -> Target)
+### Key Mapping (Current -> Target, No Compatibility Layer)
 
-| Current key | Target key | Migration intent |
-|---|---|---|
-| `webhook.server.port` | `servers.admission.bindAddress` | Keep old key as compatibility alias initially |
-| `webhook.server.certPath/certName/certKey` | `servers.admission.tls.*` (or inherited defaults) | Prefer inherited defaults unless explicitly overridden |
-| `auditIngress.port` | `servers.audit.bindAddress` | Preserve behavior, normalize naming |
-| `auditIngress.tls.*` | `servers.audit.tls.*` | Direct move |
-| `auditIngress.timeouts.*` | `servers.audit.timeouts.*` | Direct move |
-| `controllerManager.metrics.bindAddress` | `servers.metrics.bindAddress` | Unify metrics with same server model |
-| `controllerManager.enableHTTP2` | `servers.defaults.enableHTTP2` | Single flag for all listeners in this phase |
-| `controllerManager.metrics.secure` (if present) | `servers.metrics.tls.enabled` | Keep compatibility alias during migration |
+| Current key | Target key |
+|---|---|
+| `webhook.server.port` | `servers.admission.bindAddress` |
+| `webhook.server.certPath/certName/certKey` | `servers.admission.tls.*` (or source-code defaults) |
+| `auditIngress.port` | `servers.audit.bindAddress` |
+| `auditIngress.tls.*` | `servers.audit.tls.*` |
+| `auditIngress.timeouts.*` | `servers.audit.timeouts.*` |
+| `controllerManager.metrics.bindAddress` | `servers.metrics.bindAddress` |
+| `controllerManager.enableHTTP2` | `servers.<name>.enableHTTP2` or source-code default |
 
 ### CLI Args/Runtime Mapping Direction
 
@@ -206,6 +243,7 @@ Desired runtime model:
 - Parse Helm values into one internal server settings struct per surface.
 - Apply shared defaulting/validation once.
 - Generate listener-specific runtime config from the same code path.
+- Construct `http.Server` instances via shared functions (for example `buildHTTPServer`, `buildTLSConfig`, `buildServerRunnable`) instead of per-listener copies.
 
 Resulting behavior goals:
 
@@ -213,6 +251,7 @@ Resulting behavior goals:
 - Same timeout parsing and error messages for all listeners.
 - Same startup/shutdown lifecycle pattern for all listeners.
 - If TLS is disabled for a listener, skip cert watcher/bootstrap for that listener and run plain HTTP on its bind address.
+- No triple repetition of server setup code for admission/audit/metrics.
 
 ### TLS Disable Guardrails
 
@@ -223,7 +262,7 @@ Resulting behavior goals:
 
 ### Rollout Notes For Settings Refactor
 
-- Keep legacy keys supported during transition.
-- Emit clear deprecation warnings when legacy keys are used.
-- Switch docs/examples to target keys first; keep compatibility notes adjacent.
-- Remove deprecated keys only after at least one stable release carrying warnings.
+- Use a clean-cut switch to the new settings model.
+- Do not ship compatibility aliases or legacy key fallbacks.
+- Update chart docs/examples and templates in the same change set.
+- Fail fast on invalid/unknown legacy settings to avoid ambiguous runtime behavior.

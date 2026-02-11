@@ -116,7 +116,7 @@ The audit webhook tracks metrics with labels:
 
 2. **Verify audit webhook service exists**:
    ```bash
-   kubectl get svc -n gitops-reverser-system gitops-reverser-audit-webhook-service
+   kubectl get svc -n gitops-reverser-system gitops-reverser-service
    ```
 
 3. **Check if kube-apiserver can reach the webhook**:

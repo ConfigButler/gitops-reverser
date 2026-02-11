@@ -93,7 +93,9 @@ func main() {
 	// Log metrics configuration for debugging
 	setupLog.Info("Metrics configuration",
 		"metrics-bind-address", cfg.metricsAddr,
-		"metrics-secure", cfg.secureMetrics)
+		"metrics-insecure", cfg.metricsInsecure,
+		"webhook-insecure", cfg.webhookInsecure,
+		"audit-insecure", cfg.auditInsecure)
 
 	// Initialize metrics
 	setupCtx := ctrl.SetupSignalHandler()
@@ -105,10 +107,11 @@ func main() {
 
 	// Servers and cert watchers
 	webhookServer, webhookCertWatcher := initWebhookServer(
+		!cfg.webhookInsecure,
 		cfg.webhookCertPath, cfg.webhookCertName, cfg.webhookCertKey, tlsOpts,
 	)
 	metricsServerOptions, metricsCertWatcher := buildMetricsServerOptions(
-		cfg.metricsAddr, cfg.secureMetrics,
+		cfg.metricsAddr, !cfg.metricsInsecure,
 		cfg.metricsCertPath, cfg.metricsCertName, cfg.metricsCertKey,
 		tlsOpts,
 	)
@@ -207,24 +210,21 @@ func main() {
 	fatalIfErr(err, "unable to create audit handler")
 
 	var auditCertWatcher *certwatcher.CertWatcher
-	if cfg.auditIngressEnabled {
-		auditRunnable, watcher, initErr := initAuditServerRunnable(cfg, tlsOpts, auditHandler)
-		fatalIfErr(initErr, "unable to initialize audit ingress server")
-		auditCertWatcher = watcher
-		fatalIfErr(mgr.Add(auditRunnable), "unable to add audit ingress server runnable")
 
-		if cfg.auditDumpPath != "" {
-			setupLog.Info("Audit ingress server configured with file dumping",
-				"http-path", "/audit-webhook/{clusterID}",
-				"dump-path", cfg.auditDumpPath,
-				"address", buildAuditServerAddress(cfg.auditListenAddress, cfg.auditPort))
-		} else {
-			setupLog.Info("Audit ingress server configured",
-				"http-path", "/audit-webhook/{clusterID}",
-				"address", buildAuditServerAddress(cfg.auditListenAddress, cfg.auditPort))
-		}
+	auditRunnable, watcher, initErr := initAuditServerRunnable(cfg, tlsOpts, auditHandler)
+	fatalIfErr(initErr, "unable to initialize audit ingress server")
+	auditCertWatcher = watcher
+	fatalIfErr(mgr.Add(auditRunnable), "unable to add audit ingress server runnable")
+
+	if cfg.auditDumpPath != "" {
+		setupLog.Info("Audit ingress server configured with file dumping",
+			"http-path", "/audit-webhook/{clusterID}",
+			"dump-path", cfg.auditDumpPath,
+			"address", buildAuditServerAddress(cfg.auditListenAddress, cfg.auditPort))
 	} else {
-		setupLog.Info("Audit ingress server disabled by flag", "flag", "--audit-ingress-enabled=false")
+		setupLog.Info("Audit ingress server configured",
+			"http-path", "/audit-webhook/{clusterID}",
+			"address", buildAuditServerAddress(cfg.auditListenAddress, cfg.auditPort))
 	}
 
 	// NOTE: Old git.Worker has been replaced by WorkerManager + BranchWorker architecture
@@ -275,15 +275,16 @@ type appConfig struct {
 	webhookCertName          string
 	webhookCertKey           string
 	probeAddr                string
-	secureMetrics            bool
+	metricsInsecure          bool
+	webhookInsecure          bool
 	enableHTTP2              bool
 	auditDumpPath            string
-	auditIngressEnabled      bool
 	auditListenAddress       string
 	auditPort                int
 	auditCertPath            string
 	auditCertName            string
 	auditCertKey             string
+	auditInsecure            bool
 	auditMaxRequestBodyBytes int64
 	auditReadTimeout         time.Duration
 	auditWriteTimeout        time.Duration
@@ -307,40 +308,29 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 	fs.StringVar(&cfg.metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
 	fs.StringVar(&cfg.probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
-	fs.BoolVar(&cfg.secureMetrics, "metrics-secure", true,
-		"If set, the metrics endpoint is served securely via HTTPS. Use --metrics-secure=false to use HTTP instead.")
-	fs.StringVar(
-		&cfg.webhookCertPath,
-		"webhook-cert-path",
-		"",
-		"The directory that contains the webhook certificate.",
-	)
-	fs.StringVar(&cfg.webhookCertName, "webhook-cert-name", "tls.crt", "The name of the webhook certificate file.")
-	fs.StringVar(&cfg.webhookCertKey, "webhook-cert-key", "tls.key", "The name of the webhook key file.")
-	fs.StringVar(&cfg.metricsCertPath, "metrics-cert-path", "",
-		"The directory that contains the metrics server certificate.")
-	fs.StringVar(
+	fs.BoolVar(&cfg.metricsInsecure, "metrics-insecure", false,
+		"If set, the metrics endpoint is served via HTTP instead of HTTPS.")
+	bindServerCertFlags(fs, "webhook", "webhook", &cfg.webhookCertPath, &cfg.webhookCertName, &cfg.webhookCertKey)
+	bindServerCertFlags(
+		fs,
+		"metrics",
+		"metrics server",
+		&cfg.metricsCertPath,
 		&cfg.metricsCertName,
-		"metrics-cert-name",
-		"tls.crt",
-		"The name of the metrics server certificate file.",
+		&cfg.metricsCertKey,
 	)
-	fs.StringVar(&cfg.metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
+	fs.BoolVar(&cfg.webhookInsecure, "webhook-insecure", false,
+		"If set, webhook server certificate watching and TLS wiring are disabled for local test/play usage.")
 	fs.BoolVar(&cfg.enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
 	fs.StringVar(&cfg.auditDumpPath, "audit-dump-path", "",
 		"Directory to write audit events for debugging. If empty, audit event file dumping is disabled.")
-	fs.BoolVar(&cfg.auditIngressEnabled, "audit-ingress-enabled", true,
-		"Enable the dedicated HTTPS audit ingress server.")
 	fs.StringVar(&cfg.auditListenAddress, "audit-listen-address", "0.0.0.0",
 		"IP address for the dedicated audit ingress HTTPS server.")
 	fs.IntVar(&cfg.auditPort, "audit-port", defaultAuditPort, "Port for the dedicated audit ingress HTTPS server.")
-	fs.StringVar(&cfg.auditCertPath, "audit-cert-path", "",
-		"The directory that contains the audit ingress TLS certificate and key.")
-	fs.StringVar(&cfg.auditCertName, "audit-cert-name", "tls.crt",
-		"The name of the audit ingress TLS certificate file.")
-	fs.StringVar(&cfg.auditCertKey, "audit-cert-key", "tls.key",
-		"The name of the audit ingress TLS key file.")
+	bindServerCertFlags(fs, "audit", "audit ingress TLS", &cfg.auditCertPath, &cfg.auditCertName, &cfg.auditCertKey)
+	fs.BoolVar(&cfg.auditInsecure, "audit-insecure", false,
+		"If set, the audit ingress endpoint is served via HTTP instead of HTTPS.")
 	fs.Int64Var(&cfg.auditMaxRequestBodyBytes, "audit-max-request-body-bytes", defaultAuditMaxBodyBytes,
 		"Maximum request body size in bytes accepted by the audit ingress handler.")
 	fs.DurationVar(&cfg.auditReadTimeout, "audit-read-timeout", defaultAuditReadTimeout,
@@ -360,21 +350,29 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 	if err := fs.Parse(args); err != nil {
 		return appConfig{}, err
 	}
-	if cfg.auditPort <= 0 {
-		return appConfig{}, fmt.Errorf("audit-port must be > 0, got %d", cfg.auditPort)
+	applyAuditCertFallbacks(&cfg)
+	if err := validateAuditConfig(cfg); err != nil {
+		return appConfig{}, err
 	}
-	if cfg.auditMaxRequestBodyBytes <= 0 {
-		return appConfig{}, fmt.Errorf("audit-max-request-body-bytes must be > 0, got %d", cfg.auditMaxRequestBodyBytes)
-	}
-	if cfg.auditReadTimeout <= 0 {
-		return appConfig{}, fmt.Errorf("audit-read-timeout must be > 0, got %s", cfg.auditReadTimeout)
-	}
-	if cfg.auditWriteTimeout <= 0 {
-		return appConfig{}, fmt.Errorf("audit-write-timeout must be > 0, got %s", cfg.auditWriteTimeout)
-	}
-	if cfg.auditIdleTimeout <= 0 {
-		return appConfig{}, fmt.Errorf("audit-idle-timeout must be > 0, got %s", cfg.auditIdleTimeout)
-	}
+
+	return cfg, nil
+}
+
+func bindServerCertFlags(
+	fs *flag.FlagSet,
+	prefix string,
+	component string,
+	certPath, certName, certKey *string,
+) {
+	fs.StringVar(certPath, fmt.Sprintf("%s-cert-path", prefix), "",
+		fmt.Sprintf("The directory that contains the %s certificate.", component))
+	fs.StringVar(certName, fmt.Sprintf("%s-cert-name", prefix), "tls.crt",
+		fmt.Sprintf("The name of the %s certificate file.", component))
+	fs.StringVar(certKey, fmt.Sprintf("%s-cert-key", prefix), "tls.key",
+		fmt.Sprintf("The name of the %s key file.", component))
+}
+
+func applyAuditCertFallbacks(cfg *appConfig) {
 	if cfg.auditCertPath == "" {
 		cfg.auditCertPath = cfg.webhookCertPath
 	}
@@ -384,8 +382,25 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 	if cfg.auditCertKey == "" {
 		cfg.auditCertKey = cfg.webhookCertKey
 	}
+}
 
-	return cfg, nil
+func validateAuditConfig(cfg appConfig) error {
+	if cfg.auditPort <= 0 {
+		return fmt.Errorf("audit-port must be > 0, got %d", cfg.auditPort)
+	}
+	if cfg.auditMaxRequestBodyBytes <= 0 {
+		return fmt.Errorf("audit-max-request-body-bytes must be > 0, got %d", cfg.auditMaxRequestBodyBytes)
+	}
+	if cfg.auditReadTimeout <= 0 {
+		return fmt.Errorf("audit-read-timeout must be > 0, got %s", cfg.auditReadTimeout)
+	}
+	if cfg.auditWriteTimeout <= 0 {
+		return fmt.Errorf("audit-write-timeout must be > 0, got %s", cfg.auditWriteTimeout)
+	}
+	if cfg.auditIdleTimeout <= 0 {
+		return fmt.Errorf("audit-idle-timeout must be > 0, got %s", cfg.auditIdleTimeout)
+	}
+	return nil
 }
 
 // fatalIfErr logs and exits the process if err is not nil.
@@ -417,27 +432,16 @@ func buildTLSOptions(enableHTTP2 bool) []func(*tls.Config) {
 
 // initWebhookServer initializes the webhook server and, if configured, a cert watcher.
 func initWebhookServer(
+	tlsEnabled bool,
 	certPath, certName, certKey string,
 	baseTLS []func(*tls.Config),
 ) (webhook.Server, *certwatcher.CertWatcher) {
-	webhookTLSOpts := append([]func(*tls.Config){}, baseTLS...)
-	var webhookCertWatcher *certwatcher.CertWatcher
-
-	if len(certPath) > 0 {
-		setupLog.Info("Initializing webhook certificate watcher using provided certificates",
-			"webhook-cert-path", certPath, //nolint:lll // Structured log with many fields
-			"webhook-cert-name", certName, "webhook-cert-key", certKey)
-
-		var err error
-		webhookCertWatcher, err = certwatcher.New(
-			filepath.Join(certPath, certName),
-			filepath.Join(certPath, certKey),
-		)
-		fatalIfErr(err, "Failed to initialize webhook certificate watcher")
-
-		webhookTLSOpts = append(webhookTLSOpts, func(config *tls.Config) {
-			config.GetCertificate = webhookCertWatcher.GetCertificate
-		})
+	webhookTLSOpts, webhookCertWatcher, err := buildTLSRuntime(
+		tlsEnabled, false, "webhook", certPath, certName, certKey, baseTLS,
+	)
+	fatalIfErr(err, "failed to initialize webhook TLS runtime")
+	if !tlsEnabled {
+		setupLog.Info("Webhook insecure mode enabled; skipping webhook certificate watcher wiring")
 	}
 
 	server := webhook.NewServer(webhook.Options{TLSOpts: webhookTLSOpts})
@@ -451,10 +455,15 @@ func buildMetricsServerOptions(
 	certPath, certName, certKey string,
 	baseTLS []func(*tls.Config),
 ) (metricsserver.Options, *certwatcher.CertWatcher) {
+	tlsOpts, metricsCertWatcher, err := buildTLSRuntime(
+		secureMetrics, false, "metrics", certPath, certName, certKey, baseTLS,
+	)
+	fatalIfErr(err, "failed to initialize metrics TLS runtime")
+
 	opts := metricsserver.Options{
 		BindAddress:   metricsAddr,
 		SecureServing: secureMetrics,
-		TLSOpts:       baseTLS,
+		TLSOpts:       tlsOpts,
 	}
 
 	if secureMetrics {
@@ -465,29 +474,18 @@ func buildMetricsServerOptions(
 		opts.FilterProvider = filters.WithAuthenticationAndAuthorization
 	}
 
-	var metricsCertWatcher *certwatcher.CertWatcher
-	if len(certPath) > 0 {
-		setupLog.Info("Initializing metrics certificate watcher using provided certificates",
-			"metrics-cert-path", certPath, //nolint:lll // Structured log with many fields
-			"metrics-cert-name", certName, "metrics-cert-key", certKey)
-
-		var err error
-		metricsCertWatcher, err = certwatcher.New(
-			filepath.Join(certPath, certName),
-			filepath.Join(certPath, certKey),
-		)
-		fatalIfErr(err, "to initialize metrics certificate watcher", "error", err)
-
-		opts.TLSOpts = append(opts.TLSOpts, func(config *tls.Config) {
-			config.GetCertificate = metricsCertWatcher.GetCertificate
-		})
-	}
-
 	return opts, metricsCertWatcher
 }
 
 type auditServerRunnable struct {
-	server *http.Server
+	server     *http.Server
+	tlsEnabled bool
+}
+
+type serverTimeouts struct {
+	read  time.Duration
+	write time.Duration
+	idle  time.Duration
 }
 
 func (r *auditServerRunnable) Start(ctx context.Context) error {
@@ -504,7 +502,12 @@ func (r *auditServerRunnable) Start(ctx context.Context) error {
 		}
 	}()
 
-	err := r.server.ListenAndServeTLS("", "")
+	var err error
+	if r.tlsEnabled {
+		err = r.server.ListenAndServeTLS("", "")
+	} else {
+		err = r.server.ListenAndServe()
+	}
 	<-shutdownDone
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil
@@ -517,41 +520,34 @@ func initAuditServerRunnable(
 	baseTLS []func(*tls.Config),
 	handler http.Handler,
 ) (*auditServerRunnable, *certwatcher.CertWatcher, error) {
-	if strings.TrimSpace(cfg.auditCertPath) == "" {
-		return nil, nil, errors.New("audit-cert-path is required when audit ingress is enabled")
-	}
-
-	certWatcher, err := certwatcher.New(
-		filepath.Join(cfg.auditCertPath, cfg.auditCertName),
-		filepath.Join(cfg.auditCertPath, cfg.auditCertKey),
+	tlsEnabled := !cfg.auditInsecure
+	tlsOpts, certWatcher, err := buildTLSRuntime(
+		tlsEnabled, true, "audit ingress", cfg.auditCertPath, cfg.auditCertName, cfg.auditCertKey, baseTLS,
 	)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to initialize audit ingress certificate watcher: %w", err)
+		return nil, nil, err
 	}
 
-	tlsOpts := append([]func(*tls.Config){}, baseTLS...)
-	tlsOpts = append(tlsOpts, func(config *tls.Config) {
-		config.GetCertificate = certWatcher.GetCertificate
-	})
-
-	serverTLS := &tls.Config{
-		MinVersion: tls.VersionTLS12,
-	}
-	for _, opt := range tlsOpts {
-		opt(serverTLS)
+	var serverTLS *tls.Config
+	if tlsEnabled {
+		serverTLS = buildServerTLSConfig(tlsOpts)
+	} else {
+		setupLog.Info("Audit ingress TLS disabled; serving plain HTTP for audit ingress")
 	}
 
 	mux := buildAuditServeMux(handler)
-	server := &http.Server{
-		Addr:         buildAuditServerAddress(cfg.auditListenAddress, cfg.auditPort),
-		Handler:      mux,
-		TLSConfig:    serverTLS,
-		ReadTimeout:  cfg.auditReadTimeout,
-		WriteTimeout: cfg.auditWriteTimeout,
-		IdleTimeout:  cfg.auditIdleTimeout,
-	}
+	server := buildHTTPServer(
+		buildAuditServerAddress(cfg.auditListenAddress, cfg.auditPort),
+		mux,
+		serverTLS,
+		serverTimeouts{
+			read:  cfg.auditReadTimeout,
+			write: cfg.auditWriteTimeout,
+			idle:  cfg.auditIdleTimeout,
+		},
+	)
 
-	return &auditServerRunnable{server: server}, certWatcher, nil
+	return &auditServerRunnable{server: server, tlsEnabled: tlsEnabled}, certWatcher, nil
 }
 
 func buildAuditServeMux(handler http.Handler) *http.ServeMux {
@@ -566,6 +562,68 @@ func buildAuditServerAddress(listenAddress string, port int) string {
 		return fmt.Sprintf(":%d", port)
 	}
 	return net.JoinHostPort(listenAddress, strconv.Itoa(port))
+}
+
+func buildServerTLSConfig(tlsOpts []func(*tls.Config)) *tls.Config {
+	serverTLS := &tls.Config{MinVersion: tls.VersionTLS12}
+	for _, opt := range tlsOpts {
+		opt(serverTLS)
+	}
+	return serverTLS
+}
+
+func buildTLSRuntime(
+	tlsEnabled bool,
+	requireCert bool,
+	component string,
+	certPath, certName, certKey string,
+	baseTLS []func(*tls.Config),
+) ([]func(*tls.Config), *certwatcher.CertWatcher, error) {
+	tlsOpts := append([]func(*tls.Config){}, baseTLS...)
+	if !tlsEnabled {
+		return tlsOpts, nil, nil
+	}
+
+	if strings.TrimSpace(certPath) == "" {
+		if requireCert {
+			return nil, nil, fmt.Errorf("%s-cert-path is required when %s TLS is enabled", component, component)
+		}
+		return tlsOpts, nil, nil
+	}
+
+	setupLog.Info("Initializing certificate watcher using provided certificates",
+		"component", component,
+		"cert-path", certPath,
+		"cert-name", certName,
+		"cert-key", certKey)
+
+	certWatcher, err := newCertWatcher(certPath, certName, certKey)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to initialize %s certificate watcher: %w", component, err)
+	}
+
+	tlsOpts = append(tlsOpts, func(config *tls.Config) {
+		config.GetCertificate = certWatcher.GetCertificate
+	})
+	return tlsOpts, certWatcher, nil
+}
+
+func buildHTTPServer(addr string, handler http.Handler, tlsConfig *tls.Config, timeouts serverTimeouts) *http.Server {
+	return &http.Server{
+		Addr:         addr,
+		Handler:      handler,
+		TLSConfig:    tlsConfig,
+		ReadTimeout:  timeouts.read,
+		WriteTimeout: timeouts.write,
+		IdleTimeout:  timeouts.idle,
+	}
+}
+
+func newCertWatcher(certPath, certName, certKey string) (*certwatcher.CertWatcher, error) {
+	return certwatcher.New(
+		filepath.Join(certPath, certName),
+		filepath.Join(certPath, certKey),
+	)
 }
 
 // newManager creates a new controller-runtime Manager with common options.
@@ -592,17 +650,21 @@ func addCertWatchersToManager(
 	mgr ctrl.Manager,
 	metricsCertWatcher, webhookCertWatcher, auditCertWatcher *certwatcher.CertWatcher,
 ) {
-	if metricsCertWatcher != nil {
-		setupLog.Info("Adding metrics certificate watcher to manager")
-		fatalIfErr(mgr.Add(metricsCertWatcher), "unable to add metrics certificate watcher to manager")
+	watchers := []struct {
+		component string
+		watcher   *certwatcher.CertWatcher
+	}{
+		{component: "metrics", watcher: metricsCertWatcher},
+		{component: "webhook", watcher: webhookCertWatcher},
+		{component: "audit ingress", watcher: auditCertWatcher},
 	}
-	if webhookCertWatcher != nil {
-		setupLog.Info("Adding webhook certificate watcher to manager")
-		fatalIfErr(mgr.Add(webhookCertWatcher), "unable to add webhook certificate watcher to manager")
-	}
-	if auditCertWatcher != nil {
-		setupLog.Info("Adding audit ingress certificate watcher to manager")
-		fatalIfErr(mgr.Add(auditCertWatcher), "unable to add audit ingress certificate watcher to manager")
+
+	for _, item := range watchers {
+		if item.watcher == nil {
+			continue
+		}
+		setupLog.Info("Adding certificate watcher to manager", "component", item.component)
+		fatalIfErr(mgr.Add(item.watcher), "unable to add certificate watcher to manager", "component", item.component)
 	}
 }
 
