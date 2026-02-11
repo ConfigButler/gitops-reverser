@@ -184,7 +184,7 @@ var _ = Describe("Manager", Ordered, func() {
 				podOutput, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred(), "Failed to retrieve controller-manager pod information")
 				podNames := utils.GetNonEmptyLines(podOutput)
-				g.Expect(podNames).To(HaveLen(2), "expected 2 controller pods running for HA")
+				g.Expect(podNames).To(HaveLen(1), "expected exactly 1 controller pod running")
 				controllerPodName = podNames[0] // Use first pod for logging
 				g.Expect(controllerPodName).To(ContainSubstring("controller-manager"))
 
@@ -202,36 +202,8 @@ var _ = Describe("Manager", Ordered, func() {
 			Eventually(verifyControllerUp).Should(Succeed())
 		})
 
-		It("should identify leader pod with role=leader label", func() {
-			By("verifying that exactly one pod has the role=leader label")
-			verifyLeaderLabel := func(g Gomega) {
-				cmd := exec.Command("kubectl", "get",
-					"pods", "-l", "control-plane=controller-manager,role=leader",
-					"-o", "go-template={{ range .items }}"+
-						"{{ if not .metadata.deletionTimestamp }}"+
-						"{{ .metadata.name }}"+
-						"{{ \"\\n\" }}{{ end }}{{ end }}",
-					"-n", namespace,
-				)
-
-				podOutput, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred(), "Failed to retrieve leader pod information")
-				leaderPods := utils.GetNonEmptyLines(podOutput)
-				g.Expect(leaderPods).To(HaveLen(1), "expected exactly 1 leader pod")
-
-				leaderPodName := leaderPods[0]
-				g.Expect(leaderPodName).To(ContainSubstring("controller-manager"))
-
-				// Update controllerPodName to use the leader pod for subsequent tests
-				controllerPodName = leaderPodName
-
-				By(fmt.Sprintf("Leader pod identified: %s", leaderPodName))
-			}
-			Eventually(verifyLeaderLabel, 30*time.Second).Should(Succeed())
-		})
-
-		It("should route webhook traffic only to leader pod", func() {
-			By("verifying webhook service selects only the leader pod")
+		It("should route webhook traffic to the running controller pod", func() {
+			By("verifying webhook service selects the running controller pod")
 			verifyWebhookService := func(g Gomega) {
 				// Get webhook service endpoints
 				cmd := exec.Command("kubectl", "get", "endpoints",
@@ -252,18 +224,16 @@ var _ = Describe("Manager", Ordered, func() {
 					}
 				}
 
-				// Should only have one endpoint (the leader pod)
-				g.Expect(podNames).To(HaveLen(1), "webhook service should route to exactly 1 pod (leader)")
+				// Should only have one endpoint in single-pod mode.
+				g.Expect(podNames).To(HaveLen(1), "webhook service should route to exactly 1 pod")
+				g.Expect(podNames[0]).To(Equal(controllerPodName), "webhook should route to controller pod")
 
-				// Verify it's the leader pod
-				g.Expect(podNames[0]).To(Equal(controllerPodName), "webhook should route to leader pod")
-
-				By(fmt.Sprintf("✅ Webhook service correctly routes to leader pod: %s", controllerPodName))
+				By(fmt.Sprintf("✅ Webhook service correctly routes to pod: %s", controllerPodName))
 			}
 			Eventually(verifyWebhookService, 30*time.Second).Should(Succeed())
 		})
 
-		It("should expose both admission and audit leader-only services", func() {
+		It("should expose both admission and audit services", func() {
 			By("verifying admission webhook service exists")
 			cmd := exec.Command("kubectl", "get", "svc", "gitops-reverser-webhook-service", "-n", namespace)
 			_, err := utils.Run(cmd)
@@ -274,7 +244,7 @@ var _ = Describe("Manager", Ordered, func() {
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Audit webhook service should exist")
 
-			By("verifying audit service routes only to leader pod")
+			By("verifying audit service routes to the controller pod")
 			Eventually(func(g Gomega) {
 				endpointsCmd := exec.Command("kubectl", "get", "endpoints",
 					"gitops-reverser-audit-webhook-service", "-n", namespace,
@@ -292,8 +262,8 @@ var _ = Describe("Manager", Ordered, func() {
 					}
 				}
 
-				g.Expect(podNames).To(HaveLen(1), "audit service should route to exactly 1 pod (leader)")
-				g.Expect(podNames[0]).To(Equal(controllerPodName), "audit service should route to leader pod")
+				g.Expect(podNames).To(HaveLen(1), "audit service should route to exactly 1 pod")
+				g.Expect(podNames[0]).To(Equal(controllerPodName), "audit service should route to controller pod")
 			}, 30*time.Second).Should(Succeed())
 		})
 
@@ -346,10 +316,10 @@ var _ = Describe("Manager", Ordered, func() {
 				func(v float64) bool { return v > 0 },
 				"process metrics should exist")
 
-			By("verifying metrics from both controller pods")
+			By("verifying metrics from the controller pod")
 			podCount, err := queryPrometheus("count(up{job='gitops-reverser-metrics'})")
 			Expect(err).NotTo(HaveOccurred())
-			Expect(podCount).To(Equal(2.0), "Should scrape from 2 controller pods")
+			Expect(podCount).To(Equal(1.0), "Should scrape from 1 controller pod")
 
 			fmt.Printf("✅ Metrics collection verified from %.0f pods\n", podCount)
 			fmt.Printf("📊 Inspect metrics: %s\n", getPrometheusURL())
@@ -373,24 +343,13 @@ var _ = Describe("Manager", Ordered, func() {
 				func(v float64) bool { return v > baselineEvents },
 				"webhook events should increment")
 
-			By("verifying only leader pod received webhook events")
-			leaderEvents, err := queryPrometheus(
-				"sum(gitopsreverser_events_received_total{role='leader'}) or vector(0)",
-			)
+			By("verifying webhook events were received")
+			currentEvents, err := queryPrometheus("sum(gitopsreverser_events_received_total) or vector(0)")
 			Expect(err).NotTo(HaveOccurred())
-			Expect(leaderEvents).To(BeNumerically(">", baselineEvents),
-				"Leader should have processed webhook events")
-			fmt.Printf("✅ Leader processed %.0f events\n", leaderEvents-baselineEvents)
+			Expect(currentEvents).To(BeNumerically(">", baselineEvents), "Controller should process webhook events")
+			fmt.Printf("✅ Controller processed %.0f events\n", currentEvents-baselineEvents)
 
-			By("confirming follower pod has no new webhook events")
-			followerEvents, err := queryPrometheus(
-				"sum(gitopsreverser_events_received_total{role!='leader'}) or vector(0)",
-			)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(followerEvents).To(Equal(0.0),
-				"Follower should not process webhook events")
-
-			fmt.Printf("✅ Webhook routing validated - only leader receives events\n")
+			fmt.Printf("✅ Webhook routing validated\n")
 			fmt.Printf("📊 Inspect metrics: %s\n", getPrometheusURL())
 
 			By("cleaning up webhook test resources")
@@ -604,7 +563,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 			By("waiting for controller reconciliation of ConfigMap event")
 			verifyReconciliationLogs := func(g Gomega) {
-				// Get controller logs from all pods (leader will have the reconciliation logs)
+				// Get controller logs from all pods (single-pod mode still uses label selector).
 				cmd := exec.Command("kubectl", "logs", "-l", "control-plane=controller-manager",
 					"-n", namespace, "--tail=500", "--prefix=true")
 				output, err := utils.Run(cmd)
@@ -612,7 +571,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 				// Check for git commit operation in logs
 				g.Expect(output).To(ContainSubstring("git commit"),
-					"Should see git commit operation in logs from leader pod")
+					"Should see git commit operation in controller logs")
 			}
 			Eventually(verifyReconciliationLogs).Should(Succeed())
 

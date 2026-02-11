@@ -15,9 +15,6 @@ data:
       bindAddress: {{ .Values.controllerManager.metrics.bindAddress }}
     webhook:
       port: {{ .Values.webhook.server.port }}
-    leaderElection:
-      leaderElect: {{ .Values.controllerManager.leaderElection }}
-      resourceName: 9ed3440e.configbutler.ai
     {{- if .Values.logging }}
     logging:
       level: {{ .Values.logging.level | default "info" }}

@@ -21,8 +21,8 @@ metadata:
     {{- include "gitops-reverser.labels" . | nindent 4 }}
 spec:
   dnsNames:
-    - {{ include "gitops-reverser.fullname" . }}-leader-only.{{ .Release.Namespace }}.svc
-    - {{ include "gitops-reverser.fullname" . }}-leader-only.{{ .Release.Namespace }}.svc.cluster.local
+    - {{ include "gitops-reverser.fullname" . }}-webhook.{{ .Release.Namespace }}.svc
+    - {{ include "gitops-reverser.fullname" . }}-webhook.{{ .Release.Namespace }}.svc.cluster.local
   issuerRef:
     kind: {{ .Values.certificates.certManager.issuer.kind }}
     name: {{ .Values.certificates.certManager.issuer.name }}

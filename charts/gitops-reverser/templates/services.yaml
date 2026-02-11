@@ -3,11 +3,11 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "gitops-reverser.fullname" . }}-leader-only
+  name: {{ include "gitops-reverser.fullname" . }}-webhook
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "gitops-reverser.labels" . | nindent 4 }}
-    app.kubernetes.io/component: leader-only
+    app.kubernetes.io/component: webhook
 spec:
   type: ClusterIP
   ports:
@@ -17,7 +17,6 @@ spec:
       protocol: TCP
   selector:
     {{- include "gitops-reverser.selectorLabels" . | nindent 4 }}
-    role: leader  # Pods get this label from within the operator source code: the Kube API lease mechanism is used to always have one active leader.
 ---
 {{- if .Values.auditIngress.enabled }}
 apiVersion: v1
@@ -40,7 +39,6 @@ spec:
       protocol: TCP
   selector:
     {{- include "gitops-reverser.selectorLabels" . | nindent 4 }}
-    role: leader
 ---
 {{- end }}
 apiVersion: v1

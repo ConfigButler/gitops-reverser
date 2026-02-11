@@ -8,8 +8,6 @@ resources:
   - role.yaml
   - role_binding.yaml
   - test_user_role_binding.yaml
-  - leader_election_role.yaml
-  - leader_election_role_binding.yaml
   # The following RBAC configurations are used to protect
   # the metrics endpoint with authn/authz. These configurations
   # ensure that only authorized users and service accounts
@@ -36,4 +34,3 @@ resources:
   - gitprovider_admin_role.yaml
   - gitprovider_editor_role.yaml
   - gitprovider_viewer_role.yaml
-
