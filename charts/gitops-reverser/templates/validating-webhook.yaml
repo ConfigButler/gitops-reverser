@@ -14,7 +14,7 @@ webhooks:
   - v1
   clientConfig:
     service:
-      name: {{ include "gitops-reverser.fullname" . }}-webhook
+      name: {{ include "gitops-reverser.fullname" . }}
       namespace: {{ .Release.Namespace }}
       path: /process-validating-webhook
     {{- if not .Values.certificates.certManager.enabled }}

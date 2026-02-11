@@ -33,13 +33,26 @@ func TestParseFlagsWithArgs_Defaults(t *testing.T) {
 	cfg, err := parseFlagsWithArgs(fs, []string{})
 	require.NoError(t, err)
 
-	assert.True(t, cfg.auditIngressEnabled)
+	assert.False(t, cfg.webhookInsecure)
+	assert.False(t, cfg.metricsInsecure)
+	assert.False(t, cfg.auditInsecure)
 	assert.Equal(t, "0.0.0.0", cfg.auditListenAddress)
 	assert.Equal(t, 9444, cfg.auditPort)
 	assert.Equal(t, int64(10485760), cfg.auditMaxRequestBodyBytes)
 	assert.Equal(t, 15*time.Second, cfg.auditReadTimeout)
 	assert.Equal(t, 30*time.Second, cfg.auditWriteTimeout)
 	assert.Equal(t, 60*time.Second, cfg.auditIdleTimeout)
+}
+
+func TestParseFlagsWithArgs_AuditUnsecure(t *testing.T) {
+	fs := flag.NewFlagSet("test-audit-insecure", flag.ContinueOnError)
+	args := []string{
+		"--audit-insecure",
+	}
+
+	cfg, err := parseFlagsWithArgs(fs, args)
+	require.NoError(t, err)
+	assert.True(t, cfg.auditInsecure)
 }
 
 func TestParseFlagsWithArgs_CustomAuditValues(t *testing.T) {

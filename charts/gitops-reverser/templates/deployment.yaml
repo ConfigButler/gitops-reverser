@@ -40,22 +40,32 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args:
             - --health-probe-bind-address=:8081
-            - --metrics-bind-address=:8080
-            - --metrics-secure=false
-            - --webhook-cert-path={{ .Values.webhook.server.certPath }}
-            - --webhook-cert-name={{ .Values.webhook.server.certName }}
-            - --webhook-cert-key={{ .Values.webhook.server.certKey }}
-            - --audit-ingress-enabled={{ .Values.auditIngress.enabled }}
-            - --audit-listen-address=0.0.0.0
-            - --audit-port={{ .Values.auditIngress.port }}
-            - --audit-max-request-body-bytes={{ .Values.auditIngress.maxRequestBodyBytes }}
-            - --audit-read-timeout={{ .Values.auditIngress.timeouts.read }}
-            - --audit-write-timeout={{ .Values.auditIngress.timeouts.write }}
-            - --audit-idle-timeout={{ .Values.auditIngress.timeouts.idle }}
-            {{- if .Values.auditIngress.enabled }}
-            - --audit-cert-path={{ .Values.auditIngress.tls.certPath }}
-            - --audit-cert-name={{ .Values.auditIngress.tls.certName }}
-            - --audit-cert-key={{ .Values.auditIngress.tls.certKey }}
+            - --metrics-bind-address={{ .Values.servers.metrics.bindAddress }}
+            {{- if not .Values.servers.metrics.tls.enabled }}
+            - --metrics-insecure
+            {{- end }}
+            - --metrics-cert-path={{ .Values.servers.metrics.tls.certPath }}
+            - --metrics-cert-name={{ .Values.servers.metrics.tls.certName }}
+            - --metrics-cert-key={{ .Values.servers.metrics.tls.certKey }}
+            {{- if not .Values.servers.admission.tls.enabled }}
+            - --webhook-insecure
+            {{- end }}
+            - --webhook-cert-path={{ .Values.servers.admission.tls.certPath }}
+            - --webhook-cert-name={{ .Values.servers.admission.tls.certName }}
+            - --webhook-cert-key={{ .Values.servers.admission.tls.certKey }}
+            {{- if and .Values.servers.audit.enabled (not .Values.servers.audit.tls.enabled) }}
+            - --audit-insecure
+            {{- end }}
+            - --audit-listen-address={{ .Values.servers.audit.listenAddress }}
+            - --audit-port={{ .Values.servers.audit.port }}
+            - --audit-max-request-body-bytes={{ .Values.servers.audit.maxRequestBodyBytes }}
+            - --audit-read-timeout={{ .Values.servers.audit.timeouts.read }}
+            - --audit-write-timeout={{ .Values.servers.audit.timeouts.write }}
+            - --audit-idle-timeout={{ .Values.servers.audit.timeouts.idle }}
+            {{- if and .Values.servers.audit.enabled .Values.servers.audit.tls.enabled }}
+            - --audit-cert-path={{ .Values.servers.audit.tls.certPath }}
+            - --audit-cert-name={{ .Values.servers.audit.tls.certName }}
+            - --audit-cert-key={{ .Values.servers.audit.tls.certKey }}
             {{- end }}
             {{- if .Values.logging.level }}
             - --zap-log-level={{ .Values.logging.level }}
@@ -74,15 +84,15 @@ spec:
             {{- end }}
           ports:
             - name: webhook-server
-              containerPort: {{ .Values.webhook.server.port }}
+              containerPort: {{ .Values.servers.admission.port }}
               protocol: TCP
-            {{- if .Values.auditIngress.enabled }}
+            {{- if .Values.servers.audit.enabled }}
             - name: audit-server
-              containerPort: {{ .Values.auditIngress.port }}
+              containerPort: {{ .Values.servers.audit.port }}
               protocol: TCP
             {{- end }}
             - name: metrics
-              containerPort: {{ .Values.controllerManager.metrics.port }}
+              containerPort: {{ .Values.servers.metrics.port }}
               protocol: TCP
           env:
             - name: POD_NAME
@@ -117,12 +127,14 @@ spec:
             {{- end }}
             - name: tmp-dir
               mountPath: /tmp
+            {{- if .Values.servers.admission.tls.enabled }}
             - name: cert
-              mountPath: {{ .Values.webhook.server.certPath }}
+              mountPath: {{ .Values.servers.admission.tls.certPath }}
               readOnly: true
-            {{- if .Values.auditIngress.enabled }}
+            {{- end }}
+            {{- if and .Values.servers.audit.enabled .Values.servers.audit.tls.enabled }}
             - name: audit-cert
-              mountPath: {{ .Values.auditIngress.tls.certPath }}
+              mountPath: {{ .Values.servers.audit.tls.certPath }}
               readOnly: true
             {{- end }}
             {{- with .Values.volumeMounts }}
@@ -135,14 +147,16 @@ spec:
         {{- end }}
         - name: tmp-dir
           emptyDir: {}
+        {{- if .Values.servers.admission.tls.enabled }}
         - name: cert
           secret:
             secretName: {{ include "gitops-reverser.fullname" . }}-webhook-server-tls-cert
             defaultMode: 420
-        {{- if .Values.auditIngress.enabled }}
+        {{- end }}
+        {{- if and .Values.servers.audit.enabled .Values.servers.audit.tls.enabled }}
         - name: audit-cert
           secret:
-            secretName: {{ .Values.auditIngress.tls.secretName | default (printf "%s-audit-server-tls-cert" (include "gitops-reverser.fullname" .)) }}
+            secretName: {{ .Values.servers.audit.tls.secretName | default (printf "%s-audit-server-tls-cert" (include "gitops-reverser.fullname" .)) }}
             defaultMode: 420
         {{- end }}
         {{- with .Values.volumes }}

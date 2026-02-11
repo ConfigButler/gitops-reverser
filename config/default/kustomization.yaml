@@ -25,27 +25,14 @@ resources:
 - ../certmanager
 # [PROMETHEUS] To enable prometheus monitor, uncomment all sections with 'PROMETHEUS'.
 #- ../prometheus
-# [METRICS] Expose the controller manager metrics service.
-- metrics_service.yaml
 # [NETWORK POLICY] Protect the /metrics endpoint and Webhook Server with NetworkPolicy.
 # Only Pod(s) running a namespace labeled with 'metrics: enabled' will be able to gather the metrics.
 # Only CR(s) which requires webhooks and are applied on namespaces labeled with 'webhooks: enabled' will
 # be able to communicate with the Webhook Server.
 #- ../network-policy
 
-# Uncomment the patches line if you enable Metrics
+# Patches are only kept for optional feature wiring.
 patches:
-# [METRICS] The following patch will enable the metrics endpoint using HTTPS and the port :8443.
-# More info: https://book.kubebuilder.io/reference/metrics
-- path: manager_metrics_patch.yaml
-  target:
-    kind: Deployment
-
-# [AUDIT-WEBHOOK] Set fixed ClusterIP for dedicated audit webhook service so kube-apiserver can connect before CoreDNS.
-- path: audit_webhook_service_fixed_ip_patch.yaml
-  target:
-    kind: Service
-    name: audit-webhook-service
 
 # Uncomment the patches line if you enable Metrics and CertManager
 # [METRICS-WITH-CERTS] To enable metrics protected with certManager, uncomment the following line.
@@ -126,7 +113,7 @@ replacements:
  - source: # Uncomment the following block if you have any webhook
      kind: Service
      version: v1
-     name: webhook-service
+     name: service
      fieldPath: .metadata.name # Name of the service
    targets:
      - select:
@@ -144,7 +131,7 @@ replacements:
  - source:
      kind: Service
      version: v1
-     name: webhook-service
+     name: service
      fieldPath: .metadata.namespace # Namespace of the service
    targets:
      - select:
@@ -163,7 +150,7 @@ replacements:
  - source:
      kind: Service
      version: v1
-     name: audit-webhook-service
+     name: service
      fieldPath: .metadata.name # Name of the dedicated audit service
    targets:
      - select:
@@ -181,7 +168,7 @@ replacements:
  - source:
      kind: Service
      version: v1
-     name: audit-webhook-service
+     name: service
      fieldPath: .metadata.namespace # Namespace of the dedicated audit service
    targets:
      - select:

@@ -47,23 +47,51 @@ controllerManager:
   # Health probe configuration
   healthProbe:
     bindAddress: :8081
-  # Metrics configuration
-  metrics:
-    port: 8080
-    bindAddress: 127.0.0.1:8080
   # Enable HTTP/2 (disabled by default for security)
   enableHTTP2: false
 
-# Webhook configuration
-webhook:
-  enabled: true
-  # Webhook server configuration
-  server:
+# HTTPS servers
+servers:
+  admission:
+    enabled: true
     port: 9443
-    certPath: "/tmp/k8s-webhook-server/serving-certs"
-    certName: "tls.crt"
-    certKey: "tls.key"
+    tls:
+      # Controls webhook TLS wiring in the controller process.
+      # Keep enabled for normal Kubernetes webhook operation.
+      enabled: true
+      certPath: "/tmp/k8s-webhook-server/serving-certs"
+      certName: "tls.crt"
+      certKey: "tls.key"
 
+  audit:
+    enabled: true
+    listenAddress: 0.0.0.0
+    port: 9444
+    tls:
+      # Serve audit ingress over HTTPS when true, HTTP when false.
+      enabled: true
+      certPath: "/tmp/k8s-audit-webhook-server/serving-certs"
+      certName: "tls.crt"
+      certKey: "tls.key"
+      secretName: ""
+    timeouts:
+      read: "15s"
+      write: "30s"
+      idle: "60s"
+    maxRequestBodyBytes: 10485760
+
+  metrics:
+    bindAddress: :8080
+    port: 8080
+    tls:
+      # Serve metrics over HTTPS when true, HTTP when false.
+      enabled: true
+      certPath: ""
+      certName: "tls.crt"
+      certKey: "tls.key"
+
+# Webhook behavior
+webhook:
   audit:
     # Set to true if you want to write events to /var/run/audit-dumps
     debugDumps: false
@@ -101,24 +129,6 @@ certificates:
       name: selfsigned-issuer
       kind: Issuer
       create: true
-
-# Dedicated audit ingress server configuration
-auditIngress:
-  enabled: true
-  # Dedicated audit HTTPS listener port in the controller container
-  port: 9444
-  # Optional fixed ClusterIP (useful for Kind/bootstrap environments before DNS is ready)
-  clusterIP: ""
-  tls:
-    certPath: "/tmp/k8s-audit-webhook-server/serving-certs"
-    certName: "tls.crt"
-    certKey: "tls.key"
-    secretName: ""
-  timeouts:
-    read: "15s"
-    write: "30s"
-    idle: "60s"
-  maxRequestBodyBytes: 10485760
 
 # RBAC configuration
 rbac:
@@ -167,8 +177,19 @@ monitoring:
     path: /metrics
     # Port name on the metrics Service (see templates/services.yaml)
     port: metrics
-    # Plain HTTP by default (--metrics-secure=false)
-    scheme: http
+    # Must match the effective metrics transport:
+    # - https when servers.metrics.tls.enabled=true
+    # - http when servers.metrics.tls.enabled=false
+    scheme: https
+
+# Service exposure
+service:
+  # Optional fixed ClusterIP (useful for Kind/bootstrap environments before DNS is ready)
+  clusterIP: ""
+  ports:
+    admission: 443
+    audit: 9444
+    metrics: 8080
 
 # Logging configuration
 logging:

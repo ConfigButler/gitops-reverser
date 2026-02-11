@@ -15,4 +15,8 @@ kubectl apply -f test/e2e/prometheus/rbac.yaml
 echo "Deploying Prometheus..."
 kubectl apply -f test/e2e/prometheus/deployment.yaml
 
+echo "Restarting Prometheus deployment to pick up ConfigMap changes..."
+kubectl rollout restart deployment/prometheus -n prometheus-e2e
+kubectl rollout status deployment/prometheus -n prometheus-e2e --timeout=120s
+
 echo "✅ Prometheus manifests deployed"

@@ -12,9 +12,9 @@ data:
     health:
       healthProbeBindAddress: {{ .Values.controllerManager.healthProbe.bindAddress }}
     metrics:
-      bindAddress: {{ .Values.controllerManager.metrics.bindAddress }}
+      bindAddress: {{ .Values.servers.metrics.bindAddress }}
     webhook:
-      port: {{ .Values.webhook.server.port }}
+      port: {{ .Values.servers.admission.port }}
     {{- if .Values.logging }}
     logging:
       level: {{ .Values.logging.level | default "info" }}

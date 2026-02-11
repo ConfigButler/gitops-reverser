@@ -61,6 +61,7 @@ spec:
         - command:
             - /manager
           args:
+            - --metrics-bind-address=:8443
             - --health-probe-bind-address=:8081
           image: controller:latest
           name: manager
