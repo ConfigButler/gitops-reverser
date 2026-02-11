@@ -4,7 +4,7 @@ This directory contains configuration files to set up a Kind cluster with Kubern
 
 ## Overview
 
-The gitops-reverser operator exposes an experimental audit webhook endpoint at `/audit-webhook` that receives audit events from the Kubernetes API server. This setup configures Kind to send audit events to this endpoint for testing and metrics collection.
+The gitops-reverser operator exposes an experimental audit webhook endpoint at `/audit-webhook/{clusterID}` that receives audit events from the Kubernetes API server. This setup configures Kind to send audit events to this endpoint for testing and metrics collection.
 
 ## Files
 
@@ -28,7 +28,7 @@ The [`cluster.yaml`](cluster.yaml:1) mounts the audit policy and webhook configu
 The [`webhook-config.yaml`](audit/webhook-config.yaml:1) configures the kube-apiserver to send audit events to:
 
 ```
-https://gitops-reverser-webhook-service.gitops-reverser-system.svc.cluster.local:443/audit-webhook
+https://10.96.200.200:443/audit-webhook/kind-e2e
 ```
 
 **Important**: Uses `insecure-skip-tls-verify: true` because the webhook service uses a self-signed certificate from cert-manager.
@@ -114,9 +114,9 @@ The audit webhook tracks metrics with labels:
    docker exec gitops-reverser-test-e2e-control-plane cat /var/log/kubernetes/kube-apiserver-audit.log
    ```
 
-2. **Verify webhook service exists**:
+2. **Verify audit webhook service exists**:
    ```bash
-   kubectl get svc -n gitops-reverser-system gitops-reverser-webhook-service
+   kubectl get svc -n gitops-reverser-system gitops-reverser-audit-webhook-service
    ```
 
 3. **Check if kube-apiserver can reach the webhook**:
@@ -143,9 +143,9 @@ The K3s setup in [`docs/audit-setup/cluster/`](../../../docs/audit-setup/cluster
 
 The Kind setup uses:
 
-- Service DNS: `gitops-reverser-webhook-service.gitops-reverser-system.svc.cluster.local`
+- Fixed ClusterIP: `10.96.200.200`
+- Path-based cluster identity: `/audit-webhook/kind-e2e`
 - Config location: `/etc/kubernetes/` (Kind standard)
-- Automatic service discovery via DNS
 
 ## References
 

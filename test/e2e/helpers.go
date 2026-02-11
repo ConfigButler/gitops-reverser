@@ -42,6 +42,7 @@ import (
 
 // namespace where the project is deployed in.
 const namespace = "sut"
+const metricWaitDefaultTimeout = 30 * time.Second
 
 // metricsServiceName is the name of the metrics service of the project.
 const metricsServiceName = "gitops-reverser-controller-manager-metrics-service"
@@ -98,13 +99,23 @@ func queryPrometheus(query string) (float64, error) {
 
 // waitForMetric waits for a Prometheus metric query to satisfy a condition
 func waitForMetric(query string, condition func(float64) bool, description string) {
+	waitForMetricWithTimeout(query, condition, description, metricWaitDefaultTimeout)
+}
+
+// waitForMetricWithTimeout waits for a Prometheus metric query with a custom timeout.
+func waitForMetricWithTimeout(
+	query string,
+	condition func(float64) bool,
+	description string,
+	timeout time.Duration,
+) {
 	By(fmt.Sprintf("waiting for metric: %s", description))
 	Eventually(func(g Gomega) {
 		value, err := queryPrometheus(query)
 		g.Expect(err).NotTo(HaveOccurred(), "Failed to query Prometheus")
 		g.Expect(condition(value)).To(BeTrue(),
 			fmt.Sprintf("%s (query: %s, value: %.2f)", description, query, value))
-	}, 30*time.Second, 2*time.Second).Should(Succeed()) //nolint:mnd // reasonable timeout and polling interval
+	}, timeout, 2*time.Second).Should(Succeed()) //nolint:mnd // reasonable polling interval
 }
 
 // getPrometheusURL returns the URL for accessing Prometheus UI
@@ -175,6 +186,15 @@ func waitForCertificateSecrets() {
 		cmd := exec.CommandContext(ctx, "kubectl", "get", "secret", "metrics-server-cert", "-n", namespace)
 		_, err := utils.Run(cmd)
 		g.Expect(err).NotTo(HaveOccurred(), "metrics-server-cert secret should exist")
+	}, 60*time.Second, 2*time.Second).Should(Succeed()) //nolint:mnd // reasonable timeout for cert-manager
+
+	By("waiting for dedicated audit certificate secret to be created by cert-manager")
+	Eventually(func(g Gomega) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second) //nolint:mnd // reasonable timeout
+		defer cancel()
+		cmd := exec.CommandContext(ctx, "kubectl", "get", "secret", "audit-webhook-server-cert", "-n", namespace)
+		_, err := utils.Run(cmd)
+		g.Expect(err).NotTo(HaveOccurred(), "audit-webhook-server-cert secret should exist")
 	}, 60*time.Second, 2*time.Second).Should(Succeed()) //nolint:mnd // reasonable timeout for cert-manager
 
 	By("✅ All certificate secrets are ready")

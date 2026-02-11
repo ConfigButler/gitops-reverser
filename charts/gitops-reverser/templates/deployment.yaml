@@ -48,6 +48,18 @@ spec:
             - --webhook-cert-path={{ .Values.webhook.server.certPath }}
             - --webhook-cert-name={{ .Values.webhook.server.certName }}
             - --webhook-cert-key={{ .Values.webhook.server.certKey }}
+            - --audit-ingress-enabled={{ .Values.auditIngress.enabled }}
+            - --audit-listen-address=0.0.0.0
+            - --audit-port={{ .Values.auditIngress.port }}
+            - --audit-max-request-body-bytes={{ .Values.auditIngress.maxRequestBodyBytes }}
+            - --audit-read-timeout={{ .Values.auditIngress.timeouts.read }}
+            - --audit-write-timeout={{ .Values.auditIngress.timeouts.write }}
+            - --audit-idle-timeout={{ .Values.auditIngress.timeouts.idle }}
+            {{- if .Values.auditIngress.enabled }}
+            - --audit-cert-path={{ .Values.auditIngress.tls.certPath }}
+            - --audit-cert-name={{ .Values.auditIngress.tls.certName }}
+            - --audit-cert-key={{ .Values.auditIngress.tls.certKey }}
+            {{- end }}
             {{- if .Values.logging.level }}
             - --zap-log-level={{ .Values.logging.level }}
             {{- end }}
@@ -67,6 +79,11 @@ spec:
             - name: webhook-server
               containerPort: {{ .Values.webhook.server.port }}
               protocol: TCP
+            {{- if .Values.auditIngress.enabled }}
+            - name: audit-server
+              containerPort: {{ .Values.auditIngress.port }}
+              protocol: TCP
+            {{- end }}
             - name: metrics
               containerPort: {{ .Values.controllerManager.metrics.port }}
               protocol: TCP
@@ -106,6 +123,11 @@ spec:
             - name: cert
               mountPath: {{ .Values.webhook.server.certPath }}
               readOnly: true
+            {{- if .Values.auditIngress.enabled }}
+            - name: audit-cert
+              mountPath: {{ .Values.auditIngress.tls.certPath }}
+              readOnly: true
+            {{- end }}
             {{- with .Values.volumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -120,6 +142,12 @@ spec:
           secret:
             secretName: {{ include "gitops-reverser.fullname" . }}-webhook-server-tls-cert
             defaultMode: 420
+        {{- if .Values.auditIngress.enabled }}
+        - name: audit-cert
+          secret:
+            secretName: {{ .Values.auditIngress.tls.secretName | default (printf "%s-audit-server-tls-cert" (include "gitops-reverser.fullname" .)) }}
+            defaultMode: 420
+        {{- end }}
         {{- with .Values.volumes }}
         {{- toYaml . | nindent 8 }}
         {{- end }}

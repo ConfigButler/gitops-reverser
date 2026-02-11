@@ -41,11 +41,11 @@ patches:
   target:
     kind: Deployment
 
-# [AUDIT-WEBHOOK] Set fixed ClusterIP for webhook service so kube-apiserver can connect before CoreDNS is ready
-- path: webhook_service_fixed_ip_patch.yaml
+# [AUDIT-WEBHOOK] Set fixed ClusterIP for dedicated audit webhook service so kube-apiserver can connect before CoreDNS.
+- path: audit_webhook_service_fixed_ip_patch.yaml
   target:
     kind: Service
-    name: webhook-service
+    name: audit-webhook-service
 
 # Uncomment the patches line if you enable Metrics and CertManager
 # [METRICS-WITH-CERTS] To enable metrics protected with certManager, uncomment the following line.
@@ -152,6 +152,43 @@ replacements:
          group: cert-manager.io
          version: v1
          name: serving-cert
+       fieldPaths:
+         - .spec.dnsNames.0
+         - .spec.dnsNames.1
+       options:
+         delimiter: '.'
+         index: 1
+         create: true
+
+ - source:
+     kind: Service
+     version: v1
+     name: audit-webhook-service
+     fieldPath: .metadata.name # Name of the dedicated audit service
+   targets:
+     - select:
+         kind: Certificate
+         group: cert-manager.io
+         version: v1
+         name: audit-serving-cert
+       fieldPaths:
+         - .spec.dnsNames.0
+         - .spec.dnsNames.1
+       options:
+         delimiter: '.'
+         index: 0
+         create: true
+ - source:
+     kind: Service
+     version: v1
+     name: audit-webhook-service
+     fieldPath: .metadata.namespace # Namespace of the dedicated audit service
+   targets:
+     - select:
+         kind: Certificate
+         group: cert-manager.io
+         version: v1
+         name: audit-serving-cert
        fieldPaths:
          - .spec.dnsNames.0
          - .spec.dnsNames.1

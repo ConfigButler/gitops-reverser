@@ -110,9 +110,23 @@ certificates:
       kind: Issuer
       create: true
 
-# Settings for receiving audit events from the kubernetes api (the best way to run this)
-audit:
-  clusterIP: 10.43.200.200  # Make sure that it's free, most clusters won't have a problem with this (it's in the default range and it's a high number)
+# Dedicated audit ingress server configuration
+auditIngress:
+  enabled: true
+  # Dedicated audit HTTPS listener port in the controller container
+  port: 9444
+  # Optional fixed ClusterIP (useful for Kind/bootstrap environments before DNS is ready)
+  clusterIP: ""
+  tls:
+    certPath: "/tmp/k8s-audit-webhook-server/serving-certs"
+    certName: "tls.crt"
+    certKey: "tls.key"
+    secretName: ""
+  timeouts:
+    read: "15s"
+    write: "30s"
+    idle: "60s"
+  maxRequestBodyBytes: 10485760
 
 # RBAC configuration
 rbac:
