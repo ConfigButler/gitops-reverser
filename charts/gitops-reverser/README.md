@@ -72,9 +72,9 @@ kubectl apply -f https://github.com/ConfigButler/gitops-reverser/releases/latest
 
 ## Architecture
 
-### High Availability Setup
+### Deployment Topology
 
-The chart deploys 2 replicas by default with leader election:
+The chart deploys 1 replica by default:
 
 ```
 ┌─────────────────────────────────────────┐
@@ -84,7 +84,7 @@ The chart deploys 2 replicas by default with leader election:
                │ webhook requests
                ▼
 ┌──────────────────────────────────────────┐
-│  gitops-reverser-leader-only (Service)   │
+│  gitops-reverser-webhook (Service)   │
 │  Admission webhook: /process-validating-webhook │
 └──────────────┬───────────────────────────┘
                │
@@ -93,19 +93,17 @@ The chart deploys 2 replicas by default with leader election:
 │  Audit webhook: /audit-webhook/{clusterID} │
 └──────────────┬───────────────────────────┘
                │
-     ┌─────────┴─────────┐
-     ▼                   ▼
-┌─────────┐         ┌─────────┐
-│ Pod 1   │         │ Pod 2   │
-│ LEADER  │◄────────┤ STANDBY │
-│ Active  │ election│ Ready   │
-└─────────┘         └─────────┘
+               ▼
+        ┌─────────────┐
+        │ Pod 1       │
+        │ Controller  │
+        │ Active      │
+        └─────────────┘
 ```
 
 **Key Features:**
-- **Leader-only service**: Routes webhook traffic only to the active leader pod
+- **Single-pod operation**: Minimal moving parts while HA work is deferred
 - **Dedicated audit service**: Separates audit ingress from admission webhook traffic
-- **Automatic failover**: Standby pod takes over if leader fails
 - **Pod anti-affinity**: Pods spread across different nodes
 - **Pod disruption budget**: Ensures at least 1 pod available during maintenance
 
@@ -115,13 +113,12 @@ The chart deploys 2 replicas by default with leader election:
 
 #### Minimal (Testing/Development)
 
-Single replica, no HA:
+Single replica:
 
 ```yaml
 # minimal-values.yaml
 replicaCount: 1
 controllerManager:
-  leaderElection: false
 podDisruptionBudget:
   enabled: false
 affinity: {}
@@ -137,15 +134,15 @@ helm install gitops-reverser \
 
 #### Production (Recommended)
 
-Enhanced HA with 3 replicas:
+Hardened single-replica deployment:
 
 ```yaml
 # production-values.yaml
-replicaCount: 3
+replicaCount: 1
 
 podDisruptionBudget:
   enabled: true
-  minAvailable: 2
+  minAvailable: 1
 
 resources:
   requests:
@@ -185,9 +182,7 @@ webhook:
 | Parameter | Description | Default |
 |-----------|-------------|---------|
 | `replicaCount` | Number of controller replicas | `1` |
-| `leaderOnlyService.enabled` | Create service routing to leader only | `true` |
 | `image.repository` | Container image repository | `ghcr.io/configbutler/gitops-reverser` |
-| `controllerManager.leaderElection` | Enable leader election | `true` |
 | `webhook.validating.failurePolicy` | Webhook failure policy (Ignore/Fail) | `Ignore` |
 | `auditIngress.enabled` | Enable dedicated audit HTTPS ingress server | `true` |
 | `auditIngress.port` | Dedicated audit container port | `9444` |
@@ -241,7 +236,7 @@ kubectl delete crd gitrepoconfigs.configbutler.ai watchrules.configbutler.ai
 ### Verify Installation
 
 ```bash
-# Check pods (should see 2 replicas)
+# Check pods (should see 1 replica)
 kubectl get pods -n gitops-reverser-system
 
 # Check CRDs
@@ -250,8 +245,6 @@ kubectl get crd | grep configbutler
 # Check webhook
 kubectl get validatingwebhookconfiguration -l app.kubernetes.io/name=gitops-reverser
 
-# Check leader election
-kubectl get lease -n gitops-reverser-system
 ```
 
 ### View Logs
@@ -260,8 +253,6 @@ kubectl get lease -n gitops-reverser-system
 # All pods
 kubectl logs -n gitops-reverser-system -l app.kubernetes.io/name=gitops-reverser -f
 
-# Leader pod only
-kubectl logs -n gitops-reverser-system -l role=leader -f
 ```
 
 ### Access Metrics
@@ -333,20 +324,6 @@ kubectl logs -n cert-manager -l app=cert-manager -f
 kubectl rollout restart deployment cert-manager -n cert-manager
 ```
 
-### Leader Election Issues
-
-Check which pod is the leader:
-
-```bash
-# View lease
-kubectl get lease -n gitops-reverser-system
-
-# View pod labels
-kubectl get pods -n gitops-reverser-system --show-labels
-
-# Leader should have label: role=leader
-```
-
 ### Pods Not Scheduling
 
 If pods are pending due to anti-affinity rules:
@@ -355,7 +332,7 @@ If pods are pending due to anti-affinity rules:
 # Check node count
 kubectl get nodes
 
-# If you have only 1 node, reduce replicas or disable affinity
+# If you have only 1 node, keep a single replica or disable affinity
 helm upgrade gitops-reverser \
   oci://ghcr.io/configbutler/charts/gitops-reverser \
   --namespace gitops-reverser-system \

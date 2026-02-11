@@ -5,12 +5,6 @@
 # High Availability configuration - runs 1 replicas by default (HA support is not good enough yet)
 replicaCount: 1
 
-# Leader-only service configuration
-leaderOnlyService:
-  # When true, creates a dedicated service that routes traffic only to the leader pod
-  # This is critical for HA deployments to ensure consistent processing of incomming API server events
-  enabled: true
-
 image:
   repository: ghcr.io/configbutler/gitops-reverser
   pullPolicy: IfNotPresent
@@ -50,8 +44,6 @@ securityContext:
 
 # Controller manager configuration
 controllerManager:
-  # Enable leader election for controller manager (required for HA)
-  leaderElection: true
   # Health probe configuration
   healthProbe:
     bindAddress: :8081

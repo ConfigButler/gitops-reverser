@@ -52,7 +52,6 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/controller"
 	"github.com/ConfigButler/gitops-reverser/internal/correlation"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
-	"github.com/ConfigButler/gitops-reverser/internal/leader"
 	"github.com/ConfigButler/gitops-reverser/internal/metrics"
 	"github.com/ConfigButler/gitops-reverser/internal/reconcile"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
@@ -115,10 +114,7 @@ func main() {
 	)
 
 	// Manager
-	mgr := newManager(metricsServerOptions, webhookServer, cfg.probeAddr, cfg.enableLeaderElection)
-
-	// Leader labeler (if elected)
-	addLeaderPodLabeler(mgr, cfg.enableLeaderElection)
+	mgr := newManager(metricsServerOptions, webhookServer, cfg.probeAddr)
 
 	// Initialize rule store for watch rules
 	ruleStore := rulestore.NewStore()
@@ -278,7 +274,6 @@ type appConfig struct {
 	webhookCertPath          string
 	webhookCertName          string
 	webhookCertKey           string
-	enableLeaderElection     bool
 	probeAddr                string
 	secureMetrics            bool
 	enableHTTP2              bool
@@ -312,9 +307,6 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 	fs.StringVar(&cfg.metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
 	fs.StringVar(&cfg.probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
-	fs.BoolVar(&cfg.enableLeaderElection, "leader-elect", false,
-		"Enable leader election for controller manager. "+
-			"Enabling this will ensure there is only one active controller manager.")
 	fs.BoolVar(&cfg.secureMetrics, "metrics-secure", true,
 		"If set, the metrics endpoint is served securely via HTTPS. Use --metrics-secure=false to use HTTP instead.")
 	fs.StringVar(
@@ -581,45 +573,18 @@ func newManager(
 	metricsOptions metricsserver.Options,
 	webhookServer webhook.Server,
 	probeAddr string,
-	enableLeaderElection bool,
 ) ctrl.Manager {
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                 scheme,
 		Metrics:                metricsOptions,
 		WebhookServer:          webhookServer,
 		HealthProbeBindAddress: probeAddr,
-		LeaderElection:         enableLeaderElection,
-		LeaderElectionID:       "9ed3440e.configbutler.ai",
-		// LeaderElectionReleaseOnCancel: true,
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
 		os.Exit(1)
 	}
 	return mgr
-}
-
-// addLeaderPodLabeler adds the leader pod labeler runnable when leader election is enabled.
-// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;update;patch
-func addLeaderPodLabeler(mgr ctrl.Manager, enabled bool) {
-	if !enabled {
-		return
-	}
-
-	podName := leader.GetPodName()
-	podNamespace := leader.GetPodNamespace()
-	if podName != "" && podNamespace != "" {
-		setupLog.Info("Adding leader pod labeler", "pod", podName, "namespace", podNamespace)
-		podLabeler := &leader.PodLabeler{
-			Client:    mgr.GetClient(),
-			Log:       ctrl.Log.WithName("leader-labeler"),
-			PodName:   podName,
-			Namespace: podNamespace,
-		}
-		fatalIfErr(mgr.Add(podLabeler), "unable to add leader pod labeler")
-	} else {
-		setupLog.Info("POD_NAME or POD_NAMESPACE not set, skipping leader pod labeler")
-	}
 }
 
 // addCertWatchersToManager attaches optional certificate watchers to the manager.
