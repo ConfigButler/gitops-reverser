@@ -47,7 +47,7 @@ In [`internal/webhook/audit_handler.go`](internal/webhook/audit_handler.go:86):
 - no request body size limit before decode
 - no explicit server-level timeouts
 - no concurrency guard for burst traffic
-- no path-based cluster ID parser or allowlist validation
+- no path-based cluster ID parser
 
 ### 2.4 E2E and docs drift already visible
 
@@ -78,10 +78,11 @@ Accepted path format:
 
 Rules:
 
+- path prefix is fixed to `/audit-webhook` in this phase (not configurable)
 - reject requests without `{clusterID}`
-- reject unknown `{clusterID}` not in allowlist
+- accept any non-empty `{clusterID}` and handle newly seen cluster IDs
 - emit structured logs with resolved `clusterID`
-- add metric labels for `cluster_id` and `cluster_id_valid`
+- add metric label for `cluster_id`
 
 ### 3.3 TLS policy contract for first step
 
@@ -108,8 +109,6 @@ Add new app config fields for audit server, separate from webhook server fields:
 - audit read timeout
 - audit write timeout
 - audit idle timeout
-- audit allowed cluster IDs
-- audit path prefix default `/audit-webhook`
 
 Add flags in [`parseFlags()`](cmd/main.go:270) for above.
 
@@ -120,7 +119,7 @@ Target file: [`cmd/main.go`](cmd/main.go:77)
 Add functions to:
 
 - build audit `http.ServeMux`
-- register handler pattern on `/{prefix}/`
+- register handler pattern on fixed `/audit-webhook/`
 - initialize TLS cert watcher for audit cert files
 - construct dedicated `http.Server` with explicit timeouts
 - add graceful shutdown using manager context
@@ -135,15 +134,12 @@ Target file: [`internal/webhook/audit_handler.go`](internal/webhook/audit_handle
 
 Add config fields:
 
-- allowed cluster IDs set
-- path prefix
 - max request body bytes
 
 Add behavior:
 
 - parse and validate cluster ID from request path
 - reject invalid path with `400`
-- reject unknown cluster ID with `403`
 - limit body read size before decode
 - include cluster ID in all processing logs
 - include cluster ID metric attribute for [`metrics.AuditEventsReceivedTotal`](internal/webhook/audit_handler.go:172)
@@ -164,8 +160,6 @@ Add explicit `auditIngress` block with:
 
 - `enabled`
 - `port`
-- `pathPrefix`
-- `allowedClusterIDs`
 - `tls.certPath`
 - `tls.certName`
 - `tls.certKey`
@@ -271,9 +265,9 @@ Target file: [`internal/webhook/audit_handler_test.go`](internal/webhook/audit_h
 
 Add table-driven cases for:
 
-- valid path with known cluster ID
+- valid path with cluster ID
 - missing cluster ID path
-- unknown cluster ID
+- newly seen cluster ID is accepted
 - body larger than configured max bytes
 - non-POST path handling remains unchanged
 
@@ -317,8 +311,7 @@ Required changes:
 
 4. E2E validation assertions
    - keep current audit metric checks
-   - add validation that unknown path cluster IDs are rejected
-   - add validation that known cluster IDs are accepted
+   - add validation that cluster IDs from path are accepted, including newly seen IDs
 
 5. Optional strict TLS uplift for e2e
    - phase 1 may keep insecure skip verify for bootstrap simplicity
@@ -352,14 +345,13 @@ Extend audit metric labels to include cluster dimension.
 
 Ensure cardinality protection:
 
-- enforce allowlist so cluster label remains bounded
+- sanitize and constrain cluster ID format/length before labeling
 
 ### 8.3 Error handling
 
 Audit server must return:
 
 - `400` for malformed path or body
-- `403` for disallowed cluster ID
 - `405` for method mismatch
 - `500` only for internal processing errors
 
@@ -384,7 +376,7 @@ Reason:
 Implementation is complete only when all are true:
 
 1. Separate in-binary audit server is active on separate port with separate service exposure.
-2. Audit endpoint requires path-based cluster ID and allowlist validation.
+2. Audit endpoint requires path-based cluster ID on fixed `/audit-webhook/{clusterID}` and accepts newly seen cluster IDs.
 3. Admission webhook behavior remains unchanged.
 4. Helm and kustomize manifests include independent audit TLS and service resources.
 5. Kind e2e setup is updated and passing with new audit path contract.
