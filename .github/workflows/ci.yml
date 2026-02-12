@@ -13,6 +13,8 @@ env:
   IMAGE_NAME: configbutler/gitops-reverser
   IMAGE_TAG: ci-${{ github.sha }}
   CHART_REGISTRY: ghcr.io/configbutler/charts
+  REPO_NAME: ${{ github.event.repository.name }}
+  CI_WORKDIR: /workspaces/${{ github.event.repository.name }}
 
 permissions:
   contents: write
@@ -289,22 +291,21 @@ jobs:
         run: |
           docker run --rm \
             --network host \
-            -v ${{ github.workspace }}:/workspaces \
-            -v $HOME/.kube:/root/.kube \
-            -w /workspaces \
+            -v "${GITHUB_WORKSPACE}:${{ env.CI_WORKDIR }}" \
+            -v "$HOME/.kube:/root/.kube" \
+            -w "${{ env.CI_WORKDIR }}" \
             -e PROJECT_IMAGE=${{ env.PROJECT_IMAGE }} \
             -e KIND_CLUSTER=${{ env.KIND_CLUSTER }} \
             ${{ env.CI_CONTAINER }} \
             bash -c "
-              git config --global --add safe.directory /workspaces
-              test -n \"\$PROJECT_IMAGE\"
-              PROJECT_IMAGE=\"\$PROJECT_IMAGE\" KIND_CLUSTER=\"\$KIND_CLUSTER\" make test-e2e
+              git config --global --add safe.directory ${{ env.CI_WORKDIR }}
+              make test-e2e
             "
 
   e2e-install-smoke:
     name: E2E Install Smoke (${{ matrix.scenario }})
     runs-on: ubuntu-latest
-    needs: [build-ci-container, docker-build, lint-helm]
+    needs: [lint-helm]
     strategy:
       matrix:
         scenario: [helm, manifest]
@@ -355,15 +356,15 @@ jobs:
           TARGET="test-e2e-install-${{ matrix.scenario }}"
           docker run --rm \
             --network host \
-            -v ${{ github.workspace }}:/workspaces \
-            -v $HOME/.kube:/root/.kube \
-            -w /workspaces \
+            -v "${GITHUB_WORKSPACE}:${{ env.CI_WORKDIR }}" \
+            -v "$HOME/.kube:/root/.kube" \
+            -w "${{ env.CI_WORKDIR }}" \
             -e PROJECT_IMAGE=${{ env.PROJECT_IMAGE }} \
             -e KIND_CLUSTER=${{ env.KIND_CLUSTER }} \
             -e HELM_CHART_SOURCE="./gitops-reverser.tgz" \
             ${{ env.CI_CONTAINER }} \
             bash -c "
-              git config --global --add safe.directory /workspaces
+              git config --global --add safe.directory ${{ env.CI_WORKDIR }}
               make ${TARGET}
             "
 
