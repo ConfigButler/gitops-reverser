@@ -1,7 +1,0 @@
-## Append samples of your project ##
-resources:
-  - clusterwatchrule.yaml
-  - watchrule.yaml
-  - gittarget.yaml
-  - gitprovider.yaml
-# +kubebuilder:scaffold:manifestskustomizesamples

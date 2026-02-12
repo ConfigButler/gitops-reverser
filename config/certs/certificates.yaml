@@ -1,0 +1,37 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/name: gitops-reverser
+  name: gitops-reverser-webhook-server-cert
+  namespace: sut
+spec:
+  dnsNames:
+  - gitops-reverser-service.sut.svc
+  - gitops-reverser-service.sut.svc.cluster.local
+  issuerRef:
+    kind: Issuer
+    name: gitops-reverser-selfsigned-issuer
+  privateKey:
+    rotationPolicy: Always
+  secretName: webhook-server-cert
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/name: gitops-reverser
+  name: gitops-reverser-audit-server-cert
+  namespace: sut
+spec:
+  dnsNames:
+  - gitops-reverser-service.sut.svc
+  - gitops-reverser-service.sut.svc.cluster.local
+  issuerRef:
+    kind: Issuer
+    name: gitops-reverser-selfsigned-issuer
+  privateKey:
+    rotationPolicy: Always
+  secretName: audit-webhook-server-cert

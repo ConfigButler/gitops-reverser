@@ -15,7 +15,7 @@ spec:
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
-  name: {{ include "gitops-reverser.fullname" . }}-serving-cert
+  name: {{ include "gitops-reverser.fullname" . }}-webhook-server-cert
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "gitops-reverser.labels" . | nindent 4 }}
@@ -38,7 +38,7 @@ spec:
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
-  name: {{ include "gitops-reverser.fullname" . }}-audit-serving-cert
+  name: {{ include "gitops-reverser.fullname" . }}-audit-server-cert
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "gitops-reverser.labels" . | nindent 4 }}

@@ -1,7 +1,13 @@
-resources:
-- manager.yaml
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
+resources:
+- namespace.yaml
+- crd
+- rbac
+- service.yaml
+- manager.yaml
+- certs
+- webhook.yaml
 images:
 - name: controller
   newName: example.com/gitops-reverser
