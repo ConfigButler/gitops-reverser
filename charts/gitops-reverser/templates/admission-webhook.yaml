@@ -7,7 +7,7 @@ metadata:
     {{- include "gitops-reverser.labels" . | nindent 4 }}
   {{- if .Values.certificates.certManager.enabled }}
   annotations:
-    cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/{{ include "gitops-reverser.fullname" . }}-webhook-server-cert
+    cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/{{ include "gitops-reverser.fullname" . }}-admission-server-cert
   {{- end }}
 webhooks:
 - admissionReviewVersions:
@@ -16,6 +16,7 @@ webhooks:
     service:
       name: {{ include "gitops-reverser.fullname" . }}
       namespace: {{ .Release.Namespace }}
+      port: {{ .Values.service.ports.admission }}
       path: /process-validating-webhook
     {{- if not .Values.certificates.certManager.enabled }}
     caBundle: {{ .Values.webhook.caBundle | b64enc }}

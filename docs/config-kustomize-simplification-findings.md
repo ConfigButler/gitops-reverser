@@ -43,7 +43,7 @@ Why:
 
 References:
 - `config/default/kustomization.yaml:187`
-- Rendered output includes: `cert-manager.io/inject-ca-from: sut/gitops-reverser-webhook-server-cert`
+- Rendered output includes: `cert-manager.io/inject-ca-from: sut/gitops-reverser-admission-server-cert`
 
 ### 4. `certmanager/kustomizeconfig.yaml` is required with `namePrefix`
 Why:
@@ -83,22 +83,22 @@ References:
 
 ## Certificate flow (how certs are used today)
 
-### Admission webhook cert (`webhook-server-cert` secret)
+### Admission webhook cert (`admission-server-cert` secret)
 1. `Certificate` resource requests cert for service DNS.
-2. cert-manager writes secret `webhook-server-cert`.
+2. cert-manager writes secret `admission-server-cert`.
 3. Deployment mounts that secret and passes `--webhook-cert-path`.
-4. webhook server serves TLS on `9443` using cert watcher.
+4. admission-server listener serves TLS on `9443` using cert watcher.
 5. cert-manager injects CA into `ValidatingWebhookConfiguration` annotation target.
 6. kube-apiserver calls webhook via Service over TLS and trusts injected CA.
 
 Key refs:
-- `config/certmanager/webhook-server-cert.yaml:18`
+- `config/certmanager/admission-server-cert.yaml:18`
 - `config/default/manager_webhook_patch.yaml:52`
 - `config/default/kustomization.yaml:187`
 
-### Audit ingress cert (`audit-webhook-server-cert` secret)
+### Audit ingress cert (`audit-server-cert` secret)
 1. Separate `Certificate` resource issues audit cert.
-2. Secret `audit-webhook-server-cert` is mounted.
+2. Secret `audit-server-cert` is mounted.
 3. Manager serves HTTPS audit endpoint on `9444` using `--audit-cert-path`.
 4. In e2e, kube-apiserver audit webhook config uses `insecure-skip-tls-verify: true` (so CA pinning is not enforced in test).
 

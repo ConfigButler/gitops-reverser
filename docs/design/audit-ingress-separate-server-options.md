@@ -6,17 +6,17 @@ Design proposal only, updated with webhook ingress best-practice alignment.
 
 ## Context
 
-Today both endpoints are served by the same controller-runtime webhook server and the same Service:
+Today both endpoints are served by the same controller-runtime admission-server listener and the same Service:
 
 - Admission webhook endpoint [`/process-validating-webhook`](cmd/main.go:191)
 - Audit endpoint [`/audit-webhook`](cmd/main.go:204)
-- Single leader-only Service on port [`443`](charts/gitops-reverser/templates/services.yaml:18) targeting one webhook server port [`9443`](charts/gitops-reverser/values.yaml:70)
+- Single leader-only Service on port [`9443`](charts/gitops-reverser/templates/services.yaml:18) targeting one admission-server port [`9443`](charts/gitops-reverser/values.yaml:70)
 
 This coupling limits independent exposure and independent TLS policy for incoming audit traffic.
 
 ## Objectives
 
-- Move audit ingress to a separate webserver and separate port.
+- Move audit ingress to a separate audit-server listener and separate port.
 - Allow explicit configuration of incoming TLS requirements for audit traffic.
 - Support audit streaming from external or secondary clusters.
 - Provide cluster differentiation options with trade-offs.
@@ -49,11 +49,11 @@ From [`docs/design/best-practices-webhook-ingress.md`](docs/design/best-practice
 
 ---
 
-## Separation options for audit webserver
+## Separation options for audit-server
 
 ### Option A: Same pod, second HTTP server, separate Service and port
 
-Run a second server process inside the manager binary for audit ingest.
+Run a second server process inside the manager binary for audit-server ingest.
 
 Pros:
 
@@ -302,7 +302,7 @@ Minimum design controls:
 graph TD
   A[Source cluster A api server] --> P[/audit-webhook/cluster-a]
   B[Source cluster B api server] --> Q[/audit-webhook/cluster-b]
-  P --> S[Audit webserver separate port]
+  P --> S[audit-server separate port]
   Q --> S
   S --> V[Cluster ID allowlist validator]
   V --> R[Queue and backpressure controls]
@@ -311,4 +311,4 @@ graph TD
 
 ## Final position
 
-A separate audit webserver on a separate port with configurable incoming TLS policy is the correct direction. For cluster differentiation, path-based identity is a practical default when it is combined with strict allowlist and network restrictions. The chart should be evolved to treat audit ingress as its own product surface with dedicated TLS, exposure, identity, and reliability controls.
+A separate audit-server listener on a separate port with configurable incoming TLS policy is the correct direction. For cluster differentiation, path-based identity is a practical default when it is combined with strict allowlist and network restrictions. The chart should be evolved to treat audit ingress as its own product surface with dedicated TLS, exposure, identity, and reliability controls.

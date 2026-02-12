@@ -7,7 +7,7 @@ Execution-focused handoff plan for implementation agent.
 Scope is fixed to:
 
 - single deployment
-- extra in-binary audit webserver
+- extra in-binary audit-server listener
 - path-based cluster recognition
 - Kind remains the e2e cluster target
 
@@ -19,7 +19,7 @@ This document intentionally excludes alternative architecture discussion.
 
 Implement an initial production-ready split where:
 
-- admission webhook keeps running on current webhook server path [`/process-validating-webhook`](cmd/main.go:191)
+- admission webhook keeps running on current admission-server path [`/process-validating-webhook`](cmd/main.go:191)
 - audit ingress moves to a separate server in the same binary on a different port
 - audit ingress is exposed via a dedicated Service
 - cluster identity is derived from request path segment
@@ -31,7 +31,7 @@ Implement an initial production-ready split where:
 
 ### 2.1 Coupling risks
 
-- Both admission and audit handlers are registered on one webhook server in [`cmd/main.go`](cmd/main.go:101) and [`cmd/main.go`](cmd/main.go:204)
+- Both admission and audit handlers are registered on one admission-server listener in [`cmd/main.go`](cmd/main.go:101) and [`cmd/main.go`](cmd/main.go:204)
 - One service endpoint currently fronts this surface in [`charts/gitops-reverser/templates/services.yaml`](charts/gitops-reverser/templates/services.yaml:3)
 - One cert lifecycle currently serves this surface in [`charts/gitops-reverser/templates/certificates.yaml`](charts/gitops-reverser/templates/certificates.yaml:16)
 
@@ -62,10 +62,10 @@ In [`internal/webhook/audit_handler.go`](internal/webhook/audit_handler.go:86):
 
 Implement two servers in one process:
 
-- admission server
-  - existing controller-runtime webhook server
+- admission-server
+  - existing controller-runtime admission-server listener
   - keeps current cert and service behavior
-- audit server
+- audit-server
   - dedicated `http.Server` listener on separate port
   - independent TLS config inputs
   - serves audit paths with cluster path segment
@@ -97,11 +97,11 @@ For phase 1:
 
 ## 4. Concrete code work items
 
-### 4.1 Add audit server config model in main
+### 4.1 Add audit-server config model in main
 
 Target file: [`cmd/main.go`](cmd/main.go:253)
 
-Add new app config fields for audit server, separate from webhook server fields:
+Add new app config fields for audit-server, separate from admission-server fields:
 
 - audit listen address and port
 - audit cert path, cert name, cert key
@@ -112,7 +112,7 @@ Add new app config fields for audit server, separate from webhook server fields:
 
 Add flags in [`parseFlags()`](cmd/main.go:270) for above.
 
-### 4.2 Implement dedicated audit server bootstrap
+### 4.2 Implement dedicated audit-server bootstrap
 
 Target file: [`cmd/main.go`](cmd/main.go:77)
 
@@ -126,7 +126,7 @@ Add functions to:
 
 Implementation note:
 
-- audit server should be started via manager runnable so lifecycle follows manager start and stop.
+- audit-server should be started via manager runnable so lifecycle follows manager start and stop.
 
 ### 4.3 Extend audit handler with path identity and guardrails
 
@@ -146,7 +146,7 @@ Add behavior:
 
 ### 4.4 Keep admission webhook behavior untouched
 
-Do not change current validating webhook registration semantics in [`cmd/main.go`](cmd/main.go:190) and chart registration in [`charts/gitops-reverser/templates/validating-webhook.yaml`](charts/gitops-reverser/templates/validating-webhook.yaml:16).
+Do not change current validating webhook registration semantics in [`cmd/main.go`](cmd/main.go:190) and chart registration in [`charts/gitops-reverser/templates/admission-webhook.yaml`](charts/gitops-reverser/templates/admission-webhook.yaml:16).
 
 ---
 
@@ -176,7 +176,7 @@ Keep existing webhook block for admission as-is in first phase.
 
 Target file: [`charts/gitops-reverser/templates/deployment.yaml`](charts/gitops-reverser/templates/deployment.yaml:41)
 
-Add container args for audit server flags and add second named container port for audit ingress.
+Add container args for audit-server flags and add second named container port for audit ingress.
 
 Mount dedicated audit TLS secret path in addition to admission cert mount.
 
@@ -243,7 +243,7 @@ Actions:
 - add replacement wiring for audit service name and namespace into cert DNS entries
 - keep admission CA injection for validating webhook intact
 
-### 6.3 Add manager patch entries for audit server args and mounts
+### 6.3 Add manager patch entries for audit-server args and mounts
 
 Relevant file: [`config/default/manager_webhook_patch.yaml`](config/default/manager_webhook_patch.yaml:1)
 
@@ -273,7 +273,7 @@ Add table-driven cases for:
 
 ### 7.2 Main bootstrap tests
 
-Add new tests for config parsing and audit server bootstrap behavior.
+Add new tests for config parsing and audit-server bootstrap behavior.
 
 Suggested new file:
 
@@ -284,7 +284,7 @@ Cover:
 - default flag values
 - custom audit flag parsing
 - invalid timeout parsing behavior if introduced
-- audit server runnable registration
+- audit-server runnable registration
 
 ### 7.3 E2E changes on Kind
 
@@ -349,7 +349,7 @@ Ensure cardinality protection:
 
 ### 8.3 Error handling
 
-Audit server must return:
+Audit-server must return:
 
 - `400` for malformed path or body
 - `405` for method mismatch
@@ -375,7 +375,7 @@ Reason:
 
 Implementation is complete only when all are true:
 
-1. Separate in-binary audit server is active on separate port with separate service exposure.
+1. Separate in-binary audit-server is active on separate port with separate service exposure.
 2. Audit endpoint requires path-based cluster ID on fixed `/audit-webhook/{clusterID}` and accepts newly seen cluster IDs.
 3. Admission webhook behavior remains unchanged.
 4. Helm and kustomize manifests include independent audit TLS and service resources.
@@ -398,6 +398,6 @@ Implementation is complete only when all are true:
 - Update docs for cluster audit config in [`docs/audit-setup/cluster/audit/webhook-config.yaml`](docs/audit-setup/cluster/audit/webhook-config.yaml:1)
 - Update Kind docs in [`test/e2e/kind/README.md`](test/e2e/kind/README.md:1)
 - Update chart docs in [`charts/gitops-reverser/README.md`](charts/gitops-reverser/README.md:1)
-- Keep architecture alternatives in [`docs/design/audit-ingress-separate-webserver-options.md`](docs/design/audit-ingress-separate-webserver-options.md:1) and keep this document implementation-only
+- Keep architecture alternatives in [`docs/design/audit-ingress-separate-server-options.md`](docs/design/audit-ingress-separate-server-options.md:1) and keep this document implementation-only
 
 This plan is ready to hand to a coding agent for direct execution.

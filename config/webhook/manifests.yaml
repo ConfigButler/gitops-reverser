@@ -10,6 +10,7 @@ webhooks:
     service:
       name: webhook-service
       namespace: system
+      port: 9443
       path: /process-validating-webhook
   failurePolicy: Ignore
   name: gitops-reverser.configbutler.ai

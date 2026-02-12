@@ -59,7 +59,7 @@ servers:
       # Controls webhook TLS wiring in the controller process.
       # Keep enabled for normal Kubernetes webhook operation.
       enabled: true
-      certPath: "/tmp/k8s-webhook-server/webhook-server-certs"
+      certPath: "/tmp/k8s-admission-server/admission-server-certs"
       certName: "tls.crt"
       certKey: "tls.key"
 
@@ -70,7 +70,7 @@ servers:
     tls:
       # Serve audit ingress over HTTPS when true, HTTP when false.
       enabled: true
-      certPath: "/tmp/k8s-audit-webhook-server/webhook-server-certs"
+      certPath: "/tmp/k8s-audit-server/audit-server-certs"
       certName: "tls.crt"
       certKey: "tls.key"
       secretName: ""
@@ -85,7 +85,7 @@ servers:
     port: 8080
     tls:
       # Serve metrics over HTTPS when true, HTTP when false.
-      enabled: true
+      enabled: false
       certPath: ""
       certName: "tls.crt"
       certKey: "tls.key"
@@ -187,7 +187,7 @@ service:
   # Optional fixed ClusterIP (useful for Kind/bootstrap environments before DNS is ready)
   clusterIP: ""
   ports:
-    admission: 443
+    admission: 9443
     audit: 9444
     metrics: 8080
 
