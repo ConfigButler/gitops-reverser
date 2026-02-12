@@ -11,9 +11,10 @@ fi
 
 install_helm() {
   echo "Installing from Helm chart (mode=helm)"
-  helm upgrade --install "cool-release" charts/gitops-reverser \
+  helm upgrade --install "name-is-cool-but-not-relevant" charts/gitops-reverser \
     --namespace "${NAMESPACE}" \
-    --create-namespace
+    --create-namespace \
+    --set fullnameOverride=gitops-reverser
 }
 
 install_manifest() {
@@ -23,13 +24,13 @@ install_manifest() {
 
 verify_installation() {
   echo "Waiting for deployment rollout"
-  kubectl -n "${NAMESPACE}" rollout status deployment/gitops-reverser --timeout=30s
+  kubectl -n "${NAMESPACE}" rollout status deployment/gitops-reverser --timeout=10s
 
   echo "Checking deployment availability"
-  kubectl -n "${NAMESPACE}" wait --for=condition=available deployment/gitops-reverser --timeout=30s
+  kubectl -n "${NAMESPACE}" wait --for=condition=available deployment/gitops-reverser --timeout=10s
 
   echo "Checking pod readiness"
-  kubectl -n "${NAMESPACE}" wait --for=condition=ready pod -l control-plane=controller-manager --timeout=30s
+  kubectl -n "${NAMESPACE}" wait --for=condition=ready pod -l control-plane=controller-manager --timeout=10s
 
   echo "Checking CRDs"
   kubectl get crd \
