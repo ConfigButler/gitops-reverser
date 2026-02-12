@@ -259,7 +259,3 @@ test-e2e-install-helm: setup-cluster cleanup-webhook setup-cert-manager wait-cer
 .PHONY: test-e2e-install-manifest
 test-e2e-install-manifest: setup-cluster cleanup-webhook setup-cert-manager wait-cert-manager ## Smoke test: install from generated dist/install.yaml and verify rollout
 	@bash test/e2e/scripts/install-smoke.sh manifest
-
-.PHONY: test-e2e-install-smoke
-test-e2e-install-smoke: test-e2e-install-helm test-e2e-install-manifest ## Run all Layer 1 install smoke tests
-	@echo "✅ All install smoke tests passed"
