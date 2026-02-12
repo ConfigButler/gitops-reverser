@@ -54,7 +54,7 @@ RUN curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/i
     | sh -s -- -b /usr/local/bin ${GOLANGCI_LINT_VERSION}
 
 # Set working directory
-WORKDIR /workspace
+WORKDIR /workspaces
 
 # Create godev group for shared Go development directory access
 # This allows both root (during build) and vscode user (during dev) to write to /go
@@ -128,8 +128,8 @@ RUN groupadd -f docker && usermod -aG docker vscode
 
 # Ensure vscode user can write to workspace (empty, so fast)
 # Note: /go permissions are already set in CI stage and preserved here
-RUN chown -R vscode:vscode /workspace && \
-    chmod -R 755 /workspace
+RUN chown -R vscode:vscode /workspaces && \
+    chmod -R 755 /workspaces
 
 # Switch back to vscode user for development
 USER vscode

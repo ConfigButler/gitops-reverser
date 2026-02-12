@@ -59,10 +59,11 @@ For Go specifically:
 
 ### 5) Recommended improvements for this repo
 
-1. Make workspace targeting explicit (optional but reduces ambiguity).
+1. Make workspace targeting explicit (recommended to remove ambiguity).
 
 ```json
 {
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/${localWorkspaceFolderBasename},type=bind",
   "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}"
 }
 ```
@@ -94,7 +95,40 @@ Notes:
 - The cache targets above are intentionally mapped to Go defaults in this container.
 - Earlier advice that swapped these two cache targets is incorrect.
 
-### 6) Practical balance (local machine vs container)
+### 6) Clean local-to-container path strategy
+
+Recommended baseline:
+
+- Host repo path: keep your normal path, for example `~/git/gitops-reverser2`.
+- Container repo path: standardize on `/workspaces/gitops-reverser2`.
+- Do not depend on `/workspace` for active development files.
+
+This gives:
+
+- Normal local Git workflow on host.
+- Predictable in-container path for scripts/tools.
+- Fewer permission/path surprises when onboarding or troubleshooting.
+
+### 7) Shared Dockerfile for devcontainer and CI: benefits and constraints
+
+Current setup uses `.devcontainer/Dockerfile` in both local Dev Container and GitHub Actions CI (`.github/workflows/ci.yml`), which is beneficial:
+
+- Single source of truth for tool versions.
+- Less drift between local and CI behavior.
+
+But it requires discipline:
+
+- Keep stage intent clear (`ci` stage for CI runtime, `dev` stage for local extras).
+- Avoid dev-only assumptions in shared base stages (for example hardcoded workspace paths).
+- Keep runtime-mount concerns in `devcontainer.json` (workspace mount, post-create behavior), not in CI-oriented image logic.
+
+Practical rule:
+
+- Image should provide tools.
+- `devcontainer.json` should define developer runtime ergonomics.
+- CI workflow should choose the appropriate image stage and avoid relying on local-mount semantics.
+
+### 8) Practical balance (local machine vs container)
 
 - Keep source code on the host via bind mount for normal editor/Git workflow.
 - Keep heavy generated caches and dependencies in container volumes for speed and reproducibility.

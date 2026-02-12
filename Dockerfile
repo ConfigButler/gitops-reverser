@@ -5,7 +5,7 @@ FROM golang:1.25.6 AS builder
 ARG TARGETOS
 ARG TARGETARCH
 
-WORKDIR /workspace
+WORKDIR /workspaces
 
 # Copy the Go Modules manifests
 COPY go.mod go.sum ./
@@ -25,7 +25,7 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -o manager cmd/
 # Refer to https://github.com/GoogleContainerTools/distroless for more details
 FROM gcr.io/distroless/static:debug
 WORKDIR /
-COPY --from=builder /workspace/manager .
+COPY --from=builder /workspaces/manager .
 USER 65532:65532
 
 ENTRYPOINT ["/manager"]
