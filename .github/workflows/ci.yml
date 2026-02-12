@@ -289,14 +289,14 @@ jobs:
         run: |
           docker run --rm \
             --network host \
-            -v ${{ github.workspace }}:/workspace \
+            -v ${{ github.workspace }}:/workspaces \
             -v $HOME/.kube:/root/.kube \
-            -w /workspace \
+            -w /workspaces \
             -e PROJECT_IMAGE=${{ env.PROJECT_IMAGE }} \
             -e KIND_CLUSTER=${{ env.KIND_CLUSTER }} \
             ${{ env.CI_CONTAINER }} \
             bash -c "
-              git config --global --add safe.directory /workspace
+              git config --global --add safe.directory /workspaces
               test -n \"\$PROJECT_IMAGE\"
               PROJECT_IMAGE=\"\$PROJECT_IMAGE\" KIND_CLUSTER=\"\$KIND_CLUSTER\" make test-e2e
             "
@@ -355,15 +355,15 @@ jobs:
           TARGET="test-e2e-install-${{ matrix.scenario }}"
           docker run --rm \
             --network host \
-            -v ${{ github.workspace }}:/workspace \
+            -v ${{ github.workspace }}:/workspaces \
             -v $HOME/.kube:/root/.kube \
-            -w /workspace \
+            -w /workspaces \
             -e PROJECT_IMAGE=${{ env.PROJECT_IMAGE }} \
             -e KIND_CLUSTER=${{ env.KIND_CLUSTER }} \
             -e HELM_CHART_SOURCE="./gitops-reverser.tgz" \
             ${{ env.CI_CONTAINER }} \
             bash -c "
-              git config --global --add safe.directory /workspace
+              git config --global --add safe.directory /workspaces
               make ${TARGET}
             "
 

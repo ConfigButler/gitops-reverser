@@ -5,6 +5,8 @@
     "context": "..",
     "target": "dev"
   },
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/${localWorkspaceFolderBasename},type=bind",
+  "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
   "features": {
     "ghcr.io/devcontainers/features/common-utils:2": {
       "userUid": "automatic",
@@ -62,9 +64,11 @@
       ]
     }
   },
-  "postCreateCommand": "sudo chmod 666 /var/run/docker.sock || true && docker network create -d=bridge --subnet=172.19.0.0/24 kind || true && sudo chown -R vscode:vscode /workspace || true",
+  "postCreateCommand": "sudo chmod 666 /var/run/docker.sock || true && docker network create -d=bridge --subnet=172.19.0.0/24 kind || true && sudo chown -R vscode:vscode ${containerWorkspaceFolder} || true",
   "remoteUser": "vscode",
   "mounts": [
+    "source=gomodcache,target=/go/pkg/mod,type=volume",
+    "source=gobuildcache,target=/home/vscode/.cache/go-build,type=volume",
     "source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind"
   ],
   "containerEnv": {
