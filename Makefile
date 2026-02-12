@@ -249,13 +249,17 @@ setup-e2e: setup-cert-manager setup-gitea-e2e setup-prometheus-e2e ## Setup all 
 	@echo "✅ E2E infrastructure initialized"
 
 .PHONY: wait-cert-manager
-wait-cert-manager: ## Wait for cert-manager pods to become ready
+wait-cert-manager: setup-cert-manager ## Wait for cert-manager pods to become ready
 	@$(KUBECTL) wait --for=condition=ready pod -l app.kubernetes.io/instance=cert-manager -n cert-manager --timeout=300s
 
+## Smoke test: install from local Helm chart and verify rollout
+## Only tested in GH for now
 .PHONY: test-e2e-install-helm
-test-e2e-install-helm: setup-cluster cleanup-webhook setup-cert-manager wait-cert-manager manifests helm-sync ## Smoke test: install from local Helm chart and verify rollout
+test-e2e-install-helm: setup-e2e wait-cert-manager
 	@bash test/e2e/scripts/install-smoke.sh helm
 
+## Smoke test: install from generated dist/install.yaml and verify rollout
+## Only tested in GH for now
 .PHONY: test-e2e-install-manifest
-test-e2e-install-manifest: setup-cluster cleanup-webhook setup-cert-manager wait-cert-manager ## Smoke test: install from generated dist/install.yaml and verify rollout
+test-e2e-install-manifest: setup-e2e wait-cert-manager
 	@bash test/e2e/scripts/install-smoke.sh manifest
