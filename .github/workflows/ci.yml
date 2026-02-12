@@ -360,6 +360,7 @@ jobs:
             -w /workspace \
             -e PROJECT_IMAGE=${{ env.PROJECT_IMAGE }} \
             -e KIND_CLUSTER=${{ env.KIND_CLUSTER }} \
+            -e HELM_CHART_SOURCE="./gitops-reverser.tgz" \
             ${{ env.CI_CONTAINER }} \
             bash -c "
               git config --global --add safe.directory /workspace
