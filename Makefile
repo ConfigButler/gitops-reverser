@@ -145,6 +145,7 @@ build-installer: manifests helm-sync ## Generate a consolidated YAML from Helm c
 	@$(HELM) template gitops-reverser charts/gitops-reverser \
 		--namespace gitops-reverser \
 		--set labels.managedBy=kubectl \
+		--set createNamespace=true \
 		--include-crds > dist/install.yaml
 	@echo "✅ Generated dist/install.yaml ($(shell wc -l < dist/install.yaml) lines)"
 

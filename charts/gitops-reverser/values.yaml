@@ -13,6 +13,9 @@ image:
 imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""
+# Create the release namespace as part of chart rendering (useful for install.yaml workflows).
+# Keep false for standard Helm installs where --create-namespace is preferred.
+createNamespace: false
 
 serviceAccount:
   # Specifies whether a service account should be created
