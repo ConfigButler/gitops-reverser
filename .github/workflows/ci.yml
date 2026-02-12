@@ -303,7 +303,8 @@ jobs:
             ${{ env.CI_CONTAINER }} \
             bash -c "
               git config --global --add safe.directory /workspace
-              make test-e2e
+              test -n \"\$PROJECT_IMAGE\"
+              PROJECT_IMAGE=\"\$PROJECT_IMAGE\" KIND_CLUSTER=\"\$KIND_CLUSTER\" make test-e2e
             "
 
   e2e-install-smoke:
@@ -374,7 +375,8 @@ jobs:
             ${{ env.CI_CONTAINER }} \
             bash -c "
               git config --global --add safe.directory /workspace
-              make ${TARGET}
+              test -n \"\$PROJECT_IMAGE\"
+              PROJECT_IMAGE=\"\$PROJECT_IMAGE\" KIND_CLUSTER=\"\$KIND_CLUSTER\" make ${TARGET}
             "
 
   # Release job only runs on push to main after tests pass
