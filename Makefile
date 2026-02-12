@@ -246,3 +246,19 @@ cleanup-prometheus-e2e: ## Clean up Prometheus e2e environment
 .PHONY: setup-e2e
 setup-e2e: setup-cert-manager setup-gitea-e2e setup-prometheus-e2e ## Setup all e2e test infrastructure
 	@echo "✅ E2E infrastructure initialized"
+
+.PHONY: wait-cert-manager
+wait-cert-manager: ## Wait for cert-manager pods to become ready
+	@$(KUBECTL) wait --for=condition=ready pod -l app.kubernetes.io/instance=cert-manager -n cert-manager --timeout=300s
+
+.PHONY: test-e2e-install-helm
+test-e2e-install-helm: setup-cluster cleanup-webhook setup-cert-manager wait-cert-manager manifests helm-sync ## Smoke test: install from local Helm chart and verify rollout
+	@bash test/e2e/scripts/install-smoke.sh helm
+
+.PHONY: test-e2e-install-manifest
+test-e2e-install-manifest: setup-cluster cleanup-webhook setup-cert-manager wait-cert-manager ## Smoke test: install from generated dist/install.yaml and verify rollout
+	@bash test/e2e/scripts/install-smoke.sh manifest
+
+.PHONY: test-e2e-install-smoke
+test-e2e-install-smoke: test-e2e-install-helm test-e2e-install-manifest ## Run all Layer 1 install smoke tests
+	@echo "✅ All install smoke tests passed"
