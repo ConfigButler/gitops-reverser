@@ -40,6 +40,8 @@ Reverse GitOps gives you both: the interactivity of the Kubernetes API with Git'
 
 🚨 This is early stage software. CRDs and behavior may change; not recommended for production yet. Feedback and contributions are very welcome!
 
+Current limitation: GitOps Reverser must run as a single pod (`replicas=1`). Multi-pod/HA operation is not supported yet.
+
 ### Use of AI
 
 I have been thinking about the idea behind GitOps Reverser for several years (I've given up my fulltime job to work on it). Some of the hardest parts, especially writing to Git efficiently and safely under load, were designed and implemented manually. The rest is vibe coded, and needs more refinement before I would run it in production.
@@ -158,6 +160,7 @@ Avoid infinite loops: Do not point GitOps (Argo CD/Flux) and GitOps Reverser at 
 
 ## Known limitations
 
+- GitOps Reverser currently supports only a single controller pod (no multi-pod/HA yet).
 - Avoid multiple GitProvider configurations pointing at the same repo to prevent queue collisions (see [`docs/TODO.md`](docs/TODO.md)).
 - Queue collisions are possible when multiple configs target the same repository; mitigation is planned.
 
