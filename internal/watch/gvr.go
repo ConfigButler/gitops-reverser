@@ -178,6 +178,10 @@ func addGVR(
 	out *[]GVR,
 	seen map[string]struct{},
 ) {
+	if shouldIgnoreResource(group, resource) {
+		return
+	}
+
 	key := group + "|" + version + "|" + resource + "|" + string(scope)
 	if _, ok := seen[key]; ok {
 		return
