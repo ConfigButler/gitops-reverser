@@ -34,10 +34,10 @@ sudo mkdir -p \
 # Fix ownership for workspace and cache roots used by tooling
 if [ -d "${workspace_dir}" ]; then
   log "Fixing ownership for workspace and cache directories"
-  sudo chown -R vscode:vscode "${workspace_dir}" /home/vscode/.cache || true
+  sudo chown -R vscode:vscode "${workspace_dir}" /home/vscode || true
 else
   log "Workspace directory not found; fixing ownership for cache only"
-  sudo chown -R vscode:vscode /home/vscode/.cache || true
+  sudo chown -R vscode:vscode /home/vscode || true
 fi
 
 log "post-create completed"
