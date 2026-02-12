@@ -3,6 +3,7 @@ set -euo pipefail
 
 MODE="${1:-}"
 NAMESPACE="gitops-reverser"
+HELM_CHART_SOURCE="${HELM_CHART_SOURCE:-charts/gitops-reverser}"
 
 if [[ -z "${MODE}" ]]; then
   echo "usage: $0 <helm|manifest>"
@@ -10,8 +11,8 @@ if [[ -z "${MODE}" ]]; then
 fi
 
 install_helm() {
-  echo "Installing from Helm chart (mode=helm)"
-  helm upgrade --install "name-is-cool-but-not-relevant" charts/gitops-reverser \
+  echo "Installing from Helm chart (mode=helm, source=${HELM_CHART_SOURCE})"
+  helm upgrade --install "name-is-cool-but-not-relevant" "${HELM_CHART_SOURCE}" \
     --namespace "${NAMESPACE}" \
     --create-namespace \
     --set fullnameOverride=gitops-reverser
