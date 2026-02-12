@@ -5,9 +5,9 @@ kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 nodes:
 - role: control-plane
-  # Mount the entire audit directory using HOST path for Docker-in-Docker
+  # Mount the entire audit directory using $PROJECT_PATH path for Docker-in-Docker (or $HOST_PROJECT_PATH if you use mount to the docker socket)
   extraMounts:
-  - hostPath: ${HOST_PROJECT_PATH}/test/e2e/kind/audit
+  - hostPath: ${PROJECT_PATH}/test/e2e/kind/audit
     containerPath: /etc/kubernetes/audit
     readOnly: false
 

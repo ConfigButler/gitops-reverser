@@ -262,9 +262,9 @@ jobs:
 
       - name: Generate Kind cluster config from template
         env:
-          HOST_PROJECT_PATH: ${{ github.workspace }}  # docker in docker, so we need to pass the host path
+          PROJECT_PATH: ${{ github.workspace }}
         run: |
-          echo "🔧 Generating cluster config with HOST_PROJECT_PATH=${HOST_PROJECT_PATH}"
+          echo "🔧 Generating cluster config with PROJECT_PATH=${PROJECT_PATH}"
           envsubst < test/e2e/kind/cluster-template.yaml > test/e2e/kind/cluster.yaml
           echo "✅ Generated configuration:"
           cat test/e2e/kind/cluster.yaml
@@ -326,9 +326,9 @@ jobs:
 
       - name: Generate Kind cluster config from template
         env:
-          HOST_PROJECT_PATH: ${{ github.workspace }}
+          PROJECT_PATH: ${{ github.workspace }}
         run: |
-          echo "🔧 Generating cluster config with HOST_PROJECT_PATH=${HOST_PROJECT_PATH}"
+          echo "🔧 Generating cluster config with PROJECT_PATH=${PROJECT_PATH}"
           envsubst < test/e2e/kind/cluster-template.yaml > test/e2e/kind/cluster.yaml
           echo "✅ Generated configuration:"
           cat test/e2e/kind/cluster.yaml

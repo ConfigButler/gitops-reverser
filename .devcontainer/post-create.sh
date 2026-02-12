@@ -6,10 +6,6 @@ log() {
   echo "[post-create] $*"
 }
 
-# Keep docker socket usable in the devcontainer (best-effort)
-log "Setting permissions on /var/run/docker.sock (best-effort)"
-sudo chmod 666 /var/run/docker.sock || true
-
 # Resolve workspace path in a way that works both inside and outside
 # VS Code-specific shell variable injection.
 workspace_dir="${1:-${containerWorkspaceFolder:-${WORKSPACE_FOLDER:-$(pwd)}}}"
