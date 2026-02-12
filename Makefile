@@ -82,7 +82,7 @@ cleanup-cluster: ## Tear down the Kind cluster used for e2e tests
 
 .PHONY: test-e2e
 test-e2e: setup-cluster cleanup-webhook setup-e2e manifests setup-port-forwards ## Run end-to-end tests in Kind cluster, note that vet, fmt and generate are not run!
-	KIND_CLUSTER=$(KIND_CLUSTER) go test ./test/e2e/ -v -ginkgo.v
+	KIND_CLUSTER=$(KIND_CLUSTER) PROJECT_IMAGE=$(PROJECT_IMAGE) go test ./test/e2e/ -v -ginkgo.v
 
 .PHONY: cleanup-webhook
 cleanup-webhook: ## Preventive cleanup of ValidatingWebhookConfiguration potenially left by previous test runs
@@ -161,7 +161,7 @@ uninstall: manifests ## Uninstall CRDs from the K8s cluster specified in ~/.kube
 
 .PHONY: deploy
 deploy: manifests ## Deploy controller to the K8s cluster specified in ~/.kube/config.
-	cd config && $(KUSTOMIZE) edit set image controller=${IMG}
+	cd config && $(KUSTOMIZE) edit set image gitops-reverser=${IMG}
 	$(KUSTOMIZE) build config | $(KUBECTL) apply -f -
 
 .PHONY: undeploy
