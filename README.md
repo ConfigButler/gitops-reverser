@@ -158,17 +158,15 @@ Avoid infinite loops: Do not point GitOps (Argo CD/Flux) and GitOps Reverser at 
 - Drift detection (use commits as alert inputs)
 - Hybrid (traditional GitOps for infra; Reverser for app/config changes)
 
-## Known limitations
+## Known limitations / design choices
 
 - GitOps Reverser currently supports only a single controller pod (no multi-pod/HA yet).
-- Avoid multiple GitProvider configurations pointing at the same repo to prevent queue collisions (see [`docs/TODO.md`](docs/TODO.md)).
-- Queue collisions are possible when multiple configs target the same repository; mitigation is planned.
+- `Secret` resources (`core/v1`, `secrets`) are intentionally ignored and never written to Git, even if a `WatchRule` includes `secrets` or `*`.
+- Avoid multiple GitProvider configurations pointing at the same repo to prevent queue collisions.
+- Queue collisions are possible when multiple configs target the same repository (so don't do that).
 
-## Monitoring
 
-Exposes basic OpenTelemetry metrics. See `config/prometheus/` for example manifests.
-
-## Other options to consider
+## Other applications to consider
 
 | **Tool** | **How it Works** | **Key Differences** | 
 |---|---|---|
