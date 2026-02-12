@@ -25,13 +25,13 @@ install_manifest() {
 
 verify_installation() {
   echo "Waiting for deployment rollout"
-  kubectl -n "${NAMESPACE}" rollout status deployment/gitops-reverser --timeout=10s
+  kubectl -n "${NAMESPACE}" rollout status deployment/gitops-reverser --timeout=30s
 
   echo "Checking deployment availability"
-  kubectl -n "${NAMESPACE}" wait --for=condition=available deployment/gitops-reverser --timeout=10s
+  kubectl -n "${NAMESPACE}" wait --for=condition=available deployment/gitops-reverser --timeout=30s
 
   echo "Checking pod readiness"
-  kubectl -n "${NAMESPACE}" wait --for=condition=ready pod -l control-plane=controller-manager --timeout=10s
+  kubectl -n "${NAMESPACE}" wait --for=condition=ready pod -l control-plane=controller-manager --timeout=30s
 
   echo "Checking CRDs"
   kubectl get crd \

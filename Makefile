@@ -43,10 +43,12 @@ help: ## Display this help.
 
 .PHONY: manifests
 manifests: ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects.
+	@rm -f config/crd/bases/*.yaml
 	$(CONTROLLER_GEN) rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases
 
 .PHONY: helm-sync
 helm-sync: ## Sync CRDs and roles from config/crd/bases to Helm chart crds directory (for packaging)
+	@rm -f charts/gitops-reverser/crds/*.yaml
 	@cp config/crd/bases/*.yaml charts/gitops-reverser/crds/
 	@cp config/rbac/role.yaml charts/gitops-reverser/config
 
