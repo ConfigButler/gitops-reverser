@@ -5,10 +5,10 @@ resources:
 - crd
 - rbac
 - service.yaml
-- manager.yaml
+- deployment.yaml
 - certs
 - webhook.yaml
 images:
-- name: controller
+- name: gitops-reverser
   newName: example.com/gitops-reverser
   newTag: v0.0.1
