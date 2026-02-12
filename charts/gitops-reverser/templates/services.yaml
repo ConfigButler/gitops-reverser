@@ -14,12 +14,12 @@ spec:
   clusterIP: {{ .Values.service.clusterIP }}
   {{- end }}
   ports:
-    - name: webhook-server
+    - name: admission
       port: {{ .Values.service.ports.admission }}
       targetPort: {{ .Values.servers.admission.port }}
       protocol: TCP
     {{- if .Values.servers.audit.enabled }}
-    - name: audit-server
+    - name: audit
       port: {{ .Values.service.ports.audit }}
       targetPort: {{ .Values.servers.audit.port }}
       protocol: TCP

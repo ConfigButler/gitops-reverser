@@ -4,9 +4,9 @@
 
 Improve consistency across the three HTTPS surfaces:
 
-1. admission webhook server
+1. admission-server
 2. audit ingress server
-3. metrics server
+3. metrics-server
 
 With Service topology now simplified after removing the leader-only Service.
 
@@ -179,7 +179,7 @@ network:
     name: "" # defaults to {{ include "gitops-reverser.fullname" . }}
     type: ClusterIP
     ports:
-      admission: 443
+      admission: 9443
       audit: 8444
       metrics: 8443
 

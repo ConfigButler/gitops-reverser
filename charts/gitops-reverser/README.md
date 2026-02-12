@@ -85,7 +85,7 @@ The chart deploys 1 replica by default:
                ▼
 ┌──────────────────────────────────────────┐
 │        gitops-reverser (Service)         │
-│  Ports: admission(443), audit(9444), metrics(8080) |
+│  Ports: admission(9443), audit(9444), metrics(8080) |
 └──────────────┬───────────────────────────┘
                │
                ▼
@@ -98,9 +98,7 @@ The chart deploys 1 replica by default:
 
 **Key Features:**
 - **Single-pod operation**: Minimal moving parts while HA work is deferred
-- **Single Service topology**: Admission, audit, and metrics on one Service
-- **Pod anti-affinity**: Pods spread across different nodes
-- **Pod disruption budget**: Ensures at least 1 pod available during maintenance
+- **Single Service topology**: admission, audit, and metrics on one Service
 
 ## Configuration
 
@@ -176,7 +174,7 @@ webhook:
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `replicaCount` | Number of controller replicas | `1` |
+| `replicaCount` | Number of controller replicas (can't be higher than 1 for now, sorry) | `1` |
 | `image.repository` | Container image repository | `ghcr.io/configbutler/gitops-reverser` |
 | `webhook.validating.failurePolicy` | Webhook failure policy (Ignore/Fail) | `Ignore` |
 | `servers.admission.tls.enabled` | Serve admission webhook with TLS (disable only for local/testing) | `true` |
@@ -184,14 +182,14 @@ webhook:
 | `servers.audit.port` | Audit container port | `9444` |
 | `servers.audit.tls.enabled` | Serve audit ingress with TLS | `true` |
 | `servers.audit.maxRequestBodyBytes` | Max accepted audit request size | `10485760` |
-| `servers.audit.timeouts.read` | Audit server read timeout | `15s` |
-| `servers.audit.timeouts.write` | Audit server write timeout | `30s` |
-| `servers.audit.timeouts.idle` | Audit server idle timeout | `60s` |
-| `servers.audit.tls.secretName` | Secret name for audit TLS cert/key | `<release>-audit-server-tls-cert` |
+| `servers.audit.timeouts.read` | Audit-server read timeout | `15s` |
+| `servers.audit.timeouts.write` | Audit-server write timeout | `30s` |
+| `servers.audit.timeouts.idle` | Audit-server idle timeout | `60s` |
+| `servers.audit.tls.secretName` | Secret name for audit TLS cert/key | `<release>-audit-server-cert` |
 | `servers.metrics.bindAddress` | Metrics listener bind address | `:8080` |
 | `servers.metrics.tls.enabled` | Serve metrics with TLS | `true` |
 | `service.clusterIP` | Optional fixed ClusterIP for single controller Service | `""` |
-| `service.ports.admission` | Service port for admission webhook | `443` |
+| `service.ports.admission` | Service port for admission webhook | `9443` |
 | `service.ports.audit` | Service port for audit ingress | `9444` |
 | `service.ports.metrics` | Service port for metrics | `8080` |
 | `certificates.certManager.enabled` | Use cert-manager for certificates | `true` |
@@ -314,7 +312,7 @@ Check certificate status:
 
 ```bash
 kubectl get certificate -n gitops-reverser-system
-kubectl describe certificate gitops-reverser-webhook-server-tls-cert -n gitops-reverser-system
+kubectl describe certificate gitops-reverser-admission-server-cert -n gitops-reverser-system
 ```
 
 If cert-manager is not working:
@@ -384,31 +382,10 @@ webhook:
 Create certificate secret manually:
 
 ```bash
-kubectl create secret tls gitops-reverser-webhook-server-tls-cert \
+kubectl create secret tls gitops-reverser-admission-server-cert \
   --cert=path/to/tls.crt \
   --key=path/to/tls.key \
   -n gitops-reverser-system
-```
-
-### Network Policies
-
-Enable network policies for additional security:
-
-```yaml
-networkPolicy:
-  enabled: true
-  ingress:
-    - from:
-      - namespaceSelector: {}
-      ports:
-      - protocol: TCP
-        port: 9443  # webhook port
-  egress:
-    - to:
-      - namespaceSelector: {}
-      ports:
-      - protocol: TCP
-        port: 443  # Kubernetes API
 ```
 
 ### Custom Resource Limits

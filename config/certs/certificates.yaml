@@ -4,7 +4,7 @@ metadata:
   labels:
     app.kubernetes.io/managed-by: kustomize
     app.kubernetes.io/name: gitops-reverser
-  name: gitops-reverser-webhook-server-cert
+  name: gitops-reverser-admission-server-cert
   namespace: sut
 spec:
   dnsNames:
@@ -15,7 +15,7 @@ spec:
     name: gitops-reverser-selfsigned-issuer
   privateKey:
     rotationPolicy: Always
-  secretName: webhook-server-cert
+  secretName: admission-server-cert
 ---
 apiVersion: cert-manager.io/v1
 kind: Certificate
@@ -34,4 +34,4 @@ spec:
     name: gitops-reverser-selfsigned-issuer
   privateKey:
     rotationPolicy: Always
-  secretName: audit-webhook-server-cert
+  secretName: audit-server-cert

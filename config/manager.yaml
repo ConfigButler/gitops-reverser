@@ -26,8 +26,8 @@ spec:
         - --metrics-bind-address=:8443
         - --metrics-insecure
         - --health-probe-bind-address=:8081
-        - --webhook-cert-path=/tmp/k8s-webhook-server/webhook-server-certs
-        - --audit-cert-path=/tmp/k8s-audit-webhook-server/webhook-server-certs
+        - --webhook-cert-path=/tmp/k8s-admission-server/admission-server-certs
+        - --audit-cert-path=/tmp/k8s-audit-server/audit-server-certs
         command:
         - /manager
         env:
@@ -49,10 +49,13 @@ spec:
         name: manager
         ports:
         - containerPort: 9443
-          name: webhook-server
+          name: admission
           protocol: TCP
         - containerPort: 9444
-          name: audit-server
+          name: audit
+          protocol: TCP
+        - containerPort: 8443
+          name: metrics
           protocol: TCP
         readinessProbe:
           httpGet:
@@ -76,10 +79,10 @@ spec:
         volumeMounts:
         - mountPath: /tmp
           name: tmp-dir
-        - mountPath: /tmp/k8s-webhook-server/webhook-server-certs
+        - mountPath: /tmp/k8s-admission-server/admission-server-certs
           name: webhook-certs
           readOnly: true
-        - mountPath: /tmp/k8s-audit-webhook-server/webhook-server-certs
+        - mountPath: /tmp/k8s-audit-server/audit-server-certs
           name: audit-webhook-certs
           readOnly: true
       securityContext:
@@ -93,7 +96,7 @@ spec:
         name: tmp-dir
       - name: webhook-certs
         secret:
-          secretName: webhook-server-cert
+          secretName: admission-server-cert
       - name: audit-webhook-certs
         secret:
-          secretName: audit-webhook-server-cert
+          secretName: audit-server-cert

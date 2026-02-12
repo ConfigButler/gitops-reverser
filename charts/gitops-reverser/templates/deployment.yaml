@@ -83,11 +83,11 @@ spec:
             - --audit-dump-path=/var/run/audit-dumps
             {{- end }}
           ports:
-            - name: webhook-server
+            - name: admission
               containerPort: {{ .Values.servers.admission.port }}
               protocol: TCP
             {{- if .Values.servers.audit.enabled }}
-            - name: audit-server
+            - name: audit
               containerPort: {{ .Values.servers.audit.port }}
               protocol: TCP
             {{- end }}
@@ -128,7 +128,7 @@ spec:
             - name: tmp-dir
               mountPath: /tmp
             {{- if .Values.servers.admission.tls.enabled }}
-            - name: cert
+            - name: admission-cert
               mountPath: {{ .Values.servers.admission.tls.certPath }}
               readOnly: true
             {{- end }}
@@ -148,15 +148,15 @@ spec:
         - name: tmp-dir
           emptyDir: {}
         {{- if .Values.servers.admission.tls.enabled }}
-        - name: cert
+        - name: admission-cert
           secret:
-            secretName: {{ include "gitops-reverser.fullname" . }}-webhook-server-tls-cert
+            secretName: {{ include "gitops-reverser.fullname" . }}-admission-server-cert
             defaultMode: 420
         {{- end }}
         {{- if and .Values.servers.audit.enabled .Values.servers.audit.tls.enabled }}
         - name: audit-cert
           secret:
-            secretName: {{ .Values.servers.audit.tls.secretName | default (printf "%s-audit-server-tls-cert" (include "gitops-reverser.fullname" .)) }}
+            secretName: {{ .Values.servers.audit.tls.secretName | default (printf "%s-audit-server-cert" (include "gitops-reverser.fullname" .)) }}
             defaultMode: 420
         {{- end }}
         {{- with .Values.volumes }}
