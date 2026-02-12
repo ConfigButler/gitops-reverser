@@ -305,7 +305,7 @@ jobs:
   e2e-install-smoke:
     name: E2E Install Smoke (${{ matrix.scenario }})
     runs-on: ubuntu-latest
-    needs: [lint-helm]
+    needs: [build-ci-container, docker-build, lint-helm]
     strategy:
       matrix:
         scenario: [helm, manifest]

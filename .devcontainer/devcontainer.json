@@ -64,7 +64,7 @@
       ]
     }
   },
-  "postCreateCommand": "sudo chmod 666 /var/run/docker.sock || true && docker network create -d=bridge --subnet=172.19.0.0/24 kind || true && sudo chown -R vscode:vscode ${containerWorkspaceFolder} || true",
+  "postCreateCommand": "bash .devcontainer/post-create.sh",
   "remoteUser": "vscode",
   "mounts": [
     "source=gomodcache,target=/go/pkg/mod,type=volume",
