@@ -1,19 +1,7 @@
-# This kustomization.yaml is not intended to be run by itself,
-# since it depends on service name and namespace that are out of this kustomize package.
-# It should be run by config/default
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
 resources:
-  - bases/configbutler.ai_watchrules.yaml
-  - bases/configbutler.ai_clusterwatchrules.yaml
-  - bases/configbutler.ai_gitproviders.yaml
-  - bases/configbutler.ai_gittargets.yaml
-# +kubebuilder:scaffold:crdkustomizeresource
-
-patches: []
-# [WEBHOOK] To enable webhook, uncomment all the sections with [WEBHOOK] prefix.
-# patches here are for enabling the conversion webhook for each CRD
-# +kubebuilder:scaffold:crdkustomizewebhookpatch
-
-# [WEBHOOK] To enable webhook, uncomment the following section
-# the following config is for teaching kustomize how to do kustomization for CRDs.
-#configurations:
-#- kustomizeconfig.yaml
+  - bases/clusterwatchrules.configbutler.ai.yaml
+  - bases/gitproviders.configbutler.ai.yaml
+  - bases/gittargets.configbutler.ai.yaml
+  - bases/watchrules.configbutler.ai.yaml

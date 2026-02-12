@@ -19,9 +19,7 @@ data:
     scrape_configs:
       # Scrape gitops-reverser metrics from the single controller Service in 'sut'
       - job_name: 'gitops-reverser-metrics'
-        scheme: https
-        tls_config:
-          insecure_skip_verify: true  # Self-signed certs in e2e
+        scheme: http
         bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
         static_configs:
           - targets:

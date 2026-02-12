@@ -1,0 +1,54 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: gitops-reverser-manager-role
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - namespaces
+  - secrets
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - '*'
+  resources:
+  - '*'
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - configbutler.ai
+  resources:
+  - clusterwatchrules
+  - gitproviders
+  - gittargets
+  - watchrules
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - configbutler.ai
+  resources:
+  - clusterwatchrules/status
+  - gitproviders/status
+  - gittargets/status
+  - watchrules/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - configbutler.ai
+  resources:
+  - gitproviders/finalizers
+  verbs:
+  - update

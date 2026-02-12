@@ -59,7 +59,7 @@ servers:
       # Controls webhook TLS wiring in the controller process.
       # Keep enabled for normal Kubernetes webhook operation.
       enabled: true
-      certPath: "/tmp/k8s-webhook-server/serving-certs"
+      certPath: "/tmp/k8s-webhook-server/webhook-server-certs"
       certName: "tls.crt"
       certKey: "tls.key"
 
@@ -70,7 +70,7 @@ servers:
     tls:
       # Serve audit ingress over HTTPS when true, HTTP when false.
       enabled: true
-      certPath: "/tmp/k8s-audit-webhook-server/serving-certs"
+      certPath: "/tmp/k8s-audit-webhook-server/webhook-server-certs"
       certName: "tls.crt"
       certKey: "tls.key"
       secretName: ""
