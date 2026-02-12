@@ -1,0 +1,3 @@
+{{- if gt (int .Values.replicaCount) 1 -}}
+{{- fail "gitops-reverser does not support HA yet (Sorry I feel your pain: but it can't be perfect from the start). Set .Values.replicaCount to 1." -}}
+{{- end -}}
