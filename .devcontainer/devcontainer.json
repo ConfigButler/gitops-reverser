@@ -60,15 +60,16 @@
         "golang.go",
         "ms-kubernetes-tools.vscode-kubernetes-tools",
         "ms-azuretools.vscode-docker",
-        "kilocode.kilo-code"
+        "openai.chatgpt"
       ]
     }
   },
-  "postCreateCommand": "bash .devcontainer/post-create.sh",
+  "postCreateCommand": "bash .devcontainer/post-create.sh '${containerWorkspaceFolder}'",
   "remoteUser": "vscode",
   "mounts": [
     "source=gomodcache,target=/go/pkg/mod,type=volume",
     "source=gobuildcache,target=/home/vscode/.cache/go-build,type=volume",
+    "source=${localEnv:HOME}${localEnv:USERPROFILE}/.gitconfig,target=/home/vscode/.gitconfig,type=bind,consistency=cached",
     "source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind"
   ],
   "containerEnv": {
