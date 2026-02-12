@@ -64,6 +64,11 @@ func (m *Manager) handleEvent(obj interface{}, g GVR, op configv1alpha1.Operatio
 	if u == nil {
 		return
 	}
+	if shouldIgnoreResource(g.Group, g.Resource) {
+		m.Log.V(1).Info("Skipping resource due to safety filter",
+			"group", g.Group, "version", g.Version, "resource", g.Resource)
+		return
+	}
 
 	ctx := context.Background()
 

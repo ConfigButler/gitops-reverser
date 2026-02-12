@@ -581,6 +581,12 @@ func (m *Manager) processListedObject(
 	u *unstructured.Unstructured,
 	g GVR,
 ) {
+	if shouldIgnoreResource(g.Group, g.Resource) {
+		m.Log.V(1).Info("Skipping seeded resource due to safety filter",
+			"group", g.Group, "version", g.Version, "resource", g.Resource)
+		return
+	}
+
 	id := types.NewResourceIdentifier(g.Group, g.Version, g.Resource, u.GetNamespace(), u.GetName())
 
 	var nsLabels map[string]string
@@ -693,7 +699,7 @@ func (m *Manager) addGVRsFromResourceRule(
 			}
 			for _, resource := range rr.Resources {
 				normalized := normalizeResource(resource)
-				if normalized == "*" {
+				if normalized == "*" || shouldIgnoreResource(group, normalized) {
 					continue // Skip wildcards
 				}
 				gvr := schema.GroupVersionResource{
@@ -731,7 +737,7 @@ func (m *Manager) addGVRsFromClusterResourceRule(
 			}
 			for _, resource := range rr.Resources {
 				normalized := normalizeResource(resource)
-				if normalized == "*" {
+				if normalized == "*" || shouldIgnoreResource(group, normalized) {
 					continue // Skip wildcards
 				}
 				gvr := schema.GroupVersionResource{
@@ -752,6 +758,10 @@ func (m *Manager) listResourcesForGVR(
 	gvr schema.GroupVersionResource,
 	gitTarget *configv1alpha1.GitTarget,
 ) ([]types.ResourceIdentifier, error) {
+	if shouldIgnoreResource(gvr.Group, gvr.Resource) {
+		return nil, nil
+	}
+
 	var resources []types.ResourceIdentifier
 
 	// List resources (cluster-wide for now, namespace filtering would go here)

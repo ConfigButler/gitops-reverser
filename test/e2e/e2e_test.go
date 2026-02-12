@@ -521,6 +521,64 @@ var _ = Describe("Manager", Ordered, func() {
 			cleanupGitTarget(destName, namespace)
 		})
 
+		It("should never commit Secret manifests even if WatchRule includes secrets", func() {
+			gitProviderName := "gitprovider-normal"
+			watchRuleName := "watchrule-secret-ignore-test"
+			secretName := "test-secret-ignore"
+
+			By("creating WatchRule that includes secrets")
+			destName := watchRuleName + "-dest"
+			createGitTarget(destName, namespace, gitProviderName, "e2e/secret-ignore-test", "main")
+
+			data := struct {
+				Name            string
+				Namespace       string
+				DestinationName string
+			}{
+				Name:            watchRuleName,
+				Namespace:       namespace,
+				DestinationName: destName,
+			}
+
+			err := applyFromTemplate("test/e2e/templates/watchrule.tmpl", data, namespace)
+			Expect(err).NotTo(HaveOccurred(), "Failed to apply WatchRule")
+			verifyResourceStatus("watchrule", watchRuleName, namespace, "True", "Ready", "")
+
+			By("creating Secret in watched namespace")
+			_, _ = utils.Run(exec.Command("kubectl", "delete", "secret", secretName,
+				"-n", namespace, "--ignore-not-found=true"))
+
+			cmd := exec.Command("kubectl", "create", "secret", "generic", secretName,
+				"--from-literal=password=do-not-commit", "-n", namespace)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Secret creation should succeed")
+
+			By("verifying Secret file never appears in Git repository")
+			verifySecretNotCommitted := func(g Gomega) {
+				pullCmd := exec.Command("git", "pull")
+				pullCmd.Dir = checkoutDir
+				pullOutput, pullErr := pullCmd.CombinedOutput()
+				if pullErr != nil {
+					g.Expect(pullErr).NotTo(HaveOccurred(),
+						fmt.Sprintf("Should successfully pull latest changes. Output: %s", string(pullOutput)))
+				}
+
+				expectedFile := filepath.Join(checkoutDir,
+					"e2e/secret-ignore-test",
+					fmt.Sprintf("v1/secrets/%s/%s.yaml", namespace, secretName))
+				_, statErr := os.Stat(expectedFile)
+				g.Expect(statErr).To(HaveOccurred(), fmt.Sprintf("Secret file must NOT exist at %s", expectedFile))
+				g.Expect(os.IsNotExist(statErr)).To(BeTrue(), "Error should be 'file does not exist'")
+			}
+			Consistently(verifySecretNotCommitted, "20s", "2s").Should(Succeed())
+
+			By("cleaning up test resources")
+			_, _ = utils.Run(exec.Command("kubectl", "delete", "secret", secretName,
+				"-n", namespace, "--ignore-not-found=true"))
+			cleanupWatchRule(watchRuleName, namespace)
+			cleanupGitTarget(destName, namespace)
+		})
+
 		It("should create Git commit when ConfigMap is added via WatchRule", func() {
 			gitProviderName := "gitprovider-normal"
 			watchRuleName := "watchrule-configmap-test"
