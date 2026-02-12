@@ -54,7 +54,13 @@ install_helm() {
 install_manifest() {
   echo "Installing from generated dist/install.yaml (mode=manifest)"
   cleanup_install
-  make build-installer
+
+  if [[ ! -f dist/install.yaml ]]; then
+    echo "dist/install.yaml not found; generating locally"
+    make build-installer
+  fi
+
+  kubectl create namespace "${NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
   kubectl apply -f dist/install.yaml
 
   if [[ -n "${PROJECT_IMAGE:-}" ]]; then
