@@ -4,6 +4,11 @@
 
 # High Availability configuration - runs 1 replicas by default (HA support is not good enough yet)
 replicaCount: 1
+deploymentStrategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxSurge: 0
+    maxUnavailable: 1
 
 image:
   repository: ghcr.io/configbutler/gitops-reverser
@@ -56,7 +61,6 @@ controllerManager:
 # HTTPS servers
 servers:
   admission:
-    enabled: true
     port: 9443
     tls:
       # Controls webhook TLS wiring in the controller process.
@@ -65,9 +69,9 @@ servers:
       certPath: "/tmp/k8s-admission-server/admission-server-certs"
       certName: "tls.crt"
       certKey: "tls.key"
+      secretName: ""
 
   audit:
-    enabled: true
     listenAddress: 0.0.0.0
     port: 9444
     tls:
@@ -89,9 +93,10 @@ servers:
     tls:
       # Serve metrics over HTTPS when true, HTTP when false.
       enabled: false
-      certPath: ""
+      certPath: "/tmp/k8s-metrics-server/metrics-server-certs"
       certName: "tls.crt"
       certKey: "tls.key"
+      secretName: ""
 
 # Webhook behavior
 webhook:
@@ -183,7 +188,7 @@ monitoring:
     # Must match the effective metrics transport:
     # - https when servers.metrics.tls.enabled=true
     # - http when servers.metrics.tls.enabled=false
-    scheme: https
+    scheme: http
 
 # Service exposure
 service:

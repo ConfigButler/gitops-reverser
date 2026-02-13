@@ -178,7 +178,7 @@ webhook:
 | `image.repository` | Container image repository | `ghcr.io/configbutler/gitops-reverser` |
 | `webhook.validating.failurePolicy` | Webhook failure policy (Ignore/Fail) | `Ignore` |
 | `servers.admission.tls.enabled` | Serve admission webhook with TLS (disable only for local/testing) | `true` |
-| `servers.audit.enabled` | Enable dedicated audit ingress listener | `true` |
+| `servers.admission.tls.secretName` | Secret name for admission TLS cert/key | `<release>-admission-server-cert` |
 | `servers.audit.port` | Audit container port | `9444` |
 | `servers.audit.tls.enabled` | Serve audit ingress with TLS | `true` |
 | `servers.audit.maxRequestBodyBytes` | Max accepted audit request size | `10485760` |
@@ -187,7 +187,9 @@ webhook:
 | `servers.audit.timeouts.idle` | Audit-server idle timeout | `60s` |
 | `servers.audit.tls.secretName` | Secret name for audit TLS cert/key | `<release>-audit-server-cert` |
 | `servers.metrics.bindAddress` | Metrics listener bind address | `:8080` |
-| `servers.metrics.tls.enabled` | Serve metrics with TLS | `true` |
+| `servers.metrics.tls.enabled` | Serve metrics with TLS | `false` |
+| `servers.metrics.tls.certPath` | Metrics TLS certificate mount path | `/tmp/k8s-metrics-server/metrics-server-certs` |
+| `servers.metrics.tls.secretName` | Secret name for metrics TLS cert/key | `<release>-metrics-server-cert` |
 | `service.clusterIP` | Optional fixed ClusterIP for single controller Service | `""` |
 | `service.ports.admission` | Service port for admission webhook | `9443` |
 | `service.ports.audit` | Service port for audit ingress | `9444` |
@@ -260,7 +262,9 @@ kubectl logs -n gitops-reverser-system -l app.kubernetes.io/name=gitops-reverser
 
 ```bash
 kubectl port-forward -n gitops-reverser-system svc/gitops-reverser 8080:8080
-curl -k https://localhost:8080/metrics
+curl http://localhost:8080/metrics
+# If metrics TLS is enabled:
+# curl -k https://localhost:8080/metrics
 ```
 
 ## Upgrading

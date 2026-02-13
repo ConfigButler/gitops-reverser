@@ -11,6 +11,8 @@ metadata:
     control-plane: controller-manager
 spec:
   replicas: {{ .Values.replicaCount }}
+  strategy:
+    {{- toYaml .Values.deploymentStrategy | nindent 4 }}
   selector:
     matchLabels:
       {{- include "gitops-reverser.selectorLabels" . | nindent 6 }}
@@ -43,30 +45,31 @@ spec:
             - --metrics-bind-address={{ .Values.servers.metrics.bindAddress }}
             {{- if not .Values.servers.metrics.tls.enabled }}
             - --metrics-insecure
-            {{- end }}
+            {{- else }}
             - --metrics-cert-path={{ .Values.servers.metrics.tls.certPath }}
             - --metrics-cert-name={{ .Values.servers.metrics.tls.certName }}
             - --metrics-cert-key={{ .Values.servers.metrics.tls.certKey }}
-            {{- if not .Values.servers.admission.tls.enabled }}
-            - --webhook-insecure
             {{- end }}
+            {{- if .Values.servers.admission.tls.enabled }}
             - --webhook-cert-path={{ .Values.servers.admission.tls.certPath }}
             - --webhook-cert-name={{ .Values.servers.admission.tls.certName }}
             - --webhook-cert-key={{ .Values.servers.admission.tls.certKey }}
-            {{- if and .Values.servers.audit.enabled (not .Values.servers.audit.tls.enabled) }}
+            {{- else }}
+            - --webhook-insecure
+            {{- end }}
+            {{- if .Values.servers.audit.tls.enabled }}
+            - --audit-cert-path={{ .Values.servers.audit.tls.certPath }}
+            - --audit-cert-name={{ .Values.servers.audit.tls.certName }}
+            - --audit-cert-key={{ .Values.servers.audit.tls.certKey }}
+            {{- else }}
             - --audit-insecure
             {{- end }}
             - --audit-listen-address={{ .Values.servers.audit.listenAddress }}
             - --audit-port={{ .Values.servers.audit.port }}
-            - --audit-max-request-body-bytes={{ .Values.servers.audit.maxRequestBodyBytes }}
+            - --audit-max-request-body-bytes={{ int64 .Values.servers.audit.maxRequestBodyBytes }}
             - --audit-read-timeout={{ .Values.servers.audit.timeouts.read }}
             - --audit-write-timeout={{ .Values.servers.audit.timeouts.write }}
             - --audit-idle-timeout={{ .Values.servers.audit.timeouts.idle }}
-            {{- if and .Values.servers.audit.enabled .Values.servers.audit.tls.enabled }}
-            - --audit-cert-path={{ .Values.servers.audit.tls.certPath }}
-            - --audit-cert-name={{ .Values.servers.audit.tls.certName }}
-            - --audit-cert-key={{ .Values.servers.audit.tls.certKey }}
-            {{- end }}
             {{- if .Values.logging.level }}
             - --zap-log-level={{ .Values.logging.level }}
             {{- end }}
@@ -86,11 +89,9 @@ spec:
             - name: admission
               containerPort: {{ .Values.servers.admission.port }}
               protocol: TCP
-            {{- if .Values.servers.audit.enabled }}
             - name: audit
               containerPort: {{ .Values.servers.audit.port }}
               protocol: TCP
-            {{- end }}
             - name: metrics
               containerPort: {{ .Values.servers.metrics.port }}
               protocol: TCP
@@ -132,7 +133,12 @@ spec:
               mountPath: {{ .Values.servers.admission.tls.certPath }}
               readOnly: true
             {{- end }}
-            {{- if and .Values.servers.audit.enabled .Values.servers.audit.tls.enabled }}
+            {{- if .Values.servers.metrics.tls.enabled }}
+            - name: metrics-cert
+              mountPath: {{ .Values.servers.metrics.tls.certPath }}
+              readOnly: true
+            {{- end }}
+            {{- if .Values.servers.audit.tls.enabled }}
             - name: audit-cert
               mountPath: {{ .Values.servers.audit.tls.certPath }}
               readOnly: true
@@ -150,10 +156,16 @@ spec:
         {{- if .Values.servers.admission.tls.enabled }}
         - name: admission-cert
           secret:
-            secretName: {{ include "gitops-reverser.fullname" . }}-admission-server-cert
+            secretName: {{ .Values.servers.admission.tls.secretName | default (printf "%s-admission-server-cert" (include "gitops-reverser.fullname" .)) }}
             defaultMode: 420
         {{- end }}
-        {{- if and .Values.servers.audit.enabled .Values.servers.audit.tls.enabled }}
+        {{- if .Values.servers.metrics.tls.enabled }}
+        - name: metrics-cert
+          secret:
+            secretName: {{ .Values.servers.metrics.tls.secretName | default (printf "%s-metrics-server-cert" (include "gitops-reverser.fullname" .)) }}
+            defaultMode: 420
+        {{- end }}
+        {{- if .Values.servers.audit.tls.enabled }}
         - name: audit-cert
           secret:
             secretName: {{ .Values.servers.audit.tls.secretName | default (printf "%s-audit-server-cert" (include "gitops-reverser.fullname" .)) }}

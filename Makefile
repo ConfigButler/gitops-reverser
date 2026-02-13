@@ -69,6 +69,7 @@ test: manifests generate fmt vet setup-envtest ## Run tests.
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(shell pwd)/bin -p path)" go test $$(go list ./... | grep -v /e2e) -coverprofile cover.out
 
 KIND_CLUSTER ?= gitops-reverser-test-e2e
+E2E_LOCAL_IMAGE ?= gitops-reverser:e2e-local
 
 .PHONY: setup-cluster
 setup-cluster: ## Set up a Kind cluster for e2e tests if it does not exist
@@ -80,11 +81,40 @@ setup-cluster: ## Set up a Kind cluster for e2e tests if it does not exist
 
 .PHONY: cleanup-cluster
 cleanup-cluster: ## Tear down the Kind cluster used for e2e tests
-	@$(KIND) delete cluster --name $(KIND_CLUSTER)
+	@if $(KIND) get clusters 2>/dev/null | grep -q "^$(KIND_CLUSTER)$$"; then \
+		echo "🧹 Deleting Kind cluster '$(KIND_CLUSTER)'"; \
+		$(KIND) delete cluster --name $(KIND_CLUSTER); \
+	else \
+		echo "ℹ️ Kind cluster '$(KIND_CLUSTER)' does not exist; skipping cleanup"; \
+	fi
+
+.PHONY: e2e-build-load-image
+e2e-build-load-image: ## Build local image and load it into the Kind cluster used by local e2e flows
+	@if [ -n "$(PROJECT_IMAGE)" ]; then \
+		echo "🐳 Building local image $(PROJECT_IMAGE)"; \
+		$(CONTAINER_TOOL) build -t $(PROJECT_IMAGE) .; \
+		echo "📦 Loading image $(PROJECT_IMAGE) into Kind cluster $(KIND_CLUSTER)"; \
+		$(KIND) load docker-image $(PROJECT_IMAGE) --name $(KIND_CLUSTER); \
+	else \
+		echo "🐳 Building local image $(E2E_LOCAL_IMAGE)"; \
+		$(CONTAINER_TOOL) build -t $(E2E_LOCAL_IMAGE) .; \
+		echo "📦 Loading image $(E2E_LOCAL_IMAGE) into Kind cluster $(KIND_CLUSTER)"; \
+		$(KIND) load docker-image $(E2E_LOCAL_IMAGE) --name $(KIND_CLUSTER); \
+	fi
 
 .PHONY: test-e2e
 test-e2e: setup-cluster cleanup-webhook setup-e2e manifests setup-port-forwards ## Run end-to-end tests in Kind cluster, note that vet, fmt and generate are not run!
-	KIND_CLUSTER=$(KIND_CLUSTER) PROJECT_IMAGE=$(PROJECT_IMAGE) go test ./test/e2e/ -v -ginkgo.v
+	@echo "ℹ️ test-e2e reuses the existing Kind cluster (no cluster cleanup in this target)"; \
+	if [ -n "$(PROJECT_IMAGE)" ]; then \
+		echo "ℹ️ Entry point selected pre-built image (CI-friendly): $(PROJECT_IMAGE)"; \
+		echo "ℹ️ Skipping local image build/load for pre-built image path"; \
+		KIND_CLUSTER=$(KIND_CLUSTER) PROJECT_IMAGE="$(PROJECT_IMAGE)" go test ./test/e2e/ -v -ginkgo.v; \
+	else \
+		echo "ℹ️ Entry point selected local fallback image: $(E2E_LOCAL_IMAGE)"; \
+		echo "ℹ️ Building/loading local image into existing cluster"; \
+		$(MAKE) e2e-build-load-image KIND_CLUSTER=$(KIND_CLUSTER); \
+		KIND_CLUSTER=$(KIND_CLUSTER) PROJECT_IMAGE="$(E2E_LOCAL_IMAGE)" go test ./test/e2e/ -v -ginkgo.v; \
+	fi
 
 .PHONY: cleanup-webhook
 cleanup-webhook: ## Preventive cleanup of ValidatingWebhookConfiguration potenially left by previous test runs
@@ -186,7 +216,7 @@ ENVTEST_K8S_VERSION ?= $(shell go list -m -f "{{ .Version }}" k8s.io/api | awk -
 
 # Gitea E2E Configuration
 GITEA_NAMESPACE ?= gitea-e2e
- GITEA_CHART_VERSION ?= 12.5.0	# https://gitea.com/gitea/helm-gitea
+GITEA_CHART_VERSION ?= 12.5.0	# https://gitea.com/gitea/helm-gitea
 
 .PHONY: setup-envtest
 setup-envtest: ## Setup envtest binaries for unit tests
@@ -255,13 +285,40 @@ wait-cert-manager: setup-cert-manager ## Wait for cert-manager pods to become re
 	@$(KUBECTL) wait --for=condition=ready pod -l app.kubernetes.io/instance=cert-manager -n cert-manager --timeout=300s
 
 ## Smoke test: install from local Helm chart and verify rollout
-## Only tested in GH for now
+.PHONY: test-e2e-install
+test-e2e-install: ## Smoke test install with E2E_INSTALL_MODE=helm|manifest
+	@MODE="$(E2E_INSTALL_MODE)"; \
+	if [ "$$MODE" != "helm" ] && [ "$$MODE" != "manifest" ]; then \
+		echo "❌ Invalid E2E_INSTALL_MODE='$$MODE' (expected: helm|manifest)"; \
+		exit 1; \
+	fi; \
+	PROJECT_IMAGE_VALUE="$(PROJECT_IMAGE)"; \
+	if [ -n "$$PROJECT_IMAGE_VALUE" ]; then \
+		echo "ℹ️ Entry point selected pre-built image (probably running in CI): $$PROJECT_IMAGE_VALUE"; \
+		echo "ℹ️ Skipping cluster cleanup for pre-built image path"; \
+		KIND_CLUSTER=$(KIND_CLUSTER) $(MAKE) setup-cluster setup-e2e wait-cert-manager; \
+	else \
+		PROJECT_IMAGE_VALUE="$(E2E_LOCAL_IMAGE)"; \
+		echo "🧹 Local fallback path: cleaning cluster to test a clean install"; \
+		KIND_CLUSTER=$(KIND_CLUSTER) $(MAKE) cleanup-cluster; \
+		echo "ℹ️ Entry point selected local fallback image: $$PROJECT_IMAGE_VALUE"; \
+		KIND_CLUSTER=$(KIND_CLUSTER) PROJECT_IMAGE="$$PROJECT_IMAGE_VALUE" $(MAKE) setup-cluster setup-e2e wait-cert-manager e2e-build-load-image; \
+	fi; \
+	echo "ℹ️ Running install smoke mode: $$MODE"; \
+	PROJECT_IMAGE="$$PROJECT_IMAGE_VALUE" bash test/e2e/scripts/install-smoke.sh "$$MODE"; \
+
+## Smoke test: install from local Helm chart and verify rollout
 .PHONY: test-e2e-install-helm
-test-e2e-install-helm: setup-e2e wait-cert-manager
-	@bash test/e2e/scripts/install-smoke.sh helm
+test-e2e-install-helm:
+	@$(MAKE) test-e2e-install E2E_INSTALL_MODE=helm PROJECT_IMAGE="$(PROJECT_IMAGE)" KIND_CLUSTER="$(KIND_CLUSTER)"
 
 ## Smoke test: install from generated dist/install.yaml and verify rollout
-## Only tested in GH for now
 .PHONY: test-e2e-install-manifest
-test-e2e-install-manifest: setup-e2e wait-cert-manager
-	@bash test/e2e/scripts/install-smoke.sh manifest
+test-e2e-install-manifest:
+	@if [ -n "$(PROJECT_IMAGE)" ]; then \
+		echo "ℹ️ test-e2e-install-manifest using existing artifact (PROJECT_IMAGE set, CI/pre-built path)"; \
+	else \
+		echo "ℹ️ test-e2e-install-manifest local path: regenerating dist/install.yaml via build-installer"; \
+		$(MAKE) build-installer; \
+	fi
+	@$(MAKE) test-e2e-install E2E_INSTALL_MODE=manifest PROJECT_IMAGE="$(PROJECT_IMAGE)" KIND_CLUSTER="$(KIND_CLUSTER)"

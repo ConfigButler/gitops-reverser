@@ -26,14 +26,14 @@ spec:
   issuerRef:
     kind: {{ .Values.certificates.certManager.issuer.kind }}
     name: {{ .Values.certificates.certManager.issuer.name }}
-  secretName: {{ include "gitops-reverser.fullname" . }}-admission-server-cert
+  secretName: {{ .Values.servers.admission.tls.secretName | default (printf "%s-admission-server-cert" (include "gitops-reverser.fullname" .)) }}
   usages:
     - digital signature
     - key encipherment
     - server auth
   privateKey:
     rotationPolicy: Always
-{{- if and .Values.servers.audit.enabled .Values.servers.audit.tls.enabled }}
+{{- if .Values.servers.audit.tls.enabled }}
 ---
 apiVersion: cert-manager.io/v1
 kind: Certificate
@@ -54,6 +54,30 @@ spec:
     kind: {{ .Values.certificates.certManager.issuer.kind }}
     name: {{ .Values.certificates.certManager.issuer.name }}
   secretName: {{ .Values.servers.audit.tls.secretName | default (printf "%s-audit-server-cert" (include "gitops-reverser.fullname" .)) }}
+  usages:
+    - digital signature
+    - key encipherment
+    - server auth
+  privateKey:
+    rotationPolicy: Always
+{{- end }}
+{{- if .Values.servers.metrics.tls.enabled }}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "gitops-reverser.fullname" . }}-metrics-server-cert
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "gitops-reverser.labels" . | nindent 4 }}
+spec:
+  dnsNames:
+    - {{ include "gitops-reverser.fullname" . }}.{{ .Release.Namespace }}.svc
+    - {{ include "gitops-reverser.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local
+  issuerRef:
+    kind: {{ .Values.certificates.certManager.issuer.kind }}
+    name: {{ .Values.certificates.certManager.issuer.name }}
+  secretName: {{ .Values.servers.metrics.tls.secretName | default (printf "%s-metrics-server-cert" (include "gitops-reverser.fullname" .)) }}
   usages:
     - digital signature
     - key encipherment

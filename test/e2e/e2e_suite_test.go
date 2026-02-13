@@ -42,7 +42,7 @@ func getProjectImage() string {
 	if img := os.Getenv("PROJECT_IMAGE"); img != "" {
 		return img
 	}
-	return "example.com/gitops-reverser:v0.0.1"
+	return "gitops-reverser:e2e-local"
 }
 
 // TestE2E runs the end-to-end (e2e) test suite for the project. These tests execute in an isolated,
@@ -63,15 +63,11 @@ var _ = BeforeSuite(func() {
 		return
 	}
 
-	// Local testing: ALWAYS rebuild to ensure latest code changes are included
-	By("building the manager(Operator) image for local testing (forcing rebuild)")
-	cmd := exec.Command("make", "docker-build", fmt.Sprintf("IMG=%s", projectImage))
+	// IDE/direct go test path: ensure cluster exists and local image is built+loaded via Makefile.
+	By("PROJECT_IMAGE is not set; preparing cluster/image through Makefile for local run")
+	cmd := exec.Command("make", "setup-cluster", "e2e-build-load-image", fmt.Sprintf("PROJECT_IMAGE=%s", projectImage))
 	_, err := utils.Run(cmd)
-	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build the manager(Operator) image")
-
-	By("loading the manager(Operator) image on Kind (forcing reload)")
-	err = utils.LoadImageToKindClusterWithName(projectImage)
-	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to load the manager(Operator) image into Kind")
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build/load manager image via Makefile")
 })
 
 var _ = AfterSuite(func() {
