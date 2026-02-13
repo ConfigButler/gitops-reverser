@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.0](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.14.3...gitops-reverser-v0.15.0) (2026-02-13)
+
+
+### Features
+
+* Let's give the audit webhook handling it's own webserver (so that TLS config can be different) ([058022c](https://github.com/ConfigButler/gitops-reverser/commit/058022c2612a43dda187cc1e1a8903591fbbf0ba))
+* Simplify the services and server configurations ([28b17d6](https://github.com/ConfigButler/gitops-reverser/commit/28b17d6839e6dcb1c06f8c6ed82dcee45bb3092a))
+* Spring cleaning of /config ([af2d1a5](https://github.com/ConfigButler/gitops-reverser/commit/af2d1a5d6b92904a36c8e6348700d1111cb18c31))
+
+
+### Bug Fixes
+
+* Also make that part simpler please ([963d1c1](https://github.com/ConfigButler/gitops-reverser/commit/963d1c10d01e760d9c4e46c632025b12b9320636))
+* linting issues ([0f96cae](https://github.com/ConfigButler/gitops-reverser/commit/0f96cae5687980e74dacce2fea3d3262f0a069cf))
+* Make "--metric-insecure" a reality and local testability of all flows ([cf9b7f7](https://github.com/ConfigButler/gitops-reverser/commit/cf9b7f70609e6a635dd3d737f99655c2f68a6526))
+* Never ever commit secrets in their raw form ([aeff306](https://github.com/ConfigButler/gitops-reverser/commit/aeff306f18012c12cbfd74d43a37a22a10b2956b))
+* Remove double crds ([00d7158](https://github.com/ConfigButler/gitops-reverser/commit/00d7158de21ca7ed884da4f1f997d04768b880e9))
+* That should fix it ([62ac5b8](https://github.com/ConfigButler/gitops-reverser/commit/62ac5b8e5d26c24c0dfce0341f1a6da25e7e2f01))
+* That should resolve it ([8176831](https://github.com/ConfigButler/gitops-reverser/commit/8176831e4ecaf3aebaf74be4d065d82ffe697da1))
+* Would this now finally work? ([f5ce17a](https://github.com/ConfigButler/gitops-reverser/commit/f5ce17a51eb7458adee8b4f730258723d629a620))
+
+
+### Documentation
+
+* Cleaning up ([1322ac9](https://github.com/ConfigButler/gitops-reverser/commit/1322ac9c0d2c5d1aa8df63c2141b9a343c38a12e))
+* Improving overview docs ([d1eaa9b](https://github.com/ConfigButler/gitops-reverser/commit/d1eaa9b44071601b1124aad38741434ed7b5a88d))
+* Updating expectations ([8dd465a](https://github.com/ConfigButler/gitops-reverser/commit/8dd465af67a76020fde9553c9227c833dfd7e8ff))
+
 ## [0.14.3](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.14.2...gitops-reverser-v0.14.3) (2026-01-30)
 
 
