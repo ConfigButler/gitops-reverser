@@ -11,15 +11,6 @@ log() {
 workspace_dir="${1:-${containerWorkspaceFolder:-${WORKSPACE_FOLDER:-$(pwd)}}}"
 log "Using workspace directory: ${workspace_dir}"
 
-# Ensure kind network exists (best-effort)
-log "Checking docker network 'kind'"
-if ! docker network inspect kind >/dev/null 2>&1; then
-  log "Creating docker network 'kind'"
-  docker network create -d=bridge --subnet=172.19.0.0/24 kind >/dev/null 2>&1 || true
-else
-  log "Docker network 'kind' already exists"
-fi
-
 # Ensure Go-related caches exist and are writable by vscode
 log "Ensuring Go cache directories exist"
 sudo mkdir -p \

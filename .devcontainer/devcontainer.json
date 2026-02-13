@@ -20,12 +20,12 @@
     "ghcr.io/devcontainers/features/git:1": {}
   },
   "runArgs": [
-    "--network=host",
     "--group-add=docker"
   ],
   "forwardPorts": [
     13000,
-    19090
+    19090,
+    6443
   ],
   "portsAttributes": {
     "13000": {
@@ -34,6 +34,10 @@
     },
     "19090": {
       "label": "Prometheus",
+      "onAutoForward": "notify"
+    },
+    "6443": {
+      "label": "Kind API",
       "onAutoForward": "notify"
     }
   },
