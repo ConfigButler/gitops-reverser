@@ -24,16 +24,13 @@ echo "✅ Generated configuration:"
 cat "$CONFIG_FILE"
 echo ""
 
-# Recreate cluster on every run so kube-apiserver always picks up current
-# audit webhook policy/config files from the mounted directory.
 if kind get clusters 2>/dev/null | grep -q "^${CLUSTER_NAME}$"; then
-    echo "♻️ Recreating existing Kind cluster '$CLUSTER_NAME' to refresh audit webhook config..."
-    kind delete cluster --name "$CLUSTER_NAME"
+    echo "♻️ Reusing existing Kind cluster '$CLUSTER_NAME' (no delete/recreate)"
+else
+    echo "🚀 Creating Kind cluster '$CLUSTER_NAME' with audit webhook support..."
+    kind create cluster --name "$CLUSTER_NAME" --config "$CONFIG_FILE" --wait 5m
+    echo "✅ Kind cluster created successfully"
 fi
-
-echo "🚀 Creating Kind cluster '$CLUSTER_NAME' with audit webhook support..."
-kind create cluster --name "$CLUSTER_NAME" --config "$CONFIG_FILE" --wait 5m
-echo "✅ Kind cluster created successfully"
 
 echo "📋 Configuring kubeconfig for cluster '$CLUSTER_NAME'..."
 kind export kubeconfig --name "$CLUSTER_NAME"

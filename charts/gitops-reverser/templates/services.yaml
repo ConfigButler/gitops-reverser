@@ -7,6 +7,7 @@ metadata:
     {{- include "gitops-reverser.labels" . | nindent 4 }}
     app.kubernetes.io/component: controller
     prometheus.io/scrape: "true"
+    prometheus.io/scheme: {{ ternary "https" "http" .Values.servers.metrics.tls.enabled | quote }}
     prometheus.io/port: "{{ .Values.service.ports.metrics }}"
 spec:
   type: ClusterIP
@@ -18,12 +19,10 @@ spec:
       port: {{ .Values.service.ports.admission }}
       targetPort: {{ .Values.servers.admission.port }}
       protocol: TCP
-    {{- if .Values.servers.audit.enabled }}
     - name: audit
       port: {{ .Values.service.ports.audit }}
       targetPort: {{ .Values.servers.audit.port }}
       protocol: TCP
-    {{- end }}
     - name: metrics
       port: {{ .Values.service.ports.metrics }}
       targetPort: {{ .Values.servers.metrics.port }}

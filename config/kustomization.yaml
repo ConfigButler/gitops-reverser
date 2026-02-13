@@ -10,5 +10,5 @@ resources:
 - webhook.yaml
 images:
 - name: gitops-reverser
-  newName: example.com/gitops-reverser
-  newTag: v0.0.1
+  newName: gitops-reverser
+  newTag: e2e-local
