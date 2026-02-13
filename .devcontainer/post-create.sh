@@ -11,6 +11,18 @@ log() {
 workspace_dir="${1:-${containerWorkspaceFolder:-${WORKSPACE_FOLDER:-$(pwd)}}}"
 log "Using workspace directory: ${workspace_dir}"
 
+# Keep ~/.gitconfig writable inside the container while still importing host settings.
+if [ -f /home/vscode/.gitconfig-host ]; then
+  log "Configuring git to include /home/vscode/.gitconfig-host"
+  touch /home/vscode/.gitconfig
+  if git config --global --get-all include.path | grep -Fxq "/home/vscode/.gitconfig-host"; then
+    log "Host gitconfig include already present"
+  else
+    git config --global --add include.path /home/vscode/.gitconfig-host
+    log "Added host gitconfig include"
+  fi
+fi
+
 # Ensure Go-related caches exist and are writable by vscode
 log "Ensuring Go cache directories exist"
 sudo mkdir -p \

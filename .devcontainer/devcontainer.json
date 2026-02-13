@@ -8,24 +8,21 @@
   "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/${localWorkspaceFolderBasename},type=bind",
   "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
   "features": {
+    "ghcr.io/devcontainers/features/docker-outside-of-docker:1": {},
     "ghcr.io/devcontainers/features/common-utils:2": {
       "userUid": "automatic",
       "userGid": "automatic",
       "username": "vscode"
     },
-    "ghcr.io/devcontainers/features/docker-in-docker:2": {
-      "moby": false,
-      "dockerDashComposeVersion": "v2"
-    },
     "ghcr.io/devcontainers/features/git:1": {}
   },
   "runArgs": [
-    "--group-add=docker"
+    "--group-add=docker",
+    "--add-host=host.docker.internal:host-gateway"
   ],
   "forwardPorts": [
     13000,
-    19090,
-    6443
+    19090
   ],
   "portsAttributes": {
     "13000": {
@@ -34,10 +31,6 @@
     },
     "19090": {
       "label": "Prometheus",
-      "onAutoForward": "notify"
-    },
-    "6443": {
-      "label": "Kind API",
       "onAutoForward": "notify"
     }
   },
@@ -71,14 +64,14 @@
   "postCreateCommand": "bash .devcontainer/post-create.sh '${containerWorkspaceFolder}'",
   "remoteUser": "vscode",
   "mounts": [
+    "source=ghconfig,target=/home/vscode/.config/gh,type=volume",
+    "source=${localEnv:HOME}${localEnv:USERPROFILE}/.gitconfig,target=/home/vscode/.gitconfig-host,type=bind,readonly,consistency=cached",
     "source=gomodcache,target=/go/pkg/mod,type=volume",
     "source=gobuildcache,target=/home/vscode/.cache/go-build,type=volume",
-    "source=${localEnv:HOME}${localEnv:USERPROFILE}/.gitconfig,target=/home/vscode/.gitconfig,type=bind,consistency=cached",
     "source=codexconfig,target=/home/vscode/.codex,type=volume"
   ],
   "containerEnv": {
     "HOST_PROJECT_PATH": "${localWorkspaceFolder}",
-    "PROJECT_PATH": "/workspaces/${localWorkspaceFolderBasename}",
-    "DOCKER_API_VERSION": "1.44"
+    "PROJECT_PATH": "/workspaces/${localWorkspaceFolderBasename}"
   }
 }

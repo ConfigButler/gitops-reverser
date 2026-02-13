@@ -168,7 +168,7 @@ git config --global --add safe.directory '*'
 
 **Better:** Explicitly list trusted paths
 ```bash
-git config --global --add safe.directory /workspace
+git config --global --add safe.directory /workspaces/<repo>
 git config --global --add safe.directory /__w/gitops-reverser/gitops-reverser
 ```
 
@@ -290,12 +290,14 @@ jobs:
 **devcontainer.json:**
 ```json
 {
-  "remoteUser": "root",
-  "postCreateCommand": "git config --global --add safe.directory /workspace"
+  "remoteUser": "vscode",
+  "postCreateCommand": "git config --global --add safe.directory ${containerWorkspaceFolder}"
 }
 ```
 
-**Why:** VS Code mounts workspace (owned by host user) into container (running as root)
+**Why:** VS Code mounts host workspace into container and ownership can differ from the active user.
+
+In this repository, local devcontainer flows usually run as `vscode` and often do not need manual `safe.directory`. CI container jobs are the primary place where this setting is required.
 
 ### Example 3: Docker Compose Development
 
@@ -305,10 +307,10 @@ services:
   dev:
     image: golang:1.25
     volumes:
-      - .:/workspace  # Host files → container
+      - .:/workspaces/<repo>  # Host files → container
     command: |
       sh -c "
-        git config --global --add safe.directory /workspace
+        git config --global --add safe.directory /workspaces/<repo>
         make test
       "
 ```
@@ -333,11 +335,11 @@ services:
 
 ```bash
 # Test in container
-docker run --rm -v $(pwd):/workspace golang:1.25 sh -c "
-  cd /workspace
+docker run --rm -v $(pwd):/workspaces/<repo> golang:1.25 sh -c "
+  cd /workspaces/<repo>
   git status  # Should fail
   
-  git config --global --add safe.directory /workspace
+  git config --global --add safe.directory /workspaces/<repo>
   git status  # Should work
 "
 ```
@@ -349,7 +351,7 @@ docker run --rm -v $(pwd):/workspace golang:1.25 sh -c "
 git config --global --get-all safe.directory
 
 # Output example:
-/workspace
+/workspaces/<repo>
 /__w/gitops-reverser/gitops-reverser
 ```
 
@@ -357,7 +359,7 @@ git config --global --get-all safe.directory
 
 ```bash
 # Remove specific directory
-git config --global --unset-all safe.directory /workspace
+git config --global --unset-all safe.directory /workspaces/<repo>
 
 # Remove all
 git config --global --remove-section safe
