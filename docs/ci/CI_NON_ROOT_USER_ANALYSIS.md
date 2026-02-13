@@ -61,7 +61,7 @@
 ```bash
 # Current CI workflow mounts:
 -v $HOME/.kube:/root/.kube  # ← Would need to change to non-root home
--v ${{ github.workspace }}:/workspace  # ← Ownership mismatches
+-v ${{ github.workspace }}:/__w/...    # ← Ownership mismatches
 ```
 
 ❌ **GitHub Actions Checkout Complications**
@@ -71,14 +71,14 @@
 
 ❌ **Docker-in-Docker Challenges**
 ```yaml
-# E2E tests use Docker socket
---network host
--v $HOME/.kube:/root/.kube  # ← Root path assumptions
+# E2E tests use Docker access and kubeconfig paths
+-v /var/run/docker.sock:/var/run/docker.sock
+-v $HOME/.kube:/root/.kube  # ← Root-home assumptions
 ```
 
 ❌ **Cache and Artifact Permissions**
 - Go module cache (`/go/pkg/mod`)
-- Build artifacts in `/workspace`
+- Build artifacts in mounted workspace paths
 - GitHub Actions cache restoration
 - All would need careful permission management
 

@@ -61,7 +61,7 @@ go_goroutines{job="gitops-reverser-metrics"}
 
 ```
 Host Machine (port 13000, 19090)
-    ↕ (exposed via --network=host)
+    ↕ (VS Code forwarded ports from devcontainer)
 DevContainer
     ↕ (kubectl port-forward)
 Kind Cluster

@@ -1,148 +1,70 @@
-# Windows DevContainer Setup Guide
+# Windows Devcontainer Setup
 
-## Problem
+Last updated: 2026-02-13
 
-On Windows, the devcontainer works differently than on Linux due to how Docker Desktop handles volume mounts:
+## Why Windows behaves differently
 
-1. **Container filesystem (`/go`)**: Full Linux filesystem with ACL support ✅
-2. **Mounted workspace (`/workspace`)**: Windows filesystem mounted via Docker, limited Unix permission support ❌
+When the repo is on the Windows filesystem and mounted into a Linux devcontainer, the mounted workspace does not behave exactly like a native Linux filesystem.
 
-## Symptoms
+Typical effects:
 
-- Cannot write files in `/workspace` directory
-- Permission denied errors when running `go mod tidy` or other commands
-- ACL commands fail on mounted volumes
+- ownership/permission friction on the mounted workspace
+- slower file I/O than WSL-native storage
+- Linux ACL-based fixes that work under `/go` do not fully apply to the mounted source tree
 
-## Root Cause
+## Current repo behavior
 
-Windows uses NTFS/ReFS filesystems which don't support Linux ACLs. When Docker Desktop mounts a Windows directory into a Linux container, it uses a compatibility layer that:
-- Simulates Unix permissions
-- Cannot support `setfacl` or advanced ACLs
-- May have permission mapping issues between Windows and Linux users
+This repo uses:
 
-## Solution
+- active workspace path: `/workspaces/<repo>`
+- `remoteUser`: `vscode`
+- post-create hook: `.devcontainer/post-create.sh` (called with `${containerWorkspaceFolder}`)
 
-The solution is to ensure the workspace directory has proper ownership and permissions for the `vscode` user, without relying on ACLs.
+The post-create script attempts to normalize ownership for the mounted workspace and `/home/vscode` caches.
 
-### Updated Dockerfile Approach
+## Recommended setup (Windows)
 
-The Dockerfile already handles this correctly:
+1. Use WSL2.
+2. Clone the repository inside the Linux filesystem (for example under `~/git/...` in Ubuntu).
+3. Open from WSL in VS Code, then reopen in container.
 
-```dockerfile
-# In dev stage - ensure vscode user can write to workspace
-RUN chown -R vscode:vscode /workspace && \
-    chmod -R 755 /workspace
-```
+This is the most reliable and fastest setup.
 
-However, this only affects the **empty** `/workspace` directory in the image. When you mount your actual Windows workspace, it **overrides** this with the Windows filesystem.
-
-### Windows-Specific Configuration
-
-For Windows users, add this to your `.devcontainer/devcontainer.json`:
-
-```json
-{
-  "remoteUser": "vscode",
-  "containerEnv": {
-    "WORKSPACE_OWNER": "vscode"
-  },
-  "postCreateCommand": "sudo chown -R vscode:vscode /workspace || true",
-  "mounts": [
-    "source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind"
-  ]
-}
-```
-
-The `postCreateCommand` runs **after** the workspace is mounted, ensuring proper ownership.
-
-### Alternative: Use WSL2 Backend
-
-For the best experience on Windows, use WSL2:
-
-1. **Install WSL2** with Ubuntu or Debian
-2. **Clone the repository inside WSL2** (not in Windows filesystem)
-3. **Open in VSCode** using the WSL extension
-4. **Use the devcontainer** - it will work exactly like on Linux
-
-This approach:
-- ✅ Full Linux filesystem support
-- ✅ ACLs work properly
-- ✅ Better performance
-- ✅ No permission mapping issues
-
-### Quick Fix for Existing Setup
-
-If you're already in the devcontainer and experiencing permission issues:
+## Quick checks inside devcontainer
 
 ```bash
-# Run this inside the devcontainer
-sudo chown -R vscode:vscode /workspace
-sudo chmod -R 755 /workspace
-
-# Verify
-ls -la /workspace
-# Should show vscode:vscode ownership
+pwd
+ls -ld .
+id
 ```
 
-## Why `/go` Works But `/workspace` Doesn't
+Expected:
 
-| Directory | Location | ACL Support | Why |
-|-----------|----------|-------------|-----|
-| `/go` | Container filesystem | ✅ Yes | Part of the Linux container image |
-| `/workspace` | Mounted from Windows | ❌ No | Windows filesystem mounted via Docker |
+- current directory under `/workspaces/<repo>`
+- effective user is `vscode`
+- workspace is writable by `vscode`
 
-The `/go` directory (where Go modules are cached) uses the container's Linux filesystem, so ACLs work perfectly. The `/workspace` directory is mounted from your Windows filesystem, so it doesn't support Linux ACLs.
+## If workspace is still not writable
 
-## Recommended Setup for Windows Users
-
-### Option 1: WSL2 (Recommended)
+Run:
 
 ```bash
-# In WSL2 terminal
-cd ~
-git clone <your-repo-url>
-cd gitops-reverser
-code .  # Opens in VSCode with WSL extension
-# Then reopen in container
+bash .devcontainer/post-create.sh "${containerWorkspaceFolder:-$(pwd)}"
 ```
 
-### Option 2: Windows with Post-Create Fix
-
-Update `.devcontainer/devcontainer.json`:
-
-```json
-{
-  "postCreateCommand": "sudo chown -R vscode:vscode /workspace && sudo chmod -R 755 /workspace || true"
-}
-```
-
-### Option 3: Run as Root (Not Recommended)
-
-Change `remoteUser` to `root` in `devcontainer.json`, but this is not recommended for security reasons.
-
-## Verification
-
-After setup, verify permissions:
+Then verify:
 
 ```bash
-# Check workspace ownership
-ls -la /workspace
-# Should show: drwxr-xr-x vscode vscode
-
-# Check you can write files
-touch /workspace/test.txt
-# Should succeed without errors
-
-# Check Go operations work
+touch .permission-check && rm .permission-check
 go mod tidy
-# Should complete without permission errors
-
-# Clean up test file
-rm /workspace/test.txt
 ```
+
+## Notes about `/go` vs workspace
+
+- `/go` is container filesystem and uses Linux semantics; ACL/setgid strategy documented in `GO_MODULE_PERMISSIONS.md` applies there.
+- `/workspaces/<repo>` is a bind mount from host; behavior depends on host filesystem and Docker Desktop integration.
 
 ## References
 
-- [Docker Desktop WSL2 Backend](https://docs.docker.com/desktop/wsl/)
-- [VSCode Remote - WSL](https://code.visualstudio.com/docs/remote/wsl)
-- [Docker Volume Permissions](https://docs.docker.com/storage/bind-mounts/#configure-bind-propagation)
+- [Docker Desktop + WSL2](https://docs.docker.com/desktop/features/wsl/)
+- [VS Code Remote - WSL](https://code.visualstudio.com/docs/remote/wsl)

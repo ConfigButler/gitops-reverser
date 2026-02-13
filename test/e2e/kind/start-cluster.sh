@@ -38,4 +38,18 @@ echo "✅ Kind cluster created successfully"
 echo "📋 Configuring kubeconfig for cluster '$CLUSTER_NAME'..."
 kind export kubeconfig --name "$CLUSTER_NAME"
 
+current_cluster_name="$(kubectl config view --minify -o jsonpath='{.clusters[0].name}')"
+current_server="$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}')"
+
+if [[ "$current_server" =~ ^https://(127\.0\.0\.1|localhost|0\.0\.0\.0):([0-9]+)$ ]]; then
+    apiserver_port="${BASH_REMATCH[2]}"
+    echo "🔁 Rewriting kubeconfig server endpoint to host.docker.internal:${apiserver_port}..."
+    kubectl config set-cluster "$current_cluster_name" \
+        --server="https://host.docker.internal:${apiserver_port}" \
+        --tls-server-name=localhost >/dev/null
+    echo "✅ kubeconfig endpoint updated for devcontainer networking"
+else
+    echo "ℹ️ kubeconfig server is '$current_server' (no rewrite needed)"
+fi
+
 echo "✅ Cluster setup complete!"
