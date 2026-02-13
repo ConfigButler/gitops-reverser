@@ -127,7 +127,7 @@ jobs:
           "
 
   lint-helm:
-    name: Lint Helm Chart
+    name: Lint and build Helm Chart (and generate single-file installer)
     runs-on: ubuntu-latest
     needs: build-ci-container
     container:
@@ -174,7 +174,6 @@ jobs:
             dist/install.yaml
             gitops-reverser.tgz
           if-no-files-found: error
-          retention-days: 1
 
   lint:
     name: Lint Go Code
