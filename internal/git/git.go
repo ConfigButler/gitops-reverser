@@ -39,8 +39,6 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/transport/http"
 	"github.com/go-logr/logr"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-
-	"github.com/ConfigButler/gitops-reverser/internal/sanitize"
 )
 
 var (
@@ -693,7 +691,7 @@ func applyEventToWorktree(ctx context.Context, worktree *git.Worktree, event Eve
 		return handleDeleteOperation(logger, filePath, fullPath, worktree)
 	}
 
-	return handleCreateOrUpdateOperation(event, filePath, fullPath, worktree)
+	return handleCreateOrUpdateOperation(ctx, event, filePath, fullPath, worktree)
 }
 
 // handleDeleteOperation removes a file from the repository.
@@ -732,14 +730,22 @@ func handleDeleteOperation(
 // handleCreateOrUpdateOperation writes and stages a file in the repository.
 // Returns true if changes were made, false if the file already has the desired content.
 func handleCreateOrUpdateOperation(
+	ctx context.Context,
 	event Event,
 	filePath, fullPath string,
 	worktree *git.Worktree,
 ) (bool, error) {
-	// Convert object to ordered YAML
-	content, err := sanitize.MarshalToOrderedYAML(event.Object)
+	content, err := buildContentForWrite(ctx, event)
 	if err != nil {
-		return false, fmt.Errorf("failed to marshal object to YAML: %w", err)
+		if isSecretResource(event.Identifier) {
+			log.FromContext(ctx).Info(
+				"Secret write skipped because encryption failed",
+				"resource", event.Identifier.String(),
+				"file", filePath,
+				"error", err.Error(),
+			)
+		}
+		return false, err
 	}
 
 	// Check if file already exists with same content

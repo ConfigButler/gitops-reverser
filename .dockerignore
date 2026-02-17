@@ -11,6 +11,7 @@
 !cmd/
 !api/
 !internal/
+!config/sops/.sops.yaml
 
 # Additional files needed for dev container build (.devcontainer/Dockerfile)
 !.golangci.yml

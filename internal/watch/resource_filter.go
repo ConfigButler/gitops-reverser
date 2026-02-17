@@ -18,8 +18,6 @@ limitations under the License.
 
 package watch
 
-import "strings"
-
-func shouldIgnoreResource(group, resource string) bool {
-	return group == "" && strings.EqualFold(resource, "secrets")
+func shouldIgnoreResource(_, _ string) bool {
+	return false
 }

@@ -20,6 +20,8 @@ import (
 	"flag"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -42,6 +44,8 @@ func TestParseFlagsWithArgs_Defaults(t *testing.T) {
 	assert.Equal(t, 15*time.Second, cfg.auditReadTimeout)
 	assert.Equal(t, 30*time.Second, cfg.auditWriteTimeout)
 	assert.Equal(t, 60*time.Second, cfg.auditIdleTimeout)
+	assert.Equal(t, "", cfg.sopsBinaryPath)
+	assert.Equal(t, "", cfg.sopsConfigPath)
 }
 
 func TestParseFlagsWithArgs_AuditUnsecure(t *testing.T) {
@@ -121,6 +125,27 @@ func TestParseFlagsWithArgs_InvalidAuditSettings(t *testing.T) {
 			require.Error(t, err)
 		})
 	}
+}
+
+func TestParseFlagsWithArgs_SOPSValidation(t *testing.T) {
+	t.Run("invalid sops binary path", func(t *testing.T) {
+		fs := flag.NewFlagSet("test-invalid-sops-bin", flag.ContinueOnError)
+		_, err := parseFlagsWithArgs(fs, []string{"--sops-binary-path=/does/not/exist/sops"})
+		require.Error(t, err)
+	})
+
+	t.Run("invalid sops config relative path", func(t *testing.T) {
+		dir := t.TempDir()
+		binPath := filepath.Join(dir, "sops")
+		require.NoError(t, os.WriteFile(binPath, []byte("bin"), 0700))
+
+		fs := flag.NewFlagSet("test-invalid-sops-config", flag.ContinueOnError)
+		_, err := parseFlagsWithArgs(fs, []string{
+			"--sops-binary-path=" + binPath,
+			"--sops-config-path=relative/config.yaml",
+		})
+		require.Error(t, err)
+	})
 }
 
 func TestBuildAuditServeMux_RoutesAuditPaths(t *testing.T) {

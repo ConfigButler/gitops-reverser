@@ -28,6 +28,8 @@ spec:
         - --health-probe-bind-address=:8081
         - --webhook-cert-path=/tmp/k8s-admission-server/admission-server-certs
         - --audit-cert-path=/tmp/k8s-audit-server/audit-server-certs
+        - --sops-binary-path=/usr/local/bin/sops
+        - --sops-config-path=/etc/gitops-reverser/.sops.yaml
         command:
         - /manager
         env:
