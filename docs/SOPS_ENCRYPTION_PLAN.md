@@ -2,247 +2,240 @@
 
 ## Goal
 
-Encrypt sensitive Kubernetes resources (initially `Secret`) with SOPS before they are written to the Git worktree, so commits contain encrypted payloads instead of plaintext `data`/`stringData`.
+Encrypt sensitive Kubernetes resources (starting with `Secret`) before writing them to the git worktree, so committed manifests never contain plaintext secret values.
 
-## Scope
+## Why This Plan Was Reworked
 
-- In scope:
-  - Encrypt on write path (watch event -> sanitize -> git file write).
-  - Support SOPS execution strategy for encryption (external binary first iteration).
-  - Add runtime configuration for enablement, policy, and SOPS invocation.
-  - Support standard SOPS key backends through mounted credentials/config.
-  - Tests, docs, and Helm wiring.
-- Out of scope (first iteration):
-  - Decryption in controller runtime.
-  - Re-encrypting existing historical commits.
-  - Complex per-namespace/per-rule encryption policies.
+We now need a plan that:
+- assumes Secret write support is enabled (or is being enabled now),
+- handles existing safety exceptions that previously blocked Secret commits,
+- enforces small implementation steps with test checks after each step,
+- and separates content-processing logic from generic git operations.
 
-## Current Baseline (Why this is needed)
+## Current-State Analysis (Code + Tests)
 
-- `internal/sanitize/sanitize.go` preserves `data` and `binaryData`.
-- `internal/watch/informers.go` enqueues sanitized objects as-is.
-- `internal/git/git.go` writes YAML generated from event object directly to disk.
-- Result: if a `WatchRule` includes `secrets` (or `*`), secret payloads are committed in plaintext.
+### 1. Secret write exception still present in watch path
 
-## High-Level Design
+Current code still hard-filters core Secrets:
+- `internal/watch/resource_filter.go`
+- `internal/watch/informers.go`
 
-### 1. Encryption Hook Point
+This means Secret events are dropped before git write logic.
 
-Add encryption at the final write stage in `internal/git/git.go` inside `handleCreateOrUpdateOperation`:
+### 2. Existing tests and docs still encode “never commit Secret” behavior
 
-1. Generate ordered YAML from sanitized object (existing behavior).
-2. Apply encryption policy:
-  - If resource should be encrypted, run SOPS encryption.
-  - If not, keep plaintext YAML.
-3. Continue with existing file compare/write/stage logic.
+Current expectation appears in:
+- `test/e2e/e2e_test.go` (`should never commit Secret manifests...`)
+- `README.md` statement that Secrets are intentionally ignored
 
-This keeps upstream watch/sanitize flow unchanged and centralizes git-output guarantees.
+If Secret writing is now intentionally enabled, these become migration points that must be updated with new encrypted-write expectations.
 
-### 2. Encryption Policy
+### 3. `handleCreateOrUpdateOperation` is overloaded
 
-Introduce explicit policy config (controller process-level first):
+Current write path in `internal/git/git.go` combines:
+- object -> ordered YAML rendering,
+- write diff/idempotency check,
+- filesystem write/stage.
 
-- `disabled` (default for backward compatibility).
-- `secretsOnly` (recommended default when enabled).
-- `matchResources` (future): configurable list of `(group, version, resource)` patterns.
+Adding encryption here directly will increase coupling. Refactoring content logic into its own file should be part of this plan.
 
-Initial policy decision:
-- Encrypt only Kubernetes `Secret` resources (`group=""`, `version="v1"`, `resource="secrets"`).
+## Target Design
 
-### 3. SOPS Invocation Model
+## 1. Split content pipeline out of `git.go`
 
-Use external SOPS binary for first implementation, invoked by the manager process.
+Create a dedicated content writer module in `internal/git`, for example:
+- `internal/git/content_writer.go`
 
-Proposed approach:
+Responsibilities:
+- Render sanitized object to ordered YAML.
+- For `Secret` resources: apply encryptor before write.
+- Return final bytes for compare/write.
 
-1. Write plaintext YAML to a secure temp file in `/tmp`.
-2. Run SOPS command to produce encrypted YAML.
-3. Read encrypted output and remove temp files.
-4. Write encrypted output to repo path.
+`handleCreateOrUpdateOperation` should then become orchestration only:
+- ask content writer for final content,
+- perform existing file compare/write/stage.
 
-Command strategy:
-- Prefer `.sops.yaml`-driven encryption rules.
-- Allow optional explicit args passthrough only through an allowlist (for example output/input type and config path), not arbitrary raw flags.
+## 2. Secret handling rule (phase-1 simplification)
 
-Failure behavior (configurable):
-- `failClosed` (recommended): do not write/commit if encryption fails.
-- `failOpen` (optional): log error and write plaintext (not recommended for production).
+For now, no policy matrix:
+- If incoming resource is Kubernetes `Secret` (`group=""`, `version="v1"`, `resource="secrets"`), attempt encryption.
+- If encryption succeeds, write encrypted content.
+- If encryption fails, do not write and emit a warning log.
+- If resource is not `Secret`, keep existing write behavior.
 
-### 3a. Architecture Choice: External Binary vs Embedded Library
+## 3. Encryption provider abstraction
 
-This should be an explicit engineering decision, not a hidden assumption.
+Add interface in `internal/git`:
+- `type Encryptor interface { Encrypt(ctx context.Context, plain []byte, meta ResourceMeta) ([]byte, error) }`
 
-Option A: External SOPS binary (first iteration)
-- Pros:
-  - Reuses upstream SOPS behavior exactly (CLI parity with existing workflows).
-  - Faster implementation and lower maintenance in this codebase.
-  - Keeps cloud KMS/age/PGP backend behavior aligned with standard SOPS usage.
-- Cons:
-  - Extra process spawn overhead per encrypted object.
-  - Runtime dependency management (binary presence, version pinning, CVE tracking).
+First implementation:
+- `SOPSEncryptor` invoking external `sops` binary.
 
-Option B: Embed encryption implementation directly in `gitops-reverser`
-- Pros:
-  - No external process execution; simpler runtime dependency surface.
-  - Potentially better performance and tighter observability hooks.
-- Cons:
-  - Higher implementation and long-term maintenance cost.
-  - Risk of behavior drift from upstream SOPS semantics and config handling.
-  - More complex support burden across key backends.
+This keeps the path open for future embedded implementations.
 
-Decision for this plan:
-- Implement Option A first (external binary), behind feature flags.
-- Keep abstraction boundary (`Encryptor` interface) so Option B can be added later without reworking git write flow.
+## 4. Runtime config
 
-Revisit triggers:
-- Encryption latency becomes a measurable bottleneck.
-- Operational burden from binary distribution/versioning is high.
-- There is a strong requirement for in-process crypto execution.
+Add config inputs (flags + Helm values):
+- `--sops-binary-path`
+- `--sops-config-path` (optional)
 
-### 4. Runtime Config Model
+Validation:
+- invalid values fail startup.
 
-Add manager flags + Helm values for encryption:
+## 5. Failure behavior
 
-- `--encryption-enabled`
-- `--encryption-policy=secretsOnly|disabled`
-- `--encryption-provider=sops`
-- `--sops-binary-path=/usr/local/bin/sops`
-- `--sops-config-path=/etc/sops/.sops.yaml` (optional)
-- `--encryption-failure-policy=failClosed|failOpen`
+- Required behavior for Secret encryption path: if encryption fails, reject write.
+- Emit warning logs for encryption failures so operators can diagnose quickly.
+- Plaintext Secret values must never be written to git under any runtime condition.
 
-Configuration precedence:
-- `--encryption-enabled=false` always disables encryption regardless of policy value.
-- `--encryption-enabled=true` requires a non-`disabled` policy.
-- Invalid combinations should fail startup with a clear validation error.
+## 6. Performance and caching strategy (required for usability)
 
-Helm values section proposal:
+Encryption can be expensive, especially with external KMS/Vault-backed SOPS setups.
 
-```yaml
-encryption:
-  enabled: false
-  policy: secretsOnly
-  failurePolicy: failClosed
-  sops:
-    binaryPath: /usr/local/bin/sops
-    configPath: /etc/sops/.sops.yaml
-```
+Required optimizations:
+- Keep pre-write deduplication effective so unchanged Secret content does not trigger a new encryption call.
+- Add optional in-memory cache for encrypted payload reuse within a process lifetime.
+- Track Secret change markers (`uid`, `resourceVersion`, `generation`) in runtime state to skip obvious no-op re-encryption attempts.
 
-### 5. Key Material / Backend Configuration
+In-memory cache design (safe default):
+- Cache key: resource identity + canonical plaintext digest.
+- Cache value: encrypted output bytes.
+- Scope: process memory only (never persisted to git, CR status, annotations, or commit metadata).
 
-Do not invent key management inside the operator. Reuse native SOPS backends:
+Secret marker usage (runtime only):
+- Keep last-seen tuple per Secret: `uid`, `resourceVersion`, `generation`.
+- If tuple is unchanged, skip encryption/write work for that Secret event.
+- `uid` protects against delete/recreate with same name.
+- `resourceVersion` and `generation` provide cheap change detection hints.
+- These markers are hints for performance; correctness still depends on final content/diff checks.
 
-- `age` via mounted secret and `SOPS_AGE_KEY_FILE`.
-- cloud KMS via workload identity / IAM env (AWS/GCP/Azure).
-- PGP if needed (lower priority).
+Security constraints:
+- Do not persist plaintext-derived hash metadata in repository content, commit messages, annotations, or labels.
+- Reason: plaintext hashes can leak signal and may allow offline guessing attacks for low-entropy secrets.
+- If persisted metadata is ever required in the future, it must be a separately reviewed design (for example keyed HMAC with managed key rotation), not part of first implementation.
+- Do not persist `uid`/`resourceVersion`/`generation` optimization state outside process memory in the first implementation.
 
-Helm should support:
+## 7. Lifecycle side-note (future, not part of first implementation)
 
-- Extra volume mounts for key files and `.sops.yaml`.
-- Extra env vars for SOPS backend configuration.
+- Add a periodic re-encryption workflow (for example monthly) to support routine key rotation.
+- This should re-encrypt Secret files with current key material and create normal git commits.
+- Periodic re-encryption must not rely on unchanged `uid`/`resourceVersion`/`generation`; it intentionally rewrites encrypted content on cadence.
+- This is explicitly out of scope for initial implementation; include as later lifecycle enhancement.
 
-## Implementation Phases
+## Implementation Plan (Small Steps + Mandatory Test Gates)
 
-## Phase 1: Core plumbing (code-only, no encryption yet)
+## Phase 0: Align baseline with Secret-write direction
 
-- Add `EncryptionConfig` struct and wire it from `cmd/main.go` into git worker path.
-- Add policy evaluator utility (`shouldEncrypt(event)`).
-- Add unit tests for policy decisions.
+Changes:
+- remove or gate secret-ignore filter in watch path.
+- update baseline docs/comments that still say secrets are always ignored.
 
-Deliverable:
-- Feature-flagged no-op framework merged.
+Test gate:
+- `go test ./internal/watch/...`
+- targeted e2e spec update/validation for secret behavior (no longer “never commit”, now “never commit plaintext”).
 
-## Phase 2: SOPS binary integration
+Exit criteria:
+- Secret events can reach git write path (at least in enabled mode).
 
-- Implement `SOPSEncryptor` (interface + concrete implementation).
-- Integrate into `handleCreateOrUpdateOperation` before file write.
-- Implement temp-file execution with strict permissions.
-- Add structured logging and metrics:
-  - encrypt attempts
-  - encrypt success/failure
-  - fail-open count
+## Phase 1: Extract content logic from `handleCreateOrUpdateOperation`
 
-Deliverable:
-- Functional encryption when enabled and policy matches.
+Changes:
+- create content writer module (`internal/git/content_writer.go`).
+- move marshal + future encryption hook into module.
+- keep behavior identical (no encryption yet).
 
-## Phase 3: Packaging and Helm configuration
+Test gate:
+- `go test ./internal/git/...`
 
-- Update `Dockerfile` multi-stage build:
-  - Add stage to fetch pinned SOPS release binary.
-  - Copy binary into final distroless image (e.g. `/usr/local/bin/sops`).
-- Update chart:
-  - New `encryption.*` values.
-  - Add manager args from values.
-  - Document volume/env examples for keys and `.sops.yaml`.
+Exit criteria:
+- no behavior change, cleaner seam for encryption.
 
-Deliverable:
-- Deployable encrypted workflow via Helm settings.
+## Phase 2: Add Secret-detection plumbing (no SOPS yet)
 
-## Phase 4: Test coverage
+Changes:
+- add encryption config structs + startup validation.
+- add simple Secret detector (`isSecretResource(event)` or equivalent).
+- pass config into git write pipeline.
 
-- Unit tests:
-  - `Secret` gets encrypted.
-  - non-secret not encrypted (policy `secretsOnly`).
-  - encryption failure with `failClosed` blocks write.
-  - encryption failure with `failOpen` writes plaintext and emits warning metric.
-  - invalid flag combinations are rejected at config validation time.
-- Integration tests (git operations):
-  - verify resulting file contains SOPS envelope fields and no raw secret values.
-- Optional e2e:
-  - run with local age key and assert encrypted commits.
+Test gate:
+- `go test ./cmd/... ./internal/git/...`
 
-Deliverable:
-- CI coverage for happy path and failure modes.
+Exit criteria:
+- Secret detection decisions tested, still no encryption side effects.
 
-## Phase 5: Documentation and migration
+## Phase 3: Add `SOPSEncryptor` and integrate
 
-- Update `README.md` and chart README with:
-  - enabling encryption
-  - key backend setup examples
-  - operational caveats
-- Add migration note:
-  - existing plaintext history remains in git; requires manual history rewrite if needed.
+Changes:
+- implement CLI-backed encryptor.
+- integrate in content writer when resource is Secret.
+- ensure temp files are secure and cleaned up.
+- emit metrics/logs for attempts/success/failure.
+- reject Secret writes on encryption failure (no plaintext fallback path).
+- use runtime Secret markers (`uid`/`resourceVersion`/`generation`) to bypass obvious no-op Secret reprocessing.
 
-Deliverable:
-- Operator docs for secure rollout.
+Test gate:
+- `go test ./internal/git/...`
+- add integration tests that assert encrypted output shape (SOPS envelope fields) and absence of plaintext values.
 
-## Security Considerations
+Exit criteria:
+- Secret writes are encrypted whenever Secret events reach the write path.
 
-- Default to `failClosed` when encryption is enabled.
-- Treat `failOpen` as development-only or break-glass behavior.
-- Ensure temp files are `0600` and cleaned up.
-- Ensure temp-file cleanup runs on both success and failure paths.
-- Avoid logging plaintext content.
-- Prefer `age` or cloud KMS over static PGP workflows.
-- Recommend separate repos/branches for encrypted outputs when integrating with downstream GitOps tools.
+## Phase 4: Packaging + Helm wiring
 
-## Operational Considerations
+Changes:
+- package pinned `sops` binary in image.
+- add chart values/args/env/volume wiring for SOPS config and key material.
+- add in-memory caching configuration knobs only if needed (size/TTL), defaulting to conservative values.
 
-- Performance:
-  - SOPS process spawn per encrypted object adds overhead.
-  - Mitigation: keep policy narrow (`secretsOnly`) and batch commit behavior unchanged.
-- Determinism:
-  - SOPS metadata may vary; deduplication currently happens pre-write on sanitized plaintext.
-  - This is acceptable for first iteration but should be documented.
-- Compatibility:
-  - Downstream consumers (Flux/Argo) must be configured for SOPS decryption if they deploy encrypted files.
+Test gate:
+- `go test ./...`
+- helm template/lint checks used in repo workflow.
 
-## Proposed Acceptance Criteria
+Exit criteria:
+- deployable encrypted workflow through chart config.
 
-- When enabled with `secretsOnly`, committed Secret manifests are SOPS-encrypted and plaintext secret values never appear in repo files.
-- Non-secret resources continue to be committed as before.
-- If SOPS is missing or misconfigured:
-  - `failClosed`: write is rejected and error surfaced.
-  - `failOpen`: plaintext write proceeds with explicit warning/metric (non-production only).
-- If invalid encryption configuration is provided, manager startup fails with actionable error output.
-- Helm users can:
-  - enable encryption
-  - mount key/config material
-  - point to SOPS binary/config path without rebuilding chart templates manually.
+## Phase 5: E2E migration and hardening
 
-## Suggested Rollout
+Changes:
+- replace old e2e assertion “Secret file must not exist” with:
+  - file exists,
+  - content is encrypted,
+  - plaintext secret value not present.
+- keep/create negative-path e2e for encryption failure behavior, asserting write is rejected and plaintext is never committed.
+- add e2e or integration perf check to verify unchanged Secret updates do not repeatedly invoke encryption.
+- add integration tests for marker-based skips and delete/recreate behavior (same name, different `uid`).
 
-1. Merge framework + binary integration behind feature flag (disabled by default).
-2. Run in staging with `enabled=true`, `policy=secretsOnly`, `failClosed`.
-3. Validate commit contents and operational metrics.
-4. Roll to production.
-5. Optionally extend policy beyond `Secret` after proving stability.
+Test gate:
+- targeted e2e secret scenarios.
+
+Exit criteria:
+- e2e reflects new contract: encrypted Secret commits, never plaintext.
+
+## Acceptance Criteria
+
+- When Secret events are processed, Secret manifests are committed encrypted.
+- Plaintext secret values do not appear in committed files.
+- Non-secret resources remain unchanged.
+- Encryption errors block Secret writes.
+- No fail-open mode exists for Secret encryption.
+- Unchanged Secret content can skip re-encryption through dedupe/cache without persisting plaintext-derived metadata.
+- Secret-only marker tracking (`uid`/`resourceVersion`/`generation`) reduces redundant re-encryption attempts.
+- `handleCreateOrUpdateOperation` no longer owns content transformation/encryption details directly.
+
+## Risks And Mitigations
+
+- Residual legacy assumptions (“secrets never written”) in tests/docs.
+  - Mitigation: Phase 0 alignment before encryption implementation.
+- Increased complexity in write path.
+  - Mitigation: extract content writer first.
+- SOPS binary dependency and runtime config drift.
+  - Mitigation: pinned version + startup validation + clear metrics.
+- Encryption latency with external backends.
+  - Mitigation: dedupe first, then in-memory cache; no persisted plaintext-hash metadata.
+
+## Rollout Recommendation
+
+1. Land Phase 0 and Phase 1 first with no encryption behavior change.
+2. Roll out Secret encryption in staging (encrypt-or-skip for Secret writes).
+3. Verify no plaintext leakage in git history for new commits.
+4. Roll out gradually to production targets.

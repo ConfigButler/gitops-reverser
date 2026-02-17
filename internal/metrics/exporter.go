@@ -77,6 +77,12 @@ var (
 	WatchDuplicatesSkippedTotal metric.Int64Counter
 	// AuditEventsReceivedTotal counts audit events received from Kubernetes API server.
 	AuditEventsReceivedTotal metric.Int64Counter
+	// Secret encryption pipeline counters.
+	SecretEncryptionAttemptsTotal    metric.Int64Counter
+	SecretEncryptionSuccessTotal     metric.Int64Counter
+	SecretEncryptionFailuresTotal    metric.Int64Counter
+	SecretEncryptionCacheHitsTotal   metric.Int64Counter
+	SecretEncryptionMarkerSkipsTotal metric.Int64Counter
 )
 
 // InitOTLPExporter initializes the OTLP-to-Prometheus bridge.
@@ -132,6 +138,11 @@ func InitOTLPExporter(_ context.Context) (func(context.Context) error, error) {
 		{"gitopsreverser_kv_evictions_total", &KVEvictionsTotal},
 		{"gitopsreverser_watch_duplicates_skipped_total", &WatchDuplicatesSkippedTotal},
 		{"gitopsreverser_audit_events_received_total", &AuditEventsReceivedTotal},
+		{"gitopsreverser_secret_encryption_attempts_total", &SecretEncryptionAttemptsTotal},
+		{"gitopsreverser_secret_encryption_success_total", &SecretEncryptionSuccessTotal},
+		{"gitopsreverser_secret_encryption_failures_total", &SecretEncryptionFailuresTotal},
+		{"gitopsreverser_secret_encryption_cache_hits_total", &SecretEncryptionCacheHitsTotal},
+		{"gitopsreverser_secret_encryption_marker_skips_total", &SecretEncryptionMarkerSkipsTotal},
 	}
 	for _, s := range counters {
 		v, err := otelMeter.Int64Counter(s.name)

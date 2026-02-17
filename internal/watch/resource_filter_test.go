@@ -29,8 +29,8 @@ func TestShouldIgnoreResource(t *testing.T) {
 		resource string
 		want     bool
 	}{
-		{name: "core secrets", group: "", resource: "secrets", want: true},
-		{name: "core secrets case insensitive", group: "", resource: "Secrets", want: true},
+		{name: "core secrets", group: "", resource: "secrets", want: false},
+		{name: "core secrets case insensitive", group: "", resource: "Secrets", want: false},
 		{name: "core configmaps", group: "", resource: "configmaps", want: false},
 		{name: "non-core secrets", group: "example.com", resource: "secrets", want: false},
 	}

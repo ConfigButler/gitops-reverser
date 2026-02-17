@@ -97,6 +97,12 @@ func main() {
 		"webhook-insecure", cfg.webhookInsecure,
 		"audit-insecure", cfg.auditInsecure)
 
+	// Configure Secret encryption behavior for git writes.
+	fatalIfErr(git.ConfigureSecretEncryption(git.EncryptionConfig{
+		SOPSBinaryPath: cfg.sopsBinaryPath,
+		SOPSConfigPath: cfg.sopsConfigPath,
+	}), "unable to configure Secret encryption")
+
 	// Initialize metrics
 	setupCtx := ctrl.SetupSignalHandler()
 	_, err := metrics.InitOTLPExporter(setupCtx)
@@ -289,6 +295,8 @@ type appConfig struct {
 	auditReadTimeout         time.Duration
 	auditWriteTimeout        time.Duration
 	auditIdleTimeout         time.Duration
+	sopsBinaryPath           string
+	sopsConfigPath           string
 	zapOpts                  zap.Options
 }
 
@@ -339,6 +347,10 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 		"Write timeout for the dedicated audit ingress HTTPS server.")
 	fs.DurationVar(&cfg.auditIdleTimeout, "audit-idle-timeout", defaultAuditIdleTimeout,
 		"Idle timeout for the dedicated audit ingress HTTPS server.")
+	fs.StringVar(&cfg.sopsBinaryPath, "sops-binary-path", "",
+		"Absolute path to the sops binary used to encrypt Secret resources before writing to git.")
+	fs.StringVar(&cfg.sopsConfigPath, "sops-config-path", "",
+		"Absolute path to an optional sops config file.")
 
 	cfg.zapOpts = zap.Options{
 		Development: true,
@@ -352,6 +364,9 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 	}
 	applyAuditCertFallbacks(&cfg)
 	if err := validateAuditConfig(cfg); err != nil {
+		return appConfig{}, err
+	}
+	if err := validateSOPSConfig(cfg); err != nil {
 		return appConfig{}, err
 	}
 
@@ -401,6 +416,13 @@ func validateAuditConfig(cfg appConfig) error {
 		return fmt.Errorf("audit-idle-timeout must be > 0, got %s", cfg.auditIdleTimeout)
 	}
 	return nil
+}
+
+func validateSOPSConfig(cfg appConfig) error {
+	return git.EncryptionConfig{
+		SOPSBinaryPath: cfg.sopsBinaryPath,
+		SOPSConfigPath: cfg.sopsConfigPath,
+	}.Validate()
 }
 
 // fatalIfErr logs and exits the process if err is not nil.

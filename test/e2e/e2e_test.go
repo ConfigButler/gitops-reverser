@@ -521,14 +521,14 @@ var _ = Describe("Manager", Ordered, func() {
 			cleanupGitTarget(destName, namespace)
 		})
 
-		It("should never commit Secret manifests even if WatchRule includes secrets", func() {
+		It("should commit encrypted Secret manifests when WatchRule includes secrets", func() {
 			gitProviderName := "gitprovider-normal"
-			watchRuleName := "watchrule-secret-ignore-test"
-			secretName := "test-secret-ignore"
+			watchRuleName := "watchrule-secret-encryption-test"
+			secretName := "test-secret-encryption"
 
 			By("creating WatchRule that includes secrets")
 			destName := watchRuleName + "-dest"
-			createGitTarget(destName, namespace, gitProviderName, "e2e/secret-ignore-test", "main")
+			createGitTarget(destName, namespace, gitProviderName, "e2e/secret-encryption-test", "main")
 
 			data := struct {
 				Name            string
@@ -553,8 +553,8 @@ var _ = Describe("Manager", Ordered, func() {
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Secret creation should succeed")
 
-			By("verifying Secret file never appears in Git repository")
-			verifySecretNotCommitted := func(g Gomega) {
+			By("verifying Secret file is committed and does not contain plaintext data")
+			verifyEncryptedSecretCommitted := func(g Gomega) {
 				pullCmd := exec.Command("git", "pull")
 				pullCmd.Dir = checkoutDir
 				pullOutput, pullErr := pullCmd.CombinedOutput()
@@ -564,13 +564,14 @@ var _ = Describe("Manager", Ordered, func() {
 				}
 
 				expectedFile := filepath.Join(checkoutDir,
-					"e2e/secret-ignore-test",
+					"e2e/secret-encryption-test",
 					fmt.Sprintf("v1/secrets/%s/%s.yaml", namespace, secretName))
-				_, statErr := os.Stat(expectedFile)
-				g.Expect(statErr).To(HaveOccurred(), fmt.Sprintf("Secret file must NOT exist at %s", expectedFile))
-				g.Expect(os.IsNotExist(statErr)).To(BeTrue(), "Error should be 'file does not exist'")
+				content, readErr := os.ReadFile(expectedFile)
+				g.Expect(readErr).NotTo(HaveOccurred(), fmt.Sprintf("Secret file must exist at %s", expectedFile))
+				g.Expect(string(content)).To(ContainSubstring("sops:"))
+				g.Expect(string(content)).NotTo(ContainSubstring("do-not-commit"))
 			}
-			Consistently(verifySecretNotCommitted, "20s", "2s").Should(Succeed())
+			Eventually(verifyEncryptedSecretCommitted, "30s", "2s").Should(Succeed())
 
 			By("cleaning up test resources")
 			_, _ = utils.Run(exec.Command("kubectl", "delete", "secret", secretName,

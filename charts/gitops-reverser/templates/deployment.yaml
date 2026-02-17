@@ -70,6 +70,10 @@ spec:
             - --audit-read-timeout={{ .Values.servers.audit.timeouts.read }}
             - --audit-write-timeout={{ .Values.servers.audit.timeouts.write }}
             - --audit-idle-timeout={{ .Values.servers.audit.timeouts.idle }}
+            - --sops-binary-path={{ .Values.sops.binaryPath }}
+            {{- if .Values.sops.configPath }}
+            - --sops-config-path={{ .Values.sops.configPath }}
+            {{- end }}
             {{- if .Values.logging.level }}
             - --zap-log-level={{ .Values.logging.level }}
             {{- end }}
