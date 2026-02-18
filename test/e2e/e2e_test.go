@@ -565,7 +565,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 				expectedFile := filepath.Join(checkoutDir,
 					"e2e/secret-encryption-test",
-					fmt.Sprintf("v1/secrets/%s/%s.yaml", namespace, secretName))
+					fmt.Sprintf("v1/secrets/%s/%s.sops.yaml", namespace, secretName))
 				content, readErr := os.ReadFile(expectedFile)
 				g.Expect(readErr).NotTo(HaveOccurred(), fmt.Sprintf("Secret file must exist at %s", expectedFile))
 				g.Expect(string(content)).To(ContainSubstring("sops:"))

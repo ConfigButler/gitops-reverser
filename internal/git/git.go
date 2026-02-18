@@ -39,6 +39,8 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/transport/http"
 	"github.com/go-logr/logr"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+
+	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
 var (
@@ -732,7 +734,7 @@ func applyEventToWorktree(
 ) (bool, error) {
 	logger := log.FromContext(ctx)
 
-	filePath := event.Identifier.ToGitPath()
+	filePath := generateFilePath(event.Identifier)
 	if event.Path != "" {
 		if bf := sanitizePath(event.Path); bf != "" {
 			filePath = path.Join(bf, filePath)
@@ -745,7 +747,14 @@ func applyEventToWorktree(
 		return handleDeleteOperation(logger, filePath, fullPath, worktree)
 	}
 
-	return handleCreateOrUpdateOperation(ctx, writer, event, filePath, fullPath, worktree)
+	return handleCreateOrUpdateOperation(
+		ctx,
+		writer,
+		event,
+		filePath,
+		fullPath,
+		worktree,
+	)
 }
 
 // handleDeleteOperation removes a file from the repository.
@@ -827,6 +836,17 @@ func handleCreateOrUpdateOperation(
 	}
 
 	return true, nil
+}
+
+func generateFilePath(id types.ResourceIdentifier) string {
+	defaultPath := id.ToGitPath()
+	if !isSecretResource(id) {
+		return defaultPath
+	}
+	if strings.HasSuffix(defaultPath, ".yaml") {
+		return strings.TrimSuffix(defaultPath, ".yaml") + ".sops.yaml"
+	}
+	return defaultPath + ".sops.yaml"
 }
 
 // createCommitForEvent creates a commit for the given event.
