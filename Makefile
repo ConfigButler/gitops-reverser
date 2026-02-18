@@ -103,7 +103,7 @@ e2e-build-load-image: ## Build local image and load it into the Kind cluster use
 	fi
 
 .PHONY: test-e2e
-test-e2e: setup-cluster cleanup-webhook setup-e2e manifests setup-port-forwards ## Run end-to-end tests in Kind cluster, note that vet, fmt and generate are not run!
+test-e2e: setup-cluster cleanup-webhook setup-e2e wait-cert-manager manifests setup-port-forwards ## Run end-to-end tests in Kind cluster, note that vet, fmt and generate are not run!
 	@echo "ℹ️ test-e2e reuses the existing Kind cluster (no cluster cleanup in this target)"; \
 	if [ -n "$(PROJECT_IMAGE)" ]; then \
 		echo "ℹ️ Entry point selected pre-built image (CI-friendly): $(PROJECT_IMAGE)"; \
@@ -242,7 +242,7 @@ setup-gitea-e2e: ## Set up Gitea for e2e testing
 
 .PHONY: setup-cert-manager
 setup-cert-manager:
-	@echo "🚀 Setup cert-manager (no wait needed)"
+	@echo "🚀 Setting up cert-manager..."
 	@$(KUBECTL) apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.19.1/cert-manager.yaml | grep -v "unchanged"
 
 .PHONY: setup-port-forwards
@@ -282,7 +282,11 @@ setup-e2e: setup-cert-manager setup-gitea-e2e setup-prometheus-e2e ## Setup all 
 
 .PHONY: wait-cert-manager
 wait-cert-manager: setup-cert-manager ## Wait for cert-manager pods to become ready
-	@$(KUBECTL) wait --for=condition=ready pod -l app.kubernetes.io/instance=cert-manager -n cert-manager --timeout=300s
+	@echo "⏳ Waiting for cert-manager deployments to become available..."
+	@$(KUBECTL) -n cert-manager rollout status deploy/cert-manager --timeout=300s
+	@$(KUBECTL) -n cert-manager rollout status deploy/cert-manager-webhook --timeout=300s
+	@$(KUBECTL) -n cert-manager rollout status deploy/cert-manager-cainjector --timeout=300s
+	@echo "✅ cert-manager is ready"
 
 ## Smoke test: install from local Helm chart and verify rollout
 .PHONY: test-e2e-install
