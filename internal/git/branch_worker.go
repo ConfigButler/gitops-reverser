@@ -172,7 +172,8 @@ func (w *BranchWorker) ListResourcesInPath(path string) ([]itypes.ResourceIdenti
 	return w.listResourceIdentifiersInPath(repoPath, path)
 }
 
-// EnsurePathBootstrapped applies bootstrap template to a path when that path has no files.
+// EnsurePathBootstrapped applies bootstrap templates to a path.
+// Existing files are preserved, and only missing template files are added.
 func (w *BranchWorker) EnsurePathBootstrapped(path, targetName, targetNamespace string) error {
 	ctx := w.ctx
 	if ctx == nil {
@@ -197,7 +198,7 @@ func (w *BranchWorker) EnsurePathBootstrapped(path, targetName, targetNamespace 
 		return err
 	}
 
-	commitHash, committed, err := w.bootstrapPathIfEmpty(ctx, repoPath, normalizedPath, bootstrapOptions, auth)
+	commitHash, committed, err := w.bootstrapPathIfNeeded(ctx, repoPath, normalizedPath, bootstrapOptions, auth)
 	if err != nil {
 		return err
 	}
@@ -243,7 +244,9 @@ func (w *BranchWorker) resolveBootstrapOptions(
 
 	encryptionConfig, err := ResolveTargetEncryption(ctx, w.Client, &target)
 	if err != nil {
-		return pathBootstrapOptions{}, fmt.Errorf("failed to resolve target encryption: %w", err)
+		w.Log.Error(err, "Skipping SOPS bootstrap due to invalid target encryption configuration",
+			"target", targetKey.String())
+		return pathBootstrapOptions{}, nil
 	}
 	if encryptionConfig == nil {
 		return pathBootstrapOptions{}, nil
@@ -251,12 +254,17 @@ func (w *BranchWorker) resolveBootstrapOptions(
 
 	sopsKey := strings.TrimSpace(encryptionConfig.Environment[sopsAgeKeyEnvVar])
 	if sopsKey == "" {
-		return pathBootstrapOptions{}, fmt.Errorf("missing %s in target encryption secret", sopsAgeKeyEnvVar)
+		w.Log.Info("Skipping SOPS bootstrap due to missing encryption key in target secret",
+			"target", targetKey.String(),
+			"requiredKey", sopsAgeKeyEnvVar)
+		return pathBootstrapOptions{}, nil
 	}
 
 	recipient, err := deriveAgeRecipientFromSOPSKey(sopsKey)
 	if err != nil {
-		return pathBootstrapOptions{}, fmt.Errorf("failed to derive age recipient: %w", err)
+		w.Log.Error(err, "Skipping SOPS bootstrap due to invalid encryption key",
+			"target", targetKey.String())
+		return pathBootstrapOptions{}, nil
 	}
 
 	return pathBootstrapOptions{
@@ -291,22 +299,13 @@ func (w *BranchWorker) prepareBootstrapRepository(
 	return repoPath, auth, nil
 }
 
-func (w *BranchWorker) bootstrapPathIfEmpty(
+func (w *BranchWorker) bootstrapPathIfNeeded(
 	ctx context.Context,
 	repoPath string,
 	normalizedPath string,
 	options pathBootstrapOptions,
 	auth transport.AuthMethod,
 ) (plumbing.Hash, bool, error) {
-	hasFiles, err := pathHasAnyFile(repoPath, normalizedPath)
-	if err != nil {
-		return plumbing.ZeroHash, false, fmt.Errorf("failed to check path contents: %w", err)
-	}
-	if hasFiles {
-		w.Log.V(1).Info("Skipping bootstrap for non-empty path", "path", normalizedPath)
-		return plumbing.ZeroHash, false, nil
-	}
-
 	repo, err := gogit.PlainOpen(repoPath)
 	if err != nil {
 		return plumbing.ZeroHash, false, fmt.Errorf("failed to open repository: %w", err)

@@ -272,7 +272,7 @@ func TestBranchWorker_EnsurePathBootstrapped_EmptyPathCreatesTemplate(t *testing
 	require.NoError(t, err)
 }
 
-func TestBranchWorker_EnsurePathBootstrapped_NonEmptyPathSkipsTemplate(t *testing.T) {
+func TestBranchWorker_EnsurePathBootstrapped_NonEmptyPathBootstrapsMissingFiles(t *testing.T) {
 	ctx := context.Background()
 	tempDir := t.TempDir()
 	remotePath := filepath.Join(tempDir, "remote.git")
@@ -305,19 +305,22 @@ func TestBranchWorker_EnsurePathBootstrapped_NonEmptyPathSkipsTemplate(t *testin
 
 	worker := NewBranchWorker(k8sClient, logr.Discard(), "test-repo", "default", "main", nil)
 	require.NoError(t, worker.EnsurePathBootstrapped("clusters/prod", "bootstrap-target", "default"))
+	require.NoError(t, worker.EnsurePathBootstrapped("clusters/prod", "bootstrap-target", "default"))
 
 	ref, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
 	require.NoError(t, err)
-	assert.Equal(t, 1, countDepth(t, serverRepo, ref.Hash()), "Existing path content should skip bootstrap commit")
+	assert.Equal(t, 2, countDepth(t, serverRepo, ref.Hash()), "Missing bootstrap files should be added once")
 
 	clonePath := filepath.Join(tempDir, "inspect")
 	_, err = PrepareBranch(ctx, remoteURL, clonePath, "main", nil)
 	require.NoError(t, err)
 
 	_, err = os.Stat(filepath.Join(clonePath, "clusters/prod", "README.md"))
-	assert.True(t, os.IsNotExist(err), "Bootstrap README should not be added to non-empty path")
+	require.NoError(t, err)
 	_, err = os.Stat(filepath.Join(clonePath, "clusters/prod", sopsConfigFileName))
-	assert.True(t, os.IsNotExist(err), "Bootstrap SOPS config should not be added to non-empty path")
+	require.NoError(t, err)
+	_, err = os.Stat(filepath.Join(clonePath, "clusters/prod", "existing.txt"))
+	require.NoError(t, err)
 }
 
 func TestBranchWorker_EnsurePathBootstrapped_NoEncryptionSkipsSOPSConfig(t *testing.T) {
@@ -353,6 +356,203 @@ func TestBranchWorker_EnsurePathBootstrapped_NoEncryptionSkipsSOPSConfig(t *test
 	require.NoError(t, err)
 	_, err = os.Stat(filepath.Join(clonePath, "clusters/dev", sopsConfigFileName))
 	assert.True(t, os.IsNotExist(err), "Bootstrap SOPS config should be skipped when encryption is not configured")
+}
+
+func TestBranchWorker_EnsurePathBootstrapped_ExistingFileNotOverwritten(t *testing.T) {
+	ctx := context.Background()
+	tempDir := t.TempDir()
+	remotePath := filepath.Join(tempDir, "remote.git")
+	remoteURL := "file://" + remotePath
+	_ = createBareRepo(t, remotePath)
+
+	seedPath := filepath.Join(tempDir, "seed")
+	seedRepo, seedWorktree := initLocalRepo(t, seedPath, remoteURL, "main")
+	require.NoError(t, os.MkdirAll(filepath.Join(seedPath, "clusters/prod"), 0750))
+	customREADME := "# custom readme\n"
+	commitFileChange(t, seedWorktree, seedPath, "clusters/prod/README.md", customREADME)
+	require.NoError(t, seedRepo.Push(&git.PushOptions{
+		RefSpecs: []config.RefSpec{
+			config.RefSpec("refs/heads/main:refs/heads/main"),
+		},
+	}))
+
+	scheme := runtime.NewScheme()
+	_ = clientgoscheme.AddToScheme(scheme)
+	_ = configv1alpha1.AddToScheme(scheme)
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	provider := &configv1alpha1.GitProvider{
+		Spec: configv1alpha1.GitProviderSpec{
+			URL: remoteURL,
+		},
+	}
+	provider.Name = "test-repo"
+	provider.Namespace = "default"
+	require.NoError(t, k8sClient.Create(ctx, provider))
+	createTargetWithEncryption(ctx, t, k8sClient, "bootstrap-target", "default", "test-repo", "main", "clusters/prod")
+
+	worker := NewBranchWorker(k8sClient, logr.Discard(), "test-repo", "default", "main", nil)
+	require.NoError(t, worker.EnsurePathBootstrapped("clusters/prod", "bootstrap-target", "default"))
+
+	clonePath := filepath.Join(tempDir, "inspect")
+	_, err := PrepareBranch(ctx, remoteURL, clonePath, "main", nil)
+	require.NoError(t, err)
+
+	readmeContent, err := os.ReadFile(filepath.Join(clonePath, "clusters/prod", "README.md"))
+	require.NoError(t, err)
+	assert.Equal(t, customREADME, string(readmeContent), "Bootstrap must not overwrite existing files")
+	_, err = os.Stat(filepath.Join(clonePath, "clusters/prod", sopsConfigFileName))
+	require.NoError(t, err)
+}
+
+func TestBranchWorker_EnsurePathBootstrapped_EnableEncryptionLaterAddsSOPSConfig(t *testing.T) {
+	ctx := context.Background()
+	tempDir := t.TempDir()
+	remotePath := filepath.Join(tempDir, "remote.git")
+	remoteURL := "file://" + remotePath
+	serverRepo := createBareRepo(t, remotePath)
+
+	scheme := runtime.NewScheme()
+	_ = clientgoscheme.AddToScheme(scheme)
+	_ = configv1alpha1.AddToScheme(scheme)
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	provider := &configv1alpha1.GitProvider{
+		Spec: configv1alpha1.GitProviderSpec{
+			URL: remoteURL,
+		},
+	}
+	provider.Name = "test-repo"
+	provider.Namespace = "default"
+	require.NoError(t, k8sClient.Create(ctx, provider))
+	createTargetWithoutEncryption(ctx, t, k8sClient, "bootstrap-target", "default", "test-repo", "main", "clusters/dev")
+
+	worker := NewBranchWorker(k8sClient, logr.Discard(), "test-repo", "default", "main", nil)
+	require.NoError(t, worker.EnsurePathBootstrapped("clusters/dev", "bootstrap-target", "default"))
+
+	cloneBeforePath := filepath.Join(tempDir, "inspect-before")
+	_, err := PrepareBranch(ctx, remoteURL, cloneBeforePath, "main", nil)
+	require.NoError(t, err)
+	_, err = os.Stat(filepath.Join(cloneBeforePath, "clusters/dev", "README.md"))
+	require.NoError(t, err)
+	_, err = os.Stat(filepath.Join(cloneBeforePath, "clusters/dev", sopsConfigFileName))
+	assert.True(t, os.IsNotExist(err), "SOPS config should not exist before encryption is configured")
+
+	attachEncryptionToTarget(ctx, t, k8sClient, "bootstrap-target", "default")
+	require.NoError(t, worker.EnsurePathBootstrapped("clusters/dev", "bootstrap-target", "default"))
+
+	ref, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
+	require.NoError(t, err)
+	assert.Equal(
+		t,
+		2,
+		countDepth(t, serverRepo, ref.Hash()),
+		"Enabling encryption later should add one bootstrap commit",
+	)
+
+	cloneAfterPath := filepath.Join(tempDir, "inspect-after")
+	_, err = PrepareBranch(ctx, remoteURL, cloneAfterPath, "main", nil)
+	require.NoError(t, err)
+	_, err = os.Stat(filepath.Join(cloneAfterPath, "clusters/dev", "README.md"))
+	require.NoError(t, err)
+	_, err = os.Stat(filepath.Join(cloneAfterPath, "clusters/dev", sopsConfigFileName))
+	require.NoError(t, err)
+}
+
+func TestBranchWorker_EnsurePathBootstrapped_InvalidEncryptionSecretSkipsSOPSConfig(t *testing.T) {
+	ctx := context.Background()
+	tempDir := t.TempDir()
+	remotePath := filepath.Join(tempDir, "remote.git")
+	remoteURL := "file://" + remotePath
+	_ = createBareRepo(t, remotePath)
+
+	scheme := runtime.NewScheme()
+	_ = clientgoscheme.AddToScheme(scheme)
+	_ = configv1alpha1.AddToScheme(scheme)
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	provider := &configv1alpha1.GitProvider{
+		Spec: configv1alpha1.GitProviderSpec{
+			URL: remoteURL,
+		},
+	}
+	provider.Name = "test-repo"
+	provider.Namespace = "default"
+	require.NoError(t, k8sClient.Create(ctx, provider))
+
+	createTargetWithEncryptionSecretData(
+		ctx,
+		t,
+		k8sClient,
+		"bootstrap-target",
+		"default",
+		"test-repo",
+		"main",
+		"clusters/dev",
+		map[string][]byte{
+			sopsAgeKeyEnvVar: []byte("not-an-age-identity"),
+		},
+	)
+
+	worker := NewBranchWorker(k8sClient, logr.Discard(), "test-repo", "default", "main", nil)
+	require.NoError(t, worker.EnsurePathBootstrapped("clusters/dev", "bootstrap-target", "default"))
+
+	clonePath := filepath.Join(tempDir, "inspect")
+	_, err := PrepareBranch(ctx, remoteURL, clonePath, "main", nil)
+	require.NoError(t, err)
+
+	_, err = os.Stat(filepath.Join(clonePath, "clusters/dev", "README.md"))
+	require.NoError(t, err)
+	_, err = os.Stat(filepath.Join(clonePath, "clusters/dev", sopsConfigFileName))
+	assert.True(t, os.IsNotExist(err), "Bootstrap SOPS config should be skipped for invalid encryption secret")
+}
+
+func TestBranchWorker_EnsurePathBootstrapped_MissingSOPSKeySkipsSOPSConfig(t *testing.T) {
+	ctx := context.Background()
+	tempDir := t.TempDir()
+	remotePath := filepath.Join(tempDir, "remote.git")
+	remoteURL := "file://" + remotePath
+	_ = createBareRepo(t, remotePath)
+
+	scheme := runtime.NewScheme()
+	_ = clientgoscheme.AddToScheme(scheme)
+	_ = configv1alpha1.AddToScheme(scheme)
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	provider := &configv1alpha1.GitProvider{
+		Spec: configv1alpha1.GitProviderSpec{
+			URL: remoteURL,
+		},
+	}
+	provider.Name = "test-repo"
+	provider.Namespace = "default"
+	require.NoError(t, k8sClient.Create(ctx, provider))
+
+	createTargetWithEncryptionSecretData(
+		ctx,
+		t,
+		k8sClient,
+		"bootstrap-target",
+		"default",
+		"test-repo",
+		"main",
+		"clusters/dev",
+		map[string][]byte{
+			"OTHER_ENV": []byte("value"),
+		},
+	)
+
+	worker := NewBranchWorker(k8sClient, logr.Discard(), "test-repo", "default", "main", nil)
+	require.NoError(t, worker.EnsurePathBootstrapped("clusters/dev", "bootstrap-target", "default"))
+
+	clonePath := filepath.Join(tempDir, "inspect")
+	_, err := PrepareBranch(ctx, remoteURL, clonePath, "main", nil)
+	require.NoError(t, err)
+
+	_, err = os.Stat(filepath.Join(clonePath, "clusters/dev", "README.md"))
+	require.NoError(t, err)
+	_, err = os.Stat(filepath.Join(clonePath, "clusters/dev", sopsConfigFileName))
+	assert.True(t, os.IsNotExist(err), "Bootstrap SOPS config should be skipped when SOPS_AGE_KEY is missing")
 }
 
 func createTargetWithEncryption(
@@ -408,4 +608,66 @@ func createTargetWithoutEncryption(
 	target.Spec.Branch = branch
 	target.Spec.Path = path
 	require.NoError(t, k8sClient.Create(ctx, target))
+}
+
+func createTargetWithEncryptionSecretData(
+	ctx context.Context,
+	t *testing.T,
+	k8sClient client.Client,
+	name, namespace, providerName, branch, path string,
+	secretData map[string][]byte,
+) {
+	t.Helper()
+
+	encryptionSecret := &corev1.Secret{}
+	encryptionSecret.Name = "sops-age-key"
+	encryptionSecret.Namespace = namespace
+	encryptionSecret.Data = secretData
+	require.NoError(t, k8sClient.Create(ctx, encryptionSecret))
+
+	target := &configv1alpha1.GitTarget{}
+	target.Name = name
+	target.Namespace = namespace
+	target.Spec.ProviderRef = configv1alpha1.GitProviderReference{
+		Kind: "GitProvider",
+		Name: providerName,
+	}
+	target.Spec.Branch = branch
+	target.Spec.Path = path
+	target.Spec.Encryption = &configv1alpha1.EncryptionSpec{
+		Provider: "sops",
+		SecretRef: configv1alpha1.LocalSecretReference{
+			Name: encryptionSecret.Name,
+		},
+	}
+	require.NoError(t, k8sClient.Create(ctx, target))
+}
+
+func attachEncryptionToTarget(
+	ctx context.Context,
+	t *testing.T,
+	k8sClient client.Client,
+	targetName, targetNamespace string,
+) {
+	t.Helper()
+	identity, err := age.GenerateX25519Identity()
+	require.NoError(t, err)
+
+	encryptionSecret := &corev1.Secret{}
+	encryptionSecret.Name = "sops-age-key"
+	encryptionSecret.Namespace = targetNamespace
+	encryptionSecret.Data = map[string][]byte{
+		sopsAgeKeyEnvVar: []byte(identity.String()),
+	}
+	require.NoError(t, k8sClient.Create(ctx, encryptionSecret))
+
+	target := &configv1alpha1.GitTarget{}
+	require.NoError(t, k8sClient.Get(ctx, client.ObjectKey{Name: targetName, Namespace: targetNamespace}, target))
+	target.Spec.Encryption = &configv1alpha1.EncryptionSpec{
+		Provider: "sops",
+		SecretRef: configv1alpha1.LocalSecretReference{
+			Name: encryptionSecret.Name,
+		},
+	}
+	require.NoError(t, k8sClient.Update(ctx, target))
 }
