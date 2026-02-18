@@ -62,11 +62,8 @@ func TestEncryptionConfigValidate(t *testing.T) {
 	})
 }
 
-func TestConfigureSecretEncryption(t *testing.T) {
-	originalWriter := defaultContentWriter
-	defaultContentWriter = newContentWriter()
-	t.Cleanup(func() { defaultContentWriter = originalWriter })
-
-	require.NoError(t, ConfigureSecretEncryption(EncryptionConfig{}))
-	assert.Nil(t, defaultContentWriter.encryptor)
+func TestConfigureSecretEncryptionWriter(t *testing.T) {
+	writer := newContentWriter()
+	require.NoError(t, configureSecretEncryptionWriter(writer, EncryptionConfig{}))
+	assert.Nil(t, writer.encryptor)
 }

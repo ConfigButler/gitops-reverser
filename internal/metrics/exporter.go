@@ -77,11 +77,15 @@ var (
 	WatchDuplicatesSkippedTotal metric.Int64Counter
 	// AuditEventsReceivedTotal counts audit events received from Kubernetes API server.
 	AuditEventsReceivedTotal metric.Int64Counter
-	// Secret encryption pipeline counters.
-	SecretEncryptionAttemptsTotal    metric.Int64Counter
-	SecretEncryptionSuccessTotal     metric.Int64Counter
-	SecretEncryptionFailuresTotal    metric.Int64Counter
-	SecretEncryptionCacheHitsTotal   metric.Int64Counter
+	// SecretEncryptionAttemptsTotal counts total Secret encryption attempts.
+	SecretEncryptionAttemptsTotal metric.Int64Counter
+	// SecretEncryptionSuccessTotal counts successful Secret encryptions.
+	SecretEncryptionSuccessTotal metric.Int64Counter
+	// SecretEncryptionFailuresTotal counts failed Secret encryptions.
+	SecretEncryptionFailuresTotal metric.Int64Counter
+	// SecretEncryptionCacheHitsTotal counts cache hits for encrypted Secret content.
+	SecretEncryptionCacheHitsTotal metric.Int64Counter
+	// SecretEncryptionMarkerSkipsTotal counts marker-based skips that reused cached Secret content.
 	SecretEncryptionMarkerSkipsTotal metric.Int64Counter
 )
 

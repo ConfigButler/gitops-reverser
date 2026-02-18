@@ -45,9 +45,7 @@ func (s *stubEncryptor) Encrypt(_ context.Context, _ []byte, _ ResourceMeta) ([]
 }
 
 func TestBuildContentForWrite_MarshalOrderedYAML(t *testing.T) {
-	originalWriter := defaultContentWriter
-	defaultContentWriter = newContentWriter()
-	t.Cleanup(func() { defaultContentWriter = originalWriter })
+	writer := newContentWriter()
 
 	event := Event{
 		Object: &unstructured.Unstructured{
@@ -65,7 +63,7 @@ func TestBuildContentForWrite_MarshalOrderedYAML(t *testing.T) {
 		},
 	}
 
-	got, err := buildContentForWrite(context.Background(), event)
+	got, err := writer.buildContentForWrite(context.Background(), event)
 	require.NoError(t, err)
 
 	output := string(got)
@@ -79,9 +77,7 @@ func TestBuildContentForWrite_MarshalOrderedYAML(t *testing.T) {
 }
 
 func TestBuildContentForWrite_ReturnsMarshalError(t *testing.T) {
-	originalWriter := defaultContentWriter
-	defaultContentWriter = newContentWriter()
-	t.Cleanup(func() { defaultContentWriter = originalWriter })
+	writer := newContentWriter()
 
 	event := Event{
 		Object: &unstructured.Unstructured{
@@ -99,15 +95,13 @@ func TestBuildContentForWrite_ReturnsMarshalError(t *testing.T) {
 		},
 	}
 
-	_, err := buildContentForWrite(context.Background(), event)
+	_, err := writer.buildContentForWrite(context.Background(), event)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to marshal object to YAML")
 }
 
 func TestBuildContentForWrite_SecretRequiresEncryptor(t *testing.T) {
-	originalWriter := defaultContentWriter
-	defaultContentWriter = newContentWriter()
-	t.Cleanup(func() { defaultContentWriter = originalWriter })
+	writer := newContentWriter()
 
 	event := Event{
 		Identifier: types.ResourceIdentifier{
@@ -132,18 +126,16 @@ func TestBuildContentForWrite_SecretRequiresEncryptor(t *testing.T) {
 		},
 	}
 
-	_, err := buildContentForWrite(context.Background(), event)
+	_, err := writer.buildContentForWrite(context.Background(), event)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "secret encryption is required but no encryptor is configured")
 }
 
 func TestBuildContentForWrite_SecretEncryptionCacheMarkerReuse(t *testing.T) {
-	originalWriter := defaultContentWriter
-	defaultContentWriter = newContentWriter()
-	t.Cleanup(func() { defaultContentWriter = originalWriter })
+	writer := newContentWriter()
 
 	enc := &stubEncryptor{result: []byte("encrypted: true\nsops:\n  version: 3.9.0\n")}
-	defaultContentWriter.setEncryptor(enc)
+	writer.setEncryptor(enc)
 
 	obj := &unstructured.Unstructured{
 		Object: map[string]interface{}{
@@ -173,21 +165,19 @@ func TestBuildContentForWrite_SecretEncryptionCacheMarkerReuse(t *testing.T) {
 		Object: obj,
 	}
 
-	first, err := buildContentForWrite(context.Background(), event)
+	first, err := writer.buildContentForWrite(context.Background(), event)
 	require.NoError(t, err)
-	second, err := buildContentForWrite(context.Background(), event)
+	second, err := writer.buildContentForWrite(context.Background(), event)
 	require.NoError(t, err)
 	assert.Equal(t, 1, enc.callCount)
 	assert.Equal(t, first, second)
 }
 
 func TestBuildContentForWrite_SecretUIDChangeForcesReencrypt(t *testing.T) {
-	originalWriter := defaultContentWriter
-	defaultContentWriter = newContentWriter()
-	t.Cleanup(func() { defaultContentWriter = originalWriter })
+	writer := newContentWriter()
 
 	enc := &stubEncryptor{result: []byte("encrypted: true\nsops:\n  version: 3.9.0\n")}
-	defaultContentWriter.setEncryptor(enc)
+	writer.setEncryptor(enc)
 
 	makeSecret := func(uid string) *unstructured.Unstructured {
 		return &unstructured.Unstructured{
@@ -218,21 +208,19 @@ func TestBuildContentForWrite_SecretUIDChangeForcesReencrypt(t *testing.T) {
 		},
 		Object: makeSecret("uid-1"),
 	}
-	_, err := buildContentForWrite(context.Background(), event)
+	_, err := writer.buildContentForWrite(context.Background(), event)
 	require.NoError(t, err)
 
 	event.Object = makeSecret("uid-2")
-	_, err = buildContentForWrite(context.Background(), event)
+	_, err = writer.buildContentForWrite(context.Background(), event)
 	require.NoError(t, err)
 	assert.Equal(t, 2, enc.callCount)
 }
 
 func TestBuildContentForWrite_SecretEncryptionFailure(t *testing.T) {
-	originalWriter := defaultContentWriter
-	defaultContentWriter = newContentWriter()
-	t.Cleanup(func() { defaultContentWriter = originalWriter })
+	writer := newContentWriter()
 
-	defaultContentWriter.setEncryptor(&stubEncryptor{err: errors.New("boom")})
+	writer.setEncryptor(&stubEncryptor{err: errors.New("boom")})
 
 	event := Event{
 		Identifier: types.ResourceIdentifier{
@@ -257,7 +245,7 @@ func TestBuildContentForWrite_SecretEncryptionFailure(t *testing.T) {
 		},
 	}
 
-	_, err := buildContentForWrite(context.Background(), event)
+	_, err := writer.buildContentForWrite(context.Background(), event)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "secret encryption failed")
 }

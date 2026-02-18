@@ -41,7 +41,7 @@ func setupBranchWorkerTest() (*BranchWorker, func()) {
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 	log := logr.Discard()
 
-	worker := NewBranchWorker(client, log, "test-repo", "gitops-system", "main")
+	worker := NewBranchWorker(client, log, "test-repo", "gitops-system", "main", nil)
 
 	cleanup := func() {
 		if worker.started {
@@ -170,7 +170,7 @@ func TestBranchWorker_EmptyRepository(t *testing.T) {
 	_ = configv1alpha1.AddToScheme(scheme)
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 	logger := logr.Discard()
-	worker := NewBranchWorker(client, logger, "test-repo", "default", "main")
+	worker := NewBranchWorker(client, logger, "test-repo", "default", "main", nil)
 
 	// Create a GitProvider in the fake client pointing to our empty repo
 	repoConfig := &configv1alpha1.GitProvider{
@@ -213,7 +213,7 @@ func TestBranchWorker_IdentityFields(t *testing.T) {
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 	log := logr.Discard()
 
-	worker := NewBranchWorker(client, log, "my-repo", "my-namespace", "develop")
+	worker := NewBranchWorker(client, log, "my-repo", "my-namespace", "develop", nil)
 
 	if worker.GitProviderRef != "my-repo" {
 		t.Errorf("Expected GitProviderRef 'my-repo', got %q", worker.GitProviderRef)

@@ -47,10 +47,9 @@ type EncryptionConfig struct {
 	SOPSConfigPath string
 }
 
-// ConfigureSecretEncryption wires Secret encryption for git write paths.
-func ConfigureSecretEncryption(cfg EncryptionConfig) error {
+func configureSecretEncryptionWriter(writer *contentWriter, cfg EncryptionConfig) error {
 	if strings.TrimSpace(cfg.SOPSBinaryPath) == "" {
-		defaultContentWriter.setEncryptor(nil)
+		writer.setEncryptor(nil)
 		return nil
 	}
 
@@ -58,7 +57,7 @@ func ConfigureSecretEncryption(cfg EncryptionConfig) error {
 		return err
 	}
 
-	defaultContentWriter.setEncryptor(NewSOPSEncryptor(cfg.SOPSBinaryPath, cfg.SOPSConfigPath))
+	writer.setEncryptor(NewSOPSEncryptor(cfg.SOPSBinaryPath, cfg.SOPSConfigPath))
 	return nil
 }
 

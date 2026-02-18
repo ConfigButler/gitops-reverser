@@ -36,18 +36,27 @@ type WorkerManager struct {
 	Client client.Client
 	Log    logr.Logger
 
-	mu      sync.RWMutex
-	workers map[BranchKey]*BranchWorker
-	ctx     context.Context
+	contentWriter *contentWriter
+	mu            sync.RWMutex
+	workers       map[BranchKey]*BranchWorker
+	ctx           context.Context
 }
 
 // NewWorkerManager creates a new worker manager.
 func NewWorkerManager(client client.Client, log logr.Logger) *WorkerManager {
 	return &WorkerManager{
-		Client:  client,
-		Log:     log,
-		workers: make(map[BranchKey]*BranchWorker),
+		Client:        client,
+		Log:           log,
+		contentWriter: newContentWriter(),
+		workers:       make(map[BranchKey]*BranchWorker),
 	}
+}
+
+// ConfigureSecretEncryption applies Secret write encryption settings for all workers.
+func (m *WorkerManager) ConfigureSecretEncryption(cfg EncryptionConfig) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return configureSecretEncryptionWriter(m.contentWriter, cfg)
 }
 
 // RegisterTarget ensures a worker exists for the target's (provider, branch)
@@ -71,8 +80,14 @@ func (m *WorkerManager) RegisterTarget(
 	// Get or create worker for this (provider, branch)
 	if _, exists := m.workers[key]; !exists {
 		m.Log.Info("Creating new branch worker", "key", key.String())
-		worker := NewBranchWorker(m.Client, m.Log.WithName("branch-worker"),
-			providerName, providerNamespace, branch)
+		worker := NewBranchWorker(
+			m.Client,
+			m.Log.WithName("branch-worker"),
+			providerName,
+			providerNamespace,
+			branch,
+			m.contentWriter,
+		)
 
 		if err := worker.Start(m.ctx); err != nil {
 			return fmt.Errorf("failed to start worker for %s: %w", key.String(), err)
