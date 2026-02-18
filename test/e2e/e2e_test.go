@@ -21,6 +21,7 @@ package e2e
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -587,7 +588,10 @@ var _ = Describe("Manager", Ordered, func() {
 
 				bootstrapSOPSFile := filepath.Join(checkoutDir, "e2e/secret-encryption-test", ".sops.yaml")
 				bootstrapContent, bootstrapErr := os.ReadFile(bootstrapSOPSFile)
-				g.Expect(bootstrapErr).NotTo(HaveOccurred(), fmt.Sprintf(".sops.yaml must exist at %s", bootstrapSOPSFile))
+				g.Expect(bootstrapErr).NotTo(
+					HaveOccurred(),
+					fmt.Sprintf(".sops.yaml must exist at %s", bootstrapSOPSFile),
+				)
 				ageKey, ageKeyErr := readSOPSAgeKeyFromFile(e2eAgeKeyPath)
 				g.Expect(ageKeyErr).NotTo(HaveOccurred(), "Should read age private key")
 				recipient, recipientErr := deriveAgeRecipient(ageKey)
@@ -1462,7 +1466,7 @@ func decryptWithControllerSOPS(ciphertext []byte, ageKey string) (string, error)
 	}
 	podName := strings.TrimSpace(podOutput)
 	if podName == "" {
-		return "", fmt.Errorf("controller pod name is empty")
+		return "", errors.New("controller pod name is empty")
 	}
 
 	cmd := exec.Command(

@@ -45,7 +45,7 @@ import (
 // namespace where the project is deployed in.
 const namespace = "sut"
 const metricWaitDefaultTimeout = 30 * time.Second
-const e2eEncryptionSecretName = "sops-age-key"
+const e2eEncryptionRefName = "sops-age-key"
 
 // controllerServiceName is the single Service name used by the controller.
 const controllerServiceName = "gitops-reverser-service"
@@ -220,7 +220,7 @@ func createGitTarget(name, namespace, providerName, path, branch string) {
 		ProviderName:         providerName,
 		Branch:               branch,
 		Path:                 path,
-		EncryptionSecretName: e2eEncryptionSecretName,
+		EncryptionSecretName: e2eEncryptionRefName,
 	}
 
 	err := applyFromTemplate("test/e2e/templates/gittarget.tmpl", data, namespace)
@@ -270,17 +270,19 @@ func setupSOPSAgeSecret(keyPath string) {
 	err = os.WriteFile(keyPath, []byte(keyFileContent), 0600)
 	Expect(err).NotTo(HaveOccurred(), "Failed to write e2e age key file")
 
-	cmd := exec.Command(
-		"kubectl", "create", "secret", "generic", e2eEncryptionSecretName,
-		"--namespace", namespace,
-		"--from-literal=SOPS_AGE_KEY="+identity.String(),
-		"--dry-run=client", "-o", "yaml",
-	)
-	createOutput, err := utils.Run(cmd)
-	Expect(err).NotTo(HaveOccurred(), "Failed to render SOPS encryption secret")
+	manifest := fmt.Sprintf(`apiVersion: v1
+kind: Secret
+metadata:
+  name: %s
+  namespace: %s
+type: Opaque
+stringData:
+  SOPS_AGE_KEY: %q
+`, e2eEncryptionRefName, namespace, identity.String())
 
-	applyCmd := exec.Command("kubectl", "apply", "-f", "-")
-	applyCmd.Stdin = strings.NewReader(createOutput)
+	ctx := context.Background()
+	applyCmd := exec.CommandContext(ctx, "kubectl", "apply", "-f", "-")
+	applyCmd.Stdin = strings.NewReader(manifest)
 	_, err = utils.Run(applyCmd)
 	Expect(err).NotTo(HaveOccurred(), "Failed to apply SOPS encryption secret")
 }
