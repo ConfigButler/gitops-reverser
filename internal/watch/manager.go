@@ -43,9 +43,9 @@ import (
 	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 	"github.com/ConfigButler/gitops-reverser/internal/correlation"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
-	"github.com/ConfigButler/gitops-reverser/internal/metrics"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
 	"github.com/ConfigButler/gitops-reverser/internal/sanitize"
+	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
@@ -225,7 +225,7 @@ func (m *Manager) enqueueMatches(
 	if m.isDuplicateContent(ctx, sanitized, id) {
 		m.Log.V(1).Info("Skipping duplicate sanitized content (likely status-only change)",
 			"identifier", id.String())
-		metrics.WatchDuplicatesSkippedTotal.Add(ctx, 1)
+		telemetry.WatchDuplicatesSkippedTotal.Add(ctx, 1)
 		return
 	}
 
@@ -339,13 +339,13 @@ func (m *Manager) tryEnrichFromCorrelation(
 	key := correlation.GenerateKey(id, operation, sanitizedYAML)
 	entry, found := m.CorrelationStore.Get(key)
 	if !found {
-		metrics.EnrichMissesTotal.Add(ctx, 1)
+		telemetry.EnrichMissesTotal.Add(ctx, 1)
 		log.V(1).Info("No correlation match", "identifier", id.String(), "key", key)
 		return userInfo
 	}
 
 	userInfo.Username = entry.Username
-	metrics.EnrichHitsTotal.Add(ctx, 1)
+	telemetry.EnrichHitsTotal.Add(ctx, 1)
 	log.V(1).Info("Enriched with username",
 		"identifier", id.String(),
 		"username", entry.Username,
@@ -551,7 +551,7 @@ func (m *Manager) seedListAndProcess(
 			return
 		}
 
-		metrics.ObjectsScannedTotal.Add(ctx, int64(len(list.Items)))
+		telemetry.ObjectsScannedTotal.Add(ctx, int64(len(list.Items)))
 		for i := range list.Items {
 			m.processListedObject(ctx, &list.Items[i], g)
 		}
@@ -570,7 +570,7 @@ func (m *Manager) seedListAndProcess(
 				m.processListedObject(ctx, &list.Items[i], g)
 			}
 		}
-		metrics.ObjectsScannedTotal.Add(ctx, int64(totalItems))
+		telemetry.ObjectsScannedTotal.Add(ctx, int64(totalItems))
 		log.V(1).Info("Seeded namespaced resources", "namespaces", len(namespacesToList), "totalItems", totalItems)
 	}
 }
@@ -605,8 +605,8 @@ func (m *Manager) processListedObject(
 
 	enq := int64(len(wrRules) + len(cwrRules))
 	if enq > 0 {
-		metrics.EventsProcessedTotal.Add(ctx, enq)
-		metrics.GitCommitQueueSize.Add(ctx, enq)
+		telemetry.EventsProcessedTotal.Add(ctx, enq)
+		telemetry.GitCommitQueueSize.Add(ctx, enq)
 	}
 }
 

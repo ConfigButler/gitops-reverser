@@ -32,7 +32,7 @@ import (
 	auditv1 "k8s.io/apiserver/pkg/apis/audit/v1"
 	"sigs.k8s.io/yaml"
 
-	"github.com/ConfigButler/gitops-reverser/internal/metrics"
+	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -41,7 +41,7 @@ import (
 
 func TestMain(m *testing.M) {
 	// Initialize metrics for tests
-	_, err := metrics.InitOTLPExporter(context.Background())
+	_, err := telemetry.InitOTLPExporter(context.Background())
 	if err != nil {
 		panic("Failed to initialize metrics: " + err.Error())
 	}

@@ -16,10 +16,11 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package metrics
+package telemetry
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -313,7 +314,7 @@ func TestHistogramMetricBehavior(t *testing.T) {
 	}
 
 	for _, value := range testValues {
-		t.Run("Duration_"+string(rune(int(value*1000))), func(t *testing.T) {
+		t.Run(fmt.Sprintf("Duration_%g", value), func(t *testing.T) {
 			assert.NotPanics(t, func() {
 				GitPushDurationSeconds.Record(ctx, value)
 			})

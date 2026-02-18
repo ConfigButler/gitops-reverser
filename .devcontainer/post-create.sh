@@ -23,6 +23,27 @@ if [ -f /home/vscode/.gitconfig-host ]; then
   fi
 fi
 
+# Ensure SSH commit signing works inside the container
+log "Configuring SSH commit signing (Git) inside container"
+
+git config --global gpg.format ssh
+git config --global commit.gpgsign true
+
+mkdir -p /home/vscode/.config/git /home/vscode/.ssh
+
+# Create allowed signers file if missing
+if [ ! -s /home/vscode/.config/git/allowed_signers ]; then
+  ssh-add -L | head -n 1 | awk '{print "simonkoudijs@gmail.com "$0}' > /home/vscode/.config/git/allowed_signers
+fi
+git config --global gpg.ssh.allowedSignersFile /home/vscode/.config/git/allowed_signers
+
+# Create a stable public key file to point Git at
+if [ ! -s /home/vscode/.ssh/signing_key.pub ]; then
+  ssh-add -L | head -n 1 > /home/vscode/.ssh/signing_key.pub
+fi
+git config --global user.signingkey /home/vscode/.ssh/signing_key.pub
+
+
 # Ensure Go-related caches exist and are writable by vscode
 log "Ensuring Go cache directories exist"
 sudo mkdir -p \

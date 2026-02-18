@@ -347,7 +347,7 @@ linters:
         linters: [gochecknoglobals, gochecknoinits]
       - path: 'cmd/main\.go'
         linters: [gochecknoglobals, cyclop, gochecknoinits, gocognit, funlen]
-      - path: 'internal/metrics/.*\.go'
+      - path: 'internal/telemetry/.*\.go'
         linters: [gochecknoglobals]
       # Allow test suite global variables and patterns
       - path: '_test\.go'
@@ -374,7 +374,7 @@ linters:
       - path: 'test/e2e/.*\.go'
         linters: [forbidigo]
       # Allow fmt.Println in metrics exporter (initialization logs)
-      - path: 'internal/metrics/.*\.go'
+      - path: 'internal/telemetry/.*\.go'
         linters: [forbidigo]
       # Relax godot for test helpers and utility functions
       - path: '(test/|helpers\.go)'
