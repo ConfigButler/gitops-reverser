@@ -70,6 +70,7 @@ test: manifests generate fmt vet setup-envtest ## Run tests.
 
 KIND_CLUSTER ?= gitops-reverser-test-e2e
 E2E_LOCAL_IMAGE ?= gitops-reverser:e2e-local
+CERT_MANAGER_WAIT_TIMEOUT ?= 600s
 
 .PHONY: setup-cluster
 setup-cluster: ## Set up a Kind cluster for e2e tests if it does not exist
@@ -281,11 +282,22 @@ setup-e2e: setup-cert-manager setup-gitea-e2e setup-prometheus-e2e ## Setup all 
 	@echo "✅ E2E infrastructure initialized"
 
 .PHONY: wait-cert-manager
-wait-cert-manager: setup-cert-manager ## Wait for cert-manager pods to become ready
-	@echo "⏳ Waiting for cert-manager deployments to become available..."
-	@$(KUBECTL) -n cert-manager rollout status deploy/cert-manager --timeout=300s
-	@$(KUBECTL) -n cert-manager rollout status deploy/cert-manager-webhook --timeout=300s
-	@$(KUBECTL) -n cert-manager rollout status deploy/cert-manager-cainjector --timeout=300s
+wait-cert-manager: ## Wait for cert-manager pods to become ready
+	@echo "⏳ Waiting for cert-manager deployments to become available (timeout=$(CERT_MANAGER_WAIT_TIMEOUT))..."
+	@set -e; \
+	for dep in cert-manager cert-manager-webhook cert-manager-cainjector; do \
+		echo "   - waiting for deployment/$$dep"; \
+		if ! $(KUBECTL) -n cert-manager rollout status deploy/$$dep --timeout=$(CERT_MANAGER_WAIT_TIMEOUT); then \
+			echo "❌ Timed out waiting for cert-manager readiness (deployment=$$dep)"; \
+			echo "📋 cert-manager deployments and pods:"; \
+			$(KUBECTL) -n cert-manager get deploy,pod -o wide || true; \
+			echo "📋 recent cert-manager events:"; \
+			$(KUBECTL) -n cert-manager get events --sort-by=.metadata.creationTimestamp | tail -n 80 || true; \
+			echo "📋 recent cert-manager logs:"; \
+			$(KUBECTL) -n cert-manager logs -l app.kubernetes.io/instance=cert-manager --all-containers=true --tail=120 || true; \
+			exit 1; \
+		fi; \
+	done
 	@echo "✅ cert-manager is ready"
 
 ## Smoke test: install from local Helm chart and verify rollout
