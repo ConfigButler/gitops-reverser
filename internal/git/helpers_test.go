@@ -317,3 +317,28 @@ func createTestEvent(tb testing.TB, name string) Event {
 		},
 	}
 }
+
+func TestParseIdentifierFromPath_StripsYAMLExtensions(t *testing.T) {
+	tests := []struct {
+		path string
+		name string
+	}{
+		{
+			path: "v1/secrets/default/db-secret.yaml",
+			name: "db-secret",
+		},
+		{
+			path: "v1/secrets/default/db-secret.sops.yaml",
+			name: "db-secret",
+		},
+	}
+
+	for _, tt := range tests {
+		id, ok := parseIdentifierFromPath(tt.path)
+		require.True(t, ok)
+		require.Equal(t, "v1", id.Version)
+		require.Equal(t, "secrets", id.Resource)
+		require.Equal(t, "default", id.Namespace)
+		require.Equal(t, tt.name, id.Name)
+	}
+}

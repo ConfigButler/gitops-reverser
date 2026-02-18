@@ -70,6 +70,7 @@ func parseIdentifierFromPath(p string) (itypes.ResourceIdentifier, bool) {
 	}
 	last := parts[len(parts)-1]
 	name := strings.TrimSuffix(last, filepath.Ext(last))
+	name = strings.TrimSuffix(name, ".sops")
 
 	var group, version, resource, namespace string
 	switch len(parts) {
