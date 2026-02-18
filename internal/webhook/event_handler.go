@@ -40,8 +40,8 @@ import (
 	"go.opentelemetry.io/otel/metric"
 
 	"github.com/ConfigButler/gitops-reverser/internal/correlation"
-	"github.com/ConfigButler/gitops-reverser/internal/metrics"
 	"github.com/ConfigButler/gitops-reverser/internal/sanitize"
+	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
@@ -65,7 +65,7 @@ func (h *EventHandler) Handle(ctx context.Context, req admission.Request) admiss
 
 	// Metrics: attribute role based on pod labels
 	roleAttr := h.getPodRoleAttribute(ctx)
-	metrics.EventsReceivedTotal.Add(ctx, 1, metric.WithAttributes(roleAttr))
+	telemetry.EventsReceivedTotal.Add(ctx, 1, metric.WithAttributes(roleAttr))
 
 	// Safety: require decoder
 	if h.Decoder == nil {
@@ -143,7 +143,7 @@ func (h *EventHandler) storeCorrelation(
 
 	// Increment webhook-specific correlation metric
 	roleAttr := h.getPodRoleAttribute(ctx)
-	metrics.WebhookCorrelationsTotal.Add(ctx, 1, metric.WithAttributes(roleAttr))
+	telemetry.WebhookCorrelationsTotal.Add(ctx, 1, metric.WithAttributes(roleAttr))
 
 	log.V(1).Info("Stored correlation entry (unfiltered)",
 		"kind", obj.GetKind(),

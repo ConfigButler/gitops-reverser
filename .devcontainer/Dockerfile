@@ -1,6 +1,6 @@
 # Multi-stage Dockerfile for GitOps Reverser
 # Stage 1: CI base image with essential build tools
-FROM golang:1.25.6-bookworm AS ci
+FROM golang:1.26.0-bookworm AS ci
 
 # Avoid warnings by switching to noninteractive
 ENV DEBIAN_FRONTEND=noninteractive
@@ -24,9 +24,9 @@ RUN apt-get update \
 
 # Tool versions - centralized for easy updates
 ENV KUBECTL_VERSION=v1.35.0 \
-    KUSTOMIZE_VERSION=5.8.0 \
+    KUSTOMIZE_VERSION=5.8.1 \
     KUBEBUILDER_VERSION=4.11.1 \
-    GOLANGCI_LINT_VERSION=v2.8.0 \
+    GOLANGCI_LINT_VERSION=v2.10.1 \
     HELM_VERSION=v4.0.0
 
 # Install kubectl

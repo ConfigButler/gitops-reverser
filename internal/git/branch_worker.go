@@ -36,8 +36,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
-	"github.com/ConfigButler/gitops-reverser/internal/metrics"
 	"github.com/ConfigButler/gitops-reverser/internal/sanitize"
+	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
@@ -493,9 +493,9 @@ func (w *BranchWorker) commitAndPush(
 	}
 
 	// Metrics
-	metrics.GitOperationsTotal.Add(w.ctx, int64(len(events)))
-	metrics.CommitsTotal.Add(w.ctx, 1)
-	metrics.ObjectsWrittenTotal.Add(w.ctx, int64(len(events)))
+	telemetry.GitOperationsTotal.Add(w.ctx, int64(len(events)))
+	telemetry.CommitsTotal.Add(w.ctx, 1)
+	telemetry.ObjectsWrittenTotal.Add(w.ctx, int64(len(events)))
 }
 
 // handleShutdown finalizes processing when context is canceled.

@@ -27,8 +27,8 @@ import (
 
 	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
-	"github.com/ConfigButler/gitops-reverser/internal/metrics"
 	"github.com/ConfigButler/gitops-reverser/internal/sanitize"
+	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
@@ -94,7 +94,7 @@ func (m *Manager) handleEvent(obj interface{}, g GVR, op configv1alpha1.Operatio
 	if op != configv1alpha1.OperationDelete && m.isDuplicateContent(ctx, sanitized, id) {
 		m.Log.V(1).Info("Skipping duplicate sanitized content (likely status-only change)",
 			"identifier", id.String())
-		metrics.WatchDuplicatesSkippedTotal.Add(ctx, 1)
+		telemetry.WatchDuplicatesSkippedTotal.Add(ctx, 1)
 		return
 	}
 
@@ -103,11 +103,11 @@ func (m *Manager) handleEvent(obj interface{}, g GVR, op configv1alpha1.Operatio
 
 	// Emit basic metrics for watcher path (mirrors webhook semantics).
 	// Count each watched object processed by the informer path.
-	metrics.ObjectsScannedTotal.Add(ctx, 1)
+	telemetry.ObjectsScannedTotal.Add(ctx, 1)
 	enqueueCount := int64(len(wrRules) + len(cwrRules))
 	if enqueueCount > 0 {
-		metrics.EventsProcessedTotal.Add(ctx, enqueueCount)
-		metrics.GitCommitQueueSize.Add(ctx, enqueueCount)
+		telemetry.EventsProcessedTotal.Add(ctx, enqueueCount)
+		telemetry.GitCommitQueueSize.Add(ctx, enqueueCount)
 	}
 
 	// WatchRule matches - route to workers

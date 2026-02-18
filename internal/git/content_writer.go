@@ -25,8 +25,8 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/ConfigButler/gitops-reverser/internal/metrics"
 	"github.com/ConfigButler/gitops-reverser/internal/sanitize"
+	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
@@ -106,18 +106,18 @@ func (w *contentWriter) encryptSecretContent(ctx context.Context, event Event, p
 		return nil, errors.New("secret encryption is required but no encryptor is configured")
 	}
 
-	if metrics.SecretEncryptionAttemptsTotal != nil {
-		metrics.SecretEncryptionAttemptsTotal.Add(ctx, 1)
+	if telemetry.SecretEncryptionAttemptsTotal != nil {
+		telemetry.SecretEncryptionAttemptsTotal.Add(ctx, 1)
 	}
 	encrypted, err := encryptor.Encrypt(ctx, plain, ResourceMeta(meta))
 	if err != nil {
-		if metrics.SecretEncryptionFailuresTotal != nil {
-			metrics.SecretEncryptionFailuresTotal.Add(ctx, 1)
+		if telemetry.SecretEncryptionFailuresTotal != nil {
+			telemetry.SecretEncryptionFailuresTotal.Add(ctx, 1)
 		}
 		return nil, fmt.Errorf("secret encryption failed: %w", err)
 	}
-	if metrics.SecretEncryptionSuccessTotal != nil {
-		metrics.SecretEncryptionSuccessTotal.Add(ctx, 1)
+	if telemetry.SecretEncryptionSuccessTotal != nil {
+		telemetry.SecretEncryptionSuccessTotal.Add(ctx, 1)
 	}
 
 	w.mu.Lock()
@@ -141,11 +141,11 @@ func (w *contentWriter) cachedEncryptedSecret(
 	if !ok {
 		return nil, false
 	}
-	if metrics.SecretEncryptionMarkerSkipsTotal != nil {
-		metrics.SecretEncryptionMarkerSkipsTotal.Add(ctx, 1)
+	if telemetry.SecretEncryptionMarkerSkipsTotal != nil {
+		telemetry.SecretEncryptionMarkerSkipsTotal.Add(ctx, 1)
 	}
-	if metrics.SecretEncryptionCacheHitsTotal != nil {
-		metrics.SecretEncryptionCacheHitsTotal.Add(ctx, 1)
+	if telemetry.SecretEncryptionCacheHitsTotal != nil {
+		telemetry.SecretEncryptionCacheHitsTotal.Add(ctx, 1)
 	}
 	return append([]byte(nil), cached...), true
 }

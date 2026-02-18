@@ -39,14 +39,14 @@ import (
 
 	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 	"github.com/ConfigButler/gitops-reverser/internal/correlation"
-	"github.com/ConfigButler/gitops-reverser/internal/metrics"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
+	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 )
 
 func TestEventHandler_Handle_MatchingRule(t *testing.T) {
 	// Setup
 	ctx := context.Background()
-	_, err := metrics.InitOTLPExporter(ctx)
+	_, err := telemetry.InitOTLPExporter(ctx)
 	require.NoError(t, err)
 
 	scheme := runtime.NewScheme()
@@ -139,7 +139,7 @@ func TestEventHandler_Handle_MatchingRule(t *testing.T) {
 func TestEventHandler_Handle_NoMatchingRule(t *testing.T) {
 	// Setup
 	ctx := context.Background()
-	_, err := metrics.InitOTLPExporter(ctx)
+	_, err := telemetry.InitOTLPExporter(ctx)
 	require.NoError(t, err)
 
 	scheme := runtime.NewScheme()
@@ -220,7 +220,7 @@ func TestEventHandler_Handle_NoMatchingRule(t *testing.T) {
 func TestEventHandler_Handle_MultipleMatchingRules(t *testing.T) {
 	// Setup
 	ctx := context.Background()
-	_, err := metrics.InitOTLPExporter(ctx)
+	_, err := telemetry.InitOTLPExporter(ctx)
 	require.NoError(t, err)
 
 	scheme := runtime.NewScheme()
@@ -320,7 +320,7 @@ func TestEventHandler_Handle_MultipleMatchingRules(t *testing.T) {
 func TestEventHandler_Handle_ExcludedByLabels(t *testing.T) {
 	// Setup
 	ctx := context.Background()
-	_, err := metrics.InitOTLPExporter(ctx)
+	_, err := telemetry.InitOTLPExporter(ctx)
 	require.NoError(t, err)
 
 	scheme := runtime.NewScheme()
@@ -412,7 +412,7 @@ func TestEventHandler_Handle_ExcludedByLabels(t *testing.T) {
 func TestEventHandler_Handle_InvalidJSON(t *testing.T) {
 	// Setup
 	ctx := context.Background()
-	_, err := metrics.InitOTLPExporter(ctx)
+	_, err := telemetry.InitOTLPExporter(ctx)
 	require.NoError(t, err)
 
 	scheme := runtime.NewScheme()
@@ -457,7 +457,7 @@ func TestEventHandler_Handle_InvalidJSON(t *testing.T) {
 func TestEventHandler_Handle_NamespacedIngressResource(t *testing.T) {
 	// Setup
 	ctx := context.Background()
-	_, err := metrics.InitOTLPExporter(ctx)
+	_, err := telemetry.InitOTLPExporter(ctx)
 	require.NoError(t, err)
 
 	scheme := runtime.NewScheme()
@@ -553,7 +553,7 @@ func TestEventHandler_Handle_DifferentOperations(t *testing.T) {
 		t.Run(string(operation), func(t *testing.T) {
 			// Setup
 			ctx := context.Background()
-			_, err := metrics.InitOTLPExporter(ctx)
+			_, err := telemetry.InitOTLPExporter(ctx)
 			require.NoError(t, err)
 
 			scheme := runtime.NewScheme()
@@ -635,7 +635,7 @@ func TestEventHandler_Handle_DifferentOperations(t *testing.T) {
 func TestEventHandler_Handle_ClusterScopedResource(t *testing.T) {
 	// Setup
 	ctx := context.Background()
-	_, err := metrics.InitOTLPExporter(ctx)
+	_, err := telemetry.InitOTLPExporter(ctx)
 	require.NoError(t, err)
 
 	scheme := runtime.NewScheme()
@@ -727,7 +727,7 @@ func TestEventHandler_InjectDecoder(t *testing.T) {
 func TestEventHandler_Handle_SanitizationApplied(t *testing.T) {
 	// Setup
 	ctx := context.Background()
-	_, err := metrics.InitOTLPExporter(ctx)
+	_, err := telemetry.InitOTLPExporter(ctx)
 	require.NoError(t, err)
 
 	scheme := runtime.NewScheme()

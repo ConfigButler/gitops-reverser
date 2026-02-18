@@ -40,7 +40,7 @@ import (
 
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	"github.com/ConfigButler/gitops-reverser/internal/metrics"
+	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 )
 
 const (
@@ -63,7 +63,7 @@ type AuditHandlerConfig struct {
 	MaxRequestBodyBytes int64
 }
 
-// AuditHandler handles incoming audit events and collects metrics.
+// AuditHandler handles incoming audit events and collects telemetry.
 type AuditHandler struct {
 	scheme       *runtime.Scheme
 	deserializer runtime.Decoder
@@ -202,7 +202,7 @@ func (h *AuditHandler) processEvents(ctx context.Context, clusterID string, even
 			user = auditEvent.ImpersonatedUser.Username
 		}
 
-		metrics.AuditEventsReceivedTotal.Add(ctx, 1, metric.WithAttributes(
+		telemetry.AuditEventsReceivedTotal.Add(ctx, 1, metric.WithAttributes(
 			attribute.String("cluster_id", clusterIDMetric),
 			attribute.String("gvr", gvr),
 			attribute.String("action", action),

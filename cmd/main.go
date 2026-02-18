@@ -52,9 +52,9 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/controller"
 	"github.com/ConfigButler/gitops-reverser/internal/correlation"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
-	"github.com/ConfigButler/gitops-reverser/internal/metrics"
 	"github.com/ConfigButler/gitops-reverser/internal/reconcile"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
+	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 	"github.com/ConfigButler/gitops-reverser/internal/watch"
 	webhookhandler "github.com/ConfigButler/gitops-reverser/internal/webhook"
 	// +kubebuilder:scaffold:imports
@@ -99,7 +99,7 @@ func main() {
 
 	// Initialize metrics
 	setupCtx := ctrl.SetupSignalHandler()
-	_, err := metrics.InitOTLPExporter(setupCtx)
+	_, err := telemetry.InitOTLPExporter(setupCtx)
 	fatalIfErr(err, "unable to initialize metrics exporter")
 
 	// TLS/options
@@ -130,7 +130,7 @@ func main() {
 	// Initialize correlation store for webhook→watch enrichment
 	correlationStore := correlation.NewStore(correlationTTL, correlationMaxEntries)
 	correlationStore.SetEvictionCallback(func() {
-		metrics.KVEvictionsTotal.Add(context.Background(), 1)
+		telemetry.KVEvictionsTotal.Add(context.Background(), 1)
 	})
 	setupLog.Info("Correlation store initialized",
 		"ttl", correlationTTL,
