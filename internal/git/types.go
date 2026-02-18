@@ -105,4 +105,10 @@ type Event struct {
 	// This comes from the GitTarget that triggered this event.
 	// Empty string means write to repository root.
 	Path string
+
+	// GitTargetName is the target owning this event.
+	GitTargetName string
+
+	// GitTargetNamespace is the namespace of the target owning this event.
+	GitTargetNamespace string
 }

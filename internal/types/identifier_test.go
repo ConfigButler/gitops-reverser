@@ -296,3 +296,21 @@ func TestFromAdmissionRequest(t *testing.T) {
 		})
 	}
 }
+
+func TestIsSecretResource(t *testing.T) {
+	assert.True(t, IsSecretResource(ResourceIdentifier{
+		Group:    "",
+		Version:  "v1",
+		Resource: "secrets",
+	}))
+	assert.False(t, IsSecretResource(ResourceIdentifier{
+		Group:    "",
+		Version:  "v1",
+		Resource: "configmaps",
+	}))
+	assert.False(t, IsSecretResource(ResourceIdentifier{
+		Group:    "example.com",
+		Version:  "v1",
+		Resource: "secrets",
+	}))
+}

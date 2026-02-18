@@ -26,11 +26,13 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"text/template"
 	"time"
 
+	"filippo.io/age"
 	. "github.com/onsi/ginkgo/v2" //nolint:staticcheck // Ginkgo standard practice
 	. "github.com/onsi/gomega"    //nolint:staticcheck // Ginkgo standard practice
 	"github.com/prometheus/client_golang/api"
@@ -43,6 +45,7 @@ import (
 // namespace where the project is deployed in.
 const namespace = "sut"
 const metricWaitDefaultTimeout = 30 * time.Second
+const e2eEncryptionSecretName = "sops-age-key"
 
 // controllerServiceName is the single Service name used by the controller.
 const controllerServiceName = "gitops-reverser-service"
@@ -205,17 +208,19 @@ func createGitTarget(name, namespace, providerName, path, branch string) {
 		name, namespace, providerName, path))
 
 	data := struct {
-		Name         string
-		Namespace    string
-		ProviderName string
-		Branch       string
-		Path         string
+		Name                 string
+		Namespace            string
+		ProviderName         string
+		Branch               string
+		Path                 string
+		EncryptionSecretName string
 	}{
-		Name:         name,
-		Namespace:    namespace,
-		ProviderName: providerName,
-		Branch:       branch,
-		Path:         path,
+		Name:                 name,
+		Namespace:            namespace,
+		ProviderName:         providerName,
+		Branch:               branch,
+		Path:                 path,
+		EncryptionSecretName: e2eEncryptionSecretName,
 	}
 
 	err := applyFromTemplate("test/e2e/templates/gittarget.tmpl", data, namespace)
@@ -252,4 +257,30 @@ func cleanupClusterWatchRule(name string) {
 	cmd := exec.CommandContext(ctx, "kubectl", "delete", "clusterwatchrule", name,
 		"--ignore-not-found=true")
 	_, _ = utils.Run(cmd)
+}
+
+func setupSOPSAgeSecret(keyPath string) {
+	By("creating SOPS age key and encryption secret for e2e")
+
+	identity, err := age.GenerateX25519Identity()
+	Expect(err).NotTo(HaveOccurred(), "Failed to generate age identity")
+
+	// Keep file format compatible with existing key reader in e2e tests.
+	keyFileContent := fmt.Sprintf("# created: e2e\n# public key: %s\n%s\n", identity.Recipient(), identity)
+	err = os.WriteFile(keyPath, []byte(keyFileContent), 0600)
+	Expect(err).NotTo(HaveOccurred(), "Failed to write e2e age key file")
+
+	cmd := exec.Command(
+		"kubectl", "create", "secret", "generic", e2eEncryptionSecretName,
+		"--namespace", namespace,
+		"--from-literal=SOPS_AGE_KEY="+identity.String(),
+		"--dry-run=client", "-o", "yaml",
+	)
+	createOutput, err := utils.Run(cmd)
+	Expect(err).NotTo(HaveOccurred(), "Failed to render SOPS encryption secret")
+
+	applyCmd := exec.Command("kubectl", "apply", "-f", "-")
+	applyCmd.Stdin = strings.NewReader(createOutput)
+	_, err = utils.Run(applyCmd)
+	Expect(err).NotTo(HaveOccurred(), "Failed to apply SOPS encryption secret")
 }

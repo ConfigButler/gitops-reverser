@@ -20,15 +20,21 @@ package git
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 
+	"filippo.io/age"
 	"github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/config"
+	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
@@ -187,10 +193,10 @@ func TestBranchWorker_EmptyRepository(t *testing.T) {
 	err = worker.ensureRepositoryInitialized(ctx)
 	require.NoError(t, err, "ensureRepositoryInitialized should succeed with empty repository")
 
-	// Test GetBranchMetadata - should return branchExists=false for empty repo
+	// Test GetBranchMetadata - branch should still be unborn until first write/bootstrap
 	exists, sha, fetchTime := worker.GetBranchMetadata()
-	assert.False(t, exists, "Branch should not exist in empty repository")
-	assert.Empty(t, sha, "SHA should be empty for empty repository")
+	assert.False(t, exists, "Branch should not exist remotely for empty repository")
+	assert.Empty(t, sha, "SHA should be empty while branch is unborn")
 	assert.False(t, fetchTime.IsZero(), "Fetch time should be set")
 
 	// Test ListResourcesInPath - should work with empty repo
@@ -200,9 +206,9 @@ func TestBranchWorker_EmptyRepository(t *testing.T) {
 
 	// Verify metadata was updated after ListResourcesInPath
 	exists2, sha2, fetchTime2 := worker.GetBranchMetadata()
-	assert.False(t, exists2, "Branch should still not exist after listing")
-	assert.Empty(t, sha2, "SHA should still be empty after listing")
-	assert.True(t, fetchTime2.After(fetchTime), "Fetch time should be updated after listing")
+	assert.False(t, exists2, "Branch should remain unborn after listing")
+	assert.Empty(t, sha2, "SHA should remain empty after listing")
+	assert.False(t, fetchTime2.Before(fetchTime), "Fetch time should not move backwards")
 }
 
 // TestBranchWorker_IdentityFields verifies worker identity is set correctly.
@@ -224,4 +230,182 @@ func TestBranchWorker_IdentityFields(t *testing.T) {
 	if worker.Branch != "develop" {
 		t.Errorf("Expected Branch 'develop', got %q", worker.Branch)
 	}
+}
+
+func TestBranchWorker_EnsurePathBootstrapped_EmptyPathCreatesTemplate(t *testing.T) {
+	ctx := context.Background()
+	tempDir := t.TempDir()
+	remotePath := filepath.Join(tempDir, "remote.git")
+	remoteURL := "file://" + remotePath
+	serverRepo := createBareRepo(t, remotePath)
+
+	scheme := runtime.NewScheme()
+	_ = clientgoscheme.AddToScheme(scheme)
+	_ = configv1alpha1.AddToScheme(scheme)
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	provider := &configv1alpha1.GitProvider{
+		Spec: configv1alpha1.GitProviderSpec{
+			URL: remoteURL,
+		},
+	}
+	provider.Name = "test-repo"
+	provider.Namespace = "default"
+	require.NoError(t, k8sClient.Create(ctx, provider))
+	createTargetWithEncryption(t, ctx, k8sClient, "bootstrap-target", "default", "test-repo", "main", "clusters/prod")
+
+	worker := NewBranchWorker(k8sClient, logr.Discard(), "test-repo", "default", "main", nil)
+	require.NoError(t, worker.EnsurePathBootstrapped("clusters/prod", "bootstrap-target", "default"))
+	require.NoError(t, worker.EnsurePathBootstrapped("clusters/prod", "bootstrap-target", "default"))
+
+	ref, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
+	require.NoError(t, err)
+	assert.Equal(t, 1, countDepth(t, serverRepo, ref.Hash()), "Bootstrap should only commit once for same path")
+
+	clonePath := filepath.Join(tempDir, "inspect")
+	_, err = PrepareBranch(ctx, remoteURL, clonePath, "main", nil)
+	require.NoError(t, err)
+
+	_, err = os.Stat(filepath.Join(clonePath, "clusters/prod", "README.md"))
+	require.NoError(t, err)
+	_, err = os.Stat(filepath.Join(clonePath, "clusters/prod", sopsConfigFileName))
+	require.NoError(t, err)
+}
+
+func TestBranchWorker_EnsurePathBootstrapped_NonEmptyPathSkipsTemplate(t *testing.T) {
+	ctx := context.Background()
+	tempDir := t.TempDir()
+	remotePath := filepath.Join(tempDir, "remote.git")
+	remoteURL := "file://" + remotePath
+	serverRepo := createBareRepo(t, remotePath)
+	seedPath := filepath.Join(tempDir, "seed")
+	seedRepo, seedWorktree := initLocalRepo(t, seedPath, remoteURL, "main")
+	require.NoError(t, os.MkdirAll(filepath.Join(seedPath, "clusters/prod"), 0750))
+	commitFileChange(t, seedWorktree, seedPath, "clusters/prod/existing.txt", "already populated")
+	require.NoError(t, seedRepo.Push(&git.PushOptions{
+		RefSpecs: []config.RefSpec{
+			config.RefSpec("refs/heads/main:refs/heads/main"),
+		},
+	}))
+
+	scheme := runtime.NewScheme()
+	_ = clientgoscheme.AddToScheme(scheme)
+	_ = configv1alpha1.AddToScheme(scheme)
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	provider := &configv1alpha1.GitProvider{
+		Spec: configv1alpha1.GitProviderSpec{
+			URL: remoteURL,
+		},
+	}
+	provider.Name = "test-repo"
+	provider.Namespace = "default"
+	require.NoError(t, k8sClient.Create(ctx, provider))
+	createTargetWithEncryption(t, ctx, k8sClient, "bootstrap-target", "default", "test-repo", "main", "clusters/prod")
+
+	worker := NewBranchWorker(k8sClient, logr.Discard(), "test-repo", "default", "main", nil)
+	require.NoError(t, worker.EnsurePathBootstrapped("clusters/prod", "bootstrap-target", "default"))
+
+	ref, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
+	require.NoError(t, err)
+	assert.Equal(t, 1, countDepth(t, serverRepo, ref.Hash()), "Existing path content should skip bootstrap commit")
+
+	clonePath := filepath.Join(tempDir, "inspect")
+	_, err = PrepareBranch(ctx, remoteURL, clonePath, "main", nil)
+	require.NoError(t, err)
+
+	_, err = os.Stat(filepath.Join(clonePath, "clusters/prod", "README.md"))
+	assert.True(t, os.IsNotExist(err), "Bootstrap README should not be added to non-empty path")
+	_, err = os.Stat(filepath.Join(clonePath, "clusters/prod", sopsConfigFileName))
+	assert.True(t, os.IsNotExist(err), "Bootstrap SOPS config should not be added to non-empty path")
+}
+
+func TestBranchWorker_EnsurePathBootstrapped_NoEncryptionSkipsSOPSConfig(t *testing.T) {
+	ctx := context.Background()
+	tempDir := t.TempDir()
+	remotePath := filepath.Join(tempDir, "remote.git")
+	remoteURL := "file://" + remotePath
+	_ = createBareRepo(t, remotePath)
+
+	scheme := runtime.NewScheme()
+	_ = clientgoscheme.AddToScheme(scheme)
+	_ = configv1alpha1.AddToScheme(scheme)
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	provider := &configv1alpha1.GitProvider{
+		Spec: configv1alpha1.GitProviderSpec{
+			URL: remoteURL,
+		},
+	}
+	provider.Name = "test-repo"
+	provider.Namespace = "default"
+	require.NoError(t, k8sClient.Create(ctx, provider))
+	createTargetWithoutEncryption(t, ctx, k8sClient, "bootstrap-target", "default", "test-repo", "main", "clusters/dev")
+
+	worker := NewBranchWorker(k8sClient, logr.Discard(), "test-repo", "default", "main", nil)
+	require.NoError(t, worker.EnsurePathBootstrapped("clusters/dev", "bootstrap-target", "default"))
+
+	clonePath := filepath.Join(tempDir, "inspect")
+	_, err := PrepareBranch(ctx, remoteURL, clonePath, "main", nil)
+	require.NoError(t, err)
+
+	_, err = os.Stat(filepath.Join(clonePath, "clusters/dev", "README.md"))
+	require.NoError(t, err)
+	_, err = os.Stat(filepath.Join(clonePath, "clusters/dev", sopsConfigFileName))
+	assert.True(t, os.IsNotExist(err), "Bootstrap SOPS config should be skipped when encryption is not configured")
+}
+
+func createTargetWithEncryption(
+	t *testing.T,
+	ctx context.Context,
+	k8sClient client.Client,
+	name, namespace, providerName, branch, path string,
+) {
+	t.Helper()
+	identity, err := age.GenerateX25519Identity()
+	require.NoError(t, err)
+
+	encryptionSecret := &corev1.Secret{}
+	encryptionSecret.Name = "sops-age-key"
+	encryptionSecret.Namespace = namespace
+	encryptionSecret.Data = map[string][]byte{
+		sopsAgeKeyEnvVar: []byte(identity.String()),
+	}
+	require.NoError(t, k8sClient.Create(ctx, encryptionSecret))
+
+	target := &configv1alpha1.GitTarget{}
+	target.Name = name
+	target.Namespace = namespace
+	target.Spec.ProviderRef = configv1alpha1.GitProviderReference{
+		Kind: "GitProvider",
+		Name: providerName,
+	}
+	target.Spec.Branch = branch
+	target.Spec.Path = path
+	target.Spec.Encryption = &configv1alpha1.EncryptionSpec{
+		Provider: "sops",
+		SecretRef: configv1alpha1.LocalSecretReference{
+			Name: "sops-age-key",
+		},
+	}
+	require.NoError(t, k8sClient.Create(ctx, target))
+}
+
+func createTargetWithoutEncryption(
+	t *testing.T,
+	ctx context.Context,
+	k8sClient client.Client,
+	name, namespace, providerName, branch, path string,
+) {
+	t.Helper()
+	target := &configv1alpha1.GitTarget{}
+	target.Name = name
+	target.Namespace = namespace
+	target.Spec.ProviderRef = configv1alpha1.GitProviderReference{
+		Kind: "GitProvider",
+		Name: providerName,
+	}
+	target.Spec.Branch = branch
+	target.Spec.Path = path
+	require.NoError(t, k8sClient.Create(ctx, target))
 }

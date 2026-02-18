@@ -26,6 +26,7 @@ import (
 	"time"
 
 	gogit "github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -160,4 +161,70 @@ func TestWriteEvents_DeleteSecretRemovesSOPSPath(t *testing.T) {
 	require.Error(t, statErr)
 	_, statErr = os.Stat(sopsPath)
 	assert.ErrorIs(t, statErr, os.ErrNotExist)
+}
+
+func TestWriteEvents_DoesNotBootstrapRootSOPSConfig(t *testing.T) {
+	repoPath := t.TempDir()
+	_, err := gogit.PlainInit(repoPath, false)
+	require.NoError(t, err)
+
+	event := Event{
+		Object: &unstructured.Unstructured{
+			Object: map[string]interface{}{
+				"apiVersion": "v1",
+				"kind":       "ConfigMap",
+				"metadata": map[string]interface{}{
+					"name":      "sample-config",
+					"namespace": "default",
+				},
+				"data": map[string]interface{}{
+					"key": "value",
+				},
+			},
+		},
+		Identifier: types.ResourceIdentifier{
+			Group:     "",
+			Version:   "v1",
+			Resource:  "configmaps",
+			Namespace: "default",
+			Name:      "sample-config",
+		},
+		Operation: "CREATE",
+		UserInfo: UserInfo{
+			Username: "tester@example.com",
+		},
+	}
+
+	_, err = WriteEvents(context.Background(), repoPath, []Event{event}, "master", nil)
+	require.NoError(t, err)
+	_, statErr := os.Stat(filepath.Join(repoPath, sopsConfigFileName))
+	assert.ErrorIs(t, statErr, os.ErrNotExist)
+}
+
+func TestWriteEvents_DoesNotCreateBootstrapOnlyCommit(t *testing.T) {
+	repoPath := t.TempDir()
+	repo, err := gogit.PlainInit(repoPath, false)
+	require.NoError(t, err)
+
+	event := Event{
+		Identifier: types.ResourceIdentifier{
+			Group:     "",
+			Version:   "v1",
+			Resource:  "configmaps",
+			Namespace: "default",
+			Name:      "does-not-exist",
+		},
+		Operation: "DELETE",
+		UserInfo: UserInfo{
+			Username: "tester@example.com",
+		},
+	}
+
+	result, err := WriteEvents(context.Background(), repoPath, []Event{event}, "master", nil)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Equal(t, 0, result.CommitsCreated)
+
+	_, err = repo.Reference(plumbing.NewBranchReferenceName("master"), true)
+	assert.ErrorIs(t, err, plumbing.ErrReferenceNotFound)
 }

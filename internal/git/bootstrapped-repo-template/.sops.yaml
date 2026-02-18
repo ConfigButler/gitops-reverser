@@ -1,0 +1,8 @@
+# .sops.yaml
+creation_rules:
+  # Encrypt only Kubernetes Secret payloads written as *.sops.yaml files.
+  - path_regex: '.*\.sops\.ya?ml$'
+    encrypted_regex: '^(data|stringData)$'
+    key_groups:
+      - age:
+          - "{{ .AgeRecipient }}"

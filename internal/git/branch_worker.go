@@ -28,6 +28,8 @@ import (
 	"sync"
 	"time"
 
+	gogit "github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -116,13 +118,6 @@ func (w *BranchWorker) Start(parentCtx context.Context) error {
 
 	w.Log.Info("Starting branch worker")
 
-	// Initialize repository and metadata in background
-	go func() {
-		if err := w.ensureRepositoryInitialized(w.ctx); err != nil {
-			w.Log.Error(err, "Failed to initialize repository")
-		}
-	}()
-
 	w.wg.Add(1)
 	go func() {
 		defer w.wg.Done()
@@ -174,6 +169,103 @@ func (w *BranchWorker) ListResourcesInPath(path string) ([]itypes.ResourceIdenti
 		w.GitProviderNamespace, w.GitProviderRef, w.Branch)
 
 	return w.listResourceIdentifiersInPath(repoPath, path)
+}
+
+// EnsurePathBootstrapped applies bootstrap template to a path when that path has no files.
+func (w *BranchWorker) EnsurePathBootstrapped(path, targetName, targetNamespace string) error {
+	ctx := w.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	normalizedPath := sanitizePath(path)
+	if strings.TrimSpace(path) != "" && normalizedPath == "" {
+		return fmt.Errorf("invalid path %q", path)
+	}
+	if strings.TrimSpace(targetName) == "" || strings.TrimSpace(targetNamespace) == "" {
+		return fmt.Errorf("target name and namespace must be set for path bootstrap")
+	}
+
+	provider, err := w.getGitProvider(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get GitProvider: %w", err)
+	}
+
+	auth, err := getAuthFromSecret(ctx, w.Client, provider)
+	if err != nil {
+		return fmt.Errorf("failed to get auth: %w", err)
+	}
+
+	targetKey := types.NamespacedName{Name: targetName, Namespace: targetNamespace}
+	var target configv1alpha1.GitTarget
+	if err := w.Client.Get(ctx, targetKey, &target); err != nil {
+		return fmt.Errorf("failed to get GitTarget %s: %w", targetKey.String(), err)
+	}
+	encryptionConfig, err := ResolveTargetEncryption(ctx, w.Client, &target)
+	if err != nil {
+		return fmt.Errorf("failed to resolve target encryption: %w", err)
+	}
+
+	bootstrapOptions := pathBootstrapOptions{}
+	if encryptionConfig != nil {
+		sopsKey := strings.TrimSpace(encryptionConfig.Environment[sopsAgeKeyEnvVar])
+		if sopsKey == "" {
+			return fmt.Errorf("missing %s in target encryption secret", sopsAgeKeyEnvVar)
+		}
+		recipient, deriveErr := deriveAgeRecipientFromSOPSKey(sopsKey)
+		if deriveErr != nil {
+			return fmt.Errorf("failed to derive age recipient: %w", deriveErr)
+		}
+		bootstrapOptions.IncludeSOPSConfig = true
+		bootstrapOptions.TemplateData.AgeRecipient = recipient
+	}
+
+	repoPath := filepath.Join("/tmp", "gitops-reverser-workers",
+		w.GitProviderNamespace, w.GitProviderRef, w.Branch)
+
+	pullReport, err := PrepareBranch(ctx, provider.Spec.URL, repoPath, w.Branch, auth)
+	if err != nil {
+		return fmt.Errorf("failed to prepare repository: %w", err)
+	}
+	w.updateBranchMetadataFromPullReport(pullReport)
+
+	hasFiles, err := pathHasAnyFile(repoPath, normalizedPath)
+	if err != nil {
+		return fmt.Errorf("failed to check path contents: %w", err)
+	}
+	if hasFiles {
+		w.Log.V(1).Info("Skipping bootstrap for non-empty path", "path", normalizedPath)
+		return nil
+	}
+
+	repo, err := gogit.PlainOpen(repoPath)
+	if err != nil {
+		return fmt.Errorf("failed to open repository: %w", err)
+	}
+
+	hash, committed, err := commitPathBootstrapTemplateIfNeeded(
+		ctx,
+		repo,
+		plumbing.NewBranchReferenceName(w.Branch),
+		normalizedPath,
+		bootstrapOptions,
+		auth,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to bootstrap path %q: %w", normalizedPath, err)
+	}
+	if !committed {
+		return nil
+	}
+
+	w.metaMu.Lock()
+	w.branchExists = true
+	w.lastCommitSHA = printSha(hash)
+	w.lastFetchTime = time.Now()
+	w.metaMu.Unlock()
+
+	w.Log.Info("Bootstrapped path", "path", normalizedPath, "commit", printSha(hash))
+	return nil
 }
 
 // listResourceIdentifiersInPath lists resource identifiers in a specific path.
@@ -289,10 +381,45 @@ func (w *BranchWorker) commitAndPush(
 	repoPath := filepath.Join("/tmp", "gitops-reverser-workers",
 		w.GitProviderNamespace, w.GitProviderRef, w.Branch)
 
-	// Use new WriteEvents abstraction
-	result, err := WriteEventsWithContentWriter(w.ctx, w.contentWriter, repoPath, events, w.Branch, auth)
-	if err != nil {
-		log.Error(err, "Failed to write events")
+	var result *WriteEventsResult
+	for _, event := range events {
+		eventLog := log.WithValues(
+			"targetNamespace", event.GitTargetNamespace,
+			"targetName", event.GitTargetName,
+		)
+
+		var encryptionConfig *ResolvedEncryptionConfig
+		if event.GitTargetName != "" && event.GitTargetNamespace != "" {
+			var target configv1alpha1.GitTarget
+			targetKey := types.NamespacedName{
+				Name:      event.GitTargetName,
+				Namespace: event.GitTargetNamespace,
+			}
+			if err := w.Client.Get(w.ctx, targetKey, &target); err != nil {
+				eventLog.Error(err, "Failed to resolve GitTarget for encryption")
+				continue
+			}
+
+			encryptionConfig, err = ResolveTargetEncryption(w.ctx, w.Client, &target)
+			if err != nil {
+				eventLog.Error(err, "Failed to resolve target encryption configuration")
+				continue
+			}
+		}
+
+		encryptionWorkDir := filepath.Join(repoPath, event.Path)
+		if err := configureSecretEncryptionWriter(w.contentWriter, encryptionWorkDir, encryptionConfig); err != nil {
+			eventLog.Error(err, "Failed to configure secret encryptor")
+			continue
+		}
+
+		result, err = WriteEventsWithContentWriter(w.ctx, w.contentWriter, repoPath, []Event{event}, w.Branch, auth)
+		if err != nil {
+			eventLog.Error(err, "Failed to write event")
+			continue
+		}
+	}
+	if result == nil {
 		return
 	}
 

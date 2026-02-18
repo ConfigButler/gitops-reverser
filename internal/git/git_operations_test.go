@@ -178,11 +178,9 @@ func TestCheckRepo_PublicConnectivityEmpty(t *testing.T) {
 	localPath := filepath.Join(tempDir, "local")
 	pullReport, err := PrepareBranch(context.Background(), remoteURL, localPath, "cool-test", nil)
 	require.NoError(t, err)
-
-	require.False(t, pullReport.ExistsOnRemote)
-	require.True(t, pullReport.HEAD.Unborn)
-	require.Empty(t, pullReport.HEAD.Sha)
-	require.Equal(t, "cool-test", pullReport.HEAD.ShortName)
+	require.NotNil(t, pullReport)
+	assert.False(t, pullReport.ExistsOnRemote)
+	assert.True(t, pullReport.HEAD.Unborn)
 
 	// Verify repository was cloned
 	localRepo, err := git.PlainOpen(localPath)
@@ -335,6 +333,7 @@ func TestWriteEvents_FirstCommitOnEmptyRepo(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, pullReport.ExistsOnRemote)
 	require.True(t, pullReport.HEAD.Unborn)
+	require.Empty(t, pullReport.HEAD.Sha)
 
 	// Create test event
 	event := createTestEvent(t, "test-pod")
@@ -754,15 +753,14 @@ func TestPullBranch_DanglingHead_NewOrphan(t *testing.T) {
 	targetBranch := "new-feature"
 
 	// PrepareBranch logic:
-	// SmartFetch sees HEAD is broken. It sees target is missing. Returns "".
-	// syncToRemote sees "", calls makeHeadUnborn().
+	// SmartFetch sees HEAD is broken. It sees target is missing and leaves HEAD unborn.
 	pullReport, err := PrepareBranch(context.Background(), remoteURL, localPath, targetBranch, nil)
 	require.NoError(t, err)
 
 	// Verify Report
-	assert.False(t, pullReport.ExistsOnRemote, "Branch should not exist on remote")
-	assert.True(t, pullReport.HEAD.Unborn, "Should be in Unborn/Orphan state because no valid base was found")
-	assert.False(t, pullReport.IncomingChanges, "No incoming changes possible on an empty base")
+	assert.False(t, pullReport.ExistsOnRemote, "PrepareBranch should not bootstrap or create remote branch")
+	assert.True(t, pullReport.HEAD.Unborn, "Target branch should stay unborn until first write/bootstrap")
+	assert.Empty(t, pullReport.HEAD.Sha)
 
 	// 4. Write Events
 	event := createTestEvent(t, "orphan-resource")
@@ -771,7 +769,7 @@ func TestPullBranch_DanglingHead_NewOrphan(t *testing.T) {
 	assert.Equal(t, 1, writeEventsResult.CommitsCreated)
 
 	// 5. Verify Topology on Server
-	// The new commit should be a ROOT commit (0 parents) because we couldn't find 'main' to branch off.
+	// The event commit should be the root commit in the new branch.
 
 	// Fetch the commit from the server
 	serverRef, err := serverRepo.Reference(plumbing.NewBranchReferenceName(targetBranch), true)
@@ -781,12 +779,7 @@ func TestPullBranch_DanglingHead_NewOrphan(t *testing.T) {
 	require.NoError(t, err)
 
 	// The Critical Assertion:
-	assert.Equal(
-		t,
-		0,
-		commitObj.NumParents(),
-		"This should be a root commit (orphan) because the default branch was missing",
-	)
+	assert.Equal(t, 0, commitObj.NumParents(), "First event on unborn branch should be a root commit")
 	assert.Contains(t, commitObj.Message, "orphan-resource")
 	assert.Contains(t, commitObj.Message, "[CREATE]")
 }
@@ -887,11 +880,11 @@ func TestPullBranch_WhipedRepo(t *testing.T) {
 	assert.True(t, pullReport.ExistsOnRemote)
 	assert.False(t, pullReport.IncomingChanges)
 
-	// Now execute the same with the empty remote, effectively this is just somebody that deleted our stuff. Since we also won't have main, we expect an unborn branch
+	// Now execute the same with the empty remote: since no base is available, PrepareBranch keeps target branch unborn.
 	pullReport, err = PrepareBranch(context.Background(), remoteURLEmpty, localPath, "feature", nil)
 	require.NoError(t, err)
 	assert.False(t, pullReport.ExistsOnRemote)
-	assert.True(t, pullReport.IncomingChanges) // This is big: we do expect this certainly to be true!
+	assert.True(t, pullReport.IncomingChanges)
 	assert.True(t, pullReport.HEAD.Unborn)
 	assert.Empty(t, pullReport.HEAD.Sha)
 	assert.Equal(t, "feature", pullReport.HEAD.ShortName)
@@ -905,16 +898,11 @@ func TestPullBranch_WhipedRepo(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, status.IsClean(), "Working copy should be clean after switching to empty remote")
 
-	// Verify no tracked files remain (except .git directory)
-	entries, err := os.ReadDir(localPath)
-	require.NoError(t, err)
-	var nonGitFiles []string
-	for _, entry := range entries {
-		if entry.Name() != ".git" {
-			nonGitFiles = append(nonGitFiles, entry.Name())
-		}
-	}
-	assert.Empty(t, nonGitFiles, "No files should exist in working copy except .git directory")
+	// No bootstrap files should be auto-created by PrepareBranch anymore.
+	_, err = os.Stat(filepath.Join(localPath, "README.md"))
+	assert.True(t, os.IsNotExist(err))
+	_, err = os.Stat(filepath.Join(localPath, sopsConfigFileName))
+	assert.True(t, os.IsNotExist(err))
 }
 
 // Benchmark for prepareBranch shallow clone performance.

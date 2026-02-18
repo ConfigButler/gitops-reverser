@@ -9,3 +9,7 @@ spec:
     name: {{ .ProviderName }}
   branch: {{ .Branch }}
   path: {{ .Path }}
+  encryption:
+    provider: sops
+    secretRef:
+      name: {{ .EncryptionSecretName }}

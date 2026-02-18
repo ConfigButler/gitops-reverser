@@ -144,6 +144,9 @@ func (s *GitTargetEventStream) OnReconciliationComplete() {
 
 // processEvent forwards the event to BranchWorker and updates deduplication state.
 func (s *GitTargetEventStream) processEvent(event git.Event, eventHash, resourceKey string) {
+	event.GitTargetName = s.gitTargetName
+	event.GitTargetNamespace = s.gitTargetNamespace
+
 	// Forward to BranchWorker
 	s.branchWorker.Enqueue(event)
 

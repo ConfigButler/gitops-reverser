@@ -249,21 +249,3 @@ func TestBuildContentForWrite_SecretEncryptionFailure(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "secret encryption failed")
 }
-
-func TestIsSecretResource(t *testing.T) {
-	assert.True(t, isSecretResource(types.ResourceIdentifier{
-		Group:    "",
-		Version:  "v1",
-		Resource: "secrets",
-	}))
-	assert.False(t, isSecretResource(types.ResourceIdentifier{
-		Group:    "",
-		Version:  "v1",
-		Resource: "configmaps",
-	}))
-	assert.False(t, isSecretResource(types.ResourceIdentifier{
-		Group:    "example.com",
-		Version:  "v1",
-		Resource: "secrets",
-	}))
-}

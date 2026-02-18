@@ -163,8 +163,8 @@ Avoid infinite loops: Do not point GitOps (Argo CD/Flux) and GitOps Reverser at 
 - GitOps Reverser currently supports only a single controller pod (no multi-pod/HA yet).
 - `Secret` resources (`core/v1`, `secrets`) are written via the same pipeline, but sensitive values are expected to be encrypted before commit.
   - Configure encryption via `--sops-binary-path` and optional `--sops-config-path`.
-  - The container image ships with `/usr/local/bin/sops` and a default config at `/etc/gitops-reverser/.sops.yaml`.
-  - Override `--sops-config-path` with your own key policy for production environments.
+  - The container image ships with `/usr/local/bin/sops`.
+  - Per-path `.sops.yaml` files are bootstrapped in the target repo for SOPS-based secret encryption.
   - If Secret encryption fails, Secret writes are rejected (no plaintext fallback).
 - Avoid multiple GitProvider configurations pointing at the same repo to prevent queue collisions.
 - Queue collisions are possible when multiple configs target the same repository (so don't do that).

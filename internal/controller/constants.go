@@ -59,6 +59,8 @@ const (
 	ReasonSecretMalformed = "SecretMalformed"
 	// ReasonConnectionFailed indicates that the connection to the provider failed.
 	ReasonConnectionFailed = "ConnectionFailed"
+	// ReasonEncryptionConfigInvalid indicates encryption configuration is invalid.
+	ReasonEncryptionConfigInvalid = "EncryptionConfigInvalid"
 )
 
 var (

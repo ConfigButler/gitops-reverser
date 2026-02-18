@@ -91,3 +91,8 @@ func (r ResourceIdentifier) String() string {
 	}
 	return fmt.Sprintf("%s/%s/%s/%s", r.Group, r.Version, r.Resource, r.Name)
 }
+
+// IsSecretResource returns true when the identifier points to a core/v1 Secret resource.
+func IsSecretResource(id ResourceIdentifier) bool {
+	return id.Group == "" && id.Version == "v1" && id.Resource == "secrets"
+}

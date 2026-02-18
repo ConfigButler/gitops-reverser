@@ -55,6 +55,10 @@ type GitTargetSpec struct {
 	// Path within the repository to write resources to.
 	// +optional
 	Path string `json:"path,omitempty"`
+
+	// Encryption defines encryption settings for Secret resource writes.
+	// +optional
+	Encryption *EncryptionSpec `json:"encryption,omitempty"`
 }
 
 // GitTargetStatus defines the observed state of GitTarget.
