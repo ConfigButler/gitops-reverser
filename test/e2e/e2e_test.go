@@ -19,6 +19,7 @@ limitations under the License.
 package e2e
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -27,6 +28,7 @@ import (
 	"strings"
 	"time"
 
+	"filippo.io/age"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -37,6 +39,7 @@ import (
 // giteaRepoURLTemplate is the URL template for test Gitea repositories.
 const giteaRepoURLTemplate = "http://gitea-http.gitea-e2e.svc.cluster.local:13000/testorg/%s.git"
 const giteaSSHURLTemplate = "ssh://git@gitea-ssh.gitea-e2e.svc.cluster.local:2222/testorg/%s.git"
+const e2eAgeKeyPath = "/tmp/e2e-age-key.txt"
 
 var testRepoName string
 var checkoutDir string
@@ -86,6 +89,8 @@ var _ = Describe("Manager", Ordered, func() {
 			"pod-security.kubernetes.io/enforce=restricted")
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to label namespace with restricted policy")
+
+		setupSOPSAgeSecret(e2eAgeKeyPath)
 
 		By("installing CRDs")
 		cmd = exec.Command("make", "install")
@@ -543,6 +548,7 @@ var _ = Describe("Manager", Ordered, func() {
 			err := applyFromTemplate("test/e2e/templates/watchrule.tmpl", data, namespace)
 			Expect(err).NotTo(HaveOccurred(), "Failed to apply WatchRule")
 			verifyResourceStatus("watchrule", watchRuleName, namespace, "True", "Ready", "")
+			verifyResourceStatus("gittarget", destName, namespace, "True", "Ready", "")
 
 			By("creating Secret in watched namespace")
 			_, _ = utils.Run(exec.Command("kubectl", "delete", "secret", secretName,
@@ -552,6 +558,14 @@ var _ = Describe("Manager", Ordered, func() {
 				"--from-literal=password=do-not-commit", "-n", namespace)
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Secret creation should succeed")
+
+			By("patching Secret once to avoid informer start race and force an update event")
+			patchCmd := exec.Command(
+				"kubectl", "patch", "secret", secretName, "-n", namespace,
+				"--type=merge", "--patch", `{"stringData":{"password":"never-commit-this"}}`,
+			)
+			_, err = utils.Run(patchCmd)
+			Expect(err).NotTo(HaveOccurred(), "Secret patch should succeed")
 
 			By("verifying Secret file is committed and does not contain plaintext data")
 			verifyEncryptedSecretCommitted := func(g Gomega) {
@@ -570,6 +584,19 @@ var _ = Describe("Manager", Ordered, func() {
 				g.Expect(readErr).NotTo(HaveOccurred(), fmt.Sprintf("Secret file must exist at %s", expectedFile))
 				g.Expect(string(content)).To(ContainSubstring("sops:"))
 				g.Expect(string(content)).NotTo(ContainSubstring("do-not-commit"))
+
+				bootstrapSOPSFile := filepath.Join(checkoutDir, "e2e/secret-encryption-test", ".sops.yaml")
+				bootstrapContent, bootstrapErr := os.ReadFile(bootstrapSOPSFile)
+				g.Expect(bootstrapErr).NotTo(HaveOccurred(), fmt.Sprintf(".sops.yaml must exist at %s", bootstrapSOPSFile))
+				ageKey, ageKeyErr := readSOPSAgeKeyFromFile(e2eAgeKeyPath)
+				g.Expect(ageKeyErr).NotTo(HaveOccurred(), "Should read age private key")
+				recipient, recipientErr := deriveAgeRecipient(ageKey)
+				g.Expect(recipientErr).NotTo(HaveOccurred(), "Should derive age recipient")
+				g.Expect(string(bootstrapContent)).To(ContainSubstring(recipient))
+
+				decryptedOutput, decryptErr := decryptWithControllerSOPS(content, ageKey)
+				g.Expect(decryptErr).NotTo(HaveOccurred(), "Should decrypt committed secret via controller sops binary")
+				g.Expect(decryptedOutput).To(ContainSubstring("bmV2ZXItY29tbWl0LXRoaXM="))
 			}
 			Eventually(verifyEncryptedSecretCommitted, "30s", "2s").Should(Succeed())
 
@@ -605,6 +632,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 			By("verifying WatchRule is ready")
 			verifyResourceStatus("watchrule", watchRuleName, namespace, "True", "Ready", "")
+			verifyResourceStatus("gittarget", destName, namespace, "True", "Ready", "")
 
 			By("creating test ConfigMap to trigger Git commit")
 			configMapData := struct {
@@ -731,6 +759,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 			By("verifying WatchRule is ready")
 			verifyResourceStatus("watchrule", watchRuleName, namespace, "True", "Ready", "")
+			verifyResourceStatus("gittarget", destName, namespace, "True", "Ready", "")
 
 			By("creating test ConfigMap to trigger Git commit")
 			configMapData := struct {
@@ -834,6 +863,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 			By("verifying ClusterWatchRule is ready")
 			verifyResourceStatus("clusterwatchrule", clusterWatchRuleName, "", "True", "Ready", "")
+			verifyResourceStatus("gittarget", destName, namespace, "True", "Ready", "")
 
 			By("installing the IceCreamOrder CRD to trigger Git commit")
 			cmd := exec.Command("kubectl", "apply", "-f", "test/e2e/templates/icecreamorder-crd.yaml")
@@ -927,6 +957,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 			By("verifying WatchRule is ready")
 			verifyResourceStatus("watchrule", watchRuleName, namespace, "True", "Ready", "")
+			verifyResourceStatus("gittarget", destName, namespace, "True", "Ready", "")
 
 			By("creating CR with labels and annotations to trigger Git commit")
 			crdInstanceData := struct {
@@ -1393,6 +1424,61 @@ var _ = Describe("Manager", Ordered, func() {
 		// +kubebuilder:scaffold:e2e-webhooks-checks
 	})
 })
+
+func readSOPSAgeKeyFromFile(path string) (string, error) {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read age key file: %w", err)
+	}
+
+	for _, line := range strings.Split(string(content), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "AGE-SECRET-KEY-") {
+			return trimmed, nil
+		}
+	}
+
+	return "", fmt.Errorf("no AGE-SECRET-KEY found in %s", path)
+}
+
+func deriveAgeRecipient(identityString string) (string, error) {
+	identity, err := age.ParseX25519Identity(strings.TrimSpace(identityString))
+	if err != nil {
+		return "", fmt.Errorf("parse age identity: %w", err)
+	}
+	return identity.Recipient().String(), nil
+}
+
+func decryptWithControllerSOPS(ciphertext []byte, ageKey string) (string, error) {
+	podCmd := exec.Command(
+		"kubectl", "get", "pods",
+		"-l", "control-plane=controller-manager",
+		"-n", namespace,
+		"-o", "jsonpath={.items[0].metadata.name}",
+	)
+	podOutput, err := utils.Run(podCmd)
+	if err != nil {
+		return "", fmt.Errorf("get controller pod: %w", err)
+	}
+	podName := strings.TrimSpace(podOutput)
+	if podName == "" {
+		return "", fmt.Errorf("controller pod name is empty")
+	}
+
+	cmd := exec.Command(
+		"kubectl", "exec", "-i",
+		podName, "-n", namespace, "--",
+		"env", fmt.Sprintf("SOPS_AGE_KEY=%s", ageKey),
+		"/usr/local/bin/sops", "--decrypt", "--input-type", "yaml", "--output-type", "yaml", "/dev/stdin",
+	)
+	cmd.Stdin = bytes.NewReader(ciphertext)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("decrypt with controller sops failed: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+
+	return string(output), nil
+}
 
 // createGitProviderWithURL creates a GitProvider resource with the specified URL.
 func createGitProviderWithURL(name, branch, secretName, repoURL string) {

@@ -39,7 +39,6 @@ FROM gcr.io/distroless/static:debug
 WORKDIR /
 COPY --from=builder /workspaces/manager .
 COPY --from=sops-downloader /usr/local/bin/sops /usr/local/bin/sops
-COPY config/sops/.sops.yaml /etc/gitops-reverser/.sops.yaml
 USER 65532:65532
 
 ENTRYPOINT ["/manager"]

@@ -209,11 +209,3 @@ logging:
 
 labels:
   managedBy: Helm # Allows CI generated install.yaml creation (don't change when you are using Helm)
-
-# Secret encryption settings
-sops:
-  # Absolute path to the sops binary in the controller image.
-  binaryPath: /usr/local/bin/sops
-  # Optional absolute path to a mounted .sops.yaml config file.
-  # Keep this empty unless you explicitly provide your own key policy.
-  configPath: ""

@@ -76,7 +76,7 @@ func (w *contentWriter) buildContentForWrite(ctx context.Context, event Event) (
 		return nil, fmt.Errorf("failed to marshal object to YAML: %w", err)
 	}
 
-	if !isSecretResource(event.Identifier) {
+	if !types.IsSecretResource(event.Identifier) {
 		return content, nil
 	}
 
@@ -165,8 +165,4 @@ func buildResourceMeta(event Event) resourceMeta {
 
 func secretIdentityKey(id types.ResourceIdentifier) string {
 	return fmt.Sprintf("%s/%s/%s/%s/%s", id.Group, id.Version, id.Resource, id.Namespace, id.Name)
-}
-
-func isSecretResource(id types.ResourceIdentifier) bool {
-	return id.Group == "" && id.Version == "v1" && id.Resource == "secrets"
 }

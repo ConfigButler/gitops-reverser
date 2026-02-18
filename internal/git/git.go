@@ -155,7 +155,12 @@ func PrepareBranch(
 	}
 
 	targetBranch := plumbing.NewBranchReferenceName(targetBranchName)
-	return syncToRemote(ctx, repo, targetBranch, auth)
+	pullReport, err := syncToRemote(ctx, repo, targetBranch, auth)
+	if err != nil {
+		return nil, err
+	}
+
+	return pullReport, nil
 }
 
 // TryReference will resolve in all likely scenarios, if it's there and if it's not. In that case you get plumbing.ZeroHash and no error.
@@ -801,7 +806,7 @@ func handleCreateOrUpdateOperation(
 ) (bool, error) {
 	content, err := writer.buildContentForWrite(ctx, event)
 	if err != nil {
-		if isSecretResource(event.Identifier) {
+		if types.IsSecretResource(event.Identifier) {
 			log.FromContext(ctx).Info(
 				"Secret write skipped because encryption failed",
 				"resource", event.Identifier.String(),
@@ -840,7 +845,7 @@ func handleCreateOrUpdateOperation(
 
 func generateFilePath(id types.ResourceIdentifier) string {
 	defaultPath := id.ToGitPath()
-	if !isSecretResource(id) {
+	if !types.IsSecretResource(id) {
 		return defaultPath
 	}
 	if strings.HasSuffix(defaultPath, ".yaml") {

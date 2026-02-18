@@ -57,6 +57,17 @@ type LocalSecretReference struct {
 	Name string `json:"name"`
 }
 
+// EncryptionSpec configures Secret encryption behavior for git writes.
+type EncryptionSpec struct {
+	// Provider selects the encryption provider.
+	// +kubebuilder:default=sops
+	// +kubebuilder:validation:Enum=sops
+	Provider string `json:"provider"`
+
+	// SecretRef references namespace-local Secret data used by the encryption provider.
+	SecretRef LocalSecretReference `json:"secretRef"`
+}
+
 // GitProviderStatus defines the observed state of GitProvider.
 type GitProviderStatus struct {
 	// conditions represent the current state of the GitProvider resource.

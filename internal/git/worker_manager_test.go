@@ -20,12 +20,15 @@ package git
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/go-logr/logr"
+	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
@@ -36,6 +39,46 @@ func setupScheme() *runtime.Scheme {
 	_ = clientgoscheme.AddToScheme(scheme)
 	_ = configv1alpha1.AddToScheme(scheme)
 	return scheme
+}
+
+func createProviderWithLocalRepo(
+	t *testing.T,
+	ctx context.Context,
+	k8sClient client.Client,
+	namespace, name string,
+) {
+	t.Helper()
+
+	remotePath := filepath.Join(t.TempDir(), name+".git")
+	createBareRepo(t, remotePath)
+
+	provider := &configv1alpha1.GitProvider{
+		Spec: configv1alpha1.GitProviderSpec{
+			URL: "file://" + remotePath,
+		},
+	}
+	provider.Name = name
+	provider.Namespace = namespace
+	require.NoError(t, k8sClient.Create(ctx, provider))
+}
+
+func createTargetForRegister(
+	t *testing.T,
+	ctx context.Context,
+	k8sClient client.Client,
+	namespace, name, providerName, branch, path string,
+) {
+	t.Helper()
+	target := &configv1alpha1.GitTarget{}
+	target.Name = name
+	target.Namespace = namespace
+	target.Spec.ProviderRef = configv1alpha1.GitProviderReference{
+		Kind: "GitProvider",
+		Name: providerName,
+	}
+	target.Spec.Branch = branch
+	target.Spec.Path = path
+	require.NoError(t, k8sClient.Create(ctx, target))
 }
 
 // TestWorkerManagerRegisterTarget verifies worker registration.
@@ -53,6 +96,8 @@ func TestWorkerManagerRegisterTarget(t *testing.T) {
 		_ = manager.Start(ctx)
 	}()
 	time.Sleep(100 * time.Millisecond) // Allow manager to start
+	createProviderWithLocalRepo(t, ctx, client, "gitops-system", "repo1")
+	createTargetForRegister(t, ctx, client, "default", "target1", "repo1", "main", "clusters/prod")
 
 	// Register first target
 	err := manager.RegisterTarget(ctx,
@@ -105,6 +150,9 @@ func TestWorkerManagerMultipleTargetsSameBranch(t *testing.T) {
 		_ = manager.Start(ctx)
 	}()
 	time.Sleep(100 * time.Millisecond)
+	createProviderWithLocalRepo(t, ctx, client, "gitops-system", "shared-repo")
+	createTargetForRegister(t, ctx, client, "default", "target-apps", "shared-repo", "main", "apps/")
+	createTargetForRegister(t, ctx, client, "default", "target-infra", "shared-repo", "main", "infra/")
 
 	// Register two targets for same repo+branch, different paths
 	err := manager.RegisterTarget(ctx,
@@ -156,6 +204,9 @@ func TestWorkerManagerDifferentBranches(t *testing.T) {
 		_ = manager.Start(ctx)
 	}()
 	time.Sleep(100 * time.Millisecond)
+	createProviderWithLocalRepo(t, ctx, client, "gitops-system", "repo1")
+	createTargetForRegister(t, ctx, client, "default", "target-main", "repo1", "main", "base/")
+	createTargetForRegister(t, ctx, client, "default", "target-dev", "repo1", "develop", "base/")
 
 	// Register targets for same repo, different branches
 	err := manager.RegisterTarget(ctx,
@@ -212,6 +263,9 @@ func TestWorkerManagerUnregisterTarget(t *testing.T) {
 		_ = manager.Start(ctx)
 	}()
 	time.Sleep(100 * time.Millisecond)
+	createProviderWithLocalRepo(t, ctx, client, "gitops-system", "repo1")
+	createTargetForRegister(t, ctx, client, "default", "target1", "repo1", "main", "apps/")
+	createTargetForRegister(t, ctx, client, "default", "target2", "repo1", "main", "infra/")
 
 	// Register two targets
 	_ = manager.RegisterTarget(ctx,
@@ -279,6 +333,8 @@ func TestWorkerManagerConcurrentRegistration(t *testing.T) {
 		_ = manager.Start(ctx)
 	}()
 	time.Sleep(100 * time.Millisecond)
+	createProviderWithLocalRepo(t, ctx, client, "gitops-system", "repo1")
+	createTargetForRegister(t, ctx, client, "default", "target", "repo1", "main", "base/")
 
 	// Concurrently register multiple targets
 	done := make(chan bool, 10)

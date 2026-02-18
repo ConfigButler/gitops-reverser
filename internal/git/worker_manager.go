@@ -36,27 +36,18 @@ type WorkerManager struct {
 	Client client.Client
 	Log    logr.Logger
 
-	contentWriter *contentWriter
-	mu            sync.RWMutex
-	workers       map[BranchKey]*BranchWorker
-	ctx           context.Context
+	mu      sync.RWMutex
+	workers map[BranchKey]*BranchWorker
+	ctx     context.Context
 }
 
 // NewWorkerManager creates a new worker manager.
 func NewWorkerManager(client client.Client, log logr.Logger) *WorkerManager {
 	return &WorkerManager{
-		Client:        client,
-		Log:           log,
-		contentWriter: newContentWriter(),
-		workers:       make(map[BranchKey]*BranchWorker),
+		Client:  client,
+		Log:     log,
+		workers: make(map[BranchKey]*BranchWorker),
 	}
-}
-
-// ConfigureSecretEncryption applies Secret write encryption settings for all workers.
-func (m *WorkerManager) ConfigureSecretEncryption(cfg EncryptionConfig) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return configureSecretEncryptionWriter(m.contentWriter, cfg)
 }
 
 // RegisterTarget ensures a worker exists for the target's (provider, branch)
@@ -64,7 +55,7 @@ func (m *WorkerManager) ConfigureSecretEncryption(cfg EncryptionConfig) error {
 // This is called by GitTarget controller when a target becomes Ready.
 func (m *WorkerManager) RegisterTarget(
 	_ context.Context,
-	_ string, targetNamespace string,
+	targetName, targetNamespace string,
 	providerName, providerNamespace string,
 	branch, path string,
 ) error {
@@ -86,7 +77,7 @@ func (m *WorkerManager) RegisterTarget(
 			providerName,
 			providerNamespace,
 			branch,
-			m.contentWriter,
+			newContentWriter(),
 		)
 
 		if err := worker.Start(m.ctx); err != nil {
@@ -96,8 +87,13 @@ func (m *WorkerManager) RegisterTarget(
 		m.workers[key] = worker
 	}
 
+	worker := m.workers[key]
+	if err := worker.EnsurePathBootstrapped(path, targetName, targetNamespace); err != nil {
+		return fmt.Errorf("failed to ensure path bootstrap for %s/%s: %w", targetNamespace, targetName, err)
+	}
+
 	m.Log.Info("GitTarget registered with branch worker",
-		"target", fmt.Sprintf("%s/%s", targetNamespace, ""),
+		"target", fmt.Sprintf("%s/%s", targetNamespace, targetName),
 		"workerKey", key.String(),
 		"path", path)
 

@@ -44,6 +44,41 @@ spec:
                   Branch to use for this target.
                   Must be one of the allowed branches in the provider.
                 type: string
+              encryption:
+                description: Encryption defines encryption settings for Secret resource
+                  writes.
+                properties:
+                  provider:
+                    default: sops
+                    description: Provider selects the encryption provider.
+                    enum:
+                    - sops
+                    type: string
+                  secretRef:
+                    description: SecretRef references namespace-local Secret data
+                      used by the encryption provider.
+                    properties:
+                      group:
+                        default: ""
+                        description: Group of the referent.
+                        type: string
+                      kind:
+                        default: Secret
+                        description: Kind of the referent.
+                        enum:
+                        - Secret
+                        type: string
+                      name:
+                        description: Name of the Secret.
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    type: object
+                required:
+                - provider
+                - secretRef
+                type: object
               path:
                 description: Path within the repository to write resources to.
                 type: string

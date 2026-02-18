@@ -269,6 +269,7 @@ setup_credentials() {
         --dry-run=client -o yaml | kubectl apply -f -
 
     echo "✅ Invalid credentials secret ($TARGET_NAMESPACE/${SECRET_NAME}-invalid) created for testing purposes"
+
 }
 
 # Function to checkout repository with authentication
@@ -359,4 +360,5 @@ echo "
 "
 
 # Cleanup temporary files
-rm -f /tmp/org_response.json /tmp/repo_response.json /tmp/token_response.json /tmp/token_list.json /tmp/ssh_key_response.json
+rm -f /tmp/org_response.json /tmp/repo_response.json /tmp/token_response.json /tmp/token_list.json \
+    /tmp/ssh_key_response.json
