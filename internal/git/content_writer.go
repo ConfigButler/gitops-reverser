@@ -51,6 +51,10 @@ type contentWriter struct {
 	secretMarker map[string]secretMarker
 }
 
+type eventContentWriter interface {
+	buildContentForWrite(ctx context.Context, event Event) ([]byte, error)
+}
+
 func newContentWriter() *contentWriter {
 	return &contentWriter{
 		secretCache:  make(map[string][]byte),
@@ -64,11 +68,9 @@ func (w *contentWriter) setEncryptor(encryptor Encryptor) {
 	w.encryptor = encryptor
 }
 
-var defaultContentWriter = newContentWriter()
-
 // buildContentForWrite renders event content to stable ordered YAML and applies
 // Secret-specific encryption when configured.
-func buildContentForWrite(ctx context.Context, event Event) ([]byte, error) {
+func (w *contentWriter) buildContentForWrite(ctx context.Context, event Event) ([]byte, error) {
 	content, err := sanitize.MarshalToOrderedYAML(event.Object)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal object to YAML: %w", err)
@@ -78,7 +80,7 @@ func buildContentForWrite(ctx context.Context, event Event) ([]byte, error) {
 		return content, nil
 	}
 
-	return defaultContentWriter.encryptSecretContent(ctx, event, content)
+	return w.encryptSecretContent(ctx, event, content)
 }
 
 func (w *contentWriter) encryptSecretContent(ctx context.Context, event Event, plain []byte) ([]byte, error) {
@@ -94,20 +96,11 @@ func (w *contentWriter) encryptSecretContent(ctx context.Context, event Event, p
 
 	w.mu.RLock()
 	encryptor := w.encryptor
-	lastMarker, markerExists := w.secretMarker[identityKey]
-	if markerExists && lastMarker == currentMarker {
-		if cached, ok := w.secretCache[cacheKey]; ok {
-			if metrics.SecretEncryptionMarkerSkipsTotal != nil {
-				metrics.SecretEncryptionMarkerSkipsTotal.Add(ctx, 1)
-			}
-			if metrics.SecretEncryptionCacheHitsTotal != nil {
-				metrics.SecretEncryptionCacheHitsTotal.Add(ctx, 1)
-			}
-			w.mu.RUnlock()
-			return append([]byte(nil), cached...), nil
-		}
-	}
+	cached, ok := w.cachedEncryptedSecret(ctx, identityKey, cacheKey, currentMarker)
 	w.mu.RUnlock()
+	if ok {
+		return cached, nil
+	}
 
 	if encryptor == nil {
 		return nil, errors.New("secret encryption is required but no encryptor is configured")
@@ -116,12 +109,7 @@ func (w *contentWriter) encryptSecretContent(ctx context.Context, event Event, p
 	if metrics.SecretEncryptionAttemptsTotal != nil {
 		metrics.SecretEncryptionAttemptsTotal.Add(ctx, 1)
 	}
-	encrypted, err := encryptor.Encrypt(ctx, plain, ResourceMeta{
-		Identifier:      meta.Identifier,
-		UID:             meta.UID,
-		ResourceVersion: meta.ResourceVersion,
-		Generation:      meta.Generation,
-	})
+	encrypted, err := encryptor.Encrypt(ctx, plain, ResourceMeta(meta))
 	if err != nil {
 		if metrics.SecretEncryptionFailuresTotal != nil {
 			metrics.SecretEncryptionFailuresTotal.Add(ctx, 1)
@@ -138,6 +126,28 @@ func (w *contentWriter) encryptSecretContent(ctx context.Context, event Event, p
 	w.mu.Unlock()
 
 	return encrypted, nil
+}
+
+func (w *contentWriter) cachedEncryptedSecret(
+	ctx context.Context,
+	identityKey, cacheKey string,
+	currentMarker secretMarker,
+) ([]byte, bool) {
+	lastMarker, markerExists := w.secretMarker[identityKey]
+	if !markerExists || lastMarker != currentMarker {
+		return nil, false
+	}
+	cached, ok := w.secretCache[cacheKey]
+	if !ok {
+		return nil, false
+	}
+	if metrics.SecretEncryptionMarkerSkipsTotal != nil {
+		metrics.SecretEncryptionMarkerSkipsTotal.Add(ctx, 1)
+	}
+	if metrics.SecretEncryptionCacheHitsTotal != nil {
+		metrics.SecretEncryptionCacheHitsTotal.Add(ctx, 1)
+	}
+	return append([]byte(nil), cached...), true
 }
 
 func buildResourceMeta(event Event) resourceMeta {

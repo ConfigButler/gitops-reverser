@@ -19,11 +19,10 @@ limitations under the License.
 package git
 
 import (
+	"bytes"
 	"context"
 	"fmt"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 )
 
@@ -41,35 +40,28 @@ func NewSOPSEncryptor(binaryPath, configPath string) *SOPSEncryptor {
 	}
 }
 
-// Encrypt writes plaintext to a secure temp file, encrypts it with sops, and
-// returns encrypted YAML bytes.
+// Encrypt streams plaintext YAML to sops over stdin and returns encrypted YAML bytes.
 func (e *SOPSEncryptor) Encrypt(ctx context.Context, plain []byte, _ ResourceMeta) ([]byte, error) {
-	tmpDir, err := os.MkdirTemp("", "gitops-reverser-sops-*")
-	if err != nil {
-		return nil, fmt.Errorf("failed to create temp dir for sops: %w", err)
-	}
-	defer func() { _ = os.RemoveAll(tmpDir) }()
-
-	inFile := filepath.Join(tmpDir, "secret.yaml")
-	if writeErr := os.WriteFile(inFile, plain, 0600); writeErr != nil {
-		return nil, fmt.Errorf("failed to write temp secret file: %w", writeErr)
-	}
-
 	args := []string{
 		"--encrypt",
 		"--input-type", "yaml",
 		"--output-type", "yaml",
-		inFile,
+		"/dev/stdin",
 	}
 	if strings.TrimSpace(e.configPath) != "" {
 		args = append([]string{"--config", e.configPath}, args...)
 	}
 
-	cmd := exec.CommandContext(ctx, e.binaryPath, args...)
+	cmd := newCommandContext(ctx, e.binaryPath, args...)
+	cmd.Stdin = bytes.NewReader(plain)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("sops encryption failed: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 
 	return out, nil
+}
+
+func newCommandContext(ctx context.Context, name string, args ...string) *exec.Cmd {
+	return exec.CommandContext(ctx, name, args...)
 }

@@ -44,8 +44,8 @@ func TestParseFlagsWithArgs_Defaults(t *testing.T) {
 	assert.Equal(t, 15*time.Second, cfg.auditReadTimeout)
 	assert.Equal(t, 30*time.Second, cfg.auditWriteTimeout)
 	assert.Equal(t, 60*time.Second, cfg.auditIdleTimeout)
-	assert.Equal(t, "", cfg.sopsBinaryPath)
-	assert.Equal(t, "", cfg.sopsConfigPath)
+	assert.Empty(t, cfg.sopsBinaryPath)
+	assert.Empty(t, cfg.sopsConfigPath)
 }
 
 func TestParseFlagsWithArgs_AuditUnsecure(t *testing.T) {

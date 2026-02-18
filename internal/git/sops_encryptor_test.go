@@ -33,7 +33,6 @@ func TestSOPSEncryptorEncrypt(t *testing.T) {
 	script := filepath.Join(dir, "sops")
 	require.NoError(t, os.WriteFile(script, []byte(`#!/usr/bin/env bash
 set -euo pipefail
-infile="${@: -1}"
 cat <<'EOF'
 apiVersion: v1
 kind: Secret
@@ -41,7 +40,7 @@ sops:
   version: 3.9.0
 encrypted_regex: "^(data|stringData)$"
 EOF
-cat "$infile" >/dev/null
+cat >/dev/null
 `), 0700))
 
 	encryptor := NewSOPSEncryptor(script, "")

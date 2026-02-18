@@ -177,8 +177,23 @@ func WriteEvents(
 	targetBranchName string,
 	auth transport.AuthMethod,
 ) (*WriteEventsResult, error) {
+	return WriteEventsWithContentWriter(ctx, newContentWriter(), repoPath, events, targetBranchName, auth)
+}
+
+// WriteEventsWithContentWriter handles writes with explicit content writer dependencies.
+func WriteEventsWithContentWriter(
+	ctx context.Context,
+	writer eventContentWriter,
+	repoPath string,
+	events []Event,
+	targetBranchName string,
+	auth transport.AuthMethod,
+) (*WriteEventsResult, error) {
 	logger := log.FromContext(ctx)
 	logger.Info("Starting writeEvents operation", "path", repoPath, "events", len(events))
+	if writer == nil {
+		return nil, errors.New("content writer is required")
+	}
 
 	repo, err := git.PlainOpen(repoPath)
 	if err != nil {
@@ -202,40 +217,69 @@ func WriteEvents(
 			}
 		}
 
-		baseBranch, baseHash, err := GetCurrentBranch(repo)
+		done, err := tryWriteEventsAttempt(
+			ctx,
+			logger,
+			writer,
+			result,
+			repo,
+			events,
+			targetBranch,
+			targetBranchName,
+			auth,
+		)
 		if err != nil {
 			return nil, err
 		}
-
-		// If we are not on targetBranch: time to create it
-		if baseBranch != targetBranch {
-			if err1 := switchOrCreateBranch(repo, targetBranch, logger, targetBranchName, baseHash); err1 != nil {
-				return nil, err1
-			}
-		}
-
-		commitsCreated, lastHash, err := generateCommitsFromEvents(ctx, repo, events)
-		if err != nil {
-			return nil, fmt.Errorf("failed to generate commits: %w", err)
-		}
-
-		// You never know what is pushed on origin: perhaps we now have a working copy that exactly is like it should be (todo: create a nice test)
-		result.CommitsCreated = commitsCreated
-		result.LastHash = printSha(lastHash)
-		if commitsCreated == 0 {
-			logger.Info("No commits created, no need to push it")
-			break
-		}
-
-		// Attempt push with atomic verification
-		err = PushAtomic(ctx, repo, baseHash, baseBranch, auth)
-		if err == nil {
-			logger.Info("All events pushed to remote", "failureCount", result.Failures)
+		if done {
 			break
 		}
 	}
 
 	return result, nil
+}
+
+func tryWriteEventsAttempt(
+	ctx context.Context,
+	logger logr.Logger,
+	writer eventContentWriter,
+	result *WriteEventsResult,
+	repo *git.Repository,
+	events []Event,
+	targetBranch plumbing.ReferenceName,
+	targetBranchName string,
+	auth transport.AuthMethod,
+) (bool, error) {
+	baseBranch, baseHash, err := GetCurrentBranch(repo)
+	if err != nil {
+		return false, err
+	}
+
+	if baseBranch != targetBranch {
+		if err := switchOrCreateBranch(repo, targetBranch, logger, targetBranchName, baseHash); err != nil {
+			return false, err
+		}
+	}
+
+	commitsCreated, lastHash, err := generateCommitsFromEvents(ctx, writer, repo, events)
+	if err != nil {
+		return false, fmt.Errorf("failed to generate commits: %w", err)
+	}
+
+	// You never know what is pushed on origin: perhaps we now have a working copy that exactly is like it should be (todo: create a nice test)
+	result.CommitsCreated = commitsCreated
+	result.LastHash = printSha(lastHash)
+	if commitsCreated == 0 {
+		logger.Info("No commits created, no need to push it")
+		return true, nil
+	}
+
+	if err := PushAtomic(ctx, repo, baseHash, baseBranch, auth); err == nil {
+		logger.Info("All events pushed to remote", "failureCount", result.Failures)
+		return true, nil
+	}
+
+	return false, nil
 }
 
 func tryResolve(
@@ -646,7 +690,12 @@ func setHead(r *git.Repository, branchName string) error {
 }
 
 // generateCommitsFromEvents creates commits from the provided events.
-func generateCommitsFromEvents(ctx context.Context, repo *git.Repository, events []Event) (int, plumbing.Hash, error) {
+func generateCommitsFromEvents(
+	ctx context.Context,
+	writer eventContentWriter,
+	repo *git.Repository,
+	events []Event,
+) (int, plumbing.Hash, error) {
 	logger := log.FromContext(ctx)
 	lastHash := plumbing.ZeroHash
 	worktree, err := repo.Worktree()
@@ -656,7 +705,7 @@ func generateCommitsFromEvents(ctx context.Context, repo *git.Repository, events
 
 	commitsCreated := 0
 	for _, event := range events {
-		changesApplied, err := applyEventToWorktree(ctx, worktree, event)
+		changesApplied, err := applyEventToWorktree(ctx, writer, worktree, event)
 		if err != nil {
 			return commitsCreated, lastHash, err
 		}
@@ -675,7 +724,12 @@ func generateCommitsFromEvents(ctx context.Context, repo *git.Repository, events
 }
 
 // applyEventToWorktree applies an event to the worktree, returning true if changes were made.
-func applyEventToWorktree(ctx context.Context, worktree *git.Worktree, event Event) (bool, error) {
+func applyEventToWorktree(
+	ctx context.Context,
+	writer eventContentWriter,
+	worktree *git.Worktree,
+	event Event,
+) (bool, error) {
 	logger := log.FromContext(ctx)
 
 	filePath := event.Identifier.ToGitPath()
@@ -691,7 +745,7 @@ func applyEventToWorktree(ctx context.Context, worktree *git.Worktree, event Eve
 		return handleDeleteOperation(logger, filePath, fullPath, worktree)
 	}
 
-	return handleCreateOrUpdateOperation(ctx, event, filePath, fullPath, worktree)
+	return handleCreateOrUpdateOperation(ctx, writer, event, filePath, fullPath, worktree)
 }
 
 // handleDeleteOperation removes a file from the repository.
@@ -731,11 +785,12 @@ func handleDeleteOperation(
 // Returns true if changes were made, false if the file already has the desired content.
 func handleCreateOrUpdateOperation(
 	ctx context.Context,
+	writer eventContentWriter,
 	event Event,
 	filePath, fullPath string,
 	worktree *git.Worktree,
 ) (bool, error) {
-	content, err := buildContentForWrite(ctx, event)
+	content, err := writer.buildContentForWrite(ctx, event)
 	if err != nil {
 		if isSecretResource(event.Identifier) {
 			log.FromContext(ctx).Info(

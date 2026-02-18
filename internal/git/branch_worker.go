@@ -58,8 +58,9 @@ type BranchWorker struct {
 	Branch               string
 
 	// Dependencies
-	Client client.Client
-	Log    logr.Logger
+	Client        client.Client
+	Log           logr.Logger
+	contentWriter *contentWriter
 
 	// Event processing
 	eventQueue chan Event
@@ -82,7 +83,11 @@ func NewBranchWorker(
 	log logr.Logger,
 	providerName, providerNamespace string,
 	branch string,
+	writer *contentWriter,
 ) *BranchWorker {
+	if writer == nil {
+		writer = newContentWriter()
+	}
 	return &BranchWorker{
 		GitProviderRef:       providerName,
 		GitProviderNamespace: providerNamespace,
@@ -93,7 +98,8 @@ func NewBranchWorker(
 			"namespace", providerNamespace,
 			"branch", branch,
 		),
-		eventQueue: make(chan Event, branchWorkerQueueSize),
+		contentWriter: writer,
+		eventQueue:    make(chan Event, branchWorkerQueueSize),
 	}
 }
 
@@ -284,7 +290,7 @@ func (w *BranchWorker) commitAndPush(
 		w.GitProviderNamespace, w.GitProviderRef, w.Branch)
 
 	// Use new WriteEvents abstraction
-	result, err := WriteEvents(w.ctx, repoPath, events, w.Branch, auth)
+	result, err := WriteEventsWithContentWriter(w.ctx, w.contentWriter, repoPath, events, w.Branch, auth)
 	if err != nil {
 		log.Error(err, "Failed to write events")
 		return

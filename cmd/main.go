@@ -97,12 +97,6 @@ func main() {
 		"webhook-insecure", cfg.webhookInsecure,
 		"audit-insecure", cfg.auditInsecure)
 
-	// Configure Secret encryption behavior for git writes.
-	fatalIfErr(git.ConfigureSecretEncryption(git.EncryptionConfig{
-		SOPSBinaryPath: cfg.sopsBinaryPath,
-		SOPSConfigPath: cfg.sopsConfigPath,
-	}), "unable to configure Secret encryption")
-
 	// Initialize metrics
 	setupCtx := ctrl.SetupSignalHandler()
 	_, err := metrics.InitOTLPExporter(setupCtx)
@@ -130,6 +124,10 @@ func main() {
 
 	// Initialize WorkerManager (manages branch workers)
 	workerManager := git.NewWorkerManager(mgr.GetClient(), ctrl.Log.WithName("worker-manager"))
+	fatalIfErr(workerManager.ConfigureSecretEncryption(git.EncryptionConfig{
+		SOPSBinaryPath: cfg.sopsBinaryPath,
+		SOPSConfigPath: cfg.sopsConfigPath,
+	}), "unable to configure Secret encryption")
 	fatalIfErr(mgr.Add(workerManager), "unable to add worker manager to manager")
 	setupLog.Info("WorkerManager initialized and added to manager")
 

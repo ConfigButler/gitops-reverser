@@ -33,10 +33,6 @@ import (
 )
 
 func TestWriteEvents_SecretEncryptionFailureDoesNotWritePlaintext(t *testing.T) {
-	originalWriter := defaultContentWriter
-	defaultContentWriter = newContentWriter()
-	t.Cleanup(func() { defaultContentWriter = originalWriter })
-
 	repoPath := t.TempDir()
 	_, err := gogit.PlainInit(repoPath, false)
 	require.NoError(t, err)
