@@ -71,6 +71,8 @@ test: manifests generate fmt vet setup-envtest ## Run tests.
 KIND_CLUSTER ?= gitops-reverser-test-e2e
 E2E_LOCAL_IMAGE ?= gitops-reverser:e2e-local
 CERT_MANAGER_WAIT_TIMEOUT ?= 600s
+CERT_MANAGER_VERSION ?= v1.19.1
+CERT_MANAGER_MANIFEST_URL ?= https://github.com/cert-manager/cert-manager/releases/download/$(CERT_MANAGER_VERSION)/cert-manager.yaml
 
 .PHONY: setup-cluster
 setup-cluster: ## Set up a Kind cluster for e2e tests if it does not exist
@@ -104,7 +106,7 @@ e2e-build-load-image: ## Build local image and load it into the Kind cluster use
 	fi
 
 .PHONY: test-e2e
-test-e2e: setup-cluster cleanup-webhook setup-e2e wait-cert-manager manifests setup-port-forwards ## Run end-to-end tests in Kind cluster, note that vet, fmt and generate are not run!
+test-e2e: setup-cluster cleanup-webhook setup-e2e check-cert-manager manifests setup-port-forwards ## Run end-to-end tests in Kind cluster, note that vet, fmt and generate are not run!
 	@echo "ℹ️ test-e2e reuses the existing Kind cluster (no cluster cleanup in this target)"; \
 	if [ -n "$(PROJECT_IMAGE)" ]; then \
 		echo "ℹ️ Entry point selected pre-built image (CI-friendly): $(PROJECT_IMAGE)"; \
@@ -244,7 +246,7 @@ setup-gitea-e2e: ## Set up Gitea for e2e testing
 .PHONY: setup-cert-manager
 setup-cert-manager:
 	@echo "🚀 Setting up cert-manager..."
-	@$(KUBECTL) apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.19.1/cert-manager.yaml | grep -v "unchanged"
+	@$(KUBECTL) apply -f $(CERT_MANAGER_MANIFEST_URL) | grep -v "unchanged"
 
 .PHONY: setup-port-forwards
 setup-port-forwards: ## Start all port-forwards in background
@@ -300,6 +302,10 @@ wait-cert-manager: ## Wait for cert-manager pods to become ready
 	done
 	@echo "✅ cert-manager is ready"
 
+.PHONY: check-cert-manager
+check-cert-manager: wait-cert-manager ## Explicit readiness check for cert-manager
+	@echo "✅ cert-manager check passed"
+
 ## Smoke test: install from local Helm chart and verify rollout
 .PHONY: test-e2e-install
 test-e2e-install: ## Smoke test install with E2E_INSTALL_MODE=helm|manifest
@@ -312,13 +318,13 @@ test-e2e-install: ## Smoke test install with E2E_INSTALL_MODE=helm|manifest
 	if [ -n "$$PROJECT_IMAGE_VALUE" ]; then \
 		echo "ℹ️ Entry point selected pre-built image (probably running in CI): $$PROJECT_IMAGE_VALUE"; \
 		echo "ℹ️ Skipping cluster cleanup for pre-built image path"; \
-		KIND_CLUSTER=$(KIND_CLUSTER) $(MAKE) setup-cluster setup-e2e wait-cert-manager; \
+		KIND_CLUSTER=$(KIND_CLUSTER) $(MAKE) setup-cluster setup-e2e check-cert-manager; \
 	else \
 		PROJECT_IMAGE_VALUE="$(E2E_LOCAL_IMAGE)"; \
 		echo "🧹 Local fallback path: cleaning cluster to test a clean install"; \
 		KIND_CLUSTER=$(KIND_CLUSTER) $(MAKE) cleanup-cluster; \
 		echo "ℹ️ Entry point selected local fallback image: $$PROJECT_IMAGE_VALUE"; \
-		KIND_CLUSTER=$(KIND_CLUSTER) PROJECT_IMAGE="$$PROJECT_IMAGE_VALUE" $(MAKE) setup-cluster setup-e2e wait-cert-manager e2e-build-load-image; \
+		KIND_CLUSTER=$(KIND_CLUSTER) PROJECT_IMAGE="$$PROJECT_IMAGE_VALUE" $(MAKE) setup-cluster setup-e2e check-cert-manager e2e-build-load-image; \
 	fi; \
 	echo "ℹ️ Running install smoke mode: $$MODE"; \
 	PROJECT_IMAGE="$$PROJECT_IMAGE_VALUE" bash test/e2e/scripts/install-smoke.sh "$$MODE"; \
