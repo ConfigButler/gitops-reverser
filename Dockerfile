@@ -21,7 +21,7 @@ COPY internal/ internal/
 # Build for the target platform
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -o manager cmd/main.go
 
-FROM alpine:3.22 AS sops-downloader
+FROM alpine:3.23 AS sops-downloader
 ARG TARGETARCH
 ARG SOPS_VERSION=v3.11.0
 RUN apk add --no-cache curl
