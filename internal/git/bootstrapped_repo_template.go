@@ -22,7 +22,6 @@ import (
 	"bytes"
 	"context"
 	"embed"
-	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -50,8 +49,6 @@ const (
 
 //go:embed bootstrapped-repo-template/* bootstrapped-repo-template/.sops.yaml
 var bootstrapTemplateFS embed.FS
-
-var errFoundFileInPath = errors.New("found file in path")
 
 type bootstrapTemplateData struct {
 	AgeRecipient string
@@ -120,37 +117,6 @@ func bootstrapCommitMessage(targetPath string) string {
 		return bootstrapCommitMessageRoot + " <root>"
 	}
 	return fmt.Sprintf("%s %s", bootstrapCommitMessageRoot, targetPath)
-}
-
-func pathHasAnyFile(repoPath, targetPath string) (bool, error) {
-	basePath := repoPath
-	if targetPath != "" {
-		basePath = filepath.Join(repoPath, targetPath)
-	}
-
-	err := filepath.WalkDir(basePath, func(currentPath string, d os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if d.IsDir() {
-			if filepath.Clean(currentPath) == filepath.Join(repoPath, ".git") {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		return errFoundFileInPath
-	})
-	if err != nil {
-		if os.IsNotExist(err) {
-			return false, nil
-		}
-		if errors.Is(err, errFoundFileInPath) {
-			return true, nil
-		}
-		return false, err
-	}
-
-	return false, nil
 }
 
 func stageBootstrapTemplateInPath(worktree *gogit.Worktree, targetPath string, options pathBootstrapOptions) error {
