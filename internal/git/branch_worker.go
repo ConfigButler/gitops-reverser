@@ -30,6 +30,7 @@ import (
 
 	gogit "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -178,81 +179,27 @@ func (w *BranchWorker) EnsurePathBootstrapped(path, targetName, targetNamespace 
 		ctx = context.Background()
 	}
 
-	normalizedPath := sanitizePath(path)
-	if strings.TrimSpace(path) != "" && normalizedPath == "" {
-		return fmt.Errorf("invalid path %q", path)
-	}
-	if strings.TrimSpace(targetName) == "" || strings.TrimSpace(targetNamespace) == "" {
-		return fmt.Errorf("target name and namespace must be set for path bootstrap")
-	}
-
-	provider, err := w.getGitProvider(ctx)
+	normalizedPath, err := normalizeBootstrapPath(path)
 	if err != nil {
-		return fmt.Errorf("failed to get GitProvider: %w", err)
+		return err
+	}
+	if err := validateBootstrapTarget(targetName, targetNamespace); err != nil {
+		return err
 	}
 
-	auth, err := getAuthFromSecret(ctx, w.Client, provider)
+	bootstrapOptions, err := w.resolveBootstrapOptions(ctx, targetName, targetNamespace)
 	if err != nil {
-		return fmt.Errorf("failed to get auth: %w", err)
+		return err
 	}
 
-	targetKey := types.NamespacedName{Name: targetName, Namespace: targetNamespace}
-	var target configv1alpha1.GitTarget
-	if err := w.Client.Get(ctx, targetKey, &target); err != nil {
-		return fmt.Errorf("failed to get GitTarget %s: %w", targetKey.String(), err)
-	}
-	encryptionConfig, err := ResolveTargetEncryption(ctx, w.Client, &target)
+	repoPath, auth, err := w.prepareBootstrapRepository(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to resolve target encryption: %w", err)
+		return err
 	}
 
-	bootstrapOptions := pathBootstrapOptions{}
-	if encryptionConfig != nil {
-		sopsKey := strings.TrimSpace(encryptionConfig.Environment[sopsAgeKeyEnvVar])
-		if sopsKey == "" {
-			return fmt.Errorf("missing %s in target encryption secret", sopsAgeKeyEnvVar)
-		}
-		recipient, deriveErr := deriveAgeRecipientFromSOPSKey(sopsKey)
-		if deriveErr != nil {
-			return fmt.Errorf("failed to derive age recipient: %w", deriveErr)
-		}
-		bootstrapOptions.IncludeSOPSConfig = true
-		bootstrapOptions.TemplateData.AgeRecipient = recipient
-	}
-
-	repoPath := filepath.Join("/tmp", "gitops-reverser-workers",
-		w.GitProviderNamespace, w.GitProviderRef, w.Branch)
-
-	pullReport, err := PrepareBranch(ctx, provider.Spec.URL, repoPath, w.Branch, auth)
+	commitHash, committed, err := w.bootstrapPathIfEmpty(ctx, repoPath, normalizedPath, bootstrapOptions, auth)
 	if err != nil {
-		return fmt.Errorf("failed to prepare repository: %w", err)
-	}
-	w.updateBranchMetadataFromPullReport(pullReport)
-
-	hasFiles, err := pathHasAnyFile(repoPath, normalizedPath)
-	if err != nil {
-		return fmt.Errorf("failed to check path contents: %w", err)
-	}
-	if hasFiles {
-		w.Log.V(1).Info("Skipping bootstrap for non-empty path", "path", normalizedPath)
-		return nil
-	}
-
-	repo, err := gogit.PlainOpen(repoPath)
-	if err != nil {
-		return fmt.Errorf("failed to open repository: %w", err)
-	}
-
-	hash, committed, err := commitPathBootstrapTemplateIfNeeded(
-		ctx,
-		repo,
-		plumbing.NewBranchReferenceName(w.Branch),
-		normalizedPath,
-		bootstrapOptions,
-		auth,
-	)
-	if err != nil {
-		return fmt.Errorf("failed to bootstrap path %q: %w", normalizedPath, err)
+		return err
 	}
 	if !committed {
 		return nil
@@ -260,12 +207,124 @@ func (w *BranchWorker) EnsurePathBootstrapped(path, targetName, targetNamespace 
 
 	w.metaMu.Lock()
 	w.branchExists = true
-	w.lastCommitSHA = printSha(hash)
+	w.lastCommitSHA = printSha(commitHash)
 	w.lastFetchTime = time.Now()
 	w.metaMu.Unlock()
 
-	w.Log.Info("Bootstrapped path", "path", normalizedPath, "commit", printSha(hash))
+	w.Log.Info("Bootstrapped path", "path", normalizedPath, "commit", printSha(commitHash))
 	return nil
+}
+
+func normalizeBootstrapPath(path string) (string, error) {
+	normalizedPath := sanitizePath(path)
+	if strings.TrimSpace(path) != "" && normalizedPath == "" {
+		return "", fmt.Errorf("invalid path %q", path)
+	}
+	return normalizedPath, nil
+}
+
+func validateBootstrapTarget(targetName, targetNamespace string) error {
+	if strings.TrimSpace(targetName) == "" || strings.TrimSpace(targetNamespace) == "" {
+		return errors.New("target name and namespace must be set for path bootstrap")
+	}
+	return nil
+}
+
+func (w *BranchWorker) resolveBootstrapOptions(
+	ctx context.Context,
+	targetName string,
+	targetNamespace string,
+) (pathBootstrapOptions, error) {
+	targetKey := types.NamespacedName{Name: targetName, Namespace: targetNamespace}
+	var target configv1alpha1.GitTarget
+	if err := w.Client.Get(ctx, targetKey, &target); err != nil {
+		return pathBootstrapOptions{}, fmt.Errorf("failed to get GitTarget %s: %w", targetKey.String(), err)
+	}
+
+	encryptionConfig, err := ResolveTargetEncryption(ctx, w.Client, &target)
+	if err != nil {
+		return pathBootstrapOptions{}, fmt.Errorf("failed to resolve target encryption: %w", err)
+	}
+	if encryptionConfig == nil {
+		return pathBootstrapOptions{}, nil
+	}
+
+	sopsKey := strings.TrimSpace(encryptionConfig.Environment[sopsAgeKeyEnvVar])
+	if sopsKey == "" {
+		return pathBootstrapOptions{}, fmt.Errorf("missing %s in target encryption secret", sopsAgeKeyEnvVar)
+	}
+
+	recipient, err := deriveAgeRecipientFromSOPSKey(sopsKey)
+	if err != nil {
+		return pathBootstrapOptions{}, fmt.Errorf("failed to derive age recipient: %w", err)
+	}
+
+	return pathBootstrapOptions{
+		IncludeSOPSConfig: true,
+		TemplateData: bootstrapTemplateData{
+			AgeRecipient: recipient,
+		},
+	}, nil
+}
+
+func (w *BranchWorker) prepareBootstrapRepository(
+	ctx context.Context,
+) (string, transport.AuthMethod, error) {
+	provider, err := w.getGitProvider(ctx)
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to get GitProvider: %w", err)
+	}
+
+	auth, err := getAuthFromSecret(ctx, w.Client, provider)
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to get auth: %w", err)
+	}
+
+	repoPath := filepath.Join("/tmp", "gitops-reverser-workers",
+		w.GitProviderNamespace, w.GitProviderRef, w.Branch)
+	pullReport, err := PrepareBranch(ctx, provider.Spec.URL, repoPath, w.Branch, auth)
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to prepare repository: %w", err)
+	}
+	w.updateBranchMetadataFromPullReport(pullReport)
+
+	return repoPath, auth, nil
+}
+
+func (w *BranchWorker) bootstrapPathIfEmpty(
+	ctx context.Context,
+	repoPath string,
+	normalizedPath string,
+	options pathBootstrapOptions,
+	auth transport.AuthMethod,
+) (plumbing.Hash, bool, error) {
+	hasFiles, err := pathHasAnyFile(repoPath, normalizedPath)
+	if err != nil {
+		return plumbing.ZeroHash, false, fmt.Errorf("failed to check path contents: %w", err)
+	}
+	if hasFiles {
+		w.Log.V(1).Info("Skipping bootstrap for non-empty path", "path", normalizedPath)
+		return plumbing.ZeroHash, false, nil
+	}
+
+	repo, err := gogit.PlainOpen(repoPath)
+	if err != nil {
+		return plumbing.ZeroHash, false, fmt.Errorf("failed to open repository: %w", err)
+	}
+
+	hash, committed, err := commitPathBootstrapTemplateIfNeeded(
+		ctx,
+		repo,
+		plumbing.NewBranchReferenceName(w.Branch),
+		normalizedPath,
+		options,
+		auth,
+	)
+	if err != nil {
+		return plumbing.ZeroHash, false, fmt.Errorf("failed to bootstrap path %q: %w", normalizedPath, err)
+	}
+
+	return hash, committed, nil
 }
 
 // listResourceIdentifiersInPath lists resource identifiers in a specific path.

@@ -34,6 +34,11 @@ import (
 	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 )
 
+const (
+	testProviderNamespace = "gitops-system"
+	testTargetNamespace   = "default"
+)
+
 func setupScheme() *runtime.Scheme {
 	scheme := runtime.NewScheme()
 	_ = clientgoscheme.AddToScheme(scheme)
@@ -42,10 +47,10 @@ func setupScheme() *runtime.Scheme {
 }
 
 func createProviderWithLocalRepo(
-	t *testing.T,
 	ctx context.Context,
+	t *testing.T,
 	k8sClient client.Client,
-	namespace, name string,
+	name string,
 ) {
 	t.Helper()
 
@@ -58,20 +63,20 @@ func createProviderWithLocalRepo(
 		},
 	}
 	provider.Name = name
-	provider.Namespace = namespace
+	provider.Namespace = testProviderNamespace
 	require.NoError(t, k8sClient.Create(ctx, provider))
 }
 
 func createTargetForRegister(
-	t *testing.T,
 	ctx context.Context,
+	t *testing.T,
 	k8sClient client.Client,
-	namespace, name, providerName, branch, path string,
+	name, providerName, branch, path string,
 ) {
 	t.Helper()
 	target := &configv1alpha1.GitTarget{}
 	target.Name = name
-	target.Namespace = namespace
+	target.Namespace = testTargetNamespace
 	target.Spec.ProviderRef = configv1alpha1.GitProviderReference{
 		Kind: "GitProvider",
 		Name: providerName,
@@ -96,8 +101,8 @@ func TestWorkerManagerRegisterTarget(t *testing.T) {
 		_ = manager.Start(ctx)
 	}()
 	time.Sleep(100 * time.Millisecond) // Allow manager to start
-	createProviderWithLocalRepo(t, ctx, client, "gitops-system", "repo1")
-	createTargetForRegister(t, ctx, client, "default", "target1", "repo1", "main", "clusters/prod")
+	createProviderWithLocalRepo(ctx, t, client, "repo1")
+	createTargetForRegister(ctx, t, client, "target1", "repo1", "main", "clusters/prod")
 
 	// Register first target
 	err := manager.RegisterTarget(ctx,
@@ -150,9 +155,9 @@ func TestWorkerManagerMultipleTargetsSameBranch(t *testing.T) {
 		_ = manager.Start(ctx)
 	}()
 	time.Sleep(100 * time.Millisecond)
-	createProviderWithLocalRepo(t, ctx, client, "gitops-system", "shared-repo")
-	createTargetForRegister(t, ctx, client, "default", "target-apps", "shared-repo", "main", "apps/")
-	createTargetForRegister(t, ctx, client, "default", "target-infra", "shared-repo", "main", "infra/")
+	createProviderWithLocalRepo(ctx, t, client, "shared-repo")
+	createTargetForRegister(ctx, t, client, "target-apps", "shared-repo", "main", "apps/")
+	createTargetForRegister(ctx, t, client, "target-infra", "shared-repo", "main", "infra/")
 
 	// Register two targets for same repo+branch, different paths
 	err := manager.RegisterTarget(ctx,
@@ -204,9 +209,9 @@ func TestWorkerManagerDifferentBranches(t *testing.T) {
 		_ = manager.Start(ctx)
 	}()
 	time.Sleep(100 * time.Millisecond)
-	createProviderWithLocalRepo(t, ctx, client, "gitops-system", "repo1")
-	createTargetForRegister(t, ctx, client, "default", "target-main", "repo1", "main", "base/")
-	createTargetForRegister(t, ctx, client, "default", "target-dev", "repo1", "develop", "base/")
+	createProviderWithLocalRepo(ctx, t, client, "repo1")
+	createTargetForRegister(ctx, t, client, "target-main", "repo1", "main", "base/")
+	createTargetForRegister(ctx, t, client, "target-dev", "repo1", "develop", "base/")
 
 	// Register targets for same repo, different branches
 	err := manager.RegisterTarget(ctx,
@@ -263,9 +268,9 @@ func TestWorkerManagerUnregisterTarget(t *testing.T) {
 		_ = manager.Start(ctx)
 	}()
 	time.Sleep(100 * time.Millisecond)
-	createProviderWithLocalRepo(t, ctx, client, "gitops-system", "repo1")
-	createTargetForRegister(t, ctx, client, "default", "target1", "repo1", "main", "apps/")
-	createTargetForRegister(t, ctx, client, "default", "target2", "repo1", "main", "infra/")
+	createProviderWithLocalRepo(ctx, t, client, "repo1")
+	createTargetForRegister(ctx, t, client, "target1", "repo1", "main", "apps/")
+	createTargetForRegister(ctx, t, client, "target2", "repo1", "main", "infra/")
 
 	// Register two targets
 	_ = manager.RegisterTarget(ctx,
@@ -333,8 +338,8 @@ func TestWorkerManagerConcurrentRegistration(t *testing.T) {
 		_ = manager.Start(ctx)
 	}()
 	time.Sleep(100 * time.Millisecond)
-	createProviderWithLocalRepo(t, ctx, client, "gitops-system", "repo1")
-	createTargetForRegister(t, ctx, client, "default", "target", "repo1", "main", "base/")
+	createProviderWithLocalRepo(ctx, t, client, "repo1")
+	createTargetForRegister(ctx, t, client, "target", "repo1", "main", "base/")
 
 	// Concurrently register multiple targets
 	done := make(chan bool, 10)

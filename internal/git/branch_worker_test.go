@@ -252,7 +252,7 @@ func TestBranchWorker_EnsurePathBootstrapped_EmptyPathCreatesTemplate(t *testing
 	provider.Name = "test-repo"
 	provider.Namespace = "default"
 	require.NoError(t, k8sClient.Create(ctx, provider))
-	createTargetWithEncryption(t, ctx, k8sClient, "bootstrap-target", "default", "test-repo", "main", "clusters/prod")
+	createTargetWithEncryption(ctx, t, k8sClient, "bootstrap-target", "default", "test-repo", "main", "clusters/prod")
 
 	worker := NewBranchWorker(k8sClient, logr.Discard(), "test-repo", "default", "main", nil)
 	require.NoError(t, worker.EnsurePathBootstrapped("clusters/prod", "bootstrap-target", "default"))
@@ -301,7 +301,7 @@ func TestBranchWorker_EnsurePathBootstrapped_NonEmptyPathSkipsTemplate(t *testin
 	provider.Name = "test-repo"
 	provider.Namespace = "default"
 	require.NoError(t, k8sClient.Create(ctx, provider))
-	createTargetWithEncryption(t, ctx, k8sClient, "bootstrap-target", "default", "test-repo", "main", "clusters/prod")
+	createTargetWithEncryption(ctx, t, k8sClient, "bootstrap-target", "default", "test-repo", "main", "clusters/prod")
 
 	worker := NewBranchWorker(k8sClient, logr.Discard(), "test-repo", "default", "main", nil)
 	require.NoError(t, worker.EnsurePathBootstrapped("clusters/prod", "bootstrap-target", "default"))
@@ -340,7 +340,7 @@ func TestBranchWorker_EnsurePathBootstrapped_NoEncryptionSkipsSOPSConfig(t *test
 	provider.Name = "test-repo"
 	provider.Namespace = "default"
 	require.NoError(t, k8sClient.Create(ctx, provider))
-	createTargetWithoutEncryption(t, ctx, k8sClient, "bootstrap-target", "default", "test-repo", "main", "clusters/dev")
+	createTargetWithoutEncryption(ctx, t, k8sClient, "bootstrap-target", "default", "test-repo", "main", "clusters/dev")
 
 	worker := NewBranchWorker(k8sClient, logr.Discard(), "test-repo", "default", "main", nil)
 	require.NoError(t, worker.EnsurePathBootstrapped("clusters/dev", "bootstrap-target", "default"))
@@ -356,8 +356,8 @@ func TestBranchWorker_EnsurePathBootstrapped_NoEncryptionSkipsSOPSConfig(t *test
 }
 
 func createTargetWithEncryption(
-	t *testing.T,
 	ctx context.Context,
+	t *testing.T,
 	k8sClient client.Client,
 	name, namespace, providerName, branch, path string,
 ) {
@@ -392,8 +392,8 @@ func createTargetWithEncryption(
 }
 
 func createTargetWithoutEncryption(
-	t *testing.T,
 	ctx context.Context,
+	t *testing.T,
 	k8sClient client.Client,
 	name, namespace, providerName, branch, path string,
 ) {

@@ -163,52 +163,105 @@ func stageBootstrapTemplateInPath(worktree *gogit.Worktree, targetPath string, o
 		return entries[i].Name() < entries[j].Name()
 	})
 
-	root := worktree.Filesystem.Root()
-	targetDir := root
-	if targetPath != "" {
-		targetDir = filepath.Join(root, targetPath)
-		if err := os.MkdirAll(targetDir, 0750); err != nil {
-			return fmt.Errorf("failed to create bootstrap target path %s: %w", targetPath, err)
-		}
+	targetDir, err := bootstrapTargetDirectory(worktree, targetPath)
+	if err != nil {
+		return err
 	}
 
 	for _, entry := range entries {
-		if entry.IsDir() {
+		if shouldSkipBootstrapEntry(entry, options) {
 			continue
 		}
-		if entry.Name() == sopsConfigFileName && !options.IncludeSOPSConfig {
-			continue
+		if err := stageBootstrapTemplateEntry(worktree, targetPath, targetDir, entry.Name(), options); err != nil {
+			return err
 		}
+	}
 
-		templatePath := path.Join(bootstrapTemplateDir, entry.Name())
-		content, err := bootstrapTemplateFS.ReadFile(templatePath)
-		if err != nil {
-			return fmt.Errorf("failed to read bootstrap template %s: %w", entry.Name(), err)
-		}
-		if entry.Name() == sopsConfigFileName {
-			content, err = renderSOPSBootstrapTemplate(content, options.TemplateData)
-			if err != nil {
-				return err
-			}
-		}
+	return nil
+}
 
-		destinationPath := filepath.Join(targetDir, entry.Name())
-		if _, statErr := os.Stat(destinationPath); statErr != nil {
-			if !os.IsNotExist(statErr) {
-				return fmt.Errorf("failed to stat bootstrap target %s: %w", entry.Name(), statErr)
-			}
-			if err := os.WriteFile(destinationPath, content, bootstrapTemplateFilePerm); err != nil {
-				return fmt.Errorf("failed to write bootstrap file %s: %w", entry.Name(), err)
-			}
-		}
+func bootstrapTargetDirectory(worktree *gogit.Worktree, targetPath string) (string, error) {
+	root := worktree.Filesystem.Root()
+	if targetPath == "" {
+		return root, nil
+	}
 
-		gitPath := entry.Name()
-		if targetPath != "" {
-			gitPath = filepath.ToSlash(filepath.Join(targetPath, entry.Name()))
-		}
-		if _, err := worktree.Add(gitPath); err != nil {
-			return fmt.Errorf("failed to stage bootstrap file %s: %w", entry.Name(), err)
-		}
+	targetDir := filepath.Join(root, targetPath)
+	if err := os.MkdirAll(targetDir, 0750); err != nil {
+		return "", fmt.Errorf("failed to create bootstrap target path %s: %w", targetPath, err)
+	}
+
+	return targetDir, nil
+}
+
+func shouldSkipBootstrapEntry(entry fs.DirEntry, options pathBootstrapOptions) bool {
+	if entry.IsDir() {
+		return true
+	}
+	return entry.Name() == sopsConfigFileName && !options.IncludeSOPSConfig
+}
+
+func stageBootstrapTemplateEntry(
+	worktree *gogit.Worktree,
+	targetPath string,
+	targetDir string,
+	entryName string,
+	options pathBootstrapOptions,
+) error {
+	content, err := readBootstrapTemplateContent(entryName, options)
+	if err != nil {
+		return err
+	}
+
+	destinationPath := filepath.Join(targetDir, entryName)
+	if err := writeBootstrapFileIfMissing(destinationPath, entryName, content); err != nil {
+		return err
+	}
+
+	return stageBootstrapFile(worktree, targetPath, entryName)
+}
+
+func readBootstrapTemplateContent(entryName string, options pathBootstrapOptions) ([]byte, error) {
+	templatePath := path.Join(bootstrapTemplateDir, entryName)
+	content, err := bootstrapTemplateFS.ReadFile(templatePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read bootstrap template %s: %w", entryName, err)
+	}
+
+	if entryName != sopsConfigFileName {
+		return content, nil
+	}
+
+	rendered, err := renderSOPSBootstrapTemplate(content, options.TemplateData)
+	if err != nil {
+		return nil, err
+	}
+
+	return rendered, nil
+}
+
+func writeBootstrapFileIfMissing(destinationPath, entryName string, content []byte) error {
+	if _, err := os.Stat(destinationPath); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("failed to stat bootstrap target %s: %w", entryName, err)
+	}
+
+	if err := os.WriteFile(destinationPath, content, bootstrapTemplateFilePerm); err != nil {
+		return fmt.Errorf("failed to write bootstrap file %s: %w", entryName, err)
+	}
+
+	return nil
+}
+
+func stageBootstrapFile(worktree *gogit.Worktree, targetPath, entryName string) error {
+	gitPath := entryName
+	if targetPath != "" {
+		gitPath = filepath.ToSlash(filepath.Join(targetPath, entryName))
+	}
+
+	if _, err := worktree.Add(gitPath); err != nil {
+		return fmt.Errorf("failed to stage bootstrap file %s: %w", entryName, err)
 	}
 
 	return nil
