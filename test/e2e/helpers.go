@@ -204,6 +204,26 @@ func getBaseFolder() string {
 //
 //nolint:unparam // in e2e helpers we accept constant namespace ("sut"); keep signature for clarity in template calls
 func createGitTarget(name, namespace, providerName, path, branch string) {
+	createGitTargetWithEncryptionOptions(
+		name,
+		namespace,
+		providerName,
+		path,
+		branch,
+		e2eEncryptionRefName,
+		false,
+	)
+}
+
+func createGitTargetWithEncryptionOptions(
+	name,
+	namespace,
+	providerName,
+	path,
+	branch,
+	encryptionSecretName string,
+	generateWhenMissing bool,
+) {
 	By(fmt.Sprintf("creating GitTarget '%s' in ns '%s' for GitProvider '%s' with path '%s'",
 		name, namespace, providerName, path))
 
@@ -214,13 +234,15 @@ func createGitTarget(name, namespace, providerName, path, branch string) {
 		Branch               string
 		Path                 string
 		EncryptionSecretName string
+		GenerateWhenMissing  bool
 	}{
 		Name:                 name,
 		Namespace:            namespace,
 		ProviderName:         providerName,
 		Branch:               branch,
 		Path:                 path,
-		EncryptionSecretName: e2eEncryptionRefName,
+		EncryptionSecretName: encryptionSecretName,
+		GenerateWhenMissing:  generateWhenMissing,
 	}
 
 	err := applyFromTemplate("test/e2e/templates/gittarget.tmpl", data, namespace)

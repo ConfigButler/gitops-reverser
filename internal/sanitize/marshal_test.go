@@ -59,6 +59,13 @@ func TestMarshalToOrderedYAML_FieldOrder(t *testing.T) {
 	assert.Less(t, metadataPos, specPos, "metadata should come before spec")
 }
 
+func TestMarshalToOrderedYAML_NilObject(t *testing.T) {
+	yamlBytes, err := MarshalToOrderedYAML(nil)
+	require.Error(t, err)
+	assert.Nil(t, yamlBytes)
+	assert.Contains(t, err.Error(), "object is nil")
+}
+
 func TestMarshalToOrderedYAML_Pod(t *testing.T) {
 	obj := &unstructured.Unstructured{
 		Object: map[string]interface{}{

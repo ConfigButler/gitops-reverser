@@ -21,6 +21,7 @@ package reconcile
 import (
 	"crypto/sha256"
 	"fmt"
+	"sync"
 
 	"github.com/go-logr/logr"
 
@@ -59,6 +60,7 @@ type GitTargetEventStream struct {
 	// Dependencies
 	branchWorker EventEnqueuer
 	logger       logr.Logger
+	mu           sync.RWMutex
 }
 
 // EventEnqueuer interface for enqueuing events (allows mocking).
@@ -92,12 +94,15 @@ func NewGitTargetEventStream(
 
 // OnWatchEvent processes incoming watch events from the cluster.
 func (s *GitTargetEventStream) OnWatchEvent(event git.Event) {
+	s.mu.Lock()
 	switch s.state {
 	case StartupReconcile:
 		// Buffer all events during reconciliation (no deduplication)
 		s.bufferedEvents = append(s.bufferedEvents, event)
+		bufferSize := len(s.bufferedEvents)
+		s.mu.Unlock()
 		s.logger.V(1).
-			Info("Buffered event during reconciliation", "resource", event.Identifier.String(), "bufferSize", len(s.bufferedEvents))
+			Info("Buffered event during reconciliation", "resource", event.Identifier.String(), "bufferSize", bufferSize)
 
 	case LiveProcessing:
 		// Check for duplicates using event hash
@@ -105,45 +110,63 @@ func (s *GitTargetEventStream) OnWatchEvent(event git.Event) {
 		resourceKey := event.Identifier.String()
 
 		if lastHash, exists := s.processedEventHashes[resourceKey]; exists && lastHash == eventHash {
+			s.mu.Unlock()
 			s.logger.V(1).Info("Skipping duplicate event", "resource", resourceKey, "hash", eventHash)
 			return
 		}
+		s.mu.Unlock()
 
 		// Process immediately
 		s.processEvent(event, eventHash, resourceKey)
+
+	default:
+		s.mu.Unlock()
 	}
 }
 
 // OnReconciliationComplete signals that initial reconciliation has finished.
 func (s *GitTargetEventStream) OnReconciliationComplete() {
+	s.mu.Lock()
 	if s.state != StartupReconcile {
+		currentState := s.state
+		s.mu.Unlock()
 		s.logger.Info(
 			"Reconciliation complete signal received but not in STARTUP_RECONCILE state",
 			"currentState",
-			s.state,
+			currentState,
 		)
 		return
 	}
 
-	s.logger.Info("Reconciliation completed, transitioning to LIVE_PROCESSING", "bufferedEvents", len(s.bufferedEvents))
+	bufferedEvents := append([]git.Event(nil), s.bufferedEvents...)
+	s.logger.Info("Reconciliation completed, transitioning to LIVE_PROCESSING", "bufferedEvents", len(bufferedEvents))
 
 	// Transition to live processing
 	s.state = LiveProcessing
+	s.bufferedEvents = nil
+	s.mu.Unlock()
 
 	// Process all buffered events
-	for _, event := range s.bufferedEvents {
+	for _, event := range bufferedEvents {
 		eventHash := s.computeEventHash(event)
 		resourceKey := event.Identifier.String()
 		s.processEvent(event, eventHash, resourceKey)
 	}
 
-	// Clear buffer
-	s.bufferedEvents = nil
 	s.logger.Info("Finished processing buffered events")
 }
 
 // processEvent forwards the event to BranchWorker and updates deduplication state.
 func (s *GitTargetEventStream) processEvent(event git.Event, eventHash, resourceKey string) {
+	if event.Object == nil && event.Operation != "DELETE" {
+		s.logger.V(1).Info(
+			"Skipping event with no object payload",
+			"resource", resourceKey,
+			"operation", event.Operation,
+		)
+		return
+	}
+
 	event.GitTargetName = s.gitTargetName
 	event.GitTargetNamespace = s.gitTargetNamespace
 
@@ -151,7 +174,9 @@ func (s *GitTargetEventStream) processEvent(event git.Event, eventHash, resource
 	s.branchWorker.Enqueue(event)
 
 	// Update deduplication state
+	s.mu.Lock()
 	s.processedEventHashes[resourceKey] = eventHash
+	s.mu.Unlock()
 
 	s.logger.V(1).Info("Processed event", "resource", resourceKey, "hash", eventHash)
 }
@@ -181,21 +206,29 @@ func (s *GitTargetEventStream) computeEventHash(event git.Event) string {
 
 // GetState returns the current state of the event stream.
 func (s *GitTargetEventStream) GetState() EventStreamState {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.state
 }
 
 // GetBufferedEventCount returns the number of events currently buffered.
 func (s *GitTargetEventStream) GetBufferedEventCount() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return len(s.bufferedEvents)
 }
 
 // GetProcessedEventCount returns the number of unique events processed.
 func (s *GitTargetEventStream) GetProcessedEventCount() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return len(s.processedEventHashes)
 }
 
 // String returns a string representation for debugging.
 func (s *GitTargetEventStream) String() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return fmt.Sprintf("GitTargetEventStream(gitTarget=%s/%s, state=%s, buffered=%d, processed=%d)",
 		s.gitTargetNamespace, s.gitTargetName, s.state, len(s.bufferedEvents), len(s.processedEventHashes))
 }

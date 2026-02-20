@@ -48,6 +48,12 @@ spec:
                 description: Encryption defines encryption settings for Secret resource
                   writes.
                 properties:
+                  generateWhenMissing:
+                    default: false
+                    description: |-
+                      GenerateWhenMissing auto-creates the referenced Secret when it does not exist.
+                      The generated Secret contains one age private key in SOPS_AGE_KEY.
+                    type: boolean
                   provider:
                     default: sops
                     description: Provider selects the encryption provider.
@@ -174,6 +180,46 @@ spec:
                   push.
                 format: date-time
                 type: string
+              lastReconcileTime:
+                description: LastReconcileTime is the timestamp of the most recent
+                  reconcile attempt.
+                format: date-time
+                type: string
+              observedGeneration:
+                description: ObservedGeneration is the latest generation observed
+                  by the controller.
+                format: int64
+                type: integer
+              snapshot:
+                description: Snapshot captures the latest initial snapshot reconciliation
+                  details.
+                properties:
+                  lastCompletedTime:
+                    description: LastCompletedTime is the timestamp of the latest
+                      completed snapshot reconciliation.
+                    format: date-time
+                    type: string
+                  stats:
+                    description: Stats records counts from the latest snapshot reconciliation
+                      diff.
+                    properties:
+                      created:
+                        description: Created is the number of resources created in
+                          Git during snapshot sync.
+                        format: int32
+                        type: integer
+                      deleted:
+                        description: Deleted is the number of stale resources deleted
+                          from Git during snapshot sync.
+                        format: int32
+                        type: integer
+                      updated:
+                        description: Updated is the number of existing resources reconciled
+                          during snapshot sync.
+                        format: int32
+                        type: integer
+                    type: object
+                type: object
             type: object
         required:
         - spec

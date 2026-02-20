@@ -21,6 +21,7 @@ package reconcile
 import (
 	"context"
 	"errors"
+	"sync"
 
 	"github.com/go-logr/logr"
 
@@ -30,6 +31,7 @@ import (
 
 // ReconcilerManager manages the lifecycle of FolderReconciler instances.
 type ReconcilerManager struct {
+	mu          sync.RWMutex
 	reconcilers map[string]*FolderReconciler // key = gitDest.Key() = "namespace/name"
 	eventRouter interface {
 		ProcessControlEvent(ctx context.Context, event events.ControlEvent) error
@@ -51,12 +53,24 @@ func NewReconcilerManager(
 	}
 }
 
+// SetEventRouter sets the control-event processor dependency after construction.
+func (m *ReconcilerManager) SetEventRouter(
+	eventRouter interface {
+		ProcessControlEvent(ctx context.Context, event events.ControlEvent) error
+	},
+) {
+	m.eventRouter = eventRouter
+}
+
 // CreateReconciler creates or retrieves a FolderReconciler for the given GitDestination.
 func (m *ReconcilerManager) CreateReconciler(
 	gitDest types.ResourceReference,
 	eventEmitter EventEmitter,
 ) *FolderReconciler {
 	key := gitDest.Key()
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
 
 	if reconciler, exists := m.reconcilers[key]; exists {
 		m.logger.V(1).Info("Reconciler already exists", "gitDest", gitDest.String())
@@ -71,12 +85,17 @@ func (m *ReconcilerManager) CreateReconciler(
 
 // GetReconciler retrieves a FolderReconciler for the given GitDestination.
 func (m *ReconcilerManager) GetReconciler(gitDest types.ResourceReference) (*FolderReconciler, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	reconciler, exists := m.reconcilers[gitDest.Key()]
 	return reconciler, exists
 }
 
 // DeleteReconciler removes a FolderReconciler from management.
 func (m *ReconcilerManager) DeleteReconciler(gitDest types.ResourceReference) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	key := gitDest.Key()
 	if _, exists := m.reconcilers[key]; !exists {
 		m.logger.V(1).Info("Reconciler not found", "gitDest", gitDest.String())
@@ -97,6 +116,9 @@ func (m *ReconcilerManager) EmitControlEvent(event events.ControlEvent) error {
 
 // ListReconcilers returns all managed reconcilers.
 func (m *ReconcilerManager) ListReconcilers() []*FolderReconciler {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
 	var reconcilers []*FolderReconciler
 	for _, reconciler := range m.reconcilers {
 		reconcilers = append(reconcilers, reconciler)
@@ -106,5 +128,7 @@ func (m *ReconcilerManager) ListReconcilers() []*FolderReconciler {
 
 // CountReconcilers returns the number of managed reconcilers.
 func (m *ReconcilerManager) CountReconcilers() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	return len(m.reconcilers)
 }

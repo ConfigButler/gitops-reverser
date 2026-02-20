@@ -24,6 +24,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
@@ -108,8 +109,16 @@ var _ = Describe("GitTarget Controller Security", func() {
 			}
 			Expect(readyCondition).NotTo(BeNil(), "Ready condition should exist")
 			Expect(readyCondition.Status).To(Equal(metav1.ConditionFalse), "Ready should be False")
-			Expect(readyCondition.Reason).To(Equal(GitTargetReasonBranchNotAllowed),
-				"Reason should be BranchNotAllowed")
+			Expect(readyCondition.Reason).To(Equal(GitTargetReadyReasonValidationFailed))
+			var validatedCondition *metav1.Condition
+			for i, condition := range createdGitTarget.Status.Conditions {
+				if condition.Type == GitTargetConditionValidated {
+					validatedCondition = &createdGitTarget.Status.Conditions[i]
+					break
+				}
+			}
+			Expect(validatedCondition).NotTo(BeNil(), "Validated condition should exist")
+			Expect(validatedCondition.Reason).To(Equal(GitTargetReasonBranchNotAllowed))
 
 			// SECURITY TEST: Verify sensitive fields are cleared
 			// This prevents unauthorized users from discovering SHA information
@@ -302,7 +311,16 @@ var _ = Describe("GitTarget Controller Security", func() {
 
 				if !tc.shouldBeAllowed {
 					Expect(readyCondition.Status).To(Equal(metav1.ConditionFalse))
-					Expect(readyCondition.Reason).To(Equal(GitTargetReasonBranchNotAllowed))
+					Expect(readyCondition.Reason).To(Equal(GitTargetReadyReasonValidationFailed))
+					var validatedCondition *metav1.Condition
+					for i, condition := range createdGitTarget.Status.Conditions {
+						if condition.Type == GitTargetConditionValidated {
+							validatedCondition = &createdGitTarget.Status.Conditions[i]
+							break
+						}
+					}
+					Expect(validatedCondition).NotTo(BeNil())
+					Expect(validatedCondition.Reason).To(Equal(GitTargetReasonBranchNotAllowed))
 					// Security: verify fields are cleared
 					Expect(createdGitTarget.Status.LastCommit).To(BeEmpty())
 				} else {
@@ -400,7 +418,8 @@ var _ = Describe("GitTarget Controller Security", func() {
 					return false
 				}
 				for _, condition := range target.Status.Conditions {
-					if condition.Type == GitTargetReasonReady && condition.Reason == GitTargetReasonConflict {
+					if condition.Type == GitTargetConditionValidated &&
+						condition.Reason == GitTargetReasonTargetConflict {
 						return true
 					}
 				}
@@ -421,9 +440,18 @@ var _ = Describe("GitTarget Controller Security", func() {
 
 			Expect(readyCondition).NotTo(BeNil())
 			Expect(readyCondition.Status).To(Equal(metav1.ConditionFalse))
-			Expect(readyCondition.Reason).To(Equal(GitTargetReasonConflict))
-			Expect(readyCondition.Message).To(ContainSubstring("first-target-conflict"))
-			Expect(readyCondition.Message).To(ContainSubstring("created later"))
+			Expect(readyCondition.Reason).To(Equal(GitTargetReadyReasonValidationFailed))
+			var validatedCondition *metav1.Condition
+			for i, condition := range secondReconciledTarget.Status.Conditions {
+				if condition.Type == GitTargetConditionValidated {
+					validatedCondition = &secondReconciledTarget.Status.Conditions[i]
+					break
+				}
+			}
+			Expect(validatedCondition).NotTo(BeNil())
+			Expect(validatedCondition.Reason).To(Equal(GitTargetReasonTargetConflict))
+			Expect(validatedCondition.Message).To(ContainSubstring("first-target-conflict"))
+			Expect(validatedCondition.Message).To(ContainSubstring("created later"))
 
 			// Cleanup
 			Expect(k8sClient.Delete(ctx, secondTarget)).Should(Succeed())
@@ -512,12 +540,141 @@ var _ = Describe("GitTarget Controller Security", func() {
 			}
 
 			Expect(readyCondition).NotTo(BeNil())
-			Expect(readyCondition.Reason).NotTo(Equal(GitTargetReasonConflict),
+			Expect(readyCondition.Reason).NotTo(Equal(GitTargetReadyReasonValidationFailed),
 				"Should not have conflict when path is different")
 
 			// Cleanup
 			Expect(k8sClient.Delete(ctx, secondTarget)).Should(Succeed())
 			Expect(k8sClient.Delete(ctx, firstTarget)).Should(Succeed())
+			Expect(k8sClient.Delete(ctx, gitProvider)).Should(Succeed())
+		})
+	})
+
+	Context("When encryption secret auto-generation is configured", func() {
+		It("Should create missing encryption secret with recipient annotation and warning annotation", func() {
+			ctx := context.Background()
+
+			gitProvider := &configbutleraiv1alpha1.GitProvider{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-provider-generate-enc-secret",
+					Namespace: "default",
+				},
+				Spec: configbutleraiv1alpha1.GitProviderSpec{
+					URL:             "https://github.com/test-org/test-repo.git",
+					AllowedBranches: []string{"main"},
+				},
+			}
+			Expect(k8sClient.Create(ctx, gitProvider)).Should(Succeed())
+
+			target := &configbutleraiv1alpha1.GitTarget{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-target-generate-enc-secret",
+					Namespace: "default",
+				},
+				Spec: configbutleraiv1alpha1.GitTargetSpec{
+					ProviderRef: configbutleraiv1alpha1.GitProviderReference{
+						Name: "test-provider-generate-enc-secret",
+						Kind: "GitProvider",
+					},
+					Branch: "main",
+					Path:   "test-path",
+					Encryption: &configbutleraiv1alpha1.EncryptionSpec{
+						Provider: "sops",
+						SecretRef: configbutleraiv1alpha1.LocalSecretReference{
+							Name: "generated-sops-age-key",
+						},
+						GenerateWhenMissing: true,
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, target)).Should(Succeed())
+
+			secretKey := types.NamespacedName{Name: "generated-sops-age-key", Namespace: "default"}
+			Eventually(func(g Gomega) {
+				var secret corev1.Secret
+				err := k8sClient.Get(ctx, secretKey, &secret)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(secret.Type).To(Equal(corev1.SecretTypeOpaque))
+				g.Expect(secret.Data).To(HaveKey("SOPS_AGE_KEY"))
+				g.Expect(string(secret.Data["SOPS_AGE_KEY"])).To(ContainSubstring("AGE-SECRET-KEY-"))
+				g.Expect(secret.Annotations).To(HaveKey(encryptionSecretRecipientAnnoKey))
+				g.Expect(secret.Annotations[encryptionSecretRecipientAnnoKey]).To(HavePrefix("age1"))
+				g.Expect(secret.Annotations).To(HaveKeyWithValue(
+					encryptionSecretBackupWarningAnno,
+					encryptionSecretBackupWarningValue,
+				))
+			}, timeout, interval).Should(Succeed())
+
+			Expect(k8sClient.Delete(ctx, target)).Should(Succeed())
+			Expect(k8sClient.Delete(ctx, gitProvider)).Should(Succeed())
+		})
+
+		It("Should report invalid encryption config when secret is missing and generation is disabled", func() {
+			ctx := context.Background()
+
+			gitProvider := &configbutleraiv1alpha1.GitProvider{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-provider-no-generate-enc-secret",
+					Namespace: "default",
+				},
+				Spec: configbutleraiv1alpha1.GitProviderSpec{
+					URL:             "https://github.com/test-org/test-repo.git",
+					AllowedBranches: []string{"main"},
+				},
+			}
+			Expect(k8sClient.Create(ctx, gitProvider)).Should(Succeed())
+
+			target := &configbutleraiv1alpha1.GitTarget{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-target-no-generate-enc-secret",
+					Namespace: "default",
+				},
+				Spec: configbutleraiv1alpha1.GitTargetSpec{
+					ProviderRef: configbutleraiv1alpha1.GitProviderReference{
+						Name: "test-provider-no-generate-enc-secret",
+						Kind: "GitProvider",
+					},
+					Branch: "main",
+					Path:   "test-path",
+					Encryption: &configbutleraiv1alpha1.EncryptionSpec{
+						Provider: "sops",
+						SecretRef: configbutleraiv1alpha1.LocalSecretReference{
+							Name: "missing-sops-age-key",
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, target)).Should(Succeed())
+
+			targetKey := types.NamespacedName{Name: "test-target-no-generate-enc-secret", Namespace: "default"}
+			Eventually(func(g Gomega) {
+				var got configbutleraiv1alpha1.GitTarget
+				err := k8sClient.Get(ctx, targetKey, &got)
+				g.Expect(err).NotTo(HaveOccurred())
+
+				var readyCondition *metav1.Condition
+				for i, condition := range got.Status.Conditions {
+					if condition.Type == GitTargetReasonReady {
+						readyCondition = &got.Status.Conditions[i]
+						break
+					}
+				}
+				g.Expect(readyCondition).NotTo(BeNil())
+				g.Expect(readyCondition.Status).To(Equal(metav1.ConditionFalse))
+				g.Expect(readyCondition.Reason).To(Equal(GitTargetReadyReasonEncryptionNotConfigured))
+				var encryptionCondition *metav1.Condition
+				for i, condition := range got.Status.Conditions {
+					if condition.Type == GitTargetConditionEncryptionConfigured {
+						encryptionCondition = &got.Status.Conditions[i]
+						break
+					}
+				}
+				g.Expect(encryptionCondition).NotTo(BeNil())
+				g.Expect(encryptionCondition.Reason).To(Equal(GitTargetReasonSecretCreateDisabled))
+				g.Expect(encryptionCondition.Message).To(ContainSubstring("generateWhenMissing is disabled"))
+			}, timeout, interval).Should(Succeed())
+
+			Expect(k8sClient.Delete(ctx, target)).Should(Succeed())
 			Expect(k8sClient.Delete(ctx, gitProvider)).Should(Succeed())
 		})
 	})

@@ -161,6 +161,7 @@ func main() {
 		ctrl.Log.WithName("event-router"),
 	)
 	setupLog.Info("EventRouter initialized")
+	reconcilerManager.SetEventRouter(eventRouter)
 
 	// Set EventRouter reference in WatchManager
 	watchMgr.EventRouter = eventRouter

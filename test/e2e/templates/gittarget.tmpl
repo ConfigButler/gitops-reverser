@@ -13,3 +13,6 @@ spec:
     provider: sops
     secretRef:
       name: {{ .EncryptionSecretName }}
+{{- if .GenerateWhenMissing }}
+    generateWhenMissing: true
+{{- end }}

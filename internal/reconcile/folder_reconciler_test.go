@@ -241,6 +241,7 @@ func TestFolderReconciler_HasBothStates(t *testing.T) {
 	reconciler.clusterResources = []types.ResourceIdentifier{
 		{Group: "", Version: "v1", Resource: "pods", Name: "app-pod"},
 	}
+	reconciler.clusterStateSeen = true
 
 	// Should still not have both states
 	assert.False(t, reconciler.HasBothStates(), "Should not have both states with only cluster state")
@@ -249,9 +250,29 @@ func TestFolderReconciler_HasBothStates(t *testing.T) {
 	reconciler.gitResources = []types.ResourceIdentifier{
 		{Group: "", Version: "v1", Resource: "pods", Name: "app-pod"},
 	}
+	reconciler.gitStateSeen = true
 
 	// Should now have both states
 	assert.True(t, reconciler.HasBothStates(), "Should have both states when both are set")
+}
+
+func TestFolderReconciler_HasBothStates_WithEmptyStates(t *testing.T) {
+	mockEmitter := &MockEventEmitter{}
+	mockControlEmitter := &MockControlEventEmitter{}
+	gitDest := types.NewResourceReference("test-gitdest", "default")
+	reconciler := NewFolderReconciler(gitDest, mockEmitter, mockControlEmitter, log.Log)
+
+	reconciler.OnClusterState(events.ClusterStateEvent{
+		GitDest:   gitDest,
+		Resources: nil,
+	})
+	assert.False(t, reconciler.HasBothStates(), "Should not have both states with only cluster state event")
+
+	reconciler.OnRepoState(events.RepoStateEvent{
+		GitDest:   gitDest,
+		Resources: nil,
+	})
+	assert.True(t, reconciler.HasBothStates(), "Should have both states when both events are received, even if empty")
 }
 
 func TestFolderReconciler_GetGitDest(t *testing.T) {

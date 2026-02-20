@@ -63,11 +63,19 @@ type GitTargetSpec struct {
 
 // GitTargetStatus defines the observed state of GitTarget.
 type GitTargetStatus struct {
+	// ObservedGeneration is the latest generation observed by the controller.
+	// +optional
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
 	// Conditions represent the latest available observations of an object's state
 	// +optional
 	// +patchMergeKey=type
 	// +patchStrategy=merge
 	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
+
+	// LastReconcileTime is the timestamp of the most recent reconcile attempt.
+	// +optional
+	LastReconcileTime metav1.Time `json:"lastReconcileTime,omitempty"`
 
 	// LastCommit is the SHA of the last commit processed.
 	// +optional
@@ -76,6 +84,36 @@ type GitTargetStatus struct {
 	// LastPushTime is the timestamp of the last successful push.
 	// +optional
 	LastPushTime *metav1.Time `json:"lastPushTime,omitempty"`
+
+	// Snapshot captures the latest initial snapshot reconciliation details.
+	// +optional
+	Snapshot *GitTargetSnapshotStatus `json:"snapshot,omitempty"`
+}
+
+// GitTargetSnapshotStatus captures initial snapshot progress details.
+type GitTargetSnapshotStatus struct {
+	// LastCompletedTime is the timestamp of the latest completed snapshot reconciliation.
+	// +optional
+	LastCompletedTime *metav1.Time `json:"lastCompletedTime,omitempty"`
+
+	// Stats records counts from the latest snapshot reconciliation diff.
+	// +optional
+	Stats GitTargetSnapshotStats `json:"stats,omitempty"`
+}
+
+// GitTargetSnapshotStats records create/update/delete counts for snapshot sync.
+type GitTargetSnapshotStats struct {
+	// Created is the number of resources created in Git during snapshot sync.
+	// +optional
+	Created int32 `json:"created,omitempty"`
+
+	// Updated is the number of existing resources reconciled during snapshot sync.
+	// +optional
+	Updated int32 `json:"updated,omitempty"`
+
+	// Deleted is the number of stale resources deleted from Git during snapshot sync.
+	// +optional
+	Deleted int32 `json:"deleted,omitempty"`
 }
 
 // +kubebuilder:object:root=true

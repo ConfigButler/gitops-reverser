@@ -103,6 +103,29 @@ kubectl -n sut create secret generic sops-age-key \
 
 Then reference it from `GitTarget.spec.encryption.secretRef.name`.
 
+Optional bootstrap mode:
+
+```yaml
+spec:
+  encryption:
+    provider: sops
+    secretRef:
+      name: sops-age-key
+    generateWhenMissing: true
+```
+
+When enabled and the secret is missing, gitops-reverser generates one age key and
+creates the secret. Generated secrets include:
+- `configbutler.ai/age-recipient: age1...`
+- `configbutler.ai/backup-warning: REMOVE_AFTER_BACKUP`
+
+Important: back up the generated private key immediately. Remove the warning
+annotation after backup:
+
+```bash
+kubectl annotate secret sops-age-key -n <namespace> configbutler.ai/backup-warning-
+```
+
 ## Rotation (new recipient/key)
 
 1. Generate new keypair.
@@ -126,3 +149,8 @@ The bootstrap template currently contains a static recipient in
 - This is a public recipient, not a private key.
 - It is not auto-replaced by the controller.
 - If you need your own keys, update committed `.sops.yaml` in the repo path and re-wrap files with `sops updatekeys`.
+
+## Design plan: `generateWhenMissing`
+
+Moved to a dedicated document: [`docs/SOPS_GENERATE_WHEN_MISSING_PLAN.md`](docs/SOPS_GENERATE_WHEN_MISSING_PLAN.md)
+

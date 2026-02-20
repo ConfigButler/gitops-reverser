@@ -78,6 +78,9 @@ type BranchWorker struct {
 	branchExists  bool
 	lastCommitSHA string
 	lastFetchTime time.Time
+
+	// repoMu serializes repository/worktree operations within this worker.
+	repoMu sync.Mutex
 }
 
 // NewBranchWorker creates a worker for a (provider, branch) combination.
@@ -160,6 +163,9 @@ func (w *BranchWorker) Enqueue(event Event) {
 // ListResourcesInPath returns resource identifiers found in a Git folder.
 // This is a synchronous service method called by EventRouter.
 func (w *BranchWorker) ListResourcesInPath(path string) ([]itypes.ResourceIdentifier, error) {
+	w.repoMu.Lock()
+	defer w.repoMu.Unlock()
+
 	// Ensure repository is initialized and up-to-date
 	if err := w.ensureRepositoryInitialized(w.ctx); err != nil {
 		return nil, fmt.Errorf("failed to initialize repository: %w", err)
@@ -175,6 +181,9 @@ func (w *BranchWorker) ListResourcesInPath(path string) ([]itypes.ResourceIdenti
 // EnsurePathBootstrapped applies bootstrap templates to a path.
 // Existing files are preserved, and only missing template files are added.
 func (w *BranchWorker) EnsurePathBootstrapped(path, targetName, targetNamespace string) error {
+	w.repoMu.Lock()
+	defer w.repoMu.Unlock()
+
 	ctx := w.ctx
 	if ctx == nil {
 		ctx = context.Background()
@@ -425,6 +434,9 @@ func (w *BranchWorker) commitAndPush(
 	provider *configv1alpha1.GitProvider,
 	events []Event,
 ) {
+	w.repoMu.Lock()
+	defer w.repoMu.Unlock()
+
 	log := w.Log.WithValues("eventCount", len(events))
 
 	log.Info("Starting git commit and push",

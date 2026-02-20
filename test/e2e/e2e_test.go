@@ -20,6 +20,7 @@ package e2e
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -453,7 +454,7 @@ var _ = Describe("Manager", Ordered, func() {
 			createGitTarget(destName, namespace, gitProviderName, "test/invalid", "different-branch")
 
 			By("verifying GitTarget fails branch validation")
-			verifyResourceStatus("gittarget", destName, namespace, "False", "BranchNotAllowed", "")
+			verifyResourceStatus("gittarget", destName, namespace, "False", "ValidationFailed", "BranchNotAllowed")
 
 			cleanupGitTarget(destName, namespace)
 			cleanupGitProvider(gitProviderName)
@@ -548,6 +549,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 			err := applyFromTemplate("test/e2e/templates/watchrule.tmpl", data, namespace)
 			Expect(err).NotTo(HaveOccurred(), "Failed to apply WatchRule")
+			verifyResourceStatus("gittarget", destName, namespace, "True", "Ready", "")
 			verifyResourceStatus("watchrule", watchRuleName, namespace, "True", "Ready", "")
 			verifyResourceStatus("gittarget", destName, namespace, "True", "Ready", "")
 
@@ -606,6 +608,145 @@ var _ = Describe("Manager", Ordered, func() {
 
 			By("cleaning up test resources")
 			_, _ = utils.Run(exec.Command("kubectl", "delete", "secret", secretName,
+				"-n", namespace, "--ignore-not-found=true"))
+			cleanupWatchRule(watchRuleName, namespace)
+			cleanupGitTarget(destName, namespace)
+		})
+
+		It("should generate missing SOPS age secret when generateWhenMissing is enabled", func() {
+			gitProviderName := "gitprovider-normal"
+			watchRuleName := "watchrule-secret-autogen-test"
+			secretName := "test-secret-autogen"
+			generatedSecretName := "sops-age-key-autogen"
+
+			By("ensuring generated encryption secret does not exist before test")
+			_, _ = utils.Run(exec.Command("kubectl", "delete", "secret", generatedSecretName,
+				"-n", namespace, "--ignore-not-found=true"))
+
+			By("creating GitTarget with generateWhenMissing enabled")
+			destName := watchRuleName + "-dest"
+			createGitTargetWithEncryptionOptions(
+				destName,
+				namespace,
+				gitProviderName,
+				"e2e/secret-autogen-test",
+				"main",
+				generatedSecretName,
+				true,
+			)
+
+			data := struct {
+				Name            string
+				Namespace       string
+				DestinationName string
+			}{
+				Name:            watchRuleName,
+				Namespace:       namespace,
+				DestinationName: destName,
+			}
+
+			err := applyFromTemplate("test/e2e/templates/watchrule.tmpl", data, namespace)
+			Expect(err).NotTo(HaveOccurred(), "Failed to apply WatchRule")
+			verifyResourceStatus("watchrule", watchRuleName, namespace, "True", "Ready", "")
+
+			By("validating generated encryption secret has recipient and warning annotations")
+			var generatedAgeKey string
+			var generatedRecipient string
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "secret", generatedSecretName, "-n", namespace, "-o", "json")
+				output, getErr := utils.Run(cmd)
+				g.Expect(getErr).NotTo(HaveOccurred())
+
+				var secretObj map[string]interface{}
+				unmarshalErr := json.Unmarshal([]byte(output), &secretObj)
+				g.Expect(unmarshalErr).NotTo(HaveOccurred())
+
+				annotations, _, annoErr := unstructured.NestedStringMap(secretObj, "metadata", "annotations")
+				g.Expect(annoErr).NotTo(HaveOccurred())
+				g.Expect(annotations).To(HaveKey("configbutler.ai/age-recipient"))
+				g.Expect(annotations["configbutler.ai/age-recipient"]).To(HavePrefix("age1"))
+				g.Expect(annotations).To(HaveKeyWithValue("configbutler.ai/backup-warning", "REMOVE_AFTER_BACKUP"))
+				generatedRecipient = annotations["configbutler.ai/age-recipient"]
+
+				sopsAgeKeyB64, found, keyErr := unstructured.NestedString(secretObj, "data", "SOPS_AGE_KEY")
+				g.Expect(keyErr).NotTo(HaveOccurred())
+				g.Expect(found).To(BeTrue())
+
+				keyBytes, decodeErr := base64.StdEncoding.DecodeString(sopsAgeKeyB64)
+				g.Expect(decodeErr).NotTo(HaveOccurred())
+				generatedAgeKey = strings.TrimSpace(string(keyBytes))
+				g.Expect(generatedAgeKey).To(HavePrefix("AGE-SECRET-KEY-"))
+			}, "30s", "2s").Should(Succeed())
+
+			By("waiting for auto-generated target bootstrap file to be present")
+			Eventually(func(g Gomega) {
+				pullCmd := exec.Command("git", "pull")
+				pullCmd.Dir = checkoutDir
+				pullOutput, pullErr := pullCmd.CombinedOutput()
+				if pullErr != nil {
+					g.Expect(pullErr).NotTo(HaveOccurred(),
+						fmt.Sprintf("Should successfully pull latest changes. Output: %s", string(pullOutput)))
+				}
+
+				bootstrapSOPSFile := filepath.Join(checkoutDir, "e2e/secret-autogen-test", ".sops.yaml")
+				bootstrapContent, bootstrapErr := os.ReadFile(bootstrapSOPSFile)
+				g.Expect(bootstrapErr).NotTo(HaveOccurred(),
+					fmt.Sprintf(".sops.yaml must exist at %s", bootstrapSOPSFile))
+				g.Expect(string(bootstrapContent)).To(ContainSubstring(generatedRecipient))
+			}, "30s", "2s").Should(Succeed())
+
+			By("creating Secret in watched namespace")
+			_, _ = utils.Run(exec.Command("kubectl", "delete", "secret", secretName,
+				"-n", namespace, "--ignore-not-found=true"))
+			cmd := exec.Command("kubectl", "create", "secret", "generic", secretName,
+				"--from-literal=password=do-not-commit", "-n", namespace)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Secret creation should succeed")
+
+			By("patching Secret once to avoid informer start race and force an update event")
+			patchCmd := exec.Command(
+				"kubectl", "patch", "secret", secretName, "-n", namespace,
+				"--type=merge", "--patch", `{"stringData":{"password":"autogen-never-commit-this"}}`,
+			)
+			_, err = utils.Run(patchCmd)
+			Expect(err).NotTo(HaveOccurred(), "Secret patch should succeed")
+
+			By("verifying committed secret is encrypted and decryptable with generated key")
+			verifyEncryptedSecretCommitted := func(g Gomega) {
+				pullCmd := exec.Command("git", "pull")
+				pullCmd.Dir = checkoutDir
+				pullOutput, pullErr := pullCmd.CombinedOutput()
+				if pullErr != nil {
+					g.Expect(pullErr).NotTo(HaveOccurred(),
+						fmt.Sprintf("Should successfully pull latest changes. Output: %s", string(pullOutput)))
+				}
+
+				expectedFile := filepath.Join(checkoutDir,
+					"e2e/secret-autogen-test",
+					fmt.Sprintf("v1/secrets/%s/%s.sops.yaml", namespace, secretName))
+				content, readErr := os.ReadFile(expectedFile)
+				g.Expect(readErr).NotTo(HaveOccurred(), fmt.Sprintf("Secret file must exist at %s", expectedFile))
+				g.Expect(string(content)).To(ContainSubstring("sops:"))
+				g.Expect(string(content)).NotTo(ContainSubstring("autogen-never-commit-this"))
+
+				bootstrapSOPSFile := filepath.Join(checkoutDir, "e2e/secret-autogen-test", ".sops.yaml")
+				bootstrapContent, bootstrapErr := os.ReadFile(bootstrapSOPSFile)
+				g.Expect(bootstrapErr).NotTo(
+					HaveOccurred(),
+					fmt.Sprintf(".sops.yaml must exist at %s", bootstrapSOPSFile),
+				)
+				g.Expect(string(bootstrapContent)).To(ContainSubstring(generatedRecipient))
+
+				decryptedOutput, decryptErr := decryptWithControllerSOPS(content, generatedAgeKey)
+				g.Expect(decryptErr).NotTo(HaveOccurred(), "Should decrypt committed secret via generated age key")
+				g.Expect(decryptedOutput).To(ContainSubstring("YXV0b2dlbi1uZXZlci1jb21taXQtdGhpcw=="))
+			}
+			Eventually(verifyEncryptedSecretCommitted, "30s", "2s").Should(Succeed())
+
+			By("cleaning up test resources")
+			_, _ = utils.Run(exec.Command("kubectl", "delete", "secret", secretName,
+				"-n", namespace, "--ignore-not-found=true"))
+			_, _ = utils.Run(exec.Command("kubectl", "delete", "secret", generatedSecretName,
 				"-n", namespace, "--ignore-not-found=true"))
 			cleanupWatchRule(watchRuleName, namespace)
 			cleanupGitTarget(destName, namespace)
@@ -1566,7 +1707,11 @@ func verifyResourceStatus(resourceType, name, ns, expectedStatus, expectedReason
 		}
 
 		g.Expect(readyStatus).To(Equal(expectedStatus))
-		g.Expect(readyReason).To(Equal(expectedReason))
+		if resourceType == "gittarget" && expectedReason == "Ready" {
+			g.Expect([]string{"Ready", "OK"}).To(ContainElement(readyReason))
+		} else {
+			g.Expect(readyReason).To(Equal(expectedReason))
+		}
 		if expectedMessageContains != "" {
 			g.Expect(readyMessage).To(ContainSubstring(expectedMessageContains))
 		}

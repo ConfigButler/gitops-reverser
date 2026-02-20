@@ -20,6 +20,7 @@ package sanitize
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"sort"
 
@@ -30,6 +31,10 @@ import (
 // MarshalToOrderedYAML converts an unstructured object to YAML with guaranteed field order.
 // Field order: apiVersion, kind, metadata, then payload (spec, data, rules, etc.)
 func MarshalToOrderedYAML(obj *unstructured.Unstructured) ([]byte, error) {
+	if obj == nil {
+		return nil, errors.New("object is nil")
+	}
+
 	var buf bytes.Buffer
 
 	// Header: apiVersion, kind, metadata

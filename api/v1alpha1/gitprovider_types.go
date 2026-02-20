@@ -66,6 +66,12 @@ type EncryptionSpec struct {
 
 	// SecretRef references namespace-local Secret data used by the encryption provider.
 	SecretRef LocalSecretReference `json:"secretRef"`
+
+	// GenerateWhenMissing auto-creates the referenced Secret when it does not exist.
+	// The generated Secret contains one age private key in SOPS_AGE_KEY.
+	// +optional
+	// +kubebuilder:default=false
+	GenerateWhenMissing bool `json:"generateWhenMissing,omitempty"`
 }
 
 // GitProviderStatus defines the observed state of GitProvider.

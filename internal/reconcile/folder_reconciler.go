@@ -38,11 +38,22 @@ type FolderReconciler struct {
 	// Current state snapshots
 	clusterResources []types.ResourceIdentifier
 	gitResources     []types.ResourceIdentifier
+	clusterStateSeen bool
+	gitStateSeen     bool
 
 	// Dependencies for event emission
 	eventEmitter   EventEmitter
 	controlEmitter events.ControlEventEmitter
 	logger         logr.Logger
+
+	lastSnapshotStats SnapshotStats
+}
+
+// SnapshotStats captures the latest create/update/delete counts from reconciliation.
+type SnapshotStats struct {
+	Created int
+	Updated int
+	Deleted int
 }
 
 // NewFolderReconciler creates a new FolderReconciler.
@@ -88,6 +99,7 @@ func (r *FolderReconciler) OnClusterState(event events.ClusterStateEvent) {
 		return
 	}
 	r.clusterResources = event.Resources
+	r.clusterStateSeen = true
 	r.logger.V(1).Info("Received cluster state", "resourceCount", len(event.Resources))
 	r.reconcile()
 }
@@ -98,6 +110,7 @@ func (r *FolderReconciler) OnRepoState(event events.RepoStateEvent) {
 		return
 	}
 	r.gitResources = event.Resources
+	r.gitStateSeen = true
 	r.logger.V(1).Info("Received repo state", "resourceCount", len(event.Resources))
 	r.reconcile()
 }
@@ -105,12 +118,17 @@ func (r *FolderReconciler) OnRepoState(event events.RepoStateEvent) {
 // reconcile performs the reconciliation logic when both states are available.
 func (r *FolderReconciler) reconcile() {
 	// Only reconcile when we have both cluster and Git state
-	if r.clusterResources == nil || r.gitResources == nil {
+	if !r.clusterStateSeen || !r.gitStateSeen {
 		return
 	}
 
 	// Compute reconciliation actions (pure logic, no time concerns)
 	toCreate, toDelete, existingInBoth := r.findDifferences(r.clusterResources, r.gitResources)
+	r.lastSnapshotStats = SnapshotStats{
+		Created: len(toCreate),
+		Updated: len(existingInBoth),
+		Deleted: len(toDelete),
+	}
 
 	r.logger.V(1).Info("Reconciliation computed",
 		"toCreate", len(toCreate),
@@ -136,6 +154,11 @@ func (r *FolderReconciler) reconcile() {
 			r.logger.Error(err, "Failed to emit reconcile resource event", "resource", resource.String())
 		}
 	}
+}
+
+// GetLastSnapshotStats returns stats from the latest completed reconciliation diff.
+func (r *FolderReconciler) GetLastSnapshotStats() SnapshotStats {
+	return r.lastSnapshotStats
 }
 
 // findDifferences computes what needs to be created, deleted, and resources that exist in both.
@@ -183,7 +206,7 @@ func (r *FolderReconciler) findDifferences(
 
 // HasBothStates returns true if the reconciler has received both cluster and Git state.
 func (r *FolderReconciler) HasBothStates() bool {
-	return r.clusterResources != nil && r.gitResources != nil
+	return r.clusterStateSeen && r.gitStateSeen
 }
 
 // GetGitDest returns the GitDestination reference this reconciler is responsible for.

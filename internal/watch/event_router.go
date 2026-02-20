@@ -21,6 +21,7 @@ package watch
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"github.com/go-logr/logr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -44,6 +45,7 @@ type EventRouter struct {
 
 	// Registry of GitTargetEventStreams by gitDest key
 	gitTargetStreams map[string]*reconcile.GitTargetEventStream
+	streamsMu        sync.RWMutex
 }
 
 // NewEventRouter creates a new event router.
@@ -195,6 +197,8 @@ func (r *EventRouter) RegisterGitTargetEventStream(
 	stream *reconcile.GitTargetEventStream,
 ) {
 	key := gitDest.Key()
+	r.streamsMu.Lock()
+	defer r.streamsMu.Unlock()
 	r.gitTargetStreams[key] = stream
 	r.Log.Info("Registered GitTargetEventStream",
 		"gitDest", gitDest.String(),
@@ -204,6 +208,8 @@ func (r *EventRouter) RegisterGitTargetEventStream(
 // GetGitTargetEventStream returns the registered GitTargetEventStream for a GitTarget.
 func (r *EventRouter) GetGitTargetEventStream(gitDest types.ResourceReference) *reconcile.GitTargetEventStream {
 	key := gitDest.Key()
+	r.streamsMu.RLock()
+	defer r.streamsMu.RUnlock()
 	return r.gitTargetStreams[key]
 }
 
@@ -211,6 +217,8 @@ func (r *EventRouter) GetGitTargetEventStream(gitDest types.ResourceReference) *
 // This is called during GitTarget deletion cleanup.
 func (r *EventRouter) UnregisterGitTargetEventStream(gitDest types.ResourceReference) {
 	key := gitDest.Key()
+	r.streamsMu.Lock()
+	defer r.streamsMu.Unlock()
 	if _, exists := r.gitTargetStreams[key]; exists {
 		delete(r.gitTargetStreams, key)
 		r.Log.Info("Unregistered GitTargetEventStream", "gitDest", gitDest.String())
@@ -224,7 +232,9 @@ func (r *EventRouter) RouteToGitTargetEventStream(
 	gitDest types.ResourceReference,
 ) error {
 	key := gitDest.Key()
+	r.streamsMu.RLock()
 	stream, exists := r.gitTargetStreams[key]
+	r.streamsMu.RUnlock()
 
 	if !exists {
 		return fmt.Errorf("no GitTargetEventStream registered for %s", key)
