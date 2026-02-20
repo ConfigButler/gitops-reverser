@@ -1,0 +1,15 @@
+apiVersion: configbutler.ai/v1alpha1
+kind: GitTarget
+metadata:
+  name: example-target
+  namespace: default
+spec:
+  providerRef:
+    name: example-provider
+  branch: main
+  path: live-cluster
+  encryption:
+    provider: sops
+    secretRef:
+      name: sops-age-key
+    generateWhenMissing: true

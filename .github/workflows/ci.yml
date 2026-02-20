@@ -301,8 +301,8 @@ jobs:
               make test-e2e
             "
 
-  e2e-install-smoke:
-    name: E2E Install Smoke (${{ matrix.scenario }})
+  e2e-install-quickstart:
+    name: E2E Install Quickstart (${{ matrix.scenario }})
     runs-on: ubuntu-latest
     needs: [build-ci-container, docker-build, lint-helm]
     strategy:
@@ -350,9 +350,9 @@ jobs:
         run: |
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ${{ env.REGISTRY }} -u ${{ github.actor }} --password-stdin
 
-      - name: Run install smoke test in CI container
+      - name: Run install quickstart smoke test in CI container
         run: |
-          TARGET="test-e2e-install-${{ matrix.scenario }}"
+          TARGET="test-e2e-install-quickstart-${{ matrix.scenario }}"
           docker run --rm \
             --network host \
             -v "${GITHUB_WORKSPACE}:${{ env.CI_WORKDIR }}" \
@@ -372,7 +372,7 @@ jobs:
     name: Release Please
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [lint-helm, lint, test, e2e-test, e2e-install-smoke, validate-devcontainer]
+    needs: [lint-helm, lint, test, e2e-test, e2e-install-quickstart, validate-devcontainer]
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
@@ -513,7 +513,7 @@ jobs:
   publish-helm:
     name: Publish Helm Chart
     runs-on: ubuntu-latest
-    needs: [build-ci-container, e2e-install-smoke, release-please]
+    needs: [build-ci-container, e2e-install-quickstart, release-please]
     if: needs.release-please.outputs.release_created == 'true'
     container:
       image: ${{ needs.build-ci-container.outputs.image }}

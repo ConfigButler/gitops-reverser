@@ -1,6 +1,7 @@
 # GitOps Reverser Helm Chart
 
-GitOps Reverser enables synchronization from Kubernetes to one or more Git repositories. This Helm chart provides a production-ready deployment with High Availability (HA) by default.
+GitOps Reverser enables synchronization from Kubernetes to one or more Git repositories.
+This Helm chart provides a production-ready single-pod deployment.
 
 ## Quick Start
 
@@ -21,13 +22,32 @@ helm install gitops-reverser \
 kubectl get pods -n gitops-reverser-system
 ```
 
-That's it! The controller is now running and ready to synchronize your Kubernetes resources with Git.
+Controller install is complete. Next, create a minimal provider/target/rule to validate first commit flow:
+
+```bash
+kubectl apply -f config/samples/quickstart-gitprovider.yaml
+kubectl apply -f config/samples/quickstart-gittarget.yaml
+kubectl apply -f config/samples/quickstart-watchrule.yaml
+```
+
+The quickstart target uses:
+- `spec.path` (not `baseFolder`)
+- `spec.encryption.provider: sops`
+- `spec.encryption.generateWhenMissing: true`
+
+When the encryption Secret is auto-generated, back up `SOPS_AGE_KEY` immediately.
+If you lose it, existing encrypted `*.sops.yaml` files are unrecoverable.
+After backup verification, remove warning annotation:
+
+```bash
+kubectl annotate secret sops-age-key -n default configbutler.ai/backup-warning-
+```
 
 ## Features
 
 - ✅ **Two-way Git synchronization**: Push Kubernetes changes back to Git repositories
-- ✅ **High Availability**: 2 replicas with leader election by default
-- ✅ **Automatic CRD installation**: GitRepoConfig and WatchRule CRDs installed automatically
+- ✅ **Single-pod stability**: 1 replica by default while multi-pod support is in progress
+- ✅ **Automatic CRD installation**: GitProvider, GitTarget, WatchRule, and ClusterWatchRule CRDs installed automatically
 - ✅ **Webhook support**: Watch all Kubernetes resources for changes
 - ✅ **Production-ready**: Pod disruption budgets, anti-affinity, and resource limits
 - ✅ **Certificate management**: Automatic TLS via cert-manager
@@ -97,7 +117,7 @@ The chart deploys 1 replica by default:
 ```
 
 **Key Features:**
-- **Single-pod operation**: Minimal moving parts while HA work is deferred
+- **Single-pod operation**: minimal moving parts while HA work is deferred
 - **Single Service topology**: admission, audit, and metrics on one Service
 
 ## Configuration
@@ -111,7 +131,6 @@ Single replica:
 ```yaml
 # minimal-values.yaml
 replicaCount: 1
-controllerManager:
 podDisruptionBudget:
   enabled: false
 affinity: {}
@@ -215,8 +234,10 @@ The bare path `/audit-webhook` is rejected. Use a non-empty cluster ID segment.
 
 This chart automatically manages the following CRDs:
 
-- **`gitrepoconfigs.configbutler.ai`** - Git repository configurations for synchronization
-- **`watchrules.configbutler.ai`** - Rules for watching Kubernetes resources
+- **`gitproviders.configbutler.ai`** - Git repository connectivity and credentials
+- **`gittargets.configbutler.ai`** - Branch/path and optional encryption configuration
+- **`watchrules.configbutler.ai`** - Namespaced watch rules
+- **`clusterwatchrules.configbutler.ai`** - Cluster-scoped watch rules
 
 ### CRD Lifecycle
 
@@ -229,7 +250,7 @@ This chart automatically manages the following CRDs:
 To manually remove CRDs after uninstallation:
 
 ```bash
-kubectl delete crd gitrepoconfigs.configbutler.ai watchrules.configbutler.ai
+kubectl delete crd gitproviders.configbutler.ai gittargets.configbutler.ai watchrules.configbutler.ai clusterwatchrules.configbutler.ai
 ```
 
 > ⚠️ **Warning**: Deleting CRDs will also delete all custom resources of those types!
@@ -291,7 +312,7 @@ helm upgrade gitops-reverser \
 If upgrading from earlier chart versions:
 
 - Single-replica is the default during the current simplified topology phase
-- Leader election now enabled by default (required for HA)
+- Leader election remains enabled for safe future multi-pod evolution
 - Health probe port changed to 8081
 - Certificate secret names are auto-generated
 
@@ -305,7 +326,7 @@ helm uninstall gitops-reverser --namespace gitops-reverser-system
 kubectl delete namespace gitops-reverser-system
 
 # Delete CRDs (optional, but removes all custom resources)
-kubectl delete crd gitrepoconfigs.configbutler.ai watchrules.configbutler.ai
+kubectl delete crd gitproviders.configbutler.ai gittargets.configbutler.ai watchrules.configbutler.ai clusterwatchrules.configbutler.ai
 ```
 
 ## Troubleshooting

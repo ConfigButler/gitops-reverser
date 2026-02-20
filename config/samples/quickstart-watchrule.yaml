@@ -1,0 +1,13 @@
+apiVersion: configbutler.ai/v1alpha1
+kind: WatchRule
+metadata:
+  name: example-watchrule
+  namespace: default
+spec:
+  targetRef:
+    name: example-target
+  rules:
+    - operations: [CREATE, UPDATE, DELETE]
+      apiGroups: [""]
+      apiVersions: ["v1"]
+      resources: ["configmaps"]

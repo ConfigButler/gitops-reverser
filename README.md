@@ -123,7 +123,12 @@ spec:
   providerRef:
     name: your-repo
   branch: test-gitops-reverser
-  baseFolder: live-cluster
+  path: live-cluster
+  encryption:
+    provider: sops
+    secretRef:
+      name: sops-age-key
+    generateWhenMissing: true
 ---
 apiVersion: configbutler.ai/v1alpha1
 kind: WatchRule
@@ -140,6 +145,12 @@ spec:
 EOF
 ```
 
+When `generateWhenMissing: true` is enabled, GitOps Reverser can create the encryption key Secret automatically.
+Back up the generated `SOPS_AGE_KEY` immediately and securely.
+If you lose that private key, existing encrypted `*.sops.yaml` files are unrecoverable.
+After confirming backup, remove the warning annotation:
+`kubectl annotate secret sops-age-key -n default configbutler.ai/backup-warning-`
+
 **4. Test it:**
 ```bash
 # Create a test ConfigMap
@@ -148,7 +159,8 @@ kubectl create configmap test-config --from-literal=key=value -n default
 # Check your Git repository - you should see a new commit with the ConfigMap YAML
 ```
 
-For cluster-wide resources (nodes, CRDs, etc.) or watching multiple namespaces, use [`ClusterWatchRule`](config/samples/clusterwatchrule.yaml). More examples in [`config/samples/`](config/samples/).
+For cluster-wide resources (nodes, CRDs, etc.) or watching multiple namespaces, use
+[`ClusterWatchRule`](config/samples/clusterwatchrule.yaml). More examples in [`config/samples/`](config/samples/).
 
 ## Usage guidance
 

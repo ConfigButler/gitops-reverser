@@ -1,0 +1,14 @@
+apiVersion: configbutler.ai/v1alpha1
+kind: GitProvider
+metadata:
+  name: example-provider
+  namespace: default
+spec:
+  # Replace with your own repository URL
+  url: "git@github.com:YOUR_USERNAME/my-k8s-audit.git"
+  allowedBranches: ["*"]
+  secretRef:
+    name: git-creds
+  push:
+    interval: "5s"
+    maxCommits: 10
