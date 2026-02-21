@@ -373,10 +373,12 @@ extract_generated_age_key() {
   local key_data age_key
 
   key_data="$(
-    kubectl -n "${QUICKSTART_NAMESPACE}" get secret "${secret_name}" -o jsonpath='{.data.SOPS_AGE_KEY}' 2>/dev/null || true
+    kubectl -n "${QUICKSTART_NAMESPACE}" get secret "${secret_name}" \
+      -o go-template='{{ range $k, $v := .data }}{{ printf "%s=%s\n" $k $v }}{{ end }}' 2>/dev/null |
+      grep '\.agekey=' | head -n1 | cut -d'=' -f2- || true
   )"
   if [[ -z "${key_data}" ]]; then
-    echo "SOPS_AGE_KEY is missing from secret ${QUICKSTART_NAMESPACE}/${secret_name}"
+    echo "No .agekey entry found in secret ${QUICKSTART_NAMESPACE}/${secret_name}"
     return 1
   fi
 
@@ -444,9 +446,13 @@ spec:
   path: live-cluster
   encryption:
     provider: sops
+    age:
+      enabled: true
+      recipients:
+        extractFromSecret: true
+        generateWhenMissing: true
     secretRef:
       name: ${ENCRYPTION_SECRET_NAME}
-    generateWhenMissing: true
 ---
 apiVersion: configbutler.ai/v1alpha1
 kind: WatchRule

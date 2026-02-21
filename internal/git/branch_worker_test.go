@@ -490,7 +490,7 @@ func TestBranchWorker_EnsurePathBootstrapped_InvalidEncryptionSecretSkipsSOPSCon
 		"main",
 		"clusters/dev",
 		map[string][]byte{
-			sopsAgeKeyEnvVar: []byte("not-an-age-identity"),
+			"identity.agekey": []byte("not-an-age-identity"),
 		},
 	)
 
@@ -552,7 +552,84 @@ func TestBranchWorker_EnsurePathBootstrapped_MissingSOPSKeySkipsSOPSConfig(t *te
 	_, err = os.Stat(filepath.Join(clonePath, "clusters/dev", "README.md"))
 	require.NoError(t, err)
 	_, err = os.Stat(filepath.Join(clonePath, "clusters/dev", sopsConfigFileName))
-	assert.True(t, os.IsNotExist(err), "Bootstrap SOPS config should be skipped when SOPS_AGE_KEY is missing")
+	assert.True(t, os.IsNotExist(err), "Bootstrap SOPS config should be skipped when no .agekey entry is present")
+}
+
+func TestBranchWorker_EnsurePathBootstrapped_RendersAllResolvedRecipients(t *testing.T) {
+	ctx := context.Background()
+	tempDir := t.TempDir()
+	remotePath := filepath.Join(tempDir, "remote.git")
+	remoteURL := "file://" + remotePath
+	_ = createBareRepo(t, remotePath)
+
+	secretIdentity, err := age.GenerateX25519Identity()
+	require.NoError(t, err)
+	secondaryIdentity, err := age.GenerateX25519Identity()
+	require.NoError(t, err)
+	publicOnlyIdentity, err := age.GenerateX25519Identity()
+	require.NoError(t, err)
+
+	scheme := runtime.NewScheme()
+	_ = clientgoscheme.AddToScheme(scheme)
+	_ = configv1alpha1.AddToScheme(scheme)
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	provider := &configv1alpha1.GitProvider{
+		Spec: configv1alpha1.GitProviderSpec{
+			URL: remoteURL,
+		},
+	}
+	provider.Name = "test-repo"
+	provider.Namespace = "default"
+	require.NoError(t, k8sClient.Create(ctx, provider))
+
+	encryptionSecret := &corev1.Secret{}
+	encryptionSecret.Name = "sops-age-key"
+	encryptionSecret.Namespace = "default"
+	encryptionSecret.Data = map[string][]byte{
+		"identity.agekey": []byte(secretIdentity.String()),
+		"backup.agekey":   []byte(secondaryIdentity.String()),
+	}
+	require.NoError(t, k8sClient.Create(ctx, encryptionSecret))
+
+	target := &configv1alpha1.GitTarget{}
+	target.Name = "bootstrap-target"
+	target.Namespace = "default"
+	target.Spec.ProviderRef = configv1alpha1.GitProviderReference{
+		Kind: "GitProvider",
+		Name: "test-repo",
+	}
+	target.Spec.Branch = "main"
+	target.Spec.Path = "clusters/dev"
+	target.Spec.Encryption = &configv1alpha1.EncryptionSpec{
+		Provider: "sops",
+		SecretRef: configv1alpha1.LocalSecretReference{
+			Name: encryptionSecret.Name,
+		},
+		Age: &configv1alpha1.AgeEncryptionSpec{
+			Enabled: true,
+			Recipients: configv1alpha1.AgeRecipientsSpec{
+				PublicKeys: []string{
+					publicOnlyIdentity.Recipient().String(),
+				},
+				ExtractFromSecret: true,
+			},
+		},
+	}
+	require.NoError(t, k8sClient.Create(ctx, target))
+
+	worker := NewBranchWorker(k8sClient, logr.Discard(), "test-repo", "default", "main", nil)
+	require.NoError(t, worker.EnsurePathBootstrapped("clusters/dev", "bootstrap-target", "default"))
+
+	clonePath := filepath.Join(tempDir, "inspect")
+	_, err = PrepareBranch(ctx, remoteURL, clonePath, "main", nil)
+	require.NoError(t, err)
+
+	sopsConfig, err := os.ReadFile(filepath.Join(clonePath, "clusters/dev", sopsConfigFileName))
+	require.NoError(t, err)
+	assert.Contains(t, string(sopsConfig), secretIdentity.Recipient().String())
+	assert.Contains(t, string(sopsConfig), secondaryIdentity.Recipient().String())
+	assert.Contains(t, string(sopsConfig), publicOnlyIdentity.Recipient().String())
 }
 
 func createTargetWithEncryption(
@@ -569,7 +646,7 @@ func createTargetWithEncryption(
 	encryptionSecret.Name = "sops-age-key"
 	encryptionSecret.Namespace = namespace
 	encryptionSecret.Data = map[string][]byte{
-		sopsAgeKeyEnvVar: []byte(identity.String()),
+		"identity.agekey": []byte(identity.String()),
 	}
 	require.NoError(t, k8sClient.Create(ctx, encryptionSecret))
 
@@ -586,6 +663,12 @@ func createTargetWithEncryption(
 		Provider: "sops",
 		SecretRef: configv1alpha1.LocalSecretReference{
 			Name: "sops-age-key",
+		},
+		Age: &configv1alpha1.AgeEncryptionSpec{
+			Enabled: true,
+			Recipients: configv1alpha1.AgeRecipientsSpec{
+				ExtractFromSecret: true,
+			},
 		},
 	}
 	require.NoError(t, k8sClient.Create(ctx, target))
@@ -639,6 +722,12 @@ func createTargetWithEncryptionSecretData(
 		SecretRef: configv1alpha1.LocalSecretReference{
 			Name: encryptionSecret.Name,
 		},
+		Age: &configv1alpha1.AgeEncryptionSpec{
+			Enabled: true,
+			Recipients: configv1alpha1.AgeRecipientsSpec{
+				ExtractFromSecret: true,
+			},
+		},
 	}
 	require.NoError(t, k8sClient.Create(ctx, target))
 }
@@ -657,7 +746,7 @@ func attachEncryptionToTarget(
 	encryptionSecret.Name = "sops-age-key"
 	encryptionSecret.Namespace = targetNamespace
 	encryptionSecret.Data = map[string][]byte{
-		sopsAgeKeyEnvVar: []byte(identity.String()),
+		"identity.agekey": []byte(identity.String()),
 	}
 	require.NoError(t, k8sClient.Create(ctx, encryptionSecret))
 
@@ -667,6 +756,12 @@ func attachEncryptionToTarget(
 		Provider: "sops",
 		SecretRef: configv1alpha1.LocalSecretReference{
 			Name: encryptionSecret.Name,
+		},
+		Age: &configv1alpha1.AgeEncryptionSpec{
+			Enabled: true,
+			Recipients: configv1alpha1.AgeRecipientsSpec{
+				ExtractFromSecret: true,
+			},
 		},
 	}
 	require.NoError(t, k8sClient.Update(ctx, target))

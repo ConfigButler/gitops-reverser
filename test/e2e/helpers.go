@@ -299,7 +299,7 @@ metadata:
   namespace: %s
 type: Opaque
 stringData:
-  SOPS_AGE_KEY: %q
+  identity.agekey: %q
 `, e2eEncryptionRefName, namespace, identity.String())
 
 	ctx := context.Background()

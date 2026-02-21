@@ -11,7 +11,7 @@ This is a practical reference for how `sops` and `age` fit together in this repo
 
 For this repo:
 - `.sops.yaml` contains recipient rules (public info).
-- Private key material is provided at runtime via Kubernetes Secret env entries (for example `SOPS_AGE_KEY`).
+- Private key material for Flux-compatible secrets is stored under `*.agekey` keys (for example `identity.agekey`).
 - Secret manifests written to Git are stored as `*.sops.yaml`.
 
 ## Important assets
@@ -94,12 +94,12 @@ sops --decrypt secret.sops.yaml
 
 ## Key material in Kubernetes
 
-In this project, encryption env vars are sourced from `GitTarget.spec.encryption.secretRef`.
+In this project, age identities are sourced from `GitTarget.spec.encryption.secretRef` using `*.agekey` entries.
 Create the runtime secret like this (namespace must match the `GitTarget` namespace):
 
 ```bash
 kubectl -n sut create secret generic sops-age-key \
-  --from-literal=SOPS_AGE_KEY="$(grep '^AGE-SECRET-KEY-' age-key.txt)"
+  --from-literal=identity.agekey="$(cat age-key.txt)"
 ```
 
 Then reference it from `GitTarget.spec.encryption.secretRef.name`.
@@ -110,9 +110,13 @@ Optional bootstrap mode:
 spec:
   encryption:
     provider: sops
+    age:
+      enabled: true
+      recipients:
+        extractFromSecret: true
+        generateWhenMissing: true
     secretRef:
       name: sops-age-key
-    generateWhenMissing: true
 ```
 
 When enabled and the secret is missing, gitops-reverser generates one age key and

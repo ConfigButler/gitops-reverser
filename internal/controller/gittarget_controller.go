@@ -88,7 +88,6 @@ const (
 )
 
 const (
-	sopsAgeKeySecretKey                = "SOPS" + "_AGE_KEY"
 	encryptionSecretRecipientAnnoKey   = "configbutler.ai/age-recipient"
 	encryptionSecretBackupWarningAnno  = "configbutler.ai/backup-warning"
 	encryptionSecretBackupWarningValue = "REMOVE_AFTER_BACKUP"
@@ -106,7 +105,7 @@ type GitTargetReconciler struct {
 // +kubebuilder:rbac:groups=configbutler.ai,resources=gittargets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=configbutler.ai,resources=gittargets/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=configbutler.ai,resources=gitproviders,verbs=get;list;watch
-// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch
 
 // Reconcile validates GitTarget references and drives startup lifecycle gates.
 //
@@ -366,13 +365,13 @@ func (r *GitTargetReconciler) evaluateEncryptionGate(
 	target *configbutleraiv1alpha1.GitTarget,
 	log logr.Logger,
 ) (bool, string, time.Duration) {
-	if target.Spec.Encryption == nil {
+	if !isTargetAgeEncryptionEnabled(target) {
 		r.setCondition(
 			target,
 			GitTargetConditionEncryptionConfigured,
 			metav1.ConditionTrue,
 			GitTargetReasonNotRequired,
-			"Encryption is not configured for this GitTarget",
+			"SOPS age encryption is not enabled for this GitTarget",
 		)
 		return true, "", 0
 	}
@@ -382,6 +381,14 @@ func (r *GitTargetReconciler) evaluateEncryptionGate(
 		if strings.Contains(err.Error(), "missing and generateWhenMissing is disabled") {
 			reason = GitTargetReasonSecretCreateDisabled
 		}
+		if strings.Contains(err.Error(), "failed to fetch encryption secret") {
+			reason = GitTargetReasonMissingSecret
+		}
+		r.setCondition(target, GitTargetConditionEncryptionConfigured, metav1.ConditionFalse, reason, err.Error())
+		return false, fmt.Sprintf("EncryptionConfigured gate failed: %s", reason), RequeueMediumInterval
+	}
+	if _, err := git.ResolveTargetEncryption(ctx, r.Client, target); err != nil {
+		reason := GitTargetReasonInvalidConfig
 		if strings.Contains(err.Error(), "failed to fetch encryption secret") {
 			reason = GitTargetReasonMissingSecret
 		}
@@ -710,42 +717,64 @@ func (r *GitTargetReconciler) ensureEncryptionSecret(
 	target *configbutleraiv1alpha1.GitTarget,
 	log logr.Logger,
 ) error {
-	if target.Spec.Encryption == nil {
+	if !shouldGenerateAgeKey(target) {
 		return nil
 	}
 
-	secretName := strings.TrimSpace(target.Spec.Encryption.SecretRef.Name)
-	if secretName == "" {
-		return errors.New("encryption.secretRef.name must be set when encryption is configured")
+	secretKey, err := secretKeyForGeneratedEncryption(target)
+	if err != nil {
+		return err
 	}
 
-	secretKey := k8stypes.NamespacedName{Name: secretName, Namespace: target.Namespace}
 	var existing corev1.Secret
-	if err := r.Get(ctx, secretKey, &existing); err == nil {
-		if existing.Annotations[encryptionSecretBackupWarningAnno] == encryptionSecretBackupWarningValue {
-			log.Info("ENCRYPTION KEY BACKUP REQUIRED: remove annotation after backup is completed",
-				"secret", secretKey.String(),
-				"annotation", encryptionSecretBackupWarningAnno)
+	if err := r.Get(ctx, secretKey, &existing); err != nil {
+		if apierrors.IsNotFound(err) {
+			return r.createGeneratedEncryptionSecret(ctx, target.Namespace, secretKey, log)
 		}
-		return nil
-	} else if !apierrors.IsNotFound(err) {
 		return fmt.Errorf("failed to fetch encryption secret %s: %w", secretKey.String(), err)
 	}
 
-	if !target.Spec.Encryption.GenerateWhenMissing {
-		return fmt.Errorf("encryption secret %s is missing and generateWhenMissing is disabled", secretKey.String())
+	if hasAgeKeyEntry(existing.Data) {
+		logEncryptionBackupWarning(log, secretKey, existing.Annotations)
+		return nil
 	}
 
-	identity, err := age.GenerateX25519Identity()
+	identity, recipient, err := generateAgeIdentity()
 	if err != nil {
 		return fmt.Errorf("failed to generate age identity for encryption secret %s: %w", secretKey.String(), err)
 	}
-	recipient := identity.Recipient().String()
+	ageKeyDataKey := currentDateAgeKeySecretDataKey()
+	ensureAgeSecretDataAndAnnotations(&existing, ageKeyDataKey, identity.String(), recipient)
+	if err := r.Update(ctx, &existing); err != nil {
+		return fmt.Errorf("failed to update encryption secret %s: %w", secretKey.String(), err)
+	}
+
+	log.Info(
+		"Added missing .agekey entry to encryption secret. Back up the private key and remove warning annotation.",
+		"secret", secretKey.String(),
+		"secretDataKey", ageKeyDataKey,
+		"recipient", recipient,
+		"warningAnnotation", encryptionSecretBackupWarningAnno,
+	)
+	return nil
+}
+
+func (r *GitTargetReconciler) createGeneratedEncryptionSecret(
+	ctx context.Context,
+	namespace string,
+	secretKey k8stypes.NamespacedName,
+	log logr.Logger,
+) error {
+	identity, recipient, err := generateAgeIdentity()
+	if err != nil {
+		return fmt.Errorf("failed to generate age identity for encryption secret %s: %w", secretKey.String(), err)
+	}
+	ageKeyDataKey := currentDateAgeKeySecretDataKey()
 
 	secret := corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      secretName,
-			Namespace: target.Namespace,
+			Name:      secretKey.Name,
+			Namespace: namespace,
 			Annotations: map[string]string{
 				encryptionSecretRecipientAnnoKey:  recipient,
 				encryptionSecretBackupWarningAnno: encryptionSecretBackupWarningValue,
@@ -753,10 +782,9 @@ func (r *GitTargetReconciler) ensureEncryptionSecret(
 		},
 		Type: corev1.SecretTypeOpaque,
 		StringData: map[string]string{
-			sopsAgeKeySecretKey: identity.String(),
+			ageKeyDataKey: identity.String(),
 		},
 	}
-
 	if err := r.Create(ctx, &secret); err != nil {
 		if apierrors.IsAlreadyExists(err) {
 			return nil
@@ -767,11 +795,90 @@ func (r *GitTargetReconciler) ensureEncryptionSecret(
 	log.Info(
 		"Generated missing encryption secret with age key. Back up the private key and remove warning annotation.",
 		"secret", secretKey.String(),
+		"secretDataKey", ageKeyDataKey,
 		"recipient", recipient,
 		"warningAnnotation", encryptionSecretBackupWarningAnno,
 	)
-
 	return nil
+}
+
+func shouldGenerateAgeKey(target *configbutleraiv1alpha1.GitTarget) bool {
+	return isTargetAgeEncryptionEnabled(target) && target.Spec.Encryption.Age.Recipients.GenerateWhenMissing
+}
+
+func secretKeyForGeneratedEncryption(target *configbutleraiv1alpha1.GitTarget) (k8stypes.NamespacedName, error) {
+	if !target.Spec.Encryption.Age.Recipients.ExtractFromSecret {
+		return k8stypes.NamespacedName{},
+			errors.New("encryption.age.recipients.generateWhenMissing=true requires extractFromSecret=true")
+	}
+
+	secretName := strings.TrimSpace(target.Spec.Encryption.SecretRef.Name)
+	if secretName == "" {
+		return k8stypes.NamespacedName{}, errors.New(
+			"encryption.secretRef.name must be set when encryption is configured",
+		)
+	}
+
+	return k8stypes.NamespacedName{Name: secretName, Namespace: target.Namespace}, nil
+}
+
+func generateAgeIdentity() (*age.X25519Identity, string, error) {
+	identity, err := age.GenerateX25519Identity()
+	if err != nil {
+		return nil, "", err
+	}
+	return identity, identity.Recipient().String(), nil
+}
+
+func ensureAgeSecretDataAndAnnotations(secret *corev1.Secret, ageKeyDataKey, identityValue, recipient string) {
+	if secret.Data == nil {
+		secret.Data = make(map[string][]byte)
+	}
+	secret.Data[ageKeyDataKey] = []byte(identityValue)
+
+	if secret.Annotations == nil {
+		secret.Annotations = make(map[string]string)
+	}
+	secret.Annotations[encryptionSecretRecipientAnnoKey] = recipient
+	secret.Annotations[encryptionSecretBackupWarningAnno] = encryptionSecretBackupWarningValue
+}
+
+func currentDateAgeKeySecretDataKey() string {
+	now := time.Now().UTC()
+	return fmt.Sprintf("%04d%02d%d.agekey", now.Year(), now.Month(), now.Day())
+}
+
+func logEncryptionBackupWarning(log logr.Logger, secretKey k8stypes.NamespacedName, annotations map[string]string) {
+	if annotations[encryptionSecretBackupWarningAnno] != encryptionSecretBackupWarningValue {
+		return
+	}
+	log.Info("ENCRYPTION KEY BACKUP REQUIRED: remove annotation after backup is completed",
+		"secret", secretKey.String(),
+		"annotation", encryptionSecretBackupWarningAnno)
+}
+
+func isTargetAgeEncryptionEnabled(target *configbutleraiv1alpha1.GitTarget) bool {
+	if target == nil || target.Spec.Encryption == nil {
+		return false
+	}
+
+	providerName := strings.TrimSpace(target.Spec.Encryption.Provider)
+	if providerName == "" {
+		providerName = git.EncryptionProviderSOPS
+	}
+	if providerName != git.EncryptionProviderSOPS {
+		return false
+	}
+	return target.Spec.Encryption.Age != nil && target.Spec.Encryption.Age.Enabled
+}
+
+func hasAgeKeyEntry(data map[string][]byte) bool {
+	for key := range data {
+		if strings.HasSuffix(key, ".agekey") {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *GitTargetReconciler) updateRepositoryStatus(

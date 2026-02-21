@@ -20,7 +20,9 @@ package git
 
 import (
 	"context"
-	"strings"
+	"os"
+	"path/filepath"
+	"sort"
 	"testing"
 
 	"filippo.io/age"
@@ -51,6 +53,22 @@ func TestResolveTargetEncryption(t *testing.T) {
 		assert.Nil(t, resolved)
 	})
 
+	t.Run("returns nil when age is disabled", func(t *testing.T) {
+		k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+		target := &v1alpha1.GitTarget{
+			ObjectMeta: metav1.ObjectMeta{Name: "target", Namespace: "default"},
+			Spec: v1alpha1.GitTargetSpec{
+				Encryption: &v1alpha1.EncryptionSpec{
+					Provider: EncryptionProviderSOPS,
+				},
+			},
+		}
+
+		resolved, err := ResolveTargetEncryption(context.Background(), k8sClient, target)
+		require.NoError(t, err)
+		assert.Nil(t, resolved)
+	})
+
 	t.Run("fails when provider is unsupported", func(t *testing.T) {
 		k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 		target := &v1alpha1.GitTarget{
@@ -58,8 +76,8 @@ func TestResolveTargetEncryption(t *testing.T) {
 			Spec: v1alpha1.GitTargetSpec{
 				Encryption: &v1alpha1.EncryptionSpec{
 					Provider: "kms",
-					SecretRef: v1alpha1.LocalSecretReference{
-						Name: "enc-secret",
+					Age: &v1alpha1.AgeEncryptionSpec{
+						Enabled: true,
 					},
 				},
 			},
@@ -70,14 +88,86 @@ func TestResolveTargetEncryption(t *testing.T) {
 		assert.Contains(t, err.Error(), "unsupported encryption provider")
 	})
 
-	t.Run("fails when secret name is missing", func(t *testing.T) {
+	t.Run("fails when public key is invalid", func(t *testing.T) {
 		k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 		target := &v1alpha1.GitTarget{
 			ObjectMeta: metav1.ObjectMeta{Name: "target", Namespace: "default"},
 			Spec: v1alpha1.GitTargetSpec{
 				Encryption: &v1alpha1.EncryptionSpec{
-					Provider:  EncryptionProviderSOPS,
-					SecretRef: v1alpha1.LocalSecretReference{},
+					Provider: EncryptionProviderSOPS,
+					Age: &v1alpha1.AgeEncryptionSpec{
+						Enabled: true,
+						Recipients: v1alpha1.AgeRecipientsSpec{
+							PublicKeys: []string{"invalid-recipient"},
+						},
+					},
+				},
+			},
+		}
+
+		_, err := ResolveTargetEncryption(context.Background(), k8sClient, target)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid age recipient")
+	})
+
+	t.Run("fails when no recipient resolves", func(t *testing.T) {
+		k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+		target := &v1alpha1.GitTarget{
+			ObjectMeta: metav1.ObjectMeta{Name: "target", Namespace: "default"},
+			Spec: v1alpha1.GitTargetSpec{
+				Encryption: &v1alpha1.EncryptionSpec{
+					Provider: EncryptionProviderSOPS,
+					Age: &v1alpha1.AgeEncryptionSpec{
+						Enabled: true,
+					},
+				},
+			},
+		}
+
+		_, err := ResolveTargetEncryption(context.Background(), k8sClient, target)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "requires at least one resolved recipient")
+	})
+
+	t.Run("resolves public key only mode without secret", func(t *testing.T) {
+		identity, err := age.GenerateX25519Identity()
+		require.NoError(t, err)
+		k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+		target := &v1alpha1.GitTarget{
+			ObjectMeta: metav1.ObjectMeta{Name: "target", Namespace: "default"},
+			Spec: v1alpha1.GitTargetSpec{
+				Encryption: &v1alpha1.EncryptionSpec{
+					Provider: EncryptionProviderSOPS,
+					Age: &v1alpha1.AgeEncryptionSpec{
+						Enabled: true,
+						Recipients: v1alpha1.AgeRecipientsSpec{
+							PublicKeys: []string{identity.Recipient().String()},
+						},
+					},
+				},
+			},
+		}
+
+		resolved, err := ResolveTargetEncryption(context.Background(), k8sClient, target)
+		require.NoError(t, err)
+		require.NotNil(t, resolved)
+		assert.Equal(t, []string{identity.Recipient().String()}, resolved.AgeRecipients)
+		assert.Nil(t, resolved.Environment)
+	})
+
+	t.Run("fails when extractFromSecret is enabled and secret name is empty", func(t *testing.T) {
+		k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+		target := &v1alpha1.GitTarget{
+			ObjectMeta: metav1.ObjectMeta{Name: "target", Namespace: "default"},
+			Spec: v1alpha1.GitTargetSpec{
+				Encryption: &v1alpha1.EncryptionSpec{
+					Provider: EncryptionProviderSOPS,
+					Age: &v1alpha1.AgeEncryptionSpec{
+						Enabled: true,
+						Recipients: v1alpha1.AgeRecipientsSpec{
+							ExtractFromSecret: true,
+						},
+					},
 				},
 			},
 		}
@@ -87,7 +177,7 @@ func TestResolveTargetEncryption(t *testing.T) {
 		assert.Contains(t, err.Error(), "encryption.secretRef.name must be set")
 	})
 
-	t.Run("fails when secret is missing", func(t *testing.T) {
+	t.Run("fails when extracted secret is missing", func(t *testing.T) {
 		k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 		target := &v1alpha1.GitTarget{
 			ObjectMeta: metav1.ObjectMeta{Name: "target", Namespace: "default"},
@@ -96,6 +186,12 @@ func TestResolveTargetEncryption(t *testing.T) {
 					Provider: EncryptionProviderSOPS,
 					SecretRef: v1alpha1.LocalSecretReference{
 						Name: "enc-secret",
+					},
+					Age: &v1alpha1.AgeEncryptionSpec{
+						Enabled: true,
+						Recipients: v1alpha1.AgeRecipientsSpec{
+							ExtractFromSecret: true,
+						},
 					},
 				},
 			},
@@ -106,11 +202,11 @@ func TestResolveTargetEncryption(t *testing.T) {
 		assert.Contains(t, err.Error(), "failed to fetch encryption secret")
 	})
 
-	t.Run("fails when secret has no valid environment keys", func(t *testing.T) {
+	t.Run("fails when extracted agekey data is invalid", func(t *testing.T) {
 		k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(&corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{Name: "enc-secret", Namespace: "default"},
 			Data: map[string][]byte{
-				"invalid.key": []byte("value"),
+				"identity.agekey": []byte("invalid"),
 			},
 		}).Build()
 		target := &v1alpha1.GitTarget{
@@ -120,6 +216,12 @@ func TestResolveTargetEncryption(t *testing.T) {
 					Provider: EncryptionProviderSOPS,
 					SecretRef: v1alpha1.LocalSecretReference{
 						Name: "enc-secret",
+					},
+					Age: &v1alpha1.AgeEncryptionSpec{
+						Enabled: true,
+						Recipients: v1alpha1.AgeRecipientsSpec{
+							ExtractFromSecret: true,
+						},
 					},
 				},
 			},
@@ -127,40 +229,23 @@ func TestResolveTargetEncryption(t *testing.T) {
 
 		_, err := ResolveTargetEncryption(context.Background(), k8sClient, target)
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "must contain at least one valid environment variable entry")
+		assert.Contains(t, err.Error(), "identity.agekey must contain AGE-SECRET-KEY identity")
 	})
 
-	t.Run("returns resolved environment for valid sops config", func(t *testing.T) {
-		k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(&corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{Name: "enc-secret", Namespace: "default"},
-			Data: map[string][]byte{
-				"SOPS_AGE_KEY": []byte("AGE-SECRET-KEY-1example"),
-			},
-		}).Build()
-		target := &v1alpha1.GitTarget{
-			ObjectMeta: metav1.ObjectMeta{Name: "target", Namespace: "default"},
-			Spec: v1alpha1.GitTargetSpec{
-				Encryption: &v1alpha1.EncryptionSpec{
-					Provider: EncryptionProviderSOPS,
-					SecretRef: v1alpha1.LocalSecretReference{
-						Name: "enc-secret",
-					},
-				},
-			},
-		}
-
-		resolved, err := ResolveTargetEncryption(context.Background(), k8sClient, target)
+	t.Run("resolves recipients from public keys and secret entries", func(t *testing.T) {
+		firstIdentity, err := age.GenerateX25519Identity()
 		require.NoError(t, err)
-		require.NotNil(t, resolved)
-		assert.Equal(t, EncryptionProviderSOPS, resolved.Provider)
-		assert.Equal(t, "AGE-SECRET-KEY-1example", resolved.Environment["SOPS_AGE_KEY"])
-	})
+		secondIdentity, err := age.GenerateX25519Identity()
+		require.NoError(t, err)
+		thirdIdentity, err := age.GenerateX25519Identity()
+		require.NoError(t, err)
 
-	t.Run("defaults provider to sops when omitted", func(t *testing.T) {
 		k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(&corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{Name: "enc-secret", Namespace: "default"},
 			Data: map[string][]byte{
-				"SOPS_AGE_KEY": []byte("AGE-SECRET-KEY-1example"),
+				"identity.agekey": []byte(firstIdentity.String()),
+				"backup.agekey":   []byte(secondIdentity.String()),
+				"SOPS_KMS_ARN":    []byte("kms-arn"),
 			},
 		}).Build()
 		target := &v1alpha1.GitTarget{
@@ -170,6 +255,16 @@ func TestResolveTargetEncryption(t *testing.T) {
 					SecretRef: v1alpha1.LocalSecretReference{
 						Name: "enc-secret",
 					},
+					Age: &v1alpha1.AgeEncryptionSpec{
+						Enabled: true,
+						Recipients: v1alpha1.AgeRecipientsSpec{
+							PublicKeys: []string{
+								thirdIdentity.Recipient().String(),
+								firstIdentity.Recipient().String(),
+							},
+							ExtractFromSecret: true,
+						},
+					},
 				},
 			},
 		}
@@ -178,29 +273,89 @@ func TestResolveTargetEncryption(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, resolved)
 		assert.Equal(t, EncryptionProviderSOPS, resolved.Provider)
+
+		expectedRecipients := []string{
+			firstIdentity.Recipient().String(),
+			secondIdentity.Recipient().String(),
+			thirdIdentity.Recipient().String(),
+		}
+		sort.Strings(expectedRecipients)
+		assert.Equal(t, expectedRecipients, resolved.AgeRecipients)
+		assert.Equal(t, "kms-arn", resolved.Environment["SOPS_KMS_ARN"])
+
+		expectedIdentities := []string{
+			firstIdentity.String(),
+			secondIdentity.String(),
+		}
+		sort.Strings(expectedIdentities)
+		assert.Equal(t, expectedIdentities, resolved.AgeIdentities)
 	})
 }
 
-func TestDeriveAgeRecipientFromSOPSKey(t *testing.T) {
+func TestBuildSOPSEnvironment(t *testing.T) {
+	t.Run("returns base environment when no age identities exist", func(t *testing.T) {
+		cfg := &ResolvedEncryptionConfig{
+			Environment: map[string]string{
+				"SOPS_KMS_ARN": "kms-arn",
+			},
+		}
+
+		env, err := buildSOPSEnvironment(t.TempDir(), cfg)
+		require.NoError(t, err)
+		assert.Equal(t, "kms-arn", env["SOPS_KMS_ARN"])
+		_, hasKeyFile := env[sopsAgeKeyFileEnvVar]
+		assert.False(t, hasKeyFile)
+	})
+
+	t.Run("writes age identities to temp file and sets SOPS age key file env", func(t *testing.T) {
+		firstIdentity, err := age.GenerateX25519Identity()
+		require.NoError(t, err)
+		secondIdentity, err := age.GenerateX25519Identity()
+		require.NoError(t, err)
+
+		workDir := t.TempDir()
+		cfg := &ResolvedEncryptionConfig{
+			Environment: map[string]string{
+				"SOPS_KMS_ARN": "kms-arn",
+			},
+			AgeIdentities: []string{firstIdentity.String(), secondIdentity.String()},
+		}
+
+		env, err := buildSOPSEnvironment(workDir, cfg)
+		require.NoError(t, err)
+		keyFilePath := env[sopsAgeKeyFileEnvVar]
+		require.NotEmpty(t, keyFilePath)
+		assert.Equal(t, ageIdentityFileDir, filepath.Base(filepath.Dir(keyFilePath)))
+
+		content, err := os.ReadFile(keyFilePath)
+		require.NoError(t, err)
+		assert.Contains(t, string(content), firstIdentity.String())
+		assert.Contains(t, string(content), secondIdentity.String())
+		assert.Equal(t, "kms-arn", env["SOPS_KMS_ARN"])
+	})
+}
+
+func TestDeriveAgeRecipientFromSecretEntry(t *testing.T) {
 	t.Run("returns recipient for single valid identity", func(t *testing.T) {
 		identity, err := age.GenerateX25519Identity()
 		require.NoError(t, err)
 
-		recipient, err := deriveAgeRecipientFromSOPSKey(identity.String())
+		recipient, parsedIdentity, err := deriveAgeRecipientFromSecretEntry("identity.agekey", identity.String())
 		require.NoError(t, err)
 		assert.Equal(t, identity.Recipient().String(), recipient)
+		assert.Equal(t, identity.String(), parsedIdentity)
 	})
 
 	t.Run("fails when identity is missing", func(t *testing.T) {
-		_, err := deriveAgeRecipientFromSOPSKey("")
+		_, _, err := deriveAgeRecipientFromSecretEntry("identity.agekey", "")
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "must contain one AGE-SECRET-KEY identity")
+		assert.Contains(t, err.Error(), "identity.agekey must contain one AGE-SECRET-KEY identity")
 	})
 
 	t.Run("fails when identity is invalid", func(t *testing.T) {
-		_, err := deriveAgeRecipientFromSOPSKey("AGE-SECRET-KEY-1invalid")
+		_, _, err := deriveAgeRecipientFromSecretEntry("identity.agekey", "AGE-SECRET-KEY-1invalid")
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "invalid SOPS_AGE_KEY identity")
+		assert.Contains(t, err.Error(), "invalid identity.agekey identity")
 	})
 
 	t.Run("fails when multiple identities are present", func(t *testing.T) {
@@ -209,8 +364,8 @@ func TestDeriveAgeRecipientFromSOPSKey(t *testing.T) {
 		second, err := age.GenerateX25519Identity()
 		require.NoError(t, err)
 
-		combined := strings.Join([]string{first.String(), second.String()}, "\n")
-		_, err = deriveAgeRecipientFromSOPSKey(combined)
+		combined := first.String() + "\n" + second.String()
+		_, _, err = deriveAgeRecipientFromSecretEntry("identity.agekey", combined)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "must contain exactly one AGE-SECRET-KEY identity")
 	})

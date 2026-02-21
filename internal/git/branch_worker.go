@@ -261,17 +261,8 @@ func (w *BranchWorker) resolveBootstrapOptions(
 		return pathBootstrapOptions{}, nil
 	}
 
-	sopsKey := strings.TrimSpace(encryptionConfig.Environment[sopsAgeKeyEnvVar])
-	if sopsKey == "" {
-		w.Log.Info("Skipping SOPS bootstrap due to missing encryption key in target secret",
-			"target", targetKey.String(),
-			"requiredKey", sopsAgeKeyEnvVar)
-		return pathBootstrapOptions{}, nil
-	}
-
-	recipient, err := deriveAgeRecipientFromSOPSKey(sopsKey)
-	if err != nil {
-		w.Log.Error(err, "Skipping SOPS bootstrap due to invalid encryption key",
+	if len(encryptionConfig.AgeRecipients) == 0 {
+		w.Log.Info("Skipping SOPS bootstrap due to missing resolved age recipients",
 			"target", targetKey.String())
 		return pathBootstrapOptions{}, nil
 	}
@@ -279,7 +270,7 @@ func (w *BranchWorker) resolveBootstrapOptions(
 	return pathBootstrapOptions{
 		IncludeSOPSConfig: true,
 		TemplateData: bootstrapTemplateData{
-			AgeRecipient: recipient,
+			AgeRecipients: encryptionConfig.AgeRecipients,
 		},
 	}, nil
 }

@@ -65,10 +65,38 @@ type EncryptionSpec struct {
 	Provider string `json:"provider"`
 
 	// SecretRef references namespace-local Secret data used by the encryption provider.
-	SecretRef LocalSecretReference `json:"secretRef"`
+	// +optional
+	SecretRef LocalSecretReference `json:"secretRef,omitempty"`
 
-	// GenerateWhenMissing auto-creates the referenced Secret when it does not exist.
-	// The generated Secret contains one age private key in SOPS_AGE_KEY.
+	// Age configures age-specific encryption behavior for SOPS.
+	// +optional
+	Age *AgeEncryptionSpec `json:"age,omitempty"`
+}
+
+// AgeEncryptionSpec configures age recipient resolution behavior.
+type AgeEncryptionSpec struct {
+	// Enabled toggles age-based recipient resolution and bootstrap behavior.
+	// +optional
+	// +kubebuilder:default=false
+	Enabled bool `json:"enabled,omitempty"`
+
+	// Recipients defines how recipients are resolved.
+	// +optional
+	Recipients AgeRecipientsSpec `json:"recipients,omitempty"`
+}
+
+// AgeRecipientsSpec defines age recipient source and key generation behavior.
+type AgeRecipientsSpec struct {
+	// PublicKeys is a static list of age recipients (age1...).
+	// +optional
+	PublicKeys []string `json:"publicKeys,omitempty"`
+
+	// ExtractFromSecret derives recipients from all *.agekey entries in encryption.secretRef.
+	// +optional
+	// +kubebuilder:default=false
+	ExtractFromSecret bool `json:"extractFromSecret,omitempty"`
+
+	// GenerateWhenMissing creates a date-named *.agekey entry in encryption.secretRef when no *.agekey exists.
 	// +optional
 	// +kubebuilder:default=false
 	GenerateWhenMissing bool `json:"generateWhenMissing,omitempty"`
