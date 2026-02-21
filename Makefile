@@ -307,8 +307,8 @@ check-cert-manager: wait-cert-manager ## Explicit readiness check for cert-manag
 	@echo "✅ cert-manager check passed"
 
 ## Smoke test: install from local Helm chart and validate first quickstart flow
-.PHONY: test-e2e-install-quickstart
-test-e2e-install-quickstart: ## Install + quickstart smoke with E2E_INSTALL_MODE=helm|manifest
+.PHONY: test-e2e-quickstart
+test-e2e-quickstart: ## Install + quickstart smoke with E2E_INSTALL_MODE=helm|manifest
 	@MODE="$(E2E_INSTALL_MODE)"; \
 	if [ "$$MODE" != "helm" ] && [ "$$MODE" != "manifest" ]; then \
 		echo "❌ Invalid E2E_INSTALL_MODE='$$MODE' (expected: helm|manifest)"; \
@@ -327,33 +327,20 @@ test-e2e-install-quickstart: ## Install + quickstart smoke with E2E_INSTALL_MODE
 		KIND_CLUSTER=$(KIND_CLUSTER) PROJECT_IMAGE="$$PROJECT_IMAGE_VALUE" $(MAKE) setup-cluster setup-e2e check-cert-manager e2e-build-load-image; \
 	fi; \
 	echo "ℹ️ Running install quickstart smoke mode: $$MODE"; \
-	PROJECT_IMAGE="$$PROJECT_IMAGE_VALUE" bash test/e2e/scripts/install-smoke-quickstart.sh "$$MODE"; \
+	PROJECT_IMAGE="$$PROJECT_IMAGE_VALUE" bash test/e2e/scripts/run-quickstart.sh "$$MODE"; \
 
 ## Smoke test: install from local Helm chart and validate first quickstart flow
-.PHONY: test-e2e-install-quickstart-helm
-test-e2e-install-quickstart-helm:
-	@$(MAKE) test-e2e-install-quickstart E2E_INSTALL_MODE=helm PROJECT_IMAGE="$(PROJECT_IMAGE)" KIND_CLUSTER="$(KIND_CLUSTER)"
+.PHONY: test-e2e-quickstart-helm
+test-e2e-quickstart-helm:
+	@$(MAKE) test-e2e-quickstart E2E_INSTALL_MODE=helm PROJECT_IMAGE="$(PROJECT_IMAGE)" KIND_CLUSTER="$(KIND_CLUSTER)"
 
 ## Smoke test: install from generated dist/install.yaml and validate first quickstart flow
-.PHONY: test-e2e-install-quickstart-manifest
-test-e2e-install-quickstart-manifest:
+.PHONY: test-e2e-quickstart-manifest
+test-e2e-quickstart-manifest:
 	@if [ -n "$(PROJECT_IMAGE)" ]; then \
-		echo "ℹ️ test-e2e-install-quickstart-manifest using existing artifact (PROJECT_IMAGE set, CI/pre-built path)"; \
+		echo "ℹ️ test-e2e-quickstart-manifest using existing artifact (PROJECT_IMAGE set, CI/pre-built path)"; \
 	else \
-		echo "ℹ️ test-e2e-install-quickstart-manifest local path: regenerating dist/install.yaml via build-installer"; \
+		echo "ℹ️ test-e2e-quickstart-manifest local path: regenerating dist/install.yaml via build-installer"; \
 		$(MAKE) build-installer; \
 	fi
-	@$(MAKE) test-e2e-install-quickstart E2E_INSTALL_MODE=manifest PROJECT_IMAGE="$(PROJECT_IMAGE)" KIND_CLUSTER="$(KIND_CLUSTER)"
-
-## Backward-compatible aliases (kept for one release cycle)
-.PHONY: test-e2e-install
-test-e2e-install: ## Alias for test-e2e-install-quickstart
-	@$(MAKE) test-e2e-install-quickstart E2E_INSTALL_MODE="$(E2E_INSTALL_MODE)" PROJECT_IMAGE="$(PROJECT_IMAGE)" KIND_CLUSTER="$(KIND_CLUSTER)"
-
-.PHONY: test-e2e-install-helm
-test-e2e-install-helm: ## Alias for test-e2e-install-quickstart-helm
-	@$(MAKE) test-e2e-install-quickstart-helm PROJECT_IMAGE="$(PROJECT_IMAGE)" KIND_CLUSTER="$(KIND_CLUSTER)"
-
-.PHONY: test-e2e-install-manifest
-test-e2e-install-manifest: ## Alias for test-e2e-install-quickstart-manifest
-	@$(MAKE) test-e2e-install-quickstart-manifest PROJECT_IMAGE="$(PROJECT_IMAGE)" KIND_CLUSTER="$(KIND_CLUSTER)"
+	@$(MAKE) test-e2e-quickstart E2E_INSTALL_MODE=manifest PROJECT_IMAGE="$(PROJECT_IMAGE)" KIND_CLUSTER="$(KIND_CLUSTER)"
