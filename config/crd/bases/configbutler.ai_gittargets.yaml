@@ -48,12 +48,37 @@ spec:
                 description: Encryption defines encryption settings for Secret resource
                   writes.
                 properties:
-                  generateWhenMissing:
-                    default: false
-                    description: |-
-                      GenerateWhenMissing auto-creates the referenced Secret when it does not exist.
-                      The generated Secret contains one age private key in SOPS_AGE_KEY.
-                    type: boolean
+                  age:
+                    description: Age configures age-specific encryption behavior for
+                      SOPS.
+                    properties:
+                      enabled:
+                        default: false
+                        description: Enabled toggles age-based recipient resolution
+                          and bootstrap behavior.
+                        type: boolean
+                      recipients:
+                        description: Recipients defines how recipients are resolved.
+                        properties:
+                          extractFromSecret:
+                            default: false
+                            description: ExtractFromSecret derives recipients from
+                              all *.agekey entries in encryption.secretRef.
+                            type: boolean
+                          generateWhenMissing:
+                            default: false
+                            description: GenerateWhenMissing creates a date-named
+                              *.agekey entry in encryption.secretRef when no *.agekey
+                              exists.
+                            type: boolean
+                          publicKeys:
+                            description: PublicKeys is a static list of age recipients
+                              (age1...).
+                            items:
+                              type: string
+                            type: array
+                        type: object
+                    type: object
                   provider:
                     default: sops
                     description: Provider selects the encryption provider.
@@ -83,7 +108,6 @@ spec:
                     type: object
                 required:
                 - provider
-                - secretRef
                 type: object
               path:
                 description: Path within the repository to write resources to.

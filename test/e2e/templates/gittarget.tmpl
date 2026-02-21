@@ -11,8 +11,12 @@ spec:
   path: {{ .Path }}
   encryption:
     provider: sops
+    age:
+      enabled: true
+      recipients:
+        extractFromSecret: true
+{{- if .GenerateWhenMissing }}
+        generateWhenMissing: true
+{{- end }}
     secretRef:
       name: {{ .EncryptionSecretName }}
-{{- if .GenerateWhenMissing }}
-    generateWhenMissing: true
-{{- end }}

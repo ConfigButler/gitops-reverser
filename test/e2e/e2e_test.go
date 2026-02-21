@@ -613,7 +613,7 @@ var _ = Describe("Manager", Ordered, func() {
 			cleanupGitTarget(destName, namespace)
 		})
 
-		It("should generate missing SOPS age secret when generateWhenMissing is enabled", func() {
+		It("should generate missing SOPS age secret when age.recipients.generateWhenMissing is enabled", func() {
 			gitProviderName := "gitprovider-normal"
 			watchRuleName := "watchrule-secret-autogen-test"
 			secretName := "test-secret-autogen"
@@ -623,7 +623,7 @@ var _ = Describe("Manager", Ordered, func() {
 			_, _ = utils.Run(exec.Command("kubectl", "delete", "secret", generatedSecretName,
 				"-n", namespace, "--ignore-not-found=true"))
 
-			By("creating GitTarget with generateWhenMissing enabled")
+			By("creating GitTarget with age recipient auto-generation enabled")
 			destName := watchRuleName + "-dest"
 			createGitTargetWithEncryptionOptions(
 				destName,
@@ -668,9 +668,17 @@ var _ = Describe("Manager", Ordered, func() {
 				g.Expect(annotations).To(HaveKeyWithValue("configbutler.ai/backup-warning", "REMOVE_AFTER_BACKUP"))
 				generatedRecipient = annotations["configbutler.ai/age-recipient"]
 
-				sopsAgeKeyB64, found, keyErr := unstructured.NestedString(secretObj, "data", "SOPS_AGE_KEY")
+				secretData, found, keyErr := unstructured.NestedStringMap(secretObj, "data")
 				g.Expect(keyErr).NotTo(HaveOccurred())
 				g.Expect(found).To(BeTrue())
+				var sopsAgeKeyB64 string
+				for key, value := range secretData {
+					if strings.HasSuffix(key, ".agekey") {
+						sopsAgeKeyB64 = value
+						break
+					}
+				}
+				g.Expect(sopsAgeKeyB64).NotTo(BeEmpty())
 
 				keyBytes, decodeErr := base64.StdEncoding.DecodeString(sopsAgeKeyB64)
 				g.Expect(decodeErr).NotTo(HaveOccurred())

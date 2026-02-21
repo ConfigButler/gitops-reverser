@@ -68,6 +68,10 @@ func (v *GitTargetValidator) ValidateCreate(
 		"branch", target.Spec.Branch,
 		"path", target.Spec.Path)
 
+	if err := validateGitTargetEncryptionSpec(target); err != nil {
+		return nil, err
+	}
+
 	return v.validateUniqueness(ctx, target, nil)
 }
 
@@ -87,6 +91,10 @@ func (v *GitTargetValidator) ValidateUpdate(
 		"providerRef", newTarget.Spec.ProviderRef.Name,
 		"branch", newTarget.Spec.Branch,
 		"path", newTarget.Spec.Path)
+
+	if err := validateGitTargetEncryptionSpec(newTarget); err != nil {
+		return nil, err
+	}
 
 	return v.validateUniqueness(ctx, newTarget, oldTarget)
 }
@@ -289,4 +297,42 @@ func createTargetIdentifier(normalizedRepoURL, branch, path string) string {
 	// Hash it for consistent identifier
 	hash := sha256.Sum256([]byte(data))
 	return hex.EncodeToString(hash[:])
+}
+
+func validateGitTargetEncryptionSpec(target *configbutleraiv1alpha1.GitTarget) error {
+	if target.Spec.Encryption == nil {
+		return nil
+	}
+
+	encryption := target.Spec.Encryption
+	providerName := strings.TrimSpace(encryption.Provider)
+	if providerName == "" {
+		providerName = "sops"
+	}
+	if providerName != "sops" {
+		return nil
+	}
+	if encryption.Age == nil || !encryption.Age.Enabled {
+		return nil
+	}
+
+	recipients := encryption.Age.Recipients
+	if len(recipients.PublicKeys) == 0 && !recipients.ExtractFromSecret {
+		return errors.New(
+			"spec.encryption.age.enabled=true requires recipients via age.recipients.publicKeys or age.recipients.extractFromSecret=true",
+		)
+	}
+	if recipients.GenerateWhenMissing && !recipients.ExtractFromSecret {
+		return errors.New(
+			"spec.encryption.age.recipients.generateWhenMissing=true requires age.recipients.extractFromSecret=true",
+		)
+	}
+	if (recipients.ExtractFromSecret || recipients.GenerateWhenMissing) &&
+		strings.TrimSpace(encryption.SecretRef.Name) == "" {
+		return errors.New(
+			"spec.encryption.secretRef.name is required when age.recipients.extractFromSecret or age.recipients.generateWhenMissing is enabled",
+		)
+	}
+
+	return nil
 }

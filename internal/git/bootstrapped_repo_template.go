@@ -51,7 +51,7 @@ const (
 var bootstrapTemplateFS embed.FS
 
 type bootstrapTemplateData struct {
-	AgeRecipient string
+	AgeRecipients []string
 }
 
 type pathBootstrapOptions struct {
@@ -234,8 +234,13 @@ func stageBootstrapFile(worktree *gogit.Worktree, targetPath, entryName string) 
 }
 
 func renderSOPSBootstrapTemplate(raw []byte, data bootstrapTemplateData) ([]byte, error) {
-	if strings.TrimSpace(data.AgeRecipient) == "" {
-		return nil, fmt.Errorf("failed to render bootstrap file %s: missing age recipient", sopsConfigFileName)
+	if len(data.AgeRecipients) == 0 {
+		return nil, fmt.Errorf("failed to render bootstrap file %s: missing age recipients", sopsConfigFileName)
+	}
+	for _, recipient := range data.AgeRecipients {
+		if strings.TrimSpace(recipient) == "" {
+			return nil, fmt.Errorf("failed to render bootstrap file %s: empty age recipient", sopsConfigFileName)
+		}
 	}
 
 	tmpl, err := template.New(sopsConfigFileName).Parse(string(raw))

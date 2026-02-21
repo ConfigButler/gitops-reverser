@@ -126,9 +126,13 @@ spec:
   path: live-cluster
   encryption:
     provider: sops
+    age:
+      enabled: true
+      recipients:
+        extractFromSecret: true
+        generateWhenMissing: true
     secretRef:
       name: sops-age-key
-    generateWhenMissing: true
 ---
 apiVersion: configbutler.ai/v1alpha1
 kind: WatchRule
@@ -145,8 +149,9 @@ spec:
 EOF
 ```
 
-When `generateWhenMissing: true` is enabled, GitOps Reverser can create the encryption key Secret automatically.
-Back up the generated `SOPS_AGE_KEY` immediately and securely.
+When `age.recipients.generateWhenMissing: true` is enabled, GitOps Reverser can create the encryption key Secret
+automatically.
+Back up the generated `*.agekey` entry immediately and securely.
 If you lose that private key, existing encrypted `*.sops.yaml` files are unrecoverable.
 After confirming backup, remove the warning annotation:
 `kubectl annotate secret sops-age-key -n default configbutler.ai/backup-warning-`
@@ -178,8 +183,9 @@ Avoid infinite loops: Do not point GitOps (Argo CD/Flux) and GitOps Reverser at 
   - The container image ships with `/usr/local/bin/sops`.
   - Per-path `.sops.yaml` files are bootstrapped in the target repo for SOPS-based secret encryption.
   - If Secret encryption fails, Secret writes are rejected (no plaintext fallback).
-  - `GitTarget.spec.encryption.generateWhenMissing: true` can auto-generate the referenced encryption Secret when it does not exist.
-    - Generated Secret data contains one `SOPS_AGE_KEY` (`AGE-SECRET-KEY-...`).
+  - `GitTarget.spec.encryption.age.recipients.generateWhenMissing: true` can auto-generate a date-based `*.agekey`
+    in the referenced encryption Secret when no `*.agekey` entry exists.
+    - Generated Secret data contains one `<date>.agekey` (`AGE-SECRET-KEY-...`).
     - Generated Secret annotation `configbutler.ai/age-recipient` stores the public age recipient.
     - Generated Secret annotation `configbutler.ai/backup-warning: REMOVE_AFTER_BACKUP` is set by default.
     - While `configbutler.ai/backup-warning` remains, gitops-reverser logs a recurring high-visibility backup warning during periodic reconciliation.

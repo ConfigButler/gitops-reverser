@@ -31,11 +31,11 @@ kubectl apply -f config/samples/quickstart-watchrule.yaml
 ```
 
 The quickstart target uses:
-- `spec.path` (not `baseFolder`)
+- `spec.path`
 - `spec.encryption.provider: sops`
-- `spec.encryption.generateWhenMissing: true`
+- `spec.encryption.age.recipients.generateWhenMissing: true`
 
-When the encryption Secret is auto-generated, back up `SOPS_AGE_KEY` immediately.
+When the encryption Secret is auto-generated, back up the generated `*.agekey` entry immediately.
 If you lose it, existing encrypted `*.sops.yaml` files are unrecoverable.
 After backup verification, remove warning annotation:
 

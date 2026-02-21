@@ -20,8 +20,10 @@ package controller
 
 import (
 	"context"
+	"strings"
 	"time"
 
+	"filippo.io/age"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
@@ -583,7 +585,13 @@ var _ = Describe("GitTarget Controller Security", func() {
 						SecretRef: configbutleraiv1alpha1.LocalSecretReference{
 							Name: "generated-sops-age-key",
 						},
-						GenerateWhenMissing: true,
+						Age: &configbutleraiv1alpha1.AgeEncryptionSpec{
+							Enabled: true,
+							Recipients: configbutleraiv1alpha1.AgeRecipientsSpec{
+								ExtractFromSecret:   true,
+								GenerateWhenMissing: true,
+							},
+						},
 					},
 				},
 			}
@@ -595,8 +603,10 @@ var _ = Describe("GitTarget Controller Security", func() {
 				err := k8sClient.Get(ctx, secretKey, &secret)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(secret.Type).To(Equal(corev1.SecretTypeOpaque))
-				g.Expect(secret.Data).To(HaveKey("SOPS_AGE_KEY"))
-				g.Expect(string(secret.Data["SOPS_AGE_KEY"])).To(ContainSubstring("AGE-SECRET-KEY-"))
+				ageKeyName, ageKeyValue := findFirstAgeKeyEntry(secret.Data)
+				g.Expect(ageKeyName).NotTo(BeEmpty())
+				g.Expect(ageKeyName).To(Equal(currentDateAgeKeySecretDataKey()))
+				g.Expect(string(ageKeyValue)).To(ContainSubstring("AGE-SECRET-KEY-"))
 				g.Expect(secret.Annotations).To(HaveKey(encryptionSecretRecipientAnnoKey))
 				g.Expect(secret.Annotations[encryptionSecretRecipientAnnoKey]).To(HavePrefix("age1"))
 				g.Expect(secret.Annotations).To(HaveKeyWithValue(
@@ -641,6 +651,13 @@ var _ = Describe("GitTarget Controller Security", func() {
 						SecretRef: configbutleraiv1alpha1.LocalSecretReference{
 							Name: "missing-sops-age-key",
 						},
+						Age: &configbutleraiv1alpha1.AgeEncryptionSpec{
+							Enabled: true,
+							Recipients: configbutleraiv1alpha1.AgeRecipientsSpec{
+								ExtractFromSecret:   true,
+								GenerateWhenMissing: false,
+							},
+						},
 					},
 				},
 			}
@@ -670,12 +687,180 @@ var _ = Describe("GitTarget Controller Security", func() {
 					}
 				}
 				g.Expect(encryptionCondition).NotTo(BeNil())
-				g.Expect(encryptionCondition.Reason).To(Equal(GitTargetReasonSecretCreateDisabled))
-				g.Expect(encryptionCondition.Message).To(ContainSubstring("generateWhenMissing is disabled"))
+				g.Expect(encryptionCondition.Reason).To(Equal(GitTargetReasonMissingSecret))
+				g.Expect(encryptionCondition.Message).To(ContainSubstring("failed to fetch encryption secret"))
 			}, timeout, interval).Should(Succeed())
 
 			Expect(k8sClient.Delete(ctx, target)).Should(Succeed())
 			Expect(k8sClient.Delete(ctx, gitProvider)).Should(Succeed())
 		})
+
+		It("Should add one .agekey entry when secret exists without any .agekey entries", func() {
+			ctx := context.Background()
+
+			gitProvider := &configbutleraiv1alpha1.GitProvider{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-provider-update-enc-secret",
+					Namespace: "default",
+				},
+				Spec: configbutleraiv1alpha1.GitProviderSpec{
+					URL:             "https://github.com/test-org/test-repo.git",
+					AllowedBranches: []string{"main"},
+				},
+			}
+			Expect(k8sClient.Create(ctx, gitProvider)).Should(Succeed())
+
+			seedSecret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "existing-sops-secret",
+					Namespace: "default",
+				},
+				Type: corev1.SecretTypeOpaque,
+				Data: map[string][]byte{
+					"OTHER_ENV": []byte("value"),
+				},
+			}
+			Expect(k8sClient.Create(ctx, seedSecret)).Should(Succeed())
+
+			target := &configbutleraiv1alpha1.GitTarget{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-target-update-enc-secret",
+					Namespace: "default",
+				},
+				Spec: configbutleraiv1alpha1.GitTargetSpec{
+					ProviderRef: configbutleraiv1alpha1.GitProviderReference{
+						Name: "test-provider-update-enc-secret",
+						Kind: "GitProvider",
+					},
+					Branch: "main",
+					Path:   "test-path",
+					Encryption: &configbutleraiv1alpha1.EncryptionSpec{
+						Provider: "sops",
+						SecretRef: configbutleraiv1alpha1.LocalSecretReference{
+							Name: "existing-sops-secret",
+						},
+						Age: &configbutleraiv1alpha1.AgeEncryptionSpec{
+							Enabled: true,
+							Recipients: configbutleraiv1alpha1.AgeRecipientsSpec{
+								ExtractFromSecret:   true,
+								GenerateWhenMissing: true,
+							},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, target)).Should(Succeed())
+
+			secretKey := types.NamespacedName{Name: "existing-sops-secret", Namespace: "default"}
+			Eventually(func(g Gomega) {
+				var secret corev1.Secret
+				err := k8sClient.Get(ctx, secretKey, &secret)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(secret.Data).To(HaveKey("OTHER_ENV"))
+				ageKeyName, ageKeyValue := findFirstAgeKeyEntry(secret.Data)
+				g.Expect(ageKeyName).NotTo(BeEmpty())
+				g.Expect(ageKeyName).To(Equal(currentDateAgeKeySecretDataKey()))
+				g.Expect(string(ageKeyValue)).To(ContainSubstring("AGE-SECRET-KEY-"))
+			}, timeout, interval).Should(Succeed())
+
+			Expect(k8sClient.Delete(ctx, target)).Should(Succeed())
+			Expect(k8sClient.Delete(ctx, seedSecret)).Should(Succeed())
+			Expect(k8sClient.Delete(ctx, gitProvider)).Should(Succeed())
+		})
+
+		It("Should not overwrite existing .agekey values when one already exists", func() {
+			ctx := context.Background()
+
+			gitProvider := &configbutleraiv1alpha1.GitProvider{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-provider-existing-agekey",
+					Namespace: "default",
+				},
+				Spec: configbutleraiv1alpha1.GitProviderSpec{
+					URL:             "https://github.com/test-org/test-repo.git",
+					AllowedBranches: []string{"main"},
+				},
+			}
+			Expect(k8sClient.Create(ctx, gitProvider)).Should(Succeed())
+
+			existingIdentity, err := age.GenerateX25519Identity()
+			Expect(err).NotTo(HaveOccurred())
+			existingAgeKey := existingIdentity.String()
+			seedSecret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "existing-agekey-secret",
+					Namespace: "default",
+				},
+				Type: corev1.SecretTypeOpaque,
+				Data: map[string][]byte{
+					"20260221.agekey": []byte(existingAgeKey),
+					"OTHER_ENV":       []byte("value"),
+				},
+			}
+			Expect(k8sClient.Create(ctx, seedSecret)).Should(Succeed())
+
+			target := &configbutleraiv1alpha1.GitTarget{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-target-existing-agekey",
+					Namespace: "default",
+				},
+				Spec: configbutleraiv1alpha1.GitTargetSpec{
+					ProviderRef: configbutleraiv1alpha1.GitProviderReference{
+						Name: "test-provider-existing-agekey",
+						Kind: "GitProvider",
+					},
+					Branch: "main",
+					Path:   "test-path",
+					Encryption: &configbutleraiv1alpha1.EncryptionSpec{
+						Provider: "sops",
+						SecretRef: configbutleraiv1alpha1.LocalSecretReference{
+							Name: "existing-agekey-secret",
+						},
+						Age: &configbutleraiv1alpha1.AgeEncryptionSpec{
+							Enabled: true,
+							Recipients: configbutleraiv1alpha1.AgeRecipientsSpec{
+								ExtractFromSecret:   true,
+								GenerateWhenMissing: true,
+							},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, target)).Should(Succeed())
+
+			secretKey := types.NamespacedName{Name: "existing-agekey-secret", Namespace: "default"}
+			Eventually(func(g Gomega) {
+				var secret corev1.Secret
+				err := k8sClient.Get(ctx, secretKey, &secret)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(secret.Data).To(HaveKey("OTHER_ENV"))
+				g.Expect(secret.Data).To(HaveKey("20260221.agekey"))
+				g.Expect(string(secret.Data["20260221.agekey"])).To(Equal(existingAgeKey))
+				g.Expect(countAgeKeyEntries(secret.Data)).To(Equal(1))
+			}, timeout, interval).Should(Succeed())
+
+			Expect(k8sClient.Delete(ctx, target)).Should(Succeed())
+			Expect(k8sClient.Delete(ctx, seedSecret)).Should(Succeed())
+			Expect(k8sClient.Delete(ctx, gitProvider)).Should(Succeed())
+		})
 	})
 })
+
+func findFirstAgeKeyEntry(data map[string][]byte) (string, []byte) {
+	for key, value := range data {
+		if strings.HasSuffix(key, ".agekey") {
+			return key, value
+		}
+	}
+	return "", nil
+}
+
+func countAgeKeyEntries(data map[string][]byte) int {
+	count := 0
+	for key := range data {
+		if strings.HasSuffix(key, ".agekey") {
+			count++
+		}
+	}
+	return count
+}

@@ -460,6 +460,102 @@ func TestGitTargetValidator_NilObject(t *testing.T) {
 	})
 }
 
+func TestValidateGitTargetEncryptionSpec(t *testing.T) {
+	t.Run("passes when encryption is nil", func(t *testing.T) {
+		target := &configbutleraiv1alpha1.GitTarget{}
+		require.NoError(t, validateGitTargetEncryptionSpec(target))
+	})
+
+	t.Run("passes when age is disabled", func(t *testing.T) {
+		target := &configbutleraiv1alpha1.GitTarget{
+			Spec: configbutleraiv1alpha1.GitTargetSpec{
+				Encryption: &configbutleraiv1alpha1.EncryptionSpec{
+					Provider: "sops",
+				},
+			},
+		}
+		require.NoError(t, validateGitTargetEncryptionSpec(target))
+	})
+
+	t.Run("fails when age enabled without recipient sources", func(t *testing.T) {
+		target := &configbutleraiv1alpha1.GitTarget{
+			Spec: configbutleraiv1alpha1.GitTargetSpec{
+				Encryption: &configbutleraiv1alpha1.EncryptionSpec{
+					Provider: "sops",
+					Age: &configbutleraiv1alpha1.AgeEncryptionSpec{
+						Enabled: true,
+					},
+				},
+			},
+		}
+
+		err := validateGitTargetEncryptionSpec(target)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "requires recipients")
+	})
+
+	t.Run("fails when generateWhenMissing is set without extractFromSecret", func(t *testing.T) {
+		target := &configbutleraiv1alpha1.GitTarget{
+			Spec: configbutleraiv1alpha1.GitTargetSpec{
+				Encryption: &configbutleraiv1alpha1.EncryptionSpec{
+					Provider: "sops",
+					Age: &configbutleraiv1alpha1.AgeEncryptionSpec{
+						Enabled: true,
+						Recipients: configbutleraiv1alpha1.AgeRecipientsSpec{
+							PublicKeys: []string{
+								"age1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq7k8m6",
+							},
+							GenerateWhenMissing: true,
+						},
+					},
+				},
+			},
+		}
+
+		err := validateGitTargetEncryptionSpec(target)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "requires age.recipients.extractFromSecret=true")
+	})
+
+	t.Run("fails when secretRef is missing for extractFromSecret", func(t *testing.T) {
+		target := &configbutleraiv1alpha1.GitTarget{
+			Spec: configbutleraiv1alpha1.GitTargetSpec{
+				Encryption: &configbutleraiv1alpha1.EncryptionSpec{
+					Provider: "sops",
+					Age: &configbutleraiv1alpha1.AgeEncryptionSpec{
+						Enabled: true,
+						Recipients: configbutleraiv1alpha1.AgeRecipientsSpec{
+							ExtractFromSecret: true,
+						},
+					},
+				},
+			},
+		}
+
+		err := validateGitTargetEncryptionSpec(target)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "spec.encryption.secretRef.name is required")
+	})
+
+	t.Run("passes for public key only configuration", func(t *testing.T) {
+		target := &configbutleraiv1alpha1.GitTarget{
+			Spec: configbutleraiv1alpha1.GitTargetSpec{
+				Encryption: &configbutleraiv1alpha1.EncryptionSpec{
+					Provider: "sops",
+					Age: &configbutleraiv1alpha1.AgeEncryptionSpec{
+						Enabled: true,
+						Recipients: configbutleraiv1alpha1.AgeRecipientsSpec{
+							PublicKeys: []string{"age1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq7k8m6"},
+						},
+					},
+				},
+			},
+		}
+
+		require.NoError(t, validateGitTargetEncryptionSpec(target))
+	})
+}
+
 // Mock client that returns errors for testing error paths.
 type errorClient struct {
 	client.Client

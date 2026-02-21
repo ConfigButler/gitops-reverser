@@ -5,4 +5,6 @@ creation_rules:
     encrypted_regex: '^(data|stringData)$'
     key_groups:
       - age:
-          - "{{ .AgeRecipient }}"
+{{- range .AgeRecipients }}
+          - "{{ . }}"
+{{- end }}
