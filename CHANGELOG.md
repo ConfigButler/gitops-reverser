@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.0](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.15.0...gitops-reverser-v0.16.0) (2026-02-21)
+
+
+### Features
+
+* Allow AGE key generation ([a90d4a7](https://github.com/ConfigButler/gitops-reverser/commit/a90d4a7e1f189bbb9c79c6228174a2921d6802e9))
+* Use sops to encrypt secrets ([14ef5e8](https://github.com/ConfigButler/gitops-reverser/commit/14ef5e84975f0c3d476fa1052cb8510395539acb))
+
+
+### Bug Fixes
+
+* Docker-outside-docker is apperently flaky, applied a workarround so that I can keep behaviour equal to CI for now ([50ffced](https://github.com/ConfigButler/gitops-reverser/commit/50ffced8929242e5affb4c7988db169aa3bb8610))
+* Let's fix it! ([401916d](https://github.com/ConfigButler/gitops-reverser/commit/401916d23d601290b7a1cd4dc3068fc1406d1632))
+* linting ([2d95654](https://github.com/ConfigButler/gitops-reverser/commit/2d956548ab5ef0c56ef8277383beeddb21e19d4f))
+
+
+### Documentation
+
+* Improvement plans for SOPS Age key generation (support only supplying public keys as well). Also multiple recpiants if wished for. ([6091aa5](https://github.com/ConfigButler/gitops-reverser/commit/6091aa584f3a3eca08e4df0f244c18a1757119c9))
+
 ## [0.15.0](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.14.3...gitops-reverser-v0.15.0) (2026-02-13)
 
 
