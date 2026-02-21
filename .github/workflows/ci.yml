@@ -352,7 +352,7 @@ jobs:
 
       - name: Run install quickstart smoke test in CI container
         run: |
-          TARGET="test-e2e-install-quickstart-${{ matrix.scenario }}"
+          TARGET="test-e2e-quickstart-${{ matrix.scenario }}"
           docker run --rm \
             --network host \
             -v "${GITHUB_WORKSPACE}:${{ env.CI_WORKDIR }}" \

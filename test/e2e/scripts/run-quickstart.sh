@@ -20,6 +20,10 @@ INVALID_PROVIDER_NAME="quickstart-invalid-provider-${TEST_ID}"
 ENCRYPTION_SECRET_NAME="quickstart-sops-age-key-${TEST_ID}"
 CONFIGMAP_NAME="quickstart-config-${TEST_ID}"
 EXPECTED_CONFIGMAP_FILE="${CHECKOUT_DIR}/live-cluster/v1/configmaps/${QUICKSTART_NAMESPACE}/${CONFIGMAP_NAME}.yaml"
+SECRET_NAME="quickstart-secret-${TEST_ID}"
+SECRET_VALUE_ONE="quickstart-plaintext-one-${TEST_ID}"
+SECRET_VALUE_TWO="quickstart-plaintext-two-${TEST_ID}"
+EXPECTED_SECRET_FILE="${CHECKOUT_DIR}/live-cluster/v1/secrets/${QUICKSTART_NAMESPACE}/${SECRET_NAME}.sops.yaml"
 GITEA_PORT_FORWARD_PID=""
 
 if [[ -z "${MODE}" ]]; then
@@ -311,7 +315,7 @@ wait_for_file_contains() {
 
   while true; do
     git -C "${CHECKOUT_DIR}" pull --ff-only >/dev/null 2>&1 || true
-    if [[ -f "${file_path}" ]] && grep -q "${expected_text}" "${file_path}"; then
+    if [[ -f "${file_path}" ]] && grep -Fq "${expected_text}" "${file_path}"; then
       return 0
     fi
     now="$(date +%s)"
@@ -341,6 +345,67 @@ wait_for_file_absent() {
     fi
     sleep 2
   done
+}
+
+wait_for_file_not_contains() {
+  local file_path="$1"
+  local unexpected_text="$2"
+  local timeout_seconds="$3"
+  local start_epoch now
+  start_epoch="$(date +%s)"
+
+  while true; do
+    git -C "${CHECKOUT_DIR}" pull --ff-only >/dev/null 2>&1 || true
+    if [[ -f "${file_path}" ]] && ! grep -Fq "${unexpected_text}" "${file_path}"; then
+      return 0
+    fi
+    now="$(date +%s)"
+    if (( now - start_epoch >= timeout_seconds )); then
+      echo "Timed out waiting for file content: ${file_path} to NOT contain '${unexpected_text}'"
+      return 1
+    fi
+    sleep 2
+  done
+}
+
+extract_generated_age_key() {
+  local secret_name="$1"
+  local key_data age_key
+
+  key_data="$(
+    kubectl -n "${QUICKSTART_NAMESPACE}" get secret "${secret_name}" -o jsonpath='{.data.SOPS_AGE_KEY}' 2>/dev/null || true
+  )"
+  if [[ -z "${key_data}" ]]; then
+    echo "SOPS_AGE_KEY is missing from secret ${QUICKSTART_NAMESPACE}/${secret_name}"
+    return 1
+  fi
+
+  age_key="$(printf '%s' "${key_data}" | base64 -d 2>/dev/null | awk '/AGE-SECRET-KEY-/{print; exit}')"
+  if [[ -z "${age_key}" ]]; then
+    echo "Failed to decode AGE-SECRET-KEY from secret ${QUICKSTART_NAMESPACE}/${secret_name}"
+    return 1
+  fi
+
+  printf '%s' "${age_key}"
+}
+
+decrypt_file_with_controller_sops() {
+  local file_path="$1"
+  local age_key="$2"
+  local pod_selector pod_name
+
+  pod_selector="$(get_controller_pod_selector)"
+  pod_name="$(
+    kubectl -n "${NAMESPACE}" get pod -l "${pod_selector}" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true
+  )"
+  if [[ -z "${pod_name}" ]]; then
+    echo "Failed to find controller pod in namespace ${NAMESPACE}"
+    return 1
+  fi
+
+  kubectl -n "${NAMESPACE}" exec -i "${pod_name}" -- \
+    env "SOPS_AGE_KEY=${age_key}" \
+    /usr/local/bin/sops --decrypt --input-type yaml --output-type yaml /dev/stdin < "${file_path}"
 }
 
 run_quickstart_flow() {
@@ -395,7 +460,7 @@ spec:
     - operations: [CREATE, UPDATE, DELETE]
       apiGroups: [""]
       apiVersions: ["v1"]
-      resources: ["configmaps"]
+      resources: ["configmaps", "secrets"]
 EOF
 
   wait_for_ready gitprovider "${GIT_PROVIDER_NAME}" "${QUICKSTART_NAMESPACE}" "${QUICKSTART_TIMEOUT_SECONDS}"
@@ -447,6 +512,42 @@ EOF
     echo "Expected commit count to increase after delete (${commits_after_update} -> ${commits_after_delete})"
     return 1
   fi
+
+  echo "Running encrypted Secret commit check"
+  local commits_before_secret commits_after_secret secret_value_one_b64 secret_value_two_b64
+  commits_before_secret="$(git_commit_count)"
+  secret_value_one_b64="$(printf '%s' "${SECRET_VALUE_ONE}" | base64 | tr -d '\n')"
+  secret_value_two_b64="$(printf '%s' "${SECRET_VALUE_TWO}" | base64 | tr -d '\n')"
+
+  kubectl -n "${QUICKSTART_NAMESPACE}" delete secret "${SECRET_NAME}" --ignore-not-found=true >/dev/null
+  kubectl -n "${QUICKSTART_NAMESPACE}" create secret generic "${SECRET_NAME}" \
+    --from-literal=password="${SECRET_VALUE_ONE}" >/dev/null
+  kubectl -n "${QUICKSTART_NAMESPACE}" patch secret "${SECRET_NAME}" --type merge \
+    --patch "{\"stringData\":{\"password\":\"${SECRET_VALUE_TWO}\"}}" >/dev/null
+
+  wait_for_file_exists "${EXPECTED_SECRET_FILE}" "${QUICKSTART_TIMEOUT_SECONDS}"
+  wait_for_file_contains "${EXPECTED_SECRET_FILE}" "sops:" "${QUICKSTART_TIMEOUT_SECONDS}"
+  wait_for_file_not_contains "${EXPECTED_SECRET_FILE}" "${SECRET_VALUE_ONE}" "${QUICKSTART_TIMEOUT_SECONDS}"
+  wait_for_file_not_contains "${EXPECTED_SECRET_FILE}" "${SECRET_VALUE_TWO}" "${QUICKSTART_TIMEOUT_SECONDS}"
+  wait_for_file_not_contains "${EXPECTED_SECRET_FILE}" "${secret_value_one_b64}" "${QUICKSTART_TIMEOUT_SECONDS}"
+  wait_for_file_not_contains "${EXPECTED_SECRET_FILE}" "${secret_value_two_b64}" "${QUICKSTART_TIMEOUT_SECONDS}"
+
+  echo "Validating encrypted Secret is decryptable with generated key"
+  local generated_age_key decrypted_secret
+  generated_age_key="$(extract_generated_age_key "${ENCRYPTION_SECRET_NAME}")"
+  decrypted_secret="$(decrypt_file_with_controller_sops "${EXPECTED_SECRET_FILE}" "${generated_age_key}")"
+  if ! grep -Fq "${secret_value_two_b64}" <<<"${decrypted_secret}"; then
+    echo "Expected decrypted secret payload to contain updated value (base64) after patch"
+    return 1
+  fi
+
+  commits_after_secret="$(git_commit_count)"
+  if (( commits_after_secret <= commits_before_secret )); then
+    echo "Expected commit count to increase after secret write (${commits_before_secret} -> ${commits_after_secret})"
+    return 1
+  fi
+
+  kubectl -n "${QUICKSTART_NAMESPACE}" delete secret "${SECRET_NAME}" --ignore-not-found=true >/dev/null
 
   echo "Running invalid-credentials quickstart UX check"
   cat <<EOF | kubectl apply -f -

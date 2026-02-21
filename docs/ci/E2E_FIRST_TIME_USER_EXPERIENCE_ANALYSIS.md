@@ -211,9 +211,9 @@ Deliverables:
 
 - New script and helper functions.
 - Updated Make targets:
-  - `test-e2e-install-quickstart`
-  - `test-e2e-install-quickstart-helm`
-  - `test-e2e-install-quickstart-manifest`
+  - `test-e2e-quickstart`
+  - `test-e2e-quickstart-helm`
+  - `test-e2e-quickstart-manifest`
 - Backward-compatible alias targets for one release cycle (optional).
 
 Exit criteria:
