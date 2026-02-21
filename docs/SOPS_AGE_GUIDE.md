@@ -67,6 +67,7 @@ Notes:
 - `path_regex` controls which files are encrypted with this rule.
 - `encrypted_regex` keeps Kubernetes Secret payload fields encrypted.
 - You can add multiple recipients under `age:`.
+- SOPS encrypts to all listed recipients; it does not select only one.
 
 ## Encrypt/decrypt with sops
 
@@ -154,3 +155,8 @@ The bootstrap template currently contains a static recipient in
 
 Moved to a dedicated document: [`docs/SOPS_GENERATE_WHEN_MISSING_PLAN.md`](docs/SOPS_GENERATE_WHEN_MISSING_PLAN.md)
 
+## Design plan: Flux-aligned key handling
+
+Implications and proposal for optional secretless encryption, Flux-compatible
+`*.agekey` generation, and multi-key support:
+[`docs/SOPS_FLUX_AGE_KEY_ALIGNMENT_PLAN.md`](docs/SOPS_FLUX_AGE_KEY_ALIGNMENT_PLAN.md)
