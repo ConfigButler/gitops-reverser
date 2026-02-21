@@ -44,4 +44,7 @@ Local dev builds directly from dev stage, no separate initialization needed.
 **Container won't build** → Ensure Docker is running  
 **Slow rebuild** → Normal, only rebuilds when tools/deps change
 
+Kind/DOOD failure findings + DinD migration plan:  
+[`KIND_DOOD_FINDINGS_AND_DIND_TRANSITION_PLAN.md`](./KIND_DOOD_FINDINGS_AND_DIND_TRANSITION_PLAN.md)
+
 See [`docs/COMPLETE_SOLUTION.md`](../docs/COMPLETE_SOLUTION.md) for details.
