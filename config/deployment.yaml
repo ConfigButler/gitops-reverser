@@ -4,22 +4,22 @@ metadata:
   labels:
     app.kubernetes.io/managed-by: kustomize
     app.kubernetes.io/name: gitops-reverser
-    control-plane: controller-manager
-  name: gitops-reverser-controller-manager
+    control-plane: gitops-reverser
+  name: gitops-reverser
   namespace: sut
 spec:
   replicas: 1
   selector:
     matchLabels:
       app.kubernetes.io/name: gitops-reverser
-      control-plane: controller-manager
+      control-plane: gitops-reverser
   template:
     metadata:
       annotations:
         kubectl.kubernetes.io/default-container: manager
       labels:
         app.kubernetes.io/name: gitops-reverser
-        control-plane: controller-manager
+        control-plane: gitops-reverser
     spec:
       containers:
       - args:
@@ -89,7 +89,7 @@ spec:
         runAsNonRoot: true
         seccompProfile:
           type: RuntimeDefault
-      serviceAccountName: gitops-reverser-controller-manager
+      serviceAccountName: gitops-reverser
       terminationGracePeriodSeconds: 10
       volumes:
       - emptyDir: {}

@@ -99,10 +99,10 @@ var _ = Describe("Manager", Ordered, func() {
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to install CRDs")
 
-		By("deploying the controller-manager")
+		By("deploying gitops-reverser")
 		cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", projectImage))
 		_, err = utils.Run(cmd)
-		Expect(err).NotTo(HaveOccurred(), "Failed to deploy the controller-manager")
+		Expect(err).NotTo(HaveOccurred(), "Failed to deploy gitops-reverser")
 
 		By("waiting for certificate secrets to be created by cert-manager")
 		waitForCertificateSecrets()
@@ -176,11 +176,11 @@ var _ = Describe("Manager", Ordered, func() {
 	Context("Manager", func() {
 
 		It("should run successfully", func() {
-			By("validating that the controller-manager pods are running as expected")
+			By("validating that the gitops-reverser pods are running as expected")
 			verifyControllerUp := func(g Gomega) {
-				// Get the names of the controller-manager pods
+				// Get the names of the gitops-reverser pods
 				cmd := exec.Command("kubectl", "get",
-					"pods", "-l", "control-plane=controller-manager",
+					"pods", "-l", "control-plane=gitops-reverser",
 					"-o", "go-template={{ range .items }}"+
 						"{{ if not .metadata.deletionTimestamp }}"+
 						"{{ .metadata.name }}"+
@@ -189,11 +189,11 @@ var _ = Describe("Manager", Ordered, func() {
 				)
 
 				podOutput, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred(), "Failed to retrieve controller-manager pod information")
+				g.Expect(err).NotTo(HaveOccurred(), "Failed to retrieve gitops-reverser pod information")
 				podNames := utils.GetNonEmptyLines(podOutput)
 				g.Expect(podNames).To(HaveLen(1), "expected exactly 1 controller pod running")
 				controllerPodName = podNames[0] // Use first pod for logging
-				g.Expect(controllerPodName).To(ContainSubstring("controller-manager"))
+				g.Expect(controllerPodName).To(ContainSubstring("gitops-reverser"))
 
 				// Validate all pods' status
 				for _, podName := range podNames {
@@ -226,7 +226,7 @@ var _ = Describe("Manager", Ordered, func() {
 					// Skip warning lines
 					if !strings.HasPrefix(line, "Warning:") &&
 						!strings.Contains(line, "deprecated") &&
-						strings.Contains(line, "controller-manager") {
+						strings.Contains(line, "gitops-reverser") {
 						podSet[line] = struct{}{}
 					}
 				}
@@ -263,7 +263,7 @@ var _ = Describe("Manager", Ordered, func() {
 				for _, line := range lines {
 					if !strings.HasPrefix(line, "Warning:") &&
 						!strings.Contains(line, "deprecated") &&
-						strings.Contains(line, "controller-manager") {
+						strings.Contains(line, "gitops-reverser") {
 						podSet[line] = struct{}{}
 					}
 				}
@@ -807,7 +807,7 @@ var _ = Describe("Manager", Ordered, func() {
 			By("waiting for controller reconciliation of ConfigMap event")
 			verifyReconciliationLogs := func(g Gomega) {
 				// Get controller logs from all pods (single-pod mode still uses label selector).
-				cmd := exec.Command("kubectl", "logs", "-l", "control-plane=controller-manager",
+				cmd := exec.Command("kubectl", "logs", "-l", "control-plane=gitops-reverser",
 					"-n", namespace, "--tail=500", "--prefix=true")
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
@@ -1155,7 +1155,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 			By("waiting for controller reconciliation of CRD instance event")
 			verifyReconciliationLogs := func(g Gomega) {
-				cmd := exec.Command("kubectl", "logs", "-l", "control-plane=controller-manager",
+				cmd := exec.Command("kubectl", "logs", "-l", "control-plane=gitops-reverser",
 					"-n", namespace, "--tail=500", "--prefix=true")
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
@@ -1605,7 +1605,7 @@ func deriveAgeRecipient(identityString string) (string, error) {
 func decryptWithControllerSOPS(ciphertext []byte, ageKey string) (string, error) {
 	podCmd := exec.Command(
 		"kubectl", "get", "pods",
-		"-l", "control-plane=controller-manager",
+		"-l", "control-plane=gitops-reverser",
 		"-n", namespace,
 		"-o", "jsonpath={.items[0].metadata.name}",
 	)
@@ -1740,7 +1740,7 @@ func showControllerLogs(context string) {
 	By(fmt.Sprintf("📋 Controller logs %s:", context))
 
 	// Get the controller pod name dynamically
-	cmd := exec.Command("kubectl", "get", "pods", "-l", "control-plane=controller-manager",
+	cmd := exec.Command("kubectl", "get", "pods", "-l", "control-plane=gitops-reverser",
 		"-o", "jsonpath={.items[0].metadata.name}", "-n", namespace)
 	podName, err := utils.Run(cmd)
 	if err != nil {
