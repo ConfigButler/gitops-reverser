@@ -58,7 +58,9 @@ Create the name of the service account to use
 {{- define "gitops-reverser.serviceAccountName" -}}
 {{- if .Values.serviceAccount.create }}
 {{- default (include "gitops-reverser.fullname" .) .Values.serviceAccount.name }}
+{{- else if .Values.serviceAccount.name }}
+{{- .Values.serviceAccount.name }}
 {{- else }}
-{{- default "default" .Values.serviceAccount.name }}
+{{- fail "serviceAccount.name must be set when serviceAccount.create=false" }}
 {{- end }}
 {{- end }}

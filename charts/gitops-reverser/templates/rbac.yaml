@@ -1,7 +1,7 @@
 {{- if .Values.rbac.create -}}
-{{- $roleYaml := .Files.Get "config/role.yaml" -}}
+{{- $roleYaml := .Files.Get "config/cluster-role.yaml" -}}
 {{- if eq $roleYaml "" -}}
-{{- fail "charts/gitops-reverser/config/role.yaml is missing. Run `make helm-sync` to regenerate chart RBAC artifacts before templating/installing." -}}
+{{- fail "charts/gitops-reverser/config/cluster-role.yaml is missing. Run `make helm-sync` to regenerate chart RBAC artifacts before templating/installing." -}}
 {{- end -}}
 {{- $roleFile := $roleYaml | fromYaml }}
 
@@ -24,53 +24,6 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
   name: {{ include "gitops-reverser.fullname" . }}-manager-role
-subjects:
-- kind: ServiceAccount
-  name: {{ include "gitops-reverser.serviceAccountName" . }}
-  namespace: {{ .Release.Namespace }}
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: {{ include "gitops-reverser.fullname" . }}-metrics-reader
-  labels:
-    {{- include "gitops-reverser.labels" . | nindent 4 }}
-rules:
-- nonResourceURLs:
-  - "/metrics"
-  verbs:
-  - get
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: {{ include "gitops-reverser.fullname" . }}-proxy-role
-  labels:
-    {{- include "gitops-reverser.labels" . | nindent 4 }}
-rules:
-- apiGroups:
-  - authentication.k8s.io
-  resources:
-  - tokenreviews
-  verbs:
-  - create
-- apiGroups:
-  - authorization.k8s.io
-  resources:
-  - subjectaccessreviews
-  verbs:
-  - create
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: {{ include "gitops-reverser.fullname" . }}-proxy-rolebinding
-  labels:
-    {{- include "gitops-reverser.labels" . | nindent 4 }}
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: {{ include "gitops-reverser.fullname" . }}-proxy-role
 subjects:
 - kind: ServiceAccount
   name: {{ include "gitops-reverser.serviceAccountName" . }}

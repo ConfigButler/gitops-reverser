@@ -50,7 +50,8 @@ manifests: ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefin
 helm-sync: ## Sync CRDs and roles from config/crd/bases to Helm chart crds directory (for packaging)
 	@rm -f charts/gitops-reverser/crds/*.yaml
 	@cp config/crd/bases/*.yaml charts/gitops-reverser/crds/
-	@cp config/rbac/role.yaml charts/gitops-reverser/config
+	@rm -f charts/gitops-reverser/config/*.yaml
+	@cp config/rbac/cluster-role.yaml charts/gitops-reverser/config/
 
 .PHONY: generate
 generate: ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
