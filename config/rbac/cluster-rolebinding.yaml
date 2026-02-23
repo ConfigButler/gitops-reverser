@@ -11,5 +11,5 @@ roleRef:
   name: gitops-reverser
 subjects:
 - kind: ServiceAccount
-  name: sa
+  name: gitops-reverser
   namespace: sut
