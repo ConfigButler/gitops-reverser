@@ -107,6 +107,22 @@ ENV KIND_VERSION=v0.31.0
 RUN curl -Lo /usr/local/bin/kind https://github.com/kubernetes-sigs/kind/releases/download/${KIND_VERSION}/kind-linux-amd64
 RUN chmod +x /usr/local/bin/kind
 
+# Install Tilt CLI (local dev loop orchestration; dev stage only)
+# https://github.com/tilt-dev/tilt/releases
+ENV TILT_VERSION=v0.36.3
+RUN arch="$(dpkg --print-architecture)" && \
+    case "${arch}" in \
+        amd64) tilt_arch="x86_64" ;; \
+        arm64) tilt_arch="arm64" ;; \
+        *) echo "unsupported architecture for Tilt: ${arch}" && exit 1 ;; \
+    esac && \
+    tilt_version_no_v="${TILT_VERSION#v}" && \
+    curl -fsSL -o /tmp/tilt.tar.gz \
+      "https://github.com/tilt-dev/tilt/releases/download/${TILT_VERSION}/tilt.${tilt_version_no_v}.linux.${tilt_arch}.tar.gz" && \
+    tar -xzf /tmp/tilt.tar.gz -C /tmp tilt && \
+    install -m 0755 /tmp/tilt /usr/local/bin/tilt && \
+    rm -f /tmp/tilt /tmp/tilt.tar.gz
+
 # Install Delve debugger for Go debugging in VSCode
 # ACLs from CI stage should be preserved, so no need to re-apply
 RUN go install github.com/go-delve/delve/cmd/dlv@latest

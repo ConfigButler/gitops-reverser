@@ -22,7 +22,8 @@
   ],
   "forwardPorts": [
     13000,
-    19090
+    19090,
+    10350
   ],
   "portsAttributes": {
     "13000": {
@@ -31,6 +32,10 @@
     },
     "19090": {
       "label": "Prometheus",
+      "onAutoForward": "notify"
+    },
+    "10350": {
+      "label": "tilt",
       "onAutoForward": "notify"
     }
   },
