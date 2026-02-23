@@ -93,7 +93,7 @@ Kind Cluster
 
 4. **View controller logs:**
    ```bash
-   kubectl logs -n sut -l control-plane=controller-manager --tail=100
+   kubectl logs -n sut -l control-plane=gitops-reverser --tail=100
    ```
 
 5. **Check Prometheus scrape status:**
