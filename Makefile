@@ -69,7 +69,12 @@ vet: ## Run go vet against code.
 test: manifests generate fmt vet setup-envtest ## Run tests.
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(shell pwd)/bin -p path)" go test $$(go list ./... | grep -v /e2e) -coverprofile cover.out
 
-KIND_CLUSTER ?= gitops-reverser-test-e2e
+# Kind cluster names per E2E test type (kept separate to avoid cross-test contamination).
+KIND_CLUSTER_E2E ?= gitops-reverser-test-e2e
+KIND_CLUSTER_QUICKSTART_HELM ?= gitops-reverser-test-e2e-quickstart-helm
+KIND_CLUSTER_QUICKSTART_MANIFEST ?= gitops-reverser-test-e2e-quickstart-manifest
+# Backward-compatible default for targets that still consume KIND_CLUSTER directly.
+KIND_CLUSTER ?= $(KIND_CLUSTER_E2E)
 E2E_LOCAL_IMAGE ?= gitops-reverser:e2e-local
 CERT_MANAGER_WAIT_TIMEOUT ?= 600s
 CERT_MANAGER_VERSION ?= v1.19.1
@@ -92,6 +97,17 @@ cleanup-cluster: ## Tear down the Kind cluster used for e2e tests
 		echo "ℹ️ Kind cluster '$(KIND_CLUSTER)' does not exist; skipping cleanup"; \
 	fi
 
+.PHONY: cleanup-e2e-clusters
+cleanup-e2e-clusters: ## Tear down all E2E Kind clusters used by test-e2e and quickstart test variants
+	@for cluster in "$(KIND_CLUSTER_E2E)" "$(KIND_CLUSTER_QUICKSTART_HELM)" "$(KIND_CLUSTER_QUICKSTART_MANIFEST)"; do \
+		if $(KIND) get clusters 2>/dev/null | grep -q "^$$cluster$$"; then \
+			echo "🧹 Deleting Kind cluster '$$cluster'"; \
+			$(KIND) delete cluster --name "$$cluster"; \
+		else \
+			echo "ℹ️ Kind cluster '$$cluster' does not exist; skipping cleanup"; \
+		fi; \
+	done
+
 .PHONY: e2e-build-load-image
 e2e-build-load-image: ## Build local image and load it into the Kind cluster used by local e2e flows
 	@if [ -n "$(PROJECT_IMAGE)" ]; then \
@@ -107,6 +123,7 @@ e2e-build-load-image: ## Build local image and load it into the Kind cluster use
 	fi
 
 .PHONY: test-e2e
+test-e2e: KIND_CLUSTER=$(KIND_CLUSTER_E2E)
 test-e2e: setup-cluster cleanup-webhook setup-e2e check-cert-manager manifests setup-port-forwards ## Run end-to-end tests in Kind cluster, note that vet, fmt and generate are not run!
 	@echo "ℹ️ test-e2e reuses the existing Kind cluster (no cluster cleanup in this target)"; \
 	if [ -n "$(PROJECT_IMAGE)" ]; then \
@@ -333,7 +350,7 @@ test-e2e-quickstart: ## Install + quickstart smoke with E2E_INSTALL_MODE=helm|ma
 ## Smoke test: install from local Helm chart and validate first quickstart flow
 .PHONY: test-e2e-quickstart-helm
 test-e2e-quickstart-helm:
-	@$(MAKE) test-e2e-quickstart E2E_INSTALL_MODE=helm PROJECT_IMAGE="$(PROJECT_IMAGE)" KIND_CLUSTER="$(KIND_CLUSTER)"
+	@$(MAKE) test-e2e-quickstart E2E_INSTALL_MODE=helm PROJECT_IMAGE="$(PROJECT_IMAGE)" KIND_CLUSTER="$(KIND_CLUSTER_QUICKSTART_HELM)"
 
 ## Smoke test: install from generated dist/install.yaml and validate first quickstart flow
 .PHONY: test-e2e-quickstart-manifest
@@ -344,4 +361,4 @@ test-e2e-quickstart-manifest:
 		echo "ℹ️ test-e2e-quickstart-manifest local path: regenerating dist/install.yaml via build-installer"; \
 		$(MAKE) build-installer; \
 	fi
-	@$(MAKE) test-e2e-quickstart E2E_INSTALL_MODE=manifest PROJECT_IMAGE="$(PROJECT_IMAGE)" KIND_CLUSTER="$(KIND_CLUSTER)"
+	@$(MAKE) test-e2e-quickstart E2E_INSTALL_MODE=manifest PROJECT_IMAGE="$(PROJECT_IMAGE)" KIND_CLUSTER="$(KIND_CLUSTER_QUICKSTART_MANIFEST)"
