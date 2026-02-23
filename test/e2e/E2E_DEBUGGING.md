@@ -4,6 +4,14 @@
 
 After running e2e tests, the infrastructure remains running for debugging purposes.
 
+### Kind Cluster Names by Test Type
+
+- `make test-e2e` uses `KIND_CLUSTER_E2E` (default: `gitops-reverser-test-e2e`)
+- `make test-e2e-quickstart-helm` uses `KIND_CLUSTER_QUICKSTART_HELM` (default: `gitops-reverser-test-e2e-quickstart-helm`)
+- `make test-e2e-quickstart-manifest` uses `KIND_CLUSTER_QUICKSTART_MANIFEST` (default: `gitops-reverser-test-e2e-quickstart-manifest`)
+
+This separation avoids cross-test contamination between end-to-end and quickstart install smoke tests.
+
 ### Port-Forward Management
 
 The `test-e2e` target automatically starts port-forwards, so services are immediately accessible:
@@ -22,7 +30,7 @@ This exposes:
 make cleanup-port-forwards
 ```
 
-**Note:** The `make test-e2e` and `make e2e-setup` targets automatically run `setup-port-forwards`, so services are ready immediately after setup.
+**Note:** The `make test-e2e` and `make setup-e2e` targets automatically run `setup-port-forwards`, so services are ready immediately after setup.
 
 ## Useful Prometheus Queries
 
@@ -102,10 +110,13 @@ Kind Cluster
 ## Cleanup
 
 ```bash
-# Clean up all e2e infrastructure
-make e2e-cleanup
+# Clean up all E2E Kind clusters (all test types)
+make cleanup-e2e-clusters
 
-# Or individually:
+# Or clean one specific cluster name:
+make cleanup-cluster KIND_CLUSTER=gitops-reverser-test-e2e
+
+# Infra cleanup inside the active cluster:
 make cleanup-prometheus-e2e
 make cleanup-gitea-e2e
 ```
@@ -115,6 +126,9 @@ make cleanup-gitea-e2e
 ```bash
 make setup-port-forwards    # Start port-forwards (Gitea:13000, Prometheus:19090)
 make cleanup-port-forwards  # Stop all port-forwards
-make e2e-setup             # Setup Gitea + Prometheus + port-forwards
+make setup-e2e             # Setup Gitea + Prometheus (+ cert-manager)
 make test-e2e              # Run e2e tests (includes port-forwards)
-make e2e-cleanup           # Clean up all infrastructure
+make test-e2e-quickstart-helm
+make test-e2e-quickstart-manifest
+make cleanup-e2e-clusters  # Delete all E2E test clusters
+```
