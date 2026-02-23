@@ -341,9 +341,9 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 	fs.DurationVar(&cfg.auditIdleTimeout, "audit-idle-timeout", defaultAuditIdleTimeout,
 		"Idle timeout for the dedicated audit ingress HTTPS server.")
 	cfg.zapOpts = zap.Options{
-		Development: true,
-		// Enable more detailed logging for debugging
-		Level: zapcore.InfoLevel, // Change to DebugLevel for even more verbose output
+		// Production mode defaults to JSON encoding, which is easier for log processors to parse.
+		Development: false,
+		Level:       zapcore.InfoLevel,
 	}
 	cfg.zapOpts.BindFlags(fs)
 

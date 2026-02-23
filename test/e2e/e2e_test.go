@@ -311,8 +311,15 @@ var _ = Describe("Manager", Ordered, func() {
 				cmd := exec.Command("kubectl", "logs", controllerPodName, "-n", namespace)
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(output).To(ContainSubstring("controller-runtime.metrics\tServing metrics server"),
-					"Metrics server not yet started")
+				jsonMetricsLogLine := "\"logger\":\"controller-runtime.metrics\"," +
+					"\"msg\":\"Serving metrics server\""
+				g.Expect(output).To(
+					SatisfyAny(
+						ContainSubstring("controller-runtime.metrics\tServing metrics server"),
+						ContainSubstring(jsonMetricsLogLine),
+					),
+					"Metrics server not yet started",
+				)
 			}
 			Eventually(verifyMetricsServerStarted).Should(Succeed())
 

@@ -42,6 +42,7 @@ func TestParseFlagsWithArgs_Defaults(t *testing.T) {
 	assert.Equal(t, 15*time.Second, cfg.auditReadTimeout)
 	assert.Equal(t, 30*time.Second, cfg.auditWriteTimeout)
 	assert.Equal(t, 60*time.Second, cfg.auditIdleTimeout)
+	assert.False(t, cfg.zapOpts.Development)
 }
 
 func TestParseFlagsWithArgs_AuditUnsecure(t *testing.T) {
