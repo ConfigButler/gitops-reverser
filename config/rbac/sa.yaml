@@ -4,5 +4,5 @@ metadata:
   labels:
     app.kubernetes.io/managed-by: kustomize
     app.kubernetes.io/name: gitops-reverser
-  name: gitops-reverser-controller-manager
+  name: gitops-reverser
   namespace: sut

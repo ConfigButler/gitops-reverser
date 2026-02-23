@@ -1,10 +1,7 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
-  # Service account used by the controller manager deployment.
-  - gitops-reverser-controller-manager.yaml
-  # Main runtime permissions for the controller.
-  - gitops-reverser-manager-role.yaml
-  - gitops-reverser-manager-rolebinding.yaml
-  # E2E-only helper: allows impersonated user jane@acme.com writes in tests.
-  - gitops-reverser-demo-jane-access.yaml
+  - sa.yaml
+  - cluster-role.yaml
+  - cluster-rolebinding.yaml
+  - cluster-rolebinding-jane.yaml   # E2E-only helper: allows impersonated user jane@acme.com writes in tests.

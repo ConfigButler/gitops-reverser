@@ -23,4 +23,4 @@ spec:
     targetPort: 8443
   selector:
     app.kubernetes.io/name: gitops-reverser
-    control-plane: controller-manager
+    control-plane: gitops-reverser

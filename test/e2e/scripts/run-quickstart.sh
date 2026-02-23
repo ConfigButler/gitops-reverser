@@ -175,12 +175,12 @@ ensure_gitea_api_port_forward() {
 reset_install_state() {
   echo "Resetting install state for clean first-time install validation"
   kubectl delete clusterrole \
-    gitops-reverser-manager-role \
+    gitops-reverser \
     gitops-reverser-metrics-reader \
     gitops-reverser-proxy-role \
     --ignore-not-found=true >/dev/null || true
   kubectl delete clusterrolebinding \
-    gitops-reverser-manager-rolebinding \
+    gitops-reverser \
     gitops-reverser-proxy-rolebinding \
     --ignore-not-found=true >/dev/null || true
   kubectl delete validatingwebhookconfiguration gitops-reverser-validating-webhook-configuration \
