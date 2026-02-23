@@ -44,8 +44,8 @@ local_resource(
 )
 
 local_resource(
-    'quickstart-smoke',
-    cmd='KIND_CLUSTER=%s PROJECT_IMAGE=gitops-reverser:e2e-local make test-e2e-quickstart-helm' % kind_cluster,
+    'make test-e2e',
+    cmd='KIND_CLUSTER=%s PROJECT_IMAGE=gitops-reverser:e2e-local make test-e2e' % kind_cluster,
     trigger_mode=TRIGGER_MODE_MANUAL,
     resource_deps=['gitops-reverser'],
 )
