@@ -39,3 +39,4 @@ dist/install.yaml
 
 *.o.yaml
 *.ignore.*
+.stamps/*
