@@ -21,29 +21,11 @@ package e2e
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"testing"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-
-	"github.com/ConfigButler/gitops-reverser/test/utils"
 )
-
-var (
-	// projectImage is the name of the image to be tested.
-	// In CI, this is provided via PROJECT_IMAGE environment variable.
-	// For local testing, defaults to locally built image.
-	projectImage = getProjectImage()
-)
-
-// getProjectImage returns the project image name from environment or default.
-func getProjectImage() string {
-	if img := os.Getenv("PROJECT_IMAGE"); img != "" {
-		return img
-	}
-	return "gitops-reverser:e2e-local"
-}
 
 // TestE2E runs the end-to-end (e2e) test suite for the project. These tests execute in an isolated,
 // temporary environment to validate project changes with the purpose of being used in CI jobs.
@@ -56,18 +38,13 @@ func TestE2E(t *testing.T) {
 }
 
 var _ = BeforeSuite(func() {
-	// Check if image is pre-built (CI environment)
-	if os.Getenv("PROJECT_IMAGE") != "" {
-		By(fmt.Sprintf("using pre-built image: %s", projectImage))
-		// Image is already built and loaded in CI pipeline
-		return
+	if img := os.Getenv("PROJECT_IMAGE"); img == "" {
+		// In local runs, the Makefile guarantees the cluster and image are ready
+		// before go test is invoked. Nothing to do here.
+		By("local run: cluster and image prepared by Makefile")
+	} else {
+		By(fmt.Sprintf("using pre-built image: %s", img))
 	}
-
-	// IDE/direct go test path: ensure cluster exists and local image is built+loaded via Makefile.
-	By("PROJECT_IMAGE is not set; preparing cluster/image through Makefile for local run")
-	cmd := exec.Command("make", "setup-cluster", "e2e-build-load-image", fmt.Sprintf("PROJECT_IMAGE=%s", projectImage))
-	_, err := utils.Run(cmd)
-	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build/load manager image via Makefile")
 })
 
 var _ = AfterSuite(func() {

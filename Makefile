@@ -73,32 +73,30 @@ test: manifests generate fmt vet setup-envtest ## Run tests.
 KIND_CLUSTER_E2E ?= gitops-reverser-test-e2e
 KIND_CLUSTER_QUICKSTART_HELM ?= gitops-reverser-test-e2e-quickstart-helm
 KIND_CLUSTER_QUICKSTART_MANIFEST ?= gitops-reverser-test-e2e-quickstart-manifest
-# Backward-compatible default for targets that still consume KIND_CLUSTER directly.
+# KIND_CLUSTER is used by cleanup-cluster; defaults to the main e2e cluster.
 KIND_CLUSTER ?= $(KIND_CLUSTER_E2E)
 E2E_LOCAL_IMAGE ?= gitops-reverser:e2e-local
 CERT_MANAGER_WAIT_TIMEOUT ?= 600s
 CERT_MANAGER_VERSION ?= v1.19.1
 CERT_MANAGER_MANIFEST_URL ?= https://github.com/cert-manager/cert-manager/releases/download/$(CERT_MANAGER_VERSION)/cert-manager.yaml
 
-.PHONY: setup-cluster
-setup-cluster: ## Set up a Kind cluster for e2e tests if it does not exist
-	@if ! command -v $(KIND) >/dev/null 2>&1; then \
-		echo "Kind is not installed - skipping Makefile cluster creation (expected in CI runs since we use helm/kind-action)"; \
-	else \
-		KIND_CLUSTER=$(KIND_CLUSTER) bash test/e2e/kind/start-cluster.sh; \
-	fi
+KUBECONTEXT_E2E := kind-$(KIND_CLUSTER_E2E)
+CS := .stamps/cluster/$(KUBECONTEXT_E2E)
+IS := .stamps/image
+GO_SOURCES := $(shell find cmd internal -type f -name '*.go') go.mod go.sum
 
 .PHONY: cleanup-cluster
-cleanup-cluster: ## Tear down the Kind cluster used for e2e tests
+cleanup-cluster: ## Tear down the Kind cluster used for e2e tests and remove its stamps
 	@if $(KIND) get clusters 2>/dev/null | grep -q "^$(KIND_CLUSTER)$$"; then \
 		echo "🧹 Deleting Kind cluster '$(KIND_CLUSTER)'"; \
 		$(KIND) delete cluster --name $(KIND_CLUSTER); \
 	else \
 		echo "ℹ️ Kind cluster '$(KIND_CLUSTER)' does not exist; skipping cleanup"; \
 	fi
+	rm -rf .stamps/cluster/kind-$(KIND_CLUSTER)
 
 .PHONY: cleanup-e2e-clusters
-cleanup-e2e-clusters: ## Tear down all E2E Kind clusters used by test-e2e and quickstart test variants
+cleanup-e2e-clusters: ## Tear down all E2E Kind clusters and their stamps
 	@for cluster in "$(KIND_CLUSTER_E2E)" "$(KIND_CLUSTER_QUICKSTART_HELM)" "$(KIND_CLUSTER_QUICKSTART_MANIFEST)"; do \
 		if $(KIND) get clusters 2>/dev/null | grep -q "^$$cluster$$"; then \
 			echo "🧹 Deleting Kind cluster '$$cluster'"; \
@@ -106,50 +104,26 @@ cleanup-e2e-clusters: ## Tear down all E2E Kind clusters used by test-e2e and qu
 		else \
 			echo "ℹ️ Kind cluster '$$cluster' does not exist; skipping cleanup"; \
 		fi; \
+		rm -rf .stamps/cluster/kind-$$cluster; \
 	done
 
-.PHONY: e2e-build-load-image
-e2e-build-load-image: ## Build local image and load it into the Kind cluster used by local e2e flows
-	@if [ -n "$(PROJECT_IMAGE)" ]; then \
-		echo "🐳 Building local image $(PROJECT_IMAGE)"; \
-		$(CONTAINER_TOOL) build -t $(PROJECT_IMAGE) .; \
-		echo "📦 Loading image $(PROJECT_IMAGE) into Kind cluster $(KIND_CLUSTER)"; \
-		$(KIND) load docker-image $(PROJECT_IMAGE) --name $(KIND_CLUSTER); \
-	else \
-		echo "🐳 Building local image $(E2E_LOCAL_IMAGE)"; \
-		$(CONTAINER_TOOL) build -t $(E2E_LOCAL_IMAGE) .; \
-		echo "📦 Loading image $(E2E_LOCAL_IMAGE) into Kind cluster $(KIND_CLUSTER)"; \
-		$(KIND) load docker-image $(E2E_LOCAL_IMAGE) --name $(KIND_CLUSTER); \
-	fi
-
-.PHONY: e2e-deploy
-e2e-deploy: manifests ## Deploy controller for e2e flows using PROJECT_IMAGE or local fallback image
-	@set -e; \
-	if [ -n "$(PROJECT_IMAGE)" ]; then \
-		echo "🚀 Deploying gitops-reverser for e2e with image $(PROJECT_IMAGE)"; \
-		$(MAKE) deploy IMG="$(PROJECT_IMAGE)"; \
-	else \
-		echo "🚀 Deploying gitops-reverser for e2e with local fallback image $(E2E_LOCAL_IMAGE)"; \
-		$(MAKE) e2e-build-load-image KIND_CLUSTER=$(KIND_CLUSTER); \
-		$(MAKE) deploy IMG="$(E2E_LOCAL_IMAGE)"; \
-	fi
-
 .PHONY: test-e2e
-test-e2e: KIND_CLUSTER=$(KIND_CLUSTER_E2E)
-test-e2e: setup-cluster cleanup-webhook setup-e2e check-cert-manager e2e-deploy setup-port-forwards ## Run end-to-end tests in Kind cluster, note that vet, fmt and generate are not run!
-	@echo "ℹ️ test-e2e reuses the existing Kind cluster (no cluster cleanup in this target)"; \
-	PROJECT_IMAGE_VALUE="$(PROJECT_IMAGE)"; \
-	if [ -z "$$PROJECT_IMAGE_VALUE" ]; then \
-		PROJECT_IMAGE_VALUE="$(E2E_LOCAL_IMAGE)"; \
-		echo "ℹ️ Entry point selected local fallback image: $$PROJECT_IMAGE_VALUE"; \
-	else \
-		echo "ℹ️ Entry point selected pre-built image (CI-friendly): $$PROJECT_IMAGE_VALUE"; \
-	fi; \
-	KIND_CLUSTER=$(KIND_CLUSTER) PROJECT_IMAGE="$$PROJECT_IMAGE_VALUE" go test ./test/e2e/ -v -ginkgo.v
+test-e2e: $(CS)/e2e.passed ## Run end-to-end tests (stamp-based; only reruns what changed)
 
-.PHONY: cleanup-webhook
-cleanup-webhook: ## Preventive cleanup of ValidatingWebhookConfiguration potenially left by previous test runs
-	$(KUBECTL) delete ValidatingWebhookConfiguration gitops-reverser-validating-webhook-configuration --ignore-not-found=true
+.PHONY: test-e2e-gitprovider
+test-e2e-gitprovider: $(CS)/portforward.running ## Run only GitProvider e2e tests
+	KIND_CLUSTER=$(KIND_CLUSTER_E2E) PROJECT_IMAGE=$(E2E_LOCAL_IMAGE) \
+	  go test ./test/e2e/ -v -ginkgo.v -ginkgo.focus="GitProvider"
+
+.PHONY: test-e2e-watchrule
+test-e2e-watchrule: $(CS)/portforward.running ## Run only WatchRule e2e tests
+	KIND_CLUSTER=$(KIND_CLUSTER_E2E) PROJECT_IMAGE=$(E2E_LOCAL_IMAGE) \
+	  go test ./test/e2e/ -v -ginkgo.v -ginkgo.focus="WatchRule"
+
+.PHONY: test-e2e-encryption
+test-e2e-encryption: $(CS)/portforward.running ## Run only encryption e2e tests
+	KIND_CLUSTER=$(KIND_CLUSTER_E2E) PROJECT_IMAGE=$(E2E_LOCAL_IMAGE) \
+	  go test ./test/e2e/ -v -ginkgo.v -ginkgo.focus="encrypt|SOPS|age"
 
 .PHONY: lint
 lint: ## Run golangci-lint linter
@@ -258,27 +232,174 @@ setup-envtest: ## Setup envtest binaries for unit tests
 		exit 1; \
 	}
 
-##@ E2E Test Infrastructure
+##@ E2E Stamp Targets (file-based; Make skips steps whose inputs haven't changed)
 
-.PHONY: setup-gitea-e2e
-setup-gitea-e2e: ## Set up Gitea for e2e testing
-	@echo "🚀 Setup Gitea for e2e testing..."
-	@$(HELM) repo add gitea-charts https://dl.gitea.com/charts/ 2>/dev/null || true
-	@$(HELM) repo update gitea-charts
-	@$(KUBECTL) create namespace $(GITEA_NAMESPACE) --dry-run=client -o yaml | $(KUBECTL) apply -f -
-	@$(HELM) upgrade --install gitea gitea-charts/gitea \
-		--namespace $(GITEA_NAMESPACE) \
-		--version $(GITEA_CHART_VERSION) \
-		--values test/e2e/gitea-values.yaml
+# DEPLOY_INPUTS: all config files except CRDs (tracked separately by crds.applied)
+DEPLOY_INPUTS := $(CS)/crds.applied $(CS)/cert-manager.installed $(CS)/prometheus.installed \
+                 $(IS)/controller.id \
+                 $(shell find config -type f -not -path 'config/crd/*')
 
-.PHONY: setup-cert-manager
-setup-cert-manager:
-	@echo "🚀 Setting up cert-manager..."
-	@$(KUBECTL) apply -f $(CERT_MANAGER_MANIFEST_URL) | grep -v "unchanged"
+$(CS)/ready: test/e2e/kind/start-cluster.sh test/e2e/kind/cluster-template.yaml
+	mkdir -p $(CS)
+	KIND_CLUSTER=$(KIND_CLUSTER_E2E) bash test/e2e/kind/start-cluster.sh
+	kubectl --context $(KUBECONTEXT_E2E) get ns >/dev/null
+	touch $@
 
-.PHONY: setup-port-forwards
-setup-port-forwards: ## Start all port-forwards in background
-	@bash test/e2e/scripts/setup-port-forwards.sh
+$(CS)/cert-manager.installed: $(CS)/ready
+	mkdir -p $(CS)
+	kubectl --context $(KUBECONTEXT_E2E) apply -f $(CERT_MANAGER_MANIFEST_URL) | grep -v unchanged
+	kubectl --context $(KUBECONTEXT_E2E) -n cert-manager rollout status deploy/cert-manager --timeout=$(CERT_MANAGER_WAIT_TIMEOUT)
+	kubectl --context $(KUBECONTEXT_E2E) -n cert-manager rollout status deploy/cert-manager-webhook --timeout=$(CERT_MANAGER_WAIT_TIMEOUT)
+	kubectl --context $(KUBECONTEXT_E2E) -n cert-manager rollout status deploy/cert-manager-cainjector --timeout=$(CERT_MANAGER_WAIT_TIMEOUT)
+	touch $@
+
+$(CS)/gitea.installed: $(CS)/ready test/e2e/gitea-values.yaml
+	mkdir -p $(CS)
+	$(HELM) repo add gitea-charts https://dl.gitea.com/charts/ 2>/dev/null || true
+	$(HELM) repo update gitea-charts
+	kubectl --context $(KUBECONTEXT_E2E) create namespace $(GITEA_NAMESPACE) --dry-run=client -o yaml \
+	  | kubectl --context $(KUBECONTEXT_E2E) apply -f -
+	$(HELM) --kube-context $(KUBECONTEXT_E2E) upgrade --install gitea gitea-charts/gitea \
+	  --namespace $(GITEA_NAMESPACE) \
+	  --version $(GITEA_CHART_VERSION) \
+	  --values test/e2e/gitea-values.yaml
+	kubectl --context $(KUBECONTEXT_E2E) -n $(GITEA_NAMESPACE) rollout status deploy/gitea --timeout=300s
+	touch $@
+
+$(CS)/prometheus.installed: $(CS)/ready test/e2e/scripts/ensure-prometheus-operator.sh
+	mkdir -p $(CS)
+	KUBECONTEXT=$(KUBECONTEXT_E2E) bash test/e2e/scripts/ensure-prometheus-operator.sh
+	touch $@
+
+$(IS)/controller.id: $(GO_SOURCES) Dockerfile
+	mkdir -p $(IS)
+	$(CONTAINER_TOOL) build -t $(E2E_LOCAL_IMAGE) .
+	$(CONTAINER_TOOL) inspect --format='{{.Id}}' $(E2E_LOCAL_IMAGE) > $@
+
+$(CS)/crds.applied: $(CS)/ready $(shell find config/crd -type f)
+	mkdir -p $(CS)
+	kubectl --context $(KUBECONTEXT_E2E) apply -k config/crd
+	kubectl --context $(KUBECONTEXT_E2E) wait --for=condition=Established crd --all --timeout=120s
+	touch $@
+
+$(CS)/controller.deployed: $(DEPLOY_INPUTS)
+	mkdir -p $(CS)
+	$(KIND) load docker-image $(E2E_LOCAL_IMAGE) --name $(KIND_CLUSTER_E2E)
+	kubectl --context $(KUBECONTEXT_E2E) delete validatingwebhookconfiguration \
+	  gitops-reverser-validating-webhook-configuration --ignore-not-found=true
+	cd config && $(KUSTOMIZE) edit set image gitops-reverser=$(E2E_LOCAL_IMAGE)
+	$(KUSTOMIZE) build config | kubectl --context $(KUBECONTEXT_E2E) apply -f -
+	kubectl --context $(KUBECONTEXT_E2E) -n sut rollout status deploy/gitops-reverser --timeout=180s
+	touch $@
+
+$(CS)/portforward.running: $(CS)/controller.deployed $(CS)/gitea.installed $(CS)/prometheus.installed
+	mkdir -p $(CS)
+	if curl -fsS http://localhost:13000/api/healthz >/dev/null 2>&1 && \
+	   curl -fsS http://localhost:19090/-/healthy    >/dev/null 2>&1; then \
+	  echo "port-forwards already healthy, skipping restart"; \
+	  touch $@; exit 0; \
+	fi
+	bash test/e2e/scripts/setup-port-forwards.sh
+	curl -fsS http://localhost:13000/api/healthz >/dev/null || { echo "Gitea health check failed"; exit 1; }
+	curl -fsS http://localhost:19090/-/healthy    >/dev/null || { echo "Prometheus health check failed"; exit 1; }
+	touch $@
+
+$(CS)/e2e.passed: $(CS)/portforward.running $(shell find test/e2e -name '*.go')
+	mkdir -p $(CS)
+	KIND_CLUSTER=$(KIND_CLUSTER_E2E) PROJECT_IMAGE=$(E2E_LOCAL_IMAGE) \
+	  go test ./test/e2e/ -v -ginkgo.v
+	touch $@
+
+##@ E2E Quickstart Tests
+
+# Quickstart cluster stamp vars (no inline comments to avoid trailing-space bug)
+KUBECONTEXT_QS_HELM := kind-$(KIND_CLUSTER_QUICKSTART_HELM)
+KUBECONTEXT_QS_MANIFEST := kind-$(KIND_CLUSTER_QUICKSTART_MANIFEST)
+CS_QS_HELM := .stamps/cluster/$(KUBECONTEXT_QS_HELM)
+CS_QS_MANIFEST := .stamps/cluster/$(KUBECONTEXT_QS_MANIFEST)
+
+$(CS_QS_HELM)/ready: test/e2e/kind/start-cluster.sh test/e2e/kind/cluster-template.yaml
+	mkdir -p $(CS_QS_HELM)
+	KIND_CLUSTER=$(KIND_CLUSTER_QUICKSTART_HELM) bash test/e2e/kind/start-cluster.sh
+	kubectl --context $(KUBECONTEXT_QS_HELM) get ns >/dev/null
+	touch $@
+
+$(CS_QS_HELM)/cert-manager.installed: $(CS_QS_HELM)/ready
+	mkdir -p $(CS_QS_HELM)
+	kubectl --context $(KUBECONTEXT_QS_HELM) apply -f $(CERT_MANAGER_MANIFEST_URL) | grep -v unchanged
+	kubectl --context $(KUBECONTEXT_QS_HELM) -n cert-manager rollout status deploy/cert-manager --timeout=$(CERT_MANAGER_WAIT_TIMEOUT)
+	kubectl --context $(KUBECONTEXT_QS_HELM) -n cert-manager rollout status deploy/cert-manager-webhook --timeout=$(CERT_MANAGER_WAIT_TIMEOUT)
+	kubectl --context $(KUBECONTEXT_QS_HELM) -n cert-manager rollout status deploy/cert-manager-cainjector --timeout=$(CERT_MANAGER_WAIT_TIMEOUT)
+	touch $@
+
+$(CS_QS_HELM)/gitea.installed: $(CS_QS_HELM)/ready test/e2e/gitea-values.yaml
+	mkdir -p $(CS_QS_HELM)
+	$(HELM) repo add gitea-charts https://dl.gitea.com/charts/ 2>/dev/null || true
+	$(HELM) repo update gitea-charts
+	kubectl --context $(KUBECONTEXT_QS_HELM) create namespace $(GITEA_NAMESPACE) --dry-run=client -o yaml \
+	  | kubectl --context $(KUBECONTEXT_QS_HELM) apply -f -
+	$(HELM) --kube-context $(KUBECONTEXT_QS_HELM) upgrade --install gitea gitea-charts/gitea \
+	  --namespace $(GITEA_NAMESPACE) \
+	  --version $(GITEA_CHART_VERSION) \
+	  --values test/e2e/gitea-values.yaml
+	kubectl --context $(KUBECONTEXT_QS_HELM) -n $(GITEA_NAMESPACE) rollout status deploy/gitea --timeout=300s
+	touch $@
+
+$(CS_QS_HELM)/image.loaded: $(IS)/controller.id $(CS_QS_HELM)/ready
+	$(KIND) load docker-image $(E2E_LOCAL_IMAGE) --name $(KIND_CLUSTER_QUICKSTART_HELM)
+	touch $@
+
+$(CS_QS_MANIFEST)/ready: test/e2e/kind/start-cluster.sh test/e2e/kind/cluster-template.yaml
+	mkdir -p $(CS_QS_MANIFEST)
+	KIND_CLUSTER=$(KIND_CLUSTER_QUICKSTART_MANIFEST) bash test/e2e/kind/start-cluster.sh
+	kubectl --context $(KUBECONTEXT_QS_MANIFEST) get ns >/dev/null
+	touch $@
+
+$(CS_QS_MANIFEST)/cert-manager.installed: $(CS_QS_MANIFEST)/ready
+	mkdir -p $(CS_QS_MANIFEST)
+	kubectl --context $(KUBECONTEXT_QS_MANIFEST) apply -f $(CERT_MANAGER_MANIFEST_URL) | grep -v unchanged
+	kubectl --context $(KUBECONTEXT_QS_MANIFEST) -n cert-manager rollout status deploy/cert-manager --timeout=$(CERT_MANAGER_WAIT_TIMEOUT)
+	kubectl --context $(KUBECONTEXT_QS_MANIFEST) -n cert-manager rollout status deploy/cert-manager-webhook --timeout=$(CERT_MANAGER_WAIT_TIMEOUT)
+	kubectl --context $(KUBECONTEXT_QS_MANIFEST) -n cert-manager rollout status deploy/cert-manager-cainjector --timeout=$(CERT_MANAGER_WAIT_TIMEOUT)
+	touch $@
+
+$(CS_QS_MANIFEST)/gitea.installed: $(CS_QS_MANIFEST)/ready test/e2e/gitea-values.yaml
+	mkdir -p $(CS_QS_MANIFEST)
+	$(HELM) repo add gitea-charts https://dl.gitea.com/charts/ 2>/dev/null || true
+	$(HELM) repo update gitea-charts
+	kubectl --context $(KUBECONTEXT_QS_MANIFEST) create namespace $(GITEA_NAMESPACE) --dry-run=client -o yaml \
+	  | kubectl --context $(KUBECONTEXT_QS_MANIFEST) apply -f -
+	$(HELM) --kube-context $(KUBECONTEXT_QS_MANIFEST) upgrade --install gitea gitea-charts/gitea \
+	  --namespace $(GITEA_NAMESPACE) \
+	  --version $(GITEA_CHART_VERSION) \
+	  --values test/e2e/gitea-values.yaml
+	kubectl --context $(KUBECONTEXT_QS_MANIFEST) -n $(GITEA_NAMESPACE) rollout status deploy/gitea --timeout=300s
+	touch $@
+
+$(CS_QS_MANIFEST)/image.loaded: $(IS)/controller.id $(CS_QS_MANIFEST)/ready
+	$(KIND) load docker-image $(E2E_LOCAL_IMAGE) --name $(KIND_CLUSTER_QUICKSTART_MANIFEST)
+	touch $@
+
+.PHONY: test-e2e-quickstart-helm
+test-e2e-quickstart-helm: $(CS_QS_HELM)/cert-manager.installed $(CS_QS_HELM)/gitea.installed ## Run quickstart smoke test (Helm install) against dedicated Kind cluster
+	@kubectl config use-context $(KUBECONTEXT_QS_HELM)
+	@QS_IMAGE="$(PROJECT_IMAGE)"; \
+	if [ -z "$$QS_IMAGE" ]; then \
+		$(MAKE) $(CS_QS_HELM)/image.loaded; \
+		QS_IMAGE="$(E2E_LOCAL_IMAGE)"; \
+	fi; \
+	PROJECT_IMAGE="$$QS_IMAGE" bash test/e2e/scripts/run-quickstart.sh helm
+
+.PHONY: test-e2e-quickstart-manifest
+test-e2e-quickstart-manifest: $(CS_QS_MANIFEST)/cert-manager.installed $(CS_QS_MANIFEST)/gitea.installed ## Run quickstart smoke test (manifest install) against dedicated Kind cluster
+	@kubectl config use-context $(KUBECONTEXT_QS_MANIFEST)
+	@QS_IMAGE="$(PROJECT_IMAGE)"; \
+	if [ -z "$$QS_IMAGE" ]; then \
+		$(MAKE) build-installer; \
+		$(MAKE) $(CS_QS_MANIFEST)/image.loaded; \
+		QS_IMAGE="$(E2E_LOCAL_IMAGE)"; \
+	fi; \
+	PROJECT_IMAGE="$$QS_IMAGE" bash test/e2e/scripts/run-quickstart.sh manifest
 
 .PHONY: cleanup-port-forwards
 cleanup-port-forwards: ## Stop all port-forwards
@@ -293,77 +414,3 @@ cleanup-gitea-e2e: cleanup-port-forwards ## Clean up Gitea e2e environment
 	@$(HELM) uninstall gitea --namespace $(GITEA_NAMESPACE) 2>/dev/null || true
 	@$(KUBECTL) delete namespace $(GITEA_NAMESPACE) 2>/dev/null || true
 	@echo "✅ Gitea cleanup completed"
-
-.PHONY: ensure-prometheus-operator
-ensure-prometheus-operator: ## Ensure Prometheus Operator + e2e monitoring resources are installed
-	@echo "🚀 Ensuring Prometheus Operator for e2e testing..."
-	@bash test/e2e/scripts/ensure-prometheus-operator.sh
-
-.PHONY: setup-e2e
-setup-e2e: setup-cert-manager setup-gitea-e2e ensure-prometheus-operator ## Setup all e2e test infrastructure
-	@echo "✅ E2E infrastructure initialized"
-
-.PHONY: wait-cert-manager
-wait-cert-manager: ## Wait for cert-manager pods to become ready
-	@echo "⏳ Waiting for cert-manager deployments to become available (timeout=$(CERT_MANAGER_WAIT_TIMEOUT))..."
-	@set -e; \
-	for dep in cert-manager cert-manager-webhook cert-manager-cainjector; do \
-		echo "   - waiting for deployment/$$dep"; \
-		if ! $(KUBECTL) -n cert-manager rollout status deploy/$$dep --timeout=$(CERT_MANAGER_WAIT_TIMEOUT); then \
-			echo "❌ Timed out waiting for cert-manager readiness (deployment=$$dep)"; \
-			echo "📋 cert-manager deployments and pods:"; \
-			$(KUBECTL) -n cert-manager get deploy,pod -o wide || true; \
-			echo "📋 recent cert-manager events:"; \
-			$(KUBECTL) -n cert-manager get events --sort-by=.metadata.creationTimestamp | tail -n 80 || true; \
-			echo "📋 recent cert-manager logs:"; \
-			$(KUBECTL) -n cert-manager logs -l app.kubernetes.io/instance=cert-manager --all-containers=true --tail=120 || true; \
-			exit 1; \
-		fi; \
-	done
-	@echo "✅ cert-manager is ready"
-
-.PHONY: check-cert-manager
-check-cert-manager: wait-cert-manager ## Explicit readiness check for cert-manager
-	@echo "✅ cert-manager check passed"
-
-## Smoke test: install from local Helm chart and validate first quickstart flow
-.PHONY: test-e2e-quickstart
-test-e2e-quickstart: ## Install + quickstart smoke with E2E_INSTALL_MODE=helm|manifest
-	@MODE="$(E2E_INSTALL_MODE)"; \
-	if [ "$$MODE" != "helm" ] && [ "$$MODE" != "manifest" ]; then \
-		echo "❌ Invalid E2E_INSTALL_MODE='$$MODE' (expected: helm|manifest)"; \
-		exit 1; \
-	fi; \
-	PROJECT_IMAGE_VALUE="$(PROJECT_IMAGE)"; \
-	if [ -n "$$PROJECT_IMAGE_VALUE" ]; then \
-		echo "ℹ️ Entry point selected pre-built image (probably running in CI): $$PROJECT_IMAGE_VALUE"; \
-		echo "ℹ️ Skipping cluster cleanup for pre-built image path"; \
-		KIND_CLUSTER=$(KIND_CLUSTER) $(MAKE) setup-cluster setup-e2e check-cert-manager; \
-		KIND_CLUSTER=$(KIND_CLUSTER) PROJECT_IMAGE="$$PROJECT_IMAGE_VALUE" $(MAKE) e2e-deploy; \
-	else \
-		PROJECT_IMAGE_VALUE="$(E2E_LOCAL_IMAGE)"; \
-		echo "🧹 Local fallback path: cleaning cluster to test a clean install"; \
-		KIND_CLUSTER=$(KIND_CLUSTER) $(MAKE) cleanup-cluster; \
-		echo "ℹ️ Entry point selected local fallback image: $$PROJECT_IMAGE_VALUE"; \
-		KIND_CLUSTER=$(KIND_CLUSTER) $(MAKE) setup-cluster setup-e2e check-cert-manager; \
-		KIND_CLUSTER=$(KIND_CLUSTER) PROJECT_IMAGE="$$PROJECT_IMAGE_VALUE" $(MAKE) e2e-build-load-image; \
-		KIND_CLUSTER=$(KIND_CLUSTER) PROJECT_IMAGE="$$PROJECT_IMAGE_VALUE" $(MAKE) e2e-deploy; \
-	fi; \
-	echo "ℹ️ Running install quickstart smoke mode: $$MODE"; \
-	PROJECT_IMAGE="$$PROJECT_IMAGE_VALUE" bash test/e2e/scripts/run-quickstart.sh "$$MODE"; \
-
-## Smoke test: install from local Helm chart and validate first quickstart flow
-.PHONY: test-e2e-quickstart-helm
-test-e2e-quickstart-helm:
-	@$(MAKE) test-e2e-quickstart E2E_INSTALL_MODE=helm PROJECT_IMAGE="$(PROJECT_IMAGE)" KIND_CLUSTER="$(KIND_CLUSTER_QUICKSTART_HELM)"
-
-## Smoke test: install from generated dist/install.yaml and validate first quickstart flow
-.PHONY: test-e2e-quickstart-manifest
-test-e2e-quickstart-manifest:
-	@if [ -n "$(PROJECT_IMAGE)" ]; then \
-		echo "ℹ️ test-e2e-quickstart-manifest using existing artifact (PROJECT_IMAGE set, CI/pre-built path)"; \
-	else \
-		echo "ℹ️ test-e2e-quickstart-manifest local path: regenerating dist/install.yaml via build-installer"; \
-		$(MAKE) build-installer; \
-	fi
-	@$(MAKE) test-e2e-quickstart E2E_INSTALL_MODE=manifest PROJECT_IMAGE="$(PROJECT_IMAGE)" KIND_CLUSTER="$(KIND_CLUSTER_QUICKSTART_MANIFEST)"

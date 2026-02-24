@@ -88,20 +88,6 @@ var _ = Describe("Manager", Ordered, func() {
 
 		setupSOPSAgeSecret(e2eAgeKeyPath)
 
-		By("installing CRDs")
-		cmd = exec.Command("make", "install")
-		_, err = utils.Run(cmd)
-		Expect(err).NotTo(HaveOccurred(), "Failed to install CRDs")
-
-		By("restarting deployed gitops-reverser to pick up updated test secrets")
-		cmd = exec.Command("kubectl", "rollout", "restart", "deployment/gitops-reverser", "-n", namespace)
-		_, err = utils.Run(cmd)
-		Expect(err).NotTo(HaveOccurred(), "Failed to restart gitops-reverser deployment")
-
-		cmd = exec.Command("kubectl", "rollout", "status", "deployment/gitops-reverser", "-n", namespace, "--timeout=120s")
-		_, err = utils.Run(cmd)
-		Expect(err).NotTo(HaveOccurred(), "Failed waiting for gitops-reverser rollout")
-
 		By("waiting for certificate secrets to be created by cert-manager")
 		waitForCertificateSecrets()
 
@@ -334,7 +320,7 @@ var _ = Describe("Manager", Ordered, func() {
 			By("verifying metrics from the controller pod")
 			podCount, err := queryPrometheus("count(up{job='gitops-reverser'})")
 			Expect(err).NotTo(HaveOccurred())
-			Expect(podCount).To(Equal(1.0), "Should scrape from 1 controller pod")
+			Expect(podCount).To(BeEquivalentTo(1), "Should scrape from 1 controller pod")
 
 			fmt.Printf("✅ Metrics collection verified from %.0f pods\n", podCount)
 			fmt.Printf("📊 Inspect metrics: %s\n", getPrometheusURL())
