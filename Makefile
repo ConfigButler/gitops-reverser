@@ -122,20 +122,30 @@ e2e-build-load-image: ## Build local image and load it into the Kind cluster use
 		$(KIND) load docker-image $(E2E_LOCAL_IMAGE) --name $(KIND_CLUSTER); \
 	fi
 
+.PHONY: e2e-deploy
+e2e-deploy: manifests ## Deploy controller for e2e flows using PROJECT_IMAGE or local fallback image
+	@set -e; \
+	if [ -n "$(PROJECT_IMAGE)" ]; then \
+		echo "🚀 Deploying gitops-reverser for e2e with image $(PROJECT_IMAGE)"; \
+		$(MAKE) deploy IMG="$(PROJECT_IMAGE)"; \
+	else \
+		echo "🚀 Deploying gitops-reverser for e2e with local fallback image $(E2E_LOCAL_IMAGE)"; \
+		$(MAKE) e2e-build-load-image KIND_CLUSTER=$(KIND_CLUSTER); \
+		$(MAKE) deploy IMG="$(E2E_LOCAL_IMAGE)"; \
+	fi
+
 .PHONY: test-e2e
 test-e2e: KIND_CLUSTER=$(KIND_CLUSTER_E2E)
-test-e2e: setup-cluster cleanup-webhook setup-e2e check-cert-manager manifests setup-port-forwards ## Run end-to-end tests in Kind cluster, note that vet, fmt and generate are not run!
+test-e2e: setup-cluster cleanup-webhook setup-e2e check-cert-manager e2e-deploy setup-port-forwards ## Run end-to-end tests in Kind cluster, note that vet, fmt and generate are not run!
 	@echo "ℹ️ test-e2e reuses the existing Kind cluster (no cluster cleanup in this target)"; \
-	if [ -n "$(PROJECT_IMAGE)" ]; then \
-		echo "ℹ️ Entry point selected pre-built image (CI-friendly): $(PROJECT_IMAGE)"; \
-		echo "ℹ️ Skipping local image build/load for pre-built image path"; \
-		KIND_CLUSTER=$(KIND_CLUSTER) PROJECT_IMAGE="$(PROJECT_IMAGE)" go test ./test/e2e/ -v -ginkgo.v; \
+	PROJECT_IMAGE_VALUE="$(PROJECT_IMAGE)"; \
+	if [ -z "$$PROJECT_IMAGE_VALUE" ]; then \
+		PROJECT_IMAGE_VALUE="$(E2E_LOCAL_IMAGE)"; \
+		echo "ℹ️ Entry point selected local fallback image: $$PROJECT_IMAGE_VALUE"; \
 	else \
-		echo "ℹ️ Entry point selected local fallback image: $(E2E_LOCAL_IMAGE)"; \
-		echo "ℹ️ Building/loading local image into existing cluster"; \
-		$(MAKE) e2e-build-load-image KIND_CLUSTER=$(KIND_CLUSTER); \
-		KIND_CLUSTER=$(KIND_CLUSTER) PROJECT_IMAGE="$(E2E_LOCAL_IMAGE)" go test ./test/e2e/ -v -ginkgo.v; \
-	fi
+		echo "ℹ️ Entry point selected pre-built image (CI-friendly): $$PROJECT_IMAGE_VALUE"; \
+	fi; \
+	KIND_CLUSTER=$(KIND_CLUSTER) PROJECT_IMAGE="$$PROJECT_IMAGE_VALUE" go test ./test/e2e/ -v -ginkgo.v
 
 .PHONY: cleanup-webhook
 cleanup-webhook: ## Preventive cleanup of ValidatingWebhookConfiguration potenially left by previous test runs
@@ -284,21 +294,13 @@ cleanup-gitea-e2e: cleanup-port-forwards ## Clean up Gitea e2e environment
 	@$(KUBECTL) delete namespace $(GITEA_NAMESPACE) 2>/dev/null || true
 	@echo "✅ Gitea cleanup completed"
 
-.PHONY: setup-prometheus-e2e
-setup-prometheus-e2e: ## Set up Prometheus for e2e metrics testing
-	@echo "🚀 Setup Prometheus for e2e testing..."
-	@bash test/e2e/scripts/setup-prometheus.sh
-
-.PHONY: cleanup-prometheus-e2e
-cleanup-prometheus-e2e: ## Clean up Prometheus e2e environment
-	@echo "🧹 Cleaning up Prometheus e2e environment..."
-	@$(KUBECTL) delete -f test/e2e/prometheus/deployment.yaml --ignore-not-found=true
-	@$(KUBECTL) delete -f test/e2e/prometheus/rbac.yaml --ignore-not-found=true
-	@$(KUBECTL) delete namespace prometheus-e2e --ignore-not-found=true
-	@echo "✅ Prometheus cleanup completed"
+.PHONY: ensure-prometheus-operator
+ensure-prometheus-operator: ## Ensure Prometheus Operator + e2e monitoring resources are installed
+	@echo "🚀 Ensuring Prometheus Operator for e2e testing..."
+	@bash test/e2e/scripts/ensure-prometheus-operator.sh
 
 .PHONY: setup-e2e
-setup-e2e: setup-cert-manager setup-gitea-e2e setup-prometheus-e2e ## Setup all e2e test infrastructure
+setup-e2e: setup-cert-manager setup-gitea-e2e ensure-prometheus-operator ## Setup all e2e test infrastructure
 	@echo "✅ E2E infrastructure initialized"
 
 .PHONY: wait-cert-manager
@@ -337,12 +339,15 @@ test-e2e-quickstart: ## Install + quickstart smoke with E2E_INSTALL_MODE=helm|ma
 		echo "ℹ️ Entry point selected pre-built image (probably running in CI): $$PROJECT_IMAGE_VALUE"; \
 		echo "ℹ️ Skipping cluster cleanup for pre-built image path"; \
 		KIND_CLUSTER=$(KIND_CLUSTER) $(MAKE) setup-cluster setup-e2e check-cert-manager; \
+		KIND_CLUSTER=$(KIND_CLUSTER) PROJECT_IMAGE="$$PROJECT_IMAGE_VALUE" $(MAKE) e2e-deploy; \
 	else \
 		PROJECT_IMAGE_VALUE="$(E2E_LOCAL_IMAGE)"; \
 		echo "🧹 Local fallback path: cleaning cluster to test a clean install"; \
 		KIND_CLUSTER=$(KIND_CLUSTER) $(MAKE) cleanup-cluster; \
 		echo "ℹ️ Entry point selected local fallback image: $$PROJECT_IMAGE_VALUE"; \
-		KIND_CLUSTER=$(KIND_CLUSTER) PROJECT_IMAGE="$$PROJECT_IMAGE_VALUE" $(MAKE) setup-cluster setup-e2e check-cert-manager e2e-build-load-image; \
+		KIND_CLUSTER=$(KIND_CLUSTER) $(MAKE) setup-cluster setup-e2e check-cert-manager; \
+		KIND_CLUSTER=$(KIND_CLUSTER) PROJECT_IMAGE="$$PROJECT_IMAGE_VALUE" $(MAKE) e2e-build-load-image; \
+		KIND_CLUSTER=$(KIND_CLUSTER) PROJECT_IMAGE="$$PROJECT_IMAGE_VALUE" $(MAKE) e2e-deploy; \
 	fi; \
 	echo "ℹ️ Running install quickstart smoke mode: $$MODE"; \
 	PROJECT_IMAGE="$$PROJECT_IMAGE_VALUE" bash test/e2e/scripts/run-quickstart.sh "$$MODE"; \

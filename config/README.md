@@ -15,3 +15,5 @@ The Helm chart is the recommended installation and lifecycle management path for
 ## Notes
 - These manifests are opinionated toward the local/e2e setup.
 - Keep them simple and explicit; avoid reintroducing heavy kustomize indirection here.
+- `config/monitoring/` contains Prometheus Operator e2e monitoring resources
+  (Prometheus + ServiceMonitor + scrape RBAC).

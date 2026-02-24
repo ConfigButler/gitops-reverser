@@ -37,10 +37,10 @@ make cleanup-port-forwards
 ### Check Pod Status
 ```promql
 # Are both controller pods being scraped?
-up{job="gitops-reverser-metrics"}
+up{job="gitops-reverser"}
 
 # Count of active pods
-count(up{job="gitops-reverser-metrics"})
+count(up{job="gitops-reverser"})
 ```
 
 ### Webhook Events
@@ -56,13 +56,13 @@ gitopsreverser_events_received_total{role!="leader"}
 ### Resource Metrics
 ```promql
 # CPU usage
-process_cpu_seconds_total{job="gitops-reverser-metrics"}
+process_cpu_seconds_total{job="gitops-reverser"}
 
 # Memory usage
-process_resident_memory_bytes{job="gitops-reverser-metrics"}
+process_resident_memory_bytes{job="gitops-reverser"}
 
 # Goroutines
-go_goroutines{job="gitops-reverser-metrics"}
+go_goroutines{job="gitops-reverser"}
 ```
 
 ## Network Architecture
@@ -73,8 +73,8 @@ Host Machine (port 13000, 19090)
 DevContainer
     ↕ (kubectl port-forward)
 Kind Cluster
-    ├─ prometheus-e2e namespace
-    │  └─ Prometheus (scrapes metrics via HTTPS + bearer token)
+    ├─ prometheus-operator namespace
+    │  └─ Prometheus Operator + Prometheus (scrapes metrics via ServiceMonitor)
     ├─ gitea-e2e namespace
     │  └─ Gitea (Git server)
     └─ sut namespace (System Under Test)
@@ -117,7 +117,6 @@ make cleanup-e2e-clusters
 make cleanup-cluster KIND_CLUSTER=gitops-reverser-test-e2e
 
 # Infra cleanup inside the active cluster:
-make cleanup-prometheus-e2e
 make cleanup-gitea-e2e
 ```
 
@@ -126,7 +125,8 @@ make cleanup-gitea-e2e
 ```bash
 make setup-port-forwards    # Start port-forwards (Gitea:13000, Prometheus:19090)
 make cleanup-port-forwards  # Stop all port-forwards
-make setup-e2e             # Setup Gitea + Prometheus (+ cert-manager)
+make ensure-prometheus-operator
+make setup-e2e             # Setup Gitea + Prometheus Operator (+ cert-manager)
 make test-e2e              # Run e2e tests (includes port-forwards)
 make test-e2e-quickstart-helm
 make test-e2e-quickstart-manifest
