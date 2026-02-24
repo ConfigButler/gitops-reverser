@@ -60,17 +60,11 @@ var _ = Describe("Manager", Ordered, func() {
 	var controllerPodName string // Name of first controller pod for logging
 
 	// Before running the tests, set up the environment by creating the namespace,
-	// enforce the restricted security policy to the namespace, installing CRDs,
-	// deploying the controller, and setting up Gitea.
+	// enforcing the restricted security policy, installing CRDs, and setting up Gitea.
 	BeforeAll(func() {
-		By("preventive namespace cleanup")
 		var err error
-		// Wait for the namespace to be fully deleted to prevent race conditions with lingering pods
-		cmd := exec.Command("kubectl", "delete", "ns", namespace, "--wait=true", "--ignore-not-found=true")
-		_, _ = utils.Run(cmd)
-
 		By("preventive CRD cleanup")
-		cmd = exec.Command("kubectl", "delete", "crd", "icecreamorders.shop.example.com", "--ignore-not-found=true")
+		cmd := exec.Command("kubectl", "delete", "crd", "icecreamorders.shop.example.com", "--ignore-not-found=true")
 		_, _ = utils.Run(cmd)
 
 		By("creating manager namespace")
@@ -99,10 +93,14 @@ var _ = Describe("Manager", Ordered, func() {
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to install CRDs")
 
-		By("deploying gitops-reverser")
-		cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", projectImage))
+		By("restarting deployed gitops-reverser to pick up updated test secrets")
+		cmd = exec.Command("kubectl", "rollout", "restart", "deployment/gitops-reverser", "-n", namespace)
 		_, err = utils.Run(cmd)
-		Expect(err).NotTo(HaveOccurred(), "Failed to deploy gitops-reverser")
+		Expect(err).NotTo(HaveOccurred(), "Failed to restart gitops-reverser deployment")
+
+		cmd = exec.Command("kubectl", "rollout", "status", "deployment/gitops-reverser", "-n", namespace, "--timeout=120s")
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed waiting for gitops-reverser rollout")
 
 		By("waiting for certificate secrets to be created by cert-manager")
 		waitForCertificateSecrets()
@@ -324,17 +322,17 @@ var _ = Describe("Manager", Ordered, func() {
 			Eventually(verifyMetricsServerStarted).Should(Succeed())
 
 			By("waiting for Prometheus to scrape controller metrics")
-			waitForMetric("up{job='gitops-reverser-metrics'}",
+			waitForMetric("up{job='gitops-reverser'}",
 				func(v float64) bool { return v == 1 },
 				"metrics endpoint should be up")
 
 			By("verifying basic process metrics are exposed")
-			waitForMetric("process_cpu_seconds_total{job='gitops-reverser-metrics'}",
+			waitForMetric("process_cpu_seconds_total{job='gitops-reverser'}",
 				func(v float64) bool { return v > 0 },
 				"process metrics should exist")
 
 			By("verifying metrics from the controller pod")
-			podCount, err := queryPrometheus("count(up{job='gitops-reverser-metrics'})")
+			podCount, err := queryPrometheus("count(up{job='gitops-reverser'})")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(podCount).To(Equal(1.0), "Should scrape from 1 controller pod")
 

@@ -1,0 +1,27 @@
+apiVersion: monitoring.coreos.com/v1
+kind: Prometheus
+metadata:
+  name: gitops-reverser
+  labels:
+    monitoring.configbutler.ai/instance: gitops-reverser
+spec:
+  replicas: 1
+  serviceAccountName: prometheus
+  retention: 2h
+  scrapeInterval: 5s
+  evaluationInterval: 5s
+  serviceMonitorSelector:
+    matchLabels:
+      monitoring.configbutler.ai/instance: gitops-reverser
+  serviceMonitorNamespaceSelector: {}
+  podMonitorSelector: {}
+  podMonitorNamespaceSelector: {}
+  ruleSelector: {}
+  ruleNamespaceSelector: {}
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi

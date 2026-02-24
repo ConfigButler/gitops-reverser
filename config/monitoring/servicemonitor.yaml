@@ -1,0 +1,20 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: gitops-reverser
+  labels:
+    monitoring.configbutler.ai/instance: gitops-reverser
+spec:
+  jobLabel: app.kubernetes.io/name
+  namespaceSelector:
+    matchNames:
+      - sut
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gitops-reverser
+  endpoints:
+    - port: metrics
+      path: /metrics
+      scheme: http
+      interval: 5s
+      scrapeTimeout: 4s
