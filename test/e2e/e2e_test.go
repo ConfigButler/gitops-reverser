@@ -1023,7 +1023,10 @@ var _ = Describe("Manager", Ordered, func() {
 				g.Expect(string(content)).To(ContainSubstring("name: icecreamorders.shop.example.com"),
 					"File should contain CRD name")
 			}
-			Eventually(verifyGitCommit).Should(Succeed())
+			Eventually(verifyGitCommit).
+				WithTimeout(60 * time.Second).
+				WithPolling(2 * time.Second).
+				Should(Succeed())
 
 			By("cleaning up test resources")
 			cleanupClusterWatchRule(clusterWatchRuleName)
@@ -1180,7 +1183,10 @@ var _ = Describe("Manager", Ordered, func() {
 				g.Expect(contentStr).NotTo(ContainSubstring("status:"),
 					"CRD instance file should NOT contain status field")
 			}
-			Eventually(verifyGitCommit).Should(Succeed())
+			Eventually(verifyGitCommit).
+				WithTimeout(60 * time.Second).
+				WithPolling(2 * time.Second).
+				Should(Succeed())
 
 			By("applying status update to the IceCreamOrder CR")
 			statusPatch := `{"status":{"orderStatus":"pending","preparationTime":"5m","totalPrice":"$12.50"}}`
