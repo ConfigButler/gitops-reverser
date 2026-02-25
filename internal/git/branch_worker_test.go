@@ -58,6 +58,17 @@ func setupBranchWorkerTest() (*BranchWorker, func()) {
 	return worker, cleanup
 }
 
+func TestRepoCacheKey_DeterministicAndDistinct(t *testing.T) {
+	a := repoCacheKey("https://example.com/foo.git")
+	b := repoCacheKey("https://example.com/foo.git")
+	c := repoCacheKey("https://example.com/bar.git")
+	d := repoCacheKey(" https://example.com/foo.git ")
+
+	require.Equal(t, a, b, "same URL should produce same cache key")
+	require.NotEqual(t, a, c, "different URL should produce different cache key")
+	require.Equal(t, a, d, "cache key should ignore surrounding whitespace")
+}
+
 // TestListResourcesInPath_BasicFunctionality verifies ListResourcesInPath can be called.
 func TestListResourcesInPath_BasicFunctionality(t *testing.T) {
 	worker, cleanup := setupBranchWorkerTest()

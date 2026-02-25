@@ -113,7 +113,7 @@ func TestWriteEvents_SecretWritesSOPSPath(t *testing.T) {
 	}
 
 	writer := newContentWriter()
-	writer.setEncryptor(&stubEncryptor{result: []byte("encrypted: true\nsops:\n  version: 3.9.0\n")})
+	writer.setEncryptor(&stubEncryptor{result: []byte("encrypted: true\nsops:\n  version: 3.9.0\n")}, "test-scope")
 
 	_, err = WriteEventsWithContentWriter(context.Background(), writer, repoPath, []Event{event}, "master", nil)
 	require.NoError(t, err)

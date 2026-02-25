@@ -59,6 +59,19 @@ func NewResourceIdentifier(group, version, resource, namespace, name string) Res
 	}
 }
 
+// Key returns a stable, fully-qualified identifier suitable for map keys and deduplication.
+//
+// Format (namespaced): "group/version/resource/namespace/name"
+// Format (cluster-scoped): "group/version/resource/name"
+//
+// For core resources, Group is empty and the key begins with "/" (e.g., "/v1/secrets/ns/name").
+func (r ResourceIdentifier) Key() string {
+	if r.Namespace != "" {
+		return fmt.Sprintf("%s/%s/%s/%s/%s", r.Group, r.Version, r.Resource, r.Namespace, r.Name)
+	}
+	return fmt.Sprintf("%s/%s/%s/%s", r.Group, r.Version, r.Resource, r.Name)
+}
+
 // ToGitPath generates the Git repository file path following Kubernetes API structure.
 func (r ResourceIdentifier) ToGitPath() string {
 	var basePath string

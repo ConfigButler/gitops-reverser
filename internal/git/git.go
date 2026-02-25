@@ -30,6 +30,7 @@ import (
 	"strings"
 	"time"
 
+	billyutil "github.com/go-git/go-billy/v5/util"
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
@@ -600,10 +601,20 @@ func cleanWorktree(r *git.Repository) error {
 		return fmt.Errorf("failed to get worktree: %w", err)
 	}
 
-	// Use Clean to remove all untracked files.
-	// Since the index is empty, this means *all* files.
-	if err := w.Clean(&git.CleanOptions{Dir: true}); err != nil {
-		return fmt.Errorf("failed to clean worktree: %w", err)
+	entries, err := w.Filesystem.ReadDir(".")
+	if err != nil {
+		return fmt.Errorf("failed to read worktree root: %w", err)
+	}
+
+	for _, entry := range entries {
+		name := entry.Name()
+		if name == ".git" {
+			continue
+		}
+
+		if err := billyutil.RemoveAll(w.Filesystem, name); err != nil {
+			return fmt.Errorf("failed to remove %q from worktree: %w", name, err)
+		}
 	}
 
 	return nil

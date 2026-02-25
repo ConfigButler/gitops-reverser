@@ -170,17 +170,17 @@ func (r *FolderReconciler) findDifferences(
 
 	// Build sets for efficient lookup
 	for _, resource := range clusterResources {
-		clusterSet[resource.String()] = resource
+		clusterSet[resource.Key()] = resource
 	}
 
 	for _, resource := range gitResources {
-		gitSet[resource.String()] = resource
+		gitSet[resource.Key()] = resource
 	}
 
 	// Find resources to create (in cluster but not in Git)
 	var toCreate []types.ResourceIdentifier
 	for _, resource := range clusterResources {
-		if _, exists := gitSet[resource.String()]; !exists {
+		if _, exists := gitSet[resource.Key()]; !exists {
 			toCreate = append(toCreate, resource)
 		}
 	}
@@ -188,7 +188,7 @@ func (r *FolderReconciler) findDifferences(
 	// Find resources to delete (in Git but not in cluster)
 	var toDelete []types.ResourceIdentifier
 	for _, resource := range gitResources {
-		if _, exists := clusterSet[resource.String()]; !exists {
+		if _, exists := clusterSet[resource.Key()]; !exists {
 			toDelete = append(toDelete, resource)
 		}
 	}
@@ -196,7 +196,7 @@ func (r *FolderReconciler) findDifferences(
 	// Find resources that exist in both cluster and Git
 	var existingInBoth []types.ResourceIdentifier
 	for _, resource := range clusterResources {
-		if _, exists := gitSet[resource.String()]; exists {
+		if _, exists := gitSet[resource.Key()]; exists {
 			existingInBoth = append(existingInBoth, resource)
 		}
 	}

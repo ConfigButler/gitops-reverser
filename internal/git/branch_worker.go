@@ -20,6 +20,8 @@ package git
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -109,6 +111,26 @@ func NewBranchWorker(
 	}
 }
 
+func repoCacheKey(remoteURL string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(remoteURL)))
+	return hex.EncodeToString(sum[:16])
+}
+
+func (w *BranchWorker) repoRootPath() string {
+	return filepath.Join(
+		"/tmp",
+		"gitops-reverser-workers",
+		w.GitProviderNamespace,
+		w.GitProviderRef,
+		w.Branch,
+		"repos",
+	)
+}
+
+func (w *BranchWorker) repoPathForRemote(remoteURL string) string {
+	return filepath.Join(w.repoRootPath(), repoCacheKey(remoteURL))
+}
+
 // Start begins processing events.
 func (w *BranchWorker) Start(parentCtx context.Context) error {
 	w.mu.Lock()
@@ -171,9 +193,11 @@ func (w *BranchWorker) ListResourcesInPath(path string) ([]itypes.ResourceIdenti
 		return nil, fmt.Errorf("failed to initialize repository: %w", err)
 	}
 
-	// Use the worker's managed repository path
-	repoPath := filepath.Join("/tmp", "gitops-reverser-workers",
-		w.GitProviderNamespace, w.GitProviderRef, w.Branch)
+	provider, err := w.getGitProvider(w.ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get GitProvider: %w", err)
+	}
+	repoPath := w.repoPathForRemote(provider.Spec.URL)
 
 	return w.listResourceIdentifiersInPath(repoPath, path)
 }
@@ -288,8 +312,7 @@ func (w *BranchWorker) prepareBootstrapRepository(
 		return "", nil, fmt.Errorf("failed to get auth: %w", err)
 	}
 
-	repoPath := filepath.Join("/tmp", "gitops-reverser-workers",
-		w.GitProviderNamespace, w.GitProviderRef, w.Branch)
+	repoPath := w.repoPathForRemote(provider.Spec.URL)
 	pullReport, err := PrepareBranch(ctx, provider.Spec.URL, repoPath, w.Branch, auth)
 	if err != nil {
 		return "", nil, fmt.Errorf("failed to prepare repository: %w", err)
@@ -375,7 +398,6 @@ func (w *BranchWorker) listResourceIdentifiersInPath(
 
 // processEvents is the main event processing loop.
 func (w *BranchWorker) processEvents() {
-	// Get GitProvider
 	provider, err := w.getGitProvider(w.ctx)
 	if err != nil {
 		w.Log.Error(err, "Failed to get GitProvider, worker exiting")
@@ -394,7 +416,7 @@ func (w *BranchWorker) processEvents() {
 	for {
 		select {
 		case <-w.ctx.Done():
-			w.handleShutdown(provider, eventBuffer)
+			w.handleShutdown(eventBuffer)
 			return
 
 		case event := <-w.eventQueue:
@@ -404,14 +426,14 @@ func (w *BranchWorker) processEvents() {
 
 			// Check limits
 			if len(eventBuffer) >= maxCommits || bufferByteCount >= maxBytesBytes {
-				w.commitAndPush(provider, eventBuffer)
+				w.commitAndPush(eventBuffer)
 				eventBuffer = nil
 				bufferByteCount = 0
 			}
 
 		case <-pushTicker.C:
 			if len(eventBuffer) > 0 {
-				w.commitAndPush(provider, eventBuffer)
+				w.commitAndPush(eventBuffer)
 				eventBuffer = nil
 				bufferByteCount = 0
 			}
@@ -421,10 +443,7 @@ func (w *BranchWorker) processEvents() {
 
 // commitAndPush processes a batch of events.
 // Events may have different paths but all go to same branch.
-func (w *BranchWorker) commitAndPush(
-	provider *configv1alpha1.GitProvider,
-	events []Event,
-) {
+func (w *BranchWorker) commitAndPush(events []Event) {
 	w.repoMu.Lock()
 	defer w.repoMu.Unlock()
 
@@ -433,14 +452,19 @@ func (w *BranchWorker) commitAndPush(
 	log.Info("Starting git commit and push",
 		"branch", w.Branch)
 
+	provider, err := w.getGitProvider(w.ctx)
+	if err != nil {
+		log.Error(err, "Failed to get GitProvider")
+		return
+	}
+
 	auth, err := getAuthFromSecret(w.ctx, w.Client, provider)
 	if err != nil {
 		log.Error(err, "Failed to get auth")
 		return
 	}
 
-	repoPath := filepath.Join("/tmp", "gitops-reverser-workers",
-		w.GitProviderNamespace, w.GitProviderRef, w.Branch)
+	repoPath := w.repoPathForRemote(provider.Spec.URL)
 
 	var result *WriteEventsResult
 	for _, event := range events {
@@ -503,12 +527,11 @@ func (w *BranchWorker) commitAndPush(
 
 // handleShutdown finalizes processing when context is canceled.
 func (w *BranchWorker) handleShutdown(
-	provider *configv1alpha1.GitProvider,
 	eventBuffer []Event,
 ) {
 	w.Log.Info("Handling shutdown, flushing buffer")
 	if len(eventBuffer) > 0 {
-		w.commitAndPush(provider, eventBuffer)
+		w.commitAndPush(eventBuffer)
 	}
 }
 
@@ -623,6 +646,9 @@ func (w *BranchWorker) SyncAndGetMetadata(ctx context.Context) (*PullReport, err
 // syncWithRemote fetches latest changes from remote to detect drift.
 // This is now called by SyncAndGetMetadata() during controller reconciliation.
 func (w *BranchWorker) syncWithRemote(ctx context.Context) (*PullReport, error) {
+	w.repoMu.Lock()
+	defer w.repoMu.Unlock()
+
 	provider, err := w.getGitProvider(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get GitProvider: %w", err)
@@ -633,8 +659,7 @@ func (w *BranchWorker) syncWithRemote(ctx context.Context) (*PullReport, error) 
 		return nil, fmt.Errorf("failed to get auth: %w", err)
 	}
 
-	repoPath := filepath.Join("/tmp", "gitops-reverser-workers",
-		w.GitProviderNamespace, w.GitProviderRef, w.Branch)
+	repoPath := w.repoPathForRemote(provider.Spec.URL)
 
 	// PrepareBranch handles both initial and update cases
 	report, err := PrepareBranch(ctx, provider.Spec.URL, repoPath, w.Branch, auth)
@@ -666,8 +691,7 @@ func (w *BranchWorker) ensureRepositoryInitialized(ctx context.Context) error {
 		return fmt.Errorf("failed to get auth: %w", err)
 	}
 
-	repoPath := filepath.Join("/tmp", "gitops-reverser-workers",
-		w.GitProviderNamespace, w.GitProviderRef, w.Branch)
+	repoPath := w.repoPathForRemote(provider.Spec.URL)
 
 	// Use new PrepareBranch abstraction
 	pullReport, err := PrepareBranch(ctx, provider.Spec.URL, repoPath, w.Branch, auth)
