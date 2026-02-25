@@ -79,9 +79,6 @@ E2E_LOCAL_IMAGE ?= gitops-reverser:e2e-local
 # In CI, PROJECT_IMAGE is the pre-built image from the docker-build job; locally we build E2E_LOCAL_IMAGE.
 E2E_IMAGE := $(if $(PROJECT_IMAGE),$(PROJECT_IMAGE),$(E2E_LOCAL_IMAGE))
 E2E_AGE_KEY_FILE ?= /tmp/e2e-age-key.txt
-CERT_MANAGER_WAIT_TIMEOUT ?= 600s
-CERT_MANAGER_VERSION ?= v1.19.1
-CERT_MANAGER_MANIFEST_URL ?= https://github.com/cert-manager/cert-manager/releases/download/$(CERT_MANAGER_VERSION)/cert-manager.yaml
 
 # CTX: kubeconfig context for the cluster being operated on.
 # Defaults to the main e2e cluster; override with CTX=kind-<name> to reuse stamp targets for other clusters.
@@ -255,6 +252,9 @@ $(CS)/sut.namespace.ready: $(CS)/ready config/namespace.yaml
 	kubectl --context $(CTX) label --overwrite ns sut pod-security.kubernetes.io/enforce=restricted
 	touch $@
 
+CERT_MANAGER_WAIT_TIMEOUT ?= 600s
+CERT_MANAGER_VERSION ?= v1.19.4
+CERT_MANAGER_MANIFEST_URL ?= https://github.com/cert-manager/cert-manager/releases/download/$(CERT_MANAGER_VERSION)/cert-manager.yaml
 $(CS)/cert-manager.installed: $(CS)/ready
 	mkdir -p $(CS)
 	kubectl --context $(CTX) apply -f $(CERT_MANAGER_MANIFEST_URL) | grep -v unchanged
@@ -330,7 +330,7 @@ $(CS)/controller.deployed: $(DEPLOY_INPUTS)
 	touch $@
 
 .PHONY: $(CS)/portforward.running
-$(CS)/portforward.running: $(CS)/controller.deployed $(CS)/gitea.installed $(CS)/prometheus.installed
+$(CS)/portforward.running: $(CS)/gitea.installed $(CS)/prometheus.installed
 	mkdir -p $(CS)
 	if curl -fsS http://localhost:13000/api/healthz >/dev/null 2>&1 && \
 	   curl -fsS http://localhost:19090/-/healthy    >/dev/null 2>&1; then \
@@ -343,7 +343,7 @@ $(CS)/portforward.running: $(CS)/controller.deployed $(CS)/gitea.installed $(CS)
 	curl -fsS http://localhost:19090/-/healthy    >/dev/null || { echo "Prometheus health check failed"; exit 1; }
 	touch $@
 
-$(CS)/e2e.passed: $(CS)/portforward.running $(CS)/age-key.applied $(shell find test/e2e -name '*.go')
+$(CS)/e2e.passed: $(CS)/controller.deployed $(CS)/portforward.running $(CS)/age-key.applied $(shell find test/e2e -name '*.go')
 	mkdir -p $(CS)
 	kubectl --context $(CTX) delete crd icecreamorders.shop.example.com --ignore-not-found=true
 	KIND_CLUSTER=$(CLUSTER_FROM_CTX) PROJECT_IMAGE=$(E2E_IMAGE) \
