@@ -26,13 +26,11 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"os"
 	"os/exec"
 	"strings"
 	"text/template"
 	"time"
 
-	"filippo.io/age"
 	. "github.com/onsi/ginkgo/v2" //nolint:staticcheck // Ginkgo standard practice
 	. "github.com/onsi/gomega"    //nolint:staticcheck // Ginkgo standard practice
 	"github.com/prometheus/client_golang/api"
@@ -170,30 +168,6 @@ func applyFromTemplate(templatePath string, data interface{}, namespace string, 
 	return err
 }
 
-// waitForCertificateSecrets waits for cert-manager to create the required certificate secrets
-// This prevents race conditions where controller pods try to mount secrets before they exist
-func waitForCertificateSecrets() {
-	By("waiting for webhook certificate secret to be created by cert-manager")
-	Eventually(func(g Gomega) {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second) //nolint:mnd // reasonable timeout
-		defer cancel()
-		cmd := exec.CommandContext(ctx, "kubectl", "get", "secret", "admission-server-cert", "-n", namespace)
-		_, err := utils.Run(cmd)
-		g.Expect(err).NotTo(HaveOccurred(), "admission-server-cert secret should exist")
-	}, 60*time.Second, 2*time.Second).Should(Succeed()) //nolint:mnd // reasonable timeout for cert-manager
-
-	By("waiting for dedicated audit certificate secret to be created by cert-manager")
-	Eventually(func(g Gomega) {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second) //nolint:mnd // reasonable timeout
-		defer cancel()
-		cmd := exec.CommandContext(ctx, "kubectl", "get", "secret", "audit-server-cert", "-n", namespace)
-		_, err := utils.Run(cmd)
-		g.Expect(err).NotTo(HaveOccurred(), "audit-server-cert secret should exist")
-	}, 60*time.Second, 2*time.Second).Should(Succeed()) //nolint:mnd // reasonable timeout for cert-manager
-
-	By("✅ All certificate secrets are ready")
-}
-
 // getBaseFolder returns the baseFolder used by GitDestination in e2e tests.
 // Must satisfy the CRD validation (POSIX-like relative path, no traversal).
 func getBaseFolder() string {
@@ -279,32 +253,4 @@ func cleanupClusterWatchRule(name string) {
 	cmd := exec.CommandContext(ctx, "kubectl", "delete", "clusterwatchrule", name,
 		"--ignore-not-found=true")
 	_, _ = utils.Run(cmd)
-}
-
-func setupSOPSAgeSecret(keyPath string) {
-	By("creating SOPS age key and encryption secret for e2e")
-
-	identity, err := age.GenerateX25519Identity()
-	Expect(err).NotTo(HaveOccurred(), "Failed to generate age identity")
-
-	// Keep file format compatible with existing key reader in e2e tests.
-	keyFileContent := fmt.Sprintf("# created: e2e\n# public key: %s\n%s\n", identity.Recipient(), identity)
-	err = os.WriteFile(keyPath, []byte(keyFileContent), 0600)
-	Expect(err).NotTo(HaveOccurred(), "Failed to write e2e age key file")
-
-	manifest := fmt.Sprintf(`apiVersion: v1
-kind: Secret
-metadata:
-  name: %s
-  namespace: %s
-type: Opaque
-stringData:
-  identity.agekey: %q
-`, e2eEncryptionRefName, namespace, identity.String())
-
-	ctx := context.Background()
-	applyCmd := exec.CommandContext(ctx, "kubectl", "apply", "-f", "-")
-	applyCmd.Stdin = strings.NewReader(manifest)
-	_, err = utils.Run(applyCmd)
-	Expect(err).NotTo(HaveOccurred(), "Failed to apply SOPS encryption secret")
 }

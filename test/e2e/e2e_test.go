@@ -41,7 +41,7 @@ import (
 // giteaRepoURLTemplate is the URL template for test Gitea repositories.
 const giteaRepoURLTemplate = "http://gitea-http.gitea-e2e.svc.cluster.local:13000/testorg/%s.git"
 const giteaSSHURLTemplate = "ssh://git@gitea-ssh.gitea-e2e.svc.cluster.local:2222/testorg/%s.git"
-const e2eAgeKeyPath = "/tmp/e2e-age-key.txt"
+const defaultE2EAgeKeyPath = "/tmp/e2e-age-key.txt"
 
 var testRepoName string
 var checkoutDir string
@@ -59,37 +59,10 @@ func getRepoURLSSH() string {
 var _ = Describe("Manager", Ordered, func() {
 	var controllerPodName string // Name of first controller pod for logging
 
-	// Before running the tests, set up the environment by creating the namespace,
-	// enforcing the restricted security policy, installing CRDs, and setting up Gitea.
+	// Before running the tests, set up per-run test fixtures.
 	BeforeAll(func() {
 		var err error
-		By("preventive CRD cleanup")
-		cmd := exec.Command("kubectl", "delete", "crd", "icecreamorders.shop.example.com", "--ignore-not-found=true")
-		_, _ = utils.Run(cmd)
-
-		By("creating manager namespace")
-		cmd = exec.Command("kubectl", "create", "ns", namespace)
-		_, err = utils.Run(cmd)
-		if err != nil {
-			// Namespace might already exist from Gitea setup - check if it's AlreadyExists error
-			By("checking if namespace already exists")
-			checkCmd := exec.Command("kubectl", "get", "ns", namespace)
-			_, checkErr := utils.Run(checkCmd)
-			if checkErr != nil {
-				Expect(err).NotTo(HaveOccurred(), "Failed to create namespace and namespace doesn't exist")
-			}
-		}
-
-		By("labeling the namespace to enforce the restricted security policy")
-		cmd = exec.Command("kubectl", "label", "--overwrite", "ns", namespace,
-			"pod-security.kubernetes.io/enforce=restricted")
-		_, err = utils.Run(cmd)
-		Expect(err).NotTo(HaveOccurred(), "Failed to label namespace with restricted policy")
-
-		setupSOPSAgeSecret(e2eAgeKeyPath)
-
-		By("waiting for certificate secrets to be created by cert-manager")
-		waitForCertificateSecrets()
+		var cmd *exec.Cmd
 
 		By("setting up Gitea test environment with unique repository")
 		companyStart := time.Date(2025, 5, 12, 0, 0, 0, 0, time.UTC)
@@ -585,7 +558,7 @@ var _ = Describe("Manager", Ordered, func() {
 					HaveOccurred(),
 					fmt.Sprintf(".sops.yaml must exist at %s", bootstrapSOPSFile),
 				)
-				ageKey, ageKeyErr := readSOPSAgeKeyFromFile(e2eAgeKeyPath)
+				ageKey, ageKeyErr := readSOPSAgeKeyFromFile(getE2EAgeKeyPath())
 				g.Expect(ageKeyErr).NotTo(HaveOccurred(), "Should read age private key")
 				recipient, recipientErr := deriveAgeRecipient(ageKey)
 				g.Expect(recipientErr).NotTo(HaveOccurred(), "Should derive age recipient")
@@ -1583,6 +1556,13 @@ func readSOPSAgeKeyFromFile(path string) (string, error) {
 	}
 
 	return "", fmt.Errorf("no AGE-SECRET-KEY found in %s", path)
+}
+
+func getE2EAgeKeyPath() string {
+	if value := strings.TrimSpace(os.Getenv("E2E_AGE_KEY_FILE")); value != "" {
+		return value
+	}
+	return defaultE2EAgeKeyPath
 }
 
 func deriveAgeRecipient(identityString string) (string, error) {
