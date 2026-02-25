@@ -276,9 +276,14 @@ $(CS)/gitea.installed: $(CS)/ready test/e2e/gitea-values.yaml
 	kubectl --context $(CTX) -n $(GITEA_NAMESPACE) rollout status deploy/gitea --timeout=300s
 	touch $@
 
-$(CS)/prometheus.installed: $(CS)/ready test/e2e/scripts/ensure-prometheus-operator.sh
+PROMETHEUS_SETUP_MANIFESTS := $(shell find test/e2e/setup/prometheus -type f -name '*.yaml')
+$(CS)/prometheus.installed: $(CS)/ready test/e2e/scripts/ensure-prometheus-operator.sh $(PROMETHEUS_SETUP_MANIFESTS)
 	mkdir -p $(CS)
 	KUBECONTEXT=$(CTX) bash test/e2e/scripts/ensure-prometheus-operator.sh
+	kubectl --context $(CTX) apply -n prometheus-operator -f test/e2e/setup/prometheus-rbac.yaml
+	kubectl --context $(CTX) apply -n prometheus-operator -f test/e2e/setup/prometheus.yaml
+	kubectl --context $(CTX) wait --for=condition=Available prometheus/gitops-reverser -n prometheus-operator --timeout=180s
+	kubectl --context $(CTX) wait --for=condition=ready pod -l prometheus=gitops-reverser -n prometheus-operator --timeout=180s
 	touch $@
 
 $(CS)/age-key.applied: $(CS)/sut.namespace.ready test/e2e/tools/gen-age-key/main.go
