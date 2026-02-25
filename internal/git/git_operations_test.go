@@ -359,6 +359,51 @@ func TestWriteEvents_FirstCommitOnEmptyRepo(t *testing.T) {
 	assert.FileExists(t, filePath)
 }
 
+func TestMakeHeadUnborn_CleansWorktreeIncludingTrackedFiles(t *testing.T) {
+	tempDir := t.TempDir()
+	repoPath := filepath.Join(tempDir, "repo")
+
+	repo, err := git.PlainInit(repoPath, false)
+	require.NoError(t, err)
+
+	worktree, err := repo.Worktree()
+	require.NoError(t, err)
+
+	err = os.WriteFile(filepath.Join(repoPath, "tracked.txt"), []byte("tracked"), 0600)
+	require.NoError(t, err)
+
+	_, err = worktree.Add("tracked.txt")
+	require.NoError(t, err)
+
+	_, err = worktree.Commit("Initial commit", &git.CommitOptions{
+		Author: &object.Signature{Name: "Test", Email: "test@example.com", When: time.Now()},
+	})
+	require.NoError(t, err)
+
+	err = worktree.Checkout(&git.CheckoutOptions{
+		Branch: plumbing.NewBranchReferenceName("main"),
+		Create: true,
+	})
+	require.NoError(t, err)
+
+	err = os.MkdirAll(filepath.Join(repoPath, "dir/sub"), 0750)
+	require.NoError(t, err)
+
+	err = os.WriteFile(filepath.Join(repoPath, "dir/sub/untracked.txt"), []byte("untracked"), 0600)
+	require.NoError(t, err)
+
+	err = os.WriteFile(filepath.Join(repoPath, ".sops.yaml"), []byte("dummy"), 0600)
+	require.NoError(t, err)
+
+	err = makeHeadUnborn(context.Background(), repo, plumbing.NewBranchReferenceName("main"))
+	require.NoError(t, err)
+
+	assert.DirExists(t, filepath.Join(repoPath, ".git"))
+	assert.NoFileExists(t, filepath.Join(repoPath, "tracked.txt"))
+	assert.NoFileExists(t, filepath.Join(repoPath, ".sops.yaml"))
+	assert.NoDirExists(t, filepath.Join(repoPath, "dir"))
+}
+
 func TestWriteEvents_BranchCreationAndPush(t *testing.T) {
 	tempDir := t.TempDir()
 

@@ -119,21 +119,6 @@ cleanup-e2e-clusters: ## Tear down all E2E Kind clusters and their stamps
 .PHONY: test-e2e
 test-e2e: $(CS)/e2e.passed ## Run end-to-end tests (stamp-based; only reruns what changed)
 
-.PHONY: test-e2e-gitprovider
-test-e2e-gitprovider: $(CS)/portforward.running ## Run only GitProvider e2e tests
-	KIND_CLUSTER=$(KIND_CLUSTER_E2E) PROJECT_IMAGE=$(E2E_IMAGE) \
-	  go test ./test/e2e/ -v -ginkgo.v -ginkgo.focus="GitProvider"
-
-.PHONY: test-e2e-watchrule
-test-e2e-watchrule: $(CS)/portforward.running ## Run only WatchRule e2e tests
-	KIND_CLUSTER=$(KIND_CLUSTER_E2E) PROJECT_IMAGE=$(E2E_IMAGE) \
-	  go test ./test/e2e/ -v -ginkgo.v -ginkgo.focus="WatchRule"
-
-.PHONY: test-e2e-encryption
-test-e2e-encryption: $(CS)/portforward.running ## Run only encryption e2e tests
-	KIND_CLUSTER=$(KIND_CLUSTER_E2E) PROJECT_IMAGE=$(E2E_IMAGE) \
-	  go test ./test/e2e/ -v -ginkgo.v -ginkgo.focus="encrypt|SOPS|age"
-
 .PHONY: lint
 lint: ## Run golangci-lint linter
 	$(GOLANGCI_LINT) run
@@ -313,10 +298,19 @@ $(CS)/controller.deployed: $(DEPLOY_INPUTS)
 	  gitops-reverser-validating-webhook-configuration --ignore-not-found=true
 	cd config && $(KUSTOMIZE) edit set image gitops-reverser=$(E2E_IMAGE)
 	$(KUSTOMIZE) build config | kubectl --context $(CTX) apply -f -
+	@if [ -z "$(PROJECT_IMAGE)" ]; then \
+	  IMAGE_ID="$$(cat $(IS)/controller.id)"; \
+	  kubectl --context $(CTX) -n sut patch deploy/gitops-reverser --type=merge \
+	    -p "{\"spec\":{\"template\":{\"metadata\":{\"annotations\":{\"configbutler.ai/e2e-image-id\":\"$$IMAGE_ID\"}}}}}"; \
+	fi
 	kubectl --context $(CTX) -n sut rollout status deploy/gitops-reverser --timeout=180s
 	touch $@
 
-$(CS)/portforward.running: $(CS)/controller.deployed $(CS)/gitea.installed $(CS)/prometheus.installed
+.PHONY: portforward-check
+portforward-check:
+	@true
+
+$(CS)/portforward.running: portforward-check $(CS)/controller.deployed $(CS)/gitea.installed $(CS)/prometheus.installed
 	mkdir -p $(CS)
 	if curl -fsS http://localhost:13000/api/healthz >/dev/null 2>&1 && \
 	   curl -fsS http://localhost:19090/-/healthy    >/dev/null 2>&1; then \

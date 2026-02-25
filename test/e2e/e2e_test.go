@@ -308,17 +308,17 @@ var _ = Describe("Manager", Ordered, func() {
 			Eventually(verifyMetricsServerStarted).Should(Succeed())
 
 			By("waiting for Prometheus to scrape controller metrics")
-			waitForMetric("up{job='gitops-reverser'}",
+			waitForMetric("sum(up{job='gitops-reverser'})",
 				func(v float64) bool { return v == 1 },
 				"metrics endpoint should be up")
 
 			By("verifying basic process metrics are exposed")
-			waitForMetric("process_cpu_seconds_total{job='gitops-reverser'}",
+			waitForMetric("sum(process_cpu_seconds_total{job='gitops-reverser'})",
 				func(v float64) bool { return v > 0 },
 				"process metrics should exist")
 
 			By("verifying metrics from the controller pod")
-			podCount, err := queryPrometheus("count(up{job='gitops-reverser'})")
+			podCount, err := queryPrometheus("sum(up{job='gitops-reverser'})")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(podCount).To(BeEquivalentTo(1), "Should scrape from 1 controller pod")
 

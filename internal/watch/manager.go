@@ -69,7 +69,7 @@ type Manager struct {
 
 	// Deduplication: tracks last seen content hash per resource to skip status-only changes
 	lastSeenMu   sync.RWMutex
-	lastSeenHash map[string]uint64 // resourceKey → content hash
+	lastSeenHash map[string]uint64 // resourceKey → content hash (key uses types.ResourceIdentifier.Key)
 
 	// Dynamic informer lifecycle management
 	informersMu       sync.Mutex
@@ -295,8 +295,8 @@ func (m *Manager) isDuplicateContent(
 	}
 	currentHash := xxhash.Sum64(yaml)
 
-	// Resource key: namespace/name (or just name for cluster-scoped)
-	resourceKey := id.String()
+	// Resource key: fully-qualified identifier (types.ResourceIdentifier.Key).
+	resourceKey := id.Key()
 
 	// Check against last seen
 	m.lastSeenMu.RLock()
@@ -1320,7 +1320,7 @@ func (m *Manager) clearDeduplicationCacheForGVRs(gvrs []GVR) {
 	}
 
 	// Remove hash entries for resources of these GVRs
-	// Key format: "group/version/resource/namespace/name"
+	// Key format: "group/version/resource/namespace/name" (group may be empty for core resources)
 	for key := range m.lastSeenHash {
 		if resourceMatchesGVRs(key, gvrSet) {
 			delete(m.lastSeenHash, key)
@@ -1332,7 +1332,8 @@ func (m *Manager) clearDeduplicationCacheForGVRs(gvrs []GVR) {
 }
 
 // resourceMatchesGVRs checks if a resource key matches any GVR in the set.
-// Key format: "group/version/resource/namespace/name".
+// Key format: "group/version/resource/namespace/name" or "group/version/resource/name" (cluster-scoped).
+// Group may be empty for core resources, which yields a key like "/v1/secrets/ns/name".
 func resourceMatchesGVRs(resourceKey string, gvrSet map[GVR]struct{}) bool {
 	// Parse key components
 	parts := splitResourceKey(resourceKey)
@@ -1361,8 +1362,8 @@ func resourceMatchesGVRs(resourceKey string, gvrSet map[GVR]struct{}) bool {
 // splitResourceKey splits a resource key into components.
 // Format: "group/version/resource/namespace/name" or "group/version/resource/name" (cluster-scoped).
 func splitResourceKey(key string) []string {
-	// ResourceIdentifier.String() produces: "group/version/resource/namespace/name"
-	// We just need the first 3 parts for GVR matching.
+	// types.ResourceIdentifier.Key() produces: "group/version/resource/namespace/name" (or ".../name" cluster-scoped).
+	// We just need the first 3 parts for GVR matching, including an empty group for core resources.
 	parts := make([]string, 0, resourceKeyCapacity)
 	current := ""
 	for _, ch := range key {

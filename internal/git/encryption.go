@@ -206,7 +206,7 @@ func configureSecretEncryptionWriter(
 	cfg *ResolvedEncryptionConfig,
 ) error {
 	if cfg == nil {
-		writer.setEncryptor(nil)
+		writer.setEncryptor(nil, "")
 		return nil
 	}
 
@@ -216,11 +216,36 @@ func configureSecretEncryptionWriter(
 		if err != nil {
 			return err
 		}
-		writer.setEncryptor(NewSOPSEncryptorWithEnv(defaultSOPSBinaryPath, "", workDir, environment))
+		scope := secretEncryptionCacheScope(workDir, cfg)
+		writer.setEncryptor(NewSOPSEncryptorWithEnv(defaultSOPSBinaryPath, "", workDir, environment), scope)
 		return nil
 	default:
 		return fmt.Errorf("unsupported encryption provider %q", cfg.Provider)
 	}
+}
+
+func secretEncryptionCacheScope(workDir string, cfg *ResolvedEncryptionConfig) string {
+	if cfg == nil {
+		return ""
+	}
+
+	hasher := sha256.New()
+	hasher.Write([]byte(strings.TrimSpace(cfg.Provider)))
+	hasher.Write([]byte{0})
+	hasher.Write([]byte(strings.TrimSpace(workDir)))
+	hasher.Write([]byte{0})
+
+	for _, recipient := range cfg.AgeRecipients {
+		hasher.Write([]byte(strings.TrimSpace(recipient)))
+		hasher.Write([]byte{0})
+	}
+	for _, identity := range cfg.AgeIdentities {
+		hasher.Write([]byte(strings.TrimSpace(identity)))
+		hasher.Write([]byte{0})
+	}
+
+	sum := hasher.Sum(nil)
+	return hex.EncodeToString(sum[:16])
 }
 
 func buildSOPSEnvironment(workDir string, cfg *ResolvedEncryptionConfig) (map[string]string, error) {

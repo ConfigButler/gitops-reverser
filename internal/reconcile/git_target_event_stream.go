@@ -107,7 +107,7 @@ func (s *GitTargetEventStream) OnWatchEvent(event git.Event) {
 	case LiveProcessing:
 		// Check for duplicates using event hash
 		eventHash := s.computeEventHash(event)
-		resourceKey := event.Identifier.String()
+		resourceKey := event.Identifier.Key()
 
 		if lastHash, exists := s.processedEventHashes[resourceKey]; exists && lastHash == eventHash {
 			s.mu.Unlock()
@@ -149,7 +149,7 @@ func (s *GitTargetEventStream) OnReconciliationComplete() {
 	// Process all buffered events
 	for _, event := range bufferedEvents {
 		eventHash := s.computeEventHash(event)
-		resourceKey := event.Identifier.String()
+		resourceKey := event.Identifier.Key()
 		s.processEvent(event, eventHash, resourceKey)
 	}
 

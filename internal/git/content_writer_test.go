@@ -135,7 +135,7 @@ func TestBuildContentForWrite_SecretEncryptionCacheMarkerReuse(t *testing.T) {
 	writer := newContentWriter()
 
 	enc := &stubEncryptor{result: []byte("encrypted: true\nsops:\n  version: 3.9.0\n")}
-	writer.setEncryptor(enc)
+	writer.setEncryptor(enc, "test-scope")
 
 	obj := &unstructured.Unstructured{
 		Object: map[string]interface{}{
@@ -177,7 +177,7 @@ func TestBuildContentForWrite_SecretUIDChangeForcesReencrypt(t *testing.T) {
 	writer := newContentWriter()
 
 	enc := &stubEncryptor{result: []byte("encrypted: true\nsops:\n  version: 3.9.0\n")}
-	writer.setEncryptor(enc)
+	writer.setEncryptor(enc, "test-scope")
 
 	makeSecret := func(uid string) *unstructured.Unstructured {
 		return &unstructured.Unstructured{
@@ -220,7 +220,7 @@ func TestBuildContentForWrite_SecretUIDChangeForcesReencrypt(t *testing.T) {
 func TestBuildContentForWrite_SecretEncryptionFailure(t *testing.T) {
 	writer := newContentWriter()
 
-	writer.setEncryptor(&stubEncryptor{err: errors.New("boom")})
+	writer.setEncryptor(&stubEncryptor{err: errors.New("boom")}, "test-scope")
 
 	event := Event{
 		Identifier: types.ResourceIdentifier{
@@ -248,4 +248,45 @@ func TestBuildContentForWrite_SecretEncryptionFailure(t *testing.T) {
 	_, err := writer.buildContentForWrite(context.Background(), event)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "secret encryption failed")
+}
+
+func TestBuildContentForWrite_SecretEncryptionScopeChangeForcesReencrypt(t *testing.T) {
+	writer := newContentWriter()
+
+	enc := &stubEncryptor{result: []byte("encrypted: true\nsops:\n  version: 3.9.0\n")}
+	writer.setEncryptor(enc, "scope-a")
+
+	event := Event{
+		Identifier: types.ResourceIdentifier{
+			Group:     "",
+			Version:   "v1",
+			Resource:  "secrets",
+			Namespace: "default",
+			Name:      "my-secret",
+		},
+		Object: &unstructured.Unstructured{
+			Object: map[string]interface{}{
+				"apiVersion": "v1",
+				"kind":       "Secret",
+				"metadata": map[string]interface{}{
+					"name":      "my-secret",
+					"namespace": "default",
+				},
+				"data": map[string]interface{}{
+					"password": "cGxhaW4=",
+				},
+			},
+		},
+	}
+
+	_, err := writer.buildContentForWrite(context.Background(), event)
+	require.NoError(t, err)
+	_, err = writer.buildContentForWrite(context.Background(), event)
+	require.NoError(t, err)
+	assert.Equal(t, 1, enc.callCount, "same scope should reuse cached encrypted content")
+
+	writer.setEncryptor(enc, "scope-b")
+	_, err = writer.buildContentForWrite(context.Background(), event)
+	require.NoError(t, err)
+	assert.Equal(t, 2, enc.callCount, "scope change should force re-encryption")
 }

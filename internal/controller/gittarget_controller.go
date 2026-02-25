@@ -911,11 +911,30 @@ func (r *GitTargetReconciler) handleFetchError(
 	namespacedName k8stypes.NamespacedName,
 ) (ctrl.Result, error) {
 	if client.IgnoreNotFound(err) == nil {
+		r.cleanupDeletedGitTarget(namespacedName, log)
 		log.Info("GitTarget not found, was likely deleted", "namespacedName", namespacedName)
 		return ctrl.Result{}, nil
 	}
 	log.Error(err, "unable to fetch GitTarget", "namespacedName", namespacedName)
 	return ctrl.Result{}, err
+}
+
+func (r *GitTargetReconciler) cleanupDeletedGitTarget(
+	namespacedName k8stypes.NamespacedName,
+	log logr.Logger,
+) {
+	if r.EventRouter == nil {
+		return
+	}
+
+	gitDest := types.NewResourceReference(namespacedName.Name, namespacedName.Namespace)
+
+	r.EventRouter.UnregisterGitTargetEventStream(gitDest)
+	if r.EventRouter.ReconcilerManager != nil {
+		_ = r.EventRouter.ReconcilerManager.DeleteReconciler(gitDest)
+	}
+
+	log.V(1).Info("Cleaned up in-memory state for deleted GitTarget", "gitDest", gitDest.String())
 }
 
 func clampIntToInt32(value int) int32 {

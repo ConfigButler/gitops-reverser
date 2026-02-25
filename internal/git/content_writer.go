@@ -23,6 +23,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/ConfigButler/gitops-reverser/internal/sanitize"
@@ -45,6 +46,9 @@ type secretMarker struct {
 
 type contentWriter struct {
 	encryptor Encryptor
+	// encryptionScope partitions encryption cache entries so cached bytes never cross
+	// repo/path/key boundaries (e.g. different GitTargets or rotated identities).
+	encryptionScope string
 
 	mu           sync.RWMutex
 	secretCache  map[string][]byte
@@ -62,10 +66,11 @@ func newContentWriter() *contentWriter {
 	}
 }
 
-func (w *contentWriter) setEncryptor(encryptor Encryptor) {
+func (w *contentWriter) setEncryptor(encryptor Encryptor, scope string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.encryptor = encryptor
+	w.encryptionScope = scope
 }
 
 // buildContentForWrite renders event content to stable ordered YAML and applies
@@ -87,7 +92,6 @@ func (w *contentWriter) encryptSecretContent(ctx context.Context, event Event, p
 	meta := buildResourceMeta(event)
 	identityKey := secretIdentityKey(meta.Identifier)
 	digest := sha256.Sum256(plain)
-	cacheKey := fmt.Sprintf("%s:%x", identityKey, digest)
 	currentMarker := secretMarker{
 		UID:             meta.UID,
 		ResourceVersion: meta.ResourceVersion,
@@ -96,7 +100,18 @@ func (w *contentWriter) encryptSecretContent(ctx context.Context, event Event, p
 
 	w.mu.RLock()
 	encryptor := w.encryptor
-	cached, ok := w.cachedEncryptedSecret(ctx, identityKey, cacheKey, currentMarker)
+	scope := w.encryptionScope
+	w.mu.RUnlock()
+
+	scopedIdentityKey := identityKey
+	if strings.TrimSpace(scope) != "" {
+		scopedIdentityKey = fmt.Sprintf("%s:%s", scope, identityKey)
+	}
+
+	cacheKey := fmt.Sprintf("%s:%x", scopedIdentityKey, digest)
+
+	w.mu.RLock()
+	cached, ok := w.cachedEncryptedSecret(ctx, scopedIdentityKey, cacheKey, currentMarker)
 	w.mu.RUnlock()
 	if ok {
 		return cached, nil
@@ -122,7 +137,7 @@ func (w *contentWriter) encryptSecretContent(ctx context.Context, event Event, p
 
 	w.mu.Lock()
 	w.secretCache[cacheKey] = append([]byte(nil), encrypted...)
-	w.secretMarker[identityKey] = currentMarker
+	w.secretMarker[scopedIdentityKey] = currentMarker
 	w.mu.Unlock()
 
 	return encrypted, nil
