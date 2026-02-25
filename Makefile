@@ -76,6 +76,8 @@ KIND_CLUSTER_QUICKSTART_MANIFEST ?= gitops-reverser-test-e2e-quickstart-manifest
 # KIND_CLUSTER is used by cleanup-cluster; defaults to the main e2e cluster.
 KIND_CLUSTER ?= $(KIND_CLUSTER_E2E)
 E2E_LOCAL_IMAGE ?= gitops-reverser:e2e-local
+# In CI, PROJECT_IMAGE is the pre-built image from the docker-build job; locally we build E2E_LOCAL_IMAGE.
+E2E_IMAGE := $(if $(PROJECT_IMAGE),$(PROJECT_IMAGE),$(E2E_LOCAL_IMAGE))
 CERT_MANAGER_WAIT_TIMEOUT ?= 600s
 CERT_MANAGER_VERSION ?= v1.19.1
 CERT_MANAGER_MANIFEST_URL ?= https://github.com/cert-manager/cert-manager/releases/download/$(CERT_MANAGER_VERSION)/cert-manager.yaml
@@ -119,17 +121,17 @@ test-e2e: $(CS)/e2e.passed ## Run end-to-end tests (stamp-based; only reruns wha
 
 .PHONY: test-e2e-gitprovider
 test-e2e-gitprovider: $(CS)/portforward.running ## Run only GitProvider e2e tests
-	KIND_CLUSTER=$(KIND_CLUSTER_E2E) PROJECT_IMAGE=$(E2E_LOCAL_IMAGE) \
+	KIND_CLUSTER=$(KIND_CLUSTER_E2E) PROJECT_IMAGE=$(E2E_IMAGE) \
 	  go test ./test/e2e/ -v -ginkgo.v -ginkgo.focus="GitProvider"
 
 .PHONY: test-e2e-watchrule
 test-e2e-watchrule: $(CS)/portforward.running ## Run only WatchRule e2e tests
-	KIND_CLUSTER=$(KIND_CLUSTER_E2E) PROJECT_IMAGE=$(E2E_LOCAL_IMAGE) \
+	KIND_CLUSTER=$(KIND_CLUSTER_E2E) PROJECT_IMAGE=$(E2E_IMAGE) \
 	  go test ./test/e2e/ -v -ginkgo.v -ginkgo.focus="WatchRule"
 
 .PHONY: test-e2e-encryption
 test-e2e-encryption: $(CS)/portforward.running ## Run only encryption e2e tests
-	KIND_CLUSTER=$(KIND_CLUSTER_E2E) PROJECT_IMAGE=$(E2E_LOCAL_IMAGE) \
+	KIND_CLUSTER=$(KIND_CLUSTER_E2E) PROJECT_IMAGE=$(E2E_IMAGE) \
 	  go test ./test/e2e/ -v -ginkgo.v -ginkgo.focus="encrypt|SOPS|age"
 
 .PHONY: lint
@@ -243,9 +245,15 @@ setup-envtest: ## Setup envtest binaries for unit tests
 
 # DEPLOY_INPUTS: all config files except CRDs (tracked separately by crds.applied).
 # Only relevant for the main e2e cluster (controller.deployed is not used by quickstart targets).
+# When PROJECT_IMAGE is set (CI), skip the local image build stamp.
+ifeq ($(PROJECT_IMAGE),)
 DEPLOY_INPUTS := $(CS)/crds.applied $(CS)/cert-manager.installed $(CS)/prometheus.installed \
                  $(IS)/controller.id \
                  $(shell find config -type f -not -path 'config/crd/*')
+else
+DEPLOY_INPUTS := $(CS)/crds.applied $(CS)/cert-manager.installed $(CS)/prometheus.installed \
+                 $(shell find config -type f -not -path 'config/crd/*')
+endif
 
 $(CS)/ready: test/e2e/kind/start-cluster.sh test/e2e/kind/cluster-template.yaml
 	mkdir -p $(CS)
@@ -281,7 +289,10 @@ $(CS)/prometheus.installed: $(CS)/ready test/e2e/scripts/ensure-prometheus-opera
 
 $(IS)/controller.id: $(GO_SOURCES) Dockerfile
 	mkdir -p $(IS)
-	$(CONTAINER_TOOL) build -t $(E2E_LOCAL_IMAGE) .
+	$(CONTAINER_TOOL) build \
+	  --build-arg TARGETOS=$(shell go env GOOS) \
+	  --build-arg TARGETARCH=$(shell go env GOARCH) \
+	  -t $(E2E_LOCAL_IMAGE) .
 	$(CONTAINER_TOOL) inspect --format='{{.Id}}' $(E2E_LOCAL_IMAGE) > $@
 
 $(CS)/crds.applied: $(CS)/ready $(shell find config/crd -type f)
@@ -296,10 +307,11 @@ $(CS)/image.loaded: $(IS)/controller.id $(CS)/ready
 
 $(CS)/controller.deployed: $(DEPLOY_INPUTS)
 	mkdir -p $(CS)
-	$(KIND) load docker-image $(E2E_LOCAL_IMAGE) --name $(CLUSTER_FROM_CTX)
+	@[ -z "$(PROJECT_IMAGE)" ] || $(CONTAINER_TOOL) pull $(E2E_IMAGE)
+	$(KIND) load docker-image $(E2E_IMAGE) --name $(CLUSTER_FROM_CTX)
 	kubectl --context $(CTX) delete validatingwebhookconfiguration \
 	  gitops-reverser-validating-webhook-configuration --ignore-not-found=true
-	cd config && $(KUSTOMIZE) edit set image gitops-reverser=$(E2E_LOCAL_IMAGE)
+	cd config && $(KUSTOMIZE) edit set image gitops-reverser=$(E2E_IMAGE)
 	$(KUSTOMIZE) build config | kubectl --context $(CTX) apply -f -
 	kubectl --context $(CTX) -n sut rollout status deploy/gitops-reverser --timeout=180s
 	touch $@
@@ -319,7 +331,7 @@ $(CS)/portforward.running: $(CS)/controller.deployed $(CS)/gitea.installed $(CS)
 
 $(CS)/e2e.passed: $(CS)/portforward.running $(shell find test/e2e -name '*.go')
 	mkdir -p $(CS)
-	KIND_CLUSTER=$(CLUSTER_FROM_CTX) PROJECT_IMAGE=$(E2E_LOCAL_IMAGE) \
+	KIND_CLUSTER=$(CLUSTER_FROM_CTX) PROJECT_IMAGE=$(E2E_IMAGE) \
 	  go test ./test/e2e/ -v -ginkgo.v
 	touch $@
 
@@ -336,7 +348,7 @@ test-e2e-quickstart-helm: ## Run quickstart smoke test (Helm install) - always s
 	    .stamps/cluster/$(KUBECONTEXT_QS_HELM)/image.loaded; \
 	fi
 	kubectl config use-context $(KUBECONTEXT_QS_HELM)
-	PROJECT_IMAGE=$(if $(PROJECT_IMAGE),$(PROJECT_IMAGE),$(E2E_LOCAL_IMAGE)) \
+	PROJECT_IMAGE=$(E2E_IMAGE) \
 	  bash test/e2e/scripts/run-quickstart.sh helm
 
 .PHONY: test-e2e-quickstart-manifest
@@ -351,7 +363,7 @@ test-e2e-quickstart-manifest: ## Run quickstart smoke test (manifest install) - 
 	    .stamps/cluster/$(KUBECONTEXT_QS_MANIFEST)/image.loaded; \
 	fi
 	kubectl config use-context $(KUBECONTEXT_QS_MANIFEST)
-	PROJECT_IMAGE=$(if $(PROJECT_IMAGE),$(PROJECT_IMAGE),$(E2E_LOCAL_IMAGE)) \
+	PROJECT_IMAGE=$(E2E_IMAGE) \
 	  bash test/e2e/scripts/run-quickstart.sh manifest
 
 .PHONY: cleanup-port-forwards
