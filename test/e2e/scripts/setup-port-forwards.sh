@@ -4,7 +4,7 @@ set -euo pipefail
 # Configuration
 GITEA_NAMESPACE=${GITEA_NAMESPACE:-gitea-e2e}
 PROMETHEUS_NAMESPACE=${PROMETHEUS_NAMESPACE:-prometheus-operator}
-PROMETHEUS_INSTANCE_NAME=${PROMETHEUS_INSTANCE_NAME:-gitops-reverser}
+PROMETHEUS_INSTANCE_NAME=${PROMETHEUS_INSTANCE_NAME:-prometheus-shared-e2e}
 
 # Cleanup old port-forwards
 echo "🧹 Cleaning up old port-forwards..."
@@ -91,7 +91,7 @@ setup_port_forward() {
 }
 
 # Setup port-forwards
-setup_port_forward "Prometheus" "$PROMETHEUS_NAMESPACE" "prometheus-operated" "19090" "9090"
+setup_port_forward "Prometheus" "$PROMETHEUS_NAMESPACE" "prometheus-shared-e2e" "19090" "9090"
 setup_port_forward "Gitea" "$GITEA_NAMESPACE" "gitea-http" "13000" "13000"
 
 echo ""
