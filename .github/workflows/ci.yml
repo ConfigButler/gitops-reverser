@@ -310,7 +310,6 @@ jobs:
         scenario: [helm, manifest]
     env:
       PROJECT_IMAGE: ${{ needs.docker-build.outputs.image }}
-      KIND_CLUSTER: gitops-reverser-test-e2e-smoke-${{ matrix.scenario }}
       CI_CONTAINER: ${{ needs.build-ci-container.outputs.image }}
 
     steps:
@@ -323,29 +322,6 @@ jobs:
           name: release-bundle
           path: .
 
-      - name: Generate Kind cluster config from template
-        env:
-          HOST_PROJECT_PATH: ${{ github.workspace }}
-        run: |
-          echo "🔧 Generating cluster config with HOST_PROJECT_PATH=${HOST_PROJECT_PATH}"
-          envsubst < test/e2e/kind/cluster-template.yaml > test/e2e/kind/cluster.yaml
-          echo "✅ Generated configuration:"
-          cat test/e2e/kind/cluster.yaml
-
-      - name: Set up Kind cluster with audit webhook support
-        uses: helm/kind-action@v1.13.0
-        with:
-          cluster_name: ${{ env.KIND_CLUSTER }}
-          version: v0.31.0
-          config: test/e2e/kind/cluster.yaml
-          wait: 5m
-
-      - name: Verify cluster setup
-        run: |
-          kubectl cluster-info
-          kubectl get nodes
-          echo "✅ Kind cluster is ready"
-
       - name: Login to Docker registry
         run: |
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ${{ env.REGISTRY }} -u ${{ github.actor }} --password-stdin
@@ -357,10 +333,11 @@ jobs:
             --network host \
             -v "${GITHUB_WORKSPACE}:${{ env.CI_WORKDIR }}" \
             -v "$HOME/.kube:/root/.kube" \
+            -v /var/run/docker.sock:/var/run/docker.sock \
             -w "${{ env.CI_WORKDIR }}" \
             -e PROJECT_IMAGE=${{ env.PROJECT_IMAGE }} \
-            -e KIND_CLUSTER=${{ env.KIND_CLUSTER }} \
             -e HELM_CHART_SOURCE="./gitops-reverser.tgz" \
+            -e HOST_PROJECT_PATH=${{ github.workspace }} \
             ${{ env.CI_CONTAINER }} \
             bash -c "
               git config --global --add safe.directory ${{ env.CI_WORKDIR }}
