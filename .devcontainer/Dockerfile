@@ -27,7 +27,8 @@ ENV KUBECTL_VERSION=v1.35.0 \
     KUSTOMIZE_VERSION=5.8.1 \
     KUBEBUILDER_VERSION=4.11.1 \
     GOLANGCI_LINT_VERSION=v2.10.1 \
-    HELM_VERSION=v4.0.0
+    HELM_VERSION=v4.0.0 \
+    KIND_VERSION=v0.31.0
 
 # Install kubectl
 RUN curl -LO "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl" \
@@ -52,6 +53,10 @@ RUN curl -fsSL https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz \
 # Install golangci-lint
 RUN curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh \
     | sh -s -- -b /usr/local/bin ${GOLANGCI_LINT_VERSION}
+
+# Install Kind (needed in CI for e2e cluster creation, and in dev for local clusters)
+RUN curl -Lo /usr/local/bin/kind "https://github.com/kubernetes-sigs/kind/releases/download/${KIND_VERSION}/kind-linux-amd64" \
+    && chmod +x /usr/local/bin/kind
 
 # Set working directory
 WORKDIR /workspaces
@@ -101,11 +106,7 @@ USER root
 # Switch to noninteractive for package installation
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install Kind (for local Kubernetes clusters)
-# Docker is provided by devcontainer.json docker-in-docker feature
-ENV KIND_VERSION=v0.31.0
-RUN curl -Lo /usr/local/bin/kind https://github.com/kubernetes-sigs/kind/releases/download/${KIND_VERSION}/kind-linux-amd64
-RUN chmod +x /usr/local/bin/kind
+# Kind is already installed in the ci stage above.
 
 # Install Tilt CLI (local dev loop orchestration; dev stage only)
 # https://github.com/tilt-dev/tilt/releases
