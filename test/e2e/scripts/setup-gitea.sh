@@ -30,17 +30,6 @@ fi
 
 echo "🚀 Setting up Gitea test environment with repository: $REPO_NAME"
 
-# Function to setup Gitea installation
-wait_gitea() {
-    echo "⏳ Waiting for Gitea to be ready..."
-    kubectl wait --for=condition=ready pod \
-        -l app.kubernetes.io/name=gitea \
-        -n "$GITEA_NAMESPACE" \
-        --timeout=300s
-
-    echo "✅ Gitea is ready"
-}
-
 test_api_connectivity() {
     # Port-forward should already be running via Makefile's setup-port-forwards
     echo "🔍 Testing API connectivity..."
@@ -318,7 +307,6 @@ checkout_repository() {
 }
 
 # Main execution logic - full setup with specified repository
-wait_gitea
 test_api_connectivity
 setup_organization_and_token
 generate_ssh_keys

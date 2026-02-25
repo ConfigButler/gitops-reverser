@@ -12,6 +12,8 @@ postgresql-ha:
   enabled: false
 redis-cluster:
   enabled: false
+valkey-cluster:
+  enabled: false
 mysql:
   enabled: false
 
