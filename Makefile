@@ -325,6 +325,7 @@ $(CS)/controller.deployed: $(DEPLOY_INPUTS)
 	kubectl --context $(CTX) -n sut rollout status deploy/gitops-reverser --timeout=180s
 	touch $@
 
+.PHONY: $(CS)/portforward.running
 $(CS)/portforward.running: $(CS)/controller.deployed $(CS)/gitea.installed $(CS)/prometheus.installed
 	mkdir -p $(CS)
 	if curl -fsS http://localhost:13000/api/healthz >/dev/null 2>&1 && \
