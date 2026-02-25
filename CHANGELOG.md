@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.17.0](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.16.0...gitops-reverser-v0.17.0) (2026-02-25)
+
+
+### Features
+
+* output json logging for now ([f4ebaee](https://github.com/ConfigButler/gitops-reverser/commit/f4ebaee51de11a401738f8069340a875ae56edab))
+
+
+### Bug Fixes
+
+* Have seperate clusters per installation type (asking for troubles if you don't). ([62496c3](https://github.com/ConfigButler/gitops-reverser/commit/62496c39cc30a176c7aa458445b85e5ac5981470))
+
+
+### Documentation
+
+* Plotting potenial next steps ([5f94e25](https://github.com/ConfigButler/gitops-reverser/commit/5f94e2580519d3bf13089d18922511dd423ce2db))
+* Seeing if this fixes it ([c4d8170](https://github.com/ConfigButler/gitops-reverser/commit/c4d8170c2e390c7b581f7934c19b201eca3e9248))
+* Some new plans for later ([263c3c3](https://github.com/ConfigButler/gitops-reverser/commit/263c3c3abe633a112d5a30de8426898ad791804f))
+
 ## [0.16.0](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.15.0...gitops-reverser-v0.16.0) (2026-02-21)
 
 
