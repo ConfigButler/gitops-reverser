@@ -78,6 +78,7 @@ KIND_CLUSTER ?= $(KIND_CLUSTER_E2E)
 E2E_LOCAL_IMAGE ?= gitops-reverser:e2e-local
 # In CI, PROJECT_IMAGE is the pre-built image from the docker-build job; locally we build E2E_LOCAL_IMAGE.
 E2E_IMAGE := $(if $(PROJECT_IMAGE),$(PROJECT_IMAGE),$(E2E_LOCAL_IMAGE))
+E2E_AGE_KEY_FILE ?= /tmp/e2e-age-key.txt
 CERT_MANAGER_WAIT_TIMEOUT ?= 600s
 CERT_MANAGER_VERSION ?= v1.19.1
 CERT_MANAGER_MANIFEST_URL ?= https://github.com/cert-manager/cert-manager/releases/download/$(CERT_MANAGER_VERSION)/cert-manager.yaml
@@ -233,10 +234,12 @@ setup-envtest: ## Setup envtest binaries for unit tests
 # When PROJECT_IMAGE is set (CI), skip the local image build stamp.
 ifeq ($(PROJECT_IMAGE),)
 DEPLOY_INPUTS := $(CS)/crds.applied $(CS)/cert-manager.installed $(CS)/prometheus.installed \
+                 $(CS)/sut.namespace.ready \
                  $(IS)/controller.id \
                  $(shell find config -type f -not -path 'config/crd/*')
 else
 DEPLOY_INPUTS := $(CS)/crds.applied $(CS)/cert-manager.installed $(CS)/prometheus.installed \
+                 $(CS)/sut.namespace.ready \
                  $(shell find config -type f -not -path 'config/crd/*')
 endif
 
@@ -244,6 +247,12 @@ $(CS)/ready: test/e2e/kind/start-cluster.sh test/e2e/kind/cluster-template.yaml
 	mkdir -p $(CS)
 	KIND_CLUSTER=$(CLUSTER_FROM_CTX) bash test/e2e/kind/start-cluster.sh
 	kubectl --context $(CTX) get ns >/dev/null
+	touch $@
+
+$(CS)/sut.namespace.ready: $(CS)/ready config/namespace.yaml
+	mkdir -p $(CS)
+	kubectl --context $(CTX) apply -f config/namespace.yaml
+	kubectl --context $(CTX) label --overwrite ns sut pod-security.kubernetes.io/enforce=restricted
 	touch $@
 
 $(CS)/cert-manager.installed: $(CS)/ready
@@ -270,6 +279,16 @@ $(CS)/gitea.installed: $(CS)/ready test/e2e/gitea-values.yaml
 $(CS)/prometheus.installed: $(CS)/ready test/e2e/scripts/ensure-prometheus-operator.sh
 	mkdir -p $(CS)
 	KUBECONTEXT=$(CTX) bash test/e2e/scripts/ensure-prometheus-operator.sh
+	touch $@
+
+$(CS)/age-key.applied: $(CS)/sut.namespace.ready test/e2e/tools/gen-age-key/main.go
+	mkdir -p $(CS)
+	go run ./test/e2e/tools/gen-age-key \
+	  --key-file $(CS)/age-key.txt \
+	  --secret-file $(CS)/age-key-secret.yaml \
+	  --namespace sut \
+	  --secret-name sops-age-key
+	kubectl --context $(CTX) apply -f $(CS)/age-key-secret.yaml
 	touch $@
 
 $(IS)/controller.id: $(GO_SOURCES) Dockerfile
@@ -306,11 +325,7 @@ $(CS)/controller.deployed: $(DEPLOY_INPUTS)
 	kubectl --context $(CTX) -n sut rollout status deploy/gitops-reverser --timeout=180s
 	touch $@
 
-.PHONY: portforward-check
-portforward-check:
-	@true
-
-$(CS)/portforward.running: portforward-check $(CS)/controller.deployed $(CS)/gitea.installed $(CS)/prometheus.installed
+$(CS)/portforward.running: $(CS)/controller.deployed $(CS)/gitea.installed $(CS)/prometheus.installed
 	mkdir -p $(CS)
 	if curl -fsS http://localhost:13000/api/healthz >/dev/null 2>&1 && \
 	   curl -fsS http://localhost:19090/-/healthy    >/dev/null 2>&1; then \
@@ -323,9 +338,11 @@ $(CS)/portforward.running: portforward-check $(CS)/controller.deployed $(CS)/git
 	curl -fsS http://localhost:19090/-/healthy    >/dev/null || { echo "Prometheus health check failed"; exit 1; }
 	touch $@
 
-$(CS)/e2e.passed: $(CS)/portforward.running $(shell find test/e2e -name '*.go')
+$(CS)/e2e.passed: $(CS)/portforward.running $(CS)/age-key.applied $(shell find test/e2e -name '*.go')
 	mkdir -p $(CS)
+	kubectl --context $(CTX) delete crd icecreamorders.shop.example.com --ignore-not-found=true
 	KIND_CLUSTER=$(CLUSTER_FROM_CTX) PROJECT_IMAGE=$(E2E_IMAGE) \
+	  E2E_AGE_KEY_FILE=$(CS)/age-key.txt \
 	  go test ./test/e2e/ -v -ginkgo.v
 	touch $@
 
