@@ -78,6 +78,7 @@ jobs:
             golangci-lint version
             controller-gen --version
             kind version
+            docker --version
             echo '✅ All CI container tools verified'
           "
 
@@ -123,7 +124,7 @@ jobs:
             helm version
             golangci-lint version
             kind version
-            docker --version || echo 'Docker CLI not available (expected in container)'
+            docker --version
             echo '✅ All dev container tools verified'
           "
 
