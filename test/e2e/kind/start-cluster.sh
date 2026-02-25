@@ -9,23 +9,6 @@ CONFIG_FILE="test/e2e/kind/cluster.ignore.yaml"
 KIND_CREATE_LOG_FILE="${TMPDIR:-/tmp}/kind-create-${CLUSTER_NAME}.log"
 POD_SUBNET="${KIND_POD_SUBNET:-10.244.0.0/16}"
 
-# Check if HOST_PROJECT_PATH is set
-if [ -z "$HOST_PROJECT_PATH" ]; then
-    echo "❌ ERROR: HOST_PROJECT_PATH environment variable is not set"
-    echo "This should be set in .devcontainer/devcontainer.json"
-    exit 1
-fi
-
-echo "🔧 Using HOST_PROJECT_PATH: $HOST_PROJECT_PATH"
-
-# Use envsubst to replace ${HOST_PROJECT_PATH} in template
-echo "📝 Generating Kind cluster configuration from template..."
-envsubst < "$TEMPLATE_FILE" > "$CONFIG_FILE"
-
-echo "✅ Generated configuration:"
-cat "$CONFIG_FILE"
-echo ""
-
 create_primary_cluster() {
     kind create cluster --name "$CLUSTER_NAME" --config "$CONFIG_FILE" --wait 5m --retain 2>&1 | tee "$KIND_CREATE_LOG_FILE"
 }
@@ -82,6 +65,21 @@ run_dood_self_heal() {
 if kind get clusters 2>/dev/null | grep -q "^${CLUSTER_NAME}$"; then
     echo "♻️ Reusing existing Kind cluster '$CLUSTER_NAME' (no delete/recreate)"
 else
+    # HOST_PROJECT_PATH is only needed when creating a new cluster (for host-path volume mounts).
+    # Clusters pre-created by CI (helm/kind-action) don't need it.
+    if [ -z "${HOST_PROJECT_PATH:-}" ]; then
+        echo "❌ ERROR: HOST_PROJECT_PATH environment variable is not set"
+        echo "This should be set in .devcontainer/devcontainer.json or passed by CI"
+        exit 1
+    fi
+
+    echo "🔧 Using HOST_PROJECT_PATH: $HOST_PROJECT_PATH"
+    echo "📝 Generating Kind cluster configuration from template..."
+    envsubst < "$TEMPLATE_FILE" > "$CONFIG_FILE"
+    echo "✅ Generated configuration:"
+    cat "$CONFIG_FILE"
+    echo ""
+
     echo "🚀 Creating Kind cluster '$CLUSTER_NAME' with audit webhook support..."
     if create_primary_cluster; then
         echo "✅ Kind cluster created successfully"
