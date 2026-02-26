@@ -104,8 +104,8 @@ Shared prerequisites:
 Deploy/install actions (to add/refine):
 
 - `e2e-deploy-full` (run-scoped install/deploy for full flow)
-- `e2e-deploy-quickstart-helm` (run-scoped Helm quickstart deploy)
-- `e2e-deploy-quickstart-manifest` (run-scoped manifest quickstart deploy)
+- `$(CS)/$(NAMESPACE)/deploy-helm` (run-scoped Helm quickstart deploy)
+- `deploy-installer` (run-scoped manifest quickstart deploy)
 
 Expected inputs for these targets:
 

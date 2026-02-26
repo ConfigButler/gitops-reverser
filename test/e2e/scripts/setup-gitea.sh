@@ -49,21 +49,46 @@ test_api_connectivity() {
 
 # Function to create organization and get token
 setup_organization_and_token() {
-    echo "🏢 Creating test organization '$ORG_NAME'..."
-    ORG_RESPONSE=$(curl -s -w "%{http_code}" -o /tmp/org_response.json \
-        -X POST "$API_URL/orgs" \
-        -H "Content-Type: application/json" \
-        -u "$ADMIN_USER:$ADMIN_PASS" \
-        -d "{\"username\":\"$ORG_NAME\",\"full_name\":\"Test Organization\",\"description\":\"E2E Test Organization\"}")
+    organization_exists() {
+        local status
+        status=$(curl -s -w "%{http_code}" -o /tmp/org_get_response.json \
+            -X GET "$API_URL/orgs/$ORG_NAME" \
+            -H "Content-Type: application/json" \
+            -u "$ADMIN_USER:$ADMIN_PASS" || true)
+        [[ "$status" == "200" ]]
+    }
 
-    if [[ "$ORG_RESPONSE" == "201" ]]; then
-        echo "✅ Organization created successfully"
-    elif [[ "$ORG_RESPONSE" == "409" ]] || [[ "$ORG_RESPONSE" == "422" ]]; then
+    echo "🏢 Ensuring test organization '$ORG_NAME' exists..."
+    if organization_exists; then
         echo "ℹ️  Organization already exists"
     else
-        echo "⚠️  Unexpected response creating organization: $ORG_RESPONSE"
-        cat /tmp/org_response.json 2>/dev/null || true
-        echo "ℹ️  Continuing setup despite organization creation issue..."
+        local attempt
+        for attempt in {1..5}; do
+            ORG_RESPONSE=$(curl -s -w "%{http_code}" -o /tmp/org_response.json \
+                -X POST "$API_URL/orgs" \
+                -H "Content-Type: application/json" \
+                -u "$ADMIN_USER:$ADMIN_PASS" \
+                -d "{\"username\":\"$ORG_NAME\",\"full_name\":\"Test Organization\",\"description\":\"E2E Test Organization\"}" || true)
+
+            if [[ "$ORG_RESPONSE" == "201" ]]; then
+                echo "✅ Organization created successfully"
+                break
+            fi
+            if [[ "$ORG_RESPONSE" == "409" ]] || [[ "$ORG_RESPONSE" == "422" ]]; then
+                echo "ℹ️  Organization already exists"
+                break
+            fi
+            if organization_exists; then
+                echo "ℹ️  Organization already exists"
+                break
+            fi
+
+            echo "⚠️  Attempt $attempt/5: failed to create organization (status=${ORG_RESPONSE:-none})"
+            cat /tmp/org_response.json 2>/dev/null || true
+            if [[ "$attempt" -lt 5 ]]; then
+                sleep 1
+            fi
+        done
     fi
 
     # Generate or reuse access token
@@ -349,4 +374,4 @@ echo "
 
 # Cleanup temporary files
 rm -f /tmp/org_response.json /tmp/repo_response.json /tmp/token_response.json /tmp/token_list.json \
-    /tmp/ssh_key_response.json
+    /tmp/ssh_key_response.json /tmp/org_get_response.json

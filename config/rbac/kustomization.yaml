@@ -2,6 +2,6 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
   - sa.yaml
-  - cluster-role.yaml
+  - role.yaml
   - cluster-rolebinding.yaml
   - cluster-rolebinding-jane.yaml   # E2E-only helper: allows impersonated user jane@acme.com writes in tests.

@@ -1,7 +1,7 @@
 {{- if .Values.rbac.create -}}
-{{- $roleYaml := .Files.Get "config/cluster-role.yaml" -}}
+{{- $roleYaml := .Files.Get "config/role.yaml" -}}
 {{- if eq $roleYaml "" -}}
-{{- fail "charts/gitops-reverser/config/cluster-role.yaml is missing. Run `make helm-sync` to regenerate chart RBAC artifacts before templating/installing." -}}
+{{- fail "charts/gitops-reverser/config/role.yaml is missing. Run `make helm-sync` to regenerate chart RBAC artifacts before templating/installing." -}}
 {{- end -}}
 {{- $roleFile := $roleYaml | fromYaml }}
 

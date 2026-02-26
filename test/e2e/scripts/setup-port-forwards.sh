@@ -5,6 +5,23 @@ set -euo pipefail
 GITEA_NAMESPACE=${GITEA_NAMESPACE:-gitea-e2e}
 PROMETHEUS_NAMESPACE=${PROMETHEUS_NAMESPACE:-prometheus-operator}
 PROMETHEUS_INSTANCE_NAME=${PROMETHEUS_INSTANCE_NAME:-prometheus-shared-e2e}
+KUBE_CONTEXT=${E2E_KUBECONTEXT:-${CTX:-${KUBECONTEXT:-}}}
+
+if [[ -z "${KUBE_CONTEXT}" ]]; then
+    KUBE_CONTEXT="$(kubectl config current-context 2>/dev/null || true)"
+fi
+
+if [[ -z "${KUBE_CONTEXT}" ]]; then
+    echo "❌ Kubernetes context is required (set E2E_KUBECONTEXT or CTX)"
+    exit 1
+fi
+
+# Fast path: keep existing healthy forwards instead of restarting.
+if curl -fsS http://localhost:13000/api/healthz >/dev/null 2>&1 && \
+   curl -fsS http://localhost:19090/-/healthy >/dev/null 2>&1; then
+    echo "✅ Existing port-forwards are healthy for context ${KUBE_CONTEXT}; skipping restart"
+    exit 0
+fi
 
 # Cleanup old port-forwards
 echo "🧹 Cleaning up old port-forwards..."
@@ -13,21 +30,22 @@ pkill -f "kubectl port-forward.*13000" || true
 sleep 1
 
 echo "🔌 Setting up port-forwards for e2e testing..."
+echo "🎯 Using kube context: ${KUBE_CONTEXT}"
 
 echo "⏳ Waiting for Prometheus pod to be ready..."
-kubectl wait --for=condition=ready pod \
+kubectl --context "$KUBE_CONTEXT" wait --for=condition=ready pod \
     -l "prometheus=${PROMETHEUS_INSTANCE_NAME}" \
     -n "$PROMETHEUS_NAMESPACE" \
     --timeout=180s || {
     echo "❌ Prometheus pod failed to become ready"
-    kubectl get pods -n "$PROMETHEUS_NAMESPACE" -l "prometheus=${PROMETHEUS_INSTANCE_NAME}" || true
+    kubectl --context "$KUBE_CONTEXT" get pods -n "$PROMETHEUS_NAMESPACE" -l "prometheus=${PROMETHEUS_INSTANCE_NAME}" || true
     exit 1
 }
 
 echo "✅ Prometheus pod is ready"
 
 echo "⏳ Waiting for Gitea pod to be ready..."
-kubectl wait --for=condition=ready pod \
+kubectl --context "$KUBE_CONTEXT" wait --for=condition=ready pod \
     -l app.kubernetes.io/name=gitea \
     -n "$GITEA_NAMESPACE" \
     --timeout=180s || {
@@ -54,7 +72,7 @@ setup_port_forward() {
 
     echo "🔌 Starting ${service_name} port-forward..."
     local pf_log="/tmp/${service_name}-pf.log"
-    kubectl port-forward --address 127.0.0.1 \
+    kubectl --context "$KUBE_CONTEXT" port-forward --address 127.0.0.1 \
         -n "$namespace" "svc/${service}" "${local_port}:${remote_port}" > "$pf_log" 2>&1 &
     local pf_pid=$!
     
@@ -93,6 +111,16 @@ setup_port_forward() {
 # Setup port-forwards
 setup_port_forward "Prometheus" "$PROMETHEUS_NAMESPACE" "prometheus-operated" "19090" "9090"
 setup_port_forward "Gitea" "$GITEA_NAMESPACE" "gitea-http" "13000" "13000"
+
+# Validate HTTP endpoints before returning success.
+curl -fsS http://localhost:13000/api/healthz >/dev/null || {
+    echo "❌ Gitea health check failed after port-forward setup"
+    exit 1
+}
+curl -fsS http://localhost:19090/-/healthy >/dev/null || {
+    echo "❌ Prometheus health check failed after port-forward setup"
+    exit 1
+}
 
 echo ""
 echo "📊 Prometheus: http://localhost:19090"

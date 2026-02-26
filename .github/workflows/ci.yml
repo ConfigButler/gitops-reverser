@@ -161,7 +161,7 @@ jobs:
 
       - name: Generate install.yaml from Helm chart
         run: |
-          make build-installer
+          make dist/install.yaml
 
       - name: Package Helm chart
         run: |

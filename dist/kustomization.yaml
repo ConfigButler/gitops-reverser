@@ -1,0 +1,8 @@
+# Helper to facilitate quick deployment to another ns (currently used for e2e)
+# kustomize edit set namespace blaat
+# kustomize build . | kubectl apply -f -
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+- install.yaml
+
