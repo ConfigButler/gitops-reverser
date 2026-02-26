@@ -1,173 +1,204 @@
 # Shared-Infra Parallel E2E Plan
 
-## Goal
+## Objective
 
-Run the three E2E flows in parallel while sharing one Gitea instance and one Prometheus instance in a single Kind cluster, with stable port-forwarding (`13000`, `19090`) and no cross-test contamination.
+Run three E2E flows in parallel in one Kind cluster, sharing one Gitea and one Prometheus instance, without cross-run contamination.
 
-## Target Architecture
+Target flows:
 
-- One shared infra stack per cluster:
-  - Gitea in `gitea-e2e`
-  - Prometheus in `prometheus-operator`
-  - Fixed port-forwards kept as-is (`localhost:13000`, `localhost:19090`)
-- Multiple parallel test flows, each with run-scoped isolation:
-  - `run-e2e-full-<id>`
-  - `run-e2e-quickstart-helm-<id>`
-  - `run-e2e-quickstart-manifest-<id>`
-- Isolation key carried across resources and metrics:
-  - `configbutler.ai/e2e-run-id=<id>`
+- `full`
+- `quickstart-helm`
+- `quickstart-manifest`
 
-## Design Principles
+## Boundary Contract (Non-Negotiable)
 
-- Share only infra components that are safe to share (Gitea, Prometheus, cluster-level operators).
-- Isolate everything stateful per test run (namespaces, repo names, resource names, secrets, temp files, checkout dirs).
-- Avoid destructive global cleanup in per-run flows.
-- Make assertions run-aware via label and metric filtering.
+This is the key design boundary for this phase:
 
-## Implementation Plan
+- Run context contract is only in Go E2E code.
+- Cluster creation and Makefile `CTX` context are not run-context-aware yet.
+- E2E Go code owns run-scoped lifecycle.
+- Makefile owns shared cluster prerequisites and deployment actions that Go invokes.
 
-## 1. Introduce Run Context
+Concretely, three E2E flows share one suite-level `BeforeAll` where Go will:
 
-Define a run context contract used by Make targets, shell scripts, and Go tests:
+1. decide `runID`
+2. create run namespace
+3. connect to shared Gitea
+4. perform Gitea setup currently in `test/e2e/scripts/setup-gitea.sh` (migrated to Go)
+
+## Current Baseline
+
+- Shared infra is already provisioned by Make stamp targets (`ready`, `cert-manager`, `gitea`, `prometheus`, `portforward`).
+- Go E2E (`test/e2e/e2e_test.go`) currently shells into `setup-gitea.sh`.
+- `setup-gitea.sh` currently does both API setup and Kubernetes secret/bootstrap work.
+- The script still contains global/shared-risk behavior (`git config --global`, fixed `/tmp/e2e-ssh-key`, fixed secret names).
+
+## Target Topology
+
+Shared components (single instance per cluster):
+
+- Gitea in `gitea-e2e`
+- Prometheus in `prometheus-operator`
+- Fixed port-forwards: `localhost:13000`, `localhost:19090`
+
+Run-scoped components (one set per flow/run):
+
+- Namespace: `run-<flow>-<id>`
+- Repo: unique per run
+- Secrets: unique names per run namespace
+- Local checkout/temp paths: unique per run
+- Labels: `configbutler.ai/e2e-run-id=<id>`
+
+## Execution Model
+
+### 1. Shared bootstrap via Make (once)
+
+Go starts by invoking Make for shared prerequisites only:
+
+- `$(CS)/ready`
+- `$(CS)/cert-manager.installed`
+- `$(CS)/gitea.installed`
+- `$(CS)/prometheus.installed`
+- `$(CS)/portforward.running`
+- `$(CS)/image.loaded` (only when local image is required)
+
+This keeps infra setup in Make and avoids reimplementing cluster dependency logic in Go.
+
+### 2. Shared `BeforeAll` in Go (run context starts here)
+
+Define and propagate a Go-only run context:
 
 - `E2E_RUN_ID`
 - `E2E_TEST_NAMESPACE`
-- `E2E_CONTROLLER_NAMESPACE` (if needed for scenario separation)
 - `E2E_GITEA_API_URL` (default `http://localhost:13000/api/v1`)
 
-Actions:
+`BeforeAll` responsibilities:
 
-- Add helper code in `test/e2e` to read/generate run context.
-- Replace hardcoded namespace usage (`sut`) in Go helpers and tests with run-context values.
-- Ensure all generated resource names include `E2E_RUN_ID` or are namespace-scoped.
+- Generate stable unique `runID`.
+- Create run namespace.
+- Initialize Gitea artifacts for this run.
+- Dispatch flow-specific deploy/install actions by calling Make targets.
 
-## 2. Refactor Gitea Setup for Concurrency
+### 3. Flow execution (parallel)
 
-Current risks include global git config and fixed temporary SSH key paths.
+Run three flows in parallel using the same shared infra but distinct run contexts:
 
-Actions in `test/e2e/scripts/setup-gitea.sh`:
+- full flow
+- quickstart-helm flow
+- quickstart-manifest flow
 
-- Accept parameters/env for:
-  - target namespace
-  - secret name prefix
-  - run id
-  - API URL
-- Replace global git URL rewrite with safer alternatives:
-  - repo-local config, or
-  - per-command credentials
-- Make SSH key files run-scoped:
-  - `/tmp/e2e-ssh-key-<run-id>`
-  - `/tmp/e2e-ssh-key-<run-id>.pub`
-- Keep shared Gitea org if desired, but enforce unique repo per run.
-- Create per-run secret names instead of shared fixed secrets when needed.
+### 4. Cleanup model
 
-## 3. Make Quickstart Flow Namespace-Aware and Non-Destructive
+- Cleanup by `runID` (namespace + run-scoped assets only).
+- Never remove shared infra or shared port-forwards during per-run cleanup.
+- Keep per-run artifacts/logs when a flow fails.
 
-Actions in `test/e2e/scripts/run-quickstart.sh`:
+## Make Targets to Call from Go
 
-- Replace fixed namespaces with run-context namespace.
-- Keep all object names run-scoped.
-- Remove or guard destructive reset operations that delete shared cluster-wide resources.
-- Preserve shared infra and fixed port-forwarding lifecycle.
+Go should call Make for concrete actions, not reimplement them.
 
-Outcome:
+Shared prerequisites:
 
-- Quickstart Helm/Manifest flows can run in parallel against shared infra without deleting each other’s prerequisites.
+- Existing stamp targets listed above.
 
-## 4. Add Metric Isolation with Labels
+Deploy/install actions (to add/refine):
 
-Use per-run labels for both resource selection and Prometheus assertions.
+- `e2e-deploy-full` (run-scoped install/deploy for full flow)
+- `e2e-deploy-quickstart-helm` (run-scoped Helm quickstart deploy)
+- `e2e-deploy-quickstart-manifest` (run-scoped manifest quickstart deploy)
 
-Actions:
+Expected inputs for these targets:
 
-- Ensure controller emits labels that can identify run context (`run_id`, `test_namespace`, or equivalent).
-- Update e2e PromQL queries to filter by run label.
-- If needed, create per-run `ServiceMonitor` objects with label selectors targeting run-tagged resources.
-- Replace assumptions bound to fixed values (for example fixed `cluster_id='kind-e2e'` assertions) with run-aware checks.
+- `E2E_TEST_NAMESPACE`
+- `E2E_RUN_ID`
+- flow-specific names (release/resource prefixes)
+- repo URL / secret refs created by Go setup
 
-## 5. Move Quickstart Assertions into Go E2E Tests
+Important:
 
-Rationale: reduce shell duplication, improve reuse and diagnostics consistency.
+- These targets must be non-destructive to shared infra.
+- They can consume run parameters, but run-context ownership remains in Go.
 
-Actions:
+## Gitea Migration Plan (setup-gitea.sh -> Go)
 
-- Port quickstart functional checks from shell to Go specs in `test/e2e`.
-- Keep shell scripts for infrastructure/bootstrap only.
-- Use table-driven tests for Helm and manifest install variants.
-- Reuse existing helper patterns for CRUD, readiness, encryption, and failure-message assertions.
+Use `https://gitea.com/gitea/go-sdk` for API operations. Keep parity-first behavior, then harden.
 
-## 6. Add Parallel Orchestration Target
+### What the current script does
 
-Introduce a new Make target to orchestrate all flows in one shared cluster.
+`setup-gitea.sh` currently performs:
 
-Example target:
+1. API readiness check (`/version` retry loop)
+2. org create-or-exists (`testorg`)
+3. token create/reuse
+4. run repo create-or-exists
+5. SSH keypair generation (`/tmp/e2e-ssh-key*`)
+6. delete existing Gitea user SSH keys, then add key
+7. create Kubernetes secrets in target namespace:
+   - HTTP secret: `git-creds`
+   - SSH secret: `git-creds-ssh`
+   - invalid secret: `git-creds-invalid`
+8. clone repo to checkout dir and set git config (currently uses global git URL rewrite)
 
-- `make test-e2e-all-parallel`
+### Port slice 1 (get started, minimum viable)
 
-Behavior:
+Implement first in Go helper:
 
-- Ensure cluster + shared infra are started once.
-- Launch `full`, `quickstart-helm`, `quickstart-manifest` with distinct run contexts in parallel.
-- Aggregate exit codes and print per-run diagnostics.
-- Keep existing targets (`test-e2e`, `test-e2e-quickstart-*`) as fallback and for incremental debugging.
+1. `WaitForGiteaAPI(ctx, apiURL)`
+2. `EnsureOrg(ctx, orgName)`
+3. `CreateRunToken(ctx, tokenName=e2e-<runID>)`
+4. `EnsureRepo(ctx, orgName, repoName)`
+5. `EnsureNamespace(ctx, runNamespace)`
+6. `CreateHTTPSecret(ctx, runNamespace, secretName, username, token)`
+7. `CreateInvalidSecret(ctx, runNamespace, invalidSecretName)`
 
-## 7. Cleanup and Diagnostics Model
+This unblocks HTTP-based GitProvider flows with run-scoped credentials.
 
-Actions:
+### Port slice 2 (required for SSH test parity)
 
-- Cleanup by `run_id` only (namespace and run-scoped resources).
-- Never kill shared port-forwards during per-run cleanup.
-- Persist run-scoped artifacts/logs for failed runs.
-- Add helper commands to inspect one run without affecting others.
+Add SSH parity next:
 
-## Validation Strategy
+1. Generate run-scoped SSH key material (no fixed `/tmp` names).
+2. Register key in Gitea without deleting unrelated keys globally.
+3. Build `known_hosts` data for `gitea-ssh.gitea-e2e.svc.cluster.local:2222`.
+4. Create run-scoped SSH secret (`git-creds-ssh-<runID>` or namespace-local fixed name per run namespace).
 
-Follow existing project validation sequence and mandatory gates.
+### Port slice 3 (checkout and git config hardening)
 
-Primary sequence:
+Replace global git rewrite behavior:
 
-1. `make fmt`
-2. `make generate`
-3. `make manifests` (if API changes)
-4. `make vet`
-5. `make lint`
-6. `make test`
-7. `make test-e2e`
+- Do not use `git config --global url.*.insteadOf`.
+- Use repo-local auth or per-command credential injection.
+- Keep checkout dir run-scoped and disposable.
 
-Mandatory completion gates:
+## Suite Structure in Go
 
-- `make lint`
-- `make test`
-- `make test-e2e`
-- `make test-e2e-quickstart-manifest`
-- `make test-e2e-quickstart-helm`
+Target shape in `test/e2e`:
 
-Additional prerequisite:
+- one shared suite `BeforeAll` for run initialization
+- three flow specs (`full`, `quickstart-helm`, `quickstart-manifest`)
+- shared helper package for run context + Gitea setup + Make invocation
 
-- Verify Docker daemon availability before E2E execution (`docker info`).
+## Metrics and Assertions Isolation
+
+- Attach run label(s) to run-scoped resources.
+- Update PromQL assertions to filter by run label/namespace.
+- Avoid assertions tied to fixed shared values when they can collide across runs.
+
+## Rollout Plan
+
+1. Finalize boundary ownership in code structure (Go vs Make).
+2. Add Go run-context helper and shared `BeforeAll` wiring.
+3. Implement Gitea port slice 1.
+4. Add run-scoped Make deploy targets and call them from Go.
+5. Implement Gitea port slice 2 for SSH parity.
+6. Move quickstart shell assertions into Go tests.
+7. Add/finish parallel orchestration target (`test-e2e-all-parallel`).
 
 ## Definition of Done
 
-- Three E2E flows can run concurrently in one cluster against one Gitea and one Prometheus instance.
-- No flaky cross-run interactions from shared names, secrets, temp files, or cleanup.
-- Prometheus assertions are run-aware via labels/filters.
-- Fixed port-forwarding remains stable and unchanged.
-- Existing mandatory lint/test/e2e targets pass.
-
-## Suggested Rollout Order
-
-1. Run context and namespace/resource parameterization.
-2. Gitea script concurrency hardening.
-3. Quickstart script de-destructive changes.
-4. Metric labeling and query filtering.
-5. Quickstart assertion migration to Go tests.
-6. Parallel orchestration target and hardening.
-
-## Risks and Mitigations
-
-- Risk: hidden global assumptions in scripts/tests.
-  - Mitigation: search and remove fixed names/paths early (`sut`, fixed secret names, `/tmp/e2e-ssh-key`, global git config).
-- Risk: metric cardinality or missing run labels.
-  - Mitigation: define required metric labels up front and enforce in tests.
-- Risk: parallelism increases flakiness from timing.
-  - Mitigation: strengthen eventual assertions and per-run diagnostics.
+- Three flows run concurrently in one cluster.
+- Shared infra is initialized once and remains stable.
+- Run context exists only in Go E2E code.
+- Go creates namespace and triggers deploy/install through Make targets.
+- Gitea setup is migrated from `setup-gitea.sh` into Go helper with at least slice 1 and slice 2 complete.
+- No cross-run contamination from secrets, repo names, temp files, or cleanup.

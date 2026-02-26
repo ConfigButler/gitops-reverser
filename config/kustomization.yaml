@@ -8,7 +8,6 @@ resources:
 - deployment.yaml
 - certs
 - webhook.yaml
-- servicemonitor.yaml
 images:
 - name: gitops-reverser
   newName: gitops-reverser
