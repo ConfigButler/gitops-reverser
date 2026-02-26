@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.17.1](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.17.0...gitops-reverser-v0.17.1) (2026-02-26)
+
+
+### Bug Fixes
+
+* Failing folder reconcile for core group (group="") resources ([212132f](https://github.com/ConfigButler/gitops-reverser/commit/212132fa0c52f9888bbc63c0008e6c3dc3bf88b5))
+* This should remove the timing mistake in the e2e setup ([74d25af](https://github.com/ConfigButler/gitops-reverser/commit/74d25afed95bffa74872fefbf25d3fe34638335b))
+
 ## [0.17.0](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.16.0...gitops-reverser-v0.17.0) (2026-02-25)
 
 
