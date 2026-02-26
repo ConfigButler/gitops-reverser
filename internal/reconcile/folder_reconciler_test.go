@@ -228,6 +228,37 @@ func TestFolderReconciler_OnRepoState(t *testing.T) {
 	assert.Len(t, reconciler.gitResources, 1, "Should not update Git resources for non-matching event")
 }
 
+func TestFolderReconciler_NoDeleteForIdenticalCoreNamespacedResource(t *testing.T) {
+	mockEmitter := &MockEventEmitter{}
+	mockControlEmitter := &MockControlEventEmitter{}
+	gitDest := types.NewResourceReference("test-gitdest", "default")
+	reconciler := NewFolderReconciler(gitDest, mockEmitter, mockControlEmitter, log.Log)
+
+	resource := types.ResourceIdentifier{
+		Group:     "",
+		Version:   "v1",
+		Resource:  "configmaps",
+		Namespace: "ns1",
+		Name:      "oeps3",
+	}
+
+	reconciler.OnClusterState(events.ClusterStateEvent{
+		GitDest:   gitDest,
+		Resources: []types.ResourceIdentifier{resource},
+	})
+	reconciler.OnRepoState(events.RepoStateEvent{
+		GitDest:   gitDest,
+		Resources: []types.ResourceIdentifier{resource},
+	})
+
+	assert.Empty(t, mockEmitter.GetCreateEvents())
+	assert.Empty(t, mockEmitter.GetDeleteEvents())
+	assert.Equal(t, []types.ResourceIdentifier{resource}, mockEmitter.GetReconcileEvents())
+
+	stats := reconciler.GetLastSnapshotStats()
+	assert.Equal(t, SnapshotStats{Created: 0, Updated: 1, Deleted: 0}, stats)
+}
+
 func TestFolderReconciler_HasBothStates(t *testing.T) {
 	mockEmitter := &MockEventEmitter{}
 	mockControlEmitter := &MockControlEventEmitter{}

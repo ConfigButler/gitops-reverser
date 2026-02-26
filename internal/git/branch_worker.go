@@ -360,7 +360,7 @@ func (w *BranchWorker) listResourceIdentifiersInPath(
 		basePath = filepath.Join(repoPath, path)
 	}
 
-	err := filepath.Walk(basePath, func(path string, info os.FileInfo, walkErr error) error {
+	err := filepath.Walk(basePath, func(walkPath string, info os.FileInfo, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -368,10 +368,11 @@ func (w *BranchWorker) listResourceIdentifiersInPath(
 			return nil
 		}
 
-		relPath, relErr := filepath.Rel(repoPath, path)
+		relPath, relErr := filepath.Rel(basePath, walkPath)
 		if relErr != nil {
 			return relErr
 		}
+		relPath = filepath.ToSlash(relPath)
 
 		// Skip marker files
 		if strings.Contains(relPath, ".configbutler") {

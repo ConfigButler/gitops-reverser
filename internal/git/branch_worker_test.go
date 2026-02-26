@@ -155,6 +155,31 @@ func TestListResourcesInPath_DifferentPaths(t *testing.T) {
 	}
 }
 
+func TestListResourceIdentifiersInPath_PathPrefixParsesAsCoreGroup(t *testing.T) {
+	worker, cleanup := setupBranchWorkerTest()
+	defer cleanup()
+
+	repoPath := t.TempDir()
+	targetPath := "live-cluster"
+
+	resourcePath := filepath.Join(repoPath, targetPath, "v1", "configmaps", "ns1", "oeps3.yaml")
+	require.NoError(t, os.MkdirAll(filepath.Dir(resourcePath), 0o755))
+	require.NoError(t, os.WriteFile(resourcePath, []byte("apiVersion: v1\nkind: ConfigMap\n"), 0o600))
+
+	markerPath := filepath.Join(repoPath, targetPath, ".configbutler")
+	require.NoError(t, os.WriteFile(markerPath, []byte("marker"), 0o600))
+
+	resources, err := worker.listResourceIdentifiersInPath(repoPath, targetPath)
+	require.NoError(t, err)
+	require.Len(t, resources, 1, "marker files should be ignored")
+
+	assert.Empty(t, resources[0].Group)
+	assert.Equal(t, "v1", resources[0].Version)
+	assert.Equal(t, "configmaps", resources[0].Resource)
+	assert.Equal(t, "ns1", resources[0].Namespace)
+	assert.Equal(t, "oeps3", resources[0].Name)
+}
+
 // TestListResourcesInPath_MissingGitProvider verifies proper error when GitProvider is missing.
 func TestListResourcesInPath_MissingGitProvider(t *testing.T) {
 	worker, cleanup := setupBranchWorkerTest()
