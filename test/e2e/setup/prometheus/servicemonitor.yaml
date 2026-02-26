@@ -2,7 +2,7 @@ apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
   name: gitops-reverser
-  namespace: prometheus-shared-e2e
+  namespace: prometheus-operator
   labels:
     monitoring.configbutler.ai/instance: gitops-reverser
 spec:
