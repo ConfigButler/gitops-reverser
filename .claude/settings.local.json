@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(make fmt)",
+      "Bash(make vet)",
+      "Bash(make lint)",
+      "Bash(make test)",
+      "Bash(make test-e2e)",
+      "Bash(make --dry-run test-e2e-quickstart-manifest)",
+      "Bash(make test-e2e-quickstart-manifest)",
+      "Bash(make test-e2e-quickstart-helm)",
+      "Bash(kubectl --context kind-gitops-reverser-test-e2e-quickstart-helm get clusterrole,clusterrolebinding,crd)",
+      "Bash(make --dry-run test-e2e-quickstart-helm)",
+      "Bash(make --dry-run test-e2e)",
+      "Bash(grep -n \"setupSOPSAgeSecret\\\\|generateAgeKey\\\\|e2eAgeKeyPath\" /workspaces/gitops-reverser2/test/e2e/*.go)",
+      "Bash(grep -n \"readSOPSAgeKeyFromFile\" /workspaces/gitops-reverser2/test/e2e/*.go)",
+      "Bash(grep -r \"make\\\\|Make\" /workspaces/gitops-reverser2/test/e2e/*.go)",
+      "Bash(make .stamps/image/controller.id)",
+      "Bash(docker version)",
+      "Bash(docker buildx version)"
+    ]
+  }
+}

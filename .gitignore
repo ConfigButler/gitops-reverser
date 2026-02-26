@@ -34,8 +34,8 @@ __debug*
 charts/gitops-reverser/crds/*.yaml
 charts/gitops-reverser/config/*.yaml
 
-# Keep the install.yaml for distribution
-dist/install.yaml
+# Generated single-file installer artifact (not tracked).
+/dist/install.yaml
 
 *.o.yaml
 *.ignore.*

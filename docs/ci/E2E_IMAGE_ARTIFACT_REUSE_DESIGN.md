@@ -73,7 +73,7 @@ Outcome:
 - Run `make test-e2e-install-helm` or `make test-e2e-install-manifest` with no `PROJECT_IMAGE`.
 - Make cleans cluster first (clean-install validation), then sets up e2e infra.
 - Make auto-builds and Kind-loads `$(E2E_LOCAL_IMAGE)`, then runs smoke install using that image.
-- For `test-e2e-install-manifest`, `build-installer` is run first to regenerate `dist/install.yaml`.
+- For `test-e2e-install-manifest`, `build-plain-manifests-installer` is run first to regenerate `dist/install.yaml`.
 
 Outcome:
 - Automatic local behavior with explicit clean-install validation for smoke tests.
@@ -97,7 +97,7 @@ Outcome:
   - local fallback path: cleanup cluster, setup infra, build/load local image.
 - `test-e2e-install-helm`: wrapper to `test-e2e-install`.
 - `test-e2e-install-manifest`:
-  - local path: run `build-installer` first.
+  - local path: run `build-plain-manifests-installer` first.
   - prebuilt path: use existing manifest artifact.
 
 ### Go (`test/e2e/e2e_suite_test.go`)
@@ -144,7 +144,7 @@ Outcome:
 - Image pull failures in Kind:
   - Ensure local build/load ran or `PROJECT_IMAGE` points to reachable registry.
 - Manifest smoke using stale image:
-  - Local path: verify `build-installer` ran before smoke target.
+  - Local path: verify `build-plain-manifests-installer` ran before smoke target.
   - CI/prebuilt path: verify artifact source and `kubectl set image` override message.
 - Pod readiness says "no matching resources":
   - Verify selector in smoke logs (`Pod selector: ...`) and deployment selector labels.

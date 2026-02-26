@@ -320,7 +320,7 @@ test-e2e-quickstart-manifest: ## Run quickstart smoke test (manifest install) - 
 	  .stamps/cluster/$(KUBECONTEXT_QS_MANIFEST)/cert-manager.installed \
 	  .stamps/cluster/$(KUBECONTEXT_QS_MANIFEST)/gitea.installed
 	@if [ -z "$(PROJECT_IMAGE)" ]; then \
-	  $(MAKE) build-installer; \
+	  $(MAKE) build-plain-manifests-installer; \
 	  $(MAKE) CTX=$(KUBECONTEXT_QS_MANIFEST) \
 	    .stamps/cluster/$(KUBECONTEXT_QS_MANIFEST)/image.loaded; \
 	fi
@@ -329,7 +329,7 @@ test-e2e-quickstart-manifest: ## Run quickstart smoke test (manifest install) - 
 	  bash test/e2e/scripts/run-quickstart.sh manifest
 ```
 
-The manifest target also calls `make build-installer` (regenerates `dist/install.yaml`) before loading the image if `PROJECT_IMAGE` is not set.
+The manifest target also calls `make build-plain-manifests-installer` (regenerates `dist/install.yaml`) before loading the image if `PROJECT_IMAGE` is not set.
 
 ### `run-quickstart.sh` is self-contained
 
