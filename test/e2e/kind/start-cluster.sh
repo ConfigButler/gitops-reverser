@@ -9,6 +9,46 @@ CONFIG_FILE="test/e2e/kind/cluster.ignore.yaml"
 KIND_CREATE_LOG_FILE="${TMPDIR:-/tmp}/kind-create-${CLUSTER_NAME}.log"
 POD_SUBNET="${KIND_POD_SUBNET:-10.244.0.0/16}"
 
+docker_can_mount_repo() {
+    local candidate="$1"
+    docker run --rm -v "${candidate}:/hostproj:ro" busybox:1.36.1 sh -c \
+        'test -f /hostproj/test/e2e/kind/audit/policy.yaml' >/dev/null 2>&1
+}
+
+resolve_host_project_path() {
+    local repo_pwd
+    repo_pwd="$(pwd -P)"
+
+    local candidates=()
+    if [ -n "${HOST_PROJECT_PATH:-}" ]; then
+        candidates+=("${HOST_PROJECT_PATH}")
+    fi
+    candidates+=("${repo_pwd}")
+
+    local candidate
+    for candidate in "${candidates[@]}"; do
+        if docker_can_mount_repo "$candidate"; then
+            echo "$candidate"
+            return 0
+        fi
+    done
+
+    echo "❌ ERROR: Unable to determine a usable HOST_PROJECT_PATH for Kind extraMounts." >&2
+    echo "Tried:" >&2
+    if [ -n "${HOST_PROJECT_PATH:-}" ]; then
+        echo "  - HOST_PROJECT_PATH=${HOST_PROJECT_PATH}" >&2
+    else
+        echo "  - HOST_PROJECT_PATH=<unset>" >&2
+    fi
+    echo "  - pwd=${repo_pwd}" >&2
+    echo "" >&2
+    echo "Fix: set HOST_PROJECT_PATH to the path visible to the Docker daemon that contains this repo." >&2
+    echo "Examples:" >&2
+    echo "  - Docker-in-Docker (daemon in this container): export HOST_PROJECT_PATH='${repo_pwd}'" >&2
+    echo "  - Docker-outside-of-Docker (daemon on your host): export HOST_PROJECT_PATH='<host absolute path to repo>'" >&2
+    return 1
+}
+
 create_primary_cluster() {
     kind create cluster --name "$CLUSTER_NAME" --config "$CONFIG_FILE" --wait 5m --retain 2>&1 | tee "$KIND_CREATE_LOG_FILE"
 }
@@ -18,6 +58,27 @@ is_known_kind_bootstrap_flake() {
     grep -Eq \
         "failed to apply overlay network|failed to remove control plane taint|failed to remove control plane load balancer label|failed to download openapi|couldn't get current server API group list|The connection to the server .*:6443 was refused" \
         "$KIND_CREATE_LOG_FILE"
+}
+
+create_cluster_with_retries() {
+    local retries="${KIND_CREATE_RETRIES:-2}"
+    local attempt=0
+
+    while true; do
+        attempt=$((attempt + 1))
+        if create_primary_cluster; then
+            return 0
+        fi
+
+        if is_known_kind_bootstrap_flake && [ "$attempt" -le "$retries" ]; then
+            echo "⚠️ Kind bootstrap flake detected; retrying create (attempt ${attempt}/${retries})"
+            kind delete cluster --name "$CLUSTER_NAME" >/dev/null 2>&1 || true
+            sleep 2
+            continue
+        fi
+
+        return 1
+    done
 }
 
 run_dood_self_heal() {
@@ -73,13 +134,8 @@ run_dood_self_heal() {
 if kind get clusters 2>/dev/null | grep -q "^${CLUSTER_NAME}$"; then
     echo "♻️ Reusing existing Kind cluster '$CLUSTER_NAME' (no delete/recreate)"
 else
-    # HOST_PROJECT_PATH is only needed when creating a new cluster (for host-path volume mounts).
-    # Clusters pre-created by CI (helm/kind-action) don't need it.
-    if [ -z "${HOST_PROJECT_PATH:-}" ]; then
-        echo "❌ ERROR: HOST_PROJECT_PATH environment variable is not set"
-        echo "This should be set in .devcontainer/devcontainer.json or passed by CI"
-        exit 1
-    fi
+    export HOST_PROJECT_PATH
+    HOST_PROJECT_PATH="$(resolve_host_project_path)"
 
     echo "🔧 Using HOST_PROJECT_PATH: $HOST_PROJECT_PATH"
     echo "📝 Generating Kind cluster configuration from template..."
@@ -89,7 +145,7 @@ else
     echo ""
 
     echo "🚀 Creating Kind cluster '$CLUSTER_NAME' with audit webhook support..."
-    if create_primary_cluster; then
+    if create_cluster_with_retries; then
         echo "✅ Kind cluster created successfully"
     else
         if is_known_kind_bootstrap_flake; then
