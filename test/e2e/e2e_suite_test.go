@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -30,8 +31,6 @@ import (
 
 	"github.com/ConfigButler/gitops-reverser/test/utils"
 )
-
-const e2eGinkgoSeedEnv = "E2E_GINKGO_RANDOM_SEED"
 
 // TestE2E runs the end-to-end (e2e) test suite for the project. These tests execute in an isolated,
 // temporary environment to validate project changes with the purpose of being used in CI jobs.
@@ -59,10 +58,13 @@ var _ = AfterSuite(func() {
 
 func ensureE2EPrepared() {
 	ctx := resolveE2EContext()
-	ns := resolveE2ENamespace()
+	seed := ginkgoRandomSeed()
+	ns := resolveE2EStampNamespace(seed)
+	installName := resolveE2EInstallName(seed)
 	target := fmt.Sprintf(".stamps/cluster/%s/%s/e2e/prepare", ctx, ns)
-	cmd := makeCommandWithSeed(
+	cmd := makeCommand(
 		fmt.Sprintf("CTX=%s", ctx),
+		fmt.Sprintf("INSTALL_NAME=%s", installName),
 		fmt.Sprintf("NAMESPACE=%s", ns),
 		target,
 		"portforward-ensure",
@@ -77,35 +79,39 @@ func ensureE2EPrepared() {
 	output, err = utils.Run(useCtx)
 	Expect(err).NotTo(HaveOccurred(), "failed to set kubectl context for e2e run")
 	_, _ = fmt.Fprintf(GinkgoWriter, "%s", output)
+
+	// The Makefile prepares the age key under the stamp directory. When running `go test` directly (without
+	// `make test-e2e`), ensure the suite uses that prepared key file.
+	if strings.TrimSpace(os.Getenv("E2E_AGE_KEY_FILE")) == "" {
+		wd, err := os.Getwd()
+		Expect(err).NotTo(HaveOccurred(), "failed to get working directory for e2e run")
+		ageKeyPath := filepath.Join(wd, ".stamps", "cluster", ctx, "age-key.txt")
+		Expect(os.Setenv("E2E_AGE_KEY_FILE", ageKeyPath)).To(Succeed())
+	}
 }
 
-func makeCommandWithSeed(args ...string) *exec.Cmd {
-	seed := ginkgoRandomSeed()
-	seedPrefix := e2eGinkgoSeedEnv + "="
-	filteredArgs := make([]string, 0, len(args)+1)
-	for _, arg := range args {
-		if strings.HasPrefix(arg, seedPrefix) {
-			continue
-		}
-		filteredArgs = append(filteredArgs, arg)
-	}
-	filteredArgs = append(filteredArgs, fmt.Sprintf("%s=%d", e2eGinkgoSeedEnv, seed))
-	cmd := exec.Command("make", filteredArgs...)
+func makeCommand(args ...string) *exec.Cmd {
+	cmd := exec.Command("make", args...)
 	_, _ = fmt.Fprintf(
 		GinkgoWriter,
-		"make invocation: seed=%d arg=%s args=%v\n",
-		seed,
-		fmt.Sprintf("%s=%d", e2eGinkgoSeedEnv, seed),
-		filteredArgs,
+		"make invocation: args=%v\n",
+		args,
 	)
 	return cmd
 }
 
-func resolveE2ENamespace() string {
+func resolveE2EInstallName(seed int64) string {
+	if value := strings.TrimSpace(os.Getenv("INSTALL_NAME")); value != "" {
+		return value
+	}
+	return fmt.Sprintf("gitops-reverser-%d", seed)
+}
+
+func resolveE2EStampNamespace(seed int64) string {
 	if value := strings.TrimSpace(os.Getenv("NAMESPACE")); value != "" {
 		return value
 	}
-	return "gitops-reverser" // does it wrok?
+	return fmt.Sprintf("gitops-reverser-%d", seed)
 }
 
 func ginkgoRandomSeed() int64 {

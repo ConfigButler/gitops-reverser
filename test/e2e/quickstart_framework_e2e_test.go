@@ -176,7 +176,7 @@ func (r *quickstartFrameworkRun) installCommand(mode string) *exec.Cmd {
 		fmt.Sprintf("INSTALL_NAMESPACE=%s", r.installNamespace),
 		fmt.Sprintf("INSTALL_NAME=%s", r.installNamespace),
 	}
-	return makeCommandWithSeed(args...)
+	return makeCommand(args...)
 }
 
 func (r *quickstartFrameworkRun) waitForControllerRollout() {

@@ -369,7 +369,8 @@ portforward-ensure: $(CS)/gitea.installed $(CS)/prometheus.installed ## Ensure p
 	mkdir -p $(CS)
 	E2E_KUBECONTEXT=$(CTX) bash test/e2e/scripts/setup-port-forwards.sh
 
-$(CS)/e2e.passed: $(CS)/$(NAMESPACE)/e2e/prepare $(shell find test/e2e -name '*.go')
+E2E_TEST_INPUTS := $(shell find test/e2e -type f \( -name '*.go' -o -name '*.sh' -o -name '*.yaml' -o -name '*.tmpl' \))
+$(CS)/e2e.passed: $(E2E_TEST_INPUTS) Makefile
 	mkdir -p $(CS)
 	kubectl --context $(CTX) delete crd icecreamorders.shop.example.com --ignore-not-found=true
 	CTX=$(CTX) KIND_CLUSTER=$(CLUSTER_FROM_CTX) \
