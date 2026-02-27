@@ -4,10 +4,8 @@ set -euo pipefail
 MODE="${1:-}"
 NAMESPACE="${NAMESPACE:-gitops-reverser}"
 QUICKSTART_NAMESPACE="${QUICKSTART_NAMESPACE:-sut}"
-HELM_CHART_SOURCE="${HELM_CHART_SOURCE:-charts/gitops-reverser}"
 WAIT_TIMEOUT="${WAIT_TIMEOUT:-60s}"
 QUICKSTART_TIMEOUT_SECONDS="${QUICKSTART_TIMEOUT_SECONDS:-180}"
-PROJECT_IMAGE="${PROJECT_IMAGE:-}"
 
 TEST_ID="$(date +%s)-$RANDOM"
 REPO_NAME="quickstart-smoke-${MODE}-${TEST_ID}"
@@ -30,12 +28,42 @@ if [[ -z "${MODE}" ]]; then
   echo "usage: $0 <helm|manifest>"
   exit 1
 fi
+if [[ "${MODE}" != "helm" && "${MODE}" != "manifest" ]]; then
+  echo "unsupported mode: ${MODE} (expected helm or manifest)"
+  exit 1
+fi
+
+discover_controller_deployment() {
+  local deployments deploy_count
+  deployments="$(
+    kubectl -n "${NAMESPACE}" get deployments -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null || true
+  )"
+  deployments="$(printf '%s\n' "${deployments}" | sed '/^$/d')"
+  if [[ -z "${deployments}" ]]; then
+    echo "No Deployments found in namespace ${NAMESPACE}" >&2
+    kubectl -n "${NAMESPACE}" get deployments -o wide >&2 || true
+    return 1
+  fi
+
+  deploy_count="$(printf '%s\n' "${deployments}" | wc -l | tr -d ' ')"
+  if [[ "${deploy_count}" != "1" ]]; then
+    echo "Expected exactly 1 Deployment in namespace ${NAMESPACE}, found ${deploy_count}" >&2
+    kubectl -n "${NAMESPACE}" get deployments -o wide >&2 || true
+    return 1
+  fi
+
+  printf '%s' "${deployments}"
+}
 
 get_controller_pod_selector() {
-  local selector
-  selector="$(kubectl -n "${NAMESPACE}" get deployment gitops-reverser \
-    -o jsonpath='{range $k,$v := .spec.selector.matchLabels}{$k}={$v},{end}' 2>/dev/null || true)"
-  selector="${selector%,}"
+  local deploy selector
+  deploy="$(discover_controller_deployment 2>/dev/null || true)"
+  selector=""
+  if [[ -n "${deploy}" ]]; then
+    selector="$(kubectl -n "${NAMESPACE}" get deployment "${deploy}" \
+      -o jsonpath='{range $k,$v := .spec.selector.matchLabels}{$k}={$v},{end}' 2>/dev/null || true)"
+    selector="${selector%,}"
+  fi
 
   if [[ -z "${selector}" ]]; then
     selector="app.kubernetes.io/name=gitops-reverser"
@@ -44,51 +72,8 @@ get_controller_pod_selector() {
   printf '%s' "${selector}"
 }
 
-install_helm() {
-  local helm_image_args=()
-  local helm_crd_args=()
-
-  if [[ -n "${PROJECT_IMAGE}" ]]; then
-    local image_no_digest image_repo image_tag
-    image_no_digest="${PROJECT_IMAGE%%@*}"
-    if [[ "${image_no_digest##*/}" == *:* ]]; then
-      image_repo="${image_no_digest%:*}"
-      image_tag="${image_no_digest##*:}"
-    else
-      image_repo="${image_no_digest}"
-      image_tag="latest"
-    fi
-    helm_image_args+=(--set "image.repository=${image_repo}" --set "image.tag=${image_tag}")
-    echo "Overriding chart image from PROJECT_IMAGE=${PROJECT_IMAGE}"
-  fi
-
-  if kubectl get crd gitproviders.configbutler.ai gittargets.configbutler.ai \
-    watchrules.configbutler.ai clusterwatchrules.configbutler.ai >/dev/null 2>&1; then
-    helm_crd_args+=(--skip-crds)
-    echo "Detected existing CRDs in cluster; installing Helm release with --skip-crds"
-  fi
-
-  echo "Installing from Helm chart (mode=helm, source=${HELM_CHART_SOURCE})"
-  helm upgrade --install "name-is-cool-but-not-relevant" "${HELM_CHART_SOURCE}" \
-    --namespace "${NAMESPACE}" \
-    --create-namespace \
-    --set fullnameOverride=gitops-reverser \
-    "${helm_crd_args[@]}" \
-    "${helm_image_args[@]}"
-}
-
-install_manifest() {
-  echo "Installing from generated dist/install.yaml (mode=manifest)"
-  kubectl apply -f dist/install.yaml
-
-  if [[ -n "${PROJECT_IMAGE}" ]]; then
-    echo "Overriding manifest deployment image from PROJECT_IMAGE=${PROJECT_IMAGE}"
-    kubectl -n "${NAMESPACE}" set image deployment/gitops-reverser manager="${PROJECT_IMAGE}"
-  fi
-}
-
 print_debug_info() {
-  local pod_selector
+  local pod_selector deploy
   pod_selector="$(get_controller_pod_selector)"
 
   echo
@@ -97,11 +82,15 @@ print_debug_info() {
   echo "Quickstart namespace: ${QUICKSTART_NAMESPACE}"
   echo "Pod selector: ${pod_selector}"
   echo
-  echo "Deployment status:"
-  kubectl -n "${NAMESPACE}" get deployment gitops-reverser -o wide || true
-  echo
-  echo "Deployment describe:"
-  kubectl -n "${NAMESPACE}" describe deployment gitops-reverser || true
+  echo "Deployments:"
+  kubectl -n "${NAMESPACE}" get deployments -o wide || true
+
+  deploy="$(discover_controller_deployment 2>/dev/null || true)"
+  if [[ -n "${deploy}" ]]; then
+    echo
+    echo "Deployment describe (${deploy}):"
+    kubectl -n "${NAMESPACE}" describe deployment "${deploy}" || true
+  fi
   echo
   echo "Pods:"
   kubectl -n "${NAMESPACE}" get pods -o wide || true
@@ -172,33 +161,18 @@ ensure_gitea_api_port_forward() {
   return 1
 }
 
-reset_install_state() {
-  echo "Resetting install state for clean first-time install validation"
-  kubectl delete clusterrole \
-    gitops-reverser \
-    gitops-reverser-metrics-reader \
-    gitops-reverser-proxy-role \
-    --ignore-not-found=true >/dev/null || true
-  kubectl delete clusterrolebinding \
-    gitops-reverser \
-    gitops-reverser-proxy-rolebinding \
-    --ignore-not-found=true >/dev/null || true
-  kubectl delete validatingwebhookconfiguration gitops-reverser-validating-webhook-configuration \
-    --ignore-not-found=true >/dev/null || true
-  kubectl delete namespace "${NAMESPACE}" --wait=true --ignore-not-found=true >/dev/null || true
-}
-
 verify_installation() {
-  local pod_selector
+  local pod_selector deploy
+  deploy="$(discover_controller_deployment)"
   pod_selector="$(get_controller_pod_selector)"
 
   run_or_debug \
     "Waiting for deployment rollout (timeout=${WAIT_TIMEOUT})" \
-    kubectl -n "${NAMESPACE}" rollout status deployment/gitops-reverser --timeout="${WAIT_TIMEOUT}"
+    kubectl -n "${NAMESPACE}" rollout status "deployment/${deploy}" --timeout="${WAIT_TIMEOUT}"
 
   run_or_debug \
     "Checking deployment availability (timeout=${WAIT_TIMEOUT})" \
-    kubectl -n "${NAMESPACE}" wait --for=condition=available deployment/gitops-reverser --timeout="${WAIT_TIMEOUT}"
+    kubectl -n "${NAMESPACE}" wait --for=condition=available "deployment/${deploy}" --timeout="${WAIT_TIMEOUT}"
 
   run_or_debug \
     "Checking pod readiness (selector=${pod_selector}, timeout=${WAIT_TIMEOUT})" \
@@ -570,21 +544,6 @@ spec:
 EOF
   wait_for_connection_failed_actionable_message "${INVALID_PROVIDER_NAME}" "${QUICKSTART_TIMEOUT_SECONDS}"
 }
-
-case "${MODE}" in
-  helm)
-    reset_install_state
-    install_helm
-    ;;
-  manifest)
-    reset_install_state
-    install_manifest
-    ;;
-  *)
-    echo "unsupported mode: ${MODE} (expected helm or manifest)"
-    exit 1
-    ;;
-esac
 
 verify_installation
 run_or_debug "Running quickstart functional smoke checks" run_quickstart_flow

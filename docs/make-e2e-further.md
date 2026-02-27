@@ -139,7 +139,7 @@ Example:
 $(CS)/e2e.passed: $(CS)/portforward.running $(CS)/age-key.applied $(shell find test/e2e -name '*.go')
 	mkdir -p $(CS)
 	kubectl --context $(CTX) delete crd icecreamorders.shop.example.com --ignore-not-found=true
-	KIND_CLUSTER=$(CLUSTER_FROM_CTX) PROJECT_IMAGE=$(E2E_IMAGE) \
+	KIND_CLUSTER=$(CLUSTER_FROM_CTX) \
 	  E2E_AGE_KEY_FILE=$(CS)/age-key.txt \
 	  go test ./test/e2e/ -v -ginkgo.v
 	touch $@

@@ -97,8 +97,12 @@ KIND_CLUSTER_QUICKSTART_MANIFEST ?= gitops-reverser-test-e2e-quickstart-manifest
 # KIND_CLUSTER is used by cleanup-cluster; defaults to the main e2e cluster.
 KIND_CLUSTER ?= $(KIND_CLUSTER_E2E)
 E2E_LOCAL_IMAGE ?= gitops-reverser:e2e-local
-# In CI, PROJECT_IMAGE is the pre-built image from the docker-build job; locally we build E2E_LOCAL_IMAGE.
-E2E_IMAGE := $(if $(PROJECT_IMAGE),$(PROJECT_IMAGE),$(E2E_LOCAL_IMAGE))
+# Capture whether PROJECT_IMAGE was provided (CI sets it; local runs typically don't).
+PROJECT_IMAGE_PROVIDED ?= $(strip $(PROJECT_IMAGE))
+export PROJECT_IMAGE_PROVIDED
+# PROJECT_IMAGE is the single source of truth after this point.
+PROJECT_IMAGE ?= $(E2E_LOCAL_IMAGE)
+export PROJECT_IMAGE
 E2E_AGE_KEY_FILE ?= /tmp/e2e-age-key.txt
 
 # CTX: kubeconfig context for the cluster being operated on.
@@ -118,6 +122,7 @@ NAMESPACE ?= gitops-reverser
 
 KUBECONTEXT_QS_HELM := kind-$(KIND_CLUSTER_QUICKSTART_HELM)
 KUBECONTEXT_QS_MANIFEST := kind-$(KIND_CLUSTER_QUICKSTART_MANIFEST)
+HELM_CHART_SOURCE ?= charts/gitops-reverser
 
 .PHONY: cleanup-cluster
 cleanup-cluster: ## Tear down the Kind cluster used for e2e tests and remove its stamps
@@ -158,8 +163,12 @@ $(CS)/$(NAMESPACE)/namespace.ready: Makefile $(CS)/ready
 # Called by the full e2e suite.
 # For now: clean the sut namespace, recreate it, run the installer, and deploy the controller image.
 # Prefer depending on stamps; this target must not invoke Go e2e tests (Go calls this target).
-$(CS)/$(NAMESPACE)/e2e/prepare: $(CS)/$(NAMESPACE)/namespace.cleaned $(CS)/$(NAMESPACE)/controller.deployed \
-	$(CS)/portforward.running $(CS)/$(NAMESPACE)/age-key.applied
+$(CS)/$(NAMESPACE)/e2e/prepare: $(CS)/$(NAMESPACE)/namespace.cleaned \
+	$(CS)/$(NAMESPACE)/install-$(INSTALL_MODE) \
+	$(CS)/image.loaded \
+	$(CS)/$(NAMESPACE)/controller.deployed \
+	$(CS)/portforward.running \
+	$(CS)/$(NAMESPACE)/age-key.applied
 	mkdir -p $(@D)
 	touch $@
 
@@ -273,7 +282,7 @@ $(CS)/cert-manager.installed: $(CS)/ready
 	kubectl --context $(CTX) -n cert-manager rollout status deploy/cert-manager --timeout=$(CERT_MANAGER_WAIT_TIMEOUT)
 	kubectl --context $(CTX) -n cert-manager rollout status deploy/cert-manager-webhook --timeout=$(CERT_MANAGER_WAIT_TIMEOUT)
 	kubectl --context $(CTX) -n cert-manager rollout status deploy/cert-manager-cainjector --timeout=$(CERT_MANAGER_WAIT_TIMEOUT)
-	$(CERT_MANAGER_VERSION) > $@
+	echo $(CERT_MANAGER_VERSION) > $@
 
 $(CS)/gitea.installed: $(CS)/ready test/e2e/gitea-values.yaml
 	mkdir -p $(CS)
@@ -319,44 +328,85 @@ $(IS)/controller.id: $(GO_SOURCES) Dockerfile
 	  -t $(E2E_LOCAL_IMAGE) .
 	$(CONTAINER_TOOL) inspect --format='{{.Id}}' $(E2E_LOCAL_IMAGE) > $@
 
+ifeq ($(PROJECT_IMAGE_PROVIDED),)
+$(IS)/project-image.ready: $(IS)/controller.id
+endif
+$(IS)/project-image.ready: Makefile
+	mkdir -p $(IS)
+	@set -euo pipefail; \
+	if [ -n "$(PROJECT_IMAGE_PROVIDED)" ]; then \
+		if ! $(CONTAINER_TOOL) image inspect "$(PROJECT_IMAGE)" >/dev/null 2>&1; then \
+			echo "Pulling PROJECT_IMAGE=$(PROJECT_IMAGE)"; \
+			$(CONTAINER_TOOL) pull "$(PROJECT_IMAGE)"; \
+		fi; \
+	fi
+	touch $@
+
 $(CS)/crds.applied: $(CS)/ready $(shell find config/crd -type f)
 	mkdir -p $(CS)
 	kubectl --context $(CTX) apply -k config/crd
 	kubectl --context $(CTX) wait --for=condition=Established crd --all --timeout=120s
 	touch $@
 
-$(CS)/image.loaded: $(IS)/controller.id $(CS)/ready
-	$(KIND) load docker-image $(E2E_LOCAL_IMAGE) --name $(CLUSTER_FROM_CTX)
+$(CS)/image.loaded: $(IS)/project-image.ready $(CS)/ready
+	$(KIND) load docker-image $(PROJECT_IMAGE) --name $(CLUSTER_FROM_CTX)
 	touch $@
 
-# DEPLOY_INPUTS: all config files except CRDs (tracked separately by crds.applied).
-# Only relevant for the main e2e cluster (controller.deployed is not used by quickstart targets).
-# When PROJECT_IMAGE is set (CI), skip the local image build stamp.
-ifeq ($(PROJECT_IMAGE),)
-DEPLOY_INPUTS := $(CS)/$(NAMESPACE)/install-$(INSTALL_MODE) \
-                 $(CS)/$(NAMESPACE)/namespace.ready \
-                 $(IS)/controller.id \
-                 $(shell find config -type f -not -path 'config/crd/*')
-else
-DEPLOY_INPUTS := $(CS)/$(NAMESPACE)/install-$(INSTALL_MODE) \
-                 $(CS)/$(NAMESPACE)/namespace.ready \
-                 $(shell find config -type f -not -path 'config/crd/*')
-endif
-$(CS)/$(NAMESPACE)/controller.deployed: Makefile $(DEPLOY_INPUTS)
+$(CS)/$(NAMESPACE)/controller.deployed: Makefile $(CS)/$(NAMESPACE)/install-$(INSTALL_MODE) $(CS)/image.loaded
 	mkdir -p $(@D)
-	@[ -z "$(PROJECT_IMAGE)" ] || $(CONTAINER_TOOL) pull $(E2E_IMAGE)
-	$(KIND) load docker-image $(E2E_IMAGE) --name $(CLUSTER_FROM_CTX)	
-	cd config && $(KUSTOMIZE) edit set namespace $(NAMESPACE)
-	cd config && $(KUSTOMIZE) edit set image gitops-reverser=$(E2E_IMAGE)
-	$(KUSTOMIZE) build config | kubectl --context $(CTX) apply -f -
-	@if [ -z "$(PROJECT_IMAGE)" ]; then \
-	  IMAGE_ID="$$(cat $(IS)/controller.id)"; \
-	  kubectl --context $(CTX) -n $(NAMESPACE) patch deploy/gitops-reverser --type=merge \
-	    -p "{\"spec\":{\"template\":{\"metadata\":{\"annotations\":{\"configbutler.ai/e2e-image-id\":\"$$IMAGE_ID\"}}}}}"; \
-	  kubectl --context $(CTX) -n $(NAMESPACE) patch deploy/gitops-reverser --type=json \
-	    -p '[{"op":"replace","path":"/spec/template/spec/containers/0/imagePullPolicy","value":"IfNotPresent"}]'; \
-	fi
-	kubectl --context $(CTX) -n $(NAMESPACE) rollout status deploy/gitops-reverser --timeout=180s
+	@set -euo pipefail; \
+	ctx="$(CTX)"; \
+	ns="$(NAMESPACE)"; \
+	project_image="$(PROJECT_IMAGE)"; \
+	if [ -z "$$project_image" ]; then \
+		echo "ERROR: PROJECT_IMAGE must be non-empty"; \
+		exit 2; \
+	fi; \
+	deployments="$$(kubectl --context "$$ctx" -n "$$ns" get deployments -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' || true)"; \
+	deployments="$$(printf '%s\n' "$$deployments" | sed '/^$$/d')"; \
+	deploy_count=0; \
+	if [ -n "$$deployments" ]; then \
+		deploy_count="$$(printf '%s\n' "$$deployments" | wc -l | tr -d ' ')"; \
+	fi; \
+	if [ "$$deploy_count" -ne 1 ]; then \
+		echo "ERROR: Expected exactly 1 Deployment in namespace '$$ns', found $$deploy_count"; \
+		kubectl --context "$$ctx" -n "$$ns" get deployments -o wide || true; \
+		exit 1; \
+	fi; \
+	deploy="$$(printf '%s\n' "$$deployments" | head -n1)"; \
+	default_container="$$(kubectl --context "$$ctx" -n "$$ns" get deployment "$$deploy" -o jsonpath='{.spec.template.metadata.annotations.kubectl\\.kubernetes\\.io/default-container}' 2>/dev/null || true)"; \
+	containers="$$(kubectl --context "$$ctx" -n "$$ns" get deployment "$$deploy" -o jsonpath='{range .spec.template.spec.containers[*]}{.name}{"\t"}{.image}{"\n"}{end}')"; \
+	container=""; \
+	if [ -n "$$default_container" ] && printf '%s\n' "$$containers" | cut -f1 | grep -qx "$$default_container"; then \
+		container="$$default_container"; \
+	else \
+		matches="$$(printf '%s\n' "$$containers" | awk -F'\t' '$$2 ~ /gitops-reverser/ {print $$1}')"; \
+		matches="$$(printf '%s\n' "$$matches" | sed '/^$$/d')"; \
+		match_count=0; \
+		if [ -n "$$matches" ]; then \
+			match_count="$$(printf '%s\n' "$$matches" | wc -l | tr -d ' ')"; \
+		fi; \
+		if [ "$$match_count" -eq 1 ]; then \
+			container="$$(printf '%s\n' "$$matches" | head -n1)"; \
+		else \
+			container_count=0; \
+			if [ -n "$$containers" ]; then \
+				container_count="$$(printf '%s\n' "$$containers" | sed '/^$$/d' | wc -l | tr -d ' ')"; \
+			fi; \
+			if [ "$$container_count" -eq 1 ]; then \
+				container="$$(printf '%s\n' "$$containers" | cut -f1)"; \
+				else \
+					echo "ERROR: Unable to uniquely select a container to patch in deployment '$$deploy'"; \
+					echo "Containers (name image):"; \
+					printf '%s\n' "$$containers" | awk -F'\t' '{print $$1, $$2}'; \
+					exit 1; \
+				fi; \
+			fi; \
+		fi; \
+	echo "Ensuring deployment '$$deploy' (container '$$container') uses image '$$project_image'"; \
+	kubectl --context "$$ctx" -n "$$ns" patch deployment "$$deploy" --type=strategic \
+		-p "{\"spec\":{\"template\":{\"spec\":{\"containers\":[{\"name\":\"$$container\",\"image\":\"$$project_image\",\"imagePullPolicy\":\"IfNotPresent\"}]}}}}"; \
+	kubectl --context "$$ctx" -n "$$ns" rollout status "deployment/$$deploy" --timeout=180s
 	touch $@
 
 $(CS)/portforward.running: $(CS)/gitea.installed $(CS)/prometheus.installed
@@ -408,13 +458,15 @@ install-plain-manifests-file: $(CS)/$(NAMESPACE)/install-plain-manifests-file
 
 install-config-dir: $(CS)/$(NAMESPACE)/install-config-dir
 
+CONFIG_DIR_INPUTS := $(shell find config -type f)
+
 ##@ Deployments of all manifests needed to run
 $(CS)/$(NAMESPACE)/install-helm: INSTALL_MODE := helm
 $(CS)/$(NAMESPACE)/install-helm: $(HELM_SYNC_OUTPUTS) $(CS)/cert-manager.installed $(CS)/prometheus.installed ## Deploy quickstart controller via Helm into CTX cluster
 	@set -euo pipefail; \
 	$(ASSERT_INSTALL_METHOD) \
 	helm_args=( \
-		upgrade --install $(INSTALL_NAME) charts/gitops-reverser \
+		upgrade --install $(INSTALL_NAME) "$(HELM_CHART_SOURCE)" \
 		--kube-context $(CTX) \
 		--namespace $(NAMESPACE) \
 		--create-namespace \
@@ -430,13 +482,16 @@ $(CS)/$(NAMESPACE)/install-helm: $(HELM_SYNC_OUTPUTS) $(CS)/cert-manager.install
 	touch $@
 
 $(CS)/$(NAMESPACE)/install-config-dir: INSTALL_MODE := config-dir
-$(CS)/$(NAMESPACE)/install-config-dir: $(MANIFEST_OUTPUTS) $(CS)/cert-manager.installed $(CS)/prometheus.installed \
+$(CS)/$(NAMESPACE)/install-config-dir: $(MANIFEST_OUTPUTS) $(CONFIG_DIR_INPUTS) $(CS)/cert-manager.installed $(CS)/prometheus.installed \
 	$(CS)/$(NAMESPACE)/namespace.ready ## Deploy controller to the K8s cluster specified in ~/.kube/config.
 	@set -euo pipefail; \
-	$(ASSERT_INSTALL_METHOD)
-	(cd config && $(KUSTOMIZE) edit set namespace "$(NAMESPACE)")
-	(cd config && $(KUSTOMIZE) edit set image gitops-reverser=${IMG})
-	(cd config && $(KUSTOMIZE) build .) | $(KUBECTL) --context $(CTX) apply -f -
+	$(ASSERT_INSTALL_METHOD) \
+	tmpdir="$$(mktemp -d)"; \
+	trap 'rm -rf "$$tmpdir"' EXIT; \
+	cp -R config "$$tmpdir/config"; \
+	(cd "$$tmpdir/config" && $(KUSTOMIZE) edit set namespace "$(NAMESPACE)"); \
+	(cd "$$tmpdir/config" && $(KUSTOMIZE) edit set image gitops-reverser="$(PROJECT_IMAGE)"); \
+	(cd "$$tmpdir/config" && $(KUSTOMIZE) build .) | $(KUBECTL) --context "$(CTX)" apply -f -
 	touch $@
 
 $(CS)/$(NAMESPACE)/install-plain-manifests-file: INSTALL_MODE := plain-manifests-file
@@ -445,8 +500,11 @@ $(CS)/$(NAMESPACE)/install-plain-manifests-file: dist/install.yaml $(CS)/cert-ma
 	ctx="$(CTX)"; \
 	ns="$(NAMESPACE)"; \
 	$(ASSERT_INSTALL_METHOD) \
+	tmpdir="$$(mktemp -d)"; \
+	trap 'rm -rf "$$tmpdir"' EXIT; \
+	cp -R dist "$$tmpdir/dist"; \
 	( \
-		cd dist && \
+		cd "$$tmpdir/dist" && \
 		kustomize edit set namespace "$$ns" >/dev/null && \
 		kustomize build . \
 	) | kubectl --context "$$ctx" apply -f -; \
@@ -455,31 +513,20 @@ $(CS)/$(NAMESPACE)/install-plain-manifests-file: dist/install.yaml $(CS)/cert-ma
 .PHONY: test-e2e-quickstart-helm
 test-e2e-quickstart-helm: ## Run quickstart smoke test (Helm install) - always starts with a clean cluster
 	$(MAKE) cleanup-cluster KIND_CLUSTER=$(KIND_CLUSTER_QUICKSTART_HELM)
-	$(MAKE) CTX=$(KUBECONTEXT_QS_HELM) \
-	  .stamps/cluster/$(KUBECONTEXT_QS_HELM)/cert-manager.installed \
-	  .stamps/cluster/$(KUBECONTEXT_QS_HELM)/gitea.installed
-	@if [ -z "$(PROJECT_IMAGE)" ]; then \
-	  $(MAKE) CTX=$(KUBECONTEXT_QS_HELM) \
-	    .stamps/cluster/$(KUBECONTEXT_QS_HELM)/image.loaded; \
-	fi
+	$(MAKE) CTX=$(KUBECONTEXT_QS_HELM) INSTALL_MODE=helm \
+	  .stamps/cluster/$(KUBECONTEXT_QS_HELM)/gitea.installed \
+	  .stamps/cluster/$(KUBECONTEXT_QS_HELM)/$(NAMESPACE)/controller.deployed
 	kubectl config use-context $(KUBECONTEXT_QS_HELM)
-	PROJECT_IMAGE=$(E2E_IMAGE) \
-	  bash test/e2e/scripts/run-quickstart.sh helm
+	bash test/e2e/scripts/run-quickstart.sh helm
 
 .PHONY: test-e2e-quickstart-manifest
 test-e2e-quickstart-manifest: ## Run quickstart smoke test (manifest install) - always starts with a clean cluster
 	$(MAKE) cleanup-cluster KIND_CLUSTER=$(KIND_CLUSTER_QUICKSTART_MANIFEST)
-	$(MAKE) CTX=$(KUBECONTEXT_QS_MANIFEST) \
-	  .stamps/cluster/$(KUBECONTEXT_QS_MANIFEST)/cert-manager.installed \
-	  .stamps/cluster/$(KUBECONTEXT_QS_MANIFEST)/gitea.installed
-	@if [ -z "$(PROJECT_IMAGE)" ]; then \
-	  $(MAKE) dist/install.yaml; \
-	  $(MAKE) CTX=$(KUBECONTEXT_QS_MANIFEST) \
-	    .stamps/cluster/$(KUBECONTEXT_QS_MANIFEST)/image.loaded; \
-	fi
+	$(MAKE) CTX=$(KUBECONTEXT_QS_MANIFEST) INSTALL_MODE=plain-manifests-file \
+	  .stamps/cluster/$(KUBECONTEXT_QS_MANIFEST)/gitea.installed \
+	  .stamps/cluster/$(KUBECONTEXT_QS_MANIFEST)/$(NAMESPACE)/controller.deployed
 	kubectl config use-context $(KUBECONTEXT_QS_MANIFEST)
-	PROJECT_IMAGE=$(E2E_IMAGE) \
-	  bash test/e2e/scripts/run-quickstart.sh manifest
+	bash test/e2e/scripts/run-quickstart.sh manifest
 
 .PHONY: cleanup-port-forwards
 cleanup-port-forwards: ## Stop all port-forwards
