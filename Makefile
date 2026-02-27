@@ -146,6 +146,7 @@ cleanup-e2e-clusters: ## Tear down all E2E Kind clusters and their stamps
 		rm -rf .stamps/cluster/kind-$$cluster; \
 	done
 
+# We delete all services (over all namespaces) since we only can have ONE service listening to the cluster audit webhook at the same time
 $(CS)/$(NAMESPACE)/namespace.cleaned: Makefile $(CS)/$(NAMESPACE)/namespace.ready
 	kubectl --context $(CTX) delete svc --all-namespaces -l app.kubernetes.io/name=gitops-reverser --ignore-not-found=true
 	kubectl --context $(CTX) delete validatingwebhookconfiguration \
@@ -343,8 +344,8 @@ $(IS)/project-image.ready: Makefile
 			echo "Pulling PROJECT_IMAGE=$(PROJECT_IMAGE)"; \
 			$(CONTAINER_TOOL) pull "$(PROJECT_IMAGE)"; \
 		fi; \
-	fi
-	touch $@
+	fi; \
+	echo "$(PROJECT_IMAGE)" > "$@"
 
 $(CS)/crds.applied: $(CS)/ready $(shell find config/crd -type f)
 	mkdir -p $(CS)
@@ -353,70 +354,29 @@ $(CS)/crds.applied: $(CS)/ready $(shell find config/crd -type f)
 	touch $@
 
 $(CS)/image.loaded: $(IS)/project-image.ready $(CS)/ready
-	$(KIND) load docker-image $(PROJECT_IMAGE) --name $(CLUSTER_FROM_CTX)
-	touch $@
-
-$(CS)/$(NAMESPACE)/controller.deployed: Makefile $(CS)/$(NAMESPACE)/install-$(INSTALL_MODE) $(CS)/image.loaded
-	mkdir -p $(@D)
 	@set -euo pipefail; \
-	ctx="$(CTX)"; \
-	ns="$(NAMESPACE)"; \
-	project_image="$(PROJECT_IMAGE)"; \
-	if [ -z "$$project_image" ]; then \
-		echo "ERROR: PROJECT_IMAGE must be non-empty"; \
-		exit 2; \
-	fi; \
-	deployments="$$(kubectl --context "$$ctx" -n "$$ns" get deployments -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' || true)"; \
-	deployments="$$(printf '%s\n' "$$deployments" | sed '/^$$/d')"; \
-	deploy_count=0; \
-	if [ -n "$$deployments" ]; then \
-		deploy_count="$$(printf '%s\n' "$$deployments" | wc -l | tr -d ' ')"; \
-	fi; \
-	if [ "$$deploy_count" -ne 1 ]; then \
-		echo "ERROR: Expected exactly 1 Deployment in namespace '$$ns', found $$deploy_count"; \
-		kubectl --context "$$ctx" -n "$$ns" get deployments -o wide || true; \
-		exit 1; \
-	fi; \
-	deploy="$$(printf '%s\n' "$$deployments" | head -n1)"; \
-	default_container="$$(kubectl --context "$$ctx" -n "$$ns" get deployment "$$deploy" -o jsonpath='{.spec.template.metadata.annotations.kubectl\\.kubernetes\\.io/default-container}' 2>/dev/null || true)"; \
-	containers="$$(kubectl --context "$$ctx" -n "$$ns" get deployment "$$deploy" -o jsonpath='{range .spec.template.spec.containers[*]}{.name}{"\t"}{.image}{"\n"}{end}')"; \
-	container=""; \
-	if [ -n "$$default_container" ] && printf '%s\n' "$$containers" | cut -f1 | grep -qx "$$default_container"; then \
-		container="$$default_container"; \
-	else \
-		matches="$$(printf '%s\n' "$$containers" | awk -F'\t' '$$2 ~ /gitops-reverser/ {print $$1}')"; \
-		matches="$$(printf '%s\n' "$$matches" | sed '/^$$/d')"; \
-		match_count=0; \
-		if [ -n "$$matches" ]; then \
-			match_count="$$(printf '%s\n' "$$matches" | wc -l | tr -d ' ')"; \
-		fi; \
-		if [ "$$match_count" -eq 1 ]; then \
-			container="$$(printf '%s\n' "$$matches" | head -n1)"; \
-		else \
-			container_count=0; \
-			if [ -n "$$containers" ]; then \
-				container_count="$$(printf '%s\n' "$$containers" | sed '/^$$/d' | wc -l | tr -d ' ')"; \
-			fi; \
-			if [ "$$container_count" -eq 1 ]; then \
-				container="$$(printf '%s\n' "$$containers" | cut -f1)"; \
-				else \
-					echo "ERROR: Unable to uniquely select a container to patch in deployment '$$deploy'"; \
-					echo "Containers (name image):"; \
-					printf '%s\n' "$$containers" | awk -F'\t' '{print $$1, $$2}'; \
-					exit 1; \
-				fi; \
-			fi; \
-		fi; \
-	echo "Ensuring deployment '$$deploy' (container '$$container') uses image '$$project_image'"; \
-	kubectl --context "$$ctx" -n "$$ns" patch deployment "$$deploy" --type=strategic \
-		-p "{\"spec\":{\"template\":{\"spec\":{\"containers\":[{\"name\":\"$$container\",\"image\":\"$$project_image\",\"imagePullPolicy\":\"IfNotPresent\"}]}}}}"; \
-	kubectl --context "$$ctx" -n "$$ns" rollout status "deployment/$$deploy" --timeout=180s
-	touch $@
+	mkdir -p $(CS); \
+	img_id="$$( $(CONTAINER_TOOL) inspect --format='{{.Id}}' $(PROJECT_IMAGE) )"; \
+	echo "Loading $(PROJECT_IMAGE) ($$img_id) into $(CLUSTER_FROM_CTX)"; \
+	$(KIND) load docker-image $(PROJECT_IMAGE) --name $(CLUSTER_FROM_CTX); \
+	echo "$$img_id" > "$@"
 
-$(CS)/portforward.running: $(CS)/gitea.installed $(CS)/prometheus.installed
-	mkdir -p $(CS)
-	E2E_KUBECONTEXT=$(CTX) bash test/e2e/scripts/setup-port-forwards.sh
-	touch $@
+$(CS)/$(NAMESPACE)/controller.deployed: $(CS)/$(NAMESPACE)/install-$(INSTALL_MODE) $(CS)/image.loaded
+	@set -euo pipefail; \
+	ctx="$(CTX)"; ns="$(NAMESPACE)"; img="$(PROJECT_IMAGE)"; c="$(CONTROLLER_CONTAINER)"; sel="$(CONTROLLER_DEPLOY_SELECTOR)"; \
+	[ -n "$$img" ] || { echo "ERROR: PROJECT_IMAGE must be non-empty" >&2; exit 2; }; \
+	[ -n "$$c" ] || { echo "ERROR: CONTROLLER_CONTAINER must be non-empty" >&2; exit 2; }; \
+	count="$$(kubectl --context "$$ctx" -n "$$ns" get deploy -l "$$sel" --no-headers 2>/dev/null | wc -l | tr -d ' ')"; \
+	[ "$$count" -eq 1 ] || { \
+		echo "ERROR: Expected exactly 1 Deployment matching '$$sel' in namespace '$$ns', found $$count" >&2; \
+		kubectl --context "$$ctx" -n "$$ns" get deploy -l "$$sel" -o wide || true; \
+		exit 1; \
+	}; \
+	deploy="$$(kubectl --context "$$ctx" -n "$$ns" get deploy -l "$$sel" -o jsonpath='{.items[0].metadata.name}')"; \
+	echo "Setting deployment/$$deploy container '$$c' to image '$$img'"; \
+	kubectl --context "$$ctx" -n "$$ns" set image "deployment/$$deploy" "$$c=$$img" --record=false; \
+	kubectl --context "$$ctx" -n "$$ns" rollout status "deployment/$$deploy" --timeout=180s; \
+	touch "$@"
 
 .PHONY: portforward-ensure
 portforward-ensure: $(CS)/gitea.installed $(CS)/prometheus.installed ## Ensure port-forwards are running (always checks)
@@ -430,6 +390,9 @@ $(CS)/e2e.passed: $(E2E_TEST_INPUTS) Makefile
 	  E2E_AGE_KEY_FILE=$(CS)/age-key.txt \
 	  go test ./test/e2e/ -v -ginkgo.v
 	touch $@
+
+CONTROLLER_CONTAINER ?= manager
+CONTROLLER_DEPLOY_SELECTOR ?= app.kubernetes.io/part-of=gitops-reverser
 
 # INSTALL_MODE, INSTALL_NAME, NAMESPACE defaults are defined near the E2E variables section above.
 INSTALL_LOCK := $(CS)/$(NAMESPACE)/install.method
@@ -517,20 +480,18 @@ $(CS)/$(NAMESPACE)/install-plain-manifests-file: dist/install.yaml $(CS)/cert-ma
 .PHONY: test-e2e-quickstart-helm
 test-e2e-quickstart-helm: ## Run quickstart smoke test (Helm install) - always starts with a clean cluster
 	$(MAKE) cleanup-cluster KIND_CLUSTER=$(KIND_CLUSTER_QUICKSTART_HELM)
-	$(MAKE) CTX=$(KUBECONTEXT_QS_HELM) INSTALL_MODE=helm \
-	  .stamps/cluster/$(KUBECONTEXT_QS_HELM)/gitea.installed \
-	  .stamps/cluster/$(KUBECONTEXT_QS_HELM)/$(NAMESPACE)/controller.deployed
-	kubectl config use-context $(KUBECONTEXT_QS_HELM)
-	bash test/e2e/scripts/run-quickstart.sh helm
+	CTX=$(KUBECONTEXT_QS_HELM) INSTALL_MODE=helm NAMESPACE=$(NAMESPACE) \
+	  E2E_ENABLE_QUICKSTART_FRAMEWORK=true E2E_QUICKSTART_MODE=helm \
+	  E2E_AGE_KEY_FILE=.stamps/cluster/$(KUBECONTEXT_QS_HELM)/age-key.txt \
+	  go test ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=quickstart-framework
 
 .PHONY: test-e2e-quickstart-manifest
 test-e2e-quickstart-manifest: ## Run quickstart smoke test (manifest install) - always starts with a clean cluster
 	$(MAKE) cleanup-cluster KIND_CLUSTER=$(KIND_CLUSTER_QUICKSTART_MANIFEST)
-	$(MAKE) CTX=$(KUBECONTEXT_QS_MANIFEST) INSTALL_MODE=plain-manifests-file \
-	  .stamps/cluster/$(KUBECONTEXT_QS_MANIFEST)/gitea.installed \
-	  .stamps/cluster/$(KUBECONTEXT_QS_MANIFEST)/$(NAMESPACE)/controller.deployed
-	kubectl config use-context $(KUBECONTEXT_QS_MANIFEST)
-	bash test/e2e/scripts/run-quickstart.sh manifest
+	CTX=$(KUBECONTEXT_QS_MANIFEST) INSTALL_MODE=plain-manifests-file NAMESPACE=$(NAMESPACE) \
+	  E2E_ENABLE_QUICKSTART_FRAMEWORK=true E2E_QUICKSTART_MODE=plain-manifests-file \
+	  E2E_AGE_KEY_FILE=.stamps/cluster/$(KUBECONTEXT_QS_MANIFEST)/age-key.txt \
+	  go test ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=quickstart-framework
 
 .PHONY: cleanup-port-forwards
 cleanup-port-forwards: ## Stop all port-forwards
