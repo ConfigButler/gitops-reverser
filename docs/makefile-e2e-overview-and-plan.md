@@ -1,172 +1,111 @@
-# Makefile E2E Overview and Next-Step Plan
+# Makefile E2E Overview and Implementation Plan
 
-## Purpose
+This is the high-level roadmap for the Makefile-driven E2E work. For the detailed stamp dependency graph, see
+`docs/make-e2e-deps.md`.
 
-This document explains the current Makefile-driven E2E model and proposes the next implementation steps to reach:
+## Goals (from Makefile + suite comments)
 
-- seed-based, run-scoped test namespaces
-- explicit suite x install-method combinations
-- quickstart assertions implemented in Go (not shell)
-- CI-aligned developer entrypoints
+- Keep `make test-e2e` as the classic developer entrypoint.
+- Use a **single seed** to scope a test run (namespaces + stamps), shared by Make and Go.
+- Make the E2E model explicit as a **matrix**: `suite` × `install-method`.
+- Keep Go focused on scenario logic/assertions; Make owns cluster orchestration (Kind/Helm/kubectl/image/stamps).
 
-## Current State
+## Current reality (as of Feb 26, 2026)
 
-## Full E2E (`make test-e2e`)
+- There is a stamp-based infra model under `.stamps/cluster/<CTX>/...` and `.stamps/image/...`.
+- The full-suite Go code already shells out to Make in `BeforeSuite` (currently to ensure port-forwards).
+- `Makefile` contains WIP placeholders:
+  - `$(CS)/$(NAMESPACE)/e2e/prepare:` exists but has no recipe yet.
+  - `test-e2e` is currently wired to only run `cleanup-namespace-sut` (it does not run the suite).
+  - `test-e2e-quickstart-manifest` references `build-plain-manifests-installer` (not defined).
+  - `$(CS)/portforward.running` is `.PHONY`, so stamps can’t skip restarts.
 
-Current entrypoint:
+## Design contract (end-state)
 
-- `test-e2e -> $(CS)/e2e.passed`
+### 1) One “prepare” target that Go calls
 
-Current dependency chain for full E2E:
+Go should call exactly one Make target in `BeforeSuite`:
 
-- `$(CS)/e2e.passed` depends on:
-  - `install` (default `INSTALL_MODE=config-dir`)
-  - `$(CS)/controller.deployed`
-  - `$(CS)/portforward.running`
-  - `$(CS)/age-key.applied`
-  - `test/e2e/**/*.go`
+- `$(CS)/$(NAMESPACE)/e2e/prepare` (stamp; no `go test` inside)
 
-`$(CS)/controller.deployed` currently:
+That stamp is responsible for:
 
-- loads image into Kind (`$(E2E_IMAGE)`)
-- deletes validating webhook configuration
-- sets image in `config/` via `kustomize edit set image`
-- applies `kustomize build config`
-- rolls out `deploy/gitops-reverser` in namespace `sut`
+- cleaning + recreating the controller namespace (`sut` for now)
+- running the selected installer (`INSTALL_MODE=...`)
+- ensuring the controller is deployed with the correct image
+- ensuring shared test dependencies are ready (port-forwards, age key, etc.)
 
-Important relationship:
+Then Go runs tests normally and only owns scenario logic/assertions.
 
-- `controller.deployed` is the cluster-state gate for full suite execution.
-- `e2e.passed` is the test-result stamp that runs `go test ./test/e2e`.
+### 2) Seed → run namespace (shared by Make + Go)
 
-## Quickstart E2E
+Inputs/outputs:
 
-Current entrypoints:
+- input: `E2E_GINKGO_RANDOM_SEED` (already used by the suite)
+- derived: `E2E_RUN_SEED` (defaults to `E2E_GINKGO_RANDOM_SEED`, fallback to timestamp)
+- derived: `E2E_RUN_NS=run-$(E2E_RUN_SEED)`
 
+The full suite should start using `E2E_RUN_NS` for test-created resources so concurrent runs don’t collide.
+Keep `sut` as the controller namespace initially (parameterize later).
+
+### 3) Makefile matrix: suite × install-method
+
+Keep the matrix intentionally small:
+
+- `suite=full` with `INSTALL_MODE=config-dir` (internal/dev install path)
+- `suite=quickstart` with `INSTALL_MODE=helm|plain-manifests-file` (user-facing install paths)
+
+Stable entrypoints:
+
+- `make test-e2e` (alias for full + config-dir)
 - `make test-e2e-quickstart-helm`
 - `make test-e2e-quickstart-manifest`
 
-These flows:
+Optional later (only if it proves valuable): `suite=full` with `INSTALL_MODE=helm|plain-manifests-file`.
 
-- always cleanup dedicated Kind cluster first
-- install cert-manager + gitea via shared stamps
-- load image for local runs
-- execute `test/e2e/scripts/run-quickstart.sh` in `helm` or `manifest` mode
+## Implementation plan (small PRs with clear outcomes)
 
-CI alignment is already strong:
+### PR1 — Fix-first correctness (unblocks everything)
 
-- `.github/workflows/ci.yml` runs:
-  - `make test-e2e`
-  - matrix: `make test-e2e-quickstart-helm|manifest`
+- Convert the `// ...` “notes” in `Makefile` into Make comments (`# ...`) so they are not treated as recipe lines.
+- Re-wire `make test-e2e` to actually run the full E2E suite again (and keep the alias stable).
+- Fix `test-e2e-quickstart-manifest` to depend on `dist/install.yaml` (or rename/add the intended target).
+- Make `$(CS)/portforward.running` a real stamp target (remove `.PHONY`) and add a health-check fast-path.
 
-## Seed and Namespace Today
+Acceptance:
 
-What exists today:
+- `make test-e2e` runs the suite end-to-end on a prepared cluster.
+- Quickstart helm+manifest targets work locally without undefined targets.
 
-- Ginkgo seed is exported to `make` as `E2E_GINKGO_RANDOM_SEED`.
-- quickstart framework installer namespace uses `run-<seed>`.
+### PR2 — Implement `e2e/prepare` as the single orchestration contract
 
-What is missing:
+- Implement `$(CS)/$(NAMESPACE)/e2e/prepare` (stamp) as the “one target Go calls”.
+- Update Go `BeforeSuite` to call `e2e/prepare` (instead of calling `portforward.running` directly).
 
-- full E2E still uses fixed namespace constants (`sut`) in Go helpers/tests.
-- Makefile does not derive namespace/build stamp identity from seed.
-- no run-scoped namespace stamp used by full E2E test resources.
+Acceptance:
 
-## Gaps Against Target Vision
+- `go test ./test/e2e/...` works when invoked from CI/Make and always provisions infra via `e2e/prepare`.
 
-1. Seed is propagated but not structurally used for run scoping.
-2. Suite x install-method model is partial:
-   - quickstart: `helm`, `manifest`
-   - full: effectively `config-dir` + extra deploy path
-   - `config-dir` is not clearly positioned as either product path or internal test path.
-3. Quickstart Go framework lacks parity with `run-quickstart.sh` assertions (commit progression, encrypted secret checks, invalid-credential message checks).
-4. Full E2E still contains significant infra-level shell/Kubernetes orchestration in Go (`setup-gitea.sh`, many direct `kubectl`).
-5. Local quickstart manifest target has a defect:
-   - `test-e2e-quickstart-manifest` calls `build-plain-manifests-installer`, but no such target exists.
+### PR3 — Run scoping via seed
 
-## Proposed End-State Model
+- Add `E2E_RUN_SEED` + `E2E_RUN_NS` to Make.
+- Add a run-namespace stamp and propagate env vars into `go test`.
+- Update Go helpers/tests to use `E2E_RUN_NS` for test-created resources.
 
-## Test matrix
+Acceptance:
 
-Define explicit, stable matrix naming:
+- Two runs with different seeds can share a cluster without namespace collisions.
 
-- `full-config-dir` (current full suite path)
-- `quickstart-helm`
-- `quickstart-manifest`
+### PR4 — Reduce shell quickstart assertions (Go parity)
 
-Optional future (only if needed):
+- Port `run-quickstart.sh` assertions into Go (commit progression, encryption checks, invalid-credential status).
+- Keep the shell script as a thin bootstrap wrapper or retire it once parity is reached.
 
-- `full-helm`
-- `full-manifest`
+Acceptance:
 
-## Seed contract
+- Quickstart smoke tests’ “real assertions” live in Go, not shell.
 
-Single run contract shared by Make and Go:
+## Notes / non-goals (for now)
 
-- `E2E_RUN_SEED` (defaults to ginkgo seed when available)
-- `E2E_RUN_NS=run-$(E2E_RUN_SEED)`
-- `E2E_CONTROLLER_NS` (keep `sut` initially, parameterize later)
-
-## Ownership split
-
-- Makefile owns cluster infra and deployment/install orchestration.
-- Go tests own scenario logic and assertions.
-- Go should not perform install/deploy internals directly.
-
-## Phased Plan
-
-## Phase 0: Stabilize current paths (small PR)
-
-1. Fix missing target reference in `test-e2e-quickstart-manifest`:
-   - replace `build-plain-manifests-installer` with existing `dist/install.yaml` dependency path.
-2. Remove `.PHONY` from `$(CS)/portforward.running` so stamp behavior is real.
-3. Add/refresh Makefile overview doc (this file) and link it from `docs/make-e2e-deps.md`.
-
-## Phase 1: Introduce run seed + run namespace primitives
-
-1. Add Make variables:
-   - `E2E_RUN_SEED ?= $(if $(E2E_GINKGO_RANDOM_SEED),$(E2E_GINKGO_RANDOM_SEED),$(shell date +%s))`
-   - `E2E_RUN_NS ?= run-$(E2E_RUN_SEED)`
-2. Add run namespace stamp:
-   - `$(CS)/run-ns.ready` applying/labeling `$(E2E_RUN_NS)`.
-3. Pass `E2E_RUN_SEED`, `E2E_RUN_NS`, `E2E_CONTROLLER_NS` into `go test` env.
-4. In Go tests, replace hardcoded test namespace constants with env-backed helper.
-
-## Phase 2: Explicit suite x install-method targets
-
-1. Introduce clear top-level targets:
-   - `test-e2e-full-config-dir`
-   - `test-e2e-quickstart-helm`
-   - `test-e2e-quickstart-manifest`
-2. Keep `test-e2e` as alias to `test-e2e-full-config-dir` for compatibility.
-3. Add `test-e2e-ci` as local equivalent of CI flow:
-   - full + quickstart-helm + quickstart-manifest.
-
-## Phase 3: Port `run-quickstart.sh` assertions into Go
-
-Port these checks into `test/e2e/quickstart_framework_e2e_test.go`:
-
-1. resource readiness (`GitProvider`, `GitTarget`, `WatchRule`)
-2. generated SOPS secret exists + backup-warning + age-recipient annotation
-3. create/update/delete ConfigMap produces expected repo file transitions and commit count increments
-4. Secret commit is encrypted (no plaintext/base64 leakage)
-5. encrypted file decrypts with generated age key and shows updated value
-6. invalid credentials produce actionable `ConnectionFailed` status message
-
-Then reduce `run-quickstart.sh` to thin install/bootstrap wrapper or retire it.
-
-## Phase 4: Minimize infra/Kubernetes orchestration in Go
-
-1. Move remaining setup operations behind Make targets/stamps.
-2. Keep Go focused on test scenario inputs + assertions.
-3. Add one convenience target for developers (candidate name):
-   - `make last-deployment` or `make e2e-prepare` to provision infra without running tests.
-
-## Recommended Immediate Next PR
-
-1. Apply Phase 0 fixes.
-2. Start Phase 3 by porting one vertical slice in Go:
-   - ConfigMap create/update/delete + repo file + commit assertions.
-3. Keep CI job structure unchanged while moving logic from shell to Go.
-
-This gives fast signal improvement without destabilizing the current pipeline.
+- Don’t expand the suite/install matrix until the `e2e/prepare` contract and run scoping are solid.
+- Avoid moving Kubernetes orchestration into Go; prefer Make stamps and verified gates.

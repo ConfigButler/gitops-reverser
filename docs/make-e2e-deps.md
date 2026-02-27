@@ -1,5 +1,7 @@
 # E2E test dependencies with Make stamps
 
+For the roadmap/implementation plan, see `docs/makefile-e2e-overview-and-plan.md`.
+
 ## What the old setup did (replaced)
 
 `make test-e2e` used to run these prerequisites unconditionally on every invocation:
