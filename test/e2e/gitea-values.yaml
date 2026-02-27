@@ -75,11 +75,9 @@ service:
 # Resource limits for CI environments
 resources:
   limits:
-    memory: "512Mi"
-    cpu: "500m"
+    memory: "1024Mi"
   requests:
-    memory: "256Mi" 
-    cpu: "250m"
+    memory: "512Mi" 
 
 podSecurityContext:
   runAsNonRoot: true

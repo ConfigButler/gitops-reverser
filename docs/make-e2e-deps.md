@@ -1,5 +1,7 @@
 # E2E test dependencies with Make stamps
 
+For the roadmap/implementation plan, see `docs/makefile-e2e-overview-and-plan.md`.
+
 ## What the old setup did (replaced)
 
 `make test-e2e` used to run these prerequisites unconditionally on every invocation:
@@ -81,24 +83,25 @@ make CTX=kind-my-other-cluster .stamps/cluster/kind-my-other-cluster/cert-manage
 ```
 make test-e2e  (phony)
   └─ $(CS)/e2e.passed
-       ├─ test/e2e/**/*.go                  (any test change reruns tests)
-       └─ $(CS)/portforward.running
-            ├─ $(CS)/controller.deployed
-            │    ├─ $(CS)/crds.applied
-            │    │    └─ $(CS)/ready
-            │    │         └─ test/e2e/kind/start-cluster.sh
-            │    │            test/e2e/kind/cluster-template.yaml
-            │    ├─ $(CS)/cert-manager.installed
-            │    │    └─ $(CS)/ready
-            │    ├─ $(CS)/prometheus.installed
-            │    │    └─ $(CS)/ready
-            │    ├─ $(IS)/controller.id
-            │    │    └─ cmd/**/*.go  internal/**/*.go  go.mod  go.sum  Dockerfile
-            │    └─ config/**  (excluding config/crd/*)
-            ├─ $(CS)/gitea.installed
-            │    └─ $(CS)/ready
-            └─ $(CS)/prometheus.installed
+       ├─ test/e2e/**                        (any test change reruns tests)
+       └─ go test ./test/e2e
+            └─ BeforeSuite calls Make:
+                 make CTX=<ctx> INSTALL_NAME=<seeded> NAMESPACE=<seeded> \
+                   $(CS)/$(NAMESPACE)/e2e/prepare portforward-ensure
+
+$(CS)/$(NAMESPACE)/e2e/prepare (stamp)
+  ├─ $(CS)/sut.namespace.cleaned
+  ├─ $(CS)/controller.deployed
+  ├─ $(CS)/portforward.running
+  └─ $(CS)/age-key.applied
 ```
+
+Notes:
+
+- The Makefile stays seed-agnostic. The Go suite derives seed-suffixed `INSTALL_NAME` and `NAMESPACE` and passes
+  them into Make so install-time cluster-scoped names can be unique per run.
+- `portforward-ensure` always runs a health check + (re)starts port-forwards as needed for the current test
+  process. The stamp target `$(CS)/portforward.running` is still used as a cached gate for other Make targets.
 
 What this buys you in practice:
 
@@ -279,18 +282,20 @@ Quickstart tests (`test-e2e-quickstart-helm`, `test-e2e-quickstart-manifest`) va
 
 ### Design: always start with a clean cluster
 
-Quickstart tests **always delete and recreate their cluster** at the start of every run. This avoids a class of failures where Helm tries to install on top of resources that were previously applied with `kubectl apply` (server-side apply), which causes `metadata.managedFields must be nil` errors. Since `run-quickstart.sh` resets install state but doesn't delete CRDs or ClusterRoles, a clean cluster is the only reliable guarantee.
+Quickstart tests **always delete and recreate their cluster** at the start of every run. This avoids a class of failures
+where Helm tries to install on top of resources that were previously applied with `kubectl apply` (server-side apply),
+which can surface as `metadata.managedFields must be nil` errors. A clean cluster is the simplest reliable guarantee.
 
 ### CTX override pattern
 
-Quickstart targets reuse the generic stamp targets via recursive Make with `CTX` overridden:
+Quickstart targets reuse the generic stamp targets by setting `CTX` before running `go test` (the Go `BeforeSuite`
+invokes `make e2e-prepare`, which uses stamp targets under `.stamps/cluster/$(CTX)/...`):
 
 ```sh
-$(MAKE) CTX=kind-gitops-reverser-test-e2e-quickstart-helm \
-  .stamps/cluster/kind-gitops-reverser-test-e2e-quickstart-helm/cert-manager.installed
+CTX=kind-gitops-reverser-test-e2e-quickstart-helm go test ./test/e2e/ ...
 ```
 
-The inner Make re-evaluates `CS` and `CLUSTER_FROM_CTX` with the overridden `CTX`, so the stamp file rules match correctly.
+The stamp rules re-evaluate `CS` and `CLUSTER_FROM_CTX` with the overridden `CTX`, so all infra is isolated per cluster.
 
 ### Helm quickstart target
 
@@ -298,16 +303,9 @@ The inner Make re-evaluates `CS` and `CLUSTER_FROM_CTX` with the overridden `CTX
 .PHONY: test-e2e-quickstart-helm
 test-e2e-quickstart-helm: ## Run quickstart smoke test (Helm install) - always starts with a clean cluster
 	$(MAKE) cleanup-cluster KIND_CLUSTER=$(KIND_CLUSTER_QUICKSTART_HELM)
-	$(MAKE) CTX=$(KUBECONTEXT_QS_HELM) \
-	  .stamps/cluster/$(KUBECONTEXT_QS_HELM)/cert-manager.installed \
-	  .stamps/cluster/$(KUBECONTEXT_QS_HELM)/gitea.installed
-	@if [ -z "$(PROJECT_IMAGE)" ]; then \
-	  $(MAKE) CTX=$(KUBECONTEXT_QS_HELM) \
-	    .stamps/cluster/$(KUBECONTEXT_QS_HELM)/image.loaded; \
-	fi
-	kubectl config use-context $(KUBECONTEXT_QS_HELM)
-	PROJECT_IMAGE=$(if $(PROJECT_IMAGE),$(PROJECT_IMAGE),$(E2E_LOCAL_IMAGE)) \
-	  bash test/e2e/scripts/run-quickstart.sh helm
+	CTX=$(KUBECONTEXT_QS_HELM) INSTALL_MODE=helm \
+	  E2E_ENABLE_QUICKSTART_FRAMEWORK=true E2E_QUICKSTART_MODE=helm \
+	  go test ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=quickstart-framework
 ```
 
 ### Manifest quickstart target
@@ -316,24 +314,17 @@ test-e2e-quickstart-helm: ## Run quickstart smoke test (Helm install) - always s
 .PHONY: test-e2e-quickstart-manifest
 test-e2e-quickstart-manifest: ## Run quickstart smoke test (manifest install) - always starts with a clean cluster
 	$(MAKE) cleanup-cluster KIND_CLUSTER=$(KIND_CLUSTER_QUICKSTART_MANIFEST)
-	$(MAKE) CTX=$(KUBECONTEXT_QS_MANIFEST) \
-	  .stamps/cluster/$(KUBECONTEXT_QS_MANIFEST)/cert-manager.installed \
-	  .stamps/cluster/$(KUBECONTEXT_QS_MANIFEST)/gitea.installed
-	@if [ -z "$(PROJECT_IMAGE)" ]; then \
-	  $(MAKE) build-installer; \
-	  $(MAKE) CTX=$(KUBECONTEXT_QS_MANIFEST) \
-	    .stamps/cluster/$(KUBECONTEXT_QS_MANIFEST)/image.loaded; \
-	fi
-	kubectl config use-context $(KUBECONTEXT_QS_MANIFEST)
-	PROJECT_IMAGE=$(if $(PROJECT_IMAGE),$(PROJECT_IMAGE),$(E2E_LOCAL_IMAGE)) \
-	  bash test/e2e/scripts/run-quickstart.sh manifest
+	CTX=$(KUBECONTEXT_QS_MANIFEST) INSTALL_MODE=plain-manifests-file \
+	  E2E_ENABLE_QUICKSTART_FRAMEWORK=true E2E_QUICKSTART_MODE=plain-manifests-file \
+	  go test ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=quickstart-framework
 ```
 
-The manifest target also calls `make build-installer` (regenerates `dist/install.yaml`) before loading the image if `PROJECT_IMAGE` is not set.
+The manifest target implicitly validates the generated `dist/install.yaml` via the `plain-manifests-file` install mode.
 
-### `run-quickstart.sh` is self-contained
+### Quickstart smoke lives in Go
 
-`run-quickstart.sh` manages its own Gitea port-forward via an internal `ensure_gitea_api_port_forward()` function. It does **not** call `setup-port-forwards.sh` and does not need Prometheus. The Makefile only needs to ensure cert-manager, Gitea, and the image are loaded before invoking the script.
+Quickstart smoke assertions run as a Go E2E test (`quickstart-framework` label). Cluster provisioning, controller install,
+and port-forward setup is owned by `make e2e-prepare` (invoked from `BeforeSuite`).
 
 ---
 

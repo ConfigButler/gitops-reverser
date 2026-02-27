@@ -16,7 +16,8 @@ But the basics are the same, and they should be able to handle multiple gitops-r
 
 What would be needed to get that right? We need to continue our quest for removing repitiont: getting back the essence, properly defining what is really dependent on what.
 
-The first next step would be to analyse test/e2e/scripts/run-quickstart.sh -> I'm sure a lot can be removed and can be picked up by the 'normal' stuff.
+The first next step used to be analysing `test/e2e/scripts/run-quickstart.sh`, but quickstart smoke assertions now live
+in Go (`test/e2e/quickstart_framework_e2e_test.go`) and the shell harness is retired.
 
 It would be really cool to create a new namespace: 
 "run-e2e-full-{same-number-as-repo-basedupon-time}"
@@ -26,4 +27,3 @@ It would be really cool to create a new namespace:
 I'm also wondering if the tests for the quickstart shouldnt be in a go e2e_test.go like file -> in the end we are just doing the same type of assertions.
 
 It would be really awesome if we could redo all tests in the proper way.
-

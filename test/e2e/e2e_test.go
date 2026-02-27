@@ -22,11 +22,11 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -1580,19 +1580,9 @@ func deriveAgeRecipient(identityString string) (string, error) {
 }
 
 func decryptWithControllerSOPS(ciphertext []byte, ageKey string) (string, error) {
-	podCmd := exec.Command(
-		"kubectl", "get", "pods",
-		"-l", "control-plane=gitops-reverser",
-		"-n", namespace,
-		"-o", "jsonpath={.items[0].metadata.name}",
-	)
-	podOutput, err := utils.Run(podCmd)
+	podName, err := discoverControllerPodName(namespace)
 	if err != nil {
-		return "", fmt.Errorf("get controller pod: %w", err)
-	}
-	podName := strings.TrimSpace(podOutput)
-	if podName == "" {
-		return "", errors.New("controller pod name is empty")
+		return "", err
 	}
 
 	cmd := exec.Command(
@@ -1608,6 +1598,85 @@ func decryptWithControllerSOPS(ciphertext []byte, ageKey string) (string, error)
 	}
 
 	return string(output), nil
+}
+
+func discoverControllerPodName(ns string) (string, error) {
+	deploymentsCmd := exec.Command(
+		"kubectl",
+		"get",
+		"deployments",
+		"-n",
+		ns,
+		"-o",
+		"jsonpath={range .items[*]}{.metadata.name}{\"\\n\"}{end}",
+	)
+	deploymentsOutput, err := utils.Run(deploymentsCmd)
+	if err != nil {
+		return "", fmt.Errorf("get deployments in namespace %s: %w", ns, err)
+	}
+
+	deployments := utils.GetNonEmptyLines(deploymentsOutput)
+	if len(deployments) != 1 {
+		return "", fmt.Errorf("expected exactly 1 Deployment in namespace %s, found %d", ns, len(deployments))
+	}
+	deploymentName := deployments[0]
+
+	deploymentCmd := exec.Command("kubectl", "get", "deployment", deploymentName, "-n", ns, "-o", "json")
+	deploymentOutput, err := utils.Run(deploymentCmd)
+	if err != nil {
+		return "", fmt.Errorf("get deployment %s/%s: %w", ns, deploymentName, err)
+	}
+
+	var deploymentObj unstructured.Unstructured
+	if unmarshalErr := json.Unmarshal([]byte(deploymentOutput), &deploymentObj); unmarshalErr != nil {
+		return "", fmt.Errorf("unmarshal deployment %s/%s: %w", ns, deploymentName, unmarshalErr)
+	}
+
+	matchLabels, found, matchLabelErr := unstructured.NestedStringMap(
+		deploymentObj.Object,
+		"spec",
+		"selector",
+		"matchLabels",
+	)
+	if matchLabelErr != nil {
+		return "", fmt.Errorf("read deployment selector labels %s/%s: %w", ns, deploymentName, matchLabelErr)
+	}
+	if !found || len(matchLabels) == 0 {
+		return "", fmt.Errorf("deployment selector labels are empty for %s/%s", ns, deploymentName)
+	}
+
+	keys := make([]string, 0, len(matchLabels))
+	for key := range matchLabels {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	selectorParts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		selectorParts = append(selectorParts, fmt.Sprintf("%s=%s", key, matchLabels[key]))
+	}
+	selector := strings.Join(selectorParts, ",")
+
+	podCmd := exec.Command(
+		"kubectl",
+		"get",
+		"pods",
+		"-n",
+		ns,
+		"-l",
+		selector,
+		"-o",
+		"jsonpath={.items[0].metadata.name}",
+	)
+	podOutput, err := utils.Run(podCmd)
+	if err != nil {
+		return "", fmt.Errorf("get controller pod for selector %q in namespace %s: %w", selector, ns, err)
+	}
+	podName := strings.TrimSpace(podOutput)
+	if podName == "" {
+		return "", fmt.Errorf("controller pod name is empty for selector %q in namespace %s", selector, ns)
+	}
+
+	return podName, nil
 }
 
 // createGitProviderWithURL creates a GitProvider resource with the specified URL.

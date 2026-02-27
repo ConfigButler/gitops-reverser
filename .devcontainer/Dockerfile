@@ -14,6 +14,7 @@ RUN apt-get update \
     vim \
     less \
     jq \
+    yq \
     sudo \
     acl \
     rsync \

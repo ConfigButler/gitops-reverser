@@ -6,7 +6,6 @@ metadata:
   labels:
     {{- include "gitops-reverser.labels" . | nindent 4 }}
     app.kubernetes.io/component: manager
-    app.kubernetes.io/created-by: gitops-reverser
     app.kubernetes.io/part-of: gitops-reverser
     control-plane: controller-manager
 spec:

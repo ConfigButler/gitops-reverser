@@ -41,20 +41,41 @@ help: ## Display this help.
 
 ##@ Development
 
+CRD_BASE_OUTPUTS := \
+	config/crd/bases/configbutler.ai_clusterwatchrules.yaml \
+	config/crd/bases/configbutler.ai_gitproviders.yaml \
+	config/crd/bases/configbutler.ai_gittargets.yaml \
+	config/crd/bases/configbutler.ai_watchrules.yaml
+MANIFEST_OUTPUTS := $(CRD_BASE_OUTPUTS) \
+	config/rbac/role.yaml \
+	config/webhook/manifests.yaml
+MANIFEST_INPUTS := $(shell find api internal cmd -type f -name '*.go' \
+	! -name '*_test.go' ! -name 'zz_generated.deepcopy.go')
 .PHONY: manifests
-manifests: ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects.
-	@rm -f config/crd/bases/*.yaml
+manifests: $(MANIFEST_OUTPUTS) ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects.
+$(MANIFEST_OUTPUTS) &: $(MANIFEST_INPUTS)
+	@rm -f config/crd/bases/*.yaml \
+		config/rbac/role.yaml \
+		config/webhook/manifests.yaml
 	$(CONTROLLER_GEN) rbac:roleName=gitops-reverser crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases
 
+HELM_CRD_OUTPUTS := $(patsubst config/crd/bases/%,charts/gitops-reverser/crds/%,$(CRD_BASE_OUTPUTS))
+HELM_SYNC_OUTPUTS := $(HELM_CRD_OUTPUTS) \
+	charts/gitops-reverser/config/role.yaml
 .PHONY: helm-sync
-helm-sync: ## Sync CRDs and roles from config/crd/bases to Helm chart crds directory (for packaging)
-	@rm -f charts/gitops-reverser/crds/*.yaml
+helm-sync: $(HELM_SYNC_OUTPUTS) ## Sync CRDs and roles from config/crd/bases to Helm chart crds directory (for packaging)
+$(HELM_SYNC_OUTPUTS) &: $(MANIFEST_OUTPUTS)
+	@mkdir -p charts/gitops-reverser/crds charts/gitops-reverser/config
+	@rm -f charts/gitops-reverser/crds/*.yaml charts/gitops-reverser/config/*.yaml
 	@cp config/crd/bases/*.yaml charts/gitops-reverser/crds/
-	@rm -f charts/gitops-reverser/config/*.yaml
-	@cp config/rbac/cluster-role.yaml charts/gitops-reverser/config/
+	@cp config/rbac/role.yaml charts/gitops-reverser/config/role.yaml
+GENERATE_INPUTS := $(shell find api -type f -name '*.go' ! -name '*_test.go' \
+	! -name 'zz_generated.deepcopy.go') hack/boilerplate.go.txt
+GENERATE_OUTPUT := api/v1alpha1/zz_generated.deepcopy.go
 
-.PHONY: generate
-generate: ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
+generate: $(GENERATE_OUTPUT) ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
+
+$(GENERATE_OUTPUT): $(GENERATE_INPUTS)
 	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./..."
 
 .PHONY: fmt
@@ -76,8 +97,12 @@ KIND_CLUSTER_QUICKSTART_MANIFEST ?= gitops-reverser-test-e2e-quickstart-manifest
 # KIND_CLUSTER is used by cleanup-cluster; defaults to the main e2e cluster.
 KIND_CLUSTER ?= $(KIND_CLUSTER_E2E)
 E2E_LOCAL_IMAGE ?= gitops-reverser:e2e-local
-# In CI, PROJECT_IMAGE is the pre-built image from the docker-build job; locally we build E2E_LOCAL_IMAGE.
-E2E_IMAGE := $(if $(PROJECT_IMAGE),$(PROJECT_IMAGE),$(E2E_LOCAL_IMAGE))
+# Capture whether PROJECT_IMAGE was provided (CI sets it; local runs typically don't).
+PROJECT_IMAGE_PROVIDED ?= $(strip $(PROJECT_IMAGE))
+export PROJECT_IMAGE_PROVIDED
+# PROJECT_IMAGE is the single source of truth after this point.
+PROJECT_IMAGE ?= $(E2E_LOCAL_IMAGE)
+export PROJECT_IMAGE
 E2E_AGE_KEY_FILE ?= /tmp/e2e-age-key.txt
 
 # CTX: kubeconfig context for the cluster being operated on.
@@ -89,8 +114,15 @@ CS := .stamps/cluster/$(CTX)
 IS := .stamps/image
 GO_SOURCES := $(shell find cmd internal -type f -name '*.go') go.mod go.sum
 
+# INSTALL_MODE controls installation workflow: helm|plain-manifests-file|config-dir
+# These defaults must be defined before any target names that reference $(NAMESPACE).
+INSTALL_MODE ?= config-dir
+INSTALL_NAME ?= gitops-reverser
+NAMESPACE ?= gitops-reverser
+
 KUBECONTEXT_QS_HELM := kind-$(KIND_CLUSTER_QUICKSTART_HELM)
 KUBECONTEXT_QS_MANIFEST := kind-$(KIND_CLUSTER_QUICKSTART_MANIFEST)
+HELM_CHART_SOURCE ?= charts/gitops-reverser
 
 .PHONY: cleanup-cluster
 cleanup-cluster: ## Tear down the Kind cluster used for e2e tests and remove its stamps
@@ -114,8 +146,40 @@ cleanup-e2e-clusters: ## Tear down all E2E Kind clusters and their stamps
 		rm -rf .stamps/cluster/kind-$$cluster; \
 	done
 
+# We delete all services (over all namespaces) since we only can have ONE service listening to the cluster audit webhook at the same time
+$(CS)/$(NAMESPACE)/namespace.cleaned: Makefile $(CS)/$(NAMESPACE)/namespace.ready
+	kubectl --context $(CTX) delete svc --all-namespaces -l app.kubernetes.io/name=gitops-reverser --ignore-not-found=true
+	kubectl --context $(CTX) delete validatingwebhookconfiguration \
+		gitops-reverser-validating-webhook-configuration --ignore-not-found=true
+	touch $@
+
+$(CS)/$(NAMESPACE)/namespace.ready: Makefile $(CS)/ready
+	mkdir -p $(@D)
+	kubectl --context $(CTX) create namespace $(NAMESPACE) --dry-run=client -o yaml | kubectl --context $(CTX) apply -f -
+	kubectl --context $(CTX) label --overwrite ns $(NAMESPACE) \
+		app.kubernetes.io/managed-by=kustomize app.kubernetes.io/name=gitops-reverser control-plane=gitops-reverser \
+		pod-security.kubernetes.io/enforce=restricted
+	touch $@
+
+# Called by the Go e2e suite (BeforeSuite) to prepare prerequisites once, including port-forwards + age key.
+.PHONY: e2e-prepare
+e2e-prepare: $(CS)/$(NAMESPACE)/e2e/prepare portforward-ensure ## Prepare E2E prerequisites for Go tests
+
+# Called by the full e2e suite.
+# For now: clean the sut namespace, recreate it, run the installer, and deploy the controller image.
+# Prefer depending on stamps; this target must not invoke Go e2e tests (Go calls this target).
+$(CS)/$(NAMESPACE)/e2e/prepare: $(CS)/$(NAMESPACE)/namespace.cleaned \
+	$(CS)/$(NAMESPACE)/install-$(INSTALL_MODE) \
+	$(CS)/image.loaded \
+	$(CS)/$(NAMESPACE)/controller.deployed \
+	$(CS)/$(NAMESPACE)/age-key.applied
+	mkdir -p $(@D)
+	touch $@
+
+
+# Keep `make test-e2e` as the classic entrypoint.
 .PHONY: test-e2e
-test-e2e: $(CS)/e2e.passed ## Run end-to-end tests (stamp-based; only reruns what changed)
+test-e2e: $(CS)/e2e.passed
 
 .PHONY: lint
 lint: ## Run golangci-lint linter
@@ -167,35 +231,17 @@ docker-buildx: ## Build and push docker image for the manager for cross-platform
 	- $(CONTAINER_TOOL) buildx rm gitops-reverser-builder
 	rm Dockerfile.cross
 
-.PHONY: build-installer
-build-installer: manifests helm-sync ## Generate a consolidated YAML from Helm chart for easy installation.
-	@echo "📦 Generating install.yaml from Helm chart..."
+CHART_INPUTS := charts/gitops-reverser/Chart.yaml \
+	charts/gitops-reverser/values.yaml \
+	$(shell find charts/gitops-reverser/templates -type f)
+
+dist/install.yaml: $(HELM_SYNC_OUTPUTS) $(CHART_INPUTS) ## Generate consolidated YAML from Helm chart.
 	@mkdir -p dist
-	@$(HELM) template gitops-reverser charts/gitops-reverser \
-		--namespace gitops-reverser \
+	@$(HELM) template $(INSTALL_NAME) charts/gitops-reverser \
+		--namespace $(NAMESPACE) \
 		--set labels.managedBy=kubectl \
 		--set createNamespace=true \
-		--include-crds > dist/install.yaml
-	@echo "✅ Generated dist/install.yaml ($(shell wc -l < dist/install.yaml) lines)"
-
-##@ Deployment
-
-.PHONY: install
-install: manifests ## Install CRDs into the K8s cluster specified in ~/.kube/config.
-	$(KUSTOMIZE) build config/crd | $(KUBECTL) apply -f -
-
-.PHONY: uninstall
-uninstall: manifests ## Uninstall CRDs from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
-	$(KUSTOMIZE) build config/crd | $(KUBECTL) delete --ignore-not-found=true -f -
-
-.PHONY: deploy
-deploy: manifests ## Deploy controller to the K8s cluster specified in ~/.kube/config.
-	cd config && $(KUSTOMIZE) edit set image gitops-reverser=${IMG}
-	$(KUSTOMIZE) build config | $(KUBECTL) apply -f -
-
-.PHONY: undeploy
-undeploy: ## Undeploy controller from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
-	$(KUSTOMIZE) build config | $(KUBECTL) delete --ignore-not-found=true -f -
+		--include-crds > $@
 
 ##@ Dependencies
 
@@ -226,33 +272,13 @@ setup-envtest: ## Setup envtest binaries for unit tests
 
 ##@ E2E Stamp Targets (cluster-parameterized; pass CTX=kind-<name> to target a different cluster)
 
-# DEPLOY_INPUTS: all config files except CRDs (tracked separately by crds.applied).
-# Only relevant for the main e2e cluster (controller.deployed is not used by quickstart targets).
-# When PROJECT_IMAGE is set (CI), skip the local image build stamp.
-ifeq ($(PROJECT_IMAGE),)
-DEPLOY_INPUTS := $(CS)/crds.applied $(CS)/cert-manager.installed $(CS)/prometheus.installed \
-                 $(CS)/sut.namespace.ready \
-                 $(IS)/controller.id \
-                 $(shell find config -type f -not -path 'config/crd/*')
-else
-DEPLOY_INPUTS := $(CS)/crds.applied $(CS)/cert-manager.installed $(CS)/prometheus.installed \
-                 $(CS)/sut.namespace.ready \
-                 $(shell find config -type f -not -path 'config/crd/*')
-endif
-
 $(CS)/ready: test/e2e/kind/start-cluster.sh test/e2e/kind/cluster-template.yaml
 	mkdir -p $(CS)
 	KIND_CLUSTER=$(CLUSTER_FROM_CTX) bash test/e2e/kind/start-cluster.sh
 	kubectl --context $(CTX) get ns >/dev/null
 	touch $@
 
-$(CS)/sut.namespace.ready: $(CS)/ready config/namespace.yaml
-	mkdir -p $(CS)
-	kubectl --context $(CTX) apply -f config/namespace.yaml
-	kubectl --context $(CTX) label --overwrite ns sut pod-security.kubernetes.io/enforce=restricted
-	touch $@
-
-CERT_MANAGER_WAIT_TIMEOUT ?= 600s
+CERT_MANAGER_WAIT_TIMEOUT ?= 300s
 CERT_MANAGER_VERSION ?= v1.19.4
 CERT_MANAGER_MANIFEST_URL ?= https://github.com/cert-manager/cert-manager/releases/download/$(CERT_MANAGER_VERSION)/cert-manager.yaml
 $(CS)/cert-manager.installed: $(CS)/ready
@@ -261,7 +287,7 @@ $(CS)/cert-manager.installed: $(CS)/ready
 	kubectl --context $(CTX) -n cert-manager rollout status deploy/cert-manager --timeout=$(CERT_MANAGER_WAIT_TIMEOUT)
 	kubectl --context $(CTX) -n cert-manager rollout status deploy/cert-manager-webhook --timeout=$(CERT_MANAGER_WAIT_TIMEOUT)
 	kubectl --context $(CTX) -n cert-manager rollout status deploy/cert-manager-cainjector --timeout=$(CERT_MANAGER_WAIT_TIMEOUT)
-	touch $@
+	echo $(CERT_MANAGER_VERSION) > $@
 
 $(CS)/gitea.installed: $(CS)/ready test/e2e/gitea-values.yaml
 	mkdir -p $(CS)
@@ -280,17 +306,21 @@ PROMETHEUS_SETUP_MANIFESTS := $(shell find test/e2e/setup/prometheus -type f -na
 $(CS)/prometheus.installed: $(CS)/ready test/e2e/scripts/ensure-prometheus-operator.sh $(PROMETHEUS_SETUP_MANIFESTS)
 	mkdir -p $(CS)
 	KUBECONTEXT=$(CTX) bash test/e2e/scripts/ensure-prometheus-operator.sh
+	kubectl --context $(CTX) wait --for=condition=Established \
+	  crd/prometheuses.monitoring.coreos.com \
+	  crd/servicemonitors.monitoring.coreos.com \
+	  --timeout=180s
 	kubectl --context $(CTX) apply -n prometheus-operator -f test/e2e/setup/prometheus
 	kubectl --context $(CTX) wait --for=condition=Available prometheus/prometheus-shared-e2e -n prometheus-operator --timeout=180s
 	kubectl --context $(CTX) wait --for=condition=ready pod -l prometheus=prometheus-shared-e2e -n prometheus-operator --timeout=180s
 	touch $@
 
-$(CS)/age-key.applied: $(CS)/sut.namespace.ready test/e2e/tools/gen-age-key/main.go
-	mkdir -p $(CS)
+$(CS)/$(NAMESPACE)/age-key.applied: Makefile $(CS)/$(NAMESPACE)/namespace.ready test/e2e/tools/gen-age-key/main.go
+	mkdir -p $(@D)
 	go run ./test/e2e/tools/gen-age-key \
 	  --key-file $(CS)/age-key.txt \
 	  --secret-file $(CS)/age-key-secret.yaml \
-	  --namespace sut \
+	  --namespace $(NAMESPACE) \
 	  --secret-name sops-age-key
 	kubectl --context $(CTX) apply -f $(CS)/age-key-secret.yaml
 	touch $@
@@ -303,84 +333,165 @@ $(IS)/controller.id: $(GO_SOURCES) Dockerfile
 	  -t $(E2E_LOCAL_IMAGE) .
 	$(CONTAINER_TOOL) inspect --format='{{.Id}}' $(E2E_LOCAL_IMAGE) > $@
 
+ifeq ($(PROJECT_IMAGE_PROVIDED),)
+$(IS)/project-image.ready: $(IS)/controller.id
+endif
+$(IS)/project-image.ready: Makefile
+	mkdir -p $(IS)
+	@set -euo pipefail; \
+	if [ -n "$(PROJECT_IMAGE_PROVIDED)" ]; then \
+		if ! $(CONTAINER_TOOL) image inspect "$(PROJECT_IMAGE)" >/dev/null 2>&1; then \
+			echo "Pulling PROJECT_IMAGE=$(PROJECT_IMAGE)"; \
+			$(CONTAINER_TOOL) pull "$(PROJECT_IMAGE)"; \
+		fi; \
+	fi; \
+	echo "$(PROJECT_IMAGE)" > "$@"
+
 $(CS)/crds.applied: $(CS)/ready $(shell find config/crd -type f)
 	mkdir -p $(CS)
 	kubectl --context $(CTX) apply -k config/crd
 	kubectl --context $(CTX) wait --for=condition=Established crd --all --timeout=120s
 	touch $@
 
-$(CS)/image.loaded: $(IS)/controller.id $(CS)/ready
-	$(KIND) load docker-image $(E2E_LOCAL_IMAGE) --name $(CLUSTER_FROM_CTX)
-	touch $@
+$(CS)/image.loaded: $(IS)/project-image.ready $(CS)/ready
+	@set -euo pipefail; \
+	mkdir -p $(CS); \
+	img_id="$$( $(CONTAINER_TOOL) inspect --format='{{.Id}}' $(PROJECT_IMAGE) )"; \
+	echo "Loading $(PROJECT_IMAGE) ($$img_id) into $(CLUSTER_FROM_CTX)"; \
+	$(KIND) load docker-image $(PROJECT_IMAGE) --name $(CLUSTER_FROM_CTX); \
+	echo "$$img_id" > "$@"
 
-$(CS)/controller.deployed: $(DEPLOY_INPUTS)
-	mkdir -p $(CS)
-	@[ -z "$(PROJECT_IMAGE)" ] || $(CONTAINER_TOOL) pull $(E2E_IMAGE)
-	$(KIND) load docker-image $(E2E_IMAGE) --name $(CLUSTER_FROM_CTX)
-	kubectl --context $(CTX) delete validatingwebhookconfiguration \
-	  gitops-reverser-validating-webhook-configuration --ignore-not-found=true
-	cd config && $(KUSTOMIZE) edit set image gitops-reverser=$(E2E_IMAGE)
-	$(KUSTOMIZE) build config | kubectl --context $(CTX) apply -f -
-	@if [ -z "$(PROJECT_IMAGE)" ]; then \
-	  IMAGE_ID="$$(cat $(IS)/controller.id)"; \
-	  kubectl --context $(CTX) -n sut patch deploy/gitops-reverser --type=merge \
-	    -p "{\"spec\":{\"template\":{\"metadata\":{\"annotations\":{\"configbutler.ai/e2e-image-id\":\"$$IMAGE_ID\"}}}}}"; \
-	fi
-	kubectl --context $(CTX) -n sut rollout status deploy/gitops-reverser --timeout=180s
-	touch $@
+$(CS)/$(NAMESPACE)/controller.deployed: $(CS)/$(NAMESPACE)/install-$(INSTALL_MODE) $(CS)/image.loaded
+	@set -euo pipefail; \
+	ctx="$(CTX)"; ns="$(NAMESPACE)"; img="$(PROJECT_IMAGE)"; c="$(CONTROLLER_CONTAINER)"; sel="$(CONTROLLER_DEPLOY_SELECTOR)"; \
+	[ -n "$$img" ] || { echo "ERROR: PROJECT_IMAGE must be non-empty" >&2; exit 2; }; \
+	[ -n "$$c" ] || { echo "ERROR: CONTROLLER_CONTAINER must be non-empty" >&2; exit 2; }; \
+	count="$$(kubectl --context "$$ctx" -n "$$ns" get deploy -l "$$sel" --no-headers 2>/dev/null | wc -l | tr -d ' ')"; \
+	[ "$$count" -eq 1 ] || { \
+		echo "ERROR: Expected exactly 1 Deployment matching '$$sel' in namespace '$$ns', found $$count" >&2; \
+		kubectl --context "$$ctx" -n "$$ns" get deploy -l "$$sel" -o wide || true; \
+		exit 1; \
+	}; \
+	deploy="$$(kubectl --context "$$ctx" -n "$$ns" get deploy -l "$$sel" -o jsonpath='{.items[0].metadata.name}')"; \
+	echo "Setting deployment/$$deploy container '$$c' to image '$$img'"; \
+	kubectl --context "$$ctx" -n "$$ns" set image "deployment/$$deploy" "$$c=$$img" --record=false; \
+	kubectl --context "$$ctx" -n "$$ns" rollout status "deployment/$$deploy" --timeout=180s; \
+	touch "$@"
 
-.PHONY: $(CS)/portforward.running
-$(CS)/portforward.running: $(CS)/gitea.installed $(CS)/prometheus.installed
+.PHONY: portforward-ensure
+portforward-ensure: $(CS)/gitea.installed $(CS)/prometheus.installed ## Ensure port-forwards are running (always checks)
 	mkdir -p $(CS)
-	if curl -fsS http://localhost:13000/api/healthz >/dev/null 2>&1 && \
-	   curl -fsS http://localhost:19090/-/healthy    >/dev/null 2>&1; then \
-	  echo "port-forwards already healthy, skipping restart"; \
-	  touch $@; exit 0; \
-	fi
-	kubectl config use-context $(CTX)
-	bash test/e2e/scripts/setup-port-forwards.sh
-	curl -fsS http://localhost:13000/api/healthz >/dev/null || { echo "Gitea health check failed"; exit 1; }
-	curl -fsS http://localhost:19090/-/healthy    >/dev/null || { echo "Prometheus health check failed"; exit 1; }
-	touch $@
+	E2E_KUBECONTEXT=$(CTX) bash test/e2e/scripts/setup-port-forwards.sh
 
-$(CS)/e2e.passed: $(CS)/controller.deployed $(CS)/portforward.running $(CS)/age-key.applied $(shell find test/e2e -name '*.go')
+E2E_TEST_INPUTS := $(shell find test/e2e -type f \( -name '*.go' -o -name '*.sh' -o -name '*.yaml' -o -name '*.tmpl' \))
+$(CS)/e2e.passed: $(E2E_TEST_INPUTS) Makefile
 	mkdir -p $(CS)
-	kubectl --context $(CTX) delete crd icecreamorders.shop.example.com --ignore-not-found=true
-	KIND_CLUSTER=$(CLUSTER_FROM_CTX) PROJECT_IMAGE=$(E2E_IMAGE) \
+	CTX=$(CTX) KIND_CLUSTER=$(CLUSTER_FROM_CTX) NAMESPACE=$(NAMESPACE) \
 	  E2E_AGE_KEY_FILE=$(CS)/age-key.txt \
 	  go test ./test/e2e/ -v -ginkgo.v
 	touch $@
 
-##@ E2E Quickstart Tests
+CONTROLLER_CONTAINER ?= manager
+CONTROLLER_DEPLOY_SELECTOR ?= app.kubernetes.io/part-of=gitops-reverser
+
+# INSTALL_MODE, INSTALL_NAME, NAMESPACE defaults are defined near the E2E variables section above.
+INSTALL_LOCK := $(CS)/$(NAMESPACE)/install.method
+VALID_INSTALL_MODES := config-dir helm plain-manifests-file
+ifeq (,$(filter $(INSTALL_MODE),$(VALID_INSTALL_MODES)))
+  $(error INSTALL_MODE must be one of: $(VALID_INSTALL_MODES))
+endif
+
+define ASSERT_INSTALL_METHOD
+mkdir -p $(@D); \
+if [ -f "$(INSTALL_LOCK)" ]; then \
+	existing="$$(cat "$(INSTALL_LOCK)")"; \
+	if [ "$$existing" != "$(INSTALL_MODE)" ]; then \
+		echo "ERROR: Namespace $(NAMESPACE) already installed using '$$existing'."; \
+		echo "Refusing to install with '$(INSTALL_MODE)'."; \
+		echo "Cleanup that namespace and remove $(INSTALL_LOCK) to switch methods."; \
+		exit 2; \
+	fi; \
+else \
+	echo "$(INSTALL_MODE)" > "$(INSTALL_LOCK)"; \
+fi;
+endef
+
+.PHONY: install install-helm install-plain-manifests-file install-config-dir
+install: $(CS)/$(NAMESPACE)/install-$(INSTALL_MODE)
+
+install-helm: $(CS)/$(NAMESPACE)/install-helm
+
+install-plain-manifests-file: $(CS)/$(NAMESPACE)/install-plain-manifests-file
+
+install-config-dir: $(CS)/$(NAMESPACE)/install-config-dir
+
+CONFIG_DIR_INPUTS := $(shell find config -type f)
+
+##@ Deployments of all manifests needed to run
+$(CS)/$(NAMESPACE)/install-helm: INSTALL_MODE := helm
+$(CS)/$(NAMESPACE)/install-helm: $(HELM_SYNC_OUTPUTS) $(CS)/cert-manager.installed $(CS)/prometheus.installed ## Deploy quickstart controller via Helm into CTX cluster
+	@set -euo pipefail; \
+	$(ASSERT_INSTALL_METHOD) \
+	helm_args=( \
+		upgrade --install $(INSTALL_NAME) "$(HELM_CHART_SOURCE)" \
+		--kube-context $(CTX) \
+		--namespace $(NAMESPACE) \
+		--create-namespace \
+	); \
+	if kubectl --context $(CTX) get crd \
+		gitproviders.configbutler.ai \
+		gittargets.configbutler.ai \
+		watchrules.configbutler.ai \
+		clusterwatchrules.configbutler.ai >/dev/null 2>&1; then \
+		helm_args+=(--skip-crds); \
+	fi; \
+	helm "$${helm_args[@]}"; \
+	touch $@
+
+$(CS)/$(NAMESPACE)/install-config-dir: INSTALL_MODE := config-dir
+$(CS)/$(NAMESPACE)/install-config-dir: $(MANIFEST_OUTPUTS) $(CONFIG_DIR_INPUTS) $(CS)/cert-manager.installed $(CS)/prometheus.installed \
+	$(CS)/$(NAMESPACE)/namespace.ready ## Deploy controller to the K8s cluster specified in ~/.kube/config.
+	@set -euo pipefail; \
+	$(ASSERT_INSTALL_METHOD) \
+	tmpdir="$$(mktemp -d)"; \
+	trap 'rm -rf "$$tmpdir"' EXIT; \
+	cp -R config "$$tmpdir/config"; \
+	(cd "$$tmpdir/config" && $(KUSTOMIZE) edit set namespace "$(NAMESPACE)"); \
+	(cd "$$tmpdir/config" && $(KUSTOMIZE) edit set image gitops-reverser="$(PROJECT_IMAGE)"); \
+	(cd "$$tmpdir/config" && $(KUSTOMIZE) build .) | $(KUBECTL) --context "$(CTX)" apply -f -
+	touch $@
+
+$(CS)/$(NAMESPACE)/install-plain-manifests-file: INSTALL_MODE := plain-manifests-file
+$(CS)/$(NAMESPACE)/install-plain-manifests-file: dist/install.yaml $(CS)/cert-manager.installed $(CS)/prometheus.installed ## Deploy quickstart controller via manifest into CTX cluster
+	@set -euo pipefail; \
+	ctx="$(CTX)"; \
+	ns="$(NAMESPACE)"; \
+	$(ASSERT_INSTALL_METHOD) \
+	tmpdir="$$(mktemp -d)"; \
+	trap 'rm -rf "$$tmpdir"' EXIT; \
+	cp -R dist "$$tmpdir/dist"; \
+	( \
+		cd "$$tmpdir/dist" && \
+		kustomize edit set namespace "$$ns" >/dev/null && \
+		kustomize build . \
+	) | kubectl --context "$$ctx" apply -f -; \
+	touch $@
 
 .PHONY: test-e2e-quickstart-helm
 test-e2e-quickstart-helm: ## Run quickstart smoke test (Helm install) - always starts with a clean cluster
 	$(MAKE) cleanup-cluster KIND_CLUSTER=$(KIND_CLUSTER_QUICKSTART_HELM)
-	$(MAKE) CTX=$(KUBECONTEXT_QS_HELM) \
-	  .stamps/cluster/$(KUBECONTEXT_QS_HELM)/cert-manager.installed \
-	  .stamps/cluster/$(KUBECONTEXT_QS_HELM)/gitea.installed
-	@if [ -z "$(PROJECT_IMAGE)" ]; then \
-	  $(MAKE) CTX=$(KUBECONTEXT_QS_HELM) \
-	    .stamps/cluster/$(KUBECONTEXT_QS_HELM)/image.loaded; \
-	fi
-	kubectl config use-context $(KUBECONTEXT_QS_HELM)
-	PROJECT_IMAGE=$(E2E_IMAGE) \
-	  bash test/e2e/scripts/run-quickstart.sh helm
+	CTX=$(KUBECONTEXT_QS_HELM) INSTALL_MODE=helm NAMESPACE=$(NAMESPACE) \
+	  E2E_ENABLE_QUICKSTART_FRAMEWORK=true E2E_QUICKSTART_MODE=helm \
+	  E2E_AGE_KEY_FILE=.stamps/cluster/$(KUBECONTEXT_QS_HELM)/age-key.txt \
+	  go test ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=quickstart-framework
 
 .PHONY: test-e2e-quickstart-manifest
 test-e2e-quickstart-manifest: ## Run quickstart smoke test (manifest install) - always starts with a clean cluster
 	$(MAKE) cleanup-cluster KIND_CLUSTER=$(KIND_CLUSTER_QUICKSTART_MANIFEST)
-	$(MAKE) CTX=$(KUBECONTEXT_QS_MANIFEST) \
-	  .stamps/cluster/$(KUBECONTEXT_QS_MANIFEST)/cert-manager.installed \
-	  .stamps/cluster/$(KUBECONTEXT_QS_MANIFEST)/gitea.installed
-	@if [ -z "$(PROJECT_IMAGE)" ]; then \
-	  $(MAKE) build-installer; \
-	  $(MAKE) CTX=$(KUBECONTEXT_QS_MANIFEST) \
-	    .stamps/cluster/$(KUBECONTEXT_QS_MANIFEST)/image.loaded; \
-	fi
-	kubectl config use-context $(KUBECONTEXT_QS_MANIFEST)
-	PROJECT_IMAGE=$(E2E_IMAGE) \
-	  bash test/e2e/scripts/run-quickstart.sh manifest
+	CTX=$(KUBECONTEXT_QS_MANIFEST) INSTALL_MODE=plain-manifests-file NAMESPACE=$(NAMESPACE) \
+	  E2E_ENABLE_QUICKSTART_FRAMEWORK=true E2E_QUICKSTART_MODE=plain-manifests-file \
+	  E2E_AGE_KEY_FILE=.stamps/cluster/$(KUBECONTEXT_QS_MANIFEST)/age-key.txt \
+	  go test ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=quickstart-framework
 
 .PHONY: cleanup-port-forwards
 cleanup-port-forwards: ## Stop all port-forwards
@@ -388,10 +499,3 @@ cleanup-port-forwards: ## Stop all port-forwards
 	@-pkill -f "kubectl.*port-forward.*13000" 2>/dev/null || true
 	@-pkill -f "kubectl.*port-forward.*19090" 2>/dev/null || true
 	@echo "✅ Port-forwards stopped"
-
-.PHONY: cleanup-gitea-e2e
-cleanup-gitea-e2e: cleanup-port-forwards ## Clean up Gitea e2e environment
-	@echo "🧹 Cleaning up Gitea e2e environment..."
-	@$(HELM) uninstall gitea --namespace $(GITEA_NAMESPACE) 2>/dev/null || true
-	@$(KUBECTL) delete namespace $(GITEA_NAMESPACE) 2>/dev/null || true
-	@echo "✅ Gitea cleanup completed"
