@@ -160,6 +160,10 @@ $(CS)/$(NAMESPACE)/namespace.ready: Makefile $(CS)/ready
 		pod-security.kubernetes.io/enforce=restricted
 	touch $@
 
+# Called by the Go e2e suite (BeforeSuite) to prepare prerequisites once, including port-forwards + age key.
+.PHONY: e2e-prepare
+e2e-prepare: $(CS)/$(NAMESPACE)/e2e/prepare portforward-ensure ## Prepare E2E prerequisites for Go tests
+
 # Called by the full e2e suite.
 # For now: clean the sut namespace, recreate it, run the installer, and deploy the controller image.
 # Prefer depending on stamps; this target must not invoke Go e2e tests (Go calls this target).
@@ -167,10 +171,10 @@ $(CS)/$(NAMESPACE)/e2e/prepare: $(CS)/$(NAMESPACE)/namespace.cleaned \
 	$(CS)/$(NAMESPACE)/install-$(INSTALL_MODE) \
 	$(CS)/image.loaded \
 	$(CS)/$(NAMESPACE)/controller.deployed \
-	$(CS)/portforward.running \
 	$(CS)/$(NAMESPACE)/age-key.applied
 	mkdir -p $(@D)
 	touch $@
+
 
 # Keep `make test-e2e` as the classic entrypoint.
 .PHONY: test-e2e
