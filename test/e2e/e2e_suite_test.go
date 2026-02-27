@@ -45,26 +45,37 @@ func TestE2E(t *testing.T) {
 
 var _ = BeforeSuite(func() {
 	if img := os.Getenv("PROJECT_IMAGE"); img == "" {
-		// In local runs, the Makefile guarantees the cluster and image are ready
-		// before go test is invoked. Nothing to do here.
-		By("local run: cluster and image prepared by Makefile")
+		By("local run: preparing cluster via Makefile target")
 	} else {
 		By(fmt.Sprintf("using pre-built image: %s", img))
 	}
 
-	By("ensuring shared e2e port-forwards are active via Makefile target")
-	ensureE2EPortForwards()
+	By("preparing e2e prerequisites via Makefile target")
+	ensureE2EPrepared()
 })
 
 var _ = AfterSuite(func() {
 })
 
-func ensureE2EPortForwards() {
+func ensureE2EPrepared() {
 	ctx := resolveE2EContext()
-	target := fmt.Sprintf(".stamps/cluster/%s/portforward.running", ctx)
-	cmd := makeCommandWithSeed(fmt.Sprintf("CTX=%s", ctx), target)
+	ns := resolveE2ENamespace()
+	target := fmt.Sprintf(".stamps/cluster/%s/%s/e2e/prepare", ctx, ns)
+	cmd := makeCommandWithSeed(
+		fmt.Sprintf("CTX=%s", ctx),
+		fmt.Sprintf("NAMESPACE=%s", ns),
+		target,
+		"portforward-ensure",
+	)
 	output, err := utils.Run(cmd)
-	Expect(err).NotTo(HaveOccurred(), "failed to run make target for port-forwards")
+	Expect(err).NotTo(HaveOccurred(), "failed to run make target for e2e prepare")
+	_, _ = fmt.Fprintf(GinkgoWriter, "%s", output)
+
+	// Many e2e helpers invoke kubectl without an explicit --context flag. Ensure kubectl is pointed at the
+	// intended cluster context for the remainder of the test run.
+	useCtx := exec.Command("kubectl", "config", "use-context", ctx)
+	output, err = utils.Run(useCtx)
+	Expect(err).NotTo(HaveOccurred(), "failed to set kubectl context for e2e run")
 	_, _ = fmt.Fprintf(GinkgoWriter, "%s", output)
 }
 
@@ -88,6 +99,13 @@ func makeCommandWithSeed(args ...string) *exec.Cmd {
 		filteredArgs,
 	)
 	return cmd
+}
+
+func resolveE2ENamespace() string {
+	if value := strings.TrimSpace(os.Getenv("NAMESPACE")); value != "" {
+		return value
+	}
+	return "gitops-reverser" // does it wrok?
 }
 
 func ginkgoRandomSeed() int64 {

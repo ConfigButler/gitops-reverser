@@ -110,6 +110,12 @@ CS := .stamps/cluster/$(CTX)
 IS := .stamps/image
 GO_SOURCES := $(shell find cmd internal -type f -name '*.go') go.mod go.sum
 
+# INSTALL_MODE controls installation workflow: helm|plain-manifests-file|config-dir
+# These defaults must be defined before any target names that reference $(NAMESPACE).
+INSTALL_MODE ?= config-dir
+INSTALL_NAME ?= gitops-reverser
+NAMESPACE ?= gitops-reverser
+
 KUBECONTEXT_QS_HELM := kind-$(KIND_CLUSTER_QUICKSTART_HELM)
 KUBECONTEXT_QS_MANIFEST := kind-$(KIND_CLUSTER_QUICKSTART_MANIFEST)
 
@@ -139,18 +145,28 @@ cleanup-namespace-sut: $(CS)/sut.namespace.ready
 	kubectl --context $(CTX) delete validatingwebhookconfiguration \
 		gitops-reverser-validating-webhook-configuration --ignore-not-found=true
 
+$(CS)/sut.namespace.cleaned: $(CS)/sut.namespace.ready
+	kubectl --context $(CTX) delete validatingwebhookconfiguration \
+		gitops-reverser-validating-webhook-configuration --ignore-not-found=true
+	touch $@
+
 $(CS)/sut.namespace.ready: $(CS)/ready config/namespace.yaml
 	mkdir -p $(CS)
 	kubectl --context $(CTX) apply -f config/namespace.yaml
 	kubectl --context $(CTX) label --overwrite ns sut pod-security.kubernetes.io/enforce=restricted
 	touch $@
 
-// This is called by the full e2e suite -> it should for now clean the sut namespace, recreate it and run the installer and build and install new image. Let's use dependecies as much as possible -> this code can't call the e2e golang stuff: this is what we will call from golang
-$(CS)/$(NAMESPACE)/e2e/prepare:
+# Called by the full e2e suite.
+# For now: clean the sut namespace, recreate it, run the installer, and deploy the controller image.
+# Prefer depending on stamps; this target must not invoke Go e2e tests (Go calls this target).
+$(CS)/$(NAMESPACE)/e2e/prepare: $(CS)/sut.namespace.cleaned $(CS)/controller.deployed $(CS)/portforward.running \
+	$(CS)/age-key.applied
+	mkdir -p $(@D)
+	touch $@
 
-// This is still what I would like to call! make test-e2e is the classic command that I'm used to
+# Keep `make test-e2e` as the classic entrypoint.
 .PHONY: test-e2e
-test-e2e: cleanup-namespace-sut
+test-e2e: $(CS)/e2e.passed
 
 .PHONY: lint
 lint: ## Run golangci-lint linter
@@ -277,6 +293,10 @@ PROMETHEUS_SETUP_MANIFESTS := $(shell find test/e2e/setup/prometheus -type f -na
 $(CS)/prometheus.installed: $(CS)/ready test/e2e/scripts/ensure-prometheus-operator.sh $(PROMETHEUS_SETUP_MANIFESTS)
 	mkdir -p $(CS)
 	KUBECONTEXT=$(CTX) bash test/e2e/scripts/ensure-prometheus-operator.sh
+	kubectl --context $(CTX) wait --for=condition=Established \
+	  crd/prometheuses.monitoring.coreos.com \
+	  crd/servicemonitors.monitoring.coreos.com \
+	  --timeout=180s
 	kubectl --context $(CTX) apply -n prometheus-operator -f test/e2e/setup/prometheus
 	kubectl --context $(CTX) wait --for=condition=Available prometheus/prometheus-shared-e2e -n prometheus-operator --timeout=180s
 	kubectl --context $(CTX) wait --for=condition=ready pod -l prometheus=prometheus-shared-e2e -n prometheus-operator --timeout=180s
@@ -314,12 +334,12 @@ $(CS)/image.loaded: $(IS)/controller.id $(CS)/ready
 # Only relevant for the main e2e cluster (controller.deployed is not used by quickstart targets).
 # When PROJECT_IMAGE is set (CI), skip the local image build stamp.
 ifeq ($(PROJECT_IMAGE),)
-DEPLOY_INPUTS := install \
+DEPLOY_INPUTS := $(CS)/$(NAMESPACE)/install-$(INSTALL_MODE) \
                  $(CS)/sut.namespace.ready \
                  $(IS)/controller.id \
                  $(shell find config -type f -not -path 'config/crd/*')
 else
-DEPLOY_INPUTS := install \
+DEPLOY_INPUTS := $(CS)/$(NAMESPACE)/install-$(INSTALL_MODE) \
                  $(CS)/sut.namespace.ready \
                  $(shell find config -type f -not -path 'config/crd/*')
 endif
@@ -333,29 +353,31 @@ $(CS)/controller.deployed: $(DEPLOY_INPUTS)
 	  IMAGE_ID="$$(cat $(IS)/controller.id)"; \
 	  kubectl --context $(CTX) -n sut patch deploy/gitops-reverser --type=merge \
 	    -p "{\"spec\":{\"template\":{\"metadata\":{\"annotations\":{\"configbutler.ai/e2e-image-id\":\"$$IMAGE_ID\"}}}}}"; \
+	  kubectl --context $(CTX) -n sut patch deploy/gitops-reverser --type=json \
+	    -p '[{"op":"replace","path":"/spec/template/spec/containers/0/imagePullPolicy","value":"IfNotPresent"}]'; \
 	fi
 	kubectl --context $(CTX) -n sut rollout status deploy/gitops-reverser --timeout=180s
 	touch $@
 
-
-.PHONY: $(CS)/portforward.running
 $(CS)/portforward.running: $(CS)/gitea.installed $(CS)/prometheus.installed
 	mkdir -p $(CS)
 	E2E_KUBECONTEXT=$(CTX) bash test/e2e/scripts/setup-port-forwards.sh
 	touch $@
 
-$(CS)/e2e.passed: install $(CS)/controller.deployed $(CS)/portforward.running $(CS)/age-key.applied $(shell find test/e2e -name '*.go')
+.PHONY: portforward-ensure
+portforward-ensure: $(CS)/gitea.installed $(CS)/prometheus.installed ## Ensure port-forwards are running (always checks)
+	mkdir -p $(CS)
+	E2E_KUBECONTEXT=$(CTX) bash test/e2e/scripts/setup-port-forwards.sh
+
+$(CS)/e2e.passed: $(CS)/$(NAMESPACE)/e2e/prepare $(shell find test/e2e -name '*.go')
 	mkdir -p $(CS)
 	kubectl --context $(CTX) delete crd icecreamorders.shop.example.com --ignore-not-found=true
-	KIND_CLUSTER=$(CLUSTER_FROM_CTX) PROJECT_IMAGE=$(E2E_IMAGE) \
+	CTX=$(CTX) KIND_CLUSTER=$(CLUSTER_FROM_CTX) \
 	  E2E_AGE_KEY_FILE=$(CS)/age-key.txt \
 	  go test ./test/e2e/ -v -ginkgo.v
 	touch $@
 
-# INSTALL_MODE controls installation workflow: helm|plain-manifests-file|config-dir
-INSTALL_MODE ?= config-dir
-INSTALL_NAME ?= gitops-reverser
-NAMESPACE ?= gitops-reverser
+# INSTALL_MODE, INSTALL_NAME, NAMESPACE defaults are defined near the E2E variables section above.
 INSTALL_LOCK := $(CS)/$(NAMESPACE)/install.method
 VALID_INSTALL_MODES := config-dir helm plain-manifests-file
 ifeq (,$(filter $(INSTALL_MODE),$(VALID_INSTALL_MODES)))
@@ -412,7 +434,7 @@ $(CS)/$(NAMESPACE)/install-config-dir: $(MANIFEST_OUTPUTS) $(CS)/cert-manager.in
 	@set -euo pipefail; \
 	$(ASSERT_INSTALL_METHOD)
 	(cd config && $(KUSTOMIZE) edit set image gitops-reverser=${IMG})
-	(cd config && $(KUSTOMIZE) build .) | $(KUBECTL) apply -f -
+	(cd config && $(KUSTOMIZE) build .) | $(KUBECTL) --context $(CTX) apply -f -
 	touch $@
 
 $(CS)/$(NAMESPACE)/install-plain-manifests-file: INSTALL_MODE := plain-manifests-file
@@ -449,7 +471,7 @@ test-e2e-quickstart-manifest: ## Run quickstart smoke test (manifest install) - 
 	  .stamps/cluster/$(KUBECONTEXT_QS_MANIFEST)/cert-manager.installed \
 	  .stamps/cluster/$(KUBECONTEXT_QS_MANIFEST)/gitea.installed
 	@if [ -z "$(PROJECT_IMAGE)" ]; then \
-	  $(MAKE) build-plain-manifests-installer; \
+	  $(MAKE) dist/install.yaml; \
 	  $(MAKE) CTX=$(KUBECONTEXT_QS_MANIFEST) \
 	    .stamps/cluster/$(KUBECONTEXT_QS_MANIFEST)/image.loaded; \
 	fi
