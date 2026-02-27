@@ -80,6 +80,17 @@ func ensureE2EPrepared() {
 	Expect(err).NotTo(HaveOccurred(), "failed to set kubectl context for e2e run")
 	_, _ = fmt.Fprintf(GinkgoWriter, "%s", output)
 
+	By("ensuring IceCreamOrder CRD is removed before tests")
+	deleteIceCreamOrderCRD := exec.Command(
+		"kubectl",
+		"--context", ctx,
+		"delete", "crd", "icecreamorders.shop.example.com",
+		"--ignore-not-found=true",
+	)
+	output, err = utils.Run(deleteIceCreamOrderCRD)
+	Expect(err).NotTo(HaveOccurred(), "failed to delete IceCreamOrder CRD before tests")
+	_, _ = fmt.Fprintf(GinkgoWriter, "%s", output)
+
 	// The Makefile prepares the age key under the stamp directory. When running `go test` directly (without
 	// `make test-e2e`), ensure the suite uses that prepared key file.
 	if strings.TrimSpace(os.Getenv("E2E_AGE_KEY_FILE")) == "" {
