@@ -59,7 +59,7 @@ var _ = AfterSuite(func() {
 func ensureE2EPrepared() {
 	ctx := resolveE2EContext()
 	seed := ginkgoRandomSeed()
-	ns := resolveE2EStampNamespace(seed)
+	ns := resolveE2ENamespace()
 	installName := resolveE2EInstallName(seed)
 	target := fmt.Sprintf(".stamps/cluster/%s/%s/e2e/prepare", ctx, ns)
 	cmd := makeCommand(
@@ -113,13 +113,6 @@ func makeCommand(args ...string) *exec.Cmd {
 
 func resolveE2EInstallName(seed int64) string {
 	if value := strings.TrimSpace(os.Getenv("INSTALL_NAME")); value != "" {
-		return value
-	}
-	return fmt.Sprintf("gitops-reverser-%d", seed)
-}
-
-func resolveE2EStampNamespace(seed int64) string {
-	if value := strings.TrimSpace(os.Getenv("NAMESPACE")); value != "" {
 		return value
 	}
 	return fmt.Sprintf("gitops-reverser-%d", seed)

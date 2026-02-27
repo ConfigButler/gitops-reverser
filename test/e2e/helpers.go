@@ -41,7 +41,7 @@ import (
 )
 
 // namespace where the project is deployed in.
-const namespace = "sut"
+var namespace = resolveE2ENamespace() //nolint:gochecknoglobals // used across e2e tests
 const metricWaitDefaultTimeout = 30 * time.Second
 const e2eEncryptionRefName = "sops-age-key"
 
@@ -175,8 +175,6 @@ func getBaseFolder() string {
 }
 
 // createGitTarget creates a GitTarget that binds a GitProvider, branch and path.
-//
-//nolint:unparam // in e2e helpers we accept constant namespace ("sut"); keep signature for clarity in template calls
 func createGitTarget(name, namespace, providerName, path, branch string) {
 	createGitTargetWithEncryptionOptions(
 		name,
@@ -225,8 +223,6 @@ func createGitTargetWithEncryptionOptions(
 }
 
 // cleanupGitTarget deletes a GitTarget resource.
-//
-//nolint:unparam // in e2e helpers we accept constant namespace ("sut"); keep signature for clarity
 func cleanupGitTarget(name, namespace string) {
 	By(fmt.Sprintf("cleaning up GitTarget '%s' in ns '%s'", name, namespace))
 	ctx := context.Background()
@@ -236,8 +232,6 @@ func cleanupGitTarget(name, namespace string) {
 }
 
 // cleanupWatchRule deletes a WatchRule resource.
-//
-//nolint:unparam // in e2e helpers we accept constant namespace ("sut"); keep signature for clarity
 func cleanupWatchRule(name, namespace string) {
 	By(fmt.Sprintf("cleaning up WatchRule '%s' in ns '%s'", name, namespace))
 	ctx := context.Background()
