@@ -109,6 +109,13 @@ Acceptance:
 
 - Quickstart smoke tests’ “real assertions” live in Go, not shell.
 
+### PR5 — Simplify image resolution + make deployment install-agnostic
+
+This refactor makes `PROJECT_IMAGE` the single source of truth and turns `$(CS)/$(NAMESPACE)/controller.deployed`
+into a true “deployment contract” that is independent of the chosen install method.
+
+Plan: `docs/makefile-e2e-image-and-deploy-refactor-plan.md`.
+
 ## Notes / non-goals (for now)
 
 - Don’t expand the suite/install matrix until the `e2e/prepare` contract and run scoping are solid.
