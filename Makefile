@@ -372,7 +372,6 @@ portforward-ensure: $(CS)/gitea.installed $(CS)/prometheus.installed ## Ensure p
 E2E_TEST_INPUTS := $(shell find test/e2e -type f \( -name '*.go' -o -name '*.sh' -o -name '*.yaml' -o -name '*.tmpl' \))
 $(CS)/e2e.passed: $(E2E_TEST_INPUTS) Makefile
 	mkdir -p $(CS)
-	kubectl --context $(CTX) delete crd icecreamorders.shop.example.com --ignore-not-found=true
 	CTX=$(CTX) KIND_CLUSTER=$(CLUSTER_FROM_CTX) \
 	  E2E_AGE_KEY_FILE=$(CS)/age-key.txt \
 	  go test ./test/e2e/ -v -ginkgo.v
