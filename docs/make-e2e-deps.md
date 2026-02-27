@@ -83,24 +83,25 @@ make CTX=kind-my-other-cluster .stamps/cluster/kind-my-other-cluster/cert-manage
 ```
 make test-e2e  (phony)
   └─ $(CS)/e2e.passed
-       ├─ test/e2e/**/*.go                  (any test change reruns tests)
-       └─ $(CS)/portforward.running
-            ├─ $(CS)/controller.deployed
-            │    ├─ $(CS)/crds.applied
-            │    │    └─ $(CS)/ready
-            │    │         └─ test/e2e/kind/start-cluster.sh
-            │    │            test/e2e/kind/cluster-template.yaml
-            │    ├─ $(CS)/cert-manager.installed
-            │    │    └─ $(CS)/ready
-            │    ├─ $(CS)/prometheus.installed
-            │    │    └─ $(CS)/ready
-            │    ├─ $(IS)/controller.id
-            │    │    └─ cmd/**/*.go  internal/**/*.go  go.mod  go.sum  Dockerfile
-            │    └─ config/**  (excluding config/crd/*)
-            ├─ $(CS)/gitea.installed
-            │    └─ $(CS)/ready
-            └─ $(CS)/prometheus.installed
+       ├─ test/e2e/**                        (any test change reruns tests)
+       └─ go test ./test/e2e
+            └─ BeforeSuite calls Make:
+                 make CTX=<ctx> INSTALL_NAME=<seeded> NAMESPACE=<seeded> \
+                   $(CS)/$(NAMESPACE)/e2e/prepare portforward-ensure
+
+$(CS)/$(NAMESPACE)/e2e/prepare (stamp)
+  ├─ $(CS)/sut.namespace.cleaned
+  ├─ $(CS)/controller.deployed
+  ├─ $(CS)/portforward.running
+  └─ $(CS)/age-key.applied
 ```
+
+Notes:
+
+- The Makefile stays seed-agnostic. The Go suite derives seed-suffixed `INSTALL_NAME` and `NAMESPACE` and passes
+  them into Make so install-time cluster-scoped names can be unique per run.
+- `portforward-ensure` always runs a health check + (re)starts port-forwards as needed for the current test
+  process. The stamp target `$(CS)/portforward.running` is still used as a cached gate for other Make targets.
 
 What this buys you in practice:
 
