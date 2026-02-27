@@ -145,9 +145,9 @@ Acceptance:
 ### PR5c — Align quickstart smoke harness with the new contract
 
 - Make quickstart Make targets perform install via `install-$(mode)` + `controller.deployed` (instead of patching in
-  `run-quickstart.sh`).
-- Remove or simplify the `PROJECT_IMAGE` override logic in `test/e2e/scripts/run-quickstart.sh` (it should no longer
-  need to know deployment names or how the install happened).
+  a shell harness).
+- Keep quickstart smoke assertions in Go (the `quickstart-framework` E2E spec) so install method changes don't require
+  shell logic updates.
 
 Acceptance:
 

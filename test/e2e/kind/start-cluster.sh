@@ -22,7 +22,15 @@ is_known_kind_bootstrap_flake() {
 
 run_dood_self_heal() {
     local control_plane_container="${CLUSTER_NAME}-control-plane"
-    docker inspect "$control_plane_container" >/dev/null 2>&1 || return 1
+    local container_found=false
+    for _ in $(seq 1 30); do
+        if docker inspect "$control_plane_container" >/dev/null 2>&1; then
+            container_found=true
+            break
+        fi
+        sleep 1
+    done
+    [ "$container_found" = "true" ] || return 1
 
     local ready=false
     for _ in $(seq 1 120); do
@@ -83,12 +91,20 @@ else
     echo "🚀 Creating Kind cluster '$CLUSTER_NAME' with audit webhook support..."
     if create_primary_cluster; then
         echo "✅ Kind cluster created successfully"
-    elif is_known_kind_bootstrap_flake && run_dood_self_heal; then
-        echo "✅ Kind cluster self-healed successfully"
     else
-        echo "❌ Kind cluster creation failed."
-        echo "📄 See log: $KIND_CREATE_LOG_FILE"
-        exit 1
+        if is_known_kind_bootstrap_flake; then
+            echo "⚠️ Kind bootstrap flake detected; attempting self-heal"
+        else
+            echo "⚠️ Kind cluster creation failed; attempting self-heal"
+        fi
+
+        if run_dood_self_heal; then
+            echo "✅ Kind cluster self-healed successfully"
+        else
+            echo "❌ Kind cluster creation failed."
+            echo "📄 See log: $KIND_CREATE_LOG_FILE"
+            exit 1
+        fi
     fi
 fi
 

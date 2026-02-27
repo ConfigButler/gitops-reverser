@@ -4,6 +4,7 @@ metadata:
   labels:
     app.kubernetes.io/managed-by: kustomize
     app.kubernetes.io/name: gitops-reverser
+    app.kubernetes.io/part-of: gitops-reverser
     control-plane: gitops-reverser
   name: gitops-reverser
   namespace: sut

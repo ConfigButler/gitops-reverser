@@ -102,8 +102,8 @@ Acceptance:
 
 ### PR4 — Reduce shell quickstart assertions (Go parity)
 
-- Port `run-quickstart.sh` assertions into Go (commit progression, encryption checks, invalid-credential status).
-- Keep the shell script as a thin bootstrap wrapper or retire it once parity is reached.
+- (Done) Port quickstart smoke assertions into Go (commit progression, encryption checks, invalid-credential status).
+- (Done) Retire the shell quickstart harness once parity is reached.
 
 Acceptance:
 
