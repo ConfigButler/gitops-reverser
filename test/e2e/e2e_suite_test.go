@@ -61,13 +61,11 @@ func ensureE2EPrepared() {
 	seed := ginkgoRandomSeed()
 	ns := resolveE2ENamespace()
 	installName := resolveE2EInstallName(seed)
-	target := fmt.Sprintf(".stamps/cluster/%s/%s/e2e/prepare", ctx, ns)
 	cmd := makeCommand(
 		fmt.Sprintf("CTX=%s", ctx),
 		fmt.Sprintf("INSTALL_NAME=%s", installName),
 		fmt.Sprintf("NAMESPACE=%s", ns),
-		target,
-		"portforward-ensure",
+		"e2e-prepare",
 	)
 	output, err := utils.Run(cmd)
 	Expect(err).NotTo(HaveOccurred(), "failed to run make target for e2e prepare")

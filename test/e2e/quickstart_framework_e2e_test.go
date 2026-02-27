@@ -40,17 +40,16 @@ const (
 )
 
 type quickstartFrameworkRun struct {
-	mode             string
-	installNamespace string
-	testID           string
-	repoName         string
-	checkoutDir      string
-	repoURL          string
-	providerName     string
-	targetName       string
-	watchRuleName    string
-	invalidProvName  string
-	encryptionName   string
+	mode            string
+	testID          string
+	repoName        string
+	checkoutDir     string
+	repoURL         string
+	providerName    string
+	targetName      string
+	watchRuleName   string
+	invalidProvName string
+	encryptionName  string
 }
 
 var _ = Describe("Quickstart Framework", Label("quickstart-framework"), Ordered, func() {
@@ -68,18 +67,14 @@ var _ = Describe("Quickstart Framework", Label("quickstart-framework"), Ordered,
 	})
 
 	It("sets up quickstart flow via Go framework", func() {
-		By("resetting install state for clean quickstart framework execution")
-		run.resetInstallState()
-
-		By(fmt.Sprintf("installing controller for quickstart mode %q", run.mode))
-		run.installController()
-		run.waitForControllerRollout()
-
 		By("creating dedicated Gitea repository and bootstrap credentials")
 		run.setupGiteaRepository()
 
 		By("applying quickstart resources from Go")
 		run.applyQuickstartResources()
+
+		By("verifying quickstart resources become Ready")
+		run.verifyQuickstartResourcesReady()
 	})
 
 })
@@ -113,84 +108,17 @@ func newQuickstartFrameworkRun() quickstartFrameworkRun {
 	checkoutDir := filepath.Join("/tmp/gitops-reverser", repoName)
 
 	return quickstartFrameworkRun{
-		mode:             mode,
-		installNamespace: quickstartInstallerNamespace(),
-		testID:           testID,
-		repoName:         repoName,
-		checkoutDir:      checkoutDir,
-		repoURL:          fmt.Sprintf("http://gitea-http.gitea-e2e.svc.cluster.local:13000/testorg/%s.git", repoName),
-		providerName:     fmt.Sprintf("quickstart-provider-%s", testID),
-		targetName:       fmt.Sprintf("quickstart-target-%s", testID),
-		watchRuleName:    fmt.Sprintf("quickstart-watchrule-%s", testID),
-		invalidProvName:  fmt.Sprintf("quickstart-invalid-provider-%s", testID),
-		encryptionName:   fmt.Sprintf("quickstart-sops-age-key-%s", testID),
+		mode:            mode,
+		testID:          testID,
+		repoName:        repoName,
+		checkoutDir:     checkoutDir,
+		repoURL:         fmt.Sprintf("http://gitea-http.gitea-e2e.svc.cluster.local:13000/testorg/%s.git", repoName),
+		providerName:    fmt.Sprintf("quickstart-provider-%s", testID),
+		targetName:      fmt.Sprintf("quickstart-target-%s", testID),
+		watchRuleName:   fmt.Sprintf("quickstart-watchrule-%s", testID),
+		invalidProvName: fmt.Sprintf("quickstart-invalid-provider-%s", testID),
+		encryptionName:  fmt.Sprintf("quickstart-sops-age-key-%s", testID),
 	}
-}
-
-func (r *quickstartFrameworkRun) resetInstallState() {
-	deleteClusterScopeObjects := [][]string{
-		{
-			"delete", "clusterrole",
-			"gitops-reverser",
-			"gitops-reverser-manager-role",
-			"gitops-reverser-metrics-reader",
-			"gitops-reverser-proxy-role",
-			"--ignore-not-found=true",
-		},
-		{
-			"delete", "clusterrolebinding",
-			"gitops-reverser",
-			"gitops-reverser-manager-rolebinding",
-			"gitops-reverser-proxy-rolebinding",
-			"--ignore-not-found=true",
-		},
-		{"delete", "validatingwebhookconfiguration", "gitops-reverser-validating-webhook-configuration",
-			"--ignore-not-found=true"},
-	}
-
-	for _, args := range deleteClusterScopeObjects {
-		cmd := exec.Command("kubectl", args...)
-		_, _ = utils.Run(cmd)
-	}
-
-	deleteNamespace := exec.Command(
-		"kubectl", "delete", "namespace", r.installNamespace, "--wait=true", "--ignore-not-found=true",
-	)
-	_, _ = utils.Run(deleteNamespace)
-}
-
-func (r *quickstartFrameworkRun) installController() {
-	cmd := r.installCommand(r.mode)
-	output, err := utils.Run(cmd)
-	Expect(err).NotTo(HaveOccurred(), fmt.Sprintf("failed to install %s controller via make install", r.mode))
-	_, _ = fmt.Fprintf(GinkgoWriter, "%s", output)
-}
-
-func (r *quickstartFrameworkRun) installCommand(mode string) *exec.Cmd {
-	ctx := resolveE2EContext()
-	args := []string{
-		fmt.Sprintf("CTX=%s", ctx),
-		"install",
-		fmt.Sprintf("INSTALL_MODE=%s", mode),
-		fmt.Sprintf("NAMESPACE=%s", r.installNamespace),
-		fmt.Sprintf("INSTALL_NAMESPACE=%s", r.installNamespace),
-		fmt.Sprintf("INSTALL_NAME=%s", r.installNamespace),
-	}
-	return makeCommand(args...)
-}
-
-func (r *quickstartFrameworkRun) waitForControllerRollout() {
-	rolloutCmd := exec.Command(
-		"kubectl", "-n", r.installNamespace, "rollout", "status",
-		"deployment/gitops-reverser", "--timeout=120s",
-	)
-	_, err := utils.Run(rolloutCmd)
-	Expect(err).NotTo(HaveOccurred(), "controller rollout did not complete")
-}
-
-func quickstartInstallerNamespace() string {
-	suiteConfig, _ := GinkgoConfiguration()
-	return fmt.Sprintf("run-%d", suiteConfig.RandomSeed)
 }
 
 func (r *quickstartFrameworkRun) setupGiteaRepository() {
@@ -227,6 +155,13 @@ func (r *quickstartFrameworkRun) applyQuickstartResources() {
 	Expect(err).NotTo(HaveOccurred(), "failed to apply quickstart watchrule")
 
 	createGitProviderWithURL(r.invalidProvName, "main", "git-creds-invalid", r.repoURL)
+}
+
+func (r *quickstartFrameworkRun) verifyQuickstartResourcesReady() {
+	ns := quickstartSetupNamespace()
+	verifyResourceStatus("gitprovider", r.providerName, ns, "True", "Ready", "")
+	verifyResourceStatus("gittarget", r.targetName, ns, "True", "Ready", "")
+	verifyResourceStatus("watchrule", r.watchRuleName, ns, "True", "Ready", "")
 }
 
 func quickstartSetupNamespace() string {
