@@ -141,26 +141,25 @@ cleanup-e2e-clusters: ## Tear down all E2E Kind clusters and their stamps
 		rm -rf .stamps/cluster/kind-$$cluster; \
 	done
 
-cleanup-namespace-sut: $(CS)/sut.namespace.ready
-	kubectl --context $(CTX) delete validatingwebhookconfiguration \
-		gitops-reverser-validating-webhook-configuration --ignore-not-found=true
-
-$(CS)/sut.namespace.cleaned: $(CS)/sut.namespace.ready
+$(CS)/$(NAMESPACE)/namespace.cleaned: Makefile $(CS)/$(NAMESPACE)/namespace.ready
+	kubectl --context $(CTX) delete svc --all-namespaces -l app.kubernetes.io/name=gitops-reverser --ignore-not-found=true
 	kubectl --context $(CTX) delete validatingwebhookconfiguration \
 		gitops-reverser-validating-webhook-configuration --ignore-not-found=true
 	touch $@
 
-$(CS)/sut.namespace.ready: $(CS)/ready config/namespace.yaml
-	mkdir -p $(CS)
-	kubectl --context $(CTX) apply -f config/namespace.yaml
-	kubectl --context $(CTX) label --overwrite ns sut pod-security.kubernetes.io/enforce=restricted
+$(CS)/$(NAMESPACE)/namespace.ready: Makefile $(CS)/ready
+	mkdir -p $(@D)
+	kubectl --context $(CTX) create namespace $(NAMESPACE) --dry-run=client -o yaml | kubectl --context $(CTX) apply -f -
+	kubectl --context $(CTX) label --overwrite ns $(NAMESPACE) \
+		app.kubernetes.io/managed-by=kustomize app.kubernetes.io/name=gitops-reverser control-plane=gitops-reverser \
+		pod-security.kubernetes.io/enforce=restricted
 	touch $@
 
 # Called by the full e2e suite.
 # For now: clean the sut namespace, recreate it, run the installer, and deploy the controller image.
 # Prefer depending on stamps; this target must not invoke Go e2e tests (Go calls this target).
-$(CS)/$(NAMESPACE)/e2e/prepare: $(CS)/sut.namespace.cleaned $(CS)/controller.deployed $(CS)/portforward.running \
-	$(CS)/age-key.applied
+$(CS)/$(NAMESPACE)/e2e/prepare: $(CS)/$(NAMESPACE)/namespace.cleaned $(CS)/$(NAMESPACE)/controller.deployed \
+	$(CS)/portforward.running $(CS)/$(NAMESPACE)/age-key.applied
 	mkdir -p $(@D)
 	touch $@
 
@@ -265,7 +264,7 @@ $(CS)/ready: test/e2e/kind/start-cluster.sh test/e2e/kind/cluster-template.yaml
 	kubectl --context $(CTX) get ns >/dev/null
 	touch $@
 
-CERT_MANAGER_WAIT_TIMEOUT ?= 600s
+CERT_MANAGER_WAIT_TIMEOUT ?= 300s
 CERT_MANAGER_VERSION ?= v1.19.4
 CERT_MANAGER_MANIFEST_URL ?= https://github.com/cert-manager/cert-manager/releases/download/$(CERT_MANAGER_VERSION)/cert-manager.yaml
 $(CS)/cert-manager.installed: $(CS)/ready
@@ -274,7 +273,7 @@ $(CS)/cert-manager.installed: $(CS)/ready
 	kubectl --context $(CTX) -n cert-manager rollout status deploy/cert-manager --timeout=$(CERT_MANAGER_WAIT_TIMEOUT)
 	kubectl --context $(CTX) -n cert-manager rollout status deploy/cert-manager-webhook --timeout=$(CERT_MANAGER_WAIT_TIMEOUT)
 	kubectl --context $(CTX) -n cert-manager rollout status deploy/cert-manager-cainjector --timeout=$(CERT_MANAGER_WAIT_TIMEOUT)
-	touch $@
+	$(CERT_MANAGER_VERSION) > $@
 
 $(CS)/gitea.installed: $(CS)/ready test/e2e/gitea-values.yaml
 	mkdir -p $(CS)
@@ -302,12 +301,12 @@ $(CS)/prometheus.installed: $(CS)/ready test/e2e/scripts/ensure-prometheus-opera
 	kubectl --context $(CTX) wait --for=condition=ready pod -l prometheus=prometheus-shared-e2e -n prometheus-operator --timeout=180s
 	touch $@
 
-$(CS)/age-key.applied: $(CS)/sut.namespace.ready test/e2e/tools/gen-age-key/main.go
-	mkdir -p $(CS)
+$(CS)/$(NAMESPACE)/age-key.applied: Makefile $(CS)/$(NAMESPACE)/namespace.ready test/e2e/tools/gen-age-key/main.go
+	mkdir -p $(@D)
 	go run ./test/e2e/tools/gen-age-key \
 	  --key-file $(CS)/age-key.txt \
 	  --secret-file $(CS)/age-key-secret.yaml \
-	  --namespace sut \
+	  --namespace $(NAMESPACE) \
 	  --secret-name sops-age-key
 	kubectl --context $(CTX) apply -f $(CS)/age-key-secret.yaml
 	touch $@
@@ -335,28 +334,29 @@ $(CS)/image.loaded: $(IS)/controller.id $(CS)/ready
 # When PROJECT_IMAGE is set (CI), skip the local image build stamp.
 ifeq ($(PROJECT_IMAGE),)
 DEPLOY_INPUTS := $(CS)/$(NAMESPACE)/install-$(INSTALL_MODE) \
-                 $(CS)/sut.namespace.ready \
+                 $(CS)/$(NAMESPACE)/namespace.ready \
                  $(IS)/controller.id \
                  $(shell find config -type f -not -path 'config/crd/*')
 else
 DEPLOY_INPUTS := $(CS)/$(NAMESPACE)/install-$(INSTALL_MODE) \
-                 $(CS)/sut.namespace.ready \
+                 $(CS)/$(NAMESPACE)/namespace.ready \
                  $(shell find config -type f -not -path 'config/crd/*')
 endif
-$(CS)/controller.deployed: $(DEPLOY_INPUTS)
-	mkdir -p $(CS)
+$(CS)/$(NAMESPACE)/controller.deployed: Makefile $(DEPLOY_INPUTS)
+	mkdir -p $(@D)
 	@[ -z "$(PROJECT_IMAGE)" ] || $(CONTAINER_TOOL) pull $(E2E_IMAGE)
 	$(KIND) load docker-image $(E2E_IMAGE) --name $(CLUSTER_FROM_CTX)	
+	cd config && $(KUSTOMIZE) edit set namespace $(NAMESPACE)
 	cd config && $(KUSTOMIZE) edit set image gitops-reverser=$(E2E_IMAGE)
 	$(KUSTOMIZE) build config | kubectl --context $(CTX) apply -f -
 	@if [ -z "$(PROJECT_IMAGE)" ]; then \
 	  IMAGE_ID="$$(cat $(IS)/controller.id)"; \
-	  kubectl --context $(CTX) -n sut patch deploy/gitops-reverser --type=merge \
+	  kubectl --context $(CTX) -n $(NAMESPACE) patch deploy/gitops-reverser --type=merge \
 	    -p "{\"spec\":{\"template\":{\"metadata\":{\"annotations\":{\"configbutler.ai/e2e-image-id\":\"$$IMAGE_ID\"}}}}}"; \
-	  kubectl --context $(CTX) -n sut patch deploy/gitops-reverser --type=json \
+	  kubectl --context $(CTX) -n $(NAMESPACE) patch deploy/gitops-reverser --type=json \
 	    -p '[{"op":"replace","path":"/spec/template/spec/containers/0/imagePullPolicy","value":"IfNotPresent"}]'; \
 	fi
-	kubectl --context $(CTX) -n sut rollout status deploy/gitops-reverser --timeout=180s
+	kubectl --context $(CTX) -n $(NAMESPACE) rollout status deploy/gitops-reverser --timeout=180s
 	touch $@
 
 $(CS)/portforward.running: $(CS)/gitea.installed $(CS)/prometheus.installed
@@ -372,7 +372,7 @@ portforward-ensure: $(CS)/gitea.installed $(CS)/prometheus.installed ## Ensure p
 E2E_TEST_INPUTS := $(shell find test/e2e -type f \( -name '*.go' -o -name '*.sh' -o -name '*.yaml' -o -name '*.tmpl' \))
 $(CS)/e2e.passed: $(E2E_TEST_INPUTS) Makefile
 	mkdir -p $(CS)
-	CTX=$(CTX) KIND_CLUSTER=$(CLUSTER_FROM_CTX) \
+	CTX=$(CTX) KIND_CLUSTER=$(CLUSTER_FROM_CTX) NAMESPACE=$(NAMESPACE) \
 	  E2E_AGE_KEY_FILE=$(CS)/age-key.txt \
 	  go test ./test/e2e/ -v -ginkgo.v
 	touch $@
@@ -430,9 +430,11 @@ $(CS)/$(NAMESPACE)/install-helm: $(HELM_SYNC_OUTPUTS) $(CS)/cert-manager.install
 	touch $@
 
 $(CS)/$(NAMESPACE)/install-config-dir: INSTALL_MODE := config-dir
-$(CS)/$(NAMESPACE)/install-config-dir: $(MANIFEST_OUTPUTS) $(CS)/cert-manager.installed $(CS)/prometheus.installed ## Deploy controller to the K8s cluster specified in ~/.kube/config.
+$(CS)/$(NAMESPACE)/install-config-dir: $(MANIFEST_OUTPUTS) $(CS)/cert-manager.installed $(CS)/prometheus.installed \
+	$(CS)/$(NAMESPACE)/namespace.ready ## Deploy controller to the K8s cluster specified in ~/.kube/config.
 	@set -euo pipefail; \
 	$(ASSERT_INSTALL_METHOD)
+	(cd config && $(KUSTOMIZE) edit set namespace "$(NAMESPACE)")
 	(cd config && $(KUSTOMIZE) edit set image gitops-reverser=${IMG})
 	(cd config && $(KUSTOMIZE) build .) | $(KUBECTL) --context $(CTX) apply -f -
 	touch $@
@@ -485,10 +487,3 @@ cleanup-port-forwards: ## Stop all port-forwards
 	@-pkill -f "kubectl.*port-forward.*13000" 2>/dev/null || true
 	@-pkill -f "kubectl.*port-forward.*19090" 2>/dev/null || true
 	@echo "✅ Port-forwards stopped"
-
-.PHONY: cleanup-gitea-e2e
-cleanup-gitea-e2e: cleanup-port-forwards ## Clean up Gitea e2e environment
-	@echo "🧹 Cleaning up Gitea e2e environment..."
-	@$(HELM) uninstall gitea --namespace $(GITEA_NAMESPACE) 2>/dev/null || true
-	@$(KUBECTL) delete namespace $(GITEA_NAMESPACE) 2>/dev/null || true
-	@echo "✅ Gitea cleanup completed"

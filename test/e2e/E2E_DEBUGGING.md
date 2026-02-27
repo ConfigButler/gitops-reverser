@@ -77,7 +77,7 @@ Kind Cluster
     │  └─ Prometheus Operator + Prometheus (scrapes metrics via ServiceMonitor)
     ├─ gitea-e2e namespace
     │  └─ Gitea (Git server)
-    └─ sut namespace (System Under Test)
+    └─ controller namespace (System Under Test; set via `NAMESPACE`)
        └─ Controller pods (2 replicas, HTTPS metrics)
 ```
 
@@ -101,7 +101,7 @@ Kind Cluster
 
 4. **View controller logs:**
    ```bash
-   kubectl logs -n sut -l control-plane=gitops-reverser --tail=100
+   kubectl logs -n "${NAMESPACE}" -l control-plane=gitops-reverser --tail=100
    ```
 
 5. **Check Prometheus scrape status:**

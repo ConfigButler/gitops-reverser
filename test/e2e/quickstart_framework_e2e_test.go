@@ -36,7 +36,7 @@ import (
 const (
 	quickstartFrameworkEnabledEnv = "E2E_ENABLE_QUICKSTART_FRAMEWORK"
 	quickstartFrameworkModeEnv    = "E2E_QUICKSTART_MODE"
-	quickstartSetupNamespace      = "sut"
+	quickstartSetupNamespaceEnv   = "QUICKSTART_NAMESPACE"
 )
 
 type quickstartFrameworkRun struct {
@@ -195,6 +195,7 @@ func quickstartInstallerNamespace() string {
 
 func (r *quickstartFrameworkRun) setupGiteaRepository() {
 	cmd := exec.Command("bash", "test/e2e/scripts/setup-gitea.sh", r.repoName, r.checkoutDir)
+	cmd.Env = append(os.Environ(), fmt.Sprintf("SUT_NAMESPACE=%s", quickstartSetupNamespace()))
 	_, err := utils.Run(cmd)
 	Expect(err).NotTo(HaveOccurred(), "failed to bootstrap gitea repository for quickstart")
 }
@@ -204,7 +205,7 @@ func (r *quickstartFrameworkRun) applyQuickstartResources() {
 
 	createGitTargetWithEncryptionOptions(
 		r.targetName,
-		quickstartSetupNamespace,
+		quickstartSetupNamespace(),
 		r.providerName,
 		"live-cluster",
 		"main",
@@ -218,12 +219,22 @@ func (r *quickstartFrameworkRun) applyQuickstartResources() {
 		DestinationName string
 	}{
 		Name:            r.watchRuleName,
-		Namespace:       quickstartSetupNamespace,
+		Namespace:       quickstartSetupNamespace(),
 		DestinationName: r.targetName,
 	}
 
-	err := applyFromTemplate("test/e2e/templates/watchrule.tmpl", watchRuleData, quickstartSetupNamespace)
+	err := applyFromTemplate("test/e2e/templates/watchrule.tmpl", watchRuleData, quickstartSetupNamespace())
 	Expect(err).NotTo(HaveOccurred(), "failed to apply quickstart watchrule")
 
 	createGitProviderWithURL(r.invalidProvName, "main", "git-creds-invalid", r.repoURL)
+}
+
+func quickstartSetupNamespace() string {
+	if value := strings.TrimSpace(os.Getenv(quickstartSetupNamespaceEnv)); value != "" {
+		return value
+	}
+	if value := strings.TrimSpace(os.Getenv("SUT_NAMESPACE")); value != "" {
+		return value
+	}
+	return "sut"
 }

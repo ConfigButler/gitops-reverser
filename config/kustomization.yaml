@@ -12,3 +12,50 @@ images:
 - name: gitops-reverser
   newName: gitops-reverser
   newTag: e2e-local
+replacements:
+- source:
+    fieldPath: metadata.namespace
+    kind: ServiceAccount
+    name: gitops-reverser
+  targets:
+  - fieldPaths:
+    - metadata.name
+    select:
+      kind: Namespace
+      name: sut
+  - fieldPaths:
+    - subjects.0.namespace
+    select:
+      kind: ClusterRoleBinding
+      name: gitops-reverser
+  - fieldPaths:
+    - webhooks.0.clientConfig.service.namespace
+    select:
+      kind: ValidatingWebhookConfiguration
+      name: gitops-reverser-validating-webhook-configuration
+  - fieldPaths:
+    - metadata.annotations.[cert-manager.io/inject-ca-from]
+    options:
+      delimiter: /
+    select:
+      kind: ValidatingWebhookConfiguration
+      name: gitops-reverser-validating-webhook-configuration
+  - fieldPaths:
+    - spec.dnsNames.0
+    - spec.dnsNames.1
+    options:
+      delimiter: .
+      index: 1
+    select:
+      kind: Certificate
+      name: gitops-reverser-admission-server-cert
+  - fieldPaths:
+    - spec.dnsNames.0
+    - spec.dnsNames.1
+    options:
+      delimiter: .
+      index: 1
+    select:
+      kind: Certificate
+      name: gitops-reverser-audit-server-cert
+namespace: gitops-reverser

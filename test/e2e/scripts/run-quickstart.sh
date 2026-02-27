@@ -2,8 +2,8 @@
 set -euo pipefail
 
 MODE="${1:-}"
-NAMESPACE="gitops-reverser"
-QUICKSTART_NAMESPACE="sut"
+NAMESPACE="${NAMESPACE:-gitops-reverser}"
+QUICKSTART_NAMESPACE="${QUICKSTART_NAMESPACE:-sut}"
 HELM_CHART_SOURCE="${HELM_CHART_SOURCE:-charts/gitops-reverser}"
 WAIT_TIMEOUT="${WAIT_TIMEOUT:-60s}"
 QUICKSTART_TIMEOUT_SECONDS="${QUICKSTART_TIMEOUT_SECONDS:-180}"
@@ -416,7 +416,7 @@ run_quickstart_flow() {
   echo "Setting up quickstart repo and credentials"
   run_or_debug \
     "Creating dedicated Gitea repo for quickstart smoke (${REPO_NAME})" \
-    bash test/e2e/scripts/setup-gitea.sh "${REPO_NAME}" "${CHECKOUT_DIR}"
+    env SUT_NAMESPACE="${QUICKSTART_NAMESPACE}" bash test/e2e/scripts/setup-gitea.sh "${REPO_NAME}" "${CHECKOUT_DIR}"
 
   echo "Applying minimal GitProvider/GitTarget/WatchRule quickstart resources"
   cat <<EOF | kubectl apply -f -
