@@ -97,12 +97,14 @@ KIND_CLUSTER_QUICKSTART_MANIFEST ?= gitops-reverser-qs-manifest
 # KIND_CLUSTER is used by cleanup-cluster; defaults to the main e2e cluster.
 KIND_CLUSTER ?= $(KIND_CLUSTER_E2E)
 E2E_LOCAL_IMAGE ?= gitops-reverser:e2e-local
-# Capture whether PROJECT_IMAGE was provided (CI sets it; local runs typically don't).
-PROJECT_IMAGE_PROVIDED ?= $(strip $(PROJECT_IMAGE))
-export PROJECT_IMAGE_PROVIDED
-# PROJECT_IMAGE is the single source of truth after this point.
-PROJECT_IMAGE ?= $(E2E_LOCAL_IMAGE)
+# Normalize PROJECT_IMAGE once, then consume only normalized variables below.
+# - If PROJECT_IMAGE is explicitly provided (CI / caller), use it and skip local source-triggered build dependency.
+# - Otherwise default to E2E_LOCAL_IMAGE and treat it as local-build managed.
+PROJECT_IMAGE_INPUT := $(strip $(PROJECT_IMAGE))
+PROJECT_IMAGE := $(if $(PROJECT_IMAGE_INPUT),$(PROJECT_IMAGE_INPUT),$(E2E_LOCAL_IMAGE))
+PROJECT_IMAGE_PROVIDED := $(if $(PROJECT_IMAGE_INPUT),true,)
 export PROJECT_IMAGE
+export PROJECT_IMAGE_PROVIDED
 E2E_AGE_KEY_FILE ?= /tmp/e2e-age-key.txt
 
 # CTX: kubeconfig context for the cluster being operated on.
