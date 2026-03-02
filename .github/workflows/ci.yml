@@ -77,7 +77,7 @@ jobs:
             helm version
             golangci-lint version
             controller-gen --version
-            kind version
+            k3d version
             docker --version
             echo '✅ All CI container tools verified'
           "
@@ -123,7 +123,7 @@ jobs:
             kustomize version
             helm version
             golangci-lint version
-            kind version
+            k3d version
             docker --version
             echo '✅ All dev container tools verified'
           "
