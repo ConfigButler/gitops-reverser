@@ -42,7 +42,8 @@ func main() {
 	var secretName string
 
 	flag.StringVar(&keyFile, "key-file", "", "path to write (or read, if it already exists) age identity file")
-	flag.StringVar(&secretFile, "secret-file", "", "path to write Kubernetes Secret manifest (optional; requires --namespace and --secret-name)")
+	flag.StringVar(&secretFile, "secret-file", "",
+		"path to write Kubernetes Secret manifest (optional; requires --namespace and --secret-name)")
 	flag.StringVar(&namespace, "namespace", "", "Secret namespace (required with --secret-file)")
 	flag.StringVar(&secretName, "secret-name", "", "Secret name (required with --secret-file)")
 	flag.Parse()
@@ -54,32 +55,9 @@ func main() {
 		exitf("--namespace and --secret-name are required when --secret-file is provided")
 	}
 
-	// If the key file already exists, reuse it; otherwise generate a fresh identity.
-	var identity *age.X25519Identity
-	if _, err := os.Stat(keyFile); err == nil {
-		parsed, err := parseIdentityFile(keyFile)
-		if err != nil {
-			exitf("parse existing key file: %v", err)
-		}
-		identity = parsed
-	} else if os.IsNotExist(err) {
-		generated, err := age.GenerateX25519Identity()
-		if err != nil {
-			exitf("generate age identity: %v", err)
-		}
-		identity = generated
-
-		keyContent := fmt.Sprintf(
-			"# created: %s\n# public key: %s\n%s\n",
-			time.Now().UTC().Format(time.RFC3339),
-			identity.Recipient(),
-			identity.String(),
-		)
-		if err := writeFile(keyFile, []byte(keyContent), keyFileMode); err != nil {
-			exitf("write key file: %v", err)
-		}
-	} else {
-		exitf("stat key file: %v", err)
+	identity, err := loadOrGenerateIdentity(keyFile)
+	if err != nil {
+		exitf("%v", err)
 	}
 
 	if secretFile == "" {
@@ -99,6 +77,34 @@ stringData:
 	if err := writeFile(secretFile, []byte(secretContent), secretFileMode); err != nil {
 		exitf("write secret file: %v", err)
 	}
+}
+
+// loadOrGenerateIdentity returns the X25519Identity from keyFile if it already exists,
+// or generates a fresh one and writes it to keyFile.
+func loadOrGenerateIdentity(keyFile string) (*age.X25519Identity, error) {
+	_, statErr := os.Stat(keyFile)
+	if statErr != nil && !os.IsNotExist(statErr) {
+		return nil, fmt.Errorf("stat key file: %w", statErr)
+	}
+	if statErr == nil {
+		return parseIdentityFile(keyFile)
+	}
+
+	// File does not exist — generate a fresh identity.
+	identity, err := age.GenerateX25519Identity()
+	if err != nil {
+		return nil, fmt.Errorf("generate age identity: %w", err)
+	}
+	keyContent := fmt.Sprintf(
+		"# created: %s\n# public key: %s\n%s\n",
+		time.Now().UTC().Format(time.RFC3339),
+		identity.Recipient(),
+		identity.String(),
+	)
+	if err := writeFile(keyFile, []byte(keyContent), keyFileMode); err != nil {
+		return nil, fmt.Errorf("write key file: %w", err)
+	}
+	return identity, nil
 }
 
 // parseIdentityFile reads an age identity file, locates the AGE-SECRET-KEY line,
