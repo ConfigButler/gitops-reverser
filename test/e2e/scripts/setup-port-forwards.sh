@@ -16,8 +16,19 @@ if [[ -z "${KUBE_CONTEXT}" ]]; then
     exit 1
 fi
 
-# Fast path: keep existing healthy forwards instead of restarting.
-if curl -fsS http://localhost:13000/api/healthz >/dev/null 2>&1 && \
+has_expected_forward_processes() {
+    local gitea_pf
+    local prom_pf
+
+    gitea_pf="$(ps -ef | grep -E "kubectl( |.* )--context ${KUBE_CONTEXT}( |.* )port-forward( |.* )svc/${GITEA_SERVICE:-gitea-http}( |.* )13000:13000" | grep -v grep || true)"
+    prom_pf="$(ps -ef | grep -E "kubectl( |.* )--context ${KUBE_CONTEXT}( |.* )port-forward( |.* )svc/prometheus-operated( |.* )19090:9090" | grep -v grep || true)"
+
+    [[ -n "${gitea_pf}" && -n "${prom_pf}" ]]
+}
+
+# Fast path: keep existing healthy forwards only if they belong to this context.
+if has_expected_forward_processes && \
+   curl -fsS http://localhost:13000/api/healthz >/dev/null 2>&1 && \
    curl -fsS http://localhost:19090/-/healthy >/dev/null 2>&1; then
     echo "✅ Existing port-forwards are healthy for context ${KUBE_CONTEXT}; skipping restart"
     exit 0
@@ -25,8 +36,8 @@ fi
 
 # Cleanup old port-forwards
 echo "🧹 Cleaning up old port-forwards..."
-pkill -f "kubectl port-forward.*19090" || true
-pkill -f "kubectl port-forward.*13000" || true
+pkill -f "kubectl.*port-forward.*19090" || true
+pkill -f "kubectl.*port-forward.*13000" || true
 sleep 1
 
 echo "🔌 Setting up port-forwards for e2e testing..."
@@ -65,7 +76,7 @@ setup_port_forward() {
     local remote_port="$5"
     
     # Check if already running
-    if ps aux | grep -E "kubectl.*port-forward.*${service}.*${local_port}:${remote_port}" | grep -v grep >/dev/null 2>&1; then
+    if ps aux | grep -E "kubectl.*--context[= ]${KUBE_CONTEXT}.*port-forward.*${service}.*${local_port}:${remote_port}" | grep -v grep >/dev/null 2>&1; then
         echo "✅ ${service_name} port-forward already running"
         return 0
     fi

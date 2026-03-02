@@ -37,7 +37,7 @@ ENV KUBECTL_VERSION=v1.35.0 \
     KUBEBUILDER_VERSION=4.11.1 \
     GOLANGCI_LINT_VERSION=v2.10.1 \
     HELM_VERSION=v4.0.0 \
-    KIND_VERSION=v0.31.0
+    K3D_VERSION=v5.8.3
 
 # Install kubectl
 RUN curl -LO "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl" \
@@ -63,9 +63,9 @@ RUN curl -fsSL https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz \
 RUN curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh \
     | sh -s -- -b /usr/local/bin ${GOLANGCI_LINT_VERSION}
 
-# Install Kind (needed in CI for e2e cluster creation, and in dev for local clusters)
-RUN curl -Lo /usr/local/bin/kind "https://github.com/kubernetes-sigs/kind/releases/download/${KIND_VERSION}/kind-linux-amd64" \
-    && chmod +x /usr/local/bin/kind
+# Install k3d (faster and kind alternative, also more stable with our docker-outside-docker setup)
+RUN curl -fsSL -o /usr/local/bin/k3d "https://github.com/k3d-io/k3d/releases/download/${K3D_VERSION}/k3d-linux-amd64" \
+    && chmod +x /usr/local/bin/k3d
 
 # Set working directory
 WORKDIR /workspaces
