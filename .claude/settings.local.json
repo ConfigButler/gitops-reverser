@@ -17,7 +17,8 @@
       "Bash(grep -r \"make\\\\|Make\" /workspaces/gitops-reverser2/test/e2e/*.go)",
       "Bash(make .stamps/image/controller.id)",
       "Bash(docker version)",
-      "Bash(docker buildx version)"
+      "Bash(docker buildx version)",
+      "Bash(go build ./test/e2e/tools/gen-age-key/...)"
     ]
   }
 }
