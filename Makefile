@@ -417,7 +417,7 @@ CONFIG_DIR_INPUTS := $(shell find config -type f)
 
 ##@ Deployments of all manifests needed to run
 $(CS)/$(NAMESPACE)/install-helm: INSTALL_MODE := helm
-$(CS)/$(NAMESPACE)/install-helm: $(CS)/$(NAMESPACE)/cleanup-installs.done $(HELM_SYNC_OUTPUTS) $(CS)/cert-manager.installed $(CS)/prometheus.installed
+$(CS)/$(NAMESPACE)/install-helm: $(CLEANUP_E2E_DONE) $(HELM_SYNC_OUTPUTS) $(CS)/cert-manager.installed $(CS)/prometheus.installed
 	@set -euo pipefail; \
 	$(ASSERT_INSTALL_METHOD) \
 	helm_args=( \
@@ -437,7 +437,7 @@ $(CS)/$(NAMESPACE)/install-helm: $(CS)/$(NAMESPACE)/cleanup-installs.done $(HELM
 	touch $@
 
 $(CS)/$(NAMESPACE)/install-config-dir: INSTALL_MODE := config-dir
-$(CS)/$(NAMESPACE)/install-config-dir: $(CS)/$(NAMESPACE)/cleanup-installs.done $(MANIFEST_OUTPUTS) $(CONFIG_DIR_INPUTS) $(CS)/cert-manager.installed $(CS)/prometheus.installed
+$(CS)/$(NAMESPACE)/install-config-dir: $(CLEANUP_E2E_DONE) $(MANIFEST_OUTPUTS) $(CONFIG_DIR_INPUTS) $(CS)/cert-manager.installed $(CS)/prometheus.installed
 	@set -euo pipefail; \
 	$(ASSERT_INSTALL_METHOD) \
 	tmpdir="$$(mktemp -d)"; \
@@ -449,7 +449,7 @@ $(CS)/$(NAMESPACE)/install-config-dir: $(CS)/$(NAMESPACE)/cleanup-installs.done 
 	touch $@
 
 $(CS)/$(NAMESPACE)/install-plain-manifests-file: INSTALL_MODE := plain-manifests-file
-$(CS)/$(NAMESPACE)/install-plain-manifests-file: $(CS)/$(NAMESPACE)/cleanup-installs.done dist/install.yaml $(CS)/cert-manager.installed $(CS)/prometheus.installed ## Deploy quickstart controller via manifest into CTX cluster
+$(CS)/$(NAMESPACE)/install-plain-manifests-file: $(CLEANUP_E2E_DONE) dist/install.yaml $(CS)/cert-manager.installed $(CS)/prometheus.installed
 	@set -euo pipefail; \
 	ctx="$(CTX)"; \
 	ns="$(NAMESPACE)"; \
@@ -491,32 +491,26 @@ $(CS)/$(NAMESPACE)/label-namespace.ready: Makefile $(CS)/$(NAMESPACE)/install-$(
 		$(E2E_NAMESPACE_LABEL_KEY)=$(E2E_NAMESPACE_LABEL_VALUE) \
 		app.kubernetes.io/name=gitops-reverser control-plane=gitops-reverser \
 		pod-security.kubernetes.io/enforce=restricted
-	@echo "✅ Added e2e=true label to namespace $(NAMESPACE)"
+	@echo "✅ Added $(E2E_NAMESPACE_LABEL_KEY)=$(E2E_NAMESPACE_LABEL_VALUE) label to namespace $(NAMESPACE)"
 	touch $@
 
-# Ensure e2e cleanup runs before any per-namespace stamps are rebuilt.
-# Keep this stamp under the namespace directory so `rm -rf .stamps/cluster/<ctx>/<ns>` forces a rerun.
-# We delete all services (over all namespaces) since we only can have ONE service listening to the cluster audit webhook at the same time
-$(CS)/$(NAMESPACE)/cleanup-installs.done: Makefile $(CS)/ready
-	mkdir -p $(@D)
-	kubectl --context $(CTX) delete svc --all-namespaces -l app.kubernetes.io/name=gitops-reverser --ignore-not-found=true; \
-	kubectl --context $(CTX) delete validatingwebhookconfiguration gitops-reverser-validating-webhook-configuration --ignore-not-found=true; \
-	$(MAKE) cleanup-installs; \
-	touch $@
-
-.PHONY: cleanup-installs
-cleanup-installs: ## Delete namespaces labeled for e2e runs in CTX cluster and remove their stamps
+CLEANUP_E2E_DONE := $(CS)/$(NAMESPACE)/cleanup-e2e.$(INSTALL_MODE).done
+$(CLEANUP_E2E_DONE): Makefile $(CS)/ready
 	@set -euo pipefail; \
 	ctx="$(CTX)"; \
-	label="$(E2E_NAMESPACE_LABEL_KEY)=$(E2E_NAMESPACE_LABEL_VALUE)"; \
-	namespaces="$$(kubectl --context "$$ctx" get ns -l "$$label" -o jsonpath='{.items[*].metadata.name}')"; \
-	if [ -z "$$namespaces" ]; then \
-		echo "ℹ️ No namespaces with label '$$label' found in context '$$ctx'"; \
-		exit 0; \
+	ns_list="$$(kubectl --context "$$ctx" get ns -l $(E2E_NAMESPACE_LABEL_KEY)=$(E2E_NAMESPACE_LABEL_VALUE) -o jsonpath='{.items[*].metadata.name}' || true)"; \
+	if [ -z "$$ns_list" ]; then \
+		echo "ℹ️ No e2e=true namespaces in '$$ctx'"; \
+	else \
+		echo "🧹 Deleting $(E2E_NAMESPACE_LABEL_KEY)=$(E2E_NAMESPACE_LABEL_VALUE) namespaces in '$$ctx': $$ns_list"; \
+		kubectl --context "$$ctx" delete ns $$ns_list --ignore-not-found=true; \
+		for ns in $$ns_list; do \
+			kubectl --context "$$ctx" wait --for=delete "ns/$$ns" --timeout=300s || true; \
+			rm -rf ".stamps/cluster/$$ctx/$$ns" 2>/dev/null || true; \
+		done; \
 	fi; \
-	echo "🧹 Deleting namespaces in context '$$ctx': $$namespaces"; \
-	kubectl --context "$$ctx" delete ns $$namespaces --ignore-not-found=true; \
-	for ns in $$namespaces; do \
-		kubectl --context "$$ctx" wait --for=delete "ns/$$ns" --timeout=300s || true; \
-	done; \
-	for ns in $$namespaces; do rm -rf ".stamps/cluster/$$ctx/$$ns"; done
+	# Clear single-instance blockers (safe always)
+	kubectl --context "$$ctx" delete svc --all-namespaces -l app.kubernetes.io/name=gitops-reverser --ignore-not-found=true || true; \
+	kubectl --context "$$ctx" delete validatingwebhookconfiguration gitops-reverser-validating-webhook-configuration --ignore-not-found=true || true; \
+	mkdir -p "$(@D)"; \
+	touch "$@"
