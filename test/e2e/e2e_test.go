@@ -20,6 +20,7 @@ package e2e
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -98,8 +99,12 @@ var _ = Describe("Manager", Ordered, func() {
 		specReport := CurrentSpecReport()
 		if specReport.Failed() {
 			By("Fetching controller manager pod logs")
-			cmd := exec.Command("kubectl", "logs", controllerPodName, "-n", namespace, "--tail=200")
-			controllerLogs, err := utils.Run(cmd)
+			controllerLogs, err := kubectlRunInNamespace(
+				namespace,
+				"logs",
+				controllerPodName,
+				"--tail=200",
+			)
 			if err == nil {
 				_, _ = fmt.Fprintf(GinkgoWriter, "Last 200 lines of controller logs:\n %s", controllerLogs)
 			} else {
@@ -107,8 +112,12 @@ var _ = Describe("Manager", Ordered, func() {
 			}
 
 			By("Fetching Kubernetes events")
-			cmd = exec.Command("kubectl", "get", "events", "-n", namespace, "--sort-by=.metadata.creationTimestamp")
-			eventsOutput, err := utils.Run(cmd)
+			eventsOutput, err := kubectlRunInNamespace(
+				namespace,
+				"get",
+				"events",
+				"--sort-by=.metadata.creationTimestamp",
+			)
 			if err == nil {
 				_, _ = fmt.Fprintf(GinkgoWriter, "Kubernetes events (newest last):\n%s", eventsOutput)
 			} else {
@@ -116,8 +125,7 @@ var _ = Describe("Manager", Ordered, func() {
 			}
 
 			By("Fetching controller manager pod description")
-			cmd = exec.Command("kubectl", "describe", "pod", controllerPodName, "-n", namespace)
-			podDescription, err := utils.Run(cmd)
+			podDescription, err := kubectlRunInNamespace(namespace, "describe", "pod", controllerPodName)
 			if err == nil {
 				_, _ = fmt.Fprintf(GinkgoWriter, "Pod description:\n%s", podDescription)
 			} else {
@@ -136,16 +144,17 @@ var _ = Describe("Manager", Ordered, func() {
 			By("validating that the gitops-reverser pods are running as expected")
 			verifyControllerUp := func(g Gomega) {
 				// Get the names of the gitops-reverser pods
-				cmd := exec.Command("kubectl", "get",
-					"pods", "-l", "control-plane=gitops-reverser",
+				podOutput, err := kubectlRunInNamespace(
+					namespace,
+					"get",
+					"pods",
+					"-l",
+					"control-plane=gitops-reverser",
 					"-o", "go-template={{ range .items }}"+
 						"{{ if not .metadata.deletionTimestamp }}"+
 						"{{ .metadata.name }}"+
 						"{{ \"\\n\" }}{{ end }}{{ end }}",
-					"-n", namespace,
 				)
-
-				podOutput, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred(), "Failed to retrieve gitops-reverser pod information")
 				podNames := utils.GetNonEmptyLines(podOutput)
 				g.Expect(podNames).To(HaveLen(1), "expected exactly 1 controller pod running")
@@ -154,11 +163,14 @@ var _ = Describe("Manager", Ordered, func() {
 
 				// Validate all pods' status
 				for _, podName := range podNames {
-					cmd = exec.Command("kubectl", "get",
-						"pods", podName, "-o", "jsonpath={.status.phase}",
-						"-n", namespace,
+					output, err := kubectlRunInNamespace(
+						namespace,
+						"get",
+						"pods",
+						podName,
+						"-o",
+						"jsonpath={.status.phase}",
 					)
-					output, err := utils.Run(cmd)
 					g.Expect(err).NotTo(HaveOccurred())
 					g.Expect(output).To(Equal("Running"), fmt.Sprintf("Incorrect status for pod %s", podName))
 				}
@@ -170,10 +182,14 @@ var _ = Describe("Manager", Ordered, func() {
 			By("verifying controller service selects the running controller pod")
 			verifyWebhookService := func(g Gomega) {
 				// Get controller service endpoints
-				cmd := exec.Command("kubectl", "get", "endpoints",
-					controllerServiceName, "-n", namespace,
-					"-o", "jsonpath={.subsets[*].addresses[*].targetRef.name}")
-				output, err := utils.Run(cmd)
+				output, err := kubectlRunInNamespace(
+					namespace,
+					"get",
+					"endpoints",
+					controllerServiceName,
+					"-o",
+					"jsonpath={.subsets[*].addresses[*].targetRef.name}",
+				)
 				g.Expect(err).NotTo(HaveOccurred(), "Failed to get controller service endpoints")
 
 				// Filter out kubectl deprecation warnings from output
@@ -203,16 +219,19 @@ var _ = Describe("Manager", Ordered, func() {
 
 		It("should expose admission and audit ports on one controller service", func() {
 			By("verifying controller service exists")
-			cmd := exec.Command("kubectl", "get", "svc", controllerServiceName, "-n", namespace)
-			_, err := utils.Run(cmd)
+			_, err := kubectlRunInNamespace(namespace, "get", "svc", controllerServiceName)
 			Expect(err).NotTo(HaveOccurred(), "Controller service should exist")
 
 			By("verifying controller service routes to the controller pod")
 			Eventually(func(g Gomega) {
-				endpointsCmd := exec.Command("kubectl", "get", "endpoints",
-					controllerServiceName, "-n", namespace,
-					"-o", "jsonpath={.subsets[*].addresses[*].targetRef.name}")
-				output, endpointsErr := utils.Run(endpointsCmd)
+				output, endpointsErr := kubectlRunInNamespace(
+					namespace,
+					"get",
+					"endpoints",
+					controllerServiceName,
+					"-o",
+					"jsonpath={.subsets[*].addresses[*].targetRef.name}",
+				)
 				g.Expect(endpointsErr).NotTo(HaveOccurred(), "Failed to get controller service endpoints")
 
 				lines := utils.GetNonEmptyLines(output)
@@ -239,8 +258,7 @@ var _ = Describe("Manager", Ordered, func() {
 			verifyWebhook := func(g Gomega) {
 				jsonPath := "jsonpath={.items[?(@.metadata.name=='gitops-reverser-validating-webhook-configuration')]" +
 					".webhooks[*].name}"
-				cmd := exec.Command("kubectl", "get", "validatingwebhookconfigurations", "-o", jsonPath)
-				output, err := utils.Run(cmd)
+				output, err := kubectlRun("get", "validatingwebhookconfigurations", "-o", jsonPath)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(ContainSubstring("gitops-reverser.configbutler.ai"),
 					"Event webhook should be registered")
@@ -250,14 +268,12 @@ var _ = Describe("Manager", Ordered, func() {
 
 		It("should ensure the metrics endpoint is serving metrics", func() {
 			By("validating that the controller service is available for metrics")
-			cmd := exec.Command("kubectl", "get", "service", controllerServiceName, "-n", namespace)
-			_, err := utils.Run(cmd)
+			_, err := kubectlRunInNamespace(namespace, "get", "service", controllerServiceName)
 			Expect(err).NotTo(HaveOccurred(), "Controller service should exist")
 
 			By("waiting for the metrics endpoint to be ready")
 			verifyMetricsEndpointReady := func(g Gomega) {
-				cmd := exec.Command("kubectl", "get", "endpoints", controllerServiceName, "-n", namespace)
-				output, err := utils.Run(cmd)
+				output, err := kubectlRunInNamespace(namespace, "get", "endpoints", controllerServiceName)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(ContainSubstring("8443"), "Metrics endpoint is not ready")
 			}
@@ -265,8 +281,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 			By("verifying that the controller manager is serving the metrics server")
 			verifyMetricsServerStarted := func(g Gomega) {
-				cmd := exec.Command("kubectl", "logs", controllerPodName, "-n", namespace)
-				output, err := utils.Run(cmd)
+				output, err := kubectlRunInNamespace(namespace, "logs", controllerPodName)
 				g.Expect(err).NotTo(HaveOccurred())
 				jsonMetricsLogLine := "\"logger\":\"controller-runtime.metrics\"," +
 					"\"msg\":\"Serving metrics server\""
@@ -306,10 +321,13 @@ var _ = Describe("Manager", Ordered, func() {
 			fmt.Printf("📊 Baseline events: %.0f\n", baselineEvents)
 
 			By("creating a ConfigMap to trigger webhook call")
-			cmd := exec.Command("kubectl", "create", "configmap", "webhook-test-cm",
-				"--namespace", namespace,
-				"--from-literal=test=webhook")
-			_, err = utils.Run(cmd)
+			_, err = kubectlRunInNamespace(
+				namespace,
+				"create",
+				"configmap",
+				"webhook-test-cm",
+				"--from-literal=test=webhook",
+			)
 			Expect(err).NotTo(HaveOccurred(), "ConfigMap creation should succeed with working webhook")
 
 			By("waiting for webhook event metric to increment")
@@ -327,8 +345,13 @@ var _ = Describe("Manager", Ordered, func() {
 			fmt.Printf("📊 Inspect metrics: %s\n", getPrometheusURL())
 
 			By("cleaning up webhook test resources")
-			cmd = exec.Command("kubectl", "delete", "configmap", "webhook-test-cm", "--namespace", namespace)
-			_, _ = utils.Run(cmd)
+			_, _ = kubectlRunInNamespace(
+				namespace,
+				"delete",
+				"configmap",
+				"webhook-test-cm",
+				"--ignore-not-found=true",
+			)
 		})
 
 		It("should receive audit webhook events from kube-apiserver", func() {
@@ -343,16 +366,23 @@ var _ = Describe("Manager", Ordered, func() {
 			fmt.Printf("📊 Baseline kind-e2e audit events: %.0f\n", baselineClusterAuditEvents)
 
 			By("creating a ConfigMap to trigger audit events")
-			cmd := exec.Command("kubectl", "create", "configmap", "audit-test-cm",
-				"--namespace", namespace,
-				"--from-literal=test=audit")
-			_, err = utils.Run(cmd)
+			_, err = kubectlRunInNamespace(
+				namespace,
+				"create",
+				"configmap",
+				"audit-test-cm",
+				"--from-literal=test=audit",
+			)
 			Expect(err).NotTo(HaveOccurred(), "ConfigMap creation should succeed")
-			cmd = exec.Command("kubectl", "patch", "configmap", "audit-test-cm",
-				"--namespace", namespace,
+			_, err = kubectlRunInNamespace(
+				namespace,
+				"patch",
+				"configmap",
+				"audit-test-cm",
 				"--type=merge",
-				"--patch", `{"data":{"test":"audit-updated"}}`)
-			_, err = utils.Run(cmd)
+				"--patch",
+				`{"data":{"test":"audit-updated"}}`,
+			)
 			Expect(err).NotTo(HaveOccurred(), "ConfigMap update should succeed")
 
 			By("waiting for audit event metric to increment")
@@ -376,8 +406,13 @@ var _ = Describe("Manager", Ordered, func() {
 			fmt.Printf("📊 Total audit events: %.0f\n", currentAuditEvents)
 
 			By("cleaning up audit test resources")
-			cmd = exec.Command("kubectl", "delete", "configmap", "audit-test-cm", "--namespace", namespace)
-			_, _ = utils.Run(cmd)
+			_, _ = kubectlRunInNamespace(
+				namespace,
+				"delete",
+				"configmap",
+				"audit-test-cm",
+				"--ignore-not-found=true",
+			)
 		})
 
 		It("should validate GitProvider with real Gitea repository", func() {
@@ -431,8 +466,7 @@ var _ = Describe("Manager", Ordered, func() {
 			showControllerLogs("before SSH test")
 
 			By("📋 Checking SSH secret exists")
-			cmd := exec.Command("kubectl", "get", "secret", "git-creds-ssh", "-n", namespace, "-o", "yaml")
-			secretOutput, err := utils.Run(cmd)
+			secretOutput, err := kubectlRunInNamespace(namespace, "get", "secret", "git-creds-ssh", "-o", "yaml")
 			if err != nil {
 				fmt.Printf("❌ SSH secret not found: %v\n", err)
 			} else {
@@ -518,20 +552,28 @@ var _ = Describe("Manager", Ordered, func() {
 			verifyResourceStatus("gittarget", destName, namespace, "True", "Ready", "")
 
 			By("creating Secret in watched namespace")
-			_, _ = utils.Run(exec.Command("kubectl", "delete", "secret", secretName,
-				"-n", namespace, "--ignore-not-found=true"))
+			_, _ = kubectlRunInNamespace(namespace, "delete", "secret", secretName, "--ignore-not-found=true")
 
-			cmd := exec.Command("kubectl", "create", "secret", "generic", secretName,
-				"--from-literal=password=do-not-commit", "-n", namespace)
-			_, err = utils.Run(cmd)
+			_, err = kubectlRunInNamespace(
+				namespace,
+				"create",
+				"secret",
+				"generic",
+				secretName,
+				"--from-literal=password=do-not-commit",
+			)
 			Expect(err).NotTo(HaveOccurred(), "Secret creation should succeed")
 
 			By("patching Secret once to avoid informer start race and force an update event")
-			patchCmd := exec.Command(
-				"kubectl", "patch", "secret", secretName, "-n", namespace,
-				"--type=merge", "--patch", `{"stringData":{"password":"never-commit-this"}}`,
+			_, err = kubectlRunInNamespace(
+				namespace,
+				"patch",
+				"secret",
+				secretName,
+				"--type=merge",
+				"--patch",
+				`{"stringData":{"password":"never-commit-this"}}`,
 			)
-			_, err = utils.Run(patchCmd)
 			Expect(err).NotTo(HaveOccurred(), "Secret patch should succeed")
 
 			By("verifying Secret file is committed and does not contain plaintext data")
@@ -571,8 +613,7 @@ var _ = Describe("Manager", Ordered, func() {
 			Eventually(verifyEncryptedSecretCommitted, "30s", "2s").Should(Succeed())
 
 			By("cleaning up test resources")
-			_, _ = utils.Run(exec.Command("kubectl", "delete", "secret", secretName,
-				"-n", namespace, "--ignore-not-found=true"))
+			_, _ = kubectlRunInNamespace(namespace, "delete", "secret", secretName, "--ignore-not-found=true")
 			cleanupWatchRule(watchRuleName, namespace)
 			cleanupGitTarget(destName, namespace)
 		})
@@ -584,8 +625,13 @@ var _ = Describe("Manager", Ordered, func() {
 			generatedSecretName := "sops-age-key-autogen"
 
 			By("ensuring generated encryption secret does not exist before test")
-			_, _ = utils.Run(exec.Command("kubectl", "delete", "secret", generatedSecretName,
-				"-n", namespace, "--ignore-not-found=true"))
+			_, _ = kubectlRunInNamespace(
+				namespace,
+				"delete",
+				"secret",
+				generatedSecretName,
+				"--ignore-not-found=true",
+			)
 
 			By("creating GitTarget with age recipient auto-generation enabled")
 			destName := watchRuleName + "-dest"
@@ -617,8 +663,14 @@ var _ = Describe("Manager", Ordered, func() {
 			var generatedAgeKey string
 			var generatedRecipient string
 			Eventually(func(g Gomega) {
-				cmd := exec.Command("kubectl", "get", "secret", generatedSecretName, "-n", namespace, "-o", "json")
-				output, getErr := utils.Run(cmd)
+				output, getErr := kubectlRunInNamespace(
+					namespace,
+					"get",
+					"secret",
+					generatedSecretName,
+					"-o",
+					"json",
+				)
 				g.Expect(getErr).NotTo(HaveOccurred())
 
 				var secretObj map[string]interface{}
@@ -668,19 +720,27 @@ var _ = Describe("Manager", Ordered, func() {
 			}, "30s", "2s").Should(Succeed())
 
 			By("creating Secret in watched namespace")
-			_, _ = utils.Run(exec.Command("kubectl", "delete", "secret", secretName,
-				"-n", namespace, "--ignore-not-found=true"))
-			cmd := exec.Command("kubectl", "create", "secret", "generic", secretName,
-				"--from-literal=password=do-not-commit", "-n", namespace)
-			_, err = utils.Run(cmd)
+			_, _ = kubectlRunInNamespace(namespace, "delete", "secret", secretName, "--ignore-not-found=true")
+			_, err = kubectlRunInNamespace(
+				namespace,
+				"create",
+				"secret",
+				"generic",
+				secretName,
+				"--from-literal=password=do-not-commit",
+			)
 			Expect(err).NotTo(HaveOccurred(), "Secret creation should succeed")
 
 			By("patching Secret once to avoid informer start race and force an update event")
-			patchCmd := exec.Command(
-				"kubectl", "patch", "secret", secretName, "-n", namespace,
-				"--type=merge", "--patch", `{"stringData":{"password":"autogen-never-commit-this"}}`,
+			_, err = kubectlRunInNamespace(
+				namespace,
+				"patch",
+				"secret",
+				secretName,
+				"--type=merge",
+				"--patch",
+				`{"stringData":{"password":"autogen-never-commit-this"}}`,
 			)
-			_, err = utils.Run(patchCmd)
 			Expect(err).NotTo(HaveOccurred(), "Secret patch should succeed")
 
 			By("verifying committed secret is encrypted and decryptable with generated key")
@@ -716,10 +776,14 @@ var _ = Describe("Manager", Ordered, func() {
 			Eventually(verifyEncryptedSecretCommitted, "30s", "2s").Should(Succeed())
 
 			By("cleaning up test resources")
-			_, _ = utils.Run(exec.Command("kubectl", "delete", "secret", secretName,
-				"-n", namespace, "--ignore-not-found=true"))
-			_, _ = utils.Run(exec.Command("kubectl", "delete", "secret", generatedSecretName,
-				"-n", namespace, "--ignore-not-found=true"))
+			_, _ = kubectlRunInNamespace(namespace, "delete", "secret", secretName, "--ignore-not-found=true")
+			_, _ = kubectlRunInNamespace(
+				namespace,
+				"delete",
+				"secret",
+				generatedSecretName,
+				"--ignore-not-found=true",
+			)
 			cleanupWatchRule(watchRuleName, namespace)
 			cleanupGitTarget(destName, namespace)
 		})
@@ -771,9 +835,14 @@ var _ = Describe("Manager", Ordered, func() {
 			By("waiting for controller reconciliation of ConfigMap event")
 			verifyReconciliationLogs := func(g Gomega) {
 				// Get controller logs from all pods (single-pod mode still uses label selector).
-				cmd := exec.Command("kubectl", "logs", "-l", "control-plane=gitops-reverser",
-					"-n", namespace, "--tail=500", "--prefix=true")
-				output, err := utils.Run(cmd)
+				output, err := kubectlRunInNamespace(
+					namespace,
+					"logs",
+					"-l",
+					"control-plane=gitops-reverser",
+					"--tail=500",
+					"--prefix=true",
+				)
 				g.Expect(err).NotTo(HaveOccurred())
 
 				// Check for git commit operation in logs
@@ -842,8 +911,7 @@ var _ = Describe("Manager", Ordered, func() {
 			Eventually(verifyGitCommit).Should(Succeed())
 
 			By("cleaning up test resources")
-			cmd := exec.Command("kubectl", "delete", "configmap", configMapName, "-n", namespace)
-			_, _ = utils.Run(cmd)
+			_, _ = kubectlRunInNamespace(namespace, "delete", "configmap", configMapName, "--ignore-not-found=true")
 			cleanupWatchRule(watchRuleName, namespace)
 			cleanupGitTarget(destName, namespace)
 
@@ -912,8 +980,7 @@ var _ = Describe("Manager", Ordered, func() {
 			Eventually(verifyFileCreated).Should(Succeed())
 
 			By("deleting the ConfigMap to trigger DELETE operation")
-			cmd := exec.Command("kubectl", "delete", "configmap", configMapName, "-n", namespace)
-			_, err := utils.Run(cmd)
+			_, err := kubectlRunInNamespace(namespace, "delete", "configmap", configMapName)
 			Expect(err).NotTo(HaveOccurred(), "ConfigMap deletion should succeed")
 
 			By("verifying ConfigMap file is deleted from Git repository")
@@ -983,15 +1050,18 @@ var _ = Describe("Manager", Ordered, func() {
 			verifyResourceStatus("gittarget", destName, namespace, "True", "Ready", "")
 
 			By("installing the IceCreamOrder CRD to trigger Git commit")
-			cmd := exec.Command("kubectl", "apply", "-f", "test/e2e/templates/icecreamorder-crd.yaml")
-			_, err = utils.Run(cmd)
+			_, err = kubectlRun("apply", "-f", "test/e2e/templates/icecreamorder-crd.yaml")
 			Expect(err).NotTo(HaveOccurred(), "Failed to install CRD")
 
 			By("waiting for CRD to be established")
 			verifyCRDEstablished := func(g Gomega) {
-				cmd := exec.Command("kubectl", "get", "crd", crdName,
-					"-o", "jsonpath={.status.conditions[?(@.type=='Established')].status}")
-				output, err := utils.Run(cmd)
+				output, err := kubectlRun(
+					"get",
+					"crd",
+					crdName,
+					"-o",
+					"jsonpath={.status.conditions[?(@.type=='Established')].status}",
+				)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(Equal("True"))
 			}
@@ -1041,15 +1111,18 @@ var _ = Describe("Manager", Ordered, func() {
 			watchRuleName := "watchrule-icecream-orders"
 
 			By("installing the IceCreamOrder CRD first (needed for custom resource tests)")
-			cmd := exec.Command("kubectl", "apply", "-f", "test/e2e/templates/icecreamorder-crd.yaml")
-			_, err := utils.Run(cmd)
+			_, err := kubectlRun("apply", "-f", "test/e2e/templates/icecreamorder-crd.yaml")
 			Expect(err).NotTo(HaveOccurred(), "Failed to install sample CRD")
 
 			By("waiting for CRD to be established")
 			verifyCRDEstablished := func(g Gomega) {
-				cmd := exec.Command("kubectl", "get", "crd", "icecreamorders.shop.example.com",
-					"-o", "jsonpath={.status.conditions[?(@.type=='Established')].status}")
-				output, err := utils.Run(cmd)
+				output, err := kubectlRun(
+					"get",
+					"crd",
+					"icecreamorders.shop.example.com",
+					"-o",
+					"jsonpath={.status.conditions[?(@.type=='Established')].status}",
+				)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(Equal("True"))
 			}
@@ -1122,9 +1195,14 @@ var _ = Describe("Manager", Ordered, func() {
 
 			By("waiting for controller reconciliation of CRD instance event")
 			verifyReconciliationLogs := func(g Gomega) {
-				cmd := exec.Command("kubectl", "logs", "-l", "control-plane=gitops-reverser",
-					"-n", namespace, "--tail=500", "--prefix=true")
-				output, err := utils.Run(cmd)
+				output, err := kubectlRunInNamespace(
+					namespace,
+					"logs",
+					"-l",
+					"control-plane=gitops-reverser",
+					"--tail=500",
+					"--prefix=true",
+				)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(ContainSubstring("git commit"),
 					"Should see git commit operation in logs")
@@ -1190,9 +1268,16 @@ var _ = Describe("Manager", Ordered, func() {
 
 			By("applying status update to the IceCreamOrder CR")
 			statusPatch := `{"status":{"orderStatus":"pending","preparationTime":"5m","totalPrice":"$12.50"}}`
-			statusCmd := exec.Command("kubectl", "patch", "icecreamorder", crdInstanceName,
-				"-n", namespace, "--type=merge", "--subresource=status", "-p", statusPatch)
-			statusOutput, statusErr := utils.Run(statusCmd)
+			statusOutput, statusErr := kubectlRunInNamespace(
+				namespace,
+				"patch",
+				"icecreamorder",
+				crdInstanceName,
+				"--type=merge",
+				"--subresource=status",
+				"-p",
+				statusPatch,
+			)
 			if statusErr != nil {
 				// Status subresource might not be configured for this CRD, which is fine for this test
 				By(fmt.Sprintf("⚠️  Status patch not supported (expected): %v", statusErr))
@@ -1239,8 +1324,7 @@ var _ = Describe("Manager", Ordered, func() {
 			By("✅ Status update verified - no Git commit created and status not in file")
 
 			By("cleaning up IceCreamOrder instance")
-			cmd2 := exec.Command("kubectl", "delete", "icecreamorder", crdInstanceName, "-n", namespace)
-			_, _ = utils.Run(cmd2)
+			_, _ = kubectlRunInNamespace(namespace, "delete", "icecreamorder", crdInstanceName)
 
 			By("Note: GitTarget, WatchRule, GitProvider, and CRD kept for subsequent tests")
 
@@ -1355,8 +1439,7 @@ var _ = Describe("Manager", Ordered, func() {
 			Eventually(verifyUpdatedFile).Should(Succeed())
 
 			By("cleaning up IceCreamOrder instance")
-			cmd := exec.Command("kubectl", "delete", "icecreamorder", crdInstanceName, "-n", namespace)
-			_, _ = utils.Run(cmd)
+			_, _ = kubectlRunInNamespace(namespace, "delete", "icecreamorder", crdInstanceName)
 
 			By("Note: GitTarget, WatchRule, GitProvider, and CRD kept for subsequent tests")
 
@@ -1418,8 +1501,7 @@ var _ = Describe("Manager", Ordered, func() {
 			Eventually(verifyFileCreated).Should(Succeed())
 
 			By("deleting the CR to trigger DELETE operation")
-			cmd := exec.Command("kubectl", "delete", "icecreamorder", crdInstanceName, "-n", namespace)
-			_, err = utils.Run(cmd)
+			_, err = kubectlRunInNamespace(namespace, "delete", "icecreamorder", crdInstanceName)
 			Expect(err).NotTo(HaveOccurred(), "CRD instance deletion should succeed")
 
 			By("verifying CRD instance file is deleted from Git repository")
@@ -1493,8 +1575,7 @@ var _ = Describe("Manager", Ordered, func() {
 			Eventually(verifyFileExists).Should(Succeed())
 
 			By("deleting the CRD to trigger DELETE operation")
-			deleteCmd := exec.Command("kubectl", "delete", "crd", crdName)
-			_, deleteErr := utils.Run(deleteCmd)
+			_, deleteErr := kubectlRun("delete", "crd", crdName)
 			Expect(deleteErr).NotTo(HaveOccurred(), "CRD deletion should succeed")
 			By("verifying CRD file is deleted from Git repository")
 			verifyFileDeleted := func(g Gomega) {
@@ -1539,9 +1620,12 @@ var _ = Describe("Manager", Ordered, func() {
 			cleanupGitProvider("gitprovider-normal")
 
 			// Clean up IceCreamOrder CRD
-			cmd := exec.Command("kubectl", "delete", "crd",
-				"icecreamorders.shop.example.com", "--ignore-not-found=true")
-			_, _ = utils.Run(cmd)
+			_, _ = kubectlRun(
+				"delete",
+				"crd",
+				"icecreamorders.shop.example.com",
+				"--ignore-not-found=true",
+			)
 		})
 
 		// +kubebuilder:scaffold:e2e-webhooks-checks
@@ -1585,9 +1669,13 @@ func decryptWithControllerSOPS(ciphertext []byte, ageKey string) (string, error)
 		return "", err
 	}
 
-	cmd := exec.Command(
-		"kubectl", "exec", "-i",
-		podName, "-n", namespace, "--",
+	cmd := kubectlCmdInNamespace(
+		context.Background(),
+		namespace,
+		"exec",
+		"-i",
+		podName,
+		"--",
 		"env", fmt.Sprintf("SOPS_AGE_KEY=%s", ageKey),
 		"/usr/local/bin/sops", "--decrypt", "--input-type", "yaml", "--output-type", "yaml", "/dev/stdin",
 	)
@@ -1601,16 +1689,13 @@ func decryptWithControllerSOPS(ciphertext []byte, ageKey string) (string, error)
 }
 
 func discoverControllerPodName(ns string) (string, error) {
-	deploymentsCmd := exec.Command(
-		"kubectl",
+	deploymentsOutput, err := kubectlRunInNamespace(
+		ns,
 		"get",
 		"deployments",
-		"-n",
-		ns,
 		"-o",
 		"jsonpath={range .items[*]}{.metadata.name}{\"\\n\"}{end}",
 	)
-	deploymentsOutput, err := utils.Run(deploymentsCmd)
 	if err != nil {
 		return "", fmt.Errorf("get deployments in namespace %s: %w", ns, err)
 	}
@@ -1621,8 +1706,7 @@ func discoverControllerPodName(ns string) (string, error) {
 	}
 	deploymentName := deployments[0]
 
-	deploymentCmd := exec.Command("kubectl", "get", "deployment", deploymentName, "-n", ns, "-o", "json")
-	deploymentOutput, err := utils.Run(deploymentCmd)
+	deploymentOutput, err := kubectlRunInNamespace(ns, "get", "deployment", deploymentName, "-o", "json")
 	if err != nil {
 		return "", fmt.Errorf("get deployment %s/%s: %w", ns, deploymentName, err)
 	}
@@ -1656,18 +1740,15 @@ func discoverControllerPodName(ns string) (string, error) {
 	}
 	selector := strings.Join(selectorParts, ",")
 
-	podCmd := exec.Command(
-		"kubectl",
+	podOutput, err := kubectlRunInNamespace(
+		ns,
 		"get",
 		"pods",
-		"-n",
-		ns,
 		"-l",
 		selector,
 		"-o",
 		"jsonpath={.items[0].metadata.name}",
 	)
-	podOutput, err := utils.Run(podCmd)
 	if err != nil {
 		return "", fmt.Errorf("get controller pod for selector %q in namespace %s: %w", selector, ns, err)
 	}
@@ -1736,8 +1817,7 @@ func verifyResourceStatus(resourceType, name, ns, expectedStatus, expectedReason
 			args = append(args, "-n", ns)
 		}
 
-		cmd := exec.Command("kubectl", args...)
-		output, err := utils.Run(cmd)
+		output, err := kubectlRun(args...)
 		g.Expect(err).NotTo(HaveOccurred())
 
 		var obj unstructured.Unstructured
@@ -1776,8 +1856,13 @@ func verifyResourceStatus(resourceType, name, ns, expectedStatus, expectedReason
 // cleanupGitProvider deletes a GitProvider resource.
 func cleanupGitProvider(name string) {
 	By(fmt.Sprintf("cleaning up GitProvider '%s'", name))
-	cmd := exec.Command("kubectl", "delete", "gitprovider", name, "-n", namespace, "--ignore-not-found=true")
-	_, err := utils.Run(cmd)
+	_, err := kubectlRunInNamespace(
+		namespace,
+		"delete",
+		"gitprovider",
+		name,
+		"--ignore-not-found=true",
+	)
 	Expect(err).NotTo(HaveOccurred())
 }
 
@@ -1786,9 +1871,15 @@ func showControllerLogs(context string) {
 	By(fmt.Sprintf("📋 Controller logs %s:", context))
 
 	// Get the controller pod name dynamically
-	cmd := exec.Command("kubectl", "get", "pods", "-l", "control-plane=gitops-reverser",
-		"-o", "jsonpath={.items[0].metadata.name}", "-n", namespace)
-	podName, err := utils.Run(cmd)
+	podName, err := kubectlRunInNamespace(
+		namespace,
+		"get",
+		"pods",
+		"-l",
+		"control-plane=gitops-reverser",
+		"-o",
+		"jsonpath={.items[0].metadata.name}",
+	)
 	if err != nil {
 		fmt.Printf("⚠️  Failed to get controller pod name: %v\n", err)
 		return
@@ -1800,8 +1891,7 @@ func showControllerLogs(context string) {
 	}
 
 	// Get the logs
-	cmd = exec.Command("kubectl", "logs", strings.TrimSpace(podName), "-n", namespace, "--tail=20")
-	output, err := utils.Run(cmd)
+	output, err := kubectlRunInNamespace(namespace, "logs", strings.TrimSpace(podName), "--tail=20")
 	if err != nil {
 		fmt.Printf("❌ Failed to get controller logs: %v\n", err)
 		return

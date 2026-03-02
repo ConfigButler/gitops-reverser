@@ -162,13 +162,13 @@ $(CS)/$(NAMESPACE)/namespace.ready: Makefile $(CS)/ready
 	touch $@
 
 # Called by the Go e2e suite (BeforeSuite) to prepare prerequisites once, including port-forwards + age key.
-.PHONY: e2e-prepare
-e2e-prepare: $(CS)/$(NAMESPACE)/e2e/prepare portforward-ensure ## Prepare E2E prerequisites for Go tests
+.PHONY: prepare-e2e
+prepare-e2e: $(CS)/$(NAMESPACE)/prepare-e2e.ready portforward-ensure ## Prepare E2E prerequisites for Go tests
 
 # Called by the full e2e suite.
 # For now: clean the sut namespace, recreate it, run the installer, and deploy the controller image.
 # Prefer depending on stamps; this target must not invoke Go e2e tests (Go calls this target).
-$(CS)/$(NAMESPACE)/e2e/prepare: $(CS)/$(NAMESPACE)/namespace.cleaned \
+$(CS)/$(NAMESPACE)/prepare-e2e.ready: $(CS)/$(NAMESPACE)/namespace.cleaned \
 	$(CS)/$(NAMESPACE)/install-$(INSTALL_MODE) \
 	$(CS)/image.loaded \
 	$(CS)/$(NAMESPACE)/controller.deployed \

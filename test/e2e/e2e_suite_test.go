@@ -58,6 +58,7 @@ var _ = AfterSuite(func() {
 
 func ensureE2EPrepared() {
 	ctx := resolveE2EContext()
+	setE2EKubectlContext(ctx)
 	seed := ginkgoRandomSeed()
 	ns := resolveE2ENamespace()
 	installName := resolveE2EInstallName(seed)
@@ -65,27 +66,23 @@ func ensureE2EPrepared() {
 		fmt.Sprintf("CTX=%s", ctx),
 		fmt.Sprintf("INSTALL_NAME=%s", installName),
 		fmt.Sprintf("NAMESPACE=%s", ns),
-		"e2e-prepare",
+		"prepare-e2e",
 	)
 	output, err := utils.Run(cmd)
 	Expect(err).NotTo(HaveOccurred(), "failed to run make target for e2e prepare")
 	_, _ = fmt.Fprintf(GinkgoWriter, "%s", output)
 
-	// Many e2e helpers invoke kubectl without an explicit --context flag. Ensure kubectl is pointed at the
-	// intended cluster context for the remainder of the test run.
-	useCtx := exec.Command("kubectl", "config", "use-context", ctx)
-	output, err = utils.Run(useCtx)
+	// Some e2e shell scripts call `kubectl` without an explicit `--context` flag. Ensure `kubectl` is
+	// pointed at the intended cluster context for the remainder of the test run.
+	output, err = kubectlRun("config", "use-context", ctx)
 	Expect(err).NotTo(HaveOccurred(), "failed to set kubectl context for e2e run")
 	_, _ = fmt.Fprintf(GinkgoWriter, "%s", output)
 
 	By("ensuring IceCreamOrder CRD is removed before tests")
-	deleteIceCreamOrderCRD := exec.Command(
-		"kubectl",
-		"--context", ctx,
+	output, err = kubectlRun(
 		"delete", "crd", "icecreamorders.shop.example.com",
 		"--ignore-not-found=true",
 	)
-	output, err = utils.Run(deleteIceCreamOrderCRD)
 	Expect(err).NotTo(HaveOccurred(), "failed to delete IceCreamOrder CRD before tests")
 	_, _ = fmt.Fprintf(GinkgoWriter, "%s", output)
 
@@ -133,8 +130,7 @@ func resolveE2EContext() string {
 		return fmt.Sprintf("kind-%s", cluster)
 	}
 
-	cmd := exec.Command("kubectl", "config", "current-context")
-	output, err := utils.Run(cmd)
+	output, err := kubectlRun("config", "current-context")
 	if err == nil {
 		if value := strings.TrimSpace(output); value != "" {
 			return value
@@ -143,18 +139,3 @@ func resolveE2EContext() string {
 
 	return "kind-gitops-reverser-test-e2e"
 }
-
-/*
-
-At startup of tests we should define the seed of the test run and use that to create a namespace and to run tests in it, also the build should be depending on that.
-
-We should be cominbing instllation methods with testsuites
-
-helm
-manifests
-config (is there still use for this?!)
-
-full
-quickstart
-
-*/

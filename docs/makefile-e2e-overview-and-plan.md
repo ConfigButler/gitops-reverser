@@ -14,7 +14,7 @@ This is the high-level roadmap for the Makefile-driven E2E work. For the detaile
 
 - There is a stamp-based infra model under `.stamps/cluster/<CTX>/...` and `.stamps/image/...`.
 - The full-suite Go code shells out to Make in `BeforeSuite`:
-  - runs `$(CS)/$(NAMESPACE)/e2e/prepare` (stamp; no tests inside)
+  - runs `$(CS)/$(NAMESPACE)/prepare-e2e.ready` (stamp; no tests inside)
   - runs `portforward-ensure` to guarantee live port-forwards for the test process
   - sets `kubectl config use-context $(CTX)` for helpers that don’t pass `--context`
 - `make test-e2e` runs `go test ./test/e2e/...` and the Go suite owns infra prep via the Make targets above.
@@ -26,7 +26,7 @@ This is the high-level roadmap for the Makefile-driven E2E work. For the detaile
 
 Go should call exactly one Make target in `BeforeSuite`:
 
-- `$(CS)/$(NAMESPACE)/e2e/prepare` (stamp; no `go test` inside)
+- `$(CS)/$(NAMESPACE)/prepare-e2e.ready` (stamp; no `go test` inside)
 
 That stamp is responsible for:
 
@@ -78,14 +78,14 @@ Acceptance:
 - `make test-e2e` runs the suite end-to-end on a prepared cluster.
 - Quickstart helm+manifest targets work locally without undefined targets.
 
-### PR2 — Implement `e2e/prepare` as the single orchestration contract (done)
+### PR2 — Implement `prepare-e2e.ready` as the single orchestration contract (done)
 
-- Implement `$(CS)/$(NAMESPACE)/e2e/prepare` (stamp) as the “one target Go calls”.
-- Update Go `BeforeSuite` to call `e2e/prepare` (and `portforward-ensure`) and set kubectl context.
+- Implement `$(CS)/$(NAMESPACE)/prepare-e2e.ready` (stamp) as the “one target Go calls”.
+- Update Go `BeforeSuite` to call `prepare-e2e.ready` (and `portforward-ensure`) and set kubectl context.
 
 Acceptance:
 
-- `go test ./test/e2e/...` works when invoked from CI/Make and always provisions infra via `e2e/prepare`.
+- `go test ./test/e2e/...` works when invoked from CI/Make and always provisions infra via `prepare-e2e.ready`.
 
 ### PR3 — Run scoping via seed
 
@@ -118,7 +118,7 @@ Plan: `docs/makefile-e2e-image-and-deploy-refactor-plan.md`.
 
 ## Notes / non-goals (for now)
 
-- Don’t expand the suite/install matrix until the `e2e/prepare` contract and run scoping are solid.
+- Don’t expand the suite/install matrix until the `prepare-e2e.ready` contract and run scoping are solid.
 - Avoid moving Kubernetes orchestration into Go; prefer Make stamps and verified gates.
 
 ## Why `manifests` and `helm-sync` are `.PHONY`

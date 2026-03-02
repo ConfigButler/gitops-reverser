@@ -107,7 +107,7 @@ Container selection strategy (no deployment-name assumptions):
 
 ## Dependency graph impact (high level)
 
-- `$(CS)/$(NAMESPACE)/e2e/prepare` should depend on:
+- `$(CS)/$(NAMESPACE)/prepare-e2e.ready` should depend on:
   - `$(CS)/$(NAMESPACE)/namespace.cleaned`
   - `$(CS)/$(NAMESPACE)/install-$(INSTALL_MODE)`
   - `$(CS)/image.loaded`
