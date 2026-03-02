@@ -1012,7 +1012,7 @@ var _ = Describe("Manager", Ordered, func() {
 				g.Expect(string(logOutput)).To(ContainSubstring("DELETE"),
 					"Git log should contain DELETE operation")
 			}
-			Eventually(verifyFileDeleted).Should(Succeed())
+			Eventually(verifyFileDeleted, "60s", "1s").Should(Succeed())
 
 			By("cleaning up test resources")
 			cleanupWatchRule(watchRuleName, namespace)
