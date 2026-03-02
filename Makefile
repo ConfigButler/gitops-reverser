@@ -156,7 +156,7 @@ prepare-e2e: $(CS)/$(NAMESPACE)/prepare-e2e.ready portforward-ensure ## Prepare 
 # Called by the full e2e suite.
 # For now: clean the sut namespace, recreate it, run the installer, and deploy the controller image.
 # Prefer depending on stamps; this target must not invoke Go e2e tests (Go calls this target).
-$(CS)/$(NAMESPACE)/prepare-e2e.ready: $(CS)/$(NAMESPACE)/install-$(INSTALL_MODE) \
+$(CS)/$(NAMESPACE)/prepare-e2e.ready: $(CS)/$(NAMESPACE)/$(INSTALL_MODE)/install.done \
 	$(CS)/$(NAMESPACE)/label-namespace.ready \
 	$(CS)/image.loaded \
 	$(CS)/$(NAMESPACE)/controller.deployed \
@@ -303,14 +303,14 @@ $(CS)/prometheus.installed: $(CS)/ready test/e2e/scripts/ensure-prometheus-opera
 	kubectl --context $(CTX) wait --for=condition=ready pod -l prometheus=prometheus-shared-e2e -n prometheus-operator --timeout=180s
 	touch $@
 
-$(CS)/$(NAMESPACE)/age-key.applied: Makefile $(CS)/$(NAMESPACE)/install-$(INSTALL_MODE) test/e2e/tools/gen-age-key/main.go
+$(CS)/$(NAMESPACE)/age-key.applied: Makefile $(CS)/$(NAMESPACE)/label-namespace.ready test/e2e/tools/gen-age-key/main.go
 	mkdir -p $(@D)
 	go run ./test/e2e/tools/gen-age-key \
-	  --key-file $(CS)/age-key.txt \
-	  --secret-file $(CS)/age-key-secret.yaml \
+	  --key-file $(CS)/$(NAMESPACE)/age-key.txt \
+	  --secret-file $(CS)/$(NAMESPACE)/age-key-secret.yaml \
 	  --namespace $(NAMESPACE) \
 	  --secret-name sops-age-key
-	kubectl --context $(CTX) apply -f $(CS)/age-key-secret.yaml
+	kubectl --context $(CTX) apply -f $(CS)/$(NAMESPACE)/age-key-secret.yaml
 	touch $@
 
 $(IS)/controller.id: $(GO_SOURCES) Dockerfile
@@ -349,7 +349,7 @@ $(CS)/image.loaded: $(IS)/project-image.ready $(CS)/ready
 	$(KIND) load docker-image $(PROJECT_IMAGE) --name $(CLUSTER_FROM_CTX); \
 	echo "$$img_id" > "$@"
 
-$(CS)/$(NAMESPACE)/controller.deployed: $(CS)/$(NAMESPACE)/install-$(INSTALL_MODE) $(CS)/image.loaded
+$(CS)/$(NAMESPACE)/controller.deployed: $(CS)/$(NAMESPACE)/$(INSTALL_MODE)/install.done $(CS)/image.loaded
 	@set -euo pipefail; \
 	ctx="$(CTX)"; ns="$(NAMESPACE)"; img="$(PROJECT_IMAGE)"; c="$(CONTROLLER_CONTAINER)"; sel="$(CONTROLLER_DEPLOY_SELECTOR)"; \
 	[ -n "$$img" ] || { echo "ERROR: PROJECT_IMAGE must be non-empty" >&2; exit 2; }; \
@@ -371,11 +371,11 @@ portforward-ensure: $(CS)/gitea.installed $(CS)/prometheus.installed ## Ensure p
 	mkdir -p $(CS)
 	E2E_KUBECONTEXT=$(CTX) bash test/e2e/scripts/setup-port-forwards.sh
 
-E2E_TEST_INPUTS := $(shell find test/e2e -type f \( -name '*.go' -o -name '*.sh' -o -name '*.yaml' -o -name '*.tmpl' \))
+E2E_TEST_INPUTS := $(CS)/$(NAMESPACE)/age-key.txt $(shell find test/e2e -type f \( -name '*.go' -o -name '*.sh' -o -name '*.yaml' -o -name '*.tmpl' \))
 $(CS)/e2e.passed: $(E2E_TEST_INPUTS) Makefile
 	mkdir -p $(CS)
 	CTX=$(CTX) KIND_CLUSTER=$(CLUSTER_FROM_CTX) NAMESPACE=$(NAMESPACE) \
-	  E2E_AGE_KEY_FILE=$(CS)/age-key.txt \
+	  E2E_AGE_KEY_FILE=$(CS)/$(NAMESPACE)/age-key.txt \
 	  go test ./test/e2e/ -v -ginkgo.v
 	touch $@
 
@@ -383,43 +383,26 @@ CONTROLLER_CONTAINER ?= manager
 CONTROLLER_DEPLOY_SELECTOR ?= app.kubernetes.io/part-of=gitops-reverser
 
 # INSTALL_MODE, INSTALL_NAME, NAMESPACE defaults are defined near the E2E variables section above.
-INSTALL_LOCK := $(CS)/$(NAMESPACE)/install.method
 VALID_INSTALL_MODES := config-dir helm plain-manifests-file
 ifeq (,$(filter $(INSTALL_MODE),$(VALID_INSTALL_MODES)))
   $(error INSTALL_MODE must be one of: $(VALID_INSTALL_MODES))
 endif
 
-define ASSERT_INSTALL_METHOD
-mkdir -p $(@D); \
-if [ -f "$(INSTALL_LOCK)" ]; then \
-	existing="$$(cat "$(INSTALL_LOCK)")"; \
-	if [ "$$existing" != "$(INSTALL_MODE)" ]; then \
-		echo "ERROR: Namespace $(NAMESPACE) already installed using '$$existing'."; \
-		echo "Refusing to install with '$(INSTALL_MODE)'."; \
-		echo "Cleanup that namespace and remove $(INSTALL_LOCK) to switch methods."; \
-		exit 2; \
-	fi; \
-else \
-	echo "$(INSTALL_MODE)" > "$(INSTALL_LOCK)"; \
-fi;
-endef
-
 .PHONY: install install-helm install-plain-manifests-file install-config-dir
-install: $(CS)/$(NAMESPACE)/install-$(INSTALL_MODE)
+install: $(CS)/$(NAMESPACE)/$(INSTALL_MODE)/install.done
 
-install-helm: $(CS)/$(NAMESPACE)/install-helm
+install-helm: $(CS)/$(NAMESPACE)/helm/install.done
 
-install-plain-manifests-file: $(CS)/$(NAMESPACE)/install-plain-manifests-file
+install-plain-manifests-file: $(CS)/$(NAMESPACE)/plain-manifests-file/install.done
 
-install-config-dir: $(CS)/$(NAMESPACE)/install-config-dir
+install-config-dir: $(CS)/$(NAMESPACE)/config-dir/install.done
 
 CONFIG_DIR_INPUTS := $(shell find config -type f)
 
 ##@ Deployments of all manifests needed to run
-$(CS)/$(NAMESPACE)/install-helm: INSTALL_MODE := helm
-$(CS)/$(NAMESPACE)/install-helm: $(CLEANUP_E2E_DONE) $(HELM_SYNC_OUTPUTS) $(CS)/cert-manager.installed $(CS)/prometheus.installed
+$(CS)/$(NAMESPACE)/helm/install.done: INSTALL_MODE := helm
+$(CS)/$(NAMESPACE)/helm/install.done: $(CS)/$(NAMESPACE)/$(INSTALL_MODE)/cleanup-e2e-installs.done $(HELM_SYNC_OUTPUTS) $(CS)/cert-manager.installed $(CS)/prometheus.installed
 	@set -euo pipefail; \
-	$(ASSERT_INSTALL_METHOD) \
 	helm_args=( \
 		upgrade --install $(INSTALL_NAME) "$(HELM_CHART_SOURCE)" \
 		--kube-context $(CTX) \
@@ -436,10 +419,9 @@ $(CS)/$(NAMESPACE)/install-helm: $(CLEANUP_E2E_DONE) $(HELM_SYNC_OUTPUTS) $(CS)/
 	helm "$${helm_args[@]}"; \
 	touch $@
 
-$(CS)/$(NAMESPACE)/install-config-dir: INSTALL_MODE := config-dir
-$(CS)/$(NAMESPACE)/install-config-dir: $(CLEANUP_E2E_DONE) $(MANIFEST_OUTPUTS) $(CONFIG_DIR_INPUTS) $(CS)/cert-manager.installed $(CS)/prometheus.installed
+$(CS)/$(NAMESPACE)/config-dir/install.done: INSTALL_MODE := config-dir
+$(CS)/$(NAMESPACE)/config-dir/install.done: $(CS)/$(NAMESPACE)/$(INSTALL_MODE)/cleanup-e2e-installs.done $(MANIFEST_OUTPUTS) $(CONFIG_DIR_INPUTS) $(CS)/cert-manager.installed $(CS)/prometheus.installed
 	@set -euo pipefail; \
-	$(ASSERT_INSTALL_METHOD) \
 	tmpdir="$$(mktemp -d)"; \
 	trap 'rm -rf "$$tmpdir"' EXIT; \
 	cp -R config "$$tmpdir/config"; \
@@ -448,12 +430,11 @@ $(CS)/$(NAMESPACE)/install-config-dir: $(CLEANUP_E2E_DONE) $(MANIFEST_OUTPUTS) $
 	(cd "$$tmpdir/config" && $(KUSTOMIZE) build .) | $(KUBECTL) --context "$(CTX)" apply -f -
 	touch $@
 
-$(CS)/$(NAMESPACE)/install-plain-manifests-file: INSTALL_MODE := plain-manifests-file
-$(CS)/$(NAMESPACE)/install-plain-manifests-file: $(CLEANUP_E2E_DONE) dist/install.yaml $(CS)/cert-manager.installed $(CS)/prometheus.installed
+$(CS)/$(NAMESPACE)/plain-manifests-file/install.done: INSTALL_MODE := plain-manifests-file
+$(CS)/$(NAMESPACE)/plain-manifests-file/install.done: $(CS)/$(NAMESPACE)/$(INSTALL_MODE)/cleanup-e2e-installs.done dist/install.yaml $(CS)/cert-manager.installed $(CS)/prometheus.installed
 	@set -euo pipefail; \
 	ctx="$(CTX)"; \
 	ns="$(NAMESPACE)"; \
-	$(ASSERT_INSTALL_METHOD) \
 	tmpdir="$$(mktemp -d)"; \
 	trap 'rm -rf "$$tmpdir"' EXIT; \
 	cp -R dist "$$tmpdir/dist"; \
@@ -485,7 +466,7 @@ cleanup-port-forwards: ## Stop all port-forwards
 	@-pkill -f "kubectl.*port-forward.*19090" 2>/dev/null || true
 	@echo "✅ Port-forwards stopped"
 
-$(CS)/$(NAMESPACE)/label-namespace.ready: Makefile $(CS)/$(NAMESPACE)/install-$(INSTALL_MODE)
+$(CS)/$(NAMESPACE)/label-namespace.ready: Makefile $(CS)/$(NAMESPACE)/$(INSTALL_MODE)/install.done
 	mkdir -p $(@D)
 	kubectl --context $(CTX) label --overwrite ns $(NAMESPACE) \
 		$(E2E_NAMESPACE_LABEL_KEY)=$(E2E_NAMESPACE_LABEL_VALUE) \
@@ -494,8 +475,7 @@ $(CS)/$(NAMESPACE)/label-namespace.ready: Makefile $(CS)/$(NAMESPACE)/install-$(
 	@echo "✅ Added $(E2E_NAMESPACE_LABEL_KEY)=$(E2E_NAMESPACE_LABEL_VALUE) label to namespace $(NAMESPACE)"
 	touch $@
 
-CLEANUP_E2E_DONE := $(CS)/$(NAMESPACE)/cleanup-e2e.$(INSTALL_MODE).done
-$(CLEANUP_E2E_DONE): Makefile $(CS)/ready
+$(CS)/$(NAMESPACE)/$(INSTALL_MODE)/cleanup-e2e-installs.done: Makefile $(CS)/ready
 	@set -euo pipefail; \
 	ctx="$(CTX)"; \
 	ns_list="$$(kubectl --context "$$ctx" get ns -l $(E2E_NAMESPACE_LABEL_KEY)=$(E2E_NAMESPACE_LABEL_VALUE) -o jsonpath='{.items[*].metadata.name}' || true)"; \
