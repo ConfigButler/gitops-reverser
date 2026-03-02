@@ -7,7 +7,7 @@ metadata:
   name: gitops-reverser-service
   namespace: sut
 spec:
-  clusterIP: 10.96.200.200    # This is required because kube-apiserver starts before CoreDNS (so we use a fixed address)
+  clusterIP: 10.43.200.200    # k3d/k3s service CIDR; kube-apiserver needs a fixed address before CoreDNS is available
   ports:
   - name: admission
     port: 9443

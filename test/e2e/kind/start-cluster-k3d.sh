@@ -25,10 +25,10 @@ resolve_host_project_path() {
     repo_pwd="$(pwd -P)"
 
     local candidates=()
+    candidates+=("${repo_pwd}")
     if [ -n "${HOST_PROJECT_PATH:-}" ]; then
         candidates+=("${HOST_PROJECT_PATH}")
     fi
-    candidates+=("${repo_pwd}")
 
     local candidate
     for candidate in "${candidates[@]}"; do
@@ -86,7 +86,7 @@ merge_kubeconfig() {
     # Ensure kubeconfig is present and current-context points at this cluster
     k3d kubeconfig merge "${CLUSTER_NAME}" \
       --kubeconfig-switch-context \
-      --kubeconfig-update-default >/dev/null
+      --kubeconfig-merge-default >/dev/null
 }
 
 rewrite_kubeconfig_for_devcontainer() {

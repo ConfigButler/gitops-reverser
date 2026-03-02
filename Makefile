@@ -90,10 +90,10 @@ vet: ## Run go vet against code.
 test: manifests generate fmt vet setup-envtest ## Run tests.
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(shell pwd)/bin -p path)" go test $$(go list ./... | grep -v /e2e) -coverprofile cover.out
 
-# Kind cluster names per E2E test type (kept separate to avoid cross-test contamination).
+# E2E cluster names per test type (kept separate to avoid cross-test contamination).
 KIND_CLUSTER_E2E ?= gitops-reverser-test-e2e
-KIND_CLUSTER_QUICKSTART_HELM ?= gitops-reverser-test-e2e-quickstart-helm
-KIND_CLUSTER_QUICKSTART_MANIFEST ?= gitops-reverser-test-e2e-quickstart-manifest
+KIND_CLUSTER_QUICKSTART_HELM ?= gitops-reverser-qs-helm
+KIND_CLUSTER_QUICKSTART_MANIFEST ?= gitops-reverser-qs-manifest
 # KIND_CLUSTER is used by cleanup-cluster; defaults to the main e2e cluster.
 KIND_CLUSTER ?= $(KIND_CLUSTER_E2E)
 E2E_LOCAL_IMAGE ?= gitops-reverser:e2e-local
@@ -106,10 +106,10 @@ export PROJECT_IMAGE
 E2E_AGE_KEY_FILE ?= /tmp/e2e-age-key.txt
 
 # CTX: kubeconfig context for the cluster being operated on.
-# Defaults to the main e2e cluster; override with CTX=kind-<name> to reuse stamp targets for other clusters.
-CTX ?= kind-$(KIND_CLUSTER_E2E)
-# Derive the Kind cluster name by stripping the "kind-" prefix from CTX.
-CLUSTER_FROM_CTX = $(patsubst kind-%,%,$(CTX))
+# Defaults to the main e2e cluster; override with CTX=k3d-<name> to reuse stamp targets for other clusters.
+CTX ?= k3d-$(KIND_CLUSTER_E2E)
+# Derive the cluster name by stripping a known context prefix from CTX.
+CLUSTER_FROM_CTX = $(patsubst kind-%,%,$(patsubst k3d-%,%,$(CTX)))
 CS := .stamps/cluster/$(CTX)
 IS := .stamps/image
 GO_SOURCES := $(shell find cmd internal -type f -name '*.go') go.mod go.sum
@@ -122,30 +122,30 @@ NAMESPACE ?= gitops-reverser
 E2E_NAMESPACE_LABEL_KEY ?= e2e
 E2E_NAMESPACE_LABEL_VALUE ?= true
 
-KUBECONTEXT_QS_HELM := kind-$(KIND_CLUSTER_QUICKSTART_HELM)
-KUBECONTEXT_QS_MANIFEST := kind-$(KIND_CLUSTER_QUICKSTART_MANIFEST)
+KUBECONTEXT_QS_HELM := k3d-$(KIND_CLUSTER_QUICKSTART_HELM)
+KUBECONTEXT_QS_MANIFEST := k3d-$(KIND_CLUSTER_QUICKSTART_MANIFEST)
 HELM_CHART_SOURCE ?= charts/gitops-reverser
 
 .PHONY: cleanup-cluster
-cleanup-cluster: ## Tear down the Kind cluster used for e2e tests and remove its stamps
-	@if $(KIND) get clusters 2>/dev/null | grep -q "^$(KIND_CLUSTER)$$"; then \
-		echo "🧹 Deleting Kind cluster '$(KIND_CLUSTER)'"; \
-		$(KIND) delete cluster --name $(KIND_CLUSTER); \
+cleanup-cluster: ## Tear down the E2E cluster used for tests and remove its stamps
+	@if $(K3D) cluster list 2>/dev/null | awk '{print $$1}' | grep -q "^$(KIND_CLUSTER)$$"; then \
+		echo "🧹 Deleting k3d cluster '$(KIND_CLUSTER)'"; \
+		$(K3D) cluster delete $(KIND_CLUSTER); \
 	else \
-		echo "ℹ️ Kind cluster '$(KIND_CLUSTER)' does not exist; skipping cleanup"; \
+		echo "ℹ️ k3d cluster '$(KIND_CLUSTER)' does not exist; skipping cleanup"; \
 	fi
-	rm -rf .stamps/cluster/kind-$(KIND_CLUSTER)
+	rm -rf .stamps/cluster/k3d-$(KIND_CLUSTER)
 
 .PHONY: cleanup-e2e-clusters
-cleanup-e2e-clusters: ## Tear down all E2E Kind clusters and their stamps
+cleanup-e2e-clusters: ## Tear down all E2E clusters and their stamps
 	@for cluster in "$(KIND_CLUSTER_E2E)" "$(KIND_CLUSTER_QUICKSTART_HELM)" "$(KIND_CLUSTER_QUICKSTART_MANIFEST)"; do \
-		if $(KIND) get clusters 2>/dev/null | grep -q "^$$cluster$$"; then \
-			echo "🧹 Deleting Kind cluster '$$cluster'"; \
-			$(KIND) delete cluster --name "$$cluster"; \
+		if $(K3D) cluster list 2>/dev/null | awk '{print $$1}' | grep -q "^$$cluster$$"; then \
+			echo "🧹 Deleting k3d cluster '$$cluster'"; \
+			$(K3D) cluster delete "$$cluster"; \
 		else \
-			echo "ℹ️ Kind cluster '$$cluster' does not exist; skipping cleanup"; \
+			echo "ℹ️ k3d cluster '$$cluster' does not exist; skipping cleanup"; \
 		fi; \
-		rm -rf .stamps/cluster/kind-$$cluster; \
+		rm -rf .stamps/cluster/k3d-$$cluster; \
 	done
 
 
@@ -235,7 +235,7 @@ dist/install.yaml: $(HELM_SYNC_OUTPUTS) $(CHART_INPUTS) ## Generate consolidated
 
 ## Tool Binaries - all pre-installed in devcontainer
 KUBECTL ?= kubectl
-KIND ?= kind
+K3D ?= k3d
 HELM ?= helm
 KUSTOMIZE ?= kustomize
 CONTROLLER_GEN ?= controller-gen
@@ -258,11 +258,11 @@ setup-envtest: ## Setup envtest binaries for unit tests
 		exit 1; \
 	}
 
-##@ E2E Stamp Targets (cluster-parameterized; pass CTX=kind-<name> to target a different cluster)
+##@ E2E Stamp Targets (cluster-parameterized; pass CTX=k3d-<name> to target a different cluster)
 
-$(CS)/ready: test/e2e/kind/start-cluster.sh test/e2e/kind/cluster-template.yaml
+$(CS)/ready: test/e2e/kind/start-cluster-k3d.sh
 	mkdir -p $(CS)
-	KIND_CLUSTER=$(CLUSTER_FROM_CTX) bash test/e2e/kind/start-cluster.sh
+	K3D_CLUSTER=$(CLUSTER_FROM_CTX) bash test/e2e/kind/start-cluster-k3d.sh
 	kubectl --context $(CTX) get ns >/dev/null
 	touch $@
 
@@ -346,7 +346,7 @@ $(CS)/image.loaded: $(IS)/project-image.ready $(CS)/ready
 	mkdir -p $(CS); \
 	img_id="$$( $(CONTAINER_TOOL) inspect --format='{{.Id}}' $(PROJECT_IMAGE) )"; \
 	echo "Loading $(PROJECT_IMAGE) ($$img_id) into $(CLUSTER_FROM_CTX)"; \
-	$(KIND) load docker-image $(PROJECT_IMAGE) --name $(CLUSTER_FROM_CTX); \
+	$(K3D) image import $(PROJECT_IMAGE) -c $(CLUSTER_FROM_CTX); \
 	echo "$$img_id" > "$@"
 
 $(CS)/$(NAMESPACE)/controller.deployed: $(CS)/$(NAMESPACE)/$(INSTALL_MODE)/install.done $(CS)/image.loaded
@@ -371,10 +371,10 @@ portforward-ensure: $(CS)/gitea.installed $(CS)/prometheus.installed ## Ensure p
 	mkdir -p $(CS)
 	E2E_KUBECONTEXT=$(CTX) bash test/e2e/scripts/setup-port-forwards.sh
 
-E2E_TEST_INPUTS := $(CS)/$(NAMESPACE)/age-key.txt $(shell find test/e2e -type f \( -name '*.go' -o -name '*.sh' -o -name '*.yaml' -o -name '*.tmpl' \))
+E2E_TEST_INPUTS := $(CS)/$(NAMESPACE)/age-key.applied $(shell find test/e2e -type f \( -name '*.go' -o -name '*.sh' -o -name '*.yaml' -o -name '*.tmpl' \))
 $(CS)/e2e.passed: $(E2E_TEST_INPUTS) Makefile
 	mkdir -p $(CS)
-	CTX=$(CTX) KIND_CLUSTER=$(CLUSTER_FROM_CTX) NAMESPACE=$(NAMESPACE) \
+	CTX=$(CTX) KIND_CLUSTER=$(CLUSTER_FROM_CTX) K3D_CLUSTER=$(CLUSTER_FROM_CTX) NAMESPACE=$(NAMESPACE) \
 	  E2E_AGE_KEY_FILE=$(CS)/$(NAMESPACE)/age-key.txt \
 	  go test ./test/e2e/ -v -ginkgo.v
 	touch $@
@@ -447,14 +447,14 @@ $(CS)/$(NAMESPACE)/plain-manifests-file/install.done: $(CS)/$(NAMESPACE)/$(INSTA
 
 .PHONY: test-e2e-quickstart-helm
 test-e2e-quickstart-helm: ## Run quickstart smoke test (Helm install) - always starts with a clean cluster
-	CTX=$(CTX) KIND_CLUSTER=$(CLUSTER_FROM_CTX) INSTALL_MODE=helm NAMESPACE=$(NAMESPACE) \
+	CTX=$(KUBECONTEXT_QS_HELM) KIND_CLUSTER=$(KIND_CLUSTER_QUICKSTART_HELM) K3D_CLUSTER=$(KIND_CLUSTER_QUICKSTART_HELM) INSTALL_MODE=helm NAMESPACE=$(NAMESPACE) \
 	  E2E_ENABLE_QUICKSTART_FRAMEWORK=true E2E_QUICKSTART_MODE=helm \
 	  E2E_AGE_KEY_FILE=.stamps/cluster/$(KUBECONTEXT_QS_HELM)/age-key.txt \
 	  go test ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=quickstart-framework
 
 .PHONY: test-e2e-quickstart-manifest
 test-e2e-quickstart-manifest: ## Run quickstart smoke test (manifest install) - always starts with a clean cluster
-	CTX=$(CTX) KIND_CLUSTER=$(CLUSTER_FROM_CTX) INSTALL_MODE=plain-manifests-file NAMESPACE=$(NAMESPACE) \
+	CTX=$(KUBECONTEXT_QS_MANIFEST) KIND_CLUSTER=$(KIND_CLUSTER_QUICKSTART_MANIFEST) K3D_CLUSTER=$(KIND_CLUSTER_QUICKSTART_MANIFEST) INSTALL_MODE=plain-manifests-file NAMESPACE=$(NAMESPACE) \
 	  E2E_ENABLE_QUICKSTART_FRAMEWORK=true E2E_QUICKSTART_MODE=plain-manifests-file \
 	  E2E_AGE_KEY_FILE=.stamps/cluster/$(KUBECONTEXT_QS_MANIFEST)/age-key.txt \
 	  go test ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=quickstart-framework
