@@ -14,7 +14,7 @@ kube-apiserver-arg:
 
 Do the upgrade in order on your contorl plane nodes:
 
-Also copy in the [policy file](/test/e2e/kind/audit/policy.yaml)
+Also copy in the [policy file](/test/e2e/cluster/audit/policy.yaml)
 
 sudo systemctl restart k3s
 # Wait 30 seconds

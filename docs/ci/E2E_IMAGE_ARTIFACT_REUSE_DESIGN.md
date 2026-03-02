@@ -105,7 +105,7 @@ Outcome:
   - if `PROJECT_IMAGE` is set: no prep
   - else: call Make for cluster/image prep (IDE fallback)
 
-### Kind cluster bootstrap (`test/e2e/kind/start-cluster.sh`)
+### Kind cluster bootstrap (`test/e2e/cluster/start-cluster.sh`)
 - Reuses existing Kind cluster if present (no delete/recreate in script).
 - Creates cluster only when missing.
 - Still exports/re-writes kubeconfig endpoint for devcontainer networking.

@@ -260,9 +260,9 @@ setup-envtest: ## Setup envtest binaries for unit tests
 
 ##@ E2E Stamp Targets (cluster-parameterized; pass CTX=k3d-<name> to target a different cluster)
 
-$(CS)/ready: test/e2e/kind/start-cluster-k3d.sh
+$(CS)/ready: test/e2e/cluster/start-cluster.sh
 	mkdir -p $(CS)
-	K3D_CLUSTER=$(CLUSTER_FROM_CTX) bash test/e2e/kind/start-cluster-k3d.sh
+	K3D_CLUSTER=$(CLUSTER_FROM_CTX) bash test/e2e/cluster/start-cluster.sh
 	kubectl --context $(CTX) get ns >/dev/null
 	touch $@
 
