@@ -59,9 +59,14 @@ cluster_exists() {
 
 ensure_k3d_stat_compat_path() {
     local host_project_path="$1"
+    local can_sudo=false
 
     if [ "${host_project_path}" = "${REPO_PWD}" ]; then
         return 0
+    fi
+
+    if command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then
+        can_sudo=true
     fi
 
     # k3d validates -v SOURCE with a local stat() before creating containers.
@@ -73,14 +78,28 @@ ensure_k3d_stat_compat_path() {
     local parent_dir
     parent_dir="$(dirname "${host_project_path}")"
     mkdir -p "${parent_dir}" 2>/dev/null || {
-        echo "⚠️ Could not create parent '${parent_dir}' for HOST_PROJECT_PATH compatibility symlink" >&2
-        return 0
+        if [ "${can_sudo}" = true ]; then
+            sudo -n mkdir -p "${parent_dir}" >/dev/null 2>&1 || {
+                echo "⚠️ Could not create parent '${parent_dir}' for HOST_PROJECT_PATH compatibility symlink" >&2
+                return 0
+            }
+        else
+            echo "⚠️ Could not create parent '${parent_dir}' for HOST_PROJECT_PATH compatibility symlink" >&2
+            return 0
+        fi
     }
 
     if [ -L "${host_project_path}" ]; then
         ln -sfn "${REPO_PWD}" "${host_project_path}" 2>/dev/null || {
-            echo "⚠️ Could not refresh HOST_PROJECT_PATH compatibility symlink '${host_project_path}'" >&2
-            return 0
+            if [ "${can_sudo}" = true ]; then
+                sudo -n ln -sfn "${REPO_PWD}" "${host_project_path}" >/dev/null 2>&1 || {
+                    echo "⚠️ Could not refresh HOST_PROJECT_PATH compatibility symlink '${host_project_path}'" >&2
+                    return 0
+                }
+            else
+                echo "⚠️ Could not refresh HOST_PROJECT_PATH compatibility symlink '${host_project_path}'" >&2
+                return 0
+            fi
         }
         return 0
     fi
@@ -90,8 +109,15 @@ ensure_k3d_stat_compat_path() {
     fi
 
     ln -s "${REPO_PWD}" "${host_project_path}" 2>/dev/null || {
-        echo "⚠️ Could not create HOST_PROJECT_PATH compatibility symlink '${host_project_path}'" >&2
-        return 0
+        if [ "${can_sudo}" = true ]; then
+            sudo -n ln -s "${REPO_PWD}" "${host_project_path}" >/dev/null 2>&1 || {
+                echo "⚠️ Could not create HOST_PROJECT_PATH compatibility symlink '${host_project_path}'" >&2
+                return 0
+            }
+        else
+            echo "⚠️ Could not create HOST_PROJECT_PATH compatibility symlink '${host_project_path}'" >&2
+            return 0
+        fi
     }
 }
 
