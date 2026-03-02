@@ -194,8 +194,7 @@ func (r *quickstartFrameworkRun) verifyGeneratedEncryptionSecret() string {
 	var generatedAgeKey string
 
 	Eventually(func(g Gomega) {
-		cmd := exec.Command("kubectl", "get", "secret", r.encryptionName, "-n", ns, "-o", "json")
-		output, err := utils.Run(cmd)
+		output, err := kubectlRunInNamespace(ns, "get", "secret", r.encryptionName, "-o", "json")
 		g.Expect(err).NotTo(HaveOccurred())
 
 		var secretObj map[string]interface{}
@@ -241,28 +240,17 @@ func (r *quickstartFrameworkRun) verifyQuickstartConfigMapCommits() {
 		fmt.Sprintf("%s.yaml", configMapName),
 	)
 
-	_, _ = utils.Run(exec.Command(
-		"kubectl",
-		"delete",
-		"configmap",
-		configMapName,
-		"-n",
-		ns,
-		"--ignore-not-found=true",
-	))
+	_, _ = kubectlRunInNamespace(ns, "delete", "configmap", configMapName, "--ignore-not-found=true")
 
 	commitsBefore, err := r.gitCommitCount()
 	Expect(err).NotTo(HaveOccurred())
 
-	_, err = utils.Run(exec.Command(
-		"kubectl",
-		"create",
-		"configmap",
+	_, err = kubectlRunInNamespace(
+		ns,
+		"create", "configmap",
 		configMapName,
 		"--from-literal=value=one",
-		"-n",
-		ns,
-	))
+	)
 	Expect(err).NotTo(HaveOccurred(), "failed to create quickstart ConfigMap")
 
 	Eventually(func(g Gomega) {
@@ -280,18 +268,15 @@ func (r *quickstartFrameworkRun) verifyQuickstartConfigMapCommits() {
 	commitsAfterCreate, err := r.gitCommitCount()
 	Expect(err).NotTo(HaveOccurred())
 
-	_, err = utils.Run(exec.Command(
-		"kubectl",
-		"patch",
-		"configmap",
-		configMapName,
-		"-n",
+	_, err = kubectlRunInNamespace(
 		ns,
+		"patch", "configmap",
+		configMapName,
 		"--type",
 		"merge",
 		"--patch",
 		`{"data":{"value":"two"}}`,
-	))
+	)
 	Expect(err).NotTo(HaveOccurred(), "failed to patch quickstart ConfigMap")
 
 	Eventually(func(g Gomega) {
@@ -309,14 +294,11 @@ func (r *quickstartFrameworkRun) verifyQuickstartConfigMapCommits() {
 	commitsAfterUpdate, err := r.gitCommitCount()
 	Expect(err).NotTo(HaveOccurred())
 
-	_, err = utils.Run(exec.Command(
-		"kubectl",
-		"delete",
-		"configmap",
-		configMapName,
-		"-n",
+	_, err = kubectlRunInNamespace(
 		ns,
-	))
+		"delete", "configmap",
+		configMapName,
+	)
 	Expect(err).NotTo(HaveOccurred(), "failed to delete quickstart ConfigMap")
 
 	Eventually(func(g Gomega) {
@@ -352,41 +334,31 @@ func (r *quickstartFrameworkRun) verifyQuickstartSecretEncryption(generatedAgeKe
 	commitsBefore, err := r.gitCommitCount()
 	Expect(err).NotTo(HaveOccurred())
 
-	_, _ = utils.Run(exec.Command(
-		"kubectl",
-		"delete",
-		"secret",
-		secretName,
-		"-n",
+	_, _ = kubectlRunInNamespace(
 		ns,
+		"delete", "secret",
+		secretName,
 		"--ignore-not-found=true",
-	))
+	)
 
-	_, err = utils.Run(exec.Command(
-		"kubectl",
-		"create",
-		"secret",
-		"generic",
+	_, err = kubectlRunInNamespace(
+		ns,
+		"create", "secret", "generic",
 		secretName,
 		"--from-literal",
 		fmt.Sprintf("password=%s", secretValueOne),
-		"-n",
-		ns,
-	))
+	)
 	Expect(err).NotTo(HaveOccurred(), "failed to create quickstart Secret")
 
-	_, err = utils.Run(exec.Command(
-		"kubectl",
-		"patch",
-		"secret",
-		secretName,
-		"-n",
+	_, err = kubectlRunInNamespace(
 		ns,
+		"patch", "secret",
+		secretName,
 		"--type",
 		"merge",
 		"--patch",
 		fmt.Sprintf(`{"stringData":{"password":"%s"}}`, secretValueTwo),
-	))
+	)
 	Expect(err).NotTo(HaveOccurred(), "failed to patch quickstart Secret")
 
 	Eventually(func(g Gomega) {
@@ -409,22 +381,18 @@ func (r *quickstartFrameworkRun) verifyQuickstartSecretEncryption(generatedAgeKe
 		g.Expect(commitsAfter).To(BeNumerically(">", commitsBefore))
 	}, quickstartTimeout(), 2*time.Second).Should(Succeed())
 
-	_, _ = utils.Run(exec.Command(
-		"kubectl",
-		"delete",
-		"secret",
-		secretName,
-		"-n",
+	_, _ = kubectlRunInNamespace(
 		ns,
+		"delete", "secret",
+		secretName,
 		"--ignore-not-found=true",
-	))
+	)
 }
 
 func (r *quickstartFrameworkRun) verifyInvalidProviderActionableMessage() {
 	ns := quickstartSetupNamespace()
 	Eventually(func(g Gomega) {
-		cmd := exec.Command("kubectl", "get", "gitprovider", r.invalidProvName, "-n", ns, "-o", "json")
-		output, err := utils.Run(cmd)
+		output, err := kubectlRunInNamespace(ns, "get", "gitprovider", r.invalidProvName, "-o", "json")
 		g.Expect(err).NotTo(HaveOccurred())
 
 		var obj unstructured.Unstructured

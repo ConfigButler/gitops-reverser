@@ -87,9 +87,9 @@ make test-e2e  (phony)
        └─ go test ./test/e2e
             └─ BeforeSuite calls Make:
                  make CTX=<ctx> INSTALL_NAME=<seeded> NAMESPACE=<seeded> \
-                   $(CS)/$(NAMESPACE)/e2e/prepare portforward-ensure
+                   $(CS)/$(NAMESPACE)/prepare-e2e.ready portforward-ensure
 
-$(CS)/$(NAMESPACE)/e2e/prepare (stamp)
+$(CS)/$(NAMESPACE)/prepare-e2e.ready (stamp)
   ├─ $(CS)/sut.namespace.cleaned
   ├─ $(CS)/controller.deployed
   ├─ $(CS)/portforward.running
@@ -289,7 +289,7 @@ which can surface as `metadata.managedFields must be nil` errors. A clean cluste
 ### CTX override pattern
 
 Quickstart targets reuse the generic stamp targets by setting `CTX` before running `go test` (the Go `BeforeSuite`
-invokes `make e2e-prepare`, which uses stamp targets under `.stamps/cluster/$(CTX)/...`):
+invokes `make prepare-e2e`, which uses stamp targets under `.stamps/cluster/$(CTX)/...`):
 
 ```sh
 CTX=kind-gitops-reverser-test-e2e-quickstart-helm go test ./test/e2e/ ...
@@ -324,7 +324,7 @@ The manifest target implicitly validates the generated `dist/install.yaml` via t
 ### Quickstart smoke lives in Go
 
 Quickstart smoke assertions run as a Go E2E test (`quickstart-framework` label). Cluster provisioning, controller install,
-and port-forward setup is owned by `make e2e-prepare` (invoked from `BeforeSuite`).
+and port-forward setup is owned by `make prepare-e2e` (invoked from `BeforeSuite`).
 
 ---
 

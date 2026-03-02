@@ -26,8 +26,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"os/exec"
-	"strings"
 	"text/template"
 	"time"
 
@@ -36,8 +34,6 @@ import (
 	"github.com/prometheus/client_golang/api"
 	v1 "github.com/prometheus/client_golang/api/prometheus/v1"
 	"github.com/prometheus/common/model"
-
-	"github.com/ConfigButler/gitops-reverser/test/utils"
 )
 
 // namespace where the project is deployed in.
@@ -147,24 +143,8 @@ func applyFromTemplate(templatePath string, data interface{}, namespace string, 
 		return err
 	}
 
-	// 1. Define the binary explicitly
-	const binary = "kubectl"
-
-	args := []string{
-		"apply", "-f", "-",
-	}
-
-	// Add extra arguments
-	args = append(args, extraArgs...)
-
-	if namespace != "" {
-		args = append(args, "-n", namespace)
-	}
-
-	ctx := context.Background()
-	cmd := exec.CommandContext(ctx, binary, args...)
-	cmd.Stdin = strings.NewReader(yamlContent)
-	_, err = utils.Run(cmd)
+	args := append([]string{"apply", "-f", "-"}, extraArgs...)
+	_, err = kubectlRunWithStdin(namespace, yamlContent, args...)
 	return err
 }
 
@@ -225,26 +205,17 @@ func createGitTargetWithEncryptionOptions(
 // cleanupGitTarget deletes a GitTarget resource.
 func cleanupGitTarget(name, namespace string) {
 	By(fmt.Sprintf("cleaning up GitTarget '%s' in ns '%s'", name, namespace))
-	ctx := context.Background()
-	cmd := exec.CommandContext(ctx, "kubectl", "delete", "gittarget", name,
-		"-n", namespace, "--ignore-not-found=true")
-	_, _ = utils.Run(cmd)
+	_, _ = kubectlRunInNamespace(namespace, "delete", "gittarget", name, "--ignore-not-found=true")
 }
 
 // cleanupWatchRule deletes a WatchRule resource.
 func cleanupWatchRule(name, namespace string) {
 	By(fmt.Sprintf("cleaning up WatchRule '%s' in ns '%s'", name, namespace))
-	ctx := context.Background()
-	cmd := exec.CommandContext(ctx, "kubectl", "delete", "watchrule", name,
-		"-n", namespace, "--ignore-not-found=true")
-	_, _ = utils.Run(cmd)
+	_, _ = kubectlRunInNamespace(namespace, "delete", "watchrule", name, "--ignore-not-found=true")
 }
 
 // cleanupClusterWatchRule deletes a ClusterWatchRule resource.
 func cleanupClusterWatchRule(name string) {
 	By(fmt.Sprintf("cleaning up ClusterWatchRule '%s'", name))
-	ctx := context.Background()
-	cmd := exec.CommandContext(ctx, "kubectl", "delete", "clusterwatchrule", name,
-		"--ignore-not-found=true")
-	_, _ = utils.Run(cmd)
+	_, _ = kubectlRun("delete", "clusterwatchrule", name, "--ignore-not-found=true")
 }
