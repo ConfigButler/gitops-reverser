@@ -59,12 +59,14 @@ var _ = AfterSuite(func() {
 func ensureE2EPrepared() {
 	ctx := resolveE2EContext()
 	setE2EKubectlContext(ctx)
-	seed := ginkgoRandomSeed()
 	ns := resolveE2ENamespace()
-	installName := resolveE2EInstallName(seed)
+	installMode, err := resolveE2EInstallMode()
+	Expect(err).NotTo(HaveOccurred(), "INSTALL_MODE environment variable must be set for e2e runs")
+	installName := resolveE2EInstallName(ns)
 	cmd := makeCommand(
 		fmt.Sprintf("CTX=%s", ctx),
 		fmt.Sprintf("INSTALL_NAME=%s", installName),
+		fmt.Sprintf("INSTALL_MODE=%s", installMode),
 		fmt.Sprintf("NAMESPACE=%s", ns),
 		"prepare-e2e",
 	)
@@ -106,28 +108,23 @@ func makeCommand(args ...string) *exec.Cmd {
 	return cmd
 }
 
-func resolveE2EInstallName(seed int64) string {
+func resolveE2EInstallName(namespace string) string {
 	if value := strings.TrimSpace(os.Getenv("INSTALL_NAME")); value != "" {
 		return value
 	}
-	return fmt.Sprintf("gitops-reverser-%d", seed)
+	return namespace
 }
 
-func ginkgoRandomSeed() int64 {
-	suiteConfig, _ := GinkgoConfiguration()
-	return suiteConfig.RandomSeed
+func resolveE2EInstallMode() (string, error) {
+	if value := strings.TrimSpace(os.Getenv("INSTALL_MODE")); value != "" {
+		return value, nil
+	}
+	return "", fmt.Errorf("INSTALL_MODE environment variable must be set")
 }
 
 func resolveE2EContext() string {
 	if value := strings.TrimSpace(os.Getenv("CTX")); value != "" {
 		return value
-	}
-
-	if cluster := strings.TrimSpace(os.Getenv("KIND_CLUSTER")); cluster != "" {
-		if strings.HasPrefix(cluster, "kind-") {
-			return cluster
-		}
-		return fmt.Sprintf("kind-%s", cluster)
 	}
 
 	output, err := kubectlRun("config", "current-context")
