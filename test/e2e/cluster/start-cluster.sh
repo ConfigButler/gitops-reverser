@@ -5,7 +5,7 @@
 
 set -euo pipefail
 
-CLUSTER_NAME="${K3D_CLUSTER:-gitops-reverser-test-e2e}"
+CLUSTER_NAME="${CLUSTER_NAME:-gitops-reverser-test-e2e}"
 AUDIT_DIR_REL="test/e2e/cluster/audit"
 K3D_CREATE_LOG_FILE="${TMPDIR:-/tmp}/k3d-create-${CLUSTER_NAME}.log"
 REPO_PWD="$(pwd -P)"
