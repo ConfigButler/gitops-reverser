@@ -140,7 +140,7 @@ $(CS)/$(NAMESPACE)/prepare-e2e.ready: $(CS)/$(NAMESPACE)/$(INSTALL_MODE)/install
 	$(CS)/$(NAMESPACE)/label-namespace.ready \
 	$(CS)/image.loaded \
 	$(CS)/$(NAMESPACE)/controller.deployed \
-	$(CS)/$(NAMESPACE)/age-key.applied
+	$(CS)/$(NAMESPACE)/sops-secret.applied
 	mkdir -p $(@D)
 	touch $@
 
@@ -282,14 +282,23 @@ $(CS)/prometheus.installed: $(CS)/ready test/e2e/scripts/ensure-prometheus-opera
 	kubectl --context $(CTX) wait --for=condition=ready pod -l prometheus=prometheus-shared-e2e -n prometheus-operator --timeout=180s
 	touch $@
 
-$(CS)/$(NAMESPACE)/age-key.applied: Makefile $(CS)/$(NAMESPACE)/label-namespace.ready test/e2e/tools/gen-age-key/main.go
+# Step 1: Generate age key file — no cluster/namespace dependency; safe to run before installation.
+$(CS)/age-key.txt: Makefile test/e2e/tools/gen-age-key/main.go
 	mkdir -p $(@D)
 	go run ./test/e2e/tools/gen-age-key \
-	  --key-file $(CS)/$(NAMESPACE)/age-key.txt \
-	  --secret-file $(CS)/$(NAMESPACE)/age-key-secret.yaml \
+	  --key-file $@
+
+# Step 2: Derive Kubernetes Secret manifest from the key file — still no cluster dependency.
+$(CS)/$(NAMESPACE)/sops-secret.yaml: $(CS)/age-key.txt Makefile
+	go run ./test/e2e/tools/gen-age-key \
+	  --key-file $(CS)/age-key.txt \
+	  --secret-file $@ \
 	  --namespace $(NAMESPACE) \
 	  --secret-name sops-age-key
-	kubectl --context $(CTX) apply -f $(CS)/$(NAMESPACE)/age-key-secret.yaml
+
+# Step 3: Apply the secret into the namespace — requires the namespace to already exist.
+$(CS)/$(NAMESPACE)/sops-secret.applied: Makefile $(CS)/$(NAMESPACE)/sops-secret.yaml $(CS)/$(NAMESPACE)/label-namespace.ready
+	kubectl --context $(CTX) apply -f $(CS)/$(NAMESPACE)/sops-secret.yaml
 	touch $@
 
 $(IS)/controller.id: $(GO_SOURCES) Dockerfile
@@ -350,11 +359,11 @@ portforward-ensure: $(CS)/gitea.installed $(CS)/prometheus.installed ## Ensure p
 	mkdir -p $(CS)
 	E2E_KUBECONTEXT=$(CTX) bash test/e2e/scripts/setup-port-forwards.sh
 
-E2E_TEST_INPUTS := $(CS)/$(NAMESPACE)/age-key.applied $(shell find test/e2e -type f \( -name '*.go' -o -name '*.sh' -o -name '*.yaml' -o -name '*.tmpl' \))
+E2E_TEST_INPUTS := $(CS)/age-key.txt $(shell find test/e2e -type f \( -name '*.go' -o -name '*.sh' -o -name '*.yaml' -o -name '*.tmpl' \))
 $(CS)/e2e.passed: $(E2E_TEST_INPUTS) Makefile
 	mkdir -p $(CS)
 	CTX=$(CTX) INSTALL_MODE=$(INSTALL_MODE) NAMESPACE=$(NAMESPACE) \
-	  E2E_AGE_KEY_FILE=$(CS)/$(NAMESPACE)/age-key.txt \
+	  E2E_AGE_KEY_FILE=$(CS)/age-key.txt \
 	  go test ./test/e2e/ -v -ginkgo.v
 	touch $@
 
@@ -428,14 +437,14 @@ $(CS)/$(NAMESPACE)/plain-manifests-file/install.done: $(CS)/$(NAMESPACE)/$(INSTA
 test-e2e-quickstart-helm: ## Run quickstart smoke test (Helm install) - always starts with a clean cluster
 	CTX=$(CTX) INSTALL_MODE=helm NAMESPACE=$(NAMESPACE) \
 	  E2E_ENABLE_QUICKSTART_FRAMEWORK=true E2E_QUICKSTART_MODE=helm \
-	  E2E_AGE_KEY_FILE=$(CS)/$(NAMESPACE)/age-key.txt \
+	  E2E_AGE_KEY_FILE=$(CS)/age-key.txt \
 	  go test ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=quickstart-framework
 
 .PHONY: test-e2e-quickstart-manifest
 test-e2e-quickstart-manifest: ## Run quickstart smoke test (manifest install) - always starts with a clean cluster
 	CTX=$(CTX) INSTALL_MODE=plain-manifests-file NAMESPACE=$(NAMESPACE) \
 	  E2E_ENABLE_QUICKSTART_FRAMEWORK=true E2E_QUICKSTART_MODE=plain-manifests-file \
-	  E2E_AGE_KEY_FILE=$(CS)/$(NAMESPACE)/age-key.txt \
+	  E2E_AGE_KEY_FILE=$(CS)/age-key.txt \
 	  go test ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=quickstart-framework
 
 .PHONY: cleanup-port-forwards
