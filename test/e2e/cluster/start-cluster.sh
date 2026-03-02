@@ -6,7 +6,7 @@
 set -euo pipefail
 
 CLUSTER_NAME="${K3D_CLUSTER:-gitops-reverser-test-e2e}"
-AUDIT_DIR_REL="test/e2e/kind/audit"
+AUDIT_DIR_REL="test/e2e/cluster/audit"
 K3D_CREATE_LOG_FILE="${TMPDIR:-/tmp}/k3d-create-${CLUSTER_NAME}.log"
 REPO_PWD="$(pwd -P)"
 
@@ -74,7 +74,7 @@ ensure_k3d_stat_compat_path() {
     # daemon but not inside this devcontainer, which causes a noisy warning.
     # Creating a local symlink keeps k3d's preflight happy without changing the
     # real bind source path passed to Docker.
-    # Example of the warning that we prevent: WARN[0000] failed to stat file/directory '/home/runner/work/gitops-reverser/gitops-reverser/test/e2e/kind/audit' volume mount '/home/runner/work/gitops-reverser/gitops-reverser/test/e2e/kind/audit:/etc/kubernetes/audit': please make sure it exists
+    # Example of the warning that we prevent: WARN[0000] failed to stat file/directory '/home/runner/work/gitops-reverser/gitops-reverser/test/e2e/cluster/audit' volume mount '/home/runner/work/gitops-reverser/gitops-reverser/test/e2e/cluster/audit:/etc/kubernetes/audit': please make sure it exists
     local parent_dir
     parent_dir="$(dirname "${host_project_path}")"
     mkdir -p "${parent_dir}" 2>/dev/null || {

@@ -43,7 +43,7 @@ In `.devcontainer/devcontainer.json`:
 
 ### B) Kind API server bind address
 
-In `test/e2e/kind/cluster-template.yaml`:
+In `test/e2e/cluster/cluster-template.yaml`:
 
 ```yaml
 networking:
@@ -54,7 +54,7 @@ This ensures host publish is reachable from devcontainer via `host.docker.intern
 
 ### C) Kubeconfig rewrite in cluster setup script
 
-In `test/e2e/kind/start-cluster.sh`, after `kind export kubeconfig`:
+In `test/e2e/cluster/start-cluster.sh`, after `kind export kubeconfig`:
 
 - detect kubeconfig server host in `{127.0.0.1, localhost, 0.0.0.0}`
 - rewrite to `https://host.docker.internal:<port>`

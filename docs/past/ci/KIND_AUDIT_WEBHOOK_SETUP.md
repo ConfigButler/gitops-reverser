@@ -25,7 +25,7 @@ Even with files correctly mounted:
 ### Evidence
 ```bash
 # Inside devcontainer:
-$ ls test/e2e/kind/audit/policy.yaml
+$ ls test/e2e/cluster/audit/policy.yaml
 -rw-r--r-- 1 vscode vscode 1858 policy.yaml  # ✅ File exists
 
 # From Docker on host:
@@ -54,7 +54,7 @@ This injects the physical host path (e.g., `/home/user/projects/gitops-reverser2
 
 #### 2. Created Template Configuration
 
-**File:** [`test/e2e/kind/cluster-template.yaml`](../test/e2e/kind/cluster-template.yaml)
+**File:** [`test/e2e/cluster/cluster-template.yaml`](../test/e2e/cluster/cluster-template.yaml)
 
 ```yaml
 kind: Cluster
@@ -62,7 +62,7 @@ apiVersion: kind.x-k8s.io/v1alpha4
 nodes:
 - role: control-plane
   extraMounts:
-  - hostPath: ${HOST_PROJECT_PATH}/test/e2e/kind/audit  # ← Mount to node
+  - hostPath: ${HOST_PROJECT_PATH}/test/e2e/cluster/audit  # ← Mount to node
     containerPath: /etc/kubernetes/audit
     readOnly: false
   
@@ -85,7 +85,7 @@ nodes:
 
 #### 3. Created Cluster Startup Script
 
-**File:** [`test/e2e/kind/start-cluster.sh`](../test/e2e/kind/start-cluster.sh)
+**File:** [`test/e2e/cluster/start-cluster.sh`](../test/e2e/cluster/start-cluster.sh)
 
 The script:
 1. Checks if `HOST_PROJECT_PATH` environment variable is set
@@ -103,7 +103,7 @@ setup-cluster: ## Set up a Kind cluster for e2e tests if it does not exist
 	@if ! command -v $(KIND) >/dev/null 2>&1; then \
 		echo "Kind is not installed - skipping..."; \
 	else \
-		KIND_CLUSTER=$(KIND_CLUSTER) bash test/e2e/kind/start-cluster.sh; \
+		KIND_CLUSTER=$(KIND_CLUSTER) bash test/e2e/cluster/start-cluster.sh; \
 	fi
 ```
 
@@ -144,7 +144,7 @@ patches:
 
 #### 3. Updated Audit Webhook Config
 
-**File:** [`test/e2e/kind/audit/webhook-config.yaml`](../test/e2e/kind/audit/webhook-config.yaml)
+**File:** [`test/e2e/cluster/audit/webhook-config.yaml`](../test/e2e/cluster/audit/webhook-config.yaml)
 
 ```yaml
 clusters:
@@ -176,15 +176,15 @@ steps:
   # Generate cluster.yaml from template with HOST_PROJECT_PATH substitution
   - name: Generate Kind cluster config from template
     run: |
-      envsubst < test/e2e/kind/cluster-template.yaml > test/e2e/kind/cluster.yaml
-      cat test/e2e/kind/cluster.yaml
+      envsubst < test/e2e/cluster/cluster-template.yaml > test/e2e/cluster/cluster.yaml
+      cat test/e2e/cluster/cluster.yaml
 
   # Use helm/kind-action with our custom config
   - name: Set up Kind cluster with audit webhook support
     uses: helm/kind-action@v1.13.0
     with:
       cluster_name: gitops-reverser-test-e2e
-      config: test/e2e/kind/cluster.yaml  # Our generated config
+      config: test/e2e/cluster/cluster.yaml  # Our generated config
       wait: 5m
 ```
 
@@ -350,8 +350,8 @@ The test **"should receive audit webhook events from kube-apiserver"** should pa
 # Old directories created by previous failed attempts still exist on host
 # Delete them manually:
 docker run --rm -v /:/host busybox rm -rf \
-  /host/workspaces/gitops-reverser2/test/e2e/kind/audit/policy.yaml \
-  /host/workspaces/gitops-reverser2/test/e2e/kind/audit/webhook-config.yaml
+  /host/workspaces/gitops-reverser2/test/e2e/cluster/audit/policy.yaml \
+  /host/workspaces/gitops-reverser2/test/e2e/cluster/audit/webhook-config.yaml
 
 # Then try creating cluster again
 kind delete cluster --name gitops-reverser-test-e2e
@@ -377,11 +377,11 @@ docker exec gitops-reverser-test-e2e-control-plane crictl logs $(docker exec git
 ## Files Modified
 
 - [`.devcontainer/devcontainer.json`](../.devcontainer/devcontainer.json) - Added `HOST_PROJECT_PATH` env var
-- [`test/e2e/kind/cluster-template.yaml`](../test/e2e/kind/cluster-template.yaml) - Template with placeholder
-- [`test/e2e/kind/start-cluster.sh`](../test/e2e/kind/start-cluster.sh) - Script to substitute and create cluster
+- [`test/e2e/cluster/cluster-template.yaml`](../test/e2e/cluster/cluster-template.yaml) - Template with placeholder
+- [`test/e2e/cluster/start-cluster.sh`](../test/e2e/cluster/start-cluster.sh) - Script to substitute and create cluster
 - [`Makefile`](../Makefile) - Updated `setup-cluster` target
 - [`test/e2e/e2e_test.go`](../test/e2e/e2e_test.go) - Added audit webhook test
-- [`test/e2e/kind/README.md`](../test/e2e/kind/README.md) - Documentation
+- [`test/e2e/cluster/README.md`](../test/e2e/cluster/README.md) - Documentation
 
 ## Verification: It Should Work Now!
 

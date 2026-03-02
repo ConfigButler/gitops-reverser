@@ -123,9 +123,9 @@ What this buys you in practice:
 ### 1 — Cluster ready
 
 ```make
-$(CS)/ready: test/e2e/kind/start-cluster.sh test/e2e/kind/cluster-template.yaml
+$(CS)/ready: test/e2e/cluster/start-cluster.sh test/e2e/cluster/cluster-template.yaml
 	mkdir -p $(CS)
-	KIND_CLUSTER=$(CLUSTER_FROM_CTX) bash test/e2e/kind/start-cluster.sh
+	KIND_CLUSTER=$(CLUSTER_FROM_CTX) bash test/e2e/cluster/start-cluster.sh
 	kubectl --context $(CTX) get ns >/dev/null
 	touch $@
 ```

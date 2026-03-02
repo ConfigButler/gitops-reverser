@@ -54,7 +54,7 @@ The current working model is:
   - `--add-host=host.docker.internal:host-gateway`
 - Kind cluster config sets:
   - `networking.apiServerAddress: "0.0.0.0"`
-- `test/e2e/kind/start-cluster.sh` rewrites kubeconfig server endpoints from
+- `test/e2e/cluster/start-cluster.sh` rewrites kubeconfig server endpoints from
   `127.0.0.1|localhost|0.0.0.0` to `host.docker.internal:<port>` and sets
   `tls-server-name=localhost`
 

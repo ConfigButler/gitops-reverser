@@ -44,7 +44,7 @@ This matches known upstream issue patterns for Kind in DOOD-style environments:
 
 ## Implemented Interim Workaround (DOOD)
 
-`test/e2e/kind/start-cluster.sh` now includes a compact self-heal path for known DOOD bootstrap flakes:
+`test/e2e/cluster/start-cluster.sh` now includes a compact self-heal path for known DOOD bootstrap flakes:
 create with `--retain`, wait for API readiness, apply Kind default CNI/storage with `--validate=false`, then wait for
 `kindnet` and node readiness.
 
@@ -78,8 +78,8 @@ environment, removing host-socket coupling for local cluster lifecycle.
 
 ### Phase 2: Kind Config Alignment
 
-1. Keep `test/e2e/kind/cluster-template.yaml` mount source aligned with container-visible path.
-2. Review `test/e2e/kind/start-cluster.sh` kubeconfig rewrite logic:
+1. Keep `test/e2e/cluster/cluster-template.yaml` mount source aligned with container-visible path.
+2. Review `test/e2e/cluster/start-cluster.sh` kubeconfig rewrite logic:
    - Current rewrite to `host.docker.internal` is DOOD-oriented
    - In DinD, direct endpoint usage is preferred unless a concrete networking reason remains
 3. Validate audit mounts from inside Kind control-plane:

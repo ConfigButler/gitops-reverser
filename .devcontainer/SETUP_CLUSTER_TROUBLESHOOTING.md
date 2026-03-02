@@ -10,19 +10,19 @@ Get "https://172.19.0.2:6443/livez?timeout=10s": dial tcp 172.19.0.2:6443: conne
 
 ## Root cause (current setup)
 
-`test/e2e/kind/start-cluster.sh` generates `test/e2e/kind/cluster.ignore.yaml` from `HOST_PROJECT_PATH`.
+`test/e2e/cluster/start-cluster.sh` generates `test/e2e/cluster/cluster.ignore.yaml` from `HOST_PROJECT_PATH`.
 
 In the current devcontainer config, `HOST_PROJECT_PATH` is set from `${localWorkspaceFolder}`.  
 That produced:
 
 ```
-hostPath: /home/simon/git/gitops-reverser2/test/e2e/kind/audit
+hostPath: /home/simon/git/gitops-reverser2/test/e2e/cluster/audit
 ```
 
 But that mounted directory exists and is empty in the container, while the real audit files are under:
 
 ```
-/workspaces/gitops-reverser2/test/e2e/kind/audit
+/workspaces/gitops-reverser2/test/e2e/cluster/audit
 ```
 
 Because the mount source is wrong/empty, kube-apiserver cannot read:
@@ -56,7 +56,7 @@ Your current config mixes modes and path assumptions, so Kind mount path resolut
 Before running `make setup-cluster`, verify generated config points to a path with files:
 
 ```bash
-cat test/e2e/kind/cluster.ignore.yaml
+cat test/e2e/cluster/cluster.ignore.yaml
 ls -la <hostPath-from-generated-file>
 ```
 
