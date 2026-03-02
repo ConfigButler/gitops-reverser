@@ -119,6 +119,8 @@ GO_SOURCES := $(shell find cmd internal -type f -name '*.go') go.mod go.sum
 INSTALL_MODE ?= config-dir
 INSTALL_NAME ?= gitops-reverser
 NAMESPACE ?= gitops-reverser
+E2E_NAMESPACE_LABEL_KEY ?= e2e
+E2E_NAMESPACE_LABEL_VALUE ?= true
 
 KUBECONTEXT_QS_HELM := kind-$(KIND_CLUSTER_QUICKSTART_HELM)
 KUBECONTEXT_QS_MANIFEST := kind-$(KIND_CLUSTER_QUICKSTART_MANIFEST)
@@ -146,20 +148,6 @@ cleanup-e2e-clusters: ## Tear down all E2E Kind clusters and their stamps
 		rm -rf .stamps/cluster/kind-$$cluster; \
 	done
 
-# We delete all services (over all namespaces) since we only can have ONE service listening to the cluster audit webhook at the same time
-$(CS)/$(NAMESPACE)/namespace.cleaned: Makefile $(CS)/$(NAMESPACE)/namespace.ready
-	kubectl --context $(CTX) delete svc --all-namespaces -l app.kubernetes.io/name=gitops-reverser --ignore-not-found=true
-	kubectl --context $(CTX) delete validatingwebhookconfiguration \
-		gitops-reverser-validating-webhook-configuration --ignore-not-found=true
-	touch $@
-
-$(CS)/$(NAMESPACE)/namespace.ready: Makefile $(CS)/ready
-	mkdir -p $(@D)
-	kubectl --context $(CTX) create namespace $(NAMESPACE) --dry-run=client -o yaml | kubectl --context $(CTX) apply -f -
-	kubectl --context $(CTX) label --overwrite ns $(NAMESPACE) \
-		app.kubernetes.io/managed-by=kustomize app.kubernetes.io/name=gitops-reverser control-plane=gitops-reverser \
-		pod-security.kubernetes.io/enforce=restricted
-	touch $@
 
 # Called by the Go e2e suite (BeforeSuite) to prepare prerequisites once, including port-forwards + age key.
 .PHONY: prepare-e2e
@@ -168,8 +156,8 @@ prepare-e2e: $(CS)/$(NAMESPACE)/prepare-e2e.ready portforward-ensure ## Prepare 
 # Called by the full e2e suite.
 # For now: clean the sut namespace, recreate it, run the installer, and deploy the controller image.
 # Prefer depending on stamps; this target must not invoke Go e2e tests (Go calls this target).
-$(CS)/$(NAMESPACE)/prepare-e2e.ready: $(CS)/$(NAMESPACE)/namespace.cleaned \
-	$(CS)/$(NAMESPACE)/install-$(INSTALL_MODE) \
+$(CS)/$(NAMESPACE)/prepare-e2e.ready: $(CS)/$(NAMESPACE)/install-$(INSTALL_MODE) \
+	$(CS)/$(NAMESPACE)/label-namespace.ready \
 	$(CS)/image.loaded \
 	$(CS)/$(NAMESPACE)/controller.deployed \
 	$(CS)/$(NAMESPACE)/age-key.applied
@@ -315,7 +303,7 @@ $(CS)/prometheus.installed: $(CS)/ready test/e2e/scripts/ensure-prometheus-opera
 	kubectl --context $(CTX) wait --for=condition=ready pod -l prometheus=prometheus-shared-e2e -n prometheus-operator --timeout=180s
 	touch $@
 
-$(CS)/$(NAMESPACE)/age-key.applied: Makefile $(CS)/$(NAMESPACE)/namespace.ready test/e2e/tools/gen-age-key/main.go
+$(CS)/$(NAMESPACE)/age-key.applied: Makefile $(CS)/$(NAMESPACE)/install-$(INSTALL_MODE) test/e2e/tools/gen-age-key/main.go
 	mkdir -p $(@D)
 	go run ./test/e2e/tools/gen-age-key \
 	  --key-file $(CS)/age-key.txt \
@@ -429,7 +417,7 @@ CONFIG_DIR_INPUTS := $(shell find config -type f)
 
 ##@ Deployments of all manifests needed to run
 $(CS)/$(NAMESPACE)/install-helm: INSTALL_MODE := helm
-$(CS)/$(NAMESPACE)/install-helm: $(HELM_SYNC_OUTPUTS) $(CS)/cert-manager.installed $(CS)/prometheus.installed ## Deploy quickstart controller via Helm into CTX cluster
+$(CS)/$(NAMESPACE)/install-helm: $(CS)/$(NAMESPACE)/cleanup-installs.done $(HELM_SYNC_OUTPUTS) $(CS)/cert-manager.installed $(CS)/prometheus.installed
 	@set -euo pipefail; \
 	$(ASSERT_INSTALL_METHOD) \
 	helm_args=( \
@@ -449,8 +437,7 @@ $(CS)/$(NAMESPACE)/install-helm: $(HELM_SYNC_OUTPUTS) $(CS)/cert-manager.install
 	touch $@
 
 $(CS)/$(NAMESPACE)/install-config-dir: INSTALL_MODE := config-dir
-$(CS)/$(NAMESPACE)/install-config-dir: $(MANIFEST_OUTPUTS) $(CONFIG_DIR_INPUTS) $(CS)/cert-manager.installed $(CS)/prometheus.installed \
-	$(CS)/$(NAMESPACE)/namespace.ready ## Deploy controller to the K8s cluster specified in ~/.kube/config.
+$(CS)/$(NAMESPACE)/install-config-dir: $(CS)/$(NAMESPACE)/cleanup-installs.done $(MANIFEST_OUTPUTS) $(CONFIG_DIR_INPUTS) $(CS)/cert-manager.installed $(CS)/prometheus.installed
 	@set -euo pipefail; \
 	$(ASSERT_INSTALL_METHOD) \
 	tmpdir="$$(mktemp -d)"; \
@@ -462,7 +449,7 @@ $(CS)/$(NAMESPACE)/install-config-dir: $(MANIFEST_OUTPUTS) $(CONFIG_DIR_INPUTS) 
 	touch $@
 
 $(CS)/$(NAMESPACE)/install-plain-manifests-file: INSTALL_MODE := plain-manifests-file
-$(CS)/$(NAMESPACE)/install-plain-manifests-file: dist/install.yaml $(CS)/cert-manager.installed $(CS)/prometheus.installed ## Deploy quickstart controller via manifest into CTX cluster
+$(CS)/$(NAMESPACE)/install-plain-manifests-file: $(CS)/$(NAMESPACE)/cleanup-installs.done dist/install.yaml $(CS)/cert-manager.installed $(CS)/prometheus.installed ## Deploy quickstart controller via manifest into CTX cluster
 	@set -euo pipefail; \
 	ctx="$(CTX)"; \
 	ns="$(NAMESPACE)"; \
@@ -479,16 +466,14 @@ $(CS)/$(NAMESPACE)/install-plain-manifests-file: dist/install.yaml $(CS)/cert-ma
 
 .PHONY: test-e2e-quickstart-helm
 test-e2e-quickstart-helm: ## Run quickstart smoke test (Helm install) - always starts with a clean cluster
-	$(MAKE) cleanup-cluster KIND_CLUSTER=$(KIND_CLUSTER_QUICKSTART_HELM)
-	CTX=$(KUBECONTEXT_QS_HELM) INSTALL_MODE=helm NAMESPACE=$(NAMESPACE) \
+	CTX=$(CTX) KIND_CLUSTER=$(CLUSTER_FROM_CTX) INSTALL_MODE=helm NAMESPACE=$(NAMESPACE) \
 	  E2E_ENABLE_QUICKSTART_FRAMEWORK=true E2E_QUICKSTART_MODE=helm \
 	  E2E_AGE_KEY_FILE=.stamps/cluster/$(KUBECONTEXT_QS_HELM)/age-key.txt \
 	  go test ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=quickstart-framework
 
 .PHONY: test-e2e-quickstart-manifest
 test-e2e-quickstart-manifest: ## Run quickstart smoke test (manifest install) - always starts with a clean cluster
-	$(MAKE) cleanup-cluster KIND_CLUSTER=$(KIND_CLUSTER_QUICKSTART_MANIFEST)
-	CTX=$(KUBECONTEXT_QS_MANIFEST) INSTALL_MODE=plain-manifests-file NAMESPACE=$(NAMESPACE) \
+	CTX=$(CTX) KIND_CLUSTER=$(CLUSTER_FROM_CTX) INSTALL_MODE=plain-manifests-file NAMESPACE=$(NAMESPACE) \
 	  E2E_ENABLE_QUICKSTART_FRAMEWORK=true E2E_QUICKSTART_MODE=plain-manifests-file \
 	  E2E_AGE_KEY_FILE=.stamps/cluster/$(KUBECONTEXT_QS_MANIFEST)/age-key.txt \
 	  go test ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=quickstart-framework
@@ -499,3 +484,39 @@ cleanup-port-forwards: ## Stop all port-forwards
 	@-pkill -f "kubectl.*port-forward.*13000" 2>/dev/null || true
 	@-pkill -f "kubectl.*port-forward.*19090" 2>/dev/null || true
 	@echo "✅ Port-forwards stopped"
+
+$(CS)/$(NAMESPACE)/label-namespace.ready: Makefile $(CS)/$(NAMESPACE)/install-$(INSTALL_MODE)
+	mkdir -p $(@D)
+	kubectl --context $(CTX) label --overwrite ns $(NAMESPACE) \
+		$(E2E_NAMESPACE_LABEL_KEY)=$(E2E_NAMESPACE_LABEL_VALUE) \
+		app.kubernetes.io/name=gitops-reverser control-plane=gitops-reverser \
+		pod-security.kubernetes.io/enforce=restricted
+	@echo "✅ Added e2e=true label to namespace $(NAMESPACE)"
+	touch $@
+
+# Ensure e2e cleanup runs before any per-namespace stamps are rebuilt.
+# Keep this stamp under the namespace directory so `rm -rf .stamps/cluster/<ctx>/<ns>` forces a rerun.
+# We delete all services (over all namespaces) since we only can have ONE service listening to the cluster audit webhook at the same time
+$(CS)/$(NAMESPACE)/cleanup-installs.done: Makefile $(CS)/ready
+	mkdir -p $(@D)
+	kubectl --context $(CTX) delete svc --all-namespaces -l app.kubernetes.io/name=gitops-reverser --ignore-not-found=true; \
+	kubectl --context $(CTX) delete validatingwebhookconfiguration gitops-reverser-validating-webhook-configuration --ignore-not-found=true; \
+	$(MAKE) cleanup-installs; \
+	touch $@
+
+.PHONY: cleanup-installs
+cleanup-installs: ## Delete namespaces labeled for e2e runs in CTX cluster and remove their stamps
+	@set -euo pipefail; \
+	ctx="$(CTX)"; \
+	label="$(E2E_NAMESPACE_LABEL_KEY)=$(E2E_NAMESPACE_LABEL_VALUE)"; \
+	namespaces="$$(kubectl --context "$$ctx" get ns -l "$$label" -o jsonpath='{.items[*].metadata.name}')"; \
+	if [ -z "$$namespaces" ]; then \
+		echo "ℹ️ No namespaces with label '$$label' found in context '$$ctx'"; \
+		exit 0; \
+	fi; \
+	echo "🧹 Deleting namespaces in context '$$ctx': $$namespaces"; \
+	kubectl --context "$$ctx" delete ns $$namespaces --ignore-not-found=true; \
+	for ns in $$namespaces; do \
+		kubectl --context "$$ctx" wait --for=delete "ns/$$ns" --timeout=300s || true; \
+	done; \
+	for ns in $$namespaces; do rm -rf ".stamps/cluster/$$ctx/$$ns"; done
