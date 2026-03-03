@@ -79,6 +79,7 @@ jobs:
             controller-gen --version
             k3d version
             docker --version
+            checkmake --version
             echo '✅ All CI container tools verified'
           "
 
@@ -125,6 +126,7 @@ jobs:
             golangci-lint version
             k3d version
             docker --version
+            checkmake --version
             echo '✅ All dev container tools verified'
           "
 
@@ -192,6 +194,9 @@ jobs:
 
       - name: Configure Git safe directory (for now needed as workarround https://github.com/actions/checkout/issues/2031)
         run: git config --global --add safe.directory /__w/gitops-reverser/gitops-reverser
+
+      - name: checkmake Makefile
+        run: checkmake Makefile
 
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9
