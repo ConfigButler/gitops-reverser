@@ -123,6 +123,65 @@ HELM_CHART_SOURCE ?= charts/gitops-reverser
 .PHONY: prepare-e2e
 prepare-e2e: $(CS)/$(NAMESPACE)/prepare-e2e.ready portforward-ensure ## Prepare E2E prerequisites for Go tests
 
+##@ E2E Gitea Setup (split bootstrap + run setup; produces concrete artifacts under $(CS))
+
+GITEA_ADMIN_USER ?= giteaadmin
+GITEA_ADMIN_PASS ?= giteapassword123
+GITEA_ORG_NAME ?= testorg
+E2E_GIT_SECRET_HTTP ?= git-creds
+E2E_GIT_SECRET_SSH ?= git-creds-ssh
+E2E_GIT_SECRET_INVALID ?= git-creds-invalid
+
+.PHONY: e2e-gitea-bootstrap
+e2e-gitea-bootstrap: $(CS)/gitea/bootstrap/ready ## Bootstrap shared Gitea prerequisites for the cluster context
+
+.PHONY: e2e-gitea-run-setup
+e2e-gitea-run-setup: $(CS)/$(NAMESPACE)/repo/repo.ready $(CS)/$(NAMESPACE)/repo/checkout.ready ## Create active repo+creds+checkout for this run
+
+$(CS)/gitea/bootstrap/api.ready: $(CS)/$(NAMESPACE)/prepare-e2e.ready test/e2e/scripts/gitea-bootstrap.sh
+	mkdir -p $(@D)
+	$(MAKE) CTX=$(CTX) INSTALL_MODE=$(INSTALL_MODE) INSTALL_NAME=$(INSTALL_NAME) NAMESPACE=$(NAMESPACE) portforward-ensure
+	BOOTSTRAP_DIR=$(CS)/gitea/bootstrap \
+	  API_URL=http://localhost:13000/api/v1 \
+	  GITEA_ADMIN_USER=$(GITEA_ADMIN_USER) \
+	  GITEA_ADMIN_PASS=$(GITEA_ADMIN_PASS) \
+	  ORG_NAME=$(GITEA_ORG_NAME) \
+	  bash test/e2e/scripts/gitea-bootstrap.sh
+	@test -f $@
+
+$(CS)/gitea/bootstrap/org-$(GITEA_ORG_NAME).ready: $(CS)/gitea/bootstrap/api.ready test/e2e/scripts/gitea-bootstrap.sh
+	mkdir -p $(@D)
+	BOOTSTRAP_DIR=$(CS)/gitea/bootstrap \
+	  API_URL=http://localhost:13000/api/v1 \
+	  GITEA_ADMIN_USER=$(GITEA_ADMIN_USER) \
+	  GITEA_ADMIN_PASS=$(GITEA_ADMIN_PASS) \
+	  ORG_NAME=$(GITEA_ORG_NAME) \
+	  bash test/e2e/scripts/gitea-bootstrap.sh
+	@test -f $@
+
+$(CS)/gitea/bootstrap/ready: $(CS)/gitea/bootstrap/api.ready $(CS)/gitea/bootstrap/org-$(GITEA_ORG_NAME).ready
+	mkdir -p $(@D)
+	@test -f $(CS)/gitea/bootstrap/api.ready
+	@test -f $(CS)/gitea/bootstrap/org-$(GITEA_ORG_NAME).ready
+	touch $@
+
+$(CS)/$(NAMESPACE)/repo/checkout.ready: $(CS)/gitea/bootstrap/ready test/e2e/scripts/gitea-run-setup.sh
+	@[ -n "$(REPO_NAME)" ] || { echo "ERROR: REPO_NAME must be set for e2e-gitea-run-setup" >&2; exit 2; }
+	mkdir -p $(@D)
+	CTX=$(CTX) CS=$(CS) NAMESPACE=$(NAMESPACE) REPO_NAME=$(REPO_NAME) CHECKOUT_DIR=$(CHECKOUT_DIR) \
+	  API_URL=http://localhost:13000/api/v1 \
+	  GITEA_ADMIN_USER=$(GITEA_ADMIN_USER) \
+	  GITEA_ADMIN_PASS=$(GITEA_ADMIN_PASS) \
+	  ORG_NAME=$(GITEA_ORG_NAME) \
+	  E2E_GIT_SECRET_HTTP=$(E2E_GIT_SECRET_HTTP) \
+	  E2E_GIT_SECRET_SSH=$(E2E_GIT_SECRET_SSH) \
+	  E2E_GIT_SECRET_INVALID=$(E2E_GIT_SECRET_INVALID) \
+	  bash test/e2e/scripts/gitea-run-setup.sh
+	@test -f $@
+
+$(CS)/$(NAMESPACE)/repo/repo.ready: $(CS)/$(NAMESPACE)/repo/checkout.ready
+	@test -f $@
+
 # Called by the full e2e suite.
 # For now: clean the sut namespace, recreate it, run the installer, and deploy the controller image.
 # Prefer depending on stamps; this target must not invoke Go e2e tests (Go calls this target).

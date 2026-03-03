@@ -47,6 +47,12 @@ const defaultE2EAgeKeyPath = "/tmp/e2e-age-key.txt"
 var testRepoName string
 var checkoutDir string
 
+var (
+	gitSecretHTTP    = "git-creds"
+	gitSecretSSH     = "git-creds-ssh"
+	gitSecretInvalid = "git-creds-invalid"
+)
+
 // getRepoUrlHTTP returns the HTTP URL for the test repository.
 func getRepoURLHTTP() string {
 	return fmt.Sprintf(giteaRepoURLTemplate, testRepoName)
@@ -62,17 +68,25 @@ var _ = Describe("Manager", Ordered, func() {
 
 	// Before running the tests, set up per-run test fixtures.
 	BeforeAll(func() {
-		var err error
-		var cmd *exec.Cmd
+		By("loading Gitea repo + checkout from suite artifacts")
+		testRepoName = strings.TrimSpace(os.Getenv("E2E_REPO_NAME"))
+		checkoutDir = strings.TrimSpace(os.Getenv("E2E_CHECKOUT_DIR"))
+		gitSecretHTTP = strings.TrimSpace(os.Getenv("E2E_GIT_SECRET_HTTP"))
+		gitSecretSSH = strings.TrimSpace(os.Getenv("E2E_GIT_SECRET_SSH"))
+		gitSecretInvalid = strings.TrimSpace(os.Getenv("E2E_GIT_SECRET_INVALID"))
 
-		By("setting up Gitea test environment with unique repository")
-		companyStart := time.Date(2025, 5, 12, 0, 0, 0, 0, time.UTC)
-		minutesSinceStart := int(time.Since(companyStart).Minutes())
-		testRepoName = fmt.Sprintf("e2e-test-%d", minutesSinceStart)
-		checkoutDir = fmt.Sprintf("/tmp/gitops-reverser/%s", testRepoName)
-		cmd = exec.Command("bash", "test/e2e/scripts/setup-gitea.sh", testRepoName, checkoutDir)
-		_, err = utils.Run(cmd)
-		Expect(err).NotTo(HaveOccurred(), "Failed to setup Gitea test environment with repository")
+		if gitSecretHTTP == "" {
+			gitSecretHTTP = "git-creds"
+		}
+		if gitSecretSSH == "" {
+			gitSecretSSH = "git-creds-ssh"
+		}
+		if gitSecretInvalid == "" {
+			gitSecretInvalid = "git-creds-invalid"
+		}
+
+		Expect(testRepoName).NotTo(BeEmpty(), "E2E_REPO_NAME must be set by the suite (make e2e-gitea-run-setup)")
+		Expect(checkoutDir).NotTo(BeEmpty(), "E2E_CHECKOUT_DIR must be set by the suite (make e2e-gitea-run-setup)")
 
 		By("setting up Prometheus client for metrics testing")
 		setupPrometheusClient()
@@ -421,7 +435,7 @@ var _ = Describe("Manager", Ordered, func() {
 			By("showing initial controller logs")
 			showControllerLogs("before creating GitProvider")
 
-			createGitProvider(gitProviderName, "main", "git-creds")
+			createGitProvider(gitProviderName, "main", gitSecretHTTP)
 
 			By("showing controller logs after GitProvider creation")
 			showControllerLogs("after creating GitProvider")
@@ -436,7 +450,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 		It("should handle GitProvider with invalid credentials", func() {
 			gitProviderName := "gitprovider-invalid-test"
-			createGitProvider(gitProviderName, "main", "git-creds-invalid")
+			createGitProvider(gitProviderName, "main", gitSecretInvalid)
 			verifyGitProviderStatus(gitProviderName, "False", "ConnectionFailed", "")
 			cleanupGitProvider(gitProviderName)
 		})
@@ -445,7 +459,7 @@ var _ = Describe("Manager", Ordered, func() {
 			gitProviderName := "gitprovider-branch-test"
 
 			// GitProvider should be Ready=True (validates connectivity, not branch existence)
-			createGitProvider(gitProviderName, "nonexistent-branch", "git-creds")
+			createGitProvider(gitProviderName, "nonexistent-branch", gitSecretHTTP)
 			verifyGitProviderStatus(gitProviderName, "True", "Ready", "Repository connectivity validated")
 
 			// GitTarget with branch not matching any pattern should fail
@@ -466,7 +480,7 @@ var _ = Describe("Manager", Ordered, func() {
 			showControllerLogs("before SSH test")
 
 			By("📋 Checking SSH secret exists")
-			secretOutput, err := kubectlRunInNamespace(namespace, "get", "secret", "git-creds-ssh", "-o", "yaml")
+			secretOutput, err := kubectlRunInNamespace(namespace, "get", "secret", gitSecretSSH, "-o", "yaml")
 			if err != nil {
 				fmt.Printf("❌ SSH secret not found: %v\n", err)
 			} else {
@@ -478,7 +492,7 @@ var _ = Describe("Manager", Ordered, func() {
 				)
 			}
 
-			createSSHGitProvider(gitProviderName, "main", "git-creds-ssh")
+			createSSHGitProvider(gitProviderName, "main", gitSecretSSH)
 
 			By("🔍 Controller logs after SSH GitProvider creation")
 			showControllerLogs("after SSH GitProvider creation")
@@ -493,7 +507,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 		It("should handle a normal and healthy GitProvider", func() {
 			gitProviderName := "gitprovider-normal"
-			createGitProvider(gitProviderName, "main", "git-creds")
+			createGitProvider(gitProviderName, "main", gitSecretHTTP)
 			verifyGitProviderStatus(gitProviderName, "True", "Ready", "Repository connectivity validated")
 		})
 

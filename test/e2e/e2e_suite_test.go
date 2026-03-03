@@ -24,8 +24,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -75,6 +77,19 @@ func ensureE2EPrepared() {
 	Expect(err).NotTo(HaveOccurred(), "failed to run make target for e2e prepare")
 	_, _ = fmt.Fprintf(GinkgoWriter, "%s", output)
 
+	By("setting up Gitea repo, credentials and checkout via Makefile target")
+	repoName := resolveE2ERepoName()
+	cmd = makeCommand(
+		fmt.Sprintf("CTX=%s", ctx),
+		fmt.Sprintf("NAMESPACE=%s", ns),
+		fmt.Sprintf("REPO_NAME=%s", repoName),
+		"e2e-gitea-run-setup",
+	)
+	output, err = utils.Run(cmd)
+	Expect(err).NotTo(HaveOccurred(), "failed to run make target for gitea run setup")
+	_, _ = fmt.Fprintf(GinkgoWriter, "%s", output)
+	exportGiteaArtifacts(ctx, ns)
+
 	// Some e2e shell scripts call `kubectl` without an explicit `--context` flag. Ensure `kubectl` is
 	// pointed at the intended cluster context for the remainder of the test run.
 	output, err = kubectlRun("config", "use-context", ctx)
@@ -97,6 +112,36 @@ func ensureE2EPrepared() {
 		ageKeyPath := filepath.Join(wd, ".stamps", "cluster", ctx, "age-key.txt")
 		Expect(os.Setenv("E2E_AGE_KEY_FILE", ageKeyPath)).To(Succeed())
 	}
+}
+
+func resolveE2ERepoName() string {
+	if value := strings.TrimSpace(os.Getenv("REPO_NAME")); value != "" {
+		return value
+	}
+	return "e2e-test-" + strconv.FormatInt(time.Now().UnixNano(), 10)
+}
+
+func exportGiteaArtifacts(ctx, namespace string) {
+	projectDir, err := utils.GetProjectDir()
+	Expect(err).NotTo(HaveOccurred(), "failed to resolve project directory for gitea artifacts")
+
+	base := filepath.Join(projectDir, ".stamps", "cluster", ctx, namespace, "repo")
+
+	activeRepoBytes, err := os.ReadFile(filepath.Join(base, "active-repo.txt"))
+	Expect(err).NotTo(HaveOccurred(), "failed to read active repo file")
+	activeRepo := strings.TrimSpace(string(activeRepoBytes))
+	Expect(activeRepo).NotTo(BeEmpty(), "active repo file must contain a repo name")
+
+	checkoutPathBytes, err := os.ReadFile(filepath.Join(base, activeRepo, "checkout.path"))
+	Expect(err).NotTo(HaveOccurred(), "failed to read checkout.path for active repo")
+	checkoutPath := strings.TrimSpace(string(checkoutPathBytes))
+	Expect(checkoutPath).NotTo(BeEmpty(), "checkout.path must contain a checkout dir")
+
+	Expect(os.Setenv("E2E_REPO_NAME", activeRepo)).To(Succeed())
+	Expect(os.Setenv("E2E_CHECKOUT_DIR", checkoutPath)).To(Succeed())
+	Expect(os.Setenv("E2E_GIT_SECRET_HTTP", "git-creds")).To(Succeed())
+	Expect(os.Setenv("E2E_GIT_SECRET_SSH", "git-creds-ssh")).To(Succeed())
+	Expect(os.Setenv("E2E_GIT_SECRET_INVALID", "git-creds-invalid")).To(Succeed())
 }
 
 func makeCommand(args ...string) *exec.Cmd {
