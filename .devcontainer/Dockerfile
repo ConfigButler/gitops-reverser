@@ -85,7 +85,8 @@ RUN chgrp -R godev /go && \
 # Install Go tools used by the project (using @version doesn't need go.mod)
 # These run AFTER permissions are set to ensure proper group ownership
 RUN go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.19.0 \
-    && go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
+    && go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest \
+    && go install github.com/mrtazz/checkmake@latest
 
 # Initialize golangci-lint cache by running it once on an empty directory
 # This downloads linter dependencies without needing source code

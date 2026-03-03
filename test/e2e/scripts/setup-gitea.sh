@@ -3,7 +3,6 @@ set -euo pipefail
 
 # Configuration
 GITEA_NAMESPACE=${GITEA_NAMESPACE:-gitea-e2e}
-GITEA_SERVICE="gitea-http"
 ADMIN_USER="giteaadmin"
 ADMIN_PASS="giteapassword123"
 ORG_NAME="testorg"
@@ -31,7 +30,7 @@ fi
 echo "🚀 Setting up Gitea test environment with repository: $REPO_NAME"
 
 test_api_connectivity() {
-    # Port-forward should already be running via Makefile's setup-port-forwards
+    # Installation and port-forward setup are handled by Makefile stamp targets.
     echo "🔍 Testing API connectivity..."
     for i in {1..30}; do
         if curl -s -f "$API_URL/version" >/dev/null 2>&1; then
