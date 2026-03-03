@@ -403,7 +403,7 @@ define DO_CLEANUP_INSTALLS
 		clusterwatchrules.configbutler.ai \
 		--ignore-not-found=true || true; \
 	echo "🗂 Removing namespace stamp dirs"; \
-	find "$$stamp_cluster_dir" -mindepth 1 -maxdepth 1 -type d -exec rm -rf {} +; \
+	find "$$stamp_cluster_dir" -mindepth 1 -maxdepth 1 -type d -exec rm -rf {} +;
 endef
 
 ##@ Deployments of all manifests needed to run
