@@ -121,16 +121,6 @@ E2E_NAMESPACE_LABEL_KEY ?= e2e
 E2E_NAMESPACE_LABEL_VALUE ?= true
 HELM_CHART_SOURCE ?= charts/gitops-reverser
 
-.PHONY: cleanup-cluster
-cleanup-cluster: ## Tear down the E2E cluster used for tests and remove its stamps
-	@if $(K3D) cluster list 2>/dev/null | awk '{print $$1}' | grep -q "^$(CLUSTER_NAME)$$"; then \
-		echo "🧹 Deleting k3d cluster '$(CLUSTER_NAME)'"; \
-		$(K3D) cluster delete $(CLUSTER_NAME); \
-	else \
-		echo "ℹ️ k3d cluster '$(CLUSTER_NAME)' does not exist; skipping cleanup"; \
-	fi
-	rm -rf .stamps/cluster/$(CTX)
-
 # Called by the Go e2e suite (BeforeSuite) to prepare prerequisites once, including port-forwards + age key.
 .PHONY: prepare-e2e
 prepare-e2e: $(CS)/$(NAMESPACE)/prepare-e2e.ready portforward-ensure ## Prepare E2E prerequisites for Go tests
@@ -138,7 +128,7 @@ prepare-e2e: $(CS)/$(NAMESPACE)/prepare-e2e.ready portforward-ensure ## Prepare 
 # Called by the full e2e suite.
 # For now: clean the sut namespace, recreate it, run the installer, and deploy the controller image.
 # Prefer depending on stamps; this target must not invoke Go e2e tests (Go calls this target).
-$(CS)/$(NAMESPACE)/prepare-e2e.ready: $(CS)/$(NAMESPACE)/$(INSTALL_MODE)/install.done \
+$(CS)/$(NAMESPACE)/prepare-e2e.ready: $(CS)/$(NAMESPACE)/$(INSTALL_MODE)/install.yaml \
 	$(CS)/image.loaded \
 	$(CS)/$(NAMESPACE)/controller.deployed \
 	$(CS)/$(NAMESPACE)/sops-secret.applied
@@ -346,7 +336,7 @@ $(CS)/image.loaded: $(IS)/project-image.ready $(CS)/ready
 	$(K3D) image import $(PROJECT_IMAGE) -c $(CLUSTER_NAME); \
 	echo "$$img_id" > "$@"
 
-$(CS)/$(NAMESPACE)/controller.deployed: $(CS)/$(NAMESPACE)/$(INSTALL_MODE)/install.done $(CS)/image.loaded
+$(CS)/$(NAMESPACE)/controller.deployed: $(CS)/$(NAMESPACE)/$(INSTALL_MODE)/install.yaml $(CS)/image.loaded
 	@set -euo pipefail; \
 	ctx="$(CTX)"; ns="$(NAMESPACE)"; img="$(PROJECT_IMAGE)"; c="$(CONTROLLER_CONTAINER)"; sel="$(CONTROLLER_DEPLOY_SELECTOR)"; \
 	[ -n "$$img" ] || { echo "ERROR: PROJECT_IMAGE must be non-empty" >&2; exit 2; }; \
@@ -386,24 +376,46 @@ ifeq (,$(filter $(INSTALL_MODE),$(VALID_INSTALL_MODES)))
 endif
 
 .PHONY: install install-helm install-plain-manifests-file install-config-dir
-install: $(CS)/$(NAMESPACE)/$(INSTALL_MODE)/install.done
+install: $(CS)/$(NAMESPACE)/$(INSTALL_MODE)/install.yaml
 
-install-helm: $(CS)/$(NAMESPACE)/helm/install.done
+install-helm: $(CS)/$(NAMESPACE)/helm/install.yaml
 
-install-plain-manifests-file: $(CS)/$(NAMESPACE)/plain-manifests-file/install.done
+install-plain-manifests-file: $(CS)/$(NAMESPACE)/plain-manifests-file/install.yaml
 
-install-config-dir: $(CS)/$(NAMESPACE)/config-dir/install.done
+install-config-dir: $(CS)/$(NAMESPACE)/config-dir/install.yaml
 
-CONFIG_DIR_INPUTS := $(shell find config -type f)
+
+# Shared cleanup logic — inlined at the start of every install recipe so it always
+# runs whenever the recipe runs, regardless of stamp freshness.
+define DO_CLEANUP_INSTALLS
+	@set -euo pipefail; \
+	ctx="$(CTX)"; \
+	stamp_cluster_dir=".stamps/cluster/$$ctx"; \
+	echo "🧹 Deleting resources via installed manifests in '$$ctx'"; \
+	while IFS= read -r -d '' manifest; do \
+		echo "  kubectl delete -f $$manifest"; \
+		$(KUBECTL) --context "$$ctx" delete -f "$$manifest" --ignore-not-found=true || true; \
+	done < <(find "$$stamp_cluster_dir" -name 'install.yaml' -print0 2>/dev/null); \
+	$(KUBECTL) --context "$$ctx" delete crd \
+		gitproviders.configbutler.ai \
+		gittargets.configbutler.ai \
+		watchrules.configbutler.ai \
+		clusterwatchrules.configbutler.ai \
+		--ignore-not-found=true || true; \
+	echo "🗂 Removing namespace stamp dirs"; \
+	find "$$stamp_cluster_dir" -mindepth 1 -maxdepth 1 -type d -exec rm -rf {} +; \
+endef
 
 ##@ Deployments of all manifests needed to run
-$(CS)/$(NAMESPACE)/helm/install.done: $(CS)/services.ready $(CS)/$(NAMESPACE)/helm/cleanup-e2e-installs.done $(HELM_SYNC_OUTPUTS)
+$(CS)/$(NAMESPACE)/helm/install.yaml: $(CS)/services.ready $(HELM_SYNC_OUTPUTS)
+	$(DO_CLEANUP_INSTALLS)
 	@set -euo pipefail; \
+	mkdir -p "$(@D)"; \
 	helm_args=( \
 		upgrade --install $(INSTALL_NAME) "$(HELM_CHART_SOURCE)" \
 		--kube-context $(CTX) \
 		--namespace $(NAMESPACE) \
-		--create-namespace \
+		--set createNamespace=true \
 	); \
 	if kubectl --context $(CTX) get crd \
 		gitproviders.configbutler.ai \
@@ -413,20 +425,28 @@ $(CS)/$(NAMESPACE)/helm/install.done: $(CS)/services.ready $(CS)/$(NAMESPACE)/he
 		helm_args+=(--skip-crds); \
 	fi; \
 	helm "$${helm_args[@]}"; \
-	touch $@
+	$(HELM) --kube-context $(CTX) get manifest $(INSTALL_NAME) \
+	  --namespace $(NAMESPACE) > "$@"
 
-$(CS)/$(NAMESPACE)/config-dir/install.done: $(CS)/services.ready $(CS)/$(NAMESPACE)/config-dir/cleanup-e2e-installs.done $(MANIFEST_OUTPUTS) $(CONFIG_DIR_INPUTS)
+CONFIG_DIR_INPUTS := $(shell find config -type f)
+$(CS)/$(NAMESPACE)/config-dir/install.yaml: $(CS)/services.ready $(MANIFEST_OUTPUTS) $(CONFIG_DIR_INPUTS)
+	$(DO_CLEANUP_INSTALLS)
 	@set -euo pipefail; \
+	mkdir -p "$(@D)"; \
 	tmpdir="$$(mktemp -d)"; \
 	trap 'rm -rf "$$tmpdir"' EXIT; \
 	cp -R config "$$tmpdir/config"; \
 	(cd "$$tmpdir/config" && $(KUSTOMIZE) edit set namespace "$(NAMESPACE)"); \
 	(cd "$$tmpdir/config" && $(KUSTOMIZE) edit set image gitops-reverser="$(PROJECT_IMAGE)"); \
-	(cd "$$tmpdir/config" && $(KUSTOMIZE) build .) | $(KUBECTL) --context "$(CTX)" apply -f -
-	touch $@
+	(cd "$$tmpdir/config" && $(KUSTOMIZE) build .) \
+	  | tee "$$tmpdir/install.yaml" \
+	  | $(KUBECTL) --context "$(CTX)" apply -f -; \
+	mv "$$tmpdir/install.yaml" "$@"
 
-$(CS)/$(NAMESPACE)/plain-manifests-file/install.done: $(CS)/services.ready $(CS)/$(NAMESPACE)/plain-manifests-file/cleanup-e2e-installs.done dist/install.yaml
+$(CS)/$(NAMESPACE)/plain-manifests-file/install.yaml: $(CS)/services.ready dist/install.yaml
+	$(DO_CLEANUP_INSTALLS)
 	@set -euo pipefail; \
+	mkdir -p "$(@D)"; \
 	ctx="$(CTX)"; \
 	ns="$(NAMESPACE)"; \
 	tmpdir="$$(mktemp -d)"; \
@@ -436,8 +456,9 @@ $(CS)/$(NAMESPACE)/plain-manifests-file/install.done: $(CS)/services.ready $(CS)
 		cd "$$tmpdir/dist" && \
 		kustomize edit set namespace "$$ns" >/dev/null && \
 		kustomize build . \
-	) | kubectl --context "$$ctx" apply -f -; \
-	touch $@
+	) | tee "$$tmpdir/install.yaml" \
+	  | kubectl --context "$$ctx" apply -f -; \
+	mv "$$tmpdir/install.yaml" "$@"
 
 .PHONY: test-e2e-quickstart-helm
 test-e2e-quickstart-helm: ## Run quickstart smoke test (Helm install)
@@ -453,36 +474,32 @@ test-e2e-quickstart-manifest: ## Run quickstart smoke test (manifest install)
 	  E2E_AGE_KEY_FILE=$(CS)/age-key.txt \
 	  go test ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=quickstart-framework
 
-.PHONY: cleanup-port-forwards
-cleanup-port-forwards: ## Stop all port-forwards
+
+
+
+##@ Cleanup
+.PHONY: clean
+clean: ## Remove build artifacts (binaries, coverage, generated dist files, build stamps)
+	rm -rf bin/ cover.out dist/ .stamps/
+
+.PHONY: clean-installs
+clean-installs: 
+	$(DO_CLEANUP_INSTALLS)
+
+.PHONY: clean-port-forwards
+clean-port-forwards: ## Stop all port-forwards
 	@echo "🛑 Stopping port-forwards..."
 	@-pkill -f "kubectl.*port-forward.*13000" 2>/dev/null || true
 	@-pkill -f "kubectl.*port-forward.*19090" 2>/dev/null || true
 	@echo "✅ Port-forwards stopped"
 
-$(CS)/$(NAMESPACE)/$(INSTALL_MODE)/cleanup-e2e-installs.done: Makefile $(CS)/ready
-	@set -euo pipefail; \
-	ctx="$(CTX)"; \
-	ns="$(NAMESPACE)"; \
-	if kubectl --context "$$ctx" get ns "$$ns" >/dev/null 2>&1; then \
-		echo "🧹 Deleting namespace '$$ns' in '$$ctx'"; \
-		kubectl --context "$$ctx" delete ns "$$ns" --ignore-not-found=true; \
-		kubectl --context "$$ctx" wait --for=delete "ns/$$ns" --timeout=300s || true; \
-		rm -rf ".stamps/cluster/$$ctx/$$ns" 2>/dev/null || true; \
-		rm -f ".stamps/cluster/$$ctx/image.loaded" 2>/dev/null || true; \
+.PHONY: clean-cluster
+clean-cluster: ## Tear down the E2E cluster used for tests and remove its stamps
+	@if $(K3D) cluster list 2>/dev/null | awk '{print $$1}' | grep -q "^$(CLUSTER_NAME)$$"; then \
+		echo "🧹 Deleting k3d cluster '$(CLUSTER_NAME)'"; \
+		$(K3D) cluster delete $(CLUSTER_NAME); \
 	else \
-		echo "ℹ️ Namespace '$$ns' does not exist in '$$ctx'"; \
-	fi; \
-	# Clear cluster-scoped resources that survive namespace deletion (safe always)
-	kubectl --context "$$ctx" delete svc --all-namespaces -l app.kubernetes.io/name=gitops-reverser --ignore-not-found=true || true; \
-	kubectl --context "$$ctx" delete validatingwebhookconfiguration gitops-reverser-validating-webhook-configuration --ignore-not-found=true || true; \
-	kubectl --context "$$ctx" delete clusterrole,clusterrolebinding -l app.kubernetes.io/name=gitops-reverser --ignore-not-found=true || true; \
-	kubectl --context "$$ctx" delete crd gitproviders.configbutler.ai gittargets.configbutler.ai watchrules.configbutler.ai clusterwatchrules.configbutler.ai --ignore-not-found=true || true; \
-	mkdir -p "$(@D)"; \
-	touch "$@"
-
-##@ Cleanup
-
-.PHONY: clean
-clean: ## Remove build artifacts (binaries, coverage, generated dist files, build stamps)
-	rm -rf bin/ cover.out dist/ .stamps/
+		echo "ℹ️ k3d cluster '$(CLUSTER_NAME)' does not exist; skipping cleanup"; \
+	fi
+	rm -rf .stamps/cluster/$(CTX)
+	
