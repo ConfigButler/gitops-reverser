@@ -433,14 +433,19 @@ $(CS)/$(NAMESPACE)/plain-manifests-file/install.yaml: $(CS)/services.ready dist/
 	ns="$(NAMESPACE)"; \
 	tmpdir="$$(mktemp -d)"; \
 	trap 'rm -rf "$$tmpdir"' EXIT; \
-	cp -R dist "$$tmpdir/dist"; \
+	cp dist/install.yaml "$$tmpdir/install.yaml"; \
+	printf '%s\n' \
+		'apiVersion: kustomize.config.k8s.io/v1beta1' \
+		'kind: Kustomization' \
+		'resources:' \
+		'- install.yaml' > "$$tmpdir/kustomization.yaml"; \
 	( \
-		cd "$$tmpdir/dist" && \
-		kustomize edit set namespace "$$ns" >/dev/null && \
-		kustomize build . \
-	) | tee "$$tmpdir/install.yaml" \
-	  | kubectl --context "$$ctx" apply -f -; \
-	mv "$$tmpdir/install.yaml" "$@"
+		cd "$$tmpdir" && \
+		$(KUSTOMIZE) edit set namespace "$$ns" >/dev/null && \
+		$(KUSTOMIZE) build . \
+	) | tee "$$tmpdir/rendered-install.yaml" \
+	  | $(KUBECTL) --context "$$ctx" apply -f -; \
+	mv "$$tmpdir/rendered-install.yaml" "$@"
 
 .PHONY: test-e2e-quickstart-helm
 test-e2e-quickstart-helm: ## Run quickstart smoke test (Helm install)
