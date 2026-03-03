@@ -79,16 +79,20 @@ Artifacts under:
 
 - `.stamps/cluster/$(CTX)/$(NAMESPACE)/repo/$(REPO_NAME)/`
 
+Checkout working copies under:
+
+- `.stamps/repos/$(REPO_NAME)/` (default; can be overridden via `CHECKOUT_DIR` or `REPOS_DIR`)
+- `.stamps/cluster/$(CTX)/$(NAMESPACE)/repo/$(REPO_NAME)/checkout` may be a symlink to the above for convenience
+
 Concrete artifact targets:
 
-1. `$(CS)/$(NAMESPACE)/repo/$(REPO_NAME)/checkout.path`
-2. `$(CS)/$(NAMESPACE)/repo/$(REPO_NAME)/checkout/.git/HEAD`
-3. `$(CS)/$(NAMESPACE)/repo/checkout.ready` (aggregate; uses active repo from `active-repo.txt`)
+1. `$(CS)/$(NAMESPACE)/repo/$(REPO_NAME)/checkout/.git/HEAD`
+2. `$(CS)/$(NAMESPACE)/repo/checkout.ready` (aggregate; uses active repo from `active-repo.txt`)
 
 Default checkout location for active repo:
 
-- `$(CS)/$(NAMESPACE)/repo/$(REPO_NAME)/checkout`
-- `CHECKOUT_DIR` may override, but should default to the stamp path above.
+- `.stamps/repos/$(REPO_NAME)/`
+- `CHECKOUT_DIR` may override; `REPOS_DIR` may override the `.stamps/repos` root.
 
 ## Script Refactor Shape
 
@@ -129,7 +133,6 @@ Suggested integration:
 | `$(CS)/$(NAMESPACE)/repo/ssh/known_hosts` | `.stamps/cluster/$(CTX)/$(NAMESPACE)/repo/ssh/known_hosts` | `secrets.yaml` |
 | `$(CS)/$(NAMESPACE)/repo/secrets.yaml` | `.stamps/cluster/$(CTX)/$(NAMESPACE)/repo/secrets.yaml` | `secrets.applied` |
 | `$(CS)/$(NAMESPACE)/repo/secrets.applied` | `.stamps/cluster/$(CTX)/$(NAMESPACE)/repo/secrets.applied` | `repo.ready` |
-| `$(CS)/$(NAMESPACE)/repo/$(REPO_NAME)/checkout.path` | `.stamps/cluster/$(CTX)/$(NAMESPACE)/repo/$(REPO_NAME)/checkout.path` | e2e/quickstart tests needing checkout location |
 | `$(CS)/$(NAMESPACE)/repo/$(REPO_NAME)/checkout/.git/HEAD` | `.stamps/cluster/$(CTX)/$(NAMESPACE)/repo/$(REPO_NAME)/checkout/.git/HEAD` | `checkout.ready` |
 | `$(CS)/$(NAMESPACE)/repo/repo.ready` | `.stamps/cluster/$(CTX)/$(NAMESPACE)/repo/repo.ready` | suite execution start gate |
 | `$(CS)/$(NAMESPACE)/repo/checkout.ready` | `.stamps/cluster/$(CTX)/$(NAMESPACE)/repo/checkout.ready` | suite execution start gate |
@@ -147,7 +150,7 @@ Recommended environment variables per producer:
      - `make ... REPO_NAME=<repo> e2e-gitea-run-setup`
    - export outputs for test usage:
      - `E2E_REPO_NAME`
-     - `E2E_CHECKOUT_DIR` (read from `checkout.path`)
+     - `E2E_CHECKOUT_DIR` (computed as `.stamps/repos/<repo-name>`)
      - `E2E_GIT_SECRET_HTTP`, `E2E_GIT_SECRET_SSH`, `E2E_GIT_SECRET_INVALID` (run-scoped names)
 2. `test/e2e/e2e_test.go`
    - remove direct `setup-gitea.sh` call

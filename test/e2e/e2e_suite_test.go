@@ -132,10 +132,16 @@ func exportGiteaArtifacts(ctx, namespace string) {
 	activeRepo := strings.TrimSpace(string(activeRepoBytes))
 	Expect(activeRepo).NotTo(BeEmpty(), "active repo file must contain a repo name")
 
-	checkoutPathBytes, err := os.ReadFile(filepath.Join(base, activeRepo, "checkout.path"))
-	Expect(err).NotTo(HaveOccurred(), "failed to read checkout.path for active repo")
-	checkoutPath := strings.TrimSpace(string(checkoutPathBytes))
-	Expect(checkoutPath).NotTo(BeEmpty(), "checkout.path must contain a checkout dir")
+	checkoutRoot := strings.TrimSpace(os.Getenv("REPOS_DIR"))
+	if checkoutRoot == "" {
+		checkoutRoot = filepath.Join(projectDir, ".stamps", "repos")
+	} else if !filepath.IsAbs(checkoutRoot) {
+		checkoutRoot = filepath.Join(projectDir, checkoutRoot)
+	}
+
+	checkoutPath := filepath.Join(checkoutRoot, activeRepo)
+	_, err = os.Stat(filepath.Join(checkoutPath, ".git"))
+	Expect(err).NotTo(HaveOccurred(), "expected checkout to exist for active repo")
 
 	Expect(os.Setenv("E2E_REPO_NAME", activeRepo)).To(Succeed())
 	Expect(os.Setenv("E2E_CHECKOUT_DIR", checkoutPath)).To(Succeed())
