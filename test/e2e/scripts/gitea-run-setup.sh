@@ -15,7 +15,8 @@ set -euo pipefail
 # - CS (optional): stamp cluster dir; defaults to .stamps/cluster/${CTX}
 # - NAMESPACE (optional): target namespace for secrets; defaults to sut
 # - REPO_NAME (required): repo name to create/use as active repo
-# - CHECKOUT_DIR (optional): checkout dir; defaults to $(CS)/$(NAMESPACE)/repo/<repo>/checkout
+# - CHECKOUT_DIR (optional): checkout dir; defaults to .stamps/repos/<repo>
+# - REPOS_DIR (optional): root dir for default checkouts; defaults to .stamps/repos
 #
 # Outputs:
 # - $(CS)/$(NAMESPACE)/repo/active-repo.txt
@@ -25,7 +26,6 @@ set -euo pipefail
 # - $(CS)/$(NAMESPACE)/repo/secrets.yaml
 # - $(CS)/$(NAMESPACE)/repo/secrets.applied
 # - $(CS)/$(NAMESPACE)/repo/repo.ready
-# - $(CS)/$(NAMESPACE)/repo/<repo>/checkout.path
 # - $(CS)/$(NAMESPACE)/repo/<repo>/checkout/.git/HEAD
 # - $(CS)/$(NAMESPACE)/repo/checkout.ready
 
@@ -50,6 +50,7 @@ ORG_NAME="${ORG_NAME:-testorg}"
 
 REPO_NAME="${REPO_NAME:-}"
 CHECKOUT_DIR="${CHECKOUT_DIR:-}"
+REPOS_DIR="${REPOS_DIR:-}"
 
 SECRET_HTTP_NAME="${E2E_GIT_SECRET_HTTP:-git-creds}"
 SECRET_SSH_NAME="${E2E_GIT_SECRET_SSH:-git-creds-ssh}"
@@ -73,8 +74,6 @@ secrets_yaml="${run_dir}/secrets.yaml"
 secrets_applied="${run_dir}/secrets.applied"
 repo_ready="${run_dir}/repo.ready"
 checkout_ready="${run_dir}/checkout.ready"
-
-repo_checkout_path_file="${repo_dir}/checkout.path"
 
 mkdir -p "${ssh_dir}" "${repo_dir}"
 
@@ -332,15 +331,25 @@ apply_secrets() {
 }
 
 ensure_checkout() {
-  local checkout_dir repo_url
-  if [[ -n "${CHECKOUT_DIR}" ]]; then
-    checkout_dir="${CHECKOUT_DIR}"
-  else
-    checkout_dir="${repo_dir}/checkout"
+  local checkout_dir checkout_link repo_url repos_dir
+
+  repos_dir="${REPOS_DIR:-${project_root}/.stamps/repos}"
+  if [[ "${repos_dir}" != /* ]]; then
+    repos_dir="${project_root}/${repos_dir}"
   fi
 
-  mkdir -p "$(dirname "${checkout_dir}")"
-  printf '%s\n' "${checkout_dir}" > "${repo_checkout_path_file}"
+  if [[ -n "${CHECKOUT_DIR}" ]]; then
+    checkout_dir="${CHECKOUT_DIR}"
+    if [[ "${checkout_dir}" != /* ]]; then
+      checkout_dir="${project_root}/${checkout_dir}"
+    fi
+  else
+    checkout_dir="${repos_dir}/${REPO_NAME}"
+  fi
+
+  checkout_link="${repo_dir}/checkout"
+
+  mkdir -p "$(dirname "${checkout_dir}")" "${repo_dir}"
 
   repo_url="http://localhost:13000/${ORG_NAME}/${REPO_NAME}.git"
 
@@ -352,6 +361,15 @@ ensure_checkout() {
       echo "ERROR: failed to clone ${repo_url} to ${checkout_dir}" >&2
       exit 1
     }
+  fi
+
+  if [[ "${checkout_link}" != "${checkout_dir}" ]]; then
+    if [[ -L "${checkout_link}" ]]; then
+      rm -f "${checkout_link}"
+    elif [[ -e "${checkout_link}" ]]; then
+      rm -rf "${checkout_link}"
+    fi
+    ln -s "${checkout_dir}" "${checkout_link}"
   fi
 
   git -C "${checkout_dir}" config user.name "E2E Test" >/dev/null 2>&1 || true
