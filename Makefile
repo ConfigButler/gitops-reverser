@@ -117,8 +117,6 @@ GO_SOURCES := $(shell find cmd internal -type f -name '*.go') go.mod go.sum
 INSTALL_MODE ?= config-dir
 INSTALL_NAME ?= gitops-reverser
 NAMESPACE ?= gitops-reverser
-E2E_NAMESPACE_LABEL_KEY ?= e2e
-E2E_NAMESPACE_LABEL_VALUE ?= true
 HELM_CHART_SOURCE ?= charts/gitops-reverser
 
 # Called by the Go e2e suite (BeforeSuite) to prepare prerequisites once, including port-forwards + age key.
@@ -384,26 +382,10 @@ install-plain-manifests-file: $(CS)/$(NAMESPACE)/plain-manifests-file/install.ya
 
 install-config-dir: $(CS)/$(NAMESPACE)/config-dir/install.yaml
 
-
 # Shared cleanup logic — inlined at the start of every install recipe so it always
 # runs whenever the recipe runs, regardless of stamp freshness.
 define DO_CLEANUP_INSTALLS
-	@set -euo pipefail; \
-	ctx="$(CTX)"; \
-	stamp_cluster_dir=".stamps/cluster/$$ctx"; \
-	echo "🧹 Deleting resources via installed manifests in '$$ctx'"; \
-	while IFS= read -r -d '' manifest; do \
-		echo "  kubectl delete -f $$manifest"; \
-		$(KUBECTL) --context "$$ctx" delete -f "$$manifest" --ignore-not-found=true || true; \
-	done < <(find "$$stamp_cluster_dir" -name 'install.yaml' -print0 2>/dev/null); \
-	$(KUBECTL) --context "$$ctx" delete crd \
-		gitproviders.configbutler.ai \
-		gittargets.configbutler.ai \
-		watchrules.configbutler.ai \
-		clusterwatchrules.configbutler.ai \
-		--ignore-not-found=true || true; \
-	echo "🗂 Removing namespace stamp dirs"; \
-	find "$$stamp_cluster_dir" -mindepth 1 -maxdepth 1 -type d -exec rm -rf {} +;
+	@CTX="$(CTX)" KUBECTL="$(KUBECTL)" bash hack/cleanup-installs.sh
 endef
 
 ##@ Deployments of all manifests needed to run
@@ -415,7 +397,7 @@ $(CS)/$(NAMESPACE)/helm/install.yaml: $(CS)/services.ready $(HELM_SYNC_OUTPUTS)
 		upgrade --install $(INSTALL_NAME) "$(HELM_CHART_SOURCE)" \
 		--kube-context $(CTX) \
 		--namespace $(NAMESPACE) \
-		--set createNamespace=true \
+		--create-namespace \
 	); \
 	if kubectl --context $(CTX) get crd \
 		gitproviders.configbutler.ai \
