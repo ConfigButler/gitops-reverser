@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.18.0](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.17.1...gitops-reverser-v0.18.0) (2026-03-03)
+
+
+### Features
+
+* Making big steps in Makefile understanding, but it's still messy ([cf93ab5](https://github.com/ConfigButler/gitops-reverser/commit/cf93ab5dbff98e98d641c1c4cb4e13bcaeef67a3))
+
+
+### Bug Fixes
+
+* Always check these things yourself ([ce9031d](https://github.com/ConfigButler/gitops-reverser/commit/ce9031d6e059dcfa6a06e34819a0389677b8e5e3))
+* Getting all paths right ([77ac054](https://github.com/ConfigButler/gitops-reverser/commit/77ac05436bdad42a5233e971cdf132c749a189ce))
+* Getting the image insertion at least a little bit straight ([ff31576](https://github.com/ConfigButler/gitops-reverser/commit/ff3157690088e226d79ba8331f47ae05a5f11bf9))
+* Kind and docker outside docker ([e94be0c](https://github.com/ConfigButler/gitops-reverser/commit/e94be0c100c0c7cd718111484c0fd174e3db781b))
+* Let's get the linter happy again ([ce18453](https://github.com/ConfigButler/gitops-reverser/commit/ce18453873a2110fe5fac421d325bf2bf7d90b1a))
+* Mistake in Makefile syntax ([2a8820a](https://github.com/ConfigButler/gitops-reverser/commit/2a8820a083df8e15a666cafa4ebce33ea0596612))
+* Now we can really uninstall, also multiple if that would already be supported ([241bb13](https://github.com/ConfigButler/gitops-reverser/commit/241bb135dca2ae5c2417bb692261f1fb59e45388))
+* preventing warning on k3d creation DoD style ([30a8208](https://github.com/ConfigButler/gitops-reverser/commit/30a8208e1061e89ef6d574fcd938d8df456ca8fc))
+* Some tweaks to cleaning existing installs, and moving to a seperate file ([22e960e](https://github.com/ConfigButler/gitops-reverser/commit/22e960ea904b3f960f18ea9ced156b9c8d3d0e3f))
+* The order in which the dependencies is (perhaps to?) important ([a38102a](https://github.com/ConfigButler/gitops-reverser/commit/a38102ac41f7c7a90981f92e59be42384c8cf56e))
+
 ## [0.17.1](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.17.0...gitops-reverser-v0.17.1) (2026-02-26)
 
 
