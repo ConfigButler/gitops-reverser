@@ -27,7 +27,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -118,7 +117,7 @@ func resolveE2ERepoName() string {
 	if value := strings.TrimSpace(os.Getenv("REPO_NAME")); value != "" {
 		return value
 	}
-	return "e2e-test-" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	return "e2e-test-" + strconv.FormatInt(GinkgoRandomSeed(), 10)
 }
 
 func exportGiteaArtifacts(ctx, namespace string) {
@@ -148,6 +147,9 @@ func exportGiteaArtifacts(ctx, namespace string) {
 	Expect(os.Setenv("E2E_GIT_SECRET_HTTP", "git-creds")).To(Succeed())
 	Expect(os.Setenv("E2E_GIT_SECRET_SSH", "git-creds-ssh")).To(Succeed())
 	Expect(os.Setenv("E2E_GIT_SECRET_INVALID", "git-creds-invalid")).To(Succeed())
+	// Propagate the resolved namespace so quickstartSetupNamespace() uses the same
+	// namespace as the install (where the operator and secrets live).
+	Expect(os.Setenv("SUT_NAMESPACE", namespace)).To(Succeed())
 }
 
 func makeCommand(args ...string) *exec.Cmd {
