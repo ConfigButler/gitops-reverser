@@ -43,7 +43,9 @@
       "Bash(make --dry-run help)",
       "Bash(yq '.[].id')",
       "Bash(printf '{\"\"sha1\"\":\"\"abc123\"\"}')",
-      "Bash(yq '.sha1')"
+      "Bash(yq '.sha1')",
+      "Bash(go build ./internal/controller/...)",
+      "Bash(go test ./internal/controller/...)"
     ]
   }
 }
