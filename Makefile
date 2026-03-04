@@ -273,6 +273,16 @@ GITEA_WAIT_TIMEOUT ?= 300s
 GITEA_PORT ?= 13000
 PROMETHEUS_PORT ?= 19090
 
+# Valkey E2E Configuration
+VALKEY_NAMESPACE ?= valkey-e2e
+VALKEY_RELEASE_NAME ?= valkey
+VALKEY_HELM_REPO_NAME ?= valkey
+VALKEY_HELM_REPO_URL ?= https://valkey.io/valkey-helm
+VALKEY_CHART_NAME ?= valkey
+VALKEY_CHART_VERSION ?= 0.9.3 # https://valkey.io/valkey-helm/index.yaml
+VALKEY_WAIT_TIMEOUT ?= 120s
+VALKEY_PORT ?= 16379
+
 ENVTEST_STAMP := .stamps/envtest-$(ENVTEST_K8S_VERSION).ready
 
 .PHONY: setup-envtest
@@ -333,8 +343,22 @@ $(CS)/prometheus.installed: $(CS)/ready hack/e2e/ensure-prometheus-operator.sh $
 	kubectl --context $(CTX) wait --for=condition=ready pod -l prometheus=prometheus-shared-e2e -n prometheus-operator --timeout=180s
 	touch $@
 
+$(CS)/valkey.installed: $(CS)/ready test/e2e/valkey-values.yaml
+	mkdir -p $(CS)
+	$(HELM) repo add $(VALKEY_HELM_REPO_NAME) $(VALKEY_HELM_REPO_URL) 2>/dev/null || true
+	$(HELM) repo update $(VALKEY_HELM_REPO_NAME)
+	kubectl --context $(CTX) create namespace $(VALKEY_NAMESPACE) --dry-run=client -o yaml \
+	  | kubectl --context $(CTX) apply -f -
+	$(HELM) --kube-context $(CTX) upgrade --install $(VALKEY_RELEASE_NAME) \
+	  $(VALKEY_HELM_REPO_NAME)/$(VALKEY_CHART_NAME) \
+	  --namespace $(VALKEY_NAMESPACE) \
+	  --version $(VALKEY_CHART_VERSION) \
+	  --values test/e2e/valkey-values.yaml
+	kubectl --context $(CTX) -n $(VALKEY_NAMESPACE) rollout status deploy/$(VALKEY_RELEASE_NAME) --timeout=$(VALKEY_WAIT_TIMEOUT)
+	echo $(VALKEY_CHART_VERSION) > $@
+
 # Aggregate stamp for external E2E services required by tests.
-$(CS)/services.ready: $(CS)/cert-manager.installed $(CS)/prometheus.installed $(CS)/gitea.installed
+$(CS)/services.ready: $(CS)/cert-manager.installed $(CS)/prometheus.installed $(CS)/gitea.installed $(CS)/valkey.installed
 	mkdir -p $(CS)
 	touch $@
 
@@ -413,7 +437,7 @@ $(CS)/$(NAMESPACE)/controller.deployed: $(CS)/$(NAMESPACE)/$(INSTALL_MODE)/insta
 .PHONY: portforward-ensure
 portforward-ensure: $(CS)/services.ready ## Ensure port-forwards are running (always checks)
 	mkdir -p $(CS)
-	E2E_KUBECONTEXT=$(CTX) GITEA_PORT=$(GITEA_PORT) PROMETHEUS_PORT=$(PROMETHEUS_PORT) bash hack/e2e/setup-port-forwards.sh
+	E2E_KUBECONTEXT=$(CTX) GITEA_PORT=$(GITEA_PORT) PROMETHEUS_PORT=$(PROMETHEUS_PORT) VALKEY_PORT=$(VALKEY_PORT) bash hack/e2e/setup-port-forwards.sh
 
 E2E_TEST_INPUTS := $(CS)/age-key.txt \
 	$(shell find test/e2e -type f \( -name '*.go' -o -name '*.sh' -o -name '*.yaml' -o -name '*.tmpl' \)) \
@@ -530,6 +554,7 @@ clean-port-forwards: ## Stop all port-forwards
 	@echo "Stopping port-forwards..."
 	@-pkill -f "kubectl.*port-forward.*$(GITEA_PORT)" 2>/dev/null || true
 	@-pkill -f "kubectl.*port-forward.*$(PROMETHEUS_PORT)" 2>/dev/null || true
+	@-pkill -f "kubectl.*port-forward.*$(VALKEY_PORT)" 2>/dev/null || true
 	@echo "Port-forwards stopped"
 
 .PHONY: clean-cluster

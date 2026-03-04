@@ -23,7 +23,8 @@
   "forwardPorts": [
     13000,
     19090,
-    10350
+    10350,
+    16379
   ],
   "portsAttributes": {
     "13000": {
@@ -36,6 +37,10 @@
     },
     "10350": {
       "label": "tilt",
+      "onAutoForward": "notify"
+    },
+    "16379": {
+      "label": "Valkey (Redis compatible)",
       "onAutoForward": "notify"
     }
   },

@@ -1,0 +1,18 @@
+# Valkey Helm values for e2e testing
+# Standalone mode, no persistence, no auth, minimal resources
+
+architecture: standalone
+
+# Disable persistence for fast, ephemeral testing
+primary:
+  persistence:
+    enabled: false
+  resources:
+    limits:
+      memory: "256Mi"
+    requests:
+      memory: "128Mi"
+
+# No authentication needed for e2e testing
+auth:
+  enabled: false

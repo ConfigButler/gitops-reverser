@@ -5,9 +5,12 @@ set -euo pipefail
 GITEA_NAMESPACE=${GITEA_NAMESPACE:-gitea-e2e}
 PROMETHEUS_NAMESPACE=${PROMETHEUS_NAMESPACE:-prometheus-operator}
 PROMETHEUS_INSTANCE_NAME=${PROMETHEUS_INSTANCE_NAME:-prometheus-shared-e2e}
+VALKEY_NAMESPACE=${VALKEY_NAMESPACE:-valkey-e2e}
+VALKEY_RELEASE_NAME=${VALKEY_RELEASE_NAME:-valkey}
 KUBE_CONTEXT=${E2E_KUBECONTEXT:-${CTX:-${KUBECONTEXT:-}}}
 GITEA_PORT=${GITEA_PORT:-13000}
 PROMETHEUS_PORT=${PROMETHEUS_PORT:-19090}
+VALKEY_PORT=${VALKEY_PORT:-16379}
 
 if [[ -z "${KUBE_CONTEXT}" ]]; then
     KUBE_CONTEXT="$(kubectl config current-context 2>/dev/null || true)"
@@ -21,17 +24,20 @@ fi
 has_expected_forward_processes() {
     local gitea_pf
     local prom_pf
+    local valkey_pf
 
     gitea_pf="$(ps -ef | grep -E "kubectl( |.* )--context ${KUBE_CONTEXT}( |.* )port-forward( |.* )svc/${GITEA_SERVICE:-gitea-http}( |.* )${GITEA_PORT}:${GITEA_PORT}" | grep -v grep || true)"
     prom_pf="$(ps -ef | grep -E "kubectl( |.* )--context ${KUBE_CONTEXT}( |.* )port-forward( |.* )svc/prometheus-operated( |.* )${PROMETHEUS_PORT}:9090" | grep -v grep || true)"
+    valkey_pf="$(ps -ef | grep -E "kubectl( |.* )--context ${KUBE_CONTEXT}( |.* )port-forward( |.* )svc/${VALKEY_RELEASE_NAME}( |.* )${VALKEY_PORT}:6379" | grep -v grep || true)"
 
-    [[ -n "${gitea_pf}" && -n "${prom_pf}" ]]
+    [[ -n "${gitea_pf}" && -n "${prom_pf}" && -n "${valkey_pf}" ]]
 }
 
 # Fast path: keep existing healthy forwards only if they belong to this context.
 if has_expected_forward_processes && \
    curl -fsS http://localhost:${GITEA_PORT}/api/healthz >/dev/null 2>&1 && \
-   curl -fsS http://localhost:${PROMETHEUS_PORT}/-/healthy >/dev/null 2>&1; then
+   curl -fsS http://localhost:${PROMETHEUS_PORT}/-/healthy >/dev/null 2>&1 && \
+   timeout 2 bash -c "echo >/dev/tcp/localhost/${VALKEY_PORT}" 2>/dev/null; then
     echo "✅ Existing port-forwards are healthy for context ${KUBE_CONTEXT}; skipping restart"
     exit 0
 fi
@@ -40,6 +46,7 @@ fi
 echo "🧹 Cleaning up old port-forwards..."
 pkill -f "kubectl.*port-forward.*${PROMETHEUS_PORT}" || true
 pkill -f "kubectl.*port-forward.*${GITEA_PORT}" || true
+pkill -f "kubectl.*port-forward.*${VALKEY_PORT}" || true
 sleep 1
 
 echo "🔌 Setting up port-forwards for e2e testing..."
@@ -67,6 +74,18 @@ kubectl --context "$KUBE_CONTEXT" wait --for=condition=ready pod \
 }
 
 echo "✅ Gitea pod is ready"
+
+echo "⏳ Waiting for Valkey pod to be ready..."
+kubectl --context "$KUBE_CONTEXT" wait --for=condition=ready pod \
+    -l app.kubernetes.io/name=valkey,app.kubernetes.io/instance="${VALKEY_RELEASE_NAME}" \
+    -n "$VALKEY_NAMESPACE" \
+    --timeout=120s || {
+    echo "❌ Valkey pod failed to become ready"
+    kubectl --context "$KUBE_CONTEXT" get pods -n "$VALKEY_NAMESPACE" || true
+    exit 1
+}
+
+echo "✅ Valkey pod is ready"
 
 # Generic function to setup a port-forward with verification
 # Args: service_name namespace service local_port remote_port
@@ -124,6 +143,7 @@ setup_port_forward() {
 # Setup port-forwards
 setup_port_forward "Prometheus" "$PROMETHEUS_NAMESPACE" "prometheus-operated" "${PROMETHEUS_PORT}" "9090"
 setup_port_forward "Gitea" "$GITEA_NAMESPACE" "gitea-http" "${GITEA_PORT}" "${GITEA_PORT}"
+setup_port_forward "Valkey" "$VALKEY_NAMESPACE" "${VALKEY_RELEASE_NAME}" "${VALKEY_PORT}" "6379"
 
 # Validate HTTP endpoints before returning success.
 curl -fsS http://localhost:${GITEA_PORT}/api/healthz >/dev/null || {
@@ -134,8 +154,13 @@ curl -fsS http://localhost:${PROMETHEUS_PORT}/-/healthy >/dev/null || {
     echo "❌ Prometheus health check failed after port-forward setup"
     exit 1
 }
+timeout 2 bash -c "echo >/dev/tcp/localhost/${VALKEY_PORT}" 2>/dev/null || {
+    echo "❌ Valkey health check failed after port-forward setup"
+    exit 1
+}
 
 echo ""
 echo "Prometheus: http://localhost:${PROMETHEUS_PORT}"
 echo "Gitea: http://localhost:${GITEA_PORT}"
+echo "Valkey: localhost:${VALKEY_PORT}"
 echo "✅ Port-forwards ready for e2e testing"
