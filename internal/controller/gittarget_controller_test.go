@@ -768,6 +768,79 @@ var _ = Describe("GitTarget Controller Security", func() {
 			Expect(k8sClient.Delete(ctx, gitProvider)).Should(Succeed())
 		})
 
+		It("Should recreate encryption secret when it is deleted while GitTarget still exists", func() {
+			ctx := context.Background()
+
+			gitProvider := &configbutleraiv1alpha1.GitProvider{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-provider-recreate-enc-secret",
+					Namespace: "default",
+				},
+				Spec: configbutleraiv1alpha1.GitProviderSpec{
+					URL:             "https://github.com/test-org/test-repo.git",
+					AllowedBranches: []string{"main"},
+				},
+			}
+			Expect(k8sClient.Create(ctx, gitProvider)).Should(Succeed())
+
+			target := &configbutleraiv1alpha1.GitTarget{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-target-recreate-enc-secret",
+					Namespace: "default",
+				},
+				Spec: configbutleraiv1alpha1.GitTargetSpec{
+					ProviderRef: configbutleraiv1alpha1.GitProviderReference{
+						Name: "test-provider-recreate-enc-secret",
+						Kind: "GitProvider",
+					},
+					Branch: "main",
+					Path:   "test-path",
+					Encryption: &configbutleraiv1alpha1.EncryptionSpec{
+						Provider: "sops",
+						SecretRef: configbutleraiv1alpha1.LocalSecretReference{
+							Name: "recreated-sops-age-key",
+						},
+						Age: &configbutleraiv1alpha1.AgeEncryptionSpec{
+							Enabled: true,
+							Recipients: configbutleraiv1alpha1.AgeRecipientsSpec{
+								ExtractFromSecret:   true,
+								GenerateWhenMissing: true,
+							},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, target)).Should(Succeed())
+
+			secretKey := types.NamespacedName{Name: "recreated-sops-age-key", Namespace: "default"}
+
+			// Wait for initial secret creation.
+			var firstSecret corev1.Secret
+			Eventually(func(g Gomega) {
+				err := k8sClient.Get(ctx, secretKey, &firstSecret)
+				g.Expect(err).NotTo(HaveOccurred())
+				ageKeyName, _ := findFirstAgeKeyEntry(firstSecret.Data)
+				g.Expect(ageKeyName).NotTo(BeEmpty())
+			}, timeout, interval).Should(Succeed())
+
+			// Delete the secret to simulate accidental removal.
+			Expect(k8sClient.Delete(ctx, &firstSecret)).Should(Succeed())
+
+			// The secret watch should trigger re-reconciliation and recreate it.
+			Eventually(func(g Gomega) {
+				var recreated corev1.Secret
+				err := k8sClient.Get(ctx, secretKey, &recreated)
+				g.Expect(err).NotTo(HaveOccurred())
+				ageKeyName, ageKeyValue := findFirstAgeKeyEntry(recreated.Data)
+				g.Expect(ageKeyName).NotTo(BeEmpty())
+				g.Expect(string(ageKeyValue)).To(ContainSubstring("AGE-SECRET-KEY-"))
+				g.Expect(recreated.Annotations).To(HaveKey(encryptionSecretRecipientAnnoKey))
+			}, timeout, interval).Should(Succeed())
+
+			Expect(k8sClient.Delete(ctx, target)).Should(Succeed())
+			Expect(k8sClient.Delete(ctx, gitProvider)).Should(Succeed())
+		})
+
 		It("Should not overwrite existing .agekey values when one already exists", func() {
 			ctx := context.Background()
 

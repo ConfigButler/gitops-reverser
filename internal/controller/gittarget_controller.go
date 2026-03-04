@@ -36,7 +36,9 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	ctrlreconcile "sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	configbutleraiv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
@@ -987,6 +989,33 @@ func (r *GitTargetReconciler) updateStatusWithRetry(
 func (r *GitTargetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&configbutleraiv1alpha1.GitTarget{}).
+		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.encryptionSecretToGitTargets)).
 		Named("gittarget").
 		Complete(r)
+}
+
+// encryptionSecretToGitTargets maps a Secret event to the GitTargets that reference it as their
+// encryption secret, so the controller re-reconciles and recreates a deleted/emptied secret.
+func (r *GitTargetReconciler) encryptionSecretToGitTargets(
+	ctx context.Context,
+	obj client.Object,
+) []ctrlreconcile.Request {
+	var targets configbutleraiv1alpha1.GitTargetList
+	if err := r.List(ctx, &targets, client.InNamespace(obj.GetNamespace())); err != nil {
+		return nil
+	}
+
+	var requests []ctrlreconcile.Request
+	for i := range targets.Items {
+		t := &targets.Items[i]
+		if !shouldGenerateAgeKey(t) {
+			continue
+		}
+		if t.Spec.Encryption.SecretRef.Name == obj.GetName() {
+			requests = append(requests, ctrlreconcile.Request{
+				NamespacedName: k8stypes.NamespacedName{Name: t.Name, Namespace: t.Namespace},
+			})
+		}
+	}
+	return requests
 }
