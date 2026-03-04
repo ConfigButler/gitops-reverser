@@ -18,6 +18,7 @@ CONTAINER_TOOL ?= docker
 # Options are set to exit when a recipe line exits non-zero or a piped command fails.
 SHELL = /usr/bin/env bash -o pipefail
 .SHELLFLAGS = -ec
+# Requires GNU Make >= 4.3 (grouped-target &: syntax used for correlated outputs).
 
 .PHONY: all
 all: build
@@ -90,7 +91,7 @@ vet: ## Run go vet against code.
 
 .PHONY: test
 test: manifests generate fmt vet setup-envtest ## Run tests.
-	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(shell pwd)/bin -p path)" go test $$(go list ./... | grep -v /e2e) -coverprofile cover.out
+	KUBEBUILDER_ASSETS="$$($(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(shell pwd)/bin -p path)" go test $$(go list ./... | grep -v /e2e) -coverprofile cover.out
 
 E2E_LOCAL_IMAGE ?= gitops-reverser:e2e-local
 # Normalize PROJECT_IMAGE once, then consume only normalized variables below.
@@ -110,7 +111,8 @@ CTX ?= k3d-gitops-reverser-test-e2e
 CLUSTER_NAME ?= $(patsubst kind-%,%,$(patsubst k3d-%,%,$(CTX)))
 CS := .stamps/cluster/$(CTX)
 IS := .stamps/image
-GO_SOURCES := $(shell find cmd internal -type f -name '*.go') go.mod go.sum
+GO_SOURCES := $(shell find cmd internal api -type f -name '*.go' \
+	! -name '*_test.go' ! -name 'zz_generated.deepcopy.go') go.mod go.sum
 
 # INSTALL_MODE controls installation workflow: helm|plain-manifests-file|config-dir
 # These defaults must be defined before any target names that reference $(NAMESPACE).
@@ -118,6 +120,12 @@ INSTALL_MODE ?= config-dir
 INSTALL_NAME ?= gitops-reverser
 NAMESPACE ?= gitops-reverser
 HELM_CHART_SOURCE ?= charts/gitops-reverser
+CONTROLLER_CONTAINER ?= manager
+CONTROLLER_DEPLOY_SELECTOR ?= app.kubernetes.io/part-of=gitops-reverser
+VALID_INSTALL_MODES := config-dir helm plain-manifests-file
+ifeq (,$(filter $(INSTALL_MODE),$(VALID_INSTALL_MODES)))
+  $(error INSTALL_MODE must be one of [$(VALID_INSTALL_MODES)])
+endif
 
 # Called by the Go e2e suite (BeforeSuite) to prepare prerequisites once, including port-forwards + age key.
 .PHONY: prepare-e2e
@@ -133,53 +141,35 @@ E2E_GIT_SECRET_SSH ?= git-creds-ssh
 E2E_GIT_SECRET_INVALID ?= git-creds-invalid
 
 .PHONY: e2e-gitea-bootstrap
-e2e-gitea-bootstrap: $(CS)/gitea/bootstrap/ready ## Bootstrap shared Gitea prerequisites for the cluster context
+e2e-gitea-bootstrap: $(CS)/gitea/bootstrap/org-$(GITEA_ORG_NAME).ready ## Bootstrap shared Gitea prerequisites for the cluster context
 
 .PHONY: e2e-gitea-run-setup
-e2e-gitea-run-setup: $(CS)/$(NAMESPACE)/repo/repo.ready $(CS)/$(NAMESPACE)/repo/checkout.ready ## Create active repo+creds+checkout for this run
+e2e-gitea-run-setup: $(CS)/$(NAMESPACE)/repo/checkout.ready ## Create active repo+creds+checkout for this run
 
-$(CS)/gitea/bootstrap/api.ready: $(CS)/$(NAMESPACE)/prepare-e2e.ready test/e2e/scripts/gitea-bootstrap.sh
+$(CS)/gitea/bootstrap/org-$(GITEA_ORG_NAME).ready: \
+    $(CS)/$(NAMESPACE)/prepare-e2e.ready hack/e2e/gitea-bootstrap.sh
 	mkdir -p $(@D)
 	$(MAKE) CTX=$(CTX) INSTALL_MODE=$(INSTALL_MODE) INSTALL_NAME=$(INSTALL_NAME) NAMESPACE=$(NAMESPACE) portforward-ensure
 	BOOTSTRAP_DIR=$(CS)/gitea/bootstrap \
-	  API_URL=http://localhost:13000/api/v1 \
+	  API_URL=http://localhost:$(GITEA_PORT)/api/v1 \
 	  GITEA_ADMIN_USER=$(GITEA_ADMIN_USER) \
 	  GITEA_ADMIN_PASS=$(GITEA_ADMIN_PASS) \
 	  ORG_NAME=$(GITEA_ORG_NAME) \
-	  bash test/e2e/scripts/gitea-bootstrap.sh
+	  bash hack/e2e/gitea-bootstrap.sh
 	@test -f $@
 
-$(CS)/gitea/bootstrap/org-$(GITEA_ORG_NAME).ready: $(CS)/gitea/bootstrap/api.ready test/e2e/scripts/gitea-bootstrap.sh
-	mkdir -p $(@D)
-	BOOTSTRAP_DIR=$(CS)/gitea/bootstrap \
-	  API_URL=http://localhost:13000/api/v1 \
-	  GITEA_ADMIN_USER=$(GITEA_ADMIN_USER) \
-	  GITEA_ADMIN_PASS=$(GITEA_ADMIN_PASS) \
-	  ORG_NAME=$(GITEA_ORG_NAME) \
-	  bash test/e2e/scripts/gitea-bootstrap.sh
-	@test -f $@
-
-$(CS)/gitea/bootstrap/ready: $(CS)/gitea/bootstrap/api.ready $(CS)/gitea/bootstrap/org-$(GITEA_ORG_NAME).ready
-	mkdir -p $(@D)
-	@test -f $(CS)/gitea/bootstrap/api.ready
-	@test -f $(CS)/gitea/bootstrap/org-$(GITEA_ORG_NAME).ready
-	touch $@
-
-$(CS)/$(NAMESPACE)/repo/checkout.ready: $(CS)/gitea/bootstrap/ready test/e2e/scripts/gitea-run-setup.sh
+$(CS)/$(NAMESPACE)/repo/checkout.ready: $(CS)/gitea/bootstrap/org-$(GITEA_ORG_NAME).ready hack/e2e/gitea-run-setup.sh
 	@[ -n "$(REPO_NAME)" ] || { echo "ERROR: REPO_NAME must be set for e2e-gitea-run-setup" >&2; exit 2; }
 	mkdir -p $(@D)
 	CTX=$(CTX) CS=$(CS) NAMESPACE=$(NAMESPACE) REPO_NAME=$(REPO_NAME) CHECKOUT_DIR=$(CHECKOUT_DIR) \
-	  API_URL=http://localhost:13000/api/v1 \
+	  API_URL=http://localhost:$(GITEA_PORT)/api/v1 \
 	  GITEA_ADMIN_USER=$(GITEA_ADMIN_USER) \
 	  GITEA_ADMIN_PASS=$(GITEA_ADMIN_PASS) \
 	  ORG_NAME=$(GITEA_ORG_NAME) \
 	  E2E_GIT_SECRET_HTTP=$(E2E_GIT_SECRET_HTTP) \
 	  E2E_GIT_SECRET_SSH=$(E2E_GIT_SECRET_SSH) \
 	  E2E_GIT_SECRET_INVALID=$(E2E_GIT_SECRET_INVALID) \
-	  bash test/e2e/scripts/gitea-run-setup.sh
-	@test -f $@
-
-$(CS)/$(NAMESPACE)/repo/repo.ready: $(CS)/$(NAMESPACE)/repo/checkout.ready
+	  bash hack/e2e/gitea-run-setup.sh
 	@test -f $@
 
 # Called by the full e2e suite.
@@ -280,15 +270,22 @@ GITEA_HELM_REPO_URL ?= https://dl.gitea.com/charts/
 GITEA_CHART_NAME ?= gitea
 GITEA_CHART_VERSION ?= 12.5.0 # https://gitea.com/gitea/helm-gitea
 GITEA_WAIT_TIMEOUT ?= 300s
+GITEA_PORT ?= 13000
+PROMETHEUS_PORT ?= 19090
+
+ENVTEST_STAMP := .stamps/envtest-$(ENVTEST_K8S_VERSION).ready
 
 .PHONY: setup-envtest
-setup-envtest: ## Setup envtest binaries for unit tests
+setup-envtest: $(ENVTEST_STAMP) ## Setup envtest binaries for unit tests
+
+$(ENVTEST_STAMP): Makefile
 	@echo "Setting up envtest binaries for Kubernetes version $(ENVTEST_K8S_VERSION)..."
 	@mkdir -p $(shell pwd)/bin
 	@$(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(shell pwd)/bin -p path || { \
 		echo "Error: Failed to set up envtest binaries for version $(ENVTEST_K8S_VERSION)."; \
 		exit 1; \
 	}
+	@mkdir -p $(@D) && touch $@
 
 ##@ E2E Stamp Targets (cluster-parameterized; pass CTX=k3d-<name> to target a different cluster)
 
@@ -324,9 +321,9 @@ $(CS)/gitea.installed: $(CS)/ready test/e2e/gitea-values.yaml
 	echo $(GITEA_CHART_VERSION) > $@
 
 PROMETHEUS_SETUP_MANIFESTS := $(shell find test/e2e/setup/prometheus -type f -name '*.yaml')
-$(CS)/prometheus.installed: $(CS)/ready test/e2e/scripts/ensure-prometheus-operator.sh $(PROMETHEUS_SETUP_MANIFESTS)
+$(CS)/prometheus.installed: $(CS)/ready hack/e2e/ensure-prometheus-operator.sh $(PROMETHEUS_SETUP_MANIFESTS)
 	mkdir -p $(CS)
-	KUBECONTEXT=$(CTX) bash test/e2e/scripts/ensure-prometheus-operator.sh
+	KUBECONTEXT=$(CTX) bash hack/e2e/ensure-prometheus-operator.sh
 	kubectl --context $(CTX) wait --for=condition=Established \
 	  crd/prometheuses.monitoring.coreos.com \
 	  crd/servicemonitors.monitoring.coreos.com \
@@ -356,8 +353,11 @@ $(CS)/$(NAMESPACE)/sops-secret.yaml: $(CS)/age-key.txt Makefile
 	  --secret-name sops-age-key
 
 # Step 3: Apply the secret into the namespace — requires the namespace to already exist.
-$(CS)/$(NAMESPACE)/sops-secret.applied: $(CS)/$(NAMESPACE)/sops-secret.yaml
-	kubectl --context $(CTX) apply -f $(CS)/$(NAMESPACE)/sops-secret.yaml
+# Explicit dep on install.yaml ensures the namespace is created before kubectl apply.
+$(CS)/$(NAMESPACE)/sops-secret.applied: \
+    $(CS)/$(NAMESPACE)/sops-secret.yaml \
+    $(CS)/$(NAMESPACE)/$(INSTALL_MODE)/install.yaml
+	kubectl --context "$(CTX)" apply -f $(CS)/$(NAMESPACE)/sops-secret.yaml
 	touch $@
 
 $(IS)/controller.id: $(GO_SOURCES) Dockerfile
@@ -406,31 +406,24 @@ $(CS)/$(NAMESPACE)/controller.deployed: $(CS)/$(NAMESPACE)/$(INSTALL_MODE)/insta
 	}; \
 	deploy="$$(kubectl --context "$$ctx" -n "$$ns" get deploy -l "$$sel" -o jsonpath='{.items[0].metadata.name}')"; \
 	echo "Setting deployment/$$deploy container '$$c' to image '$$img'"; \
-	kubectl --context "$$ctx" -n "$$ns" set image "deployment/$$deploy" "$$c=$$img" --record=false; \
+	kubectl --context "$$ctx" -n "$$ns" set image "deployment/$$deploy" "$$c=$$img"; \
 	kubectl --context "$$ctx" -n "$$ns" rollout status "deployment/$$deploy" --timeout=180s; \
 	touch "$@"
 
 .PHONY: portforward-ensure
 portforward-ensure: $(CS)/services.ready ## Ensure port-forwards are running (always checks)
 	mkdir -p $(CS)
-	E2E_KUBECONTEXT=$(CTX) bash test/e2e/scripts/setup-port-forwards.sh
+	E2E_KUBECONTEXT=$(CTX) GITEA_PORT=$(GITEA_PORT) PROMETHEUS_PORT=$(PROMETHEUS_PORT) bash hack/e2e/setup-port-forwards.sh
 
-E2E_TEST_INPUTS := $(CS)/age-key.txt $(shell find test/e2e -type f \( -name '*.go' -o -name '*.sh' -o -name '*.yaml' -o -name '*.tmpl' \))
+E2E_TEST_INPUTS := $(CS)/age-key.txt \
+	$(shell find test/e2e -type f \( -name '*.go' -o -name '*.sh' -o -name '*.yaml' -o -name '*.tmpl' \)) \
+	$(wildcard hack/e2e/*.sh)
 $(CS)/e2e.passed: $(E2E_TEST_INPUTS) Makefile
 	mkdir -p $(CS)
 	CTX=$(CTX) INSTALL_MODE=$(INSTALL_MODE) NAMESPACE=$(NAMESPACE) \
 	  E2E_AGE_KEY_FILE=$(CS)/age-key.txt \
 	  go test ./test/e2e/ -v -ginkgo.v
 	touch $@
-
-CONTROLLER_CONTAINER ?= manager
-CONTROLLER_DEPLOY_SELECTOR ?= app.kubernetes.io/part-of=gitops-reverser
-
-# INSTALL_MODE, INSTALL_NAME, NAMESPACE defaults are defined near the E2E variables section above.
-VALID_INSTALL_MODES := config-dir helm plain-manifests-file
-ifeq (,$(filter $(INSTALL_MODE),$(VALID_INSTALL_MODES)))
-  $(error INSTALL_MODE must be one of [$(VALID_INSTALL_MODES)])
-endif
 
 .PHONY: install install-helm install-plain-manifests-file install-config-dir
 install: $(CS)/$(NAMESPACE)/$(INSTALL_MODE)/install.yaml
@@ -534,10 +527,10 @@ clean-installs:
 
 .PHONY: clean-port-forwards
 clean-port-forwards: ## Stop all port-forwards
-	@echo "🛑 Stopping port-forwards..."
-	@-pkill -f "kubectl.*port-forward.*13000" 2>/dev/null || true
-	@-pkill -f "kubectl.*port-forward.*19090" 2>/dev/null || true
-	@echo "✅ Port-forwards stopped"
+	@echo "Stopping port-forwards..."
+	@-pkill -f "kubectl.*port-forward.*$(GITEA_PORT)" 2>/dev/null || true
+	@-pkill -f "kubectl.*port-forward.*$(PROMETHEUS_PORT)" 2>/dev/null || true
+	@echo "Port-forwards stopped"
 
 .PHONY: clean-cluster
 clean-cluster: ## Tear down the E2E cluster used for tests and remove its stamps

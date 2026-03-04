@@ -35,7 +35,15 @@
       "Bash(grep -l \"managedFields\" charts/gitops-reverser/crds/*.yaml)",
       "Bash(grep -l \"managedFields\" config/crd/bases/*.yaml)",
       "Bash(helm install gitops-reverser charts/gitops-reverser --kube-context k3d-gitops-reverser-test-e2e --namespace gitops-reverser --create-namespace --debug)",
-      "Bash(helm version)"
+      "Bash(helm version)",
+      "Bash(git mv test/e2e/scripts/gitea-bootstrap.sh hack/e2e/gitea-bootstrap.sh)",
+      "Bash(git mv test/e2e/scripts/gitea-run-setup.sh hack/e2e/gitea-run-setup.sh)",
+      "Bash(git mv test/e2e/scripts/setup-port-forwards.sh hack/e2e/setup-port-forwards.sh)",
+      "Bash(git mv test/e2e/scripts/ensure-prometheus-operator.sh hack/e2e/ensure-prometheus-operator.sh)",
+      "Bash(make --dry-run help)",
+      "Bash(yq '.[].id')",
+      "Bash(printf '{\"\"sha1\"\":\"\"abc123\"\"}')",
+      "Bash(yq '.sha1')"
     ]
   }
 }
