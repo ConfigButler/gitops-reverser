@@ -8,7 +8,7 @@ set -euo pipefail
 #
 # It assumes shared cluster prerequisites already exist:
 # - Gitea is installed in the cluster
-# - a localhost port-forward is running (prepare-e2e runs portforward-ensure)
+# - a localhost port-forward is running (the bootstrap Make target runs portforward-ensure)
 #
 # Inputs (env):
 # - CTX (optional): kube context used for kubectl apply; defaults to current-context
@@ -127,15 +127,7 @@ create_token() {
     exit 1
   fi
 
-  token="$(
-    python3 - <<'PY' "${tmp}"
-import json,sys
-path=sys.argv[1]
-with open(path,"r",encoding="utf-8") as f:
-    obj=json.load(f)
-print(obj.get("sha1",""))
-PY
-  )"
+  token="$(jq -r '.sha1 // ""' "${tmp}")"
   rm -f "${tmp}"
 
   if [[ -z "${token}" ]]; then
@@ -175,17 +167,7 @@ configure_ssh_key_in_gitea() {
       -u "${GITEA_ADMIN_USER}:${GITEA_ADMIN_PASS}" \
       || echo "[]"
   )"
-  key_ids="$(
-    python3 - <<'PY' "${keys_json}"
-import json,sys
-try:
-    obj=json.loads(sys.argv[1])
-except Exception:
-    obj=[]
-ids=[str(x.get("id")) for x in obj if isinstance(x,dict) and "id" in x]
-print("\n".join([i for i in ids if i and i != "None"]))
-PY
-  )"
+  key_ids="$(echo "${keys_json}" | jq -r '.[].id' 2>/dev/null || true)"
   if [[ -n "${key_ids}" ]]; then
     while IFS= read -r key_id; do
       [[ -n "${key_id}" ]] || continue
@@ -297,9 +279,11 @@ write_secrets_manifest() {
   secrets_tmp="$(mktemp)"
   rm -f "${secrets_tmp}"
 
-  # Ensure target namespace exists.
-  kubectl --context "${CTX}" create namespace "${NAMESPACE}" --dry-run=client -o yaml \
-    | kubectl --context "${CTX}" apply -f - >/dev/null
+  # Namespace must already exist (created by the install target).
+  kubectl --context "${CTX}" get namespace "${NAMESPACE}" >/dev/null 2>&1 || {
+    echo "ERROR: namespace '${NAMESPACE}' does not exist; run the install target first" >&2
+    exit 1
+  }
 
   if [[ -s "${ssh_dir}/known_hosts" ]]; then
     ssh_args+=(--from-file=known_hosts="${ssh_dir}/known_hosts")
