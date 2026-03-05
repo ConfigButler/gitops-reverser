@@ -22,10 +22,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -38,6 +40,26 @@ import (
 	"github.com/stretchr/testify/require"
 	audit "k8s.io/apiserver/pkg/apis/audit"
 )
+
+type fakeAuditEventQueue struct {
+	mu       sync.Mutex
+	events   []auditv1.Event
+	err      error
+	calls    int
+	clusters []string
+}
+
+func (q *fakeAuditEventQueue) Enqueue(_ context.Context, clusterID string, event auditv1.Event) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.calls++
+	q.clusters = append(q.clusters, clusterID)
+	q.events = append(q.events, event)
+	if q.err != nil {
+		return q.err
+	}
+	return nil
+}
 
 func TestMain(m *testing.M) {
 	// Initialize metrics for tests
@@ -417,6 +439,44 @@ func TestAuditHandler_RejectsOversizedBody(t *testing.T) {
 
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 	assert.Contains(t, w.Body.String(), "request body too large")
+}
+
+func TestAuditHandler_EnqueuesAcceptedEvents(t *testing.T) {
+	queue := &fakeAuditEventQueue{}
+	handler, err := NewAuditHandler(AuditHandlerConfig{
+		Queue: queue,
+	})
+	require.NoError(t, err)
+
+	body := `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[{"kind":"Event","auditID":"queued-1","verb":"update","stage":"ResponseComplete","user":{"username":"test-user"},"objectRef":{"resource":"configmaps","namespace":"default","name":"cm-a","apiVersion":"v1"}}]}`
+	req := httptest.NewRequest(http.MethodPost, "/audit-webhook/cluster-a", bytes.NewReader([]byte(body)))
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	require.Equal(t, 1, queue.calls)
+	require.Len(t, queue.events, 1)
+	assert.Equal(t, "cluster-a", queue.clusters[0])
+	assert.Equal(t, "queued-1", string(queue.events[0].AuditID))
+}
+
+func TestAuditHandler_EnqueueFailureReturnsInternalServerError(t *testing.T) {
+	queue := &fakeAuditEventQueue{err: errors.New("queue down")}
+	handler, err := NewAuditHandler(AuditHandlerConfig{
+		Queue: queue,
+	})
+	require.NoError(t, err)
+
+	body := `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[{"kind":"Event","auditID":"queued-1","verb":"create","stage":"ResponseComplete","user":{"username":"test-user"},"objectRef":{"resource":"secrets","namespace":"default","name":"secret-a","apiVersion":"v1"}}]}`
+	req := httptest.NewRequest(http.MethodPost, "/audit-webhook/cluster-a", bytes.NewReader([]byte(body)))
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+	assert.Contains(t, w.Body.String(), "failed to enqueue audit event")
+	require.Equal(t, 1, queue.calls)
 }
 
 func TestExtractClusterID(t *testing.T) {
