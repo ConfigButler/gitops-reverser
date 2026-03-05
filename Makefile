@@ -99,7 +99,8 @@ E2E_LOCAL_IMAGE ?= gitops-reverser:e2e-local
 # - Otherwise default to E2E_LOCAL_IMAGE and treat it as local-build managed.
 PROJECT_IMAGE_INPUT := $(strip $(PROJECT_IMAGE))
 PROJECT_IMAGE := $(if $(PROJECT_IMAGE_INPUT),$(PROJECT_IMAGE_INPUT),$(E2E_LOCAL_IMAGE))
-PROJECT_IMAGE_PROVIDED := $(if $(PROJECT_IMAGE_INPUT),true,)
+# Treat PROJECT_IMAGE as "provided" only when it differs from the local default.
+PROJECT_IMAGE_PROVIDED := $(if $(filter-out $(E2E_LOCAL_IMAGE),$(PROJECT_IMAGE_INPUT)),true,)
 export PROJECT_IMAGE
 export PROJECT_IMAGE_PROVIDED
 E2E_AGE_KEY_FILE ?= /tmp/e2e-age-key.txt
@@ -146,8 +147,7 @@ e2e-gitea-bootstrap: $(CS)/gitea/bootstrap/org-$(GITEA_ORG_NAME).ready ## Bootst
 .PHONY: e2e-gitea-run-setup
 e2e-gitea-run-setup: $(CS)/$(NAMESPACE)/repo/checkout.ready ## Create active repo+creds+checkout for this run
 
-$(CS)/gitea/bootstrap/org-$(GITEA_ORG_NAME).ready: \
-    $(CS)/$(NAMESPACE)/prepare-e2e.ready hack/e2e/gitea-bootstrap.sh
+$(CS)/gitea/bootstrap/org-$(GITEA_ORG_NAME).ready: $(CS)/$(NAMESPACE)/prepare-e2e.ready hack/e2e/gitea-bootstrap.sh
 	mkdir -p $(@D)
 	$(MAKE) CTX=$(CTX) INSTALL_MODE=$(INSTALL_MODE) INSTALL_NAME=$(INSTALL_NAME) NAMESPACE=$(NAMESPACE) portforward-ensure
 	BOOTSTRAP_DIR=$(CS)/gitea/bootstrap \
@@ -380,9 +380,7 @@ $(CS)/$(NAMESPACE)/sops-secret.yaml: $(CS)/age-key.txt Makefile
 
 # Step 3: Apply the secret into the namespace — requires the namespace to already exist.
 # Explicit dep on install.yaml ensures the namespace is created before kubectl apply.
-$(CS)/$(NAMESPACE)/sops-secret.applied: \
-    $(CS)/$(NAMESPACE)/sops-secret.yaml \
-    $(CS)/$(NAMESPACE)/$(INSTALL_MODE)/install.yaml
+$(CS)/$(NAMESPACE)/sops-secret.applied: $(CS)/$(NAMESPACE)/sops-secret.yaml $(CS)/$(NAMESPACE)/$(INSTALL_MODE)/install.yaml
 	kubectl --context "$(CTX)" apply -f $(CS)/$(NAMESPACE)/sops-secret.yaml
 	touch $@
 
@@ -414,6 +412,15 @@ $(CS)/crds.applied: $(CS)/ready $(shell find config/crd -type f)
 $(CS)/image.loaded: $(IS)/project-image.ready $(CS)/ready
 	@set -euo pipefail; \
 	mkdir -p $(CS); \
+	if ! $(CONTAINER_TOOL) image inspect "$(PROJECT_IMAGE)" >/dev/null 2>&1; then \
+		if [ -z "$(PROJECT_IMAGE_PROVIDED)" ]; then \
+			echo "Local image $(PROJECT_IMAGE) missing; rebuilding..."; \
+			$(MAKE) $(IS)/controller.id; \
+		else \
+			echo "ERROR: PROJECT_IMAGE=$(PROJECT_IMAGE) not found locally" >&2; \
+			exit 2; \
+		fi; \
+	fi; \
 	img_id="$$( $(CONTAINER_TOOL) inspect --format='{{.Id}}' $(PROJECT_IMAGE) )"; \
 	echo "Loading $(PROJECT_IMAGE) ($$img_id) into $(CTX)"; \
 	$(K3D) image import $(PROJECT_IMAGE) -c $(CLUSTER_NAME); \
