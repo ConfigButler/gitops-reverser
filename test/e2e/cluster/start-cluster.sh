@@ -184,6 +184,9 @@ rewrite_kubeconfig_for_devcontainer() {
 }
 
 main() {
+    # k3d writes/merges kubeconfig into the default location; ensure it exists so the context is usable.
+    mkdir -p "${HOME}/.kube"
+
     if cluster_exists; then
         echo "♻️ Reusing existing k3d cluster '${CLUSTER_NAME}' (no delete/recreate)"
     else
