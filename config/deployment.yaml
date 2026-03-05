@@ -29,6 +29,9 @@ spec:
         - --health-probe-bind-address=:8081
         - --webhook-cert-path=/tmp/k8s-admission-server/admission-server-certs
         - --audit-cert-path=/tmp/k8s-audit-server/audit-server-certs
+        - --audit-redis-enabled
+        - --audit-redis-addr=valkey.valkey-e2e.svc.cluster.local:6379
+        - --audit-redis-stream=gitopsreverser.audit.events.v1
         command:
         - /manager
         env:

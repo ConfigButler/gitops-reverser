@@ -69,6 +69,18 @@ spec:
             - --audit-read-timeout={{ .Values.servers.audit.timeouts.read }}
             - --audit-write-timeout={{ .Values.servers.audit.timeouts.write }}
             - --audit-idle-timeout={{ .Values.servers.audit.timeouts.idle }}
+            {{- if .Values.queue.redis.enabled }}
+            - --audit-redis-enabled
+            - --audit-redis-addr={{ .Values.queue.redis.addr }}
+            - --audit-redis-username={{ .Values.queue.redis.username | quote }}
+            - --audit-redis-password={{ .Values.queue.redis.password | quote }}
+            - --audit-redis-db={{ .Values.queue.redis.db }}
+            - --audit-redis-stream={{ .Values.queue.redis.stream }}
+            - --audit-redis-max-len={{ .Values.queue.redis.maxLen }}
+            {{- if .Values.queue.redis.tls.enabled }}
+            - --audit-redis-tls
+            {{- end }}
+            {{- end }}
             {{- if .Values.logging.level }}
             - --zap-log-level={{ .Values.logging.level }}
             {{- end }}
