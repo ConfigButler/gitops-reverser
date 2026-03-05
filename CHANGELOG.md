@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.19.0](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.18.0...gitops-reverser-v0.19.0) (2026-03-05)
+
+
+### Features
+
+* Adding valkey to allow experiment with 'persistant' queues ([a0a15a5](https://github.com/ConfigButler/gitops-reverser/commit/a0a15a5b9e1fe17e1b5379bff012ce6e6d631b13))
+* Move gitea setup to Makefile (also allowing to have the repos under the .markers) ([ea434fe](https://github.com/ConfigButler/gitops-reverser/commit/ea434fe25377170a2d285f9f6957dd04c76be50a))
+
+
+### Bug Fixes
+
+* Linting errors in Makefile ([05faf7c](https://github.com/ConfigButler/gitops-reverser/commit/05faf7c10abe5dedc447de858d4b750ec1da5ed7))
+* One edgecase where a secret is deleted (is now recreated) ([3a3f139](https://github.com/ConfigButler/gitops-reverser/commit/3a3f13970295fc05e01a310aa851b3bd12202aa4))
+
+
+### Documentation
+
+* Adding and removing ai stuff ([4d0ac12](https://github.com/ConfigButler/gitops-reverser/commit/4d0ac12d0a1f7e3c87e36c32a80f95b7e9d7fc18))
+
 ## [0.18.0](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.17.1...gitops-reverser-v0.18.0) (2026-03-03)
 
 
