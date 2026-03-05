@@ -256,16 +256,12 @@ CHART_INPUTS = charts/gitops-reverser/Chart.yaml \
 	$(shell find charts/gitops-reverser/templates -type f)
 
 dist/install.yaml: $(HELM_SYNC_OUTPUTS) $$(CHART_INPUTS) | dist ## Generate consolidated YAML from Helm chart.
-	helm_template_args=(
-		template
-		$(INSTALL_NAME)
-		charts/gitops-reverser
-		--namespace $(NAMESPACE)
-		--set labels.managedBy=kubectl
-		--set createNamespace=true
-		--include-crds
-	)
-	$(HELM) "$${helm_template_args[@]}" > $@
+	$(HELM) template $(INSTALL_NAME) charts/gitops-reverser \
+		--namespace $(NAMESPACE) \
+		--set labels.managedBy=kubectl \
+		--set createNamespace=true \
+		--include-crds \
+		> $@
 
 ##@ Dependencies
 
@@ -291,7 +287,8 @@ GITEA_RELEASE_NAME ?= gitea
 GITEA_HELM_REPO_NAME ?= gitea-charts
 GITEA_HELM_REPO_URL ?= https://dl.gitea.com/charts/
 GITEA_CHART_NAME ?= gitea
-GITEA_CHART_VERSION ?= 12.5.0 # https://gitea.com/gitea/helm-gitea
+# https://gitea.com/gitea/helm-gitea
+GITEA_CHART_VERSION ?= 12.5.0
 GITEA_WAIT_TIMEOUT ?= 300s
 GITEA_PORT ?= 13000
 PROMETHEUS_PORT ?= 19090
@@ -302,7 +299,8 @@ VALKEY_RELEASE_NAME ?= valkey
 VALKEY_HELM_REPO_NAME ?= valkey
 VALKEY_HELM_REPO_URL ?= https://valkey.io/valkey-helm
 VALKEY_CHART_NAME ?= valkey
-VALKEY_CHART_VERSION ?= 0.9.3 # https://valkey.io/valkey-helm/index.yaml
+# https://valkey.io/valkey-helm/index.yaml
+VALKEY_CHART_VERSION ?= 0.9.3
 VALKEY_WAIT_TIMEOUT ?= 120s
 VALKEY_PORT ?= 16379
 
@@ -351,17 +349,11 @@ $(CS)/gitea.installed: $(CS)/ready test/e2e/gitea-values.yaml | $(CS)
 	$(HELM) repo update $(GITEA_HELM_REPO_NAME)
 	kubectl --context $(CTX) create namespace $(GITEA_NAMESPACE) --dry-run=client -o yaml \
 		| kubectl --context $(CTX) apply -f -
-	gitea_helm_args=(
-		--kube-context $(CTX)
-		upgrade
-		--install
-		$(GITEA_RELEASE_NAME)
-		$(GITEA_HELM_REPO_NAME)/$(GITEA_CHART_NAME)
-		--namespace $(GITEA_NAMESPACE)
-		--version $(GITEA_CHART_VERSION)
+	$(HELM) --kube-context $(CTX) upgrade --install $(GITEA_RELEASE_NAME) \
+		$(GITEA_HELM_REPO_NAME)/$(GITEA_CHART_NAME) \
+		--namespace $(GITEA_NAMESPACE) \
+		--version $(GITEA_CHART_VERSION) \
 		--values test/e2e/gitea-values.yaml
-	)
-	$(HELM) "$${gitea_helm_args[@]}"
 	kubectl --context $(CTX) -n $(GITEA_NAMESPACE) rollout status \
 		deploy/$(GITEA_RELEASE_NAME) \
 		--timeout=$(GITEA_WAIT_TIMEOUT)
@@ -392,17 +384,11 @@ $(CS)/valkey.installed: $(CS)/ready test/e2e/valkey-values.yaml | $(CS)
 	$(HELM) repo update $(VALKEY_HELM_REPO_NAME)
 	kubectl --context $(CTX) create namespace $(VALKEY_NAMESPACE) --dry-run=client -o yaml \
 		| kubectl --context $(CTX) apply -f -
-	valkey_helm_args=(
-		--kube-context $(CTX)
-		upgrade
-		--install
-		$(VALKEY_RELEASE_NAME)
-		$(VALKEY_HELM_REPO_NAME)/$(VALKEY_CHART_NAME)
-		--namespace $(VALKEY_NAMESPACE)
-		--version $(VALKEY_CHART_VERSION)
+	$(HELM) --kube-context $(CTX) upgrade --install $(VALKEY_RELEASE_NAME) \
+		$(VALKEY_HELM_REPO_NAME)/$(VALKEY_CHART_NAME) \
+		--namespace $(VALKEY_NAMESPACE) \
+		--version $(VALKEY_CHART_VERSION) \
 		--values test/e2e/valkey-values.yaml
-	)
-	$(HELM) "$${valkey_helm_args[@]}"
 	kubectl --context $(CTX) -n $(VALKEY_NAMESPACE) rollout status \
 		deploy/$(VALKEY_RELEASE_NAME) \
 		--timeout=$(VALKEY_WAIT_TIMEOUT)
@@ -538,19 +524,14 @@ endef
 $(CS)/$(NAMESPACE)/helm/install.yaml: $(CS)/services.ready $(HELM_SYNC_OUTPUTS) $$(CHART_INPUTS) | $(CS)/$(NAMESPACE)/helm
 	$(DO_CLEANUP_INSTALLS)
 	mkdir -p "$(@D)" # keep: cleanup script can delete this directory during the same recipe
-	helm_args=(
-		upgrade
-		--install
-		$(INSTALL_NAME)
-		"$(HELM_CHART_SOURCE)"
-		--kube-context $(CTX)
-		--namespace $(NAMESPACE)
-		--create-namespace
-	)
+	skip_crds_arg=""
 	if kubectl --context $(CTX) get crd $(INSTALL_CRDS) >/dev/null 2>&1; then
-		helm_args+=(--skip-crds)
+		skip_crds_arg="--skip-crds"
 	fi
-	helm "$${helm_args[@]}"
+	$(HELM) --kube-context $(CTX) upgrade --install $(INSTALL_NAME) "$(HELM_CHART_SOURCE)" \
+		--namespace $(NAMESPACE) \
+		--create-namespace \
+		$$skip_crds_arg
 	tmp_manifest="$(@D)/.$(@F).tmp"
 	$(HELM) --kube-context $(CTX) get manifest $(INSTALL_NAME) \
 		--namespace $(NAMESPACE) \
