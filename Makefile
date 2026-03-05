@@ -189,6 +189,7 @@ test-e2e: $(CS)/e2e.passed
 .PHONY: lint
 lint: ## Run golangci-lint linter
 	$(GOLANGCI_LINT) run
+	$(CHECKMAKE) Makefile
 
 .PHONY: lint-fix
 lint-fix: ## Run golangci-lint linter and perform fixes
@@ -258,6 +259,7 @@ KUSTOMIZE ?= kustomize
 CONTROLLER_GEN ?= controller-gen
 ENVTEST ?= setup-envtest
 GOLANGCI_LINT ?= golangci-lint
+CHECKMAKE ?= checkmake
 
 ## Tool Versions (for reference - versions defined in .devcontainer/Dockerfile)
 ENVTEST_K8S_VERSION ?= $(shell go list -m -f "{{ .Version }}" k8s.io/api | awk -F'[v.]' '{printf "1.%d", $$3}')
