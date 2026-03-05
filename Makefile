@@ -14,10 +14,11 @@ endif
 # tools. (i.e. podman)
 CONTAINER_TOOL ?= docker
 
-# Setting SHELL to bash allows bash commands to be executed by recipes.
-# Options are set to exit when a recipe line exits non-zero or a piped command fails.
-SHELL = /usr/bin/env bash -o pipefail
-.SHELLFLAGS = -ec
+# Requires GNU Make >= 4.3 (grouped-target &: syntax used for correlated outputs).
+SHELL := bash
+.ONESHELL:
+.SHELLFLAGS := -euo pipefail -c
+.SECONDEXPANSION:
 # Requires GNU Make >= 4.3 (grouped-target &: syntax used for correlated outputs).
 
 .PHONY: all
@@ -50,15 +51,18 @@ CRD_BASE_OUTPUTS := \
 MANIFEST_OUTPUTS := $(CRD_BASE_OUTPUTS) \
 	config/rbac/role.yaml \
 	config/webhook/manifests.yaml
-MANIFEST_INPUTS := $(shell find api internal cmd -type f -name '*.go' \
+MANIFEST_INPUTS = $(shell find api internal cmd -type f -name '*.go' \
 	! -name '*_test.go' ! -name 'zz_generated.deepcopy.go')
-CONTROLLER_GEN_ARGS := rbac:roleName=gitops-reverser crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases
+CONTROLLER_GEN_ARGS := \
+	rbac:roleName=gitops-reverser \
+	crd \
+	webhook \
+	paths="./..." \
+	output:crd:artifacts:config=config/crd/bases
 .PHONY: manifests
 manifests: $(MANIFEST_OUTPUTS) ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects.
-$(MANIFEST_OUTPUTS) &: $(MANIFEST_INPUTS)
-	@rm -f config/crd/bases/*.yaml \
-		config/rbac/role.yaml \
-		config/webhook/manifests.yaml
+$(MANIFEST_OUTPUTS) &: $$(MANIFEST_INPUTS)
+	@rm -f config/crd/bases/*.yaml config/rbac/role.yaml config/webhook/manifests.yaml
 	$(CONTROLLER_GEN) $(CONTROLLER_GEN_ARGS)
 
 HELM_CRD_OUTPUTS := $(patsubst config/crd/bases/%,charts/gitops-reverser/crds/%,$(CRD_BASE_OUTPUTS))
@@ -71,14 +75,14 @@ $(HELM_SYNC_OUTPUTS) &: $(MANIFEST_OUTPUTS)
 	@rm -f charts/gitops-reverser/crds/*.yaml charts/gitops-reverser/config/*.yaml
 	@cp config/crd/bases/*.yaml charts/gitops-reverser/crds/
 	@cp config/rbac/role.yaml charts/gitops-reverser/config/role.yaml
-GENERATE_INPUTS := $(shell find api -type f -name '*.go' ! -name '*_test.go' \
+GENERATE_INPUTS = $(shell find api -type f -name '*.go' ! -name '*_test.go' \
 	! -name 'zz_generated.deepcopy.go') hack/boilerplate.go.txt
 GENERATE_OUTPUT := api/v1alpha1/zz_generated.deepcopy.go
 
 .PHONY: generate
 generate: $(GENERATE_OUTPUT) ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
 
-$(GENERATE_OUTPUT): $(GENERATE_INPUTS)
+$(GENERATE_OUTPUT): $$(GENERATE_INPUTS)
 	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./..."
 
 .PHONY: fmt
@@ -91,7 +95,10 @@ vet: ## Run go vet against code.
 
 .PHONY: test
 test: manifests generate fmt vet setup-envtest ## Run tests.
-	KUBEBUILDER_ASSETS="$$($(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(shell pwd)/bin -p path)" go test $$(go list ./... | grep -v /e2e) -coverprofile cover.out
+	export KUBEBUILDER_ASSETS="$$($(ENVTEST) use $(ENVTEST_K8S_VERSION) \
+		--bin-dir $(shell pwd)/bin \
+		-p path)"
+	go test $$(go list ./... | grep -v /e2e) -coverprofile cover.out
 
 E2E_LOCAL_IMAGE ?= gitops-reverser:e2e-local
 # Normalize PROJECT_IMAGE once, then consume only normalized variables below.
@@ -112,7 +119,7 @@ CTX ?= k3d-gitops-reverser-test-e2e
 CLUSTER_NAME ?= $(patsubst kind-%,%,$(patsubst k3d-%,%,$(CTX)))
 CS := .stamps/cluster/$(CTX)
 IS := .stamps/image
-GO_SOURCES := $(shell find cmd internal api -type f -name '*.go' \
+GO_SOURCES = $(shell find cmd internal api -type f -name '*.go' \
 	! -name '*_test.go' ! -name 'zz_generated.deepcopy.go') go.mod go.sum
 
 # INSTALL_MODE controls installation workflow: helm|plain-manifests-file|config-dir
@@ -124,6 +131,11 @@ HELM_CHART_SOURCE ?= charts/gitops-reverser
 CONTROLLER_CONTAINER ?= manager
 CONTROLLER_DEPLOY_SELECTOR ?= app.kubernetes.io/part-of=gitops-reverser
 VALID_INSTALL_MODES := config-dir helm plain-manifests-file
+INSTALL_CRDS := \
+	gitproviders.configbutler.ai \
+	gittargets.configbutler.ai \
+	watchrules.configbutler.ai \
+	clusterwatchrules.configbutler.ai
 ifeq (,$(filter $(INSTALL_MODE),$(VALID_INSTALL_MODES)))
   $(error INSTALL_MODE must be one of [$(VALID_INSTALL_MODES)])
 endif
@@ -147,29 +159,31 @@ e2e-gitea-bootstrap: $(CS)/gitea/bootstrap/org-$(GITEA_ORG_NAME).ready ## Bootst
 .PHONY: e2e-gitea-run-setup
 e2e-gitea-run-setup: $(CS)/$(NAMESPACE)/repo/checkout.ready ## Create active repo+creds+checkout for this run
 
-$(CS)/gitea/bootstrap/org-$(GITEA_ORG_NAME).ready: $(CS)/$(NAMESPACE)/prepare-e2e.ready hack/e2e/gitea-bootstrap.sh
-	mkdir -p $(@D)
+$(CS)/gitea/bootstrap/org-$(GITEA_ORG_NAME).ready: $(CS)/$(NAMESPACE)/prepare-e2e.ready hack/e2e/gitea-bootstrap.sh | $(CS)/gitea/bootstrap
 	$(MAKE) CTX=$(CTX) INSTALL_MODE=$(INSTALL_MODE) INSTALL_NAME=$(INSTALL_NAME) NAMESPACE=$(NAMESPACE) portforward-ensure
-	BOOTSTRAP_DIR=$(CS)/gitea/bootstrap \
-	  API_URL=http://localhost:$(GITEA_PORT)/api/v1 \
-	  GITEA_ADMIN_USER=$(GITEA_ADMIN_USER) \
-	  GITEA_ADMIN_PASS=$(GITEA_ADMIN_PASS) \
-	  ORG_NAME=$(GITEA_ORG_NAME) \
-	  bash hack/e2e/gitea-bootstrap.sh
+	export BOOTSTRAP_DIR=$(CS)/gitea/bootstrap
+	export API_URL=http://localhost:$(GITEA_PORT)/api/v1
+	export GITEA_ADMIN_USER=$(GITEA_ADMIN_USER)
+	export GITEA_ADMIN_PASS=$(GITEA_ADMIN_PASS)
+	export ORG_NAME=$(GITEA_ORG_NAME)
+	bash hack/e2e/gitea-bootstrap.sh
 	@test -f $@
 
-$(CS)/$(NAMESPACE)/repo/checkout.ready: $(CS)/gitea/bootstrap/org-$(GITEA_ORG_NAME).ready hack/e2e/gitea-run-setup.sh
+$(CS)/$(NAMESPACE)/repo/checkout.ready: $(CS)/gitea/bootstrap/org-$(GITEA_ORG_NAME).ready hack/e2e/gitea-run-setup.sh | $(CS)/$(NAMESPACE)/repo
 	@[ -n "$(REPO_NAME)" ] || { echo "ERROR: REPO_NAME must be set for e2e-gitea-run-setup" >&2; exit 2; }
-	mkdir -p $(@D)
-	CTX=$(CTX) CS=$(CS) NAMESPACE=$(NAMESPACE) REPO_NAME=$(REPO_NAME) CHECKOUT_DIR=$(CHECKOUT_DIR) \
-	  API_URL=http://localhost:$(GITEA_PORT)/api/v1 \
-	  GITEA_ADMIN_USER=$(GITEA_ADMIN_USER) \
-	  GITEA_ADMIN_PASS=$(GITEA_ADMIN_PASS) \
-	  ORG_NAME=$(GITEA_ORG_NAME) \
-	  E2E_GIT_SECRET_HTTP=$(E2E_GIT_SECRET_HTTP) \
-	  E2E_GIT_SECRET_SSH=$(E2E_GIT_SECRET_SSH) \
-	  E2E_GIT_SECRET_INVALID=$(E2E_GIT_SECRET_INVALID) \
-	  bash hack/e2e/gitea-run-setup.sh
+	export CTX=$(CTX)
+	export CS=$(CS)
+	export NAMESPACE=$(NAMESPACE)
+	export REPO_NAME=$(REPO_NAME)
+	export CHECKOUT_DIR=$(CHECKOUT_DIR)
+	export API_URL=http://localhost:$(GITEA_PORT)/api/v1
+	export GITEA_ADMIN_USER=$(GITEA_ADMIN_USER)
+	export GITEA_ADMIN_PASS=$(GITEA_ADMIN_PASS)
+	export ORG_NAME=$(GITEA_ORG_NAME)
+	export E2E_GIT_SECRET_HTTP=$(E2E_GIT_SECRET_HTTP)
+	export E2E_GIT_SECRET_SSH=$(E2E_GIT_SECRET_SSH)
+	export E2E_GIT_SECRET_INVALID=$(E2E_GIT_SECRET_INVALID)
+	bash hack/e2e/gitea-run-setup.sh
 	@test -f $@
 
 # Called by the full e2e suite.
@@ -178,8 +192,8 @@ $(CS)/$(NAMESPACE)/repo/checkout.ready: $(CS)/gitea/bootstrap/org-$(GITEA_ORG_NA
 $(CS)/$(NAMESPACE)/prepare-e2e.ready: $(CS)/$(NAMESPACE)/$(INSTALL_MODE)/install.yaml \
 	$(CS)/image.loaded \
 	$(CS)/$(NAMESPACE)/controller.deployed \
-	$(CS)/$(NAMESPACE)/sops-secret.applied
-	mkdir -p $(@D)
+	$(CS)/$(NAMESPACE)/sops-secret.applied \
+	| $(CS)/$(NAMESPACE)
 	touch $@
 
 # Keep `make test-e2e` as the classic entrypoint.
@@ -237,17 +251,21 @@ docker-buildx: ## Build and push docker image for the manager for cross-platform
 	- $(CONTAINER_TOOL) buildx rm gitops-reverser-builder
 	rm Dockerfile.cross
 
-CHART_INPUTS := charts/gitops-reverser/Chart.yaml \
+CHART_INPUTS = charts/gitops-reverser/Chart.yaml \
 	charts/gitops-reverser/values.yaml \
 	$(shell find charts/gitops-reverser/templates -type f)
 
-dist/install.yaml: $(HELM_SYNC_OUTPUTS) $(CHART_INPUTS) ## Generate consolidated YAML from Helm chart.
-	@mkdir -p dist
-	@$(HELM) template $(INSTALL_NAME) charts/gitops-reverser \
-		--namespace $(NAMESPACE) \
-		--set labels.managedBy=kubectl \
-		--set createNamespace=true \
-		--include-crds > $@
+dist/install.yaml: $(HELM_SYNC_OUTPUTS) $$(CHART_INPUTS) | dist ## Generate consolidated YAML from Helm chart.
+	helm_template_args=(
+		template
+		$(INSTALL_NAME)
+		charts/gitops-reverser
+		--namespace $(NAMESPACE)
+		--set labels.managedBy=kubectl
+		--set createNamespace=true
+		--include-crds
+	)
+	$(HELM) "$${helm_template_args[@]}" > $@
 
 ##@ Dependencies
 
@@ -262,7 +280,10 @@ GOLANGCI_LINT ?= golangci-lint
 CHECKMAKE ?= checkmake
 
 ## Tool Versions (for reference - versions defined in .devcontainer/Dockerfile)
-ENVTEST_K8S_VERSION ?= $(shell go list -m -f "{{ .Version }}" k8s.io/api | awk -F'[v.]' '{printf "1.%d", $$3}')
+ENVTEST_K8S_VERSION ?= $(shell \
+	go list -m -f "{{ .Version }}" k8s.io/api \
+	| awk -F'[v.]' '{printf "1.%d", $$3}' \
+)
 
 # Gitea E2E Configuration
 GITEA_NAMESPACE ?= gitea-e2e
@@ -285,98 +306,124 @@ VALKEY_CHART_VERSION ?= 0.9.3 # https://valkey.io/valkey-helm/index.yaml
 VALKEY_WAIT_TIMEOUT ?= 120s
 VALKEY_PORT ?= 16379
 
-ENVTEST_STAMP := .stamps/envtest-$(ENVTEST_K8S_VERSION).ready
+ENVTEST_STAMP = .stamps/envtest-$(ENVTEST_K8S_VERSION).ready
 
 .PHONY: setup-envtest
 setup-envtest: $(ENVTEST_STAMP) ## Setup envtest binaries for unit tests
 
 $(ENVTEST_STAMP): Makefile
-	@echo "Setting up envtest binaries for Kubernetes version $(ENVTEST_K8S_VERSION)..."
-	@mkdir -p $(shell pwd)/bin
-	@$(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(shell pwd)/bin -p path || { \
-		echo "Error: Failed to set up envtest binaries for version $(ENVTEST_K8S_VERSION)."; \
-		exit 1; \
-	}
-	@mkdir -p $(@D) && touch $@
+	echo "Setting up envtest binaries for Kubernetes version $(ENVTEST_K8S_VERSION)..."
+	mkdir -p $(shell pwd)/bin
+	$(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(shell pwd)/bin -p path
+	mkdir -p $(@D)
+	touch $@
 
 ##@ E2E Stamp Targets (cluster-parameterized; pass CTX=k3d-<name> to target a different cluster)
 
-$(CS)/ready: test/e2e/cluster/start-cluster.sh
-	mkdir -p $(CS)
-	CLUSTER_NAME=$(CLUSTER_NAME) bash test/e2e/cluster/start-cluster.sh
+$(CS) $(IS) $(CS)/$(NAMESPACE) $(CS)/$(NAMESPACE)/repo $(CS)/gitea/bootstrap \
+$(CS)/$(NAMESPACE)/helm $(CS)/$(NAMESPACE)/config-dir $(CS)/$(NAMESPACE)/plain-manifests-file dist:
+	mkdir -p $@
+
+$(CS)/ready: test/e2e/cluster/start-cluster.sh | $(CS)
+	export CLUSTER_NAME=$(CLUSTER_NAME)
+	bash test/e2e/cluster/start-cluster.sh
 	kubectl --context $(CTX) get ns >/dev/null
 	touch $@
 
 CERT_MANAGER_WAIT_TIMEOUT ?= 300s
 CERT_MANAGER_VERSION ?= v1.19.4
 CERT_MANAGER_MANIFEST_URL ?= https://github.com/cert-manager/cert-manager/releases/download/$(CERT_MANAGER_VERSION)/cert-manager.yaml
-$(CS)/cert-manager.installed: $(CS)/ready
-	mkdir -p $(CS)
+$(CS)/cert-manager.installed: $(CS)/ready | $(CS)
 	kubectl --context $(CTX) apply -f $(CERT_MANAGER_MANIFEST_URL) | grep -v unchanged
-	kubectl --context $(CTX) -n cert-manager rollout status deploy/cert-manager --timeout=$(CERT_MANAGER_WAIT_TIMEOUT)
-	kubectl --context $(CTX) -n cert-manager rollout status deploy/cert-manager-webhook --timeout=$(CERT_MANAGER_WAIT_TIMEOUT)
-	kubectl --context $(CTX) -n cert-manager rollout status deploy/cert-manager-cainjector --timeout=$(CERT_MANAGER_WAIT_TIMEOUT)
+	kubectl --context $(CTX) -n cert-manager rollout status \
+		deploy/cert-manager \
+		--timeout=$(CERT_MANAGER_WAIT_TIMEOUT)
+	kubectl --context $(CTX) -n cert-manager rollout status \
+		deploy/cert-manager-webhook \
+		--timeout=$(CERT_MANAGER_WAIT_TIMEOUT)
+	kubectl --context $(CTX) -n cert-manager rollout status \
+		deploy/cert-manager-cainjector \
+		--timeout=$(CERT_MANAGER_WAIT_TIMEOUT)
 	echo $(CERT_MANAGER_VERSION) > $@
 
-$(CS)/gitea.installed: $(CS)/ready test/e2e/gitea-values.yaml
-	mkdir -p $(CS)
+$(CS)/gitea.installed: $(CS)/ready test/e2e/gitea-values.yaml | $(CS)
 	$(HELM) repo add $(GITEA_HELM_REPO_NAME) $(GITEA_HELM_REPO_URL) 2>/dev/null || true
 	$(HELM) repo update $(GITEA_HELM_REPO_NAME)
 	kubectl --context $(CTX) create namespace $(GITEA_NAMESPACE) --dry-run=client -o yaml \
-	  | kubectl --context $(CTX) apply -f -
-	$(HELM) --kube-context $(CTX) upgrade --install $(GITEA_RELEASE_NAME) \
-	  $(GITEA_HELM_REPO_NAME)/$(GITEA_CHART_NAME) \
-	  --namespace $(GITEA_NAMESPACE) \
-	  --version $(GITEA_CHART_VERSION) \
-	  --values test/e2e/gitea-values.yaml
-	kubectl --context $(CTX) -n $(GITEA_NAMESPACE) rollout status deploy/$(GITEA_RELEASE_NAME) --timeout=$(GITEA_WAIT_TIMEOUT)
+		| kubectl --context $(CTX) apply -f -
+	gitea_helm_args=(
+		--kube-context $(CTX)
+		upgrade
+		--install
+		$(GITEA_RELEASE_NAME)
+		$(GITEA_HELM_REPO_NAME)/$(GITEA_CHART_NAME)
+		--namespace $(GITEA_NAMESPACE)
+		--version $(GITEA_CHART_VERSION)
+		--values test/e2e/gitea-values.yaml
+	)
+	$(HELM) "$${gitea_helm_args[@]}"
+	kubectl --context $(CTX) -n $(GITEA_NAMESPACE) rollout status \
+		deploy/$(GITEA_RELEASE_NAME) \
+		--timeout=$(GITEA_WAIT_TIMEOUT)
 	echo $(GITEA_CHART_VERSION) > $@
 
-PROMETHEUS_SETUP_MANIFESTS := $(shell find test/e2e/setup/prometheus -type f -name '*.yaml')
-$(CS)/prometheus.installed: $(CS)/ready hack/e2e/ensure-prometheus-operator.sh $(PROMETHEUS_SETUP_MANIFESTS)
-	mkdir -p $(CS)
-	KUBECONTEXT=$(CTX) bash hack/e2e/ensure-prometheus-operator.sh
+PROMETHEUS_SETUP_MANIFESTS = $(shell find test/e2e/setup/prometheus -type f -name '*.yaml')
+$(CS)/prometheus.installed: $(CS)/ready hack/e2e/ensure-prometheus-operator.sh $$(PROMETHEUS_SETUP_MANIFESTS) | $(CS)
+	export KUBECONTEXT=$(CTX)
+	bash hack/e2e/ensure-prometheus-operator.sh
 	kubectl --context $(CTX) wait --for=condition=Established \
-	  crd/prometheuses.monitoring.coreos.com \
-	  crd/servicemonitors.monitoring.coreos.com \
-	  --timeout=180s
+		crd/prometheuses.monitoring.coreos.com \
+		crd/servicemonitors.monitoring.coreos.com \
+		--timeout=180s
 	kubectl --context $(CTX) apply -n prometheus-operator -f test/e2e/setup/prometheus
-	kubectl --context $(CTX) wait --for=condition=Available prometheus/prometheus-shared-e2e -n prometheus-operator --timeout=180s
-	kubectl --context $(CTX) wait --for=condition=ready pod -l prometheus=prometheus-shared-e2e -n prometheus-operator --timeout=180s
+	kubectl --context $(CTX) wait --for=condition=Available \
+		prometheus/prometheus-shared-e2e \
+		-n prometheus-operator \
+		--timeout=180s
+	kubectl --context $(CTX) wait --for=condition=ready \
+		pod \
+		-l prometheus=prometheus-shared-e2e \
+		-n prometheus-operator \
+		--timeout=180s
 	touch $@
 
-$(CS)/valkey.installed: $(CS)/ready test/e2e/valkey-values.yaml
-	mkdir -p $(CS)
+$(CS)/valkey.installed: $(CS)/ready test/e2e/valkey-values.yaml | $(CS)
 	$(HELM) repo add $(VALKEY_HELM_REPO_NAME) $(VALKEY_HELM_REPO_URL) 2>/dev/null || true
 	$(HELM) repo update $(VALKEY_HELM_REPO_NAME)
 	kubectl --context $(CTX) create namespace $(VALKEY_NAMESPACE) --dry-run=client -o yaml \
-	  | kubectl --context $(CTX) apply -f -
-	$(HELM) --kube-context $(CTX) upgrade --install $(VALKEY_RELEASE_NAME) \
-	  $(VALKEY_HELM_REPO_NAME)/$(VALKEY_CHART_NAME) \
-	  --namespace $(VALKEY_NAMESPACE) \
-	  --version $(VALKEY_CHART_VERSION) \
-	  --values test/e2e/valkey-values.yaml
-	kubectl --context $(CTX) -n $(VALKEY_NAMESPACE) rollout status deploy/$(VALKEY_RELEASE_NAME) --timeout=$(VALKEY_WAIT_TIMEOUT)
+		| kubectl --context $(CTX) apply -f -
+	valkey_helm_args=(
+		--kube-context $(CTX)
+		upgrade
+		--install
+		$(VALKEY_RELEASE_NAME)
+		$(VALKEY_HELM_REPO_NAME)/$(VALKEY_CHART_NAME)
+		--namespace $(VALKEY_NAMESPACE)
+		--version $(VALKEY_CHART_VERSION)
+		--values test/e2e/valkey-values.yaml
+	)
+	$(HELM) "$${valkey_helm_args[@]}"
+	kubectl --context $(CTX) -n $(VALKEY_NAMESPACE) rollout status \
+		deploy/$(VALKEY_RELEASE_NAME) \
+		--timeout=$(VALKEY_WAIT_TIMEOUT)
 	echo $(VALKEY_CHART_VERSION) > $@
 
 # Aggregate stamp for external E2E services required by tests.
 $(CS)/services.ready: $(CS)/cert-manager.installed $(CS)/prometheus.installed $(CS)/gitea.installed $(CS)/valkey.installed
-	mkdir -p $(CS)
 	touch $@
 
 # Step 1: Generate age key file — no cluster/namespace dependency; safe to run before installation.
-$(CS)/age-key.txt: Makefile test/e2e/tools/gen-age-key/main.go
-	mkdir -p $(@D)
+$(CS)/age-key.txt: Makefile test/e2e/tools/gen-age-key/main.go | $(CS)
 	go run ./test/e2e/tools/gen-age-key \
-	  --key-file $@
+		--key-file $@
 
 # Step 2: Derive Kubernetes Secret manifest from the key file — still no cluster dependency.
-$(CS)/$(NAMESPACE)/sops-secret.yaml: $(CS)/age-key.txt Makefile
+$(CS)/$(NAMESPACE)/sops-secret.yaml: $(CS)/age-key.txt Makefile | $(CS)/$(NAMESPACE)
 	go run ./test/e2e/tools/gen-age-key \
-	  --key-file $(CS)/age-key.txt \
-	  --secret-file $@ \
-	  --namespace $(NAMESPACE) \
-	  --secret-name sops-age-key
+		--key-file $(CS)/age-key.txt \
+		--secret-file $@ \
+		--namespace $(NAMESPACE) \
+		--secret-name sops-age-key
 
 # Step 3: Apply the secret into the namespace — requires the namespace to already exist.
 # Explicit dep on install.yaml ensures the namespace is created before kubectl apply.
@@ -384,78 +431,81 @@ $(CS)/$(NAMESPACE)/sops-secret.applied: $(CS)/$(NAMESPACE)/sops-secret.yaml $(CS
 	kubectl --context "$(CTX)" apply -f $(CS)/$(NAMESPACE)/sops-secret.yaml
 	touch $@
 
-$(IS)/controller.id: $(GO_SOURCES) Dockerfile
-	mkdir -p $(IS)
+$(IS)/controller.id: $$(GO_SOURCES) Dockerfile | $(IS)
 	$(CONTAINER_TOOL) build \
-	  --build-arg TARGETOS=$(shell go env GOOS) \
-	  --build-arg TARGETARCH=$(shell go env GOARCH) \
-	  -t $(E2E_LOCAL_IMAGE) .
+		--build-arg TARGETOS=$(shell go env GOOS) \
+		--build-arg TARGETARCH=$(shell go env GOARCH) \
+		-t $(E2E_LOCAL_IMAGE) \
+		.
 	$(CONTAINER_TOOL) inspect --format='{{.Id}}' $(E2E_LOCAL_IMAGE) > $@
 
-$(IS)/project-image.ready: $(if $(PROJECT_IMAGE_PROVIDED),,$(IS)/controller.id)
-	mkdir -p $(IS)
-	@set -euo pipefail; \
-	if [ -n "$(PROJECT_IMAGE_PROVIDED)" ]; then \
-		if ! $(CONTAINER_TOOL) image inspect "$(PROJECT_IMAGE)" >/dev/null 2>&1; then \
-			echo "Pulling PROJECT_IMAGE=$(PROJECT_IMAGE)"; \
-			$(CONTAINER_TOOL) pull "$(PROJECT_IMAGE)"; \
-		fi; \
-	fi; \
+$(IS)/project-image.ready: $(if $(PROJECT_IMAGE_PROVIDED),,$(IS)/controller.id) | $(IS)
+	if [ -n "$(PROJECT_IMAGE_PROVIDED)" ]; then
+		if ! $(CONTAINER_TOOL) image inspect "$(PROJECT_IMAGE)" >/dev/null 2>&1; then
+			echo "Pulling PROJECT_IMAGE=$(PROJECT_IMAGE)"
+			$(CONTAINER_TOOL) pull "$(PROJECT_IMAGE)"
+		fi
+	fi
 	echo "$(PROJECT_IMAGE)" > "$@"
 
-$(CS)/crds.applied: $(CS)/ready $(shell find config/crd -type f)
-	mkdir -p $(CS)
+CRD_INPUTS = $(shell find config/crd -type f)
+$(CS)/crds.applied: $(CS)/ready $$(CRD_INPUTS) | $(CS)
 	kubectl --context $(CTX) apply -k config/crd
 	kubectl --context $(CTX) wait --for=condition=Established crd --all --timeout=120s
 	touch $@
 
-$(CS)/image.loaded: $(IS)/project-image.ready $(CS)/ready
-	@set -euo pipefail; \
-	mkdir -p $(CS); \
-	if ! $(CONTAINER_TOOL) image inspect "$(PROJECT_IMAGE)" >/dev/null 2>&1; then \
-		if [ -z "$(PROJECT_IMAGE_PROVIDED)" ]; then \
-			echo "Local image $(PROJECT_IMAGE) missing; rebuilding..."; \
-			$(MAKE) $(IS)/controller.id; \
-		else \
-			echo "ERROR: PROJECT_IMAGE=$(PROJECT_IMAGE) not found locally" >&2; \
-			exit 2; \
-		fi; \
-	fi; \
-	img_id="$$( $(CONTAINER_TOOL) inspect --format='{{.Id}}' $(PROJECT_IMAGE) )"; \
-	echo "Loading $(PROJECT_IMAGE) ($$img_id) into $(CTX)"; \
-	$(K3D) image import $(PROJECT_IMAGE) -c $(CLUSTER_NAME); \
+$(CS)/image.loaded: $(IS)/project-image.ready $(CS)/ready | $(CS)
+	if ! $(CONTAINER_TOOL) image inspect "$(PROJECT_IMAGE)" >/dev/null 2>&1; then
+		if [ -z "$(PROJECT_IMAGE_PROVIDED)" ]; then
+			echo "Local image $(PROJECT_IMAGE) missing; rebuilding..."
+			$(MAKE) $(IS)/controller.id
+		else
+			echo "ERROR: PROJECT_IMAGE=$(PROJECT_IMAGE) not found locally" >&2
+			exit 2
+		fi
+	fi
+	img_id="$$( $(CONTAINER_TOOL) inspect --format='{{.Id}}' $(PROJECT_IMAGE) )"
+	echo "Loading $(PROJECT_IMAGE) ($$img_id) into $(CTX)"
+	$(K3D) image import $(PROJECT_IMAGE) -c $(CLUSTER_NAME)
 	echo "$$img_id" > "$@"
 
-$(CS)/$(NAMESPACE)/controller.deployed: $(CS)/$(NAMESPACE)/$(INSTALL_MODE)/install.yaml $(CS)/image.loaded
-	@set -euo pipefail; \
-	ctx="$(CTX)"; ns="$(NAMESPACE)"; img="$(PROJECT_IMAGE)"; c="$(CONTROLLER_CONTAINER)"; sel="$(CONTROLLER_DEPLOY_SELECTOR)"; \
-	[ -n "$$img" ] || { echo "ERROR: PROJECT_IMAGE must be non-empty" >&2; exit 2; }; \
-	[ -n "$$c" ] || { echo "ERROR: CONTROLLER_CONTAINER must be non-empty" >&2; exit 2; }; \
-	count="$$(kubectl --context "$$ctx" -n "$$ns" get deploy -l "$$sel" --no-headers 2>/dev/null | wc -l | tr -d ' ')"; \
-	[ "$$count" -eq 1 ] || { \
-		echo "ERROR: Expected exactly 1 Deployment matching '$$sel' in namespace '$$ns', found $$count" >&2; \
-		kubectl --context "$$ctx" -n "$$ns" get deploy -l "$$sel" -o wide || true; \
-		exit 1; \
-	}; \
-	deploy="$$(kubectl --context "$$ctx" -n "$$ns" get deploy -l "$$sel" -o jsonpath='{.items[0].metadata.name}')"; \
-	echo "Setting deployment/$$deploy container '$$c' to image '$$img'"; \
-	kubectl --context "$$ctx" -n "$$ns" set image "deployment/$$deploy" "$$c=$$img"; \
-	kubectl --context "$$ctx" -n "$$ns" rollout status "deployment/$$deploy" --timeout=180s; \
+$(CS)/$(NAMESPACE)/controller.deployed: $(CS)/$(NAMESPACE)/$(INSTALL_MODE)/install.yaml $(CS)/image.loaded | $(CS)/$(NAMESPACE)
+	ctx="$(CTX)"
+	ns="$(NAMESPACE)"
+	img="$(PROJECT_IMAGE)"
+	container="$(CONTROLLER_CONTAINER)"
+	selector="$(CONTROLLER_DEPLOY_SELECTOR)"
+	[ -n "$$img" ] || { echo "ERROR: PROJECT_IMAGE must be non-empty" >&2; exit 2; }
+	[ -n "$$container" ] || { echo "ERROR: CONTROLLER_CONTAINER must be non-empty" >&2; exit 2; }
+	count="$$(kubectl --context "$$ctx" -n "$$ns" get deploy -l "$$selector" --no-headers 2>/dev/null | wc -l | tr -d ' ')"
+	[ "$$count" -eq 1 ] || {
+		echo "ERROR: Expected exactly 1 Deployment matching '$$selector' in namespace '$$ns', found $$count" >&2
+		kubectl --context "$$ctx" -n "$$ns" get deploy -l "$$selector" -o wide || true
+		exit 1
+	}
+	deploy="$$(kubectl --context "$$ctx" -n "$$ns" get deploy -l "$$selector" -o jsonpath='{.items[0].metadata.name}')"
+	echo "Setting deployment/$$deploy container '$$container' to image '$$img'"
+	kubectl --context "$$ctx" -n "$$ns" set image "deployment/$$deploy" "$$container=$$img"
+	kubectl --context "$$ctx" -n "$$ns" rollout status "deployment/$$deploy" --timeout=180s
 	touch "$@"
 
 .PHONY: portforward-ensure
 portforward-ensure: $(CS)/services.ready ## Ensure port-forwards are running (always checks)
-	mkdir -p $(CS)
-	E2E_KUBECONTEXT=$(CTX) GITEA_PORT=$(GITEA_PORT) PROMETHEUS_PORT=$(PROMETHEUS_PORT) VALKEY_PORT=$(VALKEY_PORT) bash hack/e2e/setup-port-forwards.sh
+	export E2E_KUBECONTEXT=$(CTX)
+	export GITEA_PORT=$(GITEA_PORT)
+	export PROMETHEUS_PORT=$(PROMETHEUS_PORT)
+	export VALKEY_PORT=$(VALKEY_PORT)
+	bash hack/e2e/setup-port-forwards.sh
 
-E2E_TEST_INPUTS := $(CS)/age-key.txt \
+E2E_TEST_INPUTS = $(CS)/age-key.txt \
 	$(shell find test/e2e -type f \( -name '*.go' -o -name '*.sh' -o -name '*.yaml' -o -name '*.tmpl' \)) \
 	$(wildcard hack/e2e/*.sh)
-$(CS)/e2e.passed: $(E2E_TEST_INPUTS) Makefile
-	mkdir -p $(CS)
-	CTX=$(CTX) INSTALL_MODE=$(INSTALL_MODE) NAMESPACE=$(NAMESPACE) \
-	  E2E_AGE_KEY_FILE=$(CS)/age-key.txt \
-	  go test ./test/e2e/ -v -ginkgo.v
+$(CS)/e2e.passed: $$(E2E_TEST_INPUTS) Makefile | $(CS)
+	export CTX=$(CTX)
+	export INSTALL_MODE=$(INSTALL_MODE)
+	export NAMESPACE=$(NAMESPACE)
+	export E2E_AGE_KEY_FILE=$(CS)/age-key.txt
+	go test ./test/e2e/ -v -ginkgo.v
 	touch $@
 
 .PHONY: install install-helm install-plain-manifests-file install-config-dir
@@ -473,78 +523,95 @@ define DO_CLEANUP_INSTALLS
 	@CTX="$(CTX)" KUBECTL="$(KUBECTL)" bash hack/cleanup-installs.sh
 endef
 
+# Replace $@ only if the newly rendered file differs.
+# This keeps $@’s mtime stable on no-op re-runs, so downstream targets don’t
+# rebuild just because we rewrote identical content.
+define UPDATE_IF_CHANGED
+	if [ -f "$@" ] && cmp -s "$(1)" "$@"; then
+		rm -f "$(1)"
+	else
+		mv "$(1)" "$@"
+	fi
+endef
+
 ##@ Deployments of all manifests needed to run
-$(CS)/$(NAMESPACE)/helm/install.yaml: $(CS)/services.ready $(HELM_SYNC_OUTPUTS)
+$(CS)/$(NAMESPACE)/helm/install.yaml: $(CS)/services.ready $(HELM_SYNC_OUTPUTS) $$(CHART_INPUTS) | $(CS)/$(NAMESPACE)/helm
 	$(DO_CLEANUP_INSTALLS)
-	@set -euo pipefail; \
-	mkdir -p "$(@D)"; \
-	helm_args=( \
-		upgrade --install $(INSTALL_NAME) "$(HELM_CHART_SOURCE)" \
-		--kube-context $(CTX) \
-		--namespace $(NAMESPACE) \
-		--create-namespace \
-	); \
-	if kubectl --context $(CTX) get crd \
-		gitproviders.configbutler.ai \
-		gittargets.configbutler.ai \
-		watchrules.configbutler.ai \
-		clusterwatchrules.configbutler.ai >/dev/null 2>&1; then \
-		helm_args+=(--skip-crds); \
-	fi; \
-	helm "$${helm_args[@]}"; \
+	mkdir -p "$(@D)" # keep: cleanup script can delete this directory during the same recipe
+	helm_args=(
+		upgrade
+		--install
+		$(INSTALL_NAME)
+		"$(HELM_CHART_SOURCE)"
+		--kube-context $(CTX)
+		--namespace $(NAMESPACE)
+		--create-namespace
+	)
+	if kubectl --context $(CTX) get crd $(INSTALL_CRDS) >/dev/null 2>&1; then
+		helm_args+=(--skip-crds)
+	fi
+	helm "$${helm_args[@]}"
+	tmp_manifest="$(@D)/.$(@F).tmp"
 	$(HELM) --kube-context $(CTX) get manifest $(INSTALL_NAME) \
-	  --namespace $(NAMESPACE) > "$@"
+		--namespace $(NAMESPACE) \
+		> "$$tmp_manifest"
+	$(call UPDATE_IF_CHANGED,$$tmp_manifest)
 
-CONFIG_DIR_INPUTS := $(shell find config -type f)
-$(CS)/$(NAMESPACE)/config-dir/install.yaml: $(CS)/services.ready $(MANIFEST_OUTPUTS) $(CONFIG_DIR_INPUTS)
+CONFIG_DIR_INPUTS = $(shell find config -type f)
+$(CS)/$(NAMESPACE)/config-dir/install.yaml: $(CS)/services.ready $(MANIFEST_OUTPUTS) $$(CONFIG_DIR_INPUTS) | $(CS)/$(NAMESPACE)/config-dir
 	$(DO_CLEANUP_INSTALLS)
-	@set -euo pipefail; \
-	mkdir -p "$(@D)"; \
-	tmpdir="$$(mktemp -d)"; \
-	trap 'rm -rf "$$tmpdir"' EXIT; \
-	cp -R config "$$tmpdir/config"; \
-	(cd "$$tmpdir/config" && $(KUSTOMIZE) edit set namespace "$(NAMESPACE)"); \
-	(cd "$$tmpdir/config" && $(KUSTOMIZE) edit set image gitops-reverser="$(PROJECT_IMAGE)"); \
+	mkdir -p "$(@D)" # keep: cleanup script can delete this directory during the same recipe
+	tmpdir="$$(mktemp -d)"
+	trap 'rm -rf "$$tmpdir"' EXIT
+	cp -R config "$$tmpdir/config"
+	(cd "$$tmpdir/config" && $(KUSTOMIZE) edit set namespace "$(NAMESPACE)")
+	(cd "$$tmpdir/config" && $(KUSTOMIZE) edit set image gitops-reverser="$(PROJECT_IMAGE)")
 	(cd "$$tmpdir/config" && $(KUSTOMIZE) build .) \
-	  | tee "$$tmpdir/install.yaml" \
-	  | $(KUBECTL) --context "$(CTX)" apply -f -; \
-	mv "$$tmpdir/install.yaml" "$@"
+		| tee "$$tmpdir/install.yaml" \
+		| $(KUBECTL) --context "$(CTX)" apply -f -
+	$(call UPDATE_IF_CHANGED,$$tmpdir/install.yaml)
 
-$(CS)/$(NAMESPACE)/plain-manifests-file/install.yaml: $(CS)/services.ready dist/install.yaml
+$(CS)/$(NAMESPACE)/plain-manifests-file/install.yaml: $(CS)/services.ready dist/install.yaml | $(CS)/$(NAMESPACE)/plain-manifests-file
 	$(DO_CLEANUP_INSTALLS)
-	@set -euo pipefail; \
-	mkdir -p "$(@D)"; \
-	ctx="$(CTX)"; \
-	ns="$(NAMESPACE)"; \
-	tmpdir="$$(mktemp -d)"; \
-	trap 'rm -rf "$$tmpdir"' EXIT; \
-	cp dist/install.yaml "$$tmpdir/install.yaml"; \
+	mkdir -p "$(@D)" # keep: cleanup script can delete this directory during the same recipe
+	ctx="$(CTX)"
+	ns="$(NAMESPACE)"
+	tmpdir="$$(mktemp -d)"
+	trap 'rm -rf "$$tmpdir"' EXIT
+	cp dist/install.yaml "$$tmpdir/install.yaml"
 	printf '%s\n' \
 		'apiVersion: kustomize.config.k8s.io/v1beta1' \
 		'kind: Kustomization' \
 		'resources:' \
-		'- install.yaml' > "$$tmpdir/kustomization.yaml"; \
-	( \
-		cd "$$tmpdir" && \
-		$(KUSTOMIZE) edit set namespace "$$ns" >/dev/null && \
-		$(KUSTOMIZE) build . \
+		'- install.yaml' \
+		> "$$tmpdir/kustomization.yaml"
+	(
+		cd "$$tmpdir"
+		$(KUSTOMIZE) edit set namespace "$$ns" >/dev/null
+		$(KUSTOMIZE) build .
 	) | tee "$$tmpdir/rendered-install.yaml" \
-	  | $(KUBECTL) --context "$$ctx" apply -f -; \
-	mv "$$tmpdir/rendered-install.yaml" "$@"
+		| $(KUBECTL) --context "$$ctx" apply -f -
+	$(call UPDATE_IF_CHANGED,$$tmpdir/rendered-install.yaml)
 
 .PHONY: test-e2e-quickstart-helm
 test-e2e-quickstart-helm: ## Run quickstart smoke test (Helm install)
-	CTX=$(CTX) INSTALL_MODE=helm NAMESPACE=$(NAMESPACE) \
-	  E2E_ENABLE_QUICKSTART_FRAMEWORK=true E2E_QUICKSTART_MODE=helm \
-	  E2E_AGE_KEY_FILE=$(CS)/age-key.txt \
-	  go test ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=quickstart-framework
+	export CTX=$(CTX)
+	export INSTALL_MODE=helm
+	export NAMESPACE=$(NAMESPACE)
+	export E2E_ENABLE_QUICKSTART_FRAMEWORK=true
+	export E2E_QUICKSTART_MODE=helm
+	export E2E_AGE_KEY_FILE=$(CS)/age-key.txt
+	go test ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=quickstart-framework
 
 .PHONY: test-e2e-quickstart-manifest
 test-e2e-quickstart-manifest: ## Run quickstart smoke test (manifest install)
-	CTX=$(CTX) INSTALL_MODE=plain-manifests-file NAMESPACE=$(NAMESPACE) \
-	  E2E_ENABLE_QUICKSTART_FRAMEWORK=true E2E_QUICKSTART_MODE=plain-manifests-file \
-	  E2E_AGE_KEY_FILE=$(CS)/age-key.txt \
-	  go test ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=quickstart-framework
+	export CTX=$(CTX)
+	export INSTALL_MODE=plain-manifests-file
+	export NAMESPACE=$(NAMESPACE)
+	export E2E_ENABLE_QUICKSTART_FRAMEWORK=true
+	export E2E_QUICKSTART_MODE=plain-manifests-file
+	export E2E_AGE_KEY_FILE=$(CS)/age-key.txt
+	go test ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=quickstart-framework
 
 
 
@@ -555,7 +622,7 @@ clean: ## Remove build artifacts (binaries, coverage, generated dist files, buil
 	rm -rf bin/ cover.out dist/ .stamps/
 
 .PHONY: clean-installs
-clean-installs: 
+clean-installs:
 	$(DO_CLEANUP_INSTALLS)
 
 .PHONY: clean-port-forwards
@@ -568,11 +635,11 @@ clean-port-forwards: ## Stop all port-forwards
 
 .PHONY: clean-cluster
 clean-cluster: ## Tear down the E2E cluster used for tests and remove its stamps
-	@if $(K3D) cluster list 2>/dev/null | awk '{print $$1}' | grep -q "^$(CLUSTER_NAME)$$"; then \
-		echo "🧹 Deleting k3d cluster '$(CLUSTER_NAME)'"; \
-		$(K3D) cluster delete $(CLUSTER_NAME); \
-	else \
-		echo "ℹ️ k3d cluster '$(CLUSTER_NAME)' does not exist; skipping cleanup"; \
+	if $(K3D) cluster list 2>/dev/null | awk '{print $$1}' | grep -q "^$(CLUSTER_NAME)$$"; then
+		echo "🧹 Deleting k3d cluster '$(CLUSTER_NAME)'"
+		$(K3D) cluster delete $(CLUSTER_NAME)
+	else
+		echo "ℹ️ k3d cluster '$(CLUSTER_NAME)' does not exist; skipping cleanup"
 	fi
 	rm -rf .stamps/cluster/$(CTX)
 	
