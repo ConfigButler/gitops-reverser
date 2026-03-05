@@ -42,6 +42,11 @@ func TestParseFlagsWithArgs_Defaults(t *testing.T) {
 	assert.Equal(t, 15*time.Second, cfg.auditReadTimeout)
 	assert.Equal(t, 30*time.Second, cfg.auditWriteTimeout)
 	assert.Equal(t, 60*time.Second, cfg.auditIdleTimeout)
+	assert.False(t, cfg.auditRedisEnabled)
+	assert.Empty(t, cfg.auditRedisAddr)
+	assert.Equal(t, "gitopsreverser.audit.events.v1", cfg.auditRedisStream)
+	assert.Equal(t, int64(0), cfg.auditRedisMaxLen)
+	assert.False(t, cfg.auditRedisTLS)
 	assert.False(t, cfg.zapOpts.Development)
 }
 
@@ -69,6 +74,14 @@ func TestParseFlagsWithArgs_CustomAuditValues(t *testing.T) {
 		"--audit-read-timeout=5s",
 		"--audit-write-timeout=8s",
 		"--audit-idle-timeout=13s",
+		"--audit-redis-enabled",
+		"--audit-redis-addr=127.0.0.1:6379",
+		"--audit-redis-username=user",
+		"--audit-redis-password=pass",
+		"--audit-redis-db=2",
+		"--audit-redis-stream=gitopsreverser.audit.custom",
+		"--audit-redis-max-len=1000",
+		"--audit-redis-tls",
 	}
 
 	cfg, err := parseFlagsWithArgs(fs, args)
@@ -83,6 +96,14 @@ func TestParseFlagsWithArgs_CustomAuditValues(t *testing.T) {
 	assert.Equal(t, 5*time.Second, cfg.auditReadTimeout)
 	assert.Equal(t, 8*time.Second, cfg.auditWriteTimeout)
 	assert.Equal(t, 13*time.Second, cfg.auditIdleTimeout)
+	assert.True(t, cfg.auditRedisEnabled)
+	assert.Equal(t, "127.0.0.1:6379", cfg.auditRedisAddr)
+	assert.Equal(t, "user", cfg.auditRedisUsername)
+	assert.Equal(t, "pass", cfg.auditRedisPassword)
+	assert.Equal(t, 2, cfg.auditRedisDB)
+	assert.Equal(t, "gitopsreverser.audit.custom", cfg.auditRedisStream)
+	assert.Equal(t, int64(1000), cfg.auditRedisMaxLen)
+	assert.True(t, cfg.auditRedisTLS)
 }
 
 func TestParseFlagsWithArgs_FallsBackToWebhookCertPath(t *testing.T) {
@@ -112,6 +133,18 @@ func TestParseFlagsWithArgs_InvalidAuditSettings(t *testing.T) {
 		{
 			name: "invalid read timeout",
 			args: []string{"--audit-read-timeout=0s"},
+		},
+		{
+			name: "redis enabled without address",
+			args: []string{"--audit-redis-enabled"},
+		},
+		{
+			name: "invalid redis db",
+			args: []string{"--audit-redis-db=-1"},
+		},
+		{
+			name: "invalid redis max len",
+			args: []string{"--audit-redis-max-len=-1"},
 		},
 	}
 

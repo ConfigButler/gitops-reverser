@@ -128,6 +128,22 @@ webhook:
     # Object selector for validating webhook
     objectSelector: {}
 
+# Durable audit queue configuration.
+queue:
+  redis:
+    # Enable Redis Stream enqueueing for accepted audit events.
+    enabled: false
+    # Redis endpoint in host:port format.
+    addr: ""
+    username: ""
+    password: ""
+    db: 0
+    stream: "gitopsreverser.audit.events.v1"
+    # Approximate max stream length; 0 means no trimming.
+    maxLen: 0
+    tls:
+      enabled: false
+
 # TLS certificate management (Kubernetes requires this for API server callbacks)
 certificates:
   name:

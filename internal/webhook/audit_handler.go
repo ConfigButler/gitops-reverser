@@ -61,6 +61,14 @@ type AuditHandlerConfig struct {
 	DumpDir string
 	// MaxRequestBodyBytes is the maximum accepted HTTP request body size.
 	MaxRequestBodyBytes int64
+	// Queue enqueues accepted audit events to a durable backend.
+	// If nil, queueing is disabled.
+	Queue AuditEventQueue
+}
+
+// AuditEventQueue persists accepted audit events for downstream processing.
+type AuditEventQueue interface {
+	Enqueue(ctx context.Context, clusterID string, event auditv1.Event) error
 }
 
 // AuditHandler handles incoming audit events and collects telemetry.
@@ -183,6 +191,12 @@ func (h *AuditHandler) processEvents(ctx context.Context, clusterID string, even
 		process, err := h.checkEvent(&auditEvent)
 		if err != nil {
 			return fmt.Errorf("failed to check audit event: %w", err)
+		}
+
+		if h.config.Queue != nil {
+			if err := h.config.Queue.Enqueue(ctx, clusterID, auditEventV1); err != nil {
+				return fmt.Errorf("failed to enqueue audit event %q: %w", auditEvent.AuditID, err)
+			}
 		}
 
 		gvr := h.extractGVR(&auditEvent)

@@ -584,6 +584,14 @@ test-e2e-quickstart-helm: ## Run quickstart smoke test (Helm install)
 	export E2E_AGE_KEY_FILE=$(CS)/age-key.txt
 	go test ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=quickstart-framework
 
+.PHONY: test-e2e-audit-redis
+test-e2e-audit-redis: ## Run dedicated audit->Redis enqueue e2e scenario
+	export CTX=$(CTX)
+	export INSTALL_MODE=$(INSTALL_MODE)
+	export NAMESPACE=$(NAMESPACE)
+	export E2E_AGE_KEY_FILE=$(CS)/age-key.txt
+	go test ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=audit-redis
+
 .PHONY: test-e2e-quickstart-manifest
 test-e2e-quickstart-manifest: ## Run quickstart smoke test (manifest install)
 	export CTX=$(CTX)
