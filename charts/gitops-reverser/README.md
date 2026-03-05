@@ -205,6 +205,11 @@ webhook:
 | `servers.audit.timeouts.write` | Audit-server write timeout | `30s` |
 | `servers.audit.timeouts.idle` | Audit-server idle timeout | `60s` |
 | `servers.audit.tls.secretName` | Secret name for audit TLS cert/key | `<release>-audit-server-cert` |
+| `queue.redis.enabled` | Enqueue accepted audit events to Redis Streams | `false` |
+| `queue.redis.addr` | Redis endpoint for durable audit queueing | `""` |
+| `queue.redis.stream` | Redis stream name for audit events | `gitopsreverser.audit.events.v1` |
+| `queue.redis.maxLen` | Approximate stream max length (`0` disables trim) | `0` |
+| `queue.redis.tls.enabled` | Enable TLS for Redis connection | `false` |
 | `servers.metrics.bindAddress` | Metrics listener bind address | `:8080` |
 | `servers.metrics.tls.enabled` | Serve metrics with TLS | `false` |
 | `servers.metrics.tls.certPath` | Metrics TLS certificate mount path | `/tmp/k8s-metrics-server/metrics-server-certs` |

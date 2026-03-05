@@ -52,6 +52,7 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/controller"
 	"github.com/ConfigButler/gitops-reverser/internal/correlation"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
+	"github.com/ConfigButler/gitops-reverser/internal/queue"
 	"github.com/ConfigButler/gitops-reverser/internal/reconcile"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
@@ -204,9 +205,29 @@ func main() {
 	setupLog.Info("GitTarget validator webhook registered - enforcing uniqueness constraint")
 
 	// Register experimental audit webhook for metrics collection
+	var auditQueue webhookhandler.AuditEventQueue
+	if cfg.auditRedisEnabled {
+		auditQueue, err = queue.NewRedisAuditQueue(queue.RedisAuditQueueConfig{
+			Addr:       cfg.auditRedisAddr,
+			Username:   cfg.auditRedisUsername,
+			AuthValue:  cfg.auditRedisPassword,
+			DB:         cfg.auditRedisDB,
+			Stream:     cfg.auditRedisStream,
+			MaxLen:     cfg.auditRedisMaxLen,
+			TLSEnabled: cfg.auditRedisTLS,
+		})
+		fatalIfErr(err, "unable to initialize audit redis queue")
+		setupLog.Info("Audit Redis queue enabled",
+			"redis-address", cfg.auditRedisAddr,
+			"stream", cfg.auditRedisStream,
+			"db", cfg.auditRedisDB,
+			"tls-enabled", cfg.auditRedisTLS)
+	}
+
 	auditHandler, err := webhookhandler.NewAuditHandler(webhookhandler.AuditHandlerConfig{
 		DumpDir:             cfg.auditDumpPath,
 		MaxRequestBodyBytes: cfg.auditMaxRequestBodyBytes,
+		Queue:               auditQueue,
 	})
 	fatalIfErr(err, "unable to create audit handler")
 
@@ -290,6 +311,14 @@ type appConfig struct {
 	auditReadTimeout         time.Duration
 	auditWriteTimeout        time.Duration
 	auditIdleTimeout         time.Duration
+	auditRedisEnabled        bool
+	auditRedisAddr           string
+	auditRedisUsername       string
+	auditRedisPassword       string
+	auditRedisDB             int
+	auditRedisStream         string
+	auditRedisMaxLen         int64
+	auditRedisTLS            bool
 	zapOpts                  zap.Options
 }
 
@@ -340,6 +369,22 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 		"Write timeout for the dedicated audit ingress HTTPS server.")
 	fs.DurationVar(&cfg.auditIdleTimeout, "audit-idle-timeout", defaultAuditIdleTimeout,
 		"Idle timeout for the dedicated audit ingress HTTPS server.")
+	fs.BoolVar(&cfg.auditRedisEnabled, "audit-redis-enabled", false,
+		"If set, accepted audit events are enqueued to Redis Streams for durable buffering.")
+	fs.StringVar(&cfg.auditRedisAddr, "audit-redis-addr", "",
+		"Redis server address (<host>:<port>) for audit event queueing.")
+	fs.StringVar(&cfg.auditRedisUsername, "audit-redis-username", "",
+		"Optional Redis username for audit event queueing.")
+	fs.StringVar(&cfg.auditRedisPassword, "audit-redis-password", "",
+		"Optional Redis password for audit event queueing.")
+	fs.IntVar(&cfg.auditRedisDB, "audit-redis-db", 0,
+		"Redis database index for audit event queueing.")
+	fs.StringVar(&cfg.auditRedisStream, "audit-redis-stream", queue.DefaultRedisAuditStream,
+		"Redis stream name for audit event queueing.")
+	fs.Int64Var(&cfg.auditRedisMaxLen, "audit-redis-max-len", 0,
+		"Approximate max stream length (0 disables trimming).")
+	fs.BoolVar(&cfg.auditRedisTLS, "audit-redis-tls", false,
+		"If set, Redis connection for audit queueing uses TLS.")
 	cfg.zapOpts = zap.Options{
 		// Production mode defaults to JSON encoding, which is easier for log processors to parse.
 		Development: false,
@@ -399,6 +444,15 @@ func validateAuditConfig(cfg appConfig) error {
 	}
 	if cfg.auditIdleTimeout <= 0 {
 		return fmt.Errorf("audit-idle-timeout must be > 0, got %s", cfg.auditIdleTimeout)
+	}
+	if cfg.auditRedisEnabled && strings.TrimSpace(cfg.auditRedisAddr) == "" {
+		return errors.New("audit-redis-addr is required when audit-redis-enabled is true")
+	}
+	if cfg.auditRedisDB < 0 {
+		return fmt.Errorf("audit-redis-db must be >= 0, got %d", cfg.auditRedisDB)
+	}
+	if cfg.auditRedisMaxLen < 0 {
+		return fmt.Errorf("audit-redis-max-len must be >= 0, got %d", cfg.auditRedisMaxLen)
 	}
 	return nil
 }
