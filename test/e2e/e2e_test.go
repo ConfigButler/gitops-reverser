@@ -1280,8 +1280,15 @@ var _ = Describe("Manager", Ordered, func() {
 				WithPolling(2 * time.Second).
 				Should(Succeed())
 
+			By("verifying the IceCreamOrder still exists before status update")
+			verifyCRDInstanceExists := func(g Gomega) {
+				_, err := kubectlRunInNamespace(namespace, "get", "icecreamorder", crdInstanceName)
+				g.Expect(err).NotTo(HaveOccurred(), "IceCreamOrder should exist before status patch")
+			}
+			Eventually(verifyCRDInstanceExists, 15*time.Second, time.Second).Should(Succeed())
+
 			By("applying status update to the IceCreamOrder CR")
-			statusPatch := `{"status":{"orderStatus":"pending","preparationTime":"5m","totalPrice":"$12.50"}}`
+			statusPatch := `{"status":{"phase":"Preparing","cost":12.5,"message":"Queued for pickup"}}`
 			statusOutput, statusErr := kubectlRunInNamespace(
 				namespace,
 				"patch",
@@ -1292,12 +1299,8 @@ var _ = Describe("Manager", Ordered, func() {
 				"-p",
 				statusPatch,
 			)
-			if statusErr != nil {
-				// Status subresource might not be configured for this CRD, which is fine for this test
-				By(fmt.Sprintf("⚠️  Status patch not supported (expected): %v", statusErr))
-			} else {
-				By(fmt.Sprintf("✅ Status patched successfully: %s", statusOutput))
-			}
+			Expect(statusErr).NotTo(HaveOccurred(), "Status subresource patch should succeed")
+			By(fmt.Sprintf("status patched successfully: %s", statusOutput))
 
 			By("getting current git commit hash")
 			gitRevCmd := exec.Command("git", "rev-parse", "HEAD")
@@ -1330,7 +1333,9 @@ var _ = Describe("Manager", Ordered, func() {
 				g.Expect(readErr).NotTo(HaveOccurred())
 				g.Expect(string(content)).NotTo(ContainSubstring("status:"),
 					"CRD instance file should still NOT contain status field after status update")
-				g.Expect(string(content)).NotTo(ContainSubstring("orderStatus"),
+				g.Expect(string(content)).NotTo(ContainSubstring("phase:"),
+					"CRD instance file should NOT contain status phase content")
+				g.Expect(string(content)).NotTo(ContainSubstring("Queued for pickup"),
 					"CRD instance file should NOT contain status content")
 			}
 			Eventually(verifyStatusNotCommitted).Should(Succeed())
