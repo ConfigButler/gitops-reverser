@@ -166,7 +166,6 @@ kubectl create configmap test-config --from-literal=key=value -n default
 
 For cluster-wide resources (nodes, CRDs, etc.) or watching multiple namespaces, use
 [`ClusterWatchRule`](config/samples/clusterwatchrule.yaml). More examples in [`config/samples/`](config/samples/).
-
 ## Usage guidance
 
 Avoid infinite loops: Do not point GitOps (Argo CD/Flux) and GitOps Reverser at the same resources in fully automated mode. Recommended patterns:
