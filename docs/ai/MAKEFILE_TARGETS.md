@@ -178,7 +178,7 @@ flowchart TD
     start_sh(["test/e2e/cluster/start-cluster.sh"]):::src
     gitea_vals(["test/e2e/gitea-values.yaml"]):::src
     prom_sh(["hack/e2e/ensure-prometheus-operator.sh"]):::src
-    prom_manifests(["test/e2e/setup/prometheus/*.yaml"]):::src
+    prom_manifests(["test/e2e/setup/manifests/**/*.yaml"]):::src
 
     cluster_ready[".stamps/cluster/CTX/ready"]:::stamp
     cert_installed[".stamps/cluster/CTX/\ncert-manager.installed"]:::stamp

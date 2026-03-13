@@ -11,13 +11,13 @@ resources:
   - namespaces/gitea-e2e.yaml
   - namespaces/prometheus-operator.yaml
   - namespaces/valkey-e2e.yaml
+  - repositories/prometheus-operator.yaml
   - repositories/jetstack.yaml
   - repositories/gitea-charts.yaml
-  - repositories/prometheus-community.yaml
   - repositories/valkey.yaml
+  - releases/prometheus-operator.yaml
   - releases/cert-manager.yaml
   - releases/gitea.yaml
-  - releases/prometheus.yaml
   - releases/valkey.yaml
 
 generatorOptions:
@@ -30,10 +30,6 @@ configMapGenerator:
     namespace: gitea-e2e
     files:
       - values.yaml=values/gitea-values.yaml
-  - name: prometheus-values
-    namespace: prometheus-operator
-    files:
-      - values.yaml=values/prometheus-values.yaml
   - name: valkey-values
     namespace: valkey-e2e
     files:
