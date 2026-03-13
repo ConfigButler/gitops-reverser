@@ -8,7 +8,9 @@ Completed:
 
 - Flux controllers are bootstrapped from the Makefile
 - shared e2e services are applied from `test/e2e/setup/flux-services/`
-- `cert-manager`, `gitea`, `prometheus`, and `valkey` are reconciled through Flux `HelmRelease` resources
+- `cert-manager`, `gitea`, and `valkey` are reconciled through Flux `HelmRelease` resources
+- the Prometheus Operator is reconciled through a Flux `GitRepository` + `Kustomization`
+- a final local manifests step applies the remaining e2e-specific resources after the operator CRDs are ready
 - `$(CS)/services.ready` is now the single shared-services readiness gate
 
 Still intentionally outside that migration:
@@ -244,18 +246,18 @@ The Makefile should only contain:
 
 That is the main line-count and complexity win.
 
-## Phase 2: Evaluate Prometheus
+## Phase 2: Prometheus via Flux-managed operator
 
-Prometheus is more custom today because it depends on a Prometheus operator setup path.
+Prometheus remains slightly different from the other shared services because it depends on CRDs and an operator-managed
+control loop.
 
 Recommendation:
 
-- keep Prometheus out of the first Flux migration
-- once Phase 1 is stable, decide whether to:
-  - manage the operator with Flux and keep local CRs in place, or
-  - keep Prometheus imperative if it remains simpler and more reliable
+- install the Prometheus Operator from upstream sources as a Flux-managed resource
+- keep the remaining e2e-specific resources in a final local manifests directory
+- apply that manifests directory only after the operator CRDs are established
 
-This avoids mixing one straightforward cleanup with a more open-ended refactor.
+This keeps the setup cloud-native without forcing the entire Prometheus e2e definition into a chart values file.
 
 ## Completed step: replace `$(CS)/prometheus.installed`
 
@@ -279,14 +281,16 @@ Out of scope:
 
 ### Recommended shape
 
-Add Prometheus as another local Flux-managed service under `test/e2e/setup/flux-services/`.
+Install the Prometheus Operator from upstream manifests through Flux and keep the last small set of e2e-specific
+resources as a final local apply step.
 
-That likely means:
+That means:
 
-- a `HelmRepository` for the Prometheus operator chart source
-- a `HelmRelease` for the operator stack
-- local manifests or Flux-managed resources for the e2e-specific Prometheus instance and `ServiceMonitor`
-- the same shared `HelmRelease` readiness gate used by `$(CS)/services.ready`
+- a Flux `GitRepository` pointing at the upstream Prometheus Operator repository
+- a Flux `Kustomization` that reconciles the operator bundle into `prometheus-operator`
+- a local `test/e2e/setup/manifests/` directory for the remaining resources
+- a sequencing point in Make by waiting for the operator `Kustomization` and CRDs before applying that manifests
+  directory
 
 The key design goal is that `$(CS)/services.ready` should depend on one shared Flux services gate, not on a separate
 Prometheus install recipe.
@@ -305,7 +309,8 @@ This step is done when:
 
 1. Prometheus no longer has a dedicated install recipe in `Makefile`.
 2. `prepare-e2e` still reaches a working shared Prometheus endpoint for the existing e2e flow.
-3. The full shared-service bootstrap path is expressed through Flux-applied local manifests.
+3. The operator bootstrap path is expressed through Flux-applied resources, with the final local manifests applied only
+   after the operator CRDs are ready.
 4. `make test-e2e`, `make test-e2e-quickstart-manifest`, and `make test-e2e-quickstart-helm` still pass.
 
 ## Phase 3: Optional Flux-managed controller install mode
@@ -332,11 +337,12 @@ Reasons:
 - easier local debugging
 - still exercises Flux controllers and reconciliation loops
 
-In practice, Flux would reconcile local custom resources we apply directly:
+In practice, Flux reconciles local custom resources we apply directly:
 
 - `HelmRepository`
 - `HelmRelease`
-- later possibly `Kustomization`
+- `GitRepository`
+- `Kustomization`
 
 If this works well, a later phase can move the service definitions into a Git-backed source in Gitea for higher
 fidelity.
@@ -367,13 +373,7 @@ test/e2e/setup/flux-services/
 
 Optional helper location if needed:
 
-```text
-hack/e2e/
-  install-flux.sh
-```
-
-The default preference should be to keep logic in Make small and use at most one focused helper script if readability
-improves.
+No helper scripts should be required for shared service installation once the Flux resources are in place.
 
 ## Proposed Makefile shape
 

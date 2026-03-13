@@ -2,11 +2,13 @@ apiVersion: monitoring.coreos.com/v1
 kind: Prometheus
 metadata:
   name: prometheus-shared-e2e
+  namespace: prometheus-operator
   labels:
     monitoring.configbutler.ai/instance: gitops-reverser
 spec:
   replicas: 1
   serviceAccountName: prometheus-shared-e2e
+  terminationGracePeriodSeconds: 0
   retention: 2h
   scrapeInterval: 5s
   evaluationInterval: 5s

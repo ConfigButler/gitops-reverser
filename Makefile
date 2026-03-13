@@ -320,6 +320,10 @@ $(CS)/ready: test/e2e/cluster/start-cluster.sh | $(CS)
 	touch $@
 
 FLUX_SERVICES_INPUTS = $(shell find $(FLUX_SERVICES_DIR) -type f)
+LAST_STEP_MANIFESTS_DIR = test/e2e/setup/manifests
+LAST_STEP_MANIFESTS = $(shell find $(LAST_STEP_MANIFESTS_DIR) -type f -name '*.yaml')
+FLUX_SERVICES_READY_RESOURCE_TYPES = helmreleases.helm.toolkit.fluxcd.io,kustomizations.kustomize.toolkit.fluxcd.io
+SERVICES_READY_INPUTS = $(CS)/flux.installed $$(FLUX_SERVICES_INPUTS) $$(LAST_STEP_MANIFESTS)
 $(CS)/flux.installed: $(CS)/ready | $(CS)
 	$(FLUX) install --context $(CTX) --namespace $(FLUX_NAMESPACE)
 	kubectl --context $(CTX) -n $(FLUX_NAMESPACE) wait \
@@ -334,24 +338,19 @@ $(CS)/flux.installed: $(CS)/ready | $(CS)
 	$(FLUX) version --client > $@
 
 # Aggregate stamp for external E2E services required by tests.
-$(CS)/services.ready: $(CS)/flux.installed $$(FLUX_SERVICES_INPUTS) | $(CS)
+$(CS)/services.ready: $(SERVICES_READY_INPUTS) | $(CS)
+	kubectl --context $(CTX) delete helmreleases.helm.toolkit.fluxcd.io/prometheus-shared-e2e -n prometheus-operator --ignore-not-found=true
+	kubectl --context $(CTX) delete helmrepositories.source.toolkit.fluxcd.io/prometheus-community -n flux-system --ignore-not-found=true
+	kubectl --context $(CTX) -n prometheus-operator delete prometheus.monitoring.coreos.com/prometheus-shared-e2e servicemonitor.monitoring.coreos.com/gitops-reverser --ignore-not-found=true
+	kubectl --context $(CTX) -n prometheus-operator delete deployment/prometheus-shared-e2e-operator statefulset/prometheus-prometheus-shared-e2e service/prometheus-shared-e2e-operator service/prometheus-shared-e2e-prometheus --ignore-not-found=true
+	kubectl --context $(CTX) -n prometheus-operator delete pod/prometheus-prometheus-shared-e2e-0 --ignore-not-found=true --force --grace-period=0
 	kubectl --context $(CTX) apply -k $(FLUX_SERVICES_DIR)
-	count="$$(kubectl --context $(CTX) get helmreleases.helm.toolkit.fluxcd.io \
-		--all-namespaces \
-		-l $(FLUX_SERVICES_SELECTOR) \
-		--no-headers 2>/dev/null | wc -l | tr -d ' ')"
-	[ "$$count" -gt 0 ] || { echo "ERROR: no Flux-managed e2e HelmRelease resources found" >&2; exit 1; }
-	if ! kubectl --context $(CTX) wait \
-		helmreleases.helm.toolkit.fluxcd.io \
-		--all-namespaces \
-		-l $(FLUX_SERVICES_SELECTOR) \
-		--for=condition=Ready \
-		--timeout=$(FLUX_SERVICES_WAIT_TIMEOUT); then
-		kubectl --context $(CTX) get helmreleases.helm.toolkit.fluxcd.io \
-			--all-namespaces \
-			-l $(FLUX_SERVICES_SELECTOR)
-		exit 1
-	fi
+	flux_ready_count="$$(kubectl --context $(CTX) get $(FLUX_SERVICES_READY_RESOURCE_TYPES) --all-namespaces -l $(FLUX_SERVICES_SELECTOR) --no-headers 2>/dev/null | wc -l | tr -d ' ')"
+	[ "$$flux_ready_count" -gt 0 ] || { echo "ERROR: no Flux-managed e2e ready-check resources found" >&2; exit 1; }
+	if ! kubectl --context $(CTX) wait $(FLUX_SERVICES_READY_RESOURCE_TYPES) --all-namespaces -l $(FLUX_SERVICES_SELECTOR) --for=condition=Ready --timeout=$(FLUX_SERVICES_WAIT_TIMEOUT); then kubectl --context $(CTX) get $(FLUX_SERVICES_READY_RESOURCE_TYPES) --all-namespaces -l $(FLUX_SERVICES_SELECTOR); exit 1; fi
+	kubectl --context $(CTX) wait --for=condition=Established crd/prometheuses.monitoring.coreos.com crd/servicemonitors.monitoring.coreos.com --timeout=180s
+	
+	kubectl --context $(CTX) apply -R -f $(LAST_STEP_MANIFESTS_DIR)
 	touch $@
 
 # Step 1: Generate age key file — no cluster/namespace dependency; safe to run before installation.
