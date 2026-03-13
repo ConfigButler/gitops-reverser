@@ -337,27 +337,33 @@ $(CS)/flux.installed: $(CS)/ready | $(CS)
 	$(FLUX) version --client > $@
 
 # Aggregate stamp for Flux-managed external E2E services required by tests.
+.SILENT: $(CS)/flux-setup.ready $(CS)/services.ready
 $(CS)/flux-setup.ready: $(FLUX_SETUP_READY_INPUTS) | $(CS)
 	kubectl --context $(CTX) apply -k $(FLUX_SERVICES_DIR)
-	flux_ready_count=0; \
+	flux_ready_count=0
+	echo "⏳ Waiting for Flux-managed installations to become ready..."
 	for kind in \
 		helmreleases.helm.toolkit.fluxcd.io \
-		kustomizations.kustomize.toolkit.fluxcd.io \
-	; do \
-		resources="$$(kubectl --context $(CTX) get $$kind --all-namespaces -o jsonpath='{range .items[*]}{.metadata.namespace}{" "}{.metadata.name}{"\n"}{end}' 2>/dev/null)"; \
-		[ -z "$$resources" ] && continue; \
-		flux_ready_count="$$(($$flux_ready_count + $$(printf '%s\n' "$$resources" | sed '/^$$/d' | wc -l | tr -d ' ')))"; \
-		printf '%s\n' "$$resources" | while read -r namespace name; do \
-			[ -n "$$namespace" ] || continue; \
-			kubectl --context $(CTX) -n "$$namespace" wait "$$kind/$$name" --for=condition=Ready --timeout=$(FLUX_SERVICES_WAIT_TIMEOUT); \
-		done; \
-	done; \
+		kustomizations.kustomize.toolkit.fluxcd.io
+	do
+		resources="$$(kubectl --context $(CTX) get $$kind --all-namespaces -o jsonpath='{range .items[*]}{.metadata.namespace}{" "}{.metadata.name}{"\n"}{end}' 2>/dev/null)"
+		[ -z "$$resources" ] && continue
+
+		resource_count="$$(printf '%s\n' "$$resources" | sed '/^$$/d' | wc -l | tr -d ' ')"
+		flux_ready_count="$$(($$flux_ready_count + $$resource_count))"
+
+		printf '%s\n' "$$resources" | while read -r namespace name; do
+			[ -n "$$namespace" ] || continue
+			kubectl --context $(CTX) -n "$$namespace" wait "$$kind/$$name" --for=condition=Ready --timeout=$(FLUX_SERVICES_WAIT_TIMEOUT)
+		done
+	done
 	[ "$$flux_ready_count" -gt 0 ] || { echo "ERROR: no Flux-managed e2e ready-check resources found" >&2; exit 1; }
-	kubectl --context $(CTX) wait --for=condition=Established crd/prometheuses.monitoring.coreos.com crd/servicemonitors.monitoring.coreos.com --timeout=180s
+	echo "✓ Flux-managed installations ready: $$flux_ready_count"
 	touch $@
 
 # Aggregate stamp for external E2E services required by tests.
 $(CS)/services.ready: $(SERVICES_READY_INPUTS) | $(CS)
+	kubectl --context $(CTX) wait --for=condition=Established crd/prometheuses.monitoring.coreos.com crd/servicemonitors.monitoring.coreos.com --timeout=180s
 	kubectl --context $(CTX) apply -R -f $(LAST_STEP_MANIFESTS_DIR)
 	touch $@
 
