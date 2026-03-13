@@ -292,8 +292,7 @@ VALKEY_PORT ?= 16379
 FLUX_NAMESPACE ?= flux-system
 FLUX_WAIT_TIMEOUT ?= 300s
 FLUX_SERVICES_WAIT_TIMEOUT ?= 600s
-FLUX_SERVICES_DIR ?= test/e2e/setup/flux-services
-FLUX_SERVICES_SELECTOR ?= e2e.configbutler.io/stack=services
+FLUX_SERVICES_DIR ?= test/e2e/setup/flux
 
 ENVTEST_STAMP = .stamps/envtest-$(ENVTEST_K8S_VERSION).ready
 
@@ -322,8 +321,8 @@ $(CS)/ready: test/e2e/cluster/start-cluster.sh | $(CS)
 FLUX_SERVICES_INPUTS = $(shell find $(FLUX_SERVICES_DIR) -type f)
 LAST_STEP_MANIFESTS_DIR = test/e2e/setup/manifests
 LAST_STEP_MANIFESTS = $(shell find $(LAST_STEP_MANIFESTS_DIR) -type f -name '*.yaml')
-FLUX_SERVICES_READY_RESOURCE_TYPES = helmreleases.helm.toolkit.fluxcd.io,kustomizations.kustomize.toolkit.fluxcd.io
-SERVICES_READY_INPUTS = $(CS)/flux.installed $$(FLUX_SERVICES_INPUTS) $$(LAST_STEP_MANIFESTS)
+FLUX_SETUP_READY_INPUTS = $(CS)/flux.installed $$(FLUX_SERVICES_INPUTS)
+SERVICES_READY_INPUTS = $(CS)/flux-setup.ready $$(LAST_STEP_MANIFESTS)
 $(CS)/flux.installed: $(CS)/ready | $(CS)
 	$(FLUX) install --context $(CTX) --namespace $(FLUX_NAMESPACE)
 	kubectl --context $(CTX) -n $(FLUX_NAMESPACE) wait \
@@ -337,19 +336,28 @@ $(CS)/flux.installed: $(CS)/ready | $(CS)
 		--timeout=$(FLUX_WAIT_TIMEOUT)
 	$(FLUX) version --client > $@
 
+# Aggregate stamp for Flux-managed external E2E services required by tests.
+$(CS)/flux-setup.ready: $(FLUX_SETUP_READY_INPUTS) | $(CS)
+	kubectl --context $(CTX) apply -k $(FLUX_SERVICES_DIR)
+	flux_ready_count=0; \
+	for kind in \
+		helmreleases.helm.toolkit.fluxcd.io \
+		kustomizations.kustomize.toolkit.fluxcd.io \
+	; do \
+		resources="$$(kubectl --context $(CTX) get $$kind --all-namespaces -o jsonpath='{range .items[*]}{.metadata.namespace}{" "}{.metadata.name}{"\n"}{end}' 2>/dev/null)"; \
+		[ -z "$$resources" ] && continue; \
+		flux_ready_count="$$(($$flux_ready_count + $$(printf '%s\n' "$$resources" | sed '/^$$/d' | wc -l | tr -d ' ')))"; \
+		printf '%s\n' "$$resources" | while read -r namespace name; do \
+			[ -n "$$namespace" ] || continue; \
+			kubectl --context $(CTX) -n "$$namespace" wait "$$kind/$$name" --for=condition=Ready --timeout=$(FLUX_SERVICES_WAIT_TIMEOUT); \
+		done; \
+	done; \
+	[ "$$flux_ready_count" -gt 0 ] || { echo "ERROR: no Flux-managed e2e ready-check resources found" >&2; exit 1; }
+	kubectl --context $(CTX) wait --for=condition=Established crd/prometheuses.monitoring.coreos.com crd/servicemonitors.monitoring.coreos.com --timeout=180s
+	touch $@
+
 # Aggregate stamp for external E2E services required by tests.
 $(CS)/services.ready: $(SERVICES_READY_INPUTS) | $(CS)
-	kubectl --context $(CTX) delete helmreleases.helm.toolkit.fluxcd.io/prometheus-shared-e2e -n prometheus-operator --ignore-not-found=true
-	kubectl --context $(CTX) delete helmrepositories.source.toolkit.fluxcd.io/prometheus-community -n flux-system --ignore-not-found=true
-	kubectl --context $(CTX) -n prometheus-operator delete prometheus.monitoring.coreos.com/prometheus-shared-e2e servicemonitor.monitoring.coreos.com/gitops-reverser --ignore-not-found=true
-	kubectl --context $(CTX) -n prometheus-operator delete deployment/prometheus-shared-e2e-operator statefulset/prometheus-prometheus-shared-e2e service/prometheus-shared-e2e-operator service/prometheus-shared-e2e-prometheus --ignore-not-found=true
-	kubectl --context $(CTX) -n prometheus-operator delete pod/prometheus-prometheus-shared-e2e-0 --ignore-not-found=true --force --grace-period=0
-	kubectl --context $(CTX) apply -k $(FLUX_SERVICES_DIR)
-	flux_ready_count="$$(kubectl --context $(CTX) get $(FLUX_SERVICES_READY_RESOURCE_TYPES) --all-namespaces -l $(FLUX_SERVICES_SELECTOR) --no-headers 2>/dev/null | wc -l | tr -d ' ')"
-	[ "$$flux_ready_count" -gt 0 ] || { echo "ERROR: no Flux-managed e2e ready-check resources found" >&2; exit 1; }
-	if ! kubectl --context $(CTX) wait $(FLUX_SERVICES_READY_RESOURCE_TYPES) --all-namespaces -l $(FLUX_SERVICES_SELECTOR) --for=condition=Ready --timeout=$(FLUX_SERVICES_WAIT_TIMEOUT); then kubectl --context $(CTX) get $(FLUX_SERVICES_READY_RESOURCE_TYPES) --all-namespaces -l $(FLUX_SERVICES_SELECTOR); exit 1; fi
-	kubectl --context $(CTX) wait --for=condition=Established crd/prometheuses.monitoring.coreos.com crd/servicemonitors.monitoring.coreos.com --timeout=180s
-	
 	kubectl --context $(CTX) apply -R -f $(LAST_STEP_MANIFESTS_DIR)
 	touch $@
 
