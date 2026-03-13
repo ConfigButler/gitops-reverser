@@ -1,5 +1,21 @@
 # Flux-Managed E2E Services Plan
 
+## Status update
+
+The first Flux migration is now in place.
+
+Completed:
+
+- Flux controllers are bootstrapped from the Makefile
+- shared e2e services are applied from `test/e2e/setup/flux-services/`
+- `cert-manager`, `gitea`, `prometheus`, and `valkey` are reconciled through Flux `HelmRelease` resources
+- `$(CS)/services.ready` is now the single shared-services readiness gate
+
+Still intentionally outside that migration:
+
+- the controller install itself
+- Git-backed Flux sources
+
 ## Goal
 
 Reduce e2e setup complexity by making Flux manage the shared support services used by the test cluster.
@@ -131,7 +147,6 @@ Everything managed by Flux should disappear as a service-specific Make target.
 The target shape should become:
 
 - `$(CS)/flux.installed`
-- `$(CS)/flux-services.ready`
 - `$(CS)/services.ready`
 
 That means:
@@ -186,7 +201,7 @@ With:
 7. Replace the old `$(CS)/cert-manager.installed`, `$(CS)/gitea.installed`, and `$(CS)/valkey.installed` recipes with:
    - Flux bootstrap
    - apply local bundle
-   - a single `flux-services.ready` wait
+   - a single `services.ready` wait
 
 ### Readiness strategy
 
@@ -241,6 +256,57 @@ Recommendation:
   - keep Prometheus imperative if it remains simpler and more reliable
 
 This avoids mixing one straightforward cleanup with a more open-ended refactor.
+
+## Completed step: replace `$(CS)/prometheus.installed`
+
+This increment replaced the old Prometheus-specific stamp target in the Makefile.
+
+### Scope
+
+In scope:
+
+- remove the special-case `$(CS)/prometheus.installed` install path from the Makefile
+- move Prometheus bootstrap behind the same Flux-managed service pattern already used for `cert-manager`, `gitea`, and
+  `valkey`
+- preserve the existing shared-service contract of `$(CS)/services.ready`
+
+Out of scope:
+
+- changing Prometheus scrape behavior
+- redesigning test port-forwarding
+- migrating the controller install under Flux
+- introducing a Git-backed Flux source
+
+### Recommended shape
+
+Add Prometheus as another local Flux-managed service under `test/e2e/setup/flux-services/`.
+
+That likely means:
+
+- a `HelmRepository` for the Prometheus operator chart source
+- a `HelmRelease` for the operator stack
+- local manifests or Flux-managed resources for the e2e-specific Prometheus instance and `ServiceMonitor`
+- the same shared `HelmRelease` readiness gate used by `$(CS)/services.ready`
+
+The key design goal is that `$(CS)/services.ready` should depend on one shared Flux services gate, not on a separate
+Prometheus install recipe.
+
+### Makefile target end state
+
+After this step, the preferred shape is:
+
+- keep `$(CS)/flux.installed`
+- remove `$(CS)/prometheus.installed`
+- keep `$(CS)/services.ready` as the single shared-services readiness target
+
+### Acceptance criteria for this step
+
+This step is done when:
+
+1. Prometheus no longer has a dedicated install recipe in `Makefile`.
+2. `prepare-e2e` still reaches a working shared Prometheus endpoint for the existing e2e flow.
+3. The full shared-service bootstrap path is expressed through Flux-applied local manifests.
+4. `make test-e2e`, `make test-e2e-quickstart-manifest`, and `make test-e2e-quickstart-helm` still pass.
 
 ## Phase 3: Optional Flux-managed controller install mode
 
@@ -314,14 +380,11 @@ improves.
 ### New stamps
 
 - `$(CS)/flux.installed`
-- `$(CS)/flux-services.ready`
+- `$(CS)/services.ready`
 
 ### Updated aggregate
 
-`$(CS)/services.ready` should depend on:
-
-- `$(CS)/flux-services.ready`
-- existing Prometheus readiness stamp until Prometheus is migrated or intentionally left as-is
+`$(CS)/services.ready` should remain the single readiness stamp for shared e2e services.
 
 ### What should be removed
 
@@ -446,7 +509,7 @@ Phase 1 is successful when:
 3. Migrate `cert-manager` into Flux.
 4. Migrate `gitea` into Flux.
 5. Migrate `valkey` into Flux.
-6. Rewire `$(CS)/services.ready` to depend on one `flux-services.ready` target.
+6. Rewire `$(CS)/services.ready` to be the single shared-services readiness target.
 7. Remove old imperative Helm/install logic from the Makefile.
 8. Run full validation.
 

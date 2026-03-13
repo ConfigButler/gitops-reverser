@@ -283,14 +283,10 @@ ENVTEST_K8S_VERSION ?= $(shell \
 )
 
 # Gitea E2E Configuration
-GITEA_NAMESPACE ?= gitea-e2e
-GITEA_RELEASE_NAME ?= gitea
 GITEA_PORT ?= 13000
 PROMETHEUS_PORT ?= 19090
 
 # Valkey E2E Configuration
-VALKEY_NAMESPACE ?= valkey-e2e
-VALKEY_RELEASE_NAME ?= valkey
 VALKEY_PORT ?= 16379
 
 FLUX_NAMESPACE ?= flux-system
@@ -337,7 +333,8 @@ $(CS)/flux.installed: $(CS)/ready | $(CS)
 		--timeout=$(FLUX_WAIT_TIMEOUT)
 	$(FLUX) version --client > $@
 
-$(CS)/flux-services.ready: $(CS)/flux.installed $$(FLUX_SERVICES_INPUTS) | $(CS)
+# Aggregate stamp for external E2E services required by tests.
+$(CS)/services.ready: $(CS)/flux.installed $$(FLUX_SERVICES_INPUTS) | $(CS)
 	kubectl --context $(CTX) apply -k $(FLUX_SERVICES_DIR)
 	count="$$(kubectl --context $(CTX) get helmreleases.helm.toolkit.fluxcd.io \
 		--all-namespaces \
@@ -355,30 +352,6 @@ $(CS)/flux-services.ready: $(CS)/flux.installed $$(FLUX_SERVICES_INPUTS) | $(CS)
 			-l $(FLUX_SERVICES_SELECTOR)
 		exit 1
 	fi
-	touch $@
-
-PROMETHEUS_SETUP_MANIFESTS = $(shell find test/e2e/setup/prometheus -type f -name '*.yaml')
-$(CS)/prometheus.installed: $(CS)/ready hack/e2e/ensure-prometheus-operator.sh $$(PROMETHEUS_SETUP_MANIFESTS) | $(CS)
-	export KUBECONTEXT=$(CTX)
-	bash hack/e2e/ensure-prometheus-operator.sh
-	kubectl --context $(CTX) wait --for=condition=Established \
-		crd/prometheuses.monitoring.coreos.com \
-		crd/servicemonitors.monitoring.coreos.com \
-		--timeout=180s
-	kubectl --context $(CTX) apply -n prometheus-operator -f test/e2e/setup/prometheus
-	kubectl --context $(CTX) wait --for=condition=Available \
-		prometheus/prometheus-shared-e2e \
-		-n prometheus-operator \
-		--timeout=180s
-	kubectl --context $(CTX) wait --for=condition=ready \
-		pod \
-		-l prometheus=prometheus-shared-e2e \
-		-n prometheus-operator \
-		--timeout=180s
-	touch $@
-
-# Aggregate stamp for external E2E services required by tests.
-$(CS)/services.ready: $(CS)/flux-services.ready $(CS)/prometheus.installed
 	touch $@
 
 # Step 1: Generate age key file — no cluster/namespace dependency; safe to run before installation.
