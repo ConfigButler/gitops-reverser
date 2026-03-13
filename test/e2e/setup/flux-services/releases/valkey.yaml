@@ -1,0 +1,27 @@
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: valkey
+  namespace: valkey-e2e
+spec:
+  interval: 30m
+  timeout: 5m
+  chart:
+    spec:
+      chart: valkey
+      sourceRef:
+        kind: HelmRepository
+        name: valkey
+        namespace: flux-system
+      version: 0.9.3
+  install:
+    createNamespace: false
+    remediation:
+      retries: 3
+  upgrade:
+    remediation:
+      retries: 3
+  valuesFrom:
+    - kind: ConfigMap
+      name: valkey-values
+      valuesKey: values.yaml

@@ -1,11 +1,9 @@
-# Gitea Helm values for e2e testing
-# Optimized for speed and CI environments
+# Gitea Helm values for e2e testing.
+# Optimized for speed and CI environments.
 
-# Disable persistence for fast, ephemeral testing
 persistence:
   enabled: false
 
-# Disable external databases - use SQLite in memory
 memcached:
   enabled: false
 postgresql-ha:
@@ -19,12 +17,9 @@ mysql:
 
 gitea:
   config:
-    # Database configuration - SQLite file for persistence between init containers
     database:
       DB_TYPE: sqlite3
       PATH: "/data/gitea/gitea.db"
-    
-    # Server configuration
     server:
       PROTOCOL: http
       HTTP_PORT: 13000
@@ -33,22 +28,14 @@ gitea:
       SSH_DOMAIN: gitea-ssh.gitea-e2e.svc.cluster.local
       SSH_PORT: 22
       START_SSH_SERVER: true
-    
-    # Security settings
     security:
       INSTALL_LOCK: true
       SECRET_KEY: "e2e-test-secret-key-not-for-production"
-    
-    # Service settings
     service:
       DISABLE_REGISTRATION: true
       DEFAULT_KEEP_EMAIL_PRIVATE: true
-      
-    # Repository settings
     repository:
       DEFAULT_BRANCH: main
-      
-    # Additional settings for e2e
     indexer:
       ISSUE_INDEXER_TYPE: bleve
       REPO_INDEXER_ENABLED: false
@@ -56,14 +43,11 @@ gitea:
       ENABLED: false
     webhook:
       ALLOWED_HOST_LIST: "*"
-      
-  # Pre-configured admin user for API access
   admin:
     username: giteaadmin
     password: giteapassword123
     email: admin@example.com
 
-# Service configuration
 service:
   http:
     type: ClusterIP
@@ -72,12 +56,11 @@ service:
     type: ClusterIP
     port: 22
 
-# Resource limits for CI environments
 resources:
   limits:
     memory: "1024Mi"
   requests:
-    memory: "512Mi" 
+    memory: "512Mi"
 
 podSecurityContext:
   runAsNonRoot: true

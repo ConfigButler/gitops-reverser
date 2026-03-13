@@ -269,6 +269,7 @@ dist/install.yaml: $(HELM_SYNC_OUTPUTS) $$(CHART_INPUTS) | dist ## Generate cons
 KUBECTL ?= kubectl
 K3D ?= k3d
 HELM ?= helm
+FLUX ?= flux
 KUSTOMIZE ?= kustomize
 CONTROLLER_GEN ?= controller-gen
 ENVTEST ?= setup-envtest
@@ -284,25 +285,19 @@ ENVTEST_K8S_VERSION ?= $(shell \
 # Gitea E2E Configuration
 GITEA_NAMESPACE ?= gitea-e2e
 GITEA_RELEASE_NAME ?= gitea
-GITEA_HELM_REPO_NAME ?= gitea-charts
-GITEA_HELM_REPO_URL ?= https://dl.gitea.com/charts/
-GITEA_CHART_NAME ?= gitea
-# https://gitea.com/gitea/helm-gitea
-GITEA_CHART_VERSION ?= 12.5.0
-GITEA_WAIT_TIMEOUT ?= 300s
 GITEA_PORT ?= 13000
 PROMETHEUS_PORT ?= 19090
 
 # Valkey E2E Configuration
 VALKEY_NAMESPACE ?= valkey-e2e
 VALKEY_RELEASE_NAME ?= valkey
-VALKEY_HELM_REPO_NAME ?= valkey
-VALKEY_HELM_REPO_URL ?= https://valkey.io/valkey-helm
-VALKEY_CHART_NAME ?= valkey
-# https://valkey.io/valkey-helm/index.yaml
-VALKEY_CHART_VERSION ?= 0.9.3
-VALKEY_WAIT_TIMEOUT ?= 120s
 VALKEY_PORT ?= 16379
+
+FLUX_NAMESPACE ?= flux-system
+FLUX_WAIT_TIMEOUT ?= 300s
+FLUX_SERVICES_WAIT_TIMEOUT ?= 600s
+FLUX_SERVICES_DIR ?= test/e2e/setup/flux-services
+FLUX_SERVICES_SELECTOR ?= e2e.configbutler.io/stack=services
 
 ENVTEST_STAMP = .stamps/envtest-$(ENVTEST_K8S_VERSION).ready
 
@@ -328,36 +323,39 @@ $(CS)/ready: test/e2e/cluster/start-cluster.sh | $(CS)
 	kubectl --context $(CTX) get ns >/dev/null
 	touch $@
 
-CERT_MANAGER_WAIT_TIMEOUT ?= 300s
-CERT_MANAGER_VERSION ?= v1.19.4
-CERT_MANAGER_MANIFEST_URL ?= https://github.com/cert-manager/cert-manager/releases/download/$(CERT_MANAGER_VERSION)/cert-manager.yaml
-$(CS)/cert-manager.installed: $(CS)/ready | $(CS)
-	kubectl --context $(CTX) apply -f $(CERT_MANAGER_MANIFEST_URL) | grep -v unchanged
-	kubectl --context $(CTX) -n cert-manager rollout status \
-		deploy/cert-manager \
-		--timeout=$(CERT_MANAGER_WAIT_TIMEOUT)
-	kubectl --context $(CTX) -n cert-manager rollout status \
-		deploy/cert-manager-webhook \
-		--timeout=$(CERT_MANAGER_WAIT_TIMEOUT)
-	kubectl --context $(CTX) -n cert-manager rollout status \
-		deploy/cert-manager-cainjector \
-		--timeout=$(CERT_MANAGER_WAIT_TIMEOUT)
-	echo $(CERT_MANAGER_VERSION) > $@
+FLUX_SERVICES_INPUTS = $(shell find $(FLUX_SERVICES_DIR) -type f)
+$(CS)/flux.installed: $(CS)/ready | $(CS)
+	$(FLUX) install --context $(CTX) --namespace $(FLUX_NAMESPACE)
+	kubectl --context $(CTX) -n $(FLUX_NAMESPACE) wait \
+		deployment \
+		-l app.kubernetes.io/part-of=flux \
+		--for=condition=Available \
+		--timeout=$(FLUX_WAIT_TIMEOUT)
+	kubectl --context $(CTX) wait --for=condition=Established \
+		crd/helmrepositories.source.toolkit.fluxcd.io \
+		crd/helmreleases.helm.toolkit.fluxcd.io \
+		--timeout=$(FLUX_WAIT_TIMEOUT)
+	$(FLUX) version --client > $@
 
-$(CS)/gitea.installed: $(CS)/ready test/e2e/gitea-values.yaml | $(CS)
-	$(HELM) repo add $(GITEA_HELM_REPO_NAME) $(GITEA_HELM_REPO_URL) 2>/dev/null || true
-	$(HELM) repo update $(GITEA_HELM_REPO_NAME)
-	kubectl --context $(CTX) create namespace $(GITEA_NAMESPACE) --dry-run=client -o yaml \
-		| kubectl --context $(CTX) apply -f -
-	$(HELM) --kube-context $(CTX) upgrade --install $(GITEA_RELEASE_NAME) \
-		$(GITEA_HELM_REPO_NAME)/$(GITEA_CHART_NAME) \
-		--namespace $(GITEA_NAMESPACE) \
-		--version $(GITEA_CHART_VERSION) \
-		--values test/e2e/gitea-values.yaml
-	kubectl --context $(CTX) -n $(GITEA_NAMESPACE) rollout status \
-		deploy/$(GITEA_RELEASE_NAME) \
-		--timeout=$(GITEA_WAIT_TIMEOUT)
-	echo $(GITEA_CHART_VERSION) > $@
+$(CS)/flux-services.ready: $(CS)/flux.installed $$(FLUX_SERVICES_INPUTS) | $(CS)
+	kubectl --context $(CTX) apply -k $(FLUX_SERVICES_DIR)
+	count="$$(kubectl --context $(CTX) get helmreleases.helm.toolkit.fluxcd.io \
+		--all-namespaces \
+		-l $(FLUX_SERVICES_SELECTOR) \
+		--no-headers 2>/dev/null | wc -l | tr -d ' ')"
+	[ "$$count" -gt 0 ] || { echo "ERROR: no Flux-managed e2e HelmRelease resources found" >&2; exit 1; }
+	if ! kubectl --context $(CTX) wait \
+		helmreleases.helm.toolkit.fluxcd.io \
+		--all-namespaces \
+		-l $(FLUX_SERVICES_SELECTOR) \
+		--for=condition=Ready \
+		--timeout=$(FLUX_SERVICES_WAIT_TIMEOUT); then
+		kubectl --context $(CTX) get helmreleases.helm.toolkit.fluxcd.io \
+			--all-namespaces \
+			-l $(FLUX_SERVICES_SELECTOR)
+		exit 1
+	fi
+	touch $@
 
 PROMETHEUS_SETUP_MANIFESTS = $(shell find test/e2e/setup/prometheus -type f -name '*.yaml')
 $(CS)/prometheus.installed: $(CS)/ready hack/e2e/ensure-prometheus-operator.sh $$(PROMETHEUS_SETUP_MANIFESTS) | $(CS)
@@ -379,23 +377,8 @@ $(CS)/prometheus.installed: $(CS)/ready hack/e2e/ensure-prometheus-operator.sh $
 		--timeout=180s
 	touch $@
 
-$(CS)/valkey.installed: $(CS)/ready test/e2e/valkey-values.yaml | $(CS)
-	$(HELM) repo add $(VALKEY_HELM_REPO_NAME) $(VALKEY_HELM_REPO_URL) 2>/dev/null || true
-	$(HELM) repo update $(VALKEY_HELM_REPO_NAME)
-	kubectl --context $(CTX) create namespace $(VALKEY_NAMESPACE) --dry-run=client -o yaml \
-		| kubectl --context $(CTX) apply -f -
-	$(HELM) --kube-context $(CTX) upgrade --install $(VALKEY_RELEASE_NAME) \
-		$(VALKEY_HELM_REPO_NAME)/$(VALKEY_CHART_NAME) \
-		--namespace $(VALKEY_NAMESPACE) \
-		--version $(VALKEY_CHART_VERSION) \
-		--values test/e2e/valkey-values.yaml
-	kubectl --context $(CTX) -n $(VALKEY_NAMESPACE) rollout status \
-		deploy/$(VALKEY_RELEASE_NAME) \
-		--timeout=$(VALKEY_WAIT_TIMEOUT)
-	echo $(VALKEY_CHART_VERSION) > $@
-
 # Aggregate stamp for external E2E services required by tests.
-$(CS)/services.ready: $(CS)/cert-manager.installed $(CS)/prometheus.installed $(CS)/gitea.installed $(CS)/valkey.installed
+$(CS)/services.ready: $(CS)/flux-services.ready $(CS)/prometheus.installed
 	touch $@
 
 # Step 1: Generate age key file — no cluster/namespace dependency; safe to run before installation.

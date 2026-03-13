@@ -1,6 +1,6 @@
 # Multi-stage Dockerfile for GitOps Reverser
 # Stage 1: CI base image with essential build tools
-FROM golang:1.26.0-bookworm AS ci
+FROM golang:1.26.1-bookworm AS ci
 
 # Avoid warnings by switching to noninteractive
 ENV DEBIAN_FRONTEND=noninteractive
@@ -32,12 +32,18 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 # Tool versions - centralized for easy updates
+# This devcontainer currently supports amd64 tool downloads only.
 ENV KUBECTL_VERSION=v1.35.0 \
     KUSTOMIZE_VERSION=5.8.1 \
     KUBEBUILDER_VERSION=4.11.1 \
     GOLANGCI_LINT_VERSION=v2.10.1 \
     HELM_VERSION=v4.0.0 \
-    K3D_VERSION=v5.8.3
+    K3D_VERSION=v5.8.3 \
+    FLUX_VERSION=2.8.0
+
+# Fail early on unsupported architectures instead of producing a partial image.
+RUN test "$(dpkg --print-architecture)" = "amd64" \
+    || (echo "This devcontainer currently supports amd64 only." && exit 1)
 
 # Install kubectl
 RUN curl -LO "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl" \
@@ -66,6 +72,11 @@ RUN curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/i
 # Install k3d (faster and kind alternative, also more stable with our docker-outside-docker setup)
 RUN curl -fsSL -o /usr/local/bin/k3d "https://github.com/k3d-io/k3d/releases/download/${K3D_VERSION}/k3d-linux-amd64" \
     && chmod +x /usr/local/bin/k3d
+
+# Install Flux CLI
+RUN curl -fsSL "https://github.com/fluxcd/flux2/releases/download/v${FLUX_VERSION}/flux_${FLUX_VERSION}_linux_amd64.tar.gz" \
+    | tar -xzO flux > /usr/local/bin/flux \
+    && chmod +x /usr/local/bin/flux
 
 # Set working directory
 WORKDIR /workspaces
