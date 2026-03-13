@@ -5,6 +5,7 @@ set -euo pipefail
 GITEA_NAMESPACE=${GITEA_NAMESPACE:-gitea-e2e}
 PROMETHEUS_NAMESPACE=${PROMETHEUS_NAMESPACE:-prometheus-operator}
 PROMETHEUS_INSTANCE_NAME=${PROMETHEUS_INSTANCE_NAME:-prometheus-shared-e2e}
+PROMETHEUS_SERVICE=${PROMETHEUS_SERVICE:-prometheus-shared-e2e-prometheus}
 VALKEY_NAMESPACE=${VALKEY_NAMESPACE:-valkey-e2e}
 VALKEY_RELEASE_NAME=${VALKEY_RELEASE_NAME:-valkey}
 KUBE_CONTEXT=${E2E_KUBECONTEXT:-${CTX:-${KUBECONTEXT:-}}}
@@ -27,7 +28,7 @@ has_expected_forward_processes() {
     local valkey_pf
 
     gitea_pf="$(ps -ef | grep -E "kubectl( |.* )--context ${KUBE_CONTEXT}( |.* )port-forward( |.* )svc/${GITEA_SERVICE:-gitea-http}( |.* )${GITEA_PORT}:${GITEA_PORT}" | grep -v grep || true)"
-    prom_pf="$(ps -ef | grep -E "kubectl( |.* )--context ${KUBE_CONTEXT}( |.* )port-forward( |.* )svc/prometheus-operated( |.* )${PROMETHEUS_PORT}:9090" | grep -v grep || true)"
+    prom_pf="$(ps -ef | grep -E "kubectl( |.* )--context ${KUBE_CONTEXT}( |.* )port-forward( |.* )svc/${PROMETHEUS_SERVICE}( |.* )${PROMETHEUS_PORT}:9090" | grep -v grep || true)"
     valkey_pf="$(ps -ef | grep -E "kubectl( |.* )--context ${KUBE_CONTEXT}( |.* )port-forward( |.* )svc/${VALKEY_RELEASE_NAME}( |.* )${VALKEY_PORT}:6379" | grep -v grep || true)"
 
     [[ -n "${gitea_pf}" && -n "${prom_pf}" && -n "${valkey_pf}" ]]
@@ -141,7 +142,7 @@ setup_port_forward() {
 }
 
 # Setup port-forwards
-setup_port_forward "Prometheus" "$PROMETHEUS_NAMESPACE" "prometheus-operated" "${PROMETHEUS_PORT}" "9090"
+setup_port_forward "Prometheus" "$PROMETHEUS_NAMESPACE" "${PROMETHEUS_SERVICE}" "${PROMETHEUS_PORT}" "9090"
 setup_port_forward "Gitea" "$GITEA_NAMESPACE" "gitea-http" "${GITEA_PORT}" "${GITEA_PORT}"
 setup_port_forward "Valkey" "$VALKEY_NAMESPACE" "${VALKEY_RELEASE_NAME}" "${VALKEY_PORT}" "6379"
 
