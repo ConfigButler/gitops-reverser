@@ -55,7 +55,7 @@ func setCoreIdentityFields(sanitized, obj *unstructured.Unstructured) {
 	sanitized.SetKind(obj.GetKind())
 	sanitized.SetName(obj.GetName())
 	sanitized.SetNamespace(obj.GetNamespace())
-	sanitized.SetLabels(obj.GetLabels())
+	sanitized.SetLabels(cleanLabels(obj.GetLabels()))
 	// Clean annotations using the cleanAnnotations function from types.go
 	sanitized.SetAnnotations(cleanAnnotations(obj.GetAnnotations()))
 }

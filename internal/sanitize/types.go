@@ -37,8 +37,28 @@ type PartialObjectMeta struct {
 func (p *PartialObjectMeta) FromUnstructured(obj *unstructured.Unstructured) {
 	p.Name = obj.GetName()
 	p.Namespace = obj.GetNamespace()
-	p.Labels = obj.GetLabels()
+	p.Labels = cleanLabels(obj.GetLabels())
 	p.Annotations = cleanAnnotations(obj.GetAnnotations())
+}
+
+// cleanLabels removes operational labels that should not be persisted.
+func cleanLabels(labels map[string]string) map[string]string {
+	if labels == nil {
+		return nil
+	}
+
+	cleaned := make(map[string]string)
+	for k, v := range labels {
+		if isOperationalLabel(k) {
+			continue
+		}
+		cleaned[k] = v
+	}
+
+	if len(cleaned) == 0 {
+		return nil
+	}
+	return cleaned
 }
 
 // cleanAnnotations removes operational annotations.
@@ -50,17 +70,7 @@ func cleanAnnotations(annotations map[string]string) map[string]string {
 
 	cleaned := make(map[string]string)
 	for k, v := range annotations {
-		// Skip kubectl and system operational annotations
-		if strings.HasPrefix(k, "kubectl.kubernetes.io/") {
-			continue
-		}
-		if strings.HasPrefix(k, "control-plane.alpha.kubernetes.io/") {
-			continue
-		}
-		if strings.HasPrefix(k, "deployment.kubernetes.io/") {
-			continue
-		}
-		if strings.HasPrefix(k, "autoscaling.alpha.kubernetes.io/") {
+		if isOperationalAnnotation(k) {
 			continue
 		}
 		cleaned[k] = v
@@ -70,4 +80,15 @@ func cleanAnnotations(annotations map[string]string) map[string]string {
 		return nil
 	}
 	return cleaned
+}
+
+func isOperationalLabel(key string) bool {
+	return strings.HasPrefix(key, "kustomize.toolkit.fluxcd.io/")
+}
+
+func isOperationalAnnotation(key string) bool {
+	return strings.HasPrefix(key, "kubectl.kubernetes.io/") ||
+		strings.HasPrefix(key, "control-plane.alpha.kubernetes.io/") ||
+		strings.HasPrefix(key, "deployment.kubernetes.io/") ||
+		strings.HasPrefix(key, "autoscaling.alpha.kubernetes.io/")
 }

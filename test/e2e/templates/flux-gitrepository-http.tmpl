@@ -14,7 +14,7 @@ metadata:
   name: {{ .Name }}
   namespace: {{ .Namespace }}
 spec:
-  interval: 5s
+  interval: {{ .Interval }}
   timeout: 1m
   url: {{ .RepoURL }}
   ref:

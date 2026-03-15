@@ -615,6 +615,34 @@ func TestSanitize_OperationalAnnotations(t *testing.T) {
 	assert.Equal(t, "should-be-kept", annotations["example.com/custom"])
 }
 
+func TestSanitize_OperationalFluxLabels(t *testing.T) {
+	obj := &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "shop.example.com/v1",
+			"kind":       "IceCreamOrder",
+			"metadata": map[string]interface{}{
+				"name":      "my-order",
+				"namespace": "default",
+				"labels": map[string]interface{}{
+					"kustomize.toolkit.fluxcd.io/name":      "bi-live",
+					"kustomize.toolkit.fluxcd.io/namespace": "flux-system",
+					"example.com/customer":                  "alice",
+				},
+			},
+			"spec": map[string]interface{}{
+				"container": "Cone",
+			},
+		},
+	}
+
+	sanitized := Sanitize(obj)
+
+	labels := sanitized.GetLabels()
+	assert.NotContains(t, labels, "kustomize.toolkit.fluxcd.io/name")
+	assert.NotContains(t, labels, "kustomize.toolkit.fluxcd.io/namespace")
+	assert.Equal(t, "alice", labels["example.com/customer"])
+}
+
 func TestSanitize_AllOperationalAnnotationsRemoved(t *testing.T) {
 	obj := &unstructured.Unstructured{
 		Object: map[string]interface{}{

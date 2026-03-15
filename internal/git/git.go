@@ -20,6 +20,7 @@ limitations under the License.
 package git
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -39,8 +40,11 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/go-git/go-git/v5/plumbing/transport/http"
 	"github.com/go-logr/logr"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/yaml"
 
+	"github.com/ConfigButler/gitops-reverser/internal/sanitize"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
@@ -830,8 +834,11 @@ func handleCreateOrUpdateOperation(
 
 	// Check if file already exists with same content
 	if existingContent, err := os.ReadFile(fullPath); err == nil {
-		if string(existingContent) == string(content) {
+		if bytes.Equal(existingContent, content) {
 			// File already has the desired content, no changes needed
+			return false, nil
+		}
+		if manifestsAreSemanticallyEqual(existingContent, content) {
 			return false, nil
 		}
 	}
@@ -852,6 +859,30 @@ func handleCreateOrUpdateOperation(
 	}
 
 	return true, nil
+}
+
+func manifestsAreSemanticallyEqual(existingContent, desiredContent []byte) bool {
+	existingCanonical, err := canonicalizeManifestForComparison(existingContent)
+	if err != nil {
+		return false
+	}
+
+	desiredCanonical, err := canonicalizeManifestForComparison(desiredContent)
+	if err != nil {
+		return false
+	}
+
+	return bytes.Equal(existingCanonical, desiredCanonical)
+}
+
+func canonicalizeManifestForComparison(content []byte) ([]byte, error) {
+	var raw map[string]interface{}
+	if err := yaml.Unmarshal(content, &raw); err != nil {
+		return nil, fmt.Errorf("unmarshal manifest: %w", err)
+	}
+
+	obj := &unstructured.Unstructured{Object: raw}
+	return sanitize.MarshalToOrderedYAML(sanitize.Sanitize(obj))
 }
 
 func generateFilePath(id types.ResourceIdentifier) string {
