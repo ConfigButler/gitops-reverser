@@ -76,13 +76,13 @@ var _ = Describe("Manager", Ordered, func() {
 		gitSecretInvalid = strings.TrimSpace(os.Getenv("E2E_GIT_SECRET_INVALID"))
 
 		if gitSecretHTTP == "" {
-			gitSecretHTTP = "git-creds"
+			gitSecretHTTP = resolveE2EHTTPSecretName(testRepoName)
 		}
 		if gitSecretSSH == "" {
-			gitSecretSSH = "git-creds-ssh"
+			gitSecretSSH = resolveE2ESSHSecretName(testRepoName)
 		}
 		if gitSecretInvalid == "" {
-			gitSecretInvalid = "git-creds-invalid"
+			gitSecretInvalid = resolveE2EInvalidSecretName(testRepoName)
 		}
 
 		Expect(testRepoName).NotTo(BeEmpty(), "E2E_REPO_NAME must be set by the suite (make e2e-gitea-run-setup)")
