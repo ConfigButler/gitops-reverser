@@ -887,6 +887,100 @@ func TestPullBranch_UnexpectedMergeScenario(t *testing.T) {
 	assert.Equal(t, 3, countDepth(t, serverRepo, plumbing.NewHash(pullReport.HEAD.Sha)))
 }
 
+func TestWriteEvents_SkipsSemanticallyEquivalentManifest(t *testing.T) {
+	tempDir := t.TempDir()
+	serverPath := filepath.Join(tempDir, "server.git")
+	remoteURL := "file://" + serverPath
+	localPath := filepath.Join(tempDir, "local")
+
+	createBareRepo(t, serverPath)
+
+	initialContent := `apiVersion: shop.example.com/v1
+kind: IceCreamOrder
+metadata:
+  name: alice-order
+  namespace: default
+spec:
+  customerName: Alice
+  container: Cone
+  scoops:
+    - flavor: Vanilla
+      quantity: 2
+  toppings:
+    - Sprinkles
+`
+	clientPath := filepath.Join(tempDir, "client-main")
+	repo, worktree := initLocalRepo(t, clientPath, remoteURL, "main")
+	require.NoError(
+		t,
+		os.MkdirAll(filepath.Join(clientPath, "shop.example.com/v1/icecreamorders/default"), 0o750),
+	)
+	createdHash := commitFileChange(
+		t,
+		worktree,
+		clientPath,
+		"shop.example.com/v1/icecreamorders/default/alice-order.yaml",
+		initialContent,
+	)
+	err := repo.Push(&git.PushOptions{
+		RefSpecs: []config.RefSpec{
+			config.RefSpec(fmt.Sprintf("+%s:%s", "refs/heads/main", "refs/heads/main")),
+		},
+	})
+	require.NoError(t, err)
+	require.NotEqual(t, plumbing.ZeroHash, createdHash)
+
+	_, err = PrepareBranch(context.Background(), remoteURL, localPath, "main", nil)
+	require.NoError(t, err)
+
+	event := Event{
+		Object: &unstructured.Unstructured{
+			Object: map[string]interface{}{
+				"apiVersion": "shop.example.com/v1",
+				"kind":       "IceCreamOrder",
+				"metadata": map[string]interface{}{
+					"name":      "alice-order",
+					"namespace": "default",
+				},
+				"spec": map[string]interface{}{
+					"container":    "Cone",
+					"customerName": "Alice",
+					"scoops": []interface{}{
+						map[string]interface{}{
+							"flavor":   "Vanilla",
+							"quantity": int64(2),
+						},
+					},
+					"toppings": []interface{}{"Sprinkles"},
+				},
+			},
+		},
+		Identifier: types.ResourceIdentifier{
+			Group:     "shop.example.com",
+			Version:   "v1",
+			Resource:  "icecreamorders",
+			Namespace: "default",
+			Name:      "alice-order",
+		},
+		Operation: "CREATE",
+		UserInfo: UserInfo{
+			Username: "flux",
+		},
+	}
+
+	result, err := WriteEvents(context.Background(), localPath, []Event{event}, "main", nil)
+	require.NoError(t, err)
+	assert.Equal(t, 0, result.CommitsCreated)
+
+	repo, err = git.PlainOpen(localPath)
+	require.NoError(t, err)
+	worktree, err = repo.Worktree()
+	require.NoError(t, err)
+	status, err := worktree.Status()
+	require.NoError(t, err)
+	assert.True(t, status.IsClean())
+}
+
 func TestPullBranch_WhipedRepo(t *testing.T) {
 	tempDir := t.TempDir()
 	serverPath := filepath.Join(tempDir, "server")

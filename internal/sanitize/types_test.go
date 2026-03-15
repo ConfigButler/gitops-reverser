@@ -83,6 +83,29 @@ func TestPartialObjectMeta_FromUnstructured(t *testing.T) {
 			},
 		},
 		{
+			name: "object with operational flux labels filtered",
+			obj: &unstructured.Unstructured{
+				Object: map[string]interface{}{
+					"metadata": map[string]interface{}{
+						"name":      "test-pod",
+						"namespace": "default",
+						"labels": map[string]interface{}{
+							"kustomize.toolkit.fluxcd.io/name":      "live-sync",
+							"kustomize.toolkit.fluxcd.io/namespace": "flux-system",
+							"user-label":                            "should-be-kept",
+						},
+					},
+				},
+			},
+			expected: PartialObjectMeta{
+				Name:      "test-pod",
+				Namespace: "default",
+				Labels: map[string]string{
+					"user-label": "should-be-kept",
+				},
+			},
+		},
+		{
 			name: "cluster-scoped object (no namespace)",
 			obj: &unstructured.Unstructured{
 				Object: map[string]interface{}{
@@ -109,6 +132,61 @@ func TestPartialObjectMeta_FromUnstructured(t *testing.T) {
 			var meta PartialObjectMeta
 			meta.FromUnstructured(tt.obj)
 			assert.Equal(t, tt.expected, meta)
+		})
+	}
+}
+
+func TestCleanLabels(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    map[string]string
+		expected map[string]string
+	}{
+		{
+			name:     "nil labels",
+			input:    nil,
+			expected: nil,
+		},
+		{
+			name:     "empty labels",
+			input:    map[string]string{},
+			expected: nil,
+		},
+		{
+			name: "remove flux kustomize labels",
+			input: map[string]string{
+				"kustomize.toolkit.fluxcd.io/name":      "removed",
+				"kustomize.toolkit.fluxcd.io/namespace": "removed",
+				"user-label":                            "kept",
+			},
+			expected: map[string]string{
+				"user-label": "kept",
+			},
+		},
+		{
+			name: "all labels operational - return nil",
+			input: map[string]string{
+				"kustomize.toolkit.fluxcd.io/name": "removed",
+			},
+			expected: nil,
+		},
+		{
+			name: "keep user labels",
+			input: map[string]string{
+				"app.kubernetes.io/name": "kept",
+				"example.com/custom":     "kept",
+			},
+			expected: map[string]string{
+				"app.kubernetes.io/name": "kept",
+				"example.com/custom":     "kept",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := cleanLabels(tt.input)
+			assert.Equal(t, tt.expected, result)
 		})
 	}
 }

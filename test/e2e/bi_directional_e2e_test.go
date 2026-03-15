@@ -47,6 +47,8 @@ type biDirectionalRun struct {
 	fluxGitRepositoryName string
 	fluxCRDsName          string
 	fluxLiveName          string
+	fluxSourceInterval    string
+	fluxApplyInterval     string
 	gitProviderName       string
 	gitTargetName         string
 	watchRuleName         string
@@ -109,29 +111,25 @@ var _ = Describe("Bi Directional", Label("bi-directional"), Ordered, func() {
 		baselineCommitCount, err := run.gitCommitCount()
 		Expect(err).NotTo(HaveOccurred(), "failed to capture baseline git commit count")
 
-		By("installing the IceCreamOrder CRD before the GitOps flow starts")
-		_, err = kubectlRun("apply", "-f", "test/e2e/templates/icecreamorder-crd.yaml")
-		Expect(err).NotTo(HaveOccurred(), "failed to install IceCreamOrder CRD")
-		run.waitForCRDEstablished()
-
-		By("creating the initial GitOps commit with the first IceCreamOrder")
+		By("committing the IceCreamOrder CRD through normal GitOps")
 		run.writeCRDToRepo()
-		run.writeLiveOrder(iceCreamOrderFile{
-			Name:         run.firstOrderName,
-			Namespace:    namespace,
-			CustomerName: "Alice",
-			Container:    "Cone",
-			Scoops: []iceCreamScoop{
-				{Flavor: "Vanilla", Quantity: 2},
-			},
-			Toppings: []string{"Sprinkles"},
-		})
-		Expect(run.commitAllAndPush("bi-directional: bootstrap first icecream order")).To(Succeed())
+		Expect(run.commitAllAndPush("bi-directional: add icecreamorder crd")).To(Succeed())
+		crdHead := run.gitHEAD()
 		run.expectRemoteCommitCount(baselineCommitCount + 1)
 
-		By("configuring gitops-reverser to watch the same IceCreamOrder path before Flux syncs")
+		By("configuring Flux to sync the repository with separate CRD and live kustomizations")
+		run.applyFluxGitRepository()
+		run.applyFluxKustomizations()
+		run.waitForFluxGitRepositoryRevision(crdHead)
+		run.waitForFluxKustomizationRevision(run.fluxCRDsName, crdHead)
+		run.waitForCRDEstablished()
+		run.consistentlyExpectRemoteCommitCount(baselineCommitCount+1, 20*time.Second)
+
+		By("enabling gitops-reverser before Flux starts managing IceCreamOrder resources")
 		createGitProviderWithURLInNamespace(run.gitProviderName, namespace, "main", e2eGitSecretHTTP(), run.repoURL)
 		createGitTarget(run.gitTargetName, namespace, run.gitProviderName, run.livePath, "main")
+		run.expectRemoteCommitCount(baselineCommitCount + 2)
+
 		err = applyFromTemplate("test/e2e/templates/watchrule-crd.tmpl", struct {
 			Name            string
 			Namespace       string
@@ -145,28 +143,18 @@ var _ = Describe("Bi Directional", Label("bi-directional"), Ordered, func() {
 		verifyResourceStatus("gitprovider", run.gitProviderName, namespace, "True", "Ready", "")
 		verifyResourceStatus("gittarget", run.gitTargetName, namespace, "True", "Ready", "")
 		verifyResourceStatus("watchrule", run.watchRuleName, namespace, "True", "Ready", "")
+		run.consistentlyExpectRemoteCommitCount(baselineCommitCount+2, 20*time.Second)
 
-		By("configuring Flux to sync the same repository and live path")
-		run.applyFluxGitRepository()
-		run.applyFluxKustomizations()
-
-		By("verifying the initial GitOps sync succeeds without reverse-commit churn")
-		run.waitForFluxGitRepositoryRevision(run.gitHEAD())
-		run.waitForFluxKustomizationRevision(run.fluxCRDsName, run.gitHEAD())
-		run.waitForFluxKustomizationRevision(run.fluxLiveName, run.gitHEAD())
-		run.waitForOrderSpec(run.firstOrderName, "Cone", "Vanilla", "Sprinkles")
-		run.consistentlyExpectRemoteCommitCount(baselineCommitCount+1, 20*time.Second)
-
-		By("creating a second normal GitOps commit with an update and a new order")
+		By("committing two IceCreamOrders through normal GitOps")
 		run.writeLiveOrder(iceCreamOrderFile{
 			Name:         run.firstOrderName,
 			Namespace:    namespace,
 			CustomerName: "Alice",
-			Container:    "WaffleBowl",
+			Container:    "Cone",
 			Scoops: []iceCreamScoop{
-				{Flavor: "Chocolate", Quantity: 3},
+				{Flavor: "Vanilla", Quantity: 2},
 			},
-			Toppings: []string{"CookieCrumbs"},
+			Toppings: []string{"Sprinkles"},
 		})
 		run.writeLiveOrder(iceCreamOrderFile{
 			Name:         run.secondOrderName,
@@ -178,13 +166,13 @@ var _ = Describe("Bi Directional", Label("bi-directional"), Ordered, func() {
 			},
 			Toppings: []string{"WhippedCream"},
 		})
-		Expect(run.commitAllAndPush("bi-directional: update first order and add second")).To(Succeed())
-		secondHead := run.gitHEAD()
-		run.waitForFluxGitRepositoryRevision(secondHead)
-		run.waitForFluxKustomizationRevision(run.fluxLiveName, secondHead)
-		run.waitForOrderSpec(run.firstOrderName, "WaffleBowl", "Chocolate", "CookieCrumbs")
+		Expect(run.commitAllAndPush("bi-directional: add two icecream orders")).To(Succeed())
+		normalFlowHead := run.gitHEAD()
+		run.waitForFluxGitRepositoryRevision(normalFlowHead)
+		run.waitForFluxKustomizationRevision(run.fluxLiveName, normalFlowHead)
+		run.waitForOrderSpec(run.firstOrderName, "Cone", "Vanilla", "Sprinkles")
 		run.waitForOrderSpec(run.secondOrderName, "Cup", "Strawberry", "WhippedCream")
-		run.consistentlyExpectRemoteCommitCount(baselineCommitCount+2, 20*time.Second)
+		run.consistentlyExpectRemoteCommitCount(baselineCommitCount+3, 25*time.Second)
 
 		By("changing one IceCreamOrder through the Kubernetes API")
 		_, err = kubectlRunInNamespace(
@@ -204,7 +192,7 @@ var _ = Describe("Bi Directional", Label("bi-directional"), Ordered, func() {
 			g.Expect(run.gitPull()).To(Succeed())
 			count, countErr := run.gitCommitCount()
 			g.Expect(countErr).NotTo(HaveOccurred())
-			g.Expect(count).To(Equal(baselineCommitCount + 3))
+			g.Expect(count).To(Equal(baselineCommitCount + 4))
 
 			content, readErr := os.ReadFile(run.liveOrderPath(run.firstOrderName))
 			g.Expect(readErr).NotTo(HaveOccurred())
@@ -217,7 +205,7 @@ var _ = Describe("Bi Directional", Label("bi-directional"), Ordered, func() {
 		run.waitForFluxGitRepositoryRevision(thirdHead)
 		run.waitForFluxKustomizationRevision(run.fluxLiveName, thirdHead)
 		run.waitForOrderSpec(run.firstOrderName, run.reverseContainer, run.reverseFlavor, run.reverseTopping)
-		run.consistentlyExpectRemoteCommitCount(baselineCommitCount+3, 25*time.Second)
+		run.consistentlyExpectRemoteCommitCount(baselineCommitCount+4, 25*time.Second)
 	})
 })
 
@@ -244,6 +232,8 @@ func newBiDirectionalRun() biDirectionalRun {
 		fluxGitRepositoryName: fmt.Sprintf("bi-repo-%s", testID),
 		fluxCRDsName:          fmt.Sprintf("bi-crds-%s", testID),
 		fluxLiveName:          fmt.Sprintf("bi-live-%s", testID),
+		fluxSourceInterval:    "1s",
+		fluxApplyInterval:     "15s",
 		gitProviderName:       fmt.Sprintf("bi-provider-%s", testID),
 		gitTargetName:         fmt.Sprintf("bi-target-%s", testID),
 		watchRuleName:         fmt.Sprintf("bi-watchrule-%s", testID),
@@ -251,7 +241,7 @@ func newBiDirectionalRun() biDirectionalRun {
 		crdPath:               fmt.Sprintf("bi-directional/%s/crds", testID),
 		firstOrderName:        fmt.Sprintf("bi-alice-order-%s", testID),
 		secondOrderName:       fmt.Sprintf("bi-bob-order-%s", testID),
-		reverseContainer:      "BananaSplitBoat",
+		reverseContainer:      "WaffleBowl",
 		reverseFlavor:         "MintChip",
 		reverseTopping:        "Caramel",
 	}
@@ -435,6 +425,7 @@ func (r biDirectionalRun) applyFluxGitRepository() {
 		Name       string
 		RepoURL    string
 		Branch     string
+		Interval   string
 		Username   string
 		Password   string
 	}{
@@ -443,6 +434,7 @@ func (r biDirectionalRun) applyFluxGitRepository() {
 		Name:       r.fluxGitRepositoryName,
 		RepoURL:    r.repoURL,
 		Branch:     "main",
+		Interval:   r.fluxSourceInterval,
 		Username:   username,
 		Password:   password,
 	}, "flux-system")
@@ -455,6 +447,7 @@ func (r biDirectionalRun) applyFluxKustomizations() {
 		Name        string
 		Path        string
 		SourceName  string
+		Interval    string
 		DependsOn   string
 		Prune       bool
 		Wait        bool
@@ -465,6 +458,7 @@ func (r biDirectionalRun) applyFluxKustomizations() {
 		Name:       r.fluxCRDsName,
 		Path:       "./" + r.crdPath,
 		SourceName: r.fluxGitRepositoryName,
+		Interval:   r.fluxApplyInterval,
 		Prune:      true,
 		Wait:       true,
 	}, "flux-system")
@@ -475,6 +469,7 @@ func (r biDirectionalRun) applyFluxKustomizations() {
 		Name        string
 		Path        string
 		SourceName  string
+		Interval    string
 		DependsOn   string
 		Prune       bool
 		Wait        bool
@@ -485,6 +480,7 @@ func (r biDirectionalRun) applyFluxKustomizations() {
 		Name:       r.fluxLiveName,
 		Path:       "./" + r.livePath,
 		SourceName: r.fluxGitRepositoryName,
+		Interval:   r.fluxApplyInterval,
 		DependsOn:  r.fluxCRDsName,
 		Prune:      true,
 		Wait:       true,

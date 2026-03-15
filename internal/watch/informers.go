@@ -27,6 +27,7 @@ import (
 
 	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
+	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
 	"github.com/ConfigButler/gitops-reverser/internal/sanitize"
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
@@ -110,45 +111,8 @@ func (m *Manager) handleEvent(obj interface{}, g GVR, op configv1alpha1.Operatio
 		telemetry.GitCommitQueueSize.Add(ctx, enqueueCount)
 	}
 
-	// WatchRule matches - route to workers
-	for _, rule := range wrRules {
-		ev := git.Event{
-			Object:     sanitized.DeepCopy(),
-			Identifier: id,
-			Operation:  string(op),
-			UserInfo:   userInfo,
-			Path:       rule.Path,
-		}
-
-		gitDest := itypes.NewResourceReference(rule.GitTargetRef, rule.GitTargetNamespace)
-
-		if err := m.EventRouter.RouteToGitTargetEventStream(
-			ev,
-			gitDest,
-		); err != nil {
-			m.Log.V(1).Info("Failed to route event", "error", err)
-		}
-	}
-
-	// ClusterWatchRule matches - route to workers
-	for _, cr := range cwrRules {
-		ev := git.Event{
-			Object:     sanitized.DeepCopy(),
-			Identifier: id,
-			Operation:  string(op),
-			UserInfo:   userInfo,
-			Path:       cr.Path,
-		}
-
-		gitDest := itypes.NewResourceReference(cr.GitTargetRef, cr.GitTargetNamespace)
-
-		if err := m.EventRouter.RouteToGitTargetEventStream(
-			ev,
-			gitDest,
-		); err != nil {
-			m.Log.V(1).Info("Failed to route event", "error", err)
-		}
-	}
+	m.routeWatchRules(wrRules, sanitized, id, string(op), userInfo)
+	m.routeClusterWatchRules(cwrRules, sanitized, id, string(op), userInfo)
 }
 
 // toUnstructuredFromInformer safely unwraps a runtime object from informer callbacks.
@@ -175,6 +139,52 @@ func toUnstructuredFromInformer(obj interface{}) *unstructured.Unstructured {
 		}
 	}
 	return nil
+}
+
+func (m *Manager) routeWatchRules(
+	rules []rulestore.CompiledRule,
+	sanitized *unstructured.Unstructured,
+	id itypes.ResourceIdentifier,
+	operation string,
+	userInfo git.UserInfo,
+) {
+	for _, rule := range rules {
+		ev := git.Event{
+			Object:     sanitized.DeepCopy(),
+			Identifier: id,
+			Operation:  operation,
+			UserInfo:   userInfo,
+			Path:       rule.Path,
+		}
+
+		gitDest := itypes.NewResourceReference(rule.GitTargetRef, rule.GitTargetNamespace)
+		if err := m.EventRouter.RouteToGitTargetEventStream(ev, gitDest); err != nil {
+			m.Log.V(1).Info("Failed to route event", "error", err)
+		}
+	}
+}
+
+func (m *Manager) routeClusterWatchRules(
+	rules []rulestore.CompiledClusterRule,
+	sanitized *unstructured.Unstructured,
+	id itypes.ResourceIdentifier,
+	operation string,
+	userInfo git.UserInfo,
+) {
+	for _, rule := range rules {
+		ev := git.Event{
+			Object:     sanitized.DeepCopy(),
+			Identifier: id,
+			Operation:  operation,
+			UserInfo:   userInfo,
+			Path:       rule.Path,
+		}
+
+		gitDest := itypes.NewResourceReference(rule.GitTargetRef, rule.GitTargetNamespace)
+		if err := m.EventRouter.RouteToGitTargetEventStream(ev, gitDest); err != nil {
+			m.Log.V(1).Info("Failed to route event", "error", err)
+		}
+	}
 }
 
 // Note: maybeStartInformers removed - replaced by ReconcileForRuleChange
