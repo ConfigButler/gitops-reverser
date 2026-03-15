@@ -4,7 +4,7 @@ set -euo pipefail
 # Run-scoped Gitea setup for e2e tests.
 #
 # This script is designed to be invoked by Make targets and writes artifacts under:
-#   .stamps/cluster/$(CTX)/$(NAMESPACE)/repo/
+#   .stamps/cluster/$(CTX)/$(NAMESPACE)/git-$(REPO_NAME)/
 #
 # It assumes shared cluster prerequisites already exist:
 # - Gitea is installed in the cluster
@@ -19,15 +19,16 @@ set -euo pipefail
 # - REPOS_DIR (optional): root dir for default checkouts; defaults to .stamps/repos
 #
 # Outputs:
-# - $(CS)/$(NAMESPACE)/repo/active-repo.txt
-# - $(CS)/$(NAMESPACE)/repo/token.txt
-# - $(CS)/$(NAMESPACE)/repo/ssh/id_rsa{,.pub}
-# - $(CS)/$(NAMESPACE)/repo/ssh/known_hosts
-# - $(CS)/$(NAMESPACE)/repo/secrets.yaml
-# - $(CS)/$(NAMESPACE)/repo/secrets.applied
-# - $(CS)/$(NAMESPACE)/repo/repo.ready
-# - $(CS)/$(NAMESPACE)/repo/<repo>/checkout/.git/HEAD
-# - $(CS)/$(NAMESPACE)/repo/checkout.ready
+# - $(CS)/$(NAMESPACE)/git-$(REPO_NAME)/active-repo.txt
+# - $(CS)/$(NAMESPACE)/git-$(REPO_NAME)/checkout-path.txt
+# - $(CS)/$(NAMESPACE)/git-$(REPO_NAME)/token.txt
+# - $(CS)/$(NAMESPACE)/git-$(REPO_NAME)/ssh/id_rsa{,.pub}
+# - $(CS)/$(NAMESPACE)/git-$(REPO_NAME)/ssh/known_hosts
+# - $(CS)/$(NAMESPACE)/git-$(REPO_NAME)/secrets.yaml
+# - $(CS)/$(NAMESPACE)/git-$(REPO_NAME)/secrets.applied
+# - $(CS)/$(NAMESPACE)/git-$(REPO_NAME)/repo.ready
+# - $(CS)/$(NAMESPACE)/git-$(REPO_NAME)/checkout.ready
+# - .stamps/repos/<repo>/.git/HEAD (or CHECKOUT_DIR override)
 
 CTX="${CTX:-}"
 if [[ -z "${CTX}" ]]; then
@@ -52,38 +53,31 @@ REPO_NAME="${REPO_NAME:-}"
 CHECKOUT_DIR="${CHECKOUT_DIR:-}"
 REPOS_DIR="${REPOS_DIR:-}"
 
-SECRET_HTTP_NAME="${E2E_GIT_SECRET_HTTP:-git-creds}"
-SECRET_SSH_NAME="${E2E_GIT_SECRET_SSH:-git-creds-ssh}"
-SECRET_INVALID_NAME="${E2E_GIT_SECRET_INVALID:-git-creds-invalid}"
-
 if [[ -z "${REPO_NAME}" ]]; then
   echo "ERROR: REPO_NAME must be set" >&2
   exit 2
 fi
 
+SECRET_HTTP_NAME="${E2E_GIT_SECRET_HTTP:-git-creds-${REPO_NAME}}"
+SECRET_SSH_NAME="${E2E_GIT_SECRET_SSH:-git-creds-ssh-${REPO_NAME}}"
+SECRET_INVALID_NAME="${E2E_GIT_SECRET_INVALID:-git-creds-invalid-${REPO_NAME}}"
+
 project_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 cs_abs="${project_root}/${CS}"
 
-run_dir="${cs_abs}/${NAMESPACE}/repo"
+run_dir="${cs_abs}/${NAMESPACE}/git-${REPO_NAME}"
 ssh_dir="${run_dir}/ssh"
-repo_dir="${run_dir}/${REPO_NAME}"
 
 active_repo_file="${run_dir}/active-repo.txt"
+checkout_path_file="${run_dir}/checkout-path.txt"
 token_file="${run_dir}/token.txt"
 secrets_yaml="${run_dir}/secrets.yaml"
 secrets_applied="${run_dir}/secrets.applied"
 repo_ready="${run_dir}/repo.ready"
 checkout_ready="${run_dir}/checkout.ready"
 
-mkdir -p "${ssh_dir}" "${repo_dir}"
+mkdir -p "${ssh_dir}"
 
-if [[ -f "${active_repo_file}" ]]; then
-  previous_repo="$(tr -d '\n' < "${active_repo_file}" | tr -d '\r' || true)"
-  if [[ -n "${previous_repo}" && "${previous_repo}" != "${REPO_NAME}" ]]; then
-    echo "Active repo changed: ${previous_repo} -> ${REPO_NAME}"
-    rm -rf "${run_dir:?}/${previous_repo}" "${checkout_ready}" "${repo_ready}" || true
-  fi
-fi
 printf '%s\n' "${REPO_NAME}" > "${active_repo_file}"
 
 wait_for_api() {
@@ -315,7 +309,7 @@ apply_secrets() {
 }
 
 ensure_checkout() {
-  local checkout_dir checkout_link repo_url repos_dir
+  local checkout_dir repo_url repos_dir
 
   repos_dir="${REPOS_DIR:-${project_root}/.stamps/repos}"
   if [[ "${repos_dir}" != /* ]]; then
@@ -331,9 +325,7 @@ ensure_checkout() {
     checkout_dir="${repos_dir}/${REPO_NAME}"
   fi
 
-  checkout_link="${repo_dir}/checkout"
-
-  mkdir -p "$(dirname "${checkout_dir}")" "${repo_dir}"
+  mkdir -p "$(dirname "${checkout_dir}")"
 
   repo_url="http://localhost:13000/${ORG_NAME}/${REPO_NAME}.git"
 
@@ -347,15 +339,6 @@ ensure_checkout() {
     }
   fi
 
-  if [[ "${checkout_link}" != "${checkout_dir}" ]]; then
-    if [[ -L "${checkout_link}" ]]; then
-      rm -f "${checkout_link}"
-    elif [[ -e "${checkout_link}" ]]; then
-      rm -rf "${checkout_link}"
-    fi
-    ln -s "${checkout_dir}" "${checkout_link}"
-  fi
-
   git -C "${checkout_dir}" config user.name "E2E Test" >/dev/null 2>&1 || true
   git -C "${checkout_dir}" config user.email "e2e-test@gitops-reverser.local" >/dev/null 2>&1 || true
 
@@ -364,6 +347,7 @@ ensure_checkout() {
     exit 1
   fi
 
+  printf '%s\n' "${checkout_dir}" > "${checkout_path_file}"
   touch "${repo_ready}"
   touch "${checkout_ready}"
 }

@@ -186,14 +186,14 @@ func e2eGitSecretHTTP() string {
 	if value := strings.TrimSpace(os.Getenv("E2E_GIT_SECRET_HTTP")); value != "" {
 		return value
 	}
-	return "git-creds"
+	return resolveE2EHTTPSecretName(strings.TrimSpace(os.Getenv("E2E_REPO_NAME")))
 }
 
 func e2eGitSecretInvalid() string {
 	if value := strings.TrimSpace(os.Getenv("E2E_GIT_SECRET_INVALID")); value != "" {
 		return value
 	}
-	return "git-creds-invalid"
+	return resolveE2EInvalidSecretName(strings.TrimSpace(os.Getenv("E2E_REPO_NAME")))
 }
 
 func (r *quickstartFrameworkRun) verifyGeneratedEncryptionSecret() string {

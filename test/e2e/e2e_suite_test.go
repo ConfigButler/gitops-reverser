@@ -87,7 +87,7 @@ func ensureE2EPrepared() {
 	output, err = utils.Run(cmd)
 	Expect(err).NotTo(HaveOccurred(), "failed to run make target for gitea run setup")
 	_, _ = fmt.Fprintf(GinkgoWriter, "%s", output)
-	exportGiteaArtifacts(ctx, ns)
+	exportGiteaArtifacts(ctx, ns, repoName)
 
 	// Some e2e shell scripts call `kubectl` without an explicit `--context` flag. Ensure `kubectl` is
 	// pointed at the intended cluster context for the remainder of the test run.
@@ -120,36 +120,75 @@ func resolveE2ERepoName() string {
 	return "e2e-test-" + strconv.FormatInt(GinkgoRandomSeed(), 10)
 }
 
-func exportGiteaArtifacts(ctx, namespace string) {
+func exportGiteaArtifacts(ctx, namespace, repoName string) {
 	projectDir, err := utils.GetProjectDir()
 	Expect(err).NotTo(HaveOccurred(), "failed to resolve project directory for gitea artifacts")
 
-	base := filepath.Join(projectDir, ".stamps", "cluster", ctx, namespace, "repo")
+	base := filepath.Join(projectDir, ".stamps", "cluster", ctx, namespace, "git-"+repoName)
 
 	activeRepoBytes, err := os.ReadFile(filepath.Join(base, "active-repo.txt"))
 	Expect(err).NotTo(HaveOccurred(), "failed to read active repo file")
 	activeRepo := strings.TrimSpace(string(activeRepoBytes))
 	Expect(activeRepo).NotTo(BeEmpty(), "active repo file must contain a repo name")
 
-	checkoutRoot := strings.TrimSpace(os.Getenv("REPOS_DIR"))
-	if checkoutRoot == "" {
-		checkoutRoot = filepath.Join(projectDir, ".stamps", "repos")
-	} else if !filepath.IsAbs(checkoutRoot) {
-		checkoutRoot = filepath.Join(projectDir, checkoutRoot)
+	checkoutPathBytes, err := os.ReadFile(filepath.Join(base, "checkout-path.txt"))
+	if err != nil && !os.IsNotExist(err) {
+		Expect(err).NotTo(HaveOccurred(), "failed to read checkout path file")
 	}
 
-	checkoutPath := filepath.Join(checkoutRoot, activeRepo)
+	checkoutPath := strings.TrimSpace(string(checkoutPathBytes))
+	if checkoutPath == "" {
+		checkoutRoot := strings.TrimSpace(os.Getenv("REPOS_DIR"))
+		if checkoutRoot == "" {
+			checkoutRoot = filepath.Join(projectDir, ".stamps", "repos")
+		} else if !filepath.IsAbs(checkoutRoot) {
+			checkoutRoot = filepath.Join(projectDir, checkoutRoot)
+		}
+
+		checkoutPath = filepath.Join(checkoutRoot, activeRepo)
+	}
+
 	_, err = os.Stat(filepath.Join(checkoutPath, ".git"))
 	Expect(err).NotTo(HaveOccurred(), "expected checkout to exist for active repo")
 
 	Expect(os.Setenv("E2E_REPO_NAME", activeRepo)).To(Succeed())
 	Expect(os.Setenv("E2E_CHECKOUT_DIR", checkoutPath)).To(Succeed())
-	Expect(os.Setenv("E2E_GIT_SECRET_HTTP", "git-creds")).To(Succeed())
-	Expect(os.Setenv("E2E_GIT_SECRET_SSH", "git-creds-ssh")).To(Succeed())
-	Expect(os.Setenv("E2E_GIT_SECRET_INVALID", "git-creds-invalid")).To(Succeed())
+	Expect(os.Setenv("E2E_GIT_SECRET_HTTP", resolveE2EHTTPSecretName(activeRepo))).To(Succeed())
+	Expect(os.Setenv("E2E_GIT_SECRET_SSH", resolveE2ESSHSecretName(activeRepo))).To(Succeed())
+	Expect(os.Setenv("E2E_GIT_SECRET_INVALID", resolveE2EInvalidSecretName(activeRepo))).To(Succeed())
 	// Propagate the resolved namespace so quickstartSetupNamespace() uses the same
 	// namespace as the install (where the operator and secrets live).
 	Expect(os.Setenv("SUT_NAMESPACE", namespace)).To(Succeed())
+}
+
+func resolveE2EHTTPSecretName(repoName string) string {
+	if value := strings.TrimSpace(os.Getenv("E2E_GIT_SECRET_HTTP")); value != "" {
+		return value
+	}
+	if strings.TrimSpace(repoName) == "" {
+		return "git-creds"
+	}
+	return "git-creds-" + repoName
+}
+
+func resolveE2ESSHSecretName(repoName string) string {
+	if value := strings.TrimSpace(os.Getenv("E2E_GIT_SECRET_SSH")); value != "" {
+		return value
+	}
+	if strings.TrimSpace(repoName) == "" {
+		return "git-creds-ssh"
+	}
+	return "git-creds-ssh-" + repoName
+}
+
+func resolveE2EInvalidSecretName(repoName string) string {
+	if value := strings.TrimSpace(os.Getenv("E2E_GIT_SECRET_INVALID")); value != "" {
+		return value
+	}
+	if strings.TrimSpace(repoName) == "" {
+		return "git-creds-invalid"
+	}
+	return "git-creds-invalid-" + repoName
 }
 
 func makeCommand(args ...string) *exec.Cmd {

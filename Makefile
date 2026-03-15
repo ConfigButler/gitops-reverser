@@ -149,15 +149,15 @@ prepare-e2e: $(CS)/$(NAMESPACE)/prepare-e2e.ready portforward-ensure ## Prepare 
 GITEA_ADMIN_USER ?= giteaadmin
 GITEA_ADMIN_PASS ?= giteapassword123
 GITEA_ORG_NAME ?= testorg
-E2E_GIT_SECRET_HTTP ?= git-creds
-E2E_GIT_SECRET_SSH ?= git-creds-ssh
-E2E_GIT_SECRET_INVALID ?= git-creds-invalid
+E2E_GIT_SECRET_HTTP ?=
+E2E_GIT_SECRET_SSH ?=
+E2E_GIT_SECRET_INVALID ?=
 
 .PHONY: e2e-gitea-bootstrap
 e2e-gitea-bootstrap: $(CS)/gitea/bootstrap/org-$(GITEA_ORG_NAME).ready ## Bootstrap shared Gitea prerequisites for the cluster context
 
 .PHONY: e2e-gitea-run-setup
-e2e-gitea-run-setup: $(CS)/$(NAMESPACE)/repo/checkout.ready ## Create active repo+creds+checkout for this run
+e2e-gitea-run-setup: $(CS)/$(NAMESPACE)/git-$(REPO_NAME)/checkout.ready ## Create active repo+creds+checkout for this run
 
 $(CS)/gitea/bootstrap/org-$(GITEA_ORG_NAME).ready: $(CS)/$(NAMESPACE)/prepare-e2e.ready hack/e2e/gitea-bootstrap.sh | $(CS)/gitea/bootstrap
 	$(MAKE) CTX=$(CTX) INSTALL_MODE=$(INSTALL_MODE) INSTALL_NAME=$(INSTALL_NAME) NAMESPACE=$(NAMESPACE) portforward-ensure
@@ -169,8 +169,9 @@ $(CS)/gitea/bootstrap/org-$(GITEA_ORG_NAME).ready: $(CS)/$(NAMESPACE)/prepare-e2
 	bash hack/e2e/gitea-bootstrap.sh
 	@test -f $@
 
-$(CS)/$(NAMESPACE)/repo/checkout.ready: $(CS)/gitea/bootstrap/org-$(GITEA_ORG_NAME).ready hack/e2e/gitea-run-setup.sh | $(CS)/$(NAMESPACE)/repo
+$(CS)/$(NAMESPACE)/git-$(REPO_NAME)/checkout.ready: $(CS)/gitea/bootstrap/org-$(GITEA_ORG_NAME).ready hack/e2e/gitea-run-setup.sh | $(CS)/$(NAMESPACE)
 	@[ -n "$(REPO_NAME)" ] || { echo "ERROR: REPO_NAME must be set for e2e-gitea-run-setup" >&2; exit 2; }
+	mkdir -p $(@D)
 	export CTX=$(CTX)
 	export CS=$(CS)
 	export NAMESPACE=$(NAMESPACE)
@@ -308,7 +309,7 @@ $(ENVTEST_STAMP): Makefile
 
 ##@ E2E Stamp Targets (cluster-parameterized; pass CTX=k3d-<name> to target a different cluster)
 
-$(CS) $(IS) $(CS)/$(NAMESPACE) $(CS)/$(NAMESPACE)/repo $(CS)/gitea/bootstrap \
+$(CS) $(IS) $(CS)/$(NAMESPACE) $(CS)/gitea/bootstrap \
 $(CS)/$(NAMESPACE)/helm $(CS)/$(NAMESPACE)/config-dir $(CS)/$(NAMESPACE)/plain-manifests-file dist:
 	mkdir -p $@
 
@@ -560,6 +561,15 @@ test-e2e-audit-redis: ## Run dedicated audit->Redis enqueue e2e scenario
 	export NAMESPACE=$(NAMESPACE)
 	export E2E_AGE_KEY_FILE=$(CS)/age-key.txt
 	go test ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=audit-redis
+
+.PHONY: test-e2e-bi
+test-e2e-bi: ## Run dedicated bi-directional Flux + gitops-reverser e2e scenario
+	export CTX=$(CTX)
+	export INSTALL_MODE=$(INSTALL_MODE)
+	export NAMESPACE=$(NAMESPACE)
+	export E2E_ENABLE_BI_DIRECTIONAL=true
+	export E2E_AGE_KEY_FILE=$(CS)/age-key.txt
+	go test ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=bi-directional
 
 .PHONY: test-e2e-quickstart-manifest
 test-e2e-quickstart-manifest: ## Run quickstart smoke test (manifest install)

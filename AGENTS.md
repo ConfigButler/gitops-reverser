@@ -11,6 +11,8 @@
 
 **CRITICAL**: These commands MUST pass before any implementation is considered complete:
 
+Run the e2e commands sequentially, not in parallel!
+
 ```bash
 make lint      # Must pass golangci-lint checks
 make test      # Must pass all unit tests with >90% coverage  
