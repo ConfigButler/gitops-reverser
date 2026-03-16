@@ -9,75 +9,107 @@
 
 # GitOps Reverser
 
-GitOps Reverser is a Kubernetes operator that turns live API activity into clean, versioned YAML in Git. It results in a folder with YAML files that can be deployed to any cluster. The commit history is your perfect audit trail.
+GitOps Reverser is a Kubernetes operator that turns live Kubernetes API activity into clean, versioned YAML in Git.
+It gives API-first teams a Git audit trail and a deployable repo without forcing every change through Git first.
 
-<div align="center"> <img src="docs/demo/demo.gif" alt="GitOps Reverser Demo" width="100%"> </div>
-<p>
+> [!IMPORTANT]
+> Speaking at KubeCon: the Reverse GitOps pattern and this project will be presented on
+> [March 23, 2026 at 15:55 in Amsterdam](https://sched.co/2DY82).
 
-Want to see the evidence? You can find the [commit](https://github.com/ConfigButler/example-audit/commit/800a51e5a8edcccbc85c94d5fef7ef7cc8381b7b) in [ConfigButler/example-audit](https://github.com/ConfigButler/example-audit).
+<div align="center"><img src="docs/demo/demo.gif" alt="GitOps Reverser Demo" width="100%"></div>
+
+Want proof? See this [example commit](https://github.com/ConfigButler/example-audit/commit/800a51e5a8edcccbc85c94d5fef7ef7cc8381b7b)
+in [ConfigButler/example-audit](https://github.com/ConfigButler/example-audit).
+
+The broader pattern behind this project is described at [reversegitops.dev](https://reversegitops.dev).
+This repo contains a concrete operator that is implementing this.
 
 ## Why
 
-Today teams have to choose between workflows:
-- Pure GitOps: safe and auditable, but unfriendly to non‑git users.
-- API‑first: fast and interactive, but databases don't come (by default) with a way to deploy or test high-risk changesets.
+Today teams often choose between workflows:
 
-Reverse GitOps gives you both: the interactivity of the Kubernetes API with Git's safety and traceability. Users, CLIs, and automations talk to a lightweight control plane; the operator immediately reflects desired state to Git.
+- Pure GitOps: safe and auditable, but less friendly for users and tools that work through the Kubernetes API.
+- API-first: fast and interactive, but it usually does not come with strong review, rollout safety, or change history out of the box.
 
-### Converting API actions into Git commits
+GitOps Reverser bridges that gap: write to the Kubernetes API, and let the operator write the result to Git.
 
 ![](docs/images/overview.excalidraw.svg)
 
 ## How it works
 
-- Capture: Admission webhook receives Kubernetes API requests.
-- Sanitize: Remove status and server‑managed fields; format as clean YAML.
-- Queue: Buffer events to handle spikes reliably.
-- Commit: Annotate with user, operation, namespace, timestamp; commit to Git.
-- Push: It's now in your git repo.
+- Capture Kubernetes API activity.
+- Sanitize objects into stable YAML (intent only).
+- Queue and batch writes safely.
+- Commit and push the result to Git with useful metadata (username and e-mail that made the change).
 
 ## Status
 
-🚨 This is early stage software. CRDs and behavior may change; not recommended for production yet. Feedback and contributions are very welcome!
+🚨 Early stage software. CRDs and behavior may change, and it is not recommended for production yet.
 
-Current limitation: GitOps Reverser must run as a single pod (`replicas=1`). Multi-pod/HA operation is not supported yet.
+- Single pod only today (`replicas=1`); multi-pod/HA is not supported yet.
+- Runtime behavior is deterministic. The operator does not use AI or heuristics at runtime.
+- Current roadmap includes signed commits, HA support, and more edge-case hardening.
 
-### Use of AI
+## Recommended usage
 
-I have been thinking about the idea behind GitOps Reverser for several years (I've given up my fulltime job to work on it). Some of the hardest parts, especially writing to Git efficiently and safely under load, were designed and implemented manually. The rest is vibe coded, and needs more refinement before I would run it in production.
+| Mode | Good fit | Notes |
+|---|---|---|
+| Audit only | Capture live changes into Git | Safest starting point |
+| Human in the loop | Hotfix in cluster, review later | Good migration path |
+| Split ownership | API-first app resources, Git-first infra | Avoids shared write ownership |
+| Controlled bi-directional | Shared paths that truly need both sides | Requires explicit coordination |
 
-**The operator itself is fully deterministic and does not use AI or heuristics at runtime. Given the same inputs, it produces the same Git output.**
+For shared resources, the recommended model is:
 
-Feedback, issues, and pull requests are very welcome!
+- write through the Kubernetes API
+- let GitOps Reverser publish to Git
+- let GitOps controllers acknowledge those commits in a controlled way
 
-### Planned Improvements
+Do not let GitOps Reverser and Flux or Argo CD continuously reconcile the same resources in two always-on
+loops. That creates stale replays, extra commits, and possible loops.
 
-- Signed git commits
-- Full HA support by introducing [Valkey](https://valkey.io/)
-- More refined behavior in edge cases (especially with newly added CRDs)
-- Migrate to the [Kubernetes audit webhook](https://kubernetes.io/docs/tasks/debug/debug-cluster/audit/#webhook-backend) to replace the watcher/webhook combination; see [`docs/past/audit-webhook-experimental-design.md`](docs/past/audit-webhook-experimental-design.md).
+For Flux on shared paths, the current direction is manual coordination:
+
+- keep the source object
+- suspend the `Kustomization` for the shared path
+- refresh and reconcile on demand
+- wait until Flux reports the expected revision
+
+See [`docs/bi-directional.md`](docs/bi-directional.md) for the user guide and
+[`docs/design/bi-directional-flux-manual-handshake-plan.md`](docs/design/bi-directional-flux-manual-handshake-plan.md)
+for the implementation direction.
 
 ## Quick start
 
 Prerequisites:
-- A Kubernetes cluster with kubectl configured
-- cert-manager to create the webhook certificates (run `kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.19.1/cert-manager.yaml`)
-- A test git repository with write access
 
-**1. Install GitOps Reverser:**
+- A Kubernetes cluster with `kubectl` configured
+- `cert-manager` for webhook certificates
+- A Git repository with write access
+
+Install `cert-manager` if needed:
+
+```bash
+kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.19.1/cert-manager.yaml
+```
+
+**1. Install GitOps Reverser**
+
 ```bash
 kubectl apply -f https://github.com/ConfigButler/gitops-reverser/releases/latest/download/install.yaml
 ```
 
-**2. Set up Git credentials:**
+**2. Create Git credentials**
 
-Create an SSH key and add it to your Git provider (GitHub, GitLab, Gitea):
+Generate an SSH key and add the public key to your Git provider:
+
 ```bash
 ssh-keygen -t ed25519 -C "gitops-reverser@cluster" -f /tmp/gitops-reverser-key -N ""
 # Add /tmp/gitops-reverser-key.pub to your Git provider as a deploy key
 ```
 
-Create a Kubernetes Secret with the private key:
+Create a Secret with the private key:
+
 ```bash
 kubectl create secret generic git-creds \
   --from-file=ssh-privatekey=/tmp/gitops-reverser-key \
@@ -85,11 +117,9 @@ kubectl create secret generic git-creds \
   --dry-run=client -o yaml | kubectl apply -f -
 ```
 
-See [`docs/GITHUB_SETUP_GUIDE.md`](docs/GITHUB_SETUP_GUIDE.md) for detailed setup instructions.
+See [`docs/GITHUB_SETUP_GUIDE.md`](docs/GITHUB_SETUP_GUIDE.md) for a full setup guide.
 
-**3. Configure what to reconcile:**
-
-Reconciliation sources and targets are configured by three types of custom resources. Create these to start reconciling ConfigMaps:
+**3. Create a `GitProvider`, `GitTarget`, and `WatchRule`**
 
 ![](docs/images/config-basics.excalidraw.svg)
 
@@ -108,13 +138,7 @@ spec:
   push:
     interval: "5s"
     maxCommits: 10
-EOF
-```
-
-Check the status to see if it's able to connect: `kubectl get gitprovider your-repo`
-
-```bash
-cat <<EOF | kubectl apply -f -
+---
 apiVersion: configbutler.ai/v1alpha1
 kind: GitTarget
 metadata:
@@ -149,78 +173,69 @@ spec:
 EOF
 ```
 
-When `age.recipients.generateWhenMissing: true` is enabled, GitOps Reverser can create the encryption key Secret
-automatically.
-Back up the generated `*.agekey` entry immediately and securely.
-If you lose that private key, existing encrypted `*.sops.yaml` files are unrecoverable.
-After confirming backup, remove the warning annotation:
-`kubectl annotate secret sops-age-key -n default configbutler.ai/backup-warning-`
+Check connectivity:
 
-**4. Test it:**
 ```bash
-# Create a test ConfigMap
-kubectl create configmap test-config --from-literal=key=value -n default
-
-# Check your Git repository - you should see a new commit with the ConfigMap YAML
+kubectl get gitprovider your-repo
 ```
 
-For cluster-wide resources (nodes, CRDs, etc.) or watching multiple namespaces, use
-[`ClusterWatchRule`](config/samples/clusterwatchrule.yaml). More examples in [`config/samples/`](config/samples/).
-## Usage guidance
+If `age.recipients.generateWhenMissing: true` is enabled, GitOps Reverser can create the age key Secret
+automatically. Back up the generated `*.agekey` immediately. If you lose that private key, existing encrypted
+`*.sops.yaml` files are unrecoverable. After backup, remove the warning annotation:
 
-Avoid infinite loops: Do not point GitOps (Argo CD/Flux) and GitOps Reverser at the same resources in fully automated mode. Recommended patterns:
-- Audit (capture changes, no enforcement)
-- Human‑in‑the‑loop (hotfix in cluster, capture to Git, review/merge)
-- Drift detection (use commits as alert inputs)
-- Hybrid (traditional GitOps for infra; Reverser for app/config changes)
+```bash
+kubectl annotate secret sops-age-key -n default configbutler.ai/backup-warning-
+```
 
-## Known limitations / design choices
+**4. Test it**
 
-- GitOps Reverser currently supports only a single controller pod (no multi-pod/HA yet).
-- `Secret` resources (`core/v1`, `secrets`) are written via the same pipeline, but sensitive values are expected to be encrypted before commit.
-  - Configure encryption via `--sops-binary-path` and optional `--sops-config-path`.
-  - The container image ships with `/usr/local/bin/sops`.
-  - Per-path `.sops.yaml` files are bootstrapped in the target repo for SOPS-based secret encryption.
-  - If Secret encryption fails, Secret writes are rejected (no plaintext fallback).
-  - `GitTarget.spec.encryption.age.recipients.generateWhenMissing: true` can auto-generate a date-based `*.agekey`
-    in the referenced encryption Secret when no `*.agekey` entry exists.
-    - Generated Secret data contains one `<date>.agekey` (`AGE-SECRET-KEY-...`).
-    - Generated Secret annotation `configbutler.ai/age-recipient` stores the public age recipient.
-    - Generated Secret annotation `configbutler.ai/backup-warning: REMOVE_AFTER_BACKUP` is set by default.
-    - While `configbutler.ai/backup-warning` remains, gitops-reverser logs a recurring high-visibility backup warning during periodic reconciliation.
-  - WARNING: backup generated private keys immediately and securely. Losing the key means existing encrypted `*.sops.yaml` files cannot be decrypted.
-  - After backup, remove the warning annotation:
-    - `kubectl annotate secret <your-encryption-secret> -n <namespace> configbutler.ai/backup-warning-`
-- Avoid multiple GitProvider configurations pointing at the same repo to prevent queue collisions.
-- Queue collisions are possible when multiple configs target the same repository (so don't do that).
+```bash
+kubectl create configmap test-config --from-literal=key=value -n default
+```
 
+You should now see a new commit in your Git repository.
 
-## Other applications to consider
+For cluster-wide resources or watching multiple namespaces, use
+[`ClusterWatchRule`](config/samples/clusterwatchrule.yaml). More examples live in [`config/samples/`](config/samples/).
 
-| **Tool** | **How it Works** | **Key Differences** | 
+## Secrets and encryption
+
+`Secret` resources go through the same pipeline, but sensitive values are encrypted before
+commit. Secret manifests are written as `*.sops.yaml`.
+
+See [`docs/SOPS_AGE_GUIDE.md`](docs/SOPS_AGE_GUIDE.md) for working with Secrets, SOPS, age keys, bootstrap, and rotation.
+
+## Known limitations
+
+- GitOps Reverser currently supports only a single controller pod.
+- Shared-resource bi-directional sync requires explicit coordination; it is not "set both sides to automatic and walk away."
+- Avoid multiple GitProvider configurations pointing at the same repository.
+
+## Other tools to consider
+
+| Tool | What it does | How GitOps Reverser differs |
 |---|---|---|
-| [RichardoC/kube-audit-rest](https://github.com/RichardoC/kube-audit-rest) | An admission webhook that receives audit events and exposes them over a REST API. | **Action vs. Transport:** `kube-audit-rest` is a transport layer. GitOps Reverser is an *action* layer that consumes the event and commits it to Git. | 
-| [robusta-dev/robusta](https://github.com/robusta-dev/robusta) | A broad observability and automation platform. | **Focused Tool vs. Broad Platform:** Robusta is a large platform. GitOps Reverser is a small, single-purpose utility focused on simplicity and low overhead. | 
-| [bpineau/katafygio](https://github.com/bpineau/katafygio) | Periodically scans the cluster and dumps all resources to a Git repository. | **Event-Driven vs. Snapshot:** Katafygio is a backup tool. GitOps Reverser is event-driven, providing a real-time audit trail. | 
+| [RichardoC/kube-audit-rest](https://github.com/RichardoC/kube-audit-rest) | Receives audit events and exposes them over a REST API | GitOps Reverser consumes the change and writes it to Git |
+| [robusta-dev/robusta](https://github.com/robusta-dev/robusta) | Broad observability and automation platform | GitOps Reverser is narrower and focused on Git write-back |
+| [bpineau/katafygio](https://github.com/bpineau/katafygio) | Periodically snapshots cluster resources into Git | GitOps Reverser is event-driven and commit-oriented |
 
 ## Development
 
-### DevContainer Setup
+### DevContainer
 
 This project includes a DevContainer for consistent development environments.
 
 [![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/ConfigButler/gitops-reverser)
 
-**Linux/macOS:** Works out of the box with Docker Desktop or Docker Engine.
+- Linux/macOS: works with Docker Desktop or Docker Engine.
+- Windows: see [`docs/ci/WINDOWS_DEVCONTAINER_SETUP.md`](docs/ci/WINDOWS_DEVCONTAINER_SETUP.md).
 
-**Windows:** See [`docs/ci/WINDOWS_DEVCONTAINER_SETUP.md`](docs/ci/WINDOWS_DEVCONTAINER_SETUP.md) for Windows-specific setup instructions. TL;DR: Use WSL2 for the best experience, or the devcontainer will automatically fix workspace permissions on startup.
-
-### Running Tests
+### Running tests
 
 ```bash
-make test        # Unit tests
-make test-e2e    # End-to-end tests (requires Docker)
-make lint        # Linting
+make test
+make test-e2e
+make lint
 ```
 
 ## Contributing

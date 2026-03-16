@@ -5,6 +5,9 @@
 This document describes what can go wrong when a normal GitOps loop and a reverse GitOps loop both manage
 the same Kubernetes resources.
 
+For the implementation-oriented follow-up plan, see
+`docs/design/bi-directional-flux-manual-handshake-plan.md`.
+
 In this repository, the concrete example is:
 
 - FluxCD applies desired state from Git into the cluster

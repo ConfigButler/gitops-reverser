@@ -90,5 +90,6 @@ func isOperationalAnnotation(key string) bool {
 	return strings.HasPrefix(key, "kubectl.kubernetes.io/") ||
 		strings.HasPrefix(key, "control-plane.alpha.kubernetes.io/") ||
 		strings.HasPrefix(key, "deployment.kubernetes.io/") ||
-		strings.HasPrefix(key, "autoscaling.alpha.kubernetes.io/")
+		strings.HasPrefix(key, "autoscaling.alpha.kubernetes.io/") ||
+		strings.HasPrefix(key, "kustomize.toolkit.fluxcd.io/")
 }
