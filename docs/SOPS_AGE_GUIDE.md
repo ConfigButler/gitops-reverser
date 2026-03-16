@@ -2,6 +2,22 @@
 
 This is a practical reference for how `sops` and `age` fit together in this repo, and which assets/commands matter.
 
+## What GitOps Reverser does for Secrets
+
+When `GitTarget.spec.encryption.provider: sops` is enabled:
+
+- Kubernetes `Secret` resources go through the same write pipeline as other resources.
+- Secret manifests are written to Git as `*.sops.yaml`.
+- GitOps Reverser bootstraps a path-local `.sops.yaml` in the target repo path when needed.
+- If Secret encryption fails, the Secret write is rejected. There is no plaintext fallback.
+- The container image ships with `sops` at `/usr/local/bin/sops`.
+
+Operator/runtime notes:
+
+- `--sops-binary-path` can override the `sops` binary path.
+- `--sops-config-path` is optional if you want to point `sops` at a specific config file.
+- The usual repo flow is still to commit `.sops.yaml` and encrypted `*.sops.yaml` files, never age private keys.
+
 ## Mental model
 
 - `age` is the crypto system.
@@ -124,6 +140,9 @@ creates the secret. Generated secrets include:
 - `configbutler.ai/age-recipient: age1...`
 - `configbutler.ai/backup-warning: REMOVE_AFTER_BACKUP`
 
+If the Secret already exists but has no `*.agekey` entry, GitOps Reverser adds one.
+If the Secret already contains one or more `*.agekey` entries, it does not overwrite them.
+
 Important: back up the generated private key immediately. Remove the warning
 annotation after backup:
 
@@ -154,6 +173,12 @@ The bootstrap template currently contains a static recipient in
 - This is a public recipient, not a private key.
 - It is not auto-replaced by the controller.
 - If you need your own keys, update committed `.sops.yaml` in the repo path and re-wrap files with `sops updatekeys`.
+
+## What to read next
+
+- For operator usage and day-2 handling: this document.
+- For bootstrap behavior of generated keys: [`docs/SOPS_GENERATE_WHEN_MISSING_PLAN.md`](docs/SOPS_GENERATE_WHEN_MISSING_PLAN.md)
+- For longer-term Flux-compatible key handling ideas: [`docs/SOPS_FLUX_AGE_KEY_ALIGNMENT_PLAN.md`](docs/SOPS_FLUX_AGE_KEY_ALIGNMENT_PLAN.md)
 
 ## Design plan: `generateWhenMissing`
 
