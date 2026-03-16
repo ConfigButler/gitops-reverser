@@ -38,6 +38,15 @@ import (
 
 const biDirectionalEnabledEnv = "E2E_ENABLE_BI_DIRECTIONAL"
 
+const (
+	biPollInterval          = time.Second
+	biEventuallyTimeout     = 45 * time.Second
+	biFluxReconcileTimeout  = "90s"
+	biStableCountShortWait  = 3 * time.Second
+	biStableCountMediumWait = 5 * time.Second
+	biStableCountLongWait   = 6 * time.Second
+)
+
 type biDirectionalRun struct {
 	testID                     string
 	repoName                   string
@@ -155,7 +164,7 @@ var _ = Describe("Bi Directional", Label("bi-directional"), Ordered, func() {
 		run.waitForFluxGitRepositoryRevision(crdHead)
 		run.waitForFluxKustomizationRevision(run.fluxCRDsName, crdHead)
 		run.waitForCRDEstablished()
-		run.consistentlyExpectRemoteCommitCount(baselineCommitCount+1, 20*time.Second)
+		run.consistentlyExpectRemoteCommitCount(baselineCommitCount+1, biStableCountMediumWait)
 
 		By("enabling gitops-reverser before Flux starts managing IceCreamOrder resources")
 		createGitProviderWithURLInNamespace(run.gitProviderName, namespace, "main", e2eGitSecretHTTP(), run.repoURL)
@@ -186,7 +195,7 @@ var _ = Describe("Bi Directional", Label("bi-directional"), Ordered, func() {
 		run.waitForGitTargetReady()
 		verifyResourceStatus("watchrule", run.watchRuleName, namespace, "True", "Ready", "")
 
-		sharedBaselineCommitCount := run.waitForStableRemoteCommitCount(10 * time.Second)
+		sharedBaselineCommitCount := run.waitForStableRemoteCommitCount(biStableCountShortWait)
 
 		By("committing two IceCreamOrders through normal GitOps")
 		run.writeLiveOrder(iceCreamOrderFile{
@@ -217,7 +226,7 @@ var _ = Describe("Bi Directional", Label("bi-directional"), Ordered, func() {
 		run.waitForFluxKustomizationRevision(run.fluxLiveName, normalFlowHead)
 		run.waitForOrderSpec(run.firstOrderName, "Cone", "Vanilla", "Sprinkles")
 		run.waitForOrderSpec(run.secondOrderName, "Cup", "Strawberry", "WhippedCream")
-		run.consistentlyExpectRemoteCommitCount(sharedBaselineCommitCount+1, 25*time.Second)
+		run.consistentlyExpectRemoteCommitCount(sharedBaselineCommitCount+1, biStableCountLongWait)
 
 		By("changing one IceCreamOrder through the Kubernetes API")
 		_, err = kubectlRunInNamespace(
@@ -238,7 +247,7 @@ var _ = Describe("Bi Directional", Label("bi-directional"), Ordered, func() {
 			count, countErr := run.gitMainCommitCount()
 			g.Expect(countErr).NotTo(HaveOccurred())
 			g.Expect(count).To(Equal(sharedBaselineCommitCount + 2))
-		}, 90*time.Second, 2*time.Second).Should(Succeed())
+		}, biEventuallyTimeout, biPollInterval).Should(Succeed())
 
 		run.waitForCommittedOrderSpec(run.firstOrderName, run.reverseContainer, run.reverseFlavor, run.reverseTopping)
 		run.reconcileFluxSource()
@@ -249,7 +258,7 @@ var _ = Describe("Bi Directional", Label("bi-directional"), Ordered, func() {
 		run.waitForOrderSpec(run.firstOrderName, run.reverseContainer, run.reverseFlavor, run.reverseTopping)
 		run.waitForOrderSpec(run.secondOrderName, "Cup", "Strawberry", "WhippedCream")
 		run.waitForCommittedOrderSpec(run.secondOrderName, "Cup", "Strawberry", "WhippedCream")
-		run.consistentlyExpectRemoteCommitCount(sharedBaselineCommitCount+2, 25*time.Second)
+		run.consistentlyExpectRemoteCommitCount(sharedBaselineCommitCount+2, biStableCountLongWait)
 
 		By("adding a Secret to the shared live path with SOPS encryption")
 		err = applyFromTemplate("test/e2e/templates/watchrule-secret.tmpl", struct {
@@ -290,7 +299,7 @@ var _ = Describe("Bi Directional", Label("bi-directional"), Ordered, func() {
 		run.waitForCommittedEncryptedSecret(run.reverseSecretName, run.reverseSecretKey, run.reverseSecretUpdated)
 		secretCommitCount, err := run.gitMainCommitCount()
 		Expect(err).NotTo(HaveOccurred(), "failed to capture secret commit count")
-		run.consistentlyExpectRemoteCommitCount(secretCommitCount, 15*time.Second)
+		run.consistentlyExpectRemoteCommitCount(secretCommitCount, biStableCountShortWait)
 
 		By("verifying Flux can reconcile the encrypted Secret without creating another reverse commit")
 		secretHead := run.gitHEAD()
@@ -299,7 +308,7 @@ var _ = Describe("Bi Directional", Label("bi-directional"), Ordered, func() {
 		run.waitForFluxGitRepositoryRevision(secretHead)
 		run.waitForFluxKustomizationRevision(run.fluxLiveName, secretHead)
 		run.waitForSecretValue(run.reverseSecretName, run.reverseSecretKey, run.reverseSecretUpdated)
-		run.consistentlyExpectRemoteCommitCount(secretCommitCount, 20*time.Second)
+		run.consistentlyExpectRemoteCommitCount(secretCommitCount, biStableCountMediumWait)
 
 		By("testing if we can revert a commit")
 		revertBaselineCommitCount, err := run.gitMainCommitCount()
@@ -323,7 +332,7 @@ var _ = Describe("Bi Directional", Label("bi-directional"), Ordered, func() {
 		run.waitForFluxKustomizationRevision(run.fluxLiveName, revertAddHead)
 		run.waitForCommittedOrderSpec(run.revertedOrderName, "Cone", "Chocolate", "HotFudge")
 		run.waitForOrderSpec(run.revertedOrderName, "Cone", "Chocolate", "HotFudge")
-		run.consistentlyExpectRemoteCommitCount(revertBaselineCommitCount+1, 20*time.Second)
+		run.consistentlyExpectRemoteCommitCount(revertBaselineCommitCount+1, biStableCountMediumWait)
 
 		Expect(run.revertHEADAndPush()).To(Succeed())
 		revertHead := run.gitHEAD()
@@ -333,7 +342,7 @@ var _ = Describe("Bi Directional", Label("bi-directional"), Ordered, func() {
 		run.waitForFluxKustomizationRevision(run.fluxLiveName, revertHead)
 		run.waitForCommittedOrderDeleted(run.revertedOrderName)
 		run.waitForOrderDeleted(run.revertedOrderName)
-		run.consistentlyExpectRemoteCommitCount(revertBaselineCommitCount+2, 20*time.Second)
+		run.consistentlyExpectRemoteCommitCount(revertBaselineCommitCount+2, biStableCountMediumWait)
 	})
 })
 
@@ -400,7 +409,7 @@ func (r biDirectionalRun) waitForCRDEstablished() {
 		)
 		g.Expect(err).NotTo(HaveOccurred())
 		g.Expect(output).To(Equal("True"))
-	}, 30*time.Second, time.Second).Should(Succeed())
+	}, 20*time.Second, biPollInterval).Should(Succeed())
 }
 
 func (r biDirectionalRun) repoPath(parts ...string) string {
@@ -584,7 +593,7 @@ func (r biDirectionalRun) expectRemoteCommitCount(expected int) {
 		count, err := r.gitMainCommitCount()
 		g.Expect(err).NotTo(HaveOccurred())
 		g.Expect(count).To(Equal(expected))
-	}, 60*time.Second, 2*time.Second).Should(Succeed())
+	}, biEventuallyTimeout, biPollInterval).Should(Succeed())
 }
 
 func (r biDirectionalRun) consistentlyExpectRemoteCommitCount(expected int, duration time.Duration) {
@@ -593,7 +602,7 @@ func (r biDirectionalRun) consistentlyExpectRemoteCommitCount(expected int, dura
 		count, err := r.gitMainCommitCount()
 		g.Expect(err).NotTo(HaveOccurred())
 		g.Expect(count).To(Equal(expected))
-	}, duration, 2*time.Second).Should(Succeed())
+	}, duration, biPollInterval).Should(Succeed())
 }
 
 func (r biDirectionalRun) applyFluxGitRepository() {
@@ -634,8 +643,8 @@ func (r biDirectionalRun) waitForStableRemoteCommitCount(duration time.Duration)
 			currentCount, currentErr := r.gitMainCommitCount()
 			inner.Expect(currentErr).NotTo(HaveOccurred())
 			inner.Expect(currentCount).To(Equal(count))
-		}, duration, 2*time.Second).Should(Succeed())
-	}, 90*time.Second, 2*time.Second).Should(Succeed())
+		}, duration, biPollInterval).Should(Succeed())
+	}, biEventuallyTimeout, biPollInterval).Should(Succeed())
 
 	return stableCount
 }
@@ -669,7 +678,7 @@ func (r biDirectionalRun) reconcileFluxSource() {
 			"-n",
 			"flux-system",
 			"--timeout",
-			"2m",
+			biFluxReconcileTimeout,
 		),
 	).To(Succeed())
 }
@@ -684,7 +693,7 @@ func (r biDirectionalRun) reconcileFluxKustomization(name string) {
 			"-n",
 			"flux-system",
 			"--timeout",
-			"2m",
+			biFluxReconcileTimeout,
 		),
 	).To(Succeed())
 }
@@ -798,7 +807,7 @@ func (r biDirectionalRun) waitForFluxGitRepositoryRevision(head string) {
 		)
 		g.Expect(revErr).NotTo(HaveOccurred())
 		g.Expect(revision).To(ContainSubstring(head))
-	}, 90*time.Second, 2*time.Second).Should(Succeed())
+	}, biEventuallyTimeout, biPollInterval).Should(Succeed())
 }
 
 func (r biDirectionalRun) waitForFluxKustomizationRevision(name, head string) {
@@ -840,7 +849,7 @@ func (r biDirectionalRun) waitForFluxKustomizationRevision(name, head string) {
 		)
 		g.Expect(revErr).NotTo(HaveOccurred())
 		g.Expect(revision).To(ContainSubstring(head))
-	}, 90*time.Second, 2*time.Second).Should(Succeed())
+	}, biEventuallyTimeout, biPollInterval).Should(Succeed())
 }
 
 func (r biDirectionalRun) waitForOrderSpec(name, container, flavor, topping string) {
@@ -879,7 +888,7 @@ func (r biDirectionalRun) waitForOrderSpec(name, container, flavor, topping stri
 		g.Expect(toppingsErr).NotTo(HaveOccurred())
 		g.Expect(found).To(BeTrue())
 		g.Expect(toppings).To(ContainElement(topping))
-	}, 90*time.Second, 2*time.Second).Should(Succeed())
+	}, biEventuallyTimeout, biPollInterval).Should(Succeed())
 }
 
 func (r biDirectionalRun) waitForGitTargetReady() {
@@ -916,7 +925,7 @@ func (r biDirectionalRun) waitForGitTargetReady() {
 
 		g.Expect(readyStatus).To(Equal("True"))
 		g.Expect([]string{"Ready", "OK"}).To(ContainElement(readyReason))
-	}, 90*time.Second, 2*time.Second).Should(Succeed())
+	}, biEventuallyTimeout, biPollInterval).Should(Succeed())
 }
 
 func (r biDirectionalRun) waitForControllerEncryptionSecret() {
@@ -938,7 +947,7 @@ func (r biDirectionalRun) waitForControllerEncryptionSecret() {
 		g.Expect(dataErr).NotTo(HaveOccurred())
 		g.Expect(found).To(BeTrue())
 		g.Expect(findFirstAgeKeySecretEntry(data)).NotTo(BeEmpty())
-	}, 90*time.Second, 2*time.Second).Should(Succeed())
+	}, biEventuallyTimeout, biPollInterval).Should(Succeed())
 }
 
 func (r biDirectionalRun) readControllerEncryptionAgeKey() string {
@@ -1004,7 +1013,7 @@ func (r biDirectionalRun) waitForCommittedOrderSpec(name, container, flavor, top
 		g.Expect(toppingsErr).NotTo(HaveOccurred())
 		g.Expect(found).To(BeTrue())
 		g.Expect(toppings).To(ContainElement(topping))
-	}, 90*time.Second, 2*time.Second).Should(Succeed())
+	}, biEventuallyTimeout, biPollInterval).Should(Succeed())
 }
 
 func (r biDirectionalRun) waitForCommittedEncryptedSecret(name, key, expectedValue string) {
@@ -1024,7 +1033,7 @@ func (r biDirectionalRun) waitForCommittedEncryptedSecret(name, key, expectedVal
 		decryptedOutput, decryptErr := decryptWithControllerSOPS(content, ageKey)
 		g.Expect(decryptErr).NotTo(HaveOccurred())
 		g.Expect(decryptedOutput).To(ContainSubstring(fmt.Sprintf("%s: %s", key, expectedValueB64)))
-	}, 90*time.Second, 2*time.Second).Should(Succeed())
+	}, biEventuallyTimeout, biPollInterval).Should(Succeed())
 }
 
 func (r biDirectionalRun) waitForCommittedOrderDeleted(name string) {
@@ -1034,7 +1043,7 @@ func (r biDirectionalRun) waitForCommittedOrderDeleted(name string) {
 		_, err := os.Stat(r.liveOrderPath(name))
 		g.Expect(err).To(HaveOccurred())
 		g.Expect(os.IsNotExist(err)).To(BeTrue())
-	}, 90*time.Second, 2*time.Second).Should(Succeed())
+	}, biEventuallyTimeout, biPollInterval).Should(Succeed())
 }
 
 func (r biDirectionalRun) waitForSecretValue(name, key, expectedValue string) {
@@ -1051,7 +1060,7 @@ func (r biDirectionalRun) waitForSecretValue(name, key, expectedValue string) {
 		g.Expect(dataErr).NotTo(HaveOccurred())
 		g.Expect(found).To(BeTrue())
 		g.Expect(data).To(HaveKeyWithValue(key, expectedValueB64))
-	}, 90*time.Second, 2*time.Second).Should(Succeed())
+	}, biEventuallyTimeout, biPollInterval).Should(Succeed())
 }
 
 func (r biDirectionalRun) waitForOrderDeleted(name string) {
@@ -1059,7 +1068,7 @@ func (r biDirectionalRun) waitForOrderDeleted(name string) {
 		_, err := kubectlRunInNamespace(namespace, "get", "icecreamorder", name, "-o", "json")
 		g.Expect(err).To(HaveOccurred())
 		g.Expect(strings.ToLower(err.Error())).To(ContainSubstring("not found"))
-	}, 90*time.Second, 2*time.Second).Should(Succeed())
+	}, biEventuallyTimeout, biPollInterval).Should(Succeed())
 }
 
 func (r biDirectionalRun) cleanupFluxResources() {
