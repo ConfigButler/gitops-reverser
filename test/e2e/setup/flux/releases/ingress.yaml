@@ -1,0 +1,75 @@
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: traefik
+  namespace: flux-system
+spec:
+  interval: 24h
+  url: oci://ghcr.io/traefik/helm/traefik
+  layerSelector:
+    mediaType: "application/vnd.cncf.helm.chart.content.v1.tar+gzip"
+    operation: copy
+  ref:
+    semver: "39.0.1"
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: traefik
+  namespace: flux-system
+spec:
+  interval: 60m
+  timeout: 10m
+  chartRef:
+    kind: OCIRepository
+    name: traefik
+    namespace: flux-system
+  targetNamespace: traefik-system
+  install:
+    createNamespace: true
+    remediation:
+      retries: 3
+  upgrade:
+    remediation:
+      retries: 3
+  values:
+    fullnameOverride: traefik
+    global:
+      sendAnonymousUsage: false
+
+    deployment:
+      kind: Deployment
+
+    ingressClass:
+      enabled: true
+      isDefaultClass: true
+
+    metrics:
+      prometheus:
+        service:
+          enabled: true
+        serviceMonitor:
+          enabled: true
+
+    logs:
+      general:
+        level: INFO
+      access:
+        enabled: true
+
+    ingressRoute:
+      dashboard:
+        enabled: false
+
+    providers:
+      kubernetesCRD:
+        enabled: true
+        allowCrossNamespace: true
+      kubernetesIngress:
+        enabled: true
+        publishedService:
+          enabled: true
+
+    rbac:
+      enabled: true
+      namespaced: false

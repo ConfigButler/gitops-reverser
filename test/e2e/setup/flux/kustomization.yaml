@@ -10,6 +10,7 @@ resources:
   - repositories/jetstack.yaml
   - repositories/gitea-charts.yaml
   - repositories/valkey.yaml
+  - releases/ingress.yaml
   - releases/prometheus-operator.yaml
   - releases/cert-manager.yaml
   - releases/gitea.yaml

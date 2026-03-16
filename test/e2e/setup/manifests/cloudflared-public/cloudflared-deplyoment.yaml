@@ -1,0 +1,40 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cloudflared
+  namespace: cloudflared-public
+  labels:
+    app: cloudflared
+spec:
+  replicas: 2 # High availability
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cloudflared
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: cloudflared
+    spec:
+      containers:
+      - name: cloudflared
+        image: cloudflare/cloudflared:latest
+        args:
+        - tunnel
+        - --no-autoupdate
+        - --loglevel
+        - info
+        - --metrics
+        - 0.0.0.0:2000
+        - run
+        env:
+        - name: TUNNEL_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: tunnel-credentials
+              key: token
+        livenessProbe:
+          httpGet:
+            path: /ready
+            port: 2000
+          initialDelaySeconds: 10
+          periodSeconds: 10
