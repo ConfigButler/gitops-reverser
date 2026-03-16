@@ -1,0 +1,132 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: quizsubmissions.examples.configbutler.ai
+spec:
+  group: examples.configbutler.ai
+  scope: Namespaced
+  names:
+    plural: quizsubmissions
+    singular: quizsubmission
+    kind: QuizSubmission
+    listKind: QuizSubmissionList
+    shortNames:
+      - qsub
+      - qsubs
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Session
+          type: string
+          jsonPath: .spec.sessionRef.name
+        - name: SubmittedAt
+          type: date
+          jsonPath: .spec.submittedAt
+        - name: Created
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      schema:
+        openAPIV3Schema:
+          type: object
+          description: QuizSubmission is a single attendee submission for a QuizSession.
+          required:
+            - spec
+          properties:
+            spec:
+              type: object
+              required:
+                - sessionRef
+                - submittedAt
+                - answers
+              properties:
+                sessionRef:
+                  type: object
+                  required:
+                    - name
+                  properties:
+                    group:
+                      type: string
+                      default: examples.configbutler.ai
+                      enum:
+                        - examples.configbutler.ai
+                    kind:
+                      type: string
+                      default: QuizSession
+                      enum:
+                        - QuizSession
+                    name:
+                      type: string
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                submittedAt:
+                  type: string
+                  format: date-time
+                answers:
+                  type: array
+                  maxItems: 100
+                  x-kubernetes-list-type: map
+                  x-kubernetes-list-map-keys:
+                    - questionId
+                  items:
+                    type: object
+                    required:
+                      - questionId
+                    properties:
+                      questionId:
+                        type: string
+                        maxLength: 63
+                      singleChoice:
+                        type: string
+                        maxLength: 256
+                      multiChoice:
+                        type: array
+                        maxItems: 20
+                        items:
+                          type: string
+                          maxLength: 256
+                      number:
+                        type: number
+                      freeText:
+                        type: string
+                        maxLength: 2000
+                    x-kubernetes-validations:
+                      - rule: "(has(self.singleChoice) ? 1 : 0) + (has(self.multiChoice) ? 1 : 0) + (has(self.number) ? 1 : 0) + (has(self.freeText) ? 1 : 0) == 1"
+                        message: "exactly one answer field must be set"
+            status:
+              type: object
+              properties:
+                observedGeneration:
+                  type: integer
+                  format: int64
+                conditions:
+                  type: array
+                  x-kubernetes-list-type: map
+                  x-kubernetes-list-map-keys:
+                    - type
+                  items:
+                    type: object
+                    required:
+                      - type
+                      - status
+                      - lastTransitionTime
+                      - reason
+                      - message
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                        enum:
+                          - "True"
+                          - "False"
+                          - "Unknown"
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                      reason:
+                        type: string
+                      message:
+                        type: string

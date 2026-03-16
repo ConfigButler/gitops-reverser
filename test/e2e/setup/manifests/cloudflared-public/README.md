@@ -16,7 +16,6 @@ Setup steps:
 
    ```bash
    kubectl apply -k test/e2e/setup/manifests/cloudflared-public
-   kubectl apply -f test/e2e/setup/manifests/cloudflared-public/tunnel-credentials.yaml
    ```
 
 Quick checks:

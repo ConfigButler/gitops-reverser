@@ -3,5 +3,6 @@ kind: Kustomization
 
 resources:
   - ns.yaml
+  - tunnel-credentials.yaml
   - middleware.yaml
   - cloudflared-deplyoment.yaml

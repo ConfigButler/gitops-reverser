@@ -1,0 +1,17 @@
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: frontend-static
+  namespace: present
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`present.z65.nl`) && PathPrefix(`/`)
+      kind: Rule
+      services:
+        - name: present-frontend
+          port: http
+          scheme: http
+  tls: {}
+  

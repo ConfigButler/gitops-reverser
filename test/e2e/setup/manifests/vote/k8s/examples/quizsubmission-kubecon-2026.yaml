@@ -1,0 +1,22 @@
+apiVersion: examples.configbutler.ai/v1alpha1
+kind: QuizSubmission
+metadata:
+  name: kubecon-2026-sample
+  namespace: present
+spec:
+  sessionRef:
+    name: kubecon-2026
+  submittedAt: "2026-02-05T12:34:00Z"
+  answers:
+    - questionId: q1
+      singleChoice: "Yes"
+    - questionId: q2
+      multiChoice:
+        - Kubernetes
+        - Traefik
+    - questionId: q3
+      number: 7
+    - questionId: q4
+      number: 42
+    - questionId: q5
+      freeText: Loved it.

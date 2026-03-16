@@ -4,4 +4,4 @@ kind: Kustomization
 resources:
   - ns.yaml
   - podinfo.yaml
-  - ingress.yaml
+  - ingressroute.yaml
