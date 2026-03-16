@@ -210,10 +210,6 @@ func performPush(
 // PushAtomic performs an atomic PushAtomic operation in a single network session.
 // It checks if the remote branch is not touched before pushing to prevent creating diverged branches.
 // An explcit error is returned if it failed: I don't plan to use these, we can always retry...
-//
-// PushAtomic performs an atomic PushAtomic operation in a single network session.
-// It checks if the remote branch is not touched before pushing to prevent creating diverged branches.
-// An explcit error is returned if it failed: I don't plan to use these, we can always retry...
 func PushAtomic(
 	ctx context.Context,
 	repo *git.Repository,

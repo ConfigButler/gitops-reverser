@@ -16,3 +16,9 @@ spec:
   dependsOn:
     - name: {{ .DependsOn }}
 {{- end }}
+{{- if .DecryptionSecretName }}
+  decryption:
+    provider: {{ .DecryptionProvider }}
+    secretRef:
+      name: {{ .DecryptionSecretName }}
+{{- end }}

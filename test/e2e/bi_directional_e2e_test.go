@@ -33,32 +33,41 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"sigs.k8s.io/yaml"
 )
 
 const biDirectionalEnabledEnv = "E2E_ENABLE_BI_DIRECTIONAL"
 
 type biDirectionalRun struct {
-	testID                string
-	repoName              string
-	checkoutDir           string
-	repoURL               string
-	localGitRepoURL       string
-	fluxSecretName        string
-	fluxGitRepositoryName string
-	fluxCRDsName          string
-	fluxLiveName          string
-	fluxSourceInterval    string
-	fluxApplyInterval     string
-	gitProviderName       string
-	gitTargetName         string
-	watchRuleName         string
-	livePath              string
-	crdPath               string
-	firstOrderName        string
-	secondOrderName       string
-	reverseContainer      string
-	reverseFlavor         string
-	reverseTopping        string
+	testID                     string
+	repoName                   string
+	checkoutDir                string
+	repoURL                    string
+	localGitRepoURL            string
+	fluxSecretName             string
+	fluxGitRepositoryName      string
+	fluxCRDsName               string
+	fluxLiveName               string
+	fluxDecryptionSecret       string
+	controllerEncryptionSecret string
+	fluxSourceInterval         string
+	fluxApplyInterval          string
+	gitProviderName            string
+	gitTargetName              string
+	watchRuleName              string
+	secretWatchRuleName        string
+	livePath                   string
+	crdPath                    string
+	firstOrderName             string
+	secondOrderName            string
+	revertedOrderName          string
+	reverseSecretName          string
+	reverseSecretKey           string
+	reverseSecretInitial       string
+	reverseSecretUpdated       string
+	reverseContainer           string
+	reverseFlavor              string
+	reverseTopping             string
 }
 
 type iceCreamOrderFile struct {
@@ -93,6 +102,20 @@ var _ = Describe("Bi Directional", Label("bi-directional"), Ordered, func() {
 		_, _ = kubectlRunInNamespace(
 			namespace,
 			"delete",
+			"secret",
+			run.controllerEncryptionSecret,
+			"--ignore-not-found=true",
+		)
+		_, _ = kubectlRunInNamespace(
+			namespace,
+			"delete",
+			"secret",
+			run.reverseSecretName,
+			"--ignore-not-found=true",
+		)
+		_, _ = kubectlRunInNamespace(
+			namespace,
+			"delete",
 			"icecreamorder",
 			run.firstOrderName,
 			"--ignore-not-found=true",
@@ -104,11 +127,18 @@ var _ = Describe("Bi Directional", Label("bi-directional"), Ordered, func() {
 			run.secondOrderName,
 			"--ignore-not-found=true",
 		)
+		_, _ = kubectlRunInNamespace(
+			namespace,
+			"delete",
+			"icecreamorder",
+			run.revertedOrderName,
+			"--ignore-not-found=true",
+		)
 		_, _ = kubectlRun("delete", "crd", "icecreamorders.shop.example.com", "--ignore-not-found=true")
 	})
 
 	It("should avoid a commit loop while Flux and gitops-reverser share IceCreamOrder resources", func() {
-		baselineCommitCount, err := run.gitCommitCount()
+		baselineCommitCount, err := run.gitMainCommitCount()
 		Expect(err).NotTo(HaveOccurred(), "failed to capture baseline git commit count")
 
 		By("committing the IceCreamOrder CRD through normal GitOps")
@@ -119,7 +149,9 @@ var _ = Describe("Bi Directional", Label("bi-directional"), Ordered, func() {
 
 		By("configuring Flux to sync the repository with separate CRD and live kustomizations")
 		run.applyFluxGitRepository()
-		run.applyFluxKustomizations()
+		run.applyFluxCRDKustomization()
+		run.reconcileFluxSource()
+		run.reconcileFluxKustomization(run.fluxCRDsName)
 		run.waitForFluxGitRepositoryRevision(crdHead)
 		run.waitForFluxKustomizationRevision(run.fluxCRDsName, crdHead)
 		run.waitForCRDEstablished()
@@ -127,8 +159,15 @@ var _ = Describe("Bi Directional", Label("bi-directional"), Ordered, func() {
 
 		By("enabling gitops-reverser before Flux starts managing IceCreamOrder resources")
 		createGitProviderWithURLInNamespace(run.gitProviderName, namespace, "main", e2eGitSecretHTTP(), run.repoURL)
-		createGitTarget(run.gitTargetName, namespace, run.gitProviderName, run.livePath, "main")
-		run.expectRemoteCommitCount(baselineCommitCount + 2)
+		createGitTargetWithEncryptionOptions(
+			run.gitTargetName,
+			namespace,
+			run.gitProviderName,
+			run.livePath,
+			"main",
+			run.controllerEncryptionSecret,
+			true,
+		)
 
 		err = applyFromTemplate("test/e2e/templates/watchrule-crd.tmpl", struct {
 			Name            string
@@ -141,9 +180,13 @@ var _ = Describe("Bi Directional", Label("bi-directional"), Ordered, func() {
 		}, namespace)
 		Expect(err).NotTo(HaveOccurred(), "failed to apply bi-directional WatchRule")
 		verifyResourceStatus("gitprovider", run.gitProviderName, namespace, "True", "Ready", "")
-		verifyResourceStatus("gittarget", run.gitTargetName, namespace, "True", "Ready", "")
+		run.waitForControllerEncryptionSecret()
+		run.applyFluxDecryptionSecretFromControllerSecret()
+		run.applyFluxLiveKustomization()
+		run.waitForGitTargetReady()
 		verifyResourceStatus("watchrule", run.watchRuleName, namespace, "True", "Ready", "")
-		run.consistentlyExpectRemoteCommitCount(baselineCommitCount+2, 20*time.Second)
+
+		sharedBaselineCommitCount := run.waitForStableRemoteCommitCount(10 * time.Second)
 
 		By("committing two IceCreamOrders through normal GitOps")
 		run.writeLiveOrder(iceCreamOrderFile{
@@ -168,11 +211,13 @@ var _ = Describe("Bi Directional", Label("bi-directional"), Ordered, func() {
 		})
 		Expect(run.commitAllAndPush("bi-directional: add two icecream orders")).To(Succeed())
 		normalFlowHead := run.gitHEAD()
+		run.reconcileFluxSource()
+		run.reconcileFluxKustomization(run.fluxLiveName)
 		run.waitForFluxGitRepositoryRevision(normalFlowHead)
 		run.waitForFluxKustomizationRevision(run.fluxLiveName, normalFlowHead)
 		run.waitForOrderSpec(run.firstOrderName, "Cone", "Vanilla", "Sprinkles")
 		run.waitForOrderSpec(run.secondOrderName, "Cup", "Strawberry", "WhippedCream")
-		run.consistentlyExpectRemoteCommitCount(baselineCommitCount+3, 25*time.Second)
+		run.consistentlyExpectRemoteCommitCount(sharedBaselineCommitCount+1, 25*time.Second)
 
 		By("changing one IceCreamOrder through the Kubernetes API")
 		_, err = kubectlRunInNamespace(
@@ -190,22 +235,105 @@ var _ = Describe("Bi Directional", Label("bi-directional"), Ordered, func() {
 		By("verifying gitops-reverser creates one commit and Flux converges without a loop")
 		Eventually(func(g Gomega) {
 			g.Expect(run.gitPull()).To(Succeed())
-			count, countErr := run.gitCommitCount()
+			count, countErr := run.gitMainCommitCount()
 			g.Expect(countErr).NotTo(HaveOccurred())
-			g.Expect(count).To(Equal(baselineCommitCount + 4))
-
-			content, readErr := os.ReadFile(run.liveOrderPath(run.firstOrderName))
-			g.Expect(readErr).NotTo(HaveOccurred())
-			g.Expect(string(content)).To(ContainSubstring("container: " + run.reverseContainer))
-			g.Expect(string(content)).To(ContainSubstring("flavor: " + run.reverseFlavor))
-			g.Expect(string(content)).To(ContainSubstring("- " + run.reverseTopping))
+			g.Expect(count).To(Equal(sharedBaselineCommitCount + 2))
 		}, 90*time.Second, 2*time.Second).Should(Succeed())
 
+		run.waitForCommittedOrderSpec(run.firstOrderName, run.reverseContainer, run.reverseFlavor, run.reverseTopping)
+		run.reconcileFluxSource()
+		run.reconcileFluxKustomization(run.fluxLiveName)
 		thirdHead := run.gitHEAD()
 		run.waitForFluxGitRepositoryRevision(thirdHead)
 		run.waitForFluxKustomizationRevision(run.fluxLiveName, thirdHead)
 		run.waitForOrderSpec(run.firstOrderName, run.reverseContainer, run.reverseFlavor, run.reverseTopping)
-		run.consistentlyExpectRemoteCommitCount(baselineCommitCount+4, 25*time.Second)
+		run.waitForOrderSpec(run.secondOrderName, "Cup", "Strawberry", "WhippedCream")
+		run.waitForCommittedOrderSpec(run.secondOrderName, "Cup", "Strawberry", "WhippedCream")
+		run.consistentlyExpectRemoteCommitCount(sharedBaselineCommitCount+2, 25*time.Second)
+
+		By("adding a Secret to the shared live path with SOPS encryption")
+		err = applyFromTemplate("test/e2e/templates/watchrule-secret.tmpl", struct {
+			Name            string
+			Namespace       string
+			DestinationName string
+		}{
+			Name:            run.secretWatchRuleName,
+			Namespace:       namespace,
+			DestinationName: run.gitTargetName,
+		}, namespace)
+		Expect(err).NotTo(HaveOccurred(), "failed to apply Secret WatchRule")
+		verifyResourceStatus("watchrule", run.secretWatchRuleName, namespace, "True", "Ready", "")
+
+		_, _ = kubectlRunInNamespace(namespace, "delete", "secret", run.reverseSecretName, "--ignore-not-found=true")
+		_, err = kubectlRunInNamespace(
+			namespace,
+			"create",
+			"secret",
+			"generic",
+			run.reverseSecretName,
+			"--from-literal",
+			fmt.Sprintf("%s=%s", run.reverseSecretKey, run.reverseSecretInitial),
+		)
+		Expect(err).NotTo(HaveOccurred(), "failed to create Secret through the API")
+
+		_, err = kubectlRunInNamespace(
+			namespace,
+			"patch",
+			"secret",
+			run.reverseSecretName,
+			"--type=merge",
+			"--patch",
+			fmt.Sprintf(`{"stringData":{"%s":"%s"}}`, run.reverseSecretKey, run.reverseSecretUpdated),
+		)
+		Expect(err).NotTo(HaveOccurred(), "failed to patch Secret through the API")
+
+		run.waitForCommittedEncryptedSecret(run.reverseSecretName, run.reverseSecretKey, run.reverseSecretUpdated)
+		secretCommitCount, err := run.gitMainCommitCount()
+		Expect(err).NotTo(HaveOccurred(), "failed to capture secret commit count")
+		run.consistentlyExpectRemoteCommitCount(secretCommitCount, 15*time.Second)
+
+		By("verifying Flux can reconcile the encrypted Secret without creating another reverse commit")
+		secretHead := run.gitHEAD()
+		run.reconcileFluxSource()
+		run.reconcileFluxKustomization(run.fluxLiveName)
+		run.waitForFluxGitRepositoryRevision(secretHead)
+		run.waitForFluxKustomizationRevision(run.fluxLiveName, secretHead)
+		run.waitForSecretValue(run.reverseSecretName, run.reverseSecretKey, run.reverseSecretUpdated)
+		run.consistentlyExpectRemoteCommitCount(secretCommitCount, 20*time.Second)
+
+		By("testing if we can revert a commit")
+		revertBaselineCommitCount, err := run.gitMainCommitCount()
+		Expect(err).NotTo(HaveOccurred(), "failed to capture baseline git commit count for revert flow")
+
+		run.writeLiveOrder(iceCreamOrderFile{
+			Name:         run.revertedOrderName,
+			Namespace:    namespace,
+			CustomerName: "Charlie",
+			Container:    "Cone",
+			Scoops: []iceCreamScoop{
+				{Flavor: "Chocolate", Quantity: 1},
+			},
+			Toppings: []string{"HotFudge"},
+		})
+		Expect(run.commitAllAndPush("bi-directional: add reversible icecream order")).To(Succeed())
+		revertAddHead := run.gitHEAD()
+		run.reconcileFluxSource()
+		run.reconcileFluxKustomization(run.fluxLiveName)
+		run.waitForFluxGitRepositoryRevision(revertAddHead)
+		run.waitForFluxKustomizationRevision(run.fluxLiveName, revertAddHead)
+		run.waitForCommittedOrderSpec(run.revertedOrderName, "Cone", "Chocolate", "HotFudge")
+		run.waitForOrderSpec(run.revertedOrderName, "Cone", "Chocolate", "HotFudge")
+		run.consistentlyExpectRemoteCommitCount(revertBaselineCommitCount+1, 20*time.Second)
+
+		Expect(run.revertHEADAndPush()).To(Succeed())
+		revertHead := run.gitHEAD()
+		run.reconcileFluxSource()
+		run.reconcileFluxKustomization(run.fluxLiveName)
+		run.waitForFluxGitRepositoryRevision(revertHead)
+		run.waitForFluxKustomizationRevision(run.fluxLiveName, revertHead)
+		run.waitForCommittedOrderDeleted(run.revertedOrderName)
+		run.waitForOrderDeleted(run.revertedOrderName)
+		run.consistentlyExpectRemoteCommitCount(revertBaselineCommitCount+2, 20*time.Second)
 	})
 })
 
@@ -223,27 +351,35 @@ func newBiDirectionalRun() biDirectionalRun {
 	Expect(checkoutDir).NotTo(BeEmpty(), "E2E_CHECKOUT_DIR must be set by the suite")
 
 	return biDirectionalRun{
-		testID:                testID,
-		repoName:              repoName,
-		checkoutDir:           checkoutDir,
-		repoURL:               fmt.Sprintf(giteaRepoURLTemplate, repoName),
-		localGitRepoURL:       fmt.Sprintf("http://localhost:13000/testorg/%s.git", repoName),
-		fluxSecretName:        fmt.Sprintf("bi-flux-auth-%s", testID),
-		fluxGitRepositoryName: fmt.Sprintf("bi-repo-%s", testID),
-		fluxCRDsName:          fmt.Sprintf("bi-crds-%s", testID),
-		fluxLiveName:          fmt.Sprintf("bi-live-%s", testID),
-		fluxSourceInterval:    "1s",
-		fluxApplyInterval:     "15s",
-		gitProviderName:       fmt.Sprintf("bi-provider-%s", testID),
-		gitTargetName:         fmt.Sprintf("bi-target-%s", testID),
-		watchRuleName:         fmt.Sprintf("bi-watchrule-%s", testID),
-		livePath:              fmt.Sprintf("bi-directional/%s/live", testID),
-		crdPath:               fmt.Sprintf("bi-directional/%s/crds", testID),
-		firstOrderName:        fmt.Sprintf("bi-alice-order-%s", testID),
-		secondOrderName:       fmt.Sprintf("bi-bob-order-%s", testID),
-		reverseContainer:      "WaffleBowl",
-		reverseFlavor:         "MintChip",
-		reverseTopping:        "Caramel",
+		testID:                     testID,
+		repoName:                   repoName,
+		checkoutDir:                checkoutDir,
+		repoURL:                    fmt.Sprintf(giteaRepoURLTemplate, repoName),
+		localGitRepoURL:            fmt.Sprintf("http://localhost:13000/testorg/%s.git", repoName),
+		fluxSecretName:             fmt.Sprintf("bi-flux-auth-%s", testID),
+		fluxGitRepositoryName:      fmt.Sprintf("bi-repo-%s", testID),
+		fluxCRDsName:               fmt.Sprintf("bi-crds-%s", testID),
+		fluxLiveName:               fmt.Sprintf("bi-live-%s", testID),
+		fluxDecryptionSecret:       fmt.Sprintf("bi-sops-%s", testID),
+		controllerEncryptionSecret: fmt.Sprintf("bi-controller-sops-%s", testID),
+		fluxSourceInterval:         "30m",
+		fluxApplyInterval:          "30m",
+		gitProviderName:            fmt.Sprintf("bi-provider-%s", testID),
+		gitTargetName:              fmt.Sprintf("bi-target-%s", testID),
+		watchRuleName:              fmt.Sprintf("bi-watchrule-%s", testID),
+		secretWatchRuleName:        fmt.Sprintf("bi-secret-watchrule-%s", testID),
+		livePath:                   fmt.Sprintf("bi-directional/%s/live", testID),
+		crdPath:                    fmt.Sprintf("bi-directional/%s/crds", testID),
+		firstOrderName:             fmt.Sprintf("bi-alice-order-%s", testID),
+		secondOrderName:            fmt.Sprintf("bi-bob-order-%s", testID),
+		revertedOrderName:          fmt.Sprintf("bi-charlie-order-%s", testID),
+		reverseSecretName:          fmt.Sprintf("bi-secret-%s", testID),
+		reverseSecretKey:           "password",
+		reverseSecretInitial:       "do-not-commit",
+		reverseSecretUpdated:       "never-commit-this",
+		reverseContainer:           "WaffleBowl",
+		reverseFlavor:              "MintChip",
+		reverseTopping:             "Caramel",
 	}
 }
 
@@ -280,6 +416,16 @@ func (r biDirectionalRun) liveOrderPath(name string) string {
 		"icecreamorders",
 		namespace,
 		name+".yaml",
+	)
+}
+
+func (r biDirectionalRun) liveSecretPath(name string) string {
+	return r.repoPath(
+		r.livePath,
+		"v1",
+		"secrets",
+		namespace,
+		name+".sops.yaml",
 	)
 }
 
@@ -345,6 +491,16 @@ func (r biDirectionalRun) commitAllAndPush(message string) error {
 	return r.runGit("push", "--set-upstream", "origin", "main")
 }
 
+func (r biDirectionalRun) revertHEADAndPush() error {
+	if err := r.runGit("checkout", "-B", "main"); err != nil {
+		return err
+	}
+	if err := r.runGit("revert", "--no-edit", "HEAD"); err != nil {
+		return err
+	}
+	return r.runGit("push", "origin", "main")
+}
+
 func (r biDirectionalRun) configureCheckoutAuth() error {
 	username, password := r.readGitCredentialSecretDataDecoded()
 	authURL, err := r.authenticatedLocalGitURL(username, password)
@@ -373,16 +529,38 @@ func (r biDirectionalRun) runGit(args ...string) error {
 	return nil
 }
 
+func (r biDirectionalRun) runFlux(args ...string) error {
+	fluxArgs := make([]string, 0, len(args)+2)
+	if ctx := strings.TrimSpace(kubectlContext()); ctx != "" {
+		fluxArgs = append(fluxArgs, "--context", ctx)
+	}
+	fluxArgs = append(fluxArgs, args...)
+
+	cmd := exec.Command("flux", fluxArgs...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("flux %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
 func (r biDirectionalRun) gitPull() error {
 	return r.runGit("pull", "--ff-only")
 }
 
-func (r biDirectionalRun) gitCommitCount() (int, error) {
-	cmd := exec.Command("git", "rev-list", "--count", "--all")
+func (r biDirectionalRun) gitMainCommitCount() (int, error) {
+	if err := r.runGit("rev-parse", "--verify", "refs/heads/main"); err != nil {
+		if strings.Contains(err.Error(), "unknown revision") || strings.Contains(err.Error(), "Needed a single revision") {
+			return 0, nil
+		}
+		return 0, err
+	}
+
+	cmd := exec.Command("git", "rev-list", "--count", "refs/heads/main")
 	cmd.Dir = r.checkoutDir
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return 0, fmt.Errorf("git rev-list --count: %w: %s", err, strings.TrimSpace(string(output)))
+		return 0, fmt.Errorf("git rev-list --count refs/heads/main: %w: %s", err, strings.TrimSpace(string(output)))
 	}
 	count, err := strconv.Atoi(strings.TrimSpace(string(output)))
 	if err != nil {
@@ -402,16 +580,16 @@ func (r biDirectionalRun) gitHEAD() string {
 func (r biDirectionalRun) expectRemoteCommitCount(expected int) {
 	Eventually(func(g Gomega) {
 		g.Expect(r.gitPull()).To(Succeed())
-		count, err := r.gitCommitCount()
+		count, err := r.gitMainCommitCount()
 		g.Expect(err).NotTo(HaveOccurred())
 		g.Expect(count).To(Equal(expected))
-	}, 30*time.Second, 2*time.Second).Should(Succeed())
+	}, 60*time.Second, 2*time.Second).Should(Succeed())
 }
 
 func (r biDirectionalRun) consistentlyExpectRemoteCommitCount(expected int, duration time.Duration) {
 	Consistently(func(g Gomega) {
 		g.Expect(r.gitPull()).To(Succeed())
-		count, err := r.gitCommitCount()
+		count, err := r.gitMainCommitCount()
 		g.Expect(err).NotTo(HaveOccurred())
 		g.Expect(count).To(Equal(expected))
 	}, duration, 2*time.Second).Should(Succeed())
@@ -441,18 +619,89 @@ func (r biDirectionalRun) applyFluxGitRepository() {
 	Expect(err).NotTo(HaveOccurred(), "failed to apply Flux GitRepository")
 }
 
-func (r biDirectionalRun) applyFluxKustomizations() {
+func (r biDirectionalRun) waitForStableRemoteCommitCount(duration time.Duration) int {
+	var stableCount int
+
+	Eventually(func(g Gomega) {
+		g.Expect(r.gitPull()).To(Succeed())
+		count, err := r.gitMainCommitCount()
+		g.Expect(err).NotTo(HaveOccurred())
+		stableCount = count
+
+		Consistently(func(inner Gomega) {
+			inner.Expect(r.gitPull()).To(Succeed())
+			currentCount, currentErr := r.gitMainCommitCount()
+			inner.Expect(currentErr).NotTo(HaveOccurred())
+			inner.Expect(currentCount).To(Equal(count))
+		}, duration, 2*time.Second).Should(Succeed())
+	}, 90*time.Second, 2*time.Second).Should(Succeed())
+
+	return stableCount
+}
+
+func (r biDirectionalRun) applyFluxDecryptionSecretFromControllerSecret() {
+	ageKey := r.readControllerEncryptionAgeKey()
+
+	manifest := fmt.Sprintf(`apiVersion: v1
+kind: Secret
+metadata:
+  name: %s
+  namespace: flux-system
+type: Opaque
+stringData:
+  identity.agekey: |
+    %s
+`, r.fluxDecryptionSecret, strings.TrimSpace(ageKey))
+
+	_, err := kubectlRunWithStdin("flux-system", manifest, "apply", "-f", "-")
+	Expect(err).NotTo(HaveOccurred(), "failed to apply Flux decryption Secret")
+}
+
+func (r biDirectionalRun) reconcileFluxSource() {
+	By("reconciling the Flux GitRepository manually")
+	Expect(
+		r.runFlux(
+			"reconcile",
+			"source",
+			"git",
+			r.fluxGitRepositoryName,
+			"-n",
+			"flux-system",
+			"--timeout",
+			"2m",
+		),
+	).To(Succeed())
+}
+
+func (r biDirectionalRun) reconcileFluxKustomization(name string) {
+	By(fmt.Sprintf("reconciling Flux Kustomization %q manually", name))
+	Expect(
+		r.runFlux(
+			"reconcile",
+			"kustomization",
+			name,
+			"-n",
+			"flux-system",
+			"--timeout",
+			"2m",
+		),
+	).To(Succeed())
+}
+
+func (r biDirectionalRun) applyFluxCRDKustomization() {
 	err := applyFromTemplate("test/e2e/templates/flux-kustomization.tmpl", struct {
-		Namespace   string
-		Name        string
-		Path        string
-		SourceName  string
-		Interval    string
-		DependsOn   string
-		Prune       bool
-		Wait        bool
-		TargetNS    string
-		HasTargetNS bool
+		Namespace            string
+		Name                 string
+		Path                 string
+		SourceName           string
+		Interval             string
+		DependsOn            string
+		Prune                bool
+		Wait                 bool
+		TargetNS             string
+		HasTargetNS          bool
+		DecryptionProvider   string
+		DecryptionSecretName string
 	}{
 		Namespace:  "flux-system",
 		Name:       r.fluxCRDsName,
@@ -463,27 +712,33 @@ func (r biDirectionalRun) applyFluxKustomizations() {
 		Wait:       true,
 	}, "flux-system")
 	Expect(err).NotTo(HaveOccurred(), "failed to apply Flux CRD Kustomization")
+}
 
-	err = applyFromTemplate("test/e2e/templates/flux-kustomization.tmpl", struct {
-		Namespace   string
-		Name        string
-		Path        string
-		SourceName  string
-		Interval    string
-		DependsOn   string
-		Prune       bool
-		Wait        bool
-		TargetNS    string
-		HasTargetNS bool
+func (r biDirectionalRun) applyFluxLiveKustomization() {
+	err := applyFromTemplate("test/e2e/templates/flux-kustomization.tmpl", struct {
+		Namespace            string
+		Name                 string
+		Path                 string
+		SourceName           string
+		Interval             string
+		DependsOn            string
+		Prune                bool
+		Wait                 bool
+		TargetNS             string
+		HasTargetNS          bool
+		DecryptionProvider   string
+		DecryptionSecretName string
 	}{
-		Namespace:  "flux-system",
-		Name:       r.fluxLiveName,
-		Path:       "./" + r.livePath,
-		SourceName: r.fluxGitRepositoryName,
-		Interval:   r.fluxApplyInterval,
-		DependsOn:  r.fluxCRDsName,
-		Prune:      true,
-		Wait:       true,
+		Namespace:            "flux-system",
+		Name:                 r.fluxLiveName,
+		Path:                 "./" + r.livePath,
+		SourceName:           r.fluxGitRepositoryName,
+		Interval:             r.fluxApplyInterval,
+		DependsOn:            r.fluxCRDsName,
+		Prune:                true,
+		Wait:                 true,
+		DecryptionProvider:   "sops",
+		DecryptionSecretName: r.fluxDecryptionSecret,
 	}, "flux-system")
 	Expect(err).NotTo(HaveOccurred(), "failed to apply Flux live Kustomization")
 }
@@ -626,6 +881,186 @@ func (r biDirectionalRun) waitForOrderSpec(name, container, flavor, topping stri
 	}, 90*time.Second, 2*time.Second).Should(Succeed())
 }
 
+func (r biDirectionalRun) waitForGitTargetReady() {
+	Eventually(func(g Gomega) {
+		output, err := kubectlRunInNamespace(
+			namespace,
+			"get",
+			"gittarget",
+			r.gitTargetName,
+			"-o",
+			"json",
+		)
+		g.Expect(err).NotTo(HaveOccurred())
+
+		var obj unstructured.Unstructured
+		g.Expect(json.Unmarshal([]byte(output), &obj)).To(Succeed())
+
+		conditions, found, condErr := unstructured.NestedSlice(obj.Object, "status", "conditions")
+		g.Expect(condErr).NotTo(HaveOccurred())
+		g.Expect(found).To(BeTrue(), "status.conditions not found")
+
+		var readyStatus, readyReason string
+		for _, cond := range conditions {
+			condMap, ok := cond.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if condMap["type"] == "Ready" {
+				readyStatus, _ = condMap["status"].(string)
+				readyReason, _ = condMap["reason"].(string)
+				break
+			}
+		}
+
+		g.Expect(readyStatus).To(Equal("True"))
+		g.Expect([]string{"Ready", "OK"}).To(ContainElement(readyReason))
+	}, 90*time.Second, 2*time.Second).Should(Succeed())
+}
+
+func (r biDirectionalRun) waitForControllerEncryptionSecret() {
+	Eventually(func(g Gomega) {
+		output, err := kubectlRunInNamespace(
+			namespace,
+			"get",
+			"secret",
+			r.controllerEncryptionSecret,
+			"-o",
+			"json",
+		)
+		g.Expect(err).NotTo(HaveOccurred())
+
+		var obj unstructured.Unstructured
+		g.Expect(json.Unmarshal([]byte(output), &obj)).To(Succeed())
+
+		data, found, dataErr := unstructured.NestedStringMap(obj.Object, "data")
+		g.Expect(dataErr).NotTo(HaveOccurred())
+		g.Expect(found).To(BeTrue())
+		g.Expect(findFirstAgeKeySecretEntry(data)).NotTo(BeEmpty())
+	}, 90*time.Second, 2*time.Second).Should(Succeed())
+}
+
+func (r biDirectionalRun) readControllerEncryptionAgeKey() string {
+	output, err := kubectlRunInNamespace(
+		namespace,
+		"get",
+		"secret",
+		r.controllerEncryptionSecret,
+		"-o",
+		"json",
+	)
+	Expect(err).NotTo(HaveOccurred(), "failed to read controller-generated encryption Secret")
+
+	var obj unstructured.Unstructured
+	Expect(json.Unmarshal([]byte(output), &obj)).To(Succeed())
+
+	data, found, dataErr := unstructured.NestedStringMap(obj.Object, "data")
+	Expect(dataErr).NotTo(HaveOccurred(), "failed to parse controller encryption Secret data")
+	Expect(found).To(BeTrue(), "controller encryption Secret data not found")
+
+	key := findFirstAgeKeySecretEntry(data)
+	Expect(key).NotTo(BeEmpty(), "expected controller encryption Secret to contain a *.agekey entry")
+
+	decodedKey, decodeErr := base64.StdEncoding.DecodeString(strings.TrimSpace(data[key]))
+	Expect(decodeErr).NotTo(HaveOccurred(), "failed to decode controller-generated age key")
+
+	return strings.TrimSpace(string(decodedKey))
+}
+
+func findFirstAgeKeySecretEntry(data map[string]string) string {
+	for key := range data {
+		if strings.HasSuffix(strings.TrimSpace(key), ".agekey") {
+			return key
+		}
+	}
+	return ""
+}
+
+func (r biDirectionalRun) waitForCommittedOrderSpec(name, container, flavor, topping string) {
+	Eventually(func(g Gomega) {
+		g.Expect(r.gitPull()).To(Succeed())
+
+		content, err := os.ReadFile(r.liveOrderPath(name))
+		g.Expect(err).NotTo(HaveOccurred())
+
+		var obj unstructured.Unstructured
+		g.Expect(yaml.Unmarshal(content, &obj.Object)).To(Succeed())
+
+		value, found, containerErr := unstructured.NestedString(obj.Object, "spec", "container")
+		g.Expect(containerErr).NotTo(HaveOccurred())
+		g.Expect(found).To(BeTrue())
+		g.Expect(value).To(Equal(container))
+
+		scoops, found, scoopsErr := unstructured.NestedSlice(obj.Object, "spec", "scoops")
+		g.Expect(scoopsErr).NotTo(HaveOccurred())
+		g.Expect(found).To(BeTrue())
+		g.Expect(scoops).NotTo(BeEmpty())
+		firstScoop, ok := scoops[0].(map[string]interface{})
+		g.Expect(ok).To(BeTrue())
+		g.Expect(firstScoop["flavor"]).To(Equal(flavor))
+
+		toppings, found, toppingsErr := unstructured.NestedStringSlice(obj.Object, "spec", "toppings")
+		g.Expect(toppingsErr).NotTo(HaveOccurred())
+		g.Expect(found).To(BeTrue())
+		g.Expect(toppings).To(ContainElement(topping))
+	}, 90*time.Second, 2*time.Second).Should(Succeed())
+}
+
+func (r biDirectionalRun) waitForCommittedEncryptedSecret(name, key, expectedValue string) {
+	expectedValueB64 := base64.StdEncoding.EncodeToString([]byte(expectedValue))
+
+	Eventually(func(g Gomega) {
+		g.Expect(r.gitPull()).To(Succeed())
+
+		content, err := os.ReadFile(r.liveSecretPath(name))
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(string(content)).To(ContainSubstring("sops:"))
+		g.Expect(string(content)).NotTo(ContainSubstring(expectedValue))
+		g.Expect(string(content)).NotTo(ContainSubstring(expectedValueB64))
+
+		ageKey := r.readControllerEncryptionAgeKey()
+
+		decryptedOutput, decryptErr := decryptWithControllerSOPS(content, ageKey)
+		g.Expect(decryptErr).NotTo(HaveOccurred())
+		g.Expect(decryptedOutput).To(ContainSubstring(fmt.Sprintf("%s: %s", key, expectedValueB64)))
+	}, 90*time.Second, 2*time.Second).Should(Succeed())
+}
+
+func (r biDirectionalRun) waitForCommittedOrderDeleted(name string) {
+	Eventually(func(g Gomega) {
+		g.Expect(r.gitPull()).To(Succeed())
+
+		_, err := os.Stat(r.liveOrderPath(name))
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(os.IsNotExist(err)).To(BeTrue())
+	}, 90*time.Second, 2*time.Second).Should(Succeed())
+}
+
+func (r biDirectionalRun) waitForSecretValue(name, key, expectedValue string) {
+	expectedValueB64 := base64.StdEncoding.EncodeToString([]byte(expectedValue))
+
+	Eventually(func(g Gomega) {
+		output, err := kubectlRunInNamespace(namespace, "get", "secret", name, "-o", "json")
+		g.Expect(err).NotTo(HaveOccurred())
+
+		var obj unstructured.Unstructured
+		g.Expect(json.Unmarshal([]byte(output), &obj)).To(Succeed())
+
+		data, found, dataErr := unstructured.NestedStringMap(obj.Object, "data")
+		g.Expect(dataErr).NotTo(HaveOccurred())
+		g.Expect(found).To(BeTrue())
+		g.Expect(data).To(HaveKeyWithValue(key, expectedValueB64))
+	}, 90*time.Second, 2*time.Second).Should(Succeed())
+}
+
+func (r biDirectionalRun) waitForOrderDeleted(name string) {
+	Eventually(func(g Gomega) {
+		_, err := kubectlRunInNamespace(namespace, "get", "icecreamorder", name, "-o", "json")
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(strings.ToLower(err.Error())).To(ContainSubstring("not found"))
+	}, 90*time.Second, 2*time.Second).Should(Succeed())
+}
+
 func (r biDirectionalRun) cleanupFluxResources() {
 	_, _ = kubectlRunInNamespace(
 		"flux-system",
@@ -655,10 +1090,18 @@ func (r biDirectionalRun) cleanupFluxResources() {
 		r.fluxSecretName,
 		"--ignore-not-found=true",
 	)
+	_, _ = kubectlRunInNamespace(
+		"flux-system",
+		"delete",
+		"secret",
+		r.fluxDecryptionSecret,
+		"--ignore-not-found=true",
+	)
 }
 
 func (r biDirectionalRun) cleanupReverseResources() {
 	cleanupWatchRule(r.watchRuleName, namespace)
+	cleanupWatchRule(r.secretWatchRuleName, namespace)
 	cleanupGitTarget(r.gitTargetName, namespace)
 	_, _ = kubectlRunInNamespace(
 		namespace,

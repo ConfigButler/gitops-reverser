@@ -26,6 +26,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"sort"
 	"text/template"
 	"time"
 
@@ -34,6 +35,8 @@ import (
 	"github.com/prometheus/client_golang/api"
 	v1 "github.com/prometheus/client_golang/api/prometheus/v1"
 	"github.com/prometheus/common/model"
+
+	"github.com/ConfigButler/gitops-reverser/test/utils"
 )
 
 // namespace where the project is deployed in.
@@ -43,6 +46,7 @@ const e2eEncryptionRefName = "sops-age-key"
 
 // controllerServiceName is the single Service name used by the controller.
 const controllerServiceName = "gitops-reverser-service"
+const controllerPodLabelSelector = "control-plane=gitops-reverser"
 
 // promAPI is the Prometheus API client instance
 var promAPI v1.API //nolint:gochecknoglobals // Shared across test functions
@@ -218,4 +222,80 @@ func cleanupWatchRule(name, namespace string) {
 func cleanupClusterWatchRule(name string) {
 	By(fmt.Sprintf("cleaning up ClusterWatchRule '%s'", name))
 	_, _ = kubectlRun("delete", "clusterwatchrule", name, "--ignore-not-found=true")
+}
+
+func controllerPodNames() ([]string, error) {
+	output, err := kubectlRunInNamespace(
+		namespace,
+		"get",
+		"pods",
+		"-l",
+		controllerPodLabelSelector,
+		"-o",
+		"go-template={{ range .items }}{{ if not .metadata.deletionTimestamp }}{{ .metadata.name }}{{ \"\\n\" }}{{ end }}{{ end }}",
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	podNames := utils.GetNonEmptyLines(output)
+	sort.Strings(podNames)
+	return podNames, nil
+}
+
+func dumpFailureDiagnostics() {
+	if !CurrentSpecReport().Failed() {
+		return
+	}
+
+	By("Fetching Kubernetes events")
+	eventsOutput, err := kubectlRunInNamespace(
+		namespace,
+		"get",
+		"events",
+		"--sort-by=.metadata.creationTimestamp",
+	)
+	if err == nil {
+		_, _ = fmt.Fprintf(GinkgoWriter, "Kubernetes events (newest last):\n%s", eventsOutput)
+	} else {
+		_, _ = fmt.Fprintf(GinkgoWriter, "Failed to get Kubernetes events: %s\n", err)
+	}
+
+	podNames, err := controllerPodNames()
+	if err != nil {
+		_, _ = fmt.Fprintf(GinkgoWriter, "Failed to get controller pod names: %s\n", err)
+		return
+	}
+	if len(podNames) == 0 {
+		_, _ = fmt.Fprintf(
+			GinkgoWriter,
+			"No controller pods found with selector %q in namespace %q\n",
+			controllerPodLabelSelector,
+			namespace,
+		)
+		return
+	}
+
+	for _, podName := range podNames {
+		By(fmt.Sprintf("Fetching controller manager pod logs for %s", podName))
+		controllerLogs, logsErr := kubectlRunInNamespace(
+			namespace,
+			"logs",
+			podName,
+			"--tail=200",
+		)
+		if logsErr == nil {
+			_, _ = fmt.Fprintf(GinkgoWriter, "Last 200 lines of controller logs for %s:\n%s", podName, controllerLogs)
+		} else {
+			_, _ = fmt.Fprintf(GinkgoWriter, "Failed to get controller logs for %s: %s\n", podName, logsErr)
+		}
+
+		By(fmt.Sprintf("Fetching controller manager pod description for %s", podName))
+		podDescription, describeErr := kubectlRunInNamespace(namespace, "describe", "pod", podName)
+		if describeErr == nil {
+			_, _ = fmt.Fprintf(GinkgoWriter, "Pod description for %s:\n%s", podName, podDescription)
+		} else {
+			_, _ = fmt.Fprintf(GinkgoWriter, "Failed to describe controller pod %s: %s\n", podName, describeErr)
+		}
+	}
 }
