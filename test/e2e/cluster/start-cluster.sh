@@ -6,6 +6,7 @@
 set -euo pipefail
 
 CLUSTER_NAME="${CLUSTER_NAME:-gitops-reverser-test-e2e}"
+DISABLE_K3S_TRAEFIK="${DISABLE_K3S_TRAEFIK:-true}"
 AUDIT_DIR_REL="test/e2e/cluster/audit"
 K3D_CREATE_LOG_FILE="${TMPDIR:-/tmp}/k3d-create-${CLUSTER_NAME}.log"
 REPO_PWD="$(pwd -P)"
@@ -124,24 +125,38 @@ ensure_k3d_stat_compat_path() {
 create_cluster() {
     local host_project_path="$1"
     local audit_host_dir="${host_project_path}/${AUDIT_DIR_REL}"
+    local k3s_args=(
+      "--kube-apiserver-arg=audit-policy-file=/etc/kubernetes/audit/${AUDIT_POLICY_FILE}@server:0"
+      "--kube-apiserver-arg=audit-webhook-config-file=/etc/kubernetes/audit/${AUDIT_WEBHOOK_CONFIG_FILE}@server:0"
+      "--kube-apiserver-arg=audit-webhook-batch-max-wait=1s@server:0"
+      "--kube-apiserver-arg=audit-webhook-batch-max-size=10@server:0"
+    )
 
     echo "🚀 Creating k3d cluster '${CLUSTER_NAME}' with audit webhook support..."
     echo "🔧 Using HOST_PROJECT_PATH: ${host_project_path}"
     echo "🔧 Mounting audit dir: ${audit_host_dir} -> /etc/kubernetes/audit"
 
+    if [ "${DISABLE_K3S_TRAEFIK}" = "true" ]; then
+        echo "🔧 Disabling packaged k3s Traefik so Flux can install Traefik instead"
+        k3s_args+=("--disable=traefik@server:0")
+    fi
+
     # NOTE: no --api-port: let k3d pick an available port.
     #
     # Mount audit dir into the server container and pass kube-apiserver audit flags
     # via k3s "--kube-apiserver-arg=..." options.
-    k3d cluster create "${CLUSTER_NAME}" \
-      --kubeconfig-update-default \
-      --kubeconfig-switch-context \
-      -v "${audit_host_dir}:/etc/kubernetes/audit@server:0" \
-      --k3s-arg "--kube-apiserver-arg=audit-policy-file=/etc/kubernetes/audit/${AUDIT_POLICY_FILE}@server:0" \
-      --k3s-arg "--kube-apiserver-arg=audit-webhook-config-file=/etc/kubernetes/audit/${AUDIT_WEBHOOK_CONFIG_FILE}@server:0" \
-      --k3s-arg "--kube-apiserver-arg=audit-webhook-batch-max-wait=1s@server:0" \
-      --k3s-arg "--kube-apiserver-arg=audit-webhook-batch-max-size=10@server:0" \
-      2>&1 | tee "${K3D_CREATE_LOG_FILE}"
+    local create_cmd=(
+      k3d cluster create "${CLUSTER_NAME}"
+      --kubeconfig-update-default
+      --kubeconfig-switch-context
+      -v "${audit_host_dir}:/etc/kubernetes/audit@server:0"
+    )
+    local k3s_arg
+    for k3s_arg in "${k3s_args[@]}"; do
+        create_cmd+=(--k3s-arg "${k3s_arg}")
+    done
+
+    "${create_cmd[@]}" 2>&1 | tee "${K3D_CREATE_LOG_FILE}"
 }
 
 merge_kubeconfig() {

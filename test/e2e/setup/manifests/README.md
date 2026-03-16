@@ -5,3 +5,6 @@ Use this for small, cluster-local resources that are still easier to keep as a f
 as additional Flux sources.
 
 Organize related resources in subdirectories when that keeps the intent clearer.
+
+This directory is applied via the tracked [kustomization.yaml](/workspaces/gitops-reverser2/test/e2e/setup/manifests/kustomization.yaml).
+Keep local-only secrets out of that file if they are ignored; apply those separately.

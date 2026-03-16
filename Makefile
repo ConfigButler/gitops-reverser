@@ -365,7 +365,10 @@ $(CS)/flux-setup.ready: $(FLUX_SETUP_READY_INPUTS) | $(CS)
 # Aggregate stamp for external E2E services required by tests.
 $(CS)/services.ready: $(SERVICES_READY_INPUTS) | $(CS)
 	kubectl --context $(CTX) wait --for=condition=Established crd/prometheuses.monitoring.coreos.com crd/servicemonitors.monitoring.coreos.com --timeout=180s
-	kubectl --context $(CTX) apply -R -f $(LAST_STEP_MANIFESTS_DIR)
+	kubectl --context $(CTX) apply -k $(LAST_STEP_MANIFESTS_DIR)
+	if [ -f $(LAST_STEP_MANIFESTS_DIR)/cloudflared-public/tunnel-credentials.yaml ]; then
+		kubectl --context $(CTX) apply -f $(LAST_STEP_MANIFESTS_DIR)/cloudflared-public/tunnel-credentials.yaml
+	fi
 	touch $@
 
 # Step 1: Generate age key file — no cluster/namespace dependency; safe to run before installation.

@@ -40,3 +40,6 @@ charts/gitops-reverser/config/*.yaml
 *.o.yaml
 *.ignore.*
 .stamps/*
+test/e2e/setup/manifests/cloudflared-public/tunnel-credentials.yaml
+
+*tunnel-credentials.yaml
