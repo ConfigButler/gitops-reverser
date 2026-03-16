@@ -550,7 +550,8 @@ func (r biDirectionalRun) gitPull() error {
 
 func (r biDirectionalRun) gitMainCommitCount() (int, error) {
 	if err := r.runGit("rev-parse", "--verify", "refs/heads/main"); err != nil {
-		if strings.Contains(err.Error(), "unknown revision") || strings.Contains(err.Error(), "Needed a single revision") {
+		if strings.Contains(err.Error(), "unknown revision") ||
+			strings.Contains(err.Error(), "Needed a single revision") {
 			return 0, nil
 		}
 		return 0, err
