@@ -282,6 +282,7 @@ jobs:
             bash -c "
               git config --global --add safe.directory ${{ env.CI_WORKDIR }}
               make test-e2e
+              make test-e2e-bi
             "
 
   e2e-install-quickstart:
