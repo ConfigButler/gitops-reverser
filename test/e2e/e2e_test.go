@@ -107,47 +107,6 @@ var _ = Describe("Manager", Ordered, func() {
 		fmt.Printf("\n")
 	})
 
-	// After each test, check for failures and collect logs, events,
-	// and pod descriptions for debugging.
-	AfterEach(func() {
-		specReport := CurrentSpecReport()
-		if specReport.Failed() {
-			By("Fetching controller manager pod logs")
-			controllerLogs, err := kubectlRunInNamespace(
-				namespace,
-				"logs",
-				controllerPodName,
-				"--tail=200",
-			)
-			if err == nil {
-				_, _ = fmt.Fprintf(GinkgoWriter, "Last 200 lines of controller logs:\n %s", controllerLogs)
-			} else {
-				_, _ = fmt.Fprintf(GinkgoWriter, "Failed to get Controller logs: %s", err)
-			}
-
-			By("Fetching Kubernetes events")
-			eventsOutput, err := kubectlRunInNamespace(
-				namespace,
-				"get",
-				"events",
-				"--sort-by=.metadata.creationTimestamp",
-			)
-			if err == nil {
-				_, _ = fmt.Fprintf(GinkgoWriter, "Kubernetes events (newest last):\n%s", eventsOutput)
-			} else {
-				_, _ = fmt.Fprintf(GinkgoWriter, "Failed to get Kubernetes events: %s", err)
-			}
-
-			By("Fetching controller manager pod description")
-			podDescription, err := kubectlRunInNamespace(namespace, "describe", "pod", controllerPodName)
-			if err == nil {
-				_, _ = fmt.Fprintf(GinkgoWriter, "Pod description:\n%s", podDescription)
-			} else {
-				_, _ = fmt.Fprintf(GinkgoWriter, "Failed to describe controller pod: %s", err)
-			}
-		}
-	})
-
 	// Optimize timeouts for faster test execution
 	SetDefaultEventuallyTimeout(30 * time.Second)
 	SetDefaultEventuallyPollingInterval(time.Second)

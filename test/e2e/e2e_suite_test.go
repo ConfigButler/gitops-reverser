@@ -55,7 +55,8 @@ var _ = BeforeSuite(func() {
 	ensureE2EPrepared()
 })
 
-var _ = AfterSuite(func() {
+var _ = AfterEach(func() {
+	dumpFailureDiagnostics()
 })
 
 func ensureE2EPrepared() {

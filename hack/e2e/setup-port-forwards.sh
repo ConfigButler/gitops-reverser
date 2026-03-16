@@ -105,8 +105,8 @@ setup_port_forward() {
 
     echo "🔌 Starting ${service_name} port-forward..."
     local pf_log="/tmp/${service_name}-pf.log"
-    kubectl --context "$KUBE_CONTEXT" port-forward --address 127.0.0.1 \
-        -n "$namespace" "svc/${service}" "${local_port}:${remote_port}" > "$pf_log" 2>&1 &
+    setsid kubectl --context "$KUBE_CONTEXT" port-forward --address 127.0.0.1 \
+        -n "$namespace" "svc/${service}" "${local_port}:${remote_port}" > "$pf_log" 2>&1 < /dev/null &
     local pf_pid=$!
     
     # Give it time to establish
