@@ -1,0 +1,40 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: quiz-access
+  namespace: present
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: quiz-access
+  namespace: present
+rules:
+  - apiGroups:
+      - examples.configbutler.ai
+    resources:
+      - quizsessions
+      - quizsubmissions
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: quiz-access
+  namespace: present
+subjects:
+  - kind: ServiceAccount
+    name: quiz-access
+    namespace: present
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: quiz-access
+
+
+# You can the token then with 'kubectl -n present create token quiz-access'
+# These tokens are long lived and not advised anymore: already implemented the short lived version now.

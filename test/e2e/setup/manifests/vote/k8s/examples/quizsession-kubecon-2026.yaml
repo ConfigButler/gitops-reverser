@@ -1,0 +1,40 @@
+apiVersion: examples.configbutler.ai/v1alpha1
+kind: QuizSession
+metadata:
+  name: kubecon-2026
+  namespace: present
+spec:
+  title: KubeCon 2026
+  state: live
+  questions:
+    - id: q1
+      type: singleChoice
+      title: Was the talk useful?
+      required: true
+      choices:
+        - "Yes"
+        - "Somewhat"
+        - "No"
+    - id: q2
+      type: multiChoice
+      title: What do you use daily?
+      choices:
+        - Kubernetes
+        - Traefik
+        - Prometheus
+        - Terraform
+    - id: q3
+      type: scale0to10
+      title: How spicy was the YAML?
+      required: true
+      min: 0
+      max: 10
+    - id: q4
+      type: number
+      title: How many clusters do you manage?
+      min: 0
+      max: 500
+    - id: q5
+      type: freeText
+      title: One thing to improve
+      placeholder: Short and specific…

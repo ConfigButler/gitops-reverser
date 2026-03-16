@@ -7,4 +7,5 @@ as additional Flux sources.
 Organize related resources in subdirectories when that keeps the intent clearer.
 
 This directory is applied via the tracked [kustomization.yaml](/workspaces/gitops-reverser2/test/e2e/setup/manifests/kustomization.yaml).
-Keep local-only secrets out of that file if they are ignored; apply those separately.
+This branch expects the local tunnel credentials file at
+`test/e2e/setup/manifests/cloudflared-public/tunnel-credentials.yaml` to exist before `make` applies the manifests.

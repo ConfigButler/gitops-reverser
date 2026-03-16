@@ -321,6 +321,7 @@ $(CS)/ready: test/e2e/cluster/start-cluster.sh | $(CS)
 
 FLUX_SERVICES_INPUTS = $(shell find $(FLUX_SERVICES_DIR) -type f)
 LAST_STEP_MANIFESTS_DIR = test/e2e/setup/manifests
+LOCAL_TUNNEL_CREDENTIALS = $(LAST_STEP_MANIFESTS_DIR)/cloudflared-public/tunnel-credentials.yaml
 LAST_STEP_MANIFESTS = $(shell find $(LAST_STEP_MANIFESTS_DIR) -type f -name '*.yaml')
 FLUX_SETUP_READY_INPUTS = $(CS)/flux.installed $$(FLUX_SERVICES_INPUTS)
 SERVICES_READY_INPUTS = $(CS)/flux-setup.ready $$(LAST_STEP_MANIFESTS)
@@ -365,10 +366,12 @@ $(CS)/flux-setup.ready: $(FLUX_SETUP_READY_INPUTS) | $(CS)
 # Aggregate stamp for external E2E services required by tests.
 $(CS)/services.ready: $(SERVICES_READY_INPUTS) | $(CS)
 	kubectl --context $(CTX) wait --for=condition=Established crd/prometheuses.monitoring.coreos.com crd/servicemonitors.monitoring.coreos.com --timeout=180s
+	@[ -f "$(LOCAL_TUNNEL_CREDENTIALS)" ] || { \
+		echo "ERROR: missing required local tunnel credentials file '$(LOCAL_TUNNEL_CREDENTIALS)'" >&2; \
+		echo "Create it from '$(LOCAL_TUNNEL_CREDENTIALS).example' and set stringData.token before running this target." >&2; \
+		exit 1; \
+	}
 	kubectl --context $(CTX) apply -k $(LAST_STEP_MANIFESTS_DIR)
-	if [ -f $(LAST_STEP_MANIFESTS_DIR)/cloudflared-public/tunnel-credentials.yaml ]; then
-		kubectl --context $(CTX) apply -f $(LAST_STEP_MANIFESTS_DIR)/cloudflared-public/tunnel-credentials.yaml
-	fi
 	touch $@
 
 # Step 1: Generate age key file — no cluster/namespace dependency; safe to run before installation.

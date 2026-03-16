@@ -1,0 +1,63 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: auth-service
+  namespace: present
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: auth-service
+  namespace: present
+rules:
+  # Access to manage session cookie secrets (namespaced)
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "create", "update"]
+  # Access to create tokens for ServiceAccounts (for quiz-access SA)
+  - apiGroups: [""]
+    resources: ["serviceaccounts/token"]
+    verbs: ["create"]
+    resourceNames:  # This is really cool: now we can limit it to what we absolutelty need
+    - quiz-access
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: auth-service
+  namespace: present
+subjects:
+  - kind: ServiceAccount
+    name: auth-service
+    namespace: present
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: auth-service
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: auth-service
+rules:
+  # Access to quizsessions (cluster-scoped CRD)
+  - apiGroups: ["examples.configbutler.ai"]
+    resources: ["quizsessions"]
+    verbs: ["get", "list", "watch"]
+  # Access to quizsubmissions (cluster-scoped CRD)
+  - apiGroups: ["examples.configbutler.ai"]
+    resources: ["quizsubmissions"]
+    verbs: ["get", "list", "watch", "create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: auth-service
+subjects:
+  - kind: ServiceAccount
+    name: auth-service
+    namespace: present
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: auth-service

@@ -1,0 +1,115 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: present
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: present-frontend
+  namespace: present
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: present-frontend
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: present-frontend
+    spec:
+      imagePullSecrets:
+        - name: zot-pull
+      containers:
+        - name: present-frontend
+          image: zot.z65.nl/present/frontend:latest
+          imagePullPolicy: Always
+          #env:
+            #- name: KUBE_NAMESPACE   # This does not work since it's a SPA
+            #  value: present
+          ports:
+            - name: http
+              containerPort: 8080
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "250m"
+            limits:
+              memory: "128Mi"
+              cpu: "500m"            
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: present-frontend
+  namespace: present
+spec:
+  selector:
+    app.kubernetes.io/name: present-frontend
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+
+---
+# Ok this is working now, let's go to the next phase
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: present-auth-service
+  namespace: present
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: present-auth-service
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: present-auth-service
+    spec:
+      serviceAccountName: auth-service
+      imagePullSecrets:
+        - name: zot-pull
+      containers:
+        - name: auth-service
+          image: zot.z65.nl/present/auth-service:latest
+          imagePullPolicy: Always
+          env:
+            - name: FORWARD_SA
+              value: quiz-access
+            - name: FORWARD_SA_NAMESPACE
+              value: present
+            - name: COOKIE_SECURE
+              value: "true"
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "250m"
+            limits:
+              memory: "128Mi"
+              cpu: "500m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: auth-service
+  namespace: present
+spec:
+  selector:
+    app.kubernetes.io/name: present-auth-service
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
