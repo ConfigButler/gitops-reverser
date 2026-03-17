@@ -1,0 +1,53 @@
+apiVersion: flowcontrol.apiserver.k8s.io/v1
+kind: PriorityLevelConfiguration
+metadata:
+  name: quiz-realtime
+spec:
+  type: Limited
+  limited:
+    nominalConcurrencyShares: 400
+    limitResponse:
+      type: Queue
+      queuing:
+        queues: 16
+        handSize: 4
+        queueLengthLimit: 200
+---
+apiVersion: flowcontrol.apiserver.k8s.io/v1
+kind: FlowSchema
+metadata:
+  name: quiz-realtime
+spec:
+  matchingPrecedence: 800
+  priorityLevelConfiguration:
+    name: quiz-realtime
+  # Kubernetes only supports ByUser and ByNamespace here. ByUser still keeps
+  # auth-service and quiz-access isolated from each other while giving them a
+  # dedicated, larger queue budget than the generic service-account bucket.
+  distinguisherMethod:
+    type: ByUser
+  rules:
+    - subjects:
+        - kind: ServiceAccount
+          serviceAccount:
+            name: auth-service
+            namespace: vote
+        - kind: ServiceAccount
+          serviceAccount:
+            name: quiz-access
+            namespace: vote
+      resourceRules:
+        - apiGroups:
+            - "*"
+          clusterScope: true
+          namespaces:
+            - "*"
+          resources:
+            - "*"
+          verbs:
+            - "*"
+      nonResourceRules:
+        - nonResourceURLs:
+            - "*"
+          verbs:
+            - "*"

@@ -18,6 +18,8 @@ By default, the cluster bootstrap also disables packaged k3s Traefik and k3s Ser
 - `audit-webhook-config-file=/etc/kubernetes/audit/webhook-config.yaml`
 - `audit-webhook-batch-max-wait=1s`
 - `audit-webhook-batch-max-size=10`
+- `max-requests-inflight=800` (override with `KUBE_APISERVER_MAX_REQUESTS_INFLIGHT`)
+- `max-mutating-requests-inflight=400` (override with `KUBE_APISERVER_MAX_MUTATING_REQUESTS_INFLIGHT`)
 
 It also disables these packaged k3s components by default:
 
@@ -55,7 +57,8 @@ Confirm cluster is up:
 kubectl get nodes
 ```
 
-If you change the k3s disable flags in `start-cluster.sh`, recreate the k3d cluster for them to take effect.
+If you change the k3s disable flags or kube-apiserver inflight env vars in `start-cluster.sh`, recreate the k3d
+cluster for them to take effect.
 
 Confirm audit files are mounted in the k3d server node:
 

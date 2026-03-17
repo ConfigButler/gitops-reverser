@@ -373,6 +373,10 @@ linters:
       # Allow fmt.Print* in test/e2e (debugging outputs)
       - path: 'test/e2e/.*\.go'
         linters: [forbidigo]
+      # Allow the standalone load test CLI to use console output, pseudo-random
+      # traffic generation, and operator-supplied target URLs.
+      - path: 'test/loadtest/.*\.go'
+        linters: [depguard, forbidigo, gochecknoglobals, gosec, mnd]
       # Allow fmt.Println in metrics exporter (initialization logs)
       - path: 'internal/telemetry/.*\.go'
         linters: [forbidigo]

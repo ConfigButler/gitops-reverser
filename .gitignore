@@ -45,3 +45,4 @@ test/e2e/setup/manifests/cloudflared-public/tunnel-credentials.yaml
 # For now we dont do sops (will add that later)
 *tunnel-credentials.yaml
 *pull-secret.yaml
+loadtest

@@ -5,6 +5,7 @@ resources:
   - ns.yaml
   - pull-secret.yaml
   - deployments.yaml
+  - apf.yaml
   - podinfo.yaml
   - rbac-auth-service.yaml
   - rbac-participants.yaml

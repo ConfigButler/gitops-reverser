@@ -596,6 +596,33 @@ test-e2e-quickstart-manifest: ## Run quickstart smoke test (manifest install)
 
 
 
+##@ Demo
+
+# Join code shown on the presenter screen. Auto-extracted from the auth-service log
+# when not provided, so `make loadtest` just works from inside the devcontainer.
+# Override at the command line: make loadtest LOADTEST_CODE=xxxx
+LOADTEST_CODE     ?= $(shell kubectl -n vote logs deploy/vote-auth-service --tail=5 2>/dev/null | grep 'join-code:' | tail -1 | awk '{print $$NF}' | cut -d= -f2)
+LOADTEST_USERS    ?= 250
+LOADTEST_RAMP     ?= 10s
+LOADTEST_BASE_URL ?= https://vote.reversegitops.dev
+LOADTEST_SESSION  ?= kubecon-2026
+LOADTEST_NS       ?= vote
+
+.PHONY: loadtest
+loadtest: ## Simulate LOADTEST_USERS participants against the live quiz (override: LOADTEST_CODE=xxxx LOADTEST_USERS=50 LOADTEST_RAMP=30s)
+	@[ -n "$(LOADTEST_CODE)" ] || { \
+		echo "ERROR: could not determine join code automatically." >&2; \
+		echo "Pass it explicitly: make loadtest LOADTEST_CODE=xxxx" >&2; \
+		exit 1; \
+	}
+	go run ./test/loadtest \
+		--code $(LOADTEST_CODE) \
+		--users $(LOADTEST_USERS) \
+		--ramp-duration $(LOADTEST_RAMP) \
+		--base-url $(LOADTEST_BASE_URL) \
+		--session $(LOADTEST_SESSION) \
+		--namespace $(LOADTEST_NS)
+
 ##@ Cleanup
 .PHONY: clean
 clean: ## Remove build artifacts (binaries, coverage, generated dist files, build stamps)
