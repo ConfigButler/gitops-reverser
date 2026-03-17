@@ -2,7 +2,7 @@ apiVersion: examples.configbutler.ai/v1alpha1
 kind: QuizSession
 metadata:
   name: kubecon-2026
-  namespace: present
+  namespace: vote
 spec:
   title: KubeCon 2026
   state: live

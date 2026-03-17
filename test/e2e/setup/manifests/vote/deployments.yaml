@@ -1,32 +1,24 @@
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: present
----
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: present-frontend
-  namespace: present
+  name: vote-frontend
+  namespace: vote
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app.kubernetes.io/name: present-frontend
-  template:
+      app.kubernetes.io/name: vote-frontend
+  template:    
     metadata:
       labels:
-        app.kubernetes.io/name: present-frontend
+        app.kubernetes.io/name: vote-frontend
     spec:
       imagePullSecrets:
         - name: zot-pull
       containers:
-        - name: present-frontend
-          image: zot.z65.nl/present/frontend:latest
+        - name: vote-frontend
+          image: zot.z65.nl/voter/frontend:latest
           imagePullPolicy: Always
-          #env:
-            #- name: KUBE_NAMESPACE   # This does not work since it's a SPA
-            #  value: present
           ports:
             - name: http
               containerPort: 8080
@@ -41,45 +33,44 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: present-frontend
-  namespace: present
+  name: vote-frontend
+  namespace: vote
 spec:
   selector:
-    app.kubernetes.io/name: present-frontend
+    app.kubernetes.io/name: vote-frontend
   ports:
     - name: http
       port: 8080
       targetPort: http
 
 ---
-# Ok this is working now, let's go to the next phase
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: present-auth-service
-  namespace: present
+  name: vote-auth-service
+  namespace: vote
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app.kubernetes.io/name: present-auth-service
+      app.kubernetes.io/name: vote-auth-service
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: present-auth-service
+        app.kubernetes.io/name: vote-auth-service
     spec:
       serviceAccountName: auth-service
       imagePullSecrets:
         - name: zot-pull
       containers:
         - name: auth-service
-          image: zot.z65.nl/present/auth-service:latest
+          image: zot.z65.nl/voter/auth-service:latest
           imagePullPolicy: Always
           env:
             - name: FORWARD_SA
               value: quiz-access
             - name: FORWARD_SA_NAMESPACE
-              value: present
+              value: vote
             - name: COOKIE_SECURE
               value: "true"
           ports:
@@ -105,10 +96,10 @@ apiVersion: v1
 kind: Service
 metadata:
   name: auth-service
-  namespace: present
+  namespace: vote
 spec:
   selector:
-    app.kubernetes.io/name: present-auth-service
+    app.kubernetes.io/name: vote-auth-service
   ports:
     - name: http
       port: 8080

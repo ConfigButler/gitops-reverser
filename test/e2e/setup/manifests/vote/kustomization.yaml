@@ -3,5 +3,16 @@ kind: Kustomization
 
 resources:
   - ns.yaml
+  - pull-secret.yaml
+  - deployments.yaml
   - podinfo.yaml
+  - auth-service-rbac.yaml
+  - quiz-rbac.yaml
+  - ingress-auth.yaml
+  - ingress-frontend.yaml
+  - ingress-kubeapi.yaml
   - ingressroute.yaml
+  - crds/quizsessions.yaml
+  - crds/quizsubmissions.yaml
+  - examples/quizsession-kubecon-2026.yaml
+  - examples/quizsubmission-kubecon-2026.yaml

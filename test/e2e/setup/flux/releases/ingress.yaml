@@ -10,7 +10,7 @@ spec:
     mediaType: "application/vnd.cncf.helm.chart.content.v1.tar+gzip"
     operation: copy
   ref:
-    semver: "39.0.1"
+    semver: "39.0.5"  # https://github.com/traefik/traefik-helm-chart/releases/tag/v39.0.5
 ---
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
