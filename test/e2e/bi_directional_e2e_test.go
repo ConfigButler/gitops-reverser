@@ -167,7 +167,7 @@ var _ = Describe("Bi Directional", Label("bi-directional"), Ordered, func() {
 		run.consistentlyExpectRemoteCommitCount(baselineCommitCount+1, biStableCountMediumWait)
 
 		By("enabling gitops-reverser before Flux starts managing IceCreamOrder resources")
-		createGitProviderWithURLInNamespace(run.gitProviderName, namespace, "main", e2eGitSecretHTTP(), run.repoURL)
+		createGitProviderWithURLInNamespace(run.gitProviderName, namespace, e2eGitSecretHTTP(), run.repoURL)
 		createGitTargetWithEncryptionOptions(
 			run.gitTargetName,
 			namespace,

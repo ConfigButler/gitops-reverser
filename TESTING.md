@@ -57,6 +57,12 @@ E2E tests live under `./test/e2e/` (for example [`test/e2e/e2e_suite_test.go`](t
 make test-e2e
 ```
 
+To prepare the reusable talk/demo repo and intentionally leave it behind:
+
+```bash
+make test-e2e-talk
+```
+
 Important points:
 
 - E2E runs against a real Kind Kubernetes cluster.
@@ -67,6 +73,9 @@ Important points:
   - makes debugging easier (you can inspect the live cluster state)
   - makes reruns faster (no full cluster rebuild)
   - tests are written to “append” rather than require a clean-slate cluster
+- `make test-e2e-talk` now follows the same repo-provisioning path as the normal e2e suite:
+  each run gets a fresh Gitea repo unless you explicitly provide `REPO_NAME`.
+  It still leaves the demo resources behind so the environment is ready to show immediately.
 
 Notes (see [`Makefile`](Makefile:83)):
 

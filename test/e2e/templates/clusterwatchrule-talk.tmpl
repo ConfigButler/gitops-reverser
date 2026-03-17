@@ -1,0 +1,19 @@
+apiVersion: configbutler.ai/v1alpha1
+kind: ClusterWatchRule
+metadata:
+  name: {{ .Name }}
+spec:
+  targetRef:
+    name: {{ .DestinationName }}
+    namespace: {{ .Namespace }}
+  rules:
+  - scope: Cluster
+    operations: [CREATE, UPDATE, DELETE]
+    apiGroups: [""]
+    apiVersions: ["v1"]
+    resources: ["namespaces"]
+  - scope: Cluster
+    operations: [CREATE, UPDATE, DELETE]
+    apiGroups: ["configbutler.ai"]
+    apiVersions: ["v1alpha1"]
+    resources: ["clusterwatchrules"]
