@@ -7,6 +7,7 @@ set -euo pipefail
 
 CLUSTER_NAME="${CLUSTER_NAME:-gitops-reverser-test-e2e}"
 DISABLE_K3S_TRAEFIK="${DISABLE_K3S_TRAEFIK:-true}"
+DISABLE_K3S_SERVICELB="${DISABLE_K3S_SERVICELB:-true}"
 AUDIT_DIR_REL="test/e2e/cluster/audit"
 K3D_CREATE_LOG_FILE="${TMPDIR:-/tmp}/k3d-create-${CLUSTER_NAME}.log"
 REPO_PWD="$(pwd -P)"
@@ -139,6 +140,11 @@ create_cluster() {
     if [ "${DISABLE_K3S_TRAEFIK}" = "true" ]; then
         echo "🔧 Disabling packaged k3s Traefik so Flux can install Traefik instead"
         k3s_args+=("--disable=traefik@server:0")
+    fi
+
+    if [ "${DISABLE_K3S_SERVICELB}" = "true" ]; then
+        echo "🔧 Disabling packaged k3s ServiceLB to avoid svclb pods for local services"
+        k3s_args+=("--disable=servicelb@server:0")
     fi
 
     # NOTE: no --api-port: let k3d pick an available port.

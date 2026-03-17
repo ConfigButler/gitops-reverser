@@ -40,6 +40,10 @@ kind: ClusterRole
 metadata:
   name: auth-service
 rules:
+  # Validate bearer tokens presented by kubectl / kubeconfig users
+  - apiGroups: ["authentication.k8s.io"]
+    resources: ["tokenreviews"]
+    verbs: ["create"]
   # Access to quizsessions (cluster-scoped CRD)
   - apiGroups: ["examples.configbutler.ai"]
     resources: ["quizsessions"]
