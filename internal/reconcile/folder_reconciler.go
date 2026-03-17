@@ -24,6 +24,7 @@ import (
 	"fmt"
 
 	"github.com/go-logr/logr"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	"github.com/ConfigButler/gitops-reverser/internal/events"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
@@ -40,6 +41,10 @@ type FolderReconciler struct {
 	gitResources     []types.ResourceIdentifier
 	clusterStateSeen bool
 	gitStateSeen     bool
+
+	// Full cluster objects keyed by ResourceIdentifier.Key(), populated alongside
+	// clusterResources so that write events can be hydrated with real payloads.
+	clusterObjects map[string]unstructured.Unstructured
 
 	// Dependencies for event emission
 	eventEmitter   EventEmitter
@@ -99,6 +104,7 @@ func (r *FolderReconciler) OnClusterState(event events.ClusterStateEvent) {
 		return
 	}
 	r.clusterResources = event.Resources
+	r.clusterObjects = event.Objects
 	r.clusterStateSeen = true
 	r.logger.V(1).Info("Received cluster state", "resourceCount", len(event.Resources))
 	r.reconcile()
@@ -137,7 +143,8 @@ func (r *FolderReconciler) reconcile() {
 
 	// Emit reconciliation events (time filtering happens in WatchManager)
 	for _, resource := range toCreate {
-		if err := r.eventEmitter.EmitCreateEvent(resource); err != nil {
+		obj := r.objectForResource(resource)
+		if err := r.eventEmitter.EmitCreateEvent(resource, obj); err != nil {
 			r.logger.Error(err, "Failed to emit create event", "resource", resource.String())
 		}
 	}
@@ -150,7 +157,8 @@ func (r *FolderReconciler) reconcile() {
 
 	// For resources that exist in both places, emit reconcile event immediately
 	for _, resource := range existingInBoth {
-		if err := r.eventEmitter.EmitReconcileResourceEvent(resource); err != nil {
+		obj := r.objectForResource(resource)
+		if err := r.eventEmitter.EmitReconcileResourceEvent(resource, obj); err != nil {
 			r.logger.Error(err, "Failed to emit reconcile resource event", "resource", resource.String())
 		}
 	}
@@ -159,6 +167,19 @@ func (r *FolderReconciler) reconcile() {
 // GetLastSnapshotStats returns stats from the latest completed reconciliation diff.
 func (r *FolderReconciler) GetLastSnapshotStats() SnapshotStats {
 	return r.lastSnapshotStats
+}
+
+// objectForResource returns a pointer to the cached cluster object for the given resource,
+// or nil if the object is not available (e.g. ClusterStateEvent carried no objects).
+func (r *FolderReconciler) objectForResource(resource types.ResourceIdentifier) *unstructured.Unstructured {
+	if r.clusterObjects == nil {
+		return nil
+	}
+	obj, ok := r.clusterObjects[resource.Key()]
+	if !ok {
+		return nil
+	}
+	return &obj
 }
 
 // findDifferences computes what needs to be created, deleted, and resources that exist in both.

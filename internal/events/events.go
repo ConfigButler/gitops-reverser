@@ -20,6 +20,8 @@ limitations under the License.
 package events
 
 import (
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
@@ -30,6 +32,11 @@ type ClusterStateEvent struct {
 
 	// Resources currently in cluster for this GitDestination
 	Resources []types.ResourceIdentifier
+
+	// Objects maps ResourceIdentifier.Key() to the full sanitized cluster object.
+	// Populated during initial snapshot reconciliation so that CREATE and
+	// RECONCILE_RESOURCE events can be hydrated with real payloads.
+	Objects map[string]unstructured.Unstructured
 }
 
 // RepoStateEvent reports what Kubernetes resources exist in a Git repository for a GitDestination.

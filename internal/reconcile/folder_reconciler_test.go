@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/ConfigButler/gitops-reverser/internal/events"
@@ -329,7 +330,7 @@ type MockEventEmitter struct {
 	reconcileEvents []types.ResourceIdentifier
 }
 
-func (m *MockEventEmitter) EmitCreateEvent(resource types.ResourceIdentifier) error {
+func (m *MockEventEmitter) EmitCreateEvent(resource types.ResourceIdentifier, _ *unstructured.Unstructured) error {
 	m.createEvents = append(m.createEvents, resource)
 	return nil
 }
@@ -339,7 +340,10 @@ func (m *MockEventEmitter) EmitDeleteEvent(resource types.ResourceIdentifier) er
 	return nil
 }
 
-func (m *MockEventEmitter) EmitReconcileResourceEvent(resource types.ResourceIdentifier) error {
+func (m *MockEventEmitter) EmitReconcileResourceEvent(
+	resource types.ResourceIdentifier,
+	_ *unstructured.Unstructured,
+) error {
 	m.reconcileEvents = append(m.reconcileEvents, resource)
 	return nil
 }
