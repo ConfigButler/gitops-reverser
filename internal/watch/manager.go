@@ -612,10 +612,12 @@ func (m *Manager) processListedObject(
 
 // GetClusterStateForGitDest returns cluster resources for a GitTarget.
 // This is a synchronous service method called by EventRouter.
+// It returns both resource identifiers (for diff logic) and sanitized full objects
+// (keyed by ResourceIdentifier.Key()) for hydrating initial snapshot write events.
 func (m *Manager) GetClusterStateForGitDest(
 	ctx context.Context,
 	gitDest types.ResourceReference,
-) ([]types.ResourceIdentifier, error) {
+) ([]types.ResourceIdentifier, map[string]unstructured.Unstructured, error) {
 	log := m.Log.WithValues("gitDest", gitDest.String())
 
 	// Look up GitTarget to get path
@@ -624,7 +626,7 @@ func (m *Manager) GetClusterStateForGitDest(
 		Name:      gitDest.Name,
 		Namespace: gitDest.Namespace,
 	}, &gitTargetObj); err != nil {
-		return nil, fmt.Errorf("failed to get GitTarget: %w", err)
+		return nil, nil, fmt.Errorf("failed to get GitTarget: %w", err)
 	}
 
 	path := gitTargetObj.Spec.Path
@@ -658,12 +660,13 @@ func (m *Manager) GetClusterStateForGitDest(
 	// Query cluster for these GVRs
 	dc := m.dynamicClientFromConfig(log)
 	if dc == nil {
-		return nil, errors.New("no dynamic client available")
+		return nil, nil, errors.New("no dynamic client available")
 	}
 
 	var resources []types.ResourceIdentifier
+	objects := make(map[string]unstructured.Unstructured)
 	for gvr := range gvrSet {
-		gvrResources, err := m.listResourcesForGVR(ctx, dc, gvr, &gitTargetObj)
+		gvrResources, err := m.listResourcesForGVR(ctx, dc, gvr, &gitTargetObj, objects)
 		if err != nil {
 			log.Error(err, "Failed to list GVR", "gvr", gvr)
 			continue
@@ -672,7 +675,7 @@ func (m *Manager) GetClusterStateForGitDest(
 	}
 
 	log.Info("Retrieved cluster state", "resourceCount", len(resources))
-	return resources, nil
+	return resources, objects, nil
 }
 
 // addGVRsFromResourceRule adds GVRs from a CompiledResourceRule to the set.
@@ -752,11 +755,14 @@ func (m *Manager) addGVRsFromClusterResourceRule(
 }
 
 // listResourcesForGVR lists all resources for a specific GVR that match the GitTarget criteria.
+// Identifiers are returned; sanitized full objects are written into the provided objects map
+// (keyed by ResourceIdentifier.Key()) for hydrating initial snapshot write events.
 func (m *Manager) listResourcesForGVR(
 	ctx context.Context,
 	dc dynamic.Interface,
 	gvr schema.GroupVersionResource,
 	gitTarget *configv1alpha1.GitTarget,
+	objects map[string]unstructured.Unstructured,
 ) ([]types.ResourceIdentifier, error) {
 	if shouldIgnoreResource(gvr.Group, gvr.Resource) {
 		return nil, nil
@@ -787,6 +793,7 @@ func (m *Manager) listResourcesForGVR(
 			obj.GetName(),
 		)
 		resources = append(resources, id)
+		objects[id.Key()] = *sanitize.Sanitize(obj)
 	}
 
 	return resources, nil

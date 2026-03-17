@@ -114,7 +114,7 @@ func (r *EventRouter) ProcessControlEvent(ctx context.Context, event events.Cont
 // handleRequestClusterState processes RequestClusterState control events.
 func (r *EventRouter) handleRequestClusterState(ctx context.Context, event events.ControlEvent) error {
 	// Call WatchManager service (synchronous)
-	resources, err := r.WatchManager.GetClusterStateForGitDest(ctx, event.GitDest)
+	resources, objects, err := r.WatchManager.GetClusterStateForGitDest(ctx, event.GitDest)
 	if err != nil {
 		return fmt.Errorf("failed to get cluster state: %w", err)
 	}
@@ -123,6 +123,7 @@ func (r *EventRouter) handleRequestClusterState(ctx context.Context, event event
 	return r.RouteClusterStateEvent(events.ClusterStateEvent{
 		GitDest:   event.GitDest,
 		Resources: resources,
+		Objects:   objects,
 	})
 }
 

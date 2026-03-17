@@ -24,6 +24,7 @@ import (
 	"sync"
 
 	"github.com/go-logr/logr"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	"github.com/ConfigButler/gitops-reverser/internal/events"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
@@ -70,9 +71,9 @@ type EventEnqueuer interface {
 
 // EventEmitter interface for emitting reconciliation events.
 type EventEmitter interface {
-	EmitCreateEvent(resource types.ResourceIdentifier) error
+	EmitCreateEvent(resource types.ResourceIdentifier, obj *unstructured.Unstructured) error
 	EmitDeleteEvent(resource types.ResourceIdentifier) error
-	EmitReconcileResourceEvent(resource types.ResourceIdentifier) error
+	EmitReconcileResourceEvent(resource types.ResourceIdentifier, obj *unstructured.Unstructured) error
 }
 
 // NewGitTargetEventStream creates a new event stream for a GitTarget.
@@ -234,11 +235,15 @@ func (s *GitTargetEventStream) String() string {
 }
 
 // EmitCreateEvent emits a CREATE event for reconciliation.
-func (s *GitTargetEventStream) EmitCreateEvent(resource types.ResourceIdentifier) error {
+// obj carries the full sanitized cluster object so the branch worker can write it to Git.
+func (s *GitTargetEventStream) EmitCreateEvent(
+	resource types.ResourceIdentifier,
+	obj *unstructured.Unstructured,
+) error {
 	event := git.Event{
 		Operation:  "CREATE",
 		Identifier: resource,
-		// BaseFolder will be set by the reconciler
+		Object:     obj,
 	}
 	s.OnWatchEvent(event)
 	return nil
@@ -256,11 +261,16 @@ func (s *GitTargetEventStream) EmitDeleteEvent(resource types.ResourceIdentifier
 }
 
 // EmitReconcileResourceEvent emits a RECONCILE_RESOURCE event for reconciliation.
-func (s *GitTargetEventStream) EmitReconcileResourceEvent(resource types.ResourceIdentifier) error {
+// obj carries the full sanitized cluster object so the branch worker can overwrite the
+// existing Git file with the current cluster state.
+func (s *GitTargetEventStream) EmitReconcileResourceEvent(
+	resource types.ResourceIdentifier,
+	obj *unstructured.Unstructured,
+) error {
 	event := git.Event{
 		Operation:  string(events.ReconcileResource),
 		Identifier: resource,
-		// BaseFolder will be set by the reconciler
+		Object:     obj,
 	}
 	s.OnWatchEvent(event)
 	return nil
