@@ -2,13 +2,13 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: auth-service
-  namespace: present
+  namespace: vote
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: auth-service
-  namespace: present
+  namespace: vote
 rules:
   # Access to manage session cookie secrets (namespaced)
   - apiGroups: [""]
@@ -25,11 +25,11 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: auth-service
-  namespace: present
+  namespace: vote
 subjects:
   - kind: ServiceAccount
     name: auth-service
-    namespace: present
+    namespace: vote
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
@@ -56,7 +56,7 @@ metadata:
 subjects:
   - kind: ServiceAccount
     name: auth-service
-    namespace: present
+    namespace: vote
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole

@@ -17,7 +17,10 @@ spec:
     spec:
       containers:
       - name: podinfo
-        image: ghcr.io/stefanprodan/podinfo:6.9.2
+        image: ghcr.io/stefanprodan/podinfo:6.11.1
+        env:
+        - name: PODINFO_UI_MESSAGE
+          value: hello from simon
         ports:
         - name: http
           containerPort: 9898

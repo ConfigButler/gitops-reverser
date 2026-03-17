@@ -2,7 +2,7 @@ apiVersion: traefik.io/v1alpha1
 kind: Middleware
 metadata:
   name: auth-to-public
-  namespace: present
+  namespace: vote
 spec:
   replacePathRegex:
     regex: ^/auth(/.*)?$
@@ -12,12 +12,12 @@ apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
 metadata:
   name: session-info
-  namespace: present
+  namespace: vote
 spec:
   entryPoints:
-    - websecure
+    - web
   routes:
-    - match: Host(`present.z65.nl`) && PathPrefix(`/auth`)  # This is an extra indepth layer, but probably not the 'long' term solution since kubectl needs access to /apis for example to discover stuff...
+    - match: Host(`vote.reversegitops.dev`) && PathPrefix(`/auth`)  # This is an extra indepth layer, but probably not the 'long' term solution since kubectl needs access to /apis for example to discover stuff...
       kind: Rule
       middlewares:
         - name: auth-to-public
@@ -26,4 +26,3 @@ spec:
         - name: auth-service
           port: http
           scheme: http
-  tls: {}

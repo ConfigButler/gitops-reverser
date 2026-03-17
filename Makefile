@@ -371,6 +371,12 @@ $(CS)/services.ready: $(SERVICES_READY_INPUTS) | $(CS)
 		echo "Create it from '$(LOCAL_TUNNEL_CREDENTIALS).example' and set stringData.token before running this target." >&2; \
 		exit 1; \
 	}
+	kubectl --context $(CTX) apply -f $(LAST_STEP_MANIFESTS_DIR)/vote/ns.yaml
+	kubectl --context $(CTX) apply -f $(LAST_STEP_MANIFESTS_DIR)/vote/crds
+	kubectl --context $(CTX) wait --for=condition=Established \
+		crd/quizsessions.examples.configbutler.ai \
+		crd/quizsubmissions.examples.configbutler.ai \
+		--timeout=180s
 	kubectl --context $(CTX) apply -k $(LAST_STEP_MANIFESTS_DIR)
 	touch $@
 

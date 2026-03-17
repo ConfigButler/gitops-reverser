@@ -2,16 +2,15 @@ apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
 metadata:
   name: frontend-static
-  namespace: present
+  namespace: vote
 spec:
   entryPoints:
-    - websecure
+    - web
   routes:
-    - match: Host(`present.z65.nl`) && PathPrefix(`/`)
+    - match: Host(`vote.reversegitops.dev`) && PathPrefix(`/`)
       kind: Rule
       services:
-        - name: present-frontend
+        - name: vote-frontend
           port: http
           scheme: http
-  tls: {}
   
