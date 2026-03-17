@@ -23,3 +23,6 @@ Quick checks:
 - `kubectl -n cloudflared-public get pods`
 - `kubectl -n cloudflared-public logs deploy/cloudflared --tail=100`
 - `kubectl get ingress -A | grep vote.reversegitops.dev`
+
+Traefik is configured to trust forwarded client-IP headers from the default k3s pod network
+(`10.42.0.0/16`) so requests proxied by `cloudflared` preserve the original visitor IP.

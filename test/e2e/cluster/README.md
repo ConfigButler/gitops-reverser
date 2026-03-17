@@ -2,6 +2,7 @@
 
 This directory contains the remaining e2e cluster assets after the Kind-specific files were removed.
 The e2e environment now uses k3d with kube-apiserver audit webhook flags configured at cluster create time.
+By default, the cluster bootstrap also disables packaged k3s Traefik and k3s ServiceLB.
 
 ## Current Files
 
@@ -17,6 +18,11 @@ The e2e environment now uses k3d with kube-apiserver audit webhook flags configu
 - `audit-webhook-config-file=/etc/kubernetes/audit/webhook-config.yaml`
 - `audit-webhook-batch-max-wait=1s`
 - `audit-webhook-batch-max-size=10`
+
+It also disables these packaged k3s components by default:
+
+- `traefik`
+- `servicelb`
 
 The webhook URL in [`audit/webhook-config.yaml`](audit/webhook-config.yaml) targets:
 
@@ -48,6 +54,8 @@ Confirm cluster is up:
 ```bash
 kubectl get nodes
 ```
+
+If you change the k3s disable flags in `start-cluster.sh`, recreate the k3d cluster for them to take effect.
 
 Confirm audit files are mounted in the k3d server node:
 

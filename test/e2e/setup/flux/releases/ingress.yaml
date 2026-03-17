@@ -70,6 +70,13 @@ spec:
         publishedService:
           enabled: true
 
+    ports:
+      web:
+        forwardedHeaders:
+          # Trust forwarded client IP headers from in-cluster cloudflared pods on the k3s pod network.
+          trustedIPs:
+            - 10.42.0.0/16
+
     rbac:
       enabled: true
       namespaced: false
