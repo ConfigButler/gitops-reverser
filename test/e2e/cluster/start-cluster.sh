@@ -8,6 +8,8 @@ set -euo pipefail
 CLUSTER_NAME="${CLUSTER_NAME:-gitops-reverser-test-e2e}"
 DISABLE_K3S_TRAEFIK="${DISABLE_K3S_TRAEFIK:-true}"
 DISABLE_K3S_SERVICELB="${DISABLE_K3S_SERVICELB:-true}"
+KUBE_APISERVER_MAX_REQUESTS_INFLIGHT="${KUBE_APISERVER_MAX_REQUESTS_INFLIGHT:-800}"
+KUBE_APISERVER_MAX_MUTATING_REQUESTS_INFLIGHT="${KUBE_APISERVER_MAX_MUTATING_REQUESTS_INFLIGHT:-400}"
 AUDIT_DIR_REL="test/e2e/cluster/audit"
 K3D_CREATE_LOG_FILE="${TMPDIR:-/tmp}/k3d-create-${CLUSTER_NAME}.log"
 REPO_PWD="$(pwd -P)"
@@ -131,6 +133,8 @@ create_cluster() {
       "--kube-apiserver-arg=audit-webhook-config-file=/etc/kubernetes/audit/${AUDIT_WEBHOOK_CONFIG_FILE}@server:0"
       "--kube-apiserver-arg=audit-webhook-batch-max-wait=1s@server:0"
       "--kube-apiserver-arg=audit-webhook-batch-max-size=10@server:0"
+      "--kube-apiserver-arg=max-requests-inflight=${KUBE_APISERVER_MAX_REQUESTS_INFLIGHT}@server:0"
+      "--kube-apiserver-arg=max-mutating-requests-inflight=${KUBE_APISERVER_MAX_MUTATING_REQUESTS_INFLIGHT}@server:0"
     )
 
     echo "🚀 Creating k3d cluster '${CLUSTER_NAME}' with audit webhook support..."

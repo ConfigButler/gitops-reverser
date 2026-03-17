@@ -1,6 +1,19 @@
 apiVersion: traefik.io/v1alpha1
 kind: Middleware
 metadata:
+  name: api-ratelimit
+  namespace: vote
+spec:
+  rateLimit:
+    # High ceiling for now — easy to tune down for production.
+    # At 10 000 avg/s per source IP, this is effectively unlimited for a
+    # 100-person audience while still giving us a known control point.
+    average: 10000
+    burst: 1000
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
   name: auth-forwarder
   namespace: vote
 spec:
@@ -37,6 +50,7 @@ spec:
     - match: Host(`vote.reversegitops.dev`) && (PathPrefix(`/api`) || PathPrefix(`/apis`) || PathPrefix(`/openapi`))
       kind: Rule
       middlewares:
+        - name: api-ratelimit
         - name: auth-forwarder
       services:
         - name: kubernetes
