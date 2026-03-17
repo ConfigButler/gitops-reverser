@@ -49,6 +49,17 @@ make test-e2e-quickstart-manifest
 make test-e2e-quickstart-helm
 ```
 
+Prepare the talk/demo repo and leave it in place:
+
+```bash
+make test-e2e-talk
+```
+
+This target now uses the same suite-driven repo setup as the normal e2e flow, so each run gets a fresh repo
+unless you explicitly pass `REPO_NAME=...`. It seeds that repo from the `vote` namespace plus supporting
+cluster-scoped objects, and intentionally keeps the resulting Kubernetes resources and repo state for a live
+walkthrough.
+
 ## Verification
 
 Confirm cluster is up:

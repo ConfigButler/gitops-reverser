@@ -566,6 +566,15 @@ test-e2e-quickstart-helm: ## Run quickstart smoke test (Helm install)
 	export E2E_AGE_KEY_FILE=$(CS)/age-key.txt
 	go test ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=quickstart-framework
 
+.PHONY: test-e2e-talk
+test-e2e-talk: ## Prepare a reusable talk/demo repo and leave demo resources in place
+	export CTX=$(CTX)
+	export INSTALL_MODE=$(INSTALL_MODE)
+	export NAMESPACE=$(NAMESPACE)
+	export E2E_ENABLE_TALK_FRAMEWORK=true
+	export E2E_AGE_KEY_FILE=$(CS)/age-key.txt
+	go test ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=talk-demo
+
 .PHONY: test-e2e-audit-redis
 test-e2e-audit-redis: ## Run dedicated audit->Redis enqueue e2e scenario
 	export CTX=$(CTX)

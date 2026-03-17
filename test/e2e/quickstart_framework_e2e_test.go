@@ -147,7 +147,7 @@ func (r *quickstartFrameworkRun) setupGiteaRepository() {
 
 func (r *quickstartFrameworkRun) applyQuickstartResources() {
 	qsNamespace := quickstartSetupNamespace()
-	createGitProviderWithURLInNamespace(r.providerName, qsNamespace, "main", e2eGitSecretHTTP(), r.repoURL)
+	createGitProviderWithURLInNamespace(r.providerName, qsNamespace, e2eGitSecretHTTP(), r.repoURL)
 
 	createGitTargetWithEncryptionOptions(
 		r.targetName,
@@ -172,7 +172,7 @@ func (r *quickstartFrameworkRun) applyQuickstartResources() {
 	err := applyFromTemplate("test/e2e/templates/watchrule.tmpl", watchRuleData, qsNamespace)
 	Expect(err).NotTo(HaveOccurred(), "failed to apply quickstart watchrule")
 
-	createGitProviderWithURLInNamespace(r.invalidProvName, qsNamespace, "main", e2eGitSecretInvalid(), r.repoURL)
+	createGitProviderWithURLInNamespace(r.invalidProvName, qsNamespace, e2eGitSecretInvalid(), r.repoURL)
 }
 
 func (r *quickstartFrameworkRun) verifyQuickstartResourcesReady() {
@@ -480,9 +480,9 @@ func quickstartTimeout() time.Duration {
 	return time.Duration(seconds) * time.Second
 }
 
-func createGitProviderWithURLInNamespace(name, ns, branch, secretName, repoURL string) {
-	By(fmt.Sprintf("creating GitProvider '%s' in ns '%s' with branch '%s', secret '%s' and URL '%s'",
-		name, ns, branch, secretName, repoURL))
+func createGitProviderWithURLInNamespace(name, ns, secretName, repoURL string) {
+	By(fmt.Sprintf("creating GitProvider '%s' in ns '%s' with branch 'main', secret '%s' and URL '%s'",
+		name, ns, secretName, repoURL))
 
 	data := struct {
 		Name       string
@@ -494,7 +494,7 @@ func createGitProviderWithURLInNamespace(name, ns, branch, secretName, repoURL s
 		Name:       name,
 		Namespace:  ns,
 		RepoURL:    repoURL,
-		Branch:     branch,
+		Branch:     "main",
 		SecretName: secretName,
 	}
 
