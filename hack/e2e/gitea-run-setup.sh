@@ -25,7 +25,6 @@ set -euo pipefail
 # - $(CS)/$(NAMESPACE)/git-$(REPO_NAME)/ssh/id_rsa{,.pub}
 # - $(CS)/$(NAMESPACE)/git-$(REPO_NAME)/ssh/known_hosts
 # - $(CS)/$(NAMESPACE)/git-$(REPO_NAME)/secrets.yaml
-# - $(CS)/$(NAMESPACE)/git-$(REPO_NAME)/secrets.applied
 # - $(CS)/$(NAMESPACE)/git-$(REPO_NAME)/repo.ready
 # - $(CS)/$(NAMESPACE)/git-$(REPO_NAME)/checkout.ready
 # - .stamps/repos/<repo>/.git/HEAD (or CHECKOUT_DIR override)
@@ -72,7 +71,6 @@ active_repo_file="${run_dir}/active-repo.txt"
 checkout_path_file="${run_dir}/checkout-path.txt"
 token_file="${run_dir}/token.txt"
 secrets_yaml="${run_dir}/secrets.yaml"
-secrets_applied="${run_dir}/secrets.applied"
 repo_ready="${run_dir}/repo.ready"
 checkout_ready="${run_dir}/checkout.ready"
 
@@ -283,18 +281,20 @@ write_secrets_manifest() {
     ssh_args+=(--from-file=known_hosts="${ssh_dir}/known_hosts")
   fi
 
+  # Generate namespace-free manifests so each test suite can apply them
+  # to its own dynamically-named test namespace.
   {
-    kubectl --context "${CTX}" -n "${NAMESPACE}" create secret generic "${SECRET_HTTP_NAME}" \
+    kubectl create secret generic "${SECRET_HTTP_NAME}" \
       --from-literal=username="${GITEA_ADMIN_USER}" \
       --from-literal=password="${token}" \
       --dry-run=client -o yaml
     printf '\n---\n'
-    kubectl --context "${CTX}" -n "${NAMESPACE}" create secret generic "${SECRET_SSH_NAME}" \
+    kubectl create secret generic "${SECRET_SSH_NAME}" \
       --from-file=ssh-privatekey="${ssh_dir}/id_rsa" \
       "${ssh_args[@]}" \
       --dry-run=client -o yaml
     printf '\n---\n'
-    kubectl --context "${CTX}" -n "${NAMESPACE}" create secret generic "${SECRET_INVALID_NAME}" \
+    kubectl create secret generic "${SECRET_INVALID_NAME}" \
       --from-literal=username="invaliduser" \
       --from-literal=password="invalidpassword" \
       --dry-run=client -o yaml
@@ -303,10 +303,6 @@ write_secrets_manifest() {
   mv "${secrets_tmp}" "${secrets_yaml}"
 }
 
-apply_secrets() {
-  kubectl --context "${CTX}" apply -f "${secrets_yaml}" >/dev/null
-  touch "${secrets_applied}"
-}
 
 ensure_checkout() {
   local checkout_dir repo_url repos_dir
@@ -341,6 +337,7 @@ ensure_checkout() {
 
   git -C "${checkout_dir}" config user.name "E2E Test" >/dev/null 2>&1 || true
   git -C "${checkout_dir}" config user.email "e2e-test@gitops-reverser.local" >/dev/null 2>&1 || true
+  git -C "${checkout_dir}" config commit.gpgsign false >/dev/null 2>&1 || true
 
   if [[ ! -f "${checkout_dir}/.git/HEAD" ]]; then
     echo "ERROR: expected checkout to contain .git/HEAD at ${checkout_dir}" >&2
@@ -362,5 +359,4 @@ generate_known_hosts
 configure_ssh_key_in_gitea
 ensure_repo
 write_secrets_manifest
-apply_secrets
 ensure_checkout

@@ -26,7 +26,9 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"sort"
+	"strings"
 	"text/template"
 	"time"
 
@@ -204,6 +206,21 @@ func createGitTargetWithEncryptionOptions(
 	err := applyFromTemplate("test/e2e/templates/gittarget.tmpl", data, namespace)
 
 	Expect(err).NotTo(HaveOccurred(), "Failed to apply GitTarget")
+}
+
+// applySOPSAgeKeyToNamespace copies the sops-age-key secret into the given namespace
+// so that GitTarget resources created there can reference it for encryption.
+// The key data is read directly from E2E_AGE_KEY_FILE to avoid cross-namespace copy issues.
+func applySOPSAgeKeyToNamespace(ns string) {
+	By(fmt.Sprintf("applying sops-age-key to test namespace '%s'", ns))
+	ageKeyFile := strings.TrimSpace(os.Getenv("E2E_AGE_KEY_FILE"))
+	Expect(ageKeyFile).NotTo(BeEmpty(), "E2E_AGE_KEY_FILE must be set by BeforeSuite")
+	out, err := kubectlRunInNamespace(ns, "create", "secret", "generic", e2eEncryptionRefName,
+		"--from-file=identity.agekey="+ageKeyFile,
+		"--dry-run=client", "-o", "yaml")
+	Expect(err).NotTo(HaveOccurred(), "failed to generate sops-age-key manifest")
+	_, err = kubectlRunWithStdin(ns, out, "apply", "-f", "-")
+	Expect(err).NotTo(HaveOccurred(), "failed to apply sops-age-key to test namespace")
 }
 
 // cleanupGitTarget deletes a GitTarget resource.

@@ -197,9 +197,13 @@ $(CS)/$(NAMESPACE)/prepare-e2e.ready: $(CS)/$(NAMESPACE)/$(INSTALL_MODE)/install
 	| $(CS)/$(NAMESPACE)
 	touch $@
 
-# Keep `make test-e2e` as the classic entrypoint.
 .PHONY: test-e2e
-test-e2e: $(CS)/e2e.passed
+test-e2e: ## Run the full e2e test suite
+	export CTX=$(CTX)
+	export INSTALL_MODE=$(INSTALL_MODE)
+	export NAMESPACE=$(NAMESPACE)
+	export E2E_AGE_KEY_FILE=$(CS)/age-key.txt
+	go test ./test/e2e/ -v -ginkgo.v
 
 .PHONY: lint
 lint: ## Run golangci-lint linter
@@ -477,16 +481,6 @@ portforward-ensure: $(CS)/services.ready ## Ensure port-forwards are running (al
 	export VALKEY_PORT=$(VALKEY_PORT)
 	bash hack/e2e/setup-port-forwards.sh
 
-E2E_TEST_INPUTS = $(CS)/age-key.txt \
-	$(shell find test/e2e -type f \( -name '*.go' -o -name '*.sh' -o -name '*.yaml' -o -name '*.tmpl' \)) \
-	$(wildcard hack/e2e/*.sh)
-$(CS)/e2e.passed: $$(E2E_TEST_INPUTS) Makefile | $(CS)
-	export CTX=$(CTX)
-	export INSTALL_MODE=$(INSTALL_MODE)
-	export NAMESPACE=$(NAMESPACE)
-	export E2E_AGE_KEY_FILE=$(CS)/age-key.txt
-	go test ./test/e2e/ -v -ginkgo.v
-	touch $@
 
 .PHONY: install install-helm install-plain-manifests-file install-config-dir
 install: $(CS)/$(NAMESPACE)/$(INSTALL_MODE)/install.yaml

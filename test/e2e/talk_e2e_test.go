@@ -54,6 +54,7 @@ type talkDemoRun struct {
 
 var _ = Describe("Talk Demo", Label("talk-demo"), Ordered, func() {
 	var run talkDemoRun
+	var testNs string
 
 	BeforeAll(func() {
 		if !talkFrameworkEnabled() {
@@ -64,6 +65,16 @@ var _ = Describe("Talk Demo", Label("talk-demo"), Ordered, func() {
 		}
 
 		run = newTalkDemoRun()
+
+		By("creating test namespace and applying git secrets")
+		testNs = testNamespaceFor("talk-demo")
+		run.sourceNamespace = testNs
+		_, _ = kubectlRun("create", "namespace", testNs) // idempotent; ignore AlreadyExists
+		secretsYaml := strings.TrimSpace(os.Getenv("E2E_SECRETS_YAML"))
+		Expect(secretsYaml).NotTo(BeEmpty(), "E2E_SECRETS_YAML must be set by BeforeSuite")
+		_, err := kubectlRunInNamespace(testNs, "apply", "-f", secretsYaml)
+		Expect(err).NotTo(HaveOccurred(), "failed to apply git secrets to test namespace")
+		applySOPSAgeKeyToNamespace(testNs)
 	})
 
 	It("prepares a reusable demo repository without cleanup", func() {
@@ -194,7 +205,7 @@ func (r *talkDemoRun) applyTalkResources() {
 		DestinationName: r.targetName,
 	}
 
-	err := applyFromTemplate("test/e2e/templates/watchrule-all.tmpl", watchRuleData, talkDemoNamespace)
+	err := applyFromTemplate("test/e2e/templates/talk-demo/watchrule-all.tmpl", watchRuleData, talkDemoNamespace)
 	Expect(err).NotTo(HaveOccurred(), "failed to apply talk demo WatchRule")
 
 	clusterWatchRuleData := struct {
@@ -207,7 +218,7 @@ func (r *talkDemoRun) applyTalkResources() {
 		DestinationName: r.targetName,
 	}
 
-	err = applyFromTemplate("test/e2e/templates/clusterwatchrule-talk.tmpl", clusterWatchRuleData, "")
+	err = applyFromTemplate("test/e2e/templates/talk-demo/clusterwatchrule-talk.tmpl", clusterWatchRuleData, "")
 	Expect(err).NotTo(HaveOccurred(), "failed to apply talk demo ClusterWatchRule")
 }
 

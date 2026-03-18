@@ -65,6 +65,7 @@ func getRepoURLSSH() string {
 
 var _ = Describe("Manager", Ordered, func() {
 	var controllerPodName string // Name of first controller pod for logging
+	var testNs string
 
 	// Before running the tests, set up per-run test fixtures.
 	BeforeAll(func() {
@@ -91,10 +92,22 @@ var _ = Describe("Manager", Ordered, func() {
 		By("setting up Prometheus client for metrics testing")
 		setupPrometheusClient()
 		verifyPrometheusAvailable()
+
+		By("creating test namespace and applying git secrets")
+		testNs = testNamespaceFor("manager")
+		_, _ = kubectlRun("create", "namespace", testNs) // idempotent; ignore AlreadyExists
+		secretsYaml := strings.TrimSpace(os.Getenv("E2E_SECRETS_YAML"))
+		Expect(secretsYaml).NotTo(BeEmpty(), "E2E_SECRETS_YAML must be set by BeforeSuite")
+		_, err := kubectlRunInNamespace(testNs, "apply", "-f", secretsYaml)
+		Expect(err).NotTo(HaveOccurred(), "failed to apply git secrets to test namespace")
+		applySOPSAgeKeyToNamespace(testNs)
 	})
 
-	// After all tests have been executed, infrastructure remains running for debugging
+	// After all tests have been executed, clean up the test namespace
 	AfterAll(func() {
+		By("deleting test namespace")
+		_, _ = kubectlRun("delete", "namespace", testNs, "--ignore-not-found=true")
+
 		By("test infrastructure still running for debugging")
 		fmt.Printf("\n")
 		fmt.Printf("═══════════════════════════════════════════════════════════\n")
@@ -394,42 +407,42 @@ var _ = Describe("Manager", Ordered, func() {
 			By("showing initial controller logs")
 			showControllerLogs("before creating GitProvider")
 
-			createGitProvider(gitProviderName, "main", gitSecretHTTP)
+			createGitProviderWithURLInNamespace(gitProviderName, testNs, gitSecretHTTP, getRepoURLHTTP())
 
 			By("showing controller logs after GitProvider creation")
 			showControllerLogs("after creating GitProvider")
 
-			verifyGitProviderStatus(gitProviderName, "True", "Ready", "Repository connectivity validated")
+			verifyResourceStatus("gitprovider", gitProviderName, testNs, "True", "Ready", "Repository connectivity validated")
 
 			By("showing final controller logs")
 			showControllerLogs("after status verification")
 
-			cleanupGitProvider(gitProviderName)
+			_, _ = kubectlRunInNamespace(testNs, "delete", "gitprovider", gitProviderName, "--ignore-not-found=true")
 		})
 
 		It("should handle GitProvider with invalid credentials", func() {
 			gitProviderName := "gitprovider-invalid-test"
-			createGitProvider(gitProviderName, "main", gitSecretInvalid)
-			verifyGitProviderStatus(gitProviderName, "False", "ConnectionFailed", "")
-			cleanupGitProvider(gitProviderName)
+			createGitProviderWithURLInNamespace(gitProviderName, testNs, gitSecretInvalid, getRepoURLHTTP())
+			verifyResourceStatus("gitprovider", gitProviderName, testNs, "False", "ConnectionFailed", "")
+			_, _ = kubectlRunInNamespace(testNs, "delete", "gitprovider", gitProviderName, "--ignore-not-found=true")
 		})
 
 		It("should handle GitTarget with nonexistent branch pattern", func() {
 			gitProviderName := "gitprovider-branch-test"
 
 			// GitProvider should be Ready=True (validates connectivity, not branch existence)
-			createGitProvider(gitProviderName, "nonexistent-branch", gitSecretHTTP)
-			verifyGitProviderStatus(gitProviderName, "True", "Ready", "Repository connectivity validated")
+			createGitProviderWithURLInNamespace(gitProviderName, testNs, gitSecretHTTP, getRepoURLHTTP())
+			verifyResourceStatus("gitprovider", gitProviderName, testNs, "True", "Ready", "Repository connectivity validated")
 
 			// GitTarget with branch not matching any pattern should fail
 			destName := "dest-invalid-branch"
-			createGitTarget(destName, namespace, gitProviderName, "test/invalid", "different-branch")
+			createGitTarget(destName, testNs, gitProviderName, "test/invalid", "different-branch")
 
 			By("verifying GitTarget fails branch validation")
-			verifyResourceStatus("gittarget", destName, namespace, "False", "ValidationFailed", "BranchNotAllowed")
+			verifyResourceStatus("gittarget", destName, testNs, "False", "ValidationFailed", "BranchNotAllowed")
 
-			cleanupGitTarget(destName, namespace)
-			cleanupGitProvider(gitProviderName)
+			cleanupGitTarget(destName, testNs)
+			_, _ = kubectlRunInNamespace(testNs, "delete", "gitprovider", gitProviderName, "--ignore-not-found=true")
 		})
 
 		It("should validate GitProvider with SSH authentication", func() {
@@ -439,7 +452,7 @@ var _ = Describe("Manager", Ordered, func() {
 			showControllerLogs("before SSH test")
 
 			By("📋 Checking SSH secret exists")
-			secretOutput, err := kubectlRunInNamespace(namespace, "get", "secret", gitSecretSSH, "-o", "yaml")
+			secretOutput, err := kubectlRunInNamespace(testNs, "get", "secret", gitSecretSSH, "-o", "yaml")
 			if err != nil {
 				fmt.Printf("❌ SSH secret not found: %v\n", err)
 			} else {
@@ -451,23 +464,23 @@ var _ = Describe("Manager", Ordered, func() {
 				)
 			}
 
-			createSSHGitProvider(gitProviderName, "main", gitSecretSSH)
+			createGitProviderWithURLInNamespace(gitProviderName, testNs, gitSecretSSH, getRepoURLSSH())
 
 			By("🔍 Controller logs after SSH GitProvider creation")
 			showControllerLogs("after SSH GitProvider creation")
 
-			verifyGitProviderStatus(gitProviderName, "True", "Ready", "Repository connectivity validated")
+			verifyResourceStatus("gitprovider", gitProviderName, testNs, "True", "Ready", "Repository connectivity validated")
 
 			By("✅ Final SSH test logs")
 			showControllerLogs("SSH test completion")
 
-			cleanupGitProvider(gitProviderName)
+			_, _ = kubectlRunInNamespace(testNs, "delete", "gitprovider", gitProviderName, "--ignore-not-found=true")
 		})
 
 		It("should handle a normal and healthy GitProvider", func() {
 			gitProviderName := "gitprovider-normal"
-			createGitProvider(gitProviderName, "main", gitSecretHTTP)
-			verifyGitProviderStatus(gitProviderName, "True", "Ready", "Repository connectivity validated")
+			createGitProviderWithURLInNamespace(gitProviderName, testNs, gitSecretHTTP, getRepoURLHTTP())
+			verifyResourceStatus("gitprovider", gitProviderName, testNs, "True", "Ready", "Repository connectivity validated")
 		})
 
 		It("should reconcile a WatchRule CR", func() {
@@ -476,7 +489,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 			By("creating a WatchRule that references the working GitProvider")
 			destName := watchRuleName + "-dest"
-			createGitTarget(destName, namespace, gitProviderName, getBaseFolder(), "main")
+			createGitTarget(destName, testNs, gitProviderName, getBaseFolder(), "main")
 
 			data := struct {
 				Name            string
@@ -484,19 +497,19 @@ var _ = Describe("Manager", Ordered, func() {
 				DestinationName string
 			}{
 				Name:            watchRuleName,
-				Namespace:       namespace,
+				Namespace:       testNs,
 				DestinationName: destName,
 			}
 
-			err := applyFromTemplate("test/e2e/templates/watchrule.tmpl", data, namespace)
+			err := applyFromTemplate("test/e2e/templates/watchrule.tmpl", data, testNs)
 			Expect(err).NotTo(HaveOccurred(), "Failed to apply WatchRule")
 
 			By("verifying the WatchRule is reconciled")
-			verifyResourceStatus("watchrule", watchRuleName, namespace, "True", "Ready", "")
+			verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Ready", "")
 
 			By("cleaning up test resources")
-			cleanupWatchRule(watchRuleName, namespace)
-			cleanupGitTarget(destName, namespace)
+			cleanupWatchRule(watchRuleName, testNs)
+			cleanupGitTarget(destName, testNs)
 		})
 
 		It("should commit encrypted Secret manifests when WatchRule includes secrets", func() {
@@ -506,7 +519,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 			By("creating WatchRule that includes secrets")
 			destName := watchRuleName + "-dest"
-			createGitTarget(destName, namespace, gitProviderName, "e2e/secret-encryption-test", "main")
+			createGitTarget(destName, testNs, gitProviderName, "e2e/secret-encryption-test", "main")
 
 			data := struct {
 				Name            string
@@ -514,21 +527,21 @@ var _ = Describe("Manager", Ordered, func() {
 				DestinationName string
 			}{
 				Name:            watchRuleName,
-				Namespace:       namespace,
+				Namespace:       testNs,
 				DestinationName: destName,
 			}
 
-			err := applyFromTemplate("test/e2e/templates/watchrule.tmpl", data, namespace)
+			err := applyFromTemplate("test/e2e/templates/watchrule.tmpl", data, testNs)
 			Expect(err).NotTo(HaveOccurred(), "Failed to apply WatchRule")
-			verifyResourceStatus("gittarget", destName, namespace, "True", "Ready", "")
-			verifyResourceStatus("watchrule", watchRuleName, namespace, "True", "Ready", "")
-			verifyResourceStatus("gittarget", destName, namespace, "True", "Ready", "")
+			verifyResourceStatus("gittarget", destName, testNs, "True", "Ready", "")
+			verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Ready", "")
+			verifyResourceStatus("gittarget", destName, testNs, "True", "Ready", "")
 
 			By("creating Secret in watched namespace")
-			_, _ = kubectlRunInNamespace(namespace, "delete", "secret", secretName, "--ignore-not-found=true")
+			_, _ = kubectlRunInNamespace(testNs, "delete", "secret", secretName, "--ignore-not-found=true")
 
 			_, err = kubectlRunInNamespace(
-				namespace,
+				testNs,
 				"create",
 				"secret",
 				"generic",
@@ -539,7 +552,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 			By("patching Secret once to avoid informer start race and force an update event")
 			_, err = kubectlRunInNamespace(
-				namespace,
+				testNs,
 				"patch",
 				"secret",
 				secretName,
@@ -561,7 +574,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 				expectedFile := filepath.Join(checkoutDir,
 					"e2e/secret-encryption-test",
-					fmt.Sprintf("v1/secrets/%s/%s.sops.yaml", namespace, secretName))
+					fmt.Sprintf("v1/secrets/%s/%s.sops.yaml", testNs, secretName))
 				content, readErr := os.ReadFile(expectedFile)
 				g.Expect(readErr).NotTo(HaveOccurred(), fmt.Sprintf("Secret file must exist at %s", expectedFile))
 				g.Expect(string(content)).To(ContainSubstring("sops:"))
@@ -586,9 +599,9 @@ var _ = Describe("Manager", Ordered, func() {
 			Eventually(verifyEncryptedSecretCommitted, "30s", "2s").Should(Succeed())
 
 			By("cleaning up test resources")
-			_, _ = kubectlRunInNamespace(namespace, "delete", "secret", secretName, "--ignore-not-found=true")
-			cleanupWatchRule(watchRuleName, namespace)
-			cleanupGitTarget(destName, namespace)
+			_, _ = kubectlRunInNamespace(testNs, "delete", "secret", secretName, "--ignore-not-found=true")
+			cleanupWatchRule(watchRuleName, testNs)
+			cleanupGitTarget(destName, testNs)
 		})
 
 		It("should generate missing SOPS age secret when age.recipients.generateWhenMissing is enabled", func() {
@@ -599,7 +612,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 			By("ensuring generated encryption secret does not exist before test")
 			_, _ = kubectlRunInNamespace(
-				namespace,
+				testNs,
 				"delete",
 				"secret",
 				generatedSecretName,
@@ -610,7 +623,7 @@ var _ = Describe("Manager", Ordered, func() {
 			destName := watchRuleName + "-dest"
 			createGitTargetWithEncryptionOptions(
 				destName,
-				namespace,
+				testNs,
 				gitProviderName,
 				"e2e/secret-autogen-test",
 				"main",
@@ -624,20 +637,20 @@ var _ = Describe("Manager", Ordered, func() {
 				DestinationName string
 			}{
 				Name:            watchRuleName,
-				Namespace:       namespace,
+				Namespace:       testNs,
 				DestinationName: destName,
 			}
 
-			err := applyFromTemplate("test/e2e/templates/watchrule.tmpl", data, namespace)
+			err := applyFromTemplate("test/e2e/templates/watchrule.tmpl", data, testNs)
 			Expect(err).NotTo(HaveOccurred(), "Failed to apply WatchRule")
-			verifyResourceStatus("watchrule", watchRuleName, namespace, "True", "Ready", "")
+			verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Ready", "")
 
 			By("validating generated encryption secret has recipient and warning annotations")
 			var generatedAgeKey string
 			var generatedRecipient string
 			Eventually(func(g Gomega) {
 				output, getErr := kubectlRunInNamespace(
-					namespace,
+					testNs,
 					"get",
 					"secret",
 					generatedSecretName,
@@ -693,9 +706,9 @@ var _ = Describe("Manager", Ordered, func() {
 			}, "30s", "2s").Should(Succeed())
 
 			By("creating Secret in watched namespace")
-			_, _ = kubectlRunInNamespace(namespace, "delete", "secret", secretName, "--ignore-not-found=true")
+			_, _ = kubectlRunInNamespace(testNs, "delete", "secret", secretName, "--ignore-not-found=true")
 			_, err = kubectlRunInNamespace(
-				namespace,
+				testNs,
 				"create",
 				"secret",
 				"generic",
@@ -706,7 +719,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 			By("patching Secret once to avoid informer start race and force an update event")
 			_, err = kubectlRunInNamespace(
-				namespace,
+				testNs,
 				"patch",
 				"secret",
 				secretName,
@@ -728,7 +741,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 				expectedFile := filepath.Join(checkoutDir,
 					"e2e/secret-autogen-test",
-					fmt.Sprintf("v1/secrets/%s/%s.sops.yaml", namespace, secretName))
+					fmt.Sprintf("v1/secrets/%s/%s.sops.yaml", testNs, secretName))
 				content, readErr := os.ReadFile(expectedFile)
 				g.Expect(readErr).NotTo(HaveOccurred(), fmt.Sprintf("Secret file must exist at %s", expectedFile))
 				g.Expect(string(content)).To(ContainSubstring("sops:"))
@@ -749,16 +762,16 @@ var _ = Describe("Manager", Ordered, func() {
 			Eventually(verifyEncryptedSecretCommitted, "30s", "2s").Should(Succeed())
 
 			By("cleaning up test resources")
-			_, _ = kubectlRunInNamespace(namespace, "delete", "secret", secretName, "--ignore-not-found=true")
+			_, _ = kubectlRunInNamespace(testNs, "delete", "secret", secretName, "--ignore-not-found=true")
 			_, _ = kubectlRunInNamespace(
-				namespace,
+				testNs,
 				"delete",
 				"secret",
 				generatedSecretName,
 				"--ignore-not-found=true",
 			)
-			cleanupWatchRule(watchRuleName, namespace)
-			cleanupGitTarget(destName, namespace)
+			cleanupWatchRule(watchRuleName, testNs)
+			cleanupGitTarget(destName, testNs)
 		})
 
 		It("should create Git commit when ConfigMap is added via WatchRule", func() {
@@ -769,7 +782,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 			By("creating WatchRule that monitors ConfigMaps")
 			destName := watchRuleName + "-dest"
-			createGitTarget(destName, namespace, gitProviderName, "e2e/configmap-test", "main")
+			createGitTarget(destName, testNs, gitProviderName, "e2e/configmap-test", "main")
 
 			data := struct {
 				Name            string
@@ -777,16 +790,16 @@ var _ = Describe("Manager", Ordered, func() {
 				DestinationName string
 			}{
 				Name:            watchRuleName,
-				Namespace:       namespace,
+				Namespace:       testNs,
 				DestinationName: destName,
 			}
 
-			err2 := applyFromTemplate("test/e2e/templates/watchrule-configmap.tmpl", data, namespace)
+			err2 := applyFromTemplate("test/e2e/templates/manager/watchrule-configmap.tmpl", data, testNs)
 			Expect(err2).NotTo(HaveOccurred(), "Failed to apply WatchRule")
 
 			By("verifying WatchRule is ready")
-			verifyResourceStatus("watchrule", watchRuleName, namespace, "True", "Ready", "")
-			verifyResourceStatus("gittarget", destName, namespace, "True", "Ready", "")
+			verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Ready", "")
+			verifyResourceStatus("gittarget", destName, testNs, "True", "Ready", "")
 
 			By("creating test ConfigMap to trigger Git commit")
 			configMapData := struct {
@@ -794,13 +807,13 @@ var _ = Describe("Manager", Ordered, func() {
 				Namespace string
 			}{
 				Name:      configMapName,
-				Namespace: namespace,
+				Namespace: testNs,
 			}
 
 			err3 := applyFromTemplate(
-				"test/e2e/templates/configmap.tmpl",
+				"test/e2e/templates/manager/configmap.tmpl",
 				configMapData,
-				namespace,
+				testNs,
 				"--as=jane@acme.com", // Important: we validate later if the user is included in the git commit!
 			)
 			Expect(err3).NotTo(HaveOccurred(), "Failed to apply ConfigMap")
@@ -843,7 +856,7 @@ var _ = Describe("Manager", Ordered, func() {
 				// Check for the expected ConfigMap file (new API-aligned path)
 				expectedFile := filepath.Join(checkoutDir,
 					"e2e/configmap-test",
-					fmt.Sprintf("v1/configmaps/%s/%s.yaml", namespace, configMapName))
+					fmt.Sprintf("v1/configmaps/%s/%s.yaml", testNs, configMapName))
 				fileInfo, statErr := os.Stat(expectedFile)
 				g.Expect(statErr).NotTo(HaveOccurred(), fmt.Sprintf("ConfigMap file should exist at %s", expectedFile))
 				g.Expect(fileInfo.Size()).To(BeNumerically(">", 0), "ConfigMap file should not be empty")
@@ -884,9 +897,9 @@ var _ = Describe("Manager", Ordered, func() {
 			Eventually(verifyGitCommit).Should(Succeed())
 
 			By("cleaning up test resources")
-			_, _ = kubectlRunInNamespace(namespace, "delete", "configmap", configMapName, "--ignore-not-found=true")
-			cleanupWatchRule(watchRuleName, namespace)
-			cleanupGitTarget(destName, namespace)
+			_, _ = kubectlRunInNamespace(testNs, "delete", "configmap", configMapName, "--ignore-not-found=true")
+			cleanupWatchRule(watchRuleName, testNs)
+			cleanupGitTarget(destName, testNs)
 
 			By("✅ ConfigMap to Git commit E2E test passed - verified actual file creation and commit")
 			fmt.Printf("✅ ConfigMap '%s' successfully triggered Git commit with YAML file in repo '%s'\n",
@@ -901,23 +914,23 @@ var _ = Describe("Manager", Ordered, func() {
 
 			By("creating WatchRule that monitors ConfigMaps")
 			destName := watchRuleName + "-dest"
-			createGitTarget(destName, namespace, gitProviderName, "e2e/delete-test", "main")
+			createGitTarget(destName, testNs, gitProviderName, "e2e/delete-test", "main")
 			data := struct {
 				Name            string
 				Namespace       string
 				DestinationName string
 			}{
 				Name:            watchRuleName,
-				Namespace:       namespace,
+				Namespace:       testNs,
 				DestinationName: destName,
 			}
 
-			err2 := applyFromTemplate("test/e2e/templates/watchrule-configmap.tmpl", data, namespace)
+			err2 := applyFromTemplate("test/e2e/templates/manager/watchrule-configmap.tmpl", data, testNs)
 			Expect(err2).NotTo(HaveOccurred(), "Failed to apply WatchRule")
 
 			By("verifying WatchRule is ready")
-			verifyResourceStatus("watchrule", watchRuleName, namespace, "True", "Ready", "")
-			verifyResourceStatus("gittarget", destName, namespace, "True", "Ready", "")
+			verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Ready", "")
+			verifyResourceStatus("gittarget", destName, testNs, "True", "Ready", "")
 
 			By("creating test ConfigMap to trigger Git commit")
 			configMapData := struct {
@@ -925,10 +938,10 @@ var _ = Describe("Manager", Ordered, func() {
 				Namespace string
 			}{
 				Name:      configMapName,
-				Namespace: namespace,
+				Namespace: testNs,
 			}
 
-			err3 := applyFromTemplate("test/e2e/templates/configmap.tmpl", configMapData, namespace)
+			err3 := applyFromTemplate("test/e2e/templates/manager/configmap.tmpl", configMapData, testNs)
 			Expect(err3).NotTo(HaveOccurred(), "Failed to apply ConfigMap")
 
 			By("waiting for ConfigMap file to appear in Git repository")
@@ -945,7 +958,7 @@ var _ = Describe("Manager", Ordered, func() {
 				// Check for the expected ConfigMap file (new API-aligned path)
 				expectedFile := filepath.Join(checkoutDir,
 					"e2e/delete-test",
-					fmt.Sprintf("v1/configmaps/%s/%s.yaml", namespace, configMapName))
+					fmt.Sprintf("v1/configmaps/%s/%s.yaml", testNs, configMapName))
 				fileInfo, statErr := os.Stat(expectedFile)
 				g.Expect(statErr).NotTo(HaveOccurred(), fmt.Sprintf("ConfigMap file should exist at %s", expectedFile))
 				g.Expect(fileInfo.Size()).To(BeNumerically(">", 0), "ConfigMap file should not be empty")
@@ -953,7 +966,7 @@ var _ = Describe("Manager", Ordered, func() {
 			Eventually(verifyFileCreated).Should(Succeed())
 
 			By("deleting the ConfigMap to trigger DELETE operation")
-			_, err := kubectlRunInNamespace(namespace, "delete", "configmap", configMapName)
+			_, err := kubectlRunInNamespace(testNs, "delete", "configmap", configMapName)
 			Expect(err).NotTo(HaveOccurred(), "ConfigMap deletion should succeed")
 
 			By("verifying ConfigMap file is deleted from Git repository")
@@ -971,7 +984,7 @@ var _ = Describe("Manager", Ordered, func() {
 				// Check that the ConfigMap file no longer exists (new API-aligned path)
 				expectedFile := filepath.Join(checkoutDir,
 					getBaseFolder(),
-					fmt.Sprintf("v1/configmaps/%s/%s.yaml", namespace, configMapName))
+					fmt.Sprintf("v1/configmaps/%s/%s.yaml", testNs, configMapName))
 				_, statErr := os.Stat(expectedFile)
 				g.Expect(statErr).To(HaveOccurred(), fmt.Sprintf("ConfigMap file should NOT exist at %s", expectedFile))
 				g.Expect(os.IsNotExist(statErr)).To(BeTrue(), "Error should be 'file does not exist'")
@@ -988,8 +1001,8 @@ var _ = Describe("Manager", Ordered, func() {
 			Eventually(verifyFileDeleted).Should(Succeed())
 
 			By("cleaning up test resources")
-			cleanupWatchRule(watchRuleName, namespace)
-			cleanupGitTarget(destName, namespace)
+			cleanupWatchRule(watchRuleName, testNs)
+			cleanupGitTarget(destName, testNs)
 
 			By("✅ ConfigMap deletion E2E test passed - verified file removal from Git")
 			fmt.Printf("✅ ConfigMap '%s' deletion successfully triggered Git commit removing file from repo '%s'\n",
@@ -1003,7 +1016,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 			By("creating ClusterWatchRule with Cluster scope for CRDs")
 			destName := clusterWatchRuleName + "-dest"
-			createGitTarget(destName, namespace, gitProviderName, "e2e/crd-install-test", "main")
+			createGitTarget(destName, testNs, gitProviderName, "e2e/crd-install-test", "main")
 
 			clusterWatchRuleData := struct {
 				Name            string
@@ -1012,15 +1025,15 @@ var _ = Describe("Manager", Ordered, func() {
 			}{
 				Name:            clusterWatchRuleName,
 				DestinationName: destName,
-				Namespace:       namespace,
+				Namespace:       testNs,
 			}
 
-			err := applyFromTemplate("test/e2e/templates/clusterwatchrule-crd.tmpl", clusterWatchRuleData, "")
+			err := applyFromTemplate("test/e2e/templates/manager/clusterwatchrule-crd.tmpl", clusterWatchRuleData, "")
 			Expect(err).NotTo(HaveOccurred(), "Failed to apply ClusterWatchRule for CRDs")
 
 			By("verifying ClusterWatchRule is ready")
 			verifyResourceStatus("clusterwatchrule", clusterWatchRuleName, "", "True", "Ready", "")
-			verifyResourceStatus("gittarget", destName, namespace, "True", "Ready", "")
+			verifyResourceStatus("gittarget", destName, testNs, "True", "Ready", "")
 
 			By("installing the IceCreamOrder CRD to trigger Git commit")
 			_, err = kubectlRun("apply", "-f", "test/e2e/templates/icecreamorder-crd.yaml")
@@ -1073,7 +1086,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 			By("cleaning up test resources")
 			cleanupClusterWatchRule(clusterWatchRuleName)
-			cleanupGitTarget(destName, namespace)
+			cleanupGitTarget(destName, testNs)
 			// Keep CRD installed for subsequent tests
 
 			By("✅ CRD installation via ClusterWatchRule E2E test passed")
@@ -1106,7 +1119,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 			By("creating WatchRule that monitors IceCreamOrder resources")
 			destName := watchRuleName + "-dest"
-			createGitTarget(destName, namespace, gitProviderName, "e2e/icecream-test", "main")
+			createGitTarget(destName, testNs, gitProviderName, "e2e/icecream-test", "main")
 
 			data := struct {
 				Name            string
@@ -1114,16 +1127,16 @@ var _ = Describe("Manager", Ordered, func() {
 				DestinationName string
 			}{
 				Name:            watchRuleName,
-				Namespace:       namespace,
+				Namespace:       testNs,
 				DestinationName: destName,
 			}
 
-			err2 := applyFromTemplate("test/e2e/templates/watchrule-crd.tmpl", data, namespace)
+			err2 := applyFromTemplate("test/e2e/templates/watchrule-crd.tmpl", data, testNs)
 			Expect(err2).NotTo(HaveOccurred(), "Failed to apply WatchRule for CRDs")
 
 			By("verifying WatchRule is ready")
-			verifyResourceStatus("watchrule", watchRuleName, namespace, "True", "Ready", "")
-			verifyResourceStatus("gittarget", destName, namespace, "True", "Ready", "")
+			verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Ready", "")
+			verifyResourceStatus("gittarget", destName, testNs, "True", "Ready", "")
 
 			By("creating CR with labels and annotations to trigger Git commit")
 			crdInstanceData := struct {
@@ -1140,7 +1153,7 @@ var _ = Describe("Manager", Ordered, func() {
 				Toppings []string
 			}{
 				Name:      crdInstanceName,
-				Namespace: namespace,
+				Namespace: testNs,
 				Labels: map[string]string{
 					"environment": "test",
 					"team":        "engineering",
@@ -1163,7 +1176,7 @@ var _ = Describe("Manager", Ordered, func() {
 				Toppings: []string{"Sprinkles", "HotFudge"},
 			}
 
-			err3 := applyFromTemplate("test/e2e/templates/icecreamorder-instance.tmpl", crdInstanceData, namespace)
+			err3 := applyFromTemplate("test/e2e/templates/icecreamorder-instance.tmpl", crdInstanceData, testNs)
 			Expect(err3).NotTo(HaveOccurred(), "Failed to apply CRD instance")
 
 			By("waiting for controller reconciliation of CRD instance event")
@@ -1194,7 +1207,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 				expectedFile := filepath.Join(checkoutDir,
 					"e2e/icecream-test",
-					fmt.Sprintf("shop.example.com/v1/icecreamorders/%s/%s.yaml", namespace, crdInstanceName))
+					fmt.Sprintf("shop.example.com/v1/icecreamorders/%s/%s.yaml", testNs, crdInstanceName))
 				fileInfo, statErr := os.Stat(expectedFile)
 				g.Expect(statErr).
 					NotTo(HaveOccurred(), fmt.Sprintf("CRD instance file should exist at %s", expectedFile))
@@ -1241,7 +1254,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 			By("verifying the IceCreamOrder still exists before status update")
 			verifyCRDInstanceExists := func(g Gomega) {
-				_, err := kubectlRunInNamespace(namespace, "get", "icecreamorder", crdInstanceName)
+				_, err := kubectlRunInNamespace(testNs, "get", "icecreamorder", crdInstanceName)
 				g.Expect(err).NotTo(HaveOccurred(), "IceCreamOrder should exist before status patch")
 			}
 			Eventually(verifyCRDInstanceExists, 15*time.Second, time.Second).Should(Succeed())
@@ -1249,7 +1262,7 @@ var _ = Describe("Manager", Ordered, func() {
 			By("applying status update to the IceCreamOrder CR")
 			statusPatch := `{"status":{"phase":"Preparing","cost":12.5,"message":"Queued for pickup"}}`
 			statusOutput, statusErr := kubectlRunInNamespace(
-				namespace,
+				testNs,
 				"patch",
 				"icecreamorder",
 				crdInstanceName,
@@ -1287,7 +1300,7 @@ var _ = Describe("Manager", Ordered, func() {
 				// Read the file again to ensure status is still not present
 				expectedFile := filepath.Join(checkoutDir,
 					"e2e/icecream-test",
-					fmt.Sprintf("shop.example.com/v1/icecreamorders/%s/%s.yaml", namespace, crdInstanceName))
+					fmt.Sprintf("shop.example.com/v1/icecreamorders/%s/%s.yaml", testNs, crdInstanceName))
 				content, readErr := os.ReadFile(expectedFile)
 				g.Expect(readErr).NotTo(HaveOccurred())
 				g.Expect(string(content)).NotTo(ContainSubstring("status:"),
@@ -1302,7 +1315,7 @@ var _ = Describe("Manager", Ordered, func() {
 			By("✅ Status update verified - no Git commit created and status not in file")
 
 			By("cleaning up IceCreamOrder instance")
-			_, _ = kubectlRunInNamespace(namespace, "delete", "icecreamorder", crdInstanceName)
+			_, _ = kubectlRunInNamespace(testNs, "delete", "icecreamorder", crdInstanceName)
 
 			By("Note: GitTarget, WatchRule, GitProvider, and CRD kept for subsequent tests")
 
@@ -1330,7 +1343,7 @@ var _ = Describe("Manager", Ordered, func() {
 				Toppings []string
 			}{
 				Name:         crdInstanceName,
-				Namespace:    namespace,
+				Namespace:    testNs,
 				Labels:       nil,
 				Annotations:  nil,
 				CustomerName: "Bob",
@@ -1344,7 +1357,7 @@ var _ = Describe("Manager", Ordered, func() {
 				Toppings: []string{"WhippedCream"},
 			}
 
-			err := applyFromTemplate("test/e2e/templates/icecreamorder-instance.tmpl", crdInstanceData, namespace)
+			err := applyFromTemplate("test/e2e/templates/icecreamorder-instance.tmpl", crdInstanceData, testNs)
 			Expect(err).NotTo(HaveOccurred(), "Failed to apply initial CRD instance")
 
 			By("waiting for initial CRD instance file to appear in Git")
@@ -1355,7 +1368,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 				expectedFile := filepath.Join(checkoutDir,
 					"e2e/icecream-test",
-					fmt.Sprintf("shop.example.com/v1/icecreamorders/%s/%s.yaml", namespace, crdInstanceName))
+					fmt.Sprintf("shop.example.com/v1/icecreamorders/%s/%s.yaml", testNs, crdInstanceName))
 				content, readErr := os.ReadFile(expectedFile)
 				g.Expect(readErr).NotTo(HaveOccurred())
 				g.Expect(string(content)).To(ContainSubstring("customerName: Bob"))
@@ -1378,7 +1391,7 @@ var _ = Describe("Manager", Ordered, func() {
 				Toppings []string
 			}{
 				Name:         crdInstanceName,
-				Namespace:    namespace,
+				Namespace:    testNs,
 				Labels:       nil,
 				Annotations:  nil,
 				CustomerName: "Bob",
@@ -1393,7 +1406,7 @@ var _ = Describe("Manager", Ordered, func() {
 				Toppings: []string{"HotFudge", "Caramel", "Sprinkles"},
 			}
 
-			err = applyFromTemplate("test/e2e/templates/icecreamorder-instance.tmpl", updatedCRDData, namespace)
+			err = applyFromTemplate("test/e2e/templates/icecreamorder-instance.tmpl", updatedCRDData, testNs)
 			Expect(err).NotTo(HaveOccurred(), "Failed to update CRD instance")
 
 			By("verifying updated CRD instance content in Git")
@@ -1404,7 +1417,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 				expectedFile := filepath.Join(checkoutDir,
 					"e2e/icecream-test",
-					fmt.Sprintf("shop.example.com/v1/icecreamorders/%s/%s.yaml", namespace, crdInstanceName))
+					fmt.Sprintf("shop.example.com/v1/icecreamorders/%s/%s.yaml", testNs, crdInstanceName))
 				content, readErr := os.ReadFile(expectedFile)
 				g.Expect(readErr).NotTo(HaveOccurred())
 				g.Expect(string(content)).To(ContainSubstring("container: WaffleBowl"),
@@ -1417,7 +1430,7 @@ var _ = Describe("Manager", Ordered, func() {
 			Eventually(verifyUpdatedFile).Should(Succeed())
 
 			By("cleaning up IceCreamOrder instance")
-			_, _ = kubectlRunInNamespace(namespace, "delete", "icecreamorder", crdInstanceName)
+			_, _ = kubectlRunInNamespace(testNs, "delete", "icecreamorder", crdInstanceName)
 
 			By("Note: GitTarget, WatchRule, GitProvider, and CRD kept for subsequent tests")
 
@@ -1445,7 +1458,7 @@ var _ = Describe("Manager", Ordered, func() {
 				Toppings []string
 			}{
 				Name:         crdInstanceName,
-				Namespace:    namespace,
+				Namespace:    testNs,
 				Labels:       nil,
 				Annotations:  nil,
 				CustomerName: "Charlie",
@@ -1459,7 +1472,7 @@ var _ = Describe("Manager", Ordered, func() {
 				Toppings: []string{"Sprinkles"},
 			}
 
-			err := applyFromTemplate("test/e2e/templates/icecreamorder-instance.tmpl", crdInstanceData, namespace)
+			err := applyFromTemplate("test/e2e/templates/icecreamorder-instance.tmpl", crdInstanceData, testNs)
 			Expect(err).NotTo(HaveOccurred(), "Failed to apply CR")
 
 			By("waiting for CR file to appear in Git repository")
@@ -1470,7 +1483,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 				expectedFile := filepath.Join(checkoutDir,
 					"e2e/icecream-test",
-					fmt.Sprintf("shop.example.com/v1/icecreamorders/%s/%s.yaml", namespace, crdInstanceName))
+					fmt.Sprintf("shop.example.com/v1/icecreamorders/%s/%s.yaml", testNs, crdInstanceName))
 				fileInfo, statErr := os.Stat(expectedFile)
 				g.Expect(statErr).
 					NotTo(HaveOccurred(), fmt.Sprintf("CRD instance file should exist at %s", expectedFile))
@@ -1479,7 +1492,7 @@ var _ = Describe("Manager", Ordered, func() {
 			Eventually(verifyFileCreated).Should(Succeed())
 
 			By("deleting the CR to trigger DELETE operation")
-			_, err = kubectlRunInNamespace(namespace, "delete", "icecreamorder", crdInstanceName)
+			_, err = kubectlRunInNamespace(testNs, "delete", "icecreamorder", crdInstanceName)
 			Expect(err).NotTo(HaveOccurred(), "CRD instance deletion should succeed")
 
 			By("verifying CRD instance file is deleted from Git repository")
@@ -1490,7 +1503,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 				expectedFile := filepath.Join(checkoutDir,
 					"e2e/icecream-test",
-					fmt.Sprintf("shop.example.com/v1/icecreamorders/%s/%s.yaml", namespace, crdInstanceName))
+					fmt.Sprintf("shop.example.com/v1/icecreamorders/%s/%s.yaml", testNs, crdInstanceName))
 				_, statErr := os.Stat(expectedFile)
 				g.Expect(statErr).
 					To(HaveOccurred(), fmt.Sprintf("CRD instance file should NOT exist at %s", expectedFile))
@@ -1518,8 +1531,8 @@ var _ = Describe("Manager", Ordered, func() {
 
 			By("creating ClusterWatchRule with Cluster scope for CRDs")
 			destName := clusterWatchRuleName + "-dest"
-			createGitTarget(destName, namespace, gitProviderName, "e2e/crd-delete-test", "main")
-			verifyResourceStatus("gittarget", destName, namespace, "True", "Ready", "")
+			createGitTarget(destName, testNs, gitProviderName, "e2e/crd-delete-test", "main")
+			verifyResourceStatus("gittarget", destName, testNs, "True", "Ready", "")
 
 			clusterWatchRuleData := struct {
 				Name            string
@@ -1528,10 +1541,10 @@ var _ = Describe("Manager", Ordered, func() {
 			}{
 				Name:            clusterWatchRuleName,
 				DestinationName: destName,
-				Namespace:       namespace,
+				Namespace:       testNs,
 			}
 
-			err := applyFromTemplate("test/e2e/templates/clusterwatchrule-crd.tmpl", clusterWatchRuleData, "")
+			err := applyFromTemplate("test/e2e/templates/manager/clusterwatchrule-crd.tmpl", clusterWatchRuleData, "")
 			Expect(err).NotTo(HaveOccurred(), "Failed to apply ClusterWatchRule for CRDs")
 
 			By("verifying ClusterWatchRule is ready")
@@ -1580,7 +1593,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 			By("cleaning up test resources")
 			cleanupClusterWatchRule(clusterWatchRuleName)
-			cleanupGitTarget(destName, namespace)
+			cleanupGitTarget(destName, testNs)
 
 			By("✅ CRD deletion via ClusterWatchRule E2E test passed")
 		})
@@ -1589,13 +1602,13 @@ var _ = Describe("Manager", Ordered, func() {
 			By("cleaning up shared test resources")
 
 			// Clean up WatchRule from IceCreamOrder tests
-			cleanupWatchRule("watchrule-icecream-orders", namespace)
+			cleanupWatchRule("watchrule-icecream-orders", testNs)
 
 			// Clean up GitTarget from IceCreamOrder tests
-			cleanupGitTarget("watchrule-icecream-orders-dest", namespace)
+			cleanupGitTarget("watchrule-icecream-orders-dest", testNs)
 
 			// Clean up GitProvider from IceCreamOrder tests
-			cleanupGitProvider("gitprovider-normal")
+			_, _ = kubectlRunInNamespace(testNs, "delete", "gitprovider", "gitprovider-normal", "--ignore-not-found=true")
 
 			// Clean up IceCreamOrder CRD
 			_, _ = kubectlRun(
