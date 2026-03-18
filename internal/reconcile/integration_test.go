@@ -31,7 +31,7 @@ import (
 // TestFolderReconciler_FullReconciliationCycle tests the complete reconciliation cycle
 // with both cluster and Git state events.
 func TestFolderReconciler_FullReconciliationCycle(t *testing.T) {
-	mockEmitter := &MockEventEmitter{}
+	mockEmitter := &MockReconcileEmitter{}
 	mockControlEmitter := &MockControlEventEmitter{}
 	gitDest := types.NewResourceReference("test-gitdest", "default")
 	reconciler := NewFolderReconciler(gitDest, mockEmitter, mockControlEmitter, log.Log)
@@ -46,7 +46,7 @@ func TestFolderReconciler_FullReconciliationCycle(t *testing.T) {
 
 	// Should not have reconciled yet (missing Git state)
 	assert.False(t, reconciler.HasBothStates(), "Should not have both states")
-	assert.Empty(t, mockEmitter.GetCreateEvents(), "Should not emit events without both states")
+	assert.Empty(t, mockEmitter.Batches, "Should not emit batch without both states")
 
 	// Provide Git state - should now reconcile
 	reconciler.OnRepoState(events.RepoStateEvent{
@@ -57,18 +57,23 @@ func TestFolderReconciler_FullReconciliationCycle(t *testing.T) {
 		},
 	})
 
-	// Should now have both states and should have reconciled
+	// Should now have both states and a single batch
 	assert.True(t, reconciler.HasBothStates(), "Should have both states")
-	assert.Empty(t, mockEmitter.GetCreateEvents(), "No resources should be created (pod exists in both)")
-	// The service is an orphan in Git (exists in Git but not in cluster), so it should be deleted
-	assert.Len(t, mockEmitter.GetDeleteEvents(), 1, "Should delete orphaned service")
-	assert.Equal(t, "old-service", mockEmitter.GetDeleteEvents()[0].Name, "Should delete orphaned service")
-	assert.Len(t, mockEmitter.GetReconcileEvents(), 1, "Should emit reconcile event for existing resource")
+	assert.Len(t, mockEmitter.Batches, 1, "Should emit exactly one batch")
+
+	createEvents := mockEmitter.GetEventsByOperation("CREATE")
+	deleteEvents := mockEmitter.GetEventsByOperation("DELETE")
+	reconcileEvents := mockEmitter.GetEventsByOperation(string(events.ReconcileResource))
+
+	assert.Empty(t, createEvents, "No resources should be created (pod exists in both)")
+	assert.Len(t, deleteEvents, 1, "Should delete orphaned service")
+	assert.Equal(t, "old-service", deleteEvents[0].Identifier.Name, "Should delete orphaned service")
+	assert.Len(t, reconcileEvents, 1, "Should emit reconcile event for existing resource")
 }
 
 // TestFolderReconciler_MissingInGit tests reconciliation when cluster has resources not in Git.
 func TestFolderReconciler_MissingInGit(t *testing.T) {
-	mockEmitter := &MockEventEmitter{}
+	mockEmitter := &MockReconcileEmitter{}
 	mockControlEmitter := &MockControlEventEmitter{}
 	gitDest := types.NewResourceReference("test-gitdest", "default")
 	reconciler := NewFolderReconciler(gitDest, mockEmitter, mockControlEmitter, log.Log)
@@ -89,20 +94,19 @@ func TestFolderReconciler_MissingInGit(t *testing.T) {
 		},
 	})
 
-	// Should emit create event for missing service
-	createEvents := mockEmitter.GetCreateEvents()
-	assert.Len(t, createEvents, 1, "Should emit one create event")
-	assert.Equal(t, "app-svc", createEvents[0].Name, "Should create missing service")
+	createEvents := mockEmitter.GetEventsByOperation("CREATE")
+	reconcileEvents := mockEmitter.GetEventsByOperation(string(events.ReconcileResource))
 
-	// Should emit reconcile event for existing resource
-	reconcileEvents := mockEmitter.GetReconcileEvents()
+	assert.Len(t, createEvents, 1, "Should emit one create event")
+	assert.Equal(t, "app-svc", createEvents[0].Identifier.Name, "Should create missing service")
+
 	assert.Len(t, reconcileEvents, 1, "Should emit one reconcile event")
-	assert.Equal(t, "app-pod", reconcileEvents[0].Name, "Should reconcile existing pod")
+	assert.Equal(t, "app-pod", reconcileEvents[0].Identifier.Name, "Should reconcile existing pod")
 }
 
 // TestFolderReconciler_OrphansInGit tests reconciliation when Git has orphaned resources.
 func TestFolderReconciler_OrphansInGit(t *testing.T) {
-	mockEmitter := &MockEventEmitter{}
+	mockEmitter := &MockReconcileEmitter{}
 	mockControlEmitter := &MockControlEventEmitter{}
 	gitDest := types.NewResourceReference("test-gitdest", "default")
 	reconciler := NewFolderReconciler(gitDest, mockEmitter, mockControlEmitter, log.Log)
@@ -123,21 +127,20 @@ func TestFolderReconciler_OrphansInGit(t *testing.T) {
 		},
 	})
 
-	// Should emit delete event for orphan
-	deleteEvents := mockEmitter.GetDeleteEvents()
-	assert.Len(t, deleteEvents, 1, "Should emit one delete event")
-	assert.Equal(t, "old-config", deleteEvents[0].Name, "Should delete orphan configmap")
+	deleteEvents := mockEmitter.GetEventsByOperation("DELETE")
+	reconcileEvents := mockEmitter.GetEventsByOperation(string(events.ReconcileResource))
 
-	// Should emit reconcile event for existing resource
-	reconcileEvents := mockEmitter.GetReconcileEvents()
+	assert.Len(t, deleteEvents, 1, "Should emit one delete event")
+	assert.Equal(t, "old-config", deleteEvents[0].Identifier.Name, "Should delete orphan configmap")
+
 	assert.Len(t, reconcileEvents, 1, "Should emit one reconcile event")
-	assert.Equal(t, "app-pod", reconcileEvents[0].Name, "Should reconcile existing pod")
+	assert.Equal(t, "app-pod", reconcileEvents[0].Identifier.Name, "Should reconcile existing pod")
 }
 
 // TestFolderReconciler_OrderIndependence tests that event order doesn't matter.
 func TestFolderReconciler_OrderIndependence(t *testing.T) {
 	// Test 1: Git state first, then cluster state
-	mockEmitter1 := &MockEventEmitter{}
+	mockEmitter1 := &MockReconcileEmitter{}
 	mockControlEmitter1 := &MockControlEventEmitter{}
 	gitDest1 := types.NewResourceReference("test-gitdest", "default")
 	reconciler1 := NewFolderReconciler(gitDest1, mockEmitter1, mockControlEmitter1, log.Log)
@@ -158,7 +161,7 @@ func TestFolderReconciler_OrderIndependence(t *testing.T) {
 	})
 
 	// Test 2: Cluster state first, then Git state
-	mockEmitter2 := &MockEventEmitter{}
+	mockEmitter2 := &MockReconcileEmitter{}
 	mockControlEmitter2 := &MockControlEventEmitter{}
 	gitDest2 := types.NewResourceReference("test-gitdest", "default")
 	reconciler2 := NewFolderReconciler(gitDest2, mockEmitter2, mockControlEmitter2, log.Log)
@@ -179,25 +182,29 @@ func TestFolderReconciler_OrderIndependence(t *testing.T) {
 	})
 
 	// Both should produce the same results regardless of order
-	createEvents1 := mockEmitter1.GetCreateEvents()
-	createEvents2 := mockEmitter2.GetCreateEvents()
+	createEvents1 := mockEmitter1.GetEventsByOperation("CREATE")
+	createEvents2 := mockEmitter2.GetEventsByOperation("CREATE")
 
 	assert.Len(t, createEvents2, len(createEvents1), "Both orders should produce same number of create events")
 	assert.Len(t, createEvents1, 1, "Should have one create event")
 
 	if len(createEvents1) > 0 && len(createEvents2) > 0 {
-		assert.Equal(t, createEvents1[0], createEvents2[0], "Both orders should produce same create event")
+		assert.Equal(t,
+			createEvents1[0].Identifier,
+			createEvents2[0].Identifier,
+			"Both orders should produce same create event",
+		)
 	}
 }
 
 // TestFolderReconciler_ScopeIsolation tests that different scopes don't interfere.
 func TestFolderReconciler_ScopeIsolation(t *testing.T) {
-	mockEmitter1 := &MockEventEmitter{}
+	mockEmitter1 := &MockReconcileEmitter{}
 	mockControlEmitter1 := &MockControlEventEmitter{}
 	gitDest1 := types.NewResourceReference("gitdest-apps", "default")
 	reconciler1 := NewFolderReconciler(gitDest1, mockEmitter1, mockControlEmitter1, log.Log)
 
-	mockEmitter2 := &MockEventEmitter{}
+	mockEmitter2 := &MockReconcileEmitter{}
 	mockControlEmitter2 := &MockControlEventEmitter{}
 	gitDest2 := types.NewResourceReference("gitdest-infra", "default")
 	reconciler2 := NewFolderReconciler(gitDest2, mockEmitter2, mockControlEmitter2, log.Log)
@@ -237,27 +244,25 @@ func TestFolderReconciler_ScopeIsolation(t *testing.T) {
 	assert.True(t, reconciler1.HasBothStates(), "First reconciler should have both states")
 	assert.True(t, reconciler2.HasBothStates(), "Second reconciler should have both states")
 
-	// First reconciler should have reconcile event for deployment
-	reconcileEvents1 := mockEmitter1.GetReconcileEvents()
+	reconcileEvents1 := mockEmitter1.GetEventsByOperation(string(events.ReconcileResource))
 	assert.Len(t, reconcileEvents1, 1, "First reconciler should have one reconcile event")
-	assert.Equal(t, "app-deployment", reconcileEvents1[0].Name, "Should reconcile deployment")
+	assert.Equal(t, "app-deployment", reconcileEvents1[0].Identifier.Name, "Should reconcile deployment")
 
-	// Second reconciler should have delete event for orphan configmap
-	deleteEvents2 := mockEmitter2.GetDeleteEvents()
+	deleteEvents2 := mockEmitter2.GetEventsByOperation("DELETE")
 	assert.Len(t, deleteEvents2, 1, "Second reconciler should have one delete event")
-	assert.Equal(t, "orphan-cm", deleteEvents2[0].Name, "Should delete orphan configmap")
+	assert.Equal(t, "orphan-cm", deleteEvents2[0].Identifier.Name, "Should delete orphan configmap")
 
 	// Cross-contamination check
-	assert.Empty(t, mockEmitter1.GetDeleteEvents(), "First reconciler should not have delete events")
-	// Second reconciler should have reconcile event for worker-node (exists in both places)
-	reconcileEvents2 := mockEmitter2.GetReconcileEvents()
+	assert.Empty(t, mockEmitter1.GetEventsByOperation("DELETE"), "First reconciler should not have delete events")
+
+	reconcileEvents2 := mockEmitter2.GetEventsByOperation(string(events.ReconcileResource))
 	assert.Len(t, reconcileEvents2, 1, "Second reconciler should have one reconcile event")
-	assert.Equal(t, "worker-node", reconcileEvents2[0].Name, "Should reconcile worker-node")
+	assert.Equal(t, "worker-node", reconcileEvents2[0].Identifier.Name, "Should reconcile worker-node")
 }
 
 // TestFolderReconciler_ComplexScenario tests a complex real-world scenario.
 func TestFolderReconciler_ComplexScenario(t *testing.T) {
-	mockEmitter := &MockEventEmitter{}
+	mockEmitter := &MockReconcileEmitter{}
 	mockControlEmitter := &MockControlEventEmitter{}
 	gitDest := types.NewResourceReference("my-app-gitdest", "production")
 	reconciler := NewFolderReconciler(gitDest, mockEmitter, mockControlEmitter, log.Log)
@@ -287,16 +292,16 @@ func TestFolderReconciler_ComplexScenario(t *testing.T) {
 	})
 
 	// Verify complex reconciliation results
-	createEvents := mockEmitter.GetCreateEvents()
-	deleteEvents := mockEmitter.GetDeleteEvents()
-	reconcileEvents := mockEmitter.GetReconcileEvents()
+	createEvents := mockEmitter.GetEventsByOperation("CREATE")
+	deleteEvents := mockEmitter.GetEventsByOperation("DELETE")
+	reconcileEvents := mockEmitter.GetEventsByOperation(string(events.ReconcileResource))
 
 	// Should create missing resources (backend, backend-svc, app-config)
 	assert.Len(t, createEvents, 3, "Should create 3 missing resources")
 
 	createNames := make(map[string]bool)
 	for _, event := range createEvents {
-		createNames[event.Name] = true
+		createNames[event.Identifier.Name] = true
 	}
 	assert.True(t, createNames["backend"], "Should create missing backend deployment")
 	assert.True(t, createNames["backend-svc"], "Should create missing backend service")
@@ -307,7 +312,7 @@ func TestFolderReconciler_ComplexScenario(t *testing.T) {
 
 	deleteNames := make(map[string]bool)
 	for _, event := range deleteEvents {
-		deleteNames[event.Name] = true
+		deleteNames[event.Identifier.Name] = true
 	}
 	assert.True(t, deleteNames["old-config"], "Should delete old configmap")
 	assert.True(t, deleteNames["legacy-secret"], "Should delete legacy secret")
@@ -318,7 +323,7 @@ func TestFolderReconciler_ComplexScenario(t *testing.T) {
 
 	reconcileNames := make(map[string]bool)
 	for _, event := range reconcileEvents {
-		reconcileNames[event.Name] = true
+		reconcileNames[event.Identifier.Name] = true
 	}
 	assert.True(t, reconcileNames["frontend"], "Should reconcile frontend deployment")
 	assert.True(t, reconcileNames["frontend-svc"], "Should reconcile frontend service")

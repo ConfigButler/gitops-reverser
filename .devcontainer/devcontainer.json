@@ -74,15 +74,14 @@
   "postCreateCommand": "bash .devcontainer/post-create.sh '${containerWorkspaceFolder}'",
   "remoteUser": "vscode",
   "mounts": [
-    "source=ghconfig,target=/home/vscode/.config/gh,type=volume",
-    "source=${localEnv:HOME}${localEnv:USERPROFILE}/.gitconfig,target=/home/vscode/.gitconfig-host,type=bind,readonly,consistency=cached",
-    "source=devcontainer-ssh,target=/home/vscode/.ssh,type=volume",
     "source=gomodcache,target=/go/pkg/mod,type=volume",
     "source=gobuildcache,target=/home/vscode/.cache/go-build,type=volume",
     "source=codexconfig,target=/home/vscode/.codex,type=volume"
   ],
   "containerEnv": {
     "HOST_PROJECT_PATH": "${localWorkspaceFolder}",
-    "PROJECT_PATH": "/workspaces/${localWorkspaceFolderBasename}"
+    "PROJECT_PATH": "/workspaces/${localWorkspaceFolderBasename}",
+    "GIT_USER_NAME": "${localEnv:GIT_USER_NAME}",
+    "GIT_USER_EMAIL": "${localEnv:GIT_USER_EMAIL}"
   }
 }

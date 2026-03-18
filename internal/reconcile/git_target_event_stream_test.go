@@ -45,14 +45,14 @@ var _ = Describe("GitTargetEventStream", func() {
 	)
 
 	BeforeEach(func() {
-		mockWorker = &mockBranchWorker{events: make([]git.Event, 0)}
+		mockWorker = &mockBranchWorker{events: make([]git.Event, 0), batches: make([]*git.ReconcileBatch, 0)}
 		logger = logr.Discard()
 		stream = NewGitTargetEventStream(gitTargetName, gitTargetNS, mockWorker, logger)
 	})
 
 	Describe("Initial State", func() {
-		It("should start in STARTUP_RECONCILE state", func() {
-			Expect(stream.GetState()).To(Equal(StartupReconcile))
+		It("should start in RECONCILING state", func() {
+			Expect(stream.GetState()).To(Equal(Reconciling))
 		})
 
 		It("should have empty buffers initially", func() {
@@ -62,7 +62,7 @@ var _ = Describe("GitTargetEventStream", func() {
 	})
 
 	Describe("Event Buffering During Reconciliation", func() {
-		It("should buffer events during STARTUP_RECONCILE", func() {
+		It("should buffer events during RECONCILING", func() {
 			event := createTestEvent("pod", "test-pod", "CREATE")
 
 			stream.OnWatchEvent(event)
@@ -104,7 +104,7 @@ var _ = Describe("GitTargetEventStream", func() {
 		})
 
 		It("should transition state correctly", func() {
-			Expect(stream.GetState()).To(Equal(StartupReconcile))
+			Expect(stream.GetState()).To(Equal(Reconciling))
 
 			stream.OnReconciliationComplete()
 
@@ -138,6 +138,45 @@ var _ = Describe("GitTargetEventStream", func() {
 		})
 	})
 
+	Describe("BeginReconciliation", func() {
+		It("should be a no-op when already in RECONCILING", func() {
+			Expect(stream.GetState()).To(Equal(Reconciling))
+			stream.BeginReconciliation()
+			Expect(stream.GetState()).To(Equal(Reconciling))
+		})
+
+		It("should re-enter RECONCILING from LIVE_PROCESSING and buffer new events", func() {
+			stream.OnReconciliationComplete() // → LiveProcessing
+			Expect(stream.GetState()).To(Equal(LiveProcessing))
+
+			stream.BeginReconciliation() // → Reconciling again
+			Expect(stream.GetState()).To(Equal(Reconciling))
+
+			event := createTestEvent("pod", "test-pod", "UPDATE")
+			stream.OnWatchEvent(event)
+
+			Expect(stream.GetBufferedEventCount()).To(Equal(1))
+			Expect(mockWorker.events).To(BeEmpty()) // buffered, not forwarded
+		})
+	})
+
+	Describe("EmitReconcileBatch", func() {
+		It("should enqueue batch to worker and stamp GitTarget info", func() {
+			batch := git.ReconcileBatch{
+				Events: []git.Event{
+					createTestEvent("pod", "pod1", "CREATE"),
+				},
+				CommitMessage: "reconcile: sync 1 resources",
+			}
+
+			err := stream.EmitReconcileBatch(batch)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(mockWorker.batches).To(HaveLen(1))
+			Expect(mockWorker.batches[0].GitTargetName).To(Equal(gitTargetName))
+			Expect(mockWorker.batches[0].GitTargetNamespace).To(Equal(gitTargetNS))
+		})
+	})
+
 	Describe("Event Hash Deduplication", func() {
 		It("should treat different operations as different events", func() {
 			event1 := createTestEvent("pod", "test-pod", "CREATE")
@@ -167,11 +206,16 @@ var _ = Describe("GitTargetEventStream", func() {
 
 // mockBranchWorker implements EventEnqueuer interface for testing.
 type mockBranchWorker struct {
-	events []git.Event
+	events  []git.Event
+	batches []*git.ReconcileBatch
 }
 
 func (m *mockBranchWorker) Enqueue(event git.Event) {
 	m.events = append(m.events, event)
+}
+
+func (m *mockBranchWorker) EnqueueBatch(batch *git.ReconcileBatch) {
+	m.batches = append(m.batches, batch)
 }
 
 // createTestEvent creates a test event with minimal required fields.

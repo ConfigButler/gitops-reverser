@@ -711,6 +711,149 @@ func setHead(r *git.Repository, branchName string) error {
 	return r.Storer.SetReference(newHeadRef)
 }
 
+// WriteBatchWithContentWriter handles writing a ReconcileBatch as a single atomic commit.
+func WriteBatchWithContentWriter(
+	ctx context.Context,
+	writer eventContentWriter,
+	repoPath string,
+	batch *ReconcileBatch,
+	targetBranchName string,
+	auth transport.AuthMethod,
+) (*WriteEventsResult, error) {
+	logger := log.FromContext(ctx)
+	logger.Info("Starting writeBatch operation", "path", repoPath, "events", len(batch.Events))
+	if writer == nil {
+		return nil, errors.New("content writer is required")
+	}
+
+	repo, err := git.PlainOpen(repoPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open repository: %w", err)
+	}
+
+	targetBranch := plumbing.NewBranchReferenceName(targetBranchName)
+
+	result := &WriteEventsResult{
+		CommitsCreated: 0,
+		ConflictPulls:  []*PullReport{},
+		Failures:       0,
+	}
+
+	const maxRetries = 3
+	for ; result.Failures < maxRetries; result.Failures++ {
+		if result.Failures > 0 {
+			if err := tryResolve(ctx, logger, result, repo, targetBranch, auth); err != nil {
+				continue
+			}
+		}
+
+		done, err := tryWriteBatchAttempt(
+			ctx, logger, writer, result, repo, batch, targetBranch, targetBranchName, auth,
+		)
+		if err != nil {
+			return nil, err
+		}
+		if done {
+			break
+		}
+	}
+
+	return result, nil
+}
+
+func tryWriteBatchAttempt(
+	ctx context.Context,
+	logger logr.Logger,
+	writer eventContentWriter,
+	result *WriteEventsResult,
+	repo *git.Repository,
+	batch *ReconcileBatch,
+	targetBranch plumbing.ReferenceName,
+	targetBranchName string,
+	auth transport.AuthMethod,
+) (bool, error) {
+	baseBranch, baseHash, err := GetCurrentBranch(repo)
+	if err != nil {
+		return false, err
+	}
+
+	if baseBranch != targetBranch {
+		if err := switchOrCreateBranch(repo, targetBranch, logger, targetBranchName, baseHash); err != nil {
+			return false, err
+		}
+	}
+
+	committed, lastHash, err := generateBatchCommit(ctx, writer, repo, batch)
+	if err != nil {
+		return false, fmt.Errorf("failed to generate batch commit: %w", err)
+	}
+
+	result.LastHash = printSha(lastHash)
+	if !committed {
+		logger.Info("No changes in batch, no need to push")
+		result.CommitsCreated = 0
+		return true, nil
+	}
+	result.CommitsCreated = 1
+
+	if err := PushAtomic(ctx, repo, baseHash, baseBranch, auth); err == nil {
+		logger.Info("Batch pushed to remote", "failureCount", result.Failures)
+		return true, nil
+	}
+
+	return false, nil
+}
+
+// generateBatchCommit applies all events in a ReconcileBatch without committing after each,
+// then creates a single commit with the batch message.
+// Returns (committed bool, lastHash, error).
+func generateBatchCommit(
+	ctx context.Context,
+	writer eventContentWriter,
+	repo *git.Repository,
+	batch *ReconcileBatch,
+) (bool, plumbing.Hash, error) {
+	logger := log.FromContext(ctx)
+	worktree, err := repo.Worktree()
+	if err != nil {
+		return false, plumbing.ZeroHash, fmt.Errorf("failed to get worktree: %w", err)
+	}
+
+	anyChanges := false
+	for _, event := range batch.Events {
+		changesApplied, err := applyEventToWorktree(ctx, writer, worktree, event)
+		if err != nil {
+			return false, plumbing.ZeroHash, err
+		}
+		if changesApplied {
+			anyChanges = true
+		}
+	}
+
+	if !anyChanges {
+		return false, plumbing.ZeroHash, nil
+	}
+
+	hash, err := worktree.Commit(batch.CommitMessage, &git.CommitOptions{
+		Author: &object.Signature{
+			Name:  "gitops-reverser",
+			Email: "noreply@configbutler.ai",
+			When:  time.Now(),
+		},
+		Committer: &object.Signature{
+			Name:  "gitops-reverser",
+			Email: "noreply@configbutler.ai",
+			When:  time.Now(),
+		},
+	})
+	if err != nil {
+		return false, plumbing.ZeroHash, fmt.Errorf("failed to create batch commit: %w", err)
+	}
+
+	logger.Info("Created batch commit", "message", batch.CommitMessage, "events", len(batch.Events))
+	return true, hash, nil
+}
+
 // generateCommitsFromEvents creates commits from the provided events.
 func generateCommitsFromEvents(
 	ctx context.Context,
