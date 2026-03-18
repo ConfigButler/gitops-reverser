@@ -22,10 +22,10 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/ConfigButler/gitops-reverser/internal/events"
+	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
@@ -139,11 +139,9 @@ func TestFolderReconciler_FindDifferences(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Create mock emitters
-			mockEmitter := &MockEventEmitter{}
+			mockEmitter := &MockReconcileEmitter{}
 			mockControlEmitter := &MockControlEventEmitter{}
 
-			// Create reconciler with new API
 			gitDest := types.NewResourceReference("test-gitdest", "default")
 			reconciler := NewFolderReconciler(gitDest, mockEmitter, mockControlEmitter, log.Log)
 
@@ -170,7 +168,7 @@ func TestFolderReconciler_FindDifferences(t *testing.T) {
 }
 
 func TestFolderReconciler_OnClusterState(t *testing.T) {
-	mockEmitter := &MockEventEmitter{}
+	mockEmitter := &MockReconcileEmitter{}
 	mockControlEmitter := &MockControlEventEmitter{}
 	gitDest := types.NewResourceReference("test-gitdest", "default")
 	reconciler := NewFolderReconciler(gitDest, mockEmitter, mockControlEmitter, log.Log)
@@ -200,7 +198,7 @@ func TestFolderReconciler_OnClusterState(t *testing.T) {
 }
 
 func TestFolderReconciler_OnRepoState(t *testing.T) {
-	mockEmitter := &MockEventEmitter{}
+	mockEmitter := &MockReconcileEmitter{}
 	mockControlEmitter := &MockControlEventEmitter{}
 	gitDest := types.NewResourceReference("test-gitdest", "default")
 	reconciler := NewFolderReconciler(gitDest, mockEmitter, mockControlEmitter, log.Log)
@@ -230,7 +228,7 @@ func TestFolderReconciler_OnRepoState(t *testing.T) {
 }
 
 func TestFolderReconciler_NoDeleteForIdenticalCoreNamespacedResource(t *testing.T) {
-	mockEmitter := &MockEventEmitter{}
+	mockEmitter := &MockReconcileEmitter{}
 	mockControlEmitter := &MockControlEventEmitter{}
 	gitDest := types.NewResourceReference("test-gitdest", "default")
 	reconciler := NewFolderReconciler(gitDest, mockEmitter, mockControlEmitter, log.Log)
@@ -252,16 +250,19 @@ func TestFolderReconciler_NoDeleteForIdenticalCoreNamespacedResource(t *testing.
 		Resources: []types.ResourceIdentifier{resource},
 	})
 
-	assert.Empty(t, mockEmitter.GetCreateEvents())
-	assert.Empty(t, mockEmitter.GetDeleteEvents())
-	assert.Equal(t, []types.ResourceIdentifier{resource}, mockEmitter.GetReconcileEvents())
+	assert.Empty(t, mockEmitter.GetEventsByOperation("CREATE"))
+	assert.Empty(t, mockEmitter.GetEventsByOperation("DELETE"))
+	assert.Equal(t,
+		[]types.ResourceIdentifier{resource},
+		mockEmitter.GetIdentifiersByOperation(string(events.ReconcileResource)),
+	)
 
 	stats := reconciler.GetLastSnapshotStats()
 	assert.Equal(t, SnapshotStats{Created: 0, Updated: 1, Deleted: 0}, stats)
 }
 
 func TestFolderReconciler_HasBothStates(t *testing.T) {
-	mockEmitter := &MockEventEmitter{}
+	mockEmitter := &MockReconcileEmitter{}
 	mockControlEmitter := &MockControlEventEmitter{}
 	gitDest := types.NewResourceReference("test-gitdest", "default")
 	reconciler := NewFolderReconciler(gitDest, mockEmitter, mockControlEmitter, log.Log)
@@ -289,7 +290,7 @@ func TestFolderReconciler_HasBothStates(t *testing.T) {
 }
 
 func TestFolderReconciler_HasBothStates_WithEmptyStates(t *testing.T) {
-	mockEmitter := &MockEventEmitter{}
+	mockEmitter := &MockReconcileEmitter{}
 	mockControlEmitter := &MockControlEventEmitter{}
 	gitDest := types.NewResourceReference("test-gitdest", "default")
 	reconciler := NewFolderReconciler(gitDest, mockEmitter, mockControlEmitter, log.Log)
@@ -308,7 +309,7 @@ func TestFolderReconciler_HasBothStates_WithEmptyStates(t *testing.T) {
 }
 
 func TestFolderReconciler_GetGitDest(t *testing.T) {
-	mockEmitter := &MockEventEmitter{}
+	mockEmitter := &MockReconcileEmitter{}
 	mockControlEmitter := &MockControlEventEmitter{}
 	gitDest := types.NewResourceReference("test-gitdest", "default")
 	reconciler := NewFolderReconciler(gitDest, mockEmitter, mockControlEmitter, log.Log)
@@ -323,41 +324,66 @@ func TestFolderReconciler_GetGitDest(t *testing.T) {
 	assert.Contains(t, reconciler.String(), "default/test-gitdest", "String should contain gitDest reference")
 }
 
-// MockEventEmitter is a mock implementation of EventEmitter for testing.
-type MockEventEmitter struct {
-	createEvents    []types.ResourceIdentifier
-	deleteEvents    []types.ResourceIdentifier
-	reconcileEvents []types.ResourceIdentifier
+func TestFolderReconciler_EmitsSingleBatch(t *testing.T) {
+	mockEmitter := &MockReconcileEmitter{}
+	mockControlEmitter := &MockControlEventEmitter{}
+	gitDest := types.NewResourceReference("test-gitdest", "default")
+	reconciler := NewFolderReconciler(gitDest, mockEmitter, mockControlEmitter, log.Log)
+
+	reconciler.OnClusterState(events.ClusterStateEvent{
+		GitDest: gitDest,
+		Resources: []types.ResourceIdentifier{
+			{Group: "", Version: "v1", Resource: "pods", Name: "new-pod"},
+			{Group: "", Version: "v1", Resource: "pods", Name: "existing-pod"},
+		},
+	})
+	reconciler.OnRepoState(events.RepoStateEvent{
+		GitDest: gitDest,
+		Resources: []types.ResourceIdentifier{
+			{Group: "", Version: "v1", Resource: "pods", Name: "existing-pod"},
+			{Group: "", Version: "v1", Resource: "pods", Name: "old-pod"},
+		},
+	})
+
+	// Exactly one batch should be emitted
+	assert.Len(t, mockEmitter.Batches, 1, "Should emit exactly one batch")
+	batch := mockEmitter.Batches[0]
+
+	// Batch should contain all events
+	assert.Len(t, batch.Events, 3, "Batch should have 3 events (1 create, 1 delete, 1 reconcile)")
+	assert.Contains(t, batch.CommitMessage, "reconcile: sync 3 resources")
 }
 
-func (m *MockEventEmitter) EmitCreateEvent(resource types.ResourceIdentifier, _ *unstructured.Unstructured) error {
-	m.createEvents = append(m.createEvents, resource)
+// MockReconcileEmitter is a mock implementation of ReconcileEmitter for testing.
+type MockReconcileEmitter struct {
+	Batches []git.ReconcileBatch
+}
+
+func (m *MockReconcileEmitter) EmitReconcileBatch(batch git.ReconcileBatch) error {
+	m.Batches = append(m.Batches, batch)
 	return nil
 }
 
-func (m *MockEventEmitter) EmitDeleteEvent(resource types.ResourceIdentifier) error {
-	m.deleteEvents = append(m.deleteEvents, resource)
-	return nil
+// GetEventsByOperation returns all events from all batches matching the given operation.
+func (m *MockReconcileEmitter) GetEventsByOperation(op string) []git.Event {
+	var result []git.Event
+	for _, batch := range m.Batches {
+		for _, ev := range batch.Events {
+			if ev.Operation == op {
+				result = append(result, ev)
+			}
+		}
+	}
+	return result
 }
 
-func (m *MockEventEmitter) EmitReconcileResourceEvent(
-	resource types.ResourceIdentifier,
-	_ *unstructured.Unstructured,
-) error {
-	m.reconcileEvents = append(m.reconcileEvents, resource)
-	return nil
-}
-
-func (m *MockEventEmitter) GetCreateEvents() []types.ResourceIdentifier {
-	return m.createEvents
-}
-
-func (m *MockEventEmitter) GetDeleteEvents() []types.ResourceIdentifier {
-	return m.deleteEvents
-}
-
-func (m *MockEventEmitter) GetReconcileEvents() []types.ResourceIdentifier {
-	return m.reconcileEvents
+// GetIdentifiersByOperation returns resource identifiers from all batch events with the given operation.
+func (m *MockReconcileEmitter) GetIdentifiersByOperation(op string) []types.ResourceIdentifier {
+	var result []types.ResourceIdentifier
+	for _, ev := range m.GetEventsByOperation(op) {
+		result = append(result, ev.Identifier)
+	}
+	return result
 }
 
 // MockControlEventEmitter is a mock implementation of ControlEventEmitter for testing.

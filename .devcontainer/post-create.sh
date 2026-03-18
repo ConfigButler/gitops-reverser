@@ -11,74 +11,79 @@ fail() {
   exit 1
 }
 
-# Resolve workspace path in a way that works both inside and outside
-# VS Code-specific shell variable injection.
 workspace_dir="${1:-${containerWorkspaceFolder:-${WORKSPACE_FOLDER:-$(pwd)}}}"
 log "Using workspace directory: ${workspace_dir}"
 
-# Keep ~/.gitconfig writable inside the container while still importing host settings.
-if [ -f /home/vscode/.gitconfig-host ]; then
-  log "Configuring git to include /home/vscode/.gitconfig-host"
-  touch /home/vscode/.gitconfig
-  if git config --global --get-all include.path | grep -Fxq "/home/vscode/.gitconfig-host"; then
-    log "Host gitconfig include already present"
-  else
-    git config --global --add include.path /home/vscode/.gitconfig-host
-    log "Added host gitconfig include"
-  fi
+# Resolve Git identity from effective config first, then fallback env vars.
+git_name="$(git config --get user.name || true)"
+git_email="$(git config --get user.email || true)"
+
+if [ -z "${git_name}" ] && [ -n "${GIT_USER_NAME:-}" ]; then
+  git_name="${GIT_USER_NAME}"
 fi
 
-# Require basic Git identity information.
-git_name="$(git config --global --includes --get user.name || true)"
-git_email="$(git config --global --includes --get user.email || true)"
+if [ -z "${git_email}" ] && [ -n "${GIT_USER_EMAIL:-}" ]; then
+  git_email="${GIT_USER_EMAIL}"
+fi
+
 if [ -z "${git_name}" ] || [ -z "${git_email}" ]; then
-  fail "Missing Git identity. Configure both user.name and user.email in your host ~/.gitconfig."
+  fail "Missing Git identity. Set user.name and user.email in Git, or provide GIT_USER_NAME and GIT_USER_EMAIL to the devcontainer environment."
 fi
 
-# Respect existing signing settings (OpenPGP/SSH). Fallback to SSH signing only when missing.
-if git config --global --includes --get commit.gpgsign >/dev/null 2>&1 \
-  || git config --global --includes --get gpg.format >/dev/null 2>&1 \
-  || git config --global --includes --get user.signingkey >/dev/null 2>&1; then
-  log "Detected existing Git signing configuration; leaving signing settings unchanged"
-else
-  log "No Git signing configuration detected; configuring SSH signing fallback"
-
-  mkdir -p /home/vscode/.ssh
-
-  if ! ssh-add -L >/tmp/ssh-agent-keys.out 2>/dev/null || ! grep -qE '^ssh-' /tmp/ssh-agent-keys.out; then
-    log "No SSH keys found in agent; creating fallback signing key"
-    if [ ! -f /home/vscode/.ssh/signing_key ]; then
-      ssh-keygen -t ed25519 -f /home/vscode/.ssh/signing_key -N "" -C "${git_email}" >/dev/null
-    fi
-    cp /home/vscode/.ssh/signing_key.pub /tmp/ssh-agent-keys.out
-  fi
-
-  first_pubkey="$(head -n 1 /tmp/ssh-agent-keys.out)"
-  printf "%s %s\n" "${git_email}" "${first_pubkey}" > /home/vscode/.ssh/allowed_signers
-  printf "%s\n" "${first_pubkey}" > /home/vscode/.ssh/signing_key.pub
-
-  git config --global gpg.format ssh
-  git config --global commit.gpgsign true
-  git config --global gpg.ssh.allowedSignersFile /home/vscode/.ssh/allowed_signers
-  git config --global user.signingkey /home/vscode/.ssh/signing_key.pub
-
-  rm -f /tmp/ssh-agent-keys.out
+# Persist identity globally in the container if it is not already configured there.
+if ! git config --global --get user.name >/dev/null 2>&1; then
+  git config --global user.name "${git_name}"
 fi
 
+if ! git config --global --get user.email >/dev/null 2>&1; then
+  git config --global user.email "${git_email}"
+fi
 
-# Ensure Go-related caches exist and are writable by vscode
+# Require SSH agent forwarding for signing.
+if [ -z "${SSH_AUTH_SOCK:-}" ]; then
+  fail "SSH agent not available in the devcontainer. Start ssh-agent on your machine, load your key with ssh-add, then reopen the devcontainer."
+fi
+
+agent_keys_file="$(mktemp)"
+trap 'rm -f "${agent_keys_file}"' EXIT
+
+if ! ssh-add -L >"${agent_keys_file}" 2>/dev/null; then
+  fail "Could not read SSH keys from agent. Make sure your key is loaded on your machine with ssh-add, then reopen the devcontainer."
+fi
+
+if ! grep -qE '^ssh-' "${agent_keys_file}"; then
+  fail "SSH agent is running but has no keys loaded. Run ssh-add ~/.ssh/id_ed25519 on your machine, then reopen the devcontainer."
+fi
+
+first_pubkey="$(head -n 1 "${agent_keys_file}")"
+
+# Enforce SSH commit signing.
+git config --global gpg.format ssh
+git config --global commit.gpgsign true
+
+mkdir -p /home/vscode/.config/git /home/vscode/.ssh
+printf '%s\n' "${first_pubkey}" > /home/vscode/.ssh/devcontainer_signing_key.pub
+chmod 600 /home/vscode/.ssh/devcontainer_signing_key.pub
+git config --global user.signingkey /home/vscode/.ssh/devcontainer_signing_key.pub
+
+# Useful for local verification output.
+printf '%s <%s> %s\n' "${git_name}" "${git_email}" "${first_pubkey}" > /home/vscode/.config/git/allowed_signers
+chmod 600 /home/vscode/.config/git/allowed_signers
+git config --global gpg.ssh.allowedSignersFile /home/vscode/.config/git/allowed_signers
+
+log "Git identity and SSH signing configured"
+
 log "Ensuring Go cache directories exist"
 sudo mkdir -p \
   /home/vscode/.cache/go-build \
   /home/vscode/.cache/goimports \
   /home/vscode/.cache/golangci-lint
 
-# Fix ownership for workspace and cache roots used by tooling
 if [ -d "${workspace_dir}" ]; then
-  log "Fixing ownership for workspace and cache directories"
+  log "Fixing ownership for workspace and home directories"
   sudo chown -R vscode:vscode "${workspace_dir}" /home/vscode || true
 else
-  log "Workspace directory not found; fixing ownership for cache only"
+  log "Workspace directory not found; fixing ownership for home only"
   sudo chown -R vscode:vscode /home/vscode || true
 fi
 

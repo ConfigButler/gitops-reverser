@@ -27,8 +27,14 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	"github.com/ConfigButler/gitops-reverser/internal/events"
+	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
+
+// BatchEmitter emits a complete reconcile batch as a single unit.
+type BatchEmitter interface {
+	EmitReconcileBatch(batch git.ReconcileBatch) error
+}
 
 // FolderReconciler reconciles Git base folder to match cluster state.
 // It operates without time concerns (delegated to WatchManager) and focuses purely
@@ -47,9 +53,9 @@ type FolderReconciler struct {
 	clusterObjects map[string]unstructured.Unstructured
 
 	// Dependencies for event emission
-	eventEmitter   EventEmitter
-	controlEmitter events.ControlEventEmitter
-	logger         logr.Logger
+	reconcileEmitter BatchEmitter
+	controlEmitter   events.ControlEventEmitter
+	logger           logr.Logger
 
 	lastSnapshotStats SnapshotStats
 }
@@ -64,15 +70,15 @@ type SnapshotStats struct {
 // NewFolderReconciler creates a new FolderReconciler.
 func NewFolderReconciler(
 	gitDest types.ResourceReference,
-	eventEmitter EventEmitter,
+	reconcileEmitter BatchEmitter,
 	controlEmitter events.ControlEventEmitter,
 	logger logr.Logger,
 ) *FolderReconciler {
 	return &FolderReconciler{
-		gitDest:        gitDest,
-		eventEmitter:   eventEmitter,
-		controlEmitter: controlEmitter,
-		logger:         logger.WithValues("gitDest", gitDest.String()),
+		gitDest:          gitDest,
+		reconcileEmitter: reconcileEmitter,
+		controlEmitter:   controlEmitter,
+		logger:           logger.WithValues("gitDest", gitDest.String()),
 	}
 }
 
@@ -122,6 +128,7 @@ func (r *FolderReconciler) OnRepoState(event events.RepoStateEvent) {
 }
 
 // reconcile performs the reconciliation logic when both states are available.
+// It collects all changes into a single ReconcileBatch and emits it atomically.
 func (r *FolderReconciler) reconcile() {
 	// Only reconcile when we have both cluster and Git state
 	if !r.clusterStateSeen || !r.gitStateSeen {
@@ -141,26 +148,50 @@ func (r *FolderReconciler) reconcile() {
 		"toDelete", len(toDelete),
 		"existingInBoth", len(existingInBoth))
 
-	// Emit reconciliation events (time filtering happens in WatchManager)
+	total := len(toCreate) + len(toDelete) + len(existingInBoth)
+	if total == 0 {
+		r.logger.V(1).Info("No differences found, skipping batch emission")
+		return
+	}
+
+	// Build the complete event list for this reconcile run
+	var batchEvents []git.Event
+
 	for _, resource := range toCreate {
 		obj := r.objectForResource(resource)
-		if err := r.eventEmitter.EmitCreateEvent(resource, obj); err != nil {
-			r.logger.Error(err, "Failed to emit create event", "resource", resource.String())
-		}
+		batchEvents = append(batchEvents, git.Event{
+			Operation:  "CREATE",
+			Identifier: resource,
+			Object:     obj,
+			UserInfo:   git.UserInfo{Username: "gitops-reverser"},
+		})
 	}
 
 	for _, resource := range toDelete {
-		if err := r.eventEmitter.EmitDeleteEvent(resource); err != nil {
-			r.logger.Error(err, "Failed to emit delete event", "resource", resource.String())
-		}
+		batchEvents = append(batchEvents, git.Event{
+			Operation:  "DELETE",
+			Identifier: resource,
+			UserInfo:   git.UserInfo{Username: "gitops-reverser"},
+		})
 	}
 
-	// For resources that exist in both places, emit reconcile event immediately
 	for _, resource := range existingInBoth {
 		obj := r.objectForResource(resource)
-		if err := r.eventEmitter.EmitReconcileResourceEvent(resource, obj); err != nil {
-			r.logger.Error(err, "Failed to emit reconcile resource event", "resource", resource.String())
-		}
+		batchEvents = append(batchEvents, git.Event{
+			Operation:  string(events.ReconcileResource),
+			Identifier: resource,
+			Object:     obj,
+			UserInfo:   git.UserInfo{Username: "gitops-reverser"},
+		})
+	}
+
+	batch := git.ReconcileBatch{
+		Events:        batchEvents,
+		CommitMessage: fmt.Sprintf("reconcile: sync %d resources from cluster snapshot", total),
+	}
+
+	if err := r.reconcileEmitter.EmitReconcileBatch(batch); err != nil {
+		r.logger.Error(err, "Failed to emit reconcile batch")
 	}
 }
 

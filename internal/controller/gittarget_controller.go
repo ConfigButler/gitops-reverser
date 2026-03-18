@@ -494,6 +494,10 @@ func (r *GitTargetReconciler) evaluateSnapshotGate(
 		return nil, metav1.ConditionFalse, "", 0, err
 	}
 
+	// Enter buffering state before starting reconciliation so that live events
+	// arriving during the snapshot sync are queued and not interleaved.
+	stream.BeginReconciliation()
+
 	gitDest := types.NewResourceReference(target.Name, target.Namespace)
 	reconciler := r.EventRouter.ReconcilerManager.CreateReconciler(gitDest, stream)
 	if err := reconciler.StartReconciliation(ctx); err != nil {

@@ -24,20 +24,17 @@ import (
 	"sync"
 
 	"github.com/go-logr/logr"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
-	"github.com/ConfigButler/gitops-reverser/internal/events"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/sanitize"
-	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
 // EventStreamState represents the state of the event stream processing.
 type EventStreamState string
 
 const (
-	// StartupReconcile buffers events while initial reconciliation runs.
-	StartupReconcile EventStreamState = "STARTUP_RECONCILE"
+	// Reconciling buffers live events while a reconcile batch is in flight.
+	Reconciling EventStreamState = "RECONCILING"
 	// LiveProcessing processes all events normally.
 	LiveProcessing EventStreamState = "LIVE_PROCESSING"
 )
@@ -64,16 +61,10 @@ type GitTargetEventStream struct {
 	mu           sync.RWMutex
 }
 
-// EventEnqueuer interface for enqueuing events (allows mocking).
+// EventEnqueuer interface for enqueuing events and batches (allows mocking).
 type EventEnqueuer interface {
 	Enqueue(event git.Event)
-}
-
-// EventEmitter interface for emitting reconciliation events.
-type EventEmitter interface {
-	EmitCreateEvent(resource types.ResourceIdentifier, obj *unstructured.Unstructured) error
-	EmitDeleteEvent(resource types.ResourceIdentifier) error
-	EmitReconcileResourceEvent(resource types.ResourceIdentifier, obj *unstructured.Unstructured) error
+	EnqueueBatch(batch *git.ReconcileBatch)
 }
 
 // NewGitTargetEventStream creates a new event stream for a GitTarget.
@@ -85,7 +76,7 @@ func NewGitTargetEventStream(
 	return &GitTargetEventStream{
 		gitTargetName:        gitTargetName,
 		gitTargetNamespace:   gitTargetNamespace,
-		state:                StartupReconcile,
+		state:                Reconciling,
 		bufferedEvents:       make([]git.Event, 0),
 		processedEventHashes: make(map[string]string),
 		branchWorker:         branchWorker,
@@ -93,11 +84,24 @@ func NewGitTargetEventStream(
 	}
 }
 
+// BeginReconciliation transitions the stream to RECONCILING state (buffering live events).
+// Safe to call when already in RECONCILING state (no-op).
+func (s *GitTargetEventStream) BeginReconciliation() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.state == Reconciling {
+		return
+	}
+	s.state = Reconciling
+	s.bufferedEvents = make([]git.Event, 0)
+	s.logger.Info("Transitioned to RECONCILING state")
+}
+
 // OnWatchEvent processes incoming watch events from the cluster.
 func (s *GitTargetEventStream) OnWatchEvent(event git.Event) {
 	s.mu.Lock()
 	switch s.state {
-	case StartupReconcile:
+	case Reconciling:
 		// Buffer all events during reconciliation (no deduplication)
 		s.bufferedEvents = append(s.bufferedEvents, event)
 		bufferSize := len(s.bufferedEvents)
@@ -125,14 +129,24 @@ func (s *GitTargetEventStream) OnWatchEvent(event git.Event) {
 	}
 }
 
-// OnReconciliationComplete signals that initial reconciliation has finished.
+// EmitReconcileBatch forwards a complete reconcile batch to the BranchWorker as a single WorkItem.
+// Called while in RECONCILING state by FolderReconciler.
+func (s *GitTargetEventStream) EmitReconcileBatch(batch git.ReconcileBatch) error {
+	batch.GitTargetName = s.gitTargetName
+	batch.GitTargetNamespace = s.gitTargetNamespace
+	s.branchWorker.EnqueueBatch(&batch)
+	return nil
+}
+
+// OnReconciliationComplete signals that reconciliation has finished.
+// Transitions to LIVE_PROCESSING and flushes buffered live events.
 func (s *GitTargetEventStream) OnReconciliationComplete() {
 	s.mu.Lock()
-	if s.state != StartupReconcile {
+	if s.state != Reconciling {
 		currentState := s.state
 		s.mu.Unlock()
 		s.logger.Info(
-			"Reconciliation complete signal received but not in STARTUP_RECONCILE state",
+			"Reconciliation complete signal received but not in RECONCILING state",
 			"currentState",
 			currentState,
 		)
@@ -232,46 +246,4 @@ func (s *GitTargetEventStream) String() string {
 	defer s.mu.RUnlock()
 	return fmt.Sprintf("GitTargetEventStream(gitTarget=%s/%s, state=%s, buffered=%d, processed=%d)",
 		s.gitTargetNamespace, s.gitTargetName, s.state, len(s.bufferedEvents), len(s.processedEventHashes))
-}
-
-// EmitCreateEvent emits a CREATE event for reconciliation.
-// obj carries the full sanitized cluster object so the branch worker can write it to Git.
-func (s *GitTargetEventStream) EmitCreateEvent(
-	resource types.ResourceIdentifier,
-	obj *unstructured.Unstructured,
-) error {
-	event := git.Event{
-		Operation:  "CREATE",
-		Identifier: resource,
-		Object:     obj,
-	}
-	s.OnWatchEvent(event)
-	return nil
-}
-
-// EmitDeleteEvent emits a DELETE event for reconciliation.
-func (s *GitTargetEventStream) EmitDeleteEvent(resource types.ResourceIdentifier) error {
-	event := git.Event{
-		Operation:  "DELETE",
-		Identifier: resource,
-		// BaseFolder will be set by the reconciler
-	}
-	s.OnWatchEvent(event)
-	return nil
-}
-
-// EmitReconcileResourceEvent emits a RECONCILE_RESOURCE event for reconciliation.
-// obj carries the full sanitized cluster object so the branch worker can overwrite the
-// existing Git file with the current cluster state.
-func (s *GitTargetEventStream) EmitReconcileResourceEvent(
-	resource types.ResourceIdentifier,
-	obj *unstructured.Unstructured,
-) error {
-	event := git.Event{
-		Operation:  string(events.ReconcileResource),
-		Identifier: resource,
-		Object:     obj,
-	}
-	s.OnWatchEvent(event)
-	return nil
 }

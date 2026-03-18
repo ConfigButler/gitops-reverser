@@ -272,14 +272,21 @@ func TestGitTargetEventStream_DeduplicationPerStream(t *testing.T) {
 
 // mockEventEnqueuer implements EventEnqueuer interface for testing.
 type mockEventEnqueuer struct {
-	mu     sync.Mutex
-	events []git.Event
+	mu      sync.Mutex
+	events  []git.Event
+	batches []*git.ReconcileBatch
 }
 
 func (m *mockEventEnqueuer) Enqueue(event git.Event) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.events = append(m.events, event)
+}
+
+func (m *mockEventEnqueuer) EnqueueBatch(batch *git.ReconcileBatch) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.batches = append(m.batches, batch)
 }
 
 // createTestEventWithPath creates a test event with a specific path.

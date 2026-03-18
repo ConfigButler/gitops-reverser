@@ -65,7 +65,7 @@ func (m *ReconcilerManager) SetEventRouter(
 // CreateReconciler creates or retrieves a FolderReconciler for the given GitDestination.
 func (m *ReconcilerManager) CreateReconciler(
 	gitDest types.ResourceReference,
-	eventEmitter EventEmitter,
+	eventEmitter BatchEmitter,
 ) *FolderReconciler {
 	key := gitDest.Key()
 

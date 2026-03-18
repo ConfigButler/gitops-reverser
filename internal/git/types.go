@@ -85,6 +85,22 @@ type UserInfo struct {
 	UID      string
 }
 
+// ReconcileBatch is a complete set of file changes from one reconcile run.
+// It is enqueued as a single WorkItem so the BranchWorker always commits it atomically.
+type ReconcileBatch struct {
+	Events             []Event
+	CommitMessage      string
+	GitTargetName      string
+	GitTargetNamespace string
+}
+
+// WorkItem is the unit of work in the BranchWorker queue.
+// Exactly one of Single or Batch is non-nil.
+type WorkItem struct {
+	Single *Event
+	Batch  *ReconcileBatch
+}
+
 // Event represents a resource change event to be processed by a branch worker.
 // Branch comes from the worker context (not stored in event).
 // Path comes from the GitTarget that created this event.

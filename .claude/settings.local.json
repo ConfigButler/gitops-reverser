@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(go test:*)",
+      "Bash(make lint:*)",
+      "Bash(make test-e2e:*)"
+    ]
+  }
+}

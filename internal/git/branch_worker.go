@@ -68,7 +68,7 @@ type BranchWorker struct {
 	contentWriter *contentWriter
 
 	// Event processing
-	eventQueue chan Event
+	eventQueue chan WorkItem
 	ctx        context.Context
 	cancelFunc context.CancelFunc
 	wg         sync.WaitGroup
@@ -107,7 +107,7 @@ func NewBranchWorker(
 			"branch", branch,
 		),
 		contentWriter: writer,
-		eventQueue:    make(chan Event, branchWorkerQueueSize),
+		eventQueue:    make(chan WorkItem, branchWorkerQueueSize),
 	}
 }
 
@@ -168,10 +168,11 @@ func (w *BranchWorker) Stop() {
 	w.Log.Info("Branch worker stopped")
 }
 
-// Enqueue adds an event to this worker's queue.
+// Enqueue adds a single live event to this worker's queue.
 func (w *BranchWorker) Enqueue(event Event) {
+	item := WorkItem{Single: &event}
 	select {
-	case w.eventQueue <- event:
+	case w.eventQueue <- item:
 		w.Log.V(1).Info("Event enqueued",
 			"operation", event.Operation,
 			"path", event.Path)
@@ -179,6 +180,21 @@ func (w *BranchWorker) Enqueue(event Event) {
 		w.Log.Error(nil, "Event queue full, event dropped",
 			"operation", event.Operation,
 			"path", event.Path)
+	}
+}
+
+// EnqueueBatch adds a reconcile batch to this worker's queue as a single atomic unit.
+func (w *BranchWorker) EnqueueBatch(batch *ReconcileBatch) {
+	item := WorkItem{Batch: batch}
+	select {
+	case w.eventQueue <- item:
+		w.Log.V(1).Info("Batch enqueued",
+			"events", len(batch.Events),
+			"gitTarget", batch.GitTargetName)
+	default:
+		w.Log.Error(nil, "Event queue full, batch dropped",
+			"events", len(batch.Events),
+			"gitTarget", batch.GitTargetName)
 	}
 }
 
@@ -420,16 +436,27 @@ func (w *BranchWorker) processEvents() {
 			w.handleShutdown(eventBuffer)
 			return
 
-		case event := <-w.eventQueue:
-			// Buffer event
-			eventBuffer = append(eventBuffer, event)
-			bufferByteCount += w.estimateEventSize(event)
+		case item := <-w.eventQueue:
+			if item.Single != nil {
+				// Buffer single live event
+				eventBuffer = append(eventBuffer, *item.Single)
+				bufferByteCount += w.estimateEventSize(*item.Single)
 
-			// Check limits
-			if len(eventBuffer) >= maxCommits || bufferByteCount >= maxBytesBytes {
-				w.commitAndPush(eventBuffer)
-				eventBuffer = nil
-				bufferByteCount = 0
+				// Check limits
+				if len(eventBuffer) >= maxCommits || bufferByteCount >= maxBytesBytes {
+					w.commitAndPush(eventBuffer)
+					eventBuffer = nil
+					bufferByteCount = 0
+				}
+			} else if item.Batch != nil {
+				// Flush any buffered live events first to preserve ordering
+				if len(eventBuffer) > 0 {
+					w.commitAndPush(eventBuffer)
+					eventBuffer = nil
+					bufferByteCount = 0
+				}
+				// Process the entire batch as a single atomic commit
+				w.commitAndPushBatch(item.Batch)
 			}
 
 		case <-pushTicker.C:
@@ -524,6 +551,87 @@ func (w *BranchWorker) commitAndPush(events []Event) {
 	telemetry.GitOperationsTotal.Add(w.ctx, int64(len(events)))
 	telemetry.CommitsTotal.Add(w.ctx, 1)
 	telemetry.ObjectsWrittenTotal.Add(w.ctx, int64(len(events)))
+}
+
+// commitAndPushBatch processes a reconcile batch as a single atomic commit.
+func (w *BranchWorker) commitAndPushBatch(batch *ReconcileBatch) {
+	w.repoMu.Lock()
+	defer w.repoMu.Unlock()
+
+	log := w.Log.WithValues("batchEvents", len(batch.Events), "gitTarget", batch.GitTargetName)
+	log.Info("Starting git batch commit and push", "branch", w.Branch)
+
+	provider, err := w.getGitProvider(w.ctx)
+	if err != nil {
+		log.Error(err, "Failed to get GitProvider")
+		return
+	}
+
+	auth, err := getAuthFromSecret(w.ctx, w.Client, provider)
+	if err != nil {
+		log.Error(err, "Failed to get auth")
+		return
+	}
+
+	repoPath := w.repoPathForRemote(provider.Spec.URL)
+
+	// Resolve encryption and path from the GitTarget
+	var encryptionConfig *ResolvedEncryptionConfig
+	if batch.GitTargetName != "" && batch.GitTargetNamespace != "" {
+		targetKey := types.NamespacedName{
+			Name:      batch.GitTargetName,
+			Namespace: batch.GitTargetNamespace,
+		}
+		var target configv1alpha1.GitTarget
+		if err := w.Client.Get(w.ctx, targetKey, &target); err != nil {
+			log.Error(err, "Failed to resolve GitTarget for batch")
+			return
+		}
+
+		encryptionConfig, err = ResolveTargetEncryption(w.ctx, w.Client, &target)
+		if err != nil {
+			log.Error(err, "Failed to resolve target encryption configuration")
+			return
+		}
+
+		// Stamp path and GitTarget info onto each event in the batch
+		for i := range batch.Events {
+			if batch.Events[i].Path == "" {
+				batch.Events[i].Path = target.Spec.Path
+			}
+			batch.Events[i].GitTargetName = batch.GitTargetName
+			batch.Events[i].GitTargetNamespace = batch.GitTargetNamespace
+		}
+	}
+
+	// Configure encryption writer for the batch path
+	if len(batch.Events) > 0 {
+		encryptionWorkDir := filepath.Join(repoPath, batch.Events[0].Path)
+		if err := configureSecretEncryptionWriter(w.contentWriter, encryptionWorkDir, encryptionConfig); err != nil {
+			log.Error(err, "Failed to configure secret encryptor")
+			return
+		}
+	}
+
+	result, err := WriteBatchWithContentWriter(w.ctx, w.contentWriter, repoPath, batch, w.Branch, auth)
+	if err != nil {
+		log.Error(err, "Failed to write batch")
+		return
+	}
+
+	log.Info("Successfully pushed batch commit",
+		"commitsCreated", result.CommitsCreated,
+		"conflictPulls", len(result.ConflictPulls),
+		"failures", result.Failures)
+
+	if len(result.ConflictPulls) > 0 {
+		lastPull := result.ConflictPulls[len(result.ConflictPulls)-1]
+		w.updateBranchMetadataFromPullReport(lastPull)
+	}
+
+	telemetry.GitOperationsTotal.Add(w.ctx, int64(len(batch.Events)))
+	telemetry.CommitsTotal.Add(w.ctx, 1)
+	telemetry.ObjectsWrittenTotal.Add(w.ctx, int64(len(batch.Events)))
 }
 
 // handleShutdown finalizes processing when context is canceled.
