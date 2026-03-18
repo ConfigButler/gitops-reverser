@@ -60,7 +60,7 @@ make test-e2e
 To prepare the reusable talk/demo repo and intentionally leave it behind:
 
 ```bash
-make test-e2e-talk
+make test-e2e-demo
 ```
 
 Important points:
@@ -73,9 +73,12 @@ Important points:
   - makes debugging easier (you can inspect the live cluster state)
   - makes reruns faster (no full cluster rebuild)
   - tests are written to “append” rather than require a clean-slate cluster
-- `make test-e2e-talk` now follows the same repo-provisioning path as the normal e2e suite:
+- `make test-e2e-demo` now follows the same repo-provisioning path as the normal e2e suite:
   each run gets a fresh Gitea repo unless you explicitly provide `REPO_NAME`.
   It still leaves the demo resources behind so the environment is ready to show immediately.
+- `make test-e2e-demo` runs an extra demo-only prep step before the suite:
+  it validates the local cloudflared and pull-secret manifests, installs the demo quiz CRDs, waits for them,
+  and only then applies `test/e2e/setup/demo-only`.
 
 Notes (see [`Makefile`](Makefile:83)):
 

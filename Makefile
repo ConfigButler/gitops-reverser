@@ -320,11 +320,14 @@ $(CS)/ready: test/e2e/cluster/start-cluster.sh | $(CS)
 	touch $@
 
 FLUX_SERVICES_INPUTS = $(shell find $(FLUX_SERVICES_DIR) -type f)
-LAST_STEP_MANIFESTS_DIR = test/e2e/setup/manifests
-LOCAL_TUNNEL_CREDENTIALS = $(LAST_STEP_MANIFESTS_DIR)/cloudflared-public/tunnel-credentials.yaml
-LAST_STEP_MANIFESTS = $(shell find $(LAST_STEP_MANIFESTS_DIR) -type f -name '*.yaml')
+SHARED_MANIFESTS_DIR = test/e2e/setup/manifests
+SHARED_MANIFESTS = $(shell find $(SHARED_MANIFESTS_DIR) -type f -name '*.yaml')
+DEMO_MANIFESTS_DIR = test/e2e/setup/demo-only
+DEMO_MANIFESTS = $(shell find $(DEMO_MANIFESTS_DIR) -type f -name '*.yaml')
+DEMO_TUNNEL_CREDENTIALS = $(DEMO_MANIFESTS_DIR)/cloudflared-public/tunnel-credentials.yaml
+DEMO_PULL_SECRET = $(DEMO_MANIFESTS_DIR)/vote/pull-secret.yaml
 FLUX_SETUP_READY_INPUTS = $(CS)/flux.installed $$(FLUX_SERVICES_INPUTS)
-SERVICES_READY_INPUTS = $(CS)/flux-setup.ready $$(LAST_STEP_MANIFESTS)
+SERVICES_READY_INPUTS = $(CS)/flux-setup.ready $$(SHARED_MANIFESTS)
 $(CS)/flux.installed: $(CS)/ready | $(CS)
 	$(FLUX) install --context $(CTX) --namespace $(FLUX_NAMESPACE)
 	kubectl --context $(CTX) -n $(FLUX_NAMESPACE) wait \
@@ -366,18 +369,27 @@ $(CS)/flux-setup.ready: $(FLUX_SETUP_READY_INPUTS) | $(CS)
 # Aggregate stamp for external E2E services required by tests.
 $(CS)/services.ready: $(SERVICES_READY_INPUTS) | $(CS)
 	kubectl --context $(CTX) wait --for=condition=Established crd/prometheuses.monitoring.coreos.com crd/servicemonitors.monitoring.coreos.com --timeout=180s
-	@[ -f "$(LOCAL_TUNNEL_CREDENTIALS)" ] || { \
-		echo "ERROR: missing required local tunnel credentials file '$(LOCAL_TUNNEL_CREDENTIALS)'" >&2; \
-		echo "Create it from '$(LOCAL_TUNNEL_CREDENTIALS).example' and set stringData.token before running this target." >&2; \
-		exit 1; \
-	}
-	kubectl --context $(CTX) apply -f $(LAST_STEP_MANIFESTS_DIR)/vote/ns.yaml
-	kubectl --context $(CTX) apply -f $(LAST_STEP_MANIFESTS_DIR)/vote/crds
+	kubectl --context $(CTX) apply -k $(SHARED_MANIFESTS_DIR)
+	touch $@
+
+.PHONY: prepare-e2e-demo
+prepare-e2e-demo: $(CS)/demo.ready ## Prepare demo-only prerequisites for talk/demo e2e runs
+
+$(CS)/demo.ready: $(CS)/services.ready $$(DEMO_MANIFESTS) | $(CS)
+	$(call REQUIRE_FILE,$(DEMO_TUNNEL_CREDENTIALS),demo tunnel credentials,Create it from '$(DEMO_TUNNEL_CREDENTIALS).example' and set stringData.token before running this target.)
+	$(call REQUIRE_FILE,$(DEMO_PULL_SECRET),demo image pull secret,Create it from '$(DEMO_PULL_SECRET).example' before running this target.)
+	kubectl --context $(CTX) apply -f $(DEMO_MANIFESTS_DIR)/vote/ns.yaml
+	kubectl --context $(CTX) apply -f $(DEMO_MANIFESTS_DIR)/cloudflared-public/ns.yaml
+	kubectl --context $(CTX) wait --for=jsonpath='{.status.phase}'=Active \
+		namespace/vote \
+		namespace/cloudflared-public \
+		--timeout=120s
+	kubectl --context $(CTX) apply -f $(DEMO_MANIFESTS_DIR)/vote/crds
 	kubectl --context $(CTX) wait --for=condition=Established \
 		crd/quizsessions.examples.configbutler.ai \
 		crd/quizsubmissions.examples.configbutler.ai \
 		--timeout=180s
-	kubectl --context $(CTX) apply -k $(LAST_STEP_MANIFESTS_DIR)
+	kubectl --context $(CTX) apply -k $(DEMO_MANIFESTS_DIR)
 	touch $@
 
 # Step 1: Generate age key file — no cluster/namespace dependency; safe to run before installation.
@@ -502,6 +514,14 @@ define UPDATE_IF_CHANGED
 	fi
 endef
 
+define REQUIRE_FILE
+	@[ -f "$(1)" ] || { \
+		echo "ERROR: missing required $(2) file '$(1)'" >&2; \
+		echo "$(3)" >&2; \
+		exit 1; \
+	}
+endef
+
 ##@ Deployments of all manifests needed to run
 $(CS)/$(NAMESPACE)/helm/install.yaml: $(CS)/services.ready $(HELM_SYNC_OUTPUTS) $$(CHART_INPUTS) | $(CS)/$(NAMESPACE)/helm
 	$(DO_CLEANUP_INSTALLS)
@@ -566,8 +586,8 @@ test-e2e-quickstart-helm: ## Run quickstart smoke test (Helm install)
 	export E2E_AGE_KEY_FILE=$(CS)/age-key.txt
 	go test ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=quickstart-framework
 
-.PHONY: test-e2e-talk
-test-e2e-talk: ## Prepare a reusable talk/demo repo and leave demo resources in place
+.PHONY: test-e2e-demo
+test-e2e-demo: prepare-e2e-demo ## Prepare a reusable talk/demo repo and leave demo resources in place
 	export CTX=$(CTX)
 	export INSTALL_MODE=$(INSTALL_MODE)
 	export NAMESPACE=$(NAMESPACE)
