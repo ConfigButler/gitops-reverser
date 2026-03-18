@@ -2,7 +2,7 @@
 
 ## Summary
 
-The `test-e2e-talk` scenario currently shows repeated Git worktree resets and repeated initial snapshot reconciliations when the demo target is configured to watch the `vote` namespace plus cluster-scoped resources.
+The `test-e2e-demo` scenario currently shows repeated Git worktree resets and repeated initial snapshot reconciliations when the demo target is configured to watch the `vote` namespace plus cluster-scoped resources.
 
 The current cluster state contains about `3105` watched resources, and roughly `3000` of those are `quizsubmissions`. That large object count does not look like the root cause by itself, but it appears to amplify the problem significantly once the reset/reconciliation loop starts.
 

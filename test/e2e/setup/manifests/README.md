@@ -7,5 +7,6 @@ as additional Flux sources.
 Organize related resources in subdirectories when that keeps the intent clearer.
 
 This directory is applied via the tracked [kustomization.yaml](/workspaces/gitops-reverser2/test/e2e/setup/manifests/kustomization.yaml).
-This branch expects the local tunnel credentials file at
-`test/e2e/setup/manifests/cloudflared-public/tunnel-credentials.yaml` to exist before `make` applies the manifests.
+
+Keep this directory CI-safe. Demo-only resources that require local secrets or extra CRD ordering belong under
+`test/e2e/setup/demo-only` and are applied only by `make test-e2e-demo` / `make prepare-e2e-demo`.
