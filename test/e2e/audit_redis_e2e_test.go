@@ -35,6 +35,23 @@ const (
 )
 
 var _ = Describe("Audit Redis Queue", Label("audit-redis"), Ordered, func() {
+	var testNs string
+
+	BeforeAll(func() {
+		By("creating test namespace and applying git secrets")
+		testNs = testNamespaceFor("audit-redis")
+		_, _ = kubectlRun("create", "namespace", testNs) // idempotent; ignore AlreadyExists
+		secretsYaml := strings.TrimSpace(os.Getenv("E2E_SECRETS_YAML"))
+		Expect(secretsYaml).NotTo(BeEmpty(), "E2E_SECRETS_YAML must be set by BeforeSuite")
+		_, err := kubectlRunInNamespace(testNs, "apply", "-f", secretsYaml)
+		Expect(err).NotTo(HaveOccurred(), "failed to apply git secrets to test namespace")
+	})
+
+	AfterAll(func() {
+		By("deleting test namespace")
+		_, _ = kubectlRun("delete", "namespace", testNs, "--ignore-not-found=true")
+	})
+
 	It("should enqueue incoming audit webhook events into a Redis stream", func() {
 		streamName := defaultAuditRedisStream
 		testConfigMapName := fmt.Sprintf("audit-redis-test-cm-%d", GinkgoRandomSeed())
@@ -53,7 +70,7 @@ var _ = Describe("Audit Redis Queue", Label("audit-redis"), Ordered, func() {
 
 		By("triggering kube-apiserver audit events with a ConfigMap create/update")
 		_, err = kubectlRunInNamespace(
-			namespace,
+			testNs,
 			"delete",
 			"configmap",
 			testConfigMapName,
@@ -62,7 +79,7 @@ var _ = Describe("Audit Redis Queue", Label("audit-redis"), Ordered, func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		_, err = kubectlRunInNamespace(
-			namespace,
+			testNs,
 			"create",
 			"configmap",
 			testConfigMapName,
@@ -71,7 +88,7 @@ var _ = Describe("Audit Redis Queue", Label("audit-redis"), Ordered, func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		_, err = kubectlRunInNamespace(
-			namespace,
+			testNs,
 			"patch",
 			"configmap",
 			testConfigMapName,
@@ -103,7 +120,7 @@ var _ = Describe("Audit Redis Queue", Label("audit-redis"), Ordered, func() {
 
 		By("cleaning up test ConfigMap")
 		_, _ = kubectlRunInNamespace(
-			namespace,
+			testNs,
 			"delete",
 			"configmap",
 			testConfigMapName,

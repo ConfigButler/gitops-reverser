@@ -37,7 +37,6 @@ import (
 const (
 	quickstartFrameworkEnabledEnv = "E2E_ENABLE_QUICKSTART_FRAMEWORK"
 	quickstartFrameworkModeEnv    = "E2E_QUICKSTART_MODE"
-	quickstartSetupNamespaceEnv   = "QUICKSTART_NAMESPACE"
 	quickstartTimeoutSecondsEnv   = "QUICKSTART_TIMEOUT_SECONDS"
 )
 
@@ -66,6 +65,18 @@ var _ = Describe("Quickstart Framework", Label("quickstart-framework"), Ordered,
 		}
 
 		run = newQuickstartFrameworkRun()
+
+		qsNs := testNamespaceFor("quickstart-framework")
+		_, _ = kubectlRun("create", "namespace", qsNs)
+		secretsYaml := strings.TrimSpace(os.Getenv("E2E_SECRETS_YAML"))
+		Expect(secretsYaml).NotTo(BeEmpty(), "E2E_SECRETS_YAML must be set by BeforeSuite")
+		_, err := kubectlRunInNamespace(qsNs, "apply", "-f", secretsYaml)
+		Expect(err).NotTo(HaveOccurred(), "failed to apply git secrets to quickstart namespace")
+		applySOPSAgeKeyToNamespace(qsNs)
+	})
+
+	AfterAll(func() {
+		_, _ = kubectlRun("delete", "namespace", testNamespaceFor("quickstart-framework"), "--ignore-not-found=true")
 	})
 
 	It("sets up quickstart flow via Go framework", func() {
@@ -146,7 +157,7 @@ func (r *quickstartFrameworkRun) setupGiteaRepository() {
 }
 
 func (r *quickstartFrameworkRun) applyQuickstartResources() {
-	qsNamespace := quickstartSetupNamespace()
+	qsNamespace := testNamespaceFor("quickstart-framework")
 	createGitProviderWithURLInNamespace(r.providerName, qsNamespace, e2eGitSecretHTTP(), r.repoURL)
 
 	createGitTargetWithEncryptionOptions(
@@ -176,7 +187,7 @@ func (r *quickstartFrameworkRun) applyQuickstartResources() {
 }
 
 func (r *quickstartFrameworkRun) verifyQuickstartResourcesReady() {
-	ns := quickstartSetupNamespace()
+	ns := testNamespaceFor("quickstart-framework")
 	verifyResourceStatus("gitprovider", r.providerName, ns, "True", "Ready", "")
 	verifyResourceStatus("gittarget", r.targetName, ns, "True", "Ready", "")
 	verifyResourceStatus("watchrule", r.watchRuleName, ns, "True", "Ready", "")
@@ -197,7 +208,7 @@ func e2eGitSecretInvalid() string {
 }
 
 func (r *quickstartFrameworkRun) verifyGeneratedEncryptionSecret() string {
-	ns := quickstartSetupNamespace()
+	ns := testNamespaceFor("quickstart-framework")
 	var generatedAgeKey string
 
 	Eventually(func(g Gomega) {
@@ -236,7 +247,7 @@ func (r *quickstartFrameworkRun) verifyGeneratedEncryptionSecret() string {
 }
 
 func (r *quickstartFrameworkRun) verifyQuickstartConfigMapCommits() {
-	ns := quickstartSetupNamespace()
+	ns := testNamespaceFor("quickstart-framework")
 	configMapName := fmt.Sprintf("quickstart-config-%s", r.testID)
 	expectedFile := filepath.Join(
 		r.checkoutDir,
@@ -322,7 +333,7 @@ func (r *quickstartFrameworkRun) verifyQuickstartConfigMapCommits() {
 }
 
 func (r *quickstartFrameworkRun) verifyQuickstartSecretEncryption(generatedAgeKey string) {
-	ns := quickstartSetupNamespace()
+	ns := testNamespaceFor("quickstart-framework")
 	secretName := fmt.Sprintf("quickstart-secret-%s", r.testID)
 	secretValueOne := fmt.Sprintf("quickstart-plaintext-one-%s", r.testID)
 	secretValueTwo := fmt.Sprintf("quickstart-plaintext-two-%s", r.testID)
@@ -397,7 +408,7 @@ func (r *quickstartFrameworkRun) verifyQuickstartSecretEncryption(generatedAgeKe
 }
 
 func (r *quickstartFrameworkRun) verifyInvalidProviderActionableMessage() {
-	ns := quickstartSetupNamespace()
+	ns := testNamespaceFor("quickstart-framework")
 	Eventually(func(g Gomega) {
 		output, err := kubectlRunInNamespace(ns, "get", "gitprovider", r.invalidProvName, "-o", "json")
 		g.Expect(err).NotTo(HaveOccurred())
@@ -502,12 +513,3 @@ func createGitProviderWithURLInNamespace(name, ns, secretName, repoURL string) {
 	Expect(err).NotTo(HaveOccurred(), "failed to apply GitProvider")
 }
 
-func quickstartSetupNamespace() string {
-	if value := strings.TrimSpace(os.Getenv(quickstartSetupNamespaceEnv)); value != "" {
-		return value
-	}
-	if value := strings.TrimSpace(os.Getenv("SUT_NAMESPACE")); value != "" {
-		return value
-	}
-	return "sut"
-}
