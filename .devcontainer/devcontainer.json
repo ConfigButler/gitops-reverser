@@ -67,7 +67,8 @@
         "golang.go",
         "ms-kubernetes-tools.vscode-kubernetes-tools",
         "ms-azuretools.vscode-docker",
-        "openai.chatgpt"
+        "openai.chatgpt",
+        "anthropic.claude-code"
       ]
     }
   },
@@ -76,7 +77,8 @@
   "mounts": [
     "source=gomodcache,target=/go/pkg/mod,type=volume",
     "source=gobuildcache,target=/home/vscode/.cache/go-build,type=volume",
-    "source=codexconfig,target=/home/vscode/.codex,type=volume"
+    "source=codexconfig,target=/home/vscode/.codex,type=volume",
+    "source=claudeconfig,target=/home/vscode/.claude,type=volume"
   ],
   "containerEnv": {
     "HOST_PROJECT_PATH": "${localWorkspaceFolder}",
