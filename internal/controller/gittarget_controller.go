@@ -489,6 +489,18 @@ func (r *GitTargetReconciler) evaluateSnapshotGate(
 		return nil, metav1.ConditionTrue, "Initial snapshot reconciliation completed", 0, nil
 	}
 
+	// Initial snapshot only. Re-snapshots on rule changes are triggered by the
+	// WatchRule controller via ReconcileForRuleChange, not via this gate.
+	// Without this guard, unrelated events (e.g. Flux touching the encryption
+	// secret) can re-trigger a cluster-wide snapshot and produce spurious commits.
+	if isConditionTrue(target.Status.Conditions, GitTargetConditionSnapshotSynced) {
+		stream, err := r.ensureEventStream(target, providerNS, log)
+		if err != nil {
+			return nil, metav1.ConditionFalse, "", 0, err
+		}
+		return stream, metav1.ConditionTrue, "Initial snapshot reconciliation completed", 0, nil
+	}
+
 	stream, err := r.ensureEventStream(target, providerNS, log)
 	if err != nil {
 		return nil, metav1.ConditionFalse, "", 0, err
@@ -618,6 +630,16 @@ func (r *GitTargetReconciler) setReadyCondition(
 	reason, message string,
 ) {
 	r.setCondition(target, GitTargetConditionReady, status, reason, message)
+}
+
+// isConditionTrue returns true if the named condition is present with Status=True.
+func isConditionTrue(conditions []metav1.Condition, conditionType string) bool {
+	for _, c := range conditions {
+		if c.Type == conditionType {
+			return c.Status == metav1.ConditionTrue
+		}
+	}
+	return false
 }
 
 func (r *GitTargetReconciler) setCondition(

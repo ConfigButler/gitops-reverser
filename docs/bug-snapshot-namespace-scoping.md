@@ -1,6 +1,6 @@
 # Bug Report: Snapshot Reconciliation Ignores Namespace Scope
 
-**Status:** Confirmed
+**Status:** Confirmed -> Resolved!
 **Severity:** High — causes spurious commits that break the commit-loop prevention guarantee
 **Discovered via:** `make test-e2e-bi` (bi-directional e2e test)
 
@@ -29,7 +29,7 @@ Inspecting the Git log of the test repo (`.stamps/repos/<run>/bi-directional/<id
 97d53b1 reconcile: sync 27 resources from cluster snapshot   ← SPURIOUS
 6cc837e [UPDATE] v1/secrets/bi-secret-<id>
 9c4d294 [CREATE] v1/secrets/bi-secret-<id>
-c2722b7 [CREATE] v1/secrets/sops-age-key
+c2722b7 [CREATE] v1/secret1s/sops-age-key
 3179204 [CREATE] v1/secrets/git-creds-ssh-<run>
 4dca51e [CREATE] v1/secrets/git-creds-invalid-<run>
 f6da0a0 [CREATE] v1/secrets/git-creds-<run>

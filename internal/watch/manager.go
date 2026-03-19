@@ -636,14 +636,30 @@ func (m *Manager) GetClusterStateForGitDest(
 	wrRules := m.RuleStore.SnapshotWatchRules()
 	cwrRules := m.RuleStore.SnapshotClusterWatchRules()
 
-	// Build GVR set from rules that reference this GitTarget
-	gvrSet := make(map[schema.GroupVersionResource]struct{})
+	// Build a map from GVR to the namespaces that should be listed for it.
+	// WatchRules are namespace-scoped: only list within rule.Source.Namespace.
+	// ClusterWatchRules are cluster-wide: clusterWide=true overrides any namespace set.
+	type gvrEntry struct {
+		namespaces  map[string]struct{}
+		clusterWide bool
+	}
+	gvrMap := make(map[schema.GroupVersionResource]*gvrEntry)
 
 	for _, rule := range wrRules {
 		if rule.GitTargetRef == gitTargetObj.Name &&
 			rule.GitTargetNamespace == gitTargetObj.Namespace {
+			ns := rule.Source.Namespace
 			for _, rr := range rule.ResourceRules {
-				m.addGVRsFromResourceRule(rr, gvrSet)
+				for _, gvr := range m.gvrsFromResourceRule(rr) {
+					entry := gvrMap[gvr]
+					if entry == nil {
+						entry = &gvrEntry{namespaces: make(map[string]struct{})}
+						gvrMap[gvr] = entry
+					}
+					if !entry.clusterWide {
+						entry.namespaces[ns] = struct{}{}
+					}
+				}
 			}
 		}
 	}
@@ -651,8 +667,13 @@ func (m *Manager) GetClusterStateForGitDest(
 	for _, cwrRule := range cwrRules {
 		if cwrRule.GitTargetRef == gitTargetObj.Name &&
 			cwrRule.GitTargetNamespace == gitTargetObj.Namespace {
-			for _, rr := range cwrRule.Rules {
-				m.addGVRsFromClusterResourceRule(rr, gvrSet)
+			for _, gvr := range m.gvrsFromClusterRule(cwrRule) {
+				entry := gvrMap[gvr]
+				if entry == nil {
+					entry = &gvrEntry{namespaces: make(map[string]struct{})}
+					gvrMap[gvr] = entry
+				}
+				entry.clusterWide = true
 			}
 		}
 	}
@@ -665,8 +686,14 @@ func (m *Manager) GetClusterStateForGitDest(
 
 	var resources []types.ResourceIdentifier
 	objects := make(map[string]unstructured.Unstructured)
-	for gvr := range gvrSet {
-		gvrResources, err := m.listResourcesForGVR(ctx, dc, gvr, &gitTargetObj, objects)
+	for gvr, entry := range gvrMap {
+		var namespaces []string
+		if !entry.clusterWide {
+			for ns := range entry.namespaces {
+				namespaces = append(namespaces, ns)
+			}
+		}
+		gvrResources, err := m.listResourcesForGVR(ctx, dc, gvr, namespaces, objects)
 		if err != nil {
 			log.Error(err, "Failed to list GVR", "gvr", gvr)
 			continue
@@ -678,11 +705,8 @@ func (m *Manager) GetClusterStateForGitDest(
 	return resources, objects, nil
 }
 
-// addGVRsFromResourceRule adds GVRs from a CompiledResourceRule to the set.
-func (m *Manager) addGVRsFromResourceRule(
-	rr rulestore.CompiledResourceRule,
-	gvrSet map[schema.GroupVersionResource]struct{},
-) {
+// gvrsFromResourceRule returns the GVRs implied by a CompiledResourceRule.
+func (m *Manager) gvrsFromResourceRule(rr rulestore.CompiledResourceRule) []schema.GroupVersionResource {
 	groups := rr.APIGroups
 	if len(groups) == 0 {
 		groups = []string{""}
@@ -692,99 +716,106 @@ func (m *Manager) addGVRsFromResourceRule(
 		versions = []string{"v1"}
 	}
 
+	var out []schema.GroupVersionResource
 	for _, group := range groups {
 		if group == "*" {
-			continue // Skip wildcards for now
+			continue
 		}
 		for _, version := range versions {
 			if version == "*" {
-				continue // Skip wildcards
+				continue
 			}
 			for _, resource := range rr.Resources {
 				normalized := normalizeResource(resource)
 				if normalized == "*" || shouldIgnoreResource(group, normalized) {
-					continue // Skip wildcards
+					continue
 				}
-				gvr := schema.GroupVersionResource{
+				out = append(out, schema.GroupVersionResource{
 					Group:    group,
 					Version:  version,
 					Resource: normalized,
-				}
-				gvrSet[gvr] = struct{}{}
+				})
 			}
 		}
 	}
+	return out
 }
 
-// addGVRsFromClusterResourceRule adds GVRs from a CompiledClusterResourceRule to the set.
-func (m *Manager) addGVRsFromClusterResourceRule(
-	rr rulestore.CompiledClusterResourceRule,
-	gvrSet map[schema.GroupVersionResource]struct{},
-) {
-	groups := rr.APIGroups
-	if len(groups) == 0 {
-		groups = []string{""}
-	}
-	versions := rr.APIVersions
-	if len(versions) == 0 {
-		versions = []string{"v1"}
-	}
-
-	for _, group := range groups {
-		if group == "*" {
-			continue // Skip wildcards for now
+// gvrsFromClusterRule returns the GVRs implied by a CompiledClusterRule.
+func (m *Manager) gvrsFromClusterRule(cwrRule rulestore.CompiledClusterRule) []schema.GroupVersionResource {
+	var out []schema.GroupVersionResource
+	for _, rr := range cwrRule.Rules {
+		groups := rr.APIGroups
+		if len(groups) == 0 {
+			groups = []string{""}
 		}
-		for _, version := range versions {
-			if version == "*" {
-				continue // Skip wildcards
+		versions := rr.APIVersions
+		if len(versions) == 0 {
+			versions = []string{"v1"}
+		}
+		for _, group := range groups {
+			if group == "*" {
+				continue
 			}
-			for _, resource := range rr.Resources {
-				normalized := normalizeResource(resource)
-				if normalized == "*" || shouldIgnoreResource(group, normalized) {
-					continue // Skip wildcards
+			for _, version := range versions {
+				if version == "*" {
+					continue
 				}
-				gvr := schema.GroupVersionResource{
-					Group:    group,
-					Version:  version,
-					Resource: normalized,
+				for _, resource := range rr.Resources {
+					normalized := normalizeResource(resource)
+					if normalized == "*" || shouldIgnoreResource(group, normalized) {
+						continue
+					}
+					out = append(out, schema.GroupVersionResource{
+						Group:    group,
+						Version:  version,
+						Resource: normalized,
+					})
 				}
-				gvrSet[gvr] = struct{}{}
 			}
 		}
 	}
+	return out
 }
 
-// listResourcesForGVR lists all resources for a specific GVR that match the GitTarget criteria.
+// listResourcesForGVR lists resources for a GVR, scoped to the given namespaces.
+// If namespaces is empty, a cluster-wide list is performed (for ClusterWatchRules).
 // Identifiers are returned; sanitized full objects are written into the provided objects map
 // (keyed by ResourceIdentifier.Key()) for hydrating initial snapshot write events.
 func (m *Manager) listResourcesForGVR(
 	ctx context.Context,
 	dc dynamic.Interface,
 	gvr schema.GroupVersionResource,
-	gitTarget *configv1alpha1.GitTarget,
+	namespaces []string,
 	objects map[string]unstructured.Unstructured,
 ) ([]types.ResourceIdentifier, error) {
 	if shouldIgnoreResource(gvr.Group, gvr.Resource) {
 		return nil, nil
 	}
 
-	var resources []types.ResourceIdentifier
+	var allItems []unstructured.Unstructured
 
-	// List resources (cluster-wide for now, namespace filtering would go here)
-	list, err := dc.Resource(gvr).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return nil, fmt.Errorf("failed to list %v: %w", gvr, err)
+	if len(namespaces) == 0 {
+		// ClusterWatchRule or cluster-scoped resource: list cluster-wide
+		list, err := dc.Resource(gvr).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return nil, fmt.Errorf("failed to list %v: %w", gvr, err)
+		}
+		allItems = list.Items
+	} else {
+		// WatchRule: list only in the namespaces that have a matching rule
+		for _, ns := range namespaces {
+			list, err := dc.Resource(gvr).Namespace(ns).List(ctx, metav1.ListOptions{})
+			if err != nil {
+				return nil, fmt.Errorf("failed to list %v in namespace %s: %w", gvr, ns, err)
+			}
+			allItems = append(allItems, list.Items...)
+		}
 	}
 
-	// Convert to ResourceIdentifiers, filtering by labels/selectors if needed
-	for i := range list.Items {
-		obj := &list.Items[i]
-
-		// Check if object matches GitTarget criteria
-		if !m.objectMatchesGitTarget(obj, gitTarget) {
-			continue
-		}
-
+	var resources []types.ResourceIdentifier
+	for i := range allItems {
+		obj := &allItems[i]
 		id := types.NewResourceIdentifier(
 			gvr.Group,
 			gvr.Version,
@@ -797,16 +828,6 @@ func (m *Manager) listResourcesForGVR(
 	}
 
 	return resources, nil
-}
-
-// objectMatchesGitTarget checks if an object should be included for a GitTarget.
-func (m *Manager) objectMatchesGitTarget(
-	_ *unstructured.Unstructured,
-	_ *configv1alpha1.GitTarget,
-) bool {
-	// For now, simple match - in the future could filter by namespace, labels, etc.
-	// based on the rules that reference this GitTarget
-	return true
 }
 
 // ReconcileForRuleChange reconciles the watch manager when rules change.

@@ -3,7 +3,8 @@
     "allow": [
       "Bash(go test:*)",
       "Bash(make lint:*)",
-      "Bash(make test-e2e:*)"
+      "Bash(make test-e2e:*)",
+      "Bash(go build:*)"
     ]
   }
 }
