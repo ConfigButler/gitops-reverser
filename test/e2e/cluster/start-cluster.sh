@@ -157,6 +157,7 @@ create_cluster() {
     # via k3s "--kube-apiserver-arg=..." options.
     local create_cmd=(
       k3d cluster create "${CLUSTER_NAME}"
+      --image rancher/k3s:v1.35.2-k3s1
       --kubeconfig-update-default
       --kubeconfig-switch-context
       -v "${audit_host_dir}:/etc/kubernetes/audit@server:0"
