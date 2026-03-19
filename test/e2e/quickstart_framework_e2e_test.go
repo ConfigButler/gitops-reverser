@@ -512,4 +512,3 @@ func createGitProviderWithURLInNamespace(name, ns, secretName, repoURL string) {
 	err := applyFromTemplate("test/e2e/templates/gitprovider.tmpl", data, ns)
 	Expect(err).NotTo(HaveOccurred(), "failed to apply GitProvider")
 }
-

@@ -42,6 +42,7 @@ import (
 
 	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 	"github.com/ConfigButler/gitops-reverser/internal/correlation"
+	"github.com/ConfigButler/gitops-reverser/internal/events"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
 	"github.com/ConfigButler/gitops-reverser/internal/sanitize"
@@ -80,6 +81,10 @@ type Manager struct {
 	unavailableGVRsMu      sync.Mutex
 	unavailableGVRs        map[GVR]int       // GVR -> retry count
 	unavailableGVRsLastTry map[GVR]time.Time // GVR -> last retry time
+
+	// dynamicClient overrides the config-built dynamic client when non-nil.
+	// Used in tests to inject a fake client without a real REST config.
+	dynamicClient dynamic.Interface
 }
 
 const (
@@ -211,68 +216,6 @@ func (m *Manager) matchRules(
 	return wrRules, cwrRules
 }
 
-// enqueueMatches pushes sanitized events to branch workers via event router.
-// It attempts to enrich events with webhook-captured username via correlation store.
-// Implements deduplication: skips enqueuing if sanitized content is identical to last seen.
-func (m *Manager) enqueueMatches(
-	ctx context.Context,
-	sanitized *unstructured.Unstructured,
-	id types.ResourceIdentifier,
-	watchRules []rulestore.CompiledRule,
-	clusterRules []rulestore.CompiledClusterRule,
-) {
-	// Check for duplicate content (status-only changes)
-	if m.isDuplicateContent(ctx, sanitized, id) {
-		m.Log.V(1).Info("Skipping duplicate sanitized content (likely status-only change)",
-			"identifier", id.String())
-		telemetry.WatchDuplicatesSkippedTotal.Add(ctx, 1)
-		return
-	}
-
-	// Attempt correlation enrichment
-	userInfo := m.tryEnrichFromCorrelation(ctx, sanitized, id, "UPDATE")
-
-	// WatchRule matches - route to GitDestinationEventStreams
-	for _, rule := range watchRules {
-		ev := git.Event{
-			Object:     sanitized.DeepCopy(),
-			Identifier: id,
-			Operation:  "UPDATE",
-			UserInfo:   userInfo,
-			Path:       rule.Path,
-		}
-
-		gitDest := types.NewResourceReference(rule.GitTargetRef, rule.GitTargetNamespace)
-
-		// Route to GitTargetEventStream for buffering and deduplication
-		if err := m.EventRouter.RouteToGitTargetEventStream(ev, gitDest); err != nil {
-			m.Log.Error(err, "Failed to route event to GitTargetEventStream - dropping event",
-				"gitDest", gitDest.String(),
-				"resource", id.String())
-		}
-	}
-
-	// ClusterWatchRule matches - route to GitTargetEventStreams
-	for _, cr := range clusterRules {
-		ev := git.Event{
-			Object:     sanitized.DeepCopy(),
-			Identifier: id,
-			Operation:  "UPDATE",
-			UserInfo:   userInfo,
-			Path:       cr.Path,
-		}
-
-		gitDest := types.NewResourceReference(cr.GitTargetRef, cr.GitTargetNamespace)
-
-		// Route to GitTargetEventStream for buffering and deduplication
-		if err := m.EventRouter.RouteToGitTargetEventStream(ev, gitDest); err != nil {
-			m.Log.Error(err, "Failed to route event to GitTargetEventStream - dropping event",
-				"gitDest", gitDest.String(),
-				"resource", id.String())
-		}
-	}
-}
-
 // isDuplicateContent checks if the sanitized content is identical to the last seen version.
 // Returns true if content is duplicate (should skip), false if new content (should process).
 func (m *Manager) isDuplicateContent(
@@ -353,34 +296,12 @@ func (m *Manager) tryEnrichFromCorrelation(
 	return userInfo
 }
 
-// seedSelectedResources performs a one-time List across all discoverable GVRs derived from active rules,
-// sanitizes objects, matches rules, and enqueues UPDATE events to bootstrap the repository state.
-// Orphan detection is now handled by FolderReconciler comparing cluster vs git state.
-func (m *Manager) seedSelectedResources(ctx context.Context) {
-	log := m.Log.WithName("seed")
-	log.Info("starting initial seed listing")
-
-	dc := m.dynamicClientFromConfig(log)
-	if dc == nil {
-		// Reason already logged.
-		return
-	}
-
-	discoverable := m.discoverableGVRs(ctx)
-	if len(discoverable) == 0 {
-		log.Info("no discoverable GVRs to seed")
-		return
-	}
-
-	for _, g := range discoverable {
-		m.seedListAndProcess(ctx, dc, g)
-	}
-
-	log.Info("seed listing completed", "gvrCount", len(discoverable))
-}
-
 // dynamicClientFromConfig builds a dynamic client from the controller's REST config.
+// If m.dynamicClient is set (e.g. in tests) it is returned directly.
 func (m *Manager) dynamicClientFromConfig(log logr.Logger) dynamic.Interface {
+	if m.dynamicClient != nil {
+		return m.dynamicClient
+	}
 	cfg := m.restConfig()
 	if cfg == nil {
 		log.Info("skipping seed - no rest config available")
@@ -392,12 +313,6 @@ func (m *Manager) dynamicClientFromConfig(log logr.Logger) dynamic.Interface {
 		return nil
 	}
 	return dc
-}
-
-// discoverableGVRs returns the filtered list of GVRs to seed.
-func (m *Manager) discoverableGVRs(ctx context.Context) []GVR {
-	requested := m.ComputeRequestedGVRs()
-	return m.FilterDiscoverableGVRs(ctx, requested)
 }
 
 // getNamespacesForGVR returns the list of namespaces to list for a given GVR.
@@ -527,93 +442,12 @@ func (m *Manager) matchesResources(resources []string, targetResource string) bo
 	return false
 }
 
-// seedListAndProcess lists objects for a GVR and processes them into enqueue operations.
-// For namespaced GVRs from WatchRules, only lists resources in the rule's namespace.
-// For cluster-scoped GVRs or ClusterWatchRule GVRs, lists cluster-wide.
-func (m *Manager) seedListAndProcess(
-	ctx context.Context,
-	dc dynamic.Interface,
-	g GVR,
-) {
-	log := m.Log.WithName("seed").
-		WithValues("group", g.Group, "version", g.Version, "resource", g.Resource, "scope", g.Scope)
-
-	res := schema.GroupVersionResource{Group: g.Group, Version: g.Version, Resource: g.Resource}
-
-	// Determine which namespaces to list based on scope and source
-	namespacesToList := m.getNamespacesForGVR(g)
-
-	if len(namespacesToList) == 0 {
-		// Cluster-scoped resource or ClusterWatchRule with namespaced resources (all namespaces)
-		list, err := dc.Resource(res).List(ctx, metav1.ListOptions{})
-		if err != nil {
-			log.Error(err, "seed list failed (cluster-wide)")
-			return
-		}
-
-		telemetry.ObjectsScannedTotal.Add(ctx, int64(len(list.Items)))
-		for i := range list.Items {
-			m.processListedObject(ctx, &list.Items[i], g)
-		}
-	} else {
-		// Namespaced resource from WatchRule(s) - list per namespace
-		totalItems := 0
-		for _, ns := range namespacesToList {
-			list, err := dc.Resource(res).Namespace(ns).List(ctx, metav1.ListOptions{})
-			if err != nil {
-				log.Error(err, "seed list failed", "namespace", ns)
-				continue
-			}
-
-			totalItems += len(list.Items)
-			for i := range list.Items {
-				m.processListedObject(ctx, &list.Items[i], g)
-			}
-		}
-		telemetry.ObjectsScannedTotal.Add(ctx, int64(totalItems))
-		log.V(1).Info("Seeded namespaced resources", "namespaces", len(namespacesToList), "totalItems", totalItems)
-	}
-}
-
-// processListedObject evaluates rules, sanitizes, and enqueues events for one item.
-func (m *Manager) processListedObject(
-	ctx context.Context,
-	u *unstructured.Unstructured,
-	g GVR,
-) {
-	if shouldIgnoreResource(g.Group, g.Resource) {
-		m.Log.V(1).Info("Skipping seeded resource due to safety filter",
-			"group", g.Group, "version", g.Version, "resource", g.Resource)
-		return
-	}
-
-	id := types.NewResourceIdentifier(g.Group, g.Version, g.Resource, u.GetNamespace(), u.GetName())
-
-	var nsLabels map[string]string
-	if ns := id.Namespace; ns != "" {
-		nsLabels = m.getNamespaceLabels(ctx, ns)
-	}
-	isClusterScoped := id.IsClusterScoped()
-
-	wrRules, cwrRules := m.matchRules(u, g.Resource, g.Group, g.Version, isClusterScoped, nsLabels)
-	if len(wrRules) == 0 && len(cwrRules) == 0 {
-		return
-	}
-
-	sanitized := sanitize.Sanitize(u)
-	m.enqueueMatches(ctx, sanitized, id, wrRules, cwrRules)
-
-	enq := int64(len(wrRules) + len(cwrRules))
-	if enq > 0 {
-		telemetry.EventsProcessedTotal.Add(ctx, enq)
-		telemetry.GitCommitQueueSize.Add(ctx, enq)
-	}
-}
-
 // GetClusterStateForGitDest returns cluster resources for a GitTarget.
 // This is a synchronous service method called by EventRouter.
 // It returns both resource identifiers (for diff logic) and sanitized full objects
 // (keyed by ResourceIdentifier.Key()) for hydrating initial snapshot write events.
+//
+//nolint:gocognit,cyclop
 func (m *Manager) GetClusterStateForGitDest(
 	ctx context.Context,
 	gitDest types.ResourceReference,
@@ -742,6 +576,8 @@ func (m *Manager) gvrsFromResourceRule(rr rulestore.CompiledResourceRule) []sche
 }
 
 // gvrsFromClusterRule returns the GVRs implied by a CompiledClusterRule.
+//
+//nolint:gocognit
 func (m *Manager) gvrsFromClusterRule(cwrRule rulestore.CompiledClusterRule) []schema.GroupVersionResource {
 	var out []schema.GroupVersionResource
 	for _, rr := range cwrRule.Rules {
@@ -873,6 +709,11 @@ func (m *Manager) ReconcileForRuleChange(ctx context.Context) error {
 		m.stopInformer(gvr)
 	}
 
+	// Put affected GitTarget event streams into RECONCILING state BEFORE starting new
+	// informers.  This ensures informer ADDED events fired during cache sync are buffered
+	// rather than processed as N individual [CREATE] commits.
+	m.beginReconciliationForAffectedTargets(log)
+
 	// Start informers for added GVRs
 	if len(added) > 0 {
 		if err := m.startInformersForGVRs(ctx, added); err != nil {
@@ -884,9 +725,17 @@ func (m *Manager) ReconcileForRuleChange(ctx context.Context) error {
 	// Clear deduplication cache for changed GVRs to prevent false duplicates
 	m.clearDeduplicationCacheForGVRs(append(added, removed...))
 
-	// Trigger re-seed to sync Git with new state
-	// Run in background to avoid blocking controller
-	go m.seedSelectedResources(ctx)
+	// Emit RequestClusterState for each affected GitTarget so that a single
+	// "reconcile: sync N resources" commit is produced instead of N individual
+	// [CREATE] commits from the informer ADDED events buffered above.
+	m.emitSnapshotForRuleChange(ctx, log)
+
+	// Transition streams back to LIVE_PROCESSING and flush buffered events.
+	// startInformersForGVRs already waited for cache sync (WaitForCacheSync),
+	// so all initial ADDED events are guaranteed to be buffered before this point.
+	// The flushed events are no-ops at the git level because the snapshot batch
+	// just wrote those files.
+	m.completeReconciliationForAffectedTargets(log)
 
 	log.Info("Watch manager reconciliation completed",
 		"addedGVRs", len(added),
@@ -1407,6 +1256,80 @@ func splitResourceKey(key string) []string {
 		}
 	}
 	return parts
+}
+
+// collectAffectedGitTargets returns the unique set of GitTarget ResourceReferences
+// that appear in any current WatchRule or ClusterWatchRule.
+func (m *Manager) collectAffectedGitTargets() []types.ResourceReference {
+	seen := make(map[string]struct{})
+	var targets []types.ResourceReference
+
+	for _, rule := range m.RuleStore.SnapshotWatchRules() {
+		ref := types.NewResourceReference(rule.GitTargetRef, rule.GitTargetNamespace)
+		if _, exists := seen[ref.Key()]; !exists {
+			seen[ref.Key()] = struct{}{}
+			targets = append(targets, ref)
+		}
+	}
+
+	for _, rule := range m.RuleStore.SnapshotClusterWatchRules() {
+		ref := types.NewResourceReference(rule.GitTargetRef, rule.GitTargetNamespace)
+		if _, exists := seen[ref.Key()]; !exists {
+			seen[ref.Key()] = struct{}{}
+			targets = append(targets, ref)
+		}
+	}
+
+	return targets
+}
+
+// beginReconciliationForAffectedTargets puts every registered GitTargetEventStream for
+// affected GitTargets into RECONCILING state so that informer ADDED events that fire
+// during cache sync are buffered rather than processed as individual live commits.
+func (m *Manager) beginReconciliationForAffectedTargets(log logr.Logger) {
+	if m.EventRouter == nil {
+		return
+	}
+	for _, gitDest := range m.collectAffectedGitTargets() {
+		m.EventRouter.BeginReconciliationForStream(gitDest)
+		log.Info("Buffering live events for snapshot", "gitDest", gitDest.String())
+	}
+}
+
+// emitSnapshotForRuleChange emits RequestClusterState for every affected GitTarget so
+// that a single "reconcile: sync N resources" commit is produced instead of N individual
+// [CREATE] commits from informer ADDED events.
+func (m *Manager) emitSnapshotForRuleChange(ctx context.Context, log logr.Logger) {
+	if m.EventRouter == nil {
+		log.Info("EventRouter not set, skipping RequestClusterState emission")
+		return
+	}
+	targets := m.collectAffectedGitTargets()
+	log.Info("Emitting RequestClusterState for affected GitTargets after rule change", "count", len(targets))
+	for _, gitDest := range targets {
+		if err := m.EventRouter.ProcessControlEvent(ctx, events.ControlEvent{
+			Type:    events.RequestClusterState,
+			GitDest: gitDest,
+		}); err != nil {
+			log.Error(err, "failed to emit RequestClusterState for rule change", "gitDest", gitDest)
+		}
+	}
+}
+
+// completeReconciliationForAffectedTargets transitions every affected GitTargetEventStream
+// out of RECONCILING state and flushes buffered live events.  It must be called after
+// emitSnapshotForRuleChange so that:
+//  1. The snapshot batch has already been emitted.
+//  2. Buffered informer ADDED events are flushed and produce no-op git writes (the
+//     files were just written by the snapshot).
+func (m *Manager) completeReconciliationForAffectedTargets(log logr.Logger) {
+	if m.EventRouter == nil {
+		return
+	}
+	for _, gitDest := range m.collectAffectedGitTargets() {
+		m.EventRouter.CompleteReconciliationForStream(gitDest)
+		log.Info("Flushing buffered events after snapshot", "gitDest", gitDest.String())
+	}
 }
 
 // SetupWithManager is a placeholder to enable kubebuilder RBAC marker scanning.

@@ -486,7 +486,7 @@ func (r *GitTargetReconciler) evaluateSnapshotGate(
 			target.Status.Snapshot = &configbutleraiv1alpha1.GitTargetSnapshotStatus{}
 		}
 		target.Status.Snapshot.LastCompletedTime = &now
-		return nil, metav1.ConditionTrue, "Initial snapshot reconciliation completed", 0, nil
+		return nil, metav1.ConditionTrue, MsgSnapshotCompleted, 0, nil
 	}
 
 	// Initial snapshot only. Re-snapshots on rule changes are triggered by the
@@ -498,7 +498,7 @@ func (r *GitTargetReconciler) evaluateSnapshotGate(
 		if err != nil {
 			return nil, metav1.ConditionFalse, "", 0, err
 		}
-		return stream, metav1.ConditionTrue, "Initial snapshot reconciliation completed", 0, nil
+		return stream, metav1.ConditionTrue, MsgSnapshotCompleted, 0, nil
 	}
 
 	stream, err := r.ensureEventStream(target, providerNS, log)
@@ -535,7 +535,7 @@ func (r *GitTargetReconciler) evaluateSnapshotGate(
 		Deleted: clampIntToInt32(stats.Deleted),
 	}
 
-	return stream, metav1.ConditionTrue, "Initial snapshot reconciliation completed", 0, nil
+	return stream, metav1.ConditionTrue, MsgSnapshotCompleted, 0, nil
 }
 
 func (r *GitTargetReconciler) evaluateEventStreamGate(

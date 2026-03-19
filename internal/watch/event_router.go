@@ -214,6 +214,34 @@ func (r *EventRouter) GetGitTargetEventStream(gitDest types.ResourceReference) *
 	return r.gitTargetStreams[key]
 }
 
+// BeginReconciliationForStream transitions the registered GitTargetEventStream for the
+// given gitDest into RECONCILING state so that live informer ADDED events are buffered
+// rather than processed individually.  It is a no-op when no stream is registered yet.
+func (r *EventRouter) BeginReconciliationForStream(gitDest types.ResourceReference) {
+	stream := r.GetGitTargetEventStream(gitDest)
+	if stream == nil {
+		r.Log.V(1).Info("No GitTargetEventStream registered, skipping BeginReconciliation",
+			"gitDest", gitDest.String())
+		return
+	}
+	stream.BeginReconciliation()
+	r.Log.Info("BeginReconciliation called for GitTargetEventStream", "gitDest", gitDest.String())
+}
+
+// CompleteReconciliationForStream transitions the registered GitTargetEventStream for the
+// given gitDest out of RECONCILING state and flushes any buffered live events.
+// It is a no-op when no stream is registered.
+func (r *EventRouter) CompleteReconciliationForStream(gitDest types.ResourceReference) {
+	stream := r.GetGitTargetEventStream(gitDest)
+	if stream == nil {
+		r.Log.V(1).Info("No GitTargetEventStream registered, skipping CompleteReconciliation",
+			"gitDest", gitDest.String())
+		return
+	}
+	stream.OnReconciliationComplete()
+	r.Log.Info("CompleteReconciliation called for GitTargetEventStream", "gitDest", gitDest.String())
+}
+
 // UnregisterGitTargetEventStream removes a GitTargetEventStream from the router.
 // This is called during GitTarget deletion cleanup.
 func (r *EventRouter) UnregisterGitTargetEventStream(gitDest types.ResourceReference) {
