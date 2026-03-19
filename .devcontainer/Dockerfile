@@ -96,9 +96,10 @@ RUN chgrp -R godev /go && \
 # Install Go tools used by the project (using @version doesn't need go.mod)
 # These run AFTER permissions are set to ensure proper group ownership
 RUN go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.19.0 \
-    && go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest \
-    && go install github.com/checkmake/checkmake/cmd/checkmake@latest
-
+    && go install sigs.k8s.io/controller-runtime/tools/setup-envtest@v0.0.0-20260318145839-6c9615a2a166 \
+    && go install github.com/checkmake/checkmake/cmd/checkmake@v0.3.2 \
+    && go install golang.org/x/tools/cmd/goimports@v0.43.0
+    
 # Initialize golangci-lint cache by running it once on an empty directory
 # This downloads linter dependencies without needing source code
 RUN mkdir -p /tmp/golangci-init && cd /tmp/golangci-init \
@@ -147,11 +148,11 @@ RUN arch="$(dpkg --print-architecture)" && \
 
 # Install Delve debugger for Go debugging in VSCode
 # ACLs from CI stage should be preserved, so no need to re-apply
-RUN go install github.com/go-delve/delve/cmd/dlv@latest
+RUN go install github.com/go-delve/delve/cmd/dlv@v1.26.1
 
 # Install VSCode Go extension tools (gopls and staticcheck)
-RUN go install golang.org/x/tools/gopls@latest \
-    && go install honnef.co/go/tools/cmd/staticcheck@latest
+RUN go install golang.org/x/tools/gopls@v0.21.1 \
+    && go install honnef.co/go/tools/cmd/staticcheck@v0.7.0
 
 # Create vscode user for non-root development and add to godev group
 RUN groupadd --gid 1000 vscode \

@@ -32,8 +32,8 @@ import (
 	"text/template"
 	"time"
 
-	. "github.com/onsi/ginkgo/v2" //nolint:staticcheck // Ginkgo standard practice
-	. "github.com/onsi/gomega"    //nolint:staticcheck // Ginkgo standard practice
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 	"github.com/prometheus/client_golang/api"
 	v1 "github.com/prometheus/client_golang/api/prometheus/v1"
 	"github.com/prometheus/common/model"

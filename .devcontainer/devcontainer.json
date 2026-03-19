@@ -78,7 +78,8 @@
     "source=gomodcache,target=/go/pkg/mod,type=volume",
     "source=gobuildcache,target=/home/vscode/.cache/go-build,type=volume",
     "source=codexconfig,target=/home/vscode/.codex,type=volume",
-    "source=claudeconfig,target=/home/vscode/.claude,type=volume"
+    "source=claudeconfig,target=/home/vscode/.claude,type=volume",
+    "source=persisted-home,target=/home/vscode/persisted-home,type=volume"
   ],
   "containerEnv": {
     "HOST_PROJECT_PATH": "${localWorkspaceFolder}",

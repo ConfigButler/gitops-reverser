@@ -35,6 +35,10 @@ const (
 	// ConditionTypeReady indicates whether the resource is ready.
 	ConditionTypeReady = "Ready"
 
+	// MsgSnapshotCompleted is returned as the condition message when the initial
+	// cluster snapshot has been successfully committed to Git.
+	MsgSnapshotCompleted = "Initial snapshot reconciliation completed"
+
 	// RequeueShortInterval is the requeue interval for transient errors.
 	RequeueShortInterval = 2 * time.Minute
 	// RequeueMediumInterval is the requeue interval for auth/secret errors.

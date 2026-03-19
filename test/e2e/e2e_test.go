@@ -412,7 +412,10 @@ var _ = Describe("Manager", Ordered, func() {
 			By("showing controller logs after GitProvider creation")
 			showControllerLogs("after creating GitProvider")
 
-			verifyResourceStatus("gitprovider", gitProviderName, testNs, "True", "Ready", "Repository connectivity validated")
+			verifyResourceStatus(
+				"gitprovider", gitProviderName, testNs,
+				"True", "Ready", "Repository connectivity validated",
+			)
 
 			By("showing final controller logs")
 			showControllerLogs("after status verification")
@@ -432,7 +435,9 @@ var _ = Describe("Manager", Ordered, func() {
 
 			// GitProvider should be Ready=True (validates connectivity, not branch existence)
 			createGitProviderWithURLInNamespace(gitProviderName, testNs, gitSecretHTTP, getRepoURLHTTP())
-			verifyResourceStatus("gitprovider", gitProviderName, testNs, "True", "Ready", "Repository connectivity validated")
+			verifyResourceStatus(
+				"gitprovider", gitProviderName, testNs, "True", "Ready", "Repository connectivity validated",
+			)
 
 			// GitTarget with branch not matching any pattern should fail
 			destName := "dest-invalid-branch"
@@ -469,7 +474,9 @@ var _ = Describe("Manager", Ordered, func() {
 			By("🔍 Controller logs after SSH GitProvider creation")
 			showControllerLogs("after SSH GitProvider creation")
 
-			verifyResourceStatus("gitprovider", gitProviderName, testNs, "True", "Ready", "Repository connectivity validated")
+			verifyResourceStatus(
+				"gitprovider", gitProviderName, testNs, "True", "Ready", "Repository connectivity validated",
+			)
 
 			By("✅ Final SSH test logs")
 			showControllerLogs("SSH test completion")
@@ -480,7 +487,9 @@ var _ = Describe("Manager", Ordered, func() {
 		It("should handle a normal and healthy GitProvider", func() {
 			gitProviderName := "gitprovider-normal"
 			createGitProviderWithURLInNamespace(gitProviderName, testNs, gitSecretHTTP, getRepoURLHTTP())
-			verifyResourceStatus("gitprovider", gitProviderName, testNs, "True", "Ready", "Repository connectivity validated")
+			verifyResourceStatus(
+				"gitprovider", gitProviderName, testNs, "True", "Ready", "Repository connectivity validated",
+			)
 		})
 
 		It("should reconcile a WatchRule CR", func() {
@@ -1608,7 +1617,9 @@ var _ = Describe("Manager", Ordered, func() {
 			cleanupGitTarget("watchrule-icecream-orders-dest", testNs)
 
 			// Clean up GitProvider from IceCreamOrder tests
-			_, _ = kubectlRunInNamespace(testNs, "delete", "gitprovider", "gitprovider-normal", "--ignore-not-found=true")
+			_, _ = kubectlRunInNamespace(
+				testNs, "delete", "gitprovider", "gitprovider-normal", "--ignore-not-found=true",
+			)
 
 			// Clean up IceCreamOrder CRD
 			_, _ = kubectlRun(
@@ -1751,44 +1762,6 @@ func discoverControllerPodName(ns string) (string, error) {
 	return podName, nil
 }
 
-// createGitProviderWithURL creates a GitProvider resource with the specified URL.
-func createGitProviderWithURL(name, branch, secretName, repoURL string) {
-	By(fmt.Sprintf("creating GitProvider '%s' with branch '%s', secret '%s' and URL '%s'",
-		name, branch, secretName, repoURL))
-
-	data := struct {
-		Name       string
-		Namespace  string
-		RepoURL    string
-		Branch     string
-		SecretName string
-	}{
-		Name:       name,
-		Namespace:  namespace,
-		RepoURL:    repoURL,
-		Branch:     branch,
-		SecretName: secretName,
-	}
-
-	err := applyFromTemplate("test/e2e/templates/gitprovider.tmpl", data, namespace)
-	Expect(err).NotTo(HaveOccurred(), "Failed to apply GitProvider")
-}
-
-// createGitProvider creates a GitProvider resource with HTTP URL.
-func createGitProvider(name, branch, secretName string) {
-	createGitProviderWithURL(name, branch, secretName, getRepoURLHTTP())
-}
-
-// createSSHGitProvider creates a GitProvider resource with SSH URL.
-func createSSHGitProvider(name, branch, secretName string) {
-	createGitProviderWithURL(name, branch, secretName, getRepoURLSSH())
-}
-
-// verifyGitProviderStatus verifies the GitProvider status matches expected values.
-func verifyGitProviderStatus(name, expectedStatus, expectedReason, expectedMessageContains string) {
-	verifyResourceStatus("gitprovider", name, namespace, expectedStatus, expectedReason, expectedMessageContains)
-}
-
 // verifyResourceStatus verifies a resource's status conditions match expected values.
 // For cluster-scoped resources, provide an empty namespace.
 func verifyResourceStatus(resourceType, name, ns, expectedStatus, expectedReason, expectedMessageContains string) {
@@ -1842,19 +1815,6 @@ func verifyResourceStatus(resourceType, name, ns, expectedStatus, expectedReason
 		}
 	}
 	Eventually(verifyStatus).Should(Succeed())
-}
-
-// cleanupGitProvider deletes a GitProvider resource.
-func cleanupGitProvider(name string) {
-	By(fmt.Sprintf("cleaning up GitProvider '%s'", name))
-	_, err := kubectlRunInNamespace(
-		namespace,
-		"delete",
-		"gitprovider",
-		name,
-		"--ignore-not-found=true",
-	)
-	Expect(err).NotTo(HaveOccurred())
 }
 
 // showControllerLogs displays the current controller logs to help with debugging during test execution.

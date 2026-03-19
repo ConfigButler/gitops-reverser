@@ -87,4 +87,8 @@ else
   sudo chown -R vscode:vscode /home/vscode || true
 fi
 
+# Persist the ~/.claude.json file by making it a symlink (this trick can be used for other potenial config file in the home folder as well)
+touch /home/vscode/persisted-home/.claude.json
+rm -f /home/vscode/.claude.json && ln -s /home/vscode/persisted-home/.claude.json /home/vscode/.claude.json
+
 log "post-create completed"

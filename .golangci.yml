@@ -368,7 +368,7 @@ linters:
         source: 'github\.com/onsi/(ginkgo|gomega)'
         linters: [revive]
       - text: "should not use dot imports"
-        path: 'test/utils/.*\.go'
+        path: 'test/(utils|e2e)/.*\.go'
         linters: [staticcheck]
       # Allow fmt.Print* in test/e2e (debugging outputs)
       - path: 'test/e2e/.*\.go'
