@@ -7,7 +7,7 @@ spec:
   entryPoints:
     - web
   routes:
-    - match: Host(`vote.reversegitops.dev`) && PathPrefix(`/`)
+    - match: Host(`demo.configbutler.ai`) && PathPrefix(`/`)
       kind: Rule
       services:
         - name: vote-frontend

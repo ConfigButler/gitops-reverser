@@ -17,7 +17,7 @@ spec:
   entryPoints:
     - web
   routes:
-    - match: Host(`vote.reversegitops.dev`) && PathPrefix(`/auth`)  # This is an extra indepth layer, but probably not the 'long' term solution since kubectl needs access to /apis for example to discover stuff...
+    - match: Host(`demo.configbutler.ai`) && PathPrefix(`/auth`)  # This is an extra indepth layer, but probably not the 'long' term solution since kubectl needs access to /apis for example to discover stuff...
       kind: Rule
       middlewares:
         - name: auth-to-public

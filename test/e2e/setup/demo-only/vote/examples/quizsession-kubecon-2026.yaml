@@ -9,7 +9,7 @@ spec:
   questions:
     - id: q1
       type: singleChoice
-      title: Was the talk useful?
+      title: What should be next?
       required: true
       choices:
         - "Yes"

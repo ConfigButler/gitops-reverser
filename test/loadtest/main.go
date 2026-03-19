@@ -59,8 +59,8 @@ type submissionSpec struct {
 }
 
 type objectMeta struct {
-	GenerateName string `json:"generateName"`
-	Namespace    string `json:"namespace"`
+	Name      string `json:"name"`
+	Namespace string `json:"namespace"`
 }
 
 type quizSubmission struct {
@@ -103,7 +103,7 @@ func clamp(v, lo, hi float64) float64 {
 	return v
 }
 
-func randomSubmission(rng *rand.Rand, session, namespace string) quizSubmission {
+func randomSubmission(rng *rand.Rand, userID int, runID, session, namespace string) quizSubmission {
 	// q1 singleChoice — weighted 70% Yes / 20% Somewhat / 10% No
 	q1Pool := []string{
 		"Yes", "Yes", "Yes", "Yes", "Yes", "Yes", "Yes",
@@ -123,15 +123,15 @@ func randomSubmission(rng *rand.Rand, session, namespace string) quizSubmission 
 	// q4 number — realistic cluster count [1, 50]
 	q4 := float64(1 + rng.Intn(50))
 
-	// q5 freeText
-	q5 := freeTextPool[rng.Intn(len(freeTextPool))]
+	// q5 freeText — include userID to ensure uniqueness across submissions
+	q5 := fmt.Sprintf("%s [loadtest-user-%d]", freeTextPool[rng.Intn(len(freeTextPool))], userID)
 
 	return quizSubmission{
 		APIVersion: apiGroup + "/" + apiVersion,
 		Kind:       "QuizSubmission",
 		Metadata: objectMeta{
-			GenerateName: session + "-",
-			Namespace:    namespace,
+			Name:      fmt.Sprintf("%s-%d", runID, userID),
+			Namespace: namespace,
 		},
 		Spec: submissionSpec{
 			SessionRef:  sessionRef{Name: session},
@@ -162,7 +162,7 @@ type userResult struct {
 func simulateUser(
 	ctx context.Context,
 	userID int,
-	baseURL, code, session, namespace string,
+	baseURL, code, runID, session, namespace string,
 	rng *rand.Rand,
 ) userResult {
 	res := userResult{userID: userID}
@@ -211,7 +211,7 @@ func simulateUser(
 	}
 
 	// ── Step 2: Submit quiz answers ───────────────────────────────────────────
-	sub := randomSubmission(rng, session, namespace)
+	sub := randomSubmission(rng, userID, runID, session, namespace)
 	body, err := json.Marshal(sub)
 	if err != nil {
 		res.err = fmt.Sprintf("marshal submission: %v", err)
@@ -357,10 +357,21 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Generate a short alphanumeric run ID (e.g. "q1g3") shared across all users
+	// so names look like "q1g3-0", "q1g3-1", … and are stable within one run.
+	const runIDChars = "abcdefghijklmnopqrstuvwxyz0123456789"
+	runIDRng := rand.New(rand.NewSource(time.Now().UnixNano()))
+	runIDb := make([]byte, 4)
+	for i := range runIDb {
+		runIDb[i] = runIDChars[runIDRng.Intn(len(runIDChars))]
+	}
+	runID := string(runIDb)
+
 	fmt.Printf("Starting load test\n")
 	fmt.Printf("  Base URL:      %s\n", *baseURL)
 	fmt.Printf("  Session:       %s/%s\n", *namespace, *session)
 	fmt.Printf("  Join code:     %s\n", *code)
+	fmt.Printf("  Run ID:        %s\n", runID)
 	fmt.Printf("  Participants:  %d\n", *users)
 	fmt.Printf("  Ramp duration: %s\n", *rampDuration)
 	fmt.Println()
@@ -386,7 +397,7 @@ func main() {
 				return
 			case <-time.After(delay):
 			}
-			resultCh <- simulateUser(ctx, userID, *baseURL, *code, *session, *namespace, rng)
+			resultCh <- simulateUser(ctx, userID, *baseURL, *code, runID, *session, *namespace, rng)
 		}(i)
 	}
 

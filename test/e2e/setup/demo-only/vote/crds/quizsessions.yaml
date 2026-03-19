@@ -20,6 +20,12 @@ spec:
       subresources:
         status: {}
       additionalPrinterColumns:
+        - name: State
+          type: string
+          jsonPath: .spec.state
+        - name: Join Code
+          type: string
+          jsonPath: .status.joinCode
         - name: Title
           type: string
           jsonPath: .spec.title
@@ -99,6 +105,9 @@ spec:
             status:
               type: object
               properties:
+                joinCode:
+                  type: string
+                  description: Current active join code for this session
                 observedGeneration:
                   type: integer
                   format: int64
