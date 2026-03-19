@@ -47,7 +47,7 @@ spec:
   routes:
     # All Kubernetes API paths. auth-forwarder handles both browser (mints a token via
     # session cookie / join code) and kubectl (validates and passes through bearer token).
-    - match: Host(`vote.reversegitops.dev`) && (PathPrefix(`/api`) || PathPrefix(`/apis`) || PathPrefix(`/openapi`))
+    - match: Host(`demo.configbutler.ai`) && (PathPrefix(`/api`) || PathPrefix(`/apis`) || PathPrefix(`/openapi`))
       kind: Rule
       middlewares:
         - name: api-ratelimit

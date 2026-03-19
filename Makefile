@@ -581,13 +581,14 @@ test-e2e-quickstart-helm: ## Run quickstart smoke test (Helm install)
 	go test ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=quickstart-framework
 
 .PHONY: test-e2e-demo
-test-e2e-demo: prepare-e2e-demo ## Prepare a reusable talk/demo repo and leave demo resources in place
+test-e2e-demo: prepare-e2e-demo ## Prepare a reusable demo repo and leave demo resources in place
 	export CTX=$(CTX)
 	export INSTALL_MODE=$(INSTALL_MODE)
 	export NAMESPACE=$(NAMESPACE)
-	export E2E_ENABLE_TALK_FRAMEWORK=true
+	export E2E_ENABLE_DEMO=true
 	export E2E_AGE_KEY_FILE=$(CS)/age-key.txt
-	go test ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=talk-demo
+	export TESTNAMESPACE=vote
+	go test ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=demo
 
 .PHONY: test-e2e-audit-redis
 test-e2e-audit-redis: ## Run dedicated audit->Redis enqueue e2e scenario
@@ -625,9 +626,9 @@ test-e2e-quickstart-manifest: ## Run quickstart smoke test (manifest install)
 # when not provided, so `make loadtest` just works from inside the devcontainer.
 # Override at the command line: make loadtest LOADTEST_CODE=xxxx
 LOADTEST_CODE     ?= $(shell kubectl -n vote logs deploy/vote-auth-service --tail=5 2>/dev/null | grep 'join-code:' | tail -1 | awk '{print $$NF}' | cut -d= -f2)
-LOADTEST_USERS    ?= 250
-LOADTEST_RAMP     ?= 10s
-LOADTEST_BASE_URL ?= https://vote.reversegitops.dev
+LOADTEST_USERS    ?= 200
+LOADTEST_RAMP     ?= 20s
+LOADTEST_BASE_URL ?= https://demo.configbutler.ai
 LOADTEST_SESSION  ?= kubecon-2026
 LOADTEST_NS       ?= vote
 

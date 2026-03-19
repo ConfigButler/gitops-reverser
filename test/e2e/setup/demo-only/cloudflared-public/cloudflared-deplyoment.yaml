@@ -17,7 +17,7 @@ spec:
     spec:
       containers:
       - name: cloudflared
-        image: cloudflare/cloudflared:latest
+        image: cloudflare/cloudflared:2026.3.0
         args:
         - tunnel
         - --no-autoupdate
@@ -38,3 +38,4 @@ spec:
             port: 2000
           initialDelaySeconds: 10
           periodSeconds: 10
+          failureThreshold: 10

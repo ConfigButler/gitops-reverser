@@ -39,6 +39,10 @@ func resolveE2ENamespace() string {
 // The name is scoped to the current Ginkgo run via the random seed,
 // tying it to the repo and other per-run resources.
 // Example: "8675309-test-manager"
+// If TESTNAMESPACE is set, that value is returned directly (used by demo runs to pin to "vote").
 func testNamespaceFor(suite string) string {
+	if value := strings.TrimSpace(os.Getenv("TESTNAMESPACE")); value != "" {
+		return value
+	}
 	return fmt.Sprintf("%d-test-%s", GinkgoRandomSeed(), suite)
 }

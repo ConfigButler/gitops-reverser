@@ -2,7 +2,7 @@
 
 ## Goal
 
-Run a simple audience voting portal on `voting.reversegitops.dev`, hosted from this devcontainer-driven setup, in a way that:
+Run a simple audience voting portal on `demo.configbutler.ai`, hosted from this devcontainer-driven setup, in a way that:
 
 - is realistic enough for the talk,
 - exercises the "path back" from live changes into Git,
@@ -85,7 +85,7 @@ Get public access working early.
 Recommendation:
 
 - use `cloudflared` only after the app works locally inside k3d,
-- expose one hostname only: `voting.reversegitops.dev`,
+- expose one hostname only: `demo.configbutler.ai`,
 - avoid adding extra public endpoints during the talk setup,
 - prepare a local fallback URL or port-forward for rehearsal.
 

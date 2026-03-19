@@ -34,12 +34,12 @@ import (
 )
 
 const (
-	talkFrameworkEnabledEnv = "E2E_ENABLE_TALK_FRAMEWORK"
-	talkDemoNamespace       = "vote"
-	talkDemoPath            = "demo/vote-stack"
+	demoEnabledEnv = "E2E_ENABLE_DEMO"
+	demoNamespace  = "vote"
+	demoPath       = "adam/rai/8f"
 )
 
-type talkDemoRun struct {
+type demoRun struct {
 	repoName             string
 	checkoutDir          string
 	repoURL              string
@@ -52,22 +52,22 @@ type talkDemoRun struct {
 	encryptionName       string
 }
 
-var _ = Describe("Talk Demo", Label("talk-demo"), Ordered, func() {
-	var run talkDemoRun
+var _ = Describe("Demo", Label("demo"), Ordered, func() {
+	var run demoRun
 	var testNs string
 
 	BeforeAll(func() {
-		if !talkFrameworkEnabled() {
+		if !demoEnabled() {
 			Skip(fmt.Sprintf(
-				"talk demo is disabled; set %s=true to run",
-				talkFrameworkEnabledEnv,
+				"demo is disabled; set %s=true to run",
+				demoEnabledEnv,
 			))
 		}
 
-		run = newTalkDemoRun()
+		run = newDemoRun()
 
 		By("creating test namespace and applying git secrets")
-		testNs = testNamespaceFor("talk-demo")
+		testNs = testNamespaceFor("demo")
 		run.sourceNamespace = testNs
 		_, _ = kubectlRun("create", "namespace", testNs) // idempotent; ignore AlreadyExists
 		secretsYaml := strings.TrimSpace(os.Getenv("E2E_SECRETS_YAML"))
@@ -78,35 +78,35 @@ var _ = Describe("Talk Demo", Label("talk-demo"), Ordered, func() {
 	})
 
 	It("prepares a reusable demo repository without cleanup", func() {
-		By("asserting the talk demo repository checkout exists")
-		run.setupGiteaRepository()
+		By("asserting the demo repository checkout exists")
+		run.setupRepository()
 
 		By("copying Git credentials into the vote namespace")
-		run.copyGitSecretToTalkNamespace()
+		run.copyGitSecret()
 
-		By("applying talk demo GitOps Reverser resources")
-		run.applyTalkResources()
+		By("applying demo GitOps Reverser resources")
+		run.applyResources()
 
-		By("verifying the talk demo resources become Ready")
-		run.verifyTalkResourcesReady()
+		By("verifying the demo resources become Ready")
+		run.verifyResourcesReady()
 
 		By("seeding the demo repository with a few representative updates")
-		run.seedTalkRepository()
+		run.seedRepository()
 
 		By("waiting for the initial snapshot to seed the demo repository")
-		run.verifyTalkRepositorySeeded()
+		run.verifyRepositorySeeded()
 
 		By("printing demo artifacts for the presenter")
 		run.logArtifacts()
 	})
 })
 
-func talkFrameworkEnabled() bool {
-	value := strings.ToLower(strings.TrimSpace(os.Getenv(talkFrameworkEnabledEnv)))
+func demoEnabled() bool {
+	value := strings.ToLower(strings.TrimSpace(os.Getenv(demoEnabledEnv)))
 	return value == "1" || value == "true" || value == "yes"
 }
 
-func newTalkDemoRun() talkDemoRun {
+func newDemoRun() demoRun {
 	repoName := strings.TrimSpace(os.Getenv("E2E_REPO_NAME"))
 	checkoutDir := strings.TrimSpace(os.Getenv("E2E_CHECKOUT_DIR"))
 	sourceNamespace := resolveE2ENamespace()
@@ -126,27 +126,27 @@ func newTalkDemoRun() talkDemoRun {
 		repoName,
 	)
 
-	return talkDemoRun{
+	return demoRun{
 		repoName:    repoName,
 		checkoutDir: checkoutDir,
 		repoURL:     repoURL,
 
 		sourceNamespace:      sourceNamespace,
 		gitSecretName:        gitSecretName,
-		providerName:         "talk-demo-provider",
-		targetName:           "talk-demo-target",
-		watchRuleName:        "talk-demo-watch-all",
-		clusterWatchRuleName: "talk-demo-cluster-resources",
-		encryptionName:       "talk-demo-sops-age-key",
+		providerName:         "demo-provider-" + repoName,
+		targetName:           "demo-target-" + repoName,
+		watchRuleName:        "demo-watch-all-" + repoName,
+		clusterWatchRuleName: "demo-cluster-resources-" + repoName,
+		encryptionName:       "demo-sops-age-key",
 	}
 }
 
-func (r *talkDemoRun) setupGiteaRepository() {
+func (r *demoRun) setupRepository() {
 	_, err := os.Stat(filepath.Join(r.checkoutDir, ".git"))
 	Expect(err).NotTo(HaveOccurred(), "expected checkout to exist at E2E_CHECKOUT_DIR")
 }
 
-func (r *talkDemoRun) copyGitSecretToTalkNamespace() {
+func (r *demoRun) copyGitSecret() {
 	output, err := kubectlRunInNamespace(r.sourceNamespace, "get", "secret", r.gitSecretName, "-o", "json")
 	Expect(err).NotTo(HaveOccurred(), "failed to fetch source Git Secret")
 
@@ -157,7 +157,7 @@ func (r *talkDemoRun) copyGitSecretToTalkNamespace() {
 	Expect(err).NotTo(HaveOccurred(), "failed to read Secret metadata")
 	Expect(found).To(BeTrue(), "expected Secret metadata")
 
-	metadata["namespace"] = talkDemoNamespace
+	metadata["namespace"] = demoNamespace
 	delete(metadata, "creationTimestamp")
 	delete(metadata, "generateName")
 	delete(metadata, "managedFields")
@@ -178,18 +178,18 @@ func (r *talkDemoRun) copyGitSecretToTalkNamespace() {
 	manifest, err := json.Marshal(secretObj)
 	Expect(err).NotTo(HaveOccurred(), "failed to marshal copied Git Secret")
 
-	_, err = kubectlRunWithStdin(talkDemoNamespace, string(manifest), "apply", "-f", "-")
+	_, err = kubectlRunWithStdin(demoNamespace, string(manifest), "apply", "-f", "-")
 	Expect(err).NotTo(HaveOccurred(), "failed to apply copied Git Secret into vote namespace")
 }
 
-func (r *talkDemoRun) applyTalkResources() {
-	createGitProviderWithURLInNamespace(r.providerName, talkDemoNamespace, r.gitSecretName, r.repoURL)
+func (r *demoRun) applyResources() {
+	createGitProviderWithURLInNamespace(r.providerName, demoNamespace, r.gitSecretName, r.repoURL)
 
 	createGitTargetWithEncryptionOptions(
 		r.targetName,
-		talkDemoNamespace,
+		demoNamespace,
 		r.providerName,
-		talkDemoPath,
+		demoPath,
 		"main",
 		r.encryptionName,
 		true,
@@ -201,12 +201,12 @@ func (r *talkDemoRun) applyTalkResources() {
 		DestinationName string
 	}{
 		Name:            r.watchRuleName,
-		Namespace:       talkDemoNamespace,
+		Namespace:       demoNamespace,
 		DestinationName: r.targetName,
 	}
 
-	err := applyFromTemplate("test/e2e/templates/talk-demo/watchrule-all.tmpl", watchRuleData, talkDemoNamespace)
-	Expect(err).NotTo(HaveOccurred(), "failed to apply talk demo WatchRule")
+	err := applyFromTemplate("test/e2e/templates/demo/watchrule-all.tmpl", watchRuleData, demoNamespace)
+	Expect(err).NotTo(HaveOccurred(), "failed to apply demo WatchRule")
 
 	clusterWatchRuleData := struct {
 		Name            string
@@ -214,74 +214,74 @@ func (r *talkDemoRun) applyTalkResources() {
 		DestinationName string
 	}{
 		Name:            r.clusterWatchRuleName,
-		Namespace:       talkDemoNamespace,
+		Namespace:       demoNamespace,
 		DestinationName: r.targetName,
 	}
 
-	err = applyFromTemplate("test/e2e/templates/talk-demo/clusterwatchrule-talk.tmpl", clusterWatchRuleData, "")
-	Expect(err).NotTo(HaveOccurred(), "failed to apply talk demo ClusterWatchRule")
+	err = applyFromTemplate("test/e2e/templates/demo/clusterwatchrule-demo.tmpl", clusterWatchRuleData, "")
+	Expect(err).NotTo(HaveOccurred(), "failed to apply demo ClusterWatchRule")
 }
 
-func (r *talkDemoRun) verifyTalkResourcesReady() {
-	verifyResourceStatus("gitprovider", r.providerName, talkDemoNamespace, "True", "Ready", "")
-	verifyResourceStatus("gittarget", r.targetName, talkDemoNamespace, "True", "Ready", "")
-	verifyResourceStatus("watchrule", r.watchRuleName, talkDemoNamespace, "True", "Ready", "")
+func (r *demoRun) verifyResourcesReady() {
+	verifyResourceStatus("gitprovider", r.providerName, demoNamespace, "True", "Ready", "")
+	verifyResourceStatus("gittarget", r.targetName, demoNamespace, "True", "Ready", "")
+	verifyResourceStatus("watchrule", r.watchRuleName, demoNamespace, "True", "Ready", "")
 	verifyResourceStatus("clusterwatchrule", r.clusterWatchRuleName, "", "True", "Ready", "")
 }
 
-func (r *talkDemoRun) seedTalkRepository() {
+func (r *demoRun) seedRepository() {
 	value := strconv.FormatInt(time.Now().UnixNano(), 10)
 
 	r.patchClusterResource(
 		"namespace",
-		talkDemoNamespace,
-		fmt.Sprintf(`{"metadata":{"annotations":{"configbutler.ai/talk-demo-prepared-at":"%s"}}}`, value),
+		demoNamespace,
+		fmt.Sprintf(`{"metadata":{"annotations":{"configbutler.ai/demo-prepared-at":"%s"}}}`, value),
 	)
 
 	r.patchNamespacedResource(
 		"gitprovider",
 		r.providerName,
-		fmt.Sprintf(`{"metadata":{"annotations":{"configbutler.ai/talk-demo-prepared-at":"%s"}}}`, value),
+		fmt.Sprintf(`{"metadata":{"annotations":{"configbutler.ai/demo-prepared-at":"%s"}}}`, value),
 	)
 	r.patchNamespacedResource(
 		"gittarget",
 		r.targetName,
-		fmt.Sprintf(`{"metadata":{"annotations":{"configbutler.ai/talk-demo-prepared-at":"%s"}}}`, value),
+		fmt.Sprintf(`{"metadata":{"annotations":{"configbutler.ai/demo-prepared-at":"%s"}}}`, value),
 	)
 	r.patchNamespacedResource(
 		"watchrule",
 		r.watchRuleName,
-		fmt.Sprintf(`{"metadata":{"annotations":{"configbutler.ai/talk-demo-prepared-at":"%s"}}}`, value),
+		fmt.Sprintf(`{"metadata":{"annotations":{"configbutler.ai/demo-prepared-at":"%s"}}}`, value),
 	)
 	r.patchClusterResource(
 		"clusterwatchrule",
 		r.clusterWatchRuleName,
-		fmt.Sprintf(`{"metadata":{"annotations":{"configbutler.ai/talk-demo-prepared-at":"%s"}}}`, value),
+		fmt.Sprintf(`{"metadata":{"annotations":{"configbutler.ai/demo-prepared-at":"%s"}}}`, value),
 	)
 
 	r.patchNamespacedResource(
 		"deployment",
 		"vote-frontend",
-		fmt.Sprintf(`{"metadata":{"annotations":{"configbutler.ai/talk-demo-prepared-at":"%s"}}}`, value),
+		fmt.Sprintf(`{"metadata":{"annotations":{"configbutler.ai/demo-prepared-at":"%s"}}}`, value),
 	)
 	r.patchNamespacedResource(
 		"service",
 		"vote-frontend",
-		fmt.Sprintf(`{"metadata":{"annotations":{"configbutler.ai/talk-demo-prepared-at":"%s"}}}`, value),
+		fmt.Sprintf(`{"metadata":{"annotations":{"configbutler.ai/demo-prepared-at":"%s"}}}`, value),
 	)
 	r.patchNamespacedResource(
 		"ingressroute",
 		"frontend-static",
-		fmt.Sprintf(`{"metadata":{"annotations":{"configbutler.ai/talk-demo-prepared-at":"%s"}}}`, value),
+		fmt.Sprintf(`{"metadata":{"annotations":{"configbutler.ai/demo-prepared-at":"%s"}}}`, value),
 	)
 	r.patchNamespacedResource(
 		"quizsession",
 		"kubecon-2026",
-		fmt.Sprintf(`{"metadata":{"annotations":{"configbutler.ai/talk-demo-prepared-at":"%s"}}}`, value),
+		fmt.Sprintf(`{"metadata":{"annotations":{"configbutler.ai/demo-prepared-at":"%s"}}}`, value),
 	)
 }
 
-func (r *talkDemoRun) patchClusterResource(resource, name, patch string) {
+func (r *demoRun) patchClusterResource(resource, name, patch string) {
 	_, err := kubectlRun(
 		"patch",
 		resource,
@@ -294,9 +294,9 @@ func (r *talkDemoRun) patchClusterResource(resource, name, patch string) {
 	Expect(err).NotTo(HaveOccurred(), fmt.Sprintf("failed to patch cluster resource %s/%s", resource, name))
 }
 
-func (r *talkDemoRun) patchNamespacedResource(resource, name, patch string) {
+func (r *demoRun) patchNamespacedResource(resource, name, patch string) {
 	_, err := kubectlRunInNamespace(
-		talkDemoNamespace,
+		demoNamespace,
 		"patch",
 		resource,
 		name,
@@ -308,22 +308,22 @@ func (r *talkDemoRun) patchNamespacedResource(resource, name, patch string) {
 	Expect(err).NotTo(HaveOccurred(), fmt.Sprintf("failed to patch namespaced resource %s/%s", resource, name))
 }
 
-func (r *talkDemoRun) verifyTalkRepositorySeeded() {
+func (r *demoRun) verifyRepositorySeeded() {
 	expectedFiles := []string{
-		filepath.Join(r.checkoutDir, talkDemoPath, ".sops.yaml"),
-		filepath.Join(r.checkoutDir, talkDemoPath, "v1/namespaces/vote.yaml"),
-		filepath.Join(r.checkoutDir, talkDemoPath, "apps/v1/deployments/vote/vote-frontend.yaml"),
-		filepath.Join(r.checkoutDir, talkDemoPath, "v1/services/vote/vote-frontend.yaml"),
-		filepath.Join(r.checkoutDir, talkDemoPath, "traefik.io/v1alpha1/ingressroutes/vote/frontend-static.yaml"),
+		filepath.Join(r.checkoutDir, demoPath, ".sops.yaml"),
+		filepath.Join(r.checkoutDir, demoPath, "v1/namespaces/vote.yaml"),
+		filepath.Join(r.checkoutDir, demoPath, "apps/v1/deployments/vote/vote-frontend.yaml"),
+		filepath.Join(r.checkoutDir, demoPath, "v1/services/vote/vote-frontend.yaml"),
+		filepath.Join(r.checkoutDir, demoPath, "traefik.io/v1alpha1/ingressroutes/vote/frontend-static.yaml"),
 		filepath.Join(
 			r.checkoutDir,
-			talkDemoPath,
-			"configbutler.ai/v1alpha1/gitproviders/vote/talk-demo-provider.yaml",
+			demoPath,
+			"configbutler.ai/v1alpha1/gitproviders/vote/demo-provider.yaml",
 		),
 	}
 	quizSubmissionPattern := filepath.Join(
 		r.checkoutDir,
-		talkDemoPath,
+		demoPath,
 		"examples.configbutler.ai/v1alpha1/quizsubmissions/vote/*.yaml",
 	)
 
@@ -345,19 +345,19 @@ func (r *talkDemoRun) verifyTalkRepositorySeeded() {
 	}, 2*time.Minute, 2*time.Second).Should(Succeed())
 }
 
-func (r *talkDemoRun) logArtifacts() {
+func (r *demoRun) logArtifacts() {
 	_, _ = fmt.Fprintf(
 		GinkgoWriter,
-		"Talk demo ready:\n  repo=%s\n  checkout=%s\n  repoURL=%s\n  namespace=%s\n  path=%s\n",
+		"Demo ready:\n  repo=%s\n  checkout=%s\n  repoURL=%s\n  namespace=%s\n  path=%s\n",
 		r.repoName,
 		r.checkoutDir,
 		r.repoURL,
-		talkDemoNamespace,
-		talkDemoPath,
+		demoNamespace,
+		demoPath,
 	)
 }
 
-func (r *talkDemoRun) gitPull() error {
+func (r *demoRun) gitPull() error {
 	pullCmd := exec.Command("git", "pull", "--ff-only")
 	pullCmd.Dir = r.checkoutDir
 	output, err := pullCmd.CombinedOutput()
@@ -367,7 +367,7 @@ func (r *talkDemoRun) gitPull() error {
 	return nil
 }
 
-func (r *talkDemoRun) gitCommitCount() (int, error) {
+func (r *demoRun) gitCommitCount() (int, error) {
 	cmd := exec.Command("git", "rev-list", "--count", "--all")
 	cmd.Dir = r.checkoutDir
 	output, err := cmd.CombinedOutput()

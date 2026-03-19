@@ -48,6 +48,10 @@ rules:
   - apiGroups: ["examples.configbutler.ai"]
     resources: ["quizsessions"]
     verbs: ["get", "list", "watch"]
+  # Write join code into quizsession status
+  - apiGroups: ["examples.configbutler.ai"]
+    resources: ["quizsessions/status"]
+    verbs: ["patch"]
   # Access to quizsubmissions (cluster-scoped CRD)
   - apiGroups: ["examples.configbutler.ai"]
     resources: ["quizsubmissions"]

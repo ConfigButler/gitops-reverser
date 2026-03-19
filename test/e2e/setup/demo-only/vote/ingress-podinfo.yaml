@@ -37,7 +37,7 @@ spec:
   entryPoints:
   - web
   routes:
-  - match: Host(`vote.reversegitops.dev`) && Path(`/podinfo`)
+  - match: Host(`demo.configbutler.ai`) && Path(`/podinfo`)
     kind: Rule
     middlewares:
     - name: ratelimit
@@ -45,7 +45,7 @@ spec:
     services:
     - name: podinfo
       port: 80
-  - match: Host(`vote.reversegitops.dev`) && PathPrefix(`/podinfo/`)
+  - match: Host(`demo.configbutler.ai`) && PathPrefix(`/podinfo/`)
     kind: Rule
     middlewares:
     - name: ratelimit
