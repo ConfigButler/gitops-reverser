@@ -494,12 +494,26 @@ func (r *GitTargetReconciler) ensureEventStream(
 
 	worker, exists := r.WorkerManager.GetWorkerForTarget(target.Spec.ProviderRef.Name, providerNS, target.Spec.Branch)
 	if !exists {
-		return nil, fmt.Errorf(
-			"branch worker not found for provider=%s/%s branch=%s",
-			providerNS,
-			target.Spec.ProviderRef.Name,
-			target.Spec.Branch,
-		)
+		if err := r.WorkerManager.EnsureWorker(context.Background(), target.Spec.ProviderRef.Name, providerNS, target.Spec.Branch); err != nil {
+			return nil, fmt.Errorf(
+				"failed to ensure branch worker for provider=%s/%s branch=%s: %w",
+				providerNS,
+				target.Spec.ProviderRef.Name,
+				target.Spec.Branch,
+				err,
+			)
+		}
+
+		var ensured bool
+		worker, ensured = r.WorkerManager.GetWorkerForTarget(target.Spec.ProviderRef.Name, providerNS, target.Spec.Branch)
+		if !ensured {
+			return nil, fmt.Errorf(
+				"branch worker not found for provider=%s/%s branch=%s",
+				providerNS,
+				target.Spec.ProviderRef.Name,
+				target.Spec.Branch,
+			)
+		}
 	}
 
 	gitDest := types.NewResourceReference(target.Name, target.Namespace)
