@@ -1,0 +1,47 @@
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: kro
+  namespace: flux-system
+spec:
+  interval: 24h
+  url: oci://registry.k8s.io/kro/charts/kro
+  layerSelector:
+    mediaType: "application/vnd.cncf.helm.chart.content.v1.tar+gzip"
+    operation: copy
+  ref:
+    semver: "0.8.5"
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: kro
+  namespace: flux-system
+spec:
+  interval: 60m
+  timeout: 10m
+  chartRef:
+    kind: OCIRepository
+    name: kro
+    namespace: flux-system
+  targetNamespace: kro-system
+  install:
+    createNamespace: true
+    remediation:
+      retries: 3
+  upgrade:
+    remediation:
+      retries: 3
+  values:
+    config:
+      allowCRDDeletion: true
+    metrics:
+      service:
+        create: true
+        type: "ClusterIP"
+        port: 8080
+      serviceMonitor:
+        enabled: true
+        interval: 30s
+        scrapeTimeout: 5s
+        telemetryPath: /metrics

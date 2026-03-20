@@ -379,7 +379,7 @@ $(CS)/services.ready: $(SERVICES_READY_INPUTS) | $(CS)
 .PHONY: prepare-e2e-demo
 prepare-e2e-demo: $(CS)/demo.ready ## Prepare demo-only prerequisites for talk/demo e2e runs
 
-$(CS)/demo.ready: $(CS)/services.ready $$(DEMO_MANIFESTS) | $(CS)
+$(CS)/demo.ready: $(CS)/services.ready $(CS)/$(NAMESPACE)/prepare-e2e.ready $$(DEMO_MANIFESTS) | $(CS)
 	$(call REQUIRE_FILE,$(DEMO_TUNNEL_CREDENTIALS),demo tunnel credentials,Create it from '$(DEMO_TUNNEL_CREDENTIALS).example' and set stringData.token before running this target.)
 	$(call REQUIRE_FILE,$(DEMO_PULL_SECRET),demo image pull secret,Create it from '$(DEMO_PULL_SECRET).example' before running this target.)
 	kubectl --context $(CTX) apply -f $(DEMO_MANIFESTS_DIR)/vote/ns.yaml
@@ -393,6 +393,10 @@ $(CS)/demo.ready: $(CS)/services.ready $$(DEMO_MANIFESTS) | $(CS)
 		crd/quizsessions.examples.configbutler.ai \
 		crd/quizsubmissions.examples.configbutler.ai \
 		--timeout=180s
+	kubectl --context $(CTX) apply -f $(DEMO_MANIFESTS_DIR)/podinfos-production/2-kro-template.yaml
+	kubectl --context $(CTX) wait --for=condition=Ready \
+		resourcegraphdefinition/podinfo-app \
+		--timeout=120s
 	kubectl --context $(CTX) apply -k $(DEMO_MANIFESTS_DIR)
 	touch $@
 

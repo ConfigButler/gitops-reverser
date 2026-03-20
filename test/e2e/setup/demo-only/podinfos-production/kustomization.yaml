@@ -1,0 +1,8 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - 0-ns.yaml
+  - 1-ingress-generic.yaml
+  - 2-kro-template.yaml
+  - 3-example-instance.yaml
