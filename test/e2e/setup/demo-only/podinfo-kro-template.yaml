@@ -14,7 +14,7 @@ spec:
     status:
       availableReplicas: ${deployment.status.availableReplicas}
       ready: ${deployment.status.availableReplicas >= 1}
-      url: ${"https://demo.configbutler.ai/" + schema.metadata.namespace.replace("-production", "") + "/" + deployment.metadata.name + "/"}
+      url: ${"https://demo.configbutler.ai/" + deployment.metadata.namespace.replace("-production", "") + "/" + deployment.metadata.name + "/"}
     additionalPrinterColumns:
       - name: URL
         type: string

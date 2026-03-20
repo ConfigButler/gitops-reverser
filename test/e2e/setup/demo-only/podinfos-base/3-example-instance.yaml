@@ -2,7 +2,6 @@ apiVersion: kro.run/v1alpha1
 kind: PodInfoApp
 metadata:
   name: fiets
-  namespace: podinfos-production
 spec:
   replicas: 1
   name: fiets
