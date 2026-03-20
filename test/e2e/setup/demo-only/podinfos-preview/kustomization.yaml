@@ -4,4 +4,3 @@ kind: Kustomization
 resources:
   - 0-ns.yaml
   - 1-ingress-generic.yaml
-  - 3-example-instance.yaml

@@ -14,7 +14,7 @@ spec:
     status:
       availableReplicas: ${deployment.status.availableReplicas}
       ready: ${deployment.status.availableReplicas >= 1}
-      url: ${"https://demo.configbutler.ai/podinfos/" + deployment.metadata.name + "/"}
+      url: ${"https://demo.configbutler.ai/" + schema.metadata.namespace.replace("-production", "") + "/" + deployment.metadata.name + "/"}
     additionalPrinterColumns:
       - name: URL
         type: string
@@ -28,7 +28,7 @@ spec:
         kind: Deployment
         metadata:
           name: ${schema.spec.name}
-          namespace: podinfos-production
+          namespace: ${schema.metadata.namespace}
           labels:
             app.kubernetes.io/name: ${schema.spec.name}
         spec:
@@ -78,7 +78,7 @@ spec:
         kind: Service
         metadata:
           name: ${schema.spec.name}
-          namespace: podinfos-production
+          namespace: ${schema.metadata.namespace}
           labels:
             app.kubernetes.io/name: ${schema.spec.name}
         spec:
@@ -94,17 +94,15 @@ spec:
         kind: IngressRoute
         metadata:
           name: ${schema.spec.name}
-          namespace: podinfos-production
+          namespace: ${schema.metadata.namespace}
         spec:
-          entryPoints:
-          - web
+          parentRefs:
+          - name: podinfos-gateway
           routes:
-          - match: Host(`demo.configbutler.ai`) && PathPrefix(`/podinfos/${schema.spec.name}`)
+          - match: PathPrefix(`/${schema.spec.name}`)
             kind: Rule
             middlewares:
-            - name: ratelimit
-            - name: podinfos-add-trailing-slash
-            - name: podinfos-strip-prefix
+            - name: strip-appname
             services:
             - name: ${schema.spec.name}
               port: 80

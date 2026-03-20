@@ -4,4 +4,6 @@ kind: Kustomization
 resources:
   - cloudflared-public
   - vote
+  - podinfos-shared
   - podinfos-production
+  - podinfos-preview
