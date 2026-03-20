@@ -981,6 +981,74 @@ spec:
 	assert.True(t, status.IsClean())
 }
 
+func TestWriteEvents_FirstRelevantCommitIncludesBootstrapFiles(t *testing.T) {
+	tempDir := t.TempDir()
+	serverPath := filepath.Join(tempDir, "server.git")
+	remoteURL := "file://" + serverPath
+	localPath := filepath.Join(tempDir, "local")
+	inspectPath := filepath.Join(tempDir, "inspect")
+
+	serverRepo := createBareRepo(t, serverPath)
+
+	pullReport, err := PrepareBranch(context.Background(), remoteURL, localPath, "main", nil)
+	require.NoError(t, err)
+	require.True(t, pullReport.HEAD.Unborn)
+	require.False(t, pullReport.ExistsOnRemote)
+
+	event := Event{
+		Object: &unstructured.Unstructured{
+			Object: map[string]interface{}{
+				"apiVersion": "v1",
+				"kind":       "ConfigMap",
+				"metadata": map[string]interface{}{
+					"name":      "sample-config",
+					"namespace": "default",
+				},
+				"data": map[string]interface{}{
+					"key": "value",
+				},
+			},
+		},
+		Identifier: types.ResourceIdentifier{
+			Group:     "",
+			Version:   "v1",
+			Resource:  "configmaps",
+			Namespace: "default",
+			Name:      "sample-config",
+		},
+		Operation: "CREATE",
+		UserInfo: UserInfo{
+			Username: "tester@example.com",
+		},
+		Path: "clusters/dev",
+		BootstrapOptions: pathBootstrapOptions{
+			Enabled:           true,
+			IncludeSOPSConfig: true,
+			TemplateData: bootstrapTemplateData{
+				AgeRecipients: []string{"age1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq7k8m6"},
+			},
+		},
+	}
+
+	result, err := WriteEvents(context.Background(), localPath, []Event{event}, "main", nil)
+	require.NoError(t, err)
+	require.Equal(t, 1, result.CommitsCreated)
+
+	ref, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
+	require.NoError(t, err)
+	assert.Equal(t, 1, countDepth(t, serverRepo, ref.Hash()))
+
+	_, err = PrepareBranch(context.Background(), remoteURL, inspectPath, "main", nil)
+	require.NoError(t, err)
+
+	_, err = os.Stat(filepath.Join(inspectPath, "clusters/dev", "README.md"))
+	require.NoError(t, err)
+	_, err = os.Stat(filepath.Join(inspectPath, "clusters/dev", sopsConfigFileName))
+	require.NoError(t, err)
+	_, err = os.Stat(filepath.Join(inspectPath, "clusters/dev", "v1", "configmaps", "default", "sample-config.yaml"))
+	require.NoError(t, err)
+}
+
 func TestPullBranch_WhipedRepo(t *testing.T) {
 	tempDir := t.TempDir()
 	serverPath := filepath.Join(tempDir, "server")
