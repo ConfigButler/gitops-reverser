@@ -10,7 +10,6 @@ resources:
   - repositories/jetstack.yaml
   - repositories/gitea-charts.yaml
   - repositories/valkey.yaml
-  - repositories/demo.yaml
   - releases/ingress.yaml
   - releases/prometheus-operator.yaml
   - releases/cert-manager.yaml
@@ -18,7 +17,6 @@ resources:
   - releases/valkey.yaml
   - releases/kro.yaml
   - releases/reflector.yaml
-  - releases/demo.yaml
 
 generatorOptions:
   disableNameSuffixHash: true

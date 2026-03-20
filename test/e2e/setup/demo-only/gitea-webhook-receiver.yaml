@@ -1,0 +1,31 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: gitea-webreceiver-demo
+  namespace: flux-system
+stringData:
+  token: FvfrahPqlC7R29QSa61AybaJh  # It's only internally, so ok for now
+---
+apiVersion: notification.toolkit.fluxcd.io/v1
+kind: Receiver
+metadata:
+  name: gitea-webreceiver-demo
+  namespace: flux-system
+spec:
+  type: github  # gitea itself is not supported, but is github compatible
+  events: # ping event is not supported by gitea
+    - "push"
+    - "create"
+    - "delete"
+  secretRef:
+    name: gitea-webreceiver-demo
+  resources:
+    - kind: GitRepository
+      name: demo
+      namespace: podinfos-intent
+    - kind: GitRepository
+      name: demo
+      namespace: podinfos-preview
+    - kind: GitRepository
+      name: demo
+      namespace: podinfos-production

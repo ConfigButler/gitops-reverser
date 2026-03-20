@@ -21,7 +21,7 @@ spec:
   interval: 24h   # In practice I feel that we should turn it off, and then only request a sync when something is changed
   timeout: 5m
   path: ./podinfos
-  #prune: true
+  prune: true
   sourceRef:
     kind: GitRepository
     name: demo

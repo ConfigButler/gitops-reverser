@@ -20,7 +20,7 @@ spec:
         type: string
         jsonPath: .status.url
   resources:
-    - id: gateway   # This resource is 'included' so that we only expand in namespaces that also would serve it
+    - id: gateway   # Trying to include this is a trick to only expand in namespaces that also would serve traffic
       externalRef:
         apiVersion: traefik.io/v1alpha1
         kind: IngressRoute
@@ -37,7 +37,7 @@ spec:
           namespace: ${schema.metadata.namespace}
           labels:
             app.kubernetes.io/name: ${schema.spec.name}
-            configbutler.ai/path-prefix: ${gateway.metadata.labels.?["configbutler.ai/path-prefix"]}
+            configbutler.ai/path-prefix: ${gateway.metadata.labels["configbutler.ai/path-prefix"]}
         spec:
           replicas: ${schema.spec.replicas}
           selector:
@@ -47,7 +47,7 @@ spec:
             metadata:
               labels:
                 app.kubernetes.io/name: ${schema.spec.name}
-                configbutler.ai/path-prefix: ${gateway.metadata.labels.?["configbutler.ai/path-prefix"]}
+                configbutler.ai/path-prefix: ${gateway.metadata.labels["configbutler.ai/path-prefix"]}
             spec:
               containers:
               - name: podinfo
@@ -89,7 +89,7 @@ spec:
           namespace: ${schema.metadata.namespace}
           labels:
             app.kubernetes.io/name: ${schema.spec.name}
-            configbutler.ai/path-prefix: ${gateway.metadata.labels.?["configbutler.ai/path-prefix"]}
+            configbutler.ai/path-prefix: ${gateway.metadata.labels["configbutler.ai/path-prefix"]}
         spec:
           selector:
             app.kubernetes.io/name: ${schema.spec.name}
@@ -106,7 +106,7 @@ spec:
           namespace: ${schema.metadata.namespace}
           labels:
             app.kubernetes.io/name: ${schema.spec.name}
-            configbutler.ai/path-prefix: ${gateway.metadata.labels.?["configbutler.ai/path-prefix"]}
+            configbutler.ai/path-prefix: ${gateway.metadata.labels["configbutler.ai/path-prefix"]}
         spec:
           parentRefs:
           - name: podinfos-gateway

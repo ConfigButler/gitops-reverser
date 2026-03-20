@@ -9,3 +9,12 @@ resources:
 
 patches:
   - path: 1-patch-ingress.yaml
+  - target:
+      group: source.toolkit.fluxcd.io
+      version: v1
+      kind: GitRepository
+      name: demo
+    patch: |-
+      - op: replace
+        path: /spec/ref/branch
+        value: monster

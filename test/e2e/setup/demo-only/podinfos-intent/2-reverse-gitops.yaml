@@ -6,9 +6,10 @@ spec:
   url: http://gitea-http.gitea-e2e.svc.cluster.local:13000/testorg/demo.git
   allowedBranches:
     - main
+    - monster
   push:
     interval: "5s"
-    maxCommits: 10
+    maxCommits: 30
   secretRef:
     name: git-creds-demo
 ---
@@ -19,8 +20,8 @@ metadata:
 spec:
   providerRef:
     kind: GitProvider
-    name: monster-deployment-provider
-  branch: main
+    name: demo
+  branch: monster
   path: podinfos
 ---
 apiVersion: configbutler.ai/v1alpha1
