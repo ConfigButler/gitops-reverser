@@ -393,7 +393,7 @@ $(CS)/demo.ready: $(CS)/services.ready $(CS)/$(NAMESPACE)/prepare-e2e.ready $$(D
 		crd/quizsessions.examples.configbutler.ai \
 		crd/quizsubmissions.examples.configbutler.ai \
 		--timeout=180s
-	kubectl --context $(CTX) apply -f $(DEMO_MANIFESTS_DIR)/podinfos-production/2-kro-template.yaml
+	kubectl --context $(CTX) apply -f $(DEMO_MANIFESTS_DIR)/podinfo-kro-template.yaml
 	kubectl --context $(CTX) wait --for=condition=Ready \
 		resourcegraphdefinition/podinfo-app \
 		--timeout=120s

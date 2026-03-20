@@ -1,0 +1,26 @@
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: ratelimit
+spec:
+  rateLimit:
+    average: 10
+    burst: 5
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: podinfos-add-trailing-slash
+spec:
+  redirectRegex:
+    regex: ^https?://([^/]+)/([^/]+)/([^/]+)$
+    replacement: https://${1}/${2}/${3}/
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: strip-appname
+spec:
+  stripPrefixRegex:
+    regex:
+      - /[^/]+
