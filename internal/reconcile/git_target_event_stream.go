@@ -64,6 +64,7 @@ type GitTargetEventStream struct {
 // EventEnqueuer interface for enqueuing events and batches (allows mocking).
 type EventEnqueuer interface {
 	Enqueue(event git.Event)
+	EnqueueRequest(request *git.WriteRequest)
 	EnqueueBatch(batch *git.ReconcileBatch)
 }
 
@@ -134,7 +135,8 @@ func (s *GitTargetEventStream) OnWatchEvent(event git.Event) {
 func (s *GitTargetEventStream) EmitReconcileBatch(batch git.ReconcileBatch) error {
 	batch.GitTargetName = s.gitTargetName
 	batch.GitTargetNamespace = s.gitTargetNamespace
-	s.branchWorker.EnqueueBatch(&batch)
+	batch.CommitMode = git.CommitModeAtomic
+	s.branchWorker.EnqueueRequest(&batch)
 	return nil
 }
 

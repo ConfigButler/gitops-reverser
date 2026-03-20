@@ -201,8 +201,37 @@ func WriteEventsWithContentWriter(
 	targetBranchName string,
 	auth transport.AuthMethod,
 ) (*WriteEventsResult, error) {
+	return WriteRequestWithContentWriter(ctx, writer, repoPath, &WriteRequest{
+		Events:     append([]Event(nil), events...),
+		CommitMode: CommitModePerEvent,
+	}, targetBranchName, auth)
+}
+
+// WriteRequestWithContentWriter handles writes through a single request-based implementation.
+func WriteRequestWithContentWriter(
+	ctx context.Context,
+	writer eventContentWriter,
+	repoPath string,
+	request *WriteRequest,
+	targetBranchName string,
+	auth transport.AuthMethod,
+) (*WriteEventsResult, error) {
 	logger := log.FromContext(ctx)
-	logger.Info("Starting writeEvents operation", "path", repoPath, "events", len(events))
+	if request == nil {
+		return nil, errors.New("write request is required")
+	}
+	if request.CommitMode == "" {
+		request.CommitMode = CommitModePerEvent
+	}
+	logger.Info(
+		"Starting write request operation",
+		"path",
+		repoPath,
+		"events",
+		len(request.Events),
+		"commitMode",
+		request.CommitMode,
+	)
 	if writer == nil {
 		return nil, errors.New("content writer is required")
 	}
@@ -229,13 +258,13 @@ func WriteEventsWithContentWriter(
 			}
 		}
 
-		done, err := tryWriteEventsAttempt(
+		done, err := tryWriteRequestAttempt(
 			ctx,
 			logger,
 			writer,
 			result,
 			repo,
-			events,
+			request,
 			targetBranch,
 			targetBranchName,
 			auth,
@@ -251,13 +280,13 @@ func WriteEventsWithContentWriter(
 	return result, nil
 }
 
-func tryWriteEventsAttempt(
+func tryWriteRequestAttempt(
 	ctx context.Context,
 	logger logr.Logger,
 	writer eventContentWriter,
 	result *WriteEventsResult,
 	repo *git.Repository,
-	events []Event,
+	request *WriteRequest,
 	targetBranch plumbing.ReferenceName,
 	targetBranchName string,
 	auth transport.AuthMethod,
@@ -273,7 +302,7 @@ func tryWriteEventsAttempt(
 		}
 	}
 
-	commitsCreated, lastHash, err := generateCommitsFromEvents(ctx, writer, repo, events)
+	commitsCreated, lastHash, err := generateCommitsFromRequest(ctx, writer, repo, request)
 	if err != nil {
 		return false, fmt.Errorf("failed to generate commits: %w", err)
 	}
@@ -734,113 +763,57 @@ func WriteBatchWithContentWriter(
 	targetBranchName string,
 	auth transport.AuthMethod,
 ) (*WriteEventsResult, error) {
-	logger := log.FromContext(ctx)
-	logger.Info("Starting writeBatch operation", "path", repoPath, "events", len(batch.Events))
-	if writer == nil {
-		return nil, errors.New("content writer is required")
+	if batch == nil {
+		return nil, errors.New("reconcile batch is required")
 	}
-
-	repo, err := git.PlainOpen(repoPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open repository: %w", err)
+	request := *batch
+	if request.CommitMode == "" {
+		request.CommitMode = CommitModeAtomic
 	}
-
-	targetBranch := plumbing.NewBranchReferenceName(targetBranchName)
-
-	result := &WriteEventsResult{
-		CommitsCreated: 0,
-		ConflictPulls:  []*PullReport{},
-		Failures:       0,
-	}
-
-	const maxRetries = 3
-	for ; result.Failures < maxRetries; result.Failures++ {
-		if result.Failures > 0 {
-			if err := tryResolve(ctx, logger, result, repo, targetBranch, auth); err != nil {
-				continue
-			}
-		}
-
-		done, err := tryWriteBatchAttempt(
-			ctx, logger, writer, result, repo, batch, targetBranch, targetBranchName, auth,
-		)
-		if err != nil {
-			return nil, err
-		}
-		if done {
-			break
-		}
-	}
-
-	return result, nil
+	return WriteRequestWithContentWriter(ctx, writer, repoPath, &request, targetBranchName, auth)
 }
 
-func tryWriteBatchAttempt(
-	ctx context.Context,
-	logger logr.Logger,
-	writer eventContentWriter,
-	result *WriteEventsResult,
-	repo *git.Repository,
-	batch *ReconcileBatch,
-	targetBranch plumbing.ReferenceName,
-	targetBranchName string,
-	auth transport.AuthMethod,
-) (bool, error) {
-	baseBranch, baseHash, err := GetCurrentBranch(repo)
-	if err != nil {
-		return false, err
-	}
-
-	if baseBranch != targetBranch {
-		if err := switchOrCreateBranch(repo, targetBranch, logger, targetBranchName, baseHash); err != nil {
-			return false, err
-		}
-	}
-
-	committed, lastHash, err := generateBatchCommit(ctx, writer, repo, batch)
-	if err != nil {
-		return false, fmt.Errorf("failed to generate batch commit: %w", err)
-	}
-
-	result.LastHash = printSha(lastHash)
-	if !committed {
-		logger.Info("No changes in batch, no need to push")
-		result.CommitsCreated = 0
-		return true, nil
-	}
-	result.CommitsCreated = 1
-
-	if err := PushAtomic(ctx, repo, baseHash, baseBranch, auth); err == nil {
-		logger.Info("Batch pushed to remote", "failureCount", result.Failures)
-		return true, nil
-	}
-
-	return false, nil
-}
-
-// generateBatchCommit applies all events in a ReconcileBatch without committing after each,
-// then creates a single commit with the batch message.
-// Returns (committed bool, lastHash, error).
-func generateBatchCommit(
+// generateCommitsFromRequest creates commits from the provided write request.
+func generateCommitsFromRequest(
 	ctx context.Context,
 	writer eventContentWriter,
 	repo *git.Repository,
-	batch *ReconcileBatch,
-) (bool, plumbing.Hash, error) {
+	request *WriteRequest,
+) (int, plumbing.Hash, error) {
+	if request == nil {
+		return 0, plumbing.ZeroHash, errors.New("write request is required")
+	}
+	if request.CommitMode == "" {
+		request.CommitMode = CommitModePerEvent
+	}
+	if request.CommitMode == CommitModeAtomic {
+		return generateAtomicCommit(ctx, writer, repo, request)
+	}
+
+	return generatePerEventCommits(ctx, writer, repo, request.Events)
+}
+
+// generateAtomicCommit applies all events without committing after each, then creates a single commit.
+func generateAtomicCommit(
+	ctx context.Context,
+	writer eventContentWriter,
+	repo *git.Repository,
+	request *WriteRequest,
+) (int, plumbing.Hash, error) {
 	logger := log.FromContext(ctx)
 	worktree, err := repo.Worktree()
 	if err != nil {
-		return false, plumbing.ZeroHash, fmt.Errorf("failed to get worktree: %w", err)
+		return 0, plumbing.ZeroHash, fmt.Errorf("failed to get worktree: %w", err)
 	}
-	if err := ensureBootstrapTemplateInPath(repo, batchTargetPath(batch), batch.BootstrapOptions); err != nil {
-		return false, plumbing.ZeroHash, err
+	if err := ensureBootstrapTemplateInPath(repo, batchTargetPath(request), request.BootstrapOptions); err != nil {
+		return 0, plumbing.ZeroHash, err
 	}
 
 	anyChanges := false
-	for _, event := range batch.Events {
+	for _, event := range request.Events {
 		changesApplied, err := applyEventToWorktree(ctx, writer, worktree, event)
 		if err != nil {
-			return false, plumbing.ZeroHash, err
+			return 0, plumbing.ZeroHash, err
 		}
 		if changesApplied {
 			anyChanges = true
@@ -848,10 +821,10 @@ func generateBatchCommit(
 	}
 
 	if !anyChanges {
-		return false, plumbing.ZeroHash, nil
+		return 0, plumbing.ZeroHash, nil
 	}
 
-	hash, err := worktree.Commit(batch.CommitMessage, &git.CommitOptions{
+	hash, err := worktree.Commit(request.CommitMessage, &git.CommitOptions{
 		Author: &object.Signature{
 			Name:  "gitops-reverser",
 			Email: "noreply@configbutler.ai",
@@ -864,15 +837,15 @@ func generateBatchCommit(
 		},
 	})
 	if err != nil {
-		return false, plumbing.ZeroHash, fmt.Errorf("failed to create batch commit: %w", err)
+		return 0, plumbing.ZeroHash, fmt.Errorf("failed to create batch commit: %w", err)
 	}
 
-	logger.Info("Created batch commit", "message", batch.CommitMessage, "events", len(batch.Events))
-	return true, hash, nil
+	logger.Info("Created atomic commit", "message", request.CommitMessage, "events", len(request.Events))
+	return 1, hash, nil
 }
 
-// generateCommitsFromEvents creates commits from the provided events.
-func generateCommitsFromEvents(
+// generatePerEventCommits creates one commit per event.
+func generatePerEventCommits(
 	ctx context.Context,
 	writer eventContentWriter,
 	repo *git.Repository,
@@ -1060,11 +1033,11 @@ func generateFilePath(id types.ResourceIdentifier) string {
 	return defaultPath + ".sops.yaml"
 }
 
-func batchTargetPath(batch *ReconcileBatch) string {
-	if batch == nil {
+func batchTargetPath(request *WriteRequest) string {
+	if request == nil {
 		return ""
 	}
-	for _, event := range batch.Events {
+	for _, event := range request.Events {
 		if sanitized := sanitizePath(event.Path); sanitized != "" {
 			return sanitized
 		}

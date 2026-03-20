@@ -283,6 +283,19 @@ func (m *mockEventEnqueuer) Enqueue(event git.Event) {
 	m.events = append(m.events, event)
 }
 
+func (m *mockEventEnqueuer) EnqueueRequest(request *git.WriteRequest) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if request == nil {
+		return
+	}
+	if request.CommitMode == git.CommitModeAtomic {
+		m.batches = append(m.batches, request)
+		return
+	}
+	m.events = append(m.events, request.Events...)
+}
+
 func (m *mockEventEnqueuer) EnqueueBatch(batch *git.ReconcileBatch) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

@@ -214,6 +214,17 @@ func (m *mockBranchWorker) Enqueue(event git.Event) {
 	m.events = append(m.events, event)
 }
 
+func (m *mockBranchWorker) EnqueueRequest(request *git.WriteRequest) {
+	if request == nil {
+		return
+	}
+	if request.CommitMode == git.CommitModeAtomic {
+		m.batches = append(m.batches, request)
+		return
+	}
+	m.events = append(m.events, request.Events...)
+}
+
 func (m *mockBranchWorker) EnqueueBatch(batch *git.ReconcileBatch) {
 	m.batches = append(m.batches, batch)
 }
