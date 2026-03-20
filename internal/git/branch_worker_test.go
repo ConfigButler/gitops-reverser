@@ -294,17 +294,13 @@ func TestBranchWorker_EnsurePathBootstrapped_EmptyPathCreatesTemplate(t *testing
 	require.NoError(t, worker.EnsurePathBootstrapped("clusters/prod", "bootstrap-target", "default"))
 	require.NoError(t, worker.EnsurePathBootstrapped("clusters/prod", "bootstrap-target", "default"))
 
-	ref, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
-	require.NoError(t, err)
-	assert.Equal(t, 1, countDepth(t, serverRepo, ref.Hash()), "Bootstrap should only commit once for same path")
+	_, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
+	require.ErrorIs(t, err, plumbing.ErrReferenceNotFound, "Bootstrap should not create the branch remotely")
 
-	clonePath := filepath.Join(tempDir, "inspect")
-	_, err = PrepareBranch(ctx, remoteURL, clonePath, "main", nil)
+	repoPath := worker.repoPathForRemote(remoteURL)
+	_, err = os.Stat(filepath.Join(repoPath, "clusters/prod", "README.md"))
 	require.NoError(t, err)
-
-	_, err = os.Stat(filepath.Join(clonePath, "clusters/prod", "README.md"))
-	require.NoError(t, err)
-	_, err = os.Stat(filepath.Join(clonePath, "clusters/prod", sopsConfigFileName))
+	_, err = os.Stat(filepath.Join(repoPath, "clusters/prod", sopsConfigFileName))
 	require.NoError(t, err)
 }
 
@@ -345,17 +341,14 @@ func TestBranchWorker_EnsurePathBootstrapped_NonEmptyPathBootstrapsMissingFiles(
 
 	ref, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
 	require.NoError(t, err)
-	assert.Equal(t, 2, countDepth(t, serverRepo, ref.Hash()), "Missing bootstrap files should be added once")
+	assert.Equal(t, 1, countDepth(t, serverRepo, ref.Hash()), "Bootstrap should not create a remote commit")
 
-	clonePath := filepath.Join(tempDir, "inspect")
-	_, err = PrepareBranch(ctx, remoteURL, clonePath, "main", nil)
+	repoPath := worker.repoPathForRemote(remoteURL)
+	_, err = os.Stat(filepath.Join(repoPath, "clusters/prod", "README.md"))
 	require.NoError(t, err)
-
-	_, err = os.Stat(filepath.Join(clonePath, "clusters/prod", "README.md"))
+	_, err = os.Stat(filepath.Join(repoPath, "clusters/prod", sopsConfigFileName))
 	require.NoError(t, err)
-	_, err = os.Stat(filepath.Join(clonePath, "clusters/prod", sopsConfigFileName))
-	require.NoError(t, err)
-	_, err = os.Stat(filepath.Join(clonePath, "clusters/prod", "existing.txt"))
+	_, err = os.Stat(filepath.Join(repoPath, "clusters/prod", "existing.txt"))
 	require.NoError(t, err)
 }
 
@@ -384,13 +377,10 @@ func TestBranchWorker_EnsurePathBootstrapped_NoEncryptionSkipsSOPSConfig(t *test
 	worker := NewBranchWorker(k8sClient, logr.Discard(), "test-repo", "default", "main", nil)
 	require.NoError(t, worker.EnsurePathBootstrapped("clusters/dev", "bootstrap-target", "default"))
 
-	clonePath := filepath.Join(tempDir, "inspect")
-	_, err := PrepareBranch(ctx, remoteURL, clonePath, "main", nil)
+	repoPath := worker.repoPathForRemote(remoteURL)
+	_, err := os.Stat(filepath.Join(repoPath, "clusters/dev", "README.md"))
 	require.NoError(t, err)
-
-	_, err = os.Stat(filepath.Join(clonePath, "clusters/dev", "README.md"))
-	require.NoError(t, err)
-	_, err = os.Stat(filepath.Join(clonePath, "clusters/dev", sopsConfigFileName))
+	_, err = os.Stat(filepath.Join(repoPath, "clusters/dev", sopsConfigFileName))
 	assert.True(t, os.IsNotExist(err), "Bootstrap SOPS config should be skipped when encryption is not configured")
 }
 
@@ -430,14 +420,11 @@ func TestBranchWorker_EnsurePathBootstrapped_ExistingFileNotOverwritten(t *testi
 	worker := NewBranchWorker(k8sClient, logr.Discard(), "test-repo", "default", "main", nil)
 	require.NoError(t, worker.EnsurePathBootstrapped("clusters/prod", "bootstrap-target", "default"))
 
-	clonePath := filepath.Join(tempDir, "inspect")
-	_, err := PrepareBranch(ctx, remoteURL, clonePath, "main", nil)
-	require.NoError(t, err)
-
-	readmeContent, err := os.ReadFile(filepath.Join(clonePath, "clusters/prod", "README.md"))
+	repoPath := worker.repoPathForRemote(remoteURL)
+	readmeContent, err := os.ReadFile(filepath.Join(repoPath, "clusters/prod", "README.md"))
 	require.NoError(t, err)
 	assert.Equal(t, customREADME, string(readmeContent), "Bootstrap must not overwrite existing files")
-	_, err = os.Stat(filepath.Join(clonePath, "clusters/prod", sopsConfigFileName))
+	_, err = os.Stat(filepath.Join(repoPath, "clusters/prod", sopsConfigFileName))
 	require.NoError(t, err)
 }
 
@@ -466,32 +453,20 @@ func TestBranchWorker_EnsurePathBootstrapped_EnableEncryptionLaterAddsSOPSConfig
 	worker := NewBranchWorker(k8sClient, logr.Discard(), "test-repo", "default", "main", nil)
 	require.NoError(t, worker.EnsurePathBootstrapped("clusters/dev", "bootstrap-target", "default"))
 
-	cloneBeforePath := filepath.Join(tempDir, "inspect-before")
-	_, err := PrepareBranch(ctx, remoteURL, cloneBeforePath, "main", nil)
+	repoPath := worker.repoPathForRemote(remoteURL)
+	_, err := os.Stat(filepath.Join(repoPath, "clusters/dev", "README.md"))
 	require.NoError(t, err)
-	_, err = os.Stat(filepath.Join(cloneBeforePath, "clusters/dev", "README.md"))
-	require.NoError(t, err)
-	_, err = os.Stat(filepath.Join(cloneBeforePath, "clusters/dev", sopsConfigFileName))
+	_, err = os.Stat(filepath.Join(repoPath, "clusters/dev", sopsConfigFileName))
 	assert.True(t, os.IsNotExist(err), "SOPS config should not exist before encryption is configured")
 
 	attachEncryptionToTarget(ctx, t, k8sClient, "bootstrap-target", "default")
 	require.NoError(t, worker.EnsurePathBootstrapped("clusters/dev", "bootstrap-target", "default"))
 
-	ref, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
+	_, err = serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
+	require.ErrorIs(t, err, plumbing.ErrReferenceNotFound, "Bootstrap should not create a remote commit")
+	_, err = os.Stat(filepath.Join(repoPath, "clusters/dev", "README.md"))
 	require.NoError(t, err)
-	assert.Equal(
-		t,
-		2,
-		countDepth(t, serverRepo, ref.Hash()),
-		"Enabling encryption later should add one bootstrap commit",
-	)
-
-	cloneAfterPath := filepath.Join(tempDir, "inspect-after")
-	_, err = PrepareBranch(ctx, remoteURL, cloneAfterPath, "main", nil)
-	require.NoError(t, err)
-	_, err = os.Stat(filepath.Join(cloneAfterPath, "clusters/dev", "README.md"))
-	require.NoError(t, err)
-	_, err = os.Stat(filepath.Join(cloneAfterPath, "clusters/dev", sopsConfigFileName))
+	_, err = os.Stat(filepath.Join(repoPath, "clusters/dev", sopsConfigFileName))
 	require.NoError(t, err)
 }
 
@@ -533,13 +508,10 @@ func TestBranchWorker_EnsurePathBootstrapped_InvalidEncryptionSecretSkipsSOPSCon
 	worker := NewBranchWorker(k8sClient, logr.Discard(), "test-repo", "default", "main", nil)
 	require.NoError(t, worker.EnsurePathBootstrapped("clusters/dev", "bootstrap-target", "default"))
 
-	clonePath := filepath.Join(tempDir, "inspect")
-	_, err := PrepareBranch(ctx, remoteURL, clonePath, "main", nil)
+	repoPath := worker.repoPathForRemote(remoteURL)
+	_, err := os.Stat(filepath.Join(repoPath, "clusters/dev", "README.md"))
 	require.NoError(t, err)
-
-	_, err = os.Stat(filepath.Join(clonePath, "clusters/dev", "README.md"))
-	require.NoError(t, err)
-	_, err = os.Stat(filepath.Join(clonePath, "clusters/dev", sopsConfigFileName))
+	_, err = os.Stat(filepath.Join(repoPath, "clusters/dev", sopsConfigFileName))
 	assert.True(t, os.IsNotExist(err), "Bootstrap SOPS config should be skipped for invalid encryption secret")
 }
 
@@ -581,13 +553,10 @@ func TestBranchWorker_EnsurePathBootstrapped_MissingSOPSKeySkipsSOPSConfig(t *te
 	worker := NewBranchWorker(k8sClient, logr.Discard(), "test-repo", "default", "main", nil)
 	require.NoError(t, worker.EnsurePathBootstrapped("clusters/dev", "bootstrap-target", "default"))
 
-	clonePath := filepath.Join(tempDir, "inspect")
-	_, err := PrepareBranch(ctx, remoteURL, clonePath, "main", nil)
+	repoPath := worker.repoPathForRemote(remoteURL)
+	_, err := os.Stat(filepath.Join(repoPath, "clusters/dev", "README.md"))
 	require.NoError(t, err)
-
-	_, err = os.Stat(filepath.Join(clonePath, "clusters/dev", "README.md"))
-	require.NoError(t, err)
-	_, err = os.Stat(filepath.Join(clonePath, "clusters/dev", sopsConfigFileName))
+	_, err = os.Stat(filepath.Join(repoPath, "clusters/dev", sopsConfigFileName))
 	assert.True(t, os.IsNotExist(err), "Bootstrap SOPS config should be skipped when no .agekey entry is present")
 }
 
@@ -657,11 +626,8 @@ func TestBranchWorker_EnsurePathBootstrapped_RendersAllResolvedRecipients(t *tes
 	worker := NewBranchWorker(k8sClient, logr.Discard(), "test-repo", "default", "main", nil)
 	require.NoError(t, worker.EnsurePathBootstrapped("clusters/dev", "bootstrap-target", "default"))
 
-	clonePath := filepath.Join(tempDir, "inspect")
-	_, err = PrepareBranch(ctx, remoteURL, clonePath, "main", nil)
-	require.NoError(t, err)
-
-	sopsConfig, err := os.ReadFile(filepath.Join(clonePath, "clusters/dev", sopsConfigFileName))
+	repoPath := worker.repoPathForRemote(remoteURL)
+	sopsConfig, err := os.ReadFile(filepath.Join(repoPath, "clusters/dev", sopsConfigFileName))
 	require.NoError(t, err)
 	assert.Contains(t, string(sopsConfig), secretIdentity.Recipient().String())
 	assert.Contains(t, string(sopsConfig), secondaryIdentity.Recipient().String())

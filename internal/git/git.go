@@ -481,10 +481,24 @@ func tryOpenExistingRepo(path string, logger logr.Logger) *git.Repository {
 		return nil
 	}
 
-	// Verify repository is valid by checking HEAD
-	_, err = repo.Head()
+	headRef, err := repo.Storer.Reference(plumbing.HEAD)
 	if err != nil {
 		logger.Info("Existing repository is invalid, will clone fresh", "path", path, "error", err)
+		return nil
+	}
+
+	if headRef.Type() == plumbing.SymbolicReference {
+		if _, refErr := repo.Reference(headRef.Target(), false); refErr == nil ||
+			errors.Is(refErr, plumbing.ErrReferenceNotFound) {
+			return repo
+		}
+		logger.Info(
+			"Existing repository has invalid HEAD target, will clone fresh",
+			"path",
+			path,
+			"target",
+			headRef.Target(),
+		)
 		return nil
 	}
 
@@ -818,6 +832,9 @@ func generateBatchCommit(
 	if err != nil {
 		return false, plumbing.ZeroHash, fmt.Errorf("failed to get worktree: %w", err)
 	}
+	if err := ensureBootstrapTemplateInPath(repo, batchTargetPath(batch), batch.BootstrapOptions); err != nil {
+		return false, plumbing.ZeroHash, err
+	}
 
 	anyChanges := false
 	for _, event := range batch.Events {
@@ -870,6 +887,10 @@ func generateCommitsFromEvents(
 
 	commitsCreated := 0
 	for _, event := range events {
+		if err := ensureBootstrapTemplateInPath(repo, sanitizePath(event.Path), event.BootstrapOptions); err != nil {
+			return commitsCreated, lastHash, err
+		}
+
 		changesApplied, err := applyEventToWorktree(ctx, writer, worktree, event)
 		if err != nil {
 			return commitsCreated, lastHash, err
@@ -1037,6 +1058,18 @@ func generateFilePath(id types.ResourceIdentifier) string {
 		return strings.TrimSuffix(defaultPath, ".yaml") + ".sops.yaml"
 	}
 	return defaultPath + ".sops.yaml"
+}
+
+func batchTargetPath(batch *ReconcileBatch) string {
+	if batch == nil {
+		return ""
+	}
+	for _, event := range batch.Events {
+		if sanitized := sanitizePath(event.Path); sanitized != "" {
+			return sanitized
+		}
+	}
+	return ""
 }
 
 // createCommitForEvent creates a commit for the given event.
