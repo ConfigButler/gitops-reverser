@@ -51,6 +51,8 @@ const (
 	metadataCacheDuration = 30 * time.Second
 )
 
+var errEventTargetMetadataMissing = errors.New("event git target metadata missing")
+
 // BranchWorker processes events for a single (GitProvider, Branch) combination.
 // It can serve multiple GitTargets that write to different paths in the same branch.
 // This design ensures serialized commits per branch, preventing merge conflicts.
@@ -168,32 +170,46 @@ func (w *BranchWorker) Stop() {
 
 // Enqueue adds a single live event to this worker's queue.
 func (w *BranchWorker) Enqueue(event Event) {
-	item := WorkItem{Single: &event}
+	w.enqueueRequest(&WriteRequest{
+		Events:        []Event{event},
+		CommitMode:    CommitModePerEvent,
+		CommitMessage: "",
+	})
+}
+
+// EnqueueRequest adds a write request to this worker's queue.
+func (w *BranchWorker) EnqueueRequest(request *WriteRequest) {
+	w.enqueueRequest(request)
+}
+
+func (w *BranchWorker) enqueueRequest(request *WriteRequest) {
+	if request == nil {
+		return
+	}
+	item := WorkItem{Request: request}
 	select {
 	case w.eventQueue <- item:
-		w.Log.V(1).Info("Event enqueued",
-			"operation", event.Operation,
-			"path", event.Path)
+		w.Log.V(1).Info("Write request enqueued",
+			"events", len(request.Events),
+			"mode", request.CommitMode,
+			"gitTarget", request.GitTargetName)
 	default:
-		w.Log.Error(nil, "Event queue full, event dropped",
-			"operation", event.Operation,
-			"path", event.Path)
+		w.Log.Error(nil, "Event queue full, request dropped",
+			"events", len(request.Events),
+			"mode", request.CommitMode,
+			"gitTarget", request.GitTargetName)
 	}
 }
 
 // EnqueueBatch adds a reconcile batch to this worker's queue as a single atomic unit.
 func (w *BranchWorker) EnqueueBatch(batch *ReconcileBatch) {
-	item := WorkItem{Batch: batch}
-	select {
-	case w.eventQueue <- item:
-		w.Log.V(1).Info("Batch enqueued",
-			"events", len(batch.Events),
-			"gitTarget", batch.GitTargetName)
-	default:
-		w.Log.Error(nil, "Event queue full, batch dropped",
-			"events", len(batch.Events),
-			"gitTarget", batch.GitTargetName)
+	if batch == nil {
+		return
 	}
+	if batch.CommitMode == "" {
+		batch.CommitMode = CommitModeAtomic
+	}
+	w.enqueueRequest(batch)
 }
 
 // ListResourcesInPath returns resource identifiers found in a Git folder.
@@ -417,31 +433,16 @@ func (w *BranchWorker) processEvents() {
 			return
 
 		case item := <-w.eventQueue:
-			if item.Single != nil {
-				// Buffer single live event
-				eventBuffer = append(eventBuffer, *item.Single)
-				bufferByteCount += w.estimateEventSize(*item.Single)
-
-				// Check limits
-				if len(eventBuffer) >= maxCommits || bufferByteCount >= maxBytesBytes {
-					w.commitAndPush(eventBuffer)
-					eventBuffer = nil
-					bufferByteCount = 0
-				}
-			} else if item.Batch != nil {
-				// Flush any buffered live events first to preserve ordering
-				if len(eventBuffer) > 0 {
-					w.commitAndPush(eventBuffer)
-					eventBuffer = nil
-					bufferByteCount = 0
-				}
-				// Process the entire batch as a single atomic commit
-				w.commitAndPushBatch(item.Batch)
-			}
+			eventBuffer, bufferByteCount = w.handleQueueItem(
+				item,
+				eventBuffer,
+				bufferByteCount,
+				maxCommits,
+			)
 
 		case <-pushTicker.C:
 			if len(eventBuffer) > 0 {
-				w.commitAndPush(eventBuffer)
+				w.commitAndPushRequest(newPerEventWriteRequest(eventBuffer))
 				eventBuffer = nil
 				bufferByteCount = 0
 			}
@@ -449,13 +450,64 @@ func (w *BranchWorker) processEvents() {
 	}
 }
 
-// commitAndPush processes a batch of events.
-// Events may have different paths but all go to same branch.
-func (w *BranchWorker) commitAndPush(events []Event) {
+func (w *BranchWorker) handleQueueItem(
+	item WorkItem,
+	eventBuffer []Event,
+	bufferByteCount int64,
+	maxCommits int,
+) ([]Event, int64) {
+	if item.Request == nil {
+		return eventBuffer, bufferByteCount
+	}
+
+	if item.Request.CommitMode == CommitModeAtomic {
+		return w.handleAtomicRequest(item.Request, eventBuffer)
+	}
+
+	return w.bufferPerEventRequest(item.Request, eventBuffer, bufferByteCount, maxCommits)
+}
+
+func (w *BranchWorker) handleAtomicRequest(
+	request *WriteRequest,
+	eventBuffer []Event,
+) ([]Event, int64) {
+	if len(eventBuffer) > 0 {
+		w.commitAndPushRequest(newPerEventWriteRequest(eventBuffer))
+	}
+	w.commitAndPushRequest(request)
+	return nil, 0
+}
+
+func (w *BranchWorker) bufferPerEventRequest(
+	request *WriteRequest,
+	eventBuffer []Event,
+	bufferByteCount int64,
+	maxCommits int,
+) ([]Event, int64) {
+	for _, event := range request.Events {
+		eventBuffer = append(eventBuffer, event)
+		bufferByteCount += w.estimateEventSize(event)
+
+		if len(eventBuffer) >= maxCommits || bufferByteCount >= maxBytesBytes {
+			w.commitAndPushRequest(newPerEventWriteRequest(eventBuffer))
+			eventBuffer = nil
+			bufferByteCount = 0
+		}
+	}
+
+	return eventBuffer, bufferByteCount
+}
+
+// commitAndPushRequest processes a write request for this branch.
+func (w *BranchWorker) commitAndPushRequest(request *WriteRequest) {
 	w.repoMu.Lock()
 	defer w.repoMu.Unlock()
 
-	log := w.Log.WithValues("eventCount", len(events))
+	if request == nil || len(request.Events) == 0 {
+		return
+	}
+
+	log := w.Log.WithValues("eventCount", len(request.Events), "commitMode", request.CommitMode)
 
 	log.Info("Starting git commit and push",
 		"branch", w.Branch)
@@ -474,47 +526,21 @@ func (w *BranchWorker) commitAndPush(events []Event) {
 
 	repoPath := w.repoPathForRemote(provider.Spec.URL)
 
-	var result *WriteEventsResult
-	for _, event := range events {
-		eventLog := log.WithValues(
-			"targetNamespace", event.GitTargetNamespace,
-			"targetName", event.GitTargetName,
-		)
-
-		var encryptionConfig *ResolvedEncryptionConfig
-		if event.GitTargetName != "" && event.GitTargetNamespace != "" {
-			var target configv1alpha1.GitTarget
-			targetKey := types.NamespacedName{
-				Name:      event.GitTargetName,
-				Namespace: event.GitTargetNamespace,
-			}
-			if err := w.Client.Get(w.ctx, targetKey, &target); err != nil {
-				eventLog.Error(err, "Failed to resolve GitTarget for encryption")
-				continue
-			}
-
-			encryptionConfig, err = ResolveTargetEncryption(w.ctx, w.Client, &target)
-			if err != nil {
-				eventLog.Error(err, "Failed to resolve target encryption configuration")
-				continue
-			}
-
-			event.BootstrapOptions = buildBootstrapOptions(encryptionConfig)
-		}
-
-		encryptionWorkDir := filepath.Join(repoPath, event.Path)
-		if err := configureSecretEncryptionWriter(w.contentWriter, encryptionWorkDir, encryptionConfig); err != nil {
-			eventLog.Error(err, "Failed to configure secret encryptor")
-			continue
-		}
-
-		result, err = WriteEventsWithContentWriter(w.ctx, w.contentWriter, repoPath, []Event{event}, w.Branch, auth)
-		if err != nil {
-			eventLog.Error(err, "Failed to write event")
-			continue
-		}
+	preparedRequest, encryptionConfig, err := w.prepareWriteRequest(w.ctx, request)
+	if err != nil {
+		log.Error(err, "Failed to prepare write request")
+		return
 	}
-	if result == nil {
+
+	encryptionWorkDir := filepath.Join(repoPath, requestEncryptionPath(preparedRequest))
+	if err := configureSecretEncryptionWriter(w.contentWriter, encryptionWorkDir, encryptionConfig); err != nil {
+		log.Error(err, "Failed to configure secret encryptor")
+		return
+	}
+
+	result, err := WriteRequestWithContentWriter(w.ctx, w.contentWriter, repoPath, preparedRequest, w.Branch, auth)
+	if err != nil {
+		log.Error(err, "Failed to write request")
 		return
 	}
 
@@ -530,92 +556,9 @@ func (w *BranchWorker) commitAndPush(events []Event) {
 	}
 
 	// Metrics
-	telemetry.GitOperationsTotal.Add(w.ctx, int64(len(events)))
+	telemetry.GitOperationsTotal.Add(w.ctx, int64(len(preparedRequest.Events)))
 	telemetry.CommitsTotal.Add(w.ctx, 1)
-	telemetry.ObjectsWrittenTotal.Add(w.ctx, int64(len(events)))
-}
-
-// commitAndPushBatch processes a reconcile batch as a single atomic commit.
-func (w *BranchWorker) commitAndPushBatch(batch *ReconcileBatch) {
-	w.repoMu.Lock()
-	defer w.repoMu.Unlock()
-
-	log := w.Log.WithValues("batchEvents", len(batch.Events), "gitTarget", batch.GitTargetName)
-	log.Info("Starting git batch commit and push", "branch", w.Branch)
-
-	provider, err := w.getGitProvider(w.ctx)
-	if err != nil {
-		log.Error(err, "Failed to get GitProvider")
-		return
-	}
-
-	auth, err := getAuthFromSecret(w.ctx, w.Client, provider)
-	if err != nil {
-		log.Error(err, "Failed to get auth")
-		return
-	}
-
-	repoPath := w.repoPathForRemote(provider.Spec.URL)
-
-	// Resolve encryption and path from the GitTarget
-	var encryptionConfig *ResolvedEncryptionConfig
-	if batch.GitTargetName != "" && batch.GitTargetNamespace != "" {
-		targetKey := types.NamespacedName{
-			Name:      batch.GitTargetName,
-			Namespace: batch.GitTargetNamespace,
-		}
-		var target configv1alpha1.GitTarget
-		if err := w.Client.Get(w.ctx, targetKey, &target); err != nil {
-			log.Error(err, "Failed to resolve GitTarget for batch")
-			return
-		}
-
-		encryptionConfig, err = ResolveTargetEncryption(w.ctx, w.Client, &target)
-		if err != nil {
-			log.Error(err, "Failed to resolve target encryption configuration")
-			return
-		}
-		batch.BootstrapOptions = buildBootstrapOptions(encryptionConfig)
-
-		// Stamp path and GitTarget info onto each event in the batch
-		for i := range batch.Events {
-			if batch.Events[i].Path == "" {
-				batch.Events[i].Path = target.Spec.Path
-			}
-			batch.Events[i].GitTargetName = batch.GitTargetName
-			batch.Events[i].GitTargetNamespace = batch.GitTargetNamespace
-			batch.Events[i].BootstrapOptions = batch.BootstrapOptions
-		}
-	}
-
-	// Configure encryption writer for the batch path
-	if len(batch.Events) > 0 {
-		encryptionWorkDir := filepath.Join(repoPath, batch.Events[0].Path)
-		if err := configureSecretEncryptionWriter(w.contentWriter, encryptionWorkDir, encryptionConfig); err != nil {
-			log.Error(err, "Failed to configure secret encryptor")
-			return
-		}
-	}
-
-	result, err := WriteBatchWithContentWriter(w.ctx, w.contentWriter, repoPath, batch, w.Branch, auth)
-	if err != nil {
-		log.Error(err, "Failed to write batch")
-		return
-	}
-
-	log.Info("Successfully pushed batch commit",
-		"commitsCreated", result.CommitsCreated,
-		"conflictPulls", len(result.ConflictPulls),
-		"failures", result.Failures)
-
-	if len(result.ConflictPulls) > 0 {
-		lastPull := result.ConflictPulls[len(result.ConflictPulls)-1]
-		w.updateBranchMetadataFromPullReport(lastPull)
-	}
-
-	telemetry.GitOperationsTotal.Add(w.ctx, int64(len(batch.Events)))
-	telemetry.CommitsTotal.Add(w.ctx, 1)
-	telemetry.ObjectsWrittenTotal.Add(w.ctx, int64(len(batch.Events)))
+	telemetry.ObjectsWrittenTotal.Add(w.ctx, int64(len(preparedRequest.Events)))
 }
 
 // handleShutdown finalizes processing when context is canceled.
@@ -624,7 +567,7 @@ func (w *BranchWorker) handleShutdown(
 ) {
 	w.Log.Info("Handling shutdown, flushing buffer")
 	if len(eventBuffer) > 0 {
-		w.commitAndPush(eventBuffer)
+		w.commitAndPushRequest(newPerEventWriteRequest(eventBuffer))
 	}
 }
 
@@ -825,6 +768,134 @@ func buildBootstrapOptions(encryptionConfig *ResolvedEncryptionConfig) pathBoots
 			AgeRecipients: encryptionConfig.AgeRecipients,
 		},
 	}
+}
+
+func newPerEventWriteRequest(events []Event) *WriteRequest {
+	clonedEvents := append([]Event(nil), events...)
+	return &WriteRequest{
+		Events:     clonedEvents,
+		CommitMode: CommitModePerEvent,
+	}
+}
+
+func requestEncryptionPath(request *WriteRequest) string {
+	if request == nil {
+		return ""
+	}
+	for _, event := range request.Events {
+		if strings.TrimSpace(event.Path) != "" {
+			return event.Path
+		}
+	}
+	return ""
+}
+
+func (w *BranchWorker) prepareWriteRequest(
+	ctx context.Context,
+	request *WriteRequest,
+) (*WriteRequest, *ResolvedEncryptionConfig, error) {
+	if request == nil {
+		return nil, nil, errors.New("write request is required")
+	}
+
+	prepared := *request
+	prepared.Events = append([]Event(nil), request.Events...)
+	if prepared.CommitMode == "" {
+		prepared.CommitMode = CommitModePerEvent
+	}
+
+	if prepared.CommitMode == CommitModeAtomic {
+		return w.prepareAtomicWriteRequest(ctx, &prepared)
+	}
+
+	return w.preparePerEventWriteRequest(ctx, &prepared)
+}
+
+func (w *BranchWorker) prepareAtomicWriteRequest(
+	ctx context.Context,
+	request *WriteRequest,
+) (*WriteRequest, *ResolvedEncryptionConfig, error) {
+	if request.GitTargetName == "" || request.GitTargetNamespace == "" {
+		return request, nil, nil
+	}
+
+	targetKey := types.NamespacedName{
+		Name:      request.GitTargetName,
+		Namespace: request.GitTargetNamespace,
+	}
+	var target configv1alpha1.GitTarget
+	if err := w.Client.Get(ctx, targetKey, &target); err != nil {
+		return nil, nil, fmt.Errorf("failed to resolve GitTarget for request: %w", err)
+	}
+
+	encryptionConfig, err := ResolveTargetEncryption(ctx, w.Client, &target)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to resolve target encryption configuration: %w", err)
+	}
+
+	request.BootstrapOptions = buildBootstrapOptions(encryptionConfig)
+	for i := range request.Events {
+		if request.Events[i].Path == "" {
+			request.Events[i].Path = target.Spec.Path
+		}
+		request.Events[i].GitTargetName = request.GitTargetName
+		request.Events[i].GitTargetNamespace = request.GitTargetNamespace
+		request.Events[i].BootstrapOptions = request.BootstrapOptions
+	}
+
+	return request, encryptionConfig, nil
+}
+
+func (w *BranchWorker) preparePerEventWriteRequest(
+	ctx context.Context,
+	request *WriteRequest,
+) (*WriteRequest, *ResolvedEncryptionConfig, error) {
+	var requestEncryption *ResolvedEncryptionConfig
+	for i := range request.Events {
+		encryptionConfig, err := w.resolveEventEncryption(ctx, &request.Events[i])
+		if errors.Is(err, errEventTargetMetadataMissing) {
+			encryptionConfig = nil
+		} else if err != nil {
+			return nil, nil, err
+		}
+		request.Events[i].BootstrapOptions = buildBootstrapOptions(encryptionConfig)
+		if i == 0 {
+			requestEncryption = encryptionConfig
+		}
+	}
+
+	return request, requestEncryption, nil
+}
+
+func (w *BranchWorker) resolveEventEncryption(
+	ctx context.Context,
+	event *Event,
+) (*ResolvedEncryptionConfig, error) {
+	if event == nil || event.GitTargetName == "" || event.GitTargetNamespace == "" {
+		return nil, errEventTargetMetadataMissing
+	}
+
+	targetKey := types.NamespacedName{
+		Name:      event.GitTargetName,
+		Namespace: event.GitTargetNamespace,
+	}
+	var target configv1alpha1.GitTarget
+	if err := w.Client.Get(ctx, targetKey, &target); err != nil {
+		return nil, fmt.Errorf("failed to resolve GitTarget for encryption: %w", err)
+	}
+
+	encryptionConfig, err := ResolveTargetEncryption(ctx, w.Client, &target)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve target encryption configuration: %w", err)
+	}
+
+	if event.Path == "" {
+		event.Path = target.Spec.Path
+	}
+	event.GitTargetName = target.Name
+	event.GitTargetNamespace = target.Namespace
+
+	return encryptionConfig, nil
 }
 
 // parseIdentifierFromPath and getAuthFromSecret are defined in helpers.go

@@ -85,21 +85,32 @@ type UserInfo struct {
 	UID      string
 }
 
-// ReconcileBatch is a complete set of file changes from one reconcile run.
-// It is enqueued as a single WorkItem so the BranchWorker always commits it atomically.
-type ReconcileBatch struct {
+// CommitMode defines how a write request should be committed.
+type CommitMode string
+
+const (
+	// CommitModePerEvent creates one commit per event in the request.
+	CommitModePerEvent CommitMode = "per_event"
+	// CommitModeAtomic creates one commit for all events in the request.
+	CommitModeAtomic CommitMode = "atomic"
+)
+
+// WriteRequest is the unit of work queued and written by the BranchWorker.
+type WriteRequest struct {
 	Events             []Event
 	CommitMessage      string
 	GitTargetName      string
 	GitTargetNamespace string
 	BootstrapOptions   pathBootstrapOptions
+	CommitMode         CommitMode
 }
 
+// ReconcileBatch is a backward-compatible alias for a write request emitted by reconciliation.
+type ReconcileBatch = WriteRequest
+
 // WorkItem is the unit of work in the BranchWorker queue.
-// Exactly one of Single or Batch is non-nil.
 type WorkItem struct {
-	Single *Event
-	Batch  *ReconcileBatch
+	Request *WriteRequest
 }
 
 // Event represents a resource change event to be processed by a branch worker.
