@@ -1,0 +1,110 @@
+apiVersion: kro.run/v1alpha1
+kind: ResourceGraphDefinition
+metadata:
+  name: podinfo-app
+spec:
+  schema:
+    apiVersion: v1alpha1
+    kind: PodInfoApp
+    spec:
+      name: string | required=true
+      message: string | default="hello from kro"
+      color: string | default="#34577c"
+      replicas: integer | default=1 minimum=1 maximum=1 description="Number of replicas — keep at 1 during demo to avoid exhausting cluster resources"
+    status:
+      availableReplicas: ${deployment.status.availableReplicas}
+      ready: ${deployment.status.availableReplicas >= 1}
+      url: ${"https://demo.configbutler.ai/podinfos/" + deployment.metadata.name + "/"}
+    additionalPrinterColumns:
+      - name: URL
+        type: string
+        jsonPath: .status.url
+  resources:
+    - id: deployment
+      readyWhen:
+        - "${deployment.status.availableReplicas >= 1}"
+      template:
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: ${schema.spec.name}
+          namespace: podinfos-production
+          labels:
+            app.kubernetes.io/name: ${schema.spec.name}
+        spec:
+          replicas: ${schema.spec.replicas}
+          selector:
+            matchLabels:
+              app.kubernetes.io/name: ${schema.spec.name}
+          template:
+            metadata:
+              labels:
+                app.kubernetes.io/name: ${schema.spec.name}
+            spec:
+              containers:
+              - name: podinfo
+                image: ghcr.io/stefanprodan/podinfo:6.11.1
+                imagePullPolicy: IfNotPresent
+                env:
+                - name: PODINFO_UI_MESSAGE
+                  value: ${schema.spec.message}
+                - name: PODINFO_UI_COLOR
+                  value: ${schema.spec.color}
+                ports:
+                - name: http
+                  containerPort: 9898
+                readinessProbe:
+                  httpGet:
+                    path: /readyz
+                    port: http
+                  initialDelaySeconds: 3
+                  periodSeconds: 10
+                livenessProbe:
+                  httpGet:
+                    path: /healthz
+                    port: http
+                  initialDelaySeconds: 10
+                  periodSeconds: 10
+                resources:
+                  requests:
+                    cpu: 10m
+                    memory: 32Mi
+                  limits:
+                    cpu: 10m
+                    memory: 32Mi
+    - id: service
+      template:
+        apiVersion: v1
+        kind: Service
+        metadata:
+          name: ${schema.spec.name}
+          namespace: podinfos-production
+          labels:
+            app.kubernetes.io/name: ${schema.spec.name}
+        spec:
+          selector:
+            app.kubernetes.io/name: ${schema.spec.name}
+          ports:
+          - name: http
+            port: 80
+            targetPort: http
+    - id: ingressroute
+      template:
+        apiVersion: traefik.io/v1alpha1
+        kind: IngressRoute
+        metadata:
+          name: ${schema.spec.name}
+          namespace: podinfos-production
+        spec:
+          entryPoints:
+          - web
+          routes:
+          - match: Host(`demo.configbutler.ai`) && PathPrefix(`/podinfos/${schema.spec.name}`)
+            kind: Rule
+            middlewares:
+            - name: ratelimit
+            - name: podinfos-add-trailing-slash
+            - name: podinfos-strip-prefix
+            services:
+            - name: ${schema.spec.name}
+              port: 80

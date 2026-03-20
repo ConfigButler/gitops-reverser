@@ -318,7 +318,8 @@ func (r *demoRun) verifyRepositorySeeded() {
 		filepath.Join(
 			r.checkoutDir,
 			demoPath,
-			"configbutler.ai/v1alpha1/gitproviders/vote/demo-provider.yaml",
+			"configbutler.ai/v1alpha1/gitproviders/vote",
+			r.providerName+".yaml",
 		),
 	}
 	quizSubmissionPattern := filepath.Join(

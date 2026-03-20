@@ -15,6 +15,7 @@ resources:
   - releases/cert-manager.yaml
   - releases/gitea.yaml
   - releases/valkey.yaml
+  - releases/kro.yaml
 
 generatorOptions:
   disableNameSuffixHash: true
