@@ -331,7 +331,17 @@ func printReport(results []userResult, wall time.Duration) {
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 
-func main() {
+type config struct {
+	baseURL      string
+	code         string
+	session      string
+	namespace    string
+	users        int
+	rampDuration time.Duration
+	timeout      time.Duration
+}
+
+func parseConfig() config {
 	baseURL := flag.String("base-url", "https://vote.reversegitops.dev",
 		"base URL of the voter app")
 	code := flag.String("code", "",
@@ -357,6 +367,18 @@ func main() {
 		os.Exit(1)
 	}
 
+	return config{
+		baseURL:      *baseURL,
+		code:         *code,
+		session:      *session,
+		namespace:    *namespace,
+		users:        *users,
+		rampDuration: *rampDuration,
+		timeout:      *timeout,
+	}
+}
+
+func generateRunID() string {
 	// Generate a short alphanumeric run ID (e.g. "q1g3") shared across all users
 	// so names look like "q1g3-0", "q1g3-1", … and are stable within one run.
 	const runIDChars = "abcdefghijklmnopqrstuvwxyz0123456789"
@@ -365,39 +387,39 @@ func main() {
 	for i := range runIDb {
 		runIDb[i] = runIDChars[runIDRng.Intn(len(runIDChars))]
 	}
-	runID := string(runIDb)
+	return string(runIDb)
+}
 
+func printStart(cfg config, runID string) {
 	fmt.Printf("Starting load test\n")
-	fmt.Printf("  Base URL:      %s\n", *baseURL)
-	fmt.Printf("  Session:       %s/%s\n", *namespace, *session)
-	fmt.Printf("  Join code:     %s\n", *code)
+	fmt.Printf("  Base URL:      %s\n", cfg.baseURL)
+	fmt.Printf("  Session:       %s/%s\n", cfg.namespace, cfg.session)
+	fmt.Printf("  Join code:     %s\n", cfg.code)
 	fmt.Printf("  Run ID:        %s\n", runID)
-	fmt.Printf("  Participants:  %d\n", *users)
-	fmt.Printf("  Ramp duration: %s\n", *rampDuration)
+	fmt.Printf("  Participants:  %d\n", cfg.users)
+	fmt.Printf("  Ramp duration: %s\n", cfg.rampDuration)
 	fmt.Println()
+}
 
-	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
-	defer cancel()
-
-	resultCh := make(chan userResult, *users)
+func runLoadTest(ctx context.Context, cfg config, runID string) []userResult {
+	resultCh := make(chan userResult, cfg.users)
 	var wg sync.WaitGroup
 
-	start := time.Now()
-	for i := range *users {
+	for i := range cfg.users {
 		wg.Add(1)
 		go func(userID int) {
 			defer wg.Done()
 			// Seed per goroutine so answers are not identical across users.
 			rng := rand.New(rand.NewSource(time.Now().UnixNano() + int64(userID)*997))
 			// Staggered arrival: uniform random delay within the ramp window.
-			delay := time.Duration(rng.Float64() * float64(*rampDuration))
+			delay := time.Duration(rng.Float64() * float64(cfg.rampDuration))
 			select {
 			case <-ctx.Done():
 				resultCh <- userResult{userID: userID, err: "cancelled before start"}
 				return
 			case <-time.After(delay):
 			}
-			resultCh <- simulateUser(ctx, userID, *baseURL, *code, runID, *session, *namespace, rng)
+			resultCh <- simulateUser(ctx, userID, cfg.baseURL, cfg.code, runID, cfg.session, cfg.namespace, rng)
 		}(i)
 	}
 
@@ -408,20 +430,33 @@ func main() {
 	}()
 
 	// Collect and live-print results as they arrive.
-	results := make([]userResult, 0, *users)
+	results := make([]userResult, 0, cfg.users)
 	done := 0
 	for r := range resultCh {
 		done++
 		results = append(results, r)
 		if r.ok {
 			fmt.Printf("  [%3d/%d] user %3d  login=%4dms submit=%4dms  OK\n",
-				done, *users, r.userID,
+				done, cfg.users, r.userID,
 				r.loginLatency.Milliseconds(), r.submitLatency.Milliseconds())
 		} else {
 			fmt.Printf("  [%3d/%d] user %3d  FAIL: %s\n",
-				done, *users, r.userID, r.err)
+				done, cfg.users, r.userID, r.err)
 		}
 	}
 
+	return results
+}
+
+func main() {
+	cfg := parseConfig()
+	runID := generateRunID()
+	printStart(cfg, runID)
+
+	ctx, cancel := context.WithTimeout(context.Background(), cfg.timeout)
+	defer cancel()
+
+	start := time.Now()
+	results := runLoadTest(ctx, cfg, runID)
 	printReport(results, time.Since(start))
 }

@@ -1,0 +1,34 @@
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: reflector
+  namespace: flux-system
+spec:
+  interval: 24h
+  url: oci://ghcr.io/emberstack/helm-charts/reflector
+  layerSelector:
+    mediaType: "application/vnd.cncf.helm.chart.content.v1.tar+gzip"
+    operation: copy
+  ref:
+    semver: "10.0.21"
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: reflector
+  namespace: flux-system
+spec:
+  interval: 60m
+  timeout: 10m
+  chartRef:
+    kind: OCIRepository
+    name: reflector
+    namespace: flux-system
+  targetNamespace: reflector
+  install:
+    createNamespace: true
+    remediation:
+      retries: 3
+  upgrade:
+    remediation:
+      retries: 3

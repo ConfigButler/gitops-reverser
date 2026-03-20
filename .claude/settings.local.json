@@ -6,7 +6,8 @@
       "Bash(make test-e2e:*)",
       "Bash(go build:*)",
       "Bash(kubectl apply:*)",
-      "Bash(kubectl wait:*)"
+      "Bash(kubectl wait:*)",
+      "Bash(chmod +x /workspaces/gitops-reverser/hack/demo/setup-monster-deployment.sh)"
     ]
   }
 }

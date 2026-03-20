@@ -2,6 +2,8 @@ apiVersion: traefik.io/v1alpha1
 kind: Middleware
 metadata:
   name: strip-namespace-prefix
+  labels:
+    configbutler.ai/path-prefix: "podinfos"
 spec:
   stripPrefix:
     prefixes:
@@ -11,6 +13,8 @@ apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
 metadata:
   name: podinfos-gateway
+  labels:
+    configbutler.ai/path-prefix: "podinfos"
 spec:
   routes:
   - match: Host(`demo.configbutler.ai`) && PathPrefix(`/podinfos-preview/`)
