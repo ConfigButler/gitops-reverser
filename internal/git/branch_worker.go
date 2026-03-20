@@ -31,8 +31,6 @@ import (
 	"time"
 
 	gogit "github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/plumbing"
-	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -218,8 +216,9 @@ func (w *BranchWorker) ListResourcesInPath(path string) ([]itypes.ResourceIdenti
 	return w.listResourceIdentifiersInPath(repoPath, path)
 }
 
-// EnsurePathBootstrapped applies bootstrap templates to a path.
+// EnsurePathBootstrapped prepares bootstrap templates locally for a path.
 // Existing files are preserved, and only missing template files are added.
+// The files are staged in the local worktree but never committed or pushed here.
 func (w *BranchWorker) EnsurePathBootstrapped(path, targetName, targetNamespace string) error {
 	w.repoMu.Lock()
 	defer w.repoMu.Unlock()
@@ -242,26 +241,16 @@ func (w *BranchWorker) EnsurePathBootstrapped(path, targetName, targetNamespace 
 		return err
 	}
 
-	repoPath, auth, err := w.prepareBootstrapRepository(ctx)
+	repoPath, err := w.prepareBootstrapRepository(ctx)
 	if err != nil {
 		return err
 	}
 
-	commitHash, committed, err := w.bootstrapPathIfNeeded(ctx, repoPath, normalizedPath, bootstrapOptions, auth)
-	if err != nil {
+	if err := w.bootstrapPathIfNeeded(repoPath, normalizedPath, bootstrapOptions); err != nil {
 		return err
 	}
-	if !committed {
-		return nil
-	}
 
-	w.metaMu.Lock()
-	w.branchExists = true
-	w.lastCommitSHA = printSha(commitHash)
-	w.lastFetchTime = time.Now()
-	w.metaMu.Unlock()
-
-	w.Log.Info("Bootstrapped path", "path", normalizedPath, "commit", printSha(commitHash))
+	w.Log.Info("Prepared bootstrap files in worktree", "path", normalizedPath)
 	return nil
 }
 
@@ -295,19 +284,20 @@ func (w *BranchWorker) resolveBootstrapOptions(
 	if err != nil {
 		w.Log.Error(err, "Skipping SOPS bootstrap due to invalid target encryption configuration",
 			"target", targetKey.String())
-		return pathBootstrapOptions{}, nil
+		return pathBootstrapOptions{Enabled: true}, nil
 	}
 	if encryptionConfig == nil {
-		return pathBootstrapOptions{}, nil
+		return pathBootstrapOptions{Enabled: true}, nil
 	}
 
 	if len(encryptionConfig.AgeRecipients) == 0 {
 		w.Log.Info("Skipping SOPS bootstrap due to missing resolved age recipients",
 			"target", targetKey.String())
-		return pathBootstrapOptions{}, nil
+		return pathBootstrapOptions{Enabled: true}, nil
 	}
 
 	return pathBootstrapOptions{
+		Enabled:           true,
 		IncludeSOPSConfig: true,
 		TemplateData: bootstrapTemplateData{
 			AgeRecipients: encryptionConfig.AgeRecipients,
@@ -317,52 +307,42 @@ func (w *BranchWorker) resolveBootstrapOptions(
 
 func (w *BranchWorker) prepareBootstrapRepository(
 	ctx context.Context,
-) (string, transport.AuthMethod, error) {
+) (string, error) {
 	provider, err := w.getGitProvider(ctx)
 	if err != nil {
-		return "", nil, fmt.Errorf("failed to get GitProvider: %w", err)
+		return "", fmt.Errorf("failed to get GitProvider: %w", err)
 	}
 
 	auth, err := getAuthFromSecret(ctx, w.Client, provider)
 	if err != nil {
-		return "", nil, fmt.Errorf("failed to get auth: %w", err)
+		return "", fmt.Errorf("failed to get auth: %w", err)
 	}
 
 	repoPath := w.repoPathForRemote(provider.Spec.URL)
 	pullReport, err := PrepareBranch(ctx, provider.Spec.URL, repoPath, w.Branch, auth)
 	if err != nil {
-		return "", nil, fmt.Errorf("failed to prepare repository: %w", err)
+		return "", fmt.Errorf("failed to prepare repository: %w", err)
 	}
 	w.updateBranchMetadataFromPullReport(pullReport)
 
-	return repoPath, auth, nil
+	return repoPath, nil
 }
 
 func (w *BranchWorker) bootstrapPathIfNeeded(
-	ctx context.Context,
 	repoPath string,
 	normalizedPath string,
 	options pathBootstrapOptions,
-	auth transport.AuthMethod,
-) (plumbing.Hash, bool, error) {
+) error {
 	repo, err := gogit.PlainOpen(repoPath)
 	if err != nil {
-		return plumbing.ZeroHash, false, fmt.Errorf("failed to open repository: %w", err)
+		return fmt.Errorf("failed to open repository: %w", err)
 	}
 
-	hash, committed, err := commitPathBootstrapTemplateIfNeeded(
-		ctx,
-		repo,
-		plumbing.NewBranchReferenceName(w.Branch),
-		normalizedPath,
-		options,
-		auth,
-	)
-	if err != nil {
-		return plumbing.ZeroHash, false, fmt.Errorf("failed to bootstrap path %q: %w", normalizedPath, err)
+	if err := ensureBootstrapTemplateInPath(repo, normalizedPath, options); err != nil {
+		return fmt.Errorf("failed to bootstrap path %q: %w", normalizedPath, err)
 	}
 
-	return hash, committed, nil
+	return nil
 }
 
 // listResourceIdentifiersInPath lists resource identifiers in a specific path.
@@ -518,6 +498,8 @@ func (w *BranchWorker) commitAndPush(events []Event) {
 				eventLog.Error(err, "Failed to resolve target encryption configuration")
 				continue
 			}
+
+			event.BootstrapOptions = buildBootstrapOptions(encryptionConfig)
 		}
 
 		encryptionWorkDir := filepath.Join(repoPath, event.Path)
@@ -593,6 +575,7 @@ func (w *BranchWorker) commitAndPushBatch(batch *ReconcileBatch) {
 			log.Error(err, "Failed to resolve target encryption configuration")
 			return
 		}
+		batch.BootstrapOptions = buildBootstrapOptions(encryptionConfig)
 
 		// Stamp path and GitTarget info onto each event in the batch
 		for i := range batch.Events {
@@ -601,6 +584,7 @@ func (w *BranchWorker) commitAndPushBatch(batch *ReconcileBatch) {
 			}
 			batch.Events[i].GitTargetName = batch.GitTargetName
 			batch.Events[i].GitTargetNamespace = batch.GitTargetNamespace
+			batch.Events[i].BootstrapOptions = batch.BootstrapOptions
 		}
 	}
 
@@ -826,6 +810,20 @@ func (w *BranchWorker) updateBranchMetadataFromPullReport(report *PullReport) {
 	// Log if this was an unborn branch
 	if report.HEAD.Unborn {
 		w.Log.Info("Branch is unborn (no commits yet)", "branch", report.HEAD.ShortName)
+	}
+}
+
+func buildBootstrapOptions(encryptionConfig *ResolvedEncryptionConfig) pathBootstrapOptions {
+	if encryptionConfig == nil || len(encryptionConfig.AgeRecipients) == 0 {
+		return pathBootstrapOptions{Enabled: true}
+	}
+
+	return pathBootstrapOptions{
+		Enabled:           true,
+		IncludeSOPSConfig: true,
+		TemplateData: bootstrapTemplateData{
+			AgeRecipients: encryptionConfig.AgeRecipients,
+		},
 	}
 }
 

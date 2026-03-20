@@ -36,19 +36,17 @@ type WorkerManager struct {
 	Client client.Client
 	Log    logr.Logger
 
-	mu             sync.RWMutex
-	workers        map[BranchKey]*BranchWorker
-	bootstrapLocks map[BranchKey]*sync.Mutex
-	ctx            context.Context
+	mu      sync.RWMutex
+	workers map[BranchKey]*BranchWorker
+	ctx     context.Context
 }
 
 // NewWorkerManager creates a new worker manager.
 func NewWorkerManager(client client.Client, log logr.Logger) *WorkerManager {
 	return &WorkerManager{
-		Client:         client,
-		Log:            log,
-		workers:        make(map[BranchKey]*BranchWorker),
-		bootstrapLocks: make(map[BranchKey]*sync.Mutex),
+		Client:  client,
+		Log:     log,
+		workers: make(map[BranchKey]*BranchWorker),
 	}
 }
 
@@ -62,18 +60,6 @@ func (m *WorkerManager) RegisterTarget(
 	branch, path string,
 ) error {
 	if err := m.EnsureWorker(ctx, providerName, providerNamespace, branch); err != nil {
-		return err
-	}
-
-	if err := m.EnsureTargetBootstrapped(
-		ctx,
-		targetName,
-		targetNamespace,
-		providerName,
-		providerNamespace,
-		branch,
-		path,
-	); err != nil {
 		return err
 	}
 
@@ -126,51 +112,6 @@ func (m *WorkerManager) EnsureWorker(
 	return nil
 }
 
-// EnsureTargetBootstrapped ensures the target path bootstrap files are present.
-// This intentionally runs outside the manager-wide lock.
-func (m *WorkerManager) EnsureTargetBootstrapped(
-	_ context.Context,
-	targetName, targetNamespace string,
-	providerName, providerNamespace string,
-	branch, path string,
-) error {
-	key := BranchKey{
-		RepoNamespace: providerNamespace,
-		RepoName:      providerName,
-		Branch:        branch,
-	}
-
-	m.mu.RLock()
-	worker, exists := m.workers[key]
-	m.mu.RUnlock()
-	if !exists {
-		return fmt.Errorf("worker not found for %s", key.String())
-	}
-
-	bootstrapLock := m.getBootstrapLock(key)
-	bootstrapLock.Lock()
-	defer bootstrapLock.Unlock()
-
-	if err := worker.EnsurePathBootstrapped(path, targetName, targetNamespace); err != nil {
-		return fmt.Errorf("failed to ensure path bootstrap for %s/%s: %w", targetNamespace, targetName, err)
-	}
-
-	return nil
-}
-
-func (m *WorkerManager) getBootstrapLock(key BranchKey) *sync.Mutex {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	lock, exists := m.bootstrapLocks[key]
-	if !exists {
-		lock = &sync.Mutex{}
-		m.bootstrapLocks[key] = lock
-	}
-
-	return lock
-}
-
 // UnregisterTarget removes a GitTarget from its worker.
 // Destroys the worker if it was the last target using it.
 // This is called by GitTarget controller when a target is deleted.
@@ -198,7 +139,6 @@ func (m *WorkerManager) UnregisterTarget(
 	m.Log.Info("Unregistering target, destroying worker", "key", key.String())
 	worker.Stop()
 	delete(m.workers, key)
-	delete(m.bootstrapLocks, key)
 
 	return nil
 }
@@ -260,7 +200,6 @@ func (m *WorkerManager) ReconcileWorkers(ctx context.Context) error {
 			m.Log.Info("Cleaning up orphaned worker", "key", key.String())
 			worker.Stop()
 			delete(m.workers, key)
-			delete(m.bootstrapLocks, key)
 		}
 	}
 
@@ -290,7 +229,6 @@ func (m *WorkerManager) Start(ctx context.Context) error {
 	}
 
 	m.workers = make(map[BranchKey]*BranchWorker)
-	m.bootstrapLocks = make(map[BranchKey]*sync.Mutex)
 	m.Log.Info("WorkerManager stopped")
 	return nil
 }

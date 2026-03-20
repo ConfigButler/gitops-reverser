@@ -84,7 +84,7 @@ func TestIsConditionTrue(t *testing.T) {
 		{
 			name: "different condition type returns false",
 			conditions: []metav1.Condition{
-				{Type: GitTargetConditionBootstrapped, Status: metav1.ConditionTrue},
+				{Type: GitTargetConditionValidated, Status: metav1.ConditionTrue},
 			},
 			conditionType: GitTargetConditionSnapshotSynced,
 			want:          false,
@@ -92,7 +92,7 @@ func TestIsConditionTrue(t *testing.T) {
 		{
 			name: "target condition true alongside other conditions",
 			conditions: []metav1.Condition{
-				{Type: GitTargetConditionBootstrapped, Status: metav1.ConditionTrue},
+				{Type: GitTargetConditionValidated, Status: metav1.ConditionTrue},
 				{Type: GitTargetConditionSnapshotSynced, Status: metav1.ConditionTrue},
 				{Type: GitTargetConditionEventStreamLive, Status: metav1.ConditionFalse},
 			},
@@ -149,7 +149,7 @@ func TestEvaluateSnapshotGate_RunsWhenSnapshotNotSynced(t *testing.T) {
 	// With EventRouter==nil the function still returns ConditionTrue via the nil-router
 	// path (which is the no-op path). The key is that the SnapshotSynced guard is not
 	// the one that fired.
-	target := makeGitTargetWithCondition(GitTargetConditionBootstrapped, metav1.ConditionTrue)
+	target := makeGitTargetWithCondition(GitTargetConditionValidated, metav1.ConditionTrue)
 
 	_, state, _, _, err := reconciler.evaluateSnapshotGate(
 		context.TODO(), target, "gitops-reverser", noopLogger(),

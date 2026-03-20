@@ -20,7 +20,6 @@ package git
 
 import (
 	"bytes"
-	"context"
 	"embed"
 	"fmt"
 	"io/fs"
@@ -30,21 +29,14 @@ import (
 	"sort"
 	"strings"
 	"text/template"
-	"time"
 
 	gogit "github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/plumbing"
-	"github.com/go-git/go-git/v5/plumbing/object"
-	"github.com/go-git/go-git/v5/plumbing/transport"
 )
 
 const (
-	sopsConfigFileName         = ".sops.yaml"
-	bootstrapTemplateDir       = "bootstrapped-repo-template"
-	bootstrapCommitMessageRoot = "chore(bootstrap): initialize path"
-	bootstrapCommitAuthorName  = "GitOps Reverser"
-	bootstrapCommitAuthorEmail = "noreply@configbutler.ai"
-	bootstrapTemplateFilePerm  = 0600
+	sopsConfigFileName        = ".sops.yaml"
+	bootstrapTemplateDir      = "bootstrapped-repo-template"
+	bootstrapTemplateFilePerm = 0600
 )
 
 //go:embed bootstrapped-repo-template/* bootstrapped-repo-template/.sops.yaml
@@ -55,68 +47,30 @@ type bootstrapTemplateData struct {
 }
 
 type pathBootstrapOptions struct {
+	Enabled           bool
 	TemplateData      bootstrapTemplateData
 	IncludeSOPSConfig bool
 }
 
-func commitPathBootstrapTemplateIfNeeded(
-	ctx context.Context,
+func ensureBootstrapTemplateInPath(
 	repo *gogit.Repository,
-	branch plumbing.ReferenceName,
 	targetPath string,
 	options pathBootstrapOptions,
-	auth transport.AuthMethod,
-) (plumbing.Hash, bool, error) {
+) error {
+	if !options.Enabled {
+		return nil
+	}
+
 	worktree, err := repo.Worktree()
 	if err != nil {
-		return plumbing.ZeroHash, false, fmt.Errorf("failed to get worktree: %w", err)
+		return fmt.Errorf("failed to get worktree: %w", err)
 	}
 
 	if err := stageBootstrapTemplateInPath(worktree, targetPath, options); err != nil {
-		return plumbing.ZeroHash, false, err
+		return err
 	}
 
-	status, err := worktree.Status()
-	if err != nil {
-		return plumbing.ZeroHash, false, fmt.Errorf("failed to get worktree status: %w", err)
-	}
-	if status.IsClean() {
-		return plumbing.ZeroHash, false, nil
-	}
-
-	baseHash, err := TryReference(repo, branch)
-	if err != nil {
-		return plumbing.ZeroHash, false, fmt.Errorf("failed to resolve branch reference: %w", err)
-	}
-
-	hash, err := worktree.Commit(bootstrapCommitMessage(targetPath), &gogit.CommitOptions{
-		Author: &object.Signature{
-			Name:  bootstrapCommitAuthorName,
-			Email: bootstrapCommitAuthorEmail,
-			When:  time.Now(),
-		},
-		Committer: &object.Signature{
-			Name:  bootstrapCommitAuthorName,
-			Email: bootstrapCommitAuthorEmail,
-			When:  time.Now(),
-		},
-	})
-	if err != nil {
-		return plumbing.ZeroHash, false, fmt.Errorf("failed to commit bootstrap files: %w", err)
-	}
-
-	if err := PushAtomic(ctx, repo, baseHash, branch, auth); err != nil {
-		return plumbing.ZeroHash, false, fmt.Errorf("failed to push bootstrap commit: %w", err)
-	}
-
-	return hash, true, nil
-}
-
-func bootstrapCommitMessage(targetPath string) string {
-	if targetPath == "" {
-		return bootstrapCommitMessageRoot + " <root>"
-	}
-	return fmt.Sprintf("%s %s", bootstrapCommitMessageRoot, targetPath)
+	return nil
 }
 
 func stageBootstrapTemplateInPath(worktree *gogit.Worktree, targetPath string, options pathBootstrapOptions) error {

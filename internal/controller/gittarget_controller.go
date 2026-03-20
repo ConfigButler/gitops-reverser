@@ -51,7 +51,6 @@ const (
 	GitTargetConditionReady                = ConditionTypeReady
 	GitTargetConditionValidated            = "Validated"
 	GitTargetConditionEncryptionConfigured = "EncryptionConfigured"
-	GitTargetConditionBootstrapped         = "Bootstrapped"
 	GitTargetConditionSnapshotSynced       = "SnapshotSynced"
 	GitTargetConditionEventStreamLive      = "EventStreamLive"
 )
@@ -72,9 +71,7 @@ const (
 	GitTargetReasonMissingSecret        = "MissingSecret"
 	GitTargetReasonInvalidConfig        = "InvalidConfig"
 	GitTargetReasonSecretCreateDisabled = "SecretCreateDisabled"
-	GitTargetReasonBootstrapApplied     = "BootstrapApplied"
 	GitTargetReasonWorkerNotFound       = "WorkerNotFound"
-	GitTargetReasonBootstrapFailed      = "BootstrapFailed"
 	GitTargetReasonRunning              = "Running"
 	GitTargetReasonCompleted            = "Completed"
 	GitTargetReasonSnapshotFailed       = "SnapshotFailed"
@@ -84,7 +81,6 @@ const (
 
 	GitTargetReadyReasonValidationFailed        = "ValidationFailed"
 	GitTargetReadyReasonEncryptionNotConfigured = "EncryptionNotConfigured"
-	GitTargetReadyReasonBootstrapNotComplete    = "BootstrapNotComplete"
 	GitTargetReadyReasonInitialSyncInProgress   = "InitialSyncInProgress"
 	GitTargetReadyReasonStreamNotLive           = "StreamNotLive"
 )
@@ -138,13 +134,6 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		)
 		r.setCondition(
 			&target,
-			GitTargetConditionBootstrapped,
-			metav1.ConditionUnknown,
-			GitTargetReasonBlocked,
-			"Blocked by Validated=False",
-		)
-		r.setCondition(
-			&target,
 			GitTargetConditionSnapshotSynced,
 			metav1.ConditionUnknown,
 			GitTargetReasonNotStarted,
@@ -179,13 +168,6 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	if !encryptionReady {
 		r.setCondition(
 			&target,
-			GitTargetConditionBootstrapped,
-			metav1.ConditionUnknown,
-			GitTargetReasonBlocked,
-			"Blocked by EncryptionConfigured=False",
-		)
-		r.setCondition(
-			&target,
 			GitTargetConditionSnapshotSynced,
 			metav1.ConditionUnknown,
 			GitTargetReasonNotStarted,
@@ -208,34 +190,6 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{RequeueAfter: encryptionRequeueAfter}, nil
-	}
-
-	bootstrapReady, bootstrapMsg, bootstrapRequeueAfter := r.evaluateBootstrapGate(ctx, &target, providerNS, log)
-	if !bootstrapReady {
-		r.setCondition(
-			&target,
-			GitTargetConditionSnapshotSynced,
-			metav1.ConditionUnknown,
-			GitTargetReasonNotStarted,
-			"Initial snapshot sync has not started",
-		)
-		r.setCondition(
-			&target,
-			GitTargetConditionEventStreamLive,
-			metav1.ConditionUnknown,
-			GitTargetReasonNotStarted,
-			"Event stream activation has not started",
-		)
-		r.setReadyCondition(
-			&target,
-			metav1.ConditionFalse,
-			GitTargetReadyReasonBootstrapNotComplete,
-			bootstrapMsg,
-		)
-		if err := r.updateStatusWithRetry(ctx, &target); err != nil {
-			return ctrl.Result{}, err
-		}
-		return ctrl.Result{RequeueAfter: bootstrapRequeueAfter}, nil
 	}
 
 	stream, snapshotState, snapshotMessage, snapshotRequeueAfter, snapshotErr := r.evaluateSnapshotGate(
@@ -405,72 +359,6 @@ func (r *GitTargetReconciler) evaluateEncryptionGate(
 		GitTargetReasonOK,
 		"Encryption configuration is valid",
 	)
-	return true, "", 0
-}
-
-func (r *GitTargetReconciler) evaluateBootstrapGate(
-	ctx context.Context,
-	target *configbutleraiv1alpha1.GitTarget,
-	providerNS string,
-	log logr.Logger,
-) (bool, string, time.Duration) {
-	if r.WorkerManager == nil {
-		r.setCondition(
-			target,
-			GitTargetConditionBootstrapped,
-			metav1.ConditionFalse,
-			GitTargetReasonWorkerNotFound,
-			"Worker manager is not configured",
-		)
-		return false, "Bootstrapped gate failed: WorkerNotFound", RequeueShortInterval
-	}
-
-	if err := r.WorkerManager.EnsureWorker(
-		ctx,
-		target.Spec.ProviderRef.Name,
-		providerNS,
-		target.Spec.Branch,
-	); err != nil {
-		log.Error(err, "Failed to ensure worker")
-		r.setCondition(
-			target,
-			GitTargetConditionBootstrapped,
-			metav1.ConditionFalse,
-			GitTargetReasonWorkerNotFound,
-			err.Error(),
-		)
-		return false, "Bootstrapped gate failed: WorkerNotFound", RequeueShortInterval
-	}
-
-	if err := r.WorkerManager.EnsureTargetBootstrapped(
-		ctx,
-		target.Name,
-		target.Namespace,
-		target.Spec.ProviderRef.Name,
-		providerNS,
-		target.Spec.Branch,
-		target.Spec.Path,
-	); err != nil {
-		log.Error(err, "Failed to bootstrap target path")
-		r.setCondition(
-			target,
-			GitTargetConditionBootstrapped,
-			metav1.ConditionFalse,
-			GitTargetReasonBootstrapFailed,
-			err.Error(),
-		)
-		return false, "Bootstrapped gate failed: BootstrapFailed", RequeueShortInterval
-	}
-
-	r.setCondition(
-		target,
-		GitTargetConditionBootstrapped,
-		metav1.ConditionTrue,
-		GitTargetReasonBootstrapApplied,
-		fmt.Sprintf("Bootstrap ensured for path %s", target.Spec.Path),
-	)
-
-	r.updateRepositoryStatus(ctx, target, log)
 	return true, "", 0
 }
 
@@ -907,29 +795,6 @@ func hasAgeKeyEntry(data map[string][]byte) bool {
 		}
 	}
 	return false
-}
-
-func (r *GitTargetReconciler) updateRepositoryStatus(
-	ctx context.Context,
-	target *configbutleraiv1alpha1.GitTarget,
-	log logr.Logger,
-) {
-	if r.WorkerManager == nil {
-		return
-	}
-
-	providerNS := target.Namespace
-	worker, exists := r.WorkerManager.GetWorkerForTarget(target.Spec.ProviderRef.Name, providerNS, target.Spec.Branch)
-	if !exists {
-		return
-	}
-
-	report, err := worker.SyncAndGetMetadata(ctx)
-	if err != nil {
-		log.Error(err, "Failed to sync repository metadata")
-		return
-	}
-	target.Status.LastCommit = report.HEAD.Sha
 }
 
 // handleFetchError handles errors from fetching GitTarget.

@@ -92,6 +92,7 @@ type ReconcileBatch struct {
 	CommitMessage      string
 	GitTargetName      string
 	GitTargetNamespace string
+	BootstrapOptions   pathBootstrapOptions
 }
 
 // WorkItem is the unit of work in the BranchWorker queue.
@@ -127,4 +128,7 @@ type Event struct {
 
 	// GitTargetNamespace is the namespace of the target owning this event.
 	GitTargetNamespace string
+
+	// BootstrapOptions controls path-scoped bootstrap file staging for this event.
+	BootstrapOptions pathBootstrapOptions
 }
