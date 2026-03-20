@@ -2,7 +2,7 @@ apiVersion: traefik.io/v1alpha1
 kind: Middleware
 metadata:
   name: ratelimit
-  namespace: podinfos-production
+  namespace: podinfos
 spec:
   rateLimit:
     average: 10
@@ -12,7 +12,7 @@ apiVersion: traefik.io/v1alpha1
 kind: Middleware
 metadata:
   name: podinfos-add-trailing-slash
-  namespace: podinfos-production
+  namespace: podinfos
 spec:
   redirectRegex:
     regex: ^https?://([^/]+)/([^/]+)/([^/]+)$
@@ -22,17 +22,17 @@ apiVersion: traefik.io/v1alpha1
 kind: Middleware
 metadata:
   name: strip-namespace-prefix
-  namespace: podinfos-production
+  namespace: podinfos
 spec:
   stripPrefix:
     prefixes:
-      - /podinfos
+      - /podinfos-preview
 ---
 apiVersion: traefik.io/v1alpha1
 kind: Middleware
 metadata:
   name: strip-appname
-  namespace: podinfos-production
+  namespace: podinfos
 spec:
   stripPrefixRegex:
     regex:
@@ -42,12 +42,12 @@ apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
 metadata:
   name: podinfos-gateway
-  namespace: podinfos-production
+  namespace: podinfos
 spec:
   entryPoints:
   - web
   routes:
-  - match: Host(`demo.configbutler.ai`) && PathPrefix(`/podinfos/`)
+  - match: Host(`demo.configbutler.ai`) && PathPrefix(`/podinfos-preview/`)
     kind: Rule
     middlewares:
     - name: ratelimit
