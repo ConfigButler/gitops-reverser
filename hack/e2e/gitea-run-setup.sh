@@ -60,6 +60,11 @@ fi
 SECRET_HTTP_NAME="${E2E_GIT_SECRET_HTTP:-git-creds-${REPO_NAME}}"
 SECRET_SSH_NAME="${E2E_GIT_SECRET_SSH:-git-creds-ssh-${REPO_NAME}}"
 SECRET_INVALID_NAME="${E2E_GIT_SECRET_INVALID:-git-creds-invalid-${REPO_NAME}}"
+FLUX_RECEIVER_NAMESPACE="${FLUX_RECEIVER_NAMESPACE:-flux-system}"
+FLUX_RECEIVER_NAME="${FLUX_RECEIVER_NAME:-gitea-webreceiver-${REPO_NAME}}"
+FLUX_RECEIVER_SECRET_NAME="${FLUX_RECEIVER_SECRET_NAME:-${FLUX_RECEIVER_NAME}}"
+FLUX_WEBHOOK_SERVICE_NAME="${FLUX_WEBHOOK_SERVICE_NAME:-webhook-receiver}"
+FLUX_WEBHOOK_URL_BASE="${FLUX_WEBHOOK_URL_BASE:-http://${FLUX_WEBHOOK_SERVICE_NAME}.${FLUX_RECEIVER_NAMESPACE}.svc.cluster.local}"
 
 project_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 cs_abs="${project_root}/${CS}"
@@ -73,6 +78,8 @@ token_file="${run_dir}/token.txt"
 secrets_yaml="${run_dir}/secrets.yaml"
 repo_ready="${run_dir}/repo.ready"
 checkout_ready="${run_dir}/checkout.ready"
+receiver_webhook_url_file="${run_dir}/receiver-webhook-url.txt"
+receiver_webhook_id_file="${run_dir}/receiver-webhook-id.txt"
 
 mkdir -p "${ssh_dir}"
 
@@ -225,6 +232,116 @@ ensure_repo() {
   rm -f "${tmp}"
 }
 
+read_flux_receiver_token() {
+  if ! kubectl --context "${CTX}" -n "${FLUX_RECEIVER_NAMESPACE}" get secret "${FLUX_RECEIVER_SECRET_NAME}" >/dev/null 2>&1; then
+    return 1
+  fi
+
+  kubectl --context "${CTX}" -n "${FLUX_RECEIVER_NAMESPACE}" get secret "${FLUX_RECEIVER_SECRET_NAME}" \
+    -o jsonpath='{.data.token}' | base64 -d
+}
+
+wait_for_flux_receiver_path() {
+  local receiver_path
+
+  if ! kubectl --context "${CTX}" -n "${FLUX_RECEIVER_NAMESPACE}" get receiver "${FLUX_RECEIVER_NAME}" >/dev/null 2>&1; then
+    return 1
+  fi
+
+  for i in {1..30}; do
+    receiver_path="$(
+      kubectl --context "${CTX}" -n "${FLUX_RECEIVER_NAMESPACE}" get receiver "${FLUX_RECEIVER_NAME}" \
+        -o jsonpath='{.status.webhookPath}' 2>/dev/null || true
+    )"
+    if [[ -n "${receiver_path}" ]]; then
+      printf '%s' "${receiver_path}"
+      return 0
+    fi
+    sleep 2
+  done
+
+  return 1
+}
+
+ensure_repo_webhook() {
+  local receiver_token receiver_path callback_url hooks_json managed_hook_ids hook_id payload tmp code
+
+  if ! receiver_token="$(read_flux_receiver_token)"; then
+    echo "Flux receiver secret ${FLUX_RECEIVER_NAMESPACE}/${FLUX_RECEIVER_SECRET_NAME} not found; skipping repo webhook setup"
+    return 0
+  fi
+
+  if [[ -z "${receiver_token}" ]]; then
+    echo "WARN: Flux receiver secret ${FLUX_RECEIVER_NAMESPACE}/${FLUX_RECEIVER_SECRET_NAME} has an empty token; skipping repo webhook setup" >&2
+    return 0
+  fi
+
+  if ! receiver_path="$(wait_for_flux_receiver_path)"; then
+    echo "WARN: Flux receiver ${FLUX_RECEIVER_NAMESPACE}/${FLUX_RECEIVER_NAME} is missing or has no webhookPath; skipping repo webhook setup" >&2
+    return 0
+  fi
+
+  callback_url="${FLUX_WEBHOOK_URL_BASE}${receiver_path}"
+  printf '%s\n' "${callback_url}" > "${receiver_webhook_url_file}"
+
+  echo "Ensuring Gitea repo webhook points to ${callback_url}"
+  hooks_json="$(
+    curl -fsS -X GET "${API_URL}/repos/${ORG_NAME}/${REPO_NAME}/hooks" \
+      -H "Content-Type: application/json" \
+      -u "${GITEA_ADMIN_USER}:${GITEA_ADMIN_PASS}"
+  )"
+
+  managed_hook_ids="$(
+    echo "${hooks_json}" | jq -r \
+      --arg url_base "${FLUX_WEBHOOK_URL_BASE}" \
+      '.[] | select(.type == "gitea") | select((.config.url // "") | startswith($url_base + "/hook/")) | .id'
+  )"
+
+  if [[ -n "${managed_hook_ids}" ]]; then
+    while IFS= read -r hook_id; do
+      [[ -n "${hook_id}" ]] || continue
+      curl -fsS -X DELETE "${API_URL}/repos/${ORG_NAME}/${REPO_NAME}/hooks/${hook_id}" \
+        -H "Content-Type: application/json" \
+        -u "${GITEA_ADMIN_USER}:${GITEA_ADMIN_PASS}" >/dev/null
+    done <<< "${managed_hook_ids}"
+  fi
+
+  payload="$(
+    jq -nc \
+      --arg url "${callback_url}" \
+      --arg secret "${receiver_token}" \
+      '{type:"gitea",active:true,events:["push","create","delete"],config:{url:$url,content_type:"json",secret:$secret}}'
+  )"
+
+  tmp="$(mktemp)"
+  code="$(
+    curl -sS -o "${tmp}" -w "%{http_code}" \
+      -X POST "${API_URL}/repos/${ORG_NAME}/${REPO_NAME}/hooks" \
+      -H "Content-Type: application/json" \
+      -u "${GITEA_ADMIN_USER}:${GITEA_ADMIN_PASS}" \
+      -d "${payload}" \
+      || true
+  )"
+
+  if [[ "${code}" != "201" ]]; then
+    echo "ERROR: Failed to create repo webhook (HTTP ${code})" >&2
+    sed 's/^/  /' "${tmp}" >&2 || true
+    rm -f "${tmp}"
+    exit 1
+  fi
+
+  hook_id="$(jq -r '.id // ""' "${tmp}")"
+  if [[ -z "${hook_id}" ]]; then
+    echo "ERROR: Repo webhook creation succeeded but response did not contain an id" >&2
+    sed 's/^/  /' "${tmp}" >&2 || true
+    rm -f "${tmp}"
+    exit 1
+  fi
+
+  printf '%s\n' "${hook_id}" > "${receiver_webhook_id_file}"
+  rm -f "${tmp}"
+}
+
 generate_known_hosts() {
   local known_hosts_file tmp pf_pid local_port ssh_host
   known_hosts_file="${ssh_dir}/known_hosts"
@@ -264,7 +381,7 @@ generate_known_hosts() {
 }
 
 write_secrets_manifest() {
-  local token secrets_tmp ssh_args=()
+  local token secrets_tmp ssh_args=() reflector_args=()
   token="$(tr -d '\n' < "${token_file}" | tr -d '\r')"
   [[ -n "${token}" ]] || { echo "ERROR: token.txt is empty" >&2; exit 1; }
 
@@ -281,13 +398,29 @@ write_secrets_manifest() {
     ssh_args+=(--from-file=known_hosts="${ssh_dir}/known_hosts")
   fi
 
+  if [[ "${REPO_NAME}" == "demo" ]]; then
+    reflector_args=(
+      "reflector.v1.k8s.emberstack.com/reflection-allowed=true"
+      "reflector.v1.k8s.emberstack.com/reflection-auto-enabled=true"
+      "reflector.v1.k8s.emberstack.com/reflection-auto-namespaces=podinfos-intent,podinfos-preview,podinfos-production"
+    )
+  fi
+
   # Generate namespace-free manifests so each test suite can apply them
   # to its own dynamically-named test namespace.
   {
-    kubectl create secret generic "${SECRET_HTTP_NAME}" \
-      --from-literal=username="${GITEA_ADMIN_USER}" \
-      --from-literal=password="${token}" \
-      --dry-run=client -o yaml
+    if [[ "${#reflector_args[@]}" -gt 0 ]]; then
+      kubectl create secret generic "${SECRET_HTTP_NAME}" \
+        --from-literal=username="${GITEA_ADMIN_USER}" \
+        --from-literal=password="${token}" \
+        --dry-run=client -o yaml | \
+        kubectl annotate --local -f - "${reflector_args[@]}" -o yaml
+    else
+      kubectl create secret generic "${SECRET_HTTP_NAME}" \
+        --from-literal=username="${GITEA_ADMIN_USER}" \
+        --from-literal=password="${token}" \
+        --dry-run=client -o yaml
+    fi
     printf '\n---\n'
     kubectl create secret generic "${SECRET_SSH_NAME}" \
       --from-file=ssh-privatekey="${ssh_dir}/id_rsa" \
@@ -359,4 +492,5 @@ generate_known_hosts
 configure_ssh_key_in_gitea
 ensure_repo
 write_secrets_manifest
+ensure_repo_webhook
 ensure_checkout

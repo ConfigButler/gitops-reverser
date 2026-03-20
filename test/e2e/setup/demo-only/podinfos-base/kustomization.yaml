@@ -5,6 +5,4 @@ resources:
   - 1-ingress-specific.yaml
   - 2-middlewares.yaml
   - 3-example-instance.yaml
-  - 4-git-creds-demo.yaml
-  - 5-gitops.yaml
-  - 6-reverse-gitops
+  - ../podinfos-gitops
