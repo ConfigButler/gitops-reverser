@@ -1,0 +1,27 @@
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: GitRepository
+metadata:
+  name: demo
+spec:
+  interval: 10m
+  timeout: 1m
+  url: http://gitea-http.gitea-e2e.svc.cluster.local:13000/testorg/demo.git
+  ref:
+    branch: main
+  secretRef:
+    name: git-creds-demo
+# TODO: send back that webhook so that we have a quick idea on whats happening on the other side
+# The goal is get the files exactly from that place
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: demo
+spec:
+  interval: 24h   # In practice I feel that we should turn it off, and then only request a sync when something is changed
+  timeout: 5m
+  path: ./podinfos
+  #prune: true
+  sourceRef:
+    kind: GitRepository
+    name: demo

@@ -1,0 +1,38 @@
+apiVersion: configbutler.ai/v1alpha1
+kind: GitProvider
+metadata:
+  name: demo
+spec:
+  url: http://gitea-http.gitea-e2e.svc.cluster.local:13000/testorg/demo.git
+  allowedBranches:
+    - main
+  push:
+    interval: "5s"
+    maxCommits: 10
+  secretRef:
+    name: git-creds-demo
+---
+apiVersion: configbutler.ai/v1alpha1
+kind: GitTarget
+metadata:
+  name: demo
+spec:
+  providerRef:
+    kind: GitProvider
+    name: monster-deployment-provider
+  branch: main
+  path: podinfos
+---
+apiVersion: configbutler.ai/v1alpha1
+kind: WatchRule
+metadata:
+  name: demo
+spec:
+  targetRef:
+    kind: GitTarget
+    name: demo
+  rules:
+    - operations: [CREATE, UPDATE, DELETE]
+      apiGroups: ["kro.run"]
+      apiVersions: ["v1alpha1"]
+      resources: ["podinfoapps"]
