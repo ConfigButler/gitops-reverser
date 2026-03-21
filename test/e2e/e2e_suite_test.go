@@ -23,9 +23,11 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -39,7 +41,9 @@ import (
 // The default setup requires Kind, builds/loads the Manager Docker image locally, and installs
 // CertManager.
 func TestE2E(t *testing.T) {
-	RegisterFailHandler(Fail)
+	initE2ECommandContext()
+	watchForE2EInterrupts()
+	RegisterFailHandler(failAndPreserveResources)
 	_, _ = fmt.Fprintf(GinkgoWriter, "Starting gitops-reverser integration test suite\n")
 	RunSpecs(t, "e2e suite")
 }
@@ -57,6 +61,12 @@ var _ = BeforeSuite(func() {
 
 var _ = AfterEach(func() {
 	dumpFailureDiagnostics()
+})
+
+var _ = ReportAfterEach(func(report SpecReport) {
+	if report.Failed() {
+		markE2EResourcesForPreservation("spec failed: " + report.FullText())
+	}
 })
 
 func ensureE2EPrepared() {
@@ -229,4 +239,20 @@ func resolveE2EContext() string {
 	}
 
 	return "kind-gitops-reverser-test-e2e"
+}
+
+func failAndPreserveResources(message string, callerSkip ...int) {
+	markE2EResourcesForPreservation("assertion failed")
+	Fail(message, callerSkip...)
+}
+
+func watchForE2EInterrupts() {
+	signals := make(chan os.Signal, 2)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+
+	go func() {
+		sig := <-signals
+		markE2EResourcesForPreservation(fmt.Sprintf("received signal %s", sig))
+		e2eCommandCancel()
+	}()
 }

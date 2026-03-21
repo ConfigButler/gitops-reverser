@@ -103,12 +103,12 @@ func hasNamespaceArg(args []string) bool {
 
 func kubectlCmd(ctx context.Context, args ...string) *exec.Cmd {
 	//nolint:gosec // e2e helper intentionally shells out to kubectl
-	return exec.CommandContext(ctx, "kubectl", kubectlArgs(args...)...)
+	return exec.CommandContext(e2eCommandContext(ctx), "kubectl", kubectlArgs(args...)...)
 }
 
 func kubectlCmdInNamespace(ctx context.Context, namespace string, args ...string) *exec.Cmd {
 	//nolint:gosec // e2e helper intentionally shells out to kubectl
-	return exec.CommandContext(ctx, "kubectl", kubectlArgsInNamespace(namespace, args...)...)
+	return exec.CommandContext(e2eCommandContext(ctx), "kubectl", kubectlArgsInNamespace(namespace, args...)...)
 }
 
 func kubectlRun(args ...string) (string, error) {
@@ -123,4 +123,35 @@ func kubectlRunWithStdin(namespace, stdin string, args ...string) (string, error
 	cmd := kubectlCmdInNamespace(context.Background(), namespace, args...)
 	cmd.Stdin = strings.NewReader(stdin)
 	return utils.Run(cmd)
+}
+
+func setE2ECommandContext(ctx context.Context) {
+	if ctx == nil {
+		setE2ECommandDone(nil)
+		return
+	}
+
+	setE2ECommandDone(ctx.Done())
+}
+
+func e2eCommandContext(ctx context.Context) context.Context {
+	if ctx != nil && ctx != context.Background() {
+		return ctx
+	}
+
+	done := e2eCommandDone()
+	if done == nil {
+		return context.Background()
+	}
+
+	commandCtx, cancel := context.WithCancel(context.Background())
+	go func() {
+		select {
+		case <-done:
+			cancel()
+		case <-commandCtx.Done():
+		}
+	}()
+
+	return commandCtx
 }

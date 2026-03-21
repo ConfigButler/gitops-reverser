@@ -494,7 +494,12 @@ func (r *GitTargetReconciler) ensureEventStream(
 
 	worker, exists := r.WorkerManager.GetWorkerForTarget(target.Spec.ProviderRef.Name, providerNS, target.Spec.Branch)
 	if !exists {
-		if err := r.WorkerManager.EnsureWorker(context.Background(), target.Spec.ProviderRef.Name, providerNS, target.Spec.Branch); err != nil {
+		if err := r.WorkerManager.EnsureWorker(
+			context.Background(),
+			target.Spec.ProviderRef.Name,
+			providerNS,
+			target.Spec.Branch,
+		); err != nil {
 			return nil, fmt.Errorf(
 				"failed to ensure branch worker for provider=%s/%s branch=%s: %w",
 				providerNS,
@@ -505,7 +510,11 @@ func (r *GitTargetReconciler) ensureEventStream(
 		}
 
 		var ensured bool
-		worker, ensured = r.WorkerManager.GetWorkerForTarget(target.Spec.ProviderRef.Name, providerNS, target.Spec.Branch)
+		worker, ensured = r.WorkerManager.GetWorkerForTarget(
+			target.Spec.ProviderRef.Name,
+			providerNS,
+			target.Spec.Branch,
+		)
 		if !ensured {
 			return nil, fmt.Errorf(
 				"branch worker not found for provider=%s/%s branch=%s",
