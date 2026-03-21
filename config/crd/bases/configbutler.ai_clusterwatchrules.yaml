@@ -23,7 +23,6 @@ spec:
       type: string
     - jsonPath: .status.conditions[?(@.type=="Ready")].message
       name: Status
-      priority: 1
       type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
