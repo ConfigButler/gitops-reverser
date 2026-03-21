@@ -76,7 +76,7 @@ var _ = Describe("Quickstart Framework", Label("quickstart-framework"), Ordered,
 	})
 
 	AfterAll(func() {
-		_, _ = kubectlRun("delete", "namespace", testNamespaceFor("quickstart-framework"), "--ignore-not-found=true")
+		cleanupNamespace(testNamespaceFor("quickstart-framework"))
 	})
 
 	It("sets up quickstart flow via Go framework", func() {

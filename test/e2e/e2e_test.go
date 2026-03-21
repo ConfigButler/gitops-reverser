@@ -105,8 +105,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 	// After all tests have been executed, clean up the test namespace
 	AfterAll(func() {
-		By("deleting test namespace")
-		_, _ = kubectlRun("delete", "namespace", testNs, "--ignore-not-found=true")
+		cleanupNamespace(testNs)
 
 		By("test infrastructure still running for debugging")
 		fmt.Printf("\n")

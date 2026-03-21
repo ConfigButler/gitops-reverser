@@ -225,20 +225,51 @@ func applySOPSAgeKeyToNamespace(ns string) {
 
 // cleanupGitTarget deletes a GitTarget resource.
 func cleanupGitTarget(name, namespace string) {
+	if skipCleanupBecauseResourcesArePreserved(fmt.Sprintf("GitTarget %s/%s", namespace, name)) {
+		return
+	}
 	By(fmt.Sprintf("cleaning up GitTarget '%s' in ns '%s'", name, namespace))
 	_, _ = kubectlRunInNamespace(namespace, "delete", "gittarget", name, "--ignore-not-found=true")
 }
 
 // cleanupWatchRule deletes a WatchRule resource.
 func cleanupWatchRule(name, namespace string) {
+	if skipCleanupBecauseResourcesArePreserved(fmt.Sprintf("WatchRule %s/%s", namespace, name)) {
+		return
+	}
 	By(fmt.Sprintf("cleaning up WatchRule '%s' in ns '%s'", name, namespace))
 	_, _ = kubectlRunInNamespace(namespace, "delete", "watchrule", name, "--ignore-not-found=true")
 }
 
 // cleanupClusterWatchRule deletes a ClusterWatchRule resource.
 func cleanupClusterWatchRule(name string) {
+	if skipCleanupBecauseResourcesArePreserved(fmt.Sprintf("ClusterWatchRule %s", name)) {
+		return
+	}
 	By(fmt.Sprintf("cleaning up ClusterWatchRule '%s'", name))
 	_, _ = kubectlRun("delete", "clusterwatchrule", name, "--ignore-not-found=true")
+}
+
+func cleanupNamespace(name string) {
+	if skipCleanupBecauseResourcesArePreserved(fmt.Sprintf("namespace %s", name)) {
+		return
+	}
+	By(fmt.Sprintf("deleting test namespace '%s'", name))
+	_, _ = kubectlRun("delete", "namespace", name, "--ignore-not-found=true")
+}
+
+func cleanupNamespacedResource(namespace, resource, name string) {
+	if skipCleanupBecauseResourcesArePreserved(fmt.Sprintf("%s %s/%s", resource, namespace, name)) {
+		return
+	}
+	_, _ = kubectlRunInNamespace(namespace, "delete", resource, name, "--ignore-not-found=true")
+}
+
+func cleanupClusterResource(resource, name string) {
+	if skipCleanupBecauseResourcesArePreserved(fmt.Sprintf("%s %s", resource, name)) {
+		return
+	}
+	_, _ = kubectlRun("delete", resource, name, "--ignore-not-found=true")
 }
 
 func controllerPodNames() ([]string, error) {
