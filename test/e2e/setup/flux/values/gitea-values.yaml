@@ -36,6 +36,9 @@ gitea:
       DEFAULT_KEEP_EMAIL_PRIVATE: true
     repository:
       DEFAULT_BRANCH: main
+    i18n:
+      LANGS: en-US
+      NAMES: English
     indexer:
       ISSUE_INDEXER_TYPE: bleve
       REPO_INDEXER_ENABLED: false

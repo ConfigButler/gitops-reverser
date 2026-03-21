@@ -20,9 +20,10 @@ metadata:
 spec:
   interval: 24h   # In practice I feel that we should turn it off, and then only request a sync when something is changed
   timeout: 5m
-  path: .podinfos/kro.run/v1alpha1/podinfoapps/podinfos-intent/
+  path: /podinfos/kro.run/v1alpha1/podinfoapps/podinfos-intent/
   targetNamespace: podinfos-production
   prune: true
+  suspend: false
   sourceRef:
     kind: GitRepository
     name: demo
