@@ -23,21 +23,25 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"filippo.io/age"
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
 func setupBranchWorkerTest() (*BranchWorker, func()) {
@@ -632,6 +636,105 @@ func TestBranchWorker_EnsurePathBootstrapped_RendersAllResolvedRecipients(t *tes
 	assert.Contains(t, string(sopsConfig), secretIdentity.Recipient().String())
 	assert.Contains(t, string(sopsConfig), secondaryIdentity.Recipient().String())
 	assert.Contains(t, string(sopsConfig), publicOnlyIdentity.Recipient().String())
+}
+
+func TestBranchWorker_CommitAndPushRequest_PreparesRepositoryBeforeFirstWrite(t *testing.T) {
+	ctx := context.Background()
+	tempDir := t.TempDir()
+	remotePath := filepath.Join(tempDir, "remote.git")
+	remoteURL := "file://" + remotePath
+	serverRepo := createBareRepo(t, remotePath)
+
+	seedPath := filepath.Join(tempDir, "seed")
+	seedRepo, seedWorktree := initLocalRepo(t, seedPath, remoteURL, "main")
+	require.NoError(t, os.WriteFile(filepath.Join(seedPath, "README.md"), []byte("seed\n"), 0o600))
+	_, err := seedWorktree.Add("README.md")
+	require.NoError(t, err)
+	_, err = seedWorktree.Commit("seed remote", &git.CommitOptions{
+		Author: &object.Signature{Name: "Test", Email: "test@example.com", When: time.Now()},
+	})
+	require.NoError(t, err)
+	require.NoError(t, seedRepo.Push(&git.PushOptions{
+		RefSpecs: []config.RefSpec{
+			config.RefSpec("refs/heads/main:refs/heads/main"),
+		},
+	}))
+
+	scheme := runtime.NewScheme()
+	_ = clientgoscheme.AddToScheme(scheme)
+	_ = configv1alpha1.AddToScheme(scheme)
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	provider := &configv1alpha1.GitProvider{
+		Spec: configv1alpha1.GitProviderSpec{
+			URL: remoteURL,
+		},
+	}
+	provider.Name = "test-repo"
+	provider.Namespace = "default"
+	require.NoError(t, k8sClient.Create(ctx, provider))
+
+	worker := NewBranchWorker(k8sClient, logr.Discard(), "test-repo", "default", "main", nil)
+	worker.ctx = ctx
+
+	request := &WriteRequest{
+		Events: []Event{
+			{
+				Operation: "CREATE",
+				Identifier: itypes.ResourceIdentifier{
+					Group:     "",
+					Version:   "v1",
+					Resource:  "configmaps",
+					Namespace: "default",
+					Name:      "example",
+				},
+				Object: &unstructured.Unstructured{
+					Object: map[string]interface{}{
+						"apiVersion": "v1",
+						"kind":       "ConfigMap",
+						"metadata": map[string]interface{}{
+							"name":      "example",
+							"namespace": "default",
+						},
+						"data": map[string]interface{}{
+							"key": "value",
+						},
+					},
+				},
+				UserInfo: UserInfo{Username: "tester"},
+				Path:     "clusters/dev",
+			},
+		},
+		CommitMode: CommitModePerEvent,
+	}
+
+	worker.commitAndPushRequest(request)
+
+	localRepoPath := worker.repoPathForRemote(remoteURL)
+	localRepo, err := git.PlainOpen(localRepoPath)
+	require.NoError(t, err)
+
+	localHeadRef, err := localRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
+	require.NoError(t, err)
+
+	remoteHeadRef, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
+	require.NoError(t, err)
+	assert.Equal(t, remoteHeadRef.Hash(), localHeadRef.Hash(), "local checkout should have been prepared and pushed")
+
+	readmeContent, err := os.ReadFile(filepath.Join(localRepoPath, "README.md"))
+	require.NoError(t, err)
+	assert.Equal(
+		t,
+		"seed\n",
+		string(readmeContent),
+		"worker should prepare by pulling remote content before first write",
+	)
+
+	manifestPath := filepath.Join(localRepoPath, "clusters/dev", "v1", "configmaps", "default", "example.yaml")
+	content, err := os.ReadFile(manifestPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(content), "name: example")
+	assert.Contains(t, string(content), "key: value")
 }
 
 func createTargetWithEncryption(

@@ -18,3 +18,15 @@ patches:
       - op: replace
         path: /spec/ref/branch
         value: monster
+  - target:   # Turn the normal GitOps off for now -> We can enable it for the demo, but it will create race conditions otherwise...
+      group: kustomize.toolkit.fluxcd.io
+      version: v1
+      kind: Kustomization
+      name: demo
+    patch : |-
+      - op: replace
+        path: /spec/suspend
+        value: true
+      - op: replace
+        path: /spec/targetNamespace
+        value: podinfos-preview

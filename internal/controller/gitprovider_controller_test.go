@@ -363,7 +363,7 @@ var _ = Describe("GitProvider Controller", func() {
 			})
 
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result.RequeueAfter).To(Equal(time.Minute * 5))
+			Expect(result.RequeueAfter).To(Equal(time.Minute * 2))
 
 			// Verify the resource was updated with failure condition
 			updatedProvider := &configbutleraiv1alpha1.GitProvider{}

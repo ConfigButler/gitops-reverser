@@ -5,7 +5,7 @@ namespace: podinfos-intent
 
 resources:
   - 0-ns.yaml
-  - 1-example-instance.yaml
+  #- 1-example-instance.yaml
   - ../podinfos-gitops
   - 2-reverse-gitops.yaml
 
@@ -28,3 +28,6 @@ patches:
       - op: replace
         path: /spec/suspend
         value: true
+      - op: replace
+        path: /spec/targetNamespace
+        value: podinfos-intent
