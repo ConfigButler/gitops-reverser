@@ -48,8 +48,7 @@ var _ = Describe("Audit Redis Queue", Label("audit-redis"), Ordered, func() {
 	})
 
 	AfterAll(func() {
-		By("deleting test namespace")
-		_, _ = kubectlRun("delete", "namespace", testNs, "--ignore-not-found=true")
+		cleanupNamespace(testNs)
 	})
 
 	It("should enqueue incoming audit webhook events into a Redis stream", func() {

@@ -119,46 +119,12 @@ var _ = Describe("Bi Directional", Label("bi-directional"), Ordered, func() {
 
 	AfterAll(func() {
 		run.cleanupFluxResources()
-		run.cleanupReverseResources(testNs)
-		_, _ = kubectlRunInNamespace(
-			testNs,
-			"delete",
-			"secret",
-			run.controllerEncryptionSecret,
-			"--ignore-not-found=true",
-		)
-		_, _ = kubectlRunInNamespace(
-			testNs,
-			"delete",
-			"secret",
-			run.reverseSecretName,
-			"--ignore-not-found=true",
-		)
-		_, _ = kubectlRunInNamespace(
-			testNs,
-			"delete",
-			"icecreamorder",
-			run.firstOrderName,
-			"--ignore-not-found=true",
-		)
-		_, _ = kubectlRunInNamespace(
-			testNs,
-			"delete",
-			"icecreamorder",
-			run.secondOrderName,
-			"--ignore-not-found=true",
-		)
-		_, _ = kubectlRunInNamespace(
-			testNs,
-			"delete",
-			"icecreamorder",
-			run.revertedOrderName,
-			"--ignore-not-found=true",
-		)
-		_, _ = kubectlRun("delete", "crd", "icecreamorders.shop.example.com", "--ignore-not-found=true")
-
-		By("deleting test namespace")
-		_, _ = kubectlRun("delete", "namespace", testNs, "--ignore-not-found=true")
+		run.cleanupReverseResources()
+		// Namespace deletion is enough for ordinary namespaced leftovers like test Secrets and
+		// IceCreamOrder instances. Keep explicit cleanup only for Flux resources and cluster-scoped
+		// resources that live outside the test namespace.
+		cleanupClusterResource("crd", "icecreamorders.shop.example.com")
+		cleanupNamespace(testNs)
 	})
 
 	It("should avoid a commit loop while Flux and gitops-reverser share IceCreamOrder resources", func() {
@@ -1087,52 +1053,16 @@ func (r biDirectionalRun) waitForOrderDeleted(name string) {
 }
 
 func (r biDirectionalRun) cleanupFluxResources() {
-	_, _ = kubectlRunInNamespace(
-		"flux-system",
-		"delete",
-		"kustomization",
-		r.fluxLiveName,
-		"--ignore-not-found=true",
-	)
-	_, _ = kubectlRunInNamespace(
-		"flux-system",
-		"delete",
-		"kustomization",
-		r.fluxCRDsName,
-		"--ignore-not-found=true",
-	)
-	_, _ = kubectlRunInNamespace(
-		"flux-system",
-		"delete",
-		"gitrepository",
-		r.fluxGitRepositoryName,
-		"--ignore-not-found=true",
-	)
-	_, _ = kubectlRunInNamespace(
-		"flux-system",
-		"delete",
-		"secret",
-		r.fluxSecretName,
-		"--ignore-not-found=true",
-	)
-	_, _ = kubectlRunInNamespace(
-		"flux-system",
-		"delete",
-		"secret",
-		r.fluxDecryptionSecret,
-		"--ignore-not-found=true",
-	)
+	cleanupNamespacedResource("flux-system", "kustomization", r.fluxLiveName)
+	cleanupNamespacedResource("flux-system", "kustomization", r.fluxCRDsName)
+	cleanupNamespacedResource("flux-system", "gitrepository", r.fluxGitRepositoryName)
+	cleanupNamespacedResource("flux-system", "secret", r.fluxSecretName)
+	cleanupNamespacedResource("flux-system", "secret", r.fluxDecryptionSecret)
 }
 
-func (r biDirectionalRun) cleanupReverseResources(ns string) {
-	cleanupWatchRule(r.watchRuleName, ns)
-	cleanupWatchRule(r.secretWatchRuleName, ns)
-	cleanupGitTarget(r.gitTargetName, ns)
-	_, _ = kubectlRunInNamespace(
-		ns,
-		"delete",
-		"gitprovider",
-		r.gitProviderName,
-		"--ignore-not-found=true",
-	)
+func (r biDirectionalRun) cleanupReverseResources() {
+	cleanupWatchRule(r.watchRuleName, r.testNs)
+	cleanupWatchRule(r.secretWatchRuleName, r.testNs)
+	cleanupGitTarget(r.gitTargetName, r.testNs)
+	cleanupNamespacedResource(r.testNs, "gitprovider", r.gitProviderName)
 }
