@@ -737,6 +737,124 @@ func TestBranchWorker_CommitAndPushRequest_PreparesRepositoryBeforeFirstWrite(t 
 	assert.Contains(t, string(content), "key: value")
 }
 
+func TestBranchWorker_CommitAndPushRequest_NewBranchStartsFromLatestMain(t *testing.T) {
+	ctx := context.Background()
+	tempDir := t.TempDir()
+	remotePath := filepath.Join(tempDir, "remote.git")
+	remoteURL := "file://" + remotePath
+	serverRepo := createBareRepo(t, remotePath)
+
+	seedPath := filepath.Join(tempDir, "seed")
+	seedRepo, seedWorktree := initLocalRepo(t, seedPath, remoteURL, "main")
+	hashA := commitFileChange(t, seedWorktree, seedPath, "README.md", "v1\n")
+	require.NoError(t, seedRepo.Push(&git.PushOptions{
+		RefSpecs: []config.RefSpec{
+			config.RefSpec("refs/heads/main:refs/heads/main"),
+		},
+	}))
+
+	scheme := runtime.NewScheme()
+	_ = clientgoscheme.AddToScheme(scheme)
+	_ = configv1alpha1.AddToScheme(scheme)
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	provider := &configv1alpha1.GitProvider{
+		Spec: configv1alpha1.GitProviderSpec{
+			URL: remoteURL,
+		},
+	}
+	provider.Name = "test-repo"
+	provider.Namespace = "default"
+	require.NoError(t, k8sClient.Create(ctx, provider))
+
+	worker := NewBranchWorker(k8sClient, logr.Discard(), "test-repo", "default", "feature", nil)
+	worker.ctx = ctx
+
+	// Pre-create a stale local checkout while remote main is still at commit A.
+	staleRepoPath := worker.repoPathForRemote(remoteURL)
+	staleReport, err := PrepareBranch(ctx, remoteURL, staleRepoPath, worker.Branch, nil)
+	require.NoError(t, err)
+	require.Equal(t, hashA.String(), staleReport.HEAD.Sha)
+
+	// Advance remote main to commit B after the local checkout is stale.
+	hashB := commitFileChange(t, seedWorktree, seedPath, "LATEST.md", "from-main-b\n")
+	require.NoError(t, seedRepo.Push(&git.PushOptions{
+		RefSpecs: []config.RefSpec{
+			config.RefSpec("refs/heads/main:refs/heads/main"),
+		},
+	}))
+
+	request := &WriteRequest{
+		Events: []Event{
+			{
+				Operation: "CREATE",
+				Identifier: itypes.ResourceIdentifier{
+					Group:     "",
+					Version:   "v1",
+					Resource:  "configmaps",
+					Namespace: "default",
+					Name:      "example-feature",
+				},
+				Object: &unstructured.Unstructured{
+					Object: map[string]interface{}{
+						"apiVersion": "v1",
+						"kind":       "ConfigMap",
+						"metadata": map[string]interface{}{
+							"name":      "example-feature",
+							"namespace": "default",
+						},
+						"data": map[string]interface{}{
+							"key": "value",
+						},
+					},
+				},
+				UserInfo: UserInfo{Username: "tester"},
+				Path:     "clusters/dev",
+			},
+		},
+		CommitMode: CommitModePerEvent,
+	}
+
+	worker.commitAndPushRequest(request)
+
+	remoteMainRef, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
+	require.NoError(t, err)
+	assert.Equal(t, hashB, remoteMainRef.Hash(), "remote main should remain at the latest commit")
+
+	remoteFeatureRef, err := serverRepo.Reference(plumbing.NewBranchReferenceName("feature"), true)
+	require.NoError(t, err)
+
+	featureCommit, err := serverRepo.CommitObject(remoteFeatureRef.Hash())
+	require.NoError(t, err)
+	require.Len(t, featureCommit.ParentHashes, 1, "new feature branch commit should be based on main plus one commit")
+	assert.Equal(t, hashB, featureCommit.ParentHashes[0], "feature branch should start from latest main commit")
+
+	localRepo, err := git.PlainOpen(staleRepoPath)
+	require.NoError(t, err)
+	localFeatureRef, err := localRepo.Reference(plumbing.NewBranchReferenceName("feature"), true)
+	require.NoError(t, err)
+	assert.Equal(t, remoteFeatureRef.Hash(), localFeatureRef.Hash(), "local and remote feature branches should match")
+
+	featureCheckoutPath := filepath.Join(tempDir, "verify-feature")
+	_, _ = initLocalRepo(t, featureCheckoutPath, remoteURL, "feature")
+
+	latestMainContent, err := os.ReadFile(filepath.Join(featureCheckoutPath, "LATEST.md"))
+	require.NoError(t, err)
+	assert.Equal(t, "from-main-b\n", string(latestMainContent), "feature branch should include latest main content")
+
+	manifestPath := filepath.Join(
+		featureCheckoutPath,
+		"clusters/dev",
+		"v1",
+		"configmaps",
+		"default",
+		"example-feature.yaml",
+	)
+	manifestContent, err := os.ReadFile(manifestPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(manifestContent), "name: example-feature")
+}
+
 func createTargetWithEncryption(
 	ctx context.Context,
 	t *testing.T,

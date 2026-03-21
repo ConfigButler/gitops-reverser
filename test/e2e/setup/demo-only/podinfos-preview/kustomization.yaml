@@ -25,8 +25,5 @@ patches:
       name: demo
     patch : |-
       - op: replace
-        path: /spec/suspend
-        value: true
-      - op: replace
         path: /spec/targetNamespace
         value: podinfos-preview
