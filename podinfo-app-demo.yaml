@@ -5,6 +5,5 @@ metadata:
   namespace: podinfos-intent
 spec:
   replicas: 1
-  name: fiets
   message: The Dutch word for bicycle is "fiets". We have a lot of them. 🚲
   color: "#115711"

@@ -525,6 +525,12 @@ func (w *BranchWorker) commitAndPushRequest(request *WriteRequest) {
 	}
 
 	repoPath := w.repoPathForRemote(provider.Spec.URL)
+	pullReport, err := PrepareBranch(w.ctx, provider.Spec.URL, repoPath, w.Branch, auth)
+	if err != nil {
+		log.Error(err, "Failed to prepare repository")
+		return
+	}
+	w.updateBranchMetadataFromPullReport(pullReport)
 
 	preparedRequest, encryptionConfig, err := w.prepareWriteRequest(w.ctx, request)
 	if err != nil {
@@ -556,9 +562,15 @@ func (w *BranchWorker) commitAndPushRequest(request *WriteRequest) {
 	}
 
 	// Metrics
-	telemetry.GitOperationsTotal.Add(w.ctx, int64(len(preparedRequest.Events)))
-	telemetry.CommitsTotal.Add(w.ctx, 1)
-	telemetry.ObjectsWrittenTotal.Add(w.ctx, int64(len(preparedRequest.Events)))
+	if telemetry.GitOperationsTotal != nil {
+		telemetry.GitOperationsTotal.Add(w.ctx, int64(len(preparedRequest.Events)))
+	}
+	if telemetry.CommitsTotal != nil {
+		telemetry.CommitsTotal.Add(w.ctx, 1)
+	}
+	if telemetry.ObjectsWrittenTotal != nil {
+		telemetry.ObjectsWrittenTotal.Add(w.ctx, int64(len(preparedRequest.Events)))
+	}
 }
 
 // handleShutdown finalizes processing when context is canceled.

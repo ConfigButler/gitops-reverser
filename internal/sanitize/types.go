@@ -83,7 +83,9 @@ func cleanAnnotations(annotations map[string]string) map[string]string {
 }
 
 func isOperationalLabel(key string) bool {
-	return strings.HasPrefix(key, "kustomize.toolkit.fluxcd.io/")
+	return strings.HasPrefix(key, "kustomize.toolkit.fluxcd.io/") ||
+		strings.HasPrefix(key, "kro.run/") ||
+		strings.HasPrefix(key, "applyset.kubernetes.io/")
 }
 
 func isOperationalAnnotation(key string) bool {
@@ -91,5 +93,6 @@ func isOperationalAnnotation(key string) bool {
 		strings.HasPrefix(key, "control-plane.alpha.kubernetes.io/") ||
 		strings.HasPrefix(key, "deployment.kubernetes.io/") ||
 		strings.HasPrefix(key, "autoscaling.alpha.kubernetes.io/") ||
-		strings.HasPrefix(key, "kustomize.toolkit.fluxcd.io/")
+		strings.HasPrefix(key, "kustomize.toolkit.fluxcd.io/") ||
+		strings.HasPrefix(key, "applyset.kubernetes.io/")
 }

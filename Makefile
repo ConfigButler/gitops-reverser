@@ -587,6 +587,8 @@ test-e2e-quickstart-helm: ## Run quickstart smoke test (Helm install)
 .PHONY: test-e2e-demo
 test-e2e-demo: prepare-e2e-demo ## Prepare a reusable demo repo and leave demo resources in place
 	export CTX=$(CTX)
+	export REPO_NAME=demo
+	rm -rf .stamps/repos/$$REPO_NAME
 	export INSTALL_MODE=$(INSTALL_MODE)
 	export NAMESPACE=$(NAMESPACE)
 	export E2E_ENABLE_DEMO=true

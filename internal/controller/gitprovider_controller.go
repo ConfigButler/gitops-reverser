@@ -161,7 +161,7 @@ func (r *GitProviderReconciler) getAuthFromSecret(
 		secretName := gitProvider.Spec.SecretRef.Name
 		r.setCondition(gitProvider, metav1.ConditionFalse, ReasonSecretMalformed,
 			fmt.Sprintf("Secret '%s' malformed: %v", secretName, err))
-		result, _ := r.updateStatusAndRequeue(ctx, gitProvider, RequeueMediumInterval)
+		result, _ := r.updateStatusAndRequeue(ctx, gitProvider, RequeueShortInterval)
 		return nil, result, true
 	}
 

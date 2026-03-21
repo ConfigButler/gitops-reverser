@@ -7,7 +7,6 @@ spec:
     apiVersion: v1alpha1
     kind: PodInfoApp
     spec:
-      name: string | required=true
       message: string | default="hello from kro"
       color: string | default="#34577c"
       replicas: integer | default=1 minimum=1 maximum=1 description="Number of replicas — keep at 1 during demo to avoid exhausting cluster resources"
@@ -33,20 +32,20 @@ spec:
         apiVersion: apps/v1
         kind: Deployment
         metadata:
-          name: ${schema.spec.name}
+          name: ${schema.metadata.name}
           namespace: ${schema.metadata.namespace}
           labels:
-            app.kubernetes.io/name: ${schema.spec.name}
+            app.kubernetes.io/name: ${schema.metadata.name}
             configbutler.ai/path-prefix: ${gateway.metadata.labels["configbutler.ai/path-prefix"]}
         spec:
           replicas: ${schema.spec.replicas}
           selector:
             matchLabels:
-              app.kubernetes.io/name: ${schema.spec.name}
+              app.kubernetes.io/name: ${schema.metadata.name}
           template:
             metadata:
               labels:
-                app.kubernetes.io/name: ${schema.spec.name}
+                app.kubernetes.io/name: ${schema.metadata.name}
                 configbutler.ai/path-prefix: ${gateway.metadata.labels["configbutler.ai/path-prefix"]}
             spec:
               containers:
@@ -85,14 +84,14 @@ spec:
         apiVersion: v1
         kind: Service
         metadata:
-          name: ${schema.spec.name}
+          name: ${schema.metadata.name}
           namespace: ${schema.metadata.namespace}
           labels:
-            app.kubernetes.io/name: ${schema.spec.name}
+            app.kubernetes.io/name: ${schema.metadata.name}
             configbutler.ai/path-prefix: ${gateway.metadata.labels["configbutler.ai/path-prefix"]}
         spec:
           selector:
-            app.kubernetes.io/name: ${schema.spec.name}
+            app.kubernetes.io/name: ${schema.metadata.name}
           ports:
           - name: http
             port: 80
@@ -102,19 +101,19 @@ spec:
         apiVersion: traefik.io/v1alpha1
         kind: IngressRoute
         metadata:
-          name: ${schema.spec.name}
+          name: ${schema.metadata.name}
           namespace: ${schema.metadata.namespace}
           labels:
-            app.kubernetes.io/name: ${schema.spec.name}
+            app.kubernetes.io/name: ${schema.metadata.name}
             configbutler.ai/path-prefix: ${gateway.metadata.labels["configbutler.ai/path-prefix"]}
         spec:
           parentRefs:
           - name: podinfos-gateway
           routes:
-          - match: PathPrefix(`/${schema.spec.name}`)
+          - match: PathPrefix(`/${schema.metadata.name}`)
             kind: Rule
             middlewares:
             - name: strip-appname
             services:
-            - name: ${schema.spec.name}
+            - name: ${schema.metadata.name}
               port: 80
