@@ -118,6 +118,12 @@ type GitTargetSnapshotStats struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:printcolumn:name="Provider",type=string,JSONPath=`.spec.providerRef.name`
+// +kubebuilder:printcolumn:name="Branch",type=string,JSONPath=`.spec.branch`
+// +kubebuilder:printcolumn:name="Path",type=string,JSONPath=`.spec.path`
+// +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
+// +kubebuilder:printcolumn:name="Status",type=string,priority=1,JSONPath=`.status.conditions[?(@.type=="Ready")].message`
+// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // GitTarget is the Schema for the gittargets API.
 type GitTarget struct {
