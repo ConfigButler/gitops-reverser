@@ -15,11 +15,15 @@ spec:
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .spec.destinationRef.name
-      name: Destination
+    - jsonPath: .spec.targetRef.name
+      name: Target
       type: string
     - jsonPath: .status.conditions[?(@.type=="Ready")].status
       name: Ready
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Ready")].message
+      name: Status
+      priority: 1
       type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
