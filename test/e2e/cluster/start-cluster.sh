@@ -158,6 +158,8 @@ create_cluster() {
     local create_cmd=(
       k3d cluster create "${CLUSTER_NAME}"
       --image rancher/k3s:v1.35.2-k3s1
+      --servers 1
+      --agents 3
       --api-port 6550
       --kubeconfig-update-default
       --kubeconfig-switch-context
