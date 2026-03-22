@@ -7,7 +7,7 @@
       "Bash(go build:*)",
       "Bash(kubectl apply:*)",
       "Bash(kubectl wait:*)",
-      "Bash(chmod +x /workspaces/gitops-reverser/hack/demo/setup-monster-deployment.sh)"
+      "Bash(chmod +x /workspaces/gitops-reverser/hack/demo/setup-holland-stuff-deployment.sh)"
     ]
   }
 }

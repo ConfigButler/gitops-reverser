@@ -1,0 +1,73 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: podinfos-assets
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: podinfos-assets
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: podinfos-assets
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:1.29.1-alpine
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 80
+          volumeMounts:
+            - name: assets
+              mountPath: /usr/share/nginx/html
+              readOnly: true
+      volumes:
+        - name: assets
+          projected:
+            sources:
+              - configMap:
+                  name: podinfos-asset-begijnhof
+              - configMap:
+                  name: podinfos-asset-fiets
+              - configMap:
+                  name: podinfos-asset-xxx
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: podinfos-assets
+spec:
+  selector:
+    app.kubernetes.io/name: podinfos-assets
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: strip-podinfo-assets-prefix
+spec:
+  stripPrefix:
+    prefixes:
+      - /podinfo-assets
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: podinfos-assets
+spec:
+  entryPoints:
+    - web
+  routes:
+    - match: Host(`demo.configbutler.ai`) && PathPrefix(`/podinfo-assets/`)
+      kind: Rule
+      middlewares:
+        - name: ratelimit
+        - name: strip-podinfo-assets-prefix
+      services:
+        - name: podinfos-assets
+          port: 80

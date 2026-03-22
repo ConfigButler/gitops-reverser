@@ -6,7 +6,7 @@ spec:
   url: http://gitea-http.gitea-e2e.svc.cluster.local:13000/testorg/demo.git
   allowedBranches:
     - main
-    - monster
+    - holland-stuff
   push:
     interval: "5s"
     maxCommits: 30
@@ -16,22 +16,22 @@ spec:
 apiVersion: configbutler.ai/v1alpha1
 kind: GitTarget
 metadata:
-  name: demo
+  name: demo-podinfos
 spec:
   providerRef:
     kind: GitProvider
     name: demo
-  branch: monster
+  branch: holland-stuff
   path: podinfos
 ---
 apiVersion: configbutler.ai/v1alpha1
 kind: WatchRule
 metadata:
-  name: demo
+  name: demo-podinfos
 spec:
   targetRef:
     kind: GitTarget
-    name: demo
+    name: demo-podinfos
   rules:
     - operations: [CREATE, UPDATE, DELETE]
       apiGroups: ["kro.run"]

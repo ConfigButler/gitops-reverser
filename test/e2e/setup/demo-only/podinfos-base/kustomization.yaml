@@ -4,5 +4,4 @@ kind: Kustomization
 resources:
   - 1-ingress-specific.yaml
   - 2-middlewares.yaml
-  #- 3-example-instance.yaml
   - ../podinfos-gitops

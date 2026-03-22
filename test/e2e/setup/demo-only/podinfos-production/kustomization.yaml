@@ -3,6 +3,21 @@ kind: Kustomization
 
 namespace: podinfos-production
 
+generatorOptions:
+  disableNameSuffixHash: true
+
+configMapGenerator:
+  - name: podinfos-asset-begijnhof
+    files:
+      - assets/podinfos-begijnhof.jpg
+  - name: podinfos-asset-fiets
+    files:
+      - assets/podinfos-fiets.jpg
+  - name: podinfos-asset-xxx
+    files:
+      - assets/podinfos-xxx.jpg
+
 resources:
   - ../podinfos-base
   - 0-ns.yaml
+  - 1-assets.yaml

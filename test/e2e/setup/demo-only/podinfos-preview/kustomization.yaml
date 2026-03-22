@@ -17,12 +17,12 @@ patches:
     patch: |-
       - op: replace
         path: /spec/ref/branch
-        value: monster
+        value: holland-stuff
   - target:   # Turn the normal GitOps off for now -> We can enable it for the demo, but it will create race conditions otherwise...
       group: kustomize.toolkit.fluxcd.io
       version: v1
       kind: Kustomization
-      name: demo
+      name: demo-podinfos
     patch : |-
       - op: replace
         path: /spec/targetNamespace

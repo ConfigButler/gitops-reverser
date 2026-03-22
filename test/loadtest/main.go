@@ -70,61 +70,31 @@ type quizSubmission struct {
 	Spec       submissionSpec `json:"spec"`
 }
 
-// ── Realistic answer pools ────────────────────────────────────────────────────
-
-var freeTextPool = []string{
-	"More live demos!",
-	"Loved the kubectl integration.",
-	"Could use more time on RBAC.",
-	"Great talk, very hands-on.",
-	"Would love a follow-up on APF.",
-	"Show the full Flux workflow end-to-end.",
-	"Brilliant use of CRDs.",
-	"More Prometheus integration examples please.",
-	"Very practical, loved it.",
-	"The QR code login was a great idea.",
-	"More depth on GitOps tooling.",
-	"Excellent speaker, clear explanations.",
-	"Would be great to see this in production.",
-	"Loved how simple the auth flow ended up being.",
-}
-
-func floatPtr(f float64) *float64 { return &f }
-
-// clamp rounds and clamps v to [lo, hi].
-func clamp(v, lo, hi float64) float64 {
-	v = math.Round(v)
-	if v < lo {
-		return lo
-	}
-	if v > hi {
-		return hi
-	}
-	return v
-}
-
 func randomSubmission(rng *rand.Rand, userID int, runID, session, namespace string) quizSubmission {
-	// q1 singleChoice — weighted 70% Yes / 20% Somewhat / 10% No
-	q1Pool := []string{
-		"Yes", "Yes", "Yes", "Yes", "Yes", "Yes", "Yes",
-		"Somewhat", "Somewhat",
+	roles := []string{
+		"Software engineer", "Software engineer", "Software engineer",
+		"Platform engineer", "Platform engineer",
+		"SRE / Ops",
+		"Other",
+	}
+	trust := []string{
+		"Git", "Git", "Git",
+		"API", "API",
+		"Both", "Both",
+		"Neither",
+	}
+	adoption := []string{
+		"Yes", "Yes", "Yes", "Yes",
+		"Maybe", "Maybe",
+		"Only in dev",
 		"No",
 	}
-	q1 := q1Pool[rng.Intn(len(q1Pool))]
-
-	// q2 multiChoice — random non-empty subset of tools
-	tools := []string{"Kubernetes", "Traefik", "Prometheus", "Terraform"}
-	rng.Shuffle(len(tools), func(i, j int) { tools[i], tools[j] = tools[j], tools[i] })
-	q2 := tools[:1+rng.Intn(len(tools))]
-
-	// q3 scale0to10 — Gaussian centered on 7, clamped [0,10]
-	q3 := clamp(rng.NormFloat64()*1.5+7, 0, 10)
-
-	// q4 number — realistic cluster count [1, 50]
-	q4 := float64(1 + rng.Intn(50))
-
-	// q5 freeText — include userID to ensure uniqueness across submissions
-	q5 := fmt.Sprintf("%s [loadtest-user-%d]", freeTextPool[rng.Intn(len(freeTextPool))], userID)
+	mood := []string{
+		"Curious", "Curious", "Curious",
+		"Excited", "Excited",
+		"Skeptical",
+		"Confused",
+	}
 
 	return quizSubmission{
 		APIVersion: apiGroup + "/" + apiVersion,
@@ -137,11 +107,10 @@ func randomSubmission(rng *rand.Rand, userID int, runID, session, namespace stri
 			SessionRef:  sessionRef{Name: session},
 			SubmittedAt: time.Now().UTC().Format(time.RFC3339),
 			Answers: []answer{
-				{QuestionID: "q1", SingleChoice: q1},
-				{QuestionID: "q2", MultiChoice: q2},
-				{QuestionID: "q3", Number: floatPtr(q3)},
-				{QuestionID: "q4", Number: floatPtr(q4)},
-				{QuestionID: "q5", FreeText: q5},
+				{QuestionID: "q1", SingleChoice: roles[rng.Intn(len(roles))]},
+				{QuestionID: "q2", SingleChoice: trust[rng.Intn(len(trust))]},
+				{QuestionID: "q3", SingleChoice: adoption[rng.Intn(len(adoption))]},
+				{QuestionID: "q4", SingleChoice: mood[rng.Intn(len(mood))]},
 			},
 		},
 	}
@@ -346,7 +315,7 @@ func parseConfig() config {
 		"base URL of the voter app")
 	code := flag.String("code", "",
 		"join code shown on the presenter screen (required)")
-	session := flag.String("session", "kubecon-2026",
+	session := flag.String("session", "demo",
 		"quiz session name (QuizSession CR name)")
 	namespace := flag.String("namespace", "vote",
 		"Kubernetes namespace where the session lives")

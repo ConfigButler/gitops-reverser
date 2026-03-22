@@ -16,11 +16,11 @@ spec:
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
-  name: demo
+  name: demo-podinfos
 spec:
   interval: 24h   # In practice I feel that we should turn it off, and then only request a sync when something is changed
   timeout: 5m
-  path: /podinfos/kro.run/v1alpha1/podinfoapps/podinfos-intent/
+  path: /podinfos/kro.run/v1alpha1/podinfoapps/podinfos-intent/   # In the current setup this is how you do it, every environment looks at intent
   targetNamespace: podinfos-production
   prune: true
   suspend: false
