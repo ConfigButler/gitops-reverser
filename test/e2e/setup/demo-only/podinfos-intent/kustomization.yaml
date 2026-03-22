@@ -5,7 +5,6 @@ namespace: podinfos-intent
 
 resources:
   - 0-ns.yaml
-  #- 1-example-instance.yaml
   - ../podinfos-gitops
   - 2-reverse-gitops.yaml
 
@@ -18,12 +17,12 @@ patches:
     patch: |-
       - op: replace
         path: /spec/ref/branch
-        value: monster
+        value: holland-stuff
   - target:   # Turn the normal GitOps off for now -> We can enable it for the demo, but it will create race conditions otherwise...
       group: kustomize.toolkit.fluxcd.io
       version: v1
       kind: Kustomization
-      name: demo
+      name: demo-podinfos
     patch : |-
       - op: replace
         path: /spec/suspend

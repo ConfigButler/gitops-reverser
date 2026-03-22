@@ -1,0 +1,48 @@
+apiVersion: examples.configbutler.ai/v1alpha1
+kind: QuizSession
+metadata:
+  name: demo
+  namespace: vote
+spec:
+  title: KubeCon 2026 Demo
+  state: live
+  questions:
+    - id: q1
+      type: singleChoice
+      title: What best describes your role?
+      required: true
+      choices:
+        - Software engineer
+        - Platform engineer
+        - SRE / Ops
+        - Other
+
+    - id: q2
+      type: singleChoice
+      title: What do you trust more?
+      required: true
+      choices:
+        - Git
+        - API
+        - Both
+        - Neither
+
+    - id: q3
+      type: singleChoice
+      title: Would you try something like this?
+      required: true
+      choices:
+        - "Yes"
+        - Maybe
+        - Only in dev
+        - "No"
+
+    - id: q4
+      type: singleChoice
+      title: What is your mood right now?
+      required: true
+      choices:
+        - Curious
+        - Excited
+        - Skeptical
+        - Confused

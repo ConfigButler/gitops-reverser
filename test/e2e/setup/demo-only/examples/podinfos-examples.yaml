@@ -1,0 +1,32 @@
+apiVersion: kro.run/v1alpha1
+kind: PodInfoApp
+metadata:
+  name: fiets
+  namespace: podinfos-intent
+spec:
+  replicas: 1
+  message: The Dutch word for bicycle is "fiets". We have a lot of them. 🚲
+  color: "#115711"
+  logoURL: https://demo.configbutler.ai/podinfo-assets/podinfos-fiets.jpg
+---
+apiVersion: kro.run/v1alpha1
+kind: PodInfoApp
+metadata:
+  name: gevel
+  namespace: podinfos-intent
+spec:
+  replicas: 1
+  message: Amsterdam is full of beautiful narrow facades, called "gevels". 🏠
+  color: "#8B5E3C"
+  logoURL: https://demo.configbutler.ai/podinfo-assets/podinfos-begijnhof.jpg
+---
+apiVersion: kro.run/v1alpha1
+kind: PodInfoApp
+metadata:
+  name: paal
+  namespace: podinfos-intent
+spec:
+  replicas: 1
+  message: These iconic Amsterdam bollards are called "Amsterdammertjes". They are everywhere. 🚧
+  color: "#C1272D"
+  logoURL: https://demo.configbutler.ai/podinfo-assets/podinfos-xxx.jpg
