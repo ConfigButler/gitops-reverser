@@ -231,52 +231,9 @@ func (r *demoRun) verifyResourcesReady() {
 
 func (r *demoRun) seedRepository() {
 	value := strconv.FormatInt(time.Now().UnixNano(), 10)
-
 	r.patchClusterResource(
 		"namespace",
 		demoNamespace,
-		fmt.Sprintf(`{"metadata":{"annotations":{"configbutler.ai/demo-prepared-at":"%s"}}}`, value),
-	)
-
-	r.patchNamespacedResource(
-		"gitprovider",
-		r.providerName,
-		fmt.Sprintf(`{"metadata":{"annotations":{"configbutler.ai/demo-prepared-at":"%s"}}}`, value),
-	)
-	r.patchNamespacedResource(
-		"gittarget",
-		r.targetName,
-		fmt.Sprintf(`{"metadata":{"annotations":{"configbutler.ai/demo-prepared-at":"%s"}}}`, value),
-	)
-	r.patchNamespacedResource(
-		"watchrule",
-		r.watchRuleName,
-		fmt.Sprintf(`{"metadata":{"annotations":{"configbutler.ai/demo-prepared-at":"%s"}}}`, value),
-	)
-	r.patchClusterResource(
-		"clusterwatchrule",
-		r.clusterWatchRuleName,
-		fmt.Sprintf(`{"metadata":{"annotations":{"configbutler.ai/demo-prepared-at":"%s"}}}`, value),
-	)
-
-	r.patchNamespacedResource(
-		"deployment",
-		"vote-frontend",
-		fmt.Sprintf(`{"metadata":{"annotations":{"configbutler.ai/demo-prepared-at":"%s"}}}`, value),
-	)
-	r.patchNamespacedResource(
-		"service",
-		"vote-frontend",
-		fmt.Sprintf(`{"metadata":{"annotations":{"configbutler.ai/demo-prepared-at":"%s"}}}`, value),
-	)
-	r.patchNamespacedResource(
-		"ingressroute",
-		"frontend-static",
-		fmt.Sprintf(`{"metadata":{"annotations":{"configbutler.ai/demo-prepared-at":"%s"}}}`, value),
-	)
-	r.patchNamespacedResource(
-		"quizsession",
-		"kubecon-2026",
 		fmt.Sprintf(`{"metadata":{"annotations":{"configbutler.ai/demo-prepared-at":"%s"}}}`, value),
 	)
 }
@@ -292,20 +249,6 @@ func (r *demoRun) patchClusterResource(resource, name, patch string) {
 		patch,
 	)
 	Expect(err).NotTo(HaveOccurred(), fmt.Sprintf("failed to patch cluster resource %s/%s", resource, name))
-}
-
-func (r *demoRun) patchNamespacedResource(resource, name, patch string) {
-	_, err := kubectlRunInNamespace(
-		demoNamespace,
-		"patch",
-		resource,
-		name,
-		"--type",
-		"merge",
-		"--patch",
-		patch,
-	)
-	Expect(err).NotTo(HaveOccurred(), fmt.Sprintf("failed to patch namespaced resource %s/%s", resource, name))
 }
 
 func (r *demoRun) verifyRepositorySeeded() {
