@@ -24,6 +24,14 @@ in [ConfigButler/example-audit](https://github.com/ConfigButler/example-audit).
 The broader pattern behind this project is described at [reversegitops.dev](https://reversegitops.dev).
 This repo contains a concrete operator that is implementing this.
 
+## Kubecon Adam -> I would love your feedback!
+
+I am at Kubecon Amsterdam 2026:
+
+* Feel free to [book a meeting](https://calendar.app.google/FgYaoZog1dFpRG9Z7) to share your thoughts.
+* Take a look at the [manifesto](https://reversegitops.dev/) ⭐ or the [concrete open source implemention](https://github.com/ConfigButler/gitops-reverser) ⭐.
+* Let me know what you think, I'm on [LinkedIn](https://www.linkedin.com/in/simonkoudijs/).
+
 ## Why
 
 Today teams often choose between workflows:
@@ -46,7 +54,7 @@ GitOps Reverser bridges that gap: write to the Kubernetes API, and let the opera
 
 🚨 Early stage software. CRDs and behavior may change, and it is not recommended for production yet.
 
-- Single pod only today (`replicas=1`); multi-pod/HA is not supported yet.
+- Single pod only today (`replicas=1`); multi-pod/HA is not (yet!) supported yet.
 - Runtime behavior is deterministic. The operator does not use AI or heuristics at runtime.
 - Current roadmap includes signed commits, HA support, and more edge-case hardening.
 
