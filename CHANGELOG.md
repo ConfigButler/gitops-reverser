@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.19.3](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.19.2...gitops-reverser-v0.19.3) (2026-03-23)
+
+
+### Bug Fixes
+
+* Have working printcolumns ([eca9ae8](https://github.com/ConfigButler/gitops-reverser/commit/eca9ae8cc448b0682e1c484feb8d969abc581600))
+* Preventing reconcile code from ignoring ns boundary ([d3b0ecf](https://github.com/ConfigButler/gitops-reverser/commit/d3b0ecf9670ef5caefd6fcf2dfe601efd26542a9))
+
 ## [0.19.2](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.19.1...gitops-reverser-v0.19.2) (2026-03-16)
 
 
