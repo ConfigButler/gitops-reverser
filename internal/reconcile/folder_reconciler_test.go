@@ -354,6 +354,41 @@ func TestFolderReconciler_EmitsSingleBatch(t *testing.T) {
 	assert.Contains(t, batch.CommitMessage, "reconcile: sync 3 resources")
 }
 
+func TestFolderReconciler_ResetStateRequiresFreshRepoAndClusterSnapshots(t *testing.T) {
+	mockEmitter := &MockReconcileEmitter{}
+	mockControlEmitter := &MockControlEventEmitter{}
+	gitDest := types.NewResourceReference("test-gitdest", "default")
+	reconciler := NewFolderReconciler(gitDest, mockEmitter, mockControlEmitter, log.Log)
+
+	initialResource := types.ResourceIdentifier{Group: "", Version: "v1", Resource: "configmaps", Name: "old"}
+	updatedResource := types.ResourceIdentifier{Group: "", Version: "v1", Resource: "configmaps", Name: "new"}
+
+	reconciler.OnClusterState(events.ClusterStateEvent{
+		GitDest:   gitDest,
+		Resources: []types.ResourceIdentifier{initialResource},
+	})
+	reconciler.OnRepoState(events.RepoStateEvent{
+		GitDest:   gitDest,
+		Resources: []types.ResourceIdentifier{initialResource},
+	})
+	assert.Len(t, mockEmitter.Batches, 1, "Initial snapshot should emit one batch")
+
+	reconciler.ResetState()
+	assert.False(t, reconciler.HasBothStates(), "ResetState should clear observed snapshot flags")
+
+	reconciler.OnRepoState(events.RepoStateEvent{
+		GitDest:   gitDest,
+		Resources: []types.ResourceIdentifier{updatedResource},
+	})
+	assert.Len(t, mockEmitter.Batches, 1, "Fresh repo state alone should not reconcile against stale cluster state")
+
+	reconciler.OnClusterState(events.ClusterStateEvent{
+		GitDest:   gitDest,
+		Resources: []types.ResourceIdentifier{updatedResource},
+	})
+	assert.Len(t, mockEmitter.Batches, 2, "Fresh cluster+repo snapshots should trigger the next batch")
+}
+
 // MockReconcileEmitter is a mock implementation of ReconcileEmitter for testing.
 type MockReconcileEmitter struct {
 	Batches []git.ReconcileBatch
