@@ -313,6 +313,7 @@ func (c *AuditConsumer) routeAuditEvent(
 	namespace := ref.Namespace
 	name := ref.Name
 	isClusterScoped := namespace == ""
+	op = effectiveAuditOperation(auditEvent, op)
 
 	wrRules := c.ruleStore.GetMatchingRules(nil, resourcePlural, op, apiGroup, apiVersion, isClusterScoped)
 	cwrRules := c.ruleStore.GetMatchingClusterRules(resourcePlural, op, apiGroup, apiVersion, isClusterScoped, nil)
@@ -474,6 +475,29 @@ func extractObject(
 	}
 
 	return sanitize.Sanitize(obj), nil
+}
+
+func effectiveAuditOperation(event auditv1.Event, op configv1alpha1.OperationType) configv1alpha1.OperationType {
+	if op == configv1alpha1.OperationDelete {
+		return op
+	}
+	if auditEventObjectMarkedForDeletion(event) {
+		return configv1alpha1.OperationDelete
+	}
+	return op
+}
+
+func auditEventObjectMarkedForDeletion(event auditv1.Event) bool {
+	if event.ResponseObject == nil || len(event.ResponseObject.Raw) == 0 {
+		return false
+	}
+
+	obj := &unstructured.Unstructured{}
+	if err := obj.UnmarshalJSON(event.ResponseObject.Raw); err != nil {
+		return false
+	}
+
+	return !obj.GetDeletionTimestamp().IsZero()
 }
 
 // verbToOperation maps a Kubernetes audit verb to a configv1alpha1.OperationType.

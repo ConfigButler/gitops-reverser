@@ -7,7 +7,7 @@ This document captures the current state of the webhook-audit ingestion pipeline
 1. what is now working
 2. how the effective event flow works
 3. where the implementation is still uneven or fragile
-4. how the Secret exception works today
+4. how Secret handling works today
 5. what better alternatives exist for Secret handling
 
 This document reflects the code and test state validated on 2026-04-08.
@@ -22,13 +22,13 @@ The system is now green again:
 - `make test-e2e-quickstart-manifest` passes
 - `make test-e2e-quickstart-helm` passes
 
-The webhook-audit migration is now functionally working, but the architecture is still a hybrid:
+The webhook-audit migration is now functionally working, but the architecture still has one important tradeoff:
 
-- audit is the authority for most live mutating events when audit Redis is enabled
+- audit is the authority for live mutating events when audit Redis is enabled
 - watch is still used for snapshot/reconcile behavior
-- Secrets are a deliberate exception and still use the watch path for live mutation handling
+- Secrets now also flow through the audit path, which means plaintext Secret payloads are persisted in Valkey before Git-side SOPS encryption
 
-That hybrid model is good enough to be correct and green, but it is still not as clean as a fully unified ingestion design.
+That model is operationally uniform for live events, but it accepts a larger security tradeoff in exchange for simpler behavior.
 
 ## What Was Broken
 
@@ -65,7 +65,7 @@ This turned out to be two separate problems stacked together:
 
 When `--audit-redis-enabled` is true:
 
-- live watch-path mutation routing is suppressed for all resources except `secrets`
+- live watch-path mutation routing is suppressed for all resources
 - audit consumer is the live mutation source of truth
 
 Implemented in:
@@ -76,7 +76,7 @@ Implemented in:
 
 ### Why this matters
 
-This removes the duplicate-source race for almost all resources:
+This removes the duplicate-source race for live-mutating resources:
 
 - no more watch-vs-audit race for ConfigMaps
 - no more watch-vs-audit race for CRDs
@@ -175,14 +175,15 @@ Watch informers still exist, but they do not route live mutating events for thes
 
 Effective live path:
 
-1. kube-apiserver audit policy drops Secret audit events
-2. no Secret event enters Redis / Valkey
-3. watch informer sees Secret create/update/delete
-4. watch path routes the live mutation
-5. Git write path applies SOPS encryption if configured
-6. encrypted Secret content is committed to Git
+1. kube-apiserver emits Secret audit event
+2. audit webhook receives it
+3. producer stores raw Secret audit payload in Redis / Valkey
+4. audit consumer reads the stream entry
+5. audit consumer routes the `git.Event`
+6. Git write path applies SOPS encryption if configured
+7. encrypted Secret content is committed to Git
 
-This is the one intentional live-path exception.
+There is no longer a Secret-specific live-path exception.
 
 ### Snapshot / reconcile path
 
@@ -195,7 +196,7 @@ Regardless of resource type, watch manager still performs cluster-state snapshot
 
 That snapshot flow is still watch-manager driven, not audit-consumer driven.
 
-## Why the Secret Exception Exists
+## Current Secret Tradeoff
 
 The short version is:
 
