@@ -1267,6 +1267,11 @@ func (m *Manager) emitSnapshotForRuleChange(ctx context.Context, log logr.Logger
 	targets := m.collectAffectedGitTargets()
 	log.Info("Emitting fresh repo and cluster state for affected GitTargets after rule change", "count", len(targets))
 	for _, gitDest := range targets {
+		if m.EventRouter != nil && m.EventRouter.ReconcilerManager != nil {
+			if reconciler, exists := m.EventRouter.ReconcilerManager.GetReconciler(gitDest); exists {
+				reconciler.ResetState()
+			}
+		}
 		if err := m.EventRouter.ProcessControlEvent(ctx, events.ControlEvent{
 			Type:    events.RequestRepoState,
 			GitDest: gitDest,

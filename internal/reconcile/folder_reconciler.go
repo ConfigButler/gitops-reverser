@@ -84,6 +84,8 @@ func NewFolderReconciler(
 
 // StartReconciliation initiates the reconciliation process by requesting state.
 func (r *FolderReconciler) StartReconciliation(_ context.Context) error {
+	r.ResetState()
+
 	r.logger.Info("Starting reconciliation")
 
 	// Emit control events to request both cluster and repo state
@@ -102,6 +104,16 @@ func (r *FolderReconciler) StartReconciliation(_ context.Context) error {
 	}
 
 	return nil
+}
+
+// ResetState clears any previously observed repo/cluster snapshots so the next
+// reconciliation cycle only runs on a fresh pair of state events.
+func (r *FolderReconciler) ResetState() {
+	r.clusterResources = nil
+	r.gitResources = nil
+	r.clusterObjects = nil
+	r.clusterStateSeen = false
+	r.gitStateSeen = false
 }
 
 // OnClusterState handles cluster state events and triggers reconciliation.

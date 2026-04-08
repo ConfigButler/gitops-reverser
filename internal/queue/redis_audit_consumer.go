@@ -32,6 +32,7 @@ import (
 	auditv1 "k8s.io/apiserver/pkg/apis/audit/v1"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 
 	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
@@ -488,12 +489,16 @@ func effectiveAuditOperation(event auditv1.Event, op configv1alpha1.OperationTyp
 }
 
 func auditEventObjectMarkedForDeletion(event auditv1.Event) bool {
-	if event.ResponseObject == nil || len(event.ResponseObject.Raw) == 0 {
+	return auditObjectMarkedForDeletion(event.ResponseObject) || auditObjectMarkedForDeletion(event.RequestObject)
+}
+
+func auditObjectMarkedForDeletion(rawObj *runtime.Unknown) bool {
+	if rawObj == nil || len(rawObj.Raw) == 0 {
 		return false
 	}
 
 	obj := &unstructured.Unstructured{}
-	if err := obj.UnmarshalJSON(event.ResponseObject.Raw); err != nil {
+	if err := obj.UnmarshalJSON(rawObj.Raw); err != nil {
 		return false
 	}
 

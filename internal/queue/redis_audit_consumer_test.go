@@ -260,6 +260,147 @@ func TestEffectiveAuditOperation_TerminatingUpdateBecomesDelete(t *testing.T) {
 	assert.Equal(t, configv1alpha1.OperationDelete, got)
 }
 
+func TestEffectiveAuditOperation_TerminatingRequestObjectBecomesDelete(t *testing.T) {
+	requestObject := []byte(`{
+  "kind": "CustomResourceDefinition",
+  "apiVersion": "apiextensions.k8s.io/v1",
+  "metadata": {
+    "name": "icecreamorders.shop.example.com",
+    "uid": "c812c2be-b7a1-4062-9d4b-1238c53ed81b",
+    "resourceVersion": "2775",
+    "generation": 1,
+    "creationTimestamp": "2026-04-08T19:04:29Z",
+    "deletionTimestamp": "2026-04-08T19:04:57Z",
+    "finalizers": [
+      "customresourcecleanup.apiextensions.k8s.io"
+    ]
+  },
+  "status": {
+    "conditions": [
+      {
+        "type": "NamesAccepted",
+        "status": "True",
+        "lastTransitionTime": "2026-04-08T19:04:29Z",
+        "reason": "NoConflicts",
+        "message": "no conflicts found"
+      },
+      {
+        "type": "Established",
+        "status": "True",
+        "lastTransitionTime": "2026-04-08T19:04:29Z",
+        "reason": "InitialNamesAccepted",
+        "message": "the initial names have been accepted"
+      },
+      {
+        "type": "Terminating",
+        "status": "True",
+        "lastTransitionTime": "2026-04-08T19:04:57Z",
+        "reason": "InstanceDeletionInProgress",
+        "message": "CustomResource deletion is in progress"
+      }
+    ],
+    "acceptedNames": {
+      "plural": "icecreamorders",
+      "singular": "icecreamorder",
+      "shortNames": [
+        "ico"
+      ],
+      "kind": "IceCreamOrder",
+      "listKind": "IceCreamOrderList"
+    },
+    "storedVersions": [
+      "v1"
+    ]
+  }
+}`)
+	responseObject := []byte(`{
+  "kind": "Status",
+  "apiVersion": "v1",
+  "metadata": {},
+  "status": "Failure",
+  "message": "customresourcedefinitions.apiextensions.k8s.io \"icecreamorders.shop.example.com\" not found",
+  "reason": "NotFound",
+  "details": {
+    "name": "icecreamorders.shop.example.com",
+    "group": "apiextensions.k8s.io",
+    "kind": "customresourcedefinitions"
+  },
+  "code": 404
+}`)
+
+	ev := auditv1.Event{
+		RequestObject:  &runtime.Unknown{Raw: requestObject},
+		ResponseObject: &runtime.Unknown{Raw: responseObject},
+	}
+
+	got := effectiveAuditOperation(ev, configv1alpha1.OperationUpdate)
+	assert.Equal(t, configv1alpha1.OperationDelete, got)
+}
+
+func TestExtractObject_TerminatingRequestObjectUsedAfterDeleteCoercion(t *testing.T) {
+	requestObject := []byte(`{
+  "kind": "CustomResourceDefinition",
+  "apiVersion": "apiextensions.k8s.io/v1",
+  "metadata": {
+    "name": "icecreamorders.shop.example.com",
+    "uid": "c812c2be-b7a1-4062-9d4b-1238c53ed81b",
+    "resourceVersion": "2775",
+    "generation": 1,
+    "creationTimestamp": "2026-04-08T19:04:29Z",
+    "deletionTimestamp": "2026-04-08T19:04:57Z",
+    "finalizers": [
+      "customresourcecleanup.apiextensions.k8s.io"
+    ]
+  },
+  "status": {
+    "conditions": [
+      {
+        "type": "Terminating",
+        "status": "True",
+        "lastTransitionTime": "2026-04-08T19:04:57Z",
+        "reason": "InstanceDeletionInProgress",
+        "message": "CustomResource deletion is in progress"
+      }
+    ]
+  }
+}`)
+	responseObject := []byte(`{
+  "kind": "Status",
+  "apiVersion": "v1",
+  "metadata": {},
+  "status": "Failure",
+  "message": "customresourcedefinitions.apiextensions.k8s.io \"icecreamorders.shop.example.com\" not found",
+  "reason": "NotFound",
+  "details": {
+    "name": "icecreamorders.shop.example.com",
+    "group": "apiextensions.k8s.io",
+    "kind": "customresourcedefinitions"
+  },
+  "code": 404
+}`)
+
+	ev := auditv1.Event{
+		RequestObject:  &runtime.Unknown{Raw: requestObject},
+		ResponseObject: &runtime.Unknown{Raw: responseObject},
+	}
+
+	op := effectiveAuditOperation(ev, configv1alpha1.OperationUpdate)
+	require.Equal(t, configv1alpha1.OperationDelete, op)
+
+	got, err := extractObject(
+		ev,
+		op,
+		"apiextensions.k8s.io/v1",
+		"customresourcedefinitions",
+		"",
+		"icecreamorders.shop.example.com",
+	)
+	require.NoError(t, err)
+	assert.Equal(t, "icecreamorders.shop.example.com", got.GetName())
+	assert.Equal(t, "apiextensions.k8s.io/v1", got.GetAPIVersion())
+	assert.Equal(t, "CustomResourceDefinition", got.GetKind())
+}
+
 func TestEffectiveAuditOperation_NonTerminatingUpdateStaysUpdate(t *testing.T) {
 	obj := &unstructured.Unstructured{}
 	obj.SetAPIVersion("v1")
