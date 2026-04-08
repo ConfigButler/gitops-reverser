@@ -12,9 +12,9 @@
 GitOps Reverser is a Kubernetes operator that turns live Kubernetes API activity into clean, versioned YAML in Git.
 It gives API-first teams a Git audit trail and a deployable repo without forcing every change through Git first.
 
-> [!IMPORTANT]
-> Speaking at KubeCon: the Reverse GitOps pattern and this project will be presented on
-> [March 23, 2026 at 15:55 in Amsterdam](https://sched.co/2DY82).
+The current setup depends on wiring a kube-apiserver audit webhook. That usually requires deep cluster
+access and works best on clusters you control, including custom platforms such as `k3s`, `k3d`, Talos,
+and Kamaji. Some managed Kubernetes platforms do not expose enough control to make this work cleanly.
 
 <div align="center"><img src="docs/demo/demo.gif" alt="GitOps Reverser Demo" width="100%"></div>
 
@@ -22,15 +22,7 @@ Want proof? See this [example commit](https://github.com/ConfigButler/example-au
 in [ConfigButler/example-audit](https://github.com/ConfigButler/example-audit).
 
 The broader pattern behind this project is described at [reversegitops.dev](https://reversegitops.dev).
-This repo contains a concrete operator that is implementing this.
-
-## Kubecon Adam -> I would love your feedback!
-
-I am at Kubecon Amsterdam 2026:
-
-* Feel free to [book a meeting](https://calendar.app.google/FgYaoZog1dFpRG9Z7) to share your thoughts.
-* Take a look at the [manifesto](https://reversegitops.dev/) ⭐ or the [concrete open source implemention](https://github.com/ConfigButler/gitops-reverser) ⭐.
-* Let me know what you think, I'm on [LinkedIn](https://www.linkedin.com/in/simonkoudijs/).
+This repo contains a concrete operator implementing that approach.
 
 ## Why
 
@@ -50,13 +42,16 @@ GitOps Reverser bridges that gap: write to the Kubernetes API, and let the opera
 - Queue and batch writes safely.
 - Commit and push the result to Git with useful metadata (username and e-mail that made the change).
 
+For some teams, a future watch-stream-only mode without author attribution may be useful on platforms where
+the audit webhook path is not practical. That is not the current mode of operation.
+
 ## Status
 
 🚨 Early stage software. CRDs and behavior may change, and it is not recommended for production yet.
 
 - Single pod only today (`replicas=1`); multi-pod/HA is not (yet!) supported yet.
 - Runtime behavior is deterministic. The operator does not use AI or heuristics at runtime.
-- Current roadmap includes signed commits, HA support, and more edge-case hardening.
+- Current roadmap includes HA support and more edge-case hardening.
 
 ## Recommended usage
 
@@ -94,6 +89,13 @@ Prerequisites:
 - A Kubernetes cluster with `kubectl` configured
 - `cert-manager` for webhook certificates
 - A Git repository with write access
+
+Notes:
+
+- The current setup depends on configuring a kube-apiserver audit webhook.
+- This usually requires deep cluster access and generally fits clusters you control yourself, including `k3s`,
+  `k3d`, Talos, and Kamaji.
+- Some managed Kubernetes platforms are more restrictive here and may block or complicate this mode.
 
 Install `cert-manager` if needed:
 
