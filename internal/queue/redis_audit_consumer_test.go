@@ -581,6 +581,38 @@ func TestProcessMessage_ClusterWatchRuleRoutesAndACKs(t *testing.T) {
 	assertNoPendingMessages(t, mr)
 }
 
+func TestProcessMessage_CustomResourceUsesObjectRefAPIGroup(t *testing.T) {
+	mr := miniredis.RunT(t)
+	er := &fakeEventRouter{}
+
+	rs := rulestore.NewStore()
+	rs.AddOrUpdateWatchRule(
+		makeWatchRule("rule-cr", []string{"icecreamorders"}, []string{"v1"}, []string{"shop.example.com"}),
+		"my-target", "default",
+		"my-provider", "default",
+		"main", "live/",
+	)
+
+	c := newTestConsumer(t, mr, rs, er)
+	require.NoError(t, c.ensureConsumerGroup(context.Background()))
+
+	ev := makeAuditEvent("create", auditv1.StageResponseComplete, "icecreamorders", "default", "order-1")
+	ev.ObjectRef.APIGroup = "shop.example.com"
+	ev.ObjectRef.APIVersion = "v1"
+	pushAuditMessage(t, mr, ev)
+
+	require.NoError(t, c.readAndProcessBatch(context.Background()))
+
+	require.Len(t, er.calls, 1)
+	assert.Equal(t, "shop.example.com", er.calls[0].Event.Identifier.Group)
+	assert.Equal(t, "v1", er.calls[0].Event.Identifier.Version)
+	assert.Equal(t, "icecreamorders", er.calls[0].Event.Identifier.Resource)
+	assert.Equal(t, "default", er.calls[0].Event.Identifier.Namespace)
+	assert.Equal(t, "order-1", er.calls[0].Event.Identifier.Name)
+	assert.Equal(t, "live/", er.calls[0].Event.Path)
+	assertNoPendingMessages(t, mr)
+}
+
 func TestRouteTMatchedRules_PartialRouteFailureStillACKs(t *testing.T) {
 	mr := miniredis.RunT(t)
 	er := &fakeEventRouter{
@@ -720,6 +752,46 @@ func TestReadAndProcessBatch_XReadGroupErrorReturnsError(t *testing.T) {
 
 	err = c.readAndProcessBatch(context.Background())
 	require.Error(t, err)
+}
+
+func TestReadAndProcessBatch_RecreatesGroupOnNoGroup(t *testing.T) {
+	mr := miniredis.RunT(t)
+	er := &fakeEventRouter{}
+	c := newTestConsumer(t, mr, rulestore.NewStore(), er)
+	require.NoError(t, c.ensureConsumerGroup(context.Background()))
+
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer client.Close()
+
+	err := client.Del(context.Background(), "test-stream").Err()
+	require.NoError(t, err)
+
+	err = c.readAndProcessBatch(context.Background())
+	require.NoError(t, err)
+
+	groups, err := client.XInfoGroups(context.Background(), "test-stream").Result()
+	require.NoError(t, err)
+	require.Len(t, groups, 1)
+	assert.Equal(t, "test-group", groups[0].Name)
+}
+
+func TestRunAutoClaimCycle_RecreatesGroupOnNoGroup(t *testing.T) {
+	mr := miniredis.RunT(t)
+	c := newTestConsumer(t, mr, rulestore.NewStore(), &fakeEventRouter{})
+	require.NoError(t, c.ensureConsumerGroup(context.Background()))
+
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer client.Close()
+
+	err := client.Del(context.Background(), "test-stream").Err()
+	require.NoError(t, err)
+
+	c.runAutoClaimCycle(context.Background())
+
+	groups, err := client.XInfoGroups(context.Background(), "test-stream").Result()
+	require.NoError(t, err)
+	require.Len(t, groups, 1)
+	assert.Equal(t, "test-group", groups[0].Name)
 }
 
 func assertNoPendingMessages(t *testing.T, mr *miniredis.Miniredis) {

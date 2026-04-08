@@ -62,6 +62,9 @@ type Manager struct {
 	RuleStore *rulestore.RuleStore
 	// EventRouter dispatches events to branch workers (replaces EventQueue).
 	EventRouter *EventRouter
+	// AuditLiveEventsEnabled makes the audit pipeline authoritative for live mutating events.
+	// Watchers still support discovery and snapshot/reconcile flows.
+	AuditLiveEventsEnabled bool
 	// Deduplication: tracks last seen content hash per resource to skip status-only changes
 	lastSeenMu   sync.RWMutex
 	lastSeenHash map[string]uint64 // resourceKey → content hash (key uses types.ResourceIdentifier.Key)
@@ -1253,17 +1256,23 @@ func (m *Manager) beginReconciliationForAffectedTargets(log logr.Logger) {
 	}
 }
 
-// emitSnapshotForRuleChange emits RequestClusterState for every affected GitTarget so
-// that a single "reconcile: sync N resources" commit is produced instead of N individual
-// [CREATE] commits from informer ADDED events.
+// emitSnapshotForRuleChange emits fresh repo and cluster state requests for every affected
+// GitTarget so FolderReconciler diffs against current repository contents rather than a
+// stale cached repo snapshot from an earlier reconcile.
 func (m *Manager) emitSnapshotForRuleChange(ctx context.Context, log logr.Logger) {
 	if m.EventRouter == nil {
-		log.Info("EventRouter not set, skipping RequestClusterState emission")
+		log.Info("EventRouter not set, skipping snapshot emission")
 		return
 	}
 	targets := m.collectAffectedGitTargets()
-	log.Info("Emitting RequestClusterState for affected GitTargets after rule change", "count", len(targets))
+	log.Info("Emitting fresh repo and cluster state for affected GitTargets after rule change", "count", len(targets))
 	for _, gitDest := range targets {
+		if err := m.EventRouter.ProcessControlEvent(ctx, events.ControlEvent{
+			Type:    events.RequestRepoState,
+			GitDest: gitDest,
+		}); err != nil {
+			log.Error(err, "failed to emit RequestRepoState for rule change", "gitDest", gitDest)
+		}
 		if err := m.EventRouter.ProcessControlEvent(ctx, events.ControlEvent{
 			Type:    events.RequestClusterState,
 			GitDest: gitDest,

@@ -65,12 +65,8 @@ var _ = Describe("Audit Redis Queue", Label("audit-redis"), Ordered, func() {
 			g.Expect(client.Ping(context.Background()).Err()).NotTo(HaveOccurred())
 		}, 30*time.Second, 2*time.Second).Should(Succeed())
 
-		By("clearing the dedicated stream for deterministic assertions")
-		_, err := client.Del(context.Background(), streamName).Result()
-		Expect(err).NotTo(HaveOccurred())
-
 		By("triggering kube-apiserver audit events with a ConfigMap create/update")
-		_, err = kubectlRunInNamespace(
+		_, err := kubectlRunInNamespace(
 			testNs,
 			"delete",
 			"configmap",
@@ -253,6 +249,13 @@ var _ = Describe("Audit Redis Consumer", Label("audit-redis"), Ordered, func() {
 			g.Expect(statErr).NotTo(HaveOccurred(),
 				fmt.Sprintf("ConfigMap file should exist at %s", expectedFile))
 			g.Expect(info.Size()).To(BeNumerically(">", 0))
+
+			authorCmd := exec.Command("git", "log", "-1", "--pretty=%an")
+			authorCmd.Dir = gitCheckout
+			authorOut, authorErr := authorCmd.CombinedOutput()
+			g.Expect(authorErr).NotTo(HaveOccurred(),
+				fmt.Sprintf("git log author failed: %s", string(authorOut)))
+			g.Expect(string(authorOut)).To(ContainSubstring("system:admin"))
 		}, 3*time.Minute, 3*time.Second).Should(Succeed())
 
 		By("cleaning up test ConfigMap")

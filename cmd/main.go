@@ -132,10 +132,11 @@ func main() {
 
 	// Watch ingestion manager (placeholder, will get EventRouter set later)
 	watchMgr := &watch.Manager{
-		Client:      mgr.GetClient(),
-		Log:         ctrl.Log.WithName("watch"),
-		RuleStore:   ruleStore,
-		EventRouter: nil, // Will be set below
+		Client:                 mgr.GetClient(),
+		Log:                    ctrl.Log.WithName("watch"),
+		RuleStore:              ruleStore,
+		EventRouter:            nil, // Will be set below
+		AuditLiveEventsEnabled: cfg.auditRedisEnabled,
 	}
 
 	// Initialize EventRouter with all dependencies

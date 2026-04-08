@@ -58,7 +58,7 @@ func (m *Manager) addHandlers(inf cache.SharedIndexInformer, g GVR) {
 }
 
 // handleEvent converts an informer object to Unstructured, matches rules, sanitizes,
-// enriches with correlation username, and enqueues commit events.
+// and enqueues commit events unless audit is authoritative for live mutations.
 // Implements deduplication to skip status-only changes.
 func (m *Manager) handleEvent(obj interface{}, g GVR, op configv1alpha1.OperationType) {
 	u := toUnstructuredFromInformer(obj)
@@ -108,6 +108,17 @@ func (m *Manager) handleEvent(obj interface{}, g GVR, op configv1alpha1.Operatio
 	if enqueueCount > 0 {
 		telemetry.EventsProcessedTotal.Add(ctx, enqueueCount)
 		telemetry.GitCommitQueueSize.Add(ctx, enqueueCount)
+	}
+
+	if m.AuditLiveEventsEnabled && g.Resource != "secrets" {
+		m.Log.V(1).Info("Skipping live watch event routing because audit stream is authoritative",
+			"identifier", id.String(),
+			"operation", op,
+			"scope", g.Scope,
+			"resource", g.Resource,
+			"watchRuleMatches", len(wrRules),
+			"clusterWatchRuleMatches", len(cwrRules))
+		return
 	}
 
 	m.routeWatchRules(wrRules, sanitized, id, string(op), userInfo)

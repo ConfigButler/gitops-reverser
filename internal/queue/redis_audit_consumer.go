@@ -207,6 +207,12 @@ func (c *AuditConsumer) readAndProcessBatch(ctx context.Context) error {
 		return nil
 	}
 	if err != nil {
+		if isNoGroupErr(err) {
+			if ensureErr := c.ensureConsumerGroup(ctx); ensureErr != nil {
+				return fmt.Errorf("XREADGROUP failed with NOGROUP and group recreation failed: %w", ensureErr)
+			}
+			return nil
+		}
 		return fmt.Errorf("XREADGROUP failed: %w", err)
 	}
 
@@ -233,6 +239,13 @@ func (c *AuditConsumer) runAutoClaimCycle(ctx context.Context) {
 		}).Result()
 
 		if err != nil {
+			if isNoGroupErr(err) {
+				if ensureErr := c.ensureConsumerGroup(ctx); ensureErr != nil {
+					c.log.Error(ensureErr, "XAUTOCLAIM failed with NOGROUP and group recreation failed")
+					return
+				}
+				return
+			}
 			c.log.Error(err, "XAUTOCLAIM failed")
 			return
 		}
@@ -295,7 +308,7 @@ func (c *AuditConsumer) routeAuditEvent(
 	clusterID string,
 ) error {
 	ref := auditEvent.ObjectRef
-	apiGroup, apiVersion := splitAPIVersion(ref.APIVersion)
+	apiGroup, apiVersion := objectRefGroupVersion(ref)
 	resourcePlural := ref.Resource
 	namespace := ref.Namespace
 	name := ref.Name
@@ -308,7 +321,12 @@ func (c *AuditConsumer) routeAuditEvent(
 		return nil
 	}
 
-	sanitized, err := extractObject(auditEvent, op, ref.APIVersion, ref.Resource, namespace, name)
+	fullAPIVersion := apiVersion
+	if apiGroup != "" {
+		fullAPIVersion = apiGroup + "/" + apiVersion
+	}
+
+	sanitized, err := extractObject(auditEvent, op, fullAPIVersion, ref.Resource, namespace, name)
 	if err != nil {
 		return fmt.Errorf("extracting object for %s/%s: %w", namespace, name, err)
 	}
@@ -483,6 +501,19 @@ func splitAPIVersion(apiVersion string) (string, string) {
 	return group, version
 }
 
+func objectRefGroupVersion(ref *auditv1.ObjectReference) (string, string) {
+	if ref == nil {
+		return "", ""
+	}
+
+	group, version := splitAPIVersion(ref.APIVersion)
+	if group != "" {
+		return group, version
+	}
+
+	return ref.APIGroup, version
+}
+
 // stringField safely reads a string value from a stream entry's Values map.
 func stringField(values map[string]interface{}, key string) string {
 	v, ok := values[key]
@@ -503,4 +534,8 @@ func stringField(values map[string]interface{}, key string) string {
 // group already exists (BUSYGROUP).
 func isAlreadyExistsErr(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "BUSYGROUP")
+}
+
+func isNoGroupErr(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "NOGROUP")
 }
