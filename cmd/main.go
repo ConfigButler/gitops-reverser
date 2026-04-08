@@ -46,11 +46,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
-	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	configbutleraiv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 	"github.com/ConfigButler/gitops-reverser/internal/controller"
-	"github.com/ConfigButler/gitops-reverser/internal/correlation"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/queue"
 	"github.com/ConfigButler/gitops-reverser/internal/reconcile"
@@ -67,9 +65,6 @@ var (
 )
 
 const (
-	// Correlation store configuration.
-	correlationMaxEntries       = 10000
-	correlationTTL              = 5 * time.Minute
 	flagParseFailureExitCode    = 2
 	defaultAuditPort            = 9444
 	defaultAuditMaxBodyBytes    = int64(10 * 1024 * 1024)
@@ -128,15 +123,6 @@ func main() {
 	fatalIfErr(mgr.Add(workerManager), "unable to add worker manager to manager")
 	setupLog.Info("WorkerManager initialized and added to manager")
 
-	// Initialize correlation store for webhook→watch enrichment
-	correlationStore := correlation.NewStore(correlationTTL, correlationMaxEntries)
-	correlationStore.SetEvictionCallback(func() {
-		telemetry.KVEvictionsTotal.Add(context.Background(), 1)
-	})
-	setupLog.Info("Correlation store initialized",
-		"ttl", correlationTTL,
-		"maxEntries", correlationMaxEntries)
-
 	// Create ReconcilerManager (will be set up as ControlEventEmitter)
 	reconcilerManager := reconcile.NewReconcilerManager(
 		nil, // eventRouter will be set after EventRouter is created
@@ -146,11 +132,10 @@ func main() {
 
 	// Watch ingestion manager (placeholder, will get EventRouter set later)
 	watchMgr := &watch.Manager{
-		Client:           mgr.GetClient(),
-		Log:              ctrl.Log.WithName("watch"),
-		RuleStore:        ruleStore,
-		EventRouter:      nil, // Will be set below
-		CorrelationStore: correlationStore,
+		Client:      mgr.GetClient(),
+		Log:         ctrl.Log.WithName("watch"),
+		RuleStore:   ruleStore,
+		EventRouter: nil, // Will be set below
 	}
 
 	// Initialize EventRouter with all dependencies
@@ -183,22 +168,6 @@ func main() {
 		WatchManager: watchMgr,
 	}).SetupWithManager(mgr), "unable to create controller", "controller", "ClusterWatchRule")
 
-	// Webhook handler (correlation storage only - stores ALL resources, watch filters by rules)
-	eventHandler := &webhookhandler.EventHandler{
-		Client:           mgr.GetClient(),
-		CorrelationStore: correlationStore,
-	}
-
-	// Create and inject decoder for generic Kubernetes resource handling
-	decoder := admission.NewDecoder(scheme)
-	fatalIfErr(eventHandler.InjectDecoder(&decoder), "unable to inject decoder into webhook handler")
-	setupLog.Info("Generic unstructured decoder injected - ready to handle all Kubernetes resource types")
-
-	// Register event correlation webhook
-	validatingWebhook := &admission.Webhook{Handler: eventHandler}
-	mgr.GetWebhookServer().Register("/process-validating-webhook", validatingWebhook)
-	setupLog.Info("Event correlation webhook handler registered", "path", "/process-validating-webhook")
-
 	// Register GitTarget validator webhook (prevents duplicate targets)
 	fatalIfErr(webhookhandler.SetupGitTargetValidatorWebhook(mgr),
 		"unable to setup GitTarget validator webhook")
@@ -222,6 +191,33 @@ func main() {
 			"stream", cfg.auditRedisStream,
 			"db", cfg.auditRedisDB,
 			"tls-enabled", cfg.auditRedisTLS)
+
+		// Register the audit stream consumer. It shares the same Redis config as the
+		// producer but uses a dedicated consumer group and ID (pod-name-scoped so that
+		// multiple replicas do not share a consumer identity).
+		consumerID := os.Getenv("POD_NAME")
+		if consumerID == "" {
+			consumerID = "gitopsreverser-consumer-0"
+		}
+		auditConsumer, consumerErr := queue.NewAuditConsumer(
+			queue.AuditConsumerConfig{
+				Addr:       cfg.auditRedisAddr,
+				Username:   cfg.auditRedisUsername,
+				AuthValue:  cfg.auditRedisPassword,
+				DB:         cfg.auditRedisDB,
+				Stream:     cfg.auditRedisStream,
+				TLSEnabled: cfg.auditRedisTLS,
+				ConsumerID: consumerID,
+			},
+			ruleStore,
+			eventRouter,
+			ctrl.Log.WithName("audit-consumer"),
+		)
+		fatalIfErr(consumerErr, "unable to initialize audit stream consumer")
+		fatalIfErr(mgr.Add(auditConsumer), "unable to add audit stream consumer to manager")
+		setupLog.Info("Audit stream consumer registered",
+			"stream", cfg.auditRedisStream,
+			"consumer-id", consumerID)
 	}
 
 	auditHandler, err := webhookhandler.NewAuditHandler(webhookhandler.AuditHandlerConfig{

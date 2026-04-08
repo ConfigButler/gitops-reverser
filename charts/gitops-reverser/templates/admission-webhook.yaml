@@ -1,4 +1,3 @@
-{{- if  .Values.webhook.validating.enabled }}
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingWebhookConfiguration
 metadata:
@@ -17,32 +16,20 @@ webhooks:
       name: {{ include "gitops-reverser.fullname" . }}
       namespace: {{ .Release.Namespace }}
       port: {{ .Values.service.ports.admission }}
-      path: /process-validating-webhook
+      path: /validate-configbutler-ai-v1alpha1-gittarget
     {{- if not .Values.certificates.certManager.enabled }}
     caBundle: {{ .Values.webhook.caBundle | b64enc }}
     {{- end }}
-  failurePolicy: {{ .Values.webhook.validating.failurePolicy }}
-  name: gitops-reverser.configbutler.ai
+  failurePolicy: Fail
+  name: vgittarget.kb.io
   rules:
-  {{- range .Values.webhook.validating.rules }}
-  - operations: {{ .operations | toJson }}
-    apiGroups: {{ .apiGroups | toJson }}
-    apiVersions: {{ .apiVersions | toJson }}
-    resources: {{ .resources | toJson }}
-    {{- if .scope }}
-    scope: {{ .scope }}
-    {{- end }}
-  {{- end }}
-  sideEffects: {{ .Values.webhook.validating.sideEffects }}
-  {{- with .Values.webhook.validating.namespaceSelector }}
-  namespaceSelector:
-    {{- toYaml . | nindent 4 }}
-  {{- end }}
-  {{- with .Values.webhook.validating.objectSelector }}
-  objectSelector:
-    {{- toYaml . | nindent 4 }}
-  {{- end }}
-  {{- if .Values.webhook.validating.timeoutSeconds }}
-  timeoutSeconds: {{ .Values.webhook.validating.timeoutSeconds }}
-  {{- end }}
-{{- end }}
+  - apiGroups:
+    - configbutler.ai
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - gittargets
+  sideEffects: None

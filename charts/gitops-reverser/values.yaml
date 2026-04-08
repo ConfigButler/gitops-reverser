@@ -103,30 +103,9 @@ webhook:
   audit:
     # Set to true if you want to write events to /var/run/audit-dumps
     debugDumps: false
-
-  # Validating webhook configuration
-  validating:
-    enabled: true
-    failurePolicy: Ignore
-    sideEffects: None
-    admissionReviewVersions: ["v1", "v1beta1"]
-    # Rules for validating webhook (by default watching all resources)
-    rules:
-      - operations: ["CREATE", "UPDATE", "DELETE"]
-        apiGroups: ["*"]
-        apiVersions: ["*"]
-        resources: ["*"]
-    # Namespace selector for validating webhook
-    namespaceSelector:
-      matchExpressions:
-        - key: kubernetes.io/metadata.name
-          operator: NotIn
-          values:
-            - kube-system
-            - kube-public
-            - kube-node-lease
-    # Object selector for validating webhook
-    objectSelector: {}
+  # CA bundle used when cert-manager is disabled (base64-encoded PEM).
+  # Required only when certificates.certManager.enabled=false.
+  caBundle: ""
 
 # Durable audit queue configuration.
 queue:

@@ -65,14 +65,6 @@ var (
 	// RepoBranchQueueDepth is a gauge for per-repo-branch queue depth.
 	RepoBranchQueueDepth metric.Int64UpDownCounter
 
-	// WebhookCorrelationsTotal counts correlation entries created by webhook.
-	WebhookCorrelationsTotal metric.Int64Counter
-	// EnrichHitsTotal counts successful webhook→watch correlation enrichments.
-	EnrichHitsTotal metric.Int64Counter
-	// EnrichMissesTotal counts failed webhook→watch correlations (no match found).
-	EnrichMissesTotal metric.Int64Counter
-	// KVEvictionsTotal counts correlation store evictions (TTL or LRU).
-	KVEvictionsTotal metric.Int64Counter
 	// WatchDuplicatesSkippedTotal counts watch events skipped due to duplicate sanitized content.
 	WatchDuplicatesSkippedTotal metric.Int64Counter
 	// AuditEventsReceivedTotal counts audit events received from Kubernetes API server.
@@ -136,10 +128,6 @@ func InitOTLPExporter(_ context.Context) (func(context.Context) error, error) {
 		{"gitopsreverser_ownership_conflicts_total", &OwnershipConflictsTotal},
 		{"gitopsreverser_lease_acquire_failures_total", &LeaseAcquireFailuresTotal},
 		{"gitopsreverser_marker_conflicts_total", &MarkerConflictsTotal},
-		{"gitopsreverser_webhook_correlations_total", &WebhookCorrelationsTotal},
-		{"gitopsreverser_enrich_hits_total", &EnrichHitsTotal},
-		{"gitopsreverser_enrich_misses_total", &EnrichMissesTotal},
-		{"gitopsreverser_kv_evictions_total", &KVEvictionsTotal},
 		{"gitopsreverser_watch_duplicates_skipped_total", &WatchDuplicatesSkippedTotal},
 		{"gitopsreverser_audit_events_received_total", &AuditEventsReceivedTotal},
 		{"gitopsreverser_secret_encryption_attempts_total", &SecretEncryptionAttemptsTotal},

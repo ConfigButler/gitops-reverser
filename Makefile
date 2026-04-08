@@ -355,7 +355,11 @@ $(CS)/flux-setup.ready: $(FLUX_SETUP_READY_INPUTS) | $(CS)
 		helmreleases.helm.toolkit.fluxcd.io \
 		kustomizations.kustomize.toolkit.fluxcd.io
 	do
-		resources="$$(kubectl --context $(CTX) get $$kind --all-namespaces -o jsonpath='{range .items[*]}{.metadata.namespace}{" "}{.metadata.name}{"\n"}{end}' 2>/dev/null)"
+		if [ "$$kind" = "kustomizations.kustomize.toolkit.fluxcd.io" ]; then
+			resources="$$(kubectl --context $(CTX) get $$kind --all-namespaces -o custom-columns=NAMESPACE:.metadata.namespace,NAME:.metadata.name,SUSPEND:.spec.suspend --no-headers 2>/dev/null | awk '$$3 != "true" && $$1 != "podinfos-preview" && $$1 != "podinfos-production" && $$1 != "podinfos-intent" {print $$1 " " $$2}')"
+		else
+			resources="$$(kubectl --context $(CTX) get $$kind --all-namespaces -o jsonpath='{range .items[*]}{.metadata.namespace}{" "}{.metadata.name}{"\n"}{end}' 2>/dev/null)"
+		fi
 		[ -z "$$resources" ] && continue
 
 		resource_count="$$(printf '%s\n' "$$resources" | sed '/^$$/d' | wc -l | tr -d ' ')"

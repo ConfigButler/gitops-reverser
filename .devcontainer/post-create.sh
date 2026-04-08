@@ -39,39 +39,8 @@ if ! git config --global --get user.email >/dev/null 2>&1; then
   git config --global user.email "${git_email}"
 fi
 
-# Require SSH agent forwarding for signing.
-if [ -z "${SSH_AUTH_SOCK:-}" ]; then
-  fail "SSH agent not available in the devcontainer. Start ssh-agent on your machine, load your key with ssh-add, then reopen the devcontainer."
-fi
-
-agent_keys_file="$(mktemp)"
-trap 'rm -f "${agent_keys_file}"' EXIT
-
-if ! ssh-add -L >"${agent_keys_file}" 2>/dev/null; then
-  fail "Could not read SSH keys from agent. Make sure your key is loaded on your machine with ssh-add, then reopen the devcontainer."
-fi
-
-if ! grep -qE '^ssh-' "${agent_keys_file}"; then
-  fail "SSH agent is running but has no keys loaded. Run ssh-add ~/.ssh/id_ed25519 on your machine, then reopen the devcontainer."
-fi
-
-first_pubkey="$(head -n 1 "${agent_keys_file}")"
-
-# Enforce SSH commit signing.
-git config --global gpg.format ssh
-git config --global commit.gpgsign true
-
-mkdir -p /home/vscode/.config/git /home/vscode/.ssh
-printf '%s\n' "${first_pubkey}" > /home/vscode/.ssh/devcontainer_signing_key.pub
-chmod 600 /home/vscode/.ssh/devcontainer_signing_key.pub
-git config --global user.signingkey /home/vscode/.ssh/devcontainer_signing_key.pub
-
-# Useful for local verification output.
-printf '%s <%s> %s\n' "${git_name}" "${git_email}" "${first_pubkey}" > /home/vscode/.config/git/allowed_signers
-chmod 600 /home/vscode/.config/git/allowed_signers
-git config --global gpg.ssh.allowedSignersFile /home/vscode/.config/git/allowed_signers
-
-log "Git identity and SSH signing configured"
+log "Refreshing Git SSH signing configuration"
+bash "${workspace_dir}/.devcontainer/sync-signing-key.sh"
 
 log "Ensuring Go cache directories exist"
 sudo mkdir -p \
