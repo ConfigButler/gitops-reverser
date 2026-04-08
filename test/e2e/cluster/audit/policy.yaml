@@ -10,7 +10,7 @@ rules:
     resources:
     # CORE: Drop runtime noise
     - group: ""
-      resources: ["events", "endpoints", "nodes", "pods", "secrets", "bindings", "componentstatuses", "*/status"]
+      resources: ["events", "endpoints", "nodes", "pods", "bindings", "componentstatuses", "*/status"]
 
     # AUTH: Drop ephemeral checks
     - group: "authentication.k8s.io"

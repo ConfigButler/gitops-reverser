@@ -196,7 +196,7 @@ func TestHandleEvent_SkipsClusterScopedLiveRoutingWhenAuditLiveEventsEnabled(t *
 	}
 }
 
-func TestHandleEvent_AllowsSecretLiveRoutingWhenAuditLiveEventsEnabled(t *testing.T) {
+func TestHandleEvent_SkipsSecretLiveRoutingWhenAuditLiveEventsEnabled(t *testing.T) {
 	initWatchMetricsOnce.Do(func() {
 		_, _ = telemetry.InitOTLPExporter(context.Background())
 	})
@@ -261,7 +261,7 @@ func TestHandleEvent_AllowsSecretLiveRoutingWhenAuditLiveEventsEnabled(t *testin
 
 	manager.handleEvent(obj, GVR{Group: "", Version: "v1", Resource: "secrets"}, configv1alpha1.OperationCreate)
 
-	if len(enqueuer.events) != 1 {
-		t.Fatalf("expected secret live event to be enqueued, got %d", len(enqueuer.events))
+	if len(enqueuer.events) != 0 {
+		t.Fatalf("expected secret live event to be skipped, got %d", len(enqueuer.events))
 	}
 }

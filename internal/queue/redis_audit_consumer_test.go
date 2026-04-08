@@ -242,6 +242,41 @@ func TestExtractObject_InvalidJSON(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestEffectiveAuditOperation_TerminatingUpdateBecomesDelete(t *testing.T) {
+	obj := &unstructured.Unstructured{}
+	obj.SetAPIVersion("apiextensions.k8s.io/v1")
+	obj.SetKind("CustomResourceDefinition")
+	obj.SetName("icecreamorders.shop.example.com")
+	now := metav1.Now()
+	obj.SetDeletionTimestamp(&now)
+	raw, err := obj.MarshalJSON()
+	require.NoError(t, err)
+
+	ev := auditv1.Event{
+		ResponseObject: &runtime.Unknown{Raw: raw},
+	}
+
+	got := effectiveAuditOperation(ev, configv1alpha1.OperationUpdate)
+	assert.Equal(t, configv1alpha1.OperationDelete, got)
+}
+
+func TestEffectiveAuditOperation_NonTerminatingUpdateStaysUpdate(t *testing.T) {
+	obj := &unstructured.Unstructured{}
+	obj.SetAPIVersion("v1")
+	obj.SetKind("ConfigMap")
+	obj.SetNamespace("default")
+	obj.SetName("cm")
+	raw, err := obj.MarshalJSON()
+	require.NoError(t, err)
+
+	ev := auditv1.Event{
+		ResponseObject: &runtime.Unknown{Raw: raw},
+	}
+
+	got := effectiveAuditOperation(ev, configv1alpha1.OperationUpdate)
+	assert.Equal(t, configv1alpha1.OperationUpdate, got)
+}
+
 // --- isAlreadyExistsErr ---
 
 func TestIsAlreadyExistsErr(t *testing.T) {

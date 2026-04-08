@@ -110,7 +110,7 @@ func (m *Manager) handleEvent(obj interface{}, g GVR, op configv1alpha1.Operatio
 		telemetry.GitCommitQueueSize.Add(ctx, enqueueCount)
 	}
 
-	if m.AuditLiveEventsEnabled && g.Resource != "secrets" {
+	if m.AuditLiveEventsEnabled {
 		m.Log.V(1).Info("Skipping live watch event routing because audit stream is authoritative",
 			"identifier", id.String(),
 			"operation", op,

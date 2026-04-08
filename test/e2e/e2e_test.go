@@ -1507,6 +1507,20 @@ var _ = Describe("Manager", Ordered, func() {
 			}
 			Eventually(verifyFileDeleted, "60s", "1s").Should(Succeed())
 
+			By("verifying the deleted CRD file does not reappear after terminating updates")
+			Consistently(func(g Gomega) {
+				pullCmd := exec.Command("git", "pull")
+				pullCmd.Dir = checkoutDir
+				_, _ = pullCmd.CombinedOutput()
+
+				expectedFile := filepath.Join(checkoutDir,
+					"e2e/crd-delete-test",
+					"apiextensions.k8s.io/v1/customresourcedefinitions/icecreamorders.shop.example.com.yaml")
+				_, statErr := os.Stat(expectedFile)
+				g.Expect(statErr).To(HaveOccurred(), "CRD file must stay deleted after CRD termination updates")
+				g.Expect(os.IsNotExist(statErr)).To(BeTrue(), "CRD file must not reappear in Git")
+			}, "15s", "1s").Should(Succeed())
+
 			By("cleaning up test resources")
 			cleanupClusterWatchRule(clusterWatchRuleName)
 			cleanupGitTarget(destName, testNs)
