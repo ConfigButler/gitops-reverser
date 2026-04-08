@@ -94,11 +94,13 @@ func (q *RedisAuditQueue) Enqueue(ctx context.Context, clusterID string, event a
 
 	objectRef := event.ObjectRef
 	apiVersion := ""
+	apiGroup := ""
 	resource := ""
 	namespace := ""
 	name := ""
 	if objectRef != nil {
 		apiVersion = objectRef.APIVersion
+		apiGroup = objectRef.APIGroup
 		resource = objectRef.Resource
 		namespace = objectRef.Namespace
 		name = objectRef.Name
@@ -109,6 +111,7 @@ func (q *RedisAuditQueue) Enqueue(ctx context.Context, clusterID string, event a
 		"audit_id":        string(event.AuditID),
 		"cluster_id":      clusterID,
 		"verb":            event.Verb,
+		"api_group":       apiGroup,
 		"api_version":     apiVersion,
 		"resource":        resource,
 		"namespace":       namespace,

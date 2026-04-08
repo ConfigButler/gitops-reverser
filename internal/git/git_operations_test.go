@@ -20,9 +20,11 @@ package git
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -38,6 +40,26 @@ import (
 
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
+
+func skipIfPublicNetworkUnavailable(t *testing.T, err error) {
+	t.Helper()
+	if err == nil {
+		return
+	}
+
+	var timeoutErr interface{ Timeout() bool }
+	if errors.As(err, &timeoutErr) && timeoutErr.Timeout() {
+		t.Skipf("skipping public connectivity test because network timed out: %v", err)
+	}
+
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "no such host") ||
+		strings.Contains(msg, "i/o timeout") ||
+		strings.Contains(msg, "temporary failure in name resolution") ||
+		strings.Contains(msg, "context deadline exceeded") {
+		t.Skipf("skipping public connectivity test because network is unavailable: %v", err)
+	}
+}
 
 // TestMain initializes the controller-runtime logger before running tests.
 // This prevents "log.SetLogger(...) was never called" warnings when code uses log.FromContext().
@@ -126,6 +148,7 @@ func TestCheckRepo_PublicConnectivity(t *testing.T) {
 	ctx := context.Background()
 	remoteURL := "https://github.com/octocat/Hello-World.git"
 	repoInfo, err := CheckRepo(ctx, remoteURL, nil)
+	skipIfPublicNetworkUnavailable(t, err)
 	tempDir := t.TempDir()
 
 	require.NoError(t, err)
@@ -170,6 +193,7 @@ func TestCheckRepo_PublicConnectivityEmpty(t *testing.T) {
 	remoteURL := "https://github.com/ConfigButler/empty.git"
 
 	repoInfo, err := CheckRepo(ctx, remoteURL, nil)
+	skipIfPublicNetworkUnavailable(t, err)
 
 	require.NoError(t, err)
 	assert.Empty(t, repoInfo.DefaultBranch)
