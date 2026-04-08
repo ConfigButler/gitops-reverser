@@ -12,19 +12,17 @@ webhooks:
       name: gitops-reverser-service
       namespace: sut
       port: 9443
-      path: /process-validating-webhook
-  failurePolicy: Ignore
-  name: gitops-reverser.configbutler.ai
+      path: /validate-configbutler-ai-v1alpha1-gittarget
+  failurePolicy: Fail
+  name: vgittarget.kb.io
   rules:
   - apiGroups:
-    - '*'
+    - configbutler.ai
     apiVersions:
-    - '*'
+    - v1alpha1
     operations:
     - CREATE
     - UPDATE
-    - DELETE
     resources:
-    - '*'
+    - gittargets
   sideEffects: None
-

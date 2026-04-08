@@ -99,8 +99,7 @@ func (m *Manager) handleEvent(obj interface{}, g GVR, op configv1alpha1.Operatio
 		return
 	}
 
-	// Attempt correlation enrichment
-	userInfo := m.tryEnrichFromCorrelation(ctx, sanitized, id, string(op))
+	userInfo := git.UserInfo{} // username not available from watch path
 
 	// Emit basic metrics for watcher path (mirrors webhook semantics).
 	// Count each watched object processed by the informer path.

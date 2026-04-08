@@ -163,45 +163,6 @@ var _ = Describe("Manager", Ordered, func() {
 			Eventually(verifyControllerUp).Should(Succeed())
 		})
 
-		It("should route webhook traffic to the running controller pod", func() {
-			By("verifying controller service selects the running controller pod")
-			verifyWebhookService := func(g Gomega) {
-				// Get controller service endpoints
-				output, err := kubectlRunInNamespace(
-					namespace,
-					"get",
-					"endpoints",
-					controllerServiceName,
-					"-o",
-					"jsonpath={.subsets[*].addresses[*].targetRef.name}",
-				)
-				g.Expect(err).NotTo(HaveOccurred(), "Failed to get controller service endpoints")
-
-				// Filter out kubectl deprecation warnings from output
-				lines := utils.GetNonEmptyLines(output)
-				podSet := map[string]struct{}{}
-				for _, line := range lines {
-					// Skip warning lines
-					if !strings.HasPrefix(line, "Warning:") &&
-						!strings.Contains(line, "deprecated") &&
-						strings.Contains(line, "gitops-reverser") {
-						podSet[line] = struct{}{}
-					}
-				}
-				var podNames []string
-				for podName := range podSet {
-					podNames = append(podNames, podName)
-				}
-
-				// Should only have one endpoint in single-pod mode.
-				g.Expect(podNames).To(HaveLen(1), "controller service should route to exactly 1 pod")
-				g.Expect(podNames[0]).To(Equal(controllerPodName), "controller service should route to controller pod")
-
-				By(fmt.Sprintf("✅ Controller service correctly routes to pod: %s", controllerPodName))
-			}
-			Eventually(verifyWebhookService, 30*time.Second).Should(Succeed())
-		})
-
 		It("should expose admission and audit ports on one controller service", func() {
 			By("verifying controller service exists")
 			_, err := kubectlRunInNamespace(namespace, "get", "svc", controllerServiceName)
@@ -236,19 +197,6 @@ var _ = Describe("Manager", Ordered, func() {
 				g.Expect(podNames).To(HaveLen(1), "controller service should route to exactly 1 pod")
 				g.Expect(podNames[0]).To(Equal(controllerPodName), "controller service should route to controller pod")
 			}, 30*time.Second).Should(Succeed())
-		})
-
-		It("should have webhook registration configured", func() {
-			By("verifying webhook registration for event handler")
-			verifyWebhook := func(g Gomega) {
-				jsonPath := "jsonpath={.items[?(@.metadata.name=='gitops-reverser-validating-webhook-configuration')]" +
-					".webhooks[*].name}"
-				output, err := kubectlRun("get", "validatingwebhookconfigurations", "-o", jsonPath)
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(output).To(ContainSubstring("gitops-reverser.configbutler.ai"),
-					"Event webhook should be registered")
-			}
-			Eventually(verifyWebhook).Should(Succeed())
 		})
 
 		It("should ensure the metrics endpoint is serving metrics", func() {
@@ -297,46 +245,6 @@ var _ = Describe("Manager", Ordered, func() {
 
 			fmt.Printf("✅ Metrics collection verified from %.0f pods\n", podCount)
 			fmt.Printf("📊 Inspect metrics: %s\n", getPrometheusURL())
-		})
-
-		It("should receive webhook calls and process them successfully", func() {
-			By("recording baseline webhook event count")
-			baselineEvents, err := queryPrometheus("sum(gitopsreverser_events_received_total) or vector(0)")
-			Expect(err).NotTo(HaveOccurred())
-			fmt.Printf("📊 Baseline events: %.0f\n", baselineEvents)
-
-			By("creating a ConfigMap to trigger webhook call")
-			_, err = kubectlRunInNamespace(
-				namespace,
-				"create",
-				"configmap",
-				"webhook-test-cm",
-				"--from-literal=test=webhook",
-			)
-			Expect(err).NotTo(HaveOccurred(), "ConfigMap creation should succeed with working webhook")
-
-			By("waiting for webhook event metric to increment")
-			waitForMetric("sum(gitopsreverser_events_received_total) or vector(0)",
-				func(v float64) bool { return v > baselineEvents },
-				"webhook events should increment")
-
-			By("verifying webhook events were received")
-			currentEvents, err := queryPrometheus("sum(gitopsreverser_events_received_total) or vector(0)")
-			Expect(err).NotTo(HaveOccurred())
-			Expect(currentEvents).To(BeNumerically(">", baselineEvents), "Controller should process webhook events")
-			fmt.Printf("✅ Controller processed %.0f events\n", currentEvents-baselineEvents)
-
-			fmt.Printf("✅ Webhook routing validated\n")
-			fmt.Printf("📊 Inspect metrics: %s\n", getPrometheusURL())
-
-			By("cleaning up webhook test resources")
-			_, _ = kubectlRunInNamespace(
-				namespace,
-				"delete",
-				"configmap",
-				"webhook-test-cm",
-				"--ignore-not-found=true",
-			)
 		})
 
 		It("should receive audit webhook events from kube-apiserver", func() {

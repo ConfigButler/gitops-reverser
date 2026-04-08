@@ -41,12 +41,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
-	"github.com/ConfigButler/gitops-reverser/internal/correlation"
 	"github.com/ConfigButler/gitops-reverser/internal/events"
-	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
 	"github.com/ConfigButler/gitops-reverser/internal/sanitize"
-	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
@@ -65,9 +62,6 @@ type Manager struct {
 	RuleStore *rulestore.RuleStore
 	// EventRouter dispatches events to branch workers (replaces EventQueue).
 	EventRouter *EventRouter
-	// CorrelationStore enables webhook→watch username enrichment.
-	CorrelationStore *correlation.Store
-
 	// Deduplication: tracks last seen content hash per resource to skip status-only changes
 	lastSeenMu   sync.RWMutex
 	lastSeenHash map[string]uint64 // resourceKey → content hash (key uses types.ResourceIdentifier.Key)
@@ -257,43 +251,6 @@ func (m *Manager) isDuplicateContent(
 	m.lastSeenMu.Unlock()
 
 	return false
-}
-
-// tryEnrichFromCorrelation attempts to enrich an event with username from the correlation store.
-func (m *Manager) tryEnrichFromCorrelation(
-	ctx context.Context,
-	sanitized *unstructured.Unstructured,
-	id types.ResourceIdentifier,
-	operation string,
-) git.UserInfo {
-	userInfo := git.UserInfo{} // default: no username
-
-	if m.CorrelationStore == nil {
-		return userInfo
-	}
-
-	log := m.Log.WithName("correlation")
-	sanitizedYAML, err := sanitize.MarshalToOrderedYAML(sanitized)
-	if err != nil {
-		log.Error(err, "Failed to marshal for correlation", "identifier", id.String())
-		return userInfo
-	}
-
-	key := correlation.GenerateKey(id, operation, sanitizedYAML)
-	entry, found := m.CorrelationStore.Get(key)
-	if !found {
-		telemetry.EnrichMissesTotal.Add(ctx, 1)
-		log.V(1).Info("No correlation match", "identifier", id.String(), "key", key)
-		return userInfo
-	}
-
-	userInfo.Username = entry.Username
-	telemetry.EnrichHitsTotal.Add(ctx, 1)
-	log.V(1).Info("Enriched with username",
-		"identifier", id.String(),
-		"username", entry.Username,
-		"key", key)
-	return userInfo
 }
 
 // dynamicClientFromConfig builds a dynamic client from the controller's REST config.
