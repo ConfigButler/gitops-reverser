@@ -526,6 +526,7 @@ $(CS)/$(NAMESPACE)/config-dir/install.yaml: $(CS)/services.ready $(MANIFEST_OUTP
 $(CS)/$(NAMESPACE)/plain-manifests-file/install.yaml: $(CS)/services.ready dist/install.yaml | $(CS)/$(NAMESPACE)/plain-manifests-file
 	$(DO_CLEANUP_INSTALLS)
 	mkdir -p "$(@D)" # keep: cleanup script can delete this directory during the same recipe
+	$(DO_ENSURE_VALKEY_AUTH)
 	CTX="$(CTX)" NAMESPACE="$(NAMESPACE)" \
 		DEFAULT_AUDIT_REDIS_ADDR="$(DEFAULT_AUDIT_REDIS_ADDR)" \
 		E2E_AUDIT_REDIS_ADDR="$(E2E_AUDIT_REDIS_ADDR)" \
