@@ -16,9 +16,20 @@ set -euo pipefail
 : "${NAMESPACE:?NAMESPACE is required}"
 : "${PROJECT_IMAGE:?PROJECT_IMAGE is required}"
 : "${STAMP_FILE:?STAMP_FILE is required}"
+: "${E2E_VALKEY_PASSWORD:?E2E_VALKEY_PASSWORD is required}"
 
 KUSTOMIZE="${KUSTOMIZE:-kustomize}"
 KUBECTL="${KUBECTL:-kubectl}"
+
+kubectl --context "${CTX}" create namespace "${NAMESPACE}" \
+	--dry-run=client -o yaml \
+	| kubectl --context "${CTX}" apply -f -
+
+kubectl --context "${CTX}" -n "${NAMESPACE}" \
+	create secret generic valkey-auth \
+	--from-literal=password="${E2E_VALKEY_PASSWORD}" \
+	--dry-run=client -o yaml \
+	| kubectl --context "${CTX}" apply -f -
 
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "${tmpdir}"' EXIT

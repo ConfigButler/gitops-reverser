@@ -33,6 +33,21 @@ deploy="$(kubectl --context "${CTX}" -n "${NAMESPACE}" \
 	get deploy -l "${CONTROLLER_DEPLOY_SELECTOR}" \
 	-o jsonpath='{.items[0].metadata.name}')"
 
+current_image="$(kubectl --context "${CTX}" -n "${NAMESPACE}" \
+	get deploy "${deploy}" \
+	-o jsonpath="{.spec.template.spec.containers[?(@.name==\"${CONTROLLER_CONTAINER}\")].image}")"
+desired_replicas="$(kubectl --context "${CTX}" -n "${NAMESPACE}" \
+	get deploy "${deploy}" -o jsonpath='{.spec.replicas}')"
+available_replicas="$(kubectl --context "${CTX}" -n "${NAMESPACE}" \
+	get deploy "${deploy}" -o jsonpath='{.status.availableReplicas}')"
+
+if [[ "${current_image}" == "${PROJECT_IMAGE}" ]] \
+	&& [[ -n "${available_replicas}" ]] \
+	&& [[ "${available_replicas}" == "${desired_replicas}" ]]; then
+	echo "deployment/${deploy} already running ${PROJECT_IMAGE} (${available_replicas}/${desired_replicas} available); skipping"
+	exit 0
+fi
+
 echo "Setting deployment/${deploy} container '${CONTROLLER_CONTAINER}' to image '${PROJECT_IMAGE}'"
 kubectl --context "${CTX}" -n "${NAMESPACE}" \
 	set image "deployment/${deploy}" "${CONTROLLER_CONTAINER}=${PROJECT_IMAGE}"

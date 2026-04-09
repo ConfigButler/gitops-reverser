@@ -520,6 +520,7 @@ $(CS)/$(NAMESPACE)/config-dir/install.yaml: $(CS)/services.ready $(MANIFEST_OUTP
 	$(DO_CLEANUP_INSTALLS)
 	mkdir -p "$(@D)" # keep: cleanup script can delete this directory during the same recipe
 	CTX="$(CTX)" NAMESPACE="$(NAMESPACE)" PROJECT_IMAGE="$(PROJECT_IMAGE)" \
+		E2E_VALKEY_PASSWORD="$(E2E_VALKEY_PASSWORD)" \
 		KUSTOMIZE="$(KUSTOMIZE)" KUBECTL="$(KUBECTL)" STAMP_FILE="$@" \
 		bash hack/e2e/install-config-dir.sh
 

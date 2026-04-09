@@ -33,13 +33,13 @@ RUN apt-get update \
 
 # Tool versions - centralized for easy updates
 # This devcontainer currently supports amd64 tool downloads only.
-ENV KUBECTL_VERSION=v1.35.0 \
+ENV KUBECTL_VERSION=v1.35.3 \
     KUSTOMIZE_VERSION=5.8.1 \
-    KUBEBUILDER_VERSION=4.11.1 \
-    GOLANGCI_LINT_VERSION=v2.10.1 \
-    HELM_VERSION=v4.0.0 \
+    KUBEBUILDER_VERSION=4.13.1 \
+    GOLANGCI_LINT_VERSION=v2.11.4 \
+    HELM_VERSION=v4.1.4 \
     K3D_VERSION=v5.8.3 \
-    FLUX_VERSION=2.8.0
+    FLUX_VERSION=2.8.5
 
 # Fail early on unsupported architectures instead of producing a partial image.
 RUN test "$(dpkg --print-architecture)" = "amd64" \
