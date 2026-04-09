@@ -7,7 +7,7 @@ metadata:
     {{- include "gitops-reverser.labels" . | nindent 4 }}
     app.kubernetes.io/component: manager
     app.kubernetes.io/part-of: gitops-reverser
-    control-plane: controller-manager
+    control-plane: gitops-reverser
 spec:
   replicas: {{ .Values.replicaCount }}
   strategy:
@@ -24,6 +24,7 @@ spec:
         {{- end }}
       labels:
         {{- include "gitops-reverser.selectorLabels" . | nindent 8 }}
+        control-plane: gitops-reverser
     spec:
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
@@ -69,17 +70,15 @@ spec:
             - --audit-read-timeout={{ .Values.servers.audit.timeouts.read }}
             - --audit-write-timeout={{ .Values.servers.audit.timeouts.write }}
             - --audit-idle-timeout={{ .Values.servers.audit.timeouts.idle }}
-            {{- if .Values.queue.redis.enabled }}
-            - --audit-redis-enabled
             - --audit-redis-addr={{ .Values.queue.redis.addr }}
-            - --audit-redis-username={{ .Values.queue.redis.username | quote }}
-            - --audit-redis-password={{ .Values.queue.redis.password | quote }}
+            {{- with .Values.queue.redis.auth.username }}
+            - --audit-redis-username={{ . | quote }}
+            {{- end }}
             - --audit-redis-db={{ .Values.queue.redis.db }}
             - --audit-redis-stream={{ .Values.queue.redis.stream }}
             - --audit-redis-max-len={{ .Values.queue.redis.maxLen }}
             {{- if .Values.queue.redis.tls.enabled }}
             - --audit-redis-tls
-            {{- end }}
             {{- end }}
             {{- if .Values.logging.level }}
             - --zap-log-level={{ .Values.logging.level }}
@@ -115,6 +114,13 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
+            {{- if .Values.queue.redis.auth.existingSecret }}
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.queue.redis.auth.existingSecret }}
+                  key: {{ .Values.queue.redis.auth.existingSecretKey | default "password" }}
+            {{- end }}
             {{- with .Values.env }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

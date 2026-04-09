@@ -26,7 +26,7 @@ The plan we implemented was:
 ### 1. Make audit authoritative for live mutating events when audit Redis is enabled
 
 - Add an internal runtime switch on the watch side.
-- When `--audit-redis-enabled` is true:
+- Audit Redis queueing is now always enabled:
   - keep watch informers for snapshot / reconcile behavior
   - stop routing live mutating watch events into `GitTargetEventStream`
 - Let the audit consumer be the source of truth for live mutation commits.
@@ -57,7 +57,7 @@ The plan we implemented was:
 ### Wiring
 
 - [cmd/main.go](/workspaces/gitops-reverser/cmd/main.go)
-  - `watch.Manager` now receives `AuditLiveEventsEnabled: cfg.auditRedisEnabled`.
+  - `watch.Manager` now runs with `AuditLiveEventsEnabled: true`.
 
 ### Watch Manager
 
@@ -160,32 +160,18 @@ This means the original migration regressions appear fixed:
 
 ### What Still Fails
 
-The clean-cluster `make test-e2e` run still fails overall.
+> **Resolved.** The IceCreamOrder failure described here was fixed in commit `c08c7c4`
+> (correct custom-resource API group mapping in the audit consumer — `objectRef.apiGroup` +
+> `objectRef.apiVersion` were not being combined correctly, causing CRs to be misrouted as core
+> `/v1` resources). All e2e suites now pass.
 
-Current failing spec:
+~~The clean-cluster `make test-e2e` run still fails overall.~~
 
-- [test/e2e/e2e_test.go:1011](/workspaces/gitops-reverser/test/e2e/e2e_test.go#L1011)
-  - `Manager should create Git commit when IceCreamOrder is added via WatchRule`
-
-Observed failure:
-
-- Expected file never appears:
-  - `/workspaces/gitops-reverser/.stamps/repos/e2e-test-1775644840/e2e/icecream-test/shop.example.com/v1/icecreamorders/1775644840-test-manager/alices-order.yaml`
-
-### Important Log Signal
-
-The controller logs show:
-
-- the IceCreamOrder create audit event is received:
-  - `gvr: "/v1/icecreamorders"`
-- but the commit worker later reports:
-  - `No commits created, no need to push it`
-
-That combination suggests the object creation is being observed, but the resulting write is considered a no-op by the time it reaches the Git layer.
+~~Current failing spec: `Manager should create Git commit when IceCreamOrder is added via WatchRule`~~
 
 ## Current Interpretation
 
-The original webhook-audit remediation is only partially complete.
+The original webhook-audit remediation is complete. All originally failing specs pass.
 
 ### Fixed
 
@@ -194,78 +180,11 @@ The original webhook-audit remediation is only partially complete.
 - Audit producer e2e isolation
 - Audit consumer e2e author verification
 - Cluster-scoped CRD export in audit-enabled mode
-
-### Still Broken
-
-- Namespaced custom resource live commit path for `WatchRule` resources like `IceCreamOrder`
-
-## Most Likely Remaining Root Cause
-
-The remaining failure does not look like the original Valkey persistence issue.
-
-It looks more like a deduplication / no-op classification problem for namespaced custom resources:
-
-- the object is seen
-- the event is routed or at least processed far enough to generate worker activity
-- but no resulting file diff is produced
-
-The strongest candidates are:
-
-1. Sanitized custom-resource content is being judged identical to an already-known state.
-2. The write path is building a path or payload that collapses to no diff.
-3. Audit/live interaction for namespaced CR instances is still suppressing the effective event somewhere, even though the cluster-scoped CRD path now works.
-
-## Recommended Next Debugging Steps
-
-### 1. Trace `IceCreamOrder` end to end
-
-Instrument or inspect these points for the failing test:
-
-- informer callback receives the CR create
-- `handleEvent` match result for `icecreamorders`
-- event routing to the `GitTargetEventStream`
-- write-request payload generated for the CR
-- file path selected for the CR object
-- git write result before commit
-
-### 2. Compare successful ConfigMap path vs failing custom-resource path
-
-Specifically compare:
-
-- identifier construction
-- sanitized object content
-- dedup hash inputs
-- generated destination path
-- whether metadata needed for CR file generation is missing
-
-### 3. Confirm whether audit path is involved for custom resources
-
-The log line:
-
-- `gvr: "/v1/icecreamorders"`
-
-is suspicious because the expected group is `shop.example.com/v1`.
-
-That may indicate a GVR mapping or audit object-ref translation problem for the custom resource path.
-
-### 4. Inspect no-op commit reasoning
-
-The worker log:
-
-- `No commits created, no need to push it`
-
-should be traced back to the exact file operation result for the `IceCreamOrder` object.
+- Namespaced custom resource live commit path (IceCreamOrder) — fixed by correct API group mapping
 
 ## Current Bottom Line
 
-The answer to "does `make test-e2e` work now?" is:
+`make test-e2e` passes on a clean cluster. The remediation work described in this document is done.
 
-- No, not fully.
-
-The answer to "did the original webhook-audit remediation help?" is:
-
-- Yes, substantially.
-
-The latest clean-cluster run shows that the original webhook-audit regressions were largely fixed, but a separate remaining regression still blocks the full e2e suite:
-
-- namespaced custom resource export via `WatchRule` in audit-enabled mode.
+For current architectural state and remaining rough edges, see
+[webhook-audit-pipeline-current-state.md](webhook-audit-pipeline-current-state.md).

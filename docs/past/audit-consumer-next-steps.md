@@ -40,7 +40,7 @@ code state precisely, and defines the concrete missing work.
 - [Line 229](../../internal/webhook/audit_handler.go#L229): `// For now we hardly do a thing`.
 
 **Wiring: [cmd/main.go](../../cmd/main.go)**
-- Redis queue is created when `--audit-redis-enabled` is set ([line 209](../../cmd/main.go#L209)).
+- Redis queue is created during startup from the configured `--audit-redis-*` settings.
 - Wired into `AuditHandler` as the `Queue` field.
 - No consumer runnable is registered. The stream accumulates indefinitely.
 
@@ -147,7 +147,7 @@ Implemented in `extractObject` in [`internal/queue/redis_audit_consumer.go`](../
 - `XAUTOCLAIM` ticker fires every 30s, reclaiming entries idle longer than 60s.
 - Consumer ID defaults to `$POD_NAME`, falling back to `"gitopsreverser-consumer-0"`.
 
-Wired in [`cmd/main.go`](../../cmd/main.go) inside the `cfg.auditRedisEnabled` block, registered via `mgr.Add`. `NeedLeaderElection() = true`.
+Wired in [`cmd/main.go`](../../cmd/main.go) during startup and registered via `mgr.Add`. `NeedLeaderElection() = true`.
 
 ### ~~Step 4: XACK only after safe handoff~~ ✅ Done
 
@@ -185,7 +185,7 @@ Implemented as `Describe("Audit Redis Consumer", Label("audit-redis"), ...)` in 
 |---|---|
 | [internal/queue/redis_audit_consumer.go](../../internal/queue/redis_audit_consumer.go) | **New.** XREADGROUP loop, XAUTOCLAIM, rule matching, object extraction, routing. |
 | [internal/queue/redis_audit_consumer_test.go](../../internal/queue/redis_audit_consumer_test.go) | **New.** 34 unit tests, 91% coverage. |
-| [cmd/main.go](../../cmd/main.go) | Wires `AuditConsumer` into the manager when `--audit-redis-enabled`. |
+| [cmd/main.go](../../cmd/main.go) | Wires `AuditConsumer` into the manager during startup. |
 | [test/e2e/audit_redis_e2e_test.go](../../test/e2e/audit_redis_e2e_test.go) | **New `Describe` block.** Consumer e2e: GitProvider + GitTarget + WatchRule setup, audit event → git commit assertion (Step 5). |
 
 All steps are now complete.

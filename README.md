@@ -88,6 +88,7 @@ Prerequisites:
 
 - A Kubernetes cluster with `kubectl` configured
 - `cert-manager` for webhook certificates
+- Valkey or Redis with auth enabled (required — audit events including Secrets flow through it)
 - A Git repository with write access
 
 Notes:
@@ -97,13 +98,34 @@ Notes:
   `k3d`, Talos, and Kamaji.
 - Some managed Kubernetes platforms are more restrictive here and may block or complicate this mode.
 
-Install `cert-manager` if needed:
+**1. Install cert-manager**
 
 ```bash
 kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.19.1/cert-manager.yaml
+kubectl wait --for=condition=ready pod -l app.kubernetes.io/instance=cert-manager -n cert-manager --timeout=300s
 ```
 
-**1. Install GitOps Reverser**
+**2. Install Valkey with auth**
+
+```bash
+# Create the namespace and a Valkey auth secret
+kubectl create namespace gitops-reverser
+kubectl create secret generic valkey-auth \
+  --namespace gitops-reverser \
+  --from-literal=password="$(openssl rand -base64 32)"
+
+# Install Valkey using the official chart
+helm repo add valkey https://valkey.io/valkey-helm/
+helm repo update
+helm install valkey valkey/valkey \
+  --namespace gitops-reverser \
+  --set auth.enabled=true \
+  --set auth.usersExistingSecret=valkey-auth \
+  --set auth.aclUsers.default.passwordKey=password \
+  --set "auth.aclUsers.default.permissions=~* &* +@all"
+```
+
+**3. Install GitOps Reverser**
 
 ```bash
 kubectl apply -f https://github.com/ConfigButler/gitops-reverser/releases/latest/download/install.yaml

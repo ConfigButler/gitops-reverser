@@ -12,14 +12,33 @@ kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/
 # 2. Wait for cert-manager to be ready
 kubectl wait --for=condition=ready pod -l app.kubernetes.io/instance=cert-manager -n cert-manager --timeout=300s
 
-# 3. Install GitOps Reverser
+# 3. Create the namespace and a Valkey auth secret
+kubectl create namespace gitops-reverser
+kubectl create secret generic valkey-auth \
+  --namespace gitops-reverser \
+  --from-literal=password="$(openssl rand -base64 32)"
+
+# 4. Install Valkey using the official chart with auth enabled
+helm repo add valkey https://valkey.io/valkey-helm/
+helm repo update
+helm install valkey valkey/valkey \
+  --namespace gitops-reverser \
+  --set auth.enabled=true \
+  --set auth.usersExistingSecret=valkey-auth \
+  --set auth.aclUsers.default.passwordKey=password \
+  --set "auth.aclUsers.default.permissions=~* &* +@all"
+
+# 5. Install GitOps Reverser, referencing the same auth secret
 helm install gitops-reverser \
   oci://ghcr.io/configbutler/charts/gitops-reverser \
-  --namespace gitops-reverser-system \
-  --create-namespace
+  --namespace gitops-reverser \
+  --create-namespace \
+  --set queue.redis.addr="valkey.gitops-reverser.svc.cluster.local:6379" \
+  --set queue.redis.auth.existingSecret=valkey-auth \
+  --set queue.redis.auth.existingSecretKey=password
 
-# 4. Verify installation
-kubectl get pods -n gitops-reverser-system
+# 6. Verify installation
+kubectl get pods -n gitops-reverser
 ```
 
 Controller install is complete. Next, create a minimal provider/target/rule to validate first commit flow:
@@ -58,6 +77,7 @@ kubectl annotate secret sops-age-key -n default configbutler.ai/backup-warning-
 - Kubernetes 1.28+
 - Helm 3.8+
 - cert-manager 1.13+ (for webhook TLS certificates)
+- Valkey or Redis reachable from the controller, with auth enabled (`queue.redis.auth.existingSecret`)
 
 ## Installation
 
@@ -68,7 +88,7 @@ Install the latest version:
 ```bash
 helm install gitops-reverser \
   oci://ghcr.io/configbutler/charts/gitops-reverser \
-  --namespace gitops-reverser-system \
+  --namespace gitops-reverser \
   --create-namespace
 ```
 
@@ -78,7 +98,7 @@ Install a specific version:
 helm install gitops-reverser \
   oci://ghcr.io/configbutler/charts/gitops-reverser \
   --version 0.3.0 \
-  --namespace gitops-reverser-system \
+  --namespace gitops-reverser \
   --create-namespace
 ```
 
@@ -139,7 +159,7 @@ affinity: {}
 ```bash
 helm install gitops-reverser \
   oci://ghcr.io/configbutler/charts/gitops-reverser \
-  --namespace gitops-reverser-system \
+  --namespace gitops-reverser \
   --create-namespace \
   --values minimal-values.yaml
 ```
@@ -205,8 +225,10 @@ webhook:
 | `servers.audit.timeouts.write` | Audit-server write timeout | `30s` |
 | `servers.audit.timeouts.idle` | Audit-server idle timeout | `60s` |
 | `servers.audit.tls.secretName` | Secret name for audit TLS cert/key | `<release>-audit-server-cert` |
-| `queue.redis.enabled` | Enqueue accepted audit events to Redis Streams | `false` |
-| `queue.redis.addr` | Redis endpoint for durable audit queueing | `""` |
+| `queue.redis.addr` | Redis endpoint (`host:port`) for required durable audit queueing | `valkey:6379` |
+| `queue.redis.auth.existingSecret` | Name of a pre-created Secret holding the Redis password | `""` |
+| `queue.redis.auth.existingSecretKey` | Key within the Secret that holds the password | `password` |
+| `queue.redis.auth.username` | Optional Redis ACL username | `""` |
 | `queue.redis.stream` | Redis stream name for audit events | `gitopsreverser.audit.events.v1` |
 | `queue.redis.maxLen` | Approximate stream max length (`0` disables trim) | `0` |
 | `queue.redis.tls.enabled` | Enable TLS for Redis connection | `false` |
@@ -266,7 +288,7 @@ kubectl delete crd gitproviders.configbutler.ai gittargets.configbutler.ai watch
 
 ```bash
 # Check pods (should see 1 replica)
-kubectl get pods -n gitops-reverser-system
+kubectl get pods -n gitops-reverser
 
 # Check CRDs
 kubectl get crd | grep configbutler
@@ -280,14 +302,14 @@ kubectl get validatingwebhookconfiguration -l app.kubernetes.io/name=gitops-reve
 
 ```bash
 # All pods
-kubectl logs -n gitops-reverser-system -l app.kubernetes.io/name=gitops-reverser -f
+kubectl logs -n gitops-reverser -l app.kubernetes.io/name=gitops-reverser -f
 
 ```
 
 ### Access Metrics
 
 ```bash
-kubectl port-forward -n gitops-reverser-system svc/gitops-reverser 8080:8080
+kubectl port-forward -n gitops-reverser svc/gitops-reverser 8080:8080
 curl http://localhost:8080/metrics
 # If metrics TLS is enabled:
 # curl -k https://localhost:8080/metrics
@@ -300,7 +322,7 @@ curl http://localhost:8080/metrics
 ```bash
 helm upgrade gitops-reverser \
   oci://ghcr.io/configbutler/charts/gitops-reverser \
-  --namespace gitops-reverser-system
+  --namespace gitops-reverser
 ```
 
 ### Upgrade with New Values
@@ -308,7 +330,7 @@ helm upgrade gitops-reverser \
 ```bash
 helm upgrade gitops-reverser \
   oci://ghcr.io/configbutler/charts/gitops-reverser \
-  --namespace gitops-reverser-system \
+  --namespace gitops-reverser \
   --values new-values.yaml
 ```
 
@@ -325,10 +347,10 @@ If upgrading from earlier chart versions:
 
 ```bash
 # Uninstall chart
-helm uninstall gitops-reverser --namespace gitops-reverser-system
+helm uninstall gitops-reverser --namespace gitops-reverser
 
 # Delete namespace (optional)
-kubectl delete namespace gitops-reverser-system
+kubectl delete namespace gitops-reverser
 
 # Delete CRDs (optional, but removes all custom resources)
 kubectl delete crd gitproviders.configbutler.ai gittargets.configbutler.ai watchrules.configbutler.ai clusterwatchrules.configbutler.ai
@@ -341,8 +363,8 @@ kubectl delete crd gitproviders.configbutler.ai gittargets.configbutler.ai watch
 Check certificate status:
 
 ```bash
-kubectl get certificate -n gitops-reverser-system
-kubectl describe certificate gitops-reverser-admission-server-cert -n gitops-reverser-system
+kubectl get certificate -n gitops-reverser
+kubectl describe certificate gitops-reverser-admission-server-cert -n gitops-reverser
 ```
 
 If cert-manager is not working:
@@ -366,7 +388,7 @@ kubectl get nodes
 # If you have only 1 node, keep a single replica or disable affinity
 helm upgrade gitops-reverser \
   oci://ghcr.io/configbutler/charts/gitops-reverser \
-  --namespace gitops-reverser-system \
+  --namespace gitops-reverser \
   --set replicaCount=1 \
   --set affinity=null
 ```
@@ -380,18 +402,18 @@ Ensure your Git credentials secret exists:
 kubectl create secret generic git-credentials \
   --from-literal=username=git \
   --from-literal=password=YOUR_TOKEN \
-  -n gitops-reverser-system
+  -n gitops-reverser
 
 # For SSH
 kubectl create secret generic git-credentials \
   --from-file=ssh-privatekey=~/.ssh/id_rsa \
-  -n gitops-reverser-system
+  -n gitops-reverser
 ```
 
 ### View Controller Events
 
 ```bash
-kubectl get events -n gitops-reverser-system --sort-by='.lastTimestamp'
+kubectl get events -n gitops-reverser --sort-by='.lastTimestamp'
 ```
 
 ## Advanced Configuration
@@ -415,7 +437,7 @@ Create certificate secret manually:
 kubectl create secret tls gitops-reverser-admission-server-cert \
   --cert=path/to/tls.crt \
   --key=path/to/tls.key \
-  -n gitops-reverser-system
+  -n gitops-reverser
 ```
 
 ### Custom Resource Limits

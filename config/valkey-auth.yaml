@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: valkey-auth
+  namespace: sut
+type: Opaque
+stringData:
+  # Fixed password for e2e/dev environments. Kustomize replaces the namespace at apply time.
+  # This is intentionally a known value — it is only used in ephemeral test clusters.
+  password: e2e-valkey-password

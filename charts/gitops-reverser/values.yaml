@@ -110,12 +110,18 @@ webhook:
 # Durable audit queue configuration.
 queue:
   redis:
-    # Enable Redis Stream enqueueing for accepted audit events.
-    enabled: false
-    # Redis endpoint in host:port format.
-    addr: ""
-    username: ""
-    password: ""
+    # Redis endpoint in host:port format. GitOps Reverser requires a reachable Valkey/Redis service.
+    addr: "valkey:6379"
+    auth:
+      # Name of a pre-existing Secret in the same namespace that holds the Redis password.
+      # The Secret must be created before installing this chart.
+      # Required for production deployments. You may leave it empty only for dev/local environments
+      # where Valkey runs without authentication.
+      existingSecret: "valkey-auth"
+      # Key within the Secret that holds the password value.
+      existingSecretKey: "password"
+      # Optional Redis username for ACL-based auth (Redis 6+). Not sensitive; stays as a plain value.
+      username: ""
     db: 0
     stream: "gitopsreverser.audit.events.v1"
     # Approximate max stream length; 0 means no trimming.

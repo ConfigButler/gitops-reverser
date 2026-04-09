@@ -1,16 +1,13 @@
 {
   "permissions": {
     "allow": [
-      "Bash(go test:*)",
       "Bash(make:*)",
-      "Bash(make lint:*)",
-      "Bash(make test-e2e:*)",
-      "Bash(go build:*)",
       "Bash(kubectl apply:*)",
       "Bash(kubectl wait:*)",
       "Bash(chmod +x /workspaces/gitops-reverser/hack/demo/setup-holland-stuff-deployment.sh)",
       "Bash(make vet:*)",
-      "Bash(go tool:*)",
+      "Bash(go:*)",
+      "Bash(helm template:*",
       "Bash(find:*"
     ]
   }

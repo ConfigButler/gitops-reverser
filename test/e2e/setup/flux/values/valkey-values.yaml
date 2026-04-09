@@ -1,5 +1,5 @@
-# Valkey Helm values for e2e testing
-# Standalone mode, no persistence, no auth, minimal resources
+# Valkey Helm values for e2e testing.
+# Standalone mode, no persistence, minimal resources, auth enabled.
 
 architecture: standalone
 
@@ -13,6 +13,12 @@ primary:
     requests:
       memory: "128Mi"
 
-# No authentication needed for e2e testing
+# Auth enabled. Password from pre-created valkey-auth secret.
+# The fixed password is intentional for test environments — not a security concern.
 auth:
-  enabled: false
+  enabled: true
+  usersExistingSecret: valkey-auth
+  aclUsers:
+    default:
+      permissions: "~* &* +@all"
+      passwordKey: password

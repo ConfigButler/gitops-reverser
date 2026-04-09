@@ -86,6 +86,14 @@ func main() {
 	cfg := parseFlags()
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&cfg.zapOpts)))
 
+	if cfg.auditRedisPassword == "" {
+		setupLog.Info(
+			"no Redis password configured — "+
+				"connecting to Valkey without authentication is not recommended for production deployments",
+			"hint", "set REDIS_PASSWORD env var via queue.redis.auth.existingSecret in the Helm chart",
+		)
+	}
+
 	// Log metrics configuration for debugging
 	setupLog.Info("Metrics configuration",
 		"metrics-bind-address", cfg.metricsAddr,
@@ -136,7 +144,7 @@ func main() {
 		Log:                    ctrl.Log.WithName("watch"),
 		RuleStore:              ruleStore,
 		EventRouter:            nil, // Will be set below
-		AuditLiveEventsEnabled: cfg.auditRedisEnabled,
+		AuditLiveEventsEnabled: true,
 	}
 
 	// Initialize EventRouter with all dependencies
@@ -174,52 +182,49 @@ func main() {
 		"unable to setup GitTarget validator webhook")
 	setupLog.Info("GitTarget validator webhook registered - enforcing uniqueness constraint")
 
-	// Register experimental audit webhook for metrics collection
-	var auditQueue webhookhandler.AuditEventQueue
-	if cfg.auditRedisEnabled {
-		auditQueue, err = queue.NewRedisAuditQueue(queue.RedisAuditQueueConfig{
+	// Register audit webhook receiver for metrics collection
+	auditQueue, err := queue.NewRedisAuditQueue(queue.RedisAuditQueueConfig{
+		Addr:       cfg.auditRedisAddr,
+		Username:   cfg.auditRedisUsername,
+		AuthValue:  cfg.auditRedisPassword,
+		DB:         cfg.auditRedisDB,
+		Stream:     cfg.auditRedisStream,
+		MaxLen:     cfg.auditRedisMaxLen,
+		TLSEnabled: cfg.auditRedisTLS,
+	})
+	fatalIfErr(err, "unable to initialize audit redis queue")
+	setupLog.Info("Audit Redis queue configured",
+		"redis-address", cfg.auditRedisAddr,
+		"stream", cfg.auditRedisStream,
+		"db", cfg.auditRedisDB,
+		"tls-enabled", cfg.auditRedisTLS)
+
+	// Register the audit stream consumer. It shares the same Redis config as the
+	// producer but uses a dedicated consumer group and ID (pod-name-scoped so that
+	// multiple replicas do not share a consumer identity).
+	consumerID := os.Getenv("POD_NAME")
+	if consumerID == "" {
+		consumerID = "gitopsreverser-consumer-0"
+	}
+	auditConsumer, consumerErr := queue.NewAuditConsumer(
+		queue.AuditConsumerConfig{
 			Addr:       cfg.auditRedisAddr,
 			Username:   cfg.auditRedisUsername,
 			AuthValue:  cfg.auditRedisPassword,
 			DB:         cfg.auditRedisDB,
 			Stream:     cfg.auditRedisStream,
-			MaxLen:     cfg.auditRedisMaxLen,
 			TLSEnabled: cfg.auditRedisTLS,
-		})
-		fatalIfErr(err, "unable to initialize audit redis queue")
-		setupLog.Info("Audit Redis queue enabled",
-			"redis-address", cfg.auditRedisAddr,
-			"stream", cfg.auditRedisStream,
-			"db", cfg.auditRedisDB,
-			"tls-enabled", cfg.auditRedisTLS)
-
-		// Register the audit stream consumer. It shares the same Redis config as the
-		// producer but uses a dedicated consumer group and ID (pod-name-scoped so that
-		// multiple replicas do not share a consumer identity).
-		consumerID := os.Getenv("POD_NAME")
-		if consumerID == "" {
-			consumerID = "gitopsreverser-consumer-0"
-		}
-		auditConsumer, consumerErr := queue.NewAuditConsumer(
-			queue.AuditConsumerConfig{
-				Addr:       cfg.auditRedisAddr,
-				Username:   cfg.auditRedisUsername,
-				AuthValue:  cfg.auditRedisPassword,
-				DB:         cfg.auditRedisDB,
-				Stream:     cfg.auditRedisStream,
-				TLSEnabled: cfg.auditRedisTLS,
-				ConsumerID: consumerID,
-			},
-			ruleStore,
-			eventRouter,
-			ctrl.Log.WithName("audit-consumer"),
-		)
-		fatalIfErr(consumerErr, "unable to initialize audit stream consumer")
-		fatalIfErr(mgr.Add(auditConsumer), "unable to add audit stream consumer to manager")
-		setupLog.Info("Audit stream consumer registered",
-			"stream", cfg.auditRedisStream,
-			"consumer-id", consumerID)
-	}
+			ConsumerID: consumerID,
+		},
+		ruleStore,
+		eventRouter,
+		ctrl.Log.WithName("audit-consumer"),
+	)
+	fatalIfErr(consumerErr, "unable to initialize audit stream consumer")
+	fatalIfErr(mgr.Add(auditConsumer), "unable to add audit stream consumer to manager")
+	setupLog.Info("Audit stream consumer registered",
+		"stream", cfg.auditRedisStream,
+		"consumer-id", consumerID)
 
 	auditHandler, err := webhookhandler.NewAuditHandler(webhookhandler.AuditHandlerConfig{
 		DumpDir:             cfg.auditDumpPath,
@@ -308,7 +313,6 @@ type appConfig struct {
 	auditReadTimeout         time.Duration
 	auditWriteTimeout        time.Duration
 	auditIdleTimeout         time.Duration
-	auditRedisEnabled        bool
 	auditRedisAddr           string
 	auditRedisUsername       string
 	auditRedisPassword       string
@@ -366,14 +370,12 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 		"Write timeout for the dedicated audit ingress HTTPS server.")
 	fs.DurationVar(&cfg.auditIdleTimeout, "audit-idle-timeout", defaultAuditIdleTimeout,
 		"Idle timeout for the dedicated audit ingress HTTPS server.")
-	fs.BoolVar(&cfg.auditRedisEnabled, "audit-redis-enabled", false,
-		"If set, accepted audit events are enqueued to Redis Streams for durable buffering.")
-	fs.StringVar(&cfg.auditRedisAddr, "audit-redis-addr", "",
+	fs.StringVar(&cfg.auditRedisAddr, "audit-redis-addr", "valkey:6379",
 		"Redis server address (<host>:<port>) for audit event queueing.")
 	fs.StringVar(&cfg.auditRedisUsername, "audit-redis-username", "",
 		"Optional Redis username for audit event queueing.")
-	fs.StringVar(&cfg.auditRedisPassword, "audit-redis-password", "",
-		"Optional Redis password for audit event queueing.")
+	fs.StringVar(&cfg.auditRedisPassword, "audit-redis-password", os.Getenv("REDIS_PASSWORD"),
+		"Redis password for audit event queueing. Prefer setting via REDIS_PASSWORD env var from a Kubernetes Secret rather than as a flag.")
 	fs.IntVar(&cfg.auditRedisDB, "audit-redis-db", 0,
 		"Redis database index for audit event queueing.")
 	fs.StringVar(&cfg.auditRedisStream, "audit-redis-stream", queue.DefaultRedisAuditStream,
@@ -442,8 +444,8 @@ func validateAuditConfig(cfg appConfig) error {
 	if cfg.auditIdleTimeout <= 0 {
 		return fmt.Errorf("audit-idle-timeout must be > 0, got %s", cfg.auditIdleTimeout)
 	}
-	if cfg.auditRedisEnabled && strings.TrimSpace(cfg.auditRedisAddr) == "" {
-		return errors.New("audit-redis-addr is required when audit-redis-enabled is true")
+	if strings.TrimSpace(cfg.auditRedisAddr) == "" {
+		return errors.New("audit-redis-addr is required")
 	}
 	if cfg.auditRedisDB < 0 {
 		return fmt.Errorf("audit-redis-db must be >= 0, got %d", cfg.auditRedisDB)

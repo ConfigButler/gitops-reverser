@@ -265,6 +265,7 @@ dist/install.yaml: $(HELM_SYNC_OUTPUTS) $$(CHART_INPUTS) | dist ## Generate cons
 		--namespace $(NAMESPACE) \
 		--set labels.managedBy=kubectl \
 		--set createNamespace=true \
+		--set queue.redis.addr=$(DEFAULT_AUDIT_REDIS_ADDR) \
 		--include-crds \
 		> $@
 
@@ -293,6 +294,10 @@ PROMETHEUS_PORT ?= 19090
 
 # Valkey E2E Configuration
 VALKEY_PORT ?= 16379
+DEFAULT_AUDIT_REDIS_ADDR ?= valkey:6379
+E2E_AUDIT_REDIS_ADDR ?= valkey.valkey-e2e.svc.cluster.local:6379
+E2E_VALKEY_PASSWORD ?= e2e-valkey-password
+E2E_CONTROLLER_SERVICE_CLUSTER_IP ?= 10.43.200.200
 
 FLUX_NAMESPACE ?= flux-system
 FLUX_WAIT_TIMEOUT ?= 300s
@@ -532,9 +537,18 @@ $(CS)/$(NAMESPACE)/helm/install.yaml: $(CS)/services.ready $(HELM_SYNC_OUTPUTS) 
 	if kubectl --context $(CTX) get crd $(INSTALL_CRDS) >/dev/null 2>&1; then
 		skip_crds_arg="--skip-crds"
 	fi
+	kubectl --context $(CTX) create namespace $(NAMESPACE) --dry-run=client -o yaml \
+		| kubectl --context $(CTX) apply -f -
+	kubectl --context $(CTX) -n $(NAMESPACE) create secret generic valkey-auth \
+		--from-literal=password=$(E2E_VALKEY_PASSWORD) \
+		--dry-run=client -o yaml | kubectl --context $(CTX) apply -f -
 	$(HELM) --kube-context $(CTX) upgrade --install $(INSTALL_NAME) "$(HELM_CHART_SOURCE)" \
 		--namespace $(NAMESPACE) \
 		--create-namespace \
+		--set queue.redis.addr=$(E2E_AUDIT_REDIS_ADDR) \
+		--set queue.redis.auth.existingSecret=valkey-auth \
+		--set queue.redis.auth.existingSecretKey=password \
+		--set service.clusterIP=$(E2E_CONTROLLER_SERVICE_CLUSTER_IP) \
 		$$skip_crds_arg
 	tmp_manifest="$(@D)/.$(@F).tmp"
 	$(HELM) --kube-context $(CTX) get manifest $(INSTALL_NAME) \
@@ -559,11 +573,10 @@ $(CS)/$(NAMESPACE)/config-dir/install.yaml: $(CS)/services.ready $(MANIFEST_OUTP
 $(CS)/$(NAMESPACE)/plain-manifests-file/install.yaml: $(CS)/services.ready dist/install.yaml | $(CS)/$(NAMESPACE)/plain-manifests-file
 	$(DO_CLEANUP_INSTALLS)
 	mkdir -p "$(@D)" # keep: cleanup script can delete this directory during the same recipe
-	ctx="$(CTX)"
-	ns="$(NAMESPACE)"
+	ctx="$(CTX)"; ns="$(NAMESPACE)"
 	tmpdir="$$(mktemp -d)"
 	trap 'rm -rf "$$tmpdir"' EXIT
-	cp dist/install.yaml "$$tmpdir/install.yaml"
+	cp dist/install.yaml "$$tmpdir/install.yaml" && sed -i 's|--audit-redis-addr=$(DEFAULT_AUDIT_REDIS_ADDR)|--audit-redis-addr=$(E2E_AUDIT_REDIS_ADDR)|' "$$tmpdir/install.yaml" && perl -0pi -e 's/type: ClusterIP\n/type: ClusterIP\n  clusterIP: $(E2E_CONTROLLER_SERVICE_CLUSTER_IP)\n/' "$$tmpdir/install.yaml"
 	printf '%s\n' \
 		'apiVersion: kustomize.config.k8s.io/v1beta1' \
 		'kind: Kustomization' \

@@ -34,7 +34,7 @@ Today the flow is:
 Kube API Audit Backend
   -> /audit-webhook/{clusterID}
   -> Audit Handler
-  -> Valkey/Redis stream enqueue (optional, feature-flagged)
+  -> Valkey/Redis stream enqueue (required)
   -> stream persistence only
 ```
 
@@ -88,14 +88,13 @@ The queue can be enabled at runtime with dedicated audit Redis flags.
 
 Implemented controls:
 
-1. `--audit-redis-enabled`
-2. `--audit-redis-addr`
-3. `--audit-redis-username`
-4. `--audit-redis-password`
-5. `--audit-redis-db`
-6. `--audit-redis-stream`
-7. `--audit-redis-max-len`
-8. `--audit-redis-tls`
+1. `--audit-redis-addr`
+2. `--audit-redis-username`
+3. `--audit-redis-password`
+4. `--audit-redis-db`
+5. `--audit-redis-stream`
+6. `--audit-redis-max-len`
+7. `--audit-redis-tls`
 
 Deployment status:
 

@@ -7,7 +7,7 @@ Helm chart, and why Valkey Streams are a good fit for the event pipeline.
 
 1. Use **Valkey Streams + Consumer Groups** as the durable event bus.
 2. Use **Valkey lock keys** (`SET key value NX EX`) for single active writer per `{repoURL, branch}` partition.
-3. Keep Valkey as an **optional external dependency by default**.
+3. Treat Valkey as a **required external dependency** for supported GitOps Reverser deployments.
 4. Add an **optional Helm subchart** for convenience (disabled by default), not as the only deployment mode.
 
 This aligns with the current project direction in `README.md` (planned HA via Valkey) and with the rewrite goals in
