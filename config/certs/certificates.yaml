@@ -29,6 +29,9 @@ spec:
   dnsNames:
   - gitops-reverser-service.sut.svc
   - gitops-reverser-service.sut.svc.cluster.local
+  - localhost
+  ipAddresses:
+  - 127.0.0.1
   issuerRef:
     kind: Issuer
     name: gitops-reverser-selfsigned-issuer

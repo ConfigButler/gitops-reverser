@@ -66,7 +66,11 @@ See [`docs/bi-directional.md`](docs/bi-directional.md) for the coordination guid
 **Prerequisites**
 
 - Kubernetes cluster with `kubectl` configured
-- TODO: Configure your kube api server to forward to some ip adres?
+- cert-manager for TLS certificate management
+
+GitOps Reverser relies on the Kubernetes [audit webhook backend](https://kubernetes.io/docs/tasks/debug/debug-cluster/audit/#webhook-backend), which requires access to kube-apiserver configuration. This works best on clusters you fully control (k3s, k3d, Talos, Kamaji). Managed platforms (EKS, GKE, AKS) restrict this access. See [`docs/design/audit-webhook-api-server-connectivity.md`](docs/design/audit-webhook-api-server-connectivity.md) for a full discussion of your options.
+
+**The quick start assumes the GitOps Reverser service is reachable at ClusterIP `10.43.200.200`.** Point your audit webhook config at `https://10.43.200.200:9444/audit-webhook` with `insecure-skip-tls-verify: true`. This is the default for k3s/k3d; adjust if your cluster's service CIDR differs.
 
 **1. Install cert-manager**
 
