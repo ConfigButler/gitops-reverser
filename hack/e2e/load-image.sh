@@ -70,12 +70,18 @@ cluster_node_names() {
 		| sort
 }
 
-# Pin the image on every node so containerd's GC never evicts it.
-# Uses the io.cri-containerd.pinned label, which containerd honours as a GC root.
-pin_image() {
+# Import the image directly into each node's containerd by piping docker save output.
+# This bypasses k3d's volume-based import mechanism, which silently fails in
+# Docker-outside-of-Docker CI environments (the shared image volume tarball is not
+# accessible inside the k3s node containers).
+import_image_direct() {
 	local ref="$1"
 	local node_name
 	while IFS= read -r node_name; do
+		echo "  → importing into ${node_name}"
+		"${CONTAINER_TOOL}" save "${PROJECT_IMAGE}" \
+			| "${CONTAINER_TOOL}" exec -i "${node_name}" \
+				ctr -n k8s.io images import -
 		"${CONTAINER_TOOL}" exec "${node_name}" \
 			ctr -n k8s.io images label "${ref}" io.cri-containerd.pinned=pinned \
 			>/dev/null
@@ -102,9 +108,6 @@ fi
 ref="$(containerd_ref "${IMAGE_REPO}" "${IMAGE_TAG}")"
 
 echo "Loading ${PROJECT_IMAGE} (${img_id}) into ${CTX}"
-"${K3D}" image import "${PROJECT_IMAGE}" -c "${CLUSTER_NAME}"
-
-echo "Pinning ${ref} on ${CTX} nodes (prevents containerd GC)"
-pin_image "${ref}"
+import_image_direct "${ref}"
 
 echo "${img_id}" >"${STAMP_FILE}"
