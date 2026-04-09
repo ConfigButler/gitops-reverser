@@ -29,3 +29,4 @@ spec:
       protocol: TCP
   selector:
     {{- include "gitops-reverser.selectorLabels" . | nindent 4 }}
+    control-plane: gitops-reverser

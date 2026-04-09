@@ -42,8 +42,7 @@ func TestParseFlagsWithArgs_Defaults(t *testing.T) {
 	assert.Equal(t, 15*time.Second, cfg.auditReadTimeout)
 	assert.Equal(t, 30*time.Second, cfg.auditWriteTimeout)
 	assert.Equal(t, 60*time.Second, cfg.auditIdleTimeout)
-	assert.False(t, cfg.auditRedisEnabled)
-	assert.Empty(t, cfg.auditRedisAddr)
+	assert.Equal(t, "valkey:6379", cfg.auditRedisAddr)
 	assert.Equal(t, "gitopsreverser.audit.events.v1", cfg.auditRedisStream)
 	assert.Equal(t, int64(0), cfg.auditRedisMaxLen)
 	assert.False(t, cfg.auditRedisTLS)
@@ -74,7 +73,6 @@ func TestParseFlagsWithArgs_CustomAuditValues(t *testing.T) {
 		"--audit-read-timeout=5s",
 		"--audit-write-timeout=8s",
 		"--audit-idle-timeout=13s",
-		"--audit-redis-enabled",
 		"--audit-redis-addr=127.0.0.1:6379",
 		"--audit-redis-username=user",
 		"--audit-redis-password=pass",
@@ -96,7 +94,6 @@ func TestParseFlagsWithArgs_CustomAuditValues(t *testing.T) {
 	assert.Equal(t, 5*time.Second, cfg.auditReadTimeout)
 	assert.Equal(t, 8*time.Second, cfg.auditWriteTimeout)
 	assert.Equal(t, 13*time.Second, cfg.auditIdleTimeout)
-	assert.True(t, cfg.auditRedisEnabled)
 	assert.Equal(t, "127.0.0.1:6379", cfg.auditRedisAddr)
 	assert.Equal(t, "user", cfg.auditRedisUsername)
 	assert.Equal(t, "pass", cfg.auditRedisPassword)
@@ -135,8 +132,8 @@ func TestParseFlagsWithArgs_InvalidAuditSettings(t *testing.T) {
 			args: []string{"--audit-read-timeout=0s"},
 		},
 		{
-			name: "redis enabled without address",
-			args: []string{"--audit-redis-enabled"},
+			name: "empty redis address",
+			args: []string{"--audit-redis-addr="},
 		},
 		{
 			name: "invalid redis db",

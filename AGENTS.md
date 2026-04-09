@@ -99,6 +99,4 @@ make test-e2e-quickstart-helm
 
 ## REFERENCES
 
-- Full guidelines: [`DEVELOPMENT_RULES.md`](../../DEVELOPMENT_RULES.md)
-- Implementation checklist: [`IMPLEMENTATION_CHECKLIST.md`](../../IMPLEMENTATION_CHECKLIST.md)
-- Contributing guide: [`CONTRIBUTING.md`](../../CONTRIBUTING.md)
+- Contributing guide: [`CONTRIBUTING.md`](./CONTRIBUTING.md)

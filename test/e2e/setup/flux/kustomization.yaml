@@ -32,3 +32,11 @@ configMapGenerator:
     namespace: valkey-e2e
     files:
       - values.yaml=values/valkey-values.yaml
+
+secretGenerator:
+  - name: valkey-auth
+    namespace: valkey-e2e
+    literals:
+      - password=e2e-valkey-password
+    options:
+      disableNameSuffixHash: true

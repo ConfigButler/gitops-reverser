@@ -1,5 +1,8 @@
 # Webhook Audit Pipeline: Current State, Remaining Hackiness, and Secret Handling
 
+> **This is the authoritative current-state document for the audit ingestion pipeline.**
+> For implementation history and the migration journey, see `docs/past/`.
+
 ## Purpose
 
 This document captures the current state of the webhook-audit ingestion pipeline after the recent fixes, with a focus on:
@@ -10,7 +13,7 @@ This document captures the current state of the webhook-audit ingestion pipeline
 4. how Secret handling works today
 5. what better alternatives exist for Secret handling
 
-This document reflects the code and test state validated on 2026-04-08.
+This document reflects the code and test state validated on 2026-04-09. All e2e suites pass.
 
 ## Executive Summary
 
@@ -22,13 +25,13 @@ The system is now green again:
 - `make test-e2e-quickstart-manifest` passes
 - `make test-e2e-quickstart-helm` passes
 
-The webhook-audit migration is now functionally working, but the architecture still has one important tradeoff:
+The webhook-audit migration is now functionally working. The architecture is operationally uniform:
 
-- audit is the authority for live mutating events when audit Redis is enabled
-- watch is still used for snapshot/reconcile behavior
-- Secrets now also flow through the audit path, which means plaintext Secret payloads are persisted in Valkey before Git-side SOPS encryption
+- audit is the single authority for all live mutating events
+- watch is still used for snapshot/reconcile behavior only
+- Secrets flow through the audit path the same as any other resource
 
-That model is operationally uniform for live events, but it accepts a larger security tradeoff in exchange for simpler behavior.
+The accepted tradeoff: raw Secret payloads are persisted in Valkey as `payload_json` before Git-side SOPS encryption applies. This is a deliberate choice — uniformity over a separate Secret ingestion path. The audit queue must be secured with auth and TLS as a result (see `final-redis-required-plan.md`).
 
 ## What Was Broken
 
@@ -63,7 +66,7 @@ This turned out to be two separate problems stacked together:
 
 ## Audit authority for live mutations
 
-When `--audit-redis-enabled` is true:
+Now that audit queueing is required:
 
 - live watch-path mutation routing is suppressed for all resources
 - audit consumer is the live mutation source of truth
@@ -196,119 +199,38 @@ Regardless of resource type, watch manager still performs cluster-state snapshot
 
 That snapshot flow is still watch-manager driven, not audit-consumer driven.
 
-## Current Secret Tradeoff
+## Current Secret Handling
 
-The short version is:
+Secrets are no longer a special case. The watch-path exception for Secrets was removed: when
+`AuditLiveEventsEnabled` is true, all live watch events are suppressed for all resources, including
+Secrets. The audit policy also no longer excludes Secrets.
 
-- Git encryption is not the risky point
-- audit ingestion before Git is the risky point
+The current flow for a live Secret mutation:
 
-## What the audit policy currently does
+1. kube-apiserver emits a Secret audit event (with `data`/`binaryData` in the payload)
+2. audit webhook receives it
+3. producer stores the raw event JSON in Valkey stream field `payload_json`
+4. audit consumer reads it, extracts the object via `extractObject`
+5. the object passes through `sanitize.Sanitize` (which currently preserves `data`/`binaryData`)
+6. Git write path applies SOPS encryption if configured before committing
 
-The audit policy in [test/e2e/cluster/audit/policy.yaml](../../test/e2e/cluster/audit/policy.yaml) explicitly excludes Secrets at `level: None`:
+**The accepted tradeoff:** raw Secret material is persisted in Valkey before SOPS encryption applies.
+This is why the audit queue must be secured. An unauthenticated Valkey with Secrets in the stream
+is a plaintext Secret exfiltration point.
 
-- group `""`
-- resource `"secrets"`
+**Why this is still the correct choice over the old exception:** the exception created split-brain
+provenance (audit for everything, watch for Secrets), which caused author-attribution races and
+added hidden complexity. Uniformity is operationally safer even if it means a stricter Valkey
+security requirement.
 
-That means kube-apiserver does not send Secret request/response bodies to the audit webhook at all.
+**Future improvement:** producer-side redaction of sensitive fields before writing to `payload_json`.
+This would shrink the security blast radius without reintroducing a separate ingestion path.
 
-## Why this matters
+## Where the Architecture Is Still Uneven
 
-If Secrets were removed from that exclusion, then for mutating requests the policy would fall through to:
+The system is correct and all suites pass, but there are still rough edges worth tracking.
 
-- `level: RequestResponse`
-
-At that point Secret content would be present in audit events before we ever reach Git.
-
-## Where that sensitive content would go
-
-Today, the audit path persists raw event payloads before sanitization:
-
-- audit webhook receives Secret request/response payload
-- producer stores the event JSON in Redis stream field `payload_json`
-- consumer later parses it
-
-The important detail is that sanitization does not save us here, because persistence happens before sanitization.
-
-Also, the sanitizer currently preserves Secret payload fields:
-
-- `data`
-- `binaryData`
-
-See:
-
-- [internal/sanitize/sanitize.go](../../internal/sanitize/sanitize.go)
-
-So even if we later sanitize for Git output, we still would already have written raw Secret data into the audit pipeline.
-
-## Exact behavior of the Secret exception today
-
-The current Secret behavior is the combined result of three choices.
-
-### 1. Audit policy excludes Secret audit events
-
-In [test/e2e/cluster/audit/policy.yaml](../../test/e2e/cluster/audit/policy.yaml):
-
-- Secrets are filtered out
-- no Secret audit payload enters the webhook audit flow
-
-### 2. Watch-path live suppression explicitly exempts Secrets
-
-In [internal/watch/informers.go](../../internal/watch/informers.go), when `AuditLiveEventsEnabled` is true:
-
-- live watch routing is skipped for almost everything
-- but `g.Resource == "secrets"` is allowed through
-
-So Secrets still emit live `git.Event`s from the informer path.
-
-### 3. Git write path encrypts committed Secret material
-
-Once the watch event reaches the Git layer:
-
-- Secret manifests are written through the existing SOPS-aware content path
-- the committed file is encrypted if target encryption is configured
-
-So the current design is:
-
-- do not ingest live Secret mutations through audit
-- do ingest live Secret mutations through watch
-- do encrypt them before Git persistence
-
-That is why the Secret exception is both:
-
-- a security workaround
-- an architectural inconsistency
-
-## Why This Is Still Hacky
-
-The system is correct now, but there are still several hacky edges.
-
-## 1. We still have two authorities depending on resource class
-
-Today the answer to “where does a live mutation come from?” is:
-
-- audit for most resources
-- watch for Secrets
-
-That is workable, but it means behavior differs by resource type in a way that is not obvious from the outside.
-
-This increases debugging cost because event provenance is conditional, not uniform.
-
-## 2. The Secret exception is encoded in more than one place
-
-The Secret behavior is not governed by one clean abstraction.
-
-It depends on:
-
-- audit policy excluding Secrets
-- watch routing code exempting Secrets
-- Git encryption being configured and working
-
-That means the design invariant is spread across policy, runtime logic, and write semantics.
-
-If someone later changes only one layer, the system can become unsafe again.
-
-## 3. Audit payload persistence is too raw
+## 1. Audit payload persistence is too raw
 
 The audit producer stores raw `payload_json`.
 
@@ -319,7 +241,7 @@ That is convenient for fidelity and debugging, but it means the security boundar
 
 This is the core reason the Secret exception exists.
 
-## 4. Snapshot/reconcile is still broad and somewhat blunt
+## 2. Snapshot/reconcile is still broad and somewhat blunt
 
 Rule changes can trigger snapshot reconciles across affected GitTargets, which is correct, but still noisy:
 
@@ -331,7 +253,7 @@ This is robust, but not especially surgical.
 
 It is more “refresh the world for this target” than “precisely reconcile only the minimal impacted subset”.
 
-## 5. Unavailable-GVR handling still affects nearby flows
+## 3. Unavailable-GVR handling still affects nearby flows
 
 When a CRD disappears, the watch manager continues tracking unavailable GVRs and retrying them.
 
@@ -343,7 +265,7 @@ That behavior is useful, but it still creates side-channel complexity:
 
 It is better than before, but still not elegant.
 
-## 6. Snapshot logic and live logic are still conceptually separate systems
+## 4. Snapshot logic and live logic are still conceptually separate systems
 
 The system now has:
 
@@ -359,183 +281,40 @@ That means bugs tend to appear at the seams:
 - source precedence
 - rule-change timing
 
-## Is There a Better Alternative for Secrets?
+## Future Improvement: Reduce Payload Sensitivity in the Queue
 
-Yes. There are better designs than the current exception.
+The cleanest long-term fix is to stop storing full raw audit payloads and instead write only the
+fields the consumer actually needs for routing and Git writing. This would dramatically reduce the
+security blast radius of a compromised Valkey instance.
 
-The current exception is the safest short-term option, but not the cleanest long-term one.
-
-## Option A: Redact Secrets before Redis persistence
-
-This is the most direct improvement.
-
-Design:
-
-1. audit webhook receives a Secret event
-2. before enqueueing to Redis, producer detects Secret resource
-3. producer removes or replaces sensitive fields:
-   - `data`
-   - `stringData`
-   - `binaryData`
-4. only the redacted payload is persisted
-
-### Pros
-
-- keeps audit as the live authority even for Secrets
-- removes the watch-path exception
-- preserves most of the current audit architecture
-
-### Cons
-
-- must be implemented very carefully
-- redaction must happen before any persistence or logging
-- if redaction misses an embedded Secret-like payload, we still leak
-
-### Assessment
-
-This is the most realistic near-term improvement.
-
-## Option B: Store only normalized routing fields, not raw audit payloads
-
-Design:
-
-- producer extracts only the minimum fields needed for routing:
-  - operation
-  - group/version/resource
-  - namespace/name
-  - user identity
-  - sanitized or redacted object form
-- raw `payload_json` is not stored
-
-### Pros
-
-- much stronger security boundary
-- reduces accidental persistence of sensitive webhook data
-- simplifies what the consumer needs to trust
-
-### Cons
-
-- bigger design change
-- loses some debugging fidelity from raw audit events
-- requires stronger schema/versioning discipline for the queue format
-
-### Assessment
-
-Architecturally cleaner than the current model. This is probably the best long-term design if the project wants audit to be the durable source of truth.
-
-## Option C: Allow Secret audit events but use metadata-only audit level
-
-Design:
-
-- keep Secrets in audit
-- do not capture request/response bodies for Secrets
-- only use metadata for routing and attribution
-
-### Pros
-
-- avoids raw Secret payload persistence
-- still lets audit carry user attribution and intent metadata
-
-### Cons
-
-- the consumer would not have the Secret body to commit
-- so audit alone could not write the Secret manifest
-- you would still need a second source for Secret contents
-
-### Assessment
-
-Good for observability, not sufficient for Git writing by itself.
-
-It reduces the security problem but does not remove the need for a separate Secret-content path.
-
-## Option D: Dedicated Secret ingestion path
-
-Design:
-
-- explicitly treat Secrets as a first-class separate ingestion mode
-- make that separation visible in code and docs
-- use a specialized Secret event path that:
-  - reads live state from the API
-  - encrypts before persistence
-  - never stores plaintext in Redis
-
-### Pros
-
-- more honest than a hidden exception
-- can be made secure and explicit
-- allows Secret-specific guarantees
-
-### Cons
-
-- still means multiple ingestion architectures
-- more code and more mental model complexity
-
-### Assessment
-
-Better than the current implicit exception if the project decides Secrets truly require a distinct handling model.
-
-## Recommended Direction
-
-My recommendation is:
-
-### Short term
-
-Keep the current Secret exception.
-
-Reason:
-
-- it is now validated
-- it is safer than simply letting Secret audit payloads flow into Redis
-- it keeps the system green
-
-### Medium term
-
-Implement producer-side pre-persistence redaction for Secrets and other sensitive resource classes.
-
-Best target:
-
-- redact before writing to Redis
-- then remove the watch live-routing exception for Secrets
-
-This would let audit become the single live mutation authority for all resources, which is much cleaner.
-
-### Long term
-
-Consider replacing raw `payload_json` persistence with a normalized, purpose-built audit queue envelope.
-
-That is the cleanest architectural end state:
-
-- smaller security surface
-- fewer source races
-- clearer contracts between producer and consumer
+Near-term practical step: redact `data`, `stringData`, and `binaryData` in the producer before
+writing `payload_json`, similar to how the sanitizer works for Git output. This keeps the current
+architecture but removes the most sensitive content from the queue.
 
 ## Current State Summary
 
-The system is now in a good operational state, but not yet in a perfect architectural state.
+The system is in a good operational state. All validation suites pass.
 
-### Clean and solid now
+### Clean and solid
 
+- audit is the single authority for all live mutations (including Secrets)
 - audit consumer self-heals `NOGROUP`
-- custom-resource audit mapping is correct
-- username attribution is preserved through audit path
-- CRD delete flow works again
-- full validation suites are green
+- custom-resource audit API group mapping is correct
+- username attribution is preserved through the audit path
+- CRD delete flow works
+- snapshot/reconcile still works correctly via the watch path
 
-### Still a bit hacky
+### Still uneven
 
-- Secrets are a special-case live-path exception
-- audit persistence is still too raw
-- watch and audit are still split-brain by design, even if much less dangerously than before
+- audit persistence stores raw `payload_json`, including raw Secret material
+- snapshot/reconcile is broad rather than surgical
+- watch and audit remain two conceptually separate systems coordinated at the seams
 
 ## Practical Bottom Line
 
-If the question is “are we in a good place now?”:
-
-- yes, functionally
-
-If the question is “is this the clean final design?”:
-
-- not yet
+Functionally solid. The main remaining architectural debt is raw payload persistence in Valkey — and
+the mitigation for that is requiring auth on the queue, which is now documented and planned in
+`final-redis-required-plan.md`.
 
 The main remaining architectural debt is Secret handling.
 
