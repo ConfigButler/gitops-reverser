@@ -190,9 +190,15 @@ $(CS)/$(NAMESPACE)/git-$(REPO_NAME)/checkout.ready: $(CS)/gitea/bootstrap/org-$(
 # Called by the full e2e suite.
 # For now: clean the sut namespace, recreate it, run the installer, and deploy the controller image.
 # Prefer depending on stamps; this target must not invoke Go e2e tests (Go calls this target).
+$(CS)/$(NAMESPACE)/webhook-tls.ready: $(CS)/$(NAMESPACE)/controller.deployed | $(CS)/$(NAMESPACE)
+	CTX="$(CTX)" CLUSTER_NAME="$(CLUSTER_NAME)" NAMESPACE="$(NAMESPACE)" \
+		bash hack/e2e/inject-webhook-tls.sh
+	touch $@
+
 $(CS)/$(NAMESPACE)/prepare-e2e.ready: $(CS)/$(NAMESPACE)/$(INSTALL_MODE)/install.yaml \
 	$(CS)/image.loaded \
 	$(CS)/$(NAMESPACE)/controller.deployed \
+	$(CS)/$(NAMESPACE)/webhook-tls.ready \
 	$(CS)/$(NAMESPACE)/sops-secret.applied \
 	| $(CS)/$(NAMESPACE)
 	touch $@
