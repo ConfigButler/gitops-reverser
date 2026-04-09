@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.20.0](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.19.3...gitops-reverser-v0.20.0) (2026-04-09)
+
+
+### Features
+
+* audit webhooks it is ([ff31254](https://github.com/ConfigButler/gitops-reverser/commit/ff312545657f83bc24773a95cca6299e20f6356d))
+
+
+### Bug Fixes
+
+* Handle deletion 'updates' by checking for terminating and deletionTimestamp ([fdf4214](https://github.com/ConfigButler/gitops-reverser/commit/fdf421425940a35a55b668c5b740d2fb73efeef7))
+
+
+### Documentation
+
+* Adjusting docs to how it all works now ([f8c7796](https://github.com/ConfigButler/gitops-reverser/commit/f8c7796976aa15df2ba2194f0dd2276c0e8c05e3))
+* Improving quick-start quality by moving to helm ([cf25552](https://github.com/ConfigButler/gitops-reverser/commit/cf255528d422358945e7fa2acad3b09bbff1f260))
+
 ## [0.19.3](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.19.2...gitops-reverser-v0.19.3) (2026-03-23)
 
 
