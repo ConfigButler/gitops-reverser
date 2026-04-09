@@ -33,7 +33,8 @@ import (
 )
 
 const (
-	defaultAuditRedisStream = "gitopsreverser.audit.events.v1"
+	defaultAuditRedisStream  = "gitopsreverser.audit.events.v1"
+	defaultE2EValkeyPassword = "e2e-valkey-password"
 )
 
 var _ = Describe("Audit Redis Queue", Label("audit-redis"), Ordered, func() {
@@ -59,7 +60,8 @@ var _ = Describe("Audit Redis Queue", Label("audit-redis"), Ordered, func() {
 
 		By("connecting to Valkey through the e2e port-forward")
 		client := redis.NewClient(&redis.Options{
-			Addr: valkeyPortForwardAddr(),
+			Addr:     valkeyPortForwardAddr(),
+			Password: valkeyPortForwardPassword(),
 		})
 		Eventually(func(g Gomega) {
 			g.Expect(client.Ping(context.Background()).Err()).NotTo(HaveOccurred())
@@ -155,7 +157,10 @@ var _ = Describe("Audit Redis Consumer", Label("audit-redis"), Ordered, func() {
 		applySOPSAgeKeyToNamespace(testNs)
 
 		By("connecting to Valkey through the e2e port-forward")
-		valkeyClient = redis.NewClient(&redis.Options{Addr: valkeyPortForwardAddr()})
+		valkeyClient = redis.NewClient(&redis.Options{
+			Addr:     valkeyPortForwardAddr(),
+			Password: valkeyPortForwardPassword(),
+		})
 		Eventually(func(g Gomega) {
 			g.Expect(valkeyClient.Ping(context.Background()).Err()).NotTo(HaveOccurred())
 		}, 30*time.Second, 2*time.Second).Should(Succeed())
@@ -269,4 +274,12 @@ func valkeyPortForwardAddr() string {
 		port = "16379"
 	}
 	return "127.0.0.1:" + port
+}
+
+func valkeyPortForwardPassword() string {
+	password := strings.TrimSpace(os.Getenv("E2E_VALKEY_PASSWORD"))
+	if password == "" {
+		return defaultE2EValkeyPassword
+	}
+	return password
 }
