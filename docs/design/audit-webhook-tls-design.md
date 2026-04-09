@@ -252,15 +252,19 @@ spec:
   issuerRef:
     name: gitops-reverser-audit-ca-issuer
     kind: Issuer
-  duration: 8760h # 1 year
+  duration: 87600h # 10 years
   renewBefore: 720h # 30 days
   privateKey:
     rotationPolicy: Always
 ```
 
-If we discover that even yearly client-cert rotation is too operationally noisy, extend this lifetime further and rotate
-it during planned control-plane maintenance. The key design point is that **serving cert rotation should be frequent and
-automatic; apiserver client credential rotation should be infrequent and explicit.**
+The intent is to protect sysadmins from repeated manual kube-apiserver audit-webhook kubeconfig updates and control-plane
+reconfiguration. The key design point is that **serving cert rotation should be frequent and automatic; apiserver client
+credential rotation should be infrequent and explicit.**
+
+If an operator wants a shorter lifetime, that should remain configurable, but it should come with a clear warning:
+shorter client-cert rotation increases the frequency of node-side kubeconfig redistribution and kube-apiserver
+maintenance.
 
 ## The kubeconfig kube-apiserver should trust
 

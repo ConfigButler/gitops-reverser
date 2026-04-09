@@ -29,6 +29,7 @@ spec:
         - --health-probe-bind-address=:8081
         - --webhook-cert-path=/tmp/k8s-admission-server/admission-server-certs
         - --audit-cert-path=/tmp/k8s-audit-server/audit-server-certs
+        - --audit-client-ca-path=/tmp/k8s-audit-server/audit-client-ca
         - --audit-redis-addr=valkey.valkey-e2e.svc.cluster.local:6379
         - --audit-redis-stream=gitopsreverser.audit.events.v1
         command:
@@ -93,6 +94,9 @@ spec:
         - mountPath: /tmp/k8s-audit-server/audit-server-certs
           name: audit-webhook-certs
           readOnly: true
+        - mountPath: /tmp/k8s-audit-server/audit-client-ca
+          name: audit-client-ca
+          readOnly: true
       securityContext:
         runAsNonRoot: true
         seccompProfile:
@@ -108,3 +112,6 @@ spec:
       - name: audit-webhook-certs
         secret:
           secretName: audit-server-cert
+      - name: audit-client-ca
+        secret:
+          secretName: gitops-reverser-audit-root-ca

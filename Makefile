@@ -110,6 +110,11 @@ PROJECT_IMAGE := $(if $(PROJECT_IMAGE_INPUT),$(PROJECT_IMAGE_INPUT),$(E2E_LOCAL_
 PROJECT_IMAGE_PROVIDED := $(if $(filter-out $(E2E_LOCAL_IMAGE),$(PROJECT_IMAGE_INPUT)),true,)
 export PROJECT_IMAGE
 export PROJECT_IMAGE_PROVIDED
+# IMAGE_DELIVERY_MODE controls how the cluster gets the controller image:
+# - load (default): import into k3d from the local Docker daemon
+# - pull: let Kubernetes pull from the registry at rollout time
+IMAGE_DELIVERY_MODE ?= load
+export IMAGE_DELIVERY_MODE
 E2E_AGE_KEY_FILE ?= /tmp/e2e-age-key.txt
 
 # CTX: kubeconfig context for the cluster being operated on.
@@ -119,6 +124,12 @@ CTX ?= k3d-gitops-reverser-test-e2e
 CLUSTER_NAME ?= $(patsubst kind-%,%,$(patsubst k3d-%,%,$(CTX)))
 CS := .stamps/cluster/$(CTX)
 IS := .stamps/image
+AUDIT_ASSET_SOURCE_DIR := test/e2e/cluster/audit
+AUDIT_ASSET_DIR := $(CS)/audit
+AUDIT_POLICY_SOURCE := $(AUDIT_ASSET_SOURCE_DIR)/policy.yaml
+AUDIT_WEBHOOK_BOOTSTRAP_SOURCE := $(AUDIT_ASSET_SOURCE_DIR)/webhook-config.yaml
+AUDIT_POLICY_PATH := $(AUDIT_ASSET_DIR)/policy.yaml
+AUDIT_WEBHOOK_CONFIG_PATH := $(AUDIT_ASSET_DIR)/webhook-config.yaml
 GO_SOURCES = $(shell find cmd internal api -type f -name '*.go' \
 	! -name '*_test.go' ! -name 'zz_generated.deepcopy.go') go.mod go.sum
 
@@ -192,6 +203,7 @@ $(CS)/$(NAMESPACE)/git-$(REPO_NAME)/checkout.ready: $(CS)/gitea/bootstrap/org-$(
 # Prefer depending on stamps; this target must not invoke Go e2e tests (Go calls this target).
 $(CS)/$(NAMESPACE)/webhook-tls.ready: $(CS)/$(NAMESPACE)/controller.deployed | $(CS)/$(NAMESPACE)
 	CTX="$(CTX)" CLUSTER_NAME="$(CLUSTER_NAME)" NAMESPACE="$(NAMESPACE)" \
+		WEBHOOK_CONFIG="$(AUDIT_WEBHOOK_CONFIG_PATH)" \
 		bash hack/e2e/inject-webhook-tls.sh
 	touch $@
 
@@ -324,12 +336,19 @@ $(ENVTEST_STAMP): Makefile
 
 ##@ E2E Stamp Targets (cluster-parameterized; pass CTX=k3d-<name> to target a different cluster)
 
-$(CS) $(IS) $(CS)/$(NAMESPACE) $(CS)/gitea/bootstrap \
+$(CS) $(IS) $(CS)/audit $(CS)/$(NAMESPACE) $(CS)/gitea/bootstrap \
 $(CS)/$(NAMESPACE)/helm $(CS)/$(NAMESPACE)/config-dir $(CS)/$(NAMESPACE)/plain-manifests-file dist:
 	mkdir -p $@
 
-$(CS)/ready: test/e2e/cluster/start-cluster.sh | $(CS)
+$(AUDIT_POLICY_PATH): $(AUDIT_POLICY_SOURCE) | $(CS)/audit
+	cp "$(AUDIT_POLICY_SOURCE)" "$@"
+
+$(AUDIT_WEBHOOK_CONFIG_PATH): $(AUDIT_WEBHOOK_BOOTSTRAP_SOURCE) | $(CS)/audit
+	cp "$(AUDIT_WEBHOOK_BOOTSTRAP_SOURCE)" "$@"
+
+$(CS)/ready: test/e2e/cluster/start-cluster.sh $(AUDIT_POLICY_PATH) $(AUDIT_WEBHOOK_CONFIG_PATH) | $(CS)
 	export CLUSTER_NAME=$(CLUSTER_NAME)
+	export AUDIT_DIR_REL=$(AUDIT_ASSET_DIR)
 	bash test/e2e/cluster/start-cluster.sh
 	kubectl --context $(CTX) get ns >/dev/null
 	touch $@
@@ -439,12 +458,18 @@ $(CS)/crds.applied: $(CS)/ready $$(CRD_INPUTS) | $(CS)
 $(CS)/image.loaded: $(IS)/project-image.ready $(CS)/ready | $(CS)
 	CTX="$(CTX)" CLUSTER_NAME="$(CLUSTER_NAME)" PROJECT_IMAGE="$(PROJECT_IMAGE)" \
 		PROJECT_IMAGE_PROVIDED="$(PROJECT_IMAGE_PROVIDED)" \
+		IMAGE_DELIVERY_MODE="$(IMAGE_DELIVERY_MODE)" \
 		CONTROLLER_ID_STAMP="$(IS)/controller.id" \
 		CONTAINER_TOOL="$(CONTAINER_TOOL)" K3D="$(K3D)" STAMP_FILE="$@" \
 		bash hack/e2e/load-image.sh
 
 $(CS)/$(NAMESPACE)/controller.deployed: $(CS)/$(NAMESPACE)/$(INSTALL_MODE)/install.yaml $(CS)/image.loaded | $(CS)/$(NAMESPACE)
 	CTX="$(CTX)" NAMESPACE="$(NAMESPACE)" PROJECT_IMAGE="$(PROJECT_IMAGE)" \
+		IMAGE_DELIVERY_MODE="$(IMAGE_DELIVERY_MODE)" \
+		IMAGE_PULL_SECRET_NAME="$(IMAGE_PULL_SECRET_NAME)" \
+		IMAGE_PULL_SECRET_REGISTRY="$(IMAGE_PULL_SECRET_REGISTRY)" \
+		IMAGE_PULL_SECRET_USERNAME="$(IMAGE_PULL_SECRET_USERNAME)" \
+		IMAGE_PULL_SECRET_PASSWORD="$(IMAGE_PULL_SECRET_PASSWORD)" \
 		CONTROLLER_CONTAINER="$(CONTROLLER_CONTAINER)" \
 		CONTROLLER_DEPLOY_SELECTOR="$(CONTROLLER_DEPLOY_SELECTOR)" \
 		bash hack/e2e/deploy-controller.sh

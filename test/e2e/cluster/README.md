@@ -8,11 +8,12 @@ By default, the cluster bootstrap also disables packaged k3s Traefik and k3s Ser
 
 - [`start-cluster.sh`](start-cluster.sh): creates/reuses a k3d cluster and configures kubeconfig for devcontainer usage
 - [`audit/policy.yaml`](audit/policy.yaml): Kubernetes audit policy used by kube-apiserver
-- [`audit/webhook-config.yaml`](audit/webhook-config.yaml): webhook target used by kube-apiserver audit backend
+- [`audit/webhook-config.yaml`](audit/webhook-config.yaml): tracked bootstrap source for the mounted audit webhook kubeconfig
 
 ## How It Works
 
-`start-cluster.sh` mounts the local audit directory into the k3d server node and sets:
+The Makefile first copies the tracked audit assets into `.stamps/cluster/<ctx>/audit/`.
+`start-cluster.sh` mounts that generated directory into the k3d server node and sets:
 
 - `audit-policy-file=/etc/kubernetes/audit/policy.yaml`
 - `audit-webhook-config-file=/etc/kubernetes/audit/webhook-config.yaml`
@@ -26,13 +27,14 @@ It also disables these packaged k3s components by default:
 - `traefik`
 - `servicelb`
 
-The webhook URL in [`audit/webhook-config.yaml`](audit/webhook-config.yaml) targets:
+The bootstrap source in [`audit/webhook-config.yaml`](audit/webhook-config.yaml) targets:
 
 `https://10.43.200.200:9444/audit-webhook/kind-e2e`
 
 Notes:
 - `insecure-skip-tls-verify: true` is intentional for local e2e
 - `kind-e2e` in the path is the cluster ID label used by tests/metrics
+- after install, `hack/e2e/inject-webhook-tls.sh` replaces the mounted `.stamps` copy with the final CA-trusting mTLS kubeconfig
 
 ## Usage
 

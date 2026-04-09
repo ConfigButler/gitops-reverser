@@ -46,8 +46,8 @@ var namespace = resolveE2ENamespace() //nolint:gochecknoglobals // used across e
 const metricWaitDefaultTimeout = 30 * time.Second
 const e2eEncryptionRefName = "sops-age-key"
 
-// controllerServiceName is the single Service name used by the controller.
 const controllerServiceName = "gitops-reverser-service"
+const auditServiceName = "gitops-reverser-audit"
 const controllerPodLabelSelector = "control-plane=gitops-reverser"
 
 // promAPI is the Prometheus API client instance

@@ -163,7 +163,7 @@ var _ = Describe("Manager", Ordered, func() {
 			Eventually(verifyControllerUp).Should(Succeed())
 		})
 
-		It("should expose admission and audit ports on one controller service", func() {
+		It("should expose the admission and metrics service", func() {
 			By("verifying controller service exists")
 			_, err := kubectlRunInNamespace(namespace, "get", "svc", controllerServiceName)
 			Expect(err).NotTo(HaveOccurred(), "Controller service should exist")
@@ -196,6 +196,37 @@ var _ = Describe("Manager", Ordered, func() {
 
 				g.Expect(podNames).To(HaveLen(1), "controller service should route to exactly 1 pod")
 				g.Expect(podNames[0]).To(Equal(controllerPodName), "controller service should route to controller pod")
+			}, 30*time.Second).Should(Succeed())
+		})
+
+		It("should expose the audit service separately", func() {
+			By("verifying audit service exists")
+			_, err := kubectlRunInNamespace(namespace, "get", "svc", auditServiceName)
+			Expect(err).NotTo(HaveOccurred(), "Audit service should exist")
+
+			By("verifying audit service routes to the controller pod")
+			Eventually(func(g Gomega) {
+				output, endpointsErr := kubectlRunInNamespace(
+					namespace,
+					"get",
+					"endpoints",
+					auditServiceName,
+					"-o",
+					"jsonpath={.subsets[*].addresses[*].targetRef.name}",
+				)
+				g.Expect(endpointsErr).NotTo(HaveOccurred(), "Failed to get audit service endpoints")
+
+				lines := utils.GetNonEmptyLines(output)
+				var podNames []string
+				for _, line := range lines {
+					if strings.HasPrefix(line, "Warning:") || strings.Contains(line, "deprecated") {
+						continue
+					}
+					podNames = append(podNames, line)
+				}
+
+				g.Expect(podNames).To(HaveLen(1), "audit service should route to exactly 1 pod")
+				g.Expect(podNames[0]).To(Equal(controllerPodName), "audit service should route to controller pod")
 			}, 30*time.Second).Should(Succeed())
 		})
 

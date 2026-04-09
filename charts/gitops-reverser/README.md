@@ -242,6 +242,8 @@ webhook:
 | `service.ports.audit` | Service port for audit ingress | `9444` |
 | `service.ports.metrics` | Service port for metrics | `8080` |
 | `certificates.certManager.enabled` | Use cert-manager for certificates | `true` |
+| `certificates.audit.client.duration` | Lifetime of the kube-apiserver audit client cert; long by default to avoid repeated manual kube-apiserver reconfiguration | `87600h` |
+| `certificates.audit.client.renewBefore` | Renew the kube-apiserver audit client cert before expiry; shorter values increase control-plane maintenance frequency | `720h` |
 | `podDisruptionBudget.enabled` | Enable PodDisruptionBudget | `true` |
 | `resources.requests.cpu` | CPU request | `10m` |
 | `resources.requests.memory` | Memory request | `64Mi` |

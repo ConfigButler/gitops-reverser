@@ -64,3 +64,10 @@ Create the name of the service account to use
 {{- fail "serviceAccount.name must be set when serviceAccount.create=false" }}
 {{- end }}
 {{- end }}
+
+{{/*
+Create the name of the audit service.
+*/}}
+{{- define "gitops-reverser.auditServiceName" -}}
+{{- printf "%s-audit" (include "gitops-reverser.fullname" .) | trunc 63 | trimSuffix "-" }}
+{{- end }}

@@ -26,6 +26,7 @@ set -euo pipefail
 # - CLUSTER_NAME (required): k3d cluster name (without k3d- prefix)
 # - PROJECT_IMAGE (required): image reference to load
 # - PROJECT_IMAGE_PROVIDED (optional): non-empty means image came from outside; empty = local build
+# - IMAGE_DELIVERY_MODE (optional): load|pull; defaults to "load"
 # - CONTROLLER_ID_STAMP (required): make stamp target to rebuild if the local image is missing
 # - CONTAINER_TOOL (optional): container tool binary; defaults to "docker"
 # - K3D (optional): k3d binary; defaults to "k3d"
@@ -39,6 +40,7 @@ set -euo pipefail
 
 CONTAINER_TOOL="${CONTAINER_TOOL:-docker}"
 K3D="${K3D:-k3d}"
+IMAGE_DELIVERY_MODE="${IMAGE_DELIVERY_MODE:-load}"
 IMAGE_REPO="${PROJECT_IMAGE%:*}"
 IMAGE_TAG="${PROJECT_IMAGE##*:}"
 
@@ -70,6 +72,57 @@ cluster_node_names() {
 		| sort
 }
 
+node_image_refs() {
+	local node_name="$1"
+	"${CONTAINER_TOOL}" exec "${node_name}" ctr -n k8s.io images ls -q 2>/dev/null || true
+}
+
+find_pin_refs() {
+	local node_name="$1"
+	local normalized_ref="$2"
+	local raw_ref="$3"
+	local repo="$4"
+	local tag="$5"
+
+	node_image_refs "${node_name}" | awk \
+		-v normalized_ref="${normalized_ref}" \
+		-v raw_ref="${raw_ref}" \
+		-v repo="${repo}" \
+		-v tag="${tag}" '
+			$0 == normalized_ref || $0 == raw_ref { print; next }
+			index($0, repo ":") == 1 && $0 ~ (":" tag "$") { print; next }
+			index($0, "/" repo ":") > 0 && $0 ~ (":" tag "$") { print; next }
+		' | sort -u
+}
+
+pin_imported_image() {
+	local node_name="$1"
+	local normalized_ref="$2"
+	local raw_ref="$3"
+	local repo="$4"
+	local tag="$5"
+	local attempt refs ref
+
+	for attempt in $(seq 1 10); do
+		refs="$(find_pin_refs "${node_name}" "${normalized_ref}" "${raw_ref}" "${repo}" "${tag}")"
+		if [[ -n "${refs}" ]]; then
+			while IFS= read -r ref; do
+				[[ -n "${ref}" ]] || continue
+				"${CONTAINER_TOOL}" exec "${node_name}" \
+					ctr -n k8s.io images label "${ref}" io.cri-containerd.pinned=pinned \
+					>/dev/null
+			done <<<"${refs}"
+			return 0
+		fi
+		sleep 1
+	done
+
+	echo "ERROR: imported image ref for ${raw_ref} not found in ${node_name} after import" >&2
+	echo "Known refs in ${node_name}:" >&2
+	node_image_refs "${node_name}" >&2
+	return 1
+}
+
 # Import the image directly into each node's containerd by piping docker save output.
 # This bypasses k3d's volume-based import mechanism, which silently fails in
 # Docker-outside-of-Docker CI environments (the shared image volume tarball is not
@@ -82,11 +135,15 @@ import_image_direct() {
 		"${CONTAINER_TOOL}" save "${PROJECT_IMAGE}" \
 			| "${CONTAINER_TOOL}" exec -i "${node_name}" \
 				ctr -n k8s.io images import -
-		"${CONTAINER_TOOL}" exec "${node_name}" \
-			ctr -n k8s.io images label "${ref}" io.cri-containerd.pinned=pinned \
-			>/dev/null
+		pin_imported_image "${node_name}" "${ref}" "${PROJECT_IMAGE}" "${IMAGE_REPO}" "${IMAGE_TAG}"
 	done < <(cluster_node_names)
 }
+
+if [[ "${IMAGE_DELIVERY_MODE}" == "pull" ]]; then
+	echo "Skipping k3d image import for ${PROJECT_IMAGE}; cluster will pull from registry"
+	echo "pull:${PROJECT_IMAGE}" >"${STAMP_FILE}"
+	exit 0
+fi
 
 if ! "${CONTAINER_TOOL}" image inspect "${PROJECT_IMAGE}" >/dev/null 2>&1; then
 	if [[ -z "${PROJECT_IMAGE_PROVIDED:-}" ]]; then

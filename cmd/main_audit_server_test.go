@@ -17,9 +17,19 @@
 package main
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"flag"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -38,6 +48,8 @@ func TestParseFlagsWithArgs_Defaults(t *testing.T) {
 	assert.False(t, cfg.auditInsecure)
 	assert.Equal(t, "0.0.0.0", cfg.auditListenAddress)
 	assert.Equal(t, 9444, cfg.auditPort)
+	assert.Equal(t, "/tmp/k8s-audit-server/audit-client-ca", cfg.auditClientCAPath)
+	assert.Equal(t, "tls.crt", cfg.auditClientCAName)
 	assert.Equal(t, int64(10485760), cfg.auditMaxRequestBodyBytes)
 	assert.Equal(t, 15*time.Second, cfg.auditReadTimeout)
 	assert.Equal(t, 30*time.Second, cfg.auditWriteTimeout)
@@ -69,6 +81,8 @@ func TestParseFlagsWithArgs_CustomAuditValues(t *testing.T) {
 		"--audit-cert-path=/tmp/audit-certs",
 		"--audit-cert-name=cert.pem",
 		"--audit-cert-key=key.pem",
+		"--audit-client-ca-path=/tmp/audit-ca",
+		"--audit-client-ca-name=ca.pem",
 		"--audit-max-request-body-bytes=2048",
 		"--audit-read-timeout=5s",
 		"--audit-write-timeout=8s",
@@ -90,6 +104,8 @@ func TestParseFlagsWithArgs_CustomAuditValues(t *testing.T) {
 	assert.Equal(t, "/tmp/audit-certs", cfg.auditCertPath)
 	assert.Equal(t, "cert.pem", cfg.auditCertName)
 	assert.Equal(t, "key.pem", cfg.auditCertKey)
+	assert.Equal(t, "/tmp/audit-ca", cfg.auditClientCAPath)
+	assert.Equal(t, "ca.pem", cfg.auditClientCAName)
 	assert.Equal(t, int64(2048), cfg.auditMaxRequestBodyBytes)
 	assert.Equal(t, 5*time.Second, cfg.auditReadTimeout)
 	assert.Equal(t, 8*time.Second, cfg.auditWriteTimeout)
@@ -126,6 +142,10 @@ func TestParseFlagsWithArgs_InvalidAuditSettings(t *testing.T) {
 		{
 			name: "invalid body size",
 			args: []string{"--audit-max-request-body-bytes=0"},
+		},
+		{
+			name: "missing audit client ca path",
+			args: []string{"--audit-client-ca-path=", "--audit-insecure=false"},
 		},
 		{
 			name: "invalid read timeout",
@@ -180,4 +200,67 @@ func TestBuildAuditServeMux_RoutesAuditPaths(t *testing.T) {
 func TestBuildAuditServerAddress(t *testing.T) {
 	assert.Equal(t, "0.0.0.0:9444", buildAuditServerAddress("0.0.0.0", 9444))
 	assert.Equal(t, ":9444", buildAuditServerAddress("", 9444))
+}
+
+func TestBuildAuditServerTLSConfig_RequiresClientCertificates(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	caPath := filepath.Join(tempDir, "tls.crt")
+	require.NoError(t, os.WriteFile(caPath, []byte(mustMakeTestRootCA(t)), 0o600))
+
+	cfg := appConfig{
+		auditClientCAPath: tempDir,
+		auditClientCAName: "tls.crt",
+	}
+
+	serverTLS, err := buildAuditServerTLSConfig(cfg, []func(*tls.Config){
+		func(c *tls.Config) {
+			c.MinVersion = tls.VersionTLS13
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, serverTLS.ClientCAs)
+
+	assert.Equal(t, tls.RequireAndVerifyClientCert, serverTLS.ClientAuth)
+	assert.Equal(t, uint16(tls.VersionTLS13), serverTLS.MinVersion)
+	expectedPool, err := loadCertPoolFromPEMFile(caPath)
+	require.NoError(t, err)
+	assert.True(t, expectedPool.Equal(serverTLS.ClientCAs))
+}
+
+func TestLoadCertPoolFromPEMFile_InvalidPEM(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	caPath := filepath.Join(tempDir, "invalid.pem")
+	require.NoError(t, os.WriteFile(caPath, []byte("not-a-cert"), 0o600))
+
+	_, err := loadCertPoolFromPEMFile(caPath)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no certificates found")
+}
+
+func mustMakeTestRootCA(t *testing.T) string {
+	t.Helper()
+
+	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject: pkix.Name{
+			CommonName: "gitops-reverser-test-root",
+		},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(24 * time.Hour),
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+	}
+
+	derBytes, err := x509.CreateCertificate(rand.Reader, template, template, privateKey.Public(), privateKey)
+	require.NoError(t, err)
+
+	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: derBytes}))
 }
