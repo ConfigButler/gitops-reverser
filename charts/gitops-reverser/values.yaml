@@ -69,7 +69,8 @@ servers:
       certPath: "/tmp/k8s-admission-server/admission-server-certs"
       certName: "tls.crt"
       certKey: "tls.key"
-      secretName: ""
+      # Leave empty to use the chart-generated Secret name.
+      secretNameOverride: ""
 
   audit:
     listenAddress: 0.0.0.0
@@ -82,7 +83,8 @@ servers:
       certKey: "tls.key"
       clientCAPath: "/tmp/k8s-audit-server/audit-client-ca"
       clientCAName: "tls.crt"
-      secretName: ""
+      # Leave empty to use the chart-generated Secret name.
+      secretNameOverride: ""
     timeouts:
       read: "15s"
       write: "30s"
@@ -98,7 +100,8 @@ servers:
       certPath: "/tmp/k8s-metrics-server/metrics-server-certs"
       certName: "tls.crt"
       certKey: "tls.key"
-      secretName: ""
+      # Leave empty to use the chart-generated Secret name.
+      secretNameOverride: ""
 
 # Webhook behavior
 webhook:
@@ -141,8 +144,13 @@ certificates:
       kind: Issuer
       create: true
   audit:
+    # When true, the chart creates audit root CA, audit server cert, and
+    # kube-apiserver client cert resources via cert-manager. Set to false if
+    # you want to provide those Secrets yourself.
+    enabled: true
     rootCA:
-      secretName: ""
+      # Leave empty to use the chart-generated Secret name.
+      secretNameOverride: ""
     client:
       # Keep the kube-apiserver client cert long-lived by default so cluster admins
       # are protected from frequent manual audit-webhook kubeconfig updates and
@@ -153,7 +161,8 @@ certificates:
       # maintenance because kube-apiserver embeds this client credential in its
       # node-local audit webhook kubeconfig.
       renewBefore: "720h"
-      secretName: ""
+      # Leave empty to use the chart-generated Secret name.
+      secretNameOverride: ""
 
 # RBAC configuration
 rbac:
@@ -219,6 +228,62 @@ service:
 auditService:
   type: NodePort
   nodePort: 30444
+  # Optional fixed ClusterIP for the dedicated audit Service. Useful for
+  # "Option 1" bootstrap models where kube-apiserver talks directly to a pinned
+  # Service IP and the control-plane host can route to the service CIDR.
+  clusterIP: ""
+
+# Guidance-only values used by Helm NOTES.txt for kube-apiserver follow-up.
+auditKubeconfig:
+  # When true, the generated example kubeconfig in Helm notes uses
+  # insecure-skip-tls-verify: true instead of a CA bundle. This is useful for
+  # local/bootstrap scenarios only and is not recommended for production.
+  insecureSkipTLSVerify: false
+
+# Optional starter resources for first-commit validation.
+# Disabled by default so the chart does not create example Git objects unless
+# you explicitly opt in.
+quickstart:
+  enabled: false
+  # Namespace for the starter GitProvider, GitTarget, and WatchRule.
+  # This namespace must already exist.
+  namespace: default
+  gitProvider:
+    name: example-provider
+    # Required when quickstart.enabled=true.
+    url: ""
+    allowedBranches:
+      - "*"
+    secretRef:
+      # Required when quickstart.enabled=true.
+      name: git-creds
+    push:
+      interval: "5s"
+      maxCommits: 10
+  gitTarget:
+    name: example-target
+    branch: main
+    path: live-cluster
+    encryption:
+      provider: sops
+      age:
+        enabled: true
+        generateWhenMissing: true
+      secretRef:
+        name: sops-age-key
+  watchRule:
+    name: example-watchrule
+    rules:
+      - operations:
+          - CREATE
+          - UPDATE
+          - DELETE
+        apiGroups:
+          - ""
+        apiVersions:
+          - v1
+        resources:
+          - configmaps
 
 # Logging configuration
 logging:

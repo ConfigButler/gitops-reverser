@@ -71,3 +71,24 @@ Create the name of the audit service.
 {{- define "gitops-reverser.auditServiceName" -}}
 {{- printf "%s-audit" (include "gitops-reverser.fullname" .) | trunc 63 | trimSuffix "-" }}
 {{- end }}
+
+{{/*
+Default Secret name for the audit root CA.
+*/}}
+{{- define "gitops-reverser.auditRootCASecretName" -}}
+{{- .Values.certificates.audit.rootCA.secretNameOverride | default (printf "%s-audit-root-ca" (include "gitops-reverser.fullname" .)) -}}
+{{- end }}
+
+{{/*
+Default Secret name for the audit server certificate.
+*/}}
+{{- define "gitops-reverser.auditServerSecretName" -}}
+{{- .Values.servers.audit.tls.secretNameOverride | default (printf "%s-audit-server-cert" (include "gitops-reverser.fullname" .)) -}}
+{{- end }}
+
+{{/*
+Default Secret name for the kube-apiserver audit client certificate.
+*/}}
+{{- define "gitops-reverser.auditClientSecretName" -}}
+{{- .Values.certificates.audit.client.secretNameOverride | default (printf "%s-audit-client-cert" (include "gitops-reverser.fullname" .)) -}}
+{{- end }}

@@ -1,0 +1,23 @@
+{{- if .Values.quickstart.enabled -}}
+{{- if eq (trim .Values.quickstart.namespace) "" -}}
+{{- fail "quickstart.namespace must not be empty when quickstart.enabled=true" -}}
+{{- end -}}
+{{- if eq (trim .Values.quickstart.gitProvider.url) "" -}}
+{{- fail "quickstart.gitProvider.url must be set when quickstart.enabled=true" -}}
+{{- end -}}
+{{- if eq (trim .Values.quickstart.gitProvider.secretRef.name) "" -}}
+{{- fail "quickstart.gitProvider.secretRef.name must be set when quickstart.enabled=true" -}}
+{{- end -}}
+{{- if eq (trim .Values.quickstart.gitTarget.branch) "" -}}
+{{- fail "quickstart.gitTarget.branch must be set when quickstart.enabled=true" -}}
+{{- end -}}
+{{- if eq (trim .Values.quickstart.gitTarget.path) "" -}}
+{{- fail "quickstart.gitTarget.path must be set when quickstart.enabled=true" -}}
+{{- end -}}
+{{- if eq (trim .Values.quickstart.gitTarget.encryption.secretRef.name) "" -}}
+{{- fail "quickstart.gitTarget.encryption.secretRef.name must be set when quickstart.enabled=true" -}}
+{{- end -}}
+{{- if not .Values.quickstart.watchRule.rules -}}
+{{- fail "quickstart.watchRule.rules must contain at least one rule when quickstart.enabled=true" -}}
+{{- end -}}
+{{- end -}}

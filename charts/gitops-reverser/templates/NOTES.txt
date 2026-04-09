@@ -1,0 +1,129 @@
+{{- $fullname := include "gitops-reverser.fullname" . -}}
+{{- $auditServiceName := include "gitops-reverser.auditServiceName" . -}}
+{{- $auditRootCASecret := include "gitops-reverser.auditRootCASecretName" . -}}
+{{- $auditClientSecret := include "gitops-reverser.auditClientSecretName" . -}}
+{{- $auditServerPort := int .Values.service.ports.audit -}}
+{{- $auditNodePort := .Values.auditService.nodePort -}}
+{{- $auditClusterIP := .Values.auditService.clusterIP -}}
+{{- $tlsServerName := printf "%s.%s.svc" $auditServiceName .Release.Namespace -}}
+GitOps Reverser is installed in namespace `{{ .Release.Namespace }}`.
+
+What the chart did for you:
+- deployed the controller and audit receiver
+- created the audit Service (`{{ $auditServiceName }}`)
+{{- if and .Values.servers.audit.tls.enabled .Values.certificates.certManager.enabled .Values.certificates.audit.enabled }}
+- created the audit TLS materials
+  - root CA Secret: `{{ $auditRootCASecret }}`
+  - kube-apiserver client cert Secret: `{{ $auditClientSecret }}`
+{{- else if .Values.servers.audit.tls.enabled }}
+- expects audit TLS materials to exist with these Secret names
+  - root CA Secret: `{{ $auditRootCASecret }}`
+  - kube-apiserver client cert Secret: `{{ $auditClientSecret }}`
+{{- else }}
+- configured the audit listener without TLS (`servers.audit.tls.enabled=false`)
+{{- end }}
+{{- if .Values.quickstart.enabled }}
+- created quickstart resources in namespace `{{ .Values.quickstart.namespace }}`
+  - GitProvider: `{{ .Values.quickstart.gitProvider.name }}`
+  - GitTarget: `{{ .Values.quickstart.gitTarget.name }}`
+  - WatchRule: `{{ .Values.quickstart.watchRule.name }}`
+{{- end }}
+
+What the chart did NOT do for you:
+- it did NOT write `/etc/kubernetes/...` files on your control-plane node(s)
+- it did NOT create your audit policy file
+- it did NOT edit kube-apiserver flags or manifests
+- it did NOT restart kube-apiserver
+
+Install GitOps Reverser first. After that, generate the kube-apiserver audit webhook kubeconfig, copy it to every
+control-plane node, configure kube-apiserver, and restart or reload kube-apiserver once.
+
+Recommended kube-apiserver settings:
+- use `--audit-webhook-mode=batch`
+- do NOT start with `blocking` or `blocking-strict`
+
+{{- if .Values.servers.audit.tls.enabled }}
+Suggested audit webhook server URL from the control-plane node:
+{{- if eq .Values.auditService.type "NodePort" }}
+{{- if $auditNodePort }}
+- `https://127.0.0.1:{{ $auditNodePort }}/audit-webhook/<cluster-id>`
+{{- else }}
+- `https://127.0.0.1:<nodePort>/audit-webhook/<cluster-id>`
+  Query the assigned nodePort with:
+  `kubectl get svc {{ $auditServiceName }} -n {{ .Release.Namespace }} -o jsonpath='{.spec.ports[0].nodePort}'`
+{{- end }}
+{{- else if eq .Values.auditService.type "LoadBalancer" }}
+- `https://<load-balancer-address>:{{ $auditServerPort }}/audit-webhook/<cluster-id>`
+  Query the address with:
+  `kubectl get svc {{ $auditServiceName }} -n {{ .Release.Namespace }} -o jsonpath='{.status.loadBalancer.ingress[0].ip}'`
+{{- else if $auditClusterIP }}
+- `https://{{ $auditClusterIP }}:{{ $auditServerPort }}/audit-webhook/<cluster-id>`
+- Use this only if your control-plane node can route to the service CIDR.
+{{- else }}
+- Choose an address reachable from the control-plane node for service `{{ $auditServiceName }}`.
+- `ClusterIP` alone is usually NOT enough unless your control-plane host can route to the service CIDR.
+{{- end }}
+
+Copy-paste example to generate `audit-webhook.kubeconfig` after the Secrets exist:
+
+```bash
+export NAMESPACE={{ .Release.Namespace }}
+export AUDIT_ROOT_CA_SECRET={{ $auditRootCASecret }}
+export AUDIT_CLIENT_SECRET={{ $auditClientSecret }}
+export AUDIT_TLS_SERVER_NAME={{ $tlsServerName }}
+export AUDIT_WEBHOOK_SERVER_URL={{- if and (eq .Values.auditService.type "NodePort") $auditNodePort }}https://127.0.0.1:{{ $auditNodePort }}/audit-webhook/<cluster-id>{{- else if $auditClusterIP }}https://{{ $auditClusterIP }}:{{ $auditServerPort }}/audit-webhook/<cluster-id>{{- else }}https://<reachable-address>/audit-webhook/<cluster-id>{{- end }}
+
+cat > audit-webhook.kubeconfig <<EOF
+apiVersion: v1
+kind: Config
+preferences: {}
+clusters:
+- name: audit-webhook
+  cluster:
+    server: ${AUDIT_WEBHOOK_SERVER_URL}
+{{- if .Values.auditKubeconfig.insecureSkipTLSVerify }}
+    insecure-skip-tls-verify: true
+{{- else }}
+    certificate-authority-data: $(kubectl get secret "${AUDIT_ROOT_CA_SECRET}" -n "${NAMESPACE}" -o jsonpath='{.data.tls\.crt}')
+    tls-server-name: ${AUDIT_TLS_SERVER_NAME}
+{{- end }}
+contexts:
+- name: webhook
+  context:
+    cluster: audit-webhook
+    user: kube-apiserver
+current-context: webhook
+users:
+- name: kube-apiserver
+  user:
+    client-certificate-data: $(kubectl get secret "${AUDIT_CLIENT_SECRET}" -n "${NAMESPACE}" -o jsonpath='{.data.tls\.crt}')
+    client-key-data: $(kubectl get secret "${AUDIT_CLIENT_SECRET}" -n "${NAMESPACE}" -o jsonpath='{.data.tls\.key}')
+EOF
+```
+{{- if .Values.auditKubeconfig.insecureSkipTLSVerify }}
+
+`auditKubeconfig.insecureSkipTLSVerify=true` is enabled, so the generated kubeconfig skips audit server certificate
+validation. This is for local/bootstrap scenarios only, not a production recommendation.
+{{- end }}
+{{- else }}
+`servers.audit.tls.enabled=false`, so only an insecure development bootstrap makes sense:
+
+```yaml
+server: https://<reachable-address>/audit-webhook/<cluster-id>
+insecure-skip-tls-verify: true
+```
+
+{{- end }}
+
+After generating the kubeconfig:
+1. Copy `audit-webhook.kubeconfig` to every control-plane node.
+2. Create or update your audit policy file.
+3. Start kube-apiserver with:
+   - `--audit-policy-file=/path/to/audit-policy.yaml`
+   - `--audit-webhook-config-file=/path/to/audit-webhook.kubeconfig`
+   - `--audit-webhook-mode=batch`
+4. Restart or reload kube-apiserver once.
+
+Further guidance:
+- `https://github.com/ConfigButler/gitops-reverser/blob/main/docs/design/audit-webhook-api-server-connectivity.md`
+- `https://github.com/ConfigButler/gitops-reverser/blob/main/docs/design/audit-webhook-tls-design.md`

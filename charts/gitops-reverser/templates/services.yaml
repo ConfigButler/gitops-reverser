@@ -37,6 +37,9 @@ metadata:
     app.kubernetes.io/component: audit
 spec:
   type: {{ .Values.auditService.type }}
+  {{- if .Values.auditService.clusterIP }}
+  clusterIP: {{ .Values.auditService.clusterIP }}
+  {{- end }}
   ports:
     - name: audit
       port: {{ .Values.service.ports.audit }}
