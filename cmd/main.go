@@ -374,8 +374,12 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 		"Redis server address (<host>:<port>) for audit event queueing.")
 	fs.StringVar(&cfg.auditRedisUsername, "audit-redis-username", "",
 		"Optional Redis username for audit event queueing.")
-	fs.StringVar(&cfg.auditRedisPassword, "audit-redis-password", os.Getenv("REDIS_PASSWORD"),
-		"Redis password for audit event queueing. Prefer setting via REDIS_PASSWORD env var from a Kubernetes Secret rather than as a flag.")
+	fs.StringVar(
+		&cfg.auditRedisPassword,
+		"audit-redis-password",
+		os.Getenv("REDIS_PASSWORD"),
+		"Redis password for audit event queueing. Prefer setting via REDIS_PASSWORD env var from a Kubernetes Secret.",
+	)
 	fs.IntVar(&cfg.auditRedisDB, "audit-redis-db", 0,
 		"Redis database index for audit event queueing.")
 	fs.StringVar(&cfg.auditRedisStream, "audit-redis-stream", queue.DefaultRedisAuditStream,

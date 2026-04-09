@@ -118,6 +118,7 @@ kubectl create secret generic valkey-auth \
 helm repo add valkey https://valkey.io/valkey-helm/
 helm repo update
 helm install valkey valkey/valkey \
+  --version 0.9.3 \
   --namespace gitops-reverser \
   --set auth.enabled=true \
   --set auth.usersExistingSecret=valkey-auth \
@@ -247,9 +248,9 @@ See [`docs/SOPS_AGE_GUIDE.md`](docs/SOPS_AGE_GUIDE.md) for working with Secrets,
 
 | Tool | What it does | How GitOps Reverser differs |
 |---|---|---|
-| [RichardoC/kube-audit-rest](https://github.com/RichardoC/kube-audit-rest) | Receives audit events and exposes them over a REST API | GitOps Reverser consumes the change and writes it to Git |
 | [robusta-dev/robusta](https://github.com/robusta-dev/robusta) | Broad observability and automation platform | GitOps Reverser is narrower and focused on Git write-back |
-| [bpineau/katafygio](https://github.com/bpineau/katafygio) | Periodically snapshots cluster resources into Git | GitOps Reverser is event-driven and commit-oriented |
+| [RichardoC/kube-audit-rest](https://github.com/RichardoC/kube-audit-rest) | Tries to capture cluster activity without requiring Kubernetes API server configuration. Useful as a companion on managed clusters where you cannot wire an audit webhook. It's not plug and play as it currently can't stream into an audit webhook. | GitOps Reverser currently requires the audit webhook path; kube-audit-rest might bridge that gap on restricted platforms once webhook forwarding is supported, although it cannot guarantee which actor made the change. |
+| [bpineau/katafygio](https://github.com/bpineau/katafygio) | Periodically snapshots cluster resources into Git, it does not seem to be maintained | GitOps Reverser is event-driven and commit-oriented |
 
 ## Development
 
