@@ -61,6 +61,20 @@ cluster_exists() {
     k3d cluster list -o json 2>/dev/null | grep -q "\"name\":\"${CLUSTER_NAME}\""
 }
 
+cluster_context_name() {
+    echo "k3d-${CLUSTER_NAME}"
+}
+
+cluster_is_healthy() {
+    local context_name
+    context_name="$(cluster_context_name)"
+
+    if ! kubectl config get-contexts "${context_name}" >/dev/null 2>&1; then
+        return 1
+    fi
+
+    kubectl --context "${context_name}" --request-timeout=10s get ns >/dev/null 2>&1
+}
 ensure_k3d_stat_compat_path() {
     local host_project_path="$1"
     local can_sudo=false
@@ -216,18 +230,33 @@ main() {
     # k3d writes/merges kubeconfig into the default location; ensure it exists so the context is usable.
     mkdir -p "${HOME}/.kube"
 
+    export HOST_PROJECT_PATH
+    HOST_PROJECT_PATH="$(resolve_host_project_path)"
+    ensure_k3d_stat_compat_path "${HOST_PROJECT_PATH}"
+
     if cluster_exists; then
-        echo "♻️ Reusing existing k3d cluster '${CLUSTER_NAME}' (no delete/recreate)"
+        echo "♻️ Reusing existing k3d cluster '${CLUSTER_NAME}'"
     else
-        export HOST_PROJECT_PATH
-        HOST_PROJECT_PATH="$(resolve_host_project_path)"
-        ensure_k3d_stat_compat_path "${HOST_PROJECT_PATH}"
         create_cluster "${HOST_PROJECT_PATH}"
     fi
 
     echo "📋 Configuring kubeconfig for cluster '${CLUSTER_NAME}'..."
     merge_kubeconfig
     rewrite_kubeconfig_for_devcontainer
+
+    if ! cluster_is_healthy; then
+        echo "❌ Existing k3d cluster '${CLUSTER_NAME}' is unhealthy." >&2
+        echo "Refusing to auto-recreate it because cluster-scoped stamps may now be inconsistent." >&2
+        echo "" >&2
+        echo "Cleanup and retry:" >&2
+        echo "  make clean-cluster" >&2
+        echo "or:" >&2
+        echo "  k3d cluster delete ${CLUSTER_NAME}" >&2
+        echo "  rm -rf .stamps/cluster/$(cluster_context_name)" >&2
+        exit 1
+    fi
+
+    kubectl --context "$(cluster_context_name)" --request-timeout=30s get ns >/dev/null
 
     echo "✅ Cluster setup complete!"
     echo "Try:"
