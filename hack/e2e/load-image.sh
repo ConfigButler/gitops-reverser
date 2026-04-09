@@ -148,11 +148,16 @@ fi
 if ! "${CONTAINER_TOOL}" image inspect "${PROJECT_IMAGE}" >/dev/null 2>&1; then
 	if [[ -z "${PROJECT_IMAGE_PROVIDED:-}" ]]; then
 		echo "Local image ${PROJECT_IMAGE} missing; rebuilding..."
-		make "${CONTROLLER_ID_STAMP}"
+		make -B "${CONTROLLER_ID_STAMP}"
 	else
 		echo "ERROR: PROJECT_IMAGE=${PROJECT_IMAGE} not found locally" >&2
 		exit 2
 	fi
+fi
+
+if ! "${CONTAINER_TOOL}" image inspect "${PROJECT_IMAGE}" >/dev/null 2>&1; then
+	echo "ERROR: local image ${PROJECT_IMAGE} is still missing after rebuild" >&2
+	exit 2
 fi
 
 img_id="$("${CONTAINER_TOOL}" inspect --format='{{.Id}}' "${PROJECT_IMAGE}")"
