@@ -1,6 +1,6 @@
 # Multi-stage Dockerfile for GitOps Reverser
 # Stage 1: CI base image with essential build tools
-FROM golang:1.26.1-bookworm AS ci
+FROM golang:1.26.2-bookworm AS ci
 
 # Avoid warnings by switching to noninteractive
 ENV DEBIAN_FRONTEND=noninteractive
