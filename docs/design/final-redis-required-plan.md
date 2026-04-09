@@ -145,6 +145,7 @@ kubectl create secret generic valkey-auth \
 helm repo add valkey https://valkey.io/valkey-helm/
 helm repo update
 helm install valkey valkey/valkey \
+  --version 0.9.3 \
   --namespace gitops-reverser \
   --set auth.enabled=true \
   --set auth.usersExistingSecret=valkey-auth \
@@ -282,6 +283,7 @@ kubectl wait --for=condition=ready pod -l app.kubernetes.io/instance=cert-manage
 helm repo add valkey https://valkey.io/valkey-helm/
 helm repo update
 helm install valkey valkey/valkey \
+  --version 0.9.3 \
   --namespace gitops-reverser \
   --set auth.enabled=true \
   --set auth.usersExistingSecret=valkey-auth \

@@ -354,29 +354,8 @@ $(CS)/flux.installed: $(CS)/ready | $(CS)
 .SILENT: $(CS)/flux-setup.ready $(CS)/services.ready
 $(CS)/flux-setup.ready: $(FLUX_SETUP_READY_INPUTS) | $(CS)
 	kubectl --context $(CTX) apply -k $(FLUX_SERVICES_DIR)
-	flux_ready_count=0
-	echo "⏳ Waiting for Flux-managed installations to become ready..."
-	for kind in \
-		helmreleases.helm.toolkit.fluxcd.io \
-		kustomizations.kustomize.toolkit.fluxcd.io
-	do
-		if [ "$$kind" = "kustomizations.kustomize.toolkit.fluxcd.io" ]; then
-			resources="$$(kubectl --context $(CTX) get $$kind --all-namespaces -o custom-columns=NAMESPACE:.metadata.namespace,NAME:.metadata.name,SUSPEND:.spec.suspend --no-headers 2>/dev/null | awk '$$3 != "true" && $$1 != "podinfos-preview" && $$1 != "podinfos-production" && $$1 != "podinfos-intent" {print $$1 " " $$2}')"
-		else
-			resources="$$(kubectl --context $(CTX) get $$kind --all-namespaces -o jsonpath='{range .items[*]}{.metadata.namespace}{" "}{.metadata.name}{"\n"}{end}' 2>/dev/null)"
-		fi
-		[ -z "$$resources" ] && continue
-
-		resource_count="$$(printf '%s\n' "$$resources" | sed '/^$$/d' | wc -l | tr -d ' ')"
-		flux_ready_count="$$(($$flux_ready_count + $$resource_count))"
-
-		printf '%s\n' "$$resources" | while read -r namespace name; do
-			[ -n "$$namespace" ] || continue
-			kubectl --context $(CTX) -n "$$namespace" wait "$$kind/$$name" --for=condition=Ready --timeout=$(FLUX_SERVICES_WAIT_TIMEOUT)
-		done
-	done
-	[ "$$flux_ready_count" -gt 0 ] || { echo "ERROR: no Flux-managed e2e ready-check resources found" >&2; exit 1; }
-	echo "✓ Flux-managed installations ready: $$flux_ready_count"
+	CTX="$(CTX)" FLUX_SERVICES_WAIT_TIMEOUT="$(FLUX_SERVICES_WAIT_TIMEOUT)" \
+		bash hack/e2e/wait-flux-services.sh
 	touch $@
 
 # Aggregate stamp for external E2E services required by tests.
@@ -452,38 +431,17 @@ $(CS)/crds.applied: $(CS)/ready $$(CRD_INPUTS) | $(CS)
 	touch $@
 
 $(CS)/image.loaded: $(IS)/project-image.ready $(CS)/ready | $(CS)
-	if ! $(CONTAINER_TOOL) image inspect "$(PROJECT_IMAGE)" >/dev/null 2>&1; then
-		if [ -z "$(PROJECT_IMAGE_PROVIDED)" ]; then
-			echo "Local image $(PROJECT_IMAGE) missing; rebuilding..."
-			$(MAKE) $(IS)/controller.id
-		else
-			echo "ERROR: PROJECT_IMAGE=$(PROJECT_IMAGE) not found locally" >&2
-			exit 2
-		fi
-	fi
-	img_id="$$( $(CONTAINER_TOOL) inspect --format='{{.Id}}' $(PROJECT_IMAGE) )"
-	echo "Loading $(PROJECT_IMAGE) ($$img_id) into $(CTX)"
-	$(K3D) image import $(PROJECT_IMAGE) -c $(CLUSTER_NAME)
-	echo "$$img_id" > "$@"
+	CTX="$(CTX)" CLUSTER_NAME="$(CLUSTER_NAME)" PROJECT_IMAGE="$(PROJECT_IMAGE)" \
+		PROJECT_IMAGE_PROVIDED="$(PROJECT_IMAGE_PROVIDED)" \
+		CONTROLLER_ID_STAMP="$(IS)/controller.id" \
+		CONTAINER_TOOL="$(CONTAINER_TOOL)" K3D="$(K3D)" STAMP_FILE="$@" \
+		bash hack/e2e/load-image.sh
 
 $(CS)/$(NAMESPACE)/controller.deployed: $(CS)/$(NAMESPACE)/$(INSTALL_MODE)/install.yaml $(CS)/image.loaded | $(CS)/$(NAMESPACE)
-	ctx="$(CTX)"
-	ns="$(NAMESPACE)"
-	img="$(PROJECT_IMAGE)"
-	container="$(CONTROLLER_CONTAINER)"
-	selector="$(CONTROLLER_DEPLOY_SELECTOR)"
-	[ -n "$$img" ] || { echo "ERROR: PROJECT_IMAGE must be non-empty" >&2; exit 2; }
-	[ -n "$$container" ] || { echo "ERROR: CONTROLLER_CONTAINER must be non-empty" >&2; exit 2; }
-	count="$$(kubectl --context "$$ctx" -n "$$ns" get deploy -l "$$selector" --no-headers 2>/dev/null | wc -l | tr -d ' ')"
-	[ "$$count" -eq 1 ] || {
-		echo "ERROR: Expected exactly 1 Deployment matching '$$selector' in namespace '$$ns', found $$count" >&2
-		kubectl --context "$$ctx" -n "$$ns" get deploy -l "$$selector" -o wide || true
-		exit 1
-	}
-	deploy="$$(kubectl --context "$$ctx" -n "$$ns" get deploy -l "$$selector" -o jsonpath='{.items[0].metadata.name}')"
-	echo "Setting deployment/$$deploy container '$$container' to image '$$img'"
-	kubectl --context "$$ctx" -n "$$ns" set image "deployment/$$deploy" "$$container=$$img"
-	kubectl --context "$$ctx" -n "$$ns" rollout status "deployment/$$deploy" --timeout=180s
+	CTX="$(CTX)" NAMESPACE="$(NAMESPACE)" PROJECT_IMAGE="$(PROJECT_IMAGE)" \
+		CONTROLLER_CONTAINER="$(CONTROLLER_CONTAINER)" \
+		CONTROLLER_DEPLOY_SELECTOR="$(CONTROLLER_DEPLOY_SELECTOR)" \
+		bash hack/e2e/deploy-controller.sh
 	touch "$@"
 
 .PHONY: portforward-ensure
@@ -521,6 +479,11 @@ define UPDATE_IF_CHANGED
 	fi
 endef
 
+define DO_ENSURE_VALKEY_AUTH
+	@CTX="$(CTX)" NAMESPACE="$(NAMESPACE)" E2E_VALKEY_PASSWORD="$(E2E_VALKEY_PASSWORD)" \
+		bash hack/e2e/ensure-valkey-auth.sh
+endef
+
 define REQUIRE_FILE
 	@[ -f "$(1)" ] || { \
 		echo "ERROR: missing required $(2) file '$(1)'" >&2; \
@@ -537,11 +500,7 @@ $(CS)/$(NAMESPACE)/helm/install.yaml: $(CS)/services.ready $(HELM_SYNC_OUTPUTS) 
 	if kubectl --context $(CTX) get crd $(INSTALL_CRDS) >/dev/null 2>&1; then
 		skip_crds_arg="--skip-crds"
 	fi
-	kubectl --context $(CTX) create namespace $(NAMESPACE) --dry-run=client -o yaml \
-		| kubectl --context $(CTX) apply -f -
-	kubectl --context $(CTX) -n $(NAMESPACE) create secret generic valkey-auth \
-		--from-literal=password=$(E2E_VALKEY_PASSWORD) \
-		--dry-run=client -o yaml | kubectl --context $(CTX) apply -f -
+	$(DO_ENSURE_VALKEY_AUTH)
 	$(HELM) --kube-context $(CTX) upgrade --install $(INSTALL_NAME) "$(HELM_CHART_SOURCE)" \
 		--namespace $(NAMESPACE) \
 		--create-namespace \
@@ -560,36 +519,19 @@ CONFIG_DIR_INPUTS = $(shell find config -type f)
 $(CS)/$(NAMESPACE)/config-dir/install.yaml: $(CS)/services.ready $(MANIFEST_OUTPUTS) $$(CONFIG_DIR_INPUTS) | $(CS)/$(NAMESPACE)/config-dir
 	$(DO_CLEANUP_INSTALLS)
 	mkdir -p "$(@D)" # keep: cleanup script can delete this directory during the same recipe
-	tmpdir="$$(mktemp -d)"
-	trap 'rm -rf "$$tmpdir"' EXIT
-	cp -R config "$$tmpdir/config"
-	(cd "$$tmpdir/config" && $(KUSTOMIZE) edit set namespace "$(NAMESPACE)")
-	(cd "$$tmpdir/config" && $(KUSTOMIZE) edit set image gitops-reverser="$(PROJECT_IMAGE)")
-	(cd "$$tmpdir/config" && $(KUSTOMIZE) build .) \
-		| tee "$$tmpdir/install.yaml" \
-		| $(KUBECTL) --context "$(CTX)" apply -f -
-	$(call UPDATE_IF_CHANGED,$$tmpdir/install.yaml)
+	CTX="$(CTX)" NAMESPACE="$(NAMESPACE)" PROJECT_IMAGE="$(PROJECT_IMAGE)" \
+		KUSTOMIZE="$(KUSTOMIZE)" KUBECTL="$(KUBECTL)" STAMP_FILE="$@" \
+		bash hack/e2e/install-config-dir.sh
 
 $(CS)/$(NAMESPACE)/plain-manifests-file/install.yaml: $(CS)/services.ready dist/install.yaml | $(CS)/$(NAMESPACE)/plain-manifests-file
 	$(DO_CLEANUP_INSTALLS)
 	mkdir -p "$(@D)" # keep: cleanup script can delete this directory during the same recipe
-	ctx="$(CTX)"; ns="$(NAMESPACE)"
-	tmpdir="$$(mktemp -d)"
-	trap 'rm -rf "$$tmpdir"' EXIT
-	cp dist/install.yaml "$$tmpdir/install.yaml" && sed -i 's|--audit-redis-addr=$(DEFAULT_AUDIT_REDIS_ADDR)|--audit-redis-addr=$(E2E_AUDIT_REDIS_ADDR)|' "$$tmpdir/install.yaml" && perl -0pi -e 's/type: ClusterIP\n/type: ClusterIP\n  clusterIP: $(E2E_CONTROLLER_SERVICE_CLUSTER_IP)\n/' "$$tmpdir/install.yaml"
-	printf '%s\n' \
-		'apiVersion: kustomize.config.k8s.io/v1beta1' \
-		'kind: Kustomization' \
-		'resources:' \
-		'- install.yaml' \
-		> "$$tmpdir/kustomization.yaml"
-	(
-		cd "$$tmpdir"
-		$(KUSTOMIZE) edit set namespace "$$ns" >/dev/null
-		$(KUSTOMIZE) build .
-	) | tee "$$tmpdir/rendered-install.yaml" \
-		| $(KUBECTL) --context "$$ctx" apply -f -
-	$(call UPDATE_IF_CHANGED,$$tmpdir/rendered-install.yaml)
+	CTX="$(CTX)" NAMESPACE="$(NAMESPACE)" \
+		DEFAULT_AUDIT_REDIS_ADDR="$(DEFAULT_AUDIT_REDIS_ADDR)" \
+		E2E_AUDIT_REDIS_ADDR="$(E2E_AUDIT_REDIS_ADDR)" \
+		E2E_CONTROLLER_SERVICE_CLUSTER_IP="$(E2E_CONTROLLER_SERVICE_CLUSTER_IP)" \
+		KUSTOMIZE="$(KUSTOMIZE)" KUBECTL="$(KUBECTL)" STAMP_FILE="$@" \
+		bash hack/e2e/install-plain-manifests.sh
 
 .PHONY: test-e2e-quickstart-helm
 test-e2e-quickstart-helm: ## Run quickstart smoke test (Helm install)
