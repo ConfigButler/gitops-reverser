@@ -1,0 +1,78 @@
+{{- if and .Values.certificates.certManager.enabled .Values.certificates.audit.enabled .Values.servers.audit.tls.enabled }}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "gitops-reverser.fullname" . }}-audit-root-ca
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "gitops-reverser.labels" . | nindent 4 }}
+spec:
+  commonName: {{ include "gitops-reverser.fullname" . }}-audit-root-ca
+  duration: 87600h
+  isCA: true
+  issuerRef:
+    kind: {{ .Values.certificates.certManager.issuer.kind }}
+    name: {{ .Values.certificates.certManager.issuer.name }}
+  privateKey:
+    algorithm: ECDSA
+    rotationPolicy: Always
+    size: 256
+  secretName: {{ include "gitops-reverser.auditRootCASecretName" . }}
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: {{ include "gitops-reverser.fullname" . }}-audit-ca-issuer
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "gitops-reverser.labels" . | nindent 4 }}
+spec:
+  ca:
+    secretName: {{ include "gitops-reverser.auditRootCASecretName" . }}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "gitops-reverser.fullname" . }}-audit-server-cert
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "gitops-reverser.labels" . | nindent 4 }}
+spec:
+  dnsNames:
+    - {{ include "gitops-reverser.auditServiceName" . }}.{{ .Release.Namespace }}.svc
+    - {{ include "gitops-reverser.auditServiceName" . }}.{{ .Release.Namespace }}.svc.cluster.local
+  duration: 2160h
+  issuerRef:
+    kind: Issuer
+    name: {{ include "gitops-reverser.fullname" . }}-audit-ca-issuer
+  renewBefore: 360h
+  secretName: {{ include "gitops-reverser.auditServerSecretName" . }}
+  usages:
+    - digital signature
+    - key encipherment
+    - server auth
+  privateKey:
+    rotationPolicy: Always
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "gitops-reverser.fullname" . }}-audit-client-cert
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "gitops-reverser.labels" . | nindent 4 }}
+spec:
+  commonName: kube-apiserver
+  duration: {{ .Values.certificates.audit.client.duration | quote }}
+  issuerRef:
+    kind: Issuer
+    name: {{ include "gitops-reverser.fullname" . }}-audit-ca-issuer
+  renewBefore: {{ .Values.certificates.audit.client.renewBefore | quote }}
+  secretName: {{ include "gitops-reverser.auditClientSecretName" . }}
+  usages:
+    - digital signature
+    - client auth
+  privateKey:
+    rotationPolicy: Always
+{{- end }}

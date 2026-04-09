@@ -1,0 +1,57 @@
+{{- if .Values.quickstart.enabled }}
+---
+apiVersion: configbutler.ai/v1alpha1
+kind: GitProvider
+metadata:
+  name: {{ .Values.quickstart.gitProvider.name }}
+  namespace: {{ .Values.quickstart.namespace }}
+  labels:
+    {{- include "gitops-reverser.labels" . | nindent 4 }}
+    app.kubernetes.io/component: quickstart
+spec:
+  url: {{ .Values.quickstart.gitProvider.url | quote }}
+  allowedBranches:
+    {{- toYaml .Values.quickstart.gitProvider.allowedBranches | nindent 4 }}
+  secretRef:
+    name: {{ .Values.quickstart.gitProvider.secretRef.name }}
+  push:
+    interval: {{ .Values.quickstart.gitProvider.push.interval | quote }}
+    maxCommits: {{ .Values.quickstart.gitProvider.push.maxCommits }}
+---
+apiVersion: configbutler.ai/v1alpha1
+kind: GitTarget
+metadata:
+  name: {{ .Values.quickstart.gitTarget.name }}
+  namespace: {{ .Values.quickstart.namespace }}
+  labels:
+    {{- include "gitops-reverser.labels" . | nindent 4 }}
+    app.kubernetes.io/component: quickstart
+spec:
+  providerRef:
+    name: {{ .Values.quickstart.gitProvider.name }}
+  branch: {{ .Values.quickstart.gitTarget.branch | quote }}
+  path: {{ .Values.quickstart.gitTarget.path | quote }}
+  encryption:
+    provider: {{ .Values.quickstart.gitTarget.encryption.provider | quote }}
+    age:
+      enabled: {{ .Values.quickstart.gitTarget.encryption.age.enabled }}
+      recipients:
+        extractFromSecret: true
+        generateWhenMissing: {{ .Values.quickstart.gitTarget.encryption.age.generateWhenMissing }}
+    secretRef:
+      name: {{ .Values.quickstart.gitTarget.encryption.secretRef.name }}
+---
+apiVersion: configbutler.ai/v1alpha1
+kind: WatchRule
+metadata:
+  name: {{ .Values.quickstart.watchRule.name }}
+  namespace: {{ .Values.quickstart.namespace }}
+  labels:
+    {{- include "gitops-reverser.labels" . | nindent 4 }}
+    app.kubernetes.io/component: quickstart
+spec:
+  targetRef:
+    name: {{ .Values.quickstart.gitTarget.name }}
+  rules:
+    {{- toYaml .Values.quickstart.watchRule.rules | nindent 4 }}
+{{- end }}

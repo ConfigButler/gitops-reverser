@@ -5,63 +5,16 @@ This Helm chart provides a production-ready single-pod deployment.
 
 ## Quick Start
 
-```bash
-# 1. Install cert-manager (if not already installed)
-kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.19.1/cert-manager.yaml
+The official end-to-end quickstart lives in the repository root README:
 
-# 2. Wait for cert-manager to be ready
-kubectl wait --for=condition=ready pod -l app.kubernetes.io/instance=cert-manager -n cert-manager --timeout=300s
+- [`README.md`](../../README.md)
 
-# 3. Create the namespace and a Valkey auth secret
-kubectl create namespace gitops-reverser
-kubectl create secret generic valkey-auth \
-  --namespace gitops-reverser \
-  --from-literal=password="$(openssl rand -base64 32)"
+Use that guide for cert-manager, Valkey, Helm install, kube-apiserver audit configuration, Git credentials, starter
+`GitProvider`/`GitTarget`/`WatchRule` resources, and first-commit verification.
 
-# 4. Install Valkey using the official chart with auth enabled
-helm repo add valkey https://valkey.io/valkey-helm/
-helm repo update
-helm install valkey valkey/valkey \
-  --version 0.9.3 \
-  --namespace gitops-reverser \
-  --set auth.enabled=true \
-  --set auth.usersExistingSecret=valkey-auth \
-  --set auth.aclUsers.default.passwordKey=password \
-  --set "auth.aclUsers.default.permissions=~* &* +@all"
+This chart README stays focused on chart-specific installation, configuration, and operations.
 
-# 5. Install GitOps Reverser, referencing the same auth secret
-helm install gitops-reverser \
-  oci://ghcr.io/configbutler/charts/gitops-reverser \
-  --namespace gitops-reverser \
-  --create-namespace \
-  --set queue.redis.addr="valkey.gitops-reverser.svc.cluster.local:6379" \
-  --set queue.redis.auth.existingSecret=valkey-auth \
-  --set queue.redis.auth.existingSecretKey=password
-
-# 6. Verify installation
-kubectl get pods -n gitops-reverser
-```
-
-Controller install is complete. Next, create a minimal provider/target/rule to validate first commit flow:
-
-```bash
-kubectl apply -f config/samples/quickstart-gitprovider.yaml
-kubectl apply -f config/samples/quickstart-gittarget.yaml
-kubectl apply -f config/samples/quickstart-watchrule.yaml
-```
-
-The quickstart target uses:
-- `spec.path`
-- `spec.encryption.provider: sops`
-- `spec.encryption.age.recipients.generateWhenMissing: true`
-
-When the encryption Secret is auto-generated, back up the generated `*.agekey` entry immediately.
-If you lose it, existing encrypted `*.sops.yaml` files are unrecoverable.
-After backup verification, remove warning annotation:
-
-```bash
-kubectl annotate secret sops-age-key -n default configbutler.ai/backup-warning-
-```
+For the chart's optional starter `quickstart` block, see [`docs/configuration.md`](../../docs/configuration.md).
 
 ## Features
 
@@ -93,6 +46,12 @@ helm install gitops-reverser \
   --create-namespace
 ```
 
+After installation, print the chart's post-install instructions with:
+
+```bash
+helm get notes gitops-reverser --namespace gitops-reverser
+```
+
 Install a specific version:
 
 ```bash
@@ -101,14 +60,6 @@ helm install gitops-reverser \
   --version 0.3.0 \
   --namespace gitops-reverser \
   --create-namespace
-```
-
-### From GitHub Releases
-
-You can also install using the single YAML manifest:
-
-```bash
-kubectl apply -f https://github.com/ConfigButler/gitops-reverser/releases/latest/download/install.yaml
 ```
 
 ## Architecture
@@ -218,16 +169,25 @@ webhook:
 | `image.repository` | Container image repository | `ghcr.io/configbutler/gitops-reverser` |
 | `webhook.validating.failurePolicy` | Webhook failure policy (Ignore/Fail) | `Ignore` |
 | `servers.admission.tls.enabled` | Serve admission webhook with TLS (disable only for local/testing) | `true` |
-| `servers.admission.tls.secretName` | Secret name for admission TLS cert/key | `<release>-admission-server-cert` |
+| `servers.admission.tls.secretNameOverride` | Override Secret name for admission TLS cert/key | `<release>-admission-server-cert` |
 | `servers.audit.port` | Audit container port | `9444` |
 | `servers.audit.tls.enabled` | Serve audit ingress with TLS | `true` |
 | `servers.audit.maxRequestBodyBytes` | Max accepted audit request size | `10485760` |
 | `servers.audit.timeouts.read` | Audit-server read timeout | `15s` |
 | `servers.audit.timeouts.write` | Audit-server write timeout | `30s` |
 | `servers.audit.timeouts.idle` | Audit-server idle timeout | `60s` |
-| `servers.audit.tls.secretName` | Secret name for audit TLS cert/key | `<release>-audit-server-cert` |
+| `servers.audit.tls.secretNameOverride` | Override Secret name for audit TLS cert/key | `<release>-audit-server-cert` |
+| `auditService.type` | Service type for the dedicated audit Service | `NodePort` |
+| `auditService.nodePort` | Fixed NodePort for the audit Service when `auditService.type=NodePort` | `30444` |
+| `auditService.clusterIP` | Optional fixed ClusterIP for the dedicated audit Service | `""` |
+| `quickstart.enabled` | Create starter `GitProvider`, `GitTarget`, and `WatchRule` resources | `false` |
+| `quickstart.namespace` | Namespace for the starter quickstart resources | `default` |
+| `quickstart.gitProvider.url` | Repository URL used by the starter `GitProvider` | `""` |
+| `quickstart.gitProvider.secretRef.name` | Existing Secret name used by the starter `GitProvider` | `git-creds` |
+| `quickstart.gitTarget.path` | Repository path used by the starter `GitTarget` | `live-cluster` |
+| `quickstart.watchRule.rules` | Rules used by the starter `WatchRule` | `configmaps create/update/delete` |
 | `queue.redis.addr` | Redis endpoint (`host:port`) for required durable audit queueing | `valkey:6379` |
-| `queue.redis.auth.existingSecret` | Name of a pre-created Secret holding the Redis password | `""` |
+| `queue.redis.auth.existingSecret` | Name of a pre-created Secret holding the Redis password | `valkey-auth` |
 | `queue.redis.auth.existingSecretKey` | Key within the Secret that holds the password | `password` |
 | `queue.redis.auth.username` | Optional Redis ACL username | `""` |
 | `queue.redis.stream` | Redis stream name for audit events | `gitopsreverser.audit.events.v1` |
@@ -236,14 +196,18 @@ webhook:
 | `servers.metrics.bindAddress` | Metrics listener bind address | `:8080` |
 | `servers.metrics.tls.enabled` | Serve metrics with TLS | `false` |
 | `servers.metrics.tls.certPath` | Metrics TLS certificate mount path | `/tmp/k8s-metrics-server/metrics-server-certs` |
-| `servers.metrics.tls.secretName` | Secret name for metrics TLS cert/key | `<release>-metrics-server-cert` |
+| `servers.metrics.tls.secretNameOverride` | Override Secret name for metrics TLS cert/key | `<release>-metrics-server-cert` |
 | `service.clusterIP` | Optional fixed ClusterIP for single controller Service | `""` |
 | `service.ports.admission` | Service port for admission webhook | `9443` |
 | `service.ports.audit` | Service port for audit ingress | `9444` |
 | `service.ports.metrics` | Service port for metrics | `8080` |
 | `certificates.certManager.enabled` | Use cert-manager for certificates | `true` |
+| `certificates.audit.enabled` | Let the chart manage audit TLS Secrets via cert-manager | `true` |
+| `certificates.audit.rootCA.secretNameOverride` | Override Secret name for the audit root CA | `<release>-audit-root-ca` |
 | `certificates.audit.client.duration` | Lifetime of the kube-apiserver audit client cert; long by default to avoid repeated manual kube-apiserver reconfiguration | `87600h` |
 | `certificates.audit.client.renewBefore` | Renew the kube-apiserver audit client cert before expiry; shorter values increase control-plane maintenance frequency | `720h` |
+| `certificates.audit.client.secretNameOverride` | Override Secret name for the kube-apiserver audit client cert | `<release>-audit-client-cert` |
+| `auditKubeconfig.insecureSkipTLSVerify` | Render Helm notes with `insecure-skip-tls-verify: true` for the generated audit kubeconfig example | `false` |
 | `podDisruptionBudget.enabled` | Enable PodDisruptionBudget | `true` |
 | `resources.requests.cpu` | CPU request | `10m` |
 | `resources.requests.memory` | Memory request | `64Mi` |
@@ -285,7 +249,7 @@ kubectl delete crd gitproviders.configbutler.ai gittargets.configbutler.ai watch
 
 > ⚠️ **Warning**: Deleting CRDs will also delete all custom resources of those types!
 
-## Verification & Usage
+## Verification
 
 ### Verify Installation
 
@@ -300,6 +264,8 @@ kubectl get crd | grep configbutler
 kubectl get validatingwebhookconfiguration -l app.kubernetes.io/name=gitops-reverser
 
 ```
+
+For first-run GitOps Reverser usage, follow the root quickstart instead of duplicating those steps here.
 
 ### View Logs
 
@@ -396,23 +362,6 @@ helm upgrade gitops-reverser \
   --set affinity=null
 ```
 
-### Git Authentication Issues
-
-Ensure your Git credentials secret exists:
-
-```bash
-# For HTTPS with token
-kubectl create secret generic git-credentials \
-  --from-literal=username=git \
-  --from-literal=password=YOUR_TOKEN \
-  -n gitops-reverser
-
-# For SSH
-kubectl create secret generic git-credentials \
-  --from-file=ssh-privatekey=~/.ssh/id_rsa \
-  -n gitops-reverser
-```
-
 ### View Controller Events
 
 ```bash
@@ -479,7 +428,7 @@ curl -s https://api.github.com/repos/ConfigButler/gitops-reverser/releases | jq 
 ## Support & Contributing
 
 - **Issues**: [GitHub Issues](https://github.com/ConfigButler/gitops-reverser/issues)
-- **Documentation**: [Project README](https://github.com/ConfigButler/gitops-reverser)
+- **Documentation**: [Project README and quickstart](https://github.com/ConfigButler/gitops-reverser)
 - **Contributing**: See [CONTRIBUTING.md](https://github.com/ConfigButler/gitops-reverser/blob/main/CONTRIBUTING.md)
 
 ## License

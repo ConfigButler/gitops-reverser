@@ -18,7 +18,7 @@ This is not a simple configuration step. It is a network and TLS design decision
 
 The kube-apiserver resolves names using the host's DNS, not CoreDNS. This means in-cluster service names (`*.svc.cluster.local`) do not resolve — those only exist inside CoreDNS, which the host node does not use. However, any hostname resolvable from the control-plane node (internal DNS, a LoadBalancer hostname, etc.) works fine. If you have a stable hostname reachable from the node, DNS is a valid approach.
 
-This is why the current e2e setup uses a hardcoded ClusterIP address instead.
+This is why the current e2e setup uses a node-local `127.0.0.1:<nodePort>` address instead.
 
 ## Why TLS is non-trivial
 
@@ -28,6 +28,94 @@ The kube-apiserver validates the TLS certificate of the audit webhook backend. O
 2. Skip verification with `insecure-skip-tls-verify: true` (only acceptable for local development).
 
 The complication: cert-manager, which issues the controller's TLS certificate, is installed *after* the apiserver starts. You cannot reference a cert-manager-issued certificate in the audit webhook kubeconfig at cluster bootstrap time — at least not without a two-phase setup.
+
+## Audit webhook backend best practices
+
+The connectivity model is only half of the design. The other half is how kube-apiserver should behave when the audit
+backend is slow, unavailable, or receives unusually large events.
+
+For the full flag reference, see the Kubernetes [`kube-apiserver` command reference](https://kubernetes.io/docs/reference/command-line-tools-reference/kube-apiserver/).
+
+The safest baseline for GitOps Reverser is:
+
+- use `--audit-webhook-mode=batch`
+- keep batching throttling enabled
+- enable webhook truncation
+- keep the default initial backoff unless you have a measured reason to change it
+- tune batch latency only after the network path and TLS path are already stable
+
+### Strong recommendation: do not use `blocking` or `blocking-strict`
+
+Kubernetes documents three webhook modes:
+
+- `batch`: buffer events and send them asynchronously
+- `blocking`: block API server responses while each audit event is sent
+- `blocking-strict`: same as `blocking`, but a failure at `RequestReceived` can fail the API request itself
+
+For GitOps Reverser, `blocking` and especially `blocking-strict` are poor defaults:
+
+- they couple normal API request latency directly to the health of the audit receiver
+- they turn a slow or unavailable audit sink into a control-plane performance problem
+- `blocking-strict` can reject otherwise valid user requests during audit backend failures
+
+So the practical rule is simple: **never start with `blocking` or `blocking-strict` for this integration**. If someone
+ever wants to use them, that should be a conscious, high-trust, explicitly tested choice rather than a default.
+
+### Recommended starting flags
+
+For self-hosted clusters, the most sensible starting point is:
+
+```text
+--audit-webhook-mode=batch
+--audit-webhook-batch-throttle-enable=true
+--audit-webhook-truncate-enabled=true
+```
+
+Then leave these at Kubernetes defaults unless you have measurements showing a real need:
+
+- `--audit-webhook-initial-backoff=10s`
+- `--audit-webhook-batch-buffer-size=10000`
+- `--audit-webhook-batch-max-size=400`
+- `--audit-webhook-batch-throttle-qps=10`
+- `--audit-webhook-batch-throttle-burst=15`
+
+Those defaults are designed to keep the audit path asynchronous and bounded without making the apiserver overly eager
+to retry or overrun the backend.
+
+### What to tune first, and what not to tune first
+
+If operators want faster event delivery, the first knob to consider is `--audit-webhook-batch-max-wait`.
+
+- lower `batch-max-wait` if event freshness matters more than batching efficiency
+- leave buffer size, throttle QPS, and burst alone at first
+- only increase buffer or throttle after observing real dropped events or backlog pressure
+
+This ordering matters because `batch-max-wait` changes freshness without immediately increasing failure blast radius,
+while aggressive throttle or buffer changes can hide a backend sizing problem rather than solving it.
+
+### Truncation should be enabled in real deployments
+
+Kubernetes leaves webhook truncation disabled by default. That is not a great production default for this use case.
+
+Large audit events do happen, especially when:
+
+- request bodies are large
+- patch payloads are verbose
+- request/response objects include a lot of data
+
+Enabling truncation is safer than letting oversized events destabilize delivery behavior. The tradeoff is that very
+large events may lose request/response bodies before export, but that is still usually better than failed delivery or
+excessive pressure on the backend.
+
+### The e2e values are intentionally not production advice
+
+Our e2e cluster uses a much more aggressive batch profile so tests observe audit events quickly:
+
+- low `--audit-webhook-batch-max-wait`
+- small `--audit-webhook-batch-max-size`
+
+That is a test feedback optimization, not a universal best practice. Production operators should start from `batch`
+mode plus truncation, validate the end-to-end path, and then tune for freshness only if needed.
 
 ## Options
 
@@ -206,9 +294,16 @@ server: https://gitops-reverser.gitops-reverser.svc.cluster.local:9444/audit-web
 
 ## What the current e2e setup does
 
-The e2e test cluster uses **Option 1** with `insecure-skip-tls-verify: true`. The Service ClusterIP is fixed at `10.43.200.200` in `config/service.yaml`. The webhook kubeconfig at `test/e2e/cluster/audit/webhook-config.yaml` references that IP directly.
+The e2e test cluster uses **Option 5**:
 
-This is intentional for the e2e environment and explicitly not a production recommendation.
+- kube-apiserver connects to `https://127.0.0.1:30444/...`
+- the audit Service is exposed through a `NodePort`
+- the tracked bootstrap kubeconfig source lives at `test/e2e/cluster/audit/webhook-config.yaml`
+- the mounted runtime copy is generated under `.stamps/cluster/<ctx>/audit/webhook-config.yaml`
+
+At cluster bootstrap, that generated file uses `insecure-skip-tls-verify: true` so kube-apiserver can start before
+cert-manager issues the real audit TLS materials. After install, the e2e flow rewrites the mounted `.stamps` copy with
+the final CA-trusting mTLS kubeconfig and restarts kube-apiserver once.
 
 ## Cluster setup reference
 

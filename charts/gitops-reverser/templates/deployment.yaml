@@ -178,23 +178,23 @@ spec:
         {{- if .Values.servers.admission.tls.enabled }}
         - name: admission-cert
           secret:
-            secretName: {{ .Values.servers.admission.tls.secretName | default (printf "%s-admission-server-cert" (include "gitops-reverser.fullname" .)) }}
+            secretName: {{ .Values.servers.admission.tls.secretNameOverride | default (printf "%s-admission-server-cert" (include "gitops-reverser.fullname" .)) }}
             defaultMode: 420
         {{- end }}
         {{- if .Values.servers.metrics.tls.enabled }}
         - name: metrics-cert
           secret:
-            secretName: {{ .Values.servers.metrics.tls.secretName | default (printf "%s-metrics-server-cert" (include "gitops-reverser.fullname" .)) }}
+            secretName: {{ .Values.servers.metrics.tls.secretNameOverride | default (printf "%s-metrics-server-cert" (include "gitops-reverser.fullname" .)) }}
             defaultMode: 420
         {{- end }}
         {{- if .Values.servers.audit.tls.enabled }}
         - name: audit-cert
           secret:
-            secretName: {{ .Values.servers.audit.tls.secretName | default (printf "%s-audit-server-cert" (include "gitops-reverser.fullname" .)) }}
+            secretName: {{ include "gitops-reverser.auditServerSecretName" . }}
             defaultMode: 420
         - name: audit-client-ca
           secret:
-            secretName: {{ .Values.certificates.audit.rootCA.secretName | default (printf "%s-audit-root-ca" (include "gitops-reverser.fullname" .)) }}
+            secretName: {{ include "gitops-reverser.auditRootCASecretName" . }}
             defaultMode: 420
         {{- end }}
         {{- with .Values.volumes }}

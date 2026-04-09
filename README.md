@@ -67,10 +67,10 @@ See [`docs/bi-directional.md`](docs/bi-directional.md) for the coordination guid
 
 - Kubernetes cluster with `kubectl` configured
 - cert-manager for TLS certificate management
+- Admin access to your kube-apiserver configuration (you need to configure the [audit webhook backend](https://kubernetes.io/docs/tasks/debug/debug-cluster/audit/#webhook-backend))
+  - Managed platforms (e.g. EKS, GKE, AKS) don't allow this.
+  - See [`docs/design/audit-webhook-api-server-connectivity.md`](docs/design/audit-webhook-api-server-connectivity.md) for more information.
 
-GitOps Reverser relies on the Kubernetes [audit webhook backend](https://kubernetes.io/docs/tasks/debug/debug-cluster/audit/#webhook-backend), which requires access to kube-apiserver configuration. This works best on clusters you fully control (k3s, k3d, Talos, Kamaji). Managed platforms (EKS, GKE, AKS) restrict this access. See [`docs/design/audit-webhook-api-server-connectivity.md`](docs/design/audit-webhook-api-server-connectivity.md) for a full discussion of your options.
-
-**The quick start assumes the GitOps Reverser service is reachable at ClusterIP `10.43.200.200`.** Point your audit webhook config at `https://10.43.200.200:9444/audit-webhook` with `insecure-skip-tls-verify: true`. This is the default for k3s/k3d; adjust if your cluster's service CIDR differs.
 
 **1. Install cert-manager**
 
@@ -98,10 +98,25 @@ helm install valkey valkey/valkey --version 0.9.3 --namespace gitops-reverser \
 **3. Install GitOps Reverser**
 
 ```bash
-kubectl apply -f https://github.com/ConfigButler/gitops-reverser/releases/latest/download/install.yaml
+helm install gitops-reverser \
+  oci://ghcr.io/configbutler/charts/gitops-reverser \
+  --namespace gitops-reverser \
+  --create-namespace
 ```
 
-**4. Create Git credentials**
+**4. Configure kube-apiserver audit delivery**
+
+After the install is up, read the Helm post-install notes. 
+
+If you missed the post-install output, you can print it again with:
+
+```bash
+helm get notes gitops-reverser -n gitops-reverser
+```
+
+Follow the post-install instructions carefully: you will be able to configure your Kubernetes API server to forward audit events.
+
+**5. Create Git credentials**
 
 ```bash
 ssh-keygen -t ed25519 -C "gitops-reverser@cluster" -f /tmp/gitops-reverser-key -N ""
@@ -115,25 +130,31 @@ kubectl create secret generic git-creds \
 
 See [`docs/GITHUB_SETUP_GUIDE.md`](docs/GITHUB_SETUP_GUIDE.md) for a full setup guide.
 
-**5. Create a `GitProvider`, `GitTarget`, and `WatchRule`**
+**6. Enable the starter Git configuration**
 
 ![Config basics diagram showing the relationship between GitProvider, GitTarget, and WatchRule](docs/images/config-basics.excalidraw.svg)
 
-Sample manifests are in [`config/samples/`](config/samples/). Edit the repository URL in `quickstart-gitprovider.yaml`, then apply all three:
+Use the chart's `quickstart` values so Helm creates a starter configuration `GitProvider`, `GitTarget`, and `WatchRule`
 
 ```bash
-kubectl apply -f config/samples/quickstart-gitprovider.yaml
-kubectl apply -f config/samples/quickstart-gittarget.yaml
-kubectl apply -f config/samples/quickstart-watchrule.yaml
+helm upgrade gitops-reverser \
+  oci://ghcr.io/configbutler/charts/gitops-reverser \
+  --namespace gitops-reverser \
+  --reuse-values \
+  --set quickstart.enabled=true \
+  --set quickstart.gitProvider.url=git@github.com:<org>/<repo>.git
 ```
 
-Check that the provider connected successfully:
+Then check that the starter resources become ready:
 
 ```bash
-kubectl get gitprovider example-provider
+kubectl get gitprovider,gittarget,watchrule -n default
 ```
 
-**6. Test it**
+See [`docs/configuration.md`](docs/configuration.md) for the quickstart values, names, and follow-up configuration
+options.
+
+**7. Test it**
 
 ```bash
 kubectl create configmap test-config --from-literal=key=value -n default
@@ -142,8 +163,6 @@ kubectl create configmap test-config --from-literal=key=value -n default
 You should see a new commit in your Git repository within seconds.
 
 > **Troubleshooting:** If no commit appears, check `kubectl logs -n gitops-reverser deploy/gitops-reverser`.
-
-For cluster-wide resources or watching multiple namespaces, use [`ClusterWatchRule`](config/samples/clusterwatchrule.yaml).
 
 ## Secrets and encryption
 
@@ -186,7 +205,6 @@ Contributions, issues, and discussions are welcome.
 
 ## Get in touch
 
-- [Book a meeting](https://calendar.app.google/FgYaoZog1dFpRG9Z7) to share your thoughts or discuss the project.
 - Read the [Reverse GitOps manifesto](https://reversegitops.dev/) ⭐ for the broader pattern behind this work.
 - Connect on [LinkedIn](https://www.linkedin.com/in/simonkoudijs/); feedback and ideas always welcome.
 
