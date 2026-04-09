@@ -260,6 +260,7 @@ jobs:
     env:
       PROJECT_IMAGE: ${{ needs.docker-build.outputs.image }}
       CI_CONTAINER: ${{ needs.build-ci-container.outputs.image }}
+      IMAGE_DELIVERY_MODE: pull
 
     steps:
       - name: Checkout code
@@ -277,6 +278,7 @@ jobs:
             -v /var/run/docker.sock:/var/run/docker.sock \
             -w "${{ env.CI_WORKDIR }}" \
             -e PROJECT_IMAGE=${{ env.PROJECT_IMAGE }} \
+            -e IMAGE_DELIVERY_MODE=${{ env.IMAGE_DELIVERY_MODE }} \
             -e HOST_PROJECT_PATH=${{ github.workspace }} \
             ${{ env.CI_CONTAINER }} \
             bash -c "
@@ -295,6 +297,7 @@ jobs:
     env:
       PROJECT_IMAGE: ${{ needs.docker-build.outputs.image }}
       CI_CONTAINER: ${{ needs.build-ci-container.outputs.image }}
+      IMAGE_DELIVERY_MODE: pull
 
     steps:
       - name: Checkout code
@@ -319,6 +322,7 @@ jobs:
             -v /var/run/docker.sock:/var/run/docker.sock \
             -w "${{ env.CI_WORKDIR }}" \
             -e PROJECT_IMAGE=${{ env.PROJECT_IMAGE }} \
+            -e IMAGE_DELIVERY_MODE=${{ env.IMAGE_DELIVERY_MODE }} \
             -e HELM_CHART_SOURCE="./gitops-reverser.tgz" \
             -e HOST_PROJECT_PATH=${{ github.workspace }} \
             ${{ env.CI_CONTAINER }} \

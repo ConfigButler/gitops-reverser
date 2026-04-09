@@ -80,6 +80,8 @@ servers:
       certPath: "/tmp/k8s-audit-server/audit-server-certs"
       certName: "tls.crt"
       certKey: "tls.key"
+      clientCAPath: "/tmp/k8s-audit-server/audit-client-ca"
+      clientCAName: "tls.crt"
       secretName: ""
     timeouts:
       read: "15s"
@@ -138,6 +140,20 @@ certificates:
       name: selfsigned-issuer
       kind: Issuer
       create: true
+  audit:
+    rootCA:
+      secretName: ""
+    client:
+      # Keep the kube-apiserver client cert long-lived by default so cluster admins
+      # are protected from frequent manual audit-webhook kubeconfig updates and
+      # kube-apiserver reconfiguration. cert-manager durations use Go-style units,
+      # so years must be expressed in hours (10y = 87600h).
+      duration: "87600h"
+      # Renew 30 days before expiry. Shortening this cadence increases control-plane
+      # maintenance because kube-apiserver embeds this client credential in its
+      # node-local audit webhook kubeconfig.
+      renewBefore: "720h"
+      secretName: ""
 
 # RBAC configuration
 rbac:
@@ -199,6 +215,10 @@ service:
     admission: 9443
     audit: 9444
     metrics: 8080
+
+auditService:
+  type: NodePort
+  nodePort: 30444
 
 # Logging configuration
 logging:

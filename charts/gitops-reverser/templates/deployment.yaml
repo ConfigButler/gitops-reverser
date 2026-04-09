@@ -61,6 +61,8 @@ spec:
             - --audit-cert-path={{ .Values.servers.audit.tls.certPath }}
             - --audit-cert-name={{ .Values.servers.audit.tls.certName }}
             - --audit-cert-key={{ .Values.servers.audit.tls.certKey }}
+            - --audit-client-ca-path={{ .Values.servers.audit.tls.clientCAPath }}
+            - --audit-client-ca-name={{ .Values.servers.audit.tls.clientCAName }}
             {{- else }}
             - --audit-insecure
             {{- end }}
@@ -159,6 +161,9 @@ spec:
             - name: audit-cert
               mountPath: {{ .Values.servers.audit.tls.certPath }}
               readOnly: true
+            - name: audit-client-ca
+              mountPath: {{ .Values.servers.audit.tls.clientCAPath }}
+              readOnly: true
             {{- end }}
             {{- with .Values.volumeMounts }}
             {{- toYaml . | nindent 12 }}
@@ -186,6 +191,10 @@ spec:
         - name: audit-cert
           secret:
             secretName: {{ .Values.servers.audit.tls.secretName | default (printf "%s-audit-server-cert" (include "gitops-reverser.fullname" .)) }}
+            defaultMode: 420
+        - name: audit-client-ca
+          secret:
+            secretName: {{ .Values.certificates.audit.rootCA.secretName | default (printf "%s-audit-root-ca" (include "gitops-reverser.fullname" .)) }}
             defaultMode: 420
         {{- end }}
         {{- with .Values.volumes }}

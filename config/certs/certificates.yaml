@@ -23,18 +23,76 @@ metadata:
   labels:
     app.kubernetes.io/managed-by: kustomize
     app.kubernetes.io/name: gitops-reverser
-  name: gitops-reverser-audit-server-cert
+  name: gitops-reverser-audit-root-ca
   namespace: sut
 spec:
-  dnsNames:
-  - gitops-reverser-service.sut.svc
-  - gitops-reverser-service.sut.svc.cluster.local
-  - localhost
-  ipAddresses:
-  - 127.0.0.1
+  commonName: gitops-reverser-audit-root-ca
+  duration: 87600h
+  isCA: true
   issuerRef:
     kind: Issuer
     name: gitops-reverser-selfsigned-issuer
   privateKey:
+    algorithm: ECDSA
     rotationPolicy: Always
+    size: 256
+  secretName: gitops-reverser-audit-root-ca
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/name: gitops-reverser
+  name: gitops-reverser-audit-ca-issuer
+  namespace: sut
+spec:
+  ca:
+    secretName: gitops-reverser-audit-root-ca
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/name: gitops-reverser
+  name: gitops-reverser-audit-server-cert
+  namespace: sut
+spec:
+  dnsNames:
+  - gitops-reverser-audit.sut.svc
+  - gitops-reverser-audit.sut.svc.cluster.local
+  duration: 2160h
+  issuerRef:
+    kind: Issuer
+    name: gitops-reverser-audit-ca-issuer
+  privateKey:
+    rotationPolicy: Always
+  renewBefore: 360h
   secretName: audit-server-cert
+  usages:
+  - digital signature
+  - key encipherment
+  - server auth
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/name: gitops-reverser
+  name: gitops-reverser-audit-client-cert
+  namespace: sut
+spec:
+  commonName: kube-apiserver
+  duration: 87600h
+  issuerRef:
+    kind: Issuer
+    name: gitops-reverser-audit-ca-issuer
+  privateKey:
+    rotationPolicy: Always
+  renewBefore: 720h
+  secretName: audit-client-cert
+  usages:
+  - digital signature
+  - client auth

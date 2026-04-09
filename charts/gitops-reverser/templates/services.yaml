@@ -19,14 +19,32 @@ spec:
       port: {{ .Values.service.ports.admission }}
       targetPort: {{ .Values.servers.admission.port }}
       protocol: TCP
-    - name: audit
-      port: {{ .Values.service.ports.audit }}
-      targetPort: {{ .Values.servers.audit.port }}
-      protocol: TCP
     - name: metrics
       port: {{ .Values.service.ports.metrics }}
       targetPort: {{ .Values.servers.metrics.port }}
       protocol: TCP
+  selector:
+    {{- include "gitops-reverser.selectorLabels" . | nindent 4 }}
+    control-plane: gitops-reverser
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "gitops-reverser.auditServiceName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "gitops-reverser.labels" . | nindent 4 }}
+    app.kubernetes.io/component: audit
+spec:
+  type: {{ .Values.auditService.type }}
+  ports:
+    - name: audit
+      port: {{ .Values.service.ports.audit }}
+      targetPort: {{ .Values.servers.audit.port }}
+      protocol: TCP
+      {{- if and (eq .Values.auditService.type "NodePort") .Values.auditService.nodePort }}
+      nodePort: {{ .Values.auditService.nodePort }}
+      {{- end }}
   selector:
     {{- include "gitops-reverser.selectorLabels" . | nindent 4 }}
     control-plane: gitops-reverser

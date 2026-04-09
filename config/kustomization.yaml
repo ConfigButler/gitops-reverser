@@ -5,6 +5,7 @@ resources:
 - crd
 - rbac
 - service.yaml
+- audit-service.yaml
 - deployment.yaml
 - certs
 - webhook.yaml

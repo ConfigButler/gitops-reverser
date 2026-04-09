@@ -20,6 +20,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"flag"
 	"fmt"
@@ -308,6 +309,8 @@ type appConfig struct {
 	auditCertPath            string
 	auditCertName            string
 	auditCertKey             string
+	auditClientCAPath        string
+	auditClientCAName        string
 	auditInsecure            bool
 	auditMaxRequestBodyBytes int64
 	auditReadTimeout         time.Duration
@@ -360,6 +363,10 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 		"IP address for the dedicated audit ingress HTTPS server.")
 	fs.IntVar(&cfg.auditPort, "audit-port", defaultAuditPort, "Port for the dedicated audit ingress HTTPS server.")
 	bindServerCertFlags(fs, "audit", "audit ingress TLS", &cfg.auditCertPath, &cfg.auditCertName, &cfg.auditCertKey)
+	fs.StringVar(&cfg.auditClientCAPath, "audit-client-ca-path", "/tmp/k8s-audit-server/audit-client-ca",
+		"Directory that contains the audit client CA certificate used to verify kube-apiserver client certificates.")
+	fs.StringVar(&cfg.auditClientCAName, "audit-client-ca-name", "tls.crt",
+		"File name of the audit client CA certificate used to verify kube-apiserver client certificates.")
 	fs.BoolVar(&cfg.auditInsecure, "audit-insecure", false,
 		"If set, the audit ingress endpoint is served via HTTP instead of HTTPS.")
 	fs.Int64Var(&cfg.auditMaxRequestBodyBytes, "audit-max-request-body-bytes", defaultAuditMaxBodyBytes,
@@ -450,6 +457,9 @@ func validateAuditConfig(cfg appConfig) error {
 	}
 	if strings.TrimSpace(cfg.auditRedisAddr) == "" {
 		return errors.New("audit-redis-addr is required")
+	}
+	if !cfg.auditInsecure && strings.TrimSpace(cfg.auditClientCAPath) == "" {
+		return errors.New("audit-client-ca-path is required when audit TLS is enabled")
 	}
 	if cfg.auditRedisDB < 0 {
 		return fmt.Errorf("audit-redis-db must be >= 0, got %d", cfg.auditRedisDB)
@@ -552,7 +562,7 @@ func (r *auditServerRunnable) Start(ctx context.Context) error {
 	go func() {
 		defer close(shutdownDone)
 		<-ctx.Done()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), defaultAuditShutdownTimeout)
+		shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), defaultAuditShutdownTimeout)
 		defer cancel()
 		if err := r.server.Shutdown(shutdownCtx); err != nil {
 			setupLog.Error(err, "Failed to shutdown dedicated audit ingress server")
@@ -587,7 +597,10 @@ func initAuditServerRunnable(
 
 	var serverTLS *tls.Config
 	if tlsEnabled {
-		serverTLS = buildServerTLSConfig(tlsOpts)
+		serverTLS, err = buildAuditServerTLSConfig(cfg, tlsOpts)
+		if err != nil {
+			return nil, nil, err
+		}
 	} else {
 		setupLog.Info("Audit ingress TLS disabled; serving plain HTTP for audit ingress")
 	}
@@ -627,6 +640,20 @@ func buildServerTLSConfig(tlsOpts []func(*tls.Config)) *tls.Config {
 		opt(serverTLS)
 	}
 	return serverTLS
+}
+
+func buildAuditServerTLSConfig(cfg appConfig, tlsOpts []func(*tls.Config)) (*tls.Config, error) {
+	serverTLS := buildServerTLSConfig(tlsOpts)
+
+	clientCAPool, err := loadCertPoolFromPEMFile(filepath.Join(cfg.auditClientCAPath, cfg.auditClientCAName))
+	if err != nil {
+		return nil, fmt.Errorf("failed to load audit client CA: %w", err)
+	}
+
+	serverTLS.ClientAuth = tls.RequireAndVerifyClientCert
+	serverTLS.ClientCAs = clientCAPool
+
+	return serverTLS, nil
 }
 
 func buildTLSRuntime(
@@ -681,6 +708,20 @@ func newCertWatcher(certPath, certName, certKey string) (*certwatcher.CertWatche
 		filepath.Join(certPath, certName),
 		filepath.Join(certPath, certKey),
 	)
+}
+
+func loadCertPoolFromPEMFile(path string) (*x509.CertPool, error) {
+	pemData, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read certificate bundle %q: %w", path, err)
+	}
+
+	pool := x509.NewCertPool()
+	if ok := pool.AppendCertsFromPEM(pemData); !ok {
+		return nil, fmt.Errorf("parse certificate bundle %q: no certificates found", path)
+	}
+
+	return pool, nil
 }
 
 // newManager creates a new controller-runtime Manager with common options.
