@@ -438,10 +438,10 @@ var _ = Describe("GitProvider Controller", func() {
 			Expect(updatedProvider.Status.SigningPublicKey).To(BeEmpty())
 		})
 
-		It("should fail when commit signing is configured before implementation exists", func() {
+		It("should fail when commit signing is configured but the signing secret is missing", func() {
 			gitProvider = &configbutleraiv1alpha1.GitProvider{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-provider-signing-not-implemented",
+					Name:      "test-provider-signing-secret-missing",
 					Namespace: "default",
 				},
 				Spec: configbutleraiv1alpha1.GitProviderSpec{
@@ -466,7 +466,7 @@ var _ = Describe("GitProvider Controller", func() {
 			})
 
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result.RequeueAfter).To(Equal(time.Minute * 10))
+			Expect(result.RequeueAfter).To(Equal(time.Minute * 5))
 
 			updatedProvider := &configbutleraiv1alpha1.GitProvider{}
 			err = k8sClient.Get(
@@ -479,8 +479,8 @@ var _ = Describe("GitProvider Controller", func() {
 			Expect(updatedProvider.Status.Conditions).To(HaveLen(1))
 			condition := updatedProvider.Status.Conditions[0]
 			Expect(condition.Status).To(Equal(metav1.ConditionFalse))
-			Expect(condition.Reason).To(Equal(ReasonSigningNotImplemented))
-			Expect(condition.Message).To(ContainSubstring("commit signing is not implemented yet"))
+			Expect(condition.Reason).To(Equal(ReasonSecretNotFound))
+			Expect(condition.Message).To(ContainSubstring("signing secret"))
 			Expect(updatedProvider.Status.SigningPublicKey).To(BeEmpty())
 		})
 	})

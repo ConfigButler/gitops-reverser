@@ -34,6 +34,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -1040,6 +1041,189 @@ func TestBranchWorker_CommitAndPushRequest_UsesBatchTemplateForAtomicRequest(t *
 	assert.Equal(t, DefaultCommitterEmail, commit.Committer.Email)
 	assert.Equal(t, DefaultCommitterName, commit.Author.Name)
 	assert.Equal(t, DefaultCommitterEmail, commit.Author.Email)
+}
+
+func TestBranchWorker_CommitAndPushRequest_SignsCommitWhenConfigured(t *testing.T) {
+	ctx := context.Background()
+	tempDir := t.TempDir()
+	remotePath := filepath.Join(tempDir, "remote.git")
+	remoteURL := "file://" + remotePath
+	serverRepo := createBareRepo(t, remotePath)
+
+	seedPath := filepath.Join(tempDir, "seed")
+	seedRepo, seedWorktree := initLocalRepo(t, seedPath, remoteURL, "main")
+	commitFileChange(t, seedWorktree, seedPath, "README.md", "seed\n")
+	require.NoError(t, seedRepo.Push(&git.PushOptions{
+		RefSpecs: []config.RefSpec{
+			config.RefSpec("refs/heads/main:refs/heads/main"),
+		},
+	}))
+
+	privateKey, publicKey, err := GenerateSSHSigningKeyPair(nil)
+	require.NoError(t, err)
+
+	scheme := runtime.NewScheme()
+	_ = clientgoscheme.AddToScheme(scheme)
+	_ = configv1alpha1.AddToScheme(scheme)
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	signingSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "signing-secret",
+			Namespace: "default",
+		},
+		Data: map[string][]byte{
+			signingKeyDataKey: privateKey,
+		},
+	}
+	require.NoError(t, k8sClient.Create(ctx, signingSecret))
+
+	provider := &configv1alpha1.GitProvider{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-repo",
+			Namespace: "default",
+		},
+		Spec: configv1alpha1.GitProviderSpec{
+			URL: remoteURL,
+			Commit: &configv1alpha1.CommitSpec{
+				Signing: &configv1alpha1.CommitSigningSpec{
+					SecretRef: configv1alpha1.LocalSecretReference{Name: "signing-secret"},
+				},
+			},
+		},
+	}
+	require.NoError(t, k8sClient.Create(ctx, provider))
+
+	worker := NewBranchWorker(k8sClient, logr.Discard(), "test-repo", "default", "main", nil)
+	worker.ctx = ctx
+
+	request := &WriteRequest{
+		Events: []Event{
+			{
+				Operation: "CREATE",
+				Identifier: itypes.ResourceIdentifier{
+					Version:   "v1",
+					Resource:  "configmaps",
+					Namespace: "default",
+					Name:      "signed",
+				},
+				Object: &unstructured.Unstructured{
+					Object: map[string]interface{}{
+						"apiVersion": "v1",
+						"kind":       "ConfigMap",
+						"metadata": map[string]interface{}{
+							"name":      "signed",
+							"namespace": "default",
+						},
+					},
+				},
+				UserInfo: UserInfo{Username: "alice"},
+				Path:     "clusters/dev",
+			},
+		},
+		CommitMode: CommitModePerEvent,
+	}
+
+	worker.commitAndPushRequest(request)
+
+	remoteHeadRef, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
+	require.NoError(t, err)
+
+	commit, err := serverRepo.CommitObject(remoteHeadRef.Hash())
+	require.NoError(t, err)
+	assert.Contains(t, commit.PGPSignature, "-----BEGIN SSH SIGNATURE-----")
+
+	signingPublicKey, err := SSHAuthorizedPublicKeyFromSecret(signingSecret)
+	require.NoError(t, err)
+	assert.Equal(t, string(publicKey), signingPublicKey)
+}
+
+func TestBranchWorker_CommitAndPushRequest_SkipsWriteWhenSigningSecretIsInvalid(t *testing.T) {
+	ctx := context.Background()
+	tempDir := t.TempDir()
+	remotePath := filepath.Join(tempDir, "remote.git")
+	remoteURL := "file://" + remotePath
+	serverRepo := createBareRepo(t, remotePath)
+
+	seedPath := filepath.Join(tempDir, "seed")
+	seedRepo, seedWorktree := initLocalRepo(t, seedPath, remoteURL, "main")
+	commitFileChange(t, seedWorktree, seedPath, "README.md", "seed\n")
+	require.NoError(t, seedRepo.Push(&git.PushOptions{
+		RefSpecs: []config.RefSpec{
+			config.RefSpec("refs/heads/main:refs/heads/main"),
+		},
+	}))
+
+	initialRef, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
+	require.NoError(t, err)
+
+	scheme := runtime.NewScheme()
+	_ = clientgoscheme.AddToScheme(scheme)
+	_ = configv1alpha1.AddToScheme(scheme)
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	signingSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "signing-secret",
+			Namespace: "default",
+		},
+		Data: map[string][]byte{
+			signingKeyDataKey: []byte("not-a-private-key"),
+		},
+	}
+	require.NoError(t, k8sClient.Create(ctx, signingSecret))
+
+	provider := &configv1alpha1.GitProvider{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-repo",
+			Namespace: "default",
+		},
+		Spec: configv1alpha1.GitProviderSpec{
+			URL: remoteURL,
+			Commit: &configv1alpha1.CommitSpec{
+				Signing: &configv1alpha1.CommitSigningSpec{
+					SecretRef: configv1alpha1.LocalSecretReference{Name: "signing-secret"},
+				},
+			},
+		},
+	}
+	require.NoError(t, k8sClient.Create(ctx, provider))
+
+	worker := NewBranchWorker(k8sClient, logr.Discard(), "test-repo", "default", "main", nil)
+	worker.ctx = ctx
+
+	request := &WriteRequest{
+		Events: []Event{
+			{
+				Operation: "CREATE",
+				Identifier: itypes.ResourceIdentifier{
+					Version:   "v1",
+					Resource:  "configmaps",
+					Namespace: "default",
+					Name:      "unsigned",
+				},
+				Object: &unstructured.Unstructured{
+					Object: map[string]interface{}{
+						"apiVersion": "v1",
+						"kind":       "ConfigMap",
+						"metadata": map[string]interface{}{
+							"name":      "unsigned",
+							"namespace": "default",
+						},
+					},
+				},
+				UserInfo: UserInfo{Username: "alice"},
+				Path:     "clusters/dev",
+			},
+		},
+		CommitMode: CommitModePerEvent,
+	}
+
+	worker.commitAndPushRequest(request)
+
+	finalRef, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
+	require.NoError(t, err)
+	assert.Equal(t, initialRef.Hash(), finalRef.Hash())
 }
 
 func createTargetWithEncryption(

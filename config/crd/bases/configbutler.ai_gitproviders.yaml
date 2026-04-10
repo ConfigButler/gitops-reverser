@@ -93,9 +93,7 @@ spec:
                         type: string
                     type: object
                   signing:
-                    description: |-
-                      Signing configures commit signing.
-                      This API is defined now but the signing behavior is implemented separately.
+                    description: Signing configures commit signing.
                     properties:
                       generateWhenMissing:
                         default: false
@@ -247,7 +245,7 @@ spec:
                 description: |-
                   SigningPublicKey is the operator's SSH signing public key in authorized_keys format.
                   Register this as a signing key on your git platform.
-                  Only populated when commit.signing is configured and implemented.
+                  Only populated when commit.signing is configured and a signing key is available.
                 type: string
             type: object
         required:

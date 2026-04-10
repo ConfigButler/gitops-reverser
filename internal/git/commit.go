@@ -147,22 +147,41 @@ func operatorSignature(config CommitConfig, when time.Time) *object.Signature {
 	}
 }
 
-// createCommitForEvent creates a commit for the given event.
-func createCommitForEvent(worktree *git.Worktree, event Event, config CommitConfig) (plumbing.Hash, error) {
-	commitMessage, err := renderEventCommitMessage(event, config)
-	if err != nil {
-		return plumbing.ZeroHash, err
-	}
-
-	when := time.Now()
-	return worktree.Commit(commitMessage, &git.CommitOptions{
+func commitOptionsForEvent(event Event, config CommitConfig, signer git.Signer, when time.Time) *git.CommitOptions {
+	return &git.CommitOptions{
 		Author: &object.Signature{
 			Name:  event.UserInfo.Username,
 			Email: ConstructSafeEmail(event.UserInfo.Username, "cluster.local"),
 			When:  when,
 		},
 		Committer: operatorSignature(config, when),
-	})
+		Signer:    signer,
+	}
+}
+
+func commitOptionsForBatch(config CommitConfig, signer git.Signer, when time.Time) *git.CommitOptions {
+	operator := operatorSignature(config, when)
+	return &git.CommitOptions{
+		Author:    operator,
+		Committer: operator,
+		Signer:    signer,
+	}
+}
+
+// createCommitForEvent creates a commit for the given event.
+func createCommitForEvent(
+	worktree *git.Worktree,
+	event Event,
+	config CommitConfig,
+	signer git.Signer,
+) (plumbing.Hash, error) {
+	commitMessage, err := renderEventCommitMessage(event, config)
+	if err != nil {
+		return plumbing.ZeroHash, err
+	}
+
+	when := time.Now()
+	return worktree.Commit(commitMessage, commitOptionsForEvent(event, config, signer, when))
 }
 
 // ConstructSafeEmail takes a raw username and a domain and creates a valid

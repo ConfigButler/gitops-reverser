@@ -124,7 +124,7 @@ type GitProviderStatus struct {
 
 	// SigningPublicKey is the operator's SSH signing public key in authorized_keys format.
 	// Register this as a signing key on your git platform.
-	// Only populated when commit.signing is configured and implemented.
+	// Only populated when commit.signing is configured and a signing key is available.
 	// +optional
 	SigningPublicKey string `json:"signingPublicKey,omitempty"`
 }
@@ -142,7 +142,6 @@ type CommitSpec struct {
 	Message *CommitMessageSpec `json:"message,omitempty"`
 
 	// Signing configures commit signing.
-	// This API is defined now but the signing behavior is implemented separately.
 	// +optional
 	Signing *CommitSigningSpec `json:"signing,omitempty"`
 }
