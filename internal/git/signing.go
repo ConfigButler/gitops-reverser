@@ -39,25 +39,26 @@ import (
 )
 
 const (
-	signingKeyDataKey        = "signing.key"
-	signingPublicKeyDataKey  = "signing.pub"
-	signingPassphraseDataKey = "passphrase"
-	sshSignatureNamespace    = "git"
-	sshSignatureHashAlg      = "sha512"
-	sshSignatureVersion      = uint32(1)
-	sshSignatureMagic        = "SSHSIG"
+	// SigningKeyDataKey is the Secret data key for the PEM-encoded SSH private signing key.
+	SigningKeyDataKey = "signing.key"
+	// SigningPublicKeyDataKey is the Secret data key for the authorized_keys-format public key.
+	SigningPublicKeyDataKey = "signing.pub"
+	// SigningPassphraseDataKey is the Secret data key for an optional key passphrase.
+	SigningPassphraseDataKey = "passphrase"
+
+	// Unexported aliases for internal use within this package.
+	signingKeyDataKey        = SigningKeyDataKey
+	signingPublicKeyDataKey  = SigningPublicKeyDataKey
+	signingPassphraseDataKey = SigningPassphraseDataKey
+
+	sshSignatureNamespace = "git"
+	sshSignatureHashAlg   = "sha512"
+	sshSignatureVersion   = uint32(1)
+	sshSignatureMagic     = "SSHSIG"
 )
 
 type sshCommitSigner struct {
 	signer ssh.Signer
-}
-
-type sshsigSignedData struct {
-	Magic         []byte
-	Namespace     string
-	Reserved      string
-	HashAlgorithm string
-	Hash          []byte
 }
 
 // LoadSSHCommitSigner loads a git-compatible SSH signer from the provided Secret.
@@ -139,15 +140,21 @@ func (s *sshCommitSigner) Sign(message io.Reader) ([]byte, error) {
 	}
 
 	digest := sha512.Sum512(payload)
-	toSign := ssh.Marshal(sshsigSignedData{
-		Magic:         []byte(sshSignatureMagic),
-		Namespace:     sshSignatureNamespace,
-		Reserved:      "",
-		HashAlgorithm: sshSignatureHashAlg,
-		Hash:          digest[:],
-	})
 
-	signature, err := signSSHMessage(s.signer, toSign)
+	// Build the signed data blob per PROTOCOL.sshsig:
+	//   "SSHSIG" (6 raw bytes) || uint32(version) || string(namespace)
+	//   || string(reserved) || string(hash_algorithm) || string(hash)
+	// The magic must be written as raw bytes — NOT as an SSH wire-format
+	// length-prefixed string — so ssh.Marshal must not be used here.
+	var sigData bytes.Buffer
+	sigData.WriteString(sshSignatureMagic)
+	_ = binary.Write(&sigData, binary.BigEndian, sshSignatureVersion)
+	_ = writeSSHPacketString(&sigData, []byte(sshSignatureNamespace))
+	_ = writeSSHPacketString(&sigData, nil) // reserved
+	_ = writeSSHPacketString(&sigData, []byte(sshSignatureHashAlg))
+	_ = writeSSHPacketString(&sigData, digest[:])
+
+	signature, err := signSSHMessage(s.signer, sigData.Bytes())
 	if err != nil {
 		return nil, fmt.Errorf("sign commit payload: %w", err)
 	}

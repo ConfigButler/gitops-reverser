@@ -27,6 +27,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"sort"
 	"strings"
 	"text/template"
@@ -289,6 +290,13 @@ func controllerPodNames() ([]string, error) {
 	podNames := utils.GetNonEmptyLines(output)
 	sort.Strings(podNames)
 	return podNames, nil
+}
+
+// gitRun runs a git command in the given directory and returns combined output.
+func gitRun(dir string, args ...string) (string, error) {
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	out, err := cmd.CombinedOutput()
+	return string(out), err
 }
 
 func dumpFailureDiagnostics() {

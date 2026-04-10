@@ -34,6 +34,21 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
+// buildSSHSigSignedData constructs the signed data blob per PROTOCOL.sshsig:
+//
+//	"SSHSIG" (6 raw bytes) || uint32(version) || string(namespace)
+//	|| string(reserved) || string(hash_algorithm) || string(hash)
+func buildSSHSigSignedData(namespace, reserved, hashAlgorithm string, hash []byte) []byte {
+	var buf bytes.Buffer
+	buf.WriteString(sshSignatureMagic)
+	_ = binary.Write(&buf, binary.BigEndian, sshSignatureVersion)
+	_ = writeSSHPacketString(&buf, []byte(namespace))
+	_ = writeSSHPacketString(&buf, []byte(reserved))
+	_ = writeSSHPacketString(&buf, []byte(hashAlgorithm))
+	_ = writeSSHPacketString(&buf, hash)
+	return buf.Bytes()
+}
+
 func TestLoadSSHCommitSigner_ProducesVerifiableSSHSig(t *testing.T) {
 	privateKey, publicKey, err := GenerateSSHSigningKeyPair(nil)
 	require.NoError(t, err)
@@ -66,13 +81,7 @@ func TestLoadSSHCommitSigner_ProducesVerifiableSSHSig(t *testing.T) {
 	assert.Equal(t, sshSignatureHashAlg, parsed.hashAlgorithm)
 
 	digest := sha512.Sum512(message)
-	toVerify := ssh.Marshal(sshsigSignedData{
-		Magic:         []byte(sshSignatureMagic),
-		Namespace:     parsed.namespace,
-		Reserved:      parsed.reserved,
-		HashAlgorithm: parsed.hashAlgorithm,
-		Hash:          digest[:],
-	})
+	toVerify := buildSSHSigSignedData(parsed.namespace, parsed.reserved, parsed.hashAlgorithm, digest[:])
 	require.NoError(t, parsedPublicKey.Verify(toVerify, parsed.signature))
 }
 

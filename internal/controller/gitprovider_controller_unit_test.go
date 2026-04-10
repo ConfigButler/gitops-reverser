@@ -100,9 +100,9 @@ func TestEnsureSigningKey_GeneratesMissingSecret(t *testing.T) {
 
 	var secret corev1.Secret
 	require.NoError(t, reconciler.Get(ctx, types.NamespacedName{Name: "signing-secret", Namespace: "default"}, &secret))
-	assert.NotEmpty(t, secret.Data["signing.key"])
-	assert.NotEmpty(t, secret.Data["signing.pub"])
-	assert.Equal(t, provider.Status.SigningPublicKey, string(secret.Data["signing.pub"]))
+	assert.NotEmpty(t, secret.Data[gitpkg.SigningKeyDataKey])
+	assert.NotEmpty(t, secret.Data[gitpkg.SigningPublicKeyDataKey])
+	assert.Equal(t, provider.Status.SigningPublicKey, string(secret.Data[gitpkg.SigningPublicKeyDataKey]))
 }
 
 func TestEnsureSigningKey_UsesExistingKey(t *testing.T) {
@@ -116,7 +116,7 @@ func TestEnsureSigningKey_UsesExistingKey(t *testing.T) {
 			Namespace: "default",
 		},
 		Data: map[string][]byte{
-			"signing.key": privateKey,
+			gitpkg.SigningKeyDataKey: privateKey,
 		},
 	}
 
@@ -144,7 +144,7 @@ func TestEnsureSigningKey_UsesExistingKey(t *testing.T) {
 		t,
 		reconciler.Get(ctx, types.NamespacedName{Name: "signing-secret", Namespace: "default"}, &updatedSecret),
 	)
-	_, hasPublicKey := updatedSecret.Data["signing.pub"]
+	_, hasPublicKey := updatedSecret.Data[gitpkg.SigningPublicKeyDataKey]
 	assert.False(t, hasPublicKey)
 }
 
