@@ -95,7 +95,7 @@ files touched.
 template, signing, and committer identity — no cross-cutting concerns.
 
 **Makes the message template more useful.**
-The `BatchTemplate` field in the `commits.message` block becomes the primary message for a wider
+The `BatchTemplate` field in the `commit.message` block becomes the primary message for a wider
 class of real-world commits, not just reconcile snapshots.
 
 ---
