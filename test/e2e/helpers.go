@@ -27,6 +27,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"sort"
 	"strings"
 	"text/template"
@@ -289,6 +290,14 @@ func controllerPodNames() ([]string, error) {
 	podNames := utils.GetNonEmptyLines(output)
 	sort.Strings(podNames)
 	return podNames, nil
+}
+
+// gitRun runs a git command in the given directory and returns combined output.
+func gitRun(dir string, args ...string) (string, error) {
+	// #nosec G204 -- Test helper only; command is fixed to git and arguments come from the e2e harness.
+	cmd := exec.CommandContext(e2eCommandContext(context.Background()), "git", append([]string{"-C", dir}, args...)...)
+	out, err := cmd.CombinedOutput()
+	return string(out), err
 }
 
 func dumpFailureDiagnostics() {

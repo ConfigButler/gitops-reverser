@@ -20,7 +20,9 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -52,7 +54,7 @@ type GitProviderReconciler struct {
 // +kubebuilder:rbac:groups=configbutler.ai,resources=gitproviders,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=configbutler.ai,resources=gitproviders/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=configbutler.ai,resources=gitproviders/finalizers,verbs=update
-// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -89,6 +91,26 @@ func (r *GitProviderReconciler) reconcileGitProvider(
 		"resourceVersion", gitProvider.ResourceVersion)
 
 	r.setCondition(gitProvider, metav1.ConditionUnknown, ReasonChecking, "Validating repository connectivity...")
+	if err := r.validateCommitConfiguration(gitProvider); err != nil {
+		r.setCondition(gitProvider, metav1.ConditionFalse, ReasonCommitConfigInvalid, err.Error())
+		result, _ := r.updateStatusAndRequeue(ctx, gitProvider, RequeueLongInterval)
+		return result, nil
+	}
+
+	if err := r.ensureSigningKey(ctx, gitProvider); err != nil {
+		reason := ReasonSecretMalformed
+		if strings.Contains(err.Error(), "secretRef.name") {
+			reason = ReasonCommitConfigInvalid
+		}
+		if strings.Contains(err.Error(), "not found") ||
+			strings.Contains(err.Error(), "generateWhenMissing is disabled") {
+			reason = ReasonSecretNotFound
+		}
+
+		r.setCondition(gitProvider, metav1.ConditionFalse, reason, err.Error())
+		result, _ := r.updateStatusAndRequeue(ctx, gitProvider, RequeueMediumInterval)
+		return result, nil
+	}
 
 	// Fetch and validate secret
 	secret, shouldReturn := r.fetchAndValidateSecret(ctx, log, gitProvider)
@@ -273,6 +295,27 @@ func (r *GitProviderReconciler) checkRemoteConnectivity(
 
 	log.Info("Remote connectivity check successful", "repoURL", repoURL, "branchCount", repoInfo.RemoteBranchCount)
 	return repoInfo.RemoteBranchCount, nil
+}
+
+func (r *GitProviderReconciler) validateCommitConfiguration(
+	gitProvider *configbutleraiv1alpha1.GitProvider,
+) error {
+	gitProvider.Status.SigningPublicKey = ""
+
+	if gitProvider.Spec.Commit == nil {
+		return nil
+	}
+
+	if err := gitpkg.ValidateCommitConfig(gitpkg.ResolveCommitConfig(gitProvider.Spec.Commit)); err != nil {
+		return fmt.Errorf("invalid commit configuration: %w", err)
+	}
+
+	if gitProvider.Spec.Commit.Signing != nil &&
+		strings.TrimSpace(gitProvider.Spec.Commit.Signing.SecretRef.Name) == "" {
+		return errors.New("commit.signing.secretRef.name must be set when signing is enabled")
+	}
+
+	return nil
 }
 
 // setCondition sets or updates the Ready condition.

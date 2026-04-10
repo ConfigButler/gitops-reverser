@@ -34,6 +34,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -853,6 +854,376 @@ func TestBranchWorker_CommitAndPushRequest_NewBranchStartsFromLatestMain(t *test
 	manifestContent, err := os.ReadFile(manifestPath)
 	require.NoError(t, err)
 	assert.Contains(t, string(manifestContent), "name: example-feature")
+}
+
+func TestBranchWorker_CommitAndPushRequest_UsesProviderCommitConfiguration(t *testing.T) {
+	ctx := context.Background()
+	tempDir := t.TempDir()
+	remotePath := filepath.Join(tempDir, "remote.git")
+	remoteURL := "file://" + remotePath
+	serverRepo := createBareRepo(t, remotePath)
+
+	seedPath := filepath.Join(tempDir, "seed")
+	seedRepo, seedWorktree := initLocalRepo(t, seedPath, remoteURL, "main")
+	commitFileChange(t, seedWorktree, seedPath, "README.md", "seed\n")
+	require.NoError(t, seedRepo.Push(&git.PushOptions{
+		RefSpecs: []config.RefSpec{
+			config.RefSpec("refs/heads/main:refs/heads/main"),
+		},
+	}))
+
+	scheme := runtime.NewScheme()
+	_ = clientgoscheme.AddToScheme(scheme)
+	_ = configv1alpha1.AddToScheme(scheme)
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	provider := &configv1alpha1.GitProvider{
+		Spec: configv1alpha1.GitProviderSpec{
+			URL: remoteURL,
+			Commit: &configv1alpha1.CommitSpec{
+				Committer: &configv1alpha1.CommitterSpec{
+					Name:  "Audit Bot",
+					Email: "audit@example.com",
+				},
+				Message: &configv1alpha1.CommitMessageSpec{
+					Template: "audit: {{.Username}} {{.Operation}} {{.APIVersion}}/{{.Resource}}/{{.Name}}",
+				},
+			},
+		},
+	}
+	provider.Name = "test-repo"
+	provider.Namespace = "default"
+	require.NoError(t, k8sClient.Create(ctx, provider))
+
+	worker := NewBranchWorker(k8sClient, logr.Discard(), "test-repo", "default", "main", nil)
+	worker.ctx = ctx
+
+	request := &WriteRequest{
+		Events: []Event{
+			{
+				Operation: "CREATE",
+				Identifier: itypes.ResourceIdentifier{
+					Group:     "",
+					Version:   "v1",
+					Resource:  "configmaps",
+					Namespace: "default",
+					Name:      "example",
+				},
+				Object: &unstructured.Unstructured{
+					Object: map[string]interface{}{
+						"apiVersion": "v1",
+						"kind":       "ConfigMap",
+						"metadata": map[string]interface{}{
+							"name":      "example",
+							"namespace": "default",
+						},
+					},
+				},
+				UserInfo: UserInfo{Username: "alice"},
+				Path:     "clusters/dev",
+			},
+		},
+		CommitMode: CommitModePerEvent,
+	}
+
+	worker.commitAndPushRequest(request)
+
+	remoteHeadRef, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
+	require.NoError(t, err)
+
+	commit, err := serverRepo.CommitObject(remoteHeadRef.Hash())
+	require.NoError(t, err)
+	assert.Equal(t, "audit: alice CREATE v1/configmaps/example", commit.Message)
+	assert.Equal(t, "Audit Bot", commit.Committer.Name)
+	assert.Equal(t, "audit@example.com", commit.Committer.Email)
+	assert.Equal(t, "alice", commit.Author.Name)
+	assert.Equal(t, ConstructSafeEmail("alice", "cluster.local"), commit.Author.Email)
+}
+
+func TestBranchWorker_CommitAndPushRequest_UsesBatchTemplateForAtomicRequest(t *testing.T) {
+	ctx := context.Background()
+	tempDir := t.TempDir()
+	remotePath := filepath.Join(tempDir, "remote.git")
+	remoteURL := "file://" + remotePath
+	serverRepo := createBareRepo(t, remotePath)
+
+	seedPath := filepath.Join(tempDir, "seed")
+	seedRepo, seedWorktree := initLocalRepo(t, seedPath, remoteURL, "main")
+	commitFileChange(t, seedWorktree, seedPath, "README.md", "seed\n")
+	require.NoError(t, seedRepo.Push(&git.PushOptions{
+		RefSpecs: []config.RefSpec{
+			config.RefSpec("refs/heads/main:refs/heads/main"),
+		},
+	}))
+
+	scheme := runtime.NewScheme()
+	_ = clientgoscheme.AddToScheme(scheme)
+	_ = configv1alpha1.AddToScheme(scheme)
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	provider := &configv1alpha1.GitProvider{
+		Spec: configv1alpha1.GitProviderSpec{
+			URL: remoteURL,
+			Commit: &configv1alpha1.CommitSpec{
+				Message: &configv1alpha1.CommitMessageSpec{
+					BatchTemplate: "snapshot({{.GitTarget}}): {{.Count}} resources",
+				},
+			},
+		},
+	}
+	provider.Name = "test-repo"
+	provider.Namespace = "default"
+	require.NoError(t, k8sClient.Create(ctx, provider))
+
+	worker := NewBranchWorker(k8sClient, logr.Discard(), "test-repo", "default", "main", nil)
+	worker.ctx = ctx
+
+	request := &WriteRequest{
+		Events: []Event{
+			{
+				Operation: "CREATE",
+				Identifier: itypes.ResourceIdentifier{
+					Group:     "",
+					Version:   "v1",
+					Resource:  "configmaps",
+					Namespace: "default",
+					Name:      "first",
+				},
+				Object: &unstructured.Unstructured{
+					Object: map[string]interface{}{
+						"apiVersion": "v1",
+						"kind":       "ConfigMap",
+						"metadata": map[string]interface{}{
+							"name":      "first",
+							"namespace": "default",
+						},
+					},
+				},
+				UserInfo: UserInfo{Username: "gitops-reverser"},
+				Path:     "clusters/dev",
+			},
+			{
+				Operation: "CREATE",
+				Identifier: itypes.ResourceIdentifier{
+					Group:     "",
+					Version:   "v1",
+					Resource:  "configmaps",
+					Namespace: "default",
+					Name:      "second",
+				},
+				Object: &unstructured.Unstructured{
+					Object: map[string]interface{}{
+						"apiVersion": "v1",
+						"kind":       "ConfigMap",
+						"metadata": map[string]interface{}{
+							"name":      "second",
+							"namespace": "default",
+						},
+					},
+				},
+				UserInfo: UserInfo{Username: "gitops-reverser"},
+				Path:     "clusters/dev",
+			},
+		},
+		CommitMode:    CommitModeAtomic,
+		GitTargetName: "demo-target",
+	}
+
+	worker.commitAndPushRequest(request)
+
+	remoteHeadRef, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
+	require.NoError(t, err)
+
+	commit, err := serverRepo.CommitObject(remoteHeadRef.Hash())
+	require.NoError(t, err)
+	assert.Equal(t, "snapshot(demo-target): 2 resources", commit.Message)
+	assert.Equal(t, DefaultCommitterName, commit.Committer.Name)
+	assert.Equal(t, DefaultCommitterEmail, commit.Committer.Email)
+	assert.Equal(t, DefaultCommitterName, commit.Author.Name)
+	assert.Equal(t, DefaultCommitterEmail, commit.Author.Email)
+}
+
+func TestBranchWorker_CommitAndPushRequest_SignsCommitWhenConfigured(t *testing.T) {
+	ctx := context.Background()
+	tempDir := t.TempDir()
+	remotePath := filepath.Join(tempDir, "remote.git")
+	remoteURL := "file://" + remotePath
+	serverRepo := createBareRepo(t, remotePath)
+
+	seedPath := filepath.Join(tempDir, "seed")
+	seedRepo, seedWorktree := initLocalRepo(t, seedPath, remoteURL, "main")
+	commitFileChange(t, seedWorktree, seedPath, "README.md", "seed\n")
+	require.NoError(t, seedRepo.Push(&git.PushOptions{
+		RefSpecs: []config.RefSpec{
+			config.RefSpec("refs/heads/main:refs/heads/main"),
+		},
+	}))
+
+	privateKey, publicKey, err := GenerateSSHSigningKeyPair(nil)
+	require.NoError(t, err)
+
+	scheme := runtime.NewScheme()
+	_ = clientgoscheme.AddToScheme(scheme)
+	_ = configv1alpha1.AddToScheme(scheme)
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	signingSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "signing-secret",
+			Namespace: "default",
+		},
+		Data: map[string][]byte{
+			signingKeyDataKey: privateKey,
+		},
+	}
+	require.NoError(t, k8sClient.Create(ctx, signingSecret))
+
+	provider := &configv1alpha1.GitProvider{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-repo",
+			Namespace: "default",
+		},
+		Spec: configv1alpha1.GitProviderSpec{
+			URL: remoteURL,
+			Commit: &configv1alpha1.CommitSpec{
+				Signing: &configv1alpha1.CommitSigningSpec{
+					SecretRef: configv1alpha1.LocalSecretReference{Name: "signing-secret"},
+				},
+			},
+		},
+	}
+	require.NoError(t, k8sClient.Create(ctx, provider))
+
+	worker := NewBranchWorker(k8sClient, logr.Discard(), "test-repo", "default", "main", nil)
+	worker.ctx = ctx
+
+	request := &WriteRequest{
+		Events: []Event{
+			{
+				Operation: "CREATE",
+				Identifier: itypes.ResourceIdentifier{
+					Version:   "v1",
+					Resource:  "configmaps",
+					Namespace: "default",
+					Name:      "signed",
+				},
+				Object: &unstructured.Unstructured{
+					Object: map[string]interface{}{
+						"apiVersion": "v1",
+						"kind":       "ConfigMap",
+						"metadata": map[string]interface{}{
+							"name":      "signed",
+							"namespace": "default",
+						},
+					},
+				},
+				UserInfo: UserInfo{Username: "alice"},
+				Path:     "clusters/dev",
+			},
+		},
+		CommitMode: CommitModePerEvent,
+	}
+
+	worker.commitAndPushRequest(request)
+
+	remoteHeadRef, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
+	require.NoError(t, err)
+
+	commit, err := serverRepo.CommitObject(remoteHeadRef.Hash())
+	require.NoError(t, err)
+	assert.Contains(t, commit.PGPSignature, "-----BEGIN SSH SIGNATURE-----")
+
+	signingPublicKey, err := SSHAuthorizedPublicKeyFromSecret(signingSecret)
+	require.NoError(t, err)
+	assert.Equal(t, string(publicKey), signingPublicKey)
+}
+
+func TestBranchWorker_CommitAndPushRequest_SkipsWriteWhenSigningSecretIsInvalid(t *testing.T) {
+	ctx := context.Background()
+	tempDir := t.TempDir()
+	remotePath := filepath.Join(tempDir, "remote.git")
+	remoteURL := "file://" + remotePath
+	serverRepo := createBareRepo(t, remotePath)
+
+	seedPath := filepath.Join(tempDir, "seed")
+	seedRepo, seedWorktree := initLocalRepo(t, seedPath, remoteURL, "main")
+	commitFileChange(t, seedWorktree, seedPath, "README.md", "seed\n")
+	require.NoError(t, seedRepo.Push(&git.PushOptions{
+		RefSpecs: []config.RefSpec{
+			config.RefSpec("refs/heads/main:refs/heads/main"),
+		},
+	}))
+
+	initialRef, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
+	require.NoError(t, err)
+
+	scheme := runtime.NewScheme()
+	_ = clientgoscheme.AddToScheme(scheme)
+	_ = configv1alpha1.AddToScheme(scheme)
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	signingSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "signing-secret",
+			Namespace: "default",
+		},
+		Data: map[string][]byte{
+			signingKeyDataKey: []byte("not-a-private-key"),
+		},
+	}
+	require.NoError(t, k8sClient.Create(ctx, signingSecret))
+
+	provider := &configv1alpha1.GitProvider{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-repo",
+			Namespace: "default",
+		},
+		Spec: configv1alpha1.GitProviderSpec{
+			URL: remoteURL,
+			Commit: &configv1alpha1.CommitSpec{
+				Signing: &configv1alpha1.CommitSigningSpec{
+					SecretRef: configv1alpha1.LocalSecretReference{Name: "signing-secret"},
+				},
+			},
+		},
+	}
+	require.NoError(t, k8sClient.Create(ctx, provider))
+
+	worker := NewBranchWorker(k8sClient, logr.Discard(), "test-repo", "default", "main", nil)
+	worker.ctx = ctx
+
+	request := &WriteRequest{
+		Events: []Event{
+			{
+				Operation: "CREATE",
+				Identifier: itypes.ResourceIdentifier{
+					Version:   "v1",
+					Resource:  "configmaps",
+					Namespace: "default",
+					Name:      "unsigned",
+				},
+				Object: &unstructured.Unstructured{
+					Object: map[string]interface{}{
+						"apiVersion": "v1",
+						"kind":       "ConfigMap",
+						"metadata": map[string]interface{}{
+							"name":      "unsigned",
+							"namespace": "default",
+						},
+					},
+				},
+				UserInfo: UserInfo{Username: "alice"},
+				Path:     "clusters/dev",
+			},
+		},
+		CommitMode: CommitModePerEvent,
+	}
+
+	worker.commitAndPushRequest(request)
+
+	finalRef, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
+	require.NoError(t, err)
+	assert.Equal(t, initialRef.Hash(), finalRef.Hash())
 }
 
 func createTargetWithEncryption(

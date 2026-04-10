@@ -27,7 +27,6 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 
@@ -36,7 +35,6 @@ import (
 	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/format/index"
-	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/go-git/go-git/v5/plumbing/transport/http"
 	"github.com/go-logr/logr"
@@ -390,14 +388,6 @@ func switchOrCreateBranch(
 		return fmt.Errorf("failed to prepare branch %s: %w", targetBranchName, err)
 	}
 	return nil
-}
-
-// GetCommitMessage returns a structured commit message for the given event.
-func GetCommitMessage(event Event) string {
-	return fmt.Sprintf("[%s] %s",
-		event.Operation,
-		event.Identifier.String(),
-	)
 }
 
 // ensureRemoteOrigin ensures the remote "origin" exists with the correct URL, updating if necessary.
@@ -790,7 +780,7 @@ func generateCommitsFromRequest(
 		return generateAtomicCommit(ctx, writer, repo, request)
 	}
 
-	return generatePerEventCommits(ctx, writer, repo, request.Events)
+	return generatePerEventCommits(ctx, writer, repo, request)
 }
 
 // generateAtomicCommit applies all events without committing after each, then creates a single commit.
@@ -824,23 +814,19 @@ func generateAtomicCommit(
 		return 0, plumbing.ZeroHash, nil
 	}
 
-	hash, err := worktree.Commit(request.CommitMessage, &git.CommitOptions{
-		Author: &object.Signature{
-			Name:  "gitops-reverser",
-			Email: "noreply@configbutler.ai",
-			When:  time.Now(),
-		},
-		Committer: &object.Signature{
-			Name:  "gitops-reverser",
-			Email: "noreply@configbutler.ai",
-			When:  time.Now(),
-		},
-	})
+	commitConfig := resolveWriteRequestCommitConfig(request)
+	commitMessage, err := renderBatchCommitMessage(request, commitConfig)
+	if err != nil {
+		return 0, plumbing.ZeroHash, err
+	}
+
+	when := time.Now()
+	hash, err := worktree.Commit(commitMessage, commitOptionsForBatch(commitConfig, request.Signer, when))
 	if err != nil {
 		return 0, plumbing.ZeroHash, fmt.Errorf("failed to create batch commit: %w", err)
 	}
 
-	logger.Info("Created atomic commit", "message", request.CommitMessage, "events", len(request.Events))
+	logger.Info("Created atomic commit", "message", commitMessage, "events", len(request.Events))
 	return 1, hash, nil
 }
 
@@ -849,7 +835,7 @@ func generatePerEventCommits(
 	ctx context.Context,
 	writer eventContentWriter,
 	repo *git.Repository,
-	events []Event,
+	request *WriteRequest,
 ) (int, plumbing.Hash, error) {
 	logger := log.FromContext(ctx)
 	lastHash := plumbing.ZeroHash
@@ -858,6 +844,8 @@ func generatePerEventCommits(
 		return 0, lastHash, fmt.Errorf("failed to get worktree: %w", err)
 	}
 
+	events := request.Events
+	commitConfig := resolveWriteRequestCommitConfig(request)
 	commitsCreated := 0
 	for _, event := range events {
 		if err := ensureBootstrapTemplateInPath(repo, sanitizePath(event.Path), event.BootstrapOptions); err != nil {
@@ -870,7 +858,7 @@ func generatePerEventCommits(
 		}
 
 		if changesApplied {
-			lastHash, err = createCommitForEvent(worktree, event)
+			lastHash, err = createCommitForEvent(worktree, event, commitConfig, request.Signer)
 			if err != nil {
 				return commitsCreated, lastHash, err
 			}
@@ -1045,23 +1033,6 @@ func batchTargetPath(request *WriteRequest) string {
 	return ""
 }
 
-// createCommitForEvent creates a commit for the given event.
-func createCommitForEvent(worktree *git.Worktree, event Event) (plumbing.Hash, error) {
-	commitMessage := GetCommitMessage(event)
-	return worktree.Commit(commitMessage, &git.CommitOptions{
-		Author: &object.Signature{
-			Name:  event.UserInfo.Username,
-			Email: ConstructSafeEmail(event.UserInfo.Username, "cluster.local"),
-			When:  time.Now(),
-		},
-		Committer: &object.Signature{
-			Name:  "GitOps Reverser",
-			Email: "noreply@configbutler.ai",
-			When:  time.Now(),
-		},
-	})
-}
-
 // initializeCleanRepository removes corrupted repos and initializes a fresh one.
 func initializeCleanRepository(repoPath string, logger logr.Logger) (*git.Repository, error) {
 	// If directory exists but repo is invalid, remove it
@@ -1080,32 +1051,4 @@ func initializeCleanRepository(repoPath string, logger logr.Logger) (*git.Reposi
 	}
 
 	return repo, nil
-}
-
-// ConstructSafeEmail takes a raw username and a domain and creates a valid
-// git-compliant email address.
-func ConstructSafeEmail(username string, domain string) string {
-	// Check if username is already a valid email address
-	emailRegex := regexp.MustCompile(`^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$`)
-	if emailRegex.MatchString(username) {
-		return username
-	}
-
-	// 1. Convert to lowercase
-	clean := strings.ToLower(username)
-
-	// 2. Remove anything that isn't alphanumeric, a dot, or a hyphen.
-	// This prevents spaces or weird symbols from breaking the Git header.
-	reg := regexp.MustCompile(`[^a-z0-9\.\-]`)
-	clean = reg.ReplaceAllString(clean, "")
-
-	// 3. Fallback: If the username was entirely special chars (e.g. "!!!"),
-	// provide a fallback so the email isn't empty.
-	if clean == "" {
-		clean = "unknown-user"
-	}
-
-	// 4. Construct the email
-	// Using "noreply" is a standard convention for system-generated attribution.
-	return fmt.Sprintf("%s@noreply.%s", clean, domain)
 }

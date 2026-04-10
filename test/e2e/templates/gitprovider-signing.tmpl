@@ -1,0 +1,25 @@
+apiVersion: configbutler.ai/v1alpha1
+kind: GitProvider
+metadata:
+  name: {{.Name}}
+  namespace: {{.Namespace}}
+spec:
+  url: {{.RepoURL}}
+  allowedBranches:
+    - "{{.Branch}}"
+  push:
+    interval: "1s"
+    maxCommits: 1
+  secretRef:
+    name: {{.SecretName}}
+  commit:
+    committer:
+      name: {{.CommitterName}}
+      email: {{.CommitterEmail}}
+    message:
+      template: "{{.MessageTemplate}}"
+      batchTemplate: "{{.BatchTemplate}}"
+    signing:
+      secretRef:
+        name: {{.SigningSecretName}}
+      generateWhenMissing: {{.GenerateWhenMissing}}

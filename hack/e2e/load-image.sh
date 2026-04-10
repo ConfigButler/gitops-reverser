@@ -30,7 +30,7 @@ set -euo pipefail
 # - CONTROLLER_ID_STAMP (required): make stamp target to rebuild if the local image is missing
 # - CONTAINER_TOOL (optional): container tool binary; defaults to "docker"
 # - K3D (optional): k3d binary; defaults to "k3d"
-# - STAMP_FILE (required): path to write the loaded image ID
+# - STAMP_FILE (required): path to write the loaded image reference and ID
 
 : "${CTX:?CTX is required}"
 : "${CLUSTER_NAME:?CLUSTER_NAME is required}"
@@ -123,18 +123,12 @@ pin_imported_image() {
 	return 1
 }
 
-# Import the image directly into each node's containerd by piping docker save output.
-# This bypasses k3d's volume-based import mechanism, which silently fails in
-# Docker-outside-of-Docker CI environments (the shared image volume tarball is not
-# accessible inside the k3s node containers).
-import_image_direct() {
+import_image() {
 	local ref="$1"
+	echo "Importing ${PROJECT_IMAGE} into k3d cluster ${CLUSTER_NAME}"
+	"${K3D}" image import -c "${CLUSTER_NAME}" "${PROJECT_IMAGE}"
 	local node_name
 	while IFS= read -r node_name; do
-		echo "  → importing into ${node_name}"
-		"${CONTAINER_TOOL}" save "${PROJECT_IMAGE}" \
-			| "${CONTAINER_TOOL}" exec -i "${node_name}" \
-				ctr -n k8s.io images import -
 		pin_imported_image "${node_name}" "${ref}" "${PROJECT_IMAGE}" "${IMAGE_REPO}" "${IMAGE_TAG}"
 	done < <(cluster_node_names)
 }
@@ -161,8 +155,9 @@ if ! "${CONTAINER_TOOL}" image inspect "${PROJECT_IMAGE}" >/dev/null 2>&1; then
 fi
 
 img_id="$("${CONTAINER_TOOL}" inspect --format='{{.Id}}' "${PROJECT_IMAGE}")"
+stamp_value="${PROJECT_IMAGE}@${img_id}"
 
-if [[ -f "${STAMP_FILE}" ]] && [[ "$(<"${STAMP_FILE}")" == "${img_id}" ]]; then
+if [[ -f "${STAMP_FILE}" ]] && [[ "$(<"${STAMP_FILE}")" == "${stamp_value}" ]]; then
 	echo "${PROJECT_IMAGE} (${img_id}) is already loaded into ${CTX} (stamp matches)"
 	exit 0
 fi
@@ -170,6 +165,6 @@ fi
 ref="$(containerd_ref "${IMAGE_REPO}" "${IMAGE_TAG}")"
 
 echo "Loading ${PROJECT_IMAGE} (${img_id}) into ${CTX}"
-import_image_direct "${ref}"
+import_image "${ref}"
 
-echo "${img_id}" >"${STAMP_FILE}"
+echo "${stamp_value}" >"${STAMP_FILE}"

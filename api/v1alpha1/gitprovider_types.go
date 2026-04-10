@@ -37,6 +37,10 @@ type GitProviderSpec struct {
 	// Push defines the strategy for pushing commits (batching).
 	// +optional
 	Push *PushStrategy `json:"push,omitempty"`
+
+	// Commit configures commit identity, message formatting, and signing behavior.
+	// +optional
+	Commit *CommitSpec `json:"commit,omitempty"`
 }
 
 // LocalSecretReference is a typed reference to a Secret in the same namespace.
@@ -117,6 +121,69 @@ type GitProviderStatus struct {
 	// +listMapKey=type
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// SigningPublicKey is the operator's SSH signing public key in authorized_keys format.
+	// Register this as a signing key on your git platform.
+	// Only populated when commit.signing is configured and a signing key is available.
+	// +optional
+	SigningPublicKey string `json:"signingPublicKey,omitempty"`
+}
+
+// CommitSpec configures how gitops-reverser creates commits for a GitProvider.
+type CommitSpec struct {
+	// Committer configures the operator identity written as the commit committer.
+	// When signing is enabled, Email must be a verified address on the account
+	// that owns the signing key.
+	// +optional
+	Committer *CommitterSpec `json:"committer,omitempty"`
+
+	// Message configures commit message formatting.
+	// +optional
+	Message *CommitMessageSpec `json:"message,omitempty"`
+
+	// Signing configures commit signing.
+	// +optional
+	Signing *CommitSigningSpec `json:"signing,omitempty"`
+}
+
+// CommitterSpec configures the bot identity used as the commit committer.
+type CommitterSpec struct {
+	// Name is the git committer name.
+	// +optional
+	// +kubebuilder:default="GitOps Reverser"
+	Name string `json:"name,omitempty"`
+
+	// Email is the git committer email.
+	// +optional
+	// +kubebuilder:default="noreply@configbutler.ai"
+	Email string `json:"email,omitempty"`
+}
+
+// CommitMessageSpec configures commit message formatting.
+type CommitMessageSpec struct {
+	// Template is a Go text/template string for per-event commit messages.
+	// Available variables: Operation, Group, Version, Resource, Namespace, Name,
+	// APIVersion, Username, GitTarget.
+	// +optional
+	Template string `json:"template,omitempty"`
+
+	// BatchTemplate is a Go text/template string for atomic batch commit messages.
+	// Available variables: Count, GitTarget.
+	// +optional
+	BatchTemplate string `json:"batchTemplate,omitempty"`
+}
+
+// CommitSigningSpec configures commit signing.
+type CommitSigningSpec struct {
+	// SecretRef references the Secret containing the signing key material.
+	// Expected keys will be defined by the signing implementation.
+	SecretRef LocalSecretReference `json:"secretRef"`
+
+	// GenerateWhenMissing causes the operator to generate signing key material
+	// in the referenced Secret when it is missing.
+	// +optional
+	// +kubebuilder:default=false
+	GenerateWhenMissing bool `json:"generateWhenMissing,omitempty"`
 }
 
 // +kubebuilder:object:root=true

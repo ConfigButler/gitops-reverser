@@ -25,6 +25,9 @@ quickstart:
     url: git@github.com:<org>/<repo>.git
     secretRef:
       name: git-creds
+    commit:
+      message:
+        template: "audit: [{{.Operation}}] {{.APIVersion}}/{{.Resource}}/{{.Name}}"
   gitTarget:
     path: live-cluster
   watchRule:
@@ -44,6 +47,9 @@ helm upgrade gitops-reverser \
   --reuse-values \
   --values quickstart-values.yaml
 ```
+
+`quickstart.gitProvider.commit` is optional. It lets you customize the bot committer identity,
+per-event and reconcile batch commit messages, and commit signing.
 
 ## Defaults
 

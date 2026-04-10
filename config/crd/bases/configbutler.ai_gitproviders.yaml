@@ -58,6 +58,75 @@ spec:
                 items:
                   type: string
                 type: array
+              commit:
+                description: Commit configures commit identity, message formatting,
+                  and signing behavior.
+                properties:
+                  committer:
+                    description: |-
+                      Committer configures the operator identity written as the commit committer.
+                      When signing is enabled, Email must be a verified address on the account
+                      that owns the signing key.
+                    properties:
+                      email:
+                        default: noreply@configbutler.ai
+                        description: Email is the git committer email.
+                        type: string
+                      name:
+                        default: GitOps Reverser
+                        description: Name is the git committer name.
+                        type: string
+                    type: object
+                  message:
+                    description: Message configures commit message formatting.
+                    properties:
+                      batchTemplate:
+                        description: |-
+                          BatchTemplate is a Go text/template string for atomic batch commit messages.
+                          Available variables: Count, GitTarget.
+                        type: string
+                      template:
+                        description: |-
+                          Template is a Go text/template string for per-event commit messages.
+                          Available variables: Operation, Group, Version, Resource, Namespace, Name,
+                          APIVersion, Username, GitTarget.
+                        type: string
+                    type: object
+                  signing:
+                    description: Signing configures commit signing.
+                    properties:
+                      generateWhenMissing:
+                        default: false
+                        description: |-
+                          GenerateWhenMissing causes the operator to generate signing key material
+                          in the referenced Secret when it is missing.
+                        type: boolean
+                      secretRef:
+                        description: |-
+                          SecretRef references the Secret containing the signing key material.
+                          Expected keys will be defined by the signing implementation.
+                        properties:
+                          group:
+                            default: ""
+                            description: Group of the referent.
+                            type: string
+                          kind:
+                            default: Secret
+                            description: Kind of the referent.
+                            enum:
+                            - Secret
+                            type: string
+                          name:
+                            description: Name of the Secret.
+                            minLength: 1
+                            type: string
+                        required:
+                        - name
+                        type: object
+                    required:
+                    - secretRef
+                    type: object
+                type: object
               push:
                 description: Push defines the strategy for pushing commits (batching).
                 properties:
@@ -172,6 +241,12 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              signingPublicKey:
+                description: |-
+                  SigningPublicKey is the operator's SSH signing public key in authorized_keys format.
+                  Register this as a signing key on your git platform.
+                  Only populated when commit.signing is configured and a signing key is available.
+                type: string
             type: object
         required:
         - spec

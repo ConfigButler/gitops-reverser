@@ -63,6 +63,8 @@ const (
 	ReasonSecretMalformed = "SecretMalformed"
 	// ReasonConnectionFailed indicates that the connection to the provider failed.
 	ReasonConnectionFailed = "ConnectionFailed"
+	// ReasonCommitConfigInvalid indicates the commit configuration is invalid.
+	ReasonCommitConfigInvalid = "CommitConfigInvalid"
 	// ReasonEncryptionConfigInvalid indicates encryption configuration is invalid.
 	ReasonEncryptionConfigInvalid = "EncryptionConfigInvalid"
 )

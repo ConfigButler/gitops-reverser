@@ -20,11 +20,13 @@ package git
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
 	"time"
 
+	gogit "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -171,4 +173,45 @@ func getAuthFromSecret(
 		"secret %s does not contain valid authentication data (ssh-privatekey or username/password)",
 		secretName,
 	)
+}
+
+// GetCommitSigner fetches commit signing material from the specified secret.
+func GetCommitSigner(
+	ctx context.Context,
+	k8sClient client.Client,
+	provider *v1alpha1.GitProvider,
+) (gogit.Signer, error) {
+	return getCommitSigner(ctx, k8sClient, provider)
+}
+
+func getCommitSigner(
+	ctx context.Context,
+	k8sClient client.Client,
+	provider *v1alpha1.GitProvider,
+) (gogit.Signer, error) {
+	if provider == nil || provider.Spec.Commit == nil || provider.Spec.Commit.Signing == nil {
+		return nil, nil //nolint:nilnil // absence of signing configuration is not an error
+	}
+
+	secretName := strings.TrimSpace(provider.Spec.Commit.Signing.SecretRef.Name)
+	if secretName == "" {
+		return nil, errors.New("commit.signing.secretRef.name must be set when signing is enabled")
+	}
+
+	secretKey := types.NamespacedName{
+		Name:      secretName,
+		Namespace: provider.Namespace,
+	}
+
+	var secret corev1.Secret
+	if err := k8sClient.Get(ctx, secretKey, &secret); err != nil {
+		return nil, fmt.Errorf("failed to get signing secret %s: %w", secretKey, err)
+	}
+
+	signer, err := LoadSSHCommitSigner(&secret)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load signing key from secret %s: %w", secretKey, err)
+	}
+
+	return signer, nil
 }
