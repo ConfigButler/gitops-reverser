@@ -393,6 +393,96 @@ var _ = Describe("GitProvider Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.RequeueAfter).To(Equal(time.Duration(0)))
 		})
+
+		It("should fail when commit templates are invalid", func() {
+			gitProvider = &configbutleraiv1alpha1.GitProvider{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-provider-invalid-commit-template",
+					Namespace: "default",
+				},
+				Spec: configbutleraiv1alpha1.GitProviderSpec{
+					URL:             "git@github.com:test/repo.git",
+					AllowedBranches: []string{"main"},
+					Commit: &configbutleraiv1alpha1.CommitSpec{
+						Message: &configbutleraiv1alpha1.CommitMessageSpec{
+							Template: "{{.Operation",
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, gitProvider)).To(Succeed())
+
+			result, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      gitProvider.Name,
+					Namespace: gitProvider.Namespace,
+				},
+			})
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(time.Minute * 10))
+
+			updatedProvider := &configbutleraiv1alpha1.GitProvider{}
+			err = k8sClient.Get(
+				ctx,
+				types.NamespacedName{Name: gitProvider.Name, Namespace: gitProvider.Namespace},
+				updatedProvider,
+			)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(updatedProvider.Status.Conditions).To(HaveLen(1))
+			condition := updatedProvider.Status.Conditions[0]
+			Expect(condition.Status).To(Equal(metav1.ConditionFalse))
+			Expect(condition.Reason).To(Equal(ReasonCommitConfigInvalid))
+			Expect(condition.Message).To(ContainSubstring("invalid commit configuration"))
+			Expect(updatedProvider.Status.SigningPublicKey).To(BeEmpty())
+		})
+
+		It("should fail when commit signing is configured before implementation exists", func() {
+			gitProvider = &configbutleraiv1alpha1.GitProvider{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-provider-signing-not-implemented",
+					Namespace: "default",
+				},
+				Spec: configbutleraiv1alpha1.GitProviderSpec{
+					URL:             "git@github.com:test/repo.git",
+					AllowedBranches: []string{"main"},
+					Commit: &configbutleraiv1alpha1.CommitSpec{
+						Signing: &configbutleraiv1alpha1.CommitSigningSpec{
+							SecretRef: configbutleraiv1alpha1.LocalSecretReference{
+								Name: "signing-secret",
+							},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, gitProvider)).To(Succeed())
+
+			result, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      gitProvider.Name,
+					Namespace: gitProvider.Namespace,
+				},
+			})
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(time.Minute * 10))
+
+			updatedProvider := &configbutleraiv1alpha1.GitProvider{}
+			err = k8sClient.Get(
+				ctx,
+				types.NamespacedName{Name: gitProvider.Name, Namespace: gitProvider.Namespace},
+				updatedProvider,
+			)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(updatedProvider.Status.Conditions).To(HaveLen(1))
+			condition := updatedProvider.Status.Conditions[0]
+			Expect(condition.Status).To(Equal(metav1.ConditionFalse))
+			Expect(condition.Reason).To(Equal(ReasonSigningNotImplemented))
+			Expect(condition.Message).To(ContainSubstring("commit signing is not implemented yet"))
+			Expect(updatedProvider.Status.SigningPublicKey).To(BeEmpty())
+		})
 	})
 })
 

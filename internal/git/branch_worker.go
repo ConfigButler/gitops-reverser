@@ -532,7 +532,7 @@ func (w *BranchWorker) commitAndPushRequest(request *WriteRequest) {
 	}
 	w.updateBranchMetadataFromPullReport(pullReport)
 
-	preparedRequest, encryptionConfig, err := w.prepareWriteRequest(w.ctx, request)
+	preparedRequest, encryptionConfig, err := w.prepareWriteRequest(w.ctx, request, provider)
 	if err != nil {
 		log.Error(err, "Failed to prepare write request")
 		return
@@ -805,6 +805,7 @@ func requestEncryptionPath(request *WriteRequest) string {
 func (w *BranchWorker) prepareWriteRequest(
 	ctx context.Context,
 	request *WriteRequest,
+	provider *configv1alpha1.GitProvider,
 ) (*WriteRequest, *ResolvedEncryptionConfig, error) {
 	if request == nil {
 		return nil, nil, errors.New("write request is required")
@@ -812,6 +813,11 @@ func (w *BranchWorker) prepareWriteRequest(
 
 	prepared := *request
 	prepared.Events = append([]Event(nil), request.Events...)
+	commitConfig := ResolveCommitConfig(nil)
+	if provider != nil {
+		commitConfig = ResolveCommitConfig(provider.Spec.Commit)
+	}
+	prepared.CommitConfig = &commitConfig
 	if prepared.CommitMode == "" {
 		prepared.CommitMode = CommitModePerEvent
 	}

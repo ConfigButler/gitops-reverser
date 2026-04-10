@@ -351,7 +351,7 @@ func TestFolderReconciler_EmitsSingleBatch(t *testing.T) {
 
 	// Batch should contain all events
 	assert.Len(t, batch.Events, 3, "Batch should have 3 events (1 create, 1 delete, 1 reconcile)")
-	assert.Contains(t, batch.CommitMessage, "reconcile: sync 3 resources")
+	assert.Empty(t, batch.CommitMessage, "batch commit message is now resolved from GitProvider commit settings")
 }
 
 func TestFolderReconciler_ResetStateRequiresFreshRepoAndClusterSnapshots(t *testing.T) {

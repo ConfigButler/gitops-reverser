@@ -20,6 +20,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -89,6 +90,16 @@ func (r *GitProviderReconciler) reconcileGitProvider(
 		"resourceVersion", gitProvider.ResourceVersion)
 
 	r.setCondition(gitProvider, metav1.ConditionUnknown, ReasonChecking, "Validating repository connectivity...")
+	if err := r.validateCommitConfiguration(gitProvider); err != nil {
+		reason := ReasonCommitConfigInvalid
+		if errors.Is(err, ErrCommitSigningNotImplemented) {
+			reason = ReasonSigningNotImplemented
+		}
+
+		r.setCondition(gitProvider, metav1.ConditionFalse, reason, err.Error())
+		result, _ := r.updateStatusAndRequeue(ctx, gitProvider, RequeueLongInterval)
+		return result, nil
+	}
 
 	// Fetch and validate secret
 	secret, shouldReturn := r.fetchAndValidateSecret(ctx, log, gitProvider)
@@ -273,6 +284,26 @@ func (r *GitProviderReconciler) checkRemoteConnectivity(
 
 	log.Info("Remote connectivity check successful", "repoURL", repoURL, "branchCount", repoInfo.RemoteBranchCount)
 	return repoInfo.RemoteBranchCount, nil
+}
+
+func (r *GitProviderReconciler) validateCommitConfiguration(
+	gitProvider *configbutleraiv1alpha1.GitProvider,
+) error {
+	gitProvider.Status.SigningPublicKey = ""
+
+	if gitProvider.Spec.Commit == nil {
+		return nil
+	}
+
+	if gitProvider.Spec.Commit.Signing != nil {
+		return ErrCommitSigningNotImplemented
+	}
+
+	if err := gitpkg.ValidateCommitConfig(gitpkg.ResolveCommitConfig(gitProvider.Spec.Commit)); err != nil {
+		return fmt.Errorf("invalid commit configuration: %w", err)
+	}
+
+	return nil
 }
 
 // setCondition sets or updates the Ready condition.
