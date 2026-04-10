@@ -14,16 +14,18 @@ enforcement), `commitInstructions` (too long), `commitStyle` (doesn't cover sign
 
 ## Motivation
 
-Commit-related configuration in `GitProvider` currently spans three separate concerns, none of
+Commit-related configuration in `GitProvider` currently spans two immediate concerns, neither of
 which are configurable today:
 
 1. **Committer identity** — who the operator appears as in Git history.
-2. **Author identity** — how Kubernetes usernames map to author emails in per-event commits.
-3. **Commit message** — the string written as the commit subject.
+2. **Commit message** — the string written as the commit subject.
+
+Author-email configuration is intentionally left out of this proposal for now. It can be revisited
+later once the core `commit` block settles.
 
 Commit signing requires the committer email to be a verified address on a git platform account —
 making committer identity a user-facing concern for the first time. But the identity and message
-questions are independent of signing. Introduce a single `commits` block on `GitProviderSpec` that
+questions are independent of signing. Introduce a single `commit` block on `GitProviderSpec` that
 owns all commit-level configuration; signing is one sub-field.
 
 ---
@@ -124,6 +126,8 @@ Default template (reproduces current behaviour exactly):
 #### Batch template context: `BatchCommitMessageData`
 
 Atomic batch commits cover multiple resources, so per-resource fields are not available.
+This context is intentionally small for the first version and can grow later if new batch modes need
+more summary data.
 
 ```go
 type BatchCommitMessageData struct {
@@ -168,11 +172,6 @@ type CommitSpec struct {
     // +optional
     Committer *CommitterSpec `json:"committer,omitempty"`
 
-    // Author configures how Kubernetes usernames map to Git author emails.
-    // The author name is always the Kubernetes username — not configurable.
-    // +optional
-    Author *AuthorSpec `json:"author,omitempty"`
-
     // Message configures the commit message format.
     // +optional
     Message *CommitMessageSpec `json:"message,omitempty"`
@@ -190,13 +189,6 @@ type CommitterSpec struct {
     // +optional
     // +kubebuilder:default="noreply@configbutler.ai"
     Email string `json:"email,omitempty"`
-}
-
-type AuthorSpec struct {
-    // EmailDomain is used to derive the author email: {username}@noreply.{emailDomain}
-    // +optional
-    // +kubebuilder:default="cluster.local"
-    EmailDomain string `json:"emailDomain,omitempty"`
 }
 
 type CommitMessageSpec struct {
@@ -217,7 +209,7 @@ Add to `GitProviderStatus`:
 ```go
 // SigningPublicKey is the operator's SSH signing public key in authorized_keys format.
 // Register this as a Signing Key on your git platform.
-// Only populated when commits.signing is configured.
+// Only populated when commit.signing is configured.
 // +optional
 SigningPublicKey string `json:"signingPublicKey,omitempty"`
 ```
@@ -228,7 +220,7 @@ SigningPublicKey string `json:"signingPublicKey,omitempty"`
 
 ### No configuration — defaults only
 
-Nothing changes from today. The `commits` block is entirely optional.
+Nothing changes from today. The `commit` block is entirely optional.
 
 ```yaml
 apiVersion: configbutler.ai/v1alpha1
@@ -445,8 +437,6 @@ spec:
     committer:
       name: "GitOps Reverser"
       email: "12345678+gitops-reverser-bot@users.noreply.github.com"
-    author:
-      emailDomain: "internal.mycompany.com"   # alice → alice@noreply.internal.mycompany.com
     message:
       template: "chore: [{{.Operation}}] {{.APIVersion}}/{{.Resource}}/{{.Name}} ({{.Username}})"
       batchTemplate: "chore: snapshot sync ({{.Count}} resources)"
@@ -466,7 +456,7 @@ Reconcile snapshot commits look like:
 chore: snapshot sync (347 resources)
 ```
 
-Author on per-event commits: `alice <alice@noreply.internal.mycompany.com>`
+Author on per-event commits: derived from the Kubernetes username using the existing implementation
 Committer on all commits: `GitOps Reverser <12345678+gitops-reverser-bot@users.noreply.github.com>` ✓ Verified
 
 ---
@@ -479,11 +469,10 @@ All fields are optional. Defaults reproduce current exact behaviour:
 |---|---|
 | Committer name `"gitops-reverser"` / `"GitOps Reverser"` (inconsistent) | `"GitOps Reverser"` (consistent) |
 | Committer email `"noreply@configbutler.ai"` | `"noreply@configbutler.ai"` |
-| Author email domain `cluster.local` | `cluster.local` |
 | Per-event message `[CREATE] apps/v1/deployments/name` | same — default template produces identical output |
-| Batch message `reconcile: sync N resources from cluster snapshot` | `reconcile: sync N resources` — slightly shorter, same meaning |
+| Batch message `reconcile: sync N resources from cluster snapshot` | `reconcile: sync N resources` — intentionally slightly shorter |
 
-A `GitProvider` with no `commits` block behaves exactly as before, except the committer name
+A `GitProvider` with no `commit` block behaves exactly as before, except the committer name
 inconsistency is fixed.
 
 ---
@@ -496,6 +485,7 @@ inconsistency is fixed.
 | Branch allowlist | `spec.allowedBranches` | Access control |
 | Encryption | `spec.encryption` (GitTarget) | Per-target, not per-commit |
 | Author **name** | Kubernetes username from audit event (immutable) | Must not be overridable — it is the audit record |
+| Author email mapping | deferred / future work | Keep the initial `commit` block smaller and focused |
 
 The Author name is intentionally not configurable. It is the Kubernetes username. Allowing overrides
 would mean the Git history no longer tells you who actually changed the resource.
@@ -508,6 +498,14 @@ would mean the Git history no longer tells you who actually changed the resource
 
 Templates are validated at reconcile time on the `GitProvider`, not at commit time. A malformed
 template sets `Ready=False` with a clear message rather than failing silently at write time.
+
+Semantics:
+
+- `template: null` or an omitted field means "use the default template"
+- `template: ""` means "render an empty commit message"
+
+That second case is technically possible in git/go-git, so it should not silently fall back to the
+default.
 
 ```go
 func validateTemplate(tmplStr string, data any) error {
@@ -554,6 +552,6 @@ re-parsed per commit.
 ### Deferred
 
 - **Per-GitTarget message override**: not planned. Commit messages are a provider-level concern
-  consistent with the rest of the `commits` block.
+  consistent with the rest of the `commit` block.
 - **GPG signing**: add `signingFormat: gpg` to `CommitSigningSpec` when needed. See
   [commit-signing-design.md](commit-signing-design.md).
