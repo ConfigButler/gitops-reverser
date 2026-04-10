@@ -29,6 +29,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"text/template"
 	"time"
 
 	billyutil "github.com/go-git/go-billy/v5/util"
@@ -392,12 +393,118 @@ func switchOrCreateBranch(
 	return nil
 }
 
-// GetCommitMessage returns a structured commit message for the given event.
+// GetCommitMessage returns the default structured commit message for the given event.
 func GetCommitMessage(event Event) string {
-	return fmt.Sprintf("[%s] %s",
-		event.Operation,
-		event.Identifier.String(),
+	message, err := renderEventCommitMessage(event, ResolveCommitConfig(nil))
+	if err != nil {
+		return fmt.Sprintf("[%s] %s", event.Operation, event.Identifier.String())
+	}
+	return message
+}
+
+func renderEventCommitMessage(event Event, config CommitConfig) (string, error) {
+	return renderCommitTemplate(
+		"event",
+		config.Message.Template,
+		CommitMessageData{
+			Operation:  event.Operation,
+			Group:      event.Identifier.Group,
+			Version:    event.Identifier.Version,
+			Resource:   event.Identifier.Resource,
+			Namespace:  event.Identifier.Namespace,
+			Name:       event.Identifier.Name,
+			APIVersion: buildAPIVersion(event.Identifier.Group, event.Identifier.Version),
+			Username:   event.UserInfo.Username,
+			GitTarget:  event.GitTargetName,
+		},
 	)
+}
+
+func renderBatchCommitMessage(request *WriteRequest, config CommitConfig) (string, error) {
+	if request != nil && strings.TrimSpace(request.CommitMessage) != "" {
+		return request.CommitMessage, nil
+	}
+
+	count := 0
+	gitTargetName := ""
+	if request != nil {
+		count = len(request.Events)
+		gitTargetName = request.GitTargetName
+	}
+
+	return renderCommitTemplate(
+		"batch",
+		config.Message.BatchTemplate,
+		BatchCommitMessageData{
+			Count:     count,
+			GitTarget: gitTargetName,
+		},
+	)
+}
+
+func renderCommitTemplate(name, text string, data any) (string, error) {
+	tmpl, err := template.New(name).Option("missingkey=error").Parse(text)
+	if err != nil {
+		return "", fmt.Errorf("parse %s commit template: %w", name, err)
+	}
+
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, data); err != nil {
+		return "", fmt.Errorf("execute %s commit template: %w", name, err)
+	}
+
+	return buf.String(), nil
+}
+
+func buildAPIVersion(group, version string) string {
+	if group == "" {
+		return version
+	}
+	return group + "/" + version
+}
+
+func resolveWriteRequestCommitConfig(request *WriteRequest) CommitConfig {
+	if request == nil || request.CommitConfig == nil {
+		return ResolveCommitConfig(nil)
+	}
+	return *request.CommitConfig
+}
+
+// ValidateCommitConfig checks that commit templates are syntactically valid.
+func ValidateCommitConfig(config CommitConfig) error {
+	sampleEvent := Event{
+		Operation: "CREATE",
+		Identifier: types.ResourceIdentifier{
+			Group:     "apps",
+			Version:   "v1",
+			Resource:  "deployments",
+			Namespace: "default",
+			Name:      "example",
+		},
+		UserInfo:      UserInfo{Username: "gitops-reverser"},
+		GitTargetName: "example-target",
+	}
+
+	if _, err := renderEventCommitMessage(sampleEvent, config); err != nil {
+		return err
+	}
+
+	if _, err := renderBatchCommitMessage(&WriteRequest{
+		Events:        []Event{sampleEvent},
+		GitTargetName: "example-target",
+	}, config); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func operatorSignature(config CommitConfig, when time.Time) *object.Signature {
+	return &object.Signature{
+		Name:  config.Committer.Name,
+		Email: config.Committer.Email,
+		When:  when,
+	}
 }
 
 // ensureRemoteOrigin ensures the remote "origin" exists with the correct URL, updating if necessary.
@@ -790,7 +897,7 @@ func generateCommitsFromRequest(
 		return generateAtomicCommit(ctx, writer, repo, request)
 	}
 
-	return generatePerEventCommits(ctx, writer, repo, request.Events)
+	return generatePerEventCommits(ctx, writer, repo, request.Events, resolveWriteRequestCommitConfig(request))
 }
 
 // generateAtomicCommit applies all events without committing after each, then creates a single commit.
@@ -824,23 +931,23 @@ func generateAtomicCommit(
 		return 0, plumbing.ZeroHash, nil
 	}
 
-	hash, err := worktree.Commit(request.CommitMessage, &git.CommitOptions{
-		Author: &object.Signature{
-			Name:  "gitops-reverser",
-			Email: "noreply@configbutler.ai",
-			When:  time.Now(),
-		},
-		Committer: &object.Signature{
-			Name:  "gitops-reverser",
-			Email: "noreply@configbutler.ai",
-			When:  time.Now(),
-		},
+	commitConfig := resolveWriteRequestCommitConfig(request)
+	commitMessage, err := renderBatchCommitMessage(request, commitConfig)
+	if err != nil {
+		return 0, plumbing.ZeroHash, err
+	}
+
+	when := time.Now()
+	operator := operatorSignature(commitConfig, when)
+	hash, err := worktree.Commit(commitMessage, &git.CommitOptions{
+		Author:    operator,
+		Committer: operator,
 	})
 	if err != nil {
 		return 0, plumbing.ZeroHash, fmt.Errorf("failed to create batch commit: %w", err)
 	}
 
-	logger.Info("Created atomic commit", "message", request.CommitMessage, "events", len(request.Events))
+	logger.Info("Created atomic commit", "message", commitMessage, "events", len(request.Events))
 	return 1, hash, nil
 }
 
@@ -850,6 +957,7 @@ func generatePerEventCommits(
 	writer eventContentWriter,
 	repo *git.Repository,
 	events []Event,
+	commitConfig CommitConfig,
 ) (int, plumbing.Hash, error) {
 	logger := log.FromContext(ctx)
 	lastHash := plumbing.ZeroHash
@@ -870,7 +978,7 @@ func generatePerEventCommits(
 		}
 
 		if changesApplied {
-			lastHash, err = createCommitForEvent(worktree, event)
+			lastHash, err = createCommitForEvent(worktree, event, commitConfig)
 			if err != nil {
 				return commitsCreated, lastHash, err
 			}
@@ -1046,19 +1154,20 @@ func batchTargetPath(request *WriteRequest) string {
 }
 
 // createCommitForEvent creates a commit for the given event.
-func createCommitForEvent(worktree *git.Worktree, event Event) (plumbing.Hash, error) {
-	commitMessage := GetCommitMessage(event)
+func createCommitForEvent(worktree *git.Worktree, event Event, config CommitConfig) (plumbing.Hash, error) {
+	commitMessage, err := renderEventCommitMessage(event, config)
+	if err != nil {
+		return plumbing.ZeroHash, err
+	}
+
+	when := time.Now()
 	return worktree.Commit(commitMessage, &git.CommitOptions{
 		Author: &object.Signature{
 			Name:  event.UserInfo.Username,
 			Email: ConstructSafeEmail(event.UserInfo.Username, "cluster.local"),
-			When:  time.Now(),
+			When:  when,
 		},
-		Committer: &object.Signature{
-			Name:  "GitOps Reverser",
-			Email: "noreply@configbutler.ai",
-			When:  time.Now(),
-		},
+		Committer: operatorSignature(config, when),
 	})
 }
 

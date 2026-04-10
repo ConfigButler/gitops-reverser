@@ -63,6 +63,10 @@ const (
 	ReasonSecretMalformed = "SecretMalformed"
 	// ReasonConnectionFailed indicates that the connection to the provider failed.
 	ReasonConnectionFailed = "ConnectionFailed"
+	// ReasonCommitConfigInvalid indicates the commit configuration is invalid.
+	ReasonCommitConfigInvalid = "CommitConfigInvalid"
+	// ReasonSigningNotImplemented indicates signing was configured before support landed.
+	ReasonSigningNotImplemented = "SigningNotImplemented"
 	// ReasonEncryptionConfigInvalid indicates encryption configuration is invalid.
 	ReasonEncryptionConfigInvalid = "EncryptionConfigInvalid"
 )
@@ -72,4 +76,6 @@ var (
 	ErrMissingPassword = errors.New("secret contains username but missing password")
 	// ErrInvalidSecretFormat indicates that the secret format is invalid.
 	ErrInvalidSecretFormat = errors.New("secret must contain either 'ssh-privatekey' or both 'username' and 'password'")
+	// ErrCommitSigningNotImplemented indicates signing config exists but runtime support is not wired yet.
+	ErrCommitSigningNotImplemented = errors.New("commit signing is not implemented yet")
 )

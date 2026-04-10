@@ -198,8 +198,7 @@ func (r *FolderReconciler) reconcile() {
 	}
 
 	batch := git.ReconcileBatch{
-		Events:        batchEvents,
-		CommitMessage: fmt.Sprintf("reconcile: sync %d resources from cluster snapshot", total),
+		Events: batchEvents,
 	}
 
 	if err := r.reconcileEmitter.EmitReconcileBatch(batch); err != nil {

@@ -855,6 +855,193 @@ func TestBranchWorker_CommitAndPushRequest_NewBranchStartsFromLatestMain(t *test
 	assert.Contains(t, string(manifestContent), "name: example-feature")
 }
 
+func TestBranchWorker_CommitAndPushRequest_UsesProviderCommitConfiguration(t *testing.T) {
+	ctx := context.Background()
+	tempDir := t.TempDir()
+	remotePath := filepath.Join(tempDir, "remote.git")
+	remoteURL := "file://" + remotePath
+	serverRepo := createBareRepo(t, remotePath)
+
+	seedPath := filepath.Join(tempDir, "seed")
+	seedRepo, seedWorktree := initLocalRepo(t, seedPath, remoteURL, "main")
+	commitFileChange(t, seedWorktree, seedPath, "README.md", "seed\n")
+	require.NoError(t, seedRepo.Push(&git.PushOptions{
+		RefSpecs: []config.RefSpec{
+			config.RefSpec("refs/heads/main:refs/heads/main"),
+		},
+	}))
+
+	scheme := runtime.NewScheme()
+	_ = clientgoscheme.AddToScheme(scheme)
+	_ = configv1alpha1.AddToScheme(scheme)
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	provider := &configv1alpha1.GitProvider{
+		Spec: configv1alpha1.GitProviderSpec{
+			URL: remoteURL,
+			Commit: &configv1alpha1.CommitSpec{
+				Committer: &configv1alpha1.CommitterSpec{
+					Name:  "Audit Bot",
+					Email: "audit@example.com",
+				},
+				Message: &configv1alpha1.CommitMessageSpec{
+					Template: "audit: {{.Username}} {{.Operation}} {{.APIVersion}}/{{.Resource}}/{{.Name}}",
+				},
+			},
+		},
+	}
+	provider.Name = "test-repo"
+	provider.Namespace = "default"
+	require.NoError(t, k8sClient.Create(ctx, provider))
+
+	worker := NewBranchWorker(k8sClient, logr.Discard(), "test-repo", "default", "main", nil)
+	worker.ctx = ctx
+
+	request := &WriteRequest{
+		Events: []Event{
+			{
+				Operation: "CREATE",
+				Identifier: itypes.ResourceIdentifier{
+					Group:     "",
+					Version:   "v1",
+					Resource:  "configmaps",
+					Namespace: "default",
+					Name:      "example",
+				},
+				Object: &unstructured.Unstructured{
+					Object: map[string]interface{}{
+						"apiVersion": "v1",
+						"kind":       "ConfigMap",
+						"metadata": map[string]interface{}{
+							"name":      "example",
+							"namespace": "default",
+						},
+					},
+				},
+				UserInfo: UserInfo{Username: "alice"},
+				Path:     "clusters/dev",
+			},
+		},
+		CommitMode: CommitModePerEvent,
+	}
+
+	worker.commitAndPushRequest(request)
+
+	remoteHeadRef, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
+	require.NoError(t, err)
+
+	commit, err := serverRepo.CommitObject(remoteHeadRef.Hash())
+	require.NoError(t, err)
+	assert.Equal(t, "audit: alice CREATE v1/configmaps/example", commit.Message)
+	assert.Equal(t, "Audit Bot", commit.Committer.Name)
+	assert.Equal(t, "audit@example.com", commit.Committer.Email)
+	assert.Equal(t, "alice", commit.Author.Name)
+	assert.Equal(t, ConstructSafeEmail("alice", "cluster.local"), commit.Author.Email)
+}
+
+func TestBranchWorker_CommitAndPushRequest_UsesBatchTemplateForAtomicRequest(t *testing.T) {
+	ctx := context.Background()
+	tempDir := t.TempDir()
+	remotePath := filepath.Join(tempDir, "remote.git")
+	remoteURL := "file://" + remotePath
+	serverRepo := createBareRepo(t, remotePath)
+
+	seedPath := filepath.Join(tempDir, "seed")
+	seedRepo, seedWorktree := initLocalRepo(t, seedPath, remoteURL, "main")
+	commitFileChange(t, seedWorktree, seedPath, "README.md", "seed\n")
+	require.NoError(t, seedRepo.Push(&git.PushOptions{
+		RefSpecs: []config.RefSpec{
+			config.RefSpec("refs/heads/main:refs/heads/main"),
+		},
+	}))
+
+	scheme := runtime.NewScheme()
+	_ = clientgoscheme.AddToScheme(scheme)
+	_ = configv1alpha1.AddToScheme(scheme)
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	provider := &configv1alpha1.GitProvider{
+		Spec: configv1alpha1.GitProviderSpec{
+			URL: remoteURL,
+			Commit: &configv1alpha1.CommitSpec{
+				Message: &configv1alpha1.CommitMessageSpec{
+					BatchTemplate: "snapshot({{.GitTarget}}): {{.Count}} resources",
+				},
+			},
+		},
+	}
+	provider.Name = "test-repo"
+	provider.Namespace = "default"
+	require.NoError(t, k8sClient.Create(ctx, provider))
+
+	worker := NewBranchWorker(k8sClient, logr.Discard(), "test-repo", "default", "main", nil)
+	worker.ctx = ctx
+
+	request := &WriteRequest{
+		Events: []Event{
+			{
+				Operation: "CREATE",
+				Identifier: itypes.ResourceIdentifier{
+					Group:     "",
+					Version:   "v1",
+					Resource:  "configmaps",
+					Namespace: "default",
+					Name:      "first",
+				},
+				Object: &unstructured.Unstructured{
+					Object: map[string]interface{}{
+						"apiVersion": "v1",
+						"kind":       "ConfigMap",
+						"metadata": map[string]interface{}{
+							"name":      "first",
+							"namespace": "default",
+						},
+					},
+				},
+				UserInfo: UserInfo{Username: "gitops-reverser"},
+				Path:     "clusters/dev",
+			},
+			{
+				Operation: "CREATE",
+				Identifier: itypes.ResourceIdentifier{
+					Group:     "",
+					Version:   "v1",
+					Resource:  "configmaps",
+					Namespace: "default",
+					Name:      "second",
+				},
+				Object: &unstructured.Unstructured{
+					Object: map[string]interface{}{
+						"apiVersion": "v1",
+						"kind":       "ConfigMap",
+						"metadata": map[string]interface{}{
+							"name":      "second",
+							"namespace": "default",
+						},
+					},
+				},
+				UserInfo: UserInfo{Username: "gitops-reverser"},
+				Path:     "clusters/dev",
+			},
+		},
+		CommitMode:    CommitModeAtomic,
+		GitTargetName: "demo-target",
+	}
+
+	worker.commitAndPushRequest(request)
+
+	remoteHeadRef, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
+	require.NoError(t, err)
+
+	commit, err := serverRepo.CommitObject(remoteHeadRef.Hash())
+	require.NoError(t, err)
+	assert.Equal(t, "snapshot(demo-target): 2 resources", commit.Message)
+	assert.Equal(t, DefaultCommitterName, commit.Committer.Name)
+	assert.Equal(t, DefaultCommitterEmail, commit.Committer.Email)
+	assert.Equal(t, DefaultCommitterName, commit.Author.Name)
+	assert.Equal(t, DefaultCommitterEmail, commit.Author.Email)
+}
+
 func createTargetWithEncryption(
 	ctx context.Context,
 	t *testing.T,

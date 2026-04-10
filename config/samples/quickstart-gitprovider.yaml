@@ -12,3 +12,10 @@ spec:
   push:
     interval: "5s"
     maxCommits: 10
+  # commit:
+  #   committer:
+  #     name: "GitOps Reverser"
+  #     email: "noreply@configbutler.ai"
+  #   message:
+  #     template: "audit: [{{.Operation}}] {{.APIVersion}}/{{.Resource}}/{{.Name}}"
+  #     batchTemplate: "reconcile: sync {{.Count}} resources"

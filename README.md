@@ -164,6 +164,10 @@ You should see a new commit in your Git repository within seconds.
 
 > **Troubleshooting:** If no commit appears, check `kubectl logs -n gitops-reverser deploy/gitops-reverser`.
 
+`GitProvider.spec.commit` can customize the bot committer identity and the commit message templates
+used for event writes and reconcile snapshots. The signing API is present too, but signing runtime
+support is not wired yet.
+
 ## Secrets and encryption
 
 `Secret` resources go through the same pipeline, but sensitive values are encrypted before commit. Secret manifests are written as `*.sops.yaml`.

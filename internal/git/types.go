@@ -20,10 +20,23 @@ package git
 
 import (
 	"fmt"
+	"strings"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
+	v1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
+)
+
+const (
+	// DefaultCommitterName matches the default operator identity in Git history.
+	DefaultCommitterName = "GitOps Reverser"
+	// DefaultCommitterEmail matches the default operator email in Git history.
+	DefaultCommitterEmail = "noreply@configbutler.ai"
+	// DefaultCommitMessageTemplate reproduces the current per-event commit message shape.
+	DefaultCommitMessageTemplate = "[{{.Operation}}] {{.APIVersion}}/{{.Resource}}/{{.Name}}"
+	// DefaultBatchCommitMessageTemplate is the default atomic batch commit message shape.
+	DefaultBatchCommitMessageTemplate = "reconcile: sync {{.Count}} resources"
 )
 
 // CommitFile represents a single file to be committed.
@@ -99,6 +112,7 @@ const (
 type WriteRequest struct {
 	Events             []Event
 	CommitMessage      string
+	CommitConfig       *CommitConfig
 	GitTargetName      string
 	GitTargetNamespace string
 	BootstrapOptions   pathBootstrapOptions
@@ -142,4 +156,79 @@ type Event struct {
 
 	// BootstrapOptions controls path-scoped bootstrap file staging for this event.
 	BootstrapOptions pathBootstrapOptions
+}
+
+// CommitConfig is the resolved commit behavior used by the git writer.
+type CommitConfig struct {
+	Committer CommitterConfig
+	Message   CommitMessageConfig
+}
+
+// CommitterConfig defines the operator identity used as the git committer.
+type CommitterConfig struct {
+	Name  string
+	Email string
+}
+
+// CommitMessageConfig contains the resolved per-event and batch templates.
+type CommitMessageConfig struct {
+	Template      string
+	BatchTemplate string
+}
+
+// CommitMessageData is the template context for per-event commit messages.
+type CommitMessageData struct {
+	Operation  string
+	Group      string
+	Version    string
+	Resource   string
+	Namespace  string
+	Name       string
+	APIVersion string
+	Username   string
+	GitTarget  string
+}
+
+// BatchCommitMessageData is the template context for atomic batch commit messages.
+type BatchCommitMessageData struct {
+	Count     int
+	GitTarget string
+}
+
+// ResolveCommitConfig resolves API commit settings into runtime defaults.
+func ResolveCommitConfig(spec *v1alpha1.CommitSpec) CommitConfig {
+	config := CommitConfig{
+		Committer: CommitterConfig{
+			Name:  DefaultCommitterName,
+			Email: DefaultCommitterEmail,
+		},
+		Message: CommitMessageConfig{
+			Template:      DefaultCommitMessageTemplate,
+			BatchTemplate: DefaultBatchCommitMessageTemplate,
+		},
+	}
+
+	if spec == nil {
+		return config
+	}
+
+	if spec.Committer != nil {
+		if name := strings.TrimSpace(spec.Committer.Name); name != "" {
+			config.Committer.Name = name
+		}
+		if email := strings.TrimSpace(spec.Committer.Email); email != "" {
+			config.Committer.Email = email
+		}
+	}
+
+	if spec.Message != nil {
+		if template := strings.TrimSpace(spec.Message.Template); template != "" {
+			config.Message.Template = template
+		}
+		if batchTemplate := strings.TrimSpace(spec.Message.BatchTemplate); batchTemplate != "" {
+			config.Message.BatchTemplate = batchTemplate
+		}
+	}
+
+	return config
 }
