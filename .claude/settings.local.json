@@ -7,6 +7,7 @@
       "Bash(chmod +x /workspaces/gitops-reverser/hack/demo/setup-holland-stuff-deployment.sh)",
       "Bash(make vet:*)",
       "Bash(go:*)",
+      "Bash(cat:*)",
       "Bash(helm template:*",
       "Bash(find:*"
     ]
