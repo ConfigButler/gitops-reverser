@@ -110,6 +110,8 @@ PROJECT_IMAGE := $(if $(PROJECT_IMAGE_INPUT),$(PROJECT_IMAGE_INPUT),$(E2E_LOCAL_
 PROJECT_IMAGE_PROVIDED := $(if $(filter-out $(E2E_LOCAL_IMAGE),$(PROJECT_IMAGE_INPUT)),true,)
 export PROJECT_IMAGE
 export PROJECT_IMAGE_PROVIDED
+PROJECT_IMAGE_REPO := $(shell ref='$(PROJECT_IMAGE)'; repo="$${ref%:*}"; tag="$${ref##*:}"; if [ "$$repo" = "$$tag" ]; then printf '%s' "$$ref"; else printf '%s' "$$repo"; fi)
+PROJECT_IMAGE_TAG := $(shell ref='$(PROJECT_IMAGE)'; repo="$${ref%:*}"; tag="$${ref##*:}"; if [ "$$repo" = "$$tag" ]; then printf 'latest'; else printf '%s' "$$tag"; fi)
 # IMAGE_DELIVERY_MODE controls how the cluster gets the controller image:
 # - load (default): import into k3d from the local Docker daemon
 # - pull: let Kubernetes pull from the registry at rollout time
@@ -222,6 +224,14 @@ test-e2e: ## Run the full e2e test suite
 	export NAMESPACE=$(NAMESPACE)
 	export E2E_AGE_KEY_FILE=$(CS)/age-key.txt
 	go test ./test/e2e/ -v -ginkgo.v
+
+.PHONY: test-image-refresh
+test-image-refresh: ## Validate the Make image-refresh dependency chain (requires a running e2e cluster)
+	export CTX=$(CTX)
+	export INSTALL_MODE=$(INSTALL_MODE)
+	export NAMESPACE=$(NAMESPACE)
+	export E2E_AGE_KEY_FILE=$(CS)/age-key.txt
+	go test ./test/e2e/ -v -ginkgo.v --label-filter="image-refresh"
 
 .PHONY: lint
 lint: ## Run golangci-lint linter
@@ -473,7 +483,7 @@ $(CS)/$(NAMESPACE)/controller.deployed: $(CS)/$(NAMESPACE)/$(INSTALL_MODE)/insta
 		CONTROLLER_CONTAINER="$(CONTROLLER_CONTAINER)" \
 		CONTROLLER_DEPLOY_SELECTOR="$(CONTROLLER_DEPLOY_SELECTOR)" \
 		bash hack/e2e/deploy-controller.sh
-	touch "$@"
+	cat "$(CS)/image.loaded" > "$@"
 
 .PHONY: portforward-ensure
 portforward-ensure: $(CS)/services.ready ## Ensure port-forwards are running (always checks)
@@ -515,6 +525,16 @@ define DO_ENSURE_VALKEY_AUTH
 		bash hack/e2e/ensure-valkey-auth.sh
 endef
 
+HELM_IMAGE_SET_ARGS = \
+	--set-string image.repository=$(PROJECT_IMAGE_REPO) \
+	--set-string image.tag=$(PROJECT_IMAGE_TAG)
+
+HELM_E2E_SET_ARGS = $(HELM_IMAGE_SET_ARGS) \
+	--set queue.redis.addr=$(E2E_AUDIT_REDIS_ADDR) \
+	--set queue.redis.auth.existingSecret=valkey-auth \
+	--set queue.redis.auth.existingSecretKey=password \
+	--set service.clusterIP=$(E2E_CONTROLLER_SERVICE_CLUSTER_IP)
+
 define REQUIRE_FILE
 	@[ -f "$(1)" ] || { \
 		echo "ERROR: missing required $(2) file '$(1)'" >&2; \
@@ -535,10 +555,7 @@ $(CS)/$(NAMESPACE)/helm/install.yaml: $(CS)/services.ready $(HELM_SYNC_OUTPUTS) 
 	$(HELM) --kube-context $(CTX) upgrade --install $(INSTALL_NAME) "$(HELM_CHART_SOURCE)" \
 		--namespace $(NAMESPACE) \
 		--create-namespace \
-		--set queue.redis.addr=$(E2E_AUDIT_REDIS_ADDR) \
-		--set queue.redis.auth.existingSecret=valkey-auth \
-		--set queue.redis.auth.existingSecretKey=password \
-		--set service.clusterIP=$(E2E_CONTROLLER_SERVICE_CLUSTER_IP) \
+		$(HELM_E2E_SET_ARGS) \
 		$$skip_crds_arg
 	tmp_manifest="$(@D)/.$(@F).tmp"
 	$(HELM) --kube-context $(CTX) get manifest $(INSTALL_NAME) \
@@ -559,7 +576,7 @@ $(CS)/$(NAMESPACE)/plain-manifests-file/install.yaml: $(CS)/services.ready dist/
 	$(DO_CLEANUP_INSTALLS)
 	mkdir -p "$(@D)" # keep: cleanup script can delete this directory during the same recipe
 	$(DO_ENSURE_VALKEY_AUTH)
-	CTX="$(CTX)" NAMESPACE="$(NAMESPACE)" \
+	CTX="$(CTX)" NAMESPACE="$(NAMESPACE)" PROJECT_IMAGE="$(PROJECT_IMAGE)" \
 		DEFAULT_AUDIT_REDIS_ADDR="$(DEFAULT_AUDIT_REDIS_ADDR)" \
 		E2E_AUDIT_REDIS_ADDR="$(E2E_AUDIT_REDIS_ADDR)" \
 		E2E_CONTROLLER_SERVICE_CLUSTER_IP="$(E2E_CONTROLLER_SERVICE_CLUSTER_IP)" \

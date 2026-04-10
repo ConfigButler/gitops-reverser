@@ -283,6 +283,7 @@ jobs:
             ${{ env.CI_CONTAINER }} \
             bash -c "
               git config --global --add safe.directory ${{ env.CI_WORKDIR }}
+              make test-image-refresh
               make test-e2e
               make test-e2e-bi
             "

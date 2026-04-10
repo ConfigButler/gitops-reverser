@@ -33,7 +33,6 @@ import (
 	gitpkg "github.com/ConfigButler/gitops-reverser/internal/git"
 )
 
-
 func (r *GitProviderReconciler) ensureSigningKey(
 	ctx context.Context,
 	gitProvider *configbutleraiv1alpha1.GitProvider,
@@ -155,5 +154,3 @@ func (r *GitProviderReconciler) addGeneratedSigningKeyToSecret(
 
 	return nil
 }
-
-
