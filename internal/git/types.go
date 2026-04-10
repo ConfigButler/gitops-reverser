@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"strings"
 
+	gogit "github.com/go-git/go-git/v5"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	v1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
@@ -113,6 +114,7 @@ type WriteRequest struct {
 	Events             []Event
 	CommitMessage      string
 	CommitConfig       *CommitConfig
+	Signer             gogit.Signer
 	GitTargetName      string
 	GitTargetNamespace string
 	BootstrapOptions   pathBootstrapOptions

@@ -780,7 +780,7 @@ func generateCommitsFromRequest(
 		return generateAtomicCommit(ctx, writer, repo, request)
 	}
 
-	return generatePerEventCommits(ctx, writer, repo, request.Events, resolveWriteRequestCommitConfig(request))
+	return generatePerEventCommits(ctx, writer, repo, request)
 }
 
 // generateAtomicCommit applies all events without committing after each, then creates a single commit.
@@ -821,11 +821,7 @@ func generateAtomicCommit(
 	}
 
 	when := time.Now()
-	operator := operatorSignature(commitConfig, when)
-	hash, err := worktree.Commit(commitMessage, &git.CommitOptions{
-		Author:    operator,
-		Committer: operator,
-	})
+	hash, err := worktree.Commit(commitMessage, commitOptionsForBatch(commitConfig, request.Signer, when))
 	if err != nil {
 		return 0, plumbing.ZeroHash, fmt.Errorf("failed to create batch commit: %w", err)
 	}
@@ -839,8 +835,7 @@ func generatePerEventCommits(
 	ctx context.Context,
 	writer eventContentWriter,
 	repo *git.Repository,
-	events []Event,
-	commitConfig CommitConfig,
+	request *WriteRequest,
 ) (int, plumbing.Hash, error) {
 	logger := log.FromContext(ctx)
 	lastHash := plumbing.ZeroHash
@@ -849,6 +844,8 @@ func generatePerEventCommits(
 		return 0, lastHash, fmt.Errorf("failed to get worktree: %w", err)
 	}
 
+	events := request.Events
+	commitConfig := resolveWriteRequestCommitConfig(request)
 	commitsCreated := 0
 	for _, event := range events {
 		if err := ensureBootstrapTemplateInPath(repo, sanitizePath(event.Path), event.BootstrapOptions); err != nil {
@@ -861,7 +858,7 @@ func generatePerEventCommits(
 		}
 
 		if changesApplied {
-			lastHash, err = createCommitForEvent(worktree, event, commitConfig)
+			lastHash, err = createCommitForEvent(worktree, event, commitConfig, request.Signer)
 			if err != nil {
 				return commitsCreated, lastHash, err
 			}

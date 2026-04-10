@@ -31,6 +31,7 @@ import (
 	"time"
 
 	gogit "github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -518,9 +519,9 @@ func (w *BranchWorker) commitAndPushRequest(request *WriteRequest) {
 		return
 	}
 
-	auth, err := getAuthFromSecret(w.ctx, w.Client, provider)
+	auth, signer, err := w.resolveWriteCredentials(w.ctx, provider)
 	if err != nil {
-		log.Error(err, "Failed to get auth")
+		log.Error(err, "Failed to resolve write credentials")
 		return
 	}
 
@@ -537,6 +538,7 @@ func (w *BranchWorker) commitAndPushRequest(request *WriteRequest) {
 		log.Error(err, "Failed to prepare write request")
 		return
 	}
+	preparedRequest.Signer = signer
 
 	encryptionWorkDir := filepath.Join(repoPath, requestEncryptionPath(preparedRequest))
 	if err := configureSecretEncryptionWriter(w.contentWriter, encryptionWorkDir, encryptionConfig); err != nil {
@@ -561,16 +563,7 @@ func (w *BranchWorker) commitAndPushRequest(request *WriteRequest) {
 		w.updateBranchMetadataFromPullReport(lastPull)
 	}
 
-	// Metrics
-	if telemetry.GitOperationsTotal != nil {
-		telemetry.GitOperationsTotal.Add(w.ctx, int64(len(preparedRequest.Events)))
-	}
-	if telemetry.CommitsTotal != nil {
-		telemetry.CommitsTotal.Add(w.ctx, 1)
-	}
-	if telemetry.ObjectsWrittenTotal != nil {
-		telemetry.ObjectsWrittenTotal.Add(w.ctx, int64(len(preparedRequest.Events)))
-	}
+	w.recordWriteMetrics(preparedRequest)
 }
 
 // handleShutdown finalizes processing when context is canceled.
@@ -592,6 +585,35 @@ func (w *BranchWorker) estimateEventSize(ev Event) int64 {
 		return int64(len(b))
 	}
 	return 0
+}
+
+func (w *BranchWorker) resolveWriteCredentials(
+	ctx context.Context,
+	provider *configv1alpha1.GitProvider,
+) (transport.AuthMethod, gogit.Signer, error) {
+	auth, err := getAuthFromSecret(ctx, w.Client, provider)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	signer, err := getCommitSigner(ctx, w.Client, provider)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return auth, signer, nil
+}
+
+func (w *BranchWorker) recordWriteMetrics(request *WriteRequest) {
+	if telemetry.GitOperationsTotal != nil {
+		telemetry.GitOperationsTotal.Add(w.ctx, int64(len(request.Events)))
+	}
+	if telemetry.CommitsTotal != nil {
+		telemetry.CommitsTotal.Add(w.ctx, 1)
+	}
+	if telemetry.ObjectsWrittenTotal != nil {
+		telemetry.ObjectsWrittenTotal.Add(w.ctx, int64(len(request.Events)))
+	}
 }
 
 // getGitProvider fetches the GitProvider for this worker.

@@ -48,9 +48,8 @@ helm upgrade gitops-reverser \
   --values quickstart-values.yaml
 ```
 
-`quickstart.gitProvider.commit` is optional. It lets you customize the bot committer identity and
-both per-event and reconcile batch commit messages. The signing API shape also exists, but signing
-runtime support is still pending.
+`quickstart.gitProvider.commit` is optional. It lets you customize the bot committer identity,
+per-event and reconcile batch commit messages, and commit signing.
 
 ## Defaults
 
