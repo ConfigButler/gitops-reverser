@@ -1,163 +1,80 @@
 # Contributing to GitOps Reverser
 
-First off, thank you for considering contributing to GitOps Reverser! It's people like you that make open source such a great community.
+Contributions are welcome — code, docs, bug reports, and ideas.
 
-We welcome any type of contribution, not just code. You can help with:
+## Development environment
 
-*   **Reporting a bug:** If you find a bug, please open an issue and provide as much information as possible.
-*   **Suggesting a feature:** If you have an idea for a new feature, open an issue to discuss it.
-*   **Writing documentation:** We can always use more documentation, whether it's for `godoc`, the project's README, or tutorials.
-*   **Submitting a Pull Request:** If you want to contribute code, please follow the steps below.
+Use the DevContainer. It includes Go, kubectl, k3d, Helm, and all required tools.
+Everything below assumes you are running inside it.
 
-## Getting Started
+See [`.devcontainer/README.md`](.devcontainer/README.md) for setup instructions.
 
-### Prerequisites
-
-*   Go (version 1.25 or higher)
-*   Docker
-*   `kubebuilder`
-*   A running Kubernetes cluster (like `kind` or `minikube`) to run tests against.
-
-### Development Environment Setup
-
-1.  **Fork & Clone:** Fork the repository to your own GitHub account and then clone it to your local machine.
-
-    ```sh
-    git clone https://github.com/YOUR_USERNAME/gitops-reverser.git
-    cd gitops-reverser
-    ```
-
-2.  **Install Dependencies:**
-
-    ```sh
-    go mod tidy
-    ```
-
-### Running Tests
-
-The project has a comprehensive test suite. Before submitting a pull request, please ensure that all tests pass.
-
-*   **Run Unit Tests:**
-    ```sh
-    make test
-    ```
-
-*   **Run Integration Tests (requires a Kubernetes cluster):**
-    ```sh
-    make test-integration
-    ```
-
-### Linting and Formatting
-
-All code must be formatted with `goimports` and pass `golangci-lint` checks.
-
-*   **Format Code:**
-    ```sh
-    make fmt
-    ```
-
-*   **Run Linter:**
-    ```sh
-    make lint
-    ```
-
-## Development Rules
-
-**Mandatory validation before PR submission:**
+## Before submitting a PR
 
 ```bash
-make lint      # Must pass golangci-lint checks
-make test      # Must pass all unit tests with >90% coverage
-make test-e2e  # Must pass end-to-end tests
+make lint      # must pass
+make test      # must pass
+make test-e2e  # must pass (requires Docker running)
 ```
 
-For detailed implementation guidelines, see [`.kilocode/rules/implementation-rules.md`](.kilocode/rules/implementation-rules.md).
+## Unit tests
 
-## Commit Message Format
-
-This project uses [Conventional Commits](https://www.conventionalcommits.org/) for automated versioning and changelog generation. Please format your commit messages as follows:
-
-```
-<type>(<optional scope>): <description>
-
-[optional body]
-
-[optional footer(s)]
+```bash
+make test
 ```
 
-### Commit Types
+This regenerates manifests and codegen, runs `go fmt` and `go vet`, downloads envtest
+assets, and runs all packages except `test/e2e`. Coverage is written to `cover.out`:
 
-- **feat:** A new feature (triggers minor version bump: 0.1.0 → 0.2.0)
-- **fix:** A bug fix (triggers patch version bump: 0.1.0 → 0.1.1)
-- **docs:** Documentation changes (no version bump)
-- **style:** Code style changes (formatting, etc., no version bump)
-- **refactor:** Code refactoring (no version bump)
-- **perf:** Performance improvements (triggers patch version bump)
-- **test:** Adding or updating tests (no version bump)
-- **build:** Changes to build system or dependencies (no version bump)
-- **ci:** CI/CD configuration changes (no version bump)
-- **chore:** Other changes that don't modify src or test files (no version bump)
-- **revert:** Reverts a previous commit (triggers patch version bump)
-
-### Breaking Changes
-
-To trigger a major version bump (0.1.0 → 1.0.0), include `BREAKING CHANGE:` in the commit footer or add `!` after the type:
-
-```
-feat!: redesign API structure
-
-BREAKING CHANGE: The API now uses a different authentication method
+```bash
+go tool cover -html=cover.out
 ```
 
-### Examples
+Run a single package or test:
 
-**Feature commit:**
-```
-feat(controller): add support for multi-repository configurations
-
-This allows users to configure multiple Git repositories for different
-namespaces, improving flexibility in audit trail organization.
+```bash
+go test ./internal/controller -v
+go test ./internal/git -run TestName -v
 ```
 
-**Bug fix commit:**
-```
-fix(webhook): prevent race condition in event queue
+## E2E tests
 
-Fixes #123
-```
-
-**Documentation update:**
-```
-docs: update README with Helm installation instructions
+```bash
+make test-e2e
 ```
 
-## Automated Releases
+E2E runs against a real k3d cluster with Gitea and Prometheus. The cluster is
+**intentionally not torn down on failure** — this makes debugging easier and reruns faster.
+Tests are written to append to existing state rather than require a clean slate.
 
-When commits are pushed to the `main` branch:
+For deeper debugging, see [`test/e2e/E2E_DEBUGGING.md`](test/e2e/E2E_DEBUGGING.md).
 
-1. **CI runs automatically** - All tests must pass (lint, unit tests, e2e)
-2. **Release PR created** - If CI passes, [release-please](https://github.com/googleapis/release-please) analyzes commits and creates/updates a Release PR
-3. **Changelog generated** - The Release PR includes an auto-generated changelog
-4. **Version bumped** - Chart.yaml versions are updated automatically based on commit types
-5. **Docker images built** - When the Release PR is merged, Docker images are built and published
+**Troubleshooting:**
+- envtest errors: run `make setup-envtest` then retry
+- Docker errors: ensure the Docker daemon is running
+- Permission issues: see [`docs/ci/go-module-permissions.md`](docs/ci/go-module-permissions.md)
+- Windows: see [`docs/ci/windows-devcontainer.md`](docs/ci/windows-devcontainer.md)
 
-**Note:** Only conventional commit messages will trigger version bumps. Non-conventional commits are still recorded in the changelog but won't affect versioning.
+## Commit format
 
-**For complete documentation:** See [`.github/RELEASES.md`](.github/RELEASES.md)
+This project uses [Conventional Commits](https://www.conventionalcommits.org/). The type
+determines whether a release is triggered and what version bump applies:
 
-## Submitting a Pull Request
+| Type | Effect |
+|---|---|
+| `feat` | minor bump |
+| `fix`, `perf`, `revert` | patch bump |
+| `docs`, `test`, `chore`, `ci`, `refactor`, `style`, `build` | no bump |
+| `feat!` or `BREAKING CHANGE:` footer | major bump |
 
-1.  Create a new branch for your feature or bug fix.
-    ```sh
-    git checkout -b my-awesome-feature
-    ```
-2.  Make your changes and commit them with a clear, descriptive message following the Conventional Commits format.
-3.  Push your branch to your fork.
-    ```sh
-    git push origin my-awesome-feature
-    ```
-4.  Open a pull request against the `main` branch of the `ConfigButler/gitops-reverser` repository.
+Examples: `feat(controller): add SSH key rotation`, `fix(webhook): prevent queue race`
 
-A GitHub Actions CI pipeline will automatically run on your PR to check for linting errors and run the test suite. All checks must pass before a PR can be merged.
+See [`.github/RELEASES.md`](.github/RELEASES.md) for how releases and changelogs are automated.
 
-Thank you for your contribution!
+## Pull request process
+
+1. Branch from `main`
+2. Make changes, follow the validation steps above
+3. Open a PR against `main` — CI runs automatically
+
+Thank you for contributing!

@@ -63,24 +63,7 @@ Why this is required:
 - If Docker publishes Kind API server on host loopback only (`127.0.0.1`), it is not reachable via `host.docker.internal` from the container.
 - Binding on `0.0.0.0` plus kubeconfig rewrite makes in-container `kubectl` stable without host networking.
 
-### 5) CI root vs non-root stance
-
-Current recommendation remains:
-
-- CI build containers can run as root (ephemeral build context)
-- Production runtime must run non-root (already implemented)
-
-Rationale:
-
-- Keeps CI simpler and less fragile
-- Avoids unnecessary permission workarounds
-- Preserves security boundary at runtime where it matters most
-
-### 6) Git safe.directory note
-
-`safe.directory` in CI is a normal response to UID mismatch between checkout ownership and container process user. This is not, by itself, evidence that CI must be non-root.
-
-### 7) Practical verification checklist
+### 5) Practical verification checklist
 
 After devcontainer rebuild/reopen:
 
@@ -98,10 +81,9 @@ kubectl config view --minify | sed -n '/server:/p;/tls-server-name:/p'
 kubectl get nodes
 ```
 
-### 8) Related docs in this folder
+### 6) Related docs in this folder
 
-- `KUBECTL_TLS_DEBUG_REPORT.md` - incident timeline and final fix
-- `GO_MODULE_PERMISSIONS.md` - why `/go` permissions are managed with shared group + ACLs
-- `WINDOWS_DEVCONTAINER_SETUP.md` - Windows-specific mount behavior and expected differences
-- `CI_NON_ROOT_USER_ANALYSIS.md` - tradeoffs for CI user model
-- `GIT_SAFE_DIRECTORY_EXPLAINED.md` - why `safe.directory` is required in containerized CI
+- `go-module-permissions.md` - why `/go` permissions are managed with shared group + ACLs
+- `windows-devcontainer.md` - Windows-specific mount behavior and expected differences
+- `ci-root-user.md` - why CI containers run as root
+- `git-safe-dir-explained.md` - why `safe.directory` is required in containerized CI

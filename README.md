@@ -1,7 +1,7 @@
 [![CI](https://github.com/ConfigButler/gitops-reverser/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/ConfigButler/gitops-reverser/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/ConfigButler/gitops-reverser?sort=semver)](https://github.com/ConfigButler/gitops-reverser/releases)
 [![License](https://img.shields.io/github/license/ConfigButler/gitops-reverser)](https://www.apache.org/licenses/LICENSE-2.0)
-[![Go](https://img.shields.io/badge/go-1.25-blue?logo=go)](go.mod)
+[![Go](https://img.shields.io/badge/go-1.26-blue?logo=go)](go.mod)
 [![Platforms](https://img.shields.io/badge/platforms-amd64%20%7C%20arm64-2ea44f?logo=docker)](#)
 [![Go Report Card](https://goreportcard.com/badge/github.com/ConfigButler/gitops-reverser)](https://goreportcard.com/report/github.com/ConfigButler/gitops-reverser)
 [![Container](https://img.shields.io/badge/container-ghcr.io%2Fconfigbutler%2Fgitops--reverser-2ea44f?logo=docker)](https://github.com/ConfigButler/gitops-reverser/pkgs/container/gitops-reverser)
@@ -128,7 +128,7 @@ kubectl create secret generic git-creds \
   --dry-run=client -o yaml | kubectl apply -f -
 ```
 
-See [`docs/GITHUB_SETUP_GUIDE.md`](docs/GITHUB_SETUP_GUIDE.md) for a full setup guide.
+See [`docs/github-setup-guide.md`](docs/github-setup-guide.md) for a full setup guide.
 
 **6. Enable the starter Git configuration**
 
@@ -168,7 +168,7 @@ You should see a new commit in your Git repository within seconds.
 
 `Secret` resources go through the same pipeline, but sensitive values are encrypted before commit. Secret manifests are written as `*.sops.yaml`.
 
-See [`docs/SOPS_AGE_GUIDE.md`](docs/SOPS_AGE_GUIDE.md) for working with Secrets, SOPS, age keys, bootstrap, and rotation.
+See [`docs/sops-age-guide.md`](docs/sops-age-guide.md) for working with Secrets, SOPS, age keys, bootstrap, and rotation.
 
 ## Known limitations
 
@@ -191,7 +191,7 @@ This project includes a DevContainer for consistent development environments.
 [![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/ConfigButler/gitops-reverser)
 
 - Linux/macOS: works with Docker Desktop or Docker Engine.
-- Windows: see [`docs/ci/WINDOWS_DEVCONTAINER_SETUP.md`](docs/ci/WINDOWS_DEVCONTAINER_SETUP.md).
+- Windows: see [`docs/ci/windows-devcontainer.md`](docs/ci/windows-devcontainer.md).
 
 ```bash
 make test

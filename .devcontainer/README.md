@@ -174,8 +174,5 @@ Usually normal. Rebuild time mostly depends on tool installation and cache reuse
 
 ## References
 
-Kind/DOOD failure findings + DinD migration plan:
-[`KIND_DOOD_FINDINGS_AND_DIND_TRANSITION_PLAN.md`](./KIND_DOOD_FINDINGS_AND_DIND_TRANSITION_PLAN.md)
-
-Additional project details:
-[`docs/COMPLETE_SOLUTION.md`](../docs/COMPLETE_SOLUTION.md)
+Why we use Docker-outside-of-Docker:
+[`docs/ci/dood-vs-dind-reasons.md`](../docs/ci/dood-vs-dind-reasons.md)

@@ -61,7 +61,7 @@ go mod tidy
 
 ## Notes about `/go` vs workspace
 
-- `/go` is container filesystem and uses Linux semantics; ACL/setgid strategy documented in `GO_MODULE_PERMISSIONS.md` applies there.
+- `/go` is container filesystem and uses Linux semantics; ACL/setgid strategy documented in `go-module-permissions.md` applies there.
 - `/workspaces/<repo>` is a bind mount from host; behavior depends on host filesystem and Docker Desktop integration.
 
 ## References

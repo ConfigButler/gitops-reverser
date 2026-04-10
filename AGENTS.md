@@ -77,7 +77,7 @@ make test-e2e-quickstart-helm
 
 - Update README.md for user-facing changes
 - Add/update godoc comments for all exports
-- Update WEBHOOK_SETUP.md if touching webhook functionality
+- Update API documentation if modifying webhook behavior
 - Update API documentation if modifying CRDs
 
 ## VALIDATION SEQUENCE
@@ -94,7 +94,7 @@ make test-e2e-quickstart-helm
 
 - If `make lint` fails: Run `make lint-fix` first
 - If tests fail: Fix issues and ensure >90% coverage maintained
-- If e2e fails: Check Kind cluster setup and Docker availability
+- If e2e fails: Check k3d cluster setup and Docker availability
 - If Docker not available: Ask user to start Docker daemon before running e2e tests
 
 ## REFERENCES

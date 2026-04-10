@@ -225,7 +225,6 @@ func (h *AuditHandler) processEvents(ctx context.Context, clusterID string, even
 		))
 
 		if process {
-			// For now we hardly do a thing
 			log.Info("Processed audit event",
 				"clusterID", clusterID,
 				"gvr", gvr,
