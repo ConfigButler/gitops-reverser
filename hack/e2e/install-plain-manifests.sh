@@ -8,6 +8,7 @@ set -euo pipefail
 # Inputs (env):
 # - CTX (required): kube context
 # - NAMESPACE (required): target namespace
+# - PROJECT_IMAGE (required): controller image to inject
 # - DEFAULT_AUDIT_REDIS_ADDR (required): Redis address baked into dist/install.yaml
 # - E2E_AUDIT_REDIS_ADDR (required): Redis address to substitute in for e2e
 # - E2E_CONTROLLER_SERVICE_CLUSTER_IP (required): ClusterIP to inject for the controller Service
@@ -17,6 +18,7 @@ set -euo pipefail
 
 : "${CTX:?CTX is required}"
 : "${NAMESPACE:?NAMESPACE is required}"
+: "${PROJECT_IMAGE:?PROJECT_IMAGE is required}"
 : "${DEFAULT_AUDIT_REDIS_ADDR:?DEFAULT_AUDIT_REDIS_ADDR is required}"
 : "${E2E_AUDIT_REDIS_ADDR:?E2E_AUDIT_REDIS_ADDR is required}"
 : "${E2E_CONTROLLER_SERVICE_CLUSTER_IP:?E2E_CONTROLLER_SERVICE_CLUSTER_IP is required}"
@@ -51,6 +53,7 @@ EOF
 (
 	cd "${tmpdir}"
 	"${KUSTOMIZE}" edit set namespace "${NAMESPACE}" >/dev/null
+	"${KUSTOMIZE}" edit set image ghcr.io/configbutler/gitops-reverser="${PROJECT_IMAGE}" >/dev/null
 	"${KUSTOMIZE}" build .
 ) | tee "${tmpdir}/rendered-install.yaml" \
 	| "${KUBECTL}" --context "${CTX}" apply -f -

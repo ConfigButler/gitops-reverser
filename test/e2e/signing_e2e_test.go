@@ -47,10 +47,29 @@ type signingGitProviderData struct {
 }
 
 var _ = Describe("Commit Signing", Ordered, func() {
-	var testNs string
+	var (
+		testNs     string
+		signingDir string // local git checkout directory
+		httpSecret string // name of the HTTP git credentials Secret
+		repoURL    string // HTTP URL of the active Gitea repo
+	)
 
 	BeforeAll(func() {
 		testNs = testNamespaceFor("signing")
+
+		By("reading suite artifacts set by BeforeSuite")
+		repoName := strings.TrimSpace(os.Getenv("E2E_REPO_NAME"))
+		signingDir = strings.TrimSpace(os.Getenv("E2E_CHECKOUT_DIR"))
+		httpSecret = strings.TrimSpace(os.Getenv("E2E_GIT_SECRET_HTTP"))
+		if httpSecret == "" {
+			httpSecret = resolveE2EHTTPSecretName(repoName)
+		}
+		repoURL = fmt.Sprintf(giteaRepoURLTemplate, repoName)
+
+		Expect(repoName).NotTo(BeEmpty(), "E2E_REPO_NAME must be set by BeforeSuite")
+		Expect(signingDir).NotTo(BeEmpty(), "E2E_CHECKOUT_DIR must be set by BeforeSuite")
+		_, err := os.Stat(filepath.Join(signingDir, ".git"))
+		Expect(err).NotTo(HaveOccurred(), "checkout directory must contain a .git folder")
 
 		By("creating signing test namespace")
 		_, _ = kubectlRun("create", "namespace", testNs)
@@ -58,8 +77,10 @@ var _ = Describe("Commit Signing", Ordered, func() {
 		By("applying git secrets to signing test namespace")
 		secretsYaml := strings.TrimSpace(os.Getenv("E2E_SECRETS_YAML"))
 		Expect(secretsYaml).NotTo(BeEmpty(), "E2E_SECRETS_YAML must be set by BeforeSuite")
-		_, err := kubectlRunInNamespace(testNs, "apply", "-f", secretsYaml)
+		_, err = kubectlRunInNamespace(testNs, "apply", "-f", secretsYaml)
 		Expect(err).NotTo(HaveOccurred(), "failed to apply git secrets to signing test namespace")
+
+		applySOPSAgeKeyToNamespace(testNs)
 	})
 
 	AfterAll(func() {
@@ -83,9 +104,9 @@ var _ = Describe("Commit Signing", Ordered, func() {
 		data := signingGitProviderData{
 			Name:                providerName,
 			Namespace:           testNs,
-			RepoURL:             getRepoURLHTTP(),
+			RepoURL:             repoURL,
 			Branch:              "main",
-			SecretName:          gitSecretHTTP,
+			SecretName:          httpSecret,
 			CommitterName:       "GitOps Reverser",
 			CommitterEmail:      "noreply@configbutler.ai",
 			MessageTemplate:     "[{{.Operation}}] {{.APIVersion}}/{{.Resource}}/{{.Name}}",
@@ -126,28 +147,25 @@ var _ = Describe("Commit Signing", Ordered, func() {
 
 		By("waiting for a signed commit to land in the path")
 		Eventually(func(g Gomega) {
-			_, pullErr := gitRun(checkoutDir, "pull")
+			_, pullErr := gitRun(signingDir, "pull")
 			g.Expect(pullErr).NotTo(HaveOccurred())
 
-			commitRaw, catErr := gitRun(checkoutDir, "log", "-1", "--format=%B", "--", commitPath)
-			g.Expect(catErr).NotTo(HaveOccurred())
-			g.Expect(strings.TrimSpace(commitRaw)).NotTo(BeEmpty(), "expected a commit in %s", commitPath)
-
-			// Confirm signature is present in the commit object.
-			hash, hashErr := gitRun(checkoutDir, "log", "-1", "--format=%H", "--", commitPath)
+			hash, hashErr := gitRun(signingDir, "log", "-1", "--format=%H", "--", commitPath)
 			g.Expect(hashErr).NotTo(HaveOccurred())
-			rawObj, rawErr := gitRun(checkoutDir, "cat-file", "commit", strings.TrimSpace(hash))
+			g.Expect(strings.TrimSpace(hash)).NotTo(BeEmpty(), "expected a commit in %s", commitPath)
+
+			rawObj, rawErr := gitRun(signingDir, "cat-file", "commit", strings.TrimSpace(hash))
 			g.Expect(rawErr).NotTo(HaveOccurred())
 			g.Expect(rawObj).To(ContainSubstring("-----BEGIN SSH SIGNATURE-----"),
 				"commit should carry an SSH signature")
 		}, "60s", "3s").Should(Succeed())
 
 		By("verifying the commit signature with ssh-keygen -Y verify")
-		commitHash, err := gitRun(checkoutDir, "log", "-1", "--format=%H", "--", commitPath)
+		commitHash, err := gitRun(signingDir, "log", "-1", "--format=%H", "--", commitPath)
 		Expect(err).NotTo(HaveOccurred())
 		commitHash = strings.TrimSpace(commitHash)
 
-		commitRaw, err := gitRun(checkoutDir, "cat-file", "commit", commitHash)
+		commitRaw, err := gitRun(signingDir, "cat-file", "commit", commitHash)
 		Expect(err).NotTo(HaveOccurred())
 
 		sigBlock := extractSSHSigBlock(commitRaw)
@@ -157,6 +175,7 @@ var _ = Describe("Commit Signing", Ordered, func() {
 		Expect(err).NotTo(HaveOccurred())
 		defer func() { _ = os.RemoveAll(tmpDir) }()
 
+		// The allowed-signers identity must match the committer email configured on the GitProvider.
 		allowedSigners := fmt.Sprintf("noreply@configbutler.ai namespaces=\"git\" %s\n", signingPublicKey)
 		allowedSignersFile := filepath.Join(tmpDir, "allowed-signers")
 		Expect(os.WriteFile(allowedSignersFile, []byte(allowedSigners), 0o600)).To(Succeed())
@@ -164,6 +183,7 @@ var _ = Describe("Commit Signing", Ordered, func() {
 		sigFile := filepath.Join(tmpDir, "commit.sig")
 		Expect(os.WriteFile(sigFile, []byte(sigBlock), 0o600)).To(Succeed())
 
+		// The payload is the commit object with the gpgsig header stripped.
 		payload := removeGpgsigHeader(commitRaw)
 		payloadFile := filepath.Join(tmpDir, "commit.payload")
 		Expect(os.WriteFile(payloadFile, []byte(payload), 0o600)).To(Succeed())
@@ -198,9 +218,9 @@ var _ = Describe("Commit Signing", Ordered, func() {
 		data := signingGitProviderData{
 			Name:                providerName,
 			Namespace:           testNs,
-			RepoURL:             getRepoURLHTTP(),
+			RepoURL:             repoURL,
 			Branch:              "main",
-			SecretName:          gitSecretHTTP,
+			SecretName:          httpSecret,
 			CommitterName:       customName,
 			CommitterEmail:      customEmail,
 			MessageTemplate:     customTemplate,
@@ -231,11 +251,11 @@ var _ = Describe("Commit Signing", Ordered, func() {
 
 		By("waiting for commit and verifying committer identity and message template")
 		Eventually(func(g Gomega) {
-			_, pullErr := gitRun(checkoutDir, "pull")
+			_, pullErr := gitRun(signingDir, "pull")
 			g.Expect(pullErr).NotTo(HaveOccurred())
 
 			// %cn=committer name, %ce=committer email, %s=subject
-			logLine, logErr := gitRun(checkoutDir, "log", "-1", "--format=%cn|%ce|%s", "--", commitPath)
+			logLine, logErr := gitRun(signingDir, "log", "-1", "--format=%cn|%ce|%s", "--", commitPath)
 			g.Expect(logErr).NotTo(HaveOccurred())
 			g.Expect(strings.TrimSpace(logLine)).NotTo(BeEmpty(), "expected a commit in %s", commitPath)
 
@@ -279,9 +299,9 @@ var _ = Describe("Commit Signing", Ordered, func() {
 		data := signingGitProviderData{
 			Name:                providerName,
 			Namespace:           testNs,
-			RepoURL:             getRepoURLHTTP(),
+			RepoURL:             repoURL,
 			Branch:              "main",
-			SecretName:          gitSecretHTTP,
+			SecretName:          httpSecret,
 			CommitterName:       "GitOps Reverser",
 			CommitterEmail:      "noreply@configbutler.ai",
 			MessageTemplate:     "[{{.Operation}}] {{.APIVersion}}/{{.Resource}}/{{.Name}}",
@@ -308,11 +328,11 @@ var _ = Describe("Commit Signing", Ordered, func() {
 
 		By("waiting for the batch commit and verifying its message uses the batch template")
 		Eventually(func(g Gomega) {
-			_, pullErr := gitRun(checkoutDir, "pull")
+			_, pullErr := gitRun(signingDir, "pull")
 			g.Expect(pullErr).NotTo(HaveOccurred())
 
 			// Walk the full log for the path to find any commit matching the batch template prefix.
-			logOutput, logErr := gitRun(checkoutDir, "log", "--format=%s", "--", commitPath)
+			logOutput, logErr := gitRun(signingDir, "log", "--format=%s", "--", commitPath)
 			g.Expect(logErr).NotTo(HaveOccurred())
 			g.Expect(logOutput).To(ContainSubstring("e2e-batch:"),
 				"expected a batch commit with the custom batch template in path %s", commitPath)

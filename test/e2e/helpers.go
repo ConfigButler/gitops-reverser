@@ -294,7 +294,8 @@ func controllerPodNames() ([]string, error) {
 
 // gitRun runs a git command in the given directory and returns combined output.
 func gitRun(dir string, args ...string) (string, error) {
-	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	// #nosec G204 -- Test helper only; command is fixed to git and arguments come from the e2e harness.
+	cmd := exec.CommandContext(e2eCommandContext(context.Background()), "git", append([]string{"-C", dir}, args...)...)
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
