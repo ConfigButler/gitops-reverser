@@ -27,9 +27,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"regexp"
 	"strings"
-	"text/template"
 	"time"
 
 	billyutil "github.com/go-git/go-billy/v5/util"
@@ -37,7 +35,6 @@ import (
 	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/format/index"
-	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/go-git/go-git/v5/plumbing/transport/http"
 	"github.com/go-logr/logr"
@@ -391,120 +388,6 @@ func switchOrCreateBranch(
 		return fmt.Errorf("failed to prepare branch %s: %w", targetBranchName, err)
 	}
 	return nil
-}
-
-// GetCommitMessage returns the default structured commit message for the given event.
-func GetCommitMessage(event Event) string {
-	message, err := renderEventCommitMessage(event, ResolveCommitConfig(nil))
-	if err != nil {
-		return fmt.Sprintf("[%s] %s", event.Operation, event.Identifier.String())
-	}
-	return message
-}
-
-func renderEventCommitMessage(event Event, config CommitConfig) (string, error) {
-	return renderCommitTemplate(
-		"event",
-		config.Message.Template,
-		CommitMessageData{
-			Operation:  event.Operation,
-			Group:      event.Identifier.Group,
-			Version:    event.Identifier.Version,
-			Resource:   event.Identifier.Resource,
-			Namespace:  event.Identifier.Namespace,
-			Name:       event.Identifier.Name,
-			APIVersion: buildAPIVersion(event.Identifier.Group, event.Identifier.Version),
-			Username:   event.UserInfo.Username,
-			GitTarget:  event.GitTargetName,
-		},
-	)
-}
-
-func renderBatchCommitMessage(request *WriteRequest, config CommitConfig) (string, error) {
-	if request != nil && strings.TrimSpace(request.CommitMessage) != "" {
-		return request.CommitMessage, nil
-	}
-
-	count := 0
-	gitTargetName := ""
-	if request != nil {
-		count = len(request.Events)
-		gitTargetName = request.GitTargetName
-	}
-
-	return renderCommitTemplate(
-		"batch",
-		config.Message.BatchTemplate,
-		BatchCommitMessageData{
-			Count:     count,
-			GitTarget: gitTargetName,
-		},
-	)
-}
-
-func renderCommitTemplate(name, text string, data any) (string, error) {
-	tmpl, err := template.New(name).Option("missingkey=error").Parse(text)
-	if err != nil {
-		return "", fmt.Errorf("parse %s commit template: %w", name, err)
-	}
-
-	var buf bytes.Buffer
-	if err := tmpl.Execute(&buf, data); err != nil {
-		return "", fmt.Errorf("execute %s commit template: %w", name, err)
-	}
-
-	return buf.String(), nil
-}
-
-func buildAPIVersion(group, version string) string {
-	if group == "" {
-		return version
-	}
-	return group + "/" + version
-}
-
-func resolveWriteRequestCommitConfig(request *WriteRequest) CommitConfig {
-	if request == nil || request.CommitConfig == nil {
-		return ResolveCommitConfig(nil)
-	}
-	return *request.CommitConfig
-}
-
-// ValidateCommitConfig checks that commit templates are syntactically valid.
-func ValidateCommitConfig(config CommitConfig) error {
-	sampleEvent := Event{
-		Operation: "CREATE",
-		Identifier: types.ResourceIdentifier{
-			Group:     "apps",
-			Version:   "v1",
-			Resource:  "deployments",
-			Namespace: "default",
-			Name:      "example",
-		},
-		UserInfo:      UserInfo{Username: "gitops-reverser"},
-		GitTargetName: "example-target",
-	}
-
-	if _, err := renderEventCommitMessage(sampleEvent, config); err != nil {
-		return err
-	}
-
-	if _, err := renderBatchCommitMessage(&WriteRequest{
-		Events:        []Event{sampleEvent},
-		GitTargetName: "example-target",
-	}, config); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func operatorSignature(config CommitConfig, when time.Time) *object.Signature {
-	return &object.Signature{
-		Name:  config.Committer.Name,
-		Email: config.Committer.Email,
-		When:  when,
-	}
 }
 
 // ensureRemoteOrigin ensures the remote "origin" exists with the correct URL, updating if necessary.
@@ -1153,24 +1036,6 @@ func batchTargetPath(request *WriteRequest) string {
 	return ""
 }
 
-// createCommitForEvent creates a commit for the given event.
-func createCommitForEvent(worktree *git.Worktree, event Event, config CommitConfig) (plumbing.Hash, error) {
-	commitMessage, err := renderEventCommitMessage(event, config)
-	if err != nil {
-		return plumbing.ZeroHash, err
-	}
-
-	when := time.Now()
-	return worktree.Commit(commitMessage, &git.CommitOptions{
-		Author: &object.Signature{
-			Name:  event.UserInfo.Username,
-			Email: ConstructSafeEmail(event.UserInfo.Username, "cluster.local"),
-			When:  when,
-		},
-		Committer: operatorSignature(config, when),
-	})
-}
-
 // initializeCleanRepository removes corrupted repos and initializes a fresh one.
 func initializeCleanRepository(repoPath string, logger logr.Logger) (*git.Repository, error) {
 	// If directory exists but repo is invalid, remove it
@@ -1189,32 +1054,4 @@ func initializeCleanRepository(repoPath string, logger logr.Logger) (*git.Reposi
 	}
 
 	return repo, nil
-}
-
-// ConstructSafeEmail takes a raw username and a domain and creates a valid
-// git-compliant email address.
-func ConstructSafeEmail(username string, domain string) string {
-	// Check if username is already a valid email address
-	emailRegex := regexp.MustCompile(`^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$`)
-	if emailRegex.MatchString(username) {
-		return username
-	}
-
-	// 1. Convert to lowercase
-	clean := strings.ToLower(username)
-
-	// 2. Remove anything that isn't alphanumeric, a dot, or a hyphen.
-	// This prevents spaces or weird symbols from breaking the Git header.
-	reg := regexp.MustCompile(`[^a-z0-9\.\-]`)
-	clean = reg.ReplaceAllString(clean, "")
-
-	// 3. Fallback: If the username was entirely special chars (e.g. "!!!"),
-	// provide a fallback so the email isn't empty.
-	if clean == "" {
-		clean = "unknown-user"
-	}
-
-	// 4. Construct the email
-	// Using "noreply" is a standard convention for system-generated attribution.
-	return fmt.Sprintf("%s@noreply.%s", clean, domain)
 }
