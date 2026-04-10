@@ -33,6 +33,7 @@ import (
 	gitpkg "github.com/ConfigButler/gitops-reverser/internal/git"
 )
 
+
 func (r *GitProviderReconciler) ensureSigningKey(
 	ctx context.Context,
 	gitProvider *configbutleraiv1alpha1.GitProvider,
@@ -58,7 +59,7 @@ func (r *GitProviderReconciler) ensureSigningKey(
 		return fmt.Errorf("failed to fetch signing secret %s: %w", secretKey.String(), err)
 	}
 
-	if len(secret.Data[gitpkgSigningKeyDataKey()]) == 0 {
+	if len(secret.Data[gitpkg.SigningKeyDataKey]) == 0 {
 		if !gitProvider.Spec.Commit.Signing.GenerateWhenMissing {
 			return fmt.Errorf("signing secret %s is missing signing.key and generateWhenMissing is disabled",
 				secretKey.String())
@@ -108,11 +109,13 @@ func (r *GitProviderReconciler) createGeneratedSigningSecret(
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      secretKey.Name,
 			Namespace: secretKey.Namespace,
+			// No owner reference is set intentionally: signing key material must survive
+			// GitProvider deletion to avoid accidental loss of a deployed signing identity.
 		},
 		Type: corev1.SecretTypeOpaque,
 		Data: map[string][]byte{
-			gitpkgSigningKeyDataKey():       privateKey,
-			gitpkgSigningPublicKeyDataKey(): publicKey,
+			gitpkg.SigningKeyDataKey:       privateKey,
+			gitpkg.SigningPublicKeyDataKey: publicKey,
 		},
 	}
 
@@ -135,7 +138,7 @@ func (r *GitProviderReconciler) addGeneratedSigningKeyToSecret(
 		return errors.New("signing secret is nil")
 	}
 
-	privateKey, publicKey, err := gitpkg.GenerateSSHSigningKeyPair(secret.Data[gitpkgSigningPassphraseDataKey()])
+	privateKey, publicKey, err := gitpkg.GenerateSSHSigningKeyPair(secret.Data[gitpkg.SigningPassphraseDataKey])
 	if err != nil {
 		return fmt.Errorf("failed to generate signing key for secret %s/%s: %w", secret.Namespace, secret.Name, err)
 	}
@@ -143,8 +146,8 @@ func (r *GitProviderReconciler) addGeneratedSigningKeyToSecret(
 	if secret.Data == nil {
 		secret.Data = make(map[string][]byte)
 	}
-	secret.Data[gitpkgSigningKeyDataKey()] = privateKey
-	secret.Data[gitpkgSigningPublicKeyDataKey()] = publicKey
+	secret.Data[gitpkg.SigningKeyDataKey] = privateKey
+	secret.Data[gitpkg.SigningPublicKeyDataKey] = publicKey
 
 	if err := r.Update(ctx, secret); err != nil {
 		return fmt.Errorf("failed to update signing secret %s/%s: %w", secret.Namespace, secret.Name, err)
@@ -153,14 +156,4 @@ func (r *GitProviderReconciler) addGeneratedSigningKeyToSecret(
 	return nil
 }
 
-func gitpkgSigningKeyDataKey() string {
-	return "signing.key"
-}
 
-func gitpkgSigningPublicKeyDataKey() string {
-	return "signing.pub"
-}
-
-func gitpkgSigningPassphraseDataKey() string {
-	return "passphrase"
-}
