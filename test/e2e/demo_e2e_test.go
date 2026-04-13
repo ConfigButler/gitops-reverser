@@ -114,11 +114,11 @@ func newDemoRun() demoRun {
 
 	Expect(repoName).NotTo(
 		BeEmpty(),
-		"E2E_REPO_NAME must be set by the suite (make e2e-gitea-run-setup)",
+		"E2E_REPO_NAME must be set by the suite (task e2e-gitea-run-setup)",
 	)
 	Expect(checkoutDir).NotTo(
 		BeEmpty(),
-		"E2E_CHECKOUT_DIR must be set by the suite (make e2e-gitea-run-setup)",
+		"E2E_CHECKOUT_DIR must be set by the suite (task e2e-gitea-run-setup)",
 	)
 
 	repoURL := fmt.Sprintf(

@@ -6,9 +6,9 @@ After running e2e tests, the infrastructure remains running for debugging purpos
 
 ### Kind Cluster Names by Test Type
 
-- `make test-e2e` uses `KIND_CLUSTER_E2E` (default: `gitops-reverser-test-e2e`)
-- `make test-e2e-quickstart-helm` uses `KIND_CLUSTER_QUICKSTART_HELM` (default: `gitops-reverser-test-e2e-quickstart-helm`)
-- `make test-e2e-quickstart-manifest` uses `KIND_CLUSTER_QUICKSTART_MANIFEST` (default: `gitops-reverser-test-e2e-quickstart-manifest`)
+- `task test-e2e` uses `KIND_CLUSTER_E2E` (default: `gitops-reverser-test-e2e`)
+- `task test-e2e-quickstart-helm` uses `KIND_CLUSTER_QUICKSTART_HELM` (default: `gitops-reverser-test-e2e-quickstart-helm`)
+- `task test-e2e-quickstart-manifest` uses `KIND_CLUSTER_QUICKSTART_MANIFEST` (default: `gitops-reverser-test-e2e-quickstart-manifest`)
 
 This separation avoids cross-test contamination between end-to-end and quickstart install smoke tests.
 
@@ -30,7 +30,7 @@ This exposes:
 make cleanup-port-forwards
 ```
 
-**Note:** The `make test-e2e` and `make setup-e2e` targets automatically run `setup-port-forwards`, so services are ready immediately after setup.
+**Note:** The `task test-e2e` and `task prepare-e2e` targets automatically run `setup-port-forwards`, so services are ready immediately after setup.
 
 ## Useful Prometheus Queries
 
@@ -127,8 +127,8 @@ make setup-port-forwards    # Start port-forwards (Gitea:13000, Prometheus:19090
 make cleanup-port-forwards  # Stop all port-forwards
 make ensure-prometheus-operator
 make setup-e2e             # Setup Gitea + Prometheus Operator (+ cert-manager)
-make test-e2e              # Run e2e tests (includes port-forwards)
-make test-e2e-quickstart-helm
-make test-e2e-quickstart-manifest
+task test-e2e              # Run e2e tests (includes port-forwards)
+task test-e2e-quickstart-helm
+task test-e2e-quickstart-manifest
 make cleanup-e2e-clusters  # Delete all E2E test clusters
 ```

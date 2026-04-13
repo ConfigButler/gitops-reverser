@@ -50,12 +50,12 @@ func TestE2E(t *testing.T) {
 
 var _ = BeforeSuite(func() {
 	if img := os.Getenv("PROJECT_IMAGE"); img == "" {
-		By("local run: preparing cluster via Makefile target")
+		By("local run: preparing cluster via Task target")
 	} else {
 		By(fmt.Sprintf("using pre-built image: %s", img))
 	}
 
-	By("preparing e2e prerequisites via Makefile target")
+	By("preparing e2e prerequisites via Task target")
 	ensureE2EPrepared()
 })
 
@@ -76,7 +76,7 @@ func ensureE2EPrepared() {
 	installMode, err := resolveE2EInstallMode()
 	Expect(err).NotTo(HaveOccurred(), "INSTALL_MODE environment variable must be set for e2e runs")
 	installName := resolveE2EInstallName(ns)
-	cmd := makeCommand(
+	cmd := taskCommand(
 		fmt.Sprintf("CTX=%s", ctx),
 		fmt.Sprintf("INSTALL_NAME=%s", installName),
 		fmt.Sprintf("INSTALL_MODE=%s", installMode),
@@ -84,19 +84,19 @@ func ensureE2EPrepared() {
 		"prepare-e2e",
 	)
 	output, err := utils.Run(cmd)
-	Expect(err).NotTo(HaveOccurred(), "failed to run make target for e2e prepare")
+	Expect(err).NotTo(HaveOccurred(), "failed to run task target for e2e prepare")
 	_, _ = fmt.Fprintf(GinkgoWriter, "%s", output)
 
-	By("setting up Gitea repo, credentials and checkout via Makefile target")
+	By("setting up Gitea repo, credentials and checkout via Task target")
 	repoName := resolveE2ERepoName()
-	cmd = makeCommand(
+	cmd = taskCommand(
 		fmt.Sprintf("CTX=%s", ctx),
 		fmt.Sprintf("NAMESPACE=%s", ns),
 		fmt.Sprintf("REPO_NAME=%s", repoName),
 		"e2e-gitea-run-setup",
 	)
 	output, err = utils.Run(cmd)
-	Expect(err).NotTo(HaveOccurred(), "failed to run make target for gitea run setup")
+	Expect(err).NotTo(HaveOccurred(), "failed to run task target for gitea run setup")
 	_, _ = fmt.Fprintf(GinkgoWriter, "%s", output)
 	exportGiteaArtifacts(ctx, ns, repoName)
 
@@ -114,8 +114,8 @@ func ensureE2EPrepared() {
 	Expect(err).NotTo(HaveOccurred(), "failed to delete IceCreamOrder CRD before tests")
 	_, _ = fmt.Fprintf(GinkgoWriter, "%s", output)
 
-	// The Makefile prepares the age key under the stamp directory. When running `go test` directly (without
-	// `make test-e2e`), ensure the suite uses that prepared key file.
+	// The Task prepare flow writes the age key under the stamp directory. When running `go test` directly
+	// (without `task test-e2e`), ensure the suite uses that prepared key file.
 	if strings.TrimSpace(os.Getenv("E2E_AGE_KEY_FILE")) == "" {
 		wd, err := os.Getwd()
 		Expect(err).NotTo(HaveOccurred(), "failed to get working directory for e2e run")
@@ -202,11 +202,11 @@ func resolveE2EInvalidSecretName(repoName string) string {
 	return "git-creds-invalid-" + repoName
 }
 
-func makeCommand(args ...string) *exec.Cmd {
-	cmd := exec.Command("make", args...)
+func taskCommand(args ...string) *exec.Cmd {
+	cmd := exec.Command("task", args...)
 	_, _ = fmt.Fprintf(
 		GinkgoWriter,
-		"make invocation: args=%v\n",
+		"task invocation: args=%v\n",
 		args,
 	)
 	return cmd

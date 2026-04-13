@@ -31,7 +31,7 @@ import (
 	"github.com/ConfigButler/gitops-reverser/test/utils"
 )
 
-// Validates the Make image-refresh dependency chain end-to-end.
+// Validates the Task image-refresh dependency chain end-to-end.
 //
 // Run in isolation:
 //
@@ -39,7 +39,7 @@ import (
 //
 // or via:
 //
-//	make test-image-refresh
+//	task test-image-refresh
 var _ = Describe("image refresh dependency chain", Label("image-refresh"), Ordered, func() {
 	var (
 		projectDir       string
@@ -72,18 +72,22 @@ var _ = Describe("image refresh dependency chain", Label("image-refresh"), Order
 		}
 		f, err := os.OpenFile(absPath, os.O_APPEND|os.O_WRONLY, 0600)
 		Expect(err).NotTo(HaveOccurred())
-		_, err = fmt.Fprintf(f, "\n// image-refresh-test: %s\n", marker)
+		if filepath.Base(relPath) == "Dockerfile" {
+			_, err = fmt.Fprintf(f, "\nLABEL image-refresh-test=%q\n", marker)
+		} else {
+			_, err = fmt.Fprintf(f, "\n// image-refresh-test: %s\n", marker)
+		}
 		Expect(err).NotTo(HaveOccurred())
 		Expect(f.Close()).To(Succeed())
 	}
 
-	// runPrepare runs make prepare-e2e and returns combined output.
+	// runPrepare runs task prepare-e2e and returns combined output.
 	runPrepare := func() string {
 		GinkgoHelper()
 		ctx := resolveE2EContext()
 		installMode, err := resolveE2EInstallMode()
 		Expect(err).NotTo(HaveOccurred())
-		cmd := makeCommand(
+		cmd := taskCommand(
 			fmt.Sprintf("CTX=%s", ctx),
 			fmt.Sprintf("NAMESPACE=%s", namespace),
 			fmt.Sprintf("INSTALL_MODE=%s", installMode),

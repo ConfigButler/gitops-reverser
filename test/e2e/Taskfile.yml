@@ -1,0 +1,777 @@
+version: '3'
+
+vars:
+  CTX: '{{.CTX | default "k3d-gitops-reverser-test-e2e"}}'
+  CLUSTER_NAME:
+    sh: |
+      ctx='{{.CTX}}'
+      ctx="${ctx#k3d-}"
+      ctx="${ctx#kind-}"
+      printf '%s' "${ctx}"
+  INSTALL_MODE: '{{.INSTALL_MODE | default "config-dir"}}'
+  INSTALL_NAME: '{{.INSTALL_NAME | default "gitops-reverser"}}'
+  NAMESPACE: '{{.NAMESPACE | default "gitops-reverser"}}'
+  HELM_CHART_SOURCE: '{{.HELM_CHART_SOURCE | default "charts/gitops-reverser"}}'
+  CONTROLLER_CONTAINER: '{{.CONTROLLER_CONTAINER | default "manager"}}'
+  CONTROLLER_DEPLOY_SELECTOR: '{{.CONTROLLER_DEPLOY_SELECTOR | default "app.kubernetes.io/part-of=gitops-reverser"}}'
+  CS: '.stamps/cluster/{{.CTX}}'
+  IS: '.stamps/image'
+  AUDIT_ASSET_SOURCE_DIR: 'test/e2e/cluster/audit'
+  AUDIT_ASSET_DIR: '{{.CS}}/audit'
+  AUDIT_POLICY_SOURCE: '{{.AUDIT_ASSET_SOURCE_DIR}}/policy.yaml'
+  AUDIT_WEBHOOK_BOOTSTRAP_SOURCE: '{{.AUDIT_ASSET_SOURCE_DIR}}/webhook-config.yaml'
+  AUDIT_POLICY_PATH: '{{.AUDIT_ASSET_DIR}}/policy.yaml'
+  AUDIT_WEBHOOK_CONFIG_PATH: '{{.AUDIT_ASSET_DIR}}/webhook-config.yaml'
+  KUBECTL: '{{.KUBECTL | default "kubectl"}}'
+  K3D: '{{.K3D | default "k3d"}}'
+  HELM: '{{.HELM | default "helm"}}'
+  FLUX: '{{.FLUX | default "flux"}}'
+  KUSTOMIZE: '{{.KUSTOMIZE | default "kustomize"}}'
+  CONTAINER_TOOL: '{{.CONTAINER_TOOL | default "docker"}}'
+  TASK_BIN: '{{.TASK_BIN | default "task"}}'
+  E2E_LOCAL_IMAGE: '{{.E2E_LOCAL_IMAGE | default "gitops-reverser:e2e-local"}}'
+  PROJECT_IMAGE:
+    sh: |
+      if [ -n "${PROJECT_IMAGE:-}" ]; then
+        printf '%s' "${PROJECT_IMAGE}"
+      else
+        printf '%s' '{{.E2E_LOCAL_IMAGE}}'
+      fi
+  PROJECT_IMAGE_PROVIDED:
+    sh: |
+      if [ -n "${PROJECT_IMAGE:-}" ] && [ "${PROJECT_IMAGE}" != '{{.E2E_LOCAL_IMAGE}}' ]; then
+        printf 'true'
+      fi
+  PROJECT_IMAGE_REPO:
+    sh: |
+      ref="${PROJECT_IMAGE:-}"
+      if [ -z "${ref}" ]; then
+        ref='{{.E2E_LOCAL_IMAGE}}'
+      fi
+      repo="${ref%:*}"
+      tag="${ref##*:}"
+      if [ "${repo}" = "${tag}" ]; then
+        printf '%s' "${ref}"
+      else
+        printf '%s' "${repo}"
+      fi
+  PROJECT_IMAGE_TAG:
+    sh: |
+      ref="${PROJECT_IMAGE:-}"
+      if [ -z "${ref}" ]; then
+        ref='{{.E2E_LOCAL_IMAGE}}'
+      fi
+      repo="${ref%:*}"
+      tag="${ref##*:}"
+      if [ "${repo}" = "${tag}" ]; then
+        printf 'latest'
+      else
+        printf '%s' "${tag}"
+      fi
+  IMAGE_DELIVERY_MODE: '{{.IMAGE_DELIVERY_MODE | default "load"}}'
+  GITEA_ADMIN_USER: '{{.GITEA_ADMIN_USER | default "giteaadmin"}}'
+  GITEA_ADMIN_PASS: '{{.GITEA_ADMIN_PASS | default "giteapassword123"}}'
+  GITEA_ORG_NAME: '{{.GITEA_ORG_NAME | default "testorg"}}'
+  REPO_NAME: '{{.REPO_NAME | default ""}}'
+  CHECKOUT_DIR: '{{.CHECKOUT_DIR | default ""}}'
+  E2E_GIT_SECRET_HTTP: '{{.E2E_GIT_SECRET_HTTP | default ""}}'
+  E2E_GIT_SECRET_SSH: '{{.E2E_GIT_SECRET_SSH | default ""}}'
+  E2E_GIT_SECRET_INVALID: '{{.E2E_GIT_SECRET_INVALID | default ""}}'
+  GITEA_PORT: '{{.GITEA_PORT | default "13000"}}'
+  PROMETHEUS_PORT: '{{.PROMETHEUS_PORT | default "19090"}}'
+  VALKEY_PORT: '{{.VALKEY_PORT | default "16379"}}'
+  DEFAULT_AUDIT_REDIS_ADDR: '{{.DEFAULT_AUDIT_REDIS_ADDR | default "valkey:6379"}}'
+  E2E_AUDIT_REDIS_ADDR: '{{.E2E_AUDIT_REDIS_ADDR | default "valkey.valkey-e2e.svc.cluster.local:6379"}}'
+  E2E_VALKEY_PASSWORD: '{{.E2E_VALKEY_PASSWORD | default "e2e-valkey-password"}}'
+  E2E_CONTROLLER_SERVICE_CLUSTER_IP: '{{.E2E_CONTROLLER_SERVICE_CLUSTER_IP | default "10.43.200.200"}}'
+  FLUX_NAMESPACE: '{{.FLUX_NAMESPACE | default "flux-system"}}'
+  FLUX_WAIT_TIMEOUT: '{{.FLUX_WAIT_TIMEOUT | default "300s"}}'
+  FLUX_SERVICES_WAIT_TIMEOUT: '{{.FLUX_SERVICES_WAIT_TIMEOUT | default "600s"}}'
+  FLUX_SERVICES_DIR: '{{.FLUX_SERVICES_DIR | default "test/e2e/setup/flux"}}'
+  DEMO_MANIFESTS_DIR: 'test/e2e/setup/demo-only'
+  DEMO_TUNNEL_CREDENTIALS: '{{.DEMO_MANIFESTS_DIR}}/cloudflared-public/tunnel-credentials.yaml'
+  DEMO_PULL_SECRET: '{{.DEMO_MANIFESTS_DIR}}/vote/pull-secret.yaml'
+  LOADTEST_CODE:
+    sh: |
+      kubectl -n vote logs deploy/vote-auth-service --tail=5 2>/dev/null \
+        | grep 'join-code:' | tail -1 | awk '{print $NF}' | cut -d= -f2
+  LOADTEST_USERS: '{{.LOADTEST_USERS | default "200"}}'
+  LOADTEST_RAMP: '{{.LOADTEST_RAMP | default "20s"}}'
+  LOADTEST_BASE_URL: '{{.LOADTEST_BASE_URL | default "https://demo.configbutler.ai"}}'
+  LOADTEST_SESSION: '{{.LOADTEST_SESSION | default "kubecon-2026"}}'
+  LOADTEST_NS: '{{.LOADTEST_NS | default "vote"}}'
+
+tasks:
+  prepare-e2e:
+    desc: Prepare E2E prerequisites for Go tests
+    cmds:
+      - task: install
+      - task: _project-image-ready
+      - task: _image-loaded
+      - task: _controller-deployed
+      - task: _age-key
+      - task: _sops-secret-yaml
+      - task: _sops-secret-applied
+      - task: _webhook-tls-ready
+      - task: _prepare-e2e-ready
+      - task: portforward-ensure
+
+  prepare-e2e-demo:
+    desc: Prepare demo-only prerequisites for talk/demo e2e runs
+    cmds:
+      - task: prepare-e2e
+      - task: _demo-ready
+
+  e2e-gitea-bootstrap:
+    desc: Bootstrap shared Gitea prerequisites for the cluster context
+    cmds:
+      - task: prepare-e2e
+      - task: portforward-ensure
+      - task: _gitea-bootstrap
+
+  e2e-gitea-run-setup:
+    desc: Create active repo, credentials, and checkout for this run
+    cmds:
+      - |
+        [ -n "{{.REPO_NAME}}" ] || {
+          echo "ERROR: REPO_NAME must be set for e2e-gitea-run-setup" >&2
+          exit 2
+        }
+      - task: e2e-gitea-bootstrap
+      - task: portforward-ensure
+      - task: _gitea-run-setup
+
+  portforward-ensure:
+    desc: Ensure port-forwards are running
+    cmds:
+      - task: _cluster-ready
+      - task: _flux-installed
+      - task: _flux-setup-ready
+      - task: _services-ready
+      - |
+        export E2E_KUBECONTEXT="{{.CTX}}"
+        export GITEA_PORT="{{.GITEA_PORT}}"
+        export PROMETHEUS_PORT="{{.PROMETHEUS_PORT}}"
+        export VALKEY_PORT="{{.VALKEY_PORT}}"
+        bash hack/e2e/setup-port-forwards.sh
+
+  install:
+    desc: Install using the configured INSTALL_MODE
+    cmds:
+      - |
+        case "{{.INSTALL_MODE}}" in
+          helm)
+            task install-helm
+            ;;
+          plain-manifests-file)
+            task install-plain-manifests-file
+            ;;
+          config-dir)
+            task install-config-dir
+            ;;
+          *)
+            echo "ERROR: INSTALL_MODE must be one of [config-dir helm plain-manifests-file]" >&2
+            exit 2
+            ;;
+        esac
+
+  install-helm:
+    desc: Install via Helm
+    cmds:
+      - task: _cluster-ready
+      - task: _flux-installed
+      - task: _flux-setup-ready
+      - task: _services-ready
+      - task: helm-sync
+      - task: _install-helm
+
+  install-plain-manifests-file:
+    desc: Install via dist/install.yaml
+    cmds:
+      - task: _cluster-ready
+      - task: _flux-installed
+      - task: _flux-setup-ready
+      - task: _services-ready
+      - task: dist-install
+      - task: _install-plain-manifests-file
+
+  install-config-dir:
+    desc: Install via config directory
+    cmds:
+      - task: _cluster-ready
+      - task: _flux-installed
+      - task: _flux-setup-ready
+      - task: _services-ready
+      - task: manifests
+      - task: _install-config-dir
+
+  test-e2e:
+    desc: Run the full e2e test suite
+    cmds:
+      - |
+        export CTX="{{.CTX}}"
+        export INSTALL_MODE="{{.INSTALL_MODE}}"
+        export NAMESPACE="{{.NAMESPACE}}"
+        export E2E_AGE_KEY_FILE="{{.CS}}/age-key.txt"
+        go test ./test/e2e/ -v -ginkgo.v
+
+  test-image-refresh:
+    desc: Validate the image-refresh dependency chain
+    cmds:
+      - |
+        export CTX="{{.CTX}}"
+        export INSTALL_MODE="{{.INSTALL_MODE}}"
+        export NAMESPACE="{{.NAMESPACE}}"
+        export E2E_AGE_KEY_FILE="{{.CS}}/age-key.txt"
+        go test ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=image-refresh
+
+  test-e2e-quickstart-helm:
+    desc: Run quickstart smoke test with Helm install
+    cmds:
+      - |
+        export CTX="{{.CTX}}"
+        export INSTALL_MODE=helm
+        export NAMESPACE="{{.NAMESPACE}}"
+        export E2E_ENABLE_QUICKSTART_FRAMEWORK=true
+        export E2E_QUICKSTART_MODE=helm
+        export E2E_AGE_KEY_FILE="{{.CS}}/age-key.txt"
+        go test ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=quickstart-framework
+
+  test-e2e-quickstart-manifest:
+    desc: Run quickstart smoke test with manifest install
+    cmds:
+      - |
+        export CTX="{{.CTX}}"
+        export INSTALL_MODE=plain-manifests-file
+        export NAMESPACE="{{.NAMESPACE}}"
+        export E2E_ENABLE_QUICKSTART_FRAMEWORK=true
+        export E2E_QUICKSTART_MODE=plain-manifests-file
+        export E2E_AGE_KEY_FILE="{{.CS}}/age-key.txt"
+        go test ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=quickstart-framework
+
+  test-e2e-audit-redis:
+    desc: Run dedicated audit to Redis enqueue scenario
+    cmds:
+      - |
+        export CTX="{{.CTX}}"
+        export INSTALL_MODE="{{.INSTALL_MODE}}"
+        export NAMESPACE="{{.NAMESPACE}}"
+        export E2E_AGE_KEY_FILE="{{.CS}}/age-key.txt"
+        go test ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=audit-redis
+
+  test-e2e-bi:
+    desc: Run dedicated bi-directional Flux plus gitops-reverser e2e scenario
+    cmds:
+      - |
+        export CTX="{{.CTX}}"
+        export INSTALL_MODE="{{.INSTALL_MODE}}"
+        export NAMESPACE="{{.NAMESPACE}}"
+        export E2E_ENABLE_BI_DIRECTIONAL=true
+        export E2E_AGE_KEY_FILE="{{.CS}}/age-key.txt"
+        go test ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=bi-directional
+
+  test-e2e-demo:
+    desc: Prepare a reusable demo repo and leave demo resources in place
+    cmds:
+      - task: prepare-e2e-demo
+      - rm -rf ".stamps/repos/demo"
+      - |
+        export CTX="{{.CTX}}"
+        export REPO_NAME=demo
+        export INSTALL_MODE="{{.INSTALL_MODE}}"
+        export NAMESPACE="{{.NAMESPACE}}"
+        export E2E_ENABLE_DEMO=true
+        export E2E_AGE_KEY_FILE="{{.CS}}/age-key.txt"
+        export TESTNAMESPACE=vote
+        go test ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=demo
+
+  loadtest:
+    desc: Simulate load against the live quiz demo
+    cmds:
+      - |
+        [ -n "{{.LOADTEST_CODE}}" ] || {
+          echo "ERROR: could not determine join code automatically." >&2
+          echo "Pass it explicitly: task loadtest LOADTEST_CODE=xxxx" >&2
+          exit 1
+        }
+      - |
+        go run ./test/loadtest \
+          --code "{{.LOADTEST_CODE}}" \
+          --users "{{.LOADTEST_USERS}}" \
+          --ramp-duration "{{.LOADTEST_RAMP}}" \
+          --base-url "{{.LOADTEST_BASE_URL}}" \
+          --session "{{.LOADTEST_SESSION}}" \
+          --namespace "{{.LOADTEST_NS}}"
+
+  clean-installs:
+    desc: Clean installed manifests from the current cluster context
+    cmds:
+      - |
+        CTX="{{.CTX}}" KUBECTL="{{.KUBECTL}}" bash hack/cleanup-installs.sh
+
+  clean-port-forwards:
+    desc: Stop all port-forwards
+    cmds:
+      - echo "Stopping port-forwards..."
+      - pkill -f "kubectl.*port-forward.*{{.GITEA_PORT}}" 2>/dev/null || true
+      - pkill -f "kubectl.*port-forward.*{{.PROMETHEUS_PORT}}" 2>/dev/null || true
+      - pkill -f "kubectl.*port-forward.*{{.VALKEY_PORT}}" 2>/dev/null || true
+      - echo "Port-forwards stopped"
+
+  clean-cluster:
+    desc: Tear down the E2E cluster used for tests and remove its stamps
+    cmds:
+      - |
+        if {{.K3D}} cluster list 2>/dev/null | awk '{print $1}' | grep -q "^{{.CLUSTER_NAME}}$"; then
+          echo "Deleting k3d cluster '{{.CLUSTER_NAME}}'"
+          {{.K3D}} cluster delete "{{.CLUSTER_NAME}}"
+        else
+          echo "k3d cluster '{{.CLUSTER_NAME}}' does not exist; skipping cleanup"
+        fi
+      - rm -rf "{{.CS}}"
+
+  _cluster-ready:
+    method: timestamp
+    sources:
+      - test/e2e/cluster/start-cluster.sh
+      - '{{.AUDIT_POLICY_SOURCE}}'
+      - '{{.AUDIT_WEBHOOK_BOOTSTRAP_SOURCE}}'
+    generates:
+      - '{{.CS}}/ready'
+    status:
+      - test -f "{{.CS}}/ready"
+      - test -f "{{.AUDIT_POLICY_PATH}}"
+      - test -f "{{.AUDIT_WEBHOOK_CONFIG_PATH}}"
+    cmds:
+      - mkdir -p "{{.CS}}" "{{.AUDIT_ASSET_DIR}}"
+      - cp "{{.AUDIT_POLICY_SOURCE}}" "{{.AUDIT_POLICY_PATH}}"
+      - cp "{{.AUDIT_WEBHOOK_BOOTSTRAP_SOURCE}}" "{{.AUDIT_WEBHOOK_CONFIG_PATH}}"
+      - |
+        export CLUSTER_NAME="{{.CLUSTER_NAME}}"
+        export AUDIT_DIR_REL="{{.AUDIT_ASSET_DIR}}"
+        bash test/e2e/cluster/start-cluster.sh
+        kubectl --context "{{.CTX}}" get ns >/dev/null
+        touch "{{.CS}}/ready"
+
+  _flux-installed:
+    method: timestamp
+    sources:
+      - '{{.CS}}/ready'
+    generates:
+      - '{{.CS}}/flux.installed'
+    status:
+      - test -f "{{.CS}}/flux.installed"
+    cmds:
+      - task: _cluster-ready
+      - |
+        {{.FLUX}} install --context "{{.CTX}}" --namespace "{{.FLUX_NAMESPACE}}"
+        kubectl --context "{{.CTX}}" -n "{{.FLUX_NAMESPACE}}" wait \
+          deployment \
+          -l app.kubernetes.io/part-of=flux \
+          --for=condition=Available \
+          --timeout="{{.FLUX_WAIT_TIMEOUT}}"
+        kubectl --context "{{.CTX}}" wait --for=condition=Established \
+          crd/helmrepositories.source.toolkit.fluxcd.io \
+          crd/helmreleases.helm.toolkit.fluxcd.io \
+          --timeout="{{.FLUX_WAIT_TIMEOUT}}"
+        {{.FLUX}} version --client > "{{.CS}}/flux.installed"
+
+  _flux-setup-ready:
+    method: timestamp
+    sources:
+      - '{{.CS}}/flux.installed'
+      - '{{.FLUX_SERVICES_DIR}}/**/*'
+    generates:
+      - '{{.CS}}/flux-setup.ready'
+    status:
+      - test -f "{{.CS}}/flux-setup.ready"
+    cmds:
+      - task: _flux-installed
+      - |
+        kubectl --context "{{.CTX}}" apply -k "{{.FLUX_SERVICES_DIR}}"
+        CTX="{{.CTX}}" FLUX_SERVICES_WAIT_TIMEOUT="{{.FLUX_SERVICES_WAIT_TIMEOUT}}" \
+          bash hack/e2e/wait-flux-services.sh
+        touch "{{.CS}}/flux-setup.ready"
+
+  _services-ready:
+    method: timestamp
+    sources:
+      - '{{.CS}}/flux-setup.ready'
+      - 'test/e2e/setup/manifests/**/*.yaml'
+    generates:
+      - '{{.CS}}/services.ready'
+    status:
+      - test -f "{{.CS}}/services.ready"
+    cmds:
+      - task: _flux-setup-ready
+      - |
+        kubectl --context "{{.CTX}}" wait --for=condition=Established \
+          crd/prometheuses.monitoring.coreos.com \
+          crd/servicemonitors.monitoring.coreos.com \
+          --timeout=180s
+        kubectl --context "{{.CTX}}" apply -k test/e2e/setup/manifests
+        touch "{{.CS}}/services.ready"
+
+  _controller-image-id:
+    method: timestamp
+    sources:
+      - cmd/**/*.go
+      - internal/**/*.go
+      - api/**/*.go
+      - go.mod
+      - go.sum
+      - Dockerfile
+      - exclude: cmd/**/*_test.go
+      - exclude: internal/**/*_test.go
+      - exclude: api/**/*_test.go
+      - exclude: cmd/**/zz_generated.deepcopy.go
+      - exclude: internal/**/zz_generated.deepcopy.go
+      - exclude: api/**/zz_generated.deepcopy.go
+    generates:
+      - '{{.IS}}/controller.id'
+    status:
+      - test -f "{{.IS}}/controller.id"
+    cmds:
+      - mkdir -p "{{.IS}}"
+      - |
+        {{.CONTAINER_TOOL}} build \
+          --build-arg TARGETOS="$(go env GOOS)" \
+          --build-arg TARGETARCH="$(go env GOARCH)" \
+          -t "{{.E2E_LOCAL_IMAGE}}" \
+          .
+        {{.CONTAINER_TOOL}} inspect --format='{{"{{"}}.Id{{"}}"}}' "{{.E2E_LOCAL_IMAGE}}" > "{{.IS}}/controller.id"
+
+  _project-image-ready-local:
+    method: timestamp
+    sources:
+      - '{{.IS}}/controller.id'
+    generates:
+      - '{{.IS}}/project-image.ready'
+    status:
+      - test -f "{{.IS}}/project-image.ready"
+      - test "$(<"{{.IS}}/project-image.ready")" = "{{.PROJECT_IMAGE}}"
+    cmds:
+      - task: _controller-image-id
+      - mkdir -p "{{.IS}}"
+      - printf '%s\n' "{{.PROJECT_IMAGE}}" > "{{.IS}}/project-image.ready"
+
+  _project-image-ready-provided:
+    status:
+      - test -f "{{.IS}}/project-image.ready"
+      - test "$(<"{{.IS}}/project-image.ready")" = "{{.PROJECT_IMAGE}}"
+      - '{{.CONTAINER_TOOL}} image inspect "{{.PROJECT_IMAGE}}" >/dev/null 2>&1'
+    cmds:
+      - mkdir -p "{{.IS}}"
+      - |
+        if ! {{.CONTAINER_TOOL}} image inspect "{{.PROJECT_IMAGE}}" >/dev/null 2>&1; then
+          echo "Pulling PROJECT_IMAGE={{.PROJECT_IMAGE}}"
+          {{.CONTAINER_TOOL}} pull "{{.PROJECT_IMAGE}}"
+        fi
+        printf '%s\n' "{{.PROJECT_IMAGE}}" > "{{.IS}}/project-image.ready"
+
+  _project-image-ready:
+    cmds:
+      - |
+        if [ -n "{{.PROJECT_IMAGE_PROVIDED}}" ]; then
+          task _project-image-ready-provided
+        else
+          task _controller-image-id
+          task _project-image-ready-local
+        fi
+
+  _image-loaded:
+    method: timestamp
+    sources:
+      - '{{.CS}}/ready'
+      - '{{.IS}}/project-image.ready'
+    generates:
+      - '{{.CS}}/image.loaded'
+    status:
+      - test -f "{{.CS}}/image.loaded"
+    cmds:
+      - task: _cluster-ready
+      - mkdir -p "{{.CS}}"
+      - |
+        CTX="{{.CTX}}" CLUSTER_NAME="{{.CLUSTER_NAME}}" PROJECT_IMAGE="{{.PROJECT_IMAGE}}" \
+          PROJECT_IMAGE_PROVIDED="{{.PROJECT_IMAGE_PROVIDED}}" \
+          IMAGE_DELIVERY_MODE="{{.IMAGE_DELIVERY_MODE}}" \
+          CONTROLLER_ID_TASK="_controller-image-id" TASK_BIN="{{.TASK_BIN}}" \
+          CONTAINER_TOOL="{{.CONTAINER_TOOL}}" K3D="{{.K3D}}" STAMP_FILE="{{.CS}}/image.loaded" \
+          bash hack/e2e/load-image.sh
+
+  _install-helm:
+    method: timestamp
+    sources:
+      - '{{.CS}}/services.ready'
+      - charts/gitops-reverser/Chart.yaml
+      - charts/gitops-reverser/values.yaml
+      - charts/gitops-reverser/templates/**
+      - charts/gitops-reverser/crds/*.yaml
+      - charts/gitops-reverser/config/role.yaml
+    generates:
+      - '{{.CS}}/{{.NAMESPACE}}/helm/install.yaml'
+    status:
+      - test -f "{{.CS}}/{{.NAMESPACE}}/helm/install.yaml"
+    cmds:
+      - |
+        CTX="{{.CTX}}" KUBECTL="{{.KUBECTL}}" bash hack/cleanup-installs.sh
+        mkdir -p "{{.CS}}/{{.NAMESPACE}}/helm"
+        skip_crds_arg=""
+        if kubectl --context "{{.CTX}}" get crd \
+          gitproviders.configbutler.ai \
+          gittargets.configbutler.ai \
+          watchrules.configbutler.ai \
+          clusterwatchrules.configbutler.ai >/dev/null 2>&1; then
+          skip_crds_arg="--skip-crds"
+        fi
+        CTX="{{.CTX}}" NAMESPACE="{{.NAMESPACE}}" E2E_VALKEY_PASSWORD="{{.E2E_VALKEY_PASSWORD}}" \
+          bash hack/e2e/ensure-valkey-auth.sh
+        {{.HELM}} --kube-context "{{.CTX}}" upgrade --install "{{.INSTALL_NAME}}" "{{.HELM_CHART_SOURCE}}" \
+          --namespace "{{.NAMESPACE}}" \
+          --create-namespace \
+          --set-string image.repository="{{.PROJECT_IMAGE_REPO}}" \
+          --set-string image.tag="{{.PROJECT_IMAGE_TAG}}" \
+          --set queue.redis.addr="{{.E2E_AUDIT_REDIS_ADDR}}" \
+          --set queue.redis.auth.existingSecret=valkey-auth \
+          --set queue.redis.auth.existingSecretKey=password \
+          --set service.clusterIP="{{.E2E_CONTROLLER_SERVICE_CLUSTER_IP}}" \
+          ${skip_crds_arg}
+        tmp_manifest="{{.CS}}/{{.NAMESPACE}}/helm/.install.yaml.tmp"
+        {{.HELM}} --kube-context "{{.CTX}}" get manifest "{{.INSTALL_NAME}}" \
+          --namespace "{{.NAMESPACE}}" > "${tmp_manifest}"
+        if [ -f "{{.CS}}/{{.NAMESPACE}}/helm/install.yaml" ] && cmp -s "${tmp_manifest}" "{{.CS}}/{{.NAMESPACE}}/helm/install.yaml"; then
+          rm -f "${tmp_manifest}"
+        else
+          mv "${tmp_manifest}" "{{.CS}}/{{.NAMESPACE}}/helm/install.yaml"
+        fi
+
+  _install-config-dir:
+    method: timestamp
+    sources:
+      - '{{.CS}}/services.ready'
+      - config/**/*
+    generates:
+      - '{{.CS}}/{{.NAMESPACE}}/config-dir/install.yaml'
+    status:
+      - test -f "{{.CS}}/{{.NAMESPACE}}/config-dir/install.yaml"
+    cmds:
+      - |
+        CTX="{{.CTX}}" KUBECTL="{{.KUBECTL}}" bash hack/cleanup-installs.sh
+        mkdir -p "{{.CS}}/{{.NAMESPACE}}/config-dir"
+        CTX="{{.CTX}}" NAMESPACE="{{.NAMESPACE}}" PROJECT_IMAGE="{{.PROJECT_IMAGE}}" \
+          E2E_VALKEY_PASSWORD="{{.E2E_VALKEY_PASSWORD}}" \
+          KUSTOMIZE="{{.KUSTOMIZE}}" KUBECTL="{{.KUBECTL}}" \
+          STAMP_FILE="{{.CS}}/{{.NAMESPACE}}/config-dir/install.yaml" \
+          bash hack/e2e/install-config-dir.sh
+
+  _install-plain-manifests-file:
+    method: timestamp
+    sources:
+      - '{{.CS}}/services.ready'
+      - dist/install.yaml
+    generates:
+      - '{{.CS}}/{{.NAMESPACE}}/plain-manifests-file/install.yaml'
+    status:
+      - test -f "{{.CS}}/{{.NAMESPACE}}/plain-manifests-file/install.yaml"
+    cmds:
+      - |
+        CTX="{{.CTX}}" KUBECTL="{{.KUBECTL}}" bash hack/cleanup-installs.sh
+        mkdir -p "{{.CS}}/{{.NAMESPACE}}/plain-manifests-file"
+        CTX="{{.CTX}}" NAMESPACE="{{.NAMESPACE}}" E2E_VALKEY_PASSWORD="{{.E2E_VALKEY_PASSWORD}}" \
+          bash hack/e2e/ensure-valkey-auth.sh
+        CTX="{{.CTX}}" NAMESPACE="{{.NAMESPACE}}" PROJECT_IMAGE="{{.PROJECT_IMAGE}}" \
+          DEFAULT_AUDIT_REDIS_ADDR="{{.DEFAULT_AUDIT_REDIS_ADDR}}" \
+          E2E_AUDIT_REDIS_ADDR="{{.E2E_AUDIT_REDIS_ADDR}}" \
+          E2E_CONTROLLER_SERVICE_CLUSTER_IP="{{.E2E_CONTROLLER_SERVICE_CLUSTER_IP}}" \
+          KUSTOMIZE="{{.KUSTOMIZE}}" KUBECTL="{{.KUBECTL}}" \
+          STAMP_FILE="{{.CS}}/{{.NAMESPACE}}/plain-manifests-file/install.yaml" \
+          bash hack/e2e/install-plain-manifests.sh
+
+  _controller-deployed:
+    method: timestamp
+    sources:
+      - '{{.CS}}/{{.NAMESPACE}}/{{.INSTALL_MODE}}/install.yaml'
+      - '{{.CS}}/image.loaded'
+    generates:
+      - '{{.CS}}/{{.NAMESPACE}}/controller.deployed'
+    status:
+      - test -f "{{.CS}}/{{.NAMESPACE}}/controller.deployed"
+    cmds:
+      - mkdir -p "{{.CS}}/{{.NAMESPACE}}"
+      - |
+        CTX="{{.CTX}}" NAMESPACE="{{.NAMESPACE}}" PROJECT_IMAGE="{{.PROJECT_IMAGE}}" \
+          IMAGE_DELIVERY_MODE="{{.IMAGE_DELIVERY_MODE}}" \
+          IMAGE_PULL_SECRET_NAME="${IMAGE_PULL_SECRET_NAME:-}" \
+          IMAGE_PULL_SECRET_REGISTRY="${IMAGE_PULL_SECRET_REGISTRY:-}" \
+          IMAGE_PULL_SECRET_USERNAME="${IMAGE_PULL_SECRET_USERNAME:-}" \
+          IMAGE_PULL_SECRET_PASSWORD="${IMAGE_PULL_SECRET_PASSWORD:-}" \
+          CONTROLLER_CONTAINER="{{.CONTROLLER_CONTAINER}}" \
+          CONTROLLER_DEPLOY_SELECTOR="{{.CONTROLLER_DEPLOY_SELECTOR}}" \
+          bash hack/e2e/deploy-controller.sh
+        cat "{{.CS}}/image.loaded" > "{{.CS}}/{{.NAMESPACE}}/controller.deployed"
+
+  _webhook-tls-ready:
+    method: timestamp
+    sources:
+      - '{{.CS}}/{{.NAMESPACE}}/controller.deployed'
+    generates:
+      - '{{.CS}}/{{.NAMESPACE}}/webhook-tls.ready'
+    status:
+      - test -f "{{.CS}}/{{.NAMESPACE}}/webhook-tls.ready"
+    cmds:
+      - |
+        CTX="{{.CTX}}" CLUSTER_NAME="{{.CLUSTER_NAME}}" NAMESPACE="{{.NAMESPACE}}" \
+          WEBHOOK_CONFIG="{{.AUDIT_WEBHOOK_CONFIG_PATH}}" \
+          bash hack/e2e/inject-webhook-tls.sh
+        touch "{{.CS}}/{{.NAMESPACE}}/webhook-tls.ready"
+
+  _age-key:
+    method: timestamp
+    sources:
+      - test/e2e/tools/gen-age-key/main.go
+    generates:
+      - '{{.CS}}/age-key.txt'
+    status:
+      - test -f "{{.CS}}/age-key.txt"
+    cmds:
+      - mkdir -p "{{.CS}}"
+      - |
+        go run ./test/e2e/tools/gen-age-key --key-file "{{.CS}}/age-key.txt"
+
+  _sops-secret-yaml:
+    method: timestamp
+    sources:
+      - '{{.CS}}/age-key.txt'
+      - test/e2e/tools/gen-age-key/main.go
+    generates:
+      - '{{.CS}}/{{.NAMESPACE}}/sops-secret.yaml'
+    status:
+      - test -f "{{.CS}}/{{.NAMESPACE}}/sops-secret.yaml"
+    cmds:
+      - mkdir -p "{{.CS}}/{{.NAMESPACE}}"
+      - |
+        tmp="{{.CS}}/{{.NAMESPACE}}/sops-secret.yaml.tmp"
+        go run ./test/e2e/tools/gen-age-key \
+          --key-file "{{.CS}}/age-key.txt" \
+          --secret-file "${tmp}" \
+          --namespace "{{.NAMESPACE}}" \
+          --secret-name sops-age-key
+        if [ -f "{{.CS}}/{{.NAMESPACE}}/sops-secret.yaml" ] && cmp -s "${tmp}" "{{.CS}}/{{.NAMESPACE}}/sops-secret.yaml"; then
+          rm -f "${tmp}"
+        else
+          mv "${tmp}" "{{.CS}}/{{.NAMESPACE}}/sops-secret.yaml"
+        fi
+
+  _sops-secret-applied:
+    method: timestamp
+    sources:
+      - '{{.CS}}/{{.NAMESPACE}}/sops-secret.yaml'
+      - '{{.CS}}/{{.NAMESPACE}}/{{.INSTALL_MODE}}/install.yaml'
+    generates:
+      - '{{.CS}}/{{.NAMESPACE}}/sops-secret.applied'
+    status:
+      - test -f "{{.CS}}/{{.NAMESPACE}}/sops-secret.applied"
+    cmds:
+      - |
+        kubectl --context "{{.CTX}}" apply -f "{{.CS}}/{{.NAMESPACE}}/sops-secret.yaml"
+        touch "{{.CS}}/{{.NAMESPACE}}/sops-secret.applied"
+
+  _prepare-e2e-ready:
+    method: timestamp
+    sources:
+      - '{{.CS}}/{{.NAMESPACE}}/{{.INSTALL_MODE}}/install.yaml'
+      - '{{.CS}}/image.loaded'
+      - '{{.CS}}/{{.NAMESPACE}}/controller.deployed'
+      - '{{.CS}}/{{.NAMESPACE}}/webhook-tls.ready'
+      - '{{.CS}}/{{.NAMESPACE}}/sops-secret.applied'
+    generates:
+      - '{{.CS}}/{{.NAMESPACE}}/prepare-e2e.ready'
+    status:
+      - test -f "{{.CS}}/{{.NAMESPACE}}/prepare-e2e.ready"
+    cmds:
+      - mkdir -p "{{.CS}}/{{.NAMESPACE}}"
+      - touch "{{.CS}}/{{.NAMESPACE}}/prepare-e2e.ready"
+
+  _gitea-bootstrap:
+    method: timestamp
+    sources:
+      - '{{.CS}}/{{.NAMESPACE}}/prepare-e2e.ready'
+      - hack/e2e/gitea-bootstrap.sh
+    generates:
+      - '{{.CS}}/gitea/bootstrap/org-{{.GITEA_ORG_NAME}}.ready'
+    status:
+      - test -f "{{.CS}}/gitea/bootstrap/org-{{.GITEA_ORG_NAME}}.ready"
+    cmds:
+      - mkdir -p "{{.CS}}/gitea/bootstrap"
+      - |
+        export BOOTSTRAP_DIR="{{.CS}}/gitea/bootstrap"
+        export API_URL="http://localhost:{{.GITEA_PORT}}/api/v1"
+        export GITEA_ADMIN_USER="{{.GITEA_ADMIN_USER}}"
+        export GITEA_ADMIN_PASS="{{.GITEA_ADMIN_PASS}}"
+        export ORG_NAME="{{.GITEA_ORG_NAME}}"
+        bash hack/e2e/gitea-bootstrap.sh
+        test -f "{{.CS}}/gitea/bootstrap/org-{{.GITEA_ORG_NAME}}.ready"
+
+  _gitea-run-setup:
+    method: timestamp
+    sources:
+      - '{{.CS}}/gitea/bootstrap/org-{{.GITEA_ORG_NAME}}.ready'
+      - hack/e2e/gitea-run-setup.sh
+    generates:
+      - '{{.CS}}/{{.NAMESPACE}}/git-{{.REPO_NAME}}/checkout.ready'
+    status:
+      - test -f "{{.CS}}/{{.NAMESPACE}}/git-{{.REPO_NAME}}/checkout.ready"
+    cmds:
+      - mkdir -p "{{.CS}}/{{.NAMESPACE}}/git-{{.REPO_NAME}}"
+      - |
+        export CTX="{{.CTX}}"
+        export CS="{{.CS}}"
+        export NAMESPACE="{{.NAMESPACE}}"
+        export REPO_NAME="{{.REPO_NAME}}"
+        export CHECKOUT_DIR="{{.CHECKOUT_DIR}}"
+        export API_URL="http://localhost:{{.GITEA_PORT}}/api/v1"
+        export GITEA_ADMIN_USER="{{.GITEA_ADMIN_USER}}"
+        export GITEA_ADMIN_PASS="{{.GITEA_ADMIN_PASS}}"
+        export ORG_NAME="{{.GITEA_ORG_NAME}}"
+        export E2E_GIT_SECRET_HTTP="{{.E2E_GIT_SECRET_HTTP}}"
+        export E2E_GIT_SECRET_SSH="{{.E2E_GIT_SECRET_SSH}}"
+        export E2E_GIT_SECRET_INVALID="{{.E2E_GIT_SECRET_INVALID}}"
+        bash hack/e2e/gitea-run-setup.sh
+        test -f "{{.CS}}/{{.NAMESPACE}}/git-{{.REPO_NAME}}/checkout.ready"
+
+  _demo-ready:
+    method: timestamp
+    sources:
+      - '{{.CS}}/services.ready'
+      - '{{.CS}}/{{.NAMESPACE}}/prepare-e2e.ready'
+      - '{{.DEMO_MANIFESTS_DIR}}/**/*.yaml'
+    generates:
+      - '{{.CS}}/demo.ready'
+    status:
+      - test -f "{{.CS}}/demo.ready"
+    cmds:
+      - |
+        [ -f "{{.DEMO_TUNNEL_CREDENTIALS}}" ] || {
+          echo "ERROR: missing required demo tunnel credentials file '{{.DEMO_TUNNEL_CREDENTIALS}}'" >&2
+          echo "Create it from '{{.DEMO_TUNNEL_CREDENTIALS}}.example' and set stringData.token before running this target." >&2
+          exit 1
+        }
+        [ -f "{{.DEMO_PULL_SECRET}}" ] || {
+          echo "ERROR: missing required demo image pull secret file '{{.DEMO_PULL_SECRET}}'" >&2
+          echo "Create it from '{{.DEMO_PULL_SECRET}}.example' before running this target." >&2
+          exit 1
+        }
+        kubectl --context "{{.CTX}}" apply -f "{{.DEMO_MANIFESTS_DIR}}/vote/ns.yaml"
+        kubectl --context "{{.CTX}}" apply -f "{{.DEMO_MANIFESTS_DIR}}/cloudflared-public/ns.yaml"
+        kubectl --context "{{.CTX}}" wait --for=jsonpath='{.status.phase}'=Active \
+          namespace/vote namespace/cloudflared-public --timeout=120s
+        kubectl --context "{{.CTX}}" apply -f "{{.DEMO_MANIFESTS_DIR}}/vote/crds"
+        kubectl --context "{{.CTX}}" wait --for=condition=Established \
+          crd/quizsessions.examples.configbutler.ai \
+          crd/quizsubmissions.examples.configbutler.ai \
+          --timeout=180s
+        kubectl --context "{{.CTX}}" apply -f "{{.DEMO_MANIFESTS_DIR}}/podinfo-kro-template.yaml"
+        kubectl --context "{{.CTX}}" wait --for=condition=Ready \
+          resourcegraphdefinition/podinfo-app --timeout=120s
+        kubectl --context "{{.CTX}}" apply -k "{{.DEMO_MANIFESTS_DIR}}"
+        touch "{{.CS}}/demo.ready"

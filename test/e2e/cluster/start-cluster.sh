@@ -249,7 +249,7 @@ main() {
         echo "Refusing to auto-recreate it because cluster-scoped stamps may now be inconsistent." >&2
         echo "" >&2
         echo "Cleanup and retry:" >&2
-        echo "  make clean-cluster" >&2
+        echo "  task clean-cluster" >&2
         echo "or:" >&2
         echo "  k3d cluster delete ${CLUSTER_NAME}" >&2
         echo "  rm -rf .stamps/cluster/$(cluster_context_name)" >&2

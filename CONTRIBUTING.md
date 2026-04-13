@@ -12,15 +12,15 @@ See [`.devcontainer/README.md`](.devcontainer/README.md) for setup instructions.
 ## Before submitting a PR
 
 ```bash
-make lint      # must pass
-make test      # must pass
-make test-e2e  # must pass (requires Docker running)
+task lint      # must pass
+task test      # must pass
+task test-e2e  # must pass (requires Docker running)
 ```
 
 ## Unit tests
 
 ```bash
-make test
+task test
 ```
 
 This regenerates manifests and codegen, runs `go fmt` and `go vet`, downloads envtest
@@ -40,7 +40,7 @@ go test ./internal/git -run TestName -v
 ## E2E tests
 
 ```bash
-make test-e2e
+task test-e2e
 ```
 
 E2E runs against a real k3d cluster with Gitea and Prometheus. The cluster is
@@ -50,7 +50,7 @@ Tests are written to append to existing state rather than require a clean slate.
 For deeper debugging, see [`test/e2e/E2E_DEBUGGING.md`](test/e2e/E2E_DEBUGGING.md).
 
 **Troubleshooting:**
-- envtest errors: run `make setup-envtest` then retry
+- envtest errors: run `task setup-envtest` then retry
 - Docker errors: ensure the Docker daemon is running
 - Permission issues: see [`docs/ci/go-module-permissions.md`](docs/ci/go-module-permissions.md)
 - Windows: see [`docs/ci/windows-devcontainer.md`](docs/ci/windows-devcontainer.md)

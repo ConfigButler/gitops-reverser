@@ -198,9 +198,9 @@ This project includes a DevContainer for consistent development environments.
 - Windows: see [`docs/ci/windows-devcontainer.md`](docs/ci/windows-devcontainer.md).
 
 ```bash
-make test
-make test-e2e
-make lint
+task test
+task test-e2e
+task lint
 ```
 
 ## Contributing

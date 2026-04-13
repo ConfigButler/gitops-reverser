@@ -132,8 +132,8 @@ func newQuickstartFrameworkRun() quickstartFrameworkRun {
 	repoName := strings.TrimSpace(os.Getenv("E2E_REPO_NAME"))
 	checkoutDir := strings.TrimSpace(os.Getenv("E2E_CHECKOUT_DIR"))
 
-	Expect(repoName).NotTo(BeEmpty(), "E2E_REPO_NAME must be set by the suite (make e2e-gitea-run-setup)")
-	Expect(checkoutDir).NotTo(BeEmpty(), "E2E_CHECKOUT_DIR must be set by the suite (make e2e-gitea-run-setup)")
+	Expect(repoName).NotTo(BeEmpty(), "E2E_REPO_NAME must be set by the suite (task e2e-gitea-run-setup)")
+	Expect(checkoutDir).NotTo(BeEmpty(), "E2E_CHECKOUT_DIR must be set by the suite (task e2e-gitea-run-setup)")
 
 	return quickstartFrameworkRun{
 		mode:            mode,
@@ -150,7 +150,7 @@ func newQuickstartFrameworkRun() quickstartFrameworkRun {
 }
 
 func (r *quickstartFrameworkRun) setupGiteaRepository() {
-	// Repo + creds + checkout are prepared by the suite (e2e_suite_test.go) via `make e2e-gitea-run-setup`.
+	// Repo + creds + checkout are prepared by the suite (e2e_suite_test.go) via `task e2e-gitea-run-setup`.
 	// Keep this method for readability and assert the checkout exists for developer-friendly failures.
 	_, err := os.Stat(filepath.Join(r.checkoutDir, ".git"))
 	Expect(err).NotTo(HaveOccurred(), "expected checkout to exist at E2E_CHECKOUT_DIR")
