@@ -1,17 +1,15 @@
+---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingWebhookConfiguration
 metadata:
-  annotations:
-    cert-manager.io/inject-ca-from: sut/gitops-reverser-admission-server-cert
-  name: gitops-reverser-validating-webhook-configuration
+  name: validating-webhook-configuration
 webhooks:
 - admissionReviewVersions:
   - v1
   clientConfig:
     service:
-      name: gitops-reverser-service
-      namespace: sut
-      port: 9443
+      name: webhook-service
+      namespace: system
       path: /validate-configbutler-ai-v1alpha1-gittarget
   failurePolicy: Fail
   name: vgittarget.kb.io

@@ -11,6 +11,7 @@ RUN apt-get update \
     git \
     curl \
     ca-certificates \
+    bash-completion \
     vim \
     less \
     jq \
@@ -39,7 +40,8 @@ ENV KUBECTL_VERSION=v1.35.3 \
     GOLANGCI_LINT_VERSION=v2.11.4 \
     HELM_VERSION=v4.1.4 \
     K3D_VERSION=v5.8.3 \
-    FLUX_VERSION=2.8.5
+    FLUX_VERSION=2.8.5 \
+    TASK_VERSION=v3.49.1
 
 # Fail early on unsupported architectures instead of producing a partial image.
 RUN test "$(dpkg --print-architecture)" = "amd64" \
@@ -77,6 +79,27 @@ RUN curl -fsSL -o /usr/local/bin/k3d "https://github.com/k3d-io/k3d/releases/dow
 RUN curl -fsSL "https://github.com/fluxcd/flux2/releases/download/v${FLUX_VERSION}/flux_${FLUX_VERSION}_linux_amd64.tar.gz" \
     | tar -xzO flux > /usr/local/bin/flux \
     && chmod +x /usr/local/bin/flux
+
+# Install Task
+RUN curl -fsSL "https://github.com/go-task/task/releases/download/${TASK_VERSION}/task_linux_amd64.tar.gz" \
+    | tar -xzO task > /usr/local/bin/task \
+    && chmod +x /usr/local/bin/task
+
+# Enable bash completion and auto-load Task completions for interactive shells.
+RUN printf '%s\n' \
+    '' \
+    '# Enable bash completion and Task completions in interactive shells.' \
+    'if ! shopt -oq posix; then' \
+    '  if [ -f /usr/share/bash-completion/bash_completion ]; then' \
+    '    . /usr/share/bash-completion/bash_completion' \
+    '  elif [ -f /etc/bash_completion ]; then' \
+    '    . /etc/bash_completion' \
+    '  fi' \
+    '  if command -v task >/dev/null 2>&1 && ! complete -p task >/dev/null 2>&1; then' \
+    '    eval "$(task --completion bash)"' \
+    '  fi' \
+    'fi' \
+    >> /etc/bash.bashrc
 
 # Set working directory
 WORKDIR /workspaces

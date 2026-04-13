@@ -34,6 +34,8 @@ If `ssh-add -L` shows no keys, commit signing inside the devcontainer will fail.
 go version
 kubectl version --client
 golangci-lint version
+task --version
+bash -ic 'complete -p task >/dev/null && echo task completion ok'
 docker version
 git config --get gpg.format
 git config --get user.signingkey

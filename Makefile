@@ -64,6 +64,8 @@ manifests: $(MANIFEST_OUTPUTS) ## Generate WebhookConfiguration, ClusterRole and
 $(MANIFEST_OUTPUTS) &: $$(MANIFEST_INPUTS)
 	@rm -f config/crd/bases/*.yaml config/rbac/role.yaml config/webhook/manifests.yaml
 	$(CONTROLLER_GEN) $(CONTROLLER_GEN_ARGS)
+	@mkdir -p config/crd/bases config/rbac config/webhook
+	@touch $(MANIFEST_OUTPUTS)
 
 HELM_CRD_OUTPUTS := $(patsubst config/crd/bases/%,charts/gitops-reverser/crds/%,$(CRD_BASE_OUTPUTS))
 HELM_SYNC_OUTPUTS := $(HELM_CRD_OUTPUTS) \
@@ -356,7 +358,8 @@ $(AUDIT_POLICY_PATH): $(AUDIT_POLICY_SOURCE) | $(CS)/audit
 $(AUDIT_WEBHOOK_CONFIG_PATH): $(AUDIT_WEBHOOK_BOOTSTRAP_SOURCE) | $(CS)/audit
 	cp "$(AUDIT_WEBHOOK_BOOTSTRAP_SOURCE)" "$@"
 
-$(CS)/ready: test/e2e/cluster/start-cluster.sh $(AUDIT_POLICY_PATH) $(AUDIT_WEBHOOK_CONFIG_PATH) | $(CS)
+$(CS)/ready: test/e2e/cluster/start-cluster.sh $(AUDIT_POLICY_SOURCE) $(AUDIT_WEBHOOK_BOOTSTRAP_SOURCE) \
+	| $(AUDIT_POLICY_PATH) $(AUDIT_WEBHOOK_CONFIG_PATH) $(CS)
 	export CLUSTER_NAME=$(CLUSTER_NAME)
 	export AUDIT_DIR_REL=$(AUDIT_ASSET_DIR)
 	bash test/e2e/cluster/start-cluster.sh
@@ -424,17 +427,20 @@ $(CS)/demo.ready: $(CS)/services.ready $(CS)/$(NAMESPACE)/prepare-e2e.ready $$(D
 	touch $@
 
 # Step 1: Generate age key file — no cluster/namespace dependency; safe to run before installation.
-$(CS)/age-key.txt: Makefile test/e2e/tools/gen-age-key/main.go | $(CS)
+$(CS)/age-key.txt: test/e2e/tools/gen-age-key/main.go | $(CS)
 	go run ./test/e2e/tools/gen-age-key \
 		--key-file $@
 
 # Step 2: Derive Kubernetes Secret manifest from the key file — still no cluster dependency.
-$(CS)/$(NAMESPACE)/sops-secret.yaml: $(CS)/age-key.txt Makefile | $(CS)/$(NAMESPACE)
+# Uses compare-and-replace so the mtime stays stable when the key hasn't changed.
+$(CS)/$(NAMESPACE)/sops-secret.yaml: $(CS)/age-key.txt test/e2e/tools/gen-age-key/main.go | $(CS)/$(NAMESPACE)
+	tmp=$@.tmp
 	go run ./test/e2e/tools/gen-age-key \
 		--key-file $(CS)/age-key.txt \
-		--secret-file $@ \
+		--secret-file $$tmp \
 		--namespace $(NAMESPACE) \
 		--secret-name sops-age-key
+	if [ -f "$@" ] && cmp -s "$$tmp" "$@"; then rm -f "$$tmp"; else mv "$$tmp" "$@"; fi
 
 # Step 3: Apply the secret into the namespace — requires the namespace to already exist.
 # Explicit dep on install.yaml ensures the namespace is created before kubectl apply.
