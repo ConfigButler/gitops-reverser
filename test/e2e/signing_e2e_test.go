@@ -382,7 +382,10 @@ func extractSSHSigBlock(commitRaw string) string {
 func removeGpgsigHeader(commitRaw string) string {
 	var out strings.Builder
 	skip := false
-	for _, line := range strings.Split(commitRaw, "\n") {
+	for _, segment := range strings.SplitAfter(commitRaw, "\n") {
+		line := strings.TrimSuffix(segment, "\n")
+		hasTrailingNewline := strings.HasSuffix(segment, "\n")
+
 		if strings.HasPrefix(line, "gpgsig ") {
 			skip = true
 			continue
@@ -392,7 +395,9 @@ func removeGpgsigHeader(commitRaw string) string {
 		}
 		skip = false
 		out.WriteString(line)
-		out.WriteByte('\n')
+		if hasTrailingNewline {
+			out.WriteByte('\n')
+		}
 	}
 	return out.String()
 }
