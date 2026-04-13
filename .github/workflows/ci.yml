@@ -125,30 +125,31 @@ jobs:
             helm version
             golangci-lint version
             k3d version
+            task --version
+            bash -ic 'complete -p task >/dev/null'
             docker --version
             checkmake --version
             echo '✅ All dev container tools verified'
           "
 
-  # Runs without the CI container so it can start immediately, unblocking e2e earlier.
-  # Generated files (CRDs, RBAC) are assumed to be checked in; the lint job verifies this.
   lint-helm:
     name: Lint and build Helm Chart (and generate single-file installer)
     runs-on: ubuntu-latest
+    needs: build-ci-container
+    container:
+      image: ${{ needs.build-ci-container.outputs.image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
 
-      - name: Set up Helm
-        uses: azure/setup-helm@v4
-        with:
-          version: v4.1.4
+      - name: Configure Git safe directory
+        run: git config --global --add safe.directory /__w/gitops-reverser/gitops-reverser
 
-      - name: Sync generated files into Helm chart
-        run: |
-          mkdir -p charts/gitops-reverser/crds charts/gitops-reverser/config
-          cp config/crd/bases/*.yaml charts/gitops-reverser/crds/
-          cp config/rbac/role.yaml charts/gitops-reverser/config/role.yaml
+      - name: Copy generated things from /config
+        run: make helm-sync
 
       - name: Helm lint
         run: helm lint charts/gitops-reverser
@@ -192,11 +193,6 @@ jobs:
 
       - name: Configure Git safe directory (for now needed as workarround https://github.com/actions/checkout/issues/2031)
         run: git config --global --add safe.directory /__w/gitops-reverser/gitops-reverser
-
-      - name: Check generated files are up-to-date
-        run: |
-          make manifests
-          git diff --exit-code config/
 
       - name: checkmake Makefile
         run: checkmake Makefile

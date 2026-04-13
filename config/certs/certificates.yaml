@@ -8,8 +8,8 @@ metadata:
   namespace: sut
 spec:
   dnsNames:
-  - gitops-reverser-service.sut.svc
-  - gitops-reverser-service.sut.svc.cluster.local
+  - gitops-reverser-webhook.sut.svc
+  - gitops-reverser-webhook.sut.svc.cluster.local
   issuerRef:
     kind: Issuer
     name: gitops-reverser-selfsigned-issuer

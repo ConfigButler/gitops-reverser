@@ -4,15 +4,15 @@ metadata:
   labels:
     app.kubernetes.io/managed-by: kustomize
     app.kubernetes.io/name: gitops-reverser
-  name: gitops-reverser-service
+  name: gitops-reverser-webhook
   namespace: sut
 spec:
   type: ClusterIP
   ports:
-  - name: metrics
-    port: 8443
+  - name: admission
+    port: 443
     protocol: TCP
-    targetPort: 8443
+    targetPort: 9443
   selector:
     app.kubernetes.io/name: gitops-reverser
     control-plane: gitops-reverser

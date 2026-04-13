@@ -38,6 +38,8 @@ import (
 	configbutleraiv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 )
 
+// +kubebuilder:webhook:path=/validate-configbutler-ai-v1alpha1-gittarget,mutating=false,failurePolicy=fail,sideEffects=None,groups=configbutler.ai,resources=gittargets,verbs=create;update,versions=v1alpha1,name=vgittarget.kb.io,admissionReviewVersions=v1
+
 // GitTargetValidator validates GitTarget resources to prevent duplicates.
 type GitTargetValidator struct {
 	Client client.Client
