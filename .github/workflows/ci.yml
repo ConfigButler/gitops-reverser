@@ -253,10 +253,22 @@ jobs:
           outputs: type=image,push=true
           cache-scope: build-linux/amd64
 
-  e2e-test:
-    name: End-to-End Tests
+  e2e:
+    name: E2E (${{ matrix.name }})
     runs-on: ubuntu-latest
-    needs: [build-ci-container, docker-build]
+    needs: [build-ci-container, docker-build, lint-helm]
+    strategy:
+      matrix:
+        include:
+          - name: quickstart-helm-and-makefile-image-refresh
+            script: "export INSTALL_MODE=helm HELM_CHART_SOURCE=./gitops-reverser.tgz && make test-e2e-quickstart-helm && make test-image-refresh"
+            needs_artifact: true
+          - name: quickstart-manifest
+            script: "make test-e2e-quickstart-manifest"
+            needs_artifact: true
+          - name: core
+            script: "export E2E_ENABLE_BI_DIRECTIONAL=true && make test-e2e && make test-e2e-bi"
+            needs_artifact: false
     env:
       PROJECT_IMAGE: ${{ needs.docker-build.outputs.image }}
       CI_CONTAINER: ${{ needs.build-ci-container.outputs.image }}
@@ -265,6 +277,13 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
+
+      - name: Download release bundle artifact
+        if: matrix.needs_artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: release-bundle
+          path: .
 
       - name: Login to Docker registry
         run: |
@@ -283,53 +302,7 @@ jobs:
             ${{ env.CI_CONTAINER }} \
             bash -c "
               git config --global --add safe.directory ${{ env.CI_WORKDIR }}
-              make test-image-refresh
-              make test-e2e
-              make test-e2e-bi
-            "
-
-  e2e-install-quickstart:
-    name: E2E Install Quickstart (${{ matrix.scenario }})
-    runs-on: ubuntu-latest
-    needs: [build-ci-container, docker-build, lint-helm]
-    strategy:
-      matrix:
-        scenario: [helm, manifest]
-    env:
-      PROJECT_IMAGE: ${{ needs.docker-build.outputs.image }}
-      CI_CONTAINER: ${{ needs.build-ci-container.outputs.image }}
-      IMAGE_DELIVERY_MODE: pull
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v6
-
-      - name: Download tested release bundle artifact
-        uses: actions/download-artifact@v8
-        with:
-          name: release-bundle
-          path: .
-
-      - name: Login to Docker registry
-        run: |
-          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ${{ env.REGISTRY }} -u ${{ github.actor }} --password-stdin
-
-      - name: Run install quickstart smoke test in CI container
-        run: |
-          TARGET="test-e2e-quickstart-${{ matrix.scenario }}"
-          docker run --rm \
-            --network host \
-            -v "${GITHUB_WORKSPACE}:${{ env.CI_WORKDIR }}" \
-            -v /var/run/docker.sock:/var/run/docker.sock \
-            -w "${{ env.CI_WORKDIR }}" \
-            -e PROJECT_IMAGE=${{ env.PROJECT_IMAGE }} \
-            -e IMAGE_DELIVERY_MODE=${{ env.IMAGE_DELIVERY_MODE }} \
-            -e HELM_CHART_SOURCE="./gitops-reverser.tgz" \
-            -e HOST_PROJECT_PATH=${{ github.workspace }} \
-            ${{ env.CI_CONTAINER }} \
-            bash -c "
-              git config --global --add safe.directory ${{ env.CI_WORKDIR }}
-              make ${TARGET}
+              ${{ matrix.script }}
             "
 
   # Release job only runs on push to main after tests pass
@@ -337,7 +310,7 @@ jobs:
     name: Release Please
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [lint-helm, lint, test, e2e-test, e2e-install-quickstart, validate-devcontainer]
+    needs: [lint-helm, lint, test, e2e, validate-devcontainer]
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
