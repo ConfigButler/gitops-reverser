@@ -141,14 +141,16 @@ func (s *sshCommitSigner) Sign(message io.Reader) ([]byte, error) {
 
 	digest := sha512.Sum512(payload)
 
-	// Build the signed data blob per PROTOCOL.sshsig:
-	//   "SSHSIG" (6 raw bytes) || uint32(version) || string(namespace)
+	// Build the signed data blob per the actual OpenSSH sshsig implementation.
+	// Despite PROTOCOL.sshsig stating that SIG_VERSION appears in the signed
+	// data, OpenSSH 9.x does NOT include it — version appears only in the blob
+	// header. The signed data is:
+	//   "SSHSIG" (6 raw bytes) || string(namespace)
 	//   || string(reserved) || string(hash_algorithm) || string(hash)
 	// The magic must be written as raw bytes — NOT as an SSH wire-format
 	// length-prefixed string — so ssh.Marshal must not be used here.
 	var sigData bytes.Buffer
 	sigData.WriteString(sshSignatureMagic)
-	_ = binary.Write(&sigData, binary.BigEndian, sshSignatureVersion)
 	_ = writeSSHPacketString(&sigData, []byte(sshSignatureNamespace))
 	_ = writeSSHPacketString(&sigData, nil) // reserved
 	_ = writeSSHPacketString(&sigData, []byte(sshSignatureHashAlg))

@@ -1,0 +1,211 @@
+# yaml-language-server: $schema=https://taskfile.dev/schema.json
+version: '3'
+
+vars:
+  IMG: '{{.IMG | default "controller:latest"}}'
+  CONTAINER_TOOL: '{{.CONTAINER_TOOL | default "docker"}}'
+  HELM: '{{.HELM | default "helm"}}'
+  CONTROLLER_GEN: '{{.CONTROLLER_GEN | default "controller-gen"}}'
+  ENVTEST: '{{.ENVTEST | default "setup-envtest"}}'
+  GOLANGCI_LINT: '{{.GOLANGCI_LINT | default "golangci-lint"}}'
+  INSTALL_NAME: '{{.INSTALL_NAME | default "gitops-reverser"}}'
+  NAMESPACE: '{{.NAMESPACE | default "gitops-reverser"}}'
+  DEFAULT_AUDIT_REDIS_ADDR: '{{.DEFAULT_AUDIT_REDIS_ADDR | default "valkey:6379"}}'
+  ENVTEST_K8S_VERSION:
+    sh: |
+      go list -m -f '{{"{{"}} .Version {{"}}"}}' k8s.io/api \
+        | awk -F'[v.]' '{printf "1.%d", $3}'
+  ENVTEST_STAMP: '.stamps/envtest-{{.ENVTEST_K8S_VERSION}}.ready'
+
+tasks:
+  manifests:
+    desc: Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects
+    sources:
+      - api/**/*.go
+      - internal/**/*.go
+      - cmd/**/*.go
+      - exclude: api/**/*_test.go
+      - exclude: internal/**/*_test.go
+      - exclude: cmd/**/*_test.go
+      - exclude: api/**/zz_generated.deepcopy.go
+      - exclude: internal/**/zz_generated.deepcopy.go
+      - exclude: cmd/**/zz_generated.deepcopy.go
+    generates:
+      - config/crd/bases/configbutler.ai*.yaml
+      - config/rbac/role.yaml
+      - config/webhook/manifests.yaml
+    cmds:
+      - |
+        mkdir -p config/crd/bases config/rbac config/webhook
+        rm -f config/crd/bases/*.yaml config/rbac/role.yaml config/webhook/manifests.yaml
+        {{.CONTROLLER_GEN}} \
+          rbac:roleName=gitops-reverser \
+          crd \
+          webhook \
+          paths="./..." \
+          output:crd:artifacts:config=config/crd/bases
+
+  helm-sync:
+    desc: Sync CRDs and roles from config/crd/bases into the Helm chart
+    sources:
+      - api/**/*.go
+      - internal/**/*.go
+      - cmd/**/*.go
+      - exclude: api/**/*_test.go
+      - exclude: internal/**/*_test.go
+      - exclude: cmd/**/*_test.go
+      - exclude: api/**/zz_generated.deepcopy.go
+      - exclude: internal/**/zz_generated.deepcopy.go
+      - exclude: cmd/**/zz_generated.deepcopy.go
+    generates:
+      - charts/gitops-reverser/crds/configbutler.*.yaml
+      - charts/gitops-reverser/config/role.yaml
+    cmds:
+      - task: manifests
+      - |
+        mkdir -p charts/gitops-reverser/crds charts/gitops-reverser/config
+        rm -f charts/gitops-reverser/crds/*.yaml charts/gitops-reverser/config/*.yaml
+        cp config/crd/bases/*.yaml charts/gitops-reverser/crds/
+        cp config/rbac/role.yaml charts/gitops-reverser/config/role.yaml
+
+  generate:
+    desc: Generate DeepCopy implementations
+    sources:
+      - api/**/*.go
+      - hack/boilerplate.go.txt
+      - exclude: api/**/*_test.go
+      - exclude: api/**/zz_generated.deepcopy.go
+    generates:
+      - api/v1alpha1/zz_generated.deepcopy.go
+    cmds:
+      - '{{.CONTROLLER_GEN}} object:headerFile="hack/boilerplate.go.txt" paths="./..."'
+
+  fmt:
+    desc: Run go fmt against code
+    cmds:
+      - go fmt ./...
+
+  vet:
+    desc: Run go vet against code
+    cmds:
+      - go vet ./...
+
+  setup-envtest:
+    desc: Setup envtest binaries for unit tests
+    method: timestamp
+    sources:
+      - go.mod
+    generates:
+      - '{{.ENVTEST_STAMP}}'
+    cmds:
+      - |
+        echo "Setting up envtest binaries for Kubernetes version {{.ENVTEST_K8S_VERSION}}..."
+        mkdir -p "$(pwd)/bin" "$(dirname '{{.ENVTEST_STAMP}}')"
+        {{.ENVTEST}} use {{.ENVTEST_K8S_VERSION}} --bin-dir "$(pwd)/bin" -p path
+        touch '{{.ENVTEST_STAMP}}'
+
+  test:
+    desc: Run unit tests
+    cmds:
+      - task: manifests
+      - task: generate
+      - task: fmt
+      - task: vet
+      - task: setup-envtest
+      - |
+        export KUBEBUILDER_ASSETS="$({{.ENVTEST}} use {{.ENVTEST_K8S_VERSION}} --bin-dir "$(pwd)/bin" -p path)"
+        go test $(go list ./... | grep -v /e2e) -coverprofile cover.out
+
+  lint:
+    desc: Run golangci-lint
+    cmds:
+      - '{{.GOLANGCI_LINT}} run'
+
+  lint-fix:
+    desc: Run golangci-lint and perform fixes
+    cmds:
+      - '{{.GOLANGCI_LINT}} run --fix'
+
+  lint-config:
+    desc: Verify golangci-lint configuration
+    cmds:
+      - '{{.GOLANGCI_LINT}} config verify'
+
+  build:
+    desc: Build manager binary
+    cmds:
+      - task: manifests
+      - task: generate
+      - task: fmt
+      - task: vet
+      - go build -o bin/manager cmd/main.go
+
+  run:
+    desc: Run a controller from your host
+    cmds:
+      - task: manifests
+      - task: generate
+      - task: fmt
+      - task: vet
+      - go run ./cmd/main.go
+
+  docker-build:
+    desc: Build docker image with the manager
+    cmds:
+      - '{{.CONTAINER_TOOL}} build -t {{.IMG}} .'
+
+  docker-push:
+    desc: Push docker image with the manager
+    cmds:
+      - '{{.CONTAINER_TOOL}} push {{.IMG}}'
+
+  docker-buildx:
+    desc: Build and push docker image for cross-platform support
+    vars:
+      PLATFORMS: '{{.PLATFORMS | default "linux/arm64,linux/amd64,linux/s390x,linux/ppc64le"}}'
+    cmds:
+      - |
+        sed -e '1 s/\(^FROM\)/FROM --platform=\${BUILDPLATFORM}/; t' \
+          -e '1,// s//FROM --platform=\${BUILDPLATFORM}/' Dockerfile > Dockerfile.cross
+        {{.CONTAINER_TOOL}} buildx create --name gitops-reverser-builder || true
+        {{.CONTAINER_TOOL}} buildx use gitops-reverser-builder
+        {{.CONTAINER_TOOL}} buildx build --push --platform={{.PLATFORMS}} --tag {{.IMG}} -f Dockerfile.cross .
+        {{.CONTAINER_TOOL}} buildx rm gitops-reverser-builder || true
+        rm -f Dockerfile.cross
+
+  dist-install:
+    desc: Generate consolidated YAML from the Helm chart
+    deps:
+      - helm-sync
+    aliases:
+      - dist:install
+    sources:
+      - api/**/*.go
+      - internal/**/*.go
+      - cmd/**/*.go
+      - charts/gitops-reverser/Chart.yaml
+      - charts/gitops-reverser/values.yaml
+      - charts/gitops-reverser/templates/**
+      - exclude: api/**/*_test.go
+      - exclude: internal/**/*_test.go
+      - exclude: cmd/**/*_test.go
+      - exclude: api/**/zz_generated.deepcopy.go
+      - exclude: internal/**/zz_generated.deepcopy.go
+      - exclude: cmd/**/zz_generated.deepcopy.go
+    generates:
+      - dist/install.yaml
+    cmds:
+      - |
+        mkdir -p dist
+        {{.HELM}} template {{.INSTALL_NAME}} charts/gitops-reverser \
+          --namespace {{.NAMESPACE}} \
+          --set labels.managedBy=kubectl \
+          --set createNamespace=true \
+          --set queue.redis.addr={{.DEFAULT_AUDIT_REDIS_ADDR}} \
+          --include-crds \
+          > dist/install.yaml
+
+  clean:
+    desc: Remove build artifacts, coverage, generated dist files, and stamps
+    cmds:
+      - rm -rf bin/ cover.out dist/ .stamps/

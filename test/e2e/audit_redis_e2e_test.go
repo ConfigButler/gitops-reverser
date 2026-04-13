@@ -129,7 +129,7 @@ var _ = Describe("Audit Redis Queue", Label("audit-redis"), Ordered, func() {
 })
 
 // auditConsumerDescribe holds the consumer-path e2e test.
-// Label: audit-redis (runs together with the producer test via make test-e2e-audit-redis).
+// Label: audit-redis (runs together with the producer test via task test-e2e-audit-redis).
 var _ = Describe("Audit Redis Consumer", Label("audit-redis"), Ordered, func() {
 	var (
 		testNs        string
@@ -145,7 +145,7 @@ var _ = Describe("Audit Redis Consumer", Label("audit-redis"), Ordered, func() {
 		By("resolving git checkout path from E2E_CHECKOUT_DIR")
 		gitCheckout = strings.TrimSpace(os.Getenv("E2E_CHECKOUT_DIR"))
 		Expect(gitCheckout).NotTo(BeEmpty(),
-			"E2E_CHECKOUT_DIR must be set (run via make test-e2e or make test-e2e-audit-redis)")
+			"E2E_CHECKOUT_DIR must be set (run via task test-e2e or task test-e2e-audit-redis)")
 
 		By("creating test namespace and applying git secrets")
 		testNs = testNamespaceFor("audit-consumer")

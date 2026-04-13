@@ -105,6 +105,7 @@ Responsibilities:
 
 - shared vars/defaults
 - includes for sub-Taskfiles with no `namespace:` set, so all tasks are flattened into the root namespace — `task test-e2e`, not `task e2e:test-e2e`
+- because includes are flattened, task names must remain globally unique across all included Taskfiles
 - aliases/help
 - `dotenv` or env wiring if later needed
 
@@ -116,7 +117,7 @@ All build/local artifact tasks. Task names match the Make targets directly; the 
 
 Lives next to the e2e code it orchestrates. Included from the root with no namespace.
 
-Owns everything in the **E2E cluster and install**, **E2E test suites**, **Demo / loadtest**, and **Cleanup** groups from the public command list above. Internal stamp-driving tasks (e.g. `flux.installed`, `image.loaded`) are defined here too but are not listed in `tasks:` `desc:` fields so they stay out of `task --list`.
+Owns everything in the **E2E cluster and install**, **E2E test suites**, **Demo / loadtest**, and **Cleanup** groups from the public command list above. Internal stamp-driving tasks (e.g. `flux.installed`, `image.loaded`) are defined here too, but omit `desc` so they stay out of `task --list`.
 
 ## How To Translate The Current Make Behavior
 
@@ -253,7 +254,8 @@ The current `Tiltfile` appears stale relative to the repo's current k3d-based e2
 
 ### Smoke checks
 
-- `task --list-all`
+- `task --list`
+- `task --list-all` (sanity-check internal task wiring and name collisions)
 - `task manifests`
 - `task generate`
 - `task helm-sync`

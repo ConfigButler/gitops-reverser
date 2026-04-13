@@ -1,20 +1,32 @@
 # yaml-language-server: $schema=https://taskfile.dev/schema.json
 version: '3'
 
-vars:
-  GREETING: Hello, world!
+set:
+  - errexit
+  - nounset
+  - pipefail
+
+includes:
+  build:
+    taskfile: ./Taskfile-build.yml
+    dir: .
+    flatten: true
+  e2e:
+    taskfile: ./test/e2e/Taskfile.yml
+    dir: .
+    flatten: true
 
 tasks:
   default:
-    desc: Print a greeting message
+    desc: List available tasks
     cmds:
-      - echo "{{.GREETING}}"
+      - task --list
     silent: true
 
-  test:
+  help:
+    desc: Display this help
+    aliases:
+      - list
     cmds:
-      - echo "test" > test.txt
-    sources:
-      - Makefile
-    generates:
-      - test.txt
+      - task --list
+    silent: true

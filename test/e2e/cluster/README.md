@@ -41,20 +41,20 @@ Notes:
 Run the full e2e suite:
 
 ```bash
-make test-e2e
+task test-e2e
 ```
 
 Run quickstart e2e variants:
 
 ```bash
-make test-e2e-quickstart-manifest
-make test-e2e-quickstart-helm
+task test-e2e-quickstart-manifest
+task test-e2e-quickstart-helm
 ```
 
 Prepare the talk/demo repo and leave it in place:
 
 ```bash
-make test-e2e-demo
+task test-e2e-demo
 ```
 
 This target now uses the same suite-driven repo setup as the normal e2e flow, so each run gets a fresh repo
@@ -62,7 +62,7 @@ unless you explicitly pass `REPO_NAME=...`. It seeds that repo from the `vote` n
 cluster-scoped objects, and intentionally keeps the resulting Kubernetes resources and repo state for a live
 walkthrough.
 
-Before the suite runs, `make test-e2e-demo` also executes a demo-only prep step that validates the local
+Before the suite runs, `task test-e2e-demo` also executes a demo-only prep step that validates the local
 cloudflared and pull-secret manifests, installs the quiz CRDs, waits for them, and then applies
 `test/e2e/setup/demo-only`.
 

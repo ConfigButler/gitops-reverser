@@ -79,7 +79,6 @@ jobs:
             controller-gen --version
             k3d version
             docker --version
-            checkmake --version
             echo '✅ All CI container tools verified'
           "
 
@@ -128,7 +127,6 @@ jobs:
             task --version
             bash -ic 'complete -p task >/dev/null'
             docker --version
-            checkmake --version
             echo '✅ All dev container tools verified'
           "
 
@@ -149,7 +147,7 @@ jobs:
         run: git config --global --add safe.directory /__w/gitops-reverser/gitops-reverser
 
       - name: Copy generated things from /config
-        run: make helm-sync
+        run: task helm-sync
 
       - name: Helm lint
         run: helm lint charts/gitops-reverser
@@ -162,7 +160,7 @@ jobs:
             --set image.tag=test
 
       - name: Generate install.yaml from Helm chart
-        run: make dist/install.yaml
+        run: task dist-install
 
       - name: Package Helm chart
         run: |
@@ -194,9 +192,6 @@ jobs:
       - name: Configure Git safe directory (for now needed as workarround https://github.com/actions/checkout/issues/2031)
         run: git config --global --add safe.directory /__w/gitops-reverser/gitops-reverser
 
-      - name: checkmake Makefile
-        run: checkmake Makefile
-
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:
@@ -223,7 +218,7 @@ jobs:
         run: git config --global --add safe.directory /__w/gitops-reverser/gitops-reverser
 
       - name: Run tests
-        run: make test
+        run: task test
 
   docker-build:
     name: Build
@@ -260,13 +255,13 @@ jobs:
       matrix:
         include:
           - name: quickstart-helm-and-makefile-image-refresh
-            script: "export INSTALL_MODE=helm HELM_CHART_SOURCE=./gitops-reverser.tgz && make test-e2e-quickstart-helm && make test-image-refresh"
+            script: "export INSTALL_MODE=helm HELM_CHART_SOURCE=./gitops-reverser.tgz && task test-e2e-quickstart-helm && task test-image-refresh"
             needs_artifact: true
           - name: quickstart-manifest
-            script: "make test-e2e-quickstart-manifest"
+            script: "task test-e2e-quickstart-manifest"
             needs_artifact: true
           - name: core
-            script: "export E2E_ENABLE_BI_DIRECTIONAL=true && make test-e2e && make test-e2e-bi"
+            script: "export E2E_ENABLE_BI_DIRECTIONAL=true && task test-e2e && task test-e2e-bi"
             needs_artifact: false
     env:
       PROJECT_IMAGE: ${{ needs.docker-build.outputs.image }}
