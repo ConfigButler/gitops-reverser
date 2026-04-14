@@ -1,7 +1,7 @@
 {
   "permissions": {
     "allow": [
-      "Bash(make:*)",
+      "Bash(task:*)",
       "Bash(kubectl get:*)",
       "Bash(kubectl apply:*)",
       "Bash(kubectl wait:*)",
@@ -11,8 +11,7 @@
       "Bash(go:*)",
       "Bash(ls:*)",
       "Bash(cat:*)",
-      "Bash(helm template:*",
-      "Bash(find:*"
+      "Bash(task test-e2e:*)"
     ]
   }
 }

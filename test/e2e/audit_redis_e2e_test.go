@@ -25,6 +25,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -37,17 +38,46 @@ const (
 	defaultE2EValkeyPassword = "e2e-valkey-password"
 )
 
+var (
+	// auditRedisRepo holds the file-local repo fixtures for both audit-redis Describe blocks.
+	auditRedisRepo     *RepoArtifacts
+	auditRedisRepoOnce sync.Once
+)
+
+func ensureAuditRedisRepo() *RepoArtifacts {
+	GinkgoHelper()
+
+	auditRedisRepoOnce.Do(func() {
+		consumerNs := testNamespaceFor("audit-consumer")
+
+		By("creating the audit consumer namespace for shared repo fixtures")
+		_, _ = kubectlRun("create", "namespace", consumerNs)
+
+		By("setting up the shared Gitea repo for audit-redis tests")
+		auditRedisRepo = SetupRepo(
+			resolveE2EContext(),
+			consumerNs,
+			fmt.Sprintf("e2e-audit-redis-%d", GinkgoRandomSeed()),
+		)
+	})
+
+	Expect(auditRedisRepo).NotTo(BeNil(), "expected audit Redis repo fixtures to be initialised")
+	return auditRedisRepo
+}
+
 var _ = Describe("Audit Redis Queue", Label("audit-redis", "smoke"), Ordered, func() {
 	var testNs string
 
 	BeforeAll(func() {
-		By("creating test namespace and applying git secrets")
+		By("creating producer test namespace")
 		testNs = testNamespaceFor("audit-redis")
 		_, _ = kubectlRun("create", "namespace", testNs) // idempotent; ignore AlreadyExists
-		secretsYaml := strings.TrimSpace(os.Getenv("E2E_SECRETS_YAML"))
-		Expect(secretsYaml).NotTo(BeEmpty(), "E2E_SECRETS_YAML must be set by BeforeSuite")
-		_, err := kubectlRunInNamespace(testNs, "apply", "-f", secretsYaml)
-		Expect(err).NotTo(HaveOccurred(), "failed to apply git secrets to test namespace")
+
+		repo := ensureAuditRedisRepo()
+
+		By("applying git secrets to producer test namespace")
+		_, err := kubectlRunInNamespace(testNs, "apply", "-f", repo.SecretsYAML)
+		Expect(err).NotTo(HaveOccurred(), "failed to apply git secrets to producer test namespace")
 	})
 
 	AfterAll(func() {
@@ -138,22 +168,14 @@ var _ = Describe("Audit Redis Consumer", Label("audit-redis", "smoke"), Ordered,
 		gitTargetName string
 		watchRuleName string
 		cmName        string
-		gitCheckout   string // local git checkout path; read from E2E_CHECKOUT_DIR env
 	)
 
 	BeforeAll(func() {
-		By("resolving git checkout path from E2E_CHECKOUT_DIR")
-		gitCheckout = strings.TrimSpace(os.Getenv("E2E_CHECKOUT_DIR"))
-		Expect(gitCheckout).NotTo(BeEmpty(),
-			"E2E_CHECKOUT_DIR must be set (run via task test-e2e or task test-e2e-audit-redis)")
-
-		By("creating test namespace and applying git secrets")
+		By("creating consumer test namespace and applying git secrets")
 		testNs = testNamespaceFor("audit-consumer")
-		_, _ = kubectlRun("create", "namespace", testNs)
-		secretsYaml := strings.TrimSpace(os.Getenv("E2E_SECRETS_YAML"))
-		Expect(secretsYaml).NotTo(BeEmpty(), "E2E_SECRETS_YAML must be set by BeforeSuite")
-		_, err := kubectlRunInNamespace(testNs, "apply", "-f", secretsYaml)
-		Expect(err).NotTo(HaveOccurred(), "failed to apply git secrets to test namespace")
+		repo := ensureAuditRedisRepo()
+		_, err := kubectlRunInNamespace(testNs, "apply", "-f", repo.SecretsYAML)
+		Expect(err).NotTo(HaveOccurred(), "failed to apply git secrets to consumer test namespace")
 		applySOPSAgeKeyToNamespace(testNs)
 
 		By("connecting to Valkey through the e2e port-forward")
@@ -172,15 +194,12 @@ var _ = Describe("Audit Redis Consumer", Label("audit-redis", "smoke"), Ordered,
 		watchRuleName = fmt.Sprintf("audit-consumer-watchrule-%d", seed)
 		cmName = fmt.Sprintf("audit-consumer-cm-%d", seed)
 
-		repoURL := fmt.Sprintf(giteaRepoURLTemplate, strings.TrimSpace(os.Getenv("E2E_REPO_NAME")))
-		Expect(repoURL).NotTo(ContainSubstring("%!(EXTRA"), "E2E_REPO_NAME must be set")
-
-		gitSecretName := strings.TrimSpace(os.Getenv("E2E_GIT_SECRET_HTTP"))
-		if gitSecretName == "" {
-			gitSecretName = "git-creds"
-		}
-
-		createGitProviderWithURLInNamespace(gitProvName, testNs, gitSecretName, repoURL)
+		createGitProviderWithURLInNamespace(
+			gitProvName,
+			testNs,
+			auditRedisRepo.GitSecretHTTP,
+			auditRedisRepo.RepoURLHTTP,
+		)
 		verifyResourceStatus("gitprovider", gitProvName, testNs, "True", "Ready", "")
 
 		createGitTarget(gitTargetName, testNs, gitProvName, "e2e/audit-consumer-test", "main")
@@ -239,13 +258,13 @@ var _ = Describe("Audit Redis Consumer", Label("audit-redis", "smoke"), Ordered,
 		}, 2*time.Minute, 2*time.Second).Should(Succeed())
 
 		By("waiting for the Git commit to appear (consumer path)")
-		expectedFile := filepath.Join(gitCheckout,
+		expectedFile := filepath.Join(auditRedisRepo.CheckoutDir,
 			"e2e/audit-consumer-test",
 			fmt.Sprintf("v1/configmaps/%s/%s.yaml", testNs, cmName))
 
 		Eventually(func(g Gomega) {
 			pullCmd := exec.Command("git", "pull")
-			pullCmd.Dir = gitCheckout
+			pullCmd.Dir = auditRedisRepo.CheckoutDir
 			pullOut, pullErr := pullCmd.CombinedOutput()
 			g.Expect(pullErr).NotTo(HaveOccurred(),
 				fmt.Sprintf("git pull failed: %s", string(pullOut)))
@@ -256,7 +275,7 @@ var _ = Describe("Audit Redis Consumer", Label("audit-redis", "smoke"), Ordered,
 			g.Expect(info.Size()).To(BeNumerically(">", 0))
 
 			authorCmd := exec.Command("git", "log", "-1", "--pretty=%an")
-			authorCmd.Dir = gitCheckout
+			authorCmd.Dir = auditRedisRepo.CheckoutDir
 			authorOut, authorErr := authorCmd.CombinedOutput()
 			g.Expect(authorErr).NotTo(HaveOccurred(),
 				fmt.Sprintf("git log author failed: %s", string(authorOut)))

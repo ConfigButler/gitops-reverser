@@ -94,6 +94,9 @@ type iceCreamScoop struct {
 	Quantity int
 }
 
+// biDirectionalRepo holds the file-local repo fixtures for the Bi Directional describe block.
+var biDirectionalRepo *RepoArtifacts
+
 var _ = Describe("Bi Directional", Label("bi-directional"), Ordered, func() {
 	var run biDirectionalRun
 	var testNs string
@@ -103,17 +106,24 @@ var _ = Describe("Bi Directional", Label("bi-directional"), Ordered, func() {
 			Skip(fmt.Sprintf("bi-directional e2e is disabled; set %s=true to run", biDirectionalEnabledEnv))
 		}
 
-		run = newBiDirectionalRun()
-
-		By("creating test namespace and applying git secrets")
+		By("creating test namespace")
 		testNs = testNamespaceFor("bi-directional")
-		run.testNs = testNs
 		_, _ = kubectlRun("create", "namespace", testNs) // idempotent; ignore AlreadyExists
-		secretsYaml := strings.TrimSpace(os.Getenv("E2E_SECRETS_YAML"))
-		Expect(secretsYaml).NotTo(BeEmpty(), "E2E_SECRETS_YAML must be set by BeforeSuite")
-		_, err := kubectlRunInNamespace(testNs, "apply", "-f", secretsYaml)
+
+		By("setting up Gitea repo and credentials for bi-directional tests")
+		biDirectionalRepo = SetupRepo(
+			resolveE2EContext(),
+			testNs,
+			fmt.Sprintf("e2e-bi-directional-%d", GinkgoRandomSeed()),
+		)
+
+		By("applying git secrets to test namespace")
+		_, err := kubectlRunInNamespace(testNs, "apply", "-f", biDirectionalRepo.SecretsYAML)
 		Expect(err).NotTo(HaveOccurred(), "failed to apply git secrets to test namespace")
 		applySOPSAgeKeyToNamespace(testNs)
+
+		run = newBiDirectionalRun()
+		run.testNs = testNs
 		run.assertCheckoutReady()
 	})
 
@@ -148,7 +158,7 @@ var _ = Describe("Bi Directional", Label("bi-directional"), Ordered, func() {
 		run.consistentlyExpectRemoteCommitCount(baselineCommitCount+1, biStableCountMediumWait)
 
 		By("enabling gitops-reverser before Flux starts managing IceCreamOrder resources")
-		createGitProviderWithURLInNamespace(run.gitProviderName, testNs, e2eGitSecretHTTP(), run.repoURL)
+		createGitProviderWithURLInNamespace(run.gitProviderName, testNs, biDirectionalRepo.GitSecretHTTP, run.repoURL)
 		createGitTargetWithEncryptionOptions(
 			run.gitTargetName,
 			testNs,
@@ -334,18 +344,12 @@ func biDirectionalEnabled() bool {
 
 func newBiDirectionalRun() biDirectionalRun {
 	testID := strconv.FormatInt(time.Now().UnixNano(), 10)
-	repoName := strings.TrimSpace(os.Getenv("E2E_REPO_NAME"))
-	checkoutDir := strings.TrimSpace(os.Getenv("E2E_CHECKOUT_DIR"))
-
-	Expect(repoName).NotTo(BeEmpty(), "E2E_REPO_NAME must be set by the suite")
-	Expect(checkoutDir).NotTo(BeEmpty(), "E2E_CHECKOUT_DIR must be set by the suite")
-
 	return biDirectionalRun{
 		testID:                     testID,
-		repoName:                   repoName,
-		checkoutDir:                checkoutDir,
-		repoURL:                    fmt.Sprintf(giteaRepoURLTemplate, repoName),
-		localGitRepoURL:            fmt.Sprintf("http://localhost:13000/testorg/%s.git", repoName),
+		repoName:                   biDirectionalRepo.RepoName,
+		checkoutDir:                biDirectionalRepo.CheckoutDir,
+		repoURL:                    biDirectionalRepo.RepoURLHTTP,
+		localGitRepoURL:            fmt.Sprintf("http://localhost:13000/testorg/%s.git", biDirectionalRepo.RepoName),
 		fluxSecretName:             fmt.Sprintf("bi-flux-auth-%s", testID),
 		fluxGitRepositoryName:      fmt.Sprintf("bi-repo-%s", testID),
 		fluxCRDsName:               fmt.Sprintf("bi-crds-%s", testID),
@@ -375,7 +379,7 @@ func newBiDirectionalRun() biDirectionalRun {
 
 func (r biDirectionalRun) assertCheckoutReady() {
 	_, err := os.Stat(filepath.Join(r.checkoutDir, ".git"))
-	Expect(err).NotTo(HaveOccurred(), "expected checkout to exist at E2E_CHECKOUT_DIR")
+	Expect(err).NotTo(HaveOccurred(), "expected checkout to exist at checkoutDir")
 	Expect(r.configureCheckoutAuth()).To(Succeed())
 }
 
@@ -735,7 +739,7 @@ func (r biDirectionalRun) applyFluxLiveKustomization() {
 }
 
 func (r biDirectionalRun) readGitCredentialSecretDataBase64() (string, string) {
-	output, err := kubectlRunInNamespace(r.testNs, "get", "secret", e2eGitSecretHTTP(), "-o", "json")
+	output, err := kubectlRunInNamespace(r.testNs, "get", "secret", biDirectionalRepo.GitSecretHTTP, "-o", "json")
 	Expect(err).NotTo(HaveOccurred(), "failed to read git credential Secret for Flux")
 
 	var obj unstructured.Unstructured

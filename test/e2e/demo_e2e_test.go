@@ -52,6 +52,11 @@ type demoRun struct {
 	encryptionName       string
 }
 
+// demoRepo holds the file-local repo fixtures for the Demo describe block.
+// REPO_NAME=demo and TESTNAMESPACE=vote are fixed for demo so the repo is reusable
+// for manual inspection after the run.
+var demoRepo *RepoArtifacts
+
 var _ = Describe("Demo", Label("demo"), Ordered, func() {
 	var run demoRun
 	var testNs string
@@ -64,17 +69,20 @@ var _ = Describe("Demo", Label("demo"), Ordered, func() {
 			))
 		}
 
-		run = newDemoRun()
+		By("creating demo test namespace")
+		testNs = testNamespaceFor("demo") // returns "vote" when TESTNAMESPACE=vote
+		_, _ = kubectlRun("create", "namespace", testNs)
 
-		By("creating test namespace and applying git secrets")
-		testNs = testNamespaceFor("demo")
-		run.sourceNamespace = testNs
-		_, _ = kubectlRun("create", "namespace", testNs) // idempotent; ignore AlreadyExists
-		secretsYaml := strings.TrimSpace(os.Getenv("E2E_SECRETS_YAML"))
-		Expect(secretsYaml).NotTo(BeEmpty(), "E2E_SECRETS_YAML must be set by BeforeSuite")
-		_, err := kubectlRunInNamespace(testNs, "apply", "-f", secretsYaml)
-		Expect(err).NotTo(HaveOccurred(), "failed to apply git secrets to test namespace")
+		By("setting up fixed demo Gitea repo")
+		demoRepo = SetupRepo(resolveE2EContext(), testNs, "demo")
+
+		By("applying git secrets to demo namespace")
+		_, err := kubectlRunInNamespace(testNs, "apply", "-f", demoRepo.SecretsYAML)
+		Expect(err).NotTo(HaveOccurred(), "failed to apply git secrets to demo namespace")
 		applySOPSAgeKeyToNamespace(testNs)
+
+		run = newDemoRun()
+		run.sourceNamespace = testNs
 	})
 
 	It("prepares a reusable demo repository without cleanup", func() {
@@ -107,43 +115,23 @@ func demoEnabled() bool {
 }
 
 func newDemoRun() demoRun {
-	repoName := strings.TrimSpace(os.Getenv("E2E_REPO_NAME"))
-	checkoutDir := strings.TrimSpace(os.Getenv("E2E_CHECKOUT_DIR"))
-	sourceNamespace := resolveE2ENamespace()
-	gitSecretName := e2eGitSecretHTTP()
-
-	Expect(repoName).NotTo(
-		BeEmpty(),
-		"E2E_REPO_NAME must be set by the suite (task e2e-gitea-run-setup)",
-	)
-	Expect(checkoutDir).NotTo(
-		BeEmpty(),
-		"E2E_CHECKOUT_DIR must be set by the suite (task e2e-gitea-run-setup)",
-	)
-
-	repoURL := fmt.Sprintf(
-		"http://gitea-http.gitea-e2e.svc.cluster.local:13000/testorg/%s.git",
-		repoName,
-	)
-
 	return demoRun{
-		repoName:    repoName,
-		checkoutDir: checkoutDir,
-		repoURL:     repoURL,
-
-		sourceNamespace:      sourceNamespace,
-		gitSecretName:        gitSecretName,
-		providerName:         "demo-provider-" + repoName,
-		targetName:           "demo-target-" + repoName,
-		watchRuleName:        "demo-watch-all-" + repoName,
-		clusterWatchRuleName: "demo-cluster-resources-" + repoName,
+		repoName:             demoRepo.RepoName,
+		checkoutDir:          demoRepo.CheckoutDir,
+		repoURL:              demoRepo.RepoURLHTTP,
+		sourceNamespace:      resolveE2ENamespace(),
+		gitSecretName:        demoRepo.GitSecretHTTP,
+		providerName:         "demo-provider-" + demoRepo.RepoName,
+		targetName:           "demo-target-" + demoRepo.RepoName,
+		watchRuleName:        "demo-watch-all-" + demoRepo.RepoName,
+		clusterWatchRuleName: "demo-cluster-resources-" + demoRepo.RepoName,
 		encryptionName:       "demo-sops-age-key",
 	}
 }
 
 func (r *demoRun) setupRepository() {
 	_, err := os.Stat(filepath.Join(r.checkoutDir, ".git"))
-	Expect(err).NotTo(HaveOccurred(), "expected checkout to exist at E2E_CHECKOUT_DIR")
+	Expect(err).NotTo(HaveOccurred(), "expected checkout to exist")
 }
 
 func (r *demoRun) copyGitSecret() {
