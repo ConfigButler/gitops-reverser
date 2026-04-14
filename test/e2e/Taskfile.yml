@@ -87,6 +87,8 @@ vars:
   FLUX_NAMESPACE: '{{.FLUX_NAMESPACE | default "flux-system"}}'
   FLUX_WAIT_TIMEOUT: '{{.FLUX_WAIT_TIMEOUT | default "300s"}}'
   FLUX_SERVICES_WAIT_TIMEOUT: '{{.FLUX_SERVICES_WAIT_TIMEOUT | default "600s"}}'
+  E2E_GO_TEST_TIMEOUT: '{{.E2E_GO_TEST_TIMEOUT | default "10m"}}'
+  GITEA_RUNS_DIR: '{{.CS}}/{{.NAMESPACE}}'
   FLUX_SERVICES_DIR: '{{.FLUX_SERVICES_DIR | default "test/e2e/setup/flux"}}'
   DEMO_MANIFESTS_DIR: 'test/e2e/setup/demo-only'
   DEMO_TUNNEL_CREDENTIALS: '{{.DEMO_MANIFESTS_DIR}}/cloudflared-public/tunnel-credentials.yaml'
@@ -176,23 +178,25 @@ tasks:
         esac
 
   install-helm:
+    deps: 
+      - helm-sync
     desc: Install via Helm
     cmds:
       - task: _cluster-ready
       - task: _flux-installed
       - task: _flux-setup-ready
       - task: _services-ready
-      - task: helm-sync
       - task: _install-helm
 
   install-plain-manifests-file:
     desc: Install via dist/install.yaml
+    deps:
+      - dist-install
     cmds:
       - task: _cluster-ready
       - task: _flux-installed
       - task: _flux-setup-ready
       - task: _services-ready
-      - task: dist-install
       - task: _install-plain-manifests-file
 
   install-config-dir:
@@ -206,14 +210,44 @@ tasks:
       - task: _install-config-dir
 
   test-e2e:
-    desc: Run the full e2e test suite
+    desc: Run the smoke e2e suite
     cmds:
       - |
         export CTX="{{.CTX}}"
         export INSTALL_MODE="{{.INSTALL_MODE}}"
         export NAMESPACE="{{.NAMESPACE}}"
         export E2E_AGE_KEY_FILE="{{.CS}}/age-key.txt"
-        go test ./test/e2e/ -v -ginkgo.v
+        go test -timeout "{{.E2E_GO_TEST_TIMEOUT}}" ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=smoke
+
+  test-e2e-full:
+    desc: Run the full e2e suite, including slow and specialized scenarios
+    cmds:
+      - |
+        export CTX="{{.CTX}}"
+        export INSTALL_MODE="{{.INSTALL_MODE}}"
+        export NAMESPACE="{{.NAMESPACE}}"
+        export E2E_AGE_KEY_FILE="{{.CS}}/age-key.txt"
+        go test -timeout "{{.E2E_GO_TEST_TIMEOUT}}" ./test/e2e/ -v -ginkgo.v
+
+  test-e2e-manager:
+    desc: Run manager-focused e2e scenarios
+    cmds:
+      - |
+        export CTX="{{.CTX}}"
+        export INSTALL_MODE="{{.INSTALL_MODE}}"
+        export NAMESPACE="{{.NAMESPACE}}"
+        export E2E_AGE_KEY_FILE="{{.CS}}/age-key.txt"
+        go test -timeout "{{.E2E_GO_TEST_TIMEOUT}}" ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=manager
+
+  test-e2e-signing:
+    desc: Run commit-signing e2e scenarios
+    cmds:
+      - |
+        export CTX="{{.CTX}}"
+        export INSTALL_MODE="{{.INSTALL_MODE}}"
+        export NAMESPACE="{{.NAMESPACE}}"
+        export E2E_AGE_KEY_FILE="{{.CS}}/age-key.txt"
+        go test -timeout "{{.E2E_GO_TEST_TIMEOUT}}" ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=signing
 
   test-image-refresh:
     desc: Validate the image-refresh dependency chain
@@ -223,7 +257,7 @@ tasks:
         export INSTALL_MODE="{{.INSTALL_MODE}}"
         export NAMESPACE="{{.NAMESPACE}}"
         export E2E_AGE_KEY_FILE="{{.CS}}/age-key.txt"
-        go test ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=image-refresh
+        go test -timeout "{{.E2E_GO_TEST_TIMEOUT}}" ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=image-refresh
 
   test-e2e-quickstart-helm:
     desc: Run quickstart smoke test with Helm install
@@ -235,7 +269,7 @@ tasks:
         export E2E_ENABLE_QUICKSTART_FRAMEWORK=true
         export E2E_QUICKSTART_MODE=helm
         export E2E_AGE_KEY_FILE="{{.CS}}/age-key.txt"
-        go test ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=quickstart-framework
+        go test -timeout "{{.E2E_GO_TEST_TIMEOUT}}" ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=quickstart-framework
 
   test-e2e-quickstart-manifest:
     desc: Run quickstart smoke test with manifest install
@@ -247,7 +281,7 @@ tasks:
         export E2E_ENABLE_QUICKSTART_FRAMEWORK=true
         export E2E_QUICKSTART_MODE=plain-manifests-file
         export E2E_AGE_KEY_FILE="{{.CS}}/age-key.txt"
-        go test ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=quickstart-framework
+        go test -timeout "{{.E2E_GO_TEST_TIMEOUT}}" ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=quickstart-framework
 
   test-e2e-audit-redis:
     desc: Run dedicated audit to Redis enqueue scenario
@@ -257,7 +291,7 @@ tasks:
         export INSTALL_MODE="{{.INSTALL_MODE}}"
         export NAMESPACE="{{.NAMESPACE}}"
         export E2E_AGE_KEY_FILE="{{.CS}}/age-key.txt"
-        go test ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=audit-redis
+        go test -timeout "{{.E2E_GO_TEST_TIMEOUT}}" ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=audit-redis
 
   test-e2e-bi:
     desc: Run dedicated bi-directional Flux plus gitops-reverser e2e scenario
@@ -268,7 +302,7 @@ tasks:
         export NAMESPACE="{{.NAMESPACE}}"
         export E2E_ENABLE_BI_DIRECTIONAL=true
         export E2E_AGE_KEY_FILE="{{.CS}}/age-key.txt"
-        go test ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=bi-directional
+        go test -timeout "{{.E2E_GO_TEST_TIMEOUT}}" ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=bi-directional
 
   test-e2e-demo:
     desc: Prepare a reusable demo repo and leave demo resources in place
@@ -283,7 +317,7 @@ tasks:
         export E2E_ENABLE_DEMO=true
         export E2E_AGE_KEY_FILE="{{.CS}}/age-key.txt"
         export TESTNAMESPACE=vote
-        go test ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=demo
+        go test -timeout "{{.E2E_GO_TEST_TIMEOUT}}" ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=demo
 
   loadtest:
     desc: Simulate load against the live quiz demo
@@ -501,6 +535,8 @@ tasks:
 
   _install-helm:
     method: timestamp
+    deps:
+      - clean-installs
     sources:
       - '{{.CS}}/services.ready'
       - charts/gitops-reverser/Chart.yaml
@@ -514,7 +550,6 @@ tasks:
       - test -f "{{.CS}}/{{.NAMESPACE}}/helm/install.yaml"
     cmds:
       - |
-        CTX="{{.CTX}}" KUBECTL="{{.KUBECTL}}" bash hack/cleanup-installs.sh
         mkdir -p "{{.CS}}/{{.NAMESPACE}}/helm"
         skip_crds_arg=""
         if kubectl --context "{{.CTX}}" get crd \
@@ -547,6 +582,8 @@ tasks:
 
   _install-config-dir:
     method: timestamp
+    deps:
+      - clean-installs
     sources:
       - '{{.CS}}/services.ready'
       - config/**/*
@@ -556,7 +593,6 @@ tasks:
       - test -f "{{.CS}}/{{.NAMESPACE}}/config-dir/install.yaml"
     cmds:
       - |
-        CTX="{{.CTX}}" KUBECTL="{{.KUBECTL}}" bash hack/cleanup-installs.sh
         mkdir -p "{{.CS}}/{{.NAMESPACE}}/config-dir"
         CTX="{{.CTX}}" NAMESPACE="{{.NAMESPACE}}" PROJECT_IMAGE="{{.PROJECT_IMAGE}}" \
           E2E_VALKEY_PASSWORD="{{.E2E_VALKEY_PASSWORD}}" \
@@ -566,6 +602,8 @@ tasks:
 
   _install-plain-manifests-file:
     method: timestamp
+    deps:
+      - clean-installs
     sources:
       - '{{.CS}}/services.ready'
       - dist/install.yaml
@@ -575,7 +613,6 @@ tasks:
       - test -f "{{.CS}}/{{.NAMESPACE}}/plain-manifests-file/install.yaml"
     cmds:
       - |
-        CTX="{{.CTX}}" KUBECTL="{{.KUBECTL}}" bash hack/cleanup-installs.sh
         mkdir -p "{{.CS}}/{{.NAMESPACE}}/plain-manifests-file"
         CTX="{{.CTX}}" NAMESPACE="{{.NAMESPACE}}" E2E_VALKEY_PASSWORD="{{.E2E_VALKEY_PASSWORD}}" \
           bash hack/e2e/ensure-valkey-auth.sh
@@ -699,7 +736,7 @@ tasks:
       - hack/e2e/gitea-bootstrap.sh
     generates:
       - '{{.CS}}/gitea/bootstrap/org-{{.GITEA_ORG_NAME}}.ready'
-    status:
+    status:   # Also here we could be checking the actual gitea resource, if it works and exists still.... We would not even need the actual output file then
       - test -f "{{.CS}}/gitea/bootstrap/org-{{.GITEA_ORG_NAME}}.ready"
     cmds:
       - mkdir -p "{{.CS}}/gitea/bootstrap"
@@ -718,11 +755,11 @@ tasks:
       - '{{.CS}}/gitea/bootstrap/org-{{.GITEA_ORG_NAME}}.ready'
       - hack/e2e/gitea-run-setup.sh
     generates:
-      - '{{.CS}}/{{.NAMESPACE}}/git-{{.REPO_NAME}}/checkout.ready'
-    status:
-      - test -f "{{.CS}}/{{.NAMESPACE}}/git-{{.REPO_NAME}}/checkout.ready"
+      - '{{.GITEA_RUNS_DIR}}/git-{{.REPO_NAME}}/checkout.ready'
+    status: # We could even check here if it's stil setup inside gitea itself?! But that's not to usefull perhaps?
+      - test -f "{{.GITEA_RUNS_DIR}}/git-{{.REPO_NAME}}/checkout.ready"
     cmds:
-      - mkdir -p "{{.CS}}/{{.NAMESPACE}}/git-{{.REPO_NAME}}"
+      - mkdir -p "{{.GITEA_RUNS_DIR}}/git-{{.REPO_NAME}}"
       - |
         export CTX="{{.CTX}}"
         export CS="{{.CS}}"
@@ -737,7 +774,7 @@ tasks:
         export E2E_GIT_SECRET_SSH="{{.E2E_GIT_SECRET_SSH}}"
         export E2E_GIT_SECRET_INVALID="{{.E2E_GIT_SECRET_INVALID}}"
         bash hack/e2e/gitea-run-setup.sh
-        test -f "{{.CS}}/{{.NAMESPACE}}/git-{{.REPO_NAME}}/checkout.ready"
+        test -f "{{.GITEA_RUNS_DIR}}/git-{{.REPO_NAME}}/checkout.ready"
 
   _demo-ready:
     method: timestamp

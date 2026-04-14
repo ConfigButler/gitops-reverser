@@ -32,6 +32,7 @@ If `ssh-add -L` shows no keys, commit signing inside the devcontainer will fail.
 
 ```bash
 go version
+ginkgo version
 kubectl version --client
 golangci-lint version
 task --version

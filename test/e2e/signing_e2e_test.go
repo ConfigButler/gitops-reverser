@@ -46,7 +46,7 @@ type signingGitProviderData struct {
 	GenerateWhenMissing bool
 }
 
-var _ = Describe("Commit Signing", Ordered, func() {
+var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 	var (
 		testNs     string
 		signingDir string // local git checkout directory
@@ -92,7 +92,7 @@ var _ = Describe("Commit Signing", Ordered, func() {
 
 	// ── Test 1: per-event commit is signed and verifiable by ssh-keygen ──────────
 
-	It("should produce per-event commits signed and verifiable by ssh-keygen", func() {
+	It("should produce per-event commits signed and verifiable by ssh-keygen", Label("smoke"), func() {
 		providerName := "signing-per-event"
 		signingSecretName := "signing-key-per-event"
 		destName := providerName + "-dest"
@@ -192,6 +192,11 @@ var _ = Describe("Commit Signing", Ordered, func() {
 		Expect(verifyErr).NotTo(HaveOccurred(),
 			"ssh-keygen -Y verify should succeed.\nOutput: %s", verifyOut)
 		Expect(verifyOut).To(ContainSubstring("Good"), "ssh-keygen should report a good signature")
+
+		By("verifying the commit signature with git verify-commit")
+		gitVerifyOut, gitVerifyErr := gitVerifyCommit(signingDir, allowedSignersFile, commitHash)
+		Expect(gitVerifyErr).NotTo(HaveOccurred(),
+			"git verify-commit should succeed.\nOutput: %s", gitVerifyOut)
 
 		By("cleaning up")
 		_, _ = kubectlRunInNamespace(testNs, "delete", "configmap", cmName, "--ignore-not-found=true")
@@ -418,6 +423,19 @@ func sshKeygenVerify(allowedSignersFile, identity, sigFile, payloadFile string) 
 		"-s", sigFile,
 	)
 	cmd.Stdin = bytes.NewReader(payload)
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
+func gitVerifyCommit(repoDir, allowedSignersFile, commitHash string) (string, error) {
+	cmd := exec.Command(
+		"git",
+		"-c", "gpg.format=ssh",
+		"-c", fmt.Sprintf("gpg.ssh.allowedSignersFile=%s", allowedSignersFile),
+		"verify-commit",
+		commitHash,
+	)
+	cmd.Dir = repoDir
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
