@@ -53,6 +53,9 @@ type quickstartFrameworkRun struct {
 	encryptionName  string
 }
 
+// quickstartRepo holds the file-local repo fixtures for the Quickstart Framework describe block.
+var quickstartRepo *RepoArtifacts
+
 var _ = Describe("Quickstart Framework", Label("quickstart-framework"), Ordered, func() {
 	var run quickstartFrameworkRun
 
@@ -64,15 +67,21 @@ var _ = Describe("Quickstart Framework", Label("quickstart-framework"), Ordered,
 			))
 		}
 
-		run = newQuickstartFrameworkRun()
-
 		qsNs := testNamespaceFor("quickstart-framework")
 		_, _ = kubectlRun("create", "namespace", qsNs)
-		secretsYaml := strings.TrimSpace(os.Getenv("E2E_SECRETS_YAML"))
-		Expect(secretsYaml).NotTo(BeEmpty(), "E2E_SECRETS_YAML must be set by BeforeSuite")
-		_, err := kubectlRunInNamespace(qsNs, "apply", "-f", secretsYaml)
+
+		By("setting up Gitea repo and credentials for quickstart-framework tests")
+		quickstartRepo = SetupRepo(
+			resolveE2EContext(),
+			qsNs,
+			fmt.Sprintf("e2e-quickstart-framework-%d", GinkgoRandomSeed()),
+		)
+
+		_, err := kubectlRunInNamespace(qsNs, "apply", "-f", quickstartRepo.SecretsYAML)
 		Expect(err).NotTo(HaveOccurred(), "failed to apply git secrets to quickstart namespace")
 		applySOPSAgeKeyToNamespace(qsNs)
+
+		run = newQuickstartFrameworkRun()
 	})
 
 	AfterAll(func() {
@@ -127,20 +136,13 @@ func quickstartFrameworkMode() string {
 }
 
 func newQuickstartFrameworkRun() quickstartFrameworkRun {
-	mode := quickstartFrameworkMode()
 	testID := strconv.FormatInt(time.Now().UnixNano(), 10)
-	repoName := strings.TrimSpace(os.Getenv("E2E_REPO_NAME"))
-	checkoutDir := strings.TrimSpace(os.Getenv("E2E_CHECKOUT_DIR"))
-
-	Expect(repoName).NotTo(BeEmpty(), "E2E_REPO_NAME must be set by the suite (task e2e-gitea-run-setup)")
-	Expect(checkoutDir).NotTo(BeEmpty(), "E2E_CHECKOUT_DIR must be set by the suite (task e2e-gitea-run-setup)")
-
 	return quickstartFrameworkRun{
-		mode:            mode,
+		mode:            quickstartFrameworkMode(),
 		testID:          testID,
-		repoName:        repoName,
-		checkoutDir:     checkoutDir,
-		repoURL:         fmt.Sprintf("http://gitea-http.gitea-e2e.svc.cluster.local:13000/testorg/%s.git", repoName),
+		repoName:        quickstartRepo.RepoName,
+		checkoutDir:     quickstartRepo.CheckoutDir,
+		repoURL:         quickstartRepo.RepoURLHTTP,
 		providerName:    fmt.Sprintf("quickstart-provider-%s", testID),
 		targetName:      fmt.Sprintf("quickstart-target-%s", testID),
 		watchRuleName:   fmt.Sprintf("quickstart-watchrule-%s", testID),
@@ -150,15 +152,15 @@ func newQuickstartFrameworkRun() quickstartFrameworkRun {
 }
 
 func (r *quickstartFrameworkRun) setupGiteaRepository() {
-	// Repo + creds + checkout are prepared by the suite (e2e_suite_test.go) via `task e2e-gitea-run-setup`.
+	// Repo + creds + checkout are prepared by SetupRepo in BeforeAll.
 	// Keep this method for readability and assert the checkout exists for developer-friendly failures.
 	_, err := os.Stat(filepath.Join(r.checkoutDir, ".git"))
-	Expect(err).NotTo(HaveOccurred(), "expected checkout to exist at E2E_CHECKOUT_DIR")
+	Expect(err).NotTo(HaveOccurred(), "expected checkout to exist at checkoutDir")
 }
 
 func (r *quickstartFrameworkRun) applyQuickstartResources() {
 	qsNamespace := testNamespaceFor("quickstart-framework")
-	createGitProviderWithURLInNamespace(r.providerName, qsNamespace, e2eGitSecretHTTP(), r.repoURL)
+	createGitProviderWithURLInNamespace(r.providerName, qsNamespace, quickstartRepo.GitSecretHTTP, r.repoURL)
 
 	createGitTargetWithEncryptionOptions(
 		r.targetName,
@@ -183,7 +185,7 @@ func (r *quickstartFrameworkRun) applyQuickstartResources() {
 	err := applyFromTemplate("test/e2e/templates/watchrule.tmpl", watchRuleData, qsNamespace)
 	Expect(err).NotTo(HaveOccurred(), "failed to apply quickstart watchrule")
 
-	createGitProviderWithURLInNamespace(r.invalidProvName, qsNamespace, e2eGitSecretInvalid(), r.repoURL)
+	createGitProviderWithURLInNamespace(r.invalidProvName, qsNamespace, quickstartRepo.GitSecretInvalid, r.repoURL)
 }
 
 func (r *quickstartFrameworkRun) verifyQuickstartResourcesReady() {
@@ -191,20 +193,6 @@ func (r *quickstartFrameworkRun) verifyQuickstartResourcesReady() {
 	verifyResourceStatus("gitprovider", r.providerName, ns, "True", "Ready", "")
 	verifyResourceStatus("gittarget", r.targetName, ns, "True", "Ready", "")
 	verifyResourceStatus("watchrule", r.watchRuleName, ns, "True", "Ready", "")
-}
-
-func e2eGitSecretHTTP() string {
-	if value := strings.TrimSpace(os.Getenv("E2E_GIT_SECRET_HTTP")); value != "" {
-		return value
-	}
-	return resolveE2EHTTPSecretName(strings.TrimSpace(os.Getenv("E2E_REPO_NAME")))
-}
-
-func e2eGitSecretInvalid() string {
-	if value := strings.TrimSpace(os.Getenv("E2E_GIT_SECRET_INVALID")); value != "" {
-		return value
-	}
-	return resolveE2EInvalidSecretName(strings.TrimSpace(os.Getenv("E2E_REPO_NAME")))
 }
 
 func (r *quickstartFrameworkRun) verifyGeneratedEncryptionSecret() string {

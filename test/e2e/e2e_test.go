@@ -44,24 +44,8 @@ const giteaRepoURLTemplate = "http://gitea-http.gitea-e2e.svc.cluster.local:1300
 const giteaSSHURLTemplate = "ssh://git@gitea-ssh.gitea-e2e.svc.cluster.local:2222/testorg/%s.git"
 const defaultE2EAgeKeyPath = "/tmp/e2e-age-key.txt"
 
-var testRepoName string
-var checkoutDir string
-
-var (
-	gitSecretHTTP    = "git-creds"
-	gitSecretSSH     = "git-creds-ssh"
-	gitSecretInvalid = "git-creds-invalid"
-)
-
-// getRepoUrlHTTP returns the HTTP URL for the test repository.
-func getRepoURLHTTP() string {
-	return fmt.Sprintf(giteaRepoURLTemplate, testRepoName)
-}
-
-// getRepoUrlSSH returns the SSH URL for the test repository.
-func getRepoURLSSH() string {
-	return fmt.Sprintf(giteaSSHURLTemplate, testRepoName)
-}
+// managerRepo holds the file-local repo fixtures for the Manager describe block.
+var managerRepo *RepoArtifacts
 
 var _ = Describe("Manager", Label("manager"), Ordered, func() {
 	var controllerPodName string // Name of first controller pod for logging
@@ -69,36 +53,23 @@ var _ = Describe("Manager", Label("manager"), Ordered, func() {
 
 	// Before running the tests, set up per-run test fixtures.
 	BeforeAll(func() {
-		By("loading Gitea repo + checkout from suite artifacts")
-		testRepoName = strings.TrimSpace(os.Getenv("E2E_REPO_NAME"))
-		checkoutDir = strings.TrimSpace(os.Getenv("E2E_CHECKOUT_DIR"))
-		gitSecretHTTP = strings.TrimSpace(os.Getenv("E2E_GIT_SECRET_HTTP"))
-		gitSecretSSH = strings.TrimSpace(os.Getenv("E2E_GIT_SECRET_SSH"))
-		gitSecretInvalid = strings.TrimSpace(os.Getenv("E2E_GIT_SECRET_INVALID"))
-
-		if gitSecretHTTP == "" {
-			gitSecretHTTP = resolveE2EHTTPSecretName(testRepoName)
-		}
-		if gitSecretSSH == "" {
-			gitSecretSSH = resolveE2ESSHSecretName(testRepoName)
-		}
-		if gitSecretInvalid == "" {
-			gitSecretInvalid = resolveE2EInvalidSecretName(testRepoName)
-		}
-
-		Expect(testRepoName).NotTo(BeEmpty(), "E2E_REPO_NAME must be set by the suite (task e2e-gitea-run-setup)")
-		Expect(checkoutDir).NotTo(BeEmpty(), "E2E_CHECKOUT_DIR must be set by the suite (task e2e-gitea-run-setup)")
-
 		By("setting up Prometheus client for metrics testing")
 		setupPrometheusClient()
 		verifyPrometheusAvailable()
 
-		By("creating test namespace and applying git secrets")
+		By("creating test namespace")
 		testNs = testNamespaceFor("manager")
 		_, _ = kubectlRun("create", "namespace", testNs) // idempotent; ignore AlreadyExists
-		secretsYaml := strings.TrimSpace(os.Getenv("E2E_SECRETS_YAML"))
-		Expect(secretsYaml).NotTo(BeEmpty(), "E2E_SECRETS_YAML must be set by BeforeSuite")
-		_, err := kubectlRunInNamespace(testNs, "apply", "-f", secretsYaml)
+
+		By("setting up Gitea repo and credentials for manager tests")
+		managerRepo = SetupRepo(
+			resolveE2EContext(),
+			testNs,
+			fmt.Sprintf("e2e-manager-%d", GinkgoRandomSeed()),
+		)
+
+		By("applying git secrets to test namespace")
+		_, err := kubectlRunInNamespace(testNs, "apply", "-f", managerRepo.SecretsYAML)
 		Expect(err).NotTo(HaveOccurred(), "failed to apply git secrets to test namespace")
 		applySOPSAgeKeyToNamespace(testNs)
 	})
@@ -345,7 +316,12 @@ var _ = Describe("Manager", Label("manager"), Ordered, func() {
 			By("showing initial controller logs")
 			showControllerLogs("before creating GitProvider")
 
-			createGitProviderWithURLInNamespace(gitProviderName, testNs, gitSecretHTTP, getRepoURLHTTP())
+			createGitProviderWithURLInNamespace(
+				gitProviderName,
+				testNs,
+				managerRepo.GitSecretHTTP,
+				managerRepo.RepoURLHTTP,
+			)
 
 			By("showing controller logs after GitProvider creation")
 			showControllerLogs("after creating GitProvider")
@@ -363,7 +339,12 @@ var _ = Describe("Manager", Label("manager"), Ordered, func() {
 
 		It("should handle GitProvider with invalid credentials", func() {
 			gitProviderName := "gitprovider-invalid-test"
-			createGitProviderWithURLInNamespace(gitProviderName, testNs, gitSecretInvalid, getRepoURLHTTP())
+			createGitProviderWithURLInNamespace(
+				gitProviderName,
+				testNs,
+				managerRepo.GitSecretInvalid,
+				managerRepo.RepoURLHTTP,
+			)
 			verifyResourceStatus("gitprovider", gitProviderName, testNs, "False", "ConnectionFailed", "")
 			_, _ = kubectlRunInNamespace(testNs, "delete", "gitprovider", gitProviderName, "--ignore-not-found=true")
 		})
@@ -372,7 +353,12 @@ var _ = Describe("Manager", Label("manager"), Ordered, func() {
 			gitProviderName := "gitprovider-branch-test"
 
 			// GitProvider should be Ready=True (validates connectivity, not branch existence)
-			createGitProviderWithURLInNamespace(gitProviderName, testNs, gitSecretHTTP, getRepoURLHTTP())
+			createGitProviderWithURLInNamespace(
+				gitProviderName,
+				testNs,
+				managerRepo.GitSecretHTTP,
+				managerRepo.RepoURLHTTP,
+			)
 			verifyResourceStatus(
 				"gitprovider", gitProviderName, testNs, "True", "Ready", "Repository connectivity validated",
 			)
@@ -395,7 +381,7 @@ var _ = Describe("Manager", Label("manager"), Ordered, func() {
 			showControllerLogs("before SSH test")
 
 			By("📋 Checking SSH secret exists")
-			secretOutput, err := kubectlRunInNamespace(testNs, "get", "secret", gitSecretSSH, "-o", "yaml")
+			secretOutput, err := kubectlRunInNamespace(testNs, "get", "secret", managerRepo.GitSecretSSH, "-o", "yaml")
 			if err != nil {
 				fmt.Printf("❌ SSH secret not found: %v\n", err)
 			} else {
@@ -407,7 +393,12 @@ var _ = Describe("Manager", Label("manager"), Ordered, func() {
 				)
 			}
 
-			createGitProviderWithURLInNamespace(gitProviderName, testNs, gitSecretSSH, getRepoURLSSH())
+			createGitProviderWithURLInNamespace(
+				gitProviderName,
+				testNs,
+				managerRepo.GitSecretSSH,
+				managerRepo.RepoURLSSH,
+			)
 
 			By("🔍 Controller logs after SSH GitProvider creation")
 			showControllerLogs("after SSH GitProvider creation")
@@ -424,7 +415,12 @@ var _ = Describe("Manager", Label("manager"), Ordered, func() {
 
 		It("should handle a normal and healthy GitProvider", Label("smoke"), func() {
 			gitProviderName := "gitprovider-normal"
-			createGitProviderWithURLInNamespace(gitProviderName, testNs, gitSecretHTTP, getRepoURLHTTP())
+			createGitProviderWithURLInNamespace(
+				gitProviderName,
+				testNs,
+				managerRepo.GitSecretHTTP,
+				managerRepo.RepoURLHTTP,
+			)
 			verifyResourceStatus(
 				"gitprovider", gitProviderName, testNs, "True", "Ready", "Repository connectivity validated",
 			)
@@ -512,14 +508,14 @@ var _ = Describe("Manager", Label("manager"), Ordered, func() {
 			By("verifying Secret file is committed and does not contain plaintext data")
 			verifyEncryptedSecretCommitted := func(g Gomega) {
 				pullCmd := exec.Command("git", "pull")
-				pullCmd.Dir = checkoutDir
+				pullCmd.Dir = managerRepo.CheckoutDir
 				pullOutput, pullErr := pullCmd.CombinedOutput()
 				if pullErr != nil {
 					g.Expect(pullErr).NotTo(HaveOccurred(),
 						fmt.Sprintf("Should successfully pull latest changes. Output: %s", string(pullOutput)))
 				}
 
-				expectedFile := filepath.Join(checkoutDir,
+				expectedFile := filepath.Join(managerRepo.CheckoutDir,
 					"e2e/secret-encryption-test",
 					fmt.Sprintf("v1/secrets/%s/%s.sops.yaml", testNs, secretName))
 				content, readErr := os.ReadFile(expectedFile)
@@ -527,7 +523,7 @@ var _ = Describe("Manager", Label("manager"), Ordered, func() {
 				g.Expect(string(content)).To(ContainSubstring("sops:"))
 				g.Expect(string(content)).NotTo(ContainSubstring("do-not-commit"))
 
-				bootstrapSOPSFile := filepath.Join(checkoutDir, "e2e/secret-encryption-test", ".sops.yaml")
+				bootstrapSOPSFile := filepath.Join(managerRepo.CheckoutDir, "e2e/secret-encryption-test", ".sops.yaml")
 				bootstrapContent, bootstrapErr := os.ReadFile(bootstrapSOPSFile)
 				g.Expect(bootstrapErr).NotTo(
 					HaveOccurred(),
@@ -638,14 +634,14 @@ var _ = Describe("Manager", Label("manager"), Ordered, func() {
 			By("waiting for auto-generated target bootstrap file to be present")
 			Eventually(func(g Gomega) {
 				pullCmd := exec.Command("git", "pull")
-				pullCmd.Dir = checkoutDir
+				pullCmd.Dir = managerRepo.CheckoutDir
 				pullOutput, pullErr := pullCmd.CombinedOutput()
 				if pullErr != nil {
 					g.Expect(pullErr).NotTo(HaveOccurred(),
 						fmt.Sprintf("Should successfully pull latest changes. Output: %s", string(pullOutput)))
 				}
 
-				bootstrapSOPSFile := filepath.Join(checkoutDir, "e2e/secret-autogen-test", ".sops.yaml")
+				bootstrapSOPSFile := filepath.Join(managerRepo.CheckoutDir, "e2e/secret-autogen-test", ".sops.yaml")
 				bootstrapContent, bootstrapErr := os.ReadFile(bootstrapSOPSFile)
 				g.Expect(bootstrapErr).NotTo(HaveOccurred(),
 					fmt.Sprintf(".sops.yaml must exist at %s", bootstrapSOPSFile))
@@ -679,14 +675,14 @@ var _ = Describe("Manager", Label("manager"), Ordered, func() {
 			By("verifying committed secret is encrypted and decryptable with generated key")
 			verifyEncryptedSecretCommitted := func(g Gomega) {
 				pullCmd := exec.Command("git", "pull")
-				pullCmd.Dir = checkoutDir
+				pullCmd.Dir = managerRepo.CheckoutDir
 				pullOutput, pullErr := pullCmd.CombinedOutput()
 				if pullErr != nil {
 					g.Expect(pullErr).NotTo(HaveOccurred(),
 						fmt.Sprintf("Should successfully pull latest changes. Output: %s", string(pullOutput)))
 				}
 
-				expectedFile := filepath.Join(checkoutDir,
+				expectedFile := filepath.Join(managerRepo.CheckoutDir,
 					"e2e/secret-autogen-test",
 					fmt.Sprintf("v1/secrets/%s/%s.sops.yaml", testNs, secretName))
 				content, readErr := os.ReadFile(expectedFile)
@@ -694,7 +690,7 @@ var _ = Describe("Manager", Label("manager"), Ordered, func() {
 				g.Expect(string(content)).To(ContainSubstring("sops:"))
 				g.Expect(string(content)).NotTo(ContainSubstring("autogen-never-commit-this"))
 
-				bootstrapSOPSFile := filepath.Join(checkoutDir, "e2e/secret-autogen-test", ".sops.yaml")
+				bootstrapSOPSFile := filepath.Join(managerRepo.CheckoutDir, "e2e/secret-autogen-test", ".sops.yaml")
 				bootstrapContent, bootstrapErr := os.ReadFile(bootstrapSOPSFile)
 				g.Expect(bootstrapErr).NotTo(
 					HaveOccurred(),
@@ -725,7 +721,7 @@ var _ = Describe("Manager", Label("manager"), Ordered, func() {
 			gitProviderName := "gitprovider-normal"
 			watchRuleName := "watchrule-configmap-test"
 			configMapName := "test-configmap"
-			uniqueRepoName := testRepoName
+			uniqueRepoName := managerRepo.RepoName
 
 			By("creating WatchRule that monitors ConfigMaps")
 			destName := watchRuleName + "-dest"
@@ -792,7 +788,7 @@ var _ = Describe("Manager", Label("manager"), Ordered, func() {
 				// Pull latest changes from the remote repository
 				By("pulling latest changes from remote repository")
 				pullCmd := exec.Command("git", "pull")
-				pullCmd.Dir = checkoutDir
+				pullCmd.Dir = managerRepo.CheckoutDir
 				// Don't use utils.Run() here because it overwrites cmd.Dir with the project directory
 				pullOutput, pullErr := pullCmd.CombinedOutput()
 				if pullErr != nil {
@@ -801,7 +797,7 @@ var _ = Describe("Manager", Label("manager"), Ordered, func() {
 				}
 
 				// Check for the expected ConfigMap file (new API-aligned path)
-				expectedFile := filepath.Join(checkoutDir,
+				expectedFile := filepath.Join(managerRepo.CheckoutDir,
 					"e2e/configmap-test",
 					fmt.Sprintf("v1/configmaps/%s/%s.yaml", testNs, configMapName))
 				fileInfo, statErr := os.Stat(expectedFile)
@@ -816,7 +812,7 @@ var _ = Describe("Manager", Label("manager"), Ordered, func() {
 
 				// Verify latest commit message contains operation, resource path
 				gitLogCmd := exec.Command("git", "log", "-1", "--pretty=%B")
-				gitLogCmd.Dir = checkoutDir
+				gitLogCmd.Dir = managerRepo.CheckoutDir
 				commitMsg, commitErr := gitLogCmd.CombinedOutput()
 
 				if commitErr != nil {
@@ -831,7 +827,7 @@ var _ = Describe("Manager", Label("manager"), Ordered, func() {
 					"Latest commit message should include resource path")
 
 				gitLogCmd = exec.Command("git", "log", "-1", "--pretty=%an")
-				gitLogCmd.Dir = checkoutDir
+				gitLogCmd.Dir = managerRepo.CheckoutDir
 				authorMsg, commitErr := gitLogCmd.CombinedOutput()
 				if commitErr != nil {
 					g.Expect(commitErr).NotTo(HaveOccurred(),
@@ -857,7 +853,7 @@ var _ = Describe("Manager", Label("manager"), Ordered, func() {
 			gitProviderName := "gitprovider-normal"
 			watchRuleName := "watchrule-delete-test"
 			configMapName := "test-configmap-to-delete"
-			uniqueRepoName := testRepoName
+			uniqueRepoName := managerRepo.RepoName
 
 			By("creating WatchRule that monitors ConfigMaps")
 			destName := watchRuleName + "-dest"
@@ -895,7 +891,7 @@ var _ = Describe("Manager", Label("manager"), Ordered, func() {
 			verifyFileCreated := func(g Gomega) {
 				// Pull latest changes from the remote repository
 				pullCmd := exec.Command("git", "pull")
-				pullCmd.Dir = checkoutDir
+				pullCmd.Dir = managerRepo.CheckoutDir
 				pullOutput, pullErr := pullCmd.CombinedOutput()
 				if pullErr != nil {
 					g.Expect(pullErr).NotTo(HaveOccurred(),
@@ -903,7 +899,7 @@ var _ = Describe("Manager", Label("manager"), Ordered, func() {
 				}
 
 				// Check for the expected ConfigMap file (new API-aligned path)
-				expectedFile := filepath.Join(checkoutDir,
+				expectedFile := filepath.Join(managerRepo.CheckoutDir,
 					"e2e/delete-test",
 					fmt.Sprintf("v1/configmaps/%s/%s.yaml", testNs, configMapName))
 				fileInfo, statErr := os.Stat(expectedFile)
@@ -921,7 +917,7 @@ var _ = Describe("Manager", Label("manager"), Ordered, func() {
 				// Pull latest changes from the remote repository
 				By("pulling latest changes after deletion")
 				pullCmd := exec.Command("git", "pull")
-				pullCmd.Dir = checkoutDir
+				pullCmd.Dir = managerRepo.CheckoutDir
 				pullOutput, pullErr := pullCmd.CombinedOutput()
 				if pullErr != nil {
 					g.Expect(pullErr).NotTo(HaveOccurred(),
@@ -929,7 +925,7 @@ var _ = Describe("Manager", Label("manager"), Ordered, func() {
 				}
 
 				// Check that the ConfigMap file no longer exists (new API-aligned path)
-				expectedFile := filepath.Join(checkoutDir,
+				expectedFile := filepath.Join(managerRepo.CheckoutDir,
 					getBaseFolder(),
 					fmt.Sprintf("v1/configmaps/%s/%s.yaml", testNs, configMapName))
 				_, statErr := os.Stat(expectedFile)
@@ -939,7 +935,7 @@ var _ = Describe("Manager", Label("manager"), Ordered, func() {
 				// Verify git log shows DELETE commit
 				By("verifying git log shows DELETE operation")
 				gitLogCmd := exec.Command("git", "log", "--oneline", "-n", "5")
-				gitLogCmd.Dir = checkoutDir
+				gitLogCmd.Dir = managerRepo.CheckoutDir
 				logOutput, logErr := gitLogCmd.CombinedOutput()
 				g.Expect(logErr).NotTo(HaveOccurred(), "Should be able to read git log")
 				g.Expect(string(logOutput)).To(ContainSubstring("DELETE"),
@@ -1003,7 +999,7 @@ var _ = Describe("Manager", Label("manager"), Ordered, func() {
 			By("verifying CRD YAML file exists in Git repository (NO namespace in path - cluster resource)")
 			verifyGitCommit := func(g Gomega) {
 				pullCmd := exec.Command("git", "pull")
-				pullCmd.Dir = checkoutDir
+				pullCmd.Dir = managerRepo.CheckoutDir
 				pullOutput, pullErr := pullCmd.CombinedOutput()
 				if pullErr != nil {
 					g.Expect(pullErr).NotTo(HaveOccurred(),
@@ -1011,7 +1007,7 @@ var _ = Describe("Manager", Label("manager"), Ordered, func() {
 				}
 
 				// CRDs are cluster-scoped, so path should NOT include namespace
-				expectedFile := filepath.Join(checkoutDir,
+				expectedFile := filepath.Join(managerRepo.CheckoutDir,
 					"e2e/crd-install-test",
 					"apiextensions.k8s.io/v1/customresourcedefinitions/icecreamorders.shop.example.com.yaml")
 				fileInfo, statErr := os.Stat(expectedFile)
@@ -1062,7 +1058,7 @@ var _ = Describe("Manager", Label("manager"), Ordered, func() {
 			Eventually(verifyCRDEstablished, 30*time.Second, time.Second).Should(Succeed())
 
 			crdInstanceName := "alices-order"
-			uniqueRepoName := testRepoName
+			uniqueRepoName := managerRepo.RepoName
 
 			By("creating WatchRule that monitors IceCreamOrder resources")
 			destName := watchRuleName + "-dest"
@@ -1145,14 +1141,14 @@ var _ = Describe("Manager", Label("manager"), Ordered, func() {
 			By("verifying CRD instance YAML file exists in Gitea repository")
 			verifyGitCommit := func(g Gomega) {
 				pullCmd := exec.Command("git", "pull")
-				pullCmd.Dir = checkoutDir
+				pullCmd.Dir = managerRepo.CheckoutDir
 				pullOutput, pullErr := pullCmd.CombinedOutput()
 				if pullErr != nil {
 					g.Expect(pullErr).NotTo(HaveOccurred(),
 						fmt.Sprintf("Should successfully pull latest changes. Output: %s", string(pullOutput)))
 				}
 
-				expectedFile := filepath.Join(checkoutDir,
+				expectedFile := filepath.Join(managerRepo.CheckoutDir,
 					"e2e/icecream-test",
 					fmt.Sprintf("shop.example.com/v1/icecreamorders/%s/%s.yaml", testNs, crdInstanceName))
 				fileInfo, statErr := os.Stat(expectedFile)
@@ -1223,7 +1219,7 @@ var _ = Describe("Manager", Label("manager"), Ordered, func() {
 
 			By("getting current git commit hash")
 			gitRevCmd := exec.Command("git", "rev-parse", "HEAD")
-			gitRevCmd.Dir = checkoutDir
+			gitRevCmd.Dir = managerRepo.CheckoutDir
 			beforeStatusCommit, _ := gitRevCmd.Output()
 
 			By("waiting to ensure no new commit is created from status update")
@@ -1232,12 +1228,12 @@ var _ = Describe("Manager", Label("manager"), Ordered, func() {
 			By("verifying no new commit was created and status is not in Git")
 			verifyStatusNotCommitted := func(g Gomega) {
 				pullCmd := exec.Command("git", "pull")
-				pullCmd.Dir = checkoutDir
+				pullCmd.Dir = managerRepo.CheckoutDir
 				_, _ = pullCmd.CombinedOutput()
 
 				// Check that commit hash hasn't changed
 				gitRevCmd := exec.Command("git", "rev-parse", "HEAD")
-				gitRevCmd.Dir = checkoutDir
+				gitRevCmd.Dir = managerRepo.CheckoutDir
 				afterStatusCommit, err := gitRevCmd.Output()
 				g.Expect(err).NotTo(HaveOccurred())
 
@@ -1245,7 +1241,7 @@ var _ = Describe("Manager", Label("manager"), Ordered, func() {
 				By(fmt.Sprintf("Commit after status:  %s", string(afterStatusCommit)))
 
 				// Read the file again to ensure status is still not present
-				expectedFile := filepath.Join(checkoutDir,
+				expectedFile := filepath.Join(managerRepo.CheckoutDir,
 					"e2e/icecream-test",
 					fmt.Sprintf("shop.example.com/v1/icecreamorders/%s/%s.yaml", testNs, crdInstanceName))
 				content, readErr := os.ReadFile(expectedFile)
@@ -1273,7 +1269,7 @@ var _ = Describe("Manager", Label("manager"), Ordered, func() {
 
 		It("should update Git file when IceCreamOrder is modified via WatchRule", func() {
 			crdInstanceName := "bobs-order"
-			uniqueRepoName := testRepoName
+			uniqueRepoName := managerRepo.RepoName
 
 			By("creating initial IceCreamOrder instance")
 			crdInstanceData := struct {
@@ -1310,10 +1306,10 @@ var _ = Describe("Manager", Label("manager"), Ordered, func() {
 			By("waiting for initial CRD instance file to appear in Git")
 			verifyInitialFile := func(g Gomega) {
 				pullCmd := exec.Command("git", "pull")
-				pullCmd.Dir = checkoutDir
+				pullCmd.Dir = managerRepo.CheckoutDir
 				_, _ = pullCmd.CombinedOutput()
 
-				expectedFile := filepath.Join(checkoutDir,
+				expectedFile := filepath.Join(managerRepo.CheckoutDir,
 					"e2e/icecream-test",
 					fmt.Sprintf("shop.example.com/v1/icecreamorders/%s/%s.yaml", testNs, crdInstanceName))
 				content, readErr := os.ReadFile(expectedFile)
@@ -1359,10 +1355,10 @@ var _ = Describe("Manager", Label("manager"), Ordered, func() {
 			By("verifying updated CRD instance content in Git")
 			verifyUpdatedFile := func(g Gomega) {
 				pullCmd := exec.Command("git", "pull")
-				pullCmd.Dir = checkoutDir
+				pullCmd.Dir = managerRepo.CheckoutDir
 				_, _ = pullCmd.CombinedOutput()
 
-				expectedFile := filepath.Join(checkoutDir,
+				expectedFile := filepath.Join(managerRepo.CheckoutDir,
 					"e2e/icecream-test",
 					fmt.Sprintf("shop.example.com/v1/icecreamorders/%s/%s.yaml", testNs, crdInstanceName))
 				content, readErr := os.ReadFile(expectedFile)
@@ -1388,7 +1384,7 @@ var _ = Describe("Manager", Label("manager"), Ordered, func() {
 
 		It("should delete Git file when IceCreamOrder is deleted via WatchRule", func() {
 			crdInstanceName := "charlies-order"
-			uniqueRepoName := testRepoName
+			uniqueRepoName := managerRepo.RepoName
 
 			By("creating IceCreamOrder instance")
 			crdInstanceData := struct {
@@ -1425,10 +1421,10 @@ var _ = Describe("Manager", Label("manager"), Ordered, func() {
 			By("waiting for CR file to appear in Git repository")
 			verifyFileCreated := func(g Gomega) {
 				pullCmd := exec.Command("git", "pull")
-				pullCmd.Dir = checkoutDir
+				pullCmd.Dir = managerRepo.CheckoutDir
 				_, _ = pullCmd.CombinedOutput()
 
-				expectedFile := filepath.Join(checkoutDir,
+				expectedFile := filepath.Join(managerRepo.CheckoutDir,
 					"e2e/icecream-test",
 					fmt.Sprintf("shop.example.com/v1/icecreamorders/%s/%s.yaml", testNs, crdInstanceName))
 				fileInfo, statErr := os.Stat(expectedFile)
@@ -1445,10 +1441,10 @@ var _ = Describe("Manager", Label("manager"), Ordered, func() {
 			By("verifying CRD instance file is deleted from Git repository")
 			verifyFileDeleted := func(g Gomega) {
 				pullCmd := exec.Command("git", "pull")
-				pullCmd.Dir = checkoutDir
+				pullCmd.Dir = managerRepo.CheckoutDir
 				_, _ = pullCmd.CombinedOutput()
 
-				expectedFile := filepath.Join(checkoutDir,
+				expectedFile := filepath.Join(managerRepo.CheckoutDir,
 					"e2e/icecream-test",
 					fmt.Sprintf("shop.example.com/v1/icecreamorders/%s/%s.yaml", testNs, crdInstanceName))
 				_, statErr := os.Stat(expectedFile)
@@ -1458,7 +1454,7 @@ var _ = Describe("Manager", Label("manager"), Ordered, func() {
 
 				By("verifying git log shows DELETE commit")
 				gitLogCmd := exec.Command("git", "log", "--oneline", "-n", "5")
-				gitLogCmd.Dir = checkoutDir
+				gitLogCmd.Dir = managerRepo.CheckoutDir
 				logOutput, logErr := gitLogCmd.CombinedOutput()
 				g.Expect(logErr).NotTo(HaveOccurred(), "Should be able to read git log")
 				g.Expect(string(logOutput)).To(ContainSubstring("DELETE"),
@@ -1501,10 +1497,10 @@ var _ = Describe("Manager", Label("manager"), Ordered, func() {
 			By("verifying CRD file exists in Git before deletion")
 			verifyFileExists := func(g Gomega) {
 				pullCmd := exec.Command("git", "pull")
-				pullCmd.Dir = checkoutDir
+				pullCmd.Dir = managerRepo.CheckoutDir
 				_, _ = pullCmd.CombinedOutput()
 
-				expectedFile := filepath.Join(checkoutDir,
+				expectedFile := filepath.Join(managerRepo.CheckoutDir,
 					"e2e/crd-delete-test",
 					"apiextensions.k8s.io/v1/customresourcedefinitions/icecreamorders.shop.example.com.yaml")
 				_, statErr := os.Stat(expectedFile)
@@ -1518,10 +1514,10 @@ var _ = Describe("Manager", Label("manager"), Ordered, func() {
 			By("verifying CRD file is deleted from Git repository")
 			verifyFileDeleted := func(g Gomega) {
 				pullCmd := exec.Command("git", "pull")
-				pullCmd.Dir = checkoutDir
+				pullCmd.Dir = managerRepo.CheckoutDir
 				_, _ = pullCmd.CombinedOutput()
 
-				expectedFile := filepath.Join(checkoutDir,
+				expectedFile := filepath.Join(managerRepo.CheckoutDir,
 					"e2e/crd-delete-test",
 					"apiextensions.k8s.io/v1/customresourcedefinitions/icecreamorders.shop.example.com.yaml")
 				_, statErr := os.Stat(expectedFile)
@@ -1530,7 +1526,7 @@ var _ = Describe("Manager", Label("manager"), Ordered, func() {
 
 				// Verify git log shows DELETE commit
 				gitLogCmd := exec.Command("git", "log", "--oneline", "-n", "5")
-				gitLogCmd.Dir = checkoutDir
+				gitLogCmd.Dir = managerRepo.CheckoutDir
 				logOutput, logErr := gitLogCmd.CombinedOutput()
 				g.Expect(logErr).NotTo(HaveOccurred(), "Should be able to read git log")
 				g.Expect(string(logOutput)).To(ContainSubstring("DELETE"),
@@ -1541,10 +1537,10 @@ var _ = Describe("Manager", Label("manager"), Ordered, func() {
 			By("verifying the deleted CRD file does not reappear after terminating updates")
 			Consistently(func(g Gomega) {
 				pullCmd := exec.Command("git", "pull")
-				pullCmd.Dir = checkoutDir
+				pullCmd.Dir = managerRepo.CheckoutDir
 				_, _ = pullCmd.CombinedOutput()
 
-				expectedFile := filepath.Join(checkoutDir,
+				expectedFile := filepath.Join(managerRepo.CheckoutDir,
 					"e2e/crd-delete-test",
 					"apiextensions.k8s.io/v1/customresourcedefinitions/icecreamorders.shop.example.com.yaml")
 				_, statErr := os.Stat(expectedFile)

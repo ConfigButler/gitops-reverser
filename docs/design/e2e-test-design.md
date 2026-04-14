@@ -9,11 +9,31 @@ The important mental model is:
 
 1. One `go test ./test/e2e/` invocation runs one Go package.
 2. That package has one `BeforeSuite`.
-3. `BeforeSuite` prepares one shared cluster install and one shared active Git repo for that whole run.
-4. Individual suites then create their own namespaces and resource paths inside that shared run.
+3. `BeforeSuite` prepares one shared cluster install for that whole run.
+4. Each repo-using e2e test file creates its own Gitea repo (via `SetupRepo(...)`) in its own test namespace.
+
+Repo fixtures are therefore file-local, not package-global. See
+[e2e-repo-in-namespace-plan.md](./e2e-repo-in-namespace-plan.md) and
+[e2e-repo-in-namespace-follow-up-plan.md](./e2e-repo-in-namespace-follow-up-plan.md) for the migration record.
 
 That sharing is intentional, but it also means a later suite can break an earlier suite's shared fixtures if the
 test harness treats run-scoped artifacts like install-scoped artifacts.
+
+## Cross-Cutting Requirements
+
+These requirements should shape any further e2e reorganization:
+
+- all e2e suites should remain visible and browsable in the VS Code Testing pane
+- top-level `Describe` blocks should be independently runnable and safe to execute in parallel when selected together
+- we should keep a high-signal subset of e2e coverage that finishes within 10 minutes on a normal local development run
+- the `Taskfile` is a core part of the harness and remains the source of truth for preparing the real k3d cluster and installing required resources
+
+In practice, that means:
+
+- IDE discoverability matters as much as CLI convenience; the suite layout should stay compatible with standard Go and Ginkgo test discovery instead of hiding scenarios behind shell-only wrappers
+- shared setup from `BeforeSuite` may stay, but mutable test state must be isolated so one `Describe` does not depend on another `Describe` having run first
+- the default smoke path and focused Task targets should optimize for the "relevant subset under 10 minutes" goal, while full confidence runs can remain broader and slower
+- direct `go test` runs should continue to delegate environment preparation to Task targets instead of duplicating cluster bootstrap logic in Go
 
 ## Install Mode Strategy
 
@@ -38,7 +58,7 @@ That means:
 
 ## Current Entry Points
 
-These are the Task entry points on the current worktree:
+These are the canonical Task entry points on the current worktree:
 
 | Command | Purpose |
 |---|---|
@@ -53,7 +73,9 @@ These are the Task entry points on the current worktree:
 | `task test-e2e-bi` | Bi-directional Flux plus gitops-reverser scenario |
 | `task test-e2e-demo` | Demo repo preparation flow |
 
-`go test ./test/e2e/ -v -ginkgo.v` also works directly, because `BeforeSuite` drives setup through Task.
+`go test ./test/e2e/ -v -ginkgo.v` also works directly, because `BeforeSuite` drives setup through Task. That is
+intentional: Task remains the source of truth for creating the real k3d environment, preparing shared services, and
+installing the system under test.
 
 The intended interpretation of these entry points is:
 
@@ -144,7 +166,8 @@ Those namespaces are created in `BeforeAll` and removed in `AfterAll` for the su
 
 An important detail here is that the suite is responsible for seeding those namespaces first:
 
-- the shared git credentials from `E2E_SECRETS_YAML` are applied into each test namespace
+- each repo-using file calls `SetupRepo(ctx, testNamespace, repoName)` and applies the returned
+  `RepoArtifacts.SecretsYAML` into its test namespace
 - the shared `sops-age-key` is copied into each test namespace when encryption is needed
 
 `GitProvider` and `GitTarget` do not create those Secrets by themselves. They reference Secrets that the test harness
@@ -152,63 +175,50 @@ has already copied into the target namespace.
 
 ## BeforeSuite Contract
 
-The central setup happens in [test/e2e/e2e_suite_test.go](/workspaces/gitops-reverser/test/e2e/e2e_suite_test.go:72).
+The central setup happens in [test/e2e/e2e_suite_test.go](/workspaces/gitops-reverser/test/e2e/e2e_suite_test.go).
 
-`ensureE2EPrepared()` does three main things:
+`ensureE2EPrepared()` is intentionally narrow:
 
-1. Runs `task prepare-e2e`
-2. Runs `task e2e-gitea-run-setup`
-3. Exports environment variables used by all suites
+1. Runs `task prepare-e2e` (cluster, controller install, webhook TLS, age key, port-forwards)
+2. Sets the kubectl context
+3. Ensures `E2E_AGE_KEY_FILE` points at the prepared age key
 
-Important exported variables:
+`BeforeSuite` does **not** bootstrap any Gitea repo. Per-file repo setup is the responsibility of each
+repo-using test file via [`SetupRepo(...)`](/workspaces/gitops-reverser/test/e2e/suite_repo_test.go).
 
-- `E2E_REPO_NAME`
-- `E2E_CHECKOUT_DIR`
-- `E2E_GIT_SECRET_HTTP`
-- `E2E_GIT_SECRET_SSH`
-- `E2E_GIT_SECRET_INVALID`
-- `E2E_SECRETS_YAML`
+The only cluster-level variable still consumed across files is:
+
 - `E2E_AGE_KEY_FILE`
 
-Every suite should consume those values instead of inventing its own repo setup.
+Repo state (names, checkout paths, Secret names, optional receiver webhook info) flows through a typed
+`RepoArtifacts` struct returned by `SetupRepo`, not through package-global env vars.
 
-## Repo Model: One Repo Per Package Run
+## Repo Model: One Repo Per E2E Test File
 
-The most important design detail is that almost all suites share one repo for the entire package run.
+Each repo-using e2e file owns its own repo:
 
-The repo name comes from [test/e2e/e2e_suite_test.go](/workspaces/gitops-reverser/test/e2e/e2e_suite_test.go:127):
+| File | Test namespace | Repo |
+|---|---|---|
+| `e2e_test.go` | `testNamespaceFor("manager")` | `e2e-manager-<seed>` |
+| `signing_e2e_test.go` | `testNamespaceFor("signing")` | `e2e-signing-<seed>` |
+| `audit_redis_e2e_test.go` | `testNamespaceFor("audit-consumer")` | `e2e-audit-redis-<seed>` |
+| `quickstart_framework_e2e_test.go` | `testNamespaceFor("quickstart-framework")` | `e2e-quickstart-framework-<seed>` |
+| `bi_directional_e2e_test.go` | `testNamespaceFor("bi-directional")` | `e2e-bi-directional-<seed>` |
+| `demo_e2e_test.go` | fixed `vote` | fixed `demo` |
+| `image_refresh_test.go` | install namespace only | no repo |
 
-- default: `e2e-test-<GinkgoRandomSeed>`
-- override: `REPO_NAME=...`
+Each file calls `SetupRepo(ctx, testNamespace, repoName)` once in `BeforeAll`, stores the returned
+`*RepoArtifacts` in a file-local variable, and applies `artifacts.SecretsYAML` to the test namespace.
 
-That repo is created once in `BeforeSuite`, not once per `Describe`.
+Repo stamps live under:
 
-This means:
+- `.stamps/cluster/<ctx>/<test-namespace>/git-<repo>/`
 
-- `manager`, `signing`, `audit-redis`, `quickstart-framework`, and `bi-directional` normally share the same active repo
-- they avoid collisions by writing into different subpaths inside that repo
-- a suite-level reinstall can break later suites if shared Git artifacts were stored under install-scoped paths
+not under the install namespace.
 
-The dedicated demo flow is the main exception:
-
-- `task test-e2e-demo` forces `REPO_NAME=demo`
-
-## Which Tests Create Their Own Repo?
-
-Short answer: almost none of the suites create their own repo independently.
-
-What actually happens:
-
-- the package-level `BeforeSuite` creates one repo via `e2e-gitea-run-setup`
-- most suites then reuse `E2E_REPO_NAME`, `E2E_CHECKOUT_DIR`, and `E2E_SECRETS_YAML`
-- quickstart explicitly documents this reuse in code
-  - see [test/e2e/quickstart_framework_e2e_test.go](/workspaces/gitops-reverser/test/e2e/quickstart_framework_e2e_test.go:153)
-
-So if you were wondering whether some newer suites forgot to create their own repo:
-
-- yes, newer suites generally do not create their own repo
-- but that is by design
-- they are expected to reuse the suite-level repo
+The `audit_redis_e2e_test.go` file additionally uses a `sync.Once`-backed `ensureAuditRedisRepo()`
+helper so either of its two top-level `Describe` blocks can initialize the shared file-local repo
+first without cross-container ordering coupling.
 
 ## Why CI Could Pass Even If This Was Fragile
 
