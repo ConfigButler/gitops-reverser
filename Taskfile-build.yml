@@ -20,6 +20,8 @@ vars:
 tasks:
   manifests:
     desc: Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects
+    deps:
+      - generate
     sources:
       - api/**/*.go
       - internal/**/*.go
@@ -47,6 +49,8 @@ tasks:
 
   helm-sync:
     desc: Sync CRDs and roles from config/crd/bases into the Helm chart
+    deps:
+      - manifests
     sources:
       - api/**/*.go
       - internal/**/*.go
@@ -61,7 +65,6 @@ tasks:
       - charts/gitops-reverser/crds/configbutler.*.yaml
       - charts/gitops-reverser/config/role.yaml
     cmds:
-      - task: manifests
       - |
         mkdir -p charts/gitops-reverser/crds charts/gitops-reverser/config
         rm -f charts/gitops-reverser/crds/*.yaml charts/gitops-reverser/config/*.yaml
@@ -106,12 +109,12 @@ tasks:
 
   test:
     desc: Run unit tests
+    deps:
+      - manifests
+      - fmt
+      - vet
+      - setup-envtest
     cmds:
-      - task: manifests
-      - task: generate
-      - task: fmt
-      - task: vet
-      - task: setup-envtest
       - |
         export KUBEBUILDER_ASSETS="$({{.ENVTEST}} use {{.ENVTEST_K8S_VERSION}} --bin-dir "$(pwd)/bin" -p path)"
         go test $(go list ./... | grep -v /e2e) -coverprofile cover.out
@@ -133,20 +136,20 @@ tasks:
 
   build:
     desc: Build manager binary
+    deps:
+      - manifests
+      - fmt
+      - vet
     cmds:
-      - task: manifests
-      - task: generate
-      - task: fmt
-      - task: vet
       - go build -o bin/manager cmd/main.go
 
   run:
     desc: Run a controller from your host
+    deps:
+      - manifests
+      - fmt
+      - vet
     cmds:
-      - task: manifests
-      - task: generate
-      - task: fmt
-      - task: vet
       - go run ./cmd/main.go
 
   docker-build:
@@ -177,8 +180,6 @@ tasks:
     desc: Generate consolidated YAML from the Helm chart
     deps:
       - helm-sync
-    aliases:
-      - dist:install
     sources:
       - api/**/*.go
       - internal/**/*.go

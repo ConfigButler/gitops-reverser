@@ -37,7 +37,7 @@ const (
 	defaultE2EValkeyPassword = "e2e-valkey-password"
 )
 
-var _ = Describe("Audit Redis Queue", Label("audit-redis"), Ordered, func() {
+var _ = Describe("Audit Redis Queue", Label("audit-redis", "smoke"), Ordered, func() {
 	var testNs string
 
 	BeforeAll(func() {
@@ -130,7 +130,7 @@ var _ = Describe("Audit Redis Queue", Label("audit-redis"), Ordered, func() {
 
 // auditConsumerDescribe holds the consumer-path e2e test.
 // Label: audit-redis (runs together with the producer test via task test-e2e-audit-redis).
-var _ = Describe("Audit Redis Consumer", Label("audit-redis"), Ordered, func() {
+var _ = Describe("Audit Redis Consumer", Label("audit-redis", "smoke"), Ordered, func() {
 	var (
 		testNs        string
 		valkeyClient  *redis.Client

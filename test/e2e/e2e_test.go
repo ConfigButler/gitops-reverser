@@ -63,7 +63,7 @@ func getRepoURLSSH() string {
 	return fmt.Sprintf(giteaSSHURLTemplate, testRepoName)
 }
 
-var _ = Describe("Manager", Ordered, func() {
+var _ = Describe("Manager", Label("manager"), Ordered, func() {
 	var controllerPodName string // Name of first controller pod for logging
 	var testNs string
 
@@ -125,7 +125,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 	Context("Manager", func() {
 
-		It("should run successfully", func() {
+		It("should run successfully", Label("smoke"), func() {
 			By("validating that the gitops-reverser pods are running as expected")
 			verifyControllerUp := func(g Gomega) {
 				// Get the names of the gitops-reverser pods
@@ -163,7 +163,7 @@ var _ = Describe("Manager", Ordered, func() {
 			Eventually(verifyControllerUp).Should(Succeed())
 		})
 
-		It("should expose the admission and metrics service", func() {
+		It("should expose the admission and metrics service", Label("smoke"), func() {
 			By("verifying controller service exists")
 			_, err := kubectlRunInNamespace(namespace, "get", "svc", controllerServiceName)
 			Expect(err).NotTo(HaveOccurred(), "Controller service should exist")
@@ -230,7 +230,7 @@ var _ = Describe("Manager", Ordered, func() {
 			}, 30*time.Second).Should(Succeed())
 		})
 
-		It("should ensure the metrics endpoint is serving metrics", func() {
+		It("should ensure the metrics endpoint is serving metrics", Label("smoke"), func() {
 			By("validating that the controller service is available for metrics")
 			_, err := kubectlRunInNamespace(namespace, "get", "service", controllerServiceName)
 			Expect(err).NotTo(HaveOccurred(), "Controller service should exist")
@@ -278,7 +278,7 @@ var _ = Describe("Manager", Ordered, func() {
 			fmt.Printf("📊 Inspect metrics: %s\n", getPrometheusURL())
 		})
 
-		It("should receive audit webhook events from kube-apiserver", func() {
+		It("should receive audit webhook events from kube-apiserver", Label("smoke"), func() {
 			By("recording baseline audit event count")
 			baselineAuditEvents, err := queryPrometheus("sum(gitopsreverser_audit_events_received_total) or vector(0)")
 			Expect(err).NotTo(HaveOccurred())
@@ -339,7 +339,7 @@ var _ = Describe("Manager", Ordered, func() {
 			)
 		})
 
-		It("should validate GitProvider with real Gitea repository", func() {
+		It("should validate GitProvider with real Gitea repository", Label("smoke"), func() {
 			gitProviderName := "gitprovider-e2e-test"
 
 			By("showing initial controller logs")
@@ -422,7 +422,7 @@ var _ = Describe("Manager", Ordered, func() {
 			_, _ = kubectlRunInNamespace(testNs, "delete", "gitprovider", gitProviderName, "--ignore-not-found=true")
 		})
 
-		It("should handle a normal and healthy GitProvider", func() {
+		It("should handle a normal and healthy GitProvider", Label("smoke"), func() {
 			gitProviderName := "gitprovider-normal"
 			createGitProviderWithURLInNamespace(gitProviderName, testNs, gitSecretHTTP, getRepoURLHTTP())
 			verifyResourceStatus(
@@ -459,7 +459,7 @@ var _ = Describe("Manager", Ordered, func() {
 			cleanupGitTarget(destName, testNs)
 		})
 
-		It("should commit encrypted Secret manifests when WatchRule includes secrets", func() {
+		It("should commit encrypted Secret manifests when WatchRule includes secrets", Label("smoke"), func() {
 			gitProviderName := "gitprovider-normal"
 			watchRuleName := "watchrule-secret-encryption-test"
 			secretName := "test-secret-encryption"
@@ -721,7 +721,7 @@ var _ = Describe("Manager", Ordered, func() {
 			cleanupGitTarget(destName, testNs)
 		})
 
-		It("should create Git commit when ConfigMap is added via WatchRule", func() {
+		It("should create Git commit when ConfigMap is added via WatchRule", Label("smoke"), func() {
 			gitProviderName := "gitprovider-normal"
 			watchRuleName := "watchrule-configmap-test"
 			configMapName := "test-configmap"
@@ -853,7 +853,7 @@ var _ = Describe("Manager", Ordered, func() {
 				configMapName, uniqueRepoName)
 		})
 
-		It("should delete Git file when ConfigMap is deleted via WatchRule", func() {
+		It("should delete Git file when ConfigMap is deleted via WatchRule", Label("smoke"), func() {
 			gitProviderName := "gitprovider-normal"
 			watchRuleName := "watchrule-delete-test"
 			configMapName := "test-configmap-to-delete"
@@ -956,7 +956,7 @@ var _ = Describe("Manager", Ordered, func() {
 				configMapName, uniqueRepoName)
 		})
 
-		It("should create Git commit when IceCreamOrder CRD is installed via ClusterWatchRule", func() {
+		It("should create Git commit when IceCreamOrder CRD is installed via ClusterWatchRule", Label("smoke"), func() {
 			gitProviderName := "gitprovider-normal"
 			clusterWatchRuleName := "clusterwatchrule-crd-install"
 			crdName := "icecreamorders.shop.example.com"

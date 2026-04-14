@@ -30,8 +30,8 @@ cleanup_ns() {
 	fi
 
 	if [[ -d "${base}/${ns}" ]]; then
-		echo "  rm -rf ${base}/${ns}"
-		rm -rf "${base:?}/${ns}" || true
+		echo "  removing install-scoped stamp data under ${base}/${ns} but preserving git-* run fixtures"
+		find "${base}/${ns}" -mindepth 1 -maxdepth 1 ! -name 'git-*' -exec rm -rf {} + 2>/dev/null || true
 	fi
 }
 

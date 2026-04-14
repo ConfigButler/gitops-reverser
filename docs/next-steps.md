@@ -1,0 +1,4 @@
+For the adoption of gitops-reverser it would be much better to keep the audit webhook path the advanced route: it's the only way to get the actual names. But if you don't care about names you can also live a happy live with the watch route. But we should support this: it should not be to hard to get that working. It's also a much better story for the main README.md
+    The simple approach should also be to not sign the commits. Where the more advanced route would allow you to do that as well.
+
+The other hard thing to get right is the branch behaviour: the plans that I wrote about on getting a userinterface that's interactive are very cool. They actually would need to reintroduce the mutating webhook so that we can add the annotations behaviour: and this also makes it pretty hard to fully rely on the actor grouping: since we only get the actors name after the whole fact is done. So adding annotioatns will be an afterthought after all.

@@ -131,7 +131,7 @@ func resolveE2ERepoName() string {
 	return "e2e-test-" + strconv.FormatInt(GinkgoRandomSeed(), 10)
 }
 
-func exportGiteaArtifacts(ctx, namespace, repoName string) {
+func exportGiteaArtifacts(ctx, namespace string, repoName string) {
 	projectDir, err := utils.GetProjectDir()
 	Expect(err).NotTo(HaveOccurred(), "failed to resolve project directory for gitea artifacts")
 
