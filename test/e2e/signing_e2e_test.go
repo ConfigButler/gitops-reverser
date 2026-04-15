@@ -30,6 +30,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	reverserGit "github.com/ConfigButler/gitops-reverser/internal/git"
+	"github.com/ConfigButler/gitops-reverser/internal/giteaclient"
 )
 
 // signingGitProviderData holds template data for a signing-enabled GitProvider.
@@ -85,6 +86,7 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 
 	It("should produce per-event commits verifiable locally and by Gitea (generated key)",
 		Label("smoke"), func() {
+			gitea := giteaTestInstance()
 			providerName := "signing-per-event"
 			signingSecretName := "signing-key-per-event"
 			destName := providerName + "-dest"
@@ -129,7 +131,7 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 			verifyResourceStatus("gitprovider", providerName, testNs, "True", "Ready", "")
 
 			By("registering the generated signing public key with Gitea")
-			registered, err := RegisterSigningPublicKeyAs(signingRepo.User, signingPublicKey,
+			registered, err := gitea.RegisterSigningPublicKey(signingRepo.User, signingPublicKey,
 				"e2e-signing-generated-"+providerName)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(registered).NotTo(BeNil())
@@ -188,6 +190,7 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 	// ── Test 2: BYOK signing — user-provided key, local + Gitea verification ─
 
 	It("should produce per-event commits verifiable locally and by Gitea (BYOK)", Label("byok"), func() {
+		gitea := giteaTestInstance()
 		providerName := "signing-byok"
 		signingSecretName := "signing-key-byok"
 		destName := providerName + "-dest"
@@ -213,7 +216,11 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 		applySigningSecret(testNs, signingSecretName, privateKeyPEM, publicKey)
 
 		By("registering the BYOK signing public key with Gitea")
-		registered, err := RegisterSigningPublicKeyAs(signingRepo.User, publicKeyStr, "e2e-signing-byok-"+providerName)
+		registered, err := gitea.RegisterSigningPublicKey(
+			signingRepo.User,
+			publicKeyStr,
+			"e2e-signing-byok-"+providerName,
+		)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(registered).NotTo(BeNil())
 
@@ -253,7 +260,8 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 			g.Expect(statusKey).To(HavePrefix("ssh-"))
 		}).Should(Succeed())
 		// status.signingPublicKey must match the BYOK public key we provisioned.
-		Expect(normalizeAuthorizedKey(statusKey)).To(Equal(normalizeAuthorizedKey(publicKeyStr)),
+		Expect(giteaclient.NormalizeAuthorizedKey(statusKey)).To(
+			Equal(giteaclient.NormalizeAuthorizedKey(publicKeyStr)),
 			"GitProvider.status.signingPublicKey should mirror the BYOK public key")
 
 		By("creating GitTarget and WatchRule")

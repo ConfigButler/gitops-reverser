@@ -27,6 +27,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/ConfigButler/gitops-reverser/internal/giteaclient"
 	"github.com/ConfigButler/gitops-reverser/test/utils"
 )
 
@@ -44,7 +45,7 @@ type RepoArtifacts struct {
 	GitSecretInvalid   string
 	ReceiverWebhookURL string
 	ReceiverWebhookID  string
-	User               *giteaTestUser
+	User               *giteaclient.TestUser
 }
 
 // SetupRepo runs `task e2e-gitea-run-setup` for the given context, namespace,
@@ -69,13 +70,14 @@ func SetupRepo(ctx, namespace, repoName string) *RepoArtifacts {
 	_, _ = fmt.Fprintf(GinkgoWriter, "%s", output)
 
 	artifacts := readRepoArtifacts(ctx, namespace, repoName)
+	gitea := giteaTestInstance()
 
 	By(fmt.Sprintf("ensuring dedicated Gitea user exists for repo %q", artifacts.RepoName))
-	user, err := CreateTestUser(repoName)
+	user, err := gitea.EnsureTestUser(repoName)
 	Expect(err).NotTo(HaveOccurred(), "failed to create or reuse test Gitea user for repo %s", repoName)
 
 	By(fmt.Sprintf("ensuring repo user %q is a collaborator on %q", user.Login, artifacts.RepoName))
-	err = EnsureRepoCollaborator(giteaOrg(), artifacts.RepoName, user)
+	err = gitea.EnsureRepoCollaborator(gitea.Org, artifacts.RepoName, user)
 	Expect(err).NotTo(HaveOccurred(), "failed to add collaborator %s to repo %s", user.Login, artifacts.RepoName)
 
 	artifacts.User = user

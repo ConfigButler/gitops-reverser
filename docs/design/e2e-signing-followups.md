@@ -11,6 +11,34 @@ without waiting on the atomic batch investigation.
 
 ---
 
+## Status
+
+Status as of 2026-04-15:
+
+- ✅ Per-repo Gitea users are wired into `SetupRepo(...)`.
+- ✅ `CreateTestUser(repoName)` is idempotent and returns a known usable
+  password through `giteaclient.Client.EnsureUser(...)`.
+- ✅ The signing scenarios use `signingRepo.User` instead of mutating
+  the admin user email.
+- ✅ Both generated-key and BYOK signing scenarios now verify the SSH
+  key through the Gitea web UI before asserting commit verification.
+- ✅ `assertGiteaVerified(...)` now requires `verification.verified ==
+  true` and a signer whose email matches the per-repo user.
+- ✅ Broad validation already passed for this implementation pass:
+  `task lint`, `task test`, `task test-e2e`,
+  `task test-e2e-quickstart-manifest`, and
+  `task test-e2e-quickstart-helm`.
+
+Next recommended continuation point:
+
+1. Add a higher-level `giteaclient` bootstrap helper so the debug CLI
+   and e2e suite stop re-assembling the same verify flow manually.
+2. Add dedicated tests / hardening for `internal/giteaclient/webclient.go`.
+3. Investigate the separate batch-template atomic-commit issue tracked
+   in section 2 below.
+
+---
+
 ## Decisions For The Next Pass
 
 These are the working decisions for the next implementation context:
@@ -24,8 +52,9 @@ These are the working decisions for the next implementation context:
 - Keep the existing transport-SSH setup in
   [hack/e2e/gitea-run-setup.sh](/workspaces/gitops-reverser/hack/e2e/gitea-run-setup.sh)
   unchanged for now. The existing SSH-auth e2e flow still depends on it.
-- Do not tighten `assertGiteaVerified` until the per-repo-user wiring is
-  in place and the signing scenarios pass locally with the new identity.
+- `assertGiteaVerified` is now intentionally strict; future work should
+  preserve the `verified=true` assertion unless a Gitea regression is
+  being investigated.
 
 ---
 
@@ -170,20 +199,19 @@ The signing-user work should be additive first, cleanup second.
 
 ### Implementation order
 
-1. Add `giteaTestUser`, idempotent `CreateTestUser`,
+1. ✅ Add `giteaTestUser`, idempotent `CreateTestUser`,
    `EnsureRepoCollaborator`, and `RegisterSigningPublicKeyAs`.
    No deletion helpers yet. `task test` must pass.
-2. Extend `RepoArtifacts` and wire `SetupRepo` to create or reuse the
+2. ✅ Extend `RepoArtifacts` and wire `SetupRepo` to create or reuse the
    per-repo user and add the collaborator. No cleanup. `task test` must
    pass.
-3. Switch the generated-key and BYOK signing scenarios to consume
+3. ✅ Switch the generated-key and BYOK signing scenarios to consume
    `signingRepo.User`, and remove the admin-email binding from the
-   signing `BeforeAll`. Keep `assertGiteaVerified` lenient for this
-   step. `task test-e2e-signing` must pass.
-4. After both signing scenarios show Gitea verification working with the
+   signing `BeforeAll`. `task test-e2e-signing` must pass.
+4. ✅ After both signing scenarios show Gitea verification working with the
    per-repo identity, tighten `assertGiteaVerified` to require
    `Verified == true`. `task test-e2e-signing` must pass.
-5. Optional cleanup only after the strict assertion is stable:
+5. ⏳ Optional cleanup only after the strict assertion is stable:
    delete dead admin-email helpers if unused. Do not remove the script's
    transport-SSH behavior yet.
 

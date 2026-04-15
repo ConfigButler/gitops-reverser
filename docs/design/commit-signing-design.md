@@ -200,7 +200,7 @@ Work:
    - `secretRef`
    - `generateWhenMissing`
 3. Add `status.signingPublicKey` to `GitProviderStatus`.
-4. Run `make generate` and `make manifests` once the API code is in place.
+4. Run `task generate` and `task manifests` once the API code is in place.
 
 Important constraint:
 

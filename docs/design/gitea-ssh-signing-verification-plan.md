@@ -11,6 +11,44 @@ Written 2026-04-15 after a live debugging session against
 
 ---
 
+## Implementation Status
+
+Status as of 2026-04-15:
+
+- ✅ `test/e2e/gitea_api_test.go` now uses thin wrappers over
+  `internal/giteaclient` instead of keeping its own open-coded Gitea
+  HTTP client.
+- ✅ `CreateTestUser(...)` now goes through
+  `giteaclient.Client.EnsureUser(...)`, so reruns get a known usable
+  password instead of the old "user exists but password is unknown"
+  dead-end.
+- ✅ `SetupRepo(...)` continues to create a per-repo Gitea user and add
+  it as collaborator on the shared `testorg/<repo>` repository.
+- ✅ The generated-key and BYOK signing e2e scenarios now perform the
+  full SSH-key verification flow against the Gitea web UI before
+  asserting commit verification.
+- ✅ `assertGiteaVerified(...)` is now strict: it requires
+  `verified=true`, a non-nil signer, and the expected signer email.
+- ✅ For generated keys, the suite reads `signing.key` from the
+  Kubernetes signing Secret so the test can prove possession of the
+  generated private key instead of only checking the public key.
+- ✅ Repo-level validation for this pass completed successfully:
+  `task lint`, `task test`, `docker info`, `task test-e2e`,
+  `task test-e2e-quickstart-manifest`, and
+  `task test-e2e-quickstart-helm`.
+
+What remains for the next pass:
+
+- ⏭️ Step 3 from this document is still open: add a higher-level
+  `giteaclient` fixture/bootstrap helper so the debug CLI and e2e suite
+  can share one flow instead of reassembling pieces.
+- ⏭️ Step 4 is still open: add defensive tests and hardening around the
+  web login / CSRF / verify parsing in `internal/giteaclient/webclient.go`.
+- ⏭️ The separate `batchTemplate` atomic-commit investigation remains
+  pending; see [e2e-signing-followups.md](e2e-signing-followups.md).
+
+---
+
 ## TL;DR
 
 - Gitea's `public_key.verified` column **is** the gate on SSH commit
@@ -187,6 +225,8 @@ want tighter assertions; steps 3+ are broader investments.
 
 ### 1. Wire `VerifySSHKey` into the signing e2e suite (small, high value)
 
+Status: ✅ completed on 2026-04-15.
+
 After `RegisterSigningPublicKeyAs(...)` in
 [test/e2e/signing_e2e_test.go](../../test/e2e/signing_e2e_test.go),
 call:
@@ -218,6 +258,8 @@ delete.
 
 ### 2. Replace `test/e2e/gitea_api_test.go` with thin wrappers over `giteaclient`
 
+Status: ✅ completed on 2026-04-15.
+
 Delete open-coded HTTP helpers. Keep Ginkgo-shaped wrappers
 (`SetupRepo`, `EnsureRepoCollaborator`, `RegisterSigningPublicKeyAs`,
 etc.) that call into the new package. Net lines removed should exceed
@@ -232,6 +274,8 @@ Watch-outs:
 
 ### 3. Bootstrap convenience on the client
 
+Status: ⏳ not started.
+
 Add a single top-level `SetupSignedCommitTestFixture(ctx, opts)` on
 `giteaclient` that returns `(user, repo, keyPair, webSession)` after
 doing steps 1–9 of "the verified flow that works" above. The debug
@@ -240,6 +284,8 @@ caller. Any future consumer (audit-consumer tests, webhook tests)
 gets the same flow for free.
 
 ### 4. Defensive coverage in `giteaclient`
+
+Status: ⏳ not started.
 
 - Harden the CSRF regex / login heuristic in
   [webclient.go](../../internal/giteaclient/webclient.go) against
@@ -256,6 +302,8 @@ gets the same flow for free.
   `ssh-keygen -Y sign -n gitea` shell-out.
 
 ### 5. Re-evaluate the signing e2e design
+
+Status: ⏳ not started.
 
 Once `verified=true` can be asserted reliably, revisit
 [commit-signing-design.md](commit-signing-design.md) and

@@ -1,0 +1,11 @@
+<!DOCTYPE html>
+<html>
+<body>
+  <form action="/user/settings/keys" method="post">
+    <input type="hidden" value="keys-csrf-token" name="_csrf">
+    <input type="hidden" name="type" value="verify_ssh">
+    <input type="hidden" name="fingerprint" value="SHA256:testfingerprint">
+  </form>
+  <div class="ui message">Unverified Key</div>
+</body>
+</html>

@@ -28,73 +28,73 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/giteaclient"
 )
 
-type giteaPublicKey = giteaclient.PublicKey
-type giteaCommitVerification = giteaclient.CommitVerification
-type giteaTestUser = giteaclient.TestUser
-
 const giteaRequestTimeout = 15 * time.Second
 
-func giteaAPIBase() string {
-	if v := strings.TrimSpace(os.Getenv("GITEA_API_URL")); v != "" {
-		return strings.TrimRight(v, "/")
+// GiteaTestInstance describes the live Gitea instance the e2e suite uses for
+// repo fixtures, signing-key registration, and commit verification.
+type GiteaTestInstance struct {
+	APIBaseURL     string
+	Org            string
+	AdminUser      string
+	AdminPassword  string
+	RequestTimeout time.Duration
+}
+
+func giteaTestInstance() *GiteaTestInstance {
+	apiBaseURL := strings.TrimSpace(os.Getenv("GITEA_API_URL"))
+	if apiBaseURL == "" {
+		apiBaseURL = "http://localhost:13000/api/v1"
 	}
-	return "http://localhost:13000/api/v1"
-}
 
-func giteaWebBase() string {
-	return strings.TrimSuffix(strings.TrimRight(giteaAPIBase(), "/"), "/api/v1")
-}
-
-func giteaAdminCreds() (string, string) {
-	user := strings.TrimSpace(os.Getenv("GITEA_ADMIN_USER"))
-	if user == "" {
-		user = "giteaadmin"
+	adminUser := strings.TrimSpace(os.Getenv("GITEA_ADMIN_USER"))
+	if adminUser == "" {
+		adminUser = "giteaadmin"
 	}
-	pass := strings.TrimSpace(os.Getenv("GITEA_ADMIN_PASS"))
-	if pass == "" {
-		pass = "giteapassword123"
+
+	adminPassword := strings.TrimSpace(os.Getenv("GITEA_ADMIN_PASS"))
+	if adminPassword == "" {
+		adminPassword = "giteapassword123"
 	}
-	return user, pass
-}
 
-// giteaOrg returns the Gitea org used for e2e test repos.
-func giteaOrg() string {
-	if v := strings.TrimSpace(os.Getenv("ORG_NAME")); v != "" {
-		return v
+	org := strings.TrimSpace(os.Getenv("ORG_NAME"))
+	if org == "" {
+		org = "testorg"
 	}
-	return "testorg"
+
+	return &GiteaTestInstance{
+		APIBaseURL:     strings.TrimRight(apiBaseURL, "/"),
+		Org:            org,
+		AdminUser:      adminUser,
+		AdminPassword:  adminPassword,
+		RequestTimeout: giteaRequestTimeout,
+	}
 }
 
-func testUserEmail(login string) string {
-	return login + "@configbutler.test"
+func (g *GiteaTestInstance) Client() *giteaclient.Client {
+	return giteaclient.New(g.APIBaseURL, g.AdminUser, g.AdminPassword)
 }
 
-func giteaAdminClient() *giteaclient.Client {
-	user, pass := giteaAdminCreds()
-	return giteaclient.New(giteaAPIBase(), user, pass)
+func (g *GiteaTestInstance) Context() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), g.RequestTimeout)
 }
 
-func giteaContext() (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.Background(), giteaRequestTimeout)
+func (g *GiteaTestInstance) TestUserEmail(login string) string {
+	return strings.TrimSpace(login) + "@configbutler.test"
 }
 
-// CreateTestUser creates or reuses a dedicated Gitea user for one e2e repo.
-// The helper is intentionally idempotent so reruns against an already-created
-// repo name succeed without manual cleanup.
-func CreateTestUser(login string) (*giteaTestUser, error) {
+func (g *GiteaTestInstance) EnsureTestUser(login string) (*giteaclient.TestUser, error) {
 	login = strings.TrimSpace(login)
 	if login == "" {
 		return nil, errors.New("login is empty")
 	}
 
-	ctx, cancel := giteaContext()
+	ctx, cancel := g.Context()
 	defer cancel()
 
-	return giteaAdminClient().EnsureUser(ctx, login, testUserEmail(login))
+	return g.Client().EnsureUser(ctx, login, g.TestUserEmail(login))
 }
 
-// EnsureRepoCollaborator grants the per-repo user write access to the repo.
-func EnsureRepoCollaborator(owner, repo string, user *giteaTestUser) error {
+func (g *GiteaTestInstance) EnsureRepoCollaborator(owner, repo string, user *giteaclient.TestUser) error {
 	owner = strings.TrimSpace(owner)
 	repo = strings.TrimSpace(repo)
 	if owner == "" {
@@ -107,71 +107,29 @@ func EnsureRepoCollaborator(owner, repo string, user *giteaTestUser) error {
 		return errors.New("user login is empty")
 	}
 
-	ctx, cancel := giteaContext()
+	ctx, cancel := g.Context()
 	defer cancel()
 
-	return giteaAdminClient().EnsureCollaborator(ctx, owner, repo, user.Login)
+	return g.Client().EnsureCollaborator(ctx, owner, repo, user.Login)
 }
 
-// normalizeAuthorizedKey returns the "<type> <base64>" prefix of an
-// authorized_keys entry, dropping any comment.
-func normalizeAuthorizedKey(k string) string {
-	return giteaclient.NormalizeAuthorizedKey(k)
-}
-
-func listUserPublicKeys(username string) ([]giteaPublicKey, error) {
-	ctx, cancel := giteaContext()
-	defer cancel()
-
-	return giteaAdminClient().ListUserKeys(ctx, username)
-}
-
-// ListUserPublicKeys returns the authenticated admin user's registered public
-// keys. It remains available for the transport-SSH bootstrap flow.
-func ListUserPublicKeys() ([]giteaPublicKey, error) {
-	adminUser, _ := giteaAdminCreds()
-	return listUserPublicKeys(adminUser)
-}
-
-// FindUserPublicKeyByKey looks up the authenticated admin user's public key by
-// key material, ignoring the trailing comment.
-func FindUserPublicKeyByKey(publicKey string) (*giteaPublicKey, bool, error) {
-	adminUser, _ := giteaAdminCreds()
-	return findUserPublicKeyByKey(adminUser, publicKey)
-}
-
-func findUserPublicKeyByKey(username, publicKey string) (*giteaPublicKey, bool, error) {
-	ctx, cancel := giteaContext()
-	defer cancel()
-
-	return giteaAdminClient().FindUserKey(ctx, username, publicKey)
-}
-
-// RegisterSigningPublicKey idempotently registers a public key for the admin
-// user. It remains available for the existing transport-SSH setup.
-func RegisterSigningPublicKey(publicKey, title string) (*giteaPublicKey, error) {
-	adminUser, _ := giteaAdminCreds()
-	return RegisterSigningPublicKeyAs(&giteaTestUser{Login: adminUser}, publicKey, title)
-}
-
-// RegisterSigningPublicKeyAs idempotently registers a public key on behalf of
-// the provided Gitea user so SSH-signed commits can be resolved to that user.
-func RegisterSigningPublicKeyAs(user *giteaTestUser, publicKey, title string) (*giteaPublicKey, error) {
+func (g *GiteaTestInstance) RegisterSigningPublicKey(
+	user *giteaclient.TestUser,
+	publicKey, title string,
+) (*giteaclient.PublicKey, error) {
 	if user == nil || strings.TrimSpace(user.Login) == "" {
 		return nil, errors.New("user login is empty")
 	}
 
-	ctx, cancel := giteaContext()
+	ctx, cancel := g.Context()
 	defer cancel()
 
-	return giteaAdminClient().RegisterUserKeyAsAdmin(ctx, user.Login, title, publicKey)
+	return g.Client().RegisterUserKeyAsAdmin(ctx, user.Login, title, publicKey)
 }
 
-// GetCommitVerification fetches the repo commit API for the given SHA and
-// returns its verification block.
-func GetCommitVerification(owner, repo, sha string) (*giteaCommitVerification, error) {
-	ctx, cancel := giteaContext()
+func (g *GiteaTestInstance) CommitVerification(owner, repo, sha string) (*giteaclient.CommitVerification, error) {
+	ctx, cancel := g.Context()
 	defer cancel()
 
-	return giteaAdminClient().GetCommitVerification(ctx, owner, repo, sha)
+	return g.Client().GetCommitVerification(ctx, owner, repo, sha)
 }

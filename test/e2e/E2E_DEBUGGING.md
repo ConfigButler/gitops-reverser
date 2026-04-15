@@ -4,13 +4,13 @@
 
 After running e2e tests, the infrastructure remains running for debugging purposes.
 
-### Kind Cluster Names by Test Type
+### Cluster Context
 
-- `task test-e2e` uses `KIND_CLUSTER_E2E` (default: `gitops-reverser-test-e2e`)
-- `task test-e2e-quickstart-helm` uses `KIND_CLUSTER_QUICKSTART_HELM` (default: `gitops-reverser-test-e2e-quickstart-helm`)
-- `task test-e2e-quickstart-manifest` uses `KIND_CLUSTER_QUICKSTART_MANIFEST` (default: `gitops-reverser-test-e2e-quickstart-manifest`)
+- `task test-e2e` defaults to `CTX=k3d-gitops-reverser-test-e2e`
+- `task test-e2e-quickstart-helm` defaults to the same `CTX` unless you override it
+- `task test-e2e-quickstart-manifest` defaults to the same `CTX` unless you override it
 
-This separation avoids cross-test contamination between end-to-end and quickstart install smoke tests.
+If you want isolation between runs, pass a different `CTX` explicitly.
 
 ### Port-Forward Management
 
@@ -18,7 +18,7 @@ The `test-e2e` target automatically starts port-forwards, so services are immedi
 
 **Start port-forwards:**
 ```bash
-make setup-port-forwards
+task portforward-ensure
 ```
 
 This exposes:
@@ -27,10 +27,10 @@ This exposes:
 
 **Stop port-forwards:**
 ```bash
-make cleanup-port-forwards
+task clean-port-forwards
 ```
 
-**Note:** The `task test-e2e` and `task prepare-e2e` targets automatically run `setup-port-forwards`, so services are ready immediately after setup.
+**Note:** The `task test-e2e` and `task prepare-e2e` targets automatically run `task portforward-ensure`, so services are ready immediately after setup.
 
 ## Useful Prometheus Queries
 
@@ -85,7 +85,7 @@ Kind Cluster
 
 1. **Ensure port-forwards are running:**
    ```bash
-   make setup-port-forwards
+   task portforward-ensure
    ```
 
 2. **Check Prometheus for metrics history:**
@@ -110,25 +110,24 @@ Kind Cluster
 ## Cleanup
 
 ```bash
-# Clean up all E2E Kind clusters (all test types)
-make cleanup-e2e-clusters
+# Tear down the default E2E cluster and remove its stamps
+task clean-cluster
 
-# Or clean one specific cluster name:
-make cleanup-cluster KIND_CLUSTER=gitops-reverser-test-e2e
+# Or clean a specific context
+task clean-cluster CTX=k3d-gitops-reverser-test-e2e
 
-# Infra cleanup inside the active cluster:
-make cleanup-gitea-e2e
+# Stop local port-forwards
+task clean-port-forwards
 ```
 
-## Available Make Targets
+## Available Task Targets
 
 ```bash
-make setup-port-forwards    # Start port-forwards (Gitea:13000, Prometheus:19090)
-make cleanup-port-forwards  # Stop all port-forwards
-make ensure-prometheus-operator
-make setup-e2e             # Setup Gitea + Prometheus Operator (+ cert-manager)
+task portforward-ensure     # Start/verify port-forwards (Gitea:13000, Prometheus:19090)
+task clean-port-forwards    # Stop all port-forwards
+task prepare-e2e            # Setup install + shared e2e prerequisites
 task test-e2e              # Run e2e tests (includes port-forwards)
 task test-e2e-quickstart-helm
 task test-e2e-quickstart-manifest
-make cleanup-e2e-clusters  # Delete all E2E test clusters
+task clean-cluster          # Delete the configured E2E cluster
 ```

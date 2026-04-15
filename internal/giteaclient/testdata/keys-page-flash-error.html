@@ -1,0 +1,10 @@
+<!DOCTYPE html>
+<html>
+<body>
+  <div class="ui negative message flash-error">ssh_invalid_token_signature</div>
+  <form action="/user/settings/keys" method="post">
+    <input type="hidden" name="_csrf" value="keys-csrf-token">
+    <input type="hidden" name="fingerprint" value="SHA256:testfingerprint">
+  </form>
+</body>
+</html>
