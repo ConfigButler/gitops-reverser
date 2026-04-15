@@ -8,6 +8,12 @@ you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
 
     http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
 */
 
 package e2e
@@ -74,13 +80,9 @@ func assertLocalSSHVerification(checkoutDir, commitHash, signingPublicKey, commi
 }
 
 // assertGiteaVerified queries Gitea's commit API for the given commit and
-// asserts the API returns a verification block. Gitea 1.25.4 does not expose
-// an SSH-signing-key verification flow analogous to GPG, so `Verified == true`
-// is not achievable for SSH-signed commits on this version; reaching this
-// assertion still proves the commit was accepted by Gitea and the commit API
-// returns data for it. If Gitea does report verified, that is logged but not
-// required. See docs/design/follow-up-plan-3.md Workstream 3C (minimum
-// acceptable automated coverage).
+// asserts that Gitea surfaced the SSH signature data for inspection. The
+// stricter Verified==true assertion stays deferred until the Gitea 1.25.x
+// verification-path mismatch is understood.
 func assertGiteaVerified(repoName, commitHash string) {
 	GinkgoHelper()
 
@@ -88,10 +90,12 @@ func assertGiteaVerified(repoName, commitHash string) {
 	Expect(err).NotTo(HaveOccurred(),
 		"failed to fetch Gitea commit verification for %s/%s@%s", giteaOrg(), repoName, commitHash)
 	Expect(v).NotTo(BeNil())
-	if v.Verified {
-		AddReportEntry("gitea-commit-verified",
-			fmt.Sprintf("repo=%s/%s commit=%s reason=%q", giteaOrg(), repoName, commitHash, v.Reason))
-	}
+	Expect(strings.TrimSpace(v.Signature)).To(ContainSubstring("BEGIN SSH SIGNATURE"),
+		"Gitea did not return the SSH signature payload.\n  repo=%s/%s\n  commit=%s\n  verified=%t\n  reason=%q",
+		giteaOrg(), repoName, commitHash, v.Verified, v.Reason)
+	AddReportEntry("gitea-commit-verification",
+		fmt.Sprintf("repo=%s/%s commit=%s verified=%t reason=%q",
+			giteaOrg(), repoName, commitHash, v.Verified, v.Reason))
 }
 
 // applySigningSecret creates a Secret in namespace with the signing key

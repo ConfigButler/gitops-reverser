@@ -44,6 +44,7 @@ type RepoArtifacts struct {
 	GitSecretInvalid   string
 	ReceiverWebhookURL string
 	ReceiverWebhookID  string
+	User               *giteaTestUser
 }
 
 // SetupRepo runs `task e2e-gitea-run-setup` for the given context, namespace,
@@ -67,7 +68,18 @@ func SetupRepo(ctx, namespace, repoName string) *RepoArtifacts {
 	Expect(err).NotTo(HaveOccurred(), "failed to run task target for gitea run setup (repo=%s)", repoName)
 	_, _ = fmt.Fprintf(GinkgoWriter, "%s", output)
 
-	return readRepoArtifacts(ctx, namespace, repoName)
+	artifacts := readRepoArtifacts(ctx, namespace, repoName)
+
+	By(fmt.Sprintf("ensuring dedicated Gitea user exists for repo %q", artifacts.RepoName))
+	user, err := CreateTestUser(repoName)
+	Expect(err).NotTo(HaveOccurred(), "failed to create or reuse test Gitea user for repo %s", repoName)
+
+	By(fmt.Sprintf("ensuring repo user %q is a collaborator on %q", user.Login, artifacts.RepoName))
+	err = EnsureRepoCollaborator(giteaOrg(), artifacts.RepoName, user)
+	Expect(err).NotTo(HaveOccurred(), "failed to add collaborator %s to repo %s", user.Login, artifacts.RepoName)
+
+	artifacts.User = user
+	return artifacts
 }
 
 // readRepoArtifacts reads the stamp files written by gitea-run-setup.sh and

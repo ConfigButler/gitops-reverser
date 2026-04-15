@@ -1,12 +1,31 @@
-# E2E Signing Follow-Ups — Implementation Plan
+# E2E Signing Follow-Ups — Working Plan
 
-Two independent follow-ups tracked in this document:
+Two independent follow-ups are tracked here:
 
-1. Per-repo Gitea users, enabling real `verification.verified == true`
-   assertions for SSH-signed commits.
-2. Fixing `batchTemplate` not being applied to atomic commits.
+1. Per-repo Gitea users for SSH-signing verification.
+2. Investigating why the signing e2e batch-template scenario does not
+   observe the custom atomic batch message.
 
-Each is implementable on its own. Start with (1); (2) is a separate bug.
+Start with (1). Keep (2) separate so the signing-user work can begin
+without waiting on the atomic batch investigation.
+
+---
+
+## Decisions For The Next Pass
+
+These are the working decisions for the next implementation context:
+
+- Do **not** delete Gitea users or Gitea repos in this phase. Leaving
+  them in place for inspection is acceptable.
+- `CreateTestUser(repoName)` must be **idempotent**. Re-running the same
+  repo name must succeed and return a usable user.
+- `RegisterSigningPublicKeyAs(...)` does **not** need key cleanup in
+  this phase. We can add cleanup later if it becomes necessary.
+- Keep the existing transport-SSH setup in
+  [hack/e2e/gitea-run-setup.sh](/workspaces/gitops-reverser/hack/e2e/gitea-run-setup.sh)
+  unchanged for now. The existing SSH-auth e2e flow still depends on it.
+- Do not tighten `assertGiteaVerified` until the per-repo-user wiring is
+  in place and the signing scenarios pass locally with the new identity.
 
 ---
 
@@ -14,60 +33,75 @@ Each is implementable on its own. Start with (1); (2) is a separate bug.
 
 ### Goal
 
-Every e2e repo owns a dedicated Gitea user. Commits for that repo are
-authored by that user, signing keys register under that user, and Gitea
-reports SSH-signed commits as `verification.verified == true`.
+Each e2e repo gets a dedicated Gitea user. Signing scenarios author
+commits using that user's verified email, register signing keys under
+that user, and then confirm whether Gitea reports
+`verification.verified == true`.
 
 ### Scope
 
-- In scope: Go helpers to create/delete Gitea users and PATs; wiring the
-  new user into `SetupRepo`; updating signing scenarios to consume the
-  per-repo identity; tightening the Gitea verification assertion.
-- Out of scope: rewriting
-  [hack/e2e/gitea-run-setup.sh](/workspaces/gitops-reverser/hack/e2e/gitea-run-setup.sh)
-  in Go; adding `TRUSTED_SSH_KEYS`; passphrase-protected BYOK.
+- In scope: idempotent Go helpers to create or reuse Gitea users;
+  wiring the user into `SetupRepo`; adding the user as a repo
+  collaborator; updating signing scenarios to use that identity;
+  tightening the Gitea verification assertion once the flow is green.
+- Out of scope: deleting users/repos/keys; rewriting
+  `gitea-run-setup.sh` in Go; replacing the transport SSH secret flow;
+  adding `TRUSTED_SSH_KEYS`; passphrase-protected BYOK.
 
 ### Design
 
-#### Go helpers
+#### Helper surface
 
-Add to [test/e2e/gitea_api_test.go](/workspaces/gitops-reverser/test/e2e/gitea_api_test.go)
-(or a new `gitea_user_test.go` in the same package):
+Add to
+[test/e2e/gitea_api_test.go](/workspaces/gitops-reverser/test/e2e/gitea_api_test.go)
+or a sibling helper file in the same package:
 
 ```go
 type giteaTestUser struct {
-    Login    string // mirrors repo name
+    Login    string // usually mirrors repo name
     Email    string // "<login>@configbutler.test"
     Password string // random, in-memory only
     ID       int64
-    Token    string // PAT with write:repository, write:user
+    Token    string // optional; keep if needed by RegisterSigningPublicKeyAs
 }
 
 func CreateTestUser(login string) (*giteaTestUser, error)
-func DeleteTestUser(login string) error
+func EnsureRepoCollaborator(owner, repo string, user *giteaTestUser) error
 func RegisterSigningPublicKeyAs(user *giteaTestUser, pubKey, title string) (*giteaPublicKey, error)
 ```
 
-Implementation:
+`DeleteTestUser` is intentionally **not** part of the first pass.
 
-1. `POST /admin/users` with
+#### CreateTestUser behavior
+
+`CreateTestUser(login)` must be idempotent:
+
+1. Normalize `login` and derive email as `<login>@configbutler.test`.
+2. Check whether the user already exists.
+3. If it does not exist, create it via `POST /admin/users` using:
    `{username, email, password, must_change_password: false, source_id: 0, login_name: <username>}`.
-   Gitea 1.25.x marks the email **verified** when created via this
-   endpoint — required for the signing lookup to match committer email
-   to user.
-2. `POST /users/{username}/tokens` (admin basic auth + `Sudo: <username>`
-   header) to mint a PAT scoped to `write:repository,write:user`.
-3. `DeleteTestUser` calls `DELETE /admin/users/{username}?purge=true`.
-   Treat 404 as success.
-4. All failures must include the response body, matching
-   [giteaDo](/workspaces/gitops-reverser/test/e2e/gitea_api_test.go) error conventions.
+4. If it already exists, treat that as success and return the existing
+   user details.
+5. If the signing-key helper needs user-scoped auth, mint a PAT for that
+   user. Leaving the token in Gitea is acceptable in this phase.
+6. All failures must include the response body, matching the existing
+   `giteaDo(...)` error style.
+
+Assume this helper may be called for:
+
+- random repo names used by most e2e flows
+- fixed names such as `demo`
+- reruns after an interrupted test run
 
 #### Repo ownership
 
 Repos stay under the shared `testorg`. The per-repo user is added as a
-**collaborator with write permission** via
-`PUT /repos/{owner}/{repo}/collaborators/{username}`. This keeps the
-existing org-level webhook wiring and HTTP/SSH secrets untouched.
+collaborator with write permission via:
+
+- `PUT /repos/{owner}/{repo}/collaborators/{username}`
+
+That keeps the current org-level webhook wiring and repo bootstrap
+shape intact.
 
 #### SetupRepo integration
 
@@ -83,25 +117,39 @@ type RepoArtifacts struct {
 
 Inside `SetupRepo(ctx, namespace, repoName)`:
 
-1. Call `CreateTestUser(repoName)` immediately after the repo is created.
-2. Add the user as a collaborator on `testorg/<repoName>`.
-3. Populate `artifacts.User`.
-4. `DeferCleanup(func() { _ = DeleteTestUser(repoName) })` at file scope.
+1. Keep the existing `task e2e-gitea-run-setup` call.
+2. Read the repo artifacts as today.
+3. Call `CreateTestUser(repoName)`.
+4. Call `EnsureRepoCollaborator(giteaOrg(), artifacts.RepoName, user)`.
+5. Populate `artifacts.User`.
 
-No `It` block calls `CreateTestUser` or `DeleteTestUser` directly.
+Do **not** register cleanup from `SetupRepo`. The user and repo are
+intentionally left behind for inspection, and `SetupRepo` is used by
+shared-fixture flows where automatic cleanup would be awkward.
 
 #### Test changes
 
-In [test/e2e/signing_e2e_test.go](/workspaces/gitops-reverser/test/e2e/signing_e2e_test.go):
+In
+[test/e2e/signing_e2e_test.go](/workspaces/gitops-reverser/test/e2e/signing_e2e_test.go):
 
-- Replace the `signingCommitterName` / `signingCommitterEmail` constants
-  with values read from `signingRepo.User` at `It` execution time.
-- The GitProvider committer fields use those values.
+- For the generated-key and BYOK signing scenarios, replace the shared
+  signing committer constants with values derived from
+  `signingRepo.User`.
+- Use those values in the `GitProvider` commit config.
 - Replace `RegisterSigningPublicKey(...)` with
   `RegisterSigningPublicKeyAs(signingRepo.User, ...)`.
+- Do **not** add key cleanup in the `It` blocks for this phase.
+- Remove the `EnsureAdminUserPrimaryEmail(...)` binding once the
+  per-repo-user path is wired.
 
-In [test/e2e/signing_common_test.go](/workspaces/gitops-reverser/test/e2e/signing_common_test.go),
-tighten `assertGiteaVerified`:
+Keep the custom-committer scenario focused on what it already tests:
+
+- it should continue to exercise explicit committer override behavior
+- it does not need to participate in the Gitea-user verification change
+
+In
+[test/e2e/signing_common_test.go](/workspaces/gitops-reverser/test/e2e/signing_common_test.go),
+tighten `assertGiteaVerified` only after the new flow is proven:
 
 ```go
 Expect(v.Verified).To(BeTrue(),
@@ -109,40 +157,39 @@ Expect(v.Verified).To(BeTrue(),
     giteaOrg(), repoName, commitHash, v.Reason)
 ```
 
-Only tighten this **after** per-repo users are wired in and both signing
-scenarios pass green locally.
+#### Keep these pieces for now
 
-#### Helpers to delete after step 4
+Do **not** remove these in the first pass:
 
-Once no caller remains, remove from
-[gitea_api_test.go](/workspaces/gitops-reverser/test/e2e/gitea_api_test.go):
+- `configure_ssh_key_in_gitea()` in
+  [hack/e2e/gitea-run-setup.sh](/workspaces/gitops-reverser/hack/e2e/gitea-run-setup.sh)
+- the existing SSH transport secret generation path
+- the legacy admin-email helpers until they truly have no callers
 
-- `EnsureAdminUserPrimaryEmail`
-- `EnsureUserEmail`
-- `removeUserEmail`
+The signing-user work should be additive first, cleanup second.
 
-And remove the `configure_ssh_key_in_gitea()` block from
-[hack/e2e/gitea-run-setup.sh](/workspaces/gitops-reverser/hack/e2e/gitea-run-setup.sh).
+### Implementation order
 
-### Implementation order (one commit per step)
-
-1. Add `CreateTestUser`, `DeleteTestUser`, `RegisterSigningPublicKeyAs`.
-   No callers yet. `task test` must pass.
-2. Wire `SetupRepo` to create and clean up the per-repo user; expose on
-   `RepoArtifacts.User`. No test consumes `User` yet. Signing tests
-   still pass using the old shared-admin path.
-3. Switch both signing scenarios to consume `signingRepo.User`.
-   `task test-e2e-signing` still passes with the current (lenient)
-   `assertGiteaVerified`.
-4. Tighten `assertGiteaVerified` to require `Verified == true`.
-   `task test-e2e-signing` must now pass with the strict assertion.
-5. Delete the three admin-email helpers and the
-   `configure_ssh_key_in_gitea()` block. Verify
-   `task test-e2e-signing` and `task test-e2e` stay green.
+1. Add `giteaTestUser`, idempotent `CreateTestUser`,
+   `EnsureRepoCollaborator`, and `RegisterSigningPublicKeyAs`.
+   No deletion helpers yet. `task test` must pass.
+2. Extend `RepoArtifacts` and wire `SetupRepo` to create or reuse the
+   per-repo user and add the collaborator. No cleanup. `task test` must
+   pass.
+3. Switch the generated-key and BYOK signing scenarios to consume
+   `signingRepo.User`, and remove the admin-email binding from the
+   signing `BeforeAll`. Keep `assertGiteaVerified` lenient for this
+   step. `task test-e2e-signing` must pass.
+4. After both signing scenarios show Gitea verification working with the
+   per-repo identity, tighten `assertGiteaVerified` to require
+   `Verified == true`. `task test-e2e-signing` must pass.
+5. Optional cleanup only after the strict assertion is stable:
+   delete dead admin-email helpers if unused. Do not remove the script's
+   transport-SSH behavior yet.
 
 ### Validation
 
-After every step:
+During implementation:
 
 ```bash
 task fmt
@@ -151,84 +198,87 @@ task test
 task test-e2e-signing
 ```
 
-After step 5, also run:
+Before broad e2e wrap-up:
 
 ```bash
+docker info
 task test-e2e
+task test-e2e-quickstart-manifest
+task test-e2e-quickstart-helm
 ```
 
 ### Acceptance
 
-- Both signing scenarios in
-  [signing_e2e_test.go](/workspaces/gitops-reverser/test/e2e/signing_e2e_test.go) produce commits
-  Gitea reports as `verification.verified == true`.
-- No test reads or mutates the admin user's emails or SSH keys.
-- Each repo owns exactly one Gitea user, created in `SetupRepo` and
-  cleaned up via `DeferCleanup` even on failure.
-- The three admin-email helpers and `configure_ssh_key_in_gitea()` are
-  deleted.
+- The generated-key and BYOK signing scenarios use a per-repo Gitea
+  user instead of mutating the admin user's email.
+- `CreateTestUser(repoName)` is idempotent and safe for reruns.
+- The repo user is exposed on `RepoArtifacts.User`.
+- Gitea users, repos, and registered signing keys are intentionally left
+  in place for inspection in this phase.
+- The existing SSH-auth repo setup path remains unchanged.
+- After step 4, both signing scenarios produce commits that Gitea
+  reports as `verification.verified == true`.
 
 ### Constraints
 
+- No user, repo, or signing-key deletion in this phase.
+- No key cleanup in the signing `It` blocks.
+- Do not remove `configure_ssh_key_in_gitea()` yet.
 - Do not tighten `assertGiteaVerified` before step 4.
-- Do not add retries around the verification assertion; Gitea computes
-  it synchronously.
-- Do not bundle this with the `gitea-run-setup.sh` Go port — that is a
-  separate effort tracked in
-  [gitea-setup-go-migration-analysis.md](./gitea-setup-go-migration-analysis.md).
+- Do not bundle this with the `gitea-run-setup.sh` Go port.
 
 ---
 
 ## 2. `batchTemplate` Not Applied To Atomic Commits
 
+This remains a separate follow-up and should not block the per-repo-user
+work.
+
 ### Symptom
 
 The scenario
 `Commit Signing should produce a batch commit with the custom batch message template`
-in [signing_e2e_test.go](/workspaces/gitops-reverser/test/e2e/signing_e2e_test.go) times out
-waiting for a commit message containing `e2e-batch:`. The batch commit
-**is** produced, but with the default template:
+in
+[test/e2e/signing_e2e_test.go](/workspaces/gitops-reverser/test/e2e/signing_e2e_test.go)
+times out waiting for a commit subject containing `e2e-batch:`.
 
-```
-reconcile: sync N resources
-```
+### Current assessment
 
-from [internal/git/types.go:40](/workspaces/gitops-reverser/internal/git/types.go#L40).
+Do **not** assume yet that the product path is broken.
 
-### Root cause to investigate
+Today the code already:
 
-Atomic commit path:
+- resolves `BatchTemplate` from `GitProvider.spec.commit.message` in
+  [internal/git/types.go](/workspaces/gitops-reverser/internal/git/types.go)
+- copies resolved commit config onto the prepared write request in
+  [internal/git/branch_worker.go](/workspaces/gitops-reverser/internal/git/branch_worker.go)
+- uses that config when generating atomic commits in
+  [internal/git/git.go](/workspaces/gitops-reverser/internal/git/git.go)
+- has unit coverage for atomic batch-template usage in
+  [internal/git/branch_worker_test.go](/workspaces/gitops-reverser/internal/git/branch_worker_test.go)
 
-1. [internal/reconcile/git_target_event_stream.go:133](/workspaces/gitops-reverser/internal/reconcile/git_target_event_stream.go#L133)
-   `EmitReconcileBatch` tags the request `CommitMode = CommitModeAtomic`
-   and enqueues.
-2. [internal/git/branch_worker.go:464](/workspaces/gitops-reverser/internal/git/branch_worker.go#L464)
-   picks up atomic items.
-3. [internal/git/git.go:818](/workspaces/gitops-reverser/internal/git/git.go#L818)
-   calls `renderBatchCommitMessage(request, commitConfig)`.
-4. [internal/git/commit.go:77](/workspaces/gitops-reverser/internal/git/commit.go#L77)
-   reads `config.Message.BatchTemplate`.
+So the first task is to verify whether the failure is:
 
-`commitConfig` is produced by `resolveWriteRequestCommitConfig(request)`.
-The spec's `batchTemplate` is not reaching that config at runtime —
-either the reconciler doesn't copy the field into the `WriteRequest`, or
-the worker drops it during atomic-item preparation.
+- a real product bug
+- an e2e setup or timing issue
+- the test reading the wrong commit/path/history
 
-### Debugging recipe
+### Investigation order
 
-1. Log `commitConfig.Message.BatchTemplate` immediately before
-   `renderBatchCommitMessage` in `generateAtomicCommit`.
-2. Log the same value at the point `EmitReconcileBatch` constructs the
-   `ReconcileBatch` / `WriteRequest`.
-3. If empty at (2): fix the reconciler to read
-   `GitProvider.spec.commit.message.batchTemplate` into the request.
-4. If set at (2) but empty at (1): fix the worker's atomic-item prep
-   (around [branch_worker.go:847](/workspaces/gitops-reverser/internal/git/branch_worker.go#L847))
-   to preserve the template.
+1. Re-run only the signing batch scenario and capture the actual latest
+   commit subject for the target path.
+2. Confirm the scenario is producing an atomic commit, not a per-event
+   commit series.
+3. If the remote commit subject still uses the default template, log the
+   resolved batch template in:
+   - `prepareWriteRequest(...)`
+   - `generateAtomicCommit(...)`
+4. Only if the template is empty in the runtime path should code changes
+   be made.
 
 ### Acceptance
 
-- The existing scenario passes without test-side changes.
-- Add one unit-level test covering spec → resolved-config for atomic
-  requests, next to the existing cases in
-  [internal/git/commit_test.go](/workspaces/gitops-reverser/internal/git/commit_test.go).
+- The existing batch-template signing scenario passes without test-side
+  workaround logic.
+- If a real code bug is found, add a focused unit test for the missing
+  runtime path in addition to the existing atomic-template coverage.
