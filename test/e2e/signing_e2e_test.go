@@ -135,6 +135,16 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 			Expect(registered).NotTo(BeNil())
 			Expect(registered.ID).To(BeNumerically(">", 0))
 
+			By("verifying the generated signing key in Gitea")
+			privateKeyPEM, err := signingPrivateKeyFromSecret(testNs, signingSecretName)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(verifySigningPublicKeyInGitea(
+				signingRepo.User,
+				signingPublicKey,
+				registered.Fingerprint,
+				privateKeyPEM,
+			)).To(Succeed())
+
 			By("creating GitTarget and WatchRule")
 			createGitTarget(destName, testNs, providerName, commitPath, "main")
 			verifyResourceStatus("gittarget", destName, testNs, "True", "Ready", "")
@@ -172,7 +182,7 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 			assertLocalSSHVerification(signingRepo.CheckoutDir, commitHash, signingPublicKey, committerEmail)
 
 			By("verifying the commit through the Gitea commit API")
-			assertGiteaVerified(signingRepo.RepoName, commitHash)
+			assertGiteaVerified(signingRepo.RepoName, commitHash, committerEmail)
 		})
 
 	// ── Test 2: BYOK signing — user-provided key, local + Gitea verification ─
@@ -206,6 +216,14 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 		registered, err := RegisterSigningPublicKeyAs(signingRepo.User, publicKeyStr, "e2e-signing-byok-"+providerName)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(registered).NotTo(BeNil())
+
+		By("verifying the BYOK signing key in Gitea")
+		Expect(verifySigningPublicKeyInGitea(
+			signingRepo.User,
+			publicKeyStr,
+			registered.Fingerprint,
+			privateKeyPEM,
+		)).To(Succeed())
 
 		By("creating a GitProvider that consumes the BYOK signing Secret (generateWhenMissing=false)")
 		committerName, committerEmail := signingRepoCommitter()
@@ -274,7 +292,7 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 		assertLocalSSHVerification(signingRepo.CheckoutDir, commitHash, publicKeyStr, committerEmail)
 
 		By("verifying the BYOK commit through the Gitea commit API")
-		assertGiteaVerified(signingRepo.RepoName, commitHash)
+		assertGiteaVerified(signingRepo.RepoName, commitHash, committerEmail)
 	})
 
 	// ── Test 3: per-event commit message template and committer identity ────

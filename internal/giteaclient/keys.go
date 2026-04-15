@@ -2,6 +2,18 @@
 SPDX-License-Identifier: Apache-2.0
 
 Copyright 2025 ConfigButler
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
 */
 
 package giteaclient
@@ -14,12 +26,14 @@ import (
 	"strings"
 )
 
+const authorizedKeyFieldCount = 2
+
 // NormalizeAuthorizedKey returns the "<type> <base64>" prefix of an
 // authorized_keys entry, dropping any trailing comment. This matches how Gitea
 // stores and returns keys, so it is the right shape for equality comparisons.
 func NormalizeAuthorizedKey(k string) string {
 	fields := strings.Fields(strings.TrimSpace(k))
-	if len(fields) < 2 {
+	if len(fields) < authorizedKeyFieldCount {
 		return strings.TrimSpace(k)
 	}
 	return fields[0] + " " + fields[1]

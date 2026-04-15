@@ -2,6 +2,18 @@
 SPDX-License-Identifier: Apache-2.0
 
 Copyright 2025 ConfigButler
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
 */
 
 package giteaclient
@@ -13,9 +25,17 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
+	"os"
 	"regexp"
 	"strings"
-	"time"
+)
+
+const (
+	debugMatchContextBefore = 40
+	debugMatchContextAfter  = 120
+	flashErrorPreviewSize   = 400
+	httpErrorThreshold      = 400
+	csrfMatchGroupCount     = 3
 )
 
 // WebSession drives Gitea's web UI for flows the REST API does not expose
@@ -41,7 +61,7 @@ func NewWebSession(ctx context.Context, baseURL, username, password string, debu
 	}
 	s := &WebSession{
 		BaseURL:    strings.TrimRight(baseURL, "/"),
-		HTTPClient: &http.Client{Jar: jar, Timeout: 15 * time.Second},
+		HTTPClient: &http.Client{Jar: jar, Timeout: defaultHTTPTimeout},
 		Debug:      debug,
 	}
 
@@ -71,10 +91,7 @@ func NewWebSession(ctx context.Context, baseURL, username, password string, debu
 	}
 	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(resp.Body)
-	if s.Debug {
-		fmt.Printf("   [web] login POST -> HTTP %d, final URL %s, body len=%d\n",
-			resp.StatusCode, resp.Request.URL.String(), len(body))
-	}
+	s.debugLogin(resp.StatusCode, resp.Request.URL.String(), len(body))
 
 	// On a failed login Gitea returns 200 and re-renders the login page.
 	// Detect the explicit username/password form so we fail loudly.
@@ -123,26 +140,7 @@ func (s *WebSession) VerifySSHKey(ctx context.Context, publicKey, fingerprint, s
 	}
 	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(resp.Body)
-	if s.Debug {
-		fmt.Printf("   [web] verify POST -> HTTP %d, final URL %s, body len=%d\n",
-			resp.StatusCode, resp.Request.URL.String(), len(body))
-		preview := string(body)
-		for _, needle := range []string{"verify_ssh_key_success", "ssh_invalid_token_signature",
-			"HasSSHVerifyError", "flash-", "error", "Verified Key", "Unverified Key"} {
-			if idx := strings.Index(preview, needle); idx >= 0 {
-				start := idx - 40
-				if start < 0 {
-					start = 0
-				}
-				end := idx + 120
-				if end > len(preview) {
-					end = len(preview)
-				}
-				fmt.Printf("   [web] body match %q: ...%s...\n", needle,
-					strings.ReplaceAll(preview[start:end], "\n", " "))
-			}
-		}
-	}
+	s.debugVerifyResponse(resp.StatusCode, resp.Request.URL.String(), string(body))
 
 	// Success path: Gitea 302-redirects to /user/settings/keys and flashes
 	// a success message; the rendered page no longer offers a Verify form
@@ -150,21 +148,7 @@ func (s *WebSession) VerifySSHKey(ctx context.Context, publicKey, fingerprint, s
 	// block. We detect failure by the presence of the invalid-signature class
 	// or the presence of the "HasSSHVerifyError" template data leaking into
 	// form state.
-	html := string(body)
-	if resp.StatusCode >= 400 {
-		return fmt.Errorf("verify_ssh HTTP %d: %s", resp.StatusCode, TruncateBody(html))
-	}
-	// Gitea surfaces both success and failure through flash messages rendered
-	// on the redirected settings page. Treat any `flash-error` as failure.
-	if idx := strings.Index(html, "flash-error"); idx >= 0 {
-		end := idx + 400
-		if end > len(html) {
-			end = len(html)
-		}
-		return fmt.Errorf("verify_ssh rejected (fingerprint=%s): %s",
-			fingerprint, strings.ReplaceAll(html[idx:end], "\n", " "))
-	}
-	return nil
+	return verifySSHFailure(resp.StatusCode, string(body), fingerprint)
 }
 
 // fetchCSRF GETs the given path and extracts the form CSRF token. Gitea
@@ -184,7 +168,7 @@ func (s *WebSession) fetchCSRF(ctx context.Context, path string) (string, error)
 		return "", err
 	}
 	m := csrfInputRE.FindStringSubmatch(string(body))
-	if len(m) < 3 {
+	if len(m) < csrfMatchGroupCount {
 		return "", fmt.Errorf("no _csrf input found at %s (HTTP %d)", path, resp.StatusCode)
 	}
 	if m[1] != "" {
@@ -198,3 +182,58 @@ var csrfInputRE = regexp.MustCompile(
 	`<input[^>]*\bname="_csrf"[^>]*\bvalue="([^"]+)"|` +
 		`<input[^>]*\bvalue="([^"]+)"[^>]*\bname="_csrf"`,
 )
+
+func (s *WebSession) debugLogin(statusCode int, finalURL string, bodyLen int) {
+	if !s.Debug {
+		return
+	}
+
+	_, _ = fmt.Fprintf(os.Stderr, "   [web] login POST -> HTTP %d, final URL %s, body len=%d\n",
+		statusCode, finalURL, bodyLen)
+}
+
+func (s *WebSession) debugVerifyResponse(statusCode int, finalURL, body string) {
+	if !s.Debug {
+		return
+	}
+
+	_, _ = fmt.Fprintf(os.Stderr, "   [web] verify POST -> HTTP %d, final URL %s, body len=%d\n",
+		statusCode, finalURL, len(body))
+	for _, needle := range []string{
+		"verify_ssh_key_success",
+		"ssh_invalid_token_signature",
+		"HasSSHVerifyError",
+		"flash-",
+		"error",
+		"Verified Key",
+		"Unverified Key",
+	} {
+		if snippet, ok := debugSnippet(body, needle); ok {
+			_, _ = fmt.Fprintf(os.Stderr, "   [web] body match %q: ...%s...\n", needle, snippet)
+		}
+	}
+}
+
+func debugSnippet(body, needle string) (string, bool) {
+	idx := strings.Index(body, needle)
+	if idx < 0 {
+		return "", false
+	}
+
+	start := max(idx-debugMatchContextBefore, 0)
+	end := min(idx+debugMatchContextAfter, len(body))
+	return strings.ReplaceAll(body[start:end], "\n", " "), true
+}
+
+func verifySSHFailure(statusCode int, html, fingerprint string) error {
+	if statusCode >= httpErrorThreshold {
+		return fmt.Errorf("verify_ssh HTTP %d: %s", statusCode, TruncateBody(html))
+	}
+
+	if idx := strings.Index(html, "flash-error"); idx >= 0 {
+		end := min(idx+flashErrorPreviewSize, len(html))
+		return fmt.Errorf("verify_ssh rejected (fingerprint=%s): %s",
+			fingerprint, strings.ReplaceAll(html[idx:end], "\n", " "))
+	}
+	return nil
+}
