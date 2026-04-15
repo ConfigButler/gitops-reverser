@@ -23,8 +23,10 @@ import (
 	"crypto/sha512"
 	"encoding/binary"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/exec"
 	"testing"
@@ -37,6 +39,12 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
+const (
+	testSSHSigMagic         = "SSHSIG"
+	testSSHSigVersion       = uint32(1)
+	testSSHSigHashAlgSHA512 = "sha512"
+)
+
 // buildSSHSigSignedData constructs the signed data blob as OpenSSH actually
 // implements it (verified against OpenSSH 9.x sshsig.c). Despite PROTOCOL.sshsig
 // listing SIG_VERSION in the signed-data section, the real implementation omits
@@ -46,11 +54,11 @@ import (
 //	|| string(reserved) || string(hash_algorithm) || string(hash)
 func buildSSHSigSignedData(namespace, reserved, hashAlgorithm string, hash []byte) []byte {
 	var buf bytes.Buffer
-	buf.WriteString(sshSignatureMagic)
-	_ = writeSSHPacketString(&buf, []byte(namespace))
-	_ = writeSSHPacketString(&buf, []byte(reserved))
-	_ = writeSSHPacketString(&buf, []byte(hashAlgorithm))
-	_ = writeSSHPacketString(&buf, hash)
+	buf.WriteString(testSSHSigMagic)
+	mustWriteSSHPacketStringForTest(&buf, []byte(namespace))
+	mustWriteSSHPacketStringForTest(&buf, []byte(reserved))
+	mustWriteSSHPacketStringForTest(&buf, []byte(hashAlgorithm))
+	mustWriteSSHPacketStringForTest(&buf, hash)
 	return buf.Bytes()
 }
 
@@ -83,7 +91,7 @@ func TestLoadSSHCommitSigner_ProducesVerifiableSSHSig(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, string(publicKey), string(bytes.TrimSpace(ssh.MarshalAuthorizedKey(parsedPublicKey))))
 	assert.Equal(t, sshSignatureNamespace, parsed.namespace)
-	assert.Equal(t, sshSignatureHashAlg, parsed.hashAlgorithm)
+	assert.Equal(t, testSSHSigHashAlgSHA512, parsed.hashAlgorithm)
 
 	digest := sha512.Sum512(message)
 	toVerify := buildSSHSigSignedData(parsed.namespace, parsed.reserved, parsed.hashAlgorithm, digest[:])
@@ -211,14 +219,14 @@ func parseSSHSigBlob(t *testing.T, blob []byte) parsedSSHSig {
 	t.Helper()
 
 	reader := bytes.NewReader(blob)
-	magic := make([]byte, len(sshSignatureMagic))
+	magic := make([]byte, len(testSSHSigMagic))
 	_, err := io.ReadFull(reader, magic)
 	require.NoError(t, err)
-	require.Equal(t, sshSignatureMagic, string(magic))
+	require.Equal(t, testSSHSigMagic, string(magic))
 
 	var version uint32
 	require.NoError(t, binary.Read(reader, binary.BigEndian, &version))
-	require.Equal(t, sshSignatureVersion, version)
+	require.Equal(t, testSSHSigVersion, version)
 
 	publicKey := readSSHPacketStringForTest(t, reader)
 	namespace := string(readSSHPacketStringForTest(t, reader))
@@ -250,4 +258,13 @@ func readSSHPacketStringForTest(t *testing.T, reader io.Reader) []byte {
 	require.NoError(t, err)
 
 	return data
+}
+
+func mustWriteSSHPacketStringForTest(buf *bytes.Buffer, value []byte) {
+	if len(value) > math.MaxUint32 {
+		panic(errors.New("ssh packet string too large"))
+	}
+
+	_ = binary.Write(buf, binary.BigEndian, uint32(len(value)))
+	_, _ = buf.Write(value)
 }

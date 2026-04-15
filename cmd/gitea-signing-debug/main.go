@@ -215,7 +215,7 @@ func run(o runOpts) error {
 
 	if o.VerifyWeb {
 		stepf("6b. log into Gitea web UI as %q and POST /user/settings/keys?type=verify_ssh", user.Login)
-		if err := verifyViaWeb(ctx, admin, apiURL, user, pubStr, key.Fingerprint, workDir, privPath); err != nil {
+		if err := verifyViaWeb(ctx, admin, apiURL, user, pubStr, key.Fingerprint, privPath); err != nil {
 			return err
 		}
 		v3, err := admin.GetCommitVerification(ctx, user.Login, repoName, commitSHA)
@@ -404,13 +404,12 @@ func verifyViaWeb(
 	adminClient *giteaclient.Client,
 	apiURL string,
 	user *giteaclient.TestUser,
-	pubKey, fingerprint, workDir, privPath string,
+	pubKey, fingerprint, privPath string,
 ) error {
-	result, err := adminClient.VerifySSHKeyWithKeygen(ctx, user, giteaclient.SSHKeyVerificationOptions{
+	result, err := adminClient.VerifySSHKey(ctx, user, giteaclient.SSHKeyVerificationOptions{
 		PublicKey:      pubKey,
 		Fingerprint:    fingerprint,
 		PrivateKeyPath: privPath,
-		WorkDir:        workDir,
 		Debug:          true,
 	})
 	if err != nil {

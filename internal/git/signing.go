@@ -22,20 +22,17 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
-	"crypto/sha512"
-	"encoding/base64"
-	"encoding/binary"
 	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"strings"
 
 	gogit "github.com/go-git/go-git/v5"
+	"golang.org/x/crypto/ssh"
 	corev1 "k8s.io/api/core/v1"
 
-	"golang.org/x/crypto/ssh"
+	"github.com/ConfigButler/gitops-reverser/internal/sshsig"
 )
 
 const (
@@ -50,11 +47,7 @@ const (
 	signingKeyDataKey        = SigningKeyDataKey
 	signingPublicKeyDataKey  = SigningPublicKeyDataKey
 	signingPassphraseDataKey = SigningPassphraseDataKey
-
-	sshSignatureNamespace = "git"
-	sshSignatureHashAlg   = "sha512"
-	sshSignatureVersion   = uint32(1)
-	sshSignatureMagic     = "SSHSIG"
+	sshSignatureNamespace    = "git"
 )
 
 type sshCommitSigner struct {
@@ -118,7 +111,7 @@ func loadSSHSigner(secret *corev1.Secret) (ssh.Signer, error) {
 	}
 
 	if passphrase := secret.Data[signingPassphraseDataKey]; len(passphrase) > 0 {
-		signer, err := ssh.ParsePrivateKeyWithPassphrase(privateKey, passphrase)
+		signer, err := sshsig.ParsePrivateKey(privateKey, passphrase)
 		if err != nil {
 			return nil, fmt.Errorf("parse passphrase-protected signing key from secret %s/%s: %w",
 				secret.Namespace, secret.Name, err)
@@ -126,7 +119,7 @@ func loadSSHSigner(secret *corev1.Secret) (ssh.Signer, error) {
 		return signer, nil
 	}
 
-	signer, err := ssh.ParsePrivateKey(privateKey)
+	signer, err := sshsig.ParsePrivateKey(privateKey, nil)
 	if err != nil {
 		return nil, fmt.Errorf("parse signing key from secret %s/%s: %w", secret.Namespace, secret.Name, err)
 	}
@@ -139,105 +132,10 @@ func (s *sshCommitSigner) Sign(message io.Reader) ([]byte, error) {
 		return nil, fmt.Errorf("read commit payload: %w", err)
 	}
 
-	digest := sha512.Sum512(payload)
-
-	// Build the signed data blob per the actual OpenSSH sshsig implementation.
-	// Despite PROTOCOL.sshsig stating that SIG_VERSION appears in the signed
-	// data, OpenSSH 9.x does NOT include it — version appears only in the blob
-	// header. The signed data is:
-	//   "SSHSIG" (6 raw bytes) || string(namespace)
-	//   || string(reserved) || string(hash_algorithm) || string(hash)
-	// The magic must be written as raw bytes — NOT as an SSH wire-format
-	// length-prefixed string — so ssh.Marshal must not be used here.
-	var sigData bytes.Buffer
-	sigData.WriteString(sshSignatureMagic)
-	_ = writeSSHPacketString(&sigData, []byte(sshSignatureNamespace))
-	_ = writeSSHPacketString(&sigData, nil) // reserved
-	_ = writeSSHPacketString(&sigData, []byte(sshSignatureHashAlg))
-	_ = writeSSHPacketString(&sigData, digest[:])
-
-	signature, err := signSSHMessage(s.signer, sigData.Bytes())
+	signature, err := sshsig.SignMessage(s.signer, sshSignatureNamespace, payload)
 	if err != nil {
 		return nil, fmt.Errorf("sign commit payload: %w", err)
 	}
 
-	blob, err := encodeSSHSignatureBlob(s.signer.PublicKey(), signature)
-	if err != nil {
-		return nil, err
-	}
-
-	return armorSSHSignature(blob), nil
-}
-
-func signSSHMessage(signer ssh.Signer, data []byte) (*ssh.Signature, error) {
-	if algorithmSigner, ok := signer.(ssh.AlgorithmSigner); ok && signer.PublicKey().Type() == ssh.KeyAlgoRSA {
-		return algorithmSigner.SignWithAlgorithm(rand.Reader, data, ssh.KeyAlgoRSASHA512)
-	}
-
-	return signer.Sign(rand.Reader, data)
-}
-
-func encodeSSHSignatureBlob(publicKey ssh.PublicKey, signature *ssh.Signature) ([]byte, error) {
-	if publicKey == nil {
-		return nil, errors.New("ssh signing public key is nil")
-	}
-	if signature == nil {
-		return nil, errors.New("ssh signature is nil")
-	}
-
-	signatureBlob := ssh.Marshal(*signature)
-
-	var buf bytes.Buffer
-	buf.WriteString(sshSignatureMagic)
-	if err := binary.Write(&buf, binary.BigEndian, sshSignatureVersion); err != nil {
-		return nil, fmt.Errorf("encode ssh signature version: %w", err)
-	}
-
-	if err := writeSSHPacketString(&buf, publicKey.Marshal()); err != nil {
-		return nil, err
-	}
-	if err := writeSSHPacketString(&buf, []byte(sshSignatureNamespace)); err != nil {
-		return nil, err
-	}
-	if err := writeSSHPacketString(&buf, nil); err != nil {
-		return nil, err
-	}
-	if err := writeSSHPacketString(&buf, []byte(sshSignatureHashAlg)); err != nil {
-		return nil, err
-	}
-	if err := writeSSHPacketString(&buf, signatureBlob); err != nil {
-		return nil, err
-	}
-
-	return buf.Bytes(), nil
-}
-
-func writeSSHPacketString(buf *bytes.Buffer, value []byte) error {
-	if len(value) > math.MaxUint32 {
-		return fmt.Errorf("ssh packet string too large: %d bytes", len(value))
-	}
-
-	//nolint:gosec // len(value) is bounded above by math.MaxUint32 just above.
-	_ = binary.Write(buf, binary.BigEndian, uint32(len(value)))
-	_, _ = buf.Write(value)
-	return nil
-}
-
-func armorSSHSignature(blob []byte) []byte {
-	var buf bytes.Buffer
-	_, _ = buf.WriteString("-----BEGIN SSH SIGNATURE-----\n")
-
-	encoded := base64.StdEncoding.EncodeToString(blob)
-	for len(encoded) > 70 {
-		_, _ = buf.WriteString(encoded[:70])
-		_ = buf.WriteByte('\n')
-		encoded = encoded[70:]
-	}
-	if encoded != "" {
-		_, _ = buf.WriteString(encoded)
-		_ = buf.WriteByte('\n')
-	}
-
-	_, _ = buf.WriteString("-----END SSH SIGNATURE-----")
-	return buf.Bytes()
+	return signature, nil
 }

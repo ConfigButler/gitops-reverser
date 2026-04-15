@@ -25,7 +25,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
-	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -200,11 +200,7 @@ func TestNewWebSession_FailsWithoutSessionCookie(t *testing.T) {
 	}
 }
 
-func TestClientVerifySSHKeyWithKeygen_EndToEnd(t *testing.T) {
-	if _, err := exec.LookPath("ssh-keygen"); err != nil {
-		t.Skip("ssh-keygen not found in PATH")
-	}
-
+func TestClientVerifySSHKey_EndToEnd(t *testing.T) {
 	privateKeyPEM, publicKey, err := reverserGit.GenerateSSHSigningKeyPair(nil)
 	if err != nil {
 		t.Fatalf("GenerateSSHSigningKeyPair() error = %v", err)
@@ -217,7 +213,7 @@ func TestClientVerifySSHKeyWithKeygen_EndToEnd(t *testing.T) {
 	defer cancel()
 
 	client := New(srv.URL+"/api/v1", "admin", "admin-pass")
-	result, err := client.VerifySSHKeyWithKeygen(ctx, &TestUser{
+	result, err := client.VerifySSHKey(ctx, &TestUser{
 		Login:    "alice",
 		Password: "secret",
 	}, SSHKeyVerificationOptions{
@@ -226,17 +222,53 @@ func TestClientVerifySSHKeyWithKeygen_EndToEnd(t *testing.T) {
 		PrivateKeyPEM: privateKeyPEM,
 	})
 	if err != nil {
-		t.Fatalf("VerifySSHKeyWithKeygen() error = %v", err)
+		t.Fatalf("VerifySSHKey() error = %v", err)
 	}
 
 	if result == nil || result.Session == nil {
-		t.Fatal("VerifySSHKeyWithKeygen() returned nil result")
+		t.Fatal("VerifySSHKey() returned nil result")
 	}
 	if result.Token != "token-to-sign" {
 		t.Fatalf("result.Token = %q, want %q", result.Token, "token-to-sign")
 	}
 	if !strings.Contains(result.Signature, "BEGIN SSH SIGNATURE") {
 		t.Fatalf("result.Signature missing SSH signature armor: %q", result.Signature)
+	}
+	assertVerifyForm(t, verifyForm, strings.TrimSpace(string(publicKey)))
+}
+
+func TestClientVerifySSHKey_PrivateKeyPathFallback(t *testing.T) {
+	privateKeyPEM, publicKey, err := reverserGit.GenerateSSHSigningKeyPair(nil)
+	if err != nil {
+		t.Fatalf("GenerateSSHSigningKeyPair() error = %v", err)
+	}
+
+	srv, verifyForm := newVerificationTestServer(t)
+	defer srv.Close()
+
+	keyPath := filepath.Join(t.TempDir(), "id_sign")
+	if err := os.WriteFile(keyPath, privateKeyPEM, 0o600); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v", keyPath, err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	client := New(srv.URL+"/api/v1", "admin", "admin-pass")
+	result, err := client.VerifySSHKey(ctx, &TestUser{
+		Login:    "alice",
+		Password: "secret",
+	}, SSHKeyVerificationOptions{
+		PublicKey:      strings.TrimSpace(string(publicKey)),
+		Fingerprint:    "SHA256:testfingerprint",
+		PrivateKeyPath: keyPath,
+	})
+	if err != nil {
+		t.Fatalf("VerifySSHKey() error = %v", err)
+	}
+
+	if result == nil || result.Session == nil {
+		t.Fatal("VerifySSHKey() returned nil result")
 	}
 	assertVerifyForm(t, verifyForm, strings.TrimSpace(string(publicKey)))
 }
