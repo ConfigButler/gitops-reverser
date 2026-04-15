@@ -36,8 +36,6 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-const biDirectionalEnabledEnv = "E2E_ENABLE_BI_DIRECTIONAL"
-
 const (
 	biPollInterval          = time.Second
 	biEventuallyTimeout     = 45 * time.Second
@@ -102,10 +100,6 @@ var _ = Describe("Bi Directional", Label("bi-directional"), Ordered, func() {
 	var testNs string
 
 	BeforeAll(func() {
-		if !biDirectionalEnabled() {
-			Skip(fmt.Sprintf("bi-directional e2e is disabled; set %s=true to run", biDirectionalEnabledEnv))
-		}
-
 		By("creating test namespace")
 		testNs = testNamespaceFor("bi-directional")
 		_, _ = kubectlRun("create", "namespace", testNs) // idempotent; ignore AlreadyExists
@@ -336,11 +330,6 @@ var _ = Describe("Bi Directional", Label("bi-directional"), Ordered, func() {
 		run.consistentlyExpectRemoteCommitCount(revertBaselineCommitCount+2, biStableCountMediumWait)
 	})
 })
-
-func biDirectionalEnabled() bool {
-	value := strings.ToLower(strings.TrimSpace(os.Getenv(biDirectionalEnabledEnv)))
-	return value == "1" || value == "true" || value == "yes"
-}
 
 func newBiDirectionalRun() biDirectionalRun {
 	testID := strconv.FormatInt(time.Now().UnixNano(), 10)
