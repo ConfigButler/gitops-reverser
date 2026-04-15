@@ -13,8 +13,11 @@ The important mental model is:
 4. Each repo-using e2e test file creates its own Gitea repo (via `SetupRepo(...)`) in its own test namespace.
 
 Repo fixtures are therefore file-local, not package-global. See
-[e2e-repo-in-namespace-plan.md](./e2e-repo-in-namespace-plan.md) and
-[e2e-repo-in-namespace-follow-up-plan.md](./e2e-repo-in-namespace-follow-up-plan.md) for the migration record.
+[e2e-repo-in-namespace-plan.md](./e2e-repo-in-namespace-plan.md) for the
+design intent,
+[e2e-repo-in-namespace-follow-up-plan.md](./e2e-repo-in-namespace-follow-up-plan.md)
+for the current-state summary, and
+[e2e-finish-plan.md](./e2e-finish-plan.md) for the remaining open work.
 
 That sharing is intentional, but it also means a later suite can break an earlier suite's shared fixtures if the
 test harness treats run-scoped artifacts like install-scoped artifacts.
