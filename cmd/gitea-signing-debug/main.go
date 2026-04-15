@@ -2,6 +2,18 @@
 SPDX-License-Identifier: Apache-2.0
 
 Copyright 2025 ConfigButler
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
 */
 
 // gitea-signing-debug drives the full SSH-signed-commit flow against a live
@@ -50,19 +62,47 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/giteaclient"
 )
 
+const (
+	runTimeout            = 2 * time.Minute
+	signaturePreviewLimit = 80
+	restrictedFileMode    = 0o600
+)
+
 func main() {
+	log.SetFlags(0)
+
 	var (
-		apiURL    = flag.String("gitea-url", envOr("GITEA_API_URL", "http://localhost:13000/api/v1"), "Gitea /api/v1 base URL")
-		cloneBase = flag.String("gitea-clone-url", envOr("GITEA_CLONE_URL", ""), "override clone URL base (default: derived from --gitea-url)")
+		apiURL = flag.String(
+			"gitea-url",
+			envOr("GITEA_API_URL", "http://localhost:13000/api/v1"),
+			"Gitea /api/v1 base URL",
+		)
+		cloneBase = flag.String(
+			"gitea-clone-url",
+			envOr("GITEA_CLONE_URL", ""),
+			"override clone URL base (default: derived from --gitea-url)",
+		)
 		adminU    = flag.String("admin-user", envOr("GITEA_ADMIN_USER", "giteaadmin"), "Gitea admin username")
 		adminP    = flag.String("admin-pass", envOr("GITEA_ADMIN_PASS", "giteapassword123"), "Gitea admin password")
 		userLogin = flag.String("user", fmt.Sprintf("sshdbg-%d", time.Now().Unix()), "per-run user login")
 		repoName  = flag.String("repo", "", "per-run repo name (default: <user>-repo)")
 		keepRepo  = flag.Bool("keep", false, "do not delete the repo/user at the end (useful for post-mortem)")
-		trust     = flag.String("trust-model", "committer", "trust_model for the repo: default|collaborator|committer|collaboratorcommitter")
-		logsNS    = flag.String("gitea-ns", "gitea-e2e", "kubectl namespace for Gitea pod log tail (empty disables)")
-		logsSel   = flag.String("gitea-selector", "app.kubernetes.io/name=gitea", "kubectl label selector for Gitea pod")
-		verifyWeb = flag.Bool("verify-web", true, "drive the Gitea web UI (login + POST /user/settings/keys?type=verify_ssh) to verify the SSH key")
+		trust     = flag.String(
+			"trust-model",
+			"committer",
+			"trust_model for the repo: default|collaborator|committer|collaboratorcommitter",
+		)
+		logsNS  = flag.String("gitea-ns", "gitea-e2e", "kubectl namespace for Gitea pod log tail (empty disables)")
+		logsSel = flag.String(
+			"gitea-selector",
+			"app.kubernetes.io/name=gitea",
+			"kubectl label selector for Gitea pod",
+		)
+		verifyWeb = flag.Bool(
+			"verify-web",
+			true,
+			"drive the Gitea web UI (login + POST /user/settings/keys?type=verify_ssh) to verify the SSH key",
+		)
 	)
 	flag.Parse()
 
@@ -94,31 +134,32 @@ type runOpts struct {
 	VerifyWeb, Keep      bool
 }
 
+//nolint:cyclop,funlen // This is a debug-only CLI that intentionally narrates each step of the flow.
 func run(o runOpts) error {
 	apiURL, cloneBase := o.APIURL, o.CloneBase
 	adminUser, adminPass := o.AdminUser, o.AdminPass
 	userLogin, repoName, trustModel := o.UserLogin, o.RepoName, o.TrustModel
 	logsNS, logsSel := o.LogsNS, o.LogsSelector
 	keep := o.Keep
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), runTimeout)
 	defer cancel()
 
 	admin := giteaclient.New(apiURL, adminUser, adminPass)
 	email := userLogin + "@configbutler.test"
 
-	step("1. ensure user %q", userLogin)
+	stepf("1. ensure user %q", userLogin)
 	user, err := admin.EnsureUser(ctx, userLogin, email)
 	if err != nil {
 		return fmt.Errorf("ensure user: %w", err)
 	}
-	fmt.Printf("   user id=%d email=%s password=%s\n", user.ID, user.Email, user.Password)
+	writef("   user id=%d email=%s password=%s\n", user.ID, user.Email, user.Password)
 
-	step("2. create repo %q owned by %q (trust_model=%s)", repoName, user.Login, trustModel)
+	stepf("2. create repo %q owned by %q (trust_model=%s)", repoName, user.Login, trustModel)
 	repo, err := admin.CreateUserRepo(ctx, user.Login, repoName, true, trustModel)
 	if err != nil {
 		return fmt.Errorf("create repo: %w", err)
 	}
-	fmt.Printf("   repo id=%d clone=%s\n", repo.ID, repo.CloneURL)
+	writef("   repo id=%d clone=%s\n", repo.ID, repo.CloneURL)
 
 	if !keep {
 		defer func() {
@@ -126,56 +167,41 @@ func run(o runOpts) error {
 		}()
 	}
 
-	step("3. generate SSH signing keypair")
-	privPEM, pubAuth, err := reverserGit.GenerateSSHSigningKeyPair(nil)
+	stepf("3. generate SSH signing keypair")
+	workDir, privPath, pubPath, pubStr, err := writeSigningKeyPair(keep)
 	if err != nil {
-		return fmt.Errorf("generate keypair: %w", err)
-	}
-	workDir, err := os.MkdirTemp("", "gitea-signing-debug-*")
-	if err != nil {
-		return fmt.Errorf("tempdir: %w", err)
+		return err
 	}
 	if !keep {
 		defer os.RemoveAll(workDir)
-	} else {
-		fmt.Printf("   workdir (kept): %s\n", workDir)
 	}
-	privPath := filepath.Join(workDir, "id_sign")
-	pubPath := privPath + ".pub"
-	if err := os.WriteFile(privPath, privPEM, 0o600); err != nil {
-		return fmt.Errorf("write privkey: %w", err)
-	}
-	if err := os.WriteFile(pubPath, append(pubAuth, '\n'), 0o644); err != nil {
-		return fmt.Errorf("write pubkey: %w", err)
-	}
-	pubStr := strings.TrimSpace(string(pubAuth))
-	fmt.Printf("   pubkey: %s\n", pubStr)
+	writef("   pubkey: %s\n", pubStr)
 
-	step("4a. register pubkey via ADMIN endpoint POST /admin/users/%s/keys", user.Login)
+	stepf("4a. register pubkey via ADMIN endpoint POST /admin/users/%s/keys", user.Login)
 	key, err := admin.RegisterUserKeyAsAdmin(ctx, user.Login, "debug-signing", pubStr)
 	if err != nil {
 		return fmt.Errorf("register key (admin): %w", err)
 	}
-	fmt.Printf("   key id=%d fingerprint=%s key_type=%q read_only=%v\n",
+	writef("   key id=%d fingerprint=%s key_type=%q read_only=%v\n",
 		key.ID, key.Fingerprint, key.KeyType, key.ReadOnly)
 	userClient := giteaclient.New(apiURL, user.Login, user.Password)
 	rawKey, err := userClient.GetKeyRaw(ctx, key.ID)
 	if err != nil {
-		fmt.Printf("   [warn] could not fetch raw key as user: %v\n", err)
+		writef("   [warn] could not fetch raw key as user: %v\n", err)
 	} else {
-		fmt.Printf("   raw key JSON: %s\n", string(rawKey))
+		writef("   raw key JSON: %s\n", string(rawKey))
 	}
 
-	step("5. make SSH-signed commit (committer email = %s) and push", user.Email)
+	stepf("5. make SSH-signed commit (committer email = %s) and push", user.Email)
 	cloneURL := fmt.Sprintf("%s/%s/%s.git", strings.TrimRight(cloneBase, "/"), user.Login, repoName)
 	authURL := injectBasicAuth(cloneURL, user.Login, user.Password)
-	commitSHA, err := makeSignedCommit(workDir, authURL, privPath, pubPath, user)
+	commitSHA, err := makeSignedCommit(ctx, workDir, authURL, pubPath, user)
 	if err != nil {
 		return fmt.Errorf("signed commit: %w", err)
 	}
-	fmt.Printf("   commit sha=%s\n", commitSHA)
+	writef("   commit sha=%s\n", commitSHA)
 
-	step("6. query commit verification (tailing Gitea server logs around the call)")
+	stepf("6. query commit verification (tailing Gitea server logs around the call)")
 	logsStart := time.Now().Add(-2 * time.Second)
 	v, err := admin.GetCommitVerification(ctx, user.Login, repoName, commitSHA)
 	if err != nil {
@@ -184,50 +210,35 @@ func run(o runOpts) error {
 	printVerification("verify", v)
 	time.Sleep(1 * time.Second) // let async log flush catch up
 	if logsNS != "" {
-		printGiteaLogs(logsNS, logsSel, logsStart)
+		printGiteaLogs(ctx, logsNS, logsSel, logsStart)
 	}
 
 	if o.VerifyWeb {
-		step("6b. log into Gitea web UI as %q and POST /user/settings/keys?type=verify_ssh", user.Login)
-		token, err := userClient.GetVerificationToken(ctx)
-		if err != nil {
-			return fmt.Errorf("get verification token: %w", err)
+		stepf("6b. log into Gitea web UI as %q and POST /user/settings/keys?type=verify_ssh", user.Login)
+		if err := verifyViaWeb(ctx, userClient, apiURL, user, pubStr, key.Fingerprint, workDir, privPath); err != nil {
+			return err
 		}
-		fmt.Printf("   token: %s\n", token)
-		armoredSig, err := signTokenWithSSHKeygen(workDir, privPath, token)
-		if err != nil {
-			return fmt.Errorf("ssh-keygen sign token: %w", err)
-		}
-		webBase := deriveCloneBase(apiURL)
-		sess, err := giteaclient.NewWebSession(ctx, webBase, user.Login, user.Password, true)
-		if err != nil {
-			return fmt.Errorf("web login: %w", err)
-		}
-		if err := sess.VerifySSHKey(ctx, pubStr, key.Fingerprint, armoredSig); err != nil {
-			return fmt.Errorf("verify ssh key via web: %w", err)
-		}
-		fmt.Println("   [verify-web] ok")
 		v3, err := admin.GetCommitVerification(ctx, user.Login, repoName, commitSHA)
 		if err != nil {
 			return fmt.Errorf("get commit verification (post-web): %w", err)
 		}
 		printVerification("post-web-verify", v3)
-		fmt.Println()
-		fmt.Printf("   DIFF: pre  verified=%v reason=%q\n", v.Verified, v.Reason)
-		fmt.Printf("         post verified=%v reason=%q signer=%s\n", v3.Verified, v3.Reason, signerString(v3.Signer))
+		writeln()
+		writef("   DIFF: pre  verified=%v reason=%q\n", v.Verified, v.Reason)
+		writef("         post verified=%v reason=%q signer=%s\n", v3.Verified, v3.Reason, signerString(v3.Signer))
 	}
 
-	step("7. re-list user's keys and dump all fields (including key_type)")
+	stepf("7. re-list user's keys and dump all fields (including key_type)")
 	keys, err := userClient.ListUserKeys(ctx, user.Login)
 	if err != nil {
 		return fmt.Errorf("list user keys: %w", err)
 	}
 	for _, k := range keys {
-		fmt.Printf("   key id=%d title=%q key_type=%q fingerprint=%s last_used=%s\n",
+		writef("   key id=%d title=%q key_type=%q fingerprint=%s last_used=%s\n",
 			k.ID, k.Title, k.KeyType, k.Fingerprint, k.LastUsedAt)
 	}
 
-	step("8. final verdict (re-querying commit API)")
+	stepf("8. final verdict (re-querying commit API)")
 	vFinal, err := admin.GetCommitVerification(ctx, user.Login, repoName, commitSHA)
 	if err != nil {
 		return fmt.Errorf("get commit verification (final): %w", err)
@@ -238,9 +249,9 @@ func run(o runOpts) error {
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
-func step(format string, args ...any) {
-	fmt.Println()
-	fmt.Println("─── " + fmt.Sprintf(format, args...) + " ───")
+func stepf(format string, args ...any) {
+	writeln()
+	writef("─── %s ───\n", fmt.Sprintf(format, args...))
 }
 
 func envOr(key, fallback string) string {
@@ -268,14 +279,14 @@ func injectBasicAuth(rawURL, user, pass string) string {
 }
 
 func printVerification(label string, v *giteaclient.CommitVerification) {
-	fmt.Printf("   [%s] verified=%v reason=%q signer=%s\n",
+	writef("   [%s] verified=%v reason=%q signer=%s\n",
 		label, v.Verified, v.Reason, signerString(v.Signer))
 	if v.Signature != "" {
 		sig := v.Signature
-		if len(sig) > 80 {
-			sig = sig[:80] + "..."
+		if len(sig) > signaturePreviewLimit {
+			sig = sig[:signaturePreviewLimit] + "..."
 		}
-		fmt.Printf("   [%s] signature=%s\n", label, strings.ReplaceAll(sig, "\n", "\\n"))
+		writef("   [%s] signature=%s\n", label, strings.ReplaceAll(sig, "\n", "\\n"))
 	}
 }
 
@@ -289,9 +300,13 @@ func signerString(u *giteaclient.User) string {
 // makeSignedCommit clones repo into workDir/repo, configures SSH signing, makes
 // one signed empty-ish commit authored by the test user, and pushes. It returns
 // the commit SHA.
-func makeSignedCommit(workDir, cloneURL, privPath, pubPath string, user *giteaclient.TestUser) (string, error) {
+func makeSignedCommit(
+	ctx context.Context,
+	workDir, cloneURL, pubPath string,
+	user *giteaclient.TestUser,
+) (string, error) {
 	repoDir := filepath.Join(workDir, "repo")
-	if out, err := runCmd("", "git", "clone", cloneURL, repoDir); err != nil {
+	if out, err := runCmd(ctx, "", "git", "clone", cloneURL, repoDir); err != nil {
 		return "", fmt.Errorf("git clone: %w (%s)", err, out)
 	}
 
@@ -303,7 +318,7 @@ func makeSignedCommit(workDir, cloneURL, privPath, pubPath string, user *giteacl
 		{"commit.gpgsign", "true"},
 	}
 	for _, kv := range cfg {
-		if out, err := runCmd(repoDir, "git", "config", kv[0], kv[1]); err != nil {
+		if out, err := runCmd(ctx, repoDir, "git", "config", kv[0], kv[1]); err != nil {
 			return "", fmt.Errorf("git config %s: %w (%s)", kv[0], err, out)
 		}
 	}
@@ -311,36 +326,37 @@ func makeSignedCommit(workDir, cloneURL, privPath, pubPath string, user *giteacl
 	// Touch a file so we always have a non-empty diff (Gitea init commit may
 	// already exist; an empty commit would be fine too but this is simpler).
 	f := filepath.Join(repoDir, "debug.txt")
-	if err := os.WriteFile(f, []byte(fmt.Sprintf("ts=%d\n", time.Now().UnixNano())), 0o644); err != nil {
+	if err := os.WriteFile(f, []byte(fmt.Sprintf("ts=%d\n", time.Now().UnixNano())), restrictedFileMode); err != nil {
 		return "", err
 	}
-	if out, err := runCmd(repoDir, "git", "add", "debug.txt"); err != nil {
+	if out, err := runCmd(ctx, repoDir, "git", "add", "debug.txt"); err != nil {
 		return "", fmt.Errorf("git add: %w (%s)", err, out)
 	}
 	// GIT_SSH_COMMAND not needed for signing (ssh-keygen path is local), but set
 	// for push over HTTPS it's irrelevant.
-	if out, err := runCmd(repoDir, "git", "commit", "-S", "-m", "debug: ssh-signed commit"); err != nil {
+	if out, err := runCmd(ctx, repoDir, "git", "commit", "-S", "-m", "debug: ssh-signed commit"); err != nil {
 		return "", fmt.Errorf("git commit -S: %w (%s)", err, out)
 	}
-	if out, err := runCmd(repoDir, "git", "rev-parse", "HEAD"); err != nil {
+	out, err := runCmd(ctx, repoDir, "git", "rev-parse", "HEAD")
+	if err != nil {
 		return "", fmt.Errorf("git rev-parse: %w (%s)", err, out)
-	} else {
-		sha := strings.TrimSpace(out)
-		if out, err := runCmd(repoDir, "git", "push", "origin", "HEAD"); err != nil {
-			return "", fmt.Errorf("git push: %w (%s)", err, out)
-		}
-		return sha, nil
 	}
+
+	sha := strings.TrimSpace(out)
+	if out, err := runCmd(ctx, repoDir, "git", "push", "origin", "HEAD"); err != nil {
+		return "", fmt.Errorf("git push: %w (%s)", err, out)
+	}
+	return sha, nil
 }
 
 // signTokenWithSSHKeygen shells out to `ssh-keygen -Y sign -n gitea -f privkey`
 // over the token and returns the armored signature.
-func signTokenWithSSHKeygen(workDir, privPath, token string) (string, error) {
+func signTokenWithSSHKeygen(ctx context.Context, workDir, privPath, token string) (string, error) {
 	tokenPath := filepath.Join(workDir, "token.txt")
 	if err := os.WriteFile(tokenPath, []byte(token), 0o600); err != nil {
 		return "", err
 	}
-	cmd := exec.Command("ssh-keygen", "-Y", "sign", "-n", "gitea", "-f", privPath, tokenPath)
+	cmd := exec.CommandContext(ctx, "ssh-keygen", "-Y", "sign", "-n", "gitea", "-f", privPath, tokenPath)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("ssh-keygen -Y sign: %w (%s)", err, out)
@@ -354,9 +370,9 @@ func signTokenWithSSHKeygen(workDir, privPath, token string) (string, error) {
 
 // printGiteaLogs dumps Gitea pod logs emitted after `since`, highlighting
 // lines that look related to signature/key verification. Non-fatal on failure.
-func printGiteaLogs(namespace, selector string, since time.Time) {
+func printGiteaLogs(ctx context.Context, namespace, selector string, since time.Time) {
 	sinceStr := since.UTC().Format(time.RFC3339)
-	out, err := runCmd("", "kubectl", "logs",
+	out, err := runCmd(ctx, "", "kubectl", "logs",
 		"-n", namespace,
 		"-l", selector,
 		"--tail=-1",
@@ -364,10 +380,10 @@ func printGiteaLogs(namespace, selector string, since time.Time) {
 		"--prefix=true",
 	)
 	if err != nil {
-		fmt.Printf("   [logs] kubectl logs failed: %v\n%s\n", err, out)
+		writef("   [logs] kubectl logs failed: %v\n%s\n", err, out)
 		return
 	}
-	fmt.Println("   ── Gitea pod logs since API call ──")
+	writeln("   ── Gitea pod logs since API call ──")
 	lines := strings.Split(out, "\n")
 	interesting := []string{}
 	for _, ln := range lines {
@@ -380,20 +396,88 @@ func printGiteaLogs(namespace, selector string, since time.Time) {
 		}
 	}
 	if len(interesting) == 0 {
-		fmt.Println("   (no signature/key/commit-related lines; dumping all)")
-		fmt.Println(out)
+		writeln("   (no signature/key/commit-related lines; dumping all)")
+		writeln(out)
 		return
 	}
 	for _, ln := range interesting {
-		fmt.Println("   " + ln)
+		writeln("   " + ln)
 	}
 }
 
-func runCmd(dir, name string, args ...string) (string, error) {
-	cmd := exec.Command(name, args...)
+func runCmd(ctx context.Context, dir, name string, args ...string) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	cmd := exec.CommandContext(ctx, name, args...)
 	if dir != "" {
 		cmd.Dir = dir
 	}
 	out, err := cmd.CombinedOutput()
 	return string(out), err
+}
+
+func verifyViaWeb(
+	ctx context.Context,
+	userClient *giteaclient.Client,
+	apiURL string,
+	user *giteaclient.TestUser,
+	pubKey, fingerprint, workDir, privPath string,
+) error {
+	token, err := userClient.GetVerificationToken(ctx)
+	if err != nil {
+		return fmt.Errorf("get verification token: %w", err)
+	}
+	writef("   token: %s\n", token)
+
+	armoredSig, err := signTokenWithSSHKeygen(ctx, workDir, privPath, token)
+	if err != nil {
+		return fmt.Errorf("ssh-keygen sign token: %w", err)
+	}
+
+	sess, err := giteaclient.NewWebSession(ctx, deriveCloneBase(apiURL), user.Login, user.Password, true)
+	if err != nil {
+		return fmt.Errorf("web login: %w", err)
+	}
+	if err := sess.VerifySSHKey(ctx, pubKey, fingerprint, armoredSig); err != nil {
+		return fmt.Errorf("verify ssh key via web: %w", err)
+	}
+
+	writeln("   [verify-web] ok")
+	return nil
+}
+
+func writeSigningKeyPair(keep bool) (string, string, string, string, error) {
+	privPEM, pubAuth, err := reverserGit.GenerateSSHSigningKeyPair(nil)
+	if err != nil {
+		return "", "", "", "", fmt.Errorf("generate keypair: %w", err)
+	}
+
+	workDir, err := os.MkdirTemp("", "gitea-signing-debug-*")
+	if err != nil {
+		return "", "", "", "", fmt.Errorf("tempdir: %w", err)
+	}
+	if keep {
+		writef("   workdir (kept): %s\n", workDir)
+	}
+
+	privPath := filepath.Join(workDir, "id_sign")
+	pubPath := privPath + ".pub"
+	if err := os.WriteFile(privPath, privPEM, 0o600); err != nil {
+		return "", "", "", "", fmt.Errorf("write privkey: %w", err)
+	}
+	if err := os.WriteFile(pubPath, append(pubAuth, '\n'), restrictedFileMode); err != nil {
+		return "", "", "", "", fmt.Errorf("write pubkey: %w", err)
+	}
+
+	return workDir, privPath, pubPath, strings.TrimSpace(string(pubAuth)), nil
+}
+
+func writef(format string, args ...any) {
+	_, _ = fmt.Fprintf(os.Stdout, format, args...)
+}
+
+func writeln(parts ...any) {
+	_, _ = fmt.Fprintln(os.Stdout, parts...)
 }

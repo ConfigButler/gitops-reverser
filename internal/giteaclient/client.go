@@ -2,6 +2,18 @@
 SPDX-License-Identifier: Apache-2.0
 
 Copyright 2025 ConfigButler
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
 */
 
 // Package giteaclient is a small, focused Gitea REST client used by e2e tests
@@ -21,6 +33,8 @@ import (
 	"time"
 )
 
+const defaultHTTPTimeout = 15 * time.Second
+
 // Client talks to a Gitea instance using basic auth.
 // Username/Password are used for every request; for flows that require acting
 // as a specific user (e.g. key verification), construct a second Client with
@@ -38,7 +52,7 @@ func New(baseURL, username, password string) *Client {
 		BaseURL:    strings.TrimRight(baseURL, "/"),
 		Username:   username,
 		Password:   password,
-		HTTPClient: &http.Client{Timeout: 15 * time.Second},
+		HTTPClient: &http.Client{Timeout: defaultHTTPTimeout},
 	}
 }
 
