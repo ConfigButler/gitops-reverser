@@ -36,6 +36,8 @@ const (
 	flashErrorPreviewSize   = 400
 	httpErrorThreshold      = 400
 	csrfMatchGroupCount     = 3
+	sessionCookieName       = "i_like_gitea"
+	csrfCookieName          = "_csrf"
 )
 
 // WebSession drives Gitea's web UI for flows the REST API does not expose
@@ -93,13 +95,13 @@ func NewWebSession(ctx context.Context, baseURL, username, password string, debu
 	body, _ := io.ReadAll(resp.Body)
 	s.debugLogin(resp.StatusCode, resp.Request.URL.String(), len(body))
 
-	// On a failed login Gitea returns 200 and re-renders the login page.
-	// Detect the explicit username/password form so we fail loudly.
-	if strings.Contains(string(body), `name="user_name"`) &&
-		strings.Contains(string(body), `name="password"`) &&
-		strings.Contains(resp.Request.URL.Path, "/user/login") {
-		return nil, fmt.Errorf("login failed for %s (still on /user/login). body preview: %s",
-			username, TruncateBody(string(body)))
+	if resp.StatusCode >= httpErrorThreshold {
+		return nil, fmt.Errorf("login failed for %s: HTTP %d: %s",
+			username, resp.StatusCode, TruncateBody(string(body)))
+	}
+	if !s.hasCookie(sessionCookieName) {
+		return nil, fmt.Errorf("login failed for %s: missing %s session cookie. body preview: %s",
+			username, sessionCookieName, TruncateBody(string(body)))
 	}
 	return s, nil
 }
@@ -167,14 +169,25 @@ func (s *WebSession) fetchCSRF(ctx context.Context, path string) (string, error)
 	if err != nil {
 		return "", err
 	}
-	m := csrfInputRE.FindStringSubmatch(string(body))
+	token := extractCSRFToken(string(body))
+	if token != "" {
+		return token, nil
+	}
+	if token = s.cookieValue(csrfCookieName); token != "" {
+		return token, nil
+	}
+	return "", fmt.Errorf("no _csrf input or cookie found at %s (HTTP %d)", path, resp.StatusCode)
+}
+
+func extractCSRFToken(html string) string {
+	m := csrfInputRE.FindStringSubmatch(html)
 	if len(m) < csrfMatchGroupCount {
-		return "", fmt.Errorf("no _csrf input found at %s (HTTP %d)", path, resp.StatusCode)
+		return ""
 	}
 	if m[1] != "" {
-		return m[1], nil
+		return m[1]
 	}
-	return m[2], nil
+	return m[2]
 }
 
 // csrfInputRE matches `<input ... name="_csrf" value="TOKEN">` in either order.
@@ -182,6 +195,28 @@ var csrfInputRE = regexp.MustCompile(
 	`<input[^>]*\bname="_csrf"[^>]*\bvalue="([^"]+)"|` +
 		`<input[^>]*\bvalue="([^"]+)"[^>]*\bname="_csrf"`,
 )
+
+func (s *WebSession) hasCookie(name string) bool {
+	return s.cookieValue(name) != ""
+}
+
+func (s *WebSession) cookieValue(name string) string {
+	if s == nil || s.HTTPClient == nil || s.HTTPClient.Jar == nil {
+		return ""
+	}
+
+	baseURL, err := url.Parse(s.BaseURL)
+	if err != nil {
+		return ""
+	}
+
+	for _, cookie := range s.HTTPClient.Jar.Cookies(baseURL) {
+		if cookie.Name == name {
+			return cookie.Value
+		}
+	}
+	return ""
+}
 
 func (s *WebSession) debugLogin(statusCode int, finalURL string, bodyLen int) {
 	if !s.Debug {

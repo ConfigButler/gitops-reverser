@@ -215,7 +215,7 @@ func run(o runOpts) error {
 
 	if o.VerifyWeb {
 		stepf("6b. log into Gitea web UI as %q and POST /user/settings/keys?type=verify_ssh", user.Login)
-		if err := verifyViaWeb(ctx, userClient, apiURL, user, pubStr, key.Fingerprint, workDir, privPath); err != nil {
+		if err := verifyViaWeb(ctx, admin, apiURL, user, pubStr, key.Fingerprint, workDir, privPath); err != nil {
 			return err
 		}
 		v3, err := admin.GetCommitVerification(ctx, user.Login, repoName, commitSHA)
@@ -349,25 +349,6 @@ func makeSignedCommit(
 	return sha, nil
 }
 
-// signTokenWithSSHKeygen shells out to `ssh-keygen -Y sign -n gitea -f privkey`
-// over the token and returns the armored signature.
-func signTokenWithSSHKeygen(ctx context.Context, workDir, privPath, token string) (string, error) {
-	tokenPath := filepath.Join(workDir, "token.txt")
-	if err := os.WriteFile(tokenPath, []byte(token), 0o600); err != nil {
-		return "", err
-	}
-	cmd := exec.CommandContext(ctx, "ssh-keygen", "-Y", "sign", "-n", "gitea", "-f", privPath, tokenPath)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return "", fmt.Errorf("ssh-keygen -Y sign: %w (%s)", err, out)
-	}
-	sigBytes, err := os.ReadFile(tokenPath + ".sig")
-	if err != nil {
-		return "", fmt.Errorf("read .sig: %w", err)
-	}
-	return string(sigBytes), nil
-}
-
 // printGiteaLogs dumps Gitea pod logs emitted after `since`, highlighting
 // lines that look related to signature/key verification. Non-fatal on failure.
 func printGiteaLogs(ctx context.Context, namespace, selector string, since time.Time) {
@@ -420,29 +401,23 @@ func runCmd(ctx context.Context, dir, name string, args ...string) (string, erro
 
 func verifyViaWeb(
 	ctx context.Context,
-	userClient *giteaclient.Client,
+	adminClient *giteaclient.Client,
 	apiURL string,
 	user *giteaclient.TestUser,
 	pubKey, fingerprint, workDir, privPath string,
 ) error {
-	token, err := userClient.GetVerificationToken(ctx)
+	result, err := adminClient.VerifySSHKeyWithKeygen(ctx, user, giteaclient.SSHKeyVerificationOptions{
+		PublicKey:      pubKey,
+		Fingerprint:    fingerprint,
+		PrivateKeyPath: privPath,
+		WorkDir:        workDir,
+		Debug:          true,
+	})
 	if err != nil {
-		return fmt.Errorf("get verification token: %w", err)
+		return err
 	}
-	writef("   token: %s\n", token)
-
-	armoredSig, err := signTokenWithSSHKeygen(ctx, workDir, privPath, token)
-	if err != nil {
-		return fmt.Errorf("ssh-keygen sign token: %w", err)
-	}
-
-	sess, err := giteaclient.NewWebSession(ctx, deriveCloneBase(apiURL), user.Login, user.Password, true)
-	if err != nil {
-		return fmt.Errorf("web login: %w", err)
-	}
-	if err := sess.VerifySSHKey(ctx, pubKey, fingerprint, armoredSig); err != nil {
-		return fmt.Errorf("verify ssh key via web: %w", err)
-	}
+	writef("   token: %s\n", result.Token)
+	writef("   web base: %s\n", strings.TrimSuffix(strings.TrimRight(apiURL, "/"), "/api/v1"))
 
 	writeln("   [verify-web] ok")
 	return nil

@@ -19,11 +19,11 @@ This document reflects the code and test state validated on 2026-04-09. All e2e 
 
 The system is now green again:
 
-- `make lint` passes
-- `make test` passes
-- `make test-e2e` passes
-- `make test-e2e-quickstart-manifest` passes
-- `make test-e2e-quickstart-helm` passes
+- `task lint` passes
+- `task test` passes
+- `task test-e2e` passes
+- `task test-e2e-quickstart-manifest` passes
+- `task test-e2e-quickstart-helm` passes
 
 The webhook-audit migration is now functionally working. The architecture is operationally uniform:
 

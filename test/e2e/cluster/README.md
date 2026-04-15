@@ -12,7 +12,7 @@ By default, the cluster bootstrap also disables packaged k3s Traefik and k3s Ser
 
 ## How It Works
 
-The Makefile first copies the tracked audit assets into `.stamps/cluster/<ctx>/audit/`.
+The Task-driven e2e prep flow first copies the tracked audit assets into `.stamps/cluster/<ctx>/audit/`.
 `start-cluster.sh` mounts that generated directory into the k3d server node and sets:
 
 - `audit-policy-file=/etc/kubernetes/audit/policy.yaml`

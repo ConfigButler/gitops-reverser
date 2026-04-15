@@ -14,21 +14,21 @@
 Run the e2e commands sequentially, not in parallel!
 
 ```bash
-make lint      # Must pass golangci-lint checks
-make test      # Must pass all unit tests with >90% coverage  
-make test-e2e  # Must pass end-to-end tests
+task lint      # Must pass golangci-lint checks
+task test      # Must pass all unit tests with >90% coverage
+task test-e2e  # Must pass end-to-end tests
 ```
 
 And before you are really really wrapping up, also run:
 
 ```bash
-make test-e2e-quickstart-manifest
-make test-e2e-quickstart-helm
+task test-e2e-quickstart-manifest
+task test-e2e-quickstart-helm
 ```
 
 ## PRE-IMPLEMENTATION BEHAVIOR
 
-1. **Check Docker availability for e2e tests**: Before running `make test-e2e`, verify Docker is running with `docker info` or ask user to start Docker daemon if needed
+1. **Check Docker availability for e2e tests**: Before running `task test-e2e`, verify Docker is running with `docker info` or ask user to start Docker daemon if needed
 2. **Always read project context first**: Use `read_file` to understand existing patterns in target directories
 3. **Search for similar implementations**: Use `search_files` to find existing patterns before writing new code
 4. **Follow established architecture**: Maintain consistency with `internal/` directory structure
@@ -57,7 +57,7 @@ make test-e2e-quickstart-helm
 ### API Changes (`api/v1alpha1/`)
 - Add kubebuilder validation tags
 - Include JSON tags and field descriptions
-- Run `make manifests` to update CRDs
+- Run `task manifests` to update CRDs
 - Test CRD installation and usage
 
 ### Git Operations (`internal/git/`)
@@ -82,17 +82,17 @@ make test-e2e-quickstart-helm
 
 ## VALIDATION SEQUENCE
 
-1. `make fmt` - Format code
-2. `make generate` - Update generated code (if needed)
-3. `make manifests` - Update CRDs (if API changes)
-4. `make vet` - Run go vet
-5. `make lint` - Run golangci-lint (**MANDATORY**)
-6. `make test` - Run unit tests (**MANDATORY**)
-7. `make test-e2e` - Run e2e tests (**MANDATORY**)
+1. `task fmt` - Format code
+2. `task generate` - Update generated code (if needed)
+3. `task manifests` - Update CRDs (if API changes)
+4. `task vet` - Run go vet
+5. `task lint` - Run golangci-lint (**MANDATORY**)
+6. `task test` - Run unit tests (**MANDATORY**)
+7. `task test-e2e` - Run e2e tests (**MANDATORY**)
 
 ## FAILURE HANDLING
 
-- If `make lint` fails: Run `make lint-fix` first
+- If `task lint` fails: Run `task lint-fix` first
 - If tests fail: Fix issues and ensure >90% coverage maintained
 - If e2e fails: Check k3d cluster setup and Docker availability
 - If Docker not available: Ask user to start Docker daemon before running e2e tests

@@ -2,7 +2,7 @@
 
 ## What This Tests
 
-The Make image-refresh dependency chain is load-bearing infrastructure. When it breaks,
+The Task-driven image-refresh dependency chain is load-bearing infrastructure. When it breaks,
 developers waste time chasing stale pods, and CI can silently run tests against the wrong
 build. This document defines the scenarios that must hold, and how to validate them.
 
@@ -12,7 +12,7 @@ The chain under test:
 GO_SOURCES → controller.id → project-image.ready → image.loaded → controller.deployed
 ```
 
-Each arrow is a Make dependency. When any input is newer than its stamp, the chain
+Each arrow is a Task-managed dependency edge. When any input is newer than its stamp, the chain
 invalidates forward. The end result: `kubectl rollout restart` fires, the pod picks up
 the newly loaded image from containerd.
 
@@ -20,9 +20,9 @@ the newly loaded image from containerd.
 
 ### S1 — No-op: second run without changes does nothing
 
-**Setup:** run `make prepare-e2e` once to reach a known good state.
+**Setup:** run `task prepare-e2e` once to reach a known good state.
 
-**Action:** run `make prepare-e2e` again immediately, with no source changes.
+**Action:** run `task prepare-e2e` again immediately, with no source changes.
 
 **Assert:**
 - `controller.deployed` stamp mtime is unchanged
@@ -38,7 +38,7 @@ stamp mechanism exists precisely to avoid this.
 
 **Setup:** cluster in known good state from S1.
 
-**Action:** append a comment line to `cmd/main.go`, run `make prepare-e2e`.
+**Action:** append a comment line to `cmd/main.go`, run `task prepare-e2e`.
 
 **Assert:**
 - `controller.id` stamp is newer than before
@@ -56,7 +56,7 @@ the running pod.
 
 **Setup:** cluster in state after S2 (pod already restarted once).
 
-**Action:** append another comment to `cmd/main.go`, run `make prepare-e2e`.
+**Action:** append another comment to `cmd/main.go`, run `task prepare-e2e`.
 
 **Assert:** same as S2 — new pod, new digest in stamps.
 
@@ -70,7 +70,7 @@ because a stamp was missing, but subsequent changes are silently ignored.
 **Setup:** cluster in known good state.
 
 **Action:** append a comment to `test/e2e/helpers.go` (excluded from `GO_SOURCES`),
-run `make prepare-e2e`.
+run `task prepare-e2e`.
 
 **Assert:**
 - `controller.id` stamp mtime is unchanged
@@ -87,7 +87,7 @@ not cause a rebuild.
 
 **Setup:** cluster in known good state.
 
-**Action:** append a comment to `Dockerfile`, run `make prepare-e2e`.
+**Action:** append a comment to `Dockerfile`, run `task prepare-e2e`.
 
 **Assert:** same as S2 — new pod, new digest.
 
@@ -98,7 +98,7 @@ changed Dockerfile must produce a fresh image.
 
 ### S6 — Stamp content matches what was actually deployed
 
-**Setup:** any state after a successful `make prepare-e2e`.
+**Setup:** any state after a successful `task prepare-e2e`.
 
 **Assert:**
 - `image.loaded` contains `gitops-reverser:e2e-local@sha256:<digest>`
@@ -135,8 +135,8 @@ correctly short-circuits the import when digest is unchanged.
 ## Decision Tree: Where to Test
 
 ```
-Is this testing Make dependency semantics (stamps, mtimes, rebuild triggers)?
-├── Yes → needs to run make and inspect stamp files
+Is this testing Task/stamp dependency semantics (stamps, mtimes, rebuild triggers)?
+├── Yes → needs to run `task prepare-e2e` and inspect stamp files
 │         → shell script OR Go subprocess test
 │
 └── No, this is testing the running cluster state (pod identity, image digest)?

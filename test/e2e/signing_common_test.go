@@ -19,12 +19,10 @@ limitations under the License.
 package e2e
 
 import (
-	"context"
 	"encoding/base64"
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -91,25 +89,26 @@ func assertLocalSSHVerification(checkoutDir, commitHash, signingPublicKey, commi
 func assertGiteaVerified(repoName, commitHash, expectedSignerEmail string) {
 	GinkgoHelper()
 
-	v, err := GetCommitVerification(giteaOrg(), repoName, commitHash)
+	gitea := giteaTestInstance()
+	v, err := gitea.CommitVerification(gitea.Org, repoName, commitHash)
 	Expect(err).NotTo(HaveOccurred(),
-		"failed to fetch Gitea commit verification for %s/%s@%s", giteaOrg(), repoName, commitHash)
+		"failed to fetch Gitea commit verification for %s/%s@%s", gitea.Org, repoName, commitHash)
 	Expect(v).NotTo(BeNil())
 	Expect(v.Verified).To(BeTrue(),
 		"Gitea did not report commit as verified.\n  repo=%s/%s\n  commit=%s\n  reason=%q",
-		giteaOrg(), repoName, commitHash, v.Reason)
+		gitea.Org, repoName, commitHash, v.Reason)
 	Expect(v.Signer).NotTo(BeNil(),
 		"Gitea did not resolve a signer for verified commit.\n  repo=%s/%s\n  commit=%s",
-		giteaOrg(), repoName, commitHash)
+		gitea.Org, repoName, commitHash)
 	Expect(strings.TrimSpace(v.Signer.Email)).To(Equal(expectedSignerEmail),
 		"Gitea resolved the commit to the wrong signer.\n  repo=%s/%s\n  commit=%s\n  reason=%q",
-		giteaOrg(), repoName, commitHash, v.Reason)
+		gitea.Org, repoName, commitHash, v.Reason)
 	Expect(strings.TrimSpace(v.Signature)).To(ContainSubstring("BEGIN SSH SIGNATURE"),
 		"Gitea did not return the SSH signature payload.\n  repo=%s/%s\n  commit=%s\n  verified=%t\n  reason=%q",
-		giteaOrg(), repoName, commitHash, v.Verified, v.Reason)
+		gitea.Org, repoName, commitHash, v.Verified, v.Reason)
 	AddReportEntry("gitea-commit-verification",
 		fmt.Sprintf("repo=%s/%s commit=%s verified=%t reason=%q signer=%s",
-			giteaOrg(), repoName, commitHash, v.Verified, v.Reason, v.Signer.Email))
+			gitea.Org, repoName, commitHash, v.Verified, v.Reason, v.Signer.Email))
 }
 
 // applySigningSecret creates a Secret in namespace with the signing key
@@ -140,7 +139,11 @@ func applySigningSecret(namespace, name string, privateKeyPEM, publicKey []byte)
 	Expect(err).NotTo(HaveOccurred(), "failed to apply signing secret %s/%s", namespace, name)
 }
 
-func verifySigningPublicKeyInGitea(user *giteaTestUser, publicKey, fingerprint string, privateKeyPEM []byte) error {
+func verifySigningPublicKeyInGitea(
+	user *giteaclient.TestUser,
+	publicKey, fingerprint string,
+	privateKeyPEM []byte,
+) error {
 	if user == nil {
 		return errors.New("user is nil")
 	}
@@ -171,27 +174,18 @@ func verifySigningPublicKeyInGitea(user *giteaTestUser, publicKey, fingerprint s
 		return fmt.Errorf("write private key: %w", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), giteaRequestTimeout)
+	gitea := giteaTestInstance()
+	ctx, cancel := gitea.Context()
 	defer cancel()
 
-	userClient := giteaclient.New(giteaAPIBase(), user.Login, user.Password)
-	token, err := userClient.GetVerificationToken(ctx)
-	if err != nil {
-		return fmt.Errorf("get verification token: %w", err)
-	}
-
-	armoredSig, err := signTokenWithSSHKeygen(workDir, privPath, token)
+	_, err = gitea.Client().VerifySSHKeyWithKeygen(ctx, user, giteaclient.SSHKeyVerificationOptions{
+		PublicKey:      publicKey,
+		Fingerprint:    fingerprint,
+		PrivateKeyPath: privPath,
+		WorkDir:        workDir,
+	})
 	if err != nil {
 		return err
-	}
-
-	sess, err := giteaclient.NewWebSession(ctx, giteaWebBase(), user.Login, user.Password, false)
-	if err != nil {
-		return fmt.Errorf("create web session: %w", err)
-	}
-
-	if err := sess.VerifySSHKey(ctx, publicKey, fingerprint, armoredSig); err != nil {
-		return fmt.Errorf("verify SSH key in Gitea: %w", err)
 	}
 	return nil
 }
@@ -218,23 +212,4 @@ func secretData(namespace, secretName, dataKey string) ([]byte, error) {
 
 func signingPrivateKeyFromSecret(namespace, secretName string) ([]byte, error) {
 	return secretData(namespace, secretName, gitpkg.SigningKeyDataKey)
-}
-
-func signTokenWithSSHKeygen(workDir, privPath, token string) (string, error) {
-	tokenPath := filepath.Join(workDir, "token.txt")
-	if err := os.WriteFile(tokenPath, []byte(token), 0o600); err != nil {
-		return "", fmt.Errorf("write verification token: %w", err)
-	}
-
-	cmd := exec.Command("ssh-keygen", "-Y", "sign", "-n", "gitea", "-f", privPath, tokenPath)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return "", fmt.Errorf("ssh-keygen -Y sign: %w (%s)", err, out)
-	}
-
-	sigBytes, err := os.ReadFile(tokenPath + ".sig")
-	if err != nil {
-		return "", fmt.Errorf("read ssh-keygen signature: %w", err)
-	}
-	return string(sigBytes), nil
 }

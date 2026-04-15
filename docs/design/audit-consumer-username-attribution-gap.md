@@ -97,8 +97,8 @@ storage in the e2e cluster).
 | `charts/gitops-reverser/templates/admission-webhook.yaml`: GitTarget validator only | ✅ |
 | `charts/gitops-reverser/values.yaml`: remove `webhook.validating`, add `webhook.caBundle` | ✅ |
 | `test/e2e/e2e_test.go`: remove 3 correlation webhook tests | ✅ |
-| `make lint` passes | ✅ |
-| `make test` (unit tests) passes | ✅ |
+| `task lint` passes | ✅ |
+| `task test` (unit tests) passes | ✅ |
 
 ### Remaining blocker
 The `jane@acme.com` author assertion in the WatchRule e2e test fails because the audit
