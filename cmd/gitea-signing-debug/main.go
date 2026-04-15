@@ -62,8 +62,6 @@ func main() {
 		trust     = flag.String("trust-model", "committer", "trust_model for the repo: default|collaborator|committer|collaboratorcommitter")
 		logsNS    = flag.String("gitea-ns", "gitea-e2e", "kubectl namespace for Gitea pod log tail (empty disables)")
 		logsSel   = flag.String("gitea-selector", "app.kubernetes.io/name=gitea", "kubectl label selector for Gitea pod")
-		dbPath    = flag.String("gitea-db-path", "/data/gitea/gitea.db", "path to gitea.db inside the Gitea pod (for --flip-verified)")
-		flipDB    = flag.Bool("flip-verified", false, "after the first verification query, UPDATE public_key SET verified=1 via kubectl exec sqlite3 and re-query")
 		verifyWeb = flag.Bool("verify-web", true, "drive the Gitea web UI (login + POST /user/settings/keys?type=verify_ssh) to verify the SSH key")
 	)
 	flag.Parse()
@@ -80,7 +78,7 @@ func main() {
 		AdminUser: *adminU, AdminPass: *adminP,
 		UserLogin: *userLogin, RepoName: *repoName, TrustModel: *trust,
 		LogsNS: *logsNS, LogsSelector: *logsSel,
-		DBPath: *dbPath, FlipDB: *flipDB, VerifyWeb: *verifyWeb, Keep: *keepRepo,
+		VerifyWeb: *verifyWeb, Keep: *keepRepo,
 	}
 	if err := run(opts); err != nil {
 		log.Fatalf("FAIL: %v", err)
@@ -88,13 +86,12 @@ func main() {
 }
 
 type runOpts struct {
-	APIURL, CloneBase            string
-	AdminUser, AdminPass         string
-	UserLogin, RepoName          string
-	TrustModel                   string
-	LogsNS, LogsSelector         string
-	DBPath                       string
-	FlipDB, VerifyWeb, Keep      bool
+	APIURL, CloneBase    string
+	AdminUser, AdminPass string
+	UserLogin, RepoName  string
+	TrustModel           string
+	LogsNS, LogsSelector string
+	VerifyWeb, Keep      bool
 }
 
 func run(o runOpts) error {
@@ -218,23 +215,6 @@ func run(o runOpts) error {
 		fmt.Println()
 		fmt.Printf("   DIFF: pre  verified=%v reason=%q\n", v.Verified, v.Reason)
 		fmt.Printf("         post verified=%v reason=%q signer=%s\n", v3.Verified, v3.Reason, signerString(v3.Signer))
-	}
-
-	if o.FlipDB {
-		step("6b. UPDATE public_key SET verified=1 WHERE id=%d via kubectl exec sqlite3", key.ID)
-		if err := flipVerifiedInDB(logsNS, logsSel, o.DBPath, key.ID); err != nil {
-			fmt.Printf("   [flip-db] failed: %v\n", err)
-		} else {
-			fmt.Println("   [flip-db] ok")
-			v3, err := admin.GetCommitVerification(ctx, user.Login, repoName, commitSHA)
-			if err != nil {
-				return fmt.Errorf("get commit verification (post-flip): %w", err)
-			}
-			printVerification("post-flip", v3)
-			fmt.Println()
-			fmt.Printf("   DIFF: pre  verified=%v reason=%q\n", v.Verified, v.Reason)
-			fmt.Printf("         post verified=%v reason=%q signer=%s\n", v3.Verified, v3.Reason, signerString(v3.Signer))
-		}
 	}
 
 	step("7. re-list user's keys and dump all fields (including key_type)")
@@ -370,30 +350,6 @@ func signTokenWithSSHKeygen(workDir, privPath, token string) (string, error) {
 		return "", fmt.Errorf("read .sig: %w", err)
 	}
 	return string(sigBytes), nil
-}
-
-// flipVerifiedInDB shells out to `kubectl exec` on the first pod matching the
-// selector and runs sqlite3 against the Gitea DB to flip public_key.verified=1
-// for the given key id. This bypasses the UI-only verify flow so we can prove
-// whether `verified` is the only gate on SSH commit verification.
-func flipVerifiedInDB(namespace, selector, dbPath string, keyID int64) error {
-	pod, err := runCmd("", "kubectl", "get", "pod",
-		"-n", namespace, "-l", selector,
-		"-o", "jsonpath={.items[0].metadata.name}")
-	if err != nil {
-		return fmt.Errorf("find gitea pod: %w (%s)", err, pod)
-	}
-	podName := strings.TrimSpace(pod)
-	if podName == "" {
-		return fmt.Errorf("no pod matched %s/%s", namespace, selector)
-	}
-	sql := fmt.Sprintf("UPDATE public_key SET verified=1 WHERE id=%d;", keyID)
-	out, err := runCmd("", "kubectl", "exec", "-n", namespace, podName, "--",
-		"sqlite3", dbPath, sql)
-	if err != nil {
-		return fmt.Errorf("sqlite3 UPDATE: %w (%s)", err, out)
-	}
-	return nil
 }
 
 // printGiteaLogs dumps Gitea pod logs emitted after `since`, highlighting
