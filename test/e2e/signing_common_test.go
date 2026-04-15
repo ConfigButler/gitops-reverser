@@ -163,26 +163,14 @@ func verifySigningPublicKeyInGitea(
 		return errors.New("private key is empty")
 	}
 
-	workDir, err := os.MkdirTemp("", "e2e-gitea-verify-*")
-	if err != nil {
-		return fmt.Errorf("create temp dir: %w", err)
-	}
-	defer func() { _ = os.RemoveAll(workDir) }()
-
-	privPath := filepath.Join(workDir, "id_sign")
-	if err := os.WriteFile(privPath, privateKeyPEM, 0o600); err != nil {
-		return fmt.Errorf("write private key: %w", err)
-	}
-
 	gitea := giteaTestInstance()
 	ctx, cancel := gitea.Context()
 	defer cancel()
 
-	_, err = gitea.Client().VerifySSHKeyWithKeygen(ctx, user, giteaclient.SSHKeyVerificationOptions{
-		PublicKey:      publicKey,
-		Fingerprint:    fingerprint,
-		PrivateKeyPath: privPath,
-		WorkDir:        workDir,
+	_, err := gitea.Client().VerifySSHKey(ctx, user, giteaclient.SSHKeyVerificationOptions{
+		PublicKey:     publicKey,
+		Fingerprint:   fingerprint,
+		PrivateKeyPEM: privateKeyPEM,
 	})
 	if err != nil {
 		return err

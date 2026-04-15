@@ -23,21 +23,18 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
+
+	"github.com/ConfigButler/gitops-reverser/internal/sshsig"
 )
 
-const restrictedFileMode = 0o600
-
 // SSHKeyVerificationOptions controls the shared SSH-key verification flow that
-// signs Gitea's verification token with ssh-keygen and submits the web form.
+// signs Gitea's verification token and submits the web form.
 type SSHKeyVerificationOptions struct {
 	PublicKey      string
 	Fingerprint    string
 	PrivateKeyPEM  []byte
 	PrivateKeyPath string
-	WorkDir        string
 	Debug          bool
 }
 
@@ -53,10 +50,10 @@ func (c *Client) WebBaseURL() string {
 	return strings.TrimSuffix(strings.TrimRight(c.BaseURL, "/"), "/api/v1")
 }
 
-// VerifySSHKeyWithKeygen performs the full user-scoped SSH key verification flow:
-// fetch token, sign it with ssh-keygen, log into the web UI, and submit the
+// VerifySSHKey performs the full user-scoped SSH key verification flow:
+// fetch token, sign it in process, log into the web UI, and submit the
 // verify_ssh form for the given public key fingerprint.
-func (c *Client) VerifySSHKeyWithKeygen(
+func (c *Client) VerifySSHKey(
 	ctx context.Context,
 	user *TestUser,
 	opts SSHKeyVerificationOptions,
@@ -80,17 +77,10 @@ func (c *Client) VerifySSHKeyWithKeygen(
 		return nil, errors.New("fingerprint is empty")
 	}
 
-	workDir, cleanup, err := ensureVerificationWorkDir(opts.WorkDir)
+	privateKeyPEM, err := resolveVerificationPrivateKeyPEM(opts.PrivateKeyPEM, opts.PrivateKeyPath)
 	if err != nil {
 		return nil, err
 	}
-	defer cleanup()
-
-	privateKeyPath, cleanupKey, err := ensurePrivateKeyPath(workDir, opts.PrivateKeyPath, opts.PrivateKeyPEM)
-	if err != nil {
-		return nil, err
-	}
-	defer cleanupKey()
 
 	userClient := New(c.BaseURL, user.Login, user.Password)
 	token, err := userClient.GetVerificationToken(ctx)
@@ -98,7 +88,7 @@ func (c *Client) VerifySSHKeyWithKeygen(
 		return nil, fmt.Errorf("get verification token: %w", err)
 	}
 
-	armoredSig, err := signTokenWithSSHKeygen(ctx, workDir, privateKeyPath, token)
+	armoredSig, err := signVerificationToken(privateKeyPEM, token)
 	if err != nil {
 		return nil, err
 	}
@@ -118,51 +108,30 @@ func (c *Client) VerifySSHKeyWithKeygen(
 	}, nil
 }
 
-func ensureVerificationWorkDir(workDir string) (string, func(), error) {
-	if strings.TrimSpace(workDir) != "" {
-		return workDir, func() {}, nil
+func resolveVerificationPrivateKeyPEM(privateKeyPEM []byte, privateKeyPath string) ([]byte, error) {
+	if len(privateKeyPEM) > 0 {
+		return privateKeyPEM, nil
+	}
+	if strings.TrimSpace(privateKeyPath) == "" {
+		return nil, errors.New("private key is empty")
 	}
 
-	dir, err := os.MkdirTemp("", "gitea-verify-*")
+	privateKeyPEM, err := os.ReadFile(privateKeyPath)
 	if err != nil {
-		return "", nil, fmt.Errorf("create temp dir: %w", err)
+		return nil, fmt.Errorf("read private key: %w", err)
 	}
-	return dir, func() { _ = os.RemoveAll(dir) }, nil
+	return privateKeyPEM, nil
 }
 
-func ensurePrivateKeyPath(workDir, privateKeyPath string, privateKeyPEM []byte) (string, func(), error) {
-	if strings.TrimSpace(privateKeyPath) != "" {
-		return privateKeyPath, func() {}, nil
-	}
-	if len(privateKeyPEM) == 0 {
-		return "", nil, errors.New("private key is empty")
-	}
-
-	path := filepath.Join(workDir, "id_sign")
-	if err := os.WriteFile(path, privateKeyPEM, restrictedFileMode); err != nil {
-		return "", nil, fmt.Errorf("write private key: %w", err)
-	}
-	return path, func() {
-		_ = os.Remove(path)
-		_ = os.Remove(path + ".pub")
-	}, nil
-}
-
-func signTokenWithSSHKeygen(ctx context.Context, workDir, privateKeyPath, token string) (string, error) {
-	tokenPath := filepath.Join(workDir, "token.txt")
-	if err := os.WriteFile(tokenPath, []byte(token), restrictedFileMode); err != nil {
-		return "", fmt.Errorf("write verification token: %w", err)
-	}
-
-	cmd := exec.CommandContext(ctx, "ssh-keygen", "-Y", "sign", "-n", "gitea", "-f", privateKeyPath, tokenPath)
-	out, err := cmd.CombinedOutput()
+func signVerificationToken(privateKeyPEM []byte, token string) (string, error) {
+	signer, err := sshsig.ParsePrivateKey(privateKeyPEM, nil)
 	if err != nil {
-		return "", fmt.Errorf("ssh-keygen -Y sign: %w (%s)", err, out)
+		return "", fmt.Errorf("parse private key: %w", err)
 	}
 
-	sigBytes, err := os.ReadFile(tokenPath + ".sig")
+	armoredSig, err := sshsig.SignMessage(signer, "gitea", []byte(token))
 	if err != nil {
-		return "", fmt.Errorf("read ssh-keygen signature: %w", err)
+		return "", fmt.Errorf("sign verification token: %w", err)
 	}
-	return string(sigBytes), nil
+	return string(armoredSig), nil
 }
