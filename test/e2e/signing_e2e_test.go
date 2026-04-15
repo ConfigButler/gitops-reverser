@@ -50,11 +50,6 @@ type signingGitProviderData struct {
 // signingRepo holds the file-local repo fixtures for the Commit Signing describe block.
 var signingRepo *RepoArtifacts
 
-const (
-	signingCommitterName  = "GitOps Reverser"
-	signingCommitterEmail = "noreply@configbutler.ai"
-)
-
 var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 	var testNs string
 
@@ -76,16 +71,7 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 		Expect(err).NotTo(HaveOccurred(), "failed to apply git secrets to signing test namespace")
 
 		applySOPSAgeKeyToNamespace(testNs)
-
-		By("binding committer email to the Gitea admin user for signature verification")
-		// Gitea verifies SSH-signed commits by looking up a user whose verified
-		// emails include the commit's committer email, then walking that user's
-		// registered SSH keys. A secondary email on /user/emails is not treated
-		// as verified for this purpose; patching the admin user's primary email
-		// via /admin/users is the reliable binding.
-		adminUser, _ := giteaAdminCreds()
-		_, err = EnsureAdminUserPrimaryEmail(adminUser, signingCommitterEmail)
-		Expect(err).NotTo(HaveOccurred(), "failed to bind committer email to Gitea admin user")
+		Expect(signingRepo.User).NotTo(BeNil(), "expected SetupRepo to populate a dedicated Gitea user")
 	})
 
 	AfterAll(func() {
@@ -114,14 +100,15 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 			})
 
 			By("creating a GitProvider with commit signing enabled (generateWhenMissing)")
+			committerName, committerEmail := signingRepoCommitter()
 			data := signingGitProviderData{
 				Name:                providerName,
 				Namespace:           testNs,
 				RepoURL:             signingRepo.RepoURLHTTP,
 				Branch:              "main",
 				SecretName:          signingRepo.GitSecretHTTP,
-				CommitterName:       signingCommitterName,
-				CommitterEmail:      signingCommitterEmail,
+				CommitterName:       committerName,
+				CommitterEmail:      committerEmail,
 				MessageTemplate:     "[{{.Operation}}] {{.APIVersion}}/{{.Resource}}/{{.Name}}",
 				BatchTemplate:       "reconcile: sync {{.Count}} resources",
 				SigningSecretName:   signingSecretName,
@@ -142,11 +129,11 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 			verifyResourceStatus("gitprovider", providerName, testNs, "True", "Ready", "")
 
 			By("registering the generated signing public key with Gitea")
-			registered, err := RegisterSigningPublicKey(signingPublicKey, "e2e-signing-generated-"+providerName)
+			registered, err := RegisterSigningPublicKeyAs(signingRepo.User, signingPublicKey,
+				"e2e-signing-generated-"+providerName)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(registered).NotTo(BeNil())
 			Expect(registered.ID).To(BeNumerically(">", 0))
-			DeferCleanup(func() { _ = DeleteUserPublicKey(registered.ID) })
 
 			By("creating GitTarget and WatchRule")
 			createGitTarget(destName, testNs, providerName, commitPath, "main")
@@ -182,7 +169,7 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 			}, "60s", "3s").Should(Succeed())
 
 			By("verifying the commit locally with ssh-keygen and git verify-commit")
-			assertLocalSSHVerification(signingRepo.CheckoutDir, commitHash, signingPublicKey, signingCommitterEmail)
+			assertLocalSSHVerification(signingRepo.CheckoutDir, commitHash, signingPublicKey, committerEmail)
 
 			By("verifying the commit through the Gitea commit API")
 			assertGiteaVerified(signingRepo.RepoName, commitHash)
@@ -216,20 +203,20 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 		applySigningSecret(testNs, signingSecretName, privateKeyPEM, publicKey)
 
 		By("registering the BYOK signing public key with Gitea")
-		registered, err := RegisterSigningPublicKey(publicKeyStr, "e2e-signing-byok-"+providerName)
+		registered, err := RegisterSigningPublicKeyAs(signingRepo.User, publicKeyStr, "e2e-signing-byok-"+providerName)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(registered).NotTo(BeNil())
-		DeferCleanup(func() { _ = DeleteUserPublicKey(registered.ID) })
 
 		By("creating a GitProvider that consumes the BYOK signing Secret (generateWhenMissing=false)")
+		committerName, committerEmail := signingRepoCommitter()
 		data := signingGitProviderData{
 			Name:                providerName,
 			Namespace:           testNs,
 			RepoURL:             signingRepo.RepoURLHTTP,
 			Branch:              "main",
 			SecretName:          signingRepo.GitSecretHTTP,
-			CommitterName:       signingCommitterName,
-			CommitterEmail:      signingCommitterEmail,
+			CommitterName:       committerName,
+			CommitterEmail:      committerEmail,
 			MessageTemplate:     "[{{.Operation}}] {{.APIVersion}}/{{.Resource}}/{{.Name}}",
 			BatchTemplate:       "reconcile: sync {{.Count}} resources",
 			SigningSecretName:   signingSecretName,
@@ -284,7 +271,7 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 		}, "60s", "3s").Should(Succeed())
 
 		By("verifying the BYOK commit locally")
-		assertLocalSSHVerification(signingRepo.CheckoutDir, commitHash, publicKeyStr, signingCommitterEmail)
+		assertLocalSSHVerification(signingRepo.CheckoutDir, commitHash, publicKeyStr, committerEmail)
 
 		By("verifying the BYOK commit through the Gitea commit API")
 		assertGiteaVerified(signingRepo.RepoName, commitHash)
@@ -387,14 +374,15 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 			Expect(err).NotTo(HaveOccurred())
 		}
 
+		committerName, committerEmail := signingRepoCommitter()
 		data := signingGitProviderData{
 			Name:                providerName,
 			Namespace:           testNs,
 			RepoURL:             signingRepo.RepoURLHTTP,
 			Branch:              "main",
 			SecretName:          signingRepo.GitSecretHTTP,
-			CommitterName:       signingCommitterName,
-			CommitterEmail:      signingCommitterEmail,
+			CommitterName:       committerName,
+			CommitterEmail:      committerEmail,
 			MessageTemplate:     "[{{.Operation}}] {{.APIVersion}}/{{.Resource}}/{{.Name}}",
 			BatchTemplate:       customBatchTemplate,
 			SigningSecretName:   "signing-key-batch",
@@ -413,6 +401,11 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 		}{watchRuleName, testNs, destName}
 		Expect(applyFromTemplate("test/e2e/templates/watchrule.tmpl", watchRuleData, testNs)).To(Succeed())
 		verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Ready", "")
+
+		By("recreating the GitTarget now that the WatchRule is active to force a fresh snapshot batch")
+		cleanupGitTarget(destName, testNs)
+		createGitTarget(destName, testNs, providerName, commitPath, "main")
+		verifyResourceStatus("gittarget", destName, testNs, "True", "Ready", "")
 
 		By("waiting for the batch commit and verifying its message uses the batch template")
 		Eventually(func(g Gomega) {
@@ -478,6 +471,14 @@ func removeGpgsigHeader(commitRaw string) string {
 		}
 	}
 	return out.String()
+}
+
+func signingRepoCommitter() (string, string) {
+	Expect(signingRepo).NotTo(BeNil(), "expected signing repo fixtures to be initialised")
+	Expect(signingRepo.User).NotTo(BeNil(), "expected signing repo fixtures to include a Gitea user")
+	Expect(strings.TrimSpace(signingRepo.User.Login)).NotTo(BeEmpty(), "expected signing repo user login")
+	Expect(strings.TrimSpace(signingRepo.User.Email)).NotTo(BeEmpty(), "expected signing repo user email")
+	return signingRepo.User.Login, signingRepo.User.Email
 }
 
 // sshKeygenVerify runs `ssh-keygen -Y verify` with the commit payload on stdin

@@ -2,12 +2,58 @@
 
 ## Status
 
-**Complete.** Typed Gitea helpers landed in
-[test/e2e/gitea_api_test.go](/workspaces/gitops-reverser/test/e2e/gitea_api_test.go); reusable signing
-assertions landed in [test/e2e/signing_common_test.go](/workspaces/gitops-reverser/test/e2e/signing_common_test.go);
+**Partially complete — Gitea-side verification does not actually pass.**
+
+Typed Gitea helpers landed in [test/e2e/gitea_api_test.go](/workspaces/gitops-reverser/test/e2e/gitea_api_test.go);
+reusable signing assertions landed in [test/e2e/signing_common_test.go](/workspaces/gitops-reverser/test/e2e/signing_common_test.go);
 [test/e2e/signing_e2e_test.go](/workspaces/gitops-reverser/test/e2e/signing_e2e_test.go) covers
-generated-key and BYOK with both local and Gitea-side verification. Docs were aligned in the same
-change.
+generated-key and BYOK with local verification. Docs were aligned.
+
+What is **not** working (2026-04-14):
+
+- `assertGiteaVerified` had been weakened to only check that the commit API
+  returns a verification block, with a comment claiming `Verified == true`
+  was "not achievable" on Gitea 1.25.4. That comment papered over a real
+  gap and was wrong relative to the plan's acceptance criteria.
+- After tightening the assertion to `Expect(v.Verified).To(BeTrue())`, the
+  generated-key scenario fails: Gitea returns
+  `verified=false, reason="gpg.error.no_gpg_keys_found"` for the SSH-signed
+  commit, even though:
+  - the signing public key is registered via `POST /user/keys` as the
+    admin user, and
+  - `EnsureAdminUserPrimaryEmail` binds the admin user's primary email to
+    the committer email.
+- `gpg.error.no_gpg_keys_found` is Gitea's GPG-path "no keys" response, so
+  the server is almost certainly not going down the SSH verification path
+  at all. The current bind-admin-email approach is insufficient.
+
+### Possible next step: a dedicated signing user
+
+The current setup piggybacks on the shared admin account. An alternative
+worth trying before declaring a Gitea-version limitation:
+
+1. Create a dedicated Gitea user (e.g. `e2e-signer`) via the admin API,
+   with `email == signingCommitterEmail` and the user activated so the
+   email is treated as verified.
+2. Register the signing public key under that user (either via admin API
+   impersonation or by obtaining a token for that user).
+3. Leave the admin user's primary email alone.
+
+This is likely to change Gitea's behavior because:
+
+- it removes any ambiguity about whether the admin user's patched primary
+  email is actually considered "verified" by the signature-matching code;
+- Gitea's SSH signature verification walks users whose verified emails
+  match the committer email and then inspects that user's registered
+  keys — a purpose-built user gives the cleanest match.
+
+It is **not guaranteed** to fix the issue: if Gitea 1.25.4's
+`ParseCommitWithSignature` still routes the commit down the GPG path
+(which the current error suggests), a different user won't help. The
+cheapest way to know is to try it. If it still fails with the same reason
+string, the limitation is on Gitea's signature-detection side and we
+should treat Gitea-side verification as explicitly out of scope for this
+phase and document it.
 
 ## Purpose
 
