@@ -260,8 +260,8 @@ jobs:
           - name: quickstart-manifest
             script: "task test-e2e-quickstart-manifest"
             needs_artifact: true
-          - name: core
-            script: "export E2E_ENABLE_BI_DIRECTIONAL=true && task test-e2e && task test-e2e-bi"
+          - name: full
+            script: "task test-e2e-full"
             needs_artifact: false
     env:
       PROJECT_IMAGE: ${{ needs.docker-build.outputs.image }}

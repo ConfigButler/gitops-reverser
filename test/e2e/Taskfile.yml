@@ -273,17 +273,6 @@ tasks:
         export E2E_AGE_KEY_FILE="{{.CS}}/age-key.txt"
         go test -timeout "{{.E2E_GO_TEST_TIMEOUT}}" ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=audit-redis
 
-  test-e2e-bi:
-    desc: Run dedicated bi-directional Flux plus gitops-reverser e2e scenario
-    cmds:
-      - |
-        export CTX="{{.CTX}}"
-        export INSTALL_MODE="{{.INSTALL_MODE}}"
-        export NAMESPACE="{{.NAMESPACE}}"
-        export E2E_ENABLE_BI_DIRECTIONAL=true
-        export E2E_AGE_KEY_FILE="{{.CS}}/age-key.txt"
-        go test -timeout "{{.E2E_GO_TEST_TIMEOUT}}" ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=bi-directional
-
   test-e2e-demo:
     desc: Prepare a reusable demo repo and leave demo resources in place
     cmds:

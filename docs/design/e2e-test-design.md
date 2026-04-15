@@ -73,7 +73,6 @@ These are the canonical Task entry points on the current worktree:
 | `task test-image-refresh` | Image rebuild / reload invalidation chain |
 | `task test-e2e-quickstart-helm` | Quickstart framework with Helm install |
 | `task test-e2e-quickstart-manifest` | Quickstart framework with manifest install |
-| `task test-e2e-bi` | Bi-directional Flux plus gitops-reverser scenario |
 | `task test-e2e-demo` | Demo repo preparation flow |
 
 `go test ./test/e2e/ -v -ginkgo.v` also works directly, because `BeforeSuite` drives setup through Task. That is
@@ -82,10 +81,10 @@ installing the system under test.
 
 The intended interpretation of these entry points is:
 
-- `task test-e2e`, `task test-e2e-manager`, `task test-e2e-signing`, `task test-e2e-audit-redis`, `task test-e2e-bi`, and `task test-image-refresh` are standard controller behavior checks and should normally run on the default `config-dir` install
+- `task test-e2e`, `task test-e2e-manager`, `task test-e2e-signing`, `task test-e2e-audit-redis`, and `task test-image-refresh` are standard controller behavior checks and should normally run on the default `config-dir` install
 - `task test-e2e-quickstart-helm` is the important validation for the Helm install path
 - `task test-e2e-quickstart-manifest` is the important validation for the single-file manifest install path
-- `task test-e2e-full` is a full spec run, but it is still not the primary way to validate all install modes
+- `task test-e2e-full` is a full spec run that includes the bi-directional scenario, but it is still not the primary way to validate all install modes
 
 ## Lifecycle Layers
 
@@ -245,12 +244,11 @@ Current CI e2e matrix in [.github/workflows/ci.yml](/workspaces/gitops-reverser/
 
 - `quickstart-helm-and-makefile-image-refresh`
 - `quickstart-manifest`
-- `core`
+- `full`
 
-The `core` job currently runs:
+The `full` job currently runs:
 
-- `task test-e2e`
-- `task test-e2e-bi`
+- `task test-e2e-full`
 
 On this worktree, `task test-e2e` is now smoke-only. Before that, it was broader.
 
@@ -378,7 +376,7 @@ task test-e2e-manager
 task test-e2e-signing
 task test-e2e-audit-redis
 task test-image-refresh
-task test-e2e-bi
+task test-e2e-full
 ```
 
 ### Install-path validation

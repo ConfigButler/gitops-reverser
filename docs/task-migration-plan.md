@@ -65,7 +65,6 @@ Keep command names close to the current Make targets so the cutover is easy:
 - `task test-e2e`
 - `task test-e2e-quickstart-manifest`
 - `task test-e2e-quickstart-helm`
-- `task test-e2e-bi`
 - `task test-e2e-audit-redis`
 - `task test-e2e-demo`
 - `task test-image-refresh`
@@ -272,7 +271,7 @@ Run sequentially:
 5. `task test-e2e-quickstart-manifest`
 6. `task test-e2e-quickstart-helm`
 7. `task test-image-refresh` — directly validates the stamp/invalidation chain; most sensitive to the Make→Task translation
-8. `task test-e2e-bi` — covers the bi-directional Flux scenario not exercised by the main suite
+8. `task test-e2e-full` — now includes the bi-directional Flux scenario as part of the full package run
 
 ### Stamp parity checks
 
