@@ -88,7 +88,6 @@ vars:
   FLUX_WAIT_TIMEOUT: '{{.FLUX_WAIT_TIMEOUT | default "300s"}}'
   FLUX_SERVICES_WAIT_TIMEOUT: '{{.FLUX_SERVICES_WAIT_TIMEOUT | default "600s"}}'
   E2E_GO_TEST_TIMEOUT: '{{.E2E_GO_TEST_TIMEOUT | default "10m"}}'
-  GITEA_RUNS_DIR: '{{.CS}}/{{.NAMESPACE}}'
   FLUX_SERVICES_DIR: '{{.FLUX_SERVICES_DIR | default "test/e2e/setup/flux"}}'
   DEMO_MANIFESTS_DIR: 'test/e2e/setup/demo-only'
   DEMO_TUNNEL_CREDENTIALS: '{{.DEMO_MANIFESTS_DIR}}/cloudflared-public/tunnel-credentials.yaml'
@@ -123,29 +122,6 @@ tasks:
     cmds:
       - task: prepare-e2e
       - task: _demo-ready
-
-  e2e-gitea-bootstrap-shared:
-    desc: Bootstrap shared Gitea prerequisites for the cluster context
-    cmds:
-      - task: portforward-ensure
-      - task: _gitea-bootstrap
-
-  e2e-gitea-bootstrap:
-    desc: Bootstrap shared Gitea prerequisites for the cluster context
-    cmds:
-      - task: e2e-gitea-bootstrap-shared
-
-  e2e-gitea-run-setup:
-    desc: Create active repo, credentials, and checkout for this run
-    cmds:
-      - |
-        [ -n "{{.REPO_NAME}}" ] || {
-          echo "ERROR: REPO_NAME must be set for e2e-gitea-run-setup" >&2
-          exit 2
-        }
-      - task: e2e-gitea-bootstrap-shared
-      - task: portforward-ensure
-      - task: _gitea-run-setup
 
   portforward-ensure:
     desc: Ensure port-forwards are running
@@ -715,54 +691,6 @@ tasks:
     cmds:
       - mkdir -p "{{.CS}}/{{.NAMESPACE}}"
       - touch "{{.CS}}/{{.NAMESPACE}}/prepare-e2e.ready"
-
-  _gitea-bootstrap:
-    method: timestamp
-    sources:
-      - '{{.CS}}/services.ready'
-      - hack/e2e/gitea-bootstrap.sh
-    generates:
-      - '{{.CS}}/gitea/bootstrap/org-{{.GITEA_ORG_NAME}}.ready'
-    status:
-      - test -f "{{.CS}}/gitea/bootstrap/org-{{.GITEA_ORG_NAME}}.ready"
-      - curl -fsS -u "{{.GITEA_ADMIN_USER}}:{{.GITEA_ADMIN_PASS}}" "http://localhost:{{.GITEA_PORT}}/api/v1/orgs/{{.GITEA_ORG_NAME}}" >/dev/null
-    cmds:
-      - mkdir -p "{{.CS}}/gitea/bootstrap"
-      - |
-        export BOOTSTRAP_DIR="{{.CS}}/gitea/bootstrap"
-        export API_URL="http://localhost:{{.GITEA_PORT}}/api/v1"
-        export GITEA_ADMIN_USER="{{.GITEA_ADMIN_USER}}"
-        export GITEA_ADMIN_PASS="{{.GITEA_ADMIN_PASS}}"
-        export ORG_NAME="{{.GITEA_ORG_NAME}}"
-        bash hack/e2e/gitea-bootstrap.sh
-        test -f "{{.CS}}/gitea/bootstrap/org-{{.GITEA_ORG_NAME}}.ready"
-
-  _gitea-run-setup:
-    method: timestamp
-    sources:
-      - '{{.CS}}/gitea/bootstrap/org-{{.GITEA_ORG_NAME}}.ready'
-      - hack/e2e/gitea-run-setup.sh
-    generates:
-      - '{{.GITEA_RUNS_DIR}}/git-{{.REPO_NAME}}/checkout.ready'
-    status: # We could even check here if it's stil setup inside gitea itself?! But that's not to usefull perhaps?
-      - test -f "{{.GITEA_RUNS_DIR}}/git-{{.REPO_NAME}}/checkout.ready"
-    cmds:
-      - mkdir -p "{{.GITEA_RUNS_DIR}}/git-{{.REPO_NAME}}"
-      - |
-        export CTX="{{.CTX}}"
-        export CS="{{.CS}}"
-        export NAMESPACE="{{.NAMESPACE}}"
-        export REPO_NAME="{{.REPO_NAME}}"
-        export CHECKOUT_DIR="{{.CHECKOUT_DIR}}"
-        export API_URL="http://localhost:{{.GITEA_PORT}}/api/v1"
-        export GITEA_ADMIN_USER="{{.GITEA_ADMIN_USER}}"
-        export GITEA_ADMIN_PASS="{{.GITEA_ADMIN_PASS}}"
-        export ORG_NAME="{{.GITEA_ORG_NAME}}"
-        export E2E_GIT_SECRET_HTTP="{{.E2E_GIT_SECRET_HTTP}}"
-        export E2E_GIT_SECRET_SSH="{{.E2E_GIT_SECRET_SSH}}"
-        export E2E_GIT_SECRET_INVALID="{{.E2E_GIT_SECRET_INVALID}}"
-        bash hack/e2e/gitea-run-setup.sh
-        test -f "{{.GITEA_RUNS_DIR}}/git-{{.REPO_NAME}}/checkout.ready"
 
   _demo-ready:
     method: timestamp

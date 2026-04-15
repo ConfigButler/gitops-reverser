@@ -8,6 +8,7 @@ The harness is already in a much better place than the older plans imply:
 
 - `BeforeSuite` owns shared cluster and install preparation
 - repo-using e2e files create file-local repo fixtures through `SetupRepo(...)`
+- repo bootstrap is now owned directly by the e2e Go helpers
 - signing covers generated keys and BYOK
 - signing is verified three ways:
   - `ssh-keygen -Y verify`
@@ -18,140 +19,59 @@ The older follow-up documents are now reference material, not active plans.
 
 ## Open Work
 
-### 1. Move the remaining Gitea API setup out of shell
+### 1. Final harness polish after the direct Go bootstrap shift
 
-The main remaining harness debt is in
-[hack/e2e/gitea-run-setup.sh](/workspaces/gitops-reverser/hack/e2e/gitea-run-setup.sh).
+The big shell-to-Go seam is now closed. The remaining work is cleanup and
+consolidation:
 
-The first pass should move these operations to Go:
-
-- `create_token`
-- `configure_ssh_key_in_gitea`
-- `ensure_repo`
-- `ensure_repo_webhook`
-
-Recommended shape:
-
-- add a reusable Go helper under `test/e2e/gitea/` or a similarly small
-  test-support package
-- keep `task e2e-gitea-run-setup` usable through a thin Go CLI wrapper
-- leave these shell-native pieces in bash for now:
-  - `known_hosts` generation
-  - `secrets.yaml` rendering
-  - local checkout/bootstrap plumbing
+- trim stale docs and comments that still describe the deleted Task and shell
+  repo-bootstrap path
+- decide whether the current Go bootstrap helper should stay in the main
+  `test/e2e` package or be extracted into a smaller e2e support package
+- review whether any now-unused historical migration notes should be archived or
+  deleted
+- keep the persisted artifact set intentionally small unless a new stamp buys
+  clear debugging value
 
 Acceptance:
 
-- repo setup no longer uses `curl`/`jq` for the Gitea HTTP surface
-- the Task entry point still works for manual debugging
-- e2e behavior stays unchanged
+- the active docs describe the direct Go-owned repo bootstrap accurately
+- no active e2e path depends on the deleted repo-bootstrap Task targets
+- no new file-based stamp is introduced without a concrete consumer
 
-### 2. Final harness polish after the shell-to-Go seam
+## Current Direction
 
-Only after the shell-to-Go seam is closed:
+The preferred direction is now explicit:
 
-- remove any dead shell paths or duplicate helpers left behind by the migration
-- trim stale comments and docs that still describe pre-refactor behavior
-- decide whether a higher-level reusable Gitea bootstrap helper is still worth
-  adding, or whether the lower-level pieces are already clean enough
-
-## Ideal End-State: Mostly In-Memory Repo Bootstrap
-
-The narrow migration above is the safest next step, but the cleaner long-term
-shape is bolder: keep far less repo bootstrap state on disk.
-
-### Why This Is Feasible
-
-The signing refactor already proved the main point: once the SSH and Gitea HTTP
-logic lives in Go, we are no longer forced to bounce through temp files and
-subprocesses just because OpenSSH traditionally does.
-
-The same idea can be extended to the transport setup:
-
-- create the SSH transport keypair in Go
-- register the public key in Gitea through typed helpers
-- discover or construct `known_hosts` content in Go
-- build the Secret manifests in Go instead of through shell pipes
-- keep only the artifacts that are genuinely useful for humans and tests
-
-### What Would Still Need To Exist
-
-Even in the ideal shape, not everything disappears from disk.
-
-Some artifacts are still valuable as explicit run outputs:
-
-- the local checkout path
-- the generated `secrets.yaml`, if we still want an inspectable apply artifact
-- stamp files that record the active repo and readiness markers
-
-The bigger question is the SSH material itself:
-
-- `id_rsa`
-- `id_rsa.pub`
-- `known_hosts`
-- `token.txt`
-
-Those do not need to remain first-class stamp artifacts if the setup path is
-owned in Go.
-
-### Preferred Direction
-
-The preferred direction is:
-
+- keep repo bootstrap owned in Go
 - keep signing keys memory/Secret-backed
-- move transport SSH keys to memory-first handling as well
-- treat `known_hosts` as generated content, not as a manually managed artifact
-- write secrets and stamps as the stable outputs, not the raw intermediate
-  files that happened to produce them
+- keep transport SSH keys memory-first as well
+- persist only the artifacts that are directly useful to tests and humans
 
-In that shape, the repo bootstrap helper would return structured values such as:
+In the current shape that means:
 
-- token
-- transport private key bytes
-- transport public key bytes
-- known-hosts content
-- generated Secret YAML
-- checkout path
+- the local checkout remains a stable artifact
+- the generated `secrets.yaml` remains a stable artifact
+- intermediate values such as transport keys, tokens, and webhook bookkeeping
+  stay in memory unless there is a strong reason to persist them
 
-Then the code can decide what must be persisted, instead of the shell script
-forcing every intermediate artifact onto disk.
-
-### Why This Simplifies The Harness
+## Why This Simplifies The Harness
 
 - fewer stamp files with overlapping meaning
-- less hidden coupling to filenames like `id_rsa` and `known_hosts`
-- fewer shell subprocesses and fewer "write file, read file back" cycles
-- easier future test parallelism because mutable credentials can stay scoped to
-  one setup call
-- clearer ownership boundaries between transport auth, signing, and test
-  artifacts
-
-### Caution
-
-This is a good target, but it should be reached in stages.
-
-The risky part is not the crypto; it is preserving all the small operational
-behaviors the current shell flow provides:
-
-- stamp compatibility
-- inspectability during debugging
-- `task e2e-gitea-run-setup` usability outside the test binary
-- compatibility with the current Secret contract and checkout flow
-
-So the plan should remain:
-
-1. move the Gitea HTTP surface to Go
-2. keep the current outputs stable
-3. then decide which intermediate SSH files can disappear without harming
-   debuggability
+- less hidden coupling to filenames and shell pipelines
+- fewer subprocesses and fewer write-file/read-file-back cycles
+- clearer ownership boundaries between typed Gitea calls, Kubernetes lookups,
+  and local checkout setup
+- easier future parallelism because less mutable setup state is written to disk
 
 ## Explicit Non-Goals
 
 This plan does not require:
 
-- a full bash-to-Go rewrite of every setup step
+- rebuilding every remaining shell helper immediately
 - immediate `ginkgo -p` safety for the whole package
 - redesigning the whole Task-based cluster bootstrap
+- restoring deleted repo-bootstrap Task compatibility for manual use
 
 ## Validation
 
