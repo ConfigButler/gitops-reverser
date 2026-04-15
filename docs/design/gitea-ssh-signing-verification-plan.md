@@ -239,15 +239,7 @@ CLI becomes a thin caller. The signing e2e test becomes a thin
 caller. Any future consumer (audit-consumer tests, webhook tests)
 gets the same flow for free.
 
-### 4. Stop relying on `kubectl exec sqlite3`
-
-The `--flip-verified` escape hatch in the debug CLI was useful for
-proving the hypothesis but is not something e2e should ever need. The
-Alpine-based Gitea image doesn't ship `sqlite3` anyway. Remove the
-flag once step 1 is green and the web-UI path is the single source of
-truth.
-
-### 5. Defensive coverage in `giteaclient`
+### 4. Defensive coverage in `giteaclient`
 
 - Harden the CSRF regex / login heuristic in
   [webclient.go](../../internal/giteaclient/webclient.go) against
@@ -263,20 +255,127 @@ truth.
   internally, so consumers do not need to re-implement the
   `ssh-keygen -Y sign -n gitea` shell-out.
 
-### 6. Re-evaluate the signing e2e design
+### 5. Re-evaluate the signing e2e design
 
 Once `verified=true` can be asserted reliably, revisit
 [commit-signing-design.md](commit-signing-design.md) and
-[e2e-signing-followups.md](e2e-signing-followups.md) to drop the
-workarounds that existed only because this assertion was not
-feasible. Specifically:
+[e2e-signing-followups.md](e2e-signing-followups.md). Notes:
 
-- Remove `assertLocalSSHVerification` as a required step — Gitea-side
-  verification is a strictly stronger signal.
-- Collapse the BYOK and generated-key scenarios' assertion helpers
-  into one, parametrized by who provides the key material.
+- **Keep** `assertLocalSSHVerification` (the `git verify-commit` /
+  `ssh-keygen -Y verify` pair). Gitea-side verification proves Gitea
+  accepts our signatures; the local checks prove the commits are also
+  compatible with vanilla git tooling. Both signals are useful — they
+  catch different classes of regression (Gitea wiring vs signing-format
+  correctness) and should be layered, not replaced.
+- *Optionally* consider unifying BYOK and generated-key assertion
+  helpers if they end up near-identical after the Gitea-side assertion
+  lands. This is not a strong recommendation: separate helpers are
+  fine as long as the tests stay clean and don't leak "how the suite
+  was launched" into assertion logic.
 
 ---
+
+## Shell scripts vs `giteaclient`: what stays, what moves
+
+Concrete read of the two scripts that drive today's e2e Gitea setup:
+
+### `hack/e2e/gitea-bootstrap.sh` — keep as a script
+
+Cluster-scoped, once-per-cluster work: wait for the API, ensure the
+`testorg` org exists, write `api.ready` / `org-<name>.ready` / `ready`
+stamps. This is the right home for it:
+
+- It runs before any Go test process exists — it is what makes the
+  cluster *ready enough* for tests to start.
+- Its outputs are shared across every test run and every repo, so
+  file-based stamps are the natural contract.
+- It has no per-test dynamic state worth pulling into Go.
+
+No change proposed.
+
+### `hack/e2e/gitea-run-setup.sh` — split
+
+This script mixes two concerns:
+
+**Stays as shell** (cluster/ssh infra, not per-test state):
+
+- `generate_known_hosts` — runs a temporary `kubectl port-forward` and
+  shells out to `ssh-keyscan`. This is bash's comfort zone and the
+  output (`known_hosts`) is a file consumed by kubectl-created secrets;
+  there is no value in rebuilding it in Go.
+- The `kubectl create secret ... --dry-run=client -o yaml` manifest
+  rendering in `write_secrets_manifest`. The output is a YAML artifact
+  consumed by `kubectl apply`; keeping `kubectl` as the renderer means
+  the manifests match exactly what a human operator would produce.
+- `ensure_checkout` — `git clone` + local git config. Shell is fine.
+- Flux-receiver wiring (`read_flux_receiver_token`,
+  `wait_for_flux_receiver_path`, `ensure_repo_webhook`). This reaches
+  into Kubernetes (`kubectl get receiver`, secret lookups), not Gitea
+  user state. Keep it with the bootstrap-adjacent tooling.
+
+**Moves to `internal/giteaclient`** (user/repo/key/token state):
+
+- `create_token` → a `CreateUserToken(login, name, scopes)` method.
+  The token value flows back to the caller as a return value instead
+  of being persisted in `token.txt`. The caller decides what to do
+  with it.
+- `configure_ssh_key_in_gitea` (reset admin's keys, upload one) → this
+  is exactly what `ListUserKeys` + `RegisterUserKeyAsAdmin` /
+  `RegisterUserKeyAsUser` already cover. The "reset" step becomes a
+  `DeleteUserKey` helper if we need it; for most cases
+  `FindUserKey` idempotency is enough.
+- `ensure_repo` → `CreateUserRepo` / a new `CreateOrgRepo`. Already
+  half-implemented.
+- The per-repo user / per-repo password / per-repo signing key flow
+  that steps 1–2 of "Proposed plan" introduce has *no* shell
+  counterpart today — it is native to the library.
+
+Result: the script shrinks to known_hosts + secrets manifest rendering
++ checkout + flux webhook. Everything Gitea-API-shaped lives in Go,
+which is where the tests that consume it already live.
+
+## Boundary: Taskfile, `.stamps`, in-memory e2e state
+
+Worth making explicit because the current structure has some drift.
+Proposed rule of thumb:
+
+| Layer               | Scope                                    | Persistence       |
+|---------------------|------------------------------------------|-------------------|
+| Taskfile targets    | Orchestration + ordering                 | none (task graph) |
+| `.stamps/` files    | Cluster-scoped, cross-invocation cache   | disk              |
+| `giteaclient` state | Per-test dynamic state                   | in-memory (Go)    |
+
+- **Stamps are for task-graph dependencies** between *shell* steps,
+  not for communicating with Go tests. Anything like `ready`,
+  `api.ready`, `org-testorg.ready`, `repo.ready` — where a later task
+  target wants to skip work if an earlier one already ran — is a
+  legitimate stamp.
+- **E2E tests should not write to `.stamps/`**. The user's instinct
+  here is correct. If a test needs a token, a repo URL, or a password,
+  it should get it from a library call that returns the value, not by
+  reading a file written by a shell script it happens to run after.
+  Files on disk are a global, racy, stale-prone channel; Go struct
+  fields are scoped and typed.
+- **E2E tests *may read* stamps** for the narrow case of "did the
+  cluster-level bootstrap run?" (e.g. `ready`). Reading a disk stamp
+  to answer "is the cluster configured" is fine; reading one to get
+  dynamic per-test values is not.
+- **Today's drift**: `token.txt`, `checkout-path.txt`,
+  `active-repo.txt`, `receiver-webhook-url.txt` are per-repo dynamic
+  values being routed through disk. Some of that is unavoidable
+  (the `kubectl apply`'d secret needs the token baked into YAML before
+  Go tests run). The right cut is:
+  - Values consumed only by *shell* (secrets manifest input): stay on
+    disk, written by the shell that uses them.
+  - Values consumed by *Go tests*: should be returned by a Go call,
+    not read from a stamp. When we migrate the "user" parts of
+    `gitea-run-setup.sh` into `giteaclient`, those values naturally
+    stop being written to disk.
+
+This cleanly explains why bootstrap and SSH infra stay shell-shaped
+(they produce files for other shell/kubectl steps) while the
+user/repo/key machinery becomes pure library (it produces values for
+Go code).
 
 ## Risks and open questions
 
@@ -320,7 +419,3 @@ Flags worth knowing:
   verification.
 - `--verify-web=false` — skip the UI verify step to reproduce the
   failing-baseline behaviour.
-- `--flip-verified` — bypass the UI and UPDATE the DB directly (only
-  works if the Gitea container has `sqlite3` installed, which the
-  stock Alpine image does not; included for completeness against
-  custom images).
