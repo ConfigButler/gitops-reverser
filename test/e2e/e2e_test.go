@@ -39,9 +39,6 @@ import (
 	"github.com/ConfigButler/gitops-reverser/test/utils"
 )
 
-// giteaRepoURLTemplate is the URL template for test Gitea repositories.
-const giteaRepoURLTemplate = "http://gitea-http.gitea-e2e.svc.cluster.local:13000/testorg/%s.git"
-const giteaSSHURLTemplate = "ssh://git@gitea-ssh.gitea-e2e.svc.cluster.local:2222/testorg/%s.git"
 const defaultE2EAgeKeyPath = "/tmp/e2e-age-key.txt"
 
 // managerRepo holds the file-local repo fixtures for the Manager describe block.

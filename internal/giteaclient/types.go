@@ -25,6 +25,13 @@ type User struct {
 	Email string `json:"email"`
 }
 
+// Organization is the subset of the Gitea org payload we care about.
+type Organization struct {
+	ID       int64  `json:"id"`
+	UserName string `json:"username"`
+	FullName string `json:"full_name"`
+}
+
 // PublicKey mirrors Gitea's public key shape. Note: Gitea's API does NOT
 // expose the internal `public_key.verified` DB column; KeyType is what
 // distinguishes auth keys ("user") from deploy/principal keys.
@@ -48,6 +55,27 @@ type Repository struct {
 	SSHURL   string `json:"ssh_url"`
 	Private  bool   `json:"private"`
 	Owner    User   `json:"owner"`
+}
+
+// AccessToken is the subset of the Gitea token payload used by the e2e harness.
+type AccessToken struct {
+	ID   int64  `json:"id"`
+	Name string `json:"name"`
+	SHA1 string `json:"sha1"`
+}
+
+// RepoHookConfig is the subset of the repository webhook config payload we use.
+type RepoHookConfig struct {
+	URL         string `json:"url"`
+	ContentType string `json:"content_type"`
+}
+
+// RepoHook is the subset of the repository webhook payload we use.
+type RepoHook struct {
+	ID     int64          `json:"id"`
+	Type   string         `json:"type"`
+	Active bool           `json:"active"`
+	Config RepoHookConfig `json:"config"`
 }
 
 // CommitVerification is the verification block of the commit API.
