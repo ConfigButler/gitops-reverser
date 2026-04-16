@@ -63,6 +63,30 @@ Tests are written to append to existing state rather than require a clean slate.
 
 For deeper debugging, see [`test/e2e/E2E_DEBUGGING.md`](test/e2e/E2E_DEBUGGING.md).
 
+## Tilt loop
+
+For controller iteration against the shared e2e cluster:
+
+```bash
+tilt up
+```
+
+The Tilt UI keeps build/deploy work on the existing `task prepare-e2e` path, then adds a small
+`playground` group of manual resources:
+
+- `playground-bootstrap` creates a reusable example repo, the `tilt-playground` namespace, the
+  Git credentials, and the `sops-age-key` Secret
+- the starter `GitProvider`, `GitTarget`, and `WatchRule` live in
+  [`test/playground/`](test/playground/) and are auto-applied by Tilt via kustomize once the
+  bootstrap has run
+- `playground-cleanup` removes the fixed playground namespace, repo, and local artifacts
+- `playground-upsert-*` / `playground-delete-*` mutate watched resources so you can quickly
+  confirm create, update, delete, and Secret encryption flows
+- `playground-status` prints the current starter resources and the recent repo commit log
+
+The design note for the playground flow lives in
+[`docs/design/tilt-playground-plan.md`](docs/design/tilt-playground-plan.md).
+
 **Troubleshooting:**
 - envtest errors: run `task setup-envtest` then retry
 - Docker errors: ensure the Docker daemon is running

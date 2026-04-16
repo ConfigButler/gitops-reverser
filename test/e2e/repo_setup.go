@@ -101,10 +101,10 @@ func bootstrapRepoArtifacts(namespace, repoName string) (*RepoArtifacts, error) 
 		return nil, err
 	}
 
-	if _, err := gitea.Client().RegisterUserKeyAsAdmin(
+	if _, err := gitea.Client().EnsureUserKeyAsAdmin(
 		ctx,
 		gitea.AdminUser,
-		"E2E Transport Key "+repoName,
+		transportSSHKeyTitle(repoName),
 		publicKey,
 	); err != nil {
 		return nil, fmt.Errorf("register transport SSH key for %q: %w", repoName, err)
@@ -187,6 +187,10 @@ func generateTransportSSHKeyPair() ([]byte, string, error) {
 	}
 
 	return privateKeyPEM, strings.TrimSpace(string(ssh.MarshalAuthorizedKey(publicKey))), nil
+}
+
+func transportSSHKeyTitle(repoName string) string {
+	return "E2E Transport Key " + strings.TrimSpace(repoName)
 }
 
 func ensureRepoWebhook(gitea *GiteaTestInstance, repoName string) (string, string, error) {

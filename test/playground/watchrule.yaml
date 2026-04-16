@@ -1,0 +1,12 @@
+apiVersion: configbutler.ai/v1alpha1
+kind: WatchRule
+metadata:
+  name: playground-watchrule
+  namespace: tilt-playground
+spec:
+  targetRef:
+    kind: GitTarget
+    name: playground-target
+  rules:
+    - resources: ["deployments", "services", "configmaps", "secrets"]
+    - resources: ["ingresses"]

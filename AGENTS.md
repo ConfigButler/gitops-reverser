@@ -24,13 +24,6 @@ task test      # Must pass all unit tests with >90% coverage
 task test-e2e  # Must pass end-to-end tests
 ```
 
-And before you are really really wrapping up, also run:
-
-```bash
-task test-e2e-quickstart-manifest
-task test-e2e-quickstart-helm
-```
-
 ## PRE-IMPLEMENTATION BEHAVIOR
 
 1. **Check Docker availability for e2e tests**: Before running `task test-e2e`, verify Docker is running with `docker info` or ask user to start Docker daemon if needed

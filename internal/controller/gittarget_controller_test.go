@@ -40,6 +40,70 @@ var _ = Describe("GitTarget Controller Security", func() {
 	)
 
 	Context("When a branch is not allowed by GitProvider", func() {
+		It("Should report missing provider through status instead of admission rejection", func() {
+			ctx := context.Background()
+
+			gitTarget := &configbutleraiv1alpha1.GitTarget{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-target-missing-provider",
+					Namespace: "default",
+				},
+				Spec: configbutleraiv1alpha1.GitTargetSpec{
+					ProviderRef: configbutleraiv1alpha1.GitProviderReference{
+						Name: "missing-provider",
+						Kind: "GitProvider",
+					},
+					Branch: "main",
+					Path:   "test-folder",
+				},
+			}
+			Expect(k8sClient.Create(ctx, gitTarget)).Should(Succeed())
+
+			gitTargetLookupKey := types.NamespacedName{
+				Name:      "test-target-missing-provider",
+				Namespace: "default",
+			}
+
+			createdGitTarget := &configbutleraiv1alpha1.GitTarget{}
+			Eventually(func() bool {
+				err := k8sClient.Get(ctx, gitTargetLookupKey, createdGitTarget)
+				if err != nil {
+					return false
+				}
+				for _, condition := range createdGitTarget.Status.Conditions {
+					if condition.Type == GitTargetConditionValidated &&
+						condition.Reason == GitTargetReasonProviderNotFound {
+						return true
+					}
+				}
+				return false
+			}, timeout, interval).Should(BeTrue())
+
+			var readyCondition *metav1.Condition
+			var validatedCondition *metav1.Condition
+			for i, condition := range createdGitTarget.Status.Conditions {
+				switch condition.Type {
+				case GitTargetReasonReady:
+					readyCondition = &createdGitTarget.Status.Conditions[i]
+				case GitTargetConditionValidated:
+					validatedCondition = &createdGitTarget.Status.Conditions[i]
+				}
+			}
+
+			Expect(readyCondition).NotTo(BeNil(), "Ready condition should exist")
+			Expect(readyCondition.Status).To(Equal(metav1.ConditionFalse))
+			Expect(readyCondition.Reason).To(Equal(GitTargetReadyReasonValidationFailed))
+
+			Expect(validatedCondition).NotTo(BeNil(), "Validated condition should exist")
+			Expect(validatedCondition.Status).To(Equal(metav1.ConditionFalse))
+			Expect(validatedCondition.Reason).To(Equal(GitTargetReasonProviderNotFound))
+			Expect(validatedCondition.Message).To(
+				ContainSubstring("Referenced GitProvider 'default/missing-provider' not found"),
+			)
+
+			Expect(k8sClient.Delete(ctx, gitTarget)).Should(Succeed())
+		})
+
 		It("Should clear LastCommit to prevent information disclosure", func() {
 			ctx := context.Background()
 

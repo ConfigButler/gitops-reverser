@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: playground-sample-config
+  namespace: tilt-playground
+  labels:
+    app.kubernetes.io/name: playground-sample-config
+    app.kubernetes.io/part-of: gitops-reverser-playground
+data:
+  message: "Hello from the playground"
+  purpose: "Edit me to trigger a watched ConfigMap update"
+  updatedAt: "2026-04-16T00:00:00Z"
