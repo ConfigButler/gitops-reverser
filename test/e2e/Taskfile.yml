@@ -101,7 +101,6 @@ vars:
   LOADTEST_BASE_URL: '{{.LOADTEST_BASE_URL | default "https://demo.configbutler.ai"}}'
   LOADTEST_SESSION: '{{.LOADTEST_SESSION | default "kubecon-2026"}}'
   LOADTEST_NS: '{{.LOADTEST_NS | default "vote"}}'
-
 tasks:
   prepare-e2e:
     desc: Prepare E2E prerequisites for Go tests
@@ -262,6 +261,176 @@ tasks:
         export E2E_QUICKSTART_MODE=plain-manifests-file
         export E2E_AGE_KEY_FILE="{{.CS}}/age-key.txt"
         go test -timeout "{{.E2E_GO_TEST_TIMEOUT}}" ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=quickstart-framework
+
+  playground-bootstrap:
+    desc: Bootstrap a reusable repo-backed playground
+    cmds:
+      - |
+        ctx="{{.CTX}}"
+        ns="tilt-playground"
+        repo="playground"
+        provider="playground-provider"
+        target="playground-target"
+        watchrule="playground-watchrule"
+        path="live-cluster"
+        if [ -n "${CHECKOUT_DIR:-}" ]; then
+          checkout="${CHECKOUT_DIR}"
+        elif [ -n "${REPOS_DIR:-}" ]; then
+          case "${REPOS_DIR}" in
+            /*) checkout="${REPOS_DIR}/${repo}" ;;
+            *) checkout="$(pwd)/${REPOS_DIR}/${repo}" ;;
+          esac
+        else
+          checkout="$(pwd)/.stamps/repos/${repo}"
+        fi
+
+        secrets_manifest="$(pwd)/.stamps/e2e-repo-artifacts/${ns}/${repo}/secrets.yaml"
+        ready_jsonpath='{.status.conditions[?(@.type=="Ready")].status}'
+        resource_ready() {
+          kind="$1"
+          name="$2"
+          "{{.KUBECTL}}" --context "${ctx}" -n "${ns}" get "${kind}" "${name}" \
+            -o "jsonpath=${ready_jsonpath}" 2>/dev/null | grep -qx 'True'
+        }
+
+        if [ -f "${secrets_manifest}" ] && [ -d "${checkout}/.git" ] \
+          && "{{.KUBECTL}}" --context "${ctx}" get namespace "${ns}" >/dev/null 2>&1 \
+          && resource_ready gitprovider "${provider}" \
+          && resource_ready gittarget "${target}" \
+          && resource_ready watchrule "${watchrule}"; then
+          echo "Playground already ready in namespace ${ns}; skipping bootstrap."
+          exit 0
+        fi
+
+        export CTX="${ctx}"
+        export INSTALL_MODE="config-dir"
+        export NAMESPACE="{{.NAMESPACE}}"
+        export E2E_AGE_KEY_FILE="{{.CS}}/age-key.txt"
+        go test -timeout "{{.E2E_GO_TEST_TIMEOUT}}" ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=playground
+
+  playground-cleanup:
+    desc: Remove the reusable playground namespace, repo, and local artifacts
+    cmds:
+      - |
+        "{{.TASK_BIN}}" portforward-ensure CTX="{{.CTX}}" >/dev/null
+        go run ./test/e2e/tools/playground-cleanup \
+          --context "{{.CTX}}" \
+          --project-dir "$(pwd)"
+
+  playground-status:
+    desc: Show playground resources and recent repo commits
+    cmds:
+      - |
+        ctx="{{.CTX}}"
+        ns="tilt-playground"
+        repo="playground"
+        path="live-cluster"
+        manifests_dir="$(pwd)/test/playground"
+        if [ -n "${CHECKOUT_DIR:-}" ]; then
+          checkout="${CHECKOUT_DIR}"
+        elif [ -n "${REPOS_DIR:-}" ]; then
+          case "${REPOS_DIR}" in
+            /*) checkout="${REPOS_DIR}/${repo}" ;;
+            *) checkout="$(pwd)/${REPOS_DIR}/${repo}" ;;
+          esac
+        else
+          checkout="$(pwd)/.stamps/repos/${repo}"
+        fi
+
+        echo "Playground namespace: ${ns}"
+        echo "Repo checkout: ${checkout}"
+        echo "Watched path: ${path}"
+        echo "Manifest dir: ${manifests_dir}"
+        echo
+
+        if "{{.KUBECTL}}" --context "${ctx}" get namespace "${ns}" >/dev/null 2>&1; then
+          "{{.KUBECTL}}" --context "${ctx}" get namespace "${ns}"
+          echo
+          "{{.KUBECTL}}" --context "${ctx}" -n "${ns}" get gitprovider,gittarget,watchrule,configmap,secret
+          echo
+        else
+          echo "Playground namespace not found. Run: task playground-bootstrap"
+          echo
+        fi
+
+        if [ -d "${checkout}/.git" ]; then
+          git -C "${checkout}" pull --ff-only >/dev/null 2>&1 || true
+          git -C "${checkout}" --no-pager log --oneline -n 5
+        else
+          echo "Repo checkout not found yet. Run: task playground-bootstrap"
+        fi
+
+  playground-upsert-configmap:
+    desc: Create or update a watched ConfigMap in the playground namespace
+    cmds:
+      - |
+        ctx="{{.CTX}}"
+        ns="tilt-playground"
+        name="playground-configmap"
+        stamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        value="tilt-configmap-${stamp}"
+
+        if ! "{{.KUBECTL}}" --context "${ctx}" get namespace "${ns}" >/dev/null 2>&1; then
+          echo "Playground namespace not found. Run: task playground-bootstrap" >&2
+          exit 1
+        fi
+        "{{.KUBECTL}}" --context "${ctx}" -n "${ns}" create configmap "${name}" \
+          --from-literal=value="${value}" \
+          --from-literal=updatedAt="${stamp}" \
+          --from-literal=trigger=tilt \
+          --dry-run=client -o yaml \
+          | "{{.KUBECTL}}" --context "${ctx}" apply -f -
+
+        echo "Applied ConfigMap ${ns}/${name} with value=${value}"
+
+  playground-delete-configmap:
+    desc: Delete the watched ConfigMap in the playground namespace
+    cmds:
+      - |
+        ctx="{{.CTX}}"
+        ns="tilt-playground"
+        name="playground-configmap"
+        if ! "{{.KUBECTL}}" --context "${ctx}" get namespace "${ns}" >/dev/null 2>&1; then
+          echo "Playground namespace not found; nothing to delete."
+          exit 0
+        fi
+        "{{.KUBECTL}}" --context "${ctx}" -n "${ns}" delete configmap "${name}" --ignore-not-found=true
+
+  playground-upsert-secret:
+    desc: Create or update a watched Secret in the playground namespace
+    cmds:
+      - |
+        ctx="{{.CTX}}"
+        ns="tilt-playground"
+        name="playground-secret"
+        stamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        value="tilt-secret-${stamp}"
+
+        if ! "{{.KUBECTL}}" --context "${ctx}" get namespace "${ns}" >/dev/null 2>&1; then
+          echo "Playground namespace not found. Run: task playground-bootstrap" >&2
+          exit 1
+        fi
+        "{{.KUBECTL}}" --context "${ctx}" -n "${ns}" create secret generic "${name}" \
+          --from-literal=username=tilt \
+          --from-literal=password="${value}" \
+          --from-literal=updatedAt="${stamp}" \
+          --dry-run=client -o yaml \
+          | "{{.KUBECTL}}" --context "${ctx}" apply -f -
+
+        echo "Applied Secret ${ns}/${name} with password=${value}"
+
+  playground-delete-secret:
+    desc: Delete the watched Secret in the playground namespace
+    cmds:
+      - |
+        ctx="{{.CTX}}"
+        ns="tilt-playground"
+        name="playground-secret"
+        if ! "{{.KUBECTL}}" --context "${ctx}" get namespace "${ns}" >/dev/null 2>&1; then
+          echo "Playground namespace not found; nothing to delete."
+          exit 0
+        fi
+        "{{.KUBECTL}}" --context "${ctx}" -n "${ns}" delete secret "${name}" --ignore-not-found=true
 
   test-e2e-audit-redis:
     desc: Run dedicated audit to Redis enqueue scenario

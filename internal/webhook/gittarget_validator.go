@@ -27,6 +27,7 @@ import (
 	"net/url"
 	"strings"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
@@ -125,6 +126,12 @@ func (v *GitTargetValidator) validateUniqueness(
 	// 1. Resolve Provider to get the actual repository URL
 	repoURL, err := v.getRepoURL(ctx, target)
 	if err != nil {
+		if apierrors.IsNotFound(err) {
+			log.V(1).Info("Skipping GitTarget uniqueness validation because referenced provider was not found",
+				"target", fmt.Sprintf("%s/%s", target.Namespace, target.Name),
+				"providerRef", target.Spec.ProviderRef.Name)
+			return nil, nil
+		}
 		return nil, fmt.Errorf("failed to resolve provider '%s/%s': %w",
 			target.Namespace, // Provider is always in same namespace
 			target.Spec.ProviderRef.Name,

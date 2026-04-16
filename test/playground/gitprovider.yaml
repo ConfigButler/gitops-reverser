@@ -1,0 +1,14 @@
+apiVersion: configbutler.ai/v1alpha1
+kind: GitProvider
+metadata:
+  name: playground-provider
+  namespace: tilt-playground
+spec:
+  url: http://gitea-http.gitea-e2e.svc.cluster.local:13000/testorg/playground.git
+  allowedBranches:
+    - "main"
+  push:
+    interval: "1s"
+    maxCommits: 1
+  secretRef:
+    name: git-creds-playground

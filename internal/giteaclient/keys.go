@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 )
 
@@ -69,6 +70,25 @@ func (c *Client) FindUserKey(ctx context.Context, login, publicKey string) (*Pub
 	return nil, false, nil
 }
 
+// FindUserKeyByTitle looks up a public key on the named user by title.
+func (c *Client) FindUserKeyByTitle(ctx context.Context, login, title string) (*PublicKey, bool, error) {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return nil, false, errors.New("key title is empty")
+	}
+
+	keys, err := c.ListUserKeys(ctx, login)
+	if err != nil {
+		return nil, false, err
+	}
+	for i := range keys {
+		if strings.TrimSpace(keys[i].Title) == title {
+			return &keys[i], true, nil
+		}
+	}
+	return nil, false, nil
+}
+
 // RegisterUserKeyAsAdmin idempotently registers a public key on the named user
 // using the admin endpoint POST /admin/users/{username}/keys.
 func (c *Client) RegisterUserKeyAsAdmin(ctx context.Context, login, title, publicKey string) (*PublicKey, error) {
@@ -100,6 +120,49 @@ func (c *Client) RegisterUserKeyAsAdmin(ctx context.Context, login, title, publi
 	default:
 		return nil, unexpectedStatus(http.MethodPost, path, code, raw)
 	}
+}
+
+// DeleteUserKeyAsAdmin removes a single public key from the named user.
+func (c *Client) DeleteUserKeyAsAdmin(ctx context.Context, login string, keyID int64) error {
+	path := "/admin/users/" + PathEscape(login) + "/keys/" + strconv.FormatInt(keyID, 10)
+	code, raw, err := c.Do(ctx, http.MethodDelete, path, nil, nil)
+	if err != nil {
+		return err
+	}
+	if code != http.StatusNoContent && code != http.StatusNotFound {
+		return unexpectedStatus(http.MethodDelete, path, code, raw)
+	}
+	return nil
+}
+
+// EnsureUserKeyAsAdmin ensures the named user has exactly the requested key
+// material for the given title. If the title already exists with different
+// material, the stale key is removed before the new key is created.
+func (c *Client) EnsureUserKeyAsAdmin(ctx context.Context, login, title, publicKey string) (*PublicKey, error) {
+	publicKey = strings.TrimSpace(publicKey)
+	title = strings.TrimSpace(title)
+	if publicKey == "" {
+		return nil, errors.New("public key is empty")
+	}
+	if title == "" {
+		return nil, errors.New("key title is empty")
+	}
+
+	if existing, found, err := c.FindUserKey(ctx, login, publicKey); err != nil {
+		return nil, err
+	} else if found {
+		return existing, nil
+	}
+
+	if existing, found, err := c.FindUserKeyByTitle(ctx, login, title); err != nil {
+		return nil, err
+	} else if found {
+		if err := c.DeleteUserKeyAsAdmin(ctx, login, existing.ID); err != nil {
+			return nil, err
+		}
+	}
+
+	return c.RegisterUserKeyAsAdmin(ctx, login, title, publicKey)
 }
 
 // RegisterUserKeyAsUser registers a public key via POST /user/keys using the

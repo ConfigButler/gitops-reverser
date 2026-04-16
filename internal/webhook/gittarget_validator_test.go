@@ -431,9 +431,43 @@ func TestGitTargetValidator_ValidateCreate_MissingProvider(t *testing.T) {
 	}
 
 	warnings, err := validator.ValidateCreate(context.Background(), target)
-	require.Error(t, err, "should fail when GitProvider not found")
+	require.NoError(t, err, "should allow create when GitProvider is not found")
 	assert.Nil(t, warnings)
-	assert.Contains(t, err.Error(), "failed to resolve provider")
+}
+
+func TestGitTargetValidator_ValidateUpdate_MissingProvider(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = configbutleraiv1alpha1.AddToScheme(scheme)
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		Build()
+
+	validator := &GitTargetValidator{
+		Client: fakeClient,
+	}
+
+	existingTarget := &configbutleraiv1alpha1.GitTarget{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-target",
+			Namespace: "default",
+		},
+		Spec: configbutleraiv1alpha1.GitTargetSpec{
+			ProviderRef: configbutleraiv1alpha1.GitProviderReference{
+				Name: "missing-provider",
+				Kind: "GitProvider",
+			},
+			Branch: "main",
+			Path:   "clusters/prod",
+		},
+	}
+
+	updatedTarget := existingTarget.DeepCopy()
+	updatedTarget.Spec.Path = "clusters/staging"
+
+	warnings, err := validator.ValidateUpdate(context.Background(), existingTarget, updatedTarget)
+	require.NoError(t, err, "should allow update when GitProvider is not found")
+	assert.Nil(t, warnings)
 }
 
 func TestGitTargetValidator_NilObject(t *testing.T) {

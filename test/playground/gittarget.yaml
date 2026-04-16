@@ -1,0 +1,19 @@
+apiVersion: configbutler.ai/v1alpha1
+kind: GitTarget
+metadata:
+  name: playground-target
+  namespace: tilt-playground
+spec:
+  providerRef:
+    kind: GitProvider
+    name: playground-provider
+  branch: main
+  path: live-cluster
+  encryption:
+    provider: sops
+    age:
+      enabled: true
+      recipients:
+        extractFromSecret: true
+    secretRef:
+      name: sops-age-key
