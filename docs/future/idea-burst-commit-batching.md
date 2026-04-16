@@ -67,8 +67,8 @@ drains the buffer. With a commit window, two timers coexist:
 
 The commit produces a batch message summarising the events: operation counts, resource kinds, and
 optionally the first few resource names. The template system from
-[gitprovider-commits-api.md](../design/gitprovider-commits-api.md) would use the existing
-`BatchTemplate` field for this, reusing `BatchCommitMessageData`.
+[configuration.md](../configuration.md) would use the existing `BatchTemplate` field
+for this, reusing the current batch-template model.
 
 ---
 
@@ -145,7 +145,7 @@ proximity. For now, time is what we have.
 | Idea | Connection |
 |---|---|
 | [ArgoCD application editing](idea-application-editing.md) | Burst batching is the commit-level mechanism for the "time-based grouping" strategy already described there. The author-break flush model maps directly onto the author-based grouping idea in that doc. |
-| [gitprovider-commits-api.md](../design/gitprovider-commits-api.md) | `BatchTemplate` and `CommitMessageData` are the message-layer for burst batch commits. The `commitWindow` field lives in `PushStrategy` alongside the existing `interval`. |
+| [configuration.md](../configuration.md) | `BatchTemplate` and the existing commit-template model are the message-layer for burst batch commits. The `commitWindow` field lives in `PushStrategy` alongside the existing `interval`. |
 
 ---
 

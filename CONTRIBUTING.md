@@ -2,6 +2,9 @@
 
 Contributions are welcome — code, docs, bug reports, and ideas.
 
+For security-sensitive reports, please use the private reporting path in [SECURITY.md](SECURITY.md)
+instead of opening a public issue.
+
 ## Development environment
 
 Use the DevContainer. It includes Go, kubectl, k3d, Helm, and all required tools.
@@ -81,6 +84,10 @@ determines whether a release is triggered and what version bump applies:
 Examples: `feat(controller): add SSH key rotation`, `fix(webhook): prevent queue race`
 
 See [`.github/RELEASES.md`](.github/RELEASES.md) for how releases and changelogs are automated.
+
+## AI tooling
+
+Repo-specific guidance for AI coding assistants lives in [AGENTS.md](AGENTS.md).
 
 ## Pull request process
 

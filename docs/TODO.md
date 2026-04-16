@@ -22,6 +22,10 @@ This file is meant to track the smaller current backlog, not historical notes.
   Examples include Kubernetes-generated ConfigMaps such as `kube-root-ca.crt` and similar
   cluster-specific resources that do not belong in a portable Git view by default.
 
+- [ ] Reduce sensitive data persisted in the audit queue.
+  Redacting or minimizing `payload_json` before it lands in Valkey would shrink the blast radius,
+  especially for Secret-bearing audit events.
+
 - [ ] Revisit output layout.
   Think about better control over target folders and whether some use cases should support multiple
   resources per file.
@@ -36,8 +40,14 @@ This file is meant to track the smaller current backlog, not historical notes.
 
 - [ ] Simpler setup flows, including more Git provider bootstrap automation.
 
+- [ ] Implement real `GitTarget.spec.providerRef` support for Flux `GitRepository`.
+  The API shape already allows it, but the controller path is still effectively GitProvider-first.
+  That would make the "bring your own Flux repo" story real instead of only partially modeled.
+
 - [ ] A mode that commits changes without end-user author attribution, using the watch/reconcile
   path instead of kube-apiserver audit integration.
+  This should stay explicitly framed as a simpler but lower-fidelity mode, not as equivalent to the
+  audit-backed path.
 
 - [ ] Constrained reverse actions for simple, known Kustomize-style mutations.
 

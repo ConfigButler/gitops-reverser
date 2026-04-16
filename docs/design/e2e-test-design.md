@@ -12,15 +12,37 @@ The important mental model is:
 3. `BeforeSuite` prepares one shared cluster install for that whole run.
 4. Each repo-using e2e test file creates its own Gitea repo (via `SetupRepo(...)`) in its own test namespace.
 
-Repo fixtures are therefore file-local, not package-global. See
-[e2e-repo-in-namespace-plan.md](./e2e-repo-in-namespace-plan.md) for the
-design intent,
-[e2e-repo-in-namespace-follow-up-plan.md](./e2e-repo-in-namespace-follow-up-plan.md)
-for the current-state summary, and
-[e2e-finish-plan.md](./e2e-finish-plan.md) for the remaining open work.
+Repo fixtures are therefore file-local, not package-global.
 
 That sharing is intentional, but it also means a later suite can break an earlier suite's shared fixtures if the
 test harness treats run-scoped artifacts like install-scoped artifacts.
+
+## Repo-Per-File Model
+
+The repo-per-file split is an intentional harness decision, not an accident of the current code.
+
+The durable rules are:
+
+- `BeforeSuite` owns shared cluster and install preparation
+- each repo-using e2e file owns one repo
+- repo state flows through `RepoArtifacts`, not package-global repo env vars
+- repo fixtures should stay close to the test file that actually needs them
+- the demo flow remains intentionally special with its fixed repo and namespace
+
+This shape won because it gave a good trade-off between isolation and practicality:
+
+- less hidden coupling between e2e files
+- better fit for Ginkgo and VS Code test discovery
+- no need to duplicate cluster bootstrap logic in Go
+- easier future parallelism
+
+What it does not promise:
+
+- full `ginkgo -p` safety for the whole package yet
+- removal of all remaining shell from the harness
+- total independence from shared cluster-side services
+
+Those broader open items live in [e2e-finish-plan.md](./e2e-finish-plan.md).
 
 ## Cross-Cutting Requirements
 
@@ -211,6 +233,9 @@ The only cluster-level variable still consumed across files is:
 
 Repo state (names, checkout paths, Secret names, optional receiver webhook info) flows through a typed
 `RepoArtifacts` struct returned by `SetupRepo`, not through package-global env vars.
+
+One important current detail is that `audit_redis_e2e_test.go` uses file-local lazy repo
+initialization so either top-level `Describe` can run first without hidden ordering assumptions.
 
 ## Repo Model: One Repo Per E2E Test File
 

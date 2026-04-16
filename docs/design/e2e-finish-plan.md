@@ -2,6 +2,9 @@
 
 This is the one active plan for the remaining e2e harness work.
 
+For current debugging and reuse behavior, see
+[`../../test/e2e/E2E_DEBUGGING.md`](../../test/e2e/E2E_DEBUGGING.md).
+
 ## Current Baseline
 
 The harness is already in a much better place than the older plans imply:
@@ -15,7 +18,7 @@ The harness is already in a much better place than the older plans imply:
   - `git verify-commit`
   - Gitea commit verification after the `verify_ssh` flow
 
-The older follow-up documents are now reference material, not active plans.
+Older migration and follow-up documents have been folded into the main e2e docs or removed.
 
 ## Open Work
 
@@ -24,14 +27,12 @@ The older follow-up documents are now reference material, not active plans.
 The big shell-to-Go seam is now closed. The remaining work is cleanup and
 consolidation:
 
-- trim stale docs and comments that still describe the deleted Task and shell
-  repo-bootstrap path
+- trim stale docs and comments that still describe the deleted Task and shell repo-bootstrap path
 - decide whether the current Go bootstrap helper should stay in the main
   `test/e2e` package or be extracted into a smaller e2e support package
 - review whether any now-unused historical migration notes should be archived or
   deleted
-- keep the persisted artifact set intentionally small unless a new stamp buys
-  clear debugging value
+- keep the persisted artifact set intentionally small unless a new stamp buys clear debugging value
 
 Acceptance:
 
