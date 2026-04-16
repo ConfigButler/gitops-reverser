@@ -67,6 +67,20 @@ This keeps the configured public key file aligned with the currently forwarded a
 
 ## Best Practices
 
+## Setup goals
+
+This setup is still evolving.
+
+The goal is to find a development environment that:
+
+- works across Linux, macOS, Windows, Codespaces, and remote dev machines
+- keeps personal choices open where possible instead of forcing one editor or one host setup
+- still gives contributors a setup that actually works for Go, Kubernetes, Docker, and Git signing
+
+That means some choices here are pragmatic rather than ideal. The current setup favors reliability
+and repeatability first, while still trying to leave room for different host platforms and personal
+workflows.
+
 ### SSH Signing
 
 1. Treat forwarded SSH agent keys as ephemeral
@@ -177,5 +191,11 @@ Usually normal. Rebuild time mostly depends on tool installation and cache reuse
 
 ## References
 
-Why we use Docker-outside-of-Docker:
-[`docs/ci/dood-vs-dind-reasons.md`](../docs/ci/dood-vs-dind-reasons.md)
+- Why we use Docker-outside-of-Docker:
+  [`../docs/ci/dood-vs-dind-reasons.md`](../docs/ci/dood-vs-dind-reasons.md)
+- VS Code Dev Containers: adding a non-root user:
+  [code.visualstudio.com/remote/advancedcontainers/add-nonroot-user](https://code.visualstudio.com/remote/advancedcontainers/add-nonroot-user)
+- Trail of Bits devcontainer setup notes:
+  [github.com/trailofbits/skills/.../devcontainer-setup](https://github.com/trailofbits/skills/tree/main/plugins/devcontainer-setup/skills/devcontainer-setup)
+- Devcontainer best practices reference:
+  [github.com/afonsograca/devcontainers-best-practices/.../vscode-containers.md](https://github.com/afonsograca/devcontainers-best-practices/blob/HEAD/skills/devcontainers-best-practices/references/vscode-containers.md)

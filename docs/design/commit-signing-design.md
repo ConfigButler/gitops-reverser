@@ -164,6 +164,11 @@ Two status rules matter:
    operator has platform-specific proof. A successful signed push does not prove the key is
    registered or that the committer email is verified.
 
+Generated signing Secrets should intentionally survive `GitProvider` deletion.
+That means the controller should not set an owner reference on generated signing
+Secrets by default. Signing keys have their own lifecycle, and tying them to CR
+garbage collection would make accidental key loss too easy.
+
 ---
 
 ## Deferred: remote key registration validation

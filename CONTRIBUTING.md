@@ -7,9 +7,20 @@ Contributions are welcome — code, docs, bug reports, and ideas.
 Use the DevContainer. It includes Go, kubectl, k3d, Helm, and all required tools.
 Everything below assumes you are running inside it.
 
+[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/ConfigButler/gitops-reverser)
+
 See [`.devcontainer/README.md`](.devcontainer/README.md) for setup instructions.
 
 ## Before submitting a PR
+
+For small fixes, docs improvements, and obvious bug fixes, feel free to open a PR directly.
+
+For larger changes, new features, architectural shifts, or anything likely to take significant
+effort, please open an issue or discussion first so direction can be aligned before you spend a lot
+of time on implementation.
+
+As a rough rule: if the change is likely to take more than about 30-60 minutes of focused work, or
+more than a few thousand AI tokens / a substantial coding session to prepare, check first.
 
 ```bash
 task lint      # must pass
