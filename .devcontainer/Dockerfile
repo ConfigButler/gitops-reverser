@@ -158,8 +158,7 @@ RUN printf '%s\n' \
     >> /etc/bash.bashrc
 
 # Install Tilt CLI (local dev loop orchestration; dev stage only)
-# https://github.com/tilt-dev/tilt/releases
-ENV TILT_VERSION=v0.37.3
+ENV TILT_VERSION=v0.37.1
 RUN arch="$(dpkg --print-architecture)" && \
     case "${arch}" in \
         amd64) tilt_arch="x86_64" ;; \
@@ -167,8 +166,9 @@ RUN arch="$(dpkg --print-architecture)" && \
         *) echo "unsupported architecture for Tilt: ${arch}" && exit 1 ;; \
     esac && \
     tilt_version_no_v="${TILT_VERSION#v}" && \
-    curl -fsSL -o /tmp/tilt.tar.gz \
-      "https://github.com/tilt-dev/tilt/releases/download/${TILT_VERSION}/tilt.${tilt_version_no_v}.linux.${tilt_arch}.tar.gz" && \
+    url="https://github.com/tilt-dev/tilt/releases/download/${TILT_VERSION}/tilt.${tilt_version_no_v}.linux.${tilt_arch}.tar.gz" && \
+    echo "Downloading ${url}" && \
+    curl -fsSL -o /tmp/tilt.tar.gz "${url}" && \
     tar -xzf /tmp/tilt.tar.gz -C /tmp tilt && \
     install -m 0755 /tmp/tilt /usr/local/bin/tilt && \
     rm -f /tmp/tilt /tmp/tilt.tar.gz
