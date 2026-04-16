@@ -176,16 +176,7 @@ The bootstrap template currently contains a static recipient in
 
 ## What to read next
 
-- For operator usage and day-2 handling: this document.
-- For bootstrap behavior of generated keys: [`docs/SOPS_GENERATE_WHEN_MISSING_PLAN.md`](docs/SOPS_GENERATE_WHEN_MISSING_PLAN.md)
-- For longer-term Flux-compatible key handling ideas: [`docs/SOPS_FLUX_AGE_KEY_ALIGNMENT_PLAN.md`](docs/SOPS_FLUX_AGE_KEY_ALIGNMENT_PLAN.md)
-
-## Design plan: `generateWhenMissing`
-
-Moved to a dedicated document: [`docs/SOPS_GENERATE_WHEN_MISSING_PLAN.md`](docs/SOPS_GENERATE_WHEN_MISSING_PLAN.md)
-
-## Design plan: Flux-aligned key handling
-
-Implications and proposal for optional secretless encryption, Flux-compatible
-`*.agekey` generation, and multi-key support:
-[`docs/SOPS_FLUX_AGE_KEY_ALIGNMENT_PLAN.md`](docs/SOPS_FLUX_AGE_KEY_ALIGNMENT_PLAN.md)
+- For install and starter resource setup: [`../README.md`](../README.md)
+- For chart quickstart values: [`configuration.md`](configuration.md)
+- For the deeper bootstrap/encryption architecture: [`design/sops-repo-bootstrap-and-key-management-architecture.md`](design/sops-repo-bootstrap-and-key-management-architecture.md)
+- For explicit non-goals and deferred work: [`design/sops-repo-bootstrap-out-of-scope.md`](design/sops-repo-bootstrap-out-of-scope.md)

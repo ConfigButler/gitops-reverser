@@ -4,6 +4,9 @@
 
 GitOps Reverser can participate in a bi-directional workflow, but only if the write authority is explicit.
 
+This area is still experimental. The first results are promising, but it needs careful design and
+operational discipline before it can be treated as a normal default workflow.
+
 The safe default is:
 
 - cluster changes happen through the Kubernetes API
@@ -12,6 +15,10 @@ The safe default is:
 
 What is not safe is letting GitOps Reverser and a normal always-on GitOps loop continuously reconcile the
 same resources at the same time.
+
+It also requires some form of alignment with the normal GitOps operator in the loop, whether that is
+Flux, Argo CD, or another controller. Without that coordination model, the system is very easy to
+make noisy or unstable.
 
 ## Recommended Modes
 
@@ -58,6 +65,7 @@ Best for:
 Best for:
 
 - advanced teams that need shared-path workflows and are willing to accept operational complexity
+- experiments and tightly controlled rollouts, not broad default adoption yet
 
 ## What To Avoid
 
@@ -159,7 +167,9 @@ Today the repository already supports the foundation for this direction:
 
 What is not complete yet:
 
+- a stable, well-shaped product story for bi-directional usage
 - a finished first-class product surface for manual Flux acknowledgment
+- equivalent alignment patterns for Argo CD or other GitOps operators
 - HA support for the controller
 - full production hardening for all shared-ownership edge cases
 
@@ -174,10 +184,12 @@ Adopt the feature in this order:
 
 This keeps the simplest and most understandable workflows as the default.
 
-## Design References
+## References
 
-For the deeper design and implementation material, see:
+For the concrete exercised behavior, see:
 
-- [`docs/design/bi-directional-flux-risks-and-options.md`](docs/design/bi-directional-flux-risks-and-options.md)
-- [`docs/design/bi-directional-flux-manual-handshake-plan.md`](docs/design/bi-directional-flux-manual-handshake-plan.md)
-- [`test/e2e/bi_directional_e2e_test.go`](../test/e2e/bi_directional_e2e_test.go)
+- [`../test/e2e/bi_directional_e2e_test.go`](../test/e2e/bi_directional_e2e_test.go)
+
+For broader controller and repository lifecycle background, see:
+
+- [`design/gittarget-lifecycle-and-repo-architecture.md`](design/gittarget-lifecycle-and-repo-architecture.md)

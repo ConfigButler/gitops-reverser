@@ -38,6 +38,23 @@ In practice, that means:
 - the default smoke path and focused Task targets should optimize for the "relevant subset under 10 minutes" goal, while full confidence runs can remain broader and slower
 - direct `go test` runs should continue to delegate environment preparation to Task targets instead of duplicating cluster bootstrap logic in Go
 
+## Harness Direction
+
+The current preferred direction for the harness is:
+
+- keep `_suite_test.go` and `BeforeSuite` focused on shared cluster preparation only
+- avoid moving per-test repo setup into suite-global bootstrap
+- keep each e2e file centered on one clear concern
+- make top-level `Describe` blocks independently runnable without hidden ordering assumptions
+- isolate mutable test fixtures so future parallel execution remains realistic
+
+In practice, that means:
+
+- shared infrastructure such as the cluster, controller install, webhook TLS, and port-forwards can stay suite-level
+- repo creation, namespace seeding, and other scenario-specific state should stay close to the test file that actually needs it
+- `Ordered` containers are acceptable when a workflow is inherently staged, but they should not become a substitute for cross-file isolation
+- install mode should not reshape the product-behavior suites; installer variation belongs primarily in the dedicated quickstart/install-path checks
+
 ## Install Mode Strategy
 
 There are three supported install modes:

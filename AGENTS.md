@@ -11,6 +11,11 @@
 
 **CRITICAL**: These commands MUST pass before any implementation is considered complete:
 
+Exception: if the change is **markdown/docs-only** and does not modify Go code, generated manifests,
+Helm/chart behavior, Taskfiles, CI, shell scripts, or any executable/test configuration, you do
+**not** need to run the full validation suite below. In that case, limit validation to a quick
+sanity check of the edited markdown and links.
+
 Run the e2e commands sequentially, not in parallel!
 
 ```bash
@@ -81,6 +86,9 @@ task test-e2e-quickstart-helm
 - Update API documentation if modifying CRDs
 
 ## VALIDATION SEQUENCE
+
+For markdown/docs-only edits, skip this full sequence unless the documentation change depends on or
+describes behavior you also changed in code/config during the same task.
 
 1. `task fmt` - Format code
 2. `task generate` - Update generated code (if needed)
