@@ -1,304 +1,161 @@
-# Task Migration Plan
+# Why We Switched From Make To Task
 
-## Summary
+This file used to be the migration plan. The migration is done now, so the useful question is no
+longer "how should we move?" but "why was the move worth it?"
 
-- Replace the current `Makefile` with Taskfiles and update all repo callers in the same migration so `make` is no longer required.
-- Use the newly initialized [`Taskfile.yml`](/workspaces/gitops-reverser/Taskfile.yml:1) as the starting point, but expand it into a real orchestration layer instead of a single-file monolith.
-- Keep the current `.stamps` tree as-is; Task's own `.task` directory is gitignored and left entirely to Task.
-- Preserve the current stamp behavior, including stable mtimes and content-bearing readiness files, because that behavior is important to the e2e flow and image refresh logic.
-- Use Task for orchestration, but keep explicit file-based state for cluster/e2e/runtime steps rather than trying to express everything through Task's internal checksum cache.
+Short version: switching from `Makefile` to Task was a very good choice for this repository.
 
-## Why The Makefile Is Complex Today
+## The main win
 
-The current `Makefile` is doing three different jobs at once:
+The old `Makefile` had grown into three things at once:
 
-1. Local artifact generation and developer commands
-   Examples: `manifests`, `generate`, `helm-sync`, `fmt`, `vet`, `lint`, `build`, `run`.
-2. Stateful e2e orchestration
-   Examples: cluster setup, Flux install, CRD apply, image load, controller deploy, webhook TLS injection, SOPS setup, Gitea bootstrap.
-3. Incremental caching and invalidation
-   This is implemented through explicit stamp files under `.stamps`, content-aware stamp contents, compare-and-replace logic, and Make dependency ordering.
+- developer commands
+- e2e orchestration
+- incremental state management through `.stamps`
 
-That third part is the important one to preserve. The repo is not using stamps as a cosmetic optimization. They are part of the execution model.
+Make can do all of that, but the price was high. The file mixed shell, dependency graph tricks,
+dynamic variables, grouped outputs, and recursive `$(MAKE)` calls in one place. That gave us a lot
+of freedom, but it also made the execution model harder to read and safer changes harder to make.
 
-## State Layout
+Task gave us a better split:
 
-The `.stamps` tree is kept exactly as-is. The Task project has no official guidance on where to put user-managed state files — `TASK_TEMP_DIR` only covers Task's own internal checksum cache. Migrating `.stamps` would be pure churn with no functional benefit and would require updating every Go helper, shell script, and `.gitignore` entry.
+- Taskfiles own orchestration and task discovery
+- `.stamps` still own the explicit runtime state we actually care about
+- helper scripts still do the detailed cluster and install work
 
-Task's default `.task` directory is left entirely to Task. It is gitignored and not referenced anywhere in the repo. No `TASK_TEMP_DIR` override is needed.
+That separation fits this repo much better.
 
-## Public Command Shape
+## What got better
 
-Keep command names close to the current Make targets so the cutover is easy:
+### 1. The command surface became clearer
 
-**Build / local**
-- `task manifests`
-- `task generate`
-- `task helm-sync`
-- `task fmt`
-- `task vet`
-- `task lint`
-- `task lint-fix`
-- `task lint-config`
-- `task build`
-- `task run`
-- `task test`
-- `task setup-envtest`
-- `task docker-build`
-- `task docker-push`
-- `task docker-buildx`
-- `task dist-install` (replaces the file-target `make dist/install.yaml`)
-- `task clean`
+The current root [Taskfile.yml](/workspaces/gitops-reverser/Taskfile.yml) is intentionally small:
 
-**E2E cluster and install**
-- `task prepare-e2e`
-- `task prepare-e2e-demo`
-- `task e2e-gitea-bootstrap`
-- `task e2e-gitea-run-setup`
-- `task portforward-ensure`
-- `task install`
-- `task install-helm`
-- `task install-plain-manifests-file`
-- `task install-config-dir`
+- it includes build tasks
+- it includes e2e tasks
+- it exposes one flat command surface
 
-**E2E test suites**
-- `task test-e2e`
-- `task test-e2e-quickstart-manifest`
-- `task test-e2e-quickstart-helm`
-- `task test-e2e-audit-redis`
-- `task test-e2e-demo`
-- `task test-image-refresh`
+That is easier to reason about than one large Makefile trying to be both user interface and
+execution engine.
 
-**Demo / loadtest**
-- `task loadtest`
+### 2. Build tasks became more explicit
 
-**Cleanup**
-- `task clean-cluster`
-- `task clean-installs`
-- `task clean-port-forwards`
+The current [Taskfile-build.yml](/workspaces/gitops-reverser/Taskfile-build.yml) makes the important
+parts visible:
 
-Keep the current env contract unchanged:
+- `desc`
+- `sources`
+- `generates`
+- `deps`
+- `cmds`
 
-- `CTX`
-- `INSTALL_MODE`
-- `INSTALL_NAME`
-- `NAMESPACE`
-- `PROJECT_IMAGE`
-- `IMAGE_DELIVERY_MODE`
-- `REPO_NAME`
-- current port, demo, image pull, and e2e helper vars
+For example, `manifests` now reads like a declaration of intent: what changes trigger it, what it
+produces, and what it runs.
 
-`test-e2e-quickstart-helm` and `test-e2e-quickstart-manifest` bake their `INSTALL_MODE` overrides directly as `vars:` inside the task definition rather than relying on the caller to pass them. The env contract for `NAMESPACE`, `CTX`, and `E2E_AGE_KEY_FILE` is still inherited from the root vars.
+In the old [Makefile.oldway](/workspaces/gitops-reverser/Makefile.oldway), the same area depended on
+Make-specific constructs like grouped targets:
 
-## Taskfile Structure
-
-Create:
-
-- `Taskfile.yml`
-- `taskfiles/build.yml`
-- `test/e2e/Taskfile.yml`
-
-### Root `Taskfile.yml`
-
-Responsibilities:
-
-- shared vars/defaults
-- includes for sub-Taskfiles with no `namespace:` set, so all tasks are flattened into the root namespace — `task test-e2e`, not `task e2e:test-e2e`
-- because includes are flattened, task names must remain globally unique across all included Taskfiles
-- aliases/help
-- `dotenv` or env wiring if later needed
-
-### `taskfiles/build.yml`
-
-All build/local artifact tasks. Task names match the Make targets directly; the only non-obvious one is `dist-install` (was the file-target `dist/install.yaml`).
-
-### `test/e2e/Taskfile.yml`
-
-Lives next to the e2e code it orchestrates. Included from the root with no namespace.
-
-Owns everything in the **E2E cluster and install**, **E2E test suites**, **Demo / loadtest**, and **Cleanup** groups from the public command list above. Internal stamp-driving tasks (e.g. `flux.installed`, `image.loaded`) are defined here too, but omit `desc` so they stay out of `task --list`.
-
-## How To Translate The Current Make Behavior
-
-### 1. Pure local artifact tasks
-
-Use Task `sources` and `generates` for:
-
-- manifests generation
-- helm sync copies
-- deepcopy generation
-- consolidated install manifest generation
-- envtest setup readiness file
-
-These are the easiest tasks to convert because they are file-driven and mostly local.
-
-### 2. Stateful runtime/e2e tasks
-
-Do not rely on Task's internal checksum cache for cluster/runtime steps.
-
-Instead:
-
-- keep explicit readiness files under `.stamps/...` as today
-- gate task execution with `status` checks against those files
-- continue to use content-bearing files where the file contents are part of the contract
-
-This applies to:
-
-- cluster readiness
-- services readiness
-- image loaded state
-- controller deployed state
-- install outputs
-- webhook TLS readiness
-- SOPS readiness
-- Gitea bootstrap/setup outputs
-
-### 3. Ordered execution
-
-Task runs `deps` in parallel by default. That does not match the current e2e orchestration model.
-
-So for ordered workflows like `prepare-e2e`:
-
-- use serial nested task calls inside `cmds`
-- do not model dependent steps with parallel `deps`
-
-This is important for:
-
-- `prepare-e2e`
-- install mode flows
-- demo prep
-- full validation sequences
-
-### 4. Always-run tasks
-
-A task with no `sources`, `generates`, or `status` fields always runs when invoked — Task has no basis to skip it. Use this for tasks that must check live state every time, regardless of stamp freshness. `portforward-ensure` is the primary example: it must always run to verify port-forwards are healthy, even when no stamps changed.
-
-## Stamp Behavior To Preserve
-
-These behaviors should remain exactly true after the migration.
-
-### No-op fast path
-
-A second `prepare-e2e` run with no relevant changes should skip expensive rebuild/reapply work and only hit the always-run port-forward health fast path.
-
-### Content-aware image chain
-
-The current image chain is good and should stay conceptually identical:
-
-```text
-Go/Docker inputs
-  -> controller.id
-  -> project-image.ready
-  -> image.loaded
-  -> controller.deployed
+```make
+manifests: $(MANIFEST_OUTPUTS)
+$(MANIFEST_OUTPUTS) &: $$(MANIFEST_INPUTS)
 ```
 
-Requirements:
+That is powerful, but it asks every future maintainer to keep a fairly large chunk of GNU Make in
+their head before they can safely edit a routine build step.
 
-- Go or Dockerfile changes must change the local image identity.
-- Changed image identity must update loaded-image state.
-- Changed loaded-image state must trigger controller rollout/deploy refresh.
-- No-op runs must not restart the controller.
+### 3. E2E orchestration became much easier to read
 
-### Stable mtimes on no-op writes
+The e2e flow is where Task helped most.
 
-Keep compare-and-replace behavior so unchanged outputs do not get rewritten just because the task ran.
+In the current [test/e2e/Taskfile.yml](/workspaces/gitops-reverser/test/e2e/Taskfile.yml),
+`prepare-e2e` is spelled out step by step:
 
-Important places:
+```yaml
+prepare-e2e:
+  cmds:
+    - task: install
+    - task: _project-image-ready
+    - task: _image-loaded
+    - task: _controller-deployed
+    - task: _age-key
+```
 
-- install manifests
-- SOPS secret manifest
-- any rendered artifact whose mtime drives downstream work
+That is boring in a good way. The order is visible immediately.
 
-### Explicit generated outputs
+In `Makefile.oldway`, the same behavior was spread across file targets, prerequisites, and shell
+recipes:
 
-If a generating tool may omit one declared output, the task must still ensure the declared file exists after the task completes.
+```make
+prepare-e2e: $(CS)/$(NAMESPACE)/prepare-e2e.ready portforward-ensure
+$(CS)/$(NAMESPACE)/prepare-e2e.ready: ...
+```
 
-This matters for the current webhook-manifest case and any future grouped-output conversions.
+Again, Make can express this, but the flow is much less obvious to someone reading it fresh. You
+have to jump between definitions and expand variables mentally before the real sequence becomes
+clear.
 
-### Runtime updates must not poison upstream readiness
+### 4. We kept the good part: explicit stamp state
 
-Files rewritten during later runtime steps must not accidentally invalidate earlier bootstrap tasks unless that is intentionally part of the dependency model.
+One important lesson from the migration is that we did not actually want to replace everything.
 
-## Repo Callers That Must Move Off `make`
+The `.stamps` model was still useful. It captures runtime facts and readiness boundaries that Task's
+own cache should not own for us. Keeping `.stamps` while moving orchestration to Task turned out to
+be the right split.
 
-Update these to `task` in the same migration:
+That is an important hindsight point:
 
-- `.github/workflows/ci.yml`
-- `README.md`
-- `CONTRIBUTING.md`
-- e2e Go helpers that shell out to `make`
+- switching away from Make was good
+- throwing away explicit state tracking would not have been good
 
-Also remove:
+## Why the old freedom was costly
 
-- `checkmake` from CI
-- `checkmake` from devcontainer validation/tool install
+`Makefile.oldway` shows how much raw power Make gives you:
 
-### Tiltfile
+- special forms like `.ONESHELL`, `.SECONDEXPANSION`, and grouped targets
+- recursive `$(MAKE)` calls inside recipes
+- target names that are also file paths and readiness markers
+- a lot of behavior encoded indirectly through prerequisite relationships
 
-The current `Tiltfile` appears stale relative to the repo's current k3d-based e2e flow and points at older Make-driven commands. The cleanest move is to remove it rather than port it as part of this migration.
+That flexibility is real, but it pushes complexity onto every maintainer.
 
-## Suggested Migration Sequence
+Task is more structured and more limited, and that has been an advantage here. The YAML shape makes
+it harder to be too clever. In this repo, that constraint improved readability and maintainability.
 
-1. Expand `Taskfile.yml` from the fresh `task --init` scaffold into the root orchestrator.
-2. Add `taskfiles/build.yml` and move pure local artifact tasks first.
-3. Add `test/e2e/Taskfile.yml` and port the e2e/stateful orchestration tasks while preserving current helper scripts and the `.stamps` layout unchanged.
-4. Update Go e2e helpers to invoke `task` instead of `make`.
-5. Update CI, docs, and contributor instructions.
-6. Remove `Makefile`.
-7. Remove `checkmake` references.
-8. Run the full validation sequence.
+## Why Task fits this repo better
 
-## Validation Plan
+This repository benefits from a tool that makes these things obvious:
 
-### Smoke checks
+- what the public commands are
+- which tasks are build tasks versus e2e orchestration
+- which inputs and outputs matter
+- where ordering is intentional
+- which state is externalized in `.stamps`
 
-- `task --list`
-- `task --list-all` (sanity-check internal task wiring and name collisions)
-- `task manifests`
-- `task generate`
-- `task helm-sync`
-- `task dist-install`
+Task does that well enough without pretending our cluster runtime can be reduced to a pure checksum
+graph.
 
-### Mandatory validation sequence
+## Current file layout
 
-Run sequentially:
+The current arrangement is a good outcome:
 
-1. `task lint`
-2. `task test`
-3. `docker info`
-4. `task test-e2e`
-5. `task test-e2e-quickstart-manifest`
-6. `task test-e2e-quickstart-helm`
-7. `task test-image-refresh` — directly validates the stamp/invalidation chain; most sensitive to the Make→Task translation
-8. `task test-e2e-full` — now includes the bi-directional Flux scenario as part of the full package run
+- [Taskfile.yml](/workspaces/gitops-reverser/Taskfile.yml): small root entrypoint
+- [Taskfile-build.yml](/workspaces/gitops-reverser/Taskfile-build.yml): build and local artifact tasks
+- [test/e2e/Taskfile.yml](/workspaces/gitops-reverser/test/e2e/Taskfile.yml): e2e orchestration
+- [Makefile.oldway](/workspaces/gitops-reverser/Makefile.oldway): historical reference only
 
-### Stamp parity checks
+That split is much easier to work in than the old single-file Make model.
 
-- run `task prepare-e2e` twice with no changes
-- confirm `.stamps/cluster/<ctx>/image.loaded` is unchanged on the second run
-- confirm `.stamps/cluster/<ctx>/<namespace>/controller.deployed` is unchanged on the second run
-- confirm no-op runs do not restart the controller
-- confirm Go source changes still update the image/deploy state and trigger rollout
+## Bottom line
 
-### Caller parity checks
+In hindsight, moving from Make to Task was not just neutral cleanup. It improved the repo.
 
-- no remaining repo file shells out to `make`
-- CI invokes `task` only
-- contributor-facing docs reference `task` only
+The biggest reasons are:
 
-## Assumptions
+- the public command surface is clearer
+- the e2e flow is easier to follow
+- build tasks are more declarative
+- `.stamps` stayed where explicit runtime state still matters
+- maintainers no longer need as much Make-specific knowledge to change routine automation safely
 
-- The newly created `Taskfile.yml` is only a starter scaffold and can be replaced freely.
-- Existing bash scripts remain the implementation boundary for detailed cluster/install logic; this migration changes orchestration wiring, not script internals.
-- State layout is decided in the **State Layout** section above; no further changes to `.stamps` or `.task` handling.
-
-## References
-
-- `Makefile`
-- `docs/make-caching-analysis.md`
-- `docs/design/e2e-test-design.md`
-- `docs/design/e2e-image-refresh-makefile-analysis.md`
-- `docs/design/e2e-runtime-state-vs-stamps.md`
-- Task guide: <https://taskfile.dev/docs/guide>
-- Task env reference: <https://taskfile.dev/docs/reference/environment>
+So this document should no longer be read as a migration checklist. It is now the rationale for why
+the current Task-based structure is the better long-term home for this repository.

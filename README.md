@@ -77,17 +77,7 @@ Early-stage software. CRDs and behavior may still change.
 - Tests run against Kubernetes `1.35`. Other versions may work but are not part of the current matrix.
 - Runtime behavior is deterministic; there is no AI or heuristic mutation at runtime.
 
-## Ideas
-
-Interesting, but not promised:
-
-- simpler setup flows, for example automating more Git provider bootstrap steps such as creating
-  GitHub SSH keys
-- a mode that commits changes without end-user author attribution, using the watch/reconcile path
-  without Kubernetes audit integration; simpler to set up, but at the cost of not knowing who made
-  the change
-- constrained reverse actions for simple, known Kustomize-style mutations
-- branching and promotion strategy beyond a single straight write-back flow
+Directions we may revisit later live in [docs/TODO.md](docs/TODO.md) and [docs/future/](docs/future/).
 
 ## Quick start
 
@@ -192,8 +182,8 @@ Check that the starter resources become ready:
 kubectl get gitprovider,gittarget,watchrule -n default
 ```
 
-See [`docs/configuration.md`](docs/configuration.md) for the starter values and follow-up
-customization.
+See [`docs/configuration.md`](docs/configuration.md) for how `GitProvider`, `GitTarget`, and
+`WatchRule` fit together after the starter install.
 
 **7. Test it**
 
@@ -216,6 +206,7 @@ Start here for the stable docs surface:
 
 - [`docs/README.md`](docs/README.md)
 - [`docs/configuration.md`](docs/configuration.md)
+- [`docs/commit-signing.md`](docs/commit-signing.md)
 - [`docs/github-setup-guide.md`](docs/github-setup-guide.md)
 - [`docs/sops-age-guide.md`](docs/sops-age-guide.md)
 - [`docs/bi-directional.md`](docs/bi-directional.md)

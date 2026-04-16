@@ -4,6 +4,9 @@
 
 After running e2e tests, the infrastructure remains running for debugging purposes.
 
+The harness is intentionally built to reuse prepared state between runs, so ordinary iteration
+should not require rebuilding everything from scratch.
+
 ### Cluster Context
 
 - `task test-e2e` defaults to `CTX=k3d-gitops-reverser-test-e2e`
@@ -30,7 +33,48 @@ This exposes:
 task clean-port-forwards
 ```
 
-**Note:** The `task test-e2e` and `task prepare-e2e` targets automatically run `task portforward-ensure`, so services are ready immediately after setup.
+**Note:** The `task test-e2e` and `task prepare-e2e` targets automatically run
+`task portforward-ensure`, so services are ready immediately after setup.
+
+## What Gets Reused Between Runs
+
+Most of the expensive e2e work is cached on purpose:
+
+- shared cluster and install state lives under `.stamps/cluster/<ctx>/`
+- local repo checkouts live under `.stamps/repos/<repo>/` unless `REPOS_DIR` or `CHECKOUT_DIR`
+  overrides them
+- generated repo Secret manifests live under `.stamps/e2e-repo-artifacts/`
+
+The point of these artifacts is to avoid redoing cluster setup, controller install, and repo
+fixture work when the relevant inputs have not changed.
+
+In normal day-to-day iteration, keep those artifacts and rerun the e2e target you care about.
+That is the fast path.
+
+## When To Reuse And When To Clean
+
+Reuse the existing cluster and `.stamps` when:
+
+- you are iterating on tests or controller code
+- the current cluster is healthy
+- you want to inspect or reuse the existing repo checkouts
+
+Clean or isolate when:
+
+- the cluster is broken or behaving inconsistently
+- you want a completely fresh environment
+- you need to compare two runs without shared state
+
+Useful commands:
+
+```bash
+task clean-cluster
+task clean-cluster CTX=k3d-gitops-reverser-test-e2e
+task test-e2e CTX=k3d-gitops-reverser-test-e2e-fresh
+```
+
+Avoid deleting `.stamps` wholesale unless you actually want the full rebuild cost. The harness
+keeps those artifacts specifically so most reruns stay cheap.
 
 ## Useful Prometheus Queries
 

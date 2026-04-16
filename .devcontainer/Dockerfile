@@ -11,7 +11,6 @@ RUN apt-get update \
     git \
     curl \
     ca-certificates \
-    bash-completion \
     vim \
     less \
     jq \
@@ -85,22 +84,6 @@ RUN curl -fsSL "https://github.com/go-task/task/releases/download/${TASK_VERSION
     | tar -xzO task > /usr/local/bin/task \
     && chmod +x /usr/local/bin/task
 
-# Enable bash completion and auto-load Task completions for interactive shells.
-RUN printf '%s\n' \
-    '' \
-    '# Enable bash completion and Task completions in interactive shells.' \
-    'if ! shopt -oq posix; then' \
-    '  if [ -f /usr/share/bash-completion/bash_completion ]; then' \
-    '    . /usr/share/bash-completion/bash_completion' \
-    '  elif [ -f /etc/bash_completion ]; then' \
-    '    . /etc/bash_completion' \
-    '  fi' \
-    '  if command -v task >/dev/null 2>&1 && ! complete -p task >/dev/null 2>&1; then' \
-    '    eval "$(task --completion bash)"' \
-    '  fi' \
-    'fi' \
-    >> /etc/bash.bashrc
-
 # Set working directory
 WORKDIR /workspaces
 
@@ -152,10 +135,31 @@ USER root
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Kind is already installed in the ci stage above.
+RUN apt-get update \
+    && apt-get -y install --no-install-recommends bash-completion \
+    && apt-get autoremove -y \
+    && apt-get clean -y \
+    && rm -rf /var/lib/apt/lists/*
+
+# Enable bash completion and auto-load Task completions for interactive shells in the dev image only.
+RUN printf '%s\n' \
+    '' \
+    '# Enable bash completion and Task completions in interactive shells.' \
+    'if ! shopt -oq posix; then' \
+    '  if [ -f /usr/share/bash-completion/bash_completion ]; then' \
+    '    . /usr/share/bash-completion/bash_completion' \
+    '  elif [ -f /etc/bash_completion ]; then' \
+    '    . /etc/bash_completion' \
+    '  fi' \
+    '  if command -v task >/dev/null 2>&1 && ! complete -p task >/dev/null 2>&1; then' \
+    '    eval "$(task --completion bash)"' \
+    '  fi' \
+    'fi' \
+    >> /etc/bash.bashrc
 
 # Install Tilt CLI (local dev loop orchestration; dev stage only)
 # https://github.com/tilt-dev/tilt/releases
-ENV TILT_VERSION=v0.36.3
+ENV TILT_VERSION=v0.37.3
 RUN arch="$(dpkg --print-architecture)" && \
     case "${arch}" in \
         amd64) tilt_arch="x86_64" ;; \
