@@ -43,7 +43,6 @@ func TestParseFlagsWithArgs_Defaults(t *testing.T) {
 	cfg, err := parseFlagsWithArgs(fs, []string{})
 	require.NoError(t, err)
 
-	assert.False(t, cfg.webhookInsecure)
 	assert.False(t, cfg.metricsInsecure)
 	assert.False(t, cfg.auditInsecure)
 	assert.Equal(t, "0.0.0.0", cfg.auditListenAddress)
@@ -75,7 +74,6 @@ func TestParseFlagsWithArgs_AuditUnsecure(t *testing.T) {
 func TestParseFlagsWithArgs_CustomAuditValues(t *testing.T) {
 	fs := flag.NewFlagSet("test-custom", flag.ContinueOnError)
 	args := []string{
-		"--webhook-cert-path=/tmp/webhook-certs",
 		"--audit-listen-address=127.0.0.1",
 		"--audit-port=9555",
 		"--audit-cert-path=/tmp/audit-certs",
@@ -117,17 +115,6 @@ func TestParseFlagsWithArgs_CustomAuditValues(t *testing.T) {
 	assert.Equal(t, "gitopsreverser.audit.custom", cfg.auditRedisStream)
 	assert.Equal(t, int64(1000), cfg.auditRedisMaxLen)
 	assert.True(t, cfg.auditRedisTLS)
-}
-
-func TestParseFlagsWithArgs_FallsBackToWebhookCertPath(t *testing.T) {
-	fs := flag.NewFlagSet("test-fallback", flag.ContinueOnError)
-	args := []string{
-		"--webhook-cert-path=/tmp/webhook-certs",
-	}
-
-	cfg, err := parseFlagsWithArgs(fs, args)
-	require.NoError(t, err)
-	assert.Equal(t, "/tmp/webhook-certs", cfg.auditCertPath)
 }
 
 func TestParseFlagsWithArgs_InvalidAuditSettings(t *testing.T) {

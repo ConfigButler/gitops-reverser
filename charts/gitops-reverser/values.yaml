@@ -60,18 +60,6 @@ controllerManager:
 
 # HTTPS servers
 servers:
-  admission:
-    port: 9443
-    tls:
-      # Controls webhook TLS wiring in the controller process.
-      # Keep enabled for normal Kubernetes webhook operation.
-      enabled: true
-      certPath: "/tmp/k8s-admission-server/admission-server-certs"
-      certName: "tls.crt"
-      certKey: "tls.key"
-      # Leave empty to use the chart-generated Secret name.
-      secretNameOverride: ""
-
   audit:
     listenAddress: 0.0.0.0
     port: 9444
@@ -108,9 +96,6 @@ webhook:
   audit:
     # Set to true if you want to write events to /var/run/audit-dumps
     debugDumps: false
-  # CA bundle used when cert-manager is disabled (base64-encoded PEM).
-  # Required only when certificates.certManager.enabled=false.
-  caBundle: ""
 
 # Durable audit queue configuration.
 queue:
@@ -221,7 +206,6 @@ service:
   # Optional fixed ClusterIP (useful for Kind/bootstrap environments before DNS is ready)
   clusterIP: ""
   ports:
-    admission: 9443
     audit: 9444
     metrics: 8080
 

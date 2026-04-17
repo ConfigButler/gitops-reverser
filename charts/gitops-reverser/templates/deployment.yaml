@@ -50,13 +50,6 @@ spec:
             - --metrics-cert-name={{ .Values.servers.metrics.tls.certName }}
             - --metrics-cert-key={{ .Values.servers.metrics.tls.certKey }}
             {{- end }}
-            {{- if .Values.servers.admission.tls.enabled }}
-            - --webhook-cert-path={{ .Values.servers.admission.tls.certPath }}
-            - --webhook-cert-name={{ .Values.servers.admission.tls.certName }}
-            - --webhook-cert-key={{ .Values.servers.admission.tls.certKey }}
-            {{- else }}
-            - --webhook-insecure
-            {{- end }}
             {{- if .Values.servers.audit.tls.enabled }}
             - --audit-cert-path={{ .Values.servers.audit.tls.certPath }}
             - --audit-cert-name={{ .Values.servers.audit.tls.certName }}
@@ -98,9 +91,6 @@ spec:
             - --audit-dump-path=/var/run/audit-dumps
             {{- end }}
           ports:
-            - name: admission
-              containerPort: {{ .Values.servers.admission.port }}
-              protocol: TCP
             - name: audit
               containerPort: {{ .Values.servers.audit.port }}
               protocol: TCP
@@ -147,11 +137,6 @@ spec:
             {{- end }}
             - name: tmp-dir
               mountPath: /tmp
-            {{- if .Values.servers.admission.tls.enabled }}
-            - name: admission-cert
-              mountPath: {{ .Values.servers.admission.tls.certPath }}
-              readOnly: true
-            {{- end }}
             {{- if .Values.servers.metrics.tls.enabled }}
             - name: metrics-cert
               mountPath: {{ .Values.servers.metrics.tls.certPath }}
@@ -175,12 +160,6 @@ spec:
         {{- end }}
         - name: tmp-dir
           emptyDir: {}
-        {{- if .Values.servers.admission.tls.enabled }}
-        - name: admission-cert
-          secret:
-            secretName: {{ .Values.servers.admission.tls.secretNameOverride | default (printf "%s-admission-server-cert" (include "gitops-reverser.fullname" .)) }}
-            defaultMode: 420
-        {{- end }}
         {{- if .Values.servers.metrics.tls.enabled }}
         - name: metrics-cert
           secret:

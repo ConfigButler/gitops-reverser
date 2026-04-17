@@ -84,12 +84,6 @@ Key fields:
 - `spec.path` — subfolder inside the repo for all writes from this target
 - `spec.encryption` — optional SOPS/age encryption for Secrets
 
-An **admission webhook**
-([internal/webhook/gittarget_validator.go](internal/webhook/gittarget_validator.go)) provides
-early feedback at create/update time: it validates encryption spec shape and rejects duplicate
-`(provider, branch, path)` combinations. This is a UX convenience — the controller independently
-enforces the same constraints, so correctness does not depend on the webhook.
-
 The controller exposes a **four-gate lifecycle** via `status.conditions`:
 
 1. **Validated** — GitProvider exists, branch is allowed, no path collision with other GitTargets
@@ -99,8 +93,7 @@ The controller exposes a **four-gate lifecycle** via `status.conditions`:
 
 Note: the `providerRef` API schema allows referencing a Flux `GitRepository` as an alternative to
 `GitProvider` ([api/v1alpha1/gittarget_types.go:33](api/v1alpha1/gittarget_types.go#L33)). This is
-not yet supported end-to-end — the admission webhook can resolve a `GitRepository` URL for
-uniqueness checks, but the controller and rule wiring only handle `GitProvider` today.
+not yet supported end-to-end — the controller and rule wiring only handle `GitProvider` today.
 
 ### WatchRule (namespaced)
 
@@ -491,8 +484,7 @@ flowchart TD
     E --> F[Watch Manager - constructed]
     F --> G[EventRouter - wires components together]
     G --> H[Register WatchRule + ClusterWatchRule controllers]
-    H --> H2[Register GitTarget admission webhook]
-    H2 --> I[Redis audit queue + consumer]
+    H --> I[Redis audit queue + consumer]
     I --> J[Audit HTTP server]
     J --> K[Watch Manager setup]
     K --> L[Register GitProvider + GitTarget controllers]
@@ -552,7 +544,7 @@ not yet account for cluster identity. Multi-cluster support beyond ingestion has
 | [internal/telemetry/](internal/telemetry/) | OpenTelemetry metrics | |
 | [internal/types/](internal/types/) | Shared domain types | `ResourceIdentifier`, `ResourceReference` |
 | [internal/watch/](internal/watch/) | Dynamic informers + EventRouter | `Manager`, `EventRouter`, `GVR` |
-| [internal/webhook/](internal/webhook/) | Audit webhook + GitTarget admission validator | `AuditHandler`, `GitTargetValidator` |
+| [internal/webhook/](internal/webhook/) | Audit ingress handling | `AuditHandler` |
 
 ---
 

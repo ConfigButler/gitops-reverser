@@ -132,7 +132,7 @@ var _ = Describe("Manager", Label("manager"), Ordered, func() {
 			Eventually(verifyControllerUp).Should(Succeed())
 		})
 
-		It("should expose the admission and metrics service", Label("smoke"), func() {
+		It("should expose the controller service", Label("smoke"), func() {
 			By("verifying controller service exists")
 			_, err := kubectlRunInNamespace(namespace, "get", "svc", controllerServiceName)
 			Expect(err).NotTo(HaveOccurred(), "Controller service should exist")

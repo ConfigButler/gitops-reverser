@@ -21,8 +21,6 @@ package types
 
 import (
 	"fmt"
-
-	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 )
 
 // ResourceIdentifier encapsulates all information needed to uniquely identify
@@ -34,17 +32,6 @@ type ResourceIdentifier struct {
 	Resource  string // Plural form, e.g., "deployments", "pods"
 	Namespace string // Empty string for cluster-scoped resources
 	Name      string // Resource name
-}
-
-// FromAdmissionRequest extracts a ResourceIdentifier from an admission.Request.
-func FromAdmissionRequest(req admission.Request) ResourceIdentifier {
-	return ResourceIdentifier{
-		Group:     req.Resource.Group,
-		Version:   req.Resource.Version,
-		Resource:  req.Resource.Resource,
-		Namespace: req.Namespace,
-		Name:      req.Name,
-	}
 }
 
 // NewResourceIdentifier creates a ResourceIdentifier from explicit parts.
