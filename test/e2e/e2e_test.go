@@ -472,7 +472,7 @@ var _ = Describe("Manager", Label("manager"), Ordered, func() {
 				DestinationName: destName,
 			}
 
-			err := applyFromTemplate("test/e2e/templates/watchrule.tmpl", data, testNs)
+			err := applyFromTemplate("test/e2e/templates/watchrule-secret.tmpl", data, testNs)
 			Expect(err).NotTo(HaveOccurred(), "Failed to apply WatchRule")
 			verifyResourceStatus("gittarget", destName, testNs, "True", "Ready", "")
 			verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Ready", "")
@@ -582,7 +582,7 @@ var _ = Describe("Manager", Label("manager"), Ordered, func() {
 				DestinationName: destName,
 			}
 
-			err := applyFromTemplate("test/e2e/templates/watchrule.tmpl", data, testNs)
+			err := applyFromTemplate("test/e2e/templates/watchrule-secret.tmpl", data, testNs)
 			Expect(err).NotTo(HaveOccurred(), "Failed to apply WatchRule")
 			verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Ready", "")
 

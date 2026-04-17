@@ -2,6 +2,8 @@
 
 Last updated: 2026-02-13
 
+Recent investigation: [E2E full-suite shared-state flake](../design/e2e-full-suite-shared-state-investigation.md)
+
 This folder documents why the repository uses its current devcontainer and CI behavior, especially around Go caches, workspace paths, and Kind access from inside the container.
 
 ### 1) Workspace path model

@@ -1,5 +1,7 @@
 # E2E Test Review: Gomega/Ginkgo Implementation
 
+Related investigation: [E2E Full-Suite Shared-State Investigation](./e2e-full-suite-shared-state-investigation.md)
+
 ## What's Good
 
 **Correct `Eventually(func(g Gomega))` pattern throughout.** Every poll loop threads the inner `g Gomega` correctly. This avoids the classic goroutine-abort bug where an outer `Expect` inside `Eventually` kills the test process instead of retrying. That's the most important Gomega correctness rule and it's applied consistently.
