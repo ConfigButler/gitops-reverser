@@ -56,6 +56,9 @@ const (
 
 	// autoClaimInterval controls how often XAUTOCLAIM runs.
 	autoClaimInterval = 30 * time.Second
+
+	// consumerRetryDelay controls how long the consumer waits before retrying Redis setup or reads.
+	consumerRetryDelay = time.Second
 )
 
 // AuditEventRouter is the subset of watch.EventRouter used by the consumer.
@@ -153,8 +156,18 @@ func (c *AuditConsumer) Start(ctx context.Context) error {
 		"group", c.group,
 		"consumer", c.consumerID)
 
-	if err := c.ensureConsumerGroup(ctx); err != nil {
-		return fmt.Errorf("failed to ensure consumer group: %w", err)
+	for {
+		if err := c.ensureConsumerGroup(ctx); err != nil {
+			c.log.Error(err, "Failed to ensure consumer group, retrying")
+			select {
+			case <-ctx.Done():
+				c.log.Info("Audit stream consumer stopping before consumer group became ready")
+				return nil
+			case <-time.After(consumerRetryDelay):
+			}
+			continue
+		}
+		break
 	}
 
 	autoClaimTicker := time.NewTicker(autoClaimInterval)
@@ -174,7 +187,7 @@ func (c *AuditConsumer) Start(ctx context.Context) error {
 				select {
 				case <-ctx.Done():
 					return nil
-				case <-time.After(time.Second):
+				case <-time.After(consumerRetryDelay):
 				}
 			}
 		}
@@ -316,7 +329,14 @@ func (c *AuditConsumer) routeAuditEvent(
 	isClusterScoped := namespace == ""
 	op = effectiveAuditOperation(auditEvent, op)
 
-	wrRules := c.ruleStore.GetMatchingRules(nil, resourcePlural, op, apiGroup, apiVersion, isClusterScoped)
+	var matchObj *unstructured.Unstructured
+	if !isClusterScoped {
+		matchObj = &unstructured.Unstructured{}
+		matchObj.SetNamespace(namespace)
+		matchObj.SetName(name)
+	}
+
+	wrRules := c.ruleStore.GetMatchingRules(matchObj, resourcePlural, op, apiGroup, apiVersion, isClusterScoped)
 	cwrRules := c.ruleStore.GetMatchingClusterRules(resourcePlural, op, apiGroup, apiVersion, isClusterScoped, nil)
 
 	if len(wrRules) == 0 && len(cwrRules) == 0 {

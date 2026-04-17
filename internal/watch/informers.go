@@ -121,6 +121,15 @@ func (m *Manager) handleEvent(obj interface{}, g GVR, op configv1alpha1.Operatio
 		return
 	}
 
+	if m.EventRouter == nil {
+		m.Log.V(1).Info("Skipping live watch event routing because event router is not configured",
+			"identifier", id.String(),
+			"operation", op,
+			"scope", g.Scope,
+			"resource", g.Resource)
+		return
+	}
+
 	m.routeWatchRules(wrRules, sanitized, id, string(op), userInfo)
 	m.routeClusterWatchRules(cwrRules, sanitized, id, string(op), userInfo)
 }

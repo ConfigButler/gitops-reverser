@@ -889,10 +889,19 @@ func TestProcessMessage_MixedRules_OnlyClusterWatchRuleMatchesForeignNamespace(t
 	)
 	// ClusterWatchRule — MUST match events from any namespace.
 	rs.AddOrUpdateClusterWatchRule(
-		makeClusterWatchRule("cwr-all", []string{"services"}, []string{"v1"}, []string{""}, configv1alpha1.ResourceScopeNamespaced),
-		"target-cluster", "ops",
-		"provider-ops", "ops",
-		"main", "cluster/",
+		makeClusterWatchRule(
+			"cwr-all",
+			[]string{"services"},
+			[]string{"v1"},
+			[]string{""},
+			configv1alpha1.ResourceScopeNamespaced,
+		),
+		"target-cluster",
+		"ops",
+		"provider-ops",
+		"ops",
+		"main",
+		"cluster/",
 	)
 
 	c := newTestConsumer(t, mr, rs, er)
@@ -1010,7 +1019,7 @@ func TestRunAutoClaimCycle_NoopWhenNoPendingMessages(t *testing.T) {
 	c.runAutoClaimCycle(context.Background())
 }
 
-func TestStart_ErrorOnEnsureGroupReturnsError(t *testing.T) {
+func TestStart_EnsureGroupRetriesUntilContextCancelled(t *testing.T) {
 	// Point consumer at a non-existent Redis server to trigger an error.
 	c, err := NewAuditConsumer(
 		AuditConsumerConfig{
@@ -1029,8 +1038,7 @@ func TestStart_ErrorOnEnsureGroupReturnsError(t *testing.T) {
 	defer cancel()
 
 	err = c.Start(ctx)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to ensure consumer group")
+	require.NoError(t, err)
 }
 
 func TestReadAndProcessBatch_XReadGroupErrorReturnsError(t *testing.T) {
