@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -801,6 +802,23 @@ var _ = Describe("Manager", Label("manager"), Ordered, func() {
 				g.Expect(statErr).NotTo(HaveOccurred(), fmt.Sprintf("ConfigMap file should exist at %s", expectedFile))
 				g.Expect(fileInfo.Size()).To(BeNumerically(">", 0), "ConfigMap file should not be empty")
 
+				expectedRepoPath := path.Join(
+					"e2e/configmap-test",
+					fmt.Sprintf("v1/configmaps/%s/%s.yaml", testNs, configMapName),
+				)
+				assertLatestCommitTouchesOnly(g, managerRepo.CheckoutDir, []string{expectedRepoPath})
+				assertLatestCommitTouchesNoNamespaces(
+					g,
+					managerRepo.CheckoutDir,
+					"e2e/configmap-test/v1/configmaps",
+					[]string{
+						"gitops-reverser",
+						"flux-system",
+						"kube-system",
+						"tilt-playground",
+					},
+				)
+
 				// Verify file content contains expected ConfigMap data
 				content, readErr := os.ReadFile(expectedFile)
 				g.Expect(readErr).NotTo(HaveOccurred())
@@ -913,21 +931,30 @@ var _ = Describe("Manager", Label("manager"), Ordered, func() {
 			verifyFileDeleted := func(g Gomega) {
 				// Pull latest changes from the remote repository
 				By("pulling latest changes after deletion")
-				pullCmd := exec.Command("git", "pull")
-				pullCmd.Dir = managerRepo.CheckoutDir
-				pullOutput, pullErr := pullCmd.CombinedOutput()
-				if pullErr != nil {
-					g.Expect(pullErr).NotTo(HaveOccurred(),
-						fmt.Sprintf("Should successfully pull latest changes. Output: %s", string(pullOutput)))
-				}
+				pullLatestRepoState(g, managerRepo.CheckoutDir)
 
 				// Check that the ConfigMap file no longer exists (new API-aligned path)
-				expectedFile := filepath.Join(managerRepo.CheckoutDir,
-					getBaseFolder(),
-					fmt.Sprintf("v1/configmaps/%s/%s.yaml", testNs, configMapName))
+				expectedRelativePath := path.Join(
+					"e2e/delete-test",
+					fmt.Sprintf("v1/configmaps/%s/%s.yaml", testNs, configMapName),
+				)
+				expectedFile := filepath.Join(managerRepo.CheckoutDir, expectedRelativePath)
 				_, statErr := os.Stat(expectedFile)
 				g.Expect(statErr).To(HaveOccurred(), fmt.Sprintf("ConfigMap file should NOT exist at %s", expectedFile))
 				g.Expect(os.IsNotExist(statErr)).To(BeTrue(), "Error should be 'file does not exist'")
+
+				assertLatestCommitTouchesOnly(g, managerRepo.CheckoutDir, []string{expectedRelativePath})
+				assertLatestCommitTouchesNoNamespaces(
+					g,
+					managerRepo.CheckoutDir,
+					"e2e/delete-test/v1/configmaps",
+					[]string{
+						"gitops-reverser",
+						"flux-system",
+						"kube-system",
+						"tilt-playground",
+					},
+				)
 
 				// Verify git log shows DELETE commit
 				By("verifying git log shows DELETE operation")

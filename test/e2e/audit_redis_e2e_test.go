@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -263,16 +264,29 @@ var _ = Describe("Audit Redis Consumer", Label("audit-redis", "smoke"), Ordered,
 			fmt.Sprintf("v1/configmaps/%s/%s.yaml", testNs, cmName))
 
 		Eventually(func(g Gomega) {
-			pullCmd := exec.Command("git", "pull")
-			pullCmd.Dir = auditRedisRepo.CheckoutDir
-			pullOut, pullErr := pullCmd.CombinedOutput()
-			g.Expect(pullErr).NotTo(HaveOccurred(),
-				fmt.Sprintf("git pull failed: %s", string(pullOut)))
+			pullLatestRepoState(g, auditRedisRepo.CheckoutDir)
 
 			info, statErr := os.Stat(expectedFile)
 			g.Expect(statErr).NotTo(HaveOccurred(),
 				fmt.Sprintf("ConfigMap file should exist at %s", expectedFile))
 			g.Expect(info.Size()).To(BeNumerically(">", 0))
+
+			expectedRepoPath := path.Join(
+				"e2e/audit-consumer-test",
+				fmt.Sprintf("v1/configmaps/%s/%s.yaml", testNs, cmName),
+			)
+			assertLatestCommitTouchesOnly(g, auditRedisRepo.CheckoutDir, []string{expectedRepoPath})
+			assertLatestCommitTouchesNoNamespaces(
+				g,
+				auditRedisRepo.CheckoutDir,
+				"e2e/audit-consumer-test/v1/configmaps",
+				[]string{
+					"gitops-reverser",
+					"flux-system",
+					"kube-system",
+					"tilt-playground",
+				},
+			)
 
 			authorCmd := exec.Command("git", "log", "-1", "--pretty=%an")
 			authorCmd.Dir = auditRedisRepo.CheckoutDir

@@ -231,16 +231,18 @@ func (s *RuleStore) DeleteClusterWatchRule(key types.NamespacedName) {
 	delete(s.clusterRules, key)
 }
 
-// GetMatchingRules returns all rules that match the given resource with enhanced filtering.
+// GetMatchingRules returns all namespaced WatchRules that match the given resource.
+// For namespaced resources, callers should provide an object carrying the event namespace
+// so namespaced WatchRules only match objects from their own namespace.
 // Parameters:
-//   - obj: The Kubernetes object to match (unused now; kept for signature stability)
+//   - obj: The Kubernetes object to match; its namespace is used for WatchRule filtering
 //   - resourcePlural: The plural form of the resource (e.g., "pods", "deployments")
 //   - operation: The operation type (CREATE, UPDATE, DELETE)
 //   - apiGroup: The API group of the resource (empty string for core API)
 //   - apiVersion: The API version of the resource
 //   - isClusterScoped: Whether the resource is cluster-scoped
 func (s *RuleStore) GetMatchingRules(
-	_ client.Object,
+	obj client.Object,
 	resourcePlural string,
 	operation configv1alpha1.OperationType,
 	apiGroup string,
@@ -257,9 +259,9 @@ func (s *RuleStore) GetMatchingRules(
 			continue // WatchRule can't match cluster resources
 		}
 
-		// For namespace-scoped rules, check namespace match
-		// Note: WatchRule only watches its own namespace; caller is responsible for namespace scoping
-		// based on Source.Namespace when using this result.
+		if !isClusterScoped && obj != nil && obj.GetNamespace() != "" && rule.Source.Namespace != obj.GetNamespace() {
+			continue
+		}
 
 		if rule.matches(resourcePlural, operation, apiGroup, apiVersion) {
 			matchingRules = append(matchingRules, rule)

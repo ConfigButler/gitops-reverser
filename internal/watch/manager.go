@@ -111,6 +111,10 @@ func (m *Manager) Start(ctx context.Context) error {
 	}
 	m.informersMu.Unlock()
 
+	if err := m.bootstrapRuleStore(ctx, log.WithName("bootstrap")); err != nil {
+		log.Error(err, "RuleStore bootstrap failed, continuing with current in-memory state")
+	}
+
 	// Perform initial reconciliation
 	if err := m.ReconcileForRuleChange(ctx); err != nil {
 		log.Error(err, "Initial reconciliation failed, will retry periodically")

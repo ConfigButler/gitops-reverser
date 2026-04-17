@@ -33,6 +33,57 @@ because audit events naturally arrive from all namespaces.
 Separately, startup reconcile depends on the same in-memory rule cache, but there is no explicit cache warm-up
 step before `watch.Manager.Start()` performs its initial reconcile.
 
+## Status Update
+
+### 2026-04-17
+
+The minimal-fix implementation described later in this note has now landed.
+
+Implemented:
+
+- namespaced `WatchRule` matching is now namespace-aware in `RuleStore.GetMatchingRules`
+  - [store.go](/workspaces/gitops-reverser/internal/rulestore/store.go:244)
+- both live routing paths now pass namespace context into the matcher
+  - watch/informer path: [informers.go](/workspaces/gitops-reverser/internal/watch/informers.go:63)
+  - audit consumer path: [redis_audit_consumer.go](/workspaces/gitops-reverser/internal/queue/redis_audit_consumer.go:317)
+- watch-manager startup now bootstraps the in-memory `RuleStore` from existing `WatchRule` and
+  `ClusterWatchRule` objects before initial reconcile
+  - [bootstrap.go](/workspaces/gitops-reverser/internal/watch/bootstrap.go:31)
+  - [manager.go](/workspaces/gitops-reverser/internal/watch/manager.go:99)
+- the previously skipped `RuleStore` namespace-contract tests were un-skipped and updated to enforce the new behavior
+  - [store_test.go](/workspaces/gitops-reverser/internal/rulestore/store_test.go:837)
+
+Additional hardening discovered during validation:
+
+- startup could fail if the audit consumer tried to initialize its Redis consumer group before Redis DNS/service
+  readiness settled, which temporarily left the webhook service without endpoints during e2e startup
+- `AuditConsumer.Start()` now retries consumer-group initialization instead of crashing the manager process
+  - [redis_audit_consumer.go](/workspaces/gitops-reverser/internal/queue/redis_audit_consumer.go:153)
+
+Validation completed after the implementation:
+
+- targeted red tests were first confirmed failing, then re-run green after the fix
+- `task fmt`
+- `task vet`
+- `task lint`
+- `task test`
+- `docker info`
+- `task test-e2e`
+
+Current status against this note:
+
+- the two reproduced correctness bugs in this note are fixed
+- the startup timing issue for audit-consumer Redis initialization is also fixed
+- the larger architectural follow-up remains open:
+  - separate planner-vs-matcher semantics more explicitly
+  - introduce a first-class full event-match input if we want the cleaner long-term API
+  - strengthen e2e assertions around exact touched-path sets and cross-namespace negative assertions
+
+Note:
+
+- the red/green inventory below is preserved as the original analysis and implementation guide
+- where it says "red" or "skipped", read that as historical context rather than current status
+
 ## Graphic
 
 ```mermaid
