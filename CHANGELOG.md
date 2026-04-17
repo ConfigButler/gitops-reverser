@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.21.0](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.20.0...gitops-reverser-v0.21.0) (2026-04-17)
+
+
+### Features
+
+* Allowing commit author and message config ([04a592b](https://github.com/ConfigButler/gitops-reverser/commit/04a592b03d5244cf36bbb18ac05c99c6cffc8b98))
+* commit signing ([5e8ad9c](https://github.com/ConfigButler/gitops-reverser/commit/5e8ad9cc0613a476dcf2a08695909e64478cb7bc))
+* replacing Makefile by Taskfile ([bd3b709](https://github.com/ConfigButler/gitops-reverser/commit/bd3b70929d01f16136882d1a78704c5d66e26e12))
+
+
+### Bug Fixes
+
+* gittarget can just be created without existing gitprovider (don't block, just give a good error). ([ee20cfd](https://github.com/ConfigButler/gitops-reverser/commit/ee20cfd68481ad022314a0261ac6c1449c20fa93))
+* WatchRule leaking resources from other namespaces in live event stream ([1676a42](https://github.com/ConfigButler/gitops-reverser/commit/1676a423ad30df094acfcb21890f786ba16d9248))
+
+
+### Documentation
+
+* adding architectural overview ([e932402](https://github.com/ConfigButler/gitops-reverser/commit/e93240203d2675a9d9799f4fd372ebc99327eb0b))
+* cleaning up and more clarity ([51396a2](https://github.com/ConfigButler/gitops-reverser/commit/51396a23be4282d9a724f58149ef94b92e66abc6))
+* Cleaning up docs ([96b249d](https://github.com/ConfigButler/gitops-reverser/commit/96b249d7597829a8fb3b1274a770790c4a76aa52))
+* continue docs clean-up, and other small things from review ([80c380c](https://github.com/ConfigButler/gitops-reverser/commit/80c380c0bf53167ddbd8bd641c70c6c7a66ca288))
+* Let's get an elaborate description of the e2e tests ([9091712](https://github.com/ConfigButler/gitops-reverser/commit/9091712d51571418cd00175b0ee52edd1c292be2))
+
 ## [0.20.0](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.19.3...gitops-reverser-v0.20.0) (2026-04-09)
 
 
