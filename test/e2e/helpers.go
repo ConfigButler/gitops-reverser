@@ -273,6 +273,18 @@ func cleanupClusterResource(resource, name string) {
 	_, _ = kubectlRun("delete", resource, name, "--ignore-not-found=true")
 }
 
+func stripKubectlWarnings(output string) string {
+	lines := strings.Split(output, "\n")
+	filtered := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if strings.HasPrefix(line, "Warning:") {
+			continue
+		}
+		filtered = append(filtered, line)
+	}
+	return strings.Join(filtered, "\n")
+}
+
 func controllerPodNames() ([]string, error) {
 	output, err := kubectlRunInNamespace(
 		namespace,
