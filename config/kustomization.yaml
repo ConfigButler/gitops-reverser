@@ -6,12 +6,8 @@ resources:
 - rbac
 - service.yaml
 - audit-service.yaml
-- webhook-service.yaml
 - deployment.yaml
 - certs
-- webhook/manifests.yaml
-patches:
-- path: webhook/patch.yaml
 images:
 - name: gitops-reverser
   newName: gitops-reverser
@@ -32,27 +28,6 @@ replacements:
     select:
       kind: ClusterRoleBinding
       name: gitops-reverser
-  - fieldPaths:
-    - webhooks.0.clientConfig.service.namespace
-    select:
-      kind: ValidatingWebhookConfiguration
-      name: validating-webhook-configuration
-  - fieldPaths:
-    - metadata.annotations.[cert-manager.io/inject-ca-from]
-    options:
-      delimiter: /
-    select:
-      kind: ValidatingWebhookConfiguration
-      name: validating-webhook-configuration
-  - fieldPaths:
-    - spec.dnsNames.0
-    - spec.dnsNames.1
-    options:
-      delimiter: .
-      index: 1
-    select:
-      kind: Certificate
-      name: gitops-reverser-admission-server-cert
   - fieldPaths:
     - spec.dnsNames.0
     - spec.dnsNames.1

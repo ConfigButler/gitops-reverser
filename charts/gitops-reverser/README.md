@@ -18,19 +18,16 @@ For the chart's optional starter `quickstart` block, see [`docs/configuration.md
 
 ## Features
 
-- ✅ **Two-way Git synchronization**: Push Kubernetes changes back to Git repositories
+- ✅ **Git synchronization**: Push Kubernetes changes back to Git repositories
 - ✅ **Single-pod stability**: 1 replica by default while multi-pod support is in progress
 - ✅ **Automatic CRD installation**: GitProvider, GitTarget, WatchRule, and ClusterWatchRule CRDs installed automatically
-- ✅ **Webhook support**: Watch all Kubernetes resources for changes
-- ✅ **Production-ready**: Pod disruption budgets, anti-affinity, and resource limits
-- ✅ **Certificate management**: Automatic TLS via cert-manager
+- ✅ **Audit webhook ingestion**: Receive Kubernetes audit events over HTTPS
 - ✅ **Prometheus metrics**: Built-in monitoring support
 
 ## Prerequisites
 
-- Kubernetes 1.28+
-- Helm 3.8+
-- cert-manager 1.13+ (for webhook TLS certificates)
+- Kubernetes 1.35 (probably works for older versions, but not tested)
+- cert-manager (for audit webhook TLS certificates)
 - Valkey or Redis reachable from the controller, with auth enabled (`queue.redis.auth.existingSecret`)
 
 ## Installation
@@ -73,11 +70,11 @@ The chart deploys 1 replica by default:
 │         Kubernetes API Server           │
 └──────────────┬──────────────────────────┘
                │
-               │ webhook + audit + metrics requests
+               │ metrics requests
                ▼
 ┌──────────────────────────────────────────┐
 │        gitops-reverser (Service)         │
-│  Ports: admission(9443), audit(9444), metrics(8080) |
+│             Port: metrics(8080)          │
 └──────────────┬───────────────────────────┘
                │
                ▼
@@ -86,11 +83,17 @@ The chart deploys 1 replica by default:
         │ Controller  │
         │ Active      │
         └─────────────┘
+               ▲
+               │ audit requests
+┌──────────────────────────────────────────┐
+│      gitops-reverser-audit (Service)     │
+│             Port: audit(9444)            │
+└──────────────────────────────────────────┘
 ```
 
 **Key Features:**
 - **Single-pod operation**: minimal moving parts while HA work is deferred
-- **Single Service topology**: admission, audit, and metrics on one Service
+- **Split Service topology**: metrics stay in-cluster while audit ingress is exposed separately
 
 ## Configuration
 
@@ -145,31 +148,12 @@ nodeSelector:
   node-role.kubernetes.io/worker: ""
 ```
 
-#### Custom Webhook Configuration
-
-Stricter validation and namespace filtering:
-
-```yaml
-# webhook-values.yaml
-webhook:
-  validating:
-    failurePolicy: Fail  # Reject requests if webhook fails
-    namespaceSelector:
-      matchExpressions:
-        - key: gitops-reverser/watch
-          operator: In
-          values: ["enabled"]
-```
-
 ### Configuration Reference
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
 | `replicaCount` | Number of controller replicas (can't be higher than 1 for now, sorry) | `1` |
 | `image.repository` | Container image repository | `ghcr.io/configbutler/gitops-reverser` |
-| `webhook.validating.failurePolicy` | Webhook failure policy (Ignore/Fail) | `Ignore` |
-| `servers.admission.tls.enabled` | Serve admission webhook with TLS (disable only for local/testing) | `true` |
-| `servers.admission.tls.secretNameOverride` | Override Secret name for admission TLS cert/key | `<release>-admission-server-cert` |
 | `servers.audit.port` | Audit container port | `9444` |
 | `servers.audit.tls.enabled` | Serve audit ingress with TLS | `true` |
 | `servers.audit.maxRequestBodyBytes` | Max accepted audit request size | `10485760` |
@@ -198,7 +182,6 @@ webhook:
 | `servers.metrics.tls.certPath` | Metrics TLS certificate mount path | `/tmp/k8s-metrics-server/metrics-server-certs` |
 | `servers.metrics.tls.secretNameOverride` | Override Secret name for metrics TLS cert/key | `<release>-metrics-server-cert` |
 | `service.clusterIP` | Optional fixed ClusterIP for single controller Service | `""` |
-| `service.ports.admission` | Service port for admission webhook | `9443` |
 | `service.ports.audit` | Service port for audit ingress | `9444` |
 | `service.ports.metrics` | Service port for metrics | `8080` |
 | `certificates.certManager.enabled` | Use cert-manager for certificates | `true` |
@@ -259,9 +242,6 @@ kubectl get pods -n gitops-reverser
 
 # Check CRDs
 kubectl get crd | grep configbutler
-
-# Check webhook
-kubectl get validatingwebhookconfiguration -l app.kubernetes.io/name=gitops-reverser
 
 ```
 
@@ -327,13 +307,13 @@ kubectl delete crd gitproviders.configbutler.ai gittargets.configbutler.ai watch
 
 ## Troubleshooting
 
-### Webhook Certificate Issues
+### Audit Certificate Issues
 
 Check certificate status:
 
 ```bash
 kubectl get certificate -n gitops-reverser
-kubectl describe certificate gitops-reverser-admission-server-cert -n gitops-reverser
+kubectl describe certificate gitops-reverser-audit-server-cert -n gitops-reverser
 ```
 
 If cert-manager is not working:
@@ -378,15 +358,17 @@ If not using cert-manager:
 certificates:
   certManager:
     enabled: false
-
-webhook:
-  caBundle: <base64-encoded-ca-bundle>
 ```
 
-Create certificate secret manually:
+Provide the audit TLS Secrets yourself. At minimum, the audit server certificate Secret must match
+`servers.audit.tls.secretNameOverride` (or the default `<release>-audit-server-cert`), and the
+audit root CA Secret must match `certificates.audit.rootCA.secretNameOverride` so the controller can
+verify kube-apiserver client certificates.
+
+Example server certificate Secret:
 
 ```bash
-kubectl create secret tls gitops-reverser-admission-server-cert \
+kubectl create secret tls gitops-reverser-audit-server-cert \
   --cert=path/to/tls.crt \
   --key=path/to/tls.key \
   -n gitops-reverser

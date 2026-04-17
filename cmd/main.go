@@ -46,7 +46,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
-	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	configbutleraiv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 	"github.com/ConfigButler/gitops-reverser/internal/controller"
@@ -99,7 +98,6 @@ func main() {
 	setupLog.Info("Metrics configuration",
 		"metrics-bind-address", cfg.metricsAddr,
 		"metrics-insecure", cfg.metricsInsecure,
-		"webhook-insecure", cfg.webhookInsecure,
 		"audit-insecure", cfg.auditInsecure)
 
 	// Initialize metrics
@@ -111,10 +109,6 @@ func main() {
 	tlsOpts := buildTLSOptions(cfg.enableHTTP2)
 
 	// Servers and cert watchers
-	webhookServer, webhookCertWatcher := initWebhookServer(
-		!cfg.webhookInsecure,
-		cfg.webhookCertPath, cfg.webhookCertName, cfg.webhookCertKey, tlsOpts,
-	)
 	metricsServerOptions, metricsCertWatcher := buildMetricsServerOptions(
 		cfg.metricsAddr, !cfg.metricsInsecure,
 		cfg.metricsCertPath, cfg.metricsCertName, cfg.metricsCertKey,
@@ -122,7 +116,7 @@ func main() {
 	)
 
 	// Manager
-	mgr := newManager(metricsServerOptions, webhookServer, cfg.probeAddr)
+	mgr := newManager(metricsServerOptions, cfg.probeAddr)
 
 	// Initialize rule store for watch rules
 	ruleStore := rulestore.NewStore()
@@ -177,11 +171,6 @@ func main() {
 		RuleStore:    ruleStore,
 		WatchManager: watchMgr,
 	}).SetupWithManager(mgr), "unable to create controller", "controller", "ClusterWatchRule")
-
-	// Register GitTarget validator webhook (prevents duplicate targets)
-	fatalIfErr(webhookhandler.SetupGitTargetValidatorWebhook(mgr),
-		"unable to setup GitTarget validator webhook")
-	setupLog.Info("GitTarget validator webhook registered - enforcing uniqueness constraint")
 
 	// Register audit webhook receiver for metrics collection
 	auditQueue, err := queue.NewRedisAuditQueue(queue.RedisAuditQueueConfig{
@@ -280,7 +269,7 @@ func main() {
 	// +kubebuilder:scaffold:builder
 
 	// Cert watchers
-	addCertWatchersToManager(mgr, metricsCertWatcher, webhookCertWatcher, auditCertWatcher)
+	addCertWatchersToManager(mgr, metricsCertWatcher, auditCertWatcher)
 
 	// Health checks
 	addHealthChecks(mgr)
@@ -296,12 +285,8 @@ type appConfig struct {
 	metricsCertPath          string
 	metricsCertName          string
 	metricsCertKey           string
-	webhookCertPath          string
-	webhookCertName          string
-	webhookCertKey           string
 	probeAddr                string
 	metricsInsecure          bool
-	webhookInsecure          bool
 	enableHTTP2              bool
 	auditDumpPath            string
 	auditListenAddress       string
@@ -344,7 +329,6 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 	fs.StringVar(&cfg.probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	fs.BoolVar(&cfg.metricsInsecure, "metrics-insecure", false,
 		"If set, the metrics endpoint is served via HTTP instead of HTTPS.")
-	bindServerCertFlags(fs, "webhook", "webhook", &cfg.webhookCertPath, &cfg.webhookCertName, &cfg.webhookCertKey)
 	bindServerCertFlags(
 		fs,
 		"metrics",
@@ -353,10 +337,8 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 		&cfg.metricsCertName,
 		&cfg.metricsCertKey,
 	)
-	fs.BoolVar(&cfg.webhookInsecure, "webhook-insecure", false,
-		"If set, webhook server certificate watching and TLS wiring are disabled for local test/play usage.")
 	fs.BoolVar(&cfg.enableHTTP2, "enable-http2", false,
-		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
+		"If set, HTTP/2 will be enabled for the metrics server and audit ingress server")
 	fs.StringVar(&cfg.auditDumpPath, "audit-dump-path", "",
 		"Directory to write audit events for debugging. If empty, audit event file dumping is disabled.")
 	fs.StringVar(&cfg.auditListenAddress, "audit-listen-address", "0.0.0.0",
@@ -405,7 +387,6 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 	if err := fs.Parse(args); err != nil {
 		return appConfig{}, err
 	}
-	applyAuditCertFallbacks(&cfg)
 	if err := validateAuditConfig(cfg); err != nil {
 		return appConfig{}, err
 	}
@@ -425,18 +406,6 @@ func bindServerCertFlags(
 		fmt.Sprintf("The name of the %s certificate file.", component))
 	fs.StringVar(certKey, fmt.Sprintf("%s-cert-key", prefix), "tls.key",
 		fmt.Sprintf("The name of the %s key file.", component))
-}
-
-func applyAuditCertFallbacks(cfg *appConfig) {
-	if cfg.auditCertPath == "" {
-		cfg.auditCertPath = cfg.webhookCertPath
-	}
-	if cfg.auditCertName == "" {
-		cfg.auditCertName = cfg.webhookCertName
-	}
-	if cfg.auditCertKey == "" {
-		cfg.auditCertKey = cfg.webhookCertKey
-	}
 }
 
 func validateAuditConfig(cfg appConfig) error {
@@ -495,24 +464,6 @@ func buildTLSOptions(enableHTTP2 bool) []func(*tls.Config) {
 		})
 	}
 	return tlsOpts
-}
-
-// initWebhookServer initializes the webhook server and, if configured, a cert watcher.
-func initWebhookServer(
-	tlsEnabled bool,
-	certPath, certName, certKey string,
-	baseTLS []func(*tls.Config),
-) (webhook.Server, *certwatcher.CertWatcher) {
-	webhookTLSOpts, webhookCertWatcher, err := buildTLSRuntime(
-		tlsEnabled, false, "webhook", certPath, certName, certKey, baseTLS,
-	)
-	fatalIfErr(err, "failed to initialize webhook TLS runtime")
-	if !tlsEnabled {
-		setupLog.Info("Webhook insecure mode enabled; skipping webhook certificate watcher wiring")
-	}
-
-	server := webhook.NewServer(webhook.Options{TLSOpts: webhookTLSOpts})
-	return server, webhookCertWatcher
 }
 
 // buildMetricsServerOptions configures metrics server options and an optional cert watcher.
@@ -727,13 +678,11 @@ func loadCertPoolFromPEMFile(path string) (*x509.CertPool, error) {
 // newManager creates a new controller-runtime Manager with common options.
 func newManager(
 	metricsOptions metricsserver.Options,
-	webhookServer webhook.Server,
 	probeAddr string,
 ) ctrl.Manager {
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                 scheme,
 		Metrics:                metricsOptions,
-		WebhookServer:          webhookServer,
 		HealthProbeBindAddress: probeAddr,
 	})
 	if err != nil {
@@ -746,14 +695,13 @@ func newManager(
 // addCertWatchersToManager attaches optional certificate watchers to the manager.
 func addCertWatchersToManager(
 	mgr ctrl.Manager,
-	metricsCertWatcher, webhookCertWatcher, auditCertWatcher *certwatcher.CertWatcher,
+	metricsCertWatcher, auditCertWatcher *certwatcher.CertWatcher,
 ) {
 	watchers := []struct {
 		component string
 		watcher   *certwatcher.CertWatcher
 	}{
 		{component: "metrics", watcher: metricsCertWatcher},
-		{component: "webhook", watcher: webhookCertWatcher},
 		{component: "audit ingress", watcher: auditCertWatcher},
 	}
 

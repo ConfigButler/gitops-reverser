@@ -759,6 +759,90 @@ var _ = Describe("GitTarget Controller Security", func() {
 			Expect(k8sClient.Delete(ctx, gitProvider)).Should(Succeed())
 		})
 
+		It(
+			"Should report invalid encryption config when generateWhenMissing is enabled without secret extraction",
+			func() {
+				ctx := context.Background()
+
+				gitProvider := &configbutleraiv1alpha1.GitProvider{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-provider-no-enc-recipients",
+						Namespace: "default",
+					},
+					Spec: configbutleraiv1alpha1.GitProviderSpec{
+						URL:             "https://github.com/test-org/test-repo.git",
+						AllowedBranches: []string{"main"},
+					},
+				}
+				Expect(k8sClient.Create(ctx, gitProvider)).Should(Succeed())
+
+				target := &configbutleraiv1alpha1.GitTarget{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-target-no-enc-recipients",
+						Namespace: "default",
+					},
+					Spec: configbutleraiv1alpha1.GitTargetSpec{
+						ProviderRef: configbutleraiv1alpha1.GitProviderReference{
+							Name: "test-provider-no-enc-recipients",
+							Kind: "GitProvider",
+						},
+						Branch: "main",
+						Path:   "test-path",
+						Encryption: &configbutleraiv1alpha1.EncryptionSpec{
+							Provider: "sops",
+							SecretRef: configbutleraiv1alpha1.LocalSecretReference{
+								Name: "unused-encryption-secret",
+							},
+							Age: &configbutleraiv1alpha1.AgeEncryptionSpec{
+								Enabled: true,
+								Recipients: configbutleraiv1alpha1.AgeRecipientsSpec{
+									ExtractFromSecret:   false,
+									GenerateWhenMissing: true,
+								},
+							},
+						},
+					},
+				}
+				Expect(k8sClient.Create(ctx, target)).Should(Succeed())
+
+				targetKey := types.NamespacedName{Name: "test-target-no-enc-recipients", Namespace: "default"}
+				Eventually(func(g Gomega) {
+					var got configbutleraiv1alpha1.GitTarget
+					err := k8sClient.Get(ctx, targetKey, &got)
+					g.Expect(err).NotTo(HaveOccurred())
+
+					var validatedCondition *metav1.Condition
+					var readyCondition *metav1.Condition
+					var encryptionCondition *metav1.Condition
+					for i, condition := range got.Status.Conditions {
+						switch condition.Type {
+						case GitTargetConditionValidated:
+							validatedCondition = &got.Status.Conditions[i]
+						case GitTargetReasonReady:
+							readyCondition = &got.Status.Conditions[i]
+						case GitTargetConditionEncryptionConfigured:
+							encryptionCondition = &got.Status.Conditions[i]
+						}
+					}
+
+					g.Expect(validatedCondition).NotTo(BeNil())
+					g.Expect(validatedCondition.Status).To(Equal(metav1.ConditionTrue))
+					g.Expect(readyCondition).NotTo(BeNil())
+					g.Expect(readyCondition.Status).To(Equal(metav1.ConditionFalse))
+					g.Expect(readyCondition.Reason).To(Equal(GitTargetReadyReasonEncryptionNotConfigured))
+					g.Expect(encryptionCondition).NotTo(BeNil())
+					g.Expect(encryptionCondition.Status).To(Equal(metav1.ConditionFalse))
+					g.Expect(encryptionCondition.Reason).To(Equal(GitTargetReasonInvalidConfig))
+					g.Expect(encryptionCondition.Message).To(ContainSubstring(
+						"generateWhenMissing=true requires extractFromSecret=true",
+					))
+				}, timeout, interval).Should(Succeed())
+
+				Expect(k8sClient.Delete(ctx, target)).Should(Succeed())
+				Expect(k8sClient.Delete(ctx, gitProvider)).Should(Succeed())
+			},
+		)
+
 		It("Should add one .agekey entry when secret exists without any .agekey entries", func() {
 			ctx := context.Background()
 

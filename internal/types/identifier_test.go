@@ -22,9 +22,6 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	admissionv1 "k8s.io/api/admission/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 )
 
 func TestResourceIdentifier_ToGitPath(t *testing.T) {
@@ -213,85 +210,6 @@ func TestResourceIdentifier_String(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := tt.identifier.String()
-			assert.Equal(t, tt.want, got)
-		})
-	}
-}
-
-func TestFromAdmissionRequest(t *testing.T) {
-	tests := []struct {
-		name    string
-		request admission.Request
-		want    ResourceIdentifier
-	}{
-		{
-			name: "core resource request",
-			request: admission.Request{
-				AdmissionRequest: admissionv1.AdmissionRequest{
-					Resource: metav1.GroupVersionResource{
-						Group:    "",
-						Version:  "v1",
-						Resource: "pods",
-					},
-					Namespace: "default",
-					Name:      "nginx",
-				},
-			},
-			want: ResourceIdentifier{
-				Group:     "",
-				Version:   "v1",
-				Resource:  "pods",
-				Namespace: "default",
-				Name:      "nginx",
-			},
-		},
-		{
-			name: "non-core resource request",
-			request: admission.Request{
-				AdmissionRequest: admissionv1.AdmissionRequest{
-					Resource: metav1.GroupVersionResource{
-						Group:    "apps",
-						Version:  "v1",
-						Resource: "deployments",
-					},
-					Namespace: "production",
-					Name:      "app",
-				},
-			},
-			want: ResourceIdentifier{
-				Group:     "apps",
-				Version:   "v1",
-				Resource:  "deployments",
-				Namespace: "production",
-				Name:      "app",
-			},
-		},
-		{
-			name: "cluster-scoped resource request",
-			request: admission.Request{
-				AdmissionRequest: admissionv1.AdmissionRequest{
-					Resource: metav1.GroupVersionResource{
-						Group:    "rbac.authorization.k8s.io",
-						Version:  "v1",
-						Resource: "clusterroles",
-					},
-					Namespace: "",
-					Name:      "admin",
-				},
-			},
-			want: ResourceIdentifier{
-				Group:     "rbac.authorization.k8s.io",
-				Version:   "v1",
-				Resource:  "clusterroles",
-				Namespace: "",
-				Name:      "admin",
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := FromAdmissionRequest(tt.request)
 			assert.Equal(t, tt.want, got)
 		})
 	}

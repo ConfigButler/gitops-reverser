@@ -27,7 +27,6 @@ spec:
         - --metrics-bind-address=:8443
         - --metrics-insecure
         - --health-probe-bind-address=:8081
-        - --webhook-cert-path=/tmp/k8s-admission-server/admission-server-certs
         - --audit-cert-path=/tmp/k8s-audit-server/audit-server-certs
         - --audit-client-ca-path=/tmp/k8s-audit-server/audit-client-ca
         - --audit-redis-addr=valkey.valkey-e2e.svc.cluster.local:6379
@@ -57,9 +56,6 @@ spec:
           periodSeconds: 20
         name: manager
         ports:
-        - containerPort: 9443
-          name: admission
-          protocol: TCP
         - containerPort: 9444
           name: audit
           protocol: TCP
@@ -88,9 +84,6 @@ spec:
         volumeMounts:
         - mountPath: /tmp
           name: tmp-dir
-        - mountPath: /tmp/k8s-admission-server/admission-server-certs
-          name: webhook-certs
-          readOnly: true
         - mountPath: /tmp/k8s-audit-server/audit-server-certs
           name: audit-webhook-certs
           readOnly: true
@@ -106,9 +99,6 @@ spec:
       volumes:
       - emptyDir: {}
         name: tmp-dir
-      - name: webhook-certs
-        secret:
-          secretName: admission-server-cert
       - name: audit-webhook-certs
         secret:
           secretName: audit-server-cert

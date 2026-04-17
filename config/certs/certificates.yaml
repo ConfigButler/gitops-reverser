@@ -4,25 +4,6 @@ metadata:
   labels:
     app.kubernetes.io/managed-by: kustomize
     app.kubernetes.io/name: gitops-reverser
-  name: gitops-reverser-admission-server-cert
-  namespace: sut
-spec:
-  dnsNames:
-  - gitops-reverser-webhook.sut.svc
-  - gitops-reverser-webhook.sut.svc.cluster.local
-  issuerRef:
-    kind: Issuer
-    name: gitops-reverser-selfsigned-issuer
-  privateKey:
-    rotationPolicy: Always
-  secretName: admission-server-cert
----
-apiVersion: cert-manager.io/v1
-kind: Certificate
-metadata:
-  labels:
-    app.kubernetes.io/managed-by: kustomize
-    app.kubernetes.io/name: gitops-reverser
   name: gitops-reverser-audit-root-ca
   namespace: sut
 spec:
