@@ -789,6 +789,128 @@ func TestProcessMessage_CustomResourceUsesObjectRefAPIGroup(t *testing.T) {
 	assertNoPendingMessages(t, mr)
 }
 
+func TestProcessMessage_NamespacedWatchRuleMustNotRouteForeignNamespaceAuditEvent(t *testing.T) {
+	mr := miniredis.RunT(t)
+	er := &fakeEventRouter{}
+
+	rs := rulestore.NewStore()
+	rs.AddOrUpdateWatchRule(
+		configv1alpha1.WatchRule{
+			ObjectMeta: metav1.ObjectMeta{Name: "playground-watchrule", Namespace: "tilt-playground"},
+			Spec: configv1alpha1.WatchRuleSpec{
+				TargetRef: configv1alpha1.LocalTargetReference{Name: "playground-target"},
+				Rules: []configv1alpha1.ResourceRule{{
+					Operations:  []configv1alpha1.OperationType{configv1alpha1.OperationAll},
+					APIGroups:   []string{""},
+					APIVersions: []string{"v1"},
+					Resources:   []string{"services"},
+				}},
+			},
+		},
+		"playground-target", "tilt-playground",
+		"playground-provider", "tilt-playground",
+		"main", "playground/",
+	)
+
+	c := newTestConsumer(t, mr, rs, er)
+	require.NoError(t, c.ensureConsumerGroup(context.Background()))
+
+	// Audit event from gitops-reverser namespace must NOT match a WatchRule in tilt-playground.
+	ev := makeAuditEvent("update", auditv1.StageResponseComplete, "services", "gitops-reverser", "gitops-reverser")
+	pushAuditMessage(t, mr, ev)
+
+	require.NoError(t, c.readAndProcessBatch(context.Background()))
+
+	assert.Empty(t, er.calls, "foreign-namespace audit event must not be routed via namespaced WatchRule")
+	assertNoPendingMessages(t, mr)
+}
+
+func TestProcessMessage_NamespacedWatchRuleRoutesOwnNamespaceAuditEvent(t *testing.T) {
+	mr := miniredis.RunT(t)
+	er := &fakeEventRouter{}
+
+	rs := rulestore.NewStore()
+	rs.AddOrUpdateWatchRule(
+		configv1alpha1.WatchRule{
+			ObjectMeta: metav1.ObjectMeta{Name: "playground-watchrule", Namespace: "tilt-playground"},
+			Spec: configv1alpha1.WatchRuleSpec{
+				TargetRef: configv1alpha1.LocalTargetReference{Name: "playground-target"},
+				Rules: []configv1alpha1.ResourceRule{{
+					Operations:  []configv1alpha1.OperationType{configv1alpha1.OperationAll},
+					APIGroups:   []string{""},
+					APIVersions: []string{"v1"},
+					Resources:   []string{"services"},
+				}},
+			},
+		},
+		"playground-target", "tilt-playground",
+		"playground-provider", "tilt-playground",
+		"main", "playground/",
+	)
+
+	c := newTestConsumer(t, mr, rs, er)
+	require.NoError(t, c.ensureConsumerGroup(context.Background()))
+
+	// Audit event from the same namespace as the WatchRule MUST be routed.
+	ev := makeAuditEvent("update", auditv1.StageResponseComplete, "services", "tilt-playground", "my-svc")
+	pushAuditMessage(t, mr, ev)
+
+	require.NoError(t, c.readAndProcessBatch(context.Background()))
+
+	require.Len(t, er.calls, 1)
+	assert.Equal(t, "playground-target", er.calls[0].GitDest.Name)
+	assert.Equal(t, "tilt-playground", er.calls[0].GitDest.Namespace)
+	assert.Equal(t, "tilt-playground", er.calls[0].Event.Identifier.Namespace)
+	assertNoPendingMessages(t, mr)
+}
+
+func TestProcessMessage_MixedRules_OnlyClusterWatchRuleMatchesForeignNamespace(t *testing.T) {
+	mr := miniredis.RunT(t)
+	er := &fakeEventRouter{}
+
+	rs := rulestore.NewStore()
+	// Namespaced WatchRule in ns-a — must NOT match events from ns-b.
+	rs.AddOrUpdateWatchRule(
+		configv1alpha1.WatchRule{
+			ObjectMeta: metav1.ObjectMeta{Name: "wr-ns-a", Namespace: "ns-a"},
+			Spec: configv1alpha1.WatchRuleSpec{
+				TargetRef: configv1alpha1.LocalTargetReference{Name: "target-a"},
+				Rules: []configv1alpha1.ResourceRule{{
+					Operations:  []configv1alpha1.OperationType{configv1alpha1.OperationAll},
+					APIGroups:   []string{""},
+					APIVersions: []string{"v1"},
+					Resources:   []string{"services"},
+				}},
+			},
+		},
+		"target-a", "ns-a",
+		"provider-a", "ns-a",
+		"main", "a/",
+	)
+	// ClusterWatchRule — MUST match events from any namespace.
+	rs.AddOrUpdateClusterWatchRule(
+		makeClusterWatchRule("cwr-all", []string{"services"}, []string{"v1"}, []string{""}, configv1alpha1.ResourceScopeNamespaced),
+		"target-cluster", "ops",
+		"provider-ops", "ops",
+		"main", "cluster/",
+	)
+
+	c := newTestConsumer(t, mr, rs, er)
+	require.NoError(t, c.ensureConsumerGroup(context.Background()))
+
+	// Event from ns-b: WatchRule in ns-a must NOT match, ClusterWatchRule MUST match.
+	ev := makeAuditEvent("create", auditv1.StageResponseComplete, "services", "ns-b", "svc-in-b")
+	pushAuditMessage(t, mr, ev)
+
+	require.NoError(t, c.readAndProcessBatch(context.Background()))
+
+	// Only the ClusterWatchRule route should fire.
+	require.Len(t, er.calls, 1, "expected exactly 1 route (ClusterWatchRule only)")
+	assert.Equal(t, "target-cluster", er.calls[0].GitDest.Name)
+	assert.Equal(t, "ops", er.calls[0].GitDest.Namespace)
+	assertNoPendingMessages(t, mr)
+}
+
 func TestRouteTMatchedRules_PartialRouteFailureStillACKs(t *testing.T) {
 	mr := miniredis.RunT(t)
 	er := &fakeEventRouter{

@@ -265,3 +265,244 @@ func TestHandleEvent_SkipsSecretLiveRoutingWhenAuditLiveEventsEnabled(t *testing
 		t.Fatalf("expected secret live event to be skipped, got %d", len(enqueuer.events))
 	}
 }
+
+func TestHandleEvent_NamespacedWatchRuleMustNotRouteForeignNamespaceObject(t *testing.T) {
+	initWatchMetricsOnce.Do(func() {
+		_, _ = telemetry.InitOTLPExporter(context.Background())
+	})
+
+	scheme := runtime.NewScheme()
+	if err := clientgoscheme.AddToScheme(scheme); err != nil {
+		t.Fatalf("failed to add core scheme: %v", err)
+	}
+	if err := configv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("failed to add api scheme: %v", err)
+	}
+
+	store := rulestore.NewStore()
+	store.AddOrUpdateWatchRule(
+		configv1alpha1.WatchRule{
+			ObjectMeta: metav1.ObjectMeta{Name: "playground-watchrule", Namespace: "tilt-playground"},
+			Spec: configv1alpha1.WatchRuleSpec{
+				TargetRef: configv1alpha1.LocalTargetReference{Name: "playground-target"},
+				Rules: []configv1alpha1.ResourceRule{{
+					APIGroups:   []string{""},
+					APIVersions: []string{"v1"},
+					Resources:   []string{"services"},
+					Operations:  []configv1alpha1.OperationType{configv1alpha1.OperationAll},
+				}},
+			},
+		},
+		"playground-target", "tilt-playground", "playground-provider", "tilt-playground", "main", "live",
+	)
+
+	router := &EventRouter{
+		Log:              logr.Discard(),
+		gitTargetStreams: make(map[string]*reconcile.GitTargetEventStream),
+	}
+	enqueuer := &recordingEnqueuer{}
+	stream := reconcile.NewGitTargetEventStream("playground-target", "tilt-playground", enqueuer, logr.Discard())
+	stream.OnReconciliationComplete()
+	gitDest := itypes.NewResourceReference("playground-target", "tilt-playground")
+	router.RegisterGitTargetEventStream(gitDest, stream)
+
+	fakeK8s := fakeclient.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(
+			&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "tilt-playground"}},
+			&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "gitops-reverser"}},
+		).
+		Build()
+
+	manager := &Manager{
+		Client:                 fakeK8s,
+		Log:                    logr.Discard(),
+		RuleStore:              store,
+		EventRouter:            router,
+		AuditLiveEventsEnabled: false,
+	}
+
+	// A Service from gitops-reverser namespace must NOT be routed by a WatchRule in tilt-playground.
+	obj := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "gitops-reverser",
+			Namespace: "gitops-reverser",
+		},
+	}
+
+	manager.handleEvent(obj, GVR{Group: "", Version: "v1", Resource: "services"}, configv1alpha1.OperationUpdate)
+
+	if len(enqueuer.events) != 0 {
+		t.Fatalf("expected foreign-namespace event to be rejected, got %d routed events", len(enqueuer.events))
+	}
+}
+
+func TestHandleEvent_NamespacedWatchRuleRoutesOwnNamespaceObject(t *testing.T) {
+	initWatchMetricsOnce.Do(func() {
+		_, _ = telemetry.InitOTLPExporter(context.Background())
+	})
+
+	scheme := runtime.NewScheme()
+	if err := clientgoscheme.AddToScheme(scheme); err != nil {
+		t.Fatalf("failed to add core scheme: %v", err)
+	}
+	if err := configv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("failed to add api scheme: %v", err)
+	}
+
+	store := rulestore.NewStore()
+	store.AddOrUpdateWatchRule(
+		configv1alpha1.WatchRule{
+			ObjectMeta: metav1.ObjectMeta{Name: "playground-watchrule", Namespace: "tilt-playground"},
+			Spec: configv1alpha1.WatchRuleSpec{
+				TargetRef: configv1alpha1.LocalTargetReference{Name: "playground-target"},
+				Rules: []configv1alpha1.ResourceRule{{
+					APIGroups:   []string{""},
+					APIVersions: []string{"v1"},
+					Resources:   []string{"services"},
+					Operations:  []configv1alpha1.OperationType{configv1alpha1.OperationAll},
+				}},
+			},
+		},
+		"playground-target", "tilt-playground", "playground-provider", "tilt-playground", "main", "live",
+	)
+
+	router := &EventRouter{
+		Log:              logr.Discard(),
+		gitTargetStreams: make(map[string]*reconcile.GitTargetEventStream),
+	}
+	enqueuer := &recordingEnqueuer{}
+	stream := reconcile.NewGitTargetEventStream("playground-target", "tilt-playground", enqueuer, logr.Discard())
+	stream.OnReconciliationComplete()
+	gitDest := itypes.NewResourceReference("playground-target", "tilt-playground")
+	router.RegisterGitTargetEventStream(gitDest, stream)
+
+	fakeK8s := fakeclient.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(
+			&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "tilt-playground"}},
+		).
+		Build()
+
+	manager := &Manager{
+		Client:                 fakeK8s,
+		Log:                    logr.Discard(),
+		RuleStore:              store,
+		EventRouter:            router,
+		AuditLiveEventsEnabled: false,
+	}
+
+	// A Service from the same namespace as the WatchRule MUST be routed.
+	obj := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "my-service",
+			Namespace: "tilt-playground",
+		},
+	}
+
+	manager.handleEvent(obj, GVR{Group: "", Version: "v1", Resource: "services"}, configv1alpha1.OperationUpdate)
+
+	if len(enqueuer.events) != 1 {
+		t.Fatalf("expected same-namespace event to be routed, got %d events", len(enqueuer.events))
+	}
+	if enqueuer.events[0].Identifier.Namespace != "tilt-playground" {
+		t.Fatalf("expected routed event namespace tilt-playground, got %s", enqueuer.events[0].Identifier.Namespace)
+	}
+}
+
+func TestHandleEvent_MixedRules_OnlyClusterWatchRuleMatchesForeignNamespace(t *testing.T) {
+	initWatchMetricsOnce.Do(func() {
+		_, _ = telemetry.InitOTLPExporter(context.Background())
+	})
+
+	scheme := runtime.NewScheme()
+	if err := clientgoscheme.AddToScheme(scheme); err != nil {
+		t.Fatalf("failed to add core scheme: %v", err)
+	}
+	if err := configv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("failed to add api scheme: %v", err)
+	}
+
+	store := rulestore.NewStore()
+	// Namespaced WatchRule in ns-a — must NOT match events from ns-b.
+	store.AddOrUpdateWatchRule(
+		configv1alpha1.WatchRule{
+			ObjectMeta: metav1.ObjectMeta{Name: "wr-ns-a", Namespace: "ns-a"},
+			Spec: configv1alpha1.WatchRuleSpec{
+				TargetRef: configv1alpha1.LocalTargetReference{Name: "target-a"},
+				Rules: []configv1alpha1.ResourceRule{{
+					APIGroups:   []string{""},
+					APIVersions: []string{"v1"},
+					Resources:   []string{"services"},
+					Operations:  []configv1alpha1.OperationType{configv1alpha1.OperationAll},
+				}},
+			},
+		},
+		"target-a", "ns-a", "provider-a", "ns-a", "main", "live-a",
+	)
+	// ClusterWatchRule — MUST match events from any namespace.
+	store.AddOrUpdateClusterWatchRule(
+		configv1alpha1.ClusterWatchRule{
+			ObjectMeta: metav1.ObjectMeta{Name: "cwr-all"},
+			Spec: configv1alpha1.ClusterWatchRuleSpec{
+				TargetRef: configv1alpha1.NamespacedTargetReference{Name: "target-cluster", Namespace: "ops"},
+				Rules: []configv1alpha1.ClusterResourceRule{{
+					Scope:       configv1alpha1.ResourceScopeNamespaced,
+					APIGroups:   []string{""},
+					APIVersions: []string{"v1"},
+					Resources:   []string{"services"},
+					Operations:  []configv1alpha1.OperationType{configv1alpha1.OperationAll},
+				}},
+			},
+		},
+		"target-cluster", "ops", "provider-ops", "ops", "main", "live-cluster",
+	)
+
+	router := &EventRouter{
+		Log:              logr.Discard(),
+		gitTargetStreams: make(map[string]*reconcile.GitTargetEventStream),
+	}
+	enqueueA := &recordingEnqueuer{}
+	streamA := reconcile.NewGitTargetEventStream("target-a", "ns-a", enqueueA, logr.Discard())
+	streamA.OnReconciliationComplete()
+	router.RegisterGitTargetEventStream(itypes.NewResourceReference("target-a", "ns-a"), streamA)
+
+	enqueueCluster := &recordingEnqueuer{}
+	streamCluster := reconcile.NewGitTargetEventStream("target-cluster", "ops", enqueueCluster, logr.Discard())
+	streamCluster.OnReconciliationComplete()
+	router.RegisterGitTargetEventStream(itypes.NewResourceReference("target-cluster", "ops"), streamCluster)
+
+	fakeK8s := fakeclient.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(
+			&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "ns-a"}},
+			&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "ns-b"}},
+			&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "ops"}},
+		).
+		Build()
+
+	manager := &Manager{
+		Client:                 fakeK8s,
+		Log:                    logr.Discard(),
+		RuleStore:              store,
+		EventRouter:            router,
+		AuditLiveEventsEnabled: false,
+	}
+
+	// Event from ns-b: WatchRule in ns-a must NOT match, ClusterWatchRule MUST match.
+	obj := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "svc-in-b",
+			Namespace: "ns-b",
+		},
+	}
+
+	manager.handleEvent(obj, GVR{Group: "", Version: "v1", Resource: "services"}, configv1alpha1.OperationCreate)
+
+	if len(enqueueA.events) != 0 {
+		t.Fatalf("expected namespaced WatchRule in ns-a to reject ns-b event, got %d events", len(enqueueA.events))
+	}
+	if len(enqueueCluster.events) != 1 {
+		t.Fatalf("expected ClusterWatchRule to route ns-b event, got %d events", len(enqueueCluster.events))
+	}
+}

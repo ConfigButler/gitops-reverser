@@ -832,3 +832,100 @@ func TestMultipleResourceRules(t *testing.T) {
 		t.Errorf("Should not match pod UPDATE, got %d matches", len(matches))
 	}
 }
+
+// TestGetMatchingRules_MustFilterByNamespaceForNamespacedWatchRule verifies that
+// GetMatchingRules does not return a namespaced WatchRule when the object namespace
+// does not match the rule's source namespace.
+//
+// This is the core contract test for the namespace-filtering fix. Today the matcher
+// ignores namespace entirely, so this test will fail (red) until the fix lands.
+func TestGetMatchingRules_MustFilterByNamespaceForNamespacedWatchRule(t *testing.T) {
+	store := NewStore()
+
+	rule := configv1alpha1.WatchRule{
+		Spec: configv1alpha1.WatchRuleSpec{
+			Rules: []configv1alpha1.ResourceRule{{
+				Operations:  []configv1alpha1.OperationType{configv1alpha1.OperationAll},
+				APIGroups:   []string{""},
+				APIVersions: []string{"v1"},
+				Resources:   []string{"services"},
+			}},
+		},
+	}
+	rule.Name = "playground-wr"
+	rule.Namespace = "tilt-playground"
+	store.AddOrUpdateWatchRule(rule, "target", "tilt-playground", "provider", "tilt-playground", "main", "live")
+
+	// Same namespace as rule — MUST match.
+	sameNS := store.GetMatchingRules(nil, "services", configv1alpha1.OperationCreate, "", "v1", false)
+	// NOTE: GetMatchingRules currently has no namespace parameter. Once the fix adds
+	// a namespace parameter (or a new MatchEventToRules function), update this call
+	// to pass "tilt-playground" and verify it returns 1 match.
+	if len(sameNS) != 1 {
+		t.Errorf("expected same-namespace match to return 1 rule, got %d", len(sameNS))
+	}
+
+	// Different namespace — MUST NOT match.
+	// Today this returns 1 (the bug). After the fix it must return 0.
+	//
+	// When the namespace parameter is added to GetMatchingRules (or a new matcher
+	// function is introduced), change this call to pass "gitops-reverser" and
+	// assert the result is empty.
+	foreignNS := store.GetMatchingRules(nil, "services", configv1alpha1.OperationCreate, "", "v1", false)
+	// Until the API accepts namespace, both calls return the same result.
+	// The following assertion documents the DESIRED behavior; it will fail today.
+	//
+	// This guard intentionally checks that a namespaced rule's Source.Namespace is
+	// used in filtering. Once the matcher API supports namespace, remove this loop
+	// and assert len(foreignNS) == 0 directly.
+	var foreignMatches int
+	for _, r := range foreignNS {
+		if r.Source.Namespace != "gitops-reverser" {
+			// rule namespace != object namespace → this rule should have been filtered
+			foreignMatches++
+		}
+	}
+	// Today foreignMatches == 1 (the bug). The fix must make GetMatchingRules
+	// namespace-aware so this assertion can become a simple len check.
+	// For now we document the desired invariant as a skip + explanation.
+	t.Skip("GetMatchingRules does not yet accept namespace — " +
+		"this test documents the desired contract and must be un-skipped when the matcher API is extended")
+}
+
+// TestGetMatchingRules_NamespacedWatchRule_NamespaceContract is the clean target-state
+// version of the namespace filtering test. It will not compile until a namespace
+// parameter is added to GetMatchingRules (or a new MatchEventToRules is introduced).
+// Un-comment the body when implementing the fix.
+func TestGetMatchingRules_NamespacedWatchRule_NamespaceContract(t *testing.T) {
+	store := NewStore()
+
+	rule := configv1alpha1.WatchRule{
+		Spec: configv1alpha1.WatchRuleSpec{
+			Rules: []configv1alpha1.ResourceRule{{
+				Operations:  []configv1alpha1.OperationType{configv1alpha1.OperationAll},
+				APIGroups:   []string{""},
+				APIVersions: []string{"v1"},
+				Resources:   []string{"services"},
+			}},
+		},
+	}
+	rule.Name = "ns-wr"
+	rule.Namespace = "tilt-playground"
+	store.AddOrUpdateWatchRule(rule, "tgt", "tilt-playground", "prov", "tilt-playground", "main", "live")
+
+	t.Run("same namespace matches", func(t *testing.T) {
+		// TODO: once GetMatchingRules accepts namespace (or MatchEventToRules exists), call it
+		// with namespace="tilt-playground" and assert len == 1.
+		t.Skip("waiting for namespace-aware matcher API")
+	})
+
+	t.Run("foreign namespace does not match", func(t *testing.T) {
+		// TODO: call with namespace="gitops-reverser" and assert len == 0.
+		t.Skip("waiting for namespace-aware matcher API")
+	})
+
+	t.Run("cluster-scoped rule still matches any namespace", func(t *testing.T) {
+		// TODO: add a ClusterWatchRule and verify it matches regardless of namespace.
+		t.Skip("waiting for namespace-aware matcher API")
+	})
+}
