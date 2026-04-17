@@ -1,7 +1,7 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
+  - config/gitprovider.yaml
+  - config/gittarget.yaml
+  - config/watchrule.yaml
   - configmap.yaml
-  - gitprovider.yaml
-  - gittarget.yaml
-  - watchrule.yaml
