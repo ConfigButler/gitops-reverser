@@ -44,7 +44,11 @@ tasks:
           rbac:roleName=gitops-reverser \
           crd \
           webhook \
-          paths="./..." \
+          paths=./api/... \
+          paths=./internal/controller/... \
+          paths=./internal/watch/... \
+          paths=./internal/webhook/... \
+          paths=./cmd/... \
           output:crd:artifacts:config=config/crd/bases
 
   helm-sync:
@@ -81,7 +85,7 @@ tasks:
     generates:
       - api/v1alpha1/zz_generated.deepcopy.go
     cmds:
-      - '{{.CONTROLLER_GEN}} object:headerFile="hack/boilerplate.go.txt" paths="./..."'
+      - '{{.CONTROLLER_GEN}} object:headerFile="hack/boilerplate.go.txt" paths=./api/...'
 
   fmt:
     desc: Run go fmt against code
