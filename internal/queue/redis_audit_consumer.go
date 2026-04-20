@@ -352,6 +352,12 @@ func (c *AuditConsumer) routeAuditEvent(
 	if err != nil {
 		return fmt.Errorf("extracting object for %s/%s: %w", namespace, name, err)
 	}
+	if namespace == "" {
+		namespace = sanitized.GetNamespace()
+	}
+	if name == "" {
+		name = sanitized.GetName()
+	}
 
 	id := itypes.NewResourceIdentifier(apiGroup, apiVersion, resourcePlural, namespace, name)
 	userInfo := resolveUserInfo(auditEvent)
@@ -468,17 +474,7 @@ func extractObject(
 	op configv1alpha1.OperationType,
 	apiVersion, resource, namespace, name string,
 ) (*unstructured.Unstructured, error) {
-	var raw []byte
-
-	if op == configv1alpha1.OperationDelete {
-		if event.RequestObject != nil && len(event.RequestObject.Raw) > 0 {
-			raw = event.RequestObject.Raw
-		}
-	} else {
-		if event.ResponseObject != nil && len(event.ResponseObject.Raw) > 0 {
-			raw = event.ResponseObject.Raw
-		}
-	}
+	raw := selectAuditObjectRaw(event, op)
 
 	if len(raw) == 0 {
 		// Fall back to a minimal stub so downstream pipeline always has an object.
@@ -495,7 +491,45 @@ func extractObject(
 		return nil, fmt.Errorf("failed to unmarshal object JSON: %w", err)
 	}
 
-	return sanitize.Sanitize(obj), nil
+	return backfillSanitizedIdentity(sanitize.Sanitize(obj), apiVersion, resource, namespace, name), nil
+}
+
+func selectAuditObjectRaw(event auditv1.Event, op configv1alpha1.OperationType) []byte {
+	if op == configv1alpha1.OperationDelete {
+		return firstAuditObjectRaw(event.RequestObject, event.ResponseObject)
+	}
+
+	return firstAuditObjectRaw(event.ResponseObject, event.RequestObject)
+}
+
+func firstAuditObjectRaw(objects ...*runtime.Unknown) []byte {
+	for _, object := range objects {
+		if object != nil && len(object.Raw) > 0 {
+			return object.Raw
+		}
+	}
+
+	return nil
+}
+
+func backfillSanitizedIdentity(
+	sanitized *unstructured.Unstructured,
+	apiVersion, resource, namespace, name string,
+) *unstructured.Unstructured {
+	if sanitized.GetAPIVersion() == "" {
+		sanitized.SetAPIVersion(apiVersion)
+	}
+	if sanitized.GetKind() == "" {
+		sanitized.SetKind(resource)
+	}
+	if sanitized.GetNamespace() == "" {
+		sanitized.SetNamespace(namespace)
+	}
+	if sanitized.GetName() == "" {
+		sanitized.SetName(name)
+	}
+
+	return sanitized
 }
 
 func effectiveAuditOperation(event auditv1.Event, op configv1alpha1.OperationType) configv1alpha1.OperationType {

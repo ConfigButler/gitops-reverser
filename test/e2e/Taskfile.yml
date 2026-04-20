@@ -809,7 +809,18 @@ tasks:
         kubectl --context "{{.CTX}}" -n wardle rollout status deployment/wardle-server --timeout=180s
         kubectl --context "{{.CTX}}" wait apiservice/v1alpha1.wardle.example.com \
           --for=condition=Available --timeout=180s
-        kubectl --context "{{.CTX}}" api-resources --api-group=wardle.example.com | grep -q flunders
+        for i in $(seq 1 30); do
+          if kubectl --context "{{.CTX}}" api-resources --api-group=wardle.example.com | grep -q flunders; then
+            break
+          fi
+          if [ "${i}" -eq 30 ]; then
+            echo "wardle APIService became Available, but discovery never surfaced flunders" >&2
+            kubectl --context "{{.CTX}}" get apiservice v1alpha1.wardle.example.com -o yaml >&2
+            kubectl --context "{{.CTX}}" api-resources --api-group=wardle.example.com >&2 || true
+            exit 1
+          fi
+          sleep 2
+        done
         touch "{{.CS}}/sample-apiserver.ready"
 
   _age-key:
