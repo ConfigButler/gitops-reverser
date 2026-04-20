@@ -22,6 +22,15 @@ spec:
           imagePullPolicy: IfNotPresent
           args:
             - --etcd-servers=http://localhost:2379
+            - --client-ca-file=/etc/wardle/proxy-client-ca/tls.crt
+          volumeMounts:
+            - mountPath: /etc/wardle/proxy-client-ca
+              name: proxy-client-ca
+              readOnly: true
         - name: etcd
           image: registry.k8s.io/etcd:v3.6.8
           imagePullPolicy: IfNotPresent
+      volumes:
+        - name: proxy-client-ca
+          secret:
+            secretName: audit-pass-through-backend-client-ca

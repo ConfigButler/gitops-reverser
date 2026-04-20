@@ -22,6 +22,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -67,6 +70,27 @@ var _ = Describe("Aggregated API server", Label("aggregated-api"), Ordered, func
 		createGitTarget(targetName, testNs, providerName, aggregatedPath, "main")
 		verifyResourceStatus("gittarget", targetName, testNs, "True", "Ready", "")
 	})
+
+	ensureFlunderWatchRuleReady := func() {
+		By("applying a WatchRule for wardle flunders")
+		err := applyFromTemplate(
+			"test/e2e/templates/aggregated-api/watchrule-flunder.tmpl",
+			struct {
+				Name          string
+				Namespace     string
+				GitTargetName string
+			}{
+				Name:          watchRuleName,
+				Namespace:     testNs,
+				GitTargetName: targetName,
+			},
+			testNs,
+		)
+		Expect(err).NotTo(HaveOccurred(), "failed to apply aggregated-api WatchRule")
+
+		By("verifying the WatchRule reaches Ready=True")
+		verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Ready", "")
+	}
 
 	AfterAll(func() {
 		cleanupWatchRule(watchRuleName, testNs)
@@ -141,7 +165,7 @@ spec:
 		}, 30*time.Second, time.Second).Should(Succeed())
 	})
 
-	It("should show ConfigMap audit details alongside the current Flunder audit shape", func() {
+	It("should recover Flunder audit request and response bodies through the proxy", Label("smoke"), func() {
 		streamName := defaultAuditRedisStream
 		configMapName := fmt.Sprintf("aggregated-audit-compare-cm-%d", GinkgoRandomSeed())
 		flunderName := fmt.Sprintf("aggregated-audit-compare-flunder-%d", GinkgoRandomSeed())
@@ -218,7 +242,7 @@ spec:
 				baselineID,
 				300,
 				func(payload map[string]interface{}) bool {
-					return auditPayloadMatches(payload, "wardle.example.com", "flunders", testNs, "", "create")
+					return auditPayloadMatches(payload, "wardle.example.com", "flunders", testNs, flunderName, "create")
 				},
 			)
 			g.Expect(findErr).NotTo(HaveOccurred())
@@ -226,6 +250,9 @@ spec:
 			g.Expect(auditObjectRefName(configMapAudit.Payload)).To(Equal(configMapName))
 			g.Expect(auditPayloadHasObject(configMapAudit.Payload, "requestObject")).To(BeTrue())
 			g.Expect(auditPayloadHasObject(configMapAudit.Payload, "responseObject")).To(BeTrue())
+			g.Expect(auditObjectRefName(flunderAudit.Payload)).To(Equal(flunderName))
+			g.Expect(auditPayloadHasObject(flunderAudit.Payload, "requestObject")).To(BeTrue())
+			g.Expect(auditPayloadHasObject(flunderAudit.Payload, "responseObject")).To(BeTrue())
 
 			_, _ = fmt.Fprintf(
 				GinkgoWriter,
@@ -241,30 +268,106 @@ spec:
 	})
 
 	It("should accept an aggregated flunder WatchRule and mark it ready", func() {
-		By("applying a WatchRule for wardle flunders")
-		err := applyFromTemplate(
-			"test/e2e/templates/aggregated-api/watchrule-flunder.tmpl",
-			struct {
-				Name          string
-				Namespace     string
-				GitTargetName string
-			}{
-				Name:          watchRuleName,
-				Namespace:     testNs,
-				GitTargetName: targetName,
-			},
-			testNs,
-		)
-		Expect(err).NotTo(HaveOccurred(), "failed to apply aggregated-api WatchRule")
-
-		By("verifying the WatchRule reaches Ready=True")
-		verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Ready", "")
+		ensureFlunderWatchRuleReady()
 	})
 
-	It("should create a git commit when a Flunder is created", func() {
-		Skip(
-			"See the raw audit comparison above: ConfigMap creates include object details, " +
-				"Flunder creates do not in k3s",
+	It("should create separate git commits for Flunder create, update, and delete", Label("smoke"), func() {
+		ensureFlunderWatchRuleReady()
+
+		flunderName := fmt.Sprintf("aggregated-commit-flunder-%d", GinkgoRandomSeed())
+		repoPath := path.Join(
+			aggregatedPath,
+			fmt.Sprintf("wardle.example.com/v1alpha1/flunders/%s/%s.yaml", testNs, flunderName),
 		)
+		repoFile := filepath.Join(repo.CheckoutDir, repoPath)
+
+		renderFlunderManifest := func(reference string) string {
+			return fmt.Sprintf(`apiVersion: wardle.example.com/v1alpha1
+kind: Flunder
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  reference: %s
+`, flunderName, testNs, reference)
+		}
+
+		readLatestCommitForPath := func(g Gomega, expectedOperation string) string {
+			GinkgoHelper()
+			hash, err := latestCommitHashForPath(repo.CheckoutDir, repoPath)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(hash).NotTo(BeEmpty(), "expected a git commit for %s", repoPath)
+
+			subject, err := gitRun(repo.CheckoutDir, "show", "-s", "--format=%s", hash)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(subject).To(ContainSubstring(expectedOperation))
+			g.Expect(subject).To(ContainSubstring("flunders"))
+
+			return strings.TrimSpace(hash)
+		}
+
+		DeferCleanup(func() {
+			if skipCleanupBecauseResourcesArePreserved(fmt.Sprintf("Flunder %s/%s", testNs, flunderName)) {
+				return
+			}
+			_, _ = kubectlRunInNamespace(testNs, "delete", "flunder", flunderName, "--ignore-not-found=true")
+		})
+
+		By("creating a Flunder through the aggregated API")
+		_, err := kubectlRunWithStdin(testNs, renderFlunderManifest("commit-create-reference"), "apply", "-f", "-")
+		Expect(err).NotTo(HaveOccurred())
+
+		var createCommitHash string
+		By("waiting for the create commit to land in git")
+		Eventually(func(g Gomega) {
+			pullLatestRepoState(g, repo.CheckoutDir)
+
+			content, err := os.ReadFile(repoFile)
+			g.Expect(err).NotTo(HaveOccurred(), "expected Flunder file to exist after create")
+			g.Expect(string(content)).To(ContainSubstring("reference: commit-create-reference"))
+
+			createCommitHash = readLatestCommitForPath(g, "[CREATE]")
+		}, 2*time.Minute, 2*time.Second).Should(Succeed())
+
+		By("updating the Flunder through the aggregated API")
+		_, err = kubectlRunWithStdin(testNs, renderFlunderManifest("commit-update-reference"), "apply", "-f", "-")
+		Expect(err).NotTo(HaveOccurred())
+
+		var updateCommitHash string
+		By("waiting for the update commit to land in git")
+		Eventually(func(g Gomega) {
+			pullLatestRepoState(g, repo.CheckoutDir)
+
+			content, err := os.ReadFile(repoFile)
+			g.Expect(err).NotTo(HaveOccurred(), "expected Flunder file to exist after update")
+			g.Expect(string(content)).To(ContainSubstring("reference: commit-update-reference"))
+			g.Expect(string(content)).NotTo(ContainSubstring("reference: commit-create-reference"))
+
+			updateCommitHash = readLatestCommitForPath(g, "[UPDATE]")
+			g.Expect(updateCommitHash).NotTo(Equal(createCommitHash))
+		}, 2*time.Minute, 2*time.Second).Should(Succeed())
+
+		By("deleting the Flunder through the aggregated API")
+		_, err = kubectlRunInNamespace(testNs, "delete", "flunder", flunderName)
+		Expect(err).NotTo(HaveOccurred())
+
+		By("waiting for the delete commit to land in git")
+		Eventually(func(g Gomega) {
+			pullLatestRepoState(g, repo.CheckoutDir)
+
+			_, statErr := os.Stat(repoFile)
+			g.Expect(os.IsNotExist(statErr)).To(BeTrue(), "expected Flunder file to be removed after delete")
+
+			deleteCommitHash := readLatestCommitForPath(g, "[DELETE]")
+			g.Expect(deleteCommitHash).NotTo(Equal(updateCommitHash))
+
+			subjectsOutput, err := gitRun(repo.CheckoutDir, "log", "--format=%s", "-n", "3", "--", repoPath)
+			g.Expect(err).NotTo(HaveOccurred())
+			subjects := nonEmptyTrimmedLines(subjectsOutput)
+			subjectsJoined := strings.Join(subjects, "\n")
+			g.Expect(subjectsJoined).To(ContainSubstring("[DELETE]"))
+			g.Expect(subjectsJoined).To(ContainSubstring("[UPDATE]"))
+			g.Expect(subjectsJoined).To(ContainSubstring("[CREATE]"))
+		}, 2*time.Minute, 2*time.Second).Should(Succeed())
 	})
 })
