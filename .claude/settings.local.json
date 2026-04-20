@@ -6,7 +6,7 @@
       "Bash(kubectl apply:*)",
       "Bash(kubectl wait:*)",
       "Bash(kubectl logs:*)",
-      "Bash(chmod +x /workspaces/gitops-reverser/hack/demo/setup-holland-stuff-deployment.sh)",
+      "Bash(chmod +x /workspaces/gitops-reverser/hack/demo/setup-nl-stuff-deployment.sh)",
       "Bash(make vet:*)",
       "Bash(go:*)",
       "Bash(ls:*)",

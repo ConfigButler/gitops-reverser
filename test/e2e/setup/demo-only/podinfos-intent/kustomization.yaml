@@ -17,7 +17,7 @@ patches:
     patch: |-
       - op: replace
         path: /spec/ref/branch
-        value: holland-stuff
+        value: nl-stuff
   - target:   # Turn the normal GitOps off for now -> We can enable it for the demo, but it will create race conditions otherwise...
       group: kustomize.toolkit.fluxcd.io
       version: v1

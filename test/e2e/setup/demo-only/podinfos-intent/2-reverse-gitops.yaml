@@ -6,7 +6,7 @@ spec:
   url: http://gitea-http.gitea-e2e.svc.cluster.local:13000/testorg/demo.git
   allowedBranches:
     - main
-    - holland-stuff
+    - nl-stuff
   push:
     interval: "5s"
     maxCommits: 30
@@ -21,7 +21,7 @@ spec:
   providerRef:
     kind: GitProvider
     name: demo
-  branch: holland-stuff
+  branch: nl-stuff
   path: podinfos
 ---
 apiVersion: configbutler.ai/v1alpha1
