@@ -1,0 +1,13 @@
+apiVersion: configbutler.ai/v1alpha1
+kind: WatchRule
+metadata:
+  name: {{ .Name }}
+  namespace: {{ .Namespace }}
+spec:
+  targetRef:
+    kind: GitTarget
+    name: {{ .GitTargetName }}
+  rules:
+    - apiGroups: ["wardle.example.com"]
+      apiVersions: ["v1alpha1"]
+      resources: ["flunders"]

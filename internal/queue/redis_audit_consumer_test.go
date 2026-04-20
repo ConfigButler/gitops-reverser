@@ -234,6 +234,33 @@ func TestExtractObject_FallbackStubWhenNoRaw(t *testing.T) {
 	assert.Equal(t, "default", got.GetNamespace())
 }
 
+func TestExtractObject_CreateFallsBackToRequestObjectWhenResponseMissing(t *testing.T) {
+	obj := &unstructured.Unstructured{}
+	obj.SetAPIVersion("wardle.example.com/v1alpha1")
+	obj.SetKind("Flunder")
+	obj.SetNamespace("default")
+	obj.SetName("flunder-from-request")
+	raw, _ := obj.MarshalJSON()
+
+	ev := auditv1.Event{
+		RequestObject:  &runtime.Unknown{Raw: raw},
+		ResponseObject: nil,
+	}
+
+	got, err := extractObject(
+		ev,
+		configv1alpha1.OperationCreate,
+		"wardle.example.com/v1alpha1",
+		"flunders",
+		"default",
+		"",
+	)
+	require.NoError(t, err)
+	assert.Equal(t, "Flunder", got.GetKind())
+	assert.Equal(t, "flunder-from-request", got.GetName())
+	assert.Equal(t, "default", got.GetNamespace())
+}
+
 func TestExtractObject_InvalidJSON(t *testing.T) {
 	ev := auditv1.Event{
 		ResponseObject: &runtime.Unknown{Raw: []byte("not-json")},
@@ -786,6 +813,44 @@ func TestProcessMessage_CustomResourceUsesObjectRefAPIGroup(t *testing.T) {
 	assert.Equal(t, "default", er.calls[0].Event.Identifier.Namespace)
 	assert.Equal(t, "order-1", er.calls[0].Event.Identifier.Name)
 	assert.Equal(t, "live/", er.calls[0].Event.Path)
+	assertNoPendingMessages(t, mr)
+}
+
+func TestProcessMessage_UsesRequestObjectIdentityWhenObjectRefNameMissing(t *testing.T) {
+	mr := miniredis.RunT(t)
+	er := &fakeEventRouter{}
+
+	rs := rulestore.NewStore()
+	rs.AddOrUpdateWatchRule(
+		makeWatchRule("rule-flunder", []string{"flunders"}, []string{"v1alpha1"}, []string{"wardle.example.com"}),
+		"my-target", "default",
+		"my-provider", "default",
+		"main", "live/",
+	)
+
+	c := newTestConsumer(t, mr, rs, er)
+	require.NoError(t, c.ensureConsumerGroup(context.Background()))
+
+	obj := &unstructured.Unstructured{}
+	obj.SetAPIVersion("wardle.example.com/v1alpha1")
+	obj.SetKind("Flunder")
+	obj.SetNamespace("default")
+	obj.SetName("flunder-from-request")
+	raw, _ := obj.MarshalJSON()
+
+	ev := makeAuditEvent("create", auditv1.StageResponseComplete, "flunders", "default", "")
+	ev.ObjectRef.APIGroup = "wardle.example.com"
+	ev.ObjectRef.APIVersion = "v1alpha1"
+	ev.RequestObject = &runtime.Unknown{Raw: raw}
+	ev.ResponseObject = nil
+	pushAuditMessage(t, mr, ev)
+
+	require.NoError(t, c.readAndProcessBatch(context.Background()))
+
+	require.Len(t, er.calls, 1)
+	assert.Equal(t, "flunder-from-request", er.calls[0].Event.Identifier.Name)
+	assert.Equal(t, "flunder-from-request", er.calls[0].Event.Object.GetName())
+	assert.Equal(t, "default", er.calls[0].Event.Identifier.Namespace)
 	assertNoPendingMessages(t, mr)
 }
 

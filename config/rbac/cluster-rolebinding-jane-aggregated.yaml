@@ -1,0 +1,12 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: gitops-reverser-demo-jane-aggregated-access
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: gitops-reverser-demo-jane-aggregated-edit
+subjects:
+- apiGroup: rbac.authorization.k8s.io
+  kind: User
+  name: jane@acme.com

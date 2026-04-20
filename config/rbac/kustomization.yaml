@@ -3,5 +3,7 @@ kind: Kustomization
 resources:
   - sa.yaml
   - role.yaml
+  - cluster-role-jane-aggregated.yaml
   - cluster-rolebinding.yaml
   - cluster-rolebinding-jane.yaml   # E2E-only helper: allows impersonated user jane@acme.com writes in tests.
+  - cluster-rolebinding-jane-aggregated.yaml

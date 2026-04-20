@@ -1,0 +1,8 @@
+apiVersion: wardle.example.com/v1alpha1
+kind: Flunder
+metadata:
+  name: {{ .Name }}
+  namespace: {{ .Namespace }}
+spec:
+  referenceType: "Flunder"
+  reference: "some-flunder"
