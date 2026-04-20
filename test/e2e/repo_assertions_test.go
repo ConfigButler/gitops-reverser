@@ -31,10 +31,22 @@ import (
 func pullLatestRepoState(g Gomega, checkoutDir string) {
 	GinkgoHelper()
 
-	output, err := gitRun(checkoutDir, "pull", "--ff-only")
+	output, err := gitRun(checkoutDir, "fetch", "origin", "main")
 	if err != nil {
 		g.Expect(err).NotTo(HaveOccurred(),
-			fmt.Sprintf("Should successfully pull latest changes. Output: %s", output))
+			fmt.Sprintf("Should successfully fetch latest changes. Output: %s", output))
+	}
+
+	output, err = gitRun(checkoutDir, "checkout", "-B", "main", "origin/main")
+	if err != nil {
+		g.Expect(err).NotTo(HaveOccurred(),
+			fmt.Sprintf("Should successfully align local main with origin/main. Output: %s", output))
+	}
+
+	output, err = gitRun(checkoutDir, "reset", "--hard", "origin/main")
+	if err != nil {
+		g.Expect(err).NotTo(HaveOccurred(),
+			fmt.Sprintf("Should successfully reset local main to origin/main. Output: %s", output))
 	}
 }
 

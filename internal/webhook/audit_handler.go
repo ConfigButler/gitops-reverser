@@ -193,12 +193,6 @@ func (h *AuditHandler) processEvents(ctx context.Context, clusterID string, even
 			return fmt.Errorf("failed to check audit event: %w", err)
 		}
 
-		if h.config.Queue != nil {
-			if err := h.config.Queue.Enqueue(ctx, clusterID, auditEventV1); err != nil {
-				return fmt.Errorf("failed to enqueue audit event %q: %w", auditEvent.AuditID, err)
-			}
-		}
-
 		gvr := h.extractGVR(&auditEvent)
 		action := auditEvent.Verb
 
@@ -224,18 +218,26 @@ func (h *AuditHandler) processEvents(ctx context.Context, clusterID string, even
 			attribute.String("processed", strconv.FormatBool(process)),
 		))
 
-		if process {
-			log.Info("Processed audit event",
-				"clusterID", clusterID,
-				"gvr", gvr,
-				"action", action,
-				"auditID", auditEvent.AuditID,
-				"user", user,
-				"ips", auditEvent.SourceIPs,
-				"userAgent", auditEvent.UserAgent)
-
-			h.writeAuditEventToFile(&auditEvent)
+		if !process {
+			continue
 		}
+
+		if h.config.Queue != nil {
+			if err := h.config.Queue.Enqueue(ctx, clusterID, auditEventV1); err != nil {
+				return fmt.Errorf("failed to enqueue audit event %q: %w", auditEvent.AuditID, err)
+			}
+		}
+
+		log.Info("Processed audit event",
+			"clusterID", clusterID,
+			"gvr", gvr,
+			"action", action,
+			"auditID", auditEvent.AuditID,
+			"user", user,
+			"ips", auditEvent.SourceIPs,
+			"userAgent", auditEvent.UserAgent)
+
+		h.writeAuditEventToFile(&auditEvent)
 	}
 
 	return nil
@@ -323,12 +325,30 @@ func (h *AuditHandler) extractGVR(event *audit.Event) string {
 
 // checkEvent validates an audit event before processing.
 func (h *AuditHandler) checkEvent(event *audit.Event) (bool, error) {
-	process := event.ObjectRef.Subresource != "status"
+	process := event.ObjectRef == nil || event.ObjectRef.Subresource != "status"
 	if string(event.AuditID) == "" {
 		return process, errors.New("invalid audit event: auditID cannot be empty")
 	}
+	if !hasAuditObjectBody(event) && !allowsBodylessDelete(event) {
+		return false, nil
+	}
 
 	return process, nil
+}
+
+func hasAuditObjectBody(event *audit.Event) bool {
+	return hasRuntimeUnknownBody(event.RequestObject) || hasRuntimeUnknownBody(event.ResponseObject)
+}
+
+func hasRuntimeUnknownBody(object *runtime.Unknown) bool {
+	return object != nil && len(object.Raw) > 0
+}
+
+func allowsBodylessDelete(event *audit.Event) bool {
+	return event.Verb == "delete" &&
+		event.ObjectRef != nil &&
+		event.ObjectRef.Resource != "" &&
+		event.ObjectRef.Name != ""
 }
 
 // writeAuditEventToFile writes an audit event to a YAML file for debugging and testing.

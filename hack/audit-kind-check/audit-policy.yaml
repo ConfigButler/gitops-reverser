@@ -1,0 +1,11 @@
+apiVersion: audit.k8s.io/v1
+kind: Policy
+omitStages:
+  - RequestReceived
+rules:
+  - level: RequestResponse
+    resources:
+      - group: wardle.example.com
+      - group: ""
+        resources: ["configmaps"]
+  - level: None

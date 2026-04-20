@@ -30,6 +30,7 @@ vars:
   CONTAINER_TOOL: '{{.CONTAINER_TOOL | default "docker"}}'
   TASK_BIN: '{{.TASK_BIN | default "task"}}'
   E2E_LOCAL_IMAGE: '{{.E2E_LOCAL_IMAGE | default "gitops-reverser:e2e-local"}}'
+  E2E_AGGREGATED_PROXY_IMAGE: '{{.E2E_AGGREGATED_PROXY_IMAGE | default "audit-pass-through-apiserver:e2e-local"}}'
   PROJECT_IMAGE:
     sh: |
       if [ -n "${PROJECT_IMAGE:-}" ]; then
@@ -108,6 +109,7 @@ tasks:
       - task: install
       - task: _project-image-ready
       - task: _image-loaded
+      - task: _aggregated-proxy-image-loaded
       - task: _controller-deployed
       - task: _age-key
       - task: _sops-secret-yaml
@@ -136,6 +138,12 @@ tasks:
         export PROMETHEUS_PORT="{{.PROMETHEUS_PORT}}"
         export VALKEY_PORT="{{.VALKEY_PORT}}"
         bash hack/e2e/setup-port-forwards.sh
+
+  sample-apiserver-proxy-image-load:
+    desc: Build and load the aggregated API audit pass-through proxy image into the e2e cluster
+    cmds:
+      - task: _aggregated-proxy-image-ready
+      - task: _aggregated-proxy-image-loaded
 
   install:
     desc: Install using the configured INSTALL_MODE
@@ -618,6 +626,30 @@ tasks:
           .
         {{.CONTAINER_TOOL}} inspect --format='{{"{{"}}.Id{{"}}"}}' "{{.E2E_LOCAL_IMAGE}}" > "{{.IS}}/controller.id"
 
+  _aggregated-proxy-image-id:
+    method: timestamp
+    sources:
+      - external-prototype/audit-pass-through-apiserver/cmd/**/*.go
+      - external-prototype/audit-pass-through-apiserver/pkg/**/*.go
+      - external-prototype/audit-pass-through-apiserver/go.mod
+      - external-prototype/audit-pass-through-apiserver/go.sum
+      - external-prototype/audit-pass-through-apiserver/Dockerfile
+      - exclude: external-prototype/audit-pass-through-apiserver/cmd/**/*_test.go
+      - exclude: external-prototype/audit-pass-through-apiserver/pkg/**/*_test.go
+    generates:
+      - '{{.IS}}/aggregated-proxy.id'
+    status:
+      - test -f "{{.IS}}/aggregated-proxy.id"
+    cmds:
+      - mkdir -p "{{.IS}}"
+      - |
+        {{.CONTAINER_TOOL}} build \
+          --build-arg TARGETOS="$(go env GOOS)" \
+          --build-arg TARGETARCH="$(go env GOARCH)" \
+          -t "{{.E2E_AGGREGATED_PROXY_IMAGE}}" \
+          external-prototype/audit-pass-through-apiserver
+        {{.CONTAINER_TOOL}} inspect --format='{{"{{"}}.Id{{"}}"}}' "{{.E2E_AGGREGATED_PROXY_IMAGE}}" > "{{.IS}}/aggregated-proxy.id"
+
   _project-image-ready-local:
     method: timestamp
     sources:
@@ -656,6 +688,20 @@ tasks:
           task _project-image-ready-local
         fi
 
+  _aggregated-proxy-image-ready:
+    method: timestamp
+    sources:
+      - '{{.IS}}/aggregated-proxy.id'
+    generates:
+      - '{{.IS}}/aggregated-proxy-image.ready'
+    status:
+      - test -f "{{.IS}}/aggregated-proxy-image.ready"
+      - test "$(<"{{.IS}}/aggregated-proxy-image.ready")" = "{{.E2E_AGGREGATED_PROXY_IMAGE}}"
+    cmds:
+      - task: _aggregated-proxy-image-id
+      - mkdir -p "{{.IS}}"
+      - printf '%s\n' "{{.E2E_AGGREGATED_PROXY_IMAGE}}" > "{{.IS}}/aggregated-proxy-image.ready"
+
   _image-loaded:
     method: timestamp
     sources:
@@ -674,6 +720,26 @@ tasks:
           IMAGE_DELIVERY_MODE="{{.IMAGE_DELIVERY_MODE}}" \
           CONTROLLER_ID_TASK="_controller-image-id" TASK_BIN="{{.TASK_BIN}}" \
           CONTAINER_TOOL="{{.CONTAINER_TOOL}}" K3D="{{.K3D}}" STAMP_FILE="{{.CS}}/image.loaded" \
+          bash hack/e2e/load-image.sh
+
+  _aggregated-proxy-image-loaded:
+    method: timestamp
+    sources:
+      - '{{.CS}}/ready'
+      - '{{.IS}}/aggregated-proxy-image.ready'
+    generates:
+      - '{{.CS}}/aggregated-proxy-image.loaded'
+    status:
+      - test -f "{{.CS}}/aggregated-proxy-image.loaded"
+    cmds:
+      - task: _cluster-ready
+      - mkdir -p "{{.CS}}"
+      - |
+        CTX="{{.CTX}}" CLUSTER_NAME="{{.CLUSTER_NAME}}" PROJECT_IMAGE="{{.E2E_AGGREGATED_PROXY_IMAGE}}" \
+          PROJECT_IMAGE_PROVIDED="" IMAGE_DELIVERY_MODE="load" \
+          CONTROLLER_ID_TASK="_aggregated-proxy-image-id" TASK_BIN="{{.TASK_BIN}}" \
+          CONTAINER_TOOL="{{.CONTAINER_TOOL}}" K3D="{{.K3D}}" \
+          STAMP_FILE="{{.CS}}/aggregated-proxy-image.loaded" \
           bash hack/e2e/load-image.sh
 
   _install-helm:
@@ -794,10 +860,31 @@ tasks:
           bash hack/e2e/inject-webhook-tls.sh
         touch "{{.CS}}/{{.NAMESPACE}}/webhook-tls.ready"
 
+  _sample-apiserver-proxy-webhook-kubeconfig-ready:
+    method: timestamp
+    sources:
+      - '{{.CS}}/services.ready'
+      - '{{.CS}}/{{.NAMESPACE}}/webhook-tls.ready'
+      - hack/generate-audit-webhook-kubeconfig.sh
+      - hack/e2e/prepare-sample-apiserver-proxy-webhook-kubeconfig.sh
+    generates:
+      - '{{.CS}}/sample-apiserver-proxy-webhook-kubeconfig.ready'
+    status:
+      - test -f "{{.CS}}/sample-apiserver-proxy-webhook-kubeconfig.ready"
+    cmds:
+      - task: _services-ready
+      - task: _webhook-tls-ready
+      - |
+        CTX="{{.CTX}}" NAMESPACE="{{.NAMESPACE}}" PROXY_NAMESPACE="wardle" \
+          bash hack/e2e/prepare-sample-apiserver-proxy-webhook-kubeconfig.sh
+        touch "{{.CS}}/sample-apiserver-proxy-webhook-kubeconfig.ready"
+
   _sample-apiserver-ready:
     method: timestamp
     sources:
       - '{{.CS}}/services.ready'
+      - '{{.CS}}/aggregated-proxy-image.loaded'
+      - '{{.CS}}/sample-apiserver-proxy-webhook-kubeconfig.ready'
       - 'test/e2e/setup/manifests/sample-apiserver/**/*.yaml'
     generates:
       - '{{.CS}}/sample-apiserver.ready'
@@ -805,8 +892,16 @@ tasks:
       - test -f "{{.CS}}/sample-apiserver.ready"
     cmds:
       - task: _services-ready
+      - task: _aggregated-proxy-image-loaded
+      - task: _sample-apiserver-proxy-webhook-kubeconfig-ready
       - |
+        kubectl --context "{{.CTX}}" -n wardle wait certificate/audit-pass-through-proxy-serving-cert \
+          --for=condition=Ready --timeout=180s
+        kubectl --context "{{.CTX}}" -n wardle wait certificate/audit-pass-through-backend-client-cert \
+          --for=condition=Ready --timeout=180s
+        kubectl --context "{{.CTX}}" -n wardle rollout restart deployment/audit-pass-through-proxy
         kubectl --context "{{.CTX}}" -n wardle rollout status deployment/wardle-server --timeout=180s
+        kubectl --context "{{.CTX}}" -n wardle rollout status deployment/audit-pass-through-proxy --timeout=180s
         kubectl --context "{{.CTX}}" wait apiservice/v1alpha1.wardle.example.com \
           --for=condition=Available --timeout=180s
         for i in $(seq 1 30); do

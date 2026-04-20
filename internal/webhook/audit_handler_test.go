@@ -31,6 +31,7 @@ import (
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	auditv1 "k8s.io/apiserver/pkg/apis/audit/v1"
 	"sigs.k8s.io/yaml"
 
@@ -82,28 +83,28 @@ func TestAuditHandler_ServeHTTP(t *testing.T) {
 			name:           "valid audit event - create configmap",
 			method:         http.MethodPost,
 			path:           "/audit-webhook/cluster-a",
-			body:           `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[{"kind":"Event","level":"RequestResponse","auditID":"test-id","stage":"ResponseComplete","requestURI":"/api/v1/namespaces/default/configmaps","verb":"create","user":{"username":"test-user"},"objectRef":{"resource":"configmaps","namespace":"default","name":"test-config","apiVersion":"v1"},"responseStatus":{"code":200}}]}`,
+			body:           `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[{"kind":"Event","level":"RequestResponse","auditID":"test-id","stage":"ResponseComplete","requestURI":"/api/v1/namespaces/default/configmaps","verb":"create","user":{"username":"test-user"},"objectRef":{"resource":"configmaps","namespace":"default","name":"test-config","apiVersion":"v1"},"responseStatus":{"code":200},"responseObject":{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"test-config","namespace":"default"}}}]}`,
 			expectedStatus: http.StatusOK,
 		},
 		{
 			name:           "valid audit event - update deployment",
 			method:         http.MethodPost,
 			path:           "/audit-webhook/cluster-a",
-			body:           `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[{"kind":"Event","level":"RequestResponse","auditID":"test-id","stage":"ResponseComplete","requestURI":"/apis/apps/v1/namespaces/default/deployments/test-deploy","verb":"update","user":{"username":"test-user"},"objectRef":{"resource":"deployments","namespace":"default","name":"test-deploy","apiVersion":"apps/v1"},"responseStatus":{"code":200}}]}`,
+			body:           `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[{"kind":"Event","level":"RequestResponse","auditID":"test-id","stage":"ResponseComplete","requestURI":"/apis/apps/v1/namespaces/default/deployments/test-deploy","verb":"update","user":{"username":"test-user"},"objectRef":{"resource":"deployments","namespace":"default","name":"test-deploy","apiVersion":"apps/v1"},"responseStatus":{"code":200},"responseObject":{"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"test-deploy","namespace":"default"}}}]}`,
 			expectedStatus: http.StatusOK,
 		},
 		{
 			name:           "multiple events in batch",
 			method:         http.MethodPost,
 			path:           "/audit-webhook/cluster-a",
-			body:           `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[{"kind":"Event","auditID":"batch-event-1","verb":"create","user":{"username":"test-user"},"objectRef":{"resource":"configmaps","apiVersion":"v1"}},{"kind":"Event","auditID":"batch-event-2","verb":"update","user":{"username":"test-user"},"objectRef":{"resource":"deployments","apiVersion":"apps/v1"}}]}`,
+			body:           `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[{"kind":"Event","auditID":"batch-event-1","verb":"create","user":{"username":"test-user"},"objectRef":{"resource":"configmaps","apiVersion":"v1"},"responseObject":{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"batch-event-1","namespace":"default"}}},{"kind":"Event","auditID":"batch-event-2","verb":"update","user":{"username":"test-user"},"objectRef":{"resource":"deployments","apiVersion":"apps/v1"},"responseObject":{"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"batch-event-2","namespace":"default"}}}]}`,
 			expectedStatus: http.StatusOK,
 		},
 		{
 			name:           "newly seen cluster ID is accepted",
 			method:         http.MethodPost,
 			path:           "/audit-webhook/new-cluster-42",
-			body:           `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[{"kind":"Event","auditID":"new-cluster-test","verb":"create","user":{"username":"test-user"},"objectRef":{"resource":"configmaps","apiVersion":"v1"}}]}`,
+			body:           `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[{"kind":"Event","auditID":"new-cluster-test","verb":"create","user":{"username":"test-user"},"objectRef":{"resource":"configmaps","apiVersion":"v1"},"responseObject":{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"new-cluster-test","namespace":"default"}}}]}`,
 			expectedStatus: http.StatusOK,
 		},
 		{
@@ -350,6 +351,13 @@ func TestAuditHandler_validateEvent(t *testing.T) {
 			event: audit.Event{
 				AuditID: "valid-id",
 				Verb:    "create",
+				ResponseObject: &runtime.Unknown{
+					Raw: []byte(`{
+						"apiVersion":"v1",
+						"kind":"ConfigMap",
+						"metadata":{"name":"cm-a","namespace":"default"}
+					}`),
+				},
 				ObjectRef: &audit.ObjectReference{
 					Subresource: "",
 				},
@@ -362,6 +370,13 @@ func TestAuditHandler_validateEvent(t *testing.T) {
 			event: audit.Event{
 				AuditID: "some-status",
 				Verb:    "update",
+				ResponseObject: &runtime.Unknown{
+					Raw: []byte(`{
+						"apiVersion":"apps/v1",
+						"kind":"Deployment",
+						"metadata":{"name":"deploy-a","namespace":"default"}
+					}`),
+				},
 				ObjectRef: &audit.ObjectReference{
 					Subresource: "status",
 				},
@@ -379,6 +394,31 @@ func TestAuditHandler_validateEvent(t *testing.T) {
 				},
 			},
 			expectedErr: "invalid audit event: auditID cannot be empty",
+		},
+		{
+			name: "missing request and response bodies",
+			event: audit.Event{
+				AuditID: "bodyless-id",
+				Verb:    "create",
+				ObjectRef: &audit.ObjectReference{
+					Subresource: "",
+				},
+			},
+			expectedErr:       "",
+			expectedProcessed: false,
+		},
+		{
+			name: "bodyless delete event still processes",
+			event: audit.Event{
+				AuditID: "bodyless-delete-id",
+				Verb:    "delete",
+				ObjectRef: &audit.ObjectReference{
+					Resource: "flunders",
+					Name:     "flunder-a",
+				},
+			},
+			expectedErr:       "",
+			expectedProcessed: true,
 		},
 	}
 
@@ -448,7 +488,7 @@ func TestAuditHandler_EnqueuesAcceptedEvents(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	body := `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[{"kind":"Event","auditID":"queued-1","verb":"update","stage":"ResponseComplete","user":{"username":"test-user"},"objectRef":{"resource":"configmaps","namespace":"default","name":"cm-a","apiVersion":"v1"}}]}`
+	body := `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[{"kind":"Event","auditID":"queued-1","verb":"update","stage":"ResponseComplete","user":{"username":"test-user"},"objectRef":{"resource":"configmaps","namespace":"default","name":"cm-a","apiVersion":"v1"},"responseObject":{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"cm-a","namespace":"default"}}}]}`
 	req := httptest.NewRequest(http.MethodPost, "/audit-webhook/cluster-a", bytes.NewReader([]byte(body)))
 	w := httptest.NewRecorder()
 
@@ -461,6 +501,43 @@ func TestAuditHandler_EnqueuesAcceptedEvents(t *testing.T) {
 	assert.Equal(t, "queued-1", string(queue.events[0].AuditID))
 }
 
+func TestAuditHandler_DropsBodylessEventsBeforeQueueing(t *testing.T) {
+	queue := &fakeAuditEventQueue{}
+	handler, err := NewAuditHandler(AuditHandlerConfig{
+		Queue: queue,
+	})
+	require.NoError(t, err)
+
+	body := `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[{"kind":"Event","auditID":"bodyless-1","verb":"update","stage":"ResponseComplete","user":{"username":"test-user"},"objectRef":{"resource":"configmaps","namespace":"default","name":"cm-a","apiVersion":"v1"}}]}`
+	req := httptest.NewRequest(http.MethodPost, "/audit-webhook/cluster-a", bytes.NewReader([]byte(body)))
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	require.Equal(t, 0, queue.calls)
+	require.Empty(t, queue.events)
+}
+
+func TestAuditHandler_EnqueuesBodylessDeleteEvents(t *testing.T) {
+	queue := &fakeAuditEventQueue{}
+	handler, err := NewAuditHandler(AuditHandlerConfig{
+		Queue: queue,
+	})
+	require.NoError(t, err)
+
+	body := `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[{"kind":"Event","auditID":"bodyless-delete-1","verb":"delete","stage":"ResponseComplete","user":{"username":"test-user"},"objectRef":{"resource":"flunders","namespace":"default","name":"flunder-a","apiVersion":"wardle.example.com/v1alpha1"}}]}`
+	req := httptest.NewRequest(http.MethodPost, "/audit-webhook/cluster-a", bytes.NewReader([]byte(body)))
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	require.Equal(t, 1, queue.calls)
+	require.Len(t, queue.events, 1)
+	assert.Equal(t, "bodyless-delete-1", string(queue.events[0].AuditID))
+}
+
 func TestAuditHandler_EnqueueFailureReturnsInternalServerError(t *testing.T) {
 	queue := &fakeAuditEventQueue{err: errors.New("queue down")}
 	handler, err := NewAuditHandler(AuditHandlerConfig{
@@ -468,7 +545,7 @@ func TestAuditHandler_EnqueueFailureReturnsInternalServerError(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	body := `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[{"kind":"Event","auditID":"queued-1","verb":"create","stage":"ResponseComplete","user":{"username":"test-user"},"objectRef":{"resource":"secrets","namespace":"default","name":"secret-a","apiVersion":"v1"}}]}`
+	body := `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[{"kind":"Event","auditID":"queued-1","verb":"create","stage":"ResponseComplete","user":{"username":"test-user"},"objectRef":{"resource":"secrets","namespace":"default","name":"secret-a","apiVersion":"v1"},"responseObject":{"apiVersion":"v1","kind":"Secret","metadata":{"name":"secret-a","namespace":"default"}}}]}`
 	req := httptest.NewRequest(http.MethodPost, "/audit-webhook/cluster-a", bytes.NewReader([]byte(body)))
 	w := httptest.NewRecorder()
 
