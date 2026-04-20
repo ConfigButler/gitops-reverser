@@ -271,6 +271,85 @@ spec:
 		ensureFlunderWatchRuleReady()
 	})
 
+	It("should attribute Flunder commits to the impersonated user", Label("smoke"), func() {
+		ensureFlunderWatchRuleReady()
+
+		streamName := defaultAuditRedisStream
+		flunderName := fmt.Sprintf("aggregated-impersonation-flunder-%d", GinkgoRandomSeed())
+		repoPath := path.Join(
+			aggregatedPath,
+			fmt.Sprintf("wardle.example.com/v1alpha1/flunders/%s/%s.yaml", testNs, flunderName),
+		)
+		repoFile := filepath.Join(repo.CheckoutDir, repoPath)
+		flunderManifest := fmt.Sprintf(`apiVersion: wardle.example.com/v1alpha1
+kind: Flunder
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  reference: impersonated-reference
+`, flunderName, testNs)
+
+		By("connecting to Valkey through the e2e port-forward")
+		client := newE2EValkeyClient()
+		defer func() {
+			_ = client.Close()
+		}()
+
+		Eventually(func(g Gomega) {
+			g.Expect(client.Ping(context.Background()).Err()).NotTo(HaveOccurred())
+		}, 30*time.Second, 2*time.Second).Should(Succeed())
+
+		By("recording the latest audit stream entry before the impersonated create")
+		baselineID, err := latestAuditStreamID(context.Background(), client, streamName)
+		Expect(err).NotTo(HaveOccurred())
+
+		DeferCleanup(func() {
+			if skipCleanupBecauseResourcesArePreserved(fmt.Sprintf("Flunder %s/%s", testNs, flunderName)) {
+				return
+			}
+			_, _ = kubectlRunInNamespace(testNs, "delete", "flunder", flunderName, "--ignore-not-found=true")
+		})
+
+		By("creating a Flunder through the aggregated API as an impersonated user")
+		_, err = kubectlRunWithStdin(testNs, flunderManifest, "--as=jane@acme.com", "apply", "-f", "-")
+		Expect(err).NotTo(HaveOccurred())
+
+		By("observing the impersonated user in the audit payload")
+		Eventually(func(g Gomega) {
+			flunderAudit, findErr := findAuditPayloadSince(
+				context.Background(),
+				client,
+				streamName,
+				baselineID,
+				300,
+				func(payload map[string]interface{}) bool {
+					return auditPayloadMatches(payload, "wardle.example.com", "flunders", testNs, flunderName, "create")
+				},
+			)
+			g.Expect(findErr).NotTo(HaveOccurred())
+			g.Expect(auditObjectRefName(flunderAudit.Payload)).To(Equal(flunderName))
+			g.Expect(auditEffectiveUsername(flunderAudit.Payload)).To(Equal("jane@acme.com"))
+		}, 30*time.Second, 2*time.Second).Should(Succeed())
+
+		By("verifying the resulting git commit uses the impersonated user as author")
+		Eventually(func(g Gomega) {
+			pullLatestRepoState(g, repo.CheckoutDir)
+
+			content, readErr := os.ReadFile(repoFile)
+			g.Expect(readErr).NotTo(HaveOccurred(), "expected Flunder file to exist after impersonated create")
+			g.Expect(string(content)).To(ContainSubstring("reference: impersonated-reference"))
+
+			hash, hashErr := latestCommitHashForPath(repo.CheckoutDir, repoPath)
+			g.Expect(hashErr).NotTo(HaveOccurred())
+			g.Expect(hash).NotTo(BeEmpty())
+
+			author, authorErr := gitRun(repo.CheckoutDir, "show", "-s", "--format=%an <%ae>", hash)
+			g.Expect(authorErr).NotTo(HaveOccurred())
+			g.Expect(strings.TrimSpace(author)).To(Equal("jane@acme.com <jane@acme.com>"))
+		}, 2*time.Minute, 2*time.Second).Should(Succeed())
+	})
+
 	It("should create separate git commits for Flunder create, update, and delete", Label("smoke"), func() {
 		ensureFlunderWatchRuleReady()
 
@@ -371,3 +450,32 @@ spec:
 		}, 2*time.Minute, 2*time.Second).Should(Succeed())
 	})
 })
+
+func auditEffectiveUsername(payload map[string]interface{}) string {
+	if impersonated := nestedAuditString(payload, "impersonatedUser", "username"); impersonated != "" {
+		return impersonated
+	}
+
+	return nestedAuditString(payload, "user", "username")
+}
+
+func nestedAuditString(payload map[string]interface{}, fields ...string) string {
+	current := any(payload)
+	for _, field := range fields {
+		nextMap, ok := current.(map[string]interface{})
+		if !ok {
+			return ""
+		}
+		current, ok = nextMap[field]
+		if !ok {
+			return ""
+		}
+	}
+
+	value, ok := current.(string)
+	if !ok {
+		return ""
+	}
+
+	return strings.TrimSpace(value)
+}

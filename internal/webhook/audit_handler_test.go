@@ -26,8 +26,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -42,24 +42,10 @@ import (
 	audit "k8s.io/apiserver/pkg/apis/audit"
 )
 
-type fakeAuditEventQueue struct {
-	mu       sync.Mutex
-	events   []auditv1.Event
-	err      error
-	calls    int
-	clusters []string
-}
+type errorAuditEventQueue struct{ err error }
 
-func (q *fakeAuditEventQueue) Enqueue(_ context.Context, clusterID string, event auditv1.Event) error {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	q.calls++
-	q.clusters = append(q.clusters, clusterID)
-	q.events = append(q.events, event)
-	if q.err != nil {
-		return q.err
-	}
-	return nil
+func (q errorAuditEventQueue) Enqueue(_ context.Context, _ string, _ auditv1.Event) error {
+	return q.err
 }
 
 func TestMain(m *testing.M) {
@@ -481,67 +467,63 @@ func TestAuditHandler_RejectsOversizedBody(t *testing.T) {
 	assert.Contains(t, w.Body.String(), "request body too large")
 }
 
-func TestAuditHandler_EnqueuesAcceptedEvents(t *testing.T) {
-	queue := &fakeAuditEventQueue{}
-	handler, err := NewAuditHandler(AuditHandlerConfig{
-		Queue: queue,
-	})
-	require.NoError(t, err)
+func TestAuditHandler_BodyPresenceControlsDumping(t *testing.T) {
+	tests := []struct {
+		name           string
+		body           string
+		expectedStatus int
+		expectedDumped []string
+	}{
+		{
+			name:           "events with object bodies are dumped",
+			body:           `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[{"kind":"Event","auditID":"bodyful-1","verb":"update","stage":"ResponseComplete","user":{"username":"test-user"},"objectRef":{"resource":"configmaps","namespace":"default","name":"cm-a","apiVersion":"v1"},"responseObject":{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"cm-a","namespace":"default"}}}]}`,
+			expectedStatus: http.StatusOK,
+			expectedDumped: []string{"bodyful-1.yaml"},
+		},
+		{
+			name:           "bodyless non-delete events are ignored",
+			body:           `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[{"kind":"Event","auditID":"bodyless-update-1","verb":"update","stage":"ResponseComplete","user":{"username":"test-user"},"objectRef":{"resource":"configmaps","namespace":"default","name":"cm-a","apiVersion":"v1"}}]}`,
+			expectedStatus: http.StatusOK,
+			expectedDumped: nil,
+		},
+		{
+			name:           "bodyless delete events are still dumped",
+			body:           `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[{"kind":"Event","auditID":"bodyless-delete-1","verb":"delete","stage":"ResponseComplete","user":{"username":"test-user"},"objectRef":{"resource":"flunders","namespace":"default","name":"flunder-a","apiVersion":"wardle.example.com/v1alpha1"}}]}`,
+			expectedStatus: http.StatusOK,
+			expectedDumped: []string{"bodyless-delete-1.yaml"},
+		},
+	}
 
-	body := `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[{"kind":"Event","auditID":"queued-1","verb":"update","stage":"ResponseComplete","user":{"username":"test-user"},"objectRef":{"resource":"configmaps","namespace":"default","name":"cm-a","apiVersion":"v1"},"responseObject":{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"cm-a","namespace":"default"}}}]}`
-	req := httptest.NewRequest(http.MethodPost, "/audit-webhook/cluster-a", bytes.NewReader([]byte(body)))
-	w := httptest.NewRecorder()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dumpDir := t.TempDir()
 
-	handler.ServeHTTP(w, req)
+			handler, err := NewAuditHandler(AuditHandlerConfig{
+				DumpDir: dumpDir,
+			})
+			require.NoError(t, err)
 
-	assert.Equal(t, http.StatusOK, w.Code)
-	require.Equal(t, 1, queue.calls)
-	require.Len(t, queue.events, 1)
-	assert.Equal(t, "cluster-a", queue.clusters[0])
-	assert.Equal(t, "queued-1", string(queue.events[0].AuditID))
-}
+			req := httptest.NewRequest(http.MethodPost, "/audit-webhook/cluster-a", bytes.NewReader([]byte(tt.body)))
+			w := httptest.NewRecorder()
 
-func TestAuditHandler_DropsBodylessEventsBeforeQueueing(t *testing.T) {
-	queue := &fakeAuditEventQueue{}
-	handler, err := NewAuditHandler(AuditHandlerConfig{
-		Queue: queue,
-	})
-	require.NoError(t, err)
+			handler.ServeHTTP(w, req)
 
-	body := `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[{"kind":"Event","auditID":"bodyless-1","verb":"update","stage":"ResponseComplete","user":{"username":"test-user"},"objectRef":{"resource":"configmaps","namespace":"default","name":"cm-a","apiVersion":"v1"}}]}`
-	req := httptest.NewRequest(http.MethodPost, "/audit-webhook/cluster-a", bytes.NewReader([]byte(body)))
-	w := httptest.NewRecorder()
+			assert.Equal(t, tt.expectedStatus, w.Code)
 
-	handler.ServeHTTP(w, req)
-
-	assert.Equal(t, http.StatusOK, w.Code)
-	require.Equal(t, 0, queue.calls)
-	require.Empty(t, queue.events)
-}
-
-func TestAuditHandler_EnqueuesBodylessDeleteEvents(t *testing.T) {
-	queue := &fakeAuditEventQueue{}
-	handler, err := NewAuditHandler(AuditHandlerConfig{
-		Queue: queue,
-	})
-	require.NoError(t, err)
-
-	body := `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[{"kind":"Event","auditID":"bodyless-delete-1","verb":"delete","stage":"ResponseComplete","user":{"username":"test-user"},"objectRef":{"resource":"flunders","namespace":"default","name":"flunder-a","apiVersion":"wardle.example.com/v1alpha1"}}]}`
-	req := httptest.NewRequest(http.MethodPost, "/audit-webhook/cluster-a", bytes.NewReader([]byte(body)))
-	w := httptest.NewRecorder()
-
-	handler.ServeHTTP(w, req)
-
-	assert.Equal(t, http.StatusOK, w.Code)
-	require.Equal(t, 1, queue.calls)
-	require.Len(t, queue.events, 1)
-	assert.Equal(t, "bodyless-delete-1", string(queue.events[0].AuditID))
+			entries, err := os.ReadDir(dumpDir)
+			require.NoError(t, err)
+			require.Len(t, entries, len(tt.expectedDumped))
+			for i, expectedFile := range tt.expectedDumped {
+				assert.Equal(t, expectedFile, entries[i].Name())
+				assert.FileExists(t, filepath.Join(dumpDir, expectedFile))
+			}
+		})
+	}
 }
 
 func TestAuditHandler_EnqueueFailureReturnsInternalServerError(t *testing.T) {
-	queue := &fakeAuditEventQueue{err: errors.New("queue down")}
 	handler, err := NewAuditHandler(AuditHandlerConfig{
-		Queue: queue,
+		Queue: errorAuditEventQueue{err: errors.New("queue down")},
 	})
 	require.NoError(t, err)
 
@@ -553,7 +535,6 @@ func TestAuditHandler_EnqueueFailureReturnsInternalServerError(t *testing.T) {
 
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
 	assert.Contains(t, w.Body.String(), "failed to enqueue audit event")
-	require.Equal(t, 1, queue.calls)
 }
 
 func TestExtractClusterID(t *testing.T) {
