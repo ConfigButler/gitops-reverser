@@ -115,7 +115,7 @@ jobs:
 
       - name: Validate dev container tools
         run: |
-          docker run --rm gitops-reverser-devcontainer:test bash -c "
+          docker run --rm gitops-reverser-devcontainer:test bash -lc "
             set -e
             echo '=== Validating Dev Container Tools ==='
             go version
