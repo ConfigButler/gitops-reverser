@@ -31,9 +31,10 @@ RUN apt-get update \
     && apt-get clean -y \
     && rm -rf /var/lib/apt/lists/*
 
-# Tool versions - centralized for easy updates
+# Tool versions - centralized for easy updates.
 # This devcontainer currently supports amd64 tool downloads only.
-ENV KUBECTL_VERSION=v1.35.3 \
+ENV PATH="/go/bin:/usr/local/go/bin:${PATH}" \
+    KUBECTL_VERSION=v1.35.3 \
     KUSTOMIZE_VERSION=5.8.1 \
     KUBEBUILDER_VERSION=4.13.1 \
     GOLANGCI_LINT_VERSION=v2.11.4 \
@@ -67,7 +68,7 @@ RUN curl -fsSL https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz \
     && chmod +x /usr/local/bin/helm
 
 # Install golangci-lint
-RUN curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh \
+RUN curl -sSfL https://golangci-lint.run/install.sh \
     | sh -s -- -b /usr/local/bin ${GOLANGCI_LINT_VERSION}
 
 # Install k3d (faster and kind alternative, also more stable with our docker-outside-docker setup)
