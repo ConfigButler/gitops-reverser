@@ -1,0 +1,69 @@
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: apiservice-audit-proxy
+  namespace: flux-system
+spec:
+  interval: 24h
+  url: oci://ghcr.io/configbutler/charts/apiservice-audit-proxy
+  layerSelector:
+    mediaType: application/vnd.cncf.helm.chart.content.v1.tar+gzip
+    operation: copy
+  ref:
+    semver: 0.3.0
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: aggregated-api
+  namespace: aggregated-api
+spec:
+  interval: 60m
+  timeout: 10m
+  chartRef:
+    kind: OCIRepository
+    name: apiservice-audit-proxy
+    namespace: flux-system
+  install:
+    createNamespace: false
+    disableWait: true
+    remediation:
+      retries: 3
+  upgrade:
+    disableWait: true
+    remediation:
+      retries: 3
+  values:
+    apiService:
+      enabled: true
+
+    backend:
+      url: https://api-backend.aggregated-api.svc:443
+      clientCertSecretName: audit-pass-through-backend-client-cert
+
+    webhook:
+      kubeconfigSecretName: audit-pass-through-webhook-kubeconfig
+
+    certificates:
+      mode: cert-manager
+      certManager:
+        createSelfSignedIssuer: true
+        selfSignedIssuerName: audit-pass-through-proxy-selfsigned
+        issuerRef:
+          group: cert-manager.io
+          kind: Issuer
+          name: audit-pass-through-proxy-selfsigned
+        certificateName: audit-pass-through-proxy-serving-cert
+        secretName: audit-pass-through-proxy-serving-cert
+
+    testApiserver:
+      enabled: true
+      nameOverride: api-backend
+      backendClientCert:
+        selfSignedIssuerName: audit-pass-through-backend-selfsigned
+        caSecretName: audit-pass-through-backend-client-ca
+        caIssuerName: audit-pass-through-backend-client-ca-issuer
+        clientSecretName: audit-pass-through-backend-client-cert
+
+    webhookTester:
+      enabled: false

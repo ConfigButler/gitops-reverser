@@ -6,6 +6,10 @@ Flux-managed shared services are ready.
 Use this for small, cluster-local resources that are still easier to keep as a final `kubectl apply` step than to model
 as additional Flux sources.
 
+The aggregated API e2e stack now lives under `test/e2e/setup/flux/` and is bootstrapped by Flux
+from the upstream `apiservice-audit-proxy` chart instead of being maintained here as local
+manifests.
+
 Organize related resources in subdirectories when that keeps the intent clearer.
 
 This directory is applied via the tracked [kustomization.yaml](kustomization.yaml).

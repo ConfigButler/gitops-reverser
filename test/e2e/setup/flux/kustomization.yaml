@@ -2,10 +2,12 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
 resources:
+  - namespaces/aggregated-api.yaml
   - namespaces/cert-manager.yaml
   - namespaces/gitea-e2e.yaml
   - namespaces/prometheus-operator.yaml
   - namespaces/valkey-e2e.yaml
+  - releases/aggregated-api.yaml
   - repositories/prometheus-operator.yaml
   - repositories/jetstack.yaml
   - repositories/gitea-charts.yaml
