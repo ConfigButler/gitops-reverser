@@ -28,6 +28,10 @@ resources are theoretically supported: "yes, you can watch resources served thro
 CRD is not required." However, this has **never been tested end-to-end**. This design closes that
 gap.
 
+The concrete bootstrap and wiring plan for the proxy-backed environment lives in
+[e2e-aggregated-apiserver-proxy-hookup-plan.md](e2e-aggregated-apiserver-proxy-hookup-plan.md).
+This document focuses on **what the tests must prove** once that environment exists.
+
 ### What we need to prove about gitops-reverser vs. what is Kubernetes behavior
 
 This document is careful to separate concerns:
@@ -115,7 +119,18 @@ sample-apiserver.
 
 ---
 
-## Setup: Deploying `sample-apiserver` in k3d
+## Setup: Providing `sample-apiserver` in the e2e environment
+
+The concrete installation mechanism is intentionally separated from this test-design document.
+
+- This document defines the required environment capabilities and the assertions the tests should
+  make.
+- The active bootstrap ownership and rollout sequence are defined in
+  [e2e-aggregated-apiserver-proxy-hookup-plan.md](e2e-aggregated-apiserver-proxy-hookup-plan.md).
+
+At the time of writing, the preferred direction is to have Flux bootstrap the aggregated API stack
+through the `apiservice-audit-proxy` chart rather than keep a permanently hand-maintained parallel
+manifest bundle in this repo.
 
 ### TLS approach: `insecureSkipTLSVerify`
 

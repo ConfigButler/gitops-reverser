@@ -1,300 +1,512 @@
-# E2E Aggregated APIServer Proxy Hookup Plan
+# E2E Aggregated API Proxy Hookup Plan
 
-This document records the plan for hooking the audit pass-through APIServer prototype into the
-main project's e2e environment.
+This document records the plan for integrating `apiservice-audit-proxy` into the main project's
+e2e environment so aggregated API mutations can produce rich audit-backed commits.
 
-## Branch Context
+This document is intentionally written to be **self-contained**. It should be enough to hand to an
+implementation agent later without needing the rest of the conversation.
 
-This work is happening on a branch, so it is acceptable to adjust the existing
-`test/e2e/setup/manifests/sample-apiserver/` path directly for the first integration pass.
+## Related Docs
 
-That means we do **not** need to preserve the current sample-apiserver manifest shape as a stable
-baseline during this spike. If the cleanest path is to repoint the existing `APIService`,
-`Deployment`, and `Service` wiring in place, that is fine.
+- [E2E Test Design: Aggregated API Server](e2e-aggregated-apiserver-test-design.md)
+- [Kubernetes API Discovery and Watching in GitOps Reverser](kubernetes-api-discovery.md)
+- [Audit Webhook API Server Connectivity](audit-webhook-api-server-connectivity.md)
 
-Even so, keep the old direct-wiring manifests recoverable in git history rather than deleting them
-without a clear replacement. This is still a spike.
+This document is about **environment wiring and bootstrap**. The test-design document covers what
+the e2e suite must prove once the environment exists.
+
+## Repository Context
+
+The main repo already has:
+
+- Flux bootstrap manifests under `test/e2e/setup/flux/`
+- e2e orchestration in `test/e2e/Taskfile.yml`
+- aggregated API e2e coverage in `test/e2e/aggregated_apiserver_e2e_test.go`
+- gitops-reverser audit webhook kubeconfig generation logic in `hack/`
+
+The full source of the upstream helper project is available locally in:
+
+- `external-sources/apiservice-audit-proxy/`
+
+That local clone includes:
+
+- Go source
+- Helm chart
+- docs
+- e2e setup examples
+
+So the implementation should treat `external-sources/apiservice-audit-proxy/` as the local source
+reference when checking how the project works, even though the actual cluster bootstrap should use
+the packaged OCI chart.
+
+## Design Bias
+
+Bias hard toward the **simplest reusable approach**.
+
+That means:
+
+- reuse the upstream Helm chart instead of copying its resources into this repo
+- reuse upstream chart features instead of adding gitops-reverser-specific manifests when possible
+- prefer small upstream changes if they make the integration cleaner
+- avoid maintaining a second parallel demo stack in gitops-reverser
+
+If something is awkward in the chart and would force a lot of local glue code here, it is
+acceptable to change the upstream `apiservice-audit-proxy` project instead. It is a new project and
+is intended for `gitops-reverser`.
+
+## Simple Plan
+
+The intended implementation path is:
+
+1. install `apiservice-audit-proxy` via Flux from the packaged OCI chart
+2. enable the sample-apiserver backend through that chart
+3. make the HelmRelease non-blocking during bootstrap so a not-yet-present webhook Secret does not
+   deadlock Flux
+4. let the proxy reference the final webhook Secret from the start, even before that Secret exists
+5. create the final webhook Secret later from gitops-reverser e2e wiring
+6. wait for the proxy, backend, `APIService`, and discovery checks to become healthy
+
+If that path feels complicated in practice, prefer simplifying the upstream chart rather than
+adding more local special-case logic here.
+
+## Naming Decision
+
+Use `aggregated-api` as the repo-facing name for this feature.
+
+That means:
+
+- docs, task names, readiness gates, and values files should prefer `aggregated-api`
+- Flux resources that we own should prefer `aggregated-api`
+- user-facing language in the repo should prefer "aggregated API" over "Wardle"
+
+Keep `wardle` only where it is part of the upstream sample-apiserver surface:
+
+- API group `wardle.example.com`
+- kinds such as `Flunder` and `Fischer`
+- any upstream chart or manifest field that must still point at those concrete API identifiers
+
+Recommended practical split:
+
+- **feature name**: `aggregated-api`
+- **example API served inside the test**: `wardle.example.com`
+
+If we rename the Kubernetes namespace from `wardle` to `aggregated-api`, do it intentionally and
+consistently in the Flux values override. The API group itself still remains `wardle.example.com`.
 
 ## Goal
 
-Replace the current e2e aggregated API request path:
+Make the aggregated API stack part of cluster bootstrap so it is installed via Flux and ready for
+the e2e suite without a separate late `kubectl apply -k` path.
 
-`kube-apiserver -> sample-apiserver`
+Target request path:
 
-with:
+`kube-apiserver -> apiservice-audit-proxy -> sample-apiserver`
 
-`kube-apiserver -> audit pass-through proxy -> sample-apiserver`
+Target audit path:
 
-while continuing to send the resulting synthetic `audit.k8s.io/v1` `EventList` payloads into the
-existing GitOps Reverser audit receiver.
+`apiservice-audit-proxy -> gitops-reverser audit webhook`
+
+## Preferred Outcome
+
+After `task prepare-e2e`, the environment should feel simple:
+
+- Flux has already installed the aggregated API stack
+- the proxy is the `APIService` backend
+- the sample-apiserver backend is already present through the chart
+- the only extra gitops-reverser-specific step is creating the final webhook kubeconfig Secret
+- once that Secret exists, the aggregated API becomes ready and the existing e2e tests can run
+
+This should feel like "one normal bootstrap service" rather than a special snowflake path.
 
 ## Non-Goals
 
-- Do not solve duplicate suppression in this integration pass.
-- Do not solve delegated header trust in this integration pass.
-- Do not require production-grade security posture before the first e2e spike works.
+- Do not solve duplicate suppression in this pass.
+- Do not solve production-grade delegated-header trust in this pass.
+- Do not redesign the whole shared e2e bootstrap model.
+- Do not replace the Wardle sample API with a custom aggregated API.
 
-## Recommended Hookup Shape
+## Recommended Architecture
 
-### 1. Split the current Wardle backend into proxy front door and real backend
+### 1. Flux owns the aggregated API stack
 
-Keep the existing sample-apiserver container as the real backend, but stop exposing it as the
-direct `APIService` target.
+Add the aggregated API stack to `test/e2e/setup/flux/` as a first-class bootstrap service, just
+like cert-manager, Gitea, Valkey, ingress, and reflector.
 
-Target shape:
+Flux should install:
 
-- `APIService v1alpha1.wardle.example.com` points to a new proxy `Service`
-- proxy `Deployment` forwards to the real sample-apiserver `Service`
-- sample-apiserver remains responsible only for serving the Wardle API itself
-- the colocated etcd sidecar stays with the real backend `Deployment`; do not split it away from
-  the sample-apiserver pod in the first pass
+- the `apiservice-audit-proxy` chart
+- the sample-apiserver backend enabled through that chart
+- the `APIService` registration
+- the proxy serving cert machinery
+- the backend client cert machinery
 
-Concrete impact:
+This removes the need for the hand-maintained proxy/sample-apiserver manifest bundle under
+`test/e2e/setup/manifests/sample-apiserver/`.
 
-- update `test/e2e/setup/manifests/sample-apiserver/apiservice.yaml`
-- update `test/e2e/setup/manifests/sample-apiserver/service.yaml`
-- update `test/e2e/setup/manifests/sample-apiserver/deployment.yaml`
-- likely add one new proxy `Deployment`, one new proxy `Service`, and one Secret/ConfigMap mount
+The HelmRelease should explicitly depend on cert-manager because the chart relies on certificate
+resources as part of the proxy/backend setup.
 
-Name the services explicitly up front so edits stay unambiguous:
+### 2. GitOps Reverser still owns the final audit webhook Secret contents
 
-- current `api` Service becomes the proxy-facing `APIService` target
-- add a distinct backend Service such as `api-backend`
+The proxy's outbound webhook kubeconfig still depends on the gitops-reverser audit receiver wiring,
+which is produced after the controller install and post-install TLS bootstrap.
 
-If different names are chosen, pin them consistently in the manifests and readiness flow instead of
-leaving "proxy Service" and "real backend Service" abstract.
+So the ownership split should be:
 
-### 2. Build and load the prototype image into the k3d e2e cluster
+- **Flux/bootstrap ownership**: install the aggregated API stack and reference the expected Secret
+  name from the beginning
+- **gitops-reverser e2e ownership**: generate and create the final
+  `audit-pass-through-webhook-kubeconfig` Secret after `_webhook-tls-ready`
 
-Add a narrow e2e helper target that:
+### 3. Rely on the normal Kubernetes "missing Secret" behavior
 
-- builds `external-prototype/audit-pass-through-apiserver`
-- tags it with a local e2e image reference
-- imports that image into the k3d cluster
+The proxy Deployment can safely reference a Secret that does not exist yet.
 
-This should reuse the same image loading style already used by the main project where possible.
+That means:
 
-### 3. Use the existing sample-apiserver-ready flow, but retarget it
+- we do **not** need to delay creating the HelmRelease until the Secret exists
+- we do **not** need a bootstrap-time placeholder Secret just to make the chart render
+- we can let the proxy pod wait for the Secret to appear
 
-The current readiness flow already waits for:
+Practical consequence:
 
-- the Wardle deployment rollout
-- `apiservice/v1alpha1.wardle.example.com`
-- `kubectl api-resources --api-group=wardle.example.com`
+- the aggregated API HelmRelease can be present from cluster bootstrap
+- the proxy workload may remain unavailable until the webhook Secret is created later
+- once the Secret exists, the pod can proceed without re-rendering the chart
 
-For the proxy hookup, keep the same high-level readiness checks, but ensure they now validate the
-proxy-backed path rather than the old direct path.
+This is simpler than treating the Secret as a separate install phase.
 
-## Kubeconfig Bootstrap Strategy
+Important Flux-specific consequence:
 
-### Short answer
+- the aggregated API HelmRelease must not block cluster bootstrap while the webhook Secret is still
+  intentionally missing
 
-Yes, reusing the Kubernetes audit webhook kubeconfig model will help a lot for the first spike.
+Preferred approach:
 
-### Practical recommendation
+- set `spec.install.disableWait: true`
+- set `spec.upgrade.disableWait: true`
 
-For the **first usable e2e integration**, the simplest path is:
+Fallback approach if that is not enough:
 
-- reuse the **same webhook endpoint**
-- reuse the **same cluster ID path**
-- reuse the **same trust model and certificate materials**
-- provide the proxy pod its **own mounted kubeconfig Secret**, even if that kubeconfig initially
-  contains the same endpoint and client credentials as the kube-apiserver webhook config
+- make `_flux-setup-ready` gate on "HelmRelease observed / reconciling" rather than "HelmRelease
+  Ready"
 
-That gives the proxy a working outbound path quickly, using infrastructure the e2e environment
-already knows how to provision.
+## Source of Truth Decision
 
-### Important nuance
+Use the `apiservice-audit-proxy` Helm chart as the source of truth for the proxy/backend demo
+stack.
 
-The most useful bootstrap is to reuse the **contents/model**, not necessarily the exact
-control-plane-mounted file path.
+That means:
 
-The kube-apiserver bootstrap kubeconfig currently exists for the host/control-plane path. The proxy
-pod should instead get a Kubernetes Secret or projected file inside the pod, but the data inside it
-can initially mirror the same endpoint, CA, and client credentials.
+- do **not** keep evolving a parallel hand-written copy of the same resources in
+  `test/e2e/setup/manifests/sample-apiserver/`
+- do keep the local clone in `external-sources/apiservice-audit-proxy/` as the reviewable source
+  tree that explains what the chart and image are
 
-### Why this is acceptable for the spike
+Use the packaged OCI chart for the actual e2e bootstrap:
 
-- it minimizes new TLS plumbing
-- it reduces the number of moving parts in the first end-to-end test
-- it validates the real question: does the richer synthetic `EventList` reach the existing audit
-  ingestion pipeline and produce useful downstream state?
+- chart: `oci://ghcr.io/configbutler/charts/apiservice-audit-proxy`
+- install example: `helm install apiservice-audit-proxy oci://ghcr.io/configbutler/charts/apiservice-audit-proxy --version 0.3.0`
+- first pinned version: `0.3.0`
+- image: use the chart default that comes with `0.3.0`; do not add a separate image pin unless a
+  real mismatch forces it
 
-### What not to overcomplicate yet
+Use the local source tree for inspection and, if needed, upstream fixes:
 
-Do not block the first e2e hookup on:
+- `external-sources/apiservice-audit-proxy/`
 
-- a distinct proxy client identity
-- a separate CA hierarchy
-- a separate audit receiver endpoint
-- a full production-grade separation of responsibilities
+The local clone remains useful for:
 
-Those can be follow-up improvements once the basic proxy-backed e2e scenario works.
+- code review
+- documentation references
+- syncing chart expectations with the main repo
 
-## Prerequisites Before Phase 1 Starts
+## Naming and Namespace Recommendation
 
-### Inbound TLS on the proxy is now available
+Prefer `aggregated-api` for the namespace and Flux release names that this repo owns.
 
-The prototype now supports inbound HTTPS directly via:
+Recommended shape:
 
-- `--tls-cert-file`
-- `--tls-private-key-file`
+- namespace: `aggregated-api`
+- Flux source name: `apiservice-audit-proxy`
+- Flux release name: `aggregated-api`
+- task/readiness stamp names: `_aggregated-api-ready`, `aggregated-api.ready`
 
-That clears the biggest runtime prerequisite for putting it behind `APIService`.
+Keep the backend API identity unchanged:
 
-Why this still matters in the e2e wiring:
+- `APIService`: `v1alpha1.wardle.example.com`
+- resources: `flunders`, `fischers`
 
-- kube-apiserver will dial the aggregated backend over HTTPS
-- `spec.insecureSkipTLSVerify: true` on `APIService` only skips certificate verification
-- it does **not** let the backend speak plain HTTP on port 443
+Reasoning:
 
-The e2e plan should keep using the native in-process TLS path unless a sidecar is explicitly
-chosen later.
+- `aggregated-api` is clearer in our repo than `wardle`
+- `wardle` is still correct for the actual sample-apiserver API group
+- this keeps the example API stable while making our bootstrap plumbing easier to understand
 
-### Backend TLS is explicit too
+## Simplest Integration Shape
 
-The real sample-apiserver is also reached over HTTPS, and the prototype now makes that trust mode
-explicit with:
+Add new Flux resources under `test/e2e/setup/flux/`:
 
-- `--backend-insecure-skip-verify`
-- `--backend-ca-file`
-- `--backend-client-cert-file`
-- `--backend-client-key-file`
-- `--backend-server-name`
+1. namespace for the aggregated API stack
+2. OCIRepository for the chart source
+3. ConfigMap for e2e-specific values
+4. HelmRelease that installs the chart with:
+   - `apiService.enabled=true`
+   - `testApiserver.enabled=true`
+   - `webhookTester.enabled=false`
+   - `webhook.kubeconfigSecretName=audit-pass-through-webhook-kubeconfig`
+   - chart-generated ownership of `audit-pass-through-webhook-kubeconfig` disabled or absent
+   - `dependsOn` pointing at cert-manager
+   - `install.disableWait=true`
+   - `upgrade.disableWait=true`
 
-For the first spike, `--backend-insecure-skip-verify=true` is still the expected bootstrap mode.
+The values file should live next to the other Flux values files, for example:
 
-### Backend caller identity matters too
+`test/e2e/setup/flux/values/aggregated-api-values.yaml`
 
-The real sample-apiserver may still need the immediate caller to authenticate successfully before it
-will serve the proxied request. In the proxy topology, that immediate caller is the proxy pod, not
-the kube-apiserver.
+Reviewer note:
 
-So the first workable e2e path needs one explicit backend-caller story:
+- this will likely be the first `OCIRepository` under `test/e2e/setup/flux/`
 
-- give the proxy its own client certificate for the backend hop
-- configure the sample-apiserver to trust that client certificate chain
-- use that backend client identity only to get the request accepted by the backend
+Prefer this over:
 
-The synthetic audit event is still built from the inbound delegated `X-Remote-*` headers captured
-at the proxy boundary.
+- building a custom local image for the first pass
+- rendering chart manifests into this repo and owning them here
+- keeping the old `test/e2e/setup/manifests/sample-apiserver/` path active
 
-### Aggregator auth is network-trust-first in the spike
+## What To Reuse From Upstream
 
-If the proxy is deployed without `--client-ca-file` style verification, it will accept and use
-delegated `X-Remote-*` headers without authenticating the aggregator client certificate first.
+The implementation should try to reuse these upstream chart capabilities directly:
 
-That is acceptable for the first spike only if it is stated plainly:
+- `apiService.enabled=true`
+- `testApiserver.enabled=true`
+- `webhook.kubeconfigSecretName`
+- backend client certificate wiring
+- proxy serving certificate wiring
+- the chart's own resource naming and mounting conventions
 
-- the first spike effectively trusts the cluster network path and service topology
+If any of those are close but not quite right for gitops-reverser e2e, prefer a small upstream
+change over adding a custom local workaround here.
 
-This is still aligned with the non-goal that delegated header trust is not being solved here.
-The prototype currently derives trust from deployment topology / network path, not from verified
-aggregator client identity.
+One thing to verify explicitly:
 
-## First Usable Runtime Wiring
+- the chart must **not** create `audit-pass-through-webhook-kubeconfig`
+- that Secret must be owned only by gitops-reverser e2e wiring
 
-The first usable e2e runtime wiring needs two categories of flags:
+Disabling `webhookTester.enabled` is part of this, but the implementation should still confirm
+there is no other chart path that auto-creates or takes ownership of that Secret.
 
-### Implemented now
+## Acceptable Upstream Adjustments
 
-- `--listen-address`
-- `--backend-url`
-- `--backend-insecure-skip-verify`
-- `--backend-ca-file`
-- `--backend-client-cert-file`
-- `--backend-client-key-file`
-- `--backend-server-name`
-- `--webhook-kubeconfig`
-- `--webhook-timeout`
-- `--max-audit-body-bytes`
-- `--capture-temp-dir`
-- `--tls-cert-file`
-- `--tls-private-key-file`
+If the integration is cleaner with upstream changes, those changes are welcome.
 
-### Still optional for the first spike
+Examples of good upstream adjustments:
 
-- `--client-ca-file`
+- making Secret names easier to pin from values
+- making namespace/service naming clearer
+- reducing values required for the proxy + sample-apiserver demo stack
+- improving chart behavior when the webhook Secret does not exist yet
+- simplifying the values needed for a GitOps Reverser-focused install
 
-Suggested first-pass values in e2e after those prerequisites land:
+Examples of poor local-only workarounds to avoid if upstream can be fixed instead:
 
-- `--listen-address=:9445`
-- `--backend-url=https://<real-sample-apiserver-service>.<namespace>.svc:443`
-- `--backend-insecure-skip-verify=true` for the first spike, unless backend CA wiring lands first
-- `--webhook-kubeconfig=/etc/audit-pass-through/webhook/kubeconfig`
-- `--webhook-timeout=5s`
-- `--max-audit-body-bytes=1048576`
-- `--capture-temp-dir=/tmp`
-- `--tls-cert-file=/etc/audit-pass-through/tls/tls.crt`
-- `--tls-private-key-file=/etc/audit-pass-through/tls/tls.key`
+- carrying a large forked manifest set in this repo
+- patching many rendered resources after install
+- maintaining duplicate TLS/cert wiring here that already exists in the chart
+- inventing a second bootstrap path just for aggregated APIs
 
-## Concrete Implementation Steps
+## Readiness Model
 
-### Phase 1: Plumbing
+The current bootstrap has two readiness layers:
 
-1. Add an image build/load step for the prototype under `test/e2e/Taskfile.yml`.
-2. Add proxy manifests under `test/e2e/setup/manifests/sample-apiserver/` or a nearby sibling path.
-3. Land the prototype prerequisites from [`external-prototype/audit-pass-through-apiserver/TODO.md`](../../external-prototype/audit-pass-through-apiserver/TODO.md):
-   - inbound TLS
-   - backend TLS behavior
-4. Add a Secret or projected volume containing the proxy outbound webhook kubeconfig.
-5. Add a Secret or projected volume containing the proxy inbound serving certificate and key.
-6. Point the existing `APIService` at the proxy `Service`.
-7. Retain the real sample-apiserver plus its etcd sidecar as an internal backend `Service`.
+- `_flux-setup-ready` for Flux-managed shared services
+- later task-specific readiness for components that need extra post-install work
 
-### Phase 2: Readiness
+The aggregated API stack should follow the same pattern.
 
-1. Extend `_sample-apiserver-ready` so it waits for the proxy deployment too.
-   In practice, the existing task already keys off the manifest glob under
-   `test/e2e/setup/manifests/sample-apiserver/**/*.yaml`, so adding the proxy manifests there is
-   enough to make the timestamp trigger rerun.
-2. Continue waiting for `apiservice/v1alpha1.wardle.example.com` to become `Available`.
-3. Continue asserting that `flunders` appear in API discovery.
+### Phase A: Flux bootstrap ready enough
 
-### Phase 3: Verification
+`_flux-setup-ready` should confirm that Flux has created the aggregated API release objects, but it
+should **not** require the proxy Deployment to be Available yet.
 
-Add one focused e2e scenario that:
+Reason:
 
-1. creates a `Flunder`
-2. waits for the audit pipeline to ingest the resulting event
-3. verifies that the downstream event includes the fields this prototype is intended to recover:
-   - `objectRef.name`
-   - `requestObject`
-   - `responseObject`
+- the proxy pod is allowed to wait on the missing webhook Secret
+- requiring full readiness here would deadlock bootstrap on a Secret that is intentionally created
+  later by gitops-reverser e2e logic
+- default Flux wait behavior is not compatible with this plan unless explicitly disabled for this
+  HelmRelease
 
-For the first pass, `create` is enough. `update` and `delete` can follow after that path is stable.
+### Phase B: aggregated API fully ready
 
-## Suggested First Assertion Strategy
+Create a dedicated `_aggregated-api-ready` gate that runs after:
 
-Do not start by asserting the full Git write-back path.
+- the gitops-reverser controller is installed
+- `_webhook-tls-ready` has generated the final audit receiver kubeconfig material
 
-The tighter first proof is:
+That gate should:
 
-- the proxy-backed aggregated request succeeds
-- the existing audit receiver accepts the proxy's `EventList`
-- the queued or dumped event contains the richer fields absent from native kube aggregated audit
+1. create/update `audit-pass-through-webhook-kubeconfig` in the aggregated API namespace
+2. wait for the proxy Deployment to become Available
+3. wait for the sample-apiserver backend to become Available
+4. wait for `apiservice/v1alpha1.wardle.example.com` to become `Available`
+5. confirm discovery shows `flunders`
 
-That narrows failures to the load-bearing integration point.
+This is the point where the aggregated API path becomes truly usable for e2e.
+
+Keep the gap between Secret creation and full readiness as short as possible so the cluster does
+not spend long with an unhealthy registered `APIService`.
+
+## Minimal Local Ownership
+
+The gitops-reverser repo should only need to own:
+
+- Flux resources that install the chart
+- one e2e values file for the chart
+- one readiness gate that creates the final webhook kubeconfig Secret and waits for health
+- documentation and test wiring
+
+Everything else should ideally stay in or come from `apiservice-audit-proxy`.
+
+## Concrete Implementation Plan
+
+### Phase 1: Move bootstrap ownership into Flux
+
+1. Add a namespace manifest for the aggregated API stack under `test/e2e/setup/flux/namespaces/`.
+2. Add an `OCIRepository` source for the packaged chart.
+3. Add `test/e2e/setup/flux/values/aggregated-api-values.yaml`.
+4. Add a HelmRelease for `apiservice-audit-proxy` to `test/e2e/setup/flux/releases/` with:
+   - `dependsOn` on cert-manager
+   - `install.disableWait=true`
+   - `upgrade.disableWait=true`
+5. Include those resources from `test/e2e/setup/flux/kustomization.yaml`.
+6. Before committing the HelmRelease, sanity-check the namespace-dependent rendering with
+   `helm template` against the override values so that choosing `aggregated-api` does not leave
+   stray hard-coded `wardle` namespace references in service URLs, Secret names, or mounts.
+
+### Phase 2: Remove the duplicate manifest path
+
+1. Stop treating `test/e2e/setup/manifests/sample-apiserver/` as the active source of truth.
+2. Delete `test/e2e/setup/manifests/sample-apiserver/` once the Flux path has been green for one
+   full `prepare-e2e` run.
+3. Update docs that still describe the old `kubectl apply -k test/e2e/setup/manifests` ownership
+   model for this stack.
+
+### Phase 3: Update task and readiness naming
+
+1. Rename task/readiness language from `sample-apiserver-ready` to `aggregated-api-ready`.
+2. Keep concrete checks against:
+   - `deployment/<proxy>`
+   - `deployment/<backend>`
+   - `apiservice/v1alpha1.wardle.example.com`
+   - `kubectl api-resources --api-group=wardle.example.com`
+3. Grep the whole tree for feature-name uses such as `sample-apiserver-ready` and convert them
+   together across `test/e2e/Taskfile.yml`, `hack/`, docs, and CI-related files.
+4. Leave `wardle` intact only where it refers to the actual upstream API group or example kinds.
+
+### Phase 4: Fix source and image references
+
+1. Replace stale `external-prototype/audit-pass-through-apiserver` references with
+   `external-sources/apiservice-audit-proxy` where local source references still matter.
+2. If local image loading remains part of any fast-dev path, rename the default image reference to
+   `apiservice-audit-proxy:e2e-local`.
+3. Remove doc references to the deleted prototype path.
+
+## Concrete Files Likely To Change
+
+In gitops-reverser:
+
+- `test/e2e/setup/flux/kustomization.yaml`
+- `test/e2e/setup/flux/namespaces/*.yaml`
+- `test/e2e/setup/flux/releases/*.yaml`
+- `test/e2e/setup/flux/values/aggregated-api-values.yaml`
+- `test/e2e/Taskfile.yml`
+- `hack/e2e/prepare-sample-apiserver-proxy-webhook-kubeconfig.sh` or a renamed equivalent
+- docs that still mention the old prototype path or old manifest ownership
+
+In the local upstream source, if needed:
+
+- `external-sources/apiservice-audit-proxy/charts/apiservice-audit-proxy/values.yaml`
+- `external-sources/apiservice-audit-proxy/charts/apiservice-audit-proxy/values-demo.yaml`
+- `external-sources/apiservice-audit-proxy/charts/apiservice-audit-proxy/templates/*`
+- other files under `external-sources/apiservice-audit-proxy/` as needed
+
+## Implementation Rules
+
+When implementing from this document, follow these rules:
+
+1. Start by checking whether the upstream chart already supports the needed behavior.
+2. Prefer changing upstream over adding large local glue in gitops-reverser.
+3. Keep the gitops-reverser side focused on Flux install + final Secret creation + readiness.
+4. Keep naming consistent: `aggregated-api` for our feature plumbing, `wardle` for the concrete
+   sample API group.
+5. Do not keep both the old manifest path and the new Flux path active longer than necessary.
+
+## Verification Scope
+
+The acceptance checks should stay aligned with
+[e2e-aggregated-apiserver-test-design.md](e2e-aggregated-apiserver-test-design.md):
+
+- aggregated resources are discoverable
+- WatchRules can target them
+- a `Flunder` create produces a Git commit
+- the proxy recovers `objectRef.name`, `requestObject`, and `responseObject`
+
+Do **not** make the hookup plan depend on proving every aggregated API edge case before merge.
+The load-bearing proof is that the Flux-bootstrapped environment supports the existing aggregated
+API e2e scenarios.
+
+## Done Criteria
+
+This plan is complete when all of the following are true:
+
+1. The aggregated API stack is installed by Flux during normal e2e bootstrap.
+2. The bootstrap uses the packaged OCI chart, not a large copied manifest set.
+3. The source of the project remains locally available in
+   `external-sources/apiservice-audit-proxy/`.
+4. The proxy can reference the final webhook Secret before it exists.
+5. A later readiness step creates that Secret and waits for the stack to become healthy.
+6. The old duplicate manifest-managed stack is deleted.
+7. The existing aggregated API e2e tests pass against this environment.
 
 ## Main Risks
 
-- inbound TLS on the proxy is the one prerequisite that must be resolved before Phase 1 is treated
-  as ready to start
-- proxy outbound kubeconfig/Secret mounting may be the fiddliest part
-- backend TLS behavior must be explicit rather than assumed
-- the `APIService` must still become `Available` once the proxy is inserted
-- backend service naming must stay unambiguous after the split
-- the first integration should avoid conflating proxy correctness with unrelated Git write-back
-  issues
+- Flux bootstrap can deadlock if we accidentally require the aggregated API release to become fully
+  healthy before the later webhook Secret exists.
+- If `APIService v1alpha1.wardle.example.com` exists while the proxy pod is still blocked on the
+  missing Secret, cluster-wide discovery can log errors and unrelated e2e behavior may become
+  noisy or flaky during that window.
+- Naming drift can make the stack harder to reason about if some parts still use `wardle` as the
+  feature name while others use `aggregated-api`.
+- Keeping both the Flux-managed chart and the old hand-written manifest stack alive for too long
+  invites divergence.
+- A values file that quietly bakes in the old `wardle` namespace can make the move to
+  `aggregated-api` confusing unless all URLs, Secret names, and service names are updated together.
 
 ## Recommended First Cut
 
 The fastest credible first cut is:
 
-1. directly modify the existing sample-apiserver manifest path on this branch
-2. insert the proxy as the new `APIService` backend
-3. give the proxy a kubeconfig Secret that mirrors the existing audit webhook receiver setup
-4. add one focused e2e case for aggregated `create`
+1. add the aggregated API HelmRelease to Flux bootstrap
+2. give it the final webhook Secret name up front, even before that Secret exists
+3. create the webhook Secret later in `_aggregated-api-ready`
+4. wait for the proxy/backend/APIService/discovery checks after the Secret appears
+5. delete the duplicate manifest-managed stack once the Flux path is green
 
-That is enough to validate the integration premise before investing in cleanup or stronger
-separation.
+That gets us to the desired end state quickly without inventing a second bootstrap mechanism just
+for this component.
+
+## Summary For A Future Implementation Agent
+
+If you are starting implementation with only this document:
+
+- use Flux to install `apiservice-audit-proxy` from `oci://ghcr.io/configbutler/charts/apiservice-audit-proxy`
+  pinned to `0.3.0`
+- prefer the chart as the source of truth
+- inspect local source in `external-sources/apiservice-audit-proxy/` before inventing local
+  workarounds
+- keep `aggregated-api` as the feature name and `wardle.example.com` as the actual sample API group
+- let the proxy reference the final webhook Secret from bootstrap time
+- create that Secret later from gitops-reverser e2e wiring
+- make the environment simple enough that the aggregated API test feels like a normal e2e service,
+  not a one-off special case

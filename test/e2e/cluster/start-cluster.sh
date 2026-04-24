@@ -6,6 +6,7 @@
 set -euo pipefail
 
 CLUSTER_NAME="${CLUSTER_NAME:-gitops-reverser-test-e2e}"
+K3D_API_PORT="${K3D_API_PORT:-}"
 DISABLE_K3S_TRAEFIK="${DISABLE_K3S_TRAEFIK:-true}"
 DISABLE_K3S_SERVICELB="${DISABLE_K3S_SERVICELB:-true}"
 KUBE_APISERVER_MAX_REQUESTS_INFLIGHT="${KUBE_APISERVER_MAX_REQUESTS_INFLIGHT:-800}"
@@ -165,8 +166,6 @@ create_cluster() {
         k3s_args+=("--disable=servicelb@server:0")
     fi
 
-    # NOTE: no --api-port: let k3d pick an available port.
-    #
     # Mount audit dir into the server container and pass kube-apiserver audit flags
     # via k3s "--kube-apiserver-arg=..." options.
     local create_cmd=(
@@ -174,11 +173,13 @@ create_cluster() {
       --image rancher/k3s:v1.35.2-k3s1
       --servers 1
       --agents 3
-      --api-port 6550
       --kubeconfig-update-default
       --kubeconfig-switch-context
       -v "${audit_host_dir}:/etc/kubernetes/audit@server:0"
     )
+    if [ -n "${K3D_API_PORT}" ]; then
+        create_cmd+=(--api-port "${K3D_API_PORT}")
+    fi
     local k3s_arg
     for k3s_arg in "${k3s_args[@]}"; do
         create_cmd+=(--k3s-arg "${k3s_arg}")
