@@ -53,17 +53,53 @@ func pullLatestRepoState(g Gomega, checkoutDir string) {
 func assertLatestCommitTouchesOnly(g Gomega, checkoutDir string, expectedPaths []string) {
 	GinkgoHelper()
 
-	output, err := gitRun(checkoutDir, "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD")
-	g.Expect(err).NotTo(HaveOccurred(), "Should read changed paths for latest commit")
-
-	actualPaths := nonEmptyTrimmedLines(output)
-	sort.Strings(actualPaths)
-
+	actualPaths := latestCommitTouchedPaths(g, checkoutDir)
 	expected := append([]string(nil), expectedPaths...)
 	sort.Strings(expected)
 
 	g.Expect(actualPaths).To(Equal(expected),
 		fmt.Sprintf("Latest commit should touch only expected paths. Actual: %v", actualPaths))
+}
+
+func assertLatestCommitTouchesOnlyWithOptional(
+	g Gomega,
+	checkoutDir string,
+	requiredPaths []string,
+	optionalPaths []string,
+) {
+	GinkgoHelper()
+
+	actualPaths := latestCommitTouchedPaths(g, checkoutDir)
+
+	required := append([]string(nil), requiredPaths...)
+	sort.Strings(required)
+	g.Expect(actualPaths).To(ContainElements(required),
+		fmt.Sprintf("Latest commit should include required paths. Actual: %v", actualPaths))
+
+	allowed := make(map[string]struct{}, len(requiredPaths)+len(optionalPaths))
+	for _, path := range requiredPaths {
+		allowed[path] = struct{}{}
+	}
+	for _, path := range optionalPaths {
+		allowed[path] = struct{}{}
+	}
+
+	for _, actualPath := range actualPaths {
+		_, ok := allowed[actualPath]
+		g.Expect(ok).To(BeTrue(),
+			fmt.Sprintf("Latest commit touched unexpected path %q. Actual: %v", actualPath, actualPaths))
+	}
+}
+
+func latestCommitTouchedPaths(g Gomega, checkoutDir string) []string {
+	GinkgoHelper()
+
+	output, err := gitRun(checkoutDir, "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD")
+	g.Expect(err).NotTo(HaveOccurred(), "Should read changed paths for latest commit")
+
+	actualPaths := nonEmptyTrimmedLines(output)
+	sort.Strings(actualPaths)
+	return actualPaths
 }
 
 func assertLatestCommitTouchesNoNamespaces(
