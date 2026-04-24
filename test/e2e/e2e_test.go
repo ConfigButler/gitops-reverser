@@ -806,7 +806,15 @@ var _ = Describe("Manager", Label("manager"), Ordered, func() {
 					"e2e/configmap-test",
 					fmt.Sprintf("v1/configmaps/%s/%s.yaml", testNs, configMapName),
 				)
-				assertLatestCommitTouchesOnly(g, managerRepo.CheckoutDir, []string{expectedRepoPath})
+				assertLatestCommitTouchesOnlyWithOptional(
+					g,
+					managerRepo.CheckoutDir,
+					[]string{expectedRepoPath},
+					[]string{
+						path.Join("e2e/configmap-test", "README.md"),
+						path.Join("e2e/configmap-test", ".sops.yaml"),
+					},
+				)
 				assertLatestCommitTouchesNoNamespaces(
 					g,
 					managerRepo.CheckoutDir,
