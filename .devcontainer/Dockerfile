@@ -25,8 +25,13 @@ RUN apt-get update \
     && chmod a+r /etc/apt/keyrings/docker.asc \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
        > /etc/apt/sources.list.d/docker.list \
+    && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+       -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+    && chmod a+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+       > /etc/apt/sources.list.d/github-cli.list \
     && apt-get update \
-    && apt-get -y install --no-install-recommends docker-ce-cli \
+    && apt-get -y install --no-install-recommends docker-ce-cli gh \
     && apt-get autoremove -y \
     && apt-get clean -y \
     && rm -rf /var/lib/apt/lists/*
@@ -118,6 +123,17 @@ RUN mkdir -p /tmp/golangci-init && cd /tmp/golangci-init \
 # Pre-download Go modules for caching - placed AFTER tool installation
 # This layer will be cached and only rebuilt when go.mod/go.sum changes
 # Moving this down prevents tool reinstallation when dependencies change
+RUN printf '%s\n' \
+    '# Silently load the optional repo-root .env into login shells.' \
+    'workspace_dir="${PROJECT_PATH:-}"' \
+    'if [ -n "${workspace_dir}" ] && [ -f "${workspace_dir}/.env" ]; then' \
+    '  set -a' \
+    '  . "${workspace_dir}/.env"' \
+    '  set +a' \
+    'fi' \
+    > /etc/profile.d/workspace-dotenv.sh \
+    && chmod 0644 /etc/profile.d/workspace-dotenv.sh
+
 COPY go.mod go.sum ./
 RUN go mod download
 

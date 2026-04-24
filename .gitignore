@@ -47,3 +47,4 @@ test/e2e/setup/manifests/cloudflared-public/tunnel-credentials.yaml
 *pull-secret.yaml
 loadtest
 .task
+.env

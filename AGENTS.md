@@ -101,3 +101,5 @@ describes behavior you also changed in code/config during the same task.
 ## REFERENCES
 
 - Contributing guide: [`CONTRIBUTING.md`](./CONTRIBUTING.md)
+- In the devcontainer, agents may use `gh` in read-only mode when the repo-root `.env` sets
+  `GH_TOKEN`. That `.env` file is optional, local-only, and must never be committed.
