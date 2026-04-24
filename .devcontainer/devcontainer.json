@@ -73,7 +73,7 @@
     }
   },
   "postCreateCommand": "bash .devcontainer/post-create.sh '${containerWorkspaceFolder}'",
-  "postStartCommand": "bash .devcontainer/sync-signing-key.sh",
+  "postStartCommand": "bash .devcontainer/post-start.sh '${containerWorkspaceFolder}'",
   "remoteUser": "vscode",
   "mounts": [
     "source=gomodcache,target=/go/pkg/mod,type=volume",

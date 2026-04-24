@@ -3,6 +3,9 @@
 Development environment for `gitops-reverser` with Go, Kubernetes, Docker CLI, and local SSH commit
 signing support.
 
+An optional repo-root `.env` can also provide read-only `gh` CLI access for coding agents and
+interactive debugging inside the devcontainer.
+
 ## Quick Start
 
 ### VS Code
@@ -38,6 +41,7 @@ golangci-lint version
 task --version
 bash -ic 'complete -p task >/dev/null && echo task completion ok'
 docker version
+gh --version
 git config --get gpg.format
 git config --get user.signingkey
 ssh-add -L
@@ -123,6 +127,29 @@ cat ~/.ssh/devcontainer_signing_key.pub
 cat ~/.config/git/allowed_signers
 git config --show-origin --get user.signingkey
 ```
+
+## Optional `.env` for `gh`
+
+A repo-root `.env` file is optional. If present, login shells inside the devcontainer automatically
+export its variables from `${PROJECT_PATH}/.env` via `/etc/profile.d/workspace-dotenv.sh`.
+
+This is intended for read-only GitHub access from inside the container, for example:
+
+```bash
+echo 'GH_TOKEN=<fine-grained-read-only-token>' > .env
+gh auth status
+gh run list --limit 5
+gh pr view
+```
+
+Recommended token scopes:
+
+- repository contents: read
+- metadata: read
+- pull requests: read
+- actions: read
+
+The repo-root `.env` must stay local. It is already gitignored.
 
 ## Troubleshooting
 

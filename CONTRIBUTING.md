@@ -14,6 +14,10 @@ Everything below assumes you are running inside it.
 
 See [`.devcontainer/README.md`](.devcontainer/README.md) for setup instructions.
 
+An optional repo-root `.env` file can provide read-only `gh` CLI access inside the devcontainer for
+checking PRs, Actions runs, and CI logs. Keep it local-only; the existing `.gitignore` already
+covers `.env`.
+
 ## Before submitting a PR
 
 For small fixes, docs improvements, and obvious bug fixes, feel free to open a PR directly.
