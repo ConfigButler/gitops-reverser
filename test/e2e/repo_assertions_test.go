@@ -53,7 +53,7 @@ func pullLatestRepoState(g Gomega, checkoutDir string) {
 func assertLatestCommitTouchesOnly(g Gomega, checkoutDir string, expectedPaths []string) {
 	GinkgoHelper()
 
-	actualPaths := latestCommitTouchedPaths(g, checkoutDir)
+	actualPaths := commitTouchedPaths(g, checkoutDir, "HEAD")
 	expected := append([]string(nil), expectedPaths...)
 	sort.Strings(expected)
 
@@ -61,15 +61,20 @@ func assertLatestCommitTouchesOnly(g Gomega, checkoutDir string, expectedPaths [
 		fmt.Sprintf("Latest commit should touch only expected paths. Actual: %v", actualPaths))
 }
 
-func assertLatestCommitTouchesOnlyWithOptional(
+func assertLatestCommitForPathTouchesOnlyWithOptional(
 	g Gomega,
 	checkoutDir string,
+	anchorPath string,
 	requiredPaths []string,
 	optionalPaths []string,
 ) {
 	GinkgoHelper()
 
-	actualPaths := latestCommitTouchedPaths(g, checkoutDir)
+	commitHash, err := latestCommitHashForPath(checkoutDir, anchorPath)
+	g.Expect(err).NotTo(HaveOccurred(), "Should resolve latest commit for expected path")
+	g.Expect(commitHash).NotTo(BeEmpty(), "Should find a commit touching %q", anchorPath)
+
+	actualPaths := commitTouchedPaths(g, checkoutDir, commitHash)
 
 	required := append([]string(nil), requiredPaths...)
 	sort.Strings(required)
@@ -91,10 +96,10 @@ func assertLatestCommitTouchesOnlyWithOptional(
 	}
 }
 
-func latestCommitTouchedPaths(g Gomega, checkoutDir string) []string {
+func commitTouchedPaths(g Gomega, checkoutDir, revision string) []string {
 	GinkgoHelper()
 
-	output, err := gitRun(checkoutDir, "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD")
+	output, err := gitRun(checkoutDir, "diff-tree", "--no-commit-id", "--name-only", "-r", revision)
 	g.Expect(err).NotTo(HaveOccurred(), "Should read changed paths for latest commit")
 
 	actualPaths := nonEmptyTrimmedLines(output)

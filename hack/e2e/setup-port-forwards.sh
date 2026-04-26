@@ -34,6 +34,37 @@ has_expected_forward_processes() {
     [[ -n "${gitea_pf}" && -n "${prom_pf}" && -n "${valkey_pf}" ]]
 }
 
+wait_for_ready_active_pod() {
+    local service_name="$1"
+    local namespace="$2"
+    local selector="$3"
+    local timeout_seconds="$4"
+    local deadline=$((SECONDS + timeout_seconds))
+    local pod_name
+
+    while (( SECONDS < deadline )); do
+        pod_name="$(
+            kubectl --context "$KUBE_CONTEXT" get pods \
+                -n "$namespace" \
+                -l "$selector" \
+                -o go-template='{{range .items}}{{if not .metadata.deletionTimestamp}}{{.metadata.name}}{{"\n"}}{{end}}{{end}}' \
+                | head -n 1
+        )"
+
+        if [[ -n "${pod_name}" ]]; then
+            kubectl --context "$KUBE_CONTEXT" wait --for=condition=ready "pod/${pod_name}" \
+                -n "$namespace" \
+                --timeout=15s && return 0
+        fi
+
+        sleep 2
+    done
+
+    echo "❌ ${service_name} pod failed to become ready"
+    kubectl --context "$KUBE_CONTEXT" get pods -n "$namespace" -l "$selector" || true
+    return 1
+}
+
 # Fast path: keep existing healthy forwards only if they belong to this context.
 if has_expected_forward_processes && \
    curl -fsS http://localhost:${GITEA_PORT}/api/healthz >/dev/null 2>&1 && \
@@ -54,37 +85,21 @@ echo "🔌 Setting up port-forwards for e2e testing..."
 echo "🎯 Using kube context: ${KUBE_CONTEXT}"
 
 echo "⏳ Waiting for Prometheus pod to be ready..."
-kubectl --context "$KUBE_CONTEXT" wait --for=condition=ready pod \
-    -l "prometheus=${PROMETHEUS_INSTANCE_NAME}" \
-    -n "$PROMETHEUS_NAMESPACE" \
-    --timeout=180s || {
-    echo "❌ Prometheus pod failed to become ready"
-    kubectl --context "$KUBE_CONTEXT" get pods -n "$PROMETHEUS_NAMESPACE" -l "prometheus=${PROMETHEUS_INSTANCE_NAME}" || true
-    exit 1
-}
+wait_for_ready_active_pod "Prometheus" "$PROMETHEUS_NAMESPACE" "prometheus=${PROMETHEUS_INSTANCE_NAME}" 180 || exit 1
 
 echo "✅ Prometheus pod is ready"
 
 echo "⏳ Waiting for Gitea pod to be ready..."
-kubectl --context "$KUBE_CONTEXT" wait --for=condition=ready pod \
-    -l app.kubernetes.io/name=gitea \
-    -n "$GITEA_NAMESPACE" \
-    --timeout=180s || {
-    echo "❌ Gitea pod failed to become ready"
-    exit 1
-}
+wait_for_ready_active_pod "Gitea" "$GITEA_NAMESPACE" "app.kubernetes.io/name=gitea" 180 || exit 1
 
 echo "✅ Gitea pod is ready"
 
 echo "⏳ Waiting for Valkey pod to be ready..."
-kubectl --context "$KUBE_CONTEXT" wait --for=condition=ready pod \
-    -l app.kubernetes.io/name=valkey,app.kubernetes.io/instance="${VALKEY_RELEASE_NAME}" \
-    -n "$VALKEY_NAMESPACE" \
-    --timeout=120s || {
-    echo "❌ Valkey pod failed to become ready"
-    kubectl --context "$KUBE_CONTEXT" get pods -n "$VALKEY_NAMESPACE" || true
-    exit 1
-}
+wait_for_ready_active_pod \
+    "Valkey" \
+    "$VALKEY_NAMESPACE" \
+    "app.kubernetes.io/name=valkey,app.kubernetes.io/instance=${VALKEY_RELEASE_NAME}" \
+    120 || exit 1
 
 echo "✅ Valkey pod is ready"
 

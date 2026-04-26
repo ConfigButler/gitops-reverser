@@ -304,6 +304,30 @@ func controllerPodNames() ([]string, error) {
 	return podNames, nil
 }
 
+func controllerLogs(tailLines int) (string, error) {
+	podNames, err := controllerPodNames()
+	if err != nil {
+		return "", err
+	}
+
+	logs := make([]string, 0, len(podNames))
+	for _, podName := range podNames {
+		output, logErr := kubectlRunInNamespace(
+			namespace,
+			"logs",
+			podName,
+			fmt.Sprintf("--tail=%d", tailLines),
+			"--prefix=true",
+		)
+		if logErr != nil {
+			return "", logErr
+		}
+		logs = append(logs, output)
+	}
+
+	return strings.Join(logs, "\n"), nil
+}
+
 // gitRun runs a git command in the given directory and returns combined output.
 func gitRun(dir string, args ...string) (string, error) {
 	// #nosec G204 -- Test helper only; command is fixed to git and arguments come from the e2e harness.
