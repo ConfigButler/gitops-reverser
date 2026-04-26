@@ -227,9 +227,27 @@ rewrite_kubeconfig_for_devcontainer() {
     fi
 }
 
+ensure_inotify_limits() {
+    # In Docker-outside-of-Docker, every container shares the host kernel's
+    # fs.inotify.max_user_instances (default 128). A k3d cluster with 1 server
+    # + 3 agents consumes most of those slots; once the limit is hit, containerd
+    # silently fails to write new files (e.g. the serverlb's confd config),
+    # which then surfaces later as a missing /etc/confd/values.yaml and an
+    # "unhealthy cluster" error after a docker daemon restart.
+    local current
+    current="$(cat /proc/sys/fs/inotify/max_user_instances 2>/dev/null || echo 0)"
+    if [[ "${current}" -lt 512 ]]; then
+        echo "🔧 Bumping fs.inotify.max_user_instances from ${current} to 512"
+        docker run --rm --privileged alpine \
+            sysctl -w fs.inotify.max_user_instances=512 >/dev/null
+    fi
+}
+
 main() {
     # k3d writes/merges kubeconfig into the default location; ensure it exists so the context is usable.
     mkdir -p "${HOME}/.kube"
+
+    ensure_inotify_limits
 
     export HOST_PROJECT_PATH
     HOST_PROJECT_PATH="$(resolve_host_project_path)"
