@@ -118,6 +118,7 @@ jobs:
         run: |
           docker run --rm gitops-reverser-devcontainer:test bash -lc "
             set -e
+            export PATH=/usr/local/go/bin:/go/bin:\$PATH
             echo '=== Validating Dev Container Tools ==='
             go version
             kubectl version --client

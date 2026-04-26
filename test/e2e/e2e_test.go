@@ -742,6 +742,12 @@ var _ = Describe("Manager", Label("manager"), Ordered, func() {
 			verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Ready", "")
 			verifyResourceStatus("gittarget", destName, testNs, "True", "Ready", "")
 
+			// Let any in-flight reconciles from prior specs drain before triggering
+			// our event. Without this, a stale WatchRule still in informer cache can
+			// double-commit the same ConfigMap under a different commitPath and end
+			// up on HEAD, masking our commit.
+			time.Sleep(5 * time.Second)
+
 			By("creating test ConfigMap to trigger Git commit")
 			configMapData := struct {
 				Name      string
@@ -761,15 +767,7 @@ var _ = Describe("Manager", Label("manager"), Ordered, func() {
 
 			By("waiting for controller reconciliation of ConfigMap event")
 			verifyReconciliationLogs := func(g Gomega) {
-				// Get controller logs from all pods (single-pod mode still uses label selector).
-				output, err := kubectlRunInNamespace(
-					namespace,
-					"logs",
-					"-l",
-					"control-plane=gitops-reverser",
-					"--tail=500",
-					"--prefix=true",
-				)
+				output, err := controllerLogs(500)
 				g.Expect(err).NotTo(HaveOccurred())
 
 				// Check for git commit operation in logs
@@ -806,9 +804,10 @@ var _ = Describe("Manager", Label("manager"), Ordered, func() {
 					"e2e/configmap-test",
 					fmt.Sprintf("v1/configmaps/%s/%s.yaml", testNs, configMapName),
 				)
-				assertLatestCommitTouchesOnlyWithOptional(
+				assertLatestCommitForPathTouchesOnlyWithOptional(
 					g,
 					managerRepo.CheckoutDir,
+					expectedRepoPath,
 					[]string{expectedRepoPath},
 					[]string{
 						path.Join("e2e/configmap-test", "README.md"),
