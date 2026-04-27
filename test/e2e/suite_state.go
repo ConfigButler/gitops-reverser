@@ -34,67 +34,112 @@ import (
 )
 
 var (
-	e2ePreserveResources atomic.Bool                    //nolint:gochecknoglobals // suite-scoped preservation state shared across e2e helpers
-	e2ePreserveReasonMu  sync.Mutex                     //nolint:gochecknoglobals // protects suite-scoped preservation reasons
-	e2ePreserveReasons   []string                       //nolint:gochecknoglobals // suite-scoped preservation reasons shared across e2e helpers
-	e2eCommandCancel     context.CancelFunc = func() {} //nolint:gochecknoglobals // suite-scoped cancellation hook for e2e commands
-	e2eCommandDoneCh     <-chan struct{}                //nolint:gochecknoglobals // suite-scoped done signal for e2e commands
-	e2eCommandDoneMu     sync.RWMutex                   //nolint:gochecknoglobals // protects suite-scoped command done signal
+	suiteWidePreserve        atomic.Bool                                //nolint:gochecknoglobals // suite-scoped preservation state shared across e2e helpers
+	suiteWidePreserveMu      sync.Mutex                                 //nolint:gochecknoglobals // protects suite-scoped preservation reasons
+	suiteWidePreserveReasons []string                                   //nolint:gochecknoglobals // suite-scoped preservation reasons shared across e2e helpers
+	preservedNamespacesMu    sync.RWMutex                               //nolint:gochecknoglobals // protects namespace-scoped preservation state
+	preservedNamespaces                         = map[string]struct{}{} //nolint:gochecknoglobals // namespaces intentionally preserved across cleanup calls
+	e2eCommandCancel         context.CancelFunc = func() {}             //nolint:gochecknoglobals // suite-scoped cancellation hook for e2e commands
+	e2eCommandDoneCh         <-chan struct{}                            //nolint:gochecknoglobals // suite-scoped done signal for e2e commands
+	e2eCommandDoneMu         sync.RWMutex                               //nolint:gochecknoglobals // protects suite-scoped command done signal
 )
 
-func markE2EResourcesForPreservation(reason string) {
+func markSuiteWidePreservation(reason string) {
 	trimmedReason := strings.TrimSpace(reason)
 	if trimmedReason == "" {
 		trimmedReason = "preserve requested"
 	}
 
-	e2ePreserveResources.Store(true)
+	suiteWidePreserve.Store(true)
 
-	e2ePreserveReasonMu.Lock()
-	defer e2ePreserveReasonMu.Unlock()
+	suiteWidePreserveMu.Lock()
+	defer suiteWidePreserveMu.Unlock()
 
-	for _, existing := range e2ePreserveReasons {
+	for _, existing := range suiteWidePreserveReasons {
 		if existing == trimmedReason {
 			return
 		}
 	}
 
-	e2ePreserveReasons = append(e2ePreserveReasons, trimmedReason)
+	suiteWidePreserveReasons = append(suiteWidePreserveReasons, trimmedReason)
 	_, _ = fmt.Fprintf(GinkgoWriter, "Preserving e2e resources: %s\n", trimmedReason)
 }
 
-func shouldPreserveE2EResources() bool {
-	return e2ePreserveResources.Load()
+func preserveNamespace(namespace string) {
+	trimmedNamespace := strings.TrimSpace(namespace)
+	if trimmedNamespace == "" {
+		return
+	}
+
+	preservedNamespacesMu.Lock()
+	defer preservedNamespacesMu.Unlock()
+
+	if _, exists := preservedNamespaces[trimmedNamespace]; exists {
+		return
+	}
+
+	preservedNamespaces[trimmedNamespace] = struct{}{}
+	_, _ = fmt.Fprintf(GinkgoWriter, "Preserving e2e namespace: %s\n", trimmedNamespace)
 }
 
-// skipCleanupBecauseResourcesArePreserved lets cleanup helpers opt out once the suite has decided to keep
-// cluster resources around for post-failure or post-interrupt investigation.
-func skipCleanupBecauseResourcesArePreserved(scope string) bool {
-	if !shouldPreserveE2EResources() {
+func isPreservedNamespace(namespace string) bool {
+	trimmedNamespace := strings.TrimSpace(namespace)
+	if trimmedNamespace == "" {
 		return false
 	}
 
+	preservedNamespacesMu.RLock()
+	defer preservedNamespacesMu.RUnlock()
+
+	_, exists := preservedNamespaces[trimmedNamespace]
+	return exists
+}
+
+// skipCleanupBecauseResourcesArePreserved lets cleanup helpers opt out only when the entire run has been
+// halted (Ctrl-C / SIGTERM / BeforeSuite panic) or a specific namespace has been intentionally preserved
+// (e.g. the playground for Tilt reuse). Per-spec failures deliberately do NOT preserve: the run finishes,
+// cleanup runs, and the next spec starts from a known clean state. Diagnostics for the failed spec are
+// still emitted by dumpFailureDiagnostics in AfterEach.
+func skipCleanupBecauseResourcesArePreserved(scope, namespace string) bool {
+	if suiteWidePreserve.Load() {
+		return logCleanupSkip(scope, e2ePreservationSummary())
+	}
+
+	if isPreservedNamespace(namespace) {
+		return logCleanupSkip(
+			scope,
+			fmt.Sprintf("Preserving e2e namespace %s for reuse.", strings.TrimSpace(namespace)),
+		)
+	}
+
+	return false
+}
+
+func logCleanupSkip(scope, summary string) bool {
 	message := "preserving e2e resources"
 	if trimmedScope := strings.TrimSpace(scope); trimmedScope != "" {
 		message = fmt.Sprintf("preserving e2e resources; skipping cleanup for %s", trimmedScope)
 	}
 
 	By(message)
-	_, _ = fmt.Fprintf(GinkgoWriter, "%s\n", e2ePreservationSummary())
+	if trimmedSummary := strings.TrimSpace(summary); trimmedSummary != "" {
+		_, _ = fmt.Fprintf(GinkgoWriter, "%s\n", trimmedSummary)
+	}
+
 	return true
 }
 
 func e2ePreservationSummary() string {
-	e2ePreserveReasonMu.Lock()
-	defer e2ePreserveReasonMu.Unlock()
+	suiteWidePreserveMu.Lock()
+	defer suiteWidePreserveMu.Unlock()
 
-	if len(e2ePreserveReasons) == 0 {
+	if len(suiteWidePreserveReasons) == 0 {
 		return "Preserving e2e resources for investigation."
 	}
 
 	return fmt.Sprintf(
 		"Preserving e2e resources for investigation. Reasons: %s",
-		strings.Join(e2ePreserveReasons, "; "),
+		strings.Join(suiteWidePreserveReasons, "; "),
 	)
 }
 

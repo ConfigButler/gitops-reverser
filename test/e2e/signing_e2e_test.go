@@ -95,10 +95,16 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 			commitPath := "e2e/signing-per-event"
 
 			DeferCleanup(func() {
+				if skipCleanupBecauseResourcesArePreserved(
+					fmt.Sprintf("commit signing resources for GitProvider %s/%s", testNs, providerName),
+					testNs,
+				) {
+					return
+				}
 				_, _ = kubectlRunInNamespace(testNs, "delete", "configmap", cmName, "--ignore-not-found=true")
 				cleanupWatchRule(watchRuleName, testNs)
 				cleanupGitTarget(destName, testNs)
-				_, _ = kubectlRunInNamespace(testNs, "delete", "gitprovider", providerName, "--ignore-not-found=true")
+				cleanupNamespacedResource(testNs, "gitprovider", providerName)
 			})
 
 			By("creating a GitProvider with commit signing enabled (generateWhenMissing)")
@@ -199,11 +205,17 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 		commitPath := "e2e/signing-byok"
 
 		DeferCleanup(func() {
+			if skipCleanupBecauseResourcesArePreserved(
+				fmt.Sprintf("commit signing resources for GitProvider %s/%s", testNs, providerName),
+				testNs,
+			) {
+				return
+			}
 			_, _ = kubectlRunInNamespace(testNs, "delete", "configmap", cmName, "--ignore-not-found=true")
 			cleanupWatchRule(watchRuleName, testNs)
 			cleanupGitTarget(destName, testNs)
-			_, _ = kubectlRunInNamespace(testNs, "delete", "gitprovider", providerName, "--ignore-not-found=true")
-			_, _ = kubectlRunInNamespace(testNs, "delete", "secret", signingSecretName, "--ignore-not-found=true")
+			cleanupNamespacedResource(testNs, "gitprovider", providerName)
+			cleanupNamespacedResource(testNs, "secret", signingSecretName)
 		})
 
 		By("generating a BYOK SSH signing keypair")
@@ -317,10 +329,16 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 		customTemplate := "e2e: {{.Operation}} {{.Resource}}/{{.Name}}"
 
 		DeferCleanup(func() {
+			if skipCleanupBecauseResourcesArePreserved(
+				fmt.Sprintf("commit signing resources for GitProvider %s/%s", testNs, providerName),
+				testNs,
+			) {
+				return
+			}
 			_, _ = kubectlRunInNamespace(testNs, "delete", "configmap", cmName, "--ignore-not-found=true")
 			cleanupWatchRule(watchRuleName, testNs)
 			cleanupGitTarget(destName, testNs)
-			_, _ = kubectlRunInNamespace(testNs, "delete", "gitprovider", providerName, "--ignore-not-found=true")
+			cleanupNamespacedResource(testNs, "gitprovider", providerName)
 		})
 
 		By("creating a GitProvider with custom committer and per-event message template")
@@ -382,13 +400,19 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 		customBatchTemplate := "e2e-batch: synced {{.Count}} resources to {{.GitTarget}}"
 
 		DeferCleanup(func() {
+			if skipCleanupBecauseResourcesArePreserved(
+				fmt.Sprintf("commit signing resources for GitProvider %s/%s", testNs, providerName),
+				testNs,
+			) {
+				return
+			}
 			for i := range 3 {
 				_, _ = kubectlRunInNamespace(testNs, "delete", "configmap",
 					fmt.Sprintf("batch-cm-%d", i), "--ignore-not-found=true")
 			}
 			cleanupWatchRule(watchRuleName, testNs)
 			cleanupGitTarget(destName, testNs)
-			_, _ = kubectlRunInNamespace(testNs, "delete", "gitprovider", providerName, "--ignore-not-found=true")
+			cleanupNamespacedResource(testNs, "gitprovider", providerName)
 		})
 
 		By("pre-creating ConfigMaps that the reconciler will pick up as a batch")

@@ -226,7 +226,7 @@ func applySOPSAgeKeyToNamespace(ns string) {
 
 // cleanupGitTarget deletes a GitTarget resource.
 func cleanupGitTarget(name, namespace string) {
-	if skipCleanupBecauseResourcesArePreserved(fmt.Sprintf("GitTarget %s/%s", namespace, name)) {
+	if skipCleanupBecauseResourcesArePreserved(fmt.Sprintf("GitTarget %s/%s", namespace, name), namespace) {
 		return
 	}
 	By(fmt.Sprintf("cleaning up GitTarget '%s' in ns '%s'", name, namespace))
@@ -235,7 +235,7 @@ func cleanupGitTarget(name, namespace string) {
 
 // cleanupWatchRule deletes a WatchRule resource.
 func cleanupWatchRule(name, namespace string) {
-	if skipCleanupBecauseResourcesArePreserved(fmt.Sprintf("WatchRule %s/%s", namespace, name)) {
+	if skipCleanupBecauseResourcesArePreserved(fmt.Sprintf("WatchRule %s/%s", namespace, name), namespace) {
 		return
 	}
 	By(fmt.Sprintf("cleaning up WatchRule '%s' in ns '%s'", name, namespace))
@@ -244,7 +244,7 @@ func cleanupWatchRule(name, namespace string) {
 
 // cleanupClusterWatchRule deletes a ClusterWatchRule resource.
 func cleanupClusterWatchRule(name string) {
-	if skipCleanupBecauseResourcesArePreserved(fmt.Sprintf("ClusterWatchRule %s", name)) {
+	if skipCleanupBecauseResourcesArePreserved(fmt.Sprintf("ClusterWatchRule %s", name), "") {
 		return
 	}
 	By(fmt.Sprintf("cleaning up ClusterWatchRule '%s'", name))
@@ -252,7 +252,7 @@ func cleanupClusterWatchRule(name string) {
 }
 
 func cleanupNamespace(name string) {
-	if skipCleanupBecauseResourcesArePreserved(fmt.Sprintf("namespace %s", name)) {
+	if skipCleanupBecauseResourcesArePreserved(fmt.Sprintf("namespace %s", name), name) {
 		return
 	}
 	By(fmt.Sprintf("deleting test namespace '%s'", name))
@@ -260,14 +260,14 @@ func cleanupNamespace(name string) {
 }
 
 func cleanupNamespacedResource(namespace, resource, name string) {
-	if skipCleanupBecauseResourcesArePreserved(fmt.Sprintf("%s %s/%s", resource, namespace, name)) {
+	if skipCleanupBecauseResourcesArePreserved(fmt.Sprintf("%s %s/%s", resource, namespace, name), namespace) {
 		return
 	}
 	_, _ = kubectlRunInNamespace(namespace, "delete", resource, name, "--ignore-not-found=true")
 }
 
 func cleanupClusterResource(resource, name string) {
-	if skipCleanupBecauseResourcesArePreserved(fmt.Sprintf("%s %s", resource, name)) {
+	if skipCleanupBecauseResourcesArePreserved(fmt.Sprintf("%s %s", resource, name), "") {
 		return
 	}
 	_, _ = kubectlRun("delete", resource, name, "--ignore-not-found=true")
