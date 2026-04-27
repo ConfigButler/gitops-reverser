@@ -42,12 +42,19 @@ import (
 func TestE2E(t *testing.T) {
 	initE2ECommandContext()
 	watchForE2EInterrupts()
-	RegisterFailHandler(failAndPreserveResources)
+	RegisterFailHandler(Fail)
 	_, _ = fmt.Fprintf(GinkgoWriter, "Starting gitops-reverser integration test suite\n")
 	RunSpecs(t, "e2e suite")
 }
 
 var _ = BeforeSuite(func() {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			markSuiteWidePreservation("BeforeSuite failed")
+			panic(recovered)
+		}
+	}()
+
 	if img := os.Getenv("PROJECT_IMAGE"); img == "" {
 		By("local run: preparing cluster via Task target")
 	} else {
@@ -60,12 +67,6 @@ var _ = BeforeSuite(func() {
 
 var _ = AfterEach(func() {
 	dumpFailureDiagnostics()
-})
-
-var _ = ReportAfterEach(func(report SpecReport) {
-	if report.Failed() {
-		markE2EResourcesForPreservation("spec failed: " + report.FullText())
-	}
 })
 
 func ensureE2EPrepared() {
@@ -149,18 +150,13 @@ func resolveE2EContext() string {
 	return "kind-gitops-reverser-test-e2e"
 }
 
-func failAndPreserveResources(message string, callerSkip ...int) {
-	markE2EResourcesForPreservation("assertion failed")
-	Fail(message, callerSkip...)
-}
-
 func watchForE2EInterrupts() {
 	signals := make(chan os.Signal, 2)
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
 
 	go func() {
 		sig := <-signals
-		markE2EResourcesForPreservation(fmt.Sprintf("received signal %s", sig))
+		markSuiteWidePreservation(fmt.Sprintf("received signal %s", sig))
 		e2eCommandCancel()
 	}()
 }

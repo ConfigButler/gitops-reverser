@@ -1607,9 +1607,7 @@ var _ = Describe("Manager", Label("manager"), Ordered, func() {
 			cleanupGitTarget("watchrule-icecream-orders-dest", testNs)
 
 			// Clean up GitProvider from IceCreamOrder tests
-			_, _ = kubectlRunInNamespace(
-				testNs, "delete", "gitprovider", "gitprovider-normal", "--ignore-not-found=true",
-			)
+			cleanupNamespacedResource(testNs, "gitprovider", "gitprovider-normal")
 
 			// Clean up IceCreamOrder CRD
 			_, _ = kubectlRun(

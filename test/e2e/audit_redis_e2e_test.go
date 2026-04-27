@@ -223,7 +223,7 @@ var _ = Describe("Audit Redis Consumer", Label("audit-redis", "smoke"), Ordered,
 	AfterAll(func() {
 		cleanupWatchRule(watchRuleName, testNs)
 		cleanupGitTarget(gitTargetName, testNs)
-		_, _ = kubectlRunInNamespace(testNs, "delete", "gitprovider", gitProvName, "--ignore-not-found=true")
+		cleanupNamespacedResource(testNs, "gitprovider", gitProvName)
 		cleanupNamespace(testNs)
 		if valkeyClient != nil {
 			_ = valkeyClient.Close()

@@ -84,7 +84,7 @@ var _ = Describe("playground", Label("playground"), Ordered, func() {
 		run.verifyResourcesReady()
 
 		By("marking the playground resources for reuse across Tilt sessions")
-		markE2EResourcesForPreservation("playground bootstrap complete")
+		preserveNamespace(playgroundNamespace)
 
 		By("printing playground artifacts for the developer")
 		run.logArtifacts()

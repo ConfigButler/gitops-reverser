@@ -139,7 +139,7 @@ spec:
 		Expect(err).NotTo(HaveOccurred())
 
 		DeferCleanup(func() {
-			if skipCleanupBecauseResourcesArePreserved(fmt.Sprintf("Flunder %s/%s", testNs, flunderName)) {
+			if skipCleanupBecauseResourcesArePreserved(fmt.Sprintf("Flunder %s/%s", testNs, flunderName), testNs) {
 				return
 			}
 			_, _ = kubectlRunInNamespace(testNs, "delete", "flunder", flunderName, "--ignore-not-found=true")
@@ -209,13 +209,16 @@ spec:
 		Expect(err).NotTo(HaveOccurred())
 
 		DeferCleanup(func() {
-			if skipCleanupBecauseResourcesArePreserved(fmt.Sprintf("ConfigMap %s/%s", testNs, configMapName)) {
+			if skipCleanupBecauseResourcesArePreserved(
+				fmt.Sprintf("ConfigMap %s/%s", testNs, configMapName),
+				testNs,
+			) {
 				return
 			}
 			_, _ = kubectlRunInNamespace(testNs, "delete", "configmap", configMapName, "--ignore-not-found=true")
 		})
 		DeferCleanup(func() {
-			if skipCleanupBecauseResourcesArePreserved(fmt.Sprintf("Flunder %s/%s", testNs, flunderName)) {
+			if skipCleanupBecauseResourcesArePreserved(fmt.Sprintf("Flunder %s/%s", testNs, flunderName), testNs) {
 				return
 			}
 			_, _ = kubectlRunInNamespace(testNs, "delete", "flunder", flunderName, "--ignore-not-found=true")
@@ -305,7 +308,7 @@ spec:
 		Expect(err).NotTo(HaveOccurred())
 
 		DeferCleanup(func() {
-			if skipCleanupBecauseResourcesArePreserved(fmt.Sprintf("Flunder %s/%s", testNs, flunderName)) {
+			if skipCleanupBecauseResourcesArePreserved(fmt.Sprintf("Flunder %s/%s", testNs, flunderName), testNs) {
 				return
 			}
 			_, _ = kubectlRunInNamespace(testNs, "delete", "flunder", flunderName, "--ignore-not-found=true")
@@ -386,7 +389,7 @@ spec:
 		}
 
 		DeferCleanup(func() {
-			if skipCleanupBecauseResourcesArePreserved(fmt.Sprintf("Flunder %s/%s", testNs, flunderName)) {
+			if skipCleanupBecauseResourcesArePreserved(fmt.Sprintf("Flunder %s/%s", testNs, flunderName), testNs) {
 				return
 			}
 			_, _ = kubectlRunInNamespace(testNs, "delete", "flunder", flunderName, "--ignore-not-found=true")
