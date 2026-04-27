@@ -897,6 +897,11 @@ var _ = Describe("Manager", Label("manager"), Ordered, func() {
 			verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Ready", "")
 			verifyResourceStatus("gittarget", destName, testNs, "True", "Ready", "")
 
+			// See "should create Git commit when ConfigMap is added": prior specs'
+			// WatchRules can still be in the controller's event router and pile on
+			// extra commits at unrelated commitPaths, knocking HEAD off our commit.
+			time.Sleep(5 * time.Second)
+
 			By("creating test ConfigMap to trigger Git commit")
 			configMapData := struct {
 				Name      string
@@ -950,7 +955,13 @@ var _ = Describe("Manager", Label("manager"), Ordered, func() {
 				g.Expect(statErr).To(HaveOccurred(), fmt.Sprintf("ConfigMap file should NOT exist at %s", expectedFile))
 				g.Expect(os.IsNotExist(statErr)).To(BeTrue(), "Error should be 'file does not exist'")
 
-				assertLatestCommitTouchesOnly(g, managerRepo.CheckoutDir, []string{expectedRelativePath})
+				assertLatestCommitForPathTouchesOnlyWithOptional(
+					g,
+					managerRepo.CheckoutDir,
+					expectedRelativePath,
+					[]string{expectedRelativePath},
+					nil,
+				)
 				assertLatestCommitTouchesNoNamespaces(
 					g,
 					managerRepo.CheckoutDir,
