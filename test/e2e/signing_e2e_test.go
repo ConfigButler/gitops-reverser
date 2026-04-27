@@ -454,7 +454,7 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 			g.Expect(logErr).NotTo(HaveOccurred())
 			g.Expect(logOutput).NotTo(ContainSubstring("["),
 				"expected atomic batch path %s not to contain per-event template subjects", commitPath)
-		}, "90s", "3s").Should(Succeed())
+		}, "30s", "3s").Should(Succeed())
 	})
 })
 
