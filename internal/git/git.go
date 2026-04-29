@@ -278,6 +278,106 @@ func WriteRequestWithContentWriter(
 	return result, nil
 }
 
+// CommitWriteRequestNoPush opens the repository, switches to the target branch
+// (creating it if needed), and writes the request's events as local commits
+// without pushing. Returns the hash the branch was at before any commits — the
+// rootHash that should be passed to a later PushAtomic so it can detect remote
+// drift.
+//
+// Used by BranchWorker.commitGroups to accumulate local commits across the
+// commit-window without releasing them to the remote each time. A successful
+// push is the only thing that clears the matching unpushedEvents retention
+// (see [docs/design/commit-window-batching-design.md]).
+func CommitWriteRequestNoPush(
+	ctx context.Context,
+	writer eventContentWriter,
+	repo *git.Repository,
+	request *WriteRequest,
+	targetBranchName string,
+) (plumbing.Hash, int, error) {
+	if request == nil {
+		return plumbing.ZeroHash, 0, errors.New("write request is required")
+	}
+	if writer == nil {
+		return plumbing.ZeroHash, 0, errors.New("content writer is required")
+	}
+	if request.CommitMode == "" {
+		request.CommitMode = CommitModePerEvent
+	}
+
+	logger := log.FromContext(ctx)
+	targetBranch := plumbing.NewBranchReferenceName(targetBranchName)
+
+	baseBranch, baseHash, err := GetCurrentBranch(repo)
+	if err != nil {
+		return plumbing.ZeroHash, 0, err
+	}
+
+	if baseBranch != targetBranch {
+		if err := switchOrCreateBranch(repo, targetBranch, logger, targetBranchName, baseHash); err != nil {
+			return plumbing.ZeroHash, 0, err
+		}
+	}
+
+	commitsCreated, _, err := generateCommitsFromRequest(ctx, writer, repo, request)
+	if err != nil {
+		return plumbing.ZeroHash, 0, fmt.Errorf("failed to generate commits: %w", err)
+	}
+
+	return baseHash, commitsCreated, nil
+}
+
+// PushPendingWithReplay pushes the current branch HEAD to the remote, expecting
+// rootBranch on the remote to still be at rootHash. On a non-fast-forward
+// rejection, it fetches and resets to the new remote tip, calls rebuild() to
+// re-apply pending events as fresh commits on top of that tip, and retries.
+//
+// rebuild is invoked after each successful syncToRemote and must regenerate
+// the commits that previously existed locally (sourced from the BranchWorker's
+// retained unpushedEvents). It returns the new rootHash to use for the next
+// push attempt — the tip of the target branch on the remote, before the
+// replayed commits land.
+//
+// Returns nil on a successful push. Returns an error if every retry attempt
+// fails; the caller is expected to keep its unpushedEvents retention intact and
+// retry on a later cycle.
+func PushPendingWithReplay(
+	ctx context.Context,
+	repo *git.Repository,
+	targetBranchName string,
+	auth transport.AuthMethod,
+	rootHash plumbing.Hash,
+	rebuild func(*git.Repository) (plumbing.Hash, error),
+) error {
+	logger := log.FromContext(ctx)
+	targetBranch := plumbing.NewBranchReferenceName(targetBranchName)
+
+	const maxRetries = 3
+	var lastErr error
+	for attempt := range maxRetries {
+		err := PushAtomic(ctx, repo, rootHash, targetBranch, auth)
+		if err == nil {
+			return nil
+		}
+		logger.Info("Push attempt failed, will try replay", "attempt", attempt, "error", err)
+		lastErr = err
+
+		// Conflict path: fetch + reset to remote, re-apply unpushedEvents,
+		// retry the push.
+		if _, err := syncToRemote(ctx, repo, targetBranch, auth); err != nil {
+			return fmt.Errorf("failed to sync remote during replay: %w", err)
+		}
+
+		newRootHash, err := rebuild(repo)
+		if err != nil {
+			return fmt.Errorf("failed to rebuild commits during replay: %w", err)
+		}
+		rootHash = newRootHash
+	}
+
+	return fmt.Errorf("push failed after %d attempts: %w", maxRetries, lastErr)
+}
+
 func tryWriteRequestAttempt(
 	ctx context.Context,
 	logger logr.Logger,

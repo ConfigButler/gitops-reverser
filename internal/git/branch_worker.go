@@ -31,6 +31,7 @@ import (
 	"time"
 
 	gogit "github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/types"
@@ -98,6 +99,16 @@ type BranchWorker struct {
 	// branchBufferMaxBytes caps the in-memory event buffer; tripped on event
 	// arrival, an immediate flush bypasses the commit window.
 	branchBufferMaxBytes int64
+
+	// pushCycleRootHash is the hash the target branch was at on the remote
+	// before the first commit of the current push cycle. PushAtomic uses it
+	// to detect concurrent updates: if the remote has moved since, we hit
+	// the conflict path and replay from unpushedEvents.
+	// Cleared after a successful push. Protected by repoMu.
+	pushCycleRootHash plumbing.Hash
+	// pushCycleRootBranch is the matching branch reference for
+	// pushCycleRootHash. Cleared after a successful push. Protected by repoMu.
+	pushCycleRootBranch plumbing.ReferenceName
 }
 
 // NewBranchWorker creates a worker for a (provider, branch) combination.
@@ -435,10 +446,10 @@ func (w *BranchWorker) listResourceIdentifiersInPath(
 //
 // The loop runs the two-stage state machine described in the commit-window
 // batching design: a commit-window timer drives when buffered events get
-// drained, and a one-shot push timer enforces the PushCooldown between
-// successful pushes. The commit and push stages share a single
-// commitAndPushRequest call in this PR; PR #2 splits them so local commits can
-// accumulate independently and feed replay-on-conflict from unpushedEvents.
+// drained into local commits, and a one-shot push timer enforces the
+// PushCooldown between successful pushes. Commit and push are independent —
+// local commits accumulate in unpushedEvents and feed replay-on-conflict; only
+// a successful push clears unpushedEvents.
 func (w *BranchWorker) processEvents() {
 	provider, err := w.getGitProvider(w.ctx)
 	if err != nil {
@@ -458,8 +469,17 @@ type branchWorkerEventLoop struct {
 
 	commitWindow time.Duration
 
+	// buffer holds events not yet committed locally.
 	buffer      []Event
 	bufferBytes int64
+
+	// unpushedEvents holds events that have been written to local commits but
+	// whose commits have not yet successfully reached the remote. A successful
+	// push is the only thing that clears this slice (see
+	// docs/design/commit-window-batching-design.md → Durability and
+	// replay-on-conflict).
+	unpushedEvents      []Event
+	unpushedEventsBytes int64
 
 	lastPushAt  time.Time
 	commitTimer *time.Timer
@@ -483,10 +503,11 @@ func (l *branchWorkerEventLoop) run() {
 			l.handleQueueItem(item)
 		case <-commitC:
 			l.commitTimer = nil
-			l.drainOrSchedulePush()
+			l.commitBufferedEvents()
+			l.maybeSchedulePush()
 		case <-pushC:
 			l.pushTimer = nil
-			l.flush()
+			l.pushPending()
 		}
 	}
 }
@@ -502,16 +523,25 @@ func (l *branchWorkerEventLoop) timerChannels() (<-chan time.Time, <-chan time.T
 	return commitC, pushC
 }
 
+// totalRetainedBytes is what the operator-level byte cap is enforced against:
+// the in-flight buffer plus the locally-committed-but-not-yet-pushed events
+// that we keep around for replay-on-conflict.
+func (l *branchWorkerEventLoop) totalRetainedBytes() int64 {
+	return l.bufferBytes + l.unpushedEventsBytes
+}
+
 func (l *branchWorkerEventLoop) handleQueueItem(item WorkItem) {
 	if item.Request == nil {
 		return
 	}
 
 	if item.Request.CommitMode == CommitModeAtomic {
-		// Atomic batches bypass the commit window: flush any buffered per-event
-		// work first to keep arrival order honest, then write the batch.
-		l.flush()
-		l.w.commitAndPushRequest(item.Request)
+		// Atomic batches bypass the commit window: drain any buffered per-event
+		// work first (commit + push) so arrival order is preserved, then write
+		// the batch as one fused commit+push.
+		l.commitBufferedEvents()
+		l.pushPending()
+		l.w.commitAndPushAtomic(item.Request)
 		l.lastPushAt = time.Now()
 		return
 	}
@@ -520,10 +550,14 @@ func (l *branchWorkerEventLoop) handleQueueItem(item WorkItem) {
 		l.buffer = append(l.buffer, event)
 		l.bufferBytes += l.w.estimateEventSize(event)
 
-		if l.bufferBytes >= l.w.branchBufferMaxBytes {
-			// Memory-pressure trip: drain immediately, ignoring cooldown. The
-			// cap exists to bound pod memory, not to shape commits.
-			l.flush()
+		if l.totalRetainedBytes() >= l.w.branchBufferMaxBytes {
+			// Memory-pressure trip: drain immediately, ignoring the commit
+			// window. The cap exists to bound pod memory, not to shape
+			// commits. The push still respects the cooldown — a push that
+			// fails on a stuck remote will not free memory, but that's the
+			// known stuck-push pathology documented in the design.
+			l.commitBufferedEvents()
+			l.maybeSchedulePush()
 			continue
 		}
 	}
@@ -533,10 +567,10 @@ func (l *branchWorkerEventLoop) handleQueueItem(item WorkItem) {
 	}
 
 	if l.commitWindow == 0 {
-		// Fast path: degenerate window means flush as soon as we have anything
-		// buffered. Cooldown still applies, so the next event during cooldown
-		// will schedule a deferred drain via drainOrSchedulePush.
-		l.drainOrSchedulePush()
+		// Honest per-event commits: every event arrival commits immediately.
+		// Push cadence is the only thing the cooldown affects.
+		l.commitBufferedEvents()
+		l.maybeSchedulePush()
 		return
 	}
 
@@ -544,13 +578,14 @@ func (l *branchWorkerEventLoop) handleQueueItem(item WorkItem) {
 }
 
 func (l *branchWorkerEventLoop) handleShutdown() {
-	l.w.Log.Info("Handling shutdown, flushing buffer")
+	l.w.Log.Info("Handling shutdown, draining buffer and pushing pending commits")
 	if len(l.buffer) > 0 {
+		l.commitBufferedEvents()
+	}
+	if len(l.unpushedEvents) > 0 {
 		// Shutdown bypasses the cooldown — pending work needs to land before
 		// the worker exits, even if a push was just sent.
-		l.w.commitAndPushRequest(newPerEventWriteRequest(l.buffer))
-		l.buffer = nil
-		l.bufferBytes = 0
+		l.pushPending()
 	}
 }
 
@@ -568,17 +603,46 @@ func (l *branchWorkerEventLoop) resetCommitTimer() {
 	l.commitTimer.Reset(l.commitWindow)
 }
 
-func (l *branchWorkerEventLoop) drainOrSchedulePush() {
+// commitBufferedEvents drains the buffer into local commits. On success the
+// events move from buffer → unpushedEvents (retained until a push succeeds).
+// On failure the buffer is dropped: either the repo is unreachable or the
+// events are otherwise unrecoverable, and we don't want to keep retrying with
+// the same broken state on every commit cycle.
+func (l *branchWorkerEventLoop) commitBufferedEvents() {
 	if len(l.buffer) == 0 {
 		return
 	}
+
+	hasPending := len(l.unpushedEvents) > 0
+	if err := l.w.commitGroups(l.buffer, hasPending); err != nil {
+		l.w.Log.Error(err, "Commit failed; dropping buffered events", "events", len(l.buffer))
+		l.buffer = nil
+		l.bufferBytes = 0
+		return
+	}
+
+	l.unpushedEvents = append(l.unpushedEvents, l.buffer...)
+	l.unpushedEventsBytes += l.bufferBytes
+	l.buffer = nil
+	l.bufferBytes = 0
+}
+
+// maybeSchedulePush is the post-commit hook: it pushes immediately when the
+// cooldown has elapsed (or has never fired), and otherwise schedules a
+// one-shot pushTimer to fire when the cooldown expires. While the cooldown
+// is active, additional commits accumulate locally; when the timer fires,
+// all pending commits go to the remote in a single push.
+func (l *branchWorkerEventLoop) maybeSchedulePush() {
+	if len(l.unpushedEvents) == 0 {
+		return
+	}
 	if l.lastPushAt.IsZero() {
-		l.flush()
+		l.pushPending()
 		return
 	}
 	elapsed := time.Since(l.lastPushAt)
 	if elapsed >= PushCooldown {
-		l.flush()
+		l.pushPending()
 		return
 	}
 	if l.pushTimer == nil {
@@ -586,13 +650,27 @@ func (l *branchWorkerEventLoop) drainOrSchedulePush() {
 	}
 }
 
-func (l *branchWorkerEventLoop) flush() {
-	if len(l.buffer) == 0 {
+// pushPending publishes any locally-committed-but-not-yet-pushed commits.
+// On success, unpushedEvents is cleared and lastPushAt advances. On failure
+// (transient or after exhausting replay retries), unpushedEvents stays in
+// place and a future commit/timer will retry.
+func (l *branchWorkerEventLoop) pushPending() {
+	if len(l.unpushedEvents) == 0 {
+		l.stopPushTimer()
 		return
 	}
-	l.w.commitAndPushRequest(newPerEventWriteRequest(l.buffer))
-	l.buffer = nil
-	l.bufferBytes = 0
+
+	if err := l.w.pushPendingCommits(l.unpushedEvents); err != nil {
+		l.w.Log.Error(err, "Push failed; unpushedEvents retained for retry",
+			"unpushedEvents", len(l.unpushedEvents))
+		// Leave unpushedEvents in place; do NOT advance lastPushAt — the
+		// design specifies lastPushAt only advances on a successful push.
+		l.stopPushTimer()
+		return
+	}
+
+	l.unpushedEvents = nil
+	l.unpushedEventsBytes = 0
 	l.lastPushAt = time.Now()
 	l.stopPushTimer()
 }
@@ -618,8 +696,166 @@ func (l *branchWorkerEventLoop) stopTimers() {
 	l.stopPushTimer()
 }
 
-// commitAndPushRequest processes a write request for this branch.
-func (w *BranchWorker) commitAndPushRequest(request *WriteRequest) {
+// commitGroups writes the events as local commits without pushing. When
+// hasPending is false (no commits accumulated from a prior commit in this push
+// cycle), it first calls PrepareBranch to fetch and reset to the remote tip,
+// recording the rootHash for a later push. When hasPending is true the local
+// branch already carries unpushed commits, so we must NOT reset — we commit on
+// top of the existing local HEAD.
+//
+// On success the events should be appended to the loop's unpushedEvents
+// retention by the caller; on failure the caller drops the buffered events.
+func (w *BranchWorker) commitGroups(events []Event, hasPending bool) error {
+	w.repoMu.Lock()
+	defer w.repoMu.Unlock()
+
+	if len(events) == 0 {
+		return nil
+	}
+
+	request := newPerEventWriteRequest(events)
+	log := w.Log.WithValues("eventCount", len(events), "commitMode", request.CommitMode)
+	log.V(1).Info("commitGroups: writing local commits", "branch", w.Branch, "hasPending", hasPending)
+
+	provider, err := w.getGitProvider(w.ctx)
+	if err != nil {
+		return fmt.Errorf("get GitProvider: %w", err)
+	}
+
+	auth, signer, err := w.resolveWriteCredentials(w.ctx, provider)
+	if err != nil {
+		return fmt.Errorf("resolve write credentials: %w", err)
+	}
+
+	repoPath := w.repoPathForRemote(provider.Spec.URL)
+
+	if !hasPending {
+		// First commit of a push cycle: sync with remote so the new commits
+		// are based on the latest remote tip.
+		pullReport, err := PrepareBranch(w.ctx, provider.Spec.URL, repoPath, w.Branch, auth)
+		if err != nil {
+			return fmt.Errorf("prepare repository: %w", err)
+		}
+		w.updateBranchMetadataFromPullReport(pullReport)
+		w.pushCycleRootHash = plumbing.ZeroHash
+		w.pushCycleRootBranch = ""
+	}
+
+	preparedRequest, encryptionConfig, err := w.prepareWriteRequest(w.ctx, request, provider)
+	if err != nil {
+		return fmt.Errorf("prepare write request: %w", err)
+	}
+	preparedRequest.Signer = signer
+
+	encryptionWorkDir := filepath.Join(repoPath, requestEncryptionPath(preparedRequest))
+	if err := configureSecretEncryptionWriter(w.contentWriter, encryptionWorkDir, encryptionConfig); err != nil {
+		return fmt.Errorf("configure secret encryptor: %w", err)
+	}
+
+	repo, err := gogit.PlainOpen(repoPath)
+	if err != nil {
+		return fmt.Errorf("open repository: %w", err)
+	}
+
+	preCommitHash, _, err := CommitWriteRequestNoPush(w.ctx, w.contentWriter, repo, preparedRequest, w.Branch)
+	if err != nil {
+		return fmt.Errorf("commit write request: %w", err)
+	}
+
+	if !hasPending {
+		// Record the rootHash so the eventual push can detect remote drift.
+		w.pushCycleRootHash = preCommitHash
+		w.pushCycleRootBranch = plumbing.NewBranchReferenceName(w.Branch)
+	}
+
+	w.recordWriteMetrics(preparedRequest)
+	return nil
+}
+
+// pushPendingCommits publishes any local commits that have not yet reached the
+// remote. On a non-fast-forward conflict it fetches, resets to the new remote
+// tip, and re-applies all unpushedEvents as fresh commits before retrying the
+// push. The caller (the event loop) clears unpushedEvents only on success.
+func (w *BranchWorker) pushPendingCommits(unpushedEvents []Event) error {
+	w.repoMu.Lock()
+	defer w.repoMu.Unlock()
+
+	if len(unpushedEvents) == 0 {
+		return nil
+	}
+
+	log := w.Log.WithValues("unpushedEvents", len(unpushedEvents))
+	log.V(1).Info("pushPendingCommits: pushing accumulated local commits", "branch", w.Branch)
+
+	provider, err := w.getGitProvider(w.ctx)
+	if err != nil {
+		return fmt.Errorf("get GitProvider: %w", err)
+	}
+
+	auth, signer, err := w.resolveWriteCredentials(w.ctx, provider)
+	if err != nil {
+		return fmt.Errorf("resolve write credentials: %w", err)
+	}
+
+	repoPath := w.repoPathForRemote(provider.Spec.URL)
+	repo, err := gogit.PlainOpen(repoPath)
+	if err != nil {
+		return fmt.Errorf("open repository: %w", err)
+	}
+
+	rebuild := func(repo *gogit.Repository) (plumbing.Hash, error) {
+		// After a fetch+reset to the remote tip, re-apply every retained event
+		// as a fresh local commit on top of the new tip.
+		replayRequest := newPerEventWriteRequest(unpushedEvents)
+		preparedReplay, encryptionConfig, err := w.prepareWriteRequest(w.ctx, replayRequest, provider)
+		if err != nil {
+			return plumbing.ZeroHash, fmt.Errorf("prepare replay request: %w", err)
+		}
+		preparedReplay.Signer = signer
+
+		encryptionWorkDir := filepath.Join(repoPath, requestEncryptionPath(preparedReplay))
+		if err := configureSecretEncryptionWriter(
+			w.contentWriter,
+			encryptionWorkDir,
+			encryptionConfig,
+		); err != nil {
+			return plumbing.ZeroHash, fmt.Errorf("configure secret encryptor on replay: %w", err)
+		}
+
+		preCommitHash, _, err := CommitWriteRequestNoPush(
+			w.ctx,
+			w.contentWriter,
+			repo,
+			preparedReplay,
+			w.Branch,
+		)
+		if err != nil {
+			return plumbing.ZeroHash, fmt.Errorf("regenerate commits on replay: %w", err)
+		}
+		return preCommitHash, nil
+	}
+
+	if err := PushPendingWithReplay(
+		w.ctx,
+		repo,
+		w.Branch,
+		auth,
+		w.pushCycleRootHash,
+		rebuild,
+	); err != nil {
+		return err
+	}
+
+	w.pushCycleRootHash = plumbing.ZeroHash
+	w.pushCycleRootBranch = ""
+	return nil
+}
+
+// commitAndPushAtomic processes an atomic-batch write request as a single
+// fused commit+push. It is reserved for snapshot reconciles (CommitModeAtomic)
+// where the entire batch is conceptually one operation; the per-event flow
+// uses commitGroups + pushPendingCommits instead.
+func (w *BranchWorker) commitAndPushAtomic(request *WriteRequest) {
 	w.repoMu.Lock()
 	defer w.repoMu.Unlock()
 
@@ -628,9 +864,7 @@ func (w *BranchWorker) commitAndPushRequest(request *WriteRequest) {
 	}
 
 	log := w.Log.WithValues("eventCount", len(request.Events), "commitMode", request.CommitMode)
-
-	log.Info("Starting git commit and push",
-		"branch", w.Branch)
+	log.Info("Starting atomic git commit and push", "branch", w.Branch)
 
 	provider, err := w.getGitProvider(w.ctx)
 	if err != nil {
@@ -676,13 +910,19 @@ func (w *BranchWorker) commitAndPushRequest(request *WriteRequest) {
 		"conflictPulls", len(result.ConflictPulls),
 		"failures", result.Failures)
 
-	// Update metadata if conflicts were resolved
 	if len(result.ConflictPulls) > 0 {
 		lastPull := result.ConflictPulls[len(result.ConflictPulls)-1]
 		w.updateBranchMetadataFromPullReport(lastPull)
 	}
 
 	w.recordWriteMetrics(preparedRequest)
+}
+
+// commitAndPushRequest is retained as the test-facing entry point for write
+// requests that should be committed and pushed in one go. New per-event work
+// goes through commitGroups + pushPendingCommits instead.
+func (w *BranchWorker) commitAndPushRequest(request *WriteRequest) {
+	w.commitAndPushAtomic(request)
 }
 
 // estimateEventSize approximates the serialized YAML size for an event's object.

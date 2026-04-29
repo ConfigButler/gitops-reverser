@@ -8,6 +8,6 @@ spec:
   allowedBranches:
     - "{{.Branch}}"
   push:
-    commitWindow: "0s"
+    commitWindow: "{{.CommitWindow}}"
   secretRef:
     name: {{.SecretName}}
