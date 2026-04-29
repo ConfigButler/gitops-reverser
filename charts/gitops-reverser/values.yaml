@@ -242,8 +242,7 @@ quickstart:
       # Required when quickstart.enabled=true.
       name: git-creds
     push:
-      interval: "5s"
-      maxCommits: 10
+      commitWindow: "5s"
   gitTarget:
     name: example-target
     branch: main

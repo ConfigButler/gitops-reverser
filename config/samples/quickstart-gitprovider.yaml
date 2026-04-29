@@ -10,8 +10,7 @@ spec:
   secretRef:
     name: git-creds
   push:
-    interval: "5s"
-    maxCommits: 10
+    commitWindow: "5s"
   # commit:
   #   committer:
   #     name: "GitOps Reverser"

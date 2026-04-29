@@ -128,18 +128,17 @@ spec:
                     type: object
                 type: object
               push:
-                description: Push defines the strategy for pushing commits (batching).
+                description: Push controls how events are coalesced into commits before
+                  pushing.
                 properties:
-                  interval:
+                  commitWindow:
                     description: |-
-                      Interval is the maximum time to wait before pushing queued commits.
-                      Defaults to "1m".
+                      CommitWindow is the rolling silence window used to coalesce events into
+                      a single commit per (author, gitTarget). The timer resets on every event
+                      arrival and a flush is triggered after this many seconds of silence.
+                      Setting "0s" opts into per-event commits in the steady-state.
+                      Defaults to "5s".
                     type: string
-                  maxCommits:
-                    description: |-
-                      MaxCommits is the maximum number of commits to queue before pushing.
-                      Defaults to 20.
-                    type: integer
                 type: object
               secretRef:
                 description: SecretRef for authentication credentials (may be nil

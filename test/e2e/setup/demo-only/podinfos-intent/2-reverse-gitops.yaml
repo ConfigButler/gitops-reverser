@@ -8,8 +8,7 @@ spec:
     - main
     - nl-stuff
   push:
-    interval: "5s"
-    maxCommits: 30
+    commitWindow: "5s"
   secretRef:
     name: git-creds-demo
 ---

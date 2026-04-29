@@ -50,6 +50,16 @@ const (
 	// This optimization prevents redundant Git fetches when multiple GitTargets
 	// share the same branch and reconcile within a short time window.
 	metadataCacheDuration = 30 * time.Second
+
+	// DefaultCommitWindow is the default rolling silence window used to coalesce
+	// events into one commit per (author, gitTarget). Applied when
+	// GitProvider.spec.push.commitWindow is unset or unparseable.
+	DefaultCommitWindow = 5 * time.Second
+
+	// PushCooldown is the minimum interval between successful pushes. The cooldown
+	// is intentionally fixed: commit cadence is a user concern (commitWindow on
+	// the CRD); push cadence is an implementation/politeness concern.
+	PushCooldown = 5 * time.Second
 )
 
 var errEventTargetMetadataMissing = errors.New("event git target metadata missing")
@@ -84,18 +94,28 @@ type BranchWorker struct {
 
 	// repoMu serializes repository/worktree operations within this worker.
 	repoMu sync.Mutex
+
+	// branchBufferMaxBytes caps the in-memory event buffer; tripped on event
+	// arrival, an immediate flush bypasses the commit window.
+	branchBufferMaxBytes int64
 }
 
 // NewBranchWorker creates a worker for a (provider, branch) combination.
+// Pass 0 (or a negative value) for branchBufferMaxBytes to use
+// DefaultBranchBufferMaxBytes.
 func NewBranchWorker(
 	client client.Client,
 	log logr.Logger,
 	providerName, providerNamespace string,
 	branch string,
 	writer *contentWriter,
+	branchBufferMaxBytes int64,
 ) *BranchWorker {
 	if writer == nil {
 		writer = newContentWriter()
+	}
+	if branchBufferMaxBytes <= 0 {
+		branchBufferMaxBytes = DefaultBranchBufferMaxBytes
 	}
 	return &BranchWorker{
 		GitProviderRef:       providerName,
@@ -107,8 +127,9 @@ func NewBranchWorker(
 			"namespace", providerNamespace,
 			"branch", branch,
 		),
-		contentWriter: writer,
-		eventQueue:    make(chan WorkItem, branchWorkerQueueSize),
+		contentWriter:        writer,
+		eventQueue:           make(chan WorkItem, branchWorkerQueueSize),
+		branchBufferMaxBytes: branchBufferMaxBytes,
 	}
 }
 
@@ -411,6 +432,13 @@ func (w *BranchWorker) listResourceIdentifiersInPath(
 }
 
 // processEvents is the main event processing loop.
+//
+// The loop runs the two-stage state machine described in the commit-window
+// batching design: a commit-window timer drives when buffered events get
+// drained, and a one-shot push timer enforces the PushCooldown between
+// successful pushes. The commit and push stages share a single
+// commitAndPushRequest call in this PR; PR #2 splits them so local commits can
+// accumulate independently and feed replay-on-conflict from unpushedEvents.
 func (w *BranchWorker) processEvents() {
 	provider, err := w.getGitProvider(w.ctx)
 	if err != nil {
@@ -418,85 +446,176 @@ func (w *BranchWorker) processEvents() {
 		return
 	}
 
-	// Setup timing
-	pushInterval := w.getPushInterval(provider)
-	maxCommits := w.getMaxCommits(provider)
-	pushTicker := time.NewTicker(pushInterval)
-	defer pushTicker.Stop()
+	loop := newBranchWorkerEventLoop(w, w.getCommitWindow(provider))
+	loop.run()
+}
 
-	var eventBuffer []Event
-	var bufferByteCount int64
+// branchWorkerEventLoop holds the per-branch event-loop state. Only the
+// goroutine running run() may touch these fields, so no extra synchronisation
+// is required.
+type branchWorkerEventLoop struct {
+	w *BranchWorker
+
+	commitWindow time.Duration
+
+	buffer      []Event
+	bufferBytes int64
+
+	lastPushAt  time.Time
+	commitTimer *time.Timer
+	pushTimer   *time.Timer
+}
+
+func newBranchWorkerEventLoop(w *BranchWorker, commitWindow time.Duration) *branchWorkerEventLoop {
+	return &branchWorkerEventLoop{w: w, commitWindow: commitWindow}
+}
+
+func (l *branchWorkerEventLoop) run() {
+	defer l.stopTimers()
 
 	for {
+		commitC, pushC := l.timerChannels()
 		select {
-		case <-w.ctx.Done():
-			w.handleShutdown(eventBuffer)
+		case <-l.w.ctx.Done():
+			l.handleShutdown()
 			return
-
-		case item := <-w.eventQueue:
-			eventBuffer, bufferByteCount = w.handleQueueItem(
-				item,
-				eventBuffer,
-				bufferByteCount,
-				maxCommits,
-			)
-
-		case <-pushTicker.C:
-			if len(eventBuffer) > 0 {
-				w.commitAndPushRequest(newPerEventWriteRequest(eventBuffer))
-				eventBuffer = nil
-				bufferByteCount = 0
-			}
+		case item := <-l.w.eventQueue:
+			l.handleQueueItem(item)
+		case <-commitC:
+			l.commitTimer = nil
+			l.drainOrSchedulePush()
+		case <-pushC:
+			l.pushTimer = nil
+			l.flush()
 		}
 	}
 }
 
-func (w *BranchWorker) handleQueueItem(
-	item WorkItem,
-	eventBuffer []Event,
-	bufferByteCount int64,
-	maxCommits int,
-) ([]Event, int64) {
+func (l *branchWorkerEventLoop) timerChannels() (<-chan time.Time, <-chan time.Time) {
+	var commitC, pushC <-chan time.Time
+	if l.commitTimer != nil {
+		commitC = l.commitTimer.C
+	}
+	if l.pushTimer != nil {
+		pushC = l.pushTimer.C
+	}
+	return commitC, pushC
+}
+
+func (l *branchWorkerEventLoop) handleQueueItem(item WorkItem) {
 	if item.Request == nil {
-		return eventBuffer, bufferByteCount
+		return
 	}
 
 	if item.Request.CommitMode == CommitModeAtomic {
-		return w.handleAtomicRequest(item.Request, eventBuffer)
+		// Atomic batches bypass the commit window: flush any buffered per-event
+		// work first to keep arrival order honest, then write the batch.
+		l.flush()
+		l.w.commitAndPushRequest(item.Request)
+		l.lastPushAt = time.Now()
+		return
 	}
 
-	return w.bufferPerEventRequest(item.Request, eventBuffer, bufferByteCount, maxCommits)
-}
+	for _, event := range item.Request.Events {
+		l.buffer = append(l.buffer, event)
+		l.bufferBytes += l.w.estimateEventSize(event)
 
-func (w *BranchWorker) handleAtomicRequest(
-	request *WriteRequest,
-	eventBuffer []Event,
-) ([]Event, int64) {
-	if len(eventBuffer) > 0 {
-		w.commitAndPushRequest(newPerEventWriteRequest(eventBuffer))
-	}
-	w.commitAndPushRequest(request)
-	return nil, 0
-}
-
-func (w *BranchWorker) bufferPerEventRequest(
-	request *WriteRequest,
-	eventBuffer []Event,
-	bufferByteCount int64,
-	maxCommits int,
-) ([]Event, int64) {
-	for _, event := range request.Events {
-		eventBuffer = append(eventBuffer, event)
-		bufferByteCount += w.estimateEventSize(event)
-
-		if len(eventBuffer) >= maxCommits || bufferByteCount >= maxBytesBytes {
-			w.commitAndPushRequest(newPerEventWriteRequest(eventBuffer))
-			eventBuffer = nil
-			bufferByteCount = 0
+		if l.bufferBytes >= l.w.branchBufferMaxBytes {
+			// Memory-pressure trip: drain immediately, ignoring cooldown. The
+			// cap exists to bound pod memory, not to shape commits.
+			l.flush()
+			continue
 		}
 	}
 
-	return eventBuffer, bufferByteCount
+	if len(l.buffer) == 0 {
+		return
+	}
+
+	if l.commitWindow == 0 {
+		// Fast path: degenerate window means flush as soon as we have anything
+		// buffered. Cooldown still applies, so the next event during cooldown
+		// will schedule a deferred drain via drainOrSchedulePush.
+		l.drainOrSchedulePush()
+		return
+	}
+
+	l.resetCommitTimer()
+}
+
+func (l *branchWorkerEventLoop) handleShutdown() {
+	l.w.Log.Info("Handling shutdown, flushing buffer")
+	if len(l.buffer) > 0 {
+		// Shutdown bypasses the cooldown — pending work needs to land before
+		// the worker exits, even if a push was just sent.
+		l.w.commitAndPushRequest(newPerEventWriteRequest(l.buffer))
+		l.buffer = nil
+		l.bufferBytes = 0
+	}
+}
+
+func (l *branchWorkerEventLoop) resetCommitTimer() {
+	if l.commitTimer == nil {
+		l.commitTimer = time.NewTimer(l.commitWindow)
+		return
+	}
+	if !l.commitTimer.Stop() {
+		select {
+		case <-l.commitTimer.C:
+		default:
+		}
+	}
+	l.commitTimer.Reset(l.commitWindow)
+}
+
+func (l *branchWorkerEventLoop) drainOrSchedulePush() {
+	if len(l.buffer) == 0 {
+		return
+	}
+	if l.lastPushAt.IsZero() {
+		l.flush()
+		return
+	}
+	elapsed := time.Since(l.lastPushAt)
+	if elapsed >= PushCooldown {
+		l.flush()
+		return
+	}
+	if l.pushTimer == nil {
+		l.pushTimer = time.NewTimer(PushCooldown - elapsed)
+	}
+}
+
+func (l *branchWorkerEventLoop) flush() {
+	if len(l.buffer) == 0 {
+		return
+	}
+	l.w.commitAndPushRequest(newPerEventWriteRequest(l.buffer))
+	l.buffer = nil
+	l.bufferBytes = 0
+	l.lastPushAt = time.Now()
+	l.stopPushTimer()
+}
+
+func (l *branchWorkerEventLoop) stopPushTimer() {
+	if l.pushTimer == nil {
+		return
+	}
+	if !l.pushTimer.Stop() {
+		select {
+		case <-l.pushTimer.C:
+		default:
+		}
+	}
+	l.pushTimer = nil
+}
+
+func (l *branchWorkerEventLoop) stopTimers() {
+	if l.commitTimer != nil {
+		l.commitTimer.Stop()
+		l.commitTimer = nil
+	}
+	l.stopPushTimer()
 }
 
 // commitAndPushRequest processes a write request for this branch.
@@ -566,16 +685,6 @@ func (w *BranchWorker) commitAndPushRequest(request *WriteRequest) {
 	w.recordWriteMetrics(preparedRequest)
 }
 
-// handleShutdown finalizes processing when context is canceled.
-func (w *BranchWorker) handleShutdown(
-	eventBuffer []Event,
-) {
-	w.Log.Info("Handling shutdown, flushing buffer")
-	if len(eventBuffer) > 0 {
-		w.commitAndPushRequest(newPerEventWriteRequest(eventBuffer))
-	}
-}
-
 // estimateEventSize approximates the serialized YAML size for an event's object.
 func (w *BranchWorker) estimateEventSize(ev Event) int64 {
 	if ev.Object == nil {
@@ -631,43 +740,25 @@ func (w *BranchWorker) getGitProvider(ctx context.Context) (*configv1alpha1.GitP
 	return &provider, nil
 }
 
-// getPushInterval extracts and validates the push interval from GitProvider.
-func (w *BranchWorker) getPushInterval(provider *configv1alpha1.GitProvider) time.Duration {
-	if provider.Spec.Push != nil && provider.Spec.Push.Interval != nil {
-		pushInterval, err := time.ParseDuration(*provider.Spec.Push.Interval)
-		if err != nil {
-			w.Log.Error(err, "Invalid push interval, using default")
-			return w.getDefaultPushInterval()
-		}
-		return pushInterval
+// getCommitWindow returns the configured commit-window duration. The string is
+// parsed at runtime via time.ParseDuration; an unset value, a parse error, or
+// a negative duration falls back to a defensible default. Per design: parse
+// errors → DefaultCommitWindow (loud signal); negative → 0 (caller asked for
+// near-zero coalescing and we honor that).
+func (w *BranchWorker) getCommitWindow(provider *configv1alpha1.GitProvider) time.Duration {
+	if provider.Spec.Push == nil || provider.Spec.Push.CommitWindow == nil {
+		return DefaultCommitWindow
 	}
-	return w.getDefaultPushInterval()
-}
-
-// getMaxCommits extracts the max commits setting from GitProvider.
-func (w *BranchWorker) getMaxCommits(provider *configv1alpha1.GitProvider) int {
-	if provider.Spec.Push != nil && provider.Spec.Push.MaxCommits != nil {
-		return *provider.Spec.Push.MaxCommits
+	parsed, err := time.ParseDuration(*provider.Spec.Push.CommitWindow)
+	if err != nil {
+		w.Log.Error(err, "Invalid commitWindow, using default", "value", *provider.Spec.Push.CommitWindow)
+		return DefaultCommitWindow
 	}
-	return w.getDefaultMaxCommits()
-}
-
-// getDefaultMaxCommits returns the default max commits.
-func (w *BranchWorker) getDefaultMaxCommits() int {
-	// Use faster defaults for unit tests
-	if strings.Contains(os.Args[0], "test") {
-		return TestMaxCommits
+	if parsed < 0 {
+		w.Log.Info("Negative commitWindow treated as 0", "value", *provider.Spec.Push.CommitWindow)
+		return 0
 	}
-	return DefaultMaxCommits
-}
-
-// getDefaultPushInterval returns the default push interval.
-func (w *BranchWorker) getDefaultPushInterval() time.Duration {
-	// Use faster intervals for unit tests
-	if strings.Contains(os.Args[0], "test") {
-		return TestPushInterval
-	}
-	return ProductionPushInterval
+	return parsed
 }
 
 // GetBranchMetadata returns current branch status without syncing.

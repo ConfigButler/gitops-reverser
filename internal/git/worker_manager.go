@@ -29,6 +29,11 @@ import (
 	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 )
 
+// DefaultBranchBufferMaxBytes is the default cap on a worker's combined event
+// buffer + unpushed-events memory. Operators override this via
+// --branch-buffer-max-bytes (8Mi by default).
+const DefaultBranchBufferMaxBytes int64 = 8 * 1024 * 1024
+
 // WorkerManager manages BranchWorkers.
 // Creates workers per (repo, branch), shared by multiple GitDestinations.
 // Implements controller-runtime's Runnable interface for lifecycle management.
@@ -36,17 +41,25 @@ type WorkerManager struct {
 	Client client.Client
 	Log    logr.Logger
 
+	branchBufferMaxBytes int64
+
 	mu      sync.RWMutex
 	workers map[BranchKey]*BranchWorker
 	ctx     context.Context
 }
 
 // NewWorkerManager creates a new worker manager.
-func NewWorkerManager(client client.Client, log logr.Logger) *WorkerManager {
+// branchBufferMaxBytes bounds each worker's combined buffer + unpushed-events
+// memory. Pass 0 (or a negative value) to use DefaultBranchBufferMaxBytes.
+func NewWorkerManager(client client.Client, log logr.Logger, branchBufferMaxBytes int64) *WorkerManager {
+	if branchBufferMaxBytes <= 0 {
+		branchBufferMaxBytes = DefaultBranchBufferMaxBytes
+	}
 	return &WorkerManager{
-		Client:  client,
-		Log:     log,
-		workers: make(map[BranchKey]*BranchWorker),
+		Client:               client,
+		Log:                  log,
+		branchBufferMaxBytes: branchBufferMaxBytes,
+		workers:              make(map[BranchKey]*BranchWorker),
 	}
 }
 
@@ -100,6 +113,7 @@ func (m *WorkerManager) EnsureWorker(
 			providerNamespace,
 			branch,
 			newContentWriter(),
+			m.branchBufferMaxBytes,
 		)
 
 		if err := worker.Start(m.ctx); err != nil {

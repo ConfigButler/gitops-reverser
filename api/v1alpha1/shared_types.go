@@ -33,15 +33,13 @@ type NamespacedName struct {
 	Namespace string `json:"namespace,omitempty"`
 }
 
-// PushStrategy defines the rules for when to push commits.
+// PushStrategy defines how events are coalesced into commits before pushing.
 type PushStrategy struct {
-	// Interval is the maximum time to wait before pushing queued commits.
-	// Defaults to "1m".
+	// CommitWindow is the rolling silence window used to coalesce events into
+	// a single commit per (author, gitTarget). The timer resets on every event
+	// arrival and a flush is triggered after this many seconds of silence.
+	// Setting "0s" opts into per-event commits in the steady-state.
+	// Defaults to "5s".
 	// +optional
-	Interval *string `json:"interval,omitempty"`
-
-	// MaxCommits is the maximum number of commits to queue before pushing.
-	// Defaults to 20.
-	// +optional
-	MaxCommits *int `json:"maxCommits,omitempty"`
+	CommitWindow *string `json:"commitWindow,omitempty"`
 }

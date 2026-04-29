@@ -93,7 +93,7 @@ var _ = BeforeSuite(func() {
 	testRuleStore = rulestore.NewStore()
 
 	// Initialize WorkerManager for new architecture
-	workerManager := git.NewWorkerManager(mgr.GetClient(), logf.Log.WithName("worker-manager"))
+	workerManager := git.NewWorkerManager(mgr.GetClient(), logf.Log.WithName("worker-manager"), 0)
 	err = mgr.Add(workerManager)
 	Expect(err).NotTo(HaveOccurred())
 

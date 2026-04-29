@@ -15,8 +15,7 @@ spec:
   secretRef:
     name: {{ .Values.quickstart.gitProvider.secretRef.name }}
   push:
-    interval: {{ .Values.quickstart.gitProvider.push.interval | quote }}
-    maxCommits: {{ .Values.quickstart.gitProvider.push.maxCommits }}
+    commitWindow: {{ .Values.quickstart.gitProvider.push.commitWindow | quote }}
 ---
 apiVersion: configbutler.ai/v1alpha1
 kind: GitTarget

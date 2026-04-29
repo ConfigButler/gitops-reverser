@@ -37,6 +37,7 @@ import (
 	"go.uber.org/zap/zapcore"
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -65,13 +66,14 @@ var (
 )
 
 const (
-	flagParseFailureExitCode    = 2
-	defaultAuditPort            = 9444
-	defaultAuditMaxBodyBytes    = int64(10 * 1024 * 1024)
-	defaultAuditReadTimeout     = 15 * time.Second
-	defaultAuditWriteTimeout    = 30 * time.Second
-	defaultAuditIdleTimeout     = 60 * time.Second
-	defaultAuditShutdownTimeout = 10 * time.Second
+	flagParseFailureExitCode       = 2
+	defaultAuditPort               = 9444
+	defaultAuditMaxBodyBytes       = int64(10 * 1024 * 1024)
+	defaultAuditReadTimeout        = 15 * time.Second
+	defaultAuditWriteTimeout       = 30 * time.Second
+	defaultAuditIdleTimeout        = 60 * time.Second
+	defaultAuditShutdownTimeout    = 10 * time.Second
+	defaultBranchBufferMaxBytesStr = "8Mi"
 )
 
 func init() {
@@ -122,7 +124,11 @@ func main() {
 	ruleStore := rulestore.NewStore()
 
 	// Initialize WorkerManager (manages branch workers)
-	workerManager := git.NewWorkerManager(mgr.GetClient(), ctrl.Log.WithName("worker-manager"))
+	workerManager := git.NewWorkerManager(
+		mgr.GetClient(),
+		ctrl.Log.WithName("worker-manager"),
+		cfg.branchBufferMaxBytes,
+	)
 	fatalIfErr(mgr.Add(workerManager), "unable to add worker manager to manager")
 	setupLog.Info("WorkerManager initialized and added to manager")
 
@@ -308,6 +314,7 @@ type appConfig struct {
 	auditRedisStream         string
 	auditRedisMaxLen         int64
 	auditRedisTLS            bool
+	branchBufferMaxBytes     int64
 	zapOpts                  zap.Options
 }
 
@@ -377,6 +384,14 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 		"Approximate max stream length (0 disables trimming).")
 	fs.BoolVar(&cfg.auditRedisTLS, "audit-redis-tls", false,
 		"If set, Redis connection for audit queueing uses TLS.")
+	branchBufferMaxBytesStr := os.Getenv("BRANCH_BUFFER_MAX_BYTES")
+	if branchBufferMaxBytesStr == "" {
+		branchBufferMaxBytesStr = defaultBranchBufferMaxBytesStr
+	}
+	var branchBufferMaxBytesFlag string
+	fs.StringVar(&branchBufferMaxBytesFlag, "branch-buffer-max-bytes", branchBufferMaxBytesStr,
+		"Maximum in-memory event buffer per branch worker, expressed as a Kubernetes resource quantity "+
+			"(e.g. 8Mi, 1Gi). Bounds pod memory under bursty workloads; not user-facing.")
 	cfg.zapOpts = zap.Options{
 		// Production mode defaults to JSON encoding, which is easier for log processors to parse.
 		Development: false,
@@ -389,6 +404,15 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 	}
 	if err := validateAuditConfig(cfg); err != nil {
 		return appConfig{}, err
+	}
+
+	bufferQuantity, err := resource.ParseQuantity(branchBufferMaxBytesFlag)
+	if err != nil {
+		return appConfig{}, fmt.Errorf("invalid --branch-buffer-max-bytes %q: %w", branchBufferMaxBytesFlag, err)
+	}
+	cfg.branchBufferMaxBytes, _ = bufferQuantity.AsInt64()
+	if cfg.branchBufferMaxBytes <= 0 {
+		return appConfig{}, fmt.Errorf("--branch-buffer-max-bytes must be > 0, got %s", branchBufferMaxBytesFlag)
 	}
 
 	return cfg, nil
