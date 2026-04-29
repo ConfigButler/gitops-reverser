@@ -24,7 +24,6 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
-	"time"
 
 	gogit "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing/transport"
@@ -39,21 +38,6 @@ import (
 
 // Worker configuration constants shared across implementations.
 const (
-	DefaultMaxCommits      = 20              // Default max commits before push
-	TestMaxCommits         = 1               // Max commits in test mode
-	TestPushInterval       = 5 * time.Second // Push interval for tests
-	ProductionPushInterval = 1 * time.Minute // Push interval for production
-
-	// MaxBytesMiB is the approximate MiB cap for a batch.
-	MaxBytesMiB int64 = 1
-
-	// bytesPerKiB defines the number of bytes in a KiB (2^10).
-	bytesPerKiB int64 = 1024
-	// bytesPerMiB defines the number of bytes in a MiB (2^20).
-	bytesPerMiB int64 = bytesPerKiB * 1024
-	// maxBytesBytes is the byte cap for batching (1 MiB in bytes).
-	maxBytesBytes int64 = MaxBytesMiB * bytesPerMiB
-
 	// Path part counts for identifier parsing (avoid magic numbers).
 	minCoreClusterParts                 = 3
 	groupedClusterOrCoreNamespacedParts = 4

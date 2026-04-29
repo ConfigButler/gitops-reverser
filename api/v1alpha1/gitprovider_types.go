@@ -34,7 +34,7 @@ type GitProviderSpec struct {
 	// +required
 	AllowedBranches []string `json:"allowedBranches"`
 
-	// Push defines the strategy for pushing commits (batching).
+	// Push controls how events are coalesced into commits before pushing.
 	// +optional
 	Push *PushStrategy `json:"push,omitempty"`
 

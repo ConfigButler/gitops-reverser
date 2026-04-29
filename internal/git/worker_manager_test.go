@@ -92,7 +92,7 @@ func TestWorkerManagerRegisterTarget(t *testing.T) {
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 	log := logr.Discard()
 
-	manager := NewWorkerManager(client, log)
+	manager := NewWorkerManager(client, log, 0)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -147,7 +147,7 @@ func TestWorkerManagerMultipleTargetsSameBranch(t *testing.T) {
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 	log := logr.Discard()
 
-	manager := NewWorkerManager(client, log)
+	manager := NewWorkerManager(client, log, 0)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -201,7 +201,7 @@ func TestWorkerManagerDifferentBranches(t *testing.T) {
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 	log := logr.Discard()
 
-	manager := NewWorkerManager(client, log)
+	manager := NewWorkerManager(client, log, 0)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -260,7 +260,7 @@ func TestWorkerManagerUnregisterTarget(t *testing.T) {
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 	log := logr.Discard()
 
-	manager := NewWorkerManager(client, log)
+	manager := NewWorkerManager(client, log, 0)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -330,7 +330,7 @@ func TestWorkerManagerConcurrentRegistration(t *testing.T) {
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 	log := logr.Discard()
 
-	manager := NewWorkerManager(client, log)
+	manager := NewWorkerManager(client, log, 0)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -381,7 +381,7 @@ func TestWorkerManagerGetNonexistentWorker(t *testing.T) {
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 	log := logr.Discard()
 
-	manager := NewWorkerManager(client, log)
+	manager := NewWorkerManager(client, log, 0)
 
 	worker, exists := manager.GetWorkerForTarget("nonexistent", "default", "main")
 	if exists {
@@ -398,7 +398,7 @@ func TestWorkerManagerUnregisterNonexistent(t *testing.T) {
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 	log := logr.Discard()
 
-	manager := NewWorkerManager(client, log)
+	manager := NewWorkerManager(client, log, 0)
 
 	// Unregister should be idempotent and not error
 	err := manager.UnregisterTarget("nonexistent", "default", "repo1", "gitops-system", "main")

@@ -64,7 +64,7 @@ Key fields:
 - `spec.url` — repository URL (HTTP or SSH)
 - `spec.secretRef` — Kubernetes Secret with authentication credentials
 - `spec.allowedBranches` — glob patterns controlling which branches may be written to
-- `spec.push.interval` / `spec.push.maxCommits` — commit batching policy (default: 1 min / 20 commits)
+- `spec.push.commitWindow` — rolling silence window for coalescing events into one commit per (author, gitTarget); default `5s`. The push cooldown (5s) is fixed in code, and the per-pod buffer cap is operator-configured via `--branch-buffer-max-bytes` (default `8Mi`)
 - `spec.commit.committer` / `spec.commit.message` / `spec.commit.signing` — committer identity, Go template for messages, SSH signing config
 - `status.signingPublicKey` — populated when commit signing is active
 
@@ -193,7 +193,7 @@ flowchart TD
     end
 
     subgraph "Git Write (single-threaded per branch)"
-        BW -->|batch by interval/count| COMMIT[Generate Commits]
+        BW -->|coalesce by commitWindow| COMMIT[Generate Commits]
         COMMIT --> PUSH[PushAtomic]
         PUSH -->|conflict?| RETRY[Fetch Fresh + Replay]
         RETRY --> COMMIT
@@ -213,7 +213,7 @@ of namespace. All namespace-level filtering must happen inside the operator.
 6. Extract the response object (or request object for DELETE), run through [sanitize.Sanitize()](internal/sanitize/) to strip runtime fields
 7. For each matched rule: call [EventRouter.RouteToGitTargetEventStream()](internal/watch/event_router.go)
 8. [GitTargetEventStream](internal/reconcile/git_target_event_stream.go) deduplicates by content hash and enqueues to the BranchWorker
-9. [BranchWorker](internal/git/branch_worker.go) buffers events and flushes on interval or count threshold
+9. [BranchWorker](internal/git/branch_worker.go) buffers events and flushes when the commit window expires, on shutdown, or when the buffer hits the operator's byte cap
 10. [WriteRequestWithContentWriter()](internal/git/git.go) generates commits and calls [PushAtomic()](internal/git/git_atomic_push.go)
 11. If the remote has diverged: fetch fresh remote state, hard-reset, replay the same events (up to 3 attempts)
 
@@ -235,8 +235,11 @@ BranchKey = {ProviderNamespace, ProviderName, Branch}
 
 The worker runs a single `processEvents()` goroutine that reads from a buffered channel
 (capacity 100). Events are flushed as commits when either:
-- the `maxCommits` threshold is reached
-- the push-interval ticker fires (default: 1 minute, configurable via `GitProvider.spec.push`)
+- the rolling commit-window timer expires after `spec.push.commitWindow` of silence (default `5s`)
+- the per-worker buffer hits `--branch-buffer-max-bytes` (default `8Mi`, operator-tuned)
+- the worker shuts down
+
+A fixed 5s push cooldown bounds how often successful pushes hit the remote.
 
 Atomic requests (e.g., initial snapshot reconcile) bypass the buffer and commit everything in one
 commit.
