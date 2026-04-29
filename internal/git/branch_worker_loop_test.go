@@ -71,37 +71,51 @@ func TestGetCommitWindow_DefaultsAndParsing(t *testing.T) {
 	assert.Equal(t, DefaultCommitWindow, garbage, "parse error falls back to default")
 }
 
-// TestEventLoop_DrainOrSchedulePush covers the cooldown gating logic without
+// TestEventLoop_MaybeSchedulePush covers the cooldown gating logic without
 // touching real Git: the loop's lastPushAt and pushTimer state alone determine
-// whether a flush runs immediately or is deferred.
-func TestEventLoop_DrainOrSchedulePush_CooldownGate(t *testing.T) {
+// whether the deferred push timer is set or skipped.
+func TestEventLoop_MaybeSchedulePush_CooldownGate(t *testing.T) {
 	w := &BranchWorker{Log: logr.Discard()}
 	loop := newBranchWorkerEventLoop(w, 5*time.Second)
 
-	// No buffered events → no-op, no timer scheduled.
-	loop.drainOrSchedulePush()
-	assert.Nil(t, loop.pushTimer, "no buffer → no timer")
+	// No unpushed events → no-op, no timer scheduled.
+	loop.maybeSchedulePush()
+	assert.Nil(t, loop.pushTimer, "no unpushed events → no timer")
 
-	// Buffered events but cooldown active → schedule a one-shot pushTimer.
-	loop.buffer = []Event{{}}
-	loop.bufferBytes = 1
+	// Locally-committed events plus active cooldown → schedule a one-shot
+	// pushTimer rather than push immediately.
+	loop.unpushedEvents = []Event{{}}
+	loop.unpushedEventsBytes = 1
 	loop.lastPushAt = time.Now() // pretend we just pushed
-	loop.drainOrSchedulePush()
+	loop.maybeSchedulePush()
 	require.NotNil(t, loop.pushTimer, "cooldown active → pushTimer scheduled")
 
 	// Calling again does not stack a second timer.
 	prev := loop.pushTimer
-	loop.drainOrSchedulePush()
-	assert.Same(t, prev, loop.pushTimer, "drainOrSchedulePush is idempotent while a timer is pending")
+	loop.maybeSchedulePush()
+	assert.Same(t, prev, loop.pushTimer, "maybeSchedulePush is idempotent while a timer is pending")
 
-	// Reset and verify expired-cooldown path takes the immediate branch
-	// (we avoid the real flush() because it touches Git; assert state instead).
+	// Reset and verify the expired-cooldown path would take the immediate
+	// branch (we avoid calling pushPending here since it touches Git; assert
+	// the inputs to the decision instead).
 	loop.stopPushTimer()
 	loop.lastPushAt = time.Time{} // never pushed
-	// We can't safely call flush() here (no repo), so simulate by inspecting
-	// the inputs to the decision.
 	elapsedOK := loop.lastPushAt.IsZero() || time.Since(loop.lastPushAt) >= PushCooldown
-	assert.True(t, elapsedOK, "first ever drain should bypass cooldown")
+	assert.True(t, elapsedOK, "first ever push should bypass cooldown")
+}
+
+// TestEventLoop_TotalRetainedBytes verifies the byte cap is enforced against
+// buffer + unpushedEvents combined, as required by PR2 of the design.
+func TestEventLoop_TotalRetainedBytes(t *testing.T) {
+	w := &BranchWorker{Log: logr.Discard()}
+	loop := newBranchWorkerEventLoop(w, time.Second)
+
+	assert.Equal(t, int64(0), loop.totalRetainedBytes())
+
+	loop.bufferBytes = 100
+	loop.unpushedEventsBytes = 250
+	assert.Equal(t, int64(350), loop.totalRetainedBytes(),
+		"cap is enforced against buffer + unpushedEvents combined")
 }
 
 func TestEventLoop_ResetCommitTimer(t *testing.T) {

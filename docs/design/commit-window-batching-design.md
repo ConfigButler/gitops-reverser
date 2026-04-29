@@ -3,15 +3,18 @@
 > Status: design proposal
 > Supersedes the sketch in [docs/future/idea-burst-commit-batching.md](../future/idea-burst-commit-batching.md)
 >
-> **Implementation progress (2026-04-28)** — split into three PRs as agreed:
-> - **PR 1 (in-flight, this branch): commitWindow field + two-stage event-loop state machine + push throttle.**
+> **Implementation progress (2026-04-29)** — split into three PRs as agreed:
+> - **PR 1 (landed): commitWindow field + two-stage event-loop state machine + push throttle.**
 >   API change to `PushStrategy` is done (only `commitWindow` remains; `interval`/`maxCommits` removed).
 >   `--branch-buffer-max-bytes` operator flag (env `BRANCH_BUFFER_MAX_BYTES`, default `8Mi`) plumbed through `WorkerManager` → `BranchWorker`.
 >   `BranchWorker.processEvents` rewritten as a `branchWorkerEventLoop` with two timers (commitTimer + one-shot pushTimer) and a fixed `PushCooldown = 5s`.
->   For PR 1 the actual git op is still `commitAndPushRequest` (commit + push fused). Splitting commit from push and adding `unpushedEvents` retention is **PR 2**.
 >   Samples / Helm values / quickstart template / `docs/architecture.md` updated to the new field. CRD regenerated.
->   Tests: `task fmt`, `task generate`, `task manifests`, `task vet`, `task lint`, `task test` all pass. New unit tests cover `getCommitWindow` parsing and the event-loop helper state. **`task test-e2e` blocked: the local k3d cluster's Flux controllers stay `0/1 Available` (pre-existing infra problem, unrelated to this PR).**
-> - **PR 2 (next): `unpushedEvents` retention + `replayAndRetry` adaptation.** Splits `commitAndPushRequest` into `commitGroups` and `pushPending`; sources replay events from `unpushedEvents`; ties memory cap to `buffer + unpushedEvents`. Per-event commit semantics for `commitWindow=0` only become honest after this lands.
+> - **PR 2 (landed, this branch): `unpushedEvents` retention + replay-on-conflict adaptation.**
+>   `commitAndPushRequest` split: per-event work now goes through `BranchWorker.commitGroups` (commit only, accumulates in `unpushedEvents`) followed by `BranchWorker.pushPendingCommits` (rate-limited push with replay). Atomic-batch reconciles still flow through `commitAndPushAtomic` (commit+push fused) so snapshot semantics are unchanged.
+>   New primitives in `git.go`: `CommitWriteRequestNoPush` (writes local commits without pushing, returns the rootHash for later validation) and `PushPendingWithReplay` (pushes; on non-FF conflict, fetches+resets and calls a rebuild closure to re-apply unpushed events on the new tip; up to `maxRetries=3`).
+>   The event loop now retains `unpushedEvents` between commit and push: only a successful push clears the slice, so a transient push failure or a chronic conflict leaves replay material intact for the next cycle. The byte cap is enforced against `buffer + unpushedEvents` combined.
+>   `commitWindow=0` is now honest per-event: each event arrival immediately commits locally; the cooldown only defers the push.
+>   Tests: `task fmt`, `task generate`, `task manifests`, `task vet`, `task lint`, `task test`, `task test-e2e` all pass. New unit tests cover `commitGroups` (no-push semantics, mid-cycle accumulation), `pushPendingCommits` (deferred push of accumulated commits, replay-on-conflict against an externally-advanced remote), the combined byte cap, and the `commitWindow=0` honest-per-event path.
 > - **PR 3 (later): grouped-commit path + `GroupedCommitMessageData` + `groupTemplate` field.** New code path in `commit.go` with author per group and per-(author, gitTarget) grouping; `BatchCommitMessageData` stays as-is for `CommitModeAtomic`.
 
 ## Goal
