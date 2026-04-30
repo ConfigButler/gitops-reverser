@@ -63,6 +63,17 @@ const (
 	PushCooldown = 5 * time.Second
 )
 
+var (
+	// These function vars are narrow test seams for classifying push failures
+	// without duplicating the repository layer in tests.
+	//nolint:gochecknoglobals
+	pushAtomicFn = PushAtomic
+	//nolint:gochecknoglobals
+	fetchRemoteBranchHashFn = fetchRemoteBranchHash
+	//nolint:gochecknoglobals
+	syncToRemoteFn = syncToRemote
+)
+
 // BranchWorker processes events for a single (GitProvider, Branch) combination.
 // It can serve multiple GitTargets that write to different paths in the same branch.
 // This design ensures serialized commits per branch, preventing merge conflicts.
@@ -706,22 +717,6 @@ func (l *branchWorkerEventLoop) stopTimers() {
 	l.stopPushTimer()
 }
 
-// commitGroups is kept as a test-facing helper: it resolves the buffered
-// events into one retained grouped pending write and creates the local commits
-// without pushing.
-func (w *BranchWorker) commitGroups(events []Event, hasUnpushedCommits bool) error {
-	if len(events) == 0 {
-		return nil
-	}
-
-	pendingWrite, err := w.buildGroupedPendingWrite(w.ctx, events)
-	if err != nil {
-		return err
-	}
-
-	return w.commitPendingWrites([]PendingWrite{*pendingWrite}, hasUnpushedCommits)
-}
-
 // commitPendingWrites creates local commits for the provided pending writes
 // without pushing them. When hasPendingCommits is false (no commits retained
 // from earlier in the current push cycle), it first fetches and resets to the
@@ -823,7 +818,7 @@ func (w *BranchWorker) pushPendingCommits(pendingWrites []PendingWrite) error {
 			rootBranch = plumbing.NewBranchReferenceName(w.Branch)
 		}
 
-		err := PushAtomic(w.ctx, repo, rootHash, rootBranch, auth)
+		err := pushAtomicFn(w.ctx, repo, rootHash, rootBranch, auth)
 		if err == nil {
 			w.pushCycleRootBranch = ""
 			w.pushCycleRootHash = plumbing.ZeroHash
@@ -831,15 +826,15 @@ func (w *BranchWorker) pushPendingCommits(pendingWrites []PendingWrite) error {
 		}
 		lastErr = err
 
-		remoteHash, fetchErr := fetchRemoteBranchHash(w.ctx, repo, rootBranch, auth)
+		remoteHash, fetchErr := fetchRemoteBranchHashFn(w.ctx, repo, rootBranch, auth)
 		if fetchErr != nil {
-			return fmt.Errorf("push failed and remote-state fetch also failed: %w", err)
+			return err
 		}
 		if remoteHash == rootHash {
 			return err
 		}
 
-		pullReport, syncErr := syncToRemote(w.ctx, repo, plumbing.NewBranchReferenceName(w.Branch), auth)
+		pullReport, syncErr := syncToRemoteFn(w.ctx, repo, plumbing.NewBranchReferenceName(w.Branch), auth)
 		if syncErr != nil {
 			return fmt.Errorf("sync remote during replay: %w", syncErr)
 		}

@@ -72,14 +72,6 @@ type PullReport struct {
 	IncomingChanges bool // SHA changed, requiring resource-level reconcile
 }
 
-// WriteEventsResult provides detailed writeEvents operation results.
-type WriteEventsResult struct {
-	CommitsCreated int           // Number of successfully pushed commits (0 if no changes)
-	LastHash       string        // SHA of the last created event commit
-	ConflictPulls  []*PullReport // List of PullReports: one for each conflict resolution attempt
-	Failures       int           // Number of failures while attempting to push commits (0 in ideal situation)
-}
-
 // BranchKey uniquely identifies a (GitProvider, Branch) combination.
 // This is the unit of worker ownership to prevent merge conflicts.
 // Multiple GitTargets can share the same BranchKey (same provider+branch)

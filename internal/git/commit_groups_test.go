@@ -260,7 +260,7 @@ func TestBuildGroupedCommitMessageData_OperationsAndResources(t *testing.T) {
 	groups := groupCommits(events)
 	require.Len(t, groups, 1)
 
-	data := buildGroupedCommitMessageData(groups[0])
+	data := buildGroupedCommitMessageData(groups[0].Author, groups[0].GitTarget, groups[0].orderedEvents())
 	assert.Equal(t, "alice", data.Author)
 	assert.Equal(t, "t", data.GitTarget)
 	assert.Equal(t, 3, data.Count)
@@ -277,7 +277,13 @@ func TestRenderGroupCommitMessage_DefaultTemplate(t *testing.T) {
 	groups := groupCommits(events)
 	require.Len(t, groups, 1)
 
-	msg, err := renderGroupCommitMessage(groups[0], ResolveCommitConfig(nil))
+	msg, err := renderGroupCommitMessage(CommitUnit{
+		Events:      groups[0].orderedEvents(),
+		GroupAuthor: groups[0].Author,
+		Target: ResolvedTargetMetadata{
+			Name: groups[0].GitTarget,
+		},
+	}, ResolveCommitConfig(nil))
 	require.NoError(t, err)
 	assert.Equal(t, "alice on team-a: 1 resource(s)", msg)
 }

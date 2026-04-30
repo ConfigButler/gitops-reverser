@@ -168,14 +168,13 @@ func appendClosedCommitGroup(
 	return groups
 }
 
-// buildGroupedCommitMessageData produces the template context for the group.
-// Operations are counted by Operation tag; Resources is the deduplicated list
-// of resource refs in arrival order.
-func buildGroupedCommitMessageData(g *commitGroup) GroupedCommitMessageData {
-	ordered := g.orderedEvents()
+// buildGroupedCommitMessageData produces the template context for a grouped
+// commit unit. Operations are counted by Operation tag; Resources is the
+// deduplicated list of resource refs in arrival order.
+func buildGroupedCommitMessageData(author, gitTarget string, events []Event) GroupedCommitMessageData {
 	operations := make(map[string]int, groupedCommitOperationKinds)
-	resources := make([]ResourceRef, 0, len(ordered))
-	for _, e := range ordered {
+	resources := make([]ResourceRef, 0, len(events))
+	for _, e := range events {
 		operations[e.Operation]++
 		resources = append(resources, ResourceRef{
 			Group:     e.Identifier.Group,
@@ -186,9 +185,9 @@ func buildGroupedCommitMessageData(g *commitGroup) GroupedCommitMessageData {
 		})
 	}
 	return GroupedCommitMessageData{
-		Author:     g.Author,
-		GitTarget:  g.GitTarget,
-		Count:      len(ordered),
+		Author:     author,
+		GitTarget:  gitTarget,
+		Count:      len(events),
 		Operations: operations,
 		Resources:  resources,
 	}
