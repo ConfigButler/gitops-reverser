@@ -391,11 +391,11 @@ func TestFolderReconciler_ResetStateRequiresFreshRepoAndClusterSnapshots(t *test
 
 // MockReconcileEmitter is a mock implementation of ReconcileEmitter for testing.
 type MockReconcileEmitter struct {
-	Batches []git.ReconcileBatch
+	Batches []git.WriteRequest
 }
 
-func (m *MockReconcileEmitter) EmitReconcileBatch(batch git.ReconcileBatch) error {
-	m.Batches = append(m.Batches, batch)
+func (m *MockReconcileEmitter) EmitReconcileBatch(request git.WriteRequest) error {
+	m.Batches = append(m.Batches, request)
 	return nil
 }
 

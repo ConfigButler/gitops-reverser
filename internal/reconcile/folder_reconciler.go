@@ -33,7 +33,7 @@ import (
 
 // BatchEmitter emits a complete reconcile batch as a single unit.
 type BatchEmitter interface {
-	EmitReconcileBatch(batch git.ReconcileBatch) error
+	EmitReconcileBatch(request git.WriteRequest) error
 }
 
 // FolderReconciler reconciles Git base folder to match cluster state.
@@ -140,7 +140,7 @@ func (r *FolderReconciler) OnRepoState(event events.RepoStateEvent) {
 }
 
 // reconcile performs the reconciliation logic when both states are available.
-// It collects all changes into a single ReconcileBatch and emits it atomically.
+// It collects all changes into a single write request and emits it atomically.
 func (r *FolderReconciler) reconcile() {
 	// Only reconcile when we have both cluster and Git state
 	if !r.clusterStateSeen || !r.gitStateSeen {
@@ -197,11 +197,11 @@ func (r *FolderReconciler) reconcile() {
 		})
 	}
 
-	batch := git.ReconcileBatch{
+	request := git.WriteRequest{
 		Events: batchEvents,
 	}
 
-	if err := r.reconcileEmitter.EmitReconcileBatch(batch); err != nil {
+	if err := r.reconcileEmitter.EmitReconcileBatch(request); err != nil {
 		r.logger.Error(err, "Failed to emit reconcile batch")
 	}
 }

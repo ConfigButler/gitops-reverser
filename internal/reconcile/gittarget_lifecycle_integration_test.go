@@ -274,7 +274,7 @@ func TestGitTargetEventStream_DeduplicationPerStream(t *testing.T) {
 type mockEventEnqueuer struct {
 	mu      sync.Mutex
 	events  []git.Event
-	batches []*git.ReconcileBatch
+	batches []*git.WriteRequest
 }
 
 func (m *mockEventEnqueuer) Enqueue(event git.Event) {
@@ -294,12 +294,6 @@ func (m *mockEventEnqueuer) EnqueueRequest(request *git.WriteRequest) {
 		return
 	}
 	m.events = append(m.events, request.Events...)
-}
-
-func (m *mockEventEnqueuer) EnqueueBatch(batch *git.ReconcileBatch) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.batches = append(m.batches, batch)
 }
 
 // createTestEventWithPath creates a test event with a specific path.

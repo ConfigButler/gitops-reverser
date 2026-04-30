@@ -131,9 +131,6 @@ type WriteRequest struct {
 	CommitMode         CommitMode
 }
 
-// ReconcileBatch is a backward-compatible alias for a write request emitted by reconciliation.
-type ReconcileBatch = WriteRequest
-
 // WorkItem is the unit of work in the BranchWorker queue.
 type WorkItem struct {
 	Request *WriteRequest

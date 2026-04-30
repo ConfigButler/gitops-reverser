@@ -844,25 +844,6 @@ func setHead(r *git.Repository, branchName string) error {
 	return r.Storer.SetReference(newHeadRef)
 }
 
-// WriteBatchWithContentWriter handles writing a ReconcileBatch as a single atomic commit.
-func WriteBatchWithContentWriter(
-	ctx context.Context,
-	writer eventContentWriter,
-	repoPath string,
-	batch *ReconcileBatch,
-	targetBranchName string,
-	auth transport.AuthMethod,
-) (*WriteEventsResult, error) {
-	if batch == nil {
-		return nil, errors.New("reconcile batch is required")
-	}
-	request := *batch
-	if request.CommitMode == "" {
-		request.CommitMode = CommitModeAtomic
-	}
-	return WriteRequestWithContentWriter(ctx, writer, repoPath, &request, targetBranchName, auth)
-}
-
 // generateCommitsFromRequest creates commits from the provided write request.
 func generateCommitsFromRequest(
 	ctx context.Context,

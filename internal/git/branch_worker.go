@@ -235,17 +235,6 @@ func (w *BranchWorker) enqueueRequest(request *WriteRequest) {
 	}
 }
 
-// EnqueueBatch adds a reconcile batch to this worker's queue as a single atomic unit.
-func (w *BranchWorker) EnqueueBatch(batch *ReconcileBatch) {
-	if batch == nil {
-		return
-	}
-	if batch.CommitMode == "" {
-		batch.CommitMode = CommitModeAtomic
-	}
-	w.enqueueRequest(batch)
-}
-
 // ListResourcesInPath returns resource identifiers found in a Git folder.
 // This is a synchronous service method called by EventRouter.
 func (w *BranchWorker) ListResourcesInPath(path string) ([]itypes.ResourceIdentifier, error) {
@@ -535,9 +524,10 @@ func (l *branchWorkerEventLoop) handleQueueItem(item WorkItem) {
 	}
 
 	if item.Request.CommitMode == CommitModeAtomic {
-		// Atomic batches bypass the commit window. Drain any buffered live work
-		// into retained pending writes first so arrival order is preserved, then
-		// add the atomic batch to the same retained queue and push immediately.
+		// Atomic batches bypass the commit window, but not the retained push
+		// lifecycle. Drain any buffered live work first so arrival order is
+		// preserved, then append the atomic write to pendingWrites and let the
+		// normal cooldown-driven push path decide when to publish.
 		l.commitBufferedEvents()
 
 		pendingWrite, err := l.w.buildAtomicPendingWrite(l.w.ctx, item.Request)
@@ -553,7 +543,7 @@ func (l *branchWorkerEventLoop) handleQueueItem(item WorkItem) {
 
 		l.pendingWrites = append(l.pendingWrites, *pendingWrite)
 		l.pendingWritesBytes += pendingWrite.ByteSize
-		l.pushPending()
+		l.maybeSchedulePush()
 		return
 	}
 
