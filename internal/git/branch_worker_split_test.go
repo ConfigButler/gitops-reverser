@@ -20,7 +20,9 @@ package git
 
 import (
 	"context"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -180,8 +182,8 @@ func TestCommitGroups_AccumulatesAcrossCalls(t *testing.T) {
 	require.Len(t, parentCommit.ParentHashes, 1, "first commit should still chain to the seed")
 }
 
-// TestPushPendingCommits_FlushesAccumulated verifies that two commitGroups
-// calls followed by a single pushPendingCommits publishes both local commits
+// TestPushPendingCommits_FlushesAccumulated verifies that two grouped pending
+// writes followed by a single pushPendingCommits publishes both local commits
 // to the remote and clears the rootHash on success.
 func TestPushPendingCommits_FlushesAccumulated(t *testing.T) {
 	worker, serverRepo, _ := setupCommitPushSplitWorker(t)
@@ -196,8 +198,13 @@ func TestPushPendingCommits_FlushesAccumulated(t *testing.T) {
 	require.NoError(t, worker.commitGroups(events1, false))
 	require.NoError(t, worker.commitGroups(events2, true))
 
+	pending1, err := worker.buildGroupedPendingWrite(worker.ctx, events1)
+	require.NoError(t, err)
+	pending2, err := worker.buildGroupedPendingWrite(worker.ctx, events2)
+	require.NoError(t, err)
+
 	// One push publishes everything in one network operation.
-	require.NoError(t, worker.pushPendingCommits(append(append([]Event{}, events1...), events2...)))
+	require.NoError(t, worker.pushPendingCommits([]PendingWrite{*pending1, *pending2}))
 
 	afterPushRef, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
 	require.NoError(t, err)
@@ -218,7 +225,7 @@ func TestPushPendingCommits_FlushesAccumulated(t *testing.T) {
 
 // TestPushPendingCommits_ReplaysOnConflict verifies the replay path: if the
 // remote moves between our last commit and our push, pushPendingCommits
-// rebuilds the unpushed events on top of the new remote tip and the final
+// rebuilds the retained pending write on top of the new remote tip and the final
 // remote contains both the contending commit and our replayed commits.
 func TestPushPendingCommits_ReplaysOnConflict(t *testing.T) {
 	worker, serverRepo, remoteURL := setupCommitPushSplitWorker(t)
@@ -226,6 +233,8 @@ func TestPushPendingCommits_ReplaysOnConflict(t *testing.T) {
 	// Build local commits but do not push yet.
 	events := []Event{configMapEvent("from-operator", "alice", "team-a")}
 	require.NoError(t, worker.commitGroups(events, false))
+	pendingWrite, err := worker.buildGroupedPendingWrite(worker.ctx, events)
+	require.NoError(t, err)
 
 	// While we hold the local commits, an external party advances main.
 	tempDir := t.TempDir()
@@ -240,7 +249,7 @@ func TestPushPendingCommits_ReplaysOnConflict(t *testing.T) {
 	require.NoError(t, err)
 
 	// Our push should hit non-FF, replay, and succeed.
-	require.NoError(t, worker.pushPendingCommits(events))
+	require.NoError(t, worker.pushPendingCommits([]PendingWrite{*pendingWrite}))
 
 	finalRef, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
 	require.NoError(t, err)
@@ -261,7 +270,7 @@ func TestPushPendingCommits_ReplaysOnConflict(t *testing.T) {
 // TestEventLoop_CommitWindowZero_HonestPerEvent verifies the design's PR2
 // promise: with commitWindow=0 each event arrival immediately commits to a
 // local Git commit. While the push cooldown is active those local commits
-// accumulate in unpushedEvents — only a successful push clears them.
+// accumulate in pendingWrites — only a successful push clears them.
 func TestEventLoop_CommitWindowZero_HonestPerEvent(t *testing.T) {
 	worker, serverRepo, remoteURL := setupCommitPushSplitWorker(t)
 
@@ -279,8 +288,8 @@ func TestEventLoop_CommitWindowZero_HonestPerEvent(t *testing.T) {
 	}})
 
 	assert.Empty(t, loop.buffer, "commitWindow=0 must drain the buffer on every event")
-	assert.Len(t, loop.unpushedEvents, 1,
-		"events land in unpushedEvents immediately while the cooldown defers the push")
+	assert.Len(t, loop.pendingWrites, 1,
+		"events land in pendingWrites immediately while the cooldown defers the push")
 	assert.NotNil(t, loop.pushTimer,
 		"cooldown active → a one-shot pushTimer is scheduled, not an immediate push")
 
@@ -300,4 +309,29 @@ func TestEventLoop_CommitWindowZero_HonestPerEvent(t *testing.T) {
 		"local main should advance with the per-event commit")
 
 	loop.stopTimers()
+}
+
+func TestEventLoop_AtomicPushFailure_DoesNotAdvanceCooldownOrLosePendingWrite(t *testing.T) {
+	worker, _, remoteURL := setupCommitPushSplitWorker(t)
+
+	request := &WriteRequest{
+		Events:     []Event{configMapEvent("atomic", "reconciler", "team-a")},
+		CommitMode: CommitModeAtomic,
+	}
+
+	pendingWrite, err := worker.buildAtomicPendingWrite(worker.ctx, request)
+	require.NoError(t, err)
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false))
+
+	loop := newBranchWorkerEventLoop(worker, time.Second)
+	loop.pendingWrites = []PendingWrite{*pendingWrite}
+	loop.pendingWritesBytes = pendingWrite.ByteSize
+
+	remotePath := strings.TrimPrefix(remoteURL, "file://")
+	require.NoError(t, os.RemoveAll(remotePath))
+
+	loop.pushPending()
+
+	assert.True(t, loop.lastPushAt.IsZero(), "failed atomic push must not advance cooldown state")
+	assert.Len(t, loop.pendingWrites, 1, "failed atomic push must retain pending work for retry")
 }
