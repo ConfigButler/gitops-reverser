@@ -20,6 +20,7 @@ package git
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -29,9 +30,12 @@ import (
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -104,8 +108,8 @@ func setupCommitPushSplitWorker(t *testing.T) (*BranchWorker, *git.Repository, s
 	return worker, serverRepo, remoteURL
 }
 
-// TestCommitGroups_DoesNotPush verifies that commitGroups produces grouped
-// local commits without ever advancing the remote branch.
+// TestCommitGroups_DoesNotPush verifies grouped pending writes can be committed
+// locally without ever advancing the remote branch.
 func TestCommitGroups_DoesNotPush(t *testing.T) {
 	worker, serverRepo, remoteURL := setupCommitPushSplitWorker(t)
 
@@ -119,9 +123,11 @@ func TestCommitGroups_DoesNotPush(t *testing.T) {
 		configMapEvent("first", "alice", "team-a"),
 		configMapEvent("second", "alice", "team-a"),
 	}
-	require.NoError(t, worker.commitGroups(events, false))
+	pendingWrite, err := worker.buildGroupedPendingWrite(worker.ctx, events)
+	require.NoError(t, err)
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false))
 
-	// Remote must be untouched after commitGroups; only pushPendingCommits
+	// Remote must be untouched after commitPendingWrites; only pushPendingCommits
 	// publishes work.
 	afterCommitRef, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
 	require.NoError(t, err)
@@ -151,15 +157,25 @@ func TestCommitGroups_DoesNotPush(t *testing.T) {
 }
 
 // TestCommitGroups_AccumulatesAcrossCalls covers the multi-commit path: a
-// second commitGroups call within the same push cycle (hasUnpushedCommits=true) must
+// second commitPendingWrites call within the same push cycle (hasUnpushedCommits=true) must
 // not call PrepareBranch, so the prior local commit is preserved.
 func TestCommitGroups_AccumulatesAcrossCalls(t *testing.T) {
 	worker, _, remoteURL := setupCommitPushSplitWorker(t)
 
-	require.NoError(t, worker.commitGroups([]Event{configMapEvent("first", "alice", "team-a")}, false))
+	firstPendingWrite, err := worker.buildGroupedPendingWrite(
+		worker.ctx,
+		[]Event{configMapEvent("first", "alice", "team-a")},
+	)
+	require.NoError(t, err)
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*firstPendingWrite}, false))
 	rootAfterFirst := worker.pushCycleRootHash
 
-	require.NoError(t, worker.commitGroups([]Event{configMapEvent("second", "bob", "team-b")}, true))
+	secondPendingWrite, err := worker.buildGroupedPendingWrite(
+		worker.ctx,
+		[]Event{configMapEvent("second", "bob", "team-b")},
+	)
+	require.NoError(t, err)
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*secondPendingWrite}, true))
 
 	assert.Equal(t, rootAfterFirst, worker.pushCycleRootHash,
 		"hasUnpushedCommits=true must preserve the rootHash from the first commit")
@@ -195,8 +211,13 @@ func TestPushPendingCommits_FlushesAccumulated(t *testing.T) {
 	events1 := []Event{configMapEvent("first", "alice", "team-a")}
 	events2 := []Event{configMapEvent("second", "bob", "team-b")}
 
-	require.NoError(t, worker.commitGroups(events1, false))
-	require.NoError(t, worker.commitGroups(events2, true))
+	pendingWrite1, err := worker.buildGroupedPendingWrite(worker.ctx, events1)
+	require.NoError(t, err)
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite1}, false))
+
+	pendingWrite2, err := worker.buildGroupedPendingWrite(worker.ctx, events2)
+	require.NoError(t, err)
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite2}, true))
 
 	pending1, err := worker.buildGroupedPendingWrite(worker.ctx, events1)
 	require.NoError(t, err)
@@ -232,7 +253,9 @@ func TestPushPendingCommits_ReplaysOnConflict(t *testing.T) {
 
 	// Build local commits but do not push yet.
 	events := []Event{configMapEvent("from-operator", "alice", "team-a")}
-	require.NoError(t, worker.commitGroups(events, false))
+	retainedPendingWrite, err := worker.buildGroupedPendingWrite(worker.ctx, events)
+	require.NoError(t, err)
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*retainedPendingWrite}, false))
 	pendingWrite, err := worker.buildGroupedPendingWrite(worker.ctx, events)
 	require.NoError(t, err)
 
@@ -265,6 +288,253 @@ func TestPushPendingCommits_ReplaysOnConflict(t *testing.T) {
 
 	// Successful push clears push-cycle state.
 	assert.True(t, worker.pushCycleRootHash.IsZero())
+}
+
+func TestBranchWorker_Replay_UsesResolvedMetadata_GitTargetDeletedMidBurst(t *testing.T) {
+	installFakeSOPSBinary(t)
+
+	tempDir := t.TempDir()
+	remotePath := filepath.Join(tempDir, "remote.git")
+	remoteURL := "file://" + remotePath
+	serverRepo := createBareRepo(t, remotePath)
+
+	seedPath := filepath.Join(tempDir, "seed")
+	seedRepo, seedWorktree := initLocalRepo(t, seedPath, remoteURL, "main")
+	commitFileChange(t, seedWorktree, seedPath, "README.md", "seed\n")
+	require.NoError(t, seedRepo.Push(&git.PushOptions{
+		RefSpecs: []config.RefSpec{config.RefSpec("refs/heads/main:refs/heads/main")},
+	}))
+
+	worker, err := newTestBranchWorker(
+		remoteURL,
+		"test-repo",
+		"main",
+		secretTargetObjects(t, "test-repo", "main", "")...,
+	)
+	require.NoError(t, err)
+
+	event := Event{
+		Object: &unstructured.Unstructured{
+			Object: map[string]interface{}{
+				"apiVersion": "v1",
+				"kind":       "Secret",
+				"metadata": map[string]interface{}{
+					"name":      "burst-secret",
+					"namespace": "default",
+				},
+				"data": map[string]interface{}{
+					"password": "ZG8tbm90LWNvbW1pdA==",
+				},
+			},
+		},
+		Identifier: itypes.ResourceIdentifier{
+			Group:     "",
+			Version:   "v1",
+			Resource:  "secrets",
+			Namespace: "default",
+			Name:      "burst-secret",
+		},
+		Operation:          "CREATE",
+		UserInfo:           UserInfo{Username: "alice"},
+		GitTargetName:      "secret-target",
+		GitTargetNamespace: "default",
+	}
+
+	pendingWrite, err := worker.buildGroupedPendingWrite(worker.ctx, []Event{event})
+	require.NoError(t, err)
+	targetMetadata := pendingWrite.findTargetMetadata("secret-target", "default")
+	require.NotNil(t, targetMetadata.EncryptionConfig, "resolved encryption must be retained on the pending write")
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false))
+
+	require.NoError(t, worker.Client.Delete(worker.ctx, &configv1alpha1.GitTarget{
+		ObjectMeta: metav1.ObjectMeta{Name: "secret-target", Namespace: "default"},
+	}))
+	require.NoError(t, worker.Client.Delete(worker.ctx, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "sops-age-key", Namespace: "default"},
+	}))
+
+	otherPath := filepath.Join(t.TempDir(), "other")
+	otherRepo, otherWorktree := initLocalRepo(t, otherPath, remoteURL, "main")
+	commitFileChange(t, otherWorktree, otherPath, "OUTSIDE.md", "from-other-actor\n")
+	require.NoError(t, otherRepo.Push(&git.PushOptions{
+		RefSpecs: []config.RefSpec{config.RefSpec("refs/heads/main:refs/heads/main")},
+	}))
+
+	require.NoError(t, worker.pushPendingCommits([]PendingWrite{*pendingWrite}))
+
+	finalRef, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
+	require.NoError(t, err)
+	finalCommit, err := serverRepo.CommitObject(finalRef.Hash())
+	require.NoError(t, err)
+	require.Len(t, finalCommit.ParentHashes, 1, "replay should produce a fresh commit on top of the contending tip")
+
+	verifyPath := filepath.Join(t.TempDir(), "verify")
+	_, _ = initLocalRepo(t, verifyPath, remoteURL, "main")
+
+	sopsPath := filepath.Join(verifyPath, "v1", "secrets", "default", "burst-secret.sops.yaml")
+	assert.FileExists(t, sopsPath, "replay must reuse the resolved encryption metadata after the target disappears")
+	assert.NoFileExists(t, filepath.Join(verifyPath, "v1", "secrets", "default", "burst-secret.yaml"))
+	assert.FileExists(
+		t,
+		filepath.Join(verifyPath, "OUTSIDE.md"),
+		"the contending remote commit should still be present",
+	)
+
+	content, err := os.ReadFile(sopsPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(content), "sops:")
+}
+
+func TestBranchWorker_TransientPushFailure_RetriesSameLocalCommits(t *testing.T) {
+	worker, serverRepo, remoteURL := setupCommitPushSplitWorker(t)
+
+	pendingWrite, err := worker.buildGroupedPendingWrite(
+		worker.ctx,
+		[]Event{configMapEvent("transient", "alice", "team-a")},
+	)
+	require.NoError(t, err)
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false))
+
+	localRepo, err := git.PlainOpen(worker.repoPathForRemote(remoteURL))
+	require.NoError(t, err)
+	localRefBefore, err := localRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
+	require.NoError(t, err)
+	remoteRefBefore, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
+	require.NoError(t, err)
+	rootHashBefore := worker.pushCycleRootHash
+	rootBranchBefore := worker.pushCycleRootBranch
+
+	pushErr := errors.New("transient push failure")
+	originalPush := pushAtomicFn
+	originalFetch := fetchRemoteBranchHashFn
+	originalSync := syncToRemoteFn
+	t.Cleanup(func() {
+		pushAtomicFn = originalPush
+		fetchRemoteBranchHashFn = originalFetch
+		syncToRemoteFn = originalSync
+	})
+
+	syncCalled := false
+	pushAtomicFn = func(
+		_ context.Context,
+		_ *git.Repository,
+		_ plumbing.Hash,
+		_ plumbing.ReferenceName,
+		_ transport.AuthMethod,
+	) error {
+		return pushErr
+	}
+	fetchRemoteBranchHashFn = func(
+		_ context.Context,
+		_ *git.Repository,
+		_ plumbing.ReferenceName,
+		_ transport.AuthMethod,
+	) (plumbing.Hash, error) {
+		return rootHashBefore, nil
+	}
+	syncToRemoteFn = func(
+		_ context.Context,
+		_ *git.Repository,
+		_ plumbing.ReferenceName,
+		_ transport.AuthMethod,
+	) (*PullReport, error) {
+		syncCalled = true
+		return &PullReport{}, nil
+	}
+
+	err = worker.pushPendingCommits([]PendingWrite{*pendingWrite})
+	require.ErrorIs(t, err, pushErr)
+	assert.Equal(t, pushErr, err, "transient failures should preserve the original push error for retry handling")
+	assert.False(t, syncCalled, "unchanged remote tip must not trigger replay work")
+	assert.Equal(t, rootHashBefore, worker.pushCycleRootHash)
+	assert.Equal(t, rootBranchBefore, worker.pushCycleRootBranch)
+
+	localRefAfter, err := localRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
+	require.NoError(t, err)
+	assert.Equal(
+		t,
+		localRefBefore.Hash(),
+		localRefAfter.Hash(),
+		"transient failures must keep the local commit chain intact",
+	)
+
+	remoteRefAfter, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
+	require.NoError(t, err)
+	assert.Equal(t, remoteRefBefore.Hash(), remoteRefAfter.Hash(), "transient failures must not rewrite remote state")
+}
+
+func TestBranchWorker_PushFollowedByFetchFailure_TreatsAsTransient(t *testing.T) {
+	worker, serverRepo, remoteURL := setupCommitPushSplitWorker(t)
+
+	pendingWrite, err := worker.buildGroupedPendingWrite(
+		worker.ctx,
+		[]Event{configMapEvent("fetch-failure", "alice", "team-a")},
+	)
+	require.NoError(t, err)
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false))
+
+	localRepo, err := git.PlainOpen(worker.repoPathForRemote(remoteURL))
+	require.NoError(t, err)
+	localRefBefore, err := localRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
+	require.NoError(t, err)
+	remoteRefBefore, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
+	require.NoError(t, err)
+	rootHashBefore := worker.pushCycleRootHash
+	rootBranchBefore := worker.pushCycleRootBranch
+
+	pushErr := errors.New("push failed before remote-state fetch")
+	fetchErr := errors.New("remote-state fetch failed")
+	originalPush := pushAtomicFn
+	originalFetch := fetchRemoteBranchHashFn
+	originalSync := syncToRemoteFn
+	t.Cleanup(func() {
+		pushAtomicFn = originalPush
+		fetchRemoteBranchHashFn = originalFetch
+		syncToRemoteFn = originalSync
+	})
+
+	syncCalled := false
+	pushAtomicFn = func(
+		_ context.Context,
+		_ *git.Repository,
+		_ plumbing.Hash,
+		_ plumbing.ReferenceName,
+		_ transport.AuthMethod,
+	) error {
+		return pushErr
+	}
+	fetchRemoteBranchHashFn = func(
+		_ context.Context,
+		_ *git.Repository,
+		_ plumbing.ReferenceName,
+		_ transport.AuthMethod,
+	) (plumbing.Hash, error) {
+		return plumbing.ZeroHash, fetchErr
+	}
+	syncToRemoteFn = func(
+		_ context.Context,
+		_ *git.Repository,
+		_ plumbing.ReferenceName,
+		_ transport.AuthMethod,
+	) (*PullReport, error) {
+		syncCalled = true
+		return &PullReport{}, nil
+	}
+
+	err = worker.pushPendingCommits([]PendingWrite{*pendingWrite})
+	require.ErrorIs(t, err, pushErr)
+	assert.Equal(t, pushErr, err, "fetch failures after a push error should still surface the original push failure")
+	assert.False(t, syncCalled, "replay must not start when the post-failure fetch cannot classify the error")
+	assert.Equal(t, rootHashBefore, worker.pushCycleRootHash)
+	assert.Equal(t, rootBranchBefore, worker.pushCycleRootBranch)
+
+	localRefAfter, err := localRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
+	require.NoError(t, err)
+	assert.Equal(t, localRefBefore.Hash(), localRefAfter.Hash())
+
+	remoteRefAfter, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
+	require.NoError(t, err)
+	assert.Equal(t, remoteRefBefore.Hash(), remoteRefAfter.Hash())
 }
 
 // TestEventLoop_CommitWindowZero_HonestPerEvent verifies the design's PR2

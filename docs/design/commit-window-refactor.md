@@ -664,8 +664,10 @@ Status: implemented on 2026-04-30.
 
 ### Phase 4: optional naming cleanup
 
-1. Consider whether `commitGroup` should remain a grouped-planner helper
-   or be replaced by a more general `CommitUnitBuilder`.
+Status: won't do.
+
+1. `commitGroup` remains a grouped-planner helper and `CommitUnit` remains the
+   executable unit. Unifying them would blur two different responsibilities.
 
 ## Assumptions
 

@@ -338,39 +338,25 @@ func TestPrepareBranch_CheckoutDefault(t *testing.T) {
 	assert.Equal(t, "mymain", branchName)
 }
 
-func TestWriteEvents_InvalidRepoPath(t *testing.T) {
-	_, err := WriteEvents(context.Background(), "/nonexistent/path", []Event{}, "main", nil)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to open repository")
-}
-
-func TestWriteEvents_FirstCommitOnEmptyRepo(t *testing.T) {
+func TestBranchWorker_FirstCommitOnEmptyRepo(t *testing.T) {
 	tempDir := t.TempDir()
 	serverPath := filepath.Join(tempDir, "server")
-	localPath := filepath.Join(tempDir, "local")
 
 	// Create empty remote repository (simulates empty remote repo)
 	createBareRepo(t, serverPath)
 
-	// Prepare local clone from empty remote
-	pullReport, err := PrepareBranch(context.Background(), "file://"+serverPath, localPath, "main", nil)
-	require.NoError(t, err)
-	require.False(t, pullReport.ExistsOnRemote)
-	require.True(t, pullReport.HEAD.Unborn)
-	require.Empty(t, pullReport.HEAD.Sha)
-
 	// Create test event
 	event := createTestEvent(t, "test-pod")
 
-	// Test WriteEvents
-	result, err := WriteEvents(context.Background(), localPath, []Event{event}, "main", nil)
+	worker, err := newTestBranchWorker("file://"+serverPath, "test-repo", "main")
 	require.NoError(t, err)
-	assert.Equal(t, 1, result.CommitsCreated)
-	assert.Empty(t, result.ConflictPulls)
-	assert.Equal(t, 0, result.Failures)
+	pendingWrite, err := worker.buildGroupedPendingWrite(worker.ctx, []Event{event})
+	require.NoError(t, err)
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false))
+	require.NoError(t, worker.pushPendingCommits([]PendingWrite{*pendingWrite}))
 
 	// Verify repository state
-	repo, err := git.PlainOpen(localPath)
+	repo, err := git.PlainOpen(worker.repoPathForRemote("file://" + serverPath))
 	require.NoError(t, err)
 
 	head, err := repo.Head()
@@ -379,7 +365,7 @@ func TestWriteEvents_FirstCommitOnEmptyRepo(t *testing.T) {
 	assert.Equal(t, "main", branchName)
 
 	// Verify file exists
-	filePath := filepath.Join(localPath, "v1/pods/default/test-pod.yaml")
+	filePath := filepath.Join(worker.repoPathForRemote("file://"+serverPath), "v1/pods/default/test-pod.yaml")
 	assert.FileExists(t, filePath)
 }
 
@@ -428,7 +414,7 @@ func TestMakeHeadUnborn_CleansWorktreeIncludingTrackedFiles(t *testing.T) {
 	assert.NoDirExists(t, filepath.Join(repoPath, "dir"))
 }
 
-func TestWriteEvents_BranchCreationAndPush(t *testing.T) {
+func TestBranchWorker_BranchCreationAndPush(t *testing.T) {
 	tempDir := t.TempDir()
 
 	// Create bare remote repository
@@ -439,12 +425,6 @@ func TestWriteEvents_BranchCreationAndPush(t *testing.T) {
 	simulateClientCommitOnDisk(t, "file://"+remotePath, "main", "file.txt", "hello world")
 
 	// Clone to local
-	localPath := filepath.Join(tempDir, "local")
-	pullReport, err := PrepareBranch(context.Background(), "file://"+remotePath, localPath, "feature", nil)
-	require.NoError(t, err)
-	require.False(t, pullReport.ExistsOnRemote)
-	require.False(t, pullReport.HEAD.Unborn)
-
 	// Create test event for new branch
 	event := Event{
 		Object: &unstructured.Unstructured{
@@ -470,15 +450,15 @@ func TestWriteEvents_BranchCreationAndPush(t *testing.T) {
 		},
 	}
 
-	// Test WriteEvents with new branch
-	result, err := WriteEvents(context.Background(), localPath, []Event{event}, "feature", nil)
+	worker, err := newTestBranchWorker("file://"+remotePath, "test-repo", "feature")
 	require.NoError(t, err)
-	assert.Equal(t, 1, result.CommitsCreated)
-	assert.Empty(t, result.ConflictPulls)
-	assert.Equal(t, 0, result.Failures)
+	pendingWrite, err := worker.buildGroupedPendingWrite(worker.ctx, []Event{event})
+	require.NoError(t, err)
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false))
+	require.NoError(t, worker.pushPendingCommits([]PendingWrite{*pendingWrite}))
 
 	// Verify local branch exists
-	localRepo, err := git.PlainOpen(localPath)
+	localRepo, err := git.PlainOpen(worker.repoPathForRemote("file://" + remotePath))
 	require.NoError(t, err)
 
 	head, err := localRepo.Head()
@@ -486,38 +466,35 @@ func TestWriteEvents_BranchCreationAndPush(t *testing.T) {
 	assert.Equal(t, "feature", head.Name().Short())
 }
 
-func TestWriteEvents_ConflictResolution(t *testing.T) {
-	// Test the new writeEvents conflict resolution with actual Git push conflicts
+func TestBranchWorker_ConflictResolution(t *testing.T) {
+	// Test the worker conflict resolution path with actual Git push conflicts.
 	tempDir := t.TempDir()
 	serverPath := filepath.Join(tempDir, "server")
-	localPath := filepath.Join(tempDir, "local")
 
 	createBareRepo(t, serverPath)
 	simulateClientCommitOnDisk(t, "file://"+serverPath, "main", "README.md", "This is our first readme")
 
-	// Clone to local
-	pullReport, err := PrepareBranch(context.Background(), "file://"+serverPath, localPath, "main", nil)
+	worker, err := newTestBranchWorker("file://"+serverPath, "test-repo", "main")
 	require.NoError(t, err)
-	require.True(t, pullReport.IncomingChanges)
+	event := createTestEvent(t, "some-resource")
+	pendingWrite, err := worker.buildGroupedPendingWrite(worker.ctx, []Event{event})
+	require.NoError(t, err)
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false))
 
-	// Simulate another client creating conflicting commit in remote
+	// Simulate another client creating conflicting commit in remote after our local commit exists.
 	simulateClientCommitOnDisk(t, "file://"+serverPath, "main", "README.md", "This is our conflicting readme")
 
-	// Test WriteEventss
-	event := createTestEvent(t, "some-resource")
-	result, err := WriteEvents(context.Background(), localPath, []Event{event}, "main", nil)
-	require.NoError(t, err)
+	require.NoError(t, worker.pushPendingCommits([]PendingWrite{*pendingWrite}))
 
-	// Verify operation succeeded
-	assert.Equal(t, 1, result.CommitsCreated)
-	assert.Equal(t, 1, result.Failures)
-	assert.Len(t, result.ConflictPulls, 1)
-	assert.True(t, result.ConflictPulls[0].ExistsOnRemote)
-	assert.True(t, result.ConflictPulls[0].IncomingChanges)
+	serverRepo, err := git.PlainOpen(serverPath)
+	require.NoError(t, err)
+	head, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
+	require.NoError(t, err)
+	assert.Equal(t, 3, countDepth(t, serverRepo, head.Hash()))
 }
 
-func TestWriteEvents_ConcurrentOperations(t *testing.T) {
-	// Test concurrent writeEvents operations to simulate multiple GitDestinations
+func TestBranchWorker_ConcurrentOperations(t *testing.T) {
+	// Test concurrent worker writes to simulate multiple GitDestinations.
 	tempDir := t.TempDir()
 
 	// Create shared bare remote repository
@@ -535,16 +512,26 @@ func TestWriteEvents_ConcurrentOperations(t *testing.T) {
 	for i := range numWorkers {
 		go func(workerID int) {
 			// Each worker gets its own clone
-			localPath := filepath.Join(tempDir, fmt.Sprintf("local-%d", workerID))
-			_, err := PrepareBranch(context.Background(), "file://"+remotePath, localPath, "main", nil)
+			worker, err := newTestBranchWorker(
+				"file://"+remotePath,
+				fmt.Sprintf("test-repo-%d", workerID),
+				"main",
+			)
 			if err != nil {
-				results <- fmt.Errorf("worker %d prepare failed: %w", workerID, err)
+				results <- err
 				return
 			}
-
 			event := createTestEvent(t, fmt.Sprintf("pod-worker-%d", workerID))
-			_, err = WriteEvents(context.Background(), localPath, []Event{event}, "main", nil)
-			results <- err
+			pendingWrite, err := worker.buildGroupedPendingWrite(worker.ctx, []Event{event})
+			if err != nil {
+				results <- err
+				return
+			}
+			if err := worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false); err != nil {
+				results <- err
+				return
+			}
+			results <- worker.pushPendingCommits([]PendingWrite{*pendingWrite})
 		}(i)
 	}
 
@@ -697,15 +684,18 @@ func TestPullBranch_MergeToDefaultScenario(t *testing.T) {
 	assert.False(t, pullReport.IncomingChanges)
 	assert.Equal(t, "feature", pullReport.HEAD.ShortName)
 
-	event := createTestEvent(t, "resource1")
-	writeEventsResult, err := WriteEvents(context.Background(), localPath, []Event{event}, "feature", nil)
+	worker, err := newTestBranchWorker(remoteURL, "test-repo", "feature")
 	require.NoError(t, err)
-	assert.Equal(t, 1, writeEventsResult.CommitsCreated)
+	event := createTestEvent(t, "resource1")
+	pendingWrite, err := worker.buildGroupedPendingWrite(worker.ctx, []Event{event})
+	require.NoError(t, err)
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false))
+	require.NoError(t, worker.pushPendingCommits([]PendingWrite{*pendingWrite}))
 
 	pullReport, err = PrepareBranch(context.Background(), remoteURL, localPath, "feature", nil)
 	require.NoError(t, err)
 	assert.True(t, pullReport.ExistsOnRemote)
-	assert.False(t, pullReport.IncomingChanges)
+	assert.True(t, pullReport.IncomingChanges)
 
 	mergedHash := simulateSimpleMerge(t, remoteURL, "feature", defaultBranchname)
 
@@ -722,14 +712,15 @@ func TestPullBranch_MergeToDefaultScenario(t *testing.T) {
 
 	// Now we do another change: and we should see that it's based upon the default branch
 	event = createTestEvent(t, "resource2")
-	writeEventsResult, err = WriteEvents(context.Background(), localPath, []Event{event}, "feature", nil)
+	pendingWrite, err = worker.buildGroupedPendingWrite(worker.ctx, []Event{event})
 	require.NoError(t, err)
-	assert.Equal(t, 1, writeEventsResult.CommitsCreated)
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false))
+	require.NoError(t, worker.pushPendingCommits([]PendingWrite{*pendingWrite}))
 
 	pullReport, err = PrepareBranch(context.Background(), remoteURL, localPath, "feature", nil)
 	require.NoError(t, err)
 	assert.True(t, pullReport.ExistsOnRemote)
-	assert.False(t, pullReport.IncomingChanges)
+	assert.True(t, pullReport.IncomingChanges)
 	assert.Equal(t, "feature", pullReport.HEAD.ShortName)
 	assert.False(t, pullReport.HEAD.Unborn)
 
@@ -778,17 +769,20 @@ func TestPullBranch_DanglingHead(t *testing.T) {
 
 	// 6. Write Events
 	// Should be able to work on 'feature' normally
-	event := createTestEvent(t, "resilient-change")
-	writeEventsResult, err := WriteEvents(context.Background(), localPath, []Event{event}, "feature", nil)
+	worker, err := newTestBranchWorker(remoteURL, "test-repo", "feature")
 	require.NoError(t, err)
-	assert.Equal(t, 1, writeEventsResult.CommitsCreated)
+	event := createTestEvent(t, "resilient-change")
+	pendingWrite, err := worker.buildGroupedPendingWrite(worker.ctx, []Event{event})
+	require.NoError(t, err)
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false))
+	require.NoError(t, worker.pushPendingCommits([]PendingWrite{*pendingWrite}))
 
 	// 7. Verify Persistence
 	// Ensure we can sync again without issues
 	pullReport, err = PrepareBranch(context.Background(), remoteURL, localPath, "feature", nil)
 	require.NoError(t, err)
 	assert.True(t, pullReport.ExistsOnRemote)
-	assert.False(t, pullReport.IncomingChanges, "Should be up to date after write")
+	assert.True(t, pullReport.IncomingChanges, "local checkout should pull the worker-pushed commit")
 
 	// 8. Final depth check on the SERVER
 	// Initial (1) + Feature Commit (1) + WriteEvents (1) = 3
@@ -832,10 +826,13 @@ func TestPullBranch_DanglingHead_NewOrphan(t *testing.T) {
 	assert.Empty(t, pullReport.HEAD.Sha)
 
 	// 4. Write Events
-	event := createTestEvent(t, "orphan-resource")
-	writeEventsResult, err := WriteEvents(context.Background(), localPath, []Event{event}, targetBranch, nil)
+	worker, err := newTestBranchWorker(remoteURL, "test-repo", targetBranch)
 	require.NoError(t, err)
-	assert.Equal(t, 1, writeEventsResult.CommitsCreated)
+	event := createTestEvent(t, "orphan-resource")
+	pendingWrite, err := worker.buildGroupedPendingWrite(worker.ctx, []Event{event})
+	require.NoError(t, err)
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false))
+	require.NoError(t, worker.pushPendingCommits([]PendingWrite{*pendingWrite}))
 
 	// 5. Verify Topology on Server
 	// The event commit should be the root commit in the new branch.
@@ -880,38 +877,33 @@ func TestPullBranch_UnexpectedMergeScenario(t *testing.T) {
 	assert.False(t, pullReport.IncomingChanges)
 	assert.Equal(t, "feature", pullReport.HEAD.ShortName)
 
-	event := createTestEvent(t, "resource1")
-	writeEventsResult, err := WriteEvents(context.Background(), localPath, []Event{event}, "feature", nil)
+	worker, err := newTestBranchWorker(remoteURL, "test-repo", "feature")
 	require.NoError(t, err)
-	assert.Equal(t, 1, writeEventsResult.CommitsCreated)
+	event := createTestEvent(t, "resource1")
+	pendingWrite, err := worker.buildGroupedPendingWrite(worker.ctx, []Event{event})
+	require.NoError(t, err)
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false))
+	require.NoError(t, worker.pushPendingCommits([]PendingWrite{*pendingWrite}))
 
-	mergeHash := simulateSimpleMerge(t, remoteURL, "feature", "main")
+	simulateSimpleMerge(t, remoteURL, "feature", "main")
 
 	// Now we just do a change: without calling PrepareBranch (you never new when something gets merged)
 	event = createTestEvent(t, "resource2")
-	writeEventsResult, err = WriteEvents(context.Background(), localPath, []Event{event}, "feature", nil)
+	pendingWrite, err = worker.buildGroupedPendingWrite(worker.ctx, []Event{event})
 	require.NoError(t, err)
-	assert.Equal(t, 1, writeEventsResult.CommitsCreated)
-	assert.Len(t, writeEventsResult.ConflictPulls, 1)
-	assert.True(t, writeEventsResult.ConflictPulls[0].IncomingChanges)
-	assert.False(t, writeEventsResult.ConflictPulls[0].ExistsOnRemote)
-	assert.Equal(
-		t,
-		mergeHash.String(),
-		writeEventsResult.ConflictPulls[0].HEAD.Sha,
-	) // This is probably not true anymore? -> there is no way to get the last commit
-	// assert.Equal(t, "feature", writeEventsResult.ConflictPulls[0].HEAD.Sha)
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false))
+	require.NoError(t, worker.pushPendingCommits([]PendingWrite{*pendingWrite}))
 
 	pullReport, err = PrepareBranch(context.Background(), remoteURL, localPath, "feature", nil)
 	require.NoError(t, err)
 	assert.True(t, pullReport.ExistsOnRemote)
-	assert.False(t, pullReport.IncomingChanges)
+	assert.True(t, pullReport.IncomingChanges)
 	assert.Equal(t, "feature", pullReport.HEAD.ShortName)
 	assert.False(t, pullReport.HEAD.Unborn)
 	assert.Equal(t, 3, countDepth(t, serverRepo, plumbing.NewHash(pullReport.HEAD.Sha)))
 }
 
-func TestWriteEvents_SkipsSemanticallyEquivalentManifest(t *testing.T) {
+func TestBranchWorker_SkipsSemanticallyEquivalentManifest(t *testing.T) {
 	tempDir := t.TempDir()
 	serverPath := filepath.Join(tempDir, "server.git")
 	remoteURL := "file://" + serverPath
@@ -992,85 +984,17 @@ spec:
 		},
 	}
 
-	result, err := WriteEvents(context.Background(), localPath, []Event{event}, "main", nil)
+	worker, err := newTestBranchWorker(remoteURL, "test-repo", "main")
 	require.NoError(t, err)
-	assert.Equal(t, 0, result.CommitsCreated)
+	pendingWrite, err := worker.buildGroupedPendingWrite(worker.ctx, []Event{event})
+	require.NoError(t, err)
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false))
 
-	repo, err = git.PlainOpen(localPath)
+	repo, err = git.PlainOpen(worker.repoPathForRemote(remoteURL))
 	require.NoError(t, err)
-	worktree, err = repo.Worktree()
+	head, err := repo.Reference(plumbing.NewBranchReferenceName("main"), true)
 	require.NoError(t, err)
-	status, err := worktree.Status()
-	require.NoError(t, err)
-	assert.True(t, status.IsClean())
-}
-
-func TestWriteEvents_FirstRelevantCommitIncludesBootstrapFiles(t *testing.T) {
-	tempDir := t.TempDir()
-	serverPath := filepath.Join(tempDir, "server.git")
-	remoteURL := "file://" + serverPath
-	localPath := filepath.Join(tempDir, "local")
-	inspectPath := filepath.Join(tempDir, "inspect")
-
-	serverRepo := createBareRepo(t, serverPath)
-
-	pullReport, err := PrepareBranch(context.Background(), remoteURL, localPath, "main", nil)
-	require.NoError(t, err)
-	require.True(t, pullReport.HEAD.Unborn)
-	require.False(t, pullReport.ExistsOnRemote)
-
-	event := Event{
-		Object: &unstructured.Unstructured{
-			Object: map[string]interface{}{
-				"apiVersion": "v1",
-				"kind":       "ConfigMap",
-				"metadata": map[string]interface{}{
-					"name":      "sample-config",
-					"namespace": "default",
-				},
-				"data": map[string]interface{}{
-					"key": "value",
-				},
-			},
-		},
-		Identifier: types.ResourceIdentifier{
-			Group:     "",
-			Version:   "v1",
-			Resource:  "configmaps",
-			Namespace: "default",
-			Name:      "sample-config",
-		},
-		Operation: "CREATE",
-		UserInfo: UserInfo{
-			Username: "tester@example.com",
-		},
-		Path: "clusters/dev",
-		BootstrapOptions: pathBootstrapOptions{
-			Enabled:           true,
-			IncludeSOPSConfig: true,
-			TemplateData: bootstrapTemplateData{
-				AgeRecipients: []string{"age1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq7k8m6"},
-			},
-		},
-	}
-
-	result, err := WriteEvents(context.Background(), localPath, []Event{event}, "main", nil)
-	require.NoError(t, err)
-	require.Equal(t, 1, result.CommitsCreated)
-
-	ref, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
-	require.NoError(t, err)
-	assert.Equal(t, 1, countDepth(t, serverRepo, ref.Hash()))
-
-	_, err = PrepareBranch(context.Background(), remoteURL, inspectPath, "main", nil)
-	require.NoError(t, err)
-
-	_, err = os.Stat(filepath.Join(inspectPath, "clusters/dev", "README.md"))
-	require.NoError(t, err)
-	_, err = os.Stat(filepath.Join(inspectPath, "clusters/dev", sopsConfigFileName))
-	require.NoError(t, err)
-	_, err = os.Stat(filepath.Join(inspectPath, "clusters/dev", "v1", "configmaps", "default", "sample-config.yaml"))
-	require.NoError(t, err)
+	assert.Equal(t, createdHash, head.Hash())
 }
 
 func TestPullBranch_WhipedRepo(t *testing.T) {
@@ -1101,15 +1025,18 @@ func TestPullBranch_WhipedRepo(t *testing.T) {
 	assert.False(t, pullReport.IncomingChanges)
 
 	// Now we just recreate main, let's see if this works
-	event := createTestEvent(t, "resource1")
-	writeEventsResult, err := WriteEvents(context.Background(), localPath, []Event{event}, "feature", nil)
+	worker, err := newTestBranchWorker(remoteURL, "test-repo", "feature")
 	require.NoError(t, err)
-	assert.Equal(t, 1, writeEventsResult.CommitsCreated)
+	event := createTestEvent(t, "resource1")
+	pendingWrite, err := worker.buildGroupedPendingWrite(worker.ctx, []Event{event})
+	require.NoError(t, err)
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false))
+	require.NoError(t, worker.pushPendingCommits([]PendingWrite{*pendingWrite}))
 
 	pullReport, err = PrepareBranch(context.Background(), remoteURL, localPath, "feature", nil)
 	require.NoError(t, err)
 	assert.True(t, pullReport.ExistsOnRemote)
-	assert.False(t, pullReport.IncomingChanges)
+	assert.True(t, pullReport.IncomingChanges)
 
 	// Now execute the same with the empty remote: since no base is available, PrepareBranch keeps target branch unborn.
 	pullReport, err = PrepareBranch(context.Background(), remoteURLEmpty, localPath, "feature", nil)
@@ -1184,82 +1111,3 @@ func BenchmarkPrepareBranch_ShallowClone(b *testing.B) {
 }
 
 // Benchmark for writing the first commit to an empty repository.
-func BenchmarkWriteEvents_FirstCommit(b *testing.B) {
-	for range b.N {
-		b.StopTimer()
-		tempDir := b.TempDir()
-		serverPath := filepath.Join(tempDir, "server.git")
-		remoteURL := "file://" + serverPath
-		clonePath := filepath.Join(tempDir, "worker")
-		createBareRepo(b, serverPath)
-		_, err := PrepareBranch(context.Background(), remoteURL, clonePath, "main", nil)
-		require.NoError(b, err)
-		event := createTestEvent(b, "pod-1")
-		b.StartTimer()
-
-		_, err = WriteEvents(context.Background(), clonePath, []Event{event}, "main", nil)
-		if err != nil {
-			b.Fatalf("WriteEvents failed: %v", err)
-		}
-	}
-}
-
-// Benchmark for writing a single commit to an existing branch.
-func BenchmarkWriteEvents_SingleCommit(b *testing.B) {
-	tempDir := b.TempDir()
-	serverPath := filepath.Join(tempDir, "server.git")
-	remoteURL := "file://" + serverPath
-	createBareRepo(b, serverPath)
-	simulateClientCommitOnDisk(b, remoteURL, "main", "init.txt", "hello")
-
-	b.ResetTimer()
-	for i := range b.N {
-		b.StopTimer()
-		clonePath := filepath.Join(tempDir, fmt.Sprintf("worker-%d", i))
-		_, err := PrepareBranch(context.Background(), remoteURL, clonePath, "main", nil)
-		require.NoError(b, err)
-		event := createTestEvent(b, fmt.Sprintf("pod-%d", i))
-		b.StartTimer()
-
-		_, err = WriteEvents(context.Background(), clonePath, []Event{event}, "main", nil)
-		if err != nil {
-			b.Fatalf("WriteEvents failed: %v", err)
-		}
-	}
-}
-
-// Benchmark for the conflict resolution path in WriteEvents.
-func BenchmarkWriteEvents_WithConflict(b *testing.B) {
-	for range b.N {
-		b.StopTimer()
-		// Full setup for each iteration to ensure a clean state
-		tempDir := b.TempDir()
-		serverPath := filepath.Join(tempDir, "server.git")
-		remoteURL := "file://" + serverPath
-		clonePath := filepath.Join(tempDir, "worker")
-
-		createBareRepo(b, serverPath)
-		simulateClientCommitOnDisk(b, remoteURL, "main", "init.txt", "base")
-
-		// Prepare the local clone
-		_, err := PrepareBranch(context.Background(), remoteURL, clonePath, "main", nil)
-		require.NoError(b, err)
-
-		// Introduce a conflicting commit on the remote *after* we've cloned
-		simulateClientCommitOnDisk(b, remoteURL, "main", "conflict.txt", "someone else was here")
-
-		event := createTestEvent(b, "my-pod")
-
-		b.StartTimer()
-
-		// This WriteEvents call should hit the non-fast-forward error,
-		// trigger the internal pull, and succeed on the retry.
-		result, err := WriteEvents(context.Background(), clonePath, []Event{event}, "main", nil)
-		if err != nil {
-			b.Fatalf("WriteEvents with conflict failed: %v", err)
-		}
-		if result.Failures == 0 || len(result.ConflictPulls) == 0 {
-			b.Fatal("WriteEvents did not report a conflict as expected")
-		}
-	}
-}

@@ -19,6 +19,7 @@ limitations under the License.
 package git
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -32,9 +33,16 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/plumbing/transport"
+	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/require"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
+	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
@@ -190,6 +198,38 @@ func createBareRepo(tb testing.TB, path string) *git.Repository {
 	setHeadToMain(repo)
 
 	return repo
+}
+
+func newTestBranchWorker(
+	remoteURL,
+	providerName,
+	branch string,
+	extraObjects ...client.Object,
+) (*BranchWorker, error) {
+	scheme := runtime.NewScheme()
+	if err := clientgoscheme.AddToScheme(scheme); err != nil {
+		return nil, err
+	}
+	if err := configv1alpha1.AddToScheme(scheme); err != nil {
+		return nil, err
+	}
+
+	objects := make([]client.Object, 0, len(extraObjects)+1)
+	objects = append(objects, extraObjects...)
+	objects = append(objects, &configv1alpha1.GitProvider{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      providerName,
+			Namespace: "default",
+		},
+		Spec: configv1alpha1.GitProviderSpec{
+			URL: remoteURL,
+		},
+	})
+
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build()
+	worker := NewBranchWorker(k8sClient, logr.Discard(), providerName, "default", branch, nil, 0)
+	worker.ctx = context.Background()
+	return worker, nil
 }
 
 // simulateSimpleMerge merges source content into destination, pushes the destination,

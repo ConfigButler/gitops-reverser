@@ -125,7 +125,7 @@ This prevents cross-target credential bleed when multiple paths share a branch w
 
 ## 5) Keep normal event write path focused on mirroring resources
 
-`WriteEvents(...)` remains path-aware for resource files only.
+The branch-worker write path remains path-aware for resource files only.
 No bootstrap enforcement in write loop.
 
 ## 6) Path normalization rules (must be shared)

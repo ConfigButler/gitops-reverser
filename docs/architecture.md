@@ -458,7 +458,7 @@ is rejected and no Secret file is written to the worktree. This is enforced at t
 [content writer](internal/git/content_writer.go) refuses to produce plaintext Secret content, and
 the [write path](internal/git/git.go) aborts the entire request on encryption failure. Both
 invariants are covered by dedicated tests:
-- [TestWriteEvents_SecretEncryptionFailureDoesNotWritePlaintext](internal/git/secret_write_test.go#L38) — verifies no file appears on disk
+- [TestBranchWorker_SecretEncryptionFailureDoesNotWritePlaintext](internal/git/secret_write_test.go#L101) — verifies no file appears on disk
 - [TestBuildContentForWrite_SecretRequiresEncryptor](internal/git/content_writer_test.go#L103) — verifies the content writer rejects unencrypted Secrets
 
 When a GitTarget has `spec.encryption` configured, Secret resources are encrypted with SOPS using

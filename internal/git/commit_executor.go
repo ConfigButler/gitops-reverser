@@ -73,22 +73,17 @@ func (u CommitUnit) commitMetadata() (string, *gogit.CommitOptions, error) {
 		}
 		return message, commitOptionsForEvent(u.Events[0], u.CommitConfig, u.Signer, when), nil
 	case CommitMessageBatch:
-		message, err := renderBatchCommitMessage(&WriteRequest{
-			Events:        u.Events,
-			CommitMessage: u.CommitMessage,
-			GitTargetName: u.Target.Name,
-		}, u.CommitConfig)
+		message, err := renderBatchCommitMessage(u.Events, u.CommitMessage, u.Target.Name, u.CommitConfig)
 		if err != nil {
 			return "", nil, err
 		}
 		return message, commitOptionsForBatch(u.CommitConfig, u.Signer, when), nil
 	case CommitMessageGrouped:
-		group := buildCommitGroupForUnit(u)
-		message, err := renderGroupCommitMessage(group, u.CommitConfig)
+		message, err := renderGroupCommitMessage(u, u.CommitConfig)
 		if err != nil {
 			return "", nil, err
 		}
-		return message, commitOptionsForGroup(group, u.CommitConfig, u.Signer, when), nil
+		return message, commitOptionsForGroup(u, u.CommitConfig, u.Signer, when), nil
 	default:
 		return "", nil, fmt.Errorf("unsupported commit message kind %q", u.MessageKind)
 	}
@@ -163,17 +158,4 @@ func (w *BranchWorker) applyCommitUnitEvents(
 		}
 	}
 	return anyChanges, nil
-}
-
-func buildCommitGroupForUnit(unit CommitUnit) *commitGroup {
-	group := &commitGroup{
-		Author:             unit.GroupAuthor,
-		GitTarget:          unit.Target.Name,
-		GitTargetNamespace: unit.Target.Namespace,
-		pathToEvent:        make(map[string]Event, len(unit.Events)),
-	}
-	for _, event := range unit.Events {
-		group.add(event)
-	}
-	return group
 }

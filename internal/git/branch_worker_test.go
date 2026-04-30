@@ -63,26 +63,6 @@ func setupBranchWorkerTest() (*BranchWorker, func()) {
 	return worker, cleanup
 }
 
-func commitAndPushWriteRequestForTest(worker *BranchWorker, request *WriteRequest) error {
-	var (
-		pendingWrite *PendingWrite
-		err          error
-	)
-
-	if request != nil && request.CommitMode == CommitModeAtomic {
-		pendingWrite, err = worker.buildAtomicPendingWrite(worker.ctx, request)
-	} else {
-		pendingWrite, err = worker.buildGroupedPendingWrite(worker.ctx, request.Events)
-	}
-	if err != nil {
-		return err
-	}
-	if err := worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false); err != nil {
-		return err
-	}
-	return worker.pushPendingCommits([]PendingWrite{*pendingWrite})
-}
-
 func TestRepoCacheKey_DeterministicAndDistinct(t *testing.T) {
 	a := repoCacheKey("https://example.com/foo.git")
 	b := repoCacheKey("https://example.com/foo.git")
@@ -726,10 +706,12 @@ func TestBranchWorker_CommitAndPushRequest_PreparesRepositoryBeforeFirstWrite(t 
 				Path:     "clusters/dev",
 			},
 		},
-		CommitMode: CommitModePerEvent,
 	}
 
-	require.NoError(t, commitAndPushWriteRequestForTest(worker, request))
+	pendingWrite, err := worker.buildGroupedPendingWrite(worker.ctx, request.Events)
+	require.NoError(t, err)
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false))
+	require.NoError(t, worker.pushPendingCommits([]PendingWrite{*pendingWrite}))
 
 	localRepoPath := worker.repoPathForRemote(remoteURL)
 	localRepo, err := git.PlainOpen(localRepoPath)
@@ -833,10 +815,12 @@ func TestBranchWorker_CommitAndPushRequest_NewBranchStartsFromLatestMain(t *test
 				Path:     "clusters/dev",
 			},
 		},
-		CommitMode: CommitModePerEvent,
 	}
 
-	require.NoError(t, commitAndPushWriteRequestForTest(worker, request))
+	pendingWrite, err := worker.buildGroupedPendingWrite(worker.ctx, request.Events)
+	require.NoError(t, err)
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false))
+	require.NoError(t, worker.pushPendingCommits([]PendingWrite{*pendingWrite}))
 
 	remoteMainRef, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
 	require.NoError(t, err)
@@ -943,10 +927,12 @@ func TestBranchWorker_CommitAndPushRequest_UsesProviderCommitConfiguration(t *te
 				Path:     "clusters/dev",
 			},
 		},
-		CommitMode: CommitModePerEvent,
 	}
 
-	require.NoError(t, commitAndPushWriteRequestForTest(worker, request))
+	pendingWrite, err := worker.buildGroupedPendingWrite(worker.ctx, request.Events)
+	require.NoError(t, err)
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false))
+	require.NoError(t, worker.pushPendingCommits([]PendingWrite{*pendingWrite}))
 
 	remoteHeadRef, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
 	require.NoError(t, err)
@@ -1049,7 +1035,10 @@ func TestBranchWorker_CommitAndPushRequest_UsesBatchTemplateForAtomicRequest(t *
 		GitTargetName: "demo-target",
 	}
 
-	require.NoError(t, commitAndPushWriteRequestForTest(worker, request))
+	pendingWrite, err := worker.buildAtomicPendingWrite(worker.ctx, request)
+	require.NoError(t, err)
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false))
+	require.NoError(t, worker.pushPendingCommits([]PendingWrite{*pendingWrite}))
 
 	remoteHeadRef, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
 	require.NoError(t, err)
@@ -1141,10 +1130,12 @@ func TestBranchWorker_CommitAndPushRequest_SignsCommitWhenConfigured(t *testing.
 				Path:     "clusters/dev",
 			},
 		},
-		CommitMode: CommitModePerEvent,
 	}
 
-	require.NoError(t, commitAndPushWriteRequestForTest(worker, request))
+	pendingWrite, err := worker.buildGroupedPendingWrite(worker.ctx, request.Events)
+	require.NoError(t, err)
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false))
+	require.NoError(t, worker.pushPendingCommits([]PendingWrite{*pendingWrite}))
 
 	remoteHeadRef, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
 	require.NoError(t, err)
@@ -1236,10 +1227,11 @@ func TestBranchWorker_CommitAndPushRequest_SkipsWriteWhenSigningSecretIsInvalid(
 				Path:     "clusters/dev",
 			},
 		},
-		CommitMode: CommitModePerEvent,
 	}
 
-	_ = commitAndPushWriteRequestForTest(worker, request)
+	pendingWrite, err := worker.buildGroupedPendingWrite(worker.ctx, request.Events)
+	require.Error(t, err)
+	assert.Nil(t, pendingWrite)
 
 	finalRef, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
 	require.NoError(t, err)

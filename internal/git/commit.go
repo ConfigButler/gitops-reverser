@@ -32,15 +32,6 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
-// GetCommitMessage returns the default structured commit message for the given event.
-func GetCommitMessage(event Event) string {
-	message, err := renderEventCommitMessage(event, ResolveCommitConfig(nil))
-	if err != nil {
-		return fmt.Sprintf("[%s] %s", event.Operation, event.Identifier.String())
-	}
-	return message
-}
-
 func renderEventCommitMessage(event Event, config CommitConfig) (string, error) {
 	return renderCommitTemplate(
 		"event",
@@ -59,43 +50,32 @@ func renderEventCommitMessage(event Event, config CommitConfig) (string, error) 
 	)
 }
 
-func renderBatchCommitMessage(request *WriteRequest, config CommitConfig) (string, error) {
-	if request != nil && strings.TrimSpace(request.CommitMessage) != "" {
-		return request.CommitMessage, nil
-	}
-
-	count := 0
-	gitTargetName := ""
-	if request != nil {
-		count = len(request.Events)
-		gitTargetName = request.GitTargetName
+func renderBatchCommitMessage(
+	events []Event,
+	override string,
+	gitTarget string,
+	config CommitConfig,
+) (string, error) {
+	if strings.TrimSpace(override) != "" {
+		return override, nil
 	}
 
 	return renderCommitTemplate(
 		"batch",
 		config.Message.BatchTemplate,
 		BatchCommitMessageData{
-			Count:     count,
-			GitTarget: gitTargetName,
+			Count:     len(events),
+			GitTarget: gitTarget,
 		},
 	)
 }
 
-func renderGroupCommitMessage(group *commitGroup, config CommitConfig) (string, error) {
+func renderGroupCommitMessage(unit CommitUnit, config CommitConfig) (string, error) {
 	return renderCommitTemplate(
 		"group",
 		config.Message.GroupTemplate,
-		buildGroupedCommitMessageData(group),
+		buildGroupedCommitMessageData(unit.GroupAuthor, unit.Target.Name, unit.Events),
 	)
-}
-
-func renderCommitMessageForGroup(group *commitGroup, config CommitConfig) (string, error) {
-	groupEvents := group.orderedEvents()
-	if len(groupEvents) == 1 {
-		return renderEventCommitMessage(groupEvents[0], config)
-	}
-
-	return renderGroupCommitMessage(group, config)
 }
 
 func renderCommitTemplate(name, text string, data any) (string, error) {
@@ -138,16 +118,22 @@ func ValidateCommitConfig(config CommitConfig) error {
 		return err
 	}
 
-	if _, err := renderBatchCommitMessage(&WriteRequest{
-		Events:        []Event{sampleEvent},
-		GitTargetName: "example-target",
-	}, config); err != nil {
+	if _, err := renderBatchCommitMessage(
+		[]Event{sampleEvent},
+		"",
+		"example-target",
+		config,
+	); err != nil {
 		return err
 	}
 
-	sampleGroup := newCommitGroup(sampleEvent)
-	sampleGroup.add(sampleEvent)
-	if _, err := renderGroupCommitMessage(sampleGroup, config); err != nil {
+	if _, err := renderGroupCommitMessage(CommitUnit{
+		Events:      []Event{sampleEvent},
+		GroupAuthor: sampleEvent.UserInfo.Username,
+		Target: ResolvedTargetMetadata{
+			Name: sampleEvent.GitTargetName,
+		},
+	}, config); err != nil {
 		return err
 	}
 
@@ -189,15 +175,15 @@ func commitOptionsForBatch(config CommitConfig, signer git.Signer, when time.Tim
 // commitOptionsForEvent's use of ConstructSafeEmail so cross-path tooling
 // continues to recognise the same identity.
 func commitOptionsForGroup(
-	group *commitGroup,
+	unit CommitUnit,
 	config CommitConfig,
 	signer git.Signer,
 	when time.Time,
 ) *git.CommitOptions {
 	return &git.CommitOptions{
 		Author: &object.Signature{
-			Name:  group.Author,
-			Email: ConstructSafeEmail(group.Author, "cluster.local"),
+			Name:  unit.GroupAuthor,
+			Email: ConstructSafeEmail(unit.GroupAuthor, "cluster.local"),
 			When:  when,
 		},
 		Committer: operatorSignature(config, when),
