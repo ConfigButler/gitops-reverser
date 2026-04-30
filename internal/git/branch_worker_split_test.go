@@ -30,6 +30,7 @@ import (
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
@@ -535,6 +536,89 @@ func TestBranchWorker_PushFollowedByFetchFailure_TreatsAsTransient(t *testing.T)
 	remoteRefAfter, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
 	require.NoError(t, err)
 	assert.Equal(t, remoteRefBefore.Hash(), remoteRefAfter.Hash())
+}
+
+func TestBranchWorker_AtomicAndGroupedInterleaved_PreservesArrivalOrder(t *testing.T) {
+	worker, serverRepo, _ := setupCommitPushSplitWorker(t)
+
+	groupedFirst, err := worker.buildGroupedPendingWrite(
+		worker.ctx,
+		[]Event{configMapEvent("grouped-first", "alice", "team-a")},
+	)
+	require.NoError(t, err)
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*groupedFirst}, false))
+
+	atomicRequest := &WriteRequest{
+		Events:        []Event{configMapEvent("atomic-second", "reconciler", "team-a")},
+		CommitMode:    CommitModeAtomic,
+		CommitMessage: "atomic: second write",
+	}
+	atomicSecond, err := worker.buildAtomicPendingWrite(worker.ctx, atomicRequest)
+	require.NoError(t, err)
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*atomicSecond}, true))
+
+	groupedThird, err := worker.buildGroupedPendingWrite(
+		worker.ctx,
+		[]Event{configMapEvent("grouped-third", "bob", "team-a")},
+	)
+	require.NoError(t, err)
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*groupedThird}, true))
+
+	require.NoError(t, worker.pushPendingCommits([]PendingWrite{*groupedFirst, *atomicSecond, *groupedThird}))
+
+	headRef, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
+	require.NoError(t, err)
+	headCommit, err := serverRepo.CommitObject(headRef.Hash())
+	require.NoError(t, err)
+	require.Len(t, headCommit.ParentHashes, 1)
+	assert.Equal(t, "[CREATE] v1/configmaps/grouped-third", headCommit.Message)
+
+	atomicCommit, err := serverRepo.CommitObject(headCommit.ParentHashes[0])
+	require.NoError(t, err)
+	require.Len(t, atomicCommit.ParentHashes, 1)
+	assert.Equal(t, "atomic: second write", atomicCommit.Message)
+
+	firstCommit, err := serverRepo.CommitObject(atomicCommit.ParentHashes[0])
+	require.NoError(t, err)
+	require.Len(t, firstCommit.ParentHashes, 1)
+	assert.Equal(t, "[CREATE] v1/configmaps/grouped-first", firstCommit.Message)
+}
+
+func TestBranchWorker_Replay_DropsUnitsThatBecomeNoOpAgainstNewRemoteTree(t *testing.T) {
+	worker, serverRepo, remoteURL := setupCommitPushSplitWorker(t)
+
+	event := configMapEvent("already-applied", "alice", "team-a")
+	pendingWrite, err := worker.buildGroupedPendingWrite(worker.ctx, []Event{event})
+	require.NoError(t, err)
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false))
+
+	localRepoPath := worker.repoPathForRemote(remoteURL)
+	gitPath := filepath.ToSlash(filepath.Join(event.Path, generateFilePath(event.Identifier)))
+	desiredContent, err := os.ReadFile(filepath.Join(localRepoPath, gitPath))
+	require.NoError(t, err)
+
+	otherPath := filepath.Join(t.TempDir(), "other")
+	otherRepo, otherWorktree := initLocalRepo(t, otherPath, remoteURL, "main")
+	fullPath := filepath.Join(otherPath, gitPath)
+	require.NoError(t, os.MkdirAll(filepath.Dir(fullPath), 0o750))
+	require.NoError(t, os.WriteFile(fullPath, desiredContent, 0o600))
+	_, err = otherWorktree.Add(gitPath)
+	require.NoError(t, err)
+	externalHash, err := otherWorktree.Commit("external: already applied desired content", &git.CommitOptions{
+		Author: &object.Signature{Name: "External", Email: "external@example.com", When: time.Now()},
+	})
+	require.NoError(t, err)
+	require.NoError(t, otherRepo.Push(&git.PushOptions{
+		RefSpecs: []config.RefSpec{config.RefSpec("refs/heads/main:refs/heads/main")},
+	}))
+
+	require.NoError(t, worker.pushPendingCommits([]PendingWrite{*pendingWrite}))
+
+	finalRef, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
+	require.NoError(t, err)
+	assert.Equal(t, externalHash, finalRef.Hash(),
+		"replay should not add a commit when the new remote tree already contains the desired content")
+	assert.True(t, worker.pushCycleRootHash.IsZero())
 }
 
 // TestEventLoop_CommitWindowZero_HonestPerEvent verifies the design's PR2
