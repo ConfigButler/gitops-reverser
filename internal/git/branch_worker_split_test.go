@@ -311,6 +311,41 @@ func TestEventLoop_CommitWindowZero_HonestPerEvent(t *testing.T) {
 	loop.stopTimers()
 }
 
+func TestEventLoop_AtomicRequest_RespectsCooldownAndUsesNormalPushPath(t *testing.T) {
+	worker, serverRepo, remoteURL := setupCommitPushSplitWorker(t)
+
+	initialRef, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
+	require.NoError(t, err)
+
+	loop := newBranchWorkerEventLoop(worker, time.Second)
+	loop.lastPushAt = time.Now()
+
+	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
+		Events:     []Event{configMapEvent("atomic", "reconciler", "team-a")},
+		CommitMode: CommitModeAtomic,
+	}})
+
+	assert.Empty(t, loop.buffer, "atomic requests should not remain in the live-event buffer")
+	assert.Len(t, loop.pendingWrites, 1,
+		"atomic requests should join pendingWrites and wait for the normal push cycle")
+	assert.NotNil(t, loop.pushTimer,
+		"active cooldown should defer the push with the regular timer path")
+
+	afterCommitRef, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
+	require.NoError(t, err)
+	assert.Equal(t, initialRef.Hash(), afterCommitRef.Hash(),
+		"remote must not advance while cooldown defers the push")
+
+	localRepo, err := git.PlainOpen(worker.repoPathForRemote(remoteURL))
+	require.NoError(t, err)
+	localRef, err := localRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
+	require.NoError(t, err)
+	assert.NotEqual(t, initialRef.Hash(), localRef.Hash(),
+		"local branch should already contain the atomic commit")
+
+	loop.stopTimers()
+}
+
 func TestEventLoop_AtomicPushFailure_DoesNotAdvanceCooldownOrLosePendingWrite(t *testing.T) {
 	worker, _, remoteURL := setupCommitPushSplitWorker(t)
 

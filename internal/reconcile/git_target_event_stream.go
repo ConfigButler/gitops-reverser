@@ -65,7 +65,6 @@ type GitTargetEventStream struct {
 type EventEnqueuer interface {
 	Enqueue(event git.Event)
 	EnqueueRequest(request *git.WriteRequest)
-	EnqueueBatch(batch *git.ReconcileBatch)
 }
 
 // NewGitTargetEventStream creates a new event stream for a GitTarget.
@@ -132,11 +131,11 @@ func (s *GitTargetEventStream) OnWatchEvent(event git.Event) {
 
 // EmitReconcileBatch forwards a complete reconcile batch to the BranchWorker as a single WorkItem.
 // Called while in RECONCILING state by FolderReconciler.
-func (s *GitTargetEventStream) EmitReconcileBatch(batch git.ReconcileBatch) error {
-	batch.GitTargetName = s.gitTargetName
-	batch.GitTargetNamespace = s.gitTargetNamespace
-	batch.CommitMode = git.CommitModeAtomic
-	s.branchWorker.EnqueueRequest(&batch)
+func (s *GitTargetEventStream) EmitReconcileBatch(request git.WriteRequest) error {
+	request.GitTargetName = s.gitTargetName
+	request.GitTargetNamespace = s.gitTargetNamespace
+	request.CommitMode = git.CommitModeAtomic
+	s.branchWorker.EnqueueRequest(&request)
 	return nil
 }
 

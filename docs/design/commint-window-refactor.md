@@ -1,10 +1,39 @@
 # Commit Window Refactor
 
-> Status: proposed
+> Status: in progress
 > Date: 2026-04-30
 > Related:
 > - [commit-window-batching-design.md](./commit-window-batching-design.md)
 > - [commit-planning-refactor-analysis.md](./commit-planning-refactor-analysis.md)
+
+## Implementation Status
+
+### Landed slice: Phase 1 shape change with bug fix
+
+As of 2026-04-30, the first implementation slice from this document has
+landed.
+
+Implemented:
+
+- internal `PendingWrite`, `PendingWriteKind`, `CommitPlan`, and `CommitUnit`
+  types
+- a shared planner/executor path for grouped-window and atomic writes
+- `BranchWorker` retention of `pendingWrites` instead of raw
+  `unpushedEvents`
+- replay from retained pending writes instead of replay from raw events
+- atomic writes routed through the same retained-work lifecycle as grouped
+  writes
+- atomic requests use the normal cooldown-driven push path after enqueue
+  instead of forcing an immediate push
+- conflict vs transient push handling in the unified push path
+- the atomic bug where failed pushes advanced `lastPushAt` and lost work
+
+Still pending from the broader refactor:
+
+- queue API cleanup (`EnqueueBatch`, `ReconcileBatch`, and related naming)
+- moving the planner/executor code into their final dedicated files
+- deleting the old write-path helpers in `git.go` that are no longer needed
+- any deeper cleanup of grouped-planner helper naming
 
 ## Summary
 
@@ -393,8 +422,9 @@ appended to the queue. Two options:
    on atomic enqueue, push everything pending immediately, ignoring the
    cooldown. Reconcile snapshots land fast, matches existing semantics.
 
-Recommend option 2 — it matches existing user-visible behavior. Make it an
-explicit named rule rather than an implementation accident.
+Pick option 1. It keeps atomic writes inside the same local-commit then
+cooldown-driven push lifecycle as every other retained write, which makes the
+model simpler and avoids a second special-case scheduling rule.
 
 ### `commitWindow=0` granularity
 
