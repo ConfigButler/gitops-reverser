@@ -1,6 +1,6 @@
 # Commit Window Refactor
 
-> Status: in progress
+> Status: implemented through phase 3
 > Date: 2026-04-30
 > Related:
 > - [commit-window-batching-design.md](./commit-window-batching-design.md)
@@ -8,10 +8,10 @@
 
 ## Implementation Status
 
-### Landed slice: Phase 1 shape change with bug fix
+### Landed slices: Phase 1, Phase 2, and Phase 3
 
-As of 2026-04-30, the first implementation slice from this document has
-landed.
+As of 2026-04-30, the required implementation slices from this document
+through Phase 3 have landed.
 
 Implemented:
 
@@ -25,15 +25,27 @@ Implemented:
   writes
 - atomic requests use the normal cooldown-driven push path after enqueue
   instead of forcing an immediate push
+- reconcile-facing queue names now describe `WriteRequest` directly
+  (`WriteRequestEmitter`, `EmitWriteRequest`) instead of the removed batch
+  alias vocabulary
+- `commit_plan.go` has been split into the required
+  `commit_planner.go` and `commit_executor.go` files so the code layout
+  matches the design boundaries
+- the old `git.go` request-writing compatibility path has been removed and
+  the remaining direct write entry points now execute through the shared
+  commit-unit flow
+- transitional worker helpers that exposed the old fused shape
+  (`commitAndPushAtomic`, `commitAndPushRequest`,
+  `newPendingWriteFromRequest`) have been removed
 - conflict vs transient push handling in the unified push path
 - the atomic bug where failed pushes advanced `lastPushAt` and lost work
 
-Still pending from the broader refactor:
+Remaining follow-up:
 
-- queue API cleanup (`EnqueueBatch`, `ReconcileBatch`, and related naming)
-- moving the planner/executor code into their final dedicated files
-- deleting the old write-path helpers in `git.go` that are no longer needed
-- any deeper cleanup of grouped-planner helper naming
+- optional final naming cleanup on grouped-planner internals if a clearer
+  general `CommitUnitBuilder` shape emerges later
+- background/history docs may still mention removed internals intentionally;
+  this document is the source of truth for the active refactor state
 
 ## Summary
 
@@ -463,6 +475,7 @@ Make the type surface explicit and smaller.
 
 Create a dedicated planning layer.
 
+- split the current planning responsibilities out of `commit_plan.go`
 - move grouping rules here (consume `commit_groups.go` or keep it as the
   internal builder this file dispatches to)
 - move grouped commit planning here
@@ -473,6 +486,7 @@ Create a dedicated planning layer.
 
 Create one shared execution layer.
 
+- split the current execution responsibilities out of `commit_plan.go`
 - execute `CommitUnit`s
 - apply files to the worktree
 - skip no-op units
@@ -627,17 +641,31 @@ work is retried); only the broken atomic implementation aligns with it.
 
 ### Phase 2: queue API cleanup
 
-1. Decide whether `EnqueueBatch` still earns its keep.
-2. Either:
-   - deprecate it and use `EnqueueRequest`, or
-   - keep it as a thin readability wrapper with explicit docs.
+Status: implemented on 2026-04-30.
 
-### Phase 3: optional deeper cleanup
+1. Remove remaining batch-shaped naming from the reconcile path now that
+   `ReconcileBatch` and `EnqueueBatch` are gone.
+2. Rename reconcile-facing interfaces and methods so they describe
+   `WriteRequest` directly rather than "batch" semantics.
+3. Update architecture/docs references that still describe the removed alias
+   and wrapper surface.
+
+### Phase 3: required structural cleanup
+
+Status: implemented on 2026-04-30.
+
+1. Split `commit_plan.go` into `commit_planner.go` and
+   `commit_executor.go`. This is not optional; the code layout should match
+   the design boundaries in this document.
+2. Delete the old `git.go` request-writing helpers and grouped/atomic
+   compatibility surface that the new planner/executor flow has replaced.
+3. Remove transitional worker test helpers once tests are updated to target
+   the new boundaries directly.
+
+### Phase 4: optional naming cleanup
 
 1. Consider whether `commitGroup` should remain a grouped-planner helper
    or be replaced by a more general `CommitUnitBuilder`.
-2. Consider renaming `ReconcileBatch` away if it keeps confusing readers
-   into thinking it is a richer type than it is.
 
 ## Assumptions
 

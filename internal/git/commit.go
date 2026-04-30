@@ -27,7 +27,6 @@ import (
 	"time"
 
 	"github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
 
 	"github.com/ConfigButler/gitops-reverser/internal/types"
@@ -120,13 +119,6 @@ func buildAPIVersion(group, version string) string {
 	return group + "/" + version
 }
 
-func resolveWriteRequestCommitConfig(request *WriteRequest) CommitConfig {
-	if request == nil || request.CommitConfig == nil {
-		return ResolveCommitConfig(nil)
-	}
-	return *request.CommitConfig
-}
-
 // ValidateCommitConfig checks that commit templates are syntactically valid.
 func ValidateCommitConfig(config CommitConfig) error {
 	sampleEvent := Event{
@@ -211,22 +203,6 @@ func commitOptionsForGroup(
 		Committer: operatorSignature(config, when),
 		Signer:    signer,
 	}
-}
-
-// createCommitForEvent creates a commit for the given event.
-func createCommitForEvent(
-	worktree *git.Worktree,
-	event Event,
-	config CommitConfig,
-	signer git.Signer,
-) (plumbing.Hash, error) {
-	commitMessage, err := renderEventCommitMessage(event, config)
-	if err != nil {
-		return plumbing.ZeroHash, err
-	}
-
-	when := time.Now()
-	return worktree.Commit(commitMessage, commitOptionsForEvent(event, config, signer, when))
 }
 
 // ConstructSafeEmail takes a raw username and a domain and creates a valid

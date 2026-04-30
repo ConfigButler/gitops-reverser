@@ -214,8 +214,8 @@ of namespace. All namespace-level filtering must happen inside the operator.
 7. For each matched rule: call [EventRouter.RouteToGitTargetEventStream()](internal/watch/event_router.go)
 8. [GitTargetEventStream](internal/reconcile/git_target_event_stream.go) deduplicates by content hash and enqueues to the BranchWorker
 9. [BranchWorker](internal/git/branch_worker.go) buffers events and flushes when the commit window expires, on shutdown, or when the buffer hits the operator's byte cap
-10. [WriteRequestWithContentWriter()](internal/git/git.go) generates commits and calls [PushAtomic()](internal/git/git_atomic_push.go)
-11. If the remote has diverged: fetch fresh remote state, hard-reset, replay the same events (up to 3 attempts)
+10. [BranchWorker](internal/git/branch_worker.go) converts retained writes into commit plans, executes local commits, and publishes them with [PushAtomic()](internal/git/git_atomic_push.go)
+11. If the remote has diverged: fetch fresh remote state, hard-reset, rebuild from retained pending writes, and retry
 
 ---
 
@@ -304,7 +304,7 @@ design to address this.
 
 Diffs cluster state against Git repository state during initial snapshot sync. Receives both
 a `ClusterStateEvent` (what exists in the cluster) and a `RepoStateEvent` (what exists in Git),
-then emits a single atomic `ReconcileBatch` that brings Git in line with the cluster.
+then emits a single atomic `WriteRequest` that brings Git in line with the cluster.
 
 ---
 

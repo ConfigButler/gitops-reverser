@@ -175,8 +175,8 @@ type CommitMessageSpec struct {
 	BatchTemplate string `json:"batchTemplate,omitempty"`
 
 	// GroupTemplate is a Go text/template string for grouped commit messages
-	// (CommitModeGrouped path; one commit per (author, gitTarget) group produced
-	// by the commit-window batching pipeline).
+	// (the grouped commit-window path; one commit per (author, gitTarget) group
+	// produced by the batching pipeline).
 	// Available variables: Author, GitTarget, Count, Operations (map of
 	// CREATE/UPDATE/DELETE counts), Resources (slice of {Group, Version,
 	// Resource, Namespace, Name}).

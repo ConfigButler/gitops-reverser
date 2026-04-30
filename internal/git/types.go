@@ -113,10 +113,6 @@ const (
 	CommitModePerEvent CommitMode = "per_event"
 	// CommitModeAtomic creates one commit for all events in the request.
 	CommitModeAtomic CommitMode = "atomic"
-	// CommitModeGrouped creates one commit per (author, gitTarget) group from
-	// the commit-window batching pipeline. Multiple events for the same path
-	// inside a group collapse to the latest state. Used by BranchWorker.commitGroups.
-	CommitModeGrouped CommitMode = "grouped"
 )
 
 // WriteRequest is the unit of work queued and written by the BranchWorker.
@@ -129,6 +125,71 @@ type WriteRequest struct {
 	GitTargetNamespace string
 	BootstrapOptions   pathBootstrapOptions
 	CommitMode         CommitMode
+}
+
+// PendingWriteKind distinguishes the durable write shapes retained until push.
+type PendingWriteKind string
+
+const (
+	// PendingWriteGroupedWindow is buffered live-event work drained from the
+	// commit window.
+	PendingWriteGroupedWindow PendingWriteKind = "grouped_window"
+	// PendingWriteAtomic is a caller-defined atomic request, typically from
+	// reconciliation.
+	PendingWriteAtomic PendingWriteKind = "atomic"
+)
+
+type pendingTargetKey struct {
+	Name      string
+	Namespace string
+}
+
+// ResolvedTargetMetadata is the target-scoped planning data retained with a
+// pending write so replay does not re-fetch mutable GitTarget state.
+type ResolvedTargetMetadata struct {
+	Name             string
+	Namespace        string
+	Path             string
+	BootstrapOptions pathBootstrapOptions
+	EncryptionConfig *ResolvedEncryptionConfig
+}
+
+// PendingWrite is the unit retained until a push succeeds.
+type PendingWrite struct {
+	Kind               PendingWriteKind
+	Events             []Event
+	CommitMessage      string
+	CommitConfig       CommitConfig
+	Signer             gogit.Signer
+	GitTargetName      string
+	GitTargetNamespace string
+	Targets            map[pendingTargetKey]ResolvedTargetMetadata
+	ByteSize           int64
+}
+
+// CommitPlan is the executable plan derived from one or more retained writes.
+type CommitPlan struct {
+	Units []CommitUnit
+}
+
+// CommitMessageKind determines which message/authorship path the executor uses.
+type CommitMessageKind string
+
+const (
+	CommitMessagePerEvent CommitMessageKind = "event"
+	CommitMessageBatch    CommitMessageKind = "batch"
+	CommitMessageGrouped  CommitMessageKind = "group"
+)
+
+// CommitUnit is one locally-created commit.
+type CommitUnit struct {
+	Events        []Event
+	MessageKind   CommitMessageKind
+	CommitMessage string
+	CommitConfig  CommitConfig
+	Signer        gogit.Signer
+	GroupAuthor   string
+	Target        ResolvedTargetMetadata
 }
 
 // WorkItem is the unit of work in the BranchWorker queue.

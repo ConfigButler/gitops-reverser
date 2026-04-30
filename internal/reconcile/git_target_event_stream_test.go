@@ -160,8 +160,8 @@ var _ = Describe("GitTargetEventStream", func() {
 		})
 	})
 
-	Describe("EmitReconcileBatch", func() {
-		It("should enqueue batch to worker and stamp GitTarget info", func() {
+	Describe("EmitWriteRequest", func() {
+		It("should enqueue request to worker and stamp GitTarget info", func() {
 			request := git.WriteRequest{
 				Events: []git.Event{
 					createTestEvent("pod", "pod1", "CREATE"),
@@ -169,7 +169,7 @@ var _ = Describe("GitTargetEventStream", func() {
 				CommitMessage: "reconcile: sync 1 resources",
 			}
 
-			err := stream.EmitReconcileBatch(request)
+			err := stream.EmitWriteRequest(request)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(mockWorker.batches).To(HaveLen(1))
 			Expect(mockWorker.batches[0].GitTargetName).To(Equal(gitTargetName))

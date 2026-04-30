@@ -394,7 +394,7 @@ type MockReconcileEmitter struct {
 	Batches []git.WriteRequest
 }
 
-func (m *MockReconcileEmitter) EmitReconcileBatch(request git.WriteRequest) error {
+func (m *MockReconcileEmitter) EmitWriteRequest(request git.WriteRequest) error {
 	m.Batches = append(m.Batches, request)
 	return nil
 }
