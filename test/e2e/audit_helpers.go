@@ -59,16 +59,17 @@ func findAuditPayloadSince(
 	limit int64,
 	match func(map[string]interface{}) bool,
 ) (auditPayloadEntry, error) {
-	entries, err := client.XRevRangeN(ctx, stream, "+", "-", limit).Result()
+	start := "-"
+	if afterID != "" {
+		start = "(" + afterID
+	}
+
+	entries, err := client.XRangeN(ctx, stream, start, "+", limit).Result()
 	if err != nil {
 		return auditPayloadEntry{}, err
 	}
 
 	for _, entry := range entries {
-		if afterID != "" && entry.ID == afterID {
-			break
-		}
-
 		rawJSON, ok := entry.Values["payload_json"].(string)
 		if !ok || rawJSON == "" {
 			continue

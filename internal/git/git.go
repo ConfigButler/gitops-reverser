@@ -876,11 +876,122 @@ func generateCommitsFromRequest(
 	if request.CommitMode == "" {
 		request.CommitMode = CommitModePerEvent
 	}
-	if request.CommitMode == CommitModeAtomic {
+	switch request.CommitMode {
+	case CommitModePerEvent:
+		return generatePerEventCommits(ctx, writer, repo, request)
+	case CommitModeAtomic:
 		return generateAtomicCommit(ctx, writer, repo, request)
+	case CommitModeGrouped:
+		return generateGroupedCommits(ctx, writer, repo, request)
 	}
 
-	return generatePerEventCommits(ctx, writer, repo, request)
+	return 0, plumbing.ZeroHash, fmt.Errorf("unsupported commit mode %q", request.CommitMode)
+}
+
+// generateGroupedCommits writes one commit per (author, gitTarget) group from
+// the request's events. Multiple events at the same path inside a group
+// collapse to the latest state — see commit_groups.go for the grouping rules.
+//
+// Author attribution mirrors per-event commits (via commitOptionsForGroup);
+// the commit message is rendered through the group template
+// (CommitMessageConfig.GroupTemplate).
+func generateGroupedCommits(
+	ctx context.Context,
+	writer eventContentWriter,
+	repo *git.Repository,
+	request *WriteRequest,
+) (int, plumbing.Hash, error) {
+	worktree, err := repo.Worktree()
+	if err != nil {
+		return 0, plumbing.ZeroHash, fmt.Errorf("failed to get worktree: %w", err)
+	}
+
+	commitConfig := resolveWriteRequestCommitConfig(request)
+	groups := groupCommits(request.Events)
+
+	commitsCreated := 0
+	lastHash := plumbing.ZeroHash
+	for _, g := range groups {
+		hash, created, err := commitSingleGroup(ctx, writer, repo, worktree, g, commitConfig, request.Signer)
+		if err != nil {
+			return commitsCreated, lastHash, err
+		}
+		if !created {
+			continue
+		}
+		commitsCreated++
+		lastHash = hash
+	}
+
+	return commitsCreated, lastHash, nil
+}
+
+func commitSingleGroup(
+	ctx context.Context,
+	writer eventContentWriter,
+	repo *git.Repository,
+	worktree *git.Worktree,
+	group *commitGroup,
+	commitConfig CommitConfig,
+	signer git.Signer,
+) (plumbing.Hash, bool, error) {
+	logger := log.FromContext(ctx)
+	groupEvents := group.orderedEvents()
+	if len(groupEvents) == 0 {
+		return plumbing.ZeroHash, false, nil
+	}
+
+	// Stage every path in the group BEFORE committing so the commit reflects
+	// the net effect of the burst.
+	anyChanges, err := applyGroupEventsToWorktree(ctx, writer, repo, worktree, groupEvents)
+	if err != nil {
+		return plumbing.ZeroHash, false, err
+	}
+	if !anyChanges {
+		return plumbing.ZeroHash, false, nil
+	}
+
+	message, err := renderCommitMessageForGroup(group, commitConfig)
+	if err != nil {
+		return plumbing.ZeroHash, false, err
+	}
+	when := time.Now()
+	hash, err := worktree.Commit(message, commitOptionsForGroup(group, commitConfig, signer, when))
+	if err != nil {
+		return plumbing.ZeroHash, false, fmt.Errorf("failed to create grouped commit: %w", err)
+	}
+
+	logger.Info("Created grouped commit",
+		"author", group.Author,
+		"gitTarget", group.GitTarget,
+		"resources", len(groupEvents),
+		"message", message,
+	)
+
+	return hash, true, nil
+}
+
+func applyGroupEventsToWorktree(
+	ctx context.Context,
+	writer eventContentWriter,
+	repo *git.Repository,
+	worktree *git.Worktree,
+	events []Event,
+) (bool, error) {
+	anyChanges := false
+	for _, ev := range events {
+		if err := ensureBootstrapTemplateInPath(repo, sanitizePath(ev.Path), ev.BootstrapOptions); err != nil {
+			return false, err
+		}
+		changesApplied, err := applyEventToWorktree(ctx, writer, worktree, ev)
+		if err != nil {
+			return false, err
+		}
+		if changesApplied {
+			anyChanges = true
+		}
+	}
+	return anyChanges, nil
 }
 
 // generateAtomicCommit applies all events without committing after each, then creates a single commit.

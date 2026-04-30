@@ -102,8 +102,8 @@ func setupCommitPushSplitWorker(t *testing.T) (*BranchWorker, *git.Repository, s
 	return worker, serverRepo, remoteURL
 }
 
-// TestCommitGroups_DoesNotPush verifies that commitGroups produces local
-// commits without ever advancing the remote branch.
+// TestCommitGroups_DoesNotPush verifies that commitGroups produces grouped
+// local commits without ever advancing the remote branch.
 func TestCommitGroups_DoesNotPush(t *testing.T) {
 	worker, serverRepo, remoteURL := setupCommitPushSplitWorker(t)
 
@@ -111,8 +111,13 @@ func TestCommitGroups_DoesNotPush(t *testing.T) {
 	require.NoError(t, err)
 	initialHash := initialRef.Hash()
 
-	// First commit cycle: no pending events yet.
-	require.NoError(t, worker.commitGroups([]Event{configMapEvent("first", "alice", "team-a")}, false))
+	// First commit cycle: no unpushed commits yet. Two same-author events in
+	// one flush should collapse to one grouped commit.
+	events := []Event{
+		configMapEvent("first", "alice", "team-a"),
+		configMapEvent("second", "alice", "team-a"),
+	}
+	require.NoError(t, worker.commitGroups(events, false))
 
 	// Remote must be untouched after commitGroups; only pushPendingCommits
 	// publishes work.
@@ -130,6 +135,12 @@ func TestCommitGroups_DoesNotPush(t *testing.T) {
 	assert.NotEqual(t, initialHash, localRef.Hash(),
 		"local main should advance with the new commit")
 
+	headCommit, err := localRepo.CommitObject(localRef.Hash())
+	require.NoError(t, err)
+	require.Len(t, headCommit.ParentHashes, 1, "burst should produce a single grouped commit")
+	assert.Equal(t, initialHash, headCommit.ParentHashes[0],
+		"the grouped commit should parent directly on the seed commit")
+
 	// pushCycleRootHash should be set so a subsequent push can detect drift.
 	assert.False(t, worker.pushCycleRootHash.IsZero(),
 		"first commit of a cycle records the rootHash for push validation")
@@ -138,7 +149,7 @@ func TestCommitGroups_DoesNotPush(t *testing.T) {
 }
 
 // TestCommitGroups_AccumulatesAcrossCalls covers the multi-commit path: a
-// second commitGroups call within the same push cycle (hasPending=true) must
+// second commitGroups call within the same push cycle (hasUnpushedCommits=true) must
 // not call PrepareBranch, so the prior local commit is preserved.
 func TestCommitGroups_AccumulatesAcrossCalls(t *testing.T) {
 	worker, _, remoteURL := setupCommitPushSplitWorker(t)
@@ -149,7 +160,7 @@ func TestCommitGroups_AccumulatesAcrossCalls(t *testing.T) {
 	require.NoError(t, worker.commitGroups([]Event{configMapEvent("second", "bob", "team-b")}, true))
 
 	assert.Equal(t, rootAfterFirst, worker.pushCycleRootHash,
-		"hasPending=true must preserve the rootHash from the first commit")
+		"hasUnpushedCommits=true must preserve the rootHash from the first commit")
 
 	localRepoPath := worker.repoPathForRemote(remoteURL)
 	localRepo, err := git.PlainOpen(localRepoPath)
@@ -203,8 +214,6 @@ func TestPushPendingCommits_FlushesAccumulated(t *testing.T) {
 
 	assert.True(t, worker.pushCycleRootHash.IsZero(),
 		"successful push clears pushCycleRootHash")
-	assert.Empty(t, string(worker.pushCycleRootBranch),
-		"successful push clears pushCycleRootBranch")
 }
 
 // TestPushPendingCommits_ReplaysOnConflict verifies the replay path: if the

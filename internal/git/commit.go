@@ -82,6 +82,23 @@ func renderBatchCommitMessage(request *WriteRequest, config CommitConfig) (strin
 	)
 }
 
+func renderGroupCommitMessage(group *commitGroup, config CommitConfig) (string, error) {
+	return renderCommitTemplate(
+		"group",
+		config.Message.GroupTemplate,
+		buildGroupedCommitMessageData(group),
+	)
+}
+
+func renderCommitMessageForGroup(group *commitGroup, config CommitConfig) (string, error) {
+	groupEvents := group.orderedEvents()
+	if len(groupEvents) == 1 {
+		return renderEventCommitMessage(groupEvents[0], config)
+	}
+
+	return renderGroupCommitMessage(group, config)
+}
+
 func renderCommitTemplate(name, text string, data any) (string, error) {
 	tmpl, err := template.New(name).Option("missingkey=error").Parse(text)
 	if err != nil {
@@ -136,6 +153,12 @@ func ValidateCommitConfig(config CommitConfig) error {
 		return err
 	}
 
+	sampleGroup := newCommitGroup(sampleEvent)
+	sampleGroup.add(sampleEvent)
+	if _, err := renderGroupCommitMessage(sampleGroup, config); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -164,6 +187,28 @@ func commitOptionsForBatch(config CommitConfig, signer git.Signer, when time.Tim
 	return &git.CommitOptions{
 		Author:    operator,
 		Committer: operator,
+		Signer:    signer,
+	}
+}
+
+// commitOptionsForGroup attributes the commit to the group's author and keeps
+// the operator as the committer (the operator physically writes the commit;
+// signing material, when present, is the operator's). Mirrors
+// commitOptionsForEvent's use of ConstructSafeEmail so cross-path tooling
+// continues to recognise the same identity.
+func commitOptionsForGroup(
+	group *commitGroup,
+	config CommitConfig,
+	signer git.Signer,
+	when time.Time,
+) *git.CommitOptions {
+	return &git.CommitOptions{
+		Author: &object.Signature{
+			Name:  group.Author,
+			Email: ConstructSafeEmail(group.Author, "cluster.local"),
+			When:  when,
+		},
+		Committer: operatorSignature(config, when),
 		Signer:    signer,
 	}
 }

@@ -1,21 +1,11 @@
 # Commit window batching: design
 
-> Status: design proposal
+> Status: implemented (2026-04-30)
 > Supersedes the sketch in [docs/future/idea-burst-commit-batching.md](../future/idea-burst-commit-batching.md)
 >
-> **Implementation progress (2026-04-29)** — split into three PRs as agreed:
-> - **PR 1 (landed): commitWindow field + two-stage event-loop state machine + push throttle.**
->   API change to `PushStrategy` is done (only `commitWindow` remains; `interval`/`maxCommits` removed).
->   `--branch-buffer-max-bytes` operator flag (env `BRANCH_BUFFER_MAX_BYTES`, default `8Mi`) plumbed through `WorkerManager` → `BranchWorker`.
->   `BranchWorker.processEvents` rewritten as a `branchWorkerEventLoop` with two timers (commitTimer + one-shot pushTimer) and a fixed `PushCooldown = 5s`.
->   Samples / Helm values / quickstart template / `docs/architecture.md` updated to the new field. CRD regenerated.
-> - **PR 2 (landed, this branch): `unpushedEvents` retention + replay-on-conflict adaptation.**
->   `commitAndPushRequest` split: per-event work now goes through `BranchWorker.commitGroups` (commit only, accumulates in `unpushedEvents`) followed by `BranchWorker.pushPendingCommits` (rate-limited push with replay). Atomic-batch reconciles still flow through `commitAndPushAtomic` (commit+push fused) so snapshot semantics are unchanged.
->   New primitives in `git.go`: `CommitWriteRequestNoPush` (writes local commits without pushing, returns the rootHash for later validation) and `PushPendingWithReplay` (pushes; on non-FF conflict, fetches+resets and calls a rebuild closure to re-apply unpushed events on the new tip; up to `maxRetries=3`).
->   The event loop now retains `unpushedEvents` between commit and push: only a successful push clears the slice, so a transient push failure or a chronic conflict leaves replay material intact for the next cycle. The byte cap is enforced against `buffer + unpushedEvents` combined.
->   `commitWindow=0` is now honest per-event: each event arrival immediately commits locally; the cooldown only defers the push.
->   Tests: `task fmt`, `task generate`, `task manifests`, `task vet`, `task lint`, `task test`, `task test-e2e` all pass. New unit tests cover `commitGroups` (no-push semantics, mid-cycle accumulation), `pushPendingCommits` (deferred push of accumulated commits, replay-on-conflict against an externally-advanced remote), the combined byte cap, and the `commitWindow=0` honest-per-event path.
-> - **PR 3 (later): grouped-commit path + `GroupedCommitMessageData` + `groupTemplate` field.** New code path in `commit.go` with author per group and per-(author, gitTarget) grouping; `BatchCommitMessageData` stays as-is for `CommitModeAtomic`.
+> This design is implemented in the current codebase.
+> The document now keeps the design rationale and records the landed
+> implementation shape, rather than tracking rollout stages.
 
 ## Goal
 
@@ -29,13 +19,67 @@ is one commit; the `gitTarget` axis only matters when one operation
 crosses targets — see
 [Per-target boundary: encryption and bootstrap](#per-target-boundary-encryption-and-bootstrap).)
 
-After this design lands, the CRD's commit-shaping surface is
+In the implemented design, the CRD's commit-shaping surface is
 `commitWindow` only.
-[`PushStrategy`](../../api/v1alpha1/shared_types.go) will carry
+[`PushStrategy`](../../api/v1alpha1/shared_types.go) carries
 `commitWindow` and nothing else — no `interval`, no `maxCommits`.
 The byte cap that bounds buffered events is an operator startup
 argument (`--branch-buffer-max-bytes`), not a CRD field. Reasoning
 is in [Settings reduction](#settings-reduction).
+
+## Implementation Snapshot
+
+The current implementation follows this design closely and lives
+primarily in:
+
+- [`internal/git/branch_worker.go`](../../internal/git/branch_worker.go)
+  for the two-stage event loop, buffering, commit drains, and push
+  scheduling
+- [`internal/git/commit_groups.go`](../../internal/git/commit_groups.go)
+  for grouping and grouped-commit message data
+- [`internal/git/git.go`](../../internal/git/git.go) for
+  `CommitModeGrouped` and grouped commit creation
+- [`internal/git/commit.go`](../../internal/git/commit.go) for
+  grouped author attribution and message rendering
+- [`api/v1alpha1/gitprovider_types.go`](../../api/v1alpha1/gitprovider_types.go)
+  for `commit.message.groupTemplate`
+
+Two implementation details are worth calling out explicitly:
+
+- A grouped flush with exactly one event still renders the normal
+  per-event commit message. Multi-event groups use
+  `commit.message.groupTemplate`.
+- Replay-on-conflict rebuilds commits from `unpushedEvents` using the
+  same grouped path as the first attempt, so replay stays semantically
+  aligned with the happy path.
+
+```mermaid
+flowchart TD
+    A[Audit event arrives] --> B[branchWorkerEventLoop buffers event]
+    B --> C{Drain trigger?}
+    C -->|commitWindow silence| D[commitBufferedEvents]
+    C -->|buffer cap hit| D
+    C -->|commitWindow = 0| D
+    C -->|shutdown| D
+
+    D --> E[BranchWorker.commitGroups]
+    E --> F[prepareWriteRequest resolves path and gitTarget]
+    F --> G[groupCommits groups by author and gitTarget]
+    G --> H[CommitModeGrouped writes one local commit per group]
+    H --> I[append events to unpushedEvents]
+    I --> J[scheduleOrRunPush]
+
+    J --> K{push cooldown expired?}
+    K -->|yes| L[pushPendingCommits]
+    K -->|no| M[arm one-shot pushTimer]
+    M --> L
+
+    L --> N{push succeeds?}
+    N -->|yes| O[clear unpushedEvents and record lastPushAt]
+    N -->|non-fast-forward| P[fetch reset replay from unpushedEvents]
+    P --> H
+    N -->|transient failure| Q[retain unpushedEvents for next retry]
+```
 
 ## Non-goals
 
@@ -118,8 +162,8 @@ See
 
 ### Settings reduction
 
-After this design, the CRD will have one commit-shaping knob
-(`commitWindow`) and the operator startup will have one
+In the implemented design, the CRD has one commit-shaping knob
+(`commitWindow`) and the operator startup has one
 memory-shaping knob (`--branch-buffer-max-bytes`). There will be no
 separate "push interval" or "max commits per buffer" knobs.
 Reasoning:
@@ -156,11 +200,13 @@ include it.
 
 ## Where this lives
 
-In the **owning pod for the branch**, end of pipeline. Specifically, inside
-the [`BranchWorker.processEvents`](../../internal/git/branch_worker.go) loop,
-between event buffering and `commitAndPushRequest`. Nothing changes upstream
-of the BranchWorker — neither the audit consumer, the EventRouter, nor the
-queue knows about commit windows.
+In the **owning pod for the branch**, end of pipeline. Specifically,
+inside the
+[`branchWorkerEventLoop`](../../internal/git/branch_worker.go) /
+[`BranchWorker.commitGroups`](../../internal/git/branch_worker.go)
+path. Nothing changes upstream of the BranchWorker — neither the
+audit consumer, the EventRouter, nor the queue knows about commit
+windows.
 
 This locality is deliberate:
 
@@ -555,11 +601,10 @@ for `CommitModeAtomic` (snapshot reconciles), which has no per-event
 author. The two templates describe different commit kinds and are
 not unified.
 
-The grouped-commit path is the single largest piece of new code in
-this design. `tryWriteRequestAttempt` dispatches per-event or
-atomic-batch; the grouped-commit path is a third call site with its
-own author handling and template data. See
-[Implementation plan](#implementation-plan).
+The grouped-commit path is the single largest code path added by this
+design. [`generateCommitsFromRequest`](../../internal/git/git.go) now
+dispatches `CommitModePerEvent`, `CommitModeAtomic`, and
+`CommitModeGrouped` explicitly.
 
 ## Durability and replay-on-conflict
 
@@ -958,124 +1003,42 @@ These let us actually verify the feature is doing what we expect in real
 clusters, and surface pathological cases (e.g. groups-per-flush stuck at
 1.0 means windowing is not coalescing anything).
 
-## Implementation plan
+## Implementation Notes
 
-1. [shared_types.go](../../api/v1alpha1/shared_types.go):
-   - `PushStrategy` carries `CommitWindow *string` (no `Interval`,
-     no `MaxCommits`). Same `*string + runtime parse` pattern as the
-     existing duration fields elsewhere in the API. Validation is
-     runtime-only via `time.ParseDuration` (see step 3). The OpenAPI
-     schema is a plain string field — `time.ParseDuration` accepts
-     decimal forms like `1.5s`, so a regex shape-check on the schema
-     would have to be permissive enough to match the parser. Skipping
-     the regex keeps the parser as the single source of truth for
-     what is valid.
-   - Regenerate the CRD manifest.
-2. Operator startup flag `--branch-buffer-max-bytes` (env var
-   `BRANCH_BUFFER_MAX_BYTES`), default `8Mi`. Wired into the
-   manager's options struct and through to BranchWorker construction
-   so each worker reads it once at startup. The `maxBytesBytes`
-   package-level constant in
-   [helpers.go](../../internal/git/helpers.go) is removed; the cap
-   comes from the worker's construction parameter.
-3. [branch_worker.go](../../internal/git/branch_worker.go):
-   - `getCommitWindow` parses `*string` with `time.ParseDuration`;
-     on parse error or negative result, log a warning and fall back
-     to the `5s` default (parse error) or `0` (negative).
-   - The byte cap is enforced against `buffer + unpushedEvents`
-     combined.
-   - The event loop is the two-stage state machine described in
-     [Algorithm](#algorithm) — commit stage driven by `commitTimer`
-     / byte-cap / window-zero fast path, push stage driven by
-     `lastPushAt` + one-shot `pushTimer` with `pushCooldown = 5 *
-     time.Second` defined as a package-level `const`.
-   - `commitAndPushRequest` is split into `commitGroups` (writes
-     local commits, appends to `unpushedEvents`) and `pushPending`
-     (the rate-limited push). The post-commit hook
-     (`maybeSchedulePush`) decides which fires.
-   - `unpushedEvents` retention: successful push is the only thing
-     that clears it (see
-     [Durability and replay-on-conflict](#durability-and-replay-on-conflict)).
-   - `tryResolve` + `tryWriteRequestAttempt` in
-     [git.go](../../internal/git/git.go) source replay events from
-     `unpushedEvents`. `pushCooldown` / `lastPushAt` advance only
-     on the final successful push.
-4. **Grouped-commit path** — the largest piece of new code; see
-   [Commit metadata: per-(author, target) authorship](#commit-metadata-per-author-target-authorship):
-   - `commitOptionsForGroup(group, config, signer, when)` in
-     [commit.go](../../internal/git/commit.go), modelled on
-     `commitOptionsForEvent` — Author = group's author with
-     `ConstructSafeEmail`, Committer = operator.
-   - `createCommitForGroup(worktree, group, config, signer)` writes
-     the working-tree changes for the group's path map and calls
-     `worktree.Commit` with those options.
-   - `GroupedCommitMessageData` (`{Author, GitTarget, Count,
-     Operations, Resources}`) and a default `groupTemplate` that uses
-     only stock `text/template` field access (no FuncMap helpers,
-     since
-     [the renderer](../../internal/git/commit.go) does not register
-     any). `commit.message.groupTemplate` on
-     [`CommitMessageSpec`](../../api/v1alpha1/gitprovider_types.go)
-     for user overrides.
-   - `BatchCommitMessageData` and `commitOptionsForBatch` are
-     untouched; they remain the path for `CommitModeAtomic`.
-5. `groupCommits` — linear helper with a path-keyed
-   group buffer (latest event per path wins). Each group renders its
-   own grouped commit message via step 4 and produces one Git commit
-   during `commitGroups`. The same helper drives conflict replay so
-   grouping semantics stay consistent between first-attempt and
-   replay.
-6. Tests:
-   - Unit: `groupCommits` against every scenario in
-     [Concurrent and adversarial scenarios](#concurrent-and-adversarial-scenarios),
-     including the GUI-toggle case (fifteen same-author rapid re-edits
-     of the same path collapse to one commit).
-   - Unit: distinct author strings are never coalesced —
-     `system:serviceaccount:ns:foo`, `foo`, and `system:apiserver` each
-     produce their own group even when interleaved.
-   - Unit: same author, two `GitTarget`s, no path overlap → two
-     groups (one per target), each with the correct
-     `(Author, GitTarget)` pair.
-   - Branch-worker test: simulated burst of mixed-author events,
-     assert commit shape on the resulting branch *and* that each
-     resulting commit's `Author` is the group's author (not the
-     operator) and `GitTarget` is the group's target.
-   - Branch-worker test: a same-author burst hitting two `GitTarget`s
-     produces two commits, each addressed to its own target's
-     encryption/bootstrap configuration (no cross-target leakage of
-     SOPS recipients).
-   - Branch-worker test: never-quiet stream stays under
-     `--branch-buffer-max-bytes` and produces a single commit when
-     activity ends.
-   - Branch-worker test: push throttle — five commits within 5s
-     produce one local push at t=0 and one at t=5; never more than two
-     pushes for the burst.
-   - Branch-worker test: `commitWindow=0` produces N local commits for
-     N events but at most ⌈N/(events_per_5s)⌉ pushes.
-   - Branch-worker test: shutdown bypasses cooldown and pushes pending
-     commits.
-   - Branch-worker test: push conflict triggers `replayAndRetry`
-     and produces equivalent commits on top of the new remote tip;
-     `unpushedEvents` survives across the reset and only clears on
-     the eventual successful push.
-   - Branch-worker test: chronic conflict (push always fails non-FF)
-     gives up after `maxRetries` without dropping
-     `unpushedEvents` or advancing `lastPushAt`; subsequent normal
-     push triggers retry it.
-   - E2E: `kubectl apply -k` of a multi-resource kustomize overlay
-     produces exactly one commit on the target branch.
-   - E2E: forced concurrent push (e.g. an out-of-band commit pushed by
-     a script) is followed by a successful operator-driven push that
-     correctly carries the operator's events on top of the
-     contending commit.
-7. Telemetry counters and histograms — see
-   [Observability](#observability).
-8. Docs:
-   - [docs/configuration.md](../configuration.md): user-facing
-     section documents `commitWindow` and
-     `commit.message.groupTemplate`; operator-tuning section
-     documents `--branch-buffer-max-bytes`.
-   - [docs/future/idea-burst-commit-batching.md](../future/idea-burst-commit-batching.md):
-     one-line pointer to this doc.
-   - CHANGELOG: breaking `v1alpha1` change to `PushStrategy`.
+The implementation that landed maps to the design like this:
 
+1. **API and CRD**
+   - `PushStrategy` exposes `commitWindow` as the user-facing
+     commit-shaping field.
+   - `CommitMessageSpec` includes `groupTemplate` for grouped commit
+     messages.
+   - The CRD and generated manifests were updated to reflect both
+     fields.
+2. **Branch worker event loop**
+   - The branch worker runs a two-stage state machine: commit drains
+     first, push scheduling second.
+   - The byte cap is enforced against `buffer + unpushedEvents`, not
+     just the pre-commit buffer.
+   - `commitWindow=0` is an honest fast path for per-event local
+     commits; only the push remains throttled.
+3. **Grouped commit path**
+   - `groupCommits` performs the linear grouping pass and
+     last-write-wins collapse for same-author same-path bursts.
+   - `CommitModeGrouped` writes one local commit per
+     `(author, gitTarget)` group.
+   - Grouped commits use per-group author attribution and grouped
+     template data; atomic batch commits remain operator-authored.
+4. **Push and replay**
+   - `unpushedEvents` is retained until a push succeeds.
+   - On non-fast-forward push failure, the worker fetches, resets,
+     rebuilds grouped commits from `unpushedEvents`, and retries.
+   - Replay bypasses the normal push cooldown because it is still part
+     of the same logical push attempt.
+5. **Validation and tests**
+   - Unit coverage includes grouped message rendering, grouping edge
+     cases, conflict replay, no-push local commit behavior, and
+     `commitWindow=0`.
+   - E2E coverage asserts the phase-3 behavior: a burst can land as a
+     single grouped commit on the remote.
+   - At the time this document was updated, `task lint`, `task test`,
+     and `task test-e2e` all passed for the implemented branch.

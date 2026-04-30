@@ -30,11 +30,11 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-// Commit-window batching exercises the PR2 split: multiple events arriving
-// within the rolling silence window produce per-event local commits but ride
-// out to the remote in a single push. The audit-redis consumer pipeline is
-// the real path under test — events flow kubectl → audit webhook → Valkey
-// stream → consumer → BranchWorker.commitGroups → BranchWorker.pushPendingCommits.
+// Commit-window batching exercises the grouped-commit path: multiple events
+// arriving within the rolling silence window collapse into one grouped commit
+// and one push. The audit-redis consumer pipeline is the real path under test
+// — events flow kubectl → audit webhook → Valkey stream → consumer →
+// BranchWorker.commitGroups → BranchWorker.pushPendingCommits.
 var _ = Describe("Commit Window Batching", Label("commit-window-batching", "audit-redis", "smoke"), Ordered, func() {
 	var (
 		testNs        string
@@ -93,7 +93,7 @@ var _ = Describe("Commit Window Batching", Label("commit-window-batching", "audi
 		cleanupNamespace(testNs)
 	})
 
-	It("collapses a burst of events into one push while keeping per-event commits", func() {
+	It("collapses a burst of events into one grouped commit and one push", func() {
 		const burstSize = 4
 
 		repo := auditRedisRepo
@@ -145,18 +145,13 @@ var _ = Describe("Commit Window Batching", Label("commit-window-batching", "audi
 		commitsAfter := mustCommitCount(repo.CheckoutDir)
 		commitsAdded := commitsAfter - commitsBefore
 
-		// PR2 still produces one local commit per event (PR3 will introduce
-		// grouping). The batching property is observable as the commit count
-		// increasing by exactly burstSize across one push cycle — and the
-		// push throttle visibly delays the publish to the remote until the
-		// commitWindow expires.
-		Expect(commitsAdded).To(Equal(burstSize),
-			fmt.Sprintf("expected %d new commits (one per resource), got %d", burstSize, commitsAdded))
+		// Phase 3 groups same-author events in the window into one commit. The
+		// batching property is observable as one new remote commit touching the
+		// whole burst after the commitWindow expires.
+		Expect(commitsAdded).To(Equal(1),
+			fmt.Sprintf("expected 1 grouped commit for the burst, got %d", commitsAdded))
 
-		// All burst commits must be reachable on HEAD of the burst's first
-		// commit's parent chain — i.e. they all rode out together rather
-		// than being interleaved by an unrelated commit.
-		assertBurstCommitsAreContiguous(repo.CheckoutDir, burstNames, basePath, testNs)
+		assertBurstFilesAreGroupedIntoLatestCommit(repo.CheckoutDir, burstNames, basePath, testNs)
 
 		By("cleaning up burst ConfigMaps")
 		for _, name := range burstNames {
@@ -195,11 +190,10 @@ func mustCommitCount(checkoutDir string) int {
 	return count
 }
 
-// assertBurstCommitsAreContiguous verifies the last len(burstNames) commits on
-// main each touch exactly one of the burst's ConfigMap paths and the set
-// matches burstNames. This is what "rode out in one push" looks like in the
-// remote history when batching collapses a burst into a single push cycle.
-func assertBurstCommitsAreContiguous(checkoutDir string, burstNames []string, basePath, namespace string) {
+// assertBurstFilesAreGroupedIntoLatestCommit verifies the latest commit on
+// main touches every burst path. This is what the phase 3 grouped-commit path
+// should publish after one quiet-window flush.
+func assertBurstFilesAreGroupedIntoLatestCommit(checkoutDir string, burstNames []string, basePath, namespace string) {
 	GinkgoHelper()
 
 	expectedPaths := make(map[string]struct{}, len(burstNames))
@@ -208,8 +202,7 @@ func assertBurstCommitsAreContiguous(checkoutDir string, burstNames []string, ba
 		expectedPaths[p] = struct{}{}
 	}
 
-	count := strconv.Itoa(len(burstNames))
-	out, err := gitRun(checkoutDir, "log", "-n", count, "--name-only", "--pretty=format:%H")
+	out, err := gitRun(checkoutDir, "show", "--pretty=format:", "--name-only", "HEAD")
 	Expect(err).NotTo(HaveOccurred(), fmt.Sprintf("git log failed: %s", out))
 
 	seen := make(map[string]struct{}, len(burstNames))
@@ -218,27 +211,14 @@ func assertBurstCommitsAreContiguous(checkoutDir string, burstNames []string, ba
 		if line == "" {
 			continue
 		}
-		// Skip commit hashes (40 hex chars) — we only collect changed paths.
-		if len(line) == 40 && isHex(line) {
-			continue
-		}
 		if _, ok := expectedPaths[line]; ok {
 			seen[line] = struct{}{}
 		}
 	}
 
 	Expect(seen).To(HaveLen(len(expectedPaths)),
-		fmt.Sprintf("the last %d commits should each touch a distinct burst ConfigMap; saw %v of %v",
-			len(burstNames), keysOf(seen), keysOf(expectedPaths)))
-}
-
-func isHex(s string) bool {
-	for _, r := range s {
-		if (r < '0' || r > '9') && (r < 'a' || r > 'f') && (r < 'A' || r > 'F') {
-			return false
-		}
-	}
-	return true
+		fmt.Sprintf("the latest grouped commit should touch every burst ConfigMap; saw %v of %v",
+			keysOf(seen), keysOf(expectedPaths)))
 }
 
 func keysOf(m map[string]struct{}) []string {

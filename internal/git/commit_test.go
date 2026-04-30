@@ -36,6 +36,7 @@ func TestResolveCommitConfig_Defaults(t *testing.T) {
 	assert.Equal(t, DefaultCommitterEmail, config.Committer.Email)
 	assert.Equal(t, DefaultCommitMessageTemplate, config.Message.Template)
 	assert.Equal(t, DefaultBatchCommitMessageTemplate, config.Message.BatchTemplate)
+	assert.Equal(t, DefaultGroupCommitMessageTemplate, config.Message.GroupTemplate)
 }
 
 func TestResolveCommitConfig_CustomValues(t *testing.T) {
@@ -47,6 +48,7 @@ func TestResolveCommitConfig_CustomValues(t *testing.T) {
 		Message: &v1alpha1.CommitMessageSpec{
 			Template:      "audit: {{.Operation}} {{.Name}}",
 			BatchTemplate: "snapshot: {{.Count}} {{.GitTarget}}",
+			GroupTemplate: "grouped: {{.Author}} {{.Count}}",
 		},
 	})
 
@@ -54,6 +56,7 @@ func TestResolveCommitConfig_CustomValues(t *testing.T) {
 	assert.Equal(t, "audit@example.com", config.Committer.Email)
 	assert.Equal(t, "audit: {{.Operation}} {{.Name}}", config.Message.Template)
 	assert.Equal(t, "snapshot: {{.Count}} {{.GitTarget}}", config.Message.BatchTemplate)
+	assert.Equal(t, "grouped: {{.Author}} {{.Count}}", config.Message.GroupTemplate)
 }
 
 func TestValidateCommitConfig_InvalidTemplate(t *testing.T) {
@@ -66,6 +69,18 @@ func TestValidateCommitConfig_InvalidTemplate(t *testing.T) {
 	err := ValidateCommitConfig(config)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "parse event commit template")
+}
+
+func TestValidateCommitConfig_InvalidGroupTemplate(t *testing.T) {
+	config := ResolveCommitConfig(&v1alpha1.CommitSpec{
+		Message: &v1alpha1.CommitMessageSpec{
+			GroupTemplate: "{{.Author",
+		},
+	})
+
+	err := ValidateCommitConfig(config)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "parse group commit template")
 }
 
 func TestRenderEventCommitMessage_CustomTemplate(t *testing.T) {
@@ -98,6 +113,56 @@ func TestRenderBatchCommitMessage_DefaultTemplate(t *testing.T) {
 	}, ResolveCommitConfig(nil))
 	require.NoError(t, err)
 	assert.Equal(t, "reconcile: sync 2 resources", message)
+}
+
+func TestRenderGroupCommitMessage_CustomTemplate(t *testing.T) {
+	events := []Event{{
+		Operation: "UPDATE",
+		Identifier: types.ResourceIdentifier{
+			Group:     "apps",
+			Version:   "v1",
+			Resource:  "deployments",
+			Namespace: "prod",
+			Name:      "api",
+		},
+		UserInfo:           UserInfo{Username: "alice"},
+		GitTargetName:      "platform",
+		GitTargetNamespace: "default",
+	}}
+
+	groups := groupCommits(events)
+	require.Len(t, groups, 1)
+
+	message, err := renderGroupCommitMessage(groups[0], ResolveCommitConfig(&v1alpha1.CommitSpec{
+		Message: &v1alpha1.CommitMessageSpec{
+			GroupTemplate: "grouped({{.GitTarget}}): {{.Author}} changed {{.Count}} resource(s)",
+		},
+	}))
+	require.NoError(t, err)
+	assert.Equal(t, "grouped(platform): alice changed 1 resource(s)", message)
+}
+
+func TestRenderCommitMessageForGroup_SingleEventFallsBackToEventTemplate(t *testing.T) {
+	events := []Event{{
+		Operation: "CREATE",
+		Identifier: types.ResourceIdentifier{
+			Group:     "",
+			Version:   "v1",
+			Resource:  "configmaps",
+			Namespace: "default",
+			Name:      "demo",
+		},
+		UserInfo:           UserInfo{Username: "alice"},
+		GitTargetName:      "platform",
+		GitTargetNamespace: "default",
+	}}
+
+	groups := groupCommits(events)
+	require.Len(t, groups, 1)
+
+	message, err := renderCommitMessageForGroup(groups[0], ResolveCommitConfig(nil))
+	require.NoError(t, err)
+	assert.Equal(t, "[CREATE] v1/configmaps/demo", message)
 }
 
 func TestGetCommitMessage_CreateOperation(t *testing.T) {
