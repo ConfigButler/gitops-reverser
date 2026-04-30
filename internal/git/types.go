@@ -38,6 +38,12 @@ const (
 	DefaultCommitMessageTemplate = "[{{.Operation}}] {{.APIVersion}}/{{.Resource}}/{{.Name}}"
 	// DefaultBatchCommitMessageTemplate is the default atomic batch commit message shape.
 	DefaultBatchCommitMessageTemplate = "reconcile: sync {{.Count}} resources"
+	// DefaultGroupCommitMessageTemplate is the default message shape for grouped
+	// commits (one commit per (author, gitTarget) group from the commit-window
+	// batching pipeline).
+	DefaultGroupCommitMessageTemplate = "{{.Author}} on {{.GitTarget}}: {{.Count}} resource(s)"
+
+	resourceRefStringPartCap = 5
 )
 
 // CommitFile represents a single file to be committed.
@@ -107,6 +113,10 @@ const (
 	CommitModePerEvent CommitMode = "per_event"
 	// CommitModeAtomic creates one commit for all events in the request.
 	CommitModeAtomic CommitMode = "atomic"
+	// CommitModeGrouped creates one commit per (author, gitTarget) group from
+	// the commit-window batching pipeline. Multiple events for the same path
+	// inside a group collapse to the latest state. Used by BranchWorker.commitGroups.
+	CommitModeGrouped CommitMode = "grouped"
 )
 
 // WriteRequest is the unit of work queued and written by the BranchWorker.
@@ -172,10 +182,11 @@ type CommitterConfig struct {
 	Email string
 }
 
-// CommitMessageConfig contains the resolved per-event and batch templates.
+// CommitMessageConfig contains the resolved per-event, batch, and grouped templates.
 type CommitMessageConfig struct {
 	Template      string
 	BatchTemplate string
+	GroupTemplate string
 }
 
 // CommitMessageData is the template context for per-event commit messages.
@@ -197,6 +208,56 @@ type BatchCommitMessageData struct {
 	GitTarget string
 }
 
+// ResourceRef is the lightweight resource identifier emitted to grouped commit
+// templates via GroupedCommitMessageData.Resources.
+type ResourceRef struct {
+	Group     string
+	Version   string
+	Resource  string
+	Namespace string
+	Name      string
+}
+
+// String renders the ref as group/version/resource[/namespace]/name.
+// The format mirrors ResourceIdentifier.String for templates that want to
+// {{range}} over Resources and just print each entry.
+func (r ResourceRef) String() string {
+	parts := make([]string, 0, resourceRefStringPartCap)
+	if r.Group != "" {
+		parts = append(parts, r.Group)
+	}
+	if r.Version != "" {
+		parts = append(parts, r.Version)
+	}
+	if r.Resource != "" {
+		parts = append(parts, r.Resource)
+	}
+	if r.Namespace != "" {
+		parts = append(parts, r.Namespace)
+	}
+	if r.Name != "" {
+		parts = append(parts, r.Name)
+	}
+	return strings.Join(parts, "/")
+}
+
+// GroupedCommitMessageData is the template context for grouped commit
+// messages. Each grouped commit covers exactly one (author, gitTarget) tuple
+// (see docs/design/commit-window-batching-design.md → Grouping key).
+type GroupedCommitMessageData struct {
+	// Author is the verbatim event.UserInfo.Username for the group.
+	Author string
+	// GitTarget is the single target this commit is bound to.
+	GitTarget string
+	// Count is the number of distinct resources committed.
+	Count int
+	// Operations counts events by operation kind (CREATE/UPDATE/DELETE).
+	Operations map[string]int
+	// Resources is the per-resource list, deduplicated by file path so the
+	// final state is what's being committed.
+	Resources []ResourceRef
+}
+
 // ResolveCommitConfig resolves API commit settings into runtime defaults.
 func ResolveCommitConfig(spec *v1alpha1.CommitSpec) CommitConfig {
 	config := CommitConfig{
@@ -207,6 +268,7 @@ func ResolveCommitConfig(spec *v1alpha1.CommitSpec) CommitConfig {
 		Message: CommitMessageConfig{
 			Template:      DefaultCommitMessageTemplate,
 			BatchTemplate: DefaultBatchCommitMessageTemplate,
+			GroupTemplate: DefaultGroupCommitMessageTemplate,
 		},
 	}
 
@@ -229,6 +291,9 @@ func ResolveCommitConfig(spec *v1alpha1.CommitSpec) CommitConfig {
 		}
 		if batchTemplate := strings.TrimSpace(spec.Message.BatchTemplate); batchTemplate != "" {
 			config.Message.BatchTemplate = batchTemplate
+		}
+		if groupTemplate := strings.TrimSpace(spec.Message.GroupTemplate); groupTemplate != "" {
+			config.Message.GroupTemplate = groupTemplate
 		}
 	}
 

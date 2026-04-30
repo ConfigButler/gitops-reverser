@@ -106,9 +106,6 @@ type BranchWorker struct {
 	// the conflict path and replay from unpushedEvents.
 	// Cleared after a successful push. Protected by repoMu.
 	pushCycleRootHash plumbing.Hash
-	// pushCycleRootBranch is the matching branch reference for
-	// pushCycleRootHash. Cleared after a successful push. Protected by repoMu.
-	pushCycleRootBranch plumbing.ReferenceName
 }
 
 // NewBranchWorker creates a worker for a (provider, branch) combination.
@@ -613,8 +610,8 @@ func (l *branchWorkerEventLoop) commitBufferedEvents() {
 		return
 	}
 
-	hasPending := len(l.unpushedEvents) > 0
-	if err := l.w.commitGroups(l.buffer, hasPending); err != nil {
+	hasUnpushedCommits := len(l.unpushedEvents) > 0
+	if err := l.w.commitGroups(l.buffer, hasUnpushedCommits); err != nil {
 		l.w.Log.Error(err, "Commit failed; dropping buffered events", "events", len(l.buffer))
 		l.buffer = nil
 		l.bufferBytes = 0
@@ -697,15 +694,20 @@ func (l *branchWorkerEventLoop) stopTimers() {
 }
 
 // commitGroups writes the events as local commits without pushing. When
-// hasPending is false (no commits accumulated from a prior commit in this push
+// hasUnpushedCommits is false (no commits accumulated from a prior commit in this push
 // cycle), it first calls PrepareBranch to fetch and reset to the remote tip,
-// recording the rootHash for a later push. When hasPending is true the local
+// recording the rootHash for a later push. When hasUnpushedCommits is true the local
 // branch already carries unpushed commits, so we must NOT reset — we commit on
 // top of the existing local HEAD.
 //
+// Internally the buffer is run through groupCommits to produce one local
+// commit per (author, gitTarget) group. Each group is committed with its own
+// target's encryption configuration so per-target boundaries are preserved
+// (see docs/design/commit-window-batching-design.md → Per-target boundary).
+//
 // On success the events should be appended to the loop's unpushedEvents
 // retention by the caller; on failure the caller drops the buffered events.
-func (w *BranchWorker) commitGroups(events []Event, hasPending bool) error {
+func (w *BranchWorker) commitGroups(events []Event, hasUnpushedCommits bool) error {
 	w.repoMu.Lock()
 	defer w.repoMu.Unlock()
 
@@ -713,9 +715,14 @@ func (w *BranchWorker) commitGroups(events []Event, hasPending bool) error {
 		return nil
 	}
 
-	request := newPerEventWriteRequest(events)
-	log := w.Log.WithValues("eventCount", len(events), "commitMode", request.CommitMode)
-	log.V(1).Info("commitGroups: writing local commits", "branch", w.Branch, "hasPending", hasPending)
+	log := w.Log.WithValues("eventCount", len(events))
+	log.V(1).Info(
+		"commitGroups: writing local commits",
+		"branch",
+		w.Branch,
+		"hasUnpushedCommits",
+		hasUnpushedCommits,
+	)
 
 	provider, err := w.getGitProvider(w.ctx)
 	if err != nil {
@@ -729,7 +736,7 @@ func (w *BranchWorker) commitGroups(events []Event, hasPending bool) error {
 
 	repoPath := w.repoPathForRemote(provider.Spec.URL)
 
-	if !hasPending {
+	if !hasUnpushedCommits {
 		// First commit of a push cycle: sync with remote so the new commits
 		// are based on the latest remote tip.
 		pullReport, err := PrepareBranch(w.ctx, provider.Spec.URL, repoPath, w.Branch, auth)
@@ -738,38 +745,124 @@ func (w *BranchWorker) commitGroups(events []Event, hasPending bool) error {
 		}
 		w.updateBranchMetadataFromPullReport(pullReport)
 		w.pushCycleRootHash = plumbing.ZeroHash
-		w.pushCycleRootBranch = ""
 	}
 
-	preparedRequest, encryptionConfig, err := w.prepareWriteRequest(w.ctx, request, provider)
+	// Per-event resolution sets GitTargetName/Namespace, Path, and
+	// BootstrapOptions on every event. After this, grouping (which keys on
+	// author + gitTarget) and per-group encryption resolution work cleanly.
+	preparedRequest := newPerEventWriteRequest(events)
+	preparedRequest, _, err = w.prepareWriteRequest(w.ctx, preparedRequest, provider)
 	if err != nil {
 		return fmt.Errorf("prepare write request: %w", err)
 	}
 	preparedRequest.Signer = signer
-
-	encryptionWorkDir := filepath.Join(repoPath, requestEncryptionPath(preparedRequest))
-	if err := configureSecretEncryptionWriter(w.contentWriter, encryptionWorkDir, encryptionConfig); err != nil {
-		return fmt.Errorf("configure secret encryptor: %w", err)
-	}
+	preparedRequest.CommitMode = CommitModeGrouped
 
 	repo, err := gogit.PlainOpen(repoPath)
 	if err != nil {
 		return fmt.Errorf("open repository: %w", err)
 	}
 
-	preCommitHash, _, err := CommitWriteRequestNoPush(w.ctx, w.contentWriter, repo, preparedRequest, w.Branch)
+	preCommitHash, err := w.applyGroupedCommits(repo, repoPath, preparedRequest, signer)
 	if err != nil {
-		return fmt.Errorf("commit write request: %w", err)
+		return err
 	}
 
-	if !hasPending {
+	if !hasUnpushedCommits {
 		// Record the rootHash so the eventual push can detect remote drift.
 		w.pushCycleRootHash = preCommitHash
-		w.pushCycleRootBranch = plumbing.NewBranchReferenceName(w.Branch)
 	}
 
 	w.recordWriteMetrics(preparedRequest)
 	return nil
+}
+
+// applyGroupedCommits runs groupCommits over the prepared events and writes
+// one local commit per group. Encryption is reconfigured per group so a
+// burst that crosses GitTargets keeps each group bound to its own SOPS
+// recipients (the current request-level encryption plumbing assumes one
+// target per write).
+//
+// Returns the preCommitHash of the very first group's commit — the rootHash
+// the BranchWorker uses to validate the eventual push against the remote.
+func (w *BranchWorker) applyGroupedCommits(
+	repo *gogit.Repository,
+	repoPath string,
+	preparedRequest *WriteRequest,
+	signer gogit.Signer,
+) (plumbing.Hash, error) {
+	groups := groupCommits(preparedRequest.Events)
+	if len(groups) == 0 {
+		return plumbing.ZeroHash, nil
+	}
+
+	var firstPreCommitHash plumbing.Hash
+	for i, g := range groups {
+		groupEvents := g.orderedEvents()
+
+		encryptionConfig, err := w.resolveGroupEncryption(w.ctx, g)
+		if err != nil {
+			return plumbing.ZeroHash, fmt.Errorf("resolve group encryption: %w", err)
+		}
+
+		encryptionWorkDir := filepath.Join(repoPath, sanitizePath(groupTargetPath(groupEvents)))
+		if err := configureSecretEncryptionWriter(
+			w.contentWriter,
+			encryptionWorkDir,
+			encryptionConfig,
+		); err != nil {
+			return plumbing.ZeroHash, fmt.Errorf("configure secret encryptor for group: %w", err)
+		}
+
+		subRequest := &WriteRequest{
+			Events:             groupEvents,
+			CommitMode:         CommitModeGrouped,
+			CommitConfig:       preparedRequest.CommitConfig,
+			Signer:             signer,
+			GitTargetName:      g.GitTarget,
+			GitTargetNamespace: g.GitTargetNamespace,
+		}
+
+		preCommitHash, _, err := CommitWriteRequestNoPush(w.ctx, w.contentWriter, repo, subRequest, w.Branch)
+		if err != nil {
+			return plumbing.ZeroHash, fmt.Errorf("commit grouped request: %w", err)
+		}
+		if i == 0 {
+			firstPreCommitHash = preCommitHash
+		}
+	}
+	return firstPreCommitHash, nil
+}
+
+// resolveGroupEncryption returns the encryption config for the group's
+// (target, namespace). All events in a group share the same target.
+func (w *BranchWorker) resolveGroupEncryption(
+	ctx context.Context,
+	g *commitGroup,
+) (*ResolvedEncryptionConfig, error) {
+	if g.GitTarget == "" || g.GitTargetNamespace == "" {
+		return nil, nil //nolint:nilnil // unscoped events legitimately have no target encryption
+	}
+	targetKey := types.NamespacedName{
+		Name:      g.GitTarget,
+		Namespace: g.GitTargetNamespace,
+	}
+	var target configv1alpha1.GitTarget
+	if err := w.Client.Get(ctx, targetKey, &target); err != nil {
+		return nil, fmt.Errorf("get GitTarget %s: %w", targetKey, err)
+	}
+	return ResolveTargetEncryption(ctx, w.Client, &target)
+}
+
+// groupTargetPath returns the path subtree rooted by the group's events. All
+// events in a group share a target, so the first event's Path is authoritative.
+func groupTargetPath(events []Event) string {
+	for _, e := range events {
+		if strings.TrimSpace(e.Path) != "" {
+			return e.Path
+		}
+	}
+	return ""
 }
 
 // pushPendingCommits publishes any local commits that have not yet reached the
@@ -805,30 +898,18 @@ func (w *BranchWorker) pushPendingCommits(unpushedEvents []Event) error {
 
 	rebuild := func(repo *gogit.Repository) (plumbing.Hash, error) {
 		// After a fetch+reset to the remote tip, re-apply every retained event
-		// as a fresh local commit on top of the new tip.
+		// as fresh local commits — using the same grouped path as commitGroups
+		// so the replayed history matches what would have been produced on the
+		// happy path.
 		replayRequest := newPerEventWriteRequest(unpushedEvents)
-		preparedReplay, encryptionConfig, err := w.prepareWriteRequest(w.ctx, replayRequest, provider)
+		preparedReplay, _, err := w.prepareWriteRequest(w.ctx, replayRequest, provider)
 		if err != nil {
 			return plumbing.ZeroHash, fmt.Errorf("prepare replay request: %w", err)
 		}
 		preparedReplay.Signer = signer
+		preparedReplay.CommitMode = CommitModeGrouped
 
-		encryptionWorkDir := filepath.Join(repoPath, requestEncryptionPath(preparedReplay))
-		if err := configureSecretEncryptionWriter(
-			w.contentWriter,
-			encryptionWorkDir,
-			encryptionConfig,
-		); err != nil {
-			return plumbing.ZeroHash, fmt.Errorf("configure secret encryptor on replay: %w", err)
-		}
-
-		preCommitHash, _, err := CommitWriteRequestNoPush(
-			w.ctx,
-			w.contentWriter,
-			repo,
-			preparedReplay,
-			w.Branch,
-		)
+		preCommitHash, err := w.applyGroupedCommits(repo, repoPath, preparedReplay, signer)
 		if err != nil {
 			return plumbing.ZeroHash, fmt.Errorf("regenerate commits on replay: %w", err)
 		}
@@ -847,7 +928,6 @@ func (w *BranchWorker) pushPendingCommits(unpushedEvents []Event) error {
 	}
 
 	w.pushCycleRootHash = plumbing.ZeroHash
-	w.pushCycleRootBranch = ""
 	return nil
 }
 
