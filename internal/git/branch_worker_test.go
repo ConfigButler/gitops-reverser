@@ -63,6 +63,26 @@ func setupBranchWorkerTest() (*BranchWorker, func()) {
 	return worker, cleanup
 }
 
+func commitAndPushWriteRequestForTest(worker *BranchWorker, request *WriteRequest) error {
+	var (
+		pendingWrite *PendingWrite
+		err          error
+	)
+
+	if request != nil && request.CommitMode == CommitModeAtomic {
+		pendingWrite, err = worker.buildAtomicPendingWrite(worker.ctx, request)
+	} else {
+		pendingWrite, err = worker.buildGroupedPendingWrite(worker.ctx, request.Events)
+	}
+	if err != nil {
+		return err
+	}
+	if err := worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false); err != nil {
+		return err
+	}
+	return worker.pushPendingCommits([]PendingWrite{*pendingWrite})
+}
+
 func TestRepoCacheKey_DeterministicAndDistinct(t *testing.T) {
 	a := repoCacheKey("https://example.com/foo.git")
 	b := repoCacheKey("https://example.com/foo.git")
@@ -709,7 +729,7 @@ func TestBranchWorker_CommitAndPushRequest_PreparesRepositoryBeforeFirstWrite(t 
 		CommitMode: CommitModePerEvent,
 	}
 
-	worker.commitAndPushRequest(request)
+	require.NoError(t, commitAndPushWriteRequestForTest(worker, request))
 
 	localRepoPath := worker.repoPathForRemote(remoteURL)
 	localRepo, err := git.PlainOpen(localRepoPath)
@@ -816,7 +836,7 @@ func TestBranchWorker_CommitAndPushRequest_NewBranchStartsFromLatestMain(t *test
 		CommitMode: CommitModePerEvent,
 	}
 
-	worker.commitAndPushRequest(request)
+	require.NoError(t, commitAndPushWriteRequestForTest(worker, request))
 
 	remoteMainRef, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
 	require.NoError(t, err)
@@ -926,7 +946,7 @@ func TestBranchWorker_CommitAndPushRequest_UsesProviderCommitConfiguration(t *te
 		CommitMode: CommitModePerEvent,
 	}
 
-	worker.commitAndPushRequest(request)
+	require.NoError(t, commitAndPushWriteRequestForTest(worker, request))
 
 	remoteHeadRef, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
 	require.NoError(t, err)
@@ -1029,7 +1049,7 @@ func TestBranchWorker_CommitAndPushRequest_UsesBatchTemplateForAtomicRequest(t *
 		GitTargetName: "demo-target",
 	}
 
-	worker.commitAndPushRequest(request)
+	require.NoError(t, commitAndPushWriteRequestForTest(worker, request))
 
 	remoteHeadRef, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
 	require.NoError(t, err)
@@ -1124,7 +1144,7 @@ func TestBranchWorker_CommitAndPushRequest_SignsCommitWhenConfigured(t *testing.
 		CommitMode: CommitModePerEvent,
 	}
 
-	worker.commitAndPushRequest(request)
+	require.NoError(t, commitAndPushWriteRequestForTest(worker, request))
 
 	remoteHeadRef, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
 	require.NoError(t, err)
@@ -1219,7 +1239,7 @@ func TestBranchWorker_CommitAndPushRequest_SkipsWriteWhenSigningSecretIsInvalid(
 		CommitMode: CommitModePerEvent,
 	}
 
-	worker.commitAndPushRequest(request)
+	_ = commitAndPushWriteRequestForTest(worker, request)
 
 	finalRef, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
 	require.NoError(t, err)

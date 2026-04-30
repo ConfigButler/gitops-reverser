@@ -28,7 +28,6 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
-	"time"
 
 	billyutil "github.com/go-git/go-billy/v5/util"
 	"github.com/go-git/go-git/v5"
@@ -199,36 +198,13 @@ func WriteEventsWithContentWriter(
 	targetBranchName string,
 	auth transport.AuthMethod,
 ) (*WriteEventsResult, error) {
-	return WriteRequestWithContentWriter(ctx, writer, repoPath, &WriteRequest{
-		Events:     append([]Event(nil), events...),
-		CommitMode: CommitModePerEvent,
-	}, targetBranchName, auth)
-}
-
-// WriteRequestWithContentWriter handles writes through a single request-based implementation.
-func WriteRequestWithContentWriter(
-	ctx context.Context,
-	writer eventContentWriter,
-	repoPath string,
-	request *WriteRequest,
-	targetBranchName string,
-	auth transport.AuthMethod,
-) (*WriteEventsResult, error) {
 	logger := log.FromContext(ctx)
-	if request == nil {
-		return nil, errors.New("write request is required")
-	}
-	if request.CommitMode == "" {
-		request.CommitMode = CommitModePerEvent
-	}
 	logger.Info(
-		"Starting write request operation",
+		"Starting write events operation",
 		"path",
 		repoPath,
 		"events",
-		len(request.Events),
-		"commitMode",
-		request.CommitMode,
+		len(events),
 	)
 	if writer == nil {
 		return nil, errors.New("content writer is required")
@@ -246,23 +222,18 @@ func WriteRequestWithContentWriter(
 		ConflictPulls:  []*PullReport{},
 		Failures:       0,
 	}
+	plan := buildPerEventCommitPlan(events)
 
 	const maxRetries = 3
-	for ; result.Failures < maxRetries; result.Failures++ {
-		// If this is not the first time: then we should be trying to resolve problems (most likely it's a new commit on the remote)
-		if result.Failures > 0 {
-			if err := tryResolve(ctx, logger, result, repo, targetBranch, auth); err != nil {
-				continue
-			}
-		}
-
-		done, err := tryWriteRequestAttempt(
+	for attempt := range maxRetries {
+		result.Failures = attempt
+		done, err := tryWriteEventsAttempt(
 			ctx,
 			logger,
-			writer,
 			result,
+			writer,
 			repo,
-			request,
+			plan,
 			targetBranch,
 			targetBranchName,
 			auth,
@@ -271,120 +242,30 @@ func WriteRequestWithContentWriter(
 			return nil, err
 		}
 		if done {
-			break
+			return result, nil
+		}
+
+		logger.Info("Push attempt failed, syncing and retrying", "attempt", attempt)
+		pullReport, syncErr := syncToRemote(ctx, repo, targetBranch, auth)
+		if pullReport != nil {
+			result.ConflictPulls = append(result.ConflictPulls, pullReport)
+			result.LastHash = pullReport.HEAD.Sha
+		}
+		if syncErr != nil {
+			continue
 		}
 	}
 
 	return result, nil
 }
 
-// CommitWriteRequestNoPush opens the repository, switches to the target branch
-// (creating it if needed), and writes the request's events as local commits
-// without pushing. Returns the hash the branch was at before any commits — the
-// rootHash that should be passed to a later PushAtomic so it can detect remote
-// drift.
-//
-// Used by BranchWorker.commitGroups to accumulate local commits across the
-// commit-window without releasing them to the remote each time. A successful
-// push is the only thing that clears the matching unpushedEvents retention
-// (see [docs/design/commit-window-batching-design.md]).
-func CommitWriteRequestNoPush(
-	ctx context.Context,
-	writer eventContentWriter,
-	repo *git.Repository,
-	request *WriteRequest,
-	targetBranchName string,
-) (plumbing.Hash, int, error) {
-	if request == nil {
-		return plumbing.ZeroHash, 0, errors.New("write request is required")
-	}
-	if writer == nil {
-		return plumbing.ZeroHash, 0, errors.New("content writer is required")
-	}
-	if request.CommitMode == "" {
-		request.CommitMode = CommitModePerEvent
-	}
-
-	logger := log.FromContext(ctx)
-	targetBranch := plumbing.NewBranchReferenceName(targetBranchName)
-
-	baseBranch, baseHash, err := GetCurrentBranch(repo)
-	if err != nil {
-		return plumbing.ZeroHash, 0, err
-	}
-
-	if baseBranch != targetBranch {
-		if err := switchOrCreateBranch(repo, targetBranch, logger, targetBranchName, baseHash); err != nil {
-			return plumbing.ZeroHash, 0, err
-		}
-	}
-
-	commitsCreated, _, err := generateCommitsFromRequest(ctx, writer, repo, request)
-	if err != nil {
-		return plumbing.ZeroHash, 0, fmt.Errorf("failed to generate commits: %w", err)
-	}
-
-	return baseHash, commitsCreated, nil
-}
-
-// PushPendingWithReplay pushes the current branch HEAD to the remote, expecting
-// rootBranch on the remote to still be at rootHash. On a non-fast-forward
-// rejection, it fetches and resets to the new remote tip, calls rebuild() to
-// re-apply pending events as fresh commits on top of that tip, and retries.
-//
-// rebuild is invoked after each successful syncToRemote and must regenerate
-// the commits that previously existed locally (sourced from the BranchWorker's
-// retained unpushedEvents). It returns the new rootHash to use for the next
-// push attempt — the tip of the target branch on the remote, before the
-// replayed commits land.
-//
-// Returns nil on a successful push. Returns an error if every retry attempt
-// fails; the caller is expected to keep its unpushedEvents retention intact and
-// retry on a later cycle.
-func PushPendingWithReplay(
-	ctx context.Context,
-	repo *git.Repository,
-	targetBranchName string,
-	auth transport.AuthMethod,
-	rootHash plumbing.Hash,
-	rebuild func(*git.Repository) (plumbing.Hash, error),
-) error {
-	logger := log.FromContext(ctx)
-	targetBranch := plumbing.NewBranchReferenceName(targetBranchName)
-
-	const maxRetries = 3
-	var lastErr error
-	for attempt := range maxRetries {
-		err := PushAtomic(ctx, repo, rootHash, targetBranch, auth)
-		if err == nil {
-			return nil
-		}
-		logger.Info("Push attempt failed, will try replay", "attempt", attempt, "error", err)
-		lastErr = err
-
-		// Conflict path: fetch + reset to remote, re-apply unpushedEvents,
-		// retry the push.
-		if _, err := syncToRemote(ctx, repo, targetBranch, auth); err != nil {
-			return fmt.Errorf("failed to sync remote during replay: %w", err)
-		}
-
-		newRootHash, err := rebuild(repo)
-		if err != nil {
-			return fmt.Errorf("failed to rebuild commits during replay: %w", err)
-		}
-		rootHash = newRootHash
-	}
-
-	return fmt.Errorf("push failed after %d attempts: %w", maxRetries, lastErr)
-}
-
-func tryWriteRequestAttempt(
+func tryWriteEventsAttempt(
 	ctx context.Context,
 	logger logr.Logger,
-	writer eventContentWriter,
 	result *WriteEventsResult,
+	writer eventContentWriter,
 	repo *git.Repository,
-	request *WriteRequest,
+	plan CommitPlan,
 	targetBranch plumbing.ReferenceName,
 	targetBranchName string,
 	auth transport.AuthMethod,
@@ -400,14 +281,17 @@ func tryWriteRequestAttempt(
 		}
 	}
 
-	commitsCreated, lastHash, err := generateCommitsFromRequest(ctx, writer, repo, request)
+	commitsCreated, err := executeCommitPlanWithWriter(ctx, writer, repo, plan)
 	if err != nil {
-		return false, fmt.Errorf("failed to generate commits: %w", err)
+		return false, fmt.Errorf("execute write plan: %w", err)
 	}
 
-	// You never know what is pushed on origin: perhaps we now have a working copy that exactly is like it should be (todo: create a nice test)
 	result.CommitsCreated = commitsCreated
-	result.LastHash = printSha(lastHash)
+	result.LastHash, err = currentHeadHash(repo)
+	if err != nil {
+		return false, err
+	}
+
 	if commitsCreated == 0 {
 		logger.Info("No commits created, no need to push it")
 		return true, nil
@@ -421,26 +305,102 @@ func tryWriteRequestAttempt(
 	return false, nil
 }
 
-func tryResolve(
+func executeCommitPlanWithWriter(
 	ctx context.Context,
-	logger logr.Logger,
-	result *WriteEventsResult,
+	writer eventContentWriter,
 	repo *git.Repository,
-	targetBranch plumbing.ReferenceName,
-	auth transport.AuthMethod,
-) error {
-	logger.Info(
-		"Previous attempt failed, starting new attempt",
-		"failures",
-		result.Failures,
-	)
-	pullReport, err := syncToRemote(ctx, repo, targetBranch, auth)
-	if pullReport != nil {
-		result.ConflictPulls = append(result.ConflictPulls, pullReport)
-		result.LastHash = pullReport.HEAD.Sha
+	plan CommitPlan,
+) (int, error) {
+	worktree, err := repo.Worktree()
+	if err != nil {
+		return 0, fmt.Errorf("failed to get worktree: %w", err)
 	}
 
-	return err
+	commitsCreated := 0
+	for _, unit := range plan.Units {
+		created, err := executeCommitUnitWithWriter(ctx, writer, repo, worktree, unit)
+		if err != nil {
+			return commitsCreated, err
+		}
+		commitsCreated += created
+	}
+
+	return commitsCreated, nil
+}
+
+func executeCommitUnitWithWriter(
+	ctx context.Context,
+	writer eventContentWriter,
+	repo *git.Repository,
+	worktree *git.Worktree,
+	unit CommitUnit,
+) (int, error) {
+	if len(unit.Events) == 0 {
+		return 0, nil
+	}
+
+	anyChanges := false
+	for _, event := range unit.Events {
+		if err := ensureBootstrapTemplateInPath(repo, sanitizePath(event.Path), event.BootstrapOptions); err != nil {
+			return 0, err
+		}
+
+		changesApplied, err := applyEventToWorktree(ctx, writer, worktree, event)
+		if err != nil {
+			return 0, err
+		}
+		if changesApplied {
+			anyChanges = true
+		}
+	}
+	if !anyChanges {
+		return 0, nil
+	}
+
+	commitMessage, commitOptions, err := unit.commitMetadata()
+	if err != nil {
+		return 0, err
+	}
+
+	if _, err := worktree.Commit(commitMessage, commitOptions); err != nil {
+		return 0, fmt.Errorf("failed to create commit: %w", err)
+	}
+
+	log.FromContext(ctx).Info(
+		"git commit created",
+		"messageKind",
+		unit.MessageKind,
+		"events",
+		len(unit.Events),
+		"message",
+		commitMessage,
+	)
+
+	return 1, nil
+}
+
+func buildPerEventCommitPlan(events []Event) CommitPlan {
+	units := make([]CommitUnit, 0, len(events))
+	commitConfig := ResolveCommitConfig(nil)
+	for _, event := range events {
+		units = append(units, CommitUnit{
+			Events:       []Event{event},
+			MessageKind:  CommitMessagePerEvent,
+			CommitConfig: commitConfig,
+		})
+	}
+	return CommitPlan{Units: units}
+}
+
+func currentHeadHash(repo *git.Repository) (string, error) {
+	headRef, err := repo.Head()
+	if err != nil {
+		if errors.Is(err, plumbing.ErrReferenceNotFound) {
+			return "", nil
+		}
+		return "", err
+	}
+	return printSha(headRef.Hash()), nil
 }
 
 func switchOrCreateBranch(
@@ -844,224 +804,6 @@ func setHead(r *git.Repository, branchName string) error {
 	return r.Storer.SetReference(newHeadRef)
 }
 
-// generateCommitsFromRequest creates commits from the provided write request.
-func generateCommitsFromRequest(
-	ctx context.Context,
-	writer eventContentWriter,
-	repo *git.Repository,
-	request *WriteRequest,
-) (int, plumbing.Hash, error) {
-	if request == nil {
-		return 0, plumbing.ZeroHash, errors.New("write request is required")
-	}
-	if request.CommitMode == "" {
-		request.CommitMode = CommitModePerEvent
-	}
-	switch request.CommitMode {
-	case CommitModePerEvent:
-		return generatePerEventCommits(ctx, writer, repo, request)
-	case CommitModeAtomic:
-		return generateAtomicCommit(ctx, writer, repo, request)
-	case CommitModeGrouped:
-		return generateGroupedCommits(ctx, writer, repo, request)
-	}
-
-	return 0, plumbing.ZeroHash, fmt.Errorf("unsupported commit mode %q", request.CommitMode)
-}
-
-// generateGroupedCommits writes one commit per (author, gitTarget) group from
-// the request's events. Multiple events at the same path inside a group
-// collapse to the latest state — see commit_groups.go for the grouping rules.
-//
-// Author attribution mirrors per-event commits (via commitOptionsForGroup);
-// the commit message is rendered through the group template
-// (CommitMessageConfig.GroupTemplate).
-func generateGroupedCommits(
-	ctx context.Context,
-	writer eventContentWriter,
-	repo *git.Repository,
-	request *WriteRequest,
-) (int, plumbing.Hash, error) {
-	worktree, err := repo.Worktree()
-	if err != nil {
-		return 0, plumbing.ZeroHash, fmt.Errorf("failed to get worktree: %w", err)
-	}
-
-	commitConfig := resolveWriteRequestCommitConfig(request)
-	groups := groupCommits(request.Events)
-
-	commitsCreated := 0
-	lastHash := plumbing.ZeroHash
-	for _, g := range groups {
-		hash, created, err := commitSingleGroup(ctx, writer, repo, worktree, g, commitConfig, request.Signer)
-		if err != nil {
-			return commitsCreated, lastHash, err
-		}
-		if !created {
-			continue
-		}
-		commitsCreated++
-		lastHash = hash
-	}
-
-	return commitsCreated, lastHash, nil
-}
-
-func commitSingleGroup(
-	ctx context.Context,
-	writer eventContentWriter,
-	repo *git.Repository,
-	worktree *git.Worktree,
-	group *commitGroup,
-	commitConfig CommitConfig,
-	signer git.Signer,
-) (plumbing.Hash, bool, error) {
-	logger := log.FromContext(ctx)
-	groupEvents := group.orderedEvents()
-	if len(groupEvents) == 0 {
-		return plumbing.ZeroHash, false, nil
-	}
-
-	// Stage every path in the group BEFORE committing so the commit reflects
-	// the net effect of the burst.
-	anyChanges, err := applyGroupEventsToWorktree(ctx, writer, repo, worktree, groupEvents)
-	if err != nil {
-		return plumbing.ZeroHash, false, err
-	}
-	if !anyChanges {
-		return plumbing.ZeroHash, false, nil
-	}
-
-	message, err := renderCommitMessageForGroup(group, commitConfig)
-	if err != nil {
-		return plumbing.ZeroHash, false, err
-	}
-	when := time.Now()
-	hash, err := worktree.Commit(message, commitOptionsForGroup(group, commitConfig, signer, when))
-	if err != nil {
-		return plumbing.ZeroHash, false, fmt.Errorf("failed to create grouped commit: %w", err)
-	}
-
-	logger.Info("Created grouped commit",
-		"author", group.Author,
-		"gitTarget", group.GitTarget,
-		"resources", len(groupEvents),
-		"message", message,
-	)
-
-	return hash, true, nil
-}
-
-func applyGroupEventsToWorktree(
-	ctx context.Context,
-	writer eventContentWriter,
-	repo *git.Repository,
-	worktree *git.Worktree,
-	events []Event,
-) (bool, error) {
-	anyChanges := false
-	for _, ev := range events {
-		if err := ensureBootstrapTemplateInPath(repo, sanitizePath(ev.Path), ev.BootstrapOptions); err != nil {
-			return false, err
-		}
-		changesApplied, err := applyEventToWorktree(ctx, writer, worktree, ev)
-		if err != nil {
-			return false, err
-		}
-		if changesApplied {
-			anyChanges = true
-		}
-	}
-	return anyChanges, nil
-}
-
-// generateAtomicCommit applies all events without committing after each, then creates a single commit.
-func generateAtomicCommit(
-	ctx context.Context,
-	writer eventContentWriter,
-	repo *git.Repository,
-	request *WriteRequest,
-) (int, plumbing.Hash, error) {
-	logger := log.FromContext(ctx)
-	worktree, err := repo.Worktree()
-	if err != nil {
-		return 0, plumbing.ZeroHash, fmt.Errorf("failed to get worktree: %w", err)
-	}
-	if err := ensureBootstrapTemplateInPath(repo, batchTargetPath(request), request.BootstrapOptions); err != nil {
-		return 0, plumbing.ZeroHash, err
-	}
-
-	anyChanges := false
-	for _, event := range request.Events {
-		changesApplied, err := applyEventToWorktree(ctx, writer, worktree, event)
-		if err != nil {
-			return 0, plumbing.ZeroHash, err
-		}
-		if changesApplied {
-			anyChanges = true
-		}
-	}
-
-	if !anyChanges {
-		return 0, plumbing.ZeroHash, nil
-	}
-
-	commitConfig := resolveWriteRequestCommitConfig(request)
-	commitMessage, err := renderBatchCommitMessage(request, commitConfig)
-	if err != nil {
-		return 0, plumbing.ZeroHash, err
-	}
-
-	when := time.Now()
-	hash, err := worktree.Commit(commitMessage, commitOptionsForBatch(commitConfig, request.Signer, when))
-	if err != nil {
-		return 0, plumbing.ZeroHash, fmt.Errorf("failed to create batch commit: %w", err)
-	}
-
-	logger.Info("Created atomic commit", "message", commitMessage, "events", len(request.Events))
-	return 1, hash, nil
-}
-
-// generatePerEventCommits creates one commit per event.
-func generatePerEventCommits(
-	ctx context.Context,
-	writer eventContentWriter,
-	repo *git.Repository,
-	request *WriteRequest,
-) (int, plumbing.Hash, error) {
-	logger := log.FromContext(ctx)
-	lastHash := plumbing.ZeroHash
-	worktree, err := repo.Worktree()
-	if err != nil {
-		return 0, lastHash, fmt.Errorf("failed to get worktree: %w", err)
-	}
-
-	events := request.Events
-	commitConfig := resolveWriteRequestCommitConfig(request)
-	commitsCreated := 0
-	for _, event := range events {
-		if err := ensureBootstrapTemplateInPath(repo, sanitizePath(event.Path), event.BootstrapOptions); err != nil {
-			return commitsCreated, lastHash, err
-		}
-
-		changesApplied, err := applyEventToWorktree(ctx, writer, worktree, event)
-		if err != nil {
-			return commitsCreated, lastHash, err
-		}
-
-		if changesApplied {
-			lastHash, err = createCommitForEvent(worktree, event, commitConfig, request.Signer)
-			if err != nil {
-				return commitsCreated, lastHash, err
-			}
-			commitsCreated++
-			logger.Info("Created commit", "operation", event.Operation, "resource", event.Identifier.String())
-		}
-	}
-
-	return commitsCreated, lastHash, nil
-}
-
 // applyEventToWorktree applies an event to the worktree, returning true if changes were made.
 func applyEventToWorktree(
 	ctx context.Context,
@@ -1211,18 +953,6 @@ func generateFilePath(id types.ResourceIdentifier) string {
 		return strings.TrimSuffix(defaultPath, ".yaml") + ".sops.yaml"
 	}
 	return defaultPath + ".sops.yaml"
-}
-
-func batchTargetPath(request *WriteRequest) string {
-	if request == nil {
-		return ""
-	}
-	for _, event := range request.Events {
-		if sanitized := sanitizePath(event.Path); sanitized != "" {
-			return sanitized
-		}
-	}
-	return ""
 }
 
 // initializeCleanRepository removes corrupted repos and initializes a fresh one.

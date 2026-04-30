@@ -31,9 +31,9 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
-// BatchEmitter emits a complete reconcile batch as a single unit.
-type BatchEmitter interface {
-	EmitReconcileBatch(request git.WriteRequest) error
+// WriteRequestEmitter emits a complete reconcile write request as a single unit.
+type WriteRequestEmitter interface {
+	EmitWriteRequest(request git.WriteRequest) error
 }
 
 // FolderReconciler reconciles Git base folder to match cluster state.
@@ -53,7 +53,7 @@ type FolderReconciler struct {
 	clusterObjects map[string]unstructured.Unstructured
 
 	// Dependencies for event emission
-	reconcileEmitter BatchEmitter
+	reconcileEmitter WriteRequestEmitter
 	controlEmitter   events.ControlEventEmitter
 	logger           logr.Logger
 
@@ -70,7 +70,7 @@ type SnapshotStats struct {
 // NewFolderReconciler creates a new FolderReconciler.
 func NewFolderReconciler(
 	gitDest types.ResourceReference,
-	reconcileEmitter BatchEmitter,
+	reconcileEmitter WriteRequestEmitter,
 	controlEmitter events.ControlEventEmitter,
 	logger logr.Logger,
 ) *FolderReconciler {
@@ -162,7 +162,7 @@ func (r *FolderReconciler) reconcile() {
 
 	total := len(toCreate) + len(toDelete) + len(existingInBoth)
 	if total == 0 {
-		r.logger.V(1).Info("No differences found, skipping batch emission")
+		r.logger.V(1).Info("No differences found, skipping write request emission")
 		return
 	}
 
@@ -201,8 +201,8 @@ func (r *FolderReconciler) reconcile() {
 		Events: batchEvents,
 	}
 
-	if err := r.reconcileEmitter.EmitReconcileBatch(request); err != nil {
-		r.logger.Error(err, "Failed to emit reconcile batch")
+	if err := r.reconcileEmitter.EmitWriteRequest(request); err != nil {
+		r.logger.Error(err, "Failed to emit reconcile write request")
 	}
 }
 

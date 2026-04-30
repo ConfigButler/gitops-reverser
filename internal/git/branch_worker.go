@@ -877,38 +877,6 @@ func (w *BranchWorker) rebuildPendingWrites(
 	return baseBranch, baseHash, nil
 }
 
-// commitAndPushAtomic is retained as the test-facing single-request entry
-// point, but now routes through the same retained pending-write lifecycle as
-// the worker event loop.
-func (w *BranchWorker) commitAndPushAtomic(request *WriteRequest) {
-	if request == nil || len(request.Events) == 0 {
-		return
-	}
-
-	pendingWrite, err := w.newPendingWriteFromRequest(w.ctx, request)
-	if err != nil {
-		w.Log.Error(err, "Failed to build pending write")
-		return
-	}
-
-	if err := w.commitPendingWrites([]PendingWrite{*pendingWrite}, false); err != nil {
-		w.Log.Error(err, "Failed to create local commits")
-		return
-	}
-
-	if err := w.pushPendingCommits([]PendingWrite{*pendingWrite}); err != nil {
-		w.Log.Error(err, "Failed to push pending write")
-		return
-	}
-}
-
-// commitAndPushRequest is retained as the test-facing entry point for write
-// requests that should be committed and pushed in one go. New per-event work
-// goes through commitGroups + pushPendingCommits instead.
-func (w *BranchWorker) commitAndPushRequest(request *WriteRequest) {
-	w.commitAndPushAtomic(request)
-}
-
 // estimateEventSize approximates the serialized YAML size for an event's object.
 func (w *BranchWorker) estimateEventSize(ev Event) int64 {
 	if ev.Object == nil {
@@ -926,16 +894,6 @@ func (w *BranchWorker) estimateEventsSize(events []Event) int64 {
 		total += w.estimateEventSize(event)
 	}
 	return total
-}
-
-func (w *BranchWorker) newPendingWriteFromRequest(ctx context.Context, request *WriteRequest) (*PendingWrite, error) {
-	if request == nil {
-		return nil, errors.New("write request is required")
-	}
-	if request.CommitMode == CommitModeAtomic {
-		return w.buildAtomicPendingWrite(ctx, request)
-	}
-	return w.buildGroupedPendingWrite(ctx, request.Events)
 }
 
 func (w *BranchWorker) getGitTarget(
