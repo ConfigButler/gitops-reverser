@@ -122,6 +122,14 @@ the pod's resource limits — not of the user's `GitProvider`
 configuration. Tying it to startup config rather than the CRD makes
 the "this is operational, not user-facing" framing explicit.
 
+`PushStrategy` lives on `GitProvider`, not on `GitTarget` or on some
+per-group sub-object, intentionally. Commit shaping is a property of
+the branch writer that owns the `(GitProvider, Branch)` remote ref:
+the buffer, flush timing, conflict replay, and push cooldown all live
+there. That also matches the user-facing mental model. The question is
+"how should writes to this provider/branch be shaped in Git?", not
+"how should this individual resource queue itself?".
+
 ### Caveat: replay can change commit boundaries
 
 Setting `commitWindow: "0s"` produces per-event commits *in the
@@ -518,12 +526,30 @@ so there is no runaway cost.
 The other design option is to maintain a queue per `(author)` and flush each
 queue when its own `commitWindow` expires.
 
-That approach is simpler to describe but breaks the *last-writer-wins on a
-shared file* property below. If Alice and Bob both touch ConfigMap `X`,
-their per-author queues can flush in either order depending on which
-window expires first, which is not the order events arrived in. To preserve
-ordering, the per-queue model would need a cross-queue serialisation lock
-that effectively re-introduces the single buffer.
+That approach is simpler to describe, and it is often the first idea
+people reach for, but it optimizes the wrong thing. The dominant
+constraint in this project is preserving branch arrival order. We are
+turning cluster activity into configuration history, and that history
+should stay boring and predictable. If Alice and Bob both touch
+ConfigMap `X`, their per-author queues can flush in either order
+depending on which window expires first, which is not the order events
+arrived in. That breaks the *last-writer-wins on a shared file*
+property below.
+
+To preserve ordering, the per-queue model would need a cross-queue
+serialisation lock, plus a rule for which queue is allowed to flush
+next. At that point the "many queues" design has reintroduced a single
+global ordering point and most of the complexity of the single buffer,
+without its clarity.
+
+Just as importantly, we do not expect these cross-author races to be
+the steady-state hot path. This project exists for configuration
+management, where the normal case is that one logical rollout, apply,
+or sync wave produces a short burst of related writes. Concurrent
+interleavings from multiple actors touching the same files do happen,
+and the design must be correct when they do, but they are not common
+enough to justify a more elaborate queue topology that weakens the
+ordering story.
 
 Single buffer + linear grouping at flush time costs us almost nothing
 (the buffer was already there) and gives us arrival-order correctness for
