@@ -132,11 +132,14 @@ func TestRenderGroupCommitMessage_CustomTemplate(t *testing.T) {
 		GitTargetNamespace: "default",
 	}}
 
-	message, err := renderGroupCommitMessage(CommitUnit{
-		Events:      events,
-		GroupAuthor: "alice",
-		Target: ResolvedTargetMetadata{
-			Name: "platform",
+	message, err := renderGroupCommitMessage(PendingWrite{
+		Kind:   PendingWriteCommit,
+		Events: events,
+		Targets: map[pendingTargetKey]ResolvedTargetMetadata{
+			{Name: "platform", Namespace: "default"}: {
+				Name:      "platform",
+				Namespace: "default",
+			},
 		},
 	}, ResolveCommitConfig(&v1alpha1.CommitSpec{
 		Message: &v1alpha1.CommitMessageSpec{

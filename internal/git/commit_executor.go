@@ -29,7 +29,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
-func (w *BranchWorker) executeCommitPlan(ctx context.Context, repo *gogit.Repository, plan CommitPlan) (int, error) {
+func (w *BranchWorker) executePendingWrites(
+	ctx context.Context,
+	repo *gogit.Repository,
+	pendingWrites []PendingWrite,
+) (int, error) {
 	worktree, err := repo.Worktree()
 	if err != nil {
 		return 0, fmt.Errorf("failed to get worktree: %w", err)
@@ -37,8 +41,8 @@ func (w *BranchWorker) executeCommitPlan(ctx context.Context, repo *gogit.Reposi
 
 	commitsCreated := 0
 
-	for _, unit := range plan.Units {
-		created, err := w.executeCommitUnit(ctx, repo, worktree, unit)
+	for _, pendingWrite := range pendingWrites {
+		created, err := w.executePendingWrite(ctx, repo, worktree, pendingWrite)
 		if err != nil {
 			return commitsCreated, err
 		}
@@ -48,11 +52,11 @@ func (w *BranchWorker) executeCommitPlan(ctx context.Context, repo *gogit.Reposi
 	return commitsCreated, nil
 }
 
-func (u CommitUnit) path() string {
-	if u.Target.Path != "" {
-		return u.Target.Path
+func (p PendingWrite) path() string {
+	if targetPath := p.Target().Path; targetPath != "" {
+		return targetPath
 	}
-	for _, event := range u.Events {
+	for _, event := range p.Events {
 		if event.Path != "" {
 			return event.Path
 		}
@@ -60,55 +64,62 @@ func (u CommitUnit) path() string {
 	return ""
 }
 
-func (u CommitUnit) commitMetadata() (string, *gogit.CommitOptions, error) {
+func (p PendingWrite) commitMetadata() (string, *gogit.CommitOptions, error) {
 	when := time.Now()
-	switch u.MessageKind {
+	switch p.MessageKind() {
 	case CommitMessagePerEvent:
-		if len(u.Events) != 1 {
-			return "", nil, errors.New("per-event commit unit requires exactly one event")
+		if len(p.Events) != 1 {
+			return "", nil, errors.New("per-event pending write requires exactly one event")
 		}
-		message, err := renderEventCommitMessage(u.Events[0], u.CommitConfig)
+		message, err := renderEventCommitMessage(p.Events[0], p.CommitConfig)
 		if err != nil {
 			return "", nil, err
 		}
-		return message, commitOptionsForEvent(u.Events[0], u.CommitConfig, u.Signer, when), nil
+		return message, commitOptionsForEvent(p.Events[0], p.CommitConfig, p.Signer, when), nil
 	case CommitMessageBatch:
-		message, err := renderBatchCommitMessage(u.Events, u.CommitMessage, u.Target.Name, u.CommitConfig)
+		message, err := renderBatchCommitMessage(p.Events, p.CommitMessage, p.Target().Name, p.CommitConfig)
 		if err != nil {
 			return "", nil, err
 		}
-		return message, commitOptionsForBatch(u.CommitConfig, u.Signer, when), nil
+		return message, commitOptionsForBatch(p.CommitConfig, p.Signer, when), nil
 	case CommitMessageGrouped:
-		message, err := renderGroupCommitMessage(u, u.CommitConfig)
+		message, err := renderGroupCommitMessage(p, p.CommitConfig)
 		if err != nil {
 			return "", nil, err
 		}
-		return message, commitOptionsForGroup(u, u.CommitConfig, u.Signer, when), nil
+		return message, commitOptionsForGroup(p, p.CommitConfig, p.Signer, when), nil
 	default:
-		return "", nil, fmt.Errorf("unsupported commit message kind %q", u.MessageKind)
+		return "", nil, fmt.Errorf("unsupported commit message kind %q", p.MessageKind())
 	}
 }
 
-func (w *BranchWorker) executeCommitUnit(
+func (w *BranchWorker) executePendingWrite(
 	ctx context.Context,
 	repo *gogit.Repository,
 	worktree *gogit.Worktree,
-	unit CommitUnit,
+	pendingWrite PendingWrite,
 ) (int, error) {
-	if len(unit.Events) == 0 {
+	switch pendingWrite.Kind {
+	case PendingWriteCommit, PendingWriteAtomic:
+	default:
+		return 0, fmt.Errorf("unsupported pending write kind %q", pendingWrite.Kind)
+	}
+
+	if len(pendingWrite.Events) == 0 {
 		return 0, nil
 	}
 
-	encryptionPath := filepath.Join(worktree.Filesystem.Root(), sanitizePath(unit.path()))
+	target := pendingWrite.Target()
+	encryptionPath := filepath.Join(worktree.Filesystem.Root(), sanitizePath(pendingWrite.path()))
 	if err := configureSecretEncryptionWriter(
 		w.contentWriter,
 		encryptionPath,
-		unit.Target.EncryptionConfig,
+		target.EncryptionConfig,
 	); err != nil {
 		return 0, fmt.Errorf("configure secret encryptor: %w", err)
 	}
 
-	anyChanges, err := w.applyCommitUnitEvents(ctx, repo, worktree, unit.Events)
+	anyChanges, err := w.applyPendingWriteEvents(ctx, repo, worktree, pendingWrite.Events)
 	if err != nil {
 		return 0, err
 	}
@@ -116,7 +127,7 @@ func (w *BranchWorker) executeCommitUnit(
 		return 0, nil
 	}
 
-	commitMessage, commitOptions, err := unit.commitMetadata()
+	commitMessage, commitOptions, err := pendingWrite.commitMetadata()
 	if err != nil {
 		return 0, err
 	}
@@ -128,16 +139,16 @@ func (w *BranchWorker) executeCommitUnit(
 	log.FromContext(ctx).Info(
 		"git commit created",
 		"messageKind",
-		unit.MessageKind,
+		pendingWrite.MessageKind(),
 		"events",
-		len(unit.Events),
+		len(pendingWrite.Events),
 		"message",
 		commitMessage,
 	)
 	return 1, nil
 }
 
-func (w *BranchWorker) applyCommitUnitEvents(
+func (w *BranchWorker) applyPendingWriteEvents(
 	ctx context.Context,
 	repo *gogit.Repository,
 	worktree *gogit.Worktree,

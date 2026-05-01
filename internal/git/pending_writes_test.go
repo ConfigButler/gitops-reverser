@@ -68,7 +68,7 @@ func (c *countingClient) counts() (int, int) {
 	return c.gitTargetGets, c.secretGets
 }
 
-func TestPlanner_ResolvesEncryptionOncePerUniqueTarget(t *testing.T) {
+func TestPendingWrites_ResolvesEncryptionOncePerUniqueTarget(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, clientgoscheme.AddToScheme(scheme))
 	require.NoError(t, configv1alpha1.AddToScheme(scheme))
@@ -135,8 +135,7 @@ func TestPlanner_ResolvesEncryptionOncePerUniqueTarget(t *testing.T) {
 	assert.Equal(t, "default", pendingWrite.Events[0].GitTargetNamespace)
 }
 
-func TestPlanner_PendingWriteCommit_ProjectsOneToOne(t *testing.T) {
-	worker := &BranchWorker{}
+func TestPendingWriteCommit_DerivesMetadata(t *testing.T) {
 	pendingWrite := PendingWrite{
 		Kind: PendingWriteCommit,
 		Events: []Event{
@@ -152,20 +151,24 @@ func TestPlanner_PendingWriteCommit_ProjectsOneToOne(t *testing.T) {
 		},
 	}
 
-	plan, err := worker.buildCommitPlan([]PendingWrite{pendingWrite})
-	require.NoError(t, err)
-	require.Len(t, plan.Units, 1)
-
-	assert.Equal(t, CommitMessageGrouped, plan.Units[0].MessageKind)
-	assert.Equal(t, "alice", plan.Units[0].GroupAuthor)
-	assert.Equal(t, "team-a", plan.Units[0].Target.Name)
-	require.Len(t, plan.Units[0].Events, 2)
-	assert.Equal(t, "b", plan.Units[0].Events[0].Identifier.Name)
-	assert.Equal(t, "c", plan.Units[0].Events[1].Identifier.Name)
+	assert.Equal(t, CommitMessageGrouped, pendingWrite.MessageKind())
+	assert.Equal(t, "alice", pendingWrite.Author())
+	assert.Equal(t, "team-a", pendingWrite.Target().Name)
+	require.Len(t, pendingWrite.Events, 2)
+	assert.Equal(t, "b", pendingWrite.Events[0].Identifier.Name)
+	assert.Equal(t, "c", pendingWrite.Events[1].Identifier.Name)
 }
 
-func TestPlanner_AtomicRequest_ProducesSingleAtomicPlan(t *testing.T) {
-	worker := &BranchWorker{}
+func TestPendingWriteCommit_SingleEventDerivesPerEvent(t *testing.T) {
+	pendingWrite := PendingWrite{
+		Kind:   PendingWriteCommit,
+		Events: []Event{makeEvent("alice", "a")},
+	}
+
+	assert.Equal(t, CommitMessagePerEvent, pendingWrite.MessageKind())
+}
+
+func TestPendingWriteAtomic_DerivesBatchMetadata(t *testing.T) {
 	pendingWrite := PendingWrite{
 		Kind:               PendingWriteAtomic,
 		Events:             []Event{makeEvent("alice", "a"), makeEvent("bob", "b")},
@@ -181,21 +184,31 @@ func TestPlanner_AtomicRequest_ProducesSingleAtomicPlan(t *testing.T) {
 		},
 	}
 
-	plan, err := worker.buildCommitPlan([]PendingWrite{pendingWrite})
-	require.NoError(t, err)
-	require.Len(t, plan.Units, 1)
-
-	unit := plan.Units[0]
-	assert.Equal(t, CommitMessageBatch, unit.MessageKind)
-	assert.Equal(t, "explicit batch message", unit.CommitMessage)
-	assert.Equal(t, "team-a", unit.Target.Name)
-	require.Len(t, unit.Events, 2)
-	assert.Equal(t, "a", unit.Events[0].Identifier.Name)
-	assert.Equal(t, "b", unit.Events[1].Identifier.Name)
+	assert.Equal(t, CommitMessageBatch, pendingWrite.MessageKind())
+	assert.Empty(t, pendingWrite.Author())
+	assert.Equal(t, "explicit batch message", pendingWrite.CommitMessage)
+	assert.Equal(t, "team-a", pendingWrite.Target().Name)
+	require.Len(t, pendingWrite.Events, 2)
+	assert.Equal(t, "a", pendingWrite.Events[0].Identifier.Name)
+	assert.Equal(t, "b", pendingWrite.Events[1].Identifier.Name)
 }
 
-func TestPlanner_PendingWriteCommit_PreservesArrivalOrderAcrossPendingWrites(t *testing.T) {
-	worker := &BranchWorker{}
+func TestPendingWriteAtomic_TargetFallsBackToRequestTarget(t *testing.T) {
+	pendingWrite := PendingWrite{
+		Kind:               PendingWriteAtomic,
+		GitTargetName:      "team-a",
+		GitTargetNamespace: "default",
+	}
+
+	target := pendingWrite.Target()
+	assert.Equal(t, "team-a", target.Name)
+	assert.Equal(t, "default", target.Namespace)
+	assert.Empty(t, target.Path)
+	assert.Nil(t, target.EncryptionConfig)
+}
+
+func TestExecutor_PendingWrites_PreservesArrivalOrder(t *testing.T) {
+	worker, repo, _, _ := newExecutorTestRepo(t)
 	targets := map[pendingTargetKey]ResolvedTargetMetadata{
 		{Name: "team-a", Namespace: "default"}: {
 			Name:      "team-a",
@@ -203,24 +216,32 @@ func TestPlanner_PendingWriteCommit_PreservesArrivalOrderAcrossPendingWrites(t *
 			Path:      "team-team-a",
 		},
 	}
+	config := ResolveCommitConfig(nil)
 
-	plan, err := worker.buildCommitPlan([]PendingWrite{
+	commitsCreated, err := worker.executePendingWrites(context.Background(), repo, []PendingWrite{
 		{
-			Kind:    PendingWriteCommit,
-			Events:  []Event{makeEvent("alice", "a")},
-			Targets: targets,
+			Kind:         PendingWriteCommit,
+			Events:       []Event{makeEvent("alice", "a")},
+			CommitConfig: config,
+			Targets:      targets,
 		},
 		{
-			Kind:    PendingWriteCommit,
-			Events:  []Event{makeEvent("alice", "c")},
-			Targets: targets,
+			Kind:         PendingWriteCommit,
+			Events:       []Event{makeEvent("alice", "c")},
+			CommitConfig: config,
+			Targets:      targets,
 		},
 	})
 	require.NoError(t, err)
-	require.Len(t, plan.Units, 2)
+	assert.Equal(t, 2, commitsCreated)
 
-	assert.Equal(t, "a", plan.Units[0].Events[0].Identifier.Name)
-	assert.Equal(t, "alice", plan.Units[0].GroupAuthor)
-	assert.Equal(t, "c", plan.Units[1].Events[0].Identifier.Name)
-	assert.Equal(t, "alice", plan.Units[1].GroupAuthor)
+	head, err := repo.Head()
+	require.NoError(t, err)
+	second, err := repo.CommitObject(head.Hash())
+	require.NoError(t, err)
+	first, err := second.Parent(0)
+	require.NoError(t, err)
+
+	assert.Equal(t, "[UPDATE] v1/configmaps/c", second.Message)
+	assert.Equal(t, "[UPDATE] v1/configmaps/a", first.Message)
 }

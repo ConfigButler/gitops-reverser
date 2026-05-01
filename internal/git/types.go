@@ -159,11 +159,6 @@ type PendingWrite struct {
 	ByteSize           int64
 }
 
-// CommitPlan is the executable plan derived from one or more retained writes.
-type CommitPlan struct {
-	Units []CommitUnit
-}
-
 // CommitMessageKind determines which message/authorship path the executor uses.
 type CommitMessageKind string
 
@@ -172,17 +167,6 @@ const (
 	CommitMessageBatch    CommitMessageKind = "batch"
 	CommitMessageGrouped  CommitMessageKind = "group"
 )
-
-// CommitUnit is one locally-created commit.
-type CommitUnit struct {
-	Events        []Event
-	MessageKind   CommitMessageKind
-	CommitMessage string
-	CommitConfig  CommitConfig
-	Signer        gogit.Signer
-	GroupAuthor   string
-	Target        ResolvedTargetMetadata
-}
 
 // WorkItem is the unit of work in the BranchWorker queue.
 type WorkItem struct {
