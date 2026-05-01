@@ -182,56 +182,43 @@ func (w *BranchWorker) resolveTargetMetadata(
 	}, nil
 }
 
-func (w *BranchWorker) buildCommitPlan(pendingWrites []PendingWrite) (CommitPlan, error) {
-	units := make([]CommitUnit, 0)
-
-	for _, pendingWrite := range pendingWrites {
-		switch pendingWrite.Kind {
-		case PendingWriteAtomic:
-			targetMetadata := pendingWrite.findTargetMetadata(
-				pendingWrite.GitTargetName,
-				pendingWrite.GitTargetNamespace,
-			)
-			if targetMetadata.Name == "" {
-				targetMetadata.Name = pendingWrite.GitTargetName
-				targetMetadata.Namespace = pendingWrite.GitTargetNamespace
-			}
-
-			units = append(units, CommitUnit{
-				Events:        append([]Event(nil), pendingWrite.Events...),
-				MessageKind:   CommitMessageBatch,
-				CommitMessage: pendingWrite.CommitMessage,
-				CommitConfig:  pendingWrite.CommitConfig,
-				Signer:        pendingWrite.Signer,
-				Target:        targetMetadata,
-			})
-		case PendingWriteCommit:
-			if len(pendingWrite.Events) == 0 {
-				continue
-			}
-			messageKind := CommitMessageGrouped
-			if len(pendingWrite.Events) == 1 {
-				messageKind = CommitMessagePerEvent
-			}
-			firstEvent := pendingWrite.Events[0]
-
-			units = append(units, CommitUnit{
-				Events:       append([]Event(nil), pendingWrite.Events...),
-				MessageKind:  messageKind,
-				CommitConfig: pendingWrite.CommitConfig,
-				Signer:       pendingWrite.Signer,
-				GroupAuthor:  firstEvent.UserInfo.Username,
-				Target: pendingWrite.findTargetMetadata(
-					firstEvent.GitTargetName,
-					firstEvent.GitTargetNamespace,
-				),
-			})
-		default:
-			return CommitPlan{}, fmt.Errorf("unsupported pending write kind %q", pendingWrite.Kind)
-		}
+// MessageKind is derived from the pending write's shape.
+func (p PendingWrite) MessageKind() CommitMessageKind {
+	if p.Kind == PendingWriteAtomic {
+		return CommitMessageBatch
 	}
+	if len(p.Events) == 1 {
+		return CommitMessagePerEvent
+	}
+	return CommitMessageGrouped
+}
 
-	return CommitPlan{Units: units}, nil
+// Author returns the grouped commit author for commit-shaped pending writes.
+func (p PendingWrite) Author() string {
+	if p.Kind == PendingWriteAtomic || len(p.Events) == 0 {
+		return ""
+	}
+	return p.Events[0].UserInfo.Username
+}
+
+// Target returns the single resolved target metadata for this pending write.
+func (p PendingWrite) Target() ResolvedTargetMetadata {
+	name, namespace := p.targetIdentity()
+	if md := p.findTargetMetadata(name, namespace); md.Name != "" {
+		return md
+	}
+	return ResolvedTargetMetadata{Name: name, Namespace: namespace}
+}
+
+func (p PendingWrite) targetIdentity() (string, string) {
+	if p.Kind == PendingWriteAtomic {
+		return p.GitTargetName, p.GitTargetNamespace
+	}
+	if len(p.Events) == 0 {
+		return "", ""
+	}
+	event := p.Events[0]
+	return event.GitTargetName, event.GitTargetNamespace
 }
 
 func (p PendingWrite) findTargetMetadata(name, namespace string) ResolvedTargetMetadata {

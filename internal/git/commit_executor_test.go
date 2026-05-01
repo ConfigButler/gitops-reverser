@@ -103,17 +103,13 @@ func TestExecutor_GroupedSingleEvent_UsesPerEventMessageFallback(t *testing.T) {
 	config.Message.Template = "event: {{.Name}} by {{.Username}}"
 	config.Message.GroupTemplate = "group: {{.Author}} changed {{.Count}}"
 
-	unit := CommitUnit{
-		MessageKind:  CommitMessagePerEvent,
+	pendingWrite := PendingWrite{
+		Kind:         PendingWriteCommit,
 		Events:       []Event{makeEvent("alice", "api")},
 		CommitConfig: config,
-		GroupAuthor:  "alice",
-		Target: ResolvedTargetMetadata{
-			Name: "team-a",
-		},
 	}
 
-	message, options, err := unit.commitMetadata()
+	message, options, err := pendingWrite.commitMetadata()
 	require.NoError(t, err)
 	assert.Equal(t, "event: api by alice", message)
 	assert.Equal(t, "alice", options.Author.Name)
@@ -125,20 +121,16 @@ func TestExecutor_GroupedMultiEvent_UsesGroupTemplate(t *testing.T) {
 	config.Message.Template = "event: {{.Name}}"
 	config.Message.GroupTemplate = "group: {{.Author}} {{.Count}} {{.GitTarget}}"
 
-	unit := CommitUnit{
-		MessageKind: CommitMessageGrouped,
+	pendingWrite := PendingWrite{
+		Kind: PendingWriteCommit,
 		Events: []Event{
 			makeEvent("alice", "api"),
 			makeEvent("alice", "worker"),
 		},
 		CommitConfig: config,
-		GroupAuthor:  "alice",
-		Target: ResolvedTargetMetadata{
-			Name: "team-a",
-		},
 	}
 
-	message, options, err := unit.commitMetadata()
+	message, options, err := pendingWrite.commitMetadata()
 	require.NoError(t, err)
 	assert.Equal(t, "group: alice 2 team-a", message)
 	assert.Equal(t, "alice", options.Author.Name)
@@ -149,20 +141,19 @@ func TestExecutor_AtomicUnit_UsesBatchMessage(t *testing.T) {
 	config := ResolveCommitConfig(nil)
 	config.Message.BatchTemplate = "batch: {{.Count}} {{.GitTarget}}"
 
-	unit := CommitUnit{
-		MessageKind:   CommitMessageBatch,
+	pendingWrite := PendingWrite{
+		Kind:          PendingWriteAtomic,
 		CommitMessage: "",
 		Events: []Event{
 			makeEvent("alice", "api"),
 			makeEvent("bob", "worker"),
 		},
-		CommitConfig: config,
-		Target: ResolvedTargetMetadata{
-			Name: "team-a",
-		},
+		CommitConfig:       config,
+		GitTargetName:      "team-a",
+		GitTargetNamespace: "default",
 	}
 
-	message, options, err := unit.commitMetadata()
+	message, options, err := pendingWrite.commitMetadata()
 	require.NoError(t, err)
 	assert.Equal(t, "batch: 2 team-a", message)
 	assert.Equal(t, DefaultCommitterName, options.Author.Name)
@@ -177,8 +168,8 @@ func TestExecutor_NoOpUnit_SkipsCommit(t *testing.T) {
 	headBefore, err := repo.Head()
 	require.NoError(t, err)
 
-	created, err := worker.executeCommitUnit(context.Background(), repo, worktree, CommitUnit{
-		MessageKind:  CommitMessagePerEvent,
+	created, err := worker.executePendingWrite(context.Background(), repo, worktree, PendingWrite{
+		Kind:         PendingWriteCommit,
 		Events:       []Event{event},
 		CommitConfig: ResolveCommitConfig(nil),
 	})
@@ -190,7 +181,7 @@ func TestExecutor_NoOpUnit_SkipsCommit(t *testing.T) {
 	assert.Equal(t, headBefore.Hash(), headAfter.Hash())
 }
 
-func TestExecutor_AppliesEncryptionFromCommitUnit_NotFromWorker(t *testing.T) {
+func TestExecutor_AppliesEncryptionFromPendingWrite_NotFromWorker(t *testing.T) {
 	installFakeSOPSBinary(t)
 
 	worker, repo, worktree, repoPath := newExecutorTestRepo(t)
@@ -198,22 +189,28 @@ func TestExecutor_AppliesEncryptionFromCommitUnit_NotFromWorker(t *testing.T) {
 		Provider:      EncryptionProviderSOPS,
 		AgeRecipients: []string{"age1qexecutorunitrecipient"},
 	}
-	unit := CommitUnit{
-		MessageKind: CommitMessagePerEvent,
-		Events: []Event{func() Event {
-			event := newExecutorSecretEvent("team-secrets")
-			event.BootstrapOptions = buildBootstrapOptions(cfg)
-			return event
-		}()},
+	event := func() Event {
+		event := newExecutorSecretEvent("team-secrets")
+		event.BootstrapOptions = buildBootstrapOptions(cfg)
+		event.GitTargetName = "deleted-target"
+		event.GitTargetNamespace = "default"
+		return event
+	}()
+	pendingWrite := PendingWrite{
+		Kind:         PendingWriteCommit,
+		Events:       []Event{event},
 		CommitConfig: ResolveCommitConfig(nil),
-		Target: ResolvedTargetMetadata{
-			Name:             "deleted-target",
-			Path:             "team-secrets",
-			EncryptionConfig: cfg,
+		Targets: map[pendingTargetKey]ResolvedTargetMetadata{
+			{Name: "deleted-target", Namespace: "default"}: {
+				Name:             "deleted-target",
+				Namespace:        "default",
+				Path:             "team-secrets",
+				EncryptionConfig: cfg,
+			},
 		},
 	}
 
-	created, err := worker.executeCommitUnit(context.Background(), repo, worktree, unit)
+	created, err := worker.executePendingWrite(context.Background(), repo, worktree, pendingWrite)
 	require.NoError(t, err)
 	assert.Equal(t, 1, created)
 

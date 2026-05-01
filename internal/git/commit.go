@@ -70,11 +70,11 @@ func renderBatchCommitMessage(
 	)
 }
 
-func renderGroupCommitMessage(unit CommitUnit, config CommitConfig) (string, error) {
+func renderGroupCommitMessage(pendingWrite PendingWrite, config CommitConfig) (string, error) {
 	return renderCommitTemplate(
 		"group",
 		config.Message.GroupTemplate,
-		buildGroupedCommitMessageData(unit.GroupAuthor, unit.Target.Name, unit.Events),
+		buildGroupedCommitMessageData(pendingWrite.Author(), pendingWrite.Target().Name, pendingWrite.Events),
 	)
 }
 
@@ -127,12 +127,9 @@ func ValidateCommitConfig(config CommitConfig) error {
 		return err
 	}
 
-	if _, err := renderGroupCommitMessage(CommitUnit{
-		Events:      []Event{sampleEvent},
-		GroupAuthor: sampleEvent.UserInfo.Username,
-		Target: ResolvedTargetMetadata{
-			Name: sampleEvent.GitTargetName,
-		},
+	if _, err := renderGroupCommitMessage(PendingWrite{
+		Kind:   PendingWriteCommit,
+		Events: []Event{sampleEvent},
 	}, config); err != nil {
 		return err
 	}
@@ -175,15 +172,16 @@ func commitOptionsForBatch(config CommitConfig, signer git.Signer, when time.Tim
 // commitOptionsForEvent's use of ConstructSafeEmail so cross-path tooling
 // continues to recognise the same identity.
 func commitOptionsForGroup(
-	unit CommitUnit,
+	pendingWrite PendingWrite,
 	config CommitConfig,
 	signer git.Signer,
 	when time.Time,
 ) *git.CommitOptions {
+	author := pendingWrite.Author()
 	return &git.CommitOptions{
 		Author: &object.Signature{
-			Name:  unit.GroupAuthor,
-			Email: ConstructSafeEmail(unit.GroupAuthor, "cluster.local"),
+			Name:  author,
+			Email: ConstructSafeEmail(author, "cluster.local"),
 			When:  when,
 		},
 		Committer: operatorSignature(config, when),

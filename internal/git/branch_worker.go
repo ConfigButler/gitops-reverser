@@ -779,14 +779,9 @@ func (w *BranchWorker) commitPendingWrites(pendingWrites []PendingWrite, hasPend
 		w.pushCycleRootHash = baseHash
 	}
 
-	plan, err := w.buildCommitPlan(pendingWrites)
+	commitsCreated, err := w.executePendingWrites(w.ctx, repo, pendingWrites)
 	if err != nil {
-		return fmt.Errorf("build commit plan: %w", err)
-	}
-
-	commitsCreated, err := w.executeCommitPlan(w.ctx, repo, plan)
-	if err != nil {
-		return fmt.Errorf("execute commit plan: %w", err)
+		return fmt.Errorf("execute pending writes: %w", err)
 	}
 	if commitsCreated == 0 {
 		return nil
@@ -876,13 +871,8 @@ func (w *BranchWorker) rebuildPendingWrites(
 		return "", plumbing.ZeroHash, err
 	}
 
-	plan, err := w.buildCommitPlan(pendingWrites)
-	if err != nil {
-		return "", plumbing.ZeroHash, fmt.Errorf("build replay plan: %w", err)
-	}
-
-	if _, err := w.executeCommitPlan(w.ctx, repo, plan); err != nil {
-		return "", plumbing.ZeroHash, fmt.Errorf("execute replay plan: %w", err)
+	if _, err := w.executePendingWrites(w.ctx, repo, pendingWrites); err != nil {
+		return "", plumbing.ZeroHash, fmt.Errorf("execute replay pending writes: %w", err)
 	}
 
 	return baseBranch, baseHash, nil
