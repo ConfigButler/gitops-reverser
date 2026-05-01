@@ -23,8 +23,8 @@ package git
 // run of same-(author, gitTarget) events; multiple events for the same Git
 // path inside the group keep only the final state (the latest event).
 //
-// See docs/design/commit-window-batching-design.md → Grouping key for the
-// invariants this type encodes.
+// See docs/design/commit-window-refactor.md for the invariants this type
+// encodes.
 type commitGroup struct {
 	// Author is event.UserInfo.Username verbatim.
 	Author string
