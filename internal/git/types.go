@@ -293,7 +293,7 @@ func (r ResourceRef) String() string {
 
 // GroupedCommitMessageData is the template context for grouped commit
 // messages. Each grouped commit covers exactly one (author, gitTarget) tuple
-// (see docs/design/commit-window-batching-design.md → Grouping key).
+// (see docs/design/commit-window-refactor.md).
 type GroupedCommitMessageData struct {
 	// Author is the verbatim event.UserInfo.Username for the group.
 	Author string
