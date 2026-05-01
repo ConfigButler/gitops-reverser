@@ -175,7 +175,6 @@ func (r *FolderReconciler) reconcile() {
 			Operation:  "CREATE",
 			Identifier: resource,
 			Object:     obj,
-			UserInfo:   git.UserInfo{Username: "gitops-reverser"},
 		})
 	}
 
@@ -183,7 +182,6 @@ func (r *FolderReconciler) reconcile() {
 		batchEvents = append(batchEvents, git.Event{
 			Operation:  "DELETE",
 			Identifier: resource,
-			UserInfo:   git.UserInfo{Username: "gitops-reverser"},
 		})
 	}
 
@@ -193,12 +191,18 @@ func (r *FolderReconciler) reconcile() {
 			Operation:  string(events.ReconcileResource),
 			Identifier: resource,
 			Object:     obj,
-			UserInfo:   git.UserInfo{Username: "gitops-reverser"},
 		})
 	}
 
 	request := git.WriteRequest{
-		Events: batchEvents,
+		Events:     batchEvents,
+		CommitMode: git.CommitModeAtomic,
+		CommitMessage: fmt.Sprintf(
+			"Reconcile snapshot: %d created, %d deleted, %d reconciled",
+			len(toCreate),
+			len(toDelete),
+			len(existingInBoth),
+		),
 	}
 
 	if err := r.reconcileEmitter.EmitWriteRequest(request); err != nil {
