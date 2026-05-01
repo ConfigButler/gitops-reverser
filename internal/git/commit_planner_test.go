@@ -135,17 +135,13 @@ func TestPlanner_ResolvesEncryptionOncePerUniqueTarget(t *testing.T) {
 	assert.Equal(t, "default", pendingWrite.Events[0].GitTargetNamespace)
 }
 
-func TestPlanner_GroupedWindow_GroupsByAuthorTargetAndCollisionRule(t *testing.T) {
+func TestPlanner_PendingWriteCommit_ProjectsOneToOne(t *testing.T) {
 	worker := &BranchWorker{}
 	pendingWrite := PendingWrite{
-		Kind: PendingWriteGroupedWindow,
+		Kind: PendingWriteCommit,
 		Events: []Event{
-			makeEvent("alice", "team-a", "a", "v1"),
-			makeEvent("bob", "team-a", "a", "v2"),
-			makeEvent("alice", "team-a", "b", "v1"),
-			makeEvent("alice", "team-a", "c", "v1"),
-			makeEvent("alice", "team-a", "a", "v3"),
-			makeEvent("alice", "team-b", "d", "v1"),
+			makeEvent("alice", "b"),
+			makeEvent("alice", "c"),
 		},
 		Targets: map[pendingTargetKey]ResolvedTargetMetadata{
 			{Name: "team-a", Namespace: "default"}: {
@@ -153,55 +149,26 @@ func TestPlanner_GroupedWindow_GroupsByAuthorTargetAndCollisionRule(t *testing.T
 				Namespace: "default",
 				Path:      "team-team-a",
 			},
-			{Name: "team-b", Namespace: "default"}: {
-				Name:      "team-b",
-				Namespace: "default",
-				Path:      "team-team-b",
-			},
 		},
 	}
 
 	plan, err := worker.buildCommitPlan([]PendingWrite{pendingWrite})
 	require.NoError(t, err)
-	require.Len(t, plan.Units, 5)
+	require.Len(t, plan.Units, 1)
 
-	assert.Equal(t, CommitMessagePerEvent, plan.Units[0].MessageKind)
+	assert.Equal(t, CommitMessageGrouped, plan.Units[0].MessageKind)
 	assert.Equal(t, "alice", plan.Units[0].GroupAuthor)
 	assert.Equal(t, "team-a", plan.Units[0].Target.Name)
-	require.Len(t, plan.Units[0].Events, 1)
-	assert.Equal(t, "a", plan.Units[0].Events[0].Identifier.Name)
-
-	assert.Equal(t, CommitMessagePerEvent, plan.Units[1].MessageKind)
-	assert.Equal(t, "bob", plan.Units[1].GroupAuthor)
-	assert.Equal(t, "team-a", plan.Units[1].Target.Name)
-	require.Len(t, plan.Units[1].Events, 1)
-	assert.Equal(t, "a", plan.Units[1].Events[0].Identifier.Name)
-
-	assert.Equal(t, CommitMessageGrouped, plan.Units[2].MessageKind)
-	assert.Equal(t, "alice", plan.Units[2].GroupAuthor)
-	assert.Equal(t, "team-a", plan.Units[2].Target.Name)
-	require.Len(t, plan.Units[2].Events, 2)
-	assert.Equal(t, "b", plan.Units[2].Events[0].Identifier.Name)
-	assert.Equal(t, "c", plan.Units[2].Events[1].Identifier.Name)
-
-	assert.Equal(t, CommitMessagePerEvent, plan.Units[3].MessageKind)
-	assert.Equal(t, "alice", plan.Units[3].GroupAuthor)
-	assert.Equal(t, "team-a", plan.Units[3].Target.Name)
-	require.Len(t, plan.Units[3].Events, 1)
-	assert.Equal(t, "a", plan.Units[3].Events[0].Identifier.Name)
-
-	assert.Equal(t, CommitMessagePerEvent, plan.Units[4].MessageKind)
-	assert.Equal(t, "alice", plan.Units[4].GroupAuthor)
-	assert.Equal(t, "team-b", plan.Units[4].Target.Name)
-	require.Len(t, plan.Units[4].Events, 1)
-	assert.Equal(t, "d", plan.Units[4].Events[0].Identifier.Name)
+	require.Len(t, plan.Units[0].Events, 2)
+	assert.Equal(t, "b", plan.Units[0].Events[0].Identifier.Name)
+	assert.Equal(t, "c", plan.Units[0].Events[1].Identifier.Name)
 }
 
 func TestPlanner_AtomicRequest_ProducesSingleAtomicPlan(t *testing.T) {
 	worker := &BranchWorker{}
 	pendingWrite := PendingWrite{
 		Kind:               PendingWriteAtomic,
-		Events:             []Event{makeEvent("alice", "team-a", "a", "v1"), makeEvent("bob", "team-a", "b", "v1")},
+		Events:             []Event{makeEvent("alice", "a"), makeEvent("bob", "b")},
 		CommitMessage:      "explicit batch message",
 		GitTargetName:      "team-a",
 		GitTargetNamespace: "default",
@@ -227,7 +194,7 @@ func TestPlanner_AtomicRequest_ProducesSingleAtomicPlan(t *testing.T) {
 	assert.Equal(t, "b", unit.Events[1].Identifier.Name)
 }
 
-func TestPlanner_GroupedWindow_PreservesArrivalOrderAcrossPendingWrites(t *testing.T) {
+func TestPlanner_PendingWriteCommit_PreservesArrivalOrderAcrossPendingWrites(t *testing.T) {
 	worker := &BranchWorker{}
 	targets := map[pendingTargetKey]ResolvedTargetMetadata{
 		{Name: "team-a", Namespace: "default"}: {
@@ -239,23 +206,21 @@ func TestPlanner_GroupedWindow_PreservesArrivalOrderAcrossPendingWrites(t *testi
 
 	plan, err := worker.buildCommitPlan([]PendingWrite{
 		{
-			Kind:    PendingWriteGroupedWindow,
-			Events:  []Event{makeEvent("alice", "team-a", "a", "v1"), makeEvent("bob", "team-a", "b", "v1")},
+			Kind:    PendingWriteCommit,
+			Events:  []Event{makeEvent("alice", "a")},
 			Targets: targets,
 		},
 		{
-			Kind:    PendingWriteGroupedWindow,
-			Events:  []Event{makeEvent("alice", "team-a", "c", "v1")},
+			Kind:    PendingWriteCommit,
+			Events:  []Event{makeEvent("alice", "c")},
 			Targets: targets,
 		},
 	})
 	require.NoError(t, err)
-	require.Len(t, plan.Units, 3)
+	require.Len(t, plan.Units, 2)
 
 	assert.Equal(t, "a", plan.Units[0].Events[0].Identifier.Name)
 	assert.Equal(t, "alice", plan.Units[0].GroupAuthor)
-	assert.Equal(t, "b", plan.Units[1].Events[0].Identifier.Name)
-	assert.Equal(t, "bob", plan.Units[1].GroupAuthor)
-	assert.Equal(t, "c", plan.Units[2].Events[0].Identifier.Name)
-	assert.Equal(t, "alice", plan.Units[2].GroupAuthor)
+	assert.Equal(t, "c", plan.Units[1].Events[0].Identifier.Name)
+	assert.Equal(t, "alice", plan.Units[1].GroupAuthor)
 }

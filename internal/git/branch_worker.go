@@ -105,8 +105,8 @@ type BranchWorker struct {
 	// repoMu serializes repository/worktree operations within this worker.
 	repoMu sync.Mutex
 
-	// branchBufferMaxBytes caps the in-memory event buffer; tripped on event
-	// arrival, an immediate flush bypasses the commit window.
+	// branchBufferMaxBytes caps the retained in-memory event data; tripped on
+	// event arrival, an immediate finalize bypasses the commit window.
 	branchBufferMaxBytes int64
 
 	// pushCycleRootHash is the hash the target branch was at on the remote
@@ -445,10 +445,9 @@ func (w *BranchWorker) listResourceIdentifiersInPath(
 
 // processEvents is the main event processing loop.
 //
-// The loop runs the two-stage state machine described in the commit-window
-// batching design: a commit-window timer drives when buffered events get
-// drained into local commits, and a one-shot push timer enforces the
-// PushCooldown between successful pushes. Commit and push are independent —
+// The loop owns one live commit-shaped event window. A commit-window timer
+// detects silence for that open window, and a one-shot push timer enforces the
+// PushCooldown between successful pushes. Commit and push are independent:
 // local commits accumulate from retained pending writes and feed
 // replay-on-conflict; only a successful push clears that retained queue.
 func (w *BranchWorker) processEvents() {
@@ -470,9 +469,11 @@ type branchWorkerEventLoop struct {
 
 	commitWindow time.Duration
 
-	// buffer holds events not yet committed locally.
-	buffer      []Event
-	bufferBytes int64
+	// openWindow holds the one live commit-shaped event window. It is
+	// finalized eagerly on author/target changes, atomic arrivals, byte-cap
+	// trips, commit-window silence, commitWindow=0, and shutdown.
+	openWindow  *openWindow
+	windowBytes int64
 
 	// pendingWrites holds the retained durability units for local commits that
 	// have not yet successfully reached the remote. A successful push is the
@@ -502,7 +503,7 @@ func (l *branchWorkerEventLoop) run() {
 			l.handleQueueItem(item)
 		case <-commitC:
 			l.commitTimer = nil
-			l.commitBufferedEvents()
+			l.finalizeOpenWindow()
 			l.maybeSchedulePush()
 		case <-pushC:
 			l.pushTimer = nil
@@ -523,10 +524,10 @@ func (l *branchWorkerEventLoop) timerChannels() (<-chan time.Time, <-chan time.T
 }
 
 // totalRetainedBytes is what the operator-level byte cap is enforced against:
-// the in-flight buffer plus the locally-committed-but-not-yet-pushed events
-// that we keep around for replay-on-conflict.
+// the open window plus the locally-committed-but-not-yet-pushed events that
+// we keep around for replay-on-conflict.
 func (l *branchWorkerEventLoop) totalRetainedBytes() int64 {
-	return l.bufferBytes + l.pendingWritesBytes
+	return l.windowBytes + l.pendingWritesBytes
 }
 
 func (l *branchWorkerEventLoop) handleQueueItem(item WorkItem) {
@@ -536,10 +537,10 @@ func (l *branchWorkerEventLoop) handleQueueItem(item WorkItem) {
 
 	if item.Request.CommitMode == CommitModeAtomic {
 		// Atomic batches bypass the commit window, but not the retained push
-		// lifecycle. Drain any buffered live work first so arrival order is
+		// lifecycle. Finalize any open live work first so arrival order is
 		// preserved, then append the atomic write to pendingWrites and let the
 		// normal cooldown-driven push path decide when to publish.
-		l.commitBufferedEvents()
+		l.finalizeOpenWindow()
 
 		pendingWrite, err := l.w.buildAtomicPendingWrite(l.w.ctx, item.Request)
 		if err != nil {
@@ -559,8 +560,16 @@ func (l *branchWorkerEventLoop) handleQueueItem(item WorkItem) {
 	}
 
 	for _, event := range item.Request.Events {
-		l.buffer = append(l.buffer, event)
-		l.bufferBytes += l.w.estimateEventSize(event)
+		if l.openWindow != nil && !l.openWindow.canAppend(event) {
+			l.finalizeOpenWindow()
+			l.maybeSchedulePush()
+		}
+
+		if l.openWindow == nil {
+			l.openWindow = newOpenWindow(event)
+		}
+		l.openWindow.add(event)
+		l.windowBytes += l.w.estimateEventSize(event)
 
 		if l.totalRetainedBytes() >= l.w.branchBufferMaxBytes {
 			// Memory-pressure trip: drain immediately, ignoring the commit
@@ -568,32 +577,26 @@ func (l *branchWorkerEventLoop) handleQueueItem(item WorkItem) {
 			// commits. The push still respects the cooldown — a push that
 			// fails on a stuck remote will not free memory, but that's the
 			// known stuck-push pathology documented in the design.
-			l.commitBufferedEvents()
+			l.finalizeOpenWindow()
 			l.maybeSchedulePush()
 			continue
 		}
-	}
 
-	if len(l.buffer) == 0 {
-		return
-	}
+		if l.commitWindow == 0 {
+			// Honest per-event commits: every event arrival commits
+			// immediately. Push cadence is the only thing the cooldown affects.
+			l.finalizeOpenWindow()
+			l.maybeSchedulePush()
+			continue
+		}
 
-	if l.commitWindow == 0 {
-		// Honest per-event commits: every event arrival commits immediately.
-		// Push cadence is the only thing the cooldown affects.
-		l.commitBufferedEvents()
-		l.maybeSchedulePush()
-		return
+		l.resetCommitTimer()
 	}
-
-	l.resetCommitTimer()
 }
 
 func (l *branchWorkerEventLoop) handleShutdown() {
-	l.w.Log.Info("Handling shutdown, draining buffer and pushing pending commits")
-	if len(l.buffer) > 0 {
-		l.commitBufferedEvents()
-	}
+	l.w.Log.Info("Handling shutdown, finalizing open window and pushing pending commits")
+	l.finalizeOpenWindow()
 	if len(l.pendingWrites) > 0 {
 		// Shutdown bypasses the cooldown — pending work needs to land before
 		// the worker exits, even if a push was just sent.
@@ -615,37 +618,40 @@ func (l *branchWorkerEventLoop) resetCommitTimer() {
 	l.commitTimer.Reset(l.commitWindow)
 }
 
-// commitBufferedEvents drains the live-event buffer into one retained pending
-// write and creates the corresponding local commits. On success the events move
-// from buffer → pendingWrites (retained until a push succeeds). On failure the
-// buffer is dropped: either the repo is unreachable or the events are
-// otherwise unrecoverable, and we don't want to keep retrying with the same
-// broken state on every commit cycle.
-func (l *branchWorkerEventLoop) commitBufferedEvents() {
-	if len(l.buffer) == 0 {
+// finalizeOpenWindow closes the live event window into one retained
+// commit-shaped pending write and creates the corresponding local commit. On
+// success the events move from openWindow to pendingWrites (retained until a
+// push succeeds). On failure the window is dropped: either the repo is
+// unreachable or the events are otherwise unrecoverable, and we don't want to
+// keep retrying with the same broken state on every commit cycle.
+func (l *branchWorkerEventLoop) finalizeOpenWindow() {
+	if l.openWindow == nil {
 		return
 	}
 
-	pendingWrite, err := l.w.buildGroupedPendingWrite(l.w.ctx, l.buffer)
+	l.stopCommitTimer()
+	events := l.openWindow.orderedEvents()
+
+	pendingWrite, err := l.w.buildGroupedPendingWrite(l.w.ctx, events)
 	if err != nil {
-		l.w.Log.Error(err, "Failed to build pending write; dropping buffered events", "events", len(l.buffer))
-		l.buffer = nil
-		l.bufferBytes = 0
+		l.w.Log.Error(err, "Failed to build pending write; dropping open window", "events", len(events))
+		l.openWindow = nil
+		l.windowBytes = 0
 		return
 	}
 
 	hasPendingCommits := len(l.pendingWrites) > 0
 	if err := l.w.commitPendingWrites([]PendingWrite{*pendingWrite}, hasPendingCommits); err != nil {
-		l.w.Log.Error(err, "Commit failed; dropping buffered events", "events", len(l.buffer))
-		l.buffer = nil
-		l.bufferBytes = 0
+		l.w.Log.Error(err, "Commit failed; dropping open window", "events", len(events))
+		l.openWindow = nil
+		l.windowBytes = 0
 		return
 	}
 
 	l.pendingWrites = append(l.pendingWrites, *pendingWrite)
 	l.pendingWritesBytes += pendingWrite.ByteSize
-	l.buffer = nil
-	l.bufferBytes = 0
+	l.openWindow = nil
+	l.windowBytes = 0
 }
 
 // maybeSchedulePush is the post-commit hook: it pushes immediately when the
@@ -709,11 +715,21 @@ func (l *branchWorkerEventLoop) stopPushTimer() {
 	l.pushTimer = nil
 }
 
-func (l *branchWorkerEventLoop) stopTimers() {
-	if l.commitTimer != nil {
-		l.commitTimer.Stop()
-		l.commitTimer = nil
+func (l *branchWorkerEventLoop) stopCommitTimer() {
+	if l.commitTimer == nil {
+		return
 	}
+	if !l.commitTimer.Stop() {
+		select {
+		case <-l.commitTimer.C:
+		default:
+		}
+	}
+	l.commitTimer = nil
+}
+
+func (l *branchWorkerEventLoop) stopTimers() {
+	l.stopCommitTimer()
 	l.stopPushTimer()
 }
 

@@ -84,7 +84,7 @@ func TestEventLoop_MaybeSchedulePush_CooldownGate(t *testing.T) {
 
 	// Locally-committed events plus active cooldown → schedule a one-shot
 	// pushTimer rather than push immediately.
-	loop.pendingWrites = []PendingWrite{{Kind: PendingWriteGroupedWindow}}
+	loop.pendingWrites = []PendingWrite{{Kind: PendingWriteCommit}}
 	loop.pendingWritesBytes = 1
 	loop.lastPushAt = time.Now() // pretend we just pushed
 	loop.maybeSchedulePush()
@@ -105,17 +105,17 @@ func TestEventLoop_MaybeSchedulePush_CooldownGate(t *testing.T) {
 }
 
 // TestEventLoop_TotalRetainedBytes verifies the byte cap is enforced against
-// buffer + pendingWrites combined, as required by PR2 of the design.
+// the open window + pendingWrites combined.
 func TestEventLoop_TotalRetainedBytes(t *testing.T) {
 	w := &BranchWorker{Log: logr.Discard()}
 	loop := newBranchWorkerEventLoop(w, time.Second)
 
 	assert.Equal(t, int64(0), loop.totalRetainedBytes())
 
-	loop.bufferBytes = 100
+	loop.windowBytes = 100
 	loop.pendingWritesBytes = 250
 	assert.Equal(t, int64(350), loop.totalRetainedBytes(),
-		"cap is enforced against buffer + pendingWrites combined")
+		"cap is enforced against the open window + pendingWrites combined")
 }
 
 func TestEventLoop_ResetCommitTimer(t *testing.T) {

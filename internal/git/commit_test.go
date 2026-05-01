@@ -132,14 +132,11 @@ func TestRenderGroupCommitMessage_CustomTemplate(t *testing.T) {
 		GitTargetNamespace: "default",
 	}}
 
-	groups := groupCommits(events)
-	require.Len(t, groups, 1)
-
 	message, err := renderGroupCommitMessage(CommitUnit{
-		Events:      groups[0].orderedEvents(),
-		GroupAuthor: groups[0].Author,
+		Events:      events,
+		GroupAuthor: "alice",
 		Target: ResolvedTargetMetadata{
-			Name: groups[0].GitTarget,
+			Name: "platform",
 		},
 	}, ResolveCommitConfig(&v1alpha1.CommitSpec{
 		Message: &v1alpha1.CommitMessageSpec{

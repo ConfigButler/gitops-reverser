@@ -46,7 +46,7 @@ func (w *BranchWorker) buildGroupedPendingWrite(ctx context.Context, events []Ev
 	}
 
 	return &PendingWrite{
-		Kind:         PendingWriteGroupedWindow,
+		Kind:         PendingWriteCommit,
 		Events:       resolvedEvents,
 		CommitConfig: commitConfig,
 		Signer:       signer,
@@ -205,27 +205,27 @@ func (w *BranchWorker) buildCommitPlan(pendingWrites []PendingWrite) (CommitPlan
 				Signer:        pendingWrite.Signer,
 				Target:        targetMetadata,
 			})
-		case PendingWriteGroupedWindow:
-			groups := groupCommits(pendingWrite.Events)
-			for _, group := range groups {
-				groupEvents := group.orderedEvents()
-				messageKind := CommitMessageGrouped
-				if len(groupEvents) == 1 {
-					messageKind = CommitMessagePerEvent
-				}
-
-				units = append(units, CommitUnit{
-					Events:       groupEvents,
-					MessageKind:  messageKind,
-					CommitConfig: pendingWrite.CommitConfig,
-					Signer:       pendingWrite.Signer,
-					GroupAuthor:  group.Author,
-					Target: pendingWrite.findTargetMetadata(
-						group.GitTarget,
-						group.GitTargetNamespace,
-					),
-				})
+		case PendingWriteCommit:
+			if len(pendingWrite.Events) == 0 {
+				continue
 			}
+			messageKind := CommitMessageGrouped
+			if len(pendingWrite.Events) == 1 {
+				messageKind = CommitMessagePerEvent
+			}
+			firstEvent := pendingWrite.Events[0]
+
+			units = append(units, CommitUnit{
+				Events:       append([]Event(nil), pendingWrite.Events...),
+				MessageKind:  messageKind,
+				CommitConfig: pendingWrite.CommitConfig,
+				Signer:       pendingWrite.Signer,
+				GroupAuthor:  firstEvent.UserInfo.Username,
+				Target: pendingWrite.findTargetMetadata(
+					firstEvent.GitTargetName,
+					firstEvent.GitTargetNamespace,
+				),
+			})
 		default:
 			return CommitPlan{}, fmt.Errorf("unsupported pending write kind %q", pendingWrite.Kind)
 		}

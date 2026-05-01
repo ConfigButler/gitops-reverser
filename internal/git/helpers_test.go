@@ -232,6 +232,37 @@ func newTestBranchWorker(
 	return worker, nil
 }
 
+// makeEvent builds a ConfigMap event for commit planning tests.
+func makeEvent(author, name string) Event {
+	const target = "team-a"
+
+	return Event{
+		Operation: "UPDATE",
+		Identifier: types.ResourceIdentifier{
+			Group:     "",
+			Version:   "v1",
+			Resource:  "configmaps",
+			Namespace: "default",
+			Name:      name,
+		},
+		Object: &unstructured.Unstructured{
+			Object: map[string]interface{}{
+				"apiVersion": "v1",
+				"kind":       "ConfigMap",
+				"metadata": map[string]interface{}{
+					"name":      name,
+					"namespace": "default",
+				},
+				"data": map[string]interface{}{"v": "v1"},
+			},
+		},
+		UserInfo:           UserInfo{Username: author},
+		Path:               "team-" + target,
+		GitTargetName:      target,
+		GitTargetNamespace: "default",
+	}
+}
+
 // simulateSimpleMerge merges source content into destination, pushes the destination,
 // and deletes the source branch ref locally and remotely.
 func simulateSimpleMerge(tb testing.TB, repoURL, srcBranchShort, dstBranchShort string) plumbing.Hash {

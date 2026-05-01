@@ -75,6 +75,57 @@ func configMapEvent(name, username, path string) Event {
 	}
 }
 
+func configMapTargetEvent(name, username, target string) Event {
+	event := configMapEvent(name, username, "")
+	event.GitTargetName = target
+	event.GitTargetNamespace = "default"
+	return event
+}
+
+func createPlainGitTarget(t *testing.T, worker *BranchWorker, name, path string) {
+	t.Helper()
+
+	require.NoError(t, worker.Client.Create(worker.ctx, &configv1alpha1.GitTarget{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: "default",
+		},
+		Spec: configv1alpha1.GitTargetSpec{
+			ProviderRef: configv1alpha1.GitProviderReference{
+				Kind: "GitProvider",
+				Name: worker.GitProviderRef,
+			},
+			Branch: worker.Branch,
+			Path:   path,
+		},
+	}))
+}
+
+func commitsAfterHash(
+	t *testing.T,
+	repo *git.Repository,
+	head plumbing.Hash,
+	base plumbing.Hash,
+) []*object.Commit {
+	t.Helper()
+
+	var newestFirst []*object.Commit
+	current := head
+	for current != base {
+		commit, err := repo.CommitObject(current)
+		require.NoError(t, err)
+		require.Len(t, commit.ParentHashes, 1, "expected linear history while walking replayed commits")
+		newestFirst = append(newestFirst, commit)
+		current = commit.ParentHashes[0]
+	}
+
+	chronological := make([]*object.Commit, 0, len(newestFirst))
+	for i := len(newestFirst) - 1; i >= 0; i-- {
+		chronological = append(chronological, newestFirst[i])
+	}
+	return chronological
+}
+
 // setupCommitPushSplitWorker prepares a worker pointing at a freshly seeded
 // remote so commit and push paths can be exercised end to end.
 func setupCommitPushSplitWorker(t *testing.T) (*BranchWorker, *git.Repository, string) {
@@ -133,7 +184,7 @@ func TestCommitGroups_DoesNotPush(t *testing.T) {
 	afterCommitRef, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
 	require.NoError(t, err)
 	assert.Equal(t, initialHash, afterCommitRef.Hash(),
-		"remote should not advance during commitGroups; only push publishes")
+		"remote should not advance during local commit creation; only push publishes")
 
 	// Local repo carries the new commit.
 	localRepoPath := worker.repoPathForRemote(remoteURL)
@@ -288,6 +339,50 @@ func TestPushPendingCommits_ReplaysOnConflict(t *testing.T) {
 		"replayed commit should parent on the contending external commit")
 
 	// Successful push clears push-cycle state.
+	assert.True(t, worker.pushCycleRootHash.IsZero())
+}
+
+func TestPushPendingCommits_ReplayPreservesPendingWriteCommitOrder(t *testing.T) {
+	worker, serverRepo, remoteURL := setupCommitPushSplitWorker(t)
+
+	events := [][]Event{
+		{configMapEvent("alice-first", "alice", "team-a")},
+		{configMapEvent("bob-second", "bob", "team-a")},
+		{configMapEvent("alice-third", "alice", "team-a")},
+	}
+	pendingWrites := make([]PendingWrite, 0, len(events))
+
+	for i, batch := range events {
+		pendingWrite, err := worker.buildGroupedPendingWrite(worker.ctx, batch)
+		require.NoError(t, err)
+		require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}, i > 0))
+		pendingWrites = append(pendingWrites, *pendingWrite)
+	}
+
+	tempDir := t.TempDir()
+	otherPath := filepath.Join(tempDir, "other")
+	otherRepo, otherWorktree := initLocalRepo(t, otherPath, remoteURL, "main")
+	commitFileChange(t, otherWorktree, otherPath, "OUTSIDE.md", "from-other-actor\n")
+	require.NoError(t, otherRepo.Push(&git.PushOptions{
+		RefSpecs: []config.RefSpec{config.RefSpec("refs/heads/main:refs/heads/main")},
+	}))
+
+	contendingRef, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
+	require.NoError(t, err)
+
+	require.NoError(t, worker.pushPendingCommits(pendingWrites))
+
+	finalRef, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
+	require.NoError(t, err)
+	replayed := commitsAfterHash(t, serverRepo, finalRef.Hash(), contendingRef.Hash())
+	require.Len(t, replayed, len(pendingWrites))
+
+	assert.Equal(t, "alice", replayed[0].Author.Name)
+	assert.Equal(t, "[CREATE] v1/configmaps/alice-first", replayed[0].Message)
+	assert.Equal(t, "bob", replayed[1].Author.Name)
+	assert.Equal(t, "[CREATE] v1/configmaps/bob-second", replayed[1].Message)
+	assert.Equal(t, "alice", replayed[2].Author.Name)
+	assert.Equal(t, "[CREATE] v1/configmaps/alice-third", replayed[2].Message)
 	assert.True(t, worker.pushCycleRootHash.IsZero())
 }
 
@@ -637,12 +732,15 @@ func TestEventLoop_CommitWindowZero_HonestPerEvent(t *testing.T) {
 	loop.lastPushAt = time.Now()
 
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-		Events:     []Event{configMapEvent("first", "alice", "team-a")},
+		Events: []Event{
+			configMapEvent("first", "alice", "team-a"),
+			configMapEvent("second", "alice", "team-a"),
+		},
 		CommitMode: CommitModePerEvent,
 	}})
 
-	assert.Empty(t, loop.buffer, "commitWindow=0 must drain the buffer on every event")
-	assert.Len(t, loop.pendingWrites, 1,
+	assert.Nil(t, loop.openWindow, "commitWindow=0 must finalize the open window on every event")
+	assert.Len(t, loop.pendingWrites, 2,
 		"events land in pendingWrites immediately while the cooldown defers the push")
 	assert.NotNil(t, loop.pushTimer,
 		"cooldown active → a one-shot pushTimer is scheduled, not an immediate push")
@@ -665,6 +763,183 @@ func TestEventLoop_CommitWindowZero_HonestPerEvent(t *testing.T) {
 	loop.stopTimers()
 }
 
+func TestEventLoop_AuthorChangeFinalizesOpenWindow(t *testing.T) {
+	worker, _, _ := setupCommitPushSplitWorker(t)
+	loop := newBranchWorkerEventLoop(worker, time.Hour)
+	loop.lastPushAt = time.Now()
+
+	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
+		Events: []Event{
+			configMapEvent("first", "alice", "team-a"),
+			configMapEvent("second", "bob", "team-a"),
+		},
+		CommitMode: CommitModePerEvent,
+	}})
+
+	require.Len(t, loop.pendingWrites, 1)
+	assert.Equal(t, "alice", loop.pendingWrites[0].Events[0].UserInfo.Username)
+	require.NotNil(t, loop.openWindow)
+	assert.Equal(t, "bob", loop.openWindow.Author)
+
+	loop.stopTimers()
+}
+
+func TestEventLoop_TargetChangeFinalizesOpenWindow(t *testing.T) {
+	worker, _, _ := setupCommitPushSplitWorker(t)
+	createPlainGitTarget(t, worker, "team-a", "team-a")
+	createPlainGitTarget(t, worker, "team-b", "team-b")
+
+	loop := newBranchWorkerEventLoop(worker, time.Hour)
+	loop.lastPushAt = time.Now()
+
+	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
+		Events: []Event{
+			configMapTargetEvent("first", "alice", "team-a"),
+			configMapTargetEvent("second", "alice", "team-b"),
+		},
+		CommitMode: CommitModePerEvent,
+	}})
+
+	require.Len(t, loop.pendingWrites, 1)
+	assert.Equal(t, "team-a", loop.pendingWrites[0].Events[0].GitTargetName)
+	require.NotNil(t, loop.openWindow)
+	assert.Equal(t, "team-b", loop.openWindow.GitTarget)
+
+	loop.stopTimers()
+}
+
+func TestEventLoop_RepeatedPathEditsCollapseInOpenWindow(t *testing.T) {
+	worker, _, _ := setupCommitPushSplitWorker(t)
+	loop := newBranchWorkerEventLoop(worker, time.Hour)
+	loop.lastPushAt = time.Now()
+
+	first := configMapEvent("same", "alice", "team-a")
+	second := configMapEvent("same", "alice", "team-a")
+	second.Operation = "UPDATE"
+	second.Object.Object["data"] = map[string]interface{}{"key": "latest"}
+
+	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
+		Events:     []Event{first, second, configMapEvent("other", "alice", "team-a")},
+		CommitMode: CommitModePerEvent,
+	}})
+
+	require.NotNil(t, loop.openWindow)
+	events := loop.openWindow.orderedEvents()
+	require.Len(t, events, 2)
+	assert.Equal(t, "same", events[0].Identifier.Name)
+	assert.Equal(t, "latest", events[0].Object.Object["data"].(map[string]interface{})["key"])
+	assert.Equal(t, "other", events[1].Identifier.Name)
+
+	loop.finalizeOpenWindow()
+	require.Len(t, loop.pendingWrites, 1)
+	require.Len(t, loop.pendingWrites[0].Events, 2)
+
+	loop.stopTimers()
+}
+
+func TestEventLoop_AtomicRequestFinalizesOpenWindowFirst(t *testing.T) {
+	worker, _, _ := setupCommitPushSplitWorker(t)
+	loop := newBranchWorkerEventLoop(worker, time.Hour)
+	loop.lastPushAt = time.Now()
+
+	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
+		Events:     []Event{configMapEvent("live", "alice", "team-a")},
+		CommitMode: CommitModePerEvent,
+	}})
+	require.NotNil(t, loop.openWindow)
+
+	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
+		Events:     []Event{configMapEvent("atomic", "reconciler", "team-a")},
+		CommitMode: CommitModeAtomic,
+	}})
+
+	assert.Nil(t, loop.openWindow)
+	require.Len(t, loop.pendingWrites, 2)
+	assert.Equal(t, PendingWriteCommit, loop.pendingWrites[0].Kind)
+	assert.Equal(t, "live", loop.pendingWrites[0].Events[0].Identifier.Name)
+	assert.Equal(t, PendingWriteAtomic, loop.pendingWrites[1].Kind)
+	assert.Equal(t, "atomic", loop.pendingWrites[1].Events[0].Identifier.Name)
+
+	loop.stopTimers()
+}
+
+func TestEventLoop_ByteCapFinalizesIncludingTrippingEvent(t *testing.T) {
+	worker, _, _ := setupCommitPushSplitWorker(t)
+	worker.branchBufferMaxBytes = 1
+	loop := newBranchWorkerEventLoop(worker, time.Hour)
+	loop.lastPushAt = time.Now()
+
+	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
+		Events:     []Event{configMapEvent("oversized", "alice", "team-a")},
+		CommitMode: CommitModePerEvent,
+	}})
+
+	assert.Nil(t, loop.openWindow)
+	require.Len(t, loop.pendingWrites, 1)
+	require.Len(t, loop.pendingWrites[0].Events, 1)
+	assert.Equal(t, "oversized", loop.pendingWrites[0].Events[0].Identifier.Name)
+
+	loop.stopTimers()
+}
+
+func TestEventLoop_AuthorChangeStartsFreshCommitTimer(t *testing.T) {
+	worker, _, _ := setupCommitPushSplitWorker(t)
+	loop := newBranchWorkerEventLoop(worker, time.Hour)
+	loop.lastPushAt = time.Now()
+
+	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
+		Events:     []Event{configMapEvent("first", "alice", "team-a")},
+		CommitMode: CommitModePerEvent,
+	}})
+	require.NotNil(t, loop.commitTimer)
+	firstTimer := loop.commitTimer
+
+	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
+		Events:     []Event{configMapEvent("second", "bob", "team-a")},
+		CommitMode: CommitModePerEvent,
+	}})
+
+	require.NotNil(t, loop.commitTimer)
+	assert.NotSame(t, firstTimer, loop.commitTimer)
+	require.NotNil(t, loop.openWindow)
+	assert.Equal(t, "bob", loop.openWindow.Author)
+
+	loop.stopTimers()
+}
+
+func TestEventLoop_CrossAuthorSamePathPingPongUsesOnlyAuthorBoundaries(t *testing.T) {
+	worker, _, _ := setupCommitPushSplitWorker(t)
+	loop := newBranchWorkerEventLoop(worker, time.Hour)
+	loop.lastPushAt = time.Now()
+
+	for _, event := range []Event{
+		configMapEvent("F", "alice", "team-a"),
+		configMapEvent("F", "bob", "team-a"),
+		configMapEvent("X", "alice", "team-a"),
+		configMapEvent("F", "alice", "team-a"),
+	} {
+		loop.handleQueueItem(WorkItem{Request: &WriteRequest{
+			Events:     []Event{event},
+			CommitMode: CommitModePerEvent,
+		}})
+	}
+	loop.finalizeOpenWindow()
+
+	require.Len(t, loop.pendingWrites, 3)
+	require.Len(t, loop.pendingWrites[0].Events, 1)
+	assert.Equal(t, "alice", loop.pendingWrites[0].Events[0].UserInfo.Username)
+	assert.Equal(t, "F", loop.pendingWrites[0].Events[0].Identifier.Name)
+	require.Len(t, loop.pendingWrites[1].Events, 1)
+	assert.Equal(t, "bob", loop.pendingWrites[1].Events[0].UserInfo.Username)
+	assert.Equal(t, "F", loop.pendingWrites[1].Events[0].Identifier.Name)
+	require.Len(t, loop.pendingWrites[2].Events, 2)
+	assert.Equal(t, "alice", loop.pendingWrites[2].Events[0].UserInfo.Username)
+	assert.Equal(t, "X", loop.pendingWrites[2].Events[0].Identifier.Name)
+	assert.Equal(t, "F", loop.pendingWrites[2].Events[1].Identifier.Name)
+
+	loop.stopTimers()
+}
+
 func TestEventLoop_AtomicRequest_RespectsCooldownAndUsesNormalPushPath(t *testing.T) {
 	worker, serverRepo, remoteURL := setupCommitPushSplitWorker(t)
 
@@ -679,7 +954,7 @@ func TestEventLoop_AtomicRequest_RespectsCooldownAndUsesNormalPushPath(t *testin
 		CommitMode: CommitModeAtomic,
 	}})
 
-	assert.Empty(t, loop.buffer, "atomic requests should not remain in the live-event buffer")
+	assert.Nil(t, loop.openWindow, "atomic requests should not remain in the live-event window")
 	assert.Len(t, loop.pendingWrites, 1,
 		"atomic requests should join pendingWrites and wait for the normal push cycle")
 	assert.NotNil(t, loop.pushTimer,
