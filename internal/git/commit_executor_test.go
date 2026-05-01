@@ -105,7 +105,7 @@ func TestExecutor_GroupedSingleEvent_UsesPerEventMessageFallback(t *testing.T) {
 
 	unit := CommitUnit{
 		MessageKind:  CommitMessagePerEvent,
-		Events:       []Event{makeEvent("alice", "team-a", "api", "v1")},
+		Events:       []Event{makeEvent("alice", "api")},
 		CommitConfig: config,
 		GroupAuthor:  "alice",
 		Target: ResolvedTargetMetadata{
@@ -128,8 +128,8 @@ func TestExecutor_GroupedMultiEvent_UsesGroupTemplate(t *testing.T) {
 	unit := CommitUnit{
 		MessageKind: CommitMessageGrouped,
 		Events: []Event{
-			makeEvent("alice", "team-a", "api", "v1"),
-			makeEvent("alice", "team-a", "worker", "v1"),
+			makeEvent("alice", "api"),
+			makeEvent("alice", "worker"),
 		},
 		CommitConfig: config,
 		GroupAuthor:  "alice",
@@ -153,8 +153,8 @@ func TestExecutor_AtomicUnit_UsesBatchMessage(t *testing.T) {
 		MessageKind:   CommitMessageBatch,
 		CommitMessage: "",
 		Events: []Event{
-			makeEvent("alice", "team-a", "api", "v1"),
-			makeEvent("bob", "team-a", "worker", "v1"),
+			makeEvent("alice", "api"),
+			makeEvent("bob", "worker"),
 		},
 		CommitConfig: config,
 		Target: ResolvedTargetMetadata{

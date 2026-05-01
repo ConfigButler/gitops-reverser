@@ -1,7 +1,7 @@
 # Commit Window And Commit Planning
 
 > Status: implemented
-> Date: 2026-04-30
+> Date: 2026-05-01
 
 This document is the source of truth for the current commit-window and commit
 planning implementation. It replaces the earlier batching design, planning
@@ -59,16 +59,19 @@ resolved when the work entered the pending lifecycle, so a deleted or changed
 ```mermaid
 flowchart TD
     A[WriteRequest or audit event] --> B{Commit mode}
-    B -->|PerEvent| C[BranchWorker buffer]
-    B -->|Atomic| D[PendingWriteAtomic]
-    C --> E{Drain trigger}
-    E -->|commitWindow silence| F[PendingWriteGroupedWindow]
-    E -->|buffer cap| F
+    B -->|PerEvent| C[Open window: same author and target]
+    C --> E{Finalize trigger}
+    E -->|author or target change| F[PendingWriteCommit]
+    E -->|commitWindow silence| F
+    E -->|byte cap| F
     E -->|commitWindow = 0| F
     E -->|shutdown| F
+    B -->|Atomic| Q[Finalize open window if present]
+    Q -.-> F
+    Q -->|then| D[PendingWriteAtomic]
     F --> G[pendingWrites]
     D --> G
-    G --> H[CommitPlanner builds CommitPlan]
+    G --> H[CommitPlanner projects 1:1]
     H --> I[CommitExecutor writes local commits]
     I --> J{Push}
     J -->|success| K[clear pendingWrites and advance lastPushAt]
@@ -78,52 +81,66 @@ flowchart TD
     J -->|transient failure| N[keep local commits and pendingWrites for retry]
 ```
 
-`BranchWorker` owns buffering, timers, repository preparation, push cooldowns,
-and retry scheduling. It retains `[]PendingWrite` until a push succeeds. Local
-commit creation does not clear pending work.
+`BranchWorker` owns the live open window, timers, repository preparation, push
+cooldowns, and retry scheduling. It retains `[]PendingWrite` until a push
+succeeds. Local commit creation does not clear pending work.
+
+Per-event writes are processed as a stream. The branch worker keeps one open
+window at a time, and that window contains only one author and one target. The
+window finalizes immediately on author change, target change, `commitWindow=0`,
+the byte cap, shutdown, or commit-window silence. Repeated writes to the same
+Git path inside the open window are last-write-wins while preserving first-seen
+path order.
+
+Atomic writes are different: they bypass the live-event window, but they do not
+jump ahead of already-windowed live events. If an atomic write arrives while the
+branch worker has an open event window, the worker finalizes that window into a
+commit pending write first, then appends the atomic pending write. This
+preserves arrival order while keeping atomic writes as one caller-defined batch.
 
 ## Core Types
 
 `WriteRequest` is the external input contract for Git writes. Callers choose
 between:
 
-- `CommitModePerEvent`, used for live audit events that may be windowed.
+- `CommitModePerEvent`, used for live audit events that may be windowed. With
+  `commitWindow=0`, each event finalizes immediately.
 - `CommitModeAtomic`, used for reconcile snapshots that must land as one commit.
 
 `PendingWrite` is the durability unit retained until push succeeds:
 
-- `PendingWriteGroupedWindow` represents a drained commit-window buffer.
+- `PendingWriteCommit` represents one finalized commit-shaped event window.
 - `PendingWriteAtomic` represents one caller-defined atomic write.
 
 Pending writes carry resolved target metadata: target identity, destination
 path, bootstrap options, and encryption configuration. That metadata is the
 replay contract.
 
-`CommitPlan` is the planner output. It contains ordered `CommitUnit`s, each of
-which maps to at most one local Git commit.
+`CommitPlan` is the planner output. It contains ordered `CommitUnit`s. Each
+`PendingWrite` maps to exactly one `CommitUnit`, and each unit maps to at most
+one local Git commit.
 
 `CommitExecutor` executes commit units. It applies files, stages bootstrap
 templates, configures encryption from the unit, skips no-op units, renders the
 message, chooses commit metadata, and creates the local commit.
 
-## Grouping Rules
+## Window Rules
 
-The grouped-window planner walks events in arrival order and produces one group
-per contiguous `(author, gitTarget)` run, with an extra split when a different
-author previously committed the same Git path in the same flush.
+The branch worker is the only owner of commit grouping for live audit events.
+It appends to or finalizes the open window on event arrival.
 
 Rules:
 
-- A new group starts when the author changes.
-- A new group starts when the `GitTarget` changes.
-- A new group starts when a path collides with a path already committed by a
-  prior different-author group in the same flush.
-- Same-author, same-target edits of the same path stay in the same group.
-- Within a group, the latest event for a path wins.
+- A new window starts when there is no open window.
+- The current window finalizes when the author changes.
+- The current window finalizes when the `GitTarget` changes.
+- Same-author, same-target edits of the same path stay in the same window.
+- Within a window, the latest event for a path wins.
 - First-seen path order is preserved for commit message resource ordering.
 
-This gives a useful balance: GUI-style repeated edits collapse to the final
-state, while cross-author edits keep honest commit boundaries.
+This keeps GUI-style repeated edits compact while making commit boundaries
+visible at the same point where events enter the pending lifecycle. There is no
+planner-time regrouping pass.
 
 ## Messages And Authorship
 
@@ -135,7 +152,7 @@ There are three message kinds:
 - Batch: atomic reconcile write, operator author, `commit.message.batchTemplate`.
 
 A grouped unit with one event intentionally falls back to the per-event message
-kind. This keeps `commitWindow=0` and one-event drains readable.
+kind. This keeps `commitWindow=0` and one-event finalized windows readable.
 
 The grouped template receives `GroupedCommitMessageData`:
 
@@ -185,13 +202,13 @@ spamming the remote while still keeping ordinary single-change latency close to
 
 The implementation is covered at three useful levels:
 
-- Planner tests assert grouping, atomic plan shape, arrival order, and
+- Planner tests assert 1:1 projection, atomic plan shape, arrival order, and
   one-resolution-per-target encryption lookup.
 - Executor tests assert message-kind routing, no-op skipping, and encryption
   coming from `CommitUnit` metadata.
-- Branch-worker tests assert retained pending writes, transient vs conflict
-  push handling, replay with deleted target metadata, atomic/grouped interleave
-  order, and no-op replay behavior.
+- Branch-worker tests assert open-window finalize triggers, retained pending
+  writes, transient vs conflict push handling, replay with deleted target
+  metadata, atomic/commit interleave order, and no-op replay behavior.
 
 The e2e smoke test for commit-window batching covers the full pipeline from
 Kubernetes event to Git commit. The deeper replay and failure-classification

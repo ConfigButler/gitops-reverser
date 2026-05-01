@@ -38,9 +38,8 @@ const (
 	DefaultCommitMessageTemplate = "[{{.Operation}}] {{.APIVersion}}/{{.Resource}}/{{.Name}}"
 	// DefaultBatchCommitMessageTemplate is the default atomic batch commit message shape.
 	DefaultBatchCommitMessageTemplate = "reconcile: sync {{.Count}} resources"
-	// DefaultGroupCommitMessageTemplate is the default message shape for grouped
-	// commits (one commit per (author, gitTarget) group from the commit-window
-	// batching pipeline).
+	// DefaultGroupCommitMessageTemplate is the default message shape for
+	// finalized commit-window commits that contain multiple events.
 	DefaultGroupCommitMessageTemplate = "{{.Author}} on {{.GitTarget}}: {{.Count}} resource(s)"
 
 	resourceRefStringPartCap = 5
@@ -101,7 +100,9 @@ type UserInfo struct {
 type CommitMode string
 
 const (
-	// CommitModePerEvent creates one commit per event in the request.
+	// CommitModePerEvent streams request events through the live commit window.
+	// With commitWindow=0 each event finalizes immediately; otherwise events
+	// coalesce by author, target, and quiet-window boundaries.
 	CommitModePerEvent CommitMode = "per_event"
 	// CommitModeAtomic creates one commit for all events in the request.
 	CommitModeAtomic CommitMode = "atomic"
@@ -123,9 +124,8 @@ type WriteRequest struct {
 type PendingWriteKind string
 
 const (
-	// PendingWriteGroupedWindow is buffered live-event work drained from the
-	// commit window.
-	PendingWriteGroupedWindow PendingWriteKind = "grouped_window"
+	// PendingWriteCommit is one finalized commit-shaped live-event window.
+	PendingWriteCommit PendingWriteKind = "grouped_window"
 	// PendingWriteAtomic is a caller-defined atomic request, typically from
 	// reconciliation.
 	PendingWriteAtomic PendingWriteKind = "atomic"
