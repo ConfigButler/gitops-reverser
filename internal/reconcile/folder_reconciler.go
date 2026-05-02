@@ -197,12 +197,6 @@ func (r *FolderReconciler) reconcile() {
 	request := git.WriteRequest{
 		Events:     batchEvents,
 		CommitMode: git.CommitModeAtomic,
-		CommitMessage: fmt.Sprintf(
-			"Reconcile snapshot: %d created, %d deleted, %d reconciled",
-			len(toCreate),
-			len(toDelete),
-			len(existingInBoth),
-		),
 	}
 
 	if err := r.reconcileEmitter.EmitWriteRequest(request); err != nil {

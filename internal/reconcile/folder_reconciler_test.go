@@ -352,12 +352,7 @@ func TestFolderReconciler_EmitsSingleBatch(t *testing.T) {
 	// Batch should contain all events
 	assert.Len(t, batch.Events, 3, "Batch should have 3 events (1 create, 1 delete, 1 reconcile)")
 	assert.Equal(t, git.CommitModeAtomic, batch.CommitMode, "reconcile snapshots should be committed atomically")
-	assert.NotEmpty(t, batch.CommitMessage, "reconcile snapshots should declare a commit message")
-	assert.Equal(t,
-		"Reconcile snapshot: 1 created, 1 deleted, 1 reconciled",
-		batch.CommitMessage,
-		"commit message should summarize the reconcile snapshot",
-	)
+	assert.Empty(t, batch.CommitMessage, "batch commit message should be resolved from GitProvider commit settings")
 	for _, event := range batch.Events {
 		assert.Empty(t, event.UserInfo.Username, "reconcile events should not fabricate a user identity")
 	}
