@@ -20,6 +20,7 @@ package git
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -148,6 +149,46 @@ func TestRenderGroupCommitMessage_CustomTemplate(t *testing.T) {
 	}))
 	require.NoError(t, err)
 	assert.Equal(t, "grouped(platform): alice changed 1 resource(s)", message)
+}
+
+func TestCommitOptionsFor_EmptyAuthorFallsThroughToCommitter(t *testing.T) {
+	config := ResolveCommitConfig(nil)
+	pendingWrite := PendingWrite{
+		Kind: PendingWriteAtomic,
+	}
+	when := time.Now()
+
+	options := commitOptionsFor(pendingWrite, config, nil, when)
+
+	require.NotNil(t, options.Author)
+	require.NotNil(t, options.Committer)
+	assert.Equal(t, DefaultCommitterName, options.Author.Name)
+	assert.Equal(t, DefaultCommitterEmail, options.Author.Email)
+	assert.Equal(t, options.Committer.Name, options.Author.Name)
+	assert.Equal(t, options.Committer.Email, options.Author.Email)
+	assert.Equal(t, when, options.Author.When)
+}
+
+func TestCommitOptionsFor_NonEmptyAuthorIsHonored(t *testing.T) {
+	config := ResolveCommitConfig(nil)
+	pendingWrite := PendingWrite{
+		Kind: PendingWriteCommit,
+		Events: []Event{{
+			UserInfo: UserInfo{Username: "alice"},
+		}},
+	}
+	when := time.Now()
+
+	options := commitOptionsFor(pendingWrite, config, nil, when)
+
+	require.NotNil(t, options.Author)
+	require.NotNil(t, options.Committer)
+	assert.Equal(t, "alice", options.Author.Name)
+	assert.Equal(t, "alice@noreply.cluster.local", options.Author.Email)
+	assert.Equal(t, DefaultCommitterName, options.Committer.Name)
+	assert.Equal(t, DefaultCommitterEmail, options.Committer.Email)
+	assert.NotEqual(t, options.Committer.Name, options.Author.Name)
+	assert.Equal(t, when, options.Author.When)
 }
 
 func TestRenderEventCommitMessage_CreateOperation(t *testing.T) {

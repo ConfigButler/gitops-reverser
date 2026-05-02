@@ -75,19 +75,19 @@ func (p PendingWrite) commitMetadata() (string, *gogit.CommitOptions, error) {
 		if err != nil {
 			return "", nil, err
 		}
-		return message, commitOptionsForEvent(p.Events[0], p.CommitConfig, p.Signer, when), nil
+		return message, commitOptionsFor(p, p.CommitConfig, p.Signer, when), nil
 	case CommitMessageBatch:
 		message, err := renderBatchCommitMessage(p.Events, p.CommitMessage, p.Target().Name, p.CommitConfig)
 		if err != nil {
 			return "", nil, err
 		}
-		return message, commitOptionsForBatch(p.CommitConfig, p.Signer, when), nil
+		return message, commitOptionsFor(p, p.CommitConfig, p.Signer, when), nil
 	case CommitMessageGrouped:
 		message, err := renderGroupCommitMessage(p, p.CommitConfig)
 		if err != nil {
 			return "", nil, err
 		}
-		return message, commitOptionsForGroup(p, p.CommitConfig, p.Signer, when), nil
+		return message, commitOptionsFor(p, p.CommitConfig, p.Signer, when), nil
 	default:
 		return "", nil, fmt.Errorf("unsupported commit message kind %q", p.MessageKind())
 	}

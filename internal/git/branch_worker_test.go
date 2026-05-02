@@ -1005,7 +1005,7 @@ func TestBranchWorker_CommitAndPushRequest_UsesBatchTemplateForAtomicRequest(t *
 						},
 					},
 				},
-				UserInfo: UserInfo{Username: "gitops-reverser"},
+				UserInfo: UserInfo{Username: "ignored-atomic-author"},
 				Path:     "clusters/dev",
 			},
 			{
@@ -1027,7 +1027,7 @@ func TestBranchWorker_CommitAndPushRequest_UsesBatchTemplateForAtomicRequest(t *
 						},
 					},
 				},
-				UserInfo: UserInfo{Username: "gitops-reverser"},
+				UserInfo: UserInfo{Username: "ignored-atomic-author"},
 				Path:     "clusters/dev",
 			},
 		},
