@@ -110,7 +110,7 @@ func ValidateCommitConfig(config CommitConfig) error {
 			Namespace: "default",
 			Name:      "example",
 		},
-		UserInfo:      UserInfo{Username: "gitops-reverser"},
+		UserInfo:      UserInfo{Username: "template-validator"},
 		GitTargetName: "example-target",
 	}
 
@@ -145,46 +145,30 @@ func operatorSignature(config CommitConfig, when time.Time) *object.Signature {
 	}
 }
 
-func commitOptionsForEvent(event Event, config CommitConfig, signer git.Signer, when time.Time) *git.CommitOptions {
-	return &git.CommitOptions{
-		Author: &object.Signature{
-			Name:  event.UserInfo.Username,
-			Email: ConstructSafeEmail(event.UserInfo.Username, "cluster.local"),
-			When:  when,
-		},
-		Committer: operatorSignature(config, when),
-		Signer:    signer,
-	}
-}
-
-func commitOptionsForBatch(config CommitConfig, signer git.Signer, when time.Time) *git.CommitOptions {
-	operator := operatorSignature(config, when)
-	return &git.CommitOptions{
-		Author:    operator,
-		Committer: operator,
-		Signer:    signer,
-	}
-}
-
-// commitOptionsForGroup attributes the commit to the group's author and keeps
-// the operator as the committer (the operator physically writes the commit;
-// signing material, when present, is the operator's). Mirrors
-// commitOptionsForEvent's use of ConstructSafeEmail so cross-path tooling
-// continues to recognise the same identity.
-func commitOptionsForGroup(
+// commitOptionsFor builds the CommitOptions for a pending write. The committer is always the operator.
+func commitOptionsFor(
 	pendingWrite PendingWrite,
 	config CommitConfig,
 	signer git.Signer,
 	when time.Time,
 ) *git.CommitOptions {
+	committer := operatorSignature(config, when)
 	author := pendingWrite.Author()
+	if author == "" {
+		return &git.CommitOptions{
+			Author:    committer,
+			Committer: committer,
+			Signer:    signer,
+		}
+	}
+
 	return &git.CommitOptions{
 		Author: &object.Signature{
 			Name:  author,
 			Email: ConstructSafeEmail(author, "cluster.local"),
 			When:  when,
 		},
-		Committer: operatorSignature(config, when),
+		Committer: committer,
 		Signer:    signer,
 	}
 }
