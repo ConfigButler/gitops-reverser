@@ -27,20 +27,10 @@ import (
 	"time"
 
 	"github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
 
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
-
-// GetCommitMessage returns the default structured commit message for the given event.
-func GetCommitMessage(event Event) string {
-	message, err := renderEventCommitMessage(event, ResolveCommitConfig(nil))
-	if err != nil {
-		return fmt.Sprintf("[%s] %s", event.Operation, event.Identifier.String())
-	}
-	return message
-}
 
 func renderEventCommitMessage(event Event, config CommitConfig) (string, error) {
 	return renderCommitTemplate(
@@ -60,25 +50,31 @@ func renderEventCommitMessage(event Event, config CommitConfig) (string, error) 
 	)
 }
 
-func renderBatchCommitMessage(request *WriteRequest, config CommitConfig) (string, error) {
-	if request != nil && strings.TrimSpace(request.CommitMessage) != "" {
-		return request.CommitMessage, nil
-	}
-
-	count := 0
-	gitTargetName := ""
-	if request != nil {
-		count = len(request.Events)
-		gitTargetName = request.GitTargetName
+func renderBatchCommitMessage(
+	events []Event,
+	override string,
+	gitTarget string,
+	config CommitConfig,
+) (string, error) {
+	if strings.TrimSpace(override) != "" {
+		return override, nil
 	}
 
 	return renderCommitTemplate(
 		"batch",
 		config.Message.BatchTemplate,
 		BatchCommitMessageData{
-			Count:     count,
-			GitTarget: gitTargetName,
+			Count:     len(events),
+			GitTarget: gitTarget,
 		},
+	)
+}
+
+func renderGroupCommitMessage(pendingWrite PendingWrite, config CommitConfig) (string, error) {
+	return renderCommitTemplate(
+		"group",
+		config.Message.GroupTemplate,
+		buildGroupedCommitMessageData(pendingWrite.Author(), pendingWrite.Target().Name, pendingWrite.Events),
 	)
 }
 
@@ -103,13 +99,6 @@ func buildAPIVersion(group, version string) string {
 	return group + "/" + version
 }
 
-func resolveWriteRequestCommitConfig(request *WriteRequest) CommitConfig {
-	if request == nil || request.CommitConfig == nil {
-		return ResolveCommitConfig(nil)
-	}
-	return *request.CommitConfig
-}
-
 // ValidateCommitConfig checks that commit templates are syntactically valid.
 func ValidateCommitConfig(config CommitConfig) error {
 	sampleEvent := Event{
@@ -121,7 +110,7 @@ func ValidateCommitConfig(config CommitConfig) error {
 			Namespace: "default",
 			Name:      "example",
 		},
-		UserInfo:      UserInfo{Username: "gitops-reverser"},
+		UserInfo:      UserInfo{Username: "template-validator"},
 		GitTargetName: "example-target",
 	}
 
@@ -129,9 +118,18 @@ func ValidateCommitConfig(config CommitConfig) error {
 		return err
 	}
 
-	if _, err := renderBatchCommitMessage(&WriteRequest{
-		Events:        []Event{sampleEvent},
-		GitTargetName: "example-target",
+	if _, err := renderBatchCommitMessage(
+		[]Event{sampleEvent},
+		"",
+		"example-target",
+		config,
+	); err != nil {
+		return err
+	}
+
+	if _, err := renderGroupCommitMessage(PendingWrite{
+		Kind:   PendingWriteCommit,
+		Events: []Event{sampleEvent},
 	}, config); err != nil {
 		return err
 	}
@@ -147,41 +145,32 @@ func operatorSignature(config CommitConfig, when time.Time) *object.Signature {
 	}
 }
 
-func commitOptionsForEvent(event Event, config CommitConfig, signer git.Signer, when time.Time) *git.CommitOptions {
-	return &git.CommitOptions{
-		Author: &object.Signature{
-			Name:  event.UserInfo.Username,
-			Email: ConstructSafeEmail(event.UserInfo.Username, "cluster.local"),
-			When:  when,
-		},
-		Committer: operatorSignature(config, when),
-		Signer:    signer,
-	}
-}
-
-func commitOptionsForBatch(config CommitConfig, signer git.Signer, when time.Time) *git.CommitOptions {
-	operator := operatorSignature(config, when)
-	return &git.CommitOptions{
-		Author:    operator,
-		Committer: operator,
-		Signer:    signer,
-	}
-}
-
-// createCommitForEvent creates a commit for the given event.
-func createCommitForEvent(
-	worktree *git.Worktree,
-	event Event,
+// commitOptionsFor builds the CommitOptions for a pending write. The committer is always the operator.
+func commitOptionsFor(
+	pendingWrite PendingWrite,
 	config CommitConfig,
 	signer git.Signer,
-) (plumbing.Hash, error) {
-	commitMessage, err := renderEventCommitMessage(event, config)
-	if err != nil {
-		return plumbing.ZeroHash, err
+	when time.Time,
+) *git.CommitOptions {
+	committer := operatorSignature(config, when)
+	author := pendingWrite.Author()
+	if author == "" {
+		return &git.CommitOptions{
+			Author:    committer,
+			Committer: committer,
+			Signer:    signer,
+		}
 	}
 
-	when := time.Now()
-	return worktree.Commit(commitMessage, commitOptionsForEvent(event, config, signer, when))
+	return &git.CommitOptions{
+		Author: &object.Signature{
+			Name:  author,
+			Email: ConstructSafeEmail(author, "cluster.local"),
+			When:  when,
+		},
+		Committer: committer,
+		Signer:    signer,
+	}
 }
 
 // ConstructSafeEmail takes a raw username and a domain and creates a valid

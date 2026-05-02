@@ -1,7 +1,11 @@
 {
   "permissions": {
     "allow": [
-      "Bash(gh run *)"
+      "Bash(gh run *)",
+      "Bash(grep -rn \"Push.Interval\\\\|Push.MaxCommits\\\\|PushStrategy\\\\|push:\\\\s*$\\\\|spec.push\\\\.\" --include=\"*.go\" --include=\"*.yaml\" --include=\"*.md\")",
+      "Bash(sed -i 's|NewWorkerManager\\(client, log\\)|NewWorkerManager\\(client, log, 0\\)|g' /workspaces/gitops-reverser/internal/git/worker_manager_test.go)",
+      "Bash(sed -i 's|git.NewWorkerManager\\(mgr.GetClient\\(\\), logf.Log.WithName\\(\"worker-manager\"\\)\\)|git.NewWorkerManager\\(mgr.GetClient\\(\\), logf.Log.WithName\\(\"worker-manager\"\\), 0\\)|g' /workspaces/gitops-reverser/internal/controller/suite_test.go)",
+      "Bash(docker info *)"
     ]
   }
 }

@@ -45,7 +45,7 @@ var _ = Describe("GitTargetEventStream", func() {
 	)
 
 	BeforeEach(func() {
-		mockWorker = &mockBranchWorker{events: make([]git.Event, 0), batches: make([]*git.ReconcileBatch, 0)}
+		mockWorker = &mockBranchWorker{events: make([]git.Event, 0), batches: make([]*git.WriteRequest, 0)}
 		logger = logr.Discard()
 		stream = NewGitTargetEventStream(gitTargetName, gitTargetNS, mockWorker, logger)
 	})
@@ -160,16 +160,16 @@ var _ = Describe("GitTargetEventStream", func() {
 		})
 	})
 
-	Describe("EmitReconcileBatch", func() {
-		It("should enqueue batch to worker and stamp GitTarget info", func() {
-			batch := git.ReconcileBatch{
+	Describe("EmitWriteRequest", func() {
+		It("should enqueue request to worker and stamp GitTarget info", func() {
+			request := git.WriteRequest{
 				Events: []git.Event{
 					createTestEvent("pod", "pod1", "CREATE"),
 				},
 				CommitMessage: "reconcile: sync 1 resources",
 			}
 
-			err := stream.EmitReconcileBatch(batch)
+			err := stream.EmitWriteRequest(request)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(mockWorker.batches).To(HaveLen(1))
 			Expect(mockWorker.batches[0].GitTargetName).To(Equal(gitTargetName))
@@ -207,7 +207,7 @@ var _ = Describe("GitTargetEventStream", func() {
 // mockBranchWorker implements EventEnqueuer interface for testing.
 type mockBranchWorker struct {
 	events  []git.Event
-	batches []*git.ReconcileBatch
+	batches []*git.WriteRequest
 }
 
 func (m *mockBranchWorker) Enqueue(event git.Event) {
@@ -223,10 +223,6 @@ func (m *mockBranchWorker) EnqueueRequest(request *git.WriteRequest) {
 		return
 	}
 	m.events = append(m.events, request.Events...)
-}
-
-func (m *mockBranchWorker) EnqueueBatch(batch *git.ReconcileBatch) {
-	m.batches = append(m.batches, batch)
 }
 
 // createTestEvent creates a test event with minimal required fields.

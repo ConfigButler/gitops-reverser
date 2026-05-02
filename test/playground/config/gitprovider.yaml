@@ -8,7 +8,6 @@ spec:
   allowedBranches:
     - "main"
   push:
-    interval: "1s"
-    maxCommits: 1
+    commitWindow: "0s"
   secretRef:
     name: git-creds-playground

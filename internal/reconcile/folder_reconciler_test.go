@@ -351,7 +351,11 @@ func TestFolderReconciler_EmitsSingleBatch(t *testing.T) {
 
 	// Batch should contain all events
 	assert.Len(t, batch.Events, 3, "Batch should have 3 events (1 create, 1 delete, 1 reconcile)")
-	assert.Empty(t, batch.CommitMessage, "batch commit message is now resolved from GitProvider commit settings")
+	assert.Equal(t, git.CommitModeAtomic, batch.CommitMode, "reconcile snapshots should be committed atomically")
+	assert.Empty(t, batch.CommitMessage, "batch commit message should be resolved from GitProvider commit settings")
+	for _, event := range batch.Events {
+		assert.Empty(t, event.UserInfo.Username, "reconcile events should not fabricate a user identity")
+	}
 }
 
 func TestFolderReconciler_ResetStateRequiresFreshRepoAndClusterSnapshots(t *testing.T) {
@@ -391,11 +395,11 @@ func TestFolderReconciler_ResetStateRequiresFreshRepoAndClusterSnapshots(t *test
 
 // MockReconcileEmitter is a mock implementation of ReconcileEmitter for testing.
 type MockReconcileEmitter struct {
-	Batches []git.ReconcileBatch
+	Batches []git.WriteRequest
 }
 
-func (m *MockReconcileEmitter) EmitReconcileBatch(batch git.ReconcileBatch) error {
-	m.Batches = append(m.Batches, batch)
+func (m *MockReconcileEmitter) EmitWriteRequest(request git.WriteRequest) error {
+	m.Batches = append(m.Batches, request)
 	return nil
 }
 

@@ -20,6 +20,7 @@ package git
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -36,6 +37,7 @@ func TestResolveCommitConfig_Defaults(t *testing.T) {
 	assert.Equal(t, DefaultCommitterEmail, config.Committer.Email)
 	assert.Equal(t, DefaultCommitMessageTemplate, config.Message.Template)
 	assert.Equal(t, DefaultBatchCommitMessageTemplate, config.Message.BatchTemplate)
+	assert.Equal(t, DefaultGroupCommitMessageTemplate, config.Message.GroupTemplate)
 }
 
 func TestResolveCommitConfig_CustomValues(t *testing.T) {
@@ -47,6 +49,7 @@ func TestResolveCommitConfig_CustomValues(t *testing.T) {
 		Message: &v1alpha1.CommitMessageSpec{
 			Template:      "audit: {{.Operation}} {{.Name}}",
 			BatchTemplate: "snapshot: {{.Count}} {{.GitTarget}}",
+			GroupTemplate: "grouped: {{.Author}} {{.Count}}",
 		},
 	})
 
@@ -54,6 +57,7 @@ func TestResolveCommitConfig_CustomValues(t *testing.T) {
 	assert.Equal(t, "audit@example.com", config.Committer.Email)
 	assert.Equal(t, "audit: {{.Operation}} {{.Name}}", config.Message.Template)
 	assert.Equal(t, "snapshot: {{.Count}} {{.GitTarget}}", config.Message.BatchTemplate)
+	assert.Equal(t, "grouped: {{.Author}} {{.Count}}", config.Message.GroupTemplate)
 }
 
 func TestValidateCommitConfig_InvalidTemplate(t *testing.T) {
@@ -66,6 +70,18 @@ func TestValidateCommitConfig_InvalidTemplate(t *testing.T) {
 	err := ValidateCommitConfig(config)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "parse event commit template")
+}
+
+func TestValidateCommitConfig_InvalidGroupTemplate(t *testing.T) {
+	config := ResolveCommitConfig(&v1alpha1.CommitSpec{
+		Message: &v1alpha1.CommitMessageSpec{
+			GroupTemplate: "{{.Author",
+		},
+	})
+
+	err := ValidateCommitConfig(config)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "parse group commit template")
 }
 
 func TestRenderEventCommitMessage_CustomTemplate(t *testing.T) {
@@ -92,22 +108,98 @@ func TestRenderEventCommitMessage_CustomTemplate(t *testing.T) {
 }
 
 func TestRenderBatchCommitMessage_DefaultTemplate(t *testing.T) {
-	message, err := renderBatchCommitMessage(&WriteRequest{
-		Events:        []Event{{Operation: "CREATE"}, {Operation: "DELETE"}},
-		GitTargetName: "demo",
-	}, ResolveCommitConfig(nil))
+	message, err := renderBatchCommitMessage(
+		[]Event{{Operation: "CREATE"}, {Operation: "DELETE"}},
+		"",
+		"demo",
+		ResolveCommitConfig(nil),
+	)
 	require.NoError(t, err)
 	assert.Equal(t, "reconcile: sync 2 resources", message)
 }
 
-func TestGetCommitMessage_CreateOperation(t *testing.T) {
+func TestRenderGroupCommitMessage_CustomTemplate(t *testing.T) {
+	events := []Event{{
+		Operation: "UPDATE",
+		Identifier: types.ResourceIdentifier{
+			Group:     "apps",
+			Version:   "v1",
+			Resource:  "deployments",
+			Namespace: "prod",
+			Name:      "api",
+		},
+		UserInfo:           UserInfo{Username: "alice"},
+		GitTargetName:      "platform",
+		GitTargetNamespace: "default",
+	}}
+
+	message, err := renderGroupCommitMessage(PendingWrite{
+		Kind:   PendingWriteCommit,
+		Events: events,
+		Targets: map[pendingTargetKey]ResolvedTargetMetadata{
+			{Name: "platform", Namespace: "default"}: {
+				Name:      "platform",
+				Namespace: "default",
+			},
+		},
+	}, ResolveCommitConfig(&v1alpha1.CommitSpec{
+		Message: &v1alpha1.CommitMessageSpec{
+			GroupTemplate: "grouped({{.GitTarget}}): {{.Author}} changed {{.Count}} resource(s)",
+		},
+	}))
+	require.NoError(t, err)
+	assert.Equal(t, "grouped(platform): alice changed 1 resource(s)", message)
+}
+
+func TestCommitOptionsFor_EmptyAuthorFallsThroughToCommitter(t *testing.T) {
+	config := ResolveCommitConfig(nil)
+	pendingWrite := PendingWrite{
+		Kind: PendingWriteAtomic,
+	}
+	when := time.Now()
+
+	options := commitOptionsFor(pendingWrite, config, nil, when)
+
+	require.NotNil(t, options.Author)
+	require.NotNil(t, options.Committer)
+	assert.Equal(t, DefaultCommitterName, options.Author.Name)
+	assert.Equal(t, DefaultCommitterEmail, options.Author.Email)
+	assert.Equal(t, options.Committer.Name, options.Author.Name)
+	assert.Equal(t, options.Committer.Email, options.Author.Email)
+	assert.Equal(t, when, options.Author.When)
+}
+
+func TestCommitOptionsFor_NonEmptyAuthorIsHonored(t *testing.T) {
+	config := ResolveCommitConfig(nil)
+	pendingWrite := PendingWrite{
+		Kind: PendingWriteCommit,
+		Events: []Event{{
+			UserInfo: UserInfo{Username: "alice"},
+		}},
+	}
+	when := time.Now()
+
+	options := commitOptionsFor(pendingWrite, config, nil, when)
+
+	require.NotNil(t, options.Author)
+	require.NotNil(t, options.Committer)
+	assert.Equal(t, "alice", options.Author.Name)
+	assert.Equal(t, "alice@noreply.cluster.local", options.Author.Email)
+	assert.Equal(t, DefaultCommitterName, options.Committer.Name)
+	assert.Equal(t, DefaultCommitterEmail, options.Committer.Email)
+	assert.NotEqual(t, options.Committer.Name, options.Author.Name)
+	assert.Equal(t, when, options.Author.When)
+}
+
+func TestRenderEventCommitMessage_CreateOperation(t *testing.T) {
 	event := newCommitTestEvent("pods", "default", "test-pod", "CREATE", "john.doe@example.com")
 
-	message := GetCommitMessage(event)
+	message, err := renderEventCommitMessage(event, ResolveCommitConfig(nil))
+	require.NoError(t, err)
 	assert.Equal(t, "[CREATE] v1/pods/test-pod", message)
 }
 
-func TestGetCommitMessage_UpdateOperation(t *testing.T) {
+func TestRenderEventCommitMessage_UpdateOperation(t *testing.T) {
 	event := newCommitTestEvent(
 		"services",
 		"production",
@@ -117,19 +209,21 @@ func TestGetCommitMessage_UpdateOperation(t *testing.T) {
 	)
 	event.Path = "prod-repo"
 
-	message := GetCommitMessage(event)
+	message, err := renderEventCommitMessage(event, ResolveCommitConfig(nil))
+	require.NoError(t, err)
 	assert.Equal(t, "[UPDATE] v1/services/my-service", message)
 }
 
-func TestGetCommitMessage_DeleteOperation(t *testing.T) {
+func TestRenderEventCommitMessage_DeleteOperation(t *testing.T) {
 	event := newCommitTestEvent("configmaps", "staging", "old-config", "DELETE", "admin")
 	event.Path = "staging-repo"
 
-	message := GetCommitMessage(event)
+	message, err := renderEventCommitMessage(event, ResolveCommitConfig(nil))
+	require.NoError(t, err)
 	assert.Equal(t, "[DELETE] v1/configmaps/old-config", message)
 }
 
-func TestGetCommitMessage_ClusterScopedResource(t *testing.T) {
+func TestRenderEventCommitMessage_ClusterScopedResource(t *testing.T) {
 	obj := &unstructured.Unstructured{}
 	obj.SetName("my-namespace")
 	obj.SetKind("Namespace")
@@ -148,21 +242,24 @@ func TestGetCommitMessage_ClusterScopedResource(t *testing.T) {
 		Path:      "cluster-repo",
 	}
 
-	message := GetCommitMessage(event)
+	message, err := renderEventCommitMessage(event, ResolveCommitConfig(nil))
+	require.NoError(t, err)
 	assert.Equal(t, "[CREATE] v1/namespaces/my-namespace", message)
 }
 
-func TestGetCommitMessage_EmptyUsername(t *testing.T) {
+func TestRenderEventCommitMessage_EmptyUsername(t *testing.T) {
 	event := newCommitTestEvent("pods", "default", "test-pod", "CREATE", "")
 
-	message := GetCommitMessage(event)
+	message, err := renderEventCommitMessage(event, ResolveCommitConfig(nil))
+	require.NoError(t, err)
 	assert.Equal(t, "[CREATE] v1/pods/test-pod", message)
 }
 
-func TestGetCommitMessage_SpecialCharactersInNames(t *testing.T) {
+func TestRenderEventCommitMessage_SpecialCharactersInNames(t *testing.T) {
 	event := newCommitTestEvent("pods", "test-ns_with_underscores", "test-pod.with.dots", "UPDATE", "user@domain.com")
 
-	message := GetCommitMessage(event)
+	message, err := renderEventCommitMessage(event, ResolveCommitConfig(nil))
+	require.NoError(t, err)
 	assert.Equal(t, "[UPDATE] v1/pods/test-pod.with.dots", message)
 }
 
@@ -189,7 +286,8 @@ func TestIntegration_FilePathAndCommitMessage(t *testing.T) {
 	}
 
 	filePath := identifier.ToGitPath()
-	commitMessage := GetCommitMessage(event)
+	commitMessage, err := renderEventCommitMessage(event, ResolveCommitConfig(nil))
+	require.NoError(t, err)
 
 	assert.Equal(t, "v1/pods/integration-test/integration-test-pod.yaml", filePath)
 	assert.Equal(t, "[CREATE] v1/pods/integration-test-pod", commitMessage)
@@ -220,7 +318,8 @@ func TestCommitMessage_AllOperations(t *testing.T) {
 				UserInfo:  UserInfo{Username: "test-user"},
 			}
 
-			message := GetCommitMessage(event)
+			message, err := renderEventCommitMessage(event, ResolveCommitConfig(nil))
+			require.NoError(t, err)
 			assert.Equal(t, "["+op+"] v1/testkinds/test-resource", message)
 		})
 	}
@@ -229,7 +328,8 @@ func TestCommitMessage_AllOperations(t *testing.T) {
 func TestGenerateLocalCommits_DeleteOperation(t *testing.T) {
 	event := newCommitTestEvent("configmaps", "default", "test-configmap", "DELETE", "admin")
 
-	commitMessage := GetCommitMessage(event)
+	commitMessage, err := renderEventCommitMessage(event, ResolveCommitConfig(nil))
+	require.NoError(t, err)
 	assert.Contains(t, commitMessage, "[DELETE]")
 	assert.Contains(t, commitMessage, "configmaps/test-configmap")
 }
@@ -254,7 +354,8 @@ func TestGenerateLocalCommits_CreateUpdateDeleteMixed(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			event := newCommitTestEvent("pods", "default", tc.objName, tc.operation, "test-user")
-			message := GetCommitMessage(event)
+			message, err := renderEventCommitMessage(event, ResolveCommitConfig(nil))
+			require.NoError(t, err)
 			assert.Contains(t, message, tc.expected)
 		})
 	}
@@ -315,7 +416,8 @@ func TestDeleteOperation_CommitMessageFormat(t *testing.T) {
 				UserInfo:  UserInfo{Username: tc.username},
 			}
 
-			message := GetCommitMessage(event)
+			message, err := renderEventCommitMessage(event, ResolveCommitConfig(nil))
+			require.NoError(t, err)
 			assert.Equal(t, tc.expected, message)
 		})
 	}
@@ -343,7 +445,8 @@ func TestDeleteOperation_ClusterScoped(t *testing.T) {
 	}
 
 	filePath := identifier.ToGitPath()
-	commitMessage := GetCommitMessage(event)
+	commitMessage, err := renderEventCommitMessage(event, ResolveCommitConfig(nil))
+	require.NoError(t, err)
 
 	assert.Equal(t, "v1/namespaces/test-namespace.yaml", filePath)
 	assert.Equal(t, "[DELETE] v1/namespaces/test-namespace", commitMessage)
@@ -367,7 +470,8 @@ func TestBatchOperations_MultipleDeletes(t *testing.T) {
 	}
 
 	for i, event := range events {
-		message := GetCommitMessage(event)
+		message, err := renderEventCommitMessage(event, ResolveCommitConfig(nil))
+		require.NoError(t, err)
 		assert.Contains(t, message, "[DELETE]")
 		assert.Contains(t, message, resources[i].name)
 	}

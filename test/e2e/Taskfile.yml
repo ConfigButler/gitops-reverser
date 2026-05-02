@@ -87,7 +87,7 @@ vars:
   FLUX_NAMESPACE: '{{.FLUX_NAMESPACE | default "flux-system"}}'
   FLUX_WAIT_TIMEOUT: '{{.FLUX_WAIT_TIMEOUT | default "300s"}}'
   FLUX_SERVICES_WAIT_TIMEOUT: '{{.FLUX_SERVICES_WAIT_TIMEOUT | default "600s"}}'
-  E2E_GO_TEST_TIMEOUT: '{{.E2E_GO_TEST_TIMEOUT | default "10m"}}'
+  E2E_GO_TEST_TIMEOUT: '{{.E2E_GO_TEST_TIMEOUT | default "15m"}}'
   FLUX_SERVICES_DIR: '{{.FLUX_SERVICES_DIR | default "test/e2e/setup/flux"}}'
   DEMO_MANIFESTS_DIR: 'test/e2e/setup/demo-only'
   DEMO_TUNNEL_CREDENTIALS: '{{.DEMO_MANIFESTS_DIR}}/cloudflared-public/tunnel-credentials.yaml'

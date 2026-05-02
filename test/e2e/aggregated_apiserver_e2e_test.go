@@ -165,7 +165,7 @@ spec:
 		}, 30*time.Second, time.Second).Should(Succeed())
 	})
 
-	It("should recover Flunder audit request and response bodies through the proxy", Label("smoke"), func() {
+	It("should recover Flunder audit request and response bodies through the proxy", func() {
 		streamName := defaultAuditRedisStream
 		configMapName := fmt.Sprintf("aggregated-audit-compare-cm-%d", GinkgoRandomSeed())
 		flunderName := fmt.Sprintf("aggregated-audit-compare-flunder-%d", GinkgoRandomSeed())
@@ -274,7 +274,7 @@ spec:
 		ensureFlunderWatchRuleReady()
 	})
 
-	It("should attribute Flunder commits to the impersonated user", Label("smoke"), func() {
+	It("should attribute Flunder commits to the impersonated user", func() {
 		ensureFlunderWatchRuleReady()
 
 		streamName := defaultAuditRedisStream
@@ -353,7 +353,7 @@ spec:
 		}, 2*time.Minute, 2*time.Second).Should(Succeed())
 	})
 
-	It("should create separate git commits for Flunder create, update, and delete", Label("smoke"), func() {
+	It("should create separate git commits for Flunder create, update, and delete", func() {
 		ensureFlunderWatchRuleReady()
 
 		flunderName := fmt.Sprintf("aggregated-commit-flunder-%d", GinkgoRandomSeed())

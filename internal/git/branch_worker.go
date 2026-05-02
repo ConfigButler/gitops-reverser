@@ -31,6 +31,7 @@ import (
 	"time"
 
 	gogit "github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/types"
@@ -50,9 +51,28 @@ const (
 	// This optimization prevents redundant Git fetches when multiple GitTargets
 	// share the same branch and reconcile within a short time window.
 	metadataCacheDuration = 30 * time.Second
+
+	// DefaultCommitWindow is the default rolling silence window used to coalesce
+	// events into one commit per (author, gitTarget). Applied when
+	// GitProvider.spec.push.commitWindow is unset or unparseable.
+	DefaultCommitWindow = 5 * time.Second
+
+	// PushCooldown is the minimum interval between successful pushes. The cooldown
+	// is intentionally fixed: commit cadence is a user concern (commitWindow on
+	// the CRD); push cadence is an implementation/politeness concern.
+	PushCooldown = 5 * time.Second
 )
 
-var errEventTargetMetadataMissing = errors.New("event git target metadata missing")
+var (
+	// These function vars are narrow test seams for classifying push failures
+	// without duplicating the repository layer in tests.
+	//nolint:gochecknoglobals
+	pushAtomicFn = PushAtomic
+	//nolint:gochecknoglobals
+	fetchRemoteBranchHashFn = fetchRemoteBranchHash
+	//nolint:gochecknoglobals
+	syncToRemoteFn = syncToRemote
+)
 
 // BranchWorker processes events for a single (GitProvider, Branch) combination.
 // It can serve multiple GitTargets that write to different paths in the same branch.
@@ -84,18 +104,41 @@ type BranchWorker struct {
 
 	// repoMu serializes repository/worktree operations within this worker.
 	repoMu sync.Mutex
+
+	// branchBufferMaxBytes caps the retained in-memory event data; tripped on
+	// event arrival, an immediate finalize bypasses the commit window.
+	branchBufferMaxBytes int64
+
+	// pushCycleRootHash is the hash the target branch was at on the remote
+	// before the first commit of the current push cycle. pushCycleRootBranch is
+	// the remote branch/ref that hash came from. For an existing worker branch
+	// this is usually the same branch; for a brand new branch it is the default
+	// branch we based the new branch on.
+	//
+	// PushAtomic uses this pair to detect concurrent updates: if the remote has
+	// moved since, we hit the conflict path and replay from retained pending
+	// writes.
+	pushCycleRootBranch plumbing.ReferenceName
+	// Cleared after a successful push. Protected by repoMu.
+	pushCycleRootHash plumbing.Hash
 }
 
 // NewBranchWorker creates a worker for a (provider, branch) combination.
+// Pass 0 (or a negative value) for branchBufferMaxBytes to use
+// DefaultBranchBufferMaxBytes.
 func NewBranchWorker(
 	client client.Client,
 	log logr.Logger,
 	providerName, providerNamespace string,
 	branch string,
 	writer *contentWriter,
+	branchBufferMaxBytes int64,
 ) *BranchWorker {
 	if writer == nil {
 		writer = newContentWriter()
+	}
+	if branchBufferMaxBytes <= 0 {
+		branchBufferMaxBytes = DefaultBranchBufferMaxBytes
 	}
 	return &BranchWorker{
 		GitProviderRef:       providerName,
@@ -107,8 +150,9 @@ func NewBranchWorker(
 			"namespace", providerNamespace,
 			"branch", branch,
 		),
-		contentWriter: writer,
-		eventQueue:    make(chan WorkItem, branchWorkerQueueSize),
+		contentWriter:        writer,
+		eventQueue:           make(chan WorkItem, branchWorkerQueueSize),
+		branchBufferMaxBytes: branchBufferMaxBytes,
 	}
 }
 
@@ -200,17 +244,6 @@ func (w *BranchWorker) enqueueRequest(request *WriteRequest) {
 			"mode", request.CommitMode,
 			"gitTarget", request.GitTargetName)
 	}
-}
-
-// EnqueueBatch adds a reconcile batch to this worker's queue as a single atomic unit.
-func (w *BranchWorker) EnqueueBatch(batch *ReconcileBatch) {
-	if batch == nil {
-		return
-	}
-	if batch.CommitMode == "" {
-		batch.CommitMode = CommitModeAtomic
-	}
-	w.enqueueRequest(batch)
 }
 
 // ListResourcesInPath returns resource identifiers found in a Git folder.
@@ -411,6 +444,12 @@ func (w *BranchWorker) listResourceIdentifiersInPath(
 }
 
 // processEvents is the main event processing loop.
+//
+// The loop owns one live commit-shaped event window. A commit-window timer
+// detects silence for that open window, and a one-shot push timer enforces the
+// PushCooldown between successful pushes. Commit and push are independent:
+// local commits accumulate from retained pending writes and feed
+// replay-on-conflict; only a successful push clears that retained queue.
 func (w *BranchWorker) processEvents() {
 	provider, err := w.getGitProvider(w.ctx)
 	if err != nil {
@@ -418,162 +457,425 @@ func (w *BranchWorker) processEvents() {
 		return
 	}
 
-	// Setup timing
-	pushInterval := w.getPushInterval(provider)
-	maxCommits := w.getMaxCommits(provider)
-	pushTicker := time.NewTicker(pushInterval)
-	defer pushTicker.Stop()
+	loop := newBranchWorkerEventLoop(w, w.getCommitWindow(provider))
+	loop.run()
+}
 
-	var eventBuffer []Event
-	var bufferByteCount int64
+// branchWorkerEventLoop holds the per-branch event-loop state. Only the
+// goroutine running run() may touch these fields, so no extra synchronisation
+// is required.
+type branchWorkerEventLoop struct {
+	w *BranchWorker
+
+	commitWindow time.Duration
+
+	// openWindow holds the one live commit-shaped event window. It is
+	// finalized eagerly on author/target changes, atomic arrivals, byte-cap
+	// trips, commit-window silence, commitWindow=0, and shutdown.
+	openWindow  *openWindow
+	windowBytes int64
+
+	// pendingWrites holds the retained durability units for local commits that
+	// have not yet successfully reached the remote. A successful push is the
+	// only thing that clears this slice.
+	pendingWrites      []PendingWrite
+	pendingWritesBytes int64
+
+	lastPushAt  time.Time
+	commitTimer *time.Timer
+	pushTimer   *time.Timer
+}
+
+func newBranchWorkerEventLoop(w *BranchWorker, commitWindow time.Duration) *branchWorkerEventLoop {
+	return &branchWorkerEventLoop{w: w, commitWindow: commitWindow}
+}
+
+func (l *branchWorkerEventLoop) run() {
+	defer l.stopTimers()
 
 	for {
+		commitC, pushC := l.timerChannels()
 		select {
-		case <-w.ctx.Done():
-			w.handleShutdown(eventBuffer)
+		case <-l.w.ctx.Done():
+			l.handleShutdown()
 			return
-
-		case item := <-w.eventQueue:
-			eventBuffer, bufferByteCount = w.handleQueueItem(
-				item,
-				eventBuffer,
-				bufferByteCount,
-				maxCommits,
-			)
-
-		case <-pushTicker.C:
-			if len(eventBuffer) > 0 {
-				w.commitAndPushRequest(newPerEventWriteRequest(eventBuffer))
-				eventBuffer = nil
-				bufferByteCount = 0
-			}
+		case item := <-l.w.eventQueue:
+			l.handleQueueItem(item)
+		case <-commitC:
+			l.commitTimer = nil
+			l.finalizeOpenWindow()
+			l.maybeSchedulePush()
+		case <-pushC:
+			l.pushTimer = nil
+			l.pushPending()
 		}
 	}
 }
 
-func (w *BranchWorker) handleQueueItem(
-	item WorkItem,
-	eventBuffer []Event,
-	bufferByteCount int64,
-	maxCommits int,
-) ([]Event, int64) {
+func (l *branchWorkerEventLoop) timerChannels() (<-chan time.Time, <-chan time.Time) {
+	var commitC, pushC <-chan time.Time
+	if l.commitTimer != nil {
+		commitC = l.commitTimer.C
+	}
+	if l.pushTimer != nil {
+		pushC = l.pushTimer.C
+	}
+	return commitC, pushC
+}
+
+// totalRetainedBytes is what the operator-level byte cap is enforced against:
+// the open window plus the locally-committed-but-not-yet-pushed events that
+// we keep around for replay-on-conflict.
+func (l *branchWorkerEventLoop) totalRetainedBytes() int64 {
+	return l.windowBytes + l.pendingWritesBytes
+}
+
+func (l *branchWorkerEventLoop) handleQueueItem(item WorkItem) {
 	if item.Request == nil {
-		return eventBuffer, bufferByteCount
+		return
 	}
 
 	if item.Request.CommitMode == CommitModeAtomic {
-		return w.handleAtomicRequest(item.Request, eventBuffer)
+		// Atomic batches bypass the commit window, but not the retained push
+		// lifecycle. Finalize any open live work first so arrival order is
+		// preserved, then append the atomic write to pendingWrites and let the
+		// normal cooldown-driven push path decide when to publish.
+		l.finalizeOpenWindow()
+
+		pendingWrite, err := l.w.buildAtomicPendingWrite(l.w.ctx, item.Request)
+		if err != nil {
+			l.w.Log.Error(err, "Failed to build atomic pending write", "events", len(item.Request.Events))
+			return
+		}
+
+		if err := l.w.commitPendingWrites([]PendingWrite{*pendingWrite}, len(l.pendingWrites) > 0); err != nil {
+			l.w.Log.Error(err, "Atomic commit failed; dropping request", "events", len(item.Request.Events))
+			return
+		}
+
+		l.pendingWrites = append(l.pendingWrites, *pendingWrite)
+		l.pendingWritesBytes += pendingWrite.ByteSize
+		l.maybeSchedulePush()
+		return
 	}
 
-	return w.bufferPerEventRequest(item.Request, eventBuffer, bufferByteCount, maxCommits)
-}
+	for _, event := range item.Request.Events {
+		if l.openWindow != nil && !l.openWindow.canAppend(event) {
+			l.finalizeOpenWindow()
+			l.maybeSchedulePush()
+		}
 
-func (w *BranchWorker) handleAtomicRequest(
-	request *WriteRequest,
-	eventBuffer []Event,
-) ([]Event, int64) {
-	if len(eventBuffer) > 0 {
-		w.commitAndPushRequest(newPerEventWriteRequest(eventBuffer))
+		if l.openWindow == nil {
+			l.openWindow = newOpenWindow(event)
+		}
+		l.openWindow.add(event)
+		l.windowBytes += l.w.estimateEventSize(event)
+
+		if l.totalRetainedBytes() >= l.w.branchBufferMaxBytes {
+			// Memory-pressure trip: drain immediately, ignoring the commit
+			// window. The cap exists to bound pod memory, not to shape
+			// commits. The push still respects the cooldown — a push that
+			// fails on a stuck remote will not free memory, but that's the
+			// known stuck-push pathology documented in the design.
+			l.finalizeOpenWindow()
+			l.maybeSchedulePush()
+			continue
+		}
+
+		if l.commitWindow == 0 {
+			// Honest per-event commits: every event arrival commits
+			// immediately. Push cadence is the only thing the cooldown affects.
+			l.finalizeOpenWindow()
+			l.maybeSchedulePush()
+			continue
+		}
+
+		l.resetCommitTimer()
 	}
-	w.commitAndPushRequest(request)
-	return nil, 0
 }
 
-func (w *BranchWorker) bufferPerEventRequest(
-	request *WriteRequest,
-	eventBuffer []Event,
-	bufferByteCount int64,
-	maxCommits int,
-) ([]Event, int64) {
-	for _, event := range request.Events {
-		eventBuffer = append(eventBuffer, event)
-		bufferByteCount += w.estimateEventSize(event)
+func (l *branchWorkerEventLoop) handleShutdown() {
+	l.w.Log.Info("Handling shutdown, finalizing open window and pushing pending commits")
+	l.finalizeOpenWindow()
+	if len(l.pendingWrites) > 0 {
+		// Shutdown bypasses the cooldown — pending work needs to land before
+		// the worker exits, even if a push was just sent.
+		l.pushPending()
+	}
+}
 
-		if len(eventBuffer) >= maxCommits || bufferByteCount >= maxBytesBytes {
-			w.commitAndPushRequest(newPerEventWriteRequest(eventBuffer))
-			eventBuffer = nil
-			bufferByteCount = 0
+func (l *branchWorkerEventLoop) resetCommitTimer() {
+	if l.commitTimer == nil {
+		l.commitTimer = time.NewTimer(l.commitWindow)
+		return
+	}
+	if !l.commitTimer.Stop() {
+		select {
+		case <-l.commitTimer.C:
+		default:
 		}
 	}
-
-	return eventBuffer, bufferByteCount
+	l.commitTimer.Reset(l.commitWindow)
 }
 
-// commitAndPushRequest processes a write request for this branch.
-func (w *BranchWorker) commitAndPushRequest(request *WriteRequest) {
+// finalizeOpenWindow closes the live event window into one retained
+// commit-shaped pending write and creates the corresponding local commit. On
+// success the events move from openWindow to pendingWrites (retained until a
+// push succeeds). On failure the window is dropped: either the repo is
+// unreachable or the events are otherwise unrecoverable, and we don't want to
+// keep retrying with the same broken state on every commit cycle.
+func (l *branchWorkerEventLoop) finalizeOpenWindow() {
+	if l.openWindow == nil {
+		return
+	}
+
+	l.stopCommitTimer()
+	events := l.openWindow.orderedEvents()
+
+	pendingWrite, err := l.w.buildGroupedPendingWrite(l.w.ctx, events)
+	if err != nil {
+		l.w.Log.Error(err, "Failed to build pending write; dropping open window", "events", len(events))
+		l.openWindow = nil
+		l.windowBytes = 0
+		return
+	}
+
+	hasPendingCommits := len(l.pendingWrites) > 0
+	if err := l.w.commitPendingWrites([]PendingWrite{*pendingWrite}, hasPendingCommits); err != nil {
+		l.w.Log.Error(err, "Commit failed; dropping open window", "events", len(events))
+		l.openWindow = nil
+		l.windowBytes = 0
+		return
+	}
+
+	l.pendingWrites = append(l.pendingWrites, *pendingWrite)
+	l.pendingWritesBytes += pendingWrite.ByteSize
+	l.openWindow = nil
+	l.windowBytes = 0
+}
+
+// maybeSchedulePush is the post-commit hook: it pushes immediately when the
+// cooldown has elapsed (or has never fired), and otherwise schedules a
+// one-shot pushTimer to fire when the cooldown expires. While the cooldown
+// is active, additional commits accumulate locally; when the timer fires,
+// all pending commits go to the remote in a single push.
+func (l *branchWorkerEventLoop) maybeSchedulePush() {
+	if len(l.pendingWrites) == 0 {
+		return
+	}
+	if l.lastPushAt.IsZero() {
+		l.pushPending()
+		return
+	}
+	elapsed := time.Since(l.lastPushAt)
+	if elapsed >= PushCooldown {
+		l.pushPending()
+		return
+	}
+	if l.pushTimer == nil {
+		l.pushTimer = time.NewTimer(PushCooldown - elapsed)
+	}
+}
+
+// pushPending publishes any retained pending writes that already exist as local
+// commits. On success, pendingWrites is cleared and lastPushAt advances. On
+// failure (transient or after exhausting replay retries), pendingWrites stays
+// in place and a future commit/timer will retry.
+func (l *branchWorkerEventLoop) pushPending() {
+	if len(l.pendingWrites) == 0 {
+		l.stopPushTimer()
+		return
+	}
+
+	if err := l.w.pushPendingCommits(l.pendingWrites); err != nil {
+		l.w.Log.Error(err, "Push failed; pending writes retained for retry",
+			"pendingWrites", len(l.pendingWrites))
+		// Leave pendingWrites in place; do NOT advance lastPushAt — the
+		// design specifies lastPushAt only advances on a successful push.
+		l.stopPushTimer()
+		return
+	}
+
+	l.pendingWrites = nil
+	l.pendingWritesBytes = 0
+	l.lastPushAt = time.Now()
+	l.stopPushTimer()
+}
+
+func (l *branchWorkerEventLoop) stopPushTimer() {
+	if l.pushTimer == nil {
+		return
+	}
+	if !l.pushTimer.Stop() {
+		select {
+		case <-l.pushTimer.C:
+		default:
+		}
+	}
+	l.pushTimer = nil
+}
+
+func (l *branchWorkerEventLoop) stopCommitTimer() {
+	if l.commitTimer == nil {
+		return
+	}
+	if !l.commitTimer.Stop() {
+		select {
+		case <-l.commitTimer.C:
+		default:
+		}
+	}
+	l.commitTimer = nil
+}
+
+func (l *branchWorkerEventLoop) stopTimers() {
+	l.stopCommitTimer()
+	l.stopPushTimer()
+}
+
+// commitPendingWrites creates local commits for the provided pending writes
+// without pushing them. When hasPendingCommits is false (no commits retained
+// from earlier in the current push cycle), it first fetches and resets to the
+// remote tip so the new commits are based on the latest remote state.
+func (w *BranchWorker) commitPendingWrites(pendingWrites []PendingWrite, hasPendingCommits bool) error {
 	w.repoMu.Lock()
 	defer w.repoMu.Unlock()
 
-	if request == nil || len(request.Events) == 0 {
-		return
+	if len(pendingWrites) == 0 {
+		return nil
 	}
-
-	log := w.Log.WithValues("eventCount", len(request.Events), "commitMode", request.CommitMode)
-
-	log.Info("Starting git commit and push",
-		"branch", w.Branch)
 
 	provider, err := w.getGitProvider(w.ctx)
 	if err != nil {
-		log.Error(err, "Failed to get GitProvider")
-		return
+		return fmt.Errorf("get GitProvider: %w", err)
 	}
 
-	auth, signer, err := w.resolveWriteCredentials(w.ctx, provider)
+	auth, err := getAuthFromSecret(w.ctx, w.Client, provider)
 	if err != nil {
-		log.Error(err, "Failed to resolve write credentials")
-		return
+		return fmt.Errorf("resolve auth: %w", err)
 	}
 
 	repoPath := w.repoPathForRemote(provider.Spec.URL)
-	pullReport, err := PrepareBranch(w.ctx, provider.Spec.URL, repoPath, w.Branch, auth)
+	if !hasPendingCommits {
+		pullReport, err := PrepareBranch(w.ctx, provider.Spec.URL, repoPath, w.Branch, auth)
+		if err != nil {
+			return fmt.Errorf("prepare repository: %w", err)
+		}
+		w.updateBranchMetadataFromPullReport(pullReport)
+	}
+
+	repo, err := gogit.PlainOpen(repoPath)
 	if err != nil {
-		log.Error(err, "Failed to prepare repository")
-		return
+		return fmt.Errorf("open repository: %w", err)
 	}
-	w.updateBranchMetadataFromPullReport(pullReport)
 
-	preparedRequest, encryptionConfig, err := w.prepareWriteRequest(w.ctx, request, provider)
+	baseBranch, baseHash, err := w.ensureWriteBranch(repo)
 	if err != nil {
-		log.Error(err, "Failed to prepare write request")
-		return
-	}
-	preparedRequest.Signer = signer
-
-	encryptionWorkDir := filepath.Join(repoPath, requestEncryptionPath(preparedRequest))
-	if err := configureSecretEncryptionWriter(w.contentWriter, encryptionWorkDir, encryptionConfig); err != nil {
-		log.Error(err, "Failed to configure secret encryptor")
-		return
+		return err
 	}
 
-	result, err := WriteRequestWithContentWriter(w.ctx, w.contentWriter, repoPath, preparedRequest, w.Branch, auth)
+	if !hasPendingCommits {
+		w.pushCycleRootBranch = baseBranch
+		w.pushCycleRootHash = baseHash
+	}
+
+	commitsCreated, err := w.executePendingWrites(w.ctx, repo, pendingWrites)
 	if err != nil {
-		log.Error(err, "Failed to write request")
-		return
+		return fmt.Errorf("execute pending writes: %w", err)
+	}
+	if commitsCreated == 0 {
+		return nil
 	}
 
-	log.Info("Successfully pushed commits",
-		"commitsCreated", result.CommitsCreated,
-		"conflictPulls", len(result.ConflictPulls),
-		"failures", result.Failures)
-
-	// Update metadata if conflicts were resolved
-	if len(result.ConflictPulls) > 0 {
-		lastPull := result.ConflictPulls[len(result.ConflictPulls)-1]
-		w.updateBranchMetadataFromPullReport(lastPull)
-	}
-
-	w.recordWriteMetrics(preparedRequest)
+	w.recordPendingWritesMetrics(pendingWrites, commitsCreated)
+	return nil
 }
 
-// handleShutdown finalizes processing when context is canceled.
-func (w *BranchWorker) handleShutdown(
-	eventBuffer []Event,
-) {
-	w.Log.Info("Handling shutdown, flushing buffer")
-	if len(eventBuffer) > 0 {
-		w.commitAndPushRequest(newPerEventWriteRequest(eventBuffer))
+// pushPendingCommits publishes any local commits that have not yet reached the
+// remote. On a conflict it resets to the latest remote tip, rebuilds from the
+// retained pending writes, and retries. On a transient failure it leaves the
+// local commits and retained pending writes in place for a later retry.
+func (w *BranchWorker) pushPendingCommits(pendingWrites []PendingWrite) error {
+	w.repoMu.Lock()
+	defer w.repoMu.Unlock()
+
+	if len(pendingWrites) == 0 {
+		return nil
 	}
+
+	provider, err := w.getGitProvider(w.ctx)
+	if err != nil {
+		return fmt.Errorf("get GitProvider: %w", err)
+	}
+
+	auth, err := getAuthFromSecret(w.ctx, w.Client, provider)
+	if err != nil {
+		return fmt.Errorf("resolve auth: %w", err)
+	}
+
+	repoPath := w.repoPathForRemote(provider.Spec.URL)
+	repo, err := gogit.PlainOpen(repoPath)
+	if err != nil {
+		return fmt.Errorf("open repository: %w", err)
+	}
+
+	const maxRetries = 3
+	rootHash := w.pushCycleRootHash
+	var lastErr error
+
+	for range maxRetries {
+		rootBranch := w.pushCycleRootBranch
+		if rootBranch == "" {
+			rootBranch = plumbing.NewBranchReferenceName(w.Branch)
+		}
+
+		err := pushAtomicFn(w.ctx, repo, rootHash, rootBranch, auth)
+		if err == nil {
+			w.pushCycleRootBranch = ""
+			w.pushCycleRootHash = plumbing.ZeroHash
+			return nil
+		}
+		lastErr = err
+
+		remoteHash, fetchErr := fetchRemoteBranchHashFn(w.ctx, repo, rootBranch, auth)
+		if fetchErr != nil {
+			return err
+		}
+		if remoteHash == rootHash {
+			return err
+		}
+
+		pullReport, syncErr := syncToRemoteFn(w.ctx, repo, plumbing.NewBranchReferenceName(w.Branch), auth)
+		if syncErr != nil {
+			return fmt.Errorf("sync remote during replay: %w", syncErr)
+		}
+		w.updateBranchMetadataFromPullReport(pullReport)
+
+		rootBranch, rootHash, err = w.rebuildPendingWrites(repo, pendingWrites)
+		if err != nil {
+			return err
+		}
+		w.pushCycleRootBranch = rootBranch
+		w.pushCycleRootHash = rootHash
+	}
+
+	return fmt.Errorf("push failed after %d attempts: %w", maxRetries, lastErr)
+}
+
+func (w *BranchWorker) rebuildPendingWrites(
+	repo *gogit.Repository,
+	pendingWrites []PendingWrite,
+) (plumbing.ReferenceName, plumbing.Hash, error) {
+	baseBranch, baseHash, err := w.ensureWriteBranch(repo)
+	if err != nil {
+		return "", plumbing.ZeroHash, err
+	}
+
+	if _, err := w.executePendingWrites(w.ctx, repo, pendingWrites); err != nil {
+		return "", plumbing.ZeroHash, fmt.Errorf("execute replay pending writes: %w", err)
+	}
+
+	return baseBranch, baseHash, nil
 }
 
 // estimateEventSize approximates the serialized YAML size for an event's object.
@@ -587,32 +889,78 @@ func (w *BranchWorker) estimateEventSize(ev Event) int64 {
 	return 0
 }
 
-func (w *BranchWorker) resolveWriteCredentials(
-	ctx context.Context,
-	provider *configv1alpha1.GitProvider,
-) (transport.AuthMethod, gogit.Signer, error) {
-	auth, err := getAuthFromSecret(ctx, w.Client, provider)
-	if err != nil {
-		return nil, nil, err
+func (w *BranchWorker) estimateEventsSize(events []Event) int64 {
+	var total int64
+	for _, event := range events {
+		total += w.estimateEventSize(event)
 	}
-
-	signer, err := getCommitSigner(ctx, w.Client, provider)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	return auth, signer, nil
+	return total
 }
 
-func (w *BranchWorker) recordWriteMetrics(request *WriteRequest) {
+func (w *BranchWorker) getGitTarget(
+	ctx context.Context,
+	targetName string,
+	targetNamespace string,
+) (*configv1alpha1.GitTarget, error) {
+	targetKey := types.NamespacedName{Name: targetName, Namespace: targetNamespace}
+	var target configv1alpha1.GitTarget
+	if err := w.Client.Get(ctx, targetKey, &target); err != nil {
+		return nil, fmt.Errorf("failed to get GitTarget %s: %w", targetKey, err)
+	}
+	return &target, nil
+}
+
+func fetchRemoteBranchHash(
+	ctx context.Context,
+	repo *gogit.Repository,
+	branch plumbing.ReferenceName,
+	auth transport.AuthMethod,
+) (plumbing.Hash, error) {
+	if _, err := SmartFetch(ctx, repo, branch, auth); err != nil {
+		return plumbing.ZeroHash, err
+	}
+
+	remoteRef, err := repo.Reference(plumbing.NewRemoteReferenceName("origin", branch.Short()), true)
+	if errors.Is(err, plumbing.ErrReferenceNotFound) {
+		return plumbing.ZeroHash, nil
+	}
+	if err != nil {
+		return plumbing.ZeroHash, err
+	}
+
+	return remoteRef.Hash(), nil
+}
+
+func (w *BranchWorker) ensureWriteBranch(repo *gogit.Repository) (plumbing.ReferenceName, plumbing.Hash, error) {
+	targetBranch := plumbing.NewBranchReferenceName(w.Branch)
+	baseBranch, baseHash, err := GetCurrentBranch(repo)
+	if err != nil {
+		return "", plumbing.ZeroHash, fmt.Errorf("get current branch: %w", err)
+	}
+
+	if baseBranch != targetBranch {
+		if err := switchOrCreateBranch(repo, targetBranch, w.Log, w.Branch, baseHash); err != nil {
+			return "", plumbing.ZeroHash, err
+		}
+	}
+
+	return baseBranch, baseHash, nil
+}
+
+func (w *BranchWorker) recordPendingWritesMetrics(pendingWrites []PendingWrite, commitsCreated int) {
+	eventCount := 0
+	for _, pendingWrite := range pendingWrites {
+		eventCount += len(pendingWrite.Events)
+	}
+
 	if telemetry.GitOperationsTotal != nil {
-		telemetry.GitOperationsTotal.Add(w.ctx, int64(len(request.Events)))
+		telemetry.GitOperationsTotal.Add(w.ctx, int64(eventCount))
 	}
 	if telemetry.CommitsTotal != nil {
-		telemetry.CommitsTotal.Add(w.ctx, 1)
+		telemetry.CommitsTotal.Add(w.ctx, int64(commitsCreated))
 	}
 	if telemetry.ObjectsWrittenTotal != nil {
-		telemetry.ObjectsWrittenTotal.Add(w.ctx, int64(len(request.Events)))
+		telemetry.ObjectsWrittenTotal.Add(w.ctx, int64(eventCount))
 	}
 }
 
@@ -631,43 +979,25 @@ func (w *BranchWorker) getGitProvider(ctx context.Context) (*configv1alpha1.GitP
 	return &provider, nil
 }
 
-// getPushInterval extracts and validates the push interval from GitProvider.
-func (w *BranchWorker) getPushInterval(provider *configv1alpha1.GitProvider) time.Duration {
-	if provider.Spec.Push != nil && provider.Spec.Push.Interval != nil {
-		pushInterval, err := time.ParseDuration(*provider.Spec.Push.Interval)
-		if err != nil {
-			w.Log.Error(err, "Invalid push interval, using default")
-			return w.getDefaultPushInterval()
-		}
-		return pushInterval
+// getCommitWindow returns the configured commit-window duration. The string is
+// parsed at runtime via time.ParseDuration; an unset value, a parse error, or
+// a negative duration falls back to a defensible default. Per design: parse
+// errors → DefaultCommitWindow (loud signal); negative → 0 (caller asked for
+// near-zero coalescing and we honor that).
+func (w *BranchWorker) getCommitWindow(provider *configv1alpha1.GitProvider) time.Duration {
+	if provider.Spec.Push == nil || provider.Spec.Push.CommitWindow == nil {
+		return DefaultCommitWindow
 	}
-	return w.getDefaultPushInterval()
-}
-
-// getMaxCommits extracts the max commits setting from GitProvider.
-func (w *BranchWorker) getMaxCommits(provider *configv1alpha1.GitProvider) int {
-	if provider.Spec.Push != nil && provider.Spec.Push.MaxCommits != nil {
-		return *provider.Spec.Push.MaxCommits
+	parsed, err := time.ParseDuration(*provider.Spec.Push.CommitWindow)
+	if err != nil {
+		w.Log.Error(err, "Invalid commitWindow, using default", "value", *provider.Spec.Push.CommitWindow)
+		return DefaultCommitWindow
 	}
-	return w.getDefaultMaxCommits()
-}
-
-// getDefaultMaxCommits returns the default max commits.
-func (w *BranchWorker) getDefaultMaxCommits() int {
-	// Use faster defaults for unit tests
-	if strings.Contains(os.Args[0], "test") {
-		return TestMaxCommits
+	if parsed < 0 {
+		w.Log.Info("Negative commitWindow treated as 0", "value", *provider.Spec.Push.CommitWindow)
+		return 0
 	}
-	return DefaultMaxCommits
-}
-
-// getDefaultPushInterval returns the default push interval.
-func (w *BranchWorker) getDefaultPushInterval() time.Duration {
-	// Use faster intervals for unit tests
-	if strings.Contains(os.Args[0], "test") {
-		return TestPushInterval
-	}
-	return ProductionPushInterval
+	return parsed
 }
 
 // GetBranchMetadata returns current branch status without syncing.
@@ -802,140 +1132,6 @@ func buildBootstrapOptions(encryptionConfig *ResolvedEncryptionConfig) pathBoots
 			AgeRecipients: encryptionConfig.AgeRecipients,
 		},
 	}
-}
-
-func newPerEventWriteRequest(events []Event) *WriteRequest {
-	clonedEvents := append([]Event(nil), events...)
-	return &WriteRequest{
-		Events:     clonedEvents,
-		CommitMode: CommitModePerEvent,
-	}
-}
-
-func requestEncryptionPath(request *WriteRequest) string {
-	if request == nil {
-		return ""
-	}
-	for _, event := range request.Events {
-		if strings.TrimSpace(event.Path) != "" {
-			return event.Path
-		}
-	}
-	return ""
-}
-
-func (w *BranchWorker) prepareWriteRequest(
-	ctx context.Context,
-	request *WriteRequest,
-	provider *configv1alpha1.GitProvider,
-) (*WriteRequest, *ResolvedEncryptionConfig, error) {
-	if request == nil {
-		return nil, nil, errors.New("write request is required")
-	}
-
-	prepared := *request
-	prepared.Events = append([]Event(nil), request.Events...)
-	commitConfig := ResolveCommitConfig(nil)
-	if provider != nil {
-		commitConfig = ResolveCommitConfig(provider.Spec.Commit)
-	}
-	prepared.CommitConfig = &commitConfig
-	if prepared.CommitMode == "" {
-		prepared.CommitMode = CommitModePerEvent
-	}
-
-	if prepared.CommitMode == CommitModeAtomic {
-		return w.prepareAtomicWriteRequest(ctx, &prepared)
-	}
-
-	return w.preparePerEventWriteRequest(ctx, &prepared)
-}
-
-func (w *BranchWorker) prepareAtomicWriteRequest(
-	ctx context.Context,
-	request *WriteRequest,
-) (*WriteRequest, *ResolvedEncryptionConfig, error) {
-	if request.GitTargetName == "" || request.GitTargetNamespace == "" {
-		return request, nil, nil
-	}
-
-	targetKey := types.NamespacedName{
-		Name:      request.GitTargetName,
-		Namespace: request.GitTargetNamespace,
-	}
-	var target configv1alpha1.GitTarget
-	if err := w.Client.Get(ctx, targetKey, &target); err != nil {
-		return nil, nil, fmt.Errorf("failed to resolve GitTarget for request: %w", err)
-	}
-
-	encryptionConfig, err := ResolveTargetEncryption(ctx, w.Client, &target)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to resolve target encryption configuration: %w", err)
-	}
-
-	request.BootstrapOptions = buildBootstrapOptions(encryptionConfig)
-	for i := range request.Events {
-		if request.Events[i].Path == "" {
-			request.Events[i].Path = target.Spec.Path
-		}
-		request.Events[i].GitTargetName = request.GitTargetName
-		request.Events[i].GitTargetNamespace = request.GitTargetNamespace
-		request.Events[i].BootstrapOptions = request.BootstrapOptions
-	}
-
-	return request, encryptionConfig, nil
-}
-
-func (w *BranchWorker) preparePerEventWriteRequest(
-	ctx context.Context,
-	request *WriteRequest,
-) (*WriteRequest, *ResolvedEncryptionConfig, error) {
-	var requestEncryption *ResolvedEncryptionConfig
-	for i := range request.Events {
-		encryptionConfig, err := w.resolveEventEncryption(ctx, &request.Events[i])
-		if errors.Is(err, errEventTargetMetadataMissing) {
-			encryptionConfig = nil
-		} else if err != nil {
-			return nil, nil, err
-		}
-		request.Events[i].BootstrapOptions = buildBootstrapOptions(encryptionConfig)
-		if i == 0 {
-			requestEncryption = encryptionConfig
-		}
-	}
-
-	return request, requestEncryption, nil
-}
-
-func (w *BranchWorker) resolveEventEncryption(
-	ctx context.Context,
-	event *Event,
-) (*ResolvedEncryptionConfig, error) {
-	if event == nil || event.GitTargetName == "" || event.GitTargetNamespace == "" {
-		return nil, errEventTargetMetadataMissing
-	}
-
-	targetKey := types.NamespacedName{
-		Name:      event.GitTargetName,
-		Namespace: event.GitTargetNamespace,
-	}
-	var target configv1alpha1.GitTarget
-	if err := w.Client.Get(ctx, targetKey, &target); err != nil {
-		return nil, fmt.Errorf("failed to resolve GitTarget for encryption: %w", err)
-	}
-
-	encryptionConfig, err := ResolveTargetEncryption(ctx, w.Client, &target)
-	if err != nil {
-		return nil, fmt.Errorf("failed to resolve target encryption configuration: %w", err)
-	}
-
-	if event.Path == "" {
-		event.Path = target.Spec.Path
-	}
-	event.GitTargetName = target.Name
-	event.GitTargetNamespace = target.Namespace
-
-	return encryptionConfig, nil
 }
 
 // parseIdentifierFromPath and getAuthFromSecret are defined in helpers.go

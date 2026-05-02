@@ -19,25 +19,98 @@ limitations under the License.
 package git
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"filippo.io/age"
 	gogit "github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
-func TestWriteEvents_SecretEncryptionFailureDoesNotWritePlaintext(t *testing.T) {
-	repoPath := t.TempDir()
-	_, err := gogit.PlainInit(repoPath, false)
+func installFakeSOPSBinary(t *testing.T) {
+	t.Helper()
+
+	dir := t.TempDir()
+	script := filepath.Join(dir, "sops")
+	require.NoError(t, os.WriteFile(script, []byte(`#!/usr/bin/env bash
+set -euo pipefail
+cat <<'EOF'
+apiVersion: v1
+kind: Secret
+sops:
+  version: 3.9.0
+encrypted_regex: "^(data|stringData)$"
+EOF
+cat >/dev/null
+`), 0o700))
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func secretTargetObjects(t *testing.T, providerName, branch, path string) []client.Object {
+	t.Helper()
+
+	identity, err := age.GenerateX25519Identity()
+	require.NoError(t, err)
+
+	return []client.Object{
+		&corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "sops-age-key",
+				Namespace: "default",
+			},
+			Data: map[string][]byte{
+				"identity.agekey": []byte(identity.String()),
+			},
+		},
+		&configv1alpha1.GitTarget{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "secret-target",
+				Namespace: "default",
+			},
+			Spec: configv1alpha1.GitTargetSpec{
+				ProviderRef: configv1alpha1.GitProviderReference{
+					Kind: "GitProvider",
+					Name: providerName,
+				},
+				Branch: branch,
+				Path:   path,
+				Encryption: &configv1alpha1.EncryptionSpec{
+					Provider: "sops",
+					Age: &configv1alpha1.AgeEncryptionSpec{
+						Enabled: true,
+						Recipients: configv1alpha1.AgeRecipientsSpec{
+							ExtractFromSecret: true,
+						},
+					},
+					SecretRef: configv1alpha1.LocalSecretReference{
+						Name: "sops-age-key",
+					},
+				},
+			},
+		},
+	}
+}
+
+func TestBranchWorker_SecretEncryptionFailureDoesNotWritePlaintext(t *testing.T) {
+	tempDir := t.TempDir()
+	remotePath := filepath.Join(tempDir, "remote.git")
+	remoteURL := "file://" + remotePath
+	createBareRepo(t, remotePath)
+
+	worker, err := newTestBranchWorker(remoteURL, "test-repo", "master")
 	require.NoError(t, err)
 
 	event := Event{
@@ -67,10 +140,13 @@ func TestWriteEvents_SecretEncryptionFailureDoesNotWritePlaintext(t *testing.T) 
 		},
 	}
 
-	_, err = WriteEvents(context.Background(), repoPath, []Event{event}, "master", nil)
+	pendingWrite, err := worker.buildGroupedPendingWrite(worker.ctx, []Event{event})
+	require.NoError(t, err)
+	err = worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "secret encryption is required")
 
+	repoPath := worker.repoPathForRemote(remoteURL)
 	secretPath := filepath.Join(repoPath, "v1", "secrets", "default", "test-secret.yaml")
 	_, statErr := os.Stat(secretPath)
 	require.Error(t, statErr, "Secret file should not be written when encryption fails")
@@ -80,9 +156,16 @@ func TestWriteEvents_SecretEncryptionFailureDoesNotWritePlaintext(t *testing.T) 
 	assert.Error(t, statErr, "Secret file should not be written when encryption fails")
 }
 
-func TestWriteEvents_SecretWritesSOPSPath(t *testing.T) {
-	repoPath := t.TempDir()
-	_, err := gogit.PlainInit(repoPath, false)
+func TestBranchWorker_SecretWritesSOPSPath(t *testing.T) {
+	installFakeSOPSBinary(t)
+
+	tempDir := t.TempDir()
+	remotePath := filepath.Join(tempDir, "remote.git")
+	remoteURL := "file://" + remotePath
+	createBareRepo(t, remotePath)
+
+	objects := secretTargetObjects(t, "test-repo", "master", "")
+	worker, err := newTestBranchWorker(remoteURL, "test-repo", "master", objects...)
 	require.NoError(t, err)
 
 	event := Event{
@@ -106,38 +189,42 @@ func TestWriteEvents_SecretWritesSOPSPath(t *testing.T) {
 			Namespace: "default",
 			Name:      "test-secret",
 		},
-		Operation: "CREATE",
-		UserInfo: UserInfo{
-			Username: "tester@example.com",
-		},
+		Operation:          "CREATE",
+		UserInfo:           UserInfo{Username: "tester@example.com"},
+		GitTargetName:      "secret-target",
+		GitTargetNamespace: "default",
 	}
 
-	writer := newContentWriter()
-	writer.setEncryptor(&stubEncryptor{result: []byte("encrypted: true\nsops:\n  version: 3.9.0\n")}, "test-scope")
-
-	_, err = WriteEventsWithContentWriter(context.Background(), writer, repoPath, []Event{event}, "master", nil)
+	pendingWrite, err := worker.buildGroupedPendingWrite(worker.ctx, []Event{event})
 	require.NoError(t, err)
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false))
 
-	sopsPath := filepath.Join(repoPath, "v1", "secrets", "default", "test-secret.sops.yaml")
+	sopsPath := filepath.Join(worker.repoPathForRemote(remoteURL), "v1", "secrets", "default", "test-secret.sops.yaml")
 	assert.FileExists(t, sopsPath)
 }
 
-func TestWriteEvents_DeleteSecretRemovesSOPSPath(t *testing.T) {
-	repoPath := t.TempDir()
-	repo, err := gogit.PlainInit(repoPath, false)
-	require.NoError(t, err)
+func TestBranchWorker_DeleteSecretRemovesSOPSPath(t *testing.T) {
+	tempDir := t.TempDir()
+	remotePath := filepath.Join(tempDir, "remote.git")
+	remoteURL := "file://" + remotePath
+	createBareRepo(t, remotePath)
 
-	sopsPath := filepath.Join(repoPath, "v1", "secrets", "default", "test-secret.sops.yaml")
-	require.NoError(t, os.MkdirAll(filepath.Dir(sopsPath), 0750))
-	require.NoError(t, os.WriteFile(sopsPath, []byte("encrypted"), 0600))
-
-	worktree, err := repo.Worktree()
-	require.NoError(t, err)
-	_, err = worktree.Add("v1/secrets/default/test-secret.sops.yaml")
+	seedPath := filepath.Join(tempDir, "seed")
+	repo, worktree := initLocalRepo(t, seedPath, remoteURL, "master")
+	sopsPath := filepath.Join(seedPath, "v1", "secrets", "default", "test-secret.sops.yaml")
+	require.NoError(t, os.MkdirAll(filepath.Dir(sopsPath), 0o750))
+	require.NoError(t, os.WriteFile(sopsPath, []byte("encrypted"), 0o600))
+	_, err := worktree.Add("v1/secrets/default/test-secret.sops.yaml")
 	require.NoError(t, err)
 	_, err = worktree.Commit("seed", &gogit.CommitOptions{
 		Author: &object.Signature{Name: "seed", Email: "seed@example.com", When: time.Now()},
 	})
+	require.NoError(t, err)
+	require.NoError(t, repo.Push(&gogit.PushOptions{
+		RefSpecs: []config.RefSpec{config.RefSpec("refs/heads/master:refs/heads/master")},
+	}))
+
+	worker, err := newTestBranchWorker(remoteURL, "test-repo", "master")
 	require.NoError(t, err)
 
 	event := Event{
@@ -154,18 +241,24 @@ func TestWriteEvents_DeleteSecretRemovesSOPSPath(t *testing.T) {
 		},
 	}
 
-	_, err = WriteEvents(context.Background(), repoPath, []Event{event}, "master", nil)
+	pendingWrite, err := worker.buildGroupedPendingWrite(worker.ctx, []Event{event})
 	require.NoError(t, err)
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false))
 
-	_, statErr := os.Stat(filepath.Join(repoPath, "v1", "secrets", "default", "test-secret.yaml"))
+	localRepoPath := worker.repoPathForRemote(remoteURL)
+	_, statErr := os.Stat(filepath.Join(localRepoPath, "v1", "secrets", "default", "test-secret.yaml"))
 	require.Error(t, statErr)
-	_, statErr = os.Stat(sopsPath)
+	_, statErr = os.Stat(filepath.Join(localRepoPath, "v1", "secrets", "default", "test-secret.sops.yaml"))
 	assert.ErrorIs(t, statErr, os.ErrNotExist)
 }
 
-func TestWriteEvents_DoesNotBootstrapRootSOPSConfig(t *testing.T) {
-	repoPath := t.TempDir()
-	_, err := gogit.PlainInit(repoPath, false)
+func TestBranchWorker_DoesNotBootstrapRootSOPSConfig(t *testing.T) {
+	tempDir := t.TempDir()
+	remotePath := filepath.Join(tempDir, "remote.git")
+	remoteURL := "file://" + remotePath
+	createBareRepo(t, remotePath)
+
+	worker, err := newTestBranchWorker(remoteURL, "test-repo", "master")
 	require.NoError(t, err)
 
 	event := Event{
@@ -195,15 +288,21 @@ func TestWriteEvents_DoesNotBootstrapRootSOPSConfig(t *testing.T) {
 		},
 	}
 
-	_, err = WriteEvents(context.Background(), repoPath, []Event{event}, "master", nil)
+	pendingWrite, err := worker.buildGroupedPendingWrite(worker.ctx, []Event{event})
 	require.NoError(t, err)
-	_, statErr := os.Stat(filepath.Join(repoPath, sopsConfigFileName))
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false))
+
+	_, statErr := os.Stat(filepath.Join(worker.repoPathForRemote(remoteURL), sopsConfigFileName))
 	assert.ErrorIs(t, statErr, os.ErrNotExist)
 }
 
-func TestWriteEvents_DoesNotCreateBootstrapOnlyCommit(t *testing.T) {
-	repoPath := t.TempDir()
-	repo, err := gogit.PlainInit(repoPath, false)
+func TestBranchWorker_DoesNotCreateBootstrapOnlyCommit(t *testing.T) {
+	tempDir := t.TempDir()
+	remotePath := filepath.Join(tempDir, "remote.git")
+	remoteURL := "file://" + remotePath
+	createBareRepo(t, remotePath)
+
+	worker, err := newTestBranchWorker(remoteURL, "test-repo", "master")
 	require.NoError(t, err)
 
 	event := Event{
@@ -220,11 +319,12 @@ func TestWriteEvents_DoesNotCreateBootstrapOnlyCommit(t *testing.T) {
 		},
 	}
 
-	result, err := WriteEvents(context.Background(), repoPath, []Event{event}, "master", nil)
+	pendingWrite, err := worker.buildGroupedPendingWrite(worker.ctx, []Event{event})
 	require.NoError(t, err)
-	require.NotNil(t, result)
-	assert.Equal(t, 0, result.CommitsCreated)
+	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false))
 
+	repo, err := gogit.PlainOpen(worker.repoPathForRemote(remoteURL))
+	require.NoError(t, err)
 	_, err = repo.Reference(plumbing.NewBranchReferenceName("master"), true)
 	assert.ErrorIs(t, err, plumbing.ErrReferenceNotFound)
 }

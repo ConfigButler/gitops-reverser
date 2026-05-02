@@ -33,7 +33,7 @@ import (
 type EventStreamState string
 
 const (
-	// Reconciling buffers live events while a reconcile batch is in flight.
+	// Reconciling buffers live events while a reconcile write request is in flight.
 	Reconciling EventStreamState = "RECONCILING"
 	// LiveProcessing processes all events normally.
 	LiveProcessing EventStreamState = "LIVE_PROCESSING"
@@ -61,11 +61,10 @@ type GitTargetEventStream struct {
 	mu           sync.RWMutex
 }
 
-// EventEnqueuer interface for enqueuing events and batches (allows mocking).
+// EventEnqueuer interface for enqueuing events and requests (allows mocking).
 type EventEnqueuer interface {
 	Enqueue(event git.Event)
 	EnqueueRequest(request *git.WriteRequest)
-	EnqueueBatch(batch *git.ReconcileBatch)
 }
 
 // NewGitTargetEventStream creates a new event stream for a GitTarget.
@@ -130,13 +129,14 @@ func (s *GitTargetEventStream) OnWatchEvent(event git.Event) {
 	}
 }
 
-// EmitReconcileBatch forwards a complete reconcile batch to the BranchWorker as a single WorkItem.
-// Called while in RECONCILING state by FolderReconciler.
-func (s *GitTargetEventStream) EmitReconcileBatch(batch git.ReconcileBatch) error {
-	batch.GitTargetName = s.gitTargetName
-	batch.GitTargetNamespace = s.gitTargetNamespace
-	batch.CommitMode = git.CommitModeAtomic
-	s.branchWorker.EnqueueRequest(&batch)
+// EmitWriteRequest forwards a complete reconcile write request to the
+// BranchWorker as a single work item. Called while in RECONCILING state by
+// FolderReconciler.
+func (s *GitTargetEventStream) EmitWriteRequest(request git.WriteRequest) error {
+	request.GitTargetName = s.gitTargetName
+	request.GitTargetNamespace = s.gitTargetNamespace
+	request.CommitMode = git.CommitModeAtomic
+	s.branchWorker.EnqueueRequest(&request)
 	return nil
 }
 

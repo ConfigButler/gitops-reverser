@@ -55,8 +55,6 @@ func (r *recordingEnqueuer) EnqueueRequest(request *git.WriteRequest) {
 	r.events = append(r.events, request.Events...)
 }
 
-func (r *recordingEnqueuer) EnqueueBatch(_ *git.ReconcileBatch) {}
-
 func TestHandleEvent_SkipsLiveRoutingWhenAuditLiveEventsEnabled(t *testing.T) {
 	initWatchMetricsOnce.Do(func() {
 		_, _ = telemetry.InitOTLPExporter(context.Background())

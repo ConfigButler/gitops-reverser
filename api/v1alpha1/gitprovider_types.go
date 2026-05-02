@@ -34,7 +34,7 @@ type GitProviderSpec struct {
 	// +required
 	AllowedBranches []string `json:"allowedBranches"`
 
-	// Push defines the strategy for pushing commits (batching).
+	// Push controls how events are coalesced into commits before pushing.
 	// +optional
 	Push *PushStrategy `json:"push,omitempty"`
 
@@ -161,16 +161,27 @@ type CommitterSpec struct {
 
 // CommitMessageSpec configures commit message formatting.
 type CommitMessageSpec struct {
-	// Template is a Go text/template string for per-event commit messages.
+	// Template is a Go text/template string for per-event commit messages
+	// (CommitModePerEvent path; one event per commit).
 	// Available variables: Operation, Group, Version, Resource, Namespace, Name,
 	// APIVersion, Username, GitTarget.
 	// +optional
 	Template string `json:"template,omitempty"`
 
-	// BatchTemplate is a Go text/template string for atomic batch commit messages.
+	// BatchTemplate is a Go text/template string for atomic batch commit messages
+	// (CommitModeAtomic path; one commit covers a snapshot reconcile).
 	// Available variables: Count, GitTarget.
 	// +optional
 	BatchTemplate string `json:"batchTemplate,omitempty"`
+
+	// GroupTemplate is a Go text/template string for grouped commit messages
+	// (the grouped commit-window path; one commit per (author, gitTarget) group
+	// produced by the batching pipeline).
+	// Available variables: Author, GitTarget, Count, Operations (map of
+	// CREATE/UPDATE/DELETE counts), Resources (slice of {Group, Version,
+	// Resource, Namespace, Name}).
+	// +optional
+	GroupTemplate string `json:"groupTemplate,omitempty"`
 }
 
 // CommitSigningSpec configures commit signing.

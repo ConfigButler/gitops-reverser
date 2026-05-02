@@ -38,6 +38,11 @@ const (
 	DefaultCommitMessageTemplate = "[{{.Operation}}] {{.APIVersion}}/{{.Resource}}/{{.Name}}"
 	// DefaultBatchCommitMessageTemplate is the default atomic batch commit message shape.
 	DefaultBatchCommitMessageTemplate = "reconcile: sync {{.Count}} resources"
+	// DefaultGroupCommitMessageTemplate is the default message shape for
+	// finalized commit-window commits that contain multiple events.
+	DefaultGroupCommitMessageTemplate = "{{.Author}} on {{.GitTarget}}: {{.Count}} resource(s)"
+
+	resourceRefStringPartCap = 5
 )
 
 // CommitFile represents a single file to be committed.
@@ -64,14 +69,6 @@ type PullReport struct {
 	ExistsOnRemote  bool // Branch exists on remote
 	HEAD            BranchInfo
 	IncomingChanges bool // SHA changed, requiring resource-level reconcile
-}
-
-// WriteEventsResult provides detailed writeEvents operation results.
-type WriteEventsResult struct {
-	CommitsCreated int           // Number of successfully pushed commits (0 if no changes)
-	LastHash       string        // SHA of the last created event commit
-	ConflictPulls  []*PullReport // List of PullReports: one for each conflict resolution attempt
-	Failures       int           // Number of failures while attempting to push commits (0 in ideal situation)
 }
 
 // BranchKey uniquely identifies a (GitProvider, Branch) combination.
@@ -103,7 +100,9 @@ type UserInfo struct {
 type CommitMode string
 
 const (
-	// CommitModePerEvent creates one commit per event in the request.
+	// CommitModePerEvent streams request events through the live commit window.
+	// With commitWindow=0 each event finalizes immediately; otherwise events
+	// coalesce by author, target, and quiet-window boundaries.
 	CommitModePerEvent CommitMode = "per_event"
 	// CommitModeAtomic creates one commit for all events in the request.
 	CommitModeAtomic CommitMode = "atomic"
@@ -121,8 +120,53 @@ type WriteRequest struct {
 	CommitMode         CommitMode
 }
 
-// ReconcileBatch is a backward-compatible alias for a write request emitted by reconciliation.
-type ReconcileBatch = WriteRequest
+// PendingWriteKind distinguishes the durable write shapes retained until push.
+type PendingWriteKind string
+
+const (
+	// PendingWriteCommit is one finalized commit-shaped live-event window.
+	PendingWriteCommit PendingWriteKind = "grouped_window"
+	// PendingWriteAtomic is a caller-defined atomic request, typically from
+	// reconciliation.
+	PendingWriteAtomic PendingWriteKind = "atomic"
+)
+
+type pendingTargetKey struct {
+	Name      string
+	Namespace string
+}
+
+// ResolvedTargetMetadata is the target-scoped planning data retained with a
+// pending write so replay does not re-fetch mutable GitTarget state.
+type ResolvedTargetMetadata struct {
+	Name             string
+	Namespace        string
+	Path             string
+	BootstrapOptions pathBootstrapOptions
+	EncryptionConfig *ResolvedEncryptionConfig
+}
+
+// PendingWrite is the unit retained until a push succeeds.
+type PendingWrite struct {
+	Kind               PendingWriteKind
+	Events             []Event
+	CommitMessage      string
+	CommitConfig       CommitConfig
+	Signer             gogit.Signer
+	GitTargetName      string
+	GitTargetNamespace string
+	Targets            map[pendingTargetKey]ResolvedTargetMetadata
+	ByteSize           int64
+}
+
+// CommitMessageKind determines which message/authorship path the executor uses.
+type CommitMessageKind string
+
+const (
+	CommitMessagePerEvent CommitMessageKind = "event"
+	CommitMessageBatch    CommitMessageKind = "batch"
+	CommitMessageGrouped  CommitMessageKind = "group"
+)
 
 // WorkItem is the unit of work in the BranchWorker queue.
 type WorkItem struct {
@@ -172,10 +216,11 @@ type CommitterConfig struct {
 	Email string
 }
 
-// CommitMessageConfig contains the resolved per-event and batch templates.
+// CommitMessageConfig contains the resolved per-event, batch, and grouped templates.
 type CommitMessageConfig struct {
 	Template      string
 	BatchTemplate string
+	GroupTemplate string
 }
 
 // CommitMessageData is the template context for per-event commit messages.
@@ -197,6 +242,56 @@ type BatchCommitMessageData struct {
 	GitTarget string
 }
 
+// ResourceRef is the lightweight resource identifier emitted to grouped commit
+// templates via GroupedCommitMessageData.Resources.
+type ResourceRef struct {
+	Group     string
+	Version   string
+	Resource  string
+	Namespace string
+	Name      string
+}
+
+// String renders the ref as group/version/resource[/namespace]/name.
+// The format mirrors ResourceIdentifier.String for templates that want to
+// {{range}} over Resources and just print each entry.
+func (r ResourceRef) String() string {
+	parts := make([]string, 0, resourceRefStringPartCap)
+	if r.Group != "" {
+		parts = append(parts, r.Group)
+	}
+	if r.Version != "" {
+		parts = append(parts, r.Version)
+	}
+	if r.Resource != "" {
+		parts = append(parts, r.Resource)
+	}
+	if r.Namespace != "" {
+		parts = append(parts, r.Namespace)
+	}
+	if r.Name != "" {
+		parts = append(parts, r.Name)
+	}
+	return strings.Join(parts, "/")
+}
+
+// GroupedCommitMessageData is the template context for grouped commit
+// messages. Each grouped commit covers exactly one (author, gitTarget) tuple
+// (see docs/design/commit-window-refactor.md).
+type GroupedCommitMessageData struct {
+	// Author is the verbatim event.UserInfo.Username for the group.
+	Author string
+	// GitTarget is the single target this commit is bound to.
+	GitTarget string
+	// Count is the number of distinct resources committed.
+	Count int
+	// Operations counts events by operation kind (CREATE/UPDATE/DELETE).
+	Operations map[string]int
+	// Resources is the per-resource list, deduplicated by file path so the
+	// final state is what's being committed.
+	Resources []ResourceRef
+}
+
 // ResolveCommitConfig resolves API commit settings into runtime defaults.
 func ResolveCommitConfig(spec *v1alpha1.CommitSpec) CommitConfig {
 	config := CommitConfig{
@@ -207,6 +302,7 @@ func ResolveCommitConfig(spec *v1alpha1.CommitSpec) CommitConfig {
 		Message: CommitMessageConfig{
 			Template:      DefaultCommitMessageTemplate,
 			BatchTemplate: DefaultBatchCommitMessageTemplate,
+			GroupTemplate: DefaultGroupCommitMessageTemplate,
 		},
 	}
 
@@ -229,6 +325,9 @@ func ResolveCommitConfig(spec *v1alpha1.CommitSpec) CommitConfig {
 		}
 		if batchTemplate := strings.TrimSpace(spec.Message.BatchTemplate); batchTemplate != "" {
 			config.Message.BatchTemplate = batchTemplate
+		}
+		if groupTemplate := strings.TrimSpace(spec.Message.GroupTemplate); groupTemplate != "" {
+			config.Message.GroupTemplate = groupTemplate
 		}
 	}
 

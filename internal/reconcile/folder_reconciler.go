@@ -31,9 +31,9 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
-// BatchEmitter emits a complete reconcile batch as a single unit.
-type BatchEmitter interface {
-	EmitReconcileBatch(batch git.ReconcileBatch) error
+// WriteRequestEmitter emits a complete reconcile write request as a single unit.
+type WriteRequestEmitter interface {
+	EmitWriteRequest(request git.WriteRequest) error
 }
 
 // FolderReconciler reconciles Git base folder to match cluster state.
@@ -53,7 +53,7 @@ type FolderReconciler struct {
 	clusterObjects map[string]unstructured.Unstructured
 
 	// Dependencies for event emission
-	reconcileEmitter BatchEmitter
+	reconcileEmitter WriteRequestEmitter
 	controlEmitter   events.ControlEventEmitter
 	logger           logr.Logger
 
@@ -70,7 +70,7 @@ type SnapshotStats struct {
 // NewFolderReconciler creates a new FolderReconciler.
 func NewFolderReconciler(
 	gitDest types.ResourceReference,
-	reconcileEmitter BatchEmitter,
+	reconcileEmitter WriteRequestEmitter,
 	controlEmitter events.ControlEventEmitter,
 	logger logr.Logger,
 ) *FolderReconciler {
@@ -140,7 +140,7 @@ func (r *FolderReconciler) OnRepoState(event events.RepoStateEvent) {
 }
 
 // reconcile performs the reconciliation logic when both states are available.
-// It collects all changes into a single ReconcileBatch and emits it atomically.
+// It collects all changes into a single write request and emits it atomically.
 func (r *FolderReconciler) reconcile() {
 	// Only reconcile when we have both cluster and Git state
 	if !r.clusterStateSeen || !r.gitStateSeen {
@@ -162,7 +162,7 @@ func (r *FolderReconciler) reconcile() {
 
 	total := len(toCreate) + len(toDelete) + len(existingInBoth)
 	if total == 0 {
-		r.logger.V(1).Info("No differences found, skipping batch emission")
+		r.logger.V(1).Info("No differences found, skipping write request emission")
 		return
 	}
 
@@ -175,7 +175,6 @@ func (r *FolderReconciler) reconcile() {
 			Operation:  "CREATE",
 			Identifier: resource,
 			Object:     obj,
-			UserInfo:   git.UserInfo{Username: "gitops-reverser"},
 		})
 	}
 
@@ -183,7 +182,6 @@ func (r *FolderReconciler) reconcile() {
 		batchEvents = append(batchEvents, git.Event{
 			Operation:  "DELETE",
 			Identifier: resource,
-			UserInfo:   git.UserInfo{Username: "gitops-reverser"},
 		})
 	}
 
@@ -193,16 +191,16 @@ func (r *FolderReconciler) reconcile() {
 			Operation:  string(events.ReconcileResource),
 			Identifier: resource,
 			Object:     obj,
-			UserInfo:   git.UserInfo{Username: "gitops-reverser"},
 		})
 	}
 
-	batch := git.ReconcileBatch{
-		Events: batchEvents,
+	request := git.WriteRequest{
+		Events:     batchEvents,
+		CommitMode: git.CommitModeAtomic,
 	}
 
-	if err := r.reconcileEmitter.EmitReconcileBatch(batch); err != nil {
-		r.logger.Error(err, "Failed to emit reconcile batch")
+	if err := r.reconcileEmitter.EmitWriteRequest(request); err != nil {
+		r.logger.Error(err, "Failed to emit reconcile write request")
 	}
 }
 
