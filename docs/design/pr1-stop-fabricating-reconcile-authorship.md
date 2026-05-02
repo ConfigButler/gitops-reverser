@@ -9,14 +9,14 @@
 
 The folder reconciler currently fabricates a fake user identity (`UserInfo.Username = "gitops-reverser"`) on every event it produces. This is an architectural leak: the reconciler is asserting an identity it has no business asserting. Authorship attribution is a git-layer concern.
 
-This PR removes the fabrication and converts reconcile snapshots to declared batches (`CommitModeAtomic` + a real `CommitMessage`), so the git layer's existing batch path attributes the commit to the operator.
+This PR removes the fabrication and converts reconcile snapshots to declared batches (`CommitModeAtomic`), so the git layer's existing batch path attributes the commit to the operator while still resolving the commit subject from the GitProvider `batchTemplate`.
 
 ## Architectural Principle
 
 **Producers describe *what* changed and *why*; the git layer decides *how* it gets attributed.**
 
 - The reconciler **describes the change**: events with resource data.
-- The reconciler **declares intent**: `WriteRequest.CommitMode = CommitModeAtomic` and a `WriteRequest.CommitMessage` describing the snapshot.
+- The reconciler **declares intent**: `WriteRequest.CommitMode = CommitModeAtomic`.
 - The reconciler **does not** fabricate `UserInfo`. It has no opinion on attribution.
 - The git layer's existing atomic path uses operator-as-author for batch commits (today's `commitOptionsForBatch`). No git-layer change is needed.
 
@@ -57,12 +57,10 @@ Change to:
 request := git.WriteRequest{
     Events:        batchEvents,
     CommitMode:    git.CommitModeAtomic,
-    CommitMessage: fmt.Sprintf("Reconcile snapshot: %d created, %d deleted, %d reconciled",
-        len(toCreate), len(toDelete), len(existingInBoth)),
 }
 ```
 
-The exact wording of `CommitMessage` is an implementation choice; the requirement is that it be non-empty and human-readable. Use whatever existing template/format conventions the rest of the codebase has, if any. The values shown above match the stats already computed at [folder_reconciler.go:153-156](/workspaces/gitops-reverser/internal/reconcile/folder_reconciler.go#L153-L156).
+Do not set `CommitMessage` here. Leaving it empty lets the GitProvider's configured `commit.message.batchTemplate` control the subject, including user-supplied templates used by signing/e2e scenarios.
 
 The `fmt` import is already present in the file (verify before adding).
 
@@ -94,7 +92,7 @@ In [folder_reconciler_test.go](/workspaces/gitops-reverser/internal/reconcile/fo
 
 1. **`UserInfo` is no longer fabricated.** Capture the `WriteRequest` emitted by a reconcile run with at least one create, one delete, and one existing-in-both resource. Assert that every emitted `Event.UserInfo.Username` is empty.
 2. **`CommitMode` is `Atomic`.** Capture the same `WriteRequest`. Assert `request.CommitMode == git.CommitModeAtomic`.
-3. **`CommitMessage` is non-empty.** Assert `request.CommitMessage != ""`.
+3. **`CommitMessage` remains empty.** Assert `request.CommitMessage == ""` so the GitProvider `batchTemplate` remains authoritative.
 
 These three assertions can live in one test method that exercises the full diff-and-emit flow with mocked dependencies. The existing test infrastructure should be reusable.
 
@@ -113,9 +111,9 @@ If an existing integration test asserts that reconcile commits have `Author = gi
 
 - `grep -rn 'Username: "gitops-reverser"' internal/` returns zero matches.
 - `grep -rn 'gitops-reverser' internal/reconcile/` returns zero matches in non-test, non-comment code.
-- The `WriteRequest` emitted by `FolderReconciler` always has `CommitMode == CommitModeAtomic` and a non-empty `CommitMessage` whenever `total > 0`.
+- The `WriteRequest` emitted by `FolderReconciler` always has `CommitMode == CommitModeAtomic` and an empty `CommitMessage` whenever `total > 0`.
 - All existing tests in `internal/reconcile/...` and `internal/git/...` pass.
-- A new test asserts the three properties above (no fabrication, atomic mode, non-empty message).
+- A new test asserts the three properties above (no fabrication, atomic mode, template-resolved message).
 
 ## Out Of Scope
 
