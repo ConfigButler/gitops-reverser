@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.22.0](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.21.1...gitops-reverser-v0.22.0) (2026-05-05)
+
+
+### ⚠ BREAKING CHANGES
+
+* Field rename for clarity (please check configuration.md)
+
+### Features
+
+* Field rename for clarity (please check configuration.md) ([9f101b0](https://github.com/ConfigButler/gitops-reverser/commit/9f101b0737396ebf4361e17792b35ebe5148e0b4))
+* first phase for commit batching based on author ([e742e8c](https://github.com/ConfigButler/gitops-reverser/commit/e742e8c2950589298ab4844818bfa212e80a2d1c))
+
+
+### Documentation
+
+* cleaning branch work ([d07233a](https://github.com/ConfigButler/gitops-reverser/commit/d07233ac7acfbe1288a552f49be16f9f39348ed8))
+* cleaning up old docs ([791d2f9](https://github.com/ConfigButler/gitops-reverser/commit/791d2f908db24d6305d773b6cf1ef25b3d721ec5))
+
 ## [0.21.1](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.21.0...gitops-reverser-v0.21.1) (2026-04-21)
 
 
