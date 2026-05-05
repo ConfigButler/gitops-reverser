@@ -1,8 +1,7 @@
 apiVersion: traefik.io/v1alpha1
 kind: Middleware
 metadata:
-  name: demo-auth-to-public
-  namespace: voter
+  name: auth-to-public
 spec:
   replacePathRegex:
     regex: ^/auth(/.*)?$
@@ -11,11 +10,10 @@ spec:
 apiVersion: traefik.io/v1alpha1
 kind: Middleware
 metadata:
-  name: demo-auth-forwarder
-  namespace: voter
+  name: auth-forwarder
 spec:
   forwardAuth:
-    address: http://auth-service.voter.svc.cluster.local:8080/private/forward-auth-decision
+    address: http://auth-service.voter-production.svc.cluster.local:8080/private/forward-auth-decision
     trustForwardHeader: true
     maxResponseBodySize: 65536
     authResponseHeaders:
@@ -26,8 +24,7 @@ spec:
 apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
 metadata:
-  name: demo-session-info
-  namespace: voter
+  name: session-info
 spec:
   entryPoints:
     - web
@@ -41,8 +38,8 @@ spec:
     - match: Host(`demo.configbutler.ai`) && PathPrefix(`/auth`)
       kind: Rule
       middlewares:
-        - name: demo-auth-to-public
-        - name: demo-auth-forwarder
+        - name: auth-to-public
+        - name: auth-forwarder
       services:
         - name: auth-service
           port: http

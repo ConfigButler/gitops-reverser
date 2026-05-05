@@ -1,0 +1,38 @@
+apiVersion: configbutler.ai/v1alpha1
+kind: GitProvider
+metadata:
+  name: demo-coffeeconfig
+spec:
+  url: http://gitea-http.gitea-e2e.svc.cluster.local:13000/testorg/demo.git
+  allowedBranches:
+    - main
+    - demo-test
+  push:
+    commitWindow: "5s"
+  secretRef:
+    name: git-creds-demo
+---
+apiVersion: configbutler.ai/v1alpha1
+kind: GitTarget
+metadata:
+  name: demo-coffeeconfig
+spec:
+  providerRef:
+    kind: GitProvider
+    name: demo-coffeeconfig
+  branch: demo-test
+  path: voter-coffee
+---
+apiVersion: configbutler.ai/v1alpha1
+kind: WatchRule
+metadata:
+  name: demo-coffeeconfig
+spec:
+  targetRef:
+    kind: GitTarget
+    name: demo-coffeeconfig
+  rules:
+    - operations: [CREATE, UPDATE, DELETE]
+      apiGroups: ["examples.configbutler.ai"]
+      apiVersions: ["v1alpha1"]
+      resources: ["coffeeconfigs"]

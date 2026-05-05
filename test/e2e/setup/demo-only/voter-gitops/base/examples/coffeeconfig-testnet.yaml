@@ -1,0 +1,51 @@
+apiVersion: examples.configbutler.ai/v1alpha1
+kind: CoffeeConfig
+metadata:
+  name: testnet-coffee
+  namespace: voter
+spec:
+  shopName: TestNet Coffee
+  bannerText: Scan the QR code for your free TestNet coffee
+  qrUrl: "/?voucher=testnet2026"
+  currency: EUR
+  products:
+    - sku: coffee-flat-white
+      name: Flat White
+      priceCents: 395
+      description: Double shot with silky milk
+      enabled: true
+    - sku: coffee-espresso
+      name: Espresso
+      priceCents: 275
+      description: Small, strong, and fast
+      enabled: true
+    - sku: coffee-filter
+      name: Filter Coffee
+      priceCents: 250
+      description: Batch brew for fast queues
+      enabled: true
+  vouchers:
+    - code: testnet2026
+      enabled: true
+      discountType: percentage
+      discountValue: 100
+      maximumUsage: 3
+      appliesToProducts:
+        - coffee-flat-white
+        - coffee-espresso
+        - coffee-filter
+      displayMessage: TestNet visitors get free coffee
+  mail:
+    provider: resend
+    apiKeySecretRef:
+      name: coffee-mail
+      key: api-key
+    orderConfirmationTemplate: free-order-confirmation-v1
+    fromAddress: coffee@testnet.demo
+  payments:
+    provider: stripe
+    apiKeySecretRef:
+      name: coffee-payments
+      key: api-key
+    mode: test
+    zeroAmountCheckoutAllowed: true

@@ -1,0 +1,48 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: voter-test
+
+resources:
+  - namespace.yaml
+  - ../base
+  - coffeeconfig-flux.yaml
+  - coffeeconfig-reverse-gitops.yaml
+  - ingress-auth.yaml
+  - ingress-frontend.yaml
+  - ingress-kubeapi.yaml
+
+patches:
+  - target:
+      group: apps
+      version: v1
+      kind: Deployment
+      name: voter-auth-service
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/env/1/value
+        value: voter-test
+  - target:
+      group: rbac.authorization.k8s.io
+      version: v1
+      kind: ClusterRole
+      name: auth-service
+    patch: |-
+      - op: replace
+        path: /metadata/name
+        value: voter-test-auth-service
+  - target:
+      group: rbac.authorization.k8s.io
+      version: v1
+      kind: ClusterRoleBinding
+      name: auth-service
+    patch: |-
+      - op: replace
+        path: /metadata/name
+        value: voter-test-auth-service
+      - op: replace
+        path: /subjects/0/namespace
+        value: voter-test
+      - op: replace
+        path: /roleRef/name
+        value: voter-test-auth-service
