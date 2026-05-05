@@ -19,8 +19,10 @@ limitations under the License.
 package e2e
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -92,16 +94,25 @@ var _ = Describe("Demo", Label("demo"), Ordered, func() {
 		By("asserting the demo repository checkout exists")
 		run.setupRepository()
 
+		By("ensuring the demo repository has a main branch")
+		run.ensureMainBranchSeeded()
+
 		By("copying Git credentials into demo namespaces")
 		run.copyGitSecret()
 		run.refreshDemoCoffeeConfigResources()
 		run.removeLegacyDemoResources()
 
-		By("verifying the CoffeeConfig demo resources become Ready")
-		run.verifyCoffeeConfigResourcesReady()
+		By("verifying the CoffeeConfig reverse GitOps resources become Ready")
+		run.verifyCoffeeConfigReverseResourcesReady()
+
+		By("touching the CoffeeConfig so demo-test is created when the repo was reset")
+		run.touchCoffeeConfig()
 
 		By("waiting for the CoffeeConfig snapshot to seed the demo-test branch")
 		run.verifyCoffeeConfigBranchSeeded()
+
+		By("verifying the CoffeeConfig Flux resources become Ready")
+		run.verifyCoffeeConfigFluxResourcesReady()
 
 		By("printing demo artifacts for the presenter")
 		run.logArtifacts()
@@ -126,6 +137,64 @@ func newDemoRun() demoRun {
 func (r *demoRun) setupRepository() {
 	_, err := os.Stat(filepath.Join(r.checkoutDir, ".git"))
 	Expect(err).NotTo(HaveOccurred(), "expected checkout to exist")
+}
+
+func (r *demoRun) ensureMainBranchSeeded() {
+	if r.repoHasCommits() {
+		return
+	}
+
+	username, password := r.readGitCredentials()
+	authURL := r.authenticatedOriginURL(username, password)
+
+	readmePath := filepath.Join(r.checkoutDir, "README.md")
+	content := "# Demo repository\n\nSeeded by `task test-e2e-demo` so promotion branches can start from `main`.\n"
+
+	Expect(os.WriteFile(readmePath, []byte(content), 0o644)).To(Succeed(), "failed to write demo README")
+	r.runGit("remote", "set-url", "origin", authURL)
+	r.runGit("checkout", "-B", "main")
+	r.runGit("add", "README.md")
+	r.runGit("commit", "-m", "docs: seed demo repository")
+	r.runGit("push", "--set-upstream", "origin", "main")
+}
+
+func (r *demoRun) repoHasCommits() bool {
+	_, err := gitRun(r.checkoutDir, "rev-parse", "--verify", "HEAD")
+	return err == nil
+}
+
+func (r *demoRun) readGitCredentials() (string, string) {
+	output, err := kubectlRunInNamespace(r.sourceNamespace, "get", "secret", r.gitSecretName, "-o", "json")
+	Expect(err).NotTo(HaveOccurred(), "failed to fetch source Git Secret")
+
+	var secret struct {
+		Data map[string]string `json:"data"`
+	}
+	Expect(json.Unmarshal([]byte(output), &secret)).To(Succeed())
+
+	username, err := base64.StdEncoding.DecodeString(secret.Data["username"])
+	Expect(err).NotTo(HaveOccurred(), "failed to decode Git username")
+
+	password, err := base64.StdEncoding.DecodeString(secret.Data["password"])
+	Expect(err).NotTo(HaveOccurred(), "failed to decode Git password")
+
+	return strings.TrimSpace(string(username)), strings.TrimSpace(string(password))
+}
+
+func (r *demoRun) authenticatedOriginURL(username, password string) string {
+	output, err := gitRun(r.checkoutDir, "remote", "get-url", "origin")
+	Expect(err).NotTo(HaveOccurred(), "failed to read demo repo origin URL")
+
+	parsedURL, err := url.Parse(strings.TrimSpace(output))
+	Expect(err).NotTo(HaveOccurred(), "failed to parse demo repo origin URL")
+
+	parsedURL.User = url.UserPassword(username, password)
+	return parsedURL.String()
+}
+
+func (r *demoRun) runGit(args ...string) {
+	output, err := gitRun(r.checkoutDir, args...)
+	Expect(err).NotTo(HaveOccurred(), fmt.Sprintf("git %s: %s", strings.Join(args, " "), output))
 }
 
 func (r *demoRun) copyGitSecret() {
@@ -221,10 +290,26 @@ func (r *demoRun) removeLegacyDemoResources() {
 	)
 }
 
-func (r *demoRun) verifyCoffeeConfigResourcesReady() {
+func (r *demoRun) verifyCoffeeConfigReverseResourcesReady() {
 	verifyResourceStatus("gitprovider", demoCoffeeConfigGitProviderName, voterTestNamespace, "True", "Ready", "")
 	verifyResourceStatus("gittarget", demoCoffeeConfigGitProviderName, voterTestNamespace, "True", "Ready", "")
 	verifyResourceStatus("watchrule", demoCoffeeConfigGitProviderName, voterTestNamespace, "True", "Ready", "")
+}
+
+func (r *demoRun) touchCoffeeConfig() {
+	reconcileValue := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err := kubectlRunInNamespace(
+		voterTestNamespace,
+		"annotate",
+		"coffeeconfig",
+		"testnet-coffee",
+		fmt.Sprintf("configbutler.ai/demo-prepared-at=%s", reconcileValue),
+		"--overwrite",
+	)
+	Expect(err).NotTo(HaveOccurred(), "failed to touch voter-test CoffeeConfig")
+}
+
+func (r *demoRun) verifyCoffeeConfigFluxResourcesReady() {
 	r.verifyFluxResourceReady("gitrepository", demoCoffeeConfigGitProviderName, voterTestNamespace)
 	r.verifyFluxResourceReady("kustomization", demoCoffeeConfigGitProviderName, voterTestNamespace)
 }
