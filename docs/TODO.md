@@ -8,6 +8,12 @@ This file is meant to track the smaller current backlog, not historical notes.
   Decide whether the fix should be validation, a shared queue/lock per repo, or both.
   Until then, keep recommending one `GitProvider` per repository.
 
+- [ ] Re-assess unifying `PendingWriteAtomic` and `PendingWriteCommit` into one shape.
+  Trade-off and complexity sketch in
+  [docs/future/idea-unify-pending-write-kinds.md](future/idea-unify-pending-write-kinds.md).
+  Currently deferred; worth revisiting if a second snapshot-style producer appears or
+  the reconciler's fabricated `UserInfo` causes a bug.
+
 - [ ] Improve queue and worker observability.
   Better metrics, queue visibility, and more high-load test coverage would help.
 
