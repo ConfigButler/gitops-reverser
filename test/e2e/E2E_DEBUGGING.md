@@ -27,6 +27,7 @@ task portforward-ensure
 This exposes:
 - **Prometheus**: http://localhost:19090
 - **Gitea**: http://localhost:13000 (Username: `testorg`, Password: `gitea`)
+- **Flux Operator Web UI**: http://localhost:19080
 
 **Stop port-forwards:**
 ```bash
@@ -112,7 +113,7 @@ go_goroutines{job="gitops-reverser"}
 ## Network Architecture
 
 ```
-Host Machine (port 13000, 19090)
+Host Machine (port 13000, 19090, 19080)
     ↕ (VS Code forwarded ports from devcontainer)
 DevContainer
     ↕ (kubectl port-forward)
@@ -167,7 +168,7 @@ task clean-port-forwards
 ## Available Task Targets
 
 ```bash
-task portforward-ensure     # Start/verify port-forwards (Gitea:13000, Prometheus:19090)
+task portforward-ensure     # Start/verify port-forwards (Gitea:13000, Prometheus:19090, Flux UI:19080)
 task clean-port-forwards    # Stop all port-forwards
 task prepare-e2e            # Setup install + shared e2e prerequisites
 task test-e2e              # Run e2e tests (includes port-forwards)

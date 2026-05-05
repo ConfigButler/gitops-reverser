@@ -83,6 +83,7 @@ var _ = Describe("Manager", Label("manager"), Ordered, func() {
 		fmt.Printf("═══════════════════════════════════════════════════════════\n")
 		fmt.Printf("  Prometheus: http://localhost:19090\n")
 		fmt.Printf("  Gitea:      http://localhost:13000\n")
+		fmt.Printf("  Flux UI:    http://localhost:19080\n")
 		fmt.Printf("\n")
 		fmt.Printf("═══════════════════════════════════════════════════════════\n")
 		fmt.Printf("\n")

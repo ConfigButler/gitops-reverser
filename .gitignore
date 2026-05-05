@@ -48,3 +48,6 @@ test/e2e/setup/manifests/cloudflared-public/tunnel-credentials.yaml
 loadtest
 .task
 .env
+
+.claude/*
+.agents/*
