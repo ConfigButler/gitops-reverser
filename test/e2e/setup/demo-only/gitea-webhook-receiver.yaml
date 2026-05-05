@@ -29,3 +29,9 @@ spec:
     - kind: GitRepository
       name: demo
       namespace: podinfos-production
+    - kind: GitRepository
+      name: demo-coffeeconfig
+      namespace: voter-test
+    - kind: GitRepository
+      name: demo-coffeeconfig
+      namespace: voter-production

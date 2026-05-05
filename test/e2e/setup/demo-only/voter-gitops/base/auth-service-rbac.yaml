@@ -2,13 +2,13 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: auth-service
-  namespace: vote
+  namespace: voter
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: auth-service
-  namespace: vote
+  namespace: voter
 rules:
   # Access to manage session cookie secrets (namespaced)
   - apiGroups: [""]
@@ -25,11 +25,11 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: auth-service
-  namespace: vote
+  namespace: voter
 subjects:
   - kind: ServiceAccount
     name: auth-service
-    namespace: vote
+    namespace: voter
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
@@ -38,7 +38,7 @@ roleRef:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: vote-auth-service
+  name: auth-service
 rules:
   # Validate bearer tokens presented by kubectl / kubeconfig users
   - apiGroups: ["authentication.k8s.io"]
@@ -56,16 +56,20 @@ rules:
   - apiGroups: ["examples.configbutler.ai"]
     resources: ["quizsubmissions"]
     verbs: ["get", "list", "watch", "create"]
+  # Access to CoffeeConfig (namespaced config object used by the demo)
+  - apiGroups: ["examples.configbutler.ai"]
+    resources: ["coffeeconfigs"]
+    verbs: ["get", "list", "watch", "patch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: vote-auth-service
+  name: auth-service
 subjects:
   - kind: ServiceAccount
     name: auth-service
-    namespace: vote
+    namespace: voter
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: vote-auth-service
+  name: auth-service

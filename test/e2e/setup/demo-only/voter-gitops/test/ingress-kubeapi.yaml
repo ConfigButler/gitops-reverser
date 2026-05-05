@@ -1,0 +1,38 @@
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: api-ratelimit
+spec:
+  rateLimit:
+    average: 10000
+    burst: 1000
+---
+apiVersion: traefik.io/v1alpha1
+kind: ServersTransport
+metadata:
+  name: voter-test-kube-apiserver-transport
+  namespace: default
+spec:
+  rootCAs:
+    - configMap: kube-root-ca.crt
+  serverName: kubernetes.default.svc
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: kube-api-examples-only
+spec:
+  entryPoints:
+    - web
+  routes:
+    - match: Host(`demo-test.configbutler.ai`) && (PathPrefix(`/api`) || PathPrefix(`/apis`) || PathPrefix(`/openapi`))
+      kind: Rule
+      middlewares:
+        - name: api-ratelimit
+        - name: auth-forwarder
+      services:
+        - name: kubernetes
+          namespace: default
+          port: 443
+          scheme: https
+          serversTransport: voter-test-voter-test-kube-apiserver-transport@kubernetescrd

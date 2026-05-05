@@ -1,0 +1,141 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: coffeeconfigs.examples.configbutler.ai
+spec:
+  group: examples.configbutler.ai
+  scope: Namespaced
+  names:
+    plural: coffeeconfigs
+    singular: coffeeconfig
+    kind: CoffeeConfig
+    listKind: CoffeeConfigList
+    shortNames:
+      - coffeecfg
+      - ccfg
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      additionalPrinterColumns:
+        - name: Shop
+          type: string
+          jsonPath: .spec.shopName
+        - name: Currency
+          type: string
+          jsonPath: .spec.currency
+        - name: Created
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      schema:
+        openAPIV3Schema:
+          type: object
+          required:
+            - spec
+          properties:
+            spec:
+              type: object
+              required:
+                - shopName
+                - currency
+                - products
+                - vouchers
+              properties:
+                shopName:
+                  type: string
+                  minLength: 1
+                bannerText:
+                  type: string
+                qrUrl:
+                  type: string
+                currency:
+                  type: string
+                  minLength: 1
+                products:
+                  type: array
+                  x-kubernetes-list-type: map
+                  x-kubernetes-list-map-keys:
+                    - sku
+                  items:
+                    type: object
+                    required:
+                      - sku
+                      - name
+                      - priceCents
+                    properties:
+                      sku:
+                        type: string
+                        minLength: 1
+                      name:
+                        type: string
+                        minLength: 1
+                      priceCents:
+                        type: integer
+                        minimum: 0
+                      description:
+                        type: string
+                      enabled:
+                        type: boolean
+                vouchers:
+                  type: array
+                  items:
+                    type: object
+                    required:
+                      - code
+                      - discountType
+                      - discountValue
+                    properties:
+                      code:
+                        type: string
+                        minLength: 1
+                      enabled:
+                        type: boolean
+                      discountType:
+                        type: string
+                        enum:
+                          - percentage
+                          - fixed
+                      discountValue:
+                        type: integer
+                        minimum: 0
+                      maximumUsage:
+                        type: integer
+                        minimum: 0
+                      appliesToProducts:
+                        type: array
+                        items:
+                          type: string
+                      displayMessage:
+                        type: string
+                mail:
+                  type: object
+                  properties:
+                    provider:
+                      type: string
+                    orderConfirmationTemplate:
+                      type: string
+                    fromAddress:
+                      type: string
+                    apiKeySecretRef:
+                      type: object
+                      properties:
+                        name:
+                          type: string
+                        key:
+                          type: string
+                payments:
+                  type: object
+                  properties:
+                    provider:
+                      type: string
+                    mode:
+                      type: string
+                    zeroAmountCheckoutAllowed:
+                      type: boolean
+                    apiKeySecretRef:
+                      type: object
+                      properties:
+                        name:
+                          type: string
+                        key:
+                          type: string

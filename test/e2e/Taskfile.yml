@@ -97,15 +97,11 @@ vars:
   DEMO_MANIFESTS_DIR: 'test/e2e/setup/demo-only'
   DEMO_TUNNEL_CREDENTIALS: '{{.DEMO_MANIFESTS_DIR}}/cloudflared-public/tunnel-credentials.yaml'
   DEMO_PULL_SECRET: '{{.DEMO_MANIFESTS_DIR}}/vote/pull-secret.yaml'
-  LOADTEST_CODE:
-    sh: |
-      kubectl -n vote logs deploy/vote-auth-service --tail=5 2>/dev/null \
-        | grep 'join-code:' | tail -1 | awk '{print $NF}' | cut -d= -f2
   LOADTEST_USERS: '{{.LOADTEST_USERS | default "200"}}'
   LOADTEST_RAMP: '{{.LOADTEST_RAMP | default "20s"}}'
   LOADTEST_BASE_URL: '{{.LOADTEST_BASE_URL | default "https://demo.configbutler.ai"}}'
   LOADTEST_SESSION: '{{.LOADTEST_SESSION | default "kubecon-2026"}}'
-  LOADTEST_NS: '{{.LOADTEST_NS | default "vote"}}'
+  LOADTEST_NS: '{{.LOADTEST_NS | default "voter-production"}}'
 tasks:
   prepare-e2e:
     desc: Prepare E2E prerequisites for Go tests
@@ -473,19 +469,52 @@ tasks:
         export E2E_AGE_KEY_FILE="{{.CS}}/age-key.txt"
         export TESTNAMESPACE=vote
         go test -timeout "{{.E2E_GO_TEST_TIMEOUT}}" ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=demo
+      - |
+        echo
+        echo "Voter login codes:"
+        for entry in \
+          "demo.configbutler.ai:voter-production" \
+          "demo-test.configbutler.ai:voter-test"; do
+          host="${entry%%:*}"
+          voter_ns="${entry##*:}"
+          code=""
+
+          for _ in $(seq 1 30); do
+            code="$(
+              CTX="{{.CTX}}" VOTER_NAMESPACE="${voter_ns}" \
+                hack/e2e/voter-auth-logs.sh --code-only 2>/dev/null || true
+            )"
+            [ -n "${code}" ] && break
+            sleep 2
+          done
+
+          if [ -n "${code}" ]; then
+            printf '  %s (%s): %s\n' "${host}" "${voter_ns}" "${code}"
+          else
+            printf '  %s (%s): <not found>\n' "${host}" "${voter_ns}"
+          fi
+        done
 
   loadtest:
     desc: Simulate load against the live quiz demo
     cmds:
       - |
-        [ -n "{{.LOADTEST_CODE}}" ] || {
+        code="{{.LOADTEST_CODE | default ""}}"
+        if [ -z "${code}" ]; then
+          code="$(
+            CTX="{{.CTX}}" VOTER_NAMESPACE="{{.LOADTEST_NS}}" \
+              hack/e2e/voter-auth-logs.sh --code-only 2>/dev/null || true
+          )"
+        fi
+
+        [ -n "${code}" ] || {
           echo "ERROR: could not determine join code automatically." >&2
           echo "Pass it explicitly: task loadtest LOADTEST_CODE=xxxx" >&2
           exit 1
         }
-      - |
+
         go run ./test/loadtest \
-          --code "{{.LOADTEST_CODE}}" \
+          --code "${code}" \
           --users "{{.LOADTEST_USERS}}" \
           --ramp-duration "{{.LOADTEST_RAMP}}" \
           --base-url "{{.LOADTEST_BASE_URL}}" \
@@ -972,21 +1001,26 @@ tasks:
           exit 1
         }
         kubectl --context "{{.CTX}}" apply -f "{{.DEMO_MANIFESTS_DIR}}/vote/ns.yaml"
-        kubectl --context "{{.CTX}}" apply -f "{{.DEMO_MANIFESTS_DIR}}/voter-gitops/namespace.yaml"
+        kubectl --context "{{.CTX}}" apply -f "{{.DEMO_MANIFESTS_DIR}}/voter-gitops/production/namespace.yaml"
+        kubectl --context "{{.CTX}}" apply -f "{{.DEMO_MANIFESTS_DIR}}/voter-gitops/test/namespace.yaml"
         kubectl --context "{{.CTX}}" apply -f "{{.DEMO_MANIFESTS_DIR}}/cloudflared-public/ns.yaml"
         kubectl --context "{{.CTX}}" wait --for=jsonpath='{.status.phase}'=Active \
-          namespace/vote namespace/voter namespace/cloudflared-public --timeout=120s
+          namespace/vote namespace/voter-production namespace/voter-test namespace/cloudflared-public --timeout=120s
         kubectl --context "{{.CTX}}" apply -f "{{.DEMO_PULL_SECRET}}"
         dockerconfigjson="$(
           kubectl --context "{{.CTX}}" -n vote get secret zot-pull \
             -o jsonpath='{.data.\.dockerconfigjson}' | base64 -d
         )"
-        kubectl --context "{{.CTX}}" -n voter create secret generic zot-pull \
-          --type=kubernetes.io/dockerconfigjson \
-          --from-literal=.dockerconfigjson="${dockerconfigjson}" \
-          --dry-run=client -o yaml | kubectl --context "{{.CTX}}" apply -f -
+        for voter_ns in voter-production voter-test; do
+          kubectl --context "{{.CTX}}" -n "${voter_ns}" create secret generic zot-pull \
+            --type=kubernetes.io/dockerconfigjson \
+            --from-literal=.dockerconfigjson="${dockerconfigjson}" \
+            --dry-run=client -o yaml | kubectl --context "{{.CTX}}" apply -f -
+        done
+        kubectl --context "{{.CTX}}" apply -f "{{.DEMO_MANIFESTS_DIR}}/voter-gitops/crds/coffeeconfigs.yaml"
         kubectl --context "{{.CTX}}" apply -f "{{.DEMO_MANIFESTS_DIR}}/vote/crds"
         kubectl --context "{{.CTX}}" wait --for=condition=Established \
+          crd/coffeeconfigs.examples.configbutler.ai \
           crd/quizsessions.examples.configbutler.ai \
           crd/quizsubmissions.examples.configbutler.ai \
           --timeout=180s

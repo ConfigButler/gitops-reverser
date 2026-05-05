@@ -1,0 +1,46 @@
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: auth-to-public
+spec:
+  replacePathRegex:
+    regex: ^/auth(/.*)?$
+    replacement: /public$1
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: auth-forwarder
+spec:
+  forwardAuth:
+    address: http://auth-service.voter-test.svc.cluster.local:8080/private/forward-auth-decision
+    trustForwardHeader: true
+    maxResponseBodySize: 65536
+    authResponseHeaders:
+      - Authorization
+    addAuthCookiesToResponse:
+      - auth_session
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: session-info
+spec:
+  entryPoints:
+    - web
+  routes:
+    - match: Host(`demo-test.configbutler.ai`) && PathPrefix(`/public`)
+      kind: Rule
+      services:
+        - name: auth-service
+          port: http
+          scheme: http
+    - match: Host(`demo-test.configbutler.ai`) && PathPrefix(`/auth`)
+      kind: Rule
+      middlewares:
+        - name: auth-to-public
+        - name: auth-forwarder
+      services:
+        - name: auth-service
+          port: http
+          scheme: http

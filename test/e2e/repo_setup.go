@@ -456,9 +456,15 @@ func reflectorAnnotations(repoName string) map[string]string {
 	}
 
 	return map[string]string{
-		"reflector.v1.k8s.emberstack.com/reflection-allowed":         "true",
-		"reflector.v1.k8s.emberstack.com/reflection-auto-enabled":    "true",
-		"reflector.v1.k8s.emberstack.com/reflection-auto-namespaces": "podinfos-intent,podinfos-preview,podinfos-production",
+		"reflector.v1.k8s.emberstack.com/reflection-allowed":      "true",
+		"reflector.v1.k8s.emberstack.com/reflection-auto-enabled": "true",
+		"reflector.v1.k8s.emberstack.com/reflection-auto-namespaces": strings.Join([]string{
+			"podinfos-intent",
+			"podinfos-preview",
+			"podinfos-production",
+			"voter-production",
+			"voter-test",
+		}, ","),
 	}
 }
 

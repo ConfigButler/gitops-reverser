@@ -1,0 +1,27 @@
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: GitRepository
+metadata:
+  name: demo-coffeeconfig
+spec:
+  interval: 30s
+  timeout: 1m
+  url: http://gitea-http.gitea-e2e.svc.cluster.local:13000/testorg/demo.git
+  ref:
+    branch: main
+  secretRef:
+    name: git-creds-demo
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: demo-coffeeconfig
+spec:
+  interval: 30s
+  timeout: 2m
+  path: /voter-coffee/examples.configbutler.ai/v1alpha1/coffeeconfigs/voter-test/
+  targetNamespace: voter-production
+  prune: true
+  suspend: false
+  sourceRef:
+    kind: GitRepository
+    name: demo-coffeeconfig

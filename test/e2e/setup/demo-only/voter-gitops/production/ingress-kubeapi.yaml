@@ -1,19 +1,16 @@
 apiVersion: traefik.io/v1alpha1
 kind: Middleware
 metadata:
-  name: demo-api-ratelimit
-  namespace: voter
+  name: api-ratelimit
 spec:
   rateLimit:
-    # High ceiling for now: effectively unlimited for a demo audience while
-    # still giving us a known control point.
     average: 10000
     burst: 1000
 ---
 apiVersion: traefik.io/v1alpha1
 kind: ServersTransport
 metadata:
-  name: demo-kube-apiserver-transport
+  name: voter-production-kube-apiserver-transport
   namespace: default
 spec:
   rootCAs:
@@ -23,22 +20,19 @@ spec:
 apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
 metadata:
-  name: demo-kube-api-examples-only
-  namespace: voter
+  name: kube-api-examples-only
 spec:
   entryPoints:
     - web
   routes:
-    # All Kubernetes API paths. The auth forwarder handles both browser users
-    # and kubectl clients.
     - match: Host(`demo.configbutler.ai`) && (PathPrefix(`/api`) || PathPrefix(`/apis`) || PathPrefix(`/openapi`))
       kind: Rule
       middlewares:
-        - name: demo-api-ratelimit
-        - name: demo-auth-forwarder
+        - name: api-ratelimit
+        - name: auth-forwarder
       services:
         - name: kubernetes
           namespace: default
           port: 443
           scheme: https
-          serversTransport: default-demo-kube-apiserver-transport@kubernetescrd
+          serversTransport: voter-production-voter-production-kube-apiserver-transport@kubernetescrd
