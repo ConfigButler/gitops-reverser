@@ -17,6 +17,13 @@ This file is meant to track the smaller current backlog, not historical notes.
 - [ ] Improve queue and worker observability.
   Better metrics, queue visibility, and more high-load test coverage would help.
 
+- [ ] Fix recurring full e2e flakiness around WatchRule/snapshot convergence.
+  This has shown up more than once as timeout-based failures in manager SOPS bootstrap and
+  signing snapshot-message specs, then passed on rerun. Capture and mitigation notes live in
+  [docs/design/e2e-watchrule-cross-spec-interference.md](design/e2e-watchrule-cross-spec-interference.md).
+  This should be addressed before the next feature that expands commit-message, snapshot, or
+  write-window behavior, otherwise new failures will be hard to separate from existing timing debt.
+
 - [ ] Use [bestpractices.dev](https://www.bestpractices.dev/en) as a project maturity checklist.
   Review the current gaps, decide which items matter for this project, and turn the useful ones
   into concrete follow-up work instead of treating the badge as the goal.
@@ -57,3 +64,8 @@ This file is meant to track the smaller current backlog, not historical notes.
 - [ ] Better branching and promotion strategies.
 
 - [ ] Bi-directional GitOps alignment with controllers such as Flux and Argo CD.
+
+- [ ] End-user supplied commit messages for UI-driven workflows.
+  Prototype audit-carried options such as `user.extra` enrichment and transient metadata stripped by
+  admission before committing to an aggregated API or CRD. Notes in
+  [docs/future/idea-end-user-commit-messages.md](future/idea-end-user-commit-messages.md).

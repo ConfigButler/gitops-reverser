@@ -3,6 +3,7 @@
     ".": {
       "release-type": "simple",
       "package-name": "gitops-reverser",
+      "bump-minor-pre-major": true,
       "changelog-sections": [
         {
           "type": "feat",

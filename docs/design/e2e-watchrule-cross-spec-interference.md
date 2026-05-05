@@ -14,6 +14,10 @@ The visible symptom: each spec's expected commit lands at its own `commitPath`, 
 
 The signing batch spec hits a closely related but mechanistically different version of the same problem (described below): when *any* prior spec has failed, the suite's "preserve resources for investigation" policy skips every subsequent `DeferCleanup`, leaving fully alive WatchRules in the cluster across spec boundaries.
 
+This is recurring timing debt, not a one-off CI hiccup. If the next feature changes commit messages,
+snapshot writes, write-window aggregation, or target bootstrap behavior, fix or isolate this first;
+otherwise the suite can report old convergence failures as if they were regressions in the new work.
+
 ## Evidence from CI run 24966661233 (sha 9da6a3e)
 
 Three independent WatchRules all reacted to the same `delete configmap test-configmap-to-delete` event in the **delete** spec:
@@ -53,6 +57,33 @@ The two failure modes — manager and signing — share the same observable shap
 | Signing (batch) | A prior spec failed → suite-wide "preserve resources for investigation" mode skips every subsequent `DeferCleanup` → previous WatchRule stays fully alive in k8s | Test-infrastructure cascade, downstream of an earlier real failure |
 
 A useful corollary: fixing the manager ghost-WatchRule bug will *incidentally* turn the signing batch spec green most of the time, because the preservation cascade is only triggered after the manager spec fails. The signing batch spec could still be made flaky on its own (e.g. if the signing-committer-template spec fails for unrelated reasons), but the day-to-day correlation between these two failures is not coincidence.
+
+## Evidence from CI run 25370586792 (sha ea5c953)
+
+On 2026-05-05, the push run for the merged GitHub Actions Dependabot update failed on attempt 1 and
+passed on rerun. The PR run for the same change had already passed. The failing attempt had all
+non-full-e2e jobs green: build, lint, unit tests, chart build, devcontainer validation, and both
+quickstart e2e variants.
+
+Only `E2E (full)` failed, with two timeout-style assertions:
+
+- `Manager > should generate missing SOPS age secret when age.recipients.generateWhenMissing is enabled`
+  timed out after 30s at `test/e2e/e2e_test.go:647`. The generated Secret existed and had already
+  been read, but the expected repository bootstrap file did not appear:
+  `.stamps/repos/e2e-manager-1777976528/e2e/secret-autogen-test/.sops.yaml`.
+- `Commit Signing > should produce a snapshot commit with the custom snapshot message template`
+  timed out after 30s at `test/e2e/signing_e2e_test.go:481`. The latest snapshot-path commit still
+  contained a per-event line, `[CREATE] v1/secrets/signing-key-batch`, while the spec expected the
+  custom snapshot template to have converged.
+
+The rerun of the same GitHub Actions run completed successfully. That makes this concrete instance
+look like asynchronous convergence flakiness rather than a deterministic regression in the
+Dependabot change.
+
+This newer instance is not identical to the earlier delete/configmap evidence below, but it rhymes:
+the tests are asserting on git state produced by asynchronous WatchRule/snapshot machinery with a
+fixed 30s wall-clock window. When that machinery lags, cross-spec state, stale route registration, or
+preserved resources can make the failure appear in unrelated specs.
 
 ## What changed in the staged work
 
