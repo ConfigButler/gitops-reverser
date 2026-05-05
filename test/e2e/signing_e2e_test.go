@@ -469,15 +469,15 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 			subject, subjectErr := gitRun(signingRepo.CheckoutDir, "show", "-s", "--format=%s", latestHash)
 			g.Expect(subjectErr).NotTo(HaveOccurred())
 			subject = strings.TrimSpace(subject)
-			g.Expect(subject).To(HavePrefix("e2e-batch:"),
-				"expected latest commit in %s to use the custom batch template", commitPath)
+			g.Expect(subject).To(HavePrefix("e2e-snapshot:"),
+				"expected latest commit in %s to use the custom snapshot template", commitPath)
 			g.Expect(subject).NotTo(HavePrefix("["),
 				"expected latest commit in %s not to use the per-event template", commitPath)
 
 			logOutput, logErr := gitRun(signingRepo.CheckoutDir, "log", "--format=%s", "--", commitPath)
 			g.Expect(logErr).NotTo(HaveOccurred())
 			g.Expect(logOutput).NotTo(ContainSubstring("["),
-				"expected atomic batch path %s not to contain per-event template subjects", commitPath)
+				"expected snapshot path %s not to contain per-event template subjects", commitPath)
 		}, "30s", "3s").Should(Succeed())
 	})
 })
