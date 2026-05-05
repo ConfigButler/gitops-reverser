@@ -72,9 +72,9 @@ Only `E2E (full)` failed, with two timeout-style assertions:
   been read, but the expected repository bootstrap file did not appear:
   `.stamps/repos/e2e-manager-1777976528/e2e/secret-autogen-test/.sops.yaml`.
 - `Commit Signing > should produce a snapshot commit with the custom snapshot message template`
-  timed out after 30s at `test/e2e/signing_e2e_test.go:481`. The latest snapshot-path commit still
+  timed out after 30s at `test/e2e/signing_e2e_test.go:481`. The observed snapshot-path history
   contained a per-event line, `[CREATE] v1/secrets/signing-key-batch`, while the spec expected the
-  custom snapshot template to have converged.
+  path history to contain only custom snapshot-template subjects.
 
 The rerun of the same GitHub Actions run completed successfully. That makes this concrete instance
 look like asynchronous convergence flakiness rather than a deterministic regression in the
@@ -84,6 +84,100 @@ This newer instance is not identical to the earlier delete/configmap evidence be
 the tests are asserting on git state produced by asynchronous WatchRule/snapshot machinery with a
 fixed 30s wall-clock window. When that machinery lags, cross-spec state, stale route registration, or
 preserved resources can make the failure appear in unrelated specs.
+
+## Evidence from CI run 25372010729 attempt 1 (sha 41d160b)
+
+On 2026-05-05, the push run for the docs/release guard change failed in `E2E (full)` on attempt 1.
+You reran the failed job; attempt 1 is the failure analyzed here. As with the earlier May 5 run, all
+non-full-e2e jobs were green, including build, lint, unit tests, chart build, devcontainer
+validation, and both quickstart e2e variants.
+
+Two specs failed:
+
+- `Manager > should generate missing SOPS age secret when age.recipients.generateWhenMissing is enabled`
+  timed out after 30s at `test/e2e/e2e_test.go:647`. The generated Secret existed and the
+  controller logged `Generated missing encryption secret with age key`, but the expected
+  `.sops.yaml` bootstrap file never appeared under:
+  `.stamps/repos/e2e-manager-1777978467/e2e/secret-autogen-test/.sops.yaml`.
+- `Commit Signing > should produce a snapshot commit with the custom snapshot message template`
+  timed out after 30s at `test/e2e/signing_e2e_test.go:481`.
+
+The signing failure is the same **assertion-history pollution** mechanism described in run
+`25337578768`, not a missing snapshot. The controller created and pushed the snapshot commit:
+
+```
+11:00:43  git commit created  messageKind=event    message="[CREATE] v1/secrets/signing-key-batch"
+11:00:44  git commit created  messageKind=snapshot message="e2e-snapshot: synced 11 resources to signing-snapshot-dest"
+11:00:49  Push successful
+```
+
+The test then failed because `git log --format=%s -- e2e/signing-snapshot` contained both subjects:
+
+```
+e2e-snapshot: synced 11 resources to signing-snapshot-dest
+[CREATE] v1/secrets/signing-key-batch
+```
+
+So for the signing spec, this attempt is **not** evidence that the snapshot batch failed to fire.
+The latest relevant snapshot commit existed. The assertion is too broad because it rejects any
+per-event-looking subject anywhere in the path history, including the generated signing-key Secret
+bootstrap commit.
+
+The manager SOPS-age failure is closer to the asynchronous bootstrap/convergence bucket: the
+controller generated the age Secret, registered the GitTarget stream, retrieved cluster state with
+`resourceCount=0`, and transitioned to live processing, but no `.sops.yaml` commit was observed
+within the fixed 30s window. That is still not the original ghost-WatchRule/delete-path symptom,
+because there is no evidence in this attempt of multiple WatchRules writing the same event to
+unrelated manager paths.
+
+## Evidence from CI run 25337578768 (sha cba48a6, merge sha 85fd8f2)
+
+On 2026-05-04, the PR run for the Go dependency Dependabot update failed in `E2E (full)` while
+build, lint, unit tests, chart build, devcontainer validation, and both quickstart e2e variants were
+green.
+
+Only one spec failed:
+
+- `Commit Signing > should produce a batch commit with the custom batch message template`
+  timed out after 30s at `test/e2e/signing_e2e_test.go:481`.
+
+This is **not the same mechanism** as the earlier preservation-cascade signing failure. There was no
+earlier failed spec in the Ginkgo summary, and `signing-committer-template-wr` was cleaned up before
+the batch spec started:
+
+```
+19:10:45  cleaning up WatchRule signing-committer-template-wr
+19:10:45  cleaning up GitTarget signing-committer-template-dest
+19:10:45  Commit Signing should produce a batch commit with the custom batch message template
+```
+
+It is also not exactly "the batch never fired". The controller log shows both of these commits for
+the `signing-batch` target:
+
+```
+19:10:46  Created commit        operation=CREATE resource=v1/secrets/signing-key-batch
+19:10:47  Created atomic commit message="e2e-batch: synced 11 resources to signing-batch-dest"
+```
+
+The failing assertion output contained the same two subjects:
+
+```
+e2e-batch: synced 11 resources to signing-batch-dest
+[CREATE] v1/secrets/signing-key-batch
+```
+
+So this run exposes a different sharp edge in the signing batch spec: the generated signing key is a
+Secret, the WatchRule watches Secrets, and the GitTarget is already live while
+`generateWhenMissing` creates `signing-key-batch`. That can legitimately place a per-event commit in
+the same `e2e/signing-batch` path before the forced snapshot batch lands. The latest path commit may
+be the correct atomic batch commit, but `git log --format=%s -- e2e/signing-batch` still contains the
+older per-event secret commit, so the "path history must not contain `[`" assertion is too broad.
+
+Interpretation: this belongs to the same family of "signing batch assertions are over-sensitive to
+asynchronous WatchRule writes", but it is not evidence of ghost WatchRules or skipped cleanup. The
+fix should be in the test assertion/setup: assert the latest path commit's subject and touched files,
+or move/ignore the generated signing-key Secret so per-event bootstrap commits cannot pollute the
+history check.
 
 ## What changed in the staged work
 
@@ -106,7 +200,7 @@ preserved resources can make the failure appear in unrelated specs.
 
 **Band-aided (still fragile):**
 - `Manager > should delete Git file when ConfigMap is deleted via WatchRule` — now uses the path-anchored assertion and has the same 5s settle wait. The spec will pass as long as our commit can be found *somewhere* in history at the expected path. It still produces 3 git commits per delete event in CI; we just stop checking `HEAD` for the assertion.
-- `Commit Signing > should produce a batch commit with the custom batch message template` — only ever fails when an earlier spec has already failed and triggered the preservation cascade. Tightened the `Eventually` window to 30s (down from 90s) so the next failure of this spec is interpreted correctly as "batch did not fire" rather than "we did not wait long enough"; deliberately *not* widened.
+- `Commit Signing > should produce a batch/snapshot commit with the custom message template` — has at least two distinct fragile modes now. One is the earlier preservation cascade, where a prior failed spec leaves another WatchRule alive in the same signing namespace and the batch does not land inside the `Eventually` window. The other is the generated signing-key Secret producing a legitimate per-event commit in the same path before the atomic snapshot; in that case the batch can land correctly, but the spec still fails because it searches the entire path history for per-event-style subjects. Tightened the `Eventually` window to 30s (down from 90s) so a real "batch did not fire" remains visible; the history-pollution assertion should be fixed separately rather than widened.
 
 **Open root causes:**
 1. **Ghost WatchRules (controller bug).** `cleanupWatchRule` is fire-and-forget. When the next spec's event fires, the controller's event router still holds the deleted WatchRule and routes the event to it, producing extra commits at the wrong `commitPath`. This is not a test bug — a real user creating, deleting, and recreating a WatchRule with overlapping selectors would hit the same window. The right fix is in the controller: when a WatchRule is removed from the informer cache, its registration in the event router (and any in-flight reconciles) must be drained before any further events are dispatched. As long as that is not the case, *any* test that shares a managerRepo across specs will be flaky.

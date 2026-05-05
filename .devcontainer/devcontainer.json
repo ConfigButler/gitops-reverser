@@ -24,7 +24,8 @@
     13000,
     19090,
     10350,
-    16379
+    16379,
+    19080
   ],
   "portsAttributes": {
     "13000": {
@@ -41,6 +42,10 @@
     },
     "16379": {
       "label": "Valkey (Redis compatible)",
+      "onAutoForward": "notify"
+    },
+    "19080": {
+      "label": "Flux",
       "onAutoForward": "notify"
     }
   },

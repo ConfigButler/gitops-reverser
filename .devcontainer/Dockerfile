@@ -38,6 +38,7 @@ RUN apt-get update \
 
 # Tool versions - centralized for easy updates.
 # This devcontainer currently supports amd64 tool downloads only.
+
 ENV PATH="/go/bin:/usr/local/go/bin:${PATH}" \
     KUBECTL_VERSION=v1.35.3 \
     KUSTOMIZE_VERSION=5.8.1 \
@@ -46,7 +47,11 @@ ENV PATH="/go/bin:/usr/local/go/bin:${PATH}" \
     HELM_VERSION=v4.1.4 \
     K3D_VERSION=v5.8.3 \
     FLUX_VERSION=2.8.5 \
+    FLUX_OPERATOR_VERSION=0.48.0 \
     TASK_VERSION=v3.49.1
+
+# https://github.com/fluxcd/flux2/releases
+# https://fluxoperator.dev/
 
 # Fail early on unsupported architectures instead of producing a partial image.
 RUN test "$(dpkg --print-architecture)" = "amd64" \
@@ -84,6 +89,18 @@ RUN curl -fsSL -o /usr/local/bin/k3d "https://github.com/k3d-io/k3d/releases/dow
 RUN curl -fsSL "https://github.com/fluxcd/flux2/releases/download/v${FLUX_VERSION}/flux_${FLUX_VERSION}_linux_amd64.tar.gz" \
     | tar -xzO flux > /usr/local/bin/flux \
     && chmod +x /usr/local/bin/flux
+
+# Install Flux Operator CLI
+RUN asset="flux-operator_${FLUX_OPERATOR_VERSION}_linux_amd64.tar.gz" \
+    && base="https://github.com/controlplaneio-fluxcd/flux-operator/releases/download/v${FLUX_OPERATOR_VERSION}" \
+    && tmpdir="$(mktemp -d)" \
+    && curl -fsSL "${base}/${asset}" -o "${tmpdir}/${asset}" \
+    && curl -fsSL "${base}/flux-operator_${FLUX_OPERATOR_VERSION}_checksums.txt" -o "${tmpdir}/checksums.txt" \
+    && cd "${tmpdir}" \
+    && grep "  ${asset}$" checksums.txt | sha256sum -c - \
+    && tar -xzf "${asset}" \
+    && install -m 0755 flux-operator /usr/local/bin/flux-operator \
+    && rm -rf "${tmpdir}"
 
 # Install Task
 RUN curl -fsSL "https://github.com/go-task/task/releases/download/${TASK_VERSION}/task_linux_amd64.tar.gz" \

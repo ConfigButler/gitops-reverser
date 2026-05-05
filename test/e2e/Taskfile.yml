@@ -26,6 +26,7 @@ vars:
   K3D: '{{.K3D | default "k3d"}}'
   HELM: '{{.HELM | default "helm"}}'
   FLUX: '{{.FLUX | default "flux"}}'
+  FLUX_OPERATOR: '{{.FLUX_OPERATOR | default "flux-operator"}}'
   KUSTOMIZE: '{{.KUSTOMIZE | default "kustomize"}}'
   CONTAINER_TOOL: '{{.CONTAINER_TOOL | default "docker"}}'
   TASK_BIN: '{{.TASK_BIN | default "task"}}'
@@ -80,11 +81,15 @@ vars:
   GITEA_PORT: '{{.GITEA_PORT | default "13000"}}'
   PROMETHEUS_PORT: '{{.PROMETHEUS_PORT | default "19090"}}'
   VALKEY_PORT: '{{.VALKEY_PORT | default "16379"}}'
+  FLUX_WEB_PORT: '{{.FLUX_WEB_PORT | default "19080"}}'
   DEFAULT_AUDIT_REDIS_ADDR: '{{.DEFAULT_AUDIT_REDIS_ADDR | default "valkey:6379"}}'
   E2E_AUDIT_REDIS_ADDR: '{{.E2E_AUDIT_REDIS_ADDR | default "valkey.valkey-e2e.svc.cluster.local:6379"}}'
   E2E_VALKEY_PASSWORD: '{{.E2E_VALKEY_PASSWORD | default "e2e-valkey-password"}}'
   E2E_CONTROLLER_SERVICE_CLUSTER_IP: '{{.E2E_CONTROLLER_SERVICE_CLUSTER_IP | default "10.43.200.200"}}'
   FLUX_NAMESPACE: '{{.FLUX_NAMESPACE | default "flux-system"}}'
+  FLUX_INSTANCE_NAME: '{{.FLUX_INSTANCE_NAME | default "flux"}}'
+  FLUX_INSTANCE_FILE: '{{.FLUX_INSTANCE_FILE | default "test/e2e/setup/flux-operator/flux-instance.yaml"}}'
+  FLUX_OPERATOR_DIR: '{{.FLUX_OPERATOR_DIR | default "test/e2e/setup/flux-operator"}}'
   FLUX_WAIT_TIMEOUT: '{{.FLUX_WAIT_TIMEOUT | default "300s"}}'
   FLUX_SERVICES_WAIT_TIMEOUT: '{{.FLUX_SERVICES_WAIT_TIMEOUT | default "600s"}}'
   E2E_GO_TEST_TIMEOUT: '{{.E2E_GO_TEST_TIMEOUT | default "15m"}}'
@@ -135,6 +140,7 @@ tasks:
         export GITEA_PORT="{{.GITEA_PORT}}"
         export PROMETHEUS_PORT="{{.PROMETHEUS_PORT}}"
         export VALKEY_PORT="{{.VALKEY_PORT}}"
+        export FLUX_WEB_PORT="{{.FLUX_WEB_PORT}}"
         bash hack/e2e/setup-port-forwards.sh
 
   install:
@@ -493,6 +499,7 @@ tasks:
       - pkill -f "kubectl.*port-forward.*{{.GITEA_PORT}}" 2>/dev/null || true
       - pkill -f "kubectl.*port-forward.*{{.PROMETHEUS_PORT}}" 2>/dev/null || true
       - pkill -f "kubectl.*port-forward.*{{.VALKEY_PORT}}" 2>/dev/null || true
+      - pkill -f "kubectl.*port-forward.*{{.FLUX_WEB_PORT}}" 2>/dev/null || true
       - echo "Port-forwards stopped"
 
   clean-cluster:
@@ -534,24 +541,48 @@ tasks:
     method: timestamp
     sources:
       - '{{.CS}}/ready'
+      - '{{.FLUX_OPERATOR_DIR}}/**/*.yaml'
     generates:
       - '{{.CS}}/flux.installed'
     status:
       - test -f "{{.CS}}/flux.installed"
+      - test "{{.CS}}/ready" -ot "{{.CS}}/flux.installed"
+      - test "{{.FLUX_INSTANCE_FILE}}" -ot "{{.CS}}/flux.installed"
+      - test -z "$(find "{{.FLUX_OPERATOR_DIR}}" -type f -name '*.yaml' -newer "{{.CS}}/flux.installed" -print -quit)"
+      - |
+        kubectl --context "{{.CTX}}" \
+          -n "{{.FLUX_NAMESPACE}}" \
+          get fluxinstance "{{.FLUX_INSTANCE_NAME}}" >/dev/null
     cmds:
       - task: _cluster-ready
       - |
-        {{.FLUX}} install --context "{{.CTX}}" --namespace "{{.FLUX_NAMESPACE}}"
+        {{.FLUX_OPERATOR}} install \
+          --kube-context "{{.CTX}}" \
+          --namespace "{{.FLUX_NAMESPACE}}" \
+          --timeout "{{.FLUX_WAIT_TIMEOUT}}" \
+          -f "{{.FLUX_INSTANCE_FILE}}"
+        kubectl --context "{{.CTX}}" apply -f "{{.FLUX_OPERATOR_DIR}}"
+        {{.FLUX_OPERATOR}} \
+          --kube-context "{{.CTX}}" \
+          -n "{{.FLUX_NAMESPACE}}" \
+          wait instance "{{.FLUX_INSTANCE_NAME}}" \
+          --timeout "{{.FLUX_WAIT_TIMEOUT}}"
         kubectl --context "{{.CTX}}" -n "{{.FLUX_NAMESPACE}}" wait \
           deployment \
           -l app.kubernetes.io/part-of=flux \
           --for=condition=Available \
           --timeout="{{.FLUX_WAIT_TIMEOUT}}"
         kubectl --context "{{.CTX}}" wait --for=condition=Established \
+          crd/fluxinstances.fluxcd.controlplane.io \
+          crd/gitrepositories.source.toolkit.fluxcd.io \
           crd/helmrepositories.source.toolkit.fluxcd.io \
           crd/helmreleases.helm.toolkit.fluxcd.io \
+          crd/kustomizations.kustomize.toolkit.fluxcd.io \
+          crd/ocirepositories.source.toolkit.fluxcd.io \
+          crd/receivers.notification.toolkit.fluxcd.io \
           --timeout="{{.FLUX_WAIT_TIMEOUT}}"
-        {{.FLUX}} version --client > "{{.CS}}/flux.installed"
+        {{.FLUX_OPERATOR}} version --client > "{{.CS}}/flux.installed"
+        {{.FLUX}} version --client >> "{{.CS}}/flux.installed"
 
   _flux-setup-ready:
     method: timestamp

@@ -75,6 +75,7 @@ jobs:
             kubectl version --client
             kustomize version
             helm version
+            flux-operator version --client
             golangci-lint version
             controller-gen --version
             k3d version
@@ -124,6 +125,7 @@ jobs:
             kubectl version --client
             kustomize version
             helm version
+            flux-operator version --client
             golangci-lint version
             k3d version
             task --version
