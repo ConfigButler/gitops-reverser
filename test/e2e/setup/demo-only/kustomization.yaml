@@ -5,6 +5,7 @@ resources:
   - podinfo-kro-template.yaml
   - cloudflared-public
   - vote
+  - voter-gitops
   - gitea-webhook-receiver.yaml
   - podinfos-intent
   - podinfos-preview
