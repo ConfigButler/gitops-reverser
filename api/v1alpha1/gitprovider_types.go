@@ -161,21 +161,21 @@ type CommitterSpec struct {
 
 // CommitMessageSpec configures commit message formatting.
 type CommitMessageSpec struct {
-	// Template is a Go text/template string for per-event commit messages
-	// (CommitModePerEvent path; one event per commit).
+	// EventTemplate is a Go text/template string for per-event commit messages
+	// (used when commitWindow is "0s"; one event per commit).
 	// Available variables: Operation, Group, Version, Resource, Namespace, Name,
 	// APIVersion, Username, GitTarget.
 	// +optional
-	Template string `json:"template,omitempty"`
+	EventTemplate string `json:"eventTemplate,omitempty"`
 
-	// BatchTemplate is a Go text/template string for atomic batch commit messages
-	// (CommitModeAtomic path; one commit covers a snapshot reconcile).
+	// SnapshotTemplate is a Go text/template string for atomic snapshot commit
+	// messages (the initial-sync reconcile path; one commit covers the snapshot).
 	// Available variables: Count, GitTarget.
 	// +optional
-	BatchTemplate string `json:"batchTemplate,omitempty"`
+	SnapshotTemplate string `json:"snapshotTemplate,omitempty"`
 
 	// GroupTemplate is a Go text/template string for grouped commit messages
-	// (the grouped commit-window path; one commit per (author, gitTarget) group
+	// (the commit-window path; one commit per (author, gitTarget) group
 	// produced by the batching pipeline).
 	// Available variables: Author, GitTarget, Count, Operations (map of
 	// CREATE/UPDATE/DELETE counts), Resources (slice of {Group, Version,

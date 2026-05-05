@@ -42,7 +42,7 @@ func TestValidateCommitConfiguration_InvalidTemplate(t *testing.T) {
 		Spec: configbutleraiv1alpha1.GitProviderSpec{
 			Commit: &configbutleraiv1alpha1.CommitSpec{
 				Message: &configbutleraiv1alpha1.CommitMessageSpec{
-					Template: "{{.Operation",
+					EventTemplate: "{{.Operation",
 				},
 			},
 		},

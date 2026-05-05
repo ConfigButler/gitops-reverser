@@ -80,27 +80,27 @@ spec:
                   message:
                     description: Message configures commit message formatting.
                     properties:
-                      batchTemplate:
+                      eventTemplate:
                         description: |-
-                          BatchTemplate is a Go text/template string for atomic batch commit messages
-                          (CommitModeAtomic path; one commit covers a snapshot reconcile).
-                          Available variables: Count, GitTarget.
+                          EventTemplate is a Go text/template string for per-event commit messages
+                          (used when commitWindow is "0s"; one event per commit).
+                          Available variables: Operation, Group, Version, Resource, Namespace, Name,
+                          APIVersion, Username, GitTarget.
                         type: string
                       groupTemplate:
                         description: |-
                           GroupTemplate is a Go text/template string for grouped commit messages
-                          (the grouped commit-window path; one commit per (author, gitTarget) group
+                          (the commit-window path; one commit per (author, gitTarget) group
                           produced by the batching pipeline).
                           Available variables: Author, GitTarget, Count, Operations (map of
                           CREATE/UPDATE/DELETE counts), Resources (slice of {Group, Version,
                           Resource, Namespace, Name}).
                         type: string
-                      template:
+                      snapshotTemplate:
                         description: |-
-                          Template is a Go text/template string for per-event commit messages
-                          (CommitModePerEvent path; one event per commit).
-                          Available variables: Operation, Group, Version, Resource, Namespace, Name,
-                          APIVersion, Username, GitTarget.
+                          SnapshotTemplate is a Go text/template string for atomic snapshot commit
+                          messages (the initial-sync reconcile path; one commit covers the snapshot).
+                          Available variables: Count, GitTarget.
                         type: string
                     type: object
                   signing:

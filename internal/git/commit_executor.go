@@ -76,8 +76,8 @@ func (p PendingWrite) commitMetadata() (string, *gogit.CommitOptions, error) {
 			return "", nil, err
 		}
 		return message, commitOptionsFor(p, p.CommitConfig, p.Signer, when), nil
-	case CommitMessageBatch:
-		message, err := renderBatchCommitMessage(p.Events, p.CommitMessage, p.Target().Name, p.CommitConfig)
+	case CommitMessageSnapshot:
+		message, err := renderSnapshotCommitMessage(p.Events, p.CommitMessage, p.Target().Name, p.CommitConfig)
 		if err != nil {
 			return "", nil, err
 		}

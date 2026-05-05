@@ -36,7 +36,7 @@ The important fields are:
 - `spec.url`: repository URL
 - `spec.secretRef.name`: Secret with Git credentials such as SSH or HTTPS auth
 - `spec.allowedBranches`: branches this provider is allowed to write
-- `spec.push`: batching/push behavior
+- `spec.push.commitWindow`: rolling silence window that coalesces events into one commit per author
 - `spec.commit`: committer identity, commit templates, and signing
 
 Example:
@@ -54,6 +54,22 @@ spec:
   allowedBranches:
     - main
 ```
+
+### `GitProvider.spec.push`
+
+`spec.push.commitWindow` controls how arriving events are grouped into commits. The timer resets
+on every event; when it has been silent for the configured duration, the buffered events for a
+given (author, gitTarget) are written as one commit. The default is `5s`. Setting `0s` opts into
+per-event commits in the steady-state.
+
+```yaml
+spec:
+  push:
+    commitWindow: "5s"
+```
+
+A burst (e.g. `kubectl apply -k`, `helm upgrade`, an ArgoCD sync wave) becomes one commit per
+author with a summary subject; isolated edits still produce one commit each.
 
 ### `GitProvider.spec.commit`
 
@@ -105,18 +121,23 @@ platform recognizes for the account that owns the signing key.
 
 #### Commit message templates
 
-Use `spec.commit.message.template` for normal per-event commits and
-`spec.commit.message.batchTemplate` for atomic batch or snapshot-style commits.
+There are three templates, one per commit shape:
+
+- `spec.commit.message.eventTemplate`: per-event commits (only used when `commitWindow` is `0s`).
+- `spec.commit.message.groupTemplate`: grouped commits produced by the commit window (the
+  common case).
+- `spec.commit.message.snapshotTemplate`: atomic snapshot commits (initial reconcile).
 
 ```yaml
 spec:
   commit:
     message:
-      template: "[{{.Operation}}] {{.APIVersion}}/{{.Resource}}/{{.Name}}"
-      batchTemplate: "reconcile: sync {{.Count}} resources"
+      eventTemplate: "[{{.Operation}}] {{.APIVersion}}/{{.Resource}}/{{.Name}}"
+      groupTemplate: "{{.Author}} on {{.GitTarget}}: {{.Count}} resource(s)"
+      snapshotTemplate: "reconcile: sync {{.Count}} resources"
 ```
 
-`template` can use:
+`eventTemplate` can use:
 
 - `Operation`
 - `Group`
@@ -128,7 +149,15 @@ spec:
 - `Username`
 - `GitTarget`
 
-`batchTemplate` can use:
+`groupTemplate` can use:
+
+- `Author`
+- `GitTarget`
+- `Count`
+- `Operations` (map of `CREATE`/`UPDATE`/`DELETE` counts)
+- `Resources` (slice of `{Group, Version, Resource, Namespace, Name}`)
+
+`snapshotTemplate` can use:
 
 - `Count`
 - `GitTarget`
@@ -139,21 +168,21 @@ Examples:
 spec:
   commit:
     message:
-      template: "chore: [{{.Operation}}] {{.APIVersion}}/{{.Resource}}/{{.Name}}"
+      eventTemplate: "chore: [{{.Operation}}] {{.APIVersion}}/{{.Resource}}/{{.Name}}"
 ```
 
 ```yaml
 spec:
   commit:
     message:
-      template: "[{{.Operation}}] {{.Resource}}/{{.Name}} ({{.Username}})"
+      eventTemplate: "[{{.Operation}}] {{.Resource}}/{{.Name}} ({{.Username}})"
 ```
 
 ```yaml
 spec:
   commit:
     message:
-      batchTemplate: "snapshot: {{.Count}} resources"
+      snapshotTemplate: "snapshot: {{.Count}} resources"
 ```
 
 #### Commit signing

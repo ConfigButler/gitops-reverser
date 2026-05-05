@@ -34,10 +34,10 @@ const (
 	DefaultCommitterName = "GitOps Reverser"
 	// DefaultCommitterEmail matches the default operator email in Git history.
 	DefaultCommitterEmail = "noreply@configbutler.ai"
-	// DefaultCommitMessageTemplate reproduces the current per-event commit message shape.
-	DefaultCommitMessageTemplate = "[{{.Operation}}] {{.APIVersion}}/{{.Resource}}/{{.Name}}"
-	// DefaultBatchCommitMessageTemplate is the default atomic batch commit message shape.
-	DefaultBatchCommitMessageTemplate = "reconcile: sync {{.Count}} resources"
+	// DefaultEventCommitMessageTemplate reproduces the current per-event commit message shape.
+	DefaultEventCommitMessageTemplate = "[{{.Operation}}] {{.APIVersion}}/{{.Resource}}/{{.Name}}"
+	// DefaultSnapshotCommitMessageTemplate is the default atomic snapshot commit message shape.
+	DefaultSnapshotCommitMessageTemplate = "reconcile: sync {{.Count}} resources"
 	// DefaultGroupCommitMessageTemplate is the default message shape for
 	// finalized commit-window commits that contain multiple events.
 	DefaultGroupCommitMessageTemplate = "{{.Author}} on {{.GitTarget}}: {{.Count}} resource(s)"
@@ -164,7 +164,7 @@ type CommitMessageKind string
 
 const (
 	CommitMessagePerEvent CommitMessageKind = "event"
-	CommitMessageBatch    CommitMessageKind = "batch"
+	CommitMessageSnapshot CommitMessageKind = "snapshot"
 	CommitMessageGrouped  CommitMessageKind = "group"
 )
 
@@ -216,11 +216,11 @@ type CommitterConfig struct {
 	Email string
 }
 
-// CommitMessageConfig contains the resolved per-event, batch, and grouped templates.
+// CommitMessageConfig contains the resolved per-event, snapshot, and grouped templates.
 type CommitMessageConfig struct {
-	Template      string
-	BatchTemplate string
-	GroupTemplate string
+	EventTemplate    string
+	SnapshotTemplate string
+	GroupTemplate    string
 }
 
 // CommitMessageData is the template context for per-event commit messages.
@@ -236,8 +236,8 @@ type CommitMessageData struct {
 	GitTarget  string
 }
 
-// BatchCommitMessageData is the template context for atomic batch commit messages.
-type BatchCommitMessageData struct {
+// SnapshotCommitMessageData is the template context for atomic snapshot commit messages.
+type SnapshotCommitMessageData struct {
 	Count     int
 	GitTarget string
 }
@@ -300,9 +300,9 @@ func ResolveCommitConfig(spec *v1alpha1.CommitSpec) CommitConfig {
 			Email: DefaultCommitterEmail,
 		},
 		Message: CommitMessageConfig{
-			Template:      DefaultCommitMessageTemplate,
-			BatchTemplate: DefaultBatchCommitMessageTemplate,
-			GroupTemplate: DefaultGroupCommitMessageTemplate,
+			EventTemplate:    DefaultEventCommitMessageTemplate,
+			SnapshotTemplate: DefaultSnapshotCommitMessageTemplate,
+			GroupTemplate:    DefaultGroupCommitMessageTemplate,
 		},
 	}
 
@@ -320,11 +320,11 @@ func ResolveCommitConfig(spec *v1alpha1.CommitSpec) CommitConfig {
 	}
 
 	if spec.Message != nil {
-		if template := strings.TrimSpace(spec.Message.Template); template != "" {
-			config.Message.Template = template
+		if eventTemplate := strings.TrimSpace(spec.Message.EventTemplate); eventTemplate != "" {
+			config.Message.EventTemplate = eventTemplate
 		}
-		if batchTemplate := strings.TrimSpace(spec.Message.BatchTemplate); batchTemplate != "" {
-			config.Message.BatchTemplate = batchTemplate
+		if snapshotTemplate := strings.TrimSpace(spec.Message.SnapshotTemplate); snapshotTemplate != "" {
+			config.Message.SnapshotTemplate = snapshotTemplate
 		}
 		if groupTemplate := strings.TrimSpace(spec.Message.GroupTemplate); groupTemplate != "" {
 			config.Message.GroupTemplate = groupTemplate

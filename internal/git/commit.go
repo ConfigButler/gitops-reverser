@@ -35,7 +35,7 @@ import (
 func renderEventCommitMessage(event Event, config CommitConfig) (string, error) {
 	return renderCommitTemplate(
 		"event",
-		config.Message.Template,
+		config.Message.EventTemplate,
 		CommitMessageData{
 			Operation:  event.Operation,
 			Group:      event.Identifier.Group,
@@ -50,7 +50,7 @@ func renderEventCommitMessage(event Event, config CommitConfig) (string, error) 
 	)
 }
 
-func renderBatchCommitMessage(
+func renderSnapshotCommitMessage(
 	events []Event,
 	override string,
 	gitTarget string,
@@ -61,9 +61,9 @@ func renderBatchCommitMessage(
 	}
 
 	return renderCommitTemplate(
-		"batch",
-		config.Message.BatchTemplate,
-		BatchCommitMessageData{
+		"snapshot",
+		config.Message.SnapshotTemplate,
+		SnapshotCommitMessageData{
 			Count:     len(events),
 			GitTarget: gitTarget,
 		},
@@ -118,7 +118,7 @@ func ValidateCommitConfig(config CommitConfig) error {
 		return err
 	}
 
-	if _, err := renderBatchCommitMessage(
+	if _, err := renderSnapshotCommitMessage(
 		[]Event{sampleEvent},
 		"",
 		"example-target",
