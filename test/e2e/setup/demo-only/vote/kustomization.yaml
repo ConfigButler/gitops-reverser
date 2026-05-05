@@ -8,9 +8,6 @@ resources:
   - apf.yaml
   - rbac-auth-service.yaml
   - rbac-participants.yaml
-  - ingress-auth.yaml
-  - ingress-frontend.yaml
-  - ingress-kubeapi.yaml
   - crds/quizsessions.yaml
   - crds/quizsubmissions.yaml
   - sessions/demo.yaml
