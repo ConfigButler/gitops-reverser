@@ -35,8 +35,8 @@ func TestResolveCommitConfig_Defaults(t *testing.T) {
 
 	assert.Equal(t, DefaultCommitterName, config.Committer.Name)
 	assert.Equal(t, DefaultCommitterEmail, config.Committer.Email)
-	assert.Equal(t, DefaultCommitMessageTemplate, config.Message.Template)
-	assert.Equal(t, DefaultBatchCommitMessageTemplate, config.Message.BatchTemplate)
+	assert.Equal(t, DefaultEventCommitMessageTemplate, config.Message.EventTemplate)
+	assert.Equal(t, DefaultSnapshotCommitMessageTemplate, config.Message.SnapshotTemplate)
 	assert.Equal(t, DefaultGroupCommitMessageTemplate, config.Message.GroupTemplate)
 }
 
@@ -47,23 +47,23 @@ func TestResolveCommitConfig_CustomValues(t *testing.T) {
 			Email: "audit@example.com",
 		},
 		Message: &v1alpha1.CommitMessageSpec{
-			Template:      "audit: {{.Operation}} {{.Name}}",
-			BatchTemplate: "snapshot: {{.Count}} {{.GitTarget}}",
-			GroupTemplate: "grouped: {{.Author}} {{.Count}}",
+			EventTemplate:    "audit: {{.Operation}} {{.Name}}",
+			SnapshotTemplate: "snapshot: {{.Count}} {{.GitTarget}}",
+			GroupTemplate:    "grouped: {{.Author}} {{.Count}}",
 		},
 	})
 
 	assert.Equal(t, "Audit Bot", config.Committer.Name)
 	assert.Equal(t, "audit@example.com", config.Committer.Email)
-	assert.Equal(t, "audit: {{.Operation}} {{.Name}}", config.Message.Template)
-	assert.Equal(t, "snapshot: {{.Count}} {{.GitTarget}}", config.Message.BatchTemplate)
+	assert.Equal(t, "audit: {{.Operation}} {{.Name}}", config.Message.EventTemplate)
+	assert.Equal(t, "snapshot: {{.Count}} {{.GitTarget}}", config.Message.SnapshotTemplate)
 	assert.Equal(t, "grouped: {{.Author}} {{.Count}}", config.Message.GroupTemplate)
 }
 
 func TestValidateCommitConfig_InvalidTemplate(t *testing.T) {
 	config := ResolveCommitConfig(&v1alpha1.CommitSpec{
 		Message: &v1alpha1.CommitMessageSpec{
-			Template: "{{.Operation",
+			EventTemplate: "{{.Operation",
 		},
 	})
 
@@ -100,15 +100,15 @@ func TestRenderEventCommitMessage_CustomTemplate(t *testing.T) {
 
 	message, err := renderEventCommitMessage(event, ResolveCommitConfig(&v1alpha1.CommitSpec{
 		Message: &v1alpha1.CommitMessageSpec{
-			Template: "audit({{.GitTarget}}): {{.Username}} {{.Operation}} {{.Namespace}}/{{.Name}}",
+			EventTemplate: "audit({{.GitTarget}}): {{.Username}} {{.Operation}} {{.Namespace}}/{{.Name}}",
 		},
 	}))
 	require.NoError(t, err)
 	assert.Equal(t, "audit(platform): alice UPDATE prod/api", message)
 }
 
-func TestRenderBatchCommitMessage_DefaultTemplate(t *testing.T) {
-	message, err := renderBatchCommitMessage(
+func TestRenderSnapshotCommitMessage_DefaultTemplate(t *testing.T) {
+	message, err := renderSnapshotCommitMessage(
 		[]Event{{Operation: "CREATE"}, {Operation: "DELETE"}},
 		"",
 		"demo",

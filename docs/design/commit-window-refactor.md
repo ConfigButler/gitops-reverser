@@ -146,10 +146,10 @@ planner-time regrouping pass.
 
 There are three message kinds:
 
-- Per-event: one event, event author, `commit.message.template`.
+- Per-event: one event, event author, `commit.message.eventTemplate`.
 - Grouped: multiple events from one grouped author/target, grouped author,
   `commit.message.groupTemplate`.
-- Batch: atomic reconcile write, operator author, `commit.message.batchTemplate`.
+- Snapshot: atomic reconcile write, operator author, `commit.message.snapshotTemplate`.
 
 A grouped unit with one event intentionally falls back to the per-event message
 kind. This keeps `commitWindow=0` and one-event finalized windows readable.

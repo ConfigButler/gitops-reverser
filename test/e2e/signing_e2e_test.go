@@ -42,8 +42,8 @@ type signingGitProviderData struct {
 	SecretName          string
 	CommitterName       string
 	CommitterEmail      string
-	MessageTemplate     string
-	BatchTemplate       string
+	EventTemplate       string
+	SnapshotTemplate    string
 	SigningSecretName   string
 	GenerateWhenMissing bool
 }
@@ -117,8 +117,8 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 				SecretName:          signingRepo.GitSecretHTTP,
 				CommitterName:       committerName,
 				CommitterEmail:      committerEmail,
-				MessageTemplate:     "[{{.Operation}}] {{.APIVersion}}/{{.Resource}}/{{.Name}}",
-				BatchTemplate:       "reconcile: sync {{.Count}} resources",
+				EventTemplate:       "[{{.Operation}}] {{.APIVersion}}/{{.Resource}}/{{.Name}}",
+				SnapshotTemplate:    "reconcile: sync {{.Count}} resources",
 				SigningSecretName:   signingSecretName,
 				GenerateWhenMissing: true,
 			}
@@ -254,8 +254,8 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 			SecretName:          signingRepo.GitSecretHTTP,
 			CommitterName:       committerName,
 			CommitterEmail:      committerEmail,
-			MessageTemplate:     "[{{.Operation}}] {{.APIVersion}}/{{.Resource}}/{{.Name}}",
-			BatchTemplate:       "reconcile: sync {{.Count}} resources",
+			EventTemplate:       "[{{.Operation}}] {{.APIVersion}}/{{.Resource}}/{{.Name}}",
+			SnapshotTemplate:    "reconcile: sync {{.Count}} resources",
 			SigningSecretName:   signingSecretName,
 			GenerateWhenMissing: false,
 		}
@@ -350,8 +350,8 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 			SecretName:          signingRepo.GitSecretHTTP,
 			CommitterName:       customName,
 			CommitterEmail:      customEmail,
-			MessageTemplate:     customTemplate,
-			BatchTemplate:       "reconcile: sync {{.Count}} resources",
+			EventTemplate:       customTemplate,
+			SnapshotTemplate:    "reconcile: sync {{.Count}} resources",
 			SigningSecretName:   "signing-key-committer",
 			GenerateWhenMissing: true,
 		}
@@ -392,12 +392,12 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 
 	// ── Test 4: batch/atomic commit uses batch message template ─────────────
 
-	It("should produce a batch commit with the custom batch message template", func() {
-		providerName := "signing-batch"
+	It("should produce a snapshot commit with the custom snapshot message template", func() {
+		providerName := "signing-snapshot"
 		destName := providerName + "-dest"
 		watchRuleName := providerName + "-wr"
-		commitPath := "e2e/signing-batch"
-		customBatchTemplate := "e2e-batch: synced {{.Count}} resources to {{.GitTarget}}"
+		commitPath := "e2e/signing-snapshot"
+		customSnapshotTemplate := "e2e-snapshot: synced {{.Count}} resources to {{.GitTarget}}"
 
 		DeferCleanup(func() {
 			if skipCleanupBecauseResourcesArePreserved(
@@ -433,8 +433,8 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 			SecretName:          signingRepo.GitSecretHTTP,
 			CommitterName:       committerName,
 			CommitterEmail:      committerEmail,
-			MessageTemplate:     "[{{.Operation}}] {{.APIVersion}}/{{.Resource}}/{{.Name}}",
-			BatchTemplate:       customBatchTemplate,
+			EventTemplate:       "[{{.Operation}}] {{.APIVersion}}/{{.Resource}}/{{.Name}}",
+			SnapshotTemplate:    customSnapshotTemplate,
 			SigningSecretName:   "signing-key-batch",
 			GenerateWhenMissing: true,
 		}

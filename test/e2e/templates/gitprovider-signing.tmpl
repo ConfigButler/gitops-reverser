@@ -16,8 +16,8 @@ spec:
       name: {{.CommitterName}}
       email: {{.CommitterEmail}}
     message:
-      template: "{{.MessageTemplate}}"
-      batchTemplate: "{{.BatchTemplate}}"
+      eventTemplate: "{{.EventTemplate}}"
+      snapshotTemplate: "{{.SnapshotTemplate}}"
     signing:
       secretRef:
         name: {{.SigningSecretName}}

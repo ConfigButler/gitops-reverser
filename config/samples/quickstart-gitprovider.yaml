@@ -16,5 +16,5 @@ spec:
   #     name: "GitOps Reverser"
   #     email: "noreply@configbutler.ai"
   #   message:
-  #     template: "audit: [{{.Operation}}] {{.APIVersion}}/{{.Resource}}/{{.Name}}"
-  #     batchTemplate: "reconcile: sync {{.Count}} resources"
+  #     eventTemplate: "audit: [{{.Operation}}] {{.APIVersion}}/{{.Resource}}/{{.Name}}"
+  #     snapshotTemplate: "reconcile: sync {{.Count}} resources"

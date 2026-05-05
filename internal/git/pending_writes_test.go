@@ -184,7 +184,7 @@ func TestPendingWriteAtomic_DerivesBatchMetadata(t *testing.T) {
 		},
 	}
 
-	assert.Equal(t, CommitMessageBatch, pendingWrite.MessageKind())
+	assert.Equal(t, CommitMessageSnapshot, pendingWrite.MessageKind())
 	assert.Empty(t, pendingWrite.Author())
 	assert.Equal(t, "explicit batch message", pendingWrite.CommitMessage)
 	assert.Equal(t, "team-a", pendingWrite.Target().Name)

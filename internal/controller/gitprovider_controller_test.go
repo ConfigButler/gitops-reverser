@@ -405,7 +405,7 @@ var _ = Describe("GitProvider Controller", func() {
 					AllowedBranches: []string{"main"},
 					Commit: &configbutleraiv1alpha1.CommitSpec{
 						Message: &configbutleraiv1alpha1.CommitMessageSpec{
-							Template: "{{.Operation",
+							EventTemplate: "{{.Operation",
 						},
 					},
 				},

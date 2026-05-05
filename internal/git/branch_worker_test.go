@@ -890,7 +890,7 @@ func TestBranchWorker_CommitAndPushRequest_UsesProviderCommitConfiguration(t *te
 					Email: "audit@example.com",
 				},
 				Message: &configv1alpha1.CommitMessageSpec{
-					Template: "audit: {{.Username}} {{.Operation}} {{.APIVersion}}/{{.Resource}}/{{.Name}}",
+					EventTemplate: "audit: {{.Username}} {{.Operation}} {{.APIVersion}}/{{.Resource}}/{{.Name}}",
 				},
 			},
 		},
@@ -972,7 +972,7 @@ func TestBranchWorker_CommitAndPushRequest_UsesBatchTemplateForAtomicRequest(t *
 			URL: remoteURL,
 			Commit: &configv1alpha1.CommitSpec{
 				Message: &configv1alpha1.CommitMessageSpec{
-					BatchTemplate: "snapshot({{.GitTarget}}): {{.Count}} resources",
+					SnapshotTemplate: "snapshot({{.GitTarget}}): {{.Count}} resources",
 				},
 			},
 		},

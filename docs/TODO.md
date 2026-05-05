@@ -8,9 +8,6 @@ This file is meant to track the smaller current backlog, not historical notes.
   Decide whether the fix should be validation, a shared queue/lock per repo, or both.
   Until then, keep recommending one `GitProvider` per repository.
 
-- [ ] Batch related edits into fewer commits.
-  Explore a configurable grouping model based on actor, inactivity window, and resource scope.
-
 - [ ] Improve queue and worker observability.
   Better metrics, queue visibility, and more high-load test coverage would help.
 

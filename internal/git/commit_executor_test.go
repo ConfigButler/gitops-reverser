@@ -100,7 +100,7 @@ func seedEventContent(t *testing.T, repoPath string, worktree *git.Worktree, wri
 
 func TestExecutor_GroupedSingleEvent_UsesPerEventMessageFallback(t *testing.T) {
 	config := ResolveCommitConfig(nil)
-	config.Message.Template = "event: {{.Name}} by {{.Username}}"
+	config.Message.EventTemplate = "event: {{.Name}} by {{.Username}}"
 	config.Message.GroupTemplate = "group: {{.Author}} changed {{.Count}}"
 
 	pendingWrite := PendingWrite{
@@ -118,7 +118,7 @@ func TestExecutor_GroupedSingleEvent_UsesPerEventMessageFallback(t *testing.T) {
 
 func TestExecutor_GroupedMultiEvent_UsesGroupTemplate(t *testing.T) {
 	config := ResolveCommitConfig(nil)
-	config.Message.Template = "event: {{.Name}}"
+	config.Message.EventTemplate = "event: {{.Name}}"
 	config.Message.GroupTemplate = "group: {{.Author}} {{.Count}} {{.GitTarget}}"
 
 	pendingWrite := PendingWrite{
@@ -137,9 +137,9 @@ func TestExecutor_GroupedMultiEvent_UsesGroupTemplate(t *testing.T) {
 	assert.Equal(t, DefaultCommitterName, options.Committer.Name)
 }
 
-func TestExecutor_AtomicUnit_UsesBatchMessage(t *testing.T) {
+func TestExecutor_AtomicUnit_UsesSnapshotMessage(t *testing.T) {
 	config := ResolveCommitConfig(nil)
-	config.Message.BatchTemplate = "batch: {{.Count}} {{.GitTarget}}"
+	config.Message.SnapshotTemplate = "snapshot: {{.Count}} {{.GitTarget}}"
 
 	pendingWrite := PendingWrite{
 		Kind:          PendingWriteAtomic,
@@ -155,7 +155,7 @@ func TestExecutor_AtomicUnit_UsesBatchMessage(t *testing.T) {
 
 	message, options, err := pendingWrite.commitMetadata()
 	require.NoError(t, err)
-	assert.Equal(t, "batch: 2 team-a", message)
+	assert.Equal(t, "snapshot: 2 team-a", message)
 	assert.Equal(t, DefaultCommitterName, options.Author.Name)
 	assert.Equal(t, DefaultCommitterName, options.Committer.Name)
 }
