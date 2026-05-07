@@ -300,6 +300,188 @@ This refinement is non-breaking with respect to `CommitContext` v1alpha1:
 Either ordering works. The refinement is best treated as its own design pass when it
 becomes a priority.
 
+## Alternative: `audit-proxy` as universal audit fan-out hub
+
+A more ambitious option, raised because the same maintainer owns
+`apiservice-audit-proxy`: expand its scope substantially. Rename it to `audit-proxy`, point
+kube-apiserver's `--audit-webhook-config-file` at it instead of at gitops-reverser, give it
+its own Redis, and let it own the entire job of producing a trustworthy unified audit
+stream. The proxy then fans that stream out to one or more downstream consumers —
+gitops-reverser becoming one consumer among potentially many.
+
+### Sketch
+
+- kube-apiserver's audit webhook target moves from gitops-reverser to `audit-proxy`.
+- `audit-proxy` continues to do what `apiservice-audit-proxy` does today: sit in front of
+  aggregated API backends, capture request and response bodies, attach `Audit-ID`.
+- All native kube-apiserver audit events also land in `audit-proxy`.
+- `audit-proxy` runs its own Redis (or dedicated Valkey database) used as a short-lived
+  stitching cache: it joins the hollow native event with the body it captured for the same
+  `auditID`, in-process, without crossing a public network boundary.
+- The stitched result is a single, complete, audit-id-deduplicated stream that
+  `audit-proxy` exposes as one or more output channels.
+- gitops-reverser drops its audit-webhook receiver entirely. It becomes a plain consumer of
+  `audit-proxy`'s output stream — likely via a Redis stream consumer group.
+
+```mermaid
+flowchart LR
+    actor["Actor<br/>kubectl / API client"]
+    apiserver["kube-apiserver"]
+    proxy["audit-proxy<br/>(generalised<br/>apiservice-audit-proxy)"]
+    backend["aggregated backend"]
+    proxyRedis[("audit-proxy Redis<br/>stitching + fan-out stream")]
+
+    grA["gitops-reverser A"]
+    grB["gitops-reverser B"]
+    other["other consumer<br/>SIEM / archiver / ..."]
+
+    actor -->|"mutating request"| apiserver
+    apiserver -->|"proxied request"| proxy
+    proxy -->|"forward"| backend
+    backend -->|"response"| proxy
+    proxy -->|"response"| apiserver
+    apiserver -->|"response"| actor
+
+    apiserver -. "audit webhook target<br/>all events, native" .-> proxy
+    proxy <--> proxyRedis
+
+    proxy -->|"complete events"| grA
+    proxy -->|"complete events"| grB
+    proxy -->|"complete events"| other
+
+    classDef real fill:#e8f4ff,stroke:#2f6f9f,color:#102a43
+    classDef hub fill:#d4f7d4,stroke:#2a7f2a,color:#0a3d0a
+    classDef receiver fill:#fff4d6,stroke:#a36b00,color:#3d2a00
+    classDef store fill:#f0e6ff,stroke:#5a2a9f,color:#2a1040
+    class apiserver,backend real
+    class proxy hub
+    class proxyRedis store
+    class grA,grB,other receiver
+```
+
+### Why it is appealing
+
+- **Dedicated Redis means fast.** The stitching cache is internal to one process boundary;
+  reads and writes do not cross mTLS, kubeconfig, or pod-to-pod network. Latency is
+  fundamentally lower than any cross-pod design and there is no shared cluster-wide Valkey
+  to compete with.
+- **Ordering is guaranteed at the source.** The proxy is the only thing that emits events
+  downstream. It can hold a hollow native event briefly until the matching enrichment
+  arrives (or a timeout fires) and emit one complete record. Downstream consumers see one
+  ordered stream of fully-formed events. gitops-reverser shrinks because it no longer has
+  to defend against duplicates, hollow events, or missing bodies.
+- **Reusable. The audit-stream-trust problem is general.** Other projects that consume
+  Kubernetes audit logs face the same hollow-events-for-aggregated-APIs gap. A standalone
+  `audit-proxy` that solves it is useful well beyond gitops-reverser. The fix lives once,
+  in the right place — auditing infrastructure rather than a downstream consumer.
+- **Fan-out to multiple receivers — the killer feature.** kube-apiserver's audit webhook
+  configuration accepts exactly one URL per cluster. Today that makes it impossible to run
+  multiple gitops-reverser instances against one cluster, or to layer in a SIEM and an
+  archiver alongside gitops-reverser. With the proxy as the only direct webhook target,
+  fan-out happens cheaply on the proxy side: each subscriber gets its own consumer group
+  on the output stream. Multi-consumer audit becomes a Day 1 capability, including the
+  "two gitops-reverser instances in one test cluster" case the maintainer hits today.
+
+### Trade-offs and risks
+
+The reach is much wider than the side-channel proposal, and so is the surface area.
+
+- **Massively expanded scope for `apiservice-audit-proxy`.** Today it is a small focused
+  tool that closes one gap. Becoming the cluster's audit hub means owning fan-out semantics,
+  consumer-group management, retention, replay, observability for *all* downstream
+  consumers, security sensitivity for the full audit log, and an upgrade story that does
+  not break any consumer in the wild. The maintainer cost approximately doubles.
+- **Single point of failure for the entire cluster's audit ingestion.** Today
+  gitops-reverser is also a single point, but the blast radius is "gitops-reverser stops
+  working." With the hub, the blast radius is "no audit-driven tool in the cluster gets
+  events." That changes how operator teams think about uptime, blue/green upgrades, and HA.
+- **One more network hop, paid by every event.** Native audit events that did not need
+  enrichment (built-in resources) now traverse the proxy anyway. For an off-request-path
+  signal this is acceptable, but it is a tax on every audited mutation in the cluster.
+- **Security blast radius concentrates.** Audit events carry identity, request bodies, and
+  occasionally secrets-adjacent content. Concentrating that in one fan-out hub raises the
+  consequences of a compromise. The hub has to be hardened to a higher bar than a
+  consumer-side proxy that only sees a subset.
+- **gitops-reverser gains a hard dependency on `audit-proxy`.** Today the design doc for
+  `CommitContext` says gitops-reverser does not require apiservice-audit-proxy to be
+  running. That property goes away — gitops-reverser cannot ingest audit at all without
+  the hub.
+- **Consumer-group semantics need a real design pass.** At-least-once vs at-most-once,
+  per-consumer retention, slow-consumer back-pressure, replay from a given audit ID,
+  ordering guarantees across fan-out edges — none of this is hand-wave. Each consumer's
+  failure mode has to be characterised.
+- **Operationally heavier.** A second Redis (the proxy's), a second TLS chain (between the
+  proxy and each consumer), separate alerting, separate runbooks, separate upgrade
+  sequencing.
+- **For non-aggregated-API events, enrichment value is zero.** Most audit volume in most
+  clusters is not an aggregated API — it is core resources whose native events are already
+  complete. Putting them through a stitching cache buys nothing for those events but pays
+  the cost.
+- **Dual-purpose proxy mixes concerns.** The proxy today has one job: pass-through with
+  enrichment. Adding fan-out, retention, and consumer management mixes two
+  responsibilities inside one binary. A future split (e.g., a "front-proxy" that does
+  pass-through and an "audit-hub" that does fan-out) may eventually become natural — and
+  reversing course is harder once consumers have integrated against the combined surface.
+
+### Where it differs from the side-channel proposal
+
+The side-channel proposal keeps gitops-reverser as the audit ingestion point and adds an
+internal cache for proxy enrichment. It is a small change, scoped to gitops-reverser, with
+no operator-facing impact. The hub proposal moves audit ingestion *out* of gitops-reverser
+entirely, into a tool the maintainer already owns, and turns the
+one-receiver-per-cluster constraint into a fan-out feature. The two are different
+architectural commitments, not deployment variants of the same idea.
+
+## Recommendation: which approach fits best
+
+| Aspect | Current shape | Side-channel cache | `audit-proxy` hub |
+|--------|---------------|--------------------|-------------------|
+| Scope of change | none | gitops-reverser only | `apiservice-audit-proxy` generalisation + gitops-reverser drops audit ingestion |
+| New components | none | new endpoint + cache in gitops-reverser | new Redis + fan-out story in audit-proxy |
+| Cluster operator impact | none | audit-policy update | new audit-webhook target, new component to operate |
+| Multiple consumers? | no | no | yes — major win |
+| gitops-reverser complexity | high (consumer-side dedupe) | medium (cache lookup) | low (plain stream consumer) |
+| Single point of failure for cluster audit | gitops-reverser | gitops-reverser | audit-proxy |
+| Reusable for other projects | no | no | yes |
+| Time to first viable implementation | already shipped | days to weeks | months — design + maintenance commitment |
+| Reversibility | n/a | easy to roll back | hard once consumers integrate |
+| Solves "two gitops-reverser in one cluster" | no | no | yes |
+
+The honest read:
+
+- **In the short term, the side-channel is the right move for gitops-reverser.** It
+  addresses the specific pain (duplicate events, idempotency-marker complexity in
+  `CommitContext`) with a contained change inside the project. It does not require any
+  operator-facing migration. It does not add a hard dependency. It can ship next to
+  `CommitContext` or shortly after. If it later turns out to be the wrong shape, rolling it
+  back is cheap.
+- **In the medium term, the `audit-proxy` hub is the more interesting bet — but only if
+  the fan-out problem genuinely matters.** The killer feature in the maintainer's framing
+  is multi-receiver audit (multiple gitops-reverser instances, SIEM/archiver alongside).
+  If that pain is real and felt today (the "only one gitops-reverser in my test cluster"
+  observation suggests it is), the hub justifies its scope. If multi-consumer audit is a
+  hypothetical future need, the hub is over-investment.
+- **The two are not mutually exclusive in time.** The side-channel can ship now and can
+  retire cleanly later if/when the hub lands. There is no architectural lock-in: the hub
+  absorbs the side-channel's job entirely once it exists.
+- **The deciding question for the maintainer.** The hub roughly doubles the maintenance
+  surface of `apiservice-audit-proxy` and turns it into infrastructure with a much wider
+  blast radius. Be explicit about whether that ownership cost is welcome before committing
+  — adding consumers in the wild ratchets back-out cost up quickly.
+
+If the hub is the eventual destination, a low-risk sequencing is:
+
+1. Ship the side-channel inside gitops-reverser. Weeks, low risk, contained.
+2. Sketch a v0 hub in `audit-proxy` that supports a single subscriber (gitops-reverser
+   itself), so the fan-out machinery does not have to be production-grade on day one.
+3. Migrate gitops-reverser to consume from the hub once the hub is stable. Retire the
+   side-channel.
+4. Onboard a second consumer (SIEM, second gitops-reverser instance, archiver) and
+   exercise the fan-out story for real.
+
+If multi-consumer audit is not on the near-term roadmap, stop after step 1 and revisit
+when the need is concrete rather than speculative.
+
 ## References
 
 - Existing audit handler:
