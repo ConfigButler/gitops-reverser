@@ -2,6 +2,8 @@
 
 > Status: exploratory — improvement proposal for the broader audit pipeline.
 > Related to but not blocking [design-commit-context-api.md](design-commit-context-api.md).
+> Concrete simplified follow-up:
+> [design-audit-event-body-parking.md](design-audit-event-body-parking.md).
 > Date: 2026-05-07
 
 ## Why this idea exists
@@ -21,6 +23,13 @@ duplicate. The [CommitContext design](design-commit-context-api.md) notes this a
 for an idempotency-marker mechanism in its consumer logic. A cleaner alternative is to give
 the proxy its own ingestion endpoint that does *not* feed the canonical stream, and instead
 populates a side-cache the consumer reads when processing the canonical event.
+
+This is best treated as **pipeline cleanup, not a `CommitContext` prerequisite.**
+`CommitContext` v1 should ship with the local stash plus idempotency marker described in
+[design-commit-context-api.md](design-commit-context-api.md); the side-channel is the
+follow-up that removes the marker workaround once the broader pipeline is reshaped.
+Treating it as a prerequisite would block `CommitContext` behind a refactor that does not
+need to be in the critical path.
 
 ## Current shape
 
@@ -144,10 +153,13 @@ flowchart LR
 
 The enrichment becomes a *side-channel* (green): a separate endpoint, a separate Valkey key
 space, a separate retry policy, separate metrics. The canonical pipeline (yellow boxes plus
-the audit stream) carries exactly one event per request and the consumer joins enrichment in
-on demand. By the time a batched native event reaches the consumer, the enrichment write —
-which happens directly after the proxied response — has already landed in cache. Ordering
-becomes a structural property of the architecture rather than an empirical one.
+the audit stream) carries exactly one event per request and the consumer joins enrichment
+in on demand. The enrichment write happens in a goroutine right after the proxied response,
+so under normal conditions it lands in cache before the kube-apiserver batched native
+delivery — but this is "almost always" rather than "structurally guaranteed" (see the
+ordering point in the next section). The architecture's real win is removing the
+duplicate-event problem; the consumer accepts a brief wait-or-degrade fallback for the
+rare cases where native arrives first.
 
 ## Why this is better
 
@@ -155,12 +167,17 @@ becomes a structural property of the architecture rather than an empirical one.
   more idempotency markers, no "is this miss real or already-attached?" branching. The
   consumer's logic for `CommitContext` and similar designs collapses to "GET stash, attach,
   DEL."
-- **Ordering is structurally guaranteed.** The proxy's enrichment lands in cache via a fast
-  direct write before the kube-apiserver batch delay even starts. By the time the canonical
-  audit event reaches the consumer, the cache entry is already there. The current empirical
-  "proxy usually arrives first" claim is replaced with a structural guarantee: cache write
-  happens at proxy response time; canonical event delivery happens at batch-flush time,
-  which is strictly later.
+- **Ordering: usually right, but not strictly guaranteed.** The proxy's enrichment send
+  starts in a goroutine *after* the proxied response is written
+  ([handler.go:196](../../external-sources/apiservice-audit-proxy/pkg/proxy/handler.go#L196)),
+  so it generally beats kube-apiserver's batched native delivery — but only generally. If
+  the receiver is slow, the proxy's goroutine pool backs up, retries kick in, or audit
+  webhook batching is configured aggressively, the native event can still arrive first.
+  The consumer should therefore be designed as "GET the cache; for events from kinds
+  that are *expected* to be enriched, optionally wait or retry briefly before degrading
+  to the hollow event," not "single GET is always enough." The architecture's real
+  structural win is removing the duplicate-event problem entirely; ordering is "almost
+  always wins, with a defined fallback" rather than a hard guarantee.
 - **Separation of concerns / uptime isolation.** The proxy is an enrichment side-channel,
   not a parallel main channel. Its uptime, retries, and timing cannot affect the order or
   completeness of native audit events. If the proxy is down, audit ingestion still works —
@@ -201,6 +218,16 @@ Persistent non-zero rates on the miss or orphan counters indicate one of: proxy 
 cluster has aggregated APIs that bypass the proxy, network partition between proxy and
 gitops-reverser, or misconfigured Valkey routing. Alert thresholds and runbook entries
 should land alongside the metrics themselves.
+
+**Implementation note on orphan counters.** Valkey TTL expiry does not natively emit a
+counter increment, so `audit_enrichment_orphan_total` (and the analogous
+`commit_context_stash_orphan_total`) cannot be assumed for free. Implementing them
+requires either subscribing to Valkey keyspace notifications
+(`__keyevent@*__:expired`, configured via `notify-keyspace-events`) or maintaining a
+small secondary index of in-flight cache entries plus a sweeper that decrements on a
+successful match and counts on expiry. Either approach is straightforward but is a
+non-trivial implementation choice that should be designed deliberately and land
+alongside the metric — not promised in advance and discovered missing later.
 
 ## Open questions
 
@@ -297,8 +324,10 @@ This refinement is non-breaking with respect to `CommitContext` v1alpha1:
 - If `CommitContext` ships first, the marker mechanism handles the dual-event case until
   the refinement lands.
 
-Either ordering works. The refinement is best treated as its own design pass when it
-becomes a priority.
+Either ordering works in principle, but the recommended sequencing is `CommitContext`
+first with the marker in place, side-channel afterwards as a pipeline-cleanup follow-up.
+See the [Recommendation chapter](#recommendation-which-approach-fits-best) for the full
+argument.
 
 ## Alternative: `audit-proxy` as universal audit fan-out hub
 
@@ -321,7 +350,8 @@ gitops-reverser becoming one consumer among potentially many.
 - The stitched result is a single, complete, audit-id-deduplicated stream that
   `audit-proxy` exposes as one or more output channels.
 - gitops-reverser drops its audit-webhook receiver entirely. It becomes a plain consumer of
-  `audit-proxy`'s output stream — likely via a Redis stream consumer group.
+  `audit-proxy`'s output channel. The transport between the hub and its consumers is itself
+  a design choice — covered below — and is not necessarily a Redis stream.
 
 ```mermaid
 flowchart LR
@@ -359,6 +389,70 @@ flowchart LR
     class grA,grB,other receiver
 ```
 
+### Transport: Redis stream vs webhook-style HTTP
+
+The diagram above leaves the transport between the hub and its consumers deliberately
+underspecified. The instinct of "audit-proxy publishes to a Redis stream and consumers
+attach with consumer groups" is one option, but probably not the right default. A more
+conservative choice is to keep the *external* contract of the hub identical to
+kube-apiserver's audit webhook — same wire format, same shape, just with the bodies filled
+in.
+
+The webhook-style transport has real advantages:
+
+- **Consumers do not change their receive model.** gitops-reverser already speaks
+  audit-webhook. If `audit-proxy` is just "kube-apiserver but with complete events," every
+  existing consumer integrates without a code change. The hub becomes drop-in.
+- **Simple installations stay simple.** A cluster that does not run any aggregated APIs —
+  or that accepts hollow audit for the ones it does — can skip the hub entirely and point
+  kube-apiserver directly at gitops-reverser, exactly as today. The hub becomes optional
+  rather than mandatory. The cost is real and explicit: without the hub, aggregated-API
+  events stay hollow.
+- **No public Redis surface.** The hub's Redis can stay strictly internal. The network
+  contract between hub and consumer is HTTPS, not a Redis pubsub/stream. Smaller exposure
+  area, simpler TLS story, no need to publish a Redis client API.
+
+The Redis-stream transport in turn has its own strengths — durable replay, consumer-group
+back-pressure, easy multi-consumer fan-out — which matter more if there are many
+consumers or a consumer needs to catch up after extended downtime.
+
+Best read: keep the *external* contract on the hub webhook-shaped (same wire format as
+kube-apiserver's audit webhook). The hub uses whatever it wants internally — including a
+Redis stream as an internal staging buffer — but consumers see audit-webhook. If a
+consumer later needs durable replay across restarts, the hub can grow a Redis-stream
+output channel alongside the webhook output without breaking anyone.
+
+### Configurable enrichment policy
+
+The hub has to make a choice when the synthetic enriched event and the hollow native
+event both exist for the same `auditID`. Rather than hardcoding one strategy, this should
+be configuration:
+
+- **Stitch and emit one merged event.** Hold the hollow native event briefly, wait for
+  the synthetic enrichment, merge native identity/timestamps with synthetic body, emit one
+  record. Highest fidelity, highest latency.
+- **Synthetic wins, drop native.** When the synthetic enriched event lands first (the
+  expected case for aggregated APIs the proxy fronts), emit it immediately into the
+  output and discard the hollow native event when it arrives later. Lowest latency for
+  aggregated APIs; trades the native event's batch-and-retry durability for speed.
+- **Native wins, drop synthetic.** Emit the native hollow event as it arrives and
+  discard the synthetic. Equivalent to "no enrichment" — useful when the operator only
+  wants the hub for fan-out, not for body recovery.
+- **Pass both.** Today's accidental behaviour. Useful as a debugging mode, but not a
+  steady-state strategy.
+
+The choice can be cluster-wide, per-aggregated-APIService, or even per audit-policy rule.
+A reasonable default for a typical gitops-reverser deployment is "synthetic wins, drop
+native" for aggregated APIs (fastest path to a complete event) and pass-through for
+built-in resources (no synthetic exists, so nothing to choose). The merge mode is for
+consumers that need both the native event's exact stage timestamps *and* the body — a
+security audit archive, for example.
+
+Making this configurable also gives a clean upgrade path: a new strategy can be added
+without breaking existing consumers, and operators can tune for latency vs durability per
+their constraints. It also acknowledges the maintainer's point that this is a *choice*,
+not a single right answer.
+
 ### Why it is appealing
 
 - **Dedicated Redis means fast.** The stitching cache is internal to one process boundary;
@@ -381,6 +475,16 @@ flowchart LR
   fan-out happens cheaply on the proxy side: each subscriber gets its own consumer group
   on the output stream. Multi-consumer audit becomes a Day 1 capability, including the
   "two gitops-reverser instances in one test cluster" case the maintainer hits today.
+- **Enterprise adoption depends on it.** Many companies already point their kube-apiserver
+  audit webhook at a SIEM, compliance archiver, or in-house security tool. Because
+  kube-apiserver supports exactly one webhook target, gitops-reverser cannot be deployed
+  alongside that existing consumer without displacing it — and security teams will not
+  allow displacing audit infrastructure they already depend on. A fan-out hub turns this
+  from "you'd have to convince our security team to replace the SIEM" into "point
+  everything at the hub; nothing on the existing consumer side changes." For larger
+  clusters this is potentially the difference between "tool that runs in test clusters"
+  and "tool a company can actually adopt without a security review of replacing audit
+  infrastructure."
 
 ### Trade-offs and risks
 
@@ -402,10 +506,18 @@ The reach is much wider than the side-channel proposal, and so is the surface ar
   occasionally secrets-adjacent content. Concentrating that in one fan-out hub raises the
   consequences of a compromise. The hub has to be hardened to a higher bar than a
   consumer-side proxy that only sees a subset.
-- **gitops-reverser gains a hard dependency on `audit-proxy`.** Today the design doc for
-  `CommitContext` says gitops-reverser does not require apiservice-audit-proxy to be
-  running. That property goes away — gitops-reverser cannot ingest audit at all without
-  the hub.
+- **gitops-reverser may or may not gain a hard dependency on `audit-proxy` — it depends
+  entirely on the transport choice.** Under a Redis-stream-coupled transport, the
+  dependency is real: gitops-reverser cannot ingest audit at all without the hub running.
+  Under a webhook-shaped transport (see
+  [Transport: Redis stream vs webhook-style HTTP](#transport-redis-stream-vs-webhook-style-http)),
+  the property the `CommitContext` design relies on — that gitops-reverser runs without
+  `apiservice-audit-proxy` in simple installs — is preserved: a cluster can point
+  kube-apiserver directly at gitops-reverser and skip the hub entirely, losing only
+  enrichment of aggregated-API events. So this risk is avoidable by design and lands on
+  the transport decision, not on the hub idea itself. The recommended default is
+  webhook-shaped output, which keeps simple installs simple and makes the hub an
+  *optional* component rather than a required one.
 - **Consumer-group semantics need a real design pass.** At-least-once vs at-most-once,
   per-consumer retention, slow-consumer back-pressure, replay from a given audit ID,
   ordering guarantees across fan-out edges — none of this is hand-wave. Each consumer's
@@ -432,6 +544,75 @@ entirely, into a tool the maintainer already owns, and turns the
 one-receiver-per-cluster constraint into a fan-out feature. The two are different
 architectural commitments, not deployment variants of the same idea.
 
+### Prior art
+
+A fan-out hub for Kubernetes audit events is not a new idea. The existence of several
+mature implementations is itself an argument for the pattern — and a reason to study them
+before designing this one from scratch.
+
+- **[gardener/auditlog-forwarder](https://github.com/gardener/auditlog-forwarder)** —
+  the closest direct analogue. A webhook server that receives Kubernetes audit events,
+  enriches them with metadata annotations, and forwards to multiple configured backends.
+  Same architectural shape (single inbound webhook from kube-apiserver, multiple
+  outbound backends, optional enrichment). Worth studying for its config model and
+  transport choices before committing to building.
+- **[KubeSphere kube-auditing-webhook](https://kubesphere.io/docs/v3.4/toolbox/auditing/auditing-receive-customize/)** —
+  KubeSphere's CRD-based audit webhook with multiple receiver types (alertmanager and
+  more). Tied to KubeSphere as a platform, but demonstrates the same multi-receiver
+  need with a CRD-driven configuration model.
+- **[sysdiglabs/aks-audit-log](https://github.com/sysdiglabs/aks-audit-log)** —
+  Azure-specific (AKS), forwards to Sysdig and Log Analytics. Confirms the
+  multi-destination pattern in a managed-Kubernetes context.
+- **General-purpose log routers** like
+  [Fluent Bit](https://fluentbit.io/), [Fluentd](https://www.fluentd.org/),
+  [Vector](https://vector.dev/), and the
+  [OpenTelemetry Collector](https://opentelemetry.io/docs/collector/) can be configured
+  to receive a Kubernetes audit webhook and fan out to multiple sinks. They do not
+  reconstruct hollow events for aggregated APIs, but they are what most enterprises
+  already have available for log-shaped fan-out — and they are battle-tested at scale.
+
+What is *not* yet a turnkey component is "fan-out hub plus aggregated-API enrichment in
+one tool." Gardener's forwarder enriches but does not (as far as the public docs show)
+reconstruct hollow events for aggregated APIs the way `apiservice-audit-proxy` does. The
+general-purpose routers do neither. The hub direction therefore has a real
+differentiation story — it is not "yet another audit forwarder" but specifically "the
+one that closes the aggregated-API gap *and* fans out."
+
+The prior art also opens a build-vs-borrow question. Rather than growing
+`apiservice-audit-proxy` into a full hub, an alternative is to extend (e.g.)
+`gardener/auditlog-forwarder` with the aggregated-API capture role and let it own the
+fan-out side it already does well. Worth weighing if the hub direction is taken — it
+trades maintenance commitment on a familiar codebase for cooperation with an upstream
+project that already has its own roadmap.
+
+### If upstream solved it
+
+The honest meta-point: this whole class of work is firefighting around an upstream
+Kubernetes gap. If kube-apiserver one day populated `requestObject`, `responseObject`, and
+`objectRef.name` for aggregated API audit events natively, the entire enrichment story
+disappears. Consumers would receive complete events directly, the side-channel cache
+becomes unnecessary, and `audit-proxy`'s pass-through-with-enrichment role evaporates.
+
+What does *not* go away in that future is the fan-out problem. kube-apiserver still
+accepts only one audit webhook target per cluster. A cluster that wants multiple audit
+consumers (gitops-reverser plus a SIEM, or two gitops-reverser instances) still needs a
+fan-out hub between the apiserver and the consumers — even if every event the hub
+forwards is already complete out of the box.
+
+So the layered reality:
+
+- **If upstream fills the audit gap:** the side-channel and the enrichment role both
+  retire. The hub stays alive but only for fan-out.
+- **If upstream also adds multi-target audit webhook configuration:** the hub retires
+  entirely. None of these documents are needed.
+- **If neither lands:** the maintenance burden is permanent and the hub becomes a more
+  attractive long-term investment.
+
+This framing matters for sequencing. Investing heavily in stitching infrastructure has
+diminishing returns if upstream is moving on the gap; investing in fan-out is durable
+regardless. If the maintainer has to pick which capability of the hub to harden first,
+fan-out is the most upstream-resilient bet.
+
 ## Recommendation: which approach fits best
 
 | Aspect | Current shape | Side-channel cache | `audit-proxy` hub |
@@ -449,38 +630,94 @@ architectural commitments, not deployment variants of the same idea.
 
 The honest read:
 
-- **In the short term, the side-channel is the right move for gitops-reverser.** It
-  addresses the specific pain (duplicate events, idempotency-marker complexity in
-  `CommitContext`) with a contained change inside the project. It does not require any
-  operator-facing migration. It does not add a hard dependency. It can ship next to
-  `CommitContext` or shortly after. If it later turns out to be the wrong shape, rolling it
-  back is cheap.
-- **In the medium term, the `audit-proxy` hub is the more interesting bet — but only if
-  the fan-out problem genuinely matters.** The killer feature in the maintainer's framing
-  is multi-receiver audit (multiple gitops-reverser instances, SIEM/archiver alongside).
-  If that pain is real and felt today (the "only one gitops-reverser in my test cluster"
-  observation suggests it is), the hub justifies its scope. If multi-consumer audit is a
-  hypothetical future need, the hub is over-investment.
-- **The two are not mutually exclusive in time.** The side-channel can ship now and can
-  retire cleanly later if/when the hub lands. There is no architectural lock-in: the hub
-  absorbs the side-channel's job entirely once it exists.
-- **The deciding question for the maintainer.** The hub roughly doubles the maintenance
-  surface of `apiservice-audit-proxy` and turns it into infrastructure with a much wider
-  blast radius. Be explicit about whether that ownership cost is welcome before committing
-  — adding consumers in the wild ratchets back-out cost up quickly.
+- **The side-channel is pipeline cleanup, not a `CommitContext` prerequisite.**
+  `CommitContext` v1 should ship with the local stash + idempotency marker described in
+  [design-commit-context-api.md](design-commit-context-api.md). That is enough to get the
+  feature working under the current single-endpoint shape. The side-channel comes
+  afterwards as the follow-up that removes the marker, removes consumer-side reasoning
+  about duplicate `auditID`s, and stops every future audit-driven feature from inheriting
+  the same workaround. Treating it as a prerequisite would block `CommitContext` on a
+  broader audit-pipeline refactor that does not need to be in the critical path.
+- **Pursue it eventually — sooner if aggregated-API enrichment matters beyond
+  `CommitContext`.** The side-channel pays for itself the moment a second feature in
+  gitops-reverser depends on a complete (non-hollow) audit event for an aggregated API.
+  Until then it is "valuable but not urgent." It is contained, low-risk, and reversible,
+  so when it does become a priority it is a normal-sized engineering project rather than
+  a risky refactor.
+- **The hub direction is probably not worth pursuing — and the prior art is the reason.**
+  Fan-out for Kubernetes audit events is already a solved problem at enterprise scale.
+  Companies that need it use Fluent Bit, Fluentd, Vector, the OpenTelemetry Collector,
+  [gardener/auditlog-forwarder](https://github.com/gardener/auditlog-forwarder), or
+  whichever log router their observability or security team has already standardised on.
+  Building another forwarder means competing with battle-tested components inside
+  someone else's standardised pipeline — a hard place to win adoption from. The unique
+  value `apiservice-audit-proxy` carries today is closing the aggregated-API audit gap,
+  which none of those tools do; that capability does not require fan-out to be shipped,
+  and bundling fan-out into the proxy dilutes the differentiation. See
+  [Prior art](#prior-art).
+- **Multi-consumer audit needs are best deferred to existing fan-out tools.** A cluster
+  with a SIEM and gitops-reverser points the kube-apiserver audit webhook at (e.g.)
+  Fluent Bit, which fans out to both. If the cluster also wants aggregated-API bodies,
+  place `apiservice-audit-proxy` *upstream* of the fan-out tool — every event the proxy
+  emits looks like a normal kube-apiserver audit event with bodies filled in, and any
+  compliant fan-out tool ingests it as-is.
+- **The deciding question for the maintainer flips.** It stops being "should we grow
+  `apiservice-audit-proxy` into a hub?" and becomes "do we keep it narrowly focused on
+  the aggregated-API gap, where it is differentiated?" The latter framing fits the
+  smaller maintenance commitment naturally and aligns with the upstream-resilience
+  point below.
+- **Upstream may eventually obsolete the proxy itself.** If kube-apiserver fills the
+  aggregated-API audit gap, `apiservice-audit-proxy` retires entirely — and the cluster
+  is left with whatever fan-out tool it already had, which was the right answer all
+  along. Investing in fan-out as a proxy capability is double-fragile: redundant against
+  existing fan-out tools today, and obsoleted against upstream tomorrow. Investing in
+  the narrow enrichment role is at least useful for as long as the gap exists. See
+  [If upstream solved it](#if-upstream-solved-it).
 
-If the hub is the eventual destination, a low-risk sequencing is:
+## Conclusion
 
-1. Ship the side-channel inside gitops-reverser. Weeks, low risk, contained.
-2. Sketch a v0 hub in `audit-proxy` that supports a single subscriber (gitops-reverser
-   itself), so the fan-out machinery does not have to be production-grade on day one.
-3. Migrate gitops-reverser to consume from the hub once the hub is stable. Retire the
-   side-channel.
-4. Onboard a second consumer (SIEM, second gitops-reverser instance, archiver) and
-   exercise the fan-out story for real.
+The prior-art survey above is the strongest argument *against* the hub direction, not
+for it. Fan-out for Kubernetes audit events is already a solved problem in any serious
+enterprise environment. Companies that need it have Fluent Bit, Fluentd, Vector, the
+OpenTelemetry Collector, gardener/auditlog-forwarder, or whichever log router their
+observability or security team has already standardised on. They are not waiting for
+another audit forwarder, and they will not adopt one when an existing component already
+fits their pipeline.
 
-If multi-consumer audit is not on the near-term roadmap, stop after step 1 and revisit
-when the need is concrete rather than speculative.
+The unique thing `apiservice-audit-proxy` does today is close the aggregated-API audit
+gap by capturing `requestObject` and `responseObject` for requests that pass through it.
+That is genuinely differentiated work — none of the general fan-out tools do it. Keeping
+the proxy narrowly focused on that one job preserves the differentiation, avoids the
+maintenance cost of competing in a crowded category, and lets enterprises drop the
+proxy into whatever audit pipeline they already run.
+
+The duplicate-`auditID` ordering problem is real but small, and it is gitops-reverser's
+problem to solve internally. The side-channel proposal in the first half of this
+document does exactly that, with a contained change scoped to one project. Enterprises
+do not care about gitops-reverser's internal pipeline shape; they care that the tool
+integrates with the audit forwarder they already trust. That is a much smaller surface
+to defend.
+
+End-state recommendation:
+
+1. **Keep `apiservice-audit-proxy` doing its one unique thing.** Aggregated-API audit
+   enrichment via a synthetic webhook event. Do not grow it into a fan-out hub.
+2. **Solve gitops-reverser's duplicate-`auditID` issue inside gitops-reverser**, via
+   the side-channel pattern in this document, after `CommitContext` v1 ships with the
+   local-stash + idempotency-marker approach.
+3. **Direct enterprise users with multi-consumer audit needs at the existing fan-out
+   tools.** Place `apiservice-audit-proxy` *upstream* of those tools — every event the
+   proxy emits looks like a normal kube-apiserver audit event with bodies filled in,
+   and any compliant fan-out tool consumes it as-is. ConfigButler composes with
+   whatever audit forwarder the cluster already runs; it does not ask to replace it.
+4. **Revisit only if** multi-consumer audit *plus* aggregated-API enrichment together
+   becomes a real gap that no existing fan-out tool covers. By then upstream Kubernetes
+   may have closed the audit gap and made the proxy itself redundant — which would moot
+   the question.
+
+This is a tighter scope than the hub direction promised, and that is the point.
+Differentiation lives in the narrow capability that no one else covers; everything else
+should compose with what enterprises already run.
 
 ## References
 
