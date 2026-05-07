@@ -322,6 +322,29 @@ scope:
     name: team-a-config
 ```
 
+## Comparison
+
+Modern frontends often issue resource updates as parallel requests rather than one synchronous
+sequence. That changes how these options weigh up. Audit-carried reasons survive parallel writes
+naturally because each request carries its own context. A separate "send the message last" signal,
+such as an aggregated API call after the mutations have landed, becomes more attractive when a
+frontend wants a single consolidated reason for a batch of updates rather than one reason per
+request.
+
+| Approach | Running complexity | Flexibility | Correctness | Parallel-write fit | Notes |
+|----------|--------------------|-------------|-------------|--------------------|-------|
+| audit `user.extra` | Low for gitops-reverser, but depends on an auth layer or impersonation upstream | Per-event reason | Author and reason both bound to the audited request identity | Excellent — each parallel request carries its own reason | Most frontends cannot set `user.extra` without a trusted backend that impersonates |
+| transient metadata stripped by webhook | Medium — mutating webhook on every watched type, audit policy must capture request payload | Per-event reason, scoped to the exact resource update | High if audit captures the request object before strip; patch requests need care | Excellent — each parallel request carries its own reason | Intent hidden inside metadata; other tools may retain or disturb the annotation |
+| aggregated API `CommitContext` | High — APIService registration, TLS, requestheader CA, availability handling | One message per author or author/target slot; can act as an explicit close-off after parallel writes | Author from audit `userInfo`; ordering follows the audit stream | Strong when used as a "send last" terminator after a batch of mutations | Best fit when a frontend deliberately wants one consolidated reason for many updates |
+| `CommitIntent` CRD | Medium — CRD plus controller cleanup logic | One message per intent object | Author from audit of the create; cleanup tied to commit window, not TTL | Adequate, but the CRD adds visible state for something meant to be ephemeral | Worth revisiting only if inspectability or RBAC needs it |
+| do nothing | None | None — template-driven messages only | N/A | N/A | The current behavior |
+
+The parallel-write angle does not eliminate the audit-carried options, but it does strengthen the
+case for the aggregated API as a *complement* rather than a competitor. Per-event reasons via
+`user.extra` or stripped annotations give fine-grained context; an optional `CommitContext`
+"close off" call lets a frontend consolidate a multi-request edit session into a single commit
+message when that is what the UI actually wants to express.
+
 ## Recommendation
 
 Keep this exploratory. The user problem is real, especially for UI-driven workflows such as ArgoCD
