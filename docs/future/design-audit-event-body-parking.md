@@ -29,7 +29,9 @@ configuration, routing, metrics, and mental model.
 ## Goals
 
 - Preserve the current `apiservice-audit-proxy` wire contract.
-- Produce at most one canonical stream event per `auditID`.
+- Produce at most one canonical stream event per `auditID` within the decision-key TTL
+  window. The invariant is explicitly TTL-bounded; see
+  [Redis parking construct](#redis-parking-construct).
 - Recover `requestObject`, `responseObject`, and better `objectRef` data for aggregated API
   requests when the proxy-provided event is available.
 - Make ordering policy explicit:
@@ -88,10 +90,12 @@ POST /audit-webhook/{clusterID}
 POST /audit-webhook-additional/{clusterID}
 ```
 
-This is intentionally breaking. For the current product stage, a path-level cluster identity is
-more confusing than useful because the rest of the pipeline does not fully model cluster identity
-yet. It is easier to add a first-class multi-cluster contract later than to explain a path field
-that appears supported but cannot be used consistently.
+**Scope choice: this is a deliberate expansion of v1 beyond the strict "fix the duplicate
+auditID problem" objective.** The path-level cluster identity is removed because it is more
+confusing than useful at the current product stage — the rest of the pipeline does not fully
+model cluster identity yet. Doing the cleanup now means changes touch each affected file once;
+splitting it into a separate later PR means double-touching the handler, the queue interface,
+Redis stream entries, and metric labels. Reviewers should expect this scope.
 
 Concrete cleanup implied by this:
 
@@ -125,6 +129,14 @@ clusters, or deployments where the operator accepts the proxy's best-effort deli
 It should be documented as lower authority than official-plus-additional mode because the proxy
 event is not kube-apiserver's batched/retried audit webhook delivery.
 
+**Operations note: parking allowlist drift.** When a cluster operator adds a new aggregated
+API behind `apiservice-audit-proxy`, that API's group must also be added to
+`--audit-event-body-parking-api-groups`. The
+`gitopsreverser_audit_join_body_unexpected_total{group}` metric (see [Metrics](#metrics))
+surfaces this drift: any non-zero value means the proxy is sending bodies for an API group the
+joiner is not expecting, and those bodies are being ignored. Wire it into the standard
+alerting ruleset with a low threshold.
+
 ## Current duplicate shape
 
 For an aggregated API request routed through `apiservice-audit-proxy`, gitops-reverser can receive
@@ -155,35 +167,83 @@ audit:body:v1:<auditID>
 audit:decision:v1:<auditID>
 ```
 
-`audit:body:v1:<auditID>` parks the best known full-body event:
+`audit:body:v1:<auditID>` parks a *body contribution* — not a full audit event. It carries
+exactly the fields the joiner is allowed to merge onto the official event (see
+[Merge rule](#merge-rule)), plus identifying and truncation metadata. The shape works
+unchanged for both v1's proxy writer and the post-v1 in-process `CommitContext` writer:
 
 ```json
 {
   "v": 1,
   "auditID": "0f6c...",
+  "source": "apiservice-audit-proxy",
   "receivedAt": "2026-05-07T12:34:56Z",
-  "event": { "kind": "Event", "apiVersion": "audit.k8s.io/v1" },
+  "requestObject": { },
+  "responseObject": { },
+  "objectRef": {
+    "name": "checkout",
+    "namespace": "team-a",
+    "uid": "...",
+    "resourceVersion": "..."
+  },
+  "annotations": {
+    "audit.k8s.io/proxy.requestObject.truncated": "true"
+  },
   "hasRequestObject": true,
   "hasResponseObject": true
 }
 ```
 
-`audit:decision:v1:<auditID>` records that the canonical stream already received a decision for
-that audit ID. Its value is intentionally small:
+`source` distinguishes the writer. v1 emits `"apiservice-audit-proxy"`; post-v1 the
+in-process aggregated-API handler emits `"gitops-reverser-aggregated-api"`. All other body
+fields are optional; writers populate what they have.
+
+The additional-endpoint handler builds this envelope by extracting body fields out of the
+inbound `auditv1.Event`. The post-v1 in-process handler builds it directly from the
+validated request. Both writers produce the same envelope shape; the joiner does not care
+which writer produced it.
+
+`audit:decision:v1:<auditID>` records that the canonical stream already saw a decision for
+that audit ID. The value is small and includes the lifecycle state:
 
 ```json
 {
   "v": 1,
+  "state": "emitted",
   "mode": "wait-official",
+  "claimedAt": "2026-05-07T12:34:57Z",
   "emittedAt": "2026-05-07T12:34:57Z",
-  "emitted": "merged"
+  "result": "merged"
 }
 ```
 
-Both keys use the same TTL. Recommended initial value: `5m`.
+`state` is one of:
 
-The body key prevents losing the synthetic payload while waiting for the official event. The
-decision key prevents the second arrival from being enqueued later.
+- `claimed` — `SET NX` succeeded but the enqueue is still in flight or has not started.
+- `emitted` — the enqueue succeeded; this `auditID` is now durably represented in the
+  canonical stream.
+
+A `claimed` entry that is never promoted to `emitted` (because the writer crashed between
+claim and commit, or the enqueue failed) is `DEL`'d by the writer's release path so the next
+arrival can re-claim it. If the writer is killed before it can release, the entry expires
+on its own TTL and the next arrival reclaims it then.
+
+The two keys have different TTLs because they have different purposes:
+
+- `audit:body:v1:<auditID>` — body data. TTL configured by `--audit-event-body-ttl`,
+  default `5m`. Short because it holds payload bytes.
+- `audit:decision:v1:<auditID>` — small dedupe marker. TTL configured by
+  `--audit-event-decision-ttl`, default `1h`. Much longer because the key is tiny and the
+  invariant it protects is the more important of the two.
+
+The "at most one canonical stream event per `auditID`" goal is **TTL-bounded by
+`--audit-event-decision-ttl`**. A retry or delayed sibling that arrives more than this
+duration after the original would be treated as a fresh event and re-emitted. Operators who
+need a longer dedupe window should raise this TTL; the cost is one tiny Redis key per
+`auditID` until it expires.
+
+The body key prevents losing the synthetic payload while waiting for the official event.
+The decision key prevents any sibling arriving within its TTL from being enqueued again.
 
 ## Classification
 
@@ -207,6 +267,29 @@ body twin, and the endpoint tells gitops-reverser whether the event is official 
 If a future native kube-apiserver event includes bodies for one of these groups, it is still
 official-source input and should emit normally. Body parking is only for additional-source events.
 
+### Behavior on allowlist drift
+
+When an additional-source event arrives for a group that is *not* on the parking allowlist,
+the joiner must pick a behavior. The choice matters because emitting unexpected additional
+events would re-introduce the duplicate-event bug for misconfigured proxied groups, while
+unconditionally dropping them would break the additional-only deployment mode (which has no
+official source to fall back on). The rule is mode- and source-specific:
+
+- **Official source, any group:** always emit. The allowlist does not gate official events.
+- **Additional source, allowlisted group:** enter the join flow per the configured mode
+  (`wait-official` or `first`).
+- **Additional source, not-allowlisted group, `--audit-additional-only=true`:** emit
+  directly. The allowlist is informational in this mode because no official event is
+  expected; the additional stream is canonical for this deployment.
+- **Additional source, not-allowlisted group, default modes:** drop the event and increment
+  `gitopsreverser_audit_join_body_unexpected_total{group}`. This protects the canonical
+  stream from duplicates and surfaces the misconfiguration via the metric. The intended
+  remediation is for the operator to add the group to
+  `--audit-event-body-parking-api-groups`.
+
+This rule is what the operations note about allowlist drift in
+[Deployment modes](#deployment-modes) describes.
+
 ## Join modes
 
 Configuration:
@@ -214,6 +297,7 @@ Configuration:
 ```text
 --audit-event-join-mode=wait-official | first
 --audit-event-body-ttl=5m
+--audit-event-decision-ttl=1h
 --audit-event-body-parking-api-groups=wardle.example.com,gitops-reverser.io
 --audit-additional-only=false
 ```
@@ -234,26 +318,36 @@ This mode optimizes for canonical audit ordering.
 
 When an additional full-body event arrives first:
 
-1. store it in `audit:body:v1:<auditID>`
-2. do not enqueue anything yet
+1. store the body contribution in `audit:body:v1:<auditID>`
+2. do not claim a decision and do not enqueue
 3. return `200` to the sender
 
 When the official event arrives:
 
-1. read `audit:body:v1:<auditID>`
-2. if present, merge the official event with the parked body event
-3. enqueue the merged event to the canonical audit stream
-4. write `audit:decision:v1:<auditID>`
-5. delete `audit:body:v1:<auditID>`
+1. claim the decision: `SET NX audit:decision:v1:<auditID>` with `state=claimed`. If the
+   key already existed, treat the event as a duplicate and drop it (this can happen on
+   restart-driven replay).
+2. read `audit:body:v1:<auditID>`
+3. if present, merge the official event with the parked body contribution per the
+   [Merge rule](#merge-rule)
+4. enqueue the merged event (or the official event as-is if no parked body exists) to the
+   canonical audit stream
+5. on enqueue success: update the decision key to `state=emitted` (and `result=merged` or
+   `result=as_is` accordingly). On enqueue failure: `DEL` the decision key so a later
+   arrival can re-claim it; return 5xx so kube-apiserver retries the audit webhook.
+6. on enqueue success: best-effort `DEL audit:body:v1:<auditID>` (expiry handles the rare
+   case where this fails)
 
-If no parked body exists when the official event arrives, enqueue the official event as-is and write
-the decision key. This avoids building a delayed queue for the less common native-first race.
+If no parked body exists when the official event arrives, the same flow runs without the
+merge. This avoids building a delayed queue for the less common native-first race.
 
-If `--audit-additional-only=true`, additional events do not park in this mode. They emit directly
-because no official event is expected.
+If `--audit-additional-only=true`, additional events do not park in this mode. They take
+the same claim/enqueue/commit path described under `first` because no official event is
+expected.
 
-Trade-off: most aggregated API events wait for kube-apiserver's batch delivery before they reach the
-consumer. Ordering is more correct because the canonical stream advances on the official event.
+Trade-off: most aggregated API events wait for kube-apiserver's batch delivery before they
+reach the consumer. Ordering is more correct because the canonical stream advances on the
+official event.
 
 ### Mode: `first`
 
@@ -261,15 +355,21 @@ This mode optimizes for low latency.
 
 When the first event for an `auditID` arrives:
 
-1. enqueue it immediately
-2. write `audit:decision:v1:<auditID>`
-3. do not keep a parked body
+1. claim the decision: `SET NX audit:decision:v1:<auditID>` with `state=claimed`. If the
+   key already existed, drop the event as a duplicate (the rare same-instant tie or a
+   replay).
+2. enqueue immediately
+3. on enqueue success: update the decision key to `state=emitted` (with `result=first`).
+   On enqueue failure: `DEL` the decision key so the next arrival can re-claim it; return
+   5xx.
+4. do not keep a parked body
 
-When a later event with the same `auditID` arrives, drop it because the decision key already exists.
+When a later event with the same `auditID` arrives, the `SET NX` claim fails and the event
+is dropped as a duplicate.
 
-If the synthetic full event arrives first, the canonical stream gets bodies quickly. If the official
-shallow event arrives first, the canonical stream gets the official event and the later full body is
-ignored.
+If the synthetic full event arrives first, the canonical stream gets bodies quickly. If the
+official shallow event arrives first, the canonical stream gets the official event and the
+later full body is ignored.
 
 Trade-off: stream ordering can follow the proxy's best-effort send timing instead of
 kube-apiserver's official audit delivery timing.
@@ -306,63 +406,159 @@ synthetic values. The proxy event is a body source, not the source of audit auth
 
 ## Handler flow
 
-`AuditHandler` still decodes `auditv1.EventList`. It passes the endpoint role into the joiner. For
-each event:
-
-1. validate and filter as today
-2. call `AuditEventJoiner.Decide(ctx, source, event)`
-3. act on the returned decision:
-   - `Parked`: acknowledge request, no stream write
-   - `Emit`: enqueue returned event
-   - `DropDuplicate`: acknowledge request, no stream write
-
-The queue remains the boundary to downstream processing. The consumer should not have to reason
-about two events with the same `auditID` for this case.
-
-## CommitContext fit
-
-The later `CommitContext` work has the same underlying shape: a shallow official audit event needs
-request-body content from somewhere else.
-
-The source is different:
-
-- for aggregated APIs behind `apiservice-audit-proxy`, the body source is the proxy's synthetic
-  audit event
-- for gitops-reverser's own aggregated `CommitContext` API, the body source is the handler-local
-  request body stashed by `Audit-ID`
-
-The joiner should therefore be designed around a generic concept:
-
-```text
-auditID -> parked request context -> official audit event -> completed canonical event
-```
-
-Do not hardcode the implementation as "proxy enrichment only." A small interface is enough:
+`AuditHandler` still decodes `auditv1.EventList`. It passes the endpoint role into the joiner.
+The joiner exposes a small two-phase contract so the handler controls the commit/release
+lifecycle around the enqueue:
 
 ```go
-type AuditBodyStore interface {
-    Park(ctx context.Context, auditID string, body AuditBodyEnvelope) error
-    Get(ctx context.Context, auditID string) (AuditBodyEnvelope, bool, error)
-    Delete(ctx context.Context, auditID string) error
+type AuditEventJoiner interface {
+    // Decide examines the event. For ActionEmit, Decide has already claimed the decision
+    // key via SET NX. The caller MUST follow up with CommitDecision on enqueue success or
+    // ReleaseDecision on enqueue failure. For ActionParked and ActionDropDuplicate, no
+    // claim was made and no follow-up is required.
+    Decide(ctx context.Context, source Source, event *auditv1.Event) (Decision, error)
+
+    // CommitDecision promotes a claimed decision to state=emitted. Called after a
+    // successful enqueue.
+    CommitDecision(ctx context.Context, auditID string, result Result) error
+
+    // ReleaseDecision deletes a claimed-but-not-emitted decision so a retry can re-claim
+    // it. Called after a failed enqueue.
+    ReleaseDecision(ctx context.Context, auditID string) error
+}
+
+type Action int
+
+const (
+    ActionParked        Action = iota // acknowledge, no stream write, no follow-up
+    ActionEmit                        // enqueue Decision.Event, then Commit or Release
+    ActionDropDuplicate               // acknowledge, no stream write, no follow-up
+)
+
+type Decision struct {
+    Action Action
+    // Event is set iff Action == ActionEmit. In wait-official mode where the joiner
+    // merged a parked body onto the official event, Event is the merged result.
+    Event *auditv1.Event
+    // AuditID is set iff Action == ActionEmit. Pass it back to CommitDecision /
+    // ReleaseDecision; the handler does not extract it from Event itself.
+    AuditID string
+    // Result describes what was emitted: as_is, merged, first, additional_only.
+    // Used as the result label in metrics and stored on the committed decision key.
+    Result Result
 }
 ```
 
-`CommitContext` can later write to the same kind of store with a different envelope source. It is
-still important that `CommitContext` does not take effect from the stash alone; the official audit
-event must be the trigger.
+For each event:
+
+1. validate and filter as today
+2. call `AuditEventJoiner.Decide(ctx, source, event)`
+3. dispatch on `Decision.Action`:
+   - `ActionParked`: acknowledge request (200), no stream write, no follow-up
+   - `ActionDropDuplicate`: acknowledge request (200), no stream write, no follow-up
+   - `ActionEmit`:
+     a. enqueue `Decision.Event`
+     b. on enqueue success: call `CommitDecision(ctx, Decision.AuditID, Decision.Result)`,
+        return 200
+     c. on enqueue failure: call `ReleaseDecision(ctx, Decision.AuditID)`, return 5xx
+        so the sender retries
+
+The handler is the only thing that knows whether the enqueue succeeded, so it owns the
+commit/release call. Decide alone never leaves a permanent decision key behind — only
+CommitDecision does.
+
+The queue remains the boundary to downstream processing. The consumer should not have to
+reason about two events with the same `auditID` within the decision-key TTL window.
+
+## CommitContext fit
+
+The body parking mechanism is deliberately general. v1 has exactly one writer
+(`apiservice-audit-proxy` via `/audit-webhook-additional`), but the design accommodates a
+second writer landing in the immediate post-v1 step: gitops-reverser's own aggregated API
+handler when [`CommitContext`](design-commit-context-api.md) ships.
+
+The two writers, same store:
+
+- For aggregated APIs behind `apiservice-audit-proxy`, the body source is the proxy's synthetic
+  audit event posted to `/audit-webhook-additional`.
+- For gitops-reverser's own aggregated `CommitContext` API, the body source is the handler
+  itself. When the handler accepts a `CommitContext` request, it reads `Audit-ID` from the
+  inbound request header and writes the request body to the same `audit:body:v1:<auditID>`
+  key. The official kube-apiserver audit event for the `CommitContext` create call then
+  triggers the join.
+
+This means once body parking lands, `CommitContext`'s separate `commitcontext:stash:` namespace
+and idempotency marker (described in [design-commit-context-api.md](design-commit-context-api.md))
+collapse to "the handler calls `AuditBodyStore.Park`." The marker mechanism is no longer needed
+because the parking machinery already deduplicates by `auditID` via the decision key.
+
+To prepare for that without committing to it now, v1 should:
+
+1. **Put a `source` field on the envelope from day one** even though only one source exists.
+   Schema:
+
+   ```json
+   {
+     "v": 1,
+     "auditID": "0f6c...",
+     "source": "apiservice-audit-proxy",
+     "receivedAt": "2026-05-07T12:34:56Z",
+     "event": { "kind": "Event", "apiVersion": "audit.k8s.io/v1" },
+     "hasRequestObject": true,
+     "hasResponseObject": true
+   }
+   ```
+
+   Future values: `"gitops-reverser-aggregated-api"`, etc. Adding the field now costs nothing
+   and avoids a schema-version bump later.
+
+2. **Define collision behaviour explicitly.** In v1 only one writer exists, so collisions are
+   theoretical. Once `CommitContext` ships, a request that goes through
+   `apiservice-audit-proxy` *and* lands at gitops-reverser's own aggregated API would produce
+   two writes for the same `auditID`. v1 keeps it simple: **last write wins** (plain `SET`,
+   not `SET NX`, on `audit:body:v1:<auditID>`). The two writes are substantively similar —
+   both contain the same request body — so the collision is benign. Source-priority merge
+   semantics, if ever needed, are deferred (see Decisions and deferred work).
+
+3. **Keep the `AuditBodyStore` interface source-agnostic.** It does not know whether the
+   writer is the additional-endpoint handler or an in-process aggregated-API handler:
+
+   ```go
+   type AuditBodyStore interface {
+       Park(ctx context.Context, auditID string, body AuditBodyEnvelope) error
+       Get(ctx context.Context, auditID string) (AuditBodyEnvelope, bool, error)
+       Delete(ctx context.Context, auditID string) error
+   }
+   ```
+
+4. **Allow the parking allowlist to cover both writers.** `gitops-reverser.io` belongs on the
+   allowlist when `CommitContext` is enabled; for v1 the default is whatever proxied groups
+   the operator configures.
+
+It is still important that `CommitContext` does not take effect from the parked body alone;
+the official audit event must remain the trigger for downstream processing. The
+audit-stream-as-source-of-truth principle holds across both writers.
 
 ## Metrics
 
-Keep this smaller than the exploratory side-channel proposal:
+Keep this smaller than the exploratory side-channel proposal. Use the existing
+`gitopsreverser_` prefix to match
+[`gitopsreverser_audit_events_received_total`](../../internal/telemetry/exporter.go) so
+dashboards stay coherent:
 
-- `audit_join_parked_total{source="body"}`
-- `audit_join_emitted_total{source, mode, result="as_is|merged|first|additional_only"}`
-- `audit_join_duplicate_dropped_total{mode}`
-- `audit_join_body_miss_total{mode}`
-- `audit_join_body_orphan_total`
-
-`audit_join_body_orphan_total` can be implemented later with either keyspace notifications or a
-small sweeper index. It should not block the first implementation.
+- `gitopsreverser_audit_join_parked_total{source="body"}`
+- `gitopsreverser_audit_join_emitted_total{source, mode, result="as_is|merged|first|additional_only"}`
+- `gitopsreverser_audit_join_duplicate_dropped_total{mode}`
+- `gitopsreverser_audit_join_body_miss_total{mode}` — official event arrived in `wait-official`
+  mode for an allowlisted group with no parked body.
+- `gitopsreverser_audit_join_body_orphan_total` — parked body expired without a matching
+  official event. Implementation deferred (see [Decisions and deferred
+  work](#decisions-and-deferred-work)).
+- `gitopsreverser_audit_join_body_unexpected_total{group}` — additional-source event arrived
+  for a group not listed in `--audit-event-body-parking-api-groups`. Persistent non-zero
+  values indicate the parking allowlist has drifted away from the set of API groups actually
+  routed through `apiservice-audit-proxy` and should be updated. Cheap to implement, valuable
+  on Day 2.
 
 ## Failure behavior
 
@@ -382,28 +578,36 @@ small sweeper index. It should not block the first implementation.
   Additional events emit directly. Missing kube-apiserver audit delivery is expected in this mode,
   so body-miss metrics should not fire for lack of an official twin.
 - **Process crash after enqueue before decision key.**
-  A duplicate can be emitted on replay. To avoid this, implementation should write the decision key
-  before enqueueing and make enqueue failure clear the decision key, or use a small Lua script for
-  the decision transition. This detail belongs in implementation, not in the public API.
+  A duplicate can be emitted on replay. v1 handles this with `SET NX` on the decision key
+  *before* enqueueing: only the writer that successfully claims the decision key proceeds to
+  enqueue. On enqueue failure, that writer `DEL`s the decision key so a retry can claim it.
+  A Redis Lua transition is a known v1.5 hardening if this proves insufficient under fault
+  injection (see [Decisions and deferred work](#decisions-and-deferred-work)).
 
 ## Implementation outline
 
 1. Change the official audit HTTP route to accept only `/audit-webhook`.
 2. Remove cluster ID extraction and stream fields.
 3. Add `/audit-webhook-additional` with the same `EventList` decoder and authentication posture.
-4. Add `AuditEventJoiner` and a Redis-backed `AuditBodyStore`.
-5. Add configuration for join mode, body TTL, parking API groups, and additional-only mode.
-6. Call the joiner from `AuditHandler` before `Queue.Enqueue`, passing the endpoint source.
-7. Add table-driven unit tests for:
+4. Add `AuditEventJoiner` and a Redis-backed `AuditBodyStore`. The body envelope carries a
+   `source` field from day one (see [CommitContext fit](#commitcontext-fit)).
+5. Implement the decision transition as `SET NX` on `audit:decision:v1:<auditID>` *before*
+   enqueueing. On enqueue failure, `DEL` the decision key so a retry can re-claim it.
+6. Add configuration for join mode, body TTL, parking API groups, and additional-only mode.
+7. Call the joiner from `AuditHandler` before `Queue.Enqueue`, passing the endpoint source.
+8. Add table-driven unit tests for:
    - full first, wait-official parks
    - official after full emits merged
    - official first emits shallow in wait-official
    - full first emits immediately in first mode
    - duplicate after decision drops
    - additional-only mode emits additional events directly
-   - full event outside the parking allowlist emits normally
+   - full event outside the parking allowlist emits normally and increments
+     `gitopsreverser_audit_join_body_unexpected_total{group}`
+   - decision-key claimed but enqueue fails clears the decision key
    - Redis failures return the right handler status
-8. Add e2e coverage for the aggregated API path proving one canonical stream entry per `auditID`.
+9. Add e2e coverage for the aggregated API path proving one canonical stream entry per
+   `auditID`.
 
 ## Migration
 
@@ -428,15 +632,31 @@ target URL changes:
 https://<gitops-reverser-audit>/audit-webhook-additional
 ```
 
-## Open questions
+## Decisions and deferred work
 
-- Should `wait-official` or `first` be the shipped default? This design recommends
-  `wait-official`, but existing installations may prefer `first` during transition.
-- Is `/audit-webhook-additional` the right name? It is explicit and compatible with the existing
-  audit webhook mental model. `/audit-webhook-supplemental` is slightly more precise but less
-  plain.
-- Should parking be configured by API group only, or by group/resource? Group-only is simpler;
-  group/resource is safer when one aggregated API group contains both proxied and unproxied
-  resources.
-- Should the decision transition use Redis Lua from the start, or is ordinary `SET NX` plus cleanup
-  enough for v1?
+This design commits to the following choices for v1:
+
+- **Default join mode is `wait-official`.** Operators that want lower latency can opt into
+  `first`. Ordering correctness is the right default and resolving this in the design avoids
+  re-litigating it in PRs.
+- **Endpoint name is `/audit-webhook-additional`.** Direct, hard to misread, and compatible
+  with the existing audit webhook mental model.
+- **Parking allowlist is configured by API group only.** Group/resource granularity adds
+  configuration weight without solving any concrete problem in v1. If a future aggregated API
+  group contains both proxied and unproxied resources, revisit then.
+- **Decision transition uses `SET NX` plus cleanup, not Redis Lua.** The Lua-script
+  transition is a known v1.5 hardening if duplicates show up under fault injection; not
+  needed for v1.
+- **Body store collisions resolve by last-write-wins** (plain `SET` on `audit:body:v1:<auditID>`).
+  Source-priority merge semantics are deferred (see [CommitContext fit](#commitcontext-fit)).
+
+Deferred to future work:
+
+- A first-class multi-cluster source identity model (replacing the removed `{clusterID}` path
+  segment).
+- Source-priority merge semantics for the body store, if multiple writers ever produce
+  meaningfully different bodies for the same `auditID`.
+- Keyspace-notification-based or sweeper-based implementation of
+  `gitopsreverser_audit_join_body_orphan_total`.
+- Group/resource granularity for the parking allowlist.
+- Redis Lua transition for the decision key.
