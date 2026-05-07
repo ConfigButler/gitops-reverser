@@ -345,22 +345,89 @@ case for the aggregated API as a *complement* rather than a competitor. Per-even
 "close off" call lets a frontend consolidate a multi-request edit session into a single commit
 message when that is what the UI actually wants to express.
 
+## Reassessment after deeper review
+
+The addendum [addendum-end-user-commit-messages-audit-transports.md](addendum-end-user-commit-messages-audit-transports.md)
+examines the audit-carried transports more closely. It surfaces three points that shift the
+weighting in the comparison table.
+
+**The audit-carried options are heavier than the table suggests.**
+
+- `user.extra` enrichment requires one of: an authentication webhook on the hot path of every
+  authenticated API call (disqualified — putting cosmetic-ish features in the auth path is
+  wildly disproportionate), OIDC claim mappings minted per save action (uncommon in real IdPs;
+  the "fresh token per save = security" framing is also weak — OIDC tokens are session
+  identity, not per-action authorization), or impersonation. Impersonation works, but
+  `Impersonate-Extra-*` was designed to carry identity claims, not free-text reasons. The
+  resulting RBAC story ("backend X may impersonate any user and set arbitrary extras") is
+  alarming for a feature that "just" attaches a commit message. Calling the impersonation path
+  off-label is fair.
+- The transient-annotation transport — including the cleaner audit-annotation variant the
+  addendum considered, which uses `AdmissionResponse.auditAnnotations` instead of reading from
+  the audit request payload — requires a mutating admission webhook on the path of every
+  relevant change. That webhook becomes a new always-on dependency in the request path, called
+  for every incoming mutation on every watched type. For a feature whose value is "the commit
+  message has more context," that is a steep operational cost.
+
+**The aggregated API has an ordering nuance that matters.**
+
+- In grouping mode (current default `commitWindow: 5s`), the natural pattern is "send the
+  message last" as a close-off after the related resource changes have landed. The audit event
+  for the `CommitContext` request falls inside the still-open window, gitops-reverser attaches
+  the message to the in-progress group, and the window finalizes shortly after. Clean and
+  well-defined, and a particularly good fit for parallel-write frontends because the message
+  acts as a synchronization barrier after the parallel batch completes.
+- In a hypothetical per-event mode (very short or per-event windows), the message would have to
+  be sent *before* the resource change to be picked up — and that is racy: other parallel
+  actions could land between the message and the action, and the message could be wrongly
+  associated. This is a real point in favour of audit-carried per-event reasons for that mode,
+  but per-event mode is not the default and not a near-term goal.
+- For the current default and the typical UI shape, the grouping-mode close-off pattern is
+  enough.
+
+**Aggregated API is also future-proof for other transient actions.**
+
+A `CommitContext`-shaped resource is a natural place to put other temporary, audited actions
+that are not durable Kubernetes state: a `commitNow` flush signal (still deferred — see
+"Commit now" above), a `proposeAsPullRequest` action that asks the branch worker to push a
+feature branch and open a PR instead of pushing to the target branch directly, and so on.
+Audit-carried transports are tied to "the reason for this single mutation"; they do not
+naturally extend to actions that are not themselves a Kubernetes resource mutation. Once the
+APIService cost is paid, additional actions are cheap to add and they all share the same
+audit-stream-as-source-of-truth treatment.
+
+**Updated ordering.**
+
+For the current defaults and the most likely deployment shapes:
+
+1. **Aggregated API `CommitContext`** — preferred. The operational cost is a one-time
+   APIService registration; once that exists, additional actions are cheap. Grouping-mode
+   close-off handles the parallel-write case the comparison table flagged.
+2. **`user.extra` via impersonation** — viable as a fallback when the cluster already has
+   impersonation infrastructure in regular use for other reasons. Skip for clusters that do
+   not.
+3. **Transient annotations (any variant) via mutating webhook** — defer. The always-on webhook
+   in the request path is a heavier ask than the value of the feature, especially when the
+   aggregated API can cover the same use case and more.
+4. **`CommitIntent` CRD** — defer. The aggregated API covers the same shape with less
+   persisted state.
+5. **Do nothing** — fall back if none of the above is available.
+
 ## Recommendation
 
-Keep this exploratory. The user problem is real, especially for UI-driven workflows such as ArgoCD
-Application editing, but the cheapest credible path may not be an aggregated API.
+Build the aggregated API `CommitContext` first. It is operationally heavier than the
+audit-carried options on paper, but the audit-carried options have hidden costs (impersonation
+RBAC for arbitrary user identities, always-on admission webhook on every relevant change) that
+this comparison underweighted on the first pass. The aggregated API is also future-proof:
+future temporary actions (`commitNow`, "propose as PR") fit the same shape with no new
+transports, and the close-off pattern is a clean fit for parallel-write frontends.
 
-Before any full design pass, prototype the two audit-carried options:
+The detailed design lives in [design-commit-context-api.md](design-commit-context-api.md).
 
-1. audit `user.extra` enrichment
-2. transient metadata annotations stripped by a mutating webhook and interpreted from audit
+The audit-carried transports remain valuable as a fallback for clusters that already have the
+infrastructure in place (impersonation in regular use, or OIDC `AuthenticationConfiguration`
+mappings), and as documentation of what the design considered.
 
-Then compare them against:
-
-3. an aggregated API endpoint for explicit commit context
-4. a simple namespaced `CommitIntent` CRD with commit-window cleanup
-5. doing nothing and keeping commit messages fully template-driven
-
-The most important invariant is that users can only set commit messages for their own attributed
-changes, and that this is proven through the audit event itself unless an explicit, auditable
-impersonation or delegation model exists.
+The most important invariant is unchanged: users can only set commit messages for their own
+attributed changes, and that is proven through the audit event itself unless an explicit,
+auditable impersonation or delegation model exists.
