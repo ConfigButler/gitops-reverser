@@ -8,7 +8,7 @@ spec:
     - main
     - demo-test
   push:
-    commitWindow: "5s"
+    commitWindow: "0s"
   secretRef:
     name: git-creds-demo
 ---

@@ -273,7 +273,12 @@ func (r *demoRun) removeLegacyDemoResources() {
 		"demo-watch-all-"+legacyNameSuffix,
 		"--ignore-not-found=true",
 	)
-	_, _ = kubectlRun("delete", "clusterwatchrule", "demo-cluster-resources-"+legacyNameSuffix, "--ignore-not-found=true")
+	_, _ = kubectlRun(
+		"delete",
+		"clusterwatchrule",
+		"demo-cluster-resources-"+legacyNameSuffix,
+		"--ignore-not-found=true",
+	)
 	_, _ = kubectlRunInNamespace(
 		demoNamespace,
 		"delete",
