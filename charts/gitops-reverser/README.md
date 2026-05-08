@@ -177,6 +177,11 @@ nodeSelector:
 | `queue.redis.stream` | Redis stream name for audit events | `gitopsreverser.audit.events.v1` |
 | `queue.redis.maxLen` | Approximate stream max length (`0` disables trim) | `0` |
 | `queue.redis.tls.enabled` | Enable TLS for Redis connection | `false` |
+| `auditEventJoin.mode` | Audit join mode: `wait-official` or `first` | `wait-official` |
+| `auditEventJoin.bodyTTL` | TTL for parked additional audit bodies | `5m` |
+| `auditEventJoin.decisionTTL` | TTL for audit decision dedupe keys | `1h` |
+| `auditEventJoin.bodyParkingAPIGroups` | API groups eligible for additional-body parking | `[]` |
+| `auditEventJoin.additionalOnly` | Treat `/audit-webhook-additional` as canonical | `false` |
 | `servers.metrics.bindAddress` | Metrics listener bind address | `:8080` |
 | `servers.metrics.tls.enabled` | Serve metrics with TLS | `false` |
 | `servers.metrics.tls.certPath` | Metrics TLS certificate mount path | `/tmp/k8s-metrics-server/metrics-server-certs` |
@@ -203,9 +208,13 @@ See [`values.yaml`](values.yaml) for complete configuration options.
 
 Source clusters must target:
 
-`https://<service>:9444/audit-webhook/<cluster-id>`
+`https://<service>:9444/audit-webhook`
 
-The bare path `/audit-webhook` is rejected. Use a non-empty cluster ID segment.
+Supplementary audit sources such as `apiservice-audit-proxy` should target:
+
+`https://<service>:9444/audit-webhook-additional`
+
+Cluster ID path segments are rejected.
 
 ## Custom Resource Definitions (CRDs)
 

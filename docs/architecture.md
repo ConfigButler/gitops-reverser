@@ -205,16 +205,17 @@ flowchart TD
 Audit events are inherently cluster-wide: the API server sends every matching mutation regardless
 of namespace. All namespace-level filtering must happen inside the operator.
 
-1. **Kubernetes API Server** sends audit events via webhook POST to `/audit-webhook/{clusterID}`
-2. [AuditHandler](internal/webhook/audit_handler.go) deserializes the `EventList` and calls `RedisAuditQueue.Enqueue()` for each event
-3. [RedisAuditQueue](internal/queue/redis_audit_queue.go) writes to Redis stream `gitopsreverser.audit.events.v1` via `XADD`
-4. [AuditConsumer](internal/queue/redis_audit_consumer.go) reads batches of 50 via `XREADGROUP` (consumer group for HA-readiness)
-5. For each message: filter to `ResponseComplete` stage + mutating verbs only, then call [RuleStore](internal/rulestore/store.go) to find matching rules
-6. Extract the response object (or request object for DELETE), run through [sanitize.Sanitize()](internal/sanitize/) to strip runtime fields
-7. For each matched rule: call [EventRouter.RouteToGitTargetEventStream()](internal/watch/event_router.go)
-8. [GitTargetEventStream](internal/reconcile/git_target_event_stream.go) deduplicates by content hash and enqueues to the BranchWorker
-9. [BranchWorker](internal/git/branch_worker.go) buffers events and flushes when the commit window expires, on shutdown, or when the buffer hits the operator's byte cap
-10. [BranchWorker](internal/git/branch_worker.go) converts retained writes into commit plans, executes local commits, and publishes them with [PushAtomic()](internal/git/git_atomic_push.go)
+1. **Kubernetes API Server** sends audit events via webhook POST to `/audit-webhook`
+2. Supplementary audit sources can send matching `EventList` payloads to `/audit-webhook-additional`
+3. [AuditHandler](internal/webhook/audit_handler.go) deserializes each `EventList`, lets the audit joiner park or merge body contributions by `auditID`, and calls `RedisAuditQueue.Enqueue()` for canonical events
+4. [RedisAuditQueue](internal/queue/redis_audit_queue.go) writes to Redis stream `gitopsreverser.audit.events.v1` via `XADD`
+5. [AuditConsumer](internal/queue/redis_audit_consumer.go) reads batches of 50 via `XREADGROUP` (consumer group for HA-readiness)
+6. For each message: filter to `ResponseComplete` stage + mutating verbs only, then call [RuleStore](internal/rulestore/store.go) to find matching rules
+7. Extract the response object (or request object for DELETE), run through [sanitize.Sanitize()](internal/sanitize/) to strip runtime fields
+8. For each matched rule: call [EventRouter.RouteToGitTargetEventStream()](internal/watch/event_router.go)
+9. [GitTargetEventStream](internal/reconcile/git_target_event_stream.go) deduplicates by content hash and enqueues to the BranchWorker
+10. [BranchWorker](internal/git/branch_worker.go) buffers events and flushes when the commit window expires, on shutdown, or when the buffer hits the operator's byte cap
+11. [BranchWorker](internal/git/branch_worker.go) converts retained writes into commit plans, executes local commits, and publishes them with [PushAtomic()](internal/git/git_atomic_push.go)
 11. If the remote has diverged: fetch fresh remote state, hard-reset, rebuild from retained pending writes, and retry
 
 ---
@@ -503,19 +504,17 @@ the design to add explicit cache warm-up before startup reconcile.
 
 ## Multi-Cluster Audit Ingestion
 
-The audit webhook accepts a `{clusterID}` path parameter:
+The audit webhook currently accepts source-role paths, not cluster identity paths:
 
 ```
-POST /audit-webhook/{clusterID}
+POST /audit-webhook
+POST /audit-webhook-additional
 ```
 
 - **Source**: [internal/webhook/audit_handler.go](internal/webhook/audit_handler.go)
 
-The `clusterID` is carried through to the AuditConsumer and attached to events. This means
-**ingestion** is already multi-cluster capable.
-
-However, the rest of the architecture (rule matching, GitTarget routing, file path generation) does
-not yet account for cluster identity. Multi-cluster support beyond ingestion has not been designed.
+Cluster identity is not modeled in the current audit stream. Multi-cluster support needs a
+first-class source identity design that covers rule matching, metrics cardinality, and file paths.
 
 ---
 

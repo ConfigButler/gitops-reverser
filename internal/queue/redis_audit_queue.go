@@ -86,7 +86,7 @@ func NewRedisAuditQueue(cfg RedisAuditQueueConfig) (*RedisAuditQueue, error) {
 }
 
 // Enqueue writes one audit event to Redis stream storage.
-func (q *RedisAuditQueue) Enqueue(ctx context.Context, clusterID string, event auditv1.Event) error {
+func (q *RedisAuditQueue) Enqueue(ctx context.Context, event auditv1.Event) error {
 	payload, err := json.Marshal(event)
 	if err != nil {
 		return fmt.Errorf("failed to marshal audit event payload: %w", err)
@@ -107,9 +107,8 @@ func (q *RedisAuditQueue) Enqueue(ctx context.Context, clusterID string, event a
 	}
 
 	values := map[string]any{
-		"event_id":        buildEventID(clusterID, event),
+		"event_id":        buildEventID(event),
 		"audit_id":        string(event.AuditID),
-		"cluster_id":      clusterID,
 		"verb":            event.Verb,
 		"api_group":       apiGroup,
 		"api_version":     apiVersion,
@@ -138,10 +137,8 @@ func (q *RedisAuditQueue) Enqueue(ctx context.Context, clusterID string, event a
 	return nil
 }
 
-func buildEventID(clusterID string, event auditv1.Event) string {
+func buildEventID(event auditv1.Event) string {
 	var builder strings.Builder
-	builder.WriteString(strings.TrimSpace(clusterID))
-	builder.WriteString("|")
 	builder.WriteString(string(event.AuditID))
 	builder.WriteString("|")
 	builder.WriteString(string(event.Stage))

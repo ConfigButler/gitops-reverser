@@ -34,6 +34,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apiserver/pkg/apis/audit"
 	auditv1 "k8s.io/apiserver/pkg/apis/audit/v1"
 	"sigs.k8s.io/yaml"
@@ -48,10 +49,6 @@ const (
 	DefaultAuditDumpDir = "/tmp/audit-events"
 	// DefaultAuditMaxRequestBodyBytes limits incoming audit payload size.
 	DefaultAuditMaxRequestBodyBytes = int64(10 * 1024 * 1024)
-	// MaxClusterIDMetricLabelLength constrains label cardinality impact.
-	MaxClusterIDMetricLabelLength = 63
-	// UnknownClusterIDMetricValue is used when cluster ID cannot be labeled safely.
-	UnknownClusterIDMetricValue = "unknown"
 )
 
 // AuditHandlerConfig contains configuration for the audit handler.
@@ -64,11 +61,13 @@ type AuditHandlerConfig struct {
 	// Queue enqueues accepted audit events to a durable backend.
 	// If nil, queueing is disabled.
 	Queue AuditEventQueue
+	// Joiner optionally parks additional-source bodies and deduplicates canonical audit events.
+	Joiner AuditEventJoiner
 }
 
 // AuditEventQueue persists accepted audit events for downstream processing.
 type AuditEventQueue interface {
-	Enqueue(ctx context.Context, clusterID string, event auditv1.Event) error
+	Enqueue(ctx context.Context, event auditv1.Event) error
 }
 
 // AuditHandler handles incoming audit events and collects telemetry.
@@ -113,14 +112,14 @@ func (h *AuditHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	clusterID, err := extractClusterID(r.URL.Path)
+	source, err := auditSourceFromPath(r.URL.Path)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
 	reqLog := log.WithValues(
-		"clusterID", clusterID,
+		"source", source,
 		"remoteAddr", r.RemoteAddr,
 		"path", r.URL.Path,
 	)
@@ -142,7 +141,7 @@ func (h *AuditHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.processEvents(ctx, clusterID, eventListV1.Items); err != nil {
+	if err := h.processEvents(ctx, source, eventListV1.Items); err != nil {
 		reqLog.Error(err, "Failed to process audit events")
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -178,124 +177,213 @@ func (h *AuditHandler) decodeEventList(r *http.Request) (*auditv1.EventList, err
 }
 
 // processEvents processes a list of audit events.
-func (h *AuditHandler) processEvents(ctx context.Context, clusterID string, events []auditv1.Event) error {
-	log := logf.Log.WithName("audit-handler")
-	clusterIDMetric := sanitizeClusterIDForMetric(clusterID)
-
+func (h *AuditHandler) processEvents(ctx context.Context, source AuditSource, events []auditv1.Event) error {
 	for _, auditEventV1 := range events {
-		var auditEvent audit.Event
-		if err := h.scheme.Convert(&auditEventV1, &auditEvent, nil); err != nil {
-			return fmt.Errorf("failed to convert audit event: %w", err)
+		if err := h.processEvent(ctx, source, auditEventV1); err != nil {
+			return err
 		}
-
-		process, err := h.checkEvent(&auditEvent)
-		if err != nil {
-			return fmt.Errorf("failed to check audit event: %w", err)
-		}
-
-		gvr := h.extractGVR(&auditEvent)
-		action := auditEvent.Verb
-
-		user := auditEvent.User.Username
-		if auditEvent.ImpersonatedUser != nil {
-			log.Info(
-				"Audit event impersonated",
-				"clusterID",
-				clusterID,
-				"authUser",
-				auditEvent.User.Username,
-				"impersonatedUser",
-				auditEvent.ImpersonatedUser,
-			)
-			user = auditEvent.ImpersonatedUser.Username
-		}
-
-		telemetry.AuditEventsReceivedTotal.Add(ctx, 1, metric.WithAttributes(
-			attribute.String("cluster_id", clusterIDMetric),
-			attribute.String("gvr", gvr),
-			attribute.String("action", action),
-			attribute.String("user", user),
-			attribute.String("processed", strconv.FormatBool(process)),
-		))
-
-		if !process {
-			continue
-		}
-
-		if h.config.Queue != nil {
-			if err := h.config.Queue.Enqueue(ctx, clusterID, auditEventV1); err != nil {
-				return fmt.Errorf("failed to enqueue audit event %q: %w", auditEvent.AuditID, err)
-			}
-		}
-
-		log.Info("Processed audit event",
-			"clusterID", clusterID,
-			"gvr", gvr,
-			"action", action,
-			"auditID", auditEvent.AuditID,
-			"user", user,
-			"ips", auditEvent.SourceIPs,
-			"userAgent", auditEvent.UserAgent)
-
-		h.writeAuditEventToFile(&auditEvent)
 	}
 
 	return nil
 }
 
-func extractClusterID(path string) (string, error) {
-	const auditPrefix = "/audit-webhook/"
-	if path == "/audit-webhook" {
-		return "", errors.New("missing cluster ID in path; expected /audit-webhook/{clusterID}")
-	}
-	if !strings.HasPrefix(path, auditPrefix) {
-		return "", errors.New("invalid path; expected /audit-webhook/{clusterID}")
+func (h *AuditHandler) processEvent(ctx context.Context, source AuditSource, auditEventV1 auditv1.Event) error {
+	log := logf.Log.WithName("audit-handler")
+
+	auditEvent, process, err := h.prepareAuditEvent(ctx, source, auditEventV1)
+	if err != nil || !process {
+		return err
 	}
 
-	clusterID := strings.TrimPrefix(path, auditPrefix)
-	clusterID = strings.TrimSuffix(clusterID, "/")
-	if clusterID == "" {
-		return "", errors.New("missing cluster ID in path; expected /audit-webhook/{clusterID}")
+	eventToWrite, joinDecision, shouldEmit, err := h.eventForCanonicalStream(ctx, source, auditEventV1, auditEvent)
+	if err != nil || !shouldEmit {
+		return err
 	}
-	if strings.Contains(clusterID, "/") {
-		return "", errors.New("invalid path; expected single segment cluster ID in /audit-webhook/{clusterID}")
+	if err := h.enqueueCanonicalEvent(ctx, eventToWrite, auditEvent, joinDecision); err != nil {
+		return err
+	}
+	if err := h.commitJoinDecision(ctx, joinDecision); err != nil {
+		return err
 	}
 
-	return clusterID, nil
+	log.Info("Processed audit event",
+		"source", source,
+		"gvr", h.extractGVR(&auditEvent),
+		"action", auditEvent.Verb,
+		"auditID", auditEvent.AuditID,
+		"user", effectiveAuditUsername(auditEvent),
+		"ips", auditEvent.SourceIPs,
+		"userAgent", auditEvent.UserAgent)
+
+	return h.writeCanonicalAuditEvent(eventToWrite, auditEvent)
 }
 
-func sanitizeClusterIDForMetric(clusterID string) string {
-	clusterID = strings.TrimSpace(clusterID)
-	if clusterID == "" {
-		return UnknownClusterIDMetricValue
+func (h *AuditHandler) prepareAuditEvent(
+	ctx context.Context,
+	source AuditSource,
+	auditEventV1 auditv1.Event,
+) (audit.Event, bool, error) {
+	var auditEvent audit.Event
+	if err := h.scheme.Convert(&auditEventV1, &auditEvent, nil); err != nil {
+		return audit.Event{}, false, fmt.Errorf("failed to convert audit event: %w", err)
 	}
 
-	var builder strings.Builder
-	builder.Grow(len(clusterID))
-	for _, r := range clusterID {
-		if isAllowedClusterIDRune(r) {
-			builder.WriteRune(r)
-			continue
+	process, err := h.checkEvent(&auditEvent)
+	if err != nil {
+		return audit.Event{}, false, fmt.Errorf("failed to check audit event: %w", err)
+	}
+	h.recordReceivedMetric(ctx, source, auditEvent, process)
+	return auditEvent, process, nil
+}
+
+func (h *AuditHandler) recordReceivedMetric(
+	ctx context.Context,
+	source AuditSource,
+	auditEvent audit.Event,
+	process bool,
+) {
+	user := effectiveAuditUsername(auditEvent)
+	if auditEvent.ImpersonatedUser != nil {
+		logf.Log.WithName("audit-handler").Info(
+			"Audit event impersonated",
+			"source", source,
+			"authUser", auditEvent.User.Username,
+			"impersonatedUser", auditEvent.ImpersonatedUser,
+		)
+	}
+
+	telemetry.AuditEventsReceivedTotal.Add(ctx, 1, metric.WithAttributes(
+		attribute.String("source", string(source)),
+		attribute.String("gvr", h.extractGVR(&auditEvent)),
+		attribute.String("action", auditEvent.Verb),
+		attribute.String("user", user),
+		attribute.String("processed", strconv.FormatBool(process)),
+	))
+}
+
+func (h *AuditHandler) eventForCanonicalStream(
+	ctx context.Context,
+	source AuditSource,
+	auditEventV1 auditv1.Event,
+	auditEvent audit.Event,
+) (*auditv1.Event, AuditJoinDecision, bool, error) {
+	if h.config.Joiner == nil {
+		emit := hasAuditV1ObjectBody(&auditEventV1) || allowsBodylessDelete(&auditEvent)
+		return &auditEventV1, AuditJoinDecision{}, emit, nil
+	}
+
+	decision, err := h.config.Joiner.Decide(ctx, source, &auditEventV1)
+	if err != nil {
+		return nil, AuditJoinDecision{}, false, fmt.Errorf(
+			"failed to decide audit event %q: %w",
+			auditEvent.AuditID,
+			err,
+		)
+	}
+	switch decision.Action {
+	case AuditJoinActionParked:
+		logAuditJoinSkip("Parked additional audit body", source, h.extractGVR(&auditEvent), auditEvent.AuditID)
+		return nil, decision, false, nil
+	case AuditJoinActionDropDuplicate:
+		logAuditJoinSkip(
+			"Dropped audit event before canonical stream enqueue",
+			source,
+			h.extractGVR(&auditEvent),
+			auditEvent.AuditID,
+		)
+		return nil, decision, false, nil
+	case AuditJoinActionEmit:
+		if decision.Event == nil {
+			return nil, decision, false, fmt.Errorf("joiner emitted nil audit event for %q", auditEvent.AuditID)
 		}
-		builder.WriteByte('_')
+		return decision.Event, decision, true, nil
+	default:
+		return nil, decision, false, fmt.Errorf(
+			"unknown audit join action %d for %q",
+			decision.Action,
+			auditEvent.AuditID,
+		)
 	}
-
-	sanitized := builder.String()
-	if len(sanitized) > MaxClusterIDMetricLabelLength {
-		sanitized = sanitized[:MaxClusterIDMetricLabelLength]
-	}
-	if sanitized == "" {
-		return UnknownClusterIDMetricValue
-	}
-
-	return sanitized
 }
 
-func isAllowedClusterIDRune(r rune) bool {
-	return (r >= 'a' && r <= 'z') ||
-		(r >= 'A' && r <= 'Z') ||
-		(r >= '0' && r <= '9') ||
-		r == '-' || r == '_' || r == '.'
+func (h *AuditHandler) enqueueCanonicalEvent(
+	ctx context.Context,
+	event *auditv1.Event,
+	auditEvent audit.Event,
+	decision AuditJoinDecision,
+) error {
+	if h.config.Queue == nil {
+		return nil
+	}
+	if err := h.config.Queue.Enqueue(ctx, *event); err != nil {
+		h.releaseJoinDecision(ctx, decision)
+		return fmt.Errorf("failed to enqueue audit event %q: %w", auditEvent.AuditID, err)
+	}
+	return nil
+}
+
+func (h *AuditHandler) commitJoinDecision(ctx context.Context, decision AuditJoinDecision) error {
+	if h.config.Joiner == nil || decision.Action != AuditJoinActionEmit {
+		return nil
+	}
+	if err := h.config.Joiner.CommitDecision(ctx, decision.AuditID, decision.Result); err != nil {
+		return fmt.Errorf("failed to commit audit event decision %q: %w", decision.AuditID, err)
+	}
+	addEmittedMetric(ctx, decision.Source, decision.Mode, decision.Result)
+	return nil
+}
+
+func (h *AuditHandler) releaseJoinDecision(ctx context.Context, decision AuditJoinDecision) {
+	if h.config.Joiner == nil || decision.Action != AuditJoinActionEmit {
+		return
+	}
+	if err := h.config.Joiner.ReleaseDecision(ctx, decision.AuditID); err != nil {
+		logf.Log.WithName("audit-handler").Error(err,
+			"Failed to release audit join decision after enqueue failure",
+			"auditID", decision.AuditID)
+	}
+}
+
+func (h *AuditHandler) writeCanonicalAuditEvent(eventToWrite *auditv1.Event, fallback audit.Event) error {
+	var emitted audit.Event
+	if err := h.scheme.Convert(eventToWrite, &emitted, nil); err != nil {
+		return fmt.Errorf("failed to convert emitted audit event: %w", err)
+	}
+	if emitted.AuditID == "" {
+		emitted = fallback
+	}
+	h.writeAuditEventToFile(&emitted)
+	return nil
+}
+
+func effectiveAuditUsername(event audit.Event) string {
+	if event.ImpersonatedUser != nil && event.ImpersonatedUser.Username != "" {
+		return event.ImpersonatedUser.Username
+	}
+	return event.User.Username
+}
+
+func logAuditJoinSkip(message string, source AuditSource, gvr string, auditID types.UID) {
+	logf.Log.WithName("audit-handler").Info(message,
+		"source", source,
+		"gvr", gvr,
+		"auditID", auditID)
+}
+
+func auditSourceFromPath(path string) (AuditSource, error) {
+	switch path {
+	case "/audit-webhook":
+		return AuditSourceOfficial, nil
+	case "/audit-webhook-additional":
+		return AuditSourceAdditional, nil
+	case "/audit-webhook/", "/audit-webhook-additional/":
+		return "", errors.New("audit webhook path must not include a trailing slash")
+	default:
+		if strings.HasPrefix(path, "/audit-webhook/") || strings.HasPrefix(path, "/audit-webhook-additional/") {
+			return "", errors.New("audit webhook path must not include a cluster ID or extra path segment")
+		}
+		return "", errors.New("invalid path; expected /audit-webhook or /audit-webhook-additional")
+	}
 }
 
 // extractGVR constructs the Group/Version/Resource string from the audit event
@@ -329,15 +417,12 @@ func (h *AuditHandler) checkEvent(event *audit.Event) (bool, error) {
 	if string(event.AuditID) == "" {
 		return process, errors.New("invalid audit event: auditID cannot be empty")
 	}
-	if !hasAuditObjectBody(event) && !allowsBodylessDelete(event) {
-		return false, nil
-	}
 
 	return process, nil
 }
 
-func hasAuditObjectBody(event *audit.Event) bool {
-	return hasRuntimeUnknownBody(event.RequestObject) || hasRuntimeUnknownBody(event.ResponseObject)
+func hasAuditV1ObjectBody(event *auditv1.Event) bool {
+	return event != nil && (hasRuntimeUnknownBody(event.RequestObject) || hasRuntimeUnknownBody(event.ResponseObject))
 }
 
 func hasRuntimeUnknownBody(object *runtime.Unknown) bool {

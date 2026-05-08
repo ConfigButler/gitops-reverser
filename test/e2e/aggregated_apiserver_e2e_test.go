@@ -256,6 +256,18 @@ spec:
 			g.Expect(auditObjectRefName(flunderAudit.Payload)).To(Equal(flunderName))
 			g.Expect(auditPayloadHasObject(flunderAudit.Payload, "requestObject")).To(BeTrue())
 			g.Expect(auditPayloadHasObject(flunderAudit.Payload, "responseObject")).To(BeTrue())
+			flunderAuditID := auditPayloadID(flunderAudit.Payload)
+			g.Expect(flunderAuditID).NotTo(BeEmpty())
+			flunderCount, countErr := countAuditPayloadsByAuditIDSince(
+				context.Background(),
+				client,
+				streamName,
+				baselineID,
+				flunderAuditID,
+				300,
+			)
+			g.Expect(countErr).NotTo(HaveOccurred())
+			g.Expect(flunderCount).To(Equal(1), "expected one canonical stream entry for the Flunder auditID")
 
 			_, _ = fmt.Fprintf(
 				GinkgoWriter,

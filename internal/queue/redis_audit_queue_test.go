@@ -63,7 +63,7 @@ func TestRedisAuditQueue_Enqueue(t *testing.T) {
 	}
 	event.User.Username = "test-user"
 
-	err = queue.Enqueue(context.Background(), "cluster-a", event)
+	err = queue.Enqueue(context.Background(), event)
 	require.NoError(t, err)
 
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
@@ -73,7 +73,7 @@ func TestRedisAuditQueue_Enqueue(t *testing.T) {
 
 	entry := entries[0].Values
 	assert.Equal(t, "audit-123", entry["audit_id"])
-	assert.Equal(t, "cluster-a", entry["cluster_id"])
+	assert.NotContains(t, entry, "cluster_id")
 	assert.Equal(t, "create", entry["verb"])
 	assert.Empty(t, entry["api_group"])
 	assert.Equal(t, "v1", entry["api_version"])
@@ -113,7 +113,7 @@ func TestRedisAuditQueue_EnqueueCustomResourceStoresAPIGroup(t *testing.T) {
 	}
 	event.User.Username = "test-user"
 
-	err = queue.Enqueue(context.Background(), "cluster-a", event)
+	err = queue.Enqueue(context.Background(), event)
 	require.NoError(t, err)
 
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})

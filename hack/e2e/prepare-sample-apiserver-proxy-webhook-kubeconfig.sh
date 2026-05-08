@@ -14,7 +14,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-AUDIT_WEBHOOK_SERVER_URL="https://gitops-reverser-audit.${NAMESPACE}.svc.cluster.local:9444/audit-webhook/${AUDIT_CLUSTER_ID}" \
+AUDIT_WEBHOOK_SERVER_URL="https://gitops-reverser-audit.${NAMESPACE}.svc.cluster.local:9444/audit-webhook-additional" \
 AUDIT_TLS_SERVER_NAME="gitops-reverser-audit.${NAMESPACE}.svc" \
 CTX="${CTX}" \
 NAMESPACE="${NAMESPACE}" \

@@ -29,7 +29,7 @@ It also disables these packaged k3s components by default:
 
 The bootstrap source in [`audit/webhook-config.yaml`](audit/webhook-config.yaml) targets:
 
-`https://10.43.200.200:9444/audit-webhook/kind-e2e`
+`https://10.43.200.200:9444/audit-webhook`
 
 Notes:
 - `insecure-skip-tls-verify: true` is intentional for local e2e
