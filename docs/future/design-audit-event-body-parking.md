@@ -494,31 +494,21 @@ because the parking machinery already deduplicates by `auditID` via the decision
 
 To prepare for that without committing to it now, v1 should:
 
-1. **Put a `source` field on the envelope from day one** even though only one source exists.
-   Schema:
+1. **Use the body-contribution envelope from day one**, with the `source` field populated
+   even though only one value exists. The schema is defined under
+   [Redis parking construct](#redis-parking-construct) and is deliberately not "an audit
+   event" — it is a partial body contribution carrying only the fields the joiner is
+   allowed to merge. v1 sources emit `"apiservice-audit-proxy"`; the post-v1 in-process
+   handler will emit `"gitops-reverser-aggregated-api"`. The shape itself does not change.
 
-   ```json
-   {
-     "v": 1,
-     "auditID": "0f6c...",
-     "source": "apiservice-audit-proxy",
-     "receivedAt": "2026-05-07T12:34:56Z",
-     "event": { "kind": "Event", "apiVersion": "audit.k8s.io/v1" },
-     "hasRequestObject": true,
-     "hasResponseObject": true
-   }
-   ```
-
-   Future values: `"gitops-reverser-aggregated-api"`, etc. Adding the field now costs nothing
-   and avoids a schema-version bump later.
-
-2. **Define collision behaviour explicitly.** In v1 only one writer exists, so collisions are
-   theoretical. Once `CommitContext` ships, a request that goes through
-   `apiservice-audit-proxy` *and* lands at gitops-reverser's own aggregated API would produce
-   two writes for the same `auditID`. v1 keeps it simple: **last write wins** (plain `SET`,
-   not `SET NX`, on `audit:body:v1:<auditID>`). The two writes are substantively similar —
-   both contain the same request body — so the collision is benign. Source-priority merge
-   semantics, if ever needed, are deferred (see Decisions and deferred work).
+2. **Define collision behaviour explicitly.** In v1 only one writer exists, so collisions
+   are theoretical. Once `CommitContext` ships, a request that goes through
+   `apiservice-audit-proxy` *and* lands at gitops-reverser's own aggregated API would
+   produce two writes for the same `auditID`. v1 keeps it simple: **last write wins**
+   (plain `SET`, not `SET NX`, on `audit:body:v1:<auditID>`). The two writes are
+   substantively similar — both contain the same request body — so the collision is
+   benign. Source-priority merge semantics are deferred (see
+   [Decisions and deferred work](#decisions-and-deferred-work)).
 
 3. **Keep the `AuditBodyStore` interface source-agnostic.** It does not know whether the
    writer is the additional-endpoint handler or an in-process aggregated-API handler:
@@ -531,9 +521,15 @@ To prepare for that without committing to it now, v1 should:
    }
    ```
 
-4. **Allow the parking allowlist to cover both writers.** `gitops-reverser.io` belongs on the
-   allowlist when `CommitContext` is enabled; for v1 the default is whatever proxied groups
-   the operator configures.
+   `AuditBodyEnvelope` is body-contribution shaped (see
+   [Redis parking construct](#redis-parking-construct)). The post-v1 in-process handler
+   constructs the envelope from a validated request directly; it does not need to fabricate
+   a synthetic `auditv1.Event` first. This is one of the reasons the envelope is deliberately
+   not event-shaped.
+
+4. **Allow the parking allowlist to cover both writers.** `gitops-reverser.io` belongs on
+   the allowlist when `CommitContext` is enabled; for v1 the default is whatever proxied
+   groups the operator configures.
 
 It is still important that `CommitContext` does not take effect from the parked body alone;
 the official audit event must remain the trigger for downstream processing. The
@@ -589,25 +585,38 @@ dashboards stay coherent:
 1. Change the official audit HTTP route to accept only `/audit-webhook`.
 2. Remove cluster ID extraction and stream fields.
 3. Add `/audit-webhook-additional` with the same `EventList` decoder and authentication posture.
-4. Add `AuditEventJoiner` and a Redis-backed `AuditBodyStore`. The body envelope carries a
-   `source` field from day one (see [CommitContext fit](#commitcontext-fit)).
-5. Implement the decision transition as `SET NX` on `audit:decision:v1:<auditID>` *before*
-   enqueueing. On enqueue failure, `DEL` the decision key so a retry can re-claim it.
-6. Add configuration for join mode, body TTL, parking API groups, and additional-only mode.
-7. Call the joiner from `AuditHandler` before `Queue.Enqueue`, passing the endpoint source.
+4. Add `AuditEventJoiner` and a Redis-backed `AuditBodyStore`. The body envelope is
+   body-contribution shaped and carries a `source` field from day one (see
+   [Redis parking construct](#redis-parking-construct) and
+   [CommitContext fit](#commitcontext-fit)).
+5. Expose the two-phase decision contract on the joiner: `Decide` claims the decision via
+   `SET NX` on `audit:decision:v1:<auditID>` *before* enqueueing; the handler follows up
+   with `CommitDecision` on enqueue success or `ReleaseDecision` (which `DEL`s the decision
+   key) on enqueue failure. See [Handler flow](#handler-flow).
+6. Add configuration for join mode, body TTL, decision TTL, parking API groups, and
+   additional-only mode.
+7. Call the joiner from `AuditHandler` before `Queue.Enqueue`, passing the endpoint source,
+   and follow up with `CommitDecision` / `ReleaseDecision` based on the enqueue outcome.
 8. Add table-driven unit tests for:
-   - full first, wait-official parks
-   - official after full emits merged
-   - official first emits shallow in wait-official
-   - full first emits immediately in first mode
-   - duplicate after decision drops
-   - additional-only mode emits additional events directly
-   - full event outside the parking allowlist emits normally and increments
-     `gitopsreverser_audit_join_body_unexpected_total{group}`
-   - decision-key claimed but enqueue fails clears the decision key
+   - full first, `wait-official` parks (no decision claim)
+   - official after full claims, emits merged, commits decision
+   - official first claims, emits shallow, commits decision in `wait-official`
+   - full first claims, emits immediately, commits decision in `first` mode
+   - duplicate after committed decision drops
+   - duplicate while decision is in `claimed` state drops (replay during in-flight enqueue)
+   - additional-only mode emits additional events directly via the same claim/commit path
+   - additional-source full event for an allowlisted group is parked
+   - additional-source full event for a not-allowlisted group, `wait-official` mode: dropped,
+     `gitopsreverser_audit_join_body_unexpected_total{group}` incremented
+   - additional-source full event for a not-allowlisted group, `first` mode: dropped,
+     unexpected metric incremented
+   - additional-source full event for a not-allowlisted group, additional-only mode: emitted
+     normally
+   - decision-key claimed but enqueue fails: `ReleaseDecision` `DEL`s the decision key, next
+     arrival can re-claim
    - Redis failures return the right handler status
 9. Add e2e coverage for the aggregated API path proving one canonical stream entry per
-   `auditID`.
+   `auditID` within the decision-key TTL window.
 
 ## Migration
 
