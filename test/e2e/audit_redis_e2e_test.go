@@ -138,9 +138,8 @@ var _ = Describe("Audit Redis Queue", Label("audit-redis", "smoke"), Ordered, fu
 			for _, entry := range entries {
 				resource, _ := entry.Values["resource"].(string)
 				name, _ := entry.Values["name"].(string)
-				clusterID, _ := entry.Values["cluster_id"].(string)
 				payload, _ := entry.Values["payload_json"].(string)
-				if resource == "configmaps" && name == testConfigMapName && clusterID == "kind-e2e" && payload != "" {
+				if resource == "configmaps" && name == testConfigMapName && payload != "" {
 					found = true
 					break
 				}

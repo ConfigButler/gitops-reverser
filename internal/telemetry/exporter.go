@@ -69,6 +69,16 @@ var (
 	WatchDuplicatesSkippedTotal metric.Int64Counter
 	// AuditEventsReceivedTotal counts audit events received from Kubernetes API server.
 	AuditEventsReceivedTotal metric.Int64Counter
+	// AuditJoinParkedTotal counts additional audit body contributions parked for later joining.
+	AuditJoinParkedTotal metric.Int64Counter
+	// AuditJoinEmittedTotal counts audit events emitted to the canonical stream after join decisions.
+	AuditJoinEmittedTotal metric.Int64Counter
+	// AuditJoinDuplicateDroppedTotal counts audit events dropped because a decision already exists.
+	AuditJoinDuplicateDroppedTotal metric.Int64Counter
+	// AuditJoinBodyMissTotal counts official audit events that had no parked body contribution.
+	AuditJoinBodyMissTotal metric.Int64Counter
+	// AuditJoinBodyUnexpectedTotal counts additional audit events for API groups outside the parking allowlist.
+	AuditJoinBodyUnexpectedTotal metric.Int64Counter
 	// SecretEncryptionAttemptsTotal counts total Secret encryption attempts.
 	SecretEncryptionAttemptsTotal metric.Int64Counter
 	// SecretEncryptionSuccessTotal counts successful Secret encryptions.
@@ -130,6 +140,11 @@ func InitOTLPExporter(_ context.Context) (func(context.Context) error, error) {
 		{"gitopsreverser_marker_conflicts_total", &MarkerConflictsTotal},
 		{"gitopsreverser_watch_duplicates_skipped_total", &WatchDuplicatesSkippedTotal},
 		{"gitopsreverser_audit_events_received_total", &AuditEventsReceivedTotal},
+		{"gitopsreverser_audit_join_parked_total", &AuditJoinParkedTotal},
+		{"gitopsreverser_audit_join_emitted_total", &AuditJoinEmittedTotal},
+		{"gitopsreverser_audit_join_duplicate_dropped_total", &AuditJoinDuplicateDroppedTotal},
+		{"gitopsreverser_audit_join_body_miss_total", &AuditJoinBodyMissTotal},
+		{"gitopsreverser_audit_join_body_unexpected_total", &AuditJoinBodyUnexpectedTotal},
 		{"gitopsreverser_secret_encryption_attempts_total", &SecretEncryptionAttemptsTotal},
 		{"gitopsreverser_secret_encryption_success_total", &SecretEncryptionSuccessTotal},
 		{"gitopsreverser_secret_encryption_failures_total", &SecretEncryptionFailuresTotal},

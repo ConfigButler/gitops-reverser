@@ -91,6 +91,37 @@ func findAuditPayloadSince(
 	return auditPayloadEntry{}, errors.New("no matching audit payload found")
 }
 
+func countAuditPayloadsByAuditIDSince(
+	ctx context.Context,
+	client *redis.Client,
+	stream, afterID, auditID string,
+	limit int64,
+) (int, error) {
+	start := "-"
+	if afterID != "" {
+		start = "(" + afterID
+	}
+
+	entries, err := client.XRangeN(ctx, stream, start, "+", limit).Result()
+	if err != nil {
+		return 0, err
+	}
+
+	count := 0
+	for _, entry := range entries {
+		value, _ := entry.Values["audit_id"].(string)
+		if value == auditID {
+			count++
+		}
+	}
+	return count, nil
+}
+
+func auditPayloadID(payload map[string]interface{}) string {
+	value, _ := payload["auditID"].(string)
+	return value
+}
+
 func auditPayloadMatches(
 	payload map[string]interface{},
 	apiGroup, resource, namespace, name, verb string,

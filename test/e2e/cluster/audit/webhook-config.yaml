@@ -9,7 +9,7 @@ preferences: {}
 clusters:
 - name: audit-webhook
   cluster:
-    server: https://127.0.0.1:30444/audit-webhook/kind-e2e
+    server: https://127.0.0.1:30444/audit-webhook
     insecure-skip-tls-verify: true
 contexts:
 - name: webhook

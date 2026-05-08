@@ -31,6 +31,7 @@ spec:
         - --audit-client-ca-path=/tmp/k8s-audit-server/audit-client-ca
         - --audit-redis-addr=valkey.valkey-e2e.svc.cluster.local:6379
         - --audit-redis-stream=gitopsreverser.audit.events.v1
+        - --audit-event-body-parking-api-groups=wardle.example.com
         command:
         - /manager
         env:

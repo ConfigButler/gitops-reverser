@@ -306,8 +306,7 @@ func (c *AuditConsumer) processMessage(ctx context.Context, msg redis.XMessage) 
 		return
 	}
 
-	clusterID := stringField(msg.Values, "cluster_id")
-	if err := c.routeAuditEvent(ctx, log, auditEvent, op, clusterID); err != nil {
+	if err := c.routeAuditEvent(ctx, log, auditEvent, op); err != nil {
 		log.Error(err, "Failed to route audit event; ACKing to avoid poison-pill")
 	}
 	c.ackMessage(ctx, msg.ID)
@@ -319,7 +318,6 @@ func (c *AuditConsumer) routeAuditEvent(
 	log logr.Logger,
 	auditEvent auditv1.Event,
 	op configv1alpha1.OperationType,
-	clusterID string,
 ) error {
 	ref := auditEvent.ObjectRef
 	apiGroup, apiVersion := objectRefGroupVersion(ref)
@@ -362,11 +360,11 @@ func (c *AuditConsumer) routeAuditEvent(
 	id := itypes.NewResourceIdentifier(apiGroup, apiVersion, resourcePlural, namespace, name)
 	userInfo := resolveUserInfo(auditEvent)
 
-	routed := c.routeToMatchedRules(log, sanitized, id, op, userInfo, clusterID, wrRules, cwrRules)
+	routed := c.routeToMatchedRules(log, sanitized, id, op, userInfo, wrRules, cwrRules)
 
 	log.V(1).Info("Processed audit stream entry",
 		"resource", resourcePlural, "namespace", namespace, "name", name,
-		"operation", op, "user", userInfo.Username, "clusterID", clusterID,
+		"operation", op, "user", userInfo.Username,
 		"routed", routed)
 	return nil
 }
@@ -379,7 +377,6 @@ func (c *AuditConsumer) routeToMatchedRules(
 	id itypes.ResourceIdentifier,
 	op configv1alpha1.OperationType,
 	userInfo git.UserInfo,
-	clusterID string,
 	wrRules []rulestore.CompiledRule,
 	cwrRules []rulestore.CompiledClusterRule,
 ) int {
@@ -389,7 +386,7 @@ func (c *AuditConsumer) routeToMatchedRules(
 		gitDest := itypes.NewResourceReference(rule.GitTargetRef, rule.GitTargetNamespace)
 		if err := c.eventRouter.RouteToGitTargetEventStream(ev, gitDest); err != nil {
 			log.V(1).Info("Failed to route audit event via WatchRule", "error", err,
-				"gitTarget", gitDest.String(), "clusterID", clusterID)
+				"gitTarget", gitDest.String())
 			continue
 		}
 		routed++
@@ -399,7 +396,7 @@ func (c *AuditConsumer) routeToMatchedRules(
 		gitDest := itypes.NewResourceReference(rule.GitTargetRef, rule.GitTargetNamespace)
 		if err := c.eventRouter.RouteToGitTargetEventStream(ev, gitDest); err != nil {
 			log.V(1).Info("Failed to route audit event via ClusterWatchRule", "error", err,
-				"gitTarget", gitDest.String(), "clusterID", clusterID)
+				"gitTarget", gitDest.String())
 			continue
 		}
 		routed++

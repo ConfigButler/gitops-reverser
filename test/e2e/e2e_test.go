@@ -253,11 +253,11 @@ var _ = Describe("Manager", Label("manager"), Ordered, func() {
 			baselineAuditEvents, err := queryPrometheus("sum(gitopsreverser_audit_events_received_total) or vector(0)")
 			Expect(err).NotTo(HaveOccurred())
 			fmt.Printf("📊 Baseline audit events: %.0f\n", baselineAuditEvents)
-			baselineClusterAuditEvents, err := queryPrometheus(
-				"sum(gitopsreverser_audit_events_received_total{cluster_id='kind-e2e'}) or vector(0)",
+			baselineOfficialAuditEvents, err := queryPrometheus(
+				"sum(gitopsreverser_audit_events_received_total{source='official'}) or vector(0)",
 			)
 			Expect(err).NotTo(HaveOccurred())
-			fmt.Printf("📊 Baseline kind-e2e audit events: %.0f\n", baselineClusterAuditEvents)
+			fmt.Printf("📊 Baseline official audit events: %.0f\n", baselineOfficialAuditEvents)
 
 			By("creating a ConfigMap to trigger audit events")
 			_, err = kubectlRunInNamespace(
@@ -284,9 +284,9 @@ var _ = Describe("Manager", Label("manager"), Ordered, func() {
 				func(v float64) bool { return v > baselineAuditEvents },
 				"audit events should increment", 2*time.Minute)
 			waitForMetricWithTimeout(
-				"sum(gitopsreverser_audit_events_received_total{cluster_id='kind-e2e'}) or vector(0)",
-				func(v float64) bool { return v > baselineClusterAuditEvents },
-				"audit events should increment for cluster_id=kind-e2e", 2*time.Minute,
+				"sum(gitopsreverser_audit_events_received_total{source='official'}) or vector(0)",
+				func(v float64) bool { return v > baselineOfficialAuditEvents },
+				"audit events should increment for source=official", 2*time.Minute,
 			)
 
 			By("verifying audit events were received")

@@ -73,6 +73,8 @@ const (
 	defaultAuditWriteTimeout       = 30 * time.Second
 	defaultAuditIdleTimeout        = 60 * time.Second
 	defaultAuditShutdownTimeout    = 10 * time.Second
+	defaultAuditEventBodyTTL       = 5 * time.Minute
+	defaultAuditEventDecisionTTL   = time.Hour
 	defaultBranchBufferMaxBytesStr = "8Mi"
 )
 
@@ -195,6 +197,26 @@ func main() {
 		"db", cfg.auditRedisDB,
 		"tls-enabled", cfg.auditRedisTLS)
 
+	auditJoiner, err := webhookhandler.NewRedisAuditEventJoiner(webhookhandler.RedisAuditJoinerConfig{
+		Addr:                 cfg.auditRedisAddr,
+		Username:             cfg.auditRedisUsername,
+		AuthValue:            cfg.auditRedisPassword,
+		DB:                   cfg.auditRedisDB,
+		TLSEnabled:           cfg.auditRedisTLS,
+		Mode:                 cfg.auditEventJoinMode,
+		BodyTTL:              cfg.auditEventBodyTTL,
+		DecisionTTL:          cfg.auditEventDecisionTTL,
+		BodyParkingAPIGroups: cfg.auditEventBodyParkingAPIGroups,
+		AdditionalOnly:       cfg.auditAdditionalOnly,
+	})
+	fatalIfErr(err, "unable to initialize audit event joiner")
+	setupLog.Info("Audit event joiner configured",
+		"mode", cfg.auditEventJoinMode,
+		"body-ttl", cfg.auditEventBodyTTL,
+		"decision-ttl", cfg.auditEventDecisionTTL,
+		"body-parking-api-groups", cfg.auditEventBodyParkingAPIGroups,
+		"additional-only", cfg.auditAdditionalOnly)
+
 	// Register the audit stream consumer. It shares the same Redis config as the
 	// producer but uses a dedicated consumer group and ID (pod-name-scoped so that
 	// multiple replicas do not share a consumer identity).
@@ -226,6 +248,7 @@ func main() {
 		DumpDir:             cfg.auditDumpPath,
 		MaxRequestBodyBytes: cfg.auditMaxRequestBodyBytes,
 		Queue:               auditQueue,
+		Joiner:              auditJoiner,
 	})
 	fatalIfErr(err, "unable to create audit handler")
 
@@ -238,12 +261,12 @@ func main() {
 
 	if cfg.auditDumpPath != "" {
 		setupLog.Info("Audit ingress server configured with file dumping",
-			"http-path", "/audit-webhook/{clusterID}",
+			"http-paths", "/audit-webhook,/audit-webhook-additional",
 			"dump-path", cfg.auditDumpPath,
 			"address", buildAuditServerAddress(cfg.auditListenAddress, cfg.auditPort))
 	} else {
 		setupLog.Info("Audit ingress server configured",
-			"http-path", "/audit-webhook/{clusterID}",
+			"http-paths", "/audit-webhook,/audit-webhook-additional",
 			"address", buildAuditServerAddress(cfg.auditListenAddress, cfg.auditPort))
 	}
 
@@ -287,35 +310,41 @@ func main() {
 
 // appConfig holds parsed CLI flags and logging options.
 type appConfig struct {
-	metricsAddr              string
-	metricsCertPath          string
-	metricsCertName          string
-	metricsCertKey           string
-	probeAddr                string
-	metricsInsecure          bool
-	enableHTTP2              bool
-	auditDumpPath            string
-	auditListenAddress       string
-	auditPort                int
-	auditCertPath            string
-	auditCertName            string
-	auditCertKey             string
-	auditClientCAPath        string
-	auditClientCAName        string
-	auditInsecure            bool
-	auditMaxRequestBodyBytes int64
-	auditReadTimeout         time.Duration
-	auditWriteTimeout        time.Duration
-	auditIdleTimeout         time.Duration
-	auditRedisAddr           string
-	auditRedisUsername       string
-	auditRedisPassword       string
-	auditRedisDB             int
-	auditRedisStream         string
-	auditRedisMaxLen         int64
-	auditRedisTLS            bool
-	branchBufferMaxBytes     int64
-	zapOpts                  zap.Options
+	metricsAddr                    string
+	metricsCertPath                string
+	metricsCertName                string
+	metricsCertKey                 string
+	probeAddr                      string
+	metricsInsecure                bool
+	enableHTTP2                    bool
+	auditDumpPath                  string
+	auditListenAddress             string
+	auditPort                      int
+	auditCertPath                  string
+	auditCertName                  string
+	auditCertKey                   string
+	auditClientCAPath              string
+	auditClientCAName              string
+	auditInsecure                  bool
+	auditMaxRequestBodyBytes       int64
+	auditReadTimeout               time.Duration
+	auditWriteTimeout              time.Duration
+	auditIdleTimeout               time.Duration
+	auditRedisAddr                 string
+	auditRedisUsername             string
+	auditRedisPassword             string
+	auditRedisDB                   int
+	auditRedisStream               string
+	auditRedisMaxLen               int64
+	auditRedisTLS                  bool
+	auditEventJoinMode             webhookhandler.AuditJoinMode
+	auditEventBodyTTL              time.Duration
+	auditEventDecisionTTL          time.Duration
+	auditEventBodyGroupsCSV        string
+	auditEventBodyParkingAPIGroups []string
+	auditAdditionalOnly            bool
+	branchBufferMaxBytes           int64
+	zapOpts                        zap.Options
 }
 
 // parseFlags parses CLI flags and returns the application configuration.
@@ -330,6 +359,7 @@ func parseFlags() appConfig {
 
 func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 	var cfg appConfig
+	cfg.auditEventJoinMode = webhookhandler.AuditJoinModeWaitOfficial
 
 	fs.StringVar(&cfg.metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
@@ -384,6 +414,19 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 		"Approximate max stream length (0 disables trimming).")
 	fs.BoolVar(&cfg.auditRedisTLS, "audit-redis-tls", false,
 		"If set, Redis connection for audit queueing uses TLS.")
+	fs.Var(
+		auditJoinModeValue{target: &cfg.auditEventJoinMode},
+		"audit-event-join-mode",
+		"Audit event join mode: wait-official or first.",
+	)
+	fs.DurationVar(&cfg.auditEventBodyTTL, "audit-event-body-ttl", defaultAuditEventBodyTTL,
+		"TTL for parked additional audit body contributions.")
+	fs.DurationVar(&cfg.auditEventDecisionTTL, "audit-event-decision-ttl", defaultAuditEventDecisionTTL,
+		"TTL for audit decision keys that deduplicate canonical stream events.")
+	fs.StringVar(&cfg.auditEventBodyGroupsCSV, "audit-event-body-parking-api-groups", "",
+		"Comma-separated API groups whose additional audit events may park request or response bodies.")
+	fs.BoolVar(&cfg.auditAdditionalOnly, "audit-additional-only", false,
+		"Treat /audit-webhook-additional as the canonical source because /audit-webhook is not expected.")
 	branchBufferMaxBytesStr := os.Getenv("BRANCH_BUFFER_MAX_BYTES")
 	if branchBufferMaxBytesStr == "" {
 		branchBufferMaxBytesStr = defaultBranchBufferMaxBytesStr
@@ -405,6 +448,7 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 	if err := validateAuditConfig(cfg); err != nil {
 		return appConfig{}, err
 	}
+	cfg.auditEventBodyParkingAPIGroups = splitCommaSeparatedValues(cfg.auditEventBodyGroupsCSV)
 
 	bufferQuantity, err := resource.ParseQuantity(branchBufferMaxBytesFlag)
 	if err != nil {
@@ -460,7 +504,52 @@ func validateAuditConfig(cfg appConfig) error {
 	if cfg.auditRedisMaxLen < 0 {
 		return fmt.Errorf("audit-redis-max-len must be >= 0, got %d", cfg.auditRedisMaxLen)
 	}
+	if cfg.auditEventJoinMode != webhookhandler.AuditJoinModeWaitOfficial &&
+		cfg.auditEventJoinMode != webhookhandler.AuditJoinModeFirst {
+		return fmt.Errorf("audit-event-join-mode must be wait-official or first, got %q", cfg.auditEventJoinMode)
+	}
+	if cfg.auditEventBodyTTL <= 0 {
+		return fmt.Errorf("audit-event-body-ttl must be > 0, got %s", cfg.auditEventBodyTTL)
+	}
+	if cfg.auditEventDecisionTTL <= 0 {
+		return fmt.Errorf("audit-event-decision-ttl must be > 0, got %s", cfg.auditEventDecisionTTL)
+	}
 	return nil
+}
+
+type auditJoinModeValue struct {
+	target *webhookhandler.AuditJoinMode
+}
+
+func (v auditJoinModeValue) String() string {
+	if v.target == nil {
+		return ""
+	}
+	return string(*v.target)
+}
+
+func (v auditJoinModeValue) Set(value string) error {
+	mode := webhookhandler.AuditJoinMode(strings.TrimSpace(value))
+	if mode != webhookhandler.AuditJoinModeWaitOfficial && mode != webhookhandler.AuditJoinModeFirst {
+		return fmt.Errorf("must be wait-official or first, got %q", value)
+	}
+	*v.target = mode
+	return nil
+}
+
+func splitCommaSeparatedValues(value string) []string {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	parts := strings.Split(value, ",")
+	result := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			result = append(result, part)
+		}
+	}
+	return result
 }
 
 // fatalIfErr logs and exits the process if err is not nil.
@@ -599,6 +688,8 @@ func buildAuditServeMux(handler http.Handler) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.Handle("/audit-webhook", handler)
 	mux.Handle("/audit-webhook/", handler)
+	mux.Handle("/audit-webhook-additional", handler)
+	mux.Handle("/audit-webhook-additional/", handler)
 	return mux
 }
 
