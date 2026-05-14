@@ -537,7 +537,6 @@ func pushAuditMessage(t *testing.T, mr *miniredis.Miniredis, ev auditv1.Event) {
 		ID:     "*",
 		Values: map[string]interface{}{
 			"payload_json": string(payload),
-			"cluster_id":   "test-cluster",
 		},
 	}).Err()
 	require.NoError(t, err)

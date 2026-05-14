@@ -139,8 +139,52 @@ Structured fields: `auditID`, `gvr`, `verb`, `source`, `quality`, `hasRequestObj
 - `quality=collection` survives joiner → stream → consumer with the full `*List` body
   preserved in the stream entry.
 
+## Known non-atomic windows
+
+The joiner uses `GET` + `SET NX` rather than a Lua script. Two non-atomic windows exist:
+
+1. **Official: peek body → claim decision.** Between the `GET audit:body:v1:<id>` and the
+   `SET NX audit:decision:v1:<id>`, an additional event could park a body. The official
+   then drops as `identity_shallow` while a body sits in Redis until TTL.
+2. **Additional: peek decision → park body.** Between the `GET audit:decision:v1:<id>` and
+   the `SET audit:body:v1:<id>`, an official could claim and emit. The body parks but is
+   never consumed.
+
+Both windows are microsecond-wide and are protected from steady-state damage by the timing
+assumption: additional events arrive seconds-to-minutes before officials. The damage when
+either races is bounded to one wasted parked body that evicts on TTL. We accept this for
+v1 because:
+
+- The "no silent shallow writes" invariant still holds — case 1 increments
+  `audit_shallow_dropped_total`, so the operator sees the loss.
+- The dedupe invariant (at most one canonical entry per `auditID` within decision-TTL) still
+  holds — the decision key is the serialization point, and a single `SET NX` is atomic.
+- The orphan body cost is bounded by `body-ttl` and is already an accepted tradeoff (see
+  the architecture doc's Known gaps section).
+
+Tighter atomicity (single Lua script that does decision-claim + body-check + body-delete
+in one round trip) is the obvious next step if real telemetry shows the race firing under
+load. Tracked as a future hardening; not gating v1.
+
+## Invariant: only ResponseComplete drives the dedupe key
+
+The joiner keys decisions by `auditID`. kube-apiserver may emit multiple stages
+(`RequestReceived`, `ResponseStarted`, `ResponseComplete`, `Panic`) under the same
+`auditID`, depending on audit policy. If a non-`ResponseComplete` event claimed the
+decision key first, the later `ResponseComplete` for the same `auditID` would be dropped
+as a duplicate before reaching Git.
+
+**Fix.** The handler filters events at the boundary: only `Stage=ResponseComplete` events
+reach the joiner. Earlier stages are counted by the receive metric and dropped silently
+(they are not useful for the Git pipeline and were already being filtered by the consumer
+as a defense-in-depth check).
+
+This filter is what makes the auditID-keyed dedupe safe.
+
 ## Open questions
 
 - Verify `apiservice-audit-proxy` does not batch internally. If it does, we either push back
   on the proxy or reintroduce an ordering-preserving official-park path (separate design).
 - Rate-limit the shallow-drop log per `(gvr, verb)`? Defer until flood data exists.
+- Move joiner ops to Lua scripts to close the race windows above? Defer until telemetry
+  shows it's needed.

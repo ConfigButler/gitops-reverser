@@ -177,7 +177,7 @@ nodeSelector:
 | `queue.redis.stream` | Redis stream name for audit events | `gitopsreverser.audit.events.v1` |
 | `queue.redis.maxLen` | Approximate stream max length (`0` disables trim) | `0` |
 | `queue.redis.tls.enabled` | Enable TLS for Redis connection | `false` |
-| `auditEventJoin.bodyTTL` | TTL for parked additional audit bodies and shallow official events waiting for a body | `5m` |
+| `auditEventJoin.bodyTTL` | TTL for parked additional audit bodies waiting for the matching official event | `5m` |
 | `auditEventJoin.decisionTTL` | TTL for audit decision dedupe keys | `1h` |
 | `auditEventJoin.additionalOnly` | Treat `/audit-webhook-additional` as canonical | `false` |
 | `servers.metrics.bindAddress` | Metrics listener bind address | `:8080` |

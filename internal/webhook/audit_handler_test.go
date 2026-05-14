@@ -625,6 +625,35 @@ func TestAuditHandler_JoinerReleasesDecisionOnEnqueueFailure(t *testing.T) {
 	assert.Empty(t, joiner.commits)
 }
 
+func TestAuditHandler_NonResponseCompleteStageBypassesJoiner(t *testing.T) {
+	queue := &recordingAuditEventQueue{}
+	joiner := &fakeAuditJoiner{decision: AuditJoinDecision{Action: AuditJoinActionEmit, Result: AuditJoinResultAsIs}}
+	handler, err := NewAuditHandler(AuditHandlerConfig{
+		Queue:  queue,
+		Joiner: joiner,
+	})
+	require.NoError(t, err)
+
+	// Same auditID, two stages. Only ResponseComplete should reach the joiner.
+	body := `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[` +
+		`{"kind":"Event","auditID":"stage-1","verb":"create","stage":"RequestReceived",` +
+		`"user":{"username":"u"},"objectRef":{"resource":"configmaps","apiVersion":"v1","namespace":"d","name":"c"},` +
+		`"requestObject":{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"c"}}},` +
+		`{"kind":"Event","auditID":"stage-1","verb":"create","stage":"ResponseComplete",` +
+		`"user":{"username":"u"},"objectRef":{"resource":"configmaps","apiVersion":"v1","namespace":"d","name":"c"},` +
+		`"responseObject":{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"c"}}}` +
+		`]}`
+	req := httptest.NewRequest(http.MethodPost, "/audit-webhook", bytes.NewReader([]byte(body)))
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	require.Len(t, queue.events, 1, "only the ResponseComplete event should be enqueued")
+	assert.Equal(t, auditv1.StageResponseComplete, queue.events[0].Stage)
+	require.Len(t, joiner.commits, 1, "joiner should only have committed for ResponseComplete")
+}
+
 func TestAuditSourceFromPath(t *testing.T) {
 	tests := []struct {
 		name        string
