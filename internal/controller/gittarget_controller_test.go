@@ -149,15 +149,17 @@ var _ = Describe("GitTarget Controller Security", func() {
 
 			createdGitTarget := &configbutleraiv1alpha1.GitTarget{}
 
-			// Wait for the controller to reconcile and set conditions
+			// Wait for the controller to reach the final BranchNotAllowed state.
+			// The reconciler may pass through transient reasons (e.g. ProviderNotFound) before the
+			// GitProvider cache is warm, so wait for the specific reason this test asserts on.
 			Eventually(func() bool {
 				err := k8sClient.Get(ctx, gitTargetLookupKey, createdGitTarget)
 				if err != nil {
 					return false
 				}
-				// Check if Ready condition exists
 				for _, condition := range createdGitTarget.Status.Conditions {
-					if condition.Type == GitTargetReasonReady {
+					if condition.Type == GitTargetConditionValidated &&
+						condition.Reason == GitTargetReasonBranchNotAllowed {
 						return true
 					}
 				}

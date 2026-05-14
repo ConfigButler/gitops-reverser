@@ -6,7 +6,8 @@
       "Bash(sed -i 's|NewWorkerManager\\(client, log\\)|NewWorkerManager\\(client, log, 0\\)|g' /workspaces/gitops-reverser/internal/git/worker_manager_test.go)",
       "Bash(sed -i 's|git.NewWorkerManager\\(mgr.GetClient\\(\\), logf.Log.WithName\\(\"worker-manager\"\\)\\)|git.NewWorkerManager\\(mgr.GetClient\\(\\), logf.Log.WithName\\(\"worker-manager\"\\), 0\\)|g' /workspaces/gitops-reverser/internal/controller/suite_test.go)",
       "Bash(docker info *)",
-      "Bash(golangci-lint run *)"
+      "Bash(golangci-lint run *)",
+      "Bash(KUBEBUILDER_ASSETS=/workspaces/gitops-reverser/bin/k8s/1.35.0-linux-amd64 go test -count=1 -timeout 90s -ginkgo.focus=\"Should clear LastCommit to prevent information disclosure\" ./internal/controller/)"
     ]
   }
 }
