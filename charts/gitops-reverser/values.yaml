@@ -120,12 +120,8 @@ queue:
       enabled: false
 
 auditEventJoin:
-  # wait-official preserves kube-apiserver audit ordering; first favors lower latency.
-  mode: "wait-official"
   bodyTTL: "5m"
   decisionTTL: "1h"
-  # API groups whose /audit-webhook-additional events can park request/response bodies.
-  bodyParkingAPIGroups: []
   # Set true when only /audit-webhook-additional is configured and no official stream is expected.
   additionalOnly: false
 

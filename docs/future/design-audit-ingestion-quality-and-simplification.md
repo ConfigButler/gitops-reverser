@@ -1,6 +1,6 @@
 # Design: audit ingestion quality and simplification
 
-> Status: future design
+> Status: implemented, except for background TTL-expiry accounting
 > Date: 2026-05-08
 > Builds on:
 > [audit event body parking implementation](../design/audit-event-body-parking-implementation.md)
@@ -85,6 +85,19 @@ Git writes, and setup that does not require API-group bookkeeping.
 - There is no orphan-body metric. Parked additional bodies that expire without an official
   twin disappear silently via TTL.
 
+## Stream payload
+
+The canonical Redis stream entry carries the complete `auditv1.Event` JSON in a single
+`payload_json` field, plus a small sidecar of index fields (`audit_id`, `verb`, `api_group`,
+`api_version`, `resource`, `namespace`, `name`, `user`, `stage_timestamp`, `event_id`). See
+[redis_audit_queue.go:89-138](../../internal/queue/redis_audit_queue.go#L89-L138) and
+[redis_audit_consumer.go:444-465](../../internal/queue/redis_audit_consumer.go#L444-L465).
+
+This means transport is lossless. The classifier decides which events reach the stream, but
+once on the stream the consumer sees exactly what kube-apiserver (or
+`apiservice-audit-proxy`) sent. Any per-verb specialization happens in the consumer, not in
+transport.
+
 ## Recognizing shallow events
 
 The classifier runs over the incoming `auditv1.Event` shape. A mutating `ResponseComplete`
@@ -98,9 +111,15 @@ Otherwise it is shallow, with two sub-kinds:
 | Quality | Condition | Treatment |
 | --- | --- | --- |
 | `complete` | request or response body present, `objectRef` complete | emit |
-| `body_shallow_deletable` | no body, but `verb=delete` and `objectRef.Resource` and `Name` set | emit (delete carve-out) |
-| `identity_shallow` | `objectRef` missing `Resource` or `Name` on a single-object verb | wait briefly for additional body, then drop |
+| `body_shallow_deletable` | no body, but `verb=delete` and `objectRef.Resource` and `Name` set | emit (single-delete carve-out) |
+| `collection` | `verb=deletecollection`, body present, `objectRef.Resource` set (no `Name` is normal) | emit (collection carve-out) |
+| `identity_shallow` | `objectRef` missing `Resource` or `Name` on a *single-object* verb | wait briefly for additional body, then drop |
 | `malformed` | additional event without any body and without parked official twin | drop and count |
+
+The `collection` quality is its own row deliberately. A `deletecollection` event without a
+single name is **not shallow** — it is a complete audit fact about a high-blast-radius
+operation, and the apiserver's response body is a real `*List` of the deleted items. We must
+forward those events. Dropping them would be a serious audit regression.
 
 ### The delete carve-out is load-bearing
 
@@ -110,12 +129,49 @@ right rule today as
 [allowsBodylessDelete](../../internal/webhook/audit_handler.go#L432-L437); the classifier
 must mirror it.
 
-### `deletecollection` is a known limitation
+### `deletecollection` is forwarded raw, with a downstream limitation
 
-`deletecollection` does not carry a single `objectRef.Name`. The classifier marks it
-`identity_shallow` until we design a real strategy for collection deletes. This document does
-not solve that. Operators who care should currently exclude `deletecollection` from their
-audit policy or accept the drop-with-warn.
+`deletecollection` is a standard kube-apiserver verb, not a new one. It deletes every object
+matching a list selector and never carries a single `objectRef.Name`; the audit response body
+is a *List* shape (e.g. `ConfigMapList` containing the deleted items), not a single object.
+
+The canonical Redis stream already carries the **full raw audit event** as `payload_json`,
+together with a small index sidecar of identity fields. See
+[redis_audit_queue.go:89-138](../../internal/queue/redis_audit_queue.go#L89-L138). Nothing in
+the joiner or queue strips deletecollection. The only deletecollection-specific code is
+[audit_joiner.go:509](../../internal/webhook/audit_joiner.go#L509), which refuses to merge a
+parked body into delete and deletecollection events because a proxy-side body for these verbs
+is `DeleteOptions`, not the deleted object.
+
+Two facts follow:
+
+1. **Forwarding deletecollection costs us nothing on the stream side.** The audit fact
+   reaches the canonical stream intact. Operators who want to audit collection deletes get
+   the full event including the `*List` of deleted items.
+2. **The consumer's git-write step does not yet route per-item.** The consumer's
+   [extractObject](../../internal/queue/redis_audit_consumer.go#L469-L492) calls
+   `Unstructured.UnmarshalJSON` on whatever raw body is present. For deletecollection that
+   raw body is a `*List`, so the resulting object represents the list envelope rather than
+   the deleted items. Rule matching downstream may therefore not commit anything sensible
+   for these events today. That is a real limitation, but it is a downstream-mapping
+   problem, not a reason to drop the audit event.
+
+Other touchpoints in the current code:
+
+- [redis_audit_consumer.go:567](../../internal/queue/redis_audit_consumer.go#L567) maps the
+  verb to `OperationDelete` so it routes alongside single deletes.
+- [test/e2e/cluster/audit/policy.yaml:53](../../test/e2e/cluster/audit/policy.yaml#L53)
+  includes `deletecollection` in the recorded verbs.
+
+Test coverage today: there is no end-to-end test for the verb. The fixture
+[config-deletecollection.yaml](../../internal/webhook/testdata/audit-events/config-deletecollection.yaml)
+exists but is not loaded by any test. The only Go reference is a verb-mapping unit case at
+[redis_audit_consumer_test.go:104](../../internal/queue/redis_audit_consumer_test.go#L104),
+which only asserts `verbToOperation("deletecollection") == OperationDelete`.
+
+**Decision for this iteration.** Forward deletecollection events to the canonical stream as
+the new `collection` quality class. Do not drop them. Add a metric to make the volume
+visible. Treat the per-item rule-matching question as the separate design problem it is.
 
 ## Proposed pipeline
 
@@ -320,8 +376,9 @@ orphan bodies.
 6. Add the new metrics in
    [internal/telemetry/exporter.go](../../internal/telemetry/exporter.go); remove
    `AuditJoinBodyUnexpectedTotal`.
-7. Add the orphan-body metric. A periodic sweeper or Redis keyspace-notification listener can
-   count expirations of `audit:body:v1:<auditID>` that never had a paired official event.
+7. Add the orphan-body metric. The instrument exists, but a periodic sweeper or Redis
+   keyspace-notification listener is still needed to count expirations of
+   `audit:body:v1:<auditID>` that never had a paired official event.
 8. End-to-end coverage:
    - additional-source event for a new API group parks and merges without configuration
    - additional-source event without a body increments `quality_total{quality="malformed"}`
@@ -331,8 +388,14 @@ orphan bodies.
    - official identity-shallow normalized by a later additional body emits once
    - official identity-shallow with no additional body increments
      `audit_shallow_dropped_total` and is not enqueued
-   - `deletecollection` follows the same identity-shallow drop path (call out as known
-     limitation in docs)
+   - `deletecollection` is emitted as `quality=collection` and reaches the canonical
+     stream. Add the first real test for the verb: load
+     [config-deletecollection.yaml](../../internal/webhook/testdata/audit-events/config-deletecollection.yaml)
+     in a unit test and assert (a) it does not drop, (b)
+     `quality_total{quality="collection"}` is incremented, and (c) the resulting stream
+     entry contains the full `*List` `responseObject`. Document in the Helm README that
+     downstream rule-matching for collection deletes is a known limitation tracked
+     separately, so operators know what to expect.
 9. Update setup docs and Helm README to describe deployment profiles
    (official-only, official-plus-proxy, additional-only) instead of body parking internals.
 
@@ -340,8 +403,12 @@ orphan bodies.
 
 - Should the operator-facing warning be rate-limited per `(gvr, verb)` to avoid log floods on
   noisy clusters? Likely yes, but the rate-limit shape is a follow-up.
-- Should `deletecollection` get a dedicated emit path that records "deleted by selector"
-  without a per-object body? Out of scope here; tracked separately.
+- How should the consumer turn a `quality=collection` stream entry into Git writes? Two
+  candidate shapes: (a) fan out the `*List` body into one synthetic per-item delete event
+  and route each through the normal pipeline, or (b) commit a single "deleted by selector"
+  record carrying the matched names. Out of scope here; tracked separately. Until that
+  design lands the audit fact is preserved on the stream, but the consumer's git-write
+  step may not act on individual items.
 - Should the body-wait TTL for identity-shallow officials be shorter than the additional-body
   TTL in practice? We start with one shared TTL and only split if data shows we need to.
 

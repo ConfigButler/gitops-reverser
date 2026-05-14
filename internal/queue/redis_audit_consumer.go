@@ -61,6 +61,8 @@ const (
 	consumerRetryDelay = time.Second
 )
 
+var errAuditEventObjectMissing = errors.New("audit event has no requestObject or responseObject")
+
 // AuditEventRouter is the subset of watch.EventRouter used by the consumer.
 // watch.EventRouter satisfies this interface without modification.
 type AuditEventRouter interface {
@@ -348,6 +350,20 @@ func (c *AuditConsumer) routeAuditEvent(
 
 	sanitized, err := extractObject(auditEvent, op, fullAPIVersion, ref.Resource, namespace, name)
 	if err != nil {
+		if errors.Is(err, errAuditEventObjectMissing) {
+			log.Error(nil,
+				"audit event dropped before git routing: missing requestObject/responseObject; "+
+					"install apiservice-audit-proxy or update kube-apiserver audit policy to include bodies",
+				"auditID", auditEvent.AuditID,
+				"gvr", fullAPIVersion+"/"+ref.Resource,
+				"verb", auditEvent.Verb,
+				"namespace", namespace,
+				"name", name,
+				"hasRequestObject", hasAuditObjectRaw(auditEvent.RequestObject),
+				"hasResponseObject", hasAuditObjectRaw(auditEvent.ResponseObject),
+			)
+			return nil
+		}
 		return fmt.Errorf("extracting object for %s/%s: %w", namespace, name, err)
 	}
 	if namespace == "" {
@@ -474,7 +490,9 @@ func extractObject(
 	raw := selectAuditObjectRaw(event, op)
 
 	if len(raw) == 0 {
-		// Fall back to a minimal stub so downstream pipeline always has an object.
+		if !allowsBodylessSingleDelete(event, resource, name) {
+			return nil, errAuditEventObjectMissing
+		}
 		u := &unstructured.Unstructured{}
 		u.SetAPIVersion(apiVersion)
 		u.SetKind(resource)
@@ -489,6 +507,12 @@ func extractObject(
 	}
 
 	return backfillSanitizedIdentity(sanitize.Sanitize(obj), apiVersion, resource, namespace, name), nil
+}
+
+func allowsBodylessSingleDelete(event auditv1.Event, resource, name string) bool {
+	return strings.EqualFold(event.Verb, "delete") &&
+		resource != "" &&
+		name != ""
 }
 
 func selectAuditObjectRaw(event auditv1.Event, op configv1alpha1.OperationType) []byte {
@@ -507,6 +531,10 @@ func firstAuditObjectRaw(objects ...*runtime.Unknown) []byte {
 	}
 
 	return nil
+}
+
+func hasAuditObjectRaw(object *runtime.Unknown) bool {
+	return object != nil && len(object.Raw) > 0
 }
 
 func backfillSanitizedIdentity(

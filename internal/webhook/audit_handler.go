@@ -268,7 +268,11 @@ func (h *AuditHandler) eventForCanonicalStream(
 	auditEvent audit.Event,
 ) (*auditv1.Event, AuditJoinDecision, bool, error) {
 	if h.config.Joiner == nil {
-		emit := hasAuditV1ObjectBody(&auditEventV1) || allowsBodylessDelete(&auditEvent)
+		quality := classifyAuditEventQuality(source, &auditEventV1)
+		addQualityMetric(ctx, source, &auditEventV1, quality)
+		emit := quality == AuditEventQualityComplete ||
+			quality == AuditEventQualityBodyShallowDeletable ||
+			quality == AuditEventQualityCollection
 		return &auditEventV1, AuditJoinDecision{}, emit, nil
 	}
 
@@ -329,7 +333,7 @@ func (h *AuditHandler) commitJoinDecision(ctx context.Context, decision AuditJoi
 	if err := h.config.Joiner.CommitDecision(ctx, decision.AuditID, decision.Result); err != nil {
 		return fmt.Errorf("failed to commit audit event decision %q: %w", decision.AuditID, err)
 	}
-	addEmittedMetric(ctx, decision.Source, decision.Mode, decision.Result)
+	addEmittedMetric(ctx, decision.Source, decision.Result)
 	return nil
 }
 
@@ -427,13 +431,6 @@ func hasAuditV1ObjectBody(event *auditv1.Event) bool {
 
 func hasRuntimeUnknownBody(object *runtime.Unknown) bool {
 	return object != nil && len(object.Raw) > 0
-}
-
-func allowsBodylessDelete(event *audit.Event) bool {
-	return event.Verb == "delete" &&
-		event.ObjectRef != nil &&
-		event.ObjectRef.Resource != "" &&
-		event.ObjectRef.Name != ""
 }
 
 // writeAuditEventToFile writes an audit event to a YAML file for debugging and testing.
