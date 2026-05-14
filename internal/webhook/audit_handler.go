@@ -26,7 +26,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -195,7 +194,12 @@ func (h *AuditHandler) processEvent(ctx context.Context, source AuditSource, aud
 		return err
 	}
 
-	eventToWrite, joinDecision, shouldEmit, err := h.eventForCanonicalStream(ctx, source, auditEventV1, auditEvent)
+	quality := classifyAuditEventQuality(source, &auditEventV1)
+	addQualityMetric(ctx, source, &auditEventV1, quality)
+
+	eventToWrite, joinDecision, shouldEmit, err := h.eventForCanonicalStream(
+		ctx, source, &auditEventV1, auditEvent, quality,
+	)
 	if err != nil || !shouldEmit {
 		return err
 	}
@@ -232,7 +236,7 @@ func (h *AuditHandler) prepareAuditEvent(
 	if err != nil {
 		return audit.Event{}, false, fmt.Errorf("failed to check audit event: %w", err)
 	}
-	h.recordReceivedMetric(ctx, source, auditEvent, process)
+	h.recordReceivedMetric(ctx, source, auditEvent)
 	return auditEvent, process, nil
 }
 
@@ -240,7 +244,6 @@ func (h *AuditHandler) recordReceivedMetric(
 	ctx context.Context,
 	source AuditSource,
 	auditEvent audit.Event,
-	process bool,
 ) {
 	user := effectiveAuditUsername(auditEvent)
 	if auditEvent.ImpersonatedUser != nil {
@@ -257,26 +260,24 @@ func (h *AuditHandler) recordReceivedMetric(
 		attribute.String("gvr", h.extractGVR(&auditEvent)),
 		attribute.String("action", auditEvent.Verb),
 		attribute.String("user", user),
-		attribute.String("processed", strconv.FormatBool(process)),
 	))
 }
 
 func (h *AuditHandler) eventForCanonicalStream(
 	ctx context.Context,
 	source AuditSource,
-	auditEventV1 auditv1.Event,
+	auditEventV1 *auditv1.Event,
 	auditEvent audit.Event,
+	quality AuditEventQuality,
 ) (*auditv1.Event, AuditJoinDecision, bool, error) {
 	if h.config.Joiner == nil {
-		quality := classifyAuditEventQuality(source, &auditEventV1)
-		addQualityMetric(ctx, source, &auditEventV1, quality)
 		emit := quality == AuditEventQualityComplete ||
 			quality == AuditEventQualityBodyShallowDeletable ||
 			quality == AuditEventQualityCollection
-		return &auditEventV1, AuditJoinDecision{}, emit, nil
+		return auditEventV1, AuditJoinDecision{}, emit, nil
 	}
 
-	decision, err := h.config.Joiner.Decide(ctx, source, &auditEventV1)
+	decision, err := h.config.Joiner.Decide(ctx, source, auditEventV1, quality)
 	if err != nil {
 		return nil, AuditJoinDecision{}, false, fmt.Errorf(
 			"failed to decide audit event %q: %w",
@@ -288,7 +289,7 @@ func (h *AuditHandler) eventForCanonicalStream(
 	case AuditJoinActionParked:
 		logAuditJoinSkip("Parked additional audit body", source, h.extractGVR(&auditEvent), auditEvent.AuditID)
 		return nil, decision, false, nil
-	case AuditJoinActionDropDuplicate:
+	case AuditJoinActionDrop:
 		logAuditJoinSkip(
 			"Dropped audit event before canonical stream enqueue",
 			source,

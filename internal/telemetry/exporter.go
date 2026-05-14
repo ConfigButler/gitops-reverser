@@ -77,14 +77,10 @@ var (
 	AuditJoinEmittedTotal metric.Int64Counter
 	// AuditJoinDuplicateDroppedTotal counts audit events dropped because a decision already exists.
 	AuditJoinDuplicateDroppedTotal metric.Int64Counter
-	// AuditJoinBodyMissTotal counts official audit events that had no parked body contribution.
-	AuditJoinBodyMissTotal metric.Int64Counter
+	// AuditShallowDroppedTotal counts identity-shallow officials dropped because no parked body was available.
+	AuditShallowDroppedTotal metric.Int64Counter
 	// AuditJoinBodyLateTotal counts additional bodies that arrived after a canonical decision.
 	AuditJoinBodyLateTotal metric.Int64Counter
-	// AuditJoinBodyOrphanTotal counts parked additional bodies that expired without an official event.
-	AuditJoinBodyOrphanTotal metric.Int64Counter
-	// AuditShallowDroppedTotal counts shallow events dropped without a canonical stream write.
-	AuditShallowDroppedTotal metric.Int64Counter
 	// SecretEncryptionAttemptsTotal counts total Secret encryption attempts.
 	SecretEncryptionAttemptsTotal metric.Int64Counter
 	// SecretEncryptionSuccessTotal counts successful Secret encryptions.
@@ -150,10 +146,8 @@ func InitOTLPExporter(_ context.Context) (func(context.Context) error, error) {
 		{"gitopsreverser_audit_join_parked_total", &AuditJoinParkedTotal},
 		{"gitopsreverser_audit_join_emitted_total", &AuditJoinEmittedTotal},
 		{"gitopsreverser_audit_join_duplicate_dropped_total", &AuditJoinDuplicateDroppedTotal},
-		{"gitopsreverser_audit_join_body_miss_total", &AuditJoinBodyMissTotal},
-		{"gitopsreverser_audit_join_body_late_total", &AuditJoinBodyLateTotal},
-		{"gitopsreverser_audit_join_body_orphan_total", &AuditJoinBodyOrphanTotal},
 		{"gitopsreverser_audit_shallow_dropped_total", &AuditShallowDroppedTotal},
+		{"gitopsreverser_audit_join_body_late_total", &AuditJoinBodyLateTotal},
 		{"gitopsreverser_secret_encryption_attempts_total", &SecretEncryptionAttemptsTotal},
 		{"gitopsreverser_secret_encryption_success_total", &SecretEncryptionSuccessTotal},
 		{"gitopsreverser_secret_encryption_failures_total", &SecretEncryptionFailuresTotal},

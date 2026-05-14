@@ -44,8 +44,6 @@ const (
 	// AuditSourceAdditional identifies events received from the supplementary audit webhook.
 	AuditSourceAdditional AuditSource = "additional"
 
-	auditBodySourceProxy = "apiservice-audit-proxy"
-
 	defaultAuditEventBodyTTL     = 5 * time.Minute
 	defaultAuditEventDecisionTTL = time.Hour
 )
@@ -78,8 +76,8 @@ const (
 	AuditJoinActionParked AuditJoinAction = iota
 	// AuditJoinActionEmit asks the handler to enqueue Event and then commit or release the decision.
 	AuditJoinActionEmit
-	// AuditJoinActionDropDuplicate acknowledges an event that should not be emitted.
-	AuditJoinActionDropDuplicate
+	// AuditJoinActionDrop acknowledges an event that must not reach the canonical stream.
+	AuditJoinActionDrop
 )
 
 // AuditJoinResult is stored on committed decisions and emitted as a metric label.
@@ -104,19 +102,19 @@ type AuditJoinDecision struct {
 }
 
 // AuditEventJoiner decides whether incoming audit events should park, emit, or drop.
+// Callers classify quality once and pass it in; the joiner does not re-classify.
 type AuditEventJoiner interface {
-	Decide(ctx context.Context, source AuditSource, event *auditv1.Event) (AuditJoinDecision, error)
+	Decide(ctx context.Context, source AuditSource, event *auditv1.Event, quality AuditEventQuality) (AuditJoinDecision, error)
 	CommitDecision(ctx context.Context, auditID string, result AuditJoinResult) error
 	ReleaseDecision(ctx context.Context, auditID string) error
 }
 
 // AuditBodyEnvelope is the parked contribution shape stored under audit:body:v1:<auditID>.
+// Only additional-source bodies are ever parked under the simplified joiner.
 type AuditBodyEnvelope struct {
 	Version           int                      `json:"v"`
 	AuditID           string                   `json:"auditID"`
-	Source            string                   `json:"source"`
 	ReceivedAt        metav1.Time              `json:"receivedAt"`
-	Event             *auditv1.Event           `json:"event,omitempty"`
 	RequestObject     *runtime.RawExtension    `json:"requestObject,omitempty"`
 	ResponseObject    *runtime.RawExtension    `json:"responseObject,omitempty"`
 	ObjectRef         *auditv1.ObjectReference `json:"objectRef,omitempty"`
@@ -188,10 +186,13 @@ func NewRedisAuditEventJoiner(cfg RedisAuditJoinerConfig) (*RedisAuditEventJoine
 }
 
 // Decide examines an event and, for emitted events, claims the audit ID before enqueueing.
+// Officials never park: an identity-shallow official with no matching parked body drops
+// synchronously with audit_shallow_dropped_total + a WARN log.
 func (j *RedisAuditEventJoiner) Decide(
 	ctx context.Context,
 	source AuditSource,
 	event *auditv1.Event,
+	quality AuditEventQuality,
 ) (AuditJoinDecision, error) {
 	if event == nil {
 		return AuditJoinDecision{}, errors.New("audit event is nil")
@@ -201,18 +202,15 @@ func (j *RedisAuditEventJoiner) Decide(
 		return AuditJoinDecision{}, errors.New("auditID cannot be empty")
 	}
 
-	quality := classifyAuditEventQuality(source, event)
-	addQualityMetric(ctx, source, event, quality)
-
 	if j.additionalOnly {
 		return j.claimForEmit(ctx, source, event, AuditJoinResultAdditionalOnly)
 	}
 
 	if source == AuditSourceAdditional {
-		return j.handleAdditionalWait(ctx, event, quality)
+		return j.handleAdditional(ctx, event, quality)
 	}
 
-	return j.claimOfficialWait(ctx, event, quality)
+	return j.handleOfficial(ctx, event, quality)
 }
 
 // CommitDecision promotes a claimed decision to emitted after the canonical stream write succeeds.
@@ -260,7 +258,7 @@ func (j *RedisAuditEventJoiner) claimForEmit(
 	}
 	if !claimed {
 		addDuplicateMetric(ctx, "decision_exists")
-		return AuditJoinDecision{Action: AuditJoinActionDropDuplicate}, nil
+		return AuditJoinDecision{Action: AuditJoinActionDrop}, nil
 	}
 	return AuditJoinDecision{
 		Action:  AuditJoinActionEmit,
@@ -271,34 +269,32 @@ func (j *RedisAuditEventJoiner) claimForEmit(
 	}, nil
 }
 
-func (j *RedisAuditEventJoiner) claimOfficialWait(
+func (j *RedisAuditEventJoiner) handleOfficial(
 	ctx context.Context,
 	event *auditv1.Event,
 	quality AuditEventQuality,
 ) (AuditJoinDecision, error) {
 	auditID := string(event.AuditID)
 
-	envelope, found, err := j.peekBody(ctx, auditID)
+	envelope, hasBody, err := j.peekBody(ctx, auditID)
 	if err != nil {
 		return AuditJoinDecision{}, err
 	}
-	if found && envelope.Source == string(AuditSourceOfficial) {
-		addDuplicateMetric(ctx, "parked_official_exists")
-		return AuditJoinDecision{Action: AuditJoinActionDropDuplicate}, nil
-	}
-	if !found && quality == AuditEventQualityIdentityShallow {
-		if err := j.parkBody(ctx, AuditSourceOfficial, event); err != nil {
-			return AuditJoinDecision{}, err
-		}
-		addParkedMetric(ctx, "official_shallow")
+
+	if !hasBody && quality == AuditEventQualityIdentityShallow {
+		addShallowDroppedMetric(ctx, event)
 		logf.Log.WithName("audit-joiner").Info(
-			"Parked shallow official audit event until additional body arrives",
+			"audit shallow event dropped: install apiservice-audit-proxy or update kube-apiserver "+
+				"audit policy to include request/response bodies",
 			"auditID", auditID,
 			"gvr", auditEventGVR(event),
 			"verb", event.Verb,
+			"source", string(AuditSourceOfficial),
 			"quality", quality,
+			"hasRequestObject", hasRuntimeUnknownBody(event.RequestObject),
+			"hasResponseObject", hasRuntimeUnknownBody(event.ResponseObject),
 		)
-		return AuditJoinDecision{Action: AuditJoinActionParked}, nil
+		return AuditJoinDecision{Action: AuditJoinActionDrop}, nil
 	}
 
 	claimed, err := j.claimDecision(ctx, auditID)
@@ -307,32 +303,33 @@ func (j *RedisAuditEventJoiner) claimOfficialWait(
 	}
 	if !claimed {
 		addDuplicateMetric(ctx, "decision_exists")
-		return AuditJoinDecision{Action: AuditJoinActionDropDuplicate}, nil
+		return AuditJoinDecision{Action: AuditJoinActionDrop}, nil
 	}
 
-	result := AuditJoinResultAsIs
-	emitEvent := event
-	if found {
+	if hasBody {
 		if err := j.deleteBody(ctx, auditID); err != nil {
 			logf.Log.WithName("audit-joiner").
 				Error(err, "Failed to delete merged parked audit body", "auditID", auditID)
 		}
-		emitEvent = mergeParkedBody(event, envelope)
-		result = AuditJoinResultMerged
-	} else if quality == AuditEventQualityIdentityShallow {
-		addBodyMissMetric(ctx, event)
+		return AuditJoinDecision{
+			Action:  AuditJoinActionEmit,
+			Event:   mergeParkedBody(event, envelope),
+			AuditID: auditID,
+			Result:  AuditJoinResultMerged,
+			Source:  AuditSourceOfficial,
+		}, nil
 	}
 
 	return AuditJoinDecision{
 		Action:  AuditJoinActionEmit,
-		Event:   emitEvent,
+		Event:   event,
 		AuditID: auditID,
-		Result:  result,
+		Result:  AuditJoinResultAsIs,
 		Source:  AuditSourceOfficial,
 	}, nil
 }
 
-func (j *RedisAuditEventJoiner) handleAdditionalWait(
+func (j *RedisAuditEventJoiner) handleAdditional(
 	ctx context.Context,
 	event *auditv1.Event,
 	quality AuditEventQuality,
@@ -346,60 +343,27 @@ func (j *RedisAuditEventJoiner) handleAdditionalWait(
 			"verb", event.Verb,
 			"quality", quality,
 		)
-		return AuditJoinDecision{Action: AuditJoinActionDropDuplicate}, nil
+		return AuditJoinDecision{Action: AuditJoinActionDrop}, nil
 	}
 
-	envelope, found, err := j.peekBody(ctx, auditID)
+	state, exists, err := j.peekDecisionState(ctx, auditID)
 	if err != nil {
 		return AuditJoinDecision{}, err
 	}
-	if found && envelope.Source == string(AuditSourceOfficial) {
-		return j.claimAdditionalWithOfficial(ctx, event, envelope)
-	}
-	if exists, err := j.decisionExists(ctx, auditID); err != nil {
-		return AuditJoinDecision{}, err
-	} else if exists {
-		addBodyLateMetric(ctx, event)
-		return AuditJoinDecision{Action: AuditJoinActionDropDuplicate}, nil
+	if exists {
+		if state == "emitted" {
+			addBodyLateMetric(ctx, event)
+		} else {
+			addDuplicateMetric(ctx, "in_flight_claim")
+		}
+		return AuditJoinDecision{Action: AuditJoinActionDrop}, nil
 	}
 
-	if err := j.parkBody(ctx, AuditSourceAdditional, event); err != nil {
+	if err := j.parkBody(ctx, event); err != nil {
 		return AuditJoinDecision{}, err
 	}
 	addParkedMetric(ctx, "additional_body")
 	return AuditJoinDecision{Action: AuditJoinActionParked}, nil
-}
-
-func (j *RedisAuditEventJoiner) claimAdditionalWithOfficial(
-	ctx context.Context,
-	event *auditv1.Event,
-	envelope AuditBodyEnvelope,
-) (AuditJoinDecision, error) {
-	auditID := string(event.AuditID)
-	claimed, err := j.claimDecision(ctx, auditID)
-	if err != nil {
-		return AuditJoinDecision{}, err
-	}
-	if !claimed {
-		addDuplicateMetric(ctx, "decision_exists")
-		return AuditJoinDecision{Action: AuditJoinActionDropDuplicate}, nil
-	}
-	if err := j.deleteBody(ctx, auditID); err != nil {
-		logf.Log.WithName("audit-joiner").Error(err, "Failed to delete merged parked audit body", "auditID", auditID)
-	}
-
-	official := envelope.Event
-	if official == nil {
-		official = event
-	}
-	additionalEnvelope := bodyEnvelopeFromEvent(event, j.now().UTC(), AuditSourceAdditional)
-	return AuditJoinDecision{
-		Action:  AuditJoinActionEmit,
-		Event:   mergeParkedBody(official, additionalEnvelope),
-		AuditID: auditID,
-		Result:  AuditJoinResultMerged,
-		Source:  AuditSourceOfficial,
-	}, nil
 }
 
 func (j *RedisAuditEventJoiner) claimDecision(ctx context.Context, auditID string) (bool, error) {
@@ -426,16 +390,23 @@ func (j *RedisAuditEventJoiner) claimDecision(ctx context.Context, auditID strin
 	return true, nil
 }
 
-func (j *RedisAuditEventJoiner) decisionExists(ctx context.Context, auditID string) (bool, error) {
-	count, err := j.client.Exists(ctx, decisionKey(auditID)).Result()
-	if err != nil {
-		return false, fmt.Errorf("failed to check audit decision for %q: %w", auditID, err)
+func (j *RedisAuditEventJoiner) peekDecisionState(ctx context.Context, auditID string) (string, bool, error) {
+	raw, err := j.client.Get(ctx, decisionKey(auditID)).Bytes()
+	if errors.Is(err, redis.Nil) {
+		return "", false, nil
 	}
-	return count > 0, nil
+	if err != nil {
+		return "", false, fmt.Errorf("failed to read audit decision for %q: %w", auditID, err)
+	}
+	var envelope auditDecisionEnvelope
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return "", false, fmt.Errorf("failed to decode audit decision for %q: %w", auditID, err)
+	}
+	return envelope.State, true, nil
 }
 
-func (j *RedisAuditEventJoiner) parkBody(ctx context.Context, source AuditSource, event *auditv1.Event) error {
-	envelope := bodyEnvelopeFromEvent(event, j.now().UTC(), source)
+func (j *RedisAuditEventJoiner) parkBody(ctx context.Context, event *auditv1.Event) error {
+	envelope := bodyEnvelopeFromEvent(event, j.now().UTC())
 	payload, err := json.Marshal(envelope)
 	if err != nil {
 		return fmt.Errorf("failed to marshal parked audit body for %q: %w", event.AuditID, err)
@@ -465,11 +436,10 @@ func (j *RedisAuditEventJoiner) deleteBody(ctx context.Context, auditID string) 
 	return j.client.Del(ctx, bodyKey(auditID)).Err()
 }
 
-func bodyEnvelopeFromEvent(event *auditv1.Event, receivedAt time.Time, source AuditSource) AuditBodyEnvelope {
-	envelope := AuditBodyEnvelope{
+func bodyEnvelopeFromEvent(event *auditv1.Event, receivedAt time.Time) AuditBodyEnvelope {
+	return AuditBodyEnvelope{
 		Version:           1,
 		AuditID:           string(event.AuditID),
-		Source:            string(source),
 		ReceivedAt:        metav1.NewTime(receivedAt),
 		RequestObject:     rawExtensionFromUnknown(event.RequestObject),
 		ResponseObject:    rawExtensionFromUnknown(event.ResponseObject),
@@ -478,13 +448,6 @@ func bodyEnvelopeFromEvent(event *auditv1.Event, receivedAt time.Time, source Au
 		HasRequestObject:  hasRuntimeUnknownBody(event.RequestObject),
 		HasResponseObject: hasRuntimeUnknownBody(event.ResponseObject),
 	}
-	if source == AuditSourceOfficial {
-		envelope.Event = event.DeepCopy()
-	}
-	if source == AuditSourceAdditional {
-		envelope.Source = auditBodySourceProxy
-	}
-	return envelope
 }
 
 func mergeParkedBody(event *auditv1.Event, envelope AuditBodyEnvelope) *auditv1.Event {
@@ -499,10 +462,13 @@ func mergeParkedObjects(merged *auditv1.Event, envelope AuditBodyEnvelope) {
 	if merged.Verb == "delete" || merged.Verb == "deletecollection" {
 		return
 	}
-	if envelope.RequestObject != nil && len(envelope.RequestObject.Raw) > 0 {
+	// Official audit is authority for bodies; parked contribution only fills gaps.
+	if !hasRuntimeUnknownBody(merged.RequestObject) &&
+		envelope.RequestObject != nil && len(envelope.RequestObject.Raw) > 0 {
 		merged.RequestObject = &runtime.Unknown{Raw: append([]byte(nil), envelope.RequestObject.Raw...)}
 	}
-	if envelope.ResponseObject != nil && len(envelope.ResponseObject.Raw) > 0 {
+	if !hasRuntimeUnknownBody(merged.ResponseObject) &&
+		envelope.ResponseObject != nil && len(envelope.ResponseObject.Raw) > 0 {
 		merged.ResponseObject = &runtime.Unknown{Raw: append([]byte(nil), envelope.ResponseObject.Raw...)}
 	}
 }
@@ -654,9 +620,9 @@ func addDuplicateMetric(ctx context.Context, reason string) {
 	}
 }
 
-func addBodyMissMetric(ctx context.Context, event *auditv1.Event) {
-	if telemetry.AuditJoinBodyMissTotal != nil {
-		telemetry.AuditJoinBodyMissTotal.Add(ctx, 1, metric.WithAttributes(
+func addShallowDroppedMetric(ctx context.Context, event *auditv1.Event) {
+	if telemetry.AuditShallowDroppedTotal != nil {
+		telemetry.AuditShallowDroppedTotal.Add(ctx, 1, metric.WithAttributes(
 			attribute.String("gvr", auditEventGVR(event)),
 			attribute.String("action", eventVerb(event)),
 		))
