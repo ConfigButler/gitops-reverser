@@ -104,7 +104,12 @@ type AuditJoinDecision struct {
 // AuditEventJoiner decides whether incoming audit events should park, emit, or drop.
 // Callers classify quality once and pass it in; the joiner does not re-classify.
 type AuditEventJoiner interface {
-	Decide(ctx context.Context, source AuditSource, event *auditv1.Event, quality AuditEventQuality) (AuditJoinDecision, error)
+	Decide(
+		ctx context.Context,
+		source AuditSource,
+		event *auditv1.Event,
+		quality AuditEventQuality,
+	) (AuditJoinDecision, error)
 	CommitDecision(ctx context.Context, auditID string, result AuditJoinResult) error
 	ReleaseDecision(ctx context.Context, auditID string) error
 }

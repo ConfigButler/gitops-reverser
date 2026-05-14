@@ -194,6 +194,13 @@ func (h *AuditHandler) processEvent(ctx context.Context, source AuditSource, aud
 		return err
 	}
 
+	// Only ResponseComplete drives the canonical stream. Earlier stages share the same auditID
+	// and must not claim the dedupe key; if they did, the later ResponseComplete event for the
+	// same auditID would be dropped as a duplicate before reaching Git.
+	if auditEventV1.Stage != auditv1.StageResponseComplete {
+		return nil
+	}
+
 	quality := classifyAuditEventQuality(source, &auditEventV1)
 	addQualityMetric(ctx, source, &auditEventV1, quality)
 

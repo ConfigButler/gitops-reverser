@@ -575,6 +575,12 @@ The official channel is strictly synchronous: every official event either emits 
 order or drops immediately. Only additional bodies park, and only because they arrive earlier
 than the official sibling they're waiting for (see [Timing assumption](#timing-assumption)).
 
+Only `Stage=ResponseComplete` events reach the joiner. kube-apiserver may emit other stages
+(`RequestReceived`, `ResponseStarted`, `Panic`) under the same `auditID`; if those were
+allowed to claim the dedupe key, the later `ResponseComplete` for the same audit ID would be
+silently dropped as a duplicate. The handler filters by stage at the boundary before the
+joiner sees the event.
+
 ### Quality classification
 
 The classifier ([audit_joiner.go:569](internal/webhook/audit_joiner.go#L569)) decides what to do
@@ -680,7 +686,7 @@ should have already kept these out, but the consumer enforces it as defense-in-d
 
 | Flag | Helm value | Default | Meaning |
 | --- | --- | --- | --- |
-| `--audit-event-body-ttl` | `auditEventJoin.bodyTTL` | `5m` | TTL for parked bodies and parked shallow officials |
+| `--audit-event-body-ttl` | `auditEventJoin.bodyTTL` | `5m` | TTL for parked additional bodies waiting for the matching official |
 | `--audit-event-decision-ttl` | `auditEventJoin.decisionTTL` | `1h` | Bounds the dedupe window |
 | `--audit-additional-only` | `auditEventJoin.additionalOnly` | `false` | Treat `/audit-webhook-additional` as canonical |
 
