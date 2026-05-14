@@ -225,13 +225,21 @@ func TestExtractObject_DeleteUsesRequestObject(t *testing.T) {
 	assert.Equal(t, "cm-deleted", got.GetName())
 }
 
-func TestExtractObject_FallbackStubWhenNoRaw(t *testing.T) {
+func TestExtractObject_DropsNonDeleteWhenNoRaw(t *testing.T) {
 	ev := auditv1.Event{} // no RequestObject / ResponseObject
 
-	got, err := extractObject(ev, configv1alpha1.OperationCreate, "v1", "ConfigMap", "default", "cm")
+	_, err := extractObject(ev, configv1alpha1.OperationCreate, "v1", "ConfigMap", "default", "cm")
+	require.ErrorIs(t, err, errAuditEventObjectMissing)
+}
+
+func TestExtractObject_AllowsBodylessSingleDelete(t *testing.T) {
+	ev := auditv1.Event{Verb: "delete"}
+
+	got, err := extractObject(ev, configv1alpha1.OperationDelete, "v1", "configmaps", "default", "cm")
 	require.NoError(t, err)
 	assert.Equal(t, "cm", got.GetName())
 	assert.Equal(t, "default", got.GetNamespace())
+	assert.Equal(t, "configmaps", got.GetKind())
 }
 
 func TestExtractObject_CreateFallsBackToRequestObjectWhenResponseMissing(t *testing.T) {
@@ -656,6 +664,7 @@ func TestProcessMessage_ImpersonatedUserPropagated(t *testing.T) {
 	ev := makeAuditEvent("update", auditv1.StageResponseComplete, "configmaps", "default", "cm")
 	ev.User.Username = "system:serviceaccount:kube-system:replicaset-controller"
 	ev.ImpersonatedUser = &authv1.UserInfo{Username: "real-user"}
+	setAuditResponseObject(t, &ev, "v1", "ConfigMap", "default", "cm")
 
 	pushAuditMessage(t, mr, ev)
 	require.NoError(t, c.readAndProcessBatch(context.Background()))
@@ -728,6 +737,18 @@ func makeAuditEvent(verb string, stage auditv1.Stage, resource, namespace, name 
 	return ev
 }
 
+func setAuditResponseObject(t *testing.T, ev *auditv1.Event, apiVersion, kind, namespace, name string) {
+	t.Helper()
+	obj := &unstructured.Unstructured{}
+	obj.SetAPIVersion(apiVersion)
+	obj.SetKind(kind)
+	obj.SetNamespace(namespace)
+	obj.SetName(name)
+	raw, err := obj.MarshalJSON()
+	require.NoError(t, err)
+	ev.ResponseObject = &runtime.Unknown{Raw: raw}
+}
+
 func makeWatchRule(
 	name string,
 	resources, versions, groups []string,
@@ -774,6 +795,7 @@ func TestProcessMessage_ClusterWatchRuleRoutesAndACKs(t *testing.T) {
 
 	// Cluster-scoped resource: no namespace.
 	ev := makeAuditEvent("create", auditv1.StageResponseComplete, "nodes", "", "node-1")
+	setAuditResponseObject(t, &ev, "v1", "Node", "", "node-1")
 	pushAuditMessage(t, mr, ev)
 
 	require.NoError(t, c.readAndProcessBatch(context.Background()))
@@ -802,6 +824,7 @@ func TestProcessMessage_CustomResourceUsesObjectRefAPIGroup(t *testing.T) {
 	ev := makeAuditEvent("create", auditv1.StageResponseComplete, "icecreamorders", "default", "order-1")
 	ev.ObjectRef.APIGroup = "shop.example.com"
 	ev.ObjectRef.APIVersion = "v1"
+	setAuditResponseObject(t, &ev, "shop.example.com/v1", "IceCreamOrder", "default", "order-1")
 	pushAuditMessage(t, mr, ev)
 
 	require.NoError(t, c.readAndProcessBatch(context.Background()))
@@ -918,6 +941,7 @@ func TestProcessMessage_NamespacedWatchRuleRoutesOwnNamespaceAuditEvent(t *testi
 
 	// Audit event from the same namespace as the WatchRule MUST be routed.
 	ev := makeAuditEvent("update", auditv1.StageResponseComplete, "services", "tilt-playground", "my-svc")
+	setAuditResponseObject(t, &ev, "v1", "Service", "tilt-playground", "my-svc")
 	pushAuditMessage(t, mr, ev)
 
 	require.NoError(t, c.readAndProcessBatch(context.Background()))
@@ -974,6 +998,7 @@ func TestProcessMessage_MixedRules_OnlyClusterWatchRuleMatchesForeignNamespace(t
 
 	// Event from ns-b: WatchRule in ns-a must NOT match, ClusterWatchRule MUST match.
 	ev := makeAuditEvent("create", auditv1.StageResponseComplete, "services", "ns-b", "svc-in-b")
+	setAuditResponseObject(t, &ev, "v1", "Service", "ns-b", "svc-in-b")
 	pushAuditMessage(t, mr, ev)
 
 	require.NoError(t, c.readAndProcessBatch(context.Background()))
@@ -1011,6 +1036,7 @@ func TestRouteTMatchedRules_PartialRouteFailureStillACKs(t *testing.T) {
 	require.NoError(t, c.ensureConsumerGroup(context.Background()))
 
 	ev := makeAuditEvent("update", auditv1.StageResponseComplete, "configmaps", "default", "cm")
+	setAuditResponseObject(t, &ev, "v1", "ConfigMap", "default", "cm")
 	pushAuditMessage(t, mr, ev)
 
 	require.NoError(t, c.readAndProcessBatch(context.Background()))
@@ -1036,6 +1062,7 @@ func TestRunAutoClaimCycle_ReclaimsIdleMessages(t *testing.T) {
 	require.NoError(t, c.ensureConsumerGroup(context.Background()))
 
 	ev := makeAuditEvent("create", auditv1.StageResponseComplete, "configmaps", "default", "cm-1")
+	setAuditResponseObject(t, &ev, "v1", "ConfigMap", "default", "cm-1")
 	pushAuditMessage(t, mr, ev)
 
 	// Read but do NOT ACK — simulates a crashed consumer leaving a pending entry.

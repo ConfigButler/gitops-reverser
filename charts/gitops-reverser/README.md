@@ -177,10 +177,8 @@ nodeSelector:
 | `queue.redis.stream` | Redis stream name for audit events | `gitopsreverser.audit.events.v1` |
 | `queue.redis.maxLen` | Approximate stream max length (`0` disables trim) | `0` |
 | `queue.redis.tls.enabled` | Enable TLS for Redis connection | `false` |
-| `auditEventJoin.mode` | Audit join mode: `wait-official` or `first` | `wait-official` |
-| `auditEventJoin.bodyTTL` | TTL for parked additional audit bodies | `5m` |
+| `auditEventJoin.bodyTTL` | TTL for parked additional audit bodies and shallow official events waiting for a body | `5m` |
 | `auditEventJoin.decisionTTL` | TTL for audit decision dedupe keys | `1h` |
-| `auditEventJoin.bodyParkingAPIGroups` | API groups eligible for additional-body parking | `[]` |
 | `auditEventJoin.additionalOnly` | Treat `/audit-webhook-additional` as canonical | `false` |
 | `servers.metrics.bindAddress` | Metrics listener bind address | `:8080` |
 | `servers.metrics.tls.enabled` | Serve metrics with TLS | `false` |
@@ -213,6 +211,10 @@ Source clusters must target:
 Supplementary audit sources such as `apiservice-audit-proxy` should target:
 
 `https://<service>:9444/audit-webhook-additional`
+
+Every event sent to `/audit-webhook-additional` is eligible to contribute a parked request or response body. No API
+group allowlist is required. Bodyless additional events are dropped as malformed. `deletecollection` audit events are
+preserved in the canonical stream, but per-item Git write fan-out for collection deletes is not implemented yet.
 
 Cluster ID path segments are rejected.
 

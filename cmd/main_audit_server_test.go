@@ -35,8 +35,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/ConfigButler/gitops-reverser/internal/webhook"
 )
 
 func TestParseFlagsWithArgs_Defaults(t *testing.T) {
@@ -59,10 +57,8 @@ func TestParseFlagsWithArgs_Defaults(t *testing.T) {
 	assert.Equal(t, "gitopsreverser.audit.events.v1", cfg.auditRedisStream)
 	assert.Equal(t, int64(0), cfg.auditRedisMaxLen)
 	assert.False(t, cfg.auditRedisTLS)
-	assert.Equal(t, webhook.AuditJoinModeWaitOfficial, cfg.auditEventJoinMode)
 	assert.Equal(t, 5*time.Minute, cfg.auditEventBodyTTL)
 	assert.Equal(t, time.Hour, cfg.auditEventDecisionTTL)
-	assert.Empty(t, cfg.auditEventBodyParkingAPIGroups)
 	assert.False(t, cfg.auditAdditionalOnly)
 	assert.False(t, cfg.zapOpts.Development)
 }
@@ -99,10 +95,8 @@ func TestParseFlagsWithArgs_CustomAuditValues(t *testing.T) {
 		"--audit-redis-stream=gitopsreverser.audit.custom",
 		"--audit-redis-max-len=1000",
 		"--audit-redis-tls",
-		"--audit-event-join-mode=first",
 		"--audit-event-body-ttl=2m",
 		"--audit-event-decision-ttl=30m",
-		"--audit-event-body-parking-api-groups=wardle.example.com,gitops-reverser.io",
 		"--audit-additional-only",
 	}
 
@@ -127,10 +121,8 @@ func TestParseFlagsWithArgs_CustomAuditValues(t *testing.T) {
 	assert.Equal(t, "gitopsreverser.audit.custom", cfg.auditRedisStream)
 	assert.Equal(t, int64(1000), cfg.auditRedisMaxLen)
 	assert.True(t, cfg.auditRedisTLS)
-	assert.Equal(t, webhook.AuditJoinModeFirst, cfg.auditEventJoinMode)
 	assert.Equal(t, 2*time.Minute, cfg.auditEventBodyTTL)
 	assert.Equal(t, 30*time.Minute, cfg.auditEventDecisionTTL)
-	assert.Equal(t, []string{"wardle.example.com", "gitops-reverser.io"}, cfg.auditEventBodyParkingAPIGroups)
 	assert.True(t, cfg.auditAdditionalOnly)
 }
 
@@ -166,10 +158,6 @@ func TestParseFlagsWithArgs_InvalidAuditSettings(t *testing.T) {
 		{
 			name: "invalid redis max len",
 			args: []string{"--audit-redis-max-len=-1"},
-		},
-		{
-			name: "invalid audit event join mode",
-			args: []string{"--audit-event-join-mode=slow"},
 		},
 		{
 			name: "invalid audit event body ttl",

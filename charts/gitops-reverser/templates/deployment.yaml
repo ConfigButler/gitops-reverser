@@ -75,12 +75,8 @@ spec:
             {{- if .Values.queue.redis.tls.enabled }}
             - --audit-redis-tls
             {{- end }}
-            - --audit-event-join-mode={{ .Values.auditEventJoin.mode }}
             - --audit-event-body-ttl={{ .Values.auditEventJoin.bodyTTL }}
             - --audit-event-decision-ttl={{ .Values.auditEventJoin.decisionTTL }}
-            {{- with .Values.auditEventJoin.bodyParkingAPIGroups }}
-            - --audit-event-body-parking-api-groups={{ join "," . }}
-            {{- end }}
             {{- if .Values.auditEventJoin.additionalOnly }}
             - --audit-additional-only
             {{- end }}

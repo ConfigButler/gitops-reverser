@@ -605,7 +605,6 @@ func TestAuditHandler_JoinerReleasesDecisionOnEnqueueFailure(t *testing.T) {
 	joiner := &fakeAuditJoiner{decision: AuditJoinDecision{
 		Action: AuditJoinActionEmit,
 		Result: AuditJoinResultMerged,
-		Mode:   AuditJoinModeWaitOfficial,
 		Source: AuditSourceOfficial,
 	}}
 	handler, err := NewAuditHandler(AuditHandlerConfig{
