@@ -1,6 +1,6 @@
 # Multi-stage Dockerfile for GitOps Reverser
 # Stage 1: CI base image with essential build tools
-FROM golang:1.26.2-bookworm AS ci
+FROM golang:1.26.3-bookworm AS ci
 
 # Avoid warnings by switching to noninteractive
 ENV DEBIAN_FRONTEND=noninteractive
@@ -40,15 +40,15 @@ RUN apt-get update \
 # This devcontainer currently supports amd64 tool downloads only.
 
 ENV PATH="/go/bin:/usr/local/go/bin:${PATH}" \
-    KUBECTL_VERSION=v1.35.3 \
+    KUBECTL_VERSION=v1.36.1 \
     KUSTOMIZE_VERSION=5.8.1 \
-    KUBEBUILDER_VERSION=4.13.1 \
-    GOLANGCI_LINT_VERSION=v2.11.4 \
-    HELM_VERSION=v4.1.4 \
+    KUBEBUILDER_VERSION=4.14.0 \
+    GOLANGCI_LINT_VERSION=v2.12.2 \
+    HELM_VERSION=v4.2.0 \
     K3D_VERSION=v5.8.3 \
-    FLUX_VERSION=2.8.5 \
-    FLUX_OPERATOR_VERSION=0.48.0 \
-    TASK_VERSION=v3.49.1
+    FLUX_VERSION=2.8.6 \
+    FLUX_OPERATOR_VERSION=0.49.0 \
+    TASK_VERSION=v3.50.0
 
 # https://github.com/fluxcd/flux2/releases
 # https://fluxoperator.dev/

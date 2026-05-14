@@ -178,32 +178,43 @@ func TestParseFlagsWithArgs_InvalidAuditSettings(t *testing.T) {
 	}
 }
 
-func TestBuildAuditServeMux_RoutesAuditPaths(t *testing.T) {
+// TestBuildAuditServeMux_DelegatesAuditPathsToHandler asserts mux-level wiring only.
+// The mux registers trailing-slash patterns so that any path under /audit-webhook/ or
+// /audit-webhook-additional/ is delegated to the AuditHandler — which is then responsible
+// for rejecting unknown subpaths (e.g. cluster-ID segments) with HTTP 400. See
+// TestAuditHandler_ServeHTTP and TestAuditSourceFromPath in internal/webhook for the
+// actual rejection assertions.
+func TestBuildAuditServeMux_DelegatesAuditPathsToHandler(t *testing.T) {
+	const delegated = http.StatusAccepted
 	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusAccepted)
+		w.WriteHeader(delegated)
 	})
 
 	mux := buildAuditServeMux(handler)
 
-	req := httptest.NewRequest(http.MethodPost, "/audit-webhook", nil)
-	w := httptest.NewRecorder()
-	mux.ServeHTTP(w, req)
-	assert.Equal(t, http.StatusAccepted, w.Code)
+	cases := []struct {
+		name string
+		path string
+		want int
+	}{
+		{"official endpoint is delegated", "/audit-webhook", delegated},
+		{"additional endpoint is delegated", "/audit-webhook-additional", delegated},
+		{
+			"subpath under /audit-webhook/ is delegated (handler then rejects)",
+			"/audit-webhook/cluster-a",
+			delegated,
+		},
+		{"unrelated path is not registered", "/not-audit", http.StatusNotFound},
+	}
 
-	req = httptest.NewRequest(http.MethodPost, "/audit-webhook-additional", nil)
-	w = httptest.NewRecorder()
-	mux.ServeHTTP(w, req)
-	assert.Equal(t, http.StatusAccepted, w.Code)
-
-	req = httptest.NewRequest(http.MethodPost, "/audit-webhook/cluster-a", nil)
-	w = httptest.NewRecorder()
-	mux.ServeHTTP(w, req)
-	assert.Equal(t, http.StatusAccepted, w.Code)
-
-	req = httptest.NewRequest(http.MethodPost, "/not-audit", nil)
-	w = httptest.NewRecorder()
-	mux.ServeHTTP(w, req)
-	assert.Equal(t, http.StatusNotFound, w.Code)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, tc.path, nil)
+			w := httptest.NewRecorder()
+			mux.ServeHTTP(w, req)
+			assert.Equal(t, tc.want, w.Code)
+		})
+	}
 }
 
 func TestBuildAuditServerAddress(t *testing.T) {
