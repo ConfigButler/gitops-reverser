@@ -1,6 +1,6 @@
 # GitOps Reverser Architecture
 
-> Last updated: April 2026
+> Last updated: May 2026
 
 GitOps Reverser is a Kubernetes operator that observes cluster mutations and writes their resulting
 object state to Git. It reverses the traditional GitOps flow: instead of Git driving the cluster,
@@ -216,7 +216,7 @@ of namespace. All namespace-level filtering must happen inside the operator.
 9. [GitTargetEventStream](internal/reconcile/git_target_event_stream.go) deduplicates by content hash and enqueues to the BranchWorker
 10. [BranchWorker](internal/git/branch_worker.go) buffers events and flushes when the commit window expires, on shutdown, or when the buffer hits the operator's byte cap
 11. [BranchWorker](internal/git/branch_worker.go) converts retained writes into commit plans, executes local commits, and publishes them with [PushAtomic()](internal/git/git_atomic_push.go)
-11. If the remote has diverged: fetch fresh remote state, hard-reset, rebuild from retained pending writes, and retry
+12. If the remote has diverged: fetch fresh remote state, hard-reset, rebuild from retained pending writes, and retry
 
 ---
 
@@ -502,19 +502,236 @@ the design to add explicit cache warm-up before startup reconcile.
 
 ---
 
-## Multi-Cluster Audit Ingestion
+## Audit Ingestion Pipeline
 
-The audit webhook currently accepts source-role paths, not cluster identity paths:
+The audit handler is the seam where everything that wants to drive a Git write enters the system.
+It accepts two semantic source roles, deduplicates by `auditID`, classifies event shape, recovers
+bodies for aggregated API requests, and writes one canonical event per `auditID` to the Redis
+stream.
+
+### What this pipeline exists for
+
+1. **Trustworthy audit identity.** The official kube-apiserver audit event is the authority for
+   who did what, when, and with what response status.
+2. **Unique canonical stream.** Within the decision-TTL window, one `auditID` produces at most
+   one stream entry.
+3. **No silent shallow writes.** A shallow event is either normalized by a matching additional
+   body or dropped — it never produces a stub Git commit.
+4. **Visibility.** Operators see counters for received events, parked bodies, dedupe decisions,
+   join latency, body misses, and late bodies. (Sweeper-driven counters for orphan bodies and
+   shallow drops are not yet wired — see [Known gaps](#known-gaps).)
+5. **Easy setup.** Deployment intent is the only knob; there are no API-group allowlists or
+   join-mode flags to maintain.
+
+### Endpoints
 
 ```
-POST /audit-webhook
-POST /audit-webhook-additional
+POST /audit-webhook              # canonical source: kube-apiserver audit webhook
+POST /audit-webhook-additional   # supplementary body source: apiservice-audit-proxy, etc.
 ```
 
-- **Source**: [internal/webhook/audit_handler.go](internal/webhook/audit_handler.go)
+Both accept `audit.k8s.io/v1 EventList`. Cluster-ID path segments and any trailing slash are
+rejected with `400`. The endpoint chosen by the sender is the source role — there is no in-payload
+marker. See [audit_handler.go:377](internal/webhook/audit_handler.go#L377).
 
-Cluster identity is not modeled in the current audit stream. Multi-cluster support needs a
-first-class source identity design that covers rule matching, metrics cardinality, and file paths.
+Cluster identity is intentionally not modeled in the stream. Multi-cluster support is a separate
+design problem: it needs source registration, rule-match semantics, metrics cardinality rules,
+and file-path semantics together. None of that exists today.
+
+### Deployment modes
+
+| Mode | Posts to /audit-webhook | Posts to /audit-webhook-additional | Notes |
+| --- | --- | --- | --- |
+| Official only | kube-apiserver | — | Core resources only; aggregated-API events arrive shallow |
+| Official + additional | kube-apiserver | `apiservice-audit-proxy` (or similar) | Recommended — recovers aggregated-API bodies |
+| Additional only | — | `apiservice-audit-proxy` | `--audit-additional-only=true`; lower authority |
+
+### Pipeline shape
+
+```mermaid
+flowchart TD
+    KAS[kube-apiserver] -->|official EventList| OFF["/audit-webhook"]
+    PROXY[apiservice-audit-proxy] -->|additional EventList| ADD["/audit-webhook-additional"]
+
+    OFF --> CLS[Classify event quality]
+    ADD --> CLS
+
+    CLS -->|official, complete or deletable or collection<br/>or shallow with parked body| CLM[Claim decision → emit]
+    CLS -->|official, identity_shallow with no parked body| DROP_S[Drop + shallow_dropped + WARN log]
+    CLS -->|additional with body, no committed decision| PARK_A[Park body, wait for official]
+    CLS -->|additional, decision committed| DROP_L[Drop + body_late]
+    CLS -->|malformed additional| DROP_M[Drop with log]
+
+    PARK_A -->|official arrives within TTL| MERGE[Merge → claim → emit]
+    PARK_A -.->|TTL expires silently| ORPHAN[(orphan body, silent)]
+
+    CLM --> STREAM[(Redis stream<br/>gitopsreverser.audit.events.v1)]
+    MERGE --> STREAM
+    STREAM --> CONS[AuditConsumer]
+    CONS --> RULES[Rule match → EventRouter → BranchWorker]
+```
+
+The official channel is strictly synchronous: every official event either emits in arrival
+order or drops immediately. Only additional bodies park, and only because they arrive earlier
+than the official sibling they're waiting for (see [Timing assumption](#timing-assumption)).
+
+### Quality classification
+
+The classifier ([audit_joiner.go:569](internal/webhook/audit_joiner.go#L569)) decides what to do
+based on event shape, not API group:
+
+| Quality | Condition | Treatment |
+| --- | --- | --- |
+| `complete` | Request or response body present | Emit |
+| `body_shallow_deletable` | `verb=delete` with `objectRef.Resource` and `Name` set, no body | Emit (delete carve-out) |
+| `collection` | `verb=deletecollection` with body and `objectRef.Resource` | Emit (forwarded raw; per-item routing is a downstream gap) |
+| `identity_shallow` | No body, missing `objectRef` identity | On official: merge if body is parked; otherwise immediate drop + `audit_shallow_dropped_total` + WARN log |
+| `malformed` | Additional event with no body at all | Drop with log |
+
+Two carve-outs are load-bearing:
+
+- **Bodyless delete with a complete `objectRef`** is kube-apiserver's normal shape for "I deleted
+  X by name." It must emit. The classifier mirrors
+  [allowsBodylessAuditV1Delete](internal/webhook/audit_joiner.go#L589) and the consumer mirrors
+  it again as [allowsBodylessSingleDelete](internal/queue/redis_audit_consumer.go#L512).
+- **`deletecollection`** carries a `*List` response body, not a single object, and is a
+  high-blast-radius operation that must be auditable. The event is forwarded raw. Per-item
+  rule matching from the `*List` body is a known downstream gap, not a reason to drop.
+
+### Joiner state machine
+
+```mermaid
+stateDiagram-v2
+    [*] --> AdditionalParked: additional with body, no committed decision
+    [*] --> EmittedAsIs: official body-rich, no parked body
+    [*] --> EmittedMerged: official body-rich, parked body exists
+    [*] --> EmittedMerged: official identity_shallow, parked body exists
+    [*] --> ShallowDropped: official identity_shallow, no parked body
+    [*] --> DuplicateDropped: official matches committed decision
+    [*] --> BodyLateDropped: additional with body, decision already committed
+
+    AdditionalParked --> EmittedMerged: official arrives within TTL
+    AdditionalParked --> [*]: TTL expires silently (orphan body)
+
+    EmittedAsIs --> [*]
+    EmittedMerged --> [*]
+    ShallowDropped --> [*]
+    DuplicateDropped --> [*]
+    BodyLateDropped --> [*]
+```
+
+### Timing assumption
+
+The "shallow drop is immediate" choice rests on one assumption:
+
+> Events posted to `/audit-webhook-additional` for an `auditID` reach gitops-reverser before
+> the corresponding kube-apiserver event for the same `auditID`.
+
+`apiservice-audit-proxy` emits in line with the request it observed. kube-apiserver's audit
+webhook batches with `--audit-webhook-batch-max-wait` (default 30s). In the steady state the
+proxy has a margin of seconds to minutes.
+
+If the assumption is violated, the cost is: a shallow drop where a parked-shallow design
+would have merged. The corresponding audit fact is logged at WARN and counted in
+`audit_shallow_dropped_total` — operators see the failure, they don't lose it silently.
+
+The single thing to verify in the field is that `apiservice-audit-proxy` does not implement
+its own batching. If it does, we revisit.
+
+The joiner uses two Redis key families:
+
+| Key | Purpose | TTL flag |
+| --- | --- | --- |
+| `audit:body:v1:<auditID>` | Parked additional-source body contribution only | `--audit-event-body-ttl` (default `5m`) |
+| `audit:decision:v1:<auditID>` | Dedupe marker; bounds the "at most one canonical entry" window | `--audit-event-decision-ttl` (default `1h`) |
+
+The handler uses a two-phase contract on the joiner:
+
+1. `Decide` claims the decision key via `SET NX` before any stream write.
+2. On enqueue success, `CommitDecision` promotes the claim to `state=emitted`.
+3. On enqueue failure, `ReleaseDecision` deletes the claim so a retry can claim again.
+
+This is what makes "at most one canonical entry per `auditID`" hold across crashes and retries.
+See [audit_joiner.go](internal/webhook/audit_joiner.go) and
+[audit_handler.go](internal/webhook/audit_handler.go).
+
+### Merge rules
+
+When a parked contribution merges into an official event:
+
+- The official remains authoritative for `auditID`, `level`, `stage`, `requestURI`, `verb`,
+  `user`, `impersonatedUser`, `sourceIPs`, `userAgent`, timestamps, and `responseStatus`.
+- The contribution can fill in `requestObject`, `responseObject`, missing `objectRef` fields
+  (`name`, `namespace`, `uid`, `resourceVersion`), and proxy truncation annotations.
+- For `delete` and `deletecollection`, request/response bodies are not merged — the proxy-side
+  body for deletes is `DeleteOptions`, not the deleted object.
+- The official body wins: parked bodies only fill in when the official body is empty. See
+  [mergeParkedObjects](internal/webhook/audit_joiner.go#L498).
+
+### Consumer-side drop is explicit
+
+The consumer used to emit a stub `apiVersion+kind+namespace+name` object straight into the Git
+pipeline when no body was present. That silent fallback is gone — `extractObject` now returns
+`errAuditEventObjectMissing` and emits a structured warning with copy-pasteable remediation
+([redis_audit_consumer.go:351](internal/queue/redis_audit_consumer.go#L351)). The classifier
+should have already kept these out, but the consumer enforces it as defense-in-depth.
+
+### Settings
+
+| Flag | Helm value | Default | Meaning |
+| --- | --- | --- | --- |
+| `--audit-event-body-ttl` | `auditEventJoin.bodyTTL` | `5m` | TTL for parked bodies and parked shallow officials |
+| `--audit-event-decision-ttl` | `auditEventJoin.decisionTTL` | `1h` | Bounds the dedupe window |
+| `--audit-additional-only` | `auditEventJoin.additionalOnly` | `false` | Treat `/audit-webhook-additional` as canonical |
+
+There is no API-group allowlist and no join-mode flag — both were removed because the endpoint
+already encodes intent and `wait-official` semantics are always correct.
+
+### Metrics
+
+| Metric | Labels | Meaning |
+| --- | --- | --- |
+| `gitopsreverser_audit_events_received_total` | `source`, `gvr`, `action`, `user` | Receive counter |
+| `gitopsreverser_audit_event_quality_total` | `source`, `quality`, `gvr`, `action` | First-class shape classification |
+| `gitopsreverser_audit_join_parked_total` | `parked_kind` | Parked additional bodies (`additional_body` is the only value) |
+| `gitopsreverser_audit_join_emitted_total` | `source`, `result` | Canonical emissions: `as_is`, `merged`, `additional_only` |
+| `gitopsreverser_audit_join_duplicate_dropped_total` | `reason` | Drops from existing decision keys: `decision_exists`, `in_flight_claim` |
+| `gitopsreverser_audit_shallow_dropped_total` | `gvr`, `action` | Identity-shallow officials dropped because no parked body was available |
+| `gitopsreverser_audit_join_body_late_total` | `gvr`, `action` | Additional body arrived after the decision was committed |
+
+Useful alerts: `audit_shallow_dropped_total` non-zero (operator misconfiguration — install
+proxy or update audit policy); `audit_join_duplicate_dropped_total` spikes (likely webhook
+retry storm); sustained `audit_join_body_late_total` (proxy timing slipping past the TTL).
+
+### Operator guidance
+
+A shallow event almost always means one of two things:
+
+- kube-apiserver's audit policy does not request bodies for that resource. See
+  [test/e2e/cluster/audit/policy.yaml](test/e2e/cluster/audit/policy.yaml) for a working policy.
+- The request traversed an aggregated API path where kube-apiserver cannot see the backend body.
+  Install `apiservice-audit-proxy` and point it at `/audit-webhook-additional`.
+
+### Known gaps
+
+These are explicit, tracked follow-ups — not hidden surprises:
+
+- **Orphan additional bodies expire silently.** A parked additional body that never finds
+  an official twin expires on its Redis TTL with no metric and no log. We accept this for
+  simplicity: surfacing it would require a periodic sweeper, and the operational signal —
+  proxy disconnected from official stream — is visible via the `audit_join_body_late_total`
+  pattern and from the proxy side directly. The identity-shallow drop case is *not* silent;
+  it surfaces synchronously via `audit_shallow_dropped_total` + WARN log.
+- **No per-item routing for `deletecollection`.** Collection events reach the canonical stream
+  intact. The consumer's `extractObject` unmarshals the `*List` envelope as a single object,
+  so downstream rule matching may not commit per-item deletes. Forwarding the audit fact is
+  correct; per-item Git fan-out is a separate design.
+- **Merge under two body writers is last-write-wins.** Today only `apiservice-audit-proxy`
+  writes additional bodies. If a future in-process aggregated-API handler also writes, the
+  body store has no source priority. Source-priority merge is deferred.
+- **Multi-cluster identity.** The removed `{clusterID}` path segment was a half-measure.
+  Multi-cluster needs a proper source-identity design across rule matching, metrics cardinality,
+  and file paths.
 
 ---
 
@@ -546,7 +763,7 @@ first-class source identity design that covers rule matching, metrics cardinalit
 | [internal/telemetry/](internal/telemetry/) | OpenTelemetry metrics | |
 | [internal/types/](internal/types/) | Shared domain types | `ResourceIdentifier`, `ResourceReference` |
 | [internal/watch/](internal/watch/) | Dynamic informers + EventRouter | `Manager`, `EventRouter`, `GVR` |
-| [internal/webhook/](internal/webhook/) | Audit ingress handling | `AuditHandler` |
+| [internal/webhook/](internal/webhook/) | Audit ingress handling | `AuditHandler`, `AuditEventJoiner`, `RedisAuditEventJoiner` |
 
 ---
 

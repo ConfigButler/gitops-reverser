@@ -67,6 +67,7 @@ func (j *fakeAuditJoiner) Decide(
 	_ context.Context,
 	_ AuditSource,
 	event *auditv1.Event,
+	_ AuditEventQuality,
 ) (AuditJoinDecision, error) {
 	if j.err != nil {
 		return AuditJoinDecision{}, j.err

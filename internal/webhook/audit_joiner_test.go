@@ -35,12 +35,24 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
+// decide is a small helper that classifies quality the way AuditHandler does, then calls Decide.
+func decide(
+	ctx context.Context,
+	t *testing.T,
+	joiner *RedisAuditEventJoiner,
+	source AuditSource,
+	event *auditv1.Event,
+) (AuditJoinDecision, error) {
+	t.Helper()
+	return joiner.Decide(ctx, source, event, classifyAuditEventQuality(source, event))
+}
+
 func TestRedisAuditEventJoiner_WaitOfficialParksAdditionalBody(t *testing.T) {
 	mr := miniredis.RunT(t)
 	joiner := newTestJoiner(t, mr, false)
 
 	event := testAuditEvent("audit-1", "wardle.example.com", true)
-	decision, err := joiner.Decide(context.Background(), AuditSourceAdditional, &event)
+	decision, err := decide(context.Background(), t, joiner, AuditSourceAdditional, &event)
 	require.NoError(t, err)
 
 	assert.Equal(t, AuditJoinActionParked, decision.Action)
@@ -57,11 +69,11 @@ func TestRedisAuditEventJoiner_WaitOfficialMergesParkedBody(t *testing.T) {
 	additional.ObjectRef.Name = "flunder-a"
 	additional.ObjectRef.Namespace = "team-a"
 	additional.Annotations = map[string]string{"audit.k8s.io/proxy.requestObject.truncated": "true"}
-	_, err := joiner.Decide(ctx, AuditSourceAdditional, &additional)
+	_, err := decide(ctx, t, joiner, AuditSourceAdditional, &additional)
 	require.NoError(t, err)
 
 	official := testAuditEvent("audit-2", "wardle.example.com", false)
-	decision, err := joiner.Decide(ctx, AuditSourceOfficial, &official)
+	decision, err := decide(ctx, t, joiner, AuditSourceOfficial, &official)
 	require.NoError(t, err)
 
 	require.Equal(t, AuditJoinActionEmit, decision.Action)
@@ -85,12 +97,13 @@ func TestRedisAuditEventJoiner_DoesNotMergeDeleteOptionsBody(t *testing.T) {
 	additional := testAuditEvent("audit-delete-1", "wardle.example.com", false)
 	additional.Verb = "delete"
 	additional.RequestObject = &runtime.Unknown{Raw: []byte(`{"propagationPolicy":"Background"}`)}
-	_, err := joiner.Decide(ctx, AuditSourceAdditional, &additional)
+	_, err := decide(ctx, t, joiner, AuditSourceAdditional, &additional)
 	require.NoError(t, err)
 
 	official := testAuditEvent("audit-delete-1", "wardle.example.com", false)
 	official.Verb = "delete"
-	decision, err := joiner.Decide(ctx, AuditSourceOfficial, &official)
+	official.ObjectRef.Name = "flunder-a"
+	decision, err := decide(ctx, t, joiner, AuditSourceOfficial, &official)
 	require.NoError(t, err)
 
 	require.Equal(t, AuditJoinActionEmit, decision.Action)
@@ -99,31 +112,17 @@ func TestRedisAuditEventJoiner_DoesNotMergeDeleteOptionsBody(t *testing.T) {
 	assert.Nil(t, decision.Event.ResponseObject)
 }
 
-func TestRedisAuditEventJoiner_WaitOfficialParksShallowOfficialUntilAdditional(t *testing.T) {
+func TestRedisAuditEventJoiner_ShallowOfficialWithoutParkedBodyDropsImmediately(t *testing.T) {
 	mr := miniredis.RunT(t)
 	joiner := newTestJoiner(t, mr, false)
-	ctx := context.Background()
 
-	official := testAuditEvent("audit-3", "wardle.example.com", false)
-	decision, err := joiner.Decide(ctx, AuditSourceOfficial, &official)
+	official := testAuditEvent("audit-shallow-1", "wardle.example.com", false)
+	decision, err := decide(context.Background(), t, joiner, AuditSourceOfficial, &official)
 	require.NoError(t, err)
 
-	assert.Equal(t, AuditJoinActionParked, decision.Action)
-	assert.True(t, mr.Exists(bodyKey("audit-3")))
-	assert.False(t, mr.Exists(decisionKey("audit-3")))
-
-	additional := testAuditEvent("audit-3", "wardle.example.com", true)
-	additional.ObjectRef.Name = "flunder-a"
-	additional.ObjectRef.Namespace = "team-a"
-	decision, err = joiner.Decide(ctx, AuditSourceAdditional, &additional)
-	require.NoError(t, err)
-
-	assert.Equal(t, AuditJoinActionEmit, decision.Action)
-	assert.Equal(t, AuditJoinResultMerged, decision.Result)
-	require.NotNil(t, decision.Event.RequestObject)
-	assert.Equal(t, "flunder-a", decision.Event.ObjectRef.Name)
-	assert.Equal(t, "team-a", decision.Event.ObjectRef.Namespace)
-	assert.False(t, mr.Exists(bodyKey("audit-3")))
+	assert.Equal(t, AuditJoinActionDrop, decision.Action)
+	assert.False(t, mr.Exists(bodyKey("audit-shallow-1")), "shallow official must not park")
+	assert.False(t, mr.Exists(decisionKey("audit-shallow-1")), "shallow drop must not claim a decision")
 }
 
 func TestRedisAuditEventJoiner_WaitOfficialEmitsNamedOfficialWithoutBody(t *testing.T) {
@@ -134,7 +133,7 @@ func TestRedisAuditEventJoiner_WaitOfficialEmitsNamedOfficialWithoutBody(t *test
 	official.Verb = "delete"
 	official.ObjectRef.Name = "flunder-a"
 	official.ObjectRef.Namespace = "team-a"
-	decision, err := joiner.Decide(context.Background(), AuditSourceOfficial, &official)
+	decision, err := decide(context.Background(), t, joiner, AuditSourceOfficial, &official)
 	require.NoError(t, err)
 
 	assert.Equal(t, AuditJoinActionEmit, decision.Action)
@@ -147,7 +146,7 @@ func TestRedisAuditEventJoiner_AdditionalOnlyEmitsNotAllowlistedAdditional(t *te
 	joiner := newTestJoiner(t, mr, true)
 
 	event := testAuditEvent("audit-5", "unexpected.example.com", true)
-	decision, err := joiner.Decide(context.Background(), AuditSourceAdditional, &event)
+	decision, err := decide(context.Background(), t, joiner, AuditSourceAdditional, &event)
 	require.NoError(t, err)
 
 	assert.Equal(t, AuditJoinActionEmit, decision.Action)
@@ -159,7 +158,7 @@ func TestRedisAuditEventJoiner_ParksAdditionalForAnyAPIGroup(t *testing.T) {
 	joiner := newTestJoiner(t, mr, false)
 
 	event := testAuditEvent("audit-6", "unexpected.example.com", true)
-	decision, err := joiner.Decide(context.Background(), AuditSourceAdditional, &event)
+	decision, err := decide(context.Background(), t, joiner, AuditSourceAdditional, &event)
 	require.NoError(t, err)
 
 	assert.Equal(t, AuditJoinActionParked, decision.Action)
@@ -172,10 +171,10 @@ func TestRedisAuditEventJoiner_DropsAdditionalWithoutBodyAsMalformed(t *testing.
 	joiner := newTestJoiner(t, mr, false)
 
 	event := testAuditEvent("audit-malformed", "wardle.example.com", false)
-	decision, err := joiner.Decide(context.Background(), AuditSourceAdditional, &event)
+	decision, err := decide(context.Background(), t, joiner, AuditSourceAdditional, &event)
 	require.NoError(t, err)
 
-	assert.Equal(t, AuditJoinActionDropDuplicate, decision.Action)
+	assert.Equal(t, AuditJoinActionDrop, decision.Action)
 	assert.False(t, mr.Exists(bodyKey("audit-malformed")))
 	assert.False(t, mr.Exists(decisionKey("audit-malformed")))
 }
@@ -192,22 +191,39 @@ func TestClassifyAuditEventQuality_DeleteCollectionFixture(t *testing.T) {
 	assert.Contains(t, string(event.ResponseObject.Raw), "ConfigMapList")
 }
 
+func TestRedisAuditEventJoiner_CollectionEventEmitsAsIsWithListBody(t *testing.T) {
+	mr := miniredis.RunT(t)
+	joiner := newTestJoiner(t, mr, false)
+
+	raw, err := os.ReadFile("testdata/audit-events/config-deletecollection.yaml")
+	require.NoError(t, err)
+	var event auditv1.Event
+	require.NoError(t, yaml.Unmarshal(raw, &event))
+
+	decision, err := decide(context.Background(), t, joiner, AuditSourceOfficial, &event)
+	require.NoError(t, err)
+	require.Equal(t, AuditJoinActionEmit, decision.Action)
+	assert.Equal(t, AuditJoinResultAsIs, decision.Result)
+	require.NotNil(t, decision.Event.ResponseObject)
+	assert.Contains(t, string(decision.Event.ResponseObject.Raw), "ConfigMapList")
+}
+
 func TestRedisAuditEventJoiner_ReleaseDecisionAllowsReclaim(t *testing.T) {
 	mr := miniredis.RunT(t)
 	joiner := newTestJoiner(t, mr, false)
 	ctx := context.Background()
 
 	event := testAuditEvent("audit-7", "wardle.example.com", true)
-	decision, err := joiner.Decide(ctx, AuditSourceOfficial, &event)
+	decision, err := decide(ctx, t, joiner, AuditSourceOfficial, &event)
 	require.NoError(t, err)
 	require.Equal(t, AuditJoinActionEmit, decision.Action)
 
-	duplicate, err := joiner.Decide(ctx, AuditSourceOfficial, &event)
+	duplicate, err := decide(ctx, t, joiner, AuditSourceOfficial, &event)
 	require.NoError(t, err)
-	require.Equal(t, AuditJoinActionDropDuplicate, duplicate.Action)
+	require.Equal(t, AuditJoinActionDrop, duplicate.Action)
 
 	require.NoError(t, joiner.ReleaseDecision(ctx, decision.AuditID))
-	reclaimed, err := joiner.Decide(ctx, AuditSourceOfficial, &event)
+	reclaimed, err := decide(ctx, t, joiner, AuditSourceOfficial, &event)
 	require.NoError(t, err)
 	assert.Equal(t, AuditJoinActionEmit, reclaimed.Action)
 }
@@ -218,7 +234,7 @@ func TestRedisAuditEventJoiner_CommitDecisionStoresEmittedState(t *testing.T) {
 	ctx := context.Background()
 
 	event := testAuditEvent("audit-8", "wardle.example.com", true)
-	decision, err := joiner.Decide(ctx, AuditSourceOfficial, &event)
+	decision, err := decide(ctx, t, joiner, AuditSourceOfficial, &event)
 	require.NoError(t, err)
 	require.NoError(t, joiner.CommitDecision(ctx, decision.AuditID, decision.Result))
 
@@ -230,6 +246,42 @@ func TestRedisAuditEventJoiner_CommitDecisionStoresEmittedState(t *testing.T) {
 	require.NoError(t, json.Unmarshal(raw, &envelope))
 	assert.Equal(t, "emitted", envelope.State)
 	assert.Equal(t, AuditJoinResultAsIs, envelope.Result)
+}
+
+func TestRedisAuditEventJoiner_AdditionalAfterCommittedDecisionIsBodyLate(t *testing.T) {
+	mr := miniredis.RunT(t)
+	joiner := newTestJoiner(t, mr, false)
+	ctx := context.Background()
+
+	official := testAuditEvent("audit-late-1", "wardle.example.com", true)
+	decision, err := decide(ctx, t, joiner, AuditSourceOfficial, &official)
+	require.NoError(t, err)
+	require.Equal(t, AuditJoinActionEmit, decision.Action)
+	require.NoError(t, joiner.CommitDecision(ctx, decision.AuditID, decision.Result))
+
+	additional := testAuditEvent("audit-late-1", "wardle.example.com", true)
+	late, err := decide(ctx, t, joiner, AuditSourceAdditional, &additional)
+	require.NoError(t, err)
+	assert.Equal(t, AuditJoinActionDrop, late.Action)
+	assert.False(t, mr.Exists(bodyKey("audit-late-1")), "late additional must not park")
+}
+
+func TestRedisAuditEventJoiner_AdditionalDuringClaimedDecisionDropsAsInFlight(t *testing.T) {
+	mr := miniredis.RunT(t)
+	joiner := newTestJoiner(t, mr, false)
+	ctx := context.Background()
+
+	// Claim but do not commit; mimics the handler having claimed and being mid-enqueue.
+	official := testAuditEvent("audit-inflight-1", "wardle.example.com", true)
+	decision, err := decide(ctx, t, joiner, AuditSourceOfficial, &official)
+	require.NoError(t, err)
+	require.Equal(t, AuditJoinActionEmit, decision.Action)
+
+	additional := testAuditEvent("audit-inflight-1", "wardle.example.com", true)
+	mid, err := decide(ctx, t, joiner, AuditSourceAdditional, &additional)
+	require.NoError(t, err)
+	assert.Equal(t, AuditJoinActionDrop, mid.Action)
+	assert.False(t, mr.Exists(bodyKey("audit-inflight-1")), "in-flight sibling must not park")
 }
 
 func newTestJoiner(

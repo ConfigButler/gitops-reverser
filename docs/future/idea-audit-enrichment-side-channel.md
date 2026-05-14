@@ -1,9 +1,10 @@
 # Idea: dedicated audit enrichment side-channel
 
-> Status: exploratory — improvement proposal for the broader audit pipeline.
+> Status: superseded — the implemented body-parking pipeline replaces this proposal.
+> See the [Audit Ingestion Pipeline section](../architecture.md#audit-ingestion-pipeline) in
+> the architecture document for the shipped design. This doc is kept as historical context for
+> the design exploration only.
 > Related to but not blocking [design-commit-context-api.md](design-commit-context-api.md).
-> Concrete simplified follow-up:
-> [design-audit-event-body-parking.md](design-audit-event-body-parking.md).
 > Date: 2026-05-07
 
 ## Why this idea exists
