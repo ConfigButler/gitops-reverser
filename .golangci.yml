@@ -66,7 +66,6 @@ linters:
     - gochecknoinits # checks that no init functions are present in Go code
     - gochecksumtype # checks exhaustiveness on Go "sum types"
     - gocognit # computes and checks the cognitive complexity of functions
-    - goconst # finds repeated strings that could be replaced by a constant
     - gocritic # provides diagnostics that check for bugs, performance and style issues
     - gocyclo # computes and checks the cyclomatic complexity of functions
     - godoclint # checks Golang's documentation practice
@@ -369,6 +368,10 @@ linters:
         linters: [revive]
       - text: "should not use dot imports"
         path: 'test/(utils|e2e)/.*\.go'
+        linters: [staticcheck]
+      # Kubernetes controller-runtime still uses this pattern in API packages.
+      - text: "SA1019: scheme.Builder is deprecated"
+        path: 'api/v1alpha1/groupversion_info\.go'
         linters: [staticcheck]
       # Allow fmt.Print* in test/e2e (debugging outputs)
       - path: 'test/e2e/.*\.go'

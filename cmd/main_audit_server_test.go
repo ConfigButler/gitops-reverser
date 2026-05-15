@@ -59,7 +59,6 @@ func TestParseFlagsWithArgs_Defaults(t *testing.T) {
 	assert.False(t, cfg.auditRedisTLS)
 	assert.Equal(t, 5*time.Minute, cfg.auditEventBodyTTL)
 	assert.Equal(t, time.Hour, cfg.auditEventDecisionTTL)
-	assert.False(t, cfg.auditAdditionalOnly)
 	assert.False(t, cfg.zapOpts.Development)
 }
 
@@ -97,7 +96,6 @@ func TestParseFlagsWithArgs_CustomAuditValues(t *testing.T) {
 		"--audit-redis-tls",
 		"--audit-event-body-ttl=2m",
 		"--audit-event-decision-ttl=30m",
-		"--audit-additional-only",
 	}
 
 	cfg, err := parseFlagsWithArgs(fs, args)
@@ -123,7 +121,6 @@ func TestParseFlagsWithArgs_CustomAuditValues(t *testing.T) {
 	assert.True(t, cfg.auditRedisTLS)
 	assert.Equal(t, 2*time.Minute, cfg.auditEventBodyTTL)
 	assert.Equal(t, 30*time.Minute, cfg.auditEventDecisionTTL)
-	assert.True(t, cfg.auditAdditionalOnly)
 }
 
 func TestParseFlagsWithArgs_InvalidAuditSettings(t *testing.T) {

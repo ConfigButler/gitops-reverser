@@ -88,8 +88,6 @@ const (
 	AuditJoinResultAsIs AuditJoinResult = "as_is"
 	// AuditJoinResultMerged means an official event was merged with a parked body contribution.
 	AuditJoinResultMerged AuditJoinResult = "merged"
-	// AuditJoinResultAdditionalOnly means the additional stream is configured as canonical.
-	AuditJoinResultAdditionalOnly AuditJoinResult = "additional_only"
 )
 
 // AuditJoinDecision is the two-phase decision returned to AuditHandler before enqueueing.
@@ -138,23 +136,21 @@ type auditDecisionEnvelope struct {
 
 // RedisAuditJoinerConfig configures Redis-backed audit body parking and decision tracking.
 type RedisAuditJoinerConfig struct {
-	Addr           string
-	Username       string
-	AuthValue      string
-	DB             int
-	TLSEnabled     bool
-	BodyTTL        time.Duration
-	DecisionTTL    time.Duration
-	AdditionalOnly bool
+	Addr        string
+	Username    string
+	AuthValue   string
+	DB          int
+	TLSEnabled  bool
+	BodyTTL     time.Duration
+	DecisionTTL time.Duration
 }
 
 // RedisAuditEventJoiner implements audit body parking with Redis/Valkey keys.
 type RedisAuditEventJoiner struct {
-	client         *redis.Client
-	bodyTTL        time.Duration
-	decisionTTL    time.Duration
-	additionalOnly bool
-	now            func() time.Time
+	client      *redis.Client
+	bodyTTL     time.Duration
+	decisionTTL time.Duration
+	now         func() time.Time
 }
 
 // NewRedisAuditEventJoiner creates a Redis-backed AuditEventJoiner.
@@ -182,11 +178,10 @@ func NewRedisAuditEventJoiner(cfg RedisAuditJoinerConfig) (*RedisAuditEventJoine
 	}
 
 	return &RedisAuditEventJoiner{
-		client:         redis.NewClient(options),
-		bodyTTL:        bodyTTL,
-		decisionTTL:    decisionTTL,
-		additionalOnly: cfg.AdditionalOnly,
-		now:            time.Now,
+		client:      redis.NewClient(options),
+		bodyTTL:     bodyTTL,
+		decisionTTL: decisionTTL,
+		now:         time.Now,
 	}, nil
 }
 
@@ -205,10 +200,6 @@ func (j *RedisAuditEventJoiner) Decide(
 	auditID := string(event.AuditID)
 	if strings.TrimSpace(auditID) == "" {
 		return AuditJoinDecision{}, errors.New("auditID cannot be empty")
-	}
-
-	if j.additionalOnly {
-		return j.claimForEmit(ctx, source, event, AuditJoinResultAdditionalOnly)
 	}
 
 	if source == AuditSourceAdditional {
@@ -248,30 +239,6 @@ func (j *RedisAuditEventJoiner) ReleaseDecision(ctx context.Context, auditID str
 		return fmt.Errorf("failed to release audit decision for %q: %w", auditID, err)
 	}
 	return nil
-}
-
-func (j *RedisAuditEventJoiner) claimForEmit(
-	ctx context.Context,
-	source AuditSource,
-	event *auditv1.Event,
-	result AuditJoinResult,
-) (AuditJoinDecision, error) {
-	auditID := string(event.AuditID)
-	claimed, err := j.claimDecision(ctx, auditID)
-	if err != nil {
-		return AuditJoinDecision{}, err
-	}
-	if !claimed {
-		addDuplicateMetric(ctx, "decision_exists")
-		return AuditJoinDecision{Action: AuditJoinActionDrop}, nil
-	}
-	return AuditJoinDecision{
-		Action:  AuditJoinActionEmit,
-		Event:   event,
-		AuditID: auditID,
-		Result:  result,
-		Source:  source,
-	}, nil
 }
 
 func (j *RedisAuditEventJoiner) handleOfficial(

@@ -198,20 +198,18 @@ func main() {
 		"tls-enabled", cfg.auditRedisTLS)
 
 	auditJoiner, err := webhookhandler.NewRedisAuditEventJoiner(webhookhandler.RedisAuditJoinerConfig{
-		Addr:           cfg.auditRedisAddr,
-		Username:       cfg.auditRedisUsername,
-		AuthValue:      cfg.auditRedisPassword,
-		DB:             cfg.auditRedisDB,
-		TLSEnabled:     cfg.auditRedisTLS,
-		BodyTTL:        cfg.auditEventBodyTTL,
-		DecisionTTL:    cfg.auditEventDecisionTTL,
-		AdditionalOnly: cfg.auditAdditionalOnly,
+		Addr:        cfg.auditRedisAddr,
+		Username:    cfg.auditRedisUsername,
+		AuthValue:   cfg.auditRedisPassword,
+		DB:          cfg.auditRedisDB,
+		TLSEnabled:  cfg.auditRedisTLS,
+		BodyTTL:     cfg.auditEventBodyTTL,
+		DecisionTTL: cfg.auditEventDecisionTTL,
 	})
 	fatalIfErr(err, "unable to initialize audit event joiner")
 	setupLog.Info("Audit event joiner configured",
 		"body-ttl", cfg.auditEventBodyTTL,
-		"decision-ttl", cfg.auditEventDecisionTTL,
-		"additional-only", cfg.auditAdditionalOnly)
+		"decision-ttl", cfg.auditEventDecisionTTL)
 
 	// Register the audit stream consumer. It shares the same Redis config as the
 	// producer but uses a dedicated consumer group and ID (pod-name-scoped so that
@@ -335,7 +333,6 @@ type appConfig struct {
 	auditRedisTLS            bool
 	auditEventBodyTTL        time.Duration
 	auditEventDecisionTTL    time.Duration
-	auditAdditionalOnly      bool
 	branchBufferMaxBytes     int64
 	zapOpts                  zap.Options
 }
@@ -410,8 +407,6 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 		"TTL for parked additional audit body contributions.")
 	fs.DurationVar(&cfg.auditEventDecisionTTL, "audit-event-decision-ttl", defaultAuditEventDecisionTTL,
 		"TTL for audit decision keys that deduplicate canonical stream events.")
-	fs.BoolVar(&cfg.auditAdditionalOnly, "audit-additional-only", false,
-		"Treat /audit-webhook-additional as the canonical source because /audit-webhook is not expected.")
 	branchBufferMaxBytesStr := os.Getenv("BRANCH_BUFFER_MAX_BYTES")
 	if branchBufferMaxBytesStr == "" {
 		branchBufferMaxBytesStr = defaultBranchBufferMaxBytesStr

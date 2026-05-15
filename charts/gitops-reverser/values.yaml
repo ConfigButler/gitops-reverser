@@ -122,8 +122,6 @@ queue:
 auditEventJoin:
   bodyTTL: "5m"
   decisionTTL: "1h"
-  # Set true when only /audit-webhook-additional is configured and no official stream is expected.
-  additionalOnly: false
 
 # TLS certificate management (Kubernetes requires this for API server callbacks)
 certificates:
