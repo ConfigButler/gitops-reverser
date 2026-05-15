@@ -144,7 +144,6 @@ func e2ePreservationSummary() string {
 }
 
 func initE2ECommandContext() {
-	//nolint:gosec // cancel is stored for suite-lifetime interrupt handling
 	e2eExecutionContext, cancel := context.WithCancel(context.Background())
 	e2eCommandCancel = cancel
 	setE2ECommandContext(e2eExecutionContext)

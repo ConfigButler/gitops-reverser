@@ -544,7 +544,7 @@ and file-path semantics together. None of that exists today.
 | --- | --- | --- | --- |
 | Official only | kube-apiserver | — | Core resources only; aggregated-API events arrive shallow |
 | Official + additional | kube-apiserver | `apiservice-audit-proxy` (or similar) | Recommended — recovers aggregated-API bodies |
-| Additional only | — | `apiservice-audit-proxy` | `--audit-additional-only=true`; lower authority |
+| Proxy as canonical | `apiservice-audit-proxy` | — | Point the source at `/audit-webhook` when it should drive the canonical stream |
 
 ### Pipeline shape
 
@@ -688,7 +688,6 @@ should have already kept these out, but the consumer enforces it as defense-in-d
 | --- | --- | --- | --- |
 | `--audit-event-body-ttl` | `auditEventJoin.bodyTTL` | `5m` | TTL for parked additional bodies waiting for the matching official |
 | `--audit-event-decision-ttl` | `auditEventJoin.decisionTTL` | `1h` | Bounds the dedupe window |
-| `--audit-additional-only` | `auditEventJoin.additionalOnly` | `false` | Treat `/audit-webhook-additional` as canonical |
 
 There is no API-group allowlist and no join-mode flag — both were removed because the endpoint
 already encodes intent and `wait-official` semantics are always correct.

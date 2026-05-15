@@ -179,7 +179,6 @@ nodeSelector:
 | `queue.redis.tls.enabled` | Enable TLS for Redis connection | `false` |
 | `auditEventJoin.bodyTTL` | TTL for parked additional audit bodies waiting for the matching official event | `5m` |
 | `auditEventJoin.decisionTTL` | TTL for audit decision dedupe keys | `1h` |
-| `auditEventJoin.additionalOnly` | Treat `/audit-webhook-additional` as canonical | `false` |
 | `servers.metrics.bindAddress` | Metrics listener bind address | `:8080` |
 | `servers.metrics.tls.enabled` | Serve metrics with TLS | `false` |
 | `servers.metrics.tls.certPath` | Metrics TLS certificate mount path | `/tmp/k8s-metrics-server/metrics-server-certs` |

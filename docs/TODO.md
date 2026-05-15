@@ -42,6 +42,11 @@ This file is meant to track the smaller current backlog, not historical notes.
 
 - [ ] Reduce duplication between `WatchRule` and `ClusterWatchRule` code paths where it makes sense.
 
+- [ ] Re-enable the `goconst` linter with a path-scoped exclusion instead of the current repo-wide
+  disable in [.golangci.yml](../.golangci.yml). Exempting `test/` and `internal/git/commit.go`
+  would silence the existing noise (~45 findings, mostly test fixtures) while still catching
+  genuine new string repetition.
+
 - [ ] Preserve more user-facing file structure where feasible.
   Comments, ordering, and other low-noise formatting details are still easy to lose when rewriting
   manifests.

@@ -49,7 +49,7 @@ func decide(
 
 func TestRedisAuditEventJoiner_WaitOfficialParksAdditionalBody(t *testing.T) {
 	mr := miniredis.RunT(t)
-	joiner := newTestJoiner(t, mr, false)
+	joiner := newTestJoiner(t, mr)
 
 	event := testAuditEvent("audit-1", "wardle.example.com", true)
 	decision, err := decide(context.Background(), t, joiner, AuditSourceAdditional, &event)
@@ -62,7 +62,7 @@ func TestRedisAuditEventJoiner_WaitOfficialParksAdditionalBody(t *testing.T) {
 
 func TestRedisAuditEventJoiner_WaitOfficialMergesParkedBody(t *testing.T) {
 	mr := miniredis.RunT(t)
-	joiner := newTestJoiner(t, mr, false)
+	joiner := newTestJoiner(t, mr)
 	ctx := context.Background()
 
 	additional := testAuditEvent("audit-2", "wardle.example.com", true)
@@ -91,7 +91,7 @@ func TestRedisAuditEventJoiner_WaitOfficialMergesParkedBody(t *testing.T) {
 
 func TestRedisAuditEventJoiner_DoesNotMergeDeleteOptionsBody(t *testing.T) {
 	mr := miniredis.RunT(t)
-	joiner := newTestJoiner(t, mr, false)
+	joiner := newTestJoiner(t, mr)
 	ctx := context.Background()
 
 	additional := testAuditEvent("audit-delete-1", "wardle.example.com", false)
@@ -114,7 +114,7 @@ func TestRedisAuditEventJoiner_DoesNotMergeDeleteOptionsBody(t *testing.T) {
 
 func TestRedisAuditEventJoiner_ShallowOfficialWithoutParkedBodyDropsImmediately(t *testing.T) {
 	mr := miniredis.RunT(t)
-	joiner := newTestJoiner(t, mr, false)
+	joiner := newTestJoiner(t, mr)
 
 	official := testAuditEvent("audit-shallow-1", "wardle.example.com", false)
 	decision, err := decide(context.Background(), t, joiner, AuditSourceOfficial, &official)
@@ -127,7 +127,7 @@ func TestRedisAuditEventJoiner_ShallowOfficialWithoutParkedBodyDropsImmediately(
 
 func TestRedisAuditEventJoiner_WaitOfficialEmitsNamedOfficialWithoutBody(t *testing.T) {
 	mr := miniredis.RunT(t)
-	joiner := newTestJoiner(t, mr, false)
+	joiner := newTestJoiner(t, mr)
 
 	official := testAuditEvent("audit-3b", "wardle.example.com", false)
 	official.Verb = "delete"
@@ -141,21 +141,9 @@ func TestRedisAuditEventJoiner_WaitOfficialEmitsNamedOfficialWithoutBody(t *test
 	assert.Nil(t, decision.Event.RequestObject)
 }
 
-func TestRedisAuditEventJoiner_AdditionalOnlyEmitsNotAllowlistedAdditional(t *testing.T) {
-	mr := miniredis.RunT(t)
-	joiner := newTestJoiner(t, mr, true)
-
-	event := testAuditEvent("audit-5", "unexpected.example.com", true)
-	decision, err := decide(context.Background(), t, joiner, AuditSourceAdditional, &event)
-	require.NoError(t, err)
-
-	assert.Equal(t, AuditJoinActionEmit, decision.Action)
-	assert.Equal(t, AuditJoinResultAdditionalOnly, decision.Result)
-}
-
 func TestRedisAuditEventJoiner_ParksAdditionalForAnyAPIGroup(t *testing.T) {
 	mr := miniredis.RunT(t)
-	joiner := newTestJoiner(t, mr, false)
+	joiner := newTestJoiner(t, mr)
 
 	event := testAuditEvent("audit-6", "unexpected.example.com", true)
 	decision, err := decide(context.Background(), t, joiner, AuditSourceAdditional, &event)
@@ -168,7 +156,7 @@ func TestRedisAuditEventJoiner_ParksAdditionalForAnyAPIGroup(t *testing.T) {
 
 func TestRedisAuditEventJoiner_DropsAdditionalWithoutBodyAsMalformed(t *testing.T) {
 	mr := miniredis.RunT(t)
-	joiner := newTestJoiner(t, mr, false)
+	joiner := newTestJoiner(t, mr)
 
 	event := testAuditEvent("audit-malformed", "wardle.example.com", false)
 	decision, err := decide(context.Background(), t, joiner, AuditSourceAdditional, &event)
@@ -193,7 +181,7 @@ func TestClassifyAuditEventQuality_DeleteCollectionFixture(t *testing.T) {
 
 func TestRedisAuditEventJoiner_CollectionEventEmitsAsIsWithListBody(t *testing.T) {
 	mr := miniredis.RunT(t)
-	joiner := newTestJoiner(t, mr, false)
+	joiner := newTestJoiner(t, mr)
 
 	raw, err := os.ReadFile("testdata/audit-events/config-deletecollection.yaml")
 	require.NoError(t, err)
@@ -210,7 +198,7 @@ func TestRedisAuditEventJoiner_CollectionEventEmitsAsIsWithListBody(t *testing.T
 
 func TestRedisAuditEventJoiner_ReleaseDecisionAllowsReclaim(t *testing.T) {
 	mr := miniredis.RunT(t)
-	joiner := newTestJoiner(t, mr, false)
+	joiner := newTestJoiner(t, mr)
 	ctx := context.Background()
 
 	event := testAuditEvent("audit-7", "wardle.example.com", true)
@@ -230,7 +218,7 @@ func TestRedisAuditEventJoiner_ReleaseDecisionAllowsReclaim(t *testing.T) {
 
 func TestRedisAuditEventJoiner_CommitDecisionStoresEmittedState(t *testing.T) {
 	mr := miniredis.RunT(t)
-	joiner := newTestJoiner(t, mr, false)
+	joiner := newTestJoiner(t, mr)
 	ctx := context.Background()
 
 	event := testAuditEvent("audit-8", "wardle.example.com", true)
@@ -250,7 +238,7 @@ func TestRedisAuditEventJoiner_CommitDecisionStoresEmittedState(t *testing.T) {
 
 func TestRedisAuditEventJoiner_AdditionalAfterCommittedDecisionIsBodyLate(t *testing.T) {
 	mr := miniredis.RunT(t)
-	joiner := newTestJoiner(t, mr, false)
+	joiner := newTestJoiner(t, mr)
 	ctx := context.Background()
 
 	official := testAuditEvent("audit-late-1", "wardle.example.com", true)
@@ -268,7 +256,7 @@ func TestRedisAuditEventJoiner_AdditionalAfterCommittedDecisionIsBodyLate(t *tes
 
 func TestRedisAuditEventJoiner_AdditionalDuringClaimedDecisionDropsAsInFlight(t *testing.T) {
 	mr := miniredis.RunT(t)
-	joiner := newTestJoiner(t, mr, false)
+	joiner := newTestJoiner(t, mr)
 	ctx := context.Background()
 
 	// Claim but do not commit; mimics the handler having claimed and being mid-enqueue.
@@ -287,14 +275,12 @@ func TestRedisAuditEventJoiner_AdditionalDuringClaimedDecisionDropsAsInFlight(t 
 func newTestJoiner(
 	t *testing.T,
 	mr *miniredis.Miniredis,
-	additionalOnly bool,
 ) *RedisAuditEventJoiner {
 	t.Helper()
 	joiner, err := NewRedisAuditEventJoiner(RedisAuditJoinerConfig{
-		Addr:           mr.Addr(),
-		BodyTTL:        time.Minute,
-		DecisionTTL:    time.Hour,
-		AdditionalOnly: additionalOnly,
+		Addr:        mr.Addr(),
+		BodyTTL:     time.Minute,
+		DecisionTTL: time.Hour,
 	})
 	require.NoError(t, err)
 	return joiner

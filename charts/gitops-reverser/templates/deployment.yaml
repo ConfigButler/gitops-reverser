@@ -77,9 +77,6 @@ spec:
             {{- end }}
             - --audit-event-body-ttl={{ .Values.auditEventJoin.bodyTTL }}
             - --audit-event-decision-ttl={{ .Values.auditEventJoin.decisionTTL }}
-            {{- if .Values.auditEventJoin.additionalOnly }}
-            - --audit-additional-only
-            {{- end }}
             {{- if .Values.logging.level }}
             - --zap-log-level={{ .Values.logging.level }}
             {{- end }}
