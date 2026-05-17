@@ -203,17 +203,15 @@ See [`values.yaml`](values.yaml) for complete configuration options.
 
 ### Audit Webhook URL Contract
 
-Source clusters must target:
+`https://<service>:9444/audit-webhook` receives the canonical audit events that drive Git writes.
 
-`https://<service>:9444/audit-webhook`
+`https://<service>:9444/audit-webhook-additional` receives events whose request or response bodies
+un-shallow the official events on `/audit-webhook`, matched by `auditID`. Every event sent here is
+eligible to contribute a parked body; no API group allowlist is required. Bodyless additional
+events are dropped as malformed.
 
-Supplementary audit sources such as `apiservice-audit-proxy` should target:
-
-`https://<service>:9444/audit-webhook-additional`
-
-Every event sent to `/audit-webhook-additional` is eligible to contribute a parked request or response body. No API
-group allowlist is required. Bodyless additional events are dropped as malformed. `deletecollection` audit events are
-preserved in the canonical stream, but per-item Git write fan-out for collection deletes is not implemented yet.
+`deletecollection` audit events are preserved in the canonical stream, but per-item Git write
+fan-out for collection deletes is not implemented yet.
 
 Cluster ID path segments are rejected.
 

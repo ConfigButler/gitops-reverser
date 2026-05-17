@@ -532,7 +532,7 @@ POST /audit-webhook-additional   # supplementary body source: apiservice-audit-p
 
 Both accept `audit.k8s.io/v1 EventList`. Cluster-ID path segments and any trailing slash are
 rejected with `400`. The endpoint chosen by the sender is the source role — there is no in-payload
-marker. See [audit_handler.go:377](internal/webhook/audit_handler.go#L377).
+marker. See [audit_handler.go:384](internal/webhook/audit_handler.go#L384).
 
 Cluster identity is intentionally not modeled in the stream. Multi-cluster support is a separate
 design problem: it needs source registration, rule-match semantics, metrics cardinality rules,
@@ -583,7 +583,7 @@ joiner sees the event.
 
 ### Quality classification
 
-The classifier ([audit_joiner.go:569](internal/webhook/audit_joiner.go#L569)) decides what to do
+The classifier ([audit_joiner.go:507](internal/webhook/audit_joiner.go#L507)) decides what to do
 based on event shape, not API group:
 
 | Quality | Condition | Treatment |
@@ -598,7 +598,7 @@ Two carve-outs are load-bearing:
 
 - **Bodyless delete with a complete `objectRef`** is kube-apiserver's normal shape for "I deleted
   X by name." It must emit. The classifier mirrors
-  [allowsBodylessAuditV1Delete](internal/webhook/audit_joiner.go#L589) and the consumer mirrors
+  [allowsBodylessAuditV1Delete](internal/webhook/audit_joiner.go#L527) and the consumer mirrors
   it again as [allowsBodylessSingleDelete](internal/queue/redis_audit_consumer.go#L512).
 - **`deletecollection`** carries a `*List` response body, not a single object, and is a
   high-blast-radius operation that must be auditable. The event is forwarded raw. Per-item
@@ -672,7 +672,7 @@ When a parked contribution merges into an official event:
 - For `delete` and `deletecollection`, request/response bodies are not merged — the proxy-side
   body for deletes is `DeleteOptions`, not the deleted object.
 - The official body wins: parked bodies only fill in when the official body is empty. See
-  [mergeParkedObjects](internal/webhook/audit_joiner.go#L498).
+  [mergeParkedObjects](internal/webhook/audit_joiner.go#L433).
 
 ### Consumer-side drop is explicit
 
@@ -699,7 +699,7 @@ already encodes intent and `wait-official` semantics are always correct.
 | `gitopsreverser_audit_events_received_total` | `source`, `gvr`, `action`, `user` | Receive counter |
 | `gitopsreverser_audit_event_quality_total` | `source`, `quality`, `gvr`, `action` | First-class shape classification |
 | `gitopsreverser_audit_join_parked_total` | `parked_kind` | Parked additional bodies (`additional_body` is the only value) |
-| `gitopsreverser_audit_join_emitted_total` | `source`, `result` | Canonical emissions: `as_is`, `merged`, `additional_only` |
+| `gitopsreverser_audit_join_emitted_total` | `source`, `result` | Canonical emissions: `as_is`, `merged` |
 | `gitopsreverser_audit_join_duplicate_dropped_total` | `reason` | Drops from existing decision keys: `decision_exists`, `in_flight_claim` |
 | `gitopsreverser_audit_shallow_dropped_total` | `gvr`, `action` | Identity-shallow officials dropped because no parked body was available |
 | `gitopsreverser_audit_join_body_late_total` | `gvr`, `action` | Additional body arrived after the decision was committed |
