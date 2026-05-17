@@ -14,6 +14,7 @@ If you only want the supported product docs, start with the files below.
 - [`commit-signing.md`](commit-signing.md): how valid Git signatures map to platform verification
 - [`github-setup-guide.md`](github-setup-guide.md): GitHub repository and credential setup
 - [`sops-age-guide.md`](sops-age-guide.md): Secret encryption with SOPS + age
+- [`aggregated-api-guide.md`](aggregated-api-guide.md): capturing aggregated API server objects
 - [`bi-directional.md`](bi-directional.md): safe shared-path and handoff patterns
 - [`alternatives.md`](alternatives.md): nearby tools and when another approach fits better
 - [`../CONTRIBUTING.md`](../CONTRIBUTING.md): contributor workflow and validation commands

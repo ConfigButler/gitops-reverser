@@ -55,6 +55,9 @@ simpler for other teams.
 `Secret` resources can be encrypted before commit with SOPS + age, and Git commits can be SSH-signed
 through `GitProvider.spec.commit.signing`.
 
+Capturing objects served by an **aggregated API server** needs extra setup — see the
+[aggregated API guide](docs/aggregated-api-guide.md).
+
 ## Boundaries
 
 GitOps Reverser reconstructs clean Kubernetes manifests from live cluster state. It does not
@@ -209,6 +212,7 @@ Start here for the stable docs surface:
 - [`docs/commit-signing.md`](docs/commit-signing.md)
 - [`docs/github-setup-guide.md`](docs/github-setup-guide.md)
 - [`docs/sops-age-guide.md`](docs/sops-age-guide.md)
+- [`docs/aggregated-api-guide.md`](docs/aggregated-api-guide.md)
 - [`docs/bi-directional.md`](docs/bi-directional.md)
 - [`docs/alternatives.md`](docs/alternatives.md)
 
