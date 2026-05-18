@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.23.0](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.22.0...gitops-reverser-v0.23.0) (2026-05-18)
+
+
+### Features
+
+* allow end-user to create explicit commit with specific message (which also ends the automatic commit window). ([abd6a48](https://github.com/ConfigButler/gitops-reverser/commit/abd6a48fed972a1d50d6f7304183766829db0021))
+* deduplicated audit ingestion for aggregated API, removes the option to indicate cluster id ([35443db](https://github.com/ConfigButler/gitops-reverser/commit/35443dbc8062da13feb807017314df5b12a1467e))
+
+
+### Bug Fixes
+
+* resolving a flaky unit test ([04715a2](https://github.com/ConfigButler/gitops-reverser/commit/04715a283db835adac038481e33f2a39283b5656))
+
+
+### Documentation
+
+* And the last claude additions for today ([76191b3](https://github.com/ConfigButler/gitops-reverser/commit/76191b3b22d04c2c4c4944ba8e430390ab95be68))
+* first design ([7d60c22](https://github.com/ConfigButler/gitops-reverser/commit/7d60c223330edb920931de70ece05302b12fe1ed))
+* getting claude to review it again, with some questioning of my own ([e133724](https://github.com/ConfigButler/gitops-reverser/commit/e133724c7e99200d589e8617ac1d65849b0fa42c))
+* getting codex feedback ([a42145c](https://github.com/ConfigButler/gitops-reverser/commit/a42145c1af6bffd36090e1bc0de14bd6d682984a))
+* getting docs in and small fixes and tests ([160640a](https://github.com/ConfigButler/gitops-reverser/commit/160640a18e06ad027fed62f1f2875244b276f0db))
+* Getting next steps in ([ac12d25](https://github.com/ConfigButler/gitops-reverser/commit/ac12d25494ded69094ad037be13e78a0145a7545))
+* getting started hints for aggregated API usage ([7d86434](https://github.com/ConfigButler/gitops-reverser/commit/7d864340cfceb568ea0e86fe3c0cbe5647b44bff))
+* investing in good designs is worth it I guess ([4cb5f45](https://github.com/ConfigButler/gitops-reverser/commit/4cb5f45c318af72286f7c543d063187254ee3d4e))
+* More details in the document ([1b51f1c](https://github.com/ConfigButler/gitops-reverser/commit/1b51f1c6c0041bc31f25e9cc878b5983f344ee35))
+* reworking docs and tuning the new CRD ([8ebceaf](https://github.com/ConfigButler/gitops-reverser/commit/8ebceafb9c6a81bda31a5b6545397db6508d5758))
+* second design ([2146289](https://github.com/ConfigButler/gitops-reverser/commit/21462898095621f4589907e9bbda73ade2e2d762))
+* some claude ([5315440](https://github.com/ConfigButler/gitops-reverser/commit/53154403e1bf078b5f9c506e02b27d6e41108477))
+* Working on plans ([7bb77bb](https://github.com/ConfigButler/gitops-reverser/commit/7bb77bb843cac543696d8471e36e8a3f114c0f52))
+
 ## [0.22.0](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.21.1...gitops-reverser-v0.22.0) (2026-05-05)
 
 
