@@ -30,13 +30,13 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-// The ExplicitCommit suite exercises the "save" signal: an ExplicitCommit
+// The CommitRequest suite exercises the "save" signal: a CommitRequest
 // object finalizes the open commit window for a GitTarget immediately, instead
 // of waiting for the rolling silence timer. The GitProvider is configured with
-// a deliberately long commitWindow so that, without the ExplicitCommit, the
+// a deliberately long commitWindow so that, without the CommitRequest, the
 // edit would not be committed for minutes — observing the commit promptly is
-// what proves the explicit-commit path works.
-var _ = Describe("Explicit Commit", Label("explicit-commit", "audit-redis", "smoke"), Ordered, func() {
+// what proves the commit-request path works.
+var _ = Describe("Commit Request", Label("commit-request", "audit-redis", "smoke"), Ordered, func() {
 	var (
 		testNs        string
 		gitProvName   string
@@ -49,8 +49,8 @@ var _ = Describe("Explicit Commit", Label("explicit-commit", "audit-redis", "smo
 	const commitWindow = "300s"
 
 	BeforeAll(func() {
-		By("creating explicit-commit test namespace and applying git secrets")
-		testNs = testNamespaceFor("explicit-commit")
+		By("creating commit-request test namespace and applying git secrets")
+		testNs = testNamespaceFor("commit-request")
 		_, _ = kubectlRun("create", "namespace", testNs)
 		repo := ensureAuditRedisRepo()
 		_, err := kubectlRunInNamespace(testNs, "apply", "-f", repo.SecretsYAML)
@@ -58,15 +58,15 @@ var _ = Describe("Explicit Commit", Label("explicit-commit", "audit-redis", "smo
 		applySOPSAgeKeyToNamespace(testNs)
 
 		seed := GinkgoRandomSeed()
-		gitProvName = fmt.Sprintf("explicit-commit-gitprovider-%d", seed)
-		gitTargetName = fmt.Sprintf("explicit-commit-gittarget-%d", seed)
-		watchRuleName = fmt.Sprintf("explicit-commit-watchrule-%d", seed)
+		gitProvName = fmt.Sprintf("commit-request-gitprovider-%d", seed)
+		gitTargetName = fmt.Sprintf("commit-request-gittarget-%d", seed)
+		watchRuleName = fmt.Sprintf("commit-request-watchrule-%d", seed)
 
 		By(fmt.Sprintf("creating GitProvider with commitWindow=%s", commitWindow))
 		createGitProviderWithCommitWindow(gitProvName, testNs, repo.GitSecretHTTP, repo.RepoURLHTTP, commitWindow)
 		verifyResourceStatus("gitprovider", gitProvName, testNs, "True", "Ready", "")
 
-		createGitTarget(gitTargetName, testNs, gitProvName, "e2e/explicit-commit-test", "main")
+		createGitTarget(gitTargetName, testNs, gitProvName, "e2e/commit-request-test", "main")
 		verifyResourceStatus("gittarget", gitTargetName, testNs, "True", "Ready", "")
 
 		watchRuleData := struct {
@@ -92,18 +92,18 @@ var _ = Describe("Explicit Commit", Label("explicit-commit", "audit-redis", "smo
 
 	It("finalizes the open commit window on demand and reports the resulting SHA", func() {
 		repo := auditRedisRepo
-		basePath := "e2e/explicit-commit-test"
+		basePath := "e2e/commit-request-test"
 		seed := GinkgoRandomSeed()
-		cmName := fmt.Sprintf("explicit-commit-cm-%d", seed)
-		explicitCommitName := fmt.Sprintf("explicit-commit-save-%d", seed)
-		message := fmt.Sprintf("save: explicit commit from e2e seed %d", seed)
+		cmName := fmt.Sprintf("commit-request-cm-%d", seed)
+		commitRequestName := fmt.Sprintf("commit-request-save-%d", seed)
+		message := fmt.Sprintf("save: commit request from e2e seed %d", seed)
 
 		By("editing a ConfigMap to open a commit window")
 		applyConfigMap(testNs, cmName)
 
 		By("waiting for the ConfigMap audit event to reach the Redis stream")
 		// Confirming the producer side guarantees the edit is observable by the
-		// consumer before the ExplicitCommit's own (later) audit event.
+		// consumer before the CommitRequest's own (later) audit event.
 		valkeyClient := newE2EValkeyClient()
 		defer func() { _ = valkeyClient.Close() }()
 		Eventually(func(g Gomega) {
@@ -129,20 +129,20 @@ var _ = Describe("Explicit Commit", Label("explicit-commit", "audit-redis", "smo
 			g.Expect(statErr).To(HaveOccurred(), "edit should still be pending inside the open commit window")
 		}, 10*time.Second, 2*time.Second).Should(Succeed())
 
-		By("creating an ExplicitCommit to finalize the open window now")
-		applyExplicitCommit(testNs, explicitCommitName, gitTargetName, message)
+		By("creating a CommitRequest to finalize the open window now")
+		applyCommitRequest(testNs, commitRequestName, gitTargetName, message)
 
-		By("waiting for the ExplicitCommit to reach the Committed phase")
+		By("waiting for the CommitRequest to reach the Committed phase")
 		var reportedSHA string
 		Eventually(func(g Gomega) {
-			phase := explicitCommitField(g, testNs, explicitCommitName, "{.status.phase}")
+			phase := commitRequestField(g, testNs, commitRequestName, "{.status.phase}")
 			g.Expect(phase).To(Equal("Committed"),
-				"ExplicitCommit should finalize the window and report Committed")
+				"CommitRequest should finalize the window and report Committed")
 
-			reportedSHA = explicitCommitField(g, testNs, explicitCommitName, "{.status.sha}")
+			reportedSHA = commitRequestField(g, testNs, commitRequestName, "{.status.sha}")
 			g.Expect(reportedSHA).NotTo(BeEmpty(), "status.sha should be populated")
 
-			branch := explicitCommitField(g, testNs, explicitCommitName, "{.status.branch}")
+			branch := commitRequestField(g, testNs, commitRequestName, "{.status.branch}")
 			g.Expect(branch).To(Equal("main"))
 		}, 2*time.Minute, 3*time.Second).Should(Succeed())
 
@@ -166,18 +166,18 @@ var _ = Describe("Explicit Commit", Label("explicit-commit", "audit-redis", "smo
 				"status.sha should match the SHA of the commit on the branch")
 		}, 2*time.Minute, 3*time.Second).Should(Succeed())
 
-		By("cleaning up the test ConfigMap and ExplicitCommit")
+		By("cleaning up the test ConfigMap and CommitRequest")
 		_, _ = kubectlRunInNamespace(testNs, "delete", "configmap", cmName, "--ignore-not-found=true")
-		_, _ = kubectlRunInNamespace(testNs, "delete", "explicitcommit", explicitCommitName, "--ignore-not-found=true")
+		_, _ = kubectlRunInNamespace(testNs, "delete", "commitrequest", commitRequestName, "--ignore-not-found=true")
 	})
 })
 
-// applyExplicitCommit creates an ExplicitCommit object that targets the given
+// applyCommitRequest creates a CommitRequest object that targets the given
 // GitTarget with an optional commit message.
-func applyExplicitCommit(namespace, name, gitTargetName, message string) {
+func applyCommitRequest(namespace, name, gitTargetName, message string) {
 	GinkgoHelper()
 	manifest := fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha1
-kind: ExplicitCommit
+kind: CommitRequest
 metadata:
   name: %s
   namespace: %s
@@ -187,13 +187,13 @@ spec:
   message: %q
 `, name, namespace, gitTargetName, message)
 	_, err := kubectlRunWithStdin(namespace, manifest, "apply", "-f", "-")
-	Expect(err).NotTo(HaveOccurred(), fmt.Sprintf("failed to apply ExplicitCommit %s/%s", namespace, name))
+	Expect(err).NotTo(HaveOccurred(), fmt.Sprintf("failed to apply CommitRequest %s/%s", namespace, name))
 }
 
-// explicitCommitField reads a jsonpath field off an ExplicitCommit object.
-func explicitCommitField(g Gomega, namespace, name, jsonPath string) string {
-	out, err := kubectlRunInNamespace(namespace, "get", "explicitcommit", name,
+// commitRequestField reads a jsonpath field off a CommitRequest object.
+func commitRequestField(g Gomega, namespace, name, jsonPath string) string {
+	out, err := kubectlRunInNamespace(namespace, "get", "commitrequest", name,
 		"-o", "jsonpath="+jsonPath)
-	g.Expect(err).NotTo(HaveOccurred(), fmt.Sprintf("failed to read %s of ExplicitCommit %s", jsonPath, name))
+	g.Expect(err).NotTo(HaveOccurred(), fmt.Sprintf("failed to read %s of CommitRequest %s", jsonPath, name))
 	return strings.TrimSpace(out)
 }

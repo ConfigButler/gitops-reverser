@@ -22,42 +22,42 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// ExplicitCommitPhase enumerates the lifecycle states of an ExplicitCommit.
-type ExplicitCommitPhase string
+// CommitRequestPhase enumerates the lifecycle states of a CommitRequest.
+type CommitRequestPhase string
 
 const (
-	// ExplicitCommitPhaseWaitingForAuditEvent is the initial phase: the object
+	// CommitRequestPhaseWaitingForAuditEvent is the initial phase: the object
 	// was created but gitops-reverser has not yet observed its audit event.
-	ExplicitCommitPhaseWaitingForAuditEvent ExplicitCommitPhase = "WaitingForAuditEvent"
-	// ExplicitCommitPhaseCommitted is terminal: the open commit window was
+	CommitRequestPhaseWaitingForAuditEvent CommitRequestPhase = "WaitingForAuditEvent"
+	// CommitRequestPhaseCommitted is terminal: the open commit window was
 	// finalized and status.branch / status.sha are set.
-	ExplicitCommitPhaseCommitted ExplicitCommitPhase = "Committed"
-	// ExplicitCommitPhaseNoOpenWindow is terminal: the audit event arrived but
+	CommitRequestPhaseCommitted CommitRequestPhase = "Committed"
+	// CommitRequestPhaseNoOpenWindow is terminal: the audit event arrived but
 	// there was no open commit window to finalize. This is not an error.
-	ExplicitCommitPhaseNoOpenWindow ExplicitCommitPhase = "NoOpenWindow"
-	// ExplicitCommitPhaseFailed is terminal: the audit event arrived but the
+	CommitRequestPhaseNoOpenWindow CommitRequestPhase = "NoOpenWindow"
+	// CommitRequestPhaseFailed is terminal: the audit event arrived but the
 	// open commit window could not be finalized (for example a failed local
 	// commit or a saturated branch-worker queue). status.message carries the
 	// failure detail.
-	ExplicitCommitPhaseFailed ExplicitCommitPhase = "Failed"
+	CommitRequestPhaseFailed CommitRequestPhase = "Failed"
 )
 
-// ExplicitCommitGitTargetReference references the GitTarget whose open commit
+// CommitRequestGitTargetReference references the GitTarget whose open commit
 // window should be finalized. The GitTarget must live in the same namespace as
-// the ExplicitCommit.
-type ExplicitCommitGitTargetReference struct {
+// the CommitRequest.
+type CommitRequestGitTargetReference struct {
 	// Name of the referenced GitTarget.
 	// +required
 	// +kubebuilder:validation:MinLength=1
 	Name string `json:"name"`
 }
 
-// ExplicitCommitSpec defines the desired state of ExplicitCommit.
-type ExplicitCommitSpec struct {
+// CommitRequestSpec defines the desired state of CommitRequest.
+type CommitRequestSpec struct {
 	// GitTargetRef names the GitTarget whose open commit window to finalize.
-	// The GitTarget must be in the same namespace as this ExplicitCommit.
+	// The GitTarget must be in the same namespace as this CommitRequest.
 	// +required
-	GitTargetRef ExplicitCommitGitTargetReference `json:"gitTargetRef"`
+	GitTargetRef CommitRequestGitTargetReference `json:"gitTargetRef"`
 
 	// Message is an optional commit message for the finalized commit. When
 	// omitted, the generated grouped-commit message is used. The spec is
@@ -74,12 +74,12 @@ type ExplicitCommitSpec struct {
 	Message string `json:"message,omitempty"`
 }
 
-// ExplicitCommitStatus defines the observed state of ExplicitCommit.
-type ExplicitCommitStatus struct {
-	// Phase is the lifecycle state of this ExplicitCommit.
+// CommitRequestStatus defines the observed state of CommitRequest.
+type CommitRequestStatus struct {
+	// Phase is the lifecycle state of this CommitRequest.
 	// +optional
 	// +kubebuilder:validation:Enum=WaitingForAuditEvent;Committed;NoOpenWindow;Failed
-	Phase ExplicitCommitPhase `json:"phase,omitempty"`
+	Phase CommitRequestPhase `json:"phase,omitempty"`
 
 	// Message is a human-readable detail for the terminal phase. It is set when
 	// Phase is Failed and carries the reason the finalize could not complete.
@@ -107,35 +107,35 @@ type ExplicitCommitStatus struct {
 // +kubebuilder:printcolumn:name="SHA",type=string,JSONPath=`.status.sha`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
-// ExplicitCommit is a one-shot "save" signal: creating one finalizes the open
+// CommitRequest is a one-shot "save" signal: creating one finalizes the open
 // commit window for the referenced GitTarget instead of waiting for the
 // silence timer. The resulting commit SHA is reported back in status.
-type ExplicitCommit struct {
+type CommitRequest struct {
 	metav1.TypeMeta `json:",inline"`
 
 	// metadata is a standard object metadata
 	// +optional
 	metav1.ObjectMeta `json:"metadata,omitempty,omitzero"`
 
-	// spec defines the desired state of ExplicitCommit
+	// spec defines the desired state of CommitRequest
 	// +required
-	Spec ExplicitCommitSpec `json:"spec"`
+	Spec CommitRequestSpec `json:"spec"`
 
-	// status defines the observed state of ExplicitCommit
+	// status defines the observed state of CommitRequest
 	// +optional
-	Status ExplicitCommitStatus `json:"status,omitempty,omitzero"`
+	Status CommitRequestStatus `json:"status,omitempty,omitzero"`
 }
 
 // +kubebuilder:object:root=true
 
-// ExplicitCommitList contains a list of ExplicitCommit.
-type ExplicitCommitList struct {
+// CommitRequestList contains a list of CommitRequest.
+type CommitRequestList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
 
-	Items []ExplicitCommit `json:"items"`
+	Items []CommitRequest `json:"items"`
 }
 
 func init() {
-	SchemeBuilder.Register(&ExplicitCommit{}, &ExplicitCommitList{})
+	SchemeBuilder.Register(&CommitRequest{}, &CommitRequestList{})
 }

@@ -29,70 +29,70 @@ import (
 	configbutleraiv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 )
 
-var _ = Describe("ExplicitCommit controller", func() {
+var _ = Describe("CommitRequest controller", func() {
 	const namespace = "default"
 
-	It("stamps a freshly created ExplicitCommit as WaitingForAuditEvent", func() {
-		explicitCommit := &configbutleraiv1alpha1.ExplicitCommit{
+	It("stamps a freshly created CommitRequest as WaitingForAuditEvent", func() {
+		commitRequest := &configbutleraiv1alpha1.CommitRequest{
 			ObjectMeta: metav1.ObjectMeta{
 				GenerateName: "save-",
 				Namespace:    namespace,
 			},
-			Spec: configbutleraiv1alpha1.ExplicitCommitSpec{
-				GitTargetRef: configbutleraiv1alpha1.ExplicitCommitGitTargetReference{
+			Spec: configbutleraiv1alpha1.CommitRequestSpec{
+				GitTargetRef: configbutleraiv1alpha1.CommitRequestGitTargetReference{
 					Name: "team-a-config",
 				},
 				Message: "increase checkout API memory",
 			},
 		}
-		Expect(k8sClient.Create(ctx, explicitCommit)).To(Succeed())
-		key := client.ObjectKeyFromObject(explicitCommit)
+		Expect(k8sClient.Create(ctx, commitRequest)).To(Succeed())
+		key := client.ObjectKeyFromObject(commitRequest)
 
 		Eventually(func(g Gomega) {
-			var fetched configbutleraiv1alpha1.ExplicitCommit
+			var fetched configbutleraiv1alpha1.CommitRequest
 			g.Expect(k8sClient.Get(ctx, key, &fetched)).To(Succeed())
 			g.Expect(fetched.Status.Phase).To(Equal(
-				configbutleraiv1alpha1.ExplicitCommitPhaseWaitingForAuditEvent))
+				configbutleraiv1alpha1.CommitRequestPhaseWaitingForAuditEvent))
 		}, 10*time.Second, 200*time.Millisecond).Should(Succeed())
 	})
 
 	It("does not overwrite a terminal phase written by the audit consumer", func() {
-		explicitCommit := &configbutleraiv1alpha1.ExplicitCommit{
+		commitRequest := &configbutleraiv1alpha1.CommitRequest{
 			ObjectMeta: metav1.ObjectMeta{
 				GenerateName: "save-",
 				Namespace:    namespace,
 			},
-			Spec: configbutleraiv1alpha1.ExplicitCommitSpec{
-				GitTargetRef: configbutleraiv1alpha1.ExplicitCommitGitTargetReference{
+			Spec: configbutleraiv1alpha1.CommitRequestSpec{
+				GitTargetRef: configbutleraiv1alpha1.CommitRequestGitTargetReference{
 					Name: "team-a-config",
 				},
 			},
 		}
-		Expect(k8sClient.Create(ctx, explicitCommit)).To(Succeed())
-		key := client.ObjectKeyFromObject(explicitCommit)
+		Expect(k8sClient.Create(ctx, commitRequest)).To(Succeed())
+		key := client.ObjectKeyFromObject(commitRequest)
 
 		// Wait for the initial stamp.
 		Eventually(func(g Gomega) {
-			var fetched configbutleraiv1alpha1.ExplicitCommit
+			var fetched configbutleraiv1alpha1.CommitRequest
 			g.Expect(k8sClient.Get(ctx, key, &fetched)).To(Succeed())
 			g.Expect(fetched.Status.Phase).To(Equal(
-				configbutleraiv1alpha1.ExplicitCommitPhaseWaitingForAuditEvent))
+				configbutleraiv1alpha1.CommitRequestPhaseWaitingForAuditEvent))
 		}, 10*time.Second, 200*time.Millisecond).Should(Succeed())
 
 		// Simulate the audit consumer writing the terminal phase.
-		var fetched configbutleraiv1alpha1.ExplicitCommit
+		var fetched configbutleraiv1alpha1.CommitRequest
 		Expect(k8sClient.Get(ctx, key, &fetched)).To(Succeed())
-		fetched.Status.Phase = configbutleraiv1alpha1.ExplicitCommitPhaseCommitted
+		fetched.Status.Phase = configbutleraiv1alpha1.CommitRequestPhaseCommitted
 		fetched.Status.Branch = "main"
 		fetched.Status.SHA = "abc123"
 		Expect(k8sClient.Status().Update(ctx, &fetched)).To(Succeed())
 
 		// The controller must leave the terminal phase intact.
 		Consistently(func(g Gomega) {
-			var checked configbutleraiv1alpha1.ExplicitCommit
+			var checked configbutleraiv1alpha1.CommitRequest
 			g.Expect(k8sClient.Get(ctx, key, &checked)).To(Succeed())
 			g.Expect(checked.Status.Phase).To(Equal(
-				configbutleraiv1alpha1.ExplicitCommitPhaseCommitted))
+				configbutleraiv1alpha1.CommitRequestPhaseCommitted))
 			g.Expect(checked.Status.SHA).To(Equal("abc123"))
 		}, 2*time.Second, 200*time.Millisecond).Should(Succeed())
 	})

@@ -1,19 +1,19 @@
-# Follow-up: `ExplicitCommit` implementation improvements
+# Follow-up: `CommitRequest` implementation improvements
 
 > Status: implemented (2026-05-18). Follow-up to
-> [design-explicit-commit-api.md](design-explicit-commit-api.md).
+> [design-commit-request-api.md](design-commit-request-api.md).
 > Date: 2026-05-18
 
 ## Summary
 
-The first `ExplicitCommit` implementation matches the broad shape of the design: a namespaced CRD
+The first `CommitRequest` implementation matches the broad shape of the design: a namespaced CRD
 is created after user edits, its own audit event triggers a finalize signal, and status reports
 `Committed` or `NoOpenWindow`.
 
 The review found a few correctness gaps where the implementation should become stricter before the
 API is treated as stable. The most important theme is binding the finalize signal to the exact
 intent represented by the audit event: the effective user, the referenced `GitTarget`, and the
-specific `ExplicitCommit` object instance.
+specific `CommitRequest` object instance.
 
 All findings below have since been implemented. One decision diverged from the original proposal:
 finding #2 recommended leaving failed finalizes in `WaitingForAuditEvent` with no `Failed` phase,
@@ -43,7 +43,7 @@ Implemented:
 
 - `git.FinalizeSignal` gained `Author`, `GitTargetName`, and `GitTargetNamespace` fields, with a
   `matchesWindow` helper.
-- `FinalizeGitTargetWindow` takes an `author` argument; `handleExplicitCommit` passes
+- `FinalizeGitTargetWindow` takes an `author` argument; `handleCommitRequest` passes
   `resolveUserInfo(event).Username`.
 - `handleFinalizeSignal` returns `FinalizeNoOpenWindow` and leaves the window open unless the
   current `openWindow` matches all three fields.
@@ -69,7 +69,7 @@ Implemented:
   leaving the object in `WaitingForAuditEvent`). The decision was made because the audit message is
   ACKed exactly once with no redelivery: leaving the object in `WaitingForAuditEvent` would strand
   it silently, with the reason only in logs. `Failed` surfaces the failure in status instead.
-- `ExplicitCommitStatus` gained a `message` field carrying the failure detail. An unknown or empty
+- `CommitRequestStatus` gained a `message` field carrying the failure detail. An unknown or empty
   finalize outcome with no error is also recorded as `Failed` rather than `NoOpenWindow`.
 - Trade-off: a transient `ErrFinalizeQueueFull` now also becomes a terminal `Failed`. This is
   intentional — without redelivery there is no retry, so a terminal phase is more honest than a
@@ -78,20 +78,20 @@ Implemented:
 
 ### 3. Compare the audit object UID before acting
 
-The audit event carries `objectRef.uid`, but the consumer currently reads the `ExplicitCommit` by
+The audit event carries `objectRef.uid`, but the consumer currently reads the `CommitRequest` by
 namespace/name only.
 
 Why this matters:
 
-- An `ExplicitCommit` could be deleted and recreated with the same name before a delayed audit event
+- An `CommitRequest` could be deleted and recreated with the same name before a delayed audit event
   is processed.
 - The stale audit event could then act on the new object's spec and write its status.
 
 Implemented:
 
-- `handleExplicitCommit` compares `event.ObjectRef.UID` (when set) to the fetched object's UID via
+- `handleCommitRequest` compares `event.ObjectRef.UID` (when set) to the fetched object's UID via
   `auditEventMatchesObject`, and logs and skips the event when they differ.
-- `writeExplicitCommitStatus` re-checks the UID in the status-write retry loop.
+- `writeCommitRequestStatus` re-checks the UID in the status-write retry loop.
 - An empty event UID (e.g. a `Metadata`-level audit policy that omits it) is treated as a match.
 
 Using `generateName` makes name reuse unlikely, but the consumer still honors the identity the
@@ -103,12 +103,12 @@ The implementation adds the CRD and RBAC, but install guidance should also refle
 
 Implemented:
 
-- `explicitcommits.configbutler.ai` is listed in the Helm README CRD list, the feature bullet, and
+- `commitrequests.configbutler.ai` is listed in the Helm README CRD list, the feature bullet, and
   both `kubectl delete crd` cleanup commands.
 - The chart's `crds/` directory is synced from `config/crd/bases` by the `helm-sync` task, so the
   new CRD is packaged automatically.
 - The e2e audit policy already captures all `create` events with a catch-all rule; a comment was
-  added noting that, if the catch-all is ever narrowed, `explicitcommits` create events must keep at
+  added noting that, if the catch-all is ever narrowed, `commitrequests` create events must keep at
   least `Metadata`-level capture (the consumer reads the object body from the apiserver).
 
 ## Commit message validation
@@ -179,7 +179,7 @@ If product feedback says this is confusing, add a later CEL validation rule or w
 
 As implemented, the consumer does not re-validate message content: CRD validation owns that
 contract, and the accepted message is used verbatim (only a defensive byte-length cap is applied).
-The `ExplicitCommit` API is `v1alpha1` and the pattern shipped with it, so there are no pre-pattern
+The `CommitRequest` API is `v1alpha1` and the pattern shipped with it, so there are no pre-pattern
 objects to migrate. A finalize that genuinely fails now lands in the terminal `Failed` phase (see
 finding #2) rather than silently staying in `WaitingForAuditEvent`.
 

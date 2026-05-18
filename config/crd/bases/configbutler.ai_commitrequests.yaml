@@ -4,14 +4,14 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.19.0
-  name: explicitcommits.configbutler.ai
+  name: commitrequests.configbutler.ai
 spec:
   group: configbutler.ai
   names:
-    kind: ExplicitCommit
-    listKind: ExplicitCommitList
-    plural: explicitcommits
-    singular: explicitcommit
+    kind: CommitRequest
+    listKind: CommitRequestList
+    plural: commitrequests
+    singular: commitrequest
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
@@ -34,7 +34,7 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          ExplicitCommit is a one-shot "save" signal: creating one finalizes the open
+          CommitRequest is a one-shot "save" signal: creating one finalizes the open
           commit window for the referenced GitTarget instead of waiting for the
           silence timer. The resulting commit SHA is reported back in status.
         properties:
@@ -56,12 +56,12 @@ spec:
           metadata:
             type: object
           spec:
-            description: spec defines the desired state of ExplicitCommit
+            description: spec defines the desired state of CommitRequest
             properties:
               gitTargetRef:
                 description: |-
                   GitTargetRef names the GitTarget whose open commit window to finalize.
-                  The GitTarget must be in the same namespace as this ExplicitCommit.
+                  The GitTarget must be in the same namespace as this CommitRequest.
                 properties:
                   name:
                     description: Name of the referenced GitTarget.
@@ -88,7 +88,7 @@ spec:
             - gitTargetRef
             type: object
           status:
-            description: status defines the observed state of ExplicitCommit
+            description: status defines the observed state of CommitRequest
             properties:
               branch:
                 description: Branch is the Git branch the commit landed on. Set when
@@ -105,7 +105,7 @@ spec:
                 format: date-time
                 type: string
               phase:
-                description: Phase is the lifecycle state of this ExplicitCommit.
+                description: Phase is the lifecycle state of this CommitRequest.
                 enum:
                 - WaitingForAuditEvent
                 - Committed

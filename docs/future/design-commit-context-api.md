@@ -2,8 +2,8 @@
 
 > **Status: superseded.** This document is kept as a detailed reference for the aggregated-API
 > transport and the native-audit-gap analysis. The active design is
-> [design-explicit-commit-api.md](design-explicit-commit-api.md), which renames the kind to
-> `ExplicitCommit`, makes "commit the open window now" the primary behavior, drops the Valkey
+> [design-commit-request-api.md](design-commit-request-api.md), which renames the kind to
+> `CommitRequest`, makes "commit the open window now" the primary behavior, drops the Valkey
 > request stash, and reports the resulting commit SHA in resource status. Read this doc only
 > for the deep-dive on the aggregated-API audit gap; everything else here is reframed there.
 >

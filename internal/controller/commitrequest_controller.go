@@ -29,50 +29,50 @@ import (
 	configbutleraiv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 )
 
-// ExplicitCommitReconciler reconciles ExplicitCommit objects. Its only job is
+// CommitRequestReconciler reconciles CommitRequest objects. Its only job is
 // to stamp the initial WaitingForAuditEvent phase on freshly-created objects;
 // the terminal phase is written by the audit consumer once the object's own
 // audit event has been processed.
-type ExplicitCommitReconciler struct {
+type CommitRequestReconciler struct {
 	client.Client
 
 	Scheme *runtime.Scheme
 }
 
-// +kubebuilder:rbac:groups=configbutler.ai,resources=explicitcommits,verbs=get;list;watch
-// +kubebuilder:rbac:groups=configbutler.ai,resources=explicitcommits/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=configbutler.ai,resources=commitrequests,verbs=get;list;watch
+// +kubebuilder:rbac:groups=configbutler.ai,resources=commitrequests/status,verbs=get;update;patch
 
-// Reconcile stamps the initial phase on an ExplicitCommit. It deliberately
+// Reconcile stamps the initial phase on a CommitRequest. It deliberately
 // does no further work: finalizing the commit window is driven by the audit
 // event, not by the API create.
-func (r *ExplicitCommitReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := logf.FromContext(ctx).WithName("ExplicitCommitReconciler")
+func (r *CommitRequestReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	log := logf.FromContext(ctx).WithName("CommitRequestReconciler")
 
-	var explicitCommit configbutleraiv1alpha1.ExplicitCommit
-	if err := r.Get(ctx, req.NamespacedName, &explicitCommit); err != nil {
+	var commitRequest configbutleraiv1alpha1.CommitRequest
+	if err := r.Get(ctx, req.NamespacedName, &commitRequest); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
 	// Only stamp the initial phase. Once any phase is set — the initial
 	// WaitingForAuditEvent or a terminal phase written by the audit consumer —
 	// this controller has nothing left to do.
-	if explicitCommit.Status.Phase != "" {
+	if commitRequest.Status.Phase != "" {
 		return ctrl.Result{}, nil
 	}
 
-	explicitCommit.Status.Phase = configbutleraiv1alpha1.ExplicitCommitPhaseWaitingForAuditEvent
-	if err := r.Status().Update(ctx, &explicitCommit); err != nil {
+	commitRequest.Status.Phase = configbutleraiv1alpha1.CommitRequestPhaseWaitingForAuditEvent
+	if err := r.Status().Update(ctx, &commitRequest); err != nil {
 		return ctrl.Result{}, err
 	}
 
-	log.V(1).Info("Stamped ExplicitCommit as WaitingForAuditEvent", "name", req.NamespacedName)
+	log.V(1).Info("Stamped CommitRequest as WaitingForAuditEvent", "name", req.NamespacedName)
 	return ctrl.Result{}, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
-func (r *ExplicitCommitReconciler) SetupWithManager(mgr ctrl.Manager) error {
+func (r *CommitRequestReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&configbutleraiv1alpha1.ExplicitCommit{}).
-		Named("explicitcommit").
+		For(&configbutleraiv1alpha1.CommitRequest{}).
+		Named("commitrequest").
 		Complete(r)
 }

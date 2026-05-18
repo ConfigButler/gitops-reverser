@@ -1,4 +1,4 @@
-# Design: `ExplicitCommit` CRD
+# Design: `CommitRequest` CRD
 
 > Status: **implemented**. Supersedes
 > [design-commit-context-api.md](design-commit-context-api.md) (kept as a reference for the
@@ -8,15 +8,15 @@
 >
 > **Implementation note:** the CRD ships under the project's existing API group,
 > so the real `apiVersion` is `configbutler.ai/v1alpha1` (not the illustrative
-> `gitops-reverser.io` used in the examples below). Pieces: `api/v1alpha1/explicitcommit_types.go`,
-> `internal/controller/explicitcommit_controller.go` (stamps the initial phase),
+> `gitops-reverser.io` used in the examples below). Pieces: `api/v1alpha1/commitrequest_types.go`,
+> `internal/controller/commitrequest_controller.go` (stamps the initial phase),
 > `internal/git/finalize_signal.go` + the `FinalizeSignal` branch in
 > `internal/git/branch_worker.go`, `EventRouter.FinalizeGitTargetWindow`, and the
-> `explicitcommits` branch in `internal/queue/explicit_commit.go`.
+> `commitrequests` branch in `internal/queue/commit_request.go`.
 
 ## Summary
 
-`ExplicitCommit` is a small namespaced CRD that acts as a **"save" signal**: a frontend creates
+`CommitRequest` is a small namespaced CRD that acts as a **"save" signal**: a frontend creates
 one after its resource edits, and gitops-reverser finalizes the open commit window for the named
 `GitTarget` now instead of waiting for the silence timer. The resulting commit SHA is reported
 back in the object's status.
@@ -36,9 +36,9 @@ left is a plain CRD plus one new branch in the audit consumer.
 
 ## Behavior
 
-`ExplicitCommit` does exactly one thing:
+`CommitRequest` does exactly one thing:
 
-> When the `ExplicitCommit`'s own audit event is consumed, finalize the open commit window for
+> When the `CommitRequest`'s own audit event is consumed, finalize the open commit window for
 > the authenticated author on the referenced `GitTarget`, using the optional `spec.message` as
 > the commit message, and report the resulting SHA in `status`.
 
@@ -49,7 +49,7 @@ to get the timing right — see [The flow](#the-flow).
 
 ```yaml
 apiVersion: gitops-reverser.io/v1alpha1
-kind: ExplicitCommit
+kind: CommitRequest
 metadata:
   namespace: team-a
   generateName: save-
@@ -84,7 +84,7 @@ audit stream, not by the API create.
 
 1. The frontend issues its resource mutations (`Deployment` patch, `ConfigMap` update, …) and
    awaits them.
-2. The frontend creates an `ExplicitCommit` in its namespace, naming a `GitTarget` and
+2. The frontend creates a `CommitRequest` in its namespace, naming a `GitTarget` and
    optionally a message.
 3. gitops-reverser sets `status.phase: WaitingForAuditEvent` on the new object. (A minimal
    controller stamps this; it does no other work.)
@@ -93,10 +93,10 @@ audit stream, not by the API create.
    `user.username`, and `objectRef` (namespace, name, uid). There is **no aggregated-API gap**.
 5. The audit event flows through the existing audit pipeline. By audit-stream ordering, every
    mutation from step 1 produced an *earlier* audit event — so by the time the consumer reaches
-   the `ExplicitCommit` event, those writes have already been applied to the open window. This
+   the `CommitRequest` event, those writes have already been applied to the open window. This
    is what makes "commit now" safe under parallel writes.
-6. The audit consumer recognizes the `explicitcommits` `create` event. It takes the **author**
-   from `user.username` and reads the `ExplicitCommit` object by `objectRef.namespace`/`name` to
+6. The audit consumer recognizes the `commitrequests` `create` event. It takes the **author**
+   from `user.username` and reads the `CommitRequest` object by `objectRef.namespace`/`name` to
    get `spec.gitTargetRef` and `spec.message`.
 7. It finalizes the open window for that author on that `GitTarget` immediately, producing the
    commit.
@@ -139,7 +139,7 @@ fires — `finalizeOpenWindow()` is internal to the event loop and has no public
    earlier write.
 2. **SHA reporting.** The worker tracks `lastCommitSHA` but has no way to return the SHA
    produced by a *specific* signal. Add a result callback (or channel) on the signal so the
-   commit SHA flows back to whoever writes `ExplicitCommit/status`.
+   commit SHA flows back to whoever writes `CommitRequest/status`.
 3. **`NoOpenWindow` detection.** Falls out for free: if `openWindow == nil` when the signal is
    dequeued, there was nothing to commit → terminal `NoOpenWindow`.
 
@@ -150,11 +150,11 @@ every event already commits, so the signal just finds `openWindow == nil`.
 
 ## RBAC and audit policy
 
-- End users (or a backend acting for them) need `create` on `explicitcommits` in their
+- End users (or a backend acting for them) need `create` on `commitrequests` in their
   namespace. That is all.
-- The gitops-reverser identity needs `get` on `explicitcommits` and `update` on
-  `explicitcommits/status`.
-- Audit policy: `Metadata` level on `explicitcommits` `create` is enough — the consumer needs
+- The gitops-reverser identity needs `get` on `commitrequests` and `update` on
+  `commitrequests/status`.
+- Audit policy: `Metadata` level on `commitrequests` `create` is enough — the consumer needs
   `auditID`, `user`, `verb`, and `objectRef`, then reads the object for the body. The Helm chart
   should ship this fragment.
 
@@ -171,7 +171,7 @@ every event already commits, so the signal just finds `openWindow == nil`.
 
 Kept here with their reasoning so a later pass does not relitigate them:
 
-- **No garbage collection.** Terminal `ExplicitCommit` objects are left in place for now.
+- **No garbage collection.** Terminal `CommitRequest` objects are left in place for now.
   Cleanup (a TTL controller) is a follow-up; it is not needed to prove the design out.
 - **No admission webhook.** Not needed at all — see [Why no webhook](#why-no-webhook). The audit
   event supplies the author, so a webhook would only add TLS and admission plumbing for nothing.

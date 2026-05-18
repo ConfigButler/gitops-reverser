@@ -1029,7 +1029,7 @@ func (w *BranchWorker) ensureWriteBranch(repo *gogit.Repository) (plumbing.Refer
 
 // writeBranchHeadSHA returns the current HEAD SHA of the worker's branch in
 // the local repository. It is called right after finalizeOpenWindow creates a
-// local commit so the resulting SHA can be reported back to an ExplicitCommit.
+// local commit so the resulting SHA can be reported back to a CommitRequest.
 func (w *BranchWorker) writeBranchHeadSHA() (string, error) {
 	w.repoMu.Lock()
 	defer w.repoMu.Unlock()

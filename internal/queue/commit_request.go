@@ -35,22 +35,22 @@ import (
 )
 
 const (
-	// explicitCommitResource is the plural resource name of the ExplicitCommit CRD.
-	explicitCommitResource = "explicitcommits"
+	// commitRequestResource is the plural resource name of the CommitRequest CRD.
+	commitRequestResource = "commitrequests"
 
-	// explicitCommitMessageMaxBytes caps the commit message length defensively;
+	// commitRequestMessageMaxBytes caps the commit message length defensively;
 	// the CRD already validates length, this guards against oversized input
 	// arriving by any other path.
-	explicitCommitMessageMaxBytes = 1024
+	commitRequestMessageMaxBytes = 1024
 
-	// explicitCommitStatusUpdateAttempts bounds the status-update conflict retry.
-	explicitCommitStatusUpdateAttempts = 3
+	// commitRequestStatusUpdateAttempts bounds the status-update conflict retry.
+	commitRequestStatusUpdateAttempts = 3
 )
 
-// isExplicitCommitCreate reports whether the audit event is the `create` of an
-// ExplicitCommit object (and not, for example, an `explicitcommits/status`
+// isCommitRequestCreate reports whether the audit event is the `create` of an
+// CommitRequest object (and not, for example, an `commitrequests/status`
 // update emitted by the controller).
-func (c *AuditConsumer) isExplicitCommitCreate(event auditv1.Event) bool {
+func (c *AuditConsumer) isCommitRequestCreate(event auditv1.Event) bool {
 	ref := event.ObjectRef
 	if ref == nil {
 		return false
@@ -61,80 +61,80 @@ func (c *AuditConsumer) isExplicitCommitCreate(event auditv1.Event) bool {
 	if ref.Subresource != "" {
 		return false
 	}
-	if ref.Resource != explicitCommitResource {
+	if ref.Resource != commitRequestResource {
 		return false
 	}
 	group, _ := objectRefGroupVersion(ref)
 	return group == configv1alpha1.GroupVersion.Group
 }
 
-// handleExplicitCommit reacts to an ExplicitCommit `create` audit event: it
+// handleCommitRequest reacts to a CommitRequest `create` audit event: it
 // reads the persisted object, finalizes the open commit window for the
 // referenced GitTarget, and records the terminal phase in the object's status.
 //
 // By audit-stream ordering every resource mutation the author made before
-// creating the ExplicitCommit produced an earlier audit event, so by the time
+// creating the CommitRequest produced an earlier audit event, so by the time
 // this runs those writes have already been applied to the open window.
-func (c *AuditConsumer) handleExplicitCommit(ctx context.Context, log logr.Logger, event auditv1.Event) {
+func (c *AuditConsumer) handleCommitRequest(ctx context.Context, log logr.Logger, event auditv1.Event) {
 	ref := event.ObjectRef
-	log = log.WithValues("explicitCommit", ref.Namespace+"/"+ref.Name)
+	log = log.WithValues("commitRequest", ref.Namespace+"/"+ref.Name)
 
 	if c.kubeClient == nil || c.apiReader == nil {
-		log.Info("ExplicitCommit handling disabled: no Kubernetes client configured; skipping")
+		log.Info("CommitRequest handling disabled: no Kubernetes client configured; skipping")
 		return
 	}
 
-	var explicitCommit configv1alpha1.ExplicitCommit
+	var commitRequest configv1alpha1.CommitRequest
 	if err := c.apiReader.Get(ctx, client.ObjectKey{
 		Namespace: ref.Namespace,
 		Name:      ref.Name,
-	}, &explicitCommit); err != nil {
+	}, &commitRequest); err != nil {
 		if apierrors.IsNotFound(err) {
 			// The object was deleted before its audit event was processed.
 			// There is no status left to write, so just skip.
-			log.Info("ExplicitCommit no longer exists; skipping")
+			log.Info("CommitRequest no longer exists; skipping")
 			return
 		}
-		log.Error(err, "Failed to read ExplicitCommit; skipping")
+		log.Error(err, "Failed to read CommitRequest; skipping")
 		return
 	}
 
 	// Honor the identity the audit event gave us: a delayed event must not act
 	// on a same-named object that was deleted and recreated since.
-	if !auditEventMatchesObject(ref, explicitCommit.UID) {
-		log.Info("ExplicitCommit UID does not match the audit event; skipping stale event",
-			"eventUID", ref.UID, "objectUID", explicitCommit.UID)
+	if !auditEventMatchesObject(ref, commitRequest.UID) {
+		log.Info("CommitRequest UID does not match the audit event; skipping stale event",
+			"eventUID", ref.UID, "objectUID", commitRequest.UID)
 		return
 	}
 
-	if isTerminalExplicitCommitPhase(explicitCommit.Status.Phase) {
-		log.V(1).Info("ExplicitCommit already in a terminal phase; skipping",
-			"phase", explicitCommit.Status.Phase)
+	if isTerminalCommitRequestPhase(commitRequest.Status.Phase) {
+		log.V(1).Info("CommitRequest already in a terminal phase; skipping",
+			"phase", commitRequest.Status.Phase)
 		return
 	}
 
 	author := resolveUserInfo(event).Username
-	message := capExplicitCommitMessage(explicitCommit.Spec.Message)
+	message := capCommitRequestMessage(commitRequest.Spec.Message)
 
 	result, err := c.eventRouter.FinalizeGitTargetWindow(
 		ctx,
 		author,
-		explicitCommit.Spec.GitTargetRef.Name,
-		explicitCommit.Namespace,
+		commitRequest.Spec.GitTargetRef.Name,
+		commitRequest.Namespace,
 		message,
 	)
 	if err != nil {
-		log.Error(err, "Failed to finalize commit window for ExplicitCommit",
-			"author", author, "gitTarget", explicitCommit.Spec.GitTargetRef.Name)
+		log.Error(err, "Failed to finalize commit window for CommitRequest",
+			"author", author, "gitTarget", commitRequest.Spec.GitTargetRef.Name)
 	}
 
-	c.writeExplicitCommitStatus(ctx, log, ref.Namespace, ref.Name, explicitCommit.UID, result, err)
+	c.writeCommitRequestStatus(ctx, log, ref.Namespace, ref.Name, commitRequest.UID, result, err)
 }
 
-// writeExplicitCommitStatus records the terminal phase produced by a finalize
-// signal onto the ExplicitCommit object, retrying on optimistic-concurrency
+// writeCommitRequestStatus records the terminal phase produced by a finalize
+// signal onto the CommitRequest object, retrying on optimistic-concurrency
 // conflicts. A non-nil finalizeErr records the Failed terminal phase.
-func (c *AuditConsumer) writeExplicitCommitStatus(
+func (c *AuditConsumer) writeCommitRequestStatus(
 	ctx context.Context,
 	log logr.Logger,
 	namespace, name string,
@@ -144,94 +144,94 @@ func (c *AuditConsumer) writeExplicitCommitStatus(
 ) {
 	now := metav1.Now()
 
-	for attempt := 1; attempt <= explicitCommitStatusUpdateAttempts; attempt++ {
-		var explicitCommit configv1alpha1.ExplicitCommit
+	for attempt := 1; attempt <= commitRequestStatusUpdateAttempts; attempt++ {
+		var commitRequest configv1alpha1.CommitRequest
 		if err := c.apiReader.Get(ctx, client.ObjectKey{
 			Namespace: namespace,
 			Name:      name,
-		}, &explicitCommit); err != nil {
+		}, &commitRequest); err != nil {
 			if apierrors.IsNotFound(err) {
-				log.Info("ExplicitCommit deleted before status could be written; skipping")
+				log.Info("CommitRequest deleted before status could be written; skipping")
 				return
 			}
-			log.Error(err, "Failed to re-read ExplicitCommit for status update")
+			log.Error(err, "Failed to re-read CommitRequest for status update")
 			return
 		}
 
 		// The object may have been deleted and recreated between the finalize
 		// and this write; never stamp status onto a different incarnation.
-		if expectedUID != "" && explicitCommit.UID != expectedUID {
-			log.Info("ExplicitCommit UID changed before status could be written; skipping",
-				"expectedUID", expectedUID, "objectUID", explicitCommit.UID)
+		if expectedUID != "" && commitRequest.UID != expectedUID {
+			log.Info("CommitRequest UID changed before status could be written; skipping",
+				"expectedUID", expectedUID, "objectUID", commitRequest.UID)
 			return
 		}
 
-		if isTerminalExplicitCommitPhase(explicitCommit.Status.Phase) {
+		if isTerminalCommitRequestPhase(commitRequest.Status.Phase) {
 			// A concurrent processing of the same audit event (e.g. an
 			// auto-claimed redelivery) already wrote the terminal phase.
 			return
 		}
 
-		applyFinalizeResultToStatus(&explicitCommit, result, finalizeErr, now)
+		applyFinalizeResultToStatus(&commitRequest, result, finalizeErr, now)
 
-		if err := c.kubeClient.Status().Update(ctx, &explicitCommit); err != nil {
+		if err := c.kubeClient.Status().Update(ctx, &commitRequest); err != nil {
 			if apierrors.IsConflict(err) {
-				log.V(1).Info("Conflict writing ExplicitCommit status; retrying", "attempt", attempt)
+				log.V(1).Info("Conflict writing CommitRequest status; retrying", "attempt", attempt)
 				continue
 			}
-			log.Error(err, "Failed to write ExplicitCommit status")
+			log.Error(err, "Failed to write CommitRequest status")
 			return
 		}
 
-		log.Info("ExplicitCommit finalized",
-			"phase", explicitCommit.Status.Phase,
-			"branch", explicitCommit.Status.Branch,
-			"sha", explicitCommit.Status.SHA,
-			"message", explicitCommit.Status.Message)
+		log.Info("CommitRequest finalized",
+			"phase", commitRequest.Status.Phase,
+			"branch", commitRequest.Status.Branch,
+			"sha", commitRequest.Status.SHA,
+			"message", commitRequest.Status.Message)
 		return
 	}
 
-	log.Error(nil, "Gave up writing ExplicitCommit status after repeated conflicts")
+	log.Error(nil, "Gave up writing CommitRequest status after repeated conflicts")
 }
 
 // applyFinalizeResultToStatus maps a FinalizeResult (or a finalize error) onto
-// an ExplicitCommit's status.
+// a CommitRequest's status.
 func applyFinalizeResultToStatus(
-	explicitCommit *configv1alpha1.ExplicitCommit,
+	commitRequest *configv1alpha1.CommitRequest,
 	result git.FinalizeResult,
 	finalizeErr error,
 	now metav1.Time,
 ) {
-	explicitCommit.Status.ObservedTime = &now
-	explicitCommit.Status.Branch = result.Branch
-	explicitCommit.Status.Message = ""
+	commitRequest.Status.ObservedTime = &now
+	commitRequest.Status.Branch = result.Branch
+	commitRequest.Status.Message = ""
 
 	if finalizeErr != nil {
-		explicitCommit.Status.Phase = configv1alpha1.ExplicitCommitPhaseFailed
-		explicitCommit.Status.Message = finalizeErr.Error()
+		commitRequest.Status.Phase = configv1alpha1.CommitRequestPhaseFailed
+		commitRequest.Status.Message = finalizeErr.Error()
 		return
 	}
 
 	switch result.Outcome {
 	case git.FinalizeCommitted:
-		explicitCommit.Status.Phase = configv1alpha1.ExplicitCommitPhaseCommitted
-		explicitCommit.Status.SHA = result.SHA
+		commitRequest.Status.Phase = configv1alpha1.CommitRequestPhaseCommitted
+		commitRequest.Status.SHA = result.SHA
 	case git.FinalizeNoOpenWindow:
-		explicitCommit.Status.Phase = configv1alpha1.ExplicitCommitPhaseNoOpenWindow
+		commitRequest.Status.Phase = configv1alpha1.CommitRequestPhaseNoOpenWindow
 	default:
 		// An empty or unknown outcome with no error is a bug, not a benign
 		// "no open window"; record it as Failed so it is not silently hidden.
-		explicitCommit.Status.Phase = configv1alpha1.ExplicitCommitPhaseFailed
-		explicitCommit.Status.Message = "unexpected finalize outcome: " + string(result.Outcome)
+		commitRequest.Status.Phase = configv1alpha1.CommitRequestPhaseFailed
+		commitRequest.Status.Message = "unexpected finalize outcome: " + string(result.Outcome)
 	}
 }
 
-// isTerminalExplicitCommitPhase reports whether the phase is one of the
+// isTerminalCommitRequestPhase reports whether the phase is one of the
 // terminal states (anything other than the initial WaitingForAuditEvent).
-func isTerminalExplicitCommitPhase(phase configv1alpha1.ExplicitCommitPhase) bool {
-	return phase == configv1alpha1.ExplicitCommitPhaseCommitted ||
-		phase == configv1alpha1.ExplicitCommitPhaseNoOpenWindow ||
-		phase == configv1alpha1.ExplicitCommitPhaseFailed
+func isTerminalCommitRequestPhase(phase configv1alpha1.CommitRequestPhase) bool {
+	return phase == configv1alpha1.CommitRequestPhaseCommitted ||
+		phase == configv1alpha1.CommitRequestPhaseNoOpenWindow ||
+		phase == configv1alpha1.CommitRequestPhaseFailed
 }
 
 // auditEventMatchesObject reports whether the audit event's objectRef.uid
@@ -244,13 +244,13 @@ func auditEventMatchesObject(ref *auditv1.ObjectReference, objectUID types.UID) 
 	return ref.UID == objectUID
 }
 
-// capExplicitCommitMessage caps a user-supplied commit message at a defensive
+// capCommitRequestMessage caps a user-supplied commit message at a defensive
 // byte length. CRD validation already rejects control characters and bounds
 // the length in Unicode characters, so the accepted message is used verbatim;
 // this cap only guards against an object that somehow bypassed validation.
-func capExplicitCommitMessage(message string) string {
-	if len(message) > explicitCommitMessageMaxBytes {
-		return truncateUTF8(message, explicitCommitMessageMaxBytes)
+func capCommitRequestMessage(message string) string {
+	if len(message) > commitRequestMessageMaxBytes {
+		return truncateUTF8(message, commitRequestMessageMaxBytes)
 	}
 	return message
 }
