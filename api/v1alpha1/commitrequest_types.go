@@ -52,7 +52,12 @@ type CommitRequestGitTargetReference struct {
 	Name string `json:"name"`
 }
 
-// CommitRequestSpec defines the desired state of CommitRequest.
+// CommitRequestSpec defines the desired state of CommitRequest. The spec is
+// immutable after creation: a CEL validation rule rejects any update that
+// changes it, so a delayed audit event always acts on the spec the object was
+// created with.
+//
+// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="CommitRequest spec is immutable after creation"
 type CommitRequestSpec struct {
 	// GitTargetRef names the GitTarget whose open commit window to finalize.
 	// The GitTarget must be in the same namespace as this CommitRequest.
@@ -60,8 +65,7 @@ type CommitRequestSpec struct {
 	GitTargetRef CommitRequestGitTargetReference `json:"gitTargetRef"`
 
 	// Message is an optional commit message for the finalized commit. When
-	// omitted, the generated grouped-commit message is used. The spec is
-	// write-once by convention; editing it after creation is out of contract.
+	// omitted, the generated grouped-commit message is used.
 	//
 	// When present it is limited to 1-1024 Unicode characters and used
 	// verbatim as the commit message. Newlines are allowed so a subject and
@@ -105,6 +109,7 @@ type CommitRequestStatus struct {
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="Branch",type=string,JSONPath=`.status.branch`
 // +kubebuilder:printcolumn:name="SHA",type=string,JSONPath=`.status.sha`
+// +kubebuilder:printcolumn:name="Message",type=string,JSONPath=`.status.message`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // CommitRequest is a one-shot "save" signal: creating one finalizes the open

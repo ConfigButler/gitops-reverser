@@ -1,81 +1,71 @@
 # Design: `CommitRequest` CRD
 
-> Status: **implemented**. Supersedes
-> [design-commit-context-api.md](design-commit-context-api.md) (kept as a reference for the
-> aggregated-API transport and its audit gap). Parent exploration:
-> [idea-end-user-commit-messages.md](idea-end-user-commit-messages.md).
-> Date: 2026-05-17
->
-> **Implementation note:** the CRD ships under the project's existing API group,
-> so the real `apiVersion` is `configbutler.ai/v1alpha1` (not the illustrative
-> `gitops-reverser.io` used in the examples below). Pieces: `api/v1alpha1/commitrequest_types.go`,
-> `internal/controller/commitrequest_controller.go` (stamps the initial phase),
-> `internal/git/finalize_signal.go` + the `FinalizeSignal` branch in
-> `internal/git/branch_worker.go`, `EventRouter.FinalizeGitTargetWindow`, and the
-> `commitrequests` branch in `internal/queue/commit_request.go`.
+> Status: **implemented**. Namespaced CRD in API group `configbutler.ai/v1alpha1`.
+> Deferred work is tracked in [design-commit-request-phase-2.md](design-commit-request-phase-2.md).
+> Date: 2026-05-18
 
-## Summary
+## What it is
 
-`CommitRequest` is a small namespaced CRD that acts as a **"save" signal**: a frontend creates
-one after its resource edits, and gitops-reverser finalizes the open commit window for the named
-`GitTarget` now instead of waiting for the silence timer. The resulting commit SHA is reported
-back in the object's status.
+`CommitRequest` is a small namespaced CRD that acts as a **"save now" signal**. A frontend
+creates one after a user's resource edits; gitops-reverser then finalizes the open commit window
+for the named `GitTarget` immediately — instead of waiting for the rolling silence timer — and
+records the resulting commit SHA in the object's status. An optional `spec.message` becomes the
+commit message verbatim.
 
-This design deliberately starts simple: one transport (a CRD), one target per object. The
-aggregated-API alternative is documented in
-[design-commit-context-api.md](design-commit-context-api.md) and is not pursued here.
+It does exactly one thing:
 
-### What changed from the predecessor design
+> When the `CommitRequest`'s own audit event is consumed, finalize the open commit window for the
+> authenticated author on the referenced `GitTarget`, using `spec.message` if set, and record the
+> outcome in `status`.
 
-[design-commit-context-api.md](design-commit-context-api.md) used an aggregated API whose audit
-events are "hollow" (no body, no object reference), which forced a Valkey request stash to carry
-the message. A CRD is served by kube-apiserver directly, so **its audit events are complete** —
-they carry the author and the object reference. That removes the stash entirely, and (see
-[Why no webhook](#why-no-webhook)) it also removes the need for an admission webhook. What is
-left is a plain CRD plus one new branch in the audit consumer.
-
-## Behavior
-
-`CommitRequest` does exactly one thing:
-
-> When the `CommitRequest`'s own audit event is consumed, finalize the open commit window for
-> the authenticated author on the referenced `GitTarget`, using the optional `spec.message` as
-> the commit message, and report the resulting SHA in `status`.
-
-The commit fires **on the audit event, never on the API create directly**. This is the only way
-to get the timing right — see [The flow](#the-flow).
+The commit fires **on the audit event for the create, never on the API create directly** — that
+is what makes the timing correct (see [The flow](#the-flow)).
 
 ## Resource shape
 
 ```yaml
-apiVersion: gitops-reverser.io/v1alpha1
+apiVersion: configbutler.ai/v1alpha1
 kind: CommitRequest
 metadata:
   namespace: team-a
-  generateName: save-
+  generateName: save-          # one fresh object per save
 spec:
   gitTargetRef:
-    name: team-a-config        # required
-  message: "Increase checkout API memory after load-test failures"   # optional, 1–1024 bytes
+    name: team-a-config        # required; GitTarget in the same namespace
+  message: "Increase checkout API memory after load-test failures"   # optional; omit for a bare "commit now"
 status:
-  phase: Committed             # WaitingForAuditEvent | Committed | NoOpenWindow
-  branch: main
-  sha: "a1b2c3d4e5f6789..."
-  observedTime: "2026-05-17T12:34:56Z"
+  phase: Committed             # WaitingForAuditEvent | Committed | NoOpenWindow | Failed
+  branch: main                 # set when Committed
+  sha: "a1b2c3d4e5f6789..."    # set when Committed
+  message: ""                  # failure detail; set when Failed
+  observedTime: "2026-05-18T12:34:56Z"
 ```
 
-- `spec.gitTargetRef.name` (**required**) — the `GitTarget` whose open window to finalize. Must
-  be in the request's namespace. One target per object keeps the status flat — a single SHA, no
-  list.
-- `spec.message` (optional) — commit message. Validated for length, UTF-8, and no control
-  characters except `\n`. If omitted, the existing generated message is used.
-- `status.phase`:
-  - **`WaitingForAuditEvent`** — the object was created; gitops-reverser has not yet seen its
-    audit event. This is the initial state.
-  - **`Committed`** — terminal. The window was finalized; `status.branch` and `status.sha` are
-    set.
-  - **`NoOpenWindow`** — terminal. The audit event arrived but the author had no open window on
-    that `GitTarget` (they pressed save with nothing pending). Not an error.
+### Spec
+
+- **`gitTargetRef.name`** (required) — the `GitTarget` whose open window to finalize. Must live
+  in the `CommitRequest`'s own namespace. One target per object keeps `status` flat: a single
+  SHA, no list.
+- **`message`** (optional) — the commit message, used verbatim. "Optional" here means the field
+  may be **omitted**, not that it may be **blank**: omitting `message` entirely is a valid
+  request — it just finalizes the window with the generated grouped-commit message, which is the
+  intended "trigger a commit now, no custom message" form. An explicit empty string
+  (`message: ""`) is *rejected* by the apiserver, because when the field is present the CRD
+  requires 1–1024 Unicode characters. Newlines are allowed (so a subject plus body works); all
+  other ASCII control characters are rejected (pattern `^[^\x00-\x09\x0B-\x1F\x7F]*$`).
+
+`spec` is immutable after creation — a CEL validation rule on the CRD (`self == oldSelf`) rejects
+any update that changes it, so a delayed audit event always acts on the spec the object was
+created with.
+
+### Status
+
+| `phase` | Meaning |
+|---|---|
+| `WaitingForAuditEvent` | Initial. The object was created; its audit event has not been processed yet. |
+| `Committed` | Terminal. The window was finalized; `branch` and `sha` are set. |
+| `NoOpenWindow` | Terminal. The audit event arrived but the author had no open window on that `GitTarget` (they saved with nothing pending). Not an error. |
+| `Failed` | Terminal. The finalize could not complete — a failed commit, a saturated worker queue, a missing `GitTarget`, etc. `status.message` carries the reason. |
 
 ## The flow
 
@@ -84,111 +74,153 @@ audit stream, not by the API create.
 
 1. The frontend issues its resource mutations (`Deployment` patch, `ConfigMap` update, …) and
    awaits them.
-2. The frontend creates a `CommitRequest` in its namespace, naming a `GitTarget` and
-   optionally a message.
-3. gitops-reverser sets `status.phase: WaitingForAuditEvent` on the new object. (A minimal
-   controller stamps this; it does no other work.)
+2. The frontend creates a `CommitRequest` in its namespace, naming a `GitTarget` and optionally a
+   message.
+3. A minimal controller stamps `status.phase: WaitingForAuditEvent` on the new object. It does no
+   other work.
 4. kube-apiserver persists the object and emits an audit event for the `create`. Because the CRD
-   is served by kube-apiserver itself, the event is complete: it carries `auditID`,
-   `user.username`, and `objectRef` (namespace, name, uid). There is **no aggregated-API gap**.
+   is served by kube-apiserver itself, the event is **complete**: it carries `auditID`, `user`,
+   and `objectRef` (namespace, name, uid).
 5. The audit event flows through the existing audit pipeline. By audit-stream ordering, every
-   mutation from step 1 produced an *earlier* audit event — so by the time the consumer reaches
-   the `CommitRequest` event, those writes have already been applied to the open window. This
-   is what makes "commit now" safe under parallel writes.
-6. The audit consumer recognizes the `commitrequests` `create` event. It takes the **author**
-   from `user.username` and reads the `CommitRequest` object by `objectRef.namespace`/`name` to
-   get `spec.gitTargetRef` and `spec.message`.
-7. It finalizes the open window for that author on that `GitTarget` immediately, producing the
-   commit.
-8. It writes the terminal status: `Committed` with `branch`/`sha`, or `NoOpenWindow`.
-9. The frontend, watching the object, sees the terminal phase and the SHA.
+   mutation from step 1 produced an *earlier* event — so by the time the consumer reaches the
+   `CommitRequest` event, those writes have already been applied to the open window. This is what
+   makes "commit now" safe under parallel writes.
+6. The audit consumer recognizes the `commitrequests` `create` event. It takes the **author** from
+   the audit event's effective user, reads the `CommitRequest` object to get `spec.gitTargetRef`
+   and `spec.message`, and verifies the object's `uid` matches `objectRef.uid`.
+7. It finalizes the open window **for that author on that `GitTarget`**, producing the commit.
+8. It writes the terminal status: `Committed` (+ `branch`/`sha`), `NoOpenWindow`, or `Failed`
+   (+ `message`).
+9. The frontend, watching the object, sees the terminal phase.
 
-The audit stream's only job here is **timing** — it tells gitops-reverser "every edit before
-this save has landed; commit now." It is not a body transport (the body is in the object) and
-not the identity source of last resort (the audit event itself carries the author).
+The audit stream's only job here is **timing** — it tells gitops-reverser "every edit before this
+save has landed; commit now." The message lives in the object; the author lives in the audit
+event.
+
+## Author and target binding
+
+A `BranchWorker` is keyed by `(provider, branch)` only, and holds at most one open window. So "the
+open window" must be pinned to the request's intent:
+
+- The **author** is the audit event's effective user (the impersonated user under impersonation).
+  Anonymous and unauthenticated callers never get an object created — kube-apiserver rejects them
+  first.
+- The finalize signal carries `Author`, `GitTargetName`, and `GitTargetNamespace`. The worker
+  finalizes the window **only if all three match** the open window. A mismatch — someone else's
+  window happens to be the one open — yields `NoOpenWindow` and leaves that window untouched for
+  its real author.
 
 ## Why no webhook
 
-The predecessor design considered an admission webhook to capture the creating user, because a
-stored CRD object does not record its own creator. It is not needed here: the **audit event for
-the `create` already carries `user.username`**, and gitops-reverser is already going to react to
-that audit event (step 6). So the author comes from the audit event — the same authenticated
-identity an admission webhook would have seen — and the message comes from reading the persisted
-object. No webhook, no stash, no extra TLS or admission plumbing.
+A stored CRD object does not record its creator, so an admission webhook was considered to capture
+the creating user. It is not needed: the audit event for the `create` already carries the
+authenticated `user`, and gitops-reverser already reacts to that audit event. The author comes
+from the audit event — the same authenticated identity a webhook would have seen — and the message
+comes from reading the persisted object. No webhook, no request stash, no extra TLS or admission
+plumbing.
 
-Author binding follows the existing rule: the author is the effective user (the impersonated
-user when impersonation is used). Anonymous and unauthenticated callers are rejected by
-kube-apiserver before an object is ever created.
+## How it works internally
 
-## Implementation seam
+Three pieces are net-new on top of existing machinery:
 
-Most of this design reuses existing machinery, but three pieces are net-new. They are called
-out here so a fresh implementation context does not have to rediscover them.
+1. **Finalize signal.** `git.FinalizeSignal` is a `WorkItem` variant meaning "finalize the open
+   window now." It is enqueued on the **same per-worker queue** as resource events — which is what
+   makes the audit-ordering argument hold: the signal is processed after every earlier write.
+   `EventRouter.FinalizeGitTargetWindow` resolves the `GitTarget` to its `(provider, branch)`
+   worker, enqueues the signal, and blocks (up to 30s) for the result.
+2. **Outcome reporting.** The signal carries a result channel; the worker replies with the commit
+   SHA, `NoOpenWindow`, or an error. A finalize error is propagated as a Go error — never silently
+   mapped to a benign phase.
+3. **Status mapping.** No open window → `NoOpenWindow`. A finalize error → `Failed` with the
+   reason in `status.message`. The audit consumer's `handleCommitRequest` writes the terminal
+   status, retrying on optimistic-concurrency conflicts and re-checking the object `uid` each
+   time.
 
-A `BranchWorker` is keyed by **(provider, branch)** and holds exactly **one** open window at a
-time ([branch_worker.go](../../internal/git/branch_worker.go)). The window finalizes on its own
-when an event with a different author/target arrives, when the byte cap trips, or when a timer
-fires — `finalizeOpenWindow()` is internal to the event loop and has no public caller.
-
-1. **A force-finalize signal.** Add a `WorkItem` / `WriteRequest` variant meaning "finalize the
-   open window now" and route it `EventRouter`
-   ([event_router.go](../../internal/watch/event_router.go)) → `BranchWorker.eventQueue` → a new
-   branch in `handleQueueItem` that calls `finalizeOpenWindow()` (then `maybeSchedulePush()`).
-   Enqueuing it on the **same per-worker queue** as resource events is what makes the timing
-   argument in [The flow](#the-flow) hold — the signal is processed in audit order, after every
-   earlier write.
-2. **SHA reporting.** The worker tracks `lastCommitSHA` but has no way to return the SHA
-   produced by a *specific* signal. Add a result callback (or channel) on the signal so the
-   commit SHA flows back to whoever writes `CommitRequest/status`.
-3. **`NoOpenWindow` detection.** Falls out for free: if `openWindow == nil` when the signal is
-   dequeued, there was nothing to commit → terminal `NoOpenWindow`.
-
-Because the signal rides the per-worker queue, "the open window for that author" is **not a
-lookup** — it is simply whichever window is open when the signal is dequeued, which by audit
-ordering is the author's own. The per-event-commit mode (`commitWindow == 0`) is a no-op case:
-every event already commits, so the signal just finds `openWindow == nil`.
+When no worker exists for the `GitTarget` (nothing has been written to that branch yet) there is,
+by definition, no open window → `NoOpenWindow`. In per-event commit mode (`commitWindow == 0`)
+every event already commits immediately, so the signal simply finds no open window.
 
 ## RBAC and audit policy
 
-- End users (or a backend acting for them) need `create` on `commitrequests` in their
-  namespace. That is all.
-- The gitops-reverser identity needs `get` on `commitrequests` and `update` on
+- End users (or a backend acting for them) need `create` on `commitrequests` in their namespace.
+  That is all.
+- The gitops-reverser identity needs `get`/`list`/`watch` on `commitrequests` and `update` on
   `commitrequests/status`.
-- Audit policy: `Metadata` level on `commitrequests` `create` is enough — the consumer needs
-  `auditID`, `user`, `verb`, and `objectRef`, then reads the object for the body. The Helm chart
-  should ship this fragment.
+- Audit policy: `Metadata` level on `commitrequests` `create` is sufficient — the consumer needs
+  `auditID`, `user`, `verb`, and `objectRef`, then reads the object body from the apiserver. The
+  repo's e2e audit policy captures this via a catch-all `create` rule; shipping a dedicated
+  fragment in the Helm chart is a phase-2 item.
 
 ## Edge cases
 
-- **No open window.** Terminal `NoOpenWindow`. Not an error.
-- **Object deleted before its audit event is processed.** The consumer cannot read the spec; it
-  logs and skips. The object is already gone, so there is no status to write.
-- **Audit event never arrives** (audit pipeline degraded). The object stays
-  `WaitingForAuditEvent`. That is acceptable for now — the existing audit-pipeline health
-  metrics cover the underlying problem.
+- **No open window** → terminal `NoOpenWindow`. Not an error.
+- **Object deleted before its audit event is processed** → the consumer cannot read the spec; it
+  logs and skips. The object is gone, so there is no status to write.
+- **Object recreated under the same name** (delete + recreate before a delayed audit event) → the
+  consumer compares `objectRef.uid` to the live object's `uid` and skips the stale event.
+- **Audit event never arrives** (audit pipeline degraded) → the object stays
+  `WaitingForAuditEvent`. Acceptable for now; the lifecycle gap this creates is the headline item
+  of the phase-2 doc.
+- **Transient finalize failure** (e.g. a saturated worker queue) → terminal `Failed`. The audit
+  message is ACKed once with no redelivery, so a terminal phase is more honest than a silently
+  stuck object. The rolling silence timer still commits the pending edits later with the generated
+  message — only the caller's custom message is lost.
 
-## Deliberately not in this first cut
+## Alternatives considered
 
-Kept here with their reasoning so a later pass does not relitigate them:
+The parent exploration ([idea-end-user-commit-messages.md](idea-end-user-commit-messages.md)) and
+the superseded aggregated-API design
+([design-commit-context-api.md](design-commit-context-api.md)) weighed several transports. They
+are summarized here so the choice is not relitigated.
 
-- **No garbage collection.** Terminal `CommitRequest` objects are left in place for now.
-  Cleanup (a TTL controller) is a follow-up; it is not needed to prove the design out.
-- **No admission webhook.** Not needed at all — see [Why no webhook](#why-no-webhook). The audit
-  event supplies the author, so a webhook would only add TLS and admission plumbing for nothing.
-- **One `GitTarget` per object.** `spec.gitTargetRef` is required precisely so the status stays
-  flat (one SHA, no list) and the matching logic stays trivial. A bare "save everything I
-  edited" form is a future extension, not a first-cut requirement.
-- **No `Failed` phase.** The first version assumes the finalize/push succeeds. A `Failed`
-  terminal phase (push cooldown exhausted, conflict, provider error) is a deliberate follow-up.
-- **No spec immutability enforcement.** `spec` is write-once by convention; editing `message`
-  after create is out of contract. Enforcing it would need a validating webhook — left as
-  convention for now.
+- **Aggregated API `CommitContext`.** A request-only aggregated API kind, nothing persisted. The
+  blocker: kube-apiserver's native audit events for aggregated APIs are "hollow" — no
+  `requestObject`, no `objectRef.name` — so the message text would have to be recovered from a
+  Valkey "request stash" keyed by `Audit-ID`. A plain CRD is served by kube-apiserver directly, so
+  **its audit events are complete**. That single fact removes the stash, the `APIService`
+  registration, and the requestheader-CA / TLS plumbing. The full deep-dive on the aggregated-API
+  audit gap is kept in [design-commit-context-api.md](design-commit-context-api.md).
+- **Audit `user.extra` enrichment.** Put the reason in `userInfo.extra` and read it from the same
+  audit event as the mutation. Cheap for gitops-reverser and naturally per-event — but ordinary
+  clients cannot set `extra`. It needs an authentication webhook on the hot path, OIDC claim
+  mappings, or impersonation with `Impersonate-Extra-*`. Granting a backend "impersonate any user
+  and set arbitrary extras" is a heavy, alarming RBAC posture for what is essentially a commit
+  message.
+- **Transient annotations stripped by a mutating webhook.** Attach a
+  `gitops-reverser.io/commit-message` annotation to the edited object; a mutating webhook strips
+  it before persistence; the consumer recovers it from the audit payload. Per-event and atomic
+  with the change — but it requires an always-on mutating webhook on the request path of every
+  watched resource type, a steep operational cost for a cosmetic feature, and the intent is hidden
+  inside metadata where other tools may disturb it.
+- **Short-lived `CommitIntent` CRD.** This design's ancestor. The early sketch treated it as
+  ephemeral "use this message for the next window, then delete it" state, which felt unnatural
+  because the cleanup clock should be the commit window, not a TTL. Reframing it as an explicit,
+  audited **"save now" request that reports its own status** — rather than a hidden message slot —
+  is what made a CRD the right shape. That reframed CRD is `CommitRequest`.
+- **Do nothing.** Keep template-generated commit messages only. The status quo; rejected because
+  frontends do have real user intent at edit time and currently no clean channel for it.
+
+`CommitRequest` wins because a CRD's audit events are complete (no stash, no webhook), the create
+is an explicit auditable operation, and reporting status back on the object gives the frontend a
+clean success/SHA signal.
+
+## Deferred
+
+Garbage collection, multi-target "save everything I edited," retry for transient finalize
+failures, and outcome metrics are intentionally out of this first cut. They are tracked — with the
+object-lifecycle question front and center — in
+[design-commit-request-phase-2.md](design-commit-request-phase-2.md).
 
 ## References
 
-- Predecessor design — aggregated-API transport, native audit gap, request stash:
-  [design-commit-context-api.md](design-commit-context-api.md) (superseded by this doc).
-- Parent exploration — transport options, audit-stream-as-source-of-truth principle,
-  "commit now" risks: [idea-end-user-commit-messages.md](idea-end-user-commit-messages.md).
+- Deferred / phase-2 work: [design-commit-request-phase-2.md](design-commit-request-phase-2.md)
+- Superseded aggregated-API design, kept for the audit-gap deep-dive:
+  [design-commit-context-api.md](design-commit-context-api.md)
+- Parent exploration — transport options and the audit-stream-as-source-of-truth principle:
+  [idea-end-user-commit-messages.md](idea-end-user-commit-messages.md)
 - Audit ingestion pipeline this design rides on:
-  [design-audit-ingestion-hardening.md](design-audit-ingestion-hardening.md).
+  [design-audit-ingestion-hardening.md](design-audit-ingestion-hardening.md)
+- Implementation: `api/v1alpha1/commitrequest_types.go`,
+  `internal/controller/commitrequest_controller.go`, `internal/queue/commit_request.go`,
+  `internal/git/finalize_signal.go` plus the `FinalizeSignal` path in
+  `internal/git/branch_worker.go`, and `EventRouter.FinalizeGitTargetWindow`.

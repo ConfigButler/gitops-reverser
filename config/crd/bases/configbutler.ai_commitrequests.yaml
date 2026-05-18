@@ -27,6 +27,9 @@ spec:
     - jsonPath: .status.sha
       name: SHA
       type: string
+    - jsonPath: .status.message
+      name: Message
+      type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -73,8 +76,7 @@ spec:
               message:
                 description: |-
                   Message is an optional commit message for the finalized commit. When
-                  omitted, the generated grouped-commit message is used. The spec is
-                  write-once by convention; editing it after creation is out of contract.
+                  omitted, the generated grouped-commit message is used.
 
                   When present it is limited to 1-1024 Unicode characters and used
                   verbatim as the commit message. Newlines are allowed so a subject and
@@ -87,6 +89,9 @@ spec:
             required:
             - gitTargetRef
             type: object
+            x-kubernetes-validations:
+            - message: CommitRequest spec is immutable after creation
+              rule: self == oldSelf
           status:
             description: status defines the observed state of CommitRequest
             properties:
