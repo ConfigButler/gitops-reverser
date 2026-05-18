@@ -51,6 +51,12 @@ This file is meant to track the smaller current backlog, not historical notes.
   Comments, ordering, and other low-noise formatting details are still easy to lose when rewriting
   manifests.
 
+- [ ] Resolve the unused `GitTarget.status.lastCommit` field.
+  It is documented as "the SHA of the last commit processed" but is never populated — the only
+  writer blanks it in [gittarget_controller.go](../internal/controller/gittarget_controller.go),
+  and the GitTarget tests assert it stays empty. Either wire it up from the branch worker (and add
+  a printer column, matching the `SHA` column `CommitRequest` now has) or drop the dead field.
+
 ## Future directions worth revisiting
 
 - [ ] Simpler setup flows, including more Git provider bootstrap automation.
