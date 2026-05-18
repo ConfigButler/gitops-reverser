@@ -30,6 +30,7 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/redis/go-redis/v9"
 	auditv1 "k8s.io/apiserver/pkg/apis/audit/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -67,6 +68,10 @@ var errAuditEventObjectMissing = errors.New("audit event has no requestObject or
 // watch.EventRouter satisfies this interface without modification.
 type AuditEventRouter interface {
 	RouteToGitTargetEventStream(event git.Event, gitDest itypes.ResourceReference) error
+	FinalizeGitTargetWindow(
+		ctx context.Context,
+		author, gitTargetName, gitTargetNamespace, message string,
+	) (git.FinalizeResult, error)
 }
 
 // AuditConsumerConfig configures the Redis stream consumer.
@@ -95,14 +100,24 @@ type AuditConsumer struct {
 	ruleStore   *rulestore.RuleStore
 	eventRouter AuditEventRouter
 	log         logr.Logger
+
+	// kubeClient writes ExplicitCommit status subresources. apiReader performs
+	// uncached reads of ExplicitCommit objects so a freshly-created object is
+	// visible even before the controller-runtime cache has synced it. Both may
+	// be nil, in which case ExplicitCommit handling is disabled.
+	kubeClient client.Client
+	apiReader  client.Reader
 }
 
 // NewAuditConsumer creates a new AuditConsumer. It does not start consuming;
-// call Start to begin the consume loop.
+// call Start to begin the consume loop. kubeClient and apiReader are used for
+// ExplicitCommit handling and may be nil to disable it.
 func NewAuditConsumer(
 	cfg AuditConsumerConfig,
 	ruleStore *rulestore.RuleStore,
 	eventRouter AuditEventRouter,
+	kubeClient client.Client,
+	apiReader client.Reader,
 	log logr.Logger,
 ) (*AuditConsumer, error) {
 	if strings.TrimSpace(cfg.Addr) == "" {
@@ -142,6 +157,8 @@ func NewAuditConsumer(
 		ruleStore:   ruleStore,
 		eventRouter: eventRouter,
 		log:         log.WithName("audit-consumer"),
+		kubeClient:  kubeClient,
+		apiReader:   apiReader,
 	}, nil
 }
 
@@ -304,6 +321,15 @@ func (c *AuditConsumer) processMessage(ctx context.Context, msg redis.XMessage) 
 	}
 
 	if auditEvent.ObjectRef == nil {
+		c.ackMessage(ctx, msg.ID)
+		return
+	}
+
+	// ExplicitCommit create events drive the "finalize the open window now"
+	// path. They are handled before rule matching and never flow into the
+	// resource-write pipeline.
+	if c.isExplicitCommitCreate(auditEvent) {
+		c.handleExplicitCommit(ctx, log, auditEvent)
 		c.ackMessage(ctx, msg.ID)
 		return
 	}

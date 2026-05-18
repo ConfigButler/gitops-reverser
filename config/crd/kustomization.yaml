@@ -2,6 +2,7 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
   - bases/configbutler.ai_clusterwatchrules.yaml
+  - bases/configbutler.ai_explicitcommits.yaml
   - bases/configbutler.ai_gitproviders.yaml
   - bases/configbutler.ai_gittargets.yaml
   - bases/configbutler.ai_watchrules.yaml

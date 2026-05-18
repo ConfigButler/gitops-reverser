@@ -20,7 +20,7 @@ For the chart's optional starter `quickstart` block, see [`docs/configuration.md
 
 - ✅ **Git synchronization**: Push Kubernetes changes back to Git repositories
 - ✅ **Single-pod stability**: 1 replica by default while multi-pod support is in progress
-- ✅ **Automatic CRD installation**: GitProvider, GitTarget, WatchRule, and ClusterWatchRule CRDs installed automatically
+- ✅ **Automatic CRD installation**: GitProvider, GitTarget, WatchRule, ClusterWatchRule, and ExplicitCommit CRDs installed automatically
 - ✅ **Audit webhook ingestion**: Receive Kubernetes audit events over HTTPS
 - ✅ **Prometheus metrics**: Built-in monitoring support
 
@@ -223,6 +223,7 @@ This chart automatically manages the following CRDs:
 - **`gittargets.configbutler.ai`** - Branch/path and optional encryption configuration
 - **`watchrules.configbutler.ai`** - Namespaced watch rules
 - **`clusterwatchrules.configbutler.ai`** - Cluster-scoped watch rules
+- **`explicitcommits.configbutler.ai`** - One-shot "save now" signals that finalize the open commit window
 
 ### CRD Lifecycle
 
@@ -235,7 +236,7 @@ This chart automatically manages the following CRDs:
 To manually remove CRDs after uninstallation:
 
 ```bash
-kubectl delete crd gitproviders.configbutler.ai gittargets.configbutler.ai watchrules.configbutler.ai clusterwatchrules.configbutler.ai
+kubectl delete crd gitproviders.configbutler.ai gittargets.configbutler.ai watchrules.configbutler.ai clusterwatchrules.configbutler.ai explicitcommits.configbutler.ai
 ```
 
 > ⚠️ **Warning**: Deleting CRDs will also delete all custom resources of those types!
@@ -310,7 +311,7 @@ helm uninstall gitops-reverser --namespace gitops-reverser
 kubectl delete namespace gitops-reverser
 
 # Delete CRDs (optional, but removes all custom resources)
-kubectl delete crd gitproviders.configbutler.ai gittargets.configbutler.ai watchrules.configbutler.ai clusterwatchrules.configbutler.ai
+kubectl delete crd gitproviders.configbutler.ai gittargets.configbutler.ai watchrules.configbutler.ai clusterwatchrules.configbutler.ai explicitcommits.configbutler.ai
 ```
 
 ## Troubleshooting

@@ -1,0 +1,125 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.19.0
+  name: explicitcommits.configbutler.ai
+spec:
+  group: configbutler.ai
+  names:
+    kind: ExplicitCommit
+    listKind: ExplicitCommitList
+    plural: explicitcommits
+    singular: explicitcommit
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.gitTargetRef.name
+      name: GitTarget
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.branch
+      name: Branch
+      type: string
+    - jsonPath: .status.sha
+      name: SHA
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          ExplicitCommit is a one-shot "save" signal: creating one finalizes the open
+          commit window for the referenced GitTarget instead of waiting for the
+          silence timer. The resulting commit SHA is reported back in status.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: spec defines the desired state of ExplicitCommit
+            properties:
+              gitTargetRef:
+                description: |-
+                  GitTargetRef names the GitTarget whose open commit window to finalize.
+                  The GitTarget must be in the same namespace as this ExplicitCommit.
+                properties:
+                  name:
+                    description: Name of the referenced GitTarget.
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
+              message:
+                description: |-
+                  Message is an optional commit message for the finalized commit. When
+                  omitted, the generated grouped-commit message is used. The spec is
+                  write-once by convention; editing it after creation is out of contract.
+
+                  When present it is limited to 1-1024 Unicode characters and used
+                  verbatim as the commit message. Newlines are allowed so a subject and
+                  body can be supplied; all other ASCII control characters (including tab
+                  and carriage return) are rejected.
+                maxLength: 1024
+                minLength: 1
+                pattern: ^[^\x00-\x09\x0B-\x1F\x7F]*$
+                type: string
+            required:
+            - gitTargetRef
+            type: object
+          status:
+            description: status defines the observed state of ExplicitCommit
+            properties:
+              branch:
+                description: Branch is the Git branch the commit landed on. Set when
+                  Phase is Committed.
+                type: string
+              message:
+                description: |-
+                  Message is a human-readable detail for the terminal phase. It is set when
+                  Phase is Failed and carries the reason the finalize could not complete.
+                type: string
+              observedTime:
+                description: ObservedTime is the timestamp at which the terminal phase
+                  was recorded.
+                format: date-time
+                type: string
+              phase:
+                description: Phase is the lifecycle state of this ExplicitCommit.
+                enum:
+                - WaitingForAuditEvent
+                - Committed
+                - NoOpenWindow
+                - Failed
+                type: string
+              sha:
+                description: SHA is the resulting commit SHA. Set when Phase is Committed.
+                type: string
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

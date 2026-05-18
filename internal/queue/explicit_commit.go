@@ -1,0 +1,269 @@
+/*
+SPDX-License-Identifier: Apache-2.0
+
+Copyright 2025 ConfigButler
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package queue
+
+import (
+	"context"
+	"strings"
+	"unicode/utf8"
+
+	"github.com/go-logr/logr"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	auditv1 "k8s.io/apiserver/pkg/apis/audit/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	"github.com/ConfigButler/gitops-reverser/internal/git"
+)
+
+const (
+	// explicitCommitResource is the plural resource name of the ExplicitCommit CRD.
+	explicitCommitResource = "explicitcommits"
+
+	// explicitCommitMessageMaxBytes caps the commit message length defensively;
+	// the CRD already validates length, this guards against oversized input
+	// arriving by any other path.
+	explicitCommitMessageMaxBytes = 1024
+
+	// explicitCommitStatusUpdateAttempts bounds the status-update conflict retry.
+	explicitCommitStatusUpdateAttempts = 3
+)
+
+// isExplicitCommitCreate reports whether the audit event is the `create` of an
+// ExplicitCommit object (and not, for example, an `explicitcommits/status`
+// update emitted by the controller).
+func (c *AuditConsumer) isExplicitCommitCreate(event auditv1.Event) bool {
+	ref := event.ObjectRef
+	if ref == nil {
+		return false
+	}
+	if !strings.EqualFold(event.Verb, "create") {
+		return false
+	}
+	if ref.Subresource != "" {
+		return false
+	}
+	if ref.Resource != explicitCommitResource {
+		return false
+	}
+	group, _ := objectRefGroupVersion(ref)
+	return group == configv1alpha1.GroupVersion.Group
+}
+
+// handleExplicitCommit reacts to an ExplicitCommit `create` audit event: it
+// reads the persisted object, finalizes the open commit window for the
+// referenced GitTarget, and records the terminal phase in the object's status.
+//
+// By audit-stream ordering every resource mutation the author made before
+// creating the ExplicitCommit produced an earlier audit event, so by the time
+// this runs those writes have already been applied to the open window.
+func (c *AuditConsumer) handleExplicitCommit(ctx context.Context, log logr.Logger, event auditv1.Event) {
+	ref := event.ObjectRef
+	log = log.WithValues("explicitCommit", ref.Namespace+"/"+ref.Name)
+
+	if c.kubeClient == nil || c.apiReader == nil {
+		log.Info("ExplicitCommit handling disabled: no Kubernetes client configured; skipping")
+		return
+	}
+
+	var explicitCommit configv1alpha1.ExplicitCommit
+	if err := c.apiReader.Get(ctx, client.ObjectKey{
+		Namespace: ref.Namespace,
+		Name:      ref.Name,
+	}, &explicitCommit); err != nil {
+		if apierrors.IsNotFound(err) {
+			// The object was deleted before its audit event was processed.
+			// There is no status left to write, so just skip.
+			log.Info("ExplicitCommit no longer exists; skipping")
+			return
+		}
+		log.Error(err, "Failed to read ExplicitCommit; skipping")
+		return
+	}
+
+	// Honor the identity the audit event gave us: a delayed event must not act
+	// on a same-named object that was deleted and recreated since.
+	if !auditEventMatchesObject(ref, explicitCommit.UID) {
+		log.Info("ExplicitCommit UID does not match the audit event; skipping stale event",
+			"eventUID", ref.UID, "objectUID", explicitCommit.UID)
+		return
+	}
+
+	if isTerminalExplicitCommitPhase(explicitCommit.Status.Phase) {
+		log.V(1).Info("ExplicitCommit already in a terminal phase; skipping",
+			"phase", explicitCommit.Status.Phase)
+		return
+	}
+
+	author := resolveUserInfo(event).Username
+	message := capExplicitCommitMessage(explicitCommit.Spec.Message)
+
+	result, err := c.eventRouter.FinalizeGitTargetWindow(
+		ctx,
+		author,
+		explicitCommit.Spec.GitTargetRef.Name,
+		explicitCommit.Namespace,
+		message,
+	)
+	if err != nil {
+		log.Error(err, "Failed to finalize commit window for ExplicitCommit",
+			"author", author, "gitTarget", explicitCommit.Spec.GitTargetRef.Name)
+	}
+
+	c.writeExplicitCommitStatus(ctx, log, ref.Namespace, ref.Name, explicitCommit.UID, result, err)
+}
+
+// writeExplicitCommitStatus records the terminal phase produced by a finalize
+// signal onto the ExplicitCommit object, retrying on optimistic-concurrency
+// conflicts. A non-nil finalizeErr records the Failed terminal phase.
+func (c *AuditConsumer) writeExplicitCommitStatus(
+	ctx context.Context,
+	log logr.Logger,
+	namespace, name string,
+	expectedUID types.UID,
+	result git.FinalizeResult,
+	finalizeErr error,
+) {
+	now := metav1.Now()
+
+	for attempt := 1; attempt <= explicitCommitStatusUpdateAttempts; attempt++ {
+		var explicitCommit configv1alpha1.ExplicitCommit
+		if err := c.apiReader.Get(ctx, client.ObjectKey{
+			Namespace: namespace,
+			Name:      name,
+		}, &explicitCommit); err != nil {
+			if apierrors.IsNotFound(err) {
+				log.Info("ExplicitCommit deleted before status could be written; skipping")
+				return
+			}
+			log.Error(err, "Failed to re-read ExplicitCommit for status update")
+			return
+		}
+
+		// The object may have been deleted and recreated between the finalize
+		// and this write; never stamp status onto a different incarnation.
+		if expectedUID != "" && explicitCommit.UID != expectedUID {
+			log.Info("ExplicitCommit UID changed before status could be written; skipping",
+				"expectedUID", expectedUID, "objectUID", explicitCommit.UID)
+			return
+		}
+
+		if isTerminalExplicitCommitPhase(explicitCommit.Status.Phase) {
+			// A concurrent processing of the same audit event (e.g. an
+			// auto-claimed redelivery) already wrote the terminal phase.
+			return
+		}
+
+		applyFinalizeResultToStatus(&explicitCommit, result, finalizeErr, now)
+
+		if err := c.kubeClient.Status().Update(ctx, &explicitCommit); err != nil {
+			if apierrors.IsConflict(err) {
+				log.V(1).Info("Conflict writing ExplicitCommit status; retrying", "attempt", attempt)
+				continue
+			}
+			log.Error(err, "Failed to write ExplicitCommit status")
+			return
+		}
+
+		log.Info("ExplicitCommit finalized",
+			"phase", explicitCommit.Status.Phase,
+			"branch", explicitCommit.Status.Branch,
+			"sha", explicitCommit.Status.SHA,
+			"message", explicitCommit.Status.Message)
+		return
+	}
+
+	log.Error(nil, "Gave up writing ExplicitCommit status after repeated conflicts")
+}
+
+// applyFinalizeResultToStatus maps a FinalizeResult (or a finalize error) onto
+// an ExplicitCommit's status.
+func applyFinalizeResultToStatus(
+	explicitCommit *configv1alpha1.ExplicitCommit,
+	result git.FinalizeResult,
+	finalizeErr error,
+	now metav1.Time,
+) {
+	explicitCommit.Status.ObservedTime = &now
+	explicitCommit.Status.Branch = result.Branch
+	explicitCommit.Status.Message = ""
+
+	if finalizeErr != nil {
+		explicitCommit.Status.Phase = configv1alpha1.ExplicitCommitPhaseFailed
+		explicitCommit.Status.Message = finalizeErr.Error()
+		return
+	}
+
+	switch result.Outcome {
+	case git.FinalizeCommitted:
+		explicitCommit.Status.Phase = configv1alpha1.ExplicitCommitPhaseCommitted
+		explicitCommit.Status.SHA = result.SHA
+	case git.FinalizeNoOpenWindow:
+		explicitCommit.Status.Phase = configv1alpha1.ExplicitCommitPhaseNoOpenWindow
+	default:
+		// An empty or unknown outcome with no error is a bug, not a benign
+		// "no open window"; record it as Failed so it is not silently hidden.
+		explicitCommit.Status.Phase = configv1alpha1.ExplicitCommitPhaseFailed
+		explicitCommit.Status.Message = "unexpected finalize outcome: " + string(result.Outcome)
+	}
+}
+
+// isTerminalExplicitCommitPhase reports whether the phase is one of the
+// terminal states (anything other than the initial WaitingForAuditEvent).
+func isTerminalExplicitCommitPhase(phase configv1alpha1.ExplicitCommitPhase) bool {
+	return phase == configv1alpha1.ExplicitCommitPhaseCommitted ||
+		phase == configv1alpha1.ExplicitCommitPhaseNoOpenWindow ||
+		phase == configv1alpha1.ExplicitCommitPhaseFailed
+}
+
+// auditEventMatchesObject reports whether the audit event's objectRef.uid
+// identifies the fetched object. An empty event UID (e.g. a Metadata-level
+// audit policy that omits it) is treated as a match.
+func auditEventMatchesObject(ref *auditv1.ObjectReference, objectUID types.UID) bool {
+	if ref == nil || ref.UID == "" {
+		return true
+	}
+	return ref.UID == objectUID
+}
+
+// capExplicitCommitMessage caps a user-supplied commit message at a defensive
+// byte length. CRD validation already rejects control characters and bounds
+// the length in Unicode characters, so the accepted message is used verbatim;
+// this cap only guards against an object that somehow bypassed validation.
+func capExplicitCommitMessage(message string) string {
+	if len(message) > explicitCommitMessageMaxBytes {
+		return truncateUTF8(message, explicitCommitMessageMaxBytes)
+	}
+	return message
+}
+
+// truncateUTF8 returns the longest prefix of s that fits within maxBytes
+// without splitting a multi-byte rune.
+func truncateUTF8(s string, maxBytes int) string {
+	if len(s) <= maxBytes {
+		return s
+	}
+	truncated := s[:maxBytes]
+	for len(truncated) > 0 && !utf8.ValidString(truncated) {
+		truncated = truncated[:len(truncated)-1]
+	}
+	return truncated
+}

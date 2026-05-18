@@ -42,15 +42,27 @@ import (
 	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
-// fakeEventRouter records calls to RouteToGitTargetEventStream.
+// fakeEventRouter records calls to RouteToGitTargetEventStream and
+// FinalizeGitTargetWindow.
 type fakeEventRouter struct {
 	calls  []routeCall
 	errFor map[string]error // keyed by gitDest.Key()
+
+	finalizeCalls  []finalizeCall
+	finalizeResult git.FinalizeResult
+	finalizeErr    error
 }
 
 type routeCall struct {
 	Event   git.Event
 	GitDest itypes.ResourceReference
+}
+
+type finalizeCall struct {
+	Author             string
+	GitTargetName      string
+	GitTargetNamespace string
+	Message            string
 }
 
 func (f *fakeEventRouter) RouteToGitTargetEventStream(event git.Event, gitDest itypes.ResourceReference) error {
@@ -61,6 +73,19 @@ func (f *fakeEventRouter) RouteToGitTargetEventStream(event git.Event, gitDest i
 		}
 	}
 	return nil
+}
+
+func (f *fakeEventRouter) FinalizeGitTargetWindow(
+	_ context.Context,
+	author, gitTargetName, gitTargetNamespace, message string,
+) (git.FinalizeResult, error) {
+	f.finalizeCalls = append(f.finalizeCalls, finalizeCall{
+		Author:             author,
+		GitTargetName:      gitTargetName,
+		GitTargetNamespace: gitTargetNamespace,
+		Message:            message,
+	})
+	return f.finalizeResult, f.finalizeErr
 }
 
 // --- splitAPIVersion ---
@@ -482,6 +507,8 @@ func TestNewAuditConsumer_RequiresAddress(t *testing.T) {
 		AuditConsumerConfig{},
 		rulestore.NewStore(),
 		&fakeEventRouter{},
+		nil,
+		nil,
 		logr.Discard(),
 	)
 	require.Error(t, err)
@@ -494,6 +521,8 @@ func TestNewAuditConsumer_DefaultsApplied(t *testing.T) {
 		AuditConsumerConfig{Addr: mr.Addr()},
 		rulestore.NewStore(),
 		&fakeEventRouter{},
+		nil,
+		nil,
 		logr.Discard(),
 	)
 	require.NoError(t, err)
@@ -520,6 +549,8 @@ func newTestConsumer(
 		},
 		rs,
 		er,
+		nil,
+		nil,
 		logr.Discard(),
 	)
 	require.NoError(t, err)
@@ -1121,6 +1152,8 @@ func TestStart_EnsureGroupRetriesUntilContextCancelled(t *testing.T) {
 		},
 		rulestore.NewStore(),
 		&fakeEventRouter{},
+		nil,
+		nil,
 		logr.Discard(),
 	)
 	require.NoError(t, err)
@@ -1143,6 +1176,8 @@ func TestReadAndProcessBatch_XReadGroupErrorReturnsError(t *testing.T) {
 		},
 		rulestore.NewStore(),
 		&fakeEventRouter{},
+		nil,
+		nil,
 		logr.Discard(),
 	)
 	require.NoError(t, err)

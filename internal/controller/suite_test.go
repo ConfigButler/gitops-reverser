@@ -124,6 +124,12 @@ var _ = BeforeSuite(func() {
 	}).SetupWithManager(mgr)
 	Expect(err).NotTo(HaveOccurred())
 
+	err = (&ExplicitCommitReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr)
+	Expect(err).NotTo(HaveOccurred())
+
 	// Note: Old git.Worker has been replaced by WorkerManager + BranchWorker architecture
 	// Webhook tests are handled separately in webhook package
 

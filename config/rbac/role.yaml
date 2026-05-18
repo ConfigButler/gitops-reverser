@@ -50,6 +50,7 @@ rules:
   - configbutler.ai
   resources:
   - clusterwatchrules/status
+  - explicitcommits/status
   - gitproviders/status
   - gittargets/status
   - watchrules/status
@@ -57,6 +58,14 @@ rules:
   - get
   - patch
   - update
+- apiGroups:
+  - configbutler.ai
+  resources:
+  - explicitcommits
+  verbs:
+  - get
+  - list
+  - watch
 - apiGroups:
   - configbutler.ai
   resources:

@@ -230,6 +230,8 @@ func main() {
 		},
 		ruleStore,
 		eventRouter,
+		mgr.GetClient(),
+		mgr.GetAPIReader(),
 		ctrl.Log.WithName("audit-consumer"),
 	)
 	fatalIfErr(consumerErr, "unable to initialize audit stream consumer")
@@ -287,6 +289,13 @@ func main() {
 		EventRouter:   eventRouter,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "GitTarget")
+		os.Exit(1)
+	}
+	if err := (&controller.ExplicitCommitReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "ExplicitCommit")
 		os.Exit(1)
 	}
 	// +kubebuilder:scaffold:builder

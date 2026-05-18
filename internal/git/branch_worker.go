@@ -227,6 +227,23 @@ func (w *BranchWorker) EnqueueRequest(request *WriteRequest) {
 	w.enqueueRequest(request)
 }
 
+// EnqueueFinalize adds a finalize signal to this worker's queue. Riding the
+// same queue as resource events is what makes the signal process in audit
+// order, after every earlier write. If the queue is full the signal is
+// dropped and its caller is notified immediately via the result channel.
+func (w *BranchWorker) EnqueueFinalize(signal *FinalizeSignal) {
+	if signal == nil {
+		return
+	}
+	select {
+	case w.eventQueue <- WorkItem{Finalize: signal}:
+		w.Log.V(1).Info("Finalize signal enqueued")
+	default:
+		w.Log.Error(nil, "Event queue full, finalize signal dropped")
+		signal.reply(FinalizeResult{Branch: w.Branch, Err: ErrFinalizeQueueFull})
+	}
+}
+
 func (w *BranchWorker) enqueueRequest(request *WriteRequest) {
 	if request == nil {
 		return
@@ -531,6 +548,11 @@ func (l *branchWorkerEventLoop) totalRetainedBytes() int64 {
 }
 
 func (l *branchWorkerEventLoop) handleQueueItem(item WorkItem) {
+	if item.Finalize != nil {
+		l.handleFinalizeSignal(item.Finalize)
+		return
+	}
+
 	if item.Request == nil {
 		return
 	}
@@ -618,15 +640,25 @@ func (l *branchWorkerEventLoop) resetCommitTimer() {
 	l.commitTimer.Reset(l.commitWindow)
 }
 
-// finalizeOpenWindow closes the live event window into one retained
-// commit-shaped pending write and creates the corresponding local commit. On
-// success the events move from openWindow to pendingWrites (retained until a
-// push succeeds). On failure the window is dropped: either the repo is
+// finalizeOpenWindow closes the live event window using the generated
+// grouped-commit message. It returns true when a commit-shaped pending write
+// was produced and retained.
+func (l *branchWorkerEventLoop) finalizeOpenWindow() bool {
+	return l.finalizeOpenWindowWithMessage("")
+}
+
+// finalizeOpenWindowWithMessage closes the live event window into one retained
+// commit-shaped pending write and creates the corresponding local commit. When
+// message is non-empty it is used verbatim as the commit message instead of
+// the generated grouped-commit message. On success the events move from
+// openWindow to pendingWrites (retained until a push succeeds) and the method
+// returns true. On failure the window is dropped — either the repo is
 // unreachable or the events are otherwise unrecoverable, and we don't want to
-// keep retrying with the same broken state on every commit cycle.
-func (l *branchWorkerEventLoop) finalizeOpenWindow() {
+// keep retrying with the same broken state on every commit cycle — and the
+// method returns false.
+func (l *branchWorkerEventLoop) finalizeOpenWindowWithMessage(message string) bool {
 	if l.openWindow == nil {
-		return
+		return false
 	}
 
 	l.stopCommitTimer()
@@ -637,21 +669,69 @@ func (l *branchWorkerEventLoop) finalizeOpenWindow() {
 		l.w.Log.Error(err, "Failed to build pending write; dropping open window", "events", len(events))
 		l.openWindow = nil
 		l.windowBytes = 0
-		return
+		return false
 	}
+	pendingWrite.CommitMessage = message
 
 	hasPendingCommits := len(l.pendingWrites) > 0
 	if err := l.w.commitPendingWrites([]PendingWrite{*pendingWrite}, hasPendingCommits); err != nil {
 		l.w.Log.Error(err, "Commit failed; dropping open window", "events", len(events))
 		l.openWindow = nil
 		l.windowBytes = 0
-		return
+		return false
 	}
 
 	l.pendingWrites = append(l.pendingWrites, *pendingWrite)
 	l.pendingWritesBytes += pendingWrite.ByteSize
 	l.openWindow = nil
 	l.windowBytes = 0
+	return true
+}
+
+// handleFinalizeSignal processes a FinalizeSignal dequeued from the event
+// queue. By audit-stream ordering every earlier write for this worker has
+// already been applied, so "the open window" is simply whichever window is
+// open right now. When no window is open the result is NoOpenWindow — the
+// author pressed save with nothing pending, which is not an error.
+//
+// A worker is keyed by provider and branch only, so the open window may
+// belong to a different author or GitTarget than this signal. In that case
+// the signal must not finalize it: the result is NoOpenWindow and the
+// unrelated window is left open for its own author to finalize.
+func (l *branchWorkerEventLoop) handleFinalizeSignal(signal *FinalizeSignal) {
+	if l.openWindow == nil {
+		l.w.Log.V(1).Info("Finalize signal: no open window to finalize")
+		signal.reply(FinalizeResult{Outcome: FinalizeNoOpenWindow, Branch: l.w.Branch})
+		return
+	}
+
+	if !signal.matchesWindow(l.openWindow) {
+		l.w.Log.V(1).Info("Finalize signal: open window belongs to a different author/target; leaving it open",
+			"signalAuthor", signal.Author,
+			"signalTarget", signal.GitTargetNamespace+"/"+signal.GitTargetName,
+			"windowAuthor", l.openWindow.Author,
+			"windowTarget", l.openWindow.GitTargetNamespace+"/"+l.openWindow.GitTarget)
+		signal.reply(FinalizeResult{Outcome: FinalizeNoOpenWindow, Branch: l.w.Branch})
+		return
+	}
+
+	if !l.finalizeOpenWindowWithMessage(signal.CommitMessage) {
+		signal.reply(FinalizeResult{
+			Branch: l.w.Branch,
+			Err:    errors.New("finalize failed; open window was dropped"),
+		})
+		return
+	}
+	l.maybeSchedulePush()
+
+	sha, err := l.w.writeBranchHeadSHA()
+	if err != nil {
+		signal.reply(FinalizeResult{Branch: l.w.Branch, Err: fmt.Errorf("read commit SHA: %w", err)})
+		return
+	}
+
+	l.w.Log.Info("Finalize signal committed open window", "sha", sha)
+	signal.reply(FinalizeResult{Outcome: FinalizeCommitted, SHA: sha, Branch: l.w.Branch})
 }
 
 // maybeSchedulePush is the post-commit hook: it pushes immediately when the
@@ -945,6 +1025,31 @@ func (w *BranchWorker) ensureWriteBranch(repo *gogit.Repository) (plumbing.Refer
 	}
 
 	return baseBranch, baseHash, nil
+}
+
+// writeBranchHeadSHA returns the current HEAD SHA of the worker's branch in
+// the local repository. It is called right after finalizeOpenWindow creates a
+// local commit so the resulting SHA can be reported back to an ExplicitCommit.
+func (w *BranchWorker) writeBranchHeadSHA() (string, error) {
+	w.repoMu.Lock()
+	defer w.repoMu.Unlock()
+
+	provider, err := w.getGitProvider(w.ctx)
+	if err != nil {
+		return "", fmt.Errorf("get GitProvider: %w", err)
+	}
+
+	repo, err := gogit.PlainOpen(w.repoPathForRemote(provider.Spec.URL))
+	if err != nil {
+		return "", fmt.Errorf("open repository: %w", err)
+	}
+
+	ref, err := repo.Reference(plumbing.NewBranchReferenceName(w.Branch), true)
+	if err != nil {
+		return "", fmt.Errorf("resolve branch %q: %w", w.Branch, err)
+	}
+
+	return ref.Hash().String(), nil
 }
 
 func (w *BranchWorker) recordPendingWritesMetrics(pendingWrites []PendingWrite, commitsCreated int) {

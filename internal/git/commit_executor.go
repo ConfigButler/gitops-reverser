@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"time"
 
 	gogit "github.com/go-git/go-git/v5"
@@ -66,6 +67,13 @@ func (p PendingWrite) path() string {
 
 func (p PendingWrite) commitMetadata() (string, *gogit.CommitOptions, error) {
 	when := time.Now()
+
+	// An explicit literal message (e.g. from an ExplicitCommit's spec.message)
+	// is used verbatim, bypassing the per-event / grouped / snapshot templates.
+	if message := strings.TrimSpace(p.CommitMessage); message != "" {
+		return p.CommitMessage, commitOptionsFor(p, p.CommitConfig, p.Signer, when), nil
+	}
+
 	switch p.MessageKind() {
 	case CommitMessagePerEvent:
 		if len(p.Events) != 1 {
