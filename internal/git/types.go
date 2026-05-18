@@ -168,9 +168,13 @@ const (
 	CommitMessageGrouped  CommitMessageKind = "group"
 )
 
-// WorkItem is the unit of work in the BranchWorker queue.
+// WorkItem is the unit of work in the BranchWorker queue. Exactly one of
+// Request or Finalize is set.
 type WorkItem struct {
+	// Request is a resource-write request.
 	Request *WriteRequest
+	// Finalize is a "finalize the open commit window now" signal.
+	Finalize *FinalizeSignal
 }
 
 // Event represents a resource change event to be processed by a branch worker.

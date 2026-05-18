@@ -51,4 +51,9 @@ rules:
     - patch
     - delete
     - deletecollection
-    # No resources listed = Matches everything else (including CRDs)
+    # No resources listed = Matches everything else (including CRDs).
+    # This also captures `explicitcommits.configbutler.ai` create events, which
+    # drive the "finalize the open commit window now" path. If this catch-all
+    # is ever narrowed, keep at least Metadata-level capture for
+    # `explicitcommits` create events — the consumer reads the object body from
+    # the apiserver, so Metadata is sufficient.

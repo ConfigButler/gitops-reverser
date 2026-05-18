@@ -22,6 +22,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/go-logr/logr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -32,6 +33,11 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/reconcile"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
+
+// finalizeSignalTimeout bounds how long FinalizeGitTargetWindow waits for a
+// branch worker to process a finalize signal before giving up. The signal
+// rides the worker's event queue, so a healthy worker replies promptly.
+const finalizeSignalTimeout = 30 * time.Second
 
 // EventRouter orchestrates control flow between components.
 // It dispatches events to BranchWorkers, calls services synchronously,
@@ -93,6 +99,71 @@ func (r *EventRouter) RouteEvent(
 		"path", event.Path)
 
 	return nil
+}
+
+// FinalizeGitTargetWindow finalizes the open commit window for the branch
+// worker backing the named GitTarget. It resolves the GitTarget's
+// (provider, branch), enqueues a finalize signal on that worker's event
+// queue, and blocks until the worker reports the outcome.
+//
+// The signal is bound to author and target: a worker is keyed only by
+// provider and branch, so it finalizes the window only when the open window
+// belongs to the same author and GitTarget.
+//
+// When no worker exists for the GitTarget there is, by definition, no open
+// commit window, so the result is NoOpenWindow rather than an error. When the
+// worker reports a finalize failure (e.g. a failed local commit or a
+// saturated queue) that failure is returned as an error.
+func (r *EventRouter) FinalizeGitTargetWindow(
+	ctx context.Context,
+	author, gitTargetName, gitTargetNamespace, message string,
+) (git.FinalizeResult, error) {
+	var gitTarget configv1alpha1.GitTarget
+	if err := r.Client.Get(ctx, client.ObjectKey{
+		Name:      gitTargetName,
+		Namespace: gitTargetNamespace,
+	}, &gitTarget); err != nil {
+		return git.FinalizeResult{}, fmt.Errorf("get GitTarget %s/%s: %w",
+			gitTargetNamespace, gitTargetName, err)
+	}
+
+	worker, exists := r.WorkerManager.GetWorkerForTarget(
+		gitTarget.Spec.ProviderRef.Name,
+		gitTarget.Namespace, // provider is in the same namespace as the target
+		gitTarget.Spec.Branch,
+	)
+	if !exists {
+		r.Log.V(1).Info("FinalizeGitTargetWindow: no worker for GitTarget, nothing to finalize",
+			"gitTarget", gitTargetNamespace+"/"+gitTargetName)
+		return git.FinalizeResult{
+			Outcome: git.FinalizeNoOpenWindow,
+			Branch:  gitTarget.Spec.Branch,
+		}, nil
+	}
+
+	resultCh := make(chan git.FinalizeResult, 1)
+	worker.EnqueueFinalize(&git.FinalizeSignal{
+		CommitMessage:      message,
+		Author:             author,
+		GitTargetName:      gitTargetName,
+		GitTargetNamespace: gitTargetNamespace,
+		Result:             resultCh,
+	})
+
+	select {
+	case result := <-resultCh:
+		// A finalize failure (failed commit, saturated queue) must surface as
+		// an error so callers do not mistake it for a benign terminal outcome.
+		if result.Err != nil {
+			return result, result.Err
+		}
+		return result, nil
+	case <-ctx.Done():
+		return git.FinalizeResult{}, ctx.Err()
+	case <-time.After(finalizeSignalTimeout):
+		return git.FinalizeResult{}, fmt.Errorf("timed out finalizing window for GitTarget %s/%s",
+			gitTargetNamespace, gitTargetName)
+	}
 }
 
 // ProcessControlEvent handles control events from reconcilers.
