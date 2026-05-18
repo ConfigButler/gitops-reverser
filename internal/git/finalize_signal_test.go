@@ -143,7 +143,7 @@ func TestHandleFinalizeSignal_CommitsOpenWindow(t *testing.T) {
 
 	commit, err := repo.CommitObject(ref.Hash())
 	require.NoError(t, err)
-	assert.Equal(t, message, commit.Message, "explicit commit message must be used verbatim")
+	assert.Equal(t, message, commit.Message, "commit request message must be used verbatim")
 	assert.Equal(t, "alice", commit.Author.Name, "commit author is the editing user")
 }
 

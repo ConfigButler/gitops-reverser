@@ -43,12 +43,12 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
 )
 
-func explicitCommitAuditEvent(namespace, name string) auditv1.Event {
+func commitRequestAuditEvent(namespace, name string) auditv1.Event {
 	event := auditv1.Event{
 		Verb:  "create",
 		Stage: auditv1.StageResponseComplete,
 		ObjectRef: &auditv1.ObjectReference{
-			Resource:   explicitCommitResource,
+			Resource:   commitRequestResource,
 			APIGroup:   configv1alpha1.GroupVersion.Group,
 			APIVersion: configv1alpha1.GroupVersion.Version,
 			Namespace:  namespace,
@@ -59,7 +59,7 @@ func explicitCommitAuditEvent(namespace, name string) auditv1.Event {
 	return event
 }
 
-func newExplicitCommitConsumer(
+func newCommitRequestConsumer(
 	t *testing.T,
 	router AuditEventRouter,
 	objects ...client.Object,
@@ -70,7 +70,7 @@ func newExplicitCommitConsumer(
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithObjects(objects...).
-		WithStatusSubresource(&configv1alpha1.ExplicitCommit{}).
+		WithStatusSubresource(&configv1alpha1.CommitRequest{}).
 		Build()
 	consumer := &AuditConsumer{
 		eventRouter: router,
@@ -81,22 +81,22 @@ func newExplicitCommitConsumer(
 	return consumer, fakeClient
 }
 
-func waitingExplicitCommit(namespace, name, gitTarget, message string) *configv1alpha1.ExplicitCommit {
-	return &configv1alpha1.ExplicitCommit{
+func waitingCommitRequest(namespace, name, gitTarget, message string) *configv1alpha1.CommitRequest {
+	return &configv1alpha1.CommitRequest{
 		ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: name},
-		Spec: configv1alpha1.ExplicitCommitSpec{
-			GitTargetRef: configv1alpha1.ExplicitCommitGitTargetReference{Name: gitTarget},
+		Spec: configv1alpha1.CommitRequestSpec{
+			GitTargetRef: configv1alpha1.CommitRequestGitTargetReference{Name: gitTarget},
 			Message:      message,
 		},
-		Status: configv1alpha1.ExplicitCommitStatus{
-			Phase: configv1alpha1.ExplicitCommitPhaseWaitingForAuditEvent,
+		Status: configv1alpha1.CommitRequestStatus{
+			Phase: configv1alpha1.CommitRequestPhaseWaitingForAuditEvent,
 		},
 	}
 }
 
-// --- isExplicitCommitCreate ---
+// --- isCommitRequestCreate ---
 
-func TestIsExplicitCommitCreate(t *testing.T) {
+func TestIsCommitRequestCreate(t *testing.T) {
 	consumer := &AuditConsumer{}
 
 	tests := []struct {
@@ -105,14 +105,14 @@ func TestIsExplicitCommitCreate(t *testing.T) {
 		want  bool
 	}{
 		{
-			name:  "explicit commit create",
-			event: explicitCommitAuditEvent("team-a", "save-1"),
+			name:  "commit request create",
+			event: commitRequestAuditEvent("team-a", "save-1"),
 			want:  true,
 		},
 		{
 			name: "status subresource update is not a create",
 			event: func() auditv1.Event {
-				e := explicitCommitAuditEvent("team-a", "save-1")
+				e := commitRequestAuditEvent("team-a", "save-1")
 				e.Verb = "update"
 				e.ObjectRef.Subresource = "status"
 				return e
@@ -122,7 +122,7 @@ func TestIsExplicitCommitCreate(t *testing.T) {
 		{
 			name: "create on the status subresource is excluded",
 			event: func() auditv1.Event {
-				e := explicitCommitAuditEvent("team-a", "save-1")
+				e := commitRequestAuditEvent("team-a", "save-1")
 				e.ObjectRef.Subresource = "status"
 				return e
 			}(),
@@ -131,7 +131,7 @@ func TestIsExplicitCommitCreate(t *testing.T) {
 		{
 			name: "other resource",
 			event: func() auditv1.Event {
-				e := explicitCommitAuditEvent("team-a", "save-1")
+				e := commitRequestAuditEvent("team-a", "save-1")
 				e.ObjectRef.Resource = "configmaps"
 				e.ObjectRef.APIGroup = ""
 				return e
@@ -141,7 +141,7 @@ func TestIsExplicitCommitCreate(t *testing.T) {
 		{
 			name: "wrong api group",
 			event: func() auditv1.Event {
-				e := explicitCommitAuditEvent("team-a", "save-1")
+				e := commitRequestAuditEvent("team-a", "save-1")
 				e.ObjectRef.APIGroup = "example.com"
 				return e
 			}(),
@@ -156,33 +156,33 @@ func TestIsExplicitCommitCreate(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.want, consumer.isExplicitCommitCreate(tt.event))
+			assert.Equal(t, tt.want, consumer.isCommitRequestCreate(tt.event))
 		})
 	}
 }
 
-// --- capExplicitCommitMessage ---
+// --- capCommitRequestMessage ---
 
-func TestCapExplicitCommitMessage(t *testing.T) {
+func TestCapCommitRequestMessage(t *testing.T) {
 	t.Run("empty stays empty", func(t *testing.T) {
-		assert.Empty(t, capExplicitCommitMessage(""))
+		assert.Empty(t, capCommitRequestMessage(""))
 	})
 
 	t.Run("valid message is used verbatim", func(t *testing.T) {
 		// CRD validation owns content rules; the consumer does not rewrite an
 		// accepted message, only caps a defensively oversized one.
 		msg := "line one\nline two"
-		assert.Equal(t, msg, capExplicitCommitMessage(msg))
+		assert.Equal(t, msg, capCommitRequestMessage(msg))
 	})
 
 	t.Run("oversized message is capped", func(t *testing.T) {
-		got := capExplicitCommitMessage(strings.Repeat("x", explicitCommitMessageMaxBytes+50))
-		assert.Len(t, got, explicitCommitMessageMaxBytes)
+		got := capCommitRequestMessage(strings.Repeat("x", commitRequestMessageMaxBytes+50))
+		assert.Len(t, got, commitRequestMessageMaxBytes)
 	})
 
 	t.Run("capping does not split a multi-byte rune", func(t *testing.T) {
-		got := capExplicitCommitMessage(strings.Repeat("é", explicitCommitMessageMaxBytes))
-		assert.LessOrEqual(t, len(got), explicitCommitMessageMaxBytes)
+		got := capCommitRequestMessage(strings.Repeat("é", commitRequestMessageMaxBytes))
+		assert.LessOrEqual(t, len(got), commitRequestMessageMaxBytes)
 		assert.True(t, utf8.ValidString(got))
 		assert.NotEmpty(t, got)
 	})
@@ -194,13 +194,13 @@ func TestApplyFinalizeResultToStatus(t *testing.T) {
 	now := metav1.Now()
 
 	t.Run("committed", func(t *testing.T) {
-		ec := &configv1alpha1.ExplicitCommit{}
+		ec := &configv1alpha1.CommitRequest{}
 		applyFinalizeResultToStatus(ec, git.FinalizeResult{
 			Outcome: git.FinalizeCommitted,
 			SHA:     "abc123",
 			Branch:  "main",
 		}, nil, now)
-		assert.Equal(t, configv1alpha1.ExplicitCommitPhaseCommitted, ec.Status.Phase)
+		assert.Equal(t, configv1alpha1.CommitRequestPhaseCommitted, ec.Status.Phase)
 		assert.Equal(t, "abc123", ec.Status.SHA)
 		assert.Equal(t, "main", ec.Status.Branch)
 		assert.Empty(t, ec.Status.Message)
@@ -208,29 +208,29 @@ func TestApplyFinalizeResultToStatus(t *testing.T) {
 	})
 
 	t.Run("no open window", func(t *testing.T) {
-		ec := &configv1alpha1.ExplicitCommit{}
+		ec := &configv1alpha1.CommitRequest{}
 		applyFinalizeResultToStatus(ec, git.FinalizeResult{
 			Outcome: git.FinalizeNoOpenWindow,
 			Branch:  "main",
 		}, nil, now)
-		assert.Equal(t, configv1alpha1.ExplicitCommitPhaseNoOpenWindow, ec.Status.Phase)
+		assert.Equal(t, configv1alpha1.CommitRequestPhaseNoOpenWindow, ec.Status.Phase)
 		assert.Empty(t, ec.Status.SHA)
 	})
 
 	t.Run("finalize error becomes Failed with the error message", func(t *testing.T) {
-		ec := &configv1alpha1.ExplicitCommit{}
+		ec := &configv1alpha1.CommitRequest{}
 		applyFinalizeResultToStatus(ec, git.FinalizeResult{Branch: "main"},
 			errors.New("branch worker event queue full"), now)
-		assert.Equal(t, configv1alpha1.ExplicitCommitPhaseFailed, ec.Status.Phase)
+		assert.Equal(t, configv1alpha1.CommitRequestPhaseFailed, ec.Status.Phase)
 		assert.Equal(t, "branch worker event queue full", ec.Status.Message)
 		assert.Equal(t, "main", ec.Status.Branch)
 		assert.Empty(t, ec.Status.SHA)
 	})
 
 	t.Run("unknown outcome with no error becomes Failed", func(t *testing.T) {
-		ec := &configv1alpha1.ExplicitCommit{}
+		ec := &configv1alpha1.CommitRequest{}
 		applyFinalizeResultToStatus(ec, git.FinalizeResult{Outcome: "Bogus"}, nil, now)
-		assert.Equal(t, configv1alpha1.ExplicitCommitPhaseFailed, ec.Status.Phase)
+		assert.Equal(t, configv1alpha1.CommitRequestPhaseFailed, ec.Status.Phase)
 		assert.Contains(t, ec.Status.Message, "Bogus")
 	})
 }
@@ -246,35 +246,35 @@ func TestTruncateUTF8(t *testing.T) {
 	assert.Equal(t, "é", truncated)
 }
 
-// --- writeExplicitCommitStatus ---
+// --- writeCommitRequestStatus ---
 
-func TestWriteExplicitCommitStatus_ObjectDeleted(t *testing.T) {
-	consumer, _ := newExplicitCommitConsumer(t, &fakeEventRouter{}) // no objects
+func TestWriteCommitRequestStatus_ObjectDeleted(t *testing.T) {
+	consumer, _ := newCommitRequestConsumer(t, &fakeEventRouter{}) // no objects
 
 	// Must not panic when the object disappeared before status could be written.
-	consumer.writeExplicitCommitStatus(context.Background(), logr.Discard(),
+	consumer.writeCommitRequestStatus(context.Background(), logr.Discard(),
 		"team-a", "vanished", "", git.FinalizeResult{Outcome: git.FinalizeCommitted}, nil)
 }
 
-func TestWriteExplicitCommitStatus_AlreadyTerminalIsLeftAlone(t *testing.T) {
-	terminal := waitingExplicitCommit("team-a", "save-x", "team-a-config", "")
-	terminal.Status.Phase = configv1alpha1.ExplicitCommitPhaseNoOpenWindow
-	consumer, fakeClient := newExplicitCommitConsumer(t, &fakeEventRouter{}, terminal)
+func TestWriteCommitRequestStatus_AlreadyTerminalIsLeftAlone(t *testing.T) {
+	terminal := waitingCommitRequest("team-a", "save-x", "team-a-config", "")
+	terminal.Status.Phase = configv1alpha1.CommitRequestPhaseNoOpenWindow
+	consumer, fakeClient := newCommitRequestConsumer(t, &fakeEventRouter{}, terminal)
 
-	consumer.writeExplicitCommitStatus(context.Background(), logr.Discard(),
+	consumer.writeCommitRequestStatus(context.Background(), logr.Discard(),
 		"team-a", "save-x", "", git.FinalizeResult{Outcome: git.FinalizeCommitted, SHA: "zzz"}, nil)
 
-	var updated configv1alpha1.ExplicitCommit
+	var updated configv1alpha1.CommitRequest
 	require.NoError(t, fakeClient.Get(context.Background(),
 		client.ObjectKey{Namespace: "team-a", Name: "save-x"}, &updated))
-	assert.Equal(t, configv1alpha1.ExplicitCommitPhaseNoOpenWindow, updated.Status.Phase,
+	assert.Equal(t, configv1alpha1.CommitRequestPhaseNoOpenWindow, updated.Status.Phase,
 		"a concurrently-written terminal phase must not be overwritten")
 	assert.Empty(t, updated.Status.SHA)
 }
 
-// explicitCommitConsumerWithInterceptor builds a consumer whose Kubernetes
+// commitRequestConsumerWithInterceptor builds a consumer whose Kubernetes
 // client applies the given interceptor funcs, for exercising error paths.
-func explicitCommitConsumerWithInterceptor(
+func commitRequestConsumerWithInterceptor(
 	t *testing.T,
 	funcs interceptor.Funcs,
 	objects ...client.Object,
@@ -285,7 +285,7 @@ func explicitCommitConsumerWithInterceptor(
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithObjects(objects...).
-		WithStatusSubresource(&configv1alpha1.ExplicitCommit{}).
+		WithStatusSubresource(&configv1alpha1.CommitRequest{}).
 		WithInterceptorFuncs(funcs).
 		Build()
 	return &AuditConsumer{
@@ -296,98 +296,98 @@ func explicitCommitConsumerWithInterceptor(
 	}
 }
 
-func explicitCommitConflict(name string) error {
+func commitRequestConflict(name string) error {
 	return apierrors.NewConflict(
-		schema.GroupResource{Group: configv1alpha1.GroupVersion.Group, Resource: explicitCommitResource},
+		schema.GroupResource{Group: configv1alpha1.GroupVersion.Group, Resource: commitRequestResource},
 		name, errors.New("optimistic lock"))
 }
 
-func TestWriteExplicitCommitStatus_RetriesOnConflict(t *testing.T) {
+func TestWriteCommitRequestStatus_RetriesOnConflict(t *testing.T) {
 	attempts := 0
-	consumer := explicitCommitConsumerWithInterceptor(t, interceptor.Funcs{
+	consumer := commitRequestConsumerWithInterceptor(t, interceptor.Funcs{
 		SubResourceUpdate: func(
 			ctx context.Context, c client.Client, _ string,
 			obj client.Object, opts ...client.SubResourceUpdateOption,
 		) error {
 			attempts++
 			if attempts == 1 {
-				return explicitCommitConflict(obj.GetName())
+				return commitRequestConflict(obj.GetName())
 			}
 			return c.Status().Update(ctx, obj, opts...)
 		},
-	}, waitingExplicitCommit("team-a", "save-c", "team-a-config", ""))
+	}, waitingCommitRequest("team-a", "save-c", "team-a-config", ""))
 
-	consumer.writeExplicitCommitStatus(context.Background(), logr.Discard(),
+	consumer.writeCommitRequestStatus(context.Background(), logr.Discard(),
 		"team-a", "save-c", "",
 		git.FinalizeResult{Outcome: git.FinalizeCommitted, SHA: "sha-after-retry", Branch: "main"}, nil)
 
 	assert.Equal(t, 2, attempts, "the first conflicting update should be retried")
 
-	var updated configv1alpha1.ExplicitCommit
+	var updated configv1alpha1.CommitRequest
 	require.NoError(t, consumer.kubeClient.Get(context.Background(),
 		client.ObjectKey{Namespace: "team-a", Name: "save-c"}, &updated))
-	assert.Equal(t, configv1alpha1.ExplicitCommitPhaseCommitted, updated.Status.Phase)
+	assert.Equal(t, configv1alpha1.CommitRequestPhaseCommitted, updated.Status.Phase)
 	assert.Equal(t, "sha-after-retry", updated.Status.SHA)
 }
 
-func TestWriteExplicitCommitStatus_GivesUpAfterPersistentConflicts(t *testing.T) {
-	consumer := explicitCommitConsumerWithInterceptor(t, interceptor.Funcs{
+func TestWriteCommitRequestStatus_GivesUpAfterPersistentConflicts(t *testing.T) {
+	consumer := commitRequestConsumerWithInterceptor(t, interceptor.Funcs{
 		SubResourceUpdate: func(
 			_ context.Context, _ client.Client, _ string,
 			obj client.Object, _ ...client.SubResourceUpdateOption,
 		) error {
-			return explicitCommitConflict(obj.GetName())
+			return commitRequestConflict(obj.GetName())
 		},
-	}, waitingExplicitCommit("team-a", "save-d", "team-a-config", ""))
+	}, waitingCommitRequest("team-a", "save-d", "team-a-config", ""))
 
 	// Must give up without panicking and without writing a terminal phase.
-	consumer.writeExplicitCommitStatus(context.Background(), logr.Discard(),
+	consumer.writeCommitRequestStatus(context.Background(), logr.Discard(),
 		"team-a", "save-d", "", git.FinalizeResult{Outcome: git.FinalizeCommitted, SHA: "never"}, nil)
 
-	var updated configv1alpha1.ExplicitCommit
+	var updated configv1alpha1.CommitRequest
 	require.NoError(t, consumer.kubeClient.Get(context.Background(),
 		client.ObjectKey{Namespace: "team-a", Name: "save-d"}, &updated))
-	assert.Equal(t, configv1alpha1.ExplicitCommitPhaseWaitingForAuditEvent, updated.Status.Phase)
+	assert.Equal(t, configv1alpha1.CommitRequestPhaseWaitingForAuditEvent, updated.Status.Phase)
 }
 
-func TestWriteExplicitCommitStatus_NonConflictUpdateErrorIsReported(t *testing.T) {
-	consumer := explicitCommitConsumerWithInterceptor(t, interceptor.Funcs{
+func TestWriteCommitRequestStatus_NonConflictUpdateErrorIsReported(t *testing.T) {
+	consumer := commitRequestConsumerWithInterceptor(t, interceptor.Funcs{
 		SubResourceUpdate: func(
 			_ context.Context, _ client.Client, _ string,
 			_ client.Object, _ ...client.SubResourceUpdateOption,
 		) error {
 			return errors.New("status backend unavailable")
 		},
-	}, waitingExplicitCommit("team-a", "save-e", "team-a-config", ""))
+	}, waitingCommitRequest("team-a", "save-e", "team-a-config", ""))
 
 	// A non-conflict error is logged and the method returns without panicking.
-	consumer.writeExplicitCommitStatus(context.Background(), logr.Discard(),
+	consumer.writeCommitRequestStatus(context.Background(), logr.Discard(),
 		"team-a", "save-e", "", git.FinalizeResult{Outcome: git.FinalizeNoOpenWindow}, nil)
 
-	var updated configv1alpha1.ExplicitCommit
+	var updated configv1alpha1.CommitRequest
 	require.NoError(t, consumer.kubeClient.Get(context.Background(),
 		client.ObjectKey{Namespace: "team-a", Name: "save-e"}, &updated))
-	assert.Equal(t, configv1alpha1.ExplicitCommitPhaseWaitingForAuditEvent, updated.Status.Phase)
+	assert.Equal(t, configv1alpha1.CommitRequestPhaseWaitingForAuditEvent, updated.Status.Phase)
 }
 
-func TestWriteExplicitCommitStatus_ReReadErrorIsReported(t *testing.T) {
-	consumer := explicitCommitConsumerWithInterceptor(t, interceptor.Funcs{
+func TestWriteCommitRequestStatus_ReReadErrorIsReported(t *testing.T) {
+	consumer := commitRequestConsumerWithInterceptor(t, interceptor.Funcs{
 		Get: func(
 			_ context.Context, _ client.WithWatch, _ client.ObjectKey,
 			_ client.Object, _ ...client.GetOption,
 		) error {
 			return errors.New("apiserver unreachable")
 		},
-	}, waitingExplicitCommit("team-a", "save-f", "team-a-config", ""))
+	}, waitingCommitRequest("team-a", "save-f", "team-a-config", ""))
 
 	// A re-read failure is logged and the method returns without panicking.
-	consumer.writeExplicitCommitStatus(context.Background(), logr.Discard(),
+	consumer.writeCommitRequestStatus(context.Background(), logr.Discard(),
 		"team-a", "save-f", "", git.FinalizeResult{Outcome: git.FinalizeCommitted}, nil)
 }
 
-// --- handleExplicitCommit ---
+// --- handleCommitRequest ---
 
-func TestHandleExplicitCommit_Committed(t *testing.T) {
+func TestHandleCommitRequest_Committed(t *testing.T) {
 	router := &fakeEventRouter{
 		finalizeResult: git.FinalizeResult{
 			Outcome: git.FinalizeCommitted,
@@ -395,13 +395,13 @@ func TestHandleExplicitCommit_Committed(t *testing.T) {
 			Branch:  "main",
 		},
 	}
-	consumer, fakeClient := newExplicitCommitConsumer(
+	consumer, fakeClient := newCommitRequestConsumer(
 		t, router,
-		waitingExplicitCommit("team-a", "save-1", "team-a-config", "increase memory"),
+		waitingCommitRequest("team-a", "save-1", "team-a-config", "increase memory"),
 	)
 
-	consumer.handleExplicitCommit(context.Background(), logr.Discard(),
-		explicitCommitAuditEvent("team-a", "save-1"))
+	consumer.handleCommitRequest(context.Background(), logr.Discard(),
+		commitRequestAuditEvent("team-a", "save-1"))
 
 	require.Len(t, router.finalizeCalls, 1)
 	assert.Equal(t, "alice", router.finalizeCalls[0].Author,
@@ -410,148 +410,148 @@ func TestHandleExplicitCommit_Committed(t *testing.T) {
 	assert.Equal(t, "team-a", router.finalizeCalls[0].GitTargetNamespace)
 	assert.Equal(t, "increase memory", router.finalizeCalls[0].Message)
 
-	var updated configv1alpha1.ExplicitCommit
+	var updated configv1alpha1.CommitRequest
 	require.NoError(t, fakeClient.Get(context.Background(),
 		client.ObjectKey{Namespace: "team-a", Name: "save-1"}, &updated))
-	assert.Equal(t, configv1alpha1.ExplicitCommitPhaseCommitted, updated.Status.Phase)
+	assert.Equal(t, configv1alpha1.CommitRequestPhaseCommitted, updated.Status.Phase)
 	assert.Equal(t, "deadbeef", updated.Status.SHA)
 	assert.Equal(t, "main", updated.Status.Branch)
 	assert.NotNil(t, updated.Status.ObservedTime)
 }
 
-func TestHandleExplicitCommit_NoOpenWindow(t *testing.T) {
+func TestHandleCommitRequest_NoOpenWindow(t *testing.T) {
 	router := &fakeEventRouter{
 		finalizeResult: git.FinalizeResult{Outcome: git.FinalizeNoOpenWindow, Branch: "main"},
 	}
-	consumer, fakeClient := newExplicitCommitConsumer(
+	consumer, fakeClient := newCommitRequestConsumer(
 		t, router,
-		waitingExplicitCommit("team-b", "save-2", "team-b-config", ""),
+		waitingCommitRequest("team-b", "save-2", "team-b-config", ""),
 	)
 
-	consumer.handleExplicitCommit(context.Background(), logr.Discard(),
-		explicitCommitAuditEvent("team-b", "save-2"))
+	consumer.handleCommitRequest(context.Background(), logr.Discard(),
+		commitRequestAuditEvent("team-b", "save-2"))
 
-	var updated configv1alpha1.ExplicitCommit
+	var updated configv1alpha1.CommitRequest
 	require.NoError(t, fakeClient.Get(context.Background(),
 		client.ObjectKey{Namespace: "team-b", Name: "save-2"}, &updated))
-	assert.Equal(t, configv1alpha1.ExplicitCommitPhaseNoOpenWindow, updated.Status.Phase)
+	assert.Equal(t, configv1alpha1.CommitRequestPhaseNoOpenWindow, updated.Status.Phase)
 	assert.Empty(t, updated.Status.SHA)
 }
 
-func TestHandleExplicitCommit_ObjectDeleted(t *testing.T) {
+func TestHandleCommitRequest_ObjectDeleted(t *testing.T) {
 	router := &fakeEventRouter{}
-	consumer, _ := newExplicitCommitConsumer(t, router) // no objects
+	consumer, _ := newCommitRequestConsumer(t, router) // no objects
 
 	// Must not panic and must not attempt a finalize for a missing object.
-	consumer.handleExplicitCommit(context.Background(), logr.Discard(),
-		explicitCommitAuditEvent("team-a", "gone"))
+	consumer.handleCommitRequest(context.Background(), logr.Discard(),
+		commitRequestAuditEvent("team-a", "gone"))
 
 	assert.Empty(t, router.finalizeCalls)
 }
 
-func TestHandleExplicitCommit_AlreadyTerminalSkips(t *testing.T) {
+func TestHandleCommitRequest_AlreadyTerminalSkips(t *testing.T) {
 	router := &fakeEventRouter{}
-	terminal := waitingExplicitCommit("team-a", "save-3", "team-a-config", "")
-	terminal.Status.Phase = configv1alpha1.ExplicitCommitPhaseCommitted
-	consumer, _ := newExplicitCommitConsumer(t, router, terminal)
+	terminal := waitingCommitRequest("team-a", "save-3", "team-a-config", "")
+	terminal.Status.Phase = configv1alpha1.CommitRequestPhaseCommitted
+	consumer, _ := newCommitRequestConsumer(t, router, terminal)
 
-	consumer.handleExplicitCommit(context.Background(), logr.Discard(),
-		explicitCommitAuditEvent("team-a", "save-3"))
+	consumer.handleCommitRequest(context.Background(), logr.Discard(),
+		commitRequestAuditEvent("team-a", "save-3"))
 
-	assert.Empty(t, router.finalizeCalls, "a terminal ExplicitCommit must not be re-finalized")
+	assert.Empty(t, router.finalizeCalls, "a terminal CommitRequest must not be re-finalized")
 }
 
-func TestHandleExplicitCommit_FinalizeErrorBecomesFailed(t *testing.T) {
+func TestHandleCommitRequest_FinalizeErrorBecomesFailed(t *testing.T) {
 	router := &fakeEventRouter{finalizeErr: errors.New("branch worker event queue full")}
-	consumer, fakeClient := newExplicitCommitConsumer(
+	consumer, fakeClient := newCommitRequestConsumer(
 		t, router,
-		waitingExplicitCommit("team-a", "save-4", "missing-target", ""),
+		waitingCommitRequest("team-a", "save-4", "missing-target", ""),
 	)
 
-	consumer.handleExplicitCommit(context.Background(), logr.Discard(),
-		explicitCommitAuditEvent("team-a", "save-4"))
+	consumer.handleCommitRequest(context.Background(), logr.Discard(),
+		commitRequestAuditEvent("team-a", "save-4"))
 
-	var updated configv1alpha1.ExplicitCommit
+	var updated configv1alpha1.CommitRequest
 	require.NoError(t, fakeClient.Get(context.Background(),
 		client.ObjectKey{Namespace: "team-a", Name: "save-4"}, &updated))
-	assert.Equal(t, configv1alpha1.ExplicitCommitPhaseFailed, updated.Status.Phase,
+	assert.Equal(t, configv1alpha1.CommitRequestPhaseFailed, updated.Status.Phase,
 		"a finalize error must surface as the Failed terminal phase")
 	assert.Equal(t, "branch worker event queue full", updated.Status.Message)
 }
 
-func TestHandleExplicitCommit_ReadErrorSkips(t *testing.T) {
-	consumer := explicitCommitConsumerWithInterceptor(t, interceptor.Funcs{
+func TestHandleCommitRequest_ReadErrorSkips(t *testing.T) {
+	consumer := commitRequestConsumerWithInterceptor(t, interceptor.Funcs{
 		Get: func(
 			_ context.Context, _ client.WithWatch, _ client.ObjectKey,
 			_ client.Object, _ ...client.GetOption,
 		) error {
 			return errors.New("apiserver unreachable")
 		},
-	}, waitingExplicitCommit("team-a", "save-g", "team-a-config", ""))
+	}, waitingCommitRequest("team-a", "save-g", "team-a-config", ""))
 
 	router := consumer.eventRouter.(*fakeEventRouter)
-	consumer.handleExplicitCommit(context.Background(), logr.Discard(),
-		explicitCommitAuditEvent("team-a", "save-g"))
+	consumer.handleCommitRequest(context.Background(), logr.Discard(),
+		commitRequestAuditEvent("team-a", "save-g"))
 
 	assert.Empty(t, router.finalizeCalls, "a read failure must not trigger a finalize")
 }
 
-func TestHandleExplicitCommit_NoClientConfigured(t *testing.T) {
+func TestHandleCommitRequest_NoClientConfigured(t *testing.T) {
 	router := &fakeEventRouter{}
 	consumer := &AuditConsumer{eventRouter: router, log: logr.Discard()}
 
-	// Must not panic when ExplicitCommit handling is disabled.
-	consumer.handleExplicitCommit(context.Background(), logr.Discard(),
-		explicitCommitAuditEvent("team-a", "save-5"))
+	// Must not panic when CommitRequest handling is disabled.
+	consumer.handleCommitRequest(context.Background(), logr.Discard(),
+		commitRequestAuditEvent("team-a", "save-5"))
 
 	assert.Empty(t, router.finalizeCalls)
 }
 
-func TestHandleExplicitCommit_StaleUIDSkipped(t *testing.T) {
+func TestHandleCommitRequest_StaleUIDSkipped(t *testing.T) {
 	router := &fakeEventRouter{}
-	current := waitingExplicitCommit("team-a", "save-uid", "team-a-config", "")
+	current := waitingCommitRequest("team-a", "save-uid", "team-a-config", "")
 	current.UID = "uid-recreated"
-	consumer, fakeClient := newExplicitCommitConsumer(t, router, current)
+	consumer, fakeClient := newCommitRequestConsumer(t, router, current)
 
 	// The audit event identifies an earlier incarnation of the same name.
-	event := explicitCommitAuditEvent("team-a", "save-uid")
+	event := commitRequestAuditEvent("team-a", "save-uid")
 	event.ObjectRef.UID = "uid-original"
 
-	consumer.handleExplicitCommit(context.Background(), logr.Discard(), event)
+	consumer.handleCommitRequest(context.Background(), logr.Discard(), event)
 
 	assert.Empty(t, router.finalizeCalls, "a stale-UID audit event must not finalize")
 
-	var updated configv1alpha1.ExplicitCommit
+	var updated configv1alpha1.CommitRequest
 	require.NoError(t, fakeClient.Get(context.Background(),
 		client.ObjectKey{Namespace: "team-a", Name: "save-uid"}, &updated))
-	assert.Equal(t, configv1alpha1.ExplicitCommitPhaseWaitingForAuditEvent, updated.Status.Phase,
+	assert.Equal(t, configv1alpha1.CommitRequestPhaseWaitingForAuditEvent, updated.Status.Phase,
 		"the recreated object's status must be left untouched")
 }
 
-func TestHandleExplicitCommit_MatchingUIDIsProcessed(t *testing.T) {
+func TestHandleCommitRequest_MatchingUIDIsProcessed(t *testing.T) {
 	router := &fakeEventRouter{
 		finalizeResult: git.FinalizeResult{Outcome: git.FinalizeCommitted, SHA: "u1d", Branch: "main"},
 	}
-	obj := waitingExplicitCommit("team-a", "save-uid-ok", "team-a-config", "")
+	obj := waitingCommitRequest("team-a", "save-uid-ok", "team-a-config", "")
 	obj.UID = "uid-match"
-	consumer, fakeClient := newExplicitCommitConsumer(t, router, obj)
+	consumer, fakeClient := newCommitRequestConsumer(t, router, obj)
 
-	event := explicitCommitAuditEvent("team-a", "save-uid-ok")
+	event := commitRequestAuditEvent("team-a", "save-uid-ok")
 	event.ObjectRef.UID = "uid-match"
 
-	consumer.handleExplicitCommit(context.Background(), logr.Discard(), event)
+	consumer.handleCommitRequest(context.Background(), logr.Discard(), event)
 
 	require.Len(t, router.finalizeCalls, 1, "a matching-UID audit event is processed")
 
-	var updated configv1alpha1.ExplicitCommit
+	var updated configv1alpha1.CommitRequest
 	require.NoError(t, fakeClient.Get(context.Background(),
 		client.ObjectKey{Namespace: "team-a", Name: "save-uid-ok"}, &updated))
-	assert.Equal(t, configv1alpha1.ExplicitCommitPhaseCommitted, updated.Status.Phase)
+	assert.Equal(t, configv1alpha1.CommitRequestPhaseCommitted, updated.Status.Phase)
 }
 
 // --- processMessage routing hook ---
 
-func TestProcessMessage_ExplicitCommitCreateIsFinalizedAndACKed(t *testing.T) {
+func TestProcessMessage_CommitRequestCreateIsFinalizedAndACKed(t *testing.T) {
 	mr := miniredis.RunT(t)
 	router := &fakeEventRouter{
 		finalizeResult: git.FinalizeResult{
@@ -567,23 +567,23 @@ func TestProcessMessage_ExplicitCommitCreateIsFinalizedAndACKed(t *testing.T) {
 	require.NoError(t, configv1alpha1.AddToScheme(scheme))
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
-		WithObjects(waitingExplicitCommit("team-a", "save-now", "team-a-config", "deploy v2")).
-		WithStatusSubresource(&configv1alpha1.ExplicitCommit{}).
+		WithObjects(waitingCommitRequest("team-a", "save-now", "team-a-config", "deploy v2")).
+		WithStatusSubresource(&configv1alpha1.CommitRequest{}).
 		Build()
 	consumer.kubeClient = fakeClient
 	consumer.apiReader = fakeClient
 
-	pushAuditMessage(t, mr, explicitCommitAuditEvent("team-a", "save-now"))
+	pushAuditMessage(t, mr, commitRequestAuditEvent("team-a", "save-now"))
 	require.NoError(t, consumer.readAndProcessBatch(context.Background()))
 
-	// The explicit commit was finalized and never routed as a resource write.
+	// The commit request was finalized and never routed as a resource write.
 	require.Len(t, router.finalizeCalls, 1)
 	assert.Empty(t, router.calls)
 	assertNoPendingMessages(t, mr)
 
-	var updated configv1alpha1.ExplicitCommit
+	var updated configv1alpha1.CommitRequest
 	require.NoError(t, fakeClient.Get(context.Background(),
 		client.ObjectKey{Namespace: "team-a", Name: "save-now"}, &updated))
-	assert.Equal(t, configv1alpha1.ExplicitCommitPhaseCommitted, updated.Status.Phase)
+	assert.Equal(t, configv1alpha1.CommitRequestPhaseCommitted, updated.Status.Phase)
 	assert.Equal(t, "cafe1234", updated.Status.SHA)
 }

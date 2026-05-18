@@ -291,11 +291,11 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "GitTarget")
 		os.Exit(1)
 	}
-	if err := (&controller.ExplicitCommitReconciler{
+	if err := (&controller.CommitRequestReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "ExplicitCommit")
+		setupLog.Error(err, "unable to create controller", "controller", "CommitRequest")
 		os.Exit(1)
 	}
 	// +kubebuilder:scaffold:builder

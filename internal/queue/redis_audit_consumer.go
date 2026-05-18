@@ -101,17 +101,17 @@ type AuditConsumer struct {
 	eventRouter AuditEventRouter
 	log         logr.Logger
 
-	// kubeClient writes ExplicitCommit status subresources. apiReader performs
-	// uncached reads of ExplicitCommit objects so a freshly-created object is
+	// kubeClient writes CommitRequest status subresources. apiReader performs
+	// uncached reads of CommitRequest objects so a freshly-created object is
 	// visible even before the controller-runtime cache has synced it. Both may
-	// be nil, in which case ExplicitCommit handling is disabled.
+	// be nil, in which case CommitRequest handling is disabled.
 	kubeClient client.Client
 	apiReader  client.Reader
 }
 
 // NewAuditConsumer creates a new AuditConsumer. It does not start consuming;
 // call Start to begin the consume loop. kubeClient and apiReader are used for
-// ExplicitCommit handling and may be nil to disable it.
+// CommitRequest handling and may be nil to disable it.
 func NewAuditConsumer(
 	cfg AuditConsumerConfig,
 	ruleStore *rulestore.RuleStore,
@@ -325,11 +325,11 @@ func (c *AuditConsumer) processMessage(ctx context.Context, msg redis.XMessage) 
 		return
 	}
 
-	// ExplicitCommit create events drive the "finalize the open window now"
+	// CommitRequest create events drive the "finalize the open window now"
 	// path. They are handled before rule matching and never flow into the
 	// resource-write pipeline.
-	if c.isExplicitCommitCreate(auditEvent) {
-		c.handleExplicitCommit(ctx, log, auditEvent)
+	if c.isCommitRequestCreate(auditEvent) {
+		c.handleCommitRequest(ctx, log, auditEvent)
 		c.ackMessage(ctx, msg.ID)
 		return
 	}
