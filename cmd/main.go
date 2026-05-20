@@ -157,6 +157,7 @@ func main() {
 		ctrl.Log.WithName("event-router"),
 	)
 	reconcilerManager.SetEventRouter(eventRouter)
+	reconcilerManager.SetOnReconcilerCreated(watchMgr.MaybeReplaySnapshot)
 
 	// Set EventRouter reference in WatchManager
 	watchMgr.EventRouter = eventRouter
