@@ -889,7 +889,7 @@ tasks:
       - |
         kubectl --context "{{.CTX}}" -n aggregated-api wait certificate/audit-pass-through-proxy-serving-cert \
           --for=condition=Ready --timeout=180s
-        kubectl --context "{{.CTX}}" -n aggregated-api wait certificate/audit-pass-through-backend-client-cert \
+        kubectl --context "{{.CTX}}" -n aggregated-api wait certificate/audit-pass-through-backend-serving-cert \
           --for=condition=Ready --timeout=180s
         kubectl --context "{{.CTX}}" -n aggregated-api rollout restart deployment/aggregated-api-apiservice-audit-proxy
         kubectl --context "{{.CTX}}" -n aggregated-api rollout status deployment/api-backend --timeout=180s

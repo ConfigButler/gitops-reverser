@@ -51,3 +51,4 @@ loadtest
 
 .claude/*
 .agents/*
+/external-sources/
