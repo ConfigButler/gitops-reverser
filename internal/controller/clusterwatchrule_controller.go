@@ -29,7 +29,9 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	ctrlreconcile "sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	configbutleraiv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
@@ -308,6 +310,89 @@ func (r *ClusterWatchRuleReconciler) updateStatusWithRetry(
 func (r *ClusterWatchRuleReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&configbutleraiv1alpha1.ClusterWatchRule{}).
+		Watches(
+			&configbutleraiv1alpha1.GitTarget{},
+			handler.EnqueueRequestsFromMapFunc(r.gitTargetToClusterWatchRules),
+		).
+		Watches(
+			&configbutleraiv1alpha1.GitProvider{},
+			handler.EnqueueRequestsFromMapFunc(r.gitProviderToClusterWatchRules),
+		).
 		Named("clusterwatchrule").
 		Complete(r)
+}
+
+// gitTargetToClusterWatchRules maps a GitTarget event to every ClusterWatchRule
+// whose targetRef matches it. ClusterWatchRule is cluster-scoped, so the lookup
+// is cluster-wide.
+func (r *ClusterWatchRuleReconciler) gitTargetToClusterWatchRules(
+	ctx context.Context,
+	obj client.Object,
+) []ctrlreconcile.Request {
+	var rules configbutleraiv1alpha1.ClusterWatchRuleList
+	if err := r.List(ctx, &rules); err != nil {
+		return nil
+	}
+
+	var requests []ctrlreconcile.Request
+	for i := range rules.Items {
+		rule := &rules.Items[i]
+		if rule.Spec.TargetRef.Name != obj.GetName() {
+			continue
+		}
+		if rule.Spec.TargetRef.Namespace != obj.GetNamespace() {
+			continue
+		}
+		requests = append(requests, ctrlreconcile.Request{
+			NamespacedName: types.NamespacedName{Name: rule.Name},
+		})
+	}
+	return requests
+}
+
+// gitProviderToClusterWatchRules maps a GitProvider event to every
+// ClusterWatchRule whose referenced GitTarget points at this provider. This
+// closes the gap where a freshly-arrived GitProvider needs to nudge rules whose
+// own GitTarget event would otherwise not fire (e.g. the GitTarget already
+// existed but its provider lookup was failing).
+func (r *ClusterWatchRuleReconciler) gitProviderToClusterWatchRules(
+	ctx context.Context,
+	obj client.Object,
+) []ctrlreconcile.Request {
+	var targets configbutleraiv1alpha1.GitTargetList
+	if err := r.List(ctx, &targets, client.InNamespace(obj.GetNamespace())); err != nil {
+		return nil
+	}
+
+	matchingTargets := make(map[types.NamespacedName]struct{})
+	for i := range targets.Items {
+		t := &targets.Items[i]
+		if t.Spec.ProviderRef.Name == obj.GetName() {
+			matchingTargets[types.NamespacedName{Name: t.Name, Namespace: t.Namespace}] = struct{}{}
+		}
+	}
+	if len(matchingTargets) == 0 {
+		return nil
+	}
+
+	var rules configbutleraiv1alpha1.ClusterWatchRuleList
+	if err := r.List(ctx, &rules); err != nil {
+		return nil
+	}
+
+	var requests []ctrlreconcile.Request
+	for i := range rules.Items {
+		rule := &rules.Items[i]
+		key := types.NamespacedName{
+			Name:      rule.Spec.TargetRef.Name,
+			Namespace: rule.Spec.TargetRef.Namespace,
+		}
+		if _, ok := matchingTargets[key]; !ok {
+			continue
+		}
+		requests = append(requests, ctrlreconcile.Request{
+			NamespacedName: types.NamespacedName{Name: rule.Name},
+		})
+	}
+	return requests
 }

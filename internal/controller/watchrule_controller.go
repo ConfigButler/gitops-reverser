@@ -30,7 +30,9 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	ctrlreconcile "sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	configbutleraiv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
@@ -328,6 +330,83 @@ func (r *WatchRuleReconciler) updateStatusWithRetry(
 func (r *WatchRuleReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&configbutleraiv1alpha1.WatchRule{}).
+		Watches(
+			&configbutleraiv1alpha1.GitTarget{},
+			handler.EnqueueRequestsFromMapFunc(r.gitTargetToWatchRules),
+		).
+		Watches(
+			&configbutleraiv1alpha1.GitProvider{},
+			handler.EnqueueRequestsFromMapFunc(r.gitProviderToWatchRules),
+		).
 		Named("watchrule").
 		Complete(r)
+}
+
+// gitTargetToWatchRules maps a GitTarget event to every WatchRule in the
+// GitTarget's namespace that references it. WatchRule.spec.targetRef is a
+// LocalTargetReference, so candidates only live in the same namespace as the
+// GitTarget.
+func (r *WatchRuleReconciler) gitTargetToWatchRules(
+	ctx context.Context,
+	obj client.Object,
+) []ctrlreconcile.Request {
+	var rules configbutleraiv1alpha1.WatchRuleList
+	if err := r.List(ctx, &rules, client.InNamespace(obj.GetNamespace())); err != nil {
+		return nil
+	}
+
+	var requests []ctrlreconcile.Request
+	for i := range rules.Items {
+		rule := &rules.Items[i]
+		if rule.Spec.TargetRef.Name != obj.GetName() {
+			continue
+		}
+		requests = append(requests, ctrlreconcile.Request{
+			NamespacedName: types.NamespacedName{Name: rule.Name, Namespace: rule.Namespace},
+		})
+	}
+	return requests
+}
+
+// gitProviderToWatchRules maps a GitProvider event to every WatchRule (in the
+// GitProvider's namespace) whose referenced GitTarget points at this provider.
+// Mirrors the equivalent helper on ClusterWatchRuleReconciler so that an
+// arriving provider doesn't have to wait for a separate GitTarget event to
+// reach the rule.
+func (r *WatchRuleReconciler) gitProviderToWatchRules(
+	ctx context.Context,
+	obj client.Object,
+) []ctrlreconcile.Request {
+	var targets configbutleraiv1alpha1.GitTargetList
+	if err := r.List(ctx, &targets, client.InNamespace(obj.GetNamespace())); err != nil {
+		return nil
+	}
+
+	matchingTargets := make(map[string]struct{})
+	for i := range targets.Items {
+		t := &targets.Items[i]
+		if t.Spec.ProviderRef.Name == obj.GetName() {
+			matchingTargets[t.Name] = struct{}{}
+		}
+	}
+	if len(matchingTargets) == 0 {
+		return nil
+	}
+
+	var rules configbutleraiv1alpha1.WatchRuleList
+	if err := r.List(ctx, &rules, client.InNamespace(obj.GetNamespace())); err != nil {
+		return nil
+	}
+
+	var requests []ctrlreconcile.Request
+	for i := range rules.Items {
+		rule := &rules.Items[i]
+		if _, ok := matchingTargets[rule.Spec.TargetRef.Name]; !ok {
+			continue
+		}
+		requests = append(requests, ctrlreconcile.Request{
+			NamespacedName: types.NamespacedName{Name: rule.Name, Namespace: rule.Namespace},
+		})
+	}
+	return requests
 }

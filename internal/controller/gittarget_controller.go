@@ -904,6 +904,10 @@ func (r *GitTargetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&configbutleraiv1alpha1.GitTarget{}).
 		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.encryptionSecretToGitTargets)).
+		Watches(
+			&configbutleraiv1alpha1.GitProvider{},
+			handler.EnqueueRequestsFromMapFunc(r.gitProviderToGitTargets),
+		).
 		Named("gittarget").
 		Complete(r)
 }
@@ -930,6 +934,32 @@ func (r *GitTargetReconciler) encryptionSecretToGitTargets(
 				NamespacedName: k8stypes.NamespacedName{Name: t.Name, Namespace: t.Namespace},
 			})
 		}
+	}
+	return requests
+}
+
+// gitProviderToGitTargets maps a GitProvider event to every GitTarget in the
+// same namespace that references it, so a freshly-arrived provider re-enqueues
+// any dependents currently stuck on ProviderNotFound instead of waiting for the
+// periodic RequeueShortInterval.
+func (r *GitTargetReconciler) gitProviderToGitTargets(
+	ctx context.Context,
+	obj client.Object,
+) []ctrlreconcile.Request {
+	var targets configbutleraiv1alpha1.GitTargetList
+	if err := r.List(ctx, &targets, client.InNamespace(obj.GetNamespace())); err != nil {
+		return nil
+	}
+
+	var requests []ctrlreconcile.Request
+	for i := range targets.Items {
+		t := &targets.Items[i]
+		if t.Spec.ProviderRef.Name != obj.GetName() {
+			continue
+		}
+		requests = append(requests, ctrlreconcile.Request{
+			NamespacedName: k8stypes.NamespacedName{Name: t.Name, Namespace: t.Namespace},
+		})
 	}
 	return requests
 }
