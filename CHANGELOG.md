@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.24.0](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.23.0...gitops-reverser-v0.24.0) (2026-05-20)
+
+
+### Features
+
+* bumping apiservice-audit-proxy and it's all TLS now ([9d431c2](https://github.com/ConfigButler/gitops-reverser/commit/9d431c27cc7a01d41d78337f59c8130d3e7b2c14))
+
 ## [0.23.0](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.22.0...gitops-reverser-v0.23.0) (2026-05-18)
 
 
