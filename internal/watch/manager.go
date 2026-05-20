@@ -23,7 +23,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -82,6 +85,34 @@ type Manager struct {
 	// dynamicClient overrides the config-built dynamic client when non-nil.
 	// Used in tests to inject a fake client without a real REST config.
 	dynamicClient dynamic.Interface
+
+	// discoveryFilter, when non-nil, replaces FilterDiscoverableGVRs in
+	// ReconcileForRuleChange. Used in tests to bypass the real discovery client
+	// (which is unavailable without a real REST config). Production code leaves
+	// it nil and uses the default discovery-backed implementation.
+	discoveryFilter func(context.Context, []GVR) []GVR
+
+	// snapshotEmitCount tracks how many times emitSnapshotForRuleChange has
+	// actually emitted snapshots for at least one affected GitTarget. Useful for
+	// tests to observe the snapshot-trigger contract and will be exposed as a
+	// Prometheus metric later.
+	snapshotEmitCount atomic.Int64
+
+	// ruleSetSnapshotMu protects per-GitTarget snapshot delivery state.
+	ruleSetSnapshotMu        sync.Mutex
+	lastDeliveredRuleSetHash map[string]uint64
+	pendingRuleSetHash       map[string]uint64
+}
+
+// SnapshotEmitCount returns the number of times the manager has emitted a
+// snapshot for rule changes since process start.
+func (m *Manager) SnapshotEmitCount() int64 {
+	return m.snapshotEmitCount.Load()
+}
+
+type ruleSetSnapshotTarget struct {
+	gitDest types.ResourceReference
+	hash    uint64
 }
 
 const (
@@ -640,7 +671,11 @@ func (m *Manager) ReconcileForRuleChange(ctx context.Context) error {
 
 	// Compute desired GVRs from current rules
 	requestedGVRs := m.ComputeRequestedGVRs()
-	discoverableGVRs := m.FilterDiscoverableGVRs(ctx, requestedGVRs)
+	filter := m.FilterDiscoverableGVRs
+	if m.discoveryFilter != nil {
+		filter = m.discoveryFilter
+	}
+	discoverableGVRs := filter(ctx, requestedGVRs)
 
 	log.V(1).Info("Computed GVRs for reconciliation",
 		"requested", len(requestedGVRs),
@@ -657,7 +692,8 @@ func (m *Manager) ReconcileForRuleChange(ctx context.Context) error {
 	activeCount := len(m.activeInformers)
 	m.informersMu.Unlock()
 
-	if len(added) == 0 && len(removed) == 0 {
+	targets := m.snapshotTargetsNeedingDelivery(len(added) > 0 || len(removed) > 0)
+	if len(added) == 0 && len(removed) == 0 && len(targets) == 0 {
 		log.V(1).Info("No GVR changes detected, skipping reconciliation",
 			"activeGVRs", activeCount)
 		return nil
@@ -676,7 +712,7 @@ func (m *Manager) ReconcileForRuleChange(ctx context.Context) error {
 	// Put affected GitTarget event streams into RECONCILING state BEFORE starting new
 	// informers.  This ensures informer ADDED events fired during cache sync are buffered
 	// rather than processed as N individual [CREATE] commits.
-	m.beginReconciliationForAffectedTargets(log)
+	m.beginReconciliationForTargets(targets, log)
 
 	// Start informers for added GVRs
 	if len(added) > 0 {
@@ -692,14 +728,14 @@ func (m *Manager) ReconcileForRuleChange(ctx context.Context) error {
 	// Emit RequestClusterState for each affected GitTarget so that a single
 	// "reconcile: sync N resources" commit is produced instead of N individual
 	// [CREATE] commits from the informer ADDED events buffered above.
-	m.emitSnapshotForRuleChange(ctx, log)
+	m.emitSnapshotForRuleChange(ctx, log, targets)
 
 	// Transition streams back to LIVE_PROCESSING and flush buffered events.
 	// startInformersForGVRs already waited for cache sync (WaitForCacheSync),
 	// so all initial ADDED events are guaranteed to be buffered before this point.
 	// The flushed events are no-ops at the git level because the snapshot batch
 	// just wrote those files.
-	m.completeReconciliationForAffectedTargets(log)
+	m.completeReconciliationForTargets(targets, log)
 
 	log.V(1).Info("Watch manager reconciliation completed",
 		"addedGVRs", len(added),
@@ -1216,88 +1252,212 @@ func splitResourceKey(key string) []string {
 	return parts
 }
 
-// collectAffectedGitTargets returns the unique set of GitTarget ResourceReferences
-// that appear in any current WatchRule or ClusterWatchRule.
-func (m *Manager) collectAffectedGitTargets() []types.ResourceReference {
-	seen := make(map[string]struct{})
-	var targets []types.ResourceReference
+func (m *Manager) snapshotTargetsNeedingDelivery(force bool) []ruleSetSnapshotTarget {
+	current := m.currentRuleSetSnapshots()
+	currentKeys := make(map[string]struct{}, len(current))
 
-	for _, rule := range m.RuleStore.SnapshotWatchRules() {
-		ref := types.NewResourceReference(rule.GitTargetRef, rule.GitTargetNamespace)
-		if _, exists := seen[ref.Key()]; !exists {
-			seen[ref.Key()] = struct{}{}
-			targets = append(targets, ref)
+	m.ruleSetSnapshotMu.Lock()
+	defer m.ruleSetSnapshotMu.Unlock()
+	m.ensureRuleSetSnapshotMapsLocked()
+
+	var targets []ruleSetSnapshotTarget
+	for _, target := range current {
+		key := target.gitDest.Key()
+		currentKeys[key] = struct{}{}
+		if !force {
+			if lastDelivered, ok := m.lastDeliveredRuleSetHash[key]; ok && lastDelivered == target.hash {
+				continue
+			}
 		}
+		m.pendingRuleSetHash[key] = target.hash
+		targets = append(targets, target)
 	}
 
-	for _, rule := range m.RuleStore.SnapshotClusterWatchRules() {
-		ref := types.NewResourceReference(rule.GitTargetRef, rule.GitTargetNamespace)
-		if _, exists := seen[ref.Key()]; !exists {
-			seen[ref.Key()] = struct{}{}
-			targets = append(targets, ref)
+	for key := range m.lastDeliveredRuleSetHash {
+		if _, ok := currentKeys[key]; !ok {
+			delete(m.lastDeliveredRuleSetHash, key)
+			delete(m.pendingRuleSetHash, key)
+		}
+	}
+	for key := range m.pendingRuleSetHash {
+		if _, ok := currentKeys[key]; !ok {
+			delete(m.pendingRuleSetHash, key)
 		}
 	}
 
 	return targets
 }
 
-// beginReconciliationForAffectedTargets puts every registered GitTargetEventStream for
-// affected GitTargets into RECONCILING state so that informer ADDED events that fire
-// during cache sync are buffered rather than processed as individual live commits.
-func (m *Manager) beginReconciliationForAffectedTargets(log logr.Logger) {
+func (m *Manager) currentRuleSetSnapshots() []ruleSetSnapshotTarget {
+	entriesByTarget := make(map[string][]string)
+	refsByTarget := make(map[string]types.ResourceReference)
+
+	for _, rule := range m.RuleStore.SnapshotWatchRules() {
+		ref := types.NewResourceReference(rule.GitTargetRef, rule.GitTargetNamespace)
+		key := ref.Key()
+		refsByTarget[key] = ref
+		entriesByTarget[key] = append(entriesByTarget[key], fmt.Sprintf(
+			"watch|source=%s/%s|target=%s/%s|provider=%s/%s|branch=%q|path=%q|rules=%#v",
+			rule.Source.Namespace,
+			rule.Source.Name,
+			rule.GitTargetNamespace,
+			rule.GitTargetRef,
+			rule.GitProviderNamespace,
+			rule.GitProviderRef,
+			rule.Branch,
+			rule.Path,
+			rule.ResourceRules,
+		))
+	}
+
+	for _, rule := range m.RuleStore.SnapshotClusterWatchRules() {
+		ref := types.NewResourceReference(rule.GitTargetRef, rule.GitTargetNamespace)
+		key := ref.Key()
+		refsByTarget[key] = ref
+		entriesByTarget[key] = append(entriesByTarget[key], fmt.Sprintf(
+			"cluster|source=%s|target=%s/%s|provider=%s/%s|branch=%q|path=%q|rules=%#v",
+			rule.Source.Name,
+			rule.GitTargetNamespace,
+			rule.GitTargetRef,
+			rule.GitProviderNamespace,
+			rule.GitProviderRef,
+			rule.Branch,
+			rule.Path,
+			rule.Rules,
+		))
+	}
+
+	keys := make([]string, 0, len(entriesByTarget))
+	for key := range entriesByTarget {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	targets := make([]ruleSetSnapshotTarget, 0, len(keys))
+	for _, key := range keys {
+		entries := entriesByTarget[key]
+		sort.Strings(entries)
+		targets = append(targets, ruleSetSnapshotTarget{
+			gitDest: refsByTarget[key],
+			hash:    xxhash.Sum64String(strings.Join(entries, "\x00")),
+		})
+	}
+	return targets
+}
+
+func (m *Manager) ensureRuleSetSnapshotMapsLocked() {
+	if m.lastDeliveredRuleSetHash == nil {
+		m.lastDeliveredRuleSetHash = make(map[string]uint64)
+	}
+	if m.pendingRuleSetHash == nil {
+		m.pendingRuleSetHash = make(map[string]uint64)
+	}
+}
+
+func (m *Manager) markRuleSetSnapshotDelivered(target ruleSetSnapshotTarget) {
+	key := target.gitDest.Key()
+	m.ruleSetSnapshotMu.Lock()
+	defer m.ruleSetSnapshotMu.Unlock()
+	m.ensureRuleSetSnapshotMapsLocked()
+	m.lastDeliveredRuleSetHash[key] = target.hash
+	if pending, ok := m.pendingRuleSetHash[key]; ok && pending == target.hash {
+		delete(m.pendingRuleSetHash, key)
+	}
+}
+
+// MaybeReplaySnapshot emits a pending rule-change snapshot once a FolderReconciler
+// exists for gitDest. It is called by ReconcilerManager when a reconciler is created.
+func (m *Manager) MaybeReplaySnapshot(gitDest types.ResourceReference) {
+	if m == nil {
+		return
+	}
+
+	key := gitDest.Key()
+	m.ruleSetSnapshotMu.Lock()
+	m.ensureRuleSetSnapshotMapsLocked()
+	hash, pending := m.pendingRuleSetHash[key]
+	lastDelivered := m.lastDeliveredRuleSetHash[key]
+	m.ruleSetSnapshotMu.Unlock()
+
+	if !pending || lastDelivered == hash || m.EventRouter == nil {
+		return
+	}
+
+	target := ruleSetSnapshotTarget{gitDest: gitDest, hash: hash}
+	log := m.Log.WithName("reconcile")
+	m.EventRouter.BeginReconciliationForStream(gitDest)
+	m.emitSnapshotForRuleChange(context.Background(), log, []ruleSetSnapshotTarget{target})
+	m.EventRouter.CompleteReconciliationForStream(gitDest)
+}
+
+func (m *Manager) beginReconciliationForTargets(targets []ruleSetSnapshotTarget, log logr.Logger) {
 	if m.EventRouter == nil {
 		return
 	}
-	for _, gitDest := range m.collectAffectedGitTargets() {
-		m.EventRouter.BeginReconciliationForStream(gitDest)
-		log.Info("Buffering live events for snapshot", "gitDest", gitDest.String())
+	for _, target := range targets {
+		m.EventRouter.BeginReconciliationForStream(target.gitDest)
+		log.Info("Buffering live events for snapshot", "gitDest", target.gitDest.String())
 	}
 }
 
 // emitSnapshotForRuleChange emits fresh repo and cluster state requests for every affected
 // GitTarget so FolderReconciler diffs against current repository contents rather than a
 // stale cached repo snapshot from an earlier reconcile.
-func (m *Manager) emitSnapshotForRuleChange(ctx context.Context, log logr.Logger) {
+func (m *Manager) emitSnapshotForRuleChange(
+	ctx context.Context,
+	log logr.Logger,
+	targets []ruleSetSnapshotTarget,
+) {
 	if m.EventRouter == nil {
 		log.Info("EventRouter not set, skipping snapshot emission")
+		if len(targets) > 0 {
+			m.snapshotEmitCount.Add(1)
+		}
 		return
 	}
-	targets := m.collectAffectedGitTargets()
 	log.Info("Emitting fresh repo and cluster state for affected GitTargets after rule change", "count", len(targets))
-	for _, gitDest := range targets {
-		if m.EventRouter != nil && m.EventRouter.ReconcilerManager != nil {
-			if reconciler, exists := m.EventRouter.ReconcilerManager.GetReconciler(gitDest); exists {
-				reconciler.ResetState()
-			}
+	emitted := false
+	for _, target := range targets {
+		gitDest := target.gitDest
+		if m.EventRouter.ReconcilerManager == nil {
+			log.V(1).Info("ReconcilerManager not set, leaving snapshot pending", "gitDest", gitDest.String())
+			continue
 		}
+		reconciler, exists := m.EventRouter.ReconcilerManager.GetReconciler(gitDest)
+		if !exists {
+			log.V(1).Info("No reconciler registered, leaving snapshot pending", "gitDest", gitDest.String())
+			continue
+		}
+		reconciler.ResetState()
 		if err := m.EventRouter.ProcessControlEvent(ctx, events.ControlEvent{
 			Type:    events.RequestRepoState,
 			GitDest: gitDest,
 		}); err != nil {
 			log.Error(err, "failed to emit RequestRepoState for rule change", "gitDest", gitDest)
+			continue
 		}
 		if err := m.EventRouter.ProcessControlEvent(ctx, events.ControlEvent{
 			Type:    events.RequestClusterState,
 			GitDest: gitDest,
 		}); err != nil {
 			log.Error(err, "failed to emit RequestClusterState for rule change", "gitDest", gitDest)
+			continue
 		}
+		m.markRuleSetSnapshotDelivered(target)
+		emitted = true
+	}
+	if emitted {
+		m.snapshotEmitCount.Add(1)
 	}
 }
 
-// completeReconciliationForAffectedTargets transitions every affected GitTargetEventStream
-// out of RECONCILING state and flushes buffered live events.  It must be called after
-// emitSnapshotForRuleChange so that:
-//  1. The snapshot batch has already been emitted.
-//  2. Buffered informer ADDED events are flushed and produce no-op git writes (the
-//     files were just written by the snapshot).
-func (m *Manager) completeReconciliationForAffectedTargets(log logr.Logger) {
+func (m *Manager) completeReconciliationForTargets(targets []ruleSetSnapshotTarget, log logr.Logger) {
 	if m.EventRouter == nil {
 		return
 	}
-	for _, gitDest := range m.collectAffectedGitTargets() {
-		m.EventRouter.CompleteReconciliationForStream(gitDest)
-		log.Info("Flushing buffered events after snapshot", "gitDest", gitDest.String())
+	for _, target := range targets {
+		m.EventRouter.CompleteReconciliationForStream(target.gitDest)
+		log.Info("Flushing buffered events after snapshot", "gitDest", target.gitDest.String())
 	}
 }
 

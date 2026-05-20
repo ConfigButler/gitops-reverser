@@ -37,6 +37,8 @@ type ReconcilerManager struct {
 		ProcessControlEvent(ctx context.Context, event events.ControlEvent) error
 	}
 	logger logr.Logger
+
+	onReconcilerCreated func(types.ResourceReference)
 }
 
 // NewReconcilerManager creates a new ReconcilerManager.
@@ -62,6 +64,13 @@ func (m *ReconcilerManager) SetEventRouter(
 	m.eventRouter = eventRouter
 }
 
+// SetOnReconcilerCreated registers a callback fired after a new FolderReconciler is created.
+func (m *ReconcilerManager) SetOnReconcilerCreated(callback func(types.ResourceReference)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.onReconcilerCreated = callback
+}
+
 // CreateReconciler creates or retrieves a FolderReconciler for the given GitDestination.
 func (m *ReconcilerManager) CreateReconciler(
 	gitDest types.ResourceReference,
@@ -70,16 +79,21 @@ func (m *ReconcilerManager) CreateReconciler(
 	key := gitDest.Key()
 
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	if reconciler, exists := m.reconcilers[key]; exists {
+		m.mu.Unlock()
 		m.logger.V(1).Info("Reconciler already exists", "gitDest", gitDest.String())
 		return reconciler
 	}
 
 	reconciler := NewFolderReconciler(gitDest, requestEmitter, m, m.logger)
 	m.reconcilers[key] = reconciler
+	callback := m.onReconcilerCreated
+	m.mu.Unlock()
+
 	m.logger.Info("Created new FolderReconciler", "gitDest", gitDest.String())
+	if callback != nil {
+		callback(gitDest)
+	}
 	return reconciler
 }
 

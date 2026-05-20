@@ -386,6 +386,8 @@ func (r *GitTargetReconciler) evaluateSnapshotGate(
 		if err != nil {
 			return nil, metav1.ConditionFalse, "", 0, err
 		}
+		gitDest := types.NewResourceReference(target.Name, target.Namespace)
+		r.EventRouter.ReconcilerManager.CreateReconciler(gitDest, stream)
 		return stream, metav1.ConditionTrue, MsgSnapshotCompleted, 0, nil
 	}
 

@@ -872,6 +872,101 @@ var _ = Describe("Manager", Label("manager"), Ordered, func() {
 				configMapName, uniqueRepoName)
 		})
 
+		// Regression net for the rule-add backfill gap: a ConfigMap that
+		// already exists in the cluster *before* a WatchRule is applied must
+		// land in git once the rule becomes Ready. Today this fails because
+		// ReconcileForRuleChange takes the early-return at manager.go:660
+		// when the new rule's GVR is already covered by other rules (and on
+		// fresh-target installs the snapshot output can be dropped because no
+		// FolderReconciler is registered yet). The unit-level coverage lives
+		// in internal/watch/rule_change_snapshot_test.go; this spec locks the
+		// observable in at the user-visible layer so a future revamp of the
+		// snapshot trigger logic can't silently regress it.
+		//
+		It("should backfill pre-existing ConfigMap when WatchRule is added afterwards", func() {
+			gitProviderName := "gitprovider-normal"
+			watchRuleName := "watchrule-backfill-test"
+			configMapName := "preexisting-configmap"
+			uniqueRepoName := managerRepo.RepoName
+
+			By("creating GitTarget but no WatchRule yet")
+			destName := watchRuleName + "-dest"
+			createGitTarget(destName, testNs, gitProviderName, "e2e/backfill-rule-add", "main")
+			verifyResourceStatus("gittarget", destName, testNs, "True", "Ready", "")
+
+			By("creating the ConfigMap BEFORE the rule that should select it")
+			configMapData := struct {
+				Name      string
+				Namespace string
+			}{
+				Name:      configMapName,
+				Namespace: testNs,
+			}
+			err := applyFromTemplate(
+				"test/e2e/templates/manager/configmap.tmpl",
+				configMapData,
+				testNs,
+				"--as=jane@acme.com",
+			)
+			Expect(err).NotTo(HaveOccurred(), "Failed to pre-create ConfigMap")
+
+			// Confirm nothing committed yet — no rule exists, so the ConfigMap
+			// must not appear in the repo before we apply the WatchRule.
+			expectedRepoPath := path.Join(
+				"e2e/backfill-rule-add",
+				fmt.Sprintf("v1/configmaps/%s/%s.yaml", testNs, configMapName),
+			)
+			expectedFile := filepath.Join(managerRepo.CheckoutDir, expectedRepoPath)
+
+			By("applying the WatchRule (rule arrives after the resource)")
+			watchRuleData := struct {
+				Name            string
+				Namespace       string
+				DestinationName string
+			}{
+				Name:            watchRuleName,
+				Namespace:       testNs,
+				DestinationName: destName,
+			}
+			err = applyFromTemplate("test/e2e/templates/manager/watchrule-configmap.tmpl", watchRuleData, testNs)
+			Expect(err).NotTo(HaveOccurred(), "Failed to apply WatchRule")
+			verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Ready", "")
+
+			By("waiting for the pre-existing ConfigMap to be backfilled into git")
+			verifyBackfill := func(g Gomega) {
+				pullCmd := exec.Command("git", "pull")
+				pullCmd.Dir = managerRepo.CheckoutDir
+				pullOutput, pullErr := pullCmd.CombinedOutput()
+				if pullErr != nil {
+					g.Expect(pullErr).NotTo(HaveOccurred(),
+						fmt.Sprintf("Should successfully pull latest changes. Output: %s", string(pullOutput)))
+				}
+
+				fileInfo, statErr := os.Stat(expectedFile)
+				g.Expect(statErr).NotTo(HaveOccurred(),
+					fmt.Sprintf("Pre-existing ConfigMap must be backfilled at %s after the rule lands", expectedFile))
+				g.Expect(fileInfo.Size()).To(BeNumerically(">", 0), "Backfilled ConfigMap file should not be empty")
+
+				content, readErr := os.ReadFile(expectedFile)
+				g.Expect(readErr).NotTo(HaveOccurred())
+				g.Expect(string(content)).To(ContainSubstring("test-key: test-value"),
+					"Backfilled file should contain the ConfigMap data that existed before the rule")
+			}
+			Eventually(verifyBackfill).
+				WithTimeout(60 * time.Second).
+				WithPolling(2 * time.Second).
+				Should(Succeed())
+
+			By("cleaning up test resources")
+			_, _ = kubectlRunInNamespace(testNs, "delete", "configmap", configMapName, "--ignore-not-found=true")
+			cleanupWatchRule(watchRuleName, testNs)
+			cleanupGitTarget(destName, testNs)
+
+			By("✅ rule-add backfill E2E test passed")
+			fmt.Printf("✅ Pre-existing ConfigMap '%s' was backfilled to repo '%s' after the WatchRule landed\n",
+				configMapName, uniqueRepoName)
+		})
+
 		It("should delete Git file when ConfigMap is deleted via WatchRule", Label("smoke"), func() {
 			gitProviderName := "gitprovider-normal"
 			watchRuleName := "watchrule-delete-test"

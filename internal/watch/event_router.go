@@ -22,6 +22,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -52,6 +53,14 @@ type EventRouter struct {
 	// Registry of GitTargetEventStreams by gitDest key
 	gitTargetStreams map[string]*reconcile.GitTargetEventStream
 	streamsMu        sync.RWMutex
+
+	// snapshotDeliveryDrops counts how many cluster/repo state events were
+	// produced but had no registered FolderReconciler to receive them. This
+	// happens, for example, when WatchManager.ReconcileForRuleChange fires its
+	// snapshot before the GitTargetReconciler has had a chance to create a
+	// FolderReconciler. Each drop is a silently-missed backfill. Exposed for
+	// tests and will be wired to a Prometheus gauge later.
+	snapshotDeliveryDrops atomic.Int64
 }
 
 // NewEventRouter creates a new event router.
@@ -70,6 +79,13 @@ func NewEventRouter(
 		Log:               log,
 		gitTargetStreams:  make(map[string]*reconcile.GitTargetEventStream),
 	}
+}
+
+// SnapshotDeliveryDrops returns the number of state events that were emitted
+// for a GitDest that had no registered FolderReconciler at the time. A
+// non-zero value indicates a missed snapshot delivery.
+func (r *EventRouter) SnapshotDeliveryDrops() int64 {
+	return r.snapshotDeliveryDrops.Load()
 }
 
 // RouteEvent sends an event to the worker for (provider, branch).
@@ -244,6 +260,7 @@ func (r *EventRouter) handleReconcileResource(_ context.Context, event events.Co
 func (r *EventRouter) RouteRepoStateEvent(event events.RepoStateEvent) error {
 	reconciler, exists := r.ReconcilerManager.GetReconciler(event.GitDest)
 	if !exists {
+		r.snapshotDeliveryDrops.Add(1)
 		r.Log.V(1).Info("No reconciler found", "gitDest", event.GitDest.String())
 		return nil
 	}
@@ -255,6 +272,7 @@ func (r *EventRouter) RouteRepoStateEvent(event events.RepoStateEvent) error {
 func (r *EventRouter) RouteClusterStateEvent(event events.ClusterStateEvent) error {
 	reconciler, exists := r.ReconcilerManager.GetReconciler(event.GitDest)
 	if !exists {
+		r.snapshotDeliveryDrops.Add(1)
 		r.Log.V(1).Info("No reconciler found", "gitDest", event.GitDest.String())
 		return nil
 	}
