@@ -90,7 +90,7 @@ vars:
   FLUX_INSTANCE_NAME: '{{.FLUX_INSTANCE_NAME | default "flux"}}'
   FLUX_INSTANCE_FILE: '{{.FLUX_INSTANCE_FILE | default "test/e2e/setup/flux-operator/flux-instance.yaml"}}'
   FLUX_OPERATOR_DIR: '{{.FLUX_OPERATOR_DIR | default "test/e2e/setup/flux-operator"}}'
-  FLUX_WAIT_TIMEOUT: '{{.FLUX_WAIT_TIMEOUT | default "300s"}}'
+  FLUX_WAIT_TIMEOUT: '{{.FLUX_WAIT_TIMEOUT | default "500s"}}'
   FLUX_SERVICES_WAIT_TIMEOUT: '{{.FLUX_SERVICES_WAIT_TIMEOUT | default "600s"}}'
   E2E_GO_TEST_TIMEOUT: '{{.E2E_GO_TEST_TIMEOUT | default "15m"}}'
   FLUX_SERVICES_DIR: '{{.FLUX_SERVICES_DIR | default "test/e2e/setup/flux"}}'

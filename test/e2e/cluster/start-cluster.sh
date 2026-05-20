@@ -172,7 +172,7 @@ create_cluster() {
       k3d cluster create "${CLUSTER_NAME}"
       --image rancher/k3s:v1.35.2-k3s1
       --servers 1
-      --agents 3
+      --agents 1
       --kubeconfig-update-default
       --kubeconfig-switch-context
       -v "${audit_host_dir}:/etc/kubernetes/audit@server:0"
@@ -229,8 +229,8 @@ rewrite_kubeconfig_for_devcontainer() {
 
 ensure_inotify_limits() {
     # In Docker-outside-of-Docker, every container shares the host kernel's
-    # fs.inotify.max_user_instances (default 128). A k3d cluster with 1 server
-    # + 3 agents consumes most of those slots; once the limit is hit, containerd
+    # fs.inotify.max_user_instances (default 128). A k3d cluster consumes
+    # several of those slots per node; once the limit is hit, containerd
     # silently fails to write new files (e.g. the serverlb's confd config),
     # which then surfaces later as a missing /etc/confd/values.yaml and an
     # "unhealthy cluster" error after a docker daemon restart.

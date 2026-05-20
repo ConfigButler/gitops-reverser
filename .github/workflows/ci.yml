@@ -258,11 +258,13 @@ jobs:
     strategy:
       matrix:
         include:
-          - name: quickstart-helm-and-makefile-image-refresh
-            script: "export INSTALL_MODE=helm HELM_CHART_SOURCE=./gitops-reverser.tgz && task test-e2e-quickstart-helm && task test-image-refresh"
-            needs_artifact: true
-          - name: quickstart-manifest
-            script: "task test-e2e-quickstart-manifest"
+          - name: quickstart
+            script: >-
+              export INSTALL_MODE=helm HELM_CHART_SOURCE=./gitops-reverser.tgz
+              && task test-e2e-quickstart-helm
+              && task test-image-refresh
+              && export INSTALL_MODE=plain-manifests-file
+              && task test-e2e-quickstart-manifest
             needs_artifact: true
           - name: full
             script: "task test-e2e-full"
