@@ -25,6 +25,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -37,6 +38,15 @@ import (
 
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 )
+
+// auditJoinerFirsts holds one-shot startup-milestone log gates; see
+// audit_handler.go for rationale.
+type auditJoinerFirsts struct {
+	shallowDropped       sync.Once
+	malformedAdditional  sync.Once
+	additionalBodyParked sync.Once
+	mergedEmit           sync.Once
+}
 
 const (
 	// AuditSourceOfficial identifies events received from the kube-apiserver audit webhook.
@@ -151,6 +161,7 @@ type RedisAuditEventJoiner struct {
 	bodyTTL     time.Duration
 	decisionTTL time.Duration
 	now         func() time.Time
+	firsts      auditJoinerFirsts
 }
 
 // NewRedisAuditEventJoiner creates a Redis-backed AuditEventJoiner.
@@ -255,9 +266,18 @@ func (j *RedisAuditEventJoiner) handleOfficial(
 
 	if !hasBody && quality == AuditEventQualityIdentityShallow {
 		addShallowDroppedMetric(ctx, event)
-		logf.Log.WithName("audit-joiner").Info(
-			"audit shallow event dropped: install apiservice-audit-proxy or update kube-apiserver "+
-				"audit policy to include request/response bodies",
+		joinerLog := logf.Log.WithName("audit-joiner")
+		j.firsts.shallowDropped.Do(func() {
+			joinerLog.Info(
+				"First shallow audit event dropped — no request/response body received. "+
+					"Install apiservice-audit-proxy or update kube-apiserver audit policy "+
+					"to include bodies. Further drops will log at V(1) only.",
+				"auditID", auditID,
+				"gvr", auditEventGVR(event),
+				"verb", event.Verb,
+			)
+		})
+		joinerLog.V(1).Info("audit shallow event dropped",
 			"auditID", auditID,
 			"gvr", auditEventGVR(event),
 			"verb", event.Verb,
@@ -283,6 +303,14 @@ func (j *RedisAuditEventJoiner) handleOfficial(
 			logf.Log.WithName("audit-joiner").
 				Error(err, "Failed to delete merged parked audit body", "auditID", auditID)
 		}
+		j.firsts.mergedEmit.Do(func() {
+			logf.Log.WithName("audit-joiner").Info(
+				"First shallow-event conversion succeeded: official event merged with parked additional body",
+				"auditID", auditID,
+				"gvr", auditEventGVR(event),
+				"verb", event.Verb,
+			)
+		})
 		return AuditJoinDecision{
 			Action:  AuditJoinActionEmit,
 			Event:   mergeParkedBody(event, envelope),
@@ -307,8 +335,18 @@ func (j *RedisAuditEventJoiner) handleAdditional(
 	quality AuditEventQuality,
 ) (AuditJoinDecision, error) {
 	auditID := string(event.AuditID)
+	joinerLog := logf.Log.WithName("audit-joiner")
 	if quality == AuditEventQualityMalformed {
-		logf.Log.WithName("audit-joiner").Info(
+		j.firsts.malformedAdditional.Do(func() {
+			joinerLog.Info(
+				"First malformed additional audit event dropped (no request/response body). "+
+					"Further drops will log at V(1) only.",
+				"auditID", auditID,
+				"gvr", auditEventGVR(event),
+				"verb", event.Verb,
+			)
+		})
+		joinerLog.V(1).Info(
 			"Dropped additional audit event without request or response body",
 			"auditID", auditID,
 			"gvr", auditEventGVR(event),
@@ -335,6 +373,12 @@ func (j *RedisAuditEventJoiner) handleAdditional(
 		return AuditJoinDecision{}, err
 	}
 	addParkedMetric(ctx, "additional_body")
+	j.firsts.additionalBodyParked.Do(func() {
+		joinerLog.Info("First additional audit body parked (awaiting matching official event)",
+			"auditID", auditID,
+			"gvr", auditEventGVR(event),
+			"verb", event.Verb)
+	})
 	return AuditJoinDecision{Action: AuditJoinActionParked}, nil
 }
 

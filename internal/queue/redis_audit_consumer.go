@@ -25,6 +25,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -107,6 +108,12 @@ type AuditConsumer struct {
 	// be nil, in which case CommitRequest handling is disabled.
 	kubeClient client.Client
 	apiReader  client.Reader
+
+	// One-shot log gates for startup-milestone visibility.
+	firstGroupReady     sync.Once
+	firstMessage        sync.Once
+	firstRouted         sync.Once
+	firstShallowDropped sync.Once
 }
 
 // NewAuditConsumer creates a new AuditConsumer. It does not start consuming;
@@ -220,7 +227,9 @@ func (c *AuditConsumer) ensureConsumerGroup(ctx context.Context) error {
 	if err != nil && !isAlreadyExistsErr(err) {
 		return err
 	}
-	c.log.Info("Consumer group ready", "stream", c.stream, "group", c.group)
+	c.firstGroupReady.Do(func() {
+		c.log.Info("Consumer group ready", "stream", c.stream, "group", c.group)
+	})
 	return nil
 }
 
@@ -298,6 +307,9 @@ func (c *AuditConsumer) runAutoClaimCycle(ctx context.Context) {
 // processMessage handles a single stream entry: parses the audit event,
 // matches rules, builds git.Event(s), routes them, and ACKs.
 func (c *AuditConsumer) processMessage(ctx context.Context, msg redis.XMessage) {
+	c.firstMessage.Do(func() {
+		c.log.Info("First audit message consumed from stream", "msgID", msg.ID, "stream", c.stream)
+	})
 	log := c.log.WithValues("msgID", msg.ID)
 
 	auditEvent, err := parseAuditEvent(msg.Values)
@@ -377,9 +389,18 @@ func (c *AuditConsumer) routeAuditEvent(
 	sanitized, err := extractObject(auditEvent, op, fullAPIVersion, ref.Resource, namespace, name)
 	if err != nil {
 		if errors.Is(err, errAuditEventObjectMissing) {
-			log.Error(nil,
-				"audit event dropped before git routing: missing requestObject/responseObject; "+
-					"install apiservice-audit-proxy or update kube-apiserver audit policy to include bodies",
+			c.firstShallowDropped.Do(func() {
+				c.log.Info(
+					"First audit event dropped before git routing — missing requestObject/responseObject. "+
+						"Install apiservice-audit-proxy or update kube-apiserver audit policy to include bodies. "+
+						"Further drops will log at V(1) only.",
+					"auditID", auditEvent.AuditID,
+					"gvr", fullAPIVersion+"/"+ref.Resource,
+					"verb", auditEvent.Verb,
+				)
+			})
+			log.V(1).Info(
+				"audit event dropped before git routing: missing requestObject/responseObject",
 				"auditID", auditEvent.AuditID,
 				"gvr", fullAPIVersion+"/"+ref.Resource,
 				"verb", auditEvent.Verb,
@@ -403,6 +424,17 @@ func (c *AuditConsumer) routeAuditEvent(
 	userInfo := resolveUserInfo(auditEvent)
 
 	routed := c.routeToMatchedRules(log, sanitized, id, op, userInfo, wrRules, cwrRules)
+
+	if routed > 0 {
+		c.firstRouted.Do(func() {
+			c.log.Info("First audit event routed to BranchWorker",
+				"resource", resourcePlural,
+				"namespace", namespace,
+				"name", name,
+				"operation", op,
+				"routedTargets", routed)
+		})
+	}
 
 	log.V(1).Info("Processed audit stream entry",
 		"resource", resourcePlural, "namespace", namespace, "name", name,

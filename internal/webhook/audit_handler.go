@@ -27,7 +27,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
+	"github.com/go-logr/logr"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -42,6 +44,18 @@ import (
 
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 )
+
+// auditHandlerFirsts holds one-shot startup-milestone log gates. Per-event
+// Info logs are noisy in steady state; these surface the first time the
+// pipeline crosses each transition so operators can see startup progress at
+// a glance.
+type auditHandlerFirsts struct {
+	officialRequest   sync.Once
+	additionalRequest sync.Once
+	officialEmit      sync.Once
+	additionalEmit    sync.Once
+	impersonatedEvent sync.Once
+}
 
 const (
 	// DefaultAuditDumpDir is the default directory for audit event dumps.
@@ -74,6 +88,7 @@ type AuditHandler struct {
 	scheme       *runtime.Scheme
 	deserializer runtime.Decoder
 	config       AuditHandlerConfig
+	firsts       auditHandlerFirsts
 }
 
 // NewAuditHandler creates a new audit handler with the given configuration.
@@ -140,12 +155,14 @@ func (h *AuditHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.logFirstAuditRequest(reqLog, source, len(eventListV1.Items))
+
 	if err := h.processEvents(ctx, source, eventListV1.Items); err != nil {
 		reqLog.Error(err, "Failed to process audit events")
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	reqLog.Info("Processed audit request", "eventCount", len(eventListV1.Items), "processingOutcome", "success")
+	reqLog.V(1).Info("Processed audit request", "eventCount", len(eventListV1.Items), "processingOutcome", "success")
 
 	w.WriteHeader(http.StatusOK)
 	_, err = w.Write([]byte("Audit event processed"))
@@ -217,7 +234,9 @@ func (h *AuditHandler) processEvent(ctx context.Context, source AuditSource, aud
 		return err
 	}
 
-	log.Info("Processed audit event",
+	h.logFirstAuditEmit(log, source, auditEvent)
+
+	log.V(1).Info("Processed audit event",
 		"source", source,
 		"gvr", h.extractGVR(&auditEvent),
 		"action", auditEvent.Verb,
@@ -227,6 +246,40 @@ func (h *AuditHandler) processEvent(ctx context.Context, source AuditSource, aud
 		"userAgent", auditEvent.UserAgent)
 
 	return h.writeCanonicalAuditEvent(eventToWrite, auditEvent)
+}
+
+// logFirstAuditRequest emits an Info banner the first time we accept an
+// audit POST from each source so operators can see ingress is wired up.
+func (h *AuditHandler) logFirstAuditRequest(log logr.Logger, source AuditSource, eventCount int) {
+	switch source {
+	case AuditSourceOfficial:
+		h.firsts.officialRequest.Do(func() {
+			log.Info("Received first audit request (official)", "eventCount", eventCount)
+		})
+	case AuditSourceAdditional:
+		h.firsts.additionalRequest.Do(func() {
+			log.Info("Received first audit request (additional)", "eventCount", eventCount)
+		})
+	}
+}
+
+// logFirstAuditEmit emits an Info banner the first time an event from each
+// source is enqueued onto the canonical stream.
+func (h *AuditHandler) logFirstAuditEmit(log logr.Logger, source AuditSource, event audit.Event) {
+	switch source {
+	case AuditSourceOfficial:
+		h.firsts.officialEmit.Do(func() {
+			log.Info("First audit event enqueued to canonical stream (official)",
+				"auditID", event.AuditID,
+				"verb", event.Verb)
+		})
+	case AuditSourceAdditional:
+		h.firsts.additionalEmit.Do(func() {
+			log.Info("First audit event enqueued to canonical stream (additional)",
+				"auditID", event.AuditID,
+				"verb", event.Verb)
+		})
+	}
 }
 
 func (h *AuditHandler) prepareAuditEvent(
@@ -254,8 +307,14 @@ func (h *AuditHandler) recordReceivedMetric(
 ) {
 	user := effectiveAuditUsername(auditEvent)
 	if auditEvent.ImpersonatedUser != nil {
-		logf.Log.WithName("audit-handler").Info(
-			"Audit event impersonated",
+		handlerLog := logf.Log.WithName("audit-handler")
+		h.firsts.impersonatedEvent.Do(func() {
+			handlerLog.Info("First impersonated audit event observed",
+				"source", source,
+				"authUser", auditEvent.User.Username,
+				"impersonatedUser", auditEvent.ImpersonatedUser.Username)
+		})
+		handlerLog.V(1).Info("Audit event impersonated",
 			"source", source,
 			"authUser", auditEvent.User.Username,
 			"impersonatedUser", auditEvent.ImpersonatedUser,
@@ -376,7 +435,7 @@ func effectiveAuditUsername(event audit.Event) string {
 }
 
 func logAuditJoinSkip(message string, source AuditSource, gvr string, auditID types.UID) {
-	logf.Log.WithName("audit-handler").Info(message,
+	logf.Log.WithName("audit-handler").V(1).Info(message,
 		"source", source,
 		"gvr", gvr,
 		"auditID", auditID)
@@ -477,5 +536,5 @@ func (h *AuditHandler) writeAuditEventToFile(event *audit.Event) {
 		return
 	}
 
-	logf.Log.Info("Audit event written to file", "file", filePath, "auditID", event.AuditID)
+	logf.Log.V(1).Info("Audit event written to file", "file", filePath, "auditID", event.AuditID)
 }

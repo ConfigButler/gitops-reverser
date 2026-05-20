@@ -160,7 +160,7 @@ func (m *Manager) shutdown() {
 	for gvr, nsMap := range m.activeInformers {
 		for ns, cancel := range nsMap {
 			cancel()
-			m.Log.Info("Shutdown: stopped informer",
+			m.Log.V(1).Info("Shutdown: stopped informer",
 				"group", gvr.Group,
 				"version", gvr.Version,
 				"resource", gvr.Resource,
@@ -636,13 +636,13 @@ func (m *Manager) listResourcesForGVR(
 // Implements immediate CRD discovery with retry logic for newly installed CRDs.
 func (m *Manager) ReconcileForRuleChange(ctx context.Context) error {
 	log := m.Log.WithName("reconcile")
-	log.Info("Reconciling watch manager for rule change")
+	log.V(1).Info("Reconciling watch manager for rule change")
 
 	// Compute desired GVRs from current rules
 	requestedGVRs := m.ComputeRequestedGVRs()
 	discoverableGVRs := m.FilterDiscoverableGVRs(ctx, requestedGVRs)
 
-	log.Info("Computed GVRs for reconciliation",
+	log.V(1).Info("Computed GVRs for reconciliation",
 		"requested", len(requestedGVRs),
 		"discoverable", len(discoverableGVRs))
 
@@ -658,7 +658,7 @@ func (m *Manager) ReconcileForRuleChange(ctx context.Context) error {
 	m.informersMu.Unlock()
 
 	if len(added) == 0 && len(removed) == 0 {
-		log.Info("No GVR changes detected, skipping reconciliation",
+		log.V(1).Info("No GVR changes detected, skipping reconciliation",
 			"activeGVRs", activeCount)
 		return nil
 	}
@@ -701,7 +701,7 @@ func (m *Manager) ReconcileForRuleChange(ctx context.Context) error {
 	// just wrote those files.
 	m.completeReconciliationForAffectedTargets(log)
 
-	log.Info("Watch manager reconciliation completed",
+	log.V(1).Info("Watch manager reconciliation completed",
 		"addedGVRs", len(added),
 		"removedGVRs", len(removed))
 
@@ -976,7 +976,7 @@ func (m *Manager) stopInformer(gvr GVR) {
 	if nsMap, exists := m.activeInformers[gvr]; exists {
 		for ns, cancel := range nsMap {
 			cancel() // Stop the informer
-			m.Log.Info("Stopped informer",
+			m.Log.V(1).Info("Stopped informer",
 				"group", gvr.Group,
 				"version", gvr.Version,
 				"resource", gvr.Resource,
@@ -990,11 +990,11 @@ func (m *Manager) stopInformer(gvr GVR) {
 // Creates namespace-scoped factories for WatchRule GVRs and cluster-wide factory for ClusterWatchRule GVRs.
 func (m *Manager) startInformersForGVRs(ctx context.Context, gvrs []GVR) error {
 	log := m.Log.WithName("reconcile")
-	log.Info("startInformersForGVRs called", "gvrCount", len(gvrs))
+	log.V(1).Info("startInformersForGVRs called", "gvrCount", len(gvrs))
 
 	cfg := m.restConfig()
 	if cfg == nil {
-		log.Info("No REST config available, skipping informer start")
+		log.V(1).Info("No REST config available, skipping informer start")
 		return nil // No config available (e.g., in unit tests)
 	}
 
@@ -1012,7 +1012,7 @@ func (m *Manager) startInformersForGVRs(ctx context.Context, gvrs []GVR) error {
 	toStart := m.collectInformersToStart(gvrs)
 
 	if len(toStart) == 0 {
-		log.Info("All informers already running")
+		log.V(1).Info("All informers already running")
 		return nil
 	}
 
@@ -1073,7 +1073,7 @@ func (m *Manager) startCollectedInformers(ctx context.Context, client dynamic.In
 		}
 	}
 
-	m.Log.WithName("reconcile").Info("All informers started and synced")
+	m.Log.WithName("reconcile").V(1).Info("All informers started and synced")
 	return nil
 }
 
@@ -1091,11 +1091,11 @@ func (m *Manager) startSingleInformer(ctx context.Context, client dynamic.Interf
 	if !factoryExists {
 		if ns == "" {
 			factory = dynamicinformer.NewDynamicSharedInformerFactory(client, 0)
-			log.Info("Created cluster-wide informer factory")
+			log.V(1).Info("Created cluster-wide informer factory")
 		} else {
 			factory = dynamicinformer.NewFilteredDynamicSharedInformerFactory(
 				client, 0, ns, nil)
-			log.Info("Created namespace-scoped informer factory", "namespace", ns)
+			log.V(1).Info("Created namespace-scoped informer factory", "namespace", ns)
 		}
 		m.informerFactories[ns] = factory
 	}
@@ -1120,22 +1120,16 @@ func (m *Manager) startSingleInformer(ctx context.Context, client dynamic.Interf
 		// For now, we stop the entire factory when all informers for a namespace are removed
 	}
 
-	log.Info("Registered new informer")
+	log.V(1).Info("Registered new informer")
 
 	// Start the factory (idempotent - starts new informers if factory already running)
-	if !factoryExists {
-		log.Info("Starting informer factory")
-	} else {
-		log.Info("Factory already running, starting new informer")
-	}
 	factory.Start(ctx.Done())
 
 	// ALWAYS wait for this specific informer to sync
-	log.Info("Waiting for informer cache sync")
 	if !cache.WaitForCacheSync(ctx.Done(), informer.HasSynced) {
 		return fmt.Errorf("failed to sync cache for %v in namespace %s", resource, ns)
 	}
-	log.Info("Informer cache synced")
+	log.V(1).Info("Informer cache synced")
 
 	return nil
 }

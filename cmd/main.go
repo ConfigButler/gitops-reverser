@@ -98,11 +98,11 @@ func main() {
 		)
 	}
 
-	// Log metrics configuration for debugging
-	setupLog.Info("Metrics configuration",
-		"metrics-bind-address", cfg.metricsAddr,
-		"metrics-insecure", cfg.metricsInsecure,
-		"audit-insecure", cfg.auditInsecure)
+	setupLog.Info("Endpoint configuration",
+		"metricsAddr", cfg.metricsAddr,
+		"metricsInsecure", cfg.metricsInsecure,
+		"auditAddress", buildAuditServerAddress(cfg.auditListenAddress, cfg.auditPort),
+		"auditInsecure", cfg.auditInsecure)
 
 	// Initialize metrics
 	setupCtx := ctrl.SetupSignalHandler()
@@ -132,14 +132,12 @@ func main() {
 		cfg.branchBufferMaxBytes,
 	)
 	fatalIfErr(mgr.Add(workerManager), "unable to add worker manager to manager")
-	setupLog.Info("WorkerManager initialized and added to manager")
 
 	// Create ReconcilerManager (will be set up as ControlEventEmitter)
 	reconcilerManager := reconcile.NewReconcilerManager(
 		nil, // eventRouter will be set after EventRouter is created
 		ctrl.Log.WithName("reconciler-manager"),
 	)
-	setupLog.Info("ReconcilerManager initialized")
 
 	// Watch ingestion manager (placeholder, will get EventRouter set later)
 	watchMgr := &watch.Manager{
@@ -158,7 +156,6 @@ func main() {
 		mgr.GetClient(),
 		ctrl.Log.WithName("event-router"),
 	)
-	setupLog.Info("EventRouter initialized")
 	reconcilerManager.SetEventRouter(eventRouter)
 
 	// Set EventRouter reference in WatchManager
@@ -191,11 +188,6 @@ func main() {
 		TLSEnabled: cfg.auditRedisTLS,
 	})
 	fatalIfErr(err, "unable to initialize audit redis queue")
-	setupLog.Info("Audit Redis queue configured",
-		"redis-address", cfg.auditRedisAddr,
-		"stream", cfg.auditRedisStream,
-		"db", cfg.auditRedisDB,
-		"tls-enabled", cfg.auditRedisTLS)
 
 	auditJoiner, err := webhookhandler.NewRedisAuditEventJoiner(webhookhandler.RedisAuditJoinerConfig{
 		Addr:        cfg.auditRedisAddr,
@@ -207,9 +199,13 @@ func main() {
 		DecisionTTL: cfg.auditEventDecisionTTL,
 	})
 	fatalIfErr(err, "unable to initialize audit event joiner")
-	setupLog.Info("Audit event joiner configured",
-		"body-ttl", cfg.auditEventBodyTTL,
-		"decision-ttl", cfg.auditEventDecisionTTL)
+	setupLog.Info("Audit pipeline configured",
+		"redisAddress", cfg.auditRedisAddr,
+		"stream", cfg.auditRedisStream,
+		"db", cfg.auditRedisDB,
+		"tlsEnabled", cfg.auditRedisTLS,
+		"bodyTTL", cfg.auditEventBodyTTL,
+		"decisionTTL", cfg.auditEventDecisionTTL)
 
 	// Register the audit stream consumer. It shares the same Redis config as the
 	// producer but uses a dedicated consumer group and ID (pod-name-scoped so that
@@ -236,9 +232,7 @@ func main() {
 	)
 	fatalIfErr(consumerErr, "unable to initialize audit stream consumer")
 	fatalIfErr(mgr.Add(auditConsumer), "unable to add audit stream consumer to manager")
-	setupLog.Info("Audit stream consumer registered",
-		"stream", cfg.auditRedisStream,
-		"consumer-id", consumerID)
+	setupLog.Info("Audit stream consumer registered", "consumerID", consumerID)
 
 	auditHandler, err := webhookhandler.NewAuditHandler(webhookhandler.AuditHandlerConfig{
 		DumpDir:             cfg.auditDumpPath,
@@ -256,24 +250,12 @@ func main() {
 	fatalIfErr(mgr.Add(auditRunnable), "unable to add audit ingress server runnable")
 
 	if cfg.auditDumpPath != "" {
-		setupLog.Info("Audit ingress server configured with file dumping",
-			"http-paths", "/audit-webhook,/audit-webhook-additional",
-			"dump-path", cfg.auditDumpPath,
-			"address", buildAuditServerAddress(cfg.auditListenAddress, cfg.auditPort))
-	} else {
-		setupLog.Info("Audit ingress server configured",
-			"http-paths", "/audit-webhook,/audit-webhook-additional",
-			"address", buildAuditServerAddress(cfg.auditListenAddress, cfg.auditPort))
+		setupLog.Info("Audit ingress dump enabled", "dumpPath", cfg.auditDumpPath)
 	}
-
-	// NOTE: Old git.Worker has been replaced by WorkerManager + BranchWorker architecture
-	// The new system is already initialized above and wired through EventRouter
-	setupLog.Info("Using new BranchWorker architecture (per-branch workers)")
 
 	// Setup watch manager (must be after controllers are set up)
 	fatalIfErr(watchMgr.SetupWithManager(mgr), "unable to setup watch ingestion manager")
 	fatalIfErr(mgr.Add(watchMgr), "unable to add watch ingestion manager")
-	setupLog.Info("Watch ingestion manager added (cluster-as-source-of-truth mode)")
 
 	if err := (&controller.GitProviderReconciler{
 		Client: mgr.GetClient(),
