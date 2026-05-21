@@ -199,7 +199,7 @@ func TestCommitOptionsFor_OIDCDisplayNameAndEmailAreHonored(t *testing.T) {
 			UserInfo: UserInfo{
 				Username:    "https://keycloak/realms/cozy#simon",
 				DisplayName: "Simon Koudijs",
-				Email:       "simon@koudijs.dev",
+				Email:       "something@configbutler.ai",
 			},
 		}},
 	}
@@ -208,7 +208,7 @@ func TestCommitOptionsFor_OIDCDisplayNameAndEmailAreHonored(t *testing.T) {
 
 	require.NotNil(t, options.Author)
 	assert.Equal(t, "Simon Koudijs", options.Author.Name)
-	assert.Equal(t, "simon@koudijs.dev", options.Author.Email)
+	assert.Equal(t, "something@configbutler.ai", options.Author.Email)
 }
 
 func TestCommitOptionsFor_UnusableOIDCFieldsFallBackToUsername(t *testing.T) {
@@ -220,9 +220,9 @@ func TestCommitOptionsFor_UnusableOIDCFieldsFallBackToUsername(t *testing.T) {
 		displayName string
 		email       string
 	}{
-		{"newline in display name", "Simon\nKoudijs", "simon@koudijs.dev"},
-		{"angle brackets in display name", "Simon <root>", "simon@koudijs.dev"},
-		{"whitespace-only display name", "   ", "simon@koudijs.dev"},
+		{"newline in display name", "Simon\nKoudijs", "something@configbutler.ai"},
+		{"angle brackets in display name", "Simon <root>", "something@configbutler.ai"},
+		{"whitespace-only display name", "   ", "something@configbutler.ai"},
 		{"non-email in email claim", "Simon Koudijs", "not-an-email"},
 	}
 
