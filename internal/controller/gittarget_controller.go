@@ -35,9 +35,11 @@ import (
 	k8stypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	ctrlreconcile "sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	configbutleraiv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
@@ -387,7 +389,7 @@ func (r *GitTargetReconciler) evaluateSnapshotGate(
 			return nil, metav1.ConditionFalse, "", 0, err
 		}
 		gitDest := types.NewResourceReference(target.Name, target.Namespace)
-		r.EventRouter.ReconcilerManager.CreateReconciler(gitDest, stream)
+		r.EventRouter.ReconcilerManager.CreateReconciler(ctx, gitDest, stream)
 		return stream, metav1.ConditionTrue, MsgSnapshotCompleted, 0, nil
 	}
 
@@ -401,7 +403,7 @@ func (r *GitTargetReconciler) evaluateSnapshotGate(
 	stream.BeginReconciliation()
 
 	gitDest := types.NewResourceReference(target.Name, target.Namespace)
-	reconciler := r.EventRouter.ReconcilerManager.CreateReconciler(gitDest, stream)
+	reconciler := r.EventRouter.ReconcilerManager.CreateReconciler(ctx, gitDest, stream)
 	if err := reconciler.StartReconciliation(ctx); err != nil {
 		return stream, metav1.ConditionFalse, "", 0, fmt.Errorf(
 			"failed to start initial snapshot reconciliation: %w",
@@ -906,9 +908,14 @@ func (r *GitTargetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&configbutleraiv1alpha1.GitTarget{}).
 		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.encryptionSecretToGitTargets)).
+		// GenerationChangedPredicate keeps this watch reacting to a freshly
+		// applied or spec-changed GitProvider while ignoring the status-only
+		// updates the controllers write themselves — without it every provider
+		// heartbeat would re-list and re-enqueue all dependent GitTargets.
 		Watches(
 			&configbutleraiv1alpha1.GitProvider{},
 			handler.EnqueueRequestsFromMapFunc(r.gitProviderToGitTargets),
+			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
 		).
 		Named("gittarget").
 		Complete(r)
@@ -950,6 +957,7 @@ func (r *GitTargetReconciler) gitProviderToGitTargets(
 ) []ctrlreconcile.Request {
 	var targets configbutleraiv1alpha1.GitTargetList
 	if err := r.List(ctx, &targets, client.InNamespace(obj.GetNamespace())); err != nil {
+		logDependencyListError(ctx, err, "GitTargets", obj)
 		return nil
 	}
 

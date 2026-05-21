@@ -20,6 +20,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"testing"
 
@@ -30,6 +31,9 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	ctrlreconcile "sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	configbutleraiv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
@@ -332,4 +336,68 @@ func TestGitProviderToWatchRules(t *testing.T) {
 			assert.Equal(t, tc.want, requestsToKeys(got))
 		})
 	}
+}
+
+// TestGenerationChangedPredicateFiltersStatusUpdates verifies PR #149 review
+// issue 2: the cross-kind watches use GenerationChangedPredicate, so they react
+// to a freshly applied or spec-changed dependency but ignore the status-only
+// updates the controllers write themselves.
+func TestGenerationChangedPredicateFiltersStatusUpdates(t *testing.T) {
+	p := predicate.GenerationChangedPredicate{}
+
+	assert.True(t, p.Create(event.CreateEvent{Object: gitProvider("provider-a", "ns-a")}),
+		"a freshly applied dependency must enqueue dependents")
+
+	assert.False(t, p.Update(event.UpdateEvent{
+		ObjectOld: &configbutleraiv1alpha1.GitProvider{ObjectMeta: metav1.ObjectMeta{Generation: 7}},
+		ObjectNew: &configbutleraiv1alpha1.GitProvider{ObjectMeta: metav1.ObjectMeta{Generation: 7}},
+	}), "a status-only update keeps the same generation and must be filtered out")
+
+	assert.True(t, p.Update(event.UpdateEvent{
+		ObjectOld: &configbutleraiv1alpha1.GitProvider{ObjectMeta: metav1.ObjectMeta{Generation: 7}},
+		ObjectNew: &configbutleraiv1alpha1.GitProvider{ObjectMeta: metav1.ObjectMeta{Generation: 8}},
+	}), "a spec change bumps generation and must enqueue dependents")
+}
+
+// newDependencyWatchesListErrorClient builds a fake client whose every List
+// call fails, used to exercise the graceful-degradation path of the cross-kind
+// map functions.
+func newDependencyWatchesListErrorClient(t *testing.T) ctrlclient.Client {
+	t.Helper()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, clientgoscheme.AddToScheme(scheme))
+	require.NoError(t, configbutleraiv1alpha1.AddToScheme(scheme))
+
+	return fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithInterceptorFuncs(interceptor.Funcs{
+			List: func(
+				context.Context,
+				ctrlclient.WithWatch,
+				ctrlclient.ObjectList,
+				...ctrlclient.ListOption,
+			) error {
+				return errors.New("simulated API server failure")
+			},
+		}).
+		Build()
+}
+
+// TestDependencyMapFunctionsTolerateListErrors verifies PR #149 review issue 5:
+// when the cached List fails, each cross-kind map function degrades gracefully
+// to "enqueue nothing" — affected resources still recover on the periodic
+// requeue — rather than panicking. The accompanying error log is emitted by
+// logDependencyListError.
+func TestDependencyMapFunctionsTolerateListErrors(t *testing.T) {
+	client := newDependencyWatchesListErrorClient(t)
+	ctx := context.Background()
+	provider := gitProvider("provider-a", "ns-a")
+	target := gitTarget("target-a", "ns-a", "provider-a")
+
+	assert.Nil(t, (&GitTargetReconciler{Client: client}).gitProviderToGitTargets(ctx, provider))
+	assert.Nil(t, (&WatchRuleReconciler{Client: client}).gitTargetToWatchRules(ctx, target))
+	assert.Nil(t, (&WatchRuleReconciler{Client: client}).gitProviderToWatchRules(ctx, provider))
+	assert.Nil(t, (&ClusterWatchRuleReconciler{Client: client}).gitTargetToClusterWatchRules(ctx, target))
+	assert.Nil(t, (&ClusterWatchRuleReconciler{Client: client}).gitProviderToClusterWatchRules(ctx, provider))
 }

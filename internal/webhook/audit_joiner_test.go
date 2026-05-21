@@ -22,10 +22,13 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
+	"github.com/go-logr/logr/funcr"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -171,6 +174,63 @@ func TestRedisAuditEventJoiner_ShallowOfficialTimesOutWaitingForBody(t *testing.
 	assert.Equal(t, AuditJoinActionDrop, decision.Action)
 	assert.False(t, mr.Exists(bodyKey("audit-wait-timeout-1")), "timed-out wait must not park")
 	assert.False(t, mr.Exists(decisionKey("audit-wait-timeout-1")), "shallow drop must not claim a decision")
+}
+
+// TestRedisAuditEventJoiner_WaitForBodyHonorsInjectedClock demonstrates PR #149
+// review issue 4: waitForBody computes its deadline from the injectable j.now()
+// but is driven by a real time.Ticker. When j.now() is frozen (or skewed), the
+// deadline check `!j.now().Before(deadline)` never becomes true, so the wait
+// loop spins until the context is cancelled instead of timing out cleanly.
+func TestRedisAuditEventJoiner_WaitForBodyHonorsInjectedClock(t *testing.T) {
+	mr := miniredis.RunT(t)
+	joiner := newTestJoinerWithOfficialBodyWait(t, mr, 100*time.Millisecond)
+
+	// Freeze the joiner clock: every j.now() call returns the same instant.
+	frozen := time.Now()
+	joiner.now = func() time.Time { return frozen }
+
+	official := testAuditEvent("audit-frozen-clock-1", "wardle.example.com", false)
+
+	// The 1s context is only a safety net so the spin does not hang the suite
+	// forever; correct behaviour must not depend on it firing.
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	decision, err := decide(ctx, t, joiner, AuditSourceOfficial, &official)
+	elapsed := time.Since(start)
+
+	require.NoError(t, err, "wait must time out on its own deadline, not via context cancellation")
+	assert.Equal(t, AuditJoinActionDrop, decision.Action)
+	assert.Less(t, elapsed, 750*time.Millisecond,
+		"a 100ms body wait must not run until the 1s context deadline")
+}
+
+// TestRedisAuditEventJoiner_TimeoutLogsEveryOccurrence verifies PR #149 review
+// issue 1: a body-wait timeout must log on every occurrence, not just once per
+// process. A recurring timeout means the additional-body proxy is missing or
+// lagging, and operators need that signal to persist.
+func TestRedisAuditEventJoiner_TimeoutLogsEveryOccurrence(t *testing.T) {
+	mr := miniredis.RunT(t)
+	joiner := newTestJoinerWithOfficialBodyWait(t, mr, 30*time.Millisecond)
+
+	var timeoutLogs atomic.Int64
+	joiner.logger = funcr.New(func(_, args string) {
+		if strings.Contains(args, "timed out waiting for additional body") {
+			timeoutLogs.Add(1)
+		}
+	}, funcr.Options{})
+
+	ctx := context.Background()
+	for _, auditID := range []string{"audit-timeout-log-1", "audit-timeout-log-2"} {
+		official := testAuditEvent(auditID, "wardle.example.com", false)
+		decision, err := decide(ctx, t, joiner, AuditSourceOfficial, &official)
+		require.NoError(t, err)
+		require.Equal(t, AuditJoinActionDrop, decision.Action)
+	}
+
+	assert.Equal(t, int64(2), timeoutLogs.Load(),
+		"every body-wait timeout must log, not just the first")
 }
 
 func TestRedisAuditEventJoiner_WaitOfficialEmitsNamedOfficialWithoutBody(t *testing.T) {
