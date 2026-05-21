@@ -28,6 +28,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/go-logr/logr"
 	"github.com/redis/go-redis/v9"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
@@ -47,7 +48,6 @@ type auditJoinerFirsts struct {
 	additionalBodyParked sync.Once
 	mergedEmit           sync.Once
 	officialWaitMerged   sync.Once
-	officialWaitTimedOut sync.Once
 }
 
 const (
@@ -166,6 +166,7 @@ type RedisAuditEventJoiner struct {
 	decisionTTL      time.Duration
 	officialBodyWait time.Duration
 	now              func() time.Time
+	logger           logr.Logger
 	firsts           auditJoinerFirsts
 }
 
@@ -199,6 +200,7 @@ func NewRedisAuditEventJoiner(cfg RedisAuditJoinerConfig) (*RedisAuditEventJoine
 		decisionTTL:      decisionTTL,
 		officialBodyWait: cfg.OfficialBodyWait,
 		now:              time.Now,
+		logger:           logf.Log.WithName("audit-joiner"),
 	}, nil
 }
 
@@ -281,7 +283,7 @@ func (j *RedisAuditEventJoiner) handleOfficial(
 
 	if !hasBody && quality == AuditEventQualityIdentityShallow {
 		addShallowDroppedMetric(ctx, event)
-		joinerLog := logf.Log.WithName("audit-joiner")
+		joinerLog := j.logger
 		j.firsts.shallowDropped.Do(func() {
 			joinerLog.Info(
 				"First shallow audit event dropped — no request/response body received. "+
@@ -315,8 +317,7 @@ func (j *RedisAuditEventJoiner) handleOfficial(
 
 	if hasBody {
 		if err := j.deleteBody(ctx, auditID); err != nil {
-			logf.Log.WithName("audit-joiner").
-				Error(err, "Failed to delete merged parked audit body", "auditID", auditID)
+			j.logger.Error(err, "Failed to delete merged parked audit body", "auditID", auditID)
 		}
 		if bodyParkedBeforeOfficial {
 			// The additional body was already parked when the official arrived: the skew is
@@ -325,7 +326,7 @@ func (j *RedisAuditEventJoiner) handleOfficial(
 				officialArrival.Sub(envelope.ReceivedAt.Time).Seconds())
 		}
 		j.firsts.mergedEmit.Do(func() {
-			logf.Log.WithName("audit-joiner").Info(
+			j.logger.Info(
 				"First shallow-event conversion succeeded: official event merged with parked additional body",
 				"auditID", auditID,
 				"gvr", auditEventGVR(event),
@@ -359,13 +360,16 @@ func (j *RedisAuditEventJoiner) waitForBody(
 		return AuditBodyEnvelope{}, false, nil
 	}
 
-	waitStart := j.now()
-	deadline := waitStart.Add(j.officialBodyWait)
+	// The body wait is an inherently real-time operation: the deadline and the
+	// skew samples must be measured from one wall clock, never from the
+	// injectable j.now() (which tests freeze). time.After owns the deadline so
+	// there is no clock comparison left to get wrong.
+	waitStart := time.Now()
 	ticker := time.NewTicker(auditJoinBodyPollInterval)
 	defer ticker.Stop()
+	timeout := time.After(j.officialBodyWait)
 
-	joinerLog := logf.Log.WithName("audit-joiner")
-	joinerLog.V(1).Info("waiting briefly for additional audit body",
+	j.logger.V(1).Info("waiting briefly for additional audit body",
 		"auditID", auditID,
 		"gvr", auditEventGVR(event),
 		"verb", event.Verb,
@@ -375,6 +379,22 @@ func (j *RedisAuditEventJoiner) waitForBody(
 		select {
 		case <-ctx.Done():
 			return AuditBodyEnvelope{}, false, ctx.Err()
+		case <-timeout:
+			observeJoinSkew(ctx, joinArrivalOfficialFirst, joinOutcomeTimedOut,
+				time.Since(waitStart).Seconds())
+			// Logged on every occurrence (deliberately not gated behind a
+			// sync.Once): a recurring timeout means the additional-body proxy
+			// is missing or lagging, and operators need that signal to persist,
+			// not just appear once at startup.
+			j.logger.Info(
+				"WARNING: official shallow audit event timed out waiting for additional body; "+
+					"the official event will be dropped. Install or repair apiservice-audit-proxy "+
+					"so request/response bodies arrive within the wait budget.",
+				"auditID", auditID,
+				"gvr", auditEventGVR(event),
+				"verb", event.Verb,
+				"wait", j.officialBodyWait)
+			return AuditBodyEnvelope{}, false, nil
 		case <-ticker.C:
 			envelope, hasBody, err := j.peekBody(ctx, auditID)
 			if err != nil {
@@ -382,27 +402,15 @@ func (j *RedisAuditEventJoiner) waitForBody(
 			}
 			if hasBody {
 				observeJoinSkew(ctx, joinArrivalOfficialFirst, joinOutcomeMerged,
-					j.now().Sub(waitStart).Seconds())
+					time.Since(waitStart).Seconds())
 				j.firsts.officialWaitMerged.Do(func() {
-					joinerLog.Info("Official shallow audit event found additional body after waiting",
+					j.logger.Info("Official shallow audit event found additional body after waiting",
 						"auditID", auditID,
 						"gvr", auditEventGVR(event),
 						"verb", event.Verb,
 						"wait", j.officialBodyWait)
 				})
 				return envelope, true, nil
-			}
-			if !j.now().Before(deadline) {
-				observeJoinSkew(ctx, joinArrivalOfficialFirst, joinOutcomeTimedOut,
-					j.now().Sub(waitStart).Seconds())
-				j.firsts.officialWaitTimedOut.Do(func() {
-					joinerLog.Info("Official shallow audit event timed out waiting for additional body",
-						"auditID", auditID,
-						"gvr", auditEventGVR(event),
-						"verb", event.Verb,
-						"wait", j.officialBodyWait)
-				})
-				return AuditBodyEnvelope{}, false, nil
 			}
 		}
 	}
@@ -414,7 +422,7 @@ func (j *RedisAuditEventJoiner) handleAdditional(
 	quality AuditEventQuality,
 ) (AuditJoinDecision, error) {
 	auditID := string(event.AuditID)
-	joinerLog := logf.Log.WithName("audit-joiner")
+	joinerLog := j.logger
 	if quality == AuditEventQualityMalformed {
 		j.firsts.malformedAdditional.Do(func() {
 			joinerLog.Info(

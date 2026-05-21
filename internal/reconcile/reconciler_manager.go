@@ -38,7 +38,7 @@ type ReconcilerManager struct {
 	}
 	logger logr.Logger
 
-	onReconcilerCreated func(types.ResourceReference)
+	onReconcilerCreated func(context.Context, types.ResourceReference)
 }
 
 // NewReconcilerManager creates a new ReconcilerManager.
@@ -65,14 +65,18 @@ func (m *ReconcilerManager) SetEventRouter(
 }
 
 // SetOnReconcilerCreated registers a callback fired after a new FolderReconciler is created.
-func (m *ReconcilerManager) SetOnReconcilerCreated(callback func(types.ResourceReference)) {
+func (m *ReconcilerManager) SetOnReconcilerCreated(callback func(context.Context, types.ResourceReference)) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.onReconcilerCreated = callback
 }
 
 // CreateReconciler creates or retrieves a FolderReconciler for the given GitDestination.
+// ctx is the caller's reconcile context; it is forwarded to the
+// onReconcilerCreated callback so downstream work (e.g. snapshot replay) is
+// cancellable rather than running on a detached context.Background().
 func (m *ReconcilerManager) CreateReconciler(
+	ctx context.Context,
 	gitDest types.ResourceReference,
 	requestEmitter WriteRequestEmitter,
 ) *FolderReconciler {
@@ -92,7 +96,7 @@ func (m *ReconcilerManager) CreateReconciler(
 
 	m.logger.Info("Created new FolderReconciler", "gitDest", gitDest.String())
 	if callback != nil {
-		callback(gitDest)
+		callback(ctx, gitDest)
 	}
 	return reconciler
 }

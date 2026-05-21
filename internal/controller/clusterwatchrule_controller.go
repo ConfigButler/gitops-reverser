@@ -28,9 +28,11 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	ctrlreconcile "sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	configbutleraiv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
@@ -310,13 +312,20 @@ func (r *ClusterWatchRuleReconciler) updateStatusWithRetry(
 func (r *ClusterWatchRuleReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&configbutleraiv1alpha1.ClusterWatchRule{}).
+		// GenerationChangedPredicate keeps these watches reacting to a freshly
+		// applied or spec-changed dependency while ignoring the status-only
+		// updates the controllers write themselves — without it every GitTarget
+		// or GitProvider heartbeat would re-list and re-enqueue all
+		// ClusterWatchRules.
 		Watches(
 			&configbutleraiv1alpha1.GitTarget{},
 			handler.EnqueueRequestsFromMapFunc(r.gitTargetToClusterWatchRules),
+			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
 		).
 		Watches(
 			&configbutleraiv1alpha1.GitProvider{},
 			handler.EnqueueRequestsFromMapFunc(r.gitProviderToClusterWatchRules),
+			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
 		).
 		Named("clusterwatchrule").
 		Complete(r)
@@ -331,6 +340,7 @@ func (r *ClusterWatchRuleReconciler) gitTargetToClusterWatchRules(
 ) []ctrlreconcile.Request {
 	var rules configbutleraiv1alpha1.ClusterWatchRuleList
 	if err := r.List(ctx, &rules); err != nil {
+		logDependencyListError(ctx, err, "ClusterWatchRules", obj)
 		return nil
 	}
 
@@ -361,6 +371,7 @@ func (r *ClusterWatchRuleReconciler) gitProviderToClusterWatchRules(
 ) []ctrlreconcile.Request {
 	var targets configbutleraiv1alpha1.GitTargetList
 	if err := r.List(ctx, &targets, client.InNamespace(obj.GetNamespace())); err != nil {
+		logDependencyListError(ctx, err, "GitTargets", obj)
 		return nil
 	}
 
@@ -377,6 +388,7 @@ func (r *ClusterWatchRuleReconciler) gitProviderToClusterWatchRules(
 
 	var rules configbutleraiv1alpha1.ClusterWatchRuleList
 	if err := r.List(ctx, &rules); err != nil {
+		logDependencyListError(ctx, err, "ClusterWatchRules", obj)
 		return nil
 	}
 

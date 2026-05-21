@@ -29,9 +29,11 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	ctrlreconcile "sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	configbutleraiv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
@@ -330,13 +332,19 @@ func (r *WatchRuleReconciler) updateStatusWithRetry(
 func (r *WatchRuleReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&configbutleraiv1alpha1.WatchRule{}).
+		// GenerationChangedPredicate keeps these watches reacting to a freshly
+		// applied or spec-changed dependency while ignoring the status-only
+		// updates the controllers write themselves — without it every GitTarget
+		// or GitProvider heartbeat would re-list and re-enqueue all WatchRules.
 		Watches(
 			&configbutleraiv1alpha1.GitTarget{},
 			handler.EnqueueRequestsFromMapFunc(r.gitTargetToWatchRules),
+			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
 		).
 		Watches(
 			&configbutleraiv1alpha1.GitProvider{},
 			handler.EnqueueRequestsFromMapFunc(r.gitProviderToWatchRules),
+			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
 		).
 		Named("watchrule").
 		Complete(r)
@@ -352,6 +360,7 @@ func (r *WatchRuleReconciler) gitTargetToWatchRules(
 ) []ctrlreconcile.Request {
 	var rules configbutleraiv1alpha1.WatchRuleList
 	if err := r.List(ctx, &rules, client.InNamespace(obj.GetNamespace())); err != nil {
+		logDependencyListError(ctx, err, "WatchRules", obj)
 		return nil
 	}
 
@@ -379,6 +388,7 @@ func (r *WatchRuleReconciler) gitProviderToWatchRules(
 ) []ctrlreconcile.Request {
 	var targets configbutleraiv1alpha1.GitTargetList
 	if err := r.List(ctx, &targets, client.InNamespace(obj.GetNamespace())); err != nil {
+		logDependencyListError(ctx, err, "GitTargets", obj)
 		return nil
 	}
 
@@ -395,6 +405,7 @@ func (r *WatchRuleReconciler) gitProviderToWatchRules(
 
 	var rules configbutleraiv1alpha1.WatchRuleList
 	if err := r.List(ctx, &rules, client.InNamespace(obj.GetNamespace())); err != nil {
+		logDependencyListError(ctx, err, "WatchRules", obj)
 		return nil
 	}
 

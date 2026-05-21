@@ -1366,8 +1366,9 @@ func (m *Manager) markRuleSetSnapshotDelivered(target ruleSetSnapshotTarget) {
 }
 
 // MaybeReplaySnapshot emits a pending rule-change snapshot once a FolderReconciler
-// exists for gitDest. It is called by ReconcilerManager when a reconciler is created.
-func (m *Manager) MaybeReplaySnapshot(gitDest types.ResourceReference) {
+// exists for gitDest. It is called by ReconcilerManager when a reconciler is
+// created; ctx is the originating reconcile context so the replay is cancellable.
+func (m *Manager) MaybeReplaySnapshot(ctx context.Context, gitDest types.ResourceReference) {
 	if m == nil {
 		return
 	}
@@ -1386,7 +1387,7 @@ func (m *Manager) MaybeReplaySnapshot(gitDest types.ResourceReference) {
 	target := ruleSetSnapshotTarget{gitDest: gitDest, hash: hash}
 	log := m.Log.WithName("reconcile")
 	m.EventRouter.BeginReconciliationForStream(gitDest)
-	m.emitSnapshotForRuleChange(context.Background(), log, []ruleSetSnapshotTarget{target})
+	m.emitSnapshotForRuleChange(ctx, log, []ruleSetSnapshotTarget{target})
 	m.EventRouter.CompleteReconciliationForStream(gitDest)
 }
 
