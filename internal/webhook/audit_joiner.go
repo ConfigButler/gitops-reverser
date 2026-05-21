@@ -46,6 +46,8 @@ type auditJoinerFirsts struct {
 	malformedAdditional  sync.Once
 	additionalBodyParked sync.Once
 	mergedEmit           sync.Once
+	officialWaitMerged   sync.Once
+	officialWaitTimedOut sync.Once
 }
 
 const (
@@ -56,6 +58,7 @@ const (
 
 	defaultAuditEventBodyTTL     = 5 * time.Minute
 	defaultAuditEventDecisionTTL = time.Hour
+	auditJoinBodyPollInterval    = 25 * time.Millisecond
 )
 
 // AuditSource is the semantic source role of an audit webhook endpoint.
@@ -146,22 +149,24 @@ type auditDecisionEnvelope struct {
 
 // RedisAuditJoinerConfig configures Redis-backed audit body parking and decision tracking.
 type RedisAuditJoinerConfig struct {
-	Addr        string
-	Username    string
-	AuthValue   string
-	DB          int
-	TLSEnabled  bool
-	BodyTTL     time.Duration
-	DecisionTTL time.Duration
+	Addr             string
+	Username         string
+	AuthValue        string
+	DB               int
+	TLSEnabled       bool
+	BodyTTL          time.Duration
+	DecisionTTL      time.Duration
+	OfficialBodyWait time.Duration
 }
 
 // RedisAuditEventJoiner implements audit body parking with Redis/Valkey keys.
 type RedisAuditEventJoiner struct {
-	client      *redis.Client
-	bodyTTL     time.Duration
-	decisionTTL time.Duration
-	now         func() time.Time
-	firsts      auditJoinerFirsts
+	client           *redis.Client
+	bodyTTL          time.Duration
+	decisionTTL      time.Duration
+	officialBodyWait time.Duration
+	now              func() time.Time
+	firsts           auditJoinerFirsts
 }
 
 // NewRedisAuditEventJoiner creates a Redis-backed AuditEventJoiner.
@@ -189,16 +194,17 @@ func NewRedisAuditEventJoiner(cfg RedisAuditJoinerConfig) (*RedisAuditEventJoine
 	}
 
 	return &RedisAuditEventJoiner{
-		client:      redis.NewClient(options),
-		bodyTTL:     bodyTTL,
-		decisionTTL: decisionTTL,
-		now:         time.Now,
+		client:           redis.NewClient(options),
+		bodyTTL:          bodyTTL,
+		decisionTTL:      decisionTTL,
+		officialBodyWait: cfg.OfficialBodyWait,
+		now:              time.Now,
 	}, nil
 }
 
 // Decide examines an event and, for emitted events, claims the audit ID before enqueueing.
-// Officials never park: an identity-shallow official with no matching parked body drops
-// synchronously with audit_shallow_dropped_total + a WARN log.
+// Officials never park. An identity-shallow official with no matching parked body waits briefly
+// for an additional body contribution, then drops with audit_shallow_dropped_total if none arrives.
 func (j *RedisAuditEventJoiner) Decide(
 	ctx context.Context,
 	source AuditSource,
@@ -258,10 +264,19 @@ func (j *RedisAuditEventJoiner) handleOfficial(
 	quality AuditEventQuality,
 ) (AuditJoinDecision, error) {
 	auditID := string(event.AuditID)
+	officialArrival := j.now()
 
 	envelope, hasBody, err := j.peekBody(ctx, auditID)
 	if err != nil {
 		return AuditJoinDecision{}, err
+	}
+	bodyParkedBeforeOfficial := hasBody
+
+	if !hasBody && quality == AuditEventQualityIdentityShallow {
+		envelope, hasBody, err = j.waitForBody(ctx, auditID, event)
+		if err != nil {
+			return AuditJoinDecision{}, err
+		}
 	}
 
 	if !hasBody && quality == AuditEventQualityIdentityShallow {
@@ -303,6 +318,12 @@ func (j *RedisAuditEventJoiner) handleOfficial(
 			logf.Log.WithName("audit-joiner").
 				Error(err, "Failed to delete merged parked audit body", "auditID", auditID)
 		}
+		if bodyParkedBeforeOfficial {
+			// The additional body was already parked when the official arrived: the skew is
+			// the proxy's lead time. waitForBody records the official-first cases itself.
+			observeJoinSkew(ctx, joinArrivalBodyFirst, joinOutcomeMerged,
+				officialArrival.Sub(envelope.ReceivedAt.Time).Seconds())
+		}
 		j.firsts.mergedEmit.Do(func() {
 			logf.Log.WithName("audit-joiner").Info(
 				"First shallow-event conversion succeeded: official event merged with parked additional body",
@@ -327,6 +348,64 @@ func (j *RedisAuditEventJoiner) handleOfficial(
 		Result:  AuditJoinResultAsIs,
 		Source:  AuditSourceOfficial,
 	}, nil
+}
+
+func (j *RedisAuditEventJoiner) waitForBody(
+	ctx context.Context,
+	auditID string,
+	event *auditv1.Event,
+) (AuditBodyEnvelope, bool, error) {
+	if j.officialBodyWait <= 0 {
+		return AuditBodyEnvelope{}, false, nil
+	}
+
+	waitStart := j.now()
+	deadline := waitStart.Add(j.officialBodyWait)
+	ticker := time.NewTicker(auditJoinBodyPollInterval)
+	defer ticker.Stop()
+
+	joinerLog := logf.Log.WithName("audit-joiner")
+	joinerLog.V(1).Info("waiting briefly for additional audit body",
+		"auditID", auditID,
+		"gvr", auditEventGVR(event),
+		"verb", event.Verb,
+		"wait", j.officialBodyWait)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return AuditBodyEnvelope{}, false, ctx.Err()
+		case <-ticker.C:
+			envelope, hasBody, err := j.peekBody(ctx, auditID)
+			if err != nil {
+				return AuditBodyEnvelope{}, false, err
+			}
+			if hasBody {
+				observeJoinSkew(ctx, joinArrivalOfficialFirst, joinOutcomeMerged,
+					j.now().Sub(waitStart).Seconds())
+				j.firsts.officialWaitMerged.Do(func() {
+					joinerLog.Info("Official shallow audit event found additional body after waiting",
+						"auditID", auditID,
+						"gvr", auditEventGVR(event),
+						"verb", event.Verb,
+						"wait", j.officialBodyWait)
+				})
+				return envelope, true, nil
+			}
+			if !j.now().Before(deadline) {
+				observeJoinSkew(ctx, joinArrivalOfficialFirst, joinOutcomeTimedOut,
+					j.now().Sub(waitStart).Seconds())
+				j.firsts.officialWaitTimedOut.Do(func() {
+					joinerLog.Info("Official shallow audit event timed out waiting for additional body",
+						"auditID", auditID,
+						"gvr", auditEventGVR(event),
+						"verb", event.Verb,
+						"wait", j.officialBodyWait)
+				})
+				return AuditBodyEnvelope{}, false, nil
+			}
+		}
+	}
 }
 
 func (j *RedisAuditEventJoiner) handleAdditional(
@@ -652,4 +731,47 @@ func addBodyLateMetric(ctx context.Context, event *auditv1.Event) {
 			attribute.String("action", eventVerb(event)),
 		))
 	}
+}
+
+const (
+	// joinArrivalBodyFirst marks a join where the additional body was parked before the
+	// official event arrived (the common, healthy case).
+	joinArrivalBodyFirst = "body_first"
+	// joinArrivalOfficialFirst marks a join where the official event arrived first and had
+	// to wait on the canonical gate for the additional body.
+	joinArrivalOfficialFirst = "official_first"
+
+	// joinOutcomeMerged marks a skew sample where the official event was merged with a body.
+	joinOutcomeMerged = "merged"
+	// joinOutcomeTimedOut marks a skew sample where the wait expired before a body arrived.
+	joinOutcomeTimedOut = "timed_out"
+)
+
+// observeJoinSkew records the arrival skew between an official audit event and its matching
+// additional body. For body_first samples this is the proxy's lead time; for official_first
+// samples it is how long the official event waited on the canonical gate. Negative samples
+// (clock jitter) are clamped to zero so they land in the first bucket.
+func observeJoinSkew(ctx context.Context, arrival, outcome string, seconds float64) {
+	if telemetry.AuditJoinSkewSeconds == nil {
+		return
+	}
+	if seconds < 0 {
+		seconds = 0
+	}
+	telemetry.AuditJoinSkewSeconds.Record(ctx, seconds, metric.WithAttributes(
+		attribute.String("arrival", arrival),
+		attribute.String("outcome", outcome),
+	))
+}
+
+// observeOfficialGateWait records how long an official audit event waited to acquire the
+// in-pod canonical ordering gate before processing.
+func observeOfficialGateWait(ctx context.Context, seconds float64) {
+	if telemetry.AuditOfficialGateWaitSeconds == nil {
+		return
+	}
+	if seconds < 0 {
+		seconds = 0
+	}
+	telemetry.AuditOfficialGateWaitSeconds.Record(ctx, seconds)
 }

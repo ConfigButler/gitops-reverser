@@ -122,6 +122,7 @@ queue:
 auditEventJoin:
   bodyTTL: "5m"
   decisionTTL: "1h"
+  bodyWait: "500ms"
 
 # TLS certificate management (Kubernetes requires this for API server callbacks)
 certificates:

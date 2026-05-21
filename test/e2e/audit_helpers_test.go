@@ -21,8 +21,8 @@ package e2e
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/redis/go-redis/v9"
 )
@@ -88,7 +88,12 @@ func findAuditPayloadSince(
 		}
 	}
 
-	return auditPayloadEntry{}, errors.New("no matching audit payload found")
+	return auditPayloadEntry{}, fmt.Errorf(
+		"no matching audit payload found after scanning %d entries from %q: %s",
+		len(entries),
+		start,
+		summarizeAuditPayloadEntries(entries, 12),
+	)
 }
 
 func countAuditPayloadsByAuditIDSince(
@@ -163,6 +168,68 @@ func auditObjectRefName(payload map[string]interface{}) string {
 func auditPayloadHasObject(payload map[string]interface{}, field string) bool {
 	object, _ := payload[field].(map[string]interface{})
 	return len(object) > 0
+}
+
+func summarizeAuditPayloadEntries(entries []redis.XMessage, maxEntries int) string {
+	if len(entries) == 0 {
+		return "<empty stream range>"
+	}
+	if maxEntries <= 0 {
+		maxEntries = len(entries)
+	}
+	start := 0
+	if len(entries) > maxEntries {
+		start = len(entries) - maxEntries
+	}
+
+	var builder strings.Builder
+	if start > 0 {
+		_, _ = fmt.Fprintf(&builder, "... %d earlier entries omitted; ", start)
+	}
+	for i, entry := range entries[start:] {
+		if i > 0 {
+			builder.WriteString("; ")
+		}
+		rawJSON, _ := entry.Values["payload_json"].(string)
+		if rawJSON == "" {
+			_, _ = fmt.Fprintf(&builder, "%s <missing payload_json>", entry.ID)
+			continue
+		}
+
+		var payload map[string]interface{}
+		if err := json.Unmarshal([]byte(rawJSON), &payload); err != nil {
+			_, _ = fmt.Fprintf(&builder, "%s <invalid payload_json: %v>", entry.ID, err)
+			continue
+		}
+		_, _ = fmt.Fprintf(
+			&builder,
+			"%s auditID=%s verb=%s ref=%s/%s ns=%s name=%s requestObject=%t responseObject=%t",
+			entry.ID,
+			auditPayloadID(payload),
+			auditPayloadString(payload, "verb"),
+			auditPayloadObjectRefString(payload, "apiGroup"),
+			auditPayloadObjectRefString(payload, "resource"),
+			auditPayloadObjectRefString(payload, "namespace"),
+			auditPayloadObjectRefString(payload, "name"),
+			auditPayloadHasObject(payload, "requestObject"),
+			auditPayloadHasObject(payload, "responseObject"),
+		)
+	}
+	return builder.String()
+}
+
+func auditPayloadString(payload map[string]interface{}, field string) string {
+	value, _ := payload[field].(string)
+	return value
+}
+
+func auditPayloadObjectRefString(payload map[string]interface{}, field string) string {
+	objectRef, _ := payload["objectRef"].(map[string]interface{})
+	if objectRef == nil {
+		return ""
+	}
+	value, _ := objectRef[field].(string)
+	return value
 }
 
 func prettyAuditPayload(payload map[string]interface{}) string {

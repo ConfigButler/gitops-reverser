@@ -506,8 +506,8 @@ the design to add explicit cache warm-up before startup reconcile.
 
 The audit handler is the seam where everything that wants to drive a Git write enters the system.
 It accepts two semantic source roles, deduplicates by `auditID`, classifies event shape, recovers
-bodies for aggregated API requests, and writes one canonical event per `auditID` to the Redis
-stream.
+bodies for aggregated API requests, preserves official-event ordering, and writes one canonical
+event per `auditID` to the Redis stream.
 
 ### What this pipeline exists for
 
@@ -517,9 +517,11 @@ stream.
    one stream entry.
 3. **No silent shallow writes.** A shallow event is either normalized by a matching additional
    body or dropped — it never produces a stub Git commit.
-4. **Visibility.** Operators see counters for received events, parked bodies, dedupe decisions,
-   join latency, body misses, and late bodies. (Sweeper-driven counters for orphan bodies and
-   shallow drops are not yet wired — see [Known gaps](#known-gaps).)
+4. **Visibility.** Operators see counters for received events, event quality, parked bodies,
+   dedupe decisions, shallow drops, and late bodies, plus histograms for official↔additional
+   arrival skew and canonical-gate wait time. See [Interpreting metrics](interpreting-metrics.md)
+   for the query cookbook. (Orphan additional bodies still expire without a metric — see
+   [Known gaps](#known-gaps).)
 5. **Easy setup.** Deployment intent is the only knob; there are no API-group allowlists or
    join-mode flags to maintain.
 
@@ -557,7 +559,9 @@ flowchart TD
     ADD --> CLS
 
     CLS -->|official, complete or deletable or collection<br/>or shallow with parked body| CLM[Claim decision → emit]
-    CLS -->|official, identity_shallow with no parked body| DROP_S[Drop + shallow_dropped + WARN log]
+    CLS -->|official, identity_shallow with no parked body| WAIT_S[Hold official canonical gate<br/>briefly wait for body]
+    WAIT_S -->|additional body arrives| MERGE
+    WAIT_S -->|wait expires| DROP_S[Drop + shallow_dropped + WARN log]
     CLS -->|additional with body, no committed decision| PARK_A[Park body, wait for official]
     CLS -->|additional, decision committed| DROP_L[Drop + body_late]
     CLS -->|malformed additional| DROP_M[Drop with log]
@@ -571,9 +575,18 @@ flowchart TD
     CONS --> RULES[Rule match → EventRouter → BranchWorker]
 ```
 
-The official channel is strictly synchronous: every official event either emits in arrival
-order or drops immediately. Only additional bodies park, and only because they arrive earlier
-than the official sibling they're waiting for (see [Timing assumption](#timing-assumption)).
+The official channel is strictly synchronous at the canonical boundary. A bodyless official event
+that needs an additional body holds the official canonical gate for a short grace period; later
+official events wait behind it so canonical Redis stream order cannot overtake the earlier event.
+The additional endpoint is not held by that gate, because it must remain able to park the missing
+body while the official event is waiting.
+
+The canonical gate is an **in-pod mutex** ([audit_handler.go](internal/webhook/audit_handler.go)),
+so this ordering guarantee holds per webhook-receiver pod. Under the future HA topology (multiple
+webhook-receiver pods behind one Service) there is no cross-pod ordering — two pods may interleave
+their canonical writes. This is acceptable because the leader-elected consumer does not depend on
+strict global stream order; the gate exists to keep a single pod's officials from leapfrogging an
+earlier official that is still waiting for its body.
 
 Only `Stage=ResponseComplete` events reach the joiner. kube-apiserver may emit other stages
 (`RequestReceived`, `ResponseStarted`, `Panic`) under the same `auditID`; if those were
@@ -591,7 +604,7 @@ based on event shape, not API group:
 | `complete` | Request or response body present | Emit |
 | `body_shallow_deletable` | `verb=delete` with `objectRef.Resource` and `Name` set, no body | Emit (delete carve-out) |
 | `collection` | `verb=deletecollection` with body and `objectRef.Resource` | Emit (forwarded raw; per-item routing is a downstream gap) |
-| `identity_shallow` | No body, missing `objectRef` identity | On official: merge if body is parked; otherwise immediate drop + `audit_shallow_dropped_total` + WARN log |
+| `identity_shallow` | No body, missing `objectRef` identity | On official: merge if body is parked; otherwise hold the official canonical gate for `--audit-event-body-wait`, then drop + `audit_shallow_dropped_total` + WARN log |
 | `malformed` | Additional event with no body at all | Drop with log |
 
 Two carve-outs are load-bearing:
@@ -612,7 +625,9 @@ stateDiagram-v2
     [*] --> EmittedAsIs: official body-rich, no parked body
     [*] --> EmittedMerged: official body-rich, parked body exists
     [*] --> EmittedMerged: official identity_shallow, parked body exists
-    [*] --> ShallowDropped: official identity_shallow, no parked body
+    [*] --> WaitingForBody: official identity_shallow, no parked body
+    WaitingForBody --> EmittedMerged: additional body arrives within grace
+    WaitingForBody --> ShallowDropped: grace expires
     [*] --> DuplicateDropped: official matches committed decision
     [*] --> BodyLateDropped: additional with body, decision already committed
 
@@ -626,23 +641,22 @@ stateDiagram-v2
     BodyLateDropped --> [*]
 ```
 
-### Timing assumption
+### Timing and ordering
 
-The "shallow drop is immediate" choice rests on one assumption:
+The joiner is optimized for the common case where `/audit-webhook-additional` arrives before the
+official kube-apiserver event. When CI or a cluster delivers the official event first by a few
+milliseconds, the handler waits up to `--audit-event-body-wait` before declaring the body missing.
 
-> Events posted to `/audit-webhook-additional` for an `auditID` reach gitops-reverser before
-> the corresponding kube-apiserver event for the same `auditID`.
+That wait is deliberately attached to the official canonical gate, not only to the individual
+event. This preserves canonical Redis stream order: later official events cannot enqueue while an
+earlier official event is waiting for its additional body. The additional endpoint is allowed to
+continue because blocking it would prevent the missing body from being parked.
 
-`apiservice-audit-proxy` emits in line with the request it observed. kube-apiserver's audit
-webhook batches with `--audit-webhook-batch-max-wait` (default 30s). In the steady state the
-proxy has a margin of seconds to minutes.
-
-If the assumption is violated, the cost is: a shallow drop where a parked-shallow design
-would have merged. The corresponding audit fact is logged at WARN and counted in
-`audit_shallow_dropped_total` — operators see the failure, they don't lose it silently.
-
-The single thing to verify in the field is that `apiservice-audit-proxy` does not implement
-its own batching. If it does, we revisit.
+If the grace period expires, the cost is still explicit: a shallow drop where a longer wait would
+have merged. The corresponding audit fact is logged at WARN and counted in
+`audit_shallow_dropped_total` — operators see the failure, they don't lose it silently. Sustained
+`audit_join_body_late_total` or `audit_shallow_dropped_total` means the proxy/body path is slower
+than the configured grace period or missing entirely.
 
 The joiner uses two Redis key families:
 
@@ -688,6 +702,7 @@ should have already kept these out, but the consumer enforces it as defense-in-d
 | --- | --- | --- | --- |
 | `--audit-event-body-ttl` | `auditEventJoin.bodyTTL` | `5m` | TTL for parked additional bodies waiting for the matching official |
 | `--audit-event-decision-ttl` | `auditEventJoin.decisionTTL` | `1h` | Bounds the dedupe window |
+| `--audit-event-body-wait` | `auditEventJoin.bodyWait` | `500ms` | Grace period for a bodyless official event to wait for a matching additional body while holding official canonical order |
 
 There is no API-group allowlist and no join-mode flag — both were removed because the endpoint
 already encodes intent and `wait-official` semantics are always correct.
@@ -703,10 +718,15 @@ already encodes intent and `wait-official` semantics are always correct.
 | `gitopsreverser_audit_join_duplicate_dropped_total` | `reason` | Drops from existing decision keys: `decision_exists`, `in_flight_claim` |
 | `gitopsreverser_audit_shallow_dropped_total` | `gvr`, `action` | Identity-shallow officials dropped because no parked body was available |
 | `gitopsreverser_audit_join_body_late_total` | `gvr`, `action` | Additional body arrived after the decision was committed |
+| `gitopsreverser_audit_join_skew_seconds` | `arrival`, `outcome` | Histogram of official↔additional arrival skew: `arrival=body_first` is the proxy's lead time, `arrival=official_first` is how long the official waited on the canonical gate |
+| `gitopsreverser_audit_official_gate_wait_seconds` | — | Histogram of how long an official event waited to acquire the in-pod canonical gate (backpressure signal) |
 
 Useful alerts: `audit_shallow_dropped_total` non-zero (operator misconfiguration — install
 proxy or update audit policy); `audit_join_duplicate_dropped_total` spikes (likely webhook
-retry storm); sustained `audit_join_body_late_total` (proxy timing slipping past the TTL).
+retry storm); sustained `audit_join_body_late_total` (proxy timing slipping past the TTL);
+`audit_join_skew_seconds` p95 for `arrival=official_first` creeping toward `--audit-event-body-wait`
+(early warning that the grace period is about to be exhausted). The full query cookbook lives in
+[Interpreting metrics](interpreting-metrics.md).
 
 ### Operator guidance
 

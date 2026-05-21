@@ -28,6 +28,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/go-logr/logr"
 	"go.opentelemetry.io/otel/attribute"
@@ -89,6 +90,7 @@ type AuditHandler struct {
 	deserializer runtime.Decoder
 	config       AuditHandlerConfig
 	firsts       auditHandlerFirsts
+	canonicalMu  sync.Mutex
 }
 
 // NewAuditHandler creates a new audit handler with the given configuration.
@@ -216,6 +218,13 @@ func (h *AuditHandler) processEvent(ctx context.Context, source AuditSource, aud
 	// same auditID would be dropped as a duplicate before reaching Git.
 	if auditEventV1.Stage != auditv1.StageResponseComplete {
 		return nil
+	}
+
+	if source == AuditSourceOfficial {
+		gateStart := time.Now()
+		h.canonicalMu.Lock()
+		defer h.canonicalMu.Unlock()
+		observeOfficialGateWait(ctx, time.Since(gateStart).Seconds())
 	}
 
 	quality := classifyAuditEventQuality(source, &auditEventV1)

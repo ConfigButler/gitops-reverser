@@ -75,6 +75,7 @@ const (
 	defaultAuditShutdownTimeout    = 10 * time.Second
 	defaultAuditEventBodyTTL       = 5 * time.Minute
 	defaultAuditEventDecisionTTL   = time.Hour
+	defaultAuditEventBodyWait      = 500 * time.Millisecond
 	defaultBranchBufferMaxBytesStr = "8Mi"
 )
 
@@ -191,13 +192,14 @@ func main() {
 	fatalIfErr(err, "unable to initialize audit redis queue")
 
 	auditJoiner, err := webhookhandler.NewRedisAuditEventJoiner(webhookhandler.RedisAuditJoinerConfig{
-		Addr:        cfg.auditRedisAddr,
-		Username:    cfg.auditRedisUsername,
-		AuthValue:   cfg.auditRedisPassword,
-		DB:          cfg.auditRedisDB,
-		TLSEnabled:  cfg.auditRedisTLS,
-		BodyTTL:     cfg.auditEventBodyTTL,
-		DecisionTTL: cfg.auditEventDecisionTTL,
+		Addr:             cfg.auditRedisAddr,
+		Username:         cfg.auditRedisUsername,
+		AuthValue:        cfg.auditRedisPassword,
+		DB:               cfg.auditRedisDB,
+		TLSEnabled:       cfg.auditRedisTLS,
+		BodyTTL:          cfg.auditEventBodyTTL,
+		DecisionTTL:      cfg.auditEventDecisionTTL,
+		OfficialBodyWait: cfg.auditEventBodyWait,
 	})
 	fatalIfErr(err, "unable to initialize audit event joiner")
 	setupLog.Info("Audit pipeline configured",
@@ -206,7 +208,8 @@ func main() {
 		"db", cfg.auditRedisDB,
 		"tlsEnabled", cfg.auditRedisTLS,
 		"bodyTTL", cfg.auditEventBodyTTL,
-		"decisionTTL", cfg.auditEventDecisionTTL)
+		"decisionTTL", cfg.auditEventDecisionTTL,
+		"officialBodyWait", cfg.auditEventBodyWait)
 
 	// Register the audit stream consumer. It shares the same Redis config as the
 	// producer but uses a dedicated consumer group and ID (pod-name-scoped so that
@@ -325,6 +328,7 @@ type appConfig struct {
 	auditRedisTLS            bool
 	auditEventBodyTTL        time.Duration
 	auditEventDecisionTTL    time.Duration
+	auditEventBodyWait       time.Duration
 	branchBufferMaxBytes     int64
 	zapOpts                  zap.Options
 }
@@ -399,6 +403,8 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 		"TTL for parked additional audit body contributions.")
 	fs.DurationVar(&cfg.auditEventDecisionTTL, "audit-event-decision-ttl", defaultAuditEventDecisionTTL,
 		"TTL for audit decision keys that deduplicate canonical stream events.")
+	fs.DurationVar(&cfg.auditEventBodyWait, "audit-event-body-wait", defaultAuditEventBodyWait,
+		"Grace period for a bodyless official audit event to wait for a matching additional body.")
 	branchBufferMaxBytesStr := os.Getenv("BRANCH_BUFFER_MAX_BYTES")
 	if branchBufferMaxBytesStr == "" {
 		branchBufferMaxBytesStr = defaultBranchBufferMaxBytesStr
@@ -480,6 +486,9 @@ func validateAuditConfig(cfg appConfig) error {
 	}
 	if cfg.auditEventDecisionTTL <= 0 {
 		return fmt.Errorf("audit-event-decision-ttl must be > 0, got %s", cfg.auditEventDecisionTTL)
+	}
+	if cfg.auditEventBodyWait < 0 {
+		return fmt.Errorf("audit-event-body-wait must be >= 0, got %s", cfg.auditEventBodyWait)
 	}
 	return nil
 }

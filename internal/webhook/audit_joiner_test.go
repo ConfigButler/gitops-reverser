@@ -125,6 +125,54 @@ func TestRedisAuditEventJoiner_ShallowOfficialWithoutParkedBodyDropsImmediately(
 	assert.False(t, mr.Exists(decisionKey("audit-shallow-1")), "shallow drop must not claim a decision")
 }
 
+func TestRedisAuditEventJoiner_ShallowOfficialWaitsForLateAdditionalBody(t *testing.T) {
+	mr := miniredis.RunT(t)
+	joiner := newTestJoinerWithOfficialBodyWait(t, mr, 200*time.Millisecond)
+	ctx := context.Background()
+
+	additional := testAuditEvent("audit-late-body-1", "wardle.example.com", true)
+	official := testAuditEvent("audit-late-body-1", "wardle.example.com", false)
+
+	errCh := make(chan error, 1)
+	go func() {
+		time.Sleep(30 * time.Millisecond)
+		_, err := joiner.Decide(
+			ctx,
+			AuditSourceAdditional,
+			&additional,
+			classifyAuditEventQuality(AuditSourceAdditional, &additional),
+		)
+		errCh <- err
+	}()
+
+	decision, err := decide(ctx, t, joiner, AuditSourceOfficial, &official)
+	require.NoError(t, err)
+	require.NoError(t, <-errCh)
+
+	require.Equal(t, AuditJoinActionEmit, decision.Action)
+	require.Equal(t, AuditJoinResultMerged, decision.Result)
+	require.NotNil(t, decision.Event.RequestObject)
+	require.NotNil(t, decision.Event.ResponseObject)
+	assert.False(t, mr.Exists(bodyKey("audit-late-body-1")))
+}
+
+func TestRedisAuditEventJoiner_ShallowOfficialTimesOutWaitingForBody(t *testing.T) {
+	mr := miniredis.RunT(t)
+	joiner := newTestJoinerWithOfficialBodyWait(t, mr, 100*time.Millisecond)
+
+	official := testAuditEvent("audit-wait-timeout-1", "wardle.example.com", false)
+
+	start := time.Now()
+	decision, err := decide(context.Background(), t, joiner, AuditSourceOfficial, &official)
+	require.NoError(t, err)
+
+	assert.GreaterOrEqual(t, time.Since(start), 100*time.Millisecond,
+		"shallow official should hold the canonical gate for the full body wait before dropping")
+	assert.Equal(t, AuditJoinActionDrop, decision.Action)
+	assert.False(t, mr.Exists(bodyKey("audit-wait-timeout-1")), "timed-out wait must not park")
+	assert.False(t, mr.Exists(decisionKey("audit-wait-timeout-1")), "shallow drop must not claim a decision")
+}
+
 func TestRedisAuditEventJoiner_WaitOfficialEmitsNamedOfficialWithoutBody(t *testing.T) {
 	mr := miniredis.RunT(t)
 	joiner := newTestJoiner(t, mr)
@@ -277,10 +325,20 @@ func newTestJoiner(
 	mr *miniredis.Miniredis,
 ) *RedisAuditEventJoiner {
 	t.Helper()
+	return newTestJoinerWithOfficialBodyWait(t, mr, 0)
+}
+
+func newTestJoinerWithOfficialBodyWait(
+	t *testing.T,
+	mr *miniredis.Miniredis,
+	officialBodyWait time.Duration,
+) *RedisAuditEventJoiner {
+	t.Helper()
 	joiner, err := NewRedisAuditEventJoiner(RedisAuditJoinerConfig{
-		Addr:        mr.Addr(),
-		BodyTTL:     time.Minute,
-		DecisionTTL: time.Hour,
+		Addr:             mr.Addr(),
+		BodyTTL:          time.Minute,
+		DecisionTTL:      time.Hour,
+		OfficialBodyWait: officialBodyWait,
 	})
 	require.NoError(t, err)
 	return joiner
