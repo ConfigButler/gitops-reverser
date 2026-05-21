@@ -883,7 +883,7 @@ var _ = Describe("Manager", Label("manager"), Ordered, func() {
 		// observable in at the user-visible layer so a future revamp of the
 		// snapshot trigger logic can't silently regress it.
 		//
-		It("should backfill pre-existing ConfigMap when WatchRule is added afterwards", func() {
+		It("should backfill pre-existing ConfigMap when WatchRule is added afterwards", Label("smoke"), func() {
 			gitProviderName := "gitprovider-normal"
 			watchRuleName := "watchrule-backfill-test"
 			configMapName := "preexisting-configmap"

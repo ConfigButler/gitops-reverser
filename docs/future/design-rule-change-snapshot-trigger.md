@@ -1,10 +1,38 @@
 # Design: rule-change snapshot trigger
 
-> Status: design — captured after issues #145/#146-style symptoms surfaced.
+> Status: implemented — captured after issues #145/#146-style symptoms surfaced.
 > Date: 2026-05-20
-> Failing tests that anchor this work:
+> Implemented: 2026-05-21
+> Tests that anchor this work:
 > - [internal/watch/rule_change_snapshot_test.go](../../internal/watch/rule_change_snapshot_test.go) — four unit tests
-> - [test/e2e/e2e_test.go](../../test/e2e/e2e_test.go) — `PIt("should backfill pre-existing ConfigMap when WatchRule is added afterwards", ...)`
+> - [test/e2e/e2e_test.go](../../test/e2e/e2e_test.go) — `It("should backfill pre-existing ConfigMap when WatchRule is added afterwards", Label("smoke"), ...)`
+
+## Implementation summary
+
+The fix landed as an in-memory delivery contract between `WatchManager` and the
+`FolderReconciler` registry:
+
+- `WatchManager` now computes a per-GitTarget rule-set hash from the compiled
+  `WatchRule` and `ClusterWatchRule` entries that affect that target.
+- `ReconcileForRuleChange` treats GVR changes as informer work, not as the only
+  snapshot trigger. If the rule-set hash changed, the target is marked pending
+  even when the GVR set is unchanged.
+- Snapshot delivery only advances `lastDeliveredRuleSetHash` after the target has
+  a registered `FolderReconciler` and both repo and cluster state requests were
+  handed to the router.
+- `ReconcilerManager.CreateReconciler` calls `WatchManager.MaybeReplaySnapshot`
+  when a new reconciler appears, so restart-like bootstraps drain pending
+  snapshots instead of dropping them.
+- `GitTargetReconciler` now creates a `FolderReconciler` even when
+  `SnapshotSynced=True`, preserving the "no new initial snapshot" gate while
+  still allowing rule-change snapshots to be delivered.
+
+Validation at implementation time:
+
+- `go test ./internal/watch -run 'TestReconcileForRuleChange' -count=1`
+- `task lint`
+- `task test`
+- `task test-e2e` with the new backfill spec included in the smoke set
 
 ## The problem in one sentence
 
@@ -16,7 +44,8 @@ Both reduce to: *no delivery contract between snapshot producer and snapshot con
 
 ### A. Rule-add when GVR is already watched
 
-[manager.go:660-664](../../internal/watch/manager.go#L660-L664) short-circuits when the GVR set didn't change:
+The old `ReconcileForRuleChange` implementation short-circuited when the GVR
+set didn't change:
 
 ```go
 if len(added) == 0 && len(removed) == 0 {
@@ -28,26 +57,26 @@ Adding a second rule for an already-watched GVR, or editing a rule's selectors w
 
 ### B. Restart with `SnapshotSynced=True`
 
-The `GitTargetReconciler` writes `SnapshotSynced=True` after a successful initial snapshot. On restart this is read back from the object's status, so [`evaluateSnapshotGate` at gittarget_controller.go:384](../../internal/controller/gittarget_controller.go#L384) takes the early-return — it ensures a `GitTargetEventStream` is registered, but it does *not* create a `FolderReconciler`. Meanwhile `WatchManager.Start` runs its own initial `ReconcileForRuleChange` (`manager.go:99`), which *does* emit a snapshot. That snapshot's `RequestClusterState` reaches [`RouteClusterStateEvent`](../../internal/watch/event_router.go#L254-L263), which looks up the reconciler, finds none, and drops the event with a V(1) log line. The same dropping happens for `RouteRepoStateEvent`. The user sees: "live updates write fine, but pre-existing resources never appear after a restart."
+The `GitTargetReconciler` writes `SnapshotSynced=True` after a successful initial snapshot. On restart this is read back from the object's status, so the old `evaluateSnapshotGate` path took the early-return — it ensured a `GitTargetEventStream` was registered, but it did *not* create a `FolderReconciler`. Meanwhile `WatchManager.Start` ran its own initial `ReconcileForRuleChange`, which *did* emit a snapshot. That snapshot's `RequestClusterState` reached `RouteClusterStateEvent`, which looked up the reconciler, found none, and dropped the event with a V(1) log line. The same dropping happened for `RouteRepoStateEvent`. The user saw: "live updates write fine, but pre-existing resources never appear after a restart."
 
 The 30-second periodic `ReconcileForRuleChange` then hits failure mode A (GVRs stable), so there's no self-heal.
 
-## How the walk works today
+## How the snapshot walk works
 
 User asked specifically: *how do we walk through all resources in all namespaces when a ClusterWatchRule is adjusted?* The full chain:
 
 1. **Trigger.** `ClusterWatchRuleReconciler` finishes reconciling and calls `WatchManager.ReconcileForRuleChange(ctx)` ([clusterwatchrule_controller.go:183](../../internal/controller/clusterwatchrule_controller.go#L183)).
-2. **GVR diff.** `ReconcileForRuleChange` computes the desired GVR set from the rule store and diffs it against `activeInformers`. The early-return at 660 fires here for failure mode A.
+2. **GVR diff and rule hash.** `ReconcileForRuleChange` computes the desired GVR set from the rule store and diffs it against `activeInformers`. The implemented path also computes per-target rule-set hashes, so unchanged GVRs no longer suppress a needed snapshot.
 3. **Informer churn.** `startInformersForGVRs(added)` / `stopInformer(removed)` brings the informer set in line with the desired set. New informers run `WaitForCacheSync`, so by the time this returns every existing resource has been observed by the informer and forwarded as an ADDED event.
-4. **Stream buffering.** `beginReconciliationForAffectedTargets` transitions every registered `GitTargetEventStream` to `Reconciling` so the informer ADDED events from step 3 are *buffered* instead of producing N individual `[CREATE]` commits.
-5. **Snapshot emission.** `emitSnapshotForRuleChange` calls `ProcessControlEvent(RequestRepoState)` and `ProcessControlEvent(RequestClusterState)` for every affected GitTarget. `handleRequestClusterState` calls [`GetClusterStateForGitDest` (manager.go:415)](../../internal/watch/manager.go#L415):
-   - Build `gvrMap[GVR] -> {namespaces, clusterWide}` from active rules. ClusterWatchRule entries set `clusterWide=true` ([manager.go:493](../../internal/watch/manager.go#L493)).
-   - For each entry, call [`listResourcesForGVR`](../../internal/watch/manager.go#L604): cluster-wide `List` when `clusterWide`, namespaced `List` when WatchRule.
+4. **Stream buffering.** `beginReconciliationForTargets` transitions every registered `GitTargetEventStream` for a target needing delivery to `Reconciling` so informer ADDED events from step 3 are *buffered* instead of producing N individual `[CREATE]` commits.
+5. **Snapshot emission.** `emitSnapshotForRuleChange` calls `ProcessControlEvent(RequestRepoState)` and `ProcessControlEvent(RequestClusterState)` for every target that needs delivery and has a registered `FolderReconciler`. `handleRequestClusterState` calls [`GetClusterStateForGitDest`](../../internal/watch/manager.go):
+   - Build `gvrMap[GVR] -> {namespaces, clusterWide}` from active rules. ClusterWatchRule entries set `clusterWide=true`.
+   - For each entry, call `listResourcesForGVR`: cluster-wide `List` when `clusterWide`, namespaced `List` when WatchRule.
    - Sanitize each item, key it by `ResourceIdentifier`, return as a `ClusterStateEvent`.
 6. **Diff and write.** `FolderReconciler.OnClusterState` ([folder_reconciler.go:120](../../internal/reconcile/folder_reconciler.go#L120)) stores the cluster-state half. When the matching `RepoState` half also arrives, `reconcile()` diffs (`findDifferences`) and emits one atomic `WriteRequest` containing `CREATE`/`UPDATE`/`DELETE` per resource.
-7. **Flush.** `completeReconciliationForAffectedTargets` transitions streams back to `LiveProcessing`. The buffered events from step 3 flush; they're no-ops at the git layer because the snapshot batch just wrote those files.
+7. **Flush.** `completeReconciliationForTargets` transitions streams back to `LiveProcessing`. The buffered events from step 3 flush; they're no-ops at the git layer because the snapshot batch just wrote those files.
 
-So the *walk itself* is functional and correctly cluster-wide for ClusterWatchRule. The hole is steps 4-6: **the broadcast at step 5 has no acknowledgment.** If no receiver is registered the snapshot is computed and thrown away.
+So the *walk itself* is functional and correctly cluster-wide for ClusterWatchRule. The original hole was steps 4-6: **the broadcast at step 5 had no acknowledgment.** The implemented delivery contract now keeps the snapshot pending when no receiver is registered.
 
 ### Architectural note worth flagging now
 
@@ -55,7 +84,7 @@ So the *walk itself* is functional and correctly cluster-wide for ClusterWatchRu
 
 This is fine as long as ClusterWatchRule means "all of this GVR, everywhere." The moment `namespaceSelector` / `labelSelector` lands on the rule spec (which the existing CRD comments already hint at), the snapshot walk must apply the same predicates as the live path or the steady state will not match the snapshot state and we'll get spurious deletes on every reconcile. Fix should land in the same change-set that introduces selectors, not retrofitted later.
 
-## Fix shape
+## Implemented fix shape
 
 The minimum change to close both failure modes is **a delivery contract per GitTarget**.
 
@@ -69,7 +98,7 @@ For each GitTarget, the WatchManager tracks two values:
 The trigger logic becomes:
 
 ```
-for each gitDest in collectAffectedGitTargets():
+for each target in currentRuleSetSnapshots():
     if currentRuleSetHash[gitDest] == lastDeliveredRuleSetHash[gitDest]:
         continue  # already in sync
     if no FolderReconciler registered for gitDest:
@@ -108,14 +137,19 @@ And `onReconcilerCreated := watchManager.MaybeReplaySnapshot` is wired at startu
 
 That fixes failure A but not failure B, and it makes every 30-second periodic tick a full cluster-wide list. The hash-based version pays the same cost only when the hash changes, which is the right knob.
 
-### What the rule-set hash actually contains
+### What the implemented rule-set hash contains
 
-Per gitDest, in canonical order:
+Per gitDest, in canonical order, the implementation fingerprints the compiled
+rule inputs currently held in `RuleStore`:
 
-- For each `WatchRule` targeting it: name, namespace, generation (or a hash of `Spec`).
-- For each `ClusterWatchRule` targeting it: name, generation (or `Spec` hash).
+- For each `WatchRule` targeting it: source name/namespace, resolved target,
+  provider, branch, path, and compiled resource rules.
+- For each `ClusterWatchRule` targeting it: source name, resolved target,
+  provider, branch, path, and compiled cluster resource rules.
 
-`generation` is the safer pick — it bumps on every `spec` change and is stable for status updates, so periodic reconciles caused by status-only events won't trigger spurious snapshots. The fingerprint is cheap; computing it on every `ReconcileForRuleChange` is fine.
+This uses the compiled store state rather than fetching the original CR objects
+or relying on `metadata.generation`. That keeps the snapshot trigger cheap and
+aligned with what live matching actually sees.
 
 ## Non-goals
 
@@ -125,10 +159,40 @@ Per gitDest, in canonical order:
 
 ## Risk / open questions
 
-- **Hash for status-only rule updates.** If a controller patches `.status` on a `ClusterWatchRule`, that doesn't change `metadata.generation` and shouldn't cause a re-snapshot. Using `generation` correctly handles this.
+- **Hash for status-only rule updates.** The implemented hash is derived from compiled rule store state, not object status. If future work fetches live CR objects for hashing, avoid including `status`, `resourceVersion`, or other status-only metadata.
 - **Delivery confirmation vs. delivery success.** The route function "found a receiver" doesn't mean the reconciler actually wrote anything to git — the diff might be empty, or a git push could fail later. We're only promising the snapshot was *handed off* to the right receiver; downstream failures are observable through existing git-push error paths and don't need to be folded in here.
 - **Concurrent rule changes.** Two `ReconcileForRuleChange` calls landing close together must not race the hash update. A per-gitDest mutex (or the existing `activeInformers` lock) is enough.
 - **Selector parity (flagged earlier).** When selectors land, `GetClusterStateForGitDest` must filter through the same predicate the live path uses, or the diff will produce spurious deletes.
+
+## Downsides and future improvements
+
+- **Hash format is implementation-local.** The current hash is built from
+  formatted compiled rule structs. It is fine for an in-process trigger, but a
+  future persistent or cross-version delivery contract should use explicit
+  canonical JSON or a typed hash builder.
+- **Pending delivery state is in memory.** A restart recomputes desired state on
+  the next reconciliation, but pending state is not persisted. If this project
+  moves toward multi-replica watch managers or stronger crash recovery, this
+  contract should move into leader-owned status, a lease-backed store, or a
+  durable work queue.
+- **Delivery still means "handed to the reconciler."** The implementation does
+  not wait for git writes or pushes to succeed before advancing the rule-set
+  delivery hash. Downstream failures remain observable through existing git
+  error paths. A future version could expose a stronger end-to-end snapshot
+  completion condition if users need it.
+- **Rule deletion cleanup needs explicit thought.** A hash computed only from
+  current rules cannot, by itself, identify a GitTarget that just lost its last
+  rule. If deletion should remove previously written files, future work should
+  retain tombstones for affected targets or make rule deletion trigger a
+  target-scoped cleanup snapshot before forgetting the target.
+- **Replay uses the reconciler creation edge.** This solves the known restart
+  gap, and periodic reconciliation remains a safety net. If reconciler lifecycle
+  grows more complex, consider a small pending-snapshot work queue with retry,
+  backoff, and metrics instead of a direct callback.
+- **Snapshot selector parity remains important.** When namespace or label
+  selectors become authoritative in snapshot listing, the hash must include
+  those selector inputs and `GetClusterStateForGitDest` must filter with the
+  same predicate as live event matching.
 
 ## Acceptance criteria
 
@@ -141,16 +205,16 @@ go green:
 - `TestReconcileForRuleChange_AddingSecondWatchRuleSameGVR_EmitsSnapshot`
 - `TestReconcileForRuleChange_RestartLikeBootstrap_NoSnapshotDrops`
 
-The pending e2e spec
-`PIt("should backfill pre-existing ConfigMap when WatchRule is added afterwards", ...)`
-flips from `PIt` to `It` and passes against a real k3d cluster.
+The e2e spec
+`It("should backfill pre-existing ConfigMap when WatchRule is added afterwards", Label("smoke"), ...)`
+passes against a real k3d cluster.
 
 The `EventRouter.SnapshotDeliveryDrops()` counter stays at 0 in steady state under a representative load test (creating and editing rules, restarting the controller).
 
 ## References
 
 - Trigger bug summary: [idea-cross-kind-dependency-watches.md](idea-cross-kind-dependency-watches.md) (related coordination concern around dependency-watches).
-- The early-return: [manager.go:660-664](../../internal/watch/manager.go#L660-L664).
-- The snapshot consumer that gets dropped: [event_router.go:254-263](../../internal/watch/event_router.go#L254-L263) (post-instrumentation: increments `snapshotDeliveryDrops`).
-- The GitTarget gate that skips re-snapshot on restart: [gittarget_controller.go:384](../../internal/controller/gittarget_controller.go#L384).
-- The snapshot walk itself: [GetClusterStateForGitDest at manager.go:415](../../internal/watch/manager.go#L415), [listResourcesForGVR at manager.go:604](../../internal/watch/manager.go#L604).
+- The old early-return: `ReconcileForRuleChange` in [manager.go](../../internal/watch/manager.go).
+- The snapshot consumer drop instrumentation: `RouteRepoStateEvent` and `RouteClusterStateEvent` in [event_router.go](../../internal/watch/event_router.go).
+- The GitTarget restart gate: `evaluateSnapshotGate` in [gittarget_controller.go](../../internal/controller/gittarget_controller.go).
+- The snapshot walk itself: `GetClusterStateForGitDest` and `listResourcesForGVR` in [manager.go](../../internal/watch/manager.go).
