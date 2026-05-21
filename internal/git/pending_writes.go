@@ -193,12 +193,21 @@ func (p PendingWrite) MessageKind() CommitMessageKind {
 	return CommitMessageGrouped
 }
 
-// Author returns the grouped commit author for commit-shaped pending writes.
+// Author returns the grouped commit author username for commit-shaped pending
+// writes. It is the stable identity used for window coalescing and the grouped
+// commit message; see AuthorUserInfo for the full signing identity.
 func (p PendingWrite) Author() string {
+	return p.AuthorUserInfo().Username
+}
+
+// AuthorUserInfo returns the full author identity for commit-shaped pending
+// writes, including any OIDC display name and email. Atomic and empty writes
+// have no per-user author and return the zero value.
+func (p PendingWrite) AuthorUserInfo() UserInfo {
 	if p.Kind == PendingWriteAtomic || len(p.Events) == 0 {
-		return ""
+		return UserInfo{}
 	}
-	return p.Events[0].UserInfo.Username
+	return p.Events[0].UserInfo
 }
 
 // Target returns the single resolved target metadata for this pending write.

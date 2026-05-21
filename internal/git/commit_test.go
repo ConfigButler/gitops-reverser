@@ -191,6 +191,65 @@ func TestCommitOptionsFor_NonEmptyAuthorIsHonored(t *testing.T) {
 	assert.Equal(t, when, options.Author.When)
 }
 
+func TestCommitOptionsFor_OIDCDisplayNameAndEmailAreHonored(t *testing.T) {
+	config := ResolveCommitConfig(nil)
+	pendingWrite := PendingWrite{
+		Kind: PendingWriteCommit,
+		Events: []Event{{
+			UserInfo: UserInfo{
+				Username:    "https://keycloak/realms/cozy#simon",
+				DisplayName: "Simon Koudijs",
+				Email:       "simon@koudijs.dev",
+			},
+		}},
+	}
+
+	options := commitOptionsFor(pendingWrite, config, nil, time.Now())
+
+	require.NotNil(t, options.Author)
+	assert.Equal(t, "Simon Koudijs", options.Author.Name)
+	assert.Equal(t, "simon@koudijs.dev", options.Author.Email)
+}
+
+func TestCommitOptionsFor_UnusableOIDCFieldsFallBackToUsername(t *testing.T) {
+	config := ResolveCommitConfig(nil)
+	when := time.Now()
+
+	tests := []struct {
+		name        string
+		displayName string
+		email       string
+	}{
+		{"newline in display name", "Simon\nKoudijs", "simon@koudijs.dev"},
+		{"angle brackets in display name", "Simon <root>", "simon@koudijs.dev"},
+		{"whitespace-only display name", "   ", "simon@koudijs.dev"},
+		{"non-email in email claim", "Simon Koudijs", "not-an-email"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			pendingWrite := PendingWrite{
+				Kind: PendingWriteCommit,
+				Events: []Event{{
+					UserInfo: UserInfo{
+						Username:    "alice",
+						DisplayName: tc.displayName,
+						Email:       tc.email,
+					},
+				}},
+			}
+
+			options := commitOptionsFor(pendingWrite, config, nil, when)
+
+			require.NotNil(t, options.Author)
+			assert.NotContains(t, options.Author.Name, "\n")
+			assert.NotContains(t, options.Author.Name, "<")
+			require.True(t, validEmailRegex.MatchString(options.Author.Email),
+				"author email %q must be a valid address", options.Author.Email)
+		})
+	}
+}
+
 func TestRenderEventCommitMessage_CreateOperation(t *testing.T) {
 	event := newCommitTestEvent("pods", "default", "test-pod", "CREATE", "john.doe@example.com")
 
