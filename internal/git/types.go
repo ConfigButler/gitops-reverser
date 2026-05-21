@@ -94,6 +94,12 @@ func (k BranchKey) String() string {
 type UserInfo struct {
 	Username string
 	UID      string
+	// DisplayName is the human-readable name from the OIDC "name" claim, when
+	// the audit event carries it. Empty means "fall back to Username".
+	DisplayName string
+	// Email is the address from the OIDC "email" claim, when the audit event
+	// carries it. Empty means "fall back to ConstructSafeEmail(Username)".
+	Email string
 }
 
 // CommitMode defines how a write request should be committed.

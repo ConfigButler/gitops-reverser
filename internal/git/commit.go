@@ -25,6 +25,7 @@ import (
 	"strings"
 	"text/template"
 	"time"
+	"unicode"
 
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing/object"
@@ -153,8 +154,8 @@ func commitOptionsFor(
 	when time.Time,
 ) *git.CommitOptions {
 	committer := operatorSignature(config, when)
-	author := pendingWrite.Author()
-	if author == "" {
+	author := pendingWrite.AuthorUserInfo()
+	if author.Username == "" {
 		return &git.CommitOptions{
 			Author:    committer,
 			Committer: committer,
@@ -164,8 +165,8 @@ func commitOptionsFor(
 
 	return &git.CommitOptions{
 		Author: &object.Signature{
-			Name:  author,
-			Email: ConstructSafeEmail(author, "cluster.local"),
+			Name:  authorName(author),
+			Email: authorEmail(author),
 			When:  when,
 		},
 		Committer: committer,
@@ -173,12 +174,48 @@ func commitOptionsFor(
 	}
 }
 
+// validEmailRegex matches a syntactically valid email address. It recognises a
+// username that is already an email and validates an OIDC-supplied email claim
+// before trusting it in a signature header.
+var validEmailRegex = regexp.MustCompile(`^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$`)
+
+// authorName returns the git author Name for a user: the OIDC display name
+// when present and safe to place in a signature header, otherwise the
+// Kubernetes username.
+func authorName(user UserInfo) string {
+	if name := strings.TrimSpace(user.DisplayName); name != "" && isSafeSignatureField(name) {
+		return name
+	}
+	return user.Username
+}
+
+// authorEmail returns the git author Email for a user: the OIDC email claim
+// when present and a valid address, otherwise a safe address constructed from
+// the username.
+func authorEmail(user UserInfo) string {
+	if email := strings.TrimSpace(user.Email); validEmailRegex.MatchString(email) {
+		return email
+	}
+	return ConstructSafeEmail(user.Username, "cluster.local")
+}
+
+// isSafeSignatureField reports whether s can be placed verbatim into a git
+// signature header field. Control characters (notably newlines) and the angle
+// brackets that delimit the email would corrupt the commit object.
+func isSafeSignatureField(s string) bool {
+	for _, r := range s {
+		if r == '<' || r == '>' || unicode.IsControl(r) {
+			return false
+		}
+	}
+	return true
+}
+
 // ConstructSafeEmail takes a raw username and a domain and creates a valid
 // git-compliant email address.
 func ConstructSafeEmail(username string, domain string) string {
 	// Check if username is already a valid email address.
-	emailRegex := regexp.MustCompile(`^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$`)
-	if emailRegex.MatchString(username) {
+	if validEmailRegex.MatchString(username) {
 		return username
 	}
 

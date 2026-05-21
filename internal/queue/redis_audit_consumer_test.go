@@ -211,6 +211,57 @@ func TestResolveUserInfo(t *testing.T) {
 		ui := resolveUserInfo(ev)
 		assert.Equal(t, "alice", ui.Username)
 	})
+
+	t.Run("no extras leaves display name and email empty", func(t *testing.T) {
+		ev := auditv1.Event{}
+		ev.User.Username = "alice"
+		ui := resolveUserInfo(ev)
+		assert.Empty(t, ui.DisplayName)
+		assert.Empty(t, ui.Email)
+	})
+
+	t.Run("OIDC extras populate display name and email", func(t *testing.T) {
+		ev := auditv1.Event{}
+		ev.User.Username = "https://idp/realms/cozy#simon"
+		ev.User.Extra = map[string]authv1.ExtraValue{
+			displayNameExtraKey: {"Simon Koudijs"},
+			emailExtraKey:       {"simon@koudijs.dev"},
+		}
+		ui := resolveUserInfo(ev)
+		assert.Equal(t, "Simon Koudijs", ui.DisplayName)
+		assert.Equal(t, "simon@koudijs.dev", ui.Email)
+	})
+
+	t.Run("extras are read from the impersonated user", func(t *testing.T) {
+		ev := auditv1.Event{
+			ImpersonatedUser: &authv1.UserInfo{
+				Username: "bob",
+				Extra: map[string]authv1.ExtraValue{
+					displayNameExtraKey: {"Bob Builder"},
+					emailExtraKey:       {"bob@example.com"},
+				},
+			},
+		}
+		ev.User.Username = "alice"
+		ev.User.Extra = map[string]authv1.ExtraValue{
+			displayNameExtraKey: {"Alice Authn"},
+			emailExtraKey:       {"alice@example.com"},
+		}
+		ui := resolveUserInfo(ev)
+		assert.Equal(t, "bob", ui.Username)
+		assert.Equal(t, "Bob Builder", ui.DisplayName)
+		assert.Equal(t, "bob@example.com", ui.Email)
+	})
+
+	t.Run("empty extra value slice is treated as absent", func(t *testing.T) {
+		ev := auditv1.Event{}
+		ev.User.Username = "alice"
+		ev.User.Extra = map[string]authv1.ExtraValue{
+			displayNameExtraKey: {},
+		}
+		ui := resolveUserInfo(ev)
+		assert.Empty(t, ui.DisplayName)
+	})
 }
 
 // --- extractObject ---
