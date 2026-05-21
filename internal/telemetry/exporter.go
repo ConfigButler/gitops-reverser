@@ -81,6 +81,12 @@ var (
 	AuditShallowDroppedTotal metric.Int64Counter
 	// AuditJoinBodyLateTotal counts additional bodies that arrived after a canonical decision.
 	AuditJoinBodyLateTotal metric.Int64Counter
+	// AuditJoinSkewSeconds records the arrival skew between an official audit event and its
+	// matching additional body, labelled by which arrived first and how the join resolved.
+	AuditJoinSkewSeconds metric.Float64Histogram
+	// AuditOfficialGateWaitSeconds records how long an official audit event waited to acquire
+	// the in-pod canonical ordering gate before processing.
+	AuditOfficialGateWaitSeconds metric.Float64Histogram
 	// SecretEncryptionAttemptsTotal counts total Secret encryption attempts.
 	SecretEncryptionAttemptsTotal metric.Int64Counter
 	// SecretEncryptionSuccessTotal counts successful Secret encryptions.
@@ -119,8 +125,9 @@ func InitOTLPExporter(_ context.Context) (func(context.Context) error, error) {
 		dest *metric.Int64Counter
 	}
 	type hSpec struct {
-		name string
-		dest *metric.Float64Histogram
+		name    string
+		dest    *metric.Float64Histogram
+		buckets []float64
 	}
 	type uSpec struct {
 		name string
@@ -162,11 +169,20 @@ func InitOTLPExporter(_ context.Context) (func(context.Context) error, error) {
 		*s.dest = v
 	}
 
+	// auditJoinBuckets span the wait budget (sub-second) and the parked-body TTL margin
+	// (seconds to minutes) so one set of boundaries fits both skew and gate-wait timings.
+	auditJoinBuckets := []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 5, 30, 300}
 	hists := []hSpec{
-		{"gitopsreverser_git_push_duration_seconds", &GitPushDurationSeconds},
+		{"gitopsreverser_git_push_duration_seconds", &GitPushDurationSeconds, nil},
+		{"gitopsreverser_audit_join_skew_seconds", &AuditJoinSkewSeconds, auditJoinBuckets},
+		{"gitopsreverser_audit_official_gate_wait_seconds", &AuditOfficialGateWaitSeconds, auditJoinBuckets},
 	}
 	for _, s := range hists {
-		v, err := otelMeter.Float64Histogram(s.name)
+		opts := []metric.Float64HistogramOption{}
+		if len(s.buckets) > 0 {
+			opts = append(opts, metric.WithExplicitBucketBoundaries(s.buckets...))
+		}
+		v, err := otelMeter.Float64Histogram(s.name, opts...)
 		if err != nil {
 			return nil, err
 		}

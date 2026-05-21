@@ -59,6 +59,7 @@ func TestParseFlagsWithArgs_Defaults(t *testing.T) {
 	assert.False(t, cfg.auditRedisTLS)
 	assert.Equal(t, 5*time.Minute, cfg.auditEventBodyTTL)
 	assert.Equal(t, time.Hour, cfg.auditEventDecisionTTL)
+	assert.Equal(t, 500*time.Millisecond, cfg.auditEventBodyWait)
 	assert.False(t, cfg.zapOpts.Development)
 }
 
@@ -96,6 +97,7 @@ func TestParseFlagsWithArgs_CustomAuditValues(t *testing.T) {
 		"--audit-redis-tls",
 		"--audit-event-body-ttl=2m",
 		"--audit-event-decision-ttl=30m",
+		"--audit-event-body-wait=250ms",
 	}
 
 	cfg, err := parseFlagsWithArgs(fs, args)
@@ -121,6 +123,7 @@ func TestParseFlagsWithArgs_CustomAuditValues(t *testing.T) {
 	assert.True(t, cfg.auditRedisTLS)
 	assert.Equal(t, 2*time.Minute, cfg.auditEventBodyTTL)
 	assert.Equal(t, 30*time.Minute, cfg.auditEventDecisionTTL)
+	assert.Equal(t, 250*time.Millisecond, cfg.auditEventBodyWait)
 }
 
 func TestParseFlagsWithArgs_InvalidAuditSettings(t *testing.T) {
@@ -163,6 +166,10 @@ func TestParseFlagsWithArgs_InvalidAuditSettings(t *testing.T) {
 		{
 			name: "invalid audit event decision ttl",
 			args: []string{"--audit-event-decision-ttl=0s"},
+		},
+		{
+			name: "invalid audit event body wait",
+			args: []string{"--audit-event-body-wait=-1s"},
 		},
 	}
 

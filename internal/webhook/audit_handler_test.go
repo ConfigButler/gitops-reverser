@@ -23,11 +23,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -48,12 +51,26 @@ func (q errorAuditEventQueue) Enqueue(_ context.Context, _ auditv1.Event) error 
 }
 
 type recordingAuditEventQueue struct {
+	mu     sync.Mutex
 	events []auditv1.Event
 }
 
 func (q *recordingAuditEventQueue) Enqueue(_ context.Context, event auditv1.Event) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
 	q.events = append(q.events, event)
 	return nil
+}
+
+func (q *recordingAuditEventQueue) auditIDs() []string {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	ids := make([]string, 0, len(q.events))
+	for _, event := range q.events {
+		ids = append(ids, string(event.AuditID))
+	}
+	return ids
 }
 
 type fakeAuditJoiner struct {
@@ -89,6 +106,63 @@ func (j *fakeAuditJoiner) CommitDecision(_ context.Context, _ string, result Aud
 
 func (j *fakeAuditJoiner) ReleaseDecision(_ context.Context, auditID string) error {
 	j.releases = append(j.releases, auditID)
+	return nil
+}
+
+type orderingAuditJoiner struct {
+	firstStarted        chan struct{}
+	releaseFirst        chan struct{}
+	additionalProcessed chan struct{}
+	closeFirstStarted   sync.Once
+	closeAdditional     sync.Once
+}
+
+func newOrderingAuditJoiner() *orderingAuditJoiner {
+	return &orderingAuditJoiner{
+		firstStarted:        make(chan struct{}),
+		releaseFirst:        make(chan struct{}),
+		additionalProcessed: make(chan struct{}),
+	}
+}
+
+func (j *orderingAuditJoiner) Decide(
+	ctx context.Context,
+	source AuditSource,
+	event *auditv1.Event,
+	_ AuditEventQuality,
+) (AuditJoinDecision, error) {
+	if source == AuditSourceAdditional {
+		j.closeAdditional.Do(func() {
+			close(j.additionalProcessed)
+		})
+		return AuditJoinDecision{Action: AuditJoinActionParked}, nil
+	}
+
+	if string(event.AuditID) == "first" {
+		j.closeFirstStarted.Do(func() {
+			close(j.firstStarted)
+		})
+		select {
+		case <-ctx.Done():
+			return AuditJoinDecision{}, ctx.Err()
+		case <-j.releaseFirst:
+		}
+	}
+
+	return AuditJoinDecision{
+		Action:  AuditJoinActionEmit,
+		Event:   event,
+		AuditID: string(event.AuditID),
+		Result:  AuditJoinResultAsIs,
+		Source:  AuditSourceOfficial,
+	}, nil
+}
+
+func (j *orderingAuditJoiner) CommitDecision(_ context.Context, _ string, _ AuditJoinResult) error {
+	return nil
+}
+
+func (j *orderingAuditJoiner) ReleaseDecision(_ context.Context, _ string) error {
 	return nil
 }
 
@@ -600,6 +674,83 @@ func TestAuditHandler_JoinerParkedSkipsQueue(t *testing.T) {
 	assert.Empty(t, queue.events)
 	assert.Empty(t, joiner.commits)
 	assert.Empty(t, joiner.releases)
+}
+
+func TestAuditHandler_OfficialCanonicalEventsAreOrderedWhileAdditionalCanPark(t *testing.T) {
+	queue := &recordingAuditEventQueue{}
+	joiner := newOrderingAuditJoiner()
+	handler, err := NewAuditHandler(AuditHandlerConfig{
+		Queue:  queue,
+		Joiner: joiner,
+	})
+	require.NoError(t, err)
+
+	serve := func(path, auditID string) *httptest.ResponseRecorder {
+		t.Helper()
+		body := fmt.Sprintf(
+			`{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[`+
+				`{"kind":"Event","auditID":%q,"verb":"create","stage":"ResponseComplete",`+
+				`"user":{"username":"test-user"},"objectRef":{"resource":"flunders",`+
+				`"apiGroup":"wardle.example.com","apiVersion":"v1alpha1"}}]}`,
+			auditID,
+		)
+		req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader([]byte(body)))
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		return w
+	}
+
+	firstDone := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		firstDone <- serve("/audit-webhook", "first")
+	}()
+
+	select {
+	case <-joiner.firstStarted:
+	case <-time.After(time.Second):
+		t.Fatal("first official event did not enter the joiner")
+	}
+
+	secondDone := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		secondDone <- serve("/audit-webhook", "second")
+	}()
+
+	additionalDone := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		additionalDone <- serve("/audit-webhook-additional", "first")
+	}()
+
+	select {
+	case w := <-additionalDone:
+		require.Equal(t, http.StatusOK, w.Code)
+	case <-time.After(time.Second):
+		t.Fatal("additional audit body should be able to park while the official event is waiting")
+	}
+
+	select {
+	case <-secondDone:
+		t.Fatal("second official event overtook the blocked first official event")
+	case <-time.After(50 * time.Millisecond):
+	}
+	assert.Empty(t, queue.auditIDs())
+
+	close(joiner.releaseFirst)
+
+	select {
+	case w := <-firstDone:
+		require.Equal(t, http.StatusOK, w.Code)
+	case <-time.After(time.Second):
+		t.Fatal("first official event did not finish")
+	}
+	select {
+	case w := <-secondDone:
+		require.Equal(t, http.StatusOK, w.Code)
+	case <-time.After(time.Second):
+		t.Fatal("second official event did not finish")
+	}
+
+	assert.Equal(t, []string{"first", "second"}, queue.auditIDs())
 }
 
 func TestAuditHandler_JoinerReleasesDecisionOnEnqueueFailure(t *testing.T) {
