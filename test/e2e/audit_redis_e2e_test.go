@@ -298,6 +298,65 @@ var _ = Describe("Audit Redis Consumer", Label("audit-redis", "smoke"), Ordered,
 		By("cleaning up test ConfigMap")
 		_, _ = kubectlRunInNamespace(testNs, "delete", "configmap", cmName, "--ignore-not-found=true")
 	})
+
+	It("should attribute the commit to the OIDC display name and email from user.extra", func() {
+		const (
+			oidcDisplayName = "Simon Koudijs"
+			oidcEmail       = "something@configbutler.ai"
+		)
+		oidcCMName := fmt.Sprintf("audit-oidc-cm-%d", GinkgoRandomSeed())
+
+		By("creating a ConfigMap while impersonating an OIDC user carrying name/email extras")
+		// Impersonation makes the real kube-apiserver emit an audit event whose
+		// impersonatedUser.Extra carries these keys, mimicking the claims a
+		// structured authentication config maps into user.extra for an OIDC
+		// login. system:masters keeps the impersonated create authorized
+		// without provisioning per-user RBAC.
+		err := createConfigMapAsImpersonatedUser(
+			testNs,
+			oidcCMName,
+			"oidc-simon",
+			[]string{"system:masters"},
+			map[string][]string{
+				"configbutler.ai/claims/display-name": {oidcDisplayName},
+				"configbutler.ai/claims/email":        {oidcEmail},
+			},
+		)
+		Expect(err).NotTo(HaveOccurred(), "failed to create impersonated ConfigMap")
+
+		repoPath := path.Join(
+			"e2e/audit-consumer-test",
+			fmt.Sprintf("v1/configmaps/%s/%s.yaml", testNs, oidcCMName),
+		)
+		expectedFile := filepath.Join(auditRedisRepo.CheckoutDir, repoPath)
+
+		By("waiting for the commit and asserting its author is the OIDC identity")
+		Eventually(func(g Gomega) {
+			pullLatestRepoState(g, auditRedisRepo.CheckoutDir)
+
+			info, statErr := os.Stat(expectedFile)
+			g.Expect(statErr).NotTo(HaveOccurred(),
+				fmt.Sprintf("ConfigMap file should exist at %s", expectedFile))
+			g.Expect(info.Size()).To(BeNumerically(">", 0))
+
+			// Scope the log to this run's unique file path so the author read
+			// back is unambiguously the commit produced by the impersonated
+			// create, regardless of commit-window coalescing.
+			authorCmd := exec.Command(
+				"git", "log", "-1", "--pretty=%an <%ae>", "--", repoPath,
+			)
+			authorCmd.Dir = auditRedisRepo.CheckoutDir
+			authorOut, authorErr := authorCmd.CombinedOutput()
+			g.Expect(authorErr).NotTo(HaveOccurred(),
+				fmt.Sprintf("git log author failed: %s", string(authorOut)))
+			g.Expect(strings.TrimSpace(string(authorOut))).To(
+				Equal(fmt.Sprintf("%s <%s>", oidcDisplayName, oidcEmail)),
+				"commit author should be the OIDC display name and email from user.extra")
+		}, 3*time.Minute, 3*time.Second).Should(Succeed())
+
+		By("cleaning up the test ConfigMap")
+		_, _ = kubectlRunInNamespace(testNs, "delete", "configmap", oidcCMName, "--ignore-not-found=true")
+	})
 })
 
 func valkeyPortForwardAddr() string {

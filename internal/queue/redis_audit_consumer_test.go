@@ -225,11 +225,11 @@ func TestResolveUserInfo(t *testing.T) {
 		ev.User.Username = "https://idp/realms/cozy#simon"
 		ev.User.Extra = map[string]authv1.ExtraValue{
 			displayNameExtraKey: {"Simon Koudijs"},
-			emailExtraKey:       {"simon@koudijs.dev"},
+			emailExtraKey:       {"something@configbutler.ai"},
 		}
 		ui := resolveUserInfo(ev)
 		assert.Equal(t, "Simon Koudijs", ui.DisplayName)
-		assert.Equal(t, "simon@koudijs.dev", ui.Email)
+		assert.Equal(t, "something@configbutler.ai", ui.Email)
 	})
 
 	t.Run("extras are read from the impersonated user", func(t *testing.T) {

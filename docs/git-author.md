@@ -32,7 +32,7 @@ claims into that map. When it does, `gitops-reverser` still ignores them:
 We would like commits to read:
 
 ```text
-Author: Simon Koudijs <simon@koudijs.dev>
+Author: Simon Koudijs <something@configbutler.ai>
 ```
 
 ## Requested change
@@ -45,7 +45,7 @@ To start simple, the key names are **hardcoded** rather than configurable:
 
 ```text
 configbutler.ai/claims/display-name    e.g. "Simon Koudijs"
-configbutler.ai/claims/email           e.g. "simon@koudijs.dev"
+configbutler.ai/claims/email           e.g. "something@configbutler.ai"
 ```
 
 These match the extras published by our reference kube-apiserver structured
@@ -156,7 +156,7 @@ and `email` → `configbutler.ai/claims/email`, a commit made by an OIDC user
 should read:
 
 ```text
-Author: Simon Koudijs <simon@koudijs.dev>
+Author: Simon Koudijs <something@configbutler.ai>
 ```
 
 A cluster whose API server publishes neither extra should produce today's
