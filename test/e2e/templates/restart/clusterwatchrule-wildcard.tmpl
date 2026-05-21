@@ -1,0 +1,18 @@
+apiVersion: configbutler.ai/v1alpha1
+kind: ClusterWatchRule
+metadata:
+  name: {{ .Name }}
+spec:
+  targetRef:
+    name: {{ .DestinationName }}
+    namespace: {{ .Namespace }}
+  rules:
+  # apiVersions: ["*"] is the documented "match all versions" form
+  # (see api/v1alpha1/clusterwatchrule_types.go). The live audit path honours
+  # it; the startup snapshot path must honour it too, otherwise a controller
+  # restart snapshots an empty cluster and deletes the whole tracked tree.
+  - scope: Namespaced
+    operations: [CREATE, UPDATE, DELETE]
+    apiGroups: ["shop.example.com"]
+    apiVersions: ["*"]
+    resources: ["icecreamorders"]

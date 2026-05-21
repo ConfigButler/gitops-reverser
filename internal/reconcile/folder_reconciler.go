@@ -142,7 +142,13 @@ func (r *FolderReconciler) OnRepoState(event events.RepoStateEvent) {
 // reconcile performs the reconciliation logic when both states are available.
 // It collects all changes into a single write request and emits it atomically.
 func (r *FolderReconciler) reconcile() {
-	// Only reconcile when we have both cluster and Git state
+	// Only reconcile when we have both cluster and Git state.
+	//
+	// An empty cluster snapshot is treated as authoritative: if the cluster
+	// genuinely holds no watched resources, the Git mirror is emptied to match.
+	// The trust boundary is the snapshot itself — Manager.GetClusterStateForGitDest
+	// fails loudly (returns an error, so no ClusterStateEvent is emitted and this
+	// never runs) rather than ever handing back a silently partial cluster view.
 	if !r.clusterStateSeen || !r.gitStateSeen {
 		return
 	}
