@@ -4,8 +4,8 @@ description: >-
   A Kubernetes controller for two-way GitOps synchronization - reverse sync from
   Kubernetes to Git
 type: application
-version: 0.24.0
-appVersion: 0.24.0
+version: 0.25.0
+appVersion: 0.25.0
 keywords:
   - gitops
   - kubernetes
