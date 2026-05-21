@@ -20,6 +20,7 @@ package watch
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"testing"
 
@@ -31,6 +32,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	k8stesting "k8s.io/client-go/testing"
 	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
@@ -326,4 +328,226 @@ func TestSnapshotRegressionNoFluxSystemLeakage(t *testing.T) {
 		"only secrets in test-ns should be returned")
 	assert.Equal(t, []string{"test-ns"}, resourceNamespaces(resources),
 		"secrets from cert-manager, flux-system, kube-system, prometheus-operator must not appear")
+}
+
+// TestSnapshotClusterWatchRuleWildcardVersionNotSilentlyEmpty is a regression guard for
+// the "startup reconcile snapshots an empty cluster and deletes the tracked git tree"
+// data-loss bug.
+//
+// apiVersions: ["*"] is the documented "match all versions" form for a ClusterWatchRule
+// (see api/v1alpha1/clusterwatchrule_types.go). The live audit path honours it, so the
+// git mirror builds up normally. The startup snapshot path (gvrsFromClusterRule) skips
+// every "*" version, so it resolves zero GVRs, lists nothing, and GetClusterStateForGitDest
+// returns (empty, nil) — a silent empty snapshot that looks authoritative. On a controller
+// restart the FolderReconciler then diffs "cluster has 0" against the full git mirror and
+// deletes everything.
+//
+// The snapshot must NOT silently return an empty result for a wildcard rule while the
+// cluster has matching resources: it must either resolve the wildcard and list them, or
+// fail loudly with an error so the reconcile aborts.
+func TestSnapshotClusterWatchRuleWildcardVersionNotSilentlyEmpty(t *testing.T) {
+	scheme := makeScheme(t)
+
+	gitTarget := &configv1alpha1.GitTarget{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-target", Namespace: "gitops-reverser"},
+		Spec:       configv1alpha1.GitTargetSpec{Path: "live"},
+	}
+
+	store := rulestore.NewStore()
+	store.AddOrUpdateClusterWatchRule(
+		configv1alpha1.ClusterWatchRule{
+			ObjectMeta: metav1.ObjectMeta{Name: "cwr-wildcard"},
+			Spec: configv1alpha1.ClusterWatchRuleSpec{
+				TargetRef: configv1alpha1.NamespacedTargetReference{
+					Name:      "my-target",
+					Namespace: "gitops-reverser",
+				},
+				Rules: []configv1alpha1.ClusterResourceRule{{
+					APIGroups:   []string{""},
+					APIVersions: []string{"*"}, // documented "all versions" wildcard
+					Resources:   []string{"nodes"},
+					Scope:       configv1alpha1.ResourceScopeCluster,
+				}},
+			},
+		},
+		"my-target", "gitops-reverser", "provider", "gitops-reverser", "main", "live",
+	)
+
+	m := setupManager(t, scheme, gitTarget, store,
+		makeNode("node-1"),
+		makeNode("node-2"),
+		makeNode("node-3"),
+	)
+
+	resources, _, err := m.GetClusterStateForGitDest(context.Background(),
+		itypes.NewResourceReference("my-target", "gitops-reverser"))
+
+	silentlyEmpty := err == nil && len(resources) == 0
+	require.False(t, silentlyEmpty,
+		"wildcard ClusterWatchRule produced a silent empty snapshot while the cluster has 3 nodes; "+
+			"on a controller restart this empty snapshot makes the FolderReconciler delete the whole git tree")
+}
+
+// TestSnapshotWatchRuleWildcardVersionNotSilentlyEmpty is the namespaced WatchRule
+// counterpart of the wildcard regression above: gvrsFromResourceRule skips "*" versions
+// just like gvrsFromClusterRule, so a wildcard WatchRule also yields a silent empty
+// snapshot.
+func TestSnapshotWatchRuleWildcardVersionNotSilentlyEmpty(t *testing.T) {
+	scheme := makeScheme(t)
+
+	gitTarget := &configv1alpha1.GitTarget{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-target", Namespace: "gitops-reverser"},
+		Spec:       configv1alpha1.GitTargetSpec{Path: "live"},
+	}
+
+	store := rulestore.NewStore()
+	store.AddOrUpdateWatchRule(
+		configv1alpha1.WatchRule{
+			ObjectMeta: metav1.ObjectMeta{Name: "wr-wildcard", Namespace: "ns-a"},
+			Spec: configv1alpha1.WatchRuleSpec{
+				TargetRef: configv1alpha1.LocalTargetReference{Name: "my-target"},
+				Rules: []configv1alpha1.ResourceRule{{
+					APIGroups:   []string{""},
+					APIVersions: []string{"*"}, // documented "all versions" wildcard
+					Resources:   []string{"configmaps"},
+				}},
+			},
+		},
+		"my-target", "gitops-reverser", "provider", "gitops-reverser", "main", "live",
+	)
+
+	m := setupManager(t, scheme, gitTarget, store,
+		makeConfigMap("cm-a1", "ns-a"),
+		makeConfigMap("cm-a2", "ns-a"),
+	)
+
+	resources, _, err := m.GetClusterStateForGitDest(context.Background(),
+		itypes.NewResourceReference("my-target", "gitops-reverser"))
+
+	silentlyEmpty := err == nil && len(resources) == 0
+	require.False(t, silentlyEmpty,
+		"wildcard WatchRule produced a silent empty snapshot while the namespace has 2 configmaps; "+
+			"on a controller restart this empty snapshot makes the FolderReconciler delete the whole git tree")
+}
+
+// TestSnapshotAbortsOnWildcardGroup verifies that a ClusterWatchRule with a "*"
+// apiGroups wildcard — which the snapshot path cannot enumerate — aborts the
+// snapshot with an error rather than silently returning an empty cluster view.
+func TestSnapshotAbortsOnWildcardGroup(t *testing.T) {
+	scheme := makeScheme(t)
+
+	gitTarget := &configv1alpha1.GitTarget{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-target", Namespace: "gitops-reverser"},
+		Spec:       configv1alpha1.GitTargetSpec{Path: "live"},
+	}
+
+	store := rulestore.NewStore()
+	store.AddOrUpdateClusterWatchRule(
+		configv1alpha1.ClusterWatchRule{
+			ObjectMeta: metav1.ObjectMeta{Name: "cwr-wildcard-group"},
+			Spec: configv1alpha1.ClusterWatchRuleSpec{
+				TargetRef: configv1alpha1.NamespacedTargetReference{
+					Name:      "my-target",
+					Namespace: "gitops-reverser",
+				},
+				Rules: []configv1alpha1.ClusterResourceRule{{
+					APIGroups:   []string{"*"},
+					APIVersions: []string{"v1"},
+					Resources:   []string{"configmaps"},
+					Scope:       configv1alpha1.ResourceScopeNamespaced,
+				}},
+			},
+		},
+		"my-target", "gitops-reverser", "provider", "gitops-reverser", "main", "live",
+	)
+
+	m := setupManager(t, scheme, gitTarget, store, makeConfigMap("cm-a", "ns-a"))
+
+	_, _, err := m.GetClusterStateForGitDest(context.Background(),
+		itypes.NewResourceReference("my-target", "gitops-reverser"))
+	require.Error(t, err,
+		"a '*' apiGroups rule cannot be snapshotted and must abort, not silently return an empty view")
+}
+
+// TestSnapshotAbortsOnWildcardResource verifies the same for a "*" resources wildcard.
+func TestSnapshotAbortsOnWildcardResource(t *testing.T) {
+	scheme := makeScheme(t)
+
+	gitTarget := &configv1alpha1.GitTarget{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-target", Namespace: "gitops-reverser"},
+		Spec:       configv1alpha1.GitTargetSpec{Path: "live"},
+	}
+
+	store := rulestore.NewStore()
+	store.AddOrUpdateClusterWatchRule(
+		configv1alpha1.ClusterWatchRule{
+			ObjectMeta: metav1.ObjectMeta{Name: "cwr-wildcard-resource"},
+			Spec: configv1alpha1.ClusterWatchRuleSpec{
+				TargetRef: configv1alpha1.NamespacedTargetReference{
+					Name:      "my-target",
+					Namespace: "gitops-reverser",
+				},
+				Rules: []configv1alpha1.ClusterResourceRule{{
+					APIGroups:   []string{""},
+					APIVersions: []string{"v1"},
+					Resources:   []string{"*"},
+					Scope:       configv1alpha1.ResourceScopeNamespaced,
+				}},
+			},
+		},
+		"my-target", "gitops-reverser", "provider", "gitops-reverser", "main", "live",
+	)
+
+	m := setupManager(t, scheme, gitTarget, store, makeConfigMap("cm-a", "ns-a"))
+
+	_, _, err := m.GetClusterStateForGitDest(context.Background(),
+		itypes.NewResourceReference("my-target", "gitops-reverser"))
+	require.Error(t, err,
+		"a '*' resources rule cannot be snapshotted and must abort, not silently return an empty view")
+}
+
+// TestSnapshotAbortsOnListError verifies that a failed List() call aborts the
+// snapshot with an error. A swallowed list error would drop that resource from
+// the snapshot, and the reconciler would then delete its tracked Git files.
+func TestSnapshotAbortsOnListError(t *testing.T) {
+	scheme := makeScheme(t)
+
+	gitTarget := &configv1alpha1.GitTarget{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-target", Namespace: "gitops-reverser"},
+		Spec:       configv1alpha1.GitTargetSpec{Path: "live"},
+	}
+
+	store := rulestore.NewStore()
+	store.AddOrUpdateClusterWatchRule(
+		configv1alpha1.ClusterWatchRule{
+			ObjectMeta: metav1.ObjectMeta{Name: "cwr-nodes"},
+			Spec: configv1alpha1.ClusterWatchRuleSpec{
+				TargetRef: configv1alpha1.NamespacedTargetReference{
+					Name:      "my-target",
+					Namespace: "gitops-reverser",
+				},
+				Rules: []configv1alpha1.ClusterResourceRule{{
+					APIGroups:   []string{""},
+					APIVersions: []string{"v1"},
+					Resources:   []string{"nodes"},
+					Scope:       configv1alpha1.ResourceScopeCluster,
+				}},
+			},
+		},
+		"my-target", "gitops-reverser", "provider", "gitops-reverser", "main", "live",
+	)
+
+	m := setupManager(t, scheme, gitTarget, store, makeNode("node-1"))
+
+	fakeDyn, ok := m.dynamicClient.(*dynamicfake.FakeDynamicClient)
+	require.True(t, ok, "expected the fake dynamic client from setupManager")
+	fakeDyn.PrependReactor("list", "*",
+		func(k8stesting.Action) (bool, runtime.Object, error) {
+			return true, nil, errors.New("simulated API server outage")
+		})
+
+	_, _, err := m.GetClusterStateForGitDest(context.Background(),
+		itypes.NewResourceReference("my-target", "gitops-reverser"))
+	require.Error(t, err,
+		"a failed List() must abort the snapshot, not silently drop the resource")
 }

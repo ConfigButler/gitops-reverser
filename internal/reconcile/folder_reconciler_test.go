@@ -393,6 +393,41 @@ func TestFolderReconciler_ResetStateRequiresFreshRepoAndClusterSnapshots(t *test
 	assert.Len(t, mockEmitter.Batches, 2, "Fresh cluster+repo snapshots should trigger the next batch")
 }
 
+// TestFolderReconciler_EmptyClusterSnapshotEmptiesGitTree documents a deliberate
+// design decision: a cluster snapshot is authoritative. When the snapshot is empty
+// while Git still holds a mirror, the cluster genuinely has no watched resources,
+// so the reconciler deletes the orphaned Git files to keep the mirror faithful.
+//
+// This is only safe because the snapshot itself is the trust boundary:
+// Manager.GetClusterStateForGitDest fails loudly (returns an error) for any
+// unresolved rule or failed list, so an *incomplete* snapshot never reaches the
+// reconciler disguised as an empty one — see the TestSnapshotAbortsOn* tests in
+// the watch package.
+func TestFolderReconciler_EmptyClusterSnapshotEmptiesGitTree(t *testing.T) {
+	mockEmitter := &MockReconcileEmitter{}
+	mockControlEmitter := &MockControlEventEmitter{}
+	gitDest := types.NewResourceReference("test-gitdest", "default")
+	reconciler := NewFolderReconciler(gitDest, mockEmitter, mockControlEmitter, log.Log)
+
+	// Git holds a mirror; the cluster genuinely has no watched resources.
+	gitResources := []types.ResourceIdentifier{
+		{
+			Group: "helm.toolkit.fluxcd.io", Version: "v2", Resource: "helmreleases",
+			Namespace: "cozy-system", Name: "cilium",
+		},
+		{
+			Group: "apps.cozystack.io", Version: "v1alpha1", Resource: "tenants",
+			Namespace: "tenant-root", Name: "root",
+		},
+	}
+
+	reconciler.OnClusterState(events.ClusterStateEvent{GitDest: gitDest, Resources: nil})
+	reconciler.OnRepoState(events.RepoStateEvent{GitDest: gitDest, Resources: gitResources})
+
+	assert.Len(t, mockEmitter.GetEventsByOperation("DELETE"), len(gitResources),
+		"an authoritative empty cluster snapshot empties the Git mirror to match")
+}
+
 // MockReconcileEmitter is a mock implementation of ReconcileEmitter for testing.
 type MockReconcileEmitter struct {
 	Batches []git.WriteRequest
