@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.25.0](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.24.0...gitops-reverser-v0.25.0) (2026-05-21)
+
+
+### Features
+
+* support "offical_first" for situations where the offical kube-api audit events arrives slightly before the additional body event. ([380dc1e](https://github.com/ConfigButler/gitops-reverser/commit/380dc1e94c62c9a70f1253cb79236567d7b0c30f))
+* support claim based commit author attribution ([06eaf8c](https://github.com/ConfigButler/gitops-reverser/commit/06eaf8c99d43305caa826301e4246f8b1ed8263e))
+
+
+### Bug Fixes
+
+* better reconcile ([f3dcf56](https://github.com/ConfigButler/gitops-reverser/commit/f3dcf56e5135b455bdc0a8bd1b20651fb6cdb12e))
+* watch for changes in dependent resources ([8c9aeb8](https://github.com/ConfigButler/gitops-reverser/commit/8c9aeb8b2c51187cc6d6b9dd05bd7f6452c19d97)), closes [#145](https://github.com/ConfigButler/gitops-reverser/issues/145)
+
+
+### Documentation
+
+* getting more whys into the architecture document ([5762a4a](https://github.com/ConfigButler/gitops-reverser/commit/5762a4a31029b6cb52051bb16f4cf26aa46d3306))
+
 ## [0.24.0](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.23.0...gitops-reverser-v0.24.0) (2026-05-20)
 
 
