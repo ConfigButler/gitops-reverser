@@ -117,6 +117,25 @@ Key fields:
 - `spec.targetRef` — references a GitTarget with explicit namespace
 - `spec.rules[].scope` — `Cluster` (cluster-scoped resources) or `Namespaced` (namespaced resources across all namespaces)
 
+### Controller dependency watches
+
+The reference chain above is also a *watch* chain. Each controller `Watches` the
+kind it references, so a freshly-applied or spec-changed dependency re-enqueues
+its dependents within milliseconds instead of waiting on the periodic requeue
+(~2 min):
+
+- `GitTargetReconciler` watches `GitProvider`
+- `WatchRuleReconciler` / `ClusterWatchRuleReconciler` watch `GitTarget` and `GitProvider`
+
+These watches use a `GenerationChangedPredicate`: they fire on create and spec
+changes but ignore the status-only updates the controllers write to their own
+dependencies. Without the predicate, every dependency heartbeat would re-list
+and re-enqueue all dependents. The trade-off: a dependency that becomes *usable*
+via a status-only transition (e.g. a `GitProvider` whose credentials start
+working with no spec edit) re-enqueues dependents only on the next periodic
+requeue, not instantly. See
+[idea-cross-kind-dependency-watches.md](future/idea-cross-kind-dependency-watches.md).
+
 ---
 
 ## Kubernetes API Concepts That Matter Here
