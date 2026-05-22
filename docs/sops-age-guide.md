@@ -12,6 +12,18 @@ When `GitTarget.spec.encryption.provider: sops` is enabled:
 - If Secret encryption fails, the Secret write is rejected. There is no plaintext fallback.
 - The container image ships with `sops` at `/usr/local/bin/sops`.
 
+The controller can classify additional Secret-shaped resource types at startup with
+`--additional-sensitive-resources`. The Helm value for a CozyStack-style custom resource is:
+
+```yaml
+controllerManager:
+  additionalSensitiveResources:
+    - core.cozystack.io/tenantsecrets
+```
+
+Entries use `resource` for the core API group or `group/resource` for grouped APIs. The bootstrapped
+SOPS rule still encrypts Secret-shaped `data` and `stringData` fields.
+
 Operator/runtime notes:
 
 - `--sops-binary-path` can override the `sops` binary path.

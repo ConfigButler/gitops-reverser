@@ -98,6 +98,21 @@ func seedEventContent(t *testing.T, repoPath string, worktree *git.Worktree, wri
 	require.NoError(t, err)
 }
 
+func TestGenerateFilePathWithPolicy_AdditionalSensitiveResourceUsesSOPSPath(t *testing.T) {
+	policy, err := types.ParseSensitiveResourcePolicy("core.cozystack.io/tenantsecrets")
+	require.NoError(t, err)
+
+	path := generateFilePathWithPolicy(types.ResourceIdentifier{
+		Group:     "core.cozystack.io",
+		Version:   "v1beta1",
+		Resource:  "tenantsecrets",
+		Namespace: "tenant-a",
+		Name:      "registry",
+	}, policy)
+
+	assert.Equal(t, "core.cozystack.io/v1beta1/tenantsecrets/tenant-a/registry.sops.yaml", path)
+}
+
 func TestExecutor_GroupedSingleEvent_UsesPerEventMessageFallback(t *testing.T) {
 	config := ResolveCommitConfig(nil)
 	config.Message.EventTemplate = "event: {{.Name}} by {{.Username}}"

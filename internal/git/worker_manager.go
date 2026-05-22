@@ -27,6 +27,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
 // DefaultBranchBufferMaxBytes is the default cap on a worker's combined event
@@ -42,6 +43,7 @@ type WorkerManager struct {
 	Log    logr.Logger
 
 	branchBufferMaxBytes int64
+	sensitiveResources   types.SensitiveResourcePolicy
 
 	mu      sync.RWMutex
 	workers map[BranchKey]*BranchWorker
@@ -51,14 +53,24 @@ type WorkerManager struct {
 // NewWorkerManager creates a new worker manager.
 // branchBufferMaxBytes bounds each worker's combined buffer + unpushed-events
 // memory. Pass 0 (or a negative value) to use DefaultBranchBufferMaxBytes.
-func NewWorkerManager(client client.Client, log logr.Logger, branchBufferMaxBytes int64) *WorkerManager {
+func NewWorkerManager(
+	client client.Client,
+	log logr.Logger,
+	branchBufferMaxBytes int64,
+	sensitiveResources ...types.SensitiveResourcePolicy,
+) *WorkerManager {
 	if branchBufferMaxBytes <= 0 {
 		branchBufferMaxBytes = DefaultBranchBufferMaxBytes
+	}
+	var policy types.SensitiveResourcePolicy
+	if len(sensitiveResources) > 0 {
+		policy = sensitiveResources[0]
 	}
 	return &WorkerManager{
 		Client:               client,
 		Log:                  log,
 		branchBufferMaxBytes: branchBufferMaxBytes,
+		sensitiveResources:   policy,
 		workers:              make(map[BranchKey]*BranchWorker),
 	}
 }
@@ -112,7 +124,7 @@ func (m *WorkerManager) EnsureWorker(
 			providerName,
 			providerNamespace,
 			branch,
-			newContentWriter(),
+			newContentWriter(m.sensitiveResources),
 			m.branchBufferMaxBytes,
 		)
 

@@ -247,9 +247,6 @@ func disallowedMiss(resource string, entries []APIResourceEntry) *ResolveMiss {
 		entry.GVR.Resource,
 		entry.PolicyReason,
 	)
-	if entry.GVR.Group == "" {
-		detail = fmt.Sprintf("%s/%s is served but %s", entry.GVR.Version, entry.GVR.Resource, entry.PolicyReason)
-	}
 	miss := newResolveMiss(resource, ResolveMissDisallowed, detail)
 	return &miss
 }
