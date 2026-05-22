@@ -50,10 +50,63 @@ rate(gitopsreverser_foo_seconds_sum[5m]) / rate(gitopsreverser_foo_seconds_count
 
 ---
 
-## Audit join pipeline
+## Audit ingestion pipeline
 
 This is the most timing-sensitive subsystem, so it gets the most coverage. Background:
 [architecture.md → Audit Ingestion Pipeline](architecture.md#audit-ingestion-pipeline).
+
+The pipeline has four stages — ingress, join, consume, route+write — and metrics are emitted
+at the edge of each. This map shows where every audit-pipeline metric is recorded before you
+read the per-metric rows:
+
+```mermaid
+flowchart TD
+    KAS["kube-apiserver"]
+    PROXY["apiservice-audit-proxy"]
+
+    subgraph S1["① Ingress — AuditHandler (webhook pod)"]
+        WH["receive + classify event quality"]
+    end
+    subgraph S2["② Join — AuditEventJoiner (webhook pod)"]
+        JOIN["park / merge / decide → one canonical event per auditID"]
+    end
+    STREAM[("Redis stream<br/>gitopsreverser.audit.events.v1")]
+    subgraph S3["③ Consume — AuditConsumer (leader pod)"]
+        CONS["filter stage/verb · rule match · extract + sanitize object"]
+    end
+    subgraph S4["④ Route + write — EventRouter → BranchWorker"]
+        ROUTE["dedup → coalesce → commit → push"]
+    end
+    GIT[("Git commit")]
+
+    KAS -->|official EventList| WH
+    PROXY -->|additional EventList| WH
+    WH --> JOIN
+    JOIN -->|canonical event| STREAM
+    STREAM --> CONS
+    CONS -->|matched + sanitized| ROUTE
+    ROUTE --> GIT
+
+    M0["audit_eventlists_total<br/>audit_eventlist_events_total<br/>audit_eventlist_duration_seconds"]
+    M1["audit_events_received_total<br/>audit_event_quality_total"]
+    M2["audit_join_parked / emitted / duplicate_dropped_total<br/>audit_shallow_dropped / body_late_total<br/>audit_join_skew_seconds<br/>audit_official_gate_wait_seconds"]
+    M3["audit_pipeline_events_total<br/>audit_pipeline_route_targets_total"]
+    M4["git_operations_total · commits_total<br/>objects_written_total · git_push_duration_seconds"]
+
+    WH -. metrics .-> M0
+    WH -. metrics .-> M1
+    JOIN -. metrics .-> M2
+    CONS -. metrics .-> M3
+    ROUTE -. metrics .-> M4
+
+    classDef metric fill:#fff3e0,stroke:#ff9800,color:#000;
+    classDef stage fill:#e8f4fd,stroke:#2196f3,color:#000;
+    class M0,M1,M2,M3,M4 metric;
+    class WH,JOIN,CONS,ROUTE,S1,S2,S3,S4 stage;
+```
+
+Event-identity labels read consistently as `group`/`version`/`resource`/`verb` across every
+stage, so one PromQL `sum by (group, version)` aggregates the whole pipeline.
 
 The pipeline joins two event sources per `auditID`: the **official** kube-apiserver audit event
 (authoritative for *who/when*) and an **additional** body contribution from a proxy
@@ -63,17 +116,36 @@ additional body arriving first and parking; when the official wins the race it w
 
 ### The metrics
 
-| Metric | Type | Labels |
-| --- | --- | --- |
-| `audit_events_received_total` | counter | `source`, `gvr`, `action`, `user` |
-| `audit_event_quality_total` | counter | `source`, `quality`, `gvr`, `action` |
-| `audit_join_parked_total` | counter | `parked_kind` |
-| `audit_join_emitted_total` | counter | `source`, `result` (`as_is`, `merged`) |
-| `audit_join_duplicate_dropped_total` | counter | `reason` |
-| `audit_shallow_dropped_total` | counter | `gvr`, `action` |
-| `audit_join_body_late_total` | counter | `gvr`, `action` |
-| `audit_join_skew_seconds` | histogram | `arrival` (`body_first`/`official_first`), `outcome` (`merged`/`timed_out`) |
-| `audit_official_gate_wait_seconds` | histogram | — |
+| Metric | Type | Labels | Stage |
+| --- | --- | --- | --- |
+| `audit_eventlists_total` | counter | `source`, `outcome` | ① ingress |
+| `audit_eventlist_events_total` | counter | `source`, `outcome` | ① ingress |
+| `audit_eventlist_duration_seconds` | histogram | `source`, `outcome` | ① ingress |
+| `audit_events_received_total` | counter | `source`, `group`, `version`, `resource`, `verb` | ① ingress |
+| `audit_event_quality_total` | counter | `source`, `quality`, `group`, `version`, `resource`, `verb` | ① ingress |
+| `audit_join_parked_total` | counter | — | ② join |
+| `audit_join_emitted_total` | counter | `source`, `result` (`as_is`, `merged`) | ② join |
+| `audit_join_duplicate_dropped_total` | counter | `reason` | ② join |
+| `audit_shallow_dropped_total` | counter | `group`, `version`, `resource`, `verb` | ② join |
+| `audit_join_body_late_total` | counter | `group`, `version`, `resource`, `verb` | ② join |
+| `audit_join_skew_seconds` | histogram | `arrival` (`body_first`/`official_first`), `outcome` (`merged`/`timed_out`) | ② join |
+| `audit_official_gate_wait_seconds` | histogram | — | ② join |
+| `audit_pipeline_events_total` | counter | `group`, `version`, `resource`, `verb`, `outcome` | ③ consume |
+| `audit_pipeline_route_targets_total` | counter | `git_target_namespace`, `git_target`, `rule_kind`, `outcome` | ③ route |
+
+**Stage ① — EventList ingress.** `audit_eventlists_total` and `audit_eventlist_duration_seconds`
+count request attempts at the webhook's two audit endpoints; `audit_eventlist_events_total`
+counts the decoded event items inside them. `outcome` is bounded: `processed`, `empty`,
+`decode_error`, `process_error`. This is the raw delivery boundary — it answers "are EventLists
+arriving?" before any join or rule logic runs. `audit_events_received_total` and
+`audit_event_quality_total` then describe individual decoded events.
+
+**Stage ③ — consumer output.** `audit_pipeline_events_total` is recorded once per canonical
+event in the consumer, after rule matching. `outcome` tells you which resource events reach the
+consumer but do not become Git work: `routed` (reached at least one BranchWorker), `unmatched`
+(no rule matched), `dropped_no_body` (matched but no usable body), `route_failed` (every matched
+target route failed). `audit_pipeline_route_targets_total` breaks routed/failed attempts down by
+destination GitTarget.
 
 `audit_join_skew_seconds` is the centerpiece for timing health. Every official↔additional pair
 produces one observation:
@@ -86,6 +158,26 @@ produces one observation:
   `audit_shallow_dropped_total`).
 
 ### Query cookbook
+
+**Are both audit sources delivering EventLists?** If one `source` flatlines, that sender is
+down or misrouted:
+
+```promql
+sum by (source, outcome) (rate(gitopsreverser_audit_eventlists_total[5m]))
+```
+
+**How many audit event items arrive per second from each source?**
+
+```promql
+sum by (source) (rate(gitopsreverser_audit_eventlist_events_total[5m]))
+```
+
+**Are EventLists failing to decode?** Should be zero — non-zero means a sender is posting
+something that is not an `audit.k8s.io/v1 EventList`:
+
+```promql
+sum by (source) (rate(gitopsreverser_audit_eventlists_total{outcome="decode_error"}[5m]))
+```
 
 **Is the join working at all?** Rate of canonical emissions, split by how they resolved:
 
@@ -140,7 +232,7 @@ early (or the official stream has stalled) and orphan expiry is imminent.
 policy that omits bodies:
 
 ```promql
-sum by (gvr, action) (rate(gitopsreverser_audit_shallow_dropped_total[5m]))
+sum by (resource, verb) (rate(gitopsreverser_audit_shallow_dropped_total[5m]))
 ```
 
 **Is the canonical gate causing backpressure?** A shallow official holds the in-pod gate for up
@@ -160,6 +252,29 @@ behind shallow events — consider whether the audit policy should be supplying 
 sum by (reason) (rate(gitopsreverser_audit_join_duplicate_dropped_total[5m]))
 ```
 
+**"Am I seeing a lot of pod create events flow through?"** The question this pipeline exists to
+answer — routed events by resource:
+
+```promql
+sum by (resource) (
+  increase(gitopsreverser_audit_pipeline_events_total{verb="create",outcome="routed"}[1h]))
+```
+
+**Which events reach the consumer but never become Git work?** A high `unmatched` rate for a
+resource you expect to capture points at a missing or wrong `WatchRule`:
+
+```promql
+topk(10, sum by (group, version, resource, verb, outcome) (
+  rate(gitopsreverser_audit_pipeline_events_total{outcome!="routed"}[5m])))
+```
+
+**Is runtime traffic reaching each GitTarget, and is routing into it failing?**
+
+```promql
+sum by (git_target_namespace, git_target, outcome) (
+  rate(gitopsreverser_audit_pipeline_route_targets_total[5m]))
+```
+
 ### Suggested alerts
 
 | Condition | Meaning |
@@ -168,6 +283,8 @@ sum by (reason) (rate(gitopsreverser_audit_join_duplicate_dropped_total[5m]))
 | `histogram_quantile(0.95, ...skew_seconds_bucket{arrival="official_first"}...) > 0.4` (with `bodyWait=500ms`) | Grace period about to be exhausted; raise `--audit-event-body-wait`. |
 | `rate(audit_join_body_late_total[15m]) > 0` sustained | Additional bodies arriving after the decision — proxy slower than `bodyTTL`. |
 | `rate(audit_join_duplicate_dropped_total[5m])` spike | Likely webhook retry storm. |
+| `rate(audit_eventlists_total{outcome="decode_error"}[10m]) > 0` | A sender is posting non-EventList payloads to an audit endpoint. |
+| `rate(audit_pipeline_route_targets_total{outcome="route_failed"}[10m]) > 0` | Matched events are failing to reach their GitTarget — check GitTarget/GitProvider readiness. |
 
 ---
 
@@ -190,7 +307,6 @@ Metrics for the path from matched event to pushed commit. Background:
 | `marker_conflicts_total` | counter | Repository marker conflicts. |
 | `watch_duplicates_skipped_total` | counter | Watch events skipped by content-hash dedup. |
 | `git_push_duration_seconds` | histogram | End-to-end push latency. |
-| `git_commit_queue_size` | gauge | Pending commits queued. |
 | `repo_branch_active_workers` | gauge | Active `BranchWorker` goroutines. |
 | `repo_branch_queue_depth` | gauge | Per-`(provider,branch)` pending-event depth. |
 
@@ -213,6 +329,56 @@ or multiple branches are contending.
 
 ```promql
 gitopsreverser_repo_branch_queue_depth
+```
+
+---
+
+## API resource catalog
+
+The API resource catalog is GitOps Reverser's single trusted in-memory view of the cluster's
+served API surface — every `WatchRule` and `ClusterWatchRule` is resolved against it. The watch
+manager refreshes it from Kubernetes discovery on its 30 s reconcile ticker, on every
+CRD/APIService change, and on every rule change. Background:
+[audit-metrics-overhaul-plan.md → API resource catalog observability](design/audit-metrics-overhaul-plan.md).
+
+| Metric | Type | Labels |
+| --- | --- | --- |
+| `api_catalog_resources` | gauge | `state` (`allowed`/`excluded`) |
+| `api_catalog_group_versions` | gauge | `state` (`trusted`/`degraded`) |
+| `api_catalog_refresh_total` | counter | `outcome` (`changed`/`unchanged`/`error`) |
+| `api_catalog_refresh_duration_seconds` | histogram | — |
+| `api_catalog_generation` | gauge | Current published catalog generation. |
+
+`excluded` resources are the default-watch-policy set (pods, events, leases, jobs, …) — served
+by the cluster but deliberately never watched. `degraded` group/versions are ones discovery
+reported as failed, usually a broken aggregated APIService.
+
+**How many resources is GitOps Reverser actually willing to watch?**
+
+```promql
+gitopsreverser_api_catalog_resources{state="allowed"}
+```
+
+**Is the 30 s refresh doing real work, or just confirming a stable surface?** A healthy cluster
+sits almost entirely on `unchanged`. A steady `changed` rate means part of the API surface is
+flapping, and each change re-runs informer reconciliation:
+
+```promql
+sum by (outcome) (rate(gitopsreverser_api_catalog_refresh_total[15m]))
+```
+
+**Is part of the API surface hidden behind a broken APIService?** Should be zero:
+
+```promql
+gitopsreverser_api_catalog_group_versions{state="degraded"} > 0
+```
+
+**Discovery latency** — catches a slow or non-aggregated apiserver. Normal is single-digit
+milliseconds; the call is two cached GETs on Kubernetes ≥ 1.27:
+
+```promql
+histogram_quantile(0.95,
+  rate(gitopsreverser_api_catalog_refresh_duration_seconds_bucket[5m]))
 ```
 
 ---

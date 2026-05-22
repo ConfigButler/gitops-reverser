@@ -773,17 +773,26 @@ already encodes intent and `wait-official` semantics are always correct.
 
 ### Metrics
 
+Event GVR is carried as three labels — `group`, `version`, `resource` — so PromQL can
+aggregate to group/version without `label_replace`. The event-action label is `verb`
+(the Kubernetes audit `Verb` field) across the whole pipeline.
+
 | Metric | Labels | Meaning |
 | --- | --- | --- |
-| `gitopsreverser_audit_events_received_total` | `source`, `gvr`, `action`, `user` | Receive counter |
-| `gitopsreverser_audit_event_quality_total` | `source`, `quality`, `gvr`, `action` | First-class shape classification |
-| `gitopsreverser_audit_join_parked_total` | `parked_kind` | Parked additional bodies (`additional_body` is the only value) |
+| `gitopsreverser_audit_eventlists_total` | `source`, `outcome` | EventList request-boundary counter: `processed`, `empty`, `decode_error`, `process_error` |
+| `gitopsreverser_audit_eventlist_events_total` | `source`, `outcome` | Decoded audit event items delivered in EventLists (no `decode_error` sample) |
+| `gitopsreverser_audit_eventlist_duration_seconds` | `source`, `outcome` | Histogram of webhook request time, including in-pod join wait work |
+| `gitopsreverser_audit_events_received_total` | `source`, `group`, `version`, `resource`, `verb` | Receive counter (username is logged, not labelled) |
+| `gitopsreverser_audit_event_quality_total` | `source`, `quality`, `group`, `version`, `resource`, `verb` | First-class shape classification |
+| `gitopsreverser_audit_join_parked_total` | — | Parked additional bodies |
 | `gitopsreverser_audit_join_emitted_total` | `source`, `result` | Canonical emissions: `as_is`, `merged` |
 | `gitopsreverser_audit_join_duplicate_dropped_total` | `reason` | Drops from existing decision keys: `decision_exists`, `in_flight_claim` |
-| `gitopsreverser_audit_shallow_dropped_total` | `gvr`, `action` | Identity-shallow officials dropped because no parked body was available |
-| `gitopsreverser_audit_join_body_late_total` | `gvr`, `action` | Additional body arrived after the decision was committed |
+| `gitopsreverser_audit_shallow_dropped_total` | `group`, `version`, `resource`, `verb` | Identity-shallow officials dropped because no parked body was available |
+| `gitopsreverser_audit_join_body_late_total` | `group`, `version`, `resource`, `verb` | Additional body arrived after the decision was committed |
 | `gitopsreverser_audit_join_skew_seconds` | `arrival`, `outcome` | Histogram of official↔additional arrival skew: `arrival=body_first` is the proxy's lead time, `arrival=official_first` is how long the official waited on the canonical gate |
 | `gitopsreverser_audit_official_gate_wait_seconds` | — | Histogram of how long an official event waited to acquire the in-pod canonical gate (backpressure signal) |
+| `gitopsreverser_audit_pipeline_events_total` | `group`, `version`, `resource`, `verb`, `outcome` | Consumer-stage counter: `unmatched`, `dropped_no_body`, `routed`, `route_failed` |
+| `gitopsreverser_audit_pipeline_route_targets_total` | `git_target_namespace`, `git_target`, `rule_kind`, `outcome` | Per-GitTarget route attempts: `routed`, `route_failed` |
 
 Useful alerts: `audit_shallow_dropped_total` non-zero (operator misconfiguration — install
 proxy or update audit policy); `audit_join_duplicate_dropped_total` spikes (likely webhook

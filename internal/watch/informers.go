@@ -96,14 +96,8 @@ func (m *Manager) handleEvent(obj interface{}, g GVR, op configv1alpha1.Operatio
 
 	userInfo := git.UserInfo{} // username not available from watch path
 
-	// Emit basic metrics for watcher path (mirrors webhook semantics).
 	// Count each watched object processed by the informer path.
 	telemetry.ObjectsScannedTotal.Add(ctx, 1)
-	enqueueCount := int64(len(wrRules) + len(cwrRules))
-	if enqueueCount > 0 {
-		telemetry.EventsProcessedTotal.Add(ctx, enqueueCount)
-		telemetry.GitCommitQueueSize.Add(ctx, enqueueCount)
-	}
 
 	if m.AuditLiveEventsEnabled {
 		m.Log.V(1).Info("Skipping live watch event routing because audit stream is authoritative",

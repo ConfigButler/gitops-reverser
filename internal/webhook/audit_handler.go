@@ -129,6 +129,15 @@ func NewAuditHandler(config AuditHandlerConfig) (*AuditHandler, error) {
 	}, nil
 }
 
+// EventList request-boundary outcome labels. They stay bounded — no path,
+// remote address, or status-code dimension — so the ingress metric set is small.
+const (
+	outcomeProcessed    = "processed"
+	outcomeEmpty        = "empty"
+	outcomeDecodeError  = "decode_error"
+	outcomeProcessError = "process_error"
+)
+
 // ServeHTTP implements http.Handler for audit event processing.
 func (h *AuditHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
@@ -145,6 +154,20 @@ func (h *AuditHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	start := time.Now()
+	outcome, eventCount := h.serveEventListRequest(ctx, w, r, source, log)
+	h.recordEventListRequest(ctx, source, outcome, eventCount, time.Since(start))
+}
+
+// serveEventListRequest decodes and processes one EventList request, returning the
+// bounded outcome and the number of decoded event items for the ingress metrics.
+func (h *AuditHandler) serveEventListRequest(
+	ctx context.Context,
+	w http.ResponseWriter,
+	r *http.Request,
+	source AuditSource,
+	log logr.Logger,
+) (string, int) {
 	reqLog := log.WithValues(
 		"source", source,
 		"remoteAddr", r.RemoteAddr,
@@ -155,32 +178,59 @@ func (h *AuditHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		reqLog.Error(err, "Failed to decode audit event list")
 		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
+		return outcomeDecodeError, 0
 	}
 
-	if len(eventListV1.Items) == 0 {
+	eventCount := len(eventListV1.Items)
+	if eventCount == 0 {
 		reqLog.Info("Received empty audit event list", "eventCount", 0, "processingOutcome", "empty")
-		w.WriteHeader(http.StatusOK)
-		_, err = w.Write([]byte("Empty event list processed"))
-		if err != nil {
-			reqLog.Error(err, "Failed to write response")
-		}
-		return
+		h.writeResponse(w, reqLog, "Empty event list processed")
+		return outcomeEmpty, 0
 	}
 
-	h.logFirstAuditRequest(reqLog, source, len(eventListV1.Items))
+	h.logFirstAuditRequest(reqLog, source, eventCount)
 
 	if err := h.processEvents(ctx, source, eventListV1.Items); err != nil {
 		reqLog.Error(err, "Failed to process audit events")
 		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+		return outcomeProcessError, eventCount
 	}
-	reqLog.V(1).Info("Processed audit request", "eventCount", len(eventListV1.Items), "processingOutcome", "success")
+	reqLog.V(1).Info("Processed audit request", "eventCount", eventCount, "processingOutcome", "success")
 
+	h.writeResponse(w, reqLog, "Audit event processed")
+	return outcomeProcessed, eventCount
+}
+
+// writeResponse writes a 200 OK body, logging any write failure.
+func (h *AuditHandler) writeResponse(w http.ResponseWriter, log logr.Logger, body string) {
 	w.WriteHeader(http.StatusOK)
-	_, err = w.Write([]byte("Audit event processed"))
-	if err != nil {
-		reqLog.Error(err, "Failed to write response")
+	if _, err := w.Write([]byte(body)); err != nil {
+		log.Error(err, "Failed to write response")
+	}
+}
+
+// recordEventListRequest emits the three EventList ingress-boundary metrics.
+// The event-item counter has no sample for decode_error, since item count is
+// only known after a successful decode.
+func (h *AuditHandler) recordEventListRequest(
+	ctx context.Context,
+	source AuditSource,
+	outcome string,
+	eventCount int,
+	elapsed time.Duration,
+) {
+	attrs := metric.WithAttributes(
+		attribute.String("source", string(source)),
+		attribute.String("outcome", outcome),
+	)
+	if telemetry.AuditEventListsTotal != nil {
+		telemetry.AuditEventListsTotal.Add(ctx, 1, attrs)
+	}
+	if telemetry.AuditEventListDurationSeconds != nil {
+		telemetry.AuditEventListDurationSeconds.Record(ctx, elapsed.Seconds(), attrs)
+	}
+	if outcome != outcomeDecodeError && telemetry.AuditEventListEventsTotal != nil {
+		telemetry.AuditEventListEventsTotal.Add(ctx, int64(eventCount), attrs)
 	}
 }
 
@@ -335,9 +385,8 @@ func (h *AuditHandler) recordReceivedMetric(
 	source AuditSource,
 	auditEvent audit.Event,
 ) {
-	user := effectiveAuditUsername(auditEvent)
+	handlerLog := logf.Log.WithName("audit-handler")
 	if auditEvent.ImpersonatedUser != nil {
-		handlerLog := logf.Log.WithName("audit-handler")
 		h.firsts.impersonatedEvent.Do(func() {
 			handlerLog.Info("First impersonated audit event observed",
 				"source", source,
@@ -351,11 +400,22 @@ func (h *AuditHandler) recordReceivedMetric(
 		)
 	}
 
+	// The username is intentionally not a metric label (cardinality bomb); it
+	// stays in the structured logs only.
+	group, version, resource := gvrParts(&auditEvent)
+	handlerLog.V(1).Info("Audit event received",
+		"source", source,
+		"group", group,
+		"version", version,
+		"resource", resource,
+		"verb", auditEvent.Verb,
+		"user", effectiveAuditUsername(auditEvent))
 	telemetry.AuditEventsReceivedTotal.Add(ctx, 1, metric.WithAttributes(
 		attribute.String("source", string(source)),
-		attribute.String("gvr", h.extractGVR(&auditEvent)),
-		attribute.String("action", auditEvent.Verb),
-		attribute.String("user", user),
+		attribute.String("group", group),
+		attribute.String("version", version),
+		attribute.String("resource", resource),
+		attribute.String("verb", auditEvent.Verb),
 	))
 }
 
@@ -487,29 +547,35 @@ func auditSourceFromPath(path string) (AuditSource, error) {
 	}
 }
 
-// extractGVR constructs the Group/Version/Resource string from the audit event
-// using k8s.io/apimachinery/pkg/runtime/schema utilities.
-func (h *AuditHandler) extractGVR(event *audit.Event) string {
+// gvrParts splits an audit event's objectRef into bounded group/version/resource
+// metric label values. An empty group denotes the core API group; an absent or
+// unparseable ref collapses to "unknown"/"invalid" so the label set stays small.
+func gvrParts(event *audit.Event) (string, string, string) {
 	if event.ObjectRef == nil || event.ObjectRef.APIVersion == "" {
-		return "unknown/unknown/unknown"
+		return "unknown", "unknown", "unknown"
 	}
-
 	gv, err := schema.ParseGroupVersion(event.ObjectRef.APIVersion)
 	if err != nil {
-		return fmt.Sprintf("invalid/%s/%s", event.ObjectRef.APIVersion, event.ObjectRef.Resource)
+		return "invalid", event.ObjectRef.APIVersion, orUnknownResource(event.ObjectRef.Resource)
 	}
+	return gv.Group, gv.Version, orUnknownResource(event.ObjectRef.Resource)
+}
 
-	resource := event.ObjectRef.Resource
+func orUnknownResource(resource string) string {
 	if resource == "" {
-		resource = "unknown"
+		return "unknown"
 	}
+	return resource
+}
 
-	gvr := gv.WithResource(resource)
-
-	if gvr.Group == "" {
-		return fmt.Sprintf("/%s/%s", gvr.Version, gvr.Resource)
+// extractGVR constructs the Group/Version/Resource string from the audit event
+// for use as a log field.
+func (h *AuditHandler) extractGVR(event *audit.Event) string {
+	group, version, resource := gvrParts(event)
+	if group == "" {
+		return fmt.Sprintf("/%s/%s", version, resource)
 	}
-	return fmt.Sprintf("%s/%s/%s", gvr.Group, gvr.Version, gvr.Resource)
+	return fmt.Sprintf("%s/%s/%s", group, version, resource)
 }
 
 // classifyAuditIngress is the intrinsic gate in front of the join pipeline. It

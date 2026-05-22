@@ -105,6 +105,50 @@ func (c *APIResourceCatalog) Generation() uint64 {
 	return c.generation
 }
 
+// CatalogStats is a point-in-time summary of the catalog used to set the
+// api_catalog_* gauges. All counts exclude subresources.
+type CatalogStats struct {
+	// AllowedResources is the count of served top-level resources the default
+	// watch policy permits.
+	AllowedResources int
+	// ExcludedResources is the count of served top-level resources the default
+	// watch policy excludes (pods, events, leases, …).
+	ExcludedResources int
+	// TrustedGroupVersions is the count of group/versions discovery served cleanly.
+	TrustedGroupVersions int
+	// DegradedGroupVersions is the count of group/versions discovery reported as failed.
+	DegradedGroupVersions int
+	// Generation is the current published catalog generation.
+	Generation uint64
+}
+
+// Stats returns a point-in-time summary of the catalog for metrics. Counts are
+// computed under the existing read lock.
+func (c *APIResourceCatalog) Stats() CatalogStats {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	stats := CatalogStats{Generation: c.generation}
+	for _, entry := range c.byGVR {
+		if entry.Subresource {
+			continue
+		}
+		if entry.Allowed {
+			stats.AllowedResources++
+		} else {
+			stats.ExcludedResources++
+		}
+	}
+	for _, state := range c.groupVersion {
+		switch {
+		case state.degraded:
+			stats.DegradedGroupVersions++
+		case state.trusted:
+			stats.TrustedGroupVersions++
+		}
+	}
+	return stats
+}
+
 // Refresh updates clean group/versions and preserves entries for group/versions
 // that discovery reports as failed.
 func (c *APIResourceCatalog) Refresh(disco apiResourceDiscovery) (bool, error) {

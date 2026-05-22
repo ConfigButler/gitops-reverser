@@ -295,6 +295,22 @@ var _ = Describe("Manager", Label("manager"), Ordered, func() {
 			Expect(currentAuditEvents).To(BeNumerically(">", baselineAuditEvents),
 				"Should have received audit events from kube-apiserver")
 
+			By("verifying the EventList ingress metric appears for source=official")
+			waitForMetricWithTimeout(
+				"sum(gitopsreverser_audit_eventlists_total{source='official'}) or vector(0)",
+				func(v float64) bool { return v > 0 },
+				"EventList ingress requests should be counted for source=official", 2*time.Minute,
+			)
+
+			By("verifying no removed cluster/gvr/action label remains on any audit series")
+			for _, removed := range []string{"cluster", "gvr", "action"} {
+				stale, queryErr := queryPrometheus(fmt.Sprintf(
+					"sum({__name__=~'gitopsreverser_audit_.+', %s=~'.+'}) or vector(0)", removed))
+				Expect(queryErr).NotTo(HaveOccurred())
+				Expect(stale).To(BeNumerically("==", 0),
+					fmt.Sprintf("no audit series should still carry the %q label", removed))
+			}
+
 			newEvents := currentAuditEvents - baselineAuditEvents
 			fmt.Printf("✅ Received %.0f new audit events from kube-apiserver\n", newEvents)
 			fmt.Printf("📊 Total audit events: %.0f\n", currentAuditEvents)
