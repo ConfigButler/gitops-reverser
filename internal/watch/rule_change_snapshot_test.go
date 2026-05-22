@@ -36,6 +36,7 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/reconcile"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
+	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
 // These tests guard against an issue #146-style regression: when a new
@@ -342,7 +343,7 @@ func TestReconcileForRuleChange_RestartLikeBootstrap_NoSnapshotDrops(t *testing.
 	// state immediately after WatchManager.Start: workers and reconcilers
 	// have not yet been registered by their respective controllers.
 	manager.EventRouter = &EventRouter{
-		WorkerManager:     git.NewWorkerManager(fakeK8s, logr.Discard(), 0),
+		WorkerManager:     git.NewWorkerManager(fakeK8s, logr.Discard(), 0, types.SensitiveResourcePolicy{}),
 		ReconcilerManager: reconcile.NewReconcilerManager(nil, logr.Discard()),
 		WatchManager:      manager,
 		Client:            fakeK8s,

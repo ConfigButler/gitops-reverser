@@ -38,7 +38,7 @@ type resourceMeta struct {
 	Generation      int64
 }
 
-type secretMarker struct {
+type sensitiveMarker struct {
 	UID             string
 	ResourceVersion string
 	Generation      int64
@@ -51,9 +51,9 @@ type contentWriter struct {
 	// repo/path/key boundaries (e.g. different GitTargets or rotated identities).
 	encryptionScope string
 
-	mu           sync.RWMutex
-	secretCache  map[string][]byte
-	secretMarker map[string]secretMarker
+	mu             sync.RWMutex
+	encryptedCache map[string][]byte
+	markers        map[string]sensitiveMarker
 }
 
 type eventContentWriter interface {
@@ -62,15 +62,11 @@ type eventContentWriter interface {
 	isSensitiveIdentifier(id types.ResourceIdentifier) bool
 }
 
-func newContentWriter(sensitiveResources ...types.SensitiveResourcePolicy) *contentWriter {
-	var policy types.SensitiveResourcePolicy
-	if len(sensitiveResources) > 0 {
-		policy = sensitiveResources[0]
-	}
+func newContentWriter(sensitiveResources types.SensitiveResourcePolicy) *contentWriter {
 	return &contentWriter{
-		sensitiveResources: policy,
-		secretCache:        make(map[string][]byte),
-		secretMarker:       make(map[string]secretMarker),
+		sensitiveResources: sensitiveResources,
+		encryptedCache:     make(map[string][]byte),
+		markers:            make(map[string]sensitiveMarker),
 	}
 }
 
@@ -93,22 +89,22 @@ func (w *contentWriter) buildContentForWrite(ctx context.Context, event Event) (
 		return content, nil
 	}
 
-	return w.encryptSecretContent(ctx, event, content)
+	return w.encryptSensitiveContent(ctx, event, content)
 }
 
 func (w *contentWriter) filePathForIdentifier(id types.ResourceIdentifier) string {
-	return generateFilePathWithPolicy(id, w.sensitiveResources)
+	return generateFilePath(id, w.sensitiveResources)
 }
 
 func (w *contentWriter) isSensitiveIdentifier(id types.ResourceIdentifier) bool {
 	return w.sensitiveResources.IsSensitive(id.Group, id.Resource)
 }
 
-func (w *contentWriter) encryptSecretContent(ctx context.Context, event Event, plain []byte) ([]byte, error) {
+func (w *contentWriter) encryptSensitiveContent(ctx context.Context, event Event, plain []byte) ([]byte, error) {
 	meta := buildResourceMeta(event)
-	identityKey := secretIdentityKey(meta.Identifier)
+	identityKey := sensitiveIdentityKey(meta.Identifier)
 	digest := sha256.Sum256(plain)
-	currentMarker := secretMarker{
+	currentMarker := sensitiveMarker{
 		UID:             meta.UID,
 		ResourceVersion: meta.ResourceVersion,
 		Generation:      meta.Generation,
@@ -127,7 +123,7 @@ func (w *contentWriter) encryptSecretContent(ctx context.Context, event Event, p
 	cacheKey := fmt.Sprintf("%s:%x", scopedIdentityKey, digest)
 
 	w.mu.RLock()
-	cached, ok := w.cachedEncryptedSecret(ctx, scopedIdentityKey, cacheKey, currentMarker)
+	cached, ok := w.cachedEncryptedContent(ctx, scopedIdentityKey, cacheKey, currentMarker)
 	w.mu.RUnlock()
 	if ok {
 		return cached, nil
@@ -152,23 +148,23 @@ func (w *contentWriter) encryptSecretContent(ctx context.Context, event Event, p
 	}
 
 	w.mu.Lock()
-	w.secretCache[cacheKey] = append([]byte(nil), encrypted...)
-	w.secretMarker[scopedIdentityKey] = currentMarker
+	w.encryptedCache[cacheKey] = append([]byte(nil), encrypted...)
+	w.markers[scopedIdentityKey] = currentMarker
 	w.mu.Unlock()
 
 	return encrypted, nil
 }
 
-func (w *contentWriter) cachedEncryptedSecret(
+func (w *contentWriter) cachedEncryptedContent(
 	ctx context.Context,
 	identityKey, cacheKey string,
-	currentMarker secretMarker,
+	currentMarker sensitiveMarker,
 ) ([]byte, bool) {
-	lastMarker, markerExists := w.secretMarker[identityKey]
+	lastMarker, markerExists := w.markers[identityKey]
 	if !markerExists || lastMarker != currentMarker {
 		return nil, false
 	}
-	cached, ok := w.secretCache[cacheKey]
+	cached, ok := w.encryptedCache[cacheKey]
 	if !ok {
 		return nil, false
 	}
@@ -194,6 +190,6 @@ func buildResourceMeta(event Event) resourceMeta {
 	return meta
 }
 
-func secretIdentityKey(id types.ResourceIdentifier) string {
+func sensitiveIdentityKey(id types.ResourceIdentifier) string {
 	return fmt.Sprintf("%s/%s/%s/%s/%s", id.Group, id.Version, id.Resource, id.Namespace, id.Name)
 }

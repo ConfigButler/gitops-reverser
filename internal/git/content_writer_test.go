@@ -45,7 +45,7 @@ func (s *stubEncryptor) Encrypt(_ context.Context, _ []byte, _ ResourceMeta) ([]
 }
 
 func TestBuildContentForWrite_MarshalOrderedYAML(t *testing.T) {
-	writer := newContentWriter()
+	writer := newContentWriter(types.SensitiveResourcePolicy{})
 
 	event := Event{
 		Object: &unstructured.Unstructured{
@@ -77,7 +77,7 @@ func TestBuildContentForWrite_MarshalOrderedYAML(t *testing.T) {
 }
 
 func TestBuildContentForWrite_ReturnsMarshalError(t *testing.T) {
-	writer := newContentWriter()
+	writer := newContentWriter(types.SensitiveResourcePolicy{})
 
 	event := Event{
 		Object: &unstructured.Unstructured{
@@ -101,7 +101,7 @@ func TestBuildContentForWrite_ReturnsMarshalError(t *testing.T) {
 }
 
 func TestBuildContentForWrite_SecretRequiresEncryptor(t *testing.T) {
-	writer := newContentWriter()
+	writer := newContentWriter(types.SensitiveResourcePolicy{})
 
 	event := Event{
 		Identifier: types.ResourceIdentifier{
@@ -156,7 +156,7 @@ func TestBuildContentForWrite_AdditionalSensitiveResourceEncrypts(t *testing.T) 
 }
 
 func TestBuildContentForWrite_SecretEncryptionCacheMarkerReuse(t *testing.T) {
-	writer := newContentWriter()
+	writer := newContentWriter(types.SensitiveResourcePolicy{})
 
 	enc := &stubEncryptor{result: []byte("encrypted: true\nsops:\n  version: 3.9.0\n")}
 	writer.setEncryptor(enc, "test-scope")
@@ -198,7 +198,7 @@ func TestBuildContentForWrite_SecretEncryptionCacheMarkerReuse(t *testing.T) {
 }
 
 func TestBuildContentForWrite_SecretUIDChangeForcesReencrypt(t *testing.T) {
-	writer := newContentWriter()
+	writer := newContentWriter(types.SensitiveResourcePolicy{})
 
 	enc := &stubEncryptor{result: []byte("encrypted: true\nsops:\n  version: 3.9.0\n")}
 	writer.setEncryptor(enc, "test-scope")
@@ -242,7 +242,7 @@ func TestBuildContentForWrite_SecretUIDChangeForcesReencrypt(t *testing.T) {
 }
 
 func TestBuildContentForWrite_SecretEncryptionFailure(t *testing.T) {
-	writer := newContentWriter()
+	writer := newContentWriter(types.SensitiveResourcePolicy{})
 
 	writer.setEncryptor(&stubEncryptor{err: errors.New("boom")}, "test-scope")
 
@@ -275,7 +275,7 @@ func TestBuildContentForWrite_SecretEncryptionFailure(t *testing.T) {
 }
 
 func TestBuildContentForWrite_SecretEncryptionScopeChangeForcesReencrypt(t *testing.T) {
-	writer := newContentWriter()
+	writer := newContentWriter(types.SensitiveResourcePolicy{})
 
 	enc := &stubEncryptor{result: []byte("encrypted: true\nsops:\n  version: 3.9.0\n")}
 	writer.setEncryptor(enc, "scope-a")

@@ -68,7 +68,7 @@ func GetHTTPAuthMethod(username, password string) (transport.AuthMethod, error) 
 // CheckRepo performs lightweight connectivity checks and gathers repository metadata.
 func CheckRepo(ctx context.Context, repoURL string, auth transport.AuthMethod) (*RepoInfo, error) {
 	logger := log.FromContext(ctx)
-	logger.Info("Checking repository connectivity and metadata", "url", repoURL)
+	logger.V(1).Info("Checking repository connectivity and metadata", "url", repoURL)
 
 	// Use remote.List() for lightweight connectivity check
 	remote := git.NewRemote(nil, &config.RemoteConfig{
@@ -115,7 +115,7 @@ func CheckRepo(ctx context.Context, repoURL string, auth transport.AuthMethod) (
 		logger.Info("Failed to find HEAD in List output")
 	}
 
-	logger.Info("Repository check completed",
+	logger.V(1).Info("Repository check completed",
 		"remoteBranches", repoInfo.RemoteBranchCount)
 
 	return repoInfo, nil
@@ -706,11 +706,7 @@ func canonicalizeManifestForComparison(content []byte) ([]byte, error) {
 	return sanitize.MarshalToOrderedYAML(sanitize.Sanitize(obj))
 }
 
-func generateFilePath(id types.ResourceIdentifier) string {
-	return generateFilePathWithPolicy(id, types.SensitiveResourcePolicy{})
-}
-
-func generateFilePathWithPolicy(id types.ResourceIdentifier, sensitiveResources types.SensitiveResourcePolicy) string {
+func generateFilePath(id types.ResourceIdentifier, sensitiveResources types.SensitiveResourcePolicy) string {
 	defaultPath := id.ToGitPath()
 	if !sensitiveResources.IsSensitive(id.Group, id.Resource) {
 		return defaultPath

@@ -45,7 +45,7 @@ func newExecutorTestRepo(t *testing.T) (*BranchWorker, *git.Repository, *git.Wor
 	worktree, err := repo.Worktree()
 	require.NoError(t, err)
 
-	return &BranchWorker{contentWriter: newContentWriter()}, repo, worktree, repoPath
+	return &BranchWorker{contentWriter: newContentWriter(types.SensitiveResourcePolicy{})}, repo, worktree, repoPath
 }
 
 func newExecutorSecretEvent(path string) Event {
@@ -82,7 +82,7 @@ func seedEventContent(t *testing.T, repoPath string, worktree *git.Worktree, wri
 	content, err := writer.buildContentForWrite(context.Background(), event)
 	require.NoError(t, err)
 
-	gitPath := generateFilePath(event.Identifier)
+	gitPath := generateFilePath(event.Identifier, types.SensitiveResourcePolicy{})
 	if event.Path != "" {
 		gitPath = filepath.ToSlash(filepath.Join(event.Path, gitPath))
 	}
@@ -98,11 +98,11 @@ func seedEventContent(t *testing.T, repoPath string, worktree *git.Worktree, wri
 	require.NoError(t, err)
 }
 
-func TestGenerateFilePathWithPolicy_AdditionalSensitiveResourceUsesSOPSPath(t *testing.T) {
+func TestGenerateFilePath_AdditionalSensitiveResourceUsesSOPSPath(t *testing.T) {
 	policy, err := types.ParseSensitiveResourcePolicy("core.cozystack.io/tenantsecrets")
 	require.NoError(t, err)
 
-	path := generateFilePathWithPolicy(types.ResourceIdentifier{
+	path := generateFilePath(types.ResourceIdentifier{
 		Group:     "core.cozystack.io",
 		Version:   "v1beta1",
 		Resource:  "tenantsecrets",

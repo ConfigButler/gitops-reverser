@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sort"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -80,9 +81,71 @@ func (m *Manager) RefreshAPIResourceCatalog(ctx context.Context) error {
 	changed, refreshErr := catalog.Refresh(disco)
 	recordCatalogRefresh(ctx, changed, refreshErr, time.Since(start))
 	if refreshErr == nil {
-		recordCatalogStats(ctx, catalog.Stats())
+		stats := catalog.Stats()
+		recordCatalogStats(ctx, stats)
+		m.logCatalogTransitions(catalog, stats)
 	}
 	return refreshErr
+}
+
+// logCatalogTransitions emits an Info line on edge-triggered catalog changes
+// only: the first successful build, and when the set of group/versions that
+// discovery cannot serve appears or clears. Steady-state refreshes - which run
+// on every rule change, periodic tick, and CRD/APIService event - stay silent.
+func (m *Manager) logCatalogTransitions(catalog *APIResourceCatalog, stats CatalogStats) {
+	log := m.Log.WithName("catalog")
+
+	if catalog.Ready() {
+		m.catalogReadyOnce.Do(func() {
+			log.Info("API resource catalog ready",
+				"allowedResources", stats.AllowedResources,
+				"excludedResources", stats.ExcludedResources,
+				"trustedGroupVersions", stats.TrustedGroupVersions,
+				"degradedGroupVersions", stats.DegradedGroupVersions,
+				"generation", stats.Generation)
+		})
+	}
+
+	m.resourceCatalogMu.Lock()
+	defer m.resourceCatalogMu.Unlock()
+
+	current := make(map[schema.GroupVersion]struct{})
+	var appeared []schema.GroupVersion
+	for _, gv := range catalog.DegradedGroupVersions() {
+		current[gv] = struct{}{}
+		if _, known := m.catalogDegradedLogged[gv]; !known {
+			appeared = append(appeared, gv)
+		}
+	}
+	var cleared []schema.GroupVersion
+	for gv := range m.catalogDegradedLogged {
+		if _, still := current[gv]; !still {
+			cleared = append(cleared, gv)
+		}
+	}
+	m.catalogDegradedLogged = current
+
+	if len(appeared) > 0 {
+		log.Info("API discovery degraded - the cluster cannot serve these group/versions; "+
+			"watch rules selecting new or unknown resources in them may not be planned until discovery recovers "+
+			"(commonly a down aggregated API server or unhealthy APIService)",
+			"groupVersions", formatGroupVersions(appeared))
+	}
+	if len(cleared) > 0 {
+		log.Info("API discovery recovered for previously degraded group/versions",
+			"groupVersions", formatGroupVersions(cleared))
+	}
+}
+
+// formatGroupVersions renders group/versions as sorted "group/version" strings
+// for stable, readable log output.
+func formatGroupVersions(gvs []schema.GroupVersion) []string {
+	out := make([]string, 0, len(gvs))
+	for _, gv := range gvs {
+		out = append(out, gv.String())
+	}
+	sort.Strings(out)
+	return out
 }
 
 // Catalog refresh outcome label values.

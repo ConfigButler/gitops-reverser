@@ -121,6 +121,17 @@ type BranchWorker struct {
 	pushCycleRootBranch plumbing.ReferenceName
 	// Cleared after a successful push. Protected by repoMu.
 	pushCycleRootHash plumbing.Hash
+
+	// firsts surfaces the first successful commit and push at default verbosity.
+	firsts branchWorkerLogFirsts
+}
+
+// branchWorkerLogFirsts logs the first successful commit and push of a worker's
+// lifetime at default verbosity, so an operator can confirm the git write path
+// works end to end, without logging every subsequent commit/push cycle.
+type branchWorkerLogFirsts struct {
+	commit sync.Once
+	push   sync.Once
 }
 
 // NewBranchWorker creates a worker for a (provider, branch) combination.
@@ -135,7 +146,7 @@ func NewBranchWorker(
 	branchBufferMaxBytes int64,
 ) *BranchWorker {
 	if writer == nil {
-		writer = newContentWriter()
+		writer = newContentWriter(itypes.SensitiveResourcePolicy{})
 	}
 	if branchBufferMaxBytes <= 0 {
 		branchBufferMaxBytes = DefaultBranchBufferMaxBytes
@@ -588,7 +599,7 @@ func (l *branchWorkerEventLoop) handleQueueItem(item WorkItem) {
 		}
 
 		if l.openWindow == nil {
-			l.openWindow = newOpenWindow(event, l.w.contentWriter.sensitiveResources)
+			l.openWindow = newOpenWindow(event, l.w.contentWriter)
 		}
 		l.openWindow.add(event)
 		l.windowBytes += l.w.estimateEventSize(event)
@@ -868,6 +879,11 @@ func (w *BranchWorker) commitPendingWrites(pendingWrites []PendingWrite, hasPend
 	}
 
 	w.recordPendingWritesMetrics(pendingWrites, commitsCreated)
+	w.firsts.commit.Do(func() {
+		w.Log.Info("First commit written to local repository",
+			"branch", w.Branch,
+			"commits", commitsCreated)
+	})
 	return nil
 }
 
@@ -913,6 +929,12 @@ func (w *BranchWorker) pushPendingCommits(pendingWrites []PendingWrite) error {
 		if err == nil {
 			w.pushCycleRootBranch = ""
 			w.pushCycleRootHash = plumbing.ZeroHash
+			w.firsts.push.Do(func() {
+				w.Log.Info("First push to remote completed",
+					"branch", w.Branch,
+					"url", provider.Spec.URL,
+					"commits", len(pendingWrites))
+			})
 			return nil
 		}
 		lastErr = err

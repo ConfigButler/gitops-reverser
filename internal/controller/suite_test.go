@@ -37,6 +37,7 @@ import (
 	configbutleraiv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
+	"github.com/ConfigButler/gitops-reverser/internal/types"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -93,7 +94,9 @@ var _ = BeforeSuite(func() {
 	testRuleStore = rulestore.NewStore()
 
 	// Initialize WorkerManager for new architecture
-	workerManager := git.NewWorkerManager(mgr.GetClient(), logf.Log.WithName("worker-manager"), 0)
+	workerManager := git.NewWorkerManager(
+		mgr.GetClient(), logf.Log.WithName("worker-manager"), 0, types.SensitiveResourcePolicy{},
+	)
 	err = mgr.Add(workerManager)
 	Expect(err).NotTo(HaveOccurred())
 

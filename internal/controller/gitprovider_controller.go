@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -32,8 +33,10 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/go-git/go-git/v5/plumbing/transport/http"
@@ -49,6 +52,17 @@ type GitProviderReconciler struct {
 	client.Client
 
 	Scheme *runtime.Scheme
+	firsts gitProviderLogFirsts
+}
+
+// gitProviderLogFirsts keeps startup progress visible without turning every
+// routine connectivity recheck into default-level log noise. Each sync.Once
+// fires a single Info line on the first occurrence across all GitProviders, so
+// an operator sees how far setup progressed even when a later step gets stuck.
+type gitProviderLogFirsts struct {
+	anonymousAccess   sync.Once
+	credentialsLoaded sync.Once
+	validationSuccess sync.Once
 }
 
 // +kubebuilder:rbac:groups=configbutler.ai,resources=gitproviders,verbs=get;list;watch;create;update;patch;delete
@@ -60,7 +74,7 @@ type GitProviderReconciler struct {
 // move the current state of the cluster closer to the desired state.
 func (r *GitProviderReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx).WithName("GitProviderReconciler")
-	log.Info("Starting reconciliation", "namespacedName", req.NamespacedName)
+	log.V(1).Info("Starting reconciliation", "namespacedName", req.NamespacedName)
 
 	// Fetch the GitProvider instance
 	var gitProvider configbutleraiv1alpha1.GitProvider
@@ -82,7 +96,7 @@ func (r *GitProviderReconciler) reconcileGitProvider(
 	log logr.Logger,
 	gitProvider *configbutleraiv1alpha1.GitProvider,
 ) (ctrl.Result, error) {
-	log.Info("Starting GitProvider validation",
+	log.V(1).Info("Starting GitProvider validation",
 		"name", gitProvider.Name,
 		"namespace", gitProvider.Namespace,
 		"url", gitProvider.Spec.URL,
@@ -137,11 +151,18 @@ func (r *GitProviderReconciler) fetchAndValidateSecret(
 	gitProvider *configbutleraiv1alpha1.GitProvider,
 ) (*corev1.Secret, bool) {
 	if gitProvider.Spec.SecretRef == nil {
-		log.Info("No secret specified, using anonymous access")
+		log.V(1).Info("No secret specified, using anonymous access")
+		r.firsts.anonymousAccess.Do(func() {
+			log.Info("GitProvider configured for anonymous access (no secretRef) - "+
+				"only public repositories will be reachable; set spec.secretRef to use a private repository",
+				"name", gitProvider.Name,
+				"namespace", gitProvider.Namespace,
+				"url", gitProvider.Spec.URL)
+		})
 		return nil, false
 	}
 
-	log.Info("Fetching secret for authentication",
+	log.V(1).Info("Fetching secret for authentication",
 		"secretName", gitProvider.Spec.SecretRef.Name,
 		"namespace", gitProvider.Namespace)
 
@@ -164,7 +185,7 @@ func (r *GitProviderReconciler) fetchAndValidateSecret(
 		return nil, true
 	}
 
-	log.Info("Successfully fetched secret", "secretName", gitProvider.Spec.SecretRef.Name)
+	log.V(1).Info("Successfully fetched secret", "secretName", gitProvider.Spec.SecretRef.Name)
 	return secret, false
 }
 
@@ -176,7 +197,7 @@ func (r *GitProviderReconciler) getAuthFromSecret(
 	gitProvider *configbutleraiv1alpha1.GitProvider,
 	secret *corev1.Secret,
 ) (transport.AuthMethod, ctrl.Result, bool) {
-	log.Info("Extracting credentials from secret")
+	log.V(1).Info("Extracting credentials from secret")
 	auth, err := r.extractCredentials(secret)
 	if err != nil {
 		log.Error(err, "Failed to extract credentials from secret")
@@ -187,7 +208,12 @@ func (r *GitProviderReconciler) getAuthFromSecret(
 		return nil, result, true
 	}
 
-	log.Info("Successfully extracted credentials", "hasAuth", auth != nil)
+	log.V(1).Info("Successfully extracted credentials", "hasAuth", auth != nil)
+	r.firsts.credentialsLoaded.Do(func() {
+		log.Info("GitProvider credentials loaded from secret",
+			"secretName", gitProvider.Spec.SecretRef.Name,
+			"namespace", gitProvider.Namespace)
+	})
 	return auth, ctrl.Result{}, false
 }
 
@@ -198,7 +224,7 @@ func (r *GitProviderReconciler) validateAndUpdateStatus(
 	gitProvider *configbutleraiv1alpha1.GitProvider,
 	auth transport.AuthMethod,
 ) (ctrl.Result, error) {
-	log.Info("Validating repository connectivity",
+	log.V(1).Info("Validating repository connectivity",
 		"url", gitProvider.Spec.URL)
 
 	// Check repository connectivity and get branch count
@@ -211,19 +237,25 @@ func (r *GitProviderReconciler) validateAndUpdateStatus(
 		return r.updateStatusAndRequeue(ctx, gitProvider, RequeueShortInterval)
 	}
 
-	log.Info("Repository connectivity validated successfully", "branchCount", branchCount)
+	log.V(1).Info("Repository connectivity validated successfully", "branchCount", branchCount)
 	message := fmt.Sprintf("Repository connectivity validated for %s", gitProvider.Spec.URL)
 	r.setCondition(gitProvider, metav1.ConditionTrue, "Ready", message)
 
-	log.Info("GitProvider validation successful", "name", gitProvider.Name)
-	log.Info("Updating status with success condition")
+	log.V(1).Info("GitProvider validation successful", "name", gitProvider.Name)
+	log.V(1).Info("Updating status with success condition")
 
 	if err := r.updateStatusWithRetry(ctx, gitProvider); err != nil {
 		log.Error(err, "Failed to update GitProvider status")
 		return ctrl.Result{}, err
 	}
 
-	log.Info("Status update completed successfully, scheduling requeue", "requeueAfter", RequeueLongInterval)
+	r.firsts.validationSuccess.Do(func() {
+		log.Info("First GitProvider validation completed successfully",
+			"name", gitProvider.Name,
+			"namespace", gitProvider.Namespace,
+			"branchCount", branchCount)
+	})
+	log.V(1).Info("Status update completed successfully, scheduling requeue", "requeueAfter", RequeueLongInterval)
 	return ctrl.Result{RequeueAfter: RequeueLongInterval}, nil
 }
 
@@ -284,7 +316,7 @@ func (r *GitProviderReconciler) checkRemoteConnectivity(
 ) (int, error) {
 	log := logf.FromContext(ctx).WithName("checkRemoteConnectivity")
 
-	log.Info("Checking remote repository connectivity", "repoURL", repoURL)
+	log.V(1).Info("Checking remote repository connectivity", "repoURL", repoURL)
 
 	// Use new CheckRepo abstraction from git package
 	repoInfo, err := gitpkg.CheckRepo(ctx, repoURL, auth)
@@ -293,7 +325,7 @@ func (r *GitProviderReconciler) checkRemoteConnectivity(
 		return 0, fmt.Errorf("failed to connect to repository: %w", err)
 	}
 
-	log.Info("Remote connectivity check successful", "repoURL", repoURL, "branchCount", repoInfo.RemoteBranchCount)
+	log.V(1).Info("Remote connectivity check successful", "repoURL", repoURL, "branchCount", repoInfo.RemoteBranchCount)
 	return repoInfo.RemoteBranchCount, nil
 }
 
@@ -354,14 +386,14 @@ func (r *GitProviderReconciler) updateStatusAndRequeue(
 
 // updateStatusWithRetry updates the status with retry logic to handle race conditions.
 //
-//nolint:dupl // Similar retry logic pattern used across controllers
+
 func (r *GitProviderReconciler) updateStatusWithRetry(
 	ctx context.Context,
 	gitProvider *configbutleraiv1alpha1.GitProvider,
 ) error {
 	log := logf.FromContext(ctx).WithName("updateStatusWithRetry")
 
-	log.Info("Starting status update with retry",
+	log.V(1).Info("Starting status update with retry",
 		"name", gitProvider.Name,
 		"namespace", gitProvider.Namespace,
 		"conditionsCount", len(gitProvider.Status.Conditions))
@@ -372,7 +404,7 @@ func (r *GitProviderReconciler) updateStatusWithRetry(
 		Jitter:   RetryBackoffJitter,
 		Steps:    RetryMaxSteps,
 	}, func() (bool, error) {
-		log.Info("Attempting status update")
+		log.V(1).Info("Attempting status update")
 
 		// Get the latest version of the resource
 		latest := &configbutleraiv1alpha1.GitProvider{}
@@ -386,27 +418,27 @@ func (r *GitProviderReconciler) updateStatusWithRetry(
 			return false, err
 		}
 
-		log.Info("Got latest resource version",
+		log.V(1).Info("Got latest resource version",
 			"generation", latest.Generation,
 			"resourceVersion", latest.ResourceVersion)
 
 		// Copy our status to the latest version
 		latest.Status = gitProvider.Status
 
-		log.Info("Attempting to update status",
+		log.V(1).Info("Attempting to update status",
 			"conditionsCount", len(latest.Status.Conditions))
 
 		// Attempt to update
 		if err := r.Status().Update(ctx, latest); err != nil {
 			if apierrors.IsConflict(err) {
-				log.Info("Resource version conflict, retrying")
+				log.V(1).Info("Resource version conflict, retrying")
 				return false, nil
 			}
 			log.Error(err, "Failed to update status")
 			return false, err
 		}
 
-		log.Info("Status update successful")
+		log.V(1).Info("Status update successful")
 		return true, nil
 	})
 }
@@ -414,7 +446,10 @@ func (r *GitProviderReconciler) updateStatusWithRetry(
 // SetupWithManager sets up the controller with the Manager.
 func (r *GitProviderReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&configbutleraiv1alpha1.GitProvider{}).
+		For(
+			&configbutleraiv1alpha1.GitProvider{},
+			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
+		).
 		Named("gitprovider").
 		Complete(r)
 }

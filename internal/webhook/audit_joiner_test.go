@@ -230,17 +230,17 @@ func TestRedisAuditEventJoiner_WaitForBodyHonorsInjectedClock(t *testing.T) {
 		"a 100ms body wait must not run until the 1s context deadline")
 }
 
-// TestRedisAuditEventJoiner_TimeoutLogsEveryOccurrence verifies PR #149 review
-// issue 1: a body-wait timeout must log on every occurrence, not just once per
-// process. A recurring timeout means the additional-body proxy is missing or
-// lagging, and operators need that signal to persist.
-func TestRedisAuditEventJoiner_TimeoutLogsEveryOccurrence(t *testing.T) {
+// TestRedisAuditEventJoiner_TimeoutLogsEveryOccurrenceAtInfo verifies a body
+// wait timeout logs at default verbosity on every occurrence: a recurring
+// timeout means the additional-body proxy is missing or lagging, and operators
+// need that signal to persist rather than appear once at startup.
+func TestRedisAuditEventJoiner_TimeoutLogsEveryOccurrenceAtInfo(t *testing.T) {
 	mr := miniredis.RunT(t)
 	joiner := newTestJoinerWithOfficialBodyWait(t, mr, 30*time.Millisecond)
 
 	var timeoutLogs atomic.Int64
 	joiner.logger = funcr.New(func(_, args string) {
-		if strings.Contains(args, "timed out waiting for additional body") {
+		if strings.Contains(args, "timed out waiting for") {
 			timeoutLogs.Add(1)
 		}
 	}, funcr.Options{})
@@ -254,7 +254,7 @@ func TestRedisAuditEventJoiner_TimeoutLogsEveryOccurrence(t *testing.T) {
 	}
 
 	assert.Equal(t, int64(2), timeoutLogs.Load(),
-		"every body-wait timeout must log, not just the first")
+		"every body-wait timeout must log at default verbosity so a recurring failure stays visible")
 }
 
 func TestRedisAuditEventJoiner_WaitOfficialEmitsNamedOfficialWithoutBody(t *testing.T) {

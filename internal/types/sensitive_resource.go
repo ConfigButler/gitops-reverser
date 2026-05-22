@@ -51,6 +51,11 @@ func ParseSensitiveResourcePolicy(additional string) (SensitiveResourcePolicy, e
 		if err != nil {
 			return SensitiveResourcePolicy{}, err
 		}
+		if key.group == "" && key.resource == "secrets" {
+			// Core Secrets are always built in; never store them as an
+			// addition or Entries would list "secrets" twice.
+			continue
+		}
 		policy.additional[key] = struct{}{}
 	}
 	return policy, nil

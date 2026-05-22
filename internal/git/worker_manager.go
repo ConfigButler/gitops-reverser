@@ -57,20 +57,16 @@ func NewWorkerManager(
 	client client.Client,
 	log logr.Logger,
 	branchBufferMaxBytes int64,
-	sensitiveResources ...types.SensitiveResourcePolicy,
+	sensitiveResources types.SensitiveResourcePolicy,
 ) *WorkerManager {
 	if branchBufferMaxBytes <= 0 {
 		branchBufferMaxBytes = DefaultBranchBufferMaxBytes
-	}
-	var policy types.SensitiveResourcePolicy
-	if len(sensitiveResources) > 0 {
-		policy = sensitiveResources[0]
 	}
 	return &WorkerManager{
 		Client:               client,
 		Log:                  log,
 		branchBufferMaxBytes: branchBufferMaxBytes,
-		sensitiveResources:   policy,
+		sensitiveResources:   sensitiveResources,
 		workers:              make(map[BranchKey]*BranchWorker),
 	}
 }

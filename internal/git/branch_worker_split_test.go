@@ -688,7 +688,8 @@ func TestBranchWorker_Replay_DropsUnitsThatBecomeNoOpAgainstNewRemoteTree(t *tes
 	require.NoError(t, worker.commitPendingWrites([]PendingWrite{*pendingWrite}, false))
 
 	localRepoPath := worker.repoPathForRemote(remoteURL)
-	gitPath := filepath.ToSlash(filepath.Join(event.Path, generateFilePath(event.Identifier)))
+	filePath := generateFilePath(event.Identifier, itypes.SensitiveResourcePolicy{})
+	gitPath := filepath.ToSlash(filepath.Join(event.Path, filePath))
 	desiredContent, err := os.ReadFile(filepath.Join(localRepoPath, gitPath))
 	require.NoError(t, err)
 

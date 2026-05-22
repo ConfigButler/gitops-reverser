@@ -88,6 +88,14 @@ type Manager struct {
 	discoveryClient func() (apiResourceDiscovery, error)
 	// catalogRefreshCh coalesces API-surface trigger watch events into manager reconciliation.
 	catalogRefreshCh chan struct{}
+	// catalogReadyOnce guards the one-time "catalog ready" log line, matching the
+	// firstMessage/firstGroupReady sync.Once pattern used by the audit consumer.
+	catalogReadyOnce sync.Once
+	// catalogDegradedLogged is the degraded group/version set last reflected in
+	// the log; logCatalogTransitions diffs against it to log appear/clear
+	// transitions (degradation can recur, so this is not a one-shot). Guarded by
+	// resourceCatalogMu.
+	catalogDegradedLogged map[schema.GroupVersion]struct{}
 
 	// snapshotEmitCount tracks how many times emitSnapshotForRuleChange has
 	// actually emitted snapshots for at least one affected GitTarget. Useful for

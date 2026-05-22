@@ -149,6 +149,26 @@ func (c *APIResourceCatalog) Stats() CatalogStats {
 	return stats
 }
 
+// DegradedGroupVersions returns the group/versions discovery currently reports
+// as failed, sorted for stable logging.
+func (c *APIResourceCatalog) DegradedGroupVersions() []schema.GroupVersion {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	out := make([]schema.GroupVersion, 0)
+	for gv, state := range c.groupVersion {
+		if state.degraded {
+			out = append(out, gv)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Group != out[j].Group {
+			return out[i].Group < out[j].Group
+		}
+		return out[i].Version < out[j].Version
+	})
+	return out
+}
+
 // Refresh updates clean group/versions and preserves entries for group/versions
 // that discovery reports as failed.
 func (c *APIResourceCatalog) Refresh(disco apiResourceDiscovery) (bool, error) {

@@ -33,6 +33,7 @@ import (
 
 	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
+	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
 func eventRouterScheme(t *testing.T) *runtime.Scheme {
@@ -46,7 +47,7 @@ func eventRouterScheme(t *testing.T) *runtime.Scheme {
 func TestFinalizeGitTargetWindow_GitTargetNotFound(t *testing.T) {
 	scheme := eventRouterScheme(t)
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
-	workerManager := git.NewWorkerManager(client, logr.Discard(), 0)
+	workerManager := git.NewWorkerManager(client, logr.Discard(), 0, types.SensitiveResourcePolicy{})
 
 	router := NewEventRouter(workerManager, nil, nil, client, logr.Discard())
 
@@ -65,7 +66,7 @@ func TestFinalizeGitTargetWindow_NoWorkerYieldsNoOpenWindow(t *testing.T) {
 		},
 	}
 	client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(gitTarget).Build()
-	workerManager := git.NewWorkerManager(client, logr.Discard(), 0)
+	workerManager := git.NewWorkerManager(client, logr.Discard(), 0, types.SensitiveResourcePolicy{})
 
 	router := NewEventRouter(workerManager, nil, nil, client, logr.Discard())
 
@@ -89,7 +90,7 @@ func TestFinalizeGitTargetWindow_RegisteredWorkerProcessesSignal(t *testing.T) {
 		},
 	}
 	client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(provider, gitTarget).Build()
-	workerManager := git.NewWorkerManager(client, logr.Discard(), 0)
+	workerManager := git.NewWorkerManager(client, logr.Discard(), 0, types.SensitiveResourcePolicy{})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
