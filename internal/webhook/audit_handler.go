@@ -513,12 +513,16 @@ func (h *AuditHandler) extractGVR(event *audit.Event) string {
 }
 
 // classifyAuditIngress is the intrinsic gate in front of the join pipeline. It
-// decides accept/reject from the event alone — stage, verb, and body shape — and
-// never consults WatchRules: rule relevance is a consumer-side concern applied
-// later, when an event is turned into a Git write.
+// decides accept/reject from the event alone — stage, verb, response status, and
+// body shape — and never consults WatchRules: rule relevance is a consumer-side
+// concern applied later, when an event is turned into a Git write.
 //
 //   - A non-ResponseComplete stage, or a read-only/unknown verb (get/list/watch),
 //     is never a Git-relevant mutation, so it is rejected for both sources.
+//   - A request the API server rejected (responseStatus.code >= 300, e.g. a 409
+//     Conflict from an optimistic-concurrency failure) changed nothing in etcd.
+//     Its responseObject is a metav1.Status error body, not the resource, so it
+//     must never reach Git; it is rejected for both sources.
 //   - An additional-source event is only worth parking when it actually carries a
 //     request/response body; a shallow (malformed) one has nothing to contribute.
 //
@@ -538,10 +542,24 @@ func classifyAuditIngress(
 	if _, ok := auditutil.VerbToOperation(event.Verb); !ok {
 		return auditIngressDecision{Reason: "read_only_or_unknown_verb"}
 	}
+	if isFailedAuditRequest(event) {
+		return auditIngressDecision{Reason: "failed_request"}
+	}
 	if source == AuditSourceAdditional && quality == AuditEventQualityMalformed {
 		return auditIngressDecision{Reason: "malformed_additional"}
 	}
 	return auditIngressDecision{Process: true}
+}
+
+// isFailedAuditRequest reports whether the API server rejected the request the
+// audit event describes. A non-success responseStatus.code (>= 300) means the
+// mutation never reached etcd, and the event's responseObject is a metav1.Status
+// error body rather than the resource. The status code is left at zero by some
+// additional-source proxies; that is treated as success here, because the
+// matching official event — which always carries responseStatus — is the one
+// that drives the canonical stream.
+func isFailedAuditRequest(event *auditv1.Event) bool {
+	return event != nil && event.ResponseStatus != nil && event.ResponseStatus.Code >= 300
 }
 
 // checkEvent validates an audit event before processing.

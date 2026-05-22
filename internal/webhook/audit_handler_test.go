@@ -941,6 +941,123 @@ func TestAuditHandler_NonResponseCompleteStageBypassesJoiner(t *testing.T) {
 	require.Len(t, joiner.commits, 1, "joiner should only have committed for ResponseComplete")
 }
 
+// TestAuditHandler_ConflictResponseNeverReachesGit reproduces a real
+// production occurrence: a HelmRelease update that the API server rejected with
+// a 409 Conflict ("the object has been modified") still produces a complete
+// ResponseComplete audit event — but its responseObject is a metav1.Status
+// error body, not the HelmRelease. Before the responseStatus gate, that Status
+// was extracted and written to Git as the resource's desired state, so the
+// committed file briefly held:
+//
+//	apiVersion: v1
+//	kind: Status
+//	reason: Conflict
+//
+// instead of the HelmRelease. A failed request changed nothing in etcd, so the
+// event must be dropped at ingress and never reach the joiner or the queue.
+func TestAuditHandler_ConflictResponseNeverReachesGit(t *testing.T) {
+	queue := &recordingAuditEventQueue{}
+	joiner := &fakeAuditJoiner{decision: AuditJoinDecision{Action: AuditJoinActionEmit}}
+	handler, err := NewAuditHandler(AuditHandlerConfig{Queue: queue, Joiner: joiner})
+	require.NoError(t, err)
+
+	// An update to helmreleases.helm.toolkit.fluxcd.io that lost an
+	// optimistic-concurrency race: responseStatus.code is 409 and the
+	// responseObject is the Status error body the API server returned.
+	body := `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[` +
+		`{"kind":"Event","auditID":"helmrelease-conflict-1","verb":"update","stage":"ResponseComplete",` +
+		`"user":{"username":"flux-controller"},"objectRef":{"resource":"helmreleases",` +
+		`"apiGroup":"helm.toolkit.fluxcd.io","apiVersion":"v2","namespace":"cozy-system","name":"info-rd"},` +
+		`"responseStatus":{"metadata":{},"status":"Failure","reason":"Conflict","code":409,` +
+		`"message":"Operation cannot be fulfilled on helmreleases.helm.toolkit.fluxcd.io \"info-rd\": ` +
+		`the object has been modified; please apply your changes to the latest version and try again"},` +
+		`"responseObject":{"apiVersion":"v1","kind":"Status","metadata":{"name":"info-rd",` +
+		`"namespace":"cozy-system"},"status":"Failure","reason":"Conflict",` +
+		`"message":"Operation cannot be fulfilled on helmreleases.helm.toolkit.fluxcd.io \"info-rd\": ` +
+		`the object has been modified; please apply your changes to the latest version and try again"}}` +
+		`]}`
+	req := httptest.NewRequest(http.MethodPost, "/audit-webhook", bytes.NewReader([]byte(body)))
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Zero(t, joiner.calls, "a 409 Conflict event must be dropped before the join pipeline")
+	assert.Empty(t, queue.events, "a failed request must never enter the canonical stream")
+}
+
+// TestAuditHandler_SuccessfulUpdateStillReachesGit is the companion to the
+// conflict test: an identical update that the API server accepted (200, with
+// the HelmRelease as responseObject) must still flow through to the queue. The
+// responseStatus gate keys on the failure code alone — it must not reject
+// healthy mutations.
+func TestAuditHandler_SuccessfulUpdateStillReachesGit(t *testing.T) {
+	queue := &recordingAuditEventQueue{}
+	joiner := &fakeAuditJoiner{decision: AuditJoinDecision{Action: AuditJoinActionEmit}}
+	handler, err := NewAuditHandler(AuditHandlerConfig{Queue: queue, Joiner: joiner})
+	require.NoError(t, err)
+
+	body := `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[` +
+		`{"kind":"Event","auditID":"helmrelease-ok-1","verb":"update","stage":"ResponseComplete",` +
+		`"user":{"username":"flux-controller"},"objectRef":{"resource":"helmreleases",` +
+		`"apiGroup":"helm.toolkit.fluxcd.io","apiVersion":"v2","namespace":"cozy-system","name":"info-rd"},` +
+		`"responseStatus":{"metadata":{},"code":200},` +
+		`"responseObject":{"apiVersion":"helm.toolkit.fluxcd.io/v2","kind":"HelmRelease",` +
+		`"metadata":{"name":"info-rd","namespace":"cozy-system"}}}` +
+		`]}`
+	req := httptest.NewRequest(http.MethodPost, "/audit-webhook", bytes.NewReader([]byte(body)))
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	require.Equal(t, 1, joiner.calls, "a successful update must still reach the joiner")
+	assert.Equal(t, []string{"helmrelease-ok-1"}, queue.auditIDs())
+}
+
+// TestClassifyAuditIngress_RejectsFailedRequests pins the intrinsic gate's
+// verdict on responseStatus.code: any non-success code (>= 300) is rejected as
+// a failed request, while a missing/zero code and 2xx codes pass.
+func TestClassifyAuditIngress_RejectsFailedRequests(t *testing.T) {
+	newEvent := func(code int32, withStatus bool) *auditv1.Event {
+		ev := &auditv1.Event{
+			Stage:     auditv1.StageResponseComplete,
+			Verb:      "update",
+			ObjectRef: &auditv1.ObjectReference{Resource: "helmreleases", Name: "info-rd"},
+		}
+		if withStatus {
+			ev.ResponseStatus = &metav1.Status{Code: code}
+		}
+		return ev
+	}
+
+	tests := []struct {
+		name        string
+		event       *auditv1.Event
+		wantProcess bool
+		wantReason  string
+	}{
+		{name: "409 Conflict rejected", event: newEvent(409, true), wantReason: "failed_request"},
+		{name: "403 Forbidden rejected", event: newEvent(403, true), wantReason: "failed_request"},
+		{name: "422 Unprocessable rejected", event: newEvent(422, true), wantReason: "failed_request"},
+		{name: "500 ServerError rejected", event: newEvent(500, true), wantReason: "failed_request"},
+		{name: "200 OK accepted", event: newEvent(200, true), wantProcess: true},
+		{name: "201 Created accepted", event: newEvent(201, true), wantProcess: true},
+		{name: "missing responseStatus accepted", event: newEvent(0, false), wantProcess: true},
+		{name: "zero code accepted", event: newEvent(0, true), wantProcess: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			decision := classifyAuditIngress(AuditSourceOfficial, tc.event, AuditEventQualityComplete)
+			assert.Equal(t, tc.wantProcess, decision.Process)
+			if !tc.wantProcess {
+				assert.Equal(t, tc.wantReason, decision.Reason)
+			}
+		})
+	}
+}
+
 func TestAuditSourceFromPath(t *testing.T) {
 	tests := []struct {
 		name        string
