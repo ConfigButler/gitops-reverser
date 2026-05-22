@@ -131,6 +131,30 @@ func TestBuildContentForWrite_SecretRequiresEncryptor(t *testing.T) {
 	assert.Contains(t, err.Error(), "secret encryption is required but no encryptor is configured")
 }
 
+func TestBuildContentForWrite_AdditionalSensitiveResourceRequiresEncryptor(t *testing.T) {
+	policy, err := types.ParseSensitiveResourcePolicy("core.cozystack.io/tenantsecrets")
+	require.NoError(t, err)
+	writer := newContentWriter(policy)
+
+	event := tenantSecretEvent("v1beta1")
+	_, err = writer.buildContentForWrite(context.Background(), event)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "secret encryption is required but no encryptor is configured")
+}
+
+func TestBuildContentForWrite_AdditionalSensitiveResourceEncrypts(t *testing.T) {
+	policy, err := types.ParseSensitiveResourcePolicy("core.cozystack.io/tenantsecrets")
+	require.NoError(t, err)
+	writer := newContentWriter(policy)
+	enc := &stubEncryptor{result: []byte("encrypted tenant secret\n")}
+	writer.setEncryptor(enc, "test-scope")
+
+	got, err := writer.buildContentForWrite(context.Background(), tenantSecretEvent("v1alpha1"))
+	require.NoError(t, err)
+	assert.Equal(t, []byte("encrypted tenant secret\n"), got)
+	assert.Equal(t, 1, enc.callCount)
+}
+
 func TestBuildContentForWrite_SecretEncryptionCacheMarkerReuse(t *testing.T) {
 	writer := newContentWriter()
 
@@ -289,4 +313,29 @@ func TestBuildContentForWrite_SecretEncryptionScopeChangeForcesReencrypt(t *test
 	_, err = writer.buildContentForWrite(context.Background(), event)
 	require.NoError(t, err)
 	assert.Equal(t, 2, enc.callCount, "scope change should force re-encryption")
+}
+
+func tenantSecretEvent(version string) Event {
+	return Event{
+		Identifier: types.ResourceIdentifier{
+			Group:     "core.cozystack.io",
+			Version:   version,
+			Resource:  "tenantsecrets",
+			Namespace: "tenant-a",
+			Name:      "registry",
+		},
+		Object: &unstructured.Unstructured{
+			Object: map[string]interface{}{
+				"apiVersion": "core.cozystack.io/" + version,
+				"kind":       "TenantSecret",
+				"metadata": map[string]interface{}{
+					"name":      "registry",
+					"namespace": "tenant-a",
+				},
+				"data": map[string]interface{}{
+					"password": "cGxhaW4=",
+				},
+			},
+		},
+	}
 }

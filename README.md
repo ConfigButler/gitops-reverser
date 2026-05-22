@@ -52,7 +52,8 @@ simpler for other teams.
 3. Events are queued safely through Valkey/Redis.
 4. The operator writes stable YAML to Git with useful commit metadata.
 
-`Secret` resources can be encrypted before commit with SOPS + age, and Git commits can be SSH-signed
+`Secret` resources can be encrypted before commit with SOPS + age, Secret-shaped custom resource
+types can opt into the same path at controller startup, and Git commits can be SSH-signed
 through `GitProvider.spec.commit.signing`.
 
 Capturing objects served by an **aggregated API server** needs extra setup — see the

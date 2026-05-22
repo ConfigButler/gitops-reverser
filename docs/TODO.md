@@ -36,6 +36,11 @@ This file is meant to track the smaller current backlog, not historical notes.
   Redacting or minimizing `payload_json` before it lands in Valkey would shrink the blast radius,
   especially for Secret-bearing audit events.
 
+- [ ] Decide how SOPS rules should cover sensitive custom resources that are not Secret-shaped.
+  The current bootstrapped `.sops.yaml` encrypts `data` and `stringData`, which fits Kubernetes
+  Secrets and CozyStack `tenantsecrets`; resources with sensitive fields under shapes such as
+  `spec.credentials` need an explicit field policy or full-file encryption decision.
+
 - [ ] Revisit output layout.
   Think about better control over target folders and whether some use cases should support multiple
   resources per file.

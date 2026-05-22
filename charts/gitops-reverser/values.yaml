@@ -57,6 +57,9 @@ controllerManager:
     bindAddress: :8081
   # Enable HTTP/2 (disabled by default for security)
   enableHTTP2: false
+  # Extra Secret-shaped resources that must use the encrypted Git write path.
+  # Entries are resource or group/resource, for example core.cozystack.io/tenantsecrets.
+  additionalSensitiveResources: []
 
 # HTTPS servers
 servers:

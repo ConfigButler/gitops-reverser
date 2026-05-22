@@ -161,6 +161,7 @@ nodeSelector:
 | `servers.audit.timeouts.write` | Audit-server write timeout | `30s` |
 | `servers.audit.timeouts.idle` | Audit-server idle timeout | `60s` |
 | `servers.audit.tls.secretNameOverride` | Override Secret name for audit TLS cert/key | `<release>-audit-server-cert` |
+| `controllerManager.additionalSensitiveResources` | Extra Secret-shaped resource types encrypted as `resource` or `group/resource` | `[]` |
 | `auditService.type` | Service type for the dedicated audit Service | `NodePort` |
 | `auditService.nodePort` | Fixed NodePort for the audit Service when `auditService.type=NodePort` | `30444` |
 | `auditService.clusterIP` | Optional fixed ClusterIP for the dedicated audit Service | `""` |

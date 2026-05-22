@@ -588,7 +588,7 @@ func (l *branchWorkerEventLoop) handleQueueItem(item WorkItem) {
 		}
 
 		if l.openWindow == nil {
-			l.openWindow = newOpenWindow(event)
+			l.openWindow = newOpenWindow(event, l.w.contentWriter.sensitiveResources)
 		}
 		l.openWindow.add(event)
 		l.windowBytes += l.w.estimateEventSize(event)

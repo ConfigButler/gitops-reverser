@@ -55,6 +55,7 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/reconcile"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
+	"github.com/ConfigButler/gitops-reverser/internal/types"
 	"github.com/ConfigButler/gitops-reverser/internal/watch"
 	webhookhandler "github.com/ConfigButler/gitops-reverser/internal/webhook"
 	// +kubebuilder:scaffold:imports
@@ -104,6 +105,7 @@ func main() {
 		"metricsInsecure", cfg.metricsInsecure,
 		"auditAddress", buildAuditServerAddress(cfg.auditListenAddress, cfg.auditPort),
 		"auditInsecure", cfg.auditInsecure)
+	setupLog.Info("Sensitive resource policy", "resources", cfg.sensitiveResources.Entries())
 
 	// Initialize metrics
 	setupCtx := ctrl.SetupSignalHandler()
@@ -131,6 +133,7 @@ func main() {
 		mgr.GetClient(),
 		ctrl.Log.WithName("worker-manager"),
 		cfg.branchBufferMaxBytes,
+		cfg.sensitiveResources,
 	)
 	fatalIfErr(mgr.Add(workerManager), "unable to add worker manager to manager")
 
@@ -330,6 +333,7 @@ type appConfig struct {
 	auditEventDecisionTTL    time.Duration
 	auditEventBodyWait       time.Duration
 	branchBufferMaxBytes     int64
+	sensitiveResources       types.SensitiveResourcePolicy
 	zapOpts                  zap.Options
 }
 
@@ -413,6 +417,13 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 	fs.StringVar(&branchBufferMaxBytesFlag, "branch-buffer-max-bytes", branchBufferMaxBytesStr,
 		"Maximum in-memory event buffer per branch worker, expressed as a Kubernetes resource quantity "+
 			"(e.g. 8Mi, 1Gi). Bounds pod memory under bursty workloads; not user-facing.")
+	var additionalSensitiveResources string
+	fs.StringVar(
+		&additionalSensitiveResources,
+		"additional-sensitive-resources",
+		"",
+		"Comma-separated additional sensitive resources in resource or group/resource form.",
+	)
 	cfg.zapOpts = zap.Options{
 		// Production mode defaults to JSON encoding, which is easier for log processors to parse.
 		Development: false,
@@ -434,6 +445,11 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 	cfg.branchBufferMaxBytes, _ = bufferQuantity.AsInt64()
 	if cfg.branchBufferMaxBytes <= 0 {
 		return appConfig{}, fmt.Errorf("--branch-buffer-max-bytes must be > 0, got %s", branchBufferMaxBytesFlag)
+	}
+
+	cfg.sensitiveResources, err = types.ParseSensitiveResourcePolicy(additionalSensitiveResources)
+	if err != nil {
+		return appConfig{}, err
 	}
 
 	return cfg, nil

@@ -61,6 +61,7 @@ func TestParseFlagsWithArgs_Defaults(t *testing.T) {
 	assert.Equal(t, time.Hour, cfg.auditEventDecisionTTL)
 	assert.Equal(t, 500*time.Millisecond, cfg.auditEventBodyWait)
 	assert.False(t, cfg.zapOpts.Development)
+	assert.Equal(t, []string{"secrets"}, cfg.sensitiveResources.Entries())
 }
 
 func TestParseFlagsWithArgs_AuditUnsecure(t *testing.T) {
@@ -126,6 +127,21 @@ func TestParseFlagsWithArgs_CustomAuditValues(t *testing.T) {
 	assert.Equal(t, 250*time.Millisecond, cfg.auditEventBodyWait)
 }
 
+func TestParseFlagsWithArgs_AdditionalSensitiveResources(t *testing.T) {
+	fs := flag.NewFlagSet("test-sensitive-resources", flag.ContinueOnError)
+	args := []string{
+		"--additional-sensitive-resources=core.cozystack.io/tenantsecrets,credentials",
+	}
+
+	cfg, err := parseFlagsWithArgs(fs, args)
+	require.NoError(t, err)
+	assert.Equal(
+		t,
+		[]string{"core.cozystack.io/tenantsecrets", "credentials", "secrets"},
+		cfg.sensitiveResources.Entries(),
+	)
+}
+
 func TestParseFlagsWithArgs_InvalidAuditSettings(t *testing.T) {
 	tests := []struct {
 		name string
@@ -170,6 +186,10 @@ func TestParseFlagsWithArgs_InvalidAuditSettings(t *testing.T) {
 		{
 			name: "invalid audit event body wait",
 			args: []string{"--audit-event-body-wait=-1s"},
+		},
+		{
+			name: "invalid sensitive resource",
+			args: []string{"--additional-sensitive-resources=example.io/v1/credentials"},
 		},
 	}
 

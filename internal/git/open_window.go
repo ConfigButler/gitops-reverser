@@ -18,6 +18,8 @@ limitations under the License.
 
 package git
 
+import "github.com/ConfigButler/gitops-reverser/internal/types"
+
 // openWindow is the one live commit-shaped event window owned by a branch
 // worker. It accepts only events with the same author and target; repeated
 // writes to the same Git path are last-write-wins while preserving first-seen
@@ -40,17 +42,19 @@ type openWindow struct {
 	// pathToEvent holds the latest event for each path inside the window.
 	// Earlier events at the same path are subsumed (see GUI-toggle rationale
 	// in the design).
-	pathToEvent map[string]Event
+	pathToEvent        map[string]Event
+	sensitiveResources types.SensitiveResourcePolicy
 }
 
 const groupedCommitOperationKinds = 3
 
-func newOpenWindow(e Event) *openWindow {
+func newOpenWindow(e Event, sensitiveResources types.SensitiveResourcePolicy) *openWindow {
 	return &openWindow{
 		Author:             e.UserInfo.Username,
 		GitTarget:          e.GitTargetName,
 		GitTargetNamespace: e.GitTargetNamespace,
 		pathToEvent:        make(map[string]Event),
+		sensitiveResources: sensitiveResources,
 	}
 }
 
@@ -67,7 +71,7 @@ func (w *openWindow) canAppend(e Event) bool {
 // event replaces the previous one (last-write-wins inside a single window);
 // otherwise pathOrder is extended.
 func (w *openWindow) add(e Event) {
-	key := windowPathKey(e)
+	key := windowPathKey(e, w.sensitiveResources)
 	if _, exists := w.pathToEvent[key]; !exists {
 		w.pathOrder = append(w.pathOrder, key)
 	}
@@ -86,8 +90,8 @@ func (w *openWindow) orderedEvents() []Event {
 
 // windowPathKey derives a stable key from an event's destination path so
 // re-edits of the same resource inside an open window collapse.
-func windowPathKey(e Event) string {
-	filePath := generateFilePath(e.Identifier)
+func windowPathKey(e Event, sensitiveResources types.SensitiveResourcePolicy) string {
+	filePath := generateFilePathWithPolicy(e.Identifier, sensitiveResources)
 	if base := sanitizePath(e.Path); base != "" {
 		return base + "/" + filePath
 	}

@@ -13,6 +13,22 @@ The short version:
 The chart's optional `quickstart` values are just a convenience layer that creates starter
 instances of those same resources.
 
+## Additional sensitive resources
+
+Core Kubernetes `Secret` resources always use the encrypted Git write path. For a Secret-shaped
+custom resource such as CozyStack `tenantsecrets`, add the resource type to the controller startup
+values:
+
+```yaml
+controllerManager:
+  additionalSensitiveResources:
+    - core.cozystack.io/tenantsecrets
+```
+
+Entries are `resource` for the core API group or `group/resource` for grouped APIs. The match ignores
+API version, so a served CRD version change does not change the sensitive classification. The custom
+resource still needs a `GitTarget` with `spec.encryption` configured before Git writes can succeed.
+
 ## How the objects fit together
 
 ![Config basics diagram showing the relationship between GitProvider, GitTarget, and WatchRule](images/config-basics.excalidraw.svg)

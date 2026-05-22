@@ -45,7 +45,8 @@ type secretMarker struct {
 }
 
 type contentWriter struct {
-	encryptor Encryptor
+	encryptor          Encryptor
+	sensitiveResources types.SensitiveResourcePolicy
 	// encryptionScope partitions encryption cache entries so cached bytes never cross
 	// repo/path/key boundaries (e.g. different GitTargets or rotated identities).
 	encryptionScope string
@@ -57,12 +58,19 @@ type contentWriter struct {
 
 type eventContentWriter interface {
 	buildContentForWrite(ctx context.Context, event Event) ([]byte, error)
+	filePathForIdentifier(id types.ResourceIdentifier) string
+	isSensitiveIdentifier(id types.ResourceIdentifier) bool
 }
 
-func newContentWriter() *contentWriter {
+func newContentWriter(sensitiveResources ...types.SensitiveResourcePolicy) *contentWriter {
+	var policy types.SensitiveResourcePolicy
+	if len(sensitiveResources) > 0 {
+		policy = sensitiveResources[0]
+	}
 	return &contentWriter{
-		secretCache:  make(map[string][]byte),
-		secretMarker: make(map[string]secretMarker),
+		sensitiveResources: policy,
+		secretCache:        make(map[string][]byte),
+		secretMarker:       make(map[string]secretMarker),
 	}
 }
 
@@ -74,18 +82,26 @@ func (w *contentWriter) setEncryptor(encryptor Encryptor, scope string) {
 }
 
 // buildContentForWrite renders event content to stable ordered YAML and applies
-// Secret-specific encryption when configured.
+// sensitive-resource encryption when configured.
 func (w *contentWriter) buildContentForWrite(ctx context.Context, event Event) ([]byte, error) {
 	content, err := sanitize.MarshalToOrderedYAML(event.Object)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal object to YAML: %w", err)
 	}
 
-	if !types.IsSecretResource(event.Identifier) {
+	if !w.isSensitiveIdentifier(event.Identifier) {
 		return content, nil
 	}
 
 	return w.encryptSecretContent(ctx, event, content)
+}
+
+func (w *contentWriter) filePathForIdentifier(id types.ResourceIdentifier) string {
+	return generateFilePathWithPolicy(id, w.sensitiveResources)
+}
+
+func (w *contentWriter) isSensitiveIdentifier(id types.ResourceIdentifier) bool {
+	return w.sensitiveResources.IsSensitive(id.Group, id.Resource)
 }
 
 func (w *contentWriter) encryptSecretContent(ctx context.Context, event Event, plain []byte) ([]byte, error) {

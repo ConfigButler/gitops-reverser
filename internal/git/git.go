@@ -575,7 +575,7 @@ func applyEventToWorktree(
 ) (bool, error) {
 	logger := log.FromContext(ctx)
 
-	filePath := generateFilePath(event.Identifier)
+	filePath := writer.filePathForIdentifier(event.Identifier)
 	if event.Path != "" {
 		if bf := sanitizePath(event.Path); bf != "" {
 			filePath = path.Join(bf, filePath)
@@ -642,9 +642,9 @@ func handleCreateOrUpdateOperation(
 ) (bool, error) {
 	content, err := writer.buildContentForWrite(ctx, event)
 	if err != nil {
-		if types.IsSecretResource(event.Identifier) {
+		if writer.isSensitiveIdentifier(event.Identifier) {
 			log.FromContext(ctx).Info(
-				"Secret write skipped because encryption failed",
+				"Sensitive resource write skipped because encryption failed",
 				"resource", event.Identifier.String(),
 				"file", filePath,
 				"error", err.Error(),
@@ -707,8 +707,12 @@ func canonicalizeManifestForComparison(content []byte) ([]byte, error) {
 }
 
 func generateFilePath(id types.ResourceIdentifier) string {
+	return generateFilePathWithPolicy(id, types.SensitiveResourcePolicy{})
+}
+
+func generateFilePathWithPolicy(id types.ResourceIdentifier, sensitiveResources types.SensitiveResourcePolicy) string {
 	defaultPath := id.ToGitPath()
-	if !types.IsSecretResource(id) {
+	if !sensitiveResources.IsSensitive(id.Group, id.Resource) {
 		return defaultPath
 	}
 	if strings.HasSuffix(defaultPath, ".yaml") {

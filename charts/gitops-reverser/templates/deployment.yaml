@@ -75,6 +75,9 @@ spec:
             {{- if .Values.queue.redis.tls.enabled }}
             - --audit-redis-tls
             {{- end }}
+            {{- with .Values.controllerManager.additionalSensitiveResources }}
+            - {{ printf "--additional-sensitive-resources=%s" (join "," .) | quote }}
+            {{- end }}
             - --audit-event-body-ttl={{ .Values.auditEventJoin.bodyTTL }}
             - --audit-event-decision-ttl={{ .Values.auditEventJoin.decisionTTL }}
             - --audit-event-body-wait={{ .Values.auditEventJoin.bodyWait }}
