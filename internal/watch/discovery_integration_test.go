@@ -66,6 +66,8 @@ func TestCRDDiscoveryLifecycle(t *testing.T) {
 		Log:             logr.Discard(),
 		RuleStore:       ruleStore,
 		discoveryFilter: func(context.Context, []GVR) []GVR { return nil },
+		resourceCatalog: newCommonTestCatalog(t),
+		discoveryClient: commonTestDiscoveryClient(),
 	}
 
 	// Step 1: Create a WatchRule that references a CRD resource that doesn't exist yet
@@ -190,9 +192,11 @@ func TestUnavailableGVRTracking(t *testing.T) {
 
 	ruleStore := rulestore.NewStore()
 	manager := &Manager{
-		Client:    fakeClient,
-		Log:       logr.Discard(),
-		RuleStore: ruleStore,
+		Client:          fakeClient,
+		Log:             logr.Discard(),
+		RuleStore:       ruleStore,
+		resourceCatalog: newCommonTestCatalog(t),
+		discoveryClient: commonTestDiscoveryClient(),
 	}
 
 	// Add a rule that references a non-existent GVR
@@ -223,10 +227,11 @@ func TestUnavailableGVRTracking(t *testing.T) {
 		"test-folder",
 	)
 
-	// Compute requested GVRs
+	// Compute requested GVRs. Catalog-backed resolution no longer requests a
+	// concrete informer for a resource that trusted discovery does not serve.
 	requestedGVRs := manager.ComputeRequestedGVRs()
-	if len(requestedGVRs) == 0 {
-		t.Fatal("Expected at least one requested GVR")
+	if len(requestedGVRs) != 0 {
+		t.Fatalf("expected no requested GVRs for not-served resource, got %d", len(requestedGVRs))
 	}
 
 	t.Logf("Requested GVRs: %d", len(requestedGVRs))

@@ -90,12 +90,14 @@ func makeRuleChangeTestManager(t *testing.T) (*Manager, *rulestore.RuleStore) {
 		Scope:    configv1alpha1.ResourceScopeNamespaced,
 	}
 	manager := &Manager{
-		Client:    fakeClient,
-		Log:       logr.Discard(),
-		RuleStore: store,
-		// Pass requested GVRs through unchanged; bypasses the real discovery
-		// client which returns nil in unit tests (no REST config).
-		discoveryFilter: func(_ context.Context, in []GVR) []GVR { return in },
+		Client:          fakeClient,
+		Log:             logr.Discard(),
+		RuleStore:       store,
+		resourceCatalog: newCommonTestCatalog(t),
+		discoveryClient: commonTestDiscoveryClient(),
+		// Keep informer discovery empty. These tests exercise snapshot delivery
+		// after rule-set changes and must not start real informers.
+		discoveryFilter: func(_ context.Context, _ []GVR) []GVR { return nil },
 		// Pretend the configmaps informer is already running cluster-wide,
 		// so compareGVRs reports added=0, removed=0 for that GVR. No real
 		// informers are started.
@@ -326,10 +328,12 @@ func TestReconcileForRuleChange_RestartLikeBootstrap_NoSnapshotDrops(t *testing.
 		Scope: configv1alpha1.ResourceScopeNamespaced,
 	}
 	manager := &Manager{
-		Client:        fakeK8s,
-		Log:           logr.Discard(),
-		RuleStore:     store,
-		dynamicClient: dynamicfake.NewSimpleDynamicClient(scheme, preexistingCM),
+		Client:          fakeK8s,
+		Log:             logr.Discard(),
+		RuleStore:       store,
+		dynamicClient:   dynamicfake.NewSimpleDynamicClient(scheme, preexistingCM),
+		resourceCatalog: newCommonTestCatalog(t),
+		discoveryClient: commonTestDiscoveryClient(),
 		// Return no discoverable GVRs so the rule's GVR (configmaps) doesn't
 		// hit startInformersForGVRs. Combined with a stale entry in
 		// activeInformers, compareGVRs reports removed > 0 and the
