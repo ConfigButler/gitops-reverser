@@ -97,8 +97,13 @@ servers:
 # Webhook behavior
 webhook:
   audit:
-    # Set to true if you want to write events to /var/run/audit-dumps
-    debugDumps: false
+    # Set to true to append every decoded audit event to a separate Redis stream
+    # before normal audit processing can filter, join, or drop it.
+    debugStream:
+      enabled: false
+      stream: "gitopsreverser.audit.debug.events.v1"
+      # Approximate max stream length; 0 means no trimming.
+      maxLen: 0
 
 # Durable audit queue configuration.
 queue:

@@ -92,6 +92,13 @@ func main() {
 	cfg := parseFlags()
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&cfg.zapOpts)))
 
+	bi := currentBuildInfo()
+	setupLog.Info("Starting gitops-reverser",
+		"version", bi.Version,
+		"gitCommit", bi.CommitWithDirty,
+		"buildDate", bi.BuildDate,
+		"goVersion", bi.GoVersion)
+
 	if cfg.auditRedisPassword == "" {
 		setupLog.Info(
 			"no Redis password configured — "+
@@ -124,6 +131,11 @@ func main() {
 
 	// Manager
 	mgr := newManager(metricsServerOptions, cfg.probeAddr)
+
+	// Expose build metadata on the metrics server so an operator can confirm a
+	// running pod is the build they expect (also logged at startup above).
+	fatalIfErr(mgr.AddMetricsServerExtraHandler("/build-info", buildInfoHandler()),
+		"unable to register build-info endpoint")
 
 	// Initialize rule store for watch rules
 	ruleStore := rulestore.NewStore()
@@ -194,6 +206,20 @@ func main() {
 	})
 	fatalIfErr(err, "unable to initialize audit redis queue")
 
+	var auditDebugQueue webhookhandler.AuditDebugEventQueue
+	if cfg.auditDebugRedisStream != "" {
+		auditDebugQueue, err = queue.NewRedisAuditDebugQueue(queue.RedisAuditQueueConfig{
+			Addr:       cfg.auditRedisAddr,
+			Username:   cfg.auditRedisUsername,
+			AuthValue:  cfg.auditRedisPassword,
+			DB:         cfg.auditRedisDB,
+			Stream:     cfg.auditDebugRedisStream,
+			MaxLen:     cfg.auditDebugRedisMaxLen,
+			TLSEnabled: cfg.auditRedisTLS,
+		})
+		fatalIfErr(err, "unable to initialize audit debug redis queue")
+	}
+
 	auditJoiner, err := webhookhandler.NewRedisAuditEventJoiner(webhookhandler.RedisAuditJoinerConfig{
 		Addr:             cfg.auditRedisAddr,
 		Username:         cfg.auditRedisUsername,
@@ -208,6 +234,7 @@ func main() {
 	setupLog.Info("Audit pipeline configured",
 		"redisAddress", cfg.auditRedisAddr,
 		"stream", cfg.auditRedisStream,
+		"debugStream", cfg.auditDebugRedisStream,
 		"db", cfg.auditRedisDB,
 		"tlsEnabled", cfg.auditRedisTLS,
 		"bodyTTL", cfg.auditEventBodyTTL,
@@ -242,9 +269,9 @@ func main() {
 	setupLog.Info("Audit stream consumer registered", "consumerID", consumerID)
 
 	auditHandler, err := webhookhandler.NewAuditHandler(webhookhandler.AuditHandlerConfig{
-		DumpDir:             cfg.auditDumpPath,
 		MaxRequestBodyBytes: cfg.auditMaxRequestBodyBytes,
 		Queue:               auditQueue,
+		DebugQueue:          auditDebugQueue,
 		Joiner:              auditJoiner,
 	})
 	fatalIfErr(err, "unable to create audit handler")
@@ -255,10 +282,6 @@ func main() {
 	fatalIfErr(initErr, "unable to initialize audit ingress server")
 	auditCertWatcher = watcher
 	fatalIfErr(mgr.Add(auditRunnable), "unable to add audit ingress server runnable")
-
-	if cfg.auditDumpPath != "" {
-		setupLog.Info("Audit ingress dump enabled", "dumpPath", cfg.auditDumpPath)
-	}
 
 	// Setup watch manager (must be after controllers are set up)
 	fatalIfErr(watchMgr.SetupWithManager(mgr), "unable to setup watch ingestion manager")
@@ -309,7 +332,6 @@ type appConfig struct {
 	probeAddr                string
 	metricsInsecure          bool
 	enableHTTP2              bool
-	auditDumpPath            string
 	auditListenAddress       string
 	auditPort                int
 	auditCertPath            string
@@ -328,6 +350,8 @@ type appConfig struct {
 	auditRedisDB             int
 	auditRedisStream         string
 	auditRedisMaxLen         int64
+	auditDebugRedisStream    string
+	auditDebugRedisMaxLen    int64
 	auditRedisTLS            bool
 	auditEventBodyTTL        time.Duration
 	auditEventDecisionTTL    time.Duration
@@ -365,8 +389,6 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 	)
 	fs.BoolVar(&cfg.enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics server and audit ingress server")
-	fs.StringVar(&cfg.auditDumpPath, "audit-dump-path", "",
-		"Directory to write audit events for debugging. If empty, audit event file dumping is disabled.")
 	fs.StringVar(&cfg.auditListenAddress, "audit-listen-address", "0.0.0.0",
 		"IP address for the dedicated audit ingress HTTPS server.")
 	fs.IntVar(&cfg.auditPort, "audit-port", defaultAuditPort, "Port for the dedicated audit ingress HTTPS server.")
@@ -401,6 +423,10 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 		"Redis stream name for audit event queueing.")
 	fs.Int64Var(&cfg.auditRedisMaxLen, "audit-redis-max-len", 0,
 		"Approximate max stream length (0 disables trimming).")
+	fs.StringVar(&cfg.auditDebugRedisStream, "audit-debug-redis-stream", "",
+		"Optional Redis stream name for every decoded audit event before normal audit processing.")
+	fs.Int64Var(&cfg.auditDebugRedisMaxLen, "audit-debug-redis-max-len", 0,
+		"Approximate max debug stream length (0 disables trimming).")
 	fs.BoolVar(&cfg.auditRedisTLS, "audit-redis-tls", false,
 		"If set, Redis connection for audit queueing uses TLS.")
 	fs.DurationVar(&cfg.auditEventBodyTTL, "audit-event-body-ttl", defaultAuditEventBodyTTL,
@@ -496,6 +522,9 @@ func validateAuditConfig(cfg appConfig) error {
 	}
 	if cfg.auditRedisMaxLen < 0 {
 		return fmt.Errorf("audit-redis-max-len must be >= 0, got %d", cfg.auditRedisMaxLen)
+	}
+	if cfg.auditDebugRedisMaxLen < 0 {
+		return fmt.Errorf("audit-debug-redis-max-len must be >= 0, got %d", cfg.auditDebugRedisMaxLen)
 	}
 	if cfg.auditEventBodyTTL <= 0 {
 		return fmt.Errorf("audit-event-body-ttl must be > 0, got %s", cfg.auditEventBodyTTL)

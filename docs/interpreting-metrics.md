@@ -121,7 +121,7 @@ additional body arriving first and parking; when the official wins the race it w
 | `audit_eventlists_total` | counter | `source`, `outcome` | ① ingress |
 | `audit_eventlist_events_total` | counter | `source`, `outcome` | ① ingress |
 | `audit_eventlist_duration_seconds` | histogram | `source`, `outcome` | ① ingress |
-| `audit_events_received_total` | counter | `source`, `group`, `version`, `resource`, `verb` | ① ingress |
+| `audit_events_received_total` | counter | `source`, `group`, `version`, `resource`, `subresource`, `verb` | ① ingress |
 | `audit_event_quality_total` | counter | `source`, `quality`, `group`, `version`, `resource`, `verb` | ① ingress |
 | `audit_join_parked_total` | counter | — | ② join |
 | `audit_join_emitted_total` | counter | `source`, `result` (`as_is`, `merged`) | ② join |
@@ -139,6 +139,13 @@ counts the decoded event items inside them. `outcome` is bounded: `processed`, `
 `decode_error`, `process_error`. This is the raw delivery boundary — it answers "are EventLists
 arriving?" before any join or rule logic runs. `audit_events_received_total` and
 `audit_event_quality_total` then describe individual decoded events.
+
+`audit_events_received_total` carries a `subresource` label: empty for top-level resources, and
+a bounded value (`exec`, `status`, `scale`, `log`, …) for subresource requests. Subresource
+events are counted here but then dropped at ingress — they do not describe a top-level object
+the Git pipeline can mirror — so any non-empty `subresource` row is "received then dropped". The
+label exists so a `pods/exec` flood is visible as exactly that, rather than collapsing into
+`resource="pods"` and looking like real pod mutations.
 
 **Stage ③ — consumer output.** `audit_pipeline_events_total` is recorded once per canonical
 event in the consumer, after rule matching. `outcome` tells you which resource events reach the
@@ -170,6 +177,26 @@ sum by (source, outcome) (rate(gitopsreverser_audit_eventlists_total[5m]))
 
 ```promql
 sum by (source) (rate(gitopsreverser_audit_eventlist_events_total[5m]))
+```
+
+**What strange or high-volume traffic is the webhook receiving?** The top received event shapes —
+this surfaces an unexpected resource flood at a glance, and because the result is split by
+`subresource`, a streaming `pods/exec` storm shows up as its own row instead of hiding inside
+`resource="pods"`:
+
+```promql
+topk(15, sum by (resource, subresource, verb) (
+  rate(gitopsreverser_audit_events_received_total[5m])))
+```
+
+Any row with a non-empty `subresource` is received-then-dropped at ingress (subresources are not
+mirrorable top-level objects). A large `pods`/`exec` row is the canonical example — see
+[shallow-audit-event-misclassification.md](design/shallow-audit-event-misclassification.md). To
+look only at the dropped subresource traffic:
+
+```promql
+topk(10, sum by (resource, subresource, verb) (
+  rate(gitopsreverser_audit_events_received_total{subresource!=""}[5m])))
 ```
 
 **Are EventLists failing to decode?** Should be zero — non-zero means a sender is posting

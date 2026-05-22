@@ -671,9 +671,18 @@ tasks:
     cmds:
       - mkdir -p "{{.IS}}"
       - |
+        GIT_COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+        GIT_DIRTY=0
+        [ -z "$(git status --porcelain 2>/dev/null)" ] || GIT_DIRTY=1
+        BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        VERSION="$(git describe --tags --always --dirty 2>/dev/null || echo dev)"
         {{.CONTAINER_TOOL}} build \
           --build-arg TARGETOS="$(go env GOOS)" \
           --build-arg TARGETARCH="$(go env GOARCH)" \
+          --build-arg VERSION="${VERSION}" \
+          --build-arg GIT_COMMIT="${GIT_COMMIT}" \
+          --build-arg GIT_DIRTY="${GIT_DIRTY}" \
+          --build-arg BUILD_DATE="${BUILD_DATE}" \
           -t "{{.E2E_LOCAL_IMAGE}}" \
           .
         {{.CONTAINER_TOOL}} inspect --format='{{"{{"}}.Id{{"}}"}}' "{{.E2E_LOCAL_IMAGE}}" > "{{.IS}}/controller.id"

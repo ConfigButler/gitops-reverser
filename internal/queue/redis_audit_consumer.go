@@ -80,6 +80,15 @@ var errAuditEventObjectMissing = errors.New("audit event has no requestObject or
 // proxy body) so the Status is never written to Git as if it were the resource.
 var errAuditEventObjectIsStatus = errors.New("audit event object is a metav1.Status error body")
 
+// errAuditEventObjectPartial marks an audit event whose body is valid JSON but
+// lacks the apiVersion/kind identity of a full Kubernetes object — typically a
+// merge-patch fragment such as {"metadata":{"finalizers":null}} recorded as the
+// requestObject of a finalizer-removal PATCH. It carries no routable resource
+// state, so it is dropped before git routing rather than treated as a decode
+// failure. The resource's real mutation is mirrored from its own (delete or
+// full-body) audit event.
+var errAuditEventObjectPartial = errors.New("audit event object body is a partial object (no kind)")
+
 // AuditEventRouter is the subset of watch.EventRouter used by the consumer.
 // watch.EventRouter satisfies this interface without modification.
 type AuditEventRouter interface {
@@ -130,6 +139,7 @@ type AuditConsumer struct {
 	firstRouted         sync.Once
 	firstShallowDropped sync.Once
 	firstStatusDropped  sync.Once
+	firstPartialDropped sync.Once
 }
 
 // NewAuditConsumer creates a new AuditConsumer. It does not start consuming;
@@ -407,10 +417,10 @@ func (c *AuditConsumer) routeAuditEvent(
 
 	sanitized, err := extractObject(auditEvent, op, fullAPIVersion, ref.Resource, namespace, name)
 	if err != nil {
-		if c.handleExtractObjectError(
+		if outcome, handled := c.handleExtractObjectError(
 			log, auditEvent, err, fullAPIVersion+"/"+ref.Resource, namespace, name,
-		) {
-			recordPipelineEvent(ctx, gvr, auditEvent.Verb, pipelineOutcomeDroppedNoBody)
+		); handled {
+			recordPipelineEvent(ctx, gvr, auditEvent.Verb, outcome)
 			return nil
 		}
 		return fmt.Errorf("extracting object for %s/%s: %w", namespace, name, err)
@@ -452,16 +462,18 @@ func (c *AuditConsumer) routeAuditEvent(
 }
 
 // handleExtractObjectError classifies an extractObject failure. For a benign
-// drop — a shallow event with no body, or a metav1.Status error body from a
-// failed API request — it logs and returns true so the caller acks the event
-// without routing it. For any other error it returns false, leaving the caller
-// to surface it.
+// drop — a shallow event with no body, a metav1.Status error body from a failed
+// API request, or a partial object such as a finalizer-removal patch fragment —
+// it logs and returns (outcome, true): the audit_pipeline_events_total outcome
+// the caller should record, and a handled flag so the event is ACK'd without
+// routing. For any other error it returns ("", false), leaving the caller to
+// surface it.
 func (c *AuditConsumer) handleExtractObjectError(
 	log logr.Logger,
 	auditEvent auditv1.Event,
 	err error,
 	gvr, namespace, name string,
-) bool {
+) (string, bool) {
 	switch {
 	case errors.Is(err, errAuditEventObjectMissing):
 		c.firstShallowDropped.Do(func() {
@@ -484,7 +496,7 @@ func (c *AuditConsumer) handleExtractObjectError(
 			"hasRequestObject", hasAuditObjectRaw(auditEvent.RequestObject),
 			"hasResponseObject", hasAuditObjectRaw(auditEvent.ResponseObject),
 		)
-		return true
+		return pipelineOutcomeDroppedNoBody, true
 	case errors.Is(err, errAuditEventObjectIsStatus):
 		c.firstStatusDropped.Do(func() {
 			c.log.Info(
@@ -505,9 +517,30 @@ func (c *AuditConsumer) handleExtractObjectError(
 			"namespace", namespace,
 			"name", name,
 		)
-		return true
+		return pipelineOutcomeDroppedNoBody, true
+	case errors.Is(err, errAuditEventObjectPartial):
+		c.firstPartialDropped.Do(func() {
+			c.log.Info(
+				"First audit event dropped before git routing — body is a partial object "+
+					"(no kind), typically a finalizer-removal PATCH fragment. The resource's "+
+					"real change is mirrored from its own audit event; this fragment is not "+
+					"routable. Further drops will log at V(1) only.",
+				"auditID", auditEvent.AuditID,
+				"gvr", gvr,
+				"verb", auditEvent.Verb,
+			)
+		})
+		log.V(1).Info(
+			"audit event dropped before git routing: partial object body (no kind)",
+			"auditID", auditEvent.AuditID,
+			"gvr", gvr,
+			"verb", auditEvent.Verb,
+			"namespace", namespace,
+			"name", name,
+		)
+		return pipelineOutcomeDroppedPartialObject, true
 	default:
-		return false
+		return "", false
 	}
 }
 
@@ -574,10 +607,11 @@ type pipelineGVR struct {
 
 // Audit pipeline consumer-stage outcome and rule-kind label values.
 const (
-	pipelineOutcomeUnmatched     = "unmatched"
-	pipelineOutcomeDroppedNoBody = "dropped_no_body"
-	pipelineOutcomeRouted        = "routed"
-	pipelineOutcomeRouteFailed   = "route_failed"
+	pipelineOutcomeUnmatched            = "unmatched"
+	pipelineOutcomeDroppedNoBody        = "dropped_no_body"
+	pipelineOutcomeDroppedPartialObject = "dropped_partial_object"
+	pipelineOutcomeRouted               = "routed"
+	pipelineOutcomeRouteFailed          = "route_failed"
 
 	ruleKindWatchRule        = "watchrule"
 	ruleKindClusterWatchRule = "clusterwatchrule"
@@ -726,6 +760,9 @@ func extractObject(
 
 	obj := &unstructured.Unstructured{}
 	if err := obj.UnmarshalJSON(raw); err != nil {
+		if isPartialObjectBody(raw) {
+			return nil, errAuditEventObjectPartial
+		}
 		return nil, fmt.Errorf("failed to unmarshal object JSON: %w", err)
 	}
 
@@ -734,6 +771,20 @@ func extractObject(
 	}
 
 	return backfillSanitizedIdentity(sanitize.Sanitize(obj), apiVersion, resource, namespace, name), nil
+}
+
+// isPartialObjectBody reports whether raw is well-formed JSON describing an
+// object that lacks a "kind" — the condition that makes
+// (*Unstructured).UnmarshalJSON fail on an otherwise valid body. A merge-patch
+// fragment such as {"metadata":{"finalizers":null}} matches; malformed bytes do
+// not, so a genuine decode failure still surfaces as an error.
+func isPartialObjectBody(raw []byte) bool {
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return false
+	}
+	kind, _ := m["kind"].(string)
+	return kind == ""
 }
 
 // isStatusObject reports whether obj is a core metav1.Status error response

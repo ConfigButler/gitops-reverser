@@ -145,7 +145,7 @@ tasks:
       - fmt
       - vet
     cmds:
-      - go build -o bin/manager cmd/main.go
+      - go build -o bin/manager ./cmd
 
   run:
     desc: Run a controller from your host
@@ -154,12 +154,24 @@ tasks:
       - fmt
       - vet
     cmds:
-      - go run ./cmd/main.go
+      - go run ./cmd
 
   docker-build:
     desc: Build docker image with the manager
     cmds:
-      - '{{.CONTAINER_TOOL}} build -t {{.IMG}} .'
+      - |
+        GIT_COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+        GIT_DIRTY=0
+        [ -z "$(git status --porcelain 2>/dev/null)" ] || GIT_DIRTY=1
+        BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        VERSION="$(git describe --tags --always --dirty 2>/dev/null || echo dev)"
+        VERSION="${VERSION#gitops-reverser-v}"
+        {{.CONTAINER_TOOL}} build \
+          --build-arg VERSION="${VERSION}" \
+          --build-arg GIT_COMMIT="${GIT_COMMIT}" \
+          --build-arg GIT_DIRTY="${GIT_DIRTY}" \
+          --build-arg BUILD_DATE="${BUILD_DATE}" \
+          -t {{.IMG}} .
 
   docker-push:
     desc: Push docker image with the manager
@@ -172,13 +184,37 @@ tasks:
       PLATFORMS: '{{.PLATFORMS | default "linux/arm64,linux/amd64,linux/s390x,linux/ppc64le"}}'
     cmds:
       - |
+        GIT_COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+        GIT_DIRTY=0
+        [ -z "$(git status --porcelain 2>/dev/null)" ] || GIT_DIRTY=1
+        BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        VERSION="$(git describe --tags --always --dirty 2>/dev/null || echo dev)"
+        VERSION="${VERSION#gitops-reverser-v}"
         sed -e '1 s/\(^FROM\)/FROM --platform=\${BUILDPLATFORM}/; t' \
           -e '1,// s//FROM --platform=\${BUILDPLATFORM}/' Dockerfile > Dockerfile.cross
         {{.CONTAINER_TOOL}} buildx create --name gitops-reverser-builder || true
         {{.CONTAINER_TOOL}} buildx use gitops-reverser-builder
-        {{.CONTAINER_TOOL}} buildx build --push --platform={{.PLATFORMS}} --tag {{.IMG}} -f Dockerfile.cross .
+        {{.CONTAINER_TOOL}} buildx build --push --platform={{.PLATFORMS}} \
+          --build-arg VERSION="${VERSION}" \
+          --build-arg GIT_COMMIT="${GIT_COMMIT}" \
+          --build-arg GIT_DIRTY="${GIT_DIRTY}" \
+          --build-arg BUILD_DATE="${BUILD_DATE}" \
+          --tag {{.IMG}} -f Dockerfile.cross .
         {{.CONTAINER_TOOL}} buildx rm gitops-reverser-builder || true
         rm -f Dockerfile.cross
+
+  docker-push-dev:
+    desc: Build and push the image to your dev registry (DEV_IMG, set in .env)
+    requires:
+      vars:
+        - DEV_IMG
+    cmds:
+      - task: docker-build
+        vars:
+          IMG: '{{.DEV_IMG}}'
+      - task: docker-push
+        vars:
+          IMG: '{{.DEV_IMG}}'
 
   dist-install:
     desc: Generate consolidated YAML from the Helm chart

@@ -5,6 +5,12 @@ FROM golang:1.26.3 AS builder
 ARG TARGETOS
 ARG TARGETARCH
 
+# Build metadata, injected into the binary via -ldflags (see cmd/buildinfo.go).
+ARG VERSION=dev
+ARG GIT_COMMIT=unknown
+ARG GIT_DIRTY=0
+ARG BUILD_DATE=unknown
+
 WORKDIR /workspaces
 
 # Copy the Go Modules manifests
@@ -19,7 +25,9 @@ COPY api/ api/
 COPY internal/ internal/
 
 # Build for the target platform
-RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -o manager cmd/main.go
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
+    -ldflags "-X main.version=${VERSION} -X main.gitCommit=${GIT_COMMIT} -X main.gitDirty=${GIT_DIRTY} -X main.buildDate=${BUILD_DATE}" \
+    -o manager ./cmd
 
 FROM alpine:3.23 AS sops-downloader
 ARG TARGETARCH

@@ -31,7 +31,7 @@ RUN apt-get update \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
        > /etc/apt/sources.list.d/github-cli.list \
     && apt-get update \
-    && apt-get -y install --no-install-recommends docker-ce-cli gh \
+    && apt-get -y install --no-install-recommends docker-ce-cli docker-buildx-plugin gh \
     && apt-get autoremove -y \
     && apt-get clean -y \
     && rm -rf /var/lib/apt/lists/*

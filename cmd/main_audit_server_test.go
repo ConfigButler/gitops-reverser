@@ -56,6 +56,8 @@ func TestParseFlagsWithArgs_Defaults(t *testing.T) {
 	assert.Equal(t, "valkey:6379", cfg.auditRedisAddr)
 	assert.Equal(t, "gitopsreverser.audit.events.v1", cfg.auditRedisStream)
 	assert.Equal(t, int64(0), cfg.auditRedisMaxLen)
+	assert.Empty(t, cfg.auditDebugRedisStream)
+	assert.Equal(t, int64(0), cfg.auditDebugRedisMaxLen)
 	assert.False(t, cfg.auditRedisTLS)
 	assert.Equal(t, 5*time.Minute, cfg.auditEventBodyTTL)
 	assert.Equal(t, time.Hour, cfg.auditEventDecisionTTL)
@@ -95,6 +97,8 @@ func TestParseFlagsWithArgs_CustomAuditValues(t *testing.T) {
 		"--audit-redis-db=2",
 		"--audit-redis-stream=gitopsreverser.audit.custom",
 		"--audit-redis-max-len=1000",
+		"--audit-debug-redis-stream=gitopsreverser.audit.debug.custom",
+		"--audit-debug-redis-max-len=2000",
 		"--audit-redis-tls",
 		"--audit-event-body-ttl=2m",
 		"--audit-event-decision-ttl=30m",
@@ -121,6 +125,8 @@ func TestParseFlagsWithArgs_CustomAuditValues(t *testing.T) {
 	assert.Equal(t, 2, cfg.auditRedisDB)
 	assert.Equal(t, "gitopsreverser.audit.custom", cfg.auditRedisStream)
 	assert.Equal(t, int64(1000), cfg.auditRedisMaxLen)
+	assert.Equal(t, "gitopsreverser.audit.debug.custom", cfg.auditDebugRedisStream)
+	assert.Equal(t, int64(2000), cfg.auditDebugRedisMaxLen)
 	assert.True(t, cfg.auditRedisTLS)
 	assert.Equal(t, 2*time.Minute, cfg.auditEventBodyTTL)
 	assert.Equal(t, 30*time.Minute, cfg.auditEventDecisionTTL)
@@ -174,6 +180,10 @@ func TestParseFlagsWithArgs_InvalidAuditSettings(t *testing.T) {
 		{
 			name: "invalid redis max len",
 			args: []string{"--audit-redis-max-len=-1"},
+		},
+		{
+			name: "invalid audit debug redis max len",
+			args: []string{"--audit-debug-redis-max-len=-1"},
 		},
 		{
 			name: "invalid audit event body ttl",

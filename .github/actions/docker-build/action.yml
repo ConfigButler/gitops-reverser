@@ -19,6 +19,9 @@ inputs:
   labels:
     description: 'Image labels'
     required: false
+  build-args:
+    description: 'Build args passed to the image build (newline-separated KEY=VALUE)'
+    required: false
   outputs:
     description: 'Build outputs (e.g., type=image,push=true or type=image,name=...,push-by-digest=true)'
     required: true
@@ -51,6 +54,7 @@ runs:
         push: true
         tags: ${{ inputs.tags }}
         labels: ${{ inputs.labels }}
+        build-args: ${{ inputs.build-args }}
         cache-from: type=gha,scope=${{ inputs.cache-scope }}
         cache-to: type=gha,mode=max,scope=${{ inputs.cache-scope }}
         outputs: ${{ inputs.outputs }}

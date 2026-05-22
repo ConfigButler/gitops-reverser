@@ -233,11 +233,13 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
 
-      - name: Set full image name
+      - name: Set full image name and build metadata
         id: image
         run: |
           FULL_IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}"
           echo "name=${FULL_IMAGE}" >> $GITHUB_OUTPUT
+          echo "git_commit=${GITHUB_SHA:0:7}" >> $GITHUB_OUTPUT
+          echo "build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
           echo "Building image: ${FULL_IMAGE}"
 
       - name: Build and push Docker image
@@ -250,6 +252,11 @@ jobs:
           tags: ${{ steps.image.outputs.name }}
           outputs: type=image,push=true
           cache-scope: build-linux/amd64
+          build-args: |
+            VERSION=${{ env.IMAGE_TAG }}
+            GIT_COMMIT=${{ steps.image.outputs.git_commit }}
+            GIT_DIRTY=0
+            BUILD_DATE=${{ steps.image.outputs.build_date }}
 
   e2e:
     name: E2E (${{ matrix.name }})
@@ -352,6 +359,12 @@ jobs:
             type=semver,pattern={{major}},value=${{ needs.release-please.outputs.version }}
             type=raw,value=latest
 
+      - name: Compute build metadata
+        id: buildmeta
+        run: |
+          echo "git_commit=${GITHUB_SHA:0:7}" >> $GITHUB_OUTPUT
+          echo "build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
+
       - name: Build and push Docker image by digest
         id: build
         uses: ./.github/actions/docker-build
@@ -363,6 +376,11 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true
           cache-scope: build-${{ matrix.platform }}
+          build-args: |
+            VERSION=${{ needs.release-please.outputs.version }}
+            GIT_COMMIT=${{ steps.buildmeta.outputs.git_commit }}
+            GIT_DIRTY=0
+            BUILD_DATE=${{ steps.buildmeta.outputs.build_date }}
 
       - name: Export digest
         run: |

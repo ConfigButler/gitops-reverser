@@ -1,6 +1,10 @@
 # yaml-language-server: $schema=https://taskfile.dev/schema.json
 version: '3'
 
+# Local-only overrides (e.g. DEV_IMG) are loaded from .env, which is gitignored.
+# See .env.example for the available keys.
+dotenv: ['.env']
+
 set:
   - errexit
   - nounset

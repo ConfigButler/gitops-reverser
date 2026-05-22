@@ -128,3 +128,28 @@ func TestRedisAuditQueue_EnqueueCustomResourceStoresAPIGroup(t *testing.T) {
 	assert.Equal(t, "default", entry["namespace"])
 	assert.Equal(t, "order-1", entry["name"])
 }
+
+func TestRedisAuditDebugQueue_EnqueueStoresSource(t *testing.T) {
+	mr := miniredis.RunT(t)
+
+	debugQueue, err := NewRedisAuditDebugQueue(RedisAuditQueueConfig{
+		Addr:   mr.Addr(),
+		Stream: "audit.debug.test",
+		MaxLen: 100,
+	})
+	require.NoError(t, err)
+
+	event := auditv1.Event{AuditID: "audit-debug-123", Verb: "create"}
+	err = debugQueue.Enqueue(context.Background(), "official", event)
+	require.NoError(t, err)
+
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	entries, err := client.XRange(context.Background(), "audit.debug.test", "-", "+").Result()
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+
+	entry := entries[0].Values
+	assert.Equal(t, "official", entry["source"])
+	assert.Equal(t, "audit-debug-123", entry["audit_id"])
+	assert.NotEmpty(t, entry["payload_json"])
+}
