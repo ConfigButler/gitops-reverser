@@ -63,6 +63,7 @@ flowchart TD
   APISERVER --> DISC["Discovery<br/>/api, /apis, aggregated discovery"]
   APISERVER --> LIST["LIST<br/>collection GET"]
   APISERVER --> WATCH["WATCH<br/>streamed deltas"]
+  APISERVER --> STREAM["Streaming list<br/>WATCH + initial events"]
 
   DISC --> D1["groups, versions, resources"]
   DISC --> D2["scope, verbs, Kind↔Resource"]
@@ -75,11 +76,14 @@ flowchart TD
   WATCH --> W1["ADDED / MODIFIED / DELETED since RV"]
   WATCH --> W2["BOOKMARK events — cheap RV checkpoint"]
   WATCH --> W3["410 Gone — RV compacted, must re-LIST"]
+  STREAM --> S1["sendInitialEvents=true - synthetic ADDED"]
+  STREAM --> S2["initial-events BOOKMARK - sync boundary"]
+  STREAM --> S3["then normal WATCH without a separate LIST"]
 
   classDef used fill:#1b5e20,color:#fff;
   classDef unused fill:#5d4037,color:#fff;
   class DISC,D1,D2,L4,WATCH,W1,W3 used;
-  class L1,L2,L3,W2 unused;
+  class L1,L2,L3,W2,STREAM,S1,S2,S3 unused;
 ```
 
 Green = used today, brown = available but unused.
@@ -140,6 +144,36 @@ A `WATCH` streams `ADDED` / `MODIFIED` / `DELETED` deltas since a given
 LIST+WATCH internally for each tracked GVR. We never open a raw watch, so we
 also never see bookmarks or drive the resume logic ourselves.
 
+### Streaming LIST+WATCH
+
+Kubernetes also exposes a watch form known as
+[streaming lists](https://kubernetes.io/docs/reference/using-api/api-concepts/#streaming-lists).
+The current upstream docs mark it as `Kubernetes v1.34 [beta]` and enabled by
+default. Instead of issuing a separate collection `LIST` before the `WATCH`,
+the client starts one watch with `sendInitialEvents=true`,
+`allowWatchBookmarks=true`, `resourceVersion=`, and
+`resourceVersionMatch=NotOlderThan`.
+
+The server begins the stream with synthetic `ADDED` events for the current
+collection. It then sends a `BOOKMARK` annotated as the end of initial events;
+that bookmark carries the RV for the established snapshot. After that point the
+same connection continues as an ordinary watch stream from that RV.
+
+This is conceptually a better primitive for GitOps Reverser's future tracking
+engine than a hand-rolled `LIST` then `WATCH`, because the API server gives us
+one ordered stream and an explicit "initial state is complete" marker. It does
+not remove the need to keep a local store: the engine still has to accumulate
+the synthetic `ADDED` events into its snapshot cache, persist the bookmark RV
+if we want resume, and fall back to classic list/watch or re-list on
+unsupported APIs and `410 Gone`.
+
+**We do not use this today.** The current `dynamicinformer` path owns the
+bootstrap internally, and the snapshot path does a second raw `LIST`. The
+project is already on Kubernetes libraries that expose the needed knobs in
+`metav1.ListOptions` (`SendInitialEvents`, `AllowWatchBookmarks`,
+`ResourceVersionMatch`), so no dependency upgrade is required to prototype a
+custom tracker.
+
 ### What we use, and what we benefit from
 
 | Capability | Used today | Benefit / cost left on the table |
@@ -151,12 +185,15 @@ also never see bookmarks or drive the resume logic ourselves.
 | `resourceVersion=0` (watch-cache read) | No | Cheaper apiserver path for the unavoidable lists |
 | `labelSelector`/`fieldSelector` | No | Server-side narrowing; also closes the selector-parity gap |
 | Watch bookmarks | No | Cheap restart resume without full re-LIST |
+| Streaming lists (`sendInitialEvents=true`) | No | One ordered initial-state + live-delta stream for a custom tracker |
 | Protobuf encoding | No (dynamic client → JSON) | Smaller payloads for built-in types |
 
 The headline: we extract real value from **discovery** and from the
 **informer** machinery, but the snapshot read path uses the *least* efficient
 shape of LIST the API server offers, and ignores every incremental-resume
-mechanism. Parts 2 and 3 are largely about closing that gap.
+mechanism. Streaming lists sharpen the Part 3 direction: the future tracking
+engine should probably speak in watch streams with explicit sync bookmarks,
+not in ad-hoc full-list snapshots.
 
 ## Where we are today
 
@@ -251,6 +288,56 @@ Key source:
 All snapshot-trigger state (`pendingRuleSetHash`, `lastDeliveredRuleSetHash`,
 `activeInformers`, `lastSeenHash`) is **in-memory and leader-local**. The only
 persisted state is `GitTarget.Status` and git itself.
+
+## Lessons from recent failures
+
+Two failures in the current watch/audit path make the rebuild constraints more
+concrete:
+
+1. A startup snapshot once interpreted a wildcard-versioned rule differently
+   from the live audit path. The snapshot resolved to zero resources, the
+   reconciler treated that as authoritative, and it deleted the existing Git
+   mirror. A failed `List()` that is logged and skipped has the same shape:
+   "partial cluster view" becomes "cluster deletion" at the diff boundary.
+2. The audit webhook path once tried to join shallow audit bodies before it
+   knew whether the event could match a rule. Unwatched pod churn then paid
+   Redis lookups and waits inside the kube-apiserver request context, producing
+   timeout noise and `context canceled` failures before exact rule routing even
+   ran.
+
+These are not only point bugs. They show where the current system is fragile:
+rule selection, snapshot completeness, event enrichment, and delivery ownership
+are split across several paths with different timing and failure behavior.
+
+The future engine should turn those failure modes into invariants:
+
+- **One selection contract.** Snapshot bootstrap, live tracking, audit
+  relevance checks, and final Git routing may operate at different precision,
+  but they must share the same interpretation of wildcard versions, groups,
+  resources, operations, scope, and selectors. An early "could match" gate may
+  be conservative; it must not contradict the exact matcher downstream.
+- **Completeness before deletion.** A snapshot or tracked shard is either known
+  complete for its rule predicate or it is an error / pending state. Missing
+  data from discovery, wildcard resolution, LIST, aggregated APIs, cache sync,
+  or cross-shard fan-in must not be converted into delete writes.
+- **Initial sync is not recoverable from future deltas.** After a bad snapshot,
+  only objects that emit later audit/watch events heal themselves; quiet
+  resources stay absent from Git. The tracker must establish and record an
+  explicit initial-sync boundary before deltas are allowed to stand in for
+  state.
+- **Cheap relevance before expensive enrichment.** Mutating events should be
+  classified by stage, verb, subresource, GVR, and possible rule relevance
+  before body joins, waits, or API fallback reads. Complete events should take
+  the short path. Exact filtering still belongs after enrichment.
+- **Readiness and ownership are state, not timing assumptions.** Startup and
+  failover will briefly have incomplete rule, discovery, and shard state. Gates
+  must either fail open for non-destructive ingestion or fail closed for
+  destructive reconciliation, and the reason must be observable.
+
+The incident evidence therefore supports the Part 3 direction: a tracker with a
+durable notion of "selected", "synced", "pending", and "owned" is not just a
+scaling convenience for HA. It is how destructive Git convergence stops
+depending on duplicated best-effort paths.
 
 ## Part 1 — Correctness: finish the delivery contract
 
@@ -384,6 +471,41 @@ flowchart LR
   end
 ```
 
+### 2.4 Treat streaming lists as a tracker primitive, not the Part 2 fix
+
+Streaming lists are tempting because they sound like "a cheaper snapshot." For
+this codebase, the immediate Part 2 fix is still to serve snapshots from the
+already-synced informer cache. That removes the redundant raw `LIST` without
+rewriting the watch stack.
+
+Streaming lists become valuable when Part 3 introduces an explicit tracking
+engine. At that point the engine can replace the classic bootstrap:
+
+```text
+LIST collection -> remember list RV -> WATCH from RV
+```
+
+with:
+
+```text
+WATCH sendInitialEvents=true -> accumulate synthetic ADDED events
+-> initial-events BOOKMARK -> mark tracked shard synced
+-> continue processing live events
+```
+
+That gives the engine a natural state machine:
+
+| Phase | Input | Engine behavior |
+|-------|-------|-----------------|
+| `bootstrapping` | synthetic `ADDED` | Populate the snapshot store, but do not emit per-object git writes yet |
+| `initial-synced` | initial-events `BOOKMARK` | Persist the snapshot RV and emit one coherent snapshot/reconcile signal |
+| `live` | normal watch events | Apply deltas and update per-object RV/hash dedup state |
+| `expired` | `410 Gone` or unsupported option | Fall back to classic relist/bootstrap |
+
+This also fits the Redis/state-store idea in [Part 3.3](#33-redis-backed-state-layer):
+the initial-events bookmark is the clean point at which the engine can record
+"this `(GVR, namespace)` shard is current through RV X."
+
 ## Part 3 — Architecture: a two-tier GVK model and a tracking engine
 
 This part responds to the broader question: *should there be an abstraction
@@ -443,10 +565,14 @@ its own component (not necessarily its own OS process — a clearly-bounded
 internal service with its own goroutine and queue) gives:
 
 - A single owner for informer lifecycle and the snapshot store.
+- A single owner for tracked-shard completeness: only synced shards may
+  contribute authoritative absence/deletion facts to a GitTarget snapshot.
 - A natural seam to make snapshot emission a queued, retried, observable
   operation instead of inline calls inside `ReconcileForRuleChange`. The
   original doc's "future improvements" already names this: *"a small
   pending-snapshot work queue with retry, backoff, and metrics."*
+- A place to keep the conservative audit "could match" gate aligned with the
+  tracked set without moving exact Git routing into the webhook hot path.
 - A boundary that can later be moved across a process or pod boundary without
   re-plumbing the controllers.
 
@@ -459,7 +585,8 @@ leader-local. A shared store would hold:
   failover, so a pending snapshot is not silently lost on leader change.
 - The per-resource RV / content-hash index (today `lastSeenHash`) — dedup
   survives restart and can be shared across pods.
-- The Tier 2 Tracked Set and shard ownership leases.
+- The Tier 2 Tracked Set, per-shard sync/completeness state, and shard ownership
+  leases.
 
 Redis is a reasonable first choice (leases, hashes, pub/sub for cross-pod
 notification). **But be honest about the cost:** it adds an external dependency
@@ -495,8 +622,8 @@ flowchart TD
 
 - **Option A — active/passive with fast failover.** Keep single-active, but
   persist the delivery contract so the new leader resumes pending snapshots
-  instead of dropping them. Low complexity, no informer fan-out change. This is
-  the recommended next HA step.
+  and initial-sync boundaries instead of dropping them. Low complexity, no
+  informer fan-out change. This is the recommended next HA step.
 - **Option B — sharded active/active.** Partition the Tier 2 Tracked Set across
   pods by `(GVK, namespace)`, each shard leased via Redis. This is true
   horizontal scale but the hard part is that rules map GitTargets to GVKs
@@ -533,7 +660,9 @@ flowchart LR
   (3a) and tracking engine (3b) are internal refactors with no CRD change.
   Durable state (3c) and HA (3d) change operational surface and need their own
   acceptance criteria, including a `SnapshotDeliveryDrops()`-equivalent staying
-  at zero across a simulated failover.
+  at zero across a simulated failover, no destructive reconcile from a partial
+  shard/snapshot, and parity tests that run wildcard-version and aggregated-API
+  rules through bootstrap and live event selection.
 
 ## Non-goals
 
@@ -551,6 +680,9 @@ flowchart LR
   [docs/design/kubernetes-api-discovery.md](../design/kubernetes-api-discovery.md).
 - API server capacity tuning:
   [docs/design/kubernetes-apf-and-inflight-tuning.md](../design/kubernetes-apf-and-inflight-tuning.md).
+- Kubernetes API concepts, especially streaming lists and resourceVersion
+  semantics:
+  [kubernetes.io/docs/reference/using-api/api-concepts](https://kubernetes.io/docs/reference/using-api/api-concepts/#streaming-lists).
 - Related coordination concern:
   [idea-cross-kind-dependency-watches.md](idea-cross-kind-dependency-watches.md).
 - Snapshot walk and double-list:
