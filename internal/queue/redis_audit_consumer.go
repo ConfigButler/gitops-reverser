@@ -30,6 +30,8 @@ import (
 
 	"github.com/go-logr/logr"
 	"github.com/redis/go-redis/v9"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 	authnv1 "k8s.io/api/authentication/v1"
 	auditv1 "k8s.io/apiserver/pkg/apis/audit/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -42,6 +44,7 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
 	"github.com/ConfigButler/gitops-reverser/internal/sanitize"
+	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
@@ -367,7 +370,7 @@ func (c *AuditConsumer) processMessage(ctx context.Context, msg redis.XMessage) 
 
 // routeAuditEvent performs rule matching, object extraction, and routing for one audit event.
 func (c *AuditConsumer) routeAuditEvent(
-	_ context.Context,
+	ctx context.Context,
 	log logr.Logger,
 	auditEvent auditv1.Event,
 	op configv1alpha1.OperationType,
@@ -390,7 +393,10 @@ func (c *AuditConsumer) routeAuditEvent(
 	wrRules := c.ruleStore.GetMatchingRules(matchObj, resourcePlural, op, apiGroup, apiVersion, isClusterScoped)
 	cwrRules := c.ruleStore.GetMatchingClusterRules(resourcePlural, op, apiGroup, apiVersion, isClusterScoped, nil)
 
+	gvr := pipelineGVR{group: apiGroup, version: apiVersion, resource: resourcePlural}
+
 	if len(wrRules) == 0 && len(cwrRules) == 0 {
+		recordPipelineEvent(ctx, gvr, auditEvent.Verb, pipelineOutcomeUnmatched)
 		return nil
 	}
 
@@ -404,6 +410,7 @@ func (c *AuditConsumer) routeAuditEvent(
 		if c.handleExtractObjectError(
 			log, auditEvent, err, fullAPIVersion+"/"+ref.Resource, namespace, name,
 		) {
+			recordPipelineEvent(ctx, gvr, auditEvent.Verb, pipelineOutcomeDroppedNoBody)
 			return nil
 		}
 		return fmt.Errorf("extracting object for %s/%s: %w", namespace, name, err)
@@ -418,7 +425,13 @@ func (c *AuditConsumer) routeAuditEvent(
 	id := itypes.NewResourceIdentifier(apiGroup, apiVersion, resourcePlural, namespace, name)
 	userInfo := resolveUserInfo(auditEvent)
 
-	routed := c.routeToMatchedRules(log, sanitized, id, op, userInfo, wrRules, cwrRules)
+	routed := c.routeToMatchedRules(ctx, log, sanitized, id, op, userInfo, wrRules, cwrRules)
+
+	if routed > 0 {
+		recordPipelineEvent(ctx, gvr, auditEvent.Verb, pipelineOutcomeRouted)
+	} else {
+		recordPipelineEvent(ctx, gvr, auditEvent.Verb, pipelineOutcomeRouteFailed)
+	}
 
 	if routed > 0 {
 		c.firstRouted.Do(func() {
@@ -501,6 +514,7 @@ func (c *AuditConsumer) handleExtractObjectError(
 // routeToMatchedRules dispatches git.Events to all matched WatchRule and ClusterWatchRule targets.
 // It returns the number of successfully routed events.
 func (c *AuditConsumer) routeToMatchedRules(
+	ctx context.Context,
 	log logr.Logger,
 	sanitized *unstructured.Unstructured,
 	id itypes.ResourceIdentifier,
@@ -516,8 +530,16 @@ func (c *AuditConsumer) routeToMatchedRules(
 		if err := c.eventRouter.RouteToGitTargetEventStream(ev, gitDest); err != nil {
 			log.V(1).Info("Failed to route audit event via WatchRule", "error", err,
 				"gitTarget", gitDest.String())
+			recordRouteTarget(
+				ctx,
+				rule.GitTargetNamespace,
+				rule.GitTargetRef,
+				ruleKindWatchRule,
+				pipelineOutcomeRouteFailed,
+			)
 			continue
 		}
+		recordRouteTarget(ctx, rule.GitTargetNamespace, rule.GitTargetRef, ruleKindWatchRule, pipelineOutcomeRouted)
 		routed++
 	}
 	for _, rule := range cwrRules {
@@ -526,11 +548,72 @@ func (c *AuditConsumer) routeToMatchedRules(
 		if err := c.eventRouter.RouteToGitTargetEventStream(ev, gitDest); err != nil {
 			log.V(1).Info("Failed to route audit event via ClusterWatchRule", "error", err,
 				"gitTarget", gitDest.String())
+			recordRouteTarget(
+				ctx, rule.GitTargetNamespace, rule.GitTargetRef, ruleKindClusterWatchRule, pipelineOutcomeRouteFailed)
 			continue
 		}
+		recordRouteTarget(
+			ctx,
+			rule.GitTargetNamespace,
+			rule.GitTargetRef,
+			ruleKindClusterWatchRule,
+			pipelineOutcomeRouted,
+		)
 		routed++
 	}
 	return routed
+}
+
+// pipelineGVR carries the bounded group/version/resource labels for the
+// audit pipeline consumer metric.
+type pipelineGVR struct {
+	group    string
+	version  string
+	resource string
+}
+
+// Audit pipeline consumer-stage outcome and rule-kind label values.
+const (
+	pipelineOutcomeUnmatched     = "unmatched"
+	pipelineOutcomeDroppedNoBody = "dropped_no_body"
+	pipelineOutcomeRouted        = "routed"
+	pipelineOutcomeRouteFailed   = "route_failed"
+
+	ruleKindWatchRule        = "watchrule"
+	ruleKindClusterWatchRule = "clusterwatchrule"
+)
+
+// recordPipelineEvent emits one audit_pipeline_events_total sample for a
+// canonical audit event that reached the consumer.
+func recordPipelineEvent(ctx context.Context, gvr pipelineGVR, verb, outcome string) {
+	if telemetry.AuditPipelineEventsTotal == nil {
+		return
+	}
+	resource := gvr.resource
+	if resource == "" {
+		resource = "unknown"
+	}
+	telemetry.AuditPipelineEventsTotal.Add(ctx, 1, metric.WithAttributes(
+		attribute.String("group", gvr.group),
+		attribute.String("version", gvr.version),
+		attribute.String("resource", resource),
+		attribute.String("verb", verb),
+		attribute.String("outcome", outcome),
+	))
+}
+
+// recordRouteTarget emits one audit_pipeline_route_targets_total sample for a
+// per-GitTarget route attempt.
+func recordRouteTarget(ctx context.Context, gitTargetNamespace, gitTarget, ruleKind, outcome string) {
+	if telemetry.AuditPipelineRouteTargetsTotal == nil {
+		return
+	}
+	telemetry.AuditPipelineRouteTargetsTotal.Add(ctx, 1, metric.WithAttributes(
+		attribute.String("git_target_namespace", gitTargetNamespace),
+		attribute.String("git_target", gitTarget),
+		attribute.String("rule_kind", ruleKind),
+		attribute.String("outcome", outcome),
+	))
 }
 
 // buildGitEvent constructs a git.Event for a given rule match.

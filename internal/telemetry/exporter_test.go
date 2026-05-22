@@ -26,27 +26,40 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/metric/noop"
 )
+
+// metricAttrs builds a single-attribute measurement option for tests.
+func metricAttrs(key, value string) metric.MeasurementOption {
+	return metric.WithAttributes(attribute.String(key, value))
+}
 
 func TestInitOTLPExporter_Success(t *testing.T) {
 	ctx := context.Background()
 
-	// Execute
 	shutdownFunc, err := InitOTLPExporter(ctx)
 
-	// Verify
 	require.NoError(t, err)
 	assert.NotNil(t, shutdownFunc)
 
-	// Verify all metrics are initialized
-	assert.NotNil(t, EventsReceivedTotal)
-	assert.NotNil(t, EventsProcessedTotal)
+	// Verify representative metrics across counters, histograms, and gauges
+	// are initialized.
 	assert.NotNil(t, GitOperationsTotal)
 	assert.NotNil(t, GitPushDurationSeconds)
-	assert.NotNil(t, GitCommitQueueSize)
+	assert.NotNil(t, ObjectsScannedTotal)
+	assert.NotNil(t, AuditEventListsTotal)
+	assert.NotNil(t, AuditEventListEventsTotal)
+	assert.NotNil(t, AuditEventListDurationSeconds)
+	assert.NotNil(t, AuditPipelineEventsTotal)
+	assert.NotNil(t, AuditPipelineRouteTargetsTotal)
+	assert.NotNil(t, APICatalogResources)
+	assert.NotNil(t, APICatalogGroupVersions)
+	assert.NotNil(t, APICatalogRefreshTotal)
+	assert.NotNil(t, APICatalogRefreshDurationSeconds)
+	assert.NotNil(t, APICatalogGeneration)
 
-	// Test shutdown function
 	err = shutdownFunc(ctx)
 	require.NoError(t, err)
 }
@@ -54,7 +67,6 @@ func TestInitOTLPExporter_Success(t *testing.T) {
 func TestMetricsInitialization(t *testing.T) {
 	ctx := context.Background()
 
-	// Initialize metrics
 	shutdownFunc, err := InitOTLPExporter(ctx)
 	require.NoError(t, err)
 	defer func() {
@@ -63,19 +75,7 @@ func TestMetricsInitialization(t *testing.T) {
 		}
 	}()
 
-	// Test that all metrics can be used without panicking
-	t.Run("EventsReceivedTotal", func(t *testing.T) {
-		assert.NotPanics(t, func() {
-			EventsReceivedTotal.Add(ctx, 1)
-		})
-	})
-
-	t.Run("EventsProcessedTotal", func(t *testing.T) {
-		assert.NotPanics(t, func() {
-			EventsProcessedTotal.Add(ctx, 1)
-		})
-	})
-
+	// Test that all metrics can be used without panicking.
 	t.Run("GitOperationsTotal", func(t *testing.T) {
 		assert.NotPanics(t, func() {
 			GitOperationsTotal.Add(ctx, 1)
@@ -88,48 +88,53 @@ func TestMetricsInitialization(t *testing.T) {
 		})
 	})
 
-	t.Run("GitCommitQueueSize", func(t *testing.T) {
+	t.Run("AuditEventListsTotal", func(t *testing.T) {
 		assert.NotPanics(t, func() {
-			GitCommitQueueSize.Add(ctx, 1)
-			GitCommitQueueSize.Add(ctx, -1)
+			AuditEventListsTotal.Add(ctx, 1)
+		})
+	})
+
+	t.Run("AuditEventListDurationSeconds", func(t *testing.T) {
+		assert.NotPanics(t, func() {
+			AuditEventListDurationSeconds.Record(ctx, 0.25)
+		})
+	})
+
+	t.Run("AuditPipelineEventsTotal", func(t *testing.T) {
+		assert.NotPanics(t, func() {
+			AuditPipelineEventsTotal.Add(ctx, 1)
+		})
+	})
+
+	t.Run("APICatalogResources", func(t *testing.T) {
+		assert.NotPanics(t, func() {
+			APICatalogResources.Record(ctx, 42)
+		})
+	})
+
+	t.Run("APICatalogGeneration", func(t *testing.T) {
+		assert.NotPanics(t, func() {
+			APICatalogGeneration.Record(ctx, 7)
+		})
+	})
+
+	t.Run("APICatalogRefreshDurationSeconds", func(t *testing.T) {
+		assert.NotPanics(t, func() {
+			APICatalogRefreshDurationSeconds.Record(ctx, 0.05)
 		})
 	})
 }
 
-func TestMetricNames(t *testing.T) {
-	ctx := context.Background()
-
-	// Initialize metrics
-	shutdownFunc, err := InitOTLPExporter(ctx)
-	require.NoError(t, err)
-	defer func() {
-		if shutdownFunc != nil {
-			assert.NoError(t, shutdownFunc(ctx))
-		}
-	}()
-
-	// We can't directly test the metric names from the instruments,
-	// but we can verify they were created without error
-	assert.NotNil(t, EventsReceivedTotal)
-	assert.NotNil(t, EventsProcessedTotal)
-	assert.NotNil(t, GitOperationsTotal)
-	assert.NotNil(t, GitPushDurationSeconds)
-	assert.NotNil(t, GitCommitQueueSize)
-}
-
 func TestMeterInitialization(t *testing.T) {
-	// Verify the meter is initialized with the correct name
 	assert.NotNil(t, otelMeter)
 
-	// The meter should be from the global meter provider
 	globalMeter := otel.Meter("gitops-reverser")
 	assert.NotNil(t, globalMeter)
 }
 
-func TestMetricsUsagePatterns(t *testing.T) {
+func TestAuditPipelineMetricUsage(t *testing.T) {
 	ctx := context.Background()
 
-	// Initialize metrics
 	shutdownFunc, err := InitOTLPExporter(ctx)
 	require.NoError(t, err)
 	defer func() {
@@ -138,49 +143,20 @@ func TestMetricsUsagePatterns(t *testing.T) {
 		}
 	}()
 
-	// Test typical usage patterns
-	t.Run("WebhookEventProcessing", func(t *testing.T) {
-		// Simulate webhook receiving and processing events
-		assert.NotPanics(t, func() {
-			EventsReceivedTotal.Add(ctx, 1)
-			EventsProcessedTotal.Add(ctx, 1)
-			GitCommitQueueSize.Add(ctx, 1)
-		})
-	})
-
-	t.Run("GitOperations", func(t *testing.T) {
-		// Simulate git operations
-		assert.NotPanics(t, func() {
-			GitOperationsTotal.Add(ctx, 1)
-			GitPushDurationSeconds.Record(ctx, 2.5)
-			GitCommitQueueSize.Add(ctx, -1) // Decrement after processing
-		})
-	})
-
-	t.Run("BatchProcessing", func(t *testing.T) {
-		// Simulate batch processing
-		assert.NotPanics(t, func() {
-			// Multiple events received
-			EventsReceivedTotal.Add(ctx, 5)
-
-			// Queue size increases
-			GitCommitQueueSize.Add(ctx, 5)
-
-			// Batch processed
-			EventsProcessedTotal.Add(ctx, 5)
-			GitOperationsTotal.Add(ctx, 1) // One git operation for the batch
-			GitPushDurationSeconds.Record(ctx, 3.2)
-
-			// Queue size decreases
-			GitCommitQueueSize.Add(ctx, -5)
-		})
+	// Simulate the audit ingestion pipeline emitting metrics at each stage.
+	assert.NotPanics(t, func() {
+		AuditEventListsTotal.Add(ctx, 1)
+		AuditEventListEventsTotal.Add(ctx, 5)
+		AuditEventListDurationSeconds.Record(ctx, 0.12)
+		AuditEventsReceivedTotal.Add(ctx, 5)
+		AuditPipelineEventsTotal.Add(ctx, 5)
+		AuditPipelineRouteTargetsTotal.Add(ctx, 3)
 	})
 }
 
-func TestMetricsWithAttributes(t *testing.T) {
+func TestAPICatalogMetricUsage(t *testing.T) {
 	ctx := context.Background()
 
-	// Initialize metrics
 	shutdownFunc, err := InitOTLPExporter(ctx)
 	require.NoError(t, err)
 	defer func() {
@@ -189,30 +165,21 @@ func TestMetricsWithAttributes(t *testing.T) {
 		}
 	}()
 
-	// Test metrics with different attribute patterns
-	// Note: The current implementation doesn't use attributes,
-	// but we test that the metrics work with context variations
-
-	type contextKey string
-	const operationKey contextKey = "operation"
-
-	t.Run("WithDifferentContexts", func(t *testing.T) {
-		ctx1 := context.WithValue(ctx, operationKey, "create")
-		ctx2 := context.WithValue(ctx, operationKey, "update")
-		ctx3 := context.WithValue(ctx, operationKey, "delete")
-
-		assert.NotPanics(t, func() {
-			EventsReceivedTotal.Add(ctx1, 1)
-			EventsReceivedTotal.Add(ctx2, 1)
-			EventsReceivedTotal.Add(ctx3, 1)
-		})
+	// Gauges are idempotent: overwriting them on every refresh is correct.
+	assert.NotPanics(t, func() {
+		APICatalogResources.Record(ctx, 120)
+		APICatalogResources.Record(ctx, 118)
+		APICatalogGroupVersions.Record(ctx, 30)
+		APICatalogGroupVersions.Record(ctx, 0)
+		APICatalogRefreshTotal.Add(ctx, 1)
+		APICatalogRefreshDurationSeconds.Record(ctx, 0.03)
+		APICatalogGeneration.Record(ctx, 12)
 	})
 }
 
 func TestConcurrentMetricsUsage(t *testing.T) {
 	ctx := context.Background()
 
-	// Initialize metrics
 	shutdownFunc, err := InitOTLPExporter(ctx)
 	require.NoError(t, err)
 	defer func() {
@@ -221,26 +188,22 @@ func TestConcurrentMetricsUsage(t *testing.T) {
 		}
 	}()
 
-	// Test concurrent access to metrics
 	done := make(chan bool, 3)
 
-	// Goroutine 1: Events received
 	go func() {
 		defer func() { done <- true }()
 		for range 100 {
-			EventsReceivedTotal.Add(ctx, 1)
+			AuditEventListsTotal.Add(ctx, 1)
 		}
 	}()
 
-	// Goroutine 2: Events processed
 	go func() {
 		defer func() { done <- true }()
 		for range 100 {
-			EventsProcessedTotal.Add(ctx, 1)
+			AuditPipelineEventsTotal.Add(ctx, 1)
 		}
 	}()
 
-	// Goroutine 3: Git operations
 	go func() {
 		defer func() { done <- true }()
 		for i := range 100 {
@@ -249,52 +212,14 @@ func TestConcurrentMetricsUsage(t *testing.T) {
 		}
 	}()
 
-	// Wait for all goroutines to complete
 	<-done
 	<-done
 	<-done
-
-	// Test should complete without panics or deadlocks
-}
-
-func TestQueueSizeMetricBehavior(t *testing.T) {
-	ctx := context.Background()
-
-	// Initialize metrics
-	shutdownFunc, err := InitOTLPExporter(ctx)
-	require.NoError(t, err)
-	defer func() {
-		if shutdownFunc != nil {
-			assert.NoError(t, shutdownFunc(ctx))
-		}
-	}()
-
-	// Test UpDownCounter behavior
-	t.Run("IncreaseDecrease", func(t *testing.T) {
-		assert.NotPanics(t, func() {
-			// Increase queue size
-			GitCommitQueueSize.Add(ctx, 10)
-
-			// Decrease queue size
-			GitCommitQueueSize.Add(ctx, -5)
-
-			// Further decrease
-			GitCommitQueueSize.Add(ctx, -5)
-		})
-	})
-
-	t.Run("NegativeValues", func(t *testing.T) {
-		assert.NotPanics(t, func() {
-			// UpDownCounter should handle negative values
-			GitCommitQueueSize.Add(ctx, -1)
-		})
-	})
 }
 
 func TestHistogramMetricBehavior(t *testing.T) {
 	ctx := context.Background()
 
-	// Initialize metrics
 	shutdownFunc, err := InitOTLPExporter(ctx)
 	require.NoError(t, err)
 	defer func() {
@@ -303,61 +228,30 @@ func TestHistogramMetricBehavior(t *testing.T) {
 		}
 	}()
 
-	// Test histogram with various values
-	testValues := []float64{
-		0.001, // Very fast
-		0.1,   // Fast
-		1.0,   // Normal
-		5.0,   // Slow
-		30.0,  // Very slow
-		0.0,   // Edge case: zero
-	}
+	testValues := []float64{0.001, 0.1, 1.0, 5.0, 30.0, 0.0}
 
 	for _, value := range testValues {
 		t.Run(fmt.Sprintf("Duration_%g", value), func(t *testing.T) {
 			assert.NotPanics(t, func() {
 				GitPushDurationSeconds.Record(ctx, value)
+				AuditEventListDurationSeconds.Record(ctx, value)
+				APICatalogRefreshDurationSeconds.Record(ctx, value)
 			})
 		})
 	}
 }
 
 func TestMetricsErrorHandling(t *testing.T) {
-	// Test behavior when metrics are not initialized
-	// This tests the global variables before initialization
-
-	// Save original values
-	originalEventsReceived := EventsReceivedTotal
-	originalEventsProcessed := EventsProcessedTotal
-	originalGitOperations := GitOperationsTotal
-	originalGitPushDuration := GitPushDurationSeconds
-	originalGitCommitQueue := GitCommitQueueSize
-
-	// Reset to nil to simulate uninitialized state
-	EventsReceivedTotal = nil
-	EventsProcessedTotal = nil
+	// Document behavior when metrics are not initialized.
+	original := GitOperationsTotal
 	GitOperationsTotal = nil
-	GitPushDurationSeconds = nil
-	GitCommitQueueSize = nil
-
-	defer func() {
-		// Restore original values
-		EventsReceivedTotal = originalEventsReceived
-		EventsProcessedTotal = originalEventsProcessed
-		GitOperationsTotal = originalGitOperations
-		GitPushDurationSeconds = originalGitPushDuration
-		GitCommitQueueSize = originalGitCommitQueue
-	}()
+	defer func() { GitOperationsTotal = original }()
 
 	ctx := context.Background()
 
-	// These should panic or handle nil gracefully
-	// In a real implementation, we might want to add nil checks
 	t.Run("NilMetrics", func(t *testing.T) {
-		// Current implementation will panic with nil metrics
-		// This test documents the current behavior
 		assert.Panics(t, func() {
-			EventsReceivedTotal.Add(ctx, 1)
+			GitOperationsTotal.Add(ctx, 1)
 		})
 	})
 }
@@ -365,55 +259,101 @@ func TestMetricsErrorHandling(t *testing.T) {
 func TestShutdownFunction(t *testing.T) {
 	ctx := context.Background()
 
-	// Initialize metrics
 	shutdownFunc, err := InitOTLPExporter(ctx)
 	require.NoError(t, err)
 	require.NotNil(t, shutdownFunc)
 
-	// Test shutdown function
 	err = shutdownFunc(ctx)
 	require.NoError(t, err)
 
-	// Test calling shutdown multiple times
+	// Calling shutdown multiple times should not error.
 	err = shutdownFunc(ctx)
-	require.NoError(t, err) // Should not error on multiple calls
+	require.NoError(t, err)
 }
 
 func TestMetricsAfterShutdown(t *testing.T) {
 	ctx := context.Background()
 
-	// Initialize metrics
 	shutdownFunc, err := InitOTLPExporter(ctx)
 	require.NoError(t, err)
 
-	// Use metrics before shutdown
 	assert.NotPanics(t, func() {
-		EventsReceivedTotal.Add(ctx, 1)
+		GitOperationsTotal.Add(ctx, 1)
 	})
 
-	// Shutdown
 	err = shutdownFunc(ctx)
 	require.NoError(t, err)
 
-	// Metrics should still work after shutdown (they just won't be exported)
+	// Metrics still work after shutdown (they just are not exported).
 	assert.NotPanics(t, func() {
-		EventsReceivedTotal.Add(ctx, 1)
+		GitOperationsTotal.Add(ctx, 1)
+	})
+}
+
+func TestInitTestExporterAndCollect(t *testing.T) {
+	ctx := context.Background()
+
+	reader, err := InitTestExporter()
+	require.NoError(t, err)
+	require.NotNil(t, reader)
+
+	t.Run("counter sum by attributes", func(t *testing.T) {
+		AuditPipelineEventsTotal.Add(ctx, 2, metricAttrs("outcome", "routed"))
+		AuditPipelineEventsTotal.Add(ctx, 3, metricAttrs("outcome", "routed"))
+		AuditPipelineEventsTotal.Add(ctx, 7, metricAttrs("outcome", "unmatched"))
+
+		routed, ok := CollectInt64Sum(reader, "gitopsreverser_audit_pipeline_events_total",
+			map[string]string{"outcome": "routed"})
+		require.True(t, ok)
+		assert.Equal(t, int64(5), routed)
+
+		unmatched, ok := CollectInt64Sum(reader, "gitopsreverser_audit_pipeline_events_total",
+			map[string]string{"outcome": "unmatched"})
+		require.True(t, ok)
+		assert.Equal(t, int64(7), unmatched)
+	})
+
+	t.Run("missing metric and attribute", func(t *testing.T) {
+		_, ok := CollectInt64Sum(reader, "gitopsreverser_does_not_exist", nil)
+		assert.False(t, ok)
+
+		_, ok = CollectInt64Sum(reader, "gitopsreverser_audit_pipeline_events_total",
+			map[string]string{"outcome": "never_recorded"})
+		assert.False(t, ok)
+	})
+
+	t.Run("gauge last value", func(t *testing.T) {
+		APICatalogResources.Record(ctx, 10, metricAttrs("state", "allowed"))
+		APICatalogResources.Record(ctx, 12, metricAttrs("state", "allowed"))
+
+		allowed, ok := CollectInt64Sum(reader, "gitopsreverser_api_catalog_resources",
+			map[string]string{"state": "allowed"})
+		require.True(t, ok)
+		assert.Equal(t, int64(12), allowed)
+	})
+
+	t.Run("histogram count", func(t *testing.T) {
+		AuditEventListDurationSeconds.Record(ctx, 0.1, metricAttrs("source", "official"))
+		AuditEventListDurationSeconds.Record(ctx, 0.2, metricAttrs("source", "official"))
+
+		count, ok := CollectHistogramCount(reader, "gitopsreverser_audit_eventlist_duration_seconds",
+			map[string]string{"source": "official"})
+		require.True(t, ok)
+		assert.Equal(t, uint64(2), count)
+
+		_, ok = CollectHistogramCount(reader, "gitopsreverser_audit_pipeline_events_total", nil)
+		assert.False(t, ok, "a counter is not a histogram")
 	})
 }
 
 func TestMeterProviderIntegration(t *testing.T) {
-	// Test that our meter integrates properly with the global meter provider
-
-	// Get a meter with the same name
 	testMeter := otel.Meter("gitops-reverser")
 	assert.NotNil(t, testMeter)
 
-	// Create a test counter
 	counter, err := testMeter.Int64Counter("test_counter")
 	require.NoError(t, err)
 	assert.NotNil(t, counter)
 
-	// Use the counter
 	ctx := context.Background()
 	assert.NotPanics(t, func() {
 		counter.Add(ctx, 1)
@@ -421,63 +361,23 @@ func TestMeterProviderIntegration(t *testing.T) {
 }
 
 func TestNoOpMeterProvider(t *testing.T) {
-	// Test behavior with no-op meter provider
 	ctx := context.Background()
 
-	// Set up a no-op meter provider
 	noopProvider := noop.NewMeterProvider()
 	otel.SetMeterProvider(noopProvider)
+	defer otel.SetMeterProvider(nil)
 
-	defer func() {
-		// Reset to default
-		otel.SetMeterProvider(nil)
-	}()
-
-	// Initialize with no-op provider
 	shutdownFunc, err := InitOTLPExporter(ctx)
 	require.NoError(t, err)
 	assert.NotNil(t, shutdownFunc)
 
-	// Metrics should still work (but do nothing)
 	assert.NotPanics(t, func() {
-		EventsReceivedTotal.Add(ctx, 1)
-		EventsProcessedTotal.Add(ctx, 1)
 		GitOperationsTotal.Add(ctx, 1)
 		GitPushDurationSeconds.Record(ctx, 1.0)
-		GitCommitQueueSize.Add(ctx, 1)
+		AuditPipelineEventsTotal.Add(ctx, 1)
+		APICatalogResources.Record(ctx, 1)
 	})
 
-	// Shutdown should work
 	err = shutdownFunc(ctx)
 	require.NoError(t, err)
-}
-
-func TestMetricNaming(t *testing.T) {
-	// Test that metric names follow OpenTelemetry conventions
-	expectedNames := []string{
-		"gitopsreverser_events_received_total",
-		"gitopsreverser_events_processed_total",
-		"gitopsreverser_git_operations_total",
-		"gitopsreverser_git_push_duration_seconds",
-		"gitopsreverser_git_commit_queue_size",
-	}
-
-	// Verify naming conventions
-	for _, name := range expectedNames {
-		// Names should be lowercase
-		// Verify metric name is not empty
-		assert.NotEmpty(t, name)
-
-		// Names should use underscores
-		assert.Contains(t, name, "_")
-
-		// Names should have appropriate prefixes
-		assert.True(t,
-			name == "gitopsreverser_events_received_total" ||
-				name == "gitopsreverser_events_processed_total" ||
-				name == "gitopsreverser_git_operations_total" ||
-				name == "gitopsreverser_git_push_duration_seconds" ||
-				name == "gitopsreverser_git_commit_queue_size",
-			"Unexpected metric name: %s", name)
-	}
 }

@@ -22,8 +22,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
+	"time"
 
 	"github.com/go-logr/logr"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/dynamic"
@@ -33,6 +37,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 
 	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 )
 
 // restConfig acquires the controller runtime REST config.
@@ -65,14 +70,70 @@ func apiServiceTriggerGVR() schema.GroupVersionResource {
 }
 
 // RefreshAPIResourceCatalog refreshes trusted catalog data from Kubernetes discovery.
-func (m *Manager) RefreshAPIResourceCatalog(_ context.Context) error {
+func (m *Manager) RefreshAPIResourceCatalog(ctx context.Context) error {
 	catalog := m.apiResourceCatalog()
 	disco, err := m.apiResourceDiscovery()
 	if err != nil {
 		return err
 	}
-	_, err = catalog.Refresh(disco)
-	return err
+	start := time.Now()
+	changed, refreshErr := catalog.Refresh(disco)
+	recordCatalogRefresh(ctx, changed, refreshErr, time.Since(start))
+	if refreshErr == nil {
+		recordCatalogStats(ctx, catalog.Stats())
+	}
+	return refreshErr
+}
+
+// Catalog refresh outcome label values.
+const (
+	catalogRefreshChanged   = "changed"
+	catalogRefreshUnchanged = "unchanged"
+	catalogRefreshError     = "error"
+)
+
+// recordCatalogRefresh emits the api_catalog_refresh_total counter and the
+// api_catalog_refresh_duration_seconds histogram for one refresh.
+func recordCatalogRefresh(ctx context.Context, changed bool, err error, elapsed time.Duration) {
+	if telemetry.APICatalogRefreshDurationSeconds != nil {
+		telemetry.APICatalogRefreshDurationSeconds.Record(ctx, elapsed.Seconds())
+	}
+	if telemetry.APICatalogRefreshTotal == nil {
+		return
+	}
+	outcome := catalogRefreshUnchanged
+	switch {
+	case err != nil:
+		outcome = catalogRefreshError
+	case changed:
+		outcome = catalogRefreshChanged
+	}
+	telemetry.APICatalogRefreshTotal.Add(ctx, 1, metric.WithAttributes(attribute.String("outcome", outcome)))
+}
+
+// recordCatalogStats sets the api_catalog_resources, api_catalog_group_versions,
+// and api_catalog_generation gauges after a successful refresh. Gauges are
+// idempotent, so overwriting them on every refresh is correct.
+func recordCatalogStats(ctx context.Context, stats CatalogStats) {
+	if telemetry.APICatalogResources != nil {
+		telemetry.APICatalogResources.Record(ctx, int64(stats.AllowedResources),
+			metric.WithAttributes(attribute.String("state", "allowed")))
+		telemetry.APICatalogResources.Record(ctx, int64(stats.ExcludedResources),
+			metric.WithAttributes(attribute.String("state", "excluded")))
+	}
+	if telemetry.APICatalogGroupVersions != nil {
+		telemetry.APICatalogGroupVersions.Record(ctx, int64(stats.TrustedGroupVersions),
+			metric.WithAttributes(attribute.String("state", "trusted")))
+		telemetry.APICatalogGroupVersions.Record(ctx, int64(stats.DegradedGroupVersions),
+			metric.WithAttributes(attribute.String("state", "degraded")))
+	}
+	if telemetry.APICatalogGeneration != nil {
+		generation := stats.Generation
+		if generation > math.MaxInt64 {
+			generation = math.MaxInt64
+		}
+		telemetry.APICatalogGeneration.Record(ctx, int64(generation))
+	}
 }
 
 func (m *Manager) apiResourceCatalog() *APIResourceCatalog {

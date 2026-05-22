@@ -1,7 +1,8 @@
 # Implementation Plan: Audit Ingestion Metrics Overhaul
 
 > Status: proposed — not yet implemented
-> Scope: audit ingestion pipeline observability
+> Scope: audit ingestion pipeline observability, plus API resource catalog
+> (watch path) observability — see the dedicated section near the end
 
 ## Goal
 
@@ -318,6 +319,105 @@ Git write-path work if the remaining worker metrics do not cover it.
 in [architecture.md](../architecture.md). A label with one value is noise.
 Remove it.
 
+## API resource catalog observability (watch path)
+
+> Scope note: this is the **watch/informer path**, not the audit ingestion
+> pipeline of changes 1-9. It is bundled into this doc because it is the same
+> `telemetry` exporter work and the same "a metric without an interpretation
+> is noise" bar. The two halves are otherwise independent.
+
+The `APIResourceCatalog`
+([internal/watch/api_resource_catalog.go](../../internal/watch/api_resource_catalog.go))
+is GitOps Reverser's single trusted in-memory view of the cluster's served API
+surface. It is refreshed from Kubernetes discovery by
+[`Manager.RefreshAPIResourceCatalog`](../../internal/watch/manager_catalog.go#L68),
+which runs:
+
+- once per `ReconcileForRuleChange` — i.e. on the **30 s periodic ticker**, on
+  every CRD/APIService trigger-informer event, and on every rule change;
+- again inside `getClusterState`, once per GitTarget being snapshotted.
+
+Today it emits **no metrics**. An operator cannot see how large the catalog
+is, how many resources the default watch policy excludes, whether discovery is
+degraded, or how often the 30 s sweep actually changes anything.
+
+### Is the 30 s refresh heavy?
+
+No — but it is worth being able to prove that. One refresh is:
+
+1. One `ServerGroupsAndResources()` discovery call. On Kubernetes ≥ 1.27 with
+   aggregated discovery this is **two cached GETs** (`/api`, `/apis`) that the
+   apiserver serves from memory. Without aggregated discovery it falls back to
+   one GET per group/version — 100+ requests on a CRD-heavy cluster.
+2. An in-memory diff (`catalogEntriesEqual`) and, only when something changed,
+   an index rebuild — both O(total resources), microseconds.
+
+So the cost is dominated by discovery **latency**, not CPU, and the apiserver
+side is cheap. The two things actually worth watching are therefore (a) the
+refresh **duration** — to catch a slow or non-aggregated apiserver — and (b)
+the **changed/unchanged ratio**. A catalog that reports `changed` on every
+sweep means something is flapping (e.g. an aggregated APIService going in and
+out of `Available`), and *that* is the real cost — each change re-runs informer
+reconciliation. A steady stream of `unchanged` is the healthy baseline and
+confirms the 30 s cadence is doing nothing expensive.
+
+One inefficiency the metrics will expose: `getClusterState` calls
+`RefreshAPIResourceCatalog` again per GitTarget, so one reconcile pass can
+issue several discovery sweeps. The refresh counter against the generation
+gauge makes that redundancy visible; collapsing it to one refresh per pass is
+a cheap follow-up, not part of this change.
+
+### Proposed metrics
+
+All labels are bounded and tiny — no per-GVR cardinality here.
+
+```
+gitopsreverser_api_catalog_resources{state}            gauge
+gitopsreverser_api_catalog_group_versions{state}       gauge
+gitopsreverser_api_catalog_refresh_total{outcome}      counter
+gitopsreverser_api_catalog_refresh_duration_seconds    histogram
+gitopsreverser_api_catalog_generation                  gauge
+```
+
+| Metric | Labels | Meaning |
+| --- | --- | --- |
+| `api_catalog_resources` | `state` = `allowed` \| `excluded` | Count of served top-level resources in the catalog, split by `APIResourceEntry.Allowed`. `excluded` is the default-watch-policy set (pods, events, leases, jobs, …) from [resource_policy.go](../../internal/watch/resource_policy.go). Subresources are not counted. |
+| `api_catalog_group_versions` | `state` = `trusted` \| `degraded` | Group/versions discovery served cleanly vs. ones it reported as failed (`catalogGroupVersionState.degraded`). A non-zero `degraded` is the signal that a broken aggregated APIService is hiding part of the surface. |
+| `api_catalog_refresh_total` | `outcome` = `changed` \| `unchanged` \| `error` | One sample per `RefreshAPIResourceCatalog` call. `changed`/`unchanged` is `Refresh`'s returned bool; `error` covers discovery failure. |
+| `api_catalog_refresh_duration_seconds` | — | Wall time of one refresh, including the discovery call. |
+| `api_catalog_generation` | — | Current `APIResourceCatalog.Generation()`. `changes(...[1h])` shows churn at a glance. |
+
+Recording points:
+
+- `refresh_total` and `refresh_duration_seconds`: wrap `catalog.Refresh(disco)`
+  in [`RefreshAPIResourceCatalog`](../../internal/watch/manager_catalog.go#L74)
+  — it already has the `changed` bool and the error in scope.
+- `resources`, `group_versions`, `generation`: set after a successful refresh
+  from a new small `APIResourceCatalog.Stats()` accessor (counts computed under
+  the existing `RLock`). Gauges are idempotent, so resetting them on every
+  refresh is correct.
+
+Example queries:
+
+```promql
+# Is the 30 s sweep doing real work, or just confirming a stable surface?
+sum by (outcome) (rate(gitopsreverser_api_catalog_refresh_total[15m]))
+
+# How many resources is GitOps Reverser actually willing to watch?
+gitopsreverser_api_catalog_resources{state="allowed"}
+
+# Is part of the API surface hidden behind a broken APIService?
+gitopsreverser_api_catalog_group_versions{state="degraded"} > 0
+
+# Discovery latency — catches a non-aggregated or slow apiserver
+histogram_quantile(0.95,
+  rate(gitopsreverser_api_catalog_refresh_duration_seconds_bucket[5m]))
+```
+
+Out of scope for this addition: per-GVR catalog series (a cardinality bomb —
+the `Allowed`/`PolicyReason` detail belongs in logs and CR status, not
+metrics), and a discovery-call counter separate from the refresh counter.
+
 ## Out of scope (noted, not done here)
 
 - **Redis stream depth / consumer-lag metric** (`XLEN` / `XPENDING`). This is
@@ -347,6 +447,9 @@ Remove it.
 - [docs/architecture.md](../architecture.md): update the **Metrics** table in
   the Audit Ingestion Pipeline section (lines ~732-741) to the new label set
   and the new metrics.
+- [docs/interpreting-metrics.md](../interpreting-metrics.md): add a short
+  "API resource catalog" subsection for the five `api_catalog_*` metrics with
+  the changed/unchanged-ratio and `degraded` interpretations from above.
 
 ## Validation
 
@@ -371,6 +474,10 @@ Specific checks:
 - Scrape `/metrics` in an e2e run and confirm official and additional EventList
   ingress series appear, and no `cluster`, `gvr`, or `action` label remains on
   any audit series.
+- A catalog test asserting `api_catalog_refresh_total` records `changed` on a
+  first refresh and `unchanged` on an immediate second refresh of identical
+  discovery data, and that `api_catalog_resources{state="excluded"}` reflects
+  the default-watch-policy set.
 
 ## Resulting audit-pipeline metric inventory
 

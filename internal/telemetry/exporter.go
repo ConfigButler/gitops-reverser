@@ -35,11 +35,8 @@ import (
 
 var (
 	otelMeter              metric.Meter
-	EventsReceivedTotal    metric.Int64Counter
-	EventsProcessedTotal   metric.Int64Counter
 	GitOperationsTotal     metric.Int64Counter
 	GitPushDurationSeconds metric.Float64Histogram
-	GitCommitQueueSize     metric.Int64UpDownCounter
 
 	// ObjectsScannedTotal counts objects scanned by list/polling/informer paths.
 	ObjectsScannedTotal metric.Int64Counter
@@ -87,6 +84,32 @@ var (
 	// AuditOfficialGateWaitSeconds records how long an official audit event waited to acquire
 	// the in-pod canonical ordering gate before processing.
 	AuditOfficialGateWaitSeconds metric.Float64Histogram
+	// AuditEventListsTotal counts inbound audit EventList requests at the webhook boundary,
+	// labelled by source and bounded outcome.
+	AuditEventListsTotal metric.Int64Counter
+	// AuditEventListEventsTotal counts decoded audit event items delivered in EventLists,
+	// labelled by source and bounded outcome.
+	AuditEventListEventsTotal metric.Int64Counter
+	// AuditEventListDurationSeconds records how long the webhook takes to answer an
+	// EventList request, including in-pod join wait work.
+	AuditEventListDurationSeconds metric.Float64Histogram
+	// AuditPipelineEventsTotal counts canonical audit events at the consumer, labelled by
+	// GVR, verb, and the consumer-stage outcome.
+	AuditPipelineEventsTotal metric.Int64Counter
+	// AuditPipelineRouteTargetsTotal counts per-GitTarget route attempts at the consumer.
+	AuditPipelineRouteTargetsTotal metric.Int64Counter
+
+	// APICatalogResources gauges the count of served top-level resources in the catalog,
+	// split by the default-watch-policy allowed/excluded state.
+	APICatalogResources metric.Int64Gauge
+	// APICatalogGroupVersions gauges discovered group/versions, split into trusted vs degraded.
+	APICatalogGroupVersions metric.Int64Gauge
+	// APICatalogRefreshTotal counts API resource catalog refreshes by outcome.
+	APICatalogRefreshTotal metric.Int64Counter
+	// APICatalogRefreshDurationSeconds records the wall time of one catalog refresh.
+	APICatalogRefreshDurationSeconds metric.Float64Histogram
+	// APICatalogGeneration gauges the current APIResourceCatalog generation.
+	APICatalogGeneration metric.Int64Gauge
 	// SecretEncryptionAttemptsTotal counts total Secret encryption attempts.
 	SecretEncryptionAttemptsTotal metric.Int64Counter
 	// SecretEncryptionSuccessTotal counts successful Secret encryptions.
@@ -119,24 +142,56 @@ func InitOTLPExporter(_ context.Context) (func(context.Context) error, error) {
 	// Get the meter from the new provider.
 	otelMeter = provider.Meter("gitops-reverser")
 
-	// Register instruments in compact loops to keep complexity low.
-	type cSpec struct {
+	if err := registerInstruments(); err != nil {
+		return nil, err
+	}
+
+	return func(_ context.Context) error {
+		fmt.Println("Shutting down OTLP exporter")
+		return nil
+	}, nil
+}
+
+// InitTestExporter wires the global instruments to a meter provider backed by a
+// manual reader, so unit tests can collect and assert recorded metric values.
+// It returns the reader to collect from.
+func InitTestExporter() (*sdkmetric.ManualReader, error) {
+	reader := sdkmetric.NewManualReader()
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	otel.SetMeterProvider(provider)
+	otelMeter = provider.Meter("gitops-reverser")
+	if err := registerInstruments(); err != nil {
+		return nil, err
+	}
+	return reader, nil
+}
+
+// Instrument registration spec types. Each pairs a metric name with the
+// package-level variable that receives the created instrument.
+type (
+	cSpec struct {
 		name string
 		dest *metric.Int64Counter
 	}
-	type hSpec struct {
+	hSpec struct {
 		name    string
 		dest    *metric.Float64Histogram
 		buckets []float64
 	}
-	type uSpec struct {
+	uSpec struct {
 		name string
 		dest *metric.Int64UpDownCounter
 	}
+	gSpec struct {
+		name string
+		dest *metric.Int64Gauge
+	}
+)
 
+// registerInstruments creates every metric instrument against the current
+// otelMeter and stores it in its package-level variable.
+func registerInstruments() error {
 	counters := []cSpec{
-		{"gitopsreverser_events_received_total", &EventsReceivedTotal},
-		{"gitopsreverser_events_processed_total", &EventsProcessedTotal},
 		{"gitopsreverser_git_operations_total", &GitOperationsTotal},
 		{"gitopsreverser_objects_scanned_total", &ObjectsScannedTotal},
 		{"gitopsreverser_objects_written_total", &ObjectsWrittenTotal},
@@ -155,6 +210,11 @@ func InitOTLPExporter(_ context.Context) (func(context.Context) error, error) {
 		{"gitopsreverser_audit_join_duplicate_dropped_total", &AuditJoinDuplicateDroppedTotal},
 		{"gitopsreverser_audit_shallow_dropped_total", &AuditShallowDroppedTotal},
 		{"gitopsreverser_audit_join_body_late_total", &AuditJoinBodyLateTotal},
+		{"gitopsreverser_audit_eventlists_total", &AuditEventListsTotal},
+		{"gitopsreverser_audit_eventlist_events_total", &AuditEventListEventsTotal},
+		{"gitopsreverser_audit_pipeline_events_total", &AuditPipelineEventsTotal},
+		{"gitopsreverser_audit_pipeline_route_targets_total", &AuditPipelineRouteTargetsTotal},
+		{"gitopsreverser_api_catalog_refresh_total", &APICatalogRefreshTotal},
 		{"gitopsreverser_secret_encryption_attempts_total", &SecretEncryptionAttemptsTotal},
 		{"gitopsreverser_secret_encryption_success_total", &SecretEncryptionSuccessTotal},
 		{"gitopsreverser_secret_encryption_failures_total", &SecretEncryptionFailuresTotal},
@@ -164,7 +224,7 @@ func InitOTLPExporter(_ context.Context) (func(context.Context) error, error) {
 	for _, s := range counters {
 		v, err := otelMeter.Int64Counter(s.name)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		*s.dest = v
 	}
@@ -172,10 +232,19 @@ func InitOTLPExporter(_ context.Context) (func(context.Context) error, error) {
 	// auditJoinBuckets span the wait budget (sub-second) and the parked-body TTL margin
 	// (seconds to minutes) so one set of boundaries fits both skew and gate-wait timings.
 	auditJoinBuckets := []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 5, 30, 300}
+	// catalogRefreshBuckets span discovery latency: two cached GETs on an aggregated
+	// apiserver (sub-second) up to a slow per-group fallback (seconds).
+	catalogRefreshBuckets := []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10}
 	hists := []hSpec{
 		{"gitopsreverser_git_push_duration_seconds", &GitPushDurationSeconds, nil},
 		{"gitopsreverser_audit_join_skew_seconds", &AuditJoinSkewSeconds, auditJoinBuckets},
 		{"gitopsreverser_audit_official_gate_wait_seconds", &AuditOfficialGateWaitSeconds, auditJoinBuckets},
+		{"gitopsreverser_audit_eventlist_duration_seconds", &AuditEventListDurationSeconds, auditJoinBuckets},
+		{
+			"gitopsreverser_api_catalog_refresh_duration_seconds",
+			&APICatalogRefreshDurationSeconds,
+			catalogRefreshBuckets,
+		},
 	}
 	for _, s := range hists {
 		opts := []metric.Float64HistogramOption{}
@@ -184,26 +253,35 @@ func InitOTLPExporter(_ context.Context) (func(context.Context) error, error) {
 		}
 		v, err := otelMeter.Float64Histogram(s.name, opts...)
 		if err != nil {
-			return nil, err
+			return err
+		}
+		*s.dest = v
+	}
+
+	gauges := []gSpec{
+		{"gitopsreverser_api_catalog_resources", &APICatalogResources},
+		{"gitopsreverser_api_catalog_group_versions", &APICatalogGroupVersions},
+		{"gitopsreverser_api_catalog_generation", &APICatalogGeneration},
+	}
+	for _, s := range gauges {
+		v, err := otelMeter.Int64Gauge(s.name)
+		if err != nil {
+			return err
 		}
 		*s.dest = v
 	}
 
 	upDowns := []uSpec{
-		{"gitopsreverser_git_commit_queue_size", &GitCommitQueueSize},
 		{"gitopsreverser_repo_branch_active_workers", &RepoBranchActiveWorkers},
 		{"gitopsreverser_repo_branch_queue_depth", &RepoBranchQueueDepth},
 	}
 	for _, s := range upDowns {
 		v, err := otelMeter.Int64UpDownCounter(s.name)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		*s.dest = v
 	}
 
-	return func(_ context.Context) error {
-		fmt.Println("Shutting down OTLP exporter")
-		return nil
-	}, nil
+	return nil
 }

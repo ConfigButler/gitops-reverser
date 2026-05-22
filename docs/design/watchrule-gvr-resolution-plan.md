@@ -41,7 +41,11 @@ object snapshot looks like deletions to the Git mirror.
 
 ## Status
 
-Draft — not yet implemented.
+Implemented. `APIResourceCatalog` and `RuleGVRResolver` landed in commit
+`aa2e463`; the pre-catalog discovery code they replaced was removed in the
+follow-up cleanup (see
+[`watch-gvr-resolution-cleanup.md`](./watch-gvr-resolution-cleanup.md)). This
+document is retained as the design record.
 
 ## Requirements
 
