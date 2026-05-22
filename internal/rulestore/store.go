@@ -246,33 +246,6 @@ func (s *RuleStore) IsReady() bool {
 	return s.ready
 }
 
-// CouldMatchResource reports whether any active rule could care about the resource.
-// It intentionally ignores namespace, object labels, and resource scope because
-// webhook ingress may see hollow audit events before object identity is complete.
-func (s *RuleStore) CouldMatchResource(
-	resourcePlural string,
-	operation configv1alpha1.OperationType,
-	apiGroup string,
-	apiVersion string,
-) bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	for _, rule := range s.rules {
-		if rule.matches(resourcePlural, operation, apiGroup, apiVersion) {
-			return true
-		}
-	}
-	for _, clusterRule := range s.clusterRules {
-		for _, rule := range clusterRule.Rules {
-			if rule.matchesCluster(resourcePlural, operation, apiGroup, apiVersion) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 // GetMatchingRules returns all namespaced WatchRules that match the given resource.
 // For namespaced resources, callers should provide an object carrying the event namespace
 // so namespaced WatchRules only match objects from their own namespace.

@@ -106,6 +106,11 @@ Key fields:
 - `spec.targetRef` — references a GitTarget in the same namespace
 - `spec.rules[]` — logical OR of resource rules, each with `operations`, `apiGroups`, `apiVersions`, `resources`
 
+Within a rule, omitted `apiGroups` / `apiVersions` mean *all* groups / versions: a bare resource
+name is resolved against the cluster's served API surface, not assumed to be core `/v1`. The
+controller reports resolution outcomes on a `ResourcesResolved` status condition — see
+[Watch / Informer System](#watch--informer-system).
+
 ### ClusterWatchRule (cluster-scoped)
 
 Watches resources across namespaces or cluster-wide.
@@ -189,12 +194,14 @@ flowchart TD
 
     subgraph "Watch / Informers (snapshot + discovery)"
         WM[Watch Manager]
+        CAT[APIResourceCatalog]
+        WM -->|resolve rules| CAT
         WM -->|GVR planning| RULE
         WM -->|snapshot events| ER
     end
 
     KAS -->|audit webhook POST| AH
-    KAS <-->|list/watch| WM
+    KAS <-->|list/watch + discovery| WM
 
     subgraph Ingestion
         AH[AuditHandler] -->|XADD| RS[(Redis Stream)]
@@ -306,8 +313,9 @@ wildcards (`*`) and core API group matching (`""`).
 
 This is an important architectural detail: **both the audit path and the watch/informer path depend
 on the same `GetMatchingRules` contract.** The RuleStore is also read by the Watch Manager's GVR
-planner (`ComputeRequestedGVRs`) to decide which informers to start. That means the RuleStore
-serves two different jobs through the same interface:
+planner (`ComputeRequestedGVRs`), which resolves the compiled rules against the API resource
+catalog (see [Watch / Informer System](#watch--informer-system)) to decide which informers to
+start. That means the RuleStore serves two different jobs through the same interface:
 
 - **GVR planning** — which resource types need informers (works at GVR granularity)
 - **Event routing** — which concrete object event should route to which target (needs full context
@@ -370,7 +378,7 @@ continue operating normally.
 
 ## Watch / Informer System
 
-- **Source**: [internal/watch/manager.go](internal/watch/manager.go), [internal/watch/informers.go](internal/watch/informers.go), [internal/watch/gvr.go](internal/watch/gvr.go)
+- **Source**: [internal/watch/manager.go](internal/watch/manager.go), [internal/watch/informers.go](internal/watch/informers.go), [internal/watch/gvr.go](internal/watch/gvr.go), [internal/watch/api_resource_catalog.go](internal/watch/api_resource_catalog.go), [internal/watch/rule_gvr_resolver.go](internal/watch/rule_gvr_resolver.go)
 
 The Watch Manager is a controller-runtime `Runnable` (leader-elected) that manages dynamic
 informers per GVR (Group/Version/Resource).
@@ -380,20 +388,57 @@ informers per GVR (Group/Version/Resource).
 Watch/informers are **not** used as the live event source (audit is). They serve three purposes:
 
 1. **Snapshot and reconcile** — provide cluster state for initial GitTarget sync and rule-change re-sync
-2. **GVR discovery and planning** — determine which GVRs need informers based on compiled rules, verified against API server discovery
+2. **GVR discovery and planning** — turn compiled rules into concrete GVRs against the API resource catalog
 3. **Content deduplication** — track last-seen content hashes to avoid redundant writes
+
+### API resource catalog
+
+- **Source**: [internal/watch/api_resource_catalog.go](internal/watch/api_resource_catalog.go), [internal/watch/rule_gvr_resolver.go](internal/watch/rule_gvr_resolver.go), [internal/watch/resource_policy.go](internal/watch/resource_policy.go)
+
+`APIResourceCatalog` is the single, trusted in-memory view of the API surface the cluster
+currently serves. It is built from `ServerGroupsAndResources()` discovery and is the only thing
+rule planning consults — snapshot planning, informer planning, and WatchRule status feedback all
+read the same catalog instead of each path running its own discovery lookup.
+
+Trust is tracked **per group/version**. A discovery refresh that fails for one aggregated API
+marks only that group/version `degraded` and keeps its last trusted entries; it never lets a
+flaky aggregated API erase a group and trigger spurious Git deletions. `Generation()` increments
+whenever trusted entries actually change. The catalog refreshes on startup, on the periodic
+reconcile, and on `CustomResourceDefinition` / `APIService` trigger informers
+(`startAPISurfaceTriggerInformers`, started with the Watch Manager runnable) whose events are
+coalesced into a single refresh signal.
+
+`RuleGVRResolver` applies WatchRule semantics to the catalog. A rule names resources, not
+necessarily their group or version:
+
+- Omitted `apiGroups` resolves the resource name across **all** served groups (so a bare
+  `resources: ["deployments"]` correctly resolves to `apps/v1`, not core `/v1`).
+- Omitted or `*` `apiVersions` picks the catalog's preferred served version.
+- A resource name served by more than one group is `Ambiguous` — the rule must name an
+  explicit `apiGroups` rather than have one guessed.
+- A resource absent from a cleanly discovered catalog is `NotServed`; one whose lookup scope is
+  degraded is `DiscoveryDegraded`; one excluded by built-in watch policy is `Disallowed`.
+
+Unresolved resources are reported on the WatchRule / ClusterWatchRule `ResourcesResolved` status
+condition rather than failing silently. Snapshot planning treats `NotServed` / `Ambiguous` /
+`Disallowed` as a skip (a resource type with no served objects cannot make the snapshot partial)
+but still aborts on `DiscoveryDegraded`, an unexpanded `*`, or a genuine list failure on a served
+GVR — a partial snapshot looks like deletions to the Git mirror.
 
 ### Reconcile cycle
 
 When WatchRule/ClusterWatchRule controllers change rules, they call `WatchManager.ReconcileForRuleChange()`:
 
-1. Compute requested GVRs from RuleStore
-2. Verify against API server discovery (with exponential backoff for unavailable GVRs)
+1. Refresh the API resource catalog from discovery
+2. Resolve compiled rules to concrete GVRs via `RuleGVRResolver`; unresolved resources are logged and surfaced on rule status
 3. Start/stop informers for added/removed GVRs
 4. Put affected GitTargetEventStreams into `RECONCILING` state
 5. Wait for informer cache sync
 6. Emit snapshot events → FolderReconciler diffs → atomic commit
 7. Transition streams to `LIVE_PROCESSING`, flush buffered events
+
+A newly installed CRD is picked up by the CRD / `APIService` trigger informers, which refresh the
+catalog and re-run the cycle; the periodic reconcile (30s) is the backstop.
 
 ### Future role
 
@@ -806,7 +851,7 @@ These are explicit, tracked follow-ups — not hidden surprises:
 | [internal/sshsig/](internal/sshsig/) | SSH commit signing (OpenSSH format) | |
 | [internal/telemetry/](internal/telemetry/) | OpenTelemetry metrics | |
 | [internal/types/](internal/types/) | Shared domain types | `ResourceIdentifier`, `ResourceReference` |
-| [internal/watch/](internal/watch/) | Dynamic informers + EventRouter | `Manager`, `EventRouter`, `GVR` |
+| [internal/watch/](internal/watch/) | Dynamic informers, API resource catalog + EventRouter | `Manager`, `EventRouter`, `GVR`, `APIResourceCatalog`, `RuleGVRResolver` |
 | [internal/webhook/](internal/webhook/) | Audit ingress handling | `AuditHandler`, `AuditEventJoiner`, `RedisAuditEventJoiner` |
 
 ---
@@ -818,6 +863,8 @@ For deeper context on specific decisions:
 - [Audit ingestion decision record](design/audit-ingestion-decision-record.md) — why audit is the authoritative live source
 - [GitTarget lifecycle and repo architecture](design/gittarget-lifecycle-and-repo-architecture.md) — GitTarget state machine details
 - [Watch and audit rule matching improvement](design/watch-audit-rule-matching-improvement.md) — known issues with namespace matching and startup bootstrap
+- [Kubernetes API resource catalog](design/kubernetes-api-resource-catalog.md) — the served-resource discovery model behind `APIResourceCatalog`
+- [WatchRule GVR resolution](design/watchrule-gvr-resolution-plan.md) — how bare rule resources resolve to concrete GVRs, and the snapshot trust model
 - [Multi-cluster audit ingestion implications](design/multi-cluster-audit-ingestion-implications.md) — what multi-cluster means beyond ingestion
 - [SOPS/age key management](design/sops-repo-bootstrap-and-key-management-architecture.md) — encryption architecture
 - [Audit webhook TLS design](design/audit-webhook-tls-design.md) — webhook transport security
