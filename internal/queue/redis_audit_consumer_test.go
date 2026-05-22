@@ -292,6 +292,57 @@ func TestExtractObject_CreateFallsBackToRequestObjectWhenResponseMissing(t *test
 	assert.Equal(t, "default", got.GetNamespace())
 }
 
+// TestExtractObject_RejectsStatusErrorBody is the consumer-side guard for the
+// production occurrence documented in
+// TestAuditHandler_ConflictResponseNeverReachesGit: a HelmRelease update that
+// failed with a 409 Conflict carries a metav1.Status error body as its
+// responseObject. If such an event ever reaches the consumer (e.g. via an
+// additional-source proxy body that lost its responseStatus), extractObject
+// must reject it rather than write the Status to Git as the resource.
+func TestExtractObject_RejectsStatusErrorBody(t *testing.T) {
+	// The exact shape the API server returned for helmreleases/info-rd.
+	statusBody := []byte(`{"apiVersion":"v1","kind":"Status","metadata":{"name":"info-rd",` +
+		`"namespace":"cozy-system"},"status":"Failure","reason":"Conflict",` +
+		`"message":"Operation cannot be fulfilled on helmreleases.helm.toolkit.fluxcd.io ` +
+		`\"info-rd\": the object has been modified; please apply your changes to the ` +
+		`latest version and try again"}`)
+
+	ev := auditv1.Event{
+		ResponseObject: &runtime.Unknown{Raw: statusBody},
+	}
+
+	_, err := extractObject(
+		ev,
+		configv1alpha1.OperationUpdate,
+		"helm.toolkit.fluxcd.io/v2",
+		"helmreleases",
+		"cozy-system",
+		"info-rd",
+	)
+	require.ErrorIs(t, err, errAuditEventObjectIsStatus)
+}
+
+// TestExtractObject_AllowsRealResourceNamedStatus confirms the Status guard
+// keys on the core metav1.Status identity (apiVersion: v1, kind: Status) and
+// does not reject a genuine custom resource that merely happens to use the
+// kind "Status" under its own API group.
+func TestExtractObject_AllowsRealResourceNamedStatus(t *testing.T) {
+	obj := &unstructured.Unstructured{}
+	obj.SetAPIVersion("example.com/v1")
+	obj.SetKind("Status")
+	obj.SetNamespace("default")
+	obj.SetName("custom")
+	raw, _ := obj.MarshalJSON()
+
+	ev := auditv1.Event{
+		ResponseObject: &runtime.Unknown{Raw: raw},
+	}
+
+	got, err := extractObject(ev, configv1alpha1.OperationCreate, "example.com/v1", "Status", "default", "custom")
+	require.NoError(t, err)
+	assert.Equal(t, "custom", got.GetName())
+}
+
 func TestExtractObject_InvalidJSON(t *testing.T) {
 	ev := auditv1.Event{
 		ResponseObject: &runtime.Unknown{Raw: []byte("not-json")},

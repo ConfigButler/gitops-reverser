@@ -67,6 +67,16 @@ const (
 
 var errAuditEventObjectMissing = errors.New("audit event has no requestObject or responseObject")
 
+// errAuditEventObjectIsStatus marks an audit event whose extracted body is a
+// metav1.Status error response (apiVersion: v1, kind: Status) rather than a
+// real resource. The API server emits such a body when a request fails — most
+// commonly a 409 Conflict from an optimistic-concurrency clash. The ingress
+// gate in internal/webhook drops failed requests by responseStatus.code, so a
+// well-formed pipeline never reaches here; this is a defense-in-depth guard
+// against an event that lost its responseStatus (e.g. an additional-source
+// proxy body) so the Status is never written to Git as if it were the resource.
+var errAuditEventObjectIsStatus = errors.New("audit event object is a metav1.Status error body")
+
 // AuditEventRouter is the subset of watch.EventRouter used by the consumer.
 // watch.EventRouter satisfies this interface without modification.
 type AuditEventRouter interface {
@@ -116,6 +126,7 @@ type AuditConsumer struct {
 	firstMessage        sync.Once
 	firstRouted         sync.Once
 	firstShallowDropped sync.Once
+	firstStatusDropped  sync.Once
 }
 
 // NewAuditConsumer creates a new AuditConsumer. It does not start consuming;
@@ -390,27 +401,9 @@ func (c *AuditConsumer) routeAuditEvent(
 
 	sanitized, err := extractObject(auditEvent, op, fullAPIVersion, ref.Resource, namespace, name)
 	if err != nil {
-		if errors.Is(err, errAuditEventObjectMissing) {
-			c.firstShallowDropped.Do(func() {
-				c.log.Info(
-					"First audit event dropped before git routing — missing requestObject/responseObject. "+
-						"Install apiservice-audit-proxy or update kube-apiserver audit policy to include bodies. "+
-						"Further drops will log at V(1) only.",
-					"auditID", auditEvent.AuditID,
-					"gvr", fullAPIVersion+"/"+ref.Resource,
-					"verb", auditEvent.Verb,
-				)
-			})
-			log.V(1).Info(
-				"audit event dropped before git routing: missing requestObject/responseObject",
-				"auditID", auditEvent.AuditID,
-				"gvr", fullAPIVersion+"/"+ref.Resource,
-				"verb", auditEvent.Verb,
-				"namespace", namespace,
-				"name", name,
-				"hasRequestObject", hasAuditObjectRaw(auditEvent.RequestObject),
-				"hasResponseObject", hasAuditObjectRaw(auditEvent.ResponseObject),
-			)
+		if c.handleExtractObjectError(
+			log, auditEvent, err, fullAPIVersion+"/"+ref.Resource, namespace, name,
+		) {
 			return nil
 		}
 		return fmt.Errorf("extracting object for %s/%s: %w", namespace, name, err)
@@ -443,6 +436,66 @@ func (c *AuditConsumer) routeAuditEvent(
 		"operation", op, "user", userInfo.Username,
 		"routed", routed)
 	return nil
+}
+
+// handleExtractObjectError classifies an extractObject failure. For a benign
+// drop — a shallow event with no body, or a metav1.Status error body from a
+// failed API request — it logs and returns true so the caller acks the event
+// without routing it. For any other error it returns false, leaving the caller
+// to surface it.
+func (c *AuditConsumer) handleExtractObjectError(
+	log logr.Logger,
+	auditEvent auditv1.Event,
+	err error,
+	gvr, namespace, name string,
+) bool {
+	switch {
+	case errors.Is(err, errAuditEventObjectMissing):
+		c.firstShallowDropped.Do(func() {
+			c.log.Info(
+				"First audit event dropped before git routing — missing requestObject/responseObject. "+
+					"Install apiservice-audit-proxy or update kube-apiserver audit policy to include bodies. "+
+					"Further drops will log at V(1) only.",
+				"auditID", auditEvent.AuditID,
+				"gvr", gvr,
+				"verb", auditEvent.Verb,
+			)
+		})
+		log.V(1).Info(
+			"audit event dropped before git routing: missing requestObject/responseObject",
+			"auditID", auditEvent.AuditID,
+			"gvr", gvr,
+			"verb", auditEvent.Verb,
+			"namespace", namespace,
+			"name", name,
+			"hasRequestObject", hasAuditObjectRaw(auditEvent.RequestObject),
+			"hasResponseObject", hasAuditObjectRaw(auditEvent.ResponseObject),
+		)
+		return true
+	case errors.Is(err, errAuditEventObjectIsStatus):
+		c.firstStatusDropped.Do(func() {
+			c.log.Info(
+				"First audit event dropped before git routing — body is a metav1.Status error "+
+					"response, not a resource. This indicates a failed API request (e.g. a 409 "+
+					"Conflict) that should have been filtered at ingress. Further drops will log "+
+					"at V(1) only.",
+				"auditID", auditEvent.AuditID,
+				"gvr", gvr,
+				"verb", auditEvent.Verb,
+			)
+		})
+		log.V(1).Info(
+			"audit event dropped before git routing: body is a metav1.Status error response",
+			"auditID", auditEvent.AuditID,
+			"gvr", gvr,
+			"verb", auditEvent.Verb,
+			"namespace", namespace,
+			"name", name,
+		)
+		return true
+	default:
+		return false
+	}
 }
 
 // routeToMatchedRules dispatches git.Events to all matched WatchRule and ClusterWatchRule targets.
@@ -593,7 +646,20 @@ func extractObject(
 		return nil, fmt.Errorf("failed to unmarshal object JSON: %w", err)
 	}
 
+	if isStatusObject(obj) {
+		return nil, errAuditEventObjectIsStatus
+	}
+
 	return backfillSanitizedIdentity(sanitize.Sanitize(obj), apiVersion, resource, namespace, name), nil
+}
+
+// isStatusObject reports whether obj is a core metav1.Status error response
+// (apiVersion: v1, kind: Status) rather than a real Kubernetes resource. The
+// API server returns such a body when a request fails — for example the
+// "the object has been modified" message of a 409 Conflict — and it must never
+// be written to Git as the resource's desired state.
+func isStatusObject(obj *unstructured.Unstructured) bool {
+	return obj != nil && obj.GetAPIVersion() == "v1" && obj.GetKind() == "Status"
 }
 
 func allowsBodylessSingleDelete(event auditv1.Event, resource, name string) bool {
