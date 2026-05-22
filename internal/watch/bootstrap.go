@@ -58,6 +58,7 @@ func (m *Manager) bootstrapRuleStore(ctx context.Context, log logr.Logger) error
 		}
 	}
 
+	m.RuleStore.MarkReady()
 	return nil
 }
 

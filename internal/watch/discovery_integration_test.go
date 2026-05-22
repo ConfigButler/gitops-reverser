@@ -51,12 +51,21 @@ func TestCRDDiscoveryLifecycle(t *testing.T) {
 		WithScheme(scheme).
 		Build()
 
-	// Create rule store and watch manager
+	// Create rule store and watch manager.
+	//
+	// discoveryFilter is stubbed so the test is hermetic. The real
+	// FilterDiscoverableGVRs reaches whatever cluster is in the ambient
+	// kubeconfig via ctrl.GetConfig(); a fake client has no discovery endpoint,
+	// so without this stub the result would depend on the developer's
+	// environment (e.g. a running e2e cluster that happens to have the CRD).
+	// Returning nil models "nothing discoverable" — actual discovery behaviour
+	// is covered by the e2e suite.
 	ruleStore := rulestore.NewStore()
 	manager := &Manager{
-		Client:    fakeClient,
-		Log:       logr.Discard(),
-		RuleStore: ruleStore,
+		Client:          fakeClient,
+		Log:             logr.Discard(),
+		RuleStore:       ruleStore,
+		discoveryFilter: func(context.Context, []GVR) []GVR { return nil },
 	}
 
 	// Step 1: Create a WatchRule that references a CRD resource that doesn't exist yet

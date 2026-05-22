@@ -31,6 +31,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	"github.com/ConfigButler/gitops-reverser/internal/auditutil"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 )
 
@@ -64,7 +65,7 @@ func (c *AuditConsumer) isCommitRequestCreate(event auditv1.Event) bool {
 	if ref.Resource != commitRequestResource {
 		return false
 	}
-	group, _ := objectRefGroupVersion(ref)
+	group, _ := auditutil.ObjectRefGroupVersion(ref)
 	return group == configv1alpha1.GroupVersion.Group
 }
 
