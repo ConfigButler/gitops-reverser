@@ -279,6 +279,19 @@ func quoteStrings(values []string) []string {
 	return out
 }
 
+// matchesScope reports whether a discovery namespaced flag aligns with a
+// declared resource scope.
+func matchesScope(namespaced bool, scope configv1alpha1.ResourceScope) bool {
+	switch scope {
+	case configv1alpha1.ResourceScopeNamespaced:
+		return namespaced
+	case configv1alpha1.ResourceScopeCluster:
+		return !namespaced
+	default:
+		return false
+	}
+}
+
 func hasWildcard(values []string) bool {
 	for _, value := range values {
 		if strings.TrimSpace(value) == "*" {

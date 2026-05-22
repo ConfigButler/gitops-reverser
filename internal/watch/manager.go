@@ -77,20 +77,9 @@ type Manager struct {
 	activeInformers   map[GVR]map[string]context.CancelFunc                   // GVR -> namespace -> cancel (empty string = cluster-wide)
 	informerFactories map[string]dynamicinformer.DynamicSharedInformerFactory // namespace -> factory (empty string = cluster-wide)
 
-	// CRD discovery retry tracking
-	unavailableGVRsMu      sync.Mutex
-	unavailableGVRs        map[GVR]int       // GVR -> retry count
-	unavailableGVRsLastTry map[GVR]time.Time // GVR -> last retry time
-
 	// dynamicClient overrides the config-built dynamic client when non-nil.
 	// Used in tests to inject a fake client without a real REST config.
 	dynamicClient dynamic.Interface
-
-	// discoveryFilter, when non-nil, replaces FilterDiscoverableGVRs in
-	// ReconcileForRuleChange. Used in tests to bypass the real discovery client
-	// (which is unavailable without a real REST config). Production code leaves
-	// it nil and uses the default discovery-backed implementation.
-	discoveryFilter func(context.Context, []GVR) []GVR
 
 	// resourceCatalog is the shared discovery-backed API surface used by rule planning.
 	resourceCatalogMu sync.Mutex
@@ -126,9 +115,6 @@ type ruleSetSnapshotTarget struct {
 const (
 	heartbeatInterval         = 30 * time.Second
 	periodicReconcileInterval = 30 * time.Second
-	crdDiscoveryRetryInterval = 2 * time.Second
-	crdDiscoveryMaxRetries    = 3
-	maxRetryShift             = 8 // Max bit shift for exponential backoff to prevent overflow
 	minResourceKeyParts       = 3
 	resourceKeyCapacity       = 5
 )
@@ -640,10 +626,6 @@ func (m *Manager) listResourcesForGVR(
 	namespaces []string,
 	objects map[string]unstructured.Unstructured,
 ) ([]types.ResourceIdentifier, error) {
-	if shouldIgnoreResource(gvr.Group, gvr.Resource) {
-		return nil, nil
-	}
-
 	var allItems []unstructured.Unstructured
 
 	if len(namespaces) == 0 {
@@ -684,7 +666,8 @@ func (m *Manager) listResourcesForGVR(
 // ReconcileForRuleChange reconciles the watch manager when rules change.
 // Called by WatchRule/ClusterWatchRule controllers after rule modifications.
 // Single-pod MVP: No debouncing needed since we control pod lifecycle.
-// Implements immediate CRD discovery with retry logic for newly installed CRDs.
+// A newly installed CRD is picked up via the API-surface trigger informers and
+// the periodic reconcile, both of which re-run this function.
 func (m *Manager) ReconcileForRuleChange(ctx context.Context) error {
 	log := m.Log.WithName("reconcile")
 	log.V(1).Info("Reconciling watch manager for rule change")
@@ -693,26 +676,18 @@ func (m *Manager) ReconcileForRuleChange(ctx context.Context) error {
 		return err
 	}
 
-	// Compute desired GVRs from current rules
+	// Compute desired GVRs from current rules. The resolver only emits GVRs that
+	// the trusted catalog confirms are served, listable, watchable and in scope,
+	// so the requested set is already the discoverable set.
 	requestedGVRs, misses := m.computeRequestedGVRs()
 	if len(misses) > 0 {
 		log.Info("rule resources were not planned", "misses", FormatResolveMisses(misses))
 	}
-	filter := m.FilterDiscoverableGVRs
-	if m.discoveryFilter != nil {
-		filter = m.discoveryFilter
-	}
-	discoverableGVRs := filter(ctx, requestedGVRs)
 
-	log.V(1).Info("Computed GVRs for reconciliation",
-		"requested", len(requestedGVRs),
-		"discoverable", len(discoverableGVRs))
-
-	// Track newly unavailable GVRs and retry previously unavailable ones
-	m.updateUnavailableGVRTracking(requestedGVRs, discoverableGVRs, log)
+	log.V(1).Info("Computed GVRs for reconciliation", "requested", len(requestedGVRs))
 
 	// Determine what changed
-	added, removed := m.compareGVRs(discoverableGVRs)
+	added, removed := m.compareGVRs(requestedGVRs)
 
 	// Log current active count for debugging
 	m.informersMu.Lock()
@@ -769,168 +744,6 @@ func (m *Manager) ReconcileForRuleChange(ctx context.Context) error {
 		"removedGVRs", len(removed))
 
 	return nil
-}
-
-// updateUnavailableGVRTracking tracks GVRs that are requested but not discoverable.
-// Schedules immediate retry for newly unavailable GVRs.
-func (m *Manager) updateUnavailableGVRTracking(
-	requested []GVR,
-	discoverable []GVR,
-	log logr.Logger,
-) {
-	m.unavailableGVRsMu.Lock()
-	defer m.unavailableGVRsMu.Unlock()
-
-	m.initializeUnavailableMaps()
-	discoverableSet := m.buildDiscoverableSet(discoverable)
-	newlyUnavailable := m.processRequestedGVRs(requested, discoverableSet, log)
-	m.cleanupUnrequestedGVRs(requested)
-	m.scheduleRetries(newlyUnavailable, log)
-}
-
-// initializeUnavailableMaps ensures unavailable tracking maps are initialized.
-func (m *Manager) initializeUnavailableMaps() {
-	if m.unavailableGVRs == nil {
-		m.unavailableGVRs = make(map[GVR]int)
-	}
-	if m.unavailableGVRsLastTry == nil {
-		m.unavailableGVRsLastTry = make(map[GVR]time.Time)
-	}
-}
-
-// buildDiscoverableSet creates a set of discoverable GVRs for fast lookup.
-func (m *Manager) buildDiscoverableSet(discoverable []GVR) map[GVR]bool {
-	discoverableSet := make(map[GVR]bool)
-	for _, gvr := range discoverable {
-		discoverableSet[gvr] = true
-	}
-	return discoverableSet
-}
-
-// processRequestedGVRs checks each requested GVR and returns newly unavailable ones.
-func (m *Manager) processRequestedGVRs(requested []GVR, discoverableSet map[GVR]bool, log logr.Logger) []GVR {
-	var newlyUnavailable []GVR
-
-	for _, gvr := range requested {
-		if discoverableSet[gvr] {
-			m.handleAvailableGVR(gvr, log)
-		} else {
-			if shouldRetry := m.handleUnavailableGVR(gvr, log); shouldRetry {
-				newlyUnavailable = append(newlyUnavailable, gvr)
-			}
-		}
-	}
-
-	return newlyUnavailable
-}
-
-// handleAvailableGVR processes a GVR that became available.
-func (m *Manager) handleAvailableGVR(gvr GVR, log logr.Logger) {
-	if _, wasUnavailable := m.unavailableGVRs[gvr]; wasUnavailable {
-		delete(m.unavailableGVRs, gvr)
-		delete(m.unavailableGVRsLastTry, gvr)
-		log.Info("GVR became available",
-			"group", gvr.Group,
-			"version", gvr.Version,
-			"resource", gvr.Resource)
-	}
-}
-
-// handleUnavailableGVR processes an unavailable GVR and returns whether to retry.
-func (m *Manager) handleUnavailableGVR(gvr GVR, log logr.Logger) bool {
-	retryCount, exists := m.unavailableGVRs[gvr]
-
-	if !exists {
-		return m.handleNewlyUnavailableGVR(gvr, log)
-	}
-
-	return m.handlePreviouslyUnavailableGVR(gvr, retryCount, log)
-}
-
-// handleNewlyUnavailableGVR processes a newly unavailable GVR.
-func (m *Manager) handleNewlyUnavailableGVR(gvr GVR, log logr.Logger) bool {
-	m.unavailableGVRs[gvr] = 0
-	m.unavailableGVRsLastTry[gvr] = time.Now()
-	log.Info("New unavailable GVR detected - scheduling retry",
-		"group", gvr.Group,
-		"version", gvr.Version,
-		"resource", gvr.Resource)
-	return true
-}
-
-// handlePreviouslyUnavailableGVR processes a previously unavailable GVR.
-func (m *Manager) handlePreviouslyUnavailableGVR(gvr GVR, retryCount int, log logr.Logger) bool {
-	if retryCount >= crdDiscoveryMaxRetries {
-		return false
-	}
-
-	lastTry := m.unavailableGVRsLastTry[gvr]
-	delay := m.calculateRetryDelay(retryCount)
-
-	if time.Since(lastTry) < delay {
-		return false
-	}
-
-	m.unavailableGVRs[gvr] = retryCount + 1
-	m.unavailableGVRsLastTry[gvr] = time.Now()
-	log.Info("Retrying unavailable GVR",
-		"group", gvr.Group,
-		"version", gvr.Version,
-		"resource", gvr.Resource,
-		"attempt", retryCount+1)
-	return true
-}
-
-// calculateRetryDelay calculates exponential backoff delay with overflow protection.
-func (m *Manager) calculateRetryDelay(retryCount int) time.Duration {
-	// Cap shift to prevent overflow
-	shiftAmount := retryCount
-	if shiftAmount > maxRetryShift {
-		shiftAmount = maxRetryShift
-	}
-	return crdDiscoveryRetryInterval * time.Duration(1<<shiftAmount)
-}
-
-// cleanupUnrequestedGVRs removes GVRs that are no longer requested.
-func (m *Manager) cleanupUnrequestedGVRs(requested []GVR) {
-	for gvr := range m.unavailableGVRs {
-		if !m.isGVRRequested(gvr, requested) {
-			delete(m.unavailableGVRs, gvr)
-			delete(m.unavailableGVRsLastTry, gvr)
-		}
-	}
-}
-
-// isGVRRequested checks if a GVR is in the requested list.
-func (m *Manager) isGVRRequested(gvr GVR, requested []GVR) bool {
-	for _, req := range requested {
-		if req == gvr {
-			return true
-		}
-	}
-	return false
-}
-
-// scheduleRetries schedules retry reconciliation for newly unavailable GVRs.
-func (m *Manager) scheduleRetries(newlyUnavailable []GVR, log logr.Logger) {
-	if len(newlyUnavailable) > 0 {
-		ctxCopy := context.Background()
-		go m.retryDiscoveryAfterDelay(ctxCopy, newlyUnavailable, log)
-	}
-}
-
-// retryDiscoveryAfterDelay waits briefly then retries reconciliation for CRD discovery.
-func (m *Manager) retryDiscoveryAfterDelay(ctx context.Context, gvrs []GVR, log logr.Logger) {
-	// Small delay to allow API server to update discovery after CRD installation
-	time.Sleep(crdDiscoveryRetryInterval)
-
-	log.Info("Retrying reconciliation for unavailable GVRs",
-		"count", len(gvrs),
-		"delay", crdDiscoveryRetryInterval)
-
-	if err := m.ReconcileForRuleChange(ctx); err != nil {
-		log.Error(err, "Retry reconciliation failed")
-	}
 }
 
 // compareGVRs returns (added, removed) GVRs compared to current active set.

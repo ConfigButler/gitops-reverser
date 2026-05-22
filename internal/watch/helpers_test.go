@@ -28,56 +28,10 @@ import (
 	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 )
 
-func TestSingleConcrete(t *testing.T) {
-	tests := []struct {
-		name    string
-		in      []string
-		wantOK  bool
-		wantVal string
-	}{
-		{name: "single value", in: []string{"apps"}, wantOK: true, wantVal: "apps"},
-		{name: "star wildcard", in: []string{"*"}, wantOK: false},
-		{name: "empty slice", in: []string{}, wantOK: false},
-		// Empty string is valid (represents core API group)
-		{name: "empty string for core API", in: []string{""}, wantOK: true, wantVal: ""},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, ok := singleConcrete(tt.in)
-			if ok != tt.wantOK {
-				t.Fatalf("singleConcrete(%v) ok=%v, want %v", tt.in, ok, tt.wantOK)
-			}
-			if ok {
-				if len(got) != 1 || got[0] != tt.wantVal {
-					t.Fatalf("singleConcrete(%v) got=%v, want [%s]", tt.in, got, tt.wantVal)
-				}
-			}
-		})
-	}
-}
-
 func TestNormalizeResource(t *testing.T) {
 	got := normalizeResource("  Deployments  ")
 	if got != "deployments" {
 		t.Fatalf("normalizeResource returned %q, want %q", got, "deployments")
-	}
-}
-
-func TestAddGVR_Dedup(t *testing.T) {
-	seen := make(map[string]struct{})
-	var out []GVR
-
-	addGVR("apps", "v1", "deployments", configv1alpha1.ResourceScopeNamespaced, &out, seen)
-	addGVR("apps", "v1", "deployments", configv1alpha1.ResourceScopeNamespaced, &out, seen)
-
-	if len(out) != 1 {
-		t.Fatalf("expected 1 unique GVR after dedup, got %d", len(out))
-	}
-
-	addGVR("apps", "v1", "statefulsets", configv1alpha1.ResourceScopeNamespaced, &out, seen)
-	if len(out) != 2 {
-		t.Fatalf("expected 2 unique GVRs, got %d", len(out))
 	}
 }
 

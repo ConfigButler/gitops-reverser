@@ -99,49 +99,9 @@ func gvrFromClusterRule(
 	return resolver.Resolve(rr.APIGroups, rr.APIVersions, rr.Resources, rr.Scope)
 }
 
-// singleConcrete returns a single-element slice if the input means a concrete set:
-// - len==1 AND value != "*"
-// - Note: Empty string "" is valid for apiGroup (means core API), so it's considered concrete
-// - len==0 is treated as wildcard (not concrete) and returns false.
-func singleConcrete(vals []string) ([]string, bool) {
-	if len(vals) != 1 {
-		return nil, false
-	}
-	v := strings.TrimSpace(vals[0])
-	// Only reject wildcard "*", not empty string (empty string is valid for core API group)
-	if v == "*" {
-		return nil, false
-	}
-	return []string{v}, true
-}
-
 // normalizeResource lowercases the resource for consistent matching.
 func normalizeResource(r string) string {
 	return strings.ToLower(strings.TrimSpace(r))
-}
-
-// addGVR appends a GVR to output if it was not seen before.
-func addGVR(
-	group, version, resource string,
-	scope configv1alpha1.ResourceScope,
-	out *[]GVR,
-	seen map[string]struct{},
-) {
-	if shouldIgnoreResource(group, resource) {
-		return
-	}
-
-	key := group + "|" + version + "|" + resource + "|" + string(scope)
-	if _, ok := seen[key]; ok {
-		return
-	}
-	seen[key] = struct{}{}
-	*out = append(*out, GVR{
-		Group:    group,
-		Version:  version,
-		Resource: resource,
-		Scope:    scope,
-	})
 }
 
 // FormatResolveMisses produces an actionable summary for status and logs.

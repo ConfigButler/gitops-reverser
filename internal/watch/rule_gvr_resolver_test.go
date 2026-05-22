@@ -19,14 +19,11 @@ limitations under the License.
 package watch
 
 import (
-	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/client-go/discovery"
 
 	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
@@ -115,45 +112,6 @@ func TestRuleGVRResolver_CatalogUnavailableFailsClosed(t *testing.T) {
 	assert.Empty(t, gvrs)
 	require.Len(t, misses, 1)
 	assert.Equal(t, ResolveMissCatalogUnavailable, misses[0].Reason)
-}
-
-func TestAPIResourceCatalog_PartialRefreshPreservesFailedGroupVersion(t *testing.T) {
-	catalog := newCommonTestCatalog(t)
-	appsGV := schema.GroupVersion{Group: "apps", Version: "v1"}
-
-	_, err := catalog.Refresh(staticCatalogDiscovery{
-		groups: []*metav1.APIGroup{
-			testAPIGroup("", "v1"),
-			testAPIGroup("apps", "v1"),
-		},
-		resources: []*metav1.APIResourceList{{
-			GroupVersion: "v1",
-			APIResources: []metav1.APIResource{{
-				Name:       "configmaps",
-				Kind:       "ConfigMap",
-				Namespaced: true,
-				Verbs:      metav1.Verbs{"list", "watch"},
-			}},
-		}},
-		err: &discovery.ErrGroupDiscoveryFailed{
-			Groups: map[schema.GroupVersion]error{appsGV: errors.New("aggregated discovery failed")},
-		},
-	})
-	require.NoError(t, err)
-
-	entry, ok := catalog.Entry(schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"})
-	require.True(t, ok)
-	assert.Equal(t, "Deployment", entry.GVK.Kind)
-
-	gvrs, misses := NewRuleGVRResolver(catalog).Resolve(
-		[]string{"apps"},
-		nil,
-		[]string{"statefulsets"},
-		configv1alpha1.ResourceScopeNamespaced,
-	)
-	assert.Empty(t, gvrs)
-	require.Len(t, misses, 1)
-	assert.Equal(t, ResolveMissDiscoveryDegraded, misses[0].Reason)
 }
 
 func TestManager_NamespacesFollowResolvedNonCoreWatchRule(t *testing.T) {

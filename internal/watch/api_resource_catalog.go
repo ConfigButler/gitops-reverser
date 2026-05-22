@@ -427,3 +427,26 @@ func matchLookupValue(selectors []string, value string) bool {
 func (gv groupVersion) schema() schema.GroupVersion {
 	return schema.GroupVersion{Group: gv.group, Version: gv.version}
 }
+
+// groupVersionSplit prevents magic numbers when splitting group/version strings.
+const groupVersionSplit = 2
+
+type groupVersion struct {
+	group   string
+	version string
+}
+
+// parseGroupVersion splits a discovery "group/version" string, treating a
+// single-segment value as the core API group (e.g. "v1").
+func parseGroupVersion(gvString string) groupVersion {
+	parts := strings.SplitN(gvString, "/", groupVersionSplit)
+	if len(parts) == 1 {
+		return groupVersion{group: "", version: parts[0]}
+	}
+	return groupVersion{group: parts[0], version: parts[1]}
+}
+
+// key builds a stable group|version|resource index key.
+func key(group, version, resource string) string {
+	return group + "|" + version + "|" + resource
+}
