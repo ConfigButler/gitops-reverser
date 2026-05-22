@@ -37,7 +37,6 @@ import (
 	auditv1 "k8s.io/apiserver/pkg/apis/audit/v1"
 	"sigs.k8s.io/yaml"
 
-	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 
 	"github.com/stretchr/testify/assert"
@@ -114,26 +113,6 @@ func (j *fakeAuditJoiner) CommitDecision(_ context.Context, _ string, result Aud
 func (j *fakeAuditJoiner) ReleaseDecision(_ context.Context, auditID string) error {
 	j.releases = append(j.releases, auditID)
 	return nil
-}
-
-type fakeAuditRelevanceMatcher struct {
-	ready bool
-	match bool
-	calls int
-}
-
-func (m *fakeAuditRelevanceMatcher) IsReady() bool {
-	return m.ready
-}
-
-func (m *fakeAuditRelevanceMatcher) CouldMatchResource(
-	_ string,
-	_ configv1alpha1.OperationType,
-	_ string,
-	_ string,
-) bool {
-	m.calls++
-	return m.match
 }
 
 type orderingAuditJoiner struct {
@@ -703,128 +682,74 @@ func TestAuditHandler_JoinerParkedSkipsQueue(t *testing.T) {
 	assert.Empty(t, joiner.releases)
 }
 
-func TestAuditHandler_UnwatchedShallowOfficialBypassesJoiner(t *testing.T) {
+// TestAuditHandler_ShallowOfficialReachesJoinerWithoutRuleKnowledge locks in the
+// fix for the aggregated-API audit regression: a shallow official event (an
+// aggregated-API resource the kube-apiserver proxies opaquely, so no body) must
+// always reach the joiner so it can wait for the proxy-supplied body — the
+// ingestion path must not consult WatchRules. flunders are used because that is
+// the exact resource the e2e test exercised, but the behaviour is resource
+// agnostic.
+func TestAuditHandler_ShallowOfficialReachesJoinerWithoutRuleKnowledge(t *testing.T) {
 	queue := &recordingAuditEventQueue{}
 	joiner := &fakeAuditJoiner{decision: AuditJoinDecision{Action: AuditJoinActionEmit}}
-	matcher := &fakeAuditRelevanceMatcher{ready: true, match: false}
-	handler, err := NewAuditHandler(AuditHandlerConfig{
-		Queue:            queue,
-		Joiner:           joiner,
-		RelevanceMatcher: matcher,
-	})
+	handler, err := NewAuditHandler(AuditHandlerConfig{Queue: queue, Joiner: joiner})
 	require.NoError(t, err)
 
 	body := `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[` +
-		`{"kind":"Event","auditID":"pod-noise-1","verb":"create","stage":"ResponseComplete",` +
-		`"user":{"username":"system:kubelet"},"objectRef":{"resource":"pods","apiVersion":"v1",` +
-		`"namespace":"default","name":"noisy-pod"}}]}`
-	req := httptest.NewRequest(http.MethodPost, "/audit-webhook", bytes.NewReader([]byte(body)))
-	w := httptest.NewRecorder()
-
-	handler.ServeHTTP(w, req)
-
-	assert.Equal(t, http.StatusOK, w.Code)
-	assert.Equal(t, 1, matcher.calls)
-	assert.Zero(t, joiner.calls, "irrelevant shallow official events must not enter the Redis joiner")
-	assert.Empty(t, queue.events)
-}
-
-func TestAuditHandler_UnwatchedAdditionalBodyBypassesJoiner(t *testing.T) {
-	queue := &recordingAuditEventQueue{}
-	joiner := &fakeAuditJoiner{decision: AuditJoinDecision{Action: AuditJoinActionParked}}
-	matcher := &fakeAuditRelevanceMatcher{ready: true, match: false}
-	handler, err := NewAuditHandler(AuditHandlerConfig{
-		Queue:            queue,
-		Joiner:           joiner,
-		RelevanceMatcher: matcher,
-	})
-	require.NoError(t, err)
-
-	body := `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[` +
-		`{"kind":"Event","auditID":"pod-body-1","verb":"create","stage":"ResponseComplete",` +
-		`"user":{"username":"system:kubelet"},"objectRef":{"resource":"pods","apiVersion":"v1",` +
-		`"namespace":"default","name":"noisy-pod"},` +
-		`"requestObject":{"apiVersion":"v1","kind":"Pod","metadata":{"name":"noisy-pod","namespace":"default"}}}]}`
-	req := httptest.NewRequest(http.MethodPost, "/audit-webhook-additional", bytes.NewReader([]byte(body)))
-	w := httptest.NewRecorder()
-
-	handler.ServeHTTP(w, req)
-
-	assert.Equal(t, http.StatusOK, w.Code)
-	assert.Equal(t, 1, matcher.calls)
-	assert.Zero(t, joiner.calls, "additional bodies for unwatched resources must not be parked")
-	assert.Empty(t, queue.events)
-}
-
-func TestAuditHandler_RelevanceGateFailsOpenUntilRuleStoreReady(t *testing.T) {
-	queue := &recordingAuditEventQueue{}
-	joiner := &fakeAuditJoiner{decision: AuditJoinDecision{Action: AuditJoinActionParked}}
-	matcher := &fakeAuditRelevanceMatcher{ready: false, match: false}
-	handler, err := NewAuditHandler(AuditHandlerConfig{
-		Queue:            queue,
-		Joiner:           joiner,
-		RelevanceMatcher: matcher,
-	})
-	require.NoError(t, err)
-
-	body := `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[` +
-		`{"kind":"Event","auditID":"startup-open-1","verb":"create","stage":"ResponseComplete",` +
-		`"user":{"username":"system:kubelet"},"objectRef":{"resource":"pods","apiVersion":"v1",` +
-		`"namespace":"default","name":"maybe-watched"}}]}`
-	req := httptest.NewRequest(http.MethodPost, "/audit-webhook", bytes.NewReader([]byte(body)))
-	w := httptest.NewRecorder()
-
-	handler.ServeHTTP(w, req)
-
-	assert.Equal(t, http.StatusOK, w.Code)
-	assert.Zero(t, matcher.calls, "not-ready rule state should fail open without checking rule contents")
-	assert.Equal(t, 1, joiner.calls)
-	assert.Empty(t, queue.events)
-}
-
-func TestAuditHandler_WatchedAdditionalBodyReachesJoiner(t *testing.T) {
-	queue := &recordingAuditEventQueue{}
-	joiner := &fakeAuditJoiner{decision: AuditJoinDecision{Action: AuditJoinActionParked}}
-	matcher := &fakeAuditRelevanceMatcher{ready: true, match: true}
-	handler, err := NewAuditHandler(AuditHandlerConfig{
-		Queue:            queue,
-		Joiner:           joiner,
-		RelevanceMatcher: matcher,
-	})
-	require.NoError(t, err)
-
-	body := `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[` +
-		`{"kind":"Event","auditID":"watched-flunder-1","verb":"create","stage":"ResponseComplete",` +
+		`{"kind":"Event","auditID":"shallow-flunder-1","verb":"create","stage":"ResponseComplete",` +
 		`"user":{"username":"test-user"},"objectRef":{"resource":"flunders",` +
-		`"apiGroup":"wardle.example.com","apiVersion":"v1alpha1"},` +
-		`"requestObject":{"apiVersion":"wardle.example.com/v1alpha1","kind":"Flunder",` +
-		`"metadata":{"name":"flunder-a","namespace":"team-a"}}}]}`
-	req := httptest.NewRequest(http.MethodPost, "/audit-webhook-additional", bytes.NewReader([]byte(body)))
+		`"apiGroup":"wardle.example.com","apiVersion":"v1alpha1","namespace":"team-a","name":"flunder-a"}}]}`
+	req := httptest.NewRequest(http.MethodPost, "/audit-webhook", bytes.NewReader([]byte(body)))
 	w := httptest.NewRecorder()
 
 	handler.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusOK, w.Code)
-	assert.Equal(t, 1, matcher.calls)
-	assert.Equal(t, 1, joiner.calls)
-	assert.Equal(t, []AuditSource{AuditSourceAdditional}, joiner.sources)
-	assert.Empty(t, queue.events)
+	require.Equal(t, 1, joiner.calls, "every shallow official event must reach the joiner's body lookup")
+	assert.Equal(t, []AuditSource{AuditSourceOfficial}, joiner.sources)
+	assert.Equal(t, []AuditEventQuality{AuditEventQualityIdentityShallow}, joiner.quality)
+	assert.Equal(t, []string{"shallow-flunder-1"}, queue.auditIDs())
 }
 
-func TestAuditHandler_IncompleteAdditionalGVRFailsOpen(t *testing.T) {
+// TestAuditHandler_CompleteOfficialReachesJoinerWithoutRuleKnowledge confirms a
+// complete official event (request/response body already inline) flows straight
+// through ingestion regardless of WatchRules — the joiner emits it as-is.
+func TestAuditHandler_CompleteOfficialReachesJoinerWithoutRuleKnowledge(t *testing.T) {
+	queue := &recordingAuditEventQueue{}
+	joiner := &fakeAuditJoiner{decision: AuditJoinDecision{Action: AuditJoinActionEmit}}
+	handler, err := NewAuditHandler(AuditHandlerConfig{Queue: queue, Joiner: joiner})
+	require.NoError(t, err)
+
+	body := `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[` +
+		`{"kind":"Event","auditID":"complete-flunder-1","verb":"create","stage":"ResponseComplete",` +
+		`"user":{"username":"test-user"},"objectRef":{"resource":"flunders",` +
+		`"apiGroup":"wardle.example.com","apiVersion":"v1alpha1","namespace":"team-a","name":"flunder-a"},` +
+		`"requestObject":{"apiVersion":"wardle.example.com/v1alpha1","kind":"Flunder",` +
+		`"metadata":{"name":"flunder-a","namespace":"team-a"}}}]}`
+	req := httptest.NewRequest(http.MethodPost, "/audit-webhook", bytes.NewReader([]byte(body)))
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	require.Equal(t, 1, joiner.calls)
+	assert.Equal(t, []AuditEventQuality{AuditEventQualityComplete}, joiner.quality)
+	assert.Equal(t, []string{"complete-flunder-1"}, queue.auditIDs())
+}
+
+// TestAuditHandler_AdditionalCompleteEventReachesJoiner confirms an
+// additional-source event is parked whenever it is intrinsically useful — a
+// mutating verb carrying a body — with no WatchRule lookup.
+func TestAuditHandler_AdditionalCompleteEventReachesJoiner(t *testing.T) {
 	queue := &recordingAuditEventQueue{}
 	joiner := &fakeAuditJoiner{decision: AuditJoinDecision{Action: AuditJoinActionParked}}
-	matcher := &fakeAuditRelevanceMatcher{ready: true, match: false}
-	handler, err := NewAuditHandler(AuditHandlerConfig{
-		Queue:            queue,
-		Joiner:           joiner,
-		RelevanceMatcher: matcher,
-	})
+	handler, err := NewAuditHandler(AuditHandlerConfig{Queue: queue, Joiner: joiner})
 	require.NoError(t, err)
 
 	body := `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[` +
-		`{"kind":"Event","auditID":"missing-gvr-1","verb":"create","stage":"ResponseComplete",` +
-		`"user":{"username":"test-user"},"objectRef":{"apiVersion":"wardle.example.com/v1alpha1"},` +
+		`{"kind":"Event","auditID":"additional-flunder-1","verb":"create","stage":"ResponseComplete",` +
+		`"user":{"username":"test-user"},"objectRef":{"resource":"flunders",` +
+		`"apiGroup":"wardle.example.com","apiVersion":"v1alpha1","namespace":"team-a","name":"flunder-a"},` +
 		`"requestObject":{"apiVersion":"wardle.example.com/v1alpha1","kind":"Flunder",` +
 		`"metadata":{"name":"flunder-a","namespace":"team-a"}}}]}`
 	req := httptest.NewRequest(http.MethodPost, "/audit-webhook-additional", bytes.NewReader([]byte(body)))
@@ -833,35 +758,57 @@ func TestAuditHandler_IncompleteAdditionalGVRFailsOpen(t *testing.T) {
 	handler.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusOK, w.Code)
-	assert.Zero(t, matcher.calls, "incomplete GVR must fail open instead of querying an unwatched guess")
-	assert.Equal(t, 1, joiner.calls)
-	assert.Empty(t, queue.events)
+	require.Equal(t, 1, joiner.calls, "a mutating additional event with a body must be parked")
+	assert.Equal(t, []AuditSource{AuditSourceAdditional}, joiner.sources)
+	assert.Equal(t, []AuditEventQuality{AuditEventQualityComplete}, joiner.quality)
+	assert.Empty(t, queue.events, "parked additional bodies do not enter the canonical stream")
 }
 
-func TestAuditHandler_CanceledUnwatchedShallowOfficialBypassesJoiner(t *testing.T) {
+// TestAuditHandler_AdditionalReadOnlyVerbBypassesJoiner confirms a read-only
+// additional event (action is a get) never reaches the joiner — it is no
+// mutation, so there is nothing to park.
+func TestAuditHandler_AdditionalReadOnlyVerbBypassesJoiner(t *testing.T) {
 	queue := &recordingAuditEventQueue{}
-	joiner := &fakeAuditJoiner{err: context.Canceled}
-	matcher := &fakeAuditRelevanceMatcher{ready: true, match: false}
-	handler, err := NewAuditHandler(AuditHandlerConfig{
-		Queue:            queue,
-		Joiner:           joiner,
-		RelevanceMatcher: matcher,
-	})
+	joiner := &fakeAuditJoiner{decision: AuditJoinDecision{Action: AuditJoinActionParked}}
+	handler, err := NewAuditHandler(AuditHandlerConfig{Queue: queue, Joiner: joiner})
 	require.NoError(t, err)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
 	body := `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[` +
-		`{"kind":"Event","auditID":"pod-noise-canceled-1","verb":"create","stage":"ResponseComplete",` +
-		`"user":{"username":"system:kubelet"},"objectRef":{"resource":"pods","apiVersion":"v1",` +
-		`"namespace":"default","name":"noisy-pod"}}]}`
-	req := httptest.NewRequest(http.MethodPost, "/audit-webhook", bytes.NewReader([]byte(body))).WithContext(ctx)
+		`{"kind":"Event","auditID":"additional-get-1","verb":"get","stage":"ResponseComplete",` +
+		`"user":{"username":"test-user"},"objectRef":{"resource":"flunders",` +
+		`"apiGroup":"wardle.example.com","apiVersion":"v1alpha1","namespace":"team-a","name":"flunder-a"},` +
+		`"responseObject":{"apiVersion":"wardle.example.com/v1alpha1","kind":"Flunder",` +
+		`"metadata":{"name":"flunder-a","namespace":"team-a"}}}]}`
+	req := httptest.NewRequest(http.MethodPost, "/audit-webhook-additional", bytes.NewReader([]byte(body)))
 	w := httptest.NewRecorder()
 
 	handler.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusOK, w.Code)
-	assert.Zero(t, joiner.calls, "irrelevant canceled requests must not reach a waiting joiner")
+	assert.Zero(t, joiner.calls, "read-only additional events must not be parked")
+	assert.Empty(t, queue.events)
+}
+
+// TestAuditHandler_AdditionalShallowEventBypassesJoiner confirms a bodyless
+// additional event never reaches the joiner — a shallow additional event has no
+// request/response body to contribute.
+func TestAuditHandler_AdditionalShallowEventBypassesJoiner(t *testing.T) {
+	queue := &recordingAuditEventQueue{}
+	joiner := &fakeAuditJoiner{decision: AuditJoinDecision{Action: AuditJoinActionParked}}
+	handler, err := NewAuditHandler(AuditHandlerConfig{Queue: queue, Joiner: joiner})
+	require.NoError(t, err)
+
+	body := `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[` +
+		`{"kind":"Event","auditID":"additional-shallow-1","verb":"create","stage":"ResponseComplete",` +
+		`"user":{"username":"test-user"},"objectRef":{"resource":"flunders",` +
+		`"apiGroup":"wardle.example.com","apiVersion":"v1alpha1","namespace":"team-a","name":"flunder-a"}}]}`
+	req := httptest.NewRequest(http.MethodPost, "/audit-webhook-additional", bytes.NewReader([]byte(body)))
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Zero(t, joiner.calls, "shallow additional events must not be parked")
 	assert.Empty(t, queue.events)
 }
 

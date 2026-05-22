@@ -386,69 +386,16 @@ func TestGetMatchingRules(t *testing.T) {
 	}
 }
 
-func TestCouldMatchResource(t *testing.T) {
+func TestRuleStore_Readiness(t *testing.T) {
 	store := NewStore()
 	if store.IsReady() {
 		t.Fatal("new store must not report ready before bootstrap")
 	}
 
-	watchRule := configv1alpha1.WatchRule{
-		ObjectMeta: metav1.ObjectMeta{Name: "flux-helmreleases", Namespace: "default"},
-		Spec: configv1alpha1.WatchRuleSpec{
-			Rules: []configv1alpha1.ResourceRule{{
-				Operations:  []configv1alpha1.OperationType{configv1alpha1.OperationAll},
-				APIGroups:   []string{"helm.toolkit.fluxcd.io"},
-				APIVersions: []string{"*"},
-				Resources:   []string{"helmreleases"},
-			}},
-		},
-	}
-	store.AddOrUpdateWatchRule(watchRule, "dest", "default", "repo", "gitops-system", "main", "live")
-
-	clusterRule := configv1alpha1.ClusterWatchRule{
-		ObjectMeta: metav1.ObjectMeta{Name: "cozystack"},
-		Spec: configv1alpha1.ClusterWatchRuleSpec{
-			Rules: []configv1alpha1.ClusterResourceRule{{
-				Operations:  []configv1alpha1.OperationType{configv1alpha1.OperationCreate},
-				APIGroups:   []string{"apps.cozystack.io"},
-				APIVersions: []string{"v1alpha1"},
-				Resources:   []string{"natses"},
-				Scope:       configv1alpha1.ResourceScopeNamespaced,
-			}},
-		},
-	}
-	store.AddOrUpdateClusterWatchRule(clusterRule, "dest", "default", "repo", "gitops-system", "main", "live")
 	store.MarkReady()
 
 	if !store.IsReady() {
 		t.Fatal("store must report ready after MarkReady")
-	}
-	if !store.CouldMatchResource(
-		"helmreleases",
-		configv1alpha1.OperationUpdate,
-		"helm.toolkit.fluxcd.io",
-		"v2",
-	) {
-		t.Fatal("wildcard API version WatchRule should be a potential match")
-	}
-	if !store.CouldMatchResource(
-		"natses",
-		configv1alpha1.OperationCreate,
-		"apps.cozystack.io",
-		"v1alpha1",
-	) {
-		t.Fatal("ClusterWatchRule should be a potential match without needing scope")
-	}
-	if store.CouldMatchResource("pods", configv1alpha1.OperationCreate, "", "v1") {
-		t.Fatal("unwatched pod creates must not be potential matches")
-	}
-	if store.CouldMatchResource(
-		"natses",
-		configv1alpha1.OperationUpdate,
-		"apps.cozystack.io",
-		"v1alpha1",
-	) {
-		t.Fatal("operation mismatch must not be a potential match")
 	}
 }
 
