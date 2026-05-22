@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.26.0](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.25.0...gitops-reverser-v0.26.0) (2026-05-22)
+
+
+### Features
+
+* metrics overhaul as a step into more observability ([1a7cd19](https://github.com/ConfigButler/gitops-reverser/commit/1a7cd19ea416fb4dfe69271867aab9034695ab75))
+* support --additionalSensitiveResources (in addition to v1/secrets) ([3ae1ebd](https://github.com/ConfigButler/gitops-reverser/commit/3ae1ebd0e10afd73b66737269889a76b586b94e7))
+
+
+### Bug Fixes
+
+* audit messages that indicate conflict (409) can't end up in Git anymore (should never happen given that they also don't end up in etcd). ([ec47c52](https://github.com/ConfigButler/gitops-reverser/commit/ec47c5227126f625064326c57fad5f94789be314))
+* central APIResourceCatalog so that we have one abstraction/cache to which things the current apiserver is serving. ([3d6cb62](https://github.com/ConfigButler/gitops-reverser/commit/3d6cb6258a168da6ad82e0c17a459efacb3ecbe3))
+* gate audit body joins by rule relevance ([605964a](https://github.com/ConfigButler/gitops-reverser/commit/605964ab046e14ae8ae6463da45ab44d2ea2e3c3))
+* reconicle fail on restart and wildcard ([26511a9](https://github.com/ConfigButler/gitops-reverser/commit/26511a967e4145f2ae691b191f9da1b408dc2932))
+* timing issues when adding a new WatchRule in e2e: simplifying the ingestion resolves this ([a688620](https://github.com/ConfigButler/gitops-reverser/commit/a688620e3d6832afb2976f3f542edfb005d977a9))
+
+
+### Documentation
+
+* planning and designing for new features ([856beee](https://github.com/ConfigButler/gitops-reverser/commit/856beeed5f6ab3717a2d3010edaa914cdff0e44b))
+
 ## [0.25.0](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.24.0...gitops-reverser-v0.25.0) (2026-05-21)
 
 
