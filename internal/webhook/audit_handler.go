@@ -43,6 +43,8 @@ import (
 
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
+	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	"github.com/ConfigButler/gitops-reverser/internal/auditutil"
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 )
 
@@ -77,11 +79,33 @@ type AuditHandlerConfig struct {
 	Queue AuditEventQueue
 	// Joiner optionally parks additional-source bodies and deduplicates canonical audit events.
 	Joiner AuditEventJoiner
+	// RelevanceMatcher optionally gates body joins to resources that active rules could watch.
+	RelevanceMatcher AuditRelevanceMatcher
 }
 
 // AuditEventQueue persists accepted audit events for downstream processing.
 type AuditEventQueue interface {
 	Enqueue(ctx context.Context, event auditv1.Event) error
+}
+
+// AuditRelevanceMatcher checks whether an audit event could match active watch rules.
+type AuditRelevanceMatcher interface {
+	IsReady() bool
+	CouldMatchResource(
+		resourcePlural string,
+		operation configv1alpha1.OperationType,
+		apiGroup string,
+		apiVersion string,
+	) bool
+}
+
+type auditIngressDecision struct {
+	Process        bool
+	Operation      configv1alpha1.OperationType
+	Quality        AuditEventQuality
+	GVR            schema.GroupVersionResource
+	CouldBeWatched bool
+	Reason         string
 }
 
 // AuditHandler handles incoming audit events and collects telemetry.
@@ -229,6 +253,16 @@ func (h *AuditHandler) processEvent(ctx context.Context, source AuditSource, aud
 
 	quality := classifyAuditEventQuality(source, &auditEventV1)
 	addQualityMetric(ctx, source, &auditEventV1, quality)
+	decision := h.classifyAuditIngress(source, &auditEventV1, quality)
+	if !decision.Process {
+		logAuditJoinSkip(
+			"Dropped audit event before join relevance gate",
+			source,
+			h.extractGVR(&auditEvent),
+			auditEvent.AuditID,
+		)
+		return nil
+	}
 
 	eventToWrite, joinDecision, shouldEmit, err := h.eventForCanonicalStream(
 		ctx, source, &auditEventV1, auditEvent, quality,
@@ -489,6 +523,64 @@ func (h *AuditHandler) extractGVR(event *audit.Event) string {
 		return fmt.Sprintf("/%s/%s", gvr.Version, gvr.Resource)
 	}
 	return fmt.Sprintf("%s/%s/%s", gvr.Group, gvr.Version, gvr.Resource)
+}
+
+func (h *AuditHandler) classifyAuditIngress(
+	source AuditSource,
+	event *auditv1.Event,
+	quality AuditEventQuality,
+) auditIngressDecision {
+	decision := auditIngressDecision{Process: true, Quality: quality}
+	if event == nil {
+		decision.Process = false
+		decision.Reason = "nil_event"
+		return decision
+	}
+	if event.Stage != auditv1.StageResponseComplete {
+		decision.Process = false
+		decision.Reason = "stage"
+		return decision
+	}
+
+	op, ok := auditutil.VerbToOperation(event.Verb)
+	if !ok {
+		decision.Process = false
+		decision.Reason = "read_only_or_unknown_verb"
+		return decision
+	}
+	decision.Operation = op
+
+	gvr, hasGVR := auditutil.ObjectRefGVR(event.ObjectRef)
+	if hasGVR {
+		decision.GVR = gvr
+	}
+	couldBeWatched := h.couldBeWatched(gvr, op, hasGVR)
+	decision.CouldBeWatched = couldBeWatched
+
+	switch {
+	case source == AuditSourceAdditional && quality == AuditEventQualityMalformed:
+		decision.Process = false
+		decision.Reason = "malformed_additional"
+	case source == AuditSourceAdditional && !couldBeWatched:
+		decision.Process = false
+		decision.Reason = "unwatched_additional"
+	case source == AuditSourceOfficial && quality == AuditEventQualityIdentityShallow && !couldBeWatched:
+		decision.Process = false
+		decision.Reason = "unwatched_shallow_official"
+	}
+	return decision
+}
+
+func (h *AuditHandler) couldBeWatched(
+	gvr schema.GroupVersionResource,
+	operation configv1alpha1.OperationType,
+	hasGVR bool,
+) bool {
+	matcher := h.config.RelevanceMatcher
+	if matcher == nil || !matcher.IsReady() || !hasGVR {
+		return true
+	}
+	return matcher.CouldMatchResource(gvr.Resource, operation, gvr.Group, gvr.Version)
 }
 
 // checkEvent validates an audit event before processing.

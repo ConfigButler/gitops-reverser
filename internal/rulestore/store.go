@@ -105,6 +105,7 @@ type RuleStore struct {
 	mu           sync.RWMutex
 	rules        map[types.NamespacedName]CompiledRule
 	clusterRules map[types.NamespacedName]CompiledClusterRule
+	ready        bool
 }
 
 // NewStore creates a new, empty RuleStore.
@@ -229,6 +230,47 @@ func (s *RuleStore) DeleteClusterWatchRule(key types.NamespacedName) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.clusterRules, key)
+}
+
+// MarkReady records that initial WatchRule and ClusterWatchRule bootstrap has completed.
+func (s *RuleStore) MarkReady() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ready = true
+}
+
+// IsReady reports whether the store has completed initial rule bootstrap.
+func (s *RuleStore) IsReady() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.ready
+}
+
+// CouldMatchResource reports whether any active rule could care about the resource.
+// It intentionally ignores namespace, object labels, and resource scope because
+// webhook ingress may see hollow audit events before object identity is complete.
+func (s *RuleStore) CouldMatchResource(
+	resourcePlural string,
+	operation configv1alpha1.OperationType,
+	apiGroup string,
+	apiVersion string,
+) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	for _, rule := range s.rules {
+		if rule.matches(resourcePlural, operation, apiGroup, apiVersion) {
+			return true
+		}
+	}
+	for _, clusterRule := range s.clusterRules {
+		for _, rule := range clusterRule.Rules {
+			if rule.matchesCluster(resourcePlural, operation, apiGroup, apiVersion) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // GetMatchingRules returns all namespaced WatchRules that match the given resource.

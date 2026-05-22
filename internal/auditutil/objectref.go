@@ -1,0 +1,82 @@
+/*
+SPDX-License-Identifier: Apache-2.0
+
+Copyright 2025 ConfigButler
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+// Package auditutil contains shared Kubernetes audit-event parsing helpers.
+package auditutil
+
+import (
+	"strings"
+
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	auditv1 "k8s.io/apiserver/pkg/apis/audit/v1"
+
+	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+)
+
+// VerbToOperation maps mutating Kubernetes audit verbs to watch operations.
+func VerbToOperation(verb string) (configv1alpha1.OperationType, bool) {
+	switch strings.ToLower(verb) {
+	case "create":
+		return configv1alpha1.OperationCreate, true
+	case "update", "patch":
+		return configv1alpha1.OperationUpdate, true
+	case "delete", "deletecollection":
+		return configv1alpha1.OperationDelete, true
+	default:
+		return "", false
+	}
+}
+
+// SplitAPIVersion splits Kubernetes apiVersion into group and version.
+func SplitAPIVersion(apiVersion string) (string, string) {
+	group, version, found := strings.Cut(apiVersion, "/")
+	if !found {
+		return "", apiVersion
+	}
+	return group, version
+}
+
+// ObjectRefGroupVersion returns the API group and version described by ref.
+func ObjectRefGroupVersion(ref *auditv1.ObjectReference) (string, string) {
+	if ref == nil {
+		return "", ""
+	}
+
+	group, version := SplitAPIVersion(ref.APIVersion)
+	if group != "" {
+		return group, version
+	}
+	return ref.APIGroup, version
+}
+
+// ObjectRefGVR returns the GVR described by ref when resource and version are usable.
+func ObjectRefGVR(ref *auditv1.ObjectReference) (schema.GroupVersionResource, bool) {
+	if ref == nil || ref.Resource == "" {
+		return schema.GroupVersionResource{}, false
+	}
+
+	group, version := ObjectRefGroupVersion(ref)
+	if version == "" {
+		return schema.GroupVersionResource{}, false
+	}
+	return schema.GroupVersionResource{
+		Group:    group,
+		Version:  version,
+		Resource: ref.Resource,
+	}, true
+}

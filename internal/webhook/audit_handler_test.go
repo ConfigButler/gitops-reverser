@@ -37,6 +37,7 @@ import (
 	auditv1 "k8s.io/apiserver/pkg/apis/audit/v1"
 	"sigs.k8s.io/yaml"
 
+	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 
 	"github.com/stretchr/testify/assert"
@@ -78,14 +79,20 @@ type fakeAuditJoiner struct {
 	err      error
 	commits  []AuditJoinResult
 	releases []string
+	calls    int
+	sources  []AuditSource
+	quality  []AuditEventQuality
 }
 
 func (j *fakeAuditJoiner) Decide(
 	_ context.Context,
-	_ AuditSource,
+	source AuditSource,
 	event *auditv1.Event,
-	_ AuditEventQuality,
+	quality AuditEventQuality,
 ) (AuditJoinDecision, error) {
+	j.calls++
+	j.sources = append(j.sources, source)
+	j.quality = append(j.quality, quality)
 	if j.err != nil {
 		return AuditJoinDecision{}, j.err
 	}
@@ -107,6 +114,26 @@ func (j *fakeAuditJoiner) CommitDecision(_ context.Context, _ string, result Aud
 func (j *fakeAuditJoiner) ReleaseDecision(_ context.Context, auditID string) error {
 	j.releases = append(j.releases, auditID)
 	return nil
+}
+
+type fakeAuditRelevanceMatcher struct {
+	ready bool
+	match bool
+	calls int
+}
+
+func (m *fakeAuditRelevanceMatcher) IsReady() bool {
+	return m.ready
+}
+
+func (m *fakeAuditRelevanceMatcher) CouldMatchResource(
+	_ string,
+	_ configv1alpha1.OperationType,
+	_ string,
+	_ string,
+) bool {
+	m.calls++
+	return m.match
 }
 
 type orderingAuditJoiner struct {
@@ -674,6 +701,168 @@ func TestAuditHandler_JoinerParkedSkipsQueue(t *testing.T) {
 	assert.Empty(t, queue.events)
 	assert.Empty(t, joiner.commits)
 	assert.Empty(t, joiner.releases)
+}
+
+func TestAuditHandler_UnwatchedShallowOfficialBypassesJoiner(t *testing.T) {
+	queue := &recordingAuditEventQueue{}
+	joiner := &fakeAuditJoiner{decision: AuditJoinDecision{Action: AuditJoinActionEmit}}
+	matcher := &fakeAuditRelevanceMatcher{ready: true, match: false}
+	handler, err := NewAuditHandler(AuditHandlerConfig{
+		Queue:            queue,
+		Joiner:           joiner,
+		RelevanceMatcher: matcher,
+	})
+	require.NoError(t, err)
+
+	body := `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[` +
+		`{"kind":"Event","auditID":"pod-noise-1","verb":"create","stage":"ResponseComplete",` +
+		`"user":{"username":"system:kubelet"},"objectRef":{"resource":"pods","apiVersion":"v1",` +
+		`"namespace":"default","name":"noisy-pod"}}]}`
+	req := httptest.NewRequest(http.MethodPost, "/audit-webhook", bytes.NewReader([]byte(body)))
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, 1, matcher.calls)
+	assert.Zero(t, joiner.calls, "irrelevant shallow official events must not enter the Redis joiner")
+	assert.Empty(t, queue.events)
+}
+
+func TestAuditHandler_UnwatchedAdditionalBodyBypassesJoiner(t *testing.T) {
+	queue := &recordingAuditEventQueue{}
+	joiner := &fakeAuditJoiner{decision: AuditJoinDecision{Action: AuditJoinActionParked}}
+	matcher := &fakeAuditRelevanceMatcher{ready: true, match: false}
+	handler, err := NewAuditHandler(AuditHandlerConfig{
+		Queue:            queue,
+		Joiner:           joiner,
+		RelevanceMatcher: matcher,
+	})
+	require.NoError(t, err)
+
+	body := `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[` +
+		`{"kind":"Event","auditID":"pod-body-1","verb":"create","stage":"ResponseComplete",` +
+		`"user":{"username":"system:kubelet"},"objectRef":{"resource":"pods","apiVersion":"v1",` +
+		`"namespace":"default","name":"noisy-pod"},` +
+		`"requestObject":{"apiVersion":"v1","kind":"Pod","metadata":{"name":"noisy-pod","namespace":"default"}}}]}`
+	req := httptest.NewRequest(http.MethodPost, "/audit-webhook-additional", bytes.NewReader([]byte(body)))
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, 1, matcher.calls)
+	assert.Zero(t, joiner.calls, "additional bodies for unwatched resources must not be parked")
+	assert.Empty(t, queue.events)
+}
+
+func TestAuditHandler_RelevanceGateFailsOpenUntilRuleStoreReady(t *testing.T) {
+	queue := &recordingAuditEventQueue{}
+	joiner := &fakeAuditJoiner{decision: AuditJoinDecision{Action: AuditJoinActionParked}}
+	matcher := &fakeAuditRelevanceMatcher{ready: false, match: false}
+	handler, err := NewAuditHandler(AuditHandlerConfig{
+		Queue:            queue,
+		Joiner:           joiner,
+		RelevanceMatcher: matcher,
+	})
+	require.NoError(t, err)
+
+	body := `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[` +
+		`{"kind":"Event","auditID":"startup-open-1","verb":"create","stage":"ResponseComplete",` +
+		`"user":{"username":"system:kubelet"},"objectRef":{"resource":"pods","apiVersion":"v1",` +
+		`"namespace":"default","name":"maybe-watched"}}]}`
+	req := httptest.NewRequest(http.MethodPost, "/audit-webhook", bytes.NewReader([]byte(body)))
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Zero(t, matcher.calls, "not-ready rule state should fail open without checking rule contents")
+	assert.Equal(t, 1, joiner.calls)
+	assert.Empty(t, queue.events)
+}
+
+func TestAuditHandler_WatchedAdditionalBodyReachesJoiner(t *testing.T) {
+	queue := &recordingAuditEventQueue{}
+	joiner := &fakeAuditJoiner{decision: AuditJoinDecision{Action: AuditJoinActionParked}}
+	matcher := &fakeAuditRelevanceMatcher{ready: true, match: true}
+	handler, err := NewAuditHandler(AuditHandlerConfig{
+		Queue:            queue,
+		Joiner:           joiner,
+		RelevanceMatcher: matcher,
+	})
+	require.NoError(t, err)
+
+	body := `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[` +
+		`{"kind":"Event","auditID":"watched-flunder-1","verb":"create","stage":"ResponseComplete",` +
+		`"user":{"username":"test-user"},"objectRef":{"resource":"flunders",` +
+		`"apiGroup":"wardle.example.com","apiVersion":"v1alpha1"},` +
+		`"requestObject":{"apiVersion":"wardle.example.com/v1alpha1","kind":"Flunder",` +
+		`"metadata":{"name":"flunder-a","namespace":"team-a"}}}]}`
+	req := httptest.NewRequest(http.MethodPost, "/audit-webhook-additional", bytes.NewReader([]byte(body)))
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, 1, matcher.calls)
+	assert.Equal(t, 1, joiner.calls)
+	assert.Equal(t, []AuditSource{AuditSourceAdditional}, joiner.sources)
+	assert.Empty(t, queue.events)
+}
+
+func TestAuditHandler_IncompleteAdditionalGVRFailsOpen(t *testing.T) {
+	queue := &recordingAuditEventQueue{}
+	joiner := &fakeAuditJoiner{decision: AuditJoinDecision{Action: AuditJoinActionParked}}
+	matcher := &fakeAuditRelevanceMatcher{ready: true, match: false}
+	handler, err := NewAuditHandler(AuditHandlerConfig{
+		Queue:            queue,
+		Joiner:           joiner,
+		RelevanceMatcher: matcher,
+	})
+	require.NoError(t, err)
+
+	body := `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[` +
+		`{"kind":"Event","auditID":"missing-gvr-1","verb":"create","stage":"ResponseComplete",` +
+		`"user":{"username":"test-user"},"objectRef":{"apiVersion":"wardle.example.com/v1alpha1"},` +
+		`"requestObject":{"apiVersion":"wardle.example.com/v1alpha1","kind":"Flunder",` +
+		`"metadata":{"name":"flunder-a","namespace":"team-a"}}}]}`
+	req := httptest.NewRequest(http.MethodPost, "/audit-webhook-additional", bytes.NewReader([]byte(body)))
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Zero(t, matcher.calls, "incomplete GVR must fail open instead of querying an unwatched guess")
+	assert.Equal(t, 1, joiner.calls)
+	assert.Empty(t, queue.events)
+}
+
+func TestAuditHandler_CanceledUnwatchedShallowOfficialBypassesJoiner(t *testing.T) {
+	queue := &recordingAuditEventQueue{}
+	joiner := &fakeAuditJoiner{err: context.Canceled}
+	matcher := &fakeAuditRelevanceMatcher{ready: true, match: false}
+	handler, err := NewAuditHandler(AuditHandlerConfig{
+		Queue:            queue,
+		Joiner:           joiner,
+		RelevanceMatcher: matcher,
+	})
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	body := `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[` +
+		`{"kind":"Event","auditID":"pod-noise-canceled-1","verb":"create","stage":"ResponseComplete",` +
+		`"user":{"username":"system:kubelet"},"objectRef":{"resource":"pods","apiVersion":"v1",` +
+		`"namespace":"default","name":"noisy-pod"}}]}`
+	req := httptest.NewRequest(http.MethodPost, "/audit-webhook", bytes.NewReader([]byte(body))).WithContext(ctx)
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Zero(t, joiner.calls, "irrelevant canceled requests must not reach a waiting joiner")
+	assert.Empty(t, queue.events)
 }
 
 func TestAuditHandler_OfficialCanonicalEventsAreOrderedWhileAdditionalCanPark(t *testing.T) {

@@ -268,44 +268,74 @@ func (j *RedisAuditEventJoiner) handleOfficial(
 	auditID := string(event.AuditID)
 	officialArrival := j.now()
 
+	if officialCanEmitAsIs(quality) {
+		return j.emitOfficialAsIs(ctx, auditID, event)
+	}
+
 	envelope, hasBody, err := j.peekBody(ctx, auditID)
 	if err != nil {
 		return AuditJoinDecision{}, err
 	}
 	bodyParkedBeforeOfficial := hasBody
 
-	if !hasBody && quality == AuditEventQualityIdentityShallow {
+	if !hasBody {
 		envelope, hasBody, err = j.waitForBody(ctx, auditID, event)
 		if err != nil {
 			return AuditJoinDecision{}, err
 		}
 	}
 
-	if !hasBody && quality == AuditEventQualityIdentityShallow {
-		addShallowDroppedMetric(ctx, event)
-		joinerLog := j.logger
-		j.firsts.shallowDropped.Do(func() {
-			joinerLog.Info(
-				"First shallow audit event dropped — no request/response body received. "+
-					"Install apiservice-audit-proxy or update kube-apiserver audit policy "+
-					"to include bodies. Further drops will log at V(1) only.",
-				"auditID", auditID,
-				"gvr", auditEventGVR(event),
-				"verb", event.Verb,
-			)
-		})
-		joinerLog.V(1).Info("audit shallow event dropped",
+	if !hasBody {
+		return j.dropShallowOfficial(ctx, auditID, event, quality), nil
+	}
+
+	return j.emitMergedOfficial(ctx, auditID, event, envelope, bodyParkedBeforeOfficial, officialArrival)
+}
+
+func officialCanEmitAsIs(quality AuditEventQuality) bool {
+	return quality == AuditEventQualityComplete ||
+		quality == AuditEventQualityCollection ||
+		quality == AuditEventQualityBodyShallowDeletable
+}
+
+func (j *RedisAuditEventJoiner) dropShallowOfficial(
+	ctx context.Context,
+	auditID string,
+	event *auditv1.Event,
+	quality AuditEventQuality,
+) AuditJoinDecision {
+	addShallowDroppedMetric(ctx, event)
+	joinerLog := j.logger
+	j.firsts.shallowDropped.Do(func() {
+		joinerLog.Info(
+			"First shallow audit event dropped — no request/response body received. "+
+				"Install apiservice-audit-proxy or update kube-apiserver audit policy "+
+				"to include bodies. Further drops will log at V(1) only.",
 			"auditID", auditID,
 			"gvr", auditEventGVR(event),
 			"verb", event.Verb,
-			"source", string(AuditSourceOfficial),
-			"quality", quality,
-			"hasRequestObject", hasRuntimeUnknownBody(event.RequestObject),
-			"hasResponseObject", hasRuntimeUnknownBody(event.ResponseObject),
 		)
-		return AuditJoinDecision{Action: AuditJoinActionDrop}, nil
-	}
+	})
+	joinerLog.V(1).Info("audit shallow event dropped",
+		"auditID", auditID,
+		"gvr", auditEventGVR(event),
+		"verb", event.Verb,
+		"source", string(AuditSourceOfficial),
+		"quality", quality,
+		"hasRequestObject", hasRuntimeUnknownBody(event.RequestObject),
+		"hasResponseObject", hasRuntimeUnknownBody(event.ResponseObject),
+	)
+	return AuditJoinDecision{Action: AuditJoinActionDrop}
+}
 
+func (j *RedisAuditEventJoiner) emitMergedOfficial(
+	ctx context.Context,
+	auditID string,
+	event *auditv1.Event,
+	envelope AuditBodyEnvelope,
+	bodyParkedBeforeOfficial bool,
+	officialArrival time.Time,
+) (AuditJoinDecision, error) {
 	claimed, err := j.claimDecision(ctx, auditID)
 	if err != nil {
 		return AuditJoinDecision{}, err
@@ -315,33 +345,46 @@ func (j *RedisAuditEventJoiner) handleOfficial(
 		return AuditJoinDecision{Action: AuditJoinActionDrop}, nil
 	}
 
-	if hasBody {
-		if err := j.deleteBody(ctx, auditID); err != nil {
-			j.logger.Error(err, "Failed to delete merged parked audit body", "auditID", auditID)
-		}
-		if bodyParkedBeforeOfficial {
-			// The additional body was already parked when the official arrived: the skew is
-			// the proxy's lead time. waitForBody records the official-first cases itself.
-			observeJoinSkew(ctx, joinArrivalBodyFirst, joinOutcomeMerged,
-				officialArrival.Sub(envelope.ReceivedAt.Time).Seconds())
-		}
-		j.firsts.mergedEmit.Do(func() {
-			j.logger.Info(
-				"First shallow-event conversion succeeded: official event merged with parked additional body",
-				"auditID", auditID,
-				"gvr", auditEventGVR(event),
-				"verb", event.Verb,
-			)
-		})
-		return AuditJoinDecision{
-			Action:  AuditJoinActionEmit,
-			Event:   mergeParkedBody(event, envelope),
-			AuditID: auditID,
-			Result:  AuditJoinResultMerged,
-			Source:  AuditSourceOfficial,
-		}, nil
+	if err := j.deleteBody(ctx, auditID); err != nil {
+		j.logger.Error(err, "Failed to delete merged parked audit body", "auditID", auditID)
 	}
+	if bodyParkedBeforeOfficial {
+		// The additional body was already parked when the official arrived: the skew is
+		// the proxy's lead time. waitForBody records the official-first cases itself.
+		observeJoinSkew(ctx, joinArrivalBodyFirst, joinOutcomeMerged,
+			officialArrival.Sub(envelope.ReceivedAt.Time).Seconds())
+	}
+	j.firsts.mergedEmit.Do(func() {
+		j.logger.Info(
+			"First shallow-event conversion succeeded: official event merged with parked additional body",
+			"auditID", auditID,
+			"gvr", auditEventGVR(event),
+			"verb", event.Verb,
+		)
+	})
 
+	return AuditJoinDecision{
+		Action:  AuditJoinActionEmit,
+		Event:   mergeParkedBody(event, envelope),
+		AuditID: auditID,
+		Result:  AuditJoinResultMerged,
+		Source:  AuditSourceOfficial,
+	}, nil
+}
+
+func (j *RedisAuditEventJoiner) emitOfficialAsIs(
+	ctx context.Context,
+	auditID string,
+	event *auditv1.Event,
+) (AuditJoinDecision, error) {
+	claimed, err := j.claimDecision(ctx, auditID)
+	if err != nil {
+		return AuditJoinDecision{}, err
+	}
+	if !claimed {
+		addDuplicateMetric(ctx, "decision_exists")
+		return AuditJoinDecision{Action: AuditJoinActionDrop}, nil
+	}
 	return AuditJoinDecision{
 		Action:  AuditJoinActionEmit,
 		Event:   event,

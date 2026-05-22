@@ -92,6 +92,28 @@ func TestRedisAuditEventJoiner_WaitOfficialMergesParkedBody(t *testing.T) {
 	assert.False(t, mr.Exists(bodyKey("audit-2")))
 }
 
+func TestRedisAuditEventJoiner_CompleteOfficialDoesNotPeekOrMergeParkedBody(t *testing.T) {
+	mr := miniredis.RunT(t)
+	joiner := newTestJoiner(t, mr)
+	ctx := context.Background()
+
+	additional := testAuditEvent("audit-complete-1", "wardle.example.com", true)
+	additional.ObjectRef.Name = "from-additional"
+	_, err := decide(ctx, t, joiner, AuditSourceAdditional, &additional)
+	require.NoError(t, err)
+
+	official := testAuditEvent("audit-complete-1", "wardle.example.com", true)
+	official.ObjectRef.Name = "from-official"
+	decision, err := decide(ctx, t, joiner, AuditSourceOfficial, &official)
+	require.NoError(t, err)
+
+	require.Equal(t, AuditJoinActionEmit, decision.Action)
+	require.Equal(t, AuditJoinResultAsIs, decision.Result)
+	assert.Equal(t, "from-official", decision.Event.ObjectRef.Name)
+	assert.True(t, mr.Exists(bodyKey("audit-complete-1")),
+		"complete official events should not pay Redis body lookup/delete; orphan bodies expire by TTL")
+}
+
 func TestRedisAuditEventJoiner_DoesNotMergeDeleteOptionsBody(t *testing.T) {
 	mr := miniredis.RunT(t)
 	joiner := newTestJoiner(t, mr)
@@ -110,9 +132,11 @@ func TestRedisAuditEventJoiner_DoesNotMergeDeleteOptionsBody(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Equal(t, AuditJoinActionEmit, decision.Action)
-	assert.Equal(t, AuditJoinResultMerged, decision.Result)
+	assert.Equal(t, AuditJoinResultAsIs, decision.Result)
 	assert.Nil(t, decision.Event.RequestObject)
 	assert.Nil(t, decision.Event.ResponseObject)
+	assert.True(t, mr.Exists(bodyKey("audit-delete-1")),
+		"bodyless single deletes should not pay Redis body lookup/delete")
 }
 
 func TestRedisAuditEventJoiner_ShallowOfficialWithoutParkedBodyDropsImmediately(t *testing.T) {

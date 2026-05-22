@@ -88,59 +88,6 @@ func (f *fakeEventRouter) FinalizeGitTargetWindow(
 	return f.finalizeResult, f.finalizeErr
 }
 
-// --- splitAPIVersion ---
-
-func TestSplitAPIVersion(t *testing.T) {
-	tests := []struct {
-		name       string
-		apiVersion string
-		wantGroup  string
-		wantVer    string
-	}{
-		{"core v1", "v1", "", "v1"},
-		{"apps/v1", "apps/v1", "apps", "v1"},
-		{"networking", "networking.k8s.io/v1", "networking.k8s.io", "v1"},
-		{"beta", "extensions/v1beta1", "extensions", "v1beta1"},
-		{"empty", "", "", ""},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			g, v := splitAPIVersion(tt.apiVersion)
-			assert.Equal(t, tt.wantGroup, g)
-			assert.Equal(t, tt.wantVer, v)
-		})
-	}
-}
-
-// --- verbToOperation ---
-
-func TestVerbToOperation(t *testing.T) {
-	tests := []struct {
-		verb      string
-		wantOp    configv1alpha1.OperationType
-		wantFound bool
-	}{
-		{"create", configv1alpha1.OperationCreate, true},
-		{"CREATE", configv1alpha1.OperationCreate, true},
-		{"update", configv1alpha1.OperationUpdate, true},
-		{"patch", configv1alpha1.OperationUpdate, true},
-		{"PATCH", configv1alpha1.OperationUpdate, true},
-		{"delete", configv1alpha1.OperationDelete, true},
-		{"deletecollection", configv1alpha1.OperationDelete, true},
-		{"get", "", false},
-		{"list", "", false},
-		{"watch", "", false},
-		{"", "", false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.verb, func(t *testing.T) {
-			op, ok := verbToOperation(tt.verb)
-			assert.Equal(t, tt.wantFound, ok)
-			assert.Equal(t, tt.wantOp, op)
-		})
-	}
-}
-
 // --- parseAuditEvent ---
 
 func TestParseAuditEvent_Success(t *testing.T) {

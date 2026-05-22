@@ -243,6 +243,7 @@ func main() {
 		MaxRequestBodyBytes: cfg.auditMaxRequestBodyBytes,
 		Queue:               auditQueue,
 		Joiner:              auditJoiner,
+		RelevanceMatcher:    ruleStore,
 	})
 	fatalIfErr(err, "unable to create audit handler")
 

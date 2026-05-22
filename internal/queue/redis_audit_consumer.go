@@ -38,6 +38,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 
 	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	"github.com/ConfigButler/gitops-reverser/internal/auditutil"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
 	"github.com/ConfigButler/gitops-reverser/internal/sanitize"
@@ -327,7 +328,7 @@ func (c *AuditConsumer) processMessage(ctx context.Context, msg redis.XMessage) 
 	}
 
 	// Only process mutating verbs.
-	op, ok := verbToOperation(auditEvent.Verb)
+	op, ok := auditutil.VerbToOperation(auditEvent.Verb)
 	if !ok {
 		c.ackMessage(ctx, msg.ID)
 		return
@@ -361,7 +362,7 @@ func (c *AuditConsumer) routeAuditEvent(
 	op configv1alpha1.OperationType,
 ) error {
 	ref := auditEvent.ObjectRef
-	apiGroup, apiVersion := objectRefGroupVersion(ref)
+	apiGroup, apiVersion := auditutil.ObjectRefGroupVersion(ref)
 	resourcePlural := ref.Resource
 	namespace := ref.Namespace
 	name := ref.Name
@@ -668,44 +669,6 @@ func auditObjectMarkedForDeletion(rawObj *runtime.Unknown) bool {
 	}
 
 	return !obj.GetDeletionTimestamp().IsZero()
-}
-
-// verbToOperation maps a Kubernetes audit verb to a configv1alpha1.OperationType.
-// Returns (op, true) for mutating verbs, ("", false) for read-only or unknown verbs.
-func verbToOperation(verb string) (configv1alpha1.OperationType, bool) {
-	switch strings.ToLower(verb) {
-	case "create":
-		return configv1alpha1.OperationCreate, true
-	case "update", "patch":
-		return configv1alpha1.OperationUpdate, true
-	case "delete", "deletecollection":
-		return configv1alpha1.OperationDelete, true
-	default:
-		return "", false
-	}
-}
-
-// splitAPIVersion splits a Kubernetes apiVersion string (e.g. "apps/v1" or "v1")
-// into (group, version). Core resources have an empty group.
-func splitAPIVersion(apiVersion string) (string, string) {
-	group, version, found := strings.Cut(apiVersion, "/")
-	if !found {
-		return "", apiVersion
-	}
-	return group, version
-}
-
-func objectRefGroupVersion(ref *auditv1.ObjectReference) (string, string) {
-	if ref == nil {
-		return "", ""
-	}
-
-	group, version := splitAPIVersion(ref.APIVersion)
-	if group != "" {
-		return group, version
-	}
-
-	return ref.APIGroup, version
 }
 
 // stringField safely reads a string value from a stream entry's Values map.
