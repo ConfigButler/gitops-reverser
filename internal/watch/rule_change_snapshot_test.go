@@ -38,23 +38,21 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
 )
 
-// These tests target a specific gap discovered in issue #146-style symptoms:
-// when a new ClusterWatchRule lands but its referenced GVR is *already* being
-// watched (e.g. because another rule already covers that GVR), today's
-// ReconcileForRuleChange takes the early-return at manager.go:660 and emits no
-// snapshot. The newly-selected resources that already exist in the cluster stay
-// out of git until they're next touched.
+// These tests guard against an issue #146-style regression: when a new
+// ClusterWatchRule lands but its referenced GVR is *already* being watched
+// (e.g. because another rule already covers that GVR), ReconcileForRuleChange
+// must still emit a snapshot. An earlier version took a GVR-only-diff
+// early-return and skipped the snapshot, so resources that already matched the
+// new rule stayed out of git until they were next touched.
 //
-// Both tests assert the desired contract (snapshot count goes up when the
-// rule-set changes, regardless of whether GVRs changed) and therefore FAIL
-// today. Once the early-return is replaced with a rule-set-aware decision, the
-// tests will go green.
+// Each test asserts the contract directly: the snapshot count goes up when the
+// rule-set changes, regardless of whether the GVR set changed.
 
 // makeRuleChangeTestManager constructs a Manager configured for these tests:
-// fake controller-runtime client, real RuleStore, a discoveryFilter stub that
-// passes every requested GVR through (bypassing the real discovery client,
-// which is unavailable without a REST config), and a target GitTarget already
-// in the fake client.
+// fake controller-runtime client, real RuleStore, a trusted-but-minimal API
+// resource catalog that does not serve configmaps (so rule resolution plans no
+// informer GVRs and no real informers start), and a target GitTarget already in
+// the fake client.
 //
 // The configmaps GVR is also pre-populated in activeInformers with a no-op
 // cancel so compareGVRs sees the GVR as "already watched". This is the
@@ -90,14 +88,14 @@ func makeRuleChangeTestManager(t *testing.T) (*Manager, *rulestore.RuleStore) {
 		Scope:    configv1alpha1.ResourceScopeNamespaced,
 	}
 	manager := &Manager{
-		Client:          fakeClient,
-		Log:             logr.Discard(),
-		RuleStore:       store,
-		resourceCatalog: newCommonTestCatalog(t),
-		discoveryClient: commonTestDiscoveryClient(),
-		// Keep informer discovery empty. These tests exercise snapshot delivery
-		// after rule-set changes and must not start real informers.
-		discoveryFilter: func(_ context.Context, _ []GVR) []GVR { return nil },
+		Client:    fakeClient,
+		Log:       logr.Discard(),
+		RuleStore: store,
+		// The catalog does not serve configmaps, so these tests exercise
+		// snapshot delivery after rule-set changes without planning real
+		// informers.
+		resourceCatalog: newSnapshotDeliveryTestCatalog(t),
+		discoveryClient: snapshotDeliveryTestDiscoveryClient(),
 		// Pretend the configmaps informer is already running cluster-wide,
 		// so compareGVRs reports added=0, removed=0 for that GVR. No real
 		// informers are started.
@@ -131,13 +129,11 @@ func configMapRuleForTarget(name, gitTargetName string) configv1alpha1.ClusterWa
 }
 
 // TestReconcileForRuleChange_AddingSecondRuleSameGVR_EmitsSnapshot exercises
-// the central gap. After the first rule is registered and reconciled, the
+// the central case. After the first rule is registered and reconciled, the
 // informer set is steady-state. Adding a *second* rule that names the same GVR
-// does not change the GVR set — only the rule-set changes. The current code
-// takes the GVR-only diff at manager.go:660 and skips the snapshot path, so
-// resources that already match the new rule are never written until their next
-// update event. The desired behavior: any rule-set change must emit a snapshot
-// for affected GitTargets.
+// does not change the GVR set — only the rule-set changes. The contract: any
+// rule-set change must still emit a snapshot for affected GitTargets, so
+// resources that already match the new rule are backfilled to git.
 func TestReconcileForRuleChange_AddingSecondRuleSameGVR_EmitsSnapshot(t *testing.T) {
 	manager, store := makeRuleChangeTestManager(t)
 	ctx := context.Background()
@@ -155,8 +151,8 @@ func TestReconcileForRuleChange_AddingSecondRuleSameGVR_EmitsSnapshot(t *testing
 	// Reset counter so the assertion targets only the *second* reconcile.
 	manager.snapshotEmitCount.Store(0)
 
-	// Second rule for the same GVR. Production today: GVR diff is empty,
-	// ReconcileForRuleChange early-returns, snapshot is never emitted.
+	// Second rule for the same GVR. The GVR diff is empty; only the rule-set
+	// changes — ReconcileForRuleChange must still emit a snapshot.
 	store.AddOrUpdateClusterWatchRule(
 		configMapRuleForTarget("rule-2", "test-target"),
 		"test-target", "test-ns",
@@ -277,15 +273,14 @@ func TestReconcileForRuleChange_AddingSecondWatchRuleSameGVR_EmitsSnapshot(t *te
 //     stream registration brings it to LiveProcessing), so the user sees
 //     "updates write, but pre-existing resources never land in git."
 //
-// This test reproduces the drop by emitting a snapshot with no pre-registered
-// FolderReconciler and asserting the drop counter stays at zero. Today it
-// fails because the snapshot fires unconditionally without coordination with
-// the GitTargetReconciler.
+// This test guards the fix: it emits a snapshot with no pre-registered
+// FolderReconciler and asserts the drop counter stays at zero, so snapshot
+// emission stays coordinated with reconciler registration.
 //
-// The setup populates activeInformers with a stale GVR and uses a
-// discoveryFilter that returns no GVRs, so compareGVRs reports
-// added=[], removed=[stale-gvr]. That bypasses the early-return without
-// requiring any real informers to start.
+// The setup populates activeInformers with a stale GVR and uses a catalog that
+// does not serve configmaps, so the rule's GVR resolves to nothing and
+// compareGVRs reports added=[], removed=[stale-gvr]. That bypasses the
+// early-return without requiring any real informers to start.
 func TestReconcileForRuleChange_RestartLikeBootstrap_NoSnapshotDrops(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, clientgoscheme.AddToScheme(scheme))
@@ -328,17 +323,16 @@ func TestReconcileForRuleChange_RestartLikeBootstrap_NoSnapshotDrops(t *testing.
 		Scope: configv1alpha1.ResourceScopeNamespaced,
 	}
 	manager := &Manager{
-		Client:          fakeK8s,
-		Log:             logr.Discard(),
-		RuleStore:       store,
-		dynamicClient:   dynamicfake.NewSimpleDynamicClient(scheme, preexistingCM),
-		resourceCatalog: newCommonTestCatalog(t),
-		discoveryClient: commonTestDiscoveryClient(),
-		// Return no discoverable GVRs so the rule's GVR (configmaps) doesn't
-		// hit startInformersForGVRs. Combined with a stale entry in
-		// activeInformers, compareGVRs reports removed > 0 and the
+		Client:        fakeK8s,
+		Log:           logr.Discard(),
+		RuleStore:     store,
+		dynamicClient: dynamicfake.NewSimpleDynamicClient(scheme, preexistingCM),
+		// The catalog does not serve configmaps, so the rule's GVR resolves to
+		// nothing and does not hit startInformersForGVRs. Combined with a stale
+		// entry in activeInformers, compareGVRs reports removed > 0 and the
 		// snapshot-emit path runs.
-		discoveryFilter: func(_ context.Context, _ []GVR) []GVR { return nil },
+		resourceCatalog: newSnapshotDeliveryTestCatalog(t),
+		discoveryClient: snapshotDeliveryTestDiscoveryClient(),
 		activeInformers: map[GVR]map[string]context.CancelFunc{
 			staleGVR: {"": func() {}},
 		},
