@@ -19,7 +19,10 @@ limitations under the License.
 package watch
 
 import (
+	"fmt"
 	"strings"
+
+	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
@@ -34,120 +37,66 @@ type GVR struct {
 	Scope    configv1alpha1.ResourceScope
 }
 
-// ComputeRequestedGVRs aggregates concrete GVRs from the active RuleStore,
-// deduplicated across WatchRule and ClusterWatchRule sources.
-//
-// MVP behavior:
-// - Only includes concrete (non-wildcard) combinations:
-//   - APIGroups: exactly one value and not "*"
-//   - APIVersions: exactly one value and not "*"
-//   - Resources: value not "*" and not a subresource pattern (no "/")
-//
-// - WatchRule entries are treated as Namespaced scope.
-// - ClusterWatchRule entries carry scope from their per-rule definition.
-//
-// Future improvements:
-// - Expand wildcard handling using discovery to enumerate actual served versions/resources.
-// - Handle subresource patterns (e.g., "pods/log") when needed.
-// - Validate GVR existence using API discovery and drop unknown entries.
+func (g GVR) schema() schema.GroupVersionResource {
+	return schema.GroupVersionResource{Group: g.Group, Version: g.Version, Resource: g.Resource}
+}
+
+// ComputeRequestedGVRs aggregates resolved GVRs from the active RuleStore.
 func (m *Manager) ComputeRequestedGVRs() []GVR {
+	out, _ := m.computeRequestedGVRs()
+	return out
+}
+
+func (m *Manager) computeRequestedGVRs() ([]GVR, []ResolveMiss) {
 	if m.RuleStore == nil {
-		return nil
+		return nil, nil
 	}
 
-	seen := make(map[string]struct{})
 	var out []GVR
+	var misses []ResolveMiss
+	resolver := m.ruleGVRResolver()
 
 	// From WatchRule (namespaced-only)
 	for _, cr := range m.RuleStore.SnapshotWatchRules() {
-		out = append(out, m.gvrFromCompiledRule(cr, configv1alpha1.ResourceScopeNamespaced, seen)...)
+		gvrs, ruleMisses := gvrFromCompiledRule(resolver, cr, configv1alpha1.ResourceScopeNamespaced)
+		out = append(out, gvrs...)
+		misses = append(misses, ruleMisses...)
 	}
 
 	// From ClusterWatchRule (scope per rule)
 	for _, ccr := range m.RuleStore.SnapshotClusterWatchRules() {
 		for _, rr := range ccr.Rules {
-			out = append(out, gvrFromClusterRule(rr, seen)...)
+			gvrs, ruleMisses := gvrFromClusterRule(resolver, rr)
+			out = append(out, gvrs...)
+			misses = append(misses, ruleMisses...)
 		}
 	}
 
-	return out
+	return dedupeGVRs(out), misses
 }
 
 // gvrFromCompiledRule extracts GVR entries from a compiled namespaced rule set.
-func (m *Manager) gvrFromCompiledRule(
+func gvrFromCompiledRule(
+	resolver *RuleGVRResolver,
 	cr rulestore.CompiledRule,
 	scope configv1alpha1.ResourceScope,
-	seen map[string]struct{},
-) []GVR {
+) ([]GVR, []ResolveMiss) {
 	var out []GVR
+	var misses []ResolveMiss
 	for _, rr := range cr.ResourceRules {
-		// Default empty apiGroups to core API
-		groups := rr.APIGroups
-		if len(groups) == 0 {
-			groups = []string{""} // Core API group
-		}
-		groupsConcrete, ok := singleConcrete(groups)
-		if !ok {
-			continue
-		}
-
-		// Default empty apiVersions to v1 (most common for core resources)
-		versions := rr.APIVersions
-		if len(versions) == 0 {
-			versions = []string{"v1"} // Default version for core API
-		}
-		versionsConcrete, ok := singleConcrete(versions)
-		if !ok {
-			continue
-		}
-
-		// Concrete resources only (skip "*" and subresources)
-		for _, res := range rr.Resources {
-			r := normalizeResource(res)
-			if r == "" || r == "*" || strings.Contains(r, "/") {
-				continue
-			}
-			addGVR(groupsConcrete[0], versionsConcrete[0], r, scope, &out, seen)
-		}
+		gvrs, ruleMisses := resolver.Resolve(rr.APIGroups, rr.APIVersions, rr.Resources, scope)
+		out = append(out, gvrs...)
+		misses = append(misses, ruleMisses...)
 	}
-	return out
+	return out, misses
 }
 
 // gvrFromClusterRule extracts GVR entries from a single cluster rule with scope.
 func gvrFromClusterRule(
+	resolver *RuleGVRResolver,
 	rr rulestore.CompiledClusterResourceRule,
-	seen map[string]struct{},
-) []GVR {
-	var out []GVR
-
-	// Default empty apiGroups to core API
-	groups := rr.APIGroups
-	if len(groups) == 0 {
-		groups = []string{""} // Core API group
-	}
-	groupsConcrete, ok := singleConcrete(groups)
-	if !ok {
-		return out
-	}
-
-	// Default empty apiVersions to v1
-	versions := rr.APIVersions
-	if len(versions) == 0 {
-		versions = []string{"v1"} // Default version for core API
-	}
-	versionsConcrete, ok := singleConcrete(versions)
-	if !ok {
-		return out
-	}
-
-	for _, res := range rr.Resources {
-		r := normalizeResource(res)
-		if r == "" || r == "*" || strings.Contains(r, "/") {
-			continue
-		}
-		addGVR(groupsConcrete[0], versionsConcrete[0], r, rr.Scope, &out, seen)
-	}
-	return out
+) ([]GVR, []ResolveMiss) {
+	return resolver.Resolve(rr.APIGroups, rr.APIVersions, rr.Resources, rr.Scope)
 }
 
 // singleConcrete returns a single-element slice if the input means a concrete set:
@@ -193,4 +142,20 @@ func addGVR(
 		Resource: resource,
 		Scope:    scope,
 	})
+}
+
+// FormatResolveMisses produces an actionable summary for status and logs.
+func FormatResolveMisses(misses []ResolveMiss) string {
+	if len(misses) == 0 {
+		return "all rule resources resolved"
+	}
+	parts := make([]string, 0, len(misses))
+	for _, miss := range misses {
+		detail := miss.Detail
+		if detail == "" {
+			detail = string(miss.Reason)
+		}
+		parts = append(parts, fmt.Sprintf("%q: %s", miss.Resource, detail))
+	}
+	return strings.Join(uniqueStrings(parts), "; ")
 }

@@ -22,8 +22,6 @@ import (
 	"context"
 	"strings"
 
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 
@@ -35,59 +33,22 @@ const (
 	groupVersionSplit = 2
 )
 
-// FilterDiscoverableGVRs returns only those GVRs that are currently present in
-// API discovery and support list+watch. Scope must match server resource namespaced flag.
-//
-// Notes:
-// - Uses ServerPreferredResources for simplicity; acceptable for MVP.
-// - Handles partial discovery failures by ignoring broken groups (common in clusters).
-func (m *Manager) FilterDiscoverableGVRs(_ context.Context, in []GVR) []GVR {
+// FilterDiscoverableGVRs returns only catalog GVRs that are listable,
+// watchable, in scope, and allowed by GitOps Reverser resource policy.
+func (m *Manager) FilterDiscoverableGVRs(ctx context.Context, in []GVR) []GVR {
 	log := m.Log.WithName("discovery")
-
-	cfg := m.restConfig()
-	if cfg == nil {
-		log.Info("skipping discovery - no rest config available")
+	if err := m.RefreshAPIResourceCatalog(ctx); err != nil {
+		log.Error(err, "failed to refresh API resource catalog")
 		return nil
-	}
-
-	disco, err := discovery.NewDiscoveryClientForConfig(cfg)
-	if err != nil {
-		log.Error(err, "failed to create discovery client")
-		return nil
-	}
-
-	preferred, err := disco.ServerPreferredResources()
-	if err != nil && !discovery.IsGroupDiscoveryFailedError(err) {
-		log.Error(err, "failed to fetch server preferred resources")
-		return nil
-	}
-
-	index := buildDiscoveryIndex(preferred)
-
-	// Build default exclusion set locally (MVP) to avoid global state.
-	// Keys use the form "group|resource" where group is empty string for core.
-	exKey := func(group, resource string) string { return group + "|" + resource }
-	defaultExclusions := map[string]struct{}{
-		exKey("", "pods"):                                                    {},
-		exKey("", "events"):                                                  {},
-		exKey("events.k8s.io", "events"):                                     {},
-		exKey("", "endpoints"):                                               {},
-		exKey("discovery.k8s.io", "endpointslices"):                          {},
-		exKey("coordination.k8s.io", "leases"):                               {},
-		exKey("apps", "controllerrevisions"):                                 {},
-		exKey("flowcontrol.apiserver.k8s.io", "flowschemas"):                 {},
-		exKey("flowcontrol.apiserver.k8s.io", "prioritylevelconfigurations"): {},
-		exKey("batch", "jobs"):                                               {},
-		exKey("batch", "cronjobs"):                                           {},
 	}
 
 	var out []GVR
 	for _, g := range in {
-		// Apply built-in default exclusions for runtime/noisy resources (MVP).
-		if _, skip := defaultExclusions[exKey(g.Group, g.Resource)]; skip {
+		entry, ok := m.apiResourceCatalog().Entry(g.schema())
+		if !ok || !entry.Allowed || entry.Subresource || !entry.Supports("list", "watch") {
 			continue
 		}
-		if ent, ok := index[key(g.Group, g.Version, g.Resource)]; ok && matchesScope(ent.namespaced, g.Scope) {
+		if matchesScope(entry.Namespaced, g.Scope) {
 			out = append(out, g)
 		}
 	}
@@ -127,43 +88,6 @@ func parseGroupVersion(gvString string) groupVersion {
 	return groupVersion{group: parts[0], version: parts[1]}
 }
 
-func hasVerbs(r metav1.APIResource, verbs ...string) bool {
-	for _, v := range verbs {
-		if !contains(r.Verbs, v) {
-			return false
-		}
-	}
-	return true
-}
-
-// discoveryEntry stores per-resource flags extracted from discovery.
-type discoveryEntry struct {
-	namespaced bool
-}
-
-// buildDiscoveryIndex converts discovery results into a fast lookup map keyed by group|version|resource.
-func buildDiscoveryIndex(preferred []*metav1.APIResourceList) map[string]discoveryEntry {
-	idx := make(map[string]discoveryEntry)
-	for _, rl := range preferred {
-		if rl == nil {
-			continue
-		}
-		gv := parseGroupVersion(rl.GroupVersion)
-		for _, r := range rl.APIResources {
-			// Skip subresources (contain '/')
-			if strings.Contains(r.Name, "/") {
-				continue
-			}
-			// Require list+watch
-			if !hasVerbs(r, "list", "watch") {
-				continue
-			}
-			idx[key(gv.group, gv.version, r.Name)] = discoveryEntry{namespaced: r.Namespaced}
-		}
-	}
-	return idx
-}
-
 // matchesScope ensures the namespaced flag from discovery aligns with desired scope.
 func matchesScope(namespaced bool, scope configv1alpha1.ResourceScope) bool {
 	switch scope {
@@ -174,15 +98,6 @@ func matchesScope(namespaced bool, scope configv1alpha1.ResourceScope) bool {
 	default:
 		return false
 	}
-}
-
-func contains(list []string, v string) bool {
-	for _, x := range list {
-		if x == v {
-			return true
-		}
-	}
-	return false
 }
 
 func key(group, version, resource string) string {

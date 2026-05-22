@@ -83,7 +83,7 @@ type ClusterResourceRule struct {
 	Operations []OperationType `json:"operations,omitempty"`
 
 	// APIGroups to match. Empty string ("") matches the core API group.
-	// If empty, matches all API groups.
+	// If omitted, GitOps Reverser resolves the resource name across all served API groups.
 	// Wildcards supported: "*" matches all groups.
 	// Examples:
 	//   - [""] matches core API (nodes, namespaces)

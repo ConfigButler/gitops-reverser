@@ -84,9 +84,11 @@ func TestManagerStart_MustSeedRuleStoreFromExistingWatchRules(t *testing.T) {
 
 	store := rulestore.NewStore()
 	manager := &Manager{
-		Client:    fakeClient,
-		Log:       logr.Discard(),
-		RuleStore: store,
+		Client:          fakeClient,
+		Log:             logr.Discard(),
+		RuleStore:       store,
+		resourceCatalog: newCommonTestCatalog(t),
+		discoveryClient: commonTestDiscoveryClient(),
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
@@ -146,9 +148,11 @@ func TestManagerStart_MustSeedRuleStoreFromExistingClusterWatchRules(t *testing.
 
 	store := rulestore.NewStore()
 	manager := &Manager{
-		Client:    fakeClient,
-		Log:       logr.Discard(),
-		RuleStore: store,
+		Client:          fakeClient,
+		Log:             logr.Discard(),
+		RuleStore:       store,
+		resourceCatalog: newCommonTestCatalog(t),
+		discoveryClient: commonTestDiscoveryClient(),
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)

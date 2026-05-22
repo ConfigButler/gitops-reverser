@@ -48,6 +48,8 @@ const (
 	ClusterWatchRuleReasonGitTargetNotFound     = "GitTargetNotFound"
 	ClusterWatchRuleReasonGitDestinationInvalid = "GitDestinationInvalid"
 	ClusterWatchRuleReasonReady                 = "Ready"
+	ClusterWatchRuleReasonResourcesResolved     = "Resolved"
+	ClusterWatchRuleReasonUnresolvedResources   = "UnresolvedResources"
 )
 
 // ClusterWatchRuleReconciler reconciles a ClusterWatchRule object.
@@ -186,6 +188,7 @@ func (r *ClusterWatchRuleReconciler) reconcileClusterWatchRuleViaTarget(
 			log.Error(err, "Failed to reconcile watch manager after cluster rule update")
 			// Don't fail the reconciliation - the rule is valid, just log the watch manager issue
 		}
+		r.setResourceResolutionCondition(ctx, clusterRule)
 	}
 
 	log.Info("ClusterWatchRule reconciliation via GitTarget successful", "name", clusterRule.Name)
@@ -210,6 +213,9 @@ func (r *ClusterWatchRuleReconciler) setReadyAndUpdateStatusWithTarget(
 	)
 	if err := r.updateStatusWithRetry(ctx, clusterRule); err != nil {
 		return ctrl.Result{}, err
+	}
+	if conditionIsFalse(clusterRule.Status.Conditions, ConditionTypeResourcesResolved) {
+		return ctrl.Result{RequeueAfter: RequeueShortInterval}, nil
 	}
 	return ctrl.Result{RequeueAfter: RequeueMediumInterval}, nil
 }
@@ -236,6 +242,43 @@ func (r *ClusterWatchRuleReconciler) setCondition(
 		}
 	}
 
+	clusterRule.Status.Conditions = append(clusterRule.Status.Conditions, condition)
+}
+
+func (r *ClusterWatchRuleReconciler) setResourceResolutionCondition(
+	ctx context.Context,
+	clusterRule *configbutleraiv1alpha1.ClusterWatchRule,
+) {
+	resolved, message := r.WatchManager.ResolveClusterWatchRuleResources(ctx, *clusterRule)
+	status := metav1.ConditionFalse
+	reason := ClusterWatchRuleReasonUnresolvedResources
+	if resolved {
+		status = metav1.ConditionTrue
+		reason = ClusterWatchRuleReasonResourcesResolved
+	}
+	r.setTypedCondition(clusterRule, ConditionTypeResourcesResolved, status, reason, message)
+}
+
+func (r *ClusterWatchRuleReconciler) setTypedCondition(
+	clusterRule *configbutleraiv1alpha1.ClusterWatchRule,
+	conditionType string,
+	status metav1.ConditionStatus,
+	reason string,
+	message string,
+) {
+	condition := metav1.Condition{
+		Type:               conditionType,
+		Status:             status,
+		Reason:             reason,
+		Message:            message,
+		LastTransitionTime: metav1.Now(),
+	}
+	for i, existingCondition := range clusterRule.Status.Conditions {
+		if existingCondition.Type == conditionType {
+			clusterRule.Status.Conditions[i] = condition
+			return
+		}
+	}
 	clusterRule.Status.Conditions = append(clusterRule.Status.Conditions, condition)
 }
 

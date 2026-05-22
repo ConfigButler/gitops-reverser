@@ -27,6 +27,7 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -63,6 +64,13 @@ func makeConfigMap(name, namespace string) *corev1.ConfigMap {
 	}
 }
 
+// makeDeployment creates a minimal Deployment suitable for the fake dynamic client.
+func makeDeployment(name, namespace string) *appsv1.Deployment {
+	return &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+	}
+}
+
 // makeNode creates a minimal Node (cluster-scoped) for the fake dynamic client.
 func makeNode(name string) *corev1.Node {
 	return &corev1.Node{
@@ -90,10 +98,12 @@ func setupManager(
 	fakeDyn := dynamicfake.NewSimpleDynamicClient(scheme, clusterObjects...)
 
 	return &Manager{
-		Client:        fakeK8s,
-		Log:           logr.Discard(),
-		RuleStore:     ruleStore,
-		dynamicClient: fakeDyn,
+		Client:          fakeK8s,
+		Log:             logr.Discard(),
+		RuleStore:       ruleStore,
+		dynamicClient:   fakeDyn,
+		resourceCatalog: newCommonTestCatalog(t),
+		discoveryClient: commonTestDiscoveryClient(),
 	}
 }
 
@@ -159,6 +169,36 @@ func TestSnapshotScopedToWatchRuleNamespace(t *testing.T) {
 		"only secrets from ns-a should be returned")
 	assert.Equal(t, []string{"ns-a"}, resourceNamespaces(resources),
 		"no resources from ns-b should leak into the snapshot")
+}
+
+func TestSnapshotBareDeploymentRuleResolvesAppsGVR(t *testing.T) {
+	scheme := makeScheme(t)
+	gitTarget := &configv1alpha1.GitTarget{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-target", Namespace: "gitops-reverser"},
+		Spec:       configv1alpha1.GitTargetSpec{Path: "live"},
+	}
+	store := rulestore.NewStore()
+	store.AddOrUpdateWatchRule(
+		configv1alpha1.WatchRule{
+			ObjectMeta: metav1.ObjectMeta{Name: "deployment-rule", Namespace: "ns-a"},
+			Spec: configv1alpha1.WatchRuleSpec{
+				TargetRef: configv1alpha1.LocalTargetReference{Name: "my-target"},
+				Rules: []configv1alpha1.ResourceRule{{
+					Resources: []string{"deployments"},
+				}},
+			},
+		},
+		"my-target", "gitops-reverser", "provider", "gitops-reverser", "main", "live",
+	)
+	manager := setupManager(t, scheme, gitTarget, store, makeDeployment("api", "ns-a"))
+
+	resources, _, err := manager.GetClusterStateForGitDest(
+		context.Background(),
+		itypes.NewResourceReference("my-target", "gitops-reverser"),
+	)
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"api"}, resourceNames(resources))
 }
 
 // TestSnapshotTwoWatchRulesInDifferentNamespaces verifies that when two WatchRules

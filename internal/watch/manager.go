@@ -34,7 +34,6 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	k8stypes "k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/dynamic/dynamicinformer"
 	"k8s.io/client-go/tools/cache"
@@ -93,6 +92,14 @@ type Manager struct {
 	// it nil and uses the default discovery-backed implementation.
 	discoveryFilter func(context.Context, []GVR) []GVR
 
+	// resourceCatalog is the shared discovery-backed API surface used by rule planning.
+	resourceCatalogMu sync.Mutex
+	resourceCatalog   *APIResourceCatalog
+	// discoveryClient overrides REST-config discovery construction in tests.
+	discoveryClient func() (apiResourceDiscovery, error)
+	// catalogRefreshCh coalesces API-surface trigger watch events into manager reconciliation.
+	catalogRefreshCh chan struct{}
+
 	// snapshotEmitCount tracks how many times emitSnapshotForRuleChange has
 	// actually emitted snapshots for at least one affected GitTarget. Useful for
 	// tests to observe the snapshot-trigger contract and will be exposed as a
@@ -133,15 +140,7 @@ func (m *Manager) Start(ctx context.Context) error {
 	log.Info("watch ingestion manager starting (reconciliation-based)")
 	defer log.Info("watch ingestion manager stopping")
 
-	// Initialize active informers maps
-	m.informersMu.Lock()
-	if m.activeInformers == nil {
-		m.activeInformers = make(map[GVR]map[string]context.CancelFunc)
-	}
-	if m.informerFactories == nil {
-		m.informerFactories = make(map[string]dynamicinformer.DynamicSharedInformerFactory)
-	}
-	m.informersMu.Unlock()
+	m.initializeManagerState()
 
 	if err := m.bootstrapRuleStore(ctx, log.WithName("bootstrap")); err != nil {
 		log.Error(err, "RuleStore bootstrap failed, continuing with current in-memory state")
@@ -151,6 +150,7 @@ func (m *Manager) Start(ctx context.Context) error {
 	if err := m.ReconcileForRuleChange(ctx); err != nil {
 		log.Error(err, "Initial reconciliation failed, will retry periodically")
 	}
+	m.startAPISurfaceTriggerInformers(ctx, log.WithName("catalog-triggers"))
 
 	// Periodic reconciliation for CRD detection and missed changes
 	periodicTicker := time.NewTicker(periodicReconcileInterval)
@@ -172,6 +172,12 @@ func (m *Manager) Start(ctx context.Context) error {
 				log.Error(err, "Periodic reconciliation failed")
 			}
 
+		case <-m.catalogRefreshCh:
+			log.V(1).Info("API surface trigger reconciliation")
+			if err := m.ReconcileForRuleChange(ctx); err != nil {
+				log.Error(err, "API surface trigger reconciliation failed")
+			}
+
 		case <-heartbeatTicker.C:
 			m.informersMu.Lock()
 			totalInformers := 0
@@ -181,6 +187,20 @@ func (m *Manager) Start(ctx context.Context) error {
 			m.informersMu.Unlock()
 			log.V(1).Info("Watch manager heartbeat", "activeInformers", totalInformers)
 		}
+	}
+}
+
+func (m *Manager) initializeManagerState() {
+	m.informersMu.Lock()
+	defer m.informersMu.Unlock()
+	if m.activeInformers == nil {
+		m.activeInformers = make(map[GVR]map[string]context.CancelFunc)
+	}
+	if m.informerFactories == nil {
+		m.informerFactories = make(map[string]dynamicinformer.DynamicSharedInformerFactory)
+	}
+	if m.catalogRefreshCh == nil {
+		m.catalogRefreshCh = make(chan struct{}, 1)
 	}
 }
 
@@ -404,7 +424,7 @@ func (m *Manager) clusterResourceRuleMatchesGVR(rr rulestore.CompiledClusterReso
 // matchesAPIGroups checks if the rule's API groups match the target group.
 func (m *Manager) matchesAPIGroups(groups []string, targetGroup string) bool {
 	if len(groups) == 0 {
-		groups = []string{""}
+		return true
 	}
 	for _, grp := range groups {
 		if grp == "*" || grp == targetGroup {
@@ -417,7 +437,7 @@ func (m *Manager) matchesAPIGroups(groups []string, targetGroup string) bool {
 // matchesAPIVersions checks if the rule's API versions match the target version.
 func (m *Manager) matchesAPIVersions(versions []string, targetVersion string) bool {
 	if len(versions) == 0 {
-		versions = []string{"v1"}
+		return true
 	}
 	for _, ver := range versions {
 		if ver == "*" || ver == targetVersion {
@@ -475,13 +495,11 @@ func (m *Manager) GetClusterStateForGitDest(
 	}
 	gvrMap := make(map[schema.GroupVersionResource]*gvrEntry)
 
-	// Wildcard ("*") API versions in a rule are resolved to the server's served
-	// version via discovery. A wildcard that cannot be resolved is collected in
-	// unresolved so the snapshot is aborted below rather than silently omitting
-	// the resource — an omitted resource is indistinguishable from "deleted from
-	// the cluster" and would wipe its tracked files on the next reconcile.
-	resolver := m.newSnapshotVersionResolver(log)
-	var unresolved []string
+	if err := m.RefreshAPIResourceCatalog(ctx); err != nil {
+		return nil, nil, fmt.Errorf("refresh API resource catalog for %s: %w", gitDest.String(), err)
+	}
+	resolver := m.ruleGVRResolver()
+	var blockingMisses []ResolveMiss
 
 	for _, rule := range wrRules {
 		if rule.GitTargetRef == gitTargetObj.Name &&
@@ -489,12 +507,12 @@ func (m *Manager) GetClusterStateForGitDest(
 			ns := rule.Source.Namespace
 			for _, rr := range rule.ResourceRules {
 				gvrs, miss := m.gvrsFromResourceRule(rr, resolver)
-				unresolved = append(unresolved, miss...)
+				blockingMisses = append(blockingMisses, blockingSnapshotMisses(miss)...)
 				for _, gvr := range gvrs {
-					entry := gvrMap[gvr]
+					entry := gvrMap[gvr.schema()]
 					if entry == nil {
 						entry = &gvrEntry{namespaces: make(map[string]struct{})}
-						gvrMap[gvr] = entry
+						gvrMap[gvr.schema()] = entry
 					}
 					if !entry.clusterWide {
 						entry.namespaces[ns] = struct{}{}
@@ -508,23 +526,22 @@ func (m *Manager) GetClusterStateForGitDest(
 		if cwrRule.GitTargetRef == gitTargetObj.Name &&
 			cwrRule.GitTargetNamespace == gitTargetObj.Namespace {
 			gvrs, miss := m.gvrsFromClusterRule(cwrRule, resolver)
-			unresolved = append(unresolved, miss...)
+			blockingMisses = append(blockingMisses, blockingSnapshotMisses(miss)...)
 			for _, gvr := range gvrs {
-				entry := gvrMap[gvr]
+				entry := gvrMap[gvr.schema()]
 				if entry == nil {
 					entry = &gvrEntry{namespaces: make(map[string]struct{})}
-					gvrMap[gvr] = entry
+					gvrMap[gvr.schema()] = entry
 				}
 				entry.clusterWide = true
 			}
 		}
 	}
 
-	if len(unresolved) > 0 {
+	if len(blockingMisses) > 0 {
 		return nil, nil, fmt.Errorf(
-			"aborting cluster snapshot for %s: could not resolve a served API version "+
-				"for rule resource(s) [%s]; refusing to snapshot a partial cluster view",
-			gitDest.String(), strings.Join(uniqueStrings(unresolved), ", "),
+			"aborting cluster snapshot for %s: %s; refusing to snapshot a partial cluster view",
+			gitDest.String(), FormatResolveMisses(blockingMisses),
 		)
 	}
 
@@ -559,158 +576,43 @@ func (m *Manager) GetClusterStateForGitDest(
 	return resources, objects, nil
 }
 
-// gvrsFromResourceRule returns the GVRs implied by a CompiledResourceRule,
-// resolving any wildcard API version via the supplied resolver. Resources whose
-// version cannot be resolved are returned in the unresolved slice.
+// gvrsFromResourceRule returns the GVRs implied by a CompiledResourceRule.
 func (m *Manager) gvrsFromResourceRule(
 	rr rulestore.CompiledResourceRule,
-	resolver *snapshotVersionResolver,
-) ([]schema.GroupVersionResource, []string) {
-	groups := rr.APIGroups
-	if len(groups) == 0 {
-		groups = []string{""}
-	}
-	versions := rr.APIVersions
-	if len(versions) == 0 {
-		versions = []string{"v1"}
-	}
-	return resolveGVRs(groups, versions, rr.Resources, resolver)
+	resolver *RuleGVRResolver,
+) ([]GVR, []ResolveMiss) {
+	return resolver.Resolve(rr.APIGroups, rr.APIVersions, rr.Resources, configv1alpha1.ResourceScopeNamespaced)
 }
 
-// gvrsFromClusterRule returns the GVRs implied by a CompiledClusterRule,
-// resolving any wildcard API version via the supplied resolver. Resources whose
-// version cannot be resolved are returned in the unresolved slice.
+// gvrsFromClusterRule returns the GVRs implied by a CompiledClusterRule.
 func (m *Manager) gvrsFromClusterRule(
 	cwrRule rulestore.CompiledClusterRule,
-	resolver *snapshotVersionResolver,
-) ([]schema.GroupVersionResource, []string) {
-	var gvrs []schema.GroupVersionResource
-	var unresolved []string
+	resolver *RuleGVRResolver,
+) ([]GVR, []ResolveMiss) {
+	var gvrs []GVR
+	var misses []ResolveMiss
 	for _, rr := range cwrRule.Rules {
-		groups := rr.APIGroups
-		if len(groups) == 0 {
-			groups = []string{""}
-		}
-		versions := rr.APIVersions
-		if len(versions) == 0 {
-			versions = []string{"v1"}
-		}
-		ruleGVRs, ruleMiss := resolveGVRs(groups, versions, rr.Resources, resolver)
+		ruleGVRs, ruleMiss := resolver.Resolve(rr.APIGroups, rr.APIVersions, rr.Resources, rr.Scope)
 		gvrs = append(gvrs, ruleGVRs...)
-		unresolved = append(unresolved, ruleMiss...)
+		misses = append(misses, ruleMiss...)
 	}
-	return gvrs, unresolved
+	return dedupeGVRs(gvrs), misses
 }
 
-// resolveGVRs expands the cartesian product of (groups, versions, resources)
-// from a watch rule into concrete GVRs to list for a snapshot.
-//
-// A concrete API version is used as-is; a "*" version is resolved to the
-// server's served version via the resolver. Any "*" group, "*" resource, or
-// unresolvable "*" version is reported in unresolved so the caller aborts the
-// snapshot: a snapshot must be a complete cluster view or no view at all, never
-// a silently partial one (a partial view looks like deletions to the reconciler).
-func resolveGVRs(
-	groups, versions, resources []string,
-	resolver *snapshotVersionResolver,
-) ([]schema.GroupVersionResource, []string) {
-	var gvrs []schema.GroupVersionResource
-	var unresolved []string
-	for _, group := range groups {
-		for _, resource := range resources {
-			normalized := normalizeResource(resource)
-			if normalized == "" || shouldIgnoreResource(group, normalized) {
-				continue
-			}
-			// "*" groups and "*" resources cannot be enumerated for a snapshot
-			// without expanding them across discovery (not implemented). Report
-			// them as unresolved so the snapshot is aborted rather than taken
-			// against a partial cluster view.
-			if group == "*" || normalized == "*" {
-				unresolved = append(unresolved, group+"/"+normalized)
-				continue
-			}
-			for _, version := range versions {
-				concrete, ok := resolver.resolveVersion(group, version, normalized)
-				if !ok {
-					unresolved = append(unresolved, group+"/"+normalized)
-					continue
-				}
-				gvrs = append(gvrs, schema.GroupVersionResource{
-					Group:    group,
-					Version:  concrete,
-					Resource: normalized,
-				})
-			}
-		}
-	}
-	return gvrs, unresolved
-}
-
-// snapshotVersionResolver resolves the concrete API version to list for a
-// (group, resource) pair when a watch rule uses the "*" version wildcard. It is
-// built once per snapshot and loads API discovery lazily, so a snapshot whose
-// rules all pin concrete versions performs no discovery call at all.
-type snapshotVersionResolver struct {
-	m   *Manager
-	log logr.Logger
-
-	once            sync.Once
-	byGroupResource map[string]string // "group|resource" -> served version
-}
-
-// newSnapshotVersionResolver returns a resolver for a single snapshot pass.
-func (m *Manager) newSnapshotVersionResolver(log logr.Logger) *snapshotVersionResolver {
-	return &snapshotVersionResolver{m: m, log: log}
-}
-
-// resolveVersion returns the concrete version to list for the given group,
-// rule-declared version and resource. A concrete declared version is returned
-// unchanged. The "*" wildcard is resolved against discovery; ok is false when a
-// wildcard cannot be resolved (e.g. discovery is unavailable), which the caller
-// treats as an aborted snapshot rather than a silently incomplete one.
-func (res *snapshotVersionResolver) resolveVersion(group, version, resource string) (string, bool) {
-	if version != "*" {
-		return version, true
-	}
-	res.once.Do(res.loadDiscovery)
-	v, found := res.byGroupResource[group+"|"+resource]
-	return v, found
-}
-
-// loadDiscovery populates byGroupResource from the server's preferred resources.
-// On any failure the map is left empty so wildcard versions fail to resolve and
-// the snapshot is aborted rather than taken against a partial cluster view.
-func (res *snapshotVersionResolver) loadDiscovery() {
-	res.byGroupResource = map[string]string{}
-
-	cfg := res.m.restConfig()
-	if cfg == nil {
-		res.log.Info("snapshot version discovery skipped - no rest config available")
-		return
-	}
-	disco, err := discovery.NewDiscoveryClientForConfig(cfg)
-	if err != nil {
-		res.log.Error(err, "failed to create discovery client for snapshot version resolution")
-		return
-	}
-	preferred, err := disco.ServerPreferredResources()
-	if err != nil && !discovery.IsGroupDiscoveryFailedError(err) {
-		res.log.Error(err, "failed to fetch server preferred resources for snapshot")
-		return
-	}
-	for _, rl := range preferred {
-		if rl == nil {
+func blockingSnapshotMisses(misses []ResolveMiss) []ResolveMiss {
+	var blocking []ResolveMiss
+	for _, miss := range misses {
+		switch miss.Reason {
+		case ResolveMissNotServed, ResolveMissAmbiguous, ResolveMissDisallowed:
 			continue
-		}
-		gv := parseGroupVersion(rl.GroupVersion)
-		for _, r := range rl.APIResources {
-			if strings.Contains(r.Name, "/") {
-				continue // skip subresources
-			}
-			res.byGroupResource[gv.group+"|"+r.Name] = gv.version
+		case ResolveMissWildcardGroup,
+			ResolveMissWildcardResource,
+			ResolveMissCatalogUnavailable,
+			ResolveMissDiscoveryDegraded:
+			blocking = append(blocking, miss)
 		}
 	}
+	return blocking
 }
 
 // uniqueStrings returns the input with duplicates removed, preserving order.
@@ -787,8 +689,15 @@ func (m *Manager) ReconcileForRuleChange(ctx context.Context) error {
 	log := m.Log.WithName("reconcile")
 	log.V(1).Info("Reconciling watch manager for rule change")
 
+	if err := m.RefreshAPIResourceCatalog(ctx); err != nil {
+		return err
+	}
+
 	// Compute desired GVRs from current rules
-	requestedGVRs := m.ComputeRequestedGVRs()
+	requestedGVRs, misses := m.computeRequestedGVRs()
+	if len(misses) > 0 {
+		log.Info("rule resources were not planned", "misses", FormatResolveMisses(misses))
+	}
 	filter := m.FilterDiscoverableGVRs
 	if m.discoveryFilter != nil {
 		filter = m.discoveryFilter

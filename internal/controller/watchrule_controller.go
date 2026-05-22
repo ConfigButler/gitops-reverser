@@ -49,6 +49,8 @@ const (
 	WatchRuleReasonGitTargetNotFound     = "GitTargetNotFound"
 	WatchRuleReasonGitDestinationInvalid = "GitDestinationInvalid"
 	WatchRuleReasonReady                 = "Ready"
+	WatchRuleReasonResourcesResolved     = "Resolved"
+	WatchRuleReasonUnresolvedResources   = "UnresolvedResources"
 )
 
 // WatchRuleReconciler reconciles a WatchRule object.
@@ -209,6 +211,7 @@ func (r *WatchRuleReconciler) reconcileWatchRuleViaTarget(
 			log.Error(err, "Failed to reconcile watch manager after rule update")
 			// Don't fail the reconciliation - the rule is valid, just log the watch manager issue
 		}
+		r.setResourceResolutionCondition(ctx, watchRule)
 	}
 
 	log.Info("WatchRule reconciliation via GitTarget successful", "name", watchRule.Name)
@@ -235,6 +238,9 @@ func (r *WatchRuleReconciler) setReadyAndUpdateStatusWithTarget(
 	if err := r.updateStatusWithRetry(ctx, watchRule); err != nil {
 		return ctrl.Result{}, err
 	}
+	if conditionIsFalse(watchRule.Status.Conditions, ConditionTypeResourcesResolved) {
+		return ctrl.Result{RequeueAfter: RequeueShortInterval}, nil
+	}
 	return ctrl.Result{RequeueAfter: RequeueMediumInterval}, nil
 }
 
@@ -258,6 +264,52 @@ func (r *WatchRuleReconciler) setCondition( //nolint:lll // Function signature
 	}
 
 	watchRule.Status.Conditions = append(watchRule.Status.Conditions, condition)
+}
+
+func (r *WatchRuleReconciler) setResourceResolutionCondition(
+	ctx context.Context,
+	watchRule *configbutleraiv1alpha1.WatchRule,
+) {
+	resolved, message := r.WatchManager.ResolveWatchRuleResources(ctx, *watchRule)
+	status := metav1.ConditionFalse
+	reason := WatchRuleReasonUnresolvedResources
+	if resolved {
+		status = metav1.ConditionTrue
+		reason = WatchRuleReasonResourcesResolved
+	}
+	r.setTypedCondition(watchRule, ConditionTypeResourcesResolved, status, reason, message)
+}
+
+func (r *WatchRuleReconciler) setTypedCondition(
+	watchRule *configbutleraiv1alpha1.WatchRule,
+	conditionType string,
+	status metav1.ConditionStatus,
+	reason string,
+	message string,
+) {
+	condition := metav1.Condition{
+		Type:               conditionType,
+		Status:             status,
+		Reason:             reason,
+		Message:            message,
+		LastTransitionTime: metav1.Now(),
+	}
+	for i, existingCondition := range watchRule.Status.Conditions {
+		if existingCondition.Type == conditionType {
+			watchRule.Status.Conditions[i] = condition
+			return
+		}
+	}
+	watchRule.Status.Conditions = append(watchRule.Status.Conditions, condition)
+}
+
+func conditionIsFalse(conditions []metav1.Condition, conditionType string) bool {
+	for _, condition := range conditions {
+		if condition.Type == conditionType {
+			return condition.Status == metav1.ConditionFalse
+		}
+	}
+	return false
 }
 
 // updateStatusAndRequeue updates the status and returns requeue result.

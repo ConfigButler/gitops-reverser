@@ -69,7 +69,7 @@ type WatchRuleSpec struct {
 }
 
 // ResourceRule defines a set of namespaced resources to watch.
-// This follows Kubernetes admission control semantics but simplified for our use case.
+// Omitted API groups and versions are resolved from the served Kubernetes API surface.
 // All fields except Resources are optional and default to matching all when not specified.
 type ResourceRule struct {
 	// Operations to watch. If empty, watches all operations (CREATE, UPDATE, DELETE).
@@ -81,7 +81,7 @@ type ResourceRule struct {
 	Operations []OperationType `json:"operations,omitempty"`
 
 	// APIGroups to match. Empty string ("") matches the core API group.
-	// If empty, matches all API groups.
+	// If omitted, GitOps Reverser resolves the resource name across all served API groups.
 	// Wildcards supported: "*" matches all groups.
 	// Examples:
 	//   - [""] matches core API (pods, services, configmaps)
@@ -108,8 +108,8 @@ type ResourceRule struct {
 	//   - "pods/*" matches all pod subresources (e.g., pods/log, pods/status)
 	//   - "pods/log" matches specific subresource
 	//
-	// For custom resources, use exact group-qualified names:
-	//   - "myapps.example.com" matches MyApp CRD
+	// For custom resources, use the exact plural resource name and set apiGroups
+	// when more than one served API group exposes that name.
 	//
 	// Note: Prefix/suffix wildcards like "pod*" or "*.example.com" are NOT supported.
 	// Use exact matches or the "*" wildcard for broad matching.
