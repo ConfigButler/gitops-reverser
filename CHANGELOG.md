@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.26.1](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.26.0...gitops-reverser-v0.26.1) (2026-05-23)
+
+
+### Bug Fixes
+
+* ignore subresource audit events (that was hard to debug!) and replaced debug dump mechanism ([#153](https://github.com/ConfigButler/gitops-reverser/issues/153)) ([23a2d65](https://github.com/ConfigButler/gitops-reverser/commit/23a2d6585c4f7055b0b45a736ca7cfb194aa46c1))
+
 ## [0.26.0](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.25.0...gitops-reverser-v0.26.0) (2026-05-22)
 
 
