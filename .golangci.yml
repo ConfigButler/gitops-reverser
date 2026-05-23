@@ -346,6 +346,10 @@ linters:
         linters: [gochecknoglobals, gochecknoinits]
       - path: 'cmd/main\.go'
         linters: [gochecknoglobals, cyclop, gochecknoinits, gocognit, funlen]
+      # Build metadata vars in cmd/buildinfo.go are injected via -ldflags, which
+      # requires them to be package-level variables.
+      - path: 'cmd/buildinfo\.go'
+        linters: [gochecknoglobals]
       - path: 'internal/telemetry/.*\.go'
         linters: [gochecknoglobals]
       # Allow test suite global variables and patterns

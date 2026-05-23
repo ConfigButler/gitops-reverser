@@ -233,7 +233,7 @@ of namespace. All namespace-level filtering must happen inside the operator.
 
 1. **Kubernetes API Server** sends audit events via webhook POST to `/audit-webhook`
 2. Supplementary audit sources can send matching `EventList` payloads to `/audit-webhook-additional`
-3. [AuditHandler](internal/webhook/audit_handler.go) deserializes each `EventList`, lets the audit joiner park or merge body contributions by `auditID`, and calls `RedisAuditQueue.Enqueue()` for canonical events
+3. [AuditHandler](internal/webhook/audit_handler.go) deserializes each `EventList`, optionally appends every decoded event to a separate early debug Redis stream, lets the audit joiner park or merge body contributions by `auditID`, and calls `RedisAuditQueue.Enqueue()` for canonical events
 4. [RedisAuditQueue](internal/queue/redis_audit_queue.go) writes to Redis stream `gitopsreverser.audit.events.v1` via `XADD`
 5. [AuditConsumer](internal/queue/redis_audit_consumer.go) reads batches of 50 via `XREADGROUP` (consumer group for HA-readiness)
 6. For each message: filter to `ResponseComplete` stage + mutating verbs only, then call [RuleStore](internal/rulestore/store.go) to find matching rules
@@ -368,6 +368,12 @@ flowchart LR
 
 Today there is a single Redis stream for all audit events. The consumer is leader-elected, meaning
 only one pod processes events at a time.
+
+When `--audit-debug-redis-stream` is set, the handler also appends each successfully decoded
+audit event to that stream immediately after `EventList` decode. This tap runs before per-event
+validation, stage/verb filtering, shallow-body joins, deduplication, and canonical enqueueing.
+It uses the canonical stream fields plus `source` (`official` or `additional`) and retains the raw
+event as `payload_json`. The stream is diagnostic only; no consumer routes it to Git.
 
 **Desired future**: each GitTarget (or at minimum each Git destination) gets its own Redis queue.
 This way a GitHub outage only stalls commits for the affected destination — events keep
@@ -658,6 +664,11 @@ allowed to claim the dedupe key, the later `ResponseComplete` for the same audit
 silently dropped as a duplicate. The handler filters by stage at the boundary before the
 joiner sees the event.
 
+Audit events with a non-empty `objectRef.subresource` are rejected before the joiner too.
+Current WatchRule planning mirrors top-level resource state only. Subresource requests can
+carry mutating-looking audit verbs without describing a Git-writable object; for example a
+successful `pods/exec` stream is audited as `verb=create` with no request/response resource body.
+
 ### Quality classification
 
 The classifier ([audit_joiner.go:507](internal/webhook/audit_joiner.go#L507)) decides what to do
@@ -782,7 +793,7 @@ aggregate to group/version without `label_replace`. The event-action label is `v
 | `gitopsreverser_audit_eventlists_total` | `source`, `outcome` | EventList request-boundary counter: `processed`, `empty`, `decode_error`, `process_error` |
 | `gitopsreverser_audit_eventlist_events_total` | `source`, `outcome` | Decoded audit event items delivered in EventLists (no `decode_error` sample) |
 | `gitopsreverser_audit_eventlist_duration_seconds` | `source`, `outcome` | Histogram of webhook request time, including in-pod join wait work |
-| `gitopsreverser_audit_events_received_total` | `source`, `group`, `version`, `resource`, `verb` | Receive counter (username is logged, not labelled) |
+| `gitopsreverser_audit_events_received_total` | `source`, `group`, `version`, `resource`, `subresource`, `verb` | Receive counter (username is logged, not labelled). `subresource` is empty for top-level resources and a bounded value (`status`, `exec`, …) otherwise |
 | `gitopsreverser_audit_event_quality_total` | `source`, `quality`, `group`, `version`, `resource`, `verb` | First-class shape classification |
 | `gitopsreverser_audit_join_parked_total` | — | Parked additional bodies |
 | `gitopsreverser_audit_join_emitted_total` | `source`, `result` | Canonical emissions: `as_is`, `merged` |
@@ -791,7 +802,7 @@ aggregate to group/version without `label_replace`. The event-action label is `v
 | `gitopsreverser_audit_join_body_late_total` | `group`, `version`, `resource`, `verb` | Additional body arrived after the decision was committed |
 | `gitopsreverser_audit_join_skew_seconds` | `arrival`, `outcome` | Histogram of official↔additional arrival skew: `arrival=body_first` is the proxy's lead time, `arrival=official_first` is how long the official waited on the canonical gate |
 | `gitopsreverser_audit_official_gate_wait_seconds` | — | Histogram of how long an official event waited to acquire the in-pod canonical gate (backpressure signal) |
-| `gitopsreverser_audit_pipeline_events_total` | `group`, `version`, `resource`, `verb`, `outcome` | Consumer-stage counter: `unmatched`, `dropped_no_body`, `routed`, `route_failed` |
+| `gitopsreverser_audit_pipeline_events_total` | `group`, `version`, `resource`, `verb`, `outcome` | Consumer-stage counter: `unmatched`, `dropped_no_body`, `dropped_partial_object`, `routed`, `route_failed` |
 | `gitopsreverser_audit_pipeline_route_targets_total` | `git_target_namespace`, `git_target`, `rule_kind`, `outcome` | Per-GitTarget route attempts: `routed`, `route_failed` |
 
 Useful alerts: `audit_shallow_dropped_total` non-zero (operator misconfiguration — install

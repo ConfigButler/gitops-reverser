@@ -48,6 +48,15 @@ const validCreateEventList = `{"kind":"EventList","apiVersion":"audit.k8s.io/v1"
 // emptyEventList decodes to zero items.
 const emptyEventList = `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[]}`
 
+// subresourceExecEventList is a one-item official EventList for a pods/exec
+// streaming request — audited as verb=create with a non-empty objectRef
+// subresource and no resource body.
+const subresourceExecEventList = `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[` +
+	`{"kind":"Event","level":"RequestResponse","auditID":"subres-exec-1","stage":"ResponseComplete",` +
+	`"verb":"create","user":{"username":"test-user"},` +
+	`"objectRef":{"resource":"pods","namespace":"default","name":"p","apiVersion":"v1","subresource":"exec"},` +
+	`"responseStatus":{"code":101}}]}`
+
 // processErrorEventList decodes but fails processing: an event with an empty
 // auditID is rejected by checkEvent.
 const processErrorEventList = `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[` +
@@ -148,4 +157,38 @@ func TestServeHTTP_EventListIngressMetrics(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestServeHTTP_ReceivedMetricCarriesSubresource confirms audit_events_received_total
+// labels objectRef.subresource, so a pods/exec flood is distinguishable from
+// real pod mutations rather than collapsing into resource="pods".
+func TestServeHTTP_ReceivedMetricCarriesSubresource(t *testing.T) {
+	reader, err := telemetry.InitTestExporter()
+	require.NoError(t, err)
+
+	handler, err := NewAuditHandler(AuditHandlerConfig{})
+	require.NoError(t, err)
+
+	// One top-level configmap create, one pods/exec streaming subresource.
+	for _, body := range []string{validCreateEventList, subresourceExecEventList} {
+		req := httptest.NewRequest(http.MethodPost, "/audit-webhook", bytes.NewReader([]byte(body)))
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		require.Equal(t, http.StatusOK, w.Code)
+	}
+
+	const receivedMetric = "gitopsreverser_audit_events_received_total"
+
+	exec, ok := telemetry.CollectInt64Sum(reader, receivedMetric, map[string]string{
+		"resource": "pods", "subresource": "exec", "verb": "create",
+	})
+	require.True(t, ok, "expected a subresource=exec received sample")
+	assert.Equal(t, int64(1), exec)
+
+	// A top-level resource carries an empty subresource label.
+	top, ok := telemetry.CollectInt64Sum(reader, receivedMetric, map[string]string{
+		"resource": "configmaps", "subresource": "", "verb": "create",
+	})
+	require.True(t, ok, `expected a subresource="" received sample for a top-level resource`)
+	assert.Equal(t, int64(1), top)
 }

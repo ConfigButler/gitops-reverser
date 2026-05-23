@@ -178,6 +178,9 @@ nodeSelector:
 | `queue.redis.stream` | Redis stream name for audit events | `gitopsreverser.audit.events.v1` |
 | `queue.redis.maxLen` | Approximate stream max length (`0` disables trim) | `0` |
 | `queue.redis.tls.enabled` | Enable TLS for Redis connection | `false` |
+| `webhook.audit.debugStream.enabled` | Append every decoded audit event to the early Redis debug stream | `false` |
+| `webhook.audit.debugStream.stream` | Redis stream name for early decoded audit event debugging | `gitopsreverser.audit.debug.events.v1` |
+| `webhook.audit.debugStream.maxLen` | Approximate early debug stream max length (`0` disables trim) | `0` |
 | `auditEventJoin.bodyTTL` | TTL for parked additional audit bodies waiting for the matching official event | `5m` |
 | `auditEventJoin.decisionTTL` | TTL for audit decision dedupe keys | `1h` |
 | `auditEventJoin.bodyWait` | Grace period for a bodyless official audit event to wait for a matching additional body while preserving official event order | `500ms` |

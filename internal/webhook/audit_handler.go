@@ -24,8 +24,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -39,8 +37,6 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apiserver/pkg/apis/audit"
 	auditv1 "k8s.io/apiserver/pkg/apis/audit/v1"
-	"sigs.k8s.io/yaml"
-
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/ConfigButler/gitops-reverser/internal/auditutil"
@@ -59,23 +55,19 @@ type auditHandlerFirsts struct {
 	impersonatedEvent sync.Once
 }
 
-const (
-	// DefaultAuditDumpDir is the default directory for audit event dumps.
-	DefaultAuditDumpDir = "/tmp/audit-events"
-	// DefaultAuditMaxRequestBodyBytes limits incoming audit payload size.
-	DefaultAuditMaxRequestBodyBytes = int64(10 * 1024 * 1024)
-)
+// DefaultAuditMaxRequestBodyBytes limits incoming audit payload size.
+const DefaultAuditMaxRequestBodyBytes = int64(10 * 1024 * 1024)
 
 // AuditHandlerConfig contains configuration for the audit handler.
 type AuditHandlerConfig struct {
-	// DumpDir is the directory where audit events are written for debugging.
-	// If empty, defaults to DefaultAuditDumpDir.
-	DumpDir string
 	// MaxRequestBodyBytes is the maximum accepted HTTP request body size.
 	MaxRequestBodyBytes int64
 	// Queue enqueues accepted audit events to a durable backend.
 	// If nil, queueing is disabled.
 	Queue AuditEventQueue
+	// DebugQueue enqueues every decoded event before audit processing begins.
+	// If nil, early debug stream queueing is disabled.
+	DebugQueue AuditDebugEventQueue
 	// Joiner optionally parks additional-source bodies and deduplicates canonical audit events.
 	Joiner AuditEventJoiner
 }
@@ -83,6 +75,11 @@ type AuditHandlerConfig struct {
 // AuditEventQueue persists accepted audit events for downstream processing.
 type AuditEventQueue interface {
 	Enqueue(ctx context.Context, event auditv1.Event) error
+}
+
+// AuditDebugEventQueue persists decoded events for early audit debugging.
+type AuditDebugEventQueue interface {
+	Enqueue(ctx context.Context, source string, event auditv1.Event) error
 }
 
 // auditIngressDecision is the intrinsic accept/reject verdict for an audit event
@@ -105,7 +102,6 @@ type AuditHandler struct {
 }
 
 // NewAuditHandler creates a new audit handler with the given configuration.
-// If config.DumpDir is empty, file dumping is disabled.
 func NewAuditHandler(config AuditHandlerConfig) (*AuditHandler, error) {
 	if config.MaxRequestBodyBytes <= 0 {
 		config.MaxRequestBodyBytes = DefaultAuditMaxRequestBodyBytes
@@ -182,6 +178,11 @@ func (h *AuditHandler) serveEventListRequest(
 	}
 
 	eventCount := len(eventListV1.Items)
+	if err := h.enqueueDebugEvents(ctx, source, eventListV1.Items); err != nil {
+		reqLog.Error(err, "Failed to enqueue early audit debug events")
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return outcomeProcessError, eventCount
+	}
 	if eventCount == 0 {
 		reqLog.Info("Received empty audit event list", "eventCount", 0, "processingOutcome", "empty")
 		h.writeResponse(w, reqLog, "Empty event list processed")
@@ -255,6 +256,19 @@ func (h *AuditHandler) decodeEventList(r *http.Request) (*auditv1.EventList, err
 	return &eventListV1, nil
 }
 
+// enqueueDebugEvents preserves each decoded event before normal audit processing can filter it.
+func (h *AuditHandler) enqueueDebugEvents(ctx context.Context, source AuditSource, events []auditv1.Event) error {
+	if h.config.DebugQueue == nil {
+		return nil
+	}
+	for _, event := range events {
+		if err := h.config.DebugQueue.Enqueue(ctx, string(source), event); err != nil {
+			return fmt.Errorf("failed to enqueue early audit debug event %q: %w", event.AuditID, err)
+		}
+	}
+	return nil
+}
+
 // processEvents processes a list of audit events.
 func (h *AuditHandler) processEvents(ctx context.Context, source AuditSource, events []auditv1.Event) error {
 	for _, auditEventV1 := range events {
@@ -325,7 +339,7 @@ func (h *AuditHandler) processEvent(ctx context.Context, source AuditSource, aud
 		"ips", auditEvent.SourceIPs,
 		"userAgent", auditEvent.UserAgent)
 
-	return h.writeCanonicalAuditEvent(eventToWrite, auditEvent)
+	return nil
 }
 
 // logFirstAuditRequest emits an Info banner the first time we accept an
@@ -403,11 +417,13 @@ func (h *AuditHandler) recordReceivedMetric(
 	// The username is intentionally not a metric label (cardinality bomb); it
 	// stays in the structured logs only.
 	group, version, resource := gvrParts(&auditEvent)
+	subresource := subresourcePart(&auditEvent)
 	handlerLog.V(1).Info("Audit event received",
 		"source", source,
 		"group", group,
 		"version", version,
 		"resource", resource,
+		"subresource", subresource,
 		"verb", auditEvent.Verb,
 		"user", effectiveAuditUsername(auditEvent))
 	telemetry.AuditEventsReceivedTotal.Add(ctx, 1, metric.WithAttributes(
@@ -415,6 +431,7 @@ func (h *AuditHandler) recordReceivedMetric(
 		attribute.String("group", group),
 		attribute.String("version", version),
 		attribute.String("resource", resource),
+		attribute.String("subresource", subresource),
 		attribute.String("verb", auditEvent.Verb),
 	))
 }
@@ -505,18 +522,6 @@ func (h *AuditHandler) releaseJoinDecision(ctx context.Context, decision AuditJo
 	}
 }
 
-func (h *AuditHandler) writeCanonicalAuditEvent(eventToWrite *auditv1.Event, fallback audit.Event) error {
-	var emitted audit.Event
-	if err := h.scheme.Convert(eventToWrite, &emitted, nil); err != nil {
-		return fmt.Errorf("failed to convert emitted audit event: %w", err)
-	}
-	if emitted.AuditID == "" {
-		emitted = fallback
-	}
-	h.writeAuditEventToFile(&emitted)
-	return nil
-}
-
 func effectiveAuditUsername(event audit.Event) string {
 	if event.ImpersonatedUser != nil && event.ImpersonatedUser.Username != "" {
 		return event.ImpersonatedUser.Username
@@ -559,6 +564,17 @@ func gvrParts(event *audit.Event) (string, string, string) {
 		return "invalid", event.ObjectRef.APIVersion, orUnknownResource(event.ObjectRef.Resource)
 	}
 	return gv.Group, gv.Version, orUnknownResource(event.ObjectRef.Resource)
+}
+
+// subresourcePart returns the audit event's objectRef.subresource, or "" when
+// the event has no objectRef or targets a top-level resource. Kubernetes
+// subresources are a bounded, closed set (status, scale, exec, log, ...), so
+// this is safe to use as a metric label.
+func subresourcePart(event *audit.Event) string {
+	if event.ObjectRef == nil {
+		return ""
+	}
+	return event.ObjectRef.Subresource
 }
 
 func orUnknownResource(resource string) string {
@@ -630,7 +646,10 @@ func isFailedAuditRequest(event *auditv1.Event) bool {
 
 // checkEvent validates an audit event before processing.
 func (h *AuditHandler) checkEvent(event *audit.Event) (bool, error) {
-	process := event.ObjectRef == nil || event.ObjectRef.Subresource != "status"
+	// Subresource audit verbs do not describe top-level object mutations that
+	// the current Git routing path can mirror. Some streaming subresources such
+	// as pods/exec are audited as verb=create with no resource body at all.
+	process := event.ObjectRef == nil || event.ObjectRef.Subresource == ""
 	if string(event.AuditID) == "" {
 		return process, errors.New("invalid audit event: auditID cannot be empty")
 	}
@@ -644,43 +663,4 @@ func hasAuditV1ObjectBody(event *auditv1.Event) bool {
 
 func hasRuntimeUnknownBody(object *runtime.Unknown) bool {
 	return object != nil && len(object.Raw) > 0
-}
-
-// writeAuditEventToFile writes an audit event to a YAML file for debugging and testing.
-// Assumes event has been validated by validateEvent() - auditID is guaranteed to be non-empty.
-// Skips file writing if DumpDir is empty (disabled).
-func (h *AuditHandler) writeAuditEventToFile(event *audit.Event) {
-	if h.config.DumpDir == "" {
-		return
-	}
-
-	if err := os.MkdirAll(h.config.DumpDir, 0750); err != nil {
-		logf.Log.Error(err, "Failed to create audit events dump directory", "directory", h.config.DumpDir)
-		return
-	}
-
-	filename := fmt.Sprintf("%s.yaml", event.AuditID)
-	filePath := filepath.Join(h.config.DumpDir, filename)
-
-	var eventV1 auditv1.Event
-	if err := h.scheme.Convert(event, &eventV1, nil); err != nil {
-		logf.Log.Error(err, "Failed to convert event to v1", "auditID", event.AuditID)
-		return
-	}
-
-	eventV1.Kind = "Event"
-	eventV1.APIVersion = "audit.k8s.io/v1"
-
-	eventYAML, err := yaml.Marshal(&eventV1)
-	if err != nil {
-		logf.Log.Error(err, "Failed to marshal audit event to YAML", "auditID", event.AuditID)
-		return
-	}
-
-	if err := os.WriteFile(filePath, eventYAML, 0600); err != nil {
-		logf.Log.Error(err, "Failed to write audit event to file", "file", filePath, "auditID", event.AuditID)
-		return
-	}
-
-	logf.Log.V(1).Info("Audit event written to file", "file", filePath, "auditID", event.AuditID)
 }

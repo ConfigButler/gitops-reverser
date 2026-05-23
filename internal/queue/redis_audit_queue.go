@@ -36,6 +36,8 @@ import (
 const (
 	// DefaultRedisAuditStream is the default stream used for audit ingestion events.
 	DefaultRedisAuditStream = "gitopsreverser.audit.events.v1"
+	// DefaultRedisAuditDebugStream is the default stream used for early audit debug events.
+	DefaultRedisAuditDebugStream = "gitopsreverser.audit.debug.events.v1"
 )
 
 // RedisAuditQueueConfig configures a Redis-backed audit queue.
@@ -54,6 +56,11 @@ type RedisAuditQueue struct {
 	client *redis.Client
 	stream string
 	maxLen int64
+}
+
+// RedisAuditDebugQueue enqueues early audit debug events into a Redis stream.
+type RedisAuditDebugQueue struct {
+	queue *RedisAuditQueue
 }
 
 // NewRedisAuditQueue creates a Redis stream-backed audit queue.
@@ -87,6 +94,28 @@ func NewRedisAuditQueue(cfg RedisAuditQueueConfig) (*RedisAuditQueue, error) {
 
 // Enqueue writes one audit event to Redis stream storage.
 func (q *RedisAuditQueue) Enqueue(ctx context.Context, event auditv1.Event) error {
+	return q.enqueue(ctx, event, nil)
+}
+
+// NewRedisAuditDebugQueue creates a Redis stream-backed early audit debug queue.
+func NewRedisAuditDebugQueue(cfg RedisAuditQueueConfig) (*RedisAuditDebugQueue, error) {
+	if strings.TrimSpace(cfg.Stream) == "" {
+		cfg.Stream = DefaultRedisAuditDebugStream
+	}
+
+	redisQueue, err := NewRedisAuditQueue(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return &RedisAuditDebugQueue{queue: redisQueue}, nil
+}
+
+// Enqueue writes one early audit debug event to Redis stream storage.
+func (q *RedisAuditDebugQueue) Enqueue(ctx context.Context, source string, event auditv1.Event) error {
+	return q.queue.enqueue(ctx, event, map[string]any{"source": source})
+}
+
+func (q *RedisAuditQueue) enqueue(ctx context.Context, event auditv1.Event, extraValues map[string]any) error {
 	payload, err := json.Marshal(event)
 	if err != nil {
 		return fmt.Errorf("failed to marshal audit event payload: %w", err)
@@ -118,6 +147,9 @@ func (q *RedisAuditQueue) Enqueue(ctx context.Context, event auditv1.Event) erro
 		"user":            event.User.Username,
 		"stage_timestamp": formatStageTimestamp(event.StageTimestamp.Time),
 		"payload_json":    string(payload),
+	}
+	for key, value := range extraValues {
+		values[key] = value
 	}
 
 	args := &redis.XAddArgs{

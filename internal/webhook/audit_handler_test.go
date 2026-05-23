@@ -27,7 +27,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -66,6 +65,31 @@ func (q *recordingAuditEventQueue) auditIDs() []string {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
+	ids := make([]string, 0, len(q.events))
+	for _, event := range q.events {
+		ids = append(ids, string(event.AuditID))
+	}
+	return ids
+}
+
+type errorAuditDebugQueue struct{ err error }
+
+func (q errorAuditDebugQueue) Enqueue(_ context.Context, _ string, _ auditv1.Event) error {
+	return q.err
+}
+
+type recordingAuditDebugQueue struct {
+	sources []string
+	events  []auditv1.Event
+}
+
+func (q *recordingAuditDebugQueue) Enqueue(_ context.Context, source string, event auditv1.Event) error {
+	q.sources = append(q.sources, source)
+	q.events = append(q.events, event)
+	return nil
+}
+
+func (q *recordingAuditDebugQueue) auditIDs() []string {
 	ids := make([]string, 0, len(q.events))
 	for _, event := range q.events {
 		ids = append(ids, string(event.AuditID))
@@ -249,9 +273,7 @@ func TestAuditHandler_ServeHTTP(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			handler, err := NewAuditHandler(AuditHandlerConfig{
-				DumpDir: "/tmp/audit-events",
-			})
+			handler, err := NewAuditHandler(AuditHandlerConfig{})
 			require.NoError(t, err)
 
 			// Create request
@@ -267,10 +289,50 @@ func TestAuditHandler_ServeHTTP(t *testing.T) {
 	}
 }
 
-func TestAuditHandler_extractGVR(t *testing.T) {
+func TestAuditHandler_DebugQueueCapturesAllDecodedEventsBeforeProcessing(t *testing.T) {
+	debugQueue := &recordingAuditDebugQueue{}
+	handler, err := NewAuditHandler(AuditHandlerConfig{DebugQueue: debugQueue})
+	require.NoError(t, err)
+
+	body := `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[` +
+		`{"kind":"Event","auditID":"request-received","verb":"get","stage":"RequestReceived",` +
+		`"objectRef":{"resource":"pods","apiVersion":"v1"}},` +
+		`{"kind":"Event","auditID":"bodyless-update","verb":"update","stage":"ResponseComplete",` +
+		`"objectRef":{"resource":"configmaps","apiVersion":"v1","namespace":"default","name":"cm-a"}}]}`
+	req := httptest.NewRequest(http.MethodPost, "/audit-webhook-additional", bytes.NewReader([]byte(body)))
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, []string{"request-received", "bodyless-update"}, debugQueue.auditIDs())
+	assert.Equal(t, []string{"additional", "additional"}, debugQueue.sources)
+}
+
+func TestAuditHandler_DebugQueueFailureStopsEventProcessing(t *testing.T) {
+	queue := &recordingAuditEventQueue{}
 	handler, err := NewAuditHandler(AuditHandlerConfig{
-		DumpDir: "/tmp/audit-events",
+		Queue:      queue,
+		DebugQueue: errorAuditDebugQueue{err: errors.New("debug stream down")},
 	})
+	require.NoError(t, err)
+
+	body := `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[` +
+		`{"kind":"Event","auditID":"canonical-event","verb":"create","stage":"ResponseComplete",` +
+		`"objectRef":{"resource":"configmaps","apiVersion":"v1","namespace":"default","name":"cm-a"},` +
+		`"responseObject":{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"cm-a"}}}]}`
+	req := httptest.NewRequest(http.MethodPost, "/audit-webhook", bytes.NewReader([]byte(body)))
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+	assert.Contains(t, w.Body.String(), "debug stream down")
+	assert.Empty(t, queue.events)
+}
+
+func TestAuditHandler_extractGVR(t *testing.T) {
+	handler, err := NewAuditHandler(AuditHandlerConfig{})
 	require.NoError(t, err)
 
 	tests := []struct {
@@ -318,9 +380,7 @@ func TestAuditHandler_extractGVR(t *testing.T) {
 }
 
 func TestAuditHandler_InvalidJSON(t *testing.T) {
-	handler, err := NewAuditHandler(AuditHandlerConfig{
-		DumpDir: "/tmp/audit-events",
-	})
+	handler, err := NewAuditHandler(AuditHandlerConfig{})
 	require.NoError(t, err)
 
 	req := httptest.NewRequest(http.MethodPost, "/audit-webhook", bytes.NewReader([]byte("invalid json")))
@@ -332,122 +392,8 @@ func TestAuditHandler_InvalidJSON(t *testing.T) {
 	assert.Contains(t, w.Body.String(), "invalid audit event list")
 }
 
-func TestAuditHandler_FileDump(t *testing.T) {
-	handler, err := NewAuditHandler(AuditHandlerConfig{
-		DumpDir: "/tmp/audit-events",
-	})
-	require.NoError(t, err)
-
-	// 1. Read the YAML file
-	yamlContent, err := os.ReadFile("testdata/audit-events/config-update.yaml")
-	require.NoError(t, err)
-
-	// 2. Unmarshal into the v1 Event struct
-	// The YAML file includes proper TypeMeta (kind/apiVersion) for Kubernetes consistency
-	var event auditv1.Event
-	err = yaml.Unmarshal(yamlContent, &event)
-	require.NoError(t, err)
-
-	// 3. Create the EventList struct
-	eventList := auditv1.EventList{
-		TypeMeta: metav1.TypeMeta{
-			Kind:       "EventList",
-			APIVersion: "audit.k8s.io/v1",
-		},
-		Items: []auditv1.Event{event},
-	}
-
-	// 4. Marshal the whole thing to JSON
-	// This guarantees perfect K8s JSON structure
-	body, err := json.Marshal(eventList)
-	require.NoError(t, err)
-
-	req := httptest.NewRequest(http.MethodPost, "/audit-webhook", bytes.NewReader(body))
-	w := httptest.NewRecorder()
-
-	// Call handler
-	handler.ServeHTTP(w, req)
-
-	// Verify successful processing
-	assert.Equal(t, http.StatusOK, w.Code)
-
-	// Check that the file was created and contains valid YAML
-	filePath := "/tmp/audit-events/89e50d9e-7963-4836-87ab-a18685930369.yaml"
-	fileContent, err := os.ReadFile(filePath)
-	require.NoError(t, err, "File should be created successfully")
-
-	// Verify the file contains valid YAML that can be unmarshaled back to audit.Event
-	var dumpedEvent audit.Event
-	err = yaml.Unmarshal(fileContent, &dumpedEvent)
-	require.NoError(t, err, "File content should be valid audit.Event YAML")
-
-	// Verify the auditID matches the actual value from the YAML file
-	assert.Equal(t, "89e50d9e-7963-4836-87ab-a18685930369", string(dumpedEvent.AuditID), "AuditID should match")
-
-	// Verify key fields are preserved (from the actual YAML file)
-	assert.Equal(t, "patch", dumpedEvent.Verb)
-	assert.Equal(t, "system:admin", dumpedEvent.User.Username)
-	assert.Equal(t, "configmaps", dumpedEvent.ObjectRef.Resource)
-
-	// Clean up file
-	err = os.Remove(filePath)
-	require.NoError(t, err, "File cleanup should succeed")
-
-	// Test that events with empty auditID are properly rejected
-	t.Run("empty auditID should not create file", func(t *testing.T) {
-		os.RemoveAll("/tmp/audit-events")
-		handler, err := NewAuditHandler(AuditHandlerConfig{
-			DumpDir: "/tmp/audit-events",
-		})
-		require.NoError(t, err)
-
-		// Create proper event with empty auditID
-		event := auditv1.Event{
-			TypeMeta: metav1.TypeMeta{
-				Kind:       "Event",
-				APIVersion: "audit.k8s.io/v1",
-			},
-			AuditID: "",
-			Verb:    "create",
-		}
-		event.User.Username = "test-user"
-		event.ObjectRef = &auditv1.ObjectReference{
-			Resource:   "configmaps",
-			APIVersion: "v1",
-		}
-
-		eventList := auditv1.EventList{
-			TypeMeta: metav1.TypeMeta{
-				Kind:       "EventList",
-				APIVersion: "audit.k8s.io/v1",
-			},
-			Items: []auditv1.Event{event},
-		}
-
-		eventJSON, err := json.Marshal(eventList)
-		require.NoError(t, err)
-
-		req := httptest.NewRequest(http.MethodPost, "/audit-webhook", bytes.NewReader(eventJSON))
-		w := httptest.NewRecorder()
-
-		// Call handler
-		handler.ServeHTTP(w, req)
-
-		// Verify that empty auditID returns 500 error (from processEvents)
-		assert.Equal(t, http.StatusInternalServerError, w.Code)
-		assert.Contains(t, w.Body.String(), "invalid audit event: auditID cannot be empty")
-
-		// Verify that no file was created for empty auditID
-		emptyAuditIDFile := "/tmp/audit-events/.yaml"
-		_, statErr := os.Stat(emptyAuditIDFile)
-		assert.True(t, os.IsNotExist(statErr), "File should not be created for empty auditID")
-	})
-}
-
 func TestAuditHandler_validateEvent(t *testing.T) {
-	handler, err := NewAuditHandler(AuditHandlerConfig{
-		DumpDir: "/tmp/audit-events",
-	})
+	handler, err := NewAuditHandler(AuditHandlerConfig{})
 	require.NoError(t, err)
 
 	tests := []struct {
@@ -476,7 +422,7 @@ func TestAuditHandler_validateEvent(t *testing.T) {
 			expectedProcessed: true,
 		},
 		{
-			name: "valid status event",
+			name: "status subresource event",
 			event: audit.Event{
 				AuditID: "some-status",
 				Verb:    "update",
@@ -489,6 +435,19 @@ func TestAuditHandler_validateEvent(t *testing.T) {
 				},
 				ObjectRef: &audit.ObjectReference{
 					Subresource: "status",
+				},
+			},
+			expectedErr:       "",
+			expectedProcessed: false,
+		},
+		{
+			name: "exec subresource event",
+			event: audit.Event{
+				AuditID: "some-exec",
+				Verb:    "create",
+				ObjectRef: &audit.ObjectReference{
+					Resource:    "pods",
+					Subresource: "exec",
 				},
 			},
 			expectedErr:       "",
@@ -575,10 +534,7 @@ func TestAuditHandler_ReadYAMLToJSON(t *testing.T) {
 }
 
 func TestAuditHandler_RejectsOversizedBody(t *testing.T) {
-	handler, err := NewAuditHandler(AuditHandlerConfig{
-		DumpDir:             "/tmp/audit-events",
-		MaxRequestBodyBytes: 32,
-	})
+	handler, err := NewAuditHandler(AuditHandlerConfig{MaxRequestBodyBytes: 32})
 	require.NoError(t, err)
 
 	oversizedBody := `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[]}`
@@ -589,60 +545,6 @@ func TestAuditHandler_RejectsOversizedBody(t *testing.T) {
 
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 	assert.Contains(t, w.Body.String(), "request body too large")
-}
-
-func TestAuditHandler_BodyPresenceControlsDumping(t *testing.T) {
-	tests := []struct {
-		name           string
-		body           string
-		expectedStatus int
-		expectedDumped []string
-	}{
-		{
-			name:           "events with object bodies are dumped",
-			body:           `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[{"kind":"Event","auditID":"bodyful-1","verb":"update","stage":"ResponseComplete","user":{"username":"test-user"},"objectRef":{"resource":"configmaps","namespace":"default","name":"cm-a","apiVersion":"v1"},"responseObject":{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"cm-a","namespace":"default"}}}]}`,
-			expectedStatus: http.StatusOK,
-			expectedDumped: []string{"bodyful-1.yaml"},
-		},
-		{
-			name:           "bodyless non-delete events are ignored",
-			body:           `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[{"kind":"Event","auditID":"bodyless-update-1","verb":"update","stage":"ResponseComplete","user":{"username":"test-user"},"objectRef":{"resource":"configmaps","namespace":"default","name":"cm-a","apiVersion":"v1"}}]}`,
-			expectedStatus: http.StatusOK,
-			expectedDumped: nil,
-		},
-		{
-			name:           "bodyless delete events are still dumped",
-			body:           `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[{"kind":"Event","auditID":"bodyless-delete-1","verb":"delete","stage":"ResponseComplete","user":{"username":"test-user"},"objectRef":{"resource":"flunders","namespace":"default","name":"flunder-a","apiVersion":"wardle.example.com/v1alpha1"}}]}`,
-			expectedStatus: http.StatusOK,
-			expectedDumped: []string{"bodyless-delete-1.yaml"},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			dumpDir := t.TempDir()
-
-			handler, err := NewAuditHandler(AuditHandlerConfig{
-				DumpDir: dumpDir,
-			})
-			require.NoError(t, err)
-
-			req := httptest.NewRequest(http.MethodPost, "/audit-webhook", bytes.NewReader([]byte(tt.body)))
-			w := httptest.NewRecorder()
-
-			handler.ServeHTTP(w, req)
-
-			assert.Equal(t, tt.expectedStatus, w.Code)
-
-			entries, err := os.ReadDir(dumpDir)
-			require.NoError(t, err)
-			require.Len(t, entries, len(tt.expectedDumped))
-			for i, expectedFile := range tt.expectedDumped {
-				assert.Equal(t, expectedFile, entries[i].Name())
-				assert.FileExists(t, filepath.Join(dumpDir, expectedFile))
-			}
-		})
-	}
 }
 
 func TestAuditHandler_EnqueueFailureReturnsInternalServerError(t *testing.T) {
@@ -1013,6 +915,78 @@ func TestAuditHandler_SuccessfulUpdateStillReachesGit(t *testing.T) {
 	assert.Equal(t, http.StatusOK, w.Code)
 	require.Equal(t, 1, joiner.calls, "a successful update must still reach the joiner")
 	assert.Equal(t, []string{"helmrelease-ok-1"}, queue.auditIDs())
+}
+
+func TestAuditHandler_PodExecCreateDoesNotEnterJoinPipeline(t *testing.T) {
+	queue := &recordingAuditEventQueue{}
+	joiner := &fakeAuditJoiner{decision: AuditJoinDecision{Action: AuditJoinActionEmit}}
+	handler, err := NewAuditHandler(AuditHandlerConfig{Queue: queue, Joiner: joiner})
+	require.NoError(t, err)
+
+	body := `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[
+{
+  "level": "RequestResponse",
+  "auditID": "3df193b2-b83e-4375-a0c2-67ee0c045404",
+  "stage": "ResponseComplete",
+  "requestURI": "/api/v1/namespaces/cozy-kubeovn/pods/ovn-central-7955dc78d8-lvwh4/exec?command=ovsdb-client&command=query&command=unix%3A%2Fvar%2Frun%2Fovn%2Fovnsb_db.sock&command=%5B%22_Server%22%2C%7B%22op%22%3A%22select%22%2C%22table%22%3A%22Database%22%2C%22where%22%3A%5B%5B%22name%22%2C%22%3D%3D%22%2C%22OVN_Southbound%22%5D%5D%2C%22columns%22%3A%5B%22leader%22%2C%22connected%22%2C%22cid%22%2C%22sid%22%2C%22index%22%5D%7D%5D&container=ovn-central&stderr=true&stdout=true",
+  "verb": "create",
+  "user": {
+    "username": "system:serviceaccount:cozy-kubeovn:kube-ovn-plunger",
+    "uid": "c0ad9728-52c2-426b-817b-01c5f9e49eb7",
+    "groups": [
+      "system:serviceaccounts",
+      "system:serviceaccounts:cozy-kubeovn",
+      "system:authenticated"
+    ],
+    "extra": {
+      "authentication.kubernetes.io/credential-id": [
+        "JTI=46b362c9-c8e0-4295-aa6c-431298f08e6b"
+      ],
+      "authentication.kubernetes.io/node-name": [
+        "talos-c1194"
+      ],
+      "authentication.kubernetes.io/node-uid": [
+        "98394f25-77d1-42a4-be30-2b189366cf26"
+      ],
+      "authentication.kubernetes.io/pod-name": [
+        "kube-ovn-plunger-9b759b798-x58r8"
+      ],
+      "authentication.kubernetes.io/pod-uid": [
+        "6a021464-f96a-42be-8249-71b8ad212ece"
+      ]
+    }
+  },
+  "sourceIPs": [
+    "10.244.0.215"
+  ],
+  "userAgent": "Go-http-client/1.1",
+  "objectRef": {
+    "resource": "pods",
+    "namespace": "cozy-kubeovn",
+    "name": "ovn-central-7955dc78d8-lvwh4",
+    "apiVersion": "v1",
+    "subresource": "exec"
+  },
+  "responseStatus": {
+    "metadata": {},
+    "code": 101
+  },
+  "requestReceivedTimestamp": "2026-05-22T19:29:23.082656Z",
+  "stageTimestamp": "2026-05-22T19:29:23.093528Z",
+  "annotations": {
+    "authorization.k8s.io/decision": "allow",
+    "authorization.k8s.io/reason": "RBAC: allowed by RoleBinding \"kube-ovn-plunger/cozy-kubeovn\" of Role \"kube-ovn-plunger\" to ServiceAccount \"kube-ovn-plunger/cozy-kubeovn\""
+  }
+}
+]}`
+	req := httptest.NewRequest(http.MethodPost, "/audit-webhook", bytes.NewReader([]byte(body)))
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Zero(t, joiner.calls, "pods/exec is a streaming subresource, not a pod create")
+	assert.Empty(t, queue.events, "pods/exec must not enter the canonical Git audit stream")
 }
 
 // TestClassifyAuditIngress_RejectsFailedRequests pins the intrinsic gate's

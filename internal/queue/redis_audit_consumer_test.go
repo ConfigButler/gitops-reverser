@@ -351,6 +351,54 @@ func TestExtractObject_InvalidJSON(t *testing.T) {
 	require.Error(t, err)
 }
 
+// TestExtractObject_ClassifiesPartialFinalizerPatch reproduces the CozyStack
+// prod occurrence: deleting mongodb-simon2 produced an audit event whose only
+// body was the finalizer-removal patch fragment {"metadata":{"finalizers":null}}.
+// extractObject must classify it as a partial object, not a decode failure.
+func TestExtractObject_ClassifiesPartialFinalizerPatch(t *testing.T) {
+	ev := auditv1.Event{
+		Verb:          "patch",
+		RequestObject: &runtime.Unknown{Raw: []byte(`{"metadata":{"finalizers":null}}`)},
+		// ResponseObject deliberately nil: the object was deleted by this same
+		// PATCH (last finalizer removed), so the apiserver recorded no body.
+	}
+
+	_, err := extractObject(
+		ev, configv1alpha1.OperationUpdate,
+		"helm.toolkit.fluxcd.io/v2", "helmreleases", "tenant-root", "mongodb-simon2",
+	)
+	require.ErrorIs(t, err, errAuditEventObjectPartial)
+}
+
+// TestExtractObject_MalformedBodyStillErrors guards the boundary: bytes that are
+// not valid JSON are a genuine decode failure and must NOT be reclassified as a
+// benign partial object — they still deserve the error-level poison-pill log.
+func TestExtractObject_MalformedBodyStillErrors(t *testing.T) {
+	ev := auditv1.Event{
+		ResponseObject: &runtime.Unknown{Raw: []byte(`{"metadata":`)}, // truncated
+	}
+
+	_, err := extractObject(ev, configv1alpha1.OperationCreate, "v1", "ConfigMap", "default", "cm")
+	require.Error(t, err)
+	require.NotErrorIs(t, err, errAuditEventObjectPartial)
+	require.NotErrorIs(t, err, errAuditEventObjectMissing)
+	require.NotErrorIs(t, err, errAuditEventObjectIsStatus)
+}
+
+// TestHandleExtractObjectError_PartialObjectIsBenign confirms a partial-object
+// error is handled (ACK, no poison-pill) and reported under the
+// dropped_partial_object metric outcome.
+func TestHandleExtractObjectError_PartialObjectIsBenign(t *testing.T) {
+	c := &AuditConsumer{log: logr.Discard()}
+	outcome, handled := c.handleExtractObjectError(
+		logr.Discard(), auditv1.Event{Verb: "patch"},
+		errAuditEventObjectPartial, "helm.toolkit.fluxcd.io/v2/helmreleases",
+		"tenant-root", "mongodb-simon2",
+	)
+	assert.True(t, handled)
+	assert.Equal(t, pipelineOutcomeDroppedPartialObject, outcome)
+}
+
 func TestEffectiveAuditOperation_TerminatingUpdateBecomesDelete(t *testing.T) {
 	obj := &unstructured.Unstructured{}
 	obj.SetAPIVersion("apiextensions.k8s.io/v1")
