@@ -170,7 +170,81 @@ var _ = Describe("Commit Request", Label("commit-request", "audit-redis", "smoke
 		_, _ = kubectlRunInNamespace(testNs, "delete", "configmap", cmName, "--ignore-not-found=true")
 		_, _ = kubectlRunInNamespace(testNs, "delete", "commitrequest", commitRequestName, "--ignore-not-found=true")
 	})
+
+	// generateName creates surface the bug described in
+	// docs/tasks/generated-name-support.md: the audit objectRef.name is empty
+	// for collection POSTs, so the consumer must resolve the generated name
+	// from responseObject. Without the fix the CommitRequest stays stuck in
+	// WaitingForAuditEvent forever.
+	It("finalizes a CommitRequest created with metadata.generateName", func() {
+		repo := auditRedisRepo
+		basePath := "e2e/commit-request-test"
+		seed := GinkgoRandomSeed()
+		cmName := fmt.Sprintf("commit-request-gen-cm-%d", seed)
+		commitRequestPrefix := fmt.Sprintf("commit-request-gen-%d-", seed)
+		message := fmt.Sprintf("save: generateName commit request from e2e seed %d", seed)
+
+		By("editing a ConfigMap to open a commit window")
+		applyConfigMap(testNs, cmName)
+
+		By("creating a CommitRequest with metadata.generateName")
+		generatedName := applyCommitRequestWithGenerateName(testNs, commitRequestPrefix, gitTargetName, message)
+
+		By("waiting for the generated-name CommitRequest to reach Committed")
+		var reportedSHA string
+		Eventually(func(g Gomega) {
+			phase := commitRequestField(g, testNs, generatedName, "{.status.phase}")
+			g.Expect(phase).To(Equal("Committed"),
+				"a CommitRequest created via generateName must reach Committed")
+
+			reportedSHA = commitRequestField(g, testNs, generatedName, "{.status.sha}")
+			g.Expect(reportedSHA).NotTo(BeEmpty(), "status.sha should be populated")
+		}, 2*time.Minute, 3*time.Second).Should(Succeed())
+
+		By("verifying the commit landed in Git with the explicit message")
+		Eventually(func(g Gomega) {
+			pullLatestRepoState(g, repo.CheckoutDir)
+
+			expectedFile := filepath.Join(repo.CheckoutDir, basePath, "v1", "configmaps", testNs, cmName+".yaml")
+			info, statErr := os.Stat(expectedFile)
+			g.Expect(statErr).NotTo(HaveOccurred(), fmt.Sprintf("ConfigMap file should exist at %s", expectedFile))
+			g.Expect(info.Size()).To(BeNumerically(">", 0))
+
+			subject, logErr := gitRun(repo.CheckoutDir, "log", "-1", "--pretty=%B")
+			g.Expect(logErr).NotTo(HaveOccurred())
+			g.Expect(strings.TrimSpace(subject)).To(Equal(message),
+				"the explicit spec.message should be used verbatim")
+		}, 2*time.Minute, 3*time.Second).Should(Succeed())
+
+		By("cleaning up the generateName ConfigMap and CommitRequest")
+		_, _ = kubectlRunInNamespace(testNs, "delete", "configmap", cmName, "--ignore-not-found=true")
+		_, _ = kubectlRunInNamespace(testNs, "delete", "commitrequest", generatedName, "--ignore-not-found=true")
+	})
 })
+
+// applyCommitRequestWithGenerateName creates a CommitRequest using
+// metadata.generateName and returns the server-allocated name.
+func applyCommitRequestWithGenerateName(namespace, prefix, gitTargetName, message string) string {
+	GinkgoHelper()
+	manifest := fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha1
+kind: CommitRequest
+metadata:
+  generateName: %s
+  namespace: %s
+spec:
+  gitTargetRef:
+    name: %s
+  message: %q
+`, prefix, namespace, gitTargetName, message)
+	out, err := kubectlRunWithStdin(namespace, manifest,
+		"create", "-f", "-", "-o", "jsonpath={.metadata.name}")
+	Expect(err).NotTo(HaveOccurred(),
+		fmt.Sprintf("failed to create CommitRequest with generateName=%s", prefix))
+	name := strings.TrimSpace(out)
+	Expect(name).NotTo(BeEmpty(), "kubectl create must return the server-allocated name")
+	Expect(name).To(HavePrefix(prefix), "the allocated name must start with the requested prefix")
+	return name
+}
 
 // applyCommitRequest creates a CommitRequest object that targets the given
 // GitTarget with an optional commit message.
