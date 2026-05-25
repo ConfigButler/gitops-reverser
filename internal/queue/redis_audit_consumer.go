@@ -388,10 +388,21 @@ func (c *AuditConsumer) routeAuditEvent(
 	ref := auditEvent.ObjectRef
 	apiGroup, apiVersion := auditutil.ObjectRefGroupVersion(ref)
 	resourcePlural := ref.Resource
-	namespace := ref.Namespace
-	name := ref.Name
-	isClusterScoped := namespace == ""
 	op = effectiveAuditOperation(auditEvent, op)
+
+	// Cluster vs namespaced scope is a property of the resource kind, so it
+	// must come from the URL-level objectRef, not from the body — a body that
+	// happens to omit metadata.namespace must not turn a namespaced event into
+	// a cluster-scoped one.
+	isClusterScoped := ref.Namespace == ""
+
+	// Resolve the (namespace, name, uid) of the event through the shared
+	// audit-identity helper so generateName creates (objectRef.name=="") and
+	// other partial objectRefs are handled the same way the CommitRequest
+	// finalize path handles them.
+	identity := auditutil.IdentityFromAuditEvent(auditEvent, op)
+	namespace := identity.Namespace
+	name := identity.Name
 
 	var matchObj *unstructured.Unstructured
 	if !isClusterScoped {
@@ -424,12 +435,6 @@ func (c *AuditConsumer) routeAuditEvent(
 			return nil
 		}
 		return fmt.Errorf("extracting object for %s/%s: %w", namespace, name, err)
-	}
-	if namespace == "" {
-		namespace = sanitized.GetNamespace()
-	}
-	if name == "" {
-		name = sanitized.GetName()
 	}
 
 	id := itypes.NewResourceIdentifier(apiGroup, apiVersion, resourcePlural, namespace, name)

@@ -31,6 +31,7 @@ import (
 	"github.com/stretchr/testify/require"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	auditv1 "k8s.io/apiserver/pkg/apis/audit/v1"
@@ -526,6 +527,57 @@ func TestHandleCommitRequest_StaleUIDSkipped(t *testing.T) {
 		client.ObjectKey{Namespace: "team-a", Name: "save-uid"}, &updated))
 	assert.Equal(t, configv1alpha1.CommitRequestPhaseWaitingForAuditEvent, updated.Status.Phase,
 		"the recreated object's status must be left untouched")
+}
+
+func TestHandleCommitRequest_UsesResponseObjectNameWhenObjectRefNameEmpty(t *testing.T) {
+	// `metadata.generateName` creates produce an audit event whose
+	// objectRef.name is empty; the final name lives in responseObject.
+	router := &fakeEventRouter{
+		finalizeResult: git.FinalizeResult{
+			Outcome: git.FinalizeCommitted,
+			SHA:     "deadbeef",
+			Branch:  "main",
+		},
+	}
+	consumer, fakeClient := newCommitRequestConsumer(t, router,
+		waitingCommitRequest("team-a", "save-generated", "team-a-config", "deploy v3"),
+	)
+
+	event := commitRequestAuditEvent("team-a", "")
+	body := &unstructured.Unstructured{}
+	body.SetAPIVersion(configv1alpha1.GroupVersion.String())
+	body.SetKind("CommitRequest")
+	body.SetNamespace("team-a")
+	body.SetName("save-generated")
+	raw, err := body.MarshalJSON()
+	require.NoError(t, err)
+	event.ResponseObject = &runtime.Unknown{Raw: raw}
+
+	consumer.handleCommitRequest(context.Background(), logr.Discard(), event)
+
+	require.Len(t, router.finalizeCalls, 1,
+		"the finalize must use the generated name resolved from responseObject")
+	assert.Equal(t, "team-a-config", router.finalizeCalls[0].GitTargetName)
+	assert.Equal(t, "deploy v3", router.finalizeCalls[0].Message)
+
+	var updated configv1alpha1.CommitRequest
+	require.NoError(t, fakeClient.Get(context.Background(),
+		client.ObjectKey{Namespace: "team-a", Name: "save-generated"}, &updated))
+	assert.Equal(t, configv1alpha1.CommitRequestPhaseCommitted, updated.Status.Phase)
+	assert.Equal(t, "deadbeef", updated.Status.SHA)
+}
+
+func TestHandleCommitRequest_UnresolvedIdentityIsSkipped(t *testing.T) {
+	router := &fakeEventRouter{}
+	consumer, _ := newCommitRequestConsumer(t, router)
+
+	// Empty objectRef.name and no body at all — identity cannot be resolved.
+	event := commitRequestAuditEvent("team-a", "")
+
+	consumer.handleCommitRequest(context.Background(), logr.Discard(), event)
+
+	assert.Empty(t, router.finalizeCalls,
+		"an audit event with no resolvable name must not trigger a finalize")
 }
 
 func TestHandleCommitRequest_MatchingUIDIsProcessed(t *testing.T) {

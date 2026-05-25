@@ -76,19 +76,33 @@ func (c *AuditConsumer) isCommitRequestCreate(event auditv1.Event) bool {
 // By audit-stream ordering every resource mutation the author made before
 // creating the CommitRequest produced an earlier audit event, so by the time
 // this runs those writes have already been applied to the open window.
+//
+// The object identity is resolved through auditutil.IdentityFromAuditEvent so
+// that `metadata.generateName` creates — whose audit objectRef carries no
+// name — are handled by reading the server-allocated name from
+// responseObject.metadata.
 func (c *AuditConsumer) handleCommitRequest(ctx context.Context, log logr.Logger, event auditv1.Event) {
-	ref := event.ObjectRef
-	log = log.WithValues("commitRequest", ref.Namespace+"/"+ref.Name)
+	identity := auditutil.IdentityFromAuditEvent(event, configv1alpha1.OperationCreate)
+	log = log.WithValues("commitRequest", identity.Namespace+"/"+identity.Name)
 
 	if c.kubeClient == nil || c.apiReader == nil {
 		log.Info("CommitRequest handling disabled: no Kubernetes client configured; skipping")
 		return
 	}
 
+	if identity.Namespace == "" || identity.Name == "" {
+		// A create audit event without a resolvable name (e.g. a body-less event
+		// for a generateName create) cannot be acted on. The persisted object
+		// will be reconciled via the regular window-close path; nothing to do.
+		log.Info("CommitRequest audit event did not identify an object; skipping",
+			"namespace", identity.Namespace, "name", identity.Name)
+		return
+	}
+
 	var commitRequest configv1alpha1.CommitRequest
 	if err := c.apiReader.Get(ctx, client.ObjectKey{
-		Namespace: ref.Namespace,
-		Name:      ref.Name,
+		Namespace: identity.Namespace,
+		Name:      identity.Name,
 	}, &commitRequest); err != nil {
 		if apierrors.IsNotFound(err) {
 			// The object was deleted before its audit event was processed.
@@ -102,9 +116,9 @@ func (c *AuditConsumer) handleCommitRequest(ctx context.Context, log logr.Logger
 
 	// Honor the identity the audit event gave us: a delayed event must not act
 	// on a same-named object that was deleted and recreated since.
-	if !auditEventMatchesObject(ref, commitRequest.UID) {
+	if !auditIdentityMatchesObject(identity.UID, commitRequest.UID) {
 		log.Info("CommitRequest UID does not match the audit event; skipping stale event",
-			"eventUID", ref.UID, "objectUID", commitRequest.UID)
+			"eventUID", identity.UID, "objectUID", commitRequest.UID)
 		return
 	}
 
@@ -129,7 +143,7 @@ func (c *AuditConsumer) handleCommitRequest(ctx context.Context, log logr.Logger
 			"author", author, "gitTarget", commitRequest.Spec.GitTargetRef.Name)
 	}
 
-	c.writeCommitRequestStatus(ctx, log, ref.Namespace, ref.Name, commitRequest.UID, result, err)
+	c.writeCommitRequestStatus(ctx, log, identity.Namespace, identity.Name, commitRequest.UID, result, err)
 }
 
 // writeCommitRequestStatus records the terminal phase produced by a finalize
@@ -235,14 +249,15 @@ func isTerminalCommitRequestPhase(phase configv1alpha1.CommitRequestPhase) bool 
 		phase == configv1alpha1.CommitRequestPhaseFailed
 }
 
-// auditEventMatchesObject reports whether the audit event's objectRef.uid
-// identifies the fetched object. An empty event UID (e.g. a Metadata-level
-// audit policy that omits it) is treated as a match.
-func auditEventMatchesObject(ref *auditv1.ObjectReference, objectUID types.UID) bool {
-	if ref == nil || ref.UID == "" {
+// auditIdentityMatchesObject reports whether the audit event identifies the
+// fetched object by UID. An empty event UID (e.g. a Metadata-level audit
+// policy that omits it, or a bodyless event whose objectRef carried no UID)
+// is treated as a match.
+func auditIdentityMatchesObject(eventUID, objectUID types.UID) bool {
+	if eventUID == "" {
 		return true
 	}
-	return ref.UID == objectUID
+	return eventUID == objectUID
 }
 
 // capCommitRequestMessage caps a user-supplied commit message at a defensive
