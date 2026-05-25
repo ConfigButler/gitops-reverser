@@ -109,7 +109,7 @@ type CommitRequestStatus struct {
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="Branch",type=string,JSONPath=`.status.branch`
 // +kubebuilder:printcolumn:name="SHA",type=string,JSONPath=`.status.sha`
-// +kubebuilder:printcolumn:name="Message",type=string,JSONPath=`.status.message`
+// +kubebuilder:printcolumn:name="Message",type=string,JSONPath=`.spec.message`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // CommitRequest is a one-shot "save" signal: creating one finalizes the open

@@ -27,7 +27,7 @@ spec:
     - jsonPath: .status.sha
       name: SHA
       type: string
-    - jsonPath: .status.message
+    - jsonPath: .spec.message
       name: Message
       type: string
     - jsonPath: .metadata.creationTimestamp
