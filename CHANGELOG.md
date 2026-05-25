@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.26.3](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.26.2...gitops-reverser-v0.26.3) (2026-05-25)
+
+
+### Bug Fixes
+
+* showing spec.message at commitrequests ([54225eb](https://github.com/ConfigButler/gitops-reverser/commit/54225eb7713c4796a6d8d6da6d581733b84de2b3))
+
 ## [0.26.2](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.26.1...gitops-reverser-v0.26.2) (2026-05-25)
 
 
