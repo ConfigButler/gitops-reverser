@@ -239,7 +239,27 @@ func main() {
 		"tlsEnabled", cfg.auditRedisTLS,
 		"bodyTTL", cfg.auditEventBodyTTL,
 		"decisionTTL", cfg.auditEventDecisionTTL,
-		"officialBodyWait", cfg.auditEventBodyWait)
+		"officialBodyWait", cfg.auditEventBodyWait,
+		"redisMaxLen", cfg.auditRedisMaxLen,
+		"debugRedisMaxLen", cfg.auditDebugRedisMaxLen)
+
+	if cfg.auditRedisMaxLen == 0 {
+		setupLog.Info(
+			"audit redis stream max length is 0; queue retention is unbounded — "+
+				"Valkey/Redis memory and restart/reload time can grow without limit. "+
+				"Set --audit-redis-max-len (queue.redis.maxLen in the Helm chart) to a bounded value.",
+			"stream", cfg.auditRedisStream,
+		)
+	}
+	if cfg.auditDebugRedisStream != "" && cfg.auditDebugRedisMaxLen == 0 {
+		setupLog.Info(
+			"audit debug redis stream max length is 0; debug queue retention is unbounded — "+
+				"the debug stream stores every decoded audit event before filtering/joining, "+
+				"so unbounded mode is especially risky. "+
+				"Set --audit-debug-redis-max-len (webhook.audit.debugStream.maxLen in the Helm chart) to a bounded value.",
+			"debugStream", cfg.auditDebugRedisStream,
+		)
+	}
 
 	// Register the audit stream consumer. It shares the same Redis config as the
 	// producer but uses a dedicated consumer group and ID (pod-name-scoped so that
@@ -248,6 +268,18 @@ func main() {
 	if consumerID == "" {
 		consumerID = "gitopsreverser-consumer-0"
 	}
+	queueMetrics, queueMetricsErr := queue.NewMetricsReporter(queue.MetricsConfig{
+		Addr:        cfg.auditRedisAddr,
+		Username:    cfg.auditRedisUsername,
+		AuthValue:   cfg.auditRedisPassword,
+		DB:          cfg.auditRedisDB,
+		TLSEnabled:  cfg.auditRedisTLS,
+		Stream:      cfg.auditRedisStream,
+		DebugStream: cfg.auditDebugRedisStream,
+	}, ctrl.Log.WithName("queue-metrics"))
+	fatalIfErr(queueMetricsErr, "unable to initialize audit queue metrics reporter")
+	fatalIfErr(mgr.Add(queueMetrics), "unable to add audit queue metrics reporter to manager")
+
 	auditConsumer, consumerErr := queue.NewAuditConsumer(
 		queue.AuditConsumerConfig{
 			Addr:       cfg.auditRedisAddr,

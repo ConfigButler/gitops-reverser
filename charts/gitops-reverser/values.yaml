@@ -102,8 +102,12 @@ webhook:
     debugStream:
       enabled: false
       stream: "gitopsreverser.audit.debug.events.v1"
-      # Approximate max stream length; 0 means no trimming.
-      maxLen: 0
+      # Approximate max stream length; 0 disables trimming and allows unbounded growth.
+      # The bounded default keeps Valkey memory and restart/reload time predictable; raise it
+      # only if your audit rate or outage-catch-up window exceeds the default budget. The
+      # debug stream stores every decoded event before filtering/joining, so unbounded mode
+      # here is especially dangerous.
+      maxLen: 10000
 
 # Durable audit queue configuration.
 queue:
@@ -122,8 +126,12 @@ queue:
       username: ""
     db: 0
     stream: "gitopsreverser.audit.events.v1"
-    # Approximate max stream length; 0 means no trimming.
-    maxLen: 0
+    # Approximate max stream length; 0 disables trimming and allows unbounded growth.
+    # 10000 is a production-safe starting point — large enough to absorb short consumer
+    # outages, small enough to keep Valkey memory and reload time predictable. Size based
+    # on your expected audit events per second and the outage/catch-up window the queue
+    # must tolerate. Too-low values can drop entries before slow consumers catch up.
+    maxLen: 10000
     tls:
       enabled: false
 

@@ -99,6 +99,22 @@ var (
 	// AuditPipelineRouteTargetsTotal counts per-GitTarget route attempts at the consumer.
 	AuditPipelineRouteTargetsTotal metric.Int64Counter
 
+	// AuditQueueStreamLength gauges the current entry count of the canonical audit Redis stream.
+	AuditQueueStreamLength metric.Int64Gauge
+	// AuditQueueConsumerLag gauges the consumer-group lag of the canonical audit Redis stream
+	// — entries not yet read by the consumer group. -1 when the lag cannot be determined.
+	AuditQueueConsumerLag metric.Int64Gauge
+	// AuditQueuePendingEntries gauges claimed-but-unacked entries for the consumer group.
+	AuditQueuePendingEntries metric.Int64Gauge
+	// AuditQueueOldestEntryAgeSeconds gauges the age in seconds of the oldest entry in the
+	// canonical audit Redis stream.
+	AuditQueueOldestEntryAgeSeconds metric.Int64Gauge
+	// AuditQueueOldestPendingAgeSeconds gauges the age in seconds of the oldest pending
+	// (claimed-but-unacked) entry for the consumer group.
+	AuditQueueOldestPendingAgeSeconds metric.Int64Gauge
+	// AuditDebugStreamLength gauges the current entry count of the optional debug stream.
+	AuditDebugStreamLength metric.Int64Gauge
+
 	// APICatalogResources gauges the count of served top-level resources in the catalog,
 	// split by the default-watch-policy allowed/excluded state.
 	APICatalogResources metric.Int64Gauge
@@ -262,6 +278,12 @@ func registerInstruments() error {
 		{"gitopsreverser_api_catalog_resources", &APICatalogResources},
 		{"gitopsreverser_api_catalog_group_versions", &APICatalogGroupVersions},
 		{"gitopsreverser_api_catalog_generation", &APICatalogGeneration},
+		{"gitopsreverser_audit_queue_stream_length", &AuditQueueStreamLength},
+		{"gitopsreverser_audit_queue_consumer_lag", &AuditQueueConsumerLag},
+		{"gitopsreverser_audit_queue_pending_entries", &AuditQueuePendingEntries},
+		{"gitopsreverser_audit_queue_oldest_entry_age_seconds", &AuditQueueOldestEntryAgeSeconds},
+		{"gitopsreverser_audit_queue_oldest_pending_age_seconds", &AuditQueueOldestPendingAgeSeconds},
+		{"gitopsreverser_audit_debug_stream_length", &AuditDebugStreamLength},
 	}
 	for _, s := range gauges {
 		v, err := otelMeter.Int64Gauge(s.name)

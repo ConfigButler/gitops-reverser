@@ -129,6 +129,129 @@ func TestRedisAuditQueue_EnqueueCustomResourceStoresAPIGroup(t *testing.T) {
 	assert.Equal(t, "order-1", entry["name"])
 }
 
+func TestRedisAuditQueue_EnqueueBoundedTrimsStream(t *testing.T) {
+	mr := miniredis.RunT(t)
+
+	const maxLen = 5
+	queue, err := NewRedisAuditQueue(RedisAuditQueueConfig{
+		Addr:   mr.Addr(),
+		Stream: "audit.events.test",
+		MaxLen: maxLen,
+	})
+	require.NoError(t, err)
+
+	const enqueued = 50
+	for i := range enqueued {
+		event := auditv1.Event{
+			AuditID: auditv1.Event{}.AuditID,
+			Verb:    "create",
+			Stage:   "ResponseComplete",
+			StageTimestamp: metav1.MicroTime{
+				Time: time.Date(2026, 3, 5, 10, 0, 0, i, time.UTC),
+			},
+			ObjectRef: &auditv1.ObjectReference{
+				APIVersion: "v1",
+				Resource:   "configmaps",
+				Namespace:  "default",
+				Name:       "cm",
+			},
+		}
+		require.NoError(t, queue.Enqueue(context.Background(), event))
+	}
+
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	length, err := client.XLen(context.Background(), "audit.events.test").Result()
+	require.NoError(t, err)
+	// MAXLEN ~ is approximate; it must trim but is allowed to leave a small overshoot.
+	// What it must not do is leave the stream at its un-trimmed size.
+	assert.LessOrEqual(t, length, int64(enqueued/2),
+		"approximate MAXLEN should trim well below the un-trimmed length of %d", enqueued)
+	assert.GreaterOrEqual(t, length, int64(maxLen),
+		"approximate MAXLEN should retain at least maxLen entries when more were enqueued")
+}
+
+func TestRedisAuditQueue_EnqueueUnboundedKeepsAllEntries(t *testing.T) {
+	mr := miniredis.RunT(t)
+
+	queue, err := NewRedisAuditQueue(RedisAuditQueueConfig{
+		Addr:   mr.Addr(),
+		Stream: "audit.events.test",
+		MaxLen: 0, // explicit unbounded
+	})
+	require.NoError(t, err)
+
+	const enqueued = 25
+	for i := range enqueued {
+		event := auditv1.Event{
+			Verb:  "create",
+			Stage: "ResponseComplete",
+			StageTimestamp: metav1.MicroTime{
+				Time: time.Date(2026, 3, 5, 10, 0, 0, i, time.UTC),
+			},
+			ObjectRef: &auditv1.ObjectReference{
+				APIVersion: "v1",
+				Resource:   "configmaps",
+				Namespace:  "default",
+				Name:       "cm",
+			},
+		}
+		require.NoError(t, queue.Enqueue(context.Background(), event))
+	}
+
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	length, err := client.XLen(context.Background(), "audit.events.test").Result()
+	require.NoError(t, err)
+	assert.Equal(t, int64(enqueued), length, "MaxLen=0 must not trim the stream")
+}
+
+func TestRedisAuditDebugQueue_EnqueueBoundedTrimsStream(t *testing.T) {
+	mr := miniredis.RunT(t)
+
+	const maxLen = 5
+	debugQueue, err := NewRedisAuditDebugQueue(RedisAuditQueueConfig{
+		Addr:   mr.Addr(),
+		Stream: "audit.debug.test",
+		MaxLen: maxLen,
+	})
+	require.NoError(t, err)
+
+	const enqueued = 50
+	for range enqueued {
+		event := auditv1.Event{Verb: "create", AuditID: "audit-debug"}
+		require.NoError(t, debugQueue.Enqueue(context.Background(), "official", event))
+	}
+
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	length, err := client.XLen(context.Background(), "audit.debug.test").Result()
+	require.NoError(t, err)
+	assert.LessOrEqual(t, length, int64(enqueued/2),
+		"approximate MAXLEN should trim the debug stream well below %d", enqueued)
+	assert.GreaterOrEqual(t, length, int64(maxLen),
+		"approximate MAXLEN should retain at least maxLen entries when more were enqueued")
+}
+
+func TestRedisAuditDebugQueue_EnqueueUnboundedKeepsAllEntries(t *testing.T) {
+	mr := miniredis.RunT(t)
+
+	debugQueue, err := NewRedisAuditDebugQueue(RedisAuditQueueConfig{
+		Addr:   mr.Addr(),
+		Stream: "audit.debug.test",
+		MaxLen: 0,
+	})
+	require.NoError(t, err)
+
+	const enqueued = 25
+	for range enqueued {
+		event := auditv1.Event{Verb: "create", AuditID: "audit-debug"}
+		require.NoError(t, debugQueue.Enqueue(context.Background(), "official", event))
+	}
+
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	length, err := client.XLen(context.Background(), "audit.debug.test").Result()
+	require.NoError(t, err)
+	assert.Equal(t, int64(enqueued), length, "MaxLen=0 must not trim the debug stream")
+}
+
 func TestRedisAuditDebugQueue_EnqueueStoresSource(t *testing.T) {
 	mr := miniredis.RunT(t)
 
