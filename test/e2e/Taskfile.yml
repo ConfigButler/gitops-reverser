@@ -199,7 +199,8 @@ tasks:
         export INSTALL_MODE="{{.INSTALL_MODE}}"
         export NAMESPACE="{{.NAMESPACE}}"
         export E2E_AGE_KEY_FILE="{{.CS}}/age-key.txt"
-        go test -timeout "{{.E2E_GO_TEST_TIMEOUT}}" ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=smoke
+        go test -timeout "{{.E2E_GO_TEST_TIMEOUT}}" ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=smoke \
+          -ginkgo.json-report="{{.CS}}/{{.NAMESPACE}}/ginkgo-report-smoke.json"
 
   test-e2e-full:
     desc: Run the full e2e suite, including slow and specialized scenarios
@@ -209,7 +210,8 @@ tasks:
         export INSTALL_MODE="{{.INSTALL_MODE}}"
         export NAMESPACE="{{.NAMESPACE}}"
         export E2E_AGE_KEY_FILE="{{.CS}}/age-key.txt"
-        go test -timeout "{{.E2E_GO_TEST_TIMEOUT}}" ./test/e2e/ -v -ginkgo.v
+        go test -timeout "{{.E2E_GO_TEST_TIMEOUT}}" ./test/e2e/ -v -ginkgo.v \
+          -ginkgo.json-report="{{.CS}}/{{.NAMESPACE}}/ginkgo-report-full.json"
 
   test-e2e-manager:
     desc: Run manager-focused e2e scenarios
@@ -219,7 +221,8 @@ tasks:
         export INSTALL_MODE="{{.INSTALL_MODE}}"
         export NAMESPACE="{{.NAMESPACE}}"
         export E2E_AGE_KEY_FILE="{{.CS}}/age-key.txt"
-        go test -timeout "{{.E2E_GO_TEST_TIMEOUT}}" ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=manager
+        go test -timeout "{{.E2E_GO_TEST_TIMEOUT}}" ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=manager \
+          -ginkgo.json-report="{{.CS}}/{{.NAMESPACE}}/ginkgo-report-manager.json"
 
   test-e2e-signing:
     desc: Run commit-signing e2e scenarios
@@ -229,7 +232,8 @@ tasks:
         export INSTALL_MODE="{{.INSTALL_MODE}}"
         export NAMESPACE="{{.NAMESPACE}}"
         export E2E_AGE_KEY_FILE="{{.CS}}/age-key.txt"
-        go test -timeout "{{.E2E_GO_TEST_TIMEOUT}}" ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=signing
+        go test -timeout "{{.E2E_GO_TEST_TIMEOUT}}" ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=signing \
+          -ginkgo.json-report="{{.CS}}/{{.NAMESPACE}}/ginkgo-report-signing.json"
 
   test-image-refresh:
     desc: Validate the image-refresh dependency chain
@@ -239,7 +243,8 @@ tasks:
         export INSTALL_MODE="{{.INSTALL_MODE}}"
         export NAMESPACE="{{.NAMESPACE}}"
         export E2E_AGE_KEY_FILE="{{.CS}}/age-key.txt"
-        go test -timeout "{{.E2E_GO_TEST_TIMEOUT}}" ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=image-refresh
+        go test -timeout "{{.E2E_GO_TEST_TIMEOUT}}" ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=image-refresh \
+          -ginkgo.json-report="{{.CS}}/{{.NAMESPACE}}/ginkgo-report-image-refresh.json"
 
   test-e2e-quickstart-helm:
     desc: Run quickstart smoke test with Helm install
@@ -251,7 +256,8 @@ tasks:
         export E2E_ENABLE_QUICKSTART_FRAMEWORK=true
         export E2E_QUICKSTART_MODE=helm
         export E2E_AGE_KEY_FILE="{{.CS}}/age-key.txt"
-        go test -timeout "{{.E2E_GO_TEST_TIMEOUT}}" ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=quickstart-framework
+        go test -timeout "{{.E2E_GO_TEST_TIMEOUT}}" ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=quickstart-framework \
+          -ginkgo.json-report="{{.CS}}/{{.NAMESPACE}}/ginkgo-report-quickstart-helm.json"
 
   test-e2e-quickstart-manifest:
     desc: Run quickstart smoke test with manifest install
@@ -263,7 +269,8 @@ tasks:
         export E2E_ENABLE_QUICKSTART_FRAMEWORK=true
         export E2E_QUICKSTART_MODE=plain-manifests-file
         export E2E_AGE_KEY_FILE="{{.CS}}/age-key.txt"
-        go test -timeout "{{.E2E_GO_TEST_TIMEOUT}}" ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=quickstart-framework
+        go test -timeout "{{.E2E_GO_TEST_TIMEOUT}}" ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=quickstart-framework \
+          -ginkgo.json-report="{{.CS}}/{{.NAMESPACE}}/ginkgo-report-quickstart-manifest.json"
 
   playground-bootstrap:
     desc: Bootstrap a reusable repo-backed playground
@@ -443,7 +450,8 @@ tasks:
         export INSTALL_MODE="{{.INSTALL_MODE}}"
         export NAMESPACE="{{.NAMESPACE}}"
         export E2E_AGE_KEY_FILE="{{.CS}}/age-key.txt"
-        go test -timeout "{{.E2E_GO_TEST_TIMEOUT}}" ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=audit-redis
+        go test -timeout "{{.E2E_GO_TEST_TIMEOUT}}" ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=audit-redis \
+          -ginkgo.json-report="{{.CS}}/{{.NAMESPACE}}/ginkgo-report-audit-redis.json"
 
   test-e2e-aggregated-api:
     desc: Run aggregated API server e2e scenarios
@@ -453,8 +461,11 @@ tasks:
         export INSTALL_MODE="{{.INSTALL_MODE}}"
         export NAMESPACE="{{.NAMESPACE}}"
         export E2E_AGE_KEY_FILE="{{.CS}}/age-key.txt"
-        go test -timeout "{{.E2E_GO_TEST_TIMEOUT}}" ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=aggregated-api
+        go test -timeout "{{.E2E_GO_TEST_TIMEOUT}}" ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=aggregated-api \
+          -ginkgo.json-report="{{.CS}}/{{.NAMESPACE}}/ginkgo-report-aggregated-api.json"
 
+  # test-e2e-demo intentionally has no -ginkgo.json-report flag: this target
+  # is a demo-setup runner, not a measurable test suite.
   test-e2e-demo:
     desc: Prepare a reusable demo repo and leave demo resources in place
     cmds:
