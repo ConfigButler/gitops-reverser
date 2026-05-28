@@ -732,10 +732,39 @@ tasks:
           CONTAINER_TOOL="{{.CONTAINER_TOOL}}" K3D="{{.K3D}}" STAMP_FILE="{{.CS}}/image.loaded" \
           bash hack/e2e/load-image.sh
 
+  _install-cleanup:
+    # Wipe prior install state so a new install mode can take over cleanly.
+    # Runs cleanup-installs.sh, which deletes any existing install.yaml-owned
+    # resources, drops the install namespace, and rm -rf's every stamp under
+    # .stamps/cluster/<ctx>/<ns>/ except git-* fixtures.
+    #
+    # This used to live inline at the top of every _install-<mode> task. As
+    # its own DAG node it can be a parallel-safe prerequisite for both the
+    # active _install-<mode> and for tasks like _sops-secret-yaml that write
+    # into the same namespace dir.
+    #
+    # Status: if the install.yaml for the *current* INSTALL_MODE already
+    # exists we're either warm or just re-running the same mode, and the
+    # in-place apply/upgrade does not need a wipe. Cleanup is only required
+    # when switching modes or on a brand-new CTX where the file is missing.
+    method: timestamp
+    deps:
+      - _cluster-ready
+    generates:
+      - '{{.CS}}/install-cleanup.done'
+    status:
+      - test -f "{{.CS}}/{{.NAMESPACE}}/{{.INSTALL_MODE}}/install.yaml"
+    cmds:
+      - |
+        CTX="{{.CTX}}" KUBECTL="{{.KUBECTL}}" bash hack/cleanup-installs.sh
+        mkdir -p "{{.CS}}"
+        touch "{{.CS}}/install-cleanup.done"
+
   _install-helm:
     deps:
       - _services-ready
       - helm-sync
+      - _install-cleanup
     sources:
       - '{{.CS}}/services.ready'
       - charts/gitops-reverser/Chart.yaml
@@ -747,7 +776,6 @@ tasks:
       - '{{.CS}}/{{.NAMESPACE}}/helm/install.yaml'
     cmds:
       - |
-        CTX="{{.CTX}}" KUBECTL="{{.KUBECTL}}" bash hack/cleanup-installs.sh
         mkdir -p "{{.CS}}/{{.NAMESPACE}}/helm"
         skip_crds_arg=""
         if kubectl --context "{{.CTX}}" get crd \
@@ -782,6 +810,7 @@ tasks:
     deps:
       - _services-ready
       - manifests
+      - _install-cleanup
     sources:
       - '{{.CS}}/services.ready'
       - config/**/*
@@ -789,7 +818,6 @@ tasks:
       - '{{.CS}}/{{.NAMESPACE}}/config-dir/install.yaml'
     cmds:
       - |
-        CTX="{{.CTX}}" KUBECTL="{{.KUBECTL}}" bash hack/cleanup-installs.sh
         mkdir -p "{{.CS}}/{{.NAMESPACE}}/config-dir"
         CTX="{{.CTX}}" NAMESPACE="{{.NAMESPACE}}" PROJECT_IMAGE="{{.PROJECT_IMAGE}}" \
           E2E_VALKEY_PASSWORD="{{.E2E_VALKEY_PASSWORD}}" \
@@ -802,6 +830,7 @@ tasks:
     deps:
       - _services-ready
       - dist-install
+      - _install-cleanup
     sources:
       - '{{.CS}}/services.ready'
       - dist/install.yaml
@@ -809,7 +838,6 @@ tasks:
       - '{{.CS}}/{{.NAMESPACE}}/plain-manifests-file/install.yaml'
     cmds:
       - |
-        CTX="{{.CTX}}" KUBECTL="{{.KUBECTL}}" bash hack/cleanup-installs.sh
         mkdir -p "{{.CS}}/{{.NAMESPACE}}/plain-manifests-file"
         CTX="{{.CTX}}" NAMESPACE="{{.NAMESPACE}}" E2E_VALKEY_PASSWORD="{{.E2E_VALKEY_PASSWORD}}" \
           bash hack/e2e/ensure-valkey-auth.sh
@@ -936,8 +964,15 @@ tasks:
 
   _sops-secret-yaml:
     method: timestamp
+    # _install-cleanup runs first: it wipes everything under
+    # .stamps/cluster/<ctx>/<ns>/ except git-* fixtures, including this
+    # task's output. Without this dep, status: was evaluated in parallel
+    # with the cleanup, found a stale file from a prior run, reported "up
+    # to date", and then _sops-secret-applied tried to kubectl apply a
+    # file the cleanup had just deleted.
     deps:
       - _age-key
+      - _install-cleanup
     sources:
       - '{{.CS}}/age-key.txt'
       - test/e2e/tools/gen-age-key/main.go
