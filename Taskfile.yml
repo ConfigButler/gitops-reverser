@@ -5,6 +5,11 @@ version: '3'
 # See .env.example for the available keys.
 dotenv: ['.env']
 
+# Default tasks to run once per invocation so the e2e DAG can fan tasks
+# out via `deps:` without racing — e.g. `_cluster-ready` reachable through
+# both `_image-loaded` and `_flux-installed` must not start twice.
+run: once
+
 set:
   - errexit
   - nounset
