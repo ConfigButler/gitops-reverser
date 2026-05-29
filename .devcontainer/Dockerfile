@@ -39,16 +39,28 @@ RUN apt-get update \
 # Tool versions - centralized for easy updates.
 # This devcontainer currently supports amd64 tool downloads only.
 
+# Finding the latest versions:
+# KUBECTL_VERSION -> https://github.com/kubernetes/kubernetes/releases
+# KUSTOMIZE_VERSION -> https://github.com/kubernetes-sigs/kustomize/releases
+# KUBEBUILDER_VERSION -> https://github.com/kubernetes-sigs/kubebuilder
+# GOLANGCI_LINT_VERSION -> https://github.com/golangci/golangci-lint/releases
+# K3D_VERSION -> https://github.com/k3d-io/k3d (seems a bit stsale?)
+# FLUX_VERSION -> https://github.com/fluxcd/flux2
+# FLUX_OPERATOR_VERSION -> https://github.com/controlplaneio-fluxcd/flux-operator
+# TASK_VERSION -> https://github.com/go-task/task/releases
+# TILT_VERSION -> https://github.com/tilt-dev/tilt/releases
+
 ENV PATH="/go/bin:/usr/local/go/bin:${PATH}" \
     KUBECTL_VERSION=v1.36.1 \
     KUSTOMIZE_VERSION=5.8.1 \
-    KUBEBUILDER_VERSION=4.14.0 \
+    KUBEBUILDER_VERSION=4.14.1 \
     GOLANGCI_LINT_VERSION=v2.12.2 \
     HELM_VERSION=v4.2.0 \
     K3D_VERSION=v5.8.3 \
-    FLUX_VERSION=2.8.6 \
-    FLUX_OPERATOR_VERSION=0.49.0 \
-    TASK_VERSION=v3.50.0
+    FLUX_VERSION=2.8.8 \
+    FLUX_OPERATOR_VERSION=0.50.0 \
+    TASK_VERSION=v3.51.1 \
+    TILT_VERSION=v0.37.3
 
 # https://github.com/fluxcd/flux2/releases
 # https://fluxoperator.dev/
@@ -192,7 +204,6 @@ RUN printf '%s\n' \
     >> /etc/bash.bashrc
 
 # Install Tilt CLI (local dev loop orchestration; dev stage only)
-ENV TILT_VERSION=v0.37.1
 RUN arch="$(dpkg --print-architecture)" && \
     case "${arch}" in \
         amd64) tilt_arch="x86_64" ;; \

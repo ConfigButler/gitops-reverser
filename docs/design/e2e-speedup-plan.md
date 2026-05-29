@@ -123,6 +123,103 @@ execution.
 - Cold `task prepare-e2e` ≥ 25 % faster than the sequential baseline.
 - Warm `task prepare-e2e` still ≈ 1.4 s.
 
+**DAG (as implemented).** Two regressions surfaced during validation and
+shaped the final shape:
+
+- `portforward-ensure` had to stay *strictly sequential after*
+  `_prepare-e2e-ready` (not a `deps:` peer): the k3d server-node restart
+  inside `_webhook-tls-ready` kills any kubectl port-forwards started
+  concurrently with it.
+- `cleanup-installs.sh` (which wipes `.stamps/cluster/<ctx>/<ns>/`)
+  needed to be its own DAG node, `_install-cleanup`, so
+  `_sops-secret-yaml` can depend on it. Previously the cleanup ran inside
+  `_install-{mode}` cmds, and in parallel mode `_sops-secret-yaml`'s
+  status was evaluated *before* the cleanup, reported "up to date" from a
+  prior run's stamp, and then the cleanup deleted the file out from
+  under `_sops-secret-applied`. `_install-cleanup`'s status check
+  (`test -f <current-mode>/install.yaml`) lets it stay idempotent across
+  warm runs while still firing on a mode switch or a fresh CTX.
+
+```mermaid
+flowchart TD
+    cluster([_cluster-ready]):::root
+    age([_age-key]):::root
+    imageid([_controller-image-id]):::root
+
+    imageid --> imageready["_project-image-ready-local<br/>+ _project-image-ready"]
+
+    cluster --> cleanup[_install-cleanup]
+    cluster --> flux[_flux-installed]
+    cluster --> imageloaded[_image-loaded]
+    imageready --> imageloaded
+
+    flux --> fluxsetup[_flux-setup-ready]
+    fluxsetup --> services[_services-ready]
+
+    age --> sopsyaml[_sops-secret-yaml]
+    cleanup --> sopsyaml
+
+    services --> install["install dispatcher<br/>+ _install-&#123;mode&#125;"]
+    cleanup --> install
+
+    install --> ctrl[_controller-deployed]
+    imageloaded --> ctrl
+    ctrl --> webhook[_webhook-tls-ready]
+
+    services --> aggkube["_aggregated-api-<br/>webhook-kubeconfig-ready"]
+    webhook --> aggkube
+    aggkube --> aggapi[_aggregated-api-ready]
+
+    sopsyaml --> sopsapplied[_sops-secret-applied]
+    install --> sopsapplied
+
+    ctrl --> ready[_prepare-e2e-ready]
+    webhook --> ready
+    sopsapplied --> ready
+    aggapi --> ready
+
+    services --> pf[portforward-ensure]
+    ready ==> prepare([prepare-e2e]):::top
+    pf ==> prepare
+
+    classDef root fill:#e8f4f8,stroke:#0066cc,stroke-width:2px
+    classDef top fill:#f0e8f8,stroke:#6600cc,stroke-width:2px
+```
+
+Legend:
+
+- Thin arrows are go-task `deps:` — parallel-safe; a task starts as soon
+  as all incoming arrows have completed.
+- Thick arrows are sequential `cmds:` ordering inside `prepare-e2e`
+  itself (the only place where ordering is not expressed via `deps:`).
+- Blue nodes (`_cluster-ready`, `_age-key`, `_controller-image-id`) have
+  no deps. Purple is the user-facing entry point.
+- The `install` node collapses three steps that act as a single unit:
+  the templated dispatcher `install` (`task: 'install-{{.INSTALL_MODE}}'`),
+  the per-mode wrapper `install-{helm,config-dir,plain-manifests-file}`,
+  and the leaf `_install-{mode}` it depends on. Each `_install-{mode}`
+  carries its own build-side dep from `Taskfile-build.yml`
+  (`helm-sync`, `manifests`, or `dist-install`); those are elided here
+  to keep the diagram readable.
+
+The critical path on a cold run is
+`_cluster-ready → _flux-installed → _flux-setup-ready → _services-ready
+→ install → _controller-deployed → _webhook-tls-ready
+→ _aggregated-api-webhook-kubeconfig-ready → _aggregated-api-ready
+→ _prepare-e2e-ready → portforward-ensure`. Everything else folds onto
+that path before its outputs are needed.
+
+**Measured impact:** cold `task prepare-e2e` 230 s → 213 s (7.4 %), well
+short of the 25 % target. Honest accounting: the Flux ramp-up is a
+strictly serial ~150 s of that budget and the docker image was cached in
+this run, so the parallel branches (`_age-key`/`_sops-secret-yaml`,
+`_image-loaded`, `_install-cleanup`, `manifests`) only saved the ~17 s
+of work they would have spent on the critical path sequentially. With a
+fresh Go build (the scenario the original plan estimate assumed),
+`_project-image-ready` would absorb tens of seconds of additional cluster
+ramp-up and the gain should approach the original estimate. Warm
+`task prepare-e2e` stays at 1 s — no regression.
+
 ### Phase 2 — Mechanical split of the `Manager` Describe
 
 The `Manager` Describe in

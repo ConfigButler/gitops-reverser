@@ -8,8 +8,8 @@
   "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/${localWorkspaceFolderBasename},type=bind",
   "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
   "features": {
-    "ghcr.io/devcontainers/features/docker-outside-of-docker:1": {},
-    "ghcr.io/devcontainers/features/common-utils:2.5.8": {
+    "ghcr.io/devcontainers/features/docker-outside-of-docker:1.10.0": {},
+    "ghcr.io/devcontainers/features/common-utils:2.5.9": {
       "userUid": "automatic",
       "userGid": "automatic",
       "username": "vscode"
