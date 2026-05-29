@@ -172,13 +172,14 @@ create_cluster() {
       k3d cluster create "${CLUSTER_NAME}"
       --image rancher/k3s:v1.35.2-k3s1
       --servers 1
-      # 2 agents (raised from 1) spread the per-test pods across more worker
-      # nodes so the controller/Gitea/Flux/Redis aren't all contending on a
-      # single agent under Ginkgo parallelism (E2E_GINKGO_PROCS>1). This was
-      # 3 historically but dropped to 1 when 1+3 nodes exhausted the default
-      # fs.inotify.max_user_instances (128); ensure_inotify_limits now raises
-      # that to 512, leaving ample headroom for the extra node.
-      --agents 2
+      # 3 agents spread the per-test pods across more worker nodes so the
+      # controller (which does CPU-heavy SSH signing + git work) is less likely
+      # to be co-located with — and starved by — a heavy test pod under Ginkgo
+      # parallelism (E2E_GINKGO_PROCS>1). This was dropped to 1 when 1+3 nodes
+      # exhausted the default fs.inotify.max_user_instances (128); the cause is
+      # now mitigated by ensure_inotify_limits raising that to 512, which leaves
+      # ample headroom for 4 nodes.
+      --agents 3
       --kubeconfig-update-default
       --kubeconfig-switch-context
       -v "${audit_host_dir}:/etc/kubernetes/audit@server:0"
