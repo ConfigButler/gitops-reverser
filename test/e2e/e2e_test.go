@@ -217,7 +217,11 @@ func verifyResourceStatus(resourceType, name, ns, expectedStatus, expectedReason
 			g.Expect(readyMessage).To(ContainSubstring(expectedMessageContains))
 		}
 	}
-	Eventually(verifyStatus).Should(Succeed())
+	// 90s (vs the 30s default) absorbs slow-CI and parallel load: in particular,
+	// after a fresh CRD install the controller's discovery cache can lag tens of
+	// seconds before it serves the new GVR and a dependent WatchRule can be
+	// planned and reach Ready. The happy path still returns as soon as Ready.
+	Eventually(verifyStatus, "90s", "2s").Should(Succeed())
 }
 
 // showControllerLogs displays the current controller logs to help with debugging during test execution.
