@@ -418,39 +418,99 @@ registry then only needs to capture genuinely process-level conflicts
 - Smoke wallclock drops by at least the parallel-safe Group A+B+C share.
 - Serial registry exists and is non-empty.
 
-**Implementation status (2026-05-29).** Landed on branch `refactors`.
+**Implementation status & where we are (2026-05-29 — read this first on resume).**
+Landed on branch `refactors` (PR #159). `gh` works directly now — no
+`unset GH_TOKEN` needed.
+
+**What is implemented (and green locally at `procs=2`):**
 
 - **Parallelism is driven by the `ginkgo` CLI, not `go test`.** `go test`
   has no `-ginkgo.procs` flag (it only accepts the `-ginkgo.parallel.*`
-  flags that the CLI sets on its workers). The three suite tasks now run
+  flags the CLI sets on its workers). `test-e2e`, `test-e2e-full` and
+  `test-e2e-manager` now run
   `go run github.com/onsi/ginkgo/v2/ginkgo --procs={{.E2E_GINKGO_PROCS}}`
   (pinned to the module version to avoid a CLI/library mismatch).
   `E2E_GINKGO_PROCS` defaults to `2`.
 - **`SynchronizedBeforeSuite`** runs `prepare-e2e` + CRD pre-cleanup once
   on process #1; the `E2E_AGE_KEY_FILE` fallback runs per-process.
-- **CRD isolation:** each of `crd_lifecycle`, `restart_snapshot`,
-  `bi_directional` renders its own group (`*.e2e.example.com`) via
-  `test/e2e/icecream.go`; the shared `icecreamorders` plural means every
+- **Per-file CRD group isolation** via `test/e2e/icecream.go`:
+  `crd_lifecycle`/`restart_snapshot`/`bi_directional` each own a group
+  (`*.e2e.example.com`); the shared `icecreamorders` plural means every
   kubectl reference is qualified `icecreamorders.<group>`.
-- **Final Serial set** (see [e2e-serial-registry.md](e2e-serial-registry.md))
-  ended up larger than the initial audit. Beyond `restart_snapshot`,
-  `image_refresh` and `aggregated_api` (controller/APIService level), the
-  four `audit-redis`-labelled containers (`Audit Redis Queue/Consumer`,
-  `Commit Window Batching`, `Commit Request`) had to go Serial — they
-  share one global audit pipeline (webhook → Redis stream → consumer) and
-  cross-contaminated each other's commits. `bi_directional` is Serial too:
-  it asserts exact commit counts to prove no commit loop, which any
-  concurrent controller activity breaks.
-- **Timeouts widened for parallel/slow-CI load:** the shared
-  `verifyResourceStatus` readiness wait went 30s → 90s (after a fresh CRD
-  install the controller's discovery cache lags before it serves the new
-  GVR, so a dependent WatchRule can't reach Ready inside 30s on contended
-  runners); the manager ConfigMap-delete `Eventually` went 30s → 60s.
-- **Measured:** smoke (`task test-e2e`, procs=2) **352 s** vs the 418.7 s
-  sequential baseline. Cold full run (fresh cluster, all 47 specs) green:
-  45 passed / 0 failed / 2 skipped in ~20 min wallclock. The dominant
-  remaining smoke cost is the Serial `Restart Snapshot Safety` spec
-  (~128 s) — that is exactly what Phase 3 targets.
+- **Serial registry** ([e2e-serial-registry.md](e2e-serial-registry.md))
+  is larger than the initial audit: `restart_snapshot`, `image_refresh`,
+  `aggregated_api` (controller/APIService level) **plus** the four
+  `audit-redis`-labelled containers (`Audit Redis Queue/Consumer`,
+  `Commit Window Batching`, `Commit Request`) — they share one global
+  audit pipeline (webhook → Redis → consumer) and cross-contaminated each
+  other's commits — **plus** `bi_directional` (asserts exact commit counts
+  to prove no commit loop; broken by any concurrent controller activity).
+- **Timeouts widened for parallel/slow load:** `verifyResourceStatus`
+  readiness 30s → 90s (post-CRD-install the controller's discovery cache
+  lags before serving the new GVR, so a dependent WatchRule can't reach
+  Ready in 30s); manager ConfigMap-delete `Eventually` 30s → 60s; signing
+  commit-waits 60s → 90s.
+
+**Commits on `refactors` since the `1205369` squash:** `cad9903` (Serial:
+bi-directional + audit pipeline), `9942e0c` (readiness 90s), `dba83ac`
+(this doc), `1294814` (k3d agents 1→2), `452961c` (signing 90s), `b7a00b4`
+(k3d agents 2→3).
+
+**Measured (local devcontainer, `procs=2`):** smoke **352 s** vs 418.7 s
+sequential baseline (~16 %); cold full **45/45** in ~20 min; warm full
+**45/45** in ~17 min. Rock solid locally across smoke + 2 full runs. The
+full-suite gain is modest *by design*: the heavy specs are `Serial` for
+correctness and the single biggest spec, `Restart Snapshot Safety`
+(~128 s), is Serial and untouched until Phase 3. Smoke's ~16 % is the
+honest gain today; the bigger win is Phase 3.
+
+**⚠️ Open problem — CI is flaky at `procs=2` (the only thing blocking
+merge).** On the stock `ubuntu-latest` GitHub runners the single
+controller is **CPU-starved** under two concurrent test streams plus its
+own CPU-heavy SSH-signing/git work. Symptom: a *different* spec times out
+each run (crd_lifecycle WatchRule readiness; watchrule "create"; signing —
+the last failed even at a 90 s wait, i.e. genuine starvation, not a tight
+timeout). It is **not** a logic bug — local is consistently green.
+Progression tried:
+- 1 agent → red.
+- **2 agents** (`1294814`) → E2E (full) went **green once**, then **red**
+  on the next run (`452961c`, signing at 90 s). Reduced but didn't
+  eliminate.
+- **3 agents** (`b7a00b4`) → E2E (full) went **green** (run
+  `26660720283`). But this is **one** green run, and 2 agents also went
+  green-once-then-red, so stability is **not yet proven** — needs a few
+  consecutive green reruns before we trust it. The 3→1 drop was originally
+  due to `fs.inotify.max_user_instances` (default 128) exhaustion; that is
+  now mitigated to 512 by `ensure_inotify_limits`, so 1 server + 3 agents
+  is safe. Confirmed the suite uses a **single** cluster (the
+  `audit-pass-through-e2e` cluster seen locally is an unrelated leftover).
+
+**▶ Resume Monday — do this:**
+
+1. Check the 3-agent result:
+   `gh pr view 159 --json statusCheckRollup,mergeable`. Look at
+   **E2E (full)**.
+2. **If green:** re-run it 1–2× to confirm it's stable, not lucky
+   (`gh run rerun <run-id>` after it completes, or push a trivial change).
+   If stable → Phase 2.5 is **done**; merge #159.
+3. **If still flaky (likely):** apply the agreed fallback — set
+   `E2E_GINKGO_PROCS=1` for the **CI E2E (full) job only** in
+   [.github/workflows/ci.yml](../../.github/workflows/ci.yml) (the `e2e`
+   job, `full` matrix entry, ~L262–280; add `E2E_GINKGO_PROCS: 1` to that
+   job/step env or prefix the `task test-e2e-full` script). This keeps the
+   local/agent `procs=2` speedup while giving CI the reliable sequential
+   behaviour (pre-2.5). All Phase 2.5 isolation work still ships and is
+   correct. Then push, confirm green, merge. (Alternative if CI speedup is
+   wanted: move the e2e job to a larger runner with real CPU for
+   `procs=2` — needs larger-runner access/quota.)
+4. **Consider reverting the agent bump to 2** (`1294814`) and dropping
+   `b7a00b4` if CI goes to `procs=1`: with sequential CI, 1 agent is
+   enough and fewer nodes = less runner pressure. Keep the higher agent
+   count only if CI stays at `procs=2`.
+5. Then start **Phase 3** (below) on a *separate* branch — it touches
+   production controller code (`internal/telemetry` + `internal/watch`)
+   and cuts the Serial `Restart Snapshot Safety` spec (~128 s, the
+   dominant remaining cost).
 
 ### Phase 3 — Target-scoped reconcile-complete + drain signal for `Restart Snapshot Safety`
 
