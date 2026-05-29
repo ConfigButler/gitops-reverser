@@ -418,6 +418,40 @@ registry then only needs to capture genuinely process-level conflicts
 - Smoke wallclock drops by at least the parallel-safe Group A+B+C share.
 - Serial registry exists and is non-empty.
 
+**Implementation status (2026-05-29).** Landed on branch `refactors`.
+
+- **Parallelism is driven by the `ginkgo` CLI, not `go test`.** `go test`
+  has no `-ginkgo.procs` flag (it only accepts the `-ginkgo.parallel.*`
+  flags that the CLI sets on its workers). The three suite tasks now run
+  `go run github.com/onsi/ginkgo/v2/ginkgo --procs={{.E2E_GINKGO_PROCS}}`
+  (pinned to the module version to avoid a CLI/library mismatch).
+  `E2E_GINKGO_PROCS` defaults to `2`.
+- **`SynchronizedBeforeSuite`** runs `prepare-e2e` + CRD pre-cleanup once
+  on process #1; the `E2E_AGE_KEY_FILE` fallback runs per-process.
+- **CRD isolation:** each of `crd_lifecycle`, `restart_snapshot`,
+  `bi_directional` renders its own group (`*.e2e.example.com`) via
+  `test/e2e/icecream.go`; the shared `icecreamorders` plural means every
+  kubectl reference is qualified `icecreamorders.<group>`.
+- **Final Serial set** (see [e2e-serial-registry.md](e2e-serial-registry.md))
+  ended up larger than the initial audit. Beyond `restart_snapshot`,
+  `image_refresh` and `aggregated_api` (controller/APIService level), the
+  four `audit-redis`-labelled containers (`Audit Redis Queue/Consumer`,
+  `Commit Window Batching`, `Commit Request`) had to go Serial — they
+  share one global audit pipeline (webhook → Redis stream → consumer) and
+  cross-contaminated each other's commits. `bi_directional` is Serial too:
+  it asserts exact commit counts to prove no commit loop, which any
+  concurrent controller activity breaks.
+- **Timeouts widened for parallel/slow-CI load:** the shared
+  `verifyResourceStatus` readiness wait went 30s → 90s (after a fresh CRD
+  install the controller's discovery cache lags before it serves the new
+  GVR, so a dependent WatchRule can't reach Ready inside 30s on contended
+  runners); the manager ConfigMap-delete `Eventually` went 30s → 60s.
+- **Measured:** smoke (`task test-e2e`, procs=2) **352 s** vs the 418.7 s
+  sequential baseline. Cold full run (fresh cluster, all 47 specs) green:
+  45 passed / 0 failed / 2 skipped in ~20 min wallclock. The dominant
+  remaining smoke cost is the Serial `Restart Snapshot Safety` spec
+  (~128 s) — that is exactly what Phase 3 targets.
+
 ### Phase 3 — Target-scoped reconcile-complete + drain signal for `Restart Snapshot Safety`
 
 **Why a pod-level gauge alone is insufficient** (per reviewer): a
