@@ -177,13 +177,17 @@ tasks:
 
   test-e2e-full:
     desc: Run the full e2e suite, including slow and specialized scenarios
+    vars:
+      # 47 specs at ~22s avg + ~6m cold prepare ≈ 25m; the smoke-tuned 15m default
+      # times out mid-run and gives a goroutine dump instead of a useful report.
+      E2E_FULL_TIMEOUT: '{{.E2E_FULL_TIMEOUT | default "30m"}}'
     cmds:
       - |
         export CTX="{{.CTX}}"
         export INSTALL_MODE="{{.INSTALL_MODE}}"
         export NAMESPACE="{{.NAMESPACE}}"
         export E2E_AGE_KEY_FILE="{{.CS}}/age-key.txt"
-        go test -timeout "{{.E2E_GO_TEST_TIMEOUT}}" ./test/e2e/ -v -ginkgo.v \
+        go test -timeout "{{.E2E_FULL_TIMEOUT}}" ./test/e2e/ -v -ginkgo.v \
           -ginkgo.json-report="{{.CS}}/{{.NAMESPACE}}/ginkgo-report-full.json"
 
   test-e2e-manager:

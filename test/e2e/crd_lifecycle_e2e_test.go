@@ -199,6 +199,16 @@ var _ = Describe("Manager CRD Lifecycle", Label("manager"), Ordered, func() {
 		}
 		Eventually(verifyCRDEstablished, 30*time.Second, time.Second).Should(Succeed())
 
+		// Established=True only means the apiserver registered the CRD; the
+		// controller's reflector may still be in "Failed to watch" backoff for
+		// a few seconds. If we create a CR before that recovers, the create
+		// event is missed and the next spec sees no file in git. Block until
+		// the resource is actually listable end-to-end.
+		Eventually(func(g Gomega) {
+			_, err := kubectlRun("get", "icecreamorders.shop.example.com", "-A")
+			g.Expect(err).NotTo(HaveOccurred(), "icecreamorders must be servable before creating instances")
+		}, 30*time.Second, time.Second).Should(Succeed())
+
 		crdInstanceName := "alices-order"
 		uniqueRepoName := crdLifecycleRepo.RepoName
 
@@ -574,7 +584,9 @@ var _ = Describe("Manager CRD Lifecycle", Label("manager"), Ordered, func() {
 				NotTo(HaveOccurred(), fmt.Sprintf("CRD instance file should exist at %s", expectedFile))
 			g.Expect(fileInfo.Size()).To(BeNumerically(">", 0), "CRD instance file should not be empty")
 		}
-		Eventually(verifyFileCreated).Should(Succeed())
+		// 60s tolerates controller-reflector re-establishment if the deployment
+		// happened to roll during the prior spec (default 30s was racing it).
+		Eventually(verifyFileCreated, 60*time.Second, 2*time.Second).Should(Succeed())
 
 		By("deleting the CR to trigger DELETE operation")
 		_, err = kubectlRunInNamespace(testNs, "delete", "icecreamorder", crdInstanceName)
