@@ -40,7 +40,10 @@ import (
 // or via:
 //
 //	task test-image-refresh
-var _ = Describe("image refresh dependency chain", Label("image-refresh"), Ordered, func() {
+//
+// Serial: redeploys / changes the controller image, perturbing the shared
+// controller for any concurrent spec. See docs/design/e2e-serial-registry.md.
+var _ = Describe("image refresh dependency chain", Label("image-refresh"), Serial, Ordered, func() {
 	var (
 		projectDir       string
 		deployedStamp    string

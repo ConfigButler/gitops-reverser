@@ -45,7 +45,9 @@ import (
 // IMPORTANT: the wildcard rule is what makes this test meaningful. A test that
 // watches with a concrete `apiVersions: ["v1"]` rule passes even with the bug
 // present — which is exactly why the existing e2e suite never caught this.
-var _ = Describe("Restart Snapshot Safety", Label("restart-snapshot", "smoke"), Ordered, func() {
+// Serial: rolls the controller deployment, which disrupts any spec running
+// concurrently on another process. See docs/design/e2e-serial-registry.md.
+var _ = Describe("Restart Snapshot Safety", Label("restart-snapshot", "smoke"), Serial, Ordered, func() {
 	var (
 		testNs        string
 		restartRepo   *RepoArtifacts
@@ -92,11 +94,11 @@ var _ = Describe("Restart Snapshot Safety", Label("restart-snapshot", "smoke"), 
 
 	It("keeps the git mirror intact when the controller restarts", func() {
 		By("installing the IceCreamOrder CRD")
-		_, err := kubectlRun("apply", "-f", "test/e2e/templates/icecreamorder-crd.yaml")
+		err := applyIceCreamCRD(crdGroupRestartSnapshot)
 		Expect(err).NotTo(HaveOccurred(), "failed to install IceCreamOrder CRD")
 		Eventually(func(g Gomega) {
 			output, getErr := kubectlRun(
-				"get", "crd", "icecreamorders.shop.example.com",
+				"get", "crd", iceCreamCRDName(crdGroupRestartSnapshot),
 				"-o", "jsonpath={.status.conditions[?(@.type=='Established')].status}",
 			)
 			g.Expect(getErr).NotTo(HaveOccurred())
@@ -111,10 +113,12 @@ var _ = Describe("Restart Snapshot Safety", Label("restart-snapshot", "smoke"), 
 			Name            string
 			DestinationName string
 			Namespace       string
+			Group           string
 		}{
 			Name:            clusterWatchRuleName,
 			DestinationName: gitTargetName,
 			Namespace:       testNs,
+			Group:           crdGroupRestartSnapshot,
 		}
 		Expect(applyFromTemplate(
 			"test/e2e/templates/restart/clusterwatchrule-wildcard.tmpl", cwrData, "",
@@ -125,13 +129,13 @@ var _ = Describe("Restart Snapshot Safety", Label("restart-snapshot", "smoke"), 
 
 		By("creating quiet IceCreamOrder resources to build up the git mirror")
 		for _, name := range orderNames {
-			createIceCreamOrder(testNs, name)
+			createIceCreamOrder(crdGroupRestartSnapshot, testNs, name)
 		}
 
 		expectedFiles := make([]string, 0, len(orderNames))
 		for _, name := range orderNames {
 			expectedFiles = append(expectedFiles, filepath.Join(
-				gitTargetPath, "shop.example.com", "v1", "icecreamorders", testNs, name+".yaml",
+				gitTargetPath, iceCreamInstanceDir(crdGroupRestartSnapshot), testNs, name+".yaml",
 			))
 		}
 
@@ -176,10 +180,11 @@ var _ = Describe("Restart Snapshot Safety", Label("restart-snapshot", "smoke"), 
 	})
 })
 
-// createIceCreamOrder applies a minimal IceCreamOrder custom resource.
-func createIceCreamOrder(ns, name string) {
+// createIceCreamOrder applies a minimal IceCreamOrder custom resource for the
+// given CRD group.
+func createIceCreamOrder(group, ns, name string) {
 	By(fmt.Sprintf("creating IceCreamOrder '%s/%s'", ns, name))
-	manifest := fmt.Sprintf(`apiVersion: shop.example.com/v1
+	manifest := fmt.Sprintf(`apiVersion: %s/v1
 kind: IceCreamOrder
 metadata:
   name: %s
@@ -190,7 +195,7 @@ spec:
   scoops:
     - flavor: Vanilla
       quantity: 1
-`, name, ns, name)
+`, group, name, ns, name)
 	_, err := kubectlRunWithStdin(ns, manifest, "apply", "-f", "-")
 	Expect(err).NotTo(HaveOccurred(), "failed to apply IceCreamOrder %s/%s", ns, name)
 }

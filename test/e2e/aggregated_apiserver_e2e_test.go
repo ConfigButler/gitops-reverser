@@ -33,7 +33,10 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
-var _ = Describe("Aggregated API server", Label("aggregated-api"), Ordered, func() {
+// Serial: installs/removes a cluster-scoped APIService (aggregation layer),
+// which perturbs apiserver discovery for every other client while it is in
+// flight. See docs/design/e2e-serial-registry.md.
+var _ = Describe("Aggregated API server", Label("aggregated-api"), Serial, Ordered, func() {
 	var (
 		testNs         string
 		repo           *RepoArtifacts

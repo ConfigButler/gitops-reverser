@@ -72,7 +72,7 @@ var _ = Describe("Manager CRD Lifecycle", Label("manager"), Ordered, func() {
 		_, _ = kubectlRun(
 			"delete",
 			"crd",
-			"icecreamorders.shop.example.com",
+			iceCreamCRDName(crdGroupCRDLifecycle),
 			"--ignore-not-found=true",
 		)
 
@@ -97,7 +97,7 @@ var _ = Describe("Manager CRD Lifecycle", Label("manager"), Ordered, func() {
 	It("should create Git commit when IceCreamOrder CRD is installed via ClusterWatchRule", Label("smoke"), func() {
 		gitProviderName := "gitprovider-normal"
 		clusterWatchRuleName := "clusterwatchrule-crd-install"
-		crdName := "icecreamorders.shop.example.com"
+		crdName := iceCreamCRDName(crdGroupCRDLifecycle)
 
 		By("creating ClusterWatchRule with Cluster scope for CRDs")
 		destName := clusterWatchRuleName + "-dest"
@@ -121,7 +121,7 @@ var _ = Describe("Manager CRD Lifecycle", Label("manager"), Ordered, func() {
 		verifyResourceStatus("gittarget", destName, testNs, "True", "Ready", "")
 
 		By("installing the IceCreamOrder CRD to trigger Git commit")
-		_, err = kubectlRun("apply", "-f", "test/e2e/templates/icecreamorder-crd.yaml")
+		err = applyIceCreamCRD(crdGroupCRDLifecycle)
 		Expect(err).NotTo(HaveOccurred(), "Failed to install CRD")
 
 		By("waiting for CRD to be established")
@@ -151,7 +151,7 @@ var _ = Describe("Manager CRD Lifecycle", Label("manager"), Ordered, func() {
 			// CRDs are cluster-scoped, so path should NOT include namespace
 			expectedFile := filepath.Join(crdLifecycleRepo.CheckoutDir,
 				"e2e/crd-install-test",
-				"apiextensions.k8s.io/v1/customresourcedefinitions/icecreamorders.shop.example.com.yaml")
+				"apiextensions.k8s.io/v1/customresourcedefinitions/"+iceCreamCRDMirrorFile(crdGroupCRDLifecycle))
 			fileInfo, statErr := os.Stat(expectedFile)
 			g.Expect(statErr).NotTo(HaveOccurred(), fmt.Sprintf("CRD file should exist at %s", expectedFile))
 			g.Expect(fileInfo.Size()).To(BeNumerically(">", 0), "CRD file should not be empty")
@@ -161,7 +161,7 @@ var _ = Describe("Manager CRD Lifecycle", Label("manager"), Ordered, func() {
 			g.Expect(readErr).NotTo(HaveOccurred())
 			g.Expect(string(content)).To(ContainSubstring("kind: CustomResourceDefinition"),
 				"File should contain CRD kind")
-			g.Expect(string(content)).To(ContainSubstring("name: icecreamorders.shop.example.com"),
+			g.Expect(string(content)).To(ContainSubstring("name: "+iceCreamCRDName(crdGroupCRDLifecycle)),
 				"File should contain CRD name")
 		}
 		Eventually(verifyGitCommit).
@@ -182,7 +182,7 @@ var _ = Describe("Manager CRD Lifecycle", Label("manager"), Ordered, func() {
 		watchRuleName := "watchrule-icecream-orders"
 
 		By("installing the IceCreamOrder CRD first (needed for custom resource tests)")
-		_, err := kubectlRun("apply", "-f", "test/e2e/templates/icecreamorder-crd.yaml")
+		err := applyIceCreamCRD(crdGroupCRDLifecycle)
 		Expect(err).NotTo(HaveOccurred(), "Failed to install sample CRD")
 
 		By("waiting for CRD to be established")
@@ -190,7 +190,7 @@ var _ = Describe("Manager CRD Lifecycle", Label("manager"), Ordered, func() {
 			output, err := kubectlRun(
 				"get",
 				"crd",
-				"icecreamorders.shop.example.com",
+				iceCreamCRDName(crdGroupCRDLifecycle),
 				"-o",
 				"jsonpath={.status.conditions[?(@.type=='Established')].status}",
 			)
@@ -205,7 +205,7 @@ var _ = Describe("Manager CRD Lifecycle", Label("manager"), Ordered, func() {
 		// event is missed and the next spec sees no file in git. Block until
 		// the resource is actually listable end-to-end.
 		Eventually(func(g Gomega) {
-			_, err := kubectlRun("get", "icecreamorders.shop.example.com", "-A")
+			_, err := kubectlRun("get", iceCreamCRDName(crdGroupCRDLifecycle), "-A")
 			g.Expect(err).NotTo(HaveOccurred(), "icecreamorders must be servable before creating instances")
 		}, 30*time.Second, time.Second).Should(Succeed())
 
@@ -220,10 +220,12 @@ var _ = Describe("Manager CRD Lifecycle", Label("manager"), Ordered, func() {
 			Name            string
 			Namespace       string
 			DestinationName string
+			Group           string
 		}{
 			Name:            watchRuleName,
 			Namespace:       testNs,
 			DestinationName: destName,
+			Group:           crdGroupCRDLifecycle,
 		}
 
 		err2 := applyFromTemplate("test/e2e/templates/watchrule-crd.tmpl", data, testNs)
@@ -246,6 +248,7 @@ var _ = Describe("Manager CRD Lifecycle", Label("manager"), Ordered, func() {
 				Quantity int
 			}
 			Toppings []string
+			Group    string
 		}{
 			Name:      crdInstanceName,
 			Namespace: testNs,
@@ -259,6 +262,7 @@ var _ = Describe("Manager CRD Lifecycle", Label("manager"), Ordered, func() {
 				"kubectl.kubernetes.io/last-applied-configuration": "should-be-filtered",
 				"deployment.kubernetes.io/revision":                "should-also-be-filtered",
 			},
+			Group:        crdGroupCRDLifecycle,
 			CustomerName: "Alice",
 			Container:    "Cone",
 			Scoops: []struct {
@@ -302,7 +306,7 @@ var _ = Describe("Manager CRD Lifecycle", Label("manager"), Ordered, func() {
 
 			expectedFile := filepath.Join(crdLifecycleRepo.CheckoutDir,
 				"e2e/icecream-test",
-				fmt.Sprintf("shop.example.com/v1/icecreamorders/%s/%s.yaml", testNs, crdInstanceName))
+				fmt.Sprintf("%s/%s/%s.yaml", iceCreamInstanceDir(crdGroupCRDLifecycle), testNs, crdInstanceName))
 			fileInfo, statErr := os.Stat(expectedFile)
 			g.Expect(statErr).
 				NotTo(HaveOccurred(), fmt.Sprintf("CRD instance file should exist at %s", expectedFile))
@@ -349,7 +353,7 @@ var _ = Describe("Manager CRD Lifecycle", Label("manager"), Ordered, func() {
 
 		By("verifying the IceCreamOrder still exists before status update")
 		verifyCRDInstanceExists := func(g Gomega) {
-			_, err := kubectlRunInNamespace(testNs, "get", "icecreamorder", crdInstanceName)
+			_, err := kubectlRunInNamespace(testNs, "get", iceCreamCRDName(crdGroupCRDLifecycle), crdInstanceName)
 			g.Expect(err).NotTo(HaveOccurred(), "IceCreamOrder should exist before status patch")
 		}
 		Eventually(verifyCRDInstanceExists, 15*time.Second, time.Second).Should(Succeed())
@@ -359,7 +363,7 @@ var _ = Describe("Manager CRD Lifecycle", Label("manager"), Ordered, func() {
 		statusOutput, statusErr := kubectlRunInNamespace(
 			testNs,
 			"patch",
-			"icecreamorder",
+			iceCreamCRDName(crdGroupCRDLifecycle),
 			crdInstanceName,
 			"--type=merge",
 			"--subresource=status",
@@ -395,7 +399,7 @@ var _ = Describe("Manager CRD Lifecycle", Label("manager"), Ordered, func() {
 			// Read the file again to ensure status is still not present
 			expectedFile := filepath.Join(crdLifecycleRepo.CheckoutDir,
 				"e2e/icecream-test",
-				fmt.Sprintf("shop.example.com/v1/icecreamorders/%s/%s.yaml", testNs, crdInstanceName))
+				fmt.Sprintf("%s/%s/%s.yaml", iceCreamInstanceDir(crdGroupCRDLifecycle), testNs, crdInstanceName))
 			content, readErr := os.ReadFile(expectedFile)
 			g.Expect(readErr).NotTo(HaveOccurred())
 			g.Expect(string(content)).NotTo(ContainSubstring("status:"),
@@ -410,7 +414,7 @@ var _ = Describe("Manager CRD Lifecycle", Label("manager"), Ordered, func() {
 		By("✅ Status update verified - no Git commit created and status not in file")
 
 		By("cleaning up IceCreamOrder instance")
-		_, _ = kubectlRunInNamespace(testNs, "delete", "icecreamorder", crdInstanceName)
+		_, _ = kubectlRunInNamespace(testNs, "delete", iceCreamCRDName(crdGroupCRDLifecycle), crdInstanceName)
 
 		By("Note: GitTarget, WatchRule, GitProvider, and CRD kept for subsequent tests")
 
@@ -436,11 +440,13 @@ var _ = Describe("Manager CRD Lifecycle", Label("manager"), Ordered, func() {
 				Quantity int
 			}
 			Toppings []string
+			Group    string
 		}{
 			Name:         crdInstanceName,
 			Namespace:    testNs,
 			Labels:       nil,
 			Annotations:  nil,
+			Group:        crdGroupCRDLifecycle,
 			CustomerName: "Bob",
 			Container:    "Cup",
 			Scoops: []struct {
@@ -463,7 +469,7 @@ var _ = Describe("Manager CRD Lifecycle", Label("manager"), Ordered, func() {
 
 			expectedFile := filepath.Join(crdLifecycleRepo.CheckoutDir,
 				"e2e/icecream-test",
-				fmt.Sprintf("shop.example.com/v1/icecreamorders/%s/%s.yaml", testNs, crdInstanceName))
+				fmt.Sprintf("%s/%s/%s.yaml", iceCreamInstanceDir(crdGroupCRDLifecycle), testNs, crdInstanceName))
 			content, readErr := os.ReadFile(expectedFile)
 			g.Expect(readErr).NotTo(HaveOccurred())
 			g.Expect(string(content)).To(ContainSubstring("customerName: Bob"))
@@ -484,11 +490,13 @@ var _ = Describe("Manager CRD Lifecycle", Label("manager"), Ordered, func() {
 				Quantity int
 			}
 			Toppings []string
+			Group    string
 		}{
 			Name:         crdInstanceName,
 			Namespace:    testNs,
 			Labels:       nil,
 			Annotations:  nil,
+			Group:        crdGroupCRDLifecycle,
 			CustomerName: "Bob",
 			Container:    "WaffleBowl",
 			Scoops: []struct {
@@ -512,7 +520,7 @@ var _ = Describe("Manager CRD Lifecycle", Label("manager"), Ordered, func() {
 
 			expectedFile := filepath.Join(crdLifecycleRepo.CheckoutDir,
 				"e2e/icecream-test",
-				fmt.Sprintf("shop.example.com/v1/icecreamorders/%s/%s.yaml", testNs, crdInstanceName))
+				fmt.Sprintf("%s/%s/%s.yaml", iceCreamInstanceDir(crdGroupCRDLifecycle), testNs, crdInstanceName))
 			content, readErr := os.ReadFile(expectedFile)
 			g.Expect(readErr).NotTo(HaveOccurred())
 			g.Expect(string(content)).To(ContainSubstring("container: WaffleBowl"),
@@ -525,7 +533,7 @@ var _ = Describe("Manager CRD Lifecycle", Label("manager"), Ordered, func() {
 		Eventually(verifyUpdatedFile).Should(Succeed())
 
 		By("cleaning up IceCreamOrder instance")
-		_, _ = kubectlRunInNamespace(testNs, "delete", "icecreamorder", crdInstanceName)
+		_, _ = kubectlRunInNamespace(testNs, "delete", iceCreamCRDName(crdGroupCRDLifecycle), crdInstanceName)
 
 		By("Note: GitTarget, WatchRule, GitProvider, and CRD kept for subsequent tests")
 
@@ -551,11 +559,13 @@ var _ = Describe("Manager CRD Lifecycle", Label("manager"), Ordered, func() {
 				Quantity int
 			}
 			Toppings []string
+			Group    string
 		}{
 			Name:         crdInstanceName,
 			Namespace:    testNs,
 			Labels:       nil,
 			Annotations:  nil,
+			Group:        crdGroupCRDLifecycle,
 			CustomerName: "Charlie",
 			Container:    "Cone",
 			Scoops: []struct {
@@ -578,7 +588,7 @@ var _ = Describe("Manager CRD Lifecycle", Label("manager"), Ordered, func() {
 
 			expectedFile := filepath.Join(crdLifecycleRepo.CheckoutDir,
 				"e2e/icecream-test",
-				fmt.Sprintf("shop.example.com/v1/icecreamorders/%s/%s.yaml", testNs, crdInstanceName))
+				fmt.Sprintf("%s/%s/%s.yaml", iceCreamInstanceDir(crdGroupCRDLifecycle), testNs, crdInstanceName))
 			fileInfo, statErr := os.Stat(expectedFile)
 			g.Expect(statErr).
 				NotTo(HaveOccurred(), fmt.Sprintf("CRD instance file should exist at %s", expectedFile))
@@ -589,7 +599,7 @@ var _ = Describe("Manager CRD Lifecycle", Label("manager"), Ordered, func() {
 		Eventually(verifyFileCreated, 60*time.Second, 2*time.Second).Should(Succeed())
 
 		By("deleting the CR to trigger DELETE operation")
-		_, err = kubectlRunInNamespace(testNs, "delete", "icecreamorder", crdInstanceName)
+		_, err = kubectlRunInNamespace(testNs, "delete", iceCreamCRDName(crdGroupCRDLifecycle), crdInstanceName)
 		Expect(err).NotTo(HaveOccurred(), "CRD instance deletion should succeed")
 
 		By("verifying CRD instance file is deleted from Git repository")
@@ -600,7 +610,7 @@ var _ = Describe("Manager CRD Lifecycle", Label("manager"), Ordered, func() {
 
 			expectedFile := filepath.Join(crdLifecycleRepo.CheckoutDir,
 				"e2e/icecream-test",
-				fmt.Sprintf("shop.example.com/v1/icecreamorders/%s/%s.yaml", testNs, crdInstanceName))
+				fmt.Sprintf("%s/%s/%s.yaml", iceCreamInstanceDir(crdGroupCRDLifecycle), testNs, crdInstanceName))
 			_, statErr := os.Stat(expectedFile)
 			g.Expect(statErr).
 				To(HaveOccurred(), fmt.Sprintf("CRD instance file should NOT exist at %s", expectedFile))
@@ -624,7 +634,7 @@ var _ = Describe("Manager CRD Lifecycle", Label("manager"), Ordered, func() {
 	It("should delete Git file when IceCreamOrder CRD is deleted via ClusterWatchRule", func() {
 		gitProviderName := "gitprovider-normal"
 		clusterWatchRuleName := "clusterwatchrule-crd-delete"
-		crdName := "icecreamorders.shop.example.com"
+		crdName := iceCreamCRDName(crdGroupCRDLifecycle)
 
 		By("creating ClusterWatchRule with Cluster scope for CRDs")
 		destName := clusterWatchRuleName + "-dest"
@@ -656,7 +666,7 @@ var _ = Describe("Manager CRD Lifecycle", Label("manager"), Ordered, func() {
 
 			expectedFile := filepath.Join(crdLifecycleRepo.CheckoutDir,
 				"e2e/crd-delete-test",
-				"apiextensions.k8s.io/v1/customresourcedefinitions/icecreamorders.shop.example.com.yaml")
+				"apiextensions.k8s.io/v1/customresourcedefinitions/"+iceCreamCRDMirrorFile(crdGroupCRDLifecycle))
 			_, statErr := os.Stat(expectedFile)
 			g.Expect(statErr).NotTo(HaveOccurred(), "CRD file should exist before deletion")
 		}
@@ -673,7 +683,7 @@ var _ = Describe("Manager CRD Lifecycle", Label("manager"), Ordered, func() {
 
 			expectedFile := filepath.Join(crdLifecycleRepo.CheckoutDir,
 				"e2e/crd-delete-test",
-				"apiextensions.k8s.io/v1/customresourcedefinitions/icecreamorders.shop.example.com.yaml")
+				"apiextensions.k8s.io/v1/customresourcedefinitions/"+iceCreamCRDMirrorFile(crdGroupCRDLifecycle))
 			_, statErr := os.Stat(expectedFile)
 			g.Expect(statErr).To(HaveOccurred(), "CRD file should NOT exist after deletion")
 			g.Expect(os.IsNotExist(statErr)).To(BeTrue(), "Error should be 'file does not exist'")
@@ -696,7 +706,7 @@ var _ = Describe("Manager CRD Lifecycle", Label("manager"), Ordered, func() {
 
 			expectedFile := filepath.Join(crdLifecycleRepo.CheckoutDir,
 				"e2e/crd-delete-test",
-				"apiextensions.k8s.io/v1/customresourcedefinitions/icecreamorders.shop.example.com.yaml")
+				"apiextensions.k8s.io/v1/customresourcedefinitions/"+iceCreamCRDMirrorFile(crdGroupCRDLifecycle))
 			_, statErr := os.Stat(expectedFile)
 			g.Expect(statErr).To(HaveOccurred(), "CRD file must stay deleted after CRD termination updates")
 			g.Expect(os.IsNotExist(statErr)).To(BeTrue(), "CRD file must not reappear in Git")

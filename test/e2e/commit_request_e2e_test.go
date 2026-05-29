@@ -36,7 +36,10 @@ import (
 // a deliberately long commitWindow so that, without the CommitRequest, the
 // edit would not be committed for minutes — observing the commit promptly is
 // what proves the commit-request path works.
-var _ = Describe("Commit Request", Label("commit-request", "audit-redis", "smoke"), Ordered, func() {
+// Serial: shares the single global audit pipeline (audit webhook → Redis stream
+// → consumer) with every other audit-redis spec. See
+// docs/design/e2e-serial-registry.md.
+var _ = Describe("Commit Request", Label("commit-request", "audit-redis", "smoke"), Serial, Ordered, func() {
 	var (
 		testNs        string
 		gitProvName   string

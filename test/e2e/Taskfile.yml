@@ -93,6 +93,10 @@ vars:
   FLUX_WAIT_TIMEOUT: '{{.FLUX_WAIT_TIMEOUT | default "500s"}}'
   FLUX_SERVICES_WAIT_TIMEOUT: '{{.FLUX_SERVICES_WAIT_TIMEOUT | default "600s"}}'
   E2E_GO_TEST_TIMEOUT: '{{.E2E_GO_TEST_TIMEOUT | default "15m"}}'
+  # Number of parallel Ginkgo processes for the e2e suite. >1 enables Ginkgo
+  # parallelism (Phase 2.5 of docs/design/e2e-speedup-plan.md). Files that touch
+  # shared cluster-scoped state are marked Serial (see docs/design/e2e-serial-registry.md).
+  E2E_GINKGO_PROCS: '{{.E2E_GINKGO_PROCS | default "2"}}'
   FLUX_SERVICES_DIR: '{{.FLUX_SERVICES_DIR | default "test/e2e/setup/flux"}}'
   DEMO_MANIFESTS_DIR: 'test/e2e/setup/demo-only'
   DEMO_TUNNEL_CREDENTIALS: '{{.DEMO_MANIFESTS_DIR}}/cloudflared-public/tunnel-credentials.yaml'
@@ -172,8 +176,15 @@ tasks:
         export INSTALL_MODE="{{.INSTALL_MODE}}"
         export NAMESPACE="{{.NAMESPACE}}"
         export E2E_AGE_KEY_FILE="{{.CS}}/age-key.txt"
-        go test -timeout "{{.E2E_GO_TEST_TIMEOUT}}" ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=smoke \
-          -ginkgo.json-report="{{.CS}}/{{.NAMESPACE}}/ginkgo-report-smoke.json"
+        # Ginkgo parallelism (--procs) is orchestrated by the ginkgo CLI, not by
+        # `go test`. Run it via `go run` so the CLI version matches the pinned
+        # github.com/onsi/ginkgo/v2 module (a globally-installed ginkgo can differ
+        # and refuse to run on a version mismatch).
+        go run github.com/onsi/ginkgo/v2/ginkgo \
+          --procs={{.E2E_GINKGO_PROCS}} --timeout="{{.E2E_GO_TEST_TIMEOUT}}" -v \
+          --label-filter=smoke \
+          --output-dir="{{.CS}}/{{.NAMESPACE}}" --json-report=ginkgo-report-smoke.json \
+          ./test/e2e/
 
   test-e2e-full:
     desc: Run the full e2e suite, including slow and specialized scenarios
@@ -187,8 +198,10 @@ tasks:
         export INSTALL_MODE="{{.INSTALL_MODE}}"
         export NAMESPACE="{{.NAMESPACE}}"
         export E2E_AGE_KEY_FILE="{{.CS}}/age-key.txt"
-        go test -timeout "{{.E2E_FULL_TIMEOUT}}" ./test/e2e/ -v -ginkgo.v \
-          -ginkgo.json-report="{{.CS}}/{{.NAMESPACE}}/ginkgo-report-full.json"
+        go run github.com/onsi/ginkgo/v2/ginkgo \
+          --procs={{.E2E_GINKGO_PROCS}} --timeout="{{.E2E_FULL_TIMEOUT}}" -v \
+          --output-dir="{{.CS}}/{{.NAMESPACE}}" --json-report=ginkgo-report-full.json \
+          ./test/e2e/
 
   test-e2e-manager:
     desc: Run manager-focused e2e scenarios
@@ -198,8 +211,11 @@ tasks:
         export INSTALL_MODE="{{.INSTALL_MODE}}"
         export NAMESPACE="{{.NAMESPACE}}"
         export E2E_AGE_KEY_FILE="{{.CS}}/age-key.txt"
-        go test -timeout "{{.E2E_GO_TEST_TIMEOUT}}" ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=manager \
-          -ginkgo.json-report="{{.CS}}/{{.NAMESPACE}}/ginkgo-report-manager.json"
+        go run github.com/onsi/ginkgo/v2/ginkgo \
+          --procs={{.E2E_GINKGO_PROCS}} --timeout="{{.E2E_GO_TEST_TIMEOUT}}" -v \
+          --label-filter=manager \
+          --output-dir="{{.CS}}/{{.NAMESPACE}}" --json-report=ginkgo-report-manager.json \
+          ./test/e2e/
 
   test-e2e-signing:
     desc: Run commit-signing e2e scenarios

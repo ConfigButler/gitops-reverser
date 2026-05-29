@@ -35,131 +35,135 @@ import (
 // and one push. The audit-redis consumer pipeline is the real path under test
 // — events flow kubectl → audit webhook → Valkey stream → consumer →
 // BranchWorker.commitGroups → BranchWorker.pushPendingCommits.
-var _ = Describe("Commit Window Batching", Label("commit-window-batching", "audit-redis", "smoke"), Ordered, func() {
-	var (
-		testNs        string
-		gitProvName   string
-		gitTargetName string
-		watchRuleName string
-	)
-
-	const commitWindow = "3s"
-
-	BeforeAll(func() {
-		By("creating commit-window-batching test namespace and applying git secrets")
-		testNs = testNamespaceFor("commit-window-batching")
-		_, _ = kubectlRun("create", "namespace", testNs)
-		repo := ensureAuditRedisRepo()
-		_, err := kubectlRunInNamespace(testNs, "apply", "-f", repo.SecretsYAML)
-		Expect(err).NotTo(HaveOccurred(), "failed to apply git secrets to namespace")
-		applySOPSAgeKeyToNamespace(testNs)
-
-		seed := GinkgoRandomSeed()
-		gitProvName = fmt.Sprintf("commit-window-gitprovider-%d", seed)
-		gitTargetName = fmt.Sprintf("commit-window-gittarget-%d", seed)
-		watchRuleName = fmt.Sprintf("commit-window-watchrule-%d", seed)
-
-		By(fmt.Sprintf("creating GitProvider with commitWindow=%s", commitWindow))
-		createGitProviderWithCommitWindow(
-			gitProvName,
-			testNs,
-			repo.GitSecretHTTP,
-			repo.RepoURLHTTP,
-			commitWindow,
+// Serial: shares the single global audit pipeline (audit webhook → Redis stream
+// → consumer) with every other audit-redis spec. See
+// docs/design/e2e-serial-registry.md.
+var _ = Describe("Commit Window Batching",
+	Label("commit-window-batching", "audit-redis", "smoke"), Serial, Ordered, func() {
+		var (
+			testNs        string
+			gitProvName   string
+			gitTargetName string
+			watchRuleName string
 		)
-		verifyResourceStatus("gitprovider", gitProvName, testNs, "True", "Ready", "")
 
-		createGitTarget(gitTargetName, testNs, gitProvName, "e2e/commit-window-test", "main")
-		verifyResourceStatus("gittarget", gitTargetName, testNs, "True", "Ready", "")
+		const commitWindow = "3s"
 
-		watchRuleData := struct {
-			Name            string
-			Namespace       string
-			DestinationName string
-		}{
-			Name:            watchRuleName,
-			Namespace:       testNs,
-			DestinationName: gitTargetName,
-		}
-		err = applyFromTemplate("test/e2e/templates/manager/watchrule-configmap.tmpl", watchRuleData, testNs)
-		Expect(err).NotTo(HaveOccurred(), "failed to apply WatchRule")
-		verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Ready", "")
-	})
+		BeforeAll(func() {
+			By("creating commit-window-batching test namespace and applying git secrets")
+			testNs = testNamespaceFor("commit-window-batching")
+			_, _ = kubectlRun("create", "namespace", testNs)
+			repo := ensureAuditRedisRepo()
+			_, err := kubectlRunInNamespace(testNs, "apply", "-f", repo.SecretsYAML)
+			Expect(err).NotTo(HaveOccurred(), "failed to apply git secrets to namespace")
+			applySOPSAgeKeyToNamespace(testNs)
 
-	AfterAll(func() {
-		cleanupWatchRule(watchRuleName, testNs)
-		cleanupGitTarget(gitTargetName, testNs)
-		cleanupNamespacedResource(testNs, "gitprovider", gitProvName)
-		cleanupNamespace(testNs)
-	})
+			seed := GinkgoRandomSeed()
+			gitProvName = fmt.Sprintf("commit-window-gitprovider-%d", seed)
+			gitTargetName = fmt.Sprintf("commit-window-gittarget-%d", seed)
+			watchRuleName = fmt.Sprintf("commit-window-watchrule-%d", seed)
 
-	It("collapses a burst of events into one grouped commit and one push", func() {
-		const burstSize = 4
+			By(fmt.Sprintf("creating GitProvider with commitWindow=%s", commitWindow))
+			createGitProviderWithCommitWindow(
+				gitProvName,
+				testNs,
+				repo.GitSecretHTTP,
+				repo.RepoURLHTTP,
+				commitWindow,
+			)
+			verifyResourceStatus("gitprovider", gitProvName, testNs, "True", "Ready", "")
 
-		repo := auditRedisRepo
-		basePath := "e2e/commit-window-test"
-		seed := GinkgoRandomSeed()
-		burstPrefix := fmt.Sprintf("commit-window-burst-%d", seed)
+			createGitTarget(gitTargetName, testNs, gitProvName, "e2e/commit-window-test", "main")
+			verifyResourceStatus("gittarget", gitTargetName, testNs, "True", "Ready", "")
 
-		// Seed: ensure the repo has at least one commit for this target so
-		// commit-count math is meaningful and not racing against bootstrap.
-		seedCM := fmt.Sprintf("%s-seed", burstPrefix)
-		applyConfigMap(testNs, seedCM)
-		Eventually(func(g Gomega) {
-			pullLatestRepoState(g, repo.CheckoutDir)
-			expected := filepath.Join(repo.CheckoutDir, basePath,
-				"v1", "configmaps", testNs, seedCM+".yaml")
-			_, statErr := os.Stat(expected)
-			g.Expect(statErr).NotTo(HaveOccurred(),
-				fmt.Sprintf("seed ConfigMap should land before the burst: %s", expected))
-		}, 90*time.Second, 2*time.Second).Should(Succeed())
+			watchRuleData := struct {
+				Name            string
+				Namespace       string
+				DestinationName string
+			}{
+				Name:            watchRuleName,
+				Namespace:       testNs,
+				DestinationName: gitTargetName,
+			}
+			err = applyFromTemplate("test/e2e/templates/manager/watchrule-configmap.tmpl", watchRuleData, testNs)
+			Expect(err).NotTo(HaveOccurred(), "failed to apply WatchRule")
+			verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Ready", "")
+		})
 
-		commitsBefore := mustCommitCount(repo.CheckoutDir)
+		AfterAll(func() {
+			cleanupWatchRule(watchRuleName, testNs)
+			cleanupGitTarget(gitTargetName, testNs)
+			cleanupNamespacedResource(testNs, "gitprovider", gitProvName)
+			cleanupNamespace(testNs)
+		})
 
-		By(fmt.Sprintf("creating %d ConfigMaps in rapid succession", burstSize))
-		burstStart := time.Now()
-		burstNames := make([]string, burstSize)
-		for i := range burstSize {
-			name := fmt.Sprintf("%s-%d", burstPrefix, i)
-			burstNames[i] = name
-			applyConfigMap(testNs, name)
-		}
-		burstSubmitted := time.Since(burstStart)
-		// Burst must fit comfortably inside the commit window so the
-		// batching property is what we are actually exercising.
-		Expect(burstSubmitted).To(BeNumerically("<", 2*time.Second),
-			"burst should be submitted faster than the commit window")
+		It("collapses a burst of events into one grouped commit and one push", func() {
+			const burstSize = 4
 
-		By("waiting for every burst ConfigMap to land in the repository")
-		Eventually(func(g Gomega) {
-			pullLatestRepoState(g, repo.CheckoutDir)
-			for _, name := range burstNames {
+			repo := auditRedisRepo
+			basePath := "e2e/commit-window-test"
+			seed := GinkgoRandomSeed()
+			burstPrefix := fmt.Sprintf("commit-window-burst-%d", seed)
+
+			// Seed: ensure the repo has at least one commit for this target so
+			// commit-count math is meaningful and not racing against bootstrap.
+			seedCM := fmt.Sprintf("%s-seed", burstPrefix)
+			applyConfigMap(testNs, seedCM)
+			Eventually(func(g Gomega) {
+				pullLatestRepoState(g, repo.CheckoutDir)
 				expected := filepath.Join(repo.CheckoutDir, basePath,
-					"v1", "configmaps", testNs, name+".yaml")
+					"v1", "configmaps", testNs, seedCM+".yaml")
 				_, statErr := os.Stat(expected)
 				g.Expect(statErr).NotTo(HaveOccurred(),
-					fmt.Sprintf("ConfigMap file should exist: %s", expected))
+					fmt.Sprintf("seed ConfigMap should land before the burst: %s", expected))
+			}, 90*time.Second, 2*time.Second).Should(Succeed())
+
+			commitsBefore := mustCommitCount(repo.CheckoutDir)
+
+			By(fmt.Sprintf("creating %d ConfigMaps in rapid succession", burstSize))
+			burstStart := time.Now()
+			burstNames := make([]string, burstSize)
+			for i := range burstSize {
+				name := fmt.Sprintf("%s-%d", burstPrefix, i)
+				burstNames[i] = name
+				applyConfigMap(testNs, name)
 			}
-		}, 90*time.Second, 2*time.Second).Should(Succeed())
+			burstSubmitted := time.Since(burstStart)
+			// Burst must fit comfortably inside the commit window so the
+			// batching property is what we are actually exercising.
+			Expect(burstSubmitted).To(BeNumerically("<", 2*time.Second),
+				"burst should be submitted faster than the commit window")
 
-		commitsAfter := mustCommitCount(repo.CheckoutDir)
-		commitsAdded := commitsAfter - commitsBefore
+			By("waiting for every burst ConfigMap to land in the repository")
+			Eventually(func(g Gomega) {
+				pullLatestRepoState(g, repo.CheckoutDir)
+				for _, name := range burstNames {
+					expected := filepath.Join(repo.CheckoutDir, basePath,
+						"v1", "configmaps", testNs, name+".yaml")
+					_, statErr := os.Stat(expected)
+					g.Expect(statErr).NotTo(HaveOccurred(),
+						fmt.Sprintf("ConfigMap file should exist: %s", expected))
+				}
+			}, 90*time.Second, 2*time.Second).Should(Succeed())
 
-		// Phase 3 groups same-author events in the window into one commit. The
-		// batching property is observable as one new remote commit touching the
-		// whole burst after the commitWindow expires.
-		Expect(commitsAdded).To(Equal(1),
-			fmt.Sprintf("expected 1 grouped commit for the burst, got %d", commitsAdded))
+			commitsAfter := mustCommitCount(repo.CheckoutDir)
+			commitsAdded := commitsAfter - commitsBefore
 
-		assertBurstFilesAreGroupedIntoLatestCommit(repo.CheckoutDir, burstNames, basePath, testNs)
+			// Phase 3 groups same-author events in the window into one commit. The
+			// batching property is observable as one new remote commit touching the
+			// whole burst after the commitWindow expires.
+			Expect(commitsAdded).To(Equal(1),
+				fmt.Sprintf("expected 1 grouped commit for the burst, got %d", commitsAdded))
 
-		By("cleaning up burst ConfigMaps")
-		for _, name := range burstNames {
-			_, _ = kubectlRunInNamespace(testNs, "delete", "configmap", name, "--ignore-not-found=true")
-		}
-		_, _ = kubectlRunInNamespace(testNs, "delete", "configmap", seedCM, "--ignore-not-found=true")
+			assertBurstFilesAreGroupedIntoLatestCommit(repo.CheckoutDir, burstNames, basePath, testNs)
+
+			By("cleaning up burst ConfigMaps")
+			for _, name := range burstNames {
+				_, _ = kubectlRunInNamespace(testNs, "delete", "configmap", name, "--ignore-not-found=true")
+			}
+			_, _ = kubectlRunInNamespace(testNs, "delete", "configmap", seedCM, "--ignore-not-found=true")
+		})
 	})
-})
 
 // applyConfigMap renders the standard manager configmap template and applies
 // it. The template carries the ConfigMap data the burst-event audit pipeline
