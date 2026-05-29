@@ -744,7 +744,10 @@ var _ = Describe("Manager WatchRule ConfigMap and Secret", Label("manager"), Ord
 			g.Expect(string(logOutput)).To(ContainSubstring("DELETE"),
 				"Git log should contain DELETE operation")
 		}
-		Eventually(verifyFileDeleted).Should(Succeed())
+		// 60s (vs the 30s default) tolerates a busier shared controller under
+		// Ginkgo parallelism: the DELETE commit can lag when other processes are
+		// driving reconciles concurrently.
+		Eventually(verifyFileDeleted, 60*time.Second, 2*time.Second).Should(Succeed())
 
 		By("cleaning up test resources")
 		cleanupWatchRule(watchRuleName, testNs)

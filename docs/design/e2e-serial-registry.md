@@ -28,6 +28,7 @@ row below.
 | [test/e2e/audit_redis_e2e_test.go](../../test/e2e/audit_redis_e2e_test.go) | `Audit Redis Queue`, `Audit Redis Consumer` | The single global audit pipeline: audit webhook → shared Redis stream → consumer. | The consumer is a cluster-wide singleton processing one shared stream; these specs assert on commit *exclusivity*, which any concurrent audit traffic violates. |
 | [test/e2e/commit_window_batching_e2e_test.go](../../test/e2e/commit_window_batching_e2e_test.go) | `Commit Window Batching` | Same global audit pipeline (labelled `audit-redis`). | Bursts of ConfigMap events flow through the shared stream/consumer and leak into other audit specs' commits. |
 | [test/e2e/commit_request_e2e_test.go](../../test/e2e/commit_request_e2e_test.go) | `Commit Request` | Same global audit pipeline (labelled `audit-redis`). | Shares the stream/consumer; commit-window/queue semantics interleave under concurrency. |
+| [test/e2e/bi_directional_e2e_test.go](../../test/e2e/bi_directional_e2e_test.go) | `Bi Directional` | Whole-cluster Flux↔gitops-reverser round-trip; asserts on **exact** remote commit counts to prove no commit loop. | Any concurrent controller activity adds/reorders commits and breaks the exact-count loop assertions. Passes sequentially; +2 commits only under parallelism. |
 
 ## Watched, but intentionally NOT Serial
 

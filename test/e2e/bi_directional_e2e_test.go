@@ -95,7 +95,12 @@ type iceCreamScoop struct {
 // biDirectionalRepo holds the file-local repo fixtures for the Bi Directional describe block.
 var biDirectionalRepo *RepoArtifacts
 
-var _ = Describe("Bi Directional", Label("bi-directional"), Ordered, func() {
+// Serial: a whole-cluster bidirectional behavioral test (Flux applies from git
+// while gitops-reverser mirrors live state back) that asserts on *exact* commit
+// counts to prove no commit loop. Concurrent controller activity from other
+// processes perturbs those counts. Passes sequentially; +2 commits only under
+// parallelism. See docs/design/e2e-serial-registry.md.
+var _ = Describe("Bi Directional", Label("bi-directional"), Serial, Ordered, func() {
 	var run biDirectionalRun
 	var testNs string
 
