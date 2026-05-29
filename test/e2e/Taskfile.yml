@@ -93,6 +93,10 @@ vars:
   FLUX_WAIT_TIMEOUT: '{{.FLUX_WAIT_TIMEOUT | default "500s"}}'
   FLUX_SERVICES_WAIT_TIMEOUT: '{{.FLUX_SERVICES_WAIT_TIMEOUT | default "600s"}}'
   E2E_GO_TEST_TIMEOUT: '{{.E2E_GO_TEST_TIMEOUT | default "15m"}}'
+  # Number of parallel Ginkgo processes for the e2e suite. >1 enables Ginkgo
+  # parallelism (Phase 2.5 of docs/design/e2e-speedup-plan.md). Files that touch
+  # shared cluster-scoped state are marked Serial (see docs/design/e2e-serial-registry.md).
+  E2E_GINKGO_PROCS: '{{.E2E_GINKGO_PROCS | default "2"}}'
   FLUX_SERVICES_DIR: '{{.FLUX_SERVICES_DIR | default "test/e2e/setup/flux"}}'
   DEMO_MANIFESTS_DIR: 'test/e2e/setup/demo-only'
   DEMO_TUNNEL_CREDENTIALS: '{{.DEMO_MANIFESTS_DIR}}/cloudflared-public/tunnel-credentials.yaml'
@@ -105,16 +109,11 @@ vars:
 tasks:
   prepare-e2e:
     desc: Prepare E2E prerequisites for Go tests
+    # portforward-ensure runs *after* _prepare-e2e-ready, not in parallel
+    # with it: _webhook-tls-ready inside the prepare graph restarts the
+    # k3d server node, which would kill any kubectl port-forwards started
+    # concurrently with it.
     cmds:
-      - task: install
-      - task: _project-image-ready
-      - task: _image-loaded
-      - task: _controller-deployed
-      - task: _age-key
-      - task: _sops-secret-yaml
-      - task: _sops-secret-applied
-      - task: _webhook-tls-ready
-      - task: _aggregated-api-ready
       - task: _prepare-e2e-ready
       - task: portforward-ensure
 
@@ -126,11 +125,9 @@ tasks:
 
   portforward-ensure:
     desc: Ensure port-forwards are running
+    deps:
+      - _services-ready
     cmds:
-      - task: _cluster-ready
-      - task: _flux-installed
-      - task: _flux-setup-ready
-      - task: _services-ready
       - |
         export E2E_KUBECONTEXT="{{.CTX}}"
         export GITEA_PORT="{{.GITEA_PORT}}"
@@ -142,54 +139,34 @@ tasks:
   install:
     desc: Install using the configured INSTALL_MODE
     cmds:
+      # Validate INSTALL_MODE before dispatching. The actual dispatch uses
+      # in-process task: invocation so the full dependency graph stays in
+      # one go-task run (the previous shell-subprocess form lost CTX and
+      # other task vars when not also exported as env).
       - |
         case "{{.INSTALL_MODE}}" in
-          helm)
-            task install-helm
-            ;;
-          plain-manifests-file)
-            task install-plain-manifests-file
-            ;;
-          config-dir)
-            task install-config-dir
-            ;;
+          helm|config-dir|plain-manifests-file) ;;
           *)
             echo "ERROR: INSTALL_MODE must be one of [config-dir helm plain-manifests-file]" >&2
             exit 2
             ;;
         esac
+      - task: 'install-{{.INSTALL_MODE}}'
 
   install-helm:
-    deps: 
-      - helm-sync
     desc: Install via Helm
-    cmds:
-      - task: _cluster-ready
-      - task: _flux-installed
-      - task: _flux-setup-ready
-      - task: _services-ready
-      - task: _install-helm
+    deps:
+      - _install-helm
 
   install-plain-manifests-file:
     desc: Install via dist/install.yaml
     deps:
-      - dist-install
-    cmds:
-      - task: _cluster-ready
-      - task: _flux-installed
-      - task: _flux-setup-ready
-      - task: _services-ready
-      - task: _install-plain-manifests-file
+      - _install-plain-manifests-file
 
   install-config-dir:
     desc: Install via config directory
-    cmds:
-      - task: _cluster-ready
-      - task: _flux-installed
-      - task: _flux-setup-ready
-      - task: _services-ready
-      - task: manifests
-      - task: _install-config-dir
+    deps:
+      - _install-config-dir
 
   test-e2e:
     desc: Run the smoke e2e suite
@@ -199,17 +176,32 @@ tasks:
         export INSTALL_MODE="{{.INSTALL_MODE}}"
         export NAMESPACE="{{.NAMESPACE}}"
         export E2E_AGE_KEY_FILE="{{.CS}}/age-key.txt"
-        go test -timeout "{{.E2E_GO_TEST_TIMEOUT}}" ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=smoke
+        # Ginkgo parallelism (--procs) is orchestrated by the ginkgo CLI, not by
+        # `go test`. Run it via `go run` so the CLI version matches the pinned
+        # github.com/onsi/ginkgo/v2 module (a globally-installed ginkgo can differ
+        # and refuse to run on a version mismatch).
+        go run github.com/onsi/ginkgo/v2/ginkgo \
+          --procs={{.E2E_GINKGO_PROCS}} --timeout="{{.E2E_GO_TEST_TIMEOUT}}" -v \
+          --label-filter=smoke \
+          --output-dir="{{.CS}}/{{.NAMESPACE}}" --json-report=ginkgo-report-smoke.json \
+          ./test/e2e/
 
   test-e2e-full:
     desc: Run the full e2e suite, including slow and specialized scenarios
+    vars:
+      # 47 specs at ~22s avg + ~6m cold prepare ≈ 25m; the smoke-tuned 15m default
+      # times out mid-run and gives a goroutine dump instead of a useful report.
+      E2E_FULL_TIMEOUT: '{{.E2E_FULL_TIMEOUT | default "30m"}}'
     cmds:
       - |
         export CTX="{{.CTX}}"
         export INSTALL_MODE="{{.INSTALL_MODE}}"
         export NAMESPACE="{{.NAMESPACE}}"
         export E2E_AGE_KEY_FILE="{{.CS}}/age-key.txt"
-        go test -timeout "{{.E2E_GO_TEST_TIMEOUT}}" ./test/e2e/ -v -ginkgo.v
+        go run github.com/onsi/ginkgo/v2/ginkgo \
+          --procs={{.E2E_GINKGO_PROCS}} --timeout="{{.E2E_FULL_TIMEOUT}}" -v \
+          --output-dir="{{.CS}}/{{.NAMESPACE}}" --json-report=ginkgo-report-full.json \
+          ./test/e2e/
 
   test-e2e-manager:
     desc: Run manager-focused e2e scenarios
@@ -219,7 +211,11 @@ tasks:
         export INSTALL_MODE="{{.INSTALL_MODE}}"
         export NAMESPACE="{{.NAMESPACE}}"
         export E2E_AGE_KEY_FILE="{{.CS}}/age-key.txt"
-        go test -timeout "{{.E2E_GO_TEST_TIMEOUT}}" ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=manager
+        go run github.com/onsi/ginkgo/v2/ginkgo \
+          --procs={{.E2E_GINKGO_PROCS}} --timeout="{{.E2E_GO_TEST_TIMEOUT}}" -v \
+          --label-filter=manager \
+          --output-dir="{{.CS}}/{{.NAMESPACE}}" --json-report=ginkgo-report-manager.json \
+          ./test/e2e/
 
   test-e2e-signing:
     desc: Run commit-signing e2e scenarios
@@ -229,7 +225,8 @@ tasks:
         export INSTALL_MODE="{{.INSTALL_MODE}}"
         export NAMESPACE="{{.NAMESPACE}}"
         export E2E_AGE_KEY_FILE="{{.CS}}/age-key.txt"
-        go test -timeout "{{.E2E_GO_TEST_TIMEOUT}}" ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=signing
+        go test -timeout "{{.E2E_GO_TEST_TIMEOUT}}" ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=signing \
+          -ginkgo.json-report="{{.CS}}/{{.NAMESPACE}}/ginkgo-report-signing.json"
 
   test-image-refresh:
     desc: Validate the image-refresh dependency chain
@@ -239,7 +236,8 @@ tasks:
         export INSTALL_MODE="{{.INSTALL_MODE}}"
         export NAMESPACE="{{.NAMESPACE}}"
         export E2E_AGE_KEY_FILE="{{.CS}}/age-key.txt"
-        go test -timeout "{{.E2E_GO_TEST_TIMEOUT}}" ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=image-refresh
+        go test -timeout "{{.E2E_GO_TEST_TIMEOUT}}" ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=image-refresh \
+          -ginkgo.json-report="{{.CS}}/{{.NAMESPACE}}/ginkgo-report-image-refresh.json"
 
   test-e2e-quickstart-helm:
     desc: Run quickstart smoke test with Helm install
@@ -251,7 +249,8 @@ tasks:
         export E2E_ENABLE_QUICKSTART_FRAMEWORK=true
         export E2E_QUICKSTART_MODE=helm
         export E2E_AGE_KEY_FILE="{{.CS}}/age-key.txt"
-        go test -timeout "{{.E2E_GO_TEST_TIMEOUT}}" ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=quickstart-framework
+        go test -timeout "{{.E2E_GO_TEST_TIMEOUT}}" ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=quickstart-framework \
+          -ginkgo.json-report="{{.CS}}/{{.NAMESPACE}}/ginkgo-report-quickstart-helm.json"
 
   test-e2e-quickstart-manifest:
     desc: Run quickstart smoke test with manifest install
@@ -263,7 +262,8 @@ tasks:
         export E2E_ENABLE_QUICKSTART_FRAMEWORK=true
         export E2E_QUICKSTART_MODE=plain-manifests-file
         export E2E_AGE_KEY_FILE="{{.CS}}/age-key.txt"
-        go test -timeout "{{.E2E_GO_TEST_TIMEOUT}}" ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=quickstart-framework
+        go test -timeout "{{.E2E_GO_TEST_TIMEOUT}}" ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=quickstart-framework \
+          -ginkgo.json-report="{{.CS}}/{{.NAMESPACE}}/ginkgo-report-quickstart-manifest.json"
 
   playground-bootstrap:
     desc: Bootstrap a reusable repo-backed playground
@@ -443,7 +443,8 @@ tasks:
         export INSTALL_MODE="{{.INSTALL_MODE}}"
         export NAMESPACE="{{.NAMESPACE}}"
         export E2E_AGE_KEY_FILE="{{.CS}}/age-key.txt"
-        go test -timeout "{{.E2E_GO_TEST_TIMEOUT}}" ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=audit-redis
+        go test -timeout "{{.E2E_GO_TEST_TIMEOUT}}" ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=audit-redis \
+          -ginkgo.json-report="{{.CS}}/{{.NAMESPACE}}/ginkgo-report-audit-redis.json"
 
   test-e2e-aggregated-api:
     desc: Run aggregated API server e2e scenarios
@@ -453,8 +454,11 @@ tasks:
         export INSTALL_MODE="{{.INSTALL_MODE}}"
         export NAMESPACE="{{.NAMESPACE}}"
         export E2E_AGE_KEY_FILE="{{.CS}}/age-key.txt"
-        go test -timeout "{{.E2E_GO_TEST_TIMEOUT}}" ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=aggregated-api
+        go test -timeout "{{.E2E_GO_TEST_TIMEOUT}}" ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=aggregated-api \
+          -ginkgo.json-report="{{.CS}}/{{.NAMESPACE}}/ginkgo-report-aggregated-api.json"
 
+  # test-e2e-demo intentionally has no -ginkgo.json-report flag: this target
+  # is a demo-setup runner, not a measurable test suite.
   test-e2e-demo:
     desc: Prepare a reusable demo repo and leave demo resources in place
     cmds:
@@ -568,6 +572,8 @@ tasks:
 
   _flux-installed:
     method: timestamp
+    deps:
+      - _cluster-ready
     sources:
       - '{{.CS}}/ready'
       - '{{.FLUX_OPERATOR_DIR}}/**/*.yaml'
@@ -583,7 +589,6 @@ tasks:
           -n "{{.FLUX_NAMESPACE}}" \
           get fluxinstance "{{.FLUX_INSTANCE_NAME}}" >/dev/null
     cmds:
-      - task: _cluster-ready
       - |
         {{.FLUX_OPERATOR}} install \
           --kube-context "{{.CTX}}" \
@@ -615,6 +620,8 @@ tasks:
 
   _flux-setup-ready:
     method: timestamp
+    deps:
+      - _flux-installed
     sources:
       - '{{.CS}}/flux.installed'
       - '{{.FLUX_SERVICES_DIR}}/**/*'
@@ -623,7 +630,6 @@ tasks:
     status:
       - test -f "{{.CS}}/flux-setup.ready"
     cmds:
-      - task: _flux-installed
       - |
         kubectl --context "{{.CTX}}" apply -k "{{.FLUX_SERVICES_DIR}}"
         CTX="{{.CTX}}" FLUX_SERVICES_WAIT_TIMEOUT="{{.FLUX_SERVICES_WAIT_TIMEOUT}}" \
@@ -632,6 +638,8 @@ tasks:
 
   _services-ready:
     method: timestamp
+    deps:
+      - _flux-setup-ready
     sources:
       - '{{.CS}}/flux-setup.ready'
       - 'test/e2e/setup/manifests/**/*.yaml'
@@ -640,7 +648,6 @@ tasks:
     status:
       - test -f "{{.CS}}/services.ready"
     cmds:
-      - task: _flux-setup-ready
       - |
         kubectl --context "{{.CTX}}" wait --for=condition=Established \
           crd/prometheuses.monitoring.coreos.com \
@@ -689,6 +696,8 @@ tasks:
 
   _project-image-ready-local:
     method: timestamp
+    deps:
+      - _controller-image-id
     sources:
       - '{{.IS}}/controller.id'
     generates:
@@ -697,7 +706,6 @@ tasks:
       - test -f "{{.IS}}/project-image.ready"
       - test "$(<"{{.IS}}/project-image.ready")" = "{{.PROJECT_IMAGE}}"
     cmds:
-      - task: _controller-image-id
       - mkdir -p "{{.IS}}"
       - printf '%s\n' "{{.PROJECT_IMAGE}}" > "{{.IS}}/project-image.ready"
 
@@ -716,17 +724,17 @@ tasks:
         printf '%s\n' "{{.PROJECT_IMAGE}}" > "{{.IS}}/project-image.ready"
 
   _project-image-ready:
+    # In-process dispatch so the leaf task runs inside the same go-task
+    # graph as its caller — preserves CTX and lets it run in parallel with
+    # the cluster/Flux chain via deps on _image-loaded.
     cmds:
-      - |
-        if [ -n "{{.PROJECT_IMAGE_PROVIDED}}" ]; then
-          task _project-image-ready-provided
-        else
-          task _controller-image-id
-          task _project-image-ready-local
-        fi
+      - task: '{{if .PROJECT_IMAGE_PROVIDED}}_project-image-ready-provided{{else}}_project-image-ready-local{{end}}'
 
   _image-loaded:
     method: timestamp
+    deps:
+      - _cluster-ready
+      - _project-image-ready
     sources:
       - '{{.CS}}/ready'
       - '{{.IS}}/project-image.ready'
@@ -735,7 +743,6 @@ tasks:
     status:
       - test -f "{{.CS}}/image.loaded"
     cmds:
-      - task: _cluster-ready
       - mkdir -p "{{.CS}}"
       - |
         CTX="{{.CTX}}" CLUSTER_NAME="{{.CLUSTER_NAME}}" PROJECT_IMAGE="{{.PROJECT_IMAGE}}" \
@@ -745,7 +752,39 @@ tasks:
           CONTAINER_TOOL="{{.CONTAINER_TOOL}}" K3D="{{.K3D}}" STAMP_FILE="{{.CS}}/image.loaded" \
           bash hack/e2e/load-image.sh
 
+  _install-cleanup:
+    # Wipe prior install state so a new install mode can take over cleanly.
+    # Runs cleanup-installs.sh, which deletes any existing install.yaml-owned
+    # resources, drops the install namespace, and rm -rf's every stamp under
+    # .stamps/cluster/<ctx>/<ns>/ except git-* fixtures.
+    #
+    # This used to live inline at the top of every _install-<mode> task. As
+    # its own DAG node it can be a parallel-safe prerequisite for both the
+    # active _install-<mode> and for tasks like _sops-secret-yaml that write
+    # into the same namespace dir.
+    #
+    # Status: if the install.yaml for the *current* INSTALL_MODE already
+    # exists we're either warm or just re-running the same mode, and the
+    # in-place apply/upgrade does not need a wipe. Cleanup is only required
+    # when switching modes or on a brand-new CTX where the file is missing.
+    method: timestamp
+    deps:
+      - _cluster-ready
+    generates:
+      - '{{.CS}}/install-cleanup.done'
+    status:
+      - test -f "{{.CS}}/{{.NAMESPACE}}/{{.INSTALL_MODE}}/install.yaml"
+    cmds:
+      - |
+        CTX="{{.CTX}}" KUBECTL="{{.KUBECTL}}" bash hack/cleanup-installs.sh
+        mkdir -p "{{.CS}}"
+        touch "{{.CS}}/install-cleanup.done"
+
   _install-helm:
+    deps:
+      - _services-ready
+      - helm-sync
+      - _install-cleanup
     sources:
       - '{{.CS}}/services.ready'
       - charts/gitops-reverser/Chart.yaml
@@ -757,7 +796,6 @@ tasks:
       - '{{.CS}}/{{.NAMESPACE}}/helm/install.yaml'
     cmds:
       - |
-        CTX="{{.CTX}}" KUBECTL="{{.KUBECTL}}" bash hack/cleanup-installs.sh
         mkdir -p "{{.CS}}/{{.NAMESPACE}}/helm"
         skip_crds_arg=""
         if kubectl --context "{{.CTX}}" get crd \
@@ -789,6 +827,10 @@ tasks:
         fi
 
   _install-config-dir:
+    deps:
+      - _services-ready
+      - manifests
+      - _install-cleanup
     sources:
       - '{{.CS}}/services.ready'
       - config/**/*
@@ -796,7 +838,6 @@ tasks:
       - '{{.CS}}/{{.NAMESPACE}}/config-dir/install.yaml'
     cmds:
       - |
-        CTX="{{.CTX}}" KUBECTL="{{.KUBECTL}}" bash hack/cleanup-installs.sh
         mkdir -p "{{.CS}}/{{.NAMESPACE}}/config-dir"
         CTX="{{.CTX}}" NAMESPACE="{{.NAMESPACE}}" PROJECT_IMAGE="{{.PROJECT_IMAGE}}" \
           E2E_VALKEY_PASSWORD="{{.E2E_VALKEY_PASSWORD}}" \
@@ -806,6 +847,10 @@ tasks:
 
   _install-plain-manifests-file:
     method: timestamp
+    deps:
+      - _services-ready
+      - dist-install
+      - _install-cleanup
     sources:
       - '{{.CS}}/services.ready'
       - dist/install.yaml
@@ -813,7 +858,6 @@ tasks:
       - '{{.CS}}/{{.NAMESPACE}}/plain-manifests-file/install.yaml'
     cmds:
       - |
-        CTX="{{.CTX}}" KUBECTL="{{.KUBECTL}}" bash hack/cleanup-installs.sh
         mkdir -p "{{.CS}}/{{.NAMESPACE}}/plain-manifests-file"
         CTX="{{.CTX}}" NAMESPACE="{{.NAMESPACE}}" E2E_VALKEY_PASSWORD="{{.E2E_VALKEY_PASSWORD}}" \
           bash hack/e2e/ensure-valkey-auth.sh
@@ -827,6 +871,9 @@ tasks:
 
   _controller-deployed:
     method: timestamp
+    deps:
+      - install
+      - _image-loaded
     sources:
       - '{{.CS}}/{{.NAMESPACE}}/{{.INSTALL_MODE}}/install.yaml'
       - '{{.CS}}/image.loaded'
@@ -850,6 +897,8 @@ tasks:
 
   _webhook-tls-ready:
     method: timestamp
+    deps:
+      - _controller-deployed
     sources:
       - '{{.CS}}/{{.NAMESPACE}}/controller.deployed'
     generates:
@@ -865,6 +914,9 @@ tasks:
 
   _aggregated-api-webhook-kubeconfig-ready:
     method: timestamp
+    deps:
+      - _services-ready
+      - _webhook-tls-ready
     sources:
       - '{{.CS}}/services.ready'
       - '{{.CS}}/{{.NAMESPACE}}/webhook-tls.ready'
@@ -875,8 +927,6 @@ tasks:
     status:
       - test -f "{{.CS}}/aggregated-api-webhook-kubeconfig.ready"
     cmds:
-      - task: _services-ready
-      - task: _webhook-tls-ready
       - |
         CTX="{{.CTX}}" NAMESPACE="{{.NAMESPACE}}" PROXY_NAMESPACE="aggregated-api" \
           bash hack/e2e/prepare-aggregated-api-webhook-kubeconfig.sh
@@ -884,6 +934,8 @@ tasks:
 
   _aggregated-api-ready:
     method: timestamp
+    deps:
+      - _aggregated-api-webhook-kubeconfig-ready
     sources:
       - '{{.CS}}/services.ready'
       - '{{.CS}}/aggregated-api-webhook-kubeconfig.ready'
@@ -893,8 +945,6 @@ tasks:
     status:
       - test -f "{{.CS}}/aggregated-api.ready"
     cmds:
-      - task: _services-ready
-      - task: _aggregated-api-webhook-kubeconfig-ready
       - |
         kubectl --context "{{.CTX}}" -n aggregated-api wait certificate/audit-pass-through-proxy-serving-cert \
           --for=condition=Ready --timeout=180s
@@ -934,6 +984,15 @@ tasks:
 
   _sops-secret-yaml:
     method: timestamp
+    # _install-cleanup runs first: it wipes everything under
+    # .stamps/cluster/<ctx>/<ns>/ except git-* fixtures, including this
+    # task's output. Without this dep, status: was evaluated in parallel
+    # with the cleanup, found a stale file from a prior run, reported "up
+    # to date", and then _sops-secret-applied tried to kubectl apply a
+    # file the cleanup had just deleted.
+    deps:
+      - _age-key
+      - _install-cleanup
     sources:
       - '{{.CS}}/age-key.txt'
       - test/e2e/tools/gen-age-key/main.go
@@ -958,6 +1017,9 @@ tasks:
 
   _sops-secret-applied:
     method: timestamp
+    deps:
+      - _sops-secret-yaml
+      - install
     sources:
       - '{{.CS}}/{{.NAMESPACE}}/sops-secret.yaml'
       - '{{.CS}}/{{.NAMESPACE}}/{{.INSTALL_MODE}}/install.yaml'
@@ -972,6 +1034,11 @@ tasks:
 
   _prepare-e2e-ready:
     method: timestamp
+    deps:
+      - _controller-deployed
+      - _webhook-tls-ready
+      - _sops-secret-applied
+      - _aggregated-api-ready
     sources:
       - '{{.CS}}/{{.NAMESPACE}}/{{.INSTALL_MODE}}/install.yaml'
       - '{{.CS}}/image.loaded'

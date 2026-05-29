@@ -47,7 +47,11 @@ func TestE2E(t *testing.T) {
 	RunSpecs(t, "e2e suite")
 }
 
-var _ = BeforeSuite(func() {
+// SynchronizedBeforeSuite splits bootstrap into work that must happen exactly
+// once (the Task prepare flow and the cluster-scoped CRD pre-cleanup, run on
+// parallel process #1) and per-process configuration (the E2E_AGE_KEY_FILE
+// fallback, which relies on os.Setenv and therefore must run in every process).
+var _ = SynchronizedBeforeSuite(func() []byte {
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			markSuiteWidePreservation("BeforeSuite failed")
@@ -62,14 +66,20 @@ var _ = BeforeSuite(func() {
 	}
 
 	By("preparing e2e cluster prerequisites via Task target")
-	ensureE2EPrepared()
+	prepareE2EClusterOnce()
+	return nil
+}, func(_ []byte) {
+	configureE2EProcess()
 })
 
 var _ = AfterEach(func() {
 	dumpFailureDiagnostics()
 })
 
-func ensureE2EPrepared() {
+// prepareE2EClusterOnce runs the expensive, cluster-mutating bootstrap exactly
+// once (parallel process #1): the Task prepare flow plus the cluster-scoped CRD
+// pre-cleanup. It is safe to run concurrently with nothing else.
+func prepareE2EClusterOnce() {
 	ctx := resolveE2EContext()
 	setE2EKubectlContext(ctx)
 	ns := resolveE2ENamespace()
@@ -93,20 +103,35 @@ func ensureE2EPrepared() {
 	Expect(err).NotTo(HaveOccurred(), "failed to set kubectl context for e2e run")
 	_, _ = fmt.Fprintf(GinkgoWriter, "%s", output)
 
-	By("ensuring IceCreamOrder CRD is removed before tests")
-	output, err = kubectlRun(
-		"delete", "crd", "icecreamorders.shop.example.com",
-		"--ignore-not-found=true",
-	)
-	Expect(err).NotTo(HaveOccurred(), "failed to delete IceCreamOrder CRD before tests")
-	_, _ = fmt.Fprintf(GinkgoWriter, "%s", output)
+	// Each CRD-installing e2e file now owns its own IceCreamOrder CRD group
+	// (see test/e2e/icecream.go). Remove all of them, plus the legacy shared
+	// group, so a warm/reused cluster starts clean.
+	By("ensuring IceCreamOrder CRDs are removed before tests")
+	for _, group := range []string{
+		crdGroupCRDLifecycle,
+		crdGroupRestartSnapshot,
+		crdGroupBiDirectional,
+		"shop.example.com", // legacy pre-isolation group
+	} {
+		output, err = kubectlRun(
+			"delete", "crd", iceCreamCRDName(group),
+			"--ignore-not-found=true",
+		)
+		Expect(err).NotTo(HaveOccurred(),
+			"failed to delete IceCreamOrder CRD %q before tests", iceCreamCRDName(group))
+		_, _ = fmt.Fprintf(GinkgoWriter, "%s", output)
+	}
+}
 
-	// The Task prepare flow writes the age key under the stamp directory. When running `go test` directly
-	// (without `task test-e2e`), ensure the suite uses that prepared key file.
+// configureE2EProcess runs in every parallel process. The Task prepare flow
+// writes the age key under the stamp directory; when running `go test` directly
+// (without `task test-e2e`), point the suite at that prepared key file. This
+// relies on os.Setenv, so it must run per-process rather than once.
+func configureE2EProcess() {
 	if strings.TrimSpace(os.Getenv("E2E_AGE_KEY_FILE")) == "" {
 		wd, err := os.Getwd()
 		Expect(err).NotTo(HaveOccurred(), "failed to get working directory for e2e run")
-		ageKeyPath := filepath.Join(wd, ".stamps", "cluster", ctx, "age-key.txt")
+		ageKeyPath := filepath.Join(wd, ".stamps", "cluster", resolveE2EContext(), "age-key.txt")
 		Expect(os.Setenv("E2E_AGE_KEY_FILE", ageKeyPath)).To(Succeed())
 	}
 }

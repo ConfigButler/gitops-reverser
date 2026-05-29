@@ -13,6 +13,6 @@ spec:
   # restart snapshots an empty cluster and deletes the whole tracked tree.
   - scope: Namespaced
     operations: [CREATE, UPDATE, DELETE]
-    apiGroups: ["shop.example.com"]
+    apiGroups: ["{{ .Group }}"]
     apiVersions: ["*"]
     resources: ["icecreamorders"]

@@ -95,7 +95,12 @@ type iceCreamScoop struct {
 // biDirectionalRepo holds the file-local repo fixtures for the Bi Directional describe block.
 var biDirectionalRepo *RepoArtifacts
 
-var _ = Describe("Bi Directional", Label("bi-directional"), Ordered, func() {
+// Serial: a whole-cluster bidirectional behavioral test (Flux applies from git
+// while gitops-reverser mirrors live state back) that asserts on *exact* commit
+// counts to prove no commit loop. Concurrent controller activity from other
+// processes perturbs those counts. Passes sequentially; +2 commits only under
+// parallelism. See docs/design/e2e-serial-registry.md.
+var _ = Describe("Bi Directional", Label("bi-directional"), Serial, Ordered, func() {
 	var run biDirectionalRun
 	var testNs string
 
@@ -127,7 +132,7 @@ var _ = Describe("Bi Directional", Label("bi-directional"), Ordered, func() {
 		// Namespace deletion is enough for ordinary namespaced leftovers like test Secrets and
 		// IceCreamOrder instances. Keep explicit cleanup only for Flux resources and cluster-scoped
 		// resources that live outside the test namespace.
-		cleanupClusterResource("crd", "icecreamorders.shop.example.com")
+		cleanupClusterResource("crd", iceCreamCRDName(crdGroupBiDirectional))
 		cleanupNamespace(testNs)
 	})
 
@@ -167,10 +172,12 @@ var _ = Describe("Bi Directional", Label("bi-directional"), Ordered, func() {
 			Name            string
 			Namespace       string
 			DestinationName string
+			Group           string
 		}{
 			Name:            run.watchRuleName,
 			Namespace:       testNs,
 			DestinationName: run.gitTargetName,
+			Group:           crdGroupBiDirectional,
 		}, testNs)
 		Expect(err).NotTo(HaveOccurred(), "failed to apply bi-directional WatchRule")
 		verifyResourceStatus("gitprovider", run.gitProviderName, testNs, "True", "Ready", "")
@@ -217,7 +224,7 @@ var _ = Describe("Bi Directional", Label("bi-directional"), Ordered, func() {
 		_, err = kubectlRunInNamespace(
 			testNs,
 			"patch",
-			"icecreamorder",
+			iceCreamCRDName(crdGroupBiDirectional),
 			run.firstOrderName,
 			"--type=merge",
 			"--patch",
@@ -377,7 +384,7 @@ func (r biDirectionalRun) waitForCRDEstablished() {
 		output, err := kubectlRun(
 			"get",
 			"crd",
-			"icecreamorders.shop.example.com",
+			iceCreamCRDName(crdGroupBiDirectional),
 			"-o",
 			"jsonpath={.status.conditions[?(@.type=='Established')].status}",
 		)
@@ -394,9 +401,7 @@ func (r biDirectionalRun) repoPath(parts ...string) string {
 func (r biDirectionalRun) liveOrderPath(name string) string {
 	return r.repoPath(
 		r.livePath,
-		"shop.example.com",
-		"v1",
-		"icecreamorders",
+		iceCreamInstanceDir(crdGroupBiDirectional),
 		r.testNs,
 		name+".yaml",
 	)
@@ -413,8 +418,11 @@ func (r biDirectionalRun) liveSecretPath(name string) string {
 }
 
 func (r biDirectionalRun) writeCRDToRepo() {
-	content, err := os.ReadFile("test/e2e/templates/icecreamorder-crd.yaml")
-	Expect(err).NotTo(HaveOccurred(), "failed to read IceCreamOrder CRD fixture")
+	content, err := renderTemplate(
+		"test/e2e/templates/icecreamorder-crd.tmpl",
+		struct{ Group string }{Group: crdGroupBiDirectional},
+	)
+	Expect(err).NotTo(HaveOccurred(), "failed to render IceCreamOrder CRD fixture")
 	Expect(
 		os.MkdirAll(
 			r.repoPath(r.crdPath, "apiextensions.k8s.io", "v1", "customresourcedefinitions"),
@@ -428,9 +436,9 @@ func (r biDirectionalRun) writeCRDToRepo() {
 				"apiextensions.k8s.io",
 				"v1",
 				"customresourcedefinitions",
-				"icecreamorders.shop.example.com.yaml",
+				iceCreamCRDMirrorFile(crdGroupBiDirectional),
 			),
-			content,
+			[]byte(content),
 			0o644,
 		),
 	).To(Succeed())
@@ -446,6 +454,7 @@ func (r biDirectionalRun) writeLiveOrder(order iceCreamOrderFile) {
 		Container    string
 		Scoops       []iceCreamScoop
 		Toppings     []string
+		Group        string
 	}{
 		Name:         order.Name,
 		Namespace:    order.Namespace,
@@ -455,6 +464,7 @@ func (r biDirectionalRun) writeLiveOrder(order iceCreamOrderFile) {
 		Container:    order.Container,
 		Scoops:       order.Scoops,
 		Toppings:     order.Toppings,
+		Group:        crdGroupBiDirectional,
 	})
 	Expect(err).NotTo(HaveOccurred(), "failed to render IceCreamOrder manifest")
 	Expect(os.MkdirAll(filepath.Dir(r.liveOrderPath(order.Name)), 0o755)).To(Succeed())
@@ -831,7 +841,7 @@ func (r biDirectionalRun) waitForOrderSpec(name, container, flavor, topping stri
 		output, err := kubectlRunInNamespace(
 			r.testNs,
 			"get",
-			"icecreamorder",
+			iceCreamCRDName(crdGroupBiDirectional),
 			name,
 			"-o",
 			"json",
@@ -1039,7 +1049,7 @@ func (r biDirectionalRun) waitForSecretValue(name, key, expectedValue string) {
 
 func (r biDirectionalRun) waitForOrderDeleted(name string) {
 	Eventually(func(g Gomega) {
-		_, err := kubectlRunInNamespace(r.testNs, "get", "icecreamorder", name, "-o", "json")
+		_, err := kubectlRunInNamespace(r.testNs, "get", iceCreamCRDName(crdGroupBiDirectional), name, "-o", "json")
 		g.Expect(err).To(HaveOccurred())
 		g.Expect(strings.ToLower(err.Error())).To(ContainSubstring("not found"))
 	}, biEventuallyTimeout, biPollInterval).Should(Succeed())

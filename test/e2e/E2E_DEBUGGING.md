@@ -126,6 +126,33 @@ Kind Cluster
        └─ Controller pods (2 replicas, HTTPS metrics)
 ```
 
+## Spec Timings
+
+Every e2e target writes a Ginkgo JSON report to
+`.stamps/cluster/<ctx>/<namespace>/ginkgo-report-<suite>.json` (e.g.
+`ginkgo-report-smoke.json` for `task test-e2e`). Render the per-spec
+duration table from the latest run with:
+
+```bash
+go run ./test/e2e/tools/spec-timings \
+  .stamps/cluster/k3d-gitops-reverser-test-e2e/gitops-reverser/ginkgo-report-smoke.json
+```
+
+The companion `test/e2e/tools/ts` reads stdin and prefixes each line with
+elapsed seconds + wallclock. Useful for decorating cold-run logs that
+don't have structured JSON yet:
+
+```bash
+task test-e2e 2>&1 | go run ./test/e2e/tools/ts | tee /tmp/e2e.log
+```
+
+If output looks batched (long pauses then a burst of timestamps), prefix
+with `stdbuf -oL -eL` to force line-buffering on `task`/`go test`:
+
+```bash
+stdbuf -oL -eL task test-e2e 2>&1 | go run ./test/e2e/tools/ts | tee /tmp/e2e.log
+```
+
 ## Debugging Failed Tests
 
 1. **Ensure port-forwards are running:**

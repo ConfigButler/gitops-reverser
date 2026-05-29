@@ -66,7 +66,10 @@ func ensureAuditRedisRepo() *RepoArtifacts {
 	return auditRedisRepo
 }
 
-var _ = Describe("Audit Redis Queue", Label("audit-redis", "smoke"), Ordered, func() {
+// Serial: shares the single global audit pipeline (audit webhook → Redis stream
+// → consumer) with every other audit-redis spec; concurrent audit traffic
+// pollutes its exclusivity assertions. See docs/design/e2e-serial-registry.md.
+var _ = Describe("Audit Redis Queue", Label("audit-redis", "smoke"), Serial, Ordered, func() {
 	var testNs string
 
 	BeforeAll(func() {
@@ -160,7 +163,9 @@ var _ = Describe("Audit Redis Queue", Label("audit-redis", "smoke"), Ordered, fu
 
 // auditConsumerDescribe holds the consumer-path e2e test.
 // Label: audit-redis (runs together with the producer test via task test-e2e-audit-redis).
-var _ = Describe("Audit Redis Consumer", Label("audit-redis", "smoke"), Ordered, func() {
+// Serial: shares the single global audit pipeline with every other audit-redis
+// spec. See docs/design/e2e-serial-registry.md.
+var _ = Describe("Audit Redis Consumer", Label("audit-redis", "smoke"), Serial, Ordered, func() {
 	var (
 		testNs        string
 		valkeyClient  *redis.Client

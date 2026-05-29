@@ -184,7 +184,7 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 				g.Expect(rawObj).To(ContainSubstring("-----BEGIN SSH SIGNATURE-----"),
 					"commit should carry an SSH signature")
 				commitHash = h
-			}, "60s", "3s").Should(Succeed())
+			}, "90s", "3s").Should(Succeed())
 
 			By("verifying the commit locally with ssh-keygen and git verify-commit")
 			assertLocalSSHVerification(signingRepo.CheckoutDir, commitHash, signingPublicKey, committerEmail)
@@ -306,7 +306,7 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 			g.Expect(rawErr).NotTo(HaveOccurred())
 			g.Expect(rawObj).To(ContainSubstring("-----BEGIN SSH SIGNATURE-----"))
 			commitHash = h
-		}, "60s", "3s").Should(Succeed())
+		}, "90s", "3s").Should(Succeed())
 
 		By("verifying the BYOK commit locally")
 		assertLocalSSHVerification(signingRepo.CheckoutDir, commitHash, publicKeyStr, committerEmail)
@@ -387,7 +387,10 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 			g.Expect(parts[1]).To(Equal(customEmail), "committer email should match configured value")
 			g.Expect(parts[2]).To(HavePrefix("e2e:"), "commit subject should use custom template prefix")
 			g.Expect(parts[2]).To(ContainSubstring("configmaps"), "commit subject should include resource type")
-		}, "60s", "3s").Should(Succeed())
+			// 90s: signing does the slowest per-event work (commit + SSH sign +
+			// push); under Ginkgo parallelism the shared controller can push this
+			// past 60s on a contended run.
+		}, "90s", "3s").Should(Succeed())
 	})
 
 	// ── Test 4: batch/atomic commit uses batch message template ─────────────
