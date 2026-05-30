@@ -464,13 +464,32 @@ correctness and the single biggest spec, `Restart Snapshot Safety`
 (~128 s), is Serial and untouched until Phase 3. Smoke's ~16 % is the
 honest gain today; the bigger win is Phase 3.
 
-**⚠️ Open problem — CI is flaky at `procs=2` (the only thing blocking
-merge).** On the stock `ubuntu-latest` GitHub runners the single
+**Resolution for merge — CI full is sequential, local remains parallel
+(2026-05-30).** On the stock `ubuntu-latest` GitHub runners the single
 controller is **CPU-starved** under two concurrent test streams plus its
 own CPU-heavy SSH-signing/git work. Symptom: a *different* spec times out
 each run (crd_lifecycle WatchRule readiness; watchrule "create"; signing —
 the last failed even at a 90 s wait, i.e. genuine starvation, not a tight
-timeout). It is **not** a logic bug — local is consistently green.
+timeout). The follow-up run after 3 agents also failed during setup while
+waiting for `helmrelease/kro`, so the blocking CI signal is broader than
+spec logic: runner/resource pressure plus external chart/registry
+readiness.
+
+GitHub API throttling was checked with `gh api rate_limit` and was not the
+limiting factor (4967/5000 core requests remaining at review time). The
+workflow now uploads any Ginkgo JSON reports and writes a per-spec timing
+summary to the GitHub job summary so build-server timings are visible.
+
+Applied fallback:
+
+- CI **E2E (full)** sets `E2E_GINKGO_PROCS=1`.
+- Local/default `task test-e2e*` remains `E2E_GINKGO_PROCS=2`.
+- k3d local/default agents remain 3 for `procs=2`; CI passes
+  `K3D_AGENT_COUNT=1` because the full job is sequential.
+- Warm k3d cluster reuse now verifies the expected node count and Ready
+  condition instead of trusting `kubectl get ns` plus stamps.
+
+History that led here:
 Progression tried:
 - 1 agent → red.
 - **2 agents** (`1294814`) → E2E (full) went **green once**, then **red**
@@ -482,35 +501,13 @@ Progression tried:
   consecutive green reruns before we trust it. The 3→1 drop was originally
   due to `fs.inotify.max_user_instances` (default 128) exhaustion; that is
   now mitigated to 512 by `ensure_inotify_limits`, so 1 server + 3 agents
-  is safe. Confirmed the suite uses a **single** cluster (the
+  is possible but no longer the CI default. Confirmed the suite uses a **single** cluster (the
   `audit-pass-through-e2e` cluster seen locally is an unrelated leftover).
 
-**▶ Resume Monday — do this:**
-
-1. Check the 3-agent result:
-   `gh pr view 159 --json statusCheckRollup,mergeable`. Look at
-   **E2E (full)**.
-2. **If green:** re-run it 1–2× to confirm it's stable, not lucky
-   (`gh run rerun <run-id>` after it completes, or push a trivial change).
-   If stable → Phase 2.5 is **done**; merge #159.
-3. **If still flaky (likely):** apply the agreed fallback — set
-   `E2E_GINKGO_PROCS=1` for the **CI E2E (full) job only** in
-   [.github/workflows/ci.yml](../../.github/workflows/ci.yml) (the `e2e`
-   job, `full` matrix entry, ~L262–280; add `E2E_GINKGO_PROCS: 1` to that
-   job/step env or prefix the `task test-e2e-full` script). This keeps the
-   local/agent `procs=2` speedup while giving CI the reliable sequential
-   behaviour (pre-2.5). All Phase 2.5 isolation work still ships and is
-   correct. Then push, confirm green, merge. (Alternative if CI speedup is
-   wanted: move the e2e job to a larger runner with real CPU for
-   `procs=2` — needs larger-runner access/quota.)
-4. **Consider reverting the agent bump to 2** (`1294814`) and dropping
-   `b7a00b4` if CI goes to `procs=1`: with sequential CI, 1 agent is
-   enough and fewer nodes = less runner pressure. Keep the higher agent
-   count only if CI stays at `procs=2`.
-5. Then start **Phase 3** (below) on a *separate* branch — it touches
-   production controller code (`internal/telemetry` + `internal/watch`)
-   and cuts the Serial `Restart Snapshot Safety` spec (~128 s, the
-   dominant remaining cost).
+**Next after merge:** start **Phase 3** (below) on a *separate* branch —
+it touches production controller code (`internal/telemetry` +
+`internal/watch`) and cuts the Serial `Restart Snapshot Safety` spec
+(~128 s, the dominant remaining cost).
 
 ### Phase 3 — Target-scoped reconcile-complete + drain signal for `Restart Snapshot Safety`
 

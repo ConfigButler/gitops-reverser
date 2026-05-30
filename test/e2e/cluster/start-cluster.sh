@@ -11,6 +11,7 @@ DISABLE_K3S_TRAEFIK="${DISABLE_K3S_TRAEFIK:-true}"
 DISABLE_K3S_SERVICELB="${DISABLE_K3S_SERVICELB:-true}"
 KUBE_APISERVER_MAX_REQUESTS_INFLIGHT="${KUBE_APISERVER_MAX_REQUESTS_INFLIGHT:-800}"
 KUBE_APISERVER_MAX_MUTATING_REQUESTS_INFLIGHT="${KUBE_APISERVER_MAX_MUTATING_REQUESTS_INFLIGHT:-400}"
+K3D_AGENT_COUNT="${K3D_AGENT_COUNT:-3}"
 AUDIT_DIR_REL="${AUDIT_DIR_REL:-test/e2e/cluster/audit}"
 K3D_CREATE_LOG_FILE="${TMPDIR:-/tmp}/k3d-create-${CLUSTER_NAME}.log"
 REPO_PWD="$(pwd -P)"
@@ -74,7 +75,41 @@ cluster_is_healthy() {
         return 1
     fi
 
-    kubectl --context "${context_name}" --request-timeout=10s get ns >/dev/null 2>&1
+    kubectl --context "${context_name}" --request-timeout=10s get ns >/dev/null 2>&1 || return 1
+
+    local expected_nodes
+    expected_nodes="$((K3D_AGENT_COUNT + 1))"
+    kubectl --context "${context_name}" --request-timeout=10s get nodes \
+        -o jsonpath='{range .items[*]}{.metadata.name}{" "}{range .status.conditions[?(@.type=="Ready")]}{.status}{end}{"\n"}{end}' \
+        2>/dev/null \
+        | awk -v expected="${expected_nodes}" '
+            BEGIN { total = 0; ready = 0 }
+            NF >= 2 {
+                total++
+                if ($2 == "True") {
+                    ready++
+                }
+            }
+            END {
+                exit !(total == expected && ready == expected)
+            }
+        '
+}
+
+wait_cluster_healthy() {
+    local context_name attempt
+    context_name="$(cluster_context_name)"
+
+    for attempt in $(seq 1 60); do
+        if cluster_is_healthy; then
+            return 0
+        fi
+        sleep 2
+    done
+
+    echo "Current node status for ${context_name}:" >&2
+    kubectl --context "${context_name}" get nodes -o wide >&2 || true
+    return 1
 }
 ensure_k3d_stat_compat_path() {
     local host_project_path="$1"
@@ -172,14 +207,7 @@ create_cluster() {
       k3d cluster create "${CLUSTER_NAME}"
       --image rancher/k3s:v1.35.2-k3s1
       --servers 1
-      # 3 agents spread the per-test pods across more worker nodes so the
-      # controller (which does CPU-heavy SSH signing + git work) is less likely
-      # to be co-located with — and starved by — a heavy test pod under Ginkgo
-      # parallelism (E2E_GINKGO_PROCS>1). This was dropped to 1 when 1+3 nodes
-      # exhausted the default fs.inotify.max_user_instances (128); the cause is
-      # now mitigated by ensure_inotify_limits raising that to 512, which leaves
-      # ample headroom for 4 nodes.
-      --agents 3
+      --agents "${K3D_AGENT_COUNT}"
       --kubeconfig-update-default
       --kubeconfig-switch-context
       -v "${audit_host_dir}:/etc/kubernetes/audit@server:0"
@@ -270,7 +298,7 @@ main() {
     merge_kubeconfig
     rewrite_kubeconfig_for_devcontainer
 
-    if ! cluster_is_healthy; then
+    if ! wait_cluster_healthy; then
         echo "❌ Existing k3d cluster '${CLUSTER_NAME}' is unhealthy." >&2
         echo "Refusing to auto-recreate it because cluster-scoped stamps may now be inconsistent." >&2
         echo "" >&2
