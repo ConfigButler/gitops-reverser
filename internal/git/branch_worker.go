@@ -28,12 +28,15 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	gogit "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/go-logr/logr"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -124,6 +127,13 @@ type BranchWorker struct {
 
 	// firsts surfaces the first successful commit and push at default verbosity.
 	firsts branchWorkerLogFirsts
+
+	// hasUnpushedWork mirrors whether the event loop is currently holding a live
+	// open window or any committed-but-not-yet-pushed pending writes. The event
+	// loop is the only writer; recordQueueDepth (callable from enqueue goroutines)
+	// is the only other reader, hence the atomic. It lets the depth gauge account
+	// for in-flight work the channel length alone cannot see.
+	hasUnpushedWork atomic.Bool
 }
 
 // branchWorkerLogFirsts logs the first successful commit and push of a worker's
@@ -249,6 +259,7 @@ func (w *BranchWorker) EnqueueFinalize(signal *FinalizeSignal) {
 	select {
 	case w.eventQueue <- WorkItem{Finalize: signal}:
 		w.Log.V(1).Info("Finalize signal enqueued")
+		w.recordQueueDepth()
 	default:
 		w.Log.Error(nil, "Event queue full, finalize signal dropped")
 		signal.reply(FinalizeResult{Branch: w.Branch, Err: ErrFinalizeQueueFull})
@@ -266,12 +277,38 @@ func (w *BranchWorker) enqueueRequest(request *WriteRequest) {
 			"events", len(request.Events),
 			"mode", request.CommitMode,
 			"gitTarget", request.GitTargetName)
+		w.recordQueueDepth()
 	default:
 		w.Log.Error(nil, "Event queue full, request dropped",
 			"events", len(request.Events),
 			"mode", request.CommitMode,
 			"gitTarget", request.GitTargetName)
 	}
+}
+
+// recordQueueDepth publishes the current pending-work depth for this worker:
+// the number of items still sitting in the event queue plus one when the event
+// loop is holding unpushed work (a live open window or retained pending
+// writes). It reads 0 only when the worker has fully drained. Safe to call from
+// any goroutine: it reads the channel length and an atomic flag. No-op until the
+// gauge is registered (e.g. in unit tests that never init the exporter).
+func (w *BranchWorker) recordQueueDepth() {
+	if telemetry.BranchWorkerQueueDepth == nil {
+		return
+	}
+	depth := int64(len(w.eventQueue))
+	if w.hasUnpushedWork.Load() {
+		depth++
+	}
+	ctx := w.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	telemetry.BranchWorkerQueueDepth.Record(ctx, depth, metric.WithAttributes(
+		attribute.String("provider_namespace", w.GitProviderNamespace),
+		attribute.String("provider_name", w.GitProviderRef),
+		attribute.String("branch", w.Branch),
+	))
 }
 
 // ListResourcesInPath returns resource identifiers found in a Git folder.
@@ -521,11 +558,13 @@ func newBranchWorkerEventLoop(w *BranchWorker, commitWindow time.Duration) *bran
 func (l *branchWorkerEventLoop) run() {
 	defer l.stopTimers()
 
+	l.syncQueueDepthMetric()
 	for {
 		commitC, pushC := l.timerChannels()
 		select {
 		case <-l.w.ctx.Done():
 			l.handleShutdown()
+			l.syncQueueDepthMetric()
 			return
 		case item := <-l.w.eventQueue:
 			l.handleQueueItem(item)
@@ -537,7 +576,17 @@ func (l *branchWorkerEventLoop) run() {
 			l.pushTimer = nil
 			l.pushPending()
 		}
+		l.syncQueueDepthMetric()
 	}
+}
+
+// syncQueueDepthMetric refreshes the worker's unpushed-work flag from the loop's
+// authoritative state and republishes the depth gauge. Called once per loop
+// iteration (the loop goroutine is the only writer of hasUnpushedWork), so the
+// gauge converges to 0 once the queue is empty and nothing is retained.
+func (l *branchWorkerEventLoop) syncQueueDepthMetric() {
+	l.w.hasUnpushedWork.Store(l.openWindow != nil || len(l.pendingWrites) > 0)
+	l.w.recordQueueDepth()
 }
 
 func (l *branchWorkerEventLoop) timerChannels() (<-chan time.Time, <-chan time.Time) {

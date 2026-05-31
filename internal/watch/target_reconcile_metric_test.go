@@ -1,0 +1,56 @@
+/*
+SPDX-License-Identifier: Apache-2.0
+
+Copyright 2025 ConfigButler
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package watch
+
+import (
+	"testing"
+
+	"github.com/go-logr/logr"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
+	"github.com/ConfigButler/gitops-reverser/internal/types"
+)
+
+const targetInitialReconcileCompleteMetric = "gitopsreverser_target_initial_reconcile_complete"
+
+// recordTargetInitialReconcileComplete must latch the per-GitTarget gauge to 1
+// under the target's namespace/name labels.
+func TestRecordTargetInitialReconcileComplete_LatchesToOne(t *testing.T) {
+	reader, err := telemetry.InitTestExporter()
+	require.NoError(t, err)
+
+	m := &Manager{Log: logr.Discard()}
+	gitDest := types.NewResourceReference("my-target", "my-ns")
+
+	m.recordTargetInitialReconcileComplete(gitDest)
+
+	value, ok := telemetry.CollectInt64Sum(reader, targetInitialReconcileCompleteMetric,
+		map[string]string{"gittarget_namespace": "my-ns", "gittarget_name": "my-target"})
+	require.True(t, ok, "expected a target_initial_reconcile_complete sample")
+	assert.Equal(t, int64(1), value)
+
+	// Re-recording is idempotent: the latch stays at 1.
+	m.recordTargetInitialReconcileComplete(gitDest)
+	value, ok = telemetry.CollectInt64Sum(reader, targetInitialReconcileCompleteMetric,
+		map[string]string{"gittarget_namespace": "my-ns", "gittarget_name": "my-target"})
+	require.True(t, ok)
+	assert.Equal(t, int64(1), value)
+}

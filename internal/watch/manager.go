@@ -41,12 +41,15 @@ import (
 
 	"github.com/cespare/xxhash/v2"
 	"github.com/go-logr/logr"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 	"github.com/ConfigButler/gitops-reverser/internal/events"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
 	"github.com/ConfigButler/gitops-reverser/internal/sanitize"
+	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
@@ -1293,11 +1296,28 @@ func (m *Manager) emitSnapshotForRuleChange(
 			continue
 		}
 		m.markRuleSetSnapshotDelivered(target)
+		m.recordTargetInitialReconcileComplete(gitDest)
 		emitted = true
 	}
 	if emitted {
 		m.snapshotEmitCount.Add(1)
 	}
+}
+
+// recordTargetInitialReconcileComplete latches the per-GitTarget gauge to 1 once
+// its snapshot decision has been made and the resulting write request submitted
+// to the branch worker. On a controller restart this is the signal that the
+// target's post-restart initial reconcile pass has reached the git write path —
+// paired with a drained BranchWorkerQueueDepth it proves the post-restart
+// snapshot has fully landed. No-op until the gauge is registered.
+func (m *Manager) recordTargetInitialReconcileComplete(gitDest types.ResourceReference) {
+	if telemetry.TargetInitialReconcileComplete == nil {
+		return
+	}
+	telemetry.TargetInitialReconcileComplete.Record(context.Background(), 1, metric.WithAttributes(
+		attribute.String("gittarget_namespace", gitDest.Namespace),
+		attribute.String("gittarget_name", gitDest.Name),
+	))
 }
 
 func (m *Manager) completeReconciliationForTargets(targets []ruleSetSnapshotTarget, log logr.Logger) {

@@ -530,11 +530,11 @@ that the pod started.
 
 **Change.** Pair two signals:
 
-1. **`gitopsreverser_target_initial_reconcile_complete{namespace,name}`**
+1. **`gitopsreverser_target_initial_reconcile_complete{gittarget_namespace,gittarget_name}`**
    — gauge per GitTarget, flips to `1` once its post-(re)start initial
    reconcile pass has completed end-to-end (snapshot decision made,
    queue submission completed).
-2. **`gitopsreverser_branch_worker_queue_depth{namespace,name,branch}`**
+2. **`gitopsreverser_branch_worker_queue_depth{provider_namespace,provider_name,branch}`**
    — gauge of pending work items for this branch worker. Wait for `0`
    to confirm the queue has drained.
 
@@ -542,14 +542,31 @@ The metric package is `internal/telemetry/` (not `internal/metrics/` —
 see `internal/telemetry/exporter.go`); add the new metrics alongside
 the existing ones.
 
+> **Label naming — do not use `namespace`/`name`.** The e2e Prometheus
+> scrapes the controller as a pod target with `honor_labels: false`
+> ([test/e2e/setup/manifests/prometheus/servicemonitor.yaml](../../test/e2e/setup/manifests/prometheus/servicemonitor.yaml)).
+> A pod scrape attaches the scraped pod's own `namespace`/`pod`/`job`
+> target labels; with honor disabled, any metric attribute literally named
+> `namespace` is overwritten and the original is moved to
+> `exported_namespace`. A `{namespace=...}` selector would then silently
+> match nothing. Hence the prefixed keys above
+> (`gittarget_namespace`, `provider_namespace`, …), matching the existing
+> convention where every gitopsreverser metric avoids bare `namespace`.
+
 **Restart test reframe:**
 
 1. Rollout-restart the controller deployment.
-2. Wait for `target_initial_reconcile_complete{ns,name} == 1` for the
-   restart test's GitTarget.
-3. Wait for `branch_worker_queue_depth{ns,name,branch} == 0`.
+2. Wait for `max(target_initial_reconcile_complete{gittarget_*}) == 1`
+   for the restart test's GitTarget.
+3. Wait for `sum(branch_worker_queue_depth{provider_*,branch}) == 0`.
 4. Apply a short stability window (a few seconds).
 5. Assert no destructive commit happened.
+
+The `max()`/`sum()` aggregation in steps 2–3 collapses the brief window
+during a rollout where Prometheus still holds the old pod's last sample
+(distinct `pod` target label) next to the new pod's, so the assertion sees
+the freshly started pod's value rather than whichever series the query
+returns first.
 
 **Risks:**
 
@@ -559,13 +576,48 @@ the existing ones.
   rollouts.
 - Worker-queue-depth must include in-flight items, not just queued ones,
   or step 3 races with the worker. Verify against the actual
-  implementation when writing the metric.
+  implementation when writing the metric. **Implemented:** the event loop
+  republishes the gauge once per iteration from its authoritative state
+  (`openWindow != nil || len(pendingWrites) > 0`, surfaced via an
+  `atomic.Bool` the enqueue paths also re-read), so the gauge counts the
+  open commit window and retained-for-replay writes — not just channel
+  depth — and only reaches 0 after a successful push clears `pendingWrites`.
 
 **Exit criterion:**
 
 - Spec runs in < 30 s (down from 128 s).
 - Both metrics are scrapable via the existing Prometheus pipeline.
 - Suite still green; no regressions in other restart-related specs.
+
+**Implementation status (2026-05-31).** Landed on branch `refactors`.
+
+- New gauges in [internal/telemetry/exporter.go](../../internal/telemetry/exporter.go):
+  `gitopsreverser_target_initial_reconcile_complete` (set in
+  `emitSnapshotForRuleChange`'s per-target success branch,
+  [internal/watch/manager.go](../../internal/watch/manager.go)) and
+  `gitopsreverser_branch_worker_queue_depth` (recorded from the branch
+  worker event loop + enqueue paths,
+  [internal/git/branch_worker.go](../../internal/git/branch_worker.go)).
+- Unit tests:
+  [internal/git/branch_worker_metrics_test.go](../../internal/git/branch_worker_metrics_test.go),
+  [internal/watch/target_reconcile_metric_test.go](../../internal/watch/target_reconcile_metric_test.go).
+- **First e2e run failed** — the query used a bare `namespace` label and
+  matched nothing (the honor_labels collision above). Renaming to the
+  prefixed keys and adding `max()`/`sum()` aggregation fixed it. The
+  controller-side delivery was correct on the first run (7 snapshot emits,
+  zero "No reconciler registered"); the bug was purely in the metric's
+  label contract.
+- **Measured:** restart spec `Restart Snapshot Safety` **57.0 s** total
+  wallclock (down from ~128 s), full smoke suite green (20/20, 444 s vs
+  the earlier 537 s run that included the failing attempt). Both metric
+  waits resolved within the first poll after the rollout settled — the
+  remaining 57 s is BeforeAll setup (Prometheus client, Gitea repo, CRD
+  install, building the mirror, the rollout restart itself) plus the 15 s
+  stability window, **not** the old 75 s blind negative-assertion wait.
+  The signal-driven wait does not hit the <30 s exit-criterion target on
+  its own because the per-spec figure is dominated by fixed setup, not the
+  drain wait that Phase 3 removed; the drain wait itself is now ~0 s.
+  Tightening the residual setup/stability cost is follow-up work.
 
 ## Decisions
 

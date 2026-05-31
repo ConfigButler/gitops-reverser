@@ -62,6 +62,28 @@ var (
 	// RepoBranchQueueDepth is a gauge for per-repo-branch queue depth.
 	RepoBranchQueueDepth metric.Int64UpDownCounter
 
+	// TargetInitialReconcileComplete latches to 1 once a GitTarget's post-(re)start
+	// initial reconcile pass has completed end-to-end in this process: the snapshot
+	// decision was made and its write request was submitted to the branch worker
+	// queue. Labelled by {gittarget_namespace, gittarget_name}. The labels avoid
+	// the reserved `namespace`/`name` keys on purpose: a Prometheus pod scrape with
+	// honor_labels=false overwrites a metric's `namespace` attribute with the
+	// scraped pod's own namespace, so a per-GitTarget `namespace` label would be
+	// silently unqueryable. It is a per-process latch — a controller restart starts
+	// a fresh process whose gauge is unset until the first snapshot delivery sets
+	// it. Load-bearing for the restart-snapshot e2e spec; treat the name/labels as
+	// a public observability contract.
+	TargetInitialReconcileComplete metric.Int64Gauge
+	// BranchWorkerQueueDepth gauges pending work for a single branch worker:
+	// queued work items plus any committed-but-not-yet-pushed work the worker is
+	// still holding. It reads 0 only when the worker has fully drained (empty
+	// queue and nothing retained for replay). Labelled by {provider_namespace,
+	// provider_name, branch}; the namespace/name keys are prefixed to avoid the
+	// reserved Prometheus pod-scrape target labels (see
+	// TargetInitialReconcileComplete). Load-bearing for the restart-snapshot e2e
+	// spec's drain wait; treat the name/labels as a public observability contract.
+	BranchWorkerQueueDepth metric.Int64Gauge
+
 	// WatchDuplicatesSkippedTotal counts watch events skipped due to duplicate sanitized content.
 	WatchDuplicatesSkippedTotal metric.Int64Counter
 	// AuditEventsReceivedTotal counts audit events received from Kubernetes API server.
@@ -284,6 +306,8 @@ func registerInstruments() error {
 		{"gitopsreverser_audit_queue_oldest_entry_age_seconds", &AuditQueueOldestEntryAgeSeconds},
 		{"gitopsreverser_audit_queue_oldest_pending_age_seconds", &AuditQueueOldestPendingAgeSeconds},
 		{"gitopsreverser_audit_debug_stream_length", &AuditDebugStreamLength},
+		{"gitopsreverser_target_initial_reconcile_complete", &TargetInitialReconcileComplete},
+		{"gitopsreverser_branch_worker_queue_depth", &BranchWorkerQueueDepth},
 	}
 	for _, s := range gauges {
 		v, err := otelMeter.Int64Gauge(s.name)

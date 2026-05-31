@@ -66,6 +66,10 @@ var _ = Describe("Restart Snapshot Safety", Label("restart-snapshot", "smoke"), 
 	orderNames := []string{"restart-order-alpha", "restart-order-bravo", "restart-order-charlie"}
 
 	BeforeAll(func() {
+		By("setting up the Prometheus client for drain-signal metrics")
+		setupPrometheusClient()
+		verifyPrometheusAvailable()
+
 		By("creating the restart-snapshot test namespace")
 		testNs = testNamespaceFor("restart-snapshot")
 		_, _ = kubectlRun("create", "namespace", testNs) // idempotent; ignore AlreadyExists
@@ -154,10 +158,46 @@ var _ = Describe("Restart Snapshot Safety", Label("restart-snapshot", "smoke"), 
 		By("restarting the controller deployment (plain rollout restart)")
 		restartControllerDeployment()
 
-		// The destructive snapshot commit lands within seconds of the new pod
-		// starting. A quiet order, once wiped, never comes back — so once the
-		// mirror is intact for a sustained window after the restart settles, it
-		// will stay intact.
+		// Phase 3 drain signals replace a 75 s blind wait. The new pod's startup
+		// reconcile sets target_initial_reconcile_complete=1 once its snapshot
+		// decision is made and submitted, and branch_worker_queue_depth returns
+		// to 0 once that submission has been committed and pushed. Waiting on
+		// both confirms the post-restart snapshot has fully drained through the
+		// git write path — the exact moment any destructive commit would have
+		// landed — instead of guessing with a fixed sleep.
+		// Both queries aggregate across pods: a rollout briefly leaves the old
+		// pod's last sample in Prometheus alongside the new pod's, each carrying
+		// its own pod target label. max()/sum() collapse them so the freshly
+		// started pod's value is what the assertion sees, rather than whichever
+		// series queryPrometheus happens to return first.
+		By("waiting for the post-restart initial reconcile to complete")
+		waitForMetricWithTimeout(
+			fmt.Sprintf(
+				`max(gitopsreverser_target_initial_reconcile_complete`+
+					`{gittarget_namespace=%q,gittarget_name=%q}) or vector(0)`,
+				testNs, gitTargetName,
+			),
+			func(v float64) bool { return v == 1 },
+			"GitTarget initial reconcile complete after restart",
+			90*time.Second,
+		)
+
+		By("waiting for the branch worker queue to drain")
+		waitForMetricWithTimeout(
+			fmt.Sprintf(
+				`sum(gitopsreverser_branch_worker_queue_depth`+
+					`{provider_namespace=%q,provider_name=%q,branch="main"}) or vector(0)`,
+				testNs, providerName,
+			),
+			func(v float64) bool { return v == 0 },
+			"branch worker queue drained after restart",
+			90*time.Second,
+		)
+
+		// A short stability window guards against a delayed second reconcile and
+		// against any Prometheus cross-restart sample staleness in the gates
+		// above: a quiet order, once wiped, never comes back, so a mirror that
+		// stays intact for this window after the drain will stay intact.
 		By("verifying the git mirror is NOT wiped by the restart")
 		Consistently(func(g Gomega) {
 			pullLatestRepoState(g, restartRepo.CheckoutDir)
@@ -166,7 +206,7 @@ var _ = Describe("Restart Snapshot Safety", Label("restart-snapshot", "smoke"), 
 				g.Expect(statErr).NotTo(HaveOccurred(),
 					"file %q disappeared after the controller restart — startup snapshot wiped the mirror", relPath)
 			}
-		}, 75*time.Second, 5*time.Second).Should(Succeed())
+		}, 15*time.Second, 5*time.Second).Should(Succeed())
 
 		By("confirming no commit since the restart deleted tracked files")
 		deletions, logErr := gitRun(
