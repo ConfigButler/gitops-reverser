@@ -29,17 +29,7 @@ row below.
 | [test/e2e/commit_window_batching_e2e_test.go](../../test/e2e/commit_window_batching_e2e_test.go) | `Commit Window Batching` | Same global audit pipeline (labelled `audit-redis`). | Bursts of ConfigMap events flow through the shared stream/consumer and leak into other audit specs' commits. |
 | [test/e2e/commit_request_e2e_test.go](../../test/e2e/commit_request_e2e_test.go) | `Commit Request` | Same global audit pipeline (labelled `audit-redis`). | Shares the stream/consumer; commit-window/queue semantics interleave under concurrency. |
 | [test/e2e/bi_directional_e2e_test.go](../../test/e2e/bi_directional_e2e_test.go) | `Bi Directional` | Whole-cluster Flux↔gitops-reverser round-trip; asserts on **exact** remote commit counts to prove no commit loop. | Any concurrent controller activity adds/reorders commits and breaks the exact-count loop assertions. Passes sequentially; +2 commits only under parallelism. |
-
-## Watched, but intentionally NOT Serial
-
-- **`crd_lifecycle_e2e_test.go`** installs a `ClusterWatchRule` that watches all
-  CRDs cluster-wide (`ClusterResourceRule` has no per-object-name filter, see
-  [api/v1alpha1/clusterwatchrule_types.go](../../api/v1alpha1/clusterwatchrule_types.go)).
-  While that rule is live it mirrors *other* files' CRD definitions into its own
-  repo. This is harmless: the rule is only active during the two CRD-lifecycle
-  specs (install/delete), it is torn down before the "no new commit" assertion,
-  and every assertion checks a *specific*, group-scoped file path. Extra mirrored
-  files are cosmetic. Kept parallel; revisit if the stability window shows flakes.
+| [test/e2e/crd_lifecycle_e2e_test.go](../../test/e2e/crd_lifecycle_e2e_test.go) | `Manager CRD Lifecycle` | Installs/deletes a CRD and a wildcard `ClusterWatchRule`, changing cluster-wide discovery/GVR catalog state. | Per-file CRD groups prevent name collisions, but discovery changes still force unrelated GitTargets to resnapshot. That can hide exact `[CREATE]`/`[DELETE]` event-commit assertions in other WatchRule specs behind later `reconcile: sync ...` commits. |
 
 All four `audit-redis`-labelled containers above were moved to `Serial` after the
 first procs=2 smoke run: `Audit Redis Consumer` asserted its commit touched only

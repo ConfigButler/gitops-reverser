@@ -444,7 +444,10 @@ Landed on branch `refactors` (PR #159). `gh` works directly now — no
   `Commit Window Batching`, `Commit Request`) — they share one global
   audit pipeline (webhook → Redis → consumer) and cross-contaminated each
   other's commits — **plus** `bi_directional` (asserts exact commit counts
-  to prove no commit loop; broken by any concurrent controller activity).
+  to prove no commit loop; broken by any concurrent controller activity)
+  and `crd_lifecycle` (CRD/ClusterWatchRule changes are name-isolated, but
+  still perturb cluster discovery and can trigger unrelated GitTarget
+  resnapshots).
 - **Timeouts widened for parallel/slow load:** `verifyResourceStatus`
   readiness 30s → 90s (post-CRD-install the controller's discovery cache
   lags before serving the new GVR, so a dependent WatchRule can't reach
@@ -579,10 +582,12 @@ the existing ones.
 - **Metric package is `internal/telemetry`.** Confirmed against
   `internal/telemetry/exporter.go`. No `internal/metrics` directory
   exists.
-- **CRD isolation over Serial marking.** Where multiple e2e files
-  install the same cluster-scoped CRD, the cheap fix is to give each
-  file its own CRD group (Phase 2.5). Serial marking is reserved for
-  conflicts that name-isolation can't fix (e.g. controller restart).
+- **CRD isolation before Serial marking.** Where multiple e2e files
+  install the same cluster-scoped CRD, the cheap first fix is to give
+  each file its own CRD group (Phase 2.5). Serial marking is still
+  required when the remaining cluster-wide side effect cannot be
+  isolated by name, such as controller restarts or CRD discovery/GVR
+  catalog churn.
 
 ## Reproducing the baseline
 
