@@ -1308,10 +1308,11 @@ func (m *Manager) emitSnapshotForRuleChange(
 // recordTargetReconcileCompleted increments the per-GitTarget reconcile counter
 // once its snapshot decision has been made and the resulting write request
 // submitted to the branch worker, tagged with the trigger that drove the pass.
-// On a controller restart a delta over a pre-restart baseline is the signal that
-// the new pod's snapshot reconcile reached the git write path — paired with a
-// drained BranchWorkerQueueDepth it proves the post-restart snapshot has fully
-// landed. No-op until the counter is registered.
+// On a controller restart the new pod's counter starts at 0, so a per-pod
+// `{pod="<new>"} > 0` reading is the signal that the new pod's snapshot
+// reconcile reached the git write path — paired with a drained
+// BranchWorkerQueueDepth it proves the post-restart snapshot has fully landed.
+// No-op until the counter is registered.
 func (m *Manager) recordTargetReconcileCompleted(gitDest types.ResourceReference, trigger string) {
 	if telemetry.TargetReconcileCompletedTotal == nil {
 		return

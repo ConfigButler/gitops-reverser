@@ -67,16 +67,16 @@ func TestRecordQueueDepth_DrainedReportsZero(t *testing.T) {
 	assert.Equal(t, int64(0), depth)
 }
 
-// recordQueueDepth must count both queued items and the in-flight unpushed-work
-// flag, so the gauge reflects work the channel length alone cannot see.
-func TestRecordQueueDepth_CountsQueuedAndInFlight(t *testing.T) {
+// recordQueueDepth must count both accepted-but-unhandled items (in flight) and
+// the retained unpushed-work flag, so the gauge reflects work the channel length
+// alone cannot see — including an item already dequeued and being processed.
+func TestRecordQueueDepth_CountsInflightAndRetained(t *testing.T) {
 	reader, err := telemetry.InitTestExporter()
 	require.NoError(t, err)
 
 	w := newMetricsTestWorker()
-	// Two items sitting in the queue, plus retained unpushed work.
-	w.eventQueue <- WorkItem{}
-	w.eventQueue <- WorkItem{}
+	// Two items accepted but not yet fully handled, plus retained unpushed work.
+	w.inflightItems.Store(2)
 	w.hasUnpushedWork.Store(true)
 
 	w.recordQueueDepth()
@@ -84,6 +84,26 @@ func TestRecordQueueDepth_CountsQueuedAndInFlight(t *testing.T) {
 	depth, ok := telemetry.CollectInt64Sum(reader, branchWorkerQueueDepthMetric, queueDepthLabels())
 	require.True(t, ok, "expected a branch_worker_queue_depth sample")
 	assert.Equal(t, int64(3), depth)
+}
+
+// recordQueueDepth must still report > 0 for an item that has been dequeued from
+// the channel but is still being handled — the exact window where len(eventQueue)
+// would read 0 and a drain gate could be falsely satisfied mid-commit.
+func TestRecordQueueDepth_InflightItemDequeuedButUnhandled(t *testing.T) {
+	reader, err := telemetry.InitTestExporter()
+	require.NoError(t, err)
+
+	w := newMetricsTestWorker()
+	// Simulate the loop having received the item (channel empty) while it is
+	// still being processed: inflight accounts for it, retained flag not yet set.
+	w.inflightItems.Store(1)
+	w.hasUnpushedWork.Store(false)
+
+	w.recordQueueDepth()
+
+	depth, ok := telemetry.CollectInt64Sum(reader, branchWorkerQueueDepthMetric, queueDepthLabels())
+	require.True(t, ok, "expected a branch_worker_queue_depth sample")
+	assert.Equal(t, int64(1), depth, "an in-flight item must keep depth > 0 even with an empty channel")
 }
 
 // enqueueRequest must publish a non-zero depth as soon as the item lands on the

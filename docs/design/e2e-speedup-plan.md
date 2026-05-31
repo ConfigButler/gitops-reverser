@@ -599,13 +599,18 @@ pass/timeout during the rollout's brief two-series overlap.
   public observability surface from day one — renaming costs cluster
   rollouts.
 - Worker-queue-depth must include in-flight items, not just queued ones,
-  or step 3 races with the worker. Verify against the actual
-  implementation when writing the metric. **Implemented:** the event loop
-  republishes the gauge once per iteration from its authoritative state
-  (`openWindow != nil || len(pendingWrites) > 0`, surfaced via an
-  `atomic.Bool` the enqueue paths also re-read), so the gauge counts the
-  open commit window and retained-for-replay writes — not just channel
-  depth — and only reaches 0 after a successful push clears `pendingWrites`.
+  or step 4 races with the worker. Verify against the actual
+  implementation when writing the metric. **Implemented:** depth =
+  `inflightItems + (hasUnpushedWork ? 1 : 0)`, where `inflightItems`
+  (`atomic.Int64`) is incremented *before* each `eventQueue` send and
+  decremented only *after* `handleQueueItem` returns, and `hasUnpushedWork`
+  (`atomic.Bool`, refreshed each loop iteration) tracks an open commit
+  window or retained pending writes. Using `len(eventQueue)` would read 0
+  the instant the loop receives an item — before it is handled — so a scrape
+  in that window could satisfy the drain gate mid-commit; counting accepted
+  items instead closes that race. The gauge reaches 0 only once every
+  accepted item is fully handled and a successful push has cleared
+  `pendingWrites`. See the in-flight follow-up below.
 
 **Exit criterion:**
 
@@ -641,6 +646,15 @@ pass/timeout during the rollout's brief two-series overlap.
   the baseline rather than above it, causing a false timeout. Replaced with
   a **per-pod** gate: discover the new pod after the rollout and assert
   `…{pod="<new>"} > 0` (and `branch_worker_queue_depth{…,pod="<new>"} == 0`).
+- **Review follow-up 3:** the queue-depth gauge originally derived its
+  pending count from `len(eventQueue)` plus an `atomic.Bool`. Review flagged
+  that the channel length drops to 0 the moment the loop *receives* an item,
+  before `handleQueueItem` finishes, so a scrape in that window could satisfy
+  the drain gate while a commit/push was still in flight. Replaced the
+  channel-length read with an `inflightItems atomic.Int64` incremented before
+  the send and decremented after handling, so an accepted-but-unhandled item
+  keeps depth `> 0`. Covered by `TestRecordQueueDepth_InflightItemDequeuedButUnhandled`
+  and verified under `go test -race`.
 - **Measured (per-pod gate, 2026-05-31):** restart spec `Restart Snapshot
   Safety` ~**67 s** total wallclock (down from ~128 s; earlier gauge/baseline
   runs measured 57–67 s — the spread is fixed-setup variance, not the gates),

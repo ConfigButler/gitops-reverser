@@ -132,8 +132,18 @@ type BranchWorker struct {
 	// open window or any committed-but-not-yet-pushed pending writes. The event
 	// loop is the only writer; recordQueueDepth (callable from enqueue goroutines)
 	// is the only other reader, hence the atomic. It lets the depth gauge account
-	// for in-flight work the channel length alone cannot see.
+	// for retained work the channel length alone cannot see.
 	hasUnpushedWork atomic.Bool
+
+	// inflightItems counts work items accepted onto eventQueue but not yet fully
+	// handled. It is incremented before the channel send (so it can never lag the
+	// loop's receive) and decremented only after handleQueueItem returns. Using
+	// len(eventQueue) instead would read 0 in the window between the loop
+	// receiving an item and finishing it — a scrape there could satisfy a drain
+	// gate while a commit/push is still in flight. The depth gauge sums this with
+	// hasUnpushedWork, so it reads 0 only once every accepted item has been
+	// handled and nothing is retained.
+	inflightItems atomic.Int64
 }
 
 // branchWorkerLogFirsts logs the first successful commit and push of a worker's
@@ -256,11 +266,15 @@ func (w *BranchWorker) EnqueueFinalize(signal *FinalizeSignal) {
 	if signal == nil {
 		return
 	}
+	// Increment before the send so inflightItems can never lag the loop's
+	// receive; roll back if the queue is full and the item is dropped.
+	w.inflightItems.Add(1)
 	select {
 	case w.eventQueue <- WorkItem{Finalize: signal}:
 		w.Log.V(1).Info("Finalize signal enqueued")
 		w.recordQueueDepth()
 	default:
+		w.inflightItems.Add(-1)
 		w.Log.Error(nil, "Event queue full, finalize signal dropped")
 		signal.reply(FinalizeResult{Branch: w.Branch, Err: ErrFinalizeQueueFull})
 	}
@@ -271,6 +285,9 @@ func (w *BranchWorker) enqueueRequest(request *WriteRequest) {
 		return
 	}
 	item := WorkItem{Request: request}
+	// Increment before the send so inflightItems can never lag the loop's
+	// receive; roll back if the queue is full and the item is dropped.
+	w.inflightItems.Add(1)
 	select {
 	case w.eventQueue <- item:
 		w.Log.V(1).Info("Write request enqueued",
@@ -279,6 +296,7 @@ func (w *BranchWorker) enqueueRequest(request *WriteRequest) {
 			"gitTarget", request.GitTargetName)
 		w.recordQueueDepth()
 	default:
+		w.inflightItems.Add(-1)
 		w.Log.Error(nil, "Event queue full, request dropped",
 			"events", len(request.Events),
 			"mode", request.CommitMode,
@@ -287,16 +305,18 @@ func (w *BranchWorker) enqueueRequest(request *WriteRequest) {
 }
 
 // recordQueueDepth publishes the current pending-work depth for this worker:
-// the number of items still sitting in the event queue plus one when the event
-// loop is holding unpushed work (a live open window or retained pending
-// writes). It reads 0 only when the worker has fully drained. Safe to call from
-// any goroutine: it reads the channel length and an atomic flag. No-op until the
-// gauge is registered (e.g. in unit tests that never init the exporter).
+// the number of accepted-but-not-yet-handled items (queued or actively being
+// processed) plus one when the event loop is holding retained unpushed work (a
+// live open window or pending writes). It reads 0 only when the worker has
+// fully drained — every accepted item handled and nothing retained — so a
+// drain gate cannot be satisfied while a commit/push is still in flight. Safe
+// to call from any goroutine: it reads two atomics. No-op until the gauge is
+// registered (e.g. in unit tests that never init the exporter).
 func (w *BranchWorker) recordQueueDepth() {
 	if telemetry.BranchWorkerQueueDepth == nil {
 		return
 	}
-	depth := int64(len(w.eventQueue))
+	depth := w.inflightItems.Load()
 	if w.hasUnpushedWork.Load() {
 		depth++
 	}
@@ -568,6 +588,10 @@ func (l *branchWorkerEventLoop) run() {
 			return
 		case item := <-l.w.eventQueue:
 			l.handleQueueItem(item)
+			// Decrement only after the item is fully handled; the post-handling
+			// open-window/pending-writes state is captured by syncQueueDepthMetric
+			// below, so there is no window where depth drops to 0 prematurely.
+			l.w.inflightItems.Add(-1)
 		case <-commitC:
 			l.commitTimer = nil
 			l.finalizeOpenWindow()
@@ -583,7 +607,8 @@ func (l *branchWorkerEventLoop) run() {
 // syncQueueDepthMetric refreshes the worker's unpushed-work flag from the loop's
 // authoritative state and republishes the depth gauge. Called once per loop
 // iteration (the loop goroutine is the only writer of hasUnpushedWork), so the
-// gauge converges to 0 once the queue is empty and nothing is retained.
+// gauge converges to 0 once every accepted item has been handled (inflightItems
+// == 0) and nothing is retained (no open window, no pending writes).
 func (l *branchWorkerEventLoop) syncQueueDepthMetric() {
 	l.w.hasUnpushedWork.Store(l.openWindow != nil || len(l.pendingWrites) > 0)
 	l.w.recordQueueDepth()

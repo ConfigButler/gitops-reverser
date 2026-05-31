@@ -89,3 +89,4 @@ kubectl get nodes
 - `windows-devcontainer.md` - Windows-specific mount behavior and expected differences
 - `ci-root-user.md` - why CI containers run as root
 - `git-safe-dir-explained.md` - why `safe.directory` is required in containerized CI
+- `e2e-allure-reporting.md` - how CI renders visual Allure reports from Ginkgo JSON

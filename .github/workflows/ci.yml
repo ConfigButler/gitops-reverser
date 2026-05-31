@@ -362,6 +362,56 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+      - name: Generate Allure results
+        id: allure-results
+        if: always()
+        run: |
+          docker run --rm \
+            -v "${GITHUB_WORKSPACE}:${{ env.CI_WORKDIR }}" \
+            -w "${{ env.CI_WORKDIR }}" \
+            ${{ env.CI_CONTAINER }} \
+            bash -c '
+              set -euo pipefail
+              mapfile -t reports < <(find .stamps -path "*/ginkgo-report-*.json" -type f | sort)
+              if [ "${#reports[@]}" -eq 0 ]; then
+                echo "No Ginkgo JSON reports were produced."
+                exit 0
+              fi
+              rm -rf allure-results
+              mkdir -p allure-results
+              go run ./test/e2e/tools/ginkgo-allure --output-dir allure-results "${reports[@]}"
+            '
+          if find allure-results -name '*-result.json' -type f | grep -q .; then
+            echo "has_results=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "has_results=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Prepare Allure history directory
+        if: always() && steps.allure-results.outputs.has_results == 'true'
+        run: |
+          mkdir -p gh-pages allure-history
+
+      - name: Generate Allure report
+        if: always() && steps.allure-results.outputs.has_results == 'true'
+        uses: simple-elf/allure-report-action@v1.13
+        with:
+          allure_results: allure-results
+          allure_report: allure-report
+          gh_pages: gh-pages
+          allure_history: allure-history
+
+      - name: Upload Allure report artifact
+        if: always() && steps.allure-results.outputs.has_results == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-allure-report-${{ matrix.name }}
+          path: |
+            allure-report
+            allure-results
+          if-no-files-found: ignore
+          retention-days: 7
+
   # Release job only runs on push to main after tests pass
   release-please:
     name: Release Please

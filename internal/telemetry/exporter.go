@@ -81,9 +81,11 @@ var (
 	// treat the name/labels as a public observability contract.
 	TargetReconcileCompletedTotal metric.Int64Counter
 	// BranchWorkerQueueDepth gauges pending work for a single branch worker:
-	// queued work items plus any committed-but-not-yet-pushed work the worker is
-	// still holding. It reads 0 only when the worker has fully drained (empty
-	// queue and nothing retained for replay). Labelled by {provider_namespace,
+	// accepted-but-not-yet-handled items (queued or actively being processed)
+	// plus any committed-but-not-yet-pushed work the worker is still holding. It
+	// reads 0 only when the worker has fully drained (every accepted item handled
+	// and nothing retained for replay), so it never reports drained while a
+	// commit/push is still in flight. Labelled by {provider_namespace,
 	// provider_name, branch}; the namespace/name keys are prefixed to avoid the
 	// reserved Prometheus pod-scrape target labels (see
 	// TargetReconcileCompletedTotal). Load-bearing for the restart-snapshot e2e
