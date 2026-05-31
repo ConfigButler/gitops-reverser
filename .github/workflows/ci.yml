@@ -401,6 +401,15 @@ jobs:
           gh_pages: gh-pages
           allure_history: allure-history
 
+      - name: Fix Allure artifact permissions
+        if: always() && steps.allure-results.outputs.has_results == 'true'
+        run: |
+          # allure-results and allure-report are produced by root-owned
+          # containers (docker run / the Docker-based report action), so the
+          # native upload-artifact step cannot read them. Hand ownership back
+          # to the runner user before uploading.
+          sudo chown -R "$(id -u):$(id -g)" allure-results allure-report
+
       - name: Upload Allure report artifact
         if: always() && steps.allure-results.outputs.has_results == 'true'
         uses: actions/upload-artifact@v7
