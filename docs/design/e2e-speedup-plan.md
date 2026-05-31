@@ -530,13 +530,35 @@ that the pod started.
 
 **Change.** Pair two signals:
 
-1. **`gitopsreverser_target_initial_reconcile_complete{gittarget_namespace,gittarget_name}`**
-   — gauge per GitTarget, flips to `1` once its post-(re)start initial
-   reconcile pass has completed end-to-end (snapshot decision made,
-   queue submission completed).
+1. **`gitopsreverser_target_reconcile_completed_total{gittarget_namespace,gittarget_name,trigger}`**
+   — **counter** per GitTarget, incremented once each rule-set snapshot
+   reconcile pass completes end-to-end (snapshot decision made, queue
+   submission completed). `trigger` is `rule_change` (the GVR/rule reconcile
+   path) or `startup_replay` (a snapshot replayed once a FolderReconciler is
+   created). A counter, **not a latched gauge**: see the stale-latch note
+   below.
 2. **`gitopsreverser_branch_worker_queue_depth{provider_namespace,provider_name,branch}`**
    — gauge of pending work items for this branch worker. Wait for `0`
    to confirm the queue has drained.
+
+> **Why a counter, not a latched gauge, and why gate per-pod.** An earlier
+> draft used a gauge `gitopsreverser_target_initial_reconcile_complete` that
+> latched to `1`. During a rollout Prometheus can still hold the **old**
+> pod's series (distinct `pod` target label) alongside the new pod's, so a
+> `max(...) == 1` check is satisfied by the dying pod's stale `1` and proves
+> nothing about the new pod — re-weakening the safety gate toward the old
+> blind wait. A counter is the right shape, but a *cross-pod*
+> `sum(...) > baseline` delta still has a failure mode: counters reset to `0`
+> on the fresh pod, so once Prometheus marks the old pod's series stale, the
+> new pod's first increment can bring the cross-pod sum back to the old total
+> (e.g. old=1 → stale → new=1 → sum stays 1) and `> baseline` never passes.
+> The robust gate is therefore **per-pod**: discover the new pod's name after
+> the rollout completes and assert `…{pod="<new-pod>"} > 0`. A counter on a
+> freshly started pod starts at `0`, so any value `> 0` proves *that pod*
+> completed its own post-restart reconcile. The counter also has long-term
+> value — `increase(...[5m])` surfaces excessive/looping reconciles. The name
+> reflects what it actually instruments: rule-set snapshot delivery/replay,
+> not a literal "initial" controller path.
 
 The metric package is `internal/telemetry/` (not `internal/metrics/` —
 see `internal/telemetry/exporter.go`); add the new metrics alongside
@@ -555,18 +577,20 @@ the existing ones.
 
 **Restart test reframe:**
 
-1. Rollout-restart the controller deployment.
-2. Wait for `max(target_initial_reconcile_complete{gittarget_*}) == 1`
-   for the restart test's GitTarget.
-3. Wait for `sum(branch_worker_queue_depth{provider_*,branch}) == 0`.
-4. Apply a short stability window (a few seconds).
-5. Assert no destructive commit happened.
+1. Rollout-restart the controller deployment (`restartControllerDeployment`
+   blocks until the rollout completes).
+2. Discover the new controller pod — after the rollout there is exactly one
+   non-terminating pod matching `control-plane=gitops-reverser`.
+3. Wait for `sum(target_reconcile_completed_total{gittarget_*,pod="<new>"})
+   > 0` for the restart test's GitTarget.
+4. Wait for `sum(branch_worker_queue_depth{provider_*,branch,pod="<new>"})
+   == 0`.
+5. Apply a short stability window (a few seconds).
+6. Assert no destructive commit happened.
 
-The `max()`/`sum()` aggregation in steps 2–3 collapses the brief window
-during a rollout where Prometheus still holds the old pod's last sample
-(distinct `pod` target label) next to the new pod's, so the assertion sees
-the freshly started pod's value rather than whichever series the query
-returns first.
+Both gates pin the `pod` target label to the freshly started pod, so neither
+the old pod's lingering samples nor a counter reset can produce a false
+pass/timeout during the rollout's brief two-series overlap.
 
 **Risks:**
 
@@ -591,10 +615,11 @@ returns first.
 
 **Implementation status (2026-05-31).** Landed on branch `refactors`.
 
-- New gauges in [internal/telemetry/exporter.go](../../internal/telemetry/exporter.go):
-  `gitopsreverser_target_initial_reconcile_complete` (set in
+- New metrics in [internal/telemetry/exporter.go](../../internal/telemetry/exporter.go):
+  counter `gitopsreverser_target_reconcile_completed_total` (incremented in
   `emitSnapshotForRuleChange`'s per-target success branch,
-  [internal/watch/manager.go](../../internal/watch/manager.go)) and
+  [internal/watch/manager.go](../../internal/watch/manager.go), with the
+  `trigger` passed by each caller) and gauge
   `gitopsreverser_branch_worker_queue_depth` (recorded from the branch
   worker event loop + enqueue paths,
   [internal/git/branch_worker.go](../../internal/git/branch_worker.go)).
@@ -603,21 +628,31 @@ returns first.
   [internal/watch/target_reconcile_metric_test.go](../../internal/watch/target_reconcile_metric_test.go).
 - **First e2e run failed** — the query used a bare `namespace` label and
   matched nothing (the honor_labels collision above). Renaming to the
-  prefixed keys and adding `max()`/`sum()` aggregation fixed it. The
-  controller-side delivery was correct on the first run (7 snapshot emits,
-  zero "No reconciler registered"); the bug was purely in the metric's
-  label contract.
-- **Measured:** restart spec `Restart Snapshot Safety` **57.0 s** total
-  wallclock (down from ~128 s), full smoke suite green (20/20, 444 s vs
-  the earlier 537 s run that included the failing attempt). Both metric
-  waits resolved within the first poll after the rollout settled — the
-  remaining 57 s is BeforeAll setup (Prometheus client, Gitea repo, CRD
-  install, building the mirror, the rollout restart itself) plus the 15 s
-  stability window, **not** the old 75 s blind negative-assertion wait.
-  The signal-driven wait does not hit the <30 s exit-criterion target on
-  its own because the per-spec figure is dominated by fixed setup, not the
-  drain wait that Phase 3 removed; the drain wait itself is now ~0 s.
-  Tightening the residual setup/stability cost is follow-up work.
+  prefixed keys and adding aggregation fixed it. The controller-side
+  delivery was correct on the first run (7 snapshot emits, zero "No
+  reconciler registered"); the bug was purely in the metric's label
+  contract.
+- **Review follow-up 1:** the reconcile signal started as a latched gauge
+  read with `max(...) == 1`; review flagged that the old pod's stale `1`
+  could satisfy that during a rollout. Replaced with the counter.
+- **Review follow-up 2:** a cross-pod `sum(...) > baseline` delta was then
+  flagged as still race-prone — counters reset on the new pod, so once the
+  old series goes stale the new pod's first increment can return the sum to
+  the baseline rather than above it, causing a false timeout. Replaced with
+  a **per-pod** gate: discover the new pod after the rollout and assert
+  `…{pod="<new>"} > 0` (and `branch_worker_queue_depth{…,pod="<new>"} == 0`).
+- **Measured (per-pod gate, 2026-05-31):** restart spec `Restart Snapshot
+  Safety` ~**67 s** total wallclock (down from ~128 s; earlier gauge/baseline
+  runs measured 57–67 s — the spread is fixed-setup variance, not the gates),
+  full smoke suite green (20/20). Both gates resolved within the first poll
+  after the rollout settled — the remaining time is BeforeAll setup
+  (Prometheus client, Gitea repo, CRD install, building the mirror, the
+  rollout restart itself) plus the 15 s stability window, **not** the old
+  75 s blind negative-assertion wait. The signal-driven wait does not hit the
+  <30 s exit-criterion target on its own because the per-spec figure is
+  dominated by fixed setup, not the drain wait that Phase 3 removed; the
+  drain wait itself is now ~0 s. Tightening the residual setup/stability cost
+  is follow-up work.
 
 ## Decisions
 

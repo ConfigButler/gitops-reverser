@@ -158,27 +158,38 @@ var _ = Describe("Restart Snapshot Safety", Label("restart-snapshot", "smoke"), 
 		By("restarting the controller deployment (plain rollout restart)")
 		restartControllerDeployment()
 
-		// Phase 3 drain signals replace a 75 s blind wait. The new pod's startup
-		// reconcile sets target_initial_reconcile_complete=1 once its snapshot
-		// decision is made and submitted, and branch_worker_queue_depth returns
-		// to 0 once that submission has been committed and pushed. Waiting on
-		// both confirms the post-restart snapshot has fully drained through the
-		// git write path — the exact moment any destructive commit would have
-		// landed — instead of guessing with a fixed sleep.
-		// Both queries aggregate across pods: a rollout briefly leaves the old
-		// pod's last sample in Prometheus alongside the new pod's, each carrying
-		// its own pod target label. max()/sum() collapse them so the freshly
-		// started pod's value is what the assertion sees, rather than whichever
-		// series queryPrometheus happens to return first.
-		By("waiting for the post-restart initial reconcile to complete")
+		// Anchor the reconcile gate to the NEW pod. restartControllerDeployment
+		// blocks until the rollout completes, so exactly one non-terminating
+		// controller pod remains — the freshly started one. controllerPodNames
+		// already filters out pods with a deletionTimestamp.
+		var newControllerPod string
+		Eventually(func(g Gomega) {
+			pods, podErr := controllerPodNames()
+			g.Expect(podErr).NotTo(HaveOccurred())
+			g.Expect(pods).To(HaveLen(1), "expected exactly one non-terminating controller pod after rollout")
+			newControllerPod = pods[0]
+		}, 30*time.Second, 2*time.Second).Should(Succeed())
+		By(fmt.Sprintf("new controller pod after restart: %s", newControllerPod))
+
+		// Phase 3 drain signals replace a 75 s blind wait. The reconcile counter
+		// is scoped to the new pod via its `pod` target label: a counter resets to
+		// 0 on a fresh pod, so `{pod="<new>"} > 0` proves the new pod completed its
+		// own post-restart snapshot reconcile. A sum() over a pre-restart baseline
+		// cannot prove this — once Prometheus marks the old pod's series stale, the
+		// new pod's first increment can bring the cross-pod sum back to the old
+		// total rather than above it, so `> baseline` could never pass.
+		// branch_worker_queue_depth returning to 0 then confirms that submission
+		// has been committed and pushed — the exact moment any destructive commit
+		// would have landed — instead of guessing with a fixed sleep.
+		By("waiting for the new pod to complete its post-restart reconcile")
 		waitForMetricWithTimeout(
 			fmt.Sprintf(
-				`max(gitopsreverser_target_initial_reconcile_complete`+
-					`{gittarget_namespace=%q,gittarget_name=%q}) or vector(0)`,
-				testNs, gitTargetName,
+				`sum(gitopsreverser_target_reconcile_completed_total`+
+					`{gittarget_namespace=%q,gittarget_name=%q,pod=%q}) or vector(0)`,
+				testNs, gitTargetName, newControllerPod,
 			),
-			func(v float64) bool { return v == 1 },
-			"GitTarget initial reconcile complete after restart",
+			func(v float64) bool { return v > 0 },
+			"GitTarget reconcile completed on the new controller pod",
 			90*time.Second,
 		)
 
@@ -186,8 +197,8 @@ var _ = Describe("Restart Snapshot Safety", Label("restart-snapshot", "smoke"), 
 		waitForMetricWithTimeout(
 			fmt.Sprintf(
 				`sum(gitopsreverser_branch_worker_queue_depth`+
-					`{provider_namespace=%q,provider_name=%q,branch="main"}) or vector(0)`,
-				testNs, providerName,
+					`{provider_namespace=%q,provider_name=%q,branch="main",pod=%q}) or vector(0)`,
+				testNs, providerName, newControllerPod,
 			),
 			func(v float64) bool { return v == 0 },
 			"branch worker queue drained after restart",

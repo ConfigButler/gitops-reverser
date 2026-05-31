@@ -62,25 +62,31 @@ var (
 	// RepoBranchQueueDepth is a gauge for per-repo-branch queue depth.
 	RepoBranchQueueDepth metric.Int64UpDownCounter
 
-	// TargetInitialReconcileComplete latches to 1 once a GitTarget's post-(re)start
-	// initial reconcile pass has completed end-to-end in this process: the snapshot
-	// decision was made and its write request was submitted to the branch worker
-	// queue. Labelled by {gittarget_namespace, gittarget_name}. The labels avoid
-	// the reserved `namespace`/`name` keys on purpose: a Prometheus pod scrape with
-	// honor_labels=false overwrites a metric's `namespace` attribute with the
-	// scraped pod's own namespace, so a per-GitTarget `namespace` label would be
-	// silently unqueryable. It is a per-process latch — a controller restart starts
-	// a fresh process whose gauge is unset until the first snapshot delivery sets
-	// it. Load-bearing for the restart-snapshot e2e spec; treat the name/labels as
-	// a public observability contract.
-	TargetInitialReconcileComplete metric.Int64Gauge
+	// TargetReconcileCompletedTotal counts completed rule-set snapshot reconcile
+	// passes per GitTarget: each increment marks one pass where the snapshot
+	// decision was made and its write request submitted to the branch worker
+	// queue. Labelled by {gittarget_namespace, gittarget_name, trigger} where
+	// trigger is `rule_change` (the GVR/rule reconcile path) or `startup_replay`
+	// (a snapshot replayed once a FolderReconciler is created). A counter, not a
+	// latched gauge, on purpose: a counter resets to 0 on a fresh pod, so a
+	// per-pod `{pod="<new>"} > 0` check after a rollout proves the new pod did
+	// its own reconcile — robust to the old pod's stale series that a Prometheus
+	// pod scrape may still be holding during the rollout, which a latched gauge
+	// (or a cross-pod sum-over-baseline) cannot distinguish.
+	// The label keys avoid the reserved `namespace`/`name`: a pod scrape with
+	// honor_labels=false would overwrite a metric's `namespace` attribute with the
+	// scraped pod's own namespace, making a per-GitTarget `namespace` selector
+	// silently match nothing. Load-bearing for the restart-snapshot e2e spec and
+	// useful long-term for spotting excessive reconciles via increase(...[5m]);
+	// treat the name/labels as a public observability contract.
+	TargetReconcileCompletedTotal metric.Int64Counter
 	// BranchWorkerQueueDepth gauges pending work for a single branch worker:
 	// queued work items plus any committed-but-not-yet-pushed work the worker is
 	// still holding. It reads 0 only when the worker has fully drained (empty
 	// queue and nothing retained for replay). Labelled by {provider_namespace,
 	// provider_name, branch}; the namespace/name keys are prefixed to avoid the
 	// reserved Prometheus pod-scrape target labels (see
-	// TargetInitialReconcileComplete). Load-bearing for the restart-snapshot e2e
+	// TargetReconcileCompletedTotal). Load-bearing for the restart-snapshot e2e
 	// spec's drain wait; treat the name/labels as a public observability contract.
 	BranchWorkerQueueDepth metric.Int64Gauge
 
@@ -258,6 +264,7 @@ func registerInstruments() error {
 		{"gitopsreverser_secret_encryption_failures_total", &SecretEncryptionFailuresTotal},
 		{"gitopsreverser_secret_encryption_cache_hits_total", &SecretEncryptionCacheHitsTotal},
 		{"gitopsreverser_secret_encryption_marker_skips_total", &SecretEncryptionMarkerSkipsTotal},
+		{"gitopsreverser_target_reconcile_completed_total", &TargetReconcileCompletedTotal},
 	}
 	for _, s := range counters {
 		v, err := otelMeter.Int64Counter(s.name)
@@ -306,7 +313,6 @@ func registerInstruments() error {
 		{"gitopsreverser_audit_queue_oldest_entry_age_seconds", &AuditQueueOldestEntryAgeSeconds},
 		{"gitopsreverser_audit_queue_oldest_pending_age_seconds", &AuditQueueOldestPendingAgeSeconds},
 		{"gitopsreverser_audit_debug_stream_length", &AuditDebugStreamLength},
-		{"gitopsreverser_target_initial_reconcile_complete", &TargetInitialReconcileComplete},
 		{"gitopsreverser_branch_worker_queue_depth", &BranchWorkerQueueDepth},
 	}
 	for _, s := range gauges {

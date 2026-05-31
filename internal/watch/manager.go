@@ -741,7 +741,7 @@ func (m *Manager) ReconcileForRuleChange(ctx context.Context) error {
 	// Emit RequestClusterState for each affected GitTarget so that a single
 	// "reconcile: sync N resources" commit is produced instead of N individual
 	// [CREATE] commits from the informer ADDED events buffered above.
-	m.emitSnapshotForRuleChange(ctx, log, targets)
+	m.emitSnapshotForRuleChange(ctx, log, targets, "rule_change")
 
 	// Transition streams back to LIVE_PROCESSING and flush buffered events.
 	// startInformersForGVRs already waited for cache sync (WaitForCacheSync),
@@ -1238,7 +1238,7 @@ func (m *Manager) MaybeReplaySnapshot(ctx context.Context, gitDest types.Resourc
 	target := ruleSetSnapshotTarget{gitDest: gitDest, hash: hash}
 	log := m.Log.WithName("reconcile")
 	m.EventRouter.BeginReconciliationForStream(gitDest)
-	m.emitSnapshotForRuleChange(ctx, log, []ruleSetSnapshotTarget{target})
+	m.emitSnapshotForRuleChange(ctx, log, []ruleSetSnapshotTarget{target}, "startup_replay")
 	m.EventRouter.CompleteReconciliationForStream(gitDest)
 }
 
@@ -1259,6 +1259,7 @@ func (m *Manager) emitSnapshotForRuleChange(
 	ctx context.Context,
 	log logr.Logger,
 	targets []ruleSetSnapshotTarget,
+	trigger string,
 ) {
 	if m.EventRouter == nil {
 		log.Info("EventRouter not set, skipping snapshot emission")
@@ -1296,7 +1297,7 @@ func (m *Manager) emitSnapshotForRuleChange(
 			continue
 		}
 		m.markRuleSetSnapshotDelivered(target)
-		m.recordTargetInitialReconcileComplete(gitDest)
+		m.recordTargetReconcileCompleted(gitDest, trigger)
 		emitted = true
 	}
 	if emitted {
@@ -1304,19 +1305,21 @@ func (m *Manager) emitSnapshotForRuleChange(
 	}
 }
 
-// recordTargetInitialReconcileComplete latches the per-GitTarget gauge to 1 once
-// its snapshot decision has been made and the resulting write request submitted
-// to the branch worker. On a controller restart this is the signal that the
-// target's post-restart initial reconcile pass has reached the git write path —
-// paired with a drained BranchWorkerQueueDepth it proves the post-restart
-// snapshot has fully landed. No-op until the gauge is registered.
-func (m *Manager) recordTargetInitialReconcileComplete(gitDest types.ResourceReference) {
-	if telemetry.TargetInitialReconcileComplete == nil {
+// recordTargetReconcileCompleted increments the per-GitTarget reconcile counter
+// once its snapshot decision has been made and the resulting write request
+// submitted to the branch worker, tagged with the trigger that drove the pass.
+// On a controller restart a delta over a pre-restart baseline is the signal that
+// the new pod's snapshot reconcile reached the git write path — paired with a
+// drained BranchWorkerQueueDepth it proves the post-restart snapshot has fully
+// landed. No-op until the counter is registered.
+func (m *Manager) recordTargetReconcileCompleted(gitDest types.ResourceReference, trigger string) {
+	if telemetry.TargetReconcileCompletedTotal == nil {
 		return
 	}
-	telemetry.TargetInitialReconcileComplete.Record(context.Background(), 1, metric.WithAttributes(
+	telemetry.TargetReconcileCompletedTotal.Add(context.Background(), 1, metric.WithAttributes(
 		attribute.String("gittarget_namespace", gitDest.Namespace),
 		attribute.String("gittarget_name", gitDest.Name),
+		attribute.String("trigger", trigger),
 	))
 }
 
