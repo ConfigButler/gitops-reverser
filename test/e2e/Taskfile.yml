@@ -220,11 +220,22 @@ tasks:
       - |
         reports_file="$(mktemp)"
         trap 'rm -f "${reports_file}"' EXIT
-        if [ -d .stamps/cluster ]; then
-          find .stamps/cluster -path "*/ginkgo-report-*.json" -type f | sort > "${reports_file}"
+        if [ -n "${ALLURE_GINKGO_REPORTS:-}" ]; then
+          printf '%s\n' ${ALLURE_GINKGO_REPORTS} | sort > "${reports_file}"
+        else
+          reports_root="${ALLURE_GINKGO_REPORTS_DIR:-{{.CS}}/{{.NAMESPACE}}}"
+          if [ -d "${reports_root}" ]; then
+            if [ "${ALLURE_INCLUDE_ALL_GINKGO_REPORTS:-}" = "true" ]; then
+              find "${reports_root}" -maxdepth 1 -name "ginkgo-report-*.json" -type f | sort > "${reports_file}"
+            else
+              find "${reports_root}" -maxdepth 1 -name "ginkgo-report-*.json" -type f -printf '%T@ %p\n' \
+                | sort -rn \
+                | sed -n '1s/^[^ ]* //p' > "${reports_file}"
+            fi
+          fi
         fi
         if [ ! -s "${reports_file}" ]; then
-          echo "No Ginkgo JSON reports found under .stamps/cluster. Run an e2e task first." >&2
+          echo "No Ginkgo JSON reports found for the current e2e context/namespace. Run an e2e task first." >&2
           exit 1
         fi
 

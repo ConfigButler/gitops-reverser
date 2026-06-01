@@ -55,9 +55,17 @@ devcontainer on the forwarded Allure port:
 task allure-e2e-open
 ```
 
-This serves the report on port `19081`. The same tasks can reuse older local
-Ginkgo JSON reports under `.stamps`, so you can generate the report after a
-failed run without rerunning the suite.
+This serves the report on port `19081`. By default, the local Allure task reads
+the newest Ginkgo JSON report from the current e2e context and namespace:
+`.stamps/cluster/<ctx>/<namespace>/ginkgo-report-*.json`.
+
+To render a different set of reports, set `ALLURE_GINKGO_REPORTS_DIR` to another
+directory or set `ALLURE_GINKGO_REPORTS` to an explicit whitespace-separated
+list of report files. To render every report in the selected directory, set
+`ALLURE_INCLUDE_ALL_GINKGO_REPORTS=true`.
+
+The same tasks can reuse an older local Ginkgo JSON report in that directory, so
+you can generate the report after a failed run without rerunning the suite.
 
 The first local render pulls the `eclipse-temurin:17-jre` image and downloads the
 Allure CLI into `.stamps/allure-cli`. Later renders reuse both Docker's image

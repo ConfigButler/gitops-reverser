@@ -130,6 +130,7 @@ func assertPassingResult(t *testing.T, outputDir string, result allureResult) {
 	}
 	assertHasLabel(t, result, "framework", "ginkgo")
 	assertHasLabel(t, result, "language", "go")
+	assertHasLabel(t, result, "thread", "ginkgo-process-2")
 	assertHasLabel(t, result, "suite", "E2E Suite")
 	assertHasLabel(t, result, "package", "e2e")
 	assertHasLabel(t, result, "parentSuite", "Manager")
@@ -198,6 +199,81 @@ func TestRun_BadJSON(t *testing.T) {
 	_, err := run(t.TempDir(), []string{path})
 	if err == nil {
 		t.Fatal("expected invalid JSON error")
+	}
+}
+
+func TestRun_IgnoresDryRunReports(t *testing.T) {
+	reports := fixtureReport()
+	reports[0].SuiteConfig.DryRun = true
+	reportPath := writeFixtureReport(t, reports)
+	outputDir := filepath.Join(t.TempDir(), "allure-results")
+
+	count, err := run(outputDir, []string{reportPath})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("count: got %d, want 0", count)
+	}
+	if results := readAllureResults(t, outputDir); len(results) != 0 {
+		t.Fatalf("results: got %d, want 0", len(results))
+	}
+}
+
+func TestRun_IgnoresSpecsSkippedByLabelFilter(t *testing.T) {
+	reports := fixtureReport()
+	reports[0].SuiteConfig.LabelFilter = "smoke"
+	reports[0].SpecReports = []types.SpecReport{
+		{
+			ContainerHierarchyTexts: []string{"Manager"},
+			LeafNodeType:            types.NodeTypeIt,
+			LeafNodeText:            "runs",
+			State:                   types.SpecStatePassed,
+			StartTime:               reports[0].StartTime,
+			EndTime:                 reports[0].StartTime.Add(time.Second),
+			RunTime:                 time.Second,
+			ParallelProcess:         1,
+		},
+		{
+			ContainerHierarchyTexts: []string{"Manager"},
+			LeafNodeType:            types.NodeTypeIt,
+			LeafNodeText:            "filtered out",
+			State:                   types.SpecStateSkipped,
+			StartTime:               reports[0].StartTime.Add(time.Second),
+			ParallelProcess:         1,
+		},
+		{
+			ContainerHierarchyTexts: []string{"Manager"},
+			LeafNodeType:            types.NodeTypeIt,
+			LeafNodeText:            "skips intentionally",
+			State:                   types.SpecStateSkipped,
+			StartTime:               reports[0].StartTime.Add(2 * time.Second),
+			Failure: types.Failure{
+				Message: "operator skipped",
+			},
+			ParallelProcess: 1,
+		},
+	}
+	reportPath := writeFixtureReport(t, reports)
+	outputDir := filepath.Join(t.TempDir(), "allure-results")
+
+	count, err := run(outputDir, []string{reportPath})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("count: got %d, want 2", count)
+	}
+	results := readAllureResults(t, outputDir)
+	if len(results) != 2 {
+		t.Fatalf("results: got %d, want 2", len(results))
+	}
+	findResult(t, results, "runs")
+	findResult(t, results, "skips intentionally")
+	for _, result := range results {
+		if result.Name == "filtered out" {
+			t.Fatal("filtered-out spec was converted")
+		}
 	}
 }
 

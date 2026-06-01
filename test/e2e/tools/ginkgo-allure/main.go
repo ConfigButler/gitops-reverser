@@ -112,17 +112,30 @@ func run(outputDir string, paths []string) (int, error) {
 		if err != nil {
 			return count, err
 		}
-		for reportIndex, report := range reports {
-			for specIndex, spec := range report.SpecReports {
-				if spec.LeafNodeType != types.NodeTypeIt {
-					continue
-				}
-				result := convertSpec(path, reportIndex, specIndex, report, spec)
-				if err := writeResult(outputDir, result, spec.CombinedOutput()); err != nil {
-					return count, err
-				}
-				count++
+		reportCount, err := convertReports(outputDir, path, reports)
+		if err != nil {
+			return count, err
+		}
+		count += reportCount
+	}
+	return count, nil
+}
+
+func convertReports(outputDir, path string, reports []types.Report) (int, error) {
+	count := 0
+	for reportIndex, report := range reports {
+		if report.SuiteConfig.DryRun {
+			continue
+		}
+		for specIndex, spec := range report.SpecReports {
+			if spec.LeafNodeType != types.NodeTypeIt || specSkippedByFilter(report, spec) {
+				continue
 			}
+			result := convertSpec(path, reportIndex, specIndex, report, spec)
+			if err := writeResult(outputDir, result, spec.CombinedOutput()); err != nil {
+				return count, err
+			}
+			count++
 		}
 	}
 	return count, nil
@@ -208,6 +221,9 @@ func labels(report types.Report, spec types.SpecReport) []allureLabel {
 		{Name: "language", Value: "go"},
 		{Name: "framework", Value: "ginkgo"},
 	}
+	if spec.ParallelProcess > 0 {
+		out = append(out, allureLabel{Name: "thread", Value: fmt.Sprintf("ginkgo-process-%d", spec.ParallelProcess)})
+	}
 	if report.SuiteDescription != "" {
 		out = append(out, allureLabel{Name: "suite", Value: report.SuiteDescription})
 	}
@@ -242,6 +258,14 @@ func allureStatus(state types.SpecState) string {
 	default:
 		return "unknown"
 	}
+}
+
+func specSkippedByFilter(report types.Report, spec types.SpecReport) bool {
+	return report.SuiteConfig.LabelFilter != "" &&
+		spec.State == types.SpecStateSkipped &&
+		spec.EndTime.IsZero() &&
+		spec.RunTime == 0 &&
+		spec.Failure.IsZero()
 }
 
 func statusDetails(spec types.SpecReport) *allureStatusDetails {
