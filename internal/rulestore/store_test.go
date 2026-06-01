@@ -386,6 +386,109 @@ func TestGetMatchingRules(t *testing.T) {
 	}
 }
 
+// TestGetMatchingRules_OverlappingRulesUnionOperations pins the semantics for
+// "two WatchRules match the same resource": operations *add up* (union), there
+// is no first-wins precedence and no single rule that "owns" the resource.
+//
+// Matching is evaluated per-operation: GetMatchingRules returns every rule whose
+// operation set includes the operation being tested (an empty set means all).
+// So for pods covered by rule A=[CREATE] and rule B=[UPDATE]:
+//   - a CREATE matches A only,
+//   - an UPDATE matches B only,
+//   - a DELETE matches neither (the union is exactly {CREATE, UPDATE}, not "all"),
+//   - and when two rules both cover CREATE, *both* are returned (additive, not
+//     deduped to one).
+//
+// This matters for the per-target effective watch plan
+// (docs/design/gittarget-isolation-on-rule-change.md): a target's watched
+// operation set for a GVR is the union across its rules, and each returned
+// CompiledRule carries its own GitTarget, so two complementary rules pointing at
+// the same target make that target watch the union.
+func TestGetMatchingRules_OverlappingRulesUnionOperations(t *testing.T) {
+	store := NewStore()
+
+	podsRule := func(name string, ops ...configv1alpha1.OperationType) configv1alpha1.WatchRule {
+		r := configv1alpha1.WatchRule{
+			Spec: configv1alpha1.WatchRuleSpec{
+				Rules: []configv1alpha1.ResourceRule{{
+					Operations:  ops,
+					APIGroups:   []string{""},
+					APIVersions: []string{"v1"},
+					Resources:   []string{"pods"},
+				}},
+			},
+		}
+		r.Name = name
+		r.Namespace = "default"
+		return r
+	}
+
+	// Two rules covering the same resource with complementary operations, plus a
+	// second CREATE rule to prove matches are additive rather than first-wins.
+	store.AddOrUpdateWatchRule(
+		podsRule("pod-create", configv1alpha1.OperationCreate),
+		"dest-a", "default", "repo", "gitops-system", "main", "a")
+	store.AddOrUpdateWatchRule(
+		podsRule("pod-update", configv1alpha1.OperationUpdate),
+		"dest-a", "default", "repo", "gitops-system", "main", "a")
+	store.AddOrUpdateWatchRule(
+		podsRule("pod-create-2", configv1alpha1.OperationCreate),
+		"dest-b", "default", "repo", "gitops-system", "main", "b")
+
+	tests := []struct {
+		name          string
+		operation     configv1alpha1.OperationType
+		expectedNames []string
+	}{
+		{
+			name:          "CREATE returns both CREATE rules (additive, not first-wins)",
+			operation:     configv1alpha1.OperationCreate,
+			expectedNames: []string{"pod-create", "pod-create-2"},
+		},
+		{
+			name:          "UPDATE returns the UPDATE rule (operations union across rules)",
+			operation:     configv1alpha1.OperationUpdate,
+			expectedNames: []string{"pod-update"},
+		},
+		{
+			name:          "DELETE matches nothing (union is exactly CREATE+UPDATE, not all)",
+			operation:     configv1alpha1.OperationDelete,
+			expectedNames: []string{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			matches := store.GetMatchingRules(nil, "pods", tt.operation, "", "v1", false)
+
+			gotNames := make(map[string]struct{}, len(matches))
+			for _, m := range matches {
+				gotNames[m.Source.Name] = struct{}{}
+			}
+
+			if len(matches) != len(tt.expectedNames) {
+				t.Errorf("expected %d matches %v, got %d %v",
+					len(tt.expectedNames), tt.expectedNames, len(matches), keys(gotNames))
+			}
+			for _, want := range tt.expectedNames {
+				if _, ok := gotNames[want]; !ok {
+					t.Errorf("expected rule %q to match %s, got %v",
+						want, tt.operation, keys(gotNames))
+				}
+			}
+		})
+	}
+}
+
+// keys returns the keys of a set, for readable test failure messages.
+func keys(m map[string]struct{}) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}
+
 func TestRuleStore_Readiness(t *testing.T) {
 	store := NewStore()
 	if store.IsReady() {

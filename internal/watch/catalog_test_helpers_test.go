@@ -120,35 +120,3 @@ func commonTestDiscoveryClient() func() (apiResourceDiscovery, error) {
 		return newCommonTestDiscovery(), nil
 	}
 }
-
-// snapshotDeliveryTestDiscovery returns a trusted-but-minimal discovery that
-// serves only an unrelated resource. The snapshot-delivery tests register
-// configmaps rules purely to exercise rule-set-change snapshot emission; with
-// configmaps absent from trusted discovery, rule resolution requests no informer
-// GVRs, so those tests never plan real informers. This replaces the old
-// discoveryFilter stub that returned no GVRs.
-func snapshotDeliveryTestDiscovery() staticCatalogDiscovery {
-	return staticCatalogDiscovery{
-		groups: []*metav1.APIGroup{testAPIGroup("", "v1")},
-		resources: []*metav1.APIResourceList{{
-			GroupVersion: "v1",
-			APIResources: []metav1.APIResource{
-				{Name: "nodes", Kind: "Node", Verbs: metav1.Verbs{"get", "list", "watch"}},
-			},
-		}},
-	}
-}
-
-func newSnapshotDeliveryTestCatalog(t *testing.T) *APIResourceCatalog {
-	t.Helper()
-	catalog := NewAPIResourceCatalog()
-	_, err := catalog.Refresh(snapshotDeliveryTestDiscovery())
-	require.NoError(t, err)
-	return catalog
-}
-
-func snapshotDeliveryTestDiscoveryClient() func() (apiResourceDiscovery, error) {
-	return func() (apiResourceDiscovery, error) {
-		return snapshotDeliveryTestDiscovery(), nil
-	}
-}

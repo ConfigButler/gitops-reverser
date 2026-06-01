@@ -123,6 +123,64 @@ type ruleSetSnapshotTarget struct {
 	hash    uint64
 }
 
+// targetWatchPlan accumulates a single GitTarget's effective watch surface while
+// currentRuleSetSnapshots walks the rule set. entries maps an entry key
+// ("group/version/resource|scope|ns") to the union of operation tokens watched
+// for it; dest holds the write destination. hash() folds both into a stable
+// per-target hash. See currentRuleSetSnapshots for the rationale on what is and
+// is not included.
+type targetWatchPlan struct {
+	gitDest types.ResourceReference
+	entries map[string]map[string]struct{}
+	dest    string
+}
+
+// addEntry records that the target watches gvr in the given namespace ("" means
+// all namespaces / cluster-scoped) for the given operations. An empty or
+// wildcard operation set is canonicalised to "*" (all operations), and once "*"
+// is present it subsumes any explicit operations during hashing.
+func (p *targetWatchPlan) addEntry(gvr GVR, namespace string, ops []configv1alpha1.OperationType) {
+	entryKey := fmt.Sprintf("%s/%s/%s|scope=%s|ns=%s",
+		gvr.Group, gvr.Version, gvr.Resource, gvr.Scope, namespace)
+	opsSet := p.entries[entryKey]
+	if opsSet == nil {
+		opsSet = make(map[string]struct{})
+		p.entries[entryKey] = opsSet
+	}
+	if len(ops) == 0 {
+		opsSet["*"] = struct{}{}
+		return
+	}
+	for _, op := range ops {
+		if op == configv1alpha1.OperationAll {
+			opsSet["*"] = struct{}{}
+			continue
+		}
+		opsSet[string(op)] = struct{}{}
+	}
+}
+
+// hash returns a stable hash of the plan: destination plus each entry with its
+// resolved operation set, sorted for determinism.
+func (p *targetWatchPlan) hash() uint64 {
+	entryStrings := make([]string, 0, len(p.entries))
+	for entryKey, opsSet := range p.entries {
+		var ops []string
+		if _, all := opsSet["*"]; all {
+			ops = []string{"*"}
+		} else {
+			ops = make([]string, 0, len(opsSet))
+			for op := range opsSet {
+				ops = append(ops, op)
+			}
+			sort.Strings(ops)
+		}
+		entryStrings = append(entryStrings, entryKey+"|ops="+strings.Join(ops, ","))
+	}
+	sort.Strings(entryStrings)
+	return xxhash.Sum64String(p.dest + "\x00" + strings.Join(entryStrings, "\x00"))
+}
+
 const (
 	heartbeatInterval         = 30 * time.Second
 	periodicReconcileInterval = 30 * time.Second
@@ -705,7 +763,7 @@ func (m *Manager) ReconcileForRuleChange(ctx context.Context) error {
 	activeCount := len(m.activeInformers)
 	m.informersMu.Unlock()
 
-	targets := m.snapshotTargetsNeedingDelivery(len(added) > 0 || len(removed) > 0)
+	targets := m.snapshotTargetsNeedingDelivery()
 	if len(added) == 0 && len(removed) == 0 && len(targets) == 0 {
 		log.V(1).Info("No GVR changes detected, skipping reconciliation",
 			"activeGVRs", activeCount)
@@ -1103,7 +1161,13 @@ func splitResourceKey(key string) []string {
 	return parts
 }
 
-func (m *Manager) snapshotTargetsNeedingDelivery(force bool) []ruleSetSnapshotTarget {
+// snapshotTargetsNeedingDelivery returns the GitTargets whose effective watch
+// plan hash differs from the one last delivered — i.e. targets whose watched
+// resource surface actually changed. Selection is purely per-target: global GVR
+// churn for an unrelated target no longer drags every target into a snapshot.
+// Targets whose hash is unchanged keep processing live events. See
+// docs/design/gittarget-isolation-on-rule-change.md.
+func (m *Manager) snapshotTargetsNeedingDelivery() []ruleSetSnapshotTarget {
 	current := m.currentRuleSetSnapshots()
 	currentKeys := make(map[string]struct{}, len(current))
 
@@ -1115,10 +1179,8 @@ func (m *Manager) snapshotTargetsNeedingDelivery(force bool) []ruleSetSnapshotTa
 	for _, target := range current {
 		key := target.gitDest.Key()
 		currentKeys[key] = struct{}{}
-		if !force {
-			if lastDelivered, ok := m.lastDeliveredRuleSetHash[key]; ok && lastDelivered == target.hash {
-				continue
-			}
+		if lastDelivered, ok := m.lastDeliveredRuleSetHash[key]; ok && lastDelivered == target.hash {
+			continue
 		}
 		m.pendingRuleSetHash[key] = target.hash
 		targets = append(targets, target)
@@ -1139,58 +1201,88 @@ func (m *Manager) snapshotTargetsNeedingDelivery(force bool) []ruleSetSnapshotTa
 	return targets
 }
 
+// currentRuleSetSnapshots returns, per GitTarget, a hash of that target's
+// *effective watch plan* — what it actually watches after rule resolution and
+// API discovery, not the literal rule text. The hash drives snapshot selection
+// in snapshotTargetsNeedingDelivery: a target is re-snapshotted only when its
+// plan hash changes.
+//
+// A plan is the set of (resolved GVR, namespace scope, union of operations)
+// entries the target watches, plus the write destination (provider/branch/path).
+// Deliberately excluded: source rule identity (namespace/name) and the raw
+// apiGroups/apiVersions/resources patterns. Those are inputs to resolution, not
+// the resolved surface — keeping them caused unrelated churn (a redundant
+// duplicate rule) and missed real churn (a wildcard newly matching a CRD). See
+// docs/design/gittarget-isolation-on-rule-change.md.
+//
+// Operations add up across rules: when two rules for the same target resolve to
+// the same GVR, the entry's operation set is their union (see
+// rulestore TestGetMatchingRules_OverlappingRulesUnionOperations). A target with
+// no resolvable rules has an empty plan and is omitted entirely.
 func (m *Manager) currentRuleSetSnapshots() []ruleSetSnapshotTarget {
-	entriesByTarget := make(map[string][]string)
-	refsByTarget := make(map[string]types.ResourceReference)
+	plans := make(map[string]*targetWatchPlan)
+	resolver := m.ruleGVRResolver()
 
+	plan := func(ref types.ResourceReference, providerNS, provider, branch, path string) *targetWatchPlan {
+		key := ref.Key()
+		p := plans[key]
+		if p == nil {
+			p = &targetWatchPlan{gitDest: ref, entries: make(map[string]map[string]struct{})}
+			plans[key] = p
+		}
+		// Destination is a property of the GitTarget, so it is identical across
+		// that target's rules; recording it on each rule is harmless.
+		p.dest = fmt.Sprintf("provider=%s/%s|branch=%q|path=%q", providerNS, provider, branch, path)
+		return p
+	}
+
+	// Namespaced WatchRules watch their own namespace (rule.Source.Namespace),
+	// so the namespace is part of the resolved scope even though the rule name is
+	// not part of the plan.
 	for _, rule := range m.RuleStore.SnapshotWatchRules() {
-		ref := types.NewResourceReference(rule.GitTargetRef, rule.GitTargetNamespace)
-		key := ref.Key()
-		refsByTarget[key] = ref
-		entriesByTarget[key] = append(entriesByTarget[key], fmt.Sprintf(
-			"watch|source=%s/%s|target=%s/%s|provider=%s/%s|branch=%q|path=%q|rules=%#v",
-			rule.Source.Namespace,
-			rule.Source.Name,
-			rule.GitTargetNamespace,
-			rule.GitTargetRef,
-			rule.GitProviderNamespace,
-			rule.GitProviderRef,
-			rule.Branch,
-			rule.Path,
-			rule.ResourceRules,
-		))
+		p := plan(
+			types.NewResourceReference(rule.GitTargetRef, rule.GitTargetNamespace),
+			rule.GitProviderNamespace, rule.GitProviderRef, rule.Branch, rule.Path,
+		)
+		for _, rr := range rule.ResourceRules {
+			gvrs, _ := resolver.Resolve(rr.APIGroups, rr.APIVersions, rr.Resources,
+				configv1alpha1.ResourceScopeNamespaced)
+			for _, gvr := range gvrs {
+				p.addEntry(gvr, rule.Source.Namespace, rr.Operations)
+			}
+		}
 	}
 
+	// ClusterWatchRules carry per-rule scope and watch all namespaces (or are
+	// cluster-scoped), so the plan namespace is empty.
 	for _, rule := range m.RuleStore.SnapshotClusterWatchRules() {
-		ref := types.NewResourceReference(rule.GitTargetRef, rule.GitTargetNamespace)
-		key := ref.Key()
-		refsByTarget[key] = ref
-		entriesByTarget[key] = append(entriesByTarget[key], fmt.Sprintf(
-			"cluster|source=%s|target=%s/%s|provider=%s/%s|branch=%q|path=%q|rules=%#v",
-			rule.Source.Name,
-			rule.GitTargetNamespace,
-			rule.GitTargetRef,
-			rule.GitProviderNamespace,
-			rule.GitProviderRef,
-			rule.Branch,
-			rule.Path,
-			rule.Rules,
-		))
+		p := plan(
+			types.NewResourceReference(rule.GitTargetRef, rule.GitTargetNamespace),
+			rule.GitProviderNamespace, rule.GitProviderRef, rule.Branch, rule.Path,
+		)
+		for _, rr := range rule.Rules {
+			gvrs, _ := resolver.Resolve(rr.APIGroups, rr.APIVersions, rr.Resources, rr.Scope)
+			for _, gvr := range gvrs {
+				p.addEntry(gvr, "", rr.Operations)
+			}
+		}
 	}
 
-	keys := make([]string, 0, len(entriesByTarget))
-	for key := range entriesByTarget {
+	keys := make([]string, 0, len(plans))
+	for key := range plans {
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
 
 	targets := make([]ruleSetSnapshotTarget, 0, len(keys))
 	for _, key := range keys {
-		entries := entriesByTarget[key]
-		sort.Strings(entries)
+		p := plans[key]
+		if len(p.entries) == 0 {
+			continue
+		}
 		targets = append(targets, ruleSetSnapshotTarget{
-			gitDest: refsByTarget[key],
-			hash:    xxhash.Sum64String(strings.Join(entries, "\x00")),
+			gitDest: p.gitDest,
+			hash:    p.hash(),
 		})
 	}
 	return targets

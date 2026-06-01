@@ -102,7 +102,10 @@ vars:
   # Number of parallel Ginkgo processes for the e2e suite. >1 enables Ginkgo
   # parallelism (Phase 2.5 of docs/design/e2e-speedup-plan.md). Files that touch
   # shared cluster-scoped state are marked Serial (see docs/design/e2e-serial-registry.md).
-  E2E_GINKGO_PROCS: '{{.E2E_GINKGO_PROCS | default "2"}}'
+  # Default 4 locally: GitTarget isolation on rule changes is now per-target
+  # (docs/design/gittarget-isolation-on-rule-change.md), so higher parallelism no
+  # longer trips cross-target snapshot coupling.
+  E2E_GINKGO_PROCS: '{{.E2E_GINKGO_PROCS | default "4"}}'
   FLUX_SERVICES_DIR: '{{.FLUX_SERVICES_DIR | default "test/e2e/setup/flux"}}'
   DEMO_MANIFESTS_DIR: 'test/e2e/setup/demo-only'
   DEMO_TUNNEL_CREDENTIALS: '{{.DEMO_MANIFESTS_DIR}}/cloudflared-public/tunnel-credentials.yaml'

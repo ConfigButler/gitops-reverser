@@ -12,11 +12,11 @@ questions (run `prepare-e2e` up front; observe disk usage).
 
 ```
 e2e (runs-on: ubuntu-latest)
- ├─ matrix leg "quickstart"  → E2E_GINKGO_PROCS=2, K3D_AGENT_COUNT=1, needs_artifact=true
+ ├─ matrix leg "quickstart"  → E2E_GINKGO_PROCS=2, K3D_AGENT_COUNT=0, needs_artifact=true
  │     script: INSTALL_MODE=helm task test-e2e-quickstart-helm
  │           → task test-image-refresh
  │           → INSTALL_MODE=plain-manifests-file task test-e2e-quickstart-manifest
- └─ matrix leg "full"        → E2E_GINKGO_PROCS=1, K3D_AGENT_COUNT=1, needs_artifact=false
+ └─ matrix leg "full"        → E2E_GINKGO_PROCS=1, K3D_AGENT_COUNT=0, needs_artifact=false
        script: task test-e2e-full
 ```
 
@@ -41,18 +41,24 @@ service image — lands on the **one** runner VM's disk.
 
 ### 1.2 What `task test-e2e-*` actually does
 
-The Task targets ([`test/e2e/Taskfile.yml`](../../test/e2e/Taskfile.yml)) don't
-prepare the cluster themselves — they just invoke Ginkgo:
+The Task targets ([`test/e2e/Taskfile.yml`](../../test/e2e/Taskfile.yml)) still
+invoke Ginkgo:
 
 ```
 go run .../ginkgo --procs=$E2E_GINKGO_PROCS --timeout=$E2E_GO_TEST_TIMEOUT ... ./test/e2e/
 ```
 
-Cluster prep happens **inside** the suite. `SynchronizedBeforeSuite` (process #1
-only) calls `prepareE2EClusterOnce()`
+For local runs, cluster prep happens **inside** the suite. `SynchronizedBeforeSuite`
+(process #1 only) calls `prepareE2EClusterOnce()`
 ([`e2e_suite_test.go:82`](../../test/e2e/e2e_suite_test.go#L82)), which shells out
 to `task prepare-e2e` with the leg's `CTX / INSTALL_MODE / NAMESPACE /
 INSTALL_NAME`.
+
+In CI, the workflow now runs the install-mode-independent `_services-ready`
+slice first, outside Ginkgo, so cluster + Flux + Flux-managed service logs
+stream in their own step. The suite still calls `prepare-e2e`; because the
+cluster/service stamps already exist, it skips that expensive subtree and
+continues with the install-mode-specific controller/image tail.
 
 ### 1.3 The `prepare-e2e` dependency graph
 
@@ -81,8 +87,11 @@ The genuinely slow / hang-prone nodes:
 | `_flux-installed` | flux-operator install + FluxInstance + Flux deployments `Available` | `FLUX_WAIT_TIMEOUT=500s` |
 | `_flux-setup-ready` | every HelmRelease/Kustomization (gitea, valkey, prometheus, traefik…) `Ready` | `FLUX_SERVICES_WAIT_TIMEOUT=600s` per resource |
 
-The whole Ginkgo run — prepare **plus** the specs — is bounded by one timeout:
-`E2E_GO_TEST_TIMEOUT=15m` (smoke/quickstart) or `E2E_FULL_TIMEOUT=30m` (full).
+For local runs, the whole Ginkgo run — prepare **plus** the specs — is bounded by
+one timeout: `E2E_GO_TEST_TIMEOUT=15m` (smoke/quickstart) or
+`E2E_FULL_TIMEOUT=30m` (full). In CI, `_services-ready` is outside that Ginkgo
+timeout; the timeout now covers the stamped/no-op cluster prep, the
+install-mode-specific tail, and the specs.
 
 ### 1.4 Why it "goes silent for ~15 min, then green on retry"
 
@@ -125,20 +134,19 @@ Ready). Disk pressure can *cause* those stalls (e.g. kubelet
 worth ruling in or out — but **measure before you commit to that theory.** That's
 exactly what §4 adds.
 
-> **Set `K3D_AGENT_COUNT=1`.** ✅ Already done — both matrix legs pass
-`k3d_agent_count: "1"` (1 server + 1 agent = 2 nodes). You could go to **0
-agents** (single-node; k3s schedules workloads on the server) to shave one more
-node-container's worth of RAM/disk/inotify. Trade-off: less parallelism headroom
-for `--procs=2`. Worth trying on the quickstart leg if measurements show
-resource pressure.
+> **Set `K3D_AGENT_COUNT=1`.** Superseded. Both matrix legs now pass
+`k3d_agent_count: "0"` (single-node k3d; k3s schedules workloads on the server).
+This reduces node-container RAM/disk/inotify footprint, but leaves less
+scheduling headroom for the quickstart leg's `--procs=2`. Keep watching the
+quickstart timing and resource samples before treating `0` agents as permanent.
 
 > **Spin up 4 e2e legs and run more in parallel.** ◑ Mixed. More legs = more
 *isolated* runners, so wall-clock can drop **if you split specs across them**.
 But it does **not** reduce per-leg disk/RAM pressure — each new leg re-pulls the
 full image set onto its own 14 GB disk. If disk/resource pressure is the real
 root cause, adding legs spreads load but each leg is just as likely to hit it.
-Fix the per-leg footprint first (measure → free disk → maybe 0 agents), *then*
-fan out for speed.
+Fix the per-leg footprint first (measure → single-node/0-agent if it keeps
+passing), *then* fan out for speed.
 
 ---
 

@@ -1,0 +1,203 @@
+/*
+SPDX-License-Identifier: Apache-2.0
+
+Copyright 2025 ConfigButler
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package e2e
+
+import (
+	"fmt"
+	"os/exec"
+	"path"
+	"time"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+)
+
+// This spec is the e2e regression for GitTarget isolation on rule changes (see
+// docs/design/gittarget-isolation-on-rule-change.md). The original symptom was a
+// parallel-run flake: one GitTarget's ConfigMap event commit ("[CREATE] ...")
+// was replaced by a snapshot commit ("reconcile: sync N resources") because an
+// unrelated spec changed a *different* target's rules at the same time, dragging
+// every target into rule-change snapshot mode.
+//
+// It is deliberately NOT Serial — the whole point is that isolation must hold
+// under parallel execution. It is Label("smoke") so it runs in the same suite
+// where the flake originally appeared.
+var _ = Describe("Manager GitTarget Isolation", Label("manager"), Label("smoke"), Ordered, func() {
+	const (
+		providerName = "gitprovider-iso"
+		targetA      = "iso-target-a"
+		targetB      = "iso-target-b"
+		ruleA        = "iso-rule-a"
+		ruleB        = "iso-rule-b"
+		pathA        = "e2e/iso-a"
+		pathB        = "e2e/iso-b"
+	)
+
+	var (
+		testNs  string
+		isoRepo *RepoArtifacts
+	)
+
+	BeforeAll(func() {
+		By("creating GitTarget isolation test namespace")
+		testNs = testNamespaceFor("manager-isolation")
+		_, _ = kubectlRun("create", "namespace", testNs) // idempotent; ignore AlreadyExists
+
+		By("setting up Gitea repo and credentials for isolation tests")
+		isoRepo = SetupRepo(
+			resolveE2EContext(),
+			testNs,
+			fmt.Sprintf("e2e-manager-isolation-%d", GinkgoRandomSeed()),
+		)
+
+		By("applying git secrets to test namespace")
+		_, err := kubectlRunInNamespace(testNs, "apply", "-f", isoRepo.SecretsYAML)
+		Expect(err).NotTo(HaveOccurred(), "failed to apply git secrets to test namespace")
+		applySOPSAgeKeyToNamespace(testNs)
+
+		By("creating shared GitProvider for isolation specs")
+		createGitProviderWithURLInNamespace(
+			providerName,
+			testNs,
+			isoRepo.GitSecretHTTP,
+			isoRepo.RepoURLHTTP,
+		)
+		verifyResourceStatus(
+			"gitprovider", providerName, testNs,
+			"True", "Ready", "Repository connectivity validated",
+		)
+
+		By("creating two independent GitTargets writing to separate paths in the same repo")
+		createGitTarget(targetA, testNs, providerName, pathA, "main")
+		createGitTarget(targetB, testNs, providerName, pathB, "main")
+		verifyResourceStatus("gittarget", targetA, testNs, "True", "Ready", "")
+		verifyResourceStatus("gittarget", targetB, testNs, "True", "Ready", "")
+
+		By("target A and target B both watch ConfigMaps (baseline steady state)")
+		applyIsolationWatchRule(ruleA, testNs, targetA, `"configmaps"`)
+		applyIsolationWatchRule(ruleB, testNs, targetB, `"configmaps"`)
+		verifyResourceStatus("watchrule", ruleA, testNs, "True", "Ready", "")
+		verifyResourceStatus("watchrule", ruleB, testNs, "True", "Ready", "")
+	})
+
+	AfterAll(func() {
+		cleanupNamespace(testNs)
+	})
+
+	SetDefaultEventuallyTimeout(30 * time.Second)
+	SetDefaultEventuallyPollingInterval(time.Second)
+
+	It("keeps target A's commits as events while target B's rules churn", Label("smoke"), func() {
+		// Let any in-flight reconciles from setup drain before we begin, so the
+		// baseline snapshot commits are settled and only our event commits land
+		// next on target A's path.
+		time.Sleep(5 * time.Second)
+
+		// Each iteration changes target B's effective watch plan (toggling an
+		// extra GVR on/off, which also churns the global informer set) and then
+		// creates a brand-new ConfigMap that target A must commit. If isolation
+		// holds, target A always produces an event commit; pre-fix, target B's
+		// churn would force target A into a "reconcile: sync" snapshot.
+		for i := range 3 {
+			cmName := fmt.Sprintf("iso-cm-%d", i)
+
+			By(fmt.Sprintf("churning target B's rule set (iteration %d)", i))
+			if i%2 == 0 {
+				applyIsolationWatchRule(ruleB, testNs, targetB, `"configmaps", "services"`)
+			} else {
+				applyIsolationWatchRule(ruleB, testNs, targetB, `"configmaps"`)
+			}
+
+			By(fmt.Sprintf("creating ConfigMap %q for target A", cmName))
+			applyIsolationConfigMap(cmName, testNs)
+
+			By("asserting target A commits it as an event commit, not a snapshot")
+			relPath := path.Join(pathA, fmt.Sprintf("v1/configmaps/%s/%s.yaml", testNs, cmName))
+			assertEventCommit := func(g Gomega) {
+				gitPull(g, isoRepo.CheckoutDir)
+
+				msg := lastCommitMessageForPath(g, isoRepo.CheckoutDir, relPath)
+				g.Expect(msg).To(ContainSubstring("[CREATE]"),
+					"target A's commit for %s must be a [CREATE] event commit", cmName)
+				g.Expect(msg).To(ContainSubstring(fmt.Sprintf("v1/configmaps/%s", cmName)),
+					"target A's commit message must name the resource path")
+				g.Expect(msg).NotTo(ContainSubstring("reconcile: sync"),
+					"target A must not enter snapshot mode because of target B's unrelated rule change "+
+						"(GitTarget isolation — see docs/design/gittarget-isolation-on-rule-change.md)")
+			}
+			Eventually(assertEventCommit).Should(Succeed())
+		}
+	})
+})
+
+// applyIsolationWatchRule applies a WatchRule selecting the given resources list
+// (a raw YAML array body, e.g. `"configmaps", "services"`) for the target.
+func applyIsolationWatchRule(name, namespace, target, resources string) {
+	data := struct {
+		Name            string
+		Namespace       string
+		DestinationName string
+		Resources       string
+	}{
+		Name:            name,
+		Namespace:       namespace,
+		DestinationName: target,
+		Resources:       resources,
+	}
+	Expect(applyFromTemplate("test/e2e/templates/manager/watchrule-resources.tmpl", data, namespace)).
+		To(Succeed(), "failed to apply isolation WatchRule %q", name)
+}
+
+// applyIsolationConfigMap creates a watched ConfigMap, attributed to a fixed
+// user so the commit is a genuine event commit.
+func applyIsolationConfigMap(name, namespace string) {
+	data := struct {
+		Name      string
+		Namespace string
+	}{
+		Name:      name,
+		Namespace: namespace,
+	}
+	Expect(applyFromTemplate(
+		"test/e2e/templates/manager/configmap.tmpl",
+		data,
+		namespace,
+		"--as=jane@acme.com",
+	)).To(Succeed(), "failed to apply isolation ConfigMap %q", name)
+}
+
+// gitPull pulls the latest changes into a checkout. It does not use utils.Run,
+// which would override cmd.Dir with the project directory.
+func gitPull(g Gomega, checkoutDir string) {
+	cmd := exec.Command("git", "pull")
+	cmd.Dir = checkoutDir
+	out, err := cmd.CombinedOutput()
+	g.Expect(err).NotTo(HaveOccurred(), "git pull failed: %s", string(out))
+}
+
+// lastCommitMessageForPath returns the body of the most recent commit that
+// touched the given repo-relative path. Scoping by path keeps each GitTarget's
+// history unambiguous even when several targets share one repo.
+func lastCommitMessageForPath(g Gomega, checkoutDir, relPath string) string {
+	cmd := exec.Command("git", "log", "-1", "--pretty=%B", "--", relPath)
+	cmd.Dir = checkoutDir
+	out, err := cmd.CombinedOutput()
+	g.Expect(err).NotTo(HaveOccurred(), "git log failed: %s", string(out))
+	return string(out)
+}

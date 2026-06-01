@@ -278,7 +278,11 @@ jobs:
           - name: full
             script: "task test-e2e-full"
             needs_artifact: false
-            e2e_ginkgo_procs: "1"
+            # Bumped 1 -> 4: the full suite was serialized to avoid the
+            # cross-target rule-change snapshot coupling, now fixed (per-target
+            # effective watch plan — docs/design/gittarget-isolation-on-rule-change.md).
+            # Validated locally at --procs=4; trialing the same in CI.
+            e2e_ginkgo_procs: "4"
             k3d_agent_count: "0"
     env:
       PROJECT_IMAGE: ${{ needs.docker-build.outputs.image }}

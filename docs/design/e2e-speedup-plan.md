@@ -487,10 +487,13 @@ Applied fallback:
 
 - CI **E2E (full)** sets `E2E_GINKGO_PROCS=1`.
 - Local/default `task test-e2e*` remains `E2E_GINKGO_PROCS=2`.
-- k3d local/default agents remain 3 for `procs=2`; CI passes
-  `K3D_AGENT_COUNT=1` because the full job is sequential.
+- k3d local/default agents remain 3 for `procs=2`; CI currently passes
+  `K3D_AGENT_COUNT=0` for both e2e legs to reduce per-leg runner footprint.
 - Warm k3d cluster reuse now verifies the expected node count and Ready
   condition instead of trusting `kubectl get ns` plus stamps.
+- CI pre-runs `_services-ready` outside Ginkgo so cluster + Flux + service
+  readiness logs stream live; the in-suite `prepare-e2e` call then reuses the
+  stamps and only performs the install-mode-specific tail.
 
 History that led here:
 Progression tried:
@@ -504,13 +507,24 @@ Progression tried:
   consecutive green reruns before we trust it. The 3→1 drop was originally
   due to `fs.inotify.max_user_instances` (default 128) exhaustion; that is
   now mitigated to 512 by `ensure_inotify_limits`, so 1 server + 3 agents
-  is possible but no longer the CI default. Confirmed the suite uses a **single** cluster (the
-  `audit-pass-through-e2e` cluster seen locally is an unrelated leftover).
+  is possible but no longer the CI default.
+- **0 agents** (`82715f2`/`de3dc09` era) → the branch has produced multiple
+  green CI runs with the explicit `_services-ready` pre-step and Allure/timing
+  artifacts, but this is still below the preferred stability window. Treat it
+  as promising, not proven, until there are 5-10 consecutive green full e2e
+  runs on the same shape.
 
-**Next after merge:** start **Phase 3** (below) on a *separate* branch —
-it touches production controller code (`internal/telemetry` +
-`internal/watch`) and cuts the Serial `Restart Snapshot Safety` spec
-(~128 s, the dominant remaining cost).
+Confirmed the suite uses a **single** cluster (the `audit-pass-through-e2e`
+cluster seen locally is an unrelated leftover).
+
+**Current best next work (2026-06-01):** do not raise the full-suite timeout
+again yet. `test-e2e-full` already has a 30 minute timeout, and recent green CI
+full legs complete well below it. The next useful work is a confidence pass:
+rerun the current CI shape enough times to build a 5-10 green-run window, then
+use the uploaded timing summaries, disk samples, and Allure reports to decide
+whether `K3D_AGENT_COUNT=0` is stable enough to merge. If it is stable, the next
+speed target is the residual fixed setup in `Restart Snapshot Safety` and the
+coarse `_services-ready` barrier, not more timeout.
 
 ### Phase 3 — Target-scoped reconcile-complete + drain signal for `Restart Snapshot Safety`
 
