@@ -6,10 +6,10 @@ set -euo pipefail
 #
 # Inputs (env):
 # - CTX (required): kube context
-# - FLUX_SERVICES_WAIT_TIMEOUT (optional): per-resource wait timeout; default 600s
+# - FLUX_SERVICES_WAIT_TIMEOUT (optional): per-resource wait timeout; default 120s
 
 : "${CTX:?CTX is required}"
-FLUX_SERVICES_WAIT_TIMEOUT="${FLUX_SERVICES_WAIT_TIMEOUT:-600s}"
+FLUX_SERVICES_WAIT_TIMEOUT="${FLUX_SERVICES_WAIT_TIMEOUT:-120s}"
 
 flux_ready_count=0
 echo "⏳ Waiting for Flux-managed installations to become ready..."

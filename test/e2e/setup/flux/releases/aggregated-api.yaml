@@ -20,6 +20,16 @@ metadata:
 spec:
   interval: 60m
   timeout: 10m
+  # This release renders cert-manager Issuer/Certificate resources (tls.mode:
+  # cert-manager below), so it must not install until cert-manager's CRDs and
+  # webhook are ready. Without this, kubectl apply -k fires both releases in
+  # parallel and aggregated-api's helm install races cert-manager: if the CRDs
+  # aren't established yet the install fails, exhausts its 3 remediation
+  # retries, and the release stays not-Ready until the next 60m interval —
+  # which times out wait-flux-services.sh on helmreleases/aggregated-api.
+  dependsOn:
+    - name: cert-manager
+      namespace: cert-manager
   chartRef:
     kind: OCIRepository
     name: apiservice-audit-proxy
