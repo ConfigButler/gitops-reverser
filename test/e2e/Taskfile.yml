@@ -176,16 +176,16 @@ tasks:
 
   test-e2e:
     desc: Run the smoke e2e suite
+    # Ginkgo parallelism (--procs) is orchestrated by the ginkgo CLI, not by
+    # `go test`. Run it via `go run` so the CLI version matches the pinned
+    # github.com/onsi/ginkgo/v2 module (a globally-installed ginkgo can differ
+    # and refuse to run on a version mismatch).
     cmds:
       - |
         export CTX="{{.CTX}}"
         export INSTALL_MODE="{{.INSTALL_MODE}}"
         export NAMESPACE="{{.NAMESPACE}}"
         export E2E_AGE_KEY_FILE="{{.CS}}/age-key.txt"
-        # Ginkgo parallelism (--procs) is orchestrated by the ginkgo CLI, not by
-        # `go test`. Run it via `go run` so the CLI version matches the pinned
-        # github.com/onsi/ginkgo/v2 module (a globally-installed ginkgo can differ
-        # and refuse to run on a version mismatch).
         go run github.com/onsi/ginkgo/v2/ginkgo \
           --procs={{.E2E_GINKGO_PROCS}} --timeout="{{.E2E_GO_TEST_TIMEOUT}}" -v \
           --label-filter=smoke \
@@ -610,13 +610,16 @@ tasks:
   clean-cluster:
     desc: Tear down the E2E cluster used for tests and remove its stamps
     cmds:
+      # Delete unconditionally rather than guarding on `k3d cluster list`. An
+      # interrupted create can leave orphaned artifacts (e.g. a `-tools`
+      # container and `-images` volume) that `k3d cluster list` does not show
+      # but `k3d cluster create` still rejects as "a cluster with that name
+      # already exists". `k3d cluster delete` cleans up that partial state and
+      # exits 0 when there is genuinely nothing to delete, so it is safe to run
+      # every time.
       - |
-        if {{.K3D}} cluster list 2>/dev/null | awk '{print $1}' | grep -q "^{{.CLUSTER_NAME}}$"; then
-          echo "Deleting k3d cluster '{{.CLUSTER_NAME}}'"
-          {{.K3D}} cluster delete "{{.CLUSTER_NAME}}"
-        else
-          echo "k3d cluster '{{.CLUSTER_NAME}}' does not exist; skipping cleanup"
-        fi
+        echo "Deleting k3d cluster '{{.CLUSTER_NAME}}' (including any orphaned partial state)"
+        {{.K3D}} cluster delete "{{.CLUSTER_NAME}}"
       - rm -rf "{{.CS}}"
 
   _cluster-ready:
