@@ -24,6 +24,10 @@ task test      # Must pass all unit tests with >90% coverage
 task test-e2e  # Must pass end-to-end tests
 ```
 
+If you change a GitHub Actions workflow, also run `task lint-actions`, which lints
+`.github/workflows/ci.yml` with `actionlint`. Both `actionlint` and `golangci-lint`
+ship in the devcontainer image.
+
 ## PRE-IMPLEMENTATION BEHAVIOR
 
 1. **Check Docker availability for e2e tests**: Before running `task test-e2e`, verify Docker is running with `docker info` or ask user to start Docker daemon if needed
@@ -63,6 +67,12 @@ task test-e2e  # Must pass end-to-end tests
 - Implement proper conflict resolution
 - Add race condition protection
 - Use temporary directories for testing
+
+### CI Workflows (`.github/workflows/`)
+- After editing any workflow, run `task lint-actions` to catch errors with
+  `actionlint` before pushing
+- A workflow-only change still counts as a CI/config change, so it is **not**
+  covered by the markdown/docs-only validation exception
 
 ## TESTING REQUIREMENTS
 

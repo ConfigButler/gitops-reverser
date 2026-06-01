@@ -300,6 +300,40 @@ jobs:
         run: |
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ${{ env.REGISTRY }} -u ${{ github.actor }} --password-stdin
 
+      - name: Start disk usage sampler
+        run: |
+          # Sample free space on / every 10s for the whole e2e run so we can see
+          # the peak (not just the post-run value). /var/lib/docker — k3d node
+          # volumes, pulled images, build cache — lives on this filesystem.
+          ( while true; do
+              printf '%s avail=%s\n' "$(date -u +%H:%M:%S)" \
+                "$(df --output=avail -BM / | tail -1 | tr -d ' ')"
+              sleep 10
+            done ) > "df-samples-${{ matrix.name }}.log" 2>/dev/null &
+          echo "SAMPLER_PID=$!" >> "$GITHUB_ENV"
+
+      - name: Bring up cluster + Flux services (explicit, streaming logs)
+        run: |
+          # Install-mode-/image-independent slice of prepare-e2e. Runs the
+          # slow, hang-prone cluster + Flux + services bring-up here so its
+          # logs stream live, instead of being buffered inside Ginkgo's
+          # SynchronizedBeforeSuite (where a stall just looks like a silent
+          # 15m hang ending in a goroutine dump). The in-suite prepare-e2e
+          # no-ops this part because the stamps already exist.
+          docker run --rm \
+            --network host \
+            -v "${GITHUB_WORKSPACE}:${{ env.CI_WORKDIR }}" \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -w "${{ env.CI_WORKDIR }}" \
+            -e IMAGE_DELIVERY_MODE=${{ env.IMAGE_DELIVERY_MODE }} \
+            -e K3D_AGENT_COUNT=${{ matrix.k3d_agent_count }} \
+            -e HOST_PROJECT_PATH=${{ github.workspace }} \
+            ${{ env.CI_CONTAINER }} \
+            bash -c "
+              git config --global --add safe.directory ${{ env.CI_WORKDIR }}
+              task _services-ready
+            "
+
       - name: Run E2E tests in CI container
         run: |
           docker run --rm \
@@ -317,6 +351,32 @@ jobs:
               git config --global --add safe.directory ${{ env.CI_WORKDIR }}
               ${{ matrix.script }}
             "
+
+      - name: Report disk usage (peak + final)
+        if: always()
+        run: |
+          kill "${SAMPLER_PID}" 2>/dev/null || true
+          samples="df-samples-${{ matrix.name }}.log"
+          {
+            echo "### Disk usage (${{ matrix.name }})"
+            echo
+            echo "Lowest free space on \`/\` during the run:"
+            echo '```'
+            sort -t= -k2 -n "${samples}" 2>/dev/null | head -1 || echo "(no samples captured)"
+            echo '```'
+            echo "Final state:"
+            echo '```'
+            df -h /
+            echo
+            docker system df
+            echo '```'
+            echo "<details><summary>Full df sample timeline</summary>"
+            echo
+            echo '```'
+            cat "${samples}" 2>/dev/null || echo "(no samples captured)"
+            echo '```'
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Summarize E2E timing reports
         if: always()

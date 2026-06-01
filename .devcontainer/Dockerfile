@@ -49,6 +49,7 @@ RUN apt-get update \
 # FLUX_OPERATOR_VERSION -> https://github.com/controlplaneio-fluxcd/flux-operator
 # TASK_VERSION -> https://github.com/go-task/task/releases
 # TILT_VERSION -> https://github.com/tilt-dev/tilt/releases
+# ACTIONLINT_VERSION -> https://github.com/rhysd/actionlint/releases
 
 ENV PATH="/go/bin:/usr/local/go/bin:${PATH}" \
     KUBECTL_VERSION=v1.36.1 \
@@ -60,7 +61,8 @@ ENV PATH="/go/bin:/usr/local/go/bin:${PATH}" \
     FLUX_VERSION=2.8.8 \
     FLUX_OPERATOR_VERSION=0.50.0 \
     TASK_VERSION=v3.51.1 \
-    TILT_VERSION=v0.37.3
+    TILT_VERSION=v0.37.3 \
+    ACTIONLINT_VERSION=1.7.12
 
 # https://github.com/fluxcd/flux2/releases
 # https://fluxoperator.dev/
@@ -118,6 +120,18 @@ RUN asset="flux-operator_${FLUX_OPERATOR_VERSION}_linux_amd64.tar.gz" \
 RUN curl -fsSL "https://github.com/go-task/task/releases/download/${TASK_VERSION}/task_linux_amd64.tar.gz" \
     | tar -xzO task > /usr/local/bin/task \
     && chmod +x /usr/local/bin/task
+
+# Install actionlint (static linter for GitHub Actions workflows)
+RUN asset="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" \
+    && base="https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}" \
+    && tmpdir="$(mktemp -d)" \
+    && curl -fsSL "${base}/${asset}" -o "${tmpdir}/${asset}" \
+    && curl -fsSL "${base}/actionlint_${ACTIONLINT_VERSION}_checksums.txt" -o "${tmpdir}/checksums.txt" \
+    && cd "${tmpdir}" \
+    && grep "  ${asset}$" checksums.txt | sha256sum -c - \
+    && tar -xzf "${asset}" actionlint \
+    && install -m 0755 actionlint /usr/local/bin/actionlint \
+    && rm -rf "${tmpdir}"
 
 # Set working directory
 WORKDIR /workspaces

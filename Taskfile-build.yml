@@ -128,6 +128,11 @@ tasks:
     cmds:
       - '{{.GOLANGCI_LINT}} run'
 
+  lint-actions:
+    desc: Lint GitHub Actions workflows with actionlint
+    cmds:
+      - actionlint .github/workflows/ci.yml
+
   lint-fix:
     desc: Run golangci-lint and perform fixes
     cmds:
