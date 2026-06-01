@@ -328,9 +328,20 @@ jobs:
             -e IMAGE_DELIVERY_MODE=${{ env.IMAGE_DELIVERY_MODE }} \
             -e K3D_AGENT_COUNT=${{ matrix.k3d_agent_count }} \
             -e HOST_PROJECT_PATH=${{ github.workspace }} \
+            -e KUBECONFIG=${{ env.CI_WORKDIR }}/.stamps/cluster/k3d-gitops-reverser-test-e2e/.kube/config \
             ${{ env.CI_CONTAINER }} \
             bash -c "
               git config --global --add safe.directory ${{ env.CI_WORKDIR }}
+              # The cluster is created here but reused by the test container
+              # below. start-cluster.sh writes the k3d context into KUBECONFIG;
+              # point it at a file on the mounted workspace so the next
+              # container inherits the context (otherwise it is lost with this
+              # ephemeral container and kubectl reports 'context does not exist').
+              # Living under .stamps/cluster/<ctx>/.kube keeps it tied to the
+              # cluster lifecycle: cleanup-installs.sh (per-namespace) leaves it
+              # alone, while clean-cluster (rm -rf .stamps/cluster/<ctx>) clears
+              # it together with the cluster it points at.
+              mkdir -p .stamps/cluster/k3d-gitops-reverser-test-e2e/.kube
               task _services-ready
             "
 
@@ -346,6 +357,7 @@ jobs:
             -e E2E_GINKGO_PROCS=${{ matrix.e2e_ginkgo_procs }} \
             -e K3D_AGENT_COUNT=${{ matrix.k3d_agent_count }} \
             -e HOST_PROJECT_PATH=${{ github.workspace }} \
+            -e KUBECONFIG=${{ env.CI_WORKDIR }}/.stamps/cluster/k3d-gitops-reverser-test-e2e/.kube/config \
             ${{ env.CI_CONTAINER }} \
             bash -c "
               git config --global --add safe.directory ${{ env.CI_WORKDIR }}
