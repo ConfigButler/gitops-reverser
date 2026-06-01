@@ -93,6 +93,12 @@ vars:
   FLUX_WAIT_TIMEOUT: '{{.FLUX_WAIT_TIMEOUT | default "500s"}}'
   FLUX_SERVICES_WAIT_TIMEOUT: '{{.FLUX_SERVICES_WAIT_TIMEOUT | default "600s"}}'
   E2E_GO_TEST_TIMEOUT: '{{.E2E_GO_TEST_TIMEOUT | default "15m"}}'
+  ALLURE_RESULTS_DIR: '{{.ALLURE_RESULTS_DIR | default ".stamps/allure-results"}}'
+  ALLURE_REPORT_DIR: '{{.ALLURE_REPORT_DIR | default ".stamps/allure-report"}}'
+  ALLURE_CLI_DIR: '{{.ALLURE_CLI_DIR | default ".stamps/allure-cli"}}'
+  ALLURE_VERSION: '{{.ALLURE_VERSION | default "2.42.0"}}'
+  ALLURE_CONTAINER_IMAGE: '{{.ALLURE_CONTAINER_IMAGE | default "eclipse-temurin:17-jre"}}'
+  ALLURE_PORT: '{{.ALLURE_PORT | default "19081"}}'
   # Number of parallel Ginkgo processes for the e2e suite. >1 enables Ginkgo
   # parallelism (Phase 2.5 of docs/design/e2e-speedup-plan.md). Files that touch
   # shared cluster-scoped state are marked Serial (see docs/design/e2e-serial-registry.md).
@@ -202,6 +208,72 @@ tasks:
           --procs={{.E2E_GINKGO_PROCS}} --timeout="{{.E2E_FULL_TIMEOUT}}" -v \
           --output-dir="{{.CS}}/{{.NAMESPACE}}" --json-report=ginkgo-report-full.json \
           ./test/e2e/
+
+  allure-e2e-results:
+    desc: Convert local e2e Ginkgo JSON reports into Allure results
+    aliases:
+      - e2e-allure-results
+    cmds:
+      - |
+        reports_file="$(mktemp)"
+        trap 'rm -f "${reports_file}"' EXIT
+        if [ -d .stamps/cluster ]; then
+          find .stamps/cluster -path "*/ginkgo-report-*.json" -type f | sort > "${reports_file}"
+        fi
+        if [ ! -s "${reports_file}" ]; then
+          echo "No Ginkgo JSON reports found under .stamps/cluster. Run an e2e task first." >&2
+          exit 1
+        fi
+
+        rm -rf "{{.ALLURE_RESULTS_DIR}}"
+        mkdir -p "{{.ALLURE_RESULTS_DIR}}"
+        xargs go run ./test/e2e/tools/ginkgo-allure --output-dir "{{.ALLURE_RESULTS_DIR}}" < "${reports_file}"
+        echo "Wrote Allure results to {{.ALLURE_RESULTS_DIR}}"
+
+  allure-e2e-report:
+    desc: Generate local Allure HTML from e2e Ginkgo reports
+    aliases:
+      - e2e-allure-report
+    cmds:
+      - task: allure-e2e-results
+      - |
+        if ! command -v docker >/dev/null 2>&1; then
+          echo "Docker is required to render Allure without adding Java to the devcontainer." >&2
+          exit 1
+        fi
+
+        workspace_host="${HOST_PROJECT_PATH:-$(pwd)}"
+        workspace_container="$(pwd)"
+        mkdir -p "{{.ALLURE_CLI_DIR}}"
+        docker run --rm \
+          --user "$(id -u):$(id -g)" \
+          -e HOME=/tmp \
+          -e ALLURE_CLI_DIR="{{.ALLURE_CLI_DIR}}" \
+          -e ALLURE_REPORT_DIR="{{.ALLURE_REPORT_DIR}}" \
+          -e ALLURE_RESULTS_DIR="{{.ALLURE_RESULTS_DIR}}" \
+          -e ALLURE_VERSION="{{.ALLURE_VERSION}}" \
+          -v "${workspace_host}:${workspace_container}" \
+          -w "${workspace_container}" \
+          "{{.ALLURE_CONTAINER_IMAGE}}" \
+          sh -eu -c '
+            allure_home="${ALLURE_CLI_DIR}/allure-${ALLURE_VERSION}"
+            if [ ! -x "${allure_home}/bin/allure" ]; then
+              rm -rf "${allure_home}"
+              mkdir -p "${ALLURE_CLI_DIR}"
+              curl -fsSL "https://github.com/allure-framework/allure2/releases/download/${ALLURE_VERSION}/allure-${ALLURE_VERSION}.tgz" \
+                | tar -xz -C "${ALLURE_CLI_DIR}"
+            fi
+            "${allure_home}/bin/allure" generate "${ALLURE_RESULTS_DIR}" --clean -o "${ALLURE_REPORT_DIR}"
+          '
+        echo "Wrote Allure HTML report to {{.ALLURE_REPORT_DIR}}"
+
+  allure-e2e-open:
+    desc: Generate and serve the local e2e Allure report
+    aliases:
+      - e2e-allure-open
+    cmds:
+      - task: allure-e2e-report
+      - python3 -m http.server "{{.ALLURE_PORT}}" --bind 0.0.0.0 --directory "{{.ALLURE_REPORT_DIR}}"
 
   test-e2e-manager:
     desc: Run manager-focused e2e scenarios

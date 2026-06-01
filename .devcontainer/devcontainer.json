@@ -25,7 +25,8 @@
     19090,
     10350,
     16379,
-    19080
+    19080,
+    19081
   ],
   "portsAttributes": {
     "13000": {
@@ -46,6 +47,10 @@
     },
     "19080": {
       "label": "Flux",
+      "onAutoForward": "notify"
+    },
+    "19081": {
+      "label": "Allure",
       "onAutoForward": "notify"
     }
   },

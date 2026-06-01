@@ -274,12 +274,12 @@ jobs:
               && task test-e2e-quickstart-manifest
             needs_artifact: true
             e2e_ginkgo_procs: "2"
-            k3d_agent_count: "1"
+            k3d_agent_count: "0"
           - name: full
             script: "task test-e2e-full"
             needs_artifact: false
             e2e_ginkgo_procs: "1"
-            k3d_agent_count: "1"
+            k3d_agent_count: "0"
     env:
       PROJECT_IMAGE: ${{ needs.docker-build.outputs.image }}
       CI_CONTAINER: ${{ needs.build-ci-container.outputs.image }}
@@ -388,7 +388,7 @@ jobs:
             cat "${samples}" 2>/dev/null || echo "(no samples captured)"
             echo '```'
             echo "</details>"
-          } >> "$GITHUB_STEP_SUMMARY"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Summarize E2E timing reports
         if: always()

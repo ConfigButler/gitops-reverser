@@ -29,3 +29,36 @@ The converter is deliberately small and one-way:
 
 The existing raw Ginkgo JSON and timing-summary artifacts are still uploaded.
 Those files remain the source of truth for local tooling and timing analysis.
+
+## Local devcontainer use
+
+The devcontainer does not install Java or the Allure CLI. Local report rendering
+uses Docker to run Allure in an on-demand Java runtime container, keeping the
+devcontainer image smaller.
+
+Run any e2e task that writes a Ginkgo JSON report, for example:
+
+```bash
+task test-e2e
+```
+
+Then generate a local Allure HTML report:
+
+```bash
+task allure-e2e-report
+```
+
+The report is written to `.stamps/allure-report`. To serve it from inside the
+devcontainer on the forwarded Allure port:
+
+```bash
+task allure-e2e-open
+```
+
+This serves the report on port `19081`. The same tasks can reuse older local
+Ginkgo JSON reports under `.stamps`, so you can generate the report after a
+failed run without rerunning the suite.
+
+The first local render pulls the `eclipse-temurin:17-jre` image and downloads the
+Allure CLI into `.stamps/allure-cli`. Later renders reuse both Docker's image
+cache and the local Allure CLI cache.
