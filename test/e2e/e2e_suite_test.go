@@ -121,6 +121,28 @@ func prepareE2EClusterOnce() {
 			"failed to delete IceCreamOrder CRD %q before tests", iceCreamCRDName(group))
 		_, _ = fmt.Fprintf(GinkgoWriter, "%s", output)
 	}
+
+	// The Gitea org is a singleton every repo fixture lives under. Create it
+	// once here — this runs on parallel process #1 only and blocks the other
+	// processes until it returns — so no two per-spec BeforeAlls ever race a
+	// concurrent POST /orgs. An in-process lock cannot solve this: Ginkgo
+	// --procs runs specs in separate OS processes, so the race is cross-process.
+	By("ensuring the shared Gitea organization exists before parallel specs run")
+	ensureSharedGiteaOrgOnce()
+}
+
+// ensureSharedGiteaOrgOnce creates the shared test org exactly once, from the
+// SynchronizedBeforeSuite process-#1 function. Per-spec bootstrap then only
+// creates its own uniquely-named repo under an org that already exists.
+func ensureSharedGiteaOrgOnce() {
+	gitea := giteaTestInstance()
+	Expect(waitForGiteaAPI(gitea.Client())).To(Succeed(),
+		"Gitea API must be reachable before creating the shared org")
+
+	ctx, cancel := gitea.Context()
+	defer cancel()
+	_, err := gitea.Client().EnsureOrg(ctx, gitea.Org, "Test Organization", "E2E Test Organization")
+	Expect(err).NotTo(HaveOccurred(), "failed to ensure shared Gitea org %q", gitea.Org)
 }
 
 // configureE2EProcess runs in every parallel process. The Task prepare flow

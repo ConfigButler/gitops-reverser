@@ -70,10 +70,10 @@ func bootstrapRepoArtifacts(namespace, repoName string) (*RepoArtifacts, error) 
 	ctx, cancel := gitea.Context()
 	defer cancel()
 
-	if _, err := gitea.Client().EnsureOrg(ctx, gitea.Org, "Test Organization", "E2E Test Organization"); err != nil {
-		return nil, fmt.Errorf("ensure Gitea org %q: %w", gitea.Org, err)
-	}
-
+	// The shared org is created once in SynchronizedBeforeSuite (process #1)
+	// before any spec runs, so it always exists here. Creating it per-spec used
+	// to race a concurrent POST /orgs across the parallel Ginkgo processes. Each
+	// repo name is unique, so the repo create below cannot collide the same way.
 	if _, err := gitea.Client().EnsureOrgRepo(
 		ctx,
 		gitea.Org,
