@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.27.0](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.26.3...gitops-reverser-v0.27.0) (2026-06-02)
+
+
+### Features
+
+* count loc ([f819e9a](https://github.com/ConfigButler/gitops-reverser/commit/f819e9a5ed445b78388108510df5afed216d9486))
+
+
+### Bug Fixes
+
+* improve and test GitTarget isolation behaviour ([0787b1b](https://github.com/ConfigButler/gitops-reverser/commit/0787b1b68bd9eb47ea3b816712f8eb09861f6d6b))
+* prevent race in creating gitea org ([ddbcbb3](https://github.com/ConfigButler/gitops-reverser/commit/ddbcbb399fea816e6d63614330b3fbba3ce5f0c0))
+* race condition in HelmRelease causing unstable e2e tests ([03b95ab](https://github.com/ConfigButler/gitops-reverser/commit/03b95abfae8a52552729872231441c1e1ac2cbc5))
+* upgrade to latest a apiservice-audit-proxy should resolve our non 0 shallow events, also included tests to verify that we don't misread deletecollection events as shallow ([903d792](https://github.com/ConfigButler/gitops-reverser/commit/903d7920162ecd56b9d863666959fc7f7d77e3e1))
+
+
+### Documentation
+
+* initial docs (also some findings from preps for Cozysummit) ([fbbfcec](https://github.com/ConfigButler/gitops-reverser/commit/fbbfcec75309577e33bf36243361428dea81002b))
+* Phase 2.5 status + Monday resume plan (3-agent CI green once; stability TBD) ([b285ac5](https://github.com/ConfigButler/gitops-reverser/commit/b285ac5e84a936143f3040e5f9b66a7de8b36764))
+* record Phase 2.5 implementation status and measured impact ([dba83ac](https://github.com/ConfigButler/gitops-reverser/commit/dba83ac962c749e744788416419625daefabedda))
+
 ## [0.26.3](https://github.com/ConfigButler/gitops-reverser/compare/gitops-reverser-v0.26.2...gitops-reverser-v0.26.3) (2026-05-25)
 
 
