@@ -661,9 +661,7 @@ func blockingSnapshotMisses(misses []ResolveMiss) []ResolveMiss {
 		switch miss.Reason {
 		case ResolveMissNotServed, ResolveMissAmbiguous, ResolveMissDisallowed:
 			continue
-		case ResolveMissWildcardGroup,
-			ResolveMissWildcardResource,
-			ResolveMissCatalogUnavailable,
+		case ResolveMissCatalogUnavailable,
 			ResolveMissDiscoveryDegraded:
 			blocking = append(blocking, miss)
 		}

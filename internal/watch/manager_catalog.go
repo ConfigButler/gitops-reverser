@@ -232,18 +232,26 @@ func (m *Manager) ResolveWatchRuleResources(
 	_ context.Context,
 	rule configv1alpha1.WatchRule,
 ) (bool, string) {
+	var gvrs []GVR
 	var misses []ResolveMiss
+	wildcard := false
 	resolver := m.ruleGVRResolver()
 	for _, resourceRule := range rule.Spec.Rules {
-		_, ruleMisses := resolver.Resolve(
+		ruleGVRs, ruleMisses := resolver.Resolve(
 			resourceRule.APIGroups,
 			resourceRule.APIVersions,
 			resourceRule.Resources,
 			configv1alpha1.ResourceScopeNamespaced,
 		)
+		gvrs = append(gvrs, ruleGVRs...)
 		misses = append(misses, ruleMisses...)
+		wildcard = wildcard || ruleSelectorsContainWildcard(
+			resourceRule.APIGroups,
+			resourceRule.APIVersions,
+			resourceRule.Resources,
+		)
 	}
-	return len(misses) == 0, FormatResolveMisses(misses)
+	return len(misses) == 0, formatResolutionStatus(dedupeGVRs(gvrs), misses, wildcard)
 }
 
 // ResolveClusterWatchRuleResources resolves one ClusterWatchRule for status feedback.
@@ -251,18 +259,38 @@ func (m *Manager) ResolveClusterWatchRuleResources(
 	_ context.Context,
 	rule configv1alpha1.ClusterWatchRule,
 ) (bool, string) {
+	var gvrs []GVR
 	var misses []ResolveMiss
+	wildcard := false
 	resolver := m.ruleGVRResolver()
 	for _, resourceRule := range rule.Spec.Rules {
-		_, ruleMisses := resolver.Resolve(
+		ruleGVRs, ruleMisses := resolver.Resolve(
 			resourceRule.APIGroups,
 			resourceRule.APIVersions,
 			resourceRule.Resources,
 			resourceRule.Scope,
 		)
+		gvrs = append(gvrs, ruleGVRs...)
 		misses = append(misses, ruleMisses...)
+		wildcard = wildcard || ruleSelectorsContainWildcard(
+			resourceRule.APIGroups,
+			resourceRule.APIVersions,
+			resourceRule.Resources,
+		)
 	}
-	return len(misses) == 0, FormatResolveMisses(misses)
+	return len(misses) == 0, formatResolutionStatus(dedupeGVRs(gvrs), misses, wildcard)
+}
+
+func ruleSelectorsContainWildcard(groups, versions, resources []string) bool {
+	return hasWildcard(groups) || hasWildcard(versions) || hasWildcard(resources)
+}
+
+func formatResolutionStatus(gvrs []GVR, misses []ResolveMiss, wildcard bool) string {
+	message := FormatResolveMisses(misses)
+	if !wildcard {
+		return message
+	}
+	return fmt.Sprintf("wildcard expanded to %d GVRs; %s", len(gvrs), message)
 }
 
 func (m *Manager) signalCatalogRefresh() {

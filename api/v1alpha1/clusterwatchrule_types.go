@@ -88,15 +88,17 @@ type ClusterResourceRule struct {
 	// Examples:
 	//   - [""] matches core API (nodes, namespaces)
 	//   - ["rbac.authorization.k8s.io"] matches RBAC resources
-	//   - ["*"] or [] matches all groups
+	//   - ["*"] matches all groups
+	//   - [] resolves a named resource only when it is served by one API group
 	// +optional
 	APIGroups []string `json:"apiGroups,omitempty"`
 
-	// APIVersions to match. If empty, matches all versions.
+	// APIVersions to match. If empty, uses the preferred served version for each group/resource.
 	// Wildcards supported: "*" matches all versions.
 	// Examples:
 	//   - ["v1"] matches only v1 version
-	//   - ["*"] or [] matches all versions
+	//   - ["*"] matches all served versions
+	//   - [] matches the preferred served version
 	// +optional
 	APIVersions []string `json:"apiVersions,omitempty"`
 
@@ -106,8 +108,15 @@ type ClusterResourceRule struct {
 	//   - "*" matches all resources
 	//   - "nodes" matches exactly nodes
 	//   - "pods" matches exactly pods (for namespaced scope)
+	//
+	// Note: Subresources cannot be added here. Values containing "/" (for example
+	// "pods/log" or "pods/*") are rejected by the API because subresources are
+	// not supported for list/watch snapshot planning. Prefix/suffix wildcards
+	// like "pod*" or "*.example.com" are NOT supported. Use exact matches or the
+	// "*" wildcard for broad matching.
 	// +required
 	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:items:Pattern=`^[^/]*$`
 	Resources []string `json:"resources"`
 
 	// Scope defines whether this rule watches Cluster-scoped or Namespaced resources.

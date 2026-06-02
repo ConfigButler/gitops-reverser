@@ -31,6 +31,32 @@ import (
 )
 
 var _ = Describe("ClusterWatchRule Controller", func() {
+	Context("When CRD validation runs", func() {
+		It("should reject subresource entries in resources", func() {
+			ctx := context.Background()
+			clusterRule := &configbutleraiv1alpha1.ClusterWatchRule{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "invalid-subresource-cluster-rule",
+				},
+				Spec: configbutleraiv1alpha1.ClusterWatchRuleSpec{
+					TargetRef: configbutleraiv1alpha1.NamespacedTargetReference{
+						Kind:      "GitTarget",
+						Name:      "target",
+						Namespace: "default",
+					},
+					Rules: []configbutleraiv1alpha1.ClusterResourceRule{{
+						Scope:     configbutleraiv1alpha1.ResourceScopeNamespaced,
+						Resources: []string{"pods/*"},
+					}},
+				},
+			}
+
+			err := k8sClient.Create(ctx, clusterRule)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("^[^/]*$"))
+		})
+	})
+
 	Context("When reconciling a ClusterWatchRule", func() {
 		var (
 			ctx        context.Context

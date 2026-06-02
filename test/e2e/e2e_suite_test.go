@@ -111,6 +111,7 @@ func prepareE2EClusterOnce() {
 		crdGroupCRDLifecycle,
 		crdGroupRestartSnapshot,
 		crdGroupBiDirectional,
+		crdGroupWildcardRule,
 		"shop.example.com", // legacy pre-isolation group
 	} {
 		output, err = kubectlRun(

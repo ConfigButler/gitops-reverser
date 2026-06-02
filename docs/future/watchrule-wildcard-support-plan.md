@@ -1,12 +1,44 @@
 # WatchRule Wildcard Support — Finding & Plan
 
-Status: **proposed** (not started)
+Status: **implemented** — Phases 0–1 shipped; **not the full happy flow** (Phase 2
+snapshot robustness and Phase 3 guardrails are still outstanding — see
+[Implementation status](#implementation-status)).
 
 > **Superseded framing:** the finding below stands, but the recommended way to
 > resolve it is the unified model in
 > [watch-and-catalog-architecture.md](../design/watch-and-catalog-architecture.md). Treat
 > this document as the focused finding + a tactical (Phase-0-first) fallback if
 > the larger refactor is deferred.
+
+## Implementation status
+
+Wildcards resolve and watch again. The resolver expands `apiGroups: ["*"]`,
+`apiVersions: ["*"]`, and `resources: ["*"]` from the API-resource catalog and
+feeds the expanded GVR set through both the informer-planning and snapshot paths;
+the rule status reports `"wildcard expanded to N GVRs"`. Admission now rejects
+subresource entries (`pods/log`, `pods/*`) via an `items` pattern, and the CRD
+field docs were corrected to match. Covered by unit tests in the resolver and
+manager-snapshot suites and a manager-labeled e2e smoke spec.
+
+**Done:** Phase 0 (docs + admission validation), Phase 1 (resolver expansion
+A + B + C, status surfacing F-partial).
+
+**Not done (the "not fully happy flow" caveat):**
+
+- **Phase 2 / item D — snapshot robustness.** Abort-on-any-`list`-error is
+  retained intentionally (and now pinned by
+  `TestSnapshotWildcardResourceAbortsOnAnyListError`). At real cluster scale a
+  broad `["*"]` target lists hundreds of GVRs, so a single transient `list`
+  failure can abort the whole target snapshot. This is the gating item for
+  declaring wildcard support truly "done".
+- **Phase 3 — guardrails.** No informer-count cap/observability and no CRD-burst
+  debounce yet.
+- **HA.** Single-pod only by design; the branch-shard prerequisite in
+  [ha-gittarget-distribution-plan.md](ha-gittarget-distribution-plan.md) must
+  land before wildcard watches become a multi-pod feature.
+
+The finding and difficulty assessment below are retained as the rationale and the
+roadmap for the remaining phases; they describe the pre-implementation state.
 
 ## Finding: documented behavior contradicts implemented behavior
 
@@ -165,19 +197,17 @@ to depth 1, so bursts are partly absorbed. **Probably acceptable as-is for now.*
 
 ## Proposed phased plan
 
-1. **Phase 0 — stop the silent lie (smallest, ship independently).** Either make
-   the docs match reality (state that `*`/subresources are rejected, `[]`
-   resolves uniquely/preferred) *or* add admission validation that rejects `*`
-   with a clear message. This removes the "applies cleanly, watches nothing"
-   trap regardless of whether full support lands.
-2. **Phase 1 — resolver expansion (A + B + C).** Implement `*` enumeration with
-   the all-vs-unique split, drop the subresource promise, surface expansion in
-   status (F, partial). Gated behind the existing reconcile machinery; no
-   snapshot changes yet. Wildcard targets now watch live events correctly.
-3. **Phase 2 — snapshot robustness (D).** Decide and implement per-GVR list
+1. ✅ **Phase 0 — stop the silent lie (smallest, ship independently).** Done: the
+   field docs now match reality (subresources rejected, `[]` resolves
+   uniquely/preferred) *and* admission validation rejects subresource entries.
+2. ✅ **Phase 1 — resolver expansion (A + B + C).** Done: `*` enumeration with the
+   all-vs-unique split, subresource promise dropped, expansion surfaced in status
+   (F, partial). Gated behind the existing reconcile machinery; no snapshot
+   changes. Wildcard targets watch live events correctly.
+3. ⬜ **Phase 2 — snapshot robustness (D).** Decide and implement per-GVR list
    resilience so a wildcard target can take a complete, safe cluster snapshot.
    This is the gating item for declaring wildcard support "done".
-4. **Phase 3 — guardrails (D scale, E debounce).** Informer-count cap/observability
+4. ⬜ **Phase 3 — guardrails (D scale, E debounce).** Informer-count cap/observability
    and optional CRD-burst debounce if churn proves costly in practice.
 
 ## Open decisions

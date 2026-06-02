@@ -289,10 +289,34 @@ func (c *APIResourceCatalog) entriesForResource(resource string) []APIResourceEn
 	return cloneAPIResourceEntries(c.byResource[resource])
 }
 
+func (c *APIResourceCatalog) entriesForGroup(group string) []APIResourceEntry {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	var out []APIResourceEntry
+	for gv, entries := range c.byGroupVer {
+		if gv.Group == group {
+			out = append(out, entries...)
+		}
+	}
+	sortCatalogEntries(out)
+	return cloneAPIResourceEntries(out)
+}
+
 func (c *APIResourceCatalog) entriesForGroupResource(group, resource string) []APIResourceEntry {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return cloneAPIResourceEntries(c.byGroupRes[groupResourceKey(group, resource)])
+}
+
+func (c *APIResourceCatalog) allEntries() []APIResourceEntry {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	out := make([]APIResourceEntry, 0, len(c.byGVR))
+	for _, entry := range c.byGVR {
+		out = append(out, entry)
+	}
+	sortCatalogEntries(out)
+	return cloneAPIResourceEntries(out)
 }
 
 func (c *APIResourceCatalog) hasDegradedLookup(groups, versions []string) bool {

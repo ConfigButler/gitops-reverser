@@ -33,6 +33,31 @@ import (
 )
 
 var _ = Describe("WatchRule Controller", func() {
+	Context("When CRD validation runs", func() {
+		It("should reject subresource entries in resources", func() {
+			ctx := context.Background()
+			watchRule := &configbutleraiv1alpha1.WatchRule{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "invalid-subresource-rule",
+					Namespace: "default",
+				},
+				Spec: configbutleraiv1alpha1.WatchRuleSpec{
+					TargetRef: configbutleraiv1alpha1.LocalTargetReference{
+						Kind: "GitTarget",
+						Name: "target",
+					},
+					Rules: []configbutleraiv1alpha1.ResourceRule{{
+						Resources: []string{"pods/log"},
+					}},
+				},
+			}
+
+			err := k8sClient.Create(ctx, watchRule)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("^[^/]*$"))
+		})
+	})
+
 	Context("When reconciling a resource", func() {
 		const resourceName = "test-resource"
 

@@ -36,10 +36,6 @@ const (
 	ResolveMissAmbiguous ResolveMissReason = "Ambiguous"
 	// ResolveMissDisallowed means resource policy excludes a served resource.
 	ResolveMissDisallowed ResolveMissReason = "Disallowed"
-	// ResolveMissWildcardGroup means explicit "*" apiGroups expansion is unsupported.
-	ResolveMissWildcardGroup ResolveMissReason = "WildcardGroup"
-	// ResolveMissWildcardResource means explicit "*" resource expansion is unsupported.
-	ResolveMissWildcardResource ResolveMissReason = "WildcardResource"
 	// ResolveMissCatalogUnavailable means discovery has not populated a catalog yet.
 	ResolveMissCatalogUnavailable ResolveMissReason = "CatalogUnavailable"
 	// ResolveMissDiscoveryDegraded means failed discovery can change the result.
@@ -83,7 +79,7 @@ func (r *RuleGVRResolver) resolveResource(
 	resource string,
 	scope configv1alpha1.ResourceScope,
 ) ([]GVR, []ResolveMiss) {
-	if misses, stop := r.preflightMisses(groups, resource); stop {
+	if misses, stop := r.preflightMisses(resource); stop {
 		return nil, misses
 	}
 
@@ -105,18 +101,10 @@ func (r *RuleGVRResolver) resolveResource(
 	return gvrsForCandidates(resource, candidates, scope)
 }
 
-func (r *RuleGVRResolver) preflightMisses(groups []string, resource string) ([]ResolveMiss, bool) {
+func (r *RuleGVRResolver) preflightMisses(resource string) ([]ResolveMiss, bool) {
 	switch {
 	case resource == "":
 		return nil, true
-	case resource == "*":
-		return []ResolveMiss{
-			newResolveMiss(resource, ResolveMissWildcardResource, "resource wildcard expansion is unsupported"),
-		}, true
-	case hasWildcard(groups):
-		return []ResolveMiss{
-			newResolveMiss(resource, ResolveMissWildcardGroup, "apiGroups wildcard expansion is unsupported"),
-		}, true
 	case strings.Contains(resource, "/"):
 		return []ResolveMiss{
 			newResolveMiss(resource, ResolveMissNotServed, "subresource planning is unsupported"),
@@ -139,7 +127,7 @@ func (r *RuleGVRResolver) emptyCandidateMiss(groups, versions []string, resource
 }
 
 func ambiguityMiss(groups []string, resource string, candidates []APIResourceEntry) *ResolveMiss {
-	if len(groups) != 0 {
+	if len(groups) != 0 || resource == "*" {
 		return nil
 	}
 	servedGroups := candidateGroups(candidates)
@@ -176,12 +164,29 @@ func gvrsForCandidates(
 }
 
 func (r *RuleGVRResolver) resourceCandidates(groups []string, resource string) []APIResourceEntry {
+	if resource == "*" {
+		return r.wildcardResourceCandidates(groups)
+	}
+	if hasWildcard(groups) {
+		return r.catalog.entriesForResource(resource)
+	}
 	if len(groups) == 0 {
 		return r.catalog.entriesForResource(resource)
 	}
 	var out []APIResourceEntry
 	for _, group := range groups {
 		out = append(out, r.catalog.entriesForGroupResource(strings.TrimSpace(group), resource)...)
+	}
+	return out
+}
+
+func (r *RuleGVRResolver) wildcardResourceCandidates(groups []string) []APIResourceEntry {
+	if len(groups) == 0 || hasWildcard(groups) {
+		return r.catalog.allEntries()
+	}
+	var out []APIResourceEntry
+	for _, group := range groups {
+		out = append(out, r.catalog.entriesForGroup(strings.TrimSpace(group))...)
 	}
 	return out
 }
@@ -210,7 +215,7 @@ func filterScope(entries []APIResourceEntry, scope configv1alpha1.ResourceScope)
 }
 
 func choosePreferredVersions(entries []APIResourceEntry, versions []string) []APIResourceEntry {
-	if len(versions) != 0 && !hasWildcard(versions) {
+	if len(versions) != 0 {
 		return entries
 	}
 	byGroupResource := make(map[string][]APIResourceEntry)

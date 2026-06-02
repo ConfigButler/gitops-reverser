@@ -470,10 +470,9 @@ func TestSnapshotWatchRuleWildcardVersionNotSilentlyEmpty(t *testing.T) {
 			"on a controller restart this empty snapshot makes the FolderReconciler delete the whole git tree")
 }
 
-// TestSnapshotAbortsOnWildcardGroup verifies that a ClusterWatchRule with a "*"
-// apiGroups wildcard — which the snapshot path cannot enumerate — aborts the
-// snapshot with an error rather than silently returning an empty cluster view.
-func TestSnapshotAbortsOnWildcardGroup(t *testing.T) {
+// TestSnapshotWildcardGroupExpands verifies that a ClusterWatchRule with a "*"
+// apiGroups wildcard can enumerate the catalog and snapshot matching resources.
+func TestSnapshotWildcardGroupExpands(t *testing.T) {
 	scheme := makeScheme(t)
 
 	gitTarget := &configv1alpha1.GitTarget{
@@ -503,14 +502,15 @@ func TestSnapshotAbortsOnWildcardGroup(t *testing.T) {
 
 	m := setupManager(t, scheme, gitTarget, store, makeConfigMap("cm-a", "ns-a"))
 
-	_, _, err := m.GetClusterStateForGitDest(context.Background(),
+	resources, _, err := m.GetClusterStateForGitDest(context.Background(),
 		itypes.NewResourceReference("my-target", "gitops-reverser"))
-	require.Error(t, err,
-		"a '*' apiGroups rule cannot be snapshotted and must abort, not silently return an empty view")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"cm-a"}, resourceNames(resources))
 }
 
-// TestSnapshotAbortsOnWildcardResource verifies the same for a "*" resources wildcard.
-func TestSnapshotAbortsOnWildcardResource(t *testing.T) {
+// TestSnapshotWildcardResourceExpands verifies that a "*" resources wildcard can
+// enumerate listable/watchable catalog entries and snapshot the resources found.
+func TestSnapshotWildcardResourceExpands(t *testing.T) {
 	scheme := makeScheme(t)
 
 	gitTarget := &configv1alpha1.GitTarget{
@@ -540,10 +540,10 @@ func TestSnapshotAbortsOnWildcardResource(t *testing.T) {
 
 	m := setupManager(t, scheme, gitTarget, store, makeConfigMap("cm-a", "ns-a"))
 
-	_, _, err := m.GetClusterStateForGitDest(context.Background(),
+	resources, _, err := m.GetClusterStateForGitDest(context.Background(),
 		itypes.NewResourceReference("my-target", "gitops-reverser"))
-	require.Error(t, err,
-		"a '*' resources rule cannot be snapshotted and must abort, not silently return an empty view")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"cm-a"}, resourceNames(resources))
 }
 
 // TestSnapshotAbortsOnListError verifies that a failed List() call aborts the
@@ -590,4 +590,50 @@ func TestSnapshotAbortsOnListError(t *testing.T) {
 		itypes.NewResourceReference("my-target", "gitops-reverser"))
 	require.Error(t, err,
 		"a failed List() must abort the snapshot, not silently drop the resource")
+}
+
+func TestSnapshotWildcardResourceAbortsOnAnyListError(t *testing.T) {
+	scheme := makeScheme(t)
+
+	gitTarget := &configv1alpha1.GitTarget{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-target", Namespace: "gitops-reverser"},
+		Spec:       configv1alpha1.GitTargetSpec{Path: "live"},
+	}
+
+	store := rulestore.NewStore()
+	store.AddOrUpdateClusterWatchRule(
+		configv1alpha1.ClusterWatchRule{
+			ObjectMeta: metav1.ObjectMeta{Name: "cwr-wildcard-resource"},
+			Spec: configv1alpha1.ClusterWatchRuleSpec{
+				TargetRef: configv1alpha1.NamespacedTargetReference{
+					Name:      "my-target",
+					Namespace: "gitops-reverser",
+				},
+				Rules: []configv1alpha1.ClusterResourceRule{{
+					APIGroups:   []string{""},
+					APIVersions: []string{"v1"},
+					Resources:   []string{"*"},
+					Scope:       configv1alpha1.ResourceScopeNamespaced,
+				}},
+			},
+		},
+		"my-target", "gitops-reverser", "provider", "gitops-reverser", "main", "live",
+	)
+
+	m := setupManager(t, scheme, gitTarget, store, makeConfigMap("cm-a", "ns-a"))
+
+	fakeDyn, ok := m.dynamicClient.(*dynamicfake.FakeDynamicClient)
+	require.True(t, ok, "expected the fake dynamic client from setupManager")
+	fakeDyn.PrependReactor("list", "services",
+		func(action k8stesting.Action) (bool, runtime.Object, error) {
+			if action.GetResource().Resource != "services" {
+				return false, nil, nil
+			}
+			return true, nil, errors.New("simulated service list failure")
+		})
+
+	_, _, err := m.GetClusterStateForGitDest(context.Background(),
+		itypes.NewResourceReference("my-target", "gitops-reverser"))
+	require.Error(t, err,
+		"a wildcard snapshot still aborts on a failed GVR list rather than emitting a partial view")
 }

@@ -71,6 +71,7 @@ var _ = Describe("Manager WatchRule ConfigMap and Secret", Label("manager"), Ord
 	})
 
 	AfterAll(func() {
+		cleanupClusterResource("crd", iceCreamCRDName(crdGroupWildcardRule))
 		cleanupNamespace(testNs)
 	})
 
@@ -110,6 +111,104 @@ var _ = Describe("Manager WatchRule ConfigMap and Secret", Label("manager"), Ord
 		verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Ready", "")
 
 		By("cleaning up test resources")
+		cleanupWatchRule(watchRuleName, testNs)
+		cleanupGitTarget(destName, testNs)
+	})
+
+	It("should expand wildcard resources across core and custom namespaced APIs", Label("smoke"), func() {
+		gitProviderName := "gitprovider-normal"
+		watchRuleName := "watchrule-wildcard-expansion-test"
+		destName := watchRuleName + "-dest"
+		gitTargetPath := "e2e/wildcard-expansion-test"
+		configMapName := "wildcard-config"
+		orderName := "wildcard-order"
+
+		By("installing the wildcard e2e IceCreamOrder CRD")
+		Expect(applyIceCreamCRD(crdGroupWildcardRule)).To(Succeed(), "failed to install IceCreamOrder CRD")
+		Eventually(func(g Gomega) {
+			output, getErr := kubectlRun(
+				"get", "crd", iceCreamCRDName(crdGroupWildcardRule),
+				"-o", "jsonpath={.status.conditions[?(@.type=='Established')].status}",
+			)
+			g.Expect(getErr).NotTo(HaveOccurred())
+			g.Expect(strings.TrimSpace(output)).To(Equal("True"))
+		}).Should(Succeed())
+
+		By("creating existing resources before the wildcard WatchRule")
+		_, _ = kubectlRunInNamespace(testNs, "delete", "configmap", configMapName, "--ignore-not-found=true")
+		_, err := kubectlRunInNamespace(
+			testNs,
+			"create",
+			"configmap",
+			configMapName,
+			"--from-literal=flavor=vanilla",
+		)
+		Expect(err).NotTo(HaveOccurred(), "ConfigMap creation should succeed")
+		createIceCreamOrder(crdGroupWildcardRule, testNs, orderName)
+
+		By("creating a GitTarget and WatchRule with wildcard group, version and resource selectors")
+		createGitTarget(destName, testNs, gitProviderName, gitTargetPath, "main")
+		watchRuleManifest := fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha1
+kind: WatchRule
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  targetRef:
+    kind: GitTarget
+    name: %s
+  rules:
+    - apiGroups: ["*"]
+      apiVersions: ["*"]
+      resources: ["*"]
+`, watchRuleName, testNs, destName)
+		_, err = kubectlRunWithStdin(testNs, watchRuleManifest, "apply", "-f", "-")
+		Expect(err).NotTo(HaveOccurred(), "Failed to apply wildcard WatchRule")
+
+		verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Ready", "")
+		Eventually(func(g Gomega) {
+			output, getErr := kubectlRunInNamespace(
+				testNs,
+				"get",
+				"watchrule",
+				watchRuleName,
+				"-o",
+				"jsonpath={.status.conditions[?(@.type=='ResourcesResolved')].message}",
+			)
+			g.Expect(getErr).NotTo(HaveOccurred())
+			g.Expect(output).To(ContainSubstring("wildcard expanded to"))
+		}, 90*time.Second, 2*time.Second).Should(Succeed())
+
+		By("verifying the initial wildcard snapshot committed core and custom resources")
+		expectedConfigMap := filepath.Join(
+			watchRuleRepo.CheckoutDir,
+			gitTargetPath,
+			fmt.Sprintf("v1/configmaps/%s/%s.yaml", testNs, configMapName),
+		)
+		expectedOrder := filepath.Join(
+			watchRuleRepo.CheckoutDir,
+			gitTargetPath,
+			iceCreamInstanceDir(crdGroupWildcardRule),
+			testNs,
+			orderName+".yaml",
+		)
+		Eventually(func(g Gomega) {
+			pullLatestRepoState(g, watchRuleRepo.CheckoutDir)
+			_, configMapErr := os.Stat(expectedConfigMap)
+			g.Expect(configMapErr).NotTo(HaveOccurred(), "ConfigMap file must exist at %s", expectedConfigMap)
+			_, orderErr := os.Stat(expectedOrder)
+			g.Expect(orderErr).NotTo(HaveOccurred(), "IceCreamOrder file must exist at %s", expectedOrder)
+		}, 2*time.Minute, 3*time.Second).Should(Succeed())
+
+		By("cleaning up wildcard test resources")
+		_, _ = kubectlRunInNamespace(
+			testNs,
+			"delete",
+			iceCreamCRDName(crdGroupWildcardRule),
+			orderName,
+			"--ignore-not-found=true",
+		)
+		_, _ = kubectlRunInNamespace(testNs, "delete", "configmap", configMapName, "--ignore-not-found=true")
 		cleanupWatchRule(watchRuleName, testNs)
 		cleanupGitTarget(destName, testNs)
 	})

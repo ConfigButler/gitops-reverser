@@ -70,7 +70,7 @@ type WatchRuleSpec struct {
 
 // ResourceRule defines a set of namespaced resources to watch.
 // Omitted API groups and versions are resolved from the served Kubernetes API surface.
-// All fields except Resources are optional and default to matching all when not specified.
+// All fields except Resources are optional.
 type ResourceRule struct {
 	// Operations to watch. If empty, watches all operations (CREATE, UPDATE, DELETE).
 	// Supports: CREATE, UPDATE, DELETE, or * (wildcard for all operations).
@@ -87,16 +87,18 @@ type ResourceRule struct {
 	//   - [""] matches core API (pods, services, configmaps)
 	//   - ["apps"] matches apps API group (deployments, statefulsets)
 	//   - ["", "apps"] matches both core and apps groups
-	//   - ["*"] or [] matches all groups
+	//   - ["*"] matches all groups
+	//   - [] resolves a named resource only when it is served by one API group
 	// +optional
 	APIGroups []string `json:"apiGroups,omitempty"`
 
-	// APIVersions to match. If empty, matches all versions.
+	// APIVersions to match. If empty, uses the preferred served version for each group/resource.
 	// Wildcards supported: "*" matches all versions.
 	// Examples:
 	//   - ["v1"] matches only v1 version
 	//   - ["v1", "v1beta1"] matches both versions
-	//   - ["*"] or [] matches all versions
+	//   - ["*"] matches all served versions
+	//   - [] matches the preferred served version
 	// +optional
 	APIVersions []string `json:"apiVersions,omitempty"`
 
@@ -105,16 +107,18 @@ type ResourceRule struct {
 	// Wildcard semantics follow Kubernetes admission webhook patterns:
 	//   - "*" matches all resources
 	//   - "pods" matches exactly pods (case-insensitive)
-	//   - "pods/*" matches all pod subresources (e.g., pods/log, pods/status)
-	//   - "pods/log" matches specific subresource
 	//
 	// For custom resources, use the exact plural resource name and set apiGroups
 	// when more than one served API group exposes that name.
 	//
-	// Note: Prefix/suffix wildcards like "pod*" or "*.example.com" are NOT supported.
-	// Use exact matches or the "*" wildcard for broad matching.
+	// Note: Subresources cannot be added here. Values containing "/" (for example
+	// "pods/log" or "pods/*") are rejected by the API because subresources are
+	// not supported for list/watch snapshot planning. Prefix/suffix wildcards
+	// like "pod*" or "*.example.com" are NOT supported. Use exact matches or the
+	// "*" wildcard for broad matching.
 	// +required
 	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:items:Pattern=`^[^/]*$`
 	Resources []string `json:"resources"`
 }
 
