@@ -32,10 +32,10 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
-// Serial: installs/removes a cluster-scoped APIService (aggregation layer),
-// which perturbs apiserver discovery for every other client while it is in
-// flight. See docs/design/e2e-serial-registry.md.
-var _ = Describe("Aggregated API server", Label("aggregated-api"), Serial, Ordered, func() {
+// Not Serial: the wardle APIService is installed once at cluster setup (Flux)
+// and only read here; everything this spec mutates is name-isolated. See
+// docs/design/e2e-serial-registry.md.
+var _ = Describe("Aggregated API server", Label("aggregated-api"), Ordered, func() {
 	var (
 		testNs         string
 		repo           *RepoArtifacts

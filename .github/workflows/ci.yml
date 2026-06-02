@@ -400,7 +400,11 @@ jobs:
         with:
           name: e2e-ginkgo-reports-${{ matrix.name }}
           path: .stamps/**/ginkgo-report-*.json
-          if-no-files-found: ignore
+          # Reports live under the dot-dir .stamps/, which upload-artifact treats
+          # as hidden and excludes by default — without this the upload silently
+          # finds no files. See the "No files were found" gotcha in upload-artifact v4+.
+          include-hidden-files: true
+          if-no-files-found: error
           retention-days: 60
 
   # Release job only runs on push to main after tests pass

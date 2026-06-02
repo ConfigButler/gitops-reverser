@@ -29,7 +29,6 @@ row below.
 |---|---|---|---|
 | [test/e2e/restart_snapshot_e2e_test.go](../../test/e2e/restart_snapshot_e2e_test.go) | `Restart Snapshot Safety` | Rollout-restarts the controller deployment. | The controller is a singleton; restarting it disrupts in-flight reconciles/commits for every other spec. |
 | [test/e2e/image_refresh_test.go](../../test/e2e/image_refresh_test.go) | `image refresh dependency chain` | Changes the controller image / redeploys the controller. | Same singleton controller; an image swap perturbs all concurrent specs. |
-| [test/e2e/aggregated_apiserver_e2e_test.go](../../test/e2e/aggregated_apiserver_e2e_test.go) | `Aggregated API server` | Installs/removes a cluster-scoped `APIService` (aggregation layer). | Registering/removing an aggregated API briefly disrupts apiserver discovery for **every** client, including unrelated kubectl calls in other specs. |
 
 ### De-serialized
 
@@ -85,6 +84,19 @@ into a resnapshot whose `reconcile: sync …` commits inflated its exact count.
 Finding #2's fix ([manager.go:1191](../../internal/watch/manager.go#L1191)) —
 a target only resnapshots when its *resolved* plan hash changes — removed that
 mechanism, the same fix that unblocked `crd_lifecycle`.
+
+`Aggregated API server` ([aggregated_apiserver_e2e_test.go](../../test/e2e/aggregated_apiserver_e2e_test.go))
+was de-serialized after its `Serial` justification proved **stale**. The note
+claimed it "installs/removes a cluster-scoped `APIService` while it is in flight",
+but the wardle APIService (`v1alpha1.wardle.example.com`) is installed once at
+cluster setup by the apiservice-audit-proxy HelmRelease
+([setup/flux/releases/aggregated-api.yaml](../../test/e2e/setup/flux/releases/aggregated-api.yaml))
+and stays Available for the whole suite. The spec only *reads* it — it never
+registers or removes it — so there is no in-flight discovery perturbation to
+serialize against. Everything the spec mutates is name-isolated (own namespace,
+own repo, namespace-scoped flunder WatchRule, namespaced Flunders), and its one
+cluster-wide assertion (`gitopsreverser_audit_shallow_dropped_total == 0`) is a
+global zero-invariant that is parallel-safe by design.
 
 ## Triage list (watch during stability runs)
 

@@ -34,20 +34,25 @@ disappear. Removing a `Serial` label without first isolating the underlying
 state re-introduces cross-spec bleed. So de-serialization is an isolation
 *refactor*, gated on verification — not a cleanup.
 
-Only 3 Serial containers are genuinely serial and stay:
+Only 2 Serial containers are genuinely serial and stay:
 
 - `Restart Snapshot Safety`, `image refresh dependency chain` — restart/reimage
-  the singleton controller.
-- `Aggregated API server` — installs/removes a cluster `APIService`; perturbs
-  apiserver discovery for every client.
+  the singleton controller, which every other spec depends on. No name isolation
+  can fix a shared singleton.
 
-`Bi Directional` was previously listed here as "genuinely serial" on the theory
-that any concurrent controller activity breaks its exact-count loop assertions.
-That turned out to be too pessimistic: with its own repo and finding #2's
-plan-hash-gated resnapshot fix, no concurrent spec writes to its `main` and no
-catalog refresh perturbs its target, so it has been de-serialized. The two
-audit-pipeline candidates below were also de-serialized — by per-spec repo
-isolation, not the B1 refactor (see the outcome note at the top of this doc).
+Three other containers previously assumed immovable have been de-serialized:
+
+- `Bi Directional` was listed as "genuinely serial" on the theory that any
+  concurrent controller activity breaks its exact-count loop assertions. Too
+  pessimistic: with its own repo and finding #2's plan-hash-gated resnapshot fix,
+  no concurrent spec writes to its `main` and no catalog refresh perturbs its
+  target.
+- `Aggregated API server` was marked Serial for "installs/removes a cluster
+  `APIService` in flight" — but it never installs one; Flux does, once, at
+  cluster setup, and it stays Available the whole run. The spec only reads it.
+- The two audit-pipeline candidates (`Commit Window Batching`, `Commit Request`)
+  were de-serialized by per-spec repo isolation, not the B1 refactor (see the
+  outcome note at the top of this doc).
 
 ---
 
