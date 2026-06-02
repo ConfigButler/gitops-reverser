@@ -50,17 +50,6 @@ func pullLatestRepoState(g Gomega, checkoutDir string) {
 	}
 }
 
-func assertLatestCommitTouchesOnly(g Gomega, checkoutDir string, expectedPaths []string) {
-	GinkgoHelper()
-
-	actualPaths := commitTouchedPaths(g, checkoutDir, "HEAD")
-	expected := append([]string(nil), expectedPaths...)
-	sort.Strings(expected)
-
-	g.Expect(actualPaths).To(Equal(expected),
-		fmt.Sprintf("Latest commit should touch only expected paths. Actual: %v", actualPaths))
-}
-
 func assertLatestCommitForPathTouchesOnlyWithOptional(
 	g Gomega,
 	checkoutDir string,

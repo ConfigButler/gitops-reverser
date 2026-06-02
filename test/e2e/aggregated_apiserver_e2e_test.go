@@ -19,7 +19,6 @@ limitations under the License.
 package e2e
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -168,58 +167,31 @@ spec:
 		}, 30*time.Second, time.Second).Should(Succeed())
 	})
 
-	It("should recover Flunder audit request and response bodies through the proxy", func() {
-		streamName := defaultAuditRedisStream
-		configMapName := fmt.Sprintf("aggregated-audit-compare-cm-%d", GinkgoRandomSeed())
-		flunderName := fmt.Sprintf("aggregated-audit-compare-flunder-%d", GinkgoRandomSeed())
+	It("should never drop aggregated audit events as shallow", func() {
+		// A "shallow" audit event is one whose request/response body never
+		// arrived, so it cannot drive a high-quality Git write and is dropped,
+		// incrementing gitopsreverser_audit_shallow_dropped_total. In a correctly
+		// configured environment every audit event is paired with its body, so
+		// that counter must stay at zero — for this scenario and for every other
+		// test sharing the cluster. Asserting it here is the externally
+		// observable equivalent of confirming the proxy recovers full bodies.
+		ensureFlunderWatchRuleReady()
 
-		By("connecting to Valkey through the e2e port-forward")
-		client := newE2EValkeyClient()
-		defer func() {
-			_ = client.Close()
-		}()
-
-		Eventually(func(g Gomega) {
-			g.Expect(client.Ping(context.Background()).Err()).NotTo(HaveOccurred())
-		}, 30*time.Second, 2*time.Second).Should(Succeed())
-
-		By("recording the latest audit stream entry before creating comparison resources")
-		baselineID, err := latestAuditStreamID(context.Background(), client, streamName)
-		Expect(err).NotTo(HaveOccurred())
-
-		configMapManifest := fmt.Sprintf(`apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: %s
-  namespace: %s
-data:
-  compare: configmap
-`, configMapName, testNs)
-
+		flunderName := fmt.Sprintf("aggregated-shallow-flunder-%d", GinkgoRandomSeed())
+		repoPath := path.Join(
+			aggregatedPath,
+			fmt.Sprintf("wardle.example.com/v1alpha1/flunders/%s/%s.yaml", testNs, flunderName),
+		)
+		repoFile := filepath.Join(repo.CheckoutDir, repoPath)
 		flunderManifest := fmt.Sprintf(`apiVersion: wardle.example.com/v1alpha1
 kind: Flunder
 metadata:
   name: %s
   namespace: %s
 spec:
-  reference: compare-reference
+  reference: shallow-check-reference
 `, flunderName, testNs)
 
-		By("creating a ConfigMap and Flunder via the same kubectl apply path")
-		_, err = kubectlRunWithStdin(testNs, configMapManifest, "apply", "-f", "-")
-		Expect(err).NotTo(HaveOccurred())
-		_, err = kubectlRunWithStdin(testNs, flunderManifest, "apply", "-f", "-")
-		Expect(err).NotTo(HaveOccurred())
-
-		DeferCleanup(func() {
-			if skipCleanupBecauseResourcesArePreserved(
-				fmt.Sprintf("ConfigMap %s/%s", testNs, configMapName),
-				testNs,
-			) {
-				return
-			}
-			_, _ = kubectlRunInNamespace(testNs, "delete", "configmap", configMapName, "--ignore-not-found=true")
-		})
 		DeferCleanup(func() {
 			if skipCleanupBecauseResourcesArePreserved(fmt.Sprintf("Flunder %s/%s", testNs, flunderName), testNs) {
 				return
@@ -227,62 +199,26 @@ spec:
 			_, _ = kubectlRunInNamespace(testNs, "delete", "flunder", flunderName, "--ignore-not-found=true")
 		})
 
-		By("capturing the corresponding raw audit payloads from the Valkey stream")
+		By("creating a Flunder through the aggregated API to exercise the audit body-join path")
+		_, err := kubectlRunWithStdin(testNs, flunderManifest, "apply", "-f", "-")
+		Expect(err).NotTo(HaveOccurred())
+
+		By("waiting for the create commit, confirming the audit body was recovered (not shallow)")
 		Eventually(func(g Gomega) {
-			configMapAudit, findErr := findAuditPayloadSince(
-				context.Background(),
-				client,
-				streamName,
-				baselineID,
-				300,
-				func(payload map[string]interface{}) bool {
-					return auditPayloadMatches(payload, "", "configmaps", testNs, configMapName, "create")
-				},
-			)
-			g.Expect(findErr).NotTo(HaveOccurred())
+			pullLatestRepoState(g, repo.CheckoutDir)
 
-			flunderAudit, findErr := findAuditPayloadSince(
-				context.Background(),
-				client,
-				streamName,
-				baselineID,
-				300,
-				func(payload map[string]interface{}) bool {
-					return auditPayloadMatches(payload, "wardle.example.com", "flunders", testNs, flunderName, "create")
-				},
-			)
-			g.Expect(findErr).NotTo(HaveOccurred())
+			content, readErr := os.ReadFile(repoFile)
+			g.Expect(readErr).NotTo(HaveOccurred(), "expected Flunder file to exist after create")
+			g.Expect(string(content)).To(ContainSubstring("reference: shallow-check-reference"))
+		}, 2*time.Minute, 2*time.Second).Should(Succeed())
 
-			g.Expect(auditObjectRefName(configMapAudit.Payload)).To(Equal(configMapName))
-			g.Expect(auditPayloadHasObject(configMapAudit.Payload, "requestObject")).To(BeTrue())
-			g.Expect(auditPayloadHasObject(configMapAudit.Payload, "responseObject")).To(BeTrue())
-			g.Expect(auditObjectRefName(flunderAudit.Payload)).To(Equal(flunderName))
-			g.Expect(auditPayloadHasObject(flunderAudit.Payload, "requestObject")).To(BeTrue())
-			g.Expect(auditPayloadHasObject(flunderAudit.Payload, "responseObject")).To(BeTrue())
-			flunderAuditID := auditPayloadID(flunderAudit.Payload)
-			g.Expect(flunderAuditID).NotTo(BeEmpty())
-			flunderCount, countErr := countAuditPayloadsByAuditIDSince(
-				context.Background(),
-				client,
-				streamName,
-				baselineID,
-				flunderAuditID,
-				300,
-			)
-			g.Expect(countErr).NotTo(HaveOccurred())
-			g.Expect(flunderCount).To(Equal(1), "expected one canonical stream entry for the Flunder auditID")
-
-			_, _ = fmt.Fprintf(
-				GinkgoWriter,
-				"ConfigMap create audit payload for comparison:\n%s\n",
-				prettyAuditPayload(configMapAudit.Payload),
-			)
-			_, _ = fmt.Fprintf(
-				GinkgoWriter,
-				"Flunder create audit payload for comparison:\n%s\n",
-				prettyAuditPayload(flunderAudit.Payload),
-			)
-		}, 30*time.Second, 2*time.Second).Should(Succeed())
+		By("verifying no audit events were dropped as shallow, cluster-wide")
+		Consistently(func(g Gomega) {
+			dropped, queryErr := queryPrometheus("sum(gitopsreverser_audit_shallow_dropped_total) or vector(0)")
+			g.Expect(queryErr).NotTo(HaveOccurred())
+			g.Expect(dropped).To(BeZero(),
+				"gitopsreverser_audit_shallow_dropped_total must stay at zero in a healthy e2e environment")
+		}, 10*time.Second, 2*time.Second).Should(Succeed())
 	})
 
 	It("should accept an aggregated flunder WatchRule and mark it ready", func() {
@@ -292,7 +228,6 @@ spec:
 	It("should attribute Flunder commits to the impersonated user", func() {
 		ensureFlunderWatchRuleReady()
 
-		streamName := defaultAuditRedisStream
 		flunderName := fmt.Sprintf("aggregated-impersonation-flunder-%d", GinkgoRandomSeed())
 		repoPath := path.Join(
 			aggregatedPath,
@@ -308,20 +243,6 @@ spec:
   reference: impersonated-reference
 `, flunderName, testNs)
 
-		By("connecting to Valkey through the e2e port-forward")
-		client := newE2EValkeyClient()
-		defer func() {
-			_ = client.Close()
-		}()
-
-		Eventually(func(g Gomega) {
-			g.Expect(client.Ping(context.Background()).Err()).NotTo(HaveOccurred())
-		}, 30*time.Second, 2*time.Second).Should(Succeed())
-
-		By("recording the latest audit stream entry before the impersonated create")
-		baselineID, err := latestAuditStreamID(context.Background(), client, streamName)
-		Expect(err).NotTo(HaveOccurred())
-
 		DeferCleanup(func() {
 			if skipCleanupBecauseResourcesArePreserved(fmt.Sprintf("Flunder %s/%s", testNs, flunderName), testNs) {
 				return
@@ -330,25 +251,8 @@ spec:
 		})
 
 		By("creating a Flunder through the aggregated API as an impersonated user")
-		_, err = kubectlRunWithStdin(testNs, flunderManifest, "--as=jane@acme.com", "apply", "-f", "-")
+		_, err := kubectlRunWithStdin(testNs, flunderManifest, "--as=jane@acme.com", "apply", "-f", "-")
 		Expect(err).NotTo(HaveOccurred())
-
-		By("observing the impersonated user in the audit payload")
-		Eventually(func(g Gomega) {
-			flunderAudit, findErr := findAuditPayloadSince(
-				context.Background(),
-				client,
-				streamName,
-				baselineID,
-				300,
-				func(payload map[string]interface{}) bool {
-					return auditPayloadMatches(payload, "wardle.example.com", "flunders", testNs, flunderName, "create")
-				},
-			)
-			g.Expect(findErr).NotTo(HaveOccurred())
-			g.Expect(auditObjectRefName(flunderAudit.Payload)).To(Equal(flunderName))
-			g.Expect(auditEffectiveUsername(flunderAudit.Payload)).To(Equal("jane@acme.com"))
-		}, 30*time.Second, 2*time.Second).Should(Succeed())
 
 		By("verifying the resulting git commit uses the impersonated user as author")
 		Eventually(func(g Gomega) {
@@ -468,32 +372,3 @@ spec:
 		}, 2*time.Minute, 2*time.Second).Should(Succeed())
 	})
 })
-
-func auditEffectiveUsername(payload map[string]interface{}) string {
-	if impersonated := nestedAuditString(payload, "impersonatedUser", "username"); impersonated != "" {
-		return impersonated
-	}
-
-	return nestedAuditString(payload, "user", "username")
-}
-
-func nestedAuditString(payload map[string]interface{}, fields ...string) string {
-	current := any(payload)
-	for _, field := range fields {
-		nextMap, ok := current.(map[string]interface{})
-		if !ok {
-			return ""
-		}
-		current, ok = nextMap[field]
-		if !ok {
-			return ""
-		}
-	}
-
-	value, ok := current.(string)
-	if !ok {
-		return ""
-	}
-
-	return strings.TrimSpace(value)
-}

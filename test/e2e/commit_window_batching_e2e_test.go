@@ -32,14 +32,14 @@ import (
 
 // Commit-window batching exercises the grouped-commit path: multiple events
 // arriving within the rolling silence window collapse into one grouped commit
-// and one push. The audit-redis consumer pipeline is the real path under test
-// — events flow kubectl → audit webhook → Valkey stream → consumer →
+// and one push. The audit consumer pipeline is the real path under test:
+// events flow kubectl → audit webhook → consumer →
 // BranchWorker.commitGroups → BranchWorker.pushPendingCommits.
-// Serial: shares the single global audit pipeline (audit webhook → Redis stream
-// → consumer) with every other audit-redis spec. See
+// Serial: shares the single global audit pipeline with every other
+// audit-consumer spec. See
 // docs/design/e2e-serial-registry.md.
 var _ = Describe("Commit Window Batching",
-	Label("commit-window-batching", "audit-redis", "smoke"), Serial, Ordered, func() {
+	Label("commit-window-batching", "audit-consumer", "smoke"), Serial, Ordered, func() {
 		var (
 			testNs        string
 			gitProvName   string
@@ -53,7 +53,7 @@ var _ = Describe("Commit Window Batching",
 			By("creating commit-window-batching test namespace and applying git secrets")
 			testNs = testNamespaceFor("commit-window-batching")
 			_, _ = kubectlRun("create", "namespace", testNs)
-			repo := ensureAuditRedisRepo()
+			repo := ensureAuditConsumerRepo()
 			_, err := kubectlRunInNamespace(testNs, "apply", "-f", repo.SecretsYAML)
 			Expect(err).NotTo(HaveOccurred(), "failed to apply git secrets to namespace")
 			applySOPSAgeKeyToNamespace(testNs)
@@ -100,7 +100,7 @@ var _ = Describe("Commit Window Batching",
 		It("collapses a burst of events into one grouped commit and one push", func() {
 			const burstSize = 4
 
-			repo := auditRedisRepo
+			repo := auditConsumerRepo
 			basePath := "e2e/commit-window-test"
 			seed := GinkgoRandomSeed()
 			burstPrefix := fmt.Sprintf("commit-window-burst-%d", seed)

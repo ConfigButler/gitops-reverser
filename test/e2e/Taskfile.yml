@@ -198,7 +198,7 @@ tasks:
   test-e2e-full:
     desc: Run the full e2e suite, including slow and specialized scenarios
     vars:
-      # 47 specs at ~22s avg + ~6m cold prepare ≈ 25m; the smoke-tuned 15m default
+      # 46 specs at ~22s avg + ~6m cold prepare ≈ 25m; the smoke-tuned 15m default
       # times out mid-run and gives a goroutine dump instead of a useful report.
       E2E_FULL_TIMEOUT: '{{.E2E_FULL_TIMEOUT | default "30m"}}'
     cmds:
@@ -520,17 +520,6 @@ tasks:
           exit 0
         fi
         "{{.KUBECTL}}" --context "${ctx}" -n "${ns}" delete secret "${name}" --ignore-not-found=true
-
-  test-e2e-audit-redis:
-    desc: Run dedicated audit to Redis enqueue scenario
-    cmds:
-      - |
-        export CTX="{{.CTX}}"
-        export INSTALL_MODE="{{.INSTALL_MODE}}"
-        export NAMESPACE="{{.NAMESPACE}}"
-        export E2E_AGE_KEY_FILE="{{.CS}}/age-key.txt"
-        go test -timeout "{{.E2E_GO_TEST_TIMEOUT}}" ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=audit-redis \
-          -ginkgo.json-report="{{.CS}}/{{.NAMESPACE}}/ginkgo-report-audit-redis.json"
 
   test-e2e-aggregated-api:
     desc: Run aggregated API server e2e scenarios
@@ -1189,6 +1178,14 @@ tasks:
           crd/quizsessions.examples.configbutler.ai \
           crd/quizsubmissions.examples.configbutler.ai \
           --timeout=180s
+        # Traefik and kro live in the demo path (not the core bring-up): the
+        # demo podinfo flows below need kro's ResourceGraphDefinition CRD and
+        # traefik's IngressRoutes. Install them here and wait before applying
+        # anything that depends on them.
+        kubectl --context "{{.CTX}}" apply -k "{{.DEMO_MANIFESTS_DIR}}/flux"
+        kubectl --context "{{.CTX}}" -n flux-system wait \
+          helmrelease/traefik helmrelease/kro \
+          --for=condition=Ready --timeout=300s
         kubectl --context "{{.CTX}}" apply -f "{{.DEMO_MANIFESTS_DIR}}/podinfo-kro-template.yaml"
         kubectl --context "{{.CTX}}" wait --for=condition=Ready \
           resourcegraphdefinition/podinfo-app --timeout=120s

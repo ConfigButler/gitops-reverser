@@ -24,7 +24,7 @@ with rationale.
 | | |
 |---|---|
 | Warm `task prepare-e2e` | **1.4 s** (everything stamp-cached) |
-| Smoke suite (`task test-e2e`, 20 of 47 specs) | **418.7 s** (~7 min) |
+| Smoke suite (`task test-e2e`, 20 of 46 specs) | **418.7 s** (~7 min) |
 | BeforeSuite (Go re-invoking warm prepare) | 1.4 s |
 
 ### Per-spec ranking (smoke filter, warm)
@@ -36,11 +36,11 @@ with rationale.
     34.1 s   8.2  Aggregated API server should install and serve flunders through the aggregation layer
     28.9 s   6.9  Manager should create Git commit when IceCreamOrder CRD is installed via ClusterWatchRule
     25.7 s   6.2  Commit Signing should produce per-event commits verifiable locally and by Gitea
-    25.2 s   6.0  Audit Redis Queue should enqueue incoming audit webhook events into a Redis stream
-    24.4 s   5.9  Audit Redis Consumer should attribute the commit to the OIDC display name and email
+    25.2 s   6.0  Audit Redis Queue should enqueue incoming audit webhook events into a Redis stream (retired)
+    24.4 s   5.9  Audit Redis Consumer should attribute the commit to the OIDC display name and email (moved to Commit Author Attribution)
     22.3 s   5.3  Commit Request finalizes a CommitRequest created with metadata.generateName
     21.9 s   5.2  Commit Request finalizes the open commit window on demand and reports the resulting SHA
-    16.4 s   3.9  Audit Redis Consumer should produce a Git commit from an audit stream event
+    16.4 s   3.9  Audit Redis Consumer should produce a Git commit from an audit stream event (retired)
     15.5 s   3.7  Manager should delete Git file when ConfigMap is deleted via WatchRule
      9.9 s   2.4  Manager should create Git commit when ConfigMap is added via WatchRule
      9.1 s   2.2  Manager should commit encrypted Secret manifests when WatchRule includes secrets
@@ -439,15 +439,14 @@ Landed on branch `refactors` (PR #159). `gh` works directly now — no
   kubectl reference is qualified `icecreamorders.<group>`.
 - **Serial registry** ([e2e-serial-registry.md](e2e-serial-registry.md))
   is larger than the initial audit: `restart_snapshot`, `image_refresh`,
-  `aggregated_api` (controller/APIService level) **plus** the four
-  `audit-redis`-labelled containers (`Audit Redis Queue/Consumer`,
-  `Commit Window Batching`, `Commit Request`) — they share one global
-  audit pipeline (webhook → Redis → consumer) and cross-contaminated each
-  other's commits — **plus** `bi_directional` (asserts exact commit counts
-  to prove no commit loop; broken by any concurrent controller activity)
-  and `crd_lifecycle` (CRD/ClusterWatchRule changes are name-isolated, but
-  still perturb cluster discovery and can trigger unrelated GitTarget
-  resnapshots).
+  `aggregated_api` (controller/APIService level) **plus** the remaining
+  `audit-consumer`-labelled containers (`Commit Window Batching`,
+  `Commit Request`) — they share one global audit pipeline and
+  cross-contaminated each other's commits — **plus**
+  `bi_directional` (asserts exact commit counts to prove no commit loop;
+  broken by any concurrent controller activity). `crd_lifecycle` and the
+  former `Audit Redis Queue/Consumer` containers have since been retired from
+  the Serial set; see [e2e-serial-registry.md](e2e-serial-registry.md).
 - **Timeouts widened for parallel/slow load:** `verifyResourceStatus`
   readiness 30s → 90s (post-CRD-install the controller's discovery cache
   lags before serving the new GVR, so a dependent WatchRule can't reach

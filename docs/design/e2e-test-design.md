@@ -108,7 +108,6 @@ These are the canonical Task entry points on the current worktree:
 | `task test-e2e-full` | Entire e2e package |
 | `task test-e2e-manager` | Manager-focused scenarios |
 | `task test-e2e-signing` | Commit-signing scenarios |
-| `task test-e2e-audit-redis` | Audit webhook to Redis scenarios |
 | `task test-image-refresh` | Image rebuild / reload invalidation chain |
 | `task test-e2e-quickstart-helm` | Quickstart framework with Helm install |
 | `task test-e2e-quickstart-manifest` | Quickstart framework with manifest install |
@@ -120,7 +119,7 @@ installing the system under test.
 
 The intended interpretation of these entry points is:
 
-- `task test-e2e`, `task test-e2e-manager`, `task test-e2e-signing`, `task test-e2e-audit-redis`, and `task test-image-refresh` are standard controller behavior checks and should normally run on the default `config-dir` install
+- `task test-e2e`, `task test-e2e-manager`, `task test-e2e-signing` and `task test-image-refresh` are standard controller behavior checks and should normally run on the default `config-dir` install
 - `task test-e2e-quickstart-helm` is the important validation for the Helm install path
 - `task test-e2e-quickstart-manifest` is the important validation for the single-file manifest install path
 - `task test-e2e-full` is a full spec run that includes the bi-directional scenario, but it is still not the primary way to validate all install modes
@@ -200,7 +199,7 @@ These namespaces are typically named:
 
 - `<ginkgo-seed>-test-manager`
 - `<ginkgo-seed>-test-signing`
-- `<ginkgo-seed>-test-audit-redis`
+- `<ginkgo-seed>-test-audit-consumer`
 - and so on
 
 Those namespaces are created in `BeforeAll` and removed in `AfterAll` for the suite.
@@ -234,8 +233,9 @@ The only cluster-level variable still consumed across files is:
 Repo state (names, checkout paths, Secret names, optional receiver webhook info) flows through a typed
 `RepoArtifacts` struct returned by `SetupRepo`, not through package-global env vars.
 
-One important current detail is that `audit_redis_e2e_test.go` uses file-local lazy repo
-initialization so either top-level `Describe` can run first without hidden ordering assumptions.
+One important current detail is that the remaining audit-consumer specs share a lazy repo
+helper in `audit_helpers_test.go`, so `Commit Window Batching` and `Commit Request` can
+run first without hidden ordering assumptions.
 
 ## Repo Model: One Repo Per E2E Test File
 
@@ -245,7 +245,8 @@ Each repo-using e2e file owns its own repo:
 |---|---|---|
 | `e2e_test.go` | `testNamespaceFor("manager")` | `e2e-manager-<seed>` |
 | `signing_e2e_test.go` | `testNamespaceFor("signing")` | `e2e-signing-<seed>` |
-| `audit_redis_e2e_test.go` | `testNamespaceFor("audit-consumer")` | `e2e-audit-redis-<seed>` |
+| `commit_window_batching_e2e_test.go` / `commit_request_e2e_test.go` | `testNamespaceFor("audit-consumer")` via shared helper; per-spec producer namespaces | `e2e-audit-consumer-<seed>` |
+| `commit_author_attribution_e2e_test.go` | `testNamespaceFor("commit-author")` | `e2e-commit-author-<seed>` |
 | `quickstart_framework_e2e_test.go` | `testNamespaceFor("quickstart-framework")` | `e2e-quickstart-framework-<seed>` |
 | `bi_directional_e2e_test.go` | `testNamespaceFor("bi-directional")` | `e2e-bi-directional-<seed>` |
 | `demo_e2e_test.go` | fixed `vote` | fixed `demo` |
@@ -260,9 +261,9 @@ Repo stamps live under:
 
 not under the install namespace.
 
-The `audit_redis_e2e_test.go` file additionally uses a `sync.Once`-backed `ensureAuditRedisRepo()`
-helper so either of its two top-level `Describe` blocks can initialize the shared file-local repo
-first without cross-container ordering coupling.
+The `audit_helpers_test.go` file additionally uses a `sync.Once`-backed
+`ensureAuditConsumerRepo()` helper so either audit-consumer container can initialize the shared
+repo first without cross-container ordering coupling.
 
 ## Why CI Could Pass Even If This Was Fragile
 
@@ -362,7 +363,9 @@ The e2e package currently contains:
 |---|---|---|
 | `e2e_test.go` | `manager` | Main reconciliation and GitOps behavior |
 | `signing_e2e_test.go` | `signing` | Commit signing behavior |
-| `audit_redis_e2e_test.go` | `audit-redis` | Audit webhook to Redis producer/consumer |
+| `commit_window_batching_e2e_test.go` | `audit-consumer` | Commit-window batching through the audit pipeline |
+| `commit_request_e2e_test.go` | `audit-consumer` | CommitRequest finalization through the audit pipeline |
+| `commit_author_attribution_e2e_test.go` | `manager`, `smoke` | OIDC claim to Git author attribution |
 | `image_refresh_test.go` | `image-refresh` | Build/load/restart invalidation chain |
 | `quickstart_framework_e2e_test.go` | `quickstart-framework` | Installer-level quickstart flow |
 | `bi_directional_e2e_test.go` | `bi-directional` | Flux plus gitops-reverser shared ownership |
@@ -384,7 +387,7 @@ Currently that includes:
 - secret encryption path
 - ConfigMap create/delete Git commits
 - cluster-scoped CRD install Git commit
-- audit-to-Redis producer/consumer path
+- audit pipeline batching, commit-request, and author-attribution paths
 - one signing verification path
 
 That keeps the default run closer to a product smoke test than to a full infra regression sweep.
@@ -416,7 +419,6 @@ Use:
 ```bash
 task test-e2e-manager
 task test-e2e-signing
-task test-e2e-audit-redis
 task test-image-refresh
 task test-e2e-full
 ```

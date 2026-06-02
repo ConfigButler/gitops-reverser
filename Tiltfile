@@ -91,7 +91,6 @@ test_targets = [
     'test-e2e-full',
     'test-e2e-signing',
     'test-e2e-manager',
-    'test-e2e-audit-redis',
     'test-image-refresh',
 ]
 for name in test_targets:

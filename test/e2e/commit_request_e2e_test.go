@@ -19,7 +19,6 @@ limitations under the License.
 package e2e
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -36,10 +35,10 @@ import (
 // a deliberately long commitWindow so that, without the CommitRequest, the
 // edit would not be committed for minutes — observing the commit promptly is
 // what proves the commit-request path works.
-// Serial: shares the single global audit pipeline (audit webhook → Redis stream
-// → consumer) with every other audit-redis spec. See
+// Serial: shares the single global audit pipeline with every other
+// audit-consumer spec. See
 // docs/design/e2e-serial-registry.md.
-var _ = Describe("Commit Request", Label("commit-request", "audit-redis", "smoke"), Serial, Ordered, func() {
+var _ = Describe("Commit Request", Label("commit-request", "audit-consumer", "smoke"), Serial, Ordered, func() {
 	var (
 		testNs        string
 		gitProvName   string
@@ -55,7 +54,7 @@ var _ = Describe("Commit Request", Label("commit-request", "audit-redis", "smoke
 		By("creating commit-request test namespace and applying git secrets")
 		testNs = testNamespaceFor("commit-request")
 		_, _ = kubectlRun("create", "namespace", testNs)
-		repo := ensureAuditRedisRepo()
+		repo := ensureAuditConsumerRepo()
 		_, err := kubectlRunInNamespace(testNs, "apply", "-f", repo.SecretsYAML)
 		Expect(err).NotTo(HaveOccurred(), "failed to apply git secrets to namespace")
 		applySOPSAgeKeyToNamespace(testNs)
@@ -94,7 +93,7 @@ var _ = Describe("Commit Request", Label("commit-request", "audit-redis", "smoke
 	})
 
 	It("finalizes the open commit window on demand and reports the resulting SHA", func() {
-		repo := auditRedisRepo
+		repo := auditConsumerRepo
 		basePath := "e2e/commit-request-test"
 		seed := GinkgoRandomSeed()
 		cmName := fmt.Sprintf("commit-request-cm-%d", seed)
@@ -103,26 +102,6 @@ var _ = Describe("Commit Request", Label("commit-request", "audit-redis", "smoke
 
 		By("editing a ConfigMap to open a commit window")
 		applyConfigMap(testNs, cmName)
-
-		By("waiting for the ConfigMap audit event to reach the Redis stream")
-		// Confirming the producer side guarantees the edit is observable by the
-		// consumer before the CommitRequest's own (later) audit event.
-		valkeyClient := newE2EValkeyClient()
-		defer func() { _ = valkeyClient.Close() }()
-		Eventually(func(g Gomega) {
-			entries, readErr := valkeyClient.XRange(context.Background(), defaultAuditRedisStream, "-", "+").Result()
-			g.Expect(readErr).NotTo(HaveOccurred())
-			found := false
-			for _, entry := range entries {
-				resource, _ := entry.Values["resource"].(string)
-				name, _ := entry.Values["name"].(string)
-				if resource == "configmaps" && name == cmName {
-					found = true
-					break
-				}
-			}
-			g.Expect(found).To(BeTrue(), "ConfigMap audit event should appear in the stream")
-		}, 2*time.Minute, 2*time.Second).Should(Succeed())
 
 		By("confirming the edit has NOT been committed yet (long commitWindow)")
 		Consistently(func(g Gomega) {
@@ -180,7 +159,7 @@ var _ = Describe("Commit Request", Label("commit-request", "audit-redis", "smoke
 	// from responseObject. Without the fix the CommitRequest stays stuck in
 	// WaitingForAuditEvent forever.
 	It("finalizes a CommitRequest created with metadata.generateName", func() {
-		repo := auditRedisRepo
+		repo := auditConsumerRepo
 		basePath := "e2e/commit-request-test"
 		seed := GinkgoRandomSeed()
 		cmName := fmt.Sprintf("commit-request-gen-cm-%d", seed)

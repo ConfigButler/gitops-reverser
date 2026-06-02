@@ -30,7 +30,7 @@ that Phase 1's DAG refactor can't fix.
 
 **Proposal.** [.github/workflows/ci.yml:261-313](../../.github/workflows/ci.yml#L261-L313)
 runs the e2e suite as a 2-entry matrix `{quickstart, full}`. Splitting
-`full` into 4–5 label-scoped shards (`smoke`, `signing`, `audit-redis`,
+`full` into 4–5 label-scoped shards (`smoke`, `signing`, `audit-consumer`,
 `bi-directional`, `image-refresh`, `aggregated-api`) would parallelize
 across GitHub runners and drop wallclock to `max(shard)` instead of
 `sum(shard)`.

@@ -252,21 +252,33 @@ current branch, but should be updated if CI stops rendering Allure:
 **[e2e-serial-registry.md](e2e-serial-registry.md)** — the Serial entries are
 **correctness-driven (shared state), not flakiness-driven**, so improved
 stability doesn't justify de-serializing directly. It *does* unlock the deeper
-refactors the registry is implicitly waiting for:
+refactors the registry is implicitly waiting for. Both items below were planned
+in [e2e-serial-deserialization-plan.md](e2e-serial-deserialization-plan.md) and
+then partly executed:
 
-- [ ] **Isolate the audit pipeline → de-serialize 4 of 8 entries.** `Audit Redis
-  Queue/Consumer`, `Commit Window Batching`, `Commit Request` are Serial only
-  because the webhook→Redis-stream→consumer pipeline is a global singleton.
-  Per-test stream keys / consumer groups (same "isolate by name" move as the
-  icecream CRD groups) lets all four run parallel. **Highest-leverage remaining
-  speedup.**
-- [ ] **Fix the discovery-lag re-snapshot (code finding #2) → de-serialize
-  `crd_lifecycle`.** That spec is Serial because CRD install/delete forces
-  unrelated GitTargets to resnapshot — the `manager.go` empty-plan / swallowed
-  resolve-miss behavior. Fix at the source; name-isolated CRD groups then make
-  the spec parallel-safe.
+- [~] **Audit pipeline.** The planned heavy refactor (per-test stream/consumer
+  isolation, plan option B1) was **not** done — it bends the intentionally
+  singleton audit pipeline for test parallelism and isn't worth the
+  production-correctness risk. Instead the audit-consumer Serial set was *reduced*:
+  `Audit Redis Queue` and `Audit Redis Consumer`
+  (`audit_redis_e2e_test.go`, now deleted) were retired — their producer-path and
+  basic consumer-commit assertions duplicated the WatchRule suite. The one unique
+  assertion (OIDC `user.extra` → commit author) moved to a new **parallel**
+  [commit_author_attribution_e2e_test.go](../../test/e2e/commit_author_attribution_e2e_test.go):
+  a dedicated 0s-commit-window GitProvider + per-path author read makes it
+  concurrency-safe, so it needs no `Serial`. `Commit Window Batching` and
+  `Commit Request` **stay Serial** — they assert batching/commit-window semantics
+  over the shared stream, which concurrent audit traffic genuinely violates.
+- [x] **De-serialize `crd_lifecycle` (was gated on code finding #2).** **Done:**
+  with finding #2's fix shipped (a target only resnapshots when its *resolved*
+  plan hash changes) and per-file CRD groups keeping the `IceCreamOrder` CRD
+  name-isolated, `Manager CRD Lifecycle` dropped `Serial` and now runs `Ordered`
+  in the parallel pool. Verified green under `--procs=4` (the only other
+  wildcard `ClusterWatchRule`, in `restart_snapshot`, is itself Serial, so no
+  concurrent spec matches the icecream group). Registry updated.
 - `bi_directional` (exact commit-count) and `restart_snapshot` / `image_refresh`
-  (singleton controller) are genuinely serial — leave them.
+  (singleton controller) + `aggregated_apiserver` (cluster `APIService`) are
+  genuinely serial — leave them.
 
 - [ ] **Confidence-window pass (the speedup plan's open thread).** Now that the
   race fixes landed (`03b95ab`, `0787b1b`), decide whether CI should keep

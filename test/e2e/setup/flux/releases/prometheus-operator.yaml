@@ -5,6 +5,13 @@ metadata:
   namespace: flux-system
 spec:
   interval: 30m
+  # The monitoring.coreos.com CRDs have very large schemas and are slow to reach
+  # Established; with wait:true the first reconcile can time out finding them
+  # 'InProgress'. Without retryInterval the next attempt is a full interval (30m)
+  # away — longer than the bring-up budget — so a transient establishment lag
+  # becomes a hard failure (wait-flux-services.sh times out on this Kustomization).
+  # Retry quickly so the CRDs settle within the bring-up window instead.
+  retryInterval: 20s
   timeout: 5m
   path: ./
   prune: true

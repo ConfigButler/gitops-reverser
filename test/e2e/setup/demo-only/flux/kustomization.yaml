@@ -1,0 +1,12 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Traefik and kro are only needed by the demo-only flows (podinfo IngressRoutes
+# and kro ResourceGraphDefinitions). They are applied and waited on by the
+# _demo-ready task, kept out of the core bring-up (test/e2e/setup/flux) so a
+# slow/failed install never blocks the measured e2e suites. Both charts default
+# to rendering a ServiceMonitor; keeping them here also means the core path no
+# longer races the prometheus-operator CRD install.
+resources:
+  - ingress.yaml
+  - kro.yaml

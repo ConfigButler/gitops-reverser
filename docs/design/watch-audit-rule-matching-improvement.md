@@ -481,7 +481,8 @@ E2E tests (existing, to be strengthened per the E2E section below):
 
 - [test/e2e/e2e_test.go](/workspaces/gitops-reverser/test/e2e/e2e_test.go:717)
 - [test/e2e/tilt_playground_e2e_test.go](/workspaces/gitops-reverser/test/e2e/tilt_playground_e2e_test.go:55)
-- [test/e2e/audit_redis_e2e_test.go](/workspaces/gitops-reverser/test/e2e/audit_redis_e2e_test.go:54)
+- [test/e2e/commit_window_batching_e2e_test.go](/workspaces/gitops-reverser/test/e2e/commit_window_batching_e2e_test.go:54)
+- [test/e2e/commit_request_e2e_test.go](/workspaces/gitops-reverser/test/e2e/commit_request_e2e_test.go:54)
 
 ## E2E Evidence From A Real Repo History
 
