@@ -95,12 +95,17 @@ type iceCreamScoop struct {
 // biDirectionalRepo holds the file-local repo fixtures for the Bi Directional describe block.
 var biDirectionalRepo *RepoArtifacts
 
-// Serial: a whole-cluster bidirectional behavioral test (Flux applies from git
-// while gitops-reverser mirrors live state back) that asserts on *exact* commit
-// counts to prove no commit loop. Concurrent controller activity from other
-// processes perturbs those counts. Passes sequentially; +2 commits only under
-// parallelism. See docs/design/e2e-serial-registry.md.
-var _ = Describe("Bi Directional", Label("bi-directional"), Serial, Ordered, func() {
+// Not Serial: a whole-cluster bidirectional behavioral test (Flux applies from
+// git while gitops-reverser mirrors live state back) that asserts on *exact*
+// commit counts to prove no commit loop. It owns a dedicated Gitea repo and its
+// own per-file CRD group, so the only writer to its main branch is its own
+// GitTarget. The historical +2-commits-under-parallelism flake came from
+// cluster-wide GVR catalog churn (another spec installing/deleting a CRD)
+// dragging unrelated targets into a resnapshot; that is fixed — a target now
+// only resnapshots when its *resolved* plan hash changes (manager.go) — so a
+// foreign catalog refresh no longer perturbs this repo's commit count. See
+// docs/design/e2e-serial-registry.md.
+var _ = Describe("Bi Directional", Label("bi-directional"), Ordered, func() {
 	var run biDirectionalRun
 	var testNs string
 

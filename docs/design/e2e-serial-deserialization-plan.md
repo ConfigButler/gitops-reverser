@@ -8,11 +8,22 @@
 > **Outcome so far:**
 > - **Part A (`crd_lifecycle`)** — **done**: de-serialized and verified green
 >   under `--procs=4`. See the registry's "De-serialized" section.
-> - **Part B (audit pipeline)** — the heavy B1 refactor was **declined** as
->   planned. Instead the redundant `Audit Redis Queue`/`Consumer` specs were
->   retired and their one unique assertion (OIDC author attribution) moved to the
->   new **parallel** `commit_author_attribution_e2e_test.go`. `Commit Window
->   Batching` and `Commit Request` remain `Serial`.
+> - **Part B (audit pipeline)** — the heavy B1 producer-side refactor was
+>   **declined** as planned, but turned out to be unnecessary. Re-reading the
+>   specs showed their real serial cause was a shared *repo* (one `sync.Once`
+>   Gitea repo + whole-branch `HEAD`/count assertions), not the shared audit
+>   *pipeline* — namespace-scoped WatchRules already route each spec's events to
+>   its own GitTarget. Giving each spec its **own** repo via `SetupRepo`
+>   de-serialized both `Commit Window Batching` and `Commit Request` with no
+>   production change. The redundant `Audit Redis Queue`/`Consumer` specs were
+>   also retired and their unique OIDC-author assertion moved to the **parallel**
+>   `commit_author_attribution_e2e_test.go`.
+> - **`bi_directional`** — also de-serialized: it already owned its repo, and
+>   finding #2's plan-hash-gated resnapshot fix removed the cluster-wide catalog
+>   churn that produced its "+2 commits under parallelism".
+>
+> All de-serializations need a stability run under `E2E_GINKGO_PROCS=2` before the
+> labels are trusted (see Part A step 3).
 
 ## Why this is not "just remove the `Serial` labels"
 
@@ -23,17 +34,20 @@ disappear. Removing a `Serial` label without first isolating the underlying
 state re-introduces cross-spec bleed. So de-serialization is an isolation
 *refactor*, gated on verification — not a cleanup.
 
-Of the 8 Serial containers, 4 are genuinely serial and stay:
+Only 3 Serial containers are genuinely serial and stay:
 
 - `Restart Snapshot Safety`, `image refresh dependency chain` — restart/reimage
   the singleton controller.
 - `Aggregated API server` — installs/removes a cluster `APIService`; perturbs
   apiserver discovery for every client.
-- `Bi Directional` — asserts exact remote commit counts; any concurrent
-  controller activity breaks the loop assertions.
 
-The two candidates below are the only realistic de-serialization targets. They
-are very different in size and risk, so they are planned independently.
+`Bi Directional` was previously listed here as "genuinely serial" on the theory
+that any concurrent controller activity breaks its exact-count loop assertions.
+That turned out to be too pessimistic: with its own repo and finding #2's
+plan-hash-gated resnapshot fix, no concurrent spec writes to its `main` and no
+catalog refresh perturbs its target, so it has been de-serialized. The two
+audit-pipeline candidates below were also de-serialized — by per-spec repo
+isolation, not the B1 refactor (see the outcome note at the top of this doc).
 
 ---
 

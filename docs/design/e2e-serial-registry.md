@@ -5,9 +5,10 @@ containers that must run `Serial` (i.e. never concurrently with any other spec)
 under bounded Ginkgo parallelism (Phase 2.5 of
 [e2e-speedup-plan.md](e2e-speedup-plan.md)).
 
-> De-serializing any row below is an isolation refactor, not a label flip. The
-> two realistic candidates (`crd_lifecycle` and the four audit pipeline specs) are
-> planned in [e2e-serial-deserialization-plan.md](e2e-serial-deserialization-plan.md).
+> De-serializing any row below is an isolation refactor, not a label flip. See
+> [e2e-serial-deserialization-plan.md](e2e-serial-deserialization-plan.md) for the
+> history; `crd_lifecycle`, the two audit-consumer specs, and `bi_directional`
+> have all been de-serialized (see the "De-serialized" section).
 
 ## Rule
 
@@ -29,9 +30,6 @@ row below.
 | [test/e2e/restart_snapshot_e2e_test.go](../../test/e2e/restart_snapshot_e2e_test.go) | `Restart Snapshot Safety` | Rollout-restarts the controller deployment. | The controller is a singleton; restarting it disrupts in-flight reconciles/commits for every other spec. |
 | [test/e2e/image_refresh_test.go](../../test/e2e/image_refresh_test.go) | `image refresh dependency chain` | Changes the controller image / redeploys the controller. | Same singleton controller; an image swap perturbs all concurrent specs. |
 | [test/e2e/aggregated_apiserver_e2e_test.go](../../test/e2e/aggregated_apiserver_e2e_test.go) | `Aggregated API server` | Installs/removes a cluster-scoped `APIService` (aggregation layer). | Registering/removing an aggregated API briefly disrupts apiserver discovery for **every** client, including unrelated kubectl calls in other specs. |
-| [test/e2e/commit_window_batching_e2e_test.go](../../test/e2e/commit_window_batching_e2e_test.go) | `Commit Window Batching` | Same global audit pipeline (labelled `audit-consumer`). | Bursts of ConfigMap events flow through the shared audit consumer and leak into other audit specs' commits. |
-| [test/e2e/commit_request_e2e_test.go](../../test/e2e/commit_request_e2e_test.go) | `Commit Request` | Same global audit pipeline (labelled `audit-consumer`). | Shares the audit consumer; commit-window/queue semantics interleave under concurrency. |
-| [test/e2e/bi_directional_e2e_test.go](../../test/e2e/bi_directional_e2e_test.go) | `Bi Directional` | Whole-cluster Flux↔gitops-reverser round-trip; asserts on **exact** remote commit counts to prove no commit loop. | Any concurrent controller activity adds/reorders commits and breaks the exact-count loop assertions. Passes sequentially; +2 commits only under parallelism. |
 
 ### De-serialized
 
@@ -63,11 +61,30 @@ commit window so each event is its own commit, and it reads the author scoped to
 each ConfigMap's unique path, so concurrent audit traffic cannot change the
 commit it asserts on.
 
-The remaining `audit-consumer`-labelled containers (`Commit Window Batching`,
-`Commit Request`) stay `Serial`: they assert on commit-window/batching semantics
-over the shared audit consumer, which any concurrent audit traffic violates.
-Because Ginkgo runs `Serial` specs alone (after all parallel specs), the audit
-pipeline only ever has one client at a time for those.
+The two `audit-consumer`-labelled containers (`Commit Window Batching`
+([commit_window_batching_e2e_test.go](../../test/e2e/commit_window_batching_e2e_test.go)),
+`Commit Request` ([commit_request_e2e_test.go](../../test/e2e/commit_request_e2e_test.go)))
+were also de-serialized. Their real serial cause was **not** the shared audit
+*pipeline* — namespace-scoped WatchRules already route each spec's events only to
+its own GitTarget — but a shared *repo*: both borrowed one Gitea repo from a
+`sync.Once` helper and asserted on whole-branch state (`Commit Request` reads
+`HEAD`/`status.sha`; `Commit Window Batching` reads `git rev-list --count main`),
+so the *other* audit spec's commits to the same `main` corrupted those reads.
+Each now provisions its **own** repo via `SetupRepo`, so the only writer to its
+`main` is its own GitTarget, fed exclusively by audit events from its own
+namespace. The batching property is a per-GitTarget branch-worker behaviour (each
+target runs its own commit window), so events for other GitTargets cannot enter
+this spec's grouped commit. The retired `sync.Once` helper (`audit_helpers_test.go`)
+was deleted.
+
+`Bi Directional` ([bi_directional_e2e_test.go](../../test/e2e/bi_directional_e2e_test.go))
+was de-serialized too. It already owned a dedicated repo and per-file CRD group;
+its historical "+2 commits only under parallelism" came from cluster-wide GVR
+catalog churn (another spec installing/deleting a CRD) dragging unrelated targets
+into a resnapshot whose `reconcile: sync …` commits inflated its exact count.
+Finding #2's fix ([manager.go:1191](../../internal/watch/manager.go#L1191)) —
+a target only resnapshots when its *resolved* plan hash changes — removed that
+mechanism, the same fix that unblocked `crd_lifecycle`.
 
 ## Triage list (watch during stability runs)
 

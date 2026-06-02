@@ -35,13 +35,19 @@ import (
 // and one push. The audit consumer pipeline is the real path under test:
 // events flow kubectl → audit webhook → consumer →
 // BranchWorker.commitGroups → BranchWorker.pushPendingCommits.
-// Serial: shares the single global audit pipeline with every other
-// audit-consumer spec. See
+//
+// Not Serial: this spec owns a dedicated Gitea repo, so the commit-count delta
+// it asserts on counts only its own GitTarget's commits — fed exclusively by
+// audit events from its own namespace. The batching property (a same-author
+// burst inside one commit window collapses into one commit) is a per-GitTarget
+// branch-worker behaviour: each GitTarget runs its own commit window, so events
+// routed to other GitTargets cannot land in this spec's grouped commit. See
 // docs/design/e2e-serial-registry.md.
 var _ = Describe("Commit Window Batching",
-	Label("commit-window-batching", "audit-consumer", "smoke"), Serial, Ordered, func() {
+	Label("commit-window-batching", "audit-consumer", "smoke"), Ordered, func() {
 		var (
 			testNs        string
+			repo          *RepoArtifacts
 			gitProvName   string
 			gitTargetName string
 			watchRuleName string
@@ -53,7 +59,11 @@ var _ = Describe("Commit Window Batching",
 			By("creating commit-window-batching test namespace and applying git secrets")
 			testNs = testNamespaceFor("commit-window-batching")
 			_, _ = kubectlRun("create", "namespace", testNs)
-			repo := ensureAuditConsumerRepo()
+			repo = SetupRepo(
+				resolveE2EContext(),
+				testNs,
+				fmt.Sprintf("e2e-commit-window-%d", GinkgoRandomSeed()),
+			)
 			_, err := kubectlRunInNamespace(testNs, "apply", "-f", repo.SecretsYAML)
 			Expect(err).NotTo(HaveOccurred(), "failed to apply git secrets to namespace")
 			applySOPSAgeKeyToNamespace(testNs)
@@ -100,7 +110,6 @@ var _ = Describe("Commit Window Batching",
 		It("collapses a burst of events into one grouped commit and one push", func() {
 			const burstSize = 4
 
-			repo := auditConsumerRepo
 			basePath := "e2e/commit-window-test"
 			seed := GinkgoRandomSeed()
 			burstPrefix := fmt.Sprintf("commit-window-burst-%d", seed)

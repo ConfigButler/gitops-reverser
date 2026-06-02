@@ -35,12 +35,17 @@ import (
 // a deliberately long commitWindow so that, without the CommitRequest, the
 // edit would not be committed for minutes — observing the commit promptly is
 // what proves the commit-request path works.
-// Serial: shares the single global audit pipeline with every other
-// audit-consumer spec. See
-// docs/design/e2e-serial-registry.md.
-var _ = Describe("Commit Request", Label("commit-request", "audit-consumer", "smoke"), Serial, Ordered, func() {
+//
+// Not Serial: this spec owns a dedicated Gitea repo (its own GitProvider →
+// GitTarget → namespace-scoped WatchRule), so the only writer to its main
+// branch is its own GitTarget, fed exclusively by audit events from its own
+// namespace. The HEAD/SHA assertions below therefore read back only this spec's
+// own commit; concurrent audit traffic for other GitTargets lands in other
+// repos and cannot move this repo's HEAD. See docs/design/e2e-serial-registry.md.
+var _ = Describe("Commit Request", Label("commit-request", "audit-consumer", "smoke"), Ordered, func() {
 	var (
 		testNs        string
+		repo          *RepoArtifacts
 		gitProvName   string
 		gitTargetName string
 		watchRuleName string
@@ -54,7 +59,11 @@ var _ = Describe("Commit Request", Label("commit-request", "audit-consumer", "sm
 		By("creating commit-request test namespace and applying git secrets")
 		testNs = testNamespaceFor("commit-request")
 		_, _ = kubectlRun("create", "namespace", testNs)
-		repo := ensureAuditConsumerRepo()
+		repo = SetupRepo(
+			resolveE2EContext(),
+			testNs,
+			fmt.Sprintf("e2e-commit-request-%d", GinkgoRandomSeed()),
+		)
 		_, err := kubectlRunInNamespace(testNs, "apply", "-f", repo.SecretsYAML)
 		Expect(err).NotTo(HaveOccurred(), "failed to apply git secrets to namespace")
 		applySOPSAgeKeyToNamespace(testNs)
@@ -93,7 +102,6 @@ var _ = Describe("Commit Request", Label("commit-request", "audit-consumer", "sm
 	})
 
 	It("finalizes the open commit window on demand and reports the resulting SHA", func() {
-		repo := auditConsumerRepo
 		basePath := "e2e/commit-request-test"
 		seed := GinkgoRandomSeed()
 		cmName := fmt.Sprintf("commit-request-cm-%d", seed)
@@ -159,7 +167,6 @@ var _ = Describe("Commit Request", Label("commit-request", "audit-consumer", "sm
 	// from responseObject. Without the fix the CommitRequest stays stuck in
 	// WaitingForAuditEvent forever.
 	It("finalizes a CommitRequest created with metadata.generateName", func() {
-		repo := auditConsumerRepo
 		basePath := "e2e/commit-request-test"
 		seed := GinkgoRandomSeed()
 		cmName := fmt.Sprintf("commit-request-gen-cm-%d", seed)
