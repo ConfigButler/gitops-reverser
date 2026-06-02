@@ -153,7 +153,8 @@ RUN chgrp -R godev /go && \
 RUN go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.19.0 \
     && go install github.com/onsi/ginkgo/v2/ginkgo@v2.28.1 \
     && go install sigs.k8s.io/controller-runtime/tools/setup-envtest@v0.0.0-20260318145839-6c9615a2a166 \
-    && go install golang.org/x/tools/cmd/goimports@v0.43.0
+    && go install golang.org/x/tools/cmd/goimports@v0.43.0 \
+    && go install github.com/boyter/scc/v3@v3.7.0
 
 # Initialize golangci-lint cache by running it once on an empty directory
 # This downloads linter dependencies without needing source code

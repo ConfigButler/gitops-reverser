@@ -8,6 +8,7 @@ vars:
   CONTROLLER_GEN: '{{.CONTROLLER_GEN | default "controller-gen"}}'
   ENVTEST: '{{.ENVTEST | default "setup-envtest"}}'
   GOLANGCI_LINT: '{{.GOLANGCI_LINT | default "golangci-lint"}}'
+  SCC: '{{.SCC | default "scc"}}'
   INSTALL_NAME: '{{.INSTALL_NAME | default "gitops-reverser"}}'
   NAMESPACE: '{{.NAMESPACE | default "gitops-reverser"}}'
   DEFAULT_AUDIT_REDIS_ADDR: '{{.DEFAULT_AUDIT_REDIS_ADDR | default "valkey:6379"}}'
@@ -142,6 +143,11 @@ tasks:
     desc: Verify golangci-lint configuration
     cmds:
       - '{{.GOLANGCI_LINT}} config verify'
+
+  loc:
+    desc: Count lines of project code with scc (excludes vendored external-sources)
+    cmds:
+      - '{{.SCC}} --exclude-dir external-sources,vendor,bin,dist {{.CLI_ARGS}}'
 
   build:
     desc: Build manager binary
