@@ -394,51 +394,14 @@ jobs:
             echo "</details>"
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
-      - name: Summarize E2E timing reports
-        if: always()
-        run: |
-          summary_file=".stamps/e2e-timing-summary-${{ matrix.name }}.md"
-          docker run --rm \
-            -v "${GITHUB_WORKSPACE}:${{ env.CI_WORKDIR }}" \
-            -w "${{ env.CI_WORKDIR }}" \
-            -e SUMMARY_FILE="${summary_file}" \
-            ${{ env.CI_CONTAINER }} \
-            bash -c '
-              set -euo pipefail
-              mkdir -p .stamps
-              reports="$(find .stamps -path "*/ginkgo-report-*.json" -type f | sort)"
-              {
-                echo "### E2E timing reports (${{ matrix.name }})"
-                if [ -z "${reports}" ]; then
-                  echo
-                  echo "No Ginkgo JSON reports were produced."
-                else
-                  # Compile the tool once instead of recompiling per report.
-                  go build -o /tmp/spec-timings ./test/e2e/tools/spec-timings
-                  while IFS= read -r report; do
-                    [ -n "${report}" ] || continue
-                    echo
-                    echo "#### ${report}"
-                    echo
-                    echo "```"
-                    /tmp/spec-timings "${report}" || true
-                    echo "```"
-                  done <<<"${reports}"
-                fi
-              } > "${SUMMARY_FILE}"
-            '
-          cat "${summary_file}" >> "${GITHUB_STEP_SUMMARY}"
-
       - name: Upload E2E raw Ginkgo JSON reports
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: e2e-ginkgo-reports-${{ matrix.name }}
-          path: |
-            .stamps/**/ginkgo-report-*.json
-            .stamps/e2e-timing-summary-${{ matrix.name }}.md
+          path: .stamps/**/ginkgo-report-*.json
           if-no-files-found: ignore
-          retention-days: 7
+          retention-days: 60
 
   # Release job only runs on push to main after tests pass
   release-please:
