@@ -147,7 +147,7 @@ its own discovery lookup or applying its own core `/v1` defaults.
 
 The detailed discovery model, refresh triggers, trust rules, and
 streaming-list note live in
-[`kubernetes-api-resource-catalog.md`](./kubernetes-api-resource-catalog.md).
+[`kubernetes-api-resource-catalog.md`](../design/kubernetes-api-resource-catalog.md).
 
 ### Catalog responsibilities
 

@@ -15,7 +15,7 @@ The e2e suite originally had one global flag, `e2ePreserveResources`, that decid
 2. The registered Gomega fail handler and the SIGINT/SIGTERM handler — both fed the same global preservation bit, so a normal assertion failure was effectively treated like a suite-wide abort.
 3. The playground bootstrap, which flipped it deliberately to keep the playground live for the developer after the suite finishes.
 
-Once the flag was on, `skipCleanupBecauseResourcesArePreserved` returned `true` for every cleanup call until the process exited. That meant a single failure poisoned the rest of the run: every spec that ran afterward leaked its WatchRules, GitTargets, ConfigMaps, and namespaces. Those leftovers then interfered with subsequent specs through the controller's own informer (most visibly, the signing batch spec — see [e2e-watchrule-cross-spec-interference.md](e2e-watchrule-cross-spec-interference.md)).
+Once the flag was on, `skipCleanupBecauseResourcesArePreserved` returned `true` for every cleanup call until the process exited. That meant a single failure poisoned the rest of the run: every spec that ran afterward leaked its WatchRules, GitTargets, ConfigMaps, and namespaces. Those leftovers then interfered with subsequent specs through the controller's own informer (most visibly, the signing batch spec — see [e2e-watchrule-cross-spec-interference.md](../design/e2e-watchrule-cross-spec-interference.md)).
 
 ## Vision and design choice
 
@@ -128,7 +128,7 @@ CI runs always pick up event dumps and controller logs from `dumpFailureDiagnost
 
 ## What this does not solve
 
-This change does not fix the underlying ghost-WatchRule bug in the controller (described in [e2e-watchrule-cross-spec-interference.md](e2e-watchrule-cross-spec-interference.md) §"Open root causes" #1). The manager create/delete specs would still occasionally see ghost commits from prior specs that ran inside the same describe block, because those specs share the same `managerRepo` and namespace. Those need either:
+This change does not fix the underlying ghost-WatchRule bug in the controller (described in [e2e-watchrule-cross-spec-interference.md](../design/e2e-watchrule-cross-spec-interference.md) §"Open root causes" #1). The manager create/delete specs would still occasionally see ghost commits from prior specs that ran inside the same describe block, because those specs share the same `managerRepo` and namespace. Those need either:
 
 - the controller-side fix (drain event-router state on WatchRule deletion), or
 - a unique-namespace-per-spec restructuring of the Manager describe block.

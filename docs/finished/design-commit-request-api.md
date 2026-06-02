@@ -1,7 +1,7 @@
 # Design: `CommitRequest` CRD
 
 > Status: **implemented**. Namespaced CRD in API group `configbutler.ai/v1alpha1`.
-> Deferred work is tracked in [design-commit-request-phase-2.md](design-commit-request-phase-2.md).
+> Deferred work is tracked in [design-commit-request-phase-2.md](../future/design-commit-request-phase-2.md).
 > Date: 2026-05-18
 
 ## What it is
@@ -168,7 +168,7 @@ every event already commits immediately, so the signal simply finds no open wind
 
 ## Alternatives considered
 
-The parent exploration ([idea-end-user-commit-messages.md](idea-end-user-commit-messages.md)) and
+The parent exploration ([idea-end-user-commit-messages.md](../future/idea-end-user-commit-messages.md)) and
 the superseded aggregated-API design
 ([design-commit-context-api.md](design-commit-context-api.md)) weighed several transports. They
 are summarized here so the choice is not relitigated.
@@ -209,15 +209,15 @@ clean success/SHA signal.
 Garbage collection, multi-target "save everything I edited," retry for transient finalize
 failures, and outcome metrics are intentionally out of this first cut. They are tracked — with the
 object-lifecycle question front and center — in
-[design-commit-request-phase-2.md](design-commit-request-phase-2.md).
+[design-commit-request-phase-2.md](../future/design-commit-request-phase-2.md).
 
 ## References
 
-- Deferred / phase-2 work: [design-commit-request-phase-2.md](design-commit-request-phase-2.md)
+- Deferred / phase-2 work: [design-commit-request-phase-2.md](../future/design-commit-request-phase-2.md)
 - Superseded aggregated-API design, kept for the audit-gap deep-dive:
   [design-commit-context-api.md](design-commit-context-api.md)
 - Parent exploration — transport options and the audit-stream-as-source-of-truth principle:
-  [idea-end-user-commit-messages.md](idea-end-user-commit-messages.md)
+  [idea-end-user-commit-messages.md](../future/idea-end-user-commit-messages.md)
 - Audit ingestion pipeline this design rides on:
   [design-audit-ingestion-hardening.md](design-audit-ingestion-hardening.md)
 - Implementation: `api/v1alpha1/commitrequest_types.go`,

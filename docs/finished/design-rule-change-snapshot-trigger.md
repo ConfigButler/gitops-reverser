@@ -213,7 +213,7 @@ The `EventRouter.SnapshotDeliveryDrops()` counter stays at 0 in steady state und
 
 ## References
 
-- Trigger bug summary: [idea-cross-kind-dependency-watches.md](idea-cross-kind-dependency-watches.md) (related coordination concern around dependency-watches).
+- Trigger bug summary: [idea-cross-kind-dependency-watches.md](../future/idea-cross-kind-dependency-watches.md) (related coordination concern around dependency-watches).
 - The old early-return: `ReconcileForRuleChange` in [manager.go](../../internal/watch/manager.go).
 - The snapshot consumer drop instrumentation: `RouteRepoStateEvent` and `RouteClusterStateEvent` in [event_router.go](../../internal/watch/event_router.go).
 - The GitTarget restart gate: `evaluateSnapshotGate` in [gittarget_controller.go](../../internal/controller/gittarget_controller.go).

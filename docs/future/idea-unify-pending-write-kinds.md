@@ -19,7 +19,7 @@ unset. The temptation is to make that the dispatch and delete the `Kind` enum.
 
 ## Use case walkthrough
 
-The four use cases in [commit-window-refactor.md](../design/commit-window-refactor.md#use-cases):
+The four use cases in [commit-window-refactor.md](../finished/commit-window-refactor.md#use-cases):
 
 1. **Burst collapse.** Per-event-only behavior (atomic is one commit by definition).
    Unification neither helps nor breaks this.

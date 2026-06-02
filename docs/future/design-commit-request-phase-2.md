@@ -1,6 +1,6 @@
 # Phase 2: `CommitRequest` — deferred work
 
-> Status: proposed. Follow-up to [design-commit-request-api.md](design-commit-request-api.md).
+> Status: proposed. Follow-up to [design-commit-request-api.md](../finished/design-commit-request-api.md).
 > Date: 2026-05-18
 
 The first cut of `CommitRequest` is intentionally minimal. This doc tracks what was deliberately

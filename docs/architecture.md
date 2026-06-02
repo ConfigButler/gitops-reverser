@@ -884,7 +884,7 @@ For deeper context on specific decisions:
 - [GitTarget lifecycle and repo architecture](design/gittarget-lifecycle-and-repo-architecture.md) — GitTarget state machine details
 - [Watch and audit rule matching improvement](design/watch-audit-rule-matching-improvement.md) — known issues with namespace matching and startup bootstrap
 - [Kubernetes API resource catalog](design/kubernetes-api-resource-catalog.md) — the served-resource discovery model behind `APIResourceCatalog`
-- [WatchRule GVR resolution](design/watchrule-gvr-resolution-plan.md) — how bare rule resources resolve to concrete GVRs, and the snapshot trust model
+- [WatchRule GVR resolution](finished/watchrule-gvr-resolution-plan.md) — how bare rule resources resolve to concrete GVRs, and the snapshot trust model
 - [Multi-cluster audit ingestion implications](design/multi-cluster-audit-ingestion-implications.md) — what multi-cluster means beyond ingestion
 - [SOPS/age key management](design/sops-repo-bootstrap-and-key-management-architecture.md) — encryption architecture
 - [Audit webhook TLS design](design/audit-webhook-tls-design.md) — webhook transport security

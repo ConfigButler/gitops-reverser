@@ -8,7 +8,7 @@
 > for the deep-dive on the aggregated-API audit gap; everything else here is reframed there.
 >
 > Original status: design — concrete pass at Option 3 from
-> [idea-end-user-commit-messages.md](idea-end-user-commit-messages.md).
+> [idea-end-user-commit-messages.md](../future/idea-end-user-commit-messages.md).
 > Date: 2026-05-07
 
 ## Goals
@@ -138,7 +138,7 @@ These are listed to validate that the resource shape generalises. None of them a
 initial implementation.
 
 - `commitNow` — finalize the matching open commit window immediately instead of waiting for the
-  silence timer. Open questions are tracked in [idea-end-user-commit-messages.md](idea-end-user-commit-messages.md)
+  silence timer. Open questions are tracked in [idea-end-user-commit-messages.md](../future/idea-end-user-commit-messages.md)
   under "Commit now."
 - `proposeAsPullRequest` — instruct the branch worker to push the in-progress commit window to
   a feature branch and open a pull request via `GitProvider`, instead of pushing to the target
@@ -763,9 +763,9 @@ namespace `team-a`.
 ## References
 
 - Parent design exploration:
-  [idea-end-user-commit-messages.md](idea-end-user-commit-messages.md)
+  [idea-end-user-commit-messages.md](../future/idea-end-user-commit-messages.md)
 - Audit-carried transport addendum (alternatives this design supersedes for v1alpha1):
-  [addendum-end-user-commit-messages-audit-transports.md](addendum-end-user-commit-messages-audit-transports.md)
+  [addendum-end-user-commit-messages-audit-transports.md](../future/addendum-end-user-commit-messages-audit-transports.md)
 - Existing audit pipeline reference: `docs/design/audit-consumer-next-steps.md`
 - The aggregated-API audit gap and the related proxy:
   [external-sources/apiservice-audit-proxy/README.md](../../external-sources/apiservice-audit-proxy/README.md)

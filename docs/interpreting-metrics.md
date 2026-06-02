@@ -191,7 +191,7 @@ topk(15, sum by (resource, subresource, verb) (
 
 Any row with a non-empty `subresource` is received-then-dropped at ingress (subresources are not
 mirrorable top-level objects). A large `pods`/`exec` row is the canonical example — see
-[shallow-audit-event-misclassification.md](design/shallow-audit-event-misclassification.md). To
+[shallow-audit-event-misclassification.md](finished/shallow-audit-event-misclassification.md). To
 look only at the dropped subresource traffic:
 
 ```promql

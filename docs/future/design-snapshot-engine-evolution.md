@@ -1,7 +1,7 @@
 # Design: snapshot engine evolution
 
 > Status: proposed — continuation of
-> [design-rule-change-snapshot-trigger.md](design-rule-change-snapshot-trigger.md).
+> [design-rule-change-snapshot-trigger.md](../finished/design-rule-change-snapshot-trigger.md).
 > Date: 2026-05-21
 > Author context: written after a critical review of the rule-change snapshot
 > trigger implementation ([ed3a1db](#) "fix: better reconcile").
@@ -402,7 +402,7 @@ per-target. This removes a whole-cluster re-list amplification on CRD install.
 
 ### 1.5 Doc hygiene
 
-[design-rule-change-snapshot-trigger.md](design-rule-change-snapshot-trigger.md)
+[design-rule-change-snapshot-trigger.md](../finished/design-rule-change-snapshot-trigger.md)
 still cites `manager.go:660` for the old early-return; it is now line 696.
 Fix the stale reference since the doc is marked "implemented".
 
@@ -675,7 +675,7 @@ flowchart LR
 ## References
 
 - Predecessor:
-  [design-rule-change-snapshot-trigger.md](design-rule-change-snapshot-trigger.md).
+  [design-rule-change-snapshot-trigger.md](../finished/design-rule-change-snapshot-trigger.md).
 - API discovery background (discoverability and verbs):
   [docs/design/kubernetes-api-discovery.md](../design/kubernetes-api-discovery.md).
 - API server capacity tuning:
