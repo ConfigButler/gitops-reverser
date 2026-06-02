@@ -1,0 +1,129 @@
+{
+  "apiVersion": "audit.k8s.io/v1",
+  "kind": "EventList",
+  "metadata": {},
+  "items": [
+    {
+      "level": "RequestResponse",
+      "auditID": "5b41e1ef-d0a5-4df0-b0bd-d5c317cbad8b",
+      "stage": "ResponseComplete",
+      "requestURI": "/apis/wardle.example.com/v1alpha1/namespaces/example-raw/flunders",
+      "verb": "deletecollection",
+      "user": {
+        "username": "system:admin",
+        "groups": [
+          "system:masters",
+          "system:authenticated"
+        ],
+        "extra": {
+          "authentication.kubernetes.io/credential-id": [
+            "X509SHA256=fb5afb7b73ca3bc9fac7563a91d609a917d56708dd1cb3bbc32abaab6cd48fd4"
+          ]
+        }
+      },
+      "sourceIPs": [
+        "172.20.0.6",
+        "10.42.0.0"
+      ],
+      "userAgent": "kubectl/v1.36.1 (linux/amd64) kubernetes/7569396",
+      "objectRef": {
+        "resource": "flunders",
+        "namespace": "example-raw",
+        "apiGroup": "wardle.example.com",
+        "apiVersion": "v1alpha1",
+        "resourceVersion": "50"
+      },
+      "responseStatus": {
+        "metadata": {},
+        "code": 200
+      },
+      "responseObject": {
+        "kind": "FlunderList",
+        "apiVersion": "wardle.example.com/v1alpha1",
+        "metadata": {
+          "resourceVersion": "50"
+        },
+        "items": [
+          {
+            "metadata": {
+              "name": "member-0",
+              "namespace": "example-raw",
+              "uid": "e1b076ff-f430-4b82-ad7b-c170c4095fe3",
+              "resourceVersion": "49",
+              "creationTimestamp": "2026-06-02T11:16:29Z",
+              "annotations": {
+                "kubectl.kubernetes.io/last-applied-configuration": "{\"apiVersion\":\"wardle.example.com/v1alpha1\",\"kind\":\"Flunder\",\"metadata\":{\"annotations\":{},\"name\":\"member-0\",\"namespace\":\"example-raw\"},\"spec\":{\"reference\":\"example\"}}\n"
+              },
+              "managedFields": [
+                {
+                  "manager": "kubectl-client-side-apply",
+                  "operation": "Update",
+                  "apiVersion": "wardle.example.com/v1alpha1",
+                  "time": "2026-06-02T11:16:29Z",
+                  "fieldsType": "FieldsV1",
+                  "fieldsV1": {
+                    "f:metadata": {
+                      "f:annotations": {
+                        ".": {},
+                        "f:kubectl.kubernetes.io/last-applied-configuration": {}
+                      }
+                    },
+                    "f:spec": {
+                      "f:reference": {},
+                      "f:referenceType": {}
+                    }
+                  }
+                }
+              ]
+            },
+            "spec": {
+              "reference": "example",
+              "referenceType": "Flunder"
+            },
+            "status": {}
+          },
+          {
+            "metadata": {
+              "name": "member-1",
+              "namespace": "example-raw",
+              "uid": "5ce03312-bab3-4e72-af37-e0ff893a7b76",
+              "resourceVersion": "50",
+              "creationTimestamp": "2026-06-02T11:16:29Z",
+              "annotations": {
+                "kubectl.kubernetes.io/last-applied-configuration": "{\"apiVersion\":\"wardle.example.com/v1alpha1\",\"kind\":\"Flunder\",\"metadata\":{\"annotations\":{},\"name\":\"member-1\",\"namespace\":\"example-raw\"},\"spec\":{\"reference\":\"example\"}}\n"
+              },
+              "managedFields": [
+                {
+                  "manager": "kubectl-client-side-apply",
+                  "operation": "Update",
+                  "apiVersion": "wardle.example.com/v1alpha1",
+                  "time": "2026-06-02T11:16:29Z",
+                  "fieldsType": "FieldsV1",
+                  "fieldsV1": {
+                    "f:metadata": {
+                      "f:annotations": {
+                        ".": {},
+                        "f:kubectl.kubernetes.io/last-applied-configuration": {}
+                      }
+                    },
+                    "f:spec": {
+                      "f:reference": {},
+                      "f:referenceType": {}
+                    }
+                  }
+                }
+              ]
+            },
+            "spec": {
+              "reference": "example",
+              "referenceType": "Flunder"
+            },
+            "status": {}
+          }
+        ]
+      },
+      "requestReceivedTimestamp": "2026-06-02T11:16:29.162706Z",
+      "stageTimestamp": "2026-06-02T11:16:29.174126Z"
+    }
+  ]
+}

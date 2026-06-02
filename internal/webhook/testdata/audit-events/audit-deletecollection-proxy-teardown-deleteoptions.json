@@ -1,0 +1,49 @@
+{
+  "apiVersion": "audit.k8s.io/v1",
+  "kind": "EventList",
+  "metadata": {},
+  "items": [
+    {
+      "level": "RequestResponse",
+      "auditID": "097dcb8c-c4d1-4e72-94f9-794cc2681e24",
+      "stage": "ResponseComplete",
+      "requestURI": "/apis/wardle.example.com/v1alpha1/namespaces/example-teardown/flunders",
+      "verb": "deletecollection",
+      "user": {
+        "username": "system:serviceaccount:kube-system:namespace-controller",
+        "groups": [
+          "system:serviceaccounts",
+          "system:serviceaccounts:kube-system",
+          "system:authenticated"
+        ],
+        "extra": {
+          "authentication.kubernetes.io/credential-id": [
+            "JTI=a124b540-01b8-444a-8f37-791b30052ae4"
+          ]
+        }
+      },
+      "sourceIPs": [
+        "127.0.0.1",
+        "10.42.0.0"
+      ],
+      "userAgent": "k3s/v1.35.2+k3s1 (linux/amd64) kubernetes/13563fe/system:serviceaccount:kube-system:namespace-controller",
+      "objectRef": {
+        "resource": "flunders",
+        "namespace": "example-teardown",
+        "apiGroup": "wardle.example.com",
+        "apiVersion": "v1alpha1"
+      },
+      "responseStatus": {
+        "metadata": {},
+        "code": 200
+      },
+      "requestObject": {
+        "kind": "DeleteOptions",
+        "apiVersion": "v1",
+        "propagationPolicy": "Background"
+      },
+      "requestReceivedTimestamp": "2026-06-02T11:16:44.602749Z",
+      "stageTimestamp": "2026-06-02T11:16:44.605108Z"
+    }
+  ]
+}

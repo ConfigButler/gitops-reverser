@@ -54,6 +54,10 @@ var _ = Describe("Aggregated API server", Label("aggregated-api"), Serial, Order
 
 		_, _ = kubectlRun("create", "namespace", testNs)
 
+		By("setting up the Prometheus client for the shallow-drop metric check")
+		setupPrometheusClient()
+		verifyPrometheusAvailable()
+
 		repo = SetupRepo(
 			resolveE2EContext(),
 			testNs,
@@ -213,6 +217,11 @@ spec:
 		}, 2*time.Minute, 2*time.Second).Should(Succeed())
 
 		By("verifying no audit events were dropped as shallow, cluster-wide")
+		// Zero is the only acceptable value here. We never want a shallow drop:
+		// not for this Flunder, and not as a side effect of any other test
+		// sharing this cluster. Any non-zero count means a request/response body
+		// failed to join its official event, so this assertion stays absolute
+		// (not a baseline delta) on purpose.
 		Consistently(func(g Gomega) {
 			dropped, queryErr := queryPrometheus("sum(gitopsreverser_audit_shallow_dropped_total) or vector(0)")
 			g.Expect(queryErr).NotTo(HaveOccurred())

@@ -44,7 +44,7 @@ RUN apt-get update \
 # KUSTOMIZE_VERSION -> https://github.com/kubernetes-sigs/kustomize/releases
 # KUBEBUILDER_VERSION -> https://github.com/kubernetes-sigs/kubebuilder
 # GOLANGCI_LINT_VERSION -> https://github.com/golangci/golangci-lint/releases
-# K3D_VERSION -> https://github.com/k3d-io/k3d (seems a bit stsale?)
+# K3D_VERSION -> https://github.com/k3d-io/k3d
 # FLUX_VERSION -> https://github.com/fluxcd/flux2
 # FLUX_OPERATOR_VERSION -> https://github.com/controlplaneio-fluxcd/flux-operator
 # TASK_VERSION -> https://github.com/go-task/task/releases
