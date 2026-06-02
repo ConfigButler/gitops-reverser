@@ -5,10 +5,10 @@ containers that must run `Serial` (i.e. never concurrently with any other spec)
 under bounded Ginkgo parallelism (Phase 2.5 of
 [e2e-speedup-plan.md](e2e-speedup-plan.md)).
 
-> De-serializing any row below is an isolation refactor, not a label flip. See
-> [e2e-serial-deserialization-plan.md](e2e-serial-deserialization-plan.md) for the
-> history; `crd_lifecycle`, the two audit-consumer specs, and `bi_directional`
-> have all been de-serialized (see the "De-serialized" section).
+> De-serializing any row below is an isolation refactor, not a label flip.
+> `crd_lifecycle`, the two audit-consumer specs, `bi_directional`, and
+> `aggregated_apiserver` have all been de-serialized (see the "De-serialized"
+> section) — only the two singleton-controller specs remain.
 
 ## Rule
 
@@ -45,9 +45,6 @@ assertions). It now runs parallel (`Ordered`, not `Serial`) because:
   `IceCreamOrder` CRD name-isolated, and the only other wildcard-ish
   `ClusterWatchRule` (`restart_snapshot`) is itself `Serial`, so no concurrent
   spec has a rule matching the icecream group.
-
-See [e2e-serial-deserialization-plan.md](e2e-serial-deserialization-plan.md) for
-the full rationale.
 
 The former `Audit Redis Queue` / `Audit Redis Consumer` containers were retired:
 the producer-path and basic consumer-commit assertions duplicated coverage in

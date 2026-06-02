@@ -1,9 +1,9 @@
 # Watch & Catalog Architecture — Requirements, Current State, Target Design
 
 Status: **vision / proposed** — supersedes the framing in
-[watchrule-wildcard-support-plan.md](watchrule-wildcard-support-plan.md),
+[watchrule-wildcard-support-plan.md](../future/watchrule-wildcard-support-plan.md),
 [watchrule-wildcard-and-resolution-semantics.md](watchrule-wildcard-and-resolution-semantics.md),
-and [rule-set-snapshot-discovery-lag-fix.md](rule-set-snapshot-discovery-lag-fix.md);
+and [rule-set-snapshot-discovery-lag-fix.md](../finished/rule-set-snapshot-discovery-lag-fix.md);
 those become implementation details of the model described here.
 
 This document is in three parts:

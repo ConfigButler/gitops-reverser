@@ -1,9 +1,11 @@
 # Rule-Set Snapshot Discovery-Lag Fix
 
+> Status: **shipped**. Drives the per-GitTarget effective-watch-plan hash in
+> `internal/watch/manager.go`.
+
 ## Problem
 
-Finding 2 in [refactors-branch-review.md](refactors-branch-review.md) is about
-the new per-GitTarget effective-watch-plan hash:
+This fix introduced the per-GitTarget effective-watch-plan hash:
 
 - `currentRuleSetSnapshots()` resolves rules through the API resource catalog.
 - It ignores `ResolveMiss` values from `resolver.Resolve(...)`

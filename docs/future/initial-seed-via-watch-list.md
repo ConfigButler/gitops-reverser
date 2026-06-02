@@ -3,7 +3,7 @@
 > Status: proposed — not yet implemented
 > Scope: `internal/watch` snapshot path, dynamic informer construction, the
 > client-go `WatchListClient` feature gate
-> Related: [`docs/upgrade-finding.md`](../upgrade-finding.md),
+> Related: [`docs/design/upgrade-finding.md`](../design/upgrade-finding.md),
 > [`docs/serious-bug/cozystack-bugreport.md`](../serious-bug/cozystack-bugreport.md)
 
 ## Goal
@@ -16,7 +16,7 @@ and stop issuing a separate hand-rolled `LIST` per GVR per namespace whenever a
 Use the client-go `WatchListClient` feature (streaming-list, on by default
 since client-go v1.35 / v0.36.x) as the *transport* that hydrates that cache,
 rather than something to fight against. The bookmark-warning we observed in
-production ([`docs/upgrade-finding.md`](../upgrade-finding.md)) was a hint that
+production ([`docs/design/upgrade-finding.md`](../design/upgrade-finding.md)) was a hint that
 we had silently opted into streaming-list without redesigning the seed path
 around it; the right response is to redesign, not to disable the gate.
 
@@ -220,7 +220,7 @@ instead of hanging the reflector.
   change the filter contract.
 - The audit-ingestion pipeline. Snapshot path and audit path are independent;
   this plan does not touch
-  [`docs/design/audit-metrics-overhaul-plan.md`](audit-metrics-overhaul-plan.md).
+  [`docs/design/audit-metrics-overhaul-plan.md`](../design/audit-metrics-overhaul-plan.md).
 - A binary-level "disable WatchListClient" flag. Explicitly rejected by the
   decision above. Operators who need to disable the gate in an emergency can
   still set `KUBE_FEATURE_WatchListClient=false` via the chart's `.Values.env`

@@ -12,7 +12,7 @@ Source of truth: `RuleGVRResolver` in
 > **Note:** this documents *current* behavior. The CRD field docs promise
 > admission-webhook-style wildcard semantics that this resolver does not yet
 > implement — see
-> [watchrule-wildcard-support-plan.md](watchrule-wildcard-support-plan.md) for
+> [watchrule-wildcard-support-plan.md](../future/watchrule-wildcard-support-plan.md) for
 > that finding and the plan to resolve it.
 
 ## Two directions, treated differently
@@ -101,7 +101,7 @@ expressible.
    CRD is installed or removed, churning the per-GitTarget effective-watch-plan
    hash on unrelated cluster activity — the same spurious re-snapshot problem
    described in
-   [rule-set-snapshot-discovery-lag-fix.md](rule-set-snapshot-discovery-lag-fix.md),
+   [rule-set-snapshot-discovery-lag-fix.md](../finished/rule-set-snapshot-discovery-lag-fix.md),
    but permanent and amplified. Refusing wildcards keeps watch plans
    deterministic.
 3. **Snapshot safety.** Snapshotting `*` would commit the entire cluster (minus
@@ -126,6 +126,6 @@ two families differ in nature:
   error to surface to the user.
 
 This distinction matters for the state model in
-[rule-set-snapshot-discovery-lag-fix.md](rule-set-snapshot-discovery-lag-fix.md):
+[rule-set-snapshot-discovery-lag-fix.md](../finished/rule-set-snapshot-discovery-lag-fix.md):
 only the transient family should drive "retry next cycle"; the wildcard family
 will not resolve on its own.

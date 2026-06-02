@@ -394,6 +394,16 @@ jobs:
             echo "</details>"
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
+      - name: Make E2E artifacts readable by the runner
+        if: always()
+        # The E2E suite runs in a root container that mounts the workspace, so
+        # everything it writes under .stamps/ (e.g. e2e-repo-artifacts/) is
+        # root-owned with restrictive perms. The upload step below runs on the
+        # host as the non-root runner user and fails with EACCES when its glob
+        # tries to scandir those dirs. Relax perms so the runner can traverse
+        # and read them. a+rX adds read for files and traverse for dirs only.
+        run: sudo chmod -R a+rX .stamps || true
+
       - name: Upload E2E raw Ginkgo JSON reports
         if: always()
         uses: actions/upload-artifact@v7

@@ -4,7 +4,7 @@ Status: **proposed** (not started)
 
 > **Superseded framing:** the finding below stands, but the recommended way to
 > resolve it is the unified model in
-> [watch-and-catalog-architecture.md](watch-and-catalog-architecture.md). Treat
+> [watch-and-catalog-architecture.md](../design/watch-and-catalog-architecture.md). Treat
 > this document as the focused finding + a tactical (Phase-0-first) fallback if
 > the larger refactor is deferred.
 
@@ -40,7 +40,7 @@ does the opposite:
 There is **no admission validation** rejecting these (only `Operations` has an
 enum), so a user can `kubectl apply` a `resources: ["*"]` rule, get no error, and
 **silently watch nothing** — only a `V(1)` resolve-miss log. See
-[watchrule-wildcard-and-resolution-semantics.md](watchrule-wildcard-and-resolution-semantics.md)
+[watchrule-wildcard-and-resolution-semantics.md](../design/watchrule-wildcard-and-resolution-semantics.md)
 for the full current semantics.
 
 ### Why it matters
@@ -80,7 +80,7 @@ is **already built and running**:
 - Per-GitTarget snapshot isolation already scopes which targets re-snapshot on a
   plan change
   ([gittarget-isolation-on-rule-change.md](../finished/gittarget-isolation-on-rule-change.md),
-  [rule-set-snapshot-discovery-lag-fix.md](rule-set-snapshot-discovery-lag-fix.md)).
+  [rule-set-snapshot-discovery-lag-fix.md](../finished/rule-set-snapshot-discovery-lag-fix.md)).
 
 So "we'd have to redo reconciles when a GVR is added" is **already the steady
 state** for explicit rules. Wildcard support mostly means letting the resolver
