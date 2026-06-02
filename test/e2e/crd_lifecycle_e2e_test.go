@@ -29,7 +29,7 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-var _ = Describe("Manager CRD Lifecycle", Label("manager"), Serial, Ordered, func() {
+var _ = Describe("Manager CRD Lifecycle", Label("manager"), Ordered, func() {
 	var (
 		testNs           string
 		crdLifecycleRepo *RepoArtifacts
