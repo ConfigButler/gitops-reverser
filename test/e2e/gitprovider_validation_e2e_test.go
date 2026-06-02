@@ -132,7 +132,7 @@ var _ = Describe("Manager GitProvider Validation", Label("manager"), Ordered, fu
 		if err != nil {
 			fmt.Printf("❌ SSH secret not found: %v\n", err)
 		} else {
-			previewLen := minInt(300, len(secretOutput))
+			previewLen := min(300, len(secretOutput))
 			fmt.Printf(
 				"✅ SSH secret exists - showing first %d chars:\n%s...\n",
 				previewLen,

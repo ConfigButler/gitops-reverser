@@ -20,7 +20,6 @@ package e2e
 
 import (
 	"fmt"
-	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -86,32 +85,7 @@ var _ = Describe("Manager Controller Basics", Label("manager"), Ordered, func() 
 
 		By("verifying controller service routes to the controller pod")
 		Eventually(func(g Gomega) {
-			output, endpointsErr := kubectlRunInNamespace(
-				namespace,
-				"get",
-				"endpoints",
-				controllerServiceName,
-				"-o",
-				"jsonpath={.subsets[*].addresses[*].targetRef.name}",
-			)
-			g.Expect(endpointsErr).NotTo(HaveOccurred(), "Failed to get controller service endpoints")
-
-			lines := utils.GetNonEmptyLines(output)
-			podSet := map[string]struct{}{}
-			for _, line := range lines {
-				if !strings.HasPrefix(line, "Warning:") &&
-					!strings.Contains(line, "deprecated") &&
-					strings.Contains(line, "gitops-reverser") {
-					podSet[line] = struct{}{}
-				}
-			}
-			var podNames []string
-			for podName := range podSet {
-				podNames = append(podNames, podName)
-			}
-
-			g.Expect(podNames).To(HaveLen(1), "controller service should route to exactly 1 pod")
-			g.Expect(podNames[0]).To(Equal(controllerPodName), "controller service should route to controller pod")
+			expectServiceRoutesToPod(g, controllerServiceName, controllerPodName)
 		}, 30*time.Second).Should(Succeed())
 	})
 
@@ -122,27 +96,7 @@ var _ = Describe("Manager Controller Basics", Label("manager"), Ordered, func() 
 
 		By("verifying audit service routes to the controller pod")
 		Eventually(func(g Gomega) {
-			output, endpointsErr := kubectlRunInNamespace(
-				namespace,
-				"get",
-				"endpoints",
-				auditServiceName,
-				"-o",
-				"jsonpath={.subsets[*].addresses[*].targetRef.name}",
-			)
-			g.Expect(endpointsErr).NotTo(HaveOccurred(), "Failed to get audit service endpoints")
-
-			lines := utils.GetNonEmptyLines(output)
-			var podNames []string
-			for _, line := range lines {
-				if strings.HasPrefix(line, "Warning:") || strings.Contains(line, "deprecated") {
-					continue
-				}
-				podNames = append(podNames, line)
-			}
-
-			g.Expect(podNames).To(HaveLen(1), "audit service should route to exactly 1 pod")
-			g.Expect(podNames[0]).To(Equal(controllerPodName), "audit service should route to controller pod")
+			expectServiceRoutesToPod(g, auditServiceName, controllerPodName)
 		}, 30*time.Second).Should(Succeed())
 	})
 

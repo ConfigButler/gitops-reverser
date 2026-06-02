@@ -140,13 +140,7 @@ var _ = Describe("Manager CRD Lifecycle", Label("manager"), Serial, Ordered, fun
 
 		By("verifying CRD YAML file exists in Git repository (NO namespace in path - cluster resource)")
 		verifyGitCommit := func(g Gomega) {
-			pullCmd := exec.Command("git", "pull")
-			pullCmd.Dir = crdLifecycleRepo.CheckoutDir
-			pullOutput, pullErr := pullCmd.CombinedOutput()
-			if pullErr != nil {
-				g.Expect(pullErr).NotTo(HaveOccurred(),
-					fmt.Sprintf("Should successfully pull latest changes. Output: %s", string(pullOutput)))
-			}
+			pullLatestRepoState(g, crdLifecycleRepo.CheckoutDir)
 
 			// CRDs are cluster-scoped, so path should NOT include namespace
 			expectedFile := filepath.Join(crdLifecycleRepo.CheckoutDir,
@@ -296,13 +290,7 @@ var _ = Describe("Manager CRD Lifecycle", Label("manager"), Serial, Ordered, fun
 
 		By("verifying CRD instance YAML file exists in Gitea repository")
 		verifyGitCommit := func(g Gomega) {
-			pullCmd := exec.Command("git", "pull")
-			pullCmd.Dir = crdLifecycleRepo.CheckoutDir
-			pullOutput, pullErr := pullCmd.CombinedOutput()
-			if pullErr != nil {
-				g.Expect(pullErr).NotTo(HaveOccurred(),
-					fmt.Sprintf("Should successfully pull latest changes. Output: %s", string(pullOutput)))
-			}
+			pullLatestRepoState(g, crdLifecycleRepo.CheckoutDir)
 
 			expectedFile := filepath.Join(crdLifecycleRepo.CheckoutDir,
 				"e2e/icecream-test",
@@ -383,9 +371,7 @@ var _ = Describe("Manager CRD Lifecycle", Label("manager"), Serial, Ordered, fun
 
 		By("verifying no new commit was created and status is not in Git")
 		verifyStatusNotCommitted := func(g Gomega) {
-			pullCmd := exec.Command("git", "pull")
-			pullCmd.Dir = crdLifecycleRepo.CheckoutDir
-			_, _ = pullCmd.CombinedOutput()
+			pullLatestRepoState(g, crdLifecycleRepo.CheckoutDir)
 
 			// Check that commit hash hasn't changed
 			gitRevCmd := exec.Command("git", "rev-parse", "HEAD")
@@ -463,9 +449,7 @@ var _ = Describe("Manager CRD Lifecycle", Label("manager"), Serial, Ordered, fun
 
 		By("waiting for initial CRD instance file to appear in Git")
 		verifyInitialFile := func(g Gomega) {
-			pullCmd := exec.Command("git", "pull")
-			pullCmd.Dir = crdLifecycleRepo.CheckoutDir
-			_, _ = pullCmd.CombinedOutput()
+			pullLatestRepoState(g, crdLifecycleRepo.CheckoutDir)
 
 			expectedFile := filepath.Join(crdLifecycleRepo.CheckoutDir,
 				"e2e/icecream-test",
@@ -514,9 +498,7 @@ var _ = Describe("Manager CRD Lifecycle", Label("manager"), Serial, Ordered, fun
 
 		By("verifying updated CRD instance content in Git")
 		verifyUpdatedFile := func(g Gomega) {
-			pullCmd := exec.Command("git", "pull")
-			pullCmd.Dir = crdLifecycleRepo.CheckoutDir
-			_, _ = pullCmd.CombinedOutput()
+			pullLatestRepoState(g, crdLifecycleRepo.CheckoutDir)
 
 			expectedFile := filepath.Join(crdLifecycleRepo.CheckoutDir,
 				"e2e/icecream-test",
@@ -582,9 +564,7 @@ var _ = Describe("Manager CRD Lifecycle", Label("manager"), Serial, Ordered, fun
 
 		By("waiting for CR file to appear in Git repository")
 		verifyFileCreated := func(g Gomega) {
-			pullCmd := exec.Command("git", "pull")
-			pullCmd.Dir = crdLifecycleRepo.CheckoutDir
-			_, _ = pullCmd.CombinedOutput()
+			pullLatestRepoState(g, crdLifecycleRepo.CheckoutDir)
 
 			expectedFile := filepath.Join(crdLifecycleRepo.CheckoutDir,
 				"e2e/icecream-test",
@@ -604,9 +584,7 @@ var _ = Describe("Manager CRD Lifecycle", Label("manager"), Serial, Ordered, fun
 
 		By("verifying CRD instance file is deleted from Git repository")
 		verifyFileDeleted := func(g Gomega) {
-			pullCmd := exec.Command("git", "pull")
-			pullCmd.Dir = crdLifecycleRepo.CheckoutDir
-			_, _ = pullCmd.CombinedOutput()
+			pullLatestRepoState(g, crdLifecycleRepo.CheckoutDir)
 
 			expectedFile := filepath.Join(crdLifecycleRepo.CheckoutDir,
 				"e2e/icecream-test",
@@ -660,9 +638,7 @@ var _ = Describe("Manager CRD Lifecycle", Label("manager"), Serial, Ordered, fun
 
 		By("verifying CRD file exists in Git before deletion")
 		verifyFileExists := func(g Gomega) {
-			pullCmd := exec.Command("git", "pull")
-			pullCmd.Dir = crdLifecycleRepo.CheckoutDir
-			_, _ = pullCmd.CombinedOutput()
+			pullLatestRepoState(g, crdLifecycleRepo.CheckoutDir)
 
 			expectedFile := filepath.Join(crdLifecycleRepo.CheckoutDir,
 				"e2e/crd-delete-test",
@@ -677,9 +653,7 @@ var _ = Describe("Manager CRD Lifecycle", Label("manager"), Serial, Ordered, fun
 		Expect(deleteErr).NotTo(HaveOccurred(), "CRD deletion should succeed")
 		By("verifying CRD file is deleted from Git repository")
 		verifyFileDeleted := func(g Gomega) {
-			pullCmd := exec.Command("git", "pull")
-			pullCmd.Dir = crdLifecycleRepo.CheckoutDir
-			_, _ = pullCmd.CombinedOutput()
+			pullLatestRepoState(g, crdLifecycleRepo.CheckoutDir)
 
 			expectedFile := filepath.Join(crdLifecycleRepo.CheckoutDir,
 				"e2e/crd-delete-test",
@@ -700,9 +674,7 @@ var _ = Describe("Manager CRD Lifecycle", Label("manager"), Serial, Ordered, fun
 
 		By("verifying the deleted CRD file does not reappear after terminating updates")
 		Consistently(func(g Gomega) {
-			pullCmd := exec.Command("git", "pull")
-			pullCmd.Dir = crdLifecycleRepo.CheckoutDir
-			_, _ = pullCmd.CombinedOutput()
+			pullLatestRepoState(g, crdLifecycleRepo.CheckoutDir)
 
 			expectedFile := filepath.Join(crdLifecycleRepo.CheckoutDir,
 				"e2e/crd-delete-test",

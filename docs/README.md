@@ -27,8 +27,11 @@ These directories are useful when changing internals, but they are not the prima
 docs surface:
 
 - [`design/`](design/): architecture notes, investigations, and implementation plans
+- [`finished/`](finished/): design docs and reports for work that has shipped or been resolved,
+  kept for historical context
 - [`ci/`](ci/): CI/devcontainer rationale and troubleshooting
 - [`future/`](future/): ideas that are intentionally deferred
+- [`serious-bug/`](serious-bug/): worked bug reports against upstream projects
 - [`audit-setup/`](audit-setup/): cluster-specific audit delivery notes and examples
 
 These root-level files are also working notes rather than polished user docs:

@@ -1,10 +1,10 @@
 ## CI/Devcontainer Findings (Current Baseline)
 
-Last updated: 2026-02-13
+Last updated: 2026-06-02
 
 Recent investigation: [E2E full-suite shared-state flake](../design/e2e-full-suite-shared-state-investigation.md)
 
-This folder documents why the repository uses its current devcontainer and CI behavior, especially around Go caches, workspace paths, and Kind access from inside the container.
+This folder documents why the repository uses its current devcontainer and CI behavior, especially around Go caches, workspace paths, and k3d cluster access from inside the container.
 
 ### 1) Workspace path model
 
@@ -46,7 +46,7 @@ Why:
 - Stable module/build caching independent of repo bind mount
 - Fewer permission regressions than putting caches in the workspace tree
 
-### 4) Kind + kubectl access model inside devcontainer
+### 4) k3d + kubectl access model inside devcontainer
 
 The current working model is:
 
@@ -54,27 +54,25 @@ The current working model is:
 - Devcontainer run args include:
   - `--group-add=docker`
   - `--add-host=host.docker.internal:host-gateway`
-- Kind cluster config sets:
-  - `networking.apiServerAddress: "0.0.0.0"`
-- `test/e2e/cluster/start-cluster.sh` rewrites kubeconfig server endpoints from
-  `127.0.0.1|localhost|0.0.0.0` to `host.docker.internal:<port>` and sets
-  `tls-server-name=localhost`
+- `test/e2e/cluster/start-cluster.sh` lets k3d pick the API server port, then
+  rewrites kubeconfig server endpoints from `127.0.0.1|localhost|0.0.0.0` to
+  `host.docker.internal:<picked-port>` and sets `tls-server-name=localhost`
 
 Why this is required:
 
-- If Docker publishes Kind API server on host loopback only (`127.0.0.1`), it is not reachable via `host.docker.internal` from the container.
-- Binding on `0.0.0.0` plus kubeconfig rewrite makes in-container `kubectl` stable without host networking.
+- If Docker publishes the k3d API server on host loopback only (`127.0.0.1`), it is not reachable via `host.docker.internal` from the container.
+- The kubeconfig rewrite to `host.docker.internal` makes in-container `kubectl` stable without host networking.
 
 ### 5) Practical verification checklist
 
 After devcontainer rebuild/reopen:
 
 ```bash
-# 1) Kind setup
-make setup-cluster
+# 1) Cluster setup (creates the k3d cluster via the e2e Taskfile)
+bash test/e2e/cluster/start-cluster.sh
 
 # 2) Confirm API publish bind (expected 0.0.0.0 or ::)
-docker inspect gitops-reverser-test-e2e-control-plane --format '{{json .NetworkSettings.Ports}}'
+docker inspect k3d-gitops-reverser-test-e2e-server-0 --format '{{json .NetworkSettings.Ports}}'
 
 # 3) Confirm kubeconfig server rewrite
 kubectl config view --minify | sed -n '/server:/p;/tls-server-name:/p'

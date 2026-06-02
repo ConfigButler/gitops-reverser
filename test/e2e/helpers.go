@@ -336,6 +336,38 @@ func gitRun(dir string, args ...string) (string, error) {
 	return string(out), err
 }
 
+// expectServiceRoutesToPod asserts that the given Service's endpoints resolve
+// to exactly the expected controller pod.
+func expectServiceRoutesToPod(g Gomega, serviceName, expectedPod string) {
+	GinkgoHelper()
+
+	output, err := kubectlRunInNamespace(
+		namespace,
+		"get",
+		"endpoints",
+		serviceName,
+		"-o",
+		"jsonpath={.subsets[*].addresses[*].targetRef.name}",
+	)
+	g.Expect(err).NotTo(HaveOccurred(), "Failed to get %s endpoints", serviceName)
+
+	podSet := map[string]struct{}{}
+	for _, line := range utils.GetNonEmptyLines(output) {
+		if strings.HasPrefix(line, "Warning:") || strings.Contains(line, "deprecated") {
+			continue
+		}
+		podSet[line] = struct{}{}
+	}
+
+	podNames := make([]string, 0, len(podSet))
+	for podName := range podSet {
+		podNames = append(podNames, podName)
+	}
+
+	g.Expect(podNames).To(HaveLen(1), "%s should route to exactly 1 pod", serviceName)
+	g.Expect(podNames[0]).To(Equal(expectedPod), "%s should route to the controller pod", serviceName)
+}
+
 func dumpFailureDiagnostics() {
 	if !CurrentSpecReport().Failed() {
 		return

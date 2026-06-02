@@ -78,15 +78,10 @@ var _ = Describe("Manager WatchRule ConfigMap and Secret", Label("manager"), Ord
 	SetDefaultEventuallyPollingInterval(time.Second)
 
 	It("should handle a normal and healthy GitProvider", Label("smoke"), func() {
-		gitProviderName := "gitprovider-normal"
-		createGitProviderWithURLInNamespace(
-			gitProviderName,
-			testNs,
-			watchRuleRepo.GitSecretHTTP,
-			watchRuleRepo.RepoURLHTTP,
-		)
+		// gitprovider-normal is created and verified in BeforeAll; this spec
+		// re-asserts it stays Ready without re-creating it.
 		verifyResourceStatus(
-			"gitprovider", gitProviderName, testNs, "True", "Ready", "Repository connectivity validated",
+			"gitprovider", "gitprovider-normal", testNs, "True", "Ready", "Repository connectivity validated",
 		)
 	})
 
@@ -171,13 +166,7 @@ var _ = Describe("Manager WatchRule ConfigMap and Secret", Label("manager"), Ord
 
 		By("verifying Secret file is committed and does not contain plaintext data")
 		verifyEncryptedSecretCommitted := func(g Gomega) {
-			pullCmd := exec.Command("git", "pull")
-			pullCmd.Dir = watchRuleRepo.CheckoutDir
-			pullOutput, pullErr := pullCmd.CombinedOutput()
-			if pullErr != nil {
-				g.Expect(pullErr).NotTo(HaveOccurred(),
-					fmt.Sprintf("Should successfully pull latest changes. Output: %s", string(pullOutput)))
-			}
+			pullLatestRepoState(g, watchRuleRepo.CheckoutDir)
 
 			expectedFile := filepath.Join(watchRuleRepo.CheckoutDir,
 				"e2e/secret-encryption-test",
@@ -297,13 +286,7 @@ var _ = Describe("Manager WatchRule ConfigMap and Secret", Label("manager"), Ord
 
 		By("waiting for auto-generated target bootstrap file to be present")
 		Eventually(func(g Gomega) {
-			pullCmd := exec.Command("git", "pull")
-			pullCmd.Dir = watchRuleRepo.CheckoutDir
-			pullOutput, pullErr := pullCmd.CombinedOutput()
-			if pullErr != nil {
-				g.Expect(pullErr).NotTo(HaveOccurred(),
-					fmt.Sprintf("Should successfully pull latest changes. Output: %s", string(pullOutput)))
-			}
+			pullLatestRepoState(g, watchRuleRepo.CheckoutDir)
 
 			bootstrapSOPSFile := filepath.Join(watchRuleRepo.CheckoutDir, "e2e/secret-autogen-test", ".sops.yaml")
 			bootstrapContent, bootstrapErr := os.ReadFile(bootstrapSOPSFile)
@@ -338,13 +321,7 @@ var _ = Describe("Manager WatchRule ConfigMap and Secret", Label("manager"), Ord
 
 		By("verifying committed secret is encrypted and decryptable with generated key")
 		verifyEncryptedSecretCommitted := func(g Gomega) {
-			pullCmd := exec.Command("git", "pull")
-			pullCmd.Dir = watchRuleRepo.CheckoutDir
-			pullOutput, pullErr := pullCmd.CombinedOutput()
-			if pullErr != nil {
-				g.Expect(pullErr).NotTo(HaveOccurred(),
-					fmt.Sprintf("Should successfully pull latest changes. Output: %s", string(pullOutput)))
-			}
+			pullLatestRepoState(g, watchRuleRepo.CheckoutDir)
 
 			expectedFile := filepath.Join(watchRuleRepo.CheckoutDir,
 				"e2e/secret-autogen-test",
@@ -447,16 +424,8 @@ var _ = Describe("Manager WatchRule ConfigMap and Secret", Label("manager"), Ord
 			// Use the pre-checked out repository directory
 			By("using pre-checked out repository for verification")
 
-			// Pull latest changes from the remote repository
 			By("pulling latest changes from remote repository")
-			pullCmd := exec.Command("git", "pull")
-			pullCmd.Dir = watchRuleRepo.CheckoutDir
-			// Don't use utils.Run() here because it overwrites cmd.Dir with the project directory
-			pullOutput, pullErr := pullCmd.CombinedOutput()
-			if pullErr != nil {
-				g.Expect(pullErr).NotTo(HaveOccurred(),
-					fmt.Sprintf("Should successfully pull latest changes. Output: %s", string(pullOutput)))
-			}
+			pullLatestRepoState(g, watchRuleRepo.CheckoutDir)
 
 			// Check for the expected ConfigMap file (new API-aligned path)
 			expectedFile := filepath.Join(watchRuleRepo.CheckoutDir,
@@ -599,13 +568,7 @@ var _ = Describe("Manager WatchRule ConfigMap and Secret", Label("manager"), Ord
 
 		By("waiting for the pre-existing ConfigMap to be backfilled into git")
 		verifyBackfill := func(g Gomega) {
-			pullCmd := exec.Command("git", "pull")
-			pullCmd.Dir = watchRuleRepo.CheckoutDir
-			pullOutput, pullErr := pullCmd.CombinedOutput()
-			if pullErr != nil {
-				g.Expect(pullErr).NotTo(HaveOccurred(),
-					fmt.Sprintf("Should successfully pull latest changes. Output: %s", string(pullOutput)))
-			}
+			pullLatestRepoState(g, watchRuleRepo.CheckoutDir)
 
 			fileInfo, statErr := os.Stat(expectedFile)
 			g.Expect(statErr).NotTo(HaveOccurred(),
@@ -678,13 +641,7 @@ var _ = Describe("Manager WatchRule ConfigMap and Secret", Label("manager"), Ord
 		By("waiting for ConfigMap file to appear in Git repository")
 		verifyFileCreated := func(g Gomega) {
 			// Pull latest changes from the remote repository
-			pullCmd := exec.Command("git", "pull")
-			pullCmd.Dir = watchRuleRepo.CheckoutDir
-			pullOutput, pullErr := pullCmd.CombinedOutput()
-			if pullErr != nil {
-				g.Expect(pullErr).NotTo(HaveOccurred(),
-					fmt.Sprintf("Should successfully pull latest changes. Output: %s", string(pullOutput)))
-			}
+			pullLatestRepoState(g, watchRuleRepo.CheckoutDir)
 
 			// Check for the expected ConfigMap file (new API-aligned path)
 			expectedFile := filepath.Join(watchRuleRepo.CheckoutDir,

@@ -4,7 +4,7 @@
 > Scope: `internal/watch` snapshot path, dynamic informer construction, the
 > client-go `WatchListClient` feature gate
 > Related: [`docs/upgrade-finding.md`](../upgrade-finding.md),
-> [`docs/cozystack-bugreport.md`](../cozystack-bugreport.md)
+> [`docs/serious-bug/cozystack-bugreport.md`](../serious-bug/cozystack-bugreport.md)
 
 ## Goal
 
@@ -171,7 +171,7 @@ Standard kube-apiserver and resources backed by `genericregistry.Store` get
 this for free. Hand-written `rest.Storage` implementations in aggregated
 servers — exactly the kind that show up in projects like Cozystack — must
 implement it themselves. The Cozystack bug report
-([`docs/cozystack-bugreport.md`](../cozystack-bugreport.md)) is a worked
+([`docs/serious-bug/cozystack-bugreport.md`](../serious-bug/cozystack-bugreport.md)) is a worked
 example: one API group conformant, one not, in the same binary.
 
 Before relying on Phase B in any production cluster, we need to audit every

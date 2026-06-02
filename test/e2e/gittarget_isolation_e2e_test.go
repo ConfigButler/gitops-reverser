@@ -20,7 +20,6 @@ package e2e
 
 import (
 	"fmt"
-	"os/exec"
 	"path"
 	"time"
 
@@ -130,7 +129,7 @@ var _ = Describe("Manager GitTarget Isolation", Label("manager"), Label("smoke")
 			By("asserting target A commits it as an event commit, not a snapshot")
 			relPath := path.Join(pathA, fmt.Sprintf("v1/configmaps/%s/%s.yaml", testNs, cmName))
 			assertEventCommit := func(g Gomega) {
-				gitPull(g, isoRepo.CheckoutDir)
+				pullLatestRepoState(g, isoRepo.CheckoutDir)
 
 				msg := lastCommitMessageForPath(g, isoRepo.CheckoutDir, relPath)
 				g.Expect(msg).To(ContainSubstring("[CREATE]"),
@@ -182,22 +181,11 @@ func applyIsolationConfigMap(name, namespace string) {
 	)).To(Succeed(), "failed to apply isolation ConfigMap %q", name)
 }
 
-// gitPull pulls the latest changes into a checkout. It does not use utils.Run,
-// which would override cmd.Dir with the project directory.
-func gitPull(g Gomega, checkoutDir string) {
-	cmd := exec.Command("git", "pull")
-	cmd.Dir = checkoutDir
-	out, err := cmd.CombinedOutput()
-	g.Expect(err).NotTo(HaveOccurred(), "git pull failed: %s", string(out))
-}
-
 // lastCommitMessageForPath returns the body of the most recent commit that
 // touched the given repo-relative path. Scoping by path keeps each GitTarget's
 // history unambiguous even when several targets share one repo.
 func lastCommitMessageForPath(g Gomega, checkoutDir, relPath string) string {
-	cmd := exec.Command("git", "log", "-1", "--pretty=%B", "--", relPath)
-	cmd.Dir = checkoutDir
-	out, err := cmd.CombinedOutput()
-	g.Expect(err).NotTo(HaveOccurred(), "git log failed: %s", string(out))
-	return string(out)
+	out, err := gitRun(checkoutDir, "log", "-1", "--pretty=%B", "--", relPath)
+	g.Expect(err).NotTo(HaveOccurred(), "git log failed: %s", out)
+	return out
 }

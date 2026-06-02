@@ -406,28 +406,30 @@ jobs:
             bash -c '
               set -euo pipefail
               mkdir -p .stamps
+              reports="$(find .stamps -path "*/ginkgo-report-*.json" -type f | sort)"
               {
                 echo "### E2E timing reports (${{ matrix.name }})"
-                reports="$(find .stamps -path "*/ginkgo-report-*.json" -type f | sort)"
                 if [ -z "${reports}" ]; then
                   echo
                   echo "No Ginkgo JSON reports were produced."
-                  exit 0
+                else
+                  # Compile the tool once instead of recompiling per report.
+                  go build -o /tmp/spec-timings ./test/e2e/tools/spec-timings
+                  while IFS= read -r report; do
+                    [ -n "${report}" ] || continue
+                    echo
+                    echo "#### ${report}"
+                    echo
+                    echo "```"
+                    /tmp/spec-timings "${report}" || true
+                    echo "```"
+                  done <<<"${reports}"
                 fi
-                while IFS= read -r report; do
-                  [ -n "${report}" ] || continue
-                  echo
-                  echo "#### ${report}"
-                  echo
-                  echo "```"
-                  go run ./test/e2e/tools/spec-timings "${report}" || true
-                  echo "```"
-                done <<<"${reports}"
               } > "${SUMMARY_FILE}"
             '
           cat "${summary_file}" >> "${GITHUB_STEP_SUMMARY}"
 
-      - name: Upload E2E timing reports
+      - name: Upload E2E raw Ginkgo JSON reports
         if: always()
         uses: actions/upload-artifact@v7
         with:
@@ -435,65 +437,6 @@ jobs:
           path: |
             .stamps/**/ginkgo-report-*.json
             .stamps/e2e-timing-summary-${{ matrix.name }}.md
-          if-no-files-found: ignore
-          retention-days: 7
-
-      - name: Generate Allure results
-        id: allure-results
-        if: always()
-        run: |
-          docker run --rm \
-            -v "${GITHUB_WORKSPACE}:${{ env.CI_WORKDIR }}" \
-            -w "${{ env.CI_WORKDIR }}" \
-            ${{ env.CI_CONTAINER }} \
-            bash -c '
-              set -euo pipefail
-              mapfile -t reports < <(find .stamps -path "*/ginkgo-report-*.json" -type f | sort)
-              if [ "${#reports[@]}" -eq 0 ]; then
-                echo "No Ginkgo JSON reports were produced."
-                exit 0
-              fi
-              rm -rf allure-results
-              mkdir -p allure-results
-              go run ./test/e2e/tools/ginkgo-allure --output-dir allure-results "${reports[@]}"
-            '
-          if find allure-results -name '*-result.json' -type f | grep -q .; then
-            echo "has_results=true" >> "${GITHUB_OUTPUT}"
-          else
-            echo "has_results=false" >> "${GITHUB_OUTPUT}"
-          fi
-
-      - name: Prepare Allure history directory
-        if: always() && steps.allure-results.outputs.has_results == 'true'
-        run: |
-          mkdir -p gh-pages allure-history
-
-      - name: Generate Allure report
-        if: always() && steps.allure-results.outputs.has_results == 'true'
-        uses: simple-elf/allure-report-action@v1.13
-        with:
-          allure_results: allure-results
-          allure_report: allure-report
-          gh_pages: gh-pages
-          allure_history: allure-history
-
-      - name: Fix Allure artifact permissions
-        if: always() && steps.allure-results.outputs.has_results == 'true'
-        run: |
-          # allure-results and allure-report are produced by root-owned
-          # containers (docker run / the Docker-based report action), so the
-          # native upload-artifact step cannot read them. Hand ownership back
-          # to the runner user before uploading.
-          sudo chown -R "$(id -u):$(id -g)" allure-results allure-report
-
-      - name: Upload Allure report artifact
-        if: always() && steps.allure-results.outputs.has_results == 'true'
-        uses: actions/upload-artifact@v7
-        with:
-          name: e2e-allure-report-${{ matrix.name }}
-          path: |
-            allure-report
-            allure-results
           if-no-files-found: ignore
           retention-days: 7
 

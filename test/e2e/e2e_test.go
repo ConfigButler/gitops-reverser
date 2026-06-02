@@ -260,11 +260,3 @@ func showControllerLogs(context string) {
 	fmt.Printf("%s\n", output)
 	fmt.Printf("----------------------------------------\n")
 }
-
-// minInt returns the minimum of two integers.
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
