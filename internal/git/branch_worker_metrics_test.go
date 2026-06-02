@@ -21,6 +21,7 @@ package git
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
@@ -106,9 +107,12 @@ func TestRecordQueueDepth_InflightItemDequeuedButUnhandled(t *testing.T) {
 	assert.Equal(t, int64(1), depth, "an in-flight item must keep depth > 0 even with an empty channel")
 }
 
-// enqueueRequest must publish a non-zero depth as soon as the item lands on the
-// queue, closing the race where a poller reads a stale drained value.
-func TestEnqueueRequest_RecordsDepth(t *testing.T) {
+// enqueueRequest must account for the accepted item in inflightItems but must
+// NOT publish the depth gauge itself: the gauge is last-writer-wins, so an
+// enqueue goroutine that raced the loop's drain could latch a stale value and
+// hang the restart drain gate. Publication is the loop's job; once the loop
+// observes the inflight item it reports the non-zero depth.
+func TestEnqueueRequest_AccountsInflightWithoutPublishing(t *testing.T) {
 	reader, err := telemetry.InitTestExporter()
 	require.NoError(t, err)
 
@@ -118,7 +122,65 @@ func TestEnqueueRequest_RecordsDepth(t *testing.T) {
 		CommitMode: CommitModePerEvent,
 	})
 
+	// The item is accounted for, but enqueue did not touch the gauge.
+	assert.Equal(t, int64(1), w.inflightItems.Load())
+	_, ok := telemetry.CollectInt64Sum(reader, branchWorkerQueueDepthMetric, queueDepthLabels())
+	assert.False(t, ok, "enqueue must not publish the depth gauge; only the loop does")
+
+	// The loop's publication (modelled here by a direct record) then reports the
+	// inflight item as non-zero depth.
+	w.recordQueueDepth()
 	depth, ok := telemetry.CollectInt64Sum(reader, branchWorkerQueueDepthMetric, queueDepthLabels())
-	require.True(t, ok, "expected a branch_worker_queue_depth sample after enqueue")
+	require.True(t, ok, "expected a branch_worker_queue_depth sample after the loop publishes")
 	assert.Equal(t, int64(1), depth)
+}
+
+// On shutdown the loop must drain items still buffered on eventQueue so the depth
+// gauge settles to 0. Each buffered item was counted into inflightItems at
+// enqueue; left undrained, the exiting worker's final publish would latch a
+// non-zero depth that never clears.
+func TestHandleShutdown_DrainsBufferedItemsToZeroDepth(t *testing.T) {
+	reader, err := telemetry.InitTestExporter()
+	require.NoError(t, err)
+
+	w := newMetricsTestWorker()
+	// Two write requests accepted onto the queue but never handled by the loop.
+	w.enqueueRequest(&WriteRequest{Events: []Event{{}}, CommitMode: CommitModePerEvent})
+	w.enqueueRequest(&WriteRequest{Events: []Event{{}}, CommitMode: CommitModePerEvent})
+	require.Equal(t, int64(2), w.inflightItems.Load())
+
+	loop := newBranchWorkerEventLoop(w, time.Second)
+	loop.handleShutdown()
+	// run() publishes once more after handleShutdown; model that here.
+	loop.syncQueueDepthMetric()
+
+	assert.Equal(t, int64(0), w.inflightItems.Load(), "buffered items must be drained from the inflight count")
+	depth, ok := telemetry.CollectInt64Sum(reader, branchWorkerQueueDepthMetric, queueDepthLabels())
+	require.True(t, ok, "expected a branch_worker_queue_depth sample after shutdown")
+	assert.Equal(t, int64(0), depth, "a drained, exiting worker must publish depth 0")
+}
+
+// A finalize signal still buffered at shutdown must be answered with
+// ErrWorkerShuttingDown so its caller unblocks instead of waiting out its
+// timeout, and its inflight slot must be released.
+func TestHandleShutdown_RepliesToBufferedFinalize(t *testing.T) {
+	_, err := telemetry.InitTestExporter()
+	require.NoError(t, err)
+
+	w := newMetricsTestWorker()
+	result := make(chan FinalizeResult, 1)
+	w.EnqueueFinalize(&FinalizeSignal{Result: result})
+	require.Equal(t, int64(1), w.inflightItems.Load())
+
+	loop := newBranchWorkerEventLoop(w, time.Second)
+	loop.handleShutdown()
+
+	assert.Equal(t, int64(0), w.inflightItems.Load())
+	select {
+	case res := <-result:
+		require.ErrorIs(t, res.Err, ErrWorkerShuttingDown)
+		assert.Equal(t, "main", res.Branch)
+	default:
+		t.Fatal("expected a finalize reply on shutdown, got none")
+	}
 }

@@ -119,8 +119,9 @@ func (m *Manager) SnapshotEmitCount() int64 {
 }
 
 type ruleSetSnapshotTarget struct {
-	gitDest types.ResourceReference
-	hash    uint64
+	gitDest    types.ResourceReference
+	hash       uint64
+	hasEntries bool
 }
 
 // targetWatchPlan accumulates a single GitTarget's effective watch surface while
@@ -799,14 +800,22 @@ func (m *Manager) ReconcileForRuleChange(ctx context.Context) error {
 	// Emit RequestClusterState for each affected GitTarget so that a single
 	// "reconcile: sync N resources" commit is produced instead of N individual
 	// [CREATE] commits from the informer ADDED events buffered above.
-	m.emitSnapshotForRuleChange(ctx, log, targets, "rule_change")
+	deliveryErr := m.emitSnapshotForRuleChange(ctx, log, targets, "rule_change")
 
 	// Transition streams back to LIVE_PROCESSING and flush buffered events.
 	// startInformersForGVRs already waited for cache sync (WaitForCacheSync),
 	// so all initial ADDED events are guaranteed to be buffered before this point.
 	// The flushed events are no-ops at the git level because the snapshot batch
-	// just wrote those files.
+	// just wrote those files. Run this even when a target failed delivery so the
+	// streams that did snapshot leave the buffering state.
 	m.completeReconciliationForTargets(targets, log)
+
+	if deliveryErr != nil {
+		// A transient emit failure left at least one target pending. Surface it so
+		// the controller requeues with backoff and retries promptly instead of
+		// waiting for the next periodic reconcile.
+		return deliveryErr
+	}
 
 	log.V(1).Info("Watch manager reconciliation completed",
 		"addedGVRs", len(added),
@@ -1179,6 +1188,9 @@ func (m *Manager) snapshotTargetsNeedingDelivery() []ruleSetSnapshotTarget {
 	for _, target := range current {
 		key := target.gitDest.Key()
 		currentKeys[key] = struct{}{}
+		if !target.hasEntries {
+			continue
+		}
 		if lastDelivered, ok := m.lastDeliveredRuleSetHash[key]; ok && lastDelivered == target.hash {
 			continue
 		}
@@ -1218,7 +1230,8 @@ func (m *Manager) snapshotTargetsNeedingDelivery() []ruleSetSnapshotTarget {
 // Operations add up across rules: when two rules for the same target resolve to
 // the same GVR, the entry's operation set is their union (see
 // rulestore TestGetMatchingRules_OverlappingRulesUnionOperations). A target with
-// no resolvable rules has an empty plan and is omitted entirely.
+// rules that currently resolve to nothing is kept as an empty plan so transient
+// discovery gaps do not look like rule removal.
 func (m *Manager) currentRuleSetSnapshots() []ruleSetSnapshotTarget {
 	plans := make(map[string]*targetWatchPlan)
 	resolver := m.ruleGVRResolver()
@@ -1277,12 +1290,10 @@ func (m *Manager) currentRuleSetSnapshots() []ruleSetSnapshotTarget {
 	targets := make([]ruleSetSnapshotTarget, 0, len(keys))
 	for _, key := range keys {
 		p := plans[key]
-		if len(p.entries) == 0 {
-			continue
-		}
 		targets = append(targets, ruleSetSnapshotTarget{
-			gitDest: p.gitDest,
-			hash:    p.hash(),
+			gitDest:    p.gitDest,
+			hash:       p.hash(),
+			hasEntries: len(p.entries) > 0,
 		})
 	}
 	return targets
@@ -1330,7 +1341,11 @@ func (m *Manager) MaybeReplaySnapshot(ctx context.Context, gitDest types.Resourc
 	target := ruleSetSnapshotTarget{gitDest: gitDest, hash: hash}
 	log := m.Log.WithName("reconcile")
 	m.EventRouter.BeginReconciliationForStream(gitDest)
-	m.emitSnapshotForRuleChange(ctx, log, []ruleSetSnapshotTarget{target}, "startup_replay")
+	if err := m.emitSnapshotForRuleChange(ctx, log, []ruleSetSnapshotTarget{target}, "startup_replay"); err != nil {
+		// The target stays pending (not marked delivered), so the next reconcile
+		// or replay retries it; just record why this attempt did not land.
+		log.Error(err, "snapshot replay did not complete, leaving target pending", "gitDest", gitDest.String())
+	}
 	m.EventRouter.CompleteReconciliationForStream(gitDest)
 }
 
@@ -1347,21 +1362,31 @@ func (m *Manager) beginReconciliationForTargets(targets []ruleSetSnapshotTarget,
 // emitSnapshotForRuleChange emits fresh repo and cluster state requests for every affected
 // GitTarget so FolderReconciler diffs against current repository contents rather than a
 // stale cached repo snapshot from an earlier reconcile.
+//
+// A target is marked delivered and counted only once *both* its repo- and
+// cluster-state requests land on the worker queue: a partial emission would have
+// the reconciler diff against an incomplete cluster view. A transient failure on
+// either request leaves that target pending and is returned as an error so the
+// caller requeues with backoff and retries it promptly, rather than waiting out
+// the 30s periodic reconcile — which matters for the per-pod restart gate that
+// blocks on the reconcile counter reaching the new pod. Other targets in the
+// batch are still attempted so one bad target cannot starve the rest.
 func (m *Manager) emitSnapshotForRuleChange(
 	ctx context.Context,
 	log logr.Logger,
 	targets []ruleSetSnapshotTarget,
 	trigger string,
-) {
+) error {
 	if m.EventRouter == nil {
 		log.Info("EventRouter not set, skipping snapshot emission")
 		if len(targets) > 0 {
 			m.snapshotEmitCount.Add(1)
 		}
-		return
+		return nil
 	}
 	log.Info("Emitting fresh repo and cluster state for affected GitTargets after rule change", "count", len(targets))
 	emitted := false
+	var errs []error
 	for _, target := range targets {
 		gitDest := target.gitDest
 		if m.EventRouter.ReconcilerManager == nil {
@@ -1379,6 +1404,7 @@ func (m *Manager) emitSnapshotForRuleChange(
 			GitDest: gitDest,
 		}); err != nil {
 			log.Error(err, "failed to emit RequestRepoState for rule change", "gitDest", gitDest)
+			errs = append(errs, fmt.Errorf("emit RequestRepoState for %s: %w", gitDest, err))
 			continue
 		}
 		if err := m.EventRouter.ProcessControlEvent(ctx, events.ControlEvent{
@@ -1386,6 +1412,7 @@ func (m *Manager) emitSnapshotForRuleChange(
 			GitDest: gitDest,
 		}); err != nil {
 			log.Error(err, "failed to emit RequestClusterState for rule change", "gitDest", gitDest)
+			errs = append(errs, fmt.Errorf("emit RequestClusterState for %s: %w", gitDest, err))
 			continue
 		}
 		m.markRuleSetSnapshotDelivered(target)
@@ -1395,6 +1422,7 @@ func (m *Manager) emitSnapshotForRuleChange(
 	if emitted {
 		m.snapshotEmitCount.Add(1)
 	}
+	return errors.Join(errs...)
 }
 
 // recordTargetReconcileCompleted increments the per-GitTarget reconcile counter

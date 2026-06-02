@@ -130,9 +130,9 @@ type BranchWorker struct {
 
 	// hasUnpushedWork mirrors whether the event loop is currently holding a live
 	// open window or any committed-but-not-yet-pushed pending writes. The event
-	// loop is the only writer; recordQueueDepth (callable from enqueue goroutines)
-	// is the only other reader, hence the atomic. It lets the depth gauge account
-	// for retained work the channel length alone cannot see.
+	// loop is the only writer and, via syncQueueDepthMetric, the only reader; the
+	// atomic guards the store/load and lets the depth gauge account for retained
+	// work the channel length alone cannot see.
 	hasUnpushedWork atomic.Bool
 
 	// inflightItems counts work items accepted onto eventQueue but not yet fully
@@ -272,7 +272,9 @@ func (w *BranchWorker) EnqueueFinalize(signal *FinalizeSignal) {
 	select {
 	case w.eventQueue <- WorkItem{Finalize: signal}:
 		w.Log.V(1).Info("Finalize signal enqueued")
-		w.recordQueueDepth()
+		// Depth is published only from the loop goroutine (syncQueueDepthMetric);
+		// the loop republishes on every received item, so the gauge converges
+		// without an enqueue-side write that could latch a stale value.
 	default:
 		w.inflightItems.Add(-1)
 		w.Log.Error(nil, "Event queue full, finalize signal dropped")
@@ -294,7 +296,9 @@ func (w *BranchWorker) enqueueRequest(request *WriteRequest) {
 			"events", len(request.Events),
 			"mode", request.CommitMode,
 			"gitTarget", request.GitTargetName)
-		w.recordQueueDepth()
+		// Depth is published only from the loop goroutine (syncQueueDepthMetric);
+		// the loop republishes on every received item, so the gauge converges
+		// without an enqueue-side write that could latch a stale value.
 	default:
 		w.inflightItems.Add(-1)
 		w.Log.Error(nil, "Event queue full, request dropped",
@@ -309,9 +313,11 @@ func (w *BranchWorker) enqueueRequest(request *WriteRequest) {
 // processed) plus one when the event loop is holding retained unpushed work (a
 // live open window or pending writes). It reads 0 only when the worker has
 // fully drained — every accepted item handled and nothing retained — so a
-// drain gate cannot be satisfied while a commit/push is still in flight. Safe
-// to call from any goroutine: it reads two atomics. No-op until the gauge is
-// registered (e.g. in unit tests that never init the exporter).
+// drain gate cannot be satisfied while a commit/push is still in flight. Called
+// only from the loop goroutine (via syncQueueDepthMetric) so the OTel gauge —
+// last-writer-wins — can never latch a stale depth from an enqueue goroutine
+// that raced the loop's drain. No-op until the gauge is registered (e.g. in
+// unit tests that never init the exporter).
 func (w *BranchWorker) recordQueueDepth() {
 	if telemetry.BranchWorkerQueueDepth == nil {
 		return
@@ -708,6 +714,31 @@ func (l *branchWorkerEventLoop) handleShutdown() {
 		// Shutdown bypasses the cooldown — pending work needs to land before
 		// the worker exits, even if a push was just sent.
 		l.pushPending()
+	}
+	l.drainUnhandledQueueItems()
+}
+
+// drainUnhandledQueueItems clears items still buffered on eventQueue that the
+// exiting loop will never handle. Each was counted into inflightItems at enqueue
+// and is decremented only by the loop after handling, so without this drain the
+// final syncQueueDepthMetric would publish a non-zero depth for the exiting
+// worker that never clears — the loop has stopped, so nothing republishes a
+// corrected value. A buffered finalize signal is answered with
+// ErrWorkerShuttingDown so its caller unblocks instead of waiting out its
+// timeout. The depth gauge then settles to 0 once the open window is finalized
+// and pending writes are pushed (any genuinely-unpushed work keeps it non-zero,
+// which is correct).
+func (l *branchWorkerEventLoop) drainUnhandledQueueItems() {
+	for {
+		select {
+		case item := <-l.w.eventQueue:
+			if item.Finalize != nil {
+				item.Finalize.reply(FinalizeResult{Branch: l.w.Branch, Err: ErrWorkerShuttingDown})
+			}
+			l.w.inflightItems.Add(-1)
+		default:
+			return
+		}
 	}
 }
 

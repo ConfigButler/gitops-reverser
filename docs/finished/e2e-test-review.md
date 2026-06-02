@@ -1,6 +1,6 @@
 # E2E Test Review: Gomega/Ginkgo Implementation
 
-Related investigation: [E2E Full-Suite Shared-State Investigation](./e2e-full-suite-shared-state-investigation.md)
+Related investigation: [E2E Full-Suite Shared-State Investigation](../design/e2e-full-suite-shared-state-investigation.md)
 
 ## What's Good
 

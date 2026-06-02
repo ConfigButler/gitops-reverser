@@ -25,10 +25,9 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	dynamicfake "k8s.io/client-go/dynamic/fake"
+	k8stypes "k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -36,6 +35,7 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/reconcile"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
+	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
@@ -120,9 +120,9 @@ func clusterRuleForResource(name, gitTargetName, resource string) configv1alpha1
 	}
 }
 
-// configMapRuleForTarget builds a configmaps ClusterWatchRule for the target.
-func configMapRuleForTarget(name, gitTargetName string) configv1alpha1.ClusterWatchRule {
-	return clusterRuleForResource(name, gitTargetName, "configmaps")
+// configMapRule builds the standard single-target configmaps ClusterWatchRule.
+func configMapRule() configv1alpha1.ClusterWatchRule {
+	return clusterRuleForResource("rule-1", "test-target", "configmaps")
 }
 
 // TestReconcileForRuleChange_TargetGainsAlreadyWatchedGVR_Snapshots is the
@@ -175,7 +175,7 @@ func TestReconcileForRuleChange_NarrowingOperationsOnExistingRule_Snapshots(t *t
 	ctx := context.Background()
 
 	// Initial rule: all operations on configmaps.
-	initial := configMapRuleForTarget("rule-1", "test-target")
+	initial := configMapRule()
 	store.AddOrUpdateClusterWatchRule(
 		initial,
 		"test-target", "test-ns",
@@ -188,7 +188,7 @@ func TestReconcileForRuleChange_NarrowingOperationsOnExistingRule_Snapshots(t *t
 
 	// Narrow operations to UPDATE only. The GVR (core/v1/configmaps) is
 	// unchanged; only the operation set in the plan changes.
-	narrowed := configMapRuleForTarget("rule-1", "test-target")
+	narrowed := configMapRule()
 	narrowed.Spec.Rules[0].Operations = []configv1alpha1.OperationType{
 		configv1alpha1.OperationUpdate,
 	}
@@ -266,29 +266,11 @@ func TestCurrentRuleSetSnapshots_NamespacedWatchRulePlanByNamespace(t *testing.T
 		"a redundant duplicate WatchRule in an already-watched namespace must not change the plan hash")
 }
 
-// TestReconcileForRuleChange_RestartLikeBootstrap_NoSnapshotDrops models the
-// "restart with already-Ready GitTarget" scenario. The user-visible symptom:
-//
-//   - On controller restart, GitTarget.Status.SnapshotSynced is already True
-//     from the prior run, so GitTargetReconciler takes the early-return at
-//     gittarget_controller.go:384 and creates no FolderReconciler.
-//   - WatchManager.Start runs its initial ReconcileForRuleChange before the
-//     GitTargetReconciler reaches the target, so the snapshot is emitted
-//     while no reconciler is registered. RouteClusterStateEvent / RouteRepoStateEvent
-//     find no receiver and silently drop the snapshot output.
-//   - Live update events still flow through (informer is running, the eventual
-//     stream registration brings it to LiveProcessing), so the user sees
-//     "updates write, but pre-existing resources never land in git."
-//
-// This test guards the fix: it emits a snapshot with no pre-registered
-// FolderReconciler and asserts the drop counter stays at zero, so snapshot
-// emission stays coordinated with reconciler registration.
-//
-// The setup populates activeInformers with a stale GVR and uses a catalog that
-// does not serve configmaps, so the rule's GVR resolves to nothing and
-// compareGVRs reports added=[], removed=[stale-gvr]. That bypasses the
-// early-return without requiring any real informers to start.
-func TestReconcileForRuleChange_RestartLikeBootstrap_NoSnapshotDrops(t *testing.T) {
+// TestReconcileForRuleChange_NoReconcilerLeavesSnapshotPending verifies that
+// rule-change reconciliation does not emit state events until a FolderReconciler
+// exists. The target remains pending so MaybeReplaySnapshot can retry when the
+// GitTarget reconciler registers the receiver.
+func TestReconcileForRuleChange_NoReconcilerLeavesSnapshotPending(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, clientgoscheme.AddToScheme(scheme))
 	require.NoError(t, configv1alpha1.AddToScheme(scheme))
@@ -300,16 +282,6 @@ func TestReconcileForRuleChange_RestartLikeBootstrap_NoSnapshotDrops(t *testing.
 			Branch:      "main",
 			Path:        "test-path",
 		},
-		Status: configv1alpha1.GitTargetStatus{
-			Conditions: []metav1.Condition{
-				// Simulate the post-restart state that triggers the
-				// gittarget_controller.go:384 early-return.
-				{Type: "SnapshotSynced", Status: metav1.ConditionTrue, Reason: "Completed"},
-			},
-		},
-	}
-	preexistingCM := &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{Name: "preexisting", Namespace: "test-ns"},
 	}
 
 	fakeK8s := fake.NewClientBuilder().
@@ -319,7 +291,7 @@ func TestReconcileForRuleChange_RestartLikeBootstrap_NoSnapshotDrops(t *testing.
 
 	store := rulestore.NewStore()
 	store.AddOrUpdateClusterWatchRule(
-		configMapRuleForTarget("rule-1", "test-target"),
+		configMapRule(),
 		"test-target", "test-ns",
 		"test-provider", "test-ns",
 		"main", "test-path",
@@ -330,15 +302,9 @@ func TestReconcileForRuleChange_RestartLikeBootstrap_NoSnapshotDrops(t *testing.
 		Scope: configv1alpha1.ResourceScopeNamespaced,
 	}
 	manager := &Manager{
-		Client:        fakeK8s,
-		Log:           logr.Discard(),
-		RuleStore:     store,
-		dynamicClient: dynamicfake.NewSimpleDynamicClient(scheme, preexistingCM),
-		// The common catalog serves configmaps, so the rule resolves to a real
-		// GVR and the target's effective watch plan is non-empty (the target is
-		// selected for a snapshot). configmaps is pre-activated so no informer is
-		// started; the stale GVR is removed so compareGVRs avoids the
-		// no-change early-return.
+		Client:          fakeK8s,
+		Log:             logr.Discard(),
+		RuleStore:       store,
 		resourceCatalog: newCommonTestCatalog(t),
 		discoveryClient: commonTestDiscoveryClient(),
 		activeInformers: map[GVR]map[string]context.CancelFunc{
@@ -347,9 +313,8 @@ func TestReconcileForRuleChange_RestartLikeBootstrap_NoSnapshotDrops(t *testing.
 		},
 	}
 
-	// Wire EventRouter with empty-but-non-nil sub-components. This is the
-	// state immediately after WatchManager.Start: workers and reconcilers
-	// have not yet been registered by their respective controllers.
+	// Wire EventRouter with no registered FolderReconciler. This is the state
+	// before the GitTarget controller has created the per-target receiver.
 	manager.EventRouter = &EventRouter{
 		WorkerManager:     git.NewWorkerManager(fakeK8s, logr.Discard(), 0, types.SensitiveResourcePolicy{}),
 		ReconcilerManager: reconcile.NewReconcilerManager(nil, logr.Discard()),
@@ -361,11 +326,10 @@ func TestReconcileForRuleChange_RestartLikeBootstrap_NoSnapshotDrops(t *testing.
 
 	require.NoError(t, manager.ReconcileForRuleChange(ctx()))
 
-	assert.Zero(t,
-		manager.EventRouter.SnapshotDeliveryDrops(),
-		"on a restart-like bootstrap (no FolderReconciler registered yet), the snapshot is emitted "+
-			"but RouteClusterStateEvent/RouteRepoStateEvent silently drop it; the system must coordinate "+
-			"emission with reconciler registration, or retry, so pre-existing matching resources land in git")
+	assert.True(t, targetPending(manager, "test-target"),
+		"target must stay pending until a FolderReconciler exists")
+	assert.Zero(t, manager.EventRouter.SnapshotDeliveryDrops(),
+		"state events must not be emitted before a FolderReconciler exists")
 }
 
 // makeTwoTargetRuleChangeManager builds a Manager with two GitTargets,
@@ -454,6 +418,19 @@ func targetPending(m *Manager, name string) bool {
 	m.ruleSetSnapshotMu.Lock()
 	defer m.ruleSetSnapshotMu.Unlock()
 	_, ok := m.pendingRuleSetHash[key]
+	return ok
+}
+
+func deliveredHash(m *Manager, name string) (uint64, bool) {
+	key := types.NewResourceReference(name, "test-ns").Key()
+	m.ruleSetSnapshotMu.Lock()
+	defer m.ruleSetSnapshotMu.Unlock()
+	hash, ok := m.lastDeliveredRuleSetHash[key]
+	return hash, ok
+}
+
+func targetDelivered(m *Manager, name string) bool {
+	_, ok := deliveredHash(m, name)
 	return ok
 }
 
@@ -572,10 +549,115 @@ func TestSnapshotTargetsNeedingDelivery_PerTargetHashIsolatesTargets(t *testing.
 		"A (whose effective plan is unchanged) is correctly skipped")
 }
 
+func TestSnapshotTargets_DiscoveryUnavailableKeepsDeliveredHash(t *testing.T) {
+	manager, store := makeRuleChangeTestManager(t)
+
+	store.AddOrUpdateClusterWatchRule(
+		configMapRule(),
+		"test-target", "test-ns", "test-provider", "test-ns", "main", "test-path",
+	)
+	seedDeliveredBaseline(manager)
+	baseline, ok := deliveredHash(manager, "test-target")
+	require.True(t, ok, "expected delivered baseline")
+
+	manager.resourceCatalog = NewAPIResourceCatalog()
+	selected := manager.snapshotTargetsNeedingDelivery()
+
+	assert.Empty(t, selected, "an unavailable catalog produces an empty plan, not a snapshot")
+	current, ok := deliveredHash(manager, "test-target")
+	require.True(t, ok, "empty plan must not prune delivered state while rules still exist")
+	assert.Equal(t, baseline, current)
+	assert.False(t, targetPending(manager, "test-target"), "empty plans are not pending snapshots")
+}
+
+func TestSnapshotTargets_DiscoveryRecoveryDoesNotResnapshotUnchangedPlan(t *testing.T) {
+	manager, store := makeRuleChangeTestManager(t)
+
+	store.AddOrUpdateClusterWatchRule(
+		configMapRule(),
+		"test-target", "test-ns", "test-provider", "test-ns", "main", "test-path",
+	)
+	seedDeliveredBaseline(manager)
+
+	manager.resourceCatalog = NewAPIResourceCatalog()
+	require.Empty(t, manager.snapshotTargetsNeedingDelivery())
+
+	manager.resourceCatalog = newCommonTestCatalog(t)
+	assert.Empty(t, manager.snapshotTargetsNeedingDelivery(),
+		"the recovered plan matches the remembered delivered hash, so no resnapshot is needed")
+}
+
+func TestSnapshotTargets_RuleRemovalPrunesDeliveredHash(t *testing.T) {
+	manager, store := makeRuleChangeTestManager(t)
+
+	store.AddOrUpdateClusterWatchRule(
+		configMapRule(),
+		"test-target", "test-ns", "test-provider", "test-ns", "main", "test-path",
+	)
+	seedDeliveredBaseline(manager)
+	require.True(t, targetDelivered(manager, "test-target"), "expected delivered baseline")
+
+	store.DeleteClusterWatchRule(k8stypes.NamespacedName{Name: "rule-1"})
+	assert.Empty(t, manager.snapshotTargetsNeedingDelivery())
+	assert.False(t, targetDelivered(manager, "test-target"),
+		"when the target truly has no rules, delivered state is pruned")
+}
+
+// A transient emit failure (here: RequestRepoState fails because no worker is
+// registered) must NOT mark the target delivered or bump the reconcile counter,
+// and must be returned to the caller so it requeues and retries promptly. Before
+// the fix the error was swallowed (counter and delivery were skipped silently),
+// so the per-pod restart gate could wait out its 90s timeout on a one-off error.
+func TestEmitSnapshotForRuleChange_TransientFailureReturnsErrorAndStaysPending(t *testing.T) {
+	reader, err := telemetry.InitTestExporter()
+	require.NoError(t, err)
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, clientgoscheme.AddToScheme(scheme))
+	require.NoError(t, configv1alpha1.AddToScheme(scheme))
+
+	gitTarget := &configv1alpha1.GitTarget{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-target", Namespace: "test-ns"},
+		Spec: configv1alpha1.GitTargetSpec{
+			ProviderRef: configv1alpha1.GitProviderReference{Name: "test-provider"},
+			Branch:      "main",
+			Path:        "test-path",
+		},
+	}
+	fakeK8s := fake.NewClientBuilder().WithScheme(scheme).WithObjects(gitTarget).Build()
+
+	manager := &Manager{Client: fakeK8s, Log: logr.Discard()}
+	gitDest := types.NewResourceReference("test-target", "test-ns")
+
+	// A FolderReconciler exists (so emission is attempted), but no BranchWorker is
+	// registered, so RequestRepoState fails with "no worker".
+	reconcilerManager := reconcile.NewReconcilerManager(nil, logr.Discard())
+	reconcilerManager.CreateReconciler(ctx(), gitDest, nil)
+	manager.EventRouter = &EventRouter{
+		WorkerManager:     git.NewWorkerManager(fakeK8s, logr.Discard(), 0, types.SensitiveResourcePolicy{}),
+		ReconcilerManager: reconcilerManager,
+		WatchManager:      manager,
+		Client:            fakeK8s,
+		Log:               logr.Discard(),
+		gitTargetStreams:  map[string]*reconcile.GitTargetEventStream{},
+	}
+
+	target := ruleSetSnapshotTarget{gitDest: gitDest, hash: 0xABCD}
+	emitErr := manager.emitSnapshotForRuleChange(ctx(), logr.Discard(), []ruleSetSnapshotTarget{target}, "rule_change")
+
+	require.Error(t, emitErr, "a failed emission must be returned so the caller requeues")
+
+	// The target was not marked delivered, so the next reconcile retries it.
+	manager.ruleSetSnapshotMu.Lock()
+	delivered, ok := manager.lastDeliveredRuleSetHash[gitDest.Key()]
+	manager.ruleSetSnapshotMu.Unlock()
+	assert.False(t, ok && delivered == target.hash, "a failed target must stay pending, not be marked delivered")
+
+	// The reconcile counter did not fire for this failed pass.
+	_, counted := telemetry.CollectInt64Sum(reader, targetReconcileCompletedMetric,
+		map[string]string{"gittarget_namespace": "test-ns", "gittarget_name": "test-target", "trigger": "rule_change"})
+	assert.False(t, counted, "the reconcile counter must not fire when emission failed")
+}
+
 // ctx returns a background context. Wrapped for terse use in test setup.
 func ctx() context.Context { return context.Background() }
-
-// Compile-time sanity: corev1 is used by tests that may extend this file with
-// pre-populated ConfigMap objects to assert backfill content. Today only the
-// snapshot-emit counter is asserted; keep the import for cheap follow-up tests.
-var _ = corev1.ConfigMap{}

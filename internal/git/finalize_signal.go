@@ -24,6 +24,11 @@ import "errors"
 // because the worker's event queue is saturated.
 var ErrFinalizeQueueFull = errors.New("branch worker event queue full; finalize signal dropped")
 
+// ErrWorkerShuttingDown is reported for a finalize signal that was still buffered
+// on the event queue when the worker began shutting down, so its caller unblocks
+// immediately instead of waiting out its timeout.
+var ErrWorkerShuttingDown = errors.New("branch worker shutting down; finalize signal not processed")
+
 // FinalizeOutcome is the terminal result of processing a FinalizeSignal.
 type FinalizeOutcome string
 
