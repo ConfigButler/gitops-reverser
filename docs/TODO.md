@@ -56,6 +56,12 @@ This file is meant to track the smaller current backlog, not historical notes.
   Comments, ordering, and other low-noise formatting details are still easy to lose when rewriting
   manifests.
 
+- [ ] Handle resources whose GVK cannot be resolved against the live cluster.
+  A manifest may reference a `apiVersion`/`kind` whose CRD is not installed, so the RESTMapper
+  cannot map it to a GVR. This is already a problem today and also blocks the manifest-inventory
+  work in [docs/future/manifest-inventory-file-agnostic-placement.md](future/manifest-inventory-file-agnostic-placement.md):
+  indexing must record the manifest identity and defer rather than fail the whole scan.
+
 - [ ] Resolve the unused `GitTarget.status.lastCommit` field.
   It is documented as "the SHA of the last commit processed" but is never populated — the only
   writer blanks it in [gittarget_controller.go](../internal/controller/gittarget_controller.go),
@@ -85,3 +91,8 @@ This file is meant to track the smaller current backlog, not historical notes.
   Prototype audit-carried options such as `user.extra` enrichment and transient metadata stripped by
   admission before committing to an aggregated API or CRD. Notes in
   [docs/future/idea-end-user-commit-messages.md](future/idea-end-user-commit-messages.md).
+
+
+Replace with https://docs.victoriametrics.com/helm/victoria-metrics-operator/ (so that it's also helm and so that we can have proper deps)
+https://kubernetes.io/docs/reference/using-api/api-concepts/#resource-versions
+https://sessionize.com/kcpcon-2026/
