@@ -86,7 +86,7 @@ func PatchDocument(
 		return wholeReplace(docs, documentIndex, desired, loc)
 	}
 
-	docs[documentIndex].body = string(encoded)
+	docs[documentIndex].body = reskinDocument(target, string(encoded))
 	return EditResult{Content: []byte(joinDocuments(docs)), Mode: EditPatched}, nil
 }
 

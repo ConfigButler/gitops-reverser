@@ -1,0 +1,17 @@
+# startup scripts for the app
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: startup-scripts
+  namespace: default
+  labels:
+    app: demo # selector label
+data:
+  build: "00123"
+  enabled: "false"
+  start.sh: |-
+    #!/bin/sh
+    set -eu
+
+    echo "starting app"
+    exec /app/server

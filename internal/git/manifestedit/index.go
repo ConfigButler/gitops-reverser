@@ -176,7 +176,8 @@ func identityFromNode(root *yaml.Node) (Identity, bool) {
 }
 
 // hasDisallowed reports the first disallowed construct (anchor, alias, merge
-// key) found in a node tree, walking without materializing aliases.
+// key, duplicate key, unusual tag) found in a node tree, walking without
+// materializing aliases so an alias bomb cannot blow up here.
 func hasDisallowed(n *yaml.Node) (string, bool) {
 	if n == nil {
 		return "", false
@@ -187,11 +188,20 @@ func hasDisallowed(n *yaml.Node) (string, bool) {
 	if n.Anchor != "" {
 		return "anchor", true
 	}
+	if isUnusualTag(n.Tag) {
+		return "unusual tag " + n.Tag, true
+	}
 	if n.Kind == yaml.MappingNode {
+		seen := make(map[string]bool)
 		for i := 0; i+1 < len(n.Content); i += 2 {
-			if n.Content[i].Tag == "!!merge" || n.Content[i].Value == "<<" {
+			key := n.Content[i]
+			if key.Tag == "!!merge" || key.Value == "<<" {
 				return "merge key", true
 			}
+			if seen[key.Value] {
+				return "duplicate key " + key.Value, true
+			}
+			seen[key.Value] = true
 		}
 	}
 	for _, c := range n.Content {
@@ -200,6 +210,19 @@ func hasDisallowed(n *yaml.Node) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// isUnusualTag reports whether an explicit YAML tag is one the editor refuses to
+// edit through: a local/custom tag (single "!") or binary. Core resolved tags
+// such as !!str, !!int, !!bool and !!timestamp (from a plain date) are fine.
+func isUnusualTag(tag string) bool {
+	if tag == "" {
+		return false
+	}
+	if strings.HasPrefix(tag, "!!") {
+		return tag == "!!binary"
+	}
+	return strings.HasPrefix(tag, "!")
 }
 
 // nodeMapGet returns the value node for a key in a mapping node, or nil.

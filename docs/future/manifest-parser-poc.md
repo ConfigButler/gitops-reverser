@@ -2,8 +2,12 @@
 
 > Status: implemented — see `internal/git/manifestedit` and its
 > [DECISION.md](../../internal/git/manifestedit/DECISION.md).
-> Outcome: `gopkg.in/yaml.v3` node editing + per-document text splitting clears
-> every hard requirement; goccy/kyaml/text-slice were not needed.
+> Outcome: `gopkg.in/yaml.v3` node editing + per-document text splitting passes
+> the implemented hard requirements; goccy/kyaml/text-slice were not needed. One
+> drift limitation is recorded (yaml.v3 normalizes flush-left sequence
+> indentation in the *edited* document), and the larger vision items
+> (Helm/Kustomize detection, GVK→GVR mapping, watched-GVR filtering, placement
+> policy) are explicitly left to writer integration, not this parser POC.
 > Related: [manifest-inventory-file-agnostic-placement.md](manifest-inventory-file-agnostic-placement.md)
 
 ## Goal
