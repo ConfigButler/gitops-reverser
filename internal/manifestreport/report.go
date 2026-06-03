@@ -101,6 +101,13 @@ func BuildReport(
 
 		loc, ok := inv.Location(id)
 		if !ok {
+			// Git may still hold this identity as a non-editable document (encrypted,
+			// disallowed construct, …). That is a skip — surfaced exactly once by
+			// gitOnlyEntries below — not a create. Only a truly absent resource is a
+			// create, so don't double-classify it here.
+			if inventoryHasNonEditable(inv, id) {
+				continue
+			}
 			entries = append(entries, Entry{
 				Identity: id,
 				Action:   ActionCreate,
@@ -178,6 +185,18 @@ func actionFromDecision(a manifestedit.DecisionAction) Action {
 	default:
 		return ActionSkip
 	}
+}
+
+// inventoryHasNonEditable reports whether Git holds a non-editable document for
+// the identity. The desired side uses this to defer to the skip gitOnlyEntries
+// emits, instead of reporting a contradictory create for the same identity.
+func inventoryHasNonEditable(inv manifestedit.Inventory, id manifestedit.Identity) bool {
+	for _, rec := range inv.Records {
+		if rec.Identity == id && !rec.Editable {
+			return true
+		}
+	}
+	return false
 }
 
 // nonEditableReason returns the recorded reason for a non-editable record, or a

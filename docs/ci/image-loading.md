@@ -19,11 +19,11 @@
 
 | Context | Command |
 |---|---|
-| Local full e2e | `task test-e2e-full` |
-| Local install smoke (helm) | `task test-e2e-quickstart-helm` |
-| Local install smoke (manifest) | `task test-e2e-quickstart-manifest` |
-| CI e2e | `PROJECT_IMAGE=<prebuilt> task test-e2e-full` |
-| CI smoke | `PROJECT_IMAGE=<prebuilt> task test-e2e-quickstart-helm` |
+| Local full e2e | `task test-e2e` |
+| Local Helm install validation | `task test-e2e-quickstart-helm` |
+| Local manifest install validation | `task test-e2e-quickstart-manifest` |
+| CI e2e | `PROJECT_IMAGE=<prebuilt> task test-e2e` |
+| CI quickstart install validation | `PROJECT_IMAGE=<prebuilt> task test-e2e-quickstart-helm` |
 | IDE direct | `go test ./test/e2e/...` (BeforeSuite handles prep) |
 
 ## IDE fallback

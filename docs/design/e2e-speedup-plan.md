@@ -169,8 +169,8 @@ Recorded so revisiting is cheap.
 ```bash
 task prepare-e2e
 mkdir -p /tmp/e2e-baseline
-go test -timeout 15m ./test/e2e/ \
-  -ginkgo.v -ginkgo.label-filter=smoke \
-  -ginkgo.json-report=/tmp/e2e-baseline/smoke.json
-go run ./test/e2e/tools/spec-timings /tmp/e2e-baseline/smoke.json
+go test -timeout 30m ./test/e2e/ \
+  -ginkgo.v \
+  -ginkgo.json-report=/tmp/e2e-baseline/full.json
+go run ./test/e2e/tools/spec-timings /tmp/e2e-baseline/full.json
 ```

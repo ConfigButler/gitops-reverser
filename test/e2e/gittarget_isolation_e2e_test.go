@@ -35,9 +35,9 @@ import (
 // every target into rule-change snapshot mode.
 //
 // It is deliberately NOT Serial — the whole point is that isolation must hold
-// under parallel execution. It is Label("smoke") so it runs in the same suite
-// where the flake originally appeared.
-var _ = Describe("Manager GitTarget Isolation", Label("manager"), Label("smoke"), Ordered, func() {
+// under parallel execution. It runs as part of the single e2e suite, the same
+// suite where the flake originally appeared.
+var _ = Describe("Manager GitTarget Isolation", Label("manager"), Ordered, func() {
 	const (
 		providerName = "gitprovider-iso"
 		targetA      = "iso-target-a"
@@ -102,7 +102,7 @@ var _ = Describe("Manager GitTarget Isolation", Label("manager"), Label("smoke")
 	SetDefaultEventuallyTimeout(30 * time.Second)
 	SetDefaultEventuallyPollingInterval(time.Second)
 
-	It("keeps target A's commits as events while target B's rules churn", Label("smoke"), func() {
+	It("keeps target A's commits as events while target B's rules churn", func() {
 		// Let any in-flight reconciles from setup drain before we begin, so the
 		// baseline snapshot commits are settled and only our event commits land
 		// next on target A's path.

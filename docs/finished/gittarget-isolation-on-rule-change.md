@@ -358,7 +358,7 @@ regression:
 - assert target A still receives the expected event commit, not a snapshot commit
 
 This should be smaller and more intentional than relying on incidental
-cross-spec timing in the full smoke suite.
+cross-spec timing in the full e2e suite.
 
 ## Non-Goals
 

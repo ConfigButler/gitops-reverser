@@ -45,7 +45,7 @@ import (
 // assertion reads the author scoped to its own unique file path, so concurrent
 // audit traffic from other specs lands in separate commits and cannot change
 // the author of this spec's commit.
-var _ = Describe("Commit Author Attribution", Label("manager", "smoke"), Ordered, func() {
+var _ = Describe("Commit Author Attribution", Label("manager"), Ordered, func() {
 	var (
 		testNs        string
 		repo          *RepoArtifacts

@@ -41,6 +41,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/yaml"
 
+	"github.com/ConfigButler/gitops-reverser/internal/git/manifestedit"
 	"github.com/ConfigButler/gitops-reverser/internal/manifestreport"
 	"github.com/ConfigButler/gitops-reverser/internal/sanitize"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
@@ -567,69 +568,164 @@ func setHead(r *git.Repository, branchName string) error {
 	return r.Storer.SetReference(newHeadRef)
 }
 
+// manifestTarget is where an event's resource lives in the worktree: the file
+// path (relative to the worktree root) and the document index within that file.
+type manifestTarget struct {
+	filePath      string
+	documentIndex int
+}
+
+// manifestLocator resolves where each event's resource lives in the worktree. It
+// caches the inventory per GitTarget base path for the lifetime of one write batch
+// (the checked-out commit), so the tree is scanned once per path, not once per
+// event. This is decision 1 of the new-file placement spike: scanning per write
+// is O(events × tree) and, for a snapshot of many large manifests (e.g. a
+// cluster-wide CRD watch), slow enough to miss commit deadlines.
+type manifestLocator struct {
+	worktree *git.Worktree
+	byBase   map[string]manifestedit.Inventory
+}
+
+func newManifestLocator(worktree *git.Worktree) *manifestLocator {
+	return &manifestLocator{worktree: worktree, byBase: make(map[string]manifestedit.Inventory)}
+}
+
+// inventoryFor returns the inventory for a base path, scanning the tree once and
+// caching the result for the rest of the batch.
+func (l *manifestLocator) inventoryFor(base string) manifestedit.Inventory {
+	if inv, ok := l.byBase[base]; ok {
+		return inv
+	}
+	inv, _ := manifestedit.IndexDir(filepath.Join(l.worktree.Filesystem.Root(), base))
+	l.byBase[base] = inv
+	return inv
+}
+
+// locate finds where the event's resource already lives under the GitTarget path
+// (match-first) and, only when it is genuinely new, falls back to the deterministic
+// identity path as a fresh single-document file.
+//
+// This is the "match-first" invariant from the new-file placement spike: location
+// is data the inventory owns, not a pure function of identity recomputed on every
+// write. We edit or delete the resource where it actually is — even if a user
+// moved it to apps/foo.yaml — instead of writing a second copy at the canonical
+// path. Identity is read from the event's object, so a delete event that carries
+// only the API identifier (no object) cannot be content-matched and keeps the
+// deterministic path.
+func (l *manifestLocator) locate(writer eventContentWriter, event Event) manifestTarget {
+	base := sanitizePath(event.Path)
+	fallback := manifestTarget{filePath: path.Join(base, writer.filePathForIdentifier(event.Identifier))}
+
+	id, ok := manifestIdentity(event.Object)
+	if !ok {
+		return fallback
+	}
+
+	// Fast path: the operator writes each resource to its canonical path, so if a
+	// file already exists there, the resource lives there and no inventory scan is
+	// needed. The scan exists only to relocate an edit/delete onto a manifest a user
+	// moved off the canonical path — which is precisely when canonical is absent. In
+	// steady state every resource is at its canonical path, so this avoids scanning
+	// (and re-parsing) a large tree on every reconcile.
+	if _, err := os.Stat(filepath.Join(l.worktree.Filesystem.Root(), fallback.filePath)); err == nil {
+		return fallback
+	}
+
+	loc, found := l.inventoryFor(base).Location(id)
+	if !found {
+		return fallback
+	}
+	return manifestTarget{filePath: path.Join(base, loc.Path), documentIndex: loc.DocumentIndex}
+}
+
 // applyEventToWorktree applies an event to the worktree, returning true if changes were made.
 func applyEventToWorktree(
 	ctx context.Context,
 	writer eventContentWriter,
-	worktree *git.Worktree,
 	event Event,
+	locator *manifestLocator,
 ) (bool, error) {
 	logger := log.FromContext(ctx)
 
-	filePath := writer.filePathForIdentifier(event.Identifier)
-	if event.Path != "" {
-		if bf := sanitizePath(event.Path); bf != "" {
-			filePath = path.Join(bf, filePath)
-		}
-	}
-
-	fullPath := filepath.Join(worktree.Filesystem.Root(), filePath)
+	target := locator.locate(writer, event)
+	fullPath := filepath.Join(locator.worktree.Filesystem.Root(), target.filePath)
 
 	if event.Operation == "DELETE" {
-		return handleDeleteOperation(logger, filePath, fullPath, worktree)
+		return handleDeleteOperation(logger, target, fullPath, locator.worktree)
 	}
 
-	return handleCreateOrUpdateOperation(
-		ctx,
-		writer,
-		event,
-		filePath,
-		fullPath,
-		worktree,
-	)
+	return handleCreateOrUpdateOperation(ctx, writer, event, target, fullPath, locator.worktree)
 }
 
-// handleDeleteOperation removes a file from the repository.
-// Returns true if the file was deleted, false if it didn't exist.
+// manifestIdentity reads the content identity (GVK + namespace + name) from a live
+// object, matching how manifestedit derives identity from YAML. ok is false when
+// there is no object or it lacks the fields needed to identify it.
+func manifestIdentity(obj *unstructured.Unstructured) (manifestedit.Identity, bool) {
+	if obj == nil {
+		return manifestedit.Identity{}, false
+	}
+	id := manifestedit.Identity{
+		APIVersion: obj.GetAPIVersion(),
+		Kind:       obj.GetKind(),
+		Namespace:  obj.GetNamespace(),
+		Name:       obj.GetName(),
+	}
+	if id.APIVersion == "" || id.Kind == "" || id.Name == "" {
+		return manifestedit.Identity{}, false
+	}
+	return id, true
+}
+
+// handleDeleteOperation removes the resource's document from its file. When that
+// was the only document the whole file is removed; otherwise the surviving
+// documents are written back byte-for-byte. Returns true if anything changed,
+// false if the file was already absent.
 func handleDeleteOperation(
+	logger logr.Logger,
+	target manifestTarget,
+	fullPath string,
+	worktree *git.Worktree,
+) (bool, error) {
+	content, err := os.ReadFile(fullPath)
+	if os.IsNotExist(err) {
+		// Already deleted or never committed.
+		logger.Info("File does not exist, skipping deletion", "file", target.filePath)
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("failed to read file %s: %w", target.filePath, err)
+	}
+
+	result, _ := manifestedit.DeleteDocument(content, target.documentIndex)
+	if result.FileEmpty {
+		return removeFileFromWorktree(logger, target.filePath, fullPath, worktree)
+	}
+
+	// The file holds other documents; keep them and drop just this one.
+	if err := os.WriteFile(fullPath, result.Content, 0600); err != nil {
+		return false, fmt.Errorf("failed to write file %s: %w", target.filePath, err)
+	}
+	if _, err := worktree.Add(target.filePath); err != nil {
+		return false, fmt.Errorf("failed to add file %s to git: %w", target.filePath, err)
+	}
+	logger.Info("Removed document from file", "file", target.filePath, "documentIndex", target.documentIndex)
+	return true, nil
+}
+
+// removeFileFromWorktree deletes a file from disk and stages the removal in git.
+func removeFileFromWorktree(
 	logger logr.Logger,
 	filePath, fullPath string,
 	worktree *git.Worktree,
 ) (bool, error) {
-	// Check if file exists before attempting deletion
-	_, statErr := os.Stat(fullPath)
-	if statErr == nil {
-		// Remove file from filesystem
-		if err := os.Remove(fullPath); err != nil {
-			return false, fmt.Errorf("failed to delete file %s: %w", filePath, err)
-		}
-
-		// Stage deletion in git
-		if _, err := worktree.Remove(filePath); err != nil {
-			return false, fmt.Errorf("failed to remove file %s from git: %w", filePath, err)
-		}
-
-		logger.Info("Deleted file from repository", "file", filePath)
-		return true, nil
+	if err := os.Remove(fullPath); err != nil {
+		return false, fmt.Errorf("failed to delete file %s: %w", filePath, err)
 	}
-
-	if os.IsNotExist(statErr) {
-		// File doesn't exist, log and skip (already deleted or never committed)
-		logger.Info("File does not exist, skipping deletion", "file", filePath)
-		return false, nil
+	if _, err := worktree.Remove(filePath); err != nil {
+		return false, fmt.Errorf("failed to remove file %s from git: %w", filePath, err)
 	}
-
-	return false, fmt.Errorf("failed to check file status %s: %w", filePath, statErr)
+	logger.Info("Deleted file from repository", "file", filePath)
+	return true, nil
 }
 
 // handleCreateOrUpdateOperation writes and stages a file in the repository.
@@ -638,9 +734,11 @@ func handleCreateOrUpdateOperation(
 	ctx context.Context,
 	writer eventContentWriter,
 	event Event,
-	filePath, fullPath string,
+	target manifestTarget,
+	fullPath string,
 	worktree *git.Worktree,
 ) (bool, error) {
+	filePath := target.filePath
 	content, err := writer.buildContentForWrite(ctx, event)
 	if err != nil {
 		if writer.isSensitiveIdentifier(event.Identifier) {
@@ -654,20 +752,23 @@ func handleCreateOrUpdateOperation(
 		return false, err
 	}
 
-	// Check if file already exists with same content
 	if existingContent, err := os.ReadFile(fullPath); err == nil {
-		if bytes.Equal(existingContent, content) {
-			// File already has the desired content, no changes needed
+		// Already the desired content, or a semantic no-op we deliberately leave
+		// alone (e.g. only comments differ) — nothing to write.
+		if bytes.Equal(existingContent, content) || manifestsAreSemanticallyEqual(existingContent, content) {
 			return false, nil
 		}
-		if manifestsAreSemanticallyEqual(existingContent, content) {
-			return false, nil
-		}
-		// The file exists and genuinely differs. If it carries hand-authored
-		// formatting (comments, custom layout) that the operator did not produce,
-		// edit the document in place so that formatting survives, instead of
-		// overwriting it wholesale.
+		// The file genuinely differs. If it carries hand-authored formatting
+		// (comments, custom layout) the operator did not produce, edit the document
+		// in place so that formatting survives instead of overwriting it wholesale.
 		if preserved, ok := preserveExistingFormatting(writer, event, filePath, existingContent); ok {
+			// The in-place edit can resolve to a no-op for the targeted document
+			// (e.g. a multi-document file whose other documents shifted the
+			// whole-file comparison above). Staging identical bytes would drive an
+			// empty commit, so treat it as no change.
+			if bytes.Equal(existingContent, preserved) {
+				return false, nil
+			}
 			content = preserved
 		}
 	}

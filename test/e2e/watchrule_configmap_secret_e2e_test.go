@@ -78,7 +78,7 @@ var _ = Describe("Manager WatchRule ConfigMap and Secret", Label("manager"), Ord
 	SetDefaultEventuallyTimeout(30 * time.Second)
 	SetDefaultEventuallyPollingInterval(time.Second)
 
-	It("should handle a normal and healthy GitProvider", Label("smoke"), func() {
+	It("should handle a normal and healthy GitProvider", func() {
 		// gitprovider-normal is created and verified in BeforeAll; this spec
 		// re-asserts it stays Ready without re-creating it.
 		verifyResourceStatus(
@@ -115,7 +115,7 @@ var _ = Describe("Manager WatchRule ConfigMap and Secret", Label("manager"), Ord
 		cleanupGitTarget(destName, testNs)
 	})
 
-	It("should expand wildcard resources across core and custom namespaced APIs", Label("smoke"), func() {
+	It("should expand wildcard resources across core and custom namespaced APIs", func() {
 		gitProviderName := "gitprovider-normal"
 		watchRuleName := "watchrule-wildcard-expansion-test"
 		destName := watchRuleName + "-dest"
@@ -213,7 +213,7 @@ spec:
 		cleanupGitTarget(destName, testNs)
 	})
 
-	It("should commit encrypted Secret manifests when WatchRule includes secrets", Label("smoke"), func() {
+	It("should commit encrypted Secret manifests when WatchRule includes secrets", func() {
 		gitProviderName := "gitprovider-normal"
 		watchRuleName := "watchrule-secret-encryption-test"
 		secretName := "test-secret-encryption"
@@ -457,7 +457,7 @@ spec:
 		cleanupGitTarget(destName, testNs)
 	})
 
-	It("should create Git commit when ConfigMap is added via WatchRule", Label("smoke"), func() {
+	It("should create Git commit when ConfigMap is added via WatchRule", func() {
 		gitProviderName := "gitprovider-normal"
 		watchRuleName := "watchrule-configmap-test"
 		configMapName := "test-configmap"
@@ -616,7 +616,7 @@ spec:
 	// observable in at the user-visible layer so a future revamp of the
 	// snapshot trigger logic can't silently regress it.
 	//
-	It("should backfill pre-existing ConfigMap when WatchRule is added afterwards", Label("smoke"), func() {
+	It("should backfill pre-existing ConfigMap when WatchRule is added afterwards", func() {
 		gitProviderName := "gitprovider-normal"
 		watchRuleName := "watchrule-backfill-test"
 		configMapName := "preexisting-configmap"
@@ -694,7 +694,7 @@ spec:
 			configMapName, uniqueRepoName)
 	})
 
-	It("should delete Git file when ConfigMap is deleted via WatchRule", Label("smoke"), func() {
+	It("should delete Git file when ConfigMap is deleted via WatchRule", func() {
 		gitProviderName := "gitprovider-normal"
 		watchRuleName := "watchrule-delete-test"
 		configMapName := "test-configmap-to-delete"

@@ -178,29 +178,16 @@ tasks:
       - _install-config-dir
 
   test-e2e:
-    desc: Run the smoke e2e suite
+    desc: Run the full e2e suite (every spec — there is no smoke/full split)
+    vars:
+      # The whole suite at ~22s avg + ~6m cold prepare ≈ 25m, so it gets a 30m
+      # timeout by default; a shorter budget times out mid-run and gives a
+      # goroutine dump instead of a useful report.
+      E2E_FULL_TIMEOUT: '{{.E2E_FULL_TIMEOUT | default "30m"}}'
     # Ginkgo parallelism (--procs) is orchestrated by the ginkgo CLI, not by
     # `go test`. Run it via `go run` so the CLI version matches the pinned
     # github.com/onsi/ginkgo/v2 module (a globally-installed ginkgo can differ
     # and refuse to run on a version mismatch).
-    cmds:
-      - |
-        export CTX="{{.CTX}}"
-        export INSTALL_MODE="{{.INSTALL_MODE}}"
-        export NAMESPACE="{{.NAMESPACE}}"
-        export E2E_AGE_KEY_FILE="{{.CS}}/age-key.txt"
-        go run github.com/onsi/ginkgo/v2/ginkgo \
-          --procs={{.E2E_GINKGO_PROCS}} --timeout="{{.E2E_GO_TEST_TIMEOUT}}" -v \
-          --label-filter=smoke \
-          --output-dir="{{.CS}}/{{.NAMESPACE}}" --json-report=ginkgo-report-smoke.json \
-          ./test/e2e/
-
-  test-e2e-full:
-    desc: Run the full e2e suite, including slow and specialized scenarios
-    vars:
-      # 46 specs at ~22s avg + ~6m cold prepare ≈ 25m; the smoke-tuned 15m default
-      # times out mid-run and gives a goroutine dump instead of a useful report.
-      E2E_FULL_TIMEOUT: '{{.E2E_FULL_TIMEOUT | default "30m"}}'
     cmds:
       - |
         export CTX="{{.CTX}}"
@@ -326,7 +313,7 @@ tasks:
           -ginkgo.json-report="{{.CS}}/{{.NAMESPACE}}/ginkgo-report-image-refresh.json"
 
   test-e2e-quickstart-helm:
-    desc: Run quickstart smoke test with Helm install
+    desc: Run quickstart install validation with Helm install
     cmds:
       - |
         export CTX="{{.CTX}}"
@@ -339,7 +326,7 @@ tasks:
           -ginkgo.json-report="{{.CS}}/{{.NAMESPACE}}/ginkgo-report-quickstart-helm.json"
 
   test-e2e-quickstart-manifest:
-    desc: Run quickstart smoke test with manifest install
+    desc: Run quickstart install validation with manifest install
     cmds:
       - |
         export CTX="{{.CTX}}"

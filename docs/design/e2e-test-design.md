@@ -57,7 +57,7 @@ In practice, that means:
 
 - IDE discoverability matters as much as CLI convenience; the suite layout should stay compatible with standard Go and Ginkgo test discovery instead of hiding scenarios behind shell-only wrappers
 - shared setup from `BeforeSuite` may stay, but mutable test state must be isolated so one `Describe` does not depend on another `Describe` having run first
-- the default smoke path and focused Task targets should optimize for the "relevant subset under 10 minutes" goal, while full confidence runs can remain broader and slower
+- the default `task test-e2e` path and focused Task targets should optimize for useful local feedback, while install-matrix confidence comes from dedicated quickstart tasks
 - direct `go test` runs should continue to delegate environment preparation to Task targets instead of duplicating cluster bootstrap logic in Go
 
 ## Harness Direction
@@ -104,8 +104,7 @@ These are the canonical Task entry points on the current worktree:
 
 | Command | Purpose |
 |---|---|
-| `task test-e2e` | Smoke suite only (`-ginkgo.label-filter=smoke`) |
-| `task test-e2e-full` | Entire e2e package |
+| `task test-e2e` | Entire e2e package (no smoke/full split) |
 | `task test-e2e-manager` | Manager-focused scenarios |
 | `task test-e2e-signing` | Commit-signing scenarios |
 | `task test-image-refresh` | Image rebuild / reload invalidation chain |
@@ -122,7 +121,7 @@ The intended interpretation of these entry points is:
 - `task test-e2e`, `task test-e2e-manager`, `task test-e2e-signing` and `task test-image-refresh` are standard controller behavior checks and should normally run on the default `config-dir` install
 - `task test-e2e-quickstart-helm` is the important validation for the Helm install path
 - `task test-e2e-quickstart-manifest` is the important validation for the single-file manifest install path
-- `task test-e2e-full` is a full spec run that includes the bi-directional scenario, but it is still not the primary way to validate all install modes
+- `task test-e2e` is a full spec run that includes the bi-directional scenario, but it is not the primary way to validate every install mode
 
 ## Lifecycle Layers
 
@@ -291,9 +290,9 @@ Current CI e2e matrix in [.github/workflows/ci.yml](/workspaces/gitops-reverser/
 
 The `full` job currently runs:
 
-- `task test-e2e-full`
+- `task test-e2e`
 
-On this worktree, `task test-e2e` is now smoke-only. Before that, it was broader.
+`task test-e2e` runs the entire e2e package (there is no longer a smoke-only subset).
 
 So "CI ran before" does not prove the fixture boundaries were healthy. It only proves the exercised combination of:
 
@@ -365,35 +364,21 @@ The e2e package currently contains:
 | `signing_e2e_test.go` | `signing` | Commit signing behavior |
 | `commit_window_batching_e2e_test.go` | `audit-consumer` | Commit-window batching through the audit pipeline |
 | `commit_request_e2e_test.go` | `audit-consumer` | CommitRequest finalization through the audit pipeline |
-| `commit_author_attribution_e2e_test.go` | `manager`, `smoke` | OIDC claim to Git author attribution |
+| `commit_author_attribution_e2e_test.go` | `manager` | OIDC claim to Git author attribution |
 | `image_refresh_test.go` | `image-refresh` | Build/load/restart invalidation chain |
 | `quickstart_framework_e2e_test.go` | `quickstart-framework` | Installer-level quickstart flow |
 | `bi_directional_e2e_test.go` | `bi-directional` | Flux plus gitops-reverser shared ownership |
 | `demo_e2e_test.go` | `demo` | Demo repo preparation, intentionally leaves resources |
 
-## Smoke Suite Definition
+## Suite Definition
 
-`task test-e2e` now runs only `Label("smoke")`.
+`task test-e2e` runs the entire e2e package — there is no smoke-only subset and no
+`Label("smoke")`. The `smoke` label was removed from every spec, and `task test-e2e`
+executes all specs on a single run.
 
-The smoke set is intended to answer one question:
-
-> Does the system work end to end at a high level?
-
-Currently that includes:
-
-- core controller health and metrics
-- audit webhook receipt
-- real GitProvider validation
-- secret encryption path
-- ConfigMap create/delete Git commits
-- cluster-scoped CRD install Git commit
-- audit pipeline batching, commit-request, and author-attribution paths
-- one signing verification path
-
-That keeps the default run closer to a product smoke test than to a full infra regression sweep.
-
-It should also stay anchored to the standard `config-dir` install. The smoke suite is not meant to prove all install
-methods on every run.
+It stays anchored to the standard `config-dir` install. The default run is not meant to
+prove all install methods on every invocation; the dedicated `quickstart-*` tasks cover
+the Helm and single-file manifest install paths.
 
 ## Recommended Way To Run E2E
 
@@ -420,7 +405,6 @@ Use:
 task test-e2e-manager
 task test-e2e-signing
 task test-image-refresh
-task test-e2e-full
 ```
 
 ### Install-path validation
@@ -445,13 +429,15 @@ In other words:
 Use:
 
 ```bash
-task test-e2e-full
+task test-e2e
+task test-e2e-quickstart-helm
+task test-e2e-quickstart-manifest
 ```
 
 This is better suited for:
 
 - larger refactors
-- CI jobs intended to catch slow-path regressions
+- CI jobs intended to catch slow-path regressions and install-mode drift
 - release validation
 
 ## Notes About Commit Signing Validation

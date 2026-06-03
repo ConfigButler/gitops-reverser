@@ -32,17 +32,18 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
-// configMapEvent builds an UPDATE event for a ConfigMap with one data key.
-func inplaceCMEvent(name, namespace, color string) Event {
+// inplaceCMEvent builds an UPDATE event for the default/app ConfigMap with its
+// single data key set to color.
+func inplaceCMEvent(color string) Event {
 	return Event{
 		Object: &unstructured.Unstructured{Object: map[string]interface{}{
 			"apiVersion": "v1",
 			"kind":       "ConfigMap",
-			"metadata":   map[string]interface{}{"name": name, "namespace": namespace},
+			"metadata":   map[string]interface{}{"name": "app", "namespace": "default"},
 			"data":       map[string]interface{}{"color": color},
 		}},
 		Identifier: types.ResourceIdentifier{
-			Group: "", Version: "v1", Resource: "configmaps", Namespace: namespace, Name: name,
+			Group: "", Version: "v1", Resource: "configmaps", Namespace: "default", Name: "app",
 		},
 		Operation: "UPDATE",
 	}
@@ -66,7 +67,7 @@ func TestHandleCreateOrUpdate_PreservesHandAuthoredFormatting(t *testing.T) {
 	worktree := newWorktreeForTest(t)
 	root := worktree.Filesystem.Root()
 
-	event := inplaceCMEvent("app", "default", "green")
+	event := inplaceCMEvent("green")
 	relPath := writer.filePathForIdentifier(event.Identifier)
 	full := filepath.Join(root, relPath)
 
@@ -77,7 +78,8 @@ func TestHandleCreateOrUpdate_PreservesHandAuthoredFormatting(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o750))
 	require.NoError(t, os.WriteFile(full, []byte(seeded), 0o600))
 
-	changed, err := handleCreateOrUpdateOperation(context.Background(), writer, event, relPath, full, worktree)
+	changed, err := handleCreateOrUpdateOperation(
+		context.Background(), writer, event, manifestTarget{filePath: relPath}, full, worktree)
 	require.NoError(t, err)
 	require.True(t, changed, "a real value change must be written")
 
@@ -97,18 +99,19 @@ func TestHandleCreateOrUpdate_CanonicalFileStaysWholesale(t *testing.T) {
 	worktree := newWorktreeForTest(t)
 	root := worktree.Filesystem.Root()
 
-	event := inplaceCMEvent("app", "default", "green")
+	event := inplaceCMEvent("green")
 	relPath := writer.filePathForIdentifier(event.Identifier)
 	full := filepath.Join(root, relPath)
 
 	// Seed with the canonical rendering of a *different* value, so the update is a
 	// real change against an operator-canonical file.
-	seedCanonical, err := writer.buildContentForWrite(context.Background(), inplaceCMEvent("app", "default", "blue"))
+	seedCanonical, err := writer.buildContentForWrite(context.Background(), inplaceCMEvent("blue"))
 	require.NoError(t, err)
 	require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o750))
 	require.NoError(t, os.WriteFile(full, seedCanonical, 0o600))
 
-	changed, err := handleCreateOrUpdateOperation(context.Background(), writer, event, relPath, full, worktree)
+	changed, err := handleCreateOrUpdateOperation(
+		context.Background(), writer, event, manifestTarget{filePath: relPath}, full, worktree)
 	require.NoError(t, err)
 	require.True(t, changed)
 

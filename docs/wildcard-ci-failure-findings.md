@@ -46,7 +46,7 @@ target B's rules changed.
 
 ### Reproduced locally
 
-`task test-e2e-full` on a fresh local k3d cluster — same single failure as CI:
+`task test-e2e` on a fresh local k3d cluster — same single failure as CI:
 
 ```
 45 Passed | 1 Failed | 0 Pending | 2 Skipped   (46 of 48 specs, 14m21s)
@@ -231,7 +231,7 @@ docker image prune -f       # dangling images
 ```
 
 Disk dropped 94% → 82% → 33% free, the `disk-pressure` taints cleared on their
-own, the cluster recovered, and `task test-e2e-full` then ran to completion
+own, the cluster recovered, and `task test-e2e` then ran to completion
 (surfacing Failure A). A leftover second cluster (`audit-pass-through-e2e`) was
 also consuming disk and was a contributing factor.
 

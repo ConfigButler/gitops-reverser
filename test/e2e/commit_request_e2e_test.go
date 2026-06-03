@@ -42,7 +42,7 @@ import (
 // namespace. The HEAD/SHA assertions below therefore read back only this spec's
 // own commit; concurrent audit traffic for other GitTargets lands in other
 // repos and cannot move this repo's HEAD. See docs/design/e2e-serial-registry.md.
-var _ = Describe("Commit Request", Label("commit-request", "audit-consumer", "smoke"), Ordered, func() {
+var _ = Describe("Commit Request", Label("commit-request", "audit-consumer"), Ordered, func() {
 	var (
 		testNs        string
 		repo          *RepoArtifacts

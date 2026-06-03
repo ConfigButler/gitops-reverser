@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This note captures an investigation into an intermittent `task test-e2e-full` failure that appeared
+This note captures an investigation into an intermittent `task test-e2e` failure that appeared
 after commit `9c7e0bc3c455f99242480e0577ab2776fae16d60` and was observed concretely in CI for image
 `ghcr.io/configbutler/gitops-reverser:ci-621200eefaf185dfe1000526b1e0f53dc3a8d93f`.
 
@@ -17,7 +17,7 @@ investigation much faster if the instability returns.
 Current status:
 
 - the CI is green again
-- the failure was observed during `task test-e2e-full`
+- the failure was observed during `task test-e2e`
 - targeted local runs of `test-e2e-manager` and `test-e2e-audit-redis` were green when run in isolation
 - the strongest remaining explanation is a full-suite shared-state interaction, not a simple single-test regression
 - a later repro on then-current `main` showed the same class of failure with a narrower stale path:
@@ -30,7 +30,7 @@ Current status:
 - a mitigation was then tried locally:
   - the manager secret specs were changed to use a secret-only WatchRule template instead of the broader
     `watchrule.tmpl`
-  - after that change, `task test-e2e` passed locally, including the manager smoke spec
+  - after that change, `task test-e2e` passed locally, including the manager spec
     `should create Git commit when ConfigMap is added via WatchRule`
 - this is encouraging, but it is still not proof that the broader full-suite instability is permanently fixed
 
@@ -327,7 +327,7 @@ Observed result of the mitigation:
   - `task lint`
   - `task test`
   - `task test-e2e`
-- the manager smoke spec
+- the manager spec
   `should create Git commit when ConfigMap is added via WatchRule`
   passed after the change
 
@@ -336,7 +336,7 @@ Current interpretation:
 - this mitigation is a strong fit for the newer `secret-autogen-test` variant
 - it reduces one clear source of cross-spec overlap in the manager suite
 - it should be treated as a tested mitigation, not yet a fully proven final root-cause closure for every
-  possible `task test-e2e-full` flake
+  possible `task test-e2e` flake
 
 ## Files Most Worth Re-Inspecting If It Returns
 

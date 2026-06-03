@@ -44,7 +44,7 @@ import (
 // routed to other GitTargets cannot land in this spec's grouped commit. See
 // docs/design/e2e-serial-registry.md.
 var _ = Describe("Commit Window Batching",
-	Label("commit-window-batching", "audit-consumer", "smoke"), Ordered, func() {
+	Label("commit-window-batching", "audit-consumer"), Ordered, func() {
 		var (
 			testNs        string
 			repo          *RepoArtifacts

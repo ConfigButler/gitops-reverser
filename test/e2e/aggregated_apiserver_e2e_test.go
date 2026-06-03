@@ -108,7 +108,7 @@ var _ = Describe("Aggregated API server", Label("aggregated-api"), Ordered, func
 	SetDefaultEventuallyTimeout(30 * time.Second)
 	SetDefaultEventuallyPollingInterval(time.Second)
 
-	It("should install and serve flunders through the aggregation layer", Label("smoke"), func() {
+	It("should install and serve flunders through the aggregation layer", func() {
 		By("waiting for the wardle APIService to report available")
 		Eventually(func(g Gomega) {
 			output, err := kubectlRun(

@@ -57,7 +57,7 @@ var _ = Describe("Manager GitProvider Validation", Label("manager"), Ordered, fu
 	SetDefaultEventuallyTimeout(30 * time.Second)
 	SetDefaultEventuallyPollingInterval(time.Second)
 
-	It("should validate GitProvider with real Gitea repository", Label("smoke"), func() {
+	It("should validate GitProvider with real Gitea repository", func() {
 		gitProviderName := "gitprovider-e2e-test"
 
 		By("showing initial controller logs")

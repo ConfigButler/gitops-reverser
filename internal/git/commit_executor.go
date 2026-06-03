@@ -162,13 +162,17 @@ func (w *BranchWorker) applyPendingWriteEvents(
 	worktree *gogit.Worktree,
 	events []Event,
 ) (bool, error) {
+	// One locator per batch: the inventory is the checked-out commit's state, so it
+	// is scanned once per base path and reused for every event (see manifestLocator).
+	locator := newManifestLocator(worktree)
+
 	anyChanges := false
 	for _, event := range events {
 		if err := ensureBootstrapTemplateInPath(repo, sanitizePath(event.Path), event.BootstrapOptions); err != nil {
 			return false, err
 		}
 
-		changesApplied, err := applyEventToWorktree(ctx, w.contentWriter, worktree, event)
+		changesApplied, err := applyEventToWorktree(ctx, w.contentWriter, event, locator)
 		if err != nil {
 			return false, err
 		}

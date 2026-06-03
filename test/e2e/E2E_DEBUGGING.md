@@ -130,12 +130,12 @@ Kind Cluster
 
 Every e2e target writes a Ginkgo JSON report to
 `.stamps/cluster/<ctx>/<namespace>/ginkgo-report-<suite>.json` (e.g.
-`ginkgo-report-smoke.json` for `task test-e2e`). Render the per-spec
+`ginkgo-report-full.json` for `task test-e2e`). Render the per-spec
 duration table from the latest run with:
 
 ```bash
 go run ./test/e2e/tools/spec-timings \
-  .stamps/cluster/k3d-gitops-reverser-test-e2e/gitops-reverser/ginkgo-report-smoke.json
+  .stamps/cluster/k3d-gitops-reverser-test-e2e/gitops-reverser/ginkgo-report-full.json
 ```
 
 The companion `test/e2e/tools/ts` reads stdin and prefixes each line with

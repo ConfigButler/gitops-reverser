@@ -85,7 +85,7 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 	// ── Test 1: generated signing key — local + Gitea verification ──────────
 
 	It("should produce per-event commits verifiable locally and by Gitea (generated key)",
-		Label("smoke"), func() {
+		func() {
 			gitea := giteaTestInstance()
 			providerName := "signing-per-event"
 			signingSecretName := "signing-key-per-event"

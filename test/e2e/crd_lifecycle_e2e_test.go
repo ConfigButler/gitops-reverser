@@ -94,7 +94,7 @@ var _ = Describe("Manager CRD Lifecycle", Label("manager"), Ordered, func() {
 	SetDefaultEventuallyTimeout(30 * time.Second)
 	SetDefaultEventuallyPollingInterval(time.Second)
 
-	It("should create Git commit when IceCreamOrder CRD is installed via ClusterWatchRule", Label("smoke"), func() {
+	It("should create Git commit when IceCreamOrder CRD is installed via ClusterWatchRule", func() {
 		gitProviderName := "gitprovider-normal"
 		clusterWatchRuleName := "clusterwatchrule-crd-install"
 		crdName := iceCreamCRDName(crdGroupCRDLifecycle)

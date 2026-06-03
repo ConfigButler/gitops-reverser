@@ -40,7 +40,7 @@ var _ = Describe("Manager Controller Basics", Label("manager"), Ordered, func() 
 	SetDefaultEventuallyTimeout(30 * time.Second)
 	SetDefaultEventuallyPollingInterval(time.Second)
 
-	It("should run successfully", Label("smoke"), func() {
+	It("should run successfully", func() {
 		By("validating that the gitops-reverser pods are running as expected")
 		verifyControllerUp := func(g Gomega) {
 			// Get the names of the gitops-reverser pods
@@ -78,7 +78,7 @@ var _ = Describe("Manager Controller Basics", Label("manager"), Ordered, func() 
 		Eventually(verifyControllerUp).Should(Succeed())
 	})
 
-	It("should expose the controller service", Label("smoke"), func() {
+	It("should expose the controller service", func() {
 		By("verifying controller service exists")
 		_, err := kubectlRunInNamespace(namespace, "get", "svc", controllerServiceName)
 		Expect(err).NotTo(HaveOccurred(), "Controller service should exist")
@@ -100,7 +100,7 @@ var _ = Describe("Manager Controller Basics", Label("manager"), Ordered, func() 
 		}, 30*time.Second).Should(Succeed())
 	})
 
-	It("should ensure the metrics endpoint is serving metrics", Label("smoke"), func() {
+	It("should ensure the metrics endpoint is serving metrics", func() {
 		By("validating that the controller service is available for metrics")
 		_, err := kubectlRunInNamespace(namespace, "get", "service", controllerServiceName)
 		Expect(err).NotTo(HaveOccurred(), "Controller service should exist")
@@ -148,7 +148,7 @@ var _ = Describe("Manager Controller Basics", Label("manager"), Ordered, func() 
 		fmt.Printf("📊 Inspect metrics: %s\n", getPrometheusURL())
 	})
 
-	It("should receive audit webhook events from kube-apiserver", Label("smoke"), func() {
+	It("should receive audit webhook events from kube-apiserver", func() {
 		By("recording baseline audit event count")
 		baselineAuditEvents, err := queryPrometheus("sum(gitopsreverser_audit_events_received_total) or vector(0)")
 		Expect(err).NotTo(HaveOccurred())

@@ -395,12 +395,9 @@ test/e2e/
 ## Test Scenarios
 
 All tests live under `Label("aggregated-api")` and are `Ordered`.
-
-Recommended label split:
-
-- `S2` should also carry `Label("smoke")`
-- the remaining scenarios stay `aggregated-api` only until we have runtime data showing the
-  always-on infrastructure cost is negligible
+There is no separate smoke label split; `task test-e2e` runs the whole package,
+and `task test-e2e-aggregated-api` remains the focused entry point for this
+category.
 
 ### Prerequisites (BeforeAll)
 
@@ -747,12 +744,7 @@ disallowedFlunders:
 
 ### Phase 4: CI integration
 
-1. Add `aggregated-api` to the full test suite (already included via `test-e2e-full` which runs
-   all labels)
-2. Add **exactly one** aggregated-api scenario to `smoke`:
-   - `S2 — Audit: CREATE a Flunder produces a git commit`
-3. Keep the remaining aggregated-api scenarios out of `smoke` initially
-   This gives us one representative end-to-end aggregated API signal in the fast suite without
-   forcing every edge-case scenario into the smoke path on day one.
-4. Re-evaluate later whether additional aggregated-api scenarios belong in `smoke`
-5. Document the new test category in `E2E_DEBUGGING.md`
+1. Keep `aggregated-api` included in `task test-e2e`, which runs all labels.
+2. Keep `task test-e2e-aggregated-api` as the focused entry point for aggregated
+   API work.
+3. Document the test category in `E2E_DEBUGGING.md`.

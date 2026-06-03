@@ -5,7 +5,7 @@
 > Implemented: 2026-05-21
 > Tests that anchor this work:
 > - [internal/watch/rule_change_snapshot_test.go](../../internal/watch/rule_change_snapshot_test.go) — four unit tests
-> - [test/e2e/e2e_test.go](../../test/e2e/e2e_test.go) — `It("should backfill pre-existing ConfigMap when WatchRule is added afterwards", Label("smoke"), ...)`
+> - [test/e2e/e2e_test.go](../../test/e2e/e2e_test.go) — `It("should backfill pre-existing ConfigMap when WatchRule is added afterwards", ...)`
 
 ## Implementation summary
 
@@ -32,7 +32,7 @@ Validation at implementation time:
 - `go test ./internal/watch -run 'TestReconcileForRuleChange' -count=1`
 - `task lint`
 - `task test`
-- `task test-e2e` with the new backfill spec included in the smoke set
+- `task test-e2e` with the new backfill spec included in the full e2e suite
 
 ## The problem in one sentence
 
@@ -206,7 +206,7 @@ go green:
 - `TestReconcileForRuleChange_RestartLikeBootstrap_NoSnapshotDrops`
 
 The e2e spec
-`It("should backfill pre-existing ConfigMap when WatchRule is added afterwards", Label("smoke"), ...)`
+`It("should backfill pre-existing ConfigMap when WatchRule is added afterwards", ...)`
 passes against a real k3d cluster.
 
 The `EventRouter.SnapshotDeliveryDrops()` counter stays at 0 in steady state under a representative load test (creating and editing rules, restarting the controller).
