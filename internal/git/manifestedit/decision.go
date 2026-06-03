@@ -40,6 +40,10 @@ import (
 // internally, so nothing one mutates can affect the other. This is what lets
 // Decide stay non-mutating.
 type Document struct {
+	// Path is the file location relative to the scan root, carried so Apply's
+	// diagnostics can name the file (e.g. "apps/deploy.yaml doc 0"), not just the
+	// document index. It is informational: it does not affect the edit.
+	Path string
 	// Content is the whole file, so Apply can splice the edited document back
 	// among its untouched siblings.
 	Content []byte
@@ -49,12 +53,18 @@ type Document struct {
 	Identity Identity
 }
 
-// NewDocument builds a Document for one target document, deriving its identity
-// from the content. ok is false when the index is out of range; the Document is
-// still returned (with a zero Identity) so callers can hand it to Decide, which
-// reports the out-of-range condition as a skip.
+// NewDocument builds a Document for one target document with no known file path.
+// See NewDocumentAt to carry the path for diagnostics.
 func NewDocument(content []byte, documentIndex int) (*Document, bool) {
-	doc := &Document{Content: content, DocumentIndex: documentIndex}
+	return NewDocumentAt("", content, documentIndex)
+}
+
+// NewDocumentAt builds a Document for one target document at a known path,
+// deriving its identity from the content. ok is false when the index is out of
+// range; the Document is still returned (with a zero Identity) so callers can
+// hand it to Decide, which reports the out-of-range condition as a skip.
+func NewDocumentAt(path string, content []byte, documentIndex int) (*Document, bool) {
+	doc := &Document{Path: path, Content: content, DocumentIndex: documentIndex}
 	docs := splitDocuments(string(content))
 	if documentIndex < 0 || documentIndex >= len(docs) {
 		return doc, false
@@ -89,8 +99,14 @@ type EditOptions struct {
 	Render func(*unstructured.Unstructured) ([]byte, error)
 	// ListMatch aligns sequences (default: by index).
 	ListMatch ListMatchStrategy
-	// Owns reports whether a field path is owned by the reverser (default: all).
-	// The field-ownership seam: an absent field is deleted only when owned.
+	// Owns is a DORMANT mechanism seam, not a product feature. It reports whether a
+	// field path is owned by the reverser; an absent field is deleted only when
+	// owned. The product decision is API-first, whole-object truth: production
+	// MUST leave this nil (own everything), so a field absent from the desired
+	// projection is deleted from Git. See
+	// docs/future/manifestedit-field-ownership-spike.md. Do not grow configuration
+	// on top of this; it exists only to keep the deletion decision explicit and to
+	// keep the merge testable.
 	Owns func(path FieldPath) bool
 }
 
@@ -231,7 +247,7 @@ func Apply(c Comparison, d Decision) (EditResult, []Diagnostic) {
 		return EditResult{Mode: EditSkipped}, []Diagnostic{{Level: d.level, Message: d.Reason}}
 	}
 	content := c.Git.Content
-	loc := Location{DocumentIndex: c.Git.DocumentIndex}
+	loc := Location{Path: c.Git.Path, DocumentIndex: c.Git.DocumentIndex}
 
 	if d.Action == ActionSkip {
 		level := d.level
@@ -249,14 +265,41 @@ func Apply(c Comparison, d Decision) (EditResult, []Diagnostic) {
 	}
 	target := docs[idx].body
 
-	// Snapshot validation: the target body must still be the shape Decide
-	// compared, or a concurrent change could land a stale edit on a new shape.
-	if d.Snapshot.BodyHash != "" && hashBody(target) != d.Snapshot.BodyHash {
-		return EditResult{Content: content, Mode: EditSkipped},
-			[]Diagnostic{diag(DiagWarning, loc, "document changed since decision, skipping")}
+	if drift := validateSnapshot(d.Snapshot, idx, target, loc); drift != nil {
+		return EditResult{Content: content, Mode: EditSkipped}, []Diagnostic{*drift}
 	}
 
 	return applyDecision(c, d, docs, idx, target, loc)
+}
+
+// validateSnapshot enforces the full Decide->Apply contract: the document Apply
+// is about to edit must be the same one Decide compared — same index, same
+// identity, same body. A mismatch returns a soft skip diagnostic so the next
+// reconcile can re-decide cleanly against the changed file, rather than landing a
+// stale edit on the wrong document. It returns nil when the snapshot still holds.
+//
+// The body hash is the strongest check (identical bytes imply identical identity),
+// but the index and identity checks make the contract explicit and give a precise
+// diagnostic when a Decision is carried and applied against a drifted file.
+func validateSnapshot(snap SnapshotRef, idx int, target string, loc Location) *Diagnostic {
+	if snap.DocumentIndex != idx {
+		d := diag(DiagWarning, loc, "decision was for document %d, applying to %d, skipping",
+			snap.DocumentIndex, idx)
+		return &d
+	}
+	if snap.BodyHash != "" && hashBody(target) != snap.BodyHash {
+		d := diag(DiagWarning, loc, "document changed since decision, skipping")
+		return &d
+	}
+	if snap.Identity != (Identity{}) {
+		if root, empty, err := decodeDoc(target); err == nil && !empty {
+			if id, ok := identityFromNode(root); ok && id != snap.Identity {
+				d := diag(DiagWarning, loc, "document identity changed since decision, skipping")
+				return &d
+			}
+		}
+	}
+	return nil
 }
 
 // applyDecision performs the edit named by the validated decision. Apply has
