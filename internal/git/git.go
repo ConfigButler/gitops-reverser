@@ -41,6 +41,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/yaml"
 
+	"github.com/ConfigButler/gitops-reverser/internal/manifestreport"
 	"github.com/ConfigButler/gitops-reverser/internal/sanitize"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
@@ -662,6 +663,13 @@ func handleCreateOrUpdateOperation(
 		if manifestsAreSemanticallyEqual(existingContent, content) {
 			return false, nil
 		}
+		// The file exists and genuinely differs. If it carries hand-authored
+		// formatting (comments, custom layout) that the operator did not produce,
+		// edit the document in place so that formatting survives, instead of
+		// overwriting it wholesale.
+		if preserved, ok := preserveExistingFormatting(writer, event, filePath, existingContent); ok {
+			content = preserved
+		}
 	}
 
 	// Ensure directory exists
@@ -669,9 +677,14 @@ func handleCreateOrUpdateOperation(
 		return false, fmt.Errorf("failed to create directory for %s: %w", filePath, err)
 	}
 
-	// Write file
-	if err := os.WriteFile(fullPath, content, 0600); err != nil {
-		return false, fmt.Errorf("failed to write file %s: %w", filePath, err)
+	// Write file. fullPath is an internally derived repo path: the GitTarget path
+	// segment is run through sanitizePath (rejects absolute paths and "..") and the
+	// rest comes from the resource's API identity, joined under the worktree root.
+	// The in-place edit now lets read-derived bytes flow back to the same path,
+	// which the gosec taint analyzer flags; the path itself is not external input.
+	writeErr := os.WriteFile(fullPath, content, 0600) //nolint:gosec // sanitizePath-guarded internal path
+	if writeErr != nil {
+		return false, fmt.Errorf("failed to write file %s: %w", filePath, writeErr)
 	}
 
 	// Add to git
@@ -680,6 +693,37 @@ func handleCreateOrUpdateOperation(
 	}
 
 	return true, nil
+}
+
+// preserveExistingFormatting edits the existing document in place to match the
+// event's object, preserving comments and layout, instead of rewriting the file
+// wholesale. It only diverts from the canonical wholesale write when both hold:
+//
+//   - the resource is not sensitive — encrypted (SOPS) documents are never edited
+//     in place, since an in-place merge would drop the sops metadata and leak the
+//     secret in cleartext; they keep the wholesale encrypt-and-write path;
+//   - the existing file is not already in the operator's canonical format — i.e.
+//     it carries hand-authored formatting worth preserving. A canonical file the
+//     operator itself wrote is left to the wholesale path, so operator-authored
+//     content stays byte-identical to before (no surprise reformatting).
+//
+// ok is false (and the caller writes canonical content) whenever in-place editing
+// does not apply or manifestedit cannot safely edit the document.
+func preserveExistingFormatting(
+	writer eventContentWriter,
+	event Event,
+	filePath string,
+	existingContent []byte,
+) ([]byte, bool) {
+	if writer.isSensitiveIdentifier(event.Identifier) {
+		return nil, false
+	}
+	canonical, err := canonicalizeManifestForComparison(existingContent)
+	if err != nil || bytes.Equal(existingContent, canonical) {
+		// Unparseable or already canonical: nothing hand-authored to preserve.
+		return nil, false
+	}
+	return manifestreport.EditInPlace(filePath, existingContent, event.Object)
 }
 
 func manifestsAreSemanticallyEqual(existingContent, desiredContent []byte) bool {

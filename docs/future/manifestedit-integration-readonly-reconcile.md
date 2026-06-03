@@ -101,9 +101,18 @@ Per the plan, step 6 does not yet take on:
   cluster reads/writes needs the RESTMapper-backed mapping tracked in
   `docs/TODO.md`. Read-only reporting against a caller-supplied desired set sides
   steps this until the comparison is trusted.
-- **Writer wiring.** No change to `commit_executor.go` / `branch_worker.go` yet.
-  When it comes, it consumes `manifestreport` + `manifestedit`; it does not change
-  them.
+- **Writer wiring (now landed, narrowly).** The live writer
+  ([git.go](../../internal/git/git.go) `handleCreateOrUpdateOperation`) now calls
+  `manifestreport.EditInPlace` through `preserveExistingFormatting`: when an
+  existing file genuinely differs and is **non-sensitive** and **not already in the
+  operator's canonical format** (i.e. it carries hand-authored comments/layout),
+  the resource update is applied as a minimal in-place edit instead of a wholesale
+  rewrite, so the formatting survives. A canonical, operator-authored file keeps
+  the wholesale path and stays byte-identical to before — existing behavior is
+  untouched. This consumes `manifestreport` + `manifestedit` unchanged. It is still
+  scoped to the **deterministic path**: matching a resource to an arbitrary
+  existing file location via the folder inventory (full file-agnostic placement)
+  is the remaining reach.
 
 ## Notes and non-goals
 

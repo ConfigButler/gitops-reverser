@@ -77,3 +77,40 @@ func identityOf(obj *unstructured.Unstructured) manifestedit.Identity {
 		Name:       obj.GetName(),
 	}
 }
+
+// EditInPlace produces a minimal, formatting-preserving edit of an existing
+// single-file manifest so its document for obj matches the desired projection,
+// instead of rewriting the file wholesale. It finds the document for obj's
+// identity, patches only what changed (preserving comments, key order, and block
+// scalars of everything else), and returns the full new file content.
+//
+// ok is false when there is no editable document for obj in the file — wrong
+// identity, an encrypted (SOPS) document, a disallowed construct, or snapshot
+// drift — so the caller must fall back to writing canonical content. The returned
+// content is never partial: when ok is true it is the whole file.
+//
+// This is the seam that brings the manifestedit comparison into the live writer:
+// the writer hands EditInPlace the bytes already on disk and the desired object,
+// and gets back a faithful in-place edit. It uses Apply (not just Decide), so it
+// is a real edit — but a read-only-safe one: it only transforms the bytes passed
+// in and never touches Git itself.
+func EditInPlace(path string, existing []byte, obj *unstructured.Unstructured) ([]byte, bool) {
+	inv, _ := manifestedit.IndexFile(path, existing)
+	loc, found := inv.Location(identityOf(obj))
+	if !found {
+		return nil, false
+	}
+
+	doc, _ := manifestedit.NewDocumentAt(path, existing, loc.DocumentIndex)
+	c := manifestedit.Comparison{Git: doc, Desired: Project(obj), Options: EditOptions()}
+	res, _ := manifestedit.Apply(c, manifestedit.Decide(c))
+
+	switch res.Mode {
+	case manifestedit.EditNoChange, manifestedit.EditPatched, manifestedit.EditWholeReplace:
+		return res.Content, true
+	case manifestedit.EditSkipped, manifestedit.EditDeleted:
+		return nil, false
+	default:
+		return nil, false
+	}
+}
