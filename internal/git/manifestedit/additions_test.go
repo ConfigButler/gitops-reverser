@@ -195,6 +195,41 @@ func TestIndex_UnusualTagNonEditable(t *testing.T) {
 	}
 }
 
+func TestPatch_EncryptedDocumentNotPatchedInPlace(t *testing.T) {
+	// In-place patching an encrypted file would drop the sops key and write the
+	// secret back in cleartext. PatchDocument must refuse.
+	enc := []byte(`apiVersion: v1
+kind: Secret
+metadata:
+  name: db
+  namespace: default
+data:
+  password: ENC[AES256_GCM,data:abc,iv:def,tag:ghi,type:str]
+sops:
+  age: []
+`)
+	desired := mustObj(t, `apiVersion: v1
+kind: Secret
+metadata:
+  name: db
+  namespace: default
+data:
+  password: hunter2
+`)
+	res, diags := PatchDocument(enc, 0, desired)
+	assert.Equal(t, EditSkipped, res.Mode)
+	assert.Equal(t, enc, res.Content, "encrypted file must be left untouched")
+	assert.NotContains(t, string(res.Content), "hunter2", "secret must never be written in cleartext")
+
+	var guarded bool
+	for _, d := range diags {
+		if strings.Contains(d.Message, "encrypted document") {
+			guarded = true
+		}
+	}
+	assert.True(t, guarded, "a diagnostic should explain the encrypted-file refusal")
+}
+
 func TestIndex_PlainTimestampStillEditable(t *testing.T) {
 	// An unquoted date resolves to !!timestamp but is perfectly normal; it must
 	// not be treated as an unusual tag.
@@ -252,9 +287,16 @@ func TestDelete_OnlyDocumentReportsFileEmpty(t *testing.T) {
 func TestDelete_FirstDocumentDropsLeadingSeparator(t *testing.T) {
 	content := []byte("apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: a\n---\n" +
 		"apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: b\n")
+	survivorBefore := docBody(string(content), 1)
+
 	res, _ := DeleteDocument(content, 0)
 	require.Equal(t, EditDeleted, res.Mode)
+
+	// The file must not start with a stray separator; only the separator is
+	// dropped, the survivor's content is unchanged.
 	assert.False(t, strings.HasPrefix(string(res.Content), "---"), "file should not start with a stray separator")
+	assert.Equal(t, survivorBefore, docBody(string(res.Content), 0),
+		"survivor content unchanged (only the separator dropped)")
 	assert.Contains(t, string(res.Content), "name: b")
 	assert.NotContains(t, string(res.Content), "name: a")
 }

@@ -57,6 +57,12 @@ func PatchDocument(
 	if reason, bad := hasDisallowed(root); bad {
 		return skip(content, loc, "ignored: %s is not editable", reason)
 	}
+	// Encrypted documents are indexed and authoritative, but never patched in
+	// place: an in-place merge would drop the sops metadata and write the secret
+	// back in cleartext. They must go through the re-encrypt writer path instead.
+	if nodeMapGet(root, "sops") != nil {
+		return skip(content, loc, "encrypted document: in-place patch is unsafe, use the re-encrypt writer path")
+	}
 	if root.Kind != yaml.MappingNode {
 		return wholeReplace(docs, documentIndex, desired, loc)
 	}

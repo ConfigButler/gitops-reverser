@@ -89,8 +89,10 @@ per row.
 | Case | Behavior |
 |---|---|
 | Unrelated documents in a multi-doc file | Spliced back byte-for-byte. |
-| Edited document: CRLF, BOM, trailing-newline presence, leading `---`, trailing `...` | Restored by `reskinDocument` after re-encode. |
+| Edited document: CRLF, BOM, trailing-newline presence, leading `---`, trailing `...` | Restored by `reskinDocument` after re-encode — **on the patch path only**. |
 | Edited document interior content (non-block scalars) | Byte-stable for the house style; flush-left sequence indentation is re-indented (recorded limitation). |
+| Whole-document fallback (`wholeReplace`) | Canonical render; does **not** restore framing (it is the explicit "preservation not possible" path). |
+| Delete document 0 of a multi-doc file | The now-leading `---` separator is dropped so the file does not start with a stray separator; the survivor's *content* is unchanged (only the separator is affected). |
 
 ### Inventory / safety (`manifestedit_test.go`, `additions_test.go`)
 
@@ -100,7 +102,10 @@ per row.
 | Anchors, aliases, merge keys | Detected at the node level, marked non-editable, never materialized (alias bomb safe). |
 | Duplicate keys, unusual tags (`!foo`, `!!binary`) | Non-editable with a diagnostic. `!!timestamp` from a plain date is fine. |
 | Non-KRM / empty document | Ignored with a diagnostic; does not block siblings. |
+| Sequence (list) matching | Index-based: an in-place item change is precise, but a **reorder** rewrites slot-by-slot and **mis-attributes item comments** (semantically correct and convergent). Keyed matching (e.g. by container `name`) is deferred. Pinned by `limitations_test.go`. |
+| Inventory status surface | `Inventory.Summary()` gives bounded counts (documents/editable/non-editable/encrypted/duplicates) and `CountByLevel` groups diagnostics — the "stats first" seed, so status need not enumerate thousands of manifests. |
 | SOPS file (by extension) | Indexed by cleartext identity when it has a `sops` key; identity-hidden or sops-less files are skipped as invalid. |
+| Encrypted document patched in place | **Refused** — `PatchDocument` skips any document with a top-level `sops` key (indexed/authoritative ≠ patchable). It must go through the re-encrypt writer path, never an in-place merge. |
 | Symlinks during folder scan | Skipped (never followed), with a diagnostic. |
 
 ## Guarantees we can honestly promise
@@ -111,6 +116,9 @@ Hard guarantees:
 - unrelated scalars/block scalars in the edited document preserved (see caveat)
 - semantic no-ops cause no write; dirty server fields are cleaned out
 - disallowed constructs are ignored with a diagnostic, never silently rewritten
+- **convergence:** the first write may normalize known drift and clean server
+  fields, but every reconcile after that is a byte-stable no-op — no separate
+  reconciliation-state layer needed (pinned by `convergence_test.go`)
 
 Best-effort (with fallback + diagnostic when not possible):
 
@@ -128,8 +136,18 @@ Best-effort (with fallback + diagnostic when not possible):
   is still restored. A stricter preflight or per-scalar text-slice fallback could
   close this later; it was not needed to choose the parser.
 - Framing (CRLF, BOM, trailing newline, `...`) is restored on the edited document
-  and spliced verbatim on unrelated documents. Internal *content* bytes of the
-  edited document are not guaranteed for every input style (see above).
+  **only on the patch path**, and spliced verbatim on unrelated documents. The
+  whole-document fallback (`wholeReplace`) renders canonically and does not restore
+  framing. Internal *content* bytes of the edited document are not guaranteed for
+  every input style (see above).
+- **Index-based list matching.** Updating a list item in place is precise, but
+  reordering a list rewrites it slot-by-slot and moves item-attached comments to
+  the wrong item. The result is semantically correct and converges; keyed
+  matching (by `name`) is the deferred fix.
+- **Encrypted records are indexed and authoritative but not patchable.** A SOPS
+  document is found and owns its location, yet `PatchDocument` refuses to edit it
+  in place (it would strip the sops key and write the secret in cleartext). The
+  real writer must route encrypted resources through the re-encrypt path.
 - **Manifest identity only.** Mapping a GVK to a watched GVR needs a live
   RESTMapper and is out of scope here (tracked in docs/TODO.md), as is namespace
   elision.

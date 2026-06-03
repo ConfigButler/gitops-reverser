@@ -101,6 +101,45 @@ func (inv Inventory) Duplicates() []DocumentRecord {
 	return inv.duplicates
 }
 
+// Summary is a compact, bounded overview of an inventory. The vision flags that
+// GitTarget status cannot enumerate thousands of manifests, so this seeds the
+// "high-level stats first" direction: a status surface shows these counts and
+// keeps per-resource detail for a separate read path.
+type Summary struct {
+	Documents   int
+	Editable    int
+	NonEditable int
+	Encrypted   int
+	Duplicates  int
+}
+
+// Summary returns bounded counts over the inventory.
+func (inv Inventory) Summary() Summary {
+	s := Summary{Duplicates: len(inv.duplicates)}
+	for _, r := range inv.Records {
+		s.Documents++
+		if r.Editable {
+			s.Editable++
+		} else {
+			s.NonEditable++
+		}
+		if r.Encrypted {
+			s.Encrypted++
+		}
+	}
+	return s
+}
+
+// CountByLevel groups diagnostics by severity, for a bounded status summary
+// instead of listing every diagnostic.
+func CountByLevel(diags []Diagnostic) map[DiagnosticLevel]int {
+	out := make(map[DiagnosticLevel]int)
+	for _, d := range diags {
+		out[d.Level]++
+	}
+	return out
+}
+
 // EditMode describes what PatchDocument did.
 type EditMode string
 

@@ -31,10 +31,15 @@ type DeleteResult struct {
 	Mode      EditMode
 }
 
-// DeleteDocument removes one document from a file, leaving the other documents
-// byte-for-byte intact. Removing the only document reports FileEmpty so the
-// caller can delete the file. This serves both resource deletion and pruning a
-// duplicate loser.
+// DeleteDocument removes one document from a file, leaving every surviving
+// document's content byte-for-byte intact. Removing the only document reports
+// FileEmpty so the caller can delete the file. This serves both resource deletion
+// and pruning a duplicate loser.
+//
+// When the first document is removed, the new first document's leading "---"
+// separator is dropped so the file does not start with a stray separator. Only
+// the separator is affected; the document content is unchanged. We deliberately
+// prefer a clean leading document over preserving a now-pointless separator.
 func DeleteDocument(content []byte, documentIndex int) (DeleteResult, []Diagnostic) {
 	docs := splitDocuments(string(content))
 
@@ -48,8 +53,8 @@ func DeleteDocument(content []byte, documentIndex int) (DeleteResult, []Diagnost
 	}
 
 	docs = append(docs[:documentIndex], docs[documentIndex+1:]...)
-	// If the first document was removed, the new first document may carry a
-	// leading "---" separator. Drop it so the file does not start with one.
+	// Drop the leading separator so a deleted first document does not leave the
+	// file starting with "---".
 	if documentIndex == 0 {
 		docs[0].sep = ""
 	}
