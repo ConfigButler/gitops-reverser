@@ -29,7 +29,7 @@ func TestPatch_IndexOutOfRange(t *testing.T) {
 	content := []byte("apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: a\n")
 	desired := mustObj(t, "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: a\n")
 
-	res, diags := PatchDocument(content, 5, desired)
+	res, diags := patch(content, 5, desired)
 	assert.Equal(t, EditSkipped, res.Mode)
 	assert.Equal(t, content, res.Content)
 	require.NotEmpty(t, diags)
@@ -40,7 +40,7 @@ func TestPatch_EmptyDocumentSkipped(t *testing.T) {
 	content := []byte("# only a comment\n")
 	desired := mustObj(t, "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: a\n")
 
-	res, diags := PatchDocument(content, 0, desired)
+	res, diags := patch(content, 0, desired)
 	assert.Equal(t, EditSkipped, res.Mode)
 	require.NotEmpty(t, diags)
 }
@@ -49,7 +49,7 @@ func TestPatch_InvalidYAMLSkipped(t *testing.T) {
 	content := []byte("apiVersion: v1\nkind: ConfigMap\nmetadata: [unterminated\n")
 	desired := mustObj(t, "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: a\n")
 
-	res, diags := PatchDocument(content, 0, desired)
+	res, diags := patch(content, 0, desired)
 	assert.Equal(t, EditSkipped, res.Mode)
 	require.NotEmpty(t, diags)
 }
@@ -58,7 +58,7 @@ func TestPatch_DisallowedDocumentSkipped(t *testing.T) {
 	content := []byte("apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: a\ndata:\n  x: &x 1\n  y: *x\n")
 	desired := mustObj(t, "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: a\n")
 
-	res, diags := PatchDocument(content, 0, desired)
+	res, diags := patch(content, 0, desired)
 	assert.Equal(t, EditSkipped, res.Mode)
 	require.NotEmpty(t, diags)
 }
@@ -76,7 +76,7 @@ data:
   color: blue
 `)
 
-	res, diags := PatchDocument(content, 0, desired)
+	res, diags := patch(content, 0, desired)
 	assert.Equal(t, EditWholeReplace, res.Mode)
 	assert.Contains(t, string(res.Content), "kind: ConfigMap")
 	require.NotEmpty(t, diags)
@@ -113,7 +113,7 @@ spec:
       - name: new
         image: new:1.0
 `)
-	res, _ := PatchDocument(content, 0, desired)
+	res, _ := patch(content, 0, desired)
 	require.Equal(t, EditPatched, res.Mode)
 	out := string(res.Content)
 	assert.Contains(t, out, "name: new")
@@ -148,7 +148,7 @@ spec:
       - name: sidecar
         image: envoy:1.0
 `)
-	res, _ := PatchDocument(content, 0, desired)
+	res, _ := patch(content, 0, desired)
 	require.Equal(t, EditPatched, res.Mode)
 	assert.Contains(t, string(res.Content), "name: sidecar")
 }
@@ -202,7 +202,7 @@ spec:
   - a
   - b
 `)
-	res, _ := PatchDocument(content, 0, desired)
+	res, _ := patch(content, 0, desired)
 	require.Equal(t, EditPatched, res.Mode)
 	out := string(res.Content)
 	assert.Contains(t, out, "nested: x", "scalar replaced by a map")

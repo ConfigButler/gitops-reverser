@@ -36,6 +36,20 @@ func mustObj(t *testing.T, y string) *unstructured.Unstructured {
 	return &unstructured.Unstructured{Object: m}
 }
 
+// testRender is the small canonical renderer the tests inject in place of the
+// production house renderer (sanitize.MarshalToOrderedYAML). The package is
+// mechanism, not policy, so the renderer is injected, never owned here.
+func testRender(obj *unstructured.Unstructured) ([]byte, error) {
+	return yaml.Marshal(obj.Object)
+}
+
+// patch wraps PatchDocument with the injected test renderer, so the many edit
+// tests read like the original three-argument call while the package stays
+// renderer-agnostic. The desired object is the already-projected Git state.
+func patch(content []byte, documentIndex int, desired *unstructured.Unstructured) (EditResult, []Diagnostic) {
+	return PatchDocument(content, documentIndex, desired, EditOptions{Render: testRender})
+}
+
 // docBody returns the body bytes of one document in content.
 func docBody(content string, idx int) string {
 	docs := splitDocuments(content)
@@ -167,18 +181,17 @@ metadata:
 data:
   color: blue
 `
-	// API returns the same object plus operational noise the sanitizer strips.
+	// The caller already projected the API object to the clean Git state, so the
+	// desired object matches Git exactly: the package never sanitizes internally.
 	desired := mustObj(t, `apiVersion: v1
 kind: ConfigMap
 metadata:
   name: app-config
   namespace: default
-  resourceVersion: "12345"
-  managedFields: [{manager: kubectl}]
 data:
   color: blue
 `)
-	res, _ := PatchDocument([]byte(gitContent), 0, desired)
+	res, _ := patch([]byte(gitContent), 0, desired)
 	assert.Equal(t, EditNoChange, res.Mode)
 	assert.Equal(t, gitContent, string(res.Content), "a true no-op must preserve bytes")
 }
@@ -202,7 +215,7 @@ metadata:
 data:
   color: blue
 `)
-	res, _ := PatchDocument([]byte(gitContent), 0, desired)
+	res, _ := patch([]byte(gitContent), 0, desired)
 	assert.Equal(t, EditPatched, res.Mode)
 	assert.NotContains(t, string(res.Content), "resourceVersion", "dirty resourceVersion must be cleaned from Git")
 	assert.Contains(t, string(res.Content), "color: blue")
@@ -238,7 +251,7 @@ metadata:
 data:
   color: red
 `)
-	res, _ := PatchDocument([]byte(content), 1, desired)
+	res, _ := patch([]byte(content), 1, desired)
 	require.Equal(t, EditPatched, res.Mode)
 
 	assert.Equal(t, doc0Before, docBody(string(res.Content), 0), "untouched document 0 must be byte-for-byte identical")
@@ -271,7 +284,7 @@ metadata:
 data:
   color: blue
 `)
-	res, _ := PatchDocument([]byte(content), 0, desired)
+	res, _ := patch([]byte(content), 0, desired)
 	require.Equal(t, EditPatched, res.Mode)
 	out := string(res.Content)
 
@@ -312,7 +325,7 @@ data:
     echo "starting app"
     exec /app/server
 `)
-	res, _ := PatchDocument([]byte(content), 0, desired)
+	res, _ := patch([]byte(content), 0, desired)
 	require.Equal(t, EditPatched, res.Mode)
 	out := string(res.Content)
 
@@ -350,7 +363,7 @@ data:
     echo "new"
     echo "line two"
 `)
-	res, _ := PatchDocument([]byte(content), 0, desired)
+	res, _ := patch([]byte(content), 0, desired)
 	require.Equal(t, EditPatched, res.Mode)
 	out := string(res.Content)
 
@@ -383,7 +396,7 @@ data:
   build: "00123"
   enabled: "false"
 `)
-	res, _ := PatchDocument([]byte(content), 0, desired)
+	res, _ := patch([]byte(content), 0, desired)
 	require.Equal(t, EditPatched, res.Mode)
 	out := string(res.Content)
 
@@ -422,7 +435,7 @@ spec:
       - name: sidecar
         image: envoy:1.0
 `)
-	res, _ := PatchDocument([]byte(content), 0, desired)
+	res, _ := patch([]byte(content), 0, desired)
 	require.Equal(t, EditPatched, res.Mode)
 	out := string(res.Content)
 
@@ -454,7 +467,7 @@ metadata:
 data:
   color: blue
 `)
-	res, _ := PatchDocument([]byte(content), 0, desired)
+	res, _ := patch([]byte(content), 0, desired)
 	require.Equal(t, EditPatched, res.Mode)
 	out := string(res.Content)
 
@@ -548,7 +561,7 @@ metadata:
 data:
   color: red
 `)
-	res, _ := PatchDocument([]byte(content), 1, desired)
+	res, _ := patch([]byte(content), 1, desired)
 	require.Equal(t, EditPatched, res.Mode)
 
 	assert.Equal(t, doc0Before, docBody(string(res.Content), 0),
@@ -581,7 +594,7 @@ metadata:
 data:
   color: red
 `)
-	res, _ := PatchDocument([]byte(content), 0, desired)
+	res, _ := patch([]byte(content), 0, desired)
 	require.Equal(t, EditPatched, res.Mode)
 	assert.Contains(t, string(res.Content), "...", "trailing document-end marker on an unrelated doc must survive")
 }

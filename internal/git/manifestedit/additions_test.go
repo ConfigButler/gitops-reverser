@@ -105,7 +105,7 @@ metadata:
 data:
   color: blue
 `)
-	res, _ := PatchDocument([]byte(doc), 0, desired)
+	res, _ := patch([]byte(doc), 0, desired)
 	require.Equal(t, EditPatched, res.Mode)
 	out := string(res.Content)
 
@@ -125,7 +125,7 @@ metadata:
 data:
   color: red
 `)
-	res, _ := PatchDocument([]byte(doc), 0, desired)
+	res, _ := patch([]byte(doc), 0, desired)
 	require.Equal(t, EditPatched, res.Mode)
 	assert.False(t, strings.HasSuffix(string(res.Content), "\n"), "missing trailing newline must stay missing")
 	assert.Contains(t, string(res.Content), "color: red")
@@ -141,7 +141,7 @@ metadata:
 data:
   color: red
 `)
-	res, _ := PatchDocument([]byte(doc), 0, desired)
+	res, _ := patch([]byte(doc), 0, desired)
 	require.Equal(t, EditPatched, res.Mode)
 	assert.True(t, strings.HasPrefix(string(res.Content), "---\n"), "leading --- must survive editing the document")
 }
@@ -156,7 +156,7 @@ metadata:
 data:
   color: red
 `)
-	res, _ := PatchDocument([]byte(doc), 0, desired)
+	res, _ := patch([]byte(doc), 0, desired)
 	require.Equal(t, EditPatched, res.Mode)
 	assert.True(t, strings.HasSuffix(strings.TrimRight(string(res.Content), "\n"), "..."),
 		"trailing ... marker must survive editing the document")
@@ -179,7 +179,7 @@ func TestIndex_DuplicateKeyNonEditable(t *testing.T) {
 func TestPatch_DuplicateKeySkipped(t *testing.T) {
 	content := []byte("apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: a\ndata:\n  k: 1\n  k: 2\n")
 	desired := mustObj(t, "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: a\n")
-	res, diags := PatchDocument(content, 0, desired)
+	res, diags := patch(content, 0, desired)
 	assert.Equal(t, EditSkipped, res.Mode)
 	assert.NotEmpty(t, diags)
 }
@@ -216,7 +216,7 @@ metadata:
 data:
   password: hunter2
 `)
-	res, diags := PatchDocument(enc, 0, desired)
+	res, diags := patch(enc, 0, desired)
 	assert.Equal(t, EditSkipped, res.Mode)
 	assert.Equal(t, enc, res.Content, "encrypted file must be left untouched")
 	assert.NotContains(t, string(res.Content), "hunter2", "secret must never be written in cleartext")

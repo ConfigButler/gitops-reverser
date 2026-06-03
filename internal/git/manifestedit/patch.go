@@ -20,97 +20,28 @@ package manifestedit
 
 import (
 	"bytes"
-	"reflect"
 
 	"gopkg.in/yaml.v3"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-
-	"github.com/ConfigButler/gitops-reverser/internal/sanitize"
 )
 
 // PatchDocument updates one document inside a file to match the desired object,
 // touching only what changed and leaving every other document byte-for-byte
-// identical. The desired object is sanitized first, so Git converges to the
-// clean GitOps projection (a stray resourceVersion in Git is removed, not kept).
+// identical. It is a thin wrapper over Decide + Apply.
+//
+// The desired object must already be the clean Git projection: this package is
+// mechanism, not policy, so it never sanitizes internally. The caller passes the
+// projected object and injects the canonical renderer (opts.Render), used for the
+// whole-document replace fallback.
 func PatchDocument(
 	content []byte,
 	documentIndex int,
 	desired *unstructured.Unstructured,
+	opts EditOptions,
 ) (EditResult, []Diagnostic) {
-	docs := splitDocuments(string(content))
-
-	if documentIndex < 0 || documentIndex >= len(docs) {
-		return EditResult{Content: content, Mode: EditSkipped},
-			[]Diagnostic{{Level: DiagError, DocumentIndex: documentIndex, Message: "document index out of range"}}
-	}
-
-	loc := Location{DocumentIndex: documentIndex}
-	target := docs[documentIndex].body
-
-	root, empty, err := decodeDoc(target)
-	if err != nil {
-		return skip(content, loc, "invalid YAML: %v", err)
-	}
-	if empty {
-		return skip(content, loc, "empty document, nothing to patch")
-	}
-	if reason, bad := hasDisallowed(root); bad {
-		return skip(content, loc, "ignored: %s is not editable", reason)
-	}
-	// Encrypted documents are indexed and authoritative, but never patched in
-	// place: an in-place merge would drop the sops metadata and write the secret
-	// back in cleartext. They must go through the re-encrypt writer path instead.
-	if nodeMapGet(root, "sops") != nil {
-		return skip(content, loc, "encrypted document: in-place patch is unsafe, use the re-encrypt writer path")
-	}
-	if root.Kind != yaml.MappingNode {
-		return wholeReplace(docs, documentIndex, desired, loc)
-	}
-
-	desiredClean := sanitize.Sanitize(desired).Object
-
-	// No-op vs cleaning: compare the raw Git document to the clean projection.
-	// Equal means a true no-op (preserve bytes); different means a change or a
-	// dirty field to clean out.
-	var rawObj map[string]interface{}
-	if err := yaml.Unmarshal([]byte(target), &rawObj); err == nil {
-		if reflect.DeepEqual(normalizeJSON(rawObj), normalizeJSON(desiredClean)) {
-			return EditResult{Content: content, Mode: EditNoChange}, nil
-		}
-	}
-
-	changed, ok := mergeMapping(root, desiredClean)
-	if !ok {
-		return wholeReplace(docs, documentIndex, desired, loc)
-	}
-	if !changed {
-		return EditResult{Content: content, Mode: EditNoChange}, nil
-	}
-
-	encoded, err := encodeNode(root)
-	if err != nil {
-		return wholeReplace(docs, documentIndex, desired, loc)
-	}
-
-	docs[documentIndex].body = reskinDocument(target, string(encoded))
-	return EditResult{Content: []byte(joinDocuments(docs)), Mode: EditPatched}, nil
-}
-
-// wholeReplace re-renders the target document canonically as a fallback.
-func wholeReplace(
-	docs []rawDoc,
-	documentIndex int,
-	desired *unstructured.Unstructured,
-	loc Location,
-) (EditResult, []Diagnostic) {
-	rendered, err := sanitize.MarshalToOrderedYAML(sanitize.Sanitize(desired))
-	if err != nil {
-		return EditResult{Content: []byte(joinDocuments(docs)), Mode: EditSkipped},
-			[]Diagnostic{diag(DiagError, loc, "cannot render document: %v", err)}
-	}
-	docs[documentIndex].body = string(rendered)
-	return EditResult{Content: []byte(joinDocuments(docs)), Mode: EditWholeReplace},
-		[]Diagnostic{diag(DiagWarning, loc, "field-level preservation not possible, replaced whole document")}
+	git, _ := NewDocument(content, documentIndex)
+	c := Comparison{Git: git, Desired: desired, Options: opts}
+	return Apply(c, Decide(c))
 }
 
 // yamlIndent is the indentation used when re-encoding an edited document. It
@@ -129,9 +60,4 @@ func encodeNode(node *yaml.Node) ([]byte, error) {
 		return nil, err
 	}
 	return buf.Bytes(), nil
-}
-
-// skip returns an unchanged result with a diagnostic.
-func skip(content []byte, loc Location, format string, args ...any) (EditResult, []Diagnostic) {
-	return EditResult{Content: content, Mode: EditSkipped}, []Diagnostic{diag(DiagWarning, loc, format, args...)}
 }

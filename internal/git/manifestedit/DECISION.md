@@ -102,7 +102,7 @@ per row.
 | Anchors, aliases, merge keys | Detected at the node level, marked non-editable, never materialized (alias bomb safe). |
 | Duplicate keys, unusual tags (`!foo`, `!!binary`) | Non-editable with a diagnostic. `!!timestamp` from a plain date is fine. |
 | Non-KRM / empty document | Ignored with a diagnostic; does not block siblings. |
-| Sequence (list) matching | Index-based: an in-place item change is precise, but a **reorder** rewrites slot-by-slot and **mis-attributes item comments** (semantically correct and convergent). Keyed matching (e.g. by container `name`) is deferred. Pinned by `limitations_test.go`. |
+| Sequence (list) matching | **Index-based by default** (`limitations_test.go` pins it): an in-place item change is precise, but a **reorder** rewrites slot-by-slot and **mis-attributes item comments** (semantically correct and convergent). **Keyed matching is now available as an injected strategy** — set `EditOptions.ListMatch.KeyField` (e.g. `name`) and items are matched by key, so comments travel with their item across a reorder; it falls back to index when items are not uniformly keyed mappings (`keyedlist_test.go`). The GVK→key choice lives with the caller, never in the merge. |
 | Inventory status surface | `Inventory.Summary()` gives bounded counts (documents/editable/non-editable/encrypted/duplicates) and `CountByLevel` groups diagnostics — the "stats first" seed, so status need not enumerate thousands of manifests. |
 | SOPS file (by extension) | Indexed by cleartext identity when it has a `sops` key; identity-hidden or sops-less files are skipped as invalid. |
 | Encrypted document patched in place | **Refused** — `PatchDocument` skips any document with a top-level `sops` key (indexed/authoritative ≠ patchable). It must go through the re-encrypt writer path, never an in-place merge. |
@@ -140,10 +140,13 @@ Best-effort (with fallback + diagnostic when not possible):
   whole-document fallback (`wholeReplace`) renders canonically and does not restore
   framing. Internal *content* bytes of the edited document are not guaranteed for
   every input style (see above).
-- **Index-based list matching.** Updating a list item in place is precise, but
-  reordering a list rewrites it slot-by-slot and moves item-attached comments to
-  the wrong item. The result is semantically correct and converges; keyed
-  matching (by `name`) is the deferred fix.
+- **Index-based list matching by default; keyed matching is opt-in.** With no
+  list strategy, updating a list item in place is precise, but reordering a list
+  rewrites it slot-by-slot and moves item-attached comments to the wrong item
+  (semantically correct and convergent). Injecting `EditOptions.ListMatch.KeyField`
+  (e.g. `name`) matches items by key instead, so comments travel with their item
+  across a reorder; the merge falls back to index when items are not uniformly
+  keyed mappings. The Kubernetes GVK→key knowledge stays with the caller.
 - **Encrypted records are indexed and authoritative but not patchable.** A SOPS
   document is found and owns its location, yet `PatchDocument` refuses to edit it
   in place (it would strip the sops key and write the secret in cleartext). The

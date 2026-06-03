@@ -57,7 +57,7 @@ spec:
   - name: sidecar
     image: envoy:1.0
 `)
-	res, _ := PatchDocument([]byte(git), 0, desired)
+	res, _ := patch([]byte(git), 0, desired)
 	require.Equal(t, EditPatched, res.Mode)
 	out := string(res.Content)
 
@@ -70,7 +70,7 @@ spec:
 		"index-based matching mis-attributes the comment on reorder (keyed matching would fix this)")
 
 	// It still converges: a second reconcile is a no-op.
-	res2, _ := PatchDocument(res.Content, 0, desired)
+	res2, _ := patch(res.Content, 0, desired)
 	assert.Equal(t, EditNoChange, res2.Mode)
 }
 

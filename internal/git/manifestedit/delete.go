@@ -36,28 +36,25 @@ type DeleteResult struct {
 // FileEmpty so the caller can delete the file. This serves both resource deletion
 // and pruning a duplicate loser.
 //
+// It is a thin wrapper over Decide + Apply with Desired == nil. Deletion is the
+// content-agnostic cell of the comparison: it never decrypts or merges, so an
+// encrypted document, a disallowed-construct document, or a duplicate loser can
+// always be pruned. No renderer is needed.
+//
 // When the first document is removed, the new first document's leading "---"
 // separator is dropped so the file does not start with a stray separator. Only
 // the separator is affected; the document content is unchanged. We deliberately
 // prefer a clean leading document over preserving a now-pointless separator.
 func DeleteDocument(content []byte, documentIndex int) (DeleteResult, []Diagnostic) {
-	docs := splitDocuments(string(content))
+	git, _ := NewDocument(content, documentIndex)
+	c := Comparison{Git: git, Desired: nil}
+	res, diags := Apply(c, Decide(c))
 
-	if documentIndex < 0 || documentIndex >= len(docs) {
-		return DeleteResult{Content: content, Mode: EditSkipped},
-			[]Diagnostic{{Level: DiagError, DocumentIndex: documentIndex, Message: "document index out of range"}}
+	if res.Mode != EditDeleted {
+		return DeleteResult{Content: content, Mode: res.Mode}, diags
 	}
-
-	if len(docs) == 1 {
-		return DeleteResult{FileEmpty: true, Mode: EditDeleted}, nil
+	if len(res.Content) == 0 {
+		return DeleteResult{FileEmpty: true, Mode: EditDeleted}, diags
 	}
-
-	docs = append(docs[:documentIndex], docs[documentIndex+1:]...)
-	// Drop the leading separator so a deleted first document does not leave the
-	// file starting with "---".
-	if documentIndex == 0 {
-		docs[0].sep = ""
-	}
-
-	return DeleteResult{Content: []byte(joinDocuments(docs)), Mode: EditDeleted}, nil
+	return DeleteResult{Content: res.Content, Mode: EditDeleted}, diags
 }

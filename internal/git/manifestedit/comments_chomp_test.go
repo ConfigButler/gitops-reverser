@@ -65,7 +65,7 @@ data:
   # comment above color
   color: blue # trailing on color
 `
-	res, _ := PatchDocument([]byte(before), 0, desired)
+	res, _ := patch([]byte(before), 0, desired)
 	require.Equal(t, EditPatched, res.Mode)
 	assert.Equal(t, after, string(res.Content))
 }
@@ -97,7 +97,7 @@ metadata:
 data:
   color: green # the brand color
 `
-	res, _ := PatchDocument([]byte(before), 0, desired)
+	res, _ := patch([]byte(before), 0, desired)
 	require.Equal(t, EditPatched, res.Mode)
 	assert.Equal(t, after, string(res.Content))
 }
@@ -137,7 +137,7 @@ metadata:
 data:
   color: blue
 `
-	res, _ := PatchDocument([]byte(before), 0, desired)
+	res, _ := patch([]byte(before), 0, desired)
 	require.Equal(t, EditPatched, res.Mode)
 	assert.Equal(t, after, string(res.Content))
 }
@@ -152,7 +152,7 @@ func TestPatch_LiteralBlockChompPreservedOnUnrelatedEdit(t *testing.T) {
 		desired := mustObj(t, "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: app\n"+
 			"  namespace: default\n  labels:\n    a: b\ndata:\n  script: "+chomp+"\n    line one\n    line two\n")
 
-		res, _ := PatchDocument([]byte(before), 0, desired)
+		res, _ := patch([]byte(before), 0, desired)
 		require.Equal(t, EditPatched, res.Mode)
 		out := string(res.Content)
 
@@ -173,7 +173,7 @@ func TestPatch_LiteralKeepChompPreservedWhenMeaningful(t *testing.T) {
 	desired := mustObj(t, "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: app\n"+
 		"  namespace: default\n  labels:\n    a: b\ndata:\n  script: |+\n    line one\n    line two\n\n")
 
-	res, _ := PatchDocument([]byte(before), 0, desired)
+	res, _ := patch([]byte(before), 0, desired)
 	require.Equal(t, EditPatched, res.Mode)
 	out := string(res.Content)
 	assert.Contains(t, out, "script: |+", "the keep indicator survives when there is a trailing blank to keep")
@@ -207,7 +207,7 @@ data:
     line one
     line two
 `)
-	res, _ := PatchDocument([]byte(before), 0, desired)
+	res, _ := patch([]byte(before), 0, desired)
 	require.Equal(t, EditPatched, res.Mode)
 	out := string(res.Content)
 
