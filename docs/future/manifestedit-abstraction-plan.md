@@ -73,10 +73,11 @@ YAML. The preservation and delete paths need no renderer at all; tests inject a
 small one explicitly. This keeps the preservation editor (mechanism, owned)
 cleanly separate from canonical rendering (policy, injected).
 
-Open sub-decision: input type. `*unstructured.Unstructured` is idiomatic and
-ergonomic; `map[string]interface{}` would remove even the apimachinery import.
-Recommendation: keep `unstructured` — it is the natural currency and a stable
-dependency — but treat the object purely as data.
+Input type decision: keep `*unstructured.Unstructured`. It is already the
+currency used by the watch and Git writer paths, keeps metadata access ergonomic,
+and is a stable dependency. `manifestedit` still treats the object as plain data:
+the caller passes the already-computed Git projection, and this package must not
+import `internal/sanitize`.
 
 ## Recommended API shape
 
@@ -107,8 +108,9 @@ type EditOptions struct {
 func Decide(c Comparison) Decision
 
 type Decision struct {
-    Action DecisionAction // NoChange | Patch | Replace | Delete | Skip
-    Reason string         // human-readable, for diagnostics
+    Action   DecisionAction // NoChange | Patch | Replace | Delete | Skip
+    Reason   string         // human-readable, for diagnostics
+    Snapshot SnapshotRef    // observed identity + target-doc hash; Apply validates against this
 }
 
 // Apply is authoritative: it re-parses c.Git, performs the edit, and returns what
@@ -118,9 +120,10 @@ func Apply(c Comparison, d Decision) (EditResult, []Diagnostic)
 ```
 
 `Document` is immutable data: the **whole file content**, the target document
-index, the manifest identity, and a content fingerprint — enough for `Apply` to
-splice the edited document back among untouched siblings and to validate the
-snapshot. It is deliberately not a shared mutable node tree (see below).
+index, and the manifest identity — enough for `Apply` to splice the edited
+document back among untouched siblings. The snapshot fingerprint is *not* part of
+`Document`; it is derived by `Decide` and carried in the `Decision` (see
+invariants). `Document` is deliberately not a shared mutable node tree (see below).
 
 `Desired == nil` models deletion as just another cell of the same comparison, with
 no second code path. The *trigger* for deletion still belongs to the reconcile
@@ -253,6 +256,36 @@ grows. Each capability lands with tests in its own group:
 A good signal that the abstraction is right: a new strategy needs a new test file
 and a small predicate, and touches nothing in layers 1–2.
 
+## Current implementation anchors
+
+This plan is a refactor of the working POC, not a rewrite from blank paper. The
+important existing anchors are:
+
+- `PatchDocument` in `internal/git/manifestedit/patch.go` is the current mixed
+  seam: it validates the target document, refuses unsafe edits, sanitizes the
+  desired object, decides no-op vs patch, applies the merge, and falls back to
+  whole-document rendering. `Comparison`, `Decide`, `Apply`, and injected
+  rendering should tease those responsibilities apart without changing the
+  proven behavior.
+- `mergeMapping` in `internal/git/manifestedit/merge.go` is today's whole-object
+  ownership rule: a field present in Git but absent from desired is deleted.
+  Keep that as the default `Owns == nil` behavior, then add ownership predicates
+  as an extension point rather than changing the baseline semantics.
+- `IndexFiles` and `DocumentRecord` in `internal/git/manifestedit/index.go`
+  already define the manifest identity, duplicate resolution, encrypted flag, and
+  editability diagnostics that the decision layer should consume.
+- `DeleteDocument` in `internal/git/manifestedit/delete.go` is already the
+  content-agnostic document-splice operation. The new delete action should route
+  through that behavior, including the existing `FileEmpty` signal for callers
+  that should remove the file.
+- `sanitize.MarshalToOrderedYAML` is already the house renderer used by the Git
+  writer. `manifestedit` should receive it through `EditOptions.Render`; it
+  should not grow its own canonical renderer or keep calling `sanitize`
+  internally.
+- `convergence_test.go` is the guardrail for the whole abstraction: after
+  `Apply`, running `Decide` again with the same desired object must settle to
+  `NoChange` and preserve the resulting bytes.
+
 ## Work sequence
 
 1. **Decouple `sanitize`** — caller supplies the desired projection, and the
@@ -277,20 +310,28 @@ coupling. Only step 6 reaches into the writer/commit path
 (`commit_executor.go`, `branch_worker.go`), and it consumes the library rather
 than changing it.
 
-## Open questions
+## Implementation decisions
 
-- Input type for the desired object: `*unstructured.Unstructured` vs plain
-  `map[string]interface{}` (apimachinery dependency or not).
-- Field-ownership model: whole-object truth vs declared managed paths. This most
-  shapes what "specific edits" ultimately means.
-- Does the document model graduate to a `manifestedit/yamldoc` sub-package, or
-  stay file-separated within one package until something else reuses it?
-- Snapshot fingerprint: is it a hash of the target document's bytes or of the
-  whole file, and is a drift between `Decide` and `Apply` a soft `Skip` (re-decide
-  next reconcile) or a hard error? Leaning soft `Skip`, since the API is leading
-  and the next reconcile re-derives cleanly.
-- Where do the projection (sanitizer) and the injected canonical renderer live
-  once the dependency is inverted — reused from `internal/sanitize` by the caller,
-  or promoted to a shared spot? Whatever holds them should have a test asserting
-  the injected renderer matches the existing writer's generated YAML, so the two
-  paths cannot drift.
+- **Desired input stays `*unstructured.Unstructured`.** This matches the current
+  event and writer path: watch/audit code already routes sanitized
+  `unstructured` objects, and the Git writer already renders them. The package
+  must not sanitize internally; the caller passes the desired Git projection.
+- **Field ownership starts as whole-object truth.** This matches today's merge
+  behavior and convergence tests: a field present in Git but absent from desired
+  is removed. Keep the `Owns(FieldPath) bool` seam with default "own all", but
+  defer declared managed paths to a separate product/design spike because it
+  changes what GitOps Reverser promises to preserve.
+- **The document model stays in one package for now.** The YAML document seams
+  (`split`/`join`, framing, decode/encode, merge) should remain file-separated
+  inside `internal/git/manifestedit`. Graduate them to `manifestedit/yamldoc`
+  only after another caller needs that API.
+- **The snapshot fingerprint is the target document body, not the whole file.**
+  Sibling documents can change without invalidating the target edit. `Decide`
+  records the observed identity plus target-document hash in the `Decision`;
+  `Apply` re-parses the current document and returns a soft `Skip` diagnostic on
+  drift, so the next reconcile can re-decide cleanly.
+- **Projection and canonical rendering stay in `internal/sanitize` for now.**
+  The integration layer injects `sanitize.MarshalToOrderedYAML` as
+  `EditOptions.Render`. Add a contract test around that adapter so
+  whole-document replacement and new-file output cannot drift from the existing
+  writer output.
