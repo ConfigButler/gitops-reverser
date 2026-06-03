@@ -1318,12 +1318,15 @@ func (w *BranchWorker) ensureRepositoryInitialized(ctx context.Context) error {
 		return fmt.Errorf("failed to get GitProvider: %w", err)
 	}
 
+	repoPath := w.repoPathForRemote(provider.Spec.URL)
+	if w.shouldReadRetainedLocalRepository(repoPath) {
+		return nil
+	}
+
 	auth, err := getAuthFromSecret(ctx, w.Client, provider)
 	if err != nil {
 		return fmt.Errorf("failed to get auth: %w", err)
 	}
-
-	repoPath := w.repoPathForRemote(provider.Spec.URL)
 
 	// Use new PrepareBranch abstraction
 	pullReport, err := PrepareBranch(ctx, provider.Spec.URL, repoPath, w.Branch, auth)
@@ -1335,6 +1338,18 @@ func (w *BranchWorker) ensureRepositoryInitialized(ctx context.Context) error {
 	w.updateBranchMetadataFromPullReport(pullReport)
 
 	return nil
+}
+
+func (w *BranchWorker) shouldReadRetainedLocalRepository(repoPath string) bool {
+	if !w.hasUnpushedWork.Load() && w.inflightItems.Load() == 0 {
+		return false
+	}
+
+	if _, err := gogit.PlainOpen(repoPath); err != nil {
+		return false
+	}
+
+	return true
 }
 
 // updateBranchMetadataFromPullReport updates metadata from a PullReport.

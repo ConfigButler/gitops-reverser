@@ -976,6 +976,59 @@ func TestEventLoop_AtomicRequest_RespectsCooldownAndUsesNormalPushPath(t *testin
 	loop.stopTimers()
 }
 
+func TestEventLoop_ListResourcesDuringCooldownPreservesDeferredEventCommits(t *testing.T) {
+	worker, serverRepo, _ := setupCommitPushSplitWorker(t)
+	createPlainGitTarget(t, worker, "target-a", "iso-a")
+	createPlainGitTarget(t, worker, "target-b", "iso-b")
+
+	initialRef, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
+	require.NoError(t, err)
+	initialHash := initialRef.Hash()
+
+	loop := newBranchWorkerEventLoop(worker, 0)
+	loop.lastPushAt = time.Now()
+
+	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
+		Events:     []Event{configMapTargetEvent("live-a", "alice", "target-a")},
+		CommitMode: CommitModePerEvent,
+	}})
+	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
+		Events:     []Event{configMapTargetEvent("live-b", "bob", "target-b")},
+		CommitMode: CommitModePerEvent,
+	}})
+	require.Len(t, loop.pendingWrites, 2)
+	loop.syncQueueDepthMetric()
+
+	resources, err := worker.ListResourcesInPath("iso-b")
+	require.NoError(t, err)
+	resourceNames := make([]string, 0, len(resources))
+	for _, resource := range resources {
+		resourceNames = append(resourceNames, resource.Name)
+	}
+	assert.Contains(t, resourceNames, "live-b",
+		"repo-state reads during cooldown must see retained local commits instead of resetting to remote")
+
+	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
+		Events:             []Event{configMapEvent("snapshot-only", "reconciler", "")},
+		CommitMode:         CommitModeAtomic,
+		GitTargetName:      "target-b",
+		GitTargetNamespace: "default",
+	}})
+	require.Len(t, loop.pendingWrites, 3)
+
+	loop.pushPending()
+
+	finalRef, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
+	require.NoError(t, err)
+	commits := commitsAfterHash(t, serverRepo, finalRef.Hash(), initialHash)
+	require.Len(t, commits, 3)
+	assert.Equal(t, "[CREATE] v1/configmaps/live-a", commits[0].Message)
+	assert.Equal(t, "[CREATE] v1/configmaps/live-b", commits[1].Message)
+	assert.Equal(t, "reconcile: sync 1 resources", commits[2].Message)
+
+	loop.stopTimers()
+}
+
 func TestEventLoop_AtomicPushFailure_DoesNotAdvanceCooldownOrLosePendingWrite(t *testing.T) {
 	worker, _, remoteURL := setupCommitPushSplitWorker(t)
 
