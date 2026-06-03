@@ -6,7 +6,8 @@
 > POC decision record: `internal/git/manifestedit/DECISION.md`
 
 The parser POC is done: `gopkg.in/yaml.v3` node editing plus per-document text
-splitting clears the hard requirements and converges. This document is about the
+splitting passes the implemented hard requirements (with recorded drift
+limitations) and converges. This document is about the
 *next* concern — getting the **abstraction** right so the package stays a small,
 self-contained, well-tested library that the rest of GitOps Reverser builds on,
 rather than something tangled into the controller and writer.
@@ -58,10 +59,16 @@ Git projection already computed.** Then:
   `k8s.io/apimachinery/.../unstructured` (both stable, neither GitOps-Reverser
   specific);
 - the comparison becomes honest and symmetric — "Git bytes vs the object you say
-  should be there" — with no hidden cleaning step;
-- the only thing to replace is the whole-document fallback render, which moves to
-  a tiny internal canonical encoder (apiVersion, kind, metadata, then the rest),
-  so the package owns its fallback with zero policy dependency.
+  should be there" — with no hidden cleaning step.
+
+What must **not** happen is reinventing the canonical render. The whole-document
+fallback and new-file rendering define the house output format, so that render is
+**policy, not mechanism**. Inject it — a `func(*unstructured.Unstructured)
+([]byte, error)`, satisfied today by `sanitize.MarshalToOrderedYAML` — rather than
+duplicating it in the package, where it could silently diverge from the existing
+writer's output contract. The package ships only a trivial default renderer for
+standalone use and tests. This keeps the preservation editor (mechanism, owned)
+cleanly separate from canonical rendering (policy, injected).
 
 Open sub-decision: input type. `*unstructured.Unstructured` is idiomatic and
 ergonomic; `map[string]interface{}` would remove even the apimachinery import.
@@ -70,26 +77,58 @@ dependency — but treat the object purely as data.
 
 ## Recommended API shape
 
-Split the "decide" from the "apply", so the two-version comparison is a value you
-can test and log, separate from byte production:
+Make the comparison itself a value, and split deciding from applying:
 
 ```go
-// Decide compares a parsed Git document against the desired object and returns
-// what should happen, without producing new bytes.
-func Decide(doc Document, desired *unstructured.Unstructured) Decision
+type Comparison struct {
+    Git     *Document                  // a parsed location: raw bytes, identity, index
+    Desired *unstructured.Unstructured // nil means "absent" -> delete
+    Options EditOptions                // injected strategies: list-match, ownership, renderer
+}
+
+// Decide is pure: it inspects and compares, and never mutates Git's content.
+func Decide(c Comparison) Decision
 
 type Decision struct {
     Action DecisionAction // NoChange | Patch | Replace | Delete | Skip
     Reason string         // human-readable, for diagnostics
 }
 
-// Apply produces the new file content for a decision (no-op returns the input).
-func Apply(file []byte, docIndex int, desired *unstructured.Unstructured) (EditResult, []Diagnostic)
+// Apply produces the new file content for a decision. NoChange returns the input.
+func Apply(file []byte, c Comparison, d Decision) (EditResult, []Diagnostic)
 ```
 
-`PatchDocument`/`DeleteDocument` remain as thin convenience wrappers over
-`Decide` + `Apply`. The win is that `Decide` is a pure, exhaustively testable
-function over the two versions — exactly the thing we "constantly compare".
+`Desired == nil` models deletion as just another cell of the same comparison, with
+no second code path. The *trigger* for deletion still belongs to the reconcile
+layer (its set-difference: "Git has watched KRM the API lacks"); the package only
+formalizes the per-document consequence.
+
+`PatchDocument`/`DeleteDocument` become thin wrappers over `Decide` + `Apply`.
+`Options` is where later strategies plug in (keyed-list key, field-ownership
+predicate, canonical renderer) so the core stays small. The win is that `Decide`
+is a pure, exhaustively testable function over the two versions — exactly the
+thing we "constantly compare".
+
+### Decide must not mutate
+
+The current merge mutates the node tree as it walks while returning `changed`.
+That is fine inside `Apply`, but it must never leak into `Decide`, or a "decision"
+could silently change Git before anything is applied. Two rules keep it honest:
+
+- **The node tree is never shared.** `Document` carries raw bytes, identity, and
+  index — not a mutable parsed tree. `Decide` and `Apply` each parse internally,
+  so nothing one mutates can affect the other.
+- **`Decide` does not run the structural merge at all.** It needs only cheap,
+  non-mutating checks: parseable? disallowed construct? encrypted? non-mapping
+  root (→ `Replace`)? and the object-level equality the no-op path already uses
+  (Git-as-written vs desired → `NoChange` or `Patch`). The node mutation happens
+  only in `Apply`, on its own fresh parse.
+
+This is simpler than clone-before-merge or a dry-run merge: by not sharing the
+tree and not merging in `Decide`, there is nothing to clone. We also deliberately
+avoid building a serializable "patch plan" in `Decide` and replaying it in
+`Apply` — that duplicates structure for no current benefit; revisit only if we
+ever need to *show* a diff before applying.
 
 ## Internal layering (one package, clear seams)
 
@@ -117,9 +156,11 @@ comparison is and what the reverser owns**. Three axes, in increasing ambition:
 
 1. **Keyed list matching.** Today lists are index-based, so a reorder rewrites
    slots and mis-attributes item comments (pinned limitation). Match list items by
-   a key (`name`, and a small per-GVK key set) so an item is compared to its
-   counterpart, not its slot. This is a strategy injected into the merge walk; it
-   does not change the rest of the model.
+   a key field so an item is compared to its counterpart, not its slot. Crucially,
+   the pure document model only ever sees a generic *list-match strategy* ("match
+   this list by field X"); the Kubernetes knowledge of which key applies to which
+   GVK (`name` for containers, and so on) lives in the manifest/decision layer or
+   the caller, never baked into the YAML merge.
 2. **Field ownership (the big one).** Right now the desired object is the *whole*
    truth: any field present in Git but absent from desired is deleted. A more
    specific model owns only certain field paths (server-side-apply-style managed
@@ -164,10 +205,12 @@ and a small predicate, and touches nothing in layers 1–2.
 
 ## Work sequence
 
-1. **Decouple `sanitize`** — caller supplies the desired projection; add the tiny
-   internal canonical-fallback encoder. Small, unlocks true standalone status.
-2. **Introduce `Decide`/`Apply`** — make the two-version comparison a first-class,
-   pure value; keep `PatchDocument`/`DeleteDocument` as wrappers.
+1. **Decouple `sanitize`** — caller supplies the desired projection, and the
+   canonical renderer is injected (trivial default for tests), not reinvented in
+   the package. Small, unlocks true standalone status.
+2. **Introduce `Comparison` + `Decide`/`Apply`** — make the two-version comparison
+   a first-class, pure value (`Decide` non-mutating, `Desired == nil` = delete);
+   keep `PatchDocument`/`DeleteDocument` as wrappers.
 3. **Convergence property test** across the corpus, wired so every later strategy
    inherits it.
 4. **Keyed list matching** as the first injected strategy (fixes the reorder
@@ -192,5 +235,8 @@ than changing it.
   shapes what "specific edits" ultimately means.
 - Does the document model graduate to a `manifestedit/yamldoc` sub-package, or
   stay file-separated within one package until something else reuses it?
-- Where does the projection (sanitizer) live once the dependency is inverted —
-  reused from `internal/sanitize` by the caller, or promoted to a shared spot?
+- Where do the projection (sanitizer) and the injected canonical renderer live
+  once the dependency is inverted — reused from `internal/sanitize` by the caller,
+  or promoted to a shared spot? Whatever holds them should have a test asserting
+  the injected renderer matches the existing writer's generated YAML, so the two
+  paths cannot drift.
