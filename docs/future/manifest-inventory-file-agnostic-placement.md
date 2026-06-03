@@ -125,15 +125,19 @@ the existing encryptor path). File-agnostic placement has to coexist with
 encrypted manifests, and the rules here are opinionated and load-bearing — they
 will make or break the implementation.
 
+- **Detection is by file extension for now.** A file is treated as SOPS-managed
+  based on its extension (the existing encrypted-file convention). Anything more
+  precise is deferred.
 - **Partial encryption only.** An encrypted manifest must keep its identity
   fields — `apiVersion`, `kind`, `metadata.name`, `metadata.namespace` — in
   cleartext. Only data-bearing fields (`data`, `stringData`, and similar, per
   the `.sops.yaml` rules) are encrypted. The inventory reads identity straight
   from the file, exactly as it would for a plaintext manifest.
-- **Identity must be readable, or the file is ignored.** If the identity fields
-  are themselves encrypted (full-file encryption), the file cannot be recognized
-  as sync material. It is skipped with a diagnostic. This is a hard requirement,
-  not best effort.
+- **Must have readable identity and a `sops` key, or it is invalid.** A
+  SOPS-managed file must have both readable cleartext identity and a `sops` key.
+  If either is missing — including full-file encryption that hides the identity —
+  the file is flagged invalid and ignored with a diagnostic. This is a hard
+  requirement, not best effort.
 - **One document per encrypted file.** Encrypted files are single-document.
   Multi-document handling does not apply to them.
 - **No decryption, ever.** GitOps Reverser never decrypts SOPS material. It does
@@ -164,6 +168,25 @@ initialized, when the tracked branch moves externally, or when the local worktre
 is refreshed from an incoming remote change. Normal API-driven writes can update
 the inventory incrementally as part of the write.
 
+### Manifest identity and resource identity
+
+The inventory deals with two views of the same object, and the document keeps
+them distinct on purpose:
+
+- **Manifest identity** is what is written in the YAML: `apiVersion` and `kind`
+  (a GroupVersionKind), plus `metadata.name` and, for namespaced resources,
+  `metadata.namespace`. This is content identity — what a human reads in the
+  file.
+- **Resource identity** is the API-side key GitOps Reverser already uses on the
+  watch/reconcile path: group, version, resource (a GroupVersionResource), plus
+  namespace and name. The manifest GVK is mapped to the watched GVR through API
+  discovery / RESTMapper.
+
+So manifest identity is the on-disk representation and resource identity is the
+normalized API key the inventory indexes by. The inventory's core job is to keep
+the mapping `resource identity -> file location` while remembering the manifest
+identity that produced it.
+
 Each discovered resource should record:
 
 - resource identity: group, version, resource, namespace, name
@@ -188,16 +211,14 @@ to:
 resource id -> existing inventory location, else placement policy
 ```
 
-### Identity is the key, document index is a hint
+### Document index is authoritative
 
-The persistent locator for a resource is its identity, not its document index.
-The index is a positional hint that shifts whenever documents are inserted or
-removed in a multi-document file, so it must never be trusted on its own. A good
-design turns this into an advantage: the index is a fast-path locator that is
-re-validated against the manifest identity on every edit. If the document at the
-expected index no longer matches the identity, the writer re-locates by identity
-(or rescans) rather than editing the wrong document. Cheap locality, no blind
-trust.
+GitOps Reverser is in control of the Git side. Almost every write originates
+from it, so it updates the document index as part of writing, and any external
+change to the branch triggers a full rescan that rebuilds the inventory from
+scratch. Within a given inventory state the document index is therefore
+authoritative: the writer locates the document to edit directly by its index and
+does not need to re-derive the position from manifest identity on every edit.
 
 ### Rebuild and rescan
 
@@ -345,19 +366,24 @@ the deleted document was the only document in the file, the file can be removed.
 ## Duplicate resources
 
 The same Kubernetes object may appear in more than one file, or more than once
-in a multi-document file. That must be treated as an error unless a future mode
-explicitly models overlays.
+in a multi-document file. Because the API is leading and there must be exactly
+one source location per resource, GitOps Reverser resolves this deterministically
+instead of refusing to act: **the first occurrence wins, and the extra manifests
+are deleted automatically** so Git converges to a single copy.
 
-For the plain-manifest phase, duplicates should make the resource non-editable
-and surface a diagnostic like:
+"First" is defined by a stable scan order (for example lexicographic file path,
+then document index) so the outcome is reproducible. A diagnostic records what
+was removed:
 
 ```text
-apps/v1/deployments/default/app appears in:
-- apps/app.yaml document 2
-- overlays/dev/app.yaml document 1
+apps/v1/deployments/default/app: keeping apps/app.yaml document 2,
+removing duplicate in overlays/dev/app.yaml document 1
 ```
 
-GitOps Reverser should not guess which copy is authoritative.
+Scan ordering can be annoying when the "wrong" copy wins, but a single
+authoritative location matters more than preserving an ambiguous duplicate. This
+applies to plain manifests; a future overlay-aware mode could model intentional
+duplicates explicitly.
 
 ## Placement policy for new resources
 
@@ -486,7 +512,6 @@ explain and override.
 - full Kustomize reverse transformation
 - Helm chart or values editing
 - decrypting SOPS material
-- guessing an authoritative object when duplicates exist
 - preserving every formatting detail in every YAML edge case
 - making two autonomous GitOps controllers safely own the same resources
 - making the initial-reconcile prune path safe on its own
@@ -501,12 +526,17 @@ explain and override.
 - Valid watched KRM found only in Git is removed from Git; only watched GVRs
   participate in add/remove.
 - Watched API resources missing from Git are added to Git.
+- Duplicate copies of the same resource are resolved first-occurrence-wins by a
+  stable scan order; the extra copies are deleted automatically.
 - Convergence to no-change relies on a consistent desired-content projection plus
   semantic no-op detection, not a separate reconciliation-state layer.
-- SOPS files are partially encrypted with cleartext identity, single-document,
-  never decrypted, and re-encrypted on write. Files whose identity is encrypted
-  are ignored. Formatting is not preserved for encrypted files.
-- Identity is the inventory key; document index is a re-validated hint.
+- SOPS files are detected by file extension and must have both readable cleartext
+  identity and a `sops` key, otherwise they are flagged invalid and ignored. They
+  are single-document, never decrypted, and re-encrypted on write. Formatting is
+  not preserved for encrypted files.
+- Identity is the inventory key. The document index is authoritative within an
+  inventory state, because GitOps Reverser updates it on write and rebuilds it
+  via a full rescan on any external change.
 - The rescan is gated on "did anything under the base path change" and is a full
   rebuild otherwise — nothing smarter.
 - Anchors, aliases, and merge keys are disallow-listed; symlinks are not
@@ -522,16 +552,13 @@ explain and override.
 
 ## Remaining questions
 
-- **SOPS detection:** is "encrypted vs plaintext" decided by the presence of the
-  `sops:` metadata stanza in the file, by matching the `.sops.yaml` path rules,
-  or both? The skip-if-identity-encrypted check and the no-commit cache depend on
-  this.
-- **No-commit cache scope:** if the cache that avoids re-encryption commits lives
-  in process memory only, the first reconcile after a restart re-commits every
-  encrypted file. Is that acceptable, or does the cache need to survive restarts?
 - **`.sops.yaml` rule changes:** when the encryption rules change which fields
   are covered, every matching file must be re-encrypted. Is that an intended mass
   commit, or should it be gated?
+- **New encrypted resources:** when a brand-new encrypted resource is created,
+  which fields get encrypted — derived purely from the in-repo `.sops.yaml`, or
+  from a GitTarget setting? This ties into the existing TODO about non-Secret
+  sensitive custom resources.
 - **Diagnostics surface:** GitTarget status will not scale to thousands of
   manifests. Start with high-level stats, and consider a small read API on
   GitOps Reverser itself for the per-resource detail later. Open.

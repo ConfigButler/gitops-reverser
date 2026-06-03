@@ -1,6 +1,9 @@
 # POC: in-document YAML editor choice
 
-> Status: proposed (first practical step)
+> Status: implemented — see `internal/git/manifestedit` and its
+> [DECISION.md](../../internal/git/manifestedit/DECISION.md).
+> Outcome: `gopkg.in/yaml.v3` node editing + per-document text splitting clears
+> every hard requirement; goccy/kyaml/text-slice were not needed.
 > Related: [manifest-inventory-file-agnostic-placement.md](manifest-inventory-file-agnostic-placement.md)
 
 ## Goal
@@ -126,16 +129,56 @@ manifests in the same folder.
 
 ### 4. Duplicate identity
 
-The same object in two files, or twice in one file, should produce a duplicate
-diagnostic and mark that resource non-editable. The writer must not guess which
-copy is authoritative.
+The same object in two files, or twice in one file, should be detected as a
+duplicate set with a diagnostic. Resolution follows the vision document: the
+first occurrence by a stable scan order wins, and the extra copies are deleted.
+The investigation still matters here — the POC must detect the duplicate set
+reliably and pick the deterministic winner — so the result is one authoritative
+copy kept and the other removed.
 
-### 5. Semantic no-op (hard)
+### 5. Semantic no-op vs cleaning (hard)
 
-An existing Git document and a desired object that are semantically equal after
-sanitization should return "no change" and preserve the original bytes. This
-includes metadata noise the sanitizer removes, such as `resourceVersion`,
-`managedFields`, and other operational fields.
+Two opposite directions that must not be confused. The API is the truth and Git
+holds only clean, GitOps-compatible manifests; the sanitizer defines that clean
+projection.
+
+**True no-op — preserve bytes.** Operational fields the sanitizer strips
+(`resourceVersion`, `managedFields`, `status`, and similar) are removed from the
+*desired* side, so they are never written. A Git manifest that is already clean
+and otherwise matches is therefore equal: return "no change" and preserve the
+original bytes exactly.
+
+```yaml
+# already in Git (clean); API returns the same object plus
+# metadata.resourceVersion and managedFields -> no write
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: default
+data:
+  color: blue
+```
+
+**Cleaning — not a no-op.** If the *Git* document itself carries operational
+noise such as `resourceVersion`, that field is absent from the clean desired
+projection, so Git differs and must be rewritten to remove it. This is field
+deletion (see test 12), not a preserved no-op.
+
+```yaml
+# in Git (dirty) -> resourceVersion must be deleted, rest preserved
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: default
+  resourceVersion: "12345"
+data:
+  color: blue
+```
+
+The asymmetry is the point: sanitizer fields are stripped from the desired object
+so they are never written, and if Git already carries them they are cleaned out.
 
 ### 6. Document-scoped update (hard)
 
