@@ -26,7 +26,7 @@ Every operation is one cell in this table:
 
 | Git version | Desired version | Decision |
 |---|---|---|
-| absent | present | **create** (placement policy — out of scope for this package) |
+| absent | present | **create** — out of scope: placement is upstream, and this is *not* a valid `Comparison` (`Git` is required; see invariants) |
 | present | absent | **delete** the matching document |
 | present | present, equal | **no-op** (preserve bytes) |
 | present | present, different | **patch** in place (or whole-document replace fallback) |
@@ -66,8 +66,11 @@ fallback and new-file rendering define the house output format, so that render i
 **policy, not mechanism**. Inject it — a `func(*unstructured.Unstructured)
 ([]byte, error)`, satisfied today by `sanitize.MarshalToOrderedYAML` — rather than
 duplicating it in the package, where it could silently diverge from the existing
-writer's output contract. The package ships only a trivial default renderer for
-standalone use and tests. This keeps the preservation editor (mechanism, owned)
+writer's output contract. There is **no silent production default**: a path that
+needs canonical output (`Replace`, or a new file) with no renderer injected fails
+loudly with a diagnostic, so a missing wiring cannot mask itself as plausible
+YAML. The preservation and delete paths need no renderer at all; tests inject a
+small one explicitly. This keeps the preservation editor (mechanism, owned)
 cleanly separate from canonical rendering (policy, injected).
 
 Open sub-decision: input type. `*unstructured.Unstructured` is idiomatic and
@@ -81,12 +84,26 @@ Make the comparison itself a value, and split deciding from applying:
 
 ```go
 type Comparison struct {
-    Git     *Document                  // a parsed location: raw bytes, identity, index
+    Git     *Document                  // required: an existing parsed document
     Desired *unstructured.Unstructured // nil means "absent" -> delete
-    Options EditOptions                // injected strategies: list-match, ownership, renderer
+    Options EditOptions                // injected strategies (see below)
 }
 
-// Decide is pure: it inspects and compares, and never mutates Git's content.
+type EditOptions struct {
+    // Render is the canonical renderer for whole-document replacement and new
+    // files — the house output format, so it is policy: injected, not owned here.
+    // Nil is allowed only when no canonical output is needed (pure patch, no-op,
+    // delete); a path that needs it with no Render fails loudly.
+    Render func(*unstructured.Unstructured) ([]byte, error)
+    // ListMatch aligns sequences (default: by index). A keyed strategy names the
+    // field to match on; the GVK->field choice is made above this layer.
+    ListMatch ListMatchStrategy
+    // Owns reports whether a field path is owned by the reverser (default: all).
+    // The field-ownership seam: an absent field is deleted only when owned.
+    Owns func(path FieldPath) bool
+}
+
+// Decide is a pure preflight: it inspects and compares, never mutating Git.
 func Decide(c Comparison) Decision
 
 type Decision struct {
@@ -94,9 +111,16 @@ type Decision struct {
     Reason string         // human-readable, for diagnostics
 }
 
-// Apply produces the new file content for a decision. NoChange returns the input.
-func Apply(file []byte, c Comparison, d Decision) (EditResult, []Diagnostic)
+// Apply is authoritative: it re-parses c.Git, performs the edit, and returns what
+// actually happened. There is no separate file argument — c.Git is the single
+// source of truth for the bytes.
+func Apply(c Comparison, d Decision) (EditResult, []Diagnostic)
 ```
+
+`Document` is immutable data: the **whole file content**, the target document
+index, the manifest identity, and a content fingerprint — enough for `Apply` to
+splice the edited document back among untouched siblings and to validate the
+snapshot. It is deliberately not a shared mutable node tree (see below).
 
 `Desired == nil` models deletion as just another cell of the same comparison, with
 no second code path. The *trigger* for deletion still belongs to the reconcile
@@ -104,10 +128,36 @@ layer (its set-difference: "Git has watched KRM the API lacks"); the package onl
 formalizes the per-document consequence.
 
 `PatchDocument`/`DeleteDocument` become thin wrappers over `Decide` + `Apply`.
-`Options` is where later strategies plug in (keyed-list key, field-ownership
-predicate, canonical renderer) so the core stays small. The win is that `Decide`
-is a pure, exhaustively testable function over the two versions — exactly the
-thing we "constantly compare".
+`Options` is the one seam where later strategies plug in (renderer, keyed-list
+key, field-ownership predicate), so the core merge stays small and pure.
+
+### API invariants
+
+These contracts keep the comparison honest; make them explicit before
+implementing:
+
+- **`Git` is required.** A `Comparison` always describes an *existing* document.
+  `Git == nil, Desired != nil` is not a valid comparison: creating a brand-new
+  resource is a **placement** decision (where does the file go?) owned upstream.
+  Once a path is chosen, a new file is just `Options.Render(desired)` — it never
+  goes through `Decide`. So the table's `absent | present -> create` row lives in
+  the integration layer, not here.
+- **`Apply` uses `c.Git` and validates the snapshot.** There is no separate file
+  argument. `Apply` re-parses `c.Git`, confirms the document at the recorded index
+  still has the identity (and a content fingerprint) that `Decide` compared, and
+  refuses with a conflict diagnostic if the file drifted in between. One source of
+  truth; no stale edit applied to a changed shape.
+- **`Decision` is preflight; `EditResult.Mode` is authoritative.** Because
+  `Decide` does not merge, it states an *intent* (e.g. `Patch`). `Apply` re-parses
+  and merges, and may legitimately land elsewhere — `Replace` if a node turns out
+  ambiguous, `Skip` if the snapshot drifted. The returned `EditResult` is the
+  truth about what happened, not the `Decision`.
+- **Deletion is content-agnostic, so refusals never block prune.** The encrypted
+  and disallowed-construct refusals apply only to *content edits* (`Patch` /
+  `Replace`), which read and rewrite the object. `Delete` only removes a document
+  (splicing siblings verbatim) — it never decrypts or merges — so an encrypted
+  resource, a disallowed-construct document, or a duplicate loser can always be
+  pruned.
 
 ### Decide must not mutate
 
@@ -235,6 +285,10 @@ than changing it.
   shapes what "specific edits" ultimately means.
 - Does the document model graduate to a `manifestedit/yamldoc` sub-package, or
   stay file-separated within one package until something else reuses it?
+- Snapshot fingerprint: is it a hash of the target document's bytes or of the
+  whole file, and is a drift between `Decide` and `Apply` a soft `Skip` (re-decide
+  next reconcile) or a hard error? Leaning soft `Skip`, since the API is leading
+  and the next reconcile re-derives cleanly.
 - Where do the projection (sanitizer) and the injected canonical renderer live
   once the dependency is inverted — reused from `internal/sanitize` by the caller,
   or promoted to a shared spot? Whatever holds them should have a test asserting
