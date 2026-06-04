@@ -41,6 +41,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	"github.com/ConfigButler/gitops-reverser/internal/mapping"
 	"github.com/ConfigButler/gitops-reverser/internal/sanitize"
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
@@ -90,6 +91,11 @@ type BranchWorker struct {
 	Client        client.Client
 	Log           logr.Logger
 	contentWriter *contentWriter
+	// mapper resolves a GVR-only DELETE event to the managed document it targets,
+	// so a manifest moved off its canonical path is still deleted (M6 in the writer).
+	// It is nil until wired to the live-catalog mapper; a nil mapper keeps the writer
+	// structure-only and falls back to canonical-path deletes.
+	mapper mapping.ResourceMapper
 
 	// Event processing
 	eventQueue chan WorkItem

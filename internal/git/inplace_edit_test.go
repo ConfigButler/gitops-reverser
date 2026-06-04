@@ -59,10 +59,23 @@ func newWorktreeForTest(t *testing.T) *gogit.Worktree {
 	return worktree
 }
 
+// applyEventsViaPlanFlush drives the M7 plan-then-flush write path for tests: it
+// builds a minimal structure-only worker (no mapper) and folds the events over the
+// worktree at base "" (events carry their own relative paths under the root). It is
+// the unit-level entry point that replaced the per-event applyEventToWorktree.
+func applyEventsViaPlanFlush(t *testing.T, writer *contentWriter, worktree *gogit.Worktree, events ...Event) bool {
+	t.Helper()
+	w := &BranchWorker{contentWriter: writer}
+	changed, err := w.flushEventsToWorktree(context.Background(), worktree, "", events)
+	require.NoError(t, err)
+	return changed
+}
+
 // When the file on disk is hand-authored (carries a comment), an update edits it
 // in place: the comment survives and only the changed field is rewritten. This is
-// the file-agnostic-placement "magic" landing in the live writer.
-func TestHandleCreateOrUpdate_PreservesHandAuthoredFormatting(t *testing.T) {
+// the file-agnostic-placement "magic" landing in the live writer's plan-then-flush
+// path: the document is matched by content identity and patched, not overwritten.
+func TestPlanFlush_PreservesHandAuthoredFormatting(t *testing.T) {
 	writer := newContentWriter(types.SensitiveResourcePolicy{})
 	worktree := newWorktreeForTest(t)
 	root := worktree.Filesystem.Root()
@@ -78,9 +91,7 @@ func TestHandleCreateOrUpdate_PreservesHandAuthoredFormatting(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o750))
 	require.NoError(t, os.WriteFile(full, []byte(seeded), 0o600))
 
-	changed, err := handleCreateOrUpdateOperation(
-		context.Background(), writer, event, manifestTarget{filePath: relPath}, full, worktree)
-	require.NoError(t, err)
+	changed := applyEventsViaPlanFlush(t, writer, worktree, event)
 	require.True(t, changed, "a real value change must be written")
 
 	got, err := os.ReadFile(full)
@@ -91,10 +102,11 @@ func TestHandleCreateOrUpdate_PreservesHandAuthoredFormatting(t *testing.T) {
 	assert.NotContains(t, string(got), "color: blue")
 }
 
-// A file already in the operator's canonical format is rewritten wholesale, byte
-// identical to what buildContentForWrite produces — operator-authored content is
-// never reformatted by the in-place path.
-func TestHandleCreateOrUpdate_CanonicalFileStaysWholesale(t *testing.T) {
+// A change against a canonical file applies the new value. The plan-then-flush path
+// deliberately patches in place (preserving any layout) rather than the old writer's
+// wholesale re-render, so the assertion is on the resulting value, not on byte
+// identity with a wholesale render.
+func TestPlanFlush_AppliesChangeToCanonicalFile(t *testing.T) {
 	writer := newContentWriter(types.SensitiveResourcePolicy{})
 	worktree := newWorktreeForTest(t)
 	root := worktree.Filesystem.Root()
@@ -110,15 +122,36 @@ func TestHandleCreateOrUpdate_CanonicalFileStaysWholesale(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o750))
 	require.NoError(t, os.WriteFile(full, seedCanonical, 0o600))
 
-	changed, err := handleCreateOrUpdateOperation(
-		context.Background(), writer, event, manifestTarget{filePath: relPath}, full, worktree)
-	require.NoError(t, err)
+	changed := applyEventsViaPlanFlush(t, writer, worktree, event)
 	require.True(t, changed)
 
 	got, err := os.ReadFile(full)
 	require.NoError(t, err)
-	wantCanonical, err := writer.buildContentForWrite(context.Background(), event)
+	assert.Contains(t, string(got), "color: green", "the changed value is applied")
+	assert.NotContains(t, string(got), "color: blue")
+}
+
+// Re-applying the identical desired state is a no-op: the byte state machine and the
+// manifestedit no-op decision agree, so nothing is written and the flush reports no
+// change (avoiding an empty commit).
+func TestPlanFlush_IdenticalUpdateIsNoOp(t *testing.T) {
+	writer := newContentWriter(types.SensitiveResourcePolicy{})
+	worktree := newWorktreeForTest(t)
+	root := worktree.Filesystem.Root()
+
+	event := inplaceCMEvent("blue")
+	relPath := writer.filePathForIdentifier(event.Identifier)
+	full := filepath.Join(root, relPath)
+
+	seed, err := writer.buildContentForWrite(context.Background(), event)
 	require.NoError(t, err)
-	assert.Equal(t, string(wantCanonical), string(got),
-		"a canonical file is rewritten wholesale, not reformatted by the in-place path")
+	require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o750))
+	require.NoError(t, os.WriteFile(full, seed, 0o600))
+
+	changed := applyEventsViaPlanFlush(t, writer, worktree, event)
+	assert.False(t, changed, "an identical update must report no change")
+
+	got, err := os.ReadFile(full)
+	require.NoError(t, err)
+	assert.Equal(t, string(seed), string(got), "a no-op must not rewrite the file")
 }

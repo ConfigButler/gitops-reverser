@@ -283,6 +283,35 @@ func buildStore(
 	return store
 }
 
+// BuildStoreFromFiles builds the byte-free structure model from already-collected
+// file bytes, rather than walking an fs.FS (BuildStore). It is the live writer's
+// entry point: the writer reads the worktree subtree once at a commit boundary —
+// it needs the bytes anyway, to hydrate and apply — and hands the same FileContent
+// slice here, so the store and the bytes the plan is applied to are one snapshot.
+//
+// mapper resolves each document's GVK to a served resource identity; a nil mapper
+// keeps it structure-only (no resource index), exactly as BuildStore. allowlist
+// names the build-directive files retained outside the model; pass the zero value
+// to materialise every KRM document.
+func BuildStoreFromFiles(
+	ctx context.Context,
+	files []manifestedit.FileContent,
+	mapper mapping.ResourceMapper,
+	allowlist Allowlist,
+) *ManifestStore {
+	return buildStore(ctx, files, nil, mapper, allowlist)
+}
+
+// DocumentLocations returns the (file path, document index) of every managed
+// document in the store. It is the public form of the planner's per-document
+// position reconstruction (record-less diagnostic gaps), computed once so a caller
+// folding many events over one commit-boundary store does not pay the O(store)
+// reconstruction per lookup. Pair it with ByManifestIdentity to resolve an
+// identity to its RecordRef.
+func (s *ManifestStore) DocumentLocations() map[*DocumentModel]RecordRef {
+	return documentLocations(s)
+}
+
 // materialize adds one managed KRM record to the store: its FileModel, the GVK
 // index, the resolved mapping, and the first-occurrence-wins identity indexes.
 func (s *ManifestStore) materialize(

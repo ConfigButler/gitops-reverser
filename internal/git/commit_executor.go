@@ -162,21 +162,26 @@ func (w *BranchWorker) applyPendingWriteEvents(
 	worktree *gogit.Worktree,
 	events []Event,
 ) (bool, error) {
-	// One locator per batch: the inventory is the checked-out commit's state, so it
-	// is scanned once per base path and reused for every event (see manifestLocator).
-	locator := newManifestLocator(worktree)
-
-	anyChanges := false
+	// Stage path-scoped bootstrap files first, before any resource write, exactly as
+	// the per-event path did.
 	for _, event := range events {
 		if err := ensureBootstrapTemplateInPath(repo, sanitizePath(event.Path), event.BootstrapOptions); err != nil {
 			return false, err
 		}
+	}
 
-		changesApplied, err := applyEventToWorktree(ctx, w.contentWriter, event, locator)
+	// Plan-then-flush each GitTarget subtree once: build the structure model, resolve
+	// every event to a single-identity action, apply to hydrated file buffers, and
+	// flush dirty/deleted files. A grouped window is single-target, so this is usually
+	// one base path.
+	byBase := groupEventsByBase(events)
+	anyChanges := false
+	for _, base := range sortedBaseKeys(byBase) {
+		changed, err := w.flushEventsToWorktree(ctx, worktree, base, byBase[base])
 		if err != nil {
 			return false, err
 		}
-		if changesApplied {
+		if changed {
 			anyChanges = true
 		}
 	}

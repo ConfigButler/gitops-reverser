@@ -496,6 +496,74 @@ dependency; it does not exist yet. Independent of Track A.
 
 ### M7 — Live writer: plan-then-flush [runtime]
 
+> **Status: ✅ landed.** The per-event `locate → write` loop is replaced by
+> plan-then-flush in
+> [`internal/git/plan_flush.go`](../../../internal/git/plan_flush.go).
+> `applyPendingWriteEvents` now groups a batch by GitTarget base path and, per
+> subtree, builds the byte-free `ManifestStore` once
+> (`manifestanalyzer.BuildStoreFromFiles`), resolves each event to a
+> **single-identity** action over that model, applies the actions to hydrated
+> commit-scoped `fileBuffer`s, and flushes only the files whose bytes changed or
+> were deleted (`Dirty()`/`Deleted()` are the byte state machine, exactly as the
+> design's `FileModel`). The replaced machinery — `manifestLocator` / `inventoryFor`
+> / `locate`, `applyEventToWorktree`, `handleCreateOrUpdateOperation` /
+> `handleDeleteOperation`, `reconcileAgainstExisting` / `preserveExistingFormatting`
+> — is deleted (~260 lines from [`git.go`](../../../internal/git/git.go)); the
+> per-document mechanism (`manifestedit.Apply` / `DeleteDocument`),
+> `ResourceIdentifier.ToGitPath` placement, and the SOPS/no-op guards survive as plan
+> decisions. The model is reused via two new exported analyzer entry points,
+> `BuildStoreFromFiles` and `ManifestStore.DocumentLocations`
+> ([`store.go`](../../../internal/manifestanalyzer/store.go)). `task lint` / `test` /
+> `test-e2e` are all green.
+>
+> Judgment calls the plan left open:
+> 1. **Steady state is single-identity, never a batch mark-and-sweep** (the design's
+>    "Two Paths, One Plan Type"). The writer resolves each event on its own — an
+>    object-bearing event is an upsert (in-place patch when a managed document for its
+>    identity already lives in the subtree, even if moved off the canonical path;
+>    otherwise a wholesale canonical write), a `DELETE` is a delete-document — and
+>    **never** drops the other managed documents just because they are absent from the
+>    batch. Whole-folder mark-and-sweep stays the M8 resync mechanism.
+> 2. **The no-op / in-place / whole-replace / skip decisions survive as
+>    `manifestedit.Decide` plan decisions**, not the old per-event heuristics. A
+>    canonical file is now patched in place (preserving any formatting) rather than
+>    re-rendered wholesale; idempotence holds because `Decide`'s object-level no-op
+>    check makes the next reconcile a no-change even if the patched bytes differ from a
+>    fresh canonical render. The multi-document data-loss guard survives as
+>    `writeCanonical`'s refusal to overwrite a multi-document canonical file, and
+>    multi-document in-place edits are inherently safe (manifestedit replaces only the
+>    target document).
+> 3. **Sensitive (SOPS) resources keep the re-encrypting wholesale path** and are never
+>    patched in place — an in-place merge would drop the sops metadata and write the
+>    secret back in cleartext — exactly as the per-event writer did.
+> 4. **Deletes are content-first, and the mapper realises M6 in the writer.** A
+>    `DELETE` is matched by manifest identity when it still carries its object — and the
+>    live watch path *does* carry the deleted object
+>    ([`informers.go`](../../../internal/watch/informers.go)), so a manifest moved off
+>    its canonical path is already deleted correctly in steady state **with no mapper**.
+>    A GVR-only delete (no object) is resolved through `PlanDelete` when a mapper is
+>    wired — the resolved resource-identity index, M6's primitive folded into the writer
+>    (covered by a static-snapshot unit test). With neither object nor mapper it falls
+>    back to the canonical placement path (document 0), the per-event writer's exact
+>    behaviour. The only object-less deletes in production are `FolderReconciler`'s
+>    orphan-prune events — the path **M8 replaces** — so wiring the live-catalog mapper
+>    into the writer (with the mapping doc's fail-closed *hold-and-retry*, which the
+>    current commit path does not yet have — a commit error drops the window) is
+>    deliberately deferred to M8, where that path and its failure model are rebuilt.
+> 5. **The live writer does not yet run the M4 acceptance gate.** It builds the store
+>    with the empty allowlist (materialise every KRM document, indexing the whole
+>    subtree for placement exactly as the old per-event inventory) and applies events
+>    unconditionally. Gating the live apply on `Accept` (allowlist / scope / refusals)
+>    is a real behaviour change — it would start refusing existing folders — so it is a
+>    separate, deliberate follow-on rather than part of this mechanism swap.
+> 6. **Coalescing and commit-boundary hydration reuse the existing machinery.** The
+>    open commit window already coalesces per path (last-writer-wins), and the per-base
+>    `fileBuffer`s give per-identity coalescing within a batch, so no separate
+>    `PendingChanges` type was introduced. The subtree is scanned once per batch at the
+>    commit boundary (the same cost as the old per-batch `IndexDir`); buffers hydrate
+>    lazily per touched file. Header-only parsing and cross-batch caching are the M9
+>    optimisations.
+
 - **Depends on**: M5, M6 (and C1 landed).
 - **Touches**: replace the event-by-event path with build-store → plan → apply →
   flush-once. **Deletes** (per the reconcile doc):
@@ -564,8 +632,14 @@ the shared write-nothing dry-run, and `DocumentModel.index` was dropped (M4 refu
 any managed file that is not entirely valid KRM, so an accepted file is contiguous).
 **M6 (delete identity) ✅ has now landed too** — `PlanDelete` resolves a GVR-only
 `DELETED` event to a single `delete-document` action over the content-derived store, so
-a moved manifest is still deleted by its true `RecordRef`. That leaves the critical
-path at **M7 (live writer: plan-then-flush)**, which folds `BuildPlan` (resync) and
-`PlanDelete` (per-event) at the commit boundary and still needs the per-event
-create/patch resolution, `PendingChanges` coalescing, and the dirty/deleted flush. C1 ✅
-landed independently and must precede M7.
+a moved manifest is still deleted by its true `RecordRef`. **M7 (live writer:
+plan-then-flush) ✅ has now landed** — the per-event `locate → write` loop is gone, the
+controller writes by building the store, resolving each event to a single-identity
+action, applying to hydrated file buffers, and flushing dirty/deleted files; the
+no-op/in-place/whole-replace/skip decisions survive as `manifestedit.Decide` plan
+decisions and e2e is green. C1 ✅ landed independently and preceded M7. That leaves the
+critical path at **M8 (streaming mark-and-sweep resync)**, which replaces
+`FolderReconciler`'s two-snapshot GVR diff (and its object-less orphan-prune deletes)
+with one streaming-list snapshot folded over the managed model, and is where the
+live-catalog mapper is wired into the writer with the fail-closed hold-and-retry the
+mapping doc requires. M9 (cross-batch cache) follows.

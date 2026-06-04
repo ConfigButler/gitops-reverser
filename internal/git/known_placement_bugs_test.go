@@ -18,20 +18,19 @@ limitations under the License.
 
 package git
 
-// These tests guard two writer defects that were fixed on this branch. They
-// started red (as the executable spec for the fix) and now pin the corrected
-// behavior so it cannot regress:
+// These tests guard writer behaviors that the M7 plan-then-flush path must keep:
 //
-//   - High:   the production writer must be file-agnostic. applyEventToWorktree
-//     asks the inventory where the resource already lives (match-first) and edits
-//     or deletes it there; only a genuinely new resource falls back to the
-//     deterministic identity path. A manifest a user placed at apps/foo.yaml is
-//     updated and deleted in place, never duplicated at the canonical path.
+//   - File-agnostic placement: the writer matches a resource by content identity and
+//     edits or deletes it where it actually lives, only falling back to the canonical
+//     identity path for a genuinely new resource. A manifest a user placed at
+//     apps/foo.yaml is updated and deleted in place, never duplicated at the canonical
+//     path.
 //
-//   - Medium: an in-place no-op must report no change. When the whole-file
-//     semantic guard diverges from manifestedit's per-document decision (multi-doc
-//     files), handleCreateOrUpdateOperation must not stage identical bytes and
-//     return true, which the commit executor would treat as commit-worthy.
+//   - No empty commits: an update that resolves to no byte change reports no change,
+//     so the commit executor does not attempt an empty commit.
+//
+//   - No data loss: a wholesale write must never drop sibling documents in a
+//     multi-document file.
 
 import (
 	"context"
@@ -66,20 +65,17 @@ func seedPlacedManifest(t *testing.T, worktree *gogit.Worktree, relPath, content
 	return full
 }
 
-// HIGH BUG (fixed) — flexible placement, update path.
-//
-// A user placed the ConfigMap at a hand-chosen path (apps/foo.yaml), not the
-// canonical identity path. A cluster update must edit the resource where it
-// already lives and must NOT spawn a duplicate at the canonical path.
-func TestApplyEvent_UpdateMustFollowExistingPlacement(t *testing.T) {
+// Flexible placement, update path: a user placed the ConfigMap at a hand-chosen path
+// (apps/foo.yaml), not the canonical identity path. A cluster update must edit the
+// resource where it already lives and must NOT spawn a duplicate at the canonical path.
+func TestPlanFlush_UpdateFollowsExistingPlacement(t *testing.T) {
 	writer := newContentWriter(types.SensitiveResourcePolicy{})
 	worktree := newWorktreeForTest(t)
 
 	placedFull := seedPlacedManifest(t, worktree, placedManifestPath, placedManifestBlue)
 
 	event := inplaceCMEvent("green")
-	_, err := applyEventToWorktree(context.Background(), writer, event, newManifestLocator(worktree))
-	require.NoError(t, err)
+	applyEventsViaPlanFlush(t, writer, worktree, event)
 
 	placedAfter, err := os.ReadFile(placedFull)
 	require.NoError(t, err)
@@ -92,13 +88,10 @@ func TestApplyEvent_UpdateMustFollowExistingPlacement(t *testing.T) {
 		"no duplicate copy must be created at the canonical path %s", canonicalFull)
 }
 
-// HIGH BUG (fixed) — flexible placement, delete path.
-//
-// Deleting the resource from the cluster must remove the manifest where it
-// actually lives (apps/foo.yaml), not leave it orphaned because the deterministic
-// path no longer matches. The delete event here carries the object, so the writer
-// can content-match it to its real location.
-func TestApplyEvent_DeleteMustFollowExistingPlacement(t *testing.T) {
+// Flexible placement, delete path: deleting the resource from the cluster must remove
+// the manifest where it actually lives (apps/foo.yaml). The delete event here carries
+// the object, so the writer content-matches it to its real location.
+func TestPlanFlush_DeleteFollowsExistingPlacement(t *testing.T) {
 	writer := newContentWriter(types.SensitiveResourcePolicy{})
 	worktree := newWorktreeForTest(t)
 
@@ -106,31 +99,25 @@ func TestApplyEvent_DeleteMustFollowExistingPlacement(t *testing.T) {
 
 	event := inplaceCMEvent("blue")
 	event.Operation = "DELETE"
-	changed, err := applyEventToWorktree(context.Background(), writer, event, newManifestLocator(worktree))
-	require.NoError(t, err)
+	changed := applyEventsViaPlanFlush(t, writer, worktree, event)
 
 	assert.True(t, changed, "deleting the resource must remove the manifest where it lives")
 	_, statErr := os.Stat(placedFull)
 	assert.True(t, os.IsNotExist(statErr), "apps/foo.yaml must be deleted, not orphaned")
 }
 
-// MEDIUM BUG (fixed) — an in-place no-op must report no change.
-//
-// Multi-doc file: an unrelated resource is the first document, and the SECOND
-// document is the exact canonical rendering of the watched object — so editing
-// it in place is a genuine no-op. The whole-file semantic guard only canonicalizes
-// the first document (sigs.k8s.io/yaml decodes one doc), so it does not short-
-// circuit; the in-place editor returns the file unchanged, and
-// handleCreateOrUpdateOperation must report changed=false rather than drive an
-// empty commit.
-func TestHandleCreateOrUpdate_NoOpInMultiDocReportsNoChange(t *testing.T) {
+// An in-place no-op must report no change. Multi-doc file: an unrelated resource is
+// the first document, and the SECOND document is the exact canonical rendering of the
+// watched object — so editing it in place is a genuine no-op. manifestedit returns the
+// file unchanged, and the flush must report changed=false rather than drive an empty
+// commit.
+func TestPlanFlush_NoOpInMultiDocReportsNoChange(t *testing.T) {
 	writer := newContentWriter(types.SensitiveResourcePolicy{})
 	worktree := newWorktreeForTest(t)
 	root := worktree.Filesystem.Root()
 
 	event := inplaceCMEvent("blue")
-	relPath := writer.filePathForIdentifier(event.Identifier)
-	full := filepath.Join(root, relPath)
+	full := filepath.Join(root, placedManifestPath)
 
 	// The target document, byte-for-byte as the operator would render it.
 	targetDoc, err := writer.buildContentForWrite(context.Background(), event)
@@ -147,9 +134,7 @@ func TestHandleCreateOrUpdate_NoOpInMultiDocReportsNoChange(t *testing.T) {
 	before, err := os.ReadFile(full)
 	require.NoError(t, err)
 
-	changed, err := handleCreateOrUpdateOperation(
-		context.Background(), writer, event, manifestTarget{filePath: relPath}, full, worktree)
-	require.NoError(t, err)
+	changed := applyEventsViaPlanFlush(t, writer, worktree, event)
 
 	after, err := os.ReadFile(full)
 	require.NoError(t, err)
@@ -158,14 +143,12 @@ func TestHandleCreateOrUpdate_NoOpInMultiDocReportsNoChange(t *testing.T) {
 		"a no-op in-place edit must report no change, otherwise an empty commit is attempted")
 }
 
-// DATA-LOSS GUARD — a wholesale write must never drop sibling documents.
-//
-// The file holds two documents and the target document is non-editable (it uses a
-// YAML merge key), so the in-place editor cannot apply and returns ok=false. The
-// fallback wholesale write would replace the whole file with the single rendered
-// resource, dropping the unrelated first document. handleCreateOrUpdateOperation
-// must instead refuse the write and report no change, leaving the file untouched.
-func TestHandleCreateOrUpdate_MultiDocFallbackDoesNotDropSiblings(t *testing.T) {
+// Data-loss guard: a wholesale write must never drop sibling documents. The canonical
+// path holds a multi-document file whose target document is non-editable (it uses a
+// YAML merge key), so it does not claim its identity and is not matched for an in-place
+// patch. The writer must refuse to overwrite the multi-document file wholesale (which
+// would drop the unrelated first document) and report no change.
+func TestPlanFlush_MultiDocCanonicalDoesNotDropSiblings(t *testing.T) {
 	writer := newContentWriter(types.SensitiveResourcePolicy{})
 	worktree := newWorktreeForTest(t)
 	root := worktree.Filesystem.Root()
@@ -179,7 +162,8 @@ func TestHandleCreateOrUpdate_MultiDocFallbackDoesNotDropSiblings(t *testing.T) 
 		"metadata:\n  name: other\n  namespace: default\n" +
 		"data:\n  k: v\n"
 	// Document 1: the target (default/app) written with a merge key, which
-	// manifestedit refuses to edit — so the in-place edit returns ok=false.
+	// manifestedit refuses to edit — so it does not claim its identity for the in-place
+	// match, and the canonical-path file is multi-document.
 	targetUneditable := "apiVersion: v1\nkind: ConfigMap\n" +
 		"metadata:\n  name: app\n  namespace: default\n" +
 		"data: &d\n  color: blue\nextra:\n  <<: *d\n"
@@ -187,34 +171,11 @@ func TestHandleCreateOrUpdate_MultiDocFallbackDoesNotDropSiblings(t *testing.T) 
 	require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o750))
 	require.NoError(t, os.WriteFile(full, []byte(seeded), 0o600))
 
-	changed, err := handleCreateOrUpdateOperation(
-		context.Background(), writer, event, manifestTarget{filePath: relPath, documentIndex: 1}, full, worktree)
-	require.NoError(t, err)
+	changed := applyEventsViaPlanFlush(t, writer, worktree, event)
 
 	after, err := os.ReadFile(full)
 	require.NoError(t, err)
-	assert.False(t, changed, "an unsafe multi-document update must report no change")
+	assert.False(t, changed, "an unsafe multi-document write must report no change")
 	assert.Equal(t, seeded, string(after),
 		"the sibling document must survive: the file must not be overwritten wholesale")
-}
-
-// PERF REGRESSION GUARD — the locator scans each base path once per batch.
-//
-// Match-first must not re-scan the tree per event: a snapshot of many large
-// manifests (e.g. a cluster-wide CRD watch) would be O(events × tree) and miss
-// commit deadlines. We prove the cache by scanning, then writing a file, then
-// scanning again: the batch sees a single snapshot of the checked-out commit, so
-// the second scan must return the cached (empty) inventory, not the new file.
-func TestManifestLocator_ScansOncePerBatch(t *testing.T) {
-	worktree := newWorktreeForTest(t)
-	locator := newManifestLocator(worktree)
-
-	first := locator.inventoryFor("")
-	require.Empty(t, first.Records, "a fresh worktree indexes no manifests")
-
-	seedPlacedManifest(t, worktree, placedManifestPath, placedManifestBlue)
-
-	second := locator.inventoryFor("")
-	assert.Empty(t, second.Records,
-		"the inventory is scanned once per batch and cached; a mid-batch write must not re-trigger a scan")
 }
