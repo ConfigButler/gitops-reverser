@@ -107,15 +107,16 @@ const (
 
 // DocumentReport describes one YAML document inside a file.
 type DocumentReport struct {
-	Index     int                   `json:"index"`
-	Class     Class                 `json:"class"`
-	GVK       GVK                   `json:"gvk"`
-	Identity  manifestedit.Identity `json:"identity"`
-	Editable  bool                  `json:"editable"`
-	Encrypted bool                  `json:"encrypted"`
-	Duplicate bool                  `json:"duplicate"`
-	// Reason explains a non-editable, non-KRM, empty, or invalid document.
-	Reason string `json:"reason,omitempty"`
+	Index    int                   `json:"index"`
+	Class    Class                 `json:"class"`
+	GVK      GVK                   `json:"gvk"`
+	Identity manifestedit.Identity `json:"identity"`
+	Editable bool                  `json:"editable"`
+	// Cause is the structured reason a KRM document is not cleanly editable
+	// (encrypted, non-editable construct). It is nil for an editable document and
+	// for non-KRM/empty/invalid rows. Duplicate identity is no longer a per-document
+	// attribute — it surfaces as an acceptance issue and a diagnostic instead.
+	Cause *DocumentCause `json:"cause,omitempty"`
 }
 
 // FileReport describes one file under the scanned root. Non-YAML files carry no
@@ -186,41 +187,71 @@ func AnalyzeDir(root string) (Report, error) {
 	return rep, nil
 }
 
+// BuildStore walks fsys and returns the byte-free ManifestStore: the managed
+// FileModels and the scan/index diagnostics. It is the structure spine the Report
+// is projected from, and the entry point downstream layers (planner, live writer)
+// will consume directly. It is read-only and never fails.
+func BuildStore(fsys fs.FS) *ManifestStore {
+	yamlFiles, _, scanDiags := collectFiles(fsys)
+	return buildStore(yamlFiles, scanDiags)
+}
+
 // Analyze scans fsys and returns a Report. It is read-only and never fails: any
 // per-entry problem (unreadable file, walk error, invalid YAML) becomes a
-// diagnostic rather than an error.
+// diagnostic rather than an error. The Report is a projection rendered from the
+// ManifestStore built by buildStore.
 func Analyze(fsys fs.FS) Report {
 	yamlFiles, nonYAML, scanDiags := collectFiles(fsys)
-	inv, indexDiags := manifestedit.IndexFiles(yamlFiles)
+	store := buildStore(yamlFiles, scanDiags)
+	return projectReport(store, yamlFiles, nonYAML)
+}
 
-	recordsByPath := map[string][]manifestedit.DocumentRecord{}
-	for _, r := range inv.Records {
-		recordsByPath[r.Location.Path] = append(recordsByPath[r.Location.Path], r)
-	}
-	dupSet := map[manifestedit.Location]bool{}
-	for _, d := range inv.Duplicates() {
-		dupSet[d.Location] = true
-	}
+// projectReport renders the analyzer Report from the store plus the scan's file
+// skeleton (which YAML and non-YAML files exist). Managed KRM documents come from
+// the store; non-KRM, empty, and invalid documents are reconstructed from the
+// store's diagnostics, exactly as the pre-store analyzer derived them.
+func projectReport(store *ManifestStore, yamlFiles []manifestedit.FileContent, nonYAML []string) Report {
+	// Non-YAML scan diagnostics (read errors, skipped symlinks, walk errors) never
+	// share a path with an indexed YAML file, so grouping every diagnostic by path
+	// yields exactly the per-document index diagnostics for each YAML file.
 	diagsByPath := map[string][]manifestedit.Diagnostic{}
-	for _, d := range indexDiags {
+	for _, d := range store.Diagnostics {
 		diagsByPath[d.Path] = append(diagsByPath[d.Path], d)
 	}
 
 	files := make([]FileReport, 0, len(yamlFiles)+len(nonYAML))
 	for _, f := range yamlFiles {
-		files = append(files, buildYAMLFileReport(f.Path, recordsByPath[f.Path], diagsByPath[f.Path], dupSet))
+		files = append(files, projectFileReport(f.Path, store.FilesByPath[f.Path], diagsByPath[f.Path]))
 	}
 	for _, p := range nonYAML {
 		files = append(files, FileReport{Path: p, IsYAML: false})
 	}
 	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
 
-	allDiags := append(append([]manifestedit.Diagnostic(nil), scanDiags...), indexDiags...)
+	// Duplicate identities and the invalid-YAML detail are acceptance facts derived
+	// from the store's collapsed index and its structured diagnostics — never from a
+	// per-document field or a diagnostic message match.
+	duplicates := map[RecordRef]bool{}
+	for path, fm := range store.FilesByPath {
+		for _, dm := range fm.Documents {
+			if store.IsDuplicate(dm) {
+				duplicates[RecordRef{FilePath: path, DocumentIndex: dm.index}] = true
+			}
+		}
+	}
+	invalidMsgs := map[RecordRef]string{}
+	for _, d := range store.Diagnostics {
+		if d.Reason == manifestedit.ReasonInvalidYAML {
+			invalidMsgs[RecordRef{FilePath: d.Path, DocumentIndex: d.DocumentIndex}] = d.Message
+		}
+	}
+
 	return Report{
+		Root:        store.Root,
 		Files:       files,
-		Summary:     buildSummary(files, allDiags),
-		Issues:      buildIssues(files),
-		Diagnostics: allDiags,
+		Summary:     buildSummary(files, store.Diagnostics, len(duplicates)),
+		Issues:      buildIssues(files, duplicates, invalidMsgs),
+		Diagnostics: store.Diagnostics,
 	}
 }
 
@@ -284,18 +315,16 @@ func collectFiles(fsys fs.FS) ([]manifestedit.FileContent, []string, []manifeste
 	return yamlFiles, nonYAML, diags
 }
 
-// buildYAMLFileReport assembles per-document classification for one YAML file by
-// merging KRM records (the authoritative manifest documents) with diagnostics
-// (which cover empty, invalid, and non-KRM documents) on document index.
-func buildYAMLFileReport(
-	path string,
-	records []manifestedit.DocumentRecord,
-	diags []manifestedit.Diagnostic,
-	dupSet map[manifestedit.Location]bool,
-) FileReport {
-	recByIdx := map[int]manifestedit.DocumentRecord{}
-	for _, r := range records {
-		recByIdx[r.Location.DocumentIndex] = r
+// projectFileReport assembles per-document classification for one YAML file by
+// merging the store's managed KRM documents (the authoritative manifest documents)
+// with diagnostics (which cover empty, invalid, and non-KRM documents) on document
+// index. fm is nil for a YAML file that holds no KRM document.
+func projectFileReport(path string, fm *FileModel, diags []manifestedit.Diagnostic) FileReport {
+	docByIdx := map[int]*DocumentModel{}
+	if fm != nil {
+		for _, dm := range fm.Documents {
+			docByIdx[dm.index] = dm
+		}
 	}
 	diagByIdx := map[int]manifestedit.Diagnostic{}
 	for _, d := range diags {
@@ -305,7 +334,7 @@ func buildYAMLFileReport(
 	}
 
 	idxSet := map[int]bool{}
-	for i := range recByIdx {
+	for i := range docByIdx {
 		idxSet[i] = true
 	}
 	for i := range diagByIdx {
@@ -319,49 +348,63 @@ func buildYAMLFileReport(
 
 	fr := FileReport{Path: path, IsYAML: true}
 	for _, i := range idxs {
-		// A KRM record always wins over a co-located diagnostic (for example a
-		// non-editable record paired with a warning about anchors).
-		if r, ok := recByIdx[i]; ok {
-			fr.Documents = append(fr.Documents, krmDocReport(i, r, dupSet))
+		// A managed KRM document always wins over a co-located diagnostic (for
+		// example a non-editable document paired with a warning about anchors).
+		if dm, ok := docByIdx[i]; ok {
+			fr.Documents = append(fr.Documents, krmDocReport(i, dm))
 			continue
 		}
 		d := diagByIdx[i]
-		fr.Documents = append(fr.Documents, DocumentReport{Index: i, Class: classFromDiag(d), Reason: d.Message})
+		fr.Documents = append(fr.Documents, DocumentReport{Index: i, Class: classFromDiag(d)})
 	}
 	return fr
 }
 
-// krmDocReport builds a DocumentReport for an indexed KRM record.
-func krmDocReport(i int, r manifestedit.DocumentRecord, dupSet map[manifestedit.Location]bool) DocumentReport {
+// krmDocReport builds a DocumentReport for one managed KRM document.
+func krmDocReport(i int, dm *DocumentModel) DocumentReport {
 	return DocumentReport{
-		Index:     i,
-		Class:     ClassKRM,
-		GVK:       ParseGVK(r.Identity.APIVersion, r.Identity.Kind),
-		Identity:  r.Identity,
-		Editable:  r.Editable,
-		Encrypted: r.Encrypted,
-		Duplicate: dupSet[r.Location],
-		Reason:    r.Reason,
+		Index:    i,
+		Class:    ClassKRM,
+		GVK:      ParseGVK(dm.ManifestIdentity.APIVersion, dm.ManifestIdentity.Kind),
+		Identity: dm.ManifestIdentity,
+		Editable: dm.Editable,
+		Cause:    causePtr(dm.Cause),
 	}
 }
 
-// classFromDiag classifies a non-KRM document from its diagnostic. It couples to
-// manifestedit's diagnostic wording; promoting manifestedit to emit structured
-// reasons is a documented follow-up. An error-level diagnostic is invalid YAML;
-// an "empty" message is an empty document; anything else is non-KRM YAML.
+// causePtr returns a pointer to a non-empty cause, or nil for a cleanly editable
+// document, so the JSON omits "cause" entirely in the common case.
+func causePtr(c DocumentCause) *DocumentCause {
+	if c.Kind == CauseNone {
+		return nil
+	}
+	return &c
+}
+
+// classFromDiag classifies a record-less document from its structured diagnostic
+// reason. Classification reads the reason code, never the message text.
 func classFromDiag(d manifestedit.Diagnostic) Class {
-	if d.Level == manifestedit.DiagError {
-		return ClassInvalidYAML
-	}
-	if strings.Contains(d.Message, "empty") {
+	switch d.Reason {
+	case manifestedit.ReasonEmptyDocument:
 		return ClassEmpty
+	case manifestedit.ReasonInvalidYAML, manifestedit.ReasonMissingSopsKey:
+		return ClassInvalidYAML
+	case manifestedit.ReasonNotKRM:
+		return ClassNonKRM
+	case manifestedit.ReasonNonEditable, manifestedit.ReasonDuplicateIdentity:
+		// These reasons always accompany a record, which wins the merge, so they are
+		// never classified here; fall through to the non-KRM default for safety.
+		return ClassNonKRM
+	default:
+		return ClassNonKRM
 	}
-	return ClassNonKRM
 }
 
-// buildSummary produces the bounded overview.
-func buildSummary(files []FileReport, diags []manifestedit.Diagnostic) Summary {
+// buildSummary produces the bounded overview. dupCount is the number of duplicate
+// identities, derived by the caller from the store's collapsed index.
+func buildSummary(files []FileReport, diags []manifestedit.Diagnostic, dupCount int) Summary {
 	s := Summary{
+		Duplicates:  dupCount,
 		ByClass:     map[Class]int{},
 		ByGVK:       map[string]int{},
 		Diagnostics: map[manifestedit.DiagnosticLevel]int{},
@@ -379,10 +422,7 @@ func buildSummary(files []FileReport, diags []manifestedit.Diagnostic) Summary {
 			if !d.GVK.Empty() {
 				s.ByGVK[d.GVK.String()]++
 			}
-			if d.Duplicate {
-				s.Duplicates++
-			}
-			if d.Encrypted {
+			if d.Cause != nil && d.Cause.Kind == CauseEncrypted {
 				s.Encrypted++
 			}
 		}
@@ -397,11 +437,18 @@ func buildSummary(files []FileReport, diags []manifestedit.Diagnostic) Summary {
 // the structural facts a stricter adoption policy may treat as blocking; whether
 // each manifest belongs (the watched/unwatched comparison against a live API) is
 // a deliberate later step.
-func buildIssues(files []FileReport) []AcceptanceIssue {
+// duplicates marks the (file, index) of every duplicate-identity loser; invalidMsgs
+// carries the parse-error detail for invalid-YAML documents, both keyed by RecordRef.
+func buildIssues(
+	files []FileReport,
+	duplicates map[RecordRef]bool,
+	invalidMsgs map[RecordRef]string,
+) []AcceptanceIssue {
 	var issues []AcceptanceIssue
 	for _, f := range files {
 		for _, d := range f.Documents {
-			if d.Duplicate {
+			ref := RecordRef{FilePath: f.Path, DocumentIndex: d.Index}
+			if duplicates[ref] {
 				issues = append(issues, AcceptanceIssue{
 					Kind: IssueDuplicate, Path: f.Path, DocumentIndex: d.Index,
 					Message: "duplicate of " + identityRef(d.Identity),
@@ -415,7 +462,7 @@ func buildIssues(files []FileReport) []AcceptanceIssue {
 				})
 			case ClassInvalidYAML:
 				issues = append(issues, AcceptanceIssue{
-					Kind: IssueInvalidYAML, Path: f.Path, DocumentIndex: d.Index, Message: d.Reason,
+					Kind: IssueInvalidYAML, Path: f.Path, DocumentIndex: d.Index, Message: invalidMsgs[ref],
 				})
 			case ClassNonYAML, ClassEmpty, ClassKRM:
 				// Not acceptance issues: ignored files, empty documents, and valid KRM.

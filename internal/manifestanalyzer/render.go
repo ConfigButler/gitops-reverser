@@ -88,19 +88,26 @@ func renderFile(w io.Writer, f FileReport) {
 	}
 }
 
-// docTags renders the small set of flags shown after a document line.
+// docTags renders the small set of flags shown after a document line. Duplicate
+// identity is no longer a per-document tag — it surfaces in the Acceptance section
+// as an issue.
 func docTags(d DocumentReport) string {
-	var tags []string
-	if d.Duplicate {
-		tags = append(tags, "duplicate")
+	if d.Cause == nil {
+		return ""
 	}
-	if d.Encrypted {
-		tags = append(tags, "encrypted")
+	switch d.Cause.Kind {
+	case CauseEncrypted:
+		return "encrypted"
+	case CauseNonEditable:
+		if d.Cause.Detail != "" {
+			return "non-editable: " + d.Cause.Detail
+		}
+		return "non-editable"
+	case CauseNone:
+		return ""
+	default:
+		return ""
 	}
-	if !d.GVK.Empty() && !d.Editable && d.Reason != "" {
-		tags = append(tags, "non-editable: "+d.Reason)
-	}
-	return strings.Join(tags, ", ")
 }
 
 // rootOrFS describes the scanned root, falling back to "(fs)" for an in-memory FS.

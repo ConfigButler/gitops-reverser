@@ -139,13 +139,19 @@ func TestAnalyze_DocumentDetail(t *testing.T) {
 	}
 
 	secret := findFile(t, rep, "secret.sops.yaml")
-	if len(secret.Documents) != 1 || !secret.Documents[0].Encrypted {
+	if len(secret.Documents) != 1 || secret.Documents[0].Cause == nil ||
+		secret.Documents[0].Cause.Kind != CauseEncrypted {
 		t.Errorf("secret.sops.yaml should be a single encrypted document: %+v", secret.Documents)
 	}
 
+	// Duplicate identity is no longer a per-document field; it surfaces as an
+	// acceptance issue derived from the store's collapsed manifest-identity index.
 	dup := findFile(t, rep, "dup.yaml")
-	if len(dup.Documents) != 1 || !dup.Documents[0].Duplicate {
-		t.Errorf("dup.yaml document should be marked duplicate: %+v", dup.Documents)
+	if len(dup.Documents) != 1 {
+		t.Fatalf("dup.yaml documents = %d, want 1", len(dup.Documents))
+	}
+	if !hasIssue(rep, IssueDuplicate, "dup.yaml") {
+		t.Errorf("dup.yaml document should raise a duplicate-identity issue: %+v", rep.Issues)
 	}
 
 	notes := findFile(t, rep, "docs/notes.txt")
@@ -176,8 +182,8 @@ data: &a
 	if doc.Class != ClassKRM {
 		t.Errorf("anchored document class = %s, want krm", doc.Class)
 	}
-	if doc.Reason == "" {
-		t.Errorf("non-editable document should carry a reason")
+	if doc.Cause == nil || doc.Cause.Kind != CauseNonEditable || doc.Cause.Detail == "" {
+		t.Errorf("non-editable document should carry a structured cause: %+v", doc.Cause)
 	}
 }
 
@@ -319,6 +325,15 @@ func countIssues(rep Report, kind IssueKind) int {
 		}
 	}
 	return n
+}
+
+func hasIssue(rep Report, kind IssueKind, path string) bool {
+	for _, is := range rep.Issues {
+		if is.Kind == kind && is.Path == path {
+			return true
+		}
+	}
+	return false
 }
 
 func findFile(t *testing.T, rep Report, path string) FileReport {

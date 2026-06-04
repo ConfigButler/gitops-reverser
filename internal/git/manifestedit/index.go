@@ -63,29 +63,32 @@ func indexOneFile(f FileContent) ([]DocumentRecord, []Diagnostic) {
 		loc := Location{Path: f.Path, DocumentIndex: i}
 		root, empty, err := decodeDoc(doc.body)
 		if err != nil {
-			diags = append(diags, diag(DiagError, loc, "invalid YAML: %v", err))
+			diags = append(diags, diagR(DiagError, ReasonInvalidYAML, loc, "invalid YAML: %v", err))
 			continue
 		}
 		if empty {
-			diags = append(diags, diag(DiagInfo, loc, "empty document, ignored"))
+			diags = append(diags, diagR(DiagInfo, ReasonEmptyDocument, loc, "empty document, ignored"))
 			continue
 		}
 
 		id, ok := identityFromNode(root)
 		if !ok {
-			diags = append(diags, diag(DiagInfo, loc, "not a Kubernetes manifest, ignored"))
+			diags = append(diags, diagR(DiagInfo, ReasonNotKRM, loc, "not a Kubernetes manifest, ignored"))
 			continue
 		}
 
 		if reason, bad := hasDisallowed(root); bad {
-			diags = append(diags, diag(DiagWarning, loc, "ignored: %s is not editable", reason))
+			diags = append(diags, diagR(DiagWarning, ReasonNonEditable, loc, "ignored: %s is not editable", reason))
 			records = append(records, DocumentRecord{Identity: id, Location: loc, Editable: false, Reason: reason})
 			continue
 		}
 
 		if encrypted {
 			if nodeMapGet(root, "sops") == nil {
-				diags = append(diags, diag(DiagError, loc, "SOPS file without a sops key, invalid"))
+				diags = append(
+					diags,
+					diagR(DiagError, ReasonMissingSopsKey, loc, "SOPS file without a sops key, invalid"),
+				)
 				continue
 			}
 			records = append(records, DocumentRecord{Identity: id, Location: loc, Editable: true, Encrypted: true})
@@ -113,6 +116,7 @@ func resolveDuplicates(records []DocumentRecord) (Inventory, []Diagnostic) {
 			inv.duplicates = append(inv.duplicates, rec)
 			diags = append(diags, Diagnostic{
 				Level:         DiagWarning,
+				Reason:        ReasonDuplicateIdentity,
 				Path:          rec.Location.Path,
 				DocumentIndex: rec.Location.DocumentIndex,
 				Message: fmt.Sprintf("%s: keeping %s document %d, removing duplicate in %s document %d",
@@ -268,4 +272,12 @@ func diag(level DiagnosticLevel, loc Location, format string, args ...any) Diagn
 		DocumentIndex: loc.DocumentIndex,
 		Message:       fmt.Sprintf(format, args...),
 	}
+}
+
+// diagR is diag with a structured reason code attached, so callers can classify
+// the document without parsing the message text.
+func diagR(level DiagnosticLevel, reason DiagReason, loc Location, format string, args ...any) Diagnostic {
+	d := diag(level, loc, format, args...)
+	d.Reason = reason
+	return d
 }

@@ -57,12 +57,39 @@ const (
 	DiagError DiagnosticLevel = "error"
 )
 
+// DiagReason is a structured, machine-readable cause for a diagnostic. It lets
+// callers classify a document from a code rather than by parsing the
+// human-readable Message — which the manifest materialization design explicitly
+// forbids. The zero value is the empty reason, used for diagnostics that carry no
+// structured classification (e.g. edit-time skips).
+type DiagReason string
+
+const (
+	// ReasonInvalidYAML marks a document that does not parse as YAML.
+	ReasonInvalidYAML DiagReason = "invalid-yaml"
+	// ReasonEmptyDocument marks an empty or comment-only document.
+	ReasonEmptyDocument DiagReason = "empty-document"
+	// ReasonNotKRM marks valid YAML that is not a Kubernetes manifest.
+	ReasonNotKRM DiagReason = "not-krm"
+	// ReasonNonEditable marks a manifest the editor refuses to edit in place
+	// (anchors, aliases, merge keys, unusual tags, duplicate keys).
+	ReasonNonEditable DiagReason = "non-editable"
+	// ReasonMissingSopsKey marks a .sops.yaml file lacking a sops stanza.
+	ReasonMissingSopsKey DiagReason = "missing-sops-key"
+	// ReasonDuplicateIdentity marks a document whose manifest identity duplicates
+	// an earlier occurrence.
+	ReasonDuplicateIdentity DiagReason = "duplicate-identity"
+)
+
 // Diagnostic explains an inventory or edit decision.
 type Diagnostic struct {
-	Level         DiagnosticLevel `json:"level"`
-	Message       string          `json:"message"`
-	Path          string          `json:"path"`
-	DocumentIndex int             `json:"documentIndex"`
+	Level DiagnosticLevel `json:"level"`
+	// Reason is the structured cause, set for index-time classification so callers
+	// never parse Message. It is empty for diagnostics with no structured code.
+	Reason        DiagReason `json:"reason,omitempty"`
+	Message       string     `json:"message"`
+	Path          string     `json:"path"`
+	DocumentIndex int        `json:"documentIndex"`
 }
 
 // DocumentRecord is one indexed Kubernetes document.

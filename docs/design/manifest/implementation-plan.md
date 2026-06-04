@@ -72,6 +72,12 @@ existing [`internal/manifestanalyzer`](../../../internal/manifestanalyzer).
 
 ### A1 — Store types + `Report` as a projection
 
+> **Status: ✅ landed.** `ManifestStore`/`FileModel`/`DocumentModel`/`RecordRef`
+> live in [`internal/manifestanalyzer/store.go`](../../../internal/manifestanalyzer/store.go);
+> `Analyze` builds the store and renders `Report` as a projection over it. CLI
+> text+JSON output is byte-identical and the existing analyzer tests pass
+> untouched.
+
 - **Depends on**: nothing.
 - **Touches**: new types in/beside `internal/manifestanalyzer`
   (`ManifestStore`, `FileModel`, `DocumentModel`, `RecordRef`); build them from the
@@ -90,6 +96,8 @@ existing [`internal/manifestanalyzer`](../../../internal/manifestanalyzer).
   handle.
 
 ### A2 — Pointer indexes + structured cause, drop the old fields
+
+> **Status: 🚧 in progress.**
 
 - **Depends on**: A1.
 - **Touches**: `ManifestStore` indexes
@@ -260,8 +268,8 @@ dependency; it does not exist yet. Independent of Track A.
 
 ## First three PRs (concretely)
 
-1. **A1** — `ManifestStore`/`FileModel`/`DocumentModel`, `Report` as a projection.
-   No behavior change; existing analyzer tests are the net.
+1. **A1** ✅ — `ManifestStore`/`FileModel`/`DocumentModel`, `Report` as a
+   projection. No behavior change; existing analyzer tests are the net.
 2. **B1** — catalog `byGVK` + exact lookup. Tiny, isolated, unblocks the mapper.
 3. **C1** — GitTarget non-overlap admission. Cheap, self-contained, locks the
    one-owner invariant in before anything destructive depends on it.

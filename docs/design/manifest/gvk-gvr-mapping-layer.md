@@ -129,6 +129,36 @@ The mapping layer does not:
 - choose Git file placement,
 - decide whether unwatched content is refused, reported, or pruned.
 
+## Source Of Truth Versus Mapper Source
+
+Kubernetes discovery is the source of truth for served GVK/GVR mappings. The API
+server is the only authority that can say "this cluster serves kind `Deployment`
+at `apps/v1` through resource `deployments`" or "this CRD's plural resource name
+is `icecreamorders`." GitOps Reverser should not invent that relationship from
+English pluralization, generated paths, or hard-coded assumptions.
+
+`MapperSource` does **not** mean there are four competing truths. It describes how
+this process obtained, cached, replayed, or intentionally declined to obtain
+Kubernetes discovery data.
+
+- `live-catalog`: the controller reads the in-process `APIResourceCatalog`, which
+  is refreshed from Kubernetes discovery and shared with watch planning. The API
+  truth is current cluster discovery, cached locally.
+- `kubeconfig`: a CLI command contacts a cluster through kubeconfig, builds a
+  temporary catalog, then maps through the same catalog semantics. The API truth
+  is current cluster discovery, fetched on demand.
+- `static-snapshot`: tests or offline review load a serialized catalog-shaped
+  fixture. The API truth is a captured or declared snapshot, not live truth.
+- `structure-only`: no API discovery data is available or desired; the analyzer
+  only parses manifest structure. There is no API truth, so mapping is
+  deliberately unknown.
+
+That distinction is why `MappingStructureOnly` is not an error. It is the honest
+answer for "we know this YAML looks like KRM, but we did not ask any API surface
+what REST resource serves it." Conversely, when a mapper is backed by discovery
+data, absence can only be trusted if the relevant group/version discovery is not
+degraded.
+
 ## Interface
 
 The concrete Go names can move, but the interface should make the dependency
@@ -203,6 +233,9 @@ make policy decisions without parsing error strings.
 
 ## Implementations
 
+These implementations share the same mapping contract. They differ only in how
+the catalog data is obtained and how much trust callers can place in freshness.
+
 ### Live Catalog Mapper
 
 Used by the controller and watch manager.
@@ -235,6 +268,10 @@ This mode can report mapping and watched/unwatched classification, but it should
 still not list live objects unless a separate command explicitly asks for a full
 plan against cluster state.
 
+This is not a second interpretation of Kubernetes semantics. It is the same
+discovery truth as `live-catalog`, just fetched by a short-lived command instead
+of by the controller's continuously refreshed catalog.
+
 ### Static Snapshot Mapper
 
 Used by tests, CI, and offline review.
@@ -247,6 +284,11 @@ Static snapshots are also the right way to make manifest materialization tests
 deterministic. A fixture can say "this cluster serves apps/v1/deployments and
 v1/configmaps" without needing a kube-apiserver.
 
+Because a static snapshot is not live discovery, it should be treated as an
+explicit test/review input. It can model old clusters, partial catalogs, policy
+exclusions, ambiguity, and degraded discovery on purpose, but it must not be
+mistaken for proof about the cluster currently running the controller.
+
 ### Structure-Only Mapper
 
 Used by the current `manifest-analyzer` default.
@@ -257,6 +299,8 @@ multi-document files, encryption boundaries, and GVK counts, but cannot decide
 whether a document is watched or orphaned.
 
 This is the mode that preserves the analyzer's current no-cluster promise.
+It should never produce creates, deletes, watched/unwatched conclusions, or
+destructive adoption decisions.
 
 ## Manifest Store Integration
 

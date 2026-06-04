@@ -43,9 +43,10 @@ func TestRenderText(t *testing.T) {
 		"(non-yaml, ignored)",
 		"krm",
 		"apps/v1/Deployment/default/web",
-		"(duplicate)",
 		"(encrypted)",
 		"Acceptance:",
+		// Duplicate identity is reported as an acceptance issue, not an inline tag.
+		"duplicate-identity",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("text output missing %q\n---\n%s", want, out)
@@ -65,10 +66,10 @@ func TestRenderText_NonEditableAndNoIssues(t *testing.T) {
 				GVK:      GVK{Version: "v1", Kind: "ConfigMap"},
 				Identity: manifestedit.Identity{APIVersion: "v1", Kind: "ConfigMap", Namespace: "default", Name: "x"},
 				Editable: false,
-				Reason:   "anchor",
+				Cause:    &DocumentCause{Kind: CauseNonEditable, Detail: "anchor"},
 			}},
 		}},
-		Summary: buildSummary([]FileReport{}, nil),
+		Summary: buildSummary([]FileReport{}, nil, 0),
 	}
 	var buf bytes.Buffer
 	RenderText(&buf, rep)
