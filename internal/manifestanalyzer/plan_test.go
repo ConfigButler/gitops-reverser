@@ -353,23 +353,18 @@ func TestBuildPlan_TwoCreatesSortByIdentity(t *testing.T) {
 	}
 }
 
-// TestBuildPlan_TombstoneDropsViaGitOnly: a desired entry with a nil Object (a
-// delete intent) contributes nothing, so its document falls through to the Git-only
-// managed drop.
-func TestBuildPlan_TombstoneDropsViaGitOnly(t *testing.T) {
+// TestBuildPlan_NilObjectIgnored: a nil-Object entry is an inert malformed entry,
+// never a delete signal. With a full in-sync snapshot plus one nil entry for a
+// resource Git does not even have, the plan is empty — the nil neither creates,
+// drops, nor disturbs the other in-sync resources.
+func TestBuildPlan_NilObjectIgnored(t *testing.T) {
 	store := planStore(t)
-	desired := []DesiredResource{
-		desiredConfigMap("a"), desiredConfigMap("b"), // keep the ConfigMaps in sync
-		{Resource: types.NewResourceIdentifier("apps", "v1", "deployments", "default", "web")}, // nil Object
-	}
+	desired := append(inSync(),
+		DesiredResource{Resource: types.NewResourceIdentifier("", "v1", "configmaps", "default", "ghost")})
 	plan := BuildPlan(store, planFiles(), desired, Policy{})
 
-	drop := findAction(t, plan, "deploy.yaml")
-	if drop.Kind != PlanDropOrphan {
-		t.Fatalf("nil-Object desired should drop its Git document, got %q", drop.Kind)
-	}
-	if len(plan.Actions) != 1 {
-		t.Errorf("only the tombstoned Deployment should drop, got %+v", plan.Actions)
+	if len(plan.Actions) != 0 {
+		t.Fatalf("a nil-Object entry must be inert, got %+v", plan.Actions)
 	}
 }
 

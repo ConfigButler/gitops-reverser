@@ -123,17 +123,25 @@ func (p Plan) Counts() map[PlanActionKind]int {
 	return out
 }
 
-// DesiredResource is one resource the cluster currently has: the resolved API-side
-// identity paired with the live object. The ResourceIdentifier is known to the
-// controller from the GVR it watched (and to the CLI from the mapper), so the plan
-// carries enough resource identity to place a new file
-// (ResourceIdentifier.ToGitPath) without re-resolving the mapping at apply time. It
-// mirrors the design's PendingChange{Resource, Object}; folding watch events into a
-// coalesced PendingChanges map keyed by ResourceIdentifier is M7.
+// DesiredResource is one resource in the COMPLETE desired snapshot the planner
+// compares Git against: a resource the cluster currently has, paired with the
+// API-side identity the controller already resolved from the GVR it watched (or the
+// CLI from the mapper). Carrying the ResourceIdentifier is what lets a create place
+// its new file (ResourceIdentifier.ToGitPath) at apply time (M7) without re-resolving
+// the mapping.
 //
-// A nil Object is tolerated as a delete intent (tombstone): it contributes no
-// desired entry, so the document it would have matched falls through to the Git-only
-// managed-drop logic — the same outcome as the resource simply being absent.
+// This is a full-snapshot input — the "Resync" path of the design's "Two Paths, One
+// Plan Type" (docs/design/manifest/reconcile-via-watchlist-mark-and-sweep.md). It is
+// NOT a per-event PendingChange: BuildPlan mark-and-sweeps every watched document
+// absent from this set as a managed drop, so the set must be the whole desired state
+// (scan mode / resync), never a partial batch. Steady-state, per-event planning that
+// targets a single identity and emits an explicit delete-document — without sweeping
+// — is the separate pending-change path (M7, on M6's delete-identity resolution).
+//
+// Object must be non-nil: every entry in a desired snapshot is a resource that
+// exists. A nil Object is a malformed entry, ignored — deliberately NOT a delete
+// tombstone, because in a sweeping planner a lone tombstone is indistinguishable from
+// "every other document is now an orphan".
 type DesiredResource struct {
 	Resource types.ResourceIdentifier
 	Object   *unstructured.Unstructured
@@ -153,9 +161,15 @@ type Policy struct {
 }
 
 // BuildPlan computes the Plan from the byte-free ManifestStore, the file bytes
-// that back it (hydration source for the patch/no-op decision), the desired API
-// objects, and the policy. It graduates manifestreport.BuildReport's read-only
+// that back it (hydration source for the patch/no-op decision), the COMPLETE desired
+// snapshot, and the policy. It graduates manifestreport.BuildReport's read-only
 // create/update/delete/skip comparison into the materialized model's plan.
+//
+// This is the full-snapshot "Resync" planner (scan mode, CLI, initial reconcile /
+// resync): it mark-and-sweeps — every watched document with no entry in desired is a
+// managed drop — so desired MUST be the whole desired state, never a partial batch.
+// The steady-state path (one plan action per live event, where a DELETED event is an
+// explicit delete-document and nothing re-sweeps) is M7, not this function.
 //
 // The store is expected to have been built with the same mapper whose watched set
 // produced desired; under a structure-only store (no resolved mappings) no managed
@@ -186,6 +200,10 @@ func BuildPlan(
 	// mark the documents it matched so the Git-only sweep below does not drop them.
 	for _, dr := range desired {
 		if dr.Object == nil {
+			// A malformed snapshot entry, ignored. It is NOT a delete tombstone: this
+			// planner sweeps, so treating a lone nil as "delete" would be
+			// indistinguishable from "every other document is orphaned". Per-event
+			// delete intents are the separate steady-state path (M7).
 			continue
 		}
 		b.planDesired(dr)

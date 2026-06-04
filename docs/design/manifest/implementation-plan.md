@@ -307,14 +307,21 @@ dependency; it does not exist yet. Independent of Track A.
 > identity collision suppresses actions for the whole identity — first-occurrence
 > winner and losers alike** — because a duplicate refuses the entire GitTarget at
 > acceptance (M4), so the planner must never edit or drop one arbitrary copy; (7)
-> **the desired set is `[]DesiredResource{Resource, Object}`**, mirroring the design's
-> `PendingChange`: each entry carries the API-side `ResourceIdentifier` the controller
-> already resolved from the GVR it watched, so a `create` carries everything
+> **`BuildPlan` is the full-snapshot "Resync" planner, not the steady-state one** —
+> per the design's "Two Paths, One Plan Type"
+> ([reconcile-via-watchlist-mark-and-sweep.md](reconcile-via-watchlist-mark-and-sweep.md)),
+> it mark-and-sweeps (every watched document absent from `desired` is a managed drop),
+> so `desired` is the **complete** `[]DesiredResource{Resource, Object}` snapshot, never
+> a partial batch. Each entry carries the API-side `ResourceIdentifier` the controller
+> resolved from the GVR it watched, so a `create` carries everything
 > `ResourceIdentifier.ToGitPath` needs to place a new file at apply time (M7) with no
-> re-resolution, and a nil `Object` is a tombstone that drops its Git document via the
-> Git-only path; (8) **hydration is the `FileContent` slice the store was built from**,
-> so a plan and its store read identical bytes, and a touched file whose bytes were
-> not supplied becomes a skip plus a diagnostic rather than a wrong edit.
+> re-resolution. A nil `Object` is an **ignored malformed entry, not a delete
+> tombstone** — a lone tombstone in a sweeping planner is indistinguishable from "every
+> other document is orphaned", so per-event delete intents that emit an explicit
+> `delete-document` without sweeping are the separate steady-state path (M7, on M6's
+> delete-identity resolution); (8) **hydration is the `FileContent` slice the store was
+> built from**, so a plan and its store read identical bytes, and a touched file whose
+> bytes were not supplied becomes a skip plus a diagnostic rather than a wrong edit.
 
 - **Depends on**: A2, B3.
 - **Touches**: a first-class `Plan` / `PlanAction` (`create` / `patch` / `replace` /
