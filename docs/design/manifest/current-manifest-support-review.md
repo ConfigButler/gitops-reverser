@@ -2,6 +2,9 @@
 
 > Status: architecture review, captured 2026-06-04
 > Related:
+> [reconcile-via-watchlist-mark-and-sweep.md](reconcile-via-watchlist-mark-and-sweep.md),
+> [gvk-gvr-mapping-layer.md](gvk-gvr-mapping-layer.md),
+> [current-manifest-support-review-feedback.md](current-manifest-support-review-feedback.md),
 > [manifest-inventory-file-agnostic-placement.md](manifest-inventory-file-agnostic-placement.md),
 > [manifestedit-abstraction-plan.md](manifestedit-abstraction-plan.md),
 > [manifestedit-writer-followups.md](manifestedit-writer-followups.md),
@@ -18,16 +21,22 @@ clear comparison API. The writer also now does match-first placement for updates
 and object-backed deletes, so a manifest moved away from the generated path can be
 updated in place.
 
-The awkward part: production writes are still event-driven and file-by-file. The
-writer materializes an inventory only as a locator sidecar, not as the central
-state model for the batch. That leaves deletion, duplicate cleanup, GVK/GVR
-lookups, multi-document safety, and status/reporting spread across several
-places.
+The awkward part is deeper than "event-by-event." Today three separate engines
+compare git to the desired state, across two incompatible identity models: the
+production diff (`FolderReconciler`) decides creates/deletes from **path-derived**
+GVR identity, then hands a flat event list to the writer, which **re-scans** the
+same tree by **content** identity to place each one. `BuildReport` is a third,
+read-only, content-based comparison. The two scans run at different layers, at
+different times, with two different notions of "what resource is this."
 
-The recommended direction is to make the inventory the primary in-memory model:
-scan the GitTarget path once, materialize every valid file/document/resource,
-resolve watched GVKs to GVRs, then plan creates, updates, and deletes against
-that model.
+The recommended direction is one materialized in-memory model with both a
+manifest-identity and a resource-identity index, fed by a first-class plan that is
+the same value for the writer, scan mode, the CLI, and status. The initial
+reconcile is driven by a streaming-list watch and a mark-and-sweep against that
+model — see
+[reconcile-via-watchlist-mark-and-sweep.md](reconcile-via-watchlist-mark-and-sweep.md).
+The feedback that drove this sharpening is in
+[current-manifest-support-review-feedback.md](current-manifest-support-review-feedback.md).
 
 ## Current Architecture
 
@@ -37,6 +46,12 @@ flowchart TD
         A[Watch or audit event]
         B[Git worktree at GitTarget path]
         C[Live object or ResourceIdentifier]
+    end
+
+    subgraph Reconcile["internal/reconcile + watch — the real diff"]
+        W[Cluster snapshot]
+        V[listResourceIdentifiersInPath: path-derived GVR scan]
+        U[FolderReconciler.findDifferences]
     end
 
     subgraph Writer["internal/git live writer"]
@@ -67,6 +82,10 @@ flowchart TD
 
     A --> D
     C --> D
+    B --> V
+    W --> U
+    V --> U
+    U -->|flat event batch| D
     B --> E
     D --> E
     E --> F
@@ -148,6 +167,16 @@ documents remain.
 
 ## Cons And Gaps
 
+- **The git tree is scanned twice, with two identity models, in two layers.** The
+  production diff (`FolderReconciler.findDifferences`) lists git resources by
+  **path** (`listResourceIdentifiersInPath` → `parseIdentifierFromPath`, a GVR
+  derived from the file path) and decides creates/deletes; the writer then
+  **re-scans** by **content** (`manifestedit.Inventory`) to place each event. A
+  manifest moved off its canonical path is invisible to the path scan, so the
+  reconciler emits a spurious create at the canonical path and never sees the moved
+  copy — the writer's content match cannot fix a decision already made upstream.
+  This is the real disease the materialized model cures, and `parseIdentifierFromPath`
+  / `listResourceIdentifiersInPath` are what it deletes.
 - The inventory is not the source of truth for the writer. It is a locator cache
   used opportunistically after a canonical-path stat fast path.
 - DELETE placement is still incomplete when delete events only carry GVR/name and
@@ -204,6 +233,38 @@ contains anything we are not entitled to manage. We deliberately do **not** buil
 a delete option for unwatched content for now; refusing is safer, never destroys
 human-authored files, and is where we start. An opt-in delete could be revisited
 later, but we are explicitly choosing not to.
+
+### What the model collapses, and where it lives
+
+The single model replaces three things with one: the path-derived diff in
+`FolderReconciler`, the content re-scan in the writer, and the read-only
+`BuildReport`. `BuildReport` is not discarded — it is **the seed of the plan** (it
+already does create/update/delete/skip against an inventory).
+
+The plan is the **cross-layer contract**, computed from pure inputs:
+
+```text
+ManifestStore = f(fs.FS)                          // pure; the analyzer already is this
+Plan          = f(ManifestStore, desiredSet, policy)
+applied       = f(ManifestStore, Plan)            // pure mutation
+Flush         = f(applied, worktree)              // the only side effect
+```
+
+Store and plan are therefore computed in the layer that owns the cluster state
+(reconcile), the writer becomes a dumb "apply plan + flush," and scan mode / CLI /
+status are the same function with the flush omitted. A plan is valid for exactly
+one **`(commit SHA, cluster snapshot revision)`** pair; the streaming-watch
+bookmark (see the reconcile doc linked above) pins that revision.
+
+Two constraints to respect from the start, not retrofit:
+
+- **The GVK↔GVR resolver must be built**, as an injectable source (live informers,
+  kubeconfig, static snapshot, or nil for structure-only). Everything downstream
+  depends on it; it does not exist yet.
+- **Materialization must be bounded.** Identity indexing needs only a cheap header
+  parse; build the full `manifestedit` node tree only for documents a plan action
+  touches (`DocumentModel.Snapshot` as a lazy handle, not eager bytes for every
+  document).
 
 ```mermaid
 classDiagram
@@ -319,6 +380,14 @@ duplicate cleanup, and moved manifests.
 Instead, build the full model once per checked-out GitTarget path, apply the plan
 to that model, and flush only the files whose bytes changed or whose file was
 deleted.
+
+The initial reconcile (and any resync) is the same mechanism with its deletes
+derived differently: a streaming-list watch folds every existing object over the
+store, and a **mark-and-sweep** drops the watched, in-scope documents the stream
+never touched. Untracked content is never a member of that swept model, so it can
+never be deleted by construction. Steady-state events are single plan actions over
+the maintained store, not a re-sweep. See
+[reconcile-via-watchlist-mark-and-sweep.md](reconcile-via-watchlist-mark-and-sweep.md).
 
 ### Concrete Data Structures
 
