@@ -601,9 +601,13 @@ type DocumentModel struct {
 // and pinned to one (commit SHA, snapshot RV) pair, so a (path, index) pair is a
 // stable reference for that plan's lifetime. The live, mutable store navigates by
 // the *DocumentModel pointers above instead, and DocumentModel deliberately does
-// not store its own FilePath or Index — both are derivable (top-down iteration
-// yields file.Path and the loop index; manifestedit is given the position only at
-// apply time via slices.Index).
+// not store its own FilePath or Index — both are derivable. The file path is the
+// containing FileModel's; the document's TRUE file index is reconstructed from the
+// record-less diagnostic gaps (every empty/non-KRM/invalid document leaves a
+// diagnostic at its position, so the managed documents fill the remaining positions
+// in order — `reconstructManagedIndices`). That recovers the right index even in a
+// non-contiguous file the acceptance gate is refusing; at apply time manifestedit is
+// handed the position directly.
 type RecordRef struct {
     FilePath      string
     DocumentIndex int

@@ -353,18 +353,70 @@ func TestBuildPlan_TwoCreatesSortByIdentity(t *testing.T) {
 	}
 }
 
-// TestBuildPlan_NilObjectIgnored: a nil-Object entry is an inert malformed entry,
-// never a delete signal. With a full in-sync snapshot plus one nil entry for a
-// resource Git does not even have, the plan is empty — the nil neither creates,
-// drops, nor disturbs the other in-sync resources.
-func TestBuildPlan_NilObjectIgnored(t *testing.T) {
+// TestBuildPlan_NilObjectGhostInert: a nil-Object entry for a resource Git does not
+// have is inert — it neither creates nor drops — but it is still diagnosed as a
+// malformed snapshot entry.
+func TestBuildPlan_NilObjectGhostInert(t *testing.T) {
 	store := planStore(t)
 	desired := append(inSync(),
 		DesiredResource{Resource: types.NewResourceIdentifier("", "v1", "configmaps", "default", "ghost")})
 	plan := BuildPlan(store, planFiles(), desired, Policy{})
 
 	if len(plan.Actions) != 0 {
-		t.Fatalf("a nil-Object entry must be inert, got %+v", plan.Actions)
+		t.Fatalf("a nil-Object entry must produce no action, got %+v", plan.Actions)
+	}
+	if len(plan.Diagnostics) != 1 {
+		t.Errorf("a nil-Object entry should be diagnosed, got %+v", plan.Diagnostics)
+	}
+}
+
+// TestBuildPlan_NilObjectProtectsExistingResource is the key safety case: a nil
+// Object for a resource that DOES exist in Git must NOT become a managed drop via the
+// sweep. The matching document is protected and the malformed entry is diagnosed.
+func TestBuildPlan_NilObjectProtectsExistingResource(t *testing.T) {
+	store := planStore(t)
+	// The Deployment exists in deploy.yaml and resolves; its desired entry is nil.
+	desired := []DesiredResource{
+		desiredConfigMap("a"), desiredConfigMap("b"),
+		{Resource: types.NewResourceIdentifier("apps", "v1", "deployments", "default", "web")},
+	}
+	plan := BuildPlan(store, planFiles(), desired, Policy{})
+
+	for _, a := range plan.Actions {
+		if a.Kind == PlanDropOrphan {
+			t.Errorf("a nil object for an existing resource must never drop it: %+v", a)
+		}
+	}
+	if len(plan.Actions) != 0 {
+		t.Fatalf("the nil-protected resync should have no actions, got %+v", plan.Actions)
+	}
+	if len(plan.Diagnostics) != 1 || plan.Diagnostics[0].Path != "deploy.yaml" {
+		t.Errorf("want one diagnostic naming deploy.yaml, got %+v", plan.Diagnostics)
+	}
+}
+
+// TestBuildPlan_ImpureFileTrueIndices proves plan references carry the TRUE file
+// index even in a non-contiguous (impure) managed file the acceptance gate would
+// refuse: deploy@0, an empty document@1, ConfigMap@2. An empty desired set drops both
+// managed documents; the drop references must be #0 and #2, not the loop indices #0
+// and #1.
+func TestBuildPlan_ImpureFileTrueIndices(t *testing.T) {
+	impure := deployYAML + "---\n# comment\n---\n" + configMapCYAML
+	fsys := fstest.MapFS{"app.yaml": {Data: []byte(impure)}}
+	files := []manifestedit.FileContent{{Path: "app.yaml", Content: []byte(impure)}}
+	store := BuildStore(context.Background(), fsys, mapping.NewStaticSnapshotMapper(sampleClusterSnapshot()))
+
+	plan := BuildPlan(store, files, nil, Policy{})
+
+	idxByKind := map[string]int{}
+	for _, a := range plan.Actions {
+		if a.Kind != PlanDropOrphan {
+			t.Fatalf("want only managed drops, got %+v", a)
+		}
+		idxByKind[a.Identity.Kind] = a.Ref.DocumentIndex
+	}
+	if idxByKind["Deployment"] != 0 || idxByKind["ConfigMap"] != 2 {
+		t.Errorf("drop refs should be true file indices (Deployment#0, ConfigMap#2), got %+v", idxByKind)
 	}
 }
 

@@ -249,6 +249,65 @@ func TestAccept_MultipleRetainedSorted(t *testing.T) {
 	}
 }
 
+func TestAccept_MappingRefusalIndexAfterGap(t *testing.T) {
+	// An empty document at file index 0, then an unwatched Secret at file index 1. The
+	// Secret is the only managed record (loop index 0), but its mapping refusal must
+	// name its TRUE file index 1 — proving mappingRefusals uses reconstructed
+	// positions, not the loop index.
+	src := "# only a comment\n---\n" + plainSecretYAML
+	fsys := fstest.MapFS{"app.yaml": {Data: []byte(src)}}
+	_, acc := acceptanceOf(t, fsys, snapMapper(), AcceptancePolicy{})
+
+	if acc.Accepted {
+		t.Fatalf("expected refusal")
+	}
+	var unwatched *AcceptanceIssue
+	for i := range acc.Issues {
+		if acc.Issues[i].Kind == IssueUnwatchedAPIKRM {
+			unwatched = &acc.Issues[i]
+		}
+	}
+	if unwatched == nil {
+		t.Fatalf("expected an unwatched-api-krm refusal, got %+v", acc.Issues)
+	}
+	if unwatched.DocumentIndex != 1 {
+		t.Errorf("unwatched refusal should carry the true file index 1, got %d", unwatched.DocumentIndex)
+	}
+	// The empty document also makes the file impure, named at its own true index 0.
+	if countAcceptance(acc, IssueImpureManagedFile) != 1 {
+		t.Errorf("the empty document should also make the file impure, got %+v", acc.Issues)
+	}
+}
+
+// TestReconstructManagedIndices_RecordlessGapsLeaveDiagnostics makes the
+// reconstruction's load-bearing invariant explicit: every record-less document kind
+// (non-KRM, invalid YAML, empty) leaves a diagnostic at its position, so the managed
+// documents always reconstruct to their true file indices. Managed docs sit at file
+// indices 0, 2, 4 here, interleaved with a non-KRM doc, an invalid doc, and a
+// trailing empty doc.
+func TestReconstructManagedIndices_RecordlessGapsLeaveDiagnostics(t *testing.T) {
+	src := deployYAML + // web @0
+		"---\njust: data\n" + // non-KRM @1
+		"---\n" + configMapCYAML + // c @2
+		"---\nfoo: [bar\n" + // invalid YAML @3
+		"---\n" + plainSecretYAML + // db @4
+		"---\n# trailing comment\n" // empty @5
+	fsys := fstest.MapFS{"app.yaml": {Data: []byte(src)}}
+	store := buildStoreFS(context.Background(), fsys, nil, Allowlist{})
+
+	loc := documentLocations(store)
+	got := map[string]int{}
+	for _, dm := range store.FilesByPath["app.yaml"].Documents {
+		got[dm.ManifestIdentity.Name] = loc[dm].DocumentIndex
+	}
+	want := map[string]int{"web": 0, "c": 2, "db": 4}
+	for name, idx := range want {
+		if got[name] != idx {
+			t.Errorf("%s reconstructed to #%d, want #%d (all=%+v)", name, got[name], idx, got)
+		}
+	}
+}
+
 func TestAllowlist(t *testing.T) {
 	def := DefaultAllowlist()
 	if !def.Allows("kustomization.yaml") || !def.Allows("base/kustomization.yaml") {

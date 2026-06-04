@@ -244,9 +244,13 @@ type planJSON struct {
 }
 
 type planActionJSON struct {
-	Kind          string                `json:"kind"`
-	Path          string                `json:"path,omitempty"`
-	DocumentIndex int                   `json:"documentIndex,omitempty"`
+	Kind string `json:"kind"`
+	Path string `json:"path,omitempty"`
+	// DocumentIndex is a pointer so that index 0 — a real, common target for a patch
+	// or drop on a file's first document — is preserved, while a create (which has no
+	// existing document location) omits it. A plain int with omitempty would drop the
+	// meaningful 0 and weaken the machine-readable contract.
+	DocumentIndex *int                  `json:"documentIndex,omitempty"`
 	Identity      manifestedit.Identity `json:"identity"`
 	Resource      string                `json:"resource,omitempty"`
 	Reason        string                `json:"reason,omitempty"`
@@ -271,13 +275,24 @@ func scanToJSON(result ScanResult) scanJSON {
 		out.Plan.Actions = append(out.Plan.Actions, planActionJSON{
 			Kind:          string(a.Kind),
 			Path:          planActionTarget(a),
-			DocumentIndex: a.Ref.DocumentIndex,
+			DocumentIndex: documentIndexJSON(a),
 			Identity:      a.Identity,
 			Resource:      resourceString(a.Resource),
 			Reason:        a.Reason,
 		})
 	}
 	return out
+}
+
+// documentIndexJSON returns the action's document index as a pointer: nil for a
+// create (no existing document location, so the field is omitted), otherwise the
+// real index — including a meaningful 0.
+func documentIndexJSON(a PlanAction) *int {
+	if a.Kind == PlanCreate {
+		return nil
+	}
+	i := a.Ref.DocumentIndex
+	return &i
 }
 
 // planCounts converts the plan's per-kind counts to string keys for JSON.

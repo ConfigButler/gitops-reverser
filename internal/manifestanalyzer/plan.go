@@ -19,6 +19,7 @@ limitations under the License.
 package manifestanalyzer
 
 import (
+	"fmt"
 	"sort"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -139,9 +140,13 @@ func (p Plan) Counts() map[PlanActionKind]int {
 // — is the separate pending-change path (M7, on M6's delete-identity resolution).
 //
 // Object must be non-nil: every entry in a desired snapshot is a resource that
-// exists. A nil Object is a malformed entry, ignored — deliberately NOT a delete
-// tombstone, because in a sweeping planner a lone tombstone is indistinguishable from
-// "every other document is now an orphan".
+// exists. A nil Object is a malformed entry — deliberately NOT a delete tombstone,
+// because in a sweeping planner a lone tombstone is indistinguishable from "every
+// other document is now an orphan". It cannot simply be skipped either: because the
+// planner mark-and-sweeps, skipping a nil entry would leave the matching managed
+// document unmatched and let the Git-only sweep DROP it. So BuildPlan instead
+// protects the matching document from the sweep (by resolved resource identity) and
+// emits a diagnostic, so a malformed entry never causes a destructive drop.
 type DesiredResource struct {
 	Resource types.ResourceIdentifier
 	Object   *unstructured.Unstructured
@@ -200,10 +205,11 @@ func BuildPlan(
 	// mark the documents it matched so the Git-only sweep below does not drop them.
 	for _, dr := range desired {
 		if dr.Object == nil {
-			// A malformed snapshot entry, ignored. It is NOT a delete tombstone: this
-			// planner sweeps, so treating a lone nil as "delete" would be
-			// indistinguishable from "every other document is orphaned". Per-event
-			// delete intents are the separate steady-state path (M7).
+			// A malformed snapshot entry. It is NOT a delete tombstone, but it cannot be
+			// silently skipped either: this planner sweeps, so an unmatched managed
+			// document would be dropped. Protect the matching document and diagnose
+			// instead — a nil object must never cause a destructive drop.
+			b.protectFromSweep(dr)
 			continue
 		}
 		b.planDesired(dr)
@@ -308,6 +314,29 @@ func (b *planBuilder) planDesired(dr DesiredResource) {
 	}
 }
 
+// protectFromSweep handles a desired entry whose Object is nil. A nil object is a
+// malformed snapshot entry, never a delete tombstone — but because BuildPlan
+// mark-and-sweeps, simply ignoring it would leave the matching managed document
+// unmatched and let the Git-only sweep drop it. So the matching document (resolved
+// by resource identity) is marked matched, protecting it from the sweep, and a
+// diagnostic records the malformed entry so the operator knows the snapshot was
+// incomplete. A nil entry that matches no managed document is inert (still diagnosed).
+func (b *planBuilder) protectFromSweep(dr DesiredResource) {
+	d := manifestedit.Diagnostic{
+		Level: manifestedit.DiagWarning,
+		Message: fmt.Sprintf(
+			"desired snapshot entry for %s has no object; protected from sweep (malformed entry, not a delete)",
+			dr.Resource.Key()),
+	}
+	if dm := b.store.ByResourceIdentity[dr.Resource]; dm != nil {
+		b.matched[dm] = true
+		ref := b.docLoc[dm]
+		d.Path = ref.FilePath
+		d.DocumentIndex = ref.DocumentIndex
+	}
+	b.diags = append(b.diags, d)
+}
+
 // planGitOnly classifies one Git document that no desired object matched.
 func (b *planBuilder) planGitOnly(dm *DocumentModel) {
 	if b.matched[dm] {
@@ -362,19 +391,21 @@ func actionFromDecision(a manifestedit.DecisionAction) (PlanActionKind, bool) {
 }
 
 // documentLocations indexes every managed document to its (file path, document
-// index) reference. DocumentModel stores neither: the planner derives both
-// top-down here — the map key's file path and the loop index over
-// FileModel.Documents — and hands manifestedit the position at hydration time. The
-// loop index equals the document's true position in the file because the M4
-// acceptance gate refuses any managed file whose documents are not all valid KRM,
-// so an accepted file holds only managed documents, contiguous from index 0. In
-// scan mode a refused (non-contiguous) file's references are advisory only — the
-// plan is reported, never applied.
+// index) reference. DocumentModel stores neither: the file path is the map key, and
+// the document's TRUE file position is reconstructed from the record-less diagnostic
+// gaps (every empty/non-KRM/invalid document leaves a diagnostic at its position, so
+// the managed documents fill the remaining positions in order). This is exact for
+// every file, contiguous or not — so a plan's reference targets the right document
+// even for an impure managed file the acceptance gate is refusing, and scan mode
+// renders an accurate (not merely advisory) target. manifestedit is handed this
+// position at hydration time.
 func documentLocations(store *ManifestStore) map[*DocumentModel]RecordRef {
+	diagsByPath := diagnosticsByPath(store.Diagnostics)
 	out := map[*DocumentModel]RecordRef{}
 	for path, fm := range store.FilesByPath {
+		idxs := reconstructManagedIndices(fm, gapIndices(diagsByPath[path]))
 		for i, dm := range fm.Documents {
-			out[dm] = RecordRef{FilePath: path, DocumentIndex: i}
+			out[dm] = RecordRef{FilePath: path, DocumentIndex: idxs[i]}
 		}
 	}
 	return out

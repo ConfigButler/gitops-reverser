@@ -132,12 +132,14 @@ existing [`internal/manifestanalyzer`](../../../internal/manifestanalyzer).
   invalid) interspersed between managed ones. **M4 dropped it.** The fix was not to
   keep the field but to make the acceptance gate refuse any managed file that is not
   entirely valid KRM (the impure-managed-file rule = Non-Negotiable Decision #2), so
-  an accepted file's managed documents are contiguous and the loop index is the true
-  position. The two pre-acceptance readers that still need true positions on a
-  *non*-accepted tree — the planner in scan mode and the `Analyze` report — handle it
-  without the field: the planner's derived index is advisory on a folder it is
-  already refusing, and the report reconstructs positions from the record-less
-  diagnostic gaps (`reconstructManagedIndices`).
+  an accepted file's managed documents are contiguous. Positions are recovered
+  without the field by `reconstructManagedIndices`: every record-less document
+  (empty / non-KRM / invalid) leaves a diagnostic at its position, so the managed
+  documents fill the remaining positions in order. The `Analyze` report, the planner
+  (`documentLocations`), and the acceptance gate's refusal messages all share this
+  reconstruction, so each recovers the **true** file index even on a *non*-accepted,
+  non-contiguous tree — a scan-mode plan over an impure file names the right document,
+  not a misleading loop index.
 
 ---
 
@@ -292,9 +294,12 @@ dependency; it does not exist yet. Independent of Track A.
 > missing-hydration).
 >
 > Judgment calls the plan left open: (1) **placement in `manifestanalyzer`, not a new
-> package** — the planner reads the transitional `DocumentModel.index` directly
-> (dropped in M4) rather than exposing it across a package boundary right before M4
-> deletes it; (2) **policy is injected** (`Policy{Project, EditOptions}`) so the
+> package** — when M3 landed the planner read the transitional `DocumentModel.index`
+> directly; M4 then **dropped that field** and the planner now reconstructs each
+> document's true file position via `documentLocations` /
+> `reconstructManagedIndices` (the record-less diagnostic gaps), keeping it in the
+> same package as the store and the report it shares that reconstruction with;
+> (2) **policy is injected** (`Policy{Project, EditOptions}`) so the
 > planner stays a pure, dependency-light function — production wires
 > `manifestreport.Project` / `EditOptions()` at the call sites, keeping the
 > integration layer out of the structure library; (3) the planner **emits
@@ -364,14 +369,19 @@ dependency; it does not exist yet. Independent of Track A.
 >    at non-contiguous file indices and a top-down loop index would edit the wrong
 >    document. The resolution was **not** to keep the index but to make the gate
 >    refuse any managed file that is not entirely valid KRM — exactly Non-Negotiable
->    Decision #2. An accepted file is therefore contiguous; the planner derives each
->    position from the loop index, and the read-only `Analyze` report reconstructs
->    positions from the record-less diagnostic gaps
->    (`reconstructManagedIndices` in
->    [analyzer.go](../../../internal/manifestanalyzer/analyzer.go)). This trades a
->    small strictness — a stray trailing `---` in an *adopted* managed file is now
->    refused — for deleting the most fragile field in the model. The live writer (M7)
->    re-derives a document's position against the freshly hydrated file at apply time.
+>    Decision #2. Positions are then **reconstructed from the record-less diagnostic
+>    gaps** (`reconstructManagedIndices` in
+>    [analyzer.go](../../../internal/manifestanalyzer/analyzer.go), shared by the
+>    `Analyze` report, the planner's `documentLocations`, and the acceptance gate's
+>    refusal messages): every empty/non-KRM/invalid document leaves a diagnostic at
+>    its position, so the managed documents fill the rest in order. This recovers the
+>    **true** file index for *every* file, contiguous or not, so a scan-mode plan over
+>    an impure (refused) file still names the right document rather than a misleading
+>    loop index. The impure-file refusal is therefore Decision #2 enforcement, not an
+>    index-safety crutch; it trades a small strictness — a stray trailing `---` in an
+>    *adopted* managed file is now refused — for deleting the most fragile field in the
+>    model. The live writer (M7) re-derives a document's position against the freshly
+>    hydrated file at apply time.
 > 2. **The allowlist is filename-based, not GVK-based.** A real `kustomization.yaml`
 >    has no `metadata.name`, so it is never a KRM record and a GVK match would never
 >    see it. `DefaultAllowlist` matches build-directive basenames

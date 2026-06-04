@@ -202,3 +202,46 @@ func TestRenderScanJSON(t *testing.T) {
 		t.Errorf("scan JSON should carry both actions, got %+v", parsed.Plan.Actions)
 	}
 }
+
+// TestRenderScanJSON_PreservesDocumentIndexZero guards the machine-readable contract:
+// a patch on a file's first document must serialize documentIndex 0 (not omit it),
+// while a create — which has no existing document location — omits it.
+func TestRenderScanJSON_PreservesDocumentIndexZero(t *testing.T) {
+	fsys := fstest.MapFS{"deploy.yaml": {Data: []byte(deployYAML)}}
+	desired := []DesiredResource{desiredDeployWeb(3), desiredConfigMap("new")} // patch deploy#0 + create
+	result := Scan(context.Background(), fsys, snapMapper(), desired, ScanPolicy{})
+
+	var buf bytes.Buffer
+	if err := RenderScanJSON(&buf, result); err != nil {
+		t.Fatalf("RenderScanJSON: %v", err)
+	}
+	if !strings.Contains(buf.String(), `"documentIndex": 0`) {
+		t.Errorf("a patch on the first document must keep documentIndex 0:\n%s", buf.String())
+	}
+
+	var parsed struct {
+		Plan struct {
+			Actions []struct {
+				Kind          string `json:"kind"`
+				DocumentIndex *int   `json:"documentIndex"`
+			} `json:"actions"`
+		} `json:"plan"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &parsed); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	for _, a := range parsed.Plan.Actions {
+		switch a.Kind {
+		case "patch":
+			if a.DocumentIndex == nil || *a.DocumentIndex != 0 {
+				t.Errorf("patch action should carry documentIndex 0, got %+v", a.DocumentIndex)
+			}
+		case "create":
+			if a.DocumentIndex != nil {
+				t.Errorf("create action should omit documentIndex, got %v", *a.DocumentIndex)
+			}
+		default:
+			t.Errorf("unexpected action kind %q", a.Kind)
+		}
+	}
+}

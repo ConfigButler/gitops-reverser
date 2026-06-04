@@ -286,18 +286,19 @@ func mixedFileRefusals(store *ManifestStore) []AcceptanceIssue {
 }
 
 // mappingRefusals refuses every managed document whose mapping is not a watched,
-// in-scope resolution. It is called only when the store has an API source. A
-// document's position is the loop index, which is its true file index because a
-// folder that reaches an accepted state holds only contiguous managed documents.
+// in-scope resolution. It is called only when the store has an API source. Each
+// document's true file position comes from documentLocations (reconstructed from the
+// record-less diagnostic gaps), so a refusal names the right document even in an
+// impure, non-contiguous file.
 func mappingRefusals(store *ManifestStore, policy AcceptancePolicy) []AcceptanceIssue {
+	docLoc := documentLocations(store)
 	var out []AcceptanceIssue
 	for _, path := range sortedKeys(store.FilesByPath) {
-		for i, dm := range store.FilesByPath[path].Documents {
+		for _, dm := range store.FilesByPath[path].Documents {
 			if store.IsDuplicate(dm) {
 				continue // already refused as a duplicate
 			}
-			ref := RecordRef{FilePath: path, DocumentIndex: i}
-			if issue, ok := mappingRefusal(ref, dm, policy); ok {
+			if issue, ok := mappingRefusal(docLoc[dm], dm, policy); ok {
 				out = append(out, issue)
 			}
 		}

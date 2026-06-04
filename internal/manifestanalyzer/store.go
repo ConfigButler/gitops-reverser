@@ -128,13 +128,17 @@ func (f *FileModel) Deleted() bool { return f.Current == nil && f.Original != ni
 // DocumentModel is one managed KRM document. It is byte-free: the full
 // manifestedit node tree is built only when a plan action touches the document
 // (Snapshot is the lazy handle), and it deliberately stores neither its file path
-// nor its position — both are derived top-down (the file path and the loop index
-// over FileModel.Documents). That derivation is sound because the M4 acceptance
-// gate refuses any managed file whose documents are not all valid KRM, so an
-// accepted file's managed documents are exactly its documents, contiguous from
-// index 0. manifestedit is given the document's position only at apply time. See
-// docs/design/manifest/current-manifest-support-review.md ("Concrete Data
-// Structures") and the M4 acceptance gate (acceptance.go).
+// nor its position. The file path is the containing FileModel's; the document's TRUE
+// file index is reconstructed when needed (by reconstructManagedIndices) from the
+// record-less diagnostic gaps — every empty/non-KRM/invalid document leaves a
+// diagnostic at its position, so the managed documents fill the remaining positions
+// in document order. That recovers the right index for any file, contiguous or not,
+// so the report, the planner (documentLocations), and the acceptance gate all agree
+// without storing a fragile mutable field. The M4 acceptance gate additionally
+// refuses any managed file that is not entirely valid KRM (Decision #2), so an
+// accepted file is contiguous anyway. manifestedit is given the position only at
+// apply time. See docs/design/manifest/current-manifest-support-review.md ("Concrete
+// Data Structures") and the M4 acceptance gate (acceptance.go).
 type DocumentModel struct {
 	// ManifestIdentity is the content identity (apiVersion + kind + namespace +
 	// name) as written in YAML.

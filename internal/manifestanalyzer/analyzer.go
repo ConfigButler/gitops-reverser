@@ -238,10 +238,7 @@ func projectReport(store *ManifestStore, yamlFiles []manifestedit.FileContent, n
 	// Non-YAML scan diagnostics (read errors, skipped symlinks, walk errors) never
 	// share a path with an indexed YAML file, so grouping every diagnostic by path
 	// yields exactly the per-document index diagnostics for each YAML file.
-	diagsByPath := map[string][]manifestedit.Diagnostic{}
-	for _, d := range store.Diagnostics {
-		diagsByPath[d.Path] = append(diagsByPath[d.Path], d)
-	}
+	diagsByPath := diagnosticsByPath(store.Diagnostics)
 
 	files := make([]FileReport, 0, len(yamlFiles)+len(nonYAML))
 	// Duplicate identities are acceptance facts derived from the store's collapsed
@@ -387,6 +384,17 @@ func projectFileReport(
 	return fr, dups
 }
 
+// diagnosticsByPath groups diagnostics by their file path, preserving order. It is
+// the shared input for position reconstruction (the report and the planner both
+// recover a managed document's true file index from the record-less gaps).
+func diagnosticsByPath(diags []manifestedit.Diagnostic) map[string][]manifestedit.Diagnostic {
+	out := map[string][]manifestedit.Diagnostic{}
+	for _, d := range diags {
+		out[d.Path] = append(out[d.Path], d)
+	}
+	return out
+}
+
 // gapIndices collects the file positions held by a record-less document — empty,
 // non-KRM, or invalid YAML — each of which leaves exactly one diagnostic at its
 // position. The non-editable and duplicate reasons accompany a managed record and
@@ -410,6 +418,16 @@ func gapIndices(diags []manifestedit.Diagnostic) map[int]bool {
 // fm.Documents. The managed documents fill the file positions not taken by a gap
 // (record-less) document, in document order, so the i-th managed document gets the
 // i-th non-gap position. It returns nil for a file with no managed documents.
+//
+// LOAD-BEARING INVARIANT: every record-less document — empty/comment-only, non-KRM,
+// invalid YAML, and a .sops.yaml missing its sops key — emits exactly one structured
+// manifestedit diagnostic at its position (see indexOneFile), and no managed record
+// shares a position with such a diagnostic. If a record-less document ever produced
+// no diagnostic, its position would be wrongly handed to a managed document and every
+// later managed index would shift. The mixed-gap test
+// (TestReconstructManagedIndices_RecordlessGapsLeaveDiagnostics) guards this; the M4
+// acceptance gate's impure-managed-file refusal means an accepted file has no gaps at
+// all, so the reconstruction only ever matters on a tree that is being refused.
 func reconstructManagedIndices(fm *FileModel, gaps map[int]bool) []int {
 	if fm == nil {
 		return nil
