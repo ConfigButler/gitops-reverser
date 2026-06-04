@@ -59,6 +59,16 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 		}
 	}()
 
+	// Hold an exclusive lock on the cluster for the whole run before touching it,
+	// so two concurrent e2e invocations against the same k3d cluster cannot
+	// clobber each other. This replaces the per-task with-lock.sh wrapper: the
+	// lock now lives in one place (here), and because Go opens the fd O_CLOEXEC
+	// it is not inherited by the detached `kubectl port-forward` children that
+	// prepare spawns — so it releases cleanly when this process exits, instead of
+	// being pinned past the run. Destructive standalone tasks (clean-cluster)
+	// honor the same lock via a flock precondition; see test/e2e/Taskfile.yml.
+	acquireE2ERunLock()
+
 	if img := os.Getenv("PROJECT_IMAGE"); img == "" {
 		By("local run: preparing cluster via Task target")
 	} else {
@@ -72,9 +82,73 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 	configureE2EProcess()
 })
 
+// Release the cluster lock once every parallel process has finished. The second
+// function runs only on process #1, where the lock was taken.
+var _ = SynchronizedAfterSuite(func() {}, func() {
+	releaseE2ERunLock()
+})
+
 var _ = AfterEach(func() {
 	dumpFailureDiagnostics()
 })
+
+// e2eRunLock is the open file descriptor whose flock serializes e2e runs against
+// one cluster. It is held by process #1 for the whole suite and released in
+// SynchronizedAfterSuite (it would also release on process exit).
+var e2eRunLock *os.File
+
+// e2eRunLockPath is the lock co-located with the rest of the cluster stamps, so
+// it matches the {{.CS}}/e2e.lock the Taskfile's clean-cluster precondition
+// probes. utils.GetProjectDir() yields the repo root regardless of the test
+// binary's working directory.
+func e2eRunLockPath() string {
+	projectDir, err := utils.GetProjectDir()
+	Expect(err).NotTo(HaveOccurred(), "failed to resolve project dir for e2e lock")
+	return filepath.Join(projectDir, ".stamps", "cluster", resolveE2EContext(), "e2e.lock")
+}
+
+// acquireE2ERunLock takes an exclusive flock on the cluster lock file. By default
+// it fails fast if another run holds it; set E2E_LOCK_WAIT=true to queue instead.
+func acquireE2ERunLock() {
+	lockPath := e2eRunLockPath()
+	Expect(os.MkdirAll(filepath.Dir(lockPath), 0o755)).To(Succeed(), "failed to create e2e lock dir")
+
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
+	Expect(err).NotTo(HaveOccurred(), "failed to open e2e lock file %s", lockPath)
+
+	how := syscall.LOCK_EX | syscall.LOCK_NB
+	if e2eLockWaitEnabled() {
+		how = syscall.LOCK_EX
+		_, _ = fmt.Fprintf(GinkgoWriter, "Waiting for e2e lock %s (CTX=%s)...\n", lockPath, resolveE2EContext())
+	}
+	if err := syscall.Flock(int(f.Fd()), how); err != nil {
+		_ = f.Close()
+		Fail(fmt.Sprintf(
+			"another e2e run is already active for context %s (lock %s); "+
+				"set E2E_LOCK_WAIT=true to wait for it instead of failing fast: %v",
+			resolveE2EContext(), lockPath, err))
+	}
+	e2eRunLock = f
+}
+
+// releaseE2ERunLock closes the lock fd, which releases the flock.
+func releaseE2ERunLock() {
+	if e2eRunLock == nil {
+		return
+	}
+	_ = e2eRunLock.Close()
+	e2eRunLock = nil
+}
+
+// e2eLockWaitEnabled reports whether E2E_LOCK_WAIT opts into blocking on the lock.
+func e2eLockWaitEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("E2E_LOCK_WAIT"))) {
+	case "true", "1", "yes":
+		return true
+	default:
+		return false
+	}
+}
 
 // prepareE2EClusterOnce runs the expensive, cluster-mutating bootstrap exactly
 // once (parallel process #1): the Task prepare flow plus the cluster-scoped CRD

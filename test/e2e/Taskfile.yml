@@ -190,16 +190,14 @@ tasks:
     # and refuse to run on a version mismatch).
     cmds:
       - |
-        hack/e2e/with-lock.sh "{{.CS}}" "{{.CTX}}" -- bash -euo pipefail -c '
-          export CTX="{{.CTX}}"
-          export INSTALL_MODE="{{.INSTALL_MODE}}"
-          export NAMESPACE="{{.NAMESPACE}}"
-          export E2E_AGE_KEY_FILE="{{.CS}}/age-key.txt"
-          go run github.com/onsi/ginkgo/v2/ginkgo \
-            --procs={{.E2E_GINKGO_PROCS}} --timeout="{{.E2E_FULL_TIMEOUT}}" -v \
-            --output-dir="{{.CS}}/{{.NAMESPACE}}" --json-report=ginkgo-report-full.json \
-            ./test/e2e/
-        '
+        export CTX="{{.CTX}}"
+        export INSTALL_MODE="{{.INSTALL_MODE}}"
+        export NAMESPACE="{{.NAMESPACE}}"
+        export E2E_AGE_KEY_FILE="{{.CS}}/age-key.txt"
+        go run github.com/onsi/ginkgo/v2/ginkgo \
+          --procs={{.E2E_GINKGO_PROCS}} --timeout="{{.E2E_FULL_TIMEOUT}}" -v \
+          --output-dir="{{.CS}}/{{.NAMESPACE}}" --json-report=ginkgo-report-full.json \
+          ./test/e2e/
 
   allure-e2e-results:
     desc: Convert local e2e Ginkgo JSON reports into Allure results
@@ -282,79 +280,68 @@ tasks:
     desc: Run manager-focused e2e scenarios
     cmds:
       - |
-        hack/e2e/with-lock.sh "{{.CS}}" "{{.CTX}}" -- bash -euo pipefail -c '
-          export CTX="{{.CTX}}"
-          export INSTALL_MODE="{{.INSTALL_MODE}}"
-          export NAMESPACE="{{.NAMESPACE}}"
-          export E2E_AGE_KEY_FILE="{{.CS}}/age-key.txt"
-          go run github.com/onsi/ginkgo/v2/ginkgo \
-            --procs={{.E2E_GINKGO_PROCS}} --timeout="{{.E2E_GO_TEST_TIMEOUT}}" -v \
-            --label-filter=manager \
-            --output-dir="{{.CS}}/{{.NAMESPACE}}" --json-report=ginkgo-report-manager.json \
-            ./test/e2e/
-        '
+        export CTX="{{.CTX}}"
+        export INSTALL_MODE="{{.INSTALL_MODE}}"
+        export NAMESPACE="{{.NAMESPACE}}"
+        export E2E_AGE_KEY_FILE="{{.CS}}/age-key.txt"
+        go run github.com/onsi/ginkgo/v2/ginkgo \
+          --procs={{.E2E_GINKGO_PROCS}} --timeout="{{.E2E_GO_TEST_TIMEOUT}}" -v \
+          --label-filter=manager \
+          --output-dir="{{.CS}}/{{.NAMESPACE}}" --json-report=ginkgo-report-manager.json \
+          ./test/e2e/
 
   test-e2e-signing:
     desc: Run commit-signing e2e scenarios
     cmds:
       - |
-        hack/e2e/with-lock.sh "{{.CS}}" "{{.CTX}}" -- bash -euo pipefail -c '
-          export CTX="{{.CTX}}"
-          export INSTALL_MODE="{{.INSTALL_MODE}}"
-          export NAMESPACE="{{.NAMESPACE}}"
-          export E2E_AGE_KEY_FILE="{{.CS}}/age-key.txt"
-          go test -timeout "{{.E2E_GO_TEST_TIMEOUT}}" ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=signing \
-            -ginkgo.json-report="{{.CS}}/{{.NAMESPACE}}/ginkgo-report-signing.json"
-        '
+        export CTX="{{.CTX}}"
+        export INSTALL_MODE="{{.INSTALL_MODE}}"
+        export NAMESPACE="{{.NAMESPACE}}"
+        export E2E_AGE_KEY_FILE="{{.CS}}/age-key.txt"
+        go test -timeout "{{.E2E_GO_TEST_TIMEOUT}}" ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=signing \
+          -ginkgo.json-report="{{.CS}}/{{.NAMESPACE}}/ginkgo-report-signing.json"
 
   test-image-refresh:
     desc: Validate the image-refresh dependency chain
     cmds:
       - |
-        hack/e2e/with-lock.sh "{{.CS}}" "{{.CTX}}" -- bash -euo pipefail -c '
-          export CTX="{{.CTX}}"
-          export INSTALL_MODE="{{.INSTALL_MODE}}"
-          export NAMESPACE="{{.NAMESPACE}}"
-          export E2E_AGE_KEY_FILE="{{.CS}}/age-key.txt"
-          go test -timeout "{{.E2E_GO_TEST_TIMEOUT}}" ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=image-refresh \
-            -ginkgo.json-report="{{.CS}}/{{.NAMESPACE}}/ginkgo-report-image-refresh.json"
-        '
+        export CTX="{{.CTX}}"
+        export INSTALL_MODE="{{.INSTALL_MODE}}"
+        export NAMESPACE="{{.NAMESPACE}}"
+        export E2E_AGE_KEY_FILE="{{.CS}}/age-key.txt"
+        go test -timeout "{{.E2E_GO_TEST_TIMEOUT}}" ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=image-refresh \
+          -ginkgo.json-report="{{.CS}}/{{.NAMESPACE}}/ginkgo-report-image-refresh.json"
 
   test-e2e-quickstart-helm:
     desc: Run quickstart install validation with Helm install
     cmds:
       - |
-        hack/e2e/with-lock.sh "{{.CS}}" "{{.CTX}}" -- bash -euo pipefail -c '
-          export CTX="{{.CTX}}"
-          export INSTALL_MODE=helm
-          export NAMESPACE="{{.NAMESPACE}}"
-          export E2E_ENABLE_QUICKSTART_FRAMEWORK=true
-          export E2E_QUICKSTART_MODE=helm
-          export E2E_AGE_KEY_FILE="{{.CS}}/age-key.txt"
-          go test -timeout "{{.E2E_GO_TEST_TIMEOUT}}" ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=quickstart-framework \
-            -ginkgo.json-report="{{.CS}}/{{.NAMESPACE}}/ginkgo-report-quickstart-helm.json"
-        '
+        export CTX="{{.CTX}}"
+        export INSTALL_MODE=helm
+        export NAMESPACE="{{.NAMESPACE}}"
+        export E2E_ENABLE_QUICKSTART_FRAMEWORK=true
+        export E2E_QUICKSTART_MODE=helm
+        export E2E_AGE_KEY_FILE="{{.CS}}/age-key.txt"
+        go test -timeout "{{.E2E_GO_TEST_TIMEOUT}}" ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=quickstart-framework \
+          -ginkgo.json-report="{{.CS}}/{{.NAMESPACE}}/ginkgo-report-quickstart-helm.json"
 
   test-e2e-quickstart-manifest:
     desc: Run quickstart install validation with manifest install
     cmds:
       - |
-        hack/e2e/with-lock.sh "{{.CS}}" "{{.CTX}}" -- bash -euo pipefail -c '
-          export CTX="{{.CTX}}"
-          export INSTALL_MODE=plain-manifests-file
-          export NAMESPACE="{{.NAMESPACE}}"
-          export E2E_ENABLE_QUICKSTART_FRAMEWORK=true
-          export E2E_QUICKSTART_MODE=plain-manifests-file
-          export E2E_AGE_KEY_FILE="{{.CS}}/age-key.txt"
-          go test -timeout "{{.E2E_GO_TEST_TIMEOUT}}" ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=quickstart-framework \
-            -ginkgo.json-report="{{.CS}}/{{.NAMESPACE}}/ginkgo-report-quickstart-manifest.json"
-        '
+        export CTX="{{.CTX}}"
+        export INSTALL_MODE=plain-manifests-file
+        export NAMESPACE="{{.NAMESPACE}}"
+        export E2E_ENABLE_QUICKSTART_FRAMEWORK=true
+        export E2E_QUICKSTART_MODE=plain-manifests-file
+        export E2E_AGE_KEY_FILE="{{.CS}}/age-key.txt"
+        go test -timeout "{{.E2E_GO_TEST_TIMEOUT}}" ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=quickstart-framework \
+          -ginkgo.json-report="{{.CS}}/{{.NAMESPACE}}/ginkgo-report-quickstart-manifest.json"
 
   playground-bootstrap:
     desc: Bootstrap a reusable repo-backed playground
     cmds:
       - |
-        hack/e2e/with-lock.sh "{{.CS}}" "{{.CTX}}" -- bash -euo pipefail <<'E2E_LOCKED'
         ctx="{{.CTX}}"
         ns="tilt-playground"
         repo="playground"
@@ -396,7 +383,6 @@ tasks:
         export NAMESPACE="{{.NAMESPACE}}"
         export E2E_AGE_KEY_FILE="{{.CS}}/age-key.txt"
         go test -timeout "{{.E2E_GO_TEST_TIMEOUT}}" ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=playground
-        E2E_LOCKED
 
   playground-cleanup:
     desc: Remove the reusable playground namespace, repo, and local artifacts
@@ -526,33 +512,29 @@ tasks:
     desc: Run aggregated API server e2e scenarios
     cmds:
       - |
-        hack/e2e/with-lock.sh "{{.CS}}" "{{.CTX}}" -- bash -euo pipefail -c '
-          export CTX="{{.CTX}}"
-          export INSTALL_MODE="{{.INSTALL_MODE}}"
-          export NAMESPACE="{{.NAMESPACE}}"
-          export E2E_AGE_KEY_FILE="{{.CS}}/age-key.txt"
-          go test -timeout "{{.E2E_GO_TEST_TIMEOUT}}" ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=aggregated-api \
-            -ginkgo.json-report="{{.CS}}/{{.NAMESPACE}}/ginkgo-report-aggregated-api.json"
-        '
+        export CTX="{{.CTX}}"
+        export INSTALL_MODE="{{.INSTALL_MODE}}"
+        export NAMESPACE="{{.NAMESPACE}}"
+        export E2E_AGE_KEY_FILE="{{.CS}}/age-key.txt"
+        go test -timeout "{{.E2E_GO_TEST_TIMEOUT}}" ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=aggregated-api \
+          -ginkgo.json-report="{{.CS}}/{{.NAMESPACE}}/ginkgo-report-aggregated-api.json"
 
   # test-e2e-demo intentionally has no -ginkgo.json-report flag: this target
   # is a demo-setup runner, not a measurable test suite.
   test-e2e-demo:
     desc: Prepare a reusable demo repo and leave demo resources in place
     cmds:
+      - task: prepare-e2e-demo
+      - rm -rf ".stamps/repos/demo"
       - |
-        hack/e2e/with-lock.sh "{{.CS}}" "{{.CTX}}" -- bash -euo pipefail -c '
-          "{{.TASK_BIN}}" prepare-e2e-demo CTX="{{.CTX}}" INSTALL_MODE="{{.INSTALL_MODE}}" NAMESPACE="{{.NAMESPACE}}"
-          rm -rf ".stamps/repos/demo"
-          export CTX="{{.CTX}}"
-          export REPO_NAME=demo
-          export INSTALL_MODE="{{.INSTALL_MODE}}"
-          export NAMESPACE="{{.NAMESPACE}}"
-          export E2E_ENABLE_DEMO=true
-          export E2E_AGE_KEY_FILE="{{.CS}}/age-key.txt"
-          export TESTNAMESPACE=vote
-          go test -timeout "{{.E2E_GO_TEST_TIMEOUT}}" ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=demo
-        '
+        export CTX="{{.CTX}}"
+        export REPO_NAME=demo
+        export INSTALL_MODE="{{.INSTALL_MODE}}"
+        export NAMESPACE="{{.NAMESPACE}}"
+        export E2E_ENABLE_DEMO=true
+        export E2E_AGE_KEY_FILE="{{.CS}}/age-key.txt"
+        export TESTNAMESPACE=vote
+        go test -timeout "{{.E2E_GO_TEST_TIMEOUT}}" ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=demo
       - |
         echo
         echo "Voter login codes:"
