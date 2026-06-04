@@ -303,6 +303,20 @@ func sanitizePath(base string) string {
 	return cleaned
 }
 
+// IsValidTargetPath reports whether p is a path the writer can safely materialize
+// into: the repository root (empty or "."), or a clean relative path. Paths the
+// writer rejects as unsafe — absolute (leading "/"), Windows separators, or ".."
+// traversal — are invalid and can own nothing. It mirrors sanitizePath, the
+// write-path guard, so the overlap/admission check and the writer agree on what a
+// target legitimately owns.
+func IsValidTargetPath(p string) bool {
+	trimmed := strings.TrimSpace(p)
+	if trimmed == "" || trimmed == "." {
+		return true // repository root
+	}
+	return sanitizePath(trimmed) != ""
+}
+
 // tryOpenExistingRepo attempts to open and validate an existing repository.
 func tryOpenExistingRepo(path string, logger logr.Logger) *git.Repository {
 	// Check if .git directory exists

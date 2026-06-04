@@ -622,6 +622,13 @@ func (r *GitTargetReconciler) checkForConflicts(
 	target *configbutleraiv1alpha1.GitTarget,
 	providerNS string,
 ) (bool, string, string, ctrl.Result) {
+	// A path the writer would reject (absolute, backslashes, ".." traversal) owns
+	// nothing, so it must neither block others nor be blocked here — its own write
+	// path fails it. Only well-formed paths participate in overlap detection.
+	if !git.IsValidTargetPath(target.Spec.Path) {
+		return false, "", "", ctrl.Result{}
+	}
+
 	var allTargets configbutleraiv1alpha1.GitTargetList
 	if err := r.List(ctx, &allTargets); err != nil {
 		return false, "", "", ctrl.Result{}
@@ -635,9 +642,19 @@ func (r *GitTargetReconciler) checkForConflicts(
 		if existing.Namespace != providerNS || existing.Spec.ProviderRef.Name != target.Spec.ProviderRef.Name {
 			continue
 		}
-		if existing.Spec.Branch == target.Spec.Branch && existing.Spec.Path == target.Spec.Path {
-			if target.CreationTimestamp.After(existing.CreationTimestamp.Time) {
-				msg := fmt.Sprintf(
+		if existing.Spec.Branch != target.Spec.Branch ||
+			!git.IsValidTargetPath(existing.Spec.Path) ||
+			!gitTargetPathsOverlap(target.Spec.Path, existing.Spec.Path) {
+			continue
+		}
+		// Two GitTargets on the same provider+branch whose paths are equal or
+		// nested fight over which documents each one owns. The later-created
+		// target loses (ties broken deterministically by identity) so every
+		// materialized folder keeps exactly one owner.
+		if gitTargetLosesConflict(target, existing) {
+			var msg string
+			if normalizeGitTargetPath(target.Spec.Path) == normalizeGitTargetPath(existing.Spec.Path) {
+				msg = fmt.Sprintf(
 					"Conflict detected. Another GitTarget '%s/%s' (created at %s) is already using GitProvider '%s/%s', branch '%s', path '%s'. This GitTarget was created later and will not be processed.",
 					existing.Namespace,
 					existing.Name,
@@ -647,8 +664,20 @@ func (r *GitTargetReconciler) checkForConflicts(
 					target.Spec.Branch,
 					target.Spec.Path,
 				)
-				return true, msg, GitTargetReasonTargetConflict, ctrl.Result{RequeueAfter: RequeueShortInterval}
+			} else {
+				msg = fmt.Sprintf(
+					"Conflict detected. This GitTarget's path '%s' overlaps the path '%s' of GitTarget '%s/%s' (created at %s) on GitProvider '%s/%s', branch '%s' — one path nests inside the other (sibling paths are allowed). This GitTarget was created later and will not be processed.",
+					target.Spec.Path,
+					existing.Spec.Path,
+					existing.Namespace,
+					existing.Name,
+					existing.CreationTimestamp.Format(time.RFC3339),
+					providerNS,
+					target.Spec.ProviderRef.Name,
+					target.Spec.Branch,
+				)
 			}
+			return true, msg, GitTargetReasonTargetConflict, ctrl.Result{RequeueAfter: RequeueShortInterval}
 		}
 	}
 

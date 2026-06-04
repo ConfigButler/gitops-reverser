@@ -616,6 +616,125 @@ var _ = Describe("GitTarget Controller Security", func() {
 			Expect(k8sClient.Delete(ctx, firstTarget)).Should(Succeed())
 			Expect(k8sClient.Delete(ctx, gitProvider)).Should(Succeed())
 		})
+
+		It("Should detect conflicts when one path nests inside another", func() {
+			ctx := context.Background()
+
+			// Create a GitProvider
+			gitProvider := &configbutleraiv1alpha1.GitProvider{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-provider-nested",
+					Namespace: "default",
+				},
+				Spec: configbutleraiv1alpha1.GitProviderSpec{
+					URL:             "https://github.com/test-org/test-repo.git",
+					AllowedBranches: []string{"main"},
+					SecretRef: &configbutleraiv1alpha1.LocalSecretReference{
+						Name: "test-secret",
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, gitProvider)).Should(Succeed())
+
+			// First GitTarget owns the parent folder "team" (winner - created first)
+			firstTarget := &configbutleraiv1alpha1.GitTarget{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "first-target-nested",
+					Namespace: "default",
+				},
+				Spec: configbutleraiv1alpha1.GitTargetSpec{
+					ProviderRef: configbutleraiv1alpha1.GitProviderReference{
+						Name: "test-provider-nested",
+						Kind: "GitProvider",
+					},
+					Branch: "main",
+					Path:   "team",
+				},
+			}
+			Expect(k8sClient.Create(ctx, firstTarget)).Should(Succeed())
+
+			firstTargetKey := types.NamespacedName{Name: "first-target-nested", Namespace: "default"}
+			Eventually(func() bool {
+				var target configbutleraiv1alpha1.GitTarget
+				if err := k8sClient.Get(ctx, firstTargetKey, &target); err != nil {
+					return false
+				}
+				for _, condition := range target.Status.Conditions {
+					if condition.Type == GitTargetReasonReady {
+						return true
+					}
+				}
+				return false
+			}, timeout, interval).Should(BeTrue())
+
+			// Kubernetes creationTimestamp has second-level precision; ensure the
+			// nested target is created strictly later so it is the loser.
+			time.Sleep(1100 * time.Millisecond)
+
+			// Second GitTarget nests under the first ("team/app") - must conflict.
+			secondTarget := &configbutleraiv1alpha1.GitTarget{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "second-target-nested",
+					Namespace: "default",
+				},
+				Spec: configbutleraiv1alpha1.GitTargetSpec{
+					ProviderRef: configbutleraiv1alpha1.GitProviderReference{
+						Name: "test-provider-nested",
+						Kind: "GitProvider",
+					},
+					Branch: "main",
+					Path:   "team/app",
+				},
+			}
+			Expect(k8sClient.Create(ctx, secondTarget)).Should(Succeed())
+
+			secondTargetKey := types.NamespacedName{Name: "second-target-nested", Namespace: "default"}
+			Eventually(func() bool {
+				var target configbutleraiv1alpha1.GitTarget
+				if err := k8sClient.Get(ctx, secondTargetKey, &target); err != nil {
+					return false
+				}
+				for _, condition := range target.Status.Conditions {
+					if condition.Type == GitTargetConditionValidated &&
+						condition.Reason == GitTargetReasonTargetConflict {
+						return true
+					}
+				}
+				return false
+			}, timeout, interval).Should(BeTrue())
+
+			var secondReconciledTarget configbutleraiv1alpha1.GitTarget
+			Expect(k8sClient.Get(ctx, secondTargetKey, &secondReconciledTarget)).Should(Succeed())
+
+			var readyCondition *metav1.Condition
+			for i, condition := range secondReconciledTarget.Status.Conditions {
+				if condition.Type == GitTargetReasonReady {
+					readyCondition = &secondReconciledTarget.Status.Conditions[i]
+					break
+				}
+			}
+			Expect(readyCondition).NotTo(BeNil())
+			Expect(readyCondition.Status).To(Equal(metav1.ConditionFalse))
+			Expect(readyCondition.Reason).To(Equal(GitTargetReadyReasonValidationFailed))
+
+			var validatedCondition *metav1.Condition
+			for i, condition := range secondReconciledTarget.Status.Conditions {
+				if condition.Type == GitTargetConditionValidated {
+					validatedCondition = &secondReconciledTarget.Status.Conditions[i]
+					break
+				}
+			}
+			Expect(validatedCondition).NotTo(BeNil())
+			Expect(validatedCondition.Reason).To(Equal(GitTargetReasonTargetConflict))
+			Expect(validatedCondition.Message).To(ContainSubstring("overlaps"))
+			Expect(validatedCondition.Message).To(ContainSubstring("first-target-nested"))
+			Expect(validatedCondition.Message).To(ContainSubstring("created later"))
+
+			// Cleanup
+			Expect(k8sClient.Delete(ctx, secondTarget)).Should(Succeed())
+			Expect(k8sClient.Delete(ctx, firstTarget)).Should(Succeed())
+			Expect(k8sClient.Delete(ctx, gitProvider)).Should(Succeed())
+		})
 	})
 
 	Context("When encryption secret auto-generation is configured", func() {

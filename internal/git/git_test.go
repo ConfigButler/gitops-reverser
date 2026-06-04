@@ -28,6 +28,30 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
+func TestIsValidTargetPath(t *testing.T) {
+	cases := []struct {
+		name string
+		path string
+		want bool
+	}{
+		{"empty is root", "", true},
+		{"dot is root", ".", true},
+		{"whitespace is root", "   ", true},
+		{"clean relative path", "team/app", true},
+		{"trailing slash ok", "team/app/", true},
+		{"absolute rejected", "/team", false},
+		{"absolute root slash rejected", "/", false},
+		{"parent traversal rejected", "../team", false},
+		{"embedded traversal rejected", "team/../other", false},
+		{"backslash rejected", "team\\app", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, IsValidTargetPath(tc.path))
+		})
+	}
+}
+
 func TestToGitPath_NamespacedResource(t *testing.T) {
 	testCases := []struct {
 		name           string

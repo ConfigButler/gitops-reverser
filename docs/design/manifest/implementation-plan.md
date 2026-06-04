@@ -40,7 +40,7 @@ flowchart LR
         B1[B1 Catalog byGVK lookup] --> B2[B2 ResourceMapper + impls]
     end
     subgraph TrackC["Track C — Topology guard"]
-        C1[C1 GitTarget non-overlap admission]
+        C1[C1 GitTarget non-overlap guard ✅]
     end
 
     A2 --> B3[B3 Mapper into store construction]
@@ -205,18 +205,37 @@ dependency; it does not exist yet. Independent of Track A.
 
 ## Track C — topology guard (independent, cheap, land early)
 
-### C1 — GitTarget non-overlap admission [runtime]
+### C1 — GitTarget non-overlap guard [runtime]
+
+> **Status: ✅ landed.** Implemented as a **reconcile-time `Validated` gate**, not
+> an admission webhook — this repo has no admission-webhook infrastructure and the
+> rule fits the established status-condition pattern. It extends the GitTarget
+> reconciler's existing `checkForConflicts` (which already rejected exact-path
+> duplicates) to also reject ancestor/descendant nesting. An overlapping target
+> goes `Validated=False` / `Ready=False`, reason `TargetConflict`, with a clear
+> message, and writes nothing.
 
 - **Depends on**: nothing.
-- **Touches**: validation on
-  [`GitTargetSpec.Path`](../../../api/v1alpha1/gittarget_types.go) (validating
-  webhook or admission check): reject a GitTarget whose `(repo, path)` is equal to,
-  an ancestor of, or a descendant of an existing GitTarget's.
+- **Touches**: `checkForConflicts` in
+  [`gittarget_controller.go`](../../../internal/controller/gittarget_controller.go);
+  segment-aware path helpers in
+  [`gittarget_path_overlap.go`](../../../internal/controller/gittarget_path_overlap.go)
+  (`gitTargetPathsOverlap` + a deterministic `gitTargetLosesConflict` tie-breaker);
+  `git.IsValidTargetPath` in [`git.go`](../../../internal/git/git.go), which reuses
+  the writer's `sanitizePath` so the guard and the write path agree on what a target
+  may own.
+- **Scope key**: overlap is evaluated within the same
+  `(namespace, providerRef, branch)`, reusing the existing conflict scoping. Known
+  gap: two GitTargets in different namespaces whose providers resolve to the *same*
+  git URL are not yet detected — future work.
 - **Unblocks**: the "one owner per folder" invariant that M7/M8 rely on — **must
   land before** the destructive writer/sweep.
-- **Done when**: nested/equal paths are rejected at admission with a clear message;
-  sibling paths pass; e2e covers accept + reject.
-- **Notes**: small and self-contained; do it whenever, but before M7.
+- **Done when**: nested/equal paths are rejected (reconcile-time, `Validated=False`,
+  reason `TargetConflict`) with a clear message; sibling paths pass; writer-invalid
+  paths (absolute, `..`, backslash) are skipped and left to their own gate; ties on
+  equal `creationTimestamp` are broken deterministically by identity; e2e covers
+  accept + reject. ✅
+- **Notes**: small and self-contained; landed before M7 as planned.
 
 ---
 
@@ -318,8 +337,9 @@ dependency; it does not exist yet. Independent of Track A.
 1. **A1** ✅ — `ManifestStore`/`FileModel`/`DocumentModel`, `Report` as a
    projection. No behavior change; existing analyzer tests are the net.
 2. **B1** ✅ — catalog `byGVK` + exact lookup. Tiny, isolated, unblocks the mapper.
-3. **C1** — GitTarget non-overlap admission. Cheap, self-contained, locks the
-   one-owner invariant in before anything destructive depends on it.
+3. **C1** ✅ — GitTarget non-overlap guard (reconcile-time `Validated` gate, not a
+   webhook). Cheap, self-contained, locks the one-owner invariant in before anything
+   destructive depends on it.
 
 A2 ✅ and B2 ✅ have followed; **B3 is now unblocked** (A2 + B2 both landed) and
-joins the tracks, then M3 begins the tail. C1 remains independent.
+joins the tracks, then M3 begins the tail. C1 ✅ landed independently.
