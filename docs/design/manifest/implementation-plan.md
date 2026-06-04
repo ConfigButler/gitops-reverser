@@ -278,6 +278,44 @@ dependency; it does not exist yet. Independent of Track A.
 
 ### M3 — Plan model
 
+> **Status: ✅ landed.** The first-class `Plan` / `PlanAction` / `PlanActionKind`
+> and the pure `BuildPlan(store, files, desired, policy)` live in
+> [`internal/manifestanalyzer/plan.go`](../../../internal/manifestanalyzer/plan.go),
+> graduating `manifestreport.BuildReport`'s read-only create/update/delete/skip into
+> the materialized model. Covered by
+> [`plan_test.go`](../../../internal/manifestanalyzer/plan_test.go) against the
+> static-snapshot fixtures (patch, create, no-op, drop-orphan, encrypted skip,
+> structure-only-never-drops, non-editable construct, injected projection, and
+> missing-hydration).
+>
+> Judgment calls the plan left open: (1) **placement in `manifestanalyzer`, not a new
+> package** — the planner reads the transitional `DocumentModel.index` directly
+> (dropped in M4) rather than exposing it across a package boundary right before M4
+> deletes it; (2) **policy is injected** (`Policy{Project, EditOptions}`) so the
+> planner stays a pure, dependency-light function — production wires
+> `manifestreport.Project` / `EditOptions()` at the call sites, keeping the
+> integration layer out of the structure library; (3) the planner **emits
+> create/patch/replace/skip/drop-orphan**; `delete-document` / `delete-file` are
+> defined as the apply vocabulary but realized mechanically at flush (M7), not
+> emitted here — a managed drop is one `PlanDropOrphan` regardless of whether
+> removing it empties the file; (4) a **no-op produces no action** (an in-sync
+> resource is not a change) while a **skip is surfaced** (out of sync but not safely
+> editable); (5) **`PlanDropOrphan` is gated on `mapping.MappingResolved`** — a
+> watched, policy-allowed document absent from the desired set — so a structure-only
+> store never drops, and disallowed/unserved KRM and unwatched API-backed KRM produce
+> no plan action exactly as the acceptance contract requires; (6) **a duplicate
+> identity collision suppresses actions for the whole identity — first-occurrence
+> winner and losers alike** — because a duplicate refuses the entire GitTarget at
+> acceptance (M4), so the planner must never edit or drop one arbitrary copy; (7)
+> **the desired set is `[]DesiredResource{Resource, Object}`**, mirroring the design's
+> `PendingChange`: each entry carries the API-side `ResourceIdentifier` the controller
+> already resolved from the GVR it watched, so a `create` carries everything
+> `ResourceIdentifier.ToGitPath` needs to place a new file at apply time (M7) with no
+> re-resolution, and a nil `Object` is a tombstone that drops its Git document via the
+> Git-only path; (8) **hydration is the `FileContent` slice the store was built from**,
+> so a plan and its store read identical bytes, and a touched file whose bytes were
+> not supplied becomes a skip plus a diagnostic rather than a wrong edit.
+
 - **Depends on**: A2, B3.
 - **Touches**: a first-class `Plan` / `PlanAction` (`create` / `patch` / `replace` /
   `delete-document` / `delete-file` / `drop-orphan` / `skip`), computed from
@@ -377,5 +415,6 @@ dependency; it does not exist yet. Independent of Track A.
    destructive depends on it.
 
 A2 ✅, B2 ✅, and B3 ✅ have followed; B3 joined the tracks (the store now builds
-with an injected mapper), so **M3 is now unblocked** and begins the tail. C1 ✅
-landed independently.
+with an injected mapper). M3 ✅ has now landed on top of them — the plan is a pure
+function of `(store, files, desired, policy)` — so **M4 (acceptance gate), M5 (scan
+mode), and M6 (delete identity) are now unblocked**. C1 ✅ landed independently.
