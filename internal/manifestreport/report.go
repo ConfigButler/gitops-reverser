@@ -82,7 +82,7 @@ func (r Report) Counts() map[Action]int {
 // The trust model is a single repository transaction: files must be the content
 // of one checked-out commit/worktree, and the resulting verdicts are valid only
 // for that snapshot. See
-// docs/future/manifestedit-integration-readonly-reconcile.md.
+// docs/design/manifest/manifestedit-integration-readonly-reconcile.md.
 func BuildReport(
 	files []manifestedit.FileContent,
 	desired []*unstructured.Unstructured,
@@ -96,6 +96,9 @@ func BuildReport(
 
 	// Desired side: create / update / no-op / skip for every cluster object.
 	for _, obj := range desired {
+		if obj == nil {
+			continue
+		}
 		id := identityOf(obj)
 		desiredSeen[id] = true
 

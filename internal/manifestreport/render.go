@@ -24,8 +24,8 @@ projection and the canonical renderer — and provides a read-only reconcile tha
 reports what it would add, remove, or update.
 
 It is the seam described in step 6 of
-docs/future/manifestedit-abstraction-plan.md and detailed in
-docs/future/manifestedit-integration-readonly-reconcile.md. It depends on
+docs/design/manifest/manifestedit-abstraction-plan.md and detailed in
+docs/design/manifest/manifestedit-integration-readonly-reconcile.md. It depends on
 internal/sanitize (the projection/renderer) and internal/git/manifestedit (the
 mechanism); manifestedit itself stays free of both.
 */
@@ -62,7 +62,7 @@ func Render(obj *unstructured.Unstructured) ([]byte, error) {
 //     strategy — keyed matching needs a path/GVK-aware policy that does not exist
 //     yet, and a blanket KeyField would change every named list's behavior;
 //   - Owns: nil = whole-object truth (API-first), the only supported policy
-//     (docs/future/manifestedit-field-ownership-spike.md).
+//     (docs/design/manifest/manifestedit-field-ownership-spike.md).
 func EditOptions() manifestedit.EditOptions {
 	return manifestedit.EditOptions{Render: Render}
 }
@@ -95,6 +95,9 @@ func identityOf(obj *unstructured.Unstructured) manifestedit.Identity {
 // is a real edit — but a read-only-safe one: it only transforms the bytes passed
 // in and never touches Git itself.
 func EditInPlace(path string, existing []byte, obj *unstructured.Unstructured) ([]byte, bool) {
+	if obj == nil {
+		return nil, false
+	}
 	inv, _ := manifestedit.IndexFile(path, existing)
 	loc, found := inv.Location(identityOf(obj))
 	if !found {

@@ -728,6 +728,57 @@ func removeFileFromWorktree(
 	return true, nil
 }
 
+// reconcileAgainstExisting decides what to write for an update when a file
+// already exists at the path. It returns the bytes to write and whether a write
+// should happen at all. write is false when the update is a no-op (identical or
+// semantically equal content, or an in-place edit that resolves to no change) or
+// when it cannot be applied safely — an in-place edit that does not apply to a
+// multi-document file would drop the sibling documents, so it is refused.
+func reconcileAgainstExisting(
+	ctx context.Context,
+	writer eventContentWriter,
+	event Event,
+	filePath string,
+	existingContent, content []byte,
+) ([]byte, bool) {
+	// Already the desired content, or a semantic no-op we deliberately leave alone
+	// (e.g. only comments differ) — nothing to write.
+	if bytes.Equal(existingContent, content) || manifestsAreSemanticallyEqual(existingContent, content) {
+		return nil, false
+	}
+
+	// The file genuinely differs. If it carries hand-authored formatting (comments,
+	// custom layout) the operator did not produce, edit the document in place so
+	// that formatting survives instead of overwriting it wholesale.
+	preserved, ok := preserveExistingFormatting(writer, event, filePath, existingContent)
+	if !ok {
+		if manifestedit.DocumentCount(existingContent) > 1 {
+			// The in-place edit did not apply and the file holds other documents. A
+			// wholesale write of this single resource would drop the siblings, so
+			// refuse rather than destroy them. This is only reachable off the
+			// canonical path (e.g. a hand-authored multi-document file matched via
+			// the inventory); the canonical one-resource-per-file layout the operator
+			// writes is always single-document and takes the wholesale path.
+			log.FromContext(ctx).Info(
+				"Skipping update: cannot edit resource in place without dropping sibling documents",
+				"file", filePath,
+				"resource", event.Identifier.String(),
+			)
+			return nil, false
+		}
+		return content, true
+	}
+
+	// The in-place edit can resolve to a no-op for the targeted document (e.g. a
+	// multi-document file whose other documents shifted the whole-file comparison
+	// above). Staging identical bytes would drive an empty commit, so treat it as
+	// no change.
+	if bytes.Equal(existingContent, preserved) {
+		return nil, false
+	}
+	return preserved, true
+}
+
 // handleCreateOrUpdateOperation writes and stages a file in the repository.
 // Returns true if changes were made, false if the file already has the desired content.
 func handleCreateOrUpdateOperation(
@@ -753,24 +804,11 @@ func handleCreateOrUpdateOperation(
 	}
 
 	if existingContent, err := os.ReadFile(fullPath); err == nil {
-		// Already the desired content, or a semantic no-op we deliberately leave
-		// alone (e.g. only comments differ) — nothing to write.
-		if bytes.Equal(existingContent, content) || manifestsAreSemanticallyEqual(existingContent, content) {
+		resolved, write := reconcileAgainstExisting(ctx, writer, event, filePath, existingContent, content)
+		if !write {
 			return false, nil
 		}
-		// The file genuinely differs. If it carries hand-authored formatting
-		// (comments, custom layout) the operator did not produce, edit the document
-		// in place so that formatting survives instead of overwriting it wholesale.
-		if preserved, ok := preserveExistingFormatting(writer, event, filePath, existingContent); ok {
-			// The in-place edit can resolve to a no-op for the targeted document
-			// (e.g. a multi-document file whose other documents shifted the
-			// whole-file comparison above). Staging identical bytes would drive an
-			// empty commit, so treat it as no change.
-			if bytes.Equal(existingContent, preserved) {
-				return false, nil
-			}
-			content = preserved
-		}
+		content = resolved
 	}
 
 	// Ensure directory exists

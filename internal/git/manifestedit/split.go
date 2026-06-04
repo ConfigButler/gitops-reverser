@@ -77,6 +77,20 @@ func splitDocuments(content string) []rawDoc {
 	return docs
 }
 
+// DocumentCount reports how many non-empty YAML documents a file holds. It is
+// block-scalar aware (it reuses the byte-faithful splitter), and ignores empty
+// documents such as a trailing "---". Callers use it to refuse a single-document
+// wholesale write that would silently drop the other documents in a shared file.
+func DocumentCount(content []byte) int {
+	n := 0
+	for _, d := range splitDocuments(string(content)) {
+		if strings.TrimSpace(d.body) != "" {
+			n++
+		}
+	}
+	return n
+}
+
 // joinDocuments reassembles documents into file content.
 func joinDocuments(docs []rawDoc) string {
 	var b strings.Builder

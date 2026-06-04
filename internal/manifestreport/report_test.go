@@ -29,6 +29,12 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
+// A nil object in the desired set is skipped rather than panicking the reconcile.
+func TestBuildReport_NilDesiredObjectSkipped(t *testing.T) {
+	rep, _ := BuildReport(nil, []*unstructured.Unstructured{nil})
+	assert.Empty(t, rep.Entries, "a nil desired object must be skipped, not classified")
+}
+
 // configMap builds a desired API object for a ConfigMap with one data key.
 func configMap(name, color string) *unstructured.Unstructured {
 	return &unstructured.Unstructured{Object: map[string]interface{}{

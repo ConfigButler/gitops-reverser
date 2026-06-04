@@ -519,11 +519,13 @@ data:
   d: &d [*c,*c,*c,*c,*c,*c,*c,*c,*c]
   e: [*d,*d,*d,*d,*d,*d,*d,*d,*d]
 `
-	inv, _ := IndexFile("bomb.sops.yaml", []byte(content))
+	inv, _ := IndexFile("bomb.yaml", []byte(content))
 	// It is indexed (identity readable) but never editable, and we never expanded it.
-	for _, r := range inv.Records {
-		assert.False(t, r.Editable)
-	}
+	// Using a plain ".yaml" path (not ".sops.yaml") keeps the record present: a
+	// ".sops.yaml" file without a sops key is invalid and indexes to zero records,
+	// which would make the assertion below pass vacuously.
+	require.Len(t, inv.Records, 1, "alias-bomb input should still index when identity is readable")
+	assert.False(t, inv.Records[0].Editable, "alias-bomb input must be marked non-editable without expansion")
 }
 
 func TestIndex_MergeKeyIgnored(t *testing.T) {

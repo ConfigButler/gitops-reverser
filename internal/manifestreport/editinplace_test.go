@@ -27,6 +27,15 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
+// A nil desired object is not editable: EditInPlace returns not-ok rather than
+// dereferencing it.
+func TestEditInPlace_NilObjectReturnsNotOk(t *testing.T) {
+	existing := []byte("apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: app\n  namespace: default\n")
+	got, ok := EditInPlace("v1/configmaps/default/app.yaml", existing, nil)
+	assert.False(t, ok)
+	assert.Nil(t, got)
+}
+
 // EditInPlace edits an existing hand-authored document so it matches the desired
 // object, preserving the comment and layout of everything it does not change.
 func TestEditInPlace_PreservesCommentsOnChange(t *testing.T) {

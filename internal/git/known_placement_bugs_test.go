@@ -158,6 +158,46 @@ func TestHandleCreateOrUpdate_NoOpInMultiDocReportsNoChange(t *testing.T) {
 		"a no-op in-place edit must report no change, otherwise an empty commit is attempted")
 }
 
+// DATA-LOSS GUARD — a wholesale write must never drop sibling documents.
+//
+// The file holds two documents and the target document is non-editable (it uses a
+// YAML merge key), so the in-place editor cannot apply and returns ok=false. The
+// fallback wholesale write would replace the whole file with the single rendered
+// resource, dropping the unrelated first document. handleCreateOrUpdateOperation
+// must instead refuse the write and report no change, leaving the file untouched.
+func TestHandleCreateOrUpdate_MultiDocFallbackDoesNotDropSiblings(t *testing.T) {
+	writer := newContentWriter(types.SensitiveResourcePolicy{})
+	worktree := newWorktreeForTest(t)
+	root := worktree.Filesystem.Root()
+
+	event := inplaceCMEvent("green")
+	relPath := writer.filePathForIdentifier(event.Identifier)
+	full := filepath.Join(root, relPath)
+
+	// Document 0: an unrelated, editable resource that must survive.
+	other := "apiVersion: v1\nkind: ConfigMap\n" +
+		"metadata:\n  name: other\n  namespace: default\n" +
+		"data:\n  k: v\n"
+	// Document 1: the target (default/app) written with a merge key, which
+	// manifestedit refuses to edit — so the in-place edit returns ok=false.
+	targetUneditable := "apiVersion: v1\nkind: ConfigMap\n" +
+		"metadata:\n  name: app\n  namespace: default\n" +
+		"data: &d\n  color: blue\nextra:\n  <<: *d\n"
+	seeded := other + "---\n" + targetUneditable
+	require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o750))
+	require.NoError(t, os.WriteFile(full, []byte(seeded), 0o600))
+
+	changed, err := handleCreateOrUpdateOperation(
+		context.Background(), writer, event, manifestTarget{filePath: relPath, documentIndex: 1}, full, worktree)
+	require.NoError(t, err)
+
+	after, err := os.ReadFile(full)
+	require.NoError(t, err)
+	assert.False(t, changed, "an unsafe multi-document update must report no change")
+	assert.Equal(t, seeded, string(after),
+		"the sibling document must survive: the file must not be overwritten wholesale")
+}
+
 // PERF REGRESSION GUARD — the locator scans each base path once per batch.
 //
 // Match-first must not re-scan the tree per event: a snapshot of many large

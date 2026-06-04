@@ -32,7 +32,7 @@ import (
 // desired version (the clean object Git should contain). Comparison makes that
 // two-version comparison a first-class value; Decide is a pure preflight over it
 // and Apply is the authoritative edit. See
-// docs/future/manifestedit-abstraction-plan.md.
+// docs/design/manifest/manifestedit-abstraction-plan.md.
 
 // Document is immutable data describing one target document inside a file: the
 // whole file content, the target document index, and the manifest identity. It
@@ -104,7 +104,7 @@ type EditOptions struct {
 	// owned. The product decision is API-first, whole-object truth: production
 	// MUST leave this nil (own everything), so a field absent from the desired
 	// projection is deleted from Git. See
-	// docs/future/manifestedit-field-ownership-spike.md. Do not grow configuration
+	// docs/design/manifest/manifestedit-field-ownership-spike.md. Do not grow configuration
 	// on top of this; it exists only to keep the deletion decision explicit and to
 	// keep the merge testable.
 	Owns func(path FieldPath) bool

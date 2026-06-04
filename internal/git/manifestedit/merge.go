@@ -112,17 +112,23 @@ func mergeValue(ctx mergeCtx, path FieldPath, node *yaml.Node, desired interface
 		if node.Kind == yaml.MappingNode {
 			return mergeMapping(ctx, path, node, d)
 		}
-		return replaceNode(node, desired), true
+		changed := replaceNode(node, desired)
+		return changed, changed
 	case []interface{}:
 		if node.Kind == yaml.SequenceNode {
 			return mergeSequence(ctx, path, node, d)
 		}
-		return replaceNode(node, desired), true
+		changed := replaceNode(node, desired)
+		return changed, changed
 	default:
 		if nodeEqualsValue(node, desired) {
 			return false, true // unchanged: leave the node (and its style) untouched
 		}
-		return replaceNode(node, desired), true
+		// replaceNode returns false only when the value cannot be encoded. Report
+		// that as a failed sub-merge (ok=false) so the caller falls back to a whole-
+		// document replace instead of silently dropping the edit.
+		changed := replaceNode(node, desired)
+		return changed, changed
 	}
 }
 

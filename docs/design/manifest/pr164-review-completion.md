@@ -1,6 +1,7 @@
 # PR #164 Review Completion Plan
 
-> Status: Phases 1–3 implemented (2026-06-04); `task fmt/vet/lint/test` green, e2e running
+> Status: Phases 1–3 implemented (2026-06-04); full validation green —
+> `task fmt/vet/lint/test` pass and `task test-e2e` passed (47/49, 2 skipped, 0 failed)
 > Source: triage of the 16 bot review comments (4 gemini, 12 coderabbit) on PR #164
 > (branch `poc/manifestedit`), cross-checked against the actual code.
 > Related: [manifestedit-abstraction-plan.md](manifestedit-abstraction-plan.md),
