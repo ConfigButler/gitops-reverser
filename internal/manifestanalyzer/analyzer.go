@@ -28,10 +28,13 @@ back both the live writer and a standalone CLI:
 
   - Filesystem access goes through fs.FS, so it runs against a git worktree, an
     arbitrary directory (os.DirFS), or an in-memory tree (fstest.MapFS).
-  - "What is in the API" is an injected WatchSource, not an ambient global. With
-    no source the analyzer simply reports KRM as "unknown" rather than guessing.
   - The analysis path is strictly read-only; it produces a Report and never
     mutates the tree.
+
+This first slice is structure-only and needs no cluster: it classifies files,
+detects duplicates, and reports the inventory of every GVK found. Comparing those
+GVKs against a live API (the "what is in the API" source of truth, which decides
+what is watched, unwatched, or orphaned) is a deliberate later step.
 
 It builds on internal/git/manifestedit for the YAML mechanism (splitting,
 manifest identity, duplicate detection, SOPS handling) and adds classification,
@@ -84,7 +87,9 @@ func (g GVK) Empty() bool {
 
 // Class is the bucket a file or document falls into, mirroring the design doc:
 // non-YAML files are ignored, non-KRM YAML is the dangerous unknown, and KRM is
-// split by whether it maps to a watched API resource.
+// every valid Kubernetes manifest. Which GVKs those manifests are is reported via
+// the GVK inventory (Summary.ByGVK) rather than by sub-classing the bucket;
+// comparing them against a live API is a deliberate later step.
 type Class string
 
 const (
@@ -96,24 +101,19 @@ const (
 	ClassInvalidYAML Class = "invalid-yaml"
 	// ClassNonKRM is valid YAML that is not a Kubernetes manifest.
 	ClassNonKRM Class = "non-krm"
-	// ClassWatchedKRM is a manifest whose GVK is a watched API resource.
-	ClassWatchedKRM Class = "watched-krm"
-	// ClassUnwatchedKRM is a manifest whose GVK is not a watched API resource.
-	ClassUnwatchedKRM Class = "unwatched-krm"
-	// ClassUnknownKRM is a manifest classified with no WatchSource available.
-	ClassUnknownKRM Class = "unknown-krm"
+	// ClassKRM is a valid Kubernetes manifest.
+	ClassKRM Class = "krm"
 )
 
 // DocumentReport describes one YAML document inside a file.
 type DocumentReport struct {
-	Index      int                   `json:"index"`
-	Class      Class                 `json:"class"`
-	GVK        GVK                   `json:"gvk"`
-	Identity   manifestedit.Identity `json:"identity"`
-	WatchState WatchState            `json:"watchState"`
-	Editable   bool                  `json:"editable"`
-	Encrypted  bool                  `json:"encrypted"`
-	Duplicate  bool                  `json:"duplicate"`
+	Index     int                   `json:"index"`
+	Class     Class                 `json:"class"`
+	GVK       GVK                   `json:"gvk"`
+	Identity  manifestedit.Identity `json:"identity"`
+	Editable  bool                  `json:"editable"`
+	Encrypted bool                  `json:"encrypted"`
+	Duplicate bool                  `json:"duplicate"`
 	// Reason explains a non-editable, non-KRM, empty, or invalid document.
 	Reason string `json:"reason,omitempty"`
 }
@@ -150,8 +150,6 @@ const (
 	IssueNonKRM IssueKind = "non-krm-yaml"
 	// IssueInvalidYAML marks a document that does not parse as YAML.
 	IssueInvalidYAML IssueKind = "invalid-yaml"
-	// IssueUnwatched marks KRM with no matching watched API resource.
-	IssueUnwatched IssueKind = "unwatched-krm"
 )
 
 // AcceptanceIssue is a fact about the tree that a stricter adoption policy may
@@ -173,16 +171,9 @@ type Report struct {
 	Diagnostics []manifestedit.Diagnostic `json:"diagnostics"`
 }
 
-// Options configures an analysis run.
-type Options struct {
-	// Watch resolves a GVK to a watch state. Nil means NoWatchSource (no API
-	// truth available), so all KRM is reported as ClassUnknownKRM.
-	Watch WatchSource
-}
-
 // AnalyzeDir analyzes the directory at root. It verifies root is a directory,
 // then runs Analyze over os.DirFS(root). Symlinks are never followed.
-func AnalyzeDir(root string, opts Options) (Report, error) {
+func AnalyzeDir(root string) (Report, error) {
 	info, err := os.Stat(root)
 	if err != nil {
 		return Report{}, err
@@ -190,7 +181,7 @@ func AnalyzeDir(root string, opts Options) (Report, error) {
 	if !info.IsDir() {
 		return Report{}, fmt.Errorf("not a directory: %s", root)
 	}
-	rep := Analyze(os.DirFS(root), opts)
+	rep := Analyze(os.DirFS(root))
 	rep.Root = root
 	return rep, nil
 }
@@ -198,12 +189,7 @@ func AnalyzeDir(root string, opts Options) (Report, error) {
 // Analyze scans fsys and returns a Report. It is read-only and never fails: any
 // per-entry problem (unreadable file, walk error, invalid YAML) becomes a
 // diagnostic rather than an error.
-func Analyze(fsys fs.FS, opts Options) Report {
-	ws := opts.Watch
-	if ws == nil {
-		ws = NoWatchSource{}
-	}
-
+func Analyze(fsys fs.FS) Report {
 	yamlFiles, nonYAML, scanDiags := collectFiles(fsys)
 	inv, indexDiags := manifestedit.IndexFiles(yamlFiles)
 
@@ -222,7 +208,7 @@ func Analyze(fsys fs.FS, opts Options) Report {
 
 	files := make([]FileReport, 0, len(yamlFiles)+len(nonYAML))
 	for _, f := range yamlFiles {
-		files = append(files, buildYAMLFileReport(f.Path, recordsByPath[f.Path], diagsByPath[f.Path], dupSet, ws))
+		files = append(files, buildYAMLFileReport(f.Path, recordsByPath[f.Path], diagsByPath[f.Path], dupSet))
 	}
 	for _, p := range nonYAML {
 		files = append(files, FileReport{Path: p, IsYAML: false})
@@ -306,7 +292,6 @@ func buildYAMLFileReport(
 	records []manifestedit.DocumentRecord,
 	diags []manifestedit.Diagnostic,
 	dupSet map[manifestedit.Location]bool,
-	ws WatchSource,
 ) FileReport {
 	recByIdx := map[int]manifestedit.DocumentRecord{}
 	for _, r := range records {
@@ -337,7 +322,7 @@ func buildYAMLFileReport(
 		// A KRM record always wins over a co-located diagnostic (for example a
 		// non-editable record paired with a warning about anchors).
 		if r, ok := recByIdx[i]; ok {
-			fr.Documents = append(fr.Documents, krmDocReport(i, r, dupSet, ws))
+			fr.Documents = append(fr.Documents, krmDocReport(i, r, dupSet))
 			continue
 		}
 		d := diagByIdx[i]
@@ -347,38 +332,17 @@ func buildYAMLFileReport(
 }
 
 // krmDocReport builds a DocumentReport for an indexed KRM record.
-func krmDocReport(
-	i int,
-	r manifestedit.DocumentRecord,
-	dupSet map[manifestedit.Location]bool,
-	ws WatchSource,
-) DocumentReport {
-	gvk := ParseGVK(r.Identity.APIVersion, r.Identity.Kind)
-	state := ws.WatchStateFor(gvk)
+func krmDocReport(i int, r manifestedit.DocumentRecord, dupSet map[manifestedit.Location]bool) DocumentReport {
 	return DocumentReport{
-		Index:      i,
-		Class:      krmClass(state),
-		GVK:        gvk,
-		Identity:   r.Identity,
-		WatchState: state,
-		Editable:   r.Editable,
-		Encrypted:  r.Encrypted,
-		Duplicate:  dupSet[r.Location],
-		Reason:     r.Reason,
+		Index:     i,
+		Class:     ClassKRM,
+		GVK:       ParseGVK(r.Identity.APIVersion, r.Identity.Kind),
+		Identity:  r.Identity,
+		Editable:  r.Editable,
+		Encrypted: r.Encrypted,
+		Duplicate: dupSet[r.Location],
+		Reason:    r.Reason,
 	}
-}
-
-// krmClass maps a watch state to the class used for a KRM document.
-func krmClass(state WatchState) Class {
-	switch state {
-	case WatchWatched:
-		return ClassWatchedKRM
-	case WatchUnwatched:
-		return ClassUnwatchedKRM
-	case WatchUnknown:
-		return ClassUnknownKRM
-	}
-	return ClassUnknownKRM
 }
 
 // classFromDiag classifies a non-KRM document from its diagnostic. It couples to
@@ -429,9 +393,10 @@ func buildSummary(files []FileReport, diags []manifestedit.Diagnostic) Summary {
 	return s
 }
 
-// buildIssues derives acceptance issues from the classified documents. With no
-// WatchSource there are no unwatched issues, which is the intended behavior: we
-// do not flag what we cannot judge.
+// buildIssues derives acceptance issues from the classified documents. These are
+// the structural facts a stricter adoption policy may treat as blocking; whether
+// each manifest belongs (the watched/unwatched comparison against a live API) is
+// a deliberate later step.
 func buildIssues(files []FileReport) []AcceptanceIssue {
 	var issues []AcceptanceIssue
 	for _, f := range files {
@@ -452,14 +417,8 @@ func buildIssues(files []FileReport) []AcceptanceIssue {
 				issues = append(issues, AcceptanceIssue{
 					Kind: IssueInvalidYAML, Path: f.Path, DocumentIndex: d.Index, Message: d.Reason,
 				})
-			case ClassUnwatchedKRM:
-				issues = append(issues, AcceptanceIssue{
-					Kind: IssueUnwatched, Path: f.Path, DocumentIndex: d.Index,
-					Message: identityRef(d.Identity) + " has no matching watched API resource",
-				})
-			case ClassNonYAML, ClassEmpty, ClassWatchedKRM, ClassUnknownKRM:
-				// Not acceptance issues: ignored files, empty documents, and KRM
-				// that is watched or whose watch state is unknown.
+			case ClassNonYAML, ClassEmpty, ClassKRM:
+				// Not acceptance issues: ignored files, empty documents, and valid KRM.
 			}
 		}
 	}

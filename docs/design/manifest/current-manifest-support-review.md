@@ -438,15 +438,20 @@ core logic.
 > [`internal/manifestanalyzer`](../../../internal/manifestanalyzer) is the
 > runtime-independent library, and
 > [`cmd/manifest-analyzer`](../../../cmd/manifest-analyzer) is the CLI. It does
-> the read-only, structure-first half: walk an `fs.FS`, classify every file into
-> the four buckets, detect duplicates, build a bounded summary and a GVK
-> inventory, and emit acceptance issues — in text or JSON. The "API truth" is an
-> injected `WatchSource`; with none it reports KRM as `unknown` (structure-only,
-> no cluster), and a static `--watched g/v/k,...` set turns on watched vs.
-> unwatched classification. `--policy refuse` makes any acceptance issue a
-> non-zero exit, prototyping the refuse adoption mode. Still to come: a
-> cluster-backed `WatchSource`, the plan/prune computation, and wiring the same
-> library into the live writer.
+> the read-only, structure-first half, with **no cluster involved**: walk an
+> `fs.FS`, classify every file (non-yaml, empty, invalid-yaml, non-krm, krm),
+> detect duplicates, build a bounded summary, report the inventory of every GVK
+> found, and emit acceptance issues — in text or JSON. `--policy refuse` makes
+> any acceptance issue a non-zero exit, prototyping the refuse adoption mode.
+>
+> Deliberately deferred: comparing those GVKs against a live API to decide what
+> is *watched / unwatched / orphaned*. An early version had a `--watched` flag and
+> an injected "watch source", but we pulled it back to "just report all found
+> GVKs" to keep the POC simple and to avoid committing to a name ("watched" may
+> not be the right word) before there is a real cluster-backed source. So the
+> remaining work is: an API source (cluster/snapshot) and the name for it, the
+> watched/unwatched/orphan comparison, the plan/prune computation, and wiring the
+> same library into the live writer.
 >
 > Running it against `config/samples` already surfaced a real constraint:
 > `manifestedit` derives manifest identity from a concrete `metadata.name`, so a
@@ -509,9 +514,10 @@ real consumer to keep it honest.
    source-of-truth conviction, opt-in and gated behind scan-mode review.
 9. Ship the standalone analyzer CLI on top of the same library, with an
    injectable API source (cluster, snapshot, or none for structure-only checks).
-   *First slice done:* read-only classification, summary, duplicate/non-KRM
-   acceptance issues, text/JSON output, and a static `--watched` source. Remaining:
-   cluster-backed source and plan/prune output.
+   *First slice done:* read-only classification, summary, GVK inventory,
+   duplicate/non-KRM acceptance issues, and text/JSON output — structure-only, no
+   cluster. Remaining: the API source (and its name), the watched/unwatched/orphan
+   comparison, and plan/prune output.
 10. After that is stable, consider longer-lived inventory caching across batches.
 
 ## Bottom Line

@@ -28,8 +28,7 @@ import (
 )
 
 func TestRenderText(t *testing.T) {
-	rep := Analyze(sampleFS(), Options{Watch: NewStaticWatchSource(
-		[]GVK{{Group: "apps", Version: "v1", Kind: "Deployment"}})})
+	rep := Analyze(sampleFS())
 	rep.Root = "/tmp/repo"
 
 	var buf bytes.Buffer
@@ -42,12 +41,11 @@ func TestRenderText(t *testing.T) {
 		"gvks: apps/v1/Deployment 2",
 		"docs/notes.txt",
 		"(non-yaml, ignored)",
-		"watched-krm",
+		"krm",
 		"apps/v1/Deployment/default/web",
 		"(duplicate)",
 		"(encrypted)",
 		"Acceptance:",
-		"unwatched-krm",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("text output missing %q\n---\n%s", want, out)
@@ -63,7 +61,7 @@ func TestRenderText_NonEditableAndNoIssues(t *testing.T) {
 			IsYAML: true,
 			Documents: []DocumentReport{{
 				Index:    0,
-				Class:    ClassUnknownKRM,
+				Class:    ClassKRM,
 				GVK:      GVK{Version: "v1", Kind: "ConfigMap"},
 				Identity: manifestedit.Identity{APIVersion: "v1", Kind: "ConfigMap", Namespace: "default", Name: "x"},
 				Editable: false,
@@ -88,7 +86,7 @@ func TestRenderText_NonEditableAndNoIssues(t *testing.T) {
 }
 
 func TestRenderJSON_RoundTrip(t *testing.T) {
-	rep := Analyze(sampleFS(), Options{})
+	rep := Analyze(sampleFS())
 
 	var buf bytes.Buffer
 	if err := RenderJSON(&buf, rep); err != nil {
@@ -105,7 +103,7 @@ func TestRenderJSON_RoundTrip(t *testing.T) {
 	if len(decoded.Files) != len(rep.Files) {
 		t.Errorf("round-trip files = %d, want %d", len(decoded.Files), len(rep.Files))
 	}
-	if decoded.Summary.ByClass[ClassUnknownKRM] != rep.Summary.ByClass[ClassUnknownKRM] {
+	if decoded.Summary.ByClass[ClassKRM] != rep.Summary.ByClass[ClassKRM] {
 		t.Errorf("round-trip class counts differ")
 	}
 }

@@ -78,8 +78,8 @@ func sampleFS() fstest.MapFS {
 	}
 }
 
-func TestAnalyze_NoWatchSource_Summary(t *testing.T) {
-	s := Analyze(sampleFS(), Options{}).Summary
+func TestAnalyze_Summary(t *testing.T) {
+	s := Analyze(sampleFS()).Summary
 
 	if s.FilesTotal != 8 || s.YAMLFiles != 7 || s.NonYAMLFiles != 1 {
 		t.Fatalf("file counts: total=%d yaml=%d nonyaml=%d", s.FilesTotal, s.YAMLFiles, s.NonYAMLFiles)
@@ -93,13 +93,11 @@ func TestAnalyze_NoWatchSource_Summary(t *testing.T) {
 
 	// Every enum key is listed so the exhaustive linter guards future additions.
 	wantClass := map[Class]int{
-		ClassUnknownKRM:   5, // deploy, cm a, cm b, secret, dup
-		ClassNonKRM:       1,
-		ClassInvalidYAML:  1,
-		ClassEmpty:        1,
-		ClassNonYAML:      0,
-		ClassWatchedKRM:   0,
-		ClassUnwatchedKRM: 0,
+		ClassKRM:         5, // deploy, cm a, cm b, secret, dup
+		ClassNonKRM:      1,
+		ClassInvalidYAML: 1,
+		ClassEmpty:       1,
+		ClassNonYAML:     0,
 	}
 	for c, n := range wantClass {
 		if s.ByClass[c] != n {
@@ -107,6 +105,7 @@ func TestAnalyze_NoWatchSource_Summary(t *testing.T) {
 		}
 	}
 
+	// The GVK inventory reports every GVK found, regardless of any API.
 	wantGVK := map[string]int{"apps/v1/Deployment": 2, "v1/ConfigMap": 2, "v1/Secret": 1}
 	for g, n := range wantGVK {
 		if s.ByGVK[g] != n {
@@ -115,11 +114,9 @@ func TestAnalyze_NoWatchSource_Summary(t *testing.T) {
 	}
 }
 
-func TestAnalyze_NoWatchSource_Issues(t *testing.T) {
-	rep := Analyze(sampleFS(), Options{})
-	// No WatchSource means no unwatched issues; only structural ones.
+func TestAnalyze_Issues(t *testing.T) {
+	rep := Analyze(sampleFS())
 	want := map[IssueKind]int{
-		IssueUnwatched:   0,
 		IssueDuplicate:   1,
 		IssueNonKRM:      1,
 		IssueInvalidYAML: 1,
@@ -131,28 +128,8 @@ func TestAnalyze_NoWatchSource_Issues(t *testing.T) {
 	}
 }
 
-func TestAnalyze_StaticWatchSource(t *testing.T) {
-	ws := NewStaticWatchSource([]GVK{{Group: "apps", Version: "v1", Kind: "Deployment"}})
-	rep := Analyze(sampleFS(), Options{Watch: ws})
-	s := rep.Summary
-
-	if s.ByClass[ClassWatchedKRM] != 2 {
-		t.Errorf("watched-krm = %d, want 2 (deploy + dup)", s.ByClass[ClassWatchedKRM])
-	}
-	if s.ByClass[ClassUnwatchedKRM] != 3 {
-		t.Errorf("unwatched-krm = %d, want 3 (cm a, cm b, secret)", s.ByClass[ClassUnwatchedKRM])
-	}
-	if got := countIssues(rep, IssueUnwatched); got != 3 {
-		t.Errorf("unwatched issues = %d, want 3", got)
-	}
-	// Structural issues remain regardless of watch source.
-	if got := countIssues(rep, IssueDuplicate); got != 1 {
-		t.Errorf("duplicate issues = %d, want 1", got)
-	}
-}
-
 func TestAnalyze_DocumentDetail(t *testing.T) {
-	rep := Analyze(sampleFS(), Options{})
+	rep := Analyze(sampleFS())
 	cm := findFile(t, rep, "cm.yaml")
 	if len(cm.Documents) != 2 {
 		t.Fatalf("cm.yaml documents = %d, want 2", len(cm.Documents))
@@ -191,13 +168,13 @@ metadata:
 data: &a
   k: v
 `
-	rep := Analyze(fstest.MapFS{"anchored.yaml": {Data: []byte(anchored)}}, Options{})
+	rep := Analyze(fstest.MapFS{"anchored.yaml": {Data: []byte(anchored)}})
 	doc := findFile(t, rep, "anchored.yaml").Documents[0]
 	if doc.Editable {
 		t.Errorf("anchored document should be non-editable")
 	}
-	if doc.Class != ClassUnknownKRM {
-		t.Errorf("anchored document class = %s, want unknown-krm", doc.Class)
+	if doc.Class != ClassKRM {
+		t.Errorf("anchored document class = %s, want krm", doc.Class)
 	}
 	if doc.Reason == "" {
 		t.Errorf("non-editable document should carry a reason")
@@ -205,7 +182,7 @@ data: &a
 }
 
 func TestAnalyze_EmptyTree(t *testing.T) {
-	rep := Analyze(fstest.MapFS{}, Options{})
+	rep := Analyze(fstest.MapFS{})
 	if rep.Summary.FilesTotal != 0 || len(rep.Issues) != 0 {
 		t.Errorf("empty tree should yield no files and no issues: %+v", rep.Summary)
 	}
@@ -216,7 +193,7 @@ func TestAnalyzeDir(t *testing.T) {
 	writeFile(t, dir, "deploy.yaml", deployYAML)
 	writeFile(t, dir, "notes.txt", notesText)
 
-	rep, err := AnalyzeDir(dir, Options{})
+	rep, err := AnalyzeDir(dir)
 	if err != nil {
 		t.Fatalf("AnalyzeDir: %v", err)
 	}
@@ -235,7 +212,7 @@ func TestAnalyzeDir_SymlinkSkipped(t *testing.T) {
 		t.Skipf("symlinks unsupported: %v", err)
 	}
 
-	rep, err := AnalyzeDir(dir, Options{})
+	rep, err := AnalyzeDir(dir)
 	if err != nil {
 		t.Fatalf("AnalyzeDir: %v", err)
 	}
@@ -248,13 +225,13 @@ func TestAnalyzeDir_SymlinkSkipped(t *testing.T) {
 }
 
 func TestAnalyzeDir_Errors(t *testing.T) {
-	if _, err := AnalyzeDir(filepath.Join(t.TempDir(), "missing"), Options{}); err == nil {
+	if _, err := AnalyzeDir(filepath.Join(t.TempDir(), "missing")); err == nil {
 		t.Error("expected error for missing directory")
 	}
 
 	file := filepath.Join(t.TempDir(), "f.yaml")
 	writeFile(t, filepath.Dir(file), "f.yaml", deployYAML)
-	if _, err := AnalyzeDir(file, Options{}); err == nil {
+	if _, err := AnalyzeDir(file); err == nil {
 		t.Error("expected error when root is not a directory")
 	}
 }
@@ -286,7 +263,7 @@ func TestAnalyze_ReadFileError(t *testing.T) {
 		MapFS:        fstest.MapFS{"bad.yaml": {Data: []byte(deployYAML)}},
 		failReadFile: "bad.yaml",
 	}
-	rep := Analyze(fsys, Options{})
+	rep := Analyze(fsys)
 	if rep.Summary.YAMLFiles != 0 {
 		t.Errorf("unreadable file should not be indexed: %+v", rep.Summary)
 	}
@@ -300,7 +277,7 @@ func TestAnalyze_WalkDirError(t *testing.T) {
 		MapFS:       fstest.MapFS{"sub/deploy.yaml": {Data: []byte(deployYAML)}},
 		failReadDir: "sub",
 	}
-	rep := Analyze(fsys, Options{})
+	rep := Analyze(fsys)
 	if !hasDiag(rep, "sub", "synthetic readdir error") {
 		t.Errorf("expected walk-error diagnostic for sub: %+v", rep.Diagnostics)
 	}

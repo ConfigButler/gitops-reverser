@@ -30,12 +30,10 @@ limitations under the License.
 //	--policy report|refuse
 //	                     report: always exit 0 (analysis only)
 //	                     refuse: exit 1 when any acceptance issue is found
-//	--watched g/v/k,...  comma-separated watched GVKs; enables watched vs
-//	                     unwatched classification. Without it, KRM is "unknown".
 //
-// Without --watched the tool runs structure-only: duplicate detection, KRM vs
-// non-KRM classification, multi-document inspection, and a GVK inventory all
-// work with no cluster access.
+// The tool is structure-only and needs no cluster: it reports duplicate
+// identities, KRM vs. non-KRM classification, multi-document files, and the
+// inventory of every GVK found.
 package main
 
 import (
@@ -43,7 +41,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strings"
 
 	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
 )
@@ -65,7 +62,6 @@ func run(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	format := fs.String("format", "text", "output format: text|json")
 	policy := fs.String("policy", "report", "adoption policy: report|refuse")
-	watched := fs.String("watched", "", "comma-separated watched GVKs (group/version/kind)")
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, "usage: manifest-analyzer [flags] <dir>")
 		fs.PrintDefaults()
@@ -88,13 +84,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return exitUsage
 	}
 
-	opts, err := buildOptions(*watched)
-	if err != nil {
-		fmt.Fprintf(stderr, "error: %v\n", err)
-		return exitUsage
-	}
-
-	rep, err := manifestanalyzer.AnalyzeDir(fs.Arg(0), opts)
+	rep, err := manifestanalyzer.AnalyzeDir(fs.Arg(0))
 	if err != nil {
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		return exitUsage
@@ -113,25 +103,4 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return exitRefused
 	}
 	return exitOK
-}
-
-// buildOptions turns the --watched flag into analyzer options. An empty flag
-// means no WatchSource (structure-only analysis).
-func buildOptions(watched string) (manifestanalyzer.Options, error) {
-	watched = strings.TrimSpace(watched)
-	if watched == "" {
-		return manifestanalyzer.Options{}, nil
-	}
-	var gvks []manifestanalyzer.GVK
-	for _, ref := range strings.Split(watched, ",") {
-		if strings.TrimSpace(ref) == "" {
-			continue
-		}
-		g, err := manifestanalyzer.ParseGVKRef(ref)
-		if err != nil {
-			return manifestanalyzer.Options{}, err
-		}
-		gvks = append(gvks, g)
-	}
-	return manifestanalyzer.Options{Watch: manifestanalyzer.NewStaticWatchSource(gvks)}, nil
 }

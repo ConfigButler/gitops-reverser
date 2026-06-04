@@ -88,19 +88,20 @@ func TestRun_RefusePolicy(t *testing.T) {
 	}
 }
 
-func TestRun_WatchedFlag(t *testing.T) {
+func TestRun_GVKInventory(t *testing.T) {
 	dir := t.TempDir()
 	write(t, dir, "deploy.yaml", deployYAML)
 	write(t, dir, "cm.yaml", "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: c\n  namespace: default\n")
 
 	var out, errBuf bytes.Buffer
-	// Only Deployment is watched, so the ConfigMap is an unwatched issue -> refuse exits 1.
-	code := run([]string{"--policy", "refuse", "--watched", "apps/v1/Deployment", dir}, &out, &errBuf)
-	if code != 1 {
-		t.Errorf("exit = %d, want 1 (unwatched ConfigMap)\n%s", code, out.String())
+	if code := run([]string{dir}, &out, &errBuf); code != 0 {
+		t.Fatalf("exit = %d, want 0\nstderr=%s", code, errBuf.String())
 	}
-	if !strings.Contains(out.String(), "unwatched-krm") {
-		t.Errorf("expected unwatched-krm in output: %s", out.String())
+	// Every GVK found is reported in the inventory, with no cluster involved.
+	for _, want := range []string{"apps/v1/Deployment", "v1/ConfigMap"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("expected %q in GVK inventory: %s", want, out.String())
+		}
 	}
 }
 
@@ -115,7 +116,6 @@ func TestRun_Errors(t *testing.T) {
 		{"bad flag", []string{"--nope", "x"}, 2},
 		{"bad format", []string{"--format", "xml", "x"}, 2},
 		{"bad policy", []string{"--policy", "delete", "x"}, 2},
-		{"bad gvk", []string{"--watched", "nope", "x"}, 2},
 		{"missing dir", []string{filepath.Join("definitely", "missing", "dir")}, 2},
 	}
 	for _, c := range cases {
