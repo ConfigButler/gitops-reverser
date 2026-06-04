@@ -178,6 +178,11 @@ func main() {
 	// Set EventRouter reference in WatchManager
 	watchMgr.EventRouter = eventRouter
 
+	// Inject the live-catalog GVK↔GVR resolver into the writer, so a GVR-only DELETE
+	// event resolves to a manifest moved off its canonical path (M6 in the writer).
+	// The catalog is a stable pointer the watch manager refreshes in place.
+	workerManager.SetMapper(watchMgr.Mapper())
+
 	// WatchRule controller (with WatchManager reference for dynamic reconciliation)
 	fatalIfErr((&controller.WatchRuleReconciler{
 		Client:       mgr.GetClient(),

@@ -141,36 +141,47 @@ func (wb *writeBatch) buffer(rel string) *fileBuffer {
 // else is an upsert (the object-bearing event the stream guarantees for non-deletes).
 func (wb *writeBatch) applyEvent(ctx context.Context, event Event) error {
 	if event.Operation == "DELETE" {
-		return wb.applyDelete(ctx, event)
+		wb.applyDelete(ctx, event)
+		return nil
 	}
 	return wb.applyUpsert(ctx, event)
 }
 
-// applyUpsert resolves an object-bearing event to an in-place patch (when a managed
-// document for its identity already lives in the subtree, possibly moved off the
-// canonical path) or a wholesale canonical write (a new resource). Sensitive
-// resources never patch in place: an in-place merge would drop the SOPS metadata and
-// write the secret back in cleartext, so they always take the re-encrypting wholesale
-// path, exactly as the per-event writer did.
+// applyUpsert resolves an object-bearing event against the subtree. When a managed
+// document for its identity already lives there — even moved off the canonical path —
+// the resource is edited where it lives: a non-sensitive document is patched in place;
+// a sensitive document is re-encrypted wholesale AT ITS EXISTING PATH (never patched in
+// place — that would drop the SOPS metadata and write the secret back in cleartext, and
+// never at the canonical path, which would orphan the moved copy). A resource with no
+// existing document is a new file at the canonical placement path.
 func (wb *writeBatch) applyUpsert(ctx context.Context, event Event) error {
-	if !wb.writer.isSensitiveIdentifier(event.Identifier) {
-		if id, ok := manifestIdentity(event.Object); ok {
-			if dm := wb.store.ByManifestIdentity[id]; dm != nil {
-				return wb.patchExisting(ctx, event, wb.docLoc[dm])
+	if id, ok := manifestIdentity(event.Object); ok {
+		if dm := wb.store.ByManifestIdentity[id]; dm != nil {
+			filePath := wb.docLoc[dm].FilePath
+			if wb.writer.isSensitiveIdentifier(event.Identifier) {
+				return wb.writeWholeFile(ctx, event, filePath)
 			}
+			return wb.patchExisting(ctx, event, filePath, id)
 		}
 	}
-	return wb.writeCanonical(ctx, event)
+	return wb.writeWholeFile(ctx, event, wb.writer.filePathForIdentifier(event.Identifier))
 }
 
-// patchExisting edits the existing managed document in place via manifestedit, which
-// preserves the sibling documents' bytes and the target's hand-authored formatting.
+// patchExisting edits the existing managed document for id in place via manifestedit,
+// preserving the sibling documents' bytes and the target's hand-authored formatting.
 // The no-op / patch / whole-replace / skip choice is a plan decision (Decide), not a
-// per-event heuristic. A multi-document file is safe: manifestedit replaces only the
-// target document, never the whole file.
-func (wb *writeBatch) patchExisting(ctx context.Context, event Event, ref manifestanalyzer.RecordRef) error {
-	buf := wb.buffer(ref.FilePath)
-	gitDoc, _ := manifestedit.NewDocumentAt(ref.FilePath, buf.current, ref.DocumentIndex)
+// per-event heuristic. The document position is re-derived from the buffer's CURRENT
+// bytes (currentDocIndex), not the pre-batch store index, so an earlier event in the
+// same batch that shifted a multi-document file does not misdirect this edit. A
+// document the store located but an earlier event already removed is simply absent now,
+// so there is nothing to patch.
+func (wb *writeBatch) patchExisting(ctx context.Context, event Event, filePath string, id manifestedit.Identity) error {
+	buf := wb.buffer(filePath)
+	idx, ok := currentDocIndex(filePath, buf.current, id)
+	if !ok {
+		return nil
+	}
+	gitDoc, _ := manifestedit.NewDocumentAt(filePath, buf.current, idx)
 	c := manifestedit.Comparison{
 		Git:     gitDoc,
 		Desired: manifestreport.Project(event.Object),
@@ -191,13 +202,14 @@ func (wb *writeBatch) patchExisting(ctx context.Context, event Event, ref manife
 	return nil
 }
 
-// writeCanonical renders the event's clean content (sanitized, or SOPS-encrypted for
-// a sensitive resource) and writes it wholesale at the canonical placement path. It
-// preserves the two per-event-writer safety rules: it never overwrites a
-// multi-document file at the canonical path (which would drop siblings), and a write
-// that matches the existing bytes is a no-op (derived from the byte state machine,
-// with the semantic-equality guard for comment-only differences).
-func (wb *writeBatch) writeCanonical(ctx context.Context, event Event) error {
+// writeWholeFile renders the event's clean content (sanitized, or SOPS-encrypted for a
+// sensitive resource) and writes it wholesale at rel: the canonical placement path for a
+// new resource, or the existing file path for a located sensitive resource. It keeps the
+// two per-event-writer safety rules: it never overwrites a multi-document file (which
+// would drop siblings — splicing a single rendered/encrypted document into a multi-doc
+// file is unsupported, so it is refused), and a write that matches the current bytes is a
+// no-op (the byte state machine, with the semantic-equality guard for comment-only diffs).
+func (wb *writeBatch) writeWholeFile(ctx context.Context, event Event, rel string) error {
 	content, err := wb.writer.buildContentForWrite(ctx, event)
 	if err != nil {
 		if wb.writer.isSensitiveIdentifier(event.Identifier) {
@@ -210,18 +222,17 @@ func (wb *writeBatch) writeCanonical(ctx context.Context, event Event) error {
 		return err
 	}
 
-	rel := wb.writer.filePathForIdentifier(event.Identifier)
 	buf := wb.buffer(rel)
-	if buf.original != nil {
-		if manifestedit.DocumentCount(buf.original) > 1 {
+	if buf.current != nil {
+		if manifestedit.DocumentCount(buf.current) > 1 {
 			log.FromContext(ctx).Info(
-				"Skipping wholesale write: canonical path holds a multi-document file",
+				"Skipping wholesale write: target holds a multi-document file",
 				"file", rel,
 				"resource", event.Identifier.String(),
 			)
 			return nil
 		}
-		if bytes.Equal(buf.original, content) || manifestsAreSemanticallyEqual(buf.original, content) {
+		if bytes.Equal(buf.current, content) || manifestsAreSemanticallyEqual(buf.current, content) {
 			return nil
 		}
 	}
@@ -230,28 +241,45 @@ func (wb *writeBatch) writeCanonical(ctx context.Context, event Event) error {
 }
 
 // applyDelete removes the document a DELETE event targets. The document is located by
-// content (resolveDelete), so a manifest moved off its canonical path is still
-// deleted. Removing the last document in a file marks it for deletion; otherwise the
-// surviving documents are kept byte-for-byte.
-func (wb *writeBatch) applyDelete(ctx context.Context, event Event) error {
-	ref, found, err := wb.resolveDelete(ctx, event)
-	if err != nil {
-		return err
-	}
+// content (resolveDelete), so a manifest moved off its canonical path is still deleted.
+// The position is re-derived from the buffer's CURRENT bytes when the identity is known,
+// so an earlier delete in the same batch that shifted a multi-document file does not
+// misdirect this one. Removing the last document in a file marks it for deletion;
+// otherwise the surviving documents are kept byte-for-byte.
+func (wb *writeBatch) applyDelete(ctx context.Context, event Event) {
+	target, found := wb.resolveDelete(ctx, event)
 	if !found {
-		return nil
+		return
 	}
-	buf := wb.buffer(ref.FilePath)
+	buf := wb.buffer(target.filePath)
 	if buf.current == nil {
-		return nil
+		return
 	}
-	res, _ := manifestedit.DeleteDocument(buf.current, ref.DocumentIndex)
+	idx := target.documentIndex
+	if target.idKnown {
+		i, ok := currentDocIndex(target.filePath, buf.current, target.id)
+		if !ok {
+			return
+		}
+		idx = i
+	}
+	res, _ := manifestedit.DeleteDocument(buf.current, idx)
 	if res.FileEmpty {
 		buf.current = nil
-		return nil
+		return
 	}
 	buf.current = res.Content
-	return nil
+}
+
+// deleteTarget names the file a delete targets. When idKnown, id re-derives the
+// document position from the live bytes at apply time (a multi-document file's indices
+// can shift within a batch); idKnown is false only for the canonical-path fallback of an
+// object-less, mapper-less delete, where documentIndex (0) is used directly.
+type deleteTarget struct {
+	filePath      string
+	id            manifestedit.Identity
+	documentIndex int
+	idKnown       bool
 }
 
 // resolveDelete locates the managed document a DELETE event targets, content-first:
@@ -260,32 +288,54 @@ func (wb *writeBatch) applyDelete(ctx context.Context, event Event) error {
 //     so it follows a moved manifest (the placement guarantee the per-event writer had).
 //  2. With a mapper, a GVR-only delete is resolved through PlanDelete — the resolved
 //     resource-identity index (and the mapper's reverse map), so a moved manifest with
-//     no object body is still found. An unobservable API surface fails closed (error).
-//  3. With no object and no mapper, fall back to the canonical placement path
-//     (document 0), exactly as the per-event writer did for an object-less delete.
+//     no object body is still found.
+//  3. Otherwise (no object and no mapper, or the mapper could not observe the API
+//     surface) fall back to the canonical placement path (document 0), exactly as the
+//     per-event writer did for an object-less delete.
 //
-// found is false when Git holds no managed document for the resource (already converged).
-func (wb *writeBatch) resolveDelete(ctx context.Context, event Event) (manifestanalyzer.RecordRef, bool, error) {
+// The mapper's fail-closed signal is deliberately downgraded to the canonical fallback
+// rather than propagated as an error: the current commit path drops the whole window on
+// a write error, so propagating would lose unrelated writes in the batch. The fallback
+// is never worse than the pre-mapper behaviour (a moved manifest is left until discovery
+// recovers and a later reconcile retries). Proper hold-and-retry lands with M8, which
+// rebuilds this delete path. found is false only when Git holds no managed document for
+// the resource (already converged, a trusted no-op).
+func (wb *writeBatch) resolveDelete(ctx context.Context, event Event) (deleteTarget, bool) {
 	if id, ok := manifestIdentity(event.Object); ok {
 		if dm := wb.store.ByManifestIdentity[id]; dm != nil {
-			return wb.docLoc[dm], true, nil
+			return deleteTarget{filePath: wb.docLoc[dm].FilePath, id: id, idKnown: true}, true
 		}
 	}
 	if wb.mapper != nil {
 		action, emitted, err := manifestanalyzer.PlanDelete(ctx, wb.store, wb.mapper, event.Identifier)
-		if err != nil {
-			return manifestanalyzer.RecordRef{}, false, err
+		switch {
+		case err != nil:
+			log.FromContext(ctx).V(1).Info("delete mapper lookup failed; falling back to canonical path",
+				"resource", event.Identifier.String(), "error", err.Error())
+		case emitted:
+			return deleteTarget{filePath: action.Ref.FilePath, id: action.Identity, idKnown: true}, true
+		default:
+			// Trusted absence: the resource names no managed document. Nothing to delete.
+			return deleteTarget{}, false
 		}
-		if emitted {
-			return action.Ref, true, nil
-		}
-		return manifestanalyzer.RecordRef{}, false, nil
 	}
 	rel := wb.writer.filePathForIdentifier(event.Identifier)
 	if _, ok := wb.contentByPath[rel]; ok {
-		return manifestanalyzer.RecordRef{FilePath: rel, DocumentIndex: 0}, true, nil
+		return deleteTarget{filePath: rel, documentIndex: 0, idKnown: false}, true
 	}
-	return manifestanalyzer.RecordRef{}, false, nil
+	return deleteTarget{}, false
+}
+
+// currentDocIndex re-derives the position of the managed document for id within the
+// file's live bytes. The pre-batch store index can go stale when an earlier event in the
+// same batch shifts a multi-document file (a delete drops a document, renumbering its
+// successors), so any edit/delete recomputes the position against the current bytes
+// rather than trusting the index captured at scan time. ok is false when no document of
+// that identity is present in the bytes (e.g. already removed earlier in the batch).
+func currentDocIndex(filePath string, content []byte, id manifestedit.Identity) (int, bool) {
+	inv, _ := manifestedit.IndexFile(filePath, content)
+	loc, ok := inv.Location(id)
+	return loc.DocumentIndex, ok
 }
 
 // flush writes every dirty buffer and removes every deleted buffer under the

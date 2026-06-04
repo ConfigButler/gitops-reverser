@@ -40,6 +40,15 @@ func NewCatalogMapper(catalog *APIResourceCatalog) *CatalogMapper {
 	return &CatalogMapper{catalog: catalog}
 }
 
+// Mapper returns a live-catalog ResourceMapper backed by this manager's catalog. The
+// catalog is a stable pointer that the manager refreshes in place, so the returned
+// mapper tracks discovery updates; it is the injectable mapper the live writer uses to
+// resolve a GVR-only delete to a moved manifest. Before the catalog has trusted data,
+// lookups report CatalogUnavailable rather than false absence, so callers fall closed.
+func (m *Manager) Mapper() mapping.ResourceMapper {
+	return NewCatalogMapper(m.apiResourceCatalog())
+}
+
 var _ mapping.ResourceMapper = (*CatalogMapper)(nil)
 
 // Source reports live-catalog.

@@ -536,27 +536,50 @@ dependency; it does not exist yet. Independent of Track A.
 > 3. **Sensitive (SOPS) resources keep the re-encrypting wholesale path** and are never
 >    patched in place — an in-place merge would drop the sops metadata and write the
 >    secret back in cleartext — exactly as the per-event writer did.
-> 4. **Deletes are content-first, and the mapper realises M6 in the writer.** A
->    `DELETE` is matched by manifest identity when it still carries its object — and the
->    live watch path *does* carry the deleted object
+> 4. **Deletes are content-first, and the mapper realises M6 in the writer — and is
+>    wired in production.** A `DELETE` is matched by manifest identity when it still
+>    carries its object — and the live watch path *does* carry the deleted object
 >    ([`informers.go`](../../../internal/watch/informers.go)), so a manifest moved off
->    its canonical path is already deleted correctly in steady state **with no mapper**.
->    A GVR-only delete (no object) is resolved through `PlanDelete` when a mapper is
->    wired — the resolved resource-identity index, M6's primitive folded into the writer
->    (covered by a static-snapshot unit test). With neither object nor mapper it falls
->    back to the canonical placement path (document 0), the per-event writer's exact
->    behaviour. The only object-less deletes in production are `FolderReconciler`'s
->    orphan-prune events — the path **M8 replaces** — so wiring the live-catalog mapper
->    into the writer (with the mapping doc's fail-closed *hold-and-retry*, which the
->    current commit path does not yet have — a commit error drops the window) is
->    deliberately deferred to M8, where that path and its failure model are rebuilt.
-> 5. **The live writer does not yet run the M4 acceptance gate.** It builds the store
+>    its canonical path is deleted correctly in steady state even before any mapper. A
+>    GVR-only delete (no object) is resolved through `PlanDelete` over the resolved
+>    resource-identity index. The live-catalog mapper is now injected end to end —
+>    `watch.Manager.Mapper()` → `WorkerManager.SetMapper` → each `BranchWorker`
+>    ([`worker_manager.go`](../../../internal/git/worker_manager.go),
+>    [`cmd/main.go`](../../../cmd/main.go)) — so the writer builds its store with the
+>    live catalog and a GVR-only moved delete resolves by content in production (covered
+>    by a static-snapshot unit test and a wiring test). **One deliberate softening of the
+>    mapping doc's fail-closed rule:** when the catalog cannot observe the API surface,
+>    `PlanDelete` returns an error, but the writer *downgrades that to the canonical-path
+>    fallback* rather than propagating it — the current commit path drops the whole window
+>    on a write error, so propagating would lose unrelated writes in the batch. The
+>    fallback is never worse than the pre-mapper behaviour (a moved manifest is left until
+>    discovery recovers and a later reconcile retries). Proper fail-closed *hold-and-retry*
+>    needs a per-intent retry the commit path does not yet have, and lands with M8, which
+>    rebuilds this delete path.
+> 5. **Stale positions are re-derived, not trusted.** A document's index within a
+>    multi-document file can shift inside one batch (an earlier delete renumbers its
+>    successors), so every edit and delete recomputes the target document's position from
+>    the buffer's *current* bytes (`currentDocIndex`) rather than the index captured when
+>    the store was built. Sensitive resources are located by identity too, then
+>    re-encrypted wholesale *at their existing path* — never patched in place (cleartext
+>    leak) and never duplicated at the canonical path (orphaning the moved copy).
+> 6. **Scope limit — the writer is content-derived, but the upstream snapshot diff is
+>    not yet.** M7 makes the *writer* match-first by content. The snapshot/atomic
+>    reconcile that feeds it (`FolderReconciler.findDifferences` over the **path-derived**
+>    `listResourceIdentifiersInPath` / `parseIdentifierFromPath`) is still live and still
+>    path-derived, so it can emit a spurious create at the canonical path for a manifest a
+>    human moved — the writer's content match cannot undo a wrong decision made upstream.
+>    The moved-manifest disease is therefore only *half* cured until **M8** replaces that
+>    diff with a streaming mark-and-sweep over the same content-derived store. Steady-state
+>    live events (which carry the object) are already fully content-derived through the new
+>    writer; the gap is the snapshot path only.
+> 7. **The live writer does not yet run the M4 acceptance gate.** It builds the store
 >    with the empty allowlist (materialise every KRM document, indexing the whole
 >    subtree for placement exactly as the old per-event inventory) and applies events
 >    unconditionally. Gating the live apply on `Accept` (allowlist / scope / refusals)
 >    is a real behaviour change — it would start refusing existing folders — so it is a
 >    separate, deliberate follow-on rather than part of this mechanism swap.
-> 6. **Coalescing and commit-boundary hydration reuse the existing machinery.** The
+> 8. **Coalescing and commit-boundary hydration reuse the existing machinery.** The
 >    open commit window already coalesces per path (last-writer-wins), and the per-base
 >    `fileBuffer`s give per-identity coalescing within a batch, so no separate
 >    `PendingChanges` type was introduced. The subtree is scanned once per batch at the
@@ -637,9 +660,14 @@ plan-then-flush) ✅ has now landed** — the per-event `locate → write` loop 
 controller writes by building the store, resolving each event to a single-identity
 action, applying to hydrated file buffers, and flushing dirty/deleted files; the
 no-op/in-place/whole-replace/skip decisions survive as `manifestedit.Decide` plan
-decisions and e2e is green. C1 ✅ landed independently and preceded M7. That leaves the
-critical path at **M8 (streaming mark-and-sweep resync)**, which replaces
-`FolderReconciler`'s two-snapshot GVR diff (and its object-less orphan-prune deletes)
-with one streaming-list snapshot folded over the managed model, and is where the
-live-catalog mapper is wired into the writer with the fail-closed hold-and-retry the
-mapping doc requires. M9 (cross-batch cache) follows.
+decisions, the live-catalog mapper is wired end to end (so GVR-only moved deletes resolve
+by content in production), and e2e is green. C1 ✅ landed independently and preceded M7.
+**M7's scope boundary:** the *writer* is now content-derived, but the *upstream*
+snapshot reconcile (`FolderReconciler.findDifferences` over path-derived
+`listResourceIdentifiersInPath` / `parseIdentifierFromPath`) is still live and still
+path-derived, so the moved-manifest disease is only half cured for the snapshot path.
+That leaves the critical path at **M8 (streaming mark-and-sweep resync)**, which replaces
+that two-snapshot GVR diff (and its object-less orphan-prune deletes) with one
+streaming-list snapshot folded over the managed model, and upgrades the writer's
+delete fallback to the mapping doc's fail-closed hold-and-retry. M9 (cross-batch cache)
+follows.

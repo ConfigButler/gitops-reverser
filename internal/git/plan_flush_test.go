@@ -165,6 +165,82 @@ func TestPlanFlush_DeleteByGVROnlyFollowsMovedManifestViaMapper(t *testing.T) {
 	assert.True(t, os.IsNotExist(statErr), "apps/foo.yaml must be deleted, not orphaned")
 }
 
+// A sensitive (SOPS) resource a user moved off its canonical .sops path must be
+// re-encrypted wholesale AT ITS EXISTING PATH — never patched in place (which would
+// leak the secret in cleartext) and never duplicated at the canonical path (which would
+// orphan the moved copy). This pins the regression where sensitive upserts skipped
+// content placement and always wrote the canonical path.
+func TestPlanFlush_SensitiveMovedResourceRewritesInPlaceNotCanonical(t *testing.T) {
+	enc := &stubEncryptor{result: []byte(
+		"apiVersion: v1\nkind: Secret\nmetadata:\n  name: app\n  namespace: default\n" +
+			"data:\n  k: ENC[AES256,data:NEW,iv:cc,tag:dd]\nsops:\n  version: 3.9.0\n  mac: NEW\n")}
+	writer := newContentWriter(types.SensitiveResourcePolicy{})
+	writer.setEncryptor(enc, "test-scope")
+	worktree := newWorktreeForTest(t)
+	root := worktree.Filesystem.Root()
+
+	// A Secret moved off its canonical .sops path. It carries a cleartext identity and a
+	// sops key, so the store indexes it as an encrypted managed document. The encrypted
+	// data differs from the new render, so the write is a real change, not a no-op.
+	movedRel := "secrets/app.sops.yaml"
+	seeded := "apiVersion: v1\nkind: Secret\nmetadata:\n  name: app\n  namespace: default\n" +
+		"data:\n  k: ENC[AES256,data:OLD,iv:aa,tag:bb]\nsops:\n  version: 3.9.0\n  mac: OLD\n"
+	movedFull := seedPlacedManifest(t, worktree, movedRel, seeded)
+
+	event := Event{
+		Object: &unstructured.Unstructured{Object: map[string]interface{}{
+			"apiVersion": "v1", "kind": "Secret",
+			"metadata": map[string]interface{}{"name": "app", "namespace": "default"},
+			"data":     map[string]interface{}{"k": "dg=="},
+		}},
+		Identifier: types.ResourceIdentifier{
+			Group: "", Version: "v1", Resource: "secrets", Namespace: "default", Name: "app",
+		},
+		Operation: "UPDATE",
+	}
+	changed := applyEventsViaPlanFlush(t, writer, worktree, event)
+	require.True(t, changed)
+
+	got, err := os.ReadFile(movedFull)
+	require.NoError(t, err)
+	assert.Equal(t, string(enc.result), string(got), "the moved secret is re-encrypted at its existing path")
+
+	canonicalFull := filepath.Join(root, writer.filePathForIdentifier(event.Identifier))
+	_, statErr := os.Stat(canonicalFull)
+	assert.Truef(t, os.IsNotExist(statErr),
+		"no duplicate secret must be created at the canonical .sops path %s", canonicalFull)
+}
+
+// Within one batch, deleting a document from a multi-document file shifts the indices of
+// the documents after it. A later event updating a surviving sibling must target it by
+// its CURRENT position, not the stale pre-batch index — otherwise the update is dropped
+// (index out of range) or lands on the wrong document.
+func TestPlanFlush_BatchDeleteThenUpdateSiblingTargetsCorrectDoc(t *testing.T) {
+	writer := newContentWriter(types.SensitiveResourcePolicy{})
+	worktree := newWorktreeForTest(t)
+	root := worktree.Filesystem.Root()
+
+	rel := "apps/multi.yaml"
+	first := "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: first\n  namespace: default\ndata:\n  k: v\n"
+	second := "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: second\n  namespace: default\ndata:\n  color: blue\n"
+	full := filepath.Join(root, rel)
+	seedPlacedManifest(t, worktree, rel, first+"---\n"+second)
+
+	// Event A deletes document 0 ("first"); event B updates "second", originally at
+	// document 1 but at document 0 once "first" is gone.
+	delFirst := cmEvent("DELETE", "first", "v")
+	updSecond := cmEvent("UPDATE", "second", "green")
+	changed := applyEventsViaPlanFlush(t, writer, worktree, delFirst, updSecond)
+	require.True(t, changed)
+
+	got, err := os.ReadFile(full)
+	require.NoError(t, err)
+	assert.NotContains(t, string(got), "name: first", "the deleted document is gone")
+	assert.Contains(t, string(got), "name: second", "the surviving document remains")
+	assert.Contains(t, string(got), "color: green", "the update must land on the correct sibling")
+	assert.NotContains(t, string(got), "color: blue", "the stale-index bug would have left the old value")
+}
+
 // groupEventsByBase buckets events by their sanitized GitTarget path, preserving
 // arrival order within a bucket.
 func TestGroupEventsByBase(t *testing.T) {

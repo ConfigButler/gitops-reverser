@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -32,8 +33,33 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	"github.com/ConfigButler/gitops-reverser/internal/mapping"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
+
+// TestWorkerManager_SetMapperInjectsIntoWorkers proves the production wiring: a mapper
+// set on the manager is handed to every worker it creates, so the live writer's
+// GVR-only delete path can resolve a moved manifest. Without injection worker.mapper is
+// nil and that path falls back to canonical placement.
+func TestWorkerManager_SetMapperInjectsIntoWorkers(t *testing.T) {
+	client := fake.NewClientBuilder().WithScheme(setupScheme()).Build()
+	manager := NewWorkerManager(client, logr.Discard(), 0, types.SensitiveResourcePolicy{})
+
+	mapper := mapping.NewStaticSnapshotMapper(mapping.Snapshot{})
+	manager.SetMapper(mapper)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	go func() { _ = manager.Start(ctx) }()
+	time.Sleep(100 * time.Millisecond) // allow Start to set m.ctx
+
+	require.NoError(t, manager.EnsureWorker(ctx, "repo1", testProviderNamespace, "main"))
+	worker, exists := manager.GetWorkerForTarget("repo1", testProviderNamespace, "main")
+	require.True(t, exists)
+	require.NotNil(t, worker)
+	assert.NotNil(t, worker.mapper, "the created worker must carry the injected mapper")
+	assert.Equal(t, mapping.ResourceMapper(mapper), worker.mapper)
+}
 
 const (
 	testProviderNamespace = "gitops-system"
