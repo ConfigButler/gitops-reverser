@@ -99,12 +99,14 @@ existing [`internal/manifestanalyzer`](../../../internal/manifestanalyzer).
 
 ### A2 — Pointer indexes + structured cause, drop the old fields
 
-> **Status: 🚧 in progress.** This milestone **intentionally changes the
-> analyzer/report output contract**: `DocumentReport` drops `Encrypted`/
+> **Status: ✅ landed.** This milestone **intentionally changed the
+> analyzer/report output contract**: `DocumentReport` dropped `Encrypted`/
 > `Duplicate`/`Reason` in favour of a structured `Cause`, and duplicate identity
-> moves out of the per-document report into diagnostics + acceptance issues. The
-> duplicate collapse mirrors `manifestedit` exactly — identity-claiming documents
-> (clean *and* encrypted) participate; disallowed-construct documents do not.
+> moved out of the per-document report into diagnostics + acceptance issues
+> (`IssueDuplicate`, `ManifestStore.IsDuplicate`). The duplicate collapse mirrors
+> `manifestedit` exactly — identity-claiming documents (clean *and* encrypted)
+> participate; disallowed-construct documents do not. The `ByResourceIdentity`
+> index exists but stays empty until the mapper populates it (B3).
 
 - **Depends on**: A1.
 - **Touches**: `ManifestStore` indexes
@@ -140,6 +142,13 @@ dependency; it does not exist yet. Independent of Track A.
 
 ### B1 — Catalog `byGVK` + exact GVK lookup
 
+> **Status: ✅ landed.** `byGVK[schema.GroupVersionKind][]APIResourceEntry` sits
+> beside `byGVR` in [`api_resource_catalog.go`](../../../internal/watch/api_resource_catalog.go);
+> `LookupGVK`/`LookupGVR` return a `CatalogLookup` carrying matched entries plus
+> degraded/ready/generation trust state, so degraded discovery is reported, never
+> treated as absence. Covered by
+> [`api_resource_catalog_lookup_test.go`](../../../internal/watch/api_resource_catalog_lookup_test.go).
+
 - **Depends on**: nothing.
 - **Touches**: [`internal/watch/api_resource_catalog.go`](../../../internal/watch/api_resource_catalog.go)
   — add a `byGVK[schema.GroupVersionKind][]APIResourceEntry` index beside the
@@ -150,16 +159,36 @@ dependency; it does not exist yet. Independent of Track A.
 
 ### B2 — `ResourceMapper` interface + implementations
 
+> **Status: ✅ landed.** The interface and runtime-independent impls live in the new
+> [`internal/mapping`](../../../internal/mapping) package (`ResourceMapper`,
+> `StructureOnlyMapper`, `StaticSnapshotMapper`, and the shared
+> `ResolveGVK`/`ResolveGVR` reduction); the catalog-backed impl is
+> [`watch.CatalogMapper`](../../../internal/watch/catalog_mapper.go). `mapping` does
+> not import `watch`, so the analyzer can resolve without pulling in the watch
+> manager. Naming note: the doc's `MappingResult`/`MappingStatus` are
+> `mapping.Result`/`mapping.Status` in code (no-stutter lint); the `Mapping*` status
+> constants kept their names.
+>
+> **Deferred within B2: `MapperSourceKubeconfig`.** Three of the four sources ship
+> here — `live-catalog` (`watch.CatalogMapper`), `static-snapshot`, and
+> `structure-only`. The kubeconfig source is a declared constant only; the
+> kubeconfig-backed discovery mapper is the optional CLI "check this folder against
+> this cluster" mode the mapping doc and Implementation Order (step 5) push to
+> *later*. It is not needed by the controller (live-catalog) or tests
+> (static-snapshot), so deferring it does not block B3/M3/M6.
+
 - **Depends on**: B1.
 - **Touches**: new `ResourceMapper` interface (per
   [gvk-gvr-mapping-layer.md](gvk-gvr-mapping-layer.md)) with `GVRForGVK` /
-  `GVKForGVR` returning `MappingStatus`; a **catalog-backed** impl (reads B1, never
-  calls discovery directly), a **static-snapshot** impl for tests, and a
-  **structure-only** impl returning `MappingStructureOnly`.
+  `GVKForGVR` returning `mapping.Result` (whose `Status` is a `mapping.Status`); a
+  **catalog-backed** impl (reads B1, never calls discovery directly), a
+  **static-snapshot** impl for tests, and a **structure-only** impl returning
+  `MappingStructureOnly`.
 - **Unblocks**: B3, M3, M6.
-- **Done when**: all four `MapperSource`s behave per the doc; expected lookup
-  outcomes are statuses, not errors; static-snapshot fixtures make tests
-  cluster-free.
+- **Done when**: the three shipped `MapperSource`s (live-catalog, static-snapshot,
+  structure-only) behave per the doc; expected lookup outcomes are statuses, not
+  errors; static-snapshot fixtures make tests cluster-free. (`kubeconfig` is
+  explicitly deferred — see status note above.)
 
 ### B3 — Wire the mapper into store construction
 
@@ -288,8 +317,9 @@ dependency; it does not exist yet. Independent of Track A.
 
 1. **A1** ✅ — `ManifestStore`/`FileModel`/`DocumentModel`, `Report` as a
    projection. No behavior change; existing analyzer tests are the net.
-2. **B1** — catalog `byGVK` + exact lookup. Tiny, isolated, unblocks the mapper.
+2. **B1** ✅ — catalog `byGVK` + exact lookup. Tiny, isolated, unblocks the mapper.
 3. **C1** — GitTarget non-overlap admission. Cheap, self-contained, locks the
    one-owner invariant in before anything destructive depends on it.
 
-A2 follows A1; B2 follows B1; then B3 joins the tracks and M3 begins the tail.
+A2 ✅ and B2 ✅ have followed; **B3 is now unblocked** (A2 + B2 both landed) and
+joins the tracks, then M3 begins the tail. C1 remains independent.

@@ -161,6 +161,19 @@ degraded.
 
 ## Interface
 
+> **Status (2026-06-04): implemented.** The interface and the runtime-independent
+> implementations live in [`internal/mapping`](../../../internal/mapping)
+> (`ResourceMapper`, `StructureOnlyMapper`, `StaticSnapshotMapper`, and the shared
+> `ResolveGVK`/`ResolveGVR` reduction); the catalog-backed implementation is
+> [`watch.CatalogMapper`](../../../internal/watch/catalog_mapper.go), built on the
+> catalog `byGVK`/`LookupGVK`/`LookupGVR` additions
+> ([`api_resource_catalog.go`](../../../internal/watch/api_resource_catalog.go)).
+> The doc warned the concrete Go names could move, and two did: to satisfy the
+> repository's no-stutter lint, `MappingResult` is `mapping.Result` and
+> `MappingStatus` is `mapping.Status`. The `Mapping*` status constants below kept
+> their names. `internal/mapping` has no dependency on `internal/watch`, so the
+> analyzer can resolve mappings without importing the watch manager.
+
 The concrete Go names can move, but the interface should make the dependency
 explicit:
 
@@ -170,8 +183,8 @@ type ResourceMapper interface {
     Ready() MapperReadiness
     Generation() uint64
 
-    GVRForGVK(ctx context.Context, gvk schema.GroupVersionKind) (MappingResult, error)
-    GVKForGVR(ctx context.Context, gvr schema.GroupVersionResource) (MappingResult, error)
+    GVRForGVK(ctx context.Context, gvk schema.GroupVersionKind) (Result, error)
+    GVKForGVR(ctx context.Context, gvr schema.GroupVersionResource) (Result, error)
 }
 
 type MapperSource string
@@ -190,7 +203,7 @@ type MapperReadiness struct {
     Reason     string
 }
 
-type MappingResult struct {
+type Result struct {
     GVK schema.GroupVersionKind
     GVR schema.GroupVersionResource
 
@@ -199,21 +212,21 @@ type MappingResult struct {
     Preferred  bool
     Allowed    bool
 
-    Status MappingStatus
+    Status Status
     Reason string
 }
 
-type MappingStatus string
+type Status string
 
 const (
-    MappingResolved           MappingStatus = "Resolved"
-    MappingUnserved           MappingStatus = "Unserved"
-    MappingAmbiguous          MappingStatus = "Ambiguous"
-    MappingDisallowed         MappingStatus = "Disallowed"
-    MappingSubresource        MappingStatus = "Subresource"
-    MappingCatalogUnavailable MappingStatus = "CatalogUnavailable"
-    MappingDiscoveryDegraded  MappingStatus = "DiscoveryDegraded"
-    MappingStructureOnly      MappingStatus = "StructureOnly"
+    MappingResolved           Status = "Resolved"
+    MappingUnserved           Status = "Unserved"
+    MappingAmbiguous          Status = "Ambiguous"
+    MappingDisallowed         Status = "Disallowed"
+    MappingSubresource        Status = "Subresource"
+    MappingCatalogUnavailable Status = "CatalogUnavailable"
+    MappingDiscoveryDegraded  Status = "DiscoveryDegraded"
+    MappingStructureOnly      Status = "StructureOnly"
 )
 ```
 
@@ -228,7 +241,7 @@ resource identity and needs manifest identity.
 
 Errors should be reserved for implementation failures: discovery call failed,
 snapshot could not be loaded, malformed static data, context cancellation.
-Expected lookup outcomes should be returned as `MappingStatus` so callers can
+Expected lookup outcomes should be returned as `Status` so callers can
 make policy decisions without parsing error strings.
 
 ## Implementations
@@ -256,6 +269,12 @@ The live mapper must not call Kubernetes discovery directly. The catalog owns
 discovery refresh and trust state; the mapper reads that trusted local view.
 
 ### Kubeconfig Discovery Mapper
+
+> **Status (2026-06-04): deferred.** `MapperSourceKubeconfig` exists as a constant,
+> but the kubeconfig-backed mapper itself is not built yet. The controller uses
+> `live-catalog` and tests use `static-snapshot`, so nothing on the B3/M3/M6 path
+> needs this; it lands with the optional CLI cluster-check mode (Implementation
+> Order step 5).
 
 Used by a CLI or offline command that is allowed to contact a cluster.
 
@@ -311,7 +330,7 @@ them:
 ManifestIdentity = apiVersion + kind + namespace + name
 GVK              = group + version + kind
 ResourceIdentity = group + version + resource + namespace + name
-MappingStatus   = resolved / unserved / ambiguous / ...
+mapping.Status   = resolved / unserved / ambiguous / ...
 ```
 
 Store construction should do the cheap parse first:
@@ -410,11 +429,14 @@ deleted from Git.
 
 ## Implementation Order
 
-1. Add `byGVK` and exact GVK lookup to `APIResourceCatalog`.
-2. Introduce the `ResourceMapper` interface and a catalog-backed implementation.
-3. Add a static-snapshot implementation for unit tests.
-4. Change manifest store construction to accept a mapper and record
-   `MappingStatus`.
+1. ✅ Add `byGVK` and exact GVK lookup to `APIResourceCatalog` (also `LookupGVR`
+   and the `CatalogLookup` trust state).
+2. ✅ Introduce the `ResourceMapper` interface and a catalog-backed implementation
+   (`watch.CatalogMapper`).
+3. ✅ Add a static-snapshot implementation for unit tests
+   (`mapping.StaticSnapshotMapper`), alongside the structure-only mapper.
+4. Change manifest store construction to accept a mapper and record the resolved
+   `mapping.Status` per document.
 5. Keep `manifest-analyzer` structure-only by default; add an optional
    kubeconfig/static-catalog mode later.
 6. Add the GitTarget mapping readiness gate before initial snapshot planning.
