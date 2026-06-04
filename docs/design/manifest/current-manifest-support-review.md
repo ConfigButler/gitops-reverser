@@ -41,51 +41,73 @@ The feedback that drove this sharpening is in
 ## Non-Negotiable Design Decisions
 
 These are settled decisions, not options. The rest of this document — especially
-the data model — is shaped by them, and they resolve the "can a managed folder
-contain unmanaged content?" question with a flat **no**.
+the data model — is shaped by them.
 
-1. **A GitTarget takes total responsibility for its folder.** Adopting a folder
-   is an all-or-nothing claim over every Kubernetes manifest (KRM document) in it.
-   There is no such thing as a KRM document that lives in a managed folder while
-   being "not ours." We either fully manage the folder, or we refuse it.
+1. **A GitTarget takes total responsibility for the KRM it materializes.**
+   Adopting a folder is an all-or-nothing claim over every API-backed Kubernetes
+   manifest in it. There is no such thing as an API-backed KRM document that lives
+   in a managed folder while being "not ours." We either fully manage it, or we
+   refuse the folder.
 
 2. **No partially materialized multi-document file — ever.** A multi-document YAML
    file is either entirely managed (every document is a tracked, in-scope resource
-   we own) or the GitTarget refuses the whole folder. We will not materialize some
-   documents in a file and leave the others as untracked passengers. That split
-   state is exactly the drift this design exists to remove, and it is the kind of
-   thing that quietly corrupts a file on the next write.
+   we own) or the GitTarget refuses the whole folder. Allowlisted non-API KRM must
+   live as its own retained file; it cannot share a multi-document file with
+   managed resources. We will not materialize some documents in a file and leave
+   the others as untracked passengers. That split state is exactly the drift this
+   design exists to remove, and it is the kind of thing that quietly corrupts a
+   file on the next write.
 
-3. **Refuse, never carve out.** Anything we cannot take full responsibility for is
-   an **acceptance failure with an error condition**, not a silent exclusion:
+3. **Refuse API KRM we do not own; retain allowlisted non-API KRM.** Anything
+   API-backed that we cannot take full responsibility for is an **acceptance
+   failure with an error condition**, not a silent exclusion:
    - non-KRM YAML (a CI config, a loose values file),
    - duplicate manifest identities,
-   - KRM of an unknown / unwatched GVK (including build directives like
-     `kustomization.yaml`),
+   - KRM of an unknown / unwatched API-backed GVK,
    - watched KRM that falls **outside this GitTarget's scope** (right kind, wrong
      namespace).
    Each of these stops the GitTarget with a clear, file-naming diagnostic and
    reconciles nothing until a human cleans the folder. We do not guess, and we do
-   not keep a "non-member" subset alongside the managed one.
+   not prune unwatched API-backed KRM. The one carve-out is an explicit allowlist
+   for non-API KRM such as `kustomization.yaml`: accepted, retained on disk,
+   never materialized, never swept, and never edited.
 
 4. **The rule is about manifests, not every byte.** Non-manifest files — non-YAML
    such as `README.md`, `.gitignore`, images, and scripts — are not KRM, are never
    materialized, and never cause a refusal. "Full responsibility" is over the
    Kubernetes resources the folder projects, not over auxiliary files that are not
    resources at all. Only YAML that *parses as KRM* is subject to the all-or-nothing
-   rule above.
+   rule above, except for explicitly allowlisted non-API KRM retained outside the
+   model.
 
-**Why this matters to the model.** Because no KRM document is ever a non-member,
-the in-memory model is dramatically simpler and safer:
+5. **GitTargets never overlap.** Within a repository, no GitTarget path may be
+   equal to, an ancestor of, or a descendant of another GitTarget's path. Sibling
+   folders are fine (`/a` and `/b`); nesting is forbidden (`/a` *and* `/a/b`).
+   Overlap would let two targets fight over which documents each one tracks — the
+   same two-owners drift this design exists to remove — and it would make
+   mark-and-sweep ambiguous (whose orphan is a document in the shared subtree?).
+   This is enforced when a GitTarget is admitted/configured: a target whose path
+   overlaps an existing one is rejected before it ever builds a store, so every
+   materialized folder has exactly one owner.
+
+**Why this matters to the model.** Because no API-backed KRM document is ever a
+non-member, the in-memory model is dramatically simpler and safer:
 
 - `FileModel.Documents` is exactly the set of managed documents — there is no
-  hidden physical document the model does not know about.
-- "A file with no documents left must be deleted" is therefore **unconditionally
-  safe**: an empty managed document set means an empty file, because there were
-  never unmanaged passengers keeping it alive.
+  hidden API-backed document a managed file holds without the model knowing.
+- **Retained allowlisted files are not `FileModel`s in the store at all.** Like
+  non-YAML auxiliary files, they are known to acceptance but live outside
+  `ManifestStore.FilesByPath` (see Concrete Data Structures), so they have no
+  document set to empty and can never be swept or deleted.
+- File deletion is driven by the **byte-derived `Deleted()`** — a hydrated file
+  whose last managed document was dropped, so `Current` became nil — never by a
+  bare `len(Documents) == 0` test. That distinction is load-bearing now that the
+  allowlist exists. Because the store holds only managed files, an empty managed
+  document set safely means an empty file.
 - "Membership" is not a permanent per-document partition we maintain; it is simply
   the acceptance outcome. Acceptance passes and every document is a member, or
-  acceptance fails and the GitTarget reconciles nothing.
+  acceptance fails and the GitTarget reconciles nothing. Allowlisted non-API KRM
+  is outside the model entirely.
 
 ## Current Architecture
 
@@ -270,18 +292,18 @@ leave wrong files in place — but we can discharge that duty conservatively:
   whose resource the API no longer has is wrong, and we **drop** it. This is by
   design and intentional: leaving a stale managed manifest would reintroduce a
   second, drifting source of truth — exactly what this design exists to remove.
-- **For everything we do *not* manage, we refuse rather than delete.** Unwatched
-  KRM, duplicate identities, and non-KRM YAML are content we are not entitled to
-  take responsibility for. Instead of guessing — and instead of deleting files a
-  human authored — we **fail the GitTarget with a clear status and reconcile
-  nothing until the folder is cleaned**.
+- **For API-backed KRM we do *not* manage, we refuse rather than delete.**
+  Unwatched KRM, duplicate identities, and non-KRM YAML are content we are not
+  entitled to take responsibility for. Instead of guessing — and instead of
+  deleting files a human authored — we **fail the GitTarget with a clear status
+  and reconcile nothing until the folder is cleaned**. Allowlisted non-API KRM is
+  retained outside the managed model.
 
 So the source-of-truth duty is discharged by *dropping the managed resources we
 own that the API no longer has*, and by *refusing the whole folder* when it
-contains anything we are not entitled to manage. We deliberately do **not** build
-a delete option for unwatched content for now; refusing is safer, never destroys
-human-authored files, and is where we start. An opt-in delete could be revisited
-later, but we are explicitly choosing not to.
+contains API-backed KRM we are not entitled to manage. We do **not** prune
+unwatched API-backed KRM. Allowlisted non-API KRM is accepted only as retained
+auxiliary input: no model record, no plan action, no sweep.
 
 ### What the model collapses, and where it lives
 
@@ -318,9 +340,10 @@ bookmark (see the reconcile doc linked above) pins that revision.
 
 Two constraints to respect from the start, not retrofit:
 
-- **The GVK↔GVR resolver must be built**, as an injectable source (live informers,
-  kubeconfig, static snapshot, or nil for structure-only). Everything downstream
-  depends on it; it does not exist yet.
+- **The GVK↔GVR resolver must be built**, as an injectable source (live
+  informers, kubeconfig, static snapshot, or nil for structure-only). Everything
+  downstream depends on it; see
+  [gvk-gvr-mapping-layer.md](gvk-gvr-mapping-layer.md).
 - **Materialization must be bounded — spatially and temporally.** *Spatially:*
   identity indexing needs only a cheap header parse; build the full `manifestedit`
   node tree only for documents a plan action touches (`DocumentModel.Snapshot` as a
@@ -393,7 +416,8 @@ maintained incrementally. The batch planner runs at the commit boundary:
    and build `manifestedit` snapshots for the touched documents.
 6. Produce a plan: create, patch, whole-replace, delete document, delete file,
    drop a watched resource the API no longer has, skip. (Duplicate identities and
-   unwatched KRM never reach planning — they are refused at acceptance.)
+   unwatched API-backed KRM never reach planning — they are refused at acceptance;
+   allowlisted non-API KRM is retained outside the model.)
 7. Apply the plan to the hydrated file models.
 8. Flush changed files and staged deletions to the worktree in one commit.
 
@@ -509,6 +533,13 @@ The exact package names can change, but the shape should be close to this:
 type ManifestStore struct {
     Root string
 
+    // FilesByPath holds only MANAGED files — those with at least one tracked,
+    // in-scope KRM document. Non-YAML auxiliary files and retained allowlisted
+    // non-API KRM files (e.g. kustomization.yaml) are deliberately NOT here: they
+    // are known to acceptance but never become FileModels, so they have no document
+    // set to empty and can never be swept or deleted. A FileModel therefore always
+    // has at least one document until its last is dropped — at which point Current
+    // goes nil and Deleted() correctly fires.
     FilesByPath map[string]*FileModel
 
     // Indexes hold pointers into FilesByPath, not (path, index) pairs, so a
@@ -673,8 +704,9 @@ const (
     PlanDeleteDocument      PlanActionKind = "delete-document"
     PlanDeleteFile          PlanActionKind = "delete-file"
     // PlanDropOrphan deletes a watched resource the API no longer has (the managed
-    // drop). Duplicate identities and unwatched KRM produce no plan action — they
-    // refuse the GitTarget at acceptance, before planning.
+    // drop). Duplicate identities and unwatched API-backed KRM produce no plan
+    // action — they refuse the GitTarget at acceptance, before planning.
+    // Allowlisted non-API KRM is retained outside the model.
     PlanDropOrphan          PlanActionKind = "drop-orphan"
     PlanSkip                PlanActionKind = "skip"
 )
@@ -803,8 +835,9 @@ If the deleted document had been the only document in the file, the same plan
 action would leave the file with zero documents and set `Current = nil`, so
 `Deleted()` reports true and flush stages a file removal instead. This is
 unconditionally safe under the design decisions above: an empty managed document
-set means an empty file, because a managed folder never carries unmanaged
-passenger documents.
+set means an empty file, because a managed *file* never carries unmanaged
+passenger documents (mixed managed/allowlisted files are refused at acceptance),
+and retained allowlisted files are not `FileModel`s in the store.
 
 **Example 3: create a new resource**
 
@@ -871,9 +904,11 @@ model rather than a second write path.
 - Promote `manifestedit.Inventory` from a locator helper into a richer
   `ManifestStore` owned by the writer or a new integration package. Keep
   `manifestedit` as the YAML mechanism underneath it.
-- Add a manifest identity field to delete events, or resolve GVR to GVK before
-  writing. Prefer attaching the identity in the reconcile layer when possible; it
-  keeps RESTMapper concerns out of the Git writer.
+- Resolve delete events through the GVK/GVR mapper before writing. Delete events
+  usually carry GVR/name, while manifests are keyed by GVK/name; the writer should
+  receive a resolved `ResourceIdentifier`/manifest identity pair from the planning
+  layer and delete by `RecordRef`. See
+  [gvk-gvr-mapping-layer.md](gvk-gvr-mapping-layer.md).
 - Add a resource-identity index beside the existing manifest-identity index. The
   writer should locate watched resources by `ResourceIdentifier`, while retaining
   GVK for YAML fidelity and diagnostics.
@@ -930,7 +965,7 @@ between pruning and refusing duplicates disappears.
 The second check is **unrecognized files**. The hard question is what to do with
 files in the folder that are not watched resources. Lumping them into one
 "unrecognized" bucket is the trap; they have very different danger levels, so the
-store should classify every file into one of four buckets:
+store should classify every file into one of five buckets:
 
 1. **Non-YAML files** (`README.md`, `.gitignore`, scripts, images): ignored
    entirely. Never read, never planned, never pruned. No ambiguity.
@@ -938,17 +973,20 @@ store should classify every file into one of four buckets:
    object — a CI config, a loose values blob): the genuinely dangerous unknown.
    We cannot model it and cannot reason about whether mutating the folder is safe.
 3. **Valid KRM, watched GVK**: the managed happy path — fully modeled and planned.
-4. **Valid KRM, unwatched GVK** (a CRD we do not watch, or a build directive such
-   as `kustomization.yaml`, which is itself KRM): recognizable, but it has no
-   matching watched resource in the API.
+4. **Valid KRM, unwatched API-backed GVK**: recognizable, but not selected by
+   this GitTarget's watched set.
+5. **Allowlisted non-API KRM** (for example `kustomization.yaml`): recognizable
+   KRM that is intentionally retained as auxiliary input, not as a managed API
+   resource.
 
 The **starter requirement** (structure-only, no cluster needed) is to define
 *recognized = parses as KRM* and to fail the GitTarget when any YAML file falls in
 bucket 2 (non-KRM YAML), alongside the duplicate-identity gate. Once the watched
-API surface is available, bucket 4 (unwatched KRM) joins the same refusal. This is
-the same "do not be clever about ambiguous content" stance throughout: content we
-cannot model, or are not entitled to manage, is a reason to stop, not to guess.
-Non-YAML files (bucket 1) are always ignored and never cause failure.
+API surface is available through the
+[GVK/GVR mapping layer](gvk-gvr-mapping-layer.md), bucket 4 (unwatched API-backed
+KRM) joins the same refusal. Bucket 5 is the explicit exception: allowlisted
+non-API KRM is accepted but not materialized. Non-YAML files (bucket 1) are always
+ignored and never cause failure.
 
 Within the recognized set, watched and unwatched KRM are treated differently, and
 here the guiding conviction is decisive: **the API is the source of truth.** The
@@ -958,12 +996,17 @@ repository we merely edit around.
 - **Watched (bucket 3)** is managed and planned against live API state. A watched
   document whose resource the API no longer has is **dropped** — this is the
   source-of-truth duty, and it is intentional.
-- **Unwatched (bucket 4) is refused, not pruned.** A KRM document of a kind we do
-  not watch is something we have made no claim over. Rather than delete content we
-  never managed, the GitTarget fails its acceptance check with a diagnostic naming
-  the offending files, and reconciles nothing until a human removes them. We
-  deliberately do **not** build a delete option for unwatched KRM for now; an
-  explicit opt-in could be added later, but we are choosing not to do that yet.
+- **Unwatched API-backed KRM (bucket 4) is refused, not pruned.** A KRM document
+  of a served kind we do not watch is something we have made no claim over. Rather
+  than delete content we never managed, the GitTarget fails its acceptance check
+  with a diagnostic naming the offending files, and reconciles nothing until a
+  human removes them. We do **not** build a delete option for unwatched
+  API-backed KRM.
+- **Allowlisted non-API KRM (bucket 5) is retained, not materialized.** Documents
+  such as `kustomization.yaml` are kept on disk as auxiliary input, excluded from
+  `FileModel.Documents`, excluded from every plan, and excluded from sweep. If an
+  allowlisted document shares a multi-document file with managed resources, the
+  folder is refused; we do not partially materialize a file.
 - **Watched but out of scope is also refused.** A document of a watched kind that
   falls outside this GitTarget's scope (right kind, wrong namespace) is KRM we
   recognize but are not entitled to manage here. Per the Non-Negotiable Design
@@ -972,14 +1015,10 @@ repository we merely edit around.
   with a file-naming diagnostic until a human resolves it.
 
 This keeps a sharp edge honest rather than dangerous: build directives like
-`kustomization.yaml` are KRM but never appear in the API. Under an earlier "prune
-unwatched" rule they would have been deleted; under the refuse rule they instead
-**block** the GitTarget until removed. A folder meant to stay Flux-consumable
-therefore cannot be adopted as-is while it carries unwatched KRM — that is a
-deliberate, visible refusal, not a silent deletion. A small allowlist exempting
-specific non-API KRM kinds (e.g. `kustomization.yaml`) from refusal could be added
-later if the product chooses to preserve such folders. Scan mode (below) renders
-the full picture first, so the consequence is seen before anything is touched.
+`kustomization.yaml` are KRM but never appear in the API. They are handled by the
+non-API KRM allowlist, not by the watched-resource planner. They stay on disk, do
+not become managed documents, and cannot be swept. Unwatched API-backed KRM still
+refuses the GitTarget; it is never pruned as cleanup.
 
 Implementation notes:
 
@@ -988,9 +1027,9 @@ Implementation notes:
   delete planning with an ambiguous model.
 - Surface the failure through GitTarget status/diagnostics with enough detail
   (offending identity + file paths) for a human to resolve it, then re-reconcile.
-- Treat the check list as extensible. Duplicate identity and unrecognized
-  (non-KRM) YAML are the first two gates; others (for example, malformed KRM in
-  an adopted folder) can join the same pre-planning acceptance phase later.
+- Treat the check list as extensible. Duplicate identity, non-KRM YAML,
+  unwatched API-backed KRM, and mixed files containing both managed and
+  allowlisted documents are pre-planning acceptance failures.
 
 ## Adoption Policy: Refuse First
 
@@ -1006,15 +1045,14 @@ conservative one to start. Two behaviors are easy to confuse, so name them apart
 - **Adoption acceptance (a gate, currently single-mode: refuse).** Before a folder
   is allowed to become the planning model at all, it must pass the acceptance
   checks. Anything we cannot take responsibility for — duplicate identities,
-  non-KRM YAML, or unwatched KRM — makes the GitTarget **refuse**: it fails with a
-  diagnostic listing the offending files and reconciles nothing until a human
-  cleans the folder.
+  non-KRM YAML, or unwatched API-backed KRM — makes the GitTarget **refuse**: it
+  fails with a diagnostic listing the offending files and reconciles nothing until
+  a human cleans the folder. Allowlisted non-API KRM is retained outside the
+  managed model.
 
-We are **not** building an active "prune the unwatched content for you" mode now.
+We do **not** build an active "prune the unwatched API-backed KRM for you" mode.
 Refusing is safer, it forces a human to look before anything is touched, and it
-never deletes a file the controller did not author. An opt-in delete option could
-be added later, but we are explicitly choosing not to, and to start with refuse
-only.
+never deletes a file the controller did not author.
 
 `scan` (dry-run) remains valuable alongside refuse: it builds the store, runs the
 acceptance checks, and renders the full plan — including the managed drops — so an
@@ -1029,9 +1067,9 @@ is trusted with write access. Scan mode is a dry-run that builds the store, runs
 the acceptance checks, and computes the full plan — creates, updates,
 whole-replaces, document deletes, file deletes, and managed drops — but stops
 before flushing anything to the worktree. It also reports any acceptance refusal
-(duplicate identity, non-KRM YAML, unwatched KRM) so an operator sees why a folder
-would be rejected. Instead of writing, it reports what it *would* do if given
-write rights.
+(duplicate identity, non-KRM YAML, unwatched API-backed KRM, or mixed
+managed/allowlisted files) so an operator sees why a folder would be rejected.
+Instead of writing, it reports what it *would* do if given write rights.
 
 This is the deliberate gate the existing safety rules ask for: no deletion until
 the plan has an explicit, reviewable form. Scan mode is that gate. It matters most
@@ -1066,9 +1104,10 @@ core logic.
 > CLI shape of the refuse adoption mode.
 >
 > Deliberately deferred: comparing those GVKs against a live API to decide what
-> is *watched / unwatched / orphaned*. The next model needs a named API source
-> abstraction, the watched/unwatched/orphan comparison, the plan/prune
-> computation, and wiring the same library into the live writer.
+> is *watched / unwatched / orphaned*. The next model needs the
+> [GVK/GVR mapping layer](gvk-gvr-mapping-layer.md), the
+> watched/unwatched/orphan comparison, the plan computation, and wiring the same
+> library into the live writer.
 >
 > Running it against `config/samples` already surfaced a real constraint:
 > `manifestedit` derives manifest identity from a concrete `metadata.name`, so a
@@ -1110,40 +1149,44 @@ turn that read-only structure model into the shared model used by scan mode and
 the live writer.
 
 1. **Stabilize the materialized model.** Promote the analyzer's report shape into
-   a true `ManifestStore`: file models with raw bytes, document models with
-   stable locations, manifest identity, editability, encryption state, duplicate
-   state, and structured diagnostics. Keep `fs.FS` as the read boundary and keep
-   controller-runtime dependencies out. Replace any classification that depends
-   on diagnostic message text with structured reasons from `manifestedit`.
+   a true byte-free `ManifestStore`: file models with document summaries,
+   manifest identity, editability plus structured cause, mapping status, and
+   structured diagnostics. Keep raw bytes and full node trees behind lazy
+   commit-scoped hydration. Keep duplicate state in diagnostics/acceptance, not in
+   the planning model. Keep `fs.FS` as the read boundary and keep
+   controller-runtime dependencies out. Replace any classification that depends on
+   diagnostic message text with structured reasons from `manifestedit`.
 2. **Add the API/source-of-truth input.** Define an injectable source for the
-   watched API surface and current desired resources. It should work with live
+   watched API surface and current desired resources by implementing
+   [gvk-gvr-mapping-layer.md](gvk-gvr-mapping-layer.md). It should work with live
    controller state, a CLI kubeconfig-backed source, and test snapshots. Resolve
-   every KRM document's GVK to a `ResourceIdentifier` where possible, record
-   unresolved GVKs as diagnostics, and add indexes by both manifest identity and
-   resource identity.
+   every API-backed KRM document's GVK to a `ResourceIdentifier` where possible,
+   record unresolved GVKs as diagnostics, and add indexes by both manifest
+   identity and resource identity.
 3. **Build the plan model.** Compare the `ManifestStore` to the desired API set
    and produce a first-class plan: create, patch, whole-replace, delete document,
    delete file, drop a watched resource absent from the API, or skip. Duplicate
-   identities and unwatched KRM produce no plan actions — they are refused at
-   acceptance, before planning. The plan should carry enough detail to render
-   human-readable output, JSON, and GitTarget status without recomputing decisions.
+   identities and unwatched API-backed KRM produce no plan actions — they are
+   refused at acceptance, before planning. Allowlisted non-API KRM also produces
+   no plan action; it is retained outside the model. The plan should carry enough
+   detail to render human-readable output, JSON, and GitTarget status without
+   recomputing decisions.
 4. **Apply adoption acceptance before writes.** Implement the acceptance gate over
    the store plus plan. The posture we are building: fail (refuse) on duplicate
-   identities, invalid YAML, non-KRM YAML, and unwatched KRM, reconciling nothing
-   until the folder is cleaned. The managed drop of watched resources absent from
-   the API is core behavior, not an opt-in. We are not building an unwatched-prune
-   mode now. A small allowlist exempting specific non-API KRM kinds (e.g.
-   `kustomization.yaml`) from refusal can be added later if the product chooses to
-   preserve Flux-consumable folders.
+   identities, invalid YAML, non-KRM YAML, unwatched API-backed KRM, and mixed
+   managed/allowlisted multi-document files, reconciling nothing until the folder
+   is cleaned. The managed drop of watched resources absent from the API is core
+   behavior, not an opt-in. We do not prune unwatched API-backed KRM. Allowlisted
+   non-API KRM such as `kustomization.yaml` is retained on disk but not
+   materialized.
 5. **Wire scan mode end to end.** Use the same planner for the CLI and controller
    dry-run path. Scan mode should build the store, resolve API state when
    available, run adoption acceptance, render the full plan, and write nothing.
    This must exist before the destructive managed drop is enabled.
-6. **Close the delete identity gap.** Ensure deletes can target moved manifests
-   without a live object body. Either carry manifest identity on delete events
-   from the reconcile layer, or resolve event GVR/name through the same GVK/GVR
-   source used by the store. The writer should delete by `RecordRef`, not by
-   regenerated path.
+6. **Close the delete identity gap through the mapper.** Ensure deletes can target
+   moved manifests without a live object body by resolving event GVR/name through
+   the same GVK/GVR mapper used by the store. The planning layer should hand the
+   writer a `RecordRef`; the writer should not regenerate paths.
 7. **Move the live writer to plan-then-flush.** Replace the event-by-event
    locator/write path with: build store for the checked-out GitTarget path,
    compute plan for the pending batch, apply plan to in-memory file models, then
@@ -1151,9 +1194,9 @@ the live writer.
    `DeleteDocument` remain the per-document edit mechanisms.
 8. **Keep deletion scoped to the managed drop.** The only deletion we perform is
    of watched KRM the API no longer has, through the per-document delete path, and
-   only for folders that passed acceptance. We are explicitly not pruning unwatched
-   KRM or "duplicate losers"; those refuse instead. An opt-in unwatched prune could
-   be revisited later, behind scan review, but it is out of scope for now.
+   only for folders that passed acceptance. We are explicitly not pruning
+   unwatched API-backed KRM or "duplicate losers"; those refuse instead.
+   Allowlisted non-API KRM is retained outside the model.
 9. **Optimize after correctness.** Once the store is authoritative in the writer,
    add longer-lived cache invalidation across batches. Rebuild on checkout/remote
    tip changes, external branch movement, GitTarget path changes, or local flushes
