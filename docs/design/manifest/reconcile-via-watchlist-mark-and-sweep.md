@@ -272,6 +272,14 @@ it (a patch). This keeps the resync of a large, cluster-wide watch bounded: the
 streamed set and the managed identity index are small per-document, and only the
 touched documents pay the full-parse cost.
 
+Steady state has the same shape on the time axis. High-rate watch events fold into
+a coalesced `PendingChanges` buffer (last-writer-wins per identity) without touching
+the worktree, and file bytes are hydrated only when the existing batch/commit
+mechanism fires — and only for the files that batch references. See "Two boundaries"
+in the main review. Bounded *spatially* (touched documents only) and *temporally*
+(commit boundary only), the per-batch cost tracks what actually changed, not the
+folder size or the event rate.
+
 ## Open Questions
 
 - **Multi-stream join cost.** A GitTarget watching many GVKs opens many streams

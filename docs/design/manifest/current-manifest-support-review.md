@@ -293,11 +293,22 @@ already does create/update/delete/skip against an inventory).
 The plan is the **cross-layer contract**, computed from pure inputs:
 
 ```text
-ManifestStore = f(fs.FS)                          // pure; the analyzer already is this
-Plan          = f(ManifestStore, desiredSet, policy)
-applied       = f(ManifestStore, Plan)            // pure mutation
-Flush         = f(applied, worktree)              // the only side effect
+# per event — cheap: no worktree I/O, no YAML parse; coalesces last-writer-wins per identity
+PendingChanges = fold(watch events)
+
+# per commit boundary — bounded; fired by the existing batch/commit mechanism
+ManifestStore  = f(fs.FS headers)                       # cheap header parse; resident, byte-free
+touched        = locate(ManifestStore, PendingChanges)  # only the files the batch references
+hydrated       = read + snapshot(touched)               # Original bytes + node trees, touched files ONLY
+Plan           = f(ManifestStore, hydrated, PendingChanges, policy)
+applied        = f(hydrated, Plan)                      # pure mutation of the touched files
+Flush          = f(applied, worktree)                   # the only side effect; one commit
 ```
+
+The analyzer / scan / CLI / status are the same pipeline with `Flush` omitted; the
+structure-only analyzer stops after `ManifestStore` (no API source, no hydration).
+The whole-folder cost is the cheap header parse — everything expensive is
+proportional to the batch, not the folder, and not to the event rate.
 
 Store and plan are therefore computed in the layer that owns the cluster state
 (reconcile), the writer becomes a dumb "apply plan + flush," and scan mode / CLI /
@@ -310,10 +321,14 @@ Two constraints to respect from the start, not retrofit:
 - **The GVK↔GVR resolver must be built**, as an injectable source (live informers,
   kubeconfig, static snapshot, or nil for structure-only). Everything downstream
   depends on it; it does not exist yet.
-- **Materialization must be bounded.** Identity indexing needs only a cheap header
-  parse; build the full `manifestedit` node tree only for documents a plan action
-  touches (`DocumentModel.Snapshot` as a lazy handle, not eager bytes for every
-  document).
+- **Materialization must be bounded — spatially and temporally.** *Spatially:*
+  identity indexing needs only a cheap header parse; build the full `manifestedit`
+  node tree only for documents a plan action touches (`DocumentModel.Snapshot` as a
+  lazy handle, not eager bytes for every document). *Temporally:* the per-event hot
+  path records only a coalesced intent (`PendingChanges`); file bytes are read and
+  documents hydrated only at the commit boundary, and only for the files that batch
+  touches. The resident `ManifestStore` is therefore byte-free. See
+  [Two boundaries](#two-boundaries-cheap-per-event-materialize-per-commit) below.
 
 ```mermaid
 classDiagram
@@ -364,20 +379,23 @@ classDiagram
     DocumentModel --> ResourceIdentifier
 ```
 
-The store should be built once from the checked-out commit/worktree snapshot, then
-used by the batch planner:
+The resident structure index is built once from the checked-out commit/worktree
+snapshot with a **cheap header parse** (no full node trees, no eager bytes), then
+maintained incrementally. The batch planner runs at the commit boundary:
 
-1. Scan all YAML files under the GitTarget path.
-2. Split every file into document models.
-3. Derive manifest identity for valid KRM documents.
-4. Resolve manifest GVK to watched GVR using the watch/catalog/RESTMapper layer.
-5. Populate indexes by manifest identity, resource identity, and GVK.
-6. Compare desired live resources against the store.
-7. Produce a plan: create, patch, whole-replace, delete document, delete file,
+1. Header-scan all YAML files under the GitTarget path (`apiVersion`/`kind`/
+   `metadata` only); split files into document models without building node trees.
+2. Derive manifest identity for valid KRM documents.
+3. Resolve manifest GVK to watched GVR using the watch/catalog/RESTMapper layer.
+4. Populate indexes by manifest identity, resource identity, and GVK.
+5. Fold the batch's coalesced `PendingChanges` (desired live resources) against the
+   index, and **hydrate only the files those changes reference** — read their bytes
+   and build `manifestedit` snapshots for the touched documents.
+6. Produce a plan: create, patch, whole-replace, delete document, delete file,
    drop a watched resource the API no longer has, skip. (Duplicate identities and
    unwatched KRM never reach planning — they are refused at acceptance.)
-8. Apply the plan to the in-memory file models.
-9. Flush changed files and staged deletions to the worktree.
+7. Apply the plan to the hydrated file models.
+8. Flush changed files and staged deletions to the worktree in one commit.
 
 ## Why This Fits The Requirements
 
@@ -410,9 +428,12 @@ Plan applied to mutable ManifestStore
 Mutable ManifestStore -> flush dirty/deleted files
 ```
 
-The important choice is that the store owns **files and bytes**, not only object
-records. The plan explains what should happen, but after the plan is applied the
-mutable file model is the source of truth for what will be written to Git.
+The important choice is that the model is organized around **files and documents**,
+not only object records — so a plan can express multi-document edits, document
+deletion, and file deletion. The resident model stays byte-free; the bytes for a
+file are hydrated only at the commit boundary (see Two boundaries below), and once
+the plan is applied the hydrated file model is the source of truth for what will be
+written to Git.
 
 Do **not** render every object model back to files on each commit. That would be
 simple, but it would discard hand-authored formatting, make multi-document files
@@ -424,9 +445,9 @@ the current split-brain shape: resource-level changes still need file-level and
 document-level context for multi-document edits, document deletion, file deletion,
 duplicate cleanup, and moved manifests.
 
-Instead, build the full model once per checked-out GitTarget path, apply the plan
-to that model, and flush only the files whose bytes changed or whose file was
-deleted.
+Instead, build the structure model once per checked-out GitTarget path (cheap
+header parse, byte-free), hydrate only the files a batch touches, apply the plan to
+those, and flush only the files whose bytes changed or whose file was deleted.
 
 The initial reconcile (and any resync) is the same mechanism with its deletes
 derived differently: a streaming-list watch folds every existing object over the
@@ -435,6 +456,50 @@ never touched. Untracked content is never a member of that swept model, so it ca
 never be deleted by construction. Steady-state events are single plan actions over
 the maintained store, not a re-sweep. See
 [reconcile-via-watchlist-mark-and-sweep.md](reconcile-via-watchlist-mark-and-sweep.md).
+
+### Two boundaries: cheap per event, materialize per commit
+
+The model has a **temporal** boundary as sharp as its spatial one, and it lines up
+with a mechanism the writer already has: events are coalesced into a single commit.
+A GitTarget can take a high rate of watch events, and most of them never need to
+touch a byte of YAML — many are no-ops, supersede each other, or cancel out before
+the next commit fires. So the write path is two-tier:
+
+- **Per event (hot path — no I/O, no YAML parse).** A watch event resolves to a
+  resource identity (via the mapper) and is recorded in a `PendingChanges` buffer,
+  last-writer-wins per identity. A create-then-delete within one batch cancels; a
+  create-then-modify keeps only the final desired object. This is bookkeeping on a
+  map keyed by `ResourceIdentifier`; it never reads the worktree, never splits YAML,
+  never builds a `manifestedit` node tree.
+- **Per commit (cold path — bounded materialization).** When the existing batch /
+  commit mechanism fires, the coalesced `PendingChanges` are resolved against the
+  resident, byte-free structure index, and only the files those changes reference
+  are **hydrated**: their `Original` bytes are read, the touched documents get their
+  `manifestedit` snapshot built, the plan is computed and applied, and dirty/deleted
+  files flush into one commit.
+
+This is the **temporal** twin of bounded materialization. The spatial constraint
+("build the node tree only for documents a plan action touches") bounds the work
+*across the folder*; the commit boundary bounds it *across the event stream*.
+Together, the cost of a batch is proportional to *what actually changed in that
+batch* — not to the size of the folder, and not to the number of events that
+arrived.
+
+Two things keep it safe:
+
+- **No-op detection still happens, but lazily and once.** Whether a pending change
+  is a real change (patch) or already satisfied (skip) is decided at commit, by
+  hydrating that one document and comparing — not per event, and never for documents
+  no pending change references.
+- **Correctness comes from comparing to git at commit, not from event order.** The
+  buffer holds only the final desired state per identity; the plan compares that to
+  the document actually in git at the commit's checkout. Intermediate event churn is
+  irrelevant by construction.
+
+This does **not** reintroduce the "keep only a list of changed resources" anti-shape
+warned against above. The per-event buffer is *intent*, not the write model: it is
+resolved against the full file/document structure at commit, where multi-document
+edits, document deletion, and file deletion all still have the context they need.
 
 ### Concrete Data Structures
 
@@ -465,10 +530,16 @@ type ManifestStore struct {
 type FileModel struct {
     Path string
 
-    Original []byte // bytes read from the checked-out worktree; nil for a new file
-    Current  []byte // bytes after applying plan actions; nil means "delete this file"
-
+    // Documents and their classification are resident and cheap (header parse only).
     Documents []*DocumentModel // every managed document in the file, in document order
+
+    // Original/Current are HYDRATED LAZILY at the commit boundary, and only for the
+    // files a batch touches — they are nil for every untouched file, so the resident
+    // store is byte-free (see "Two boundaries" above). An implementation may move
+    // these onto a separate commit-scoped working type so the type system enforces
+    // "resident = no bytes"; the semantics are what matter here.
+    Original []byte // worktree bytes once hydrated; nil for a new or unhydrated file
+    Current  []byte // bytes after applying plan actions; nil means "delete this file"
 }
 
 // Dirty and Deleted are derived, never stored. Two byte slices are the whole
@@ -505,6 +576,21 @@ type RecordRef struct {
     FilePath      string
     DocumentIndex int
 }
+
+// PendingChanges is the per-event hot path: cheap bookkeeping, no worktree I/O and
+// no YAML parsing. Watch events fold into it last-writer-wins per identity, so a
+// create-then-delete within one batch cancels and a create-then-modify keeps only
+// the final desired object. It is drained at the commit boundary, where it is
+// resolved against the resident store and the touched files are hydrated.
+type PendingChanges struct {
+    Desired map[types.ResourceIdentifier]PendingChange
+}
+
+type PendingChange struct {
+    Resource types.ResourceIdentifier
+    Object   *unstructured.Unstructured // nil ⇒ delete intent (tombstone)
+    // No rendered bytes: rendering is deferred to commit and runs once per identity.
+}
 ```
 
 What changed from the first sketch of these types, and why:
@@ -531,6 +617,33 @@ What changed from the first sketch of these types, and why:
   GVK-shaped field.
 - **`Duplicates` and `AcceptedOnce` left the store.** The first is a diagnostic; the
   second is lifecycle state that does not belong in the data model.
+- **Bytes are lazy and the per-event path is byte-free.** `FileModel.Original` /
+  `Current` are hydrated only at the commit boundary for the files a batch touches;
+  the resident store holds no bytes, and events accumulate in `PendingChanges`
+  without reading or parsing anything. This is the temporal half of bounded
+  materialization (see "Two boundaries"), promoted from a deferred optimization to a
+  structural property of the model.
+
+**Why deletion is not a `DocumentModel` flag (and how mark-and-sweep runs without
+one).** It is tempting to put `Deleted` (and a mark bit) on `DocumentModel` so the
+sweep can flip it per document. We deliberately do not: the durable model holds
+*structure*, while transient per-batch decisions live in the **plan**.
+
+- *Removing a document is a `PlanAction`* (`PlanDropOrphan` / `PlanDeleteDocument`)
+  targeting a `RecordRef`. Apply calls `manifestedit.DeleteDocument`, which rewrites
+  the file's bytes; the document then simply leaves `file.Documents` rather than
+  lingering as a `Deleted`-flagged tombstone the rest of the code must remember to
+  filter out.
+- *Flush state is file-level and derived.* `git add` / `git rm` act on files and
+  `Current` is whole-file bytes, so `Dirty()` / `Deleted()` are properties of the
+  file, not the document. A multi-document file with one document dropped is dirty,
+  not deleted; it becomes deleted only when its last document is dropped.
+- *The sweep needs no flag.* Per
+  [reconcile-via-watchlist-mark-and-sweep.md](reconcile-via-watchlist-mark-and-sweep.md),
+  the "mark" is the set of streamed identities and the "sweep" is a one-pass
+  set-difference (`orphans = members − streamed`) computed at the bookmark, which
+  then *emits* drop actions. This is isomorphic to per-document flag-toggling but
+  safe under a partial or failed stream, because the model is never half-mutated.
 
 The plan should also be explicit:
 
@@ -592,6 +705,10 @@ nil). `Dirty()` and `Deleted()` follow from that automatically — there is no f
 to set by hand.
 
 ### Concrete Examples
+
+Each example shows the **commit-time apply**, so the touched file is already
+hydrated; the per-event path that preceded it only recorded the desired change in
+`PendingChanges` without reading or parsing anything.
 
 **Example 1: update one document in a multi-document file**
 
@@ -735,7 +852,10 @@ its status, and reconcile resumes only once a human removes one of the copies.
 
 ### Why This Is Efficient Enough
 
-- The worktree is scanned once per GitTarget path per write batch.
+- Per event the cost is O(1) bookkeeping in `PendingChanges` — no worktree read and
+  no YAML parse — so a high event rate does not translate into per-event work.
+- Per batch the worktree is header-scanned once (cheap, and cacheable across
+  batches), and only the files the batch touches are read in full and parsed.
 - Only plan-targeted files are mutated in memory.
 - Only dirty or deleted files are written to disk and staged.
 - Document deletes shift a slice and rewrite one file's bytes; nothing reindexes,
