@@ -38,6 +38,55 @@ model — see
 The feedback that drove this sharpening is in
 [current-manifest-support-review-feedback.md](current-manifest-support-review-feedback.md).
 
+## Non-Negotiable Design Decisions
+
+These are settled decisions, not options. The rest of this document — especially
+the data model — is shaped by them, and they resolve the "can a managed folder
+contain unmanaged content?" question with a flat **no**.
+
+1. **A GitTarget takes total responsibility for its folder.** Adopting a folder
+   is an all-or-nothing claim over every Kubernetes manifest (KRM document) in it.
+   There is no such thing as a KRM document that lives in a managed folder while
+   being "not ours." We either fully manage the folder, or we refuse it.
+
+2. **No partially materialized multi-document file — ever.** A multi-document YAML
+   file is either entirely managed (every document is a tracked, in-scope resource
+   we own) or the GitTarget refuses the whole folder. We will not materialize some
+   documents in a file and leave the others as untracked passengers. That split
+   state is exactly the drift this design exists to remove, and it is the kind of
+   thing that quietly corrupts a file on the next write.
+
+3. **Refuse, never carve out.** Anything we cannot take full responsibility for is
+   an **acceptance failure with an error condition**, not a silent exclusion:
+   - non-KRM YAML (a CI config, a loose values file),
+   - duplicate manifest identities,
+   - KRM of an unknown / unwatched GVK (including build directives like
+     `kustomization.yaml`),
+   - watched KRM that falls **outside this GitTarget's scope** (right kind, wrong
+     namespace).
+   Each of these stops the GitTarget with a clear, file-naming diagnostic and
+   reconciles nothing until a human cleans the folder. We do not guess, and we do
+   not keep a "non-member" subset alongside the managed one.
+
+4. **The rule is about manifests, not every byte.** Non-manifest files — non-YAML
+   such as `README.md`, `.gitignore`, images, and scripts — are not KRM, are never
+   materialized, and never cause a refusal. "Full responsibility" is over the
+   Kubernetes resources the folder projects, not over auxiliary files that are not
+   resources at all. Only YAML that *parses as KRM* is subject to the all-or-nothing
+   rule above.
+
+**Why this matters to the model.** Because no KRM document is ever a non-member,
+the in-memory model is dramatically simpler and safer:
+
+- `FileModel.Documents` is exactly the set of managed documents — there is no
+  hidden physical document the model does not know about.
+- "A file with no documents left must be deleted" is therefore **unconditionally
+  safe**: an empty managed document set means an empty file, because there were
+  never unmanaged passengers keeping it alive.
+- "Membership" is not a permanent per-document partition we maintain; it is simply
+  the acceptance outcome. Acceptance passes and every document is a member, or
+  acceptance fails and the GitTarget reconciles nothing.
+
 ## Current Architecture
 
 ```mermaid
@@ -273,7 +322,6 @@ classDiagram
         +ByManifestIdentity
         +ByResourceIdentity
         +ByGVK
-        +Duplicates []RecordRef
         +Diagnostics []Diagnostic
     }
 
@@ -282,18 +330,17 @@ classDiagram
         +Original []byte
         +Current []byte
         +Documents []DocumentModel
-        +Encrypted bool
-        +Dirty bool
-        +Deleted bool
+        +Dirty() bool
+        +Deleted() bool
     }
 
     class DocumentModel {
-        +Index int
-        +RawBody []byte
         +ManifestIdentity ManifestIdentity
-        +ResourceIdentity ResourceIdentifier
+        +ResourceIdentity *ResourceIdentifier
+        +Mapping MappingStatus
         +Editable bool
-        +Reason string
+        +Cause DocumentCause
+        +Snapshot SnapshotRef
     }
 
     class ManifestIdentity {
@@ -399,48 +446,91 @@ type ManifestStore struct {
 
     FilesByPath map[string]*FileModel
 
-    ByManifestIdentity map[manifestedit.Identity]RecordRef
-    ByResourceIdentity map[types.ResourceIdentifier]RecordRef
-    ByGVK              map[manifestanalyzer.GVK][]RecordRef
+    // Indexes hold pointers into FilesByPath, not (path, index) pairs, so a
+    // document delete that shifts a file's slice never invalidates them.
+    //
+    // Post-acceptance these are single-valued by construction: duplicate manifest
+    // identities refuse the GitTarget (see Non-Negotiable Design Decisions), so a
+    // store that became the planning model has exactly one document per identity.
+    // The pre-acceptance builder (and the structure-only analyzer, which reports
+    // collisions instead of refusing) must see duplicates, so it collects
+    // candidates multi-valued and collapses to these once acceptance passes.
+    ByManifestIdentity map[manifestedit.Identity]*DocumentModel
+    ByResourceIdentity map[types.ResourceIdentifier]*DocumentModel
+    ByGVK              map[schema.GroupVersionKind][]*DocumentModel
 
-    Duplicates   []RecordRef
-    Diagnostics  []manifestedit.Diagnostic
-    AcceptedOnce bool
+    Diagnostics []manifestedit.Diagnostic
 }
 
 type FileModel struct {
     Path string
 
-    Original []byte // bytes read from the checked-out worktree
-    Current  []byte // bytes after applying plan actions
+    Original []byte // bytes read from the checked-out worktree; nil for a new file
+    Current  []byte // bytes after applying plan actions; nil means "delete this file"
 
-    Documents []*DocumentModel
-
-    Dirty   bool // Current differs from Original and must be git add'ed
-    Deleted bool // file must be removed from disk and staged with git rm
+    Documents []*DocumentModel // every managed document in the file, in document order
 }
 
+// Dirty and Deleted are derived, never stored. Two byte slices are the whole
+// state machine, so there is no flag to forget to flip:
+//
+//   new file: Original == nil, Current != nil
+//   deleted:  Original != nil, Current == nil
+//   dirty:    both non-nil and not byte-equal
+func (f *FileModel) Dirty() bool   { return f.Current != nil && !bytes.Equal(f.Current, f.Original) }
+func (f *FileModel) Deleted() bool { return f.Current == nil && f.Original != nil }
+
 type DocumentModel struct {
-    FilePath string
-    Index    int
+    ManifestIdentity manifestedit.Identity     // apiVersion + kind + namespace + name
+    ResourceIdentity *types.ResourceIdentifier // nil until the mapper resolves a GVR
 
-    ManifestIdentity manifestedit.Identity
-    ResourceIdentity types.ResourceIdentifier
-    GVK              manifestanalyzer.GVK
+    Mapping  MappingStatus // why ResourceIdentity is or is not set (resolved / unserved / ambiguous / structure-only / ...)
+    Editable bool          // false for SOPS-encrypted or otherwise non-patchable documents
+    Cause    DocumentCause // structured reason behind Editable and diagnostics — not free text
 
-    Editable  bool
-    Encrypted bool
-    Duplicate bool
-    Reason    string
-
+    // Snapshot is a lazy handle. The full manifestedit node tree is built only
+    // when a plan action touches this document; identity indexing needs only a
+    // cheap header parse.
     Snapshot manifestedit.SnapshotRef
 }
 
+// RecordRef is a plan-level value, not a model field. The Plan is serializable
+// and pinned to one (commit SHA, snapshot RV) pair, so a (path, index) pair is a
+// stable reference for that plan's lifetime. The live, mutable store navigates by
+// the *DocumentModel pointers above instead, and DocumentModel deliberately does
+// not store its own FilePath or Index — both are derivable (top-down iteration
+// yields file.Path and the loop index; manifestedit is given the position only at
+// apply time via slices.Index).
 type RecordRef struct {
     FilePath      string
     DocumentIndex int
 }
 ```
+
+What changed from the first sketch of these types, and why:
+
+- **`DocumentModel.Index` and `DocumentModel.FilePath` are gone.** A stored index
+  is the most fragile field in the model: every document delete shifts a file's
+  slice and would force re-syncing the field plus every index entry. Deriving it
+  removes that bug class. `FilePath` is redundant because every access path already
+  carries it (top-down iteration, or a plan `RecordRef`).
+- **`FileModel.Dirty` / `Deleted` became methods.** They are pure functions of
+  `Original` vs. `Current`, so storing them only created a desync hazard.
+- **`FileModel.Encrypted` and `DocumentModel.Encrypted` collapsed into
+  `Editable` + `Cause`.** Encryption is one *cause* of non-editability; modeling it
+  as a separate bool invites "encrypted but editable" contradictions.
+- **`DocumentModel.Duplicate` is gone.** Duplicate identities refuse the GitTarget
+  at acceptance, so no duplicate document ever reaches the planning model. Duplicate
+  detection is an acceptance/analyzer concern surfaced through `Diagnostics`.
+- **`DocumentModel.RawBody` became `Snapshot` (a lazy handle).** Holding eager bytes
+  per document violates bounded materialization.
+- **`Reason string` became a structured `Cause`.** Phase 1 explicitly forbids
+  classification that depends on diagnostic message text.
+- **One GVK type.** The store and the mapper both use `schema.GroupVersionKind`; the
+  per-document GVK is derived from `ManifestIdentity` rather than stored as a third
+  GVK-shaped field.
+- **`Duplicates` and `AcceptedOnce` left the store.** The first is a diagnostic; the
+  second is lifecycle state that does not belong in the data model.
 
 The plan should also be explicit:
 
@@ -483,10 +573,10 @@ The flush operation should be intentionally boring. In pseudo-code:
 func Flush(root string, store *ManifestStore, worktree *git.Worktree) error {
     for _, file := range store.FilesByPath {
         switch {
-        case file.Deleted:
+        case file.Deleted():
             os.Remove(filepath.Join(root, file.Path))
             worktree.Remove(file.Path)
-        case file.Dirty:
+        case file.Dirty():
             os.WriteFile(filepath.Join(root, file.Path), file.Current, 0o600)
             worktree.Add(file.Path)
         }
@@ -496,9 +586,10 @@ func Flush(root string, store *ManifestStore, worktree *git.Worktree) error {
 ```
 
 This means there is no separate generated-path writer. New files, in-place
-updates, whole-document replacements, duplicate pruning, and document deletes all
-produce changes by mutating `FileModel.Current`, `FileModel.Dirty`, or
-`FileModel.Deleted`.
+updates, whole-document replacements, and document deletes all produce changes by
+mutating `FileModel.Current` (and, for a delete that empties a file, setting it to
+nil). `Dirty()` and `Deleted()` follow from that automatically — there is no flag
+to set by hand.
 
 ### Concrete Examples
 
@@ -537,8 +628,8 @@ Apply:
 - look up `RecordRef{FilePath: "apps.yaml", DocumentIndex: 0}`
 - call `manifestedit.Apply` for document 0
 - replace `FileModel.Current` with the returned full-file bytes
-- mark `apps.yaml` dirty
-- keep document 1 byte-for-byte unless its index changes through a delete
+- `apps.yaml` is now dirty because `Current` differs from `Original`
+- keep document 1 byte-for-byte; the splitter preserves sibling document bytes
 
 Flush:
 
@@ -576,10 +667,14 @@ delete-document apps.yaml#1 v1/Secret/default/token
 
 Apply:
 
-- call `manifestedit.DeleteDocument` for document 1
+- call `manifestedit.DeleteDocument` for document 1 (its position is derived at
+  this point, not read from a stored field)
 - update `FileModel.Current` to the surviving ConfigMap document
-- mark `apps.yaml` dirty, not deleted
-- reindex that file's remaining documents in memory
+- drop document 1 from `apps.yaml`'s slice; `Dirty()` now reports true because
+  `Current` differs from `Original`, and `Deleted()` stays false because a
+  document remains
+- no index bookkeeping and no map rewrites: the indexes hold `*DocumentModel`
+  pointers, which survive the slice shift
 
 Flush:
 
@@ -588,8 +683,11 @@ git add apps.yaml
 ```
 
 If the deleted document had been the only document in the file, the same plan
-action would mark `FileModel.Deleted = true`, and flush would stage a file
-removal instead.
+action would leave the file with zero documents and set `Current = nil`, so
+`Deleted()` reports true and flush stages a file removal instead. This is
+unconditionally safe under the design decisions above: an empty managed document
+set means an empty file, because a managed folder never carries unmanaged
+passenger documents.
 
 **Example 3: create a new resource**
 
@@ -605,8 +703,8 @@ Apply:
 
 - placement policy chooses the path
 - canonical renderer creates one new document
-- add a new `FileModel` with `Original = nil`, `Current = rendered`
-- mark it dirty
+- add a new `FileModel` with `Original = nil`, `Current = rendered`; `Dirty()`
+  reports true (new file)
 - add its document to the in-memory indexes
 
 Flush:
@@ -640,7 +738,8 @@ its status, and reconcile resumes only once a human removes one of the copies.
 - The worktree is scanned once per GitTarget path per write batch.
 - Only plan-targeted files are mutated in memory.
 - Only dirty or deleted files are written to disk and staged.
-- Multi-document reindexing happens only for files whose document set changed.
+- Document deletes shift a slice and rewrite one file's bytes; nothing reindexes,
+  because positions are derived and the indexes hold pointers.
 - Longer-lived caching can come later, keyed by checkout state and GitTarget path.
 
 The first implementation should optimize for one correct mechanism. Once the
@@ -668,8 +767,8 @@ model rather than a second write path.
   single place to update document indexes after deletions.
 - Make dirty/deleted file flushing the only Git write mechanism. Generated-path
   creation, in-place patching, whole replacement, document deletion, and file
-  deletion should all mutate `FileModel.Current`, `FileModel.Dirty`, or
-  `FileModel.Deleted`.
+  deletion should all mutate `FileModel.Current`; `Dirty()` and `Deleted()` are
+  derived from it, never set by hand.
 - Keep the current safety rules: no in-place edits for SOPS documents, and no
   wholesale replacement of a multi-document file when the target document cannot
   be edited safely. The managed drop of watched resources the API no longer has is
@@ -745,6 +844,12 @@ repository we merely edit around.
   the offending files, and reconciles nothing until a human removes them. We
   deliberately do **not** build a delete option for unwatched KRM for now; an
   explicit opt-in could be added later, but we are choosing not to do that yet.
+- **Watched but out of scope is also refused.** A document of a watched kind that
+  falls outside this GitTarget's scope (right kind, wrong namespace) is KRM we
+  recognize but are not entitled to manage here. Per the Non-Negotiable Design
+  Decisions we do **not** leave it as a silent non-member — doing so would create
+  exactly the half-managed file we have ruled out — so it refuses the GitTarget
+  with a file-naming diagnostic until a human resolves it.
 
 This keeps a sharp edge honest rather than dangerous: build directives like
 `kustomization.yaml` are KRM but never appear in the API. Under an earlier "prune

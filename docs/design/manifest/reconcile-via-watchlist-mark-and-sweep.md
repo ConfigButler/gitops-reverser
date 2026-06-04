@@ -44,23 +44,28 @@ Concretely, a document is a member of the managed model iff **all** hold:
 - its GVK is in the GitTarget's **watched** set;
 - its `(namespace)` is within the GitTarget's watch **scope**.
 
-Everything outside that set never enters the model:
+Everything that is not a tracked, in-scope KRM document is handled before the
+model is built — and for **KRM specifically, the only handling is refusal, never
+silent exclusion** (see the Non-Negotiable Design Decisions in the main review):
 
-- **non-YAML files** (`README.md`, scripts, images) — ignored, never loaded;
+- **non-YAML files** (`README.md`, scripts, images) — not manifests; ignored,
+  never loaded, never a refusal;
 - **non-KRM YAML** — refused at acceptance, never reaches the managed model;
 - **unwatched KRM** (an unwatched CRD, or a build directive like
   `kustomization.yaml`, which is KRM but never appears in the API) — refused at
-  acceptance, and even where a future allowlist lets such a file coexist, it is
-  **not loaded into the managed model**;
-- **watched KRM out of scope** (right kind, wrong namespace) — excluded from the
-  model, because the stream will never ADD it and a naive sweep would wrongly
-  delete it.
+  acceptance;
+- **watched KRM out of scope** (right kind, wrong namespace) — also refused at
+  acceptance. We do **not** leave it as a silent non-member: a managed folder
+  carrying a KRM document we will not materialize is precisely the half-managed
+  state this design forbids.
 
-This is the safety property that matters most: **`kustomization.yaml` cannot be
-swept because it is never a member of the model that sweep operates on.** We do
-not rely on a conditional ("skip this one when deleting") that a future refactor
-could drop; we rely on membership. If it is not tracked KRM, it never gets a
-`Deleted` flag to flip, by construction.
+This is the safety property that matters most, and it now rests on an even simpler
+foundation than per-document membership flags: **a folder that reaches the managed
+model contains nothing but tracked, in-scope KRM, because anything else refused
+the GitTarget outright.** `kustomization.yaml` cannot be swept not because we
+remember to skip it, but because its presence refuses the whole folder — it is
+never in an accepted folder to begin with. There is no non-member KRM document
+anywhere for a future refactor to mishandle.
 
 This sits *after* the acceptance gate from the main review. Acceptance still scans
 the whole folder, classifies every file, and **refuses** the GitTarget on
@@ -114,8 +119,9 @@ the revision. This is the same source abstraction the analyzer/CLI already needs
 The instinct — initialize every managed document as a delete candidate, clear the
 candidacy on the matching ADD, delete the survivors — is textbook mark-and-sweep
 (it is how `kubectl apply --prune` and most GitOps prune work). It maps onto the
-`FileModel.Deleted` / `DocumentModel` shape from the main review. Four edges make
-it safe rather than destructive:
+`FileModel` / `DocumentModel` shape from the main review (where a file's
+deletion is the derived `Deleted()` state, not a stored flag). Four edges make it
+safe rather than destructive:
 
 ### 1. Document granularity, not file
 
@@ -271,13 +277,18 @@ touched documents pay the full-parse cost.
 - **Multi-stream join cost.** A GitTarget watching many GVKs opens many streams
   and waits for many bookmarks. Is there a bound on concurrent streams, and how do
   we surface "waiting for N of M initial syncs" in status?
-- **Out-of-scope watched-GVK documents.** Excluded from the managed model (so not
-  swept) — but should they refuse, warn, or be silently left? Likely "leave +
-  diagnostic," but it interacts with multiple GitTargets sharing a folder.
-- **Allowlisted non-API KRM.** If a future allowlist lets `kustomization.yaml`
-  coexist in a Flux-consumable folder, confirm it stays a non-member of the managed
-  model (never swept) and is also exempt from the acceptance refusal — these are
-  two separate exemptions that must agree.
+- **Out-of-scope watched-GVK documents.** Decided: **refused** at acceptance, not
+  silently left (see Non-Negotiable Design Decisions). The remaining nuance is how
+  this interacts with **multiple GitTargets sharing one folder** — if two targets
+  split a folder by scope, "out of scope for me" may be "in scope for you," and the
+  acceptance model needs to reason about the union of the targets rather than each
+  in isolation.
+- **Allowlisted non-API KRM.** A future allowlist that let `kustomization.yaml`
+  coexist would directly reopen the "no non-member KRM" decision, so it is
+  explicitly out of scope for now. If it is ever revisited, the allowlisted kind
+  would have to be exempt from *both* the acceptance refusal and the sweep, and the
+  Non-Negotiable Design Decisions in the main review would have to be amended
+  first — not worked around.
 - **Resync trigger policy.** When do we rebuild the snapshot and re-run
   mark-and-sweep vs. trust incremental steady-state events (watch error budget,
   resourceVersion-too-old, GitTarget spec change, worktree drift)?
