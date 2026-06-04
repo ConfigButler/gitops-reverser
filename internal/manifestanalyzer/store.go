@@ -20,10 +20,13 @@ package manifestanalyzer
 
 import (
 	"bytes"
+	"context"
+	"fmt"
 
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	"github.com/ConfigButler/gitops-reverser/internal/git/manifestedit"
+	"github.com/ConfigButler/gitops-reverser/internal/mapping"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
@@ -106,14 +109,16 @@ type DocumentModel struct {
 	// name) as written in YAML.
 	ManifestIdentity manifestedit.Identity
 
-	// ResourceIdentity is the API-side identity (GVR + namespace + name). It stays
-	// nil until the GVK↔GVR mapper resolves it (Track B); structure-only analysis
+	// ResourceIdentity is the API-side identity (GVR + namespace + name). It is set
+	// only when the injected GVK↔GVR mapper resolves the document's GVK to a single
+	// served, allowed resource; structure-only analysis (and any unresolved lookup)
 	// leaves it nil.
 	ResourceIdentity *types.ResourceIdentifier
 
-	// Mapping records why ResourceIdentity is or is not set. Structure-only
-	// analysis is always MappingStructureOnly because no API source is wired in.
-	Mapping MappingStatus
+	// Mapping records why ResourceIdentity is or is not set, as reported by the
+	// injected mapper. Structure-only analysis is always mapping.MappingStructureOnly
+	// because no API source is wired in.
+	Mapping mapping.Status
 
 	// Editable is false for SOPS-encrypted or otherwise non-patchable documents;
 	// Cause carries the structured reason.
@@ -144,14 +149,20 @@ type DocumentModel struct {
 	index int
 }
 
-// MappingStatus records why a document's ResourceIdentity is or is not resolved.
-// Structure-only analysis only ever sets MappingStructureOnly; the remaining
-// statuses arrive with the GVK↔GVR mapper in Track B.
-type MappingStatus string
+// reasonUnresolvedMapping marks a build-time diagnostic for a KRM document whose
+// GVK a non-structure-only mapper could not reduce to a single served, allowed GVR
+// (unserved, ambiguous, disallowed, subresource, degraded, or unavailable), or
+// whose lookup failed outright. The structured mapping.Status on the DocumentModel
+// is authoritative; this diagnostic surfaces the same fact in the store's
+// diagnostic stream. Structure-only analysis never emits it.
+const reasonUnresolvedMapping manifestedit.DiagReason = "unresolved-mapping"
 
-// MappingStructureOnly means no API source was available, so the document is
-// modeled by structure alone and carries no resolved ResourceIdentity.
-const MappingStructureOnly MappingStatus = "structure-only"
+// reasonScopeMismatch marks a build-time diagnostic for a resolved KRM document
+// whose mapper-reported scope contradicts its manifest: a cluster-scoped resource
+// that nonetheless sets metadata.namespace. The namespace is dropped for indexing
+// (the mapper's scope wins); whether the shape is refused is an M4 acceptance
+// decision. Structure-only analysis never resolves a scope, so never emits it.
+const reasonScopeMismatch manifestedit.DiagReason = "scope-mismatch"
 
 // CauseKind is the structured kind of a DocumentCause.
 type CauseKind string
@@ -185,10 +196,22 @@ type RecordRef struct {
 
 // buildStore indexes the YAML files into the byte-free structure model. It runs
 // the same manifestedit.IndexFiles scan the analyzer already used, groups the
-// resulting KRM records into managed FileModels, and builds the manifest-identity
-// and GVK indexes. scanDiags (walk/read/symlink problems) precede the index
-// diagnostics in store.Diagnostics.
-func buildStore(yamlFiles []manifestedit.FileContent, scanDiags []manifestedit.Diagnostic) *ManifestStore {
+// resulting KRM records into managed FileModels, and builds the manifest-identity,
+// resource-identity, and GVK indexes. scanDiags (walk/read/symlink problems)
+// precede the index diagnostics in store.Diagnostics.
+//
+// mapper resolves each document's GVK to a served resource identity. A nil mapper
+// is treated as structure-only, so the analyzer's no-cluster promise holds: no
+// resource identities are resolved and the resource index stays empty.
+func buildStore(
+	ctx context.Context,
+	yamlFiles []manifestedit.FileContent,
+	scanDiags []manifestedit.Diagnostic,
+	mapper mapping.ResourceMapper,
+) *ManifestStore {
+	if mapper == nil {
+		mapper = mapping.NewStructureOnlyMapper()
+	}
 	inv, indexDiags := manifestedit.IndexFiles(yamlFiles)
 
 	store := &ManifestStore{
@@ -208,27 +231,124 @@ func buildStore(yamlFiles []manifestedit.FileContent, scanDiags []manifestedit.D
 			fm = &FileModel{Path: r.Location.Path}
 			store.FilesByPath[r.Location.Path] = fm
 		}
+		gvk := gvkOf(r.Identity)
 		dm := &DocumentModel{
 			ManifestIdentity: r.Identity,
-			Mapping:          MappingStructureOnly,
 			Editable:         r.Editable && !r.Encrypted,
 			Cause:            causeFor(r),
 			index:            r.Location.DocumentIndex,
 		}
+		// resolveMapping is the sole owner of dm.Mapping: it sets the mapper's reported
+		// status on every path (including the error path), so a failed lookup is never
+		// left looking like intentional structure-only analysis.
+		store.resolveMapping(ctx, dm, gvk, mapper, r.Location)
 		fm.Documents = append(fm.Documents, dm)
-		store.ByGVK[gvkOf(r.Identity)] = append(store.ByGVK[gvkOf(r.Identity)], dm)
+		store.ByGVK[gvk] = append(store.ByGVK[gvk], dm)
 
 		// The manifest-identity index is the duplicate collapse: documents that claim
 		// their identity take it first-occurrence-wins; a later collision is therefore
-		// not the winner and is detectable via IsDuplicate.
+		// not the winner and is detectable via IsDuplicate. The resource-identity index
+		// collapses on exactly the same winners, so a resolved winner is reachable by
+		// either identity.
 		if dm.claimsIdentity() {
 			if _, taken := store.ByManifestIdentity[dm.ManifestIdentity]; !taken {
 				store.ByManifestIdentity[dm.ManifestIdentity] = dm
+				if dm.ResourceIdentity != nil {
+					store.ByResourceIdentity[*dm.ResourceIdentity] = dm
+				}
 			}
 		}
 	}
 
 	return store
+}
+
+// resolveMapping asks the injected mapper to resolve dm's GVK to a served GVR,
+// recording the resulting mapping.Status on the document and, when resolved, its
+// ResourceIdentity. A non-structure-only mapper that cannot resolve the GVK emits a
+// build-time diagnostic; structure-only analysis resolves nothing and emits none.
+//
+// A lookup that returns a Go error (an implementation failure — discovery RPC,
+// cancelled context — never an expected outcome, which the mapper reports as a
+// Status) is recorded as MappingCatalogUnavailable, the design's fail-closed bucket:
+// no trustworthy mapping was obtained, so the document must not be mistaken for
+// intentional structure-only analysis. A DiagError carries the failure detail.
+func (s *ManifestStore) resolveMapping(
+	ctx context.Context,
+	dm *DocumentModel,
+	gvk schema.GroupVersionKind,
+	mapper mapping.ResourceMapper,
+	loc manifestedit.Location,
+) {
+	res, err := mapper.GVRForGVK(ctx, gvk)
+	if err != nil {
+		dm.Mapping = mapping.MappingCatalogUnavailable
+		s.Diagnostics = append(s.Diagnostics, manifestedit.Diagnostic{
+			Level:         manifestedit.DiagError,
+			Reason:        reasonUnresolvedMapping,
+			Message:       fmt.Sprintf("mapping lookup for %s failed: %v", gvk, err),
+			Path:          loc.Path,
+			DocumentIndex: loc.DocumentIndex,
+		})
+		return
+	}
+
+	dm.Mapping = res.Status
+	switch res.Status {
+	case mapping.MappingResolved:
+		dm.ResourceIdentity = s.resolvedIdentity(dm, gvk, res, loc)
+	case mapping.MappingStructureOnly:
+		// No API source was consulted: nothing to resolve and nothing to flag.
+	case mapping.MappingUnserved, mapping.MappingAmbiguous, mapping.MappingDisallowed,
+		mapping.MappingSubresource, mapping.MappingCatalogUnavailable, mapping.MappingDiscoveryDegraded:
+		s.Diagnostics = append(s.Diagnostics, manifestedit.Diagnostic{
+			Level:  manifestedit.DiagWarning,
+			Reason: reasonUnresolvedMapping,
+			Message: fmt.Sprintf(
+				"GVK %s not resolved to a served resource: %s (%s)",
+				gvk,
+				res.Status,
+				res.Reason,
+			),
+			Path:          loc.Path,
+			DocumentIndex: loc.DocumentIndex,
+		})
+	}
+}
+
+// resolvedIdentity builds the ResourceIdentity for a resolved document. The mapper's
+// scope is authoritative: a cluster-scoped resource is keyed with no namespace, so a
+// manifest that nonetheless carries metadata.namespace would otherwise be indexed
+// under a wrong, namespaced resource key (internal/types treats empty namespace as
+// cluster-scoped). The namespace is dropped and the mismatch flagged.
+func (s *ManifestStore) resolvedIdentity(
+	dm *DocumentModel,
+	gvk schema.GroupVersionKind,
+	res mapping.Result,
+	loc manifestedit.Location,
+) *types.ResourceIdentifier {
+	namespace := dm.ManifestIdentity.Namespace
+	if !res.Namespaced && namespace != "" {
+		s.Diagnostics = append(s.Diagnostics, manifestedit.Diagnostic{
+			Level:  manifestedit.DiagWarning,
+			Reason: reasonScopeMismatch,
+			Message: fmt.Sprintf(
+				"%s is cluster-scoped but the manifest sets metadata.namespace %q; namespace ignored for indexing",
+				gvk, namespace,
+			),
+			Path:          loc.Path,
+			DocumentIndex: loc.DocumentIndex,
+		})
+		namespace = ""
+	}
+	ri := types.NewResourceIdentifier(
+		res.GVR.Group,
+		res.GVR.Version,
+		res.GVR.Resource,
+		namespace,
+		dm.ManifestIdentity.Name,
+	)
+	return &ri
 }
 
 // claimsIdentity reports whether a document claims its manifest identity for the
