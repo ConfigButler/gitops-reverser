@@ -30,6 +30,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -618,9 +619,22 @@ func (m *Manager) GetClusterStateForGitDest(
 		}
 		gvrResources, err := m.listResourcesForGVR(ctx, dc, gvr, namespaces, objects)
 		if err != nil {
-			// A failed list yields a partial cluster view. Abort rather than
-			// return it: a missing resource is indistinguishable from a deleted
-			// one and would wipe its tracked files on the next reconcile.
+			// A NotFound means the type is no longer served — its CRD/APIService
+			// was removed between catalog resolution and this list. Drop that GVR
+			// and keep going: this is the same condition the resolver already
+			// treats as non-blocking (ResolveMissNotServed) one step earlier, so a
+			// type that vanishes in the resolve→list race must be handled the same
+			// way rather than aborting the whole snapshot (which wedges every
+			// wildcard target whenever any CRD churns). A type that is no longer
+			// served has no live resources to mistake for deletions.
+			if apierrors.IsNotFound(err) {
+				log.Info("Skipping resource type that is no longer served", "gvr", gvr.String())
+				continue
+			}
+			// Any other failed list (a served type we could not read — timeout,
+			// 5xx, connection) yields a partial cluster view. Abort rather than
+			// return it: a missing resource is indistinguishable from a deleted one
+			// and would wipe its tracked files on the next reconcile.
 			return nil, nil, fmt.Errorf(
 				"aborting cluster snapshot for %s: failed to list %s: %w",
 				gitDest.String(), gvr.String(), err)

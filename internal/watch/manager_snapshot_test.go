@@ -29,8 +29,10 @@ import (
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	k8stesting "k8s.io/client-go/testing"
@@ -636,4 +638,64 @@ func TestSnapshotWildcardResourceAbortsOnAnyListError(t *testing.T) {
 		itypes.NewResourceReference("my-target", "gitops-reverser"))
 	require.Error(t, err,
 		"a wildcard snapshot still aborts on a failed GVR list rather than emitting a partial view")
+}
+
+// TestSnapshotSkipsTypeNoLongerServed verifies that a type which is no longer
+// served (its CRD/APIService was removed between catalog resolution and the list,
+// surfacing as a NotFound) is dropped from the snapshot instead of aborting it.
+// This is the same condition the resolver already treats as non-blocking
+// (ResolveMissNotServed) one step earlier, just discovered in the resolve→list
+// race — so it is handled identically regardless of whether the GVR came from a
+// wildcard or a named rule. It is the failure mode that wedged wildcard targets in
+// e2e when a concurrent spec tore down a CRD mid-run. Any non-NotFound list error
+// (a served type we could not read) still aborts — see TestSnapshotAbortsOnListError
+// and TestSnapshotWildcardResourceAbortsOnAnyListError.
+func TestSnapshotSkipsTypeNoLongerServed(t *testing.T) {
+	scheme := makeScheme(t)
+
+	gitTarget := &configv1alpha1.GitTarget{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-target", Namespace: "gitops-reverser"},
+		Spec:       configv1alpha1.GitTargetSpec{Path: "live"},
+	}
+
+	store := rulestore.NewStore()
+	store.AddOrUpdateClusterWatchRule(
+		configv1alpha1.ClusterWatchRule{
+			ObjectMeta: metav1.ObjectMeta{Name: "cwr-wildcard-resource"},
+			Spec: configv1alpha1.ClusterWatchRuleSpec{
+				TargetRef: configv1alpha1.NamespacedTargetReference{
+					Name:      "my-target",
+					Namespace: "gitops-reverser",
+				},
+				Rules: []configv1alpha1.ClusterResourceRule{{
+					APIGroups:   []string{""},
+					APIVersions: []string{"v1"},
+					Resources:   []string{"*"},
+					Scope:       configv1alpha1.ResourceScopeNamespaced,
+				}},
+			},
+		},
+		"my-target", "gitops-reverser", "provider", "gitops-reverser", "main", "live",
+	)
+
+	m := setupManager(t, scheme, gitTarget, store, makeConfigMap("cm-a", "ns-a"))
+
+	fakeDyn, ok := m.dynamicClient.(*dynamicfake.FakeDynamicClient)
+	require.True(t, ok, "expected the fake dynamic client from setupManager")
+	// services resolves from the wildcard but is reported as no-longer-served.
+	fakeDyn.PrependReactor("list", "services",
+		func(action k8stesting.Action) (bool, runtime.Object, error) {
+			if action.GetResource().Resource != "services" {
+				return false, nil, nil
+			}
+			return true, nil, apierrors.NewNotFound(
+				schema.GroupResource{Group: "", Resource: "services"}, "")
+		})
+
+	resources, _, err := m.GetClusterStateForGitDest(context.Background(),
+		itypes.NewResourceReference("my-target", "gitops-reverser"))
+	require.NoError(t, err,
+		"a type that 404s (no longer served) must be skipped, not abort the snapshot")
+	assert.Equal(t, []string{"cm-a"}, resourceNames(resources),
+		"the surviving resources must still be snapshotted")
 }

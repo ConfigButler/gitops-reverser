@@ -129,3 +129,14 @@ This distinction matters for the state model in
 [rule-set-snapshot-discovery-lag-fix.md](../finished/rule-set-snapshot-discovery-lag-fix.md):
 only the transient family should drive "retry next cycle"; the wildcard family
 will not resolve on its own.
+
+### Same policy applies one step later, at list time
+
+The `NotServed` skip above happens during *resolution* (a type absent from the
+catalog never enters the watch set). The identical condition can also surface one
+step later, during the authoritative `list` in `RequestClusterState`: a type that
+was served at resolve time can have its CRD/APIService removed before the list
+runs, which returns `NotFound`. For consistency that list-time `NotFound` is
+handled the same way — the GVR is skipped, not treated as a partial-view abort.
+Every *other* list error (a served type we could not read) still aborts. See the
+[Item D decision](../future/watchrule-wildcard-support-plan.md#item-d-decision-notfound-skips-everything-else-aborts).

@@ -247,6 +247,36 @@ also consuming disk and was a contributing factor.
 
 ---
 
+## Update (2026-06-04) — Failure D: snapshot abort on a vanished CRD (fixed)
+
+A later red `E2E (full)` run (on branch `poc/manifestedit`,
+[run 26935363495](https://github.com/ConfigButler/gitops-reverser/actions/runs/26935363495))
+reproduced the same `status.conditions not found` cascade as Failure B, but the
+controller logs pinned a **distinct, deterministic root cause** rather than a
+bootstrap race:
+
+```
+aborting cluster snapshot for .../watchrule-wildcard-expansion-test-dest:
+failed to list bi-directional.e2e.example.com/v1, Resource=icecreamorders:
+the server could not find the requested resource
+"snapshot replay did not complete, leaving target pending"
+```
+
+Three e2e specs each register an `icecreamorders` CRD under a *different* API
+group (`bi-directional.…`, `crd-lifecycle.…`, `wildcard-watchrule.…`). Under
+`--procs=4` they create and tear down those CRDs concurrently. A wildcard target's
+snapshot enumerates all of them; when one CRD is gone mid-flight the `list`
+returns NotFound, the **whole snapshot aborted** (the partial-view guard), the
+GitTarget was left pending, its WatchRule never reached `Ready`, and the 90s
+`verifyStatus` timed out — cascading to unrelated specs sharing the controller.
+
+This is the CRD-churn half of **Phase 2 / item D** in
+[watchrule-wildcard-support-plan.md](future/watchrule-wildcard-support-plan.md).
+**Fixed** by skipping a `NotFound` (no-longer-served type) during the snapshot
+list while still aborting on every other list error — see the
+[Item D decision](future/watchrule-wildcard-support-plan.md#item-d-decision-notfound-skips-everything-else-aborts).
+Not related to the manifest-editing work on that branch.
+
 ## Summary
 
 - **Failure A is the real, deterministic regression from the wildcard re-add** —

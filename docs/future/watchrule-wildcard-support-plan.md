@@ -25,12 +25,16 @@ A + B + C, status surfacing F-partial).
 
 **Not done (the "not fully happy flow" caveat):**
 
-- **Phase 2 / item D — snapshot robustness.** Abort-on-any-`list`-error is
-  retained intentionally (and now pinned by
-  `TestSnapshotWildcardResourceAbortsOnAnyListError`). At real cluster scale a
-  broad `["*"]` target lists hundreds of GVRs, so a single transient `list`
-  failure can abort the whole target snapshot. This is the gating item for
-  declaring wildcard support truly "done".
+- **Phase 2 / item D — snapshot robustness.** *Partially decided (see
+  [Item D decision](#item-d-decision-notfound-skips-everything-else-aborts)
+  below).* A `list` that returns **NotFound** (the type is no longer served) now
+  skips that GVR instead of aborting the whole snapshot; every other `list` error
+  still aborts (pinned by `TestSnapshotWildcardResourceAbortsOnAnyListError` and
+  `TestSnapshotAbortsOnListError`). This closes the CRD-churn race that wedged
+  wildcard targets. The remaining, larger half of D — resilience to *transient*
+  failures on *served* types at hundreds-of-GVR scale (retry/partial-snapshot
+  strategy) — is still open and is the gating item for declaring wildcard support
+  truly "done".
 - **Phase 3 — guardrails.** No informer-count cap/observability and no CRD-burst
   debounce yet.
 - **HA.** Single-pod only by design; the branch-shard prerequisite in
@@ -168,14 +172,52 @@ A wildcard target lists *every* allowed GVR. Two existing behaviors get stressed
 
 - **Partial-view abort.** `RequestClusterState` aborts the whole target snapshot
   if any single GVR `list` fails
-  ([manager.go:596-628](../../internal/watch/manager.go#L596-L628)) — correct
-  today because a missing list looks like deletions. Across hundreds of GVRs the
-  probability that *one* fails is much higher, so a wildcard target could rarely
-  produce a complete snapshot. Likely needs a per-GVR resilience strategy that
-  still distinguishes "failed to list" from "genuinely empty" without mirroring
-  spurious deletions. This is the hardest correctness question.
+  ([manager.go](../../internal/watch/manager.go)) — correct for a *served* type
+  that we could not read, because a missing list looks like deletions. The
+  **NotFound** case (type no longer served) is now split out and skipped (see
+  [Item D decision](#item-d-decision-notfound-skips-everything-else-aborts)).
+  Across hundreds of GVRs the probability that *one served type* fails transiently
+  is still higher, so a wildcard target could rarely produce a complete snapshot.
+  Resolving that needs a per-GVR resilience strategy (retry/backoff or an explicit
+  partial-snapshot mode) that still distinguishes "failed to list a served type"
+  from "genuinely empty" without mirroring spurious deletions. This is the hardest
+  correctness question and the still-open remainder of D.
 - **Informer scale / memory.** One informer per GVR across the whole surface is a
   real resource cost; worth a soft cap or opt-in guardrail.
+
+#### Item D decision: NotFound skips, everything else aborts
+
+**Decided (2026-06-04).** The "one GVR failed to list" question splits cleanly on
+the *kind* of failure:
+
+- **`NotFound` → skip that GVR, keep snapshotting.** A `list` returning NotFound
+  means the type is no longer served — its CRD or aggregated APIService was
+  removed between catalog resolution and the list. This is the **same condition
+  the resolver already treats as non-blocking** (`ResolveMissNotServed` is omitted
+  from `blockingSnapshotMisses`): a type absent from the catalog at resolve time is
+  silently skipped today. A type that vanishes in the narrow resolve→list race is
+  the identical situation discovered one step later, so it must be handled
+  identically. A no-longer-served type has no live resources to mistake for
+  deletions, so skipping it cannot mirror a spurious delete.
+- **Any other error → abort the whole snapshot (unchanged).** A timeout, 5xx, or
+  connection failure on a type that *is* served means we could not read resources
+  that may well exist. Treating that as "empty" would wipe their mirrored files,
+  so the partial-view abort stays.
+
+This is provenance-independent — it applies whether the GVR came from a wildcard
+or a named rule — because the resolver's existing `NotServed` skip is already
+provenance-independent. It needs no per-GVR "is this wildcard?" tracking. It is
+deliberately the *smaller* half of D: it fixes the CRD-churn race (a deleted CRD
+elsewhere in the cluster no longer wedges every wildcard target) without yet
+solving resilience to transient failures on served types at scale, which remains
+open above.
+
+Implemented in `GetClusterStateForGitDest`
+([manager.go](../../internal/watch/manager.go)); pinned by
+`TestSnapshotSkipsTypeNoLongerServed` (skip path) alongside the unchanged
+`TestSnapshotAbortsOnListError` / `TestSnapshotWildcardResourceAbortsOnAnyListError`
+(abort path). Origin: this race was the dominant cause of the red `E2E (full)` runs
+analysed in [wildcard-ci-failure-findings.md](../wildcard-ci-failure-findings.md).
 
 ### E. Plan-hash churn — **small mechanically, a policy choice**
 
@@ -213,9 +255,14 @@ to depth 1, so bursts are partly absorbed. **Probably acceptable as-is for now.*
 ## Open decisions
 
 - Phase 0: fix docs, or add rejecting validation, or both? (Both is cleanest.)
-- D: what is the correct "one GVR failed to list" behavior for a wildcard target
+- D: ~~what is the correct "one GVR failed to list" behavior for a wildcard target
   — skip that GVR for this cycle (risk: looks like deletions) vs abort the whole
-  target (risk: wildcard targets rarely snapshot)? This needs its own mini-design.
+  target (risk: wildcard targets rarely snapshot)?~~ **Split and partly decided:**
+  a **NotFound** (type no longer served) skips that GVR; every other error still
+  aborts — see
+  [Item D decision](#item-d-decision-notfound-skips-everything-else-aborts). The
+  transient-failure-on-a-served-type half (retry vs partial snapshot at scale) is
+  still open.
 - Should "watch everything" remain policy-filtered by the default denylist, or
   should wildcard rules be able to opt into the excluded noisy kinds?
 - Is the plan-hash churn for wildcard targets acceptable for v1, or is debounce a
