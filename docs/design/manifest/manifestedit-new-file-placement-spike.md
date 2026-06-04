@@ -6,7 +6,7 @@
 > [manifestedit-integration-readonly-reconcile.md](manifestedit-integration-readonly-reconcile.md),
 > [manifestedit-field-ownership-spike.md](manifestedit-field-ownership-spike.md),
 > [manifestedit-abstraction-plan.md](manifestedit-abstraction-plan.md),
-> [../architecture.md](../architecture.md)
+> [architecture.md](../../architecture.md)
 
 ## The one question
 
@@ -15,7 +15,7 @@ When the reverser must write a resource that has **no existing document in Git**
 out of its scope: the two-version comparison requires an existing `Git` document,
 and the read-only report already classifies this cell as `ActionCreate` with the
 reason *"no existing document in Git; placement is an upstream decision"*
-([internal/manifestreport/report.go](../../internal/manifestreport/report.go)).
+([internal/manifestreport/report.go](../../../internal/manifestreport/report.go)).
 Placement is precisely that upstream decision, and it is currently unowned as a
 configurable policy.
 
@@ -25,16 +25,16 @@ configurable policy.
   `{spec.path}/{group}/{version}/{resource}/{namespace}/{name}.yaml`
   (`.sops.yaml` for encrypted Secrets), via `generateFilePath` /
   `ResourceIdentifier.ToGitPath()`
-  ([internal/git/git.go](../../internal/git/git.go),
-  [internal/types/identifier.go](../../internal/types/identifier.go)). Repo state
+  ([internal/git/git.go](../../../internal/git/git.go),
+  [internal/types/identifier.go](../../../internal/types/identifier.go)). Repo state
   was historically discovered by parsing that path back into an identity.
 - **Identity is content, not path.** The inventory
-  ([internal/git/manifestedit](../../internal/git/manifestedit)) keys resources by
+  ([internal/git/manifestedit](../../../internal/git/manifestedit)) keys resources by
   GVK + namespace + name read from the YAML, so a resource can be *found* at any
   path, not only the deterministic one.
 - **In-place editing already landed (narrowly).** When a document already exists
   for a resource, the writer edits it in place preserving formatting
-  ([git.go](../../internal/git/git.go) `preserveExistingFormatting` →
+  ([git.go](../../../internal/git/git.go) `preserveExistingFormatting` →
   `manifestreport.EditInPlace`). Placement is the missing other half: it only
   matters when the resource is *absent* from Git.
 - **The policy north star is API-first, whole-object truth**

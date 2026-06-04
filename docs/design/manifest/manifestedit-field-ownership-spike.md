@@ -3,7 +3,7 @@
 > Status: decided
 > Related: [manifestedit-abstraction-plan.md](manifestedit-abstraction-plan.md)
 > (step 5), [manifest-inventory-file-agnostic-placement.md](manifest-inventory-file-agnostic-placement.md),
-> [bi-directional.md](../bi-directional.md),
+> [bi-directional.md](../../bi-directional.md),
 > POC decision record: `internal/git/manifestedit/DECISION.md`
 
 The abstraction plan flagged field ownership — "does the reverser own the whole
@@ -29,7 +29,7 @@ one-directional world.
 
 The mitigation is the rest of the product: **bi-directional GitOps.** A change
 made directly in Git is picked up and applied to the live cluster
-([bi-directional.md](../bi-directional.md)). Once it is in the cluster it is in
+([bi-directional.md](../../bi-directional.md)). Once it is in the cluster it is in
 the API, so it is in the next projection, so the reverser preserves it — because
 now it genuinely *is* part of the API object.
 

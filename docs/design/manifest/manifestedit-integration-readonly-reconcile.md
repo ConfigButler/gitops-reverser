@@ -1,10 +1,10 @@
 # Step 6: the read-only, inventory-driven reconcile
 
-> Status: in progress (the read-only report is implemented; writer wiring is deferred)
+> Status: in progress (the read-only report is implemented; writer wiring landed, narrowly — see below)
 > Related: [manifestedit-abstraction-plan.md](manifestedit-abstraction-plan.md)
 > (step 6), [manifestedit-field-ownership-spike.md](manifestedit-field-ownership-spike.md),
 > [manifest-inventory-file-agnostic-placement.md](manifest-inventory-file-agnostic-placement.md),
-> [../architecture.md](../architecture.md),
+> [architecture.md](../../architecture.md),
 > POC decision record: `internal/git/manifestedit/DECISION.md`
 
 This is the integration milestone. Steps 1–5 built and proved a cluster-free,
@@ -27,7 +27,7 @@ reconcile:
 - **`Project`** = `sanitize.Sanitize` — the Git projection (what "clean" means).
 - **`Render`** = `sanitize.MarshalToOrderedYAML` — the house canonical renderer,
   the *same* function the live writer uses
-  ([content_writer.go](../../internal/git/content_writer.go) `buildContentForWrite`).
+  ([content_writer.go](../../../internal/git/content_writer.go) `buildContentForWrite`).
   A contract test (`render_contract_test.go`) pins that whole-replace/new-file
   output is byte-identical to what the writer commits, so the two cannot drift.
 - **`EditOptions`** = production options: the house renderer, index-based list
@@ -64,7 +64,7 @@ So any future writing reconcile must run as one repository transaction, and this
 ordering is not optional:
 
 1. **Fetch/checkout** the target branch to a clean worktree (the existing
-   `BranchWorker` clone, see [architecture.md](../architecture.md) §Git Operations).
+   `BranchWorker` clone, see [architecture.md](../../architecture.md) §Git Operations).
 2. **Index** that worktree's files for the GitTarget's path → `Inventory`.
 3. **Compare** against the current desired cluster state → `Report` (this package).
 4. **Edit** via `manifestedit.Apply` per entry, against the *same* worktree bytes
@@ -75,12 +75,12 @@ ordering is not optional:
    the push is rejected — do **not** force.
 7. **On rejection, discard and replay**: re-fetch, re-index, re-compare, re-edit.
    This is the project's existing "checkout fresh + replay" strategy
-   ([git_atomic_push.go](../../internal/git/git_atomic_push.go),
-   [git_smart_fetch.go](../../internal/git/git_smart_fetch.go)), and it is safe
+   ([git_atomic_push.go](../../../internal/git/git_atomic_push.go),
+   [git_smart_fetch.go](../../../internal/git/git_smart_fetch.go)), and it is safe
    precisely because the API is the source of truth: any stale commit can be
    regenerated from current object state.
 
-The single-writer-per-branch invariant ([BranchWorker](../../internal/git/branch_worker.go))
+The single-writer-per-branch invariant ([BranchWorker](../../../internal/git/branch_worker.go))
 already serializes step 1–6 within a pod; push-with-lease covers the cross-pod /
 external-writer race. The report layer must never assume it is the only writer:
 it produces verdicts for a snapshot and lets the transaction boundary enforce
@@ -93,7 +93,7 @@ Per the plan, step 6 does not yet take on:
 - **The prune hazard.** `delete` is only *reported*. Automatically removing files
   for "absent from cluster" is dangerous when the cluster view is partial (a
   degraded discovery or an incomplete snapshot looks like mass deletion — see
-  [architecture.md](../architecture.md) §Watch / Informer System on partial
+  [architecture.md](../../architecture.md) §Watch / Informer System on partial
   snapshots). Acting on `delete` needs the same partial-state guards the existing
   `FolderReconciler` already reasons about, wired explicitly.
 - **GVK→GVR mapping.** The inventory keys on manifest identity (GVK + name +
@@ -102,7 +102,7 @@ Per the plan, step 6 does not yet take on:
   `docs/TODO.md`. Read-only reporting against a caller-supplied desired set sides
   steps this until the comparison is trusted.
 - **Writer wiring (now landed, narrowly).** The live writer
-  ([git.go](../../internal/git/git.go) `handleCreateOrUpdateOperation`) now calls
+  ([git.go](../../../internal/git/git.go) `handleCreateOrUpdateOperation`) now calls
   `manifestreport.EditInPlace` through `preserveExistingFormatting`: when an
   existing file genuinely differs and is **non-sensitive** and **not already in the
   operator's canonical format** (i.e. it carries hand-authored comments/layout),
@@ -121,7 +121,7 @@ Per the plan, step 6 does not yet take on:
   named mapping list's behavior; keyed matching should arrive with a
   path/GVK-aware strategy chosen above the merge, not a global default.
 - **Relationship to `FolderReconciler`.** The existing
-  [FolderReconciler](../../internal/reconcile/folder_reconciler.go) diffs cluster
+  [FolderReconciler](../../../internal/reconcile/folder_reconciler.go) diffs cluster
   vs. Git for the initial snapshot and emits a whole-file `WriteRequest`. The
   manifestedit path is the finer-grained, in-place, formatting-preserving successor
   for *editing existing documents*; this read-only report is the bridge that lets

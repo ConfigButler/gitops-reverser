@@ -1,7 +1,7 @@
 # POC: in-document YAML editor choice
 
 > Status: implemented — see `internal/git/manifestedit` and its
-> [DECISION.md](../../internal/git/manifestedit/DECISION.md).
+> [DECISION.md](../../../internal/git/manifestedit/DECISION.md).
 > Outcome: `gopkg.in/yaml.v3` node editing + per-document text splitting passes
 > the implemented hard requirements; goccy/kyaml/text-slice were not needed. One
 > drift limitation is recorded (yaml.v3 normalizes flush-left sequence

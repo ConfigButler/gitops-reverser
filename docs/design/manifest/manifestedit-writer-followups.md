@@ -16,23 +16,23 @@ follow-up, so the remaining edges are not lost.
 
 | # | Defect | Fix | Guard test |
 |---|---|---|---|
-| High | Writer was not file-agnostic: update wrote a second copy at the canonical path and delete missed a moved manifest. | `resolveManifestLocation` indexes the GitTarget tree and edits/deletes the resource where it already lives (match-first); only a genuinely new resource uses the deterministic path. Delete is now per-document via `manifestedit.DeleteDocument`. | `TestApplyEvent_UpdateMustFollowExistingPlacement`, `TestApplyEvent_DeleteMustFollowExistingPlacement` ([internal/git/known_placement_bugs_test.go](../../internal/git/known_placement_bugs_test.go)) |
+| High | Writer was not file-agnostic: update wrote a second copy at the canonical path and delete missed a moved manifest. | `resolveManifestLocation` indexes the GitTarget tree and edits/deletes the resource where it already lives (match-first); only a genuinely new resource uses the deterministic path. Delete is now per-document via `manifestedit.DeleteDocument`. | `TestApplyEvent_UpdateMustFollowExistingPlacement`, `TestApplyEvent_DeleteMustFollowExistingPlacement` ([internal/git/known_placement_bugs_test.go](../../../internal/git/known_placement_bugs_test.go)) |
 | Medium | An in-place no-op (multi-doc edge) was staged as a change and could drive an empty commit. | `handleCreateOrUpdateOperation` returns `false` when the preserved edit equals the bytes on disk. | `TestHandleCreateOrUpdate_NoOpInMultiDocReportsNoChange` (same file) |
-| Medium | `BuildReport` classified a desired resource whose only Git doc is non-editable as both `Create` and `Skip`. | When there is no editable location but a non-editable record exists, the desired side no longer emits `Create`; the single `Skip` from `gitOnlyEntries` stands. | `TestBuildReport_NonEditableDesiredIsNotDoubleClassified` ([internal/manifestreport/noneditable_desired_bug_test.go](../../internal/manifestreport/noneditable_desired_bug_test.go)) |
+| Medium | `BuildReport` classified a desired resource whose only Git doc is non-editable as both `Create` and `Skip`. | When there is no editable location but a non-editable record exists, the desired side no longer emits `Create`; the single `Skip` from `gitOnlyEntries` stands. | `TestBuildReport_NonEditableDesiredIsNotDoubleClassified` ([internal/manifestreport/noneditable_desired_bug_test.go](../../../internal/manifestreport/noneditable_desired_bug_test.go)) |
 | (perf, load-bearing) | Match-first scanned the tree **per event**. A snapshot of many large manifests (cluster-wide CRD watch ≈ O(events × tree) on big YAML) blew the per-commit deadline — a real e2e failure, not just slowness. | `manifestLocator` scans each base path **once per write batch** (the checked-out commit) and caches it. | Covered by the CRD-install e2e (`crd_lifecycle_e2e_test.go`); see "Follow-up 2 (done)". |
 
-Code: [internal/git/git.go](../../internal/git/git.go) (`manifestLocator`,
+Code: [internal/git/git.go](../../../internal/git/git.go) (`manifestLocator`,
 `handleDeleteOperation`, `handleCreateOrUpdateOperation`),
-[internal/git/commit_executor.go](../../internal/git/commit_executor.go) (one
+[internal/git/commit_executor.go](../../../internal/git/commit_executor.go) (one
 locator per batch),
-[internal/manifestreport/report.go](../../internal/manifestreport/report.go).
+[internal/manifestreport/report.go](../../../internal/manifestreport/report.go).
 
 ## Follow-up 1 — DELETE match-first needs the resource identity
 
 Match-first resolves a resource's location from its **content identity** (GVK +
 namespace + name), read from the event's object. Production DELETE events carry
 only the API identifier (GVR + namespace + name) and **no object**
-([internal/reconcile/folder_reconciler.go](../../internal/reconcile/folder_reconciler.go)
+([internal/reconcile/folder_reconciler.go](../../../internal/reconcile/folder_reconciler.go)
 builds `toDelete` events with `Identifier` only). The inventory keys by GVK, and
 mapping GVR→GVK needs a live RESTMapper, which the manifestedit POC deliberately
 does not own.
@@ -61,9 +61,9 @@ past the test's 60 s deadline, so the spec failed (zero commits). The bug-for-bu
 controlled test confirmed it: neutralizing match-first made the spec pass; restoring
 it with the per-batch cache also passed.
 
-`manifestLocator` ([internal/git/git.go](../../internal/git/git.go)) now scans each
+`manifestLocator` ([internal/git/git.go](../../../internal/git/git.go)) now scans each
 base path **once per write batch** (the checked-out commit) and caches it; the batch
-gets one locator in [commit_executor.go](../../internal/git/commit_executor.go).
+gets one locator in [commit_executor.go](../../../internal/git/commit_executor.go).
 Building the inventory once from the pre-batch state is also the semantically correct
 unit per decision 1 of
 [manifestedit-new-file-placement-spike.md](manifestedit-new-file-placement-spike.md)
@@ -102,10 +102,10 @@ What exists:
 
 - The inventory already detects duplicates with first-occurrence-wins
   (lexicographically first path is authoritative; later copies are losers) —
-  [internal/git/manifestedit/index.go](../../internal/git/manifestedit/index.go).
+  [internal/git/manifestedit/index.go](../../../internal/git/manifestedit/index.go).
 - `BuildReport` already surfaces every duplicate loser as an `ActionDelete`
   "prune candidate", and every Git-only resource the cluster lacks as a prune
-  candidate too — [internal/manifestreport/report.go](../../internal/manifestreport/report.go).
+  candidate too — [internal/manifestreport/report.go](../../../internal/manifestreport/report.go).
 
 What is missing: this is **report-only**. Nothing in the writer acts on those
 prune candidates, by design — the prune hazard (a partial cluster view turning
