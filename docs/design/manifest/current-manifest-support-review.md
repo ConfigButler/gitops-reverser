@@ -155,8 +155,10 @@ documents remain.
   found unless the delete event includes manifest identity or the writer can map
   GVR to GVK.
 - Duplicate cleanup is report-only. The inventory can find duplicate losers and
-  `BuildReport` can classify them as deletes, but the writer does not yet prune
-  them.
+  `BuildReport` can classify them as deletes, but the writer does not act on them.
+  The decided behavior is to *refuse* duplicate identities at acceptance rather
+  than prune them (see Adoption Policy), so this gap closes by refusal, not by a
+  prune feature.
 - GVK and GVR are still split across layers. `manifestedit.Identity` is GVK-based;
   `types.ResourceIdentifier` and watch events are GVR-based; there is no central
   model that records both and indexes both.
@@ -177,11 +179,31 @@ documents remain.
 
 Move to a fully materialized in-memory manifest model per GitTarget path.
 
-This rests on one strong, non-negotiable conviction: **the API is the source of
-truth.** The GitTarget folder is a materialized projection of the watched API
-resources, not a repository the writer merely edits alongside. Everything below —
-including the decision to prune KRM that is not watched — follows from that
-conviction.
+This rests on one strong, non-negotiable conviction: **the Kubernetes API is the
+source of truth.** The GitTarget folder is a materialized projection of the
+watched API resources, not a repository the writer merely edits alongside.
+
+That conviction cuts two ways, and the cut is the resolution of what used to be a
+contradiction in this document. When a GitTarget instructs us to take a folder
+under control and reconcile it, we accept a serious duty — we cannot be sloppy and
+leave wrong files in place — but we can discharge that duty conservatively:
+
+- **For watched (tracked) KRM, we keep the folder honest.** A watched document
+  whose resource the API no longer has is wrong, and we **drop** it. This is by
+  design and intentional: leaving a stale managed manifest would reintroduce a
+  second, drifting source of truth — exactly what this design exists to remove.
+- **For everything we do *not* manage, we refuse rather than delete.** Unwatched
+  KRM, duplicate identities, and non-KRM YAML are content we are not entitled to
+  take responsibility for. Instead of guessing — and instead of deleting files a
+  human authored — we **fail the GitTarget with a clear status and reconcile
+  nothing until the folder is cleaned**.
+
+So the source-of-truth duty is discharged by *dropping the managed resources we
+own that the API no longer has*, and by *refusing the whole folder* when it
+contains anything we are not entitled to manage. We deliberately do **not** build
+a delete option for unwatched content for now; refusing is safer, never destroys
+human-authored files, and is where we start. An opt-in delete could be revisited
+later, but we are explicitly choosing not to.
 
 ```mermaid
 classDiagram
@@ -196,9 +218,12 @@ classDiagram
 
     class FileModel {
         +Path string
-        +Raw []byte
+        +Original []byte
+        +Current []byte
         +Documents []DocumentModel
         +Encrypted bool
+        +Dirty bool
+        +Deleted bool
     }
 
     class DocumentModel {
@@ -241,7 +266,8 @@ used by the batch planner:
 5. Populate indexes by manifest identity, resource identity, and GVK.
 6. Compare desired live resources against the store.
 7. Produce a plan: create, patch, whole-replace, delete document, delete file,
-   prune duplicate loser, skip.
+   drop a watched resource the API no longer has, skip. (Duplicate identities and
+   unwatched KRM never reach planning — they are refused at acceptance.)
 8. Apply the plan to the in-memory file models.
 9. Flush changed files and staged deletions to the worktree.
 
@@ -258,11 +284,299 @@ GVK lookups become cheap because the store owns explicit indexes. GVR lookups al
 become cheap once each record carries both manifest identity and resolved resource
 identity.
 
-Duplicate handling becomes an ordinary plan step. Duplicate losers can be pruned
-before broader orphan pruning because the authoritative copy remains.
+Duplicate handling becomes an ordinary acceptance check. A duplicate identity
+fails the GitTarget before planning, so the writer never has to decide which copy
+wins or delete one a human authored.
 
 Status and diagnostics become bounded summaries of the store and plan, instead of
 being re-derived in multiple layers.
+
+## Writer Model: Plan, Apply, Dirty Flush
+
+The write path should have exactly one mechanism:
+
+```text
+scan worktree -> ManifestStore
+ManifestStore + desired API state -> Plan
+Plan applied to mutable ManifestStore
+Mutable ManifestStore -> flush dirty/deleted files
+```
+
+The important choice is that the store owns **files and bytes**, not only object
+records. The plan explains what should happen, but after the plan is applied the
+mutable file model is the source of truth for what will be written to Git.
+
+Do **not** render every object model back to files on each commit. That would be
+simple, but it would discard hand-authored formatting, make multi-document files
+feel like an exception, and bypass the existing `manifestedit` preservation
+mechanism.
+
+Also do **not** keep only a list of changed or removed resources. That repeats
+the current split-brain shape: resource-level changes still need file-level and
+document-level context for multi-document edits, document deletion, file deletion,
+duplicate cleanup, and moved manifests.
+
+Instead, build the full model once per checked-out GitTarget path, apply the plan
+to that model, and flush only the files whose bytes changed or whose file was
+deleted.
+
+### Concrete Data Structures
+
+The exact package names can change, but the shape should be close to this:
+
+```go
+type ManifestStore struct {
+    Root string
+
+    FilesByPath map[string]*FileModel
+
+    ByManifestIdentity map[manifestedit.Identity]RecordRef
+    ByResourceIdentity map[types.ResourceIdentifier]RecordRef
+    ByGVK              map[manifestanalyzer.GVK][]RecordRef
+
+    Duplicates   []RecordRef
+    Diagnostics  []manifestedit.Diagnostic
+    AcceptedOnce bool
+}
+
+type FileModel struct {
+    Path string
+
+    Original []byte // bytes read from the checked-out worktree
+    Current  []byte // bytes after applying plan actions
+
+    Documents []*DocumentModel
+
+    Dirty   bool // Current differs from Original and must be git add'ed
+    Deleted bool // file must be removed from disk and staged with git rm
+}
+
+type DocumentModel struct {
+    FilePath string
+    Index    int
+
+    ManifestIdentity manifestedit.Identity
+    ResourceIdentity types.ResourceIdentifier
+    GVK              manifestanalyzer.GVK
+
+    Editable  bool
+    Encrypted bool
+    Duplicate bool
+    Reason    string
+
+    Snapshot manifestedit.SnapshotRef
+}
+
+type RecordRef struct {
+    FilePath      string
+    DocumentIndex int
+}
+```
+
+The plan should also be explicit:
+
+```go
+type Plan struct {
+    Actions     []PlanAction
+    Diagnostics []manifestedit.Diagnostic
+}
+
+type PlanAction struct {
+    Kind PlanActionKind
+
+    Ref      RecordRef
+    Identity manifestedit.Identity
+    Resource types.ResourceIdentifier
+
+    Desired *unstructured.Unstructured
+    Reason  string
+}
+
+type PlanActionKind string
+
+const (
+    PlanCreate              PlanActionKind = "create"
+    PlanPatch               PlanActionKind = "patch"
+    PlanReplace             PlanActionKind = "replace"
+    PlanDeleteDocument      PlanActionKind = "delete-document"
+    PlanDeleteFile          PlanActionKind = "delete-file"
+    // PlanDropOrphan deletes a watched resource the API no longer has (the managed
+    // drop). Duplicate identities and unwatched KRM produce no plan action — they
+    // refuse the GitTarget at acceptance, before planning.
+    PlanDropOrphan          PlanActionKind = "drop-orphan"
+    PlanSkip                PlanActionKind = "skip"
+)
+```
+
+The flush operation should be intentionally boring. In pseudo-code:
+
+```go
+func Flush(root string, store *ManifestStore, worktree *git.Worktree) error {
+    for _, file := range store.FilesByPath {
+        switch {
+        case file.Deleted:
+            os.Remove(filepath.Join(root, file.Path))
+            worktree.Remove(file.Path)
+        case file.Dirty:
+            os.WriteFile(filepath.Join(root, file.Path), file.Current, 0o600)
+            worktree.Add(file.Path)
+        }
+    }
+    return nil
+}
+```
+
+This means there is no separate generated-path writer. New files, in-place
+updates, whole-document replacements, duplicate pruning, and document deletes all
+produce changes by mutating `FileModel.Current`, `FileModel.Dirty`, or
+`FileModel.Deleted`.
+
+### Concrete Examples
+
+**Example 1: update one document in a multi-document file**
+
+Input file:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app
+  namespace: default
+data:
+  color: blue
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: default
+spec:
+  replicas: 1
+```
+
+Desired API state changes only `ConfigMap/default/app` to `color: green`.
+
+Plan:
+
+```text
+patch apps.yaml#0 v1/ConfigMap/default/app
+```
+
+Apply:
+
+- look up `RecordRef{FilePath: "apps.yaml", DocumentIndex: 0}`
+- call `manifestedit.Apply` for document 0
+- replace `FileModel.Current` with the returned full-file bytes
+- mark `apps.yaml` dirty
+- keep document 1 byte-for-byte unless its index changes through a delete
+
+Flush:
+
+```text
+git add apps.yaml
+```
+
+No other files are rendered.
+
+**Example 2: delete one document from a multi-document file**
+
+Input file:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app
+  namespace: default
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: token
+  namespace: default
+```
+
+The API no longer has `Secret/default/token`.
+
+Plan:
+
+```text
+delete-document apps.yaml#1 v1/Secret/default/token
+```
+
+Apply:
+
+- call `manifestedit.DeleteDocument` for document 1
+- update `FileModel.Current` to the surviving ConfigMap document
+- mark `apps.yaml` dirty, not deleted
+- reindex that file's remaining documents in memory
+
+Flush:
+
+```text
+git add apps.yaml
+```
+
+If the deleted document had been the only document in the file, the same plan
+action would mark `FileModel.Deleted = true`, and flush would stage a file
+removal instead.
+
+**Example 3: create a new resource**
+
+The API has `Deployment/default/api`, and no record exists in `ManifestStore`.
+
+Plan:
+
+```text
+create apps/v1/deployments/default/api.yaml apps/v1/Deployment/default/api
+```
+
+Apply:
+
+- placement policy chooses the path
+- canonical renderer creates one new document
+- add a new `FileModel` with `Original = nil`, `Current = rendered`
+- mark it dirty
+- add its document to the in-memory indexes
+
+Flush:
+
+```text
+git add apps/v1/deployments/default/api.yaml
+```
+
+**Example 4: refuse a folder with duplicate identities**
+
+The store contains the same manifest identity twice:
+
+```text
+apps/app.yaml#0       v1/ConfigMap/default/app
+legacy/app.yaml#0     v1/ConfigMap/default/app
+```
+
+This is a human-authored ambiguity we will not guess at. Acceptance fails before
+any plan is applied:
+
+```text
+refuse: duplicate manifest identity v1/ConfigMap/default/app
+  at apps/app.yaml#0 and legacy/app.yaml#0
+```
+
+No file is written and no file is deleted. The GitTarget surfaces the collision in
+its status, and reconcile resumes only once a human removes one of the copies.
+
+### Why This Is Efficient Enough
+
+- The worktree is scanned once per GitTarget path per write batch.
+- Only plan-targeted files are mutated in memory.
+- Only dirty or deleted files are written to disk and staged.
+- Multi-document reindexing happens only for files whose document set changed.
+- Longer-lived caching can come later, keyed by checkout state and GitTarget path.
+
+The first implementation should optimize for one correct mechanism. Once the
+store is authoritative, cache invalidation becomes an optimization around a clear
+model rather than a second write path.
 
 ## Implementation Recommendations
 
@@ -275,19 +589,24 @@ being re-derived in multiple layers.
 - Add a resource-identity index beside the existing manifest-identity index. The
   writer should locate watched resources by `ResourceIdentifier`, while retaining
   GVK for YAML fidelity and diagnostics.
-- Turn duplicate-loser pruning into the first write-side prune feature. It has a
-  lower safety risk than pruning API-absent resources because one authoritative
-  copy remains. This applies only to duplicates the controller produced; for
-  duplicates found when first adopting a folder, see the acceptance checks below,
-  which fail the GitTarget instead of pruning.
+- Do not build duplicate-loser pruning. Duplicate identities fail the acceptance
+  check and refuse the GitTarget instead. Once the unified content-derived store
+  with match-first placement is in place, the controller no longer produces
+  duplicates of its own, so there is no remaining "safe to prune" duplicate case
+  to special-case.
 - Make the batch planner operate on the materialized store, then flush once. This
   avoids repeated disk reads, avoids stale per-event assumptions, and gives a
   single place to update document indexes after deletions.
-- Keep the current safety rules: no in-place edits for SOPS documents, no
+- Make dirty/deleted file flushing the only Git write mechanism. Generated-path
+  creation, in-place patching, whole replacement, document deletion, and file
+  deletion should all mutate `FileModel.Current`, `FileModel.Dirty`, or
+  `FileModel.Deleted`.
+- Keep the current safety rules: no in-place edits for SOPS documents, and no
   wholesale replacement of a multi-document file when the target document cannot
-  be edited safely, and no orphan pruning until the initial-reconcile prune hazard
-  has a deliberate gate. Scan mode (see below) is that gate: pruning of unwatched
-  KRM and orphans is armed only after the dry-run plan has been made reviewable.
+  be edited safely. The managed drop of watched resources the API no longer has is
+  gated behind acceptance: a folder that does not pass the acceptance checks
+  refuses outright and drops nothing. Scan mode (see below) renders the full plan,
+  including managed drops, before any write happens.
 - Keep creation placement as policy above the editor. The materialized model
   should answer "does this resource already exist?" and "where is it?"; a separate
   placement policy should answer "where should a new resource go?"
@@ -312,15 +631,13 @@ Note this is deliberately keyed on full manifest identity, not on GVK alone.
 Many resources of the same kind (several `Deployment`s, several `ConfigMap`s)
 are normal and must pass. Only same-identity collisions are rejected.
 
-This is intentionally narrower than, and in tension with, the duplicate-loser
-pruning recommended above — so the distinction is **who created the ambiguity**:
-
-- Duplicates the controller itself produced (path collisions, re-materialization
-  of an already-managed target) remain safe to prune, because one authoritative
-  copy is known to exist and the rest are our own leftovers.
-- Duplicates already present when we first adopt a human-authored folder are an
-  authoring decision we cannot disambiguate. These must fail the acceptance
-  check, not trigger pruning.
+Duplicate identities are **refused**, full stop. We cannot know which copy the
+author intended, and guessing risks deleting the one they cared about, so the
+GitTarget fails until a human resolves the collision. Once the store is the single
+content-derived model with match-first placement, the controller no longer
+produces duplicates of its own, so there is no separate "controller-produced
+duplicate" case to prune — refusal is the one behavior, and the earlier tension
+between pruning and refusing duplicates disappears.
 
 The second check is **unrecognized files**. The hard question is what to do with
 files in the folder that are not watched resources. Lumping them into one
@@ -337,33 +654,38 @@ store should classify every file into one of four buckets:
    as `kustomization.yaml`, which is itself KRM): recognizable, but it has no
    matching watched resource in the API.
 
-The **starter requirement** is to define *recognized = parses as KRM* and to
-fail the GitTarget when any YAML file falls in bucket 2. This is the same
-"do not be clever about ambiguous content" stance as the duplicate gate: a YAML
-blob we cannot even classify is a reason to stop, not to guess. Non-YAML files
-(bucket 1) are always ignored and never cause failure.
+The **starter requirement** (structure-only, no cluster needed) is to define
+*recognized = parses as KRM* and to fail the GitTarget when any YAML file falls in
+bucket 2 (non-KRM YAML), alongside the duplicate-identity gate. Once the watched
+API surface is available, bucket 4 (unwatched KRM) joins the same refusal. This is
+the same "do not be clever about ambiguous content" stance throughout: content we
+cannot model, or are not entitled to manage, is a reason to stop, not to guess.
+Non-YAML files (bucket 1) are always ignored and never cause failure.
 
 Within the recognized set, watched and unwatched KRM are treated differently, and
 here the guiding conviction is decisive: **the API is the source of truth.** The
 GitTarget folder is a projection of the watched API resources, not an independent
 repository we merely edit around.
 
-- **Watched (bucket 3)** is managed and planned against live API state.
-- **Unwatched (bucket 4) is pruned.** A KRM document with no corresponding
-  watched API resource is an orphan relative to the source of truth, and the
-  projection should not carry it. We deliberately choose pruning over the
-  safer-looking "leave it inert" option, because keeping unmanaged manifests
-  around quietly reintroduces a second, drifting source of truth — exactly what
-  this design exists to remove.
+- **Watched (bucket 3)** is managed and planned against live API state. A watched
+  document whose resource the API no longer has is **dropped** — this is the
+  source-of-truth duty, and it is intentional.
+- **Unwatched (bucket 4) is refused, not pruned.** A KRM document of a kind we do
+  not watch is something we have made no claim over. Rather than delete content we
+  never managed, the GitTarget fails its acceptance check with a diagnostic naming
+  the offending files, and reconciles nothing until a human removes them. We
+  deliberately do **not** build a delete option for unwatched KRM for now; an
+  explicit opt-in could be added later, but we are choosing not to do that yet.
 
-This is intentionally aggressive, and it has a sharp edge worth naming: build
-directives like `kustomization.yaml` are KRM but never appear in the API, so a
-literal application of the rule deletes them. That is acceptable for a pure
-projection, but if a GitTarget is meant to stay Flux-consumable, those kinds need
-a small explicit allowlist of non-API KRM that is exempt from pruning. The safety
-net for all of this is scan mode (below): the destructive consequences are made
-visible before any write happens, so we can let the prune policy evolve in the
-open rather than guessing at it up front.
+This keeps a sharp edge honest rather than dangerous: build directives like
+`kustomization.yaml` are KRM but never appear in the API. Under an earlier "prune
+unwatched" rule they would have been deleted; under the refuse rule they instead
+**block** the GitTarget until removed. A folder meant to stay Flux-consumable
+therefore cannot be adopted as-is while it carries unwatched KRM — that is a
+deliberate, visible refusal, not a silent deletion. A small allowlist exempting
+specific non-API KRM kinds (e.g. `kustomization.yaml`) from refusal could be added
+later if the product chooses to preserve such folders. Scan mode (below) renders
+the full picture first, so the consequence is seen before anything is touched.
 
 Implementation notes:
 
@@ -376,52 +698,57 @@ Implementation notes:
   (non-KRM) YAML are the first two gates; others (for example, malformed KRM in
   an adopted folder) can join the same pre-planning acceptance phase later.
 
-## Adoption Policy: Refuse, Scan, Or Prune
+## Adoption Policy: Refuse First
 
-The source-of-truth conviction says git must not carry resources the API does not
-have. But there is more than one safe way to *enforce* that, and the right one
-depends on how much the operator trusts the writer with a given GitTarget. This
-should be a **setting**, not a hardcoded behavior:
+The source-of-truth conviction says git must not carry a divergent state. There is
+more than one way to *enforce* that, and we are deliberately choosing the most
+conservative one to start. Two behaviors are easy to confuse, so name them apart:
 
-- **`refuse` (safest, good default for first materialization).** If a directory
-  is materialized for the first time and already contains KRM with no matching
-  watched API resource, do not touch anything — fail the GitTarget with a
-  diagnostic listing the offending files. This is annoying, and that is the
-  point: it forces a human to look before the writer ever deletes. It honors the
-  conviction by refusing to *accept* a divergent state at all, rather than by
-  silently reconciling it away.
-- **`scan` (dry-run).** Report what would change, write nothing. See the next
-  section.
-- **`prune`.** Actively reconcile by deleting orphans, per the conviction. This
-  is the most automated and the most destructive; it should be opt-in and, on
-  first materialization especially, only after a scan has been reviewed.
+- **Managed drop (always on once the folder is accepted, not a policy knob).** A
+  *watched* KRM document whose resource the API no longer has is deleted. This is
+  the source-of-truth duty for the resources we own, and it is not configurable
+  away — a GitTarget that asked us to manage these kinds asked us to keep them
+  honest.
+- **Adoption acceptance (a gate, currently single-mode: refuse).** Before a folder
+  is allowed to become the planning model at all, it must pass the acceptance
+  checks. Anything we cannot take responsibility for — duplicate identities,
+  non-KRM YAML, or unwatched KRM — makes the GitTarget **refuse**: it fails with a
+  diagnostic listing the offending files and reconciles nothing until a human
+  cleans the folder.
 
-Refuse and prune are two remediations of the *same* rule — git diverging from the
-API is unacceptable — differing only in whether we stop or delete. Defaulting to
-refuse means a surprising folder costs an operator a manual acknowledgement, not
-a destroyed file; prune can be enabled per GitTarget once the operator trusts the
-projection.
+We are **not** building an active "prune the unwatched content for you" mode now.
+Refusing is safer, it forces a human to look before anything is touched, and it
+never deletes a file the controller did not author. An opt-in delete option could
+be added later, but we are explicitly choosing not to, and to start with refuse
+only.
+
+`scan` (dry-run) remains valuable alongside refuse: it builds the store, runs the
+acceptance checks, and renders the full plan — including the managed drops — so an
+operator can see exactly what reconcile would do before granting it write access.
+See the next section.
 
 ## Scan Mode (Dry-Run)
 
-Because the source-of-truth conviction makes the writer willing to prune, the
-writer must be able to show its hand before it is trusted with write access. Scan
-mode is a dry-run that builds the store, runs the acceptance checks, and computes
-the full plan — creates, updates, whole-replaces, document deletes, file deletes,
-and orphan/unwatched prunes — but stops before flushing anything to the worktree.
-Instead it reports what it *would* do if given write rights.
+Because the source-of-truth duty makes the writer willing to delete managed
+resources the API has dropped, the writer must be able to show its hand before it
+is trusted with write access. Scan mode is a dry-run that builds the store, runs
+the acceptance checks, and computes the full plan — creates, updates,
+whole-replaces, document deletes, file deletes, and managed drops — but stops
+before flushing anything to the worktree. It also reports any acceptance refusal
+(duplicate identity, non-KRM YAML, unwatched KRM) so an operator sees why a folder
+would be rejected. Instead of writing, it reports what it *would* do if given
+write rights.
 
-This is the deliberate gate the existing safety rules ask for: no orphan pruning
-until the initial-reconcile prune hazard has an explicit, reviewable gate. Scan
-mode is that gate. It matters most on first materialization, where the prune set
-can be large and a mistake is destructive — it lets a human see "I am about to
-delete these N files" before any of them are touched.
+This is the deliberate gate the existing safety rules ask for: no deletion until
+the plan has an explicit, reviewable form. Scan mode is that gate. It matters most
+on first materialization, where the managed-drop set can be large and a mistake is
+destructive — it lets a human see "I am about to delete these N files" before any
+of them are touched.
 
 It also falls out naturally from the plan-then-flush architecture: the plan is
 already a first-class value, so scan mode is simply "compute the plan, render it,
-do not flush". The same plan rendering doubles as the human-facing diff and as
-the basis for status/diagnostics, and it is where the prune policy (including the
-`kustomization.yaml` allowlist question) can evolve safely before it is armed.
+do not flush". The same plan rendering doubles as the human-facing diff and as the
+basis for status/diagnostics.
 
 ## Standalone Analyzer CLI
 
@@ -434,24 +761,20 @@ would be created, updated, or pruned. That is useful for auditing a repo before
 adopting it, for debugging a GitTarget, and as a low-stakes way to exercise the
 core logic.
 
-> **POC status (2026-06-04).** The first slice of this exists:
+> **Current role (2026-06-04).**
 > [`internal/manifestanalyzer`](../../../internal/manifestanalyzer) is the
-> runtime-independent library, and
-> [`cmd/manifest-analyzer`](../../../cmd/manifest-analyzer) is the CLI. It does
-> the read-only, structure-first half, with **no cluster involved**: walk an
-> `fs.FS`, classify every file (non-yaml, empty, invalid-yaml, non-krm, krm),
-> detect duplicates, build a bounded summary, report the inventory of every GVK
-> found, and emit acceptance issues — in text or JSON. `--policy refuse` makes
-> any acceptance issue a non-zero exit, prototyping the refuse adoption mode.
+> runtime-independent analysis library, and
+> [`cmd/manifest-analyzer`](../../../cmd/manifest-analyzer) is the CLI. The
+> library walks an `fs.FS`, classifies every file (non-yaml, empty, invalid-yaml,
+> non-krm, krm), detects duplicates, builds a bounded summary, reports the
+> inventory of every GVK found, and emits acceptance issues in text or JSON.
+> `--policy refuse` makes any acceptance issue a non-zero exit, which is the
+> CLI shape of the refuse adoption mode.
 >
 > Deliberately deferred: comparing those GVKs against a live API to decide what
-> is *watched / unwatched / orphaned*. An early version had a `--watched` flag and
-> an injected "watch source", but we pulled it back to "just report all found
-> GVKs" to keep the POC simple and to avoid committing to a name ("watched" may
-> not be the right word) before there is a real cluster-backed source. So the
-> remaining work is: an API source (cluster/snapshot) and the name for it, the
-> watched/unwatched/orphan comparison, the plan/prune computation, and wiring the
-> same library into the live writer.
+> is *watched / unwatched / orphaned*. The next model needs a named API source
+> abstraction, the watched/unwatched/orphan comparison, the plan/prune
+> computation, and wiring the same library into the live writer.
 >
 > Running it against `config/samples` already surfaced a real constraint:
 > `manifestedit` derives manifest identity from a concrete `metadata.name`, so a
@@ -480,45 +803,67 @@ review already wants:
 - **Plan/diagnostic rendering should be reusable** as controller status, as
   CLI human-readable output, and as a machine-readable (JSON) form.
 
-In short, building the analyzer forces the mechanism / policy / runtime
+In short, the analyzer use case reinforces the mechanism / policy / runtime
 separation this document argues for anyway, and it gives that separation a second
 real consumer to keep it honest.
 
 ## Suggested Phases
 
-> Implementation note: rather than treating the analyzer CLI as the final phase,
-> we built its read-only core *first* (phase 9's first slice, see the POC note
-> above) to prove the runtime-independent library shape. The phases below now rest
-> on that foundation — phases 2, 3, and 6 reuse the same library — so the list is
-> ordered by dependency, not by the order the work was started.
+The current baseline is a runtime-independent analyzer library and CLI that can
+walk a directory, classify files and YAML documents, report GVK inventory, detect
+duplicate manifest identities, and render text/JSON. The remaining plan should
+turn that read-only structure model into the shared model used by scan mode and
+the live writer.
 
-1. Extend the current inventory record to carry optional resolved
-   `ResourceIdentifier`, plus GVK/GVR diagnostics.
-2. Build a `ManifestStore` wrapper around `IndexDir` for one GitTarget path and
-   use it inside the live writer instead of `manifestLocator`. Keep it as a
-   controller-runtime-independent library from the start, with the API source and
-   watched-GVK set as injected inputs — this is what later enables the CLI.
-3. Add the first-materialization acceptance phase: the duplicate-identity gate and
-   the non-KRM-YAML gate (both failing before planning), plus the `refuse`
-   adoption-policy default that fails a first-time directory containing unwatched
-   KRM rather than deleting it.
-4. Change delete planning to use manifest identity or resolved resource identity,
-   closing the moved-manifest delete gap.
-5. Replace the event-by-event write loop with plan-then-flush, making the plan a
-   first-class value (prerequisite for scan mode).
-6. Add scan mode: render the full plan, including prospective prunes, without
-   flushing. This must land before any write-side prune is armed.
-7. Apply duplicate-loser pruning through the same per-document delete path (for
-   controller-produced duplicates only).
-8. Arm the `prune` adoption mode for unwatched KRM and orphans, honoring the
-   source-of-truth conviction, opt-in and gated behind scan-mode review.
-9. Ship the standalone analyzer CLI on top of the same library, with an
-   injectable API source (cluster, snapshot, or none for structure-only checks).
-   *First slice done:* read-only classification, summary, GVK inventory,
-   duplicate/non-KRM acceptance issues, and text/JSON output — structure-only, no
-   cluster. Remaining: the API source (and its name), the watched/unwatched/orphan
-   comparison, and plan/prune output.
-10. After that is stable, consider longer-lived inventory caching across batches.
+1. **Stabilize the materialized model.** Promote the analyzer's report shape into
+   a true `ManifestStore`: file models with raw bytes, document models with
+   stable locations, manifest identity, editability, encryption state, duplicate
+   state, and structured diagnostics. Keep `fs.FS` as the read boundary and keep
+   controller-runtime dependencies out. Replace any classification that depends
+   on diagnostic message text with structured reasons from `manifestedit`.
+2. **Add the API/source-of-truth input.** Define an injectable source for the
+   watched API surface and current desired resources. It should work with live
+   controller state, a CLI kubeconfig-backed source, and test snapshots. Resolve
+   every KRM document's GVK to a `ResourceIdentifier` where possible, record
+   unresolved GVKs as diagnostics, and add indexes by both manifest identity and
+   resource identity.
+3. **Build the plan model.** Compare the `ManifestStore` to the desired API set
+   and produce a first-class plan: create, patch, whole-replace, delete document,
+   delete file, drop a watched resource absent from the API, or skip. Duplicate
+   identities and unwatched KRM produce no plan actions — they are refused at
+   acceptance, before planning. The plan should carry enough detail to render
+   human-readable output, JSON, and GitTarget status without recomputing decisions.
+4. **Apply adoption acceptance before writes.** Implement the acceptance gate over
+   the store plus plan. The posture we are building: fail (refuse) on duplicate
+   identities, invalid YAML, non-KRM YAML, and unwatched KRM, reconciling nothing
+   until the folder is cleaned. The managed drop of watched resources absent from
+   the API is core behavior, not an opt-in. We are not building an unwatched-prune
+   mode now. A small allowlist exempting specific non-API KRM kinds (e.g.
+   `kustomization.yaml`) from refusal can be added later if the product chooses to
+   preserve Flux-consumable folders.
+5. **Wire scan mode end to end.** Use the same planner for the CLI and controller
+   dry-run path. Scan mode should build the store, resolve API state when
+   available, run adoption acceptance, render the full plan, and write nothing.
+   This must exist before the destructive managed drop is enabled.
+6. **Close the delete identity gap.** Ensure deletes can target moved manifests
+   without a live object body. Either carry manifest identity on delete events
+   from the reconcile layer, or resolve event GVR/name through the same GVK/GVR
+   source used by the store. The writer should delete by `RecordRef`, not by
+   regenerated path.
+7. **Move the live writer to plan-then-flush.** Replace the event-by-event
+   locator/write path with: build store for the checked-out GitTarget path,
+   compute plan for the pending batch, apply plan to in-memory file models, then
+   flush changed files and staged removals once. `manifestedit.Apply` and
+   `DeleteDocument` remain the per-document edit mechanisms.
+8. **Keep deletion scoped to the managed drop.** The only deletion we perform is
+   of watched KRM the API no longer has, through the per-document delete path, and
+   only for folders that passed acceptance. We are explicitly not pruning unwatched
+   KRM or "duplicate losers"; those refuse instead. An opt-in unwatched prune could
+   be revisited later, behind scan review, but it is out of scope for now.
+9. **Optimize after correctness.** Once the store is authoritative in the writer,
+   add longer-lived cache invalidation across batches. Rebuild on checkout/remote
+   tip changes, external branch movement, GitTarget path changes, or local flushes
+   that cannot be represented incrementally.
 
 ## Bottom Line
 
