@@ -362,13 +362,19 @@ func actionFromDecision(a manifestedit.DecisionAction) (PlanActionKind, bool) {
 }
 
 // documentLocations indexes every managed document to its (file path, document
-// index) reference. DocumentModel deliberately stores neither, so the planner
-// derives both top-down here and hands manifestedit the position at hydration time.
+// index) reference. DocumentModel stores neither: the planner derives both
+// top-down here — the map key's file path and the loop index over
+// FileModel.Documents — and hands manifestedit the position at hydration time. The
+// loop index equals the document's true position in the file because the M4
+// acceptance gate refuses any managed file whose documents are not all valid KRM,
+// so an accepted file holds only managed documents, contiguous from index 0. In
+// scan mode a refused (non-contiguous) file's references are advisory only — the
+// plan is reported, never applied.
 func documentLocations(store *ManifestStore) map[*DocumentModel]RecordRef {
 	out := map[*DocumentModel]RecordRef{}
 	for path, fm := range store.FilesByPath {
-		for _, dm := range fm.Documents {
-			out[dm] = RecordRef{FilePath: path, DocumentIndex: dm.index}
+		for i, dm := range fm.Documents {
+			out[dm] = RecordRef{FilePath: path, DocumentIndex: i}
 		}
 	}
 	return out

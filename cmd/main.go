@@ -852,5 +852,3 @@ func addHealthChecks(mgr ctrl.Manager) {
 	fatalIfErr(mgr.AddHealthzCheck("healthz", healthz.Ping), "unable to set up health check")
 	fatalIfErr(mgr.AddReadyzCheck("readyz", healthz.Ping), "unable to set up ready check")
 }
-
-// image-refresh-test: S2

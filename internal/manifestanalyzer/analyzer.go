@@ -196,9 +196,24 @@ func AnalyzeDir(root string) (Report, error) {
 //
 // mapper resolves each managed document's GVK to a served resource identity; pass
 // nil (or a structure-only mapper) to keep the no-cluster, structure-only mode.
+//
+// BuildStore materialises every KRM document (the empty-allowlist case). Scan mode
+// passes the acceptance policy's allowlist through buildStoreFS so non-API KRM such
+// as kustomization.yaml is retained outside the model rather than materialised.
 func BuildStore(ctx context.Context, fsys fs.FS, mapper mapping.ResourceMapper) *ManifestStore {
+	return buildStoreFS(ctx, fsys, mapper, Allowlist{})
+}
+
+// buildStoreFS is BuildStore with an explicit allowlist: a record whose GVK the
+// allowlist matches is retained (kept out of FilesByPath) instead of materialised.
+func buildStoreFS(
+	ctx context.Context,
+	fsys fs.FS,
+	mapper mapping.ResourceMapper,
+	allowlist Allowlist,
+) *ManifestStore {
 	yamlFiles, _, scanDiags := collectFiles(fsys)
-	return buildStore(ctx, yamlFiles, scanDiags, mapper)
+	return buildStore(ctx, yamlFiles, scanDiags, mapper, allowlist)
 }
 
 // Analyze scans fsys and returns a Report. It is read-only and never fails: any
@@ -208,8 +223,10 @@ func BuildStore(ctx context.Context, fsys fs.FS, mapper mapping.ResourceMapper) 
 func Analyze(fsys fs.FS) Report {
 	yamlFiles, nonYAML, scanDiags := collectFiles(fsys)
 	// Analyze is the no-cluster default: a nil mapper keeps it structure-only, so the
-	// resource index stays empty and no mapping diagnostics are emitted.
-	store := buildStore(context.Background(), yamlFiles, scanDiags, nil)
+	// resource index stays empty and no mapping diagnostics are emitted. It
+	// materialises every KRM document (the empty allowlist), since the legacy report
+	// classifies the whole tree rather than adopting it.
+	store := buildStore(context.Background(), yamlFiles, scanDiags, nil, Allowlist{})
 	return projectReport(store, yamlFiles, nonYAML)
 }
 
@@ -227,25 +244,22 @@ func projectReport(store *ManifestStore, yamlFiles []manifestedit.FileContent, n
 	}
 
 	files := make([]FileReport, 0, len(yamlFiles)+len(nonYAML))
+	// Duplicate identities are acceptance facts derived from the store's collapsed
+	// index. Their position is reconstructed per file (DocumentModel no longer stores
+	// its index), so the duplicate set is collected alongside the file reports.
+	duplicates := map[RecordRef]bool{}
 	for _, f := range yamlFiles {
-		files = append(files, projectFileReport(f.Path, store.FilesByPath[f.Path], diagsByPath[f.Path]))
+		fr, dups := projectFileReport(store, f.Path, store.FilesByPath[f.Path], diagsByPath[f.Path])
+		files = append(files, fr)
+		for ref := range dups {
+			duplicates[ref] = true
+		}
 	}
 	for _, p := range nonYAML {
 		files = append(files, FileReport{Path: p, IsYAML: false})
 	}
 	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
 
-	// Duplicate identities and the invalid-YAML detail are acceptance facts derived
-	// from the store's collapsed index and its structured diagnostics — never from a
-	// per-document field or a diagnostic message match.
-	duplicates := map[RecordRef]bool{}
-	for path, fm := range store.FilesByPath {
-		for _, dm := range fm.Documents {
-			if store.IsDuplicate(dm) {
-				duplicates[RecordRef{FilePath: path, DocumentIndex: dm.index}] = true
-			}
-		}
-	}
 	// Capture the detail for every diagnostic classFromDiag maps to invalid-YAML
 	// (a parse failure or a .sops.yaml missing its sops stanza), so the resulting
 	// IssueInvalidYAML carries a message rather than an empty string.
@@ -329,11 +343,28 @@ func collectFiles(fsys fs.FS) ([]manifestedit.FileContent, []string, []manifeste
 // merging the store's managed KRM documents (the authoritative manifest documents)
 // with diagnostics (which cover empty, invalid, and non-KRM documents) on document
 // index. fm is nil for a YAML file that holds no KRM document.
-func projectFileReport(path string, fm *FileModel, diags []manifestedit.Diagnostic) FileReport {
+//
+// DocumentModel no longer stores its position, so each managed document's true file
+// index is reconstructed from the record-less diagnostic gaps: empty, non-KRM, and
+// invalid documents leave a diagnostic at their position, and the managed documents
+// fill the remaining positions in document order. It also returns the duplicate
+// losers of this file keyed by their reconstructed RecordRef.
+func projectFileReport(
+	store *ManifestStore,
+	path string,
+	fm *FileModel,
+	diags []manifestedit.Diagnostic,
+) (FileReport, map[RecordRef]bool) {
+	managedIdx := reconstructManagedIndices(fm, gapIndices(diags))
+
 	docByIdx := map[int]*DocumentModel{}
+	dups := map[RecordRef]bool{}
 	if fm != nil {
-		for _, dm := range fm.Documents {
-			docByIdx[dm.index] = dm
+		for i, dm := range fm.Documents {
+			docByIdx[managedIdx[i]] = dm
+			if store.IsDuplicate(dm) {
+				dups[RecordRef{FilePath: path, DocumentIndex: managedIdx[i]}] = true
+			}
 		}
 	}
 	diagByIdx := map[int]manifestedit.Diagnostic{}
@@ -343,31 +374,74 @@ func projectFileReport(path string, fm *FileModel, diags []manifestedit.Diagnost
 		}
 	}
 
-	idxSet := map[int]bool{}
-	for i := range docByIdx {
-		idxSet[i] = true
-	}
-	for i := range diagByIdx {
-		idxSet[i] = true
-	}
-	idxs := make([]int, 0, len(idxSet))
-	for i := range idxSet {
-		idxs = append(idxs, i)
-	}
-	sort.Ints(idxs)
-
 	fr := FileReport{Path: path, IsYAML: true}
-	for _, i := range idxs {
+	for _, i := range mergedIndices(docByIdx, diagByIdx) {
 		// A managed KRM document always wins over a co-located diagnostic (for
 		// example a non-editable document paired with a warning about anchors).
 		if dm, ok := docByIdx[i]; ok {
 			fr.Documents = append(fr.Documents, krmDocReport(i, dm))
 			continue
 		}
-		d := diagByIdx[i]
-		fr.Documents = append(fr.Documents, DocumentReport{Index: i, Class: classFromDiag(d)})
+		fr.Documents = append(fr.Documents, DocumentReport{Index: i, Class: classFromDiag(diagByIdx[i])})
 	}
-	return fr
+	return fr, dups
+}
+
+// gapIndices collects the file positions held by a record-less document — empty,
+// non-KRM, or invalid YAML — each of which leaves exactly one diagnostic at its
+// position. The non-editable and duplicate reasons accompany a managed record and
+// are therefore NOT gaps. mapping diagnostics (a different DiagReason value) also
+// accompany a managed record and fall through.
+func gapIndices(diags []manifestedit.Diagnostic) map[int]bool {
+	gaps := map[int]bool{}
+	for _, d := range diags {
+		switch d.Reason {
+		case manifestedit.ReasonEmptyDocument, manifestedit.ReasonNotKRM,
+			manifestedit.ReasonInvalidYAML, manifestedit.ReasonMissingSopsKey:
+			gaps[d.DocumentIndex] = true
+		case manifestedit.ReasonNonEditable, manifestedit.ReasonDuplicateIdentity:
+			// Accompany a managed record, so the record holds the position, not a gap.
+		}
+	}
+	return gaps
+}
+
+// reconstructManagedIndices returns the true file index of each managed document in
+// fm.Documents. The managed documents fill the file positions not taken by a gap
+// (record-less) document, in document order, so the i-th managed document gets the
+// i-th non-gap position. It returns nil for a file with no managed documents.
+func reconstructManagedIndices(fm *FileModel, gaps map[int]bool) []int {
+	if fm == nil {
+		return nil
+	}
+	out := make([]int, len(fm.Documents))
+	pos := 0
+	for i := range fm.Documents {
+		for gaps[pos] {
+			pos++
+		}
+		out[i] = pos
+		pos++
+	}
+	return out
+}
+
+// mergedIndices returns the sorted union of the managed-document and diagnostic
+// positions, so the per-document report lists every position in file order.
+func mergedIndices(docByIdx map[int]*DocumentModel, diagByIdx map[int]manifestedit.Diagnostic) []int {
+	set := map[int]bool{}
+	for i := range docByIdx {
+		set[i] = true
+	}
+	for i := range diagByIdx {
+		set[i] = true
+	}
+	out := make([]int, 0, len(set))
+	for i := range set {
+		out = append(out, i)
+	}
+	sort.Ints(out)
+	return out
 }
 
 // krmDocReport builds a DocumentReport for one managed KRM document.

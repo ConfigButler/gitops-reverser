@@ -1025,12 +1025,30 @@ Implementation notes:
 
 - Run acceptance checks as a distinct step between "build the store" and "use it
   as the planning model", so a failing GitTarget never proceeds to create/update/
-  delete planning with an ambiguous model.
+  delete planning with an ambiguous model. This is implemented as
+  [`manifestanalyzer.Accept`](../../../internal/manifestanalyzer/acceptance.go) (M4).
 - Surface the failure through GitTarget status/diagnostics with enough detail
   (offending identity + file paths) for a human to resolve it, then re-reconcile.
 - Treat the check list as extensible. Duplicate identity, non-KRM YAML,
   unwatched API-backed KRM, and mixed files containing both managed and
   allowlisted documents are pre-planning acceptance failures.
+- **A managed file must be entirely valid KRM (the "impure managed file" rule).**
+  Decision #2 ("no partially materialized multi-document file") is enforced
+  literally: a file that holds at least one managed resource is refused if it *also*
+  holds any non-managed document — an empty/comment-only document, a non-KRM
+  document, or an invalid one. A *standalone* empty document (a file with no managed
+  document) is still ignored; the rule bites only inside a file we would manage. This
+  is what lets `DocumentModel` carry no per-document index: an accepted managed file's
+  documents are contiguous from 0, so positions are derived top-down rather than
+  stored. A practical consequence is that a stray trailing `---` (which yields an
+  empty document) in an *adopted* managed file is refused until cleaned — deliberate
+  strictness over a stored-index workaround.
+- **The non-API KRM allowlist is filename-based.** A real `kustomization.yaml` has
+  no `metadata.name`, so it is not a KRM record and a GVK-keyed allowlist would never
+  match it. The allowlist matches build-directive basenames (as kustomize itself
+  does), retains the whole file outside `FilesByPath`, and suppresses its per-document
+  classification diagnostics. A *named* managed resource found inside an allowlisted
+  file is refused (mixed file) rather than silently un-managed.
 
 ## Adoption Policy: Refuse First
 

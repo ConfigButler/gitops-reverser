@@ -124,17 +124,20 @@ existing [`internal/manifestanalyzer`](../../../internal/manifestanalyzer).
   No classification reads a diagnostic message string.
 - **Notes**: this is where the data-model decisions from the review land in code —
   encode them now while they are fresh.
-- **Known transitional field — `DocumentModel.index`.** The target model derives a
-  document's position top-down instead of storing it, but that only works when
-  `FileModel.Documents` is the complete, contiguous document list. The
-  pre-acceptance, structure-only analyzer legitimately sees non-managed documents
-  (non-KRM / empty / invalid) interspersed between managed ones, so the
-  managed-only slice cannot recover a document's true file position (and gap-filling
-  breaks on the disallowed-construct case, where one index carries both a record and
-  a diagnostic). The field is therefore retained through A2 and **dropped in M4**,
-  once the acceptance gate refuses mixed files and guarantees managed files hold
-  only managed documents. It is harmless in read-only analysis because no slice ever
-  shifts.
+- **Known transitional field — `DocumentModel.index` (resolved in M4: dropped).**
+  The target model derives a document's position top-down instead of storing it, but
+  that only works when `FileModel.Documents` is the complete, contiguous document
+  list. The field was retained through A2/B3/M3 because the pre-acceptance,
+  structure-only analyzer legitimately sees non-managed documents (non-KRM / empty /
+  invalid) interspersed between managed ones. **M4 dropped it.** The fix was not to
+  keep the field but to make the acceptance gate refuse any managed file that is not
+  entirely valid KRM (the impure-managed-file rule = Non-Negotiable Decision #2), so
+  an accepted file's managed documents are contiguous and the loop index is the true
+  position. The two pre-acceptance readers that still need true positions on a
+  *non*-accepted tree — the planner in scan mode and the `Analyze` report — handle it
+  without the field: the planner's derived index is advisory on a folder it is
+  already refusing, and the report reconstructs positions from the record-less
+  diagnostic gaps (`reconstructManagedIndices`).
 
 ---
 
@@ -337,17 +340,80 @@ dependency; it does not exist yet. Independent of Track A.
 
 ### M4 — Acceptance gate
 
+> **Status: ✅ landed.** The gate is
+> [`manifestanalyzer.Accept(store, AcceptancePolicy)`](../../../internal/manifestanalyzer/acceptance.go)
+> returning `Acceptance{Accepted, Issues, Retained}`. It runs the five-bucket
+> classification and refuses: duplicate identity; an **impure managed file** (a file
+> holding managed resources that also holds an empty/comment/non-KRM/invalid
+> passenger — Decision #2's "a multi-document file may hold only valid KRM");
+> standalone non-KRM / invalid YAML (bucket 2); unwatched API-backed KRM
+> (`MappingDisallowed`, bucket 4); recognised KRM the mapper cannot resolve to a
+> single watched resource (`Unserved`/ambiguous/subresource/degraded/unavailable);
+> out-of-scope watched KRM (an injected `InScope` predicate); and a managed resource
+> hiding in an allowlisted file. The mapping-aware refusals fire only when the store
+> has an API source, so a structure-only store runs just the structure checks (the
+> design's "starter requirement"). `Acceptance` reuses the analyzer's
+> `AcceptanceIssue` type, extended with the mapping-aware `IssueKind`s, so the
+> CLI/status renderer is shared.
+>
+> Judgment calls the plan left open:
+> 1. **`DocumentModel.index` is now genuinely dropped** (per the user's explicit
+>    request, and the A2/M4 note's original intent). The earlier A2 note feared this
+>    was unsafe because empty/comment-only documents are valid and *not* refused, so
+>    a managed file `managed --- # comment --- managed` keeps its managed documents
+>    at non-contiguous file indices and a top-down loop index would edit the wrong
+>    document. The resolution was **not** to keep the index but to make the gate
+>    refuse any managed file that is not entirely valid KRM — exactly Non-Negotiable
+>    Decision #2. An accepted file is therefore contiguous; the planner derives each
+>    position from the loop index, and the read-only `Analyze` report reconstructs
+>    positions from the record-less diagnostic gaps
+>    (`reconstructManagedIndices` in
+>    [analyzer.go](../../../internal/manifestanalyzer/analyzer.go)). This trades a
+>    small strictness — a stray trailing `---` in an *adopted* managed file is now
+>    refused — for deleting the most fragile field in the model. The live writer (M7)
+>    re-derives a document's position against the freshly hydrated file at apply time.
+> 2. **The allowlist is filename-based, not GVK-based.** A real `kustomization.yaml`
+>    has no `metadata.name`, so it is never a KRM record and a GVK match would never
+>    see it. `DefaultAllowlist` matches build-directive basenames
+>    (`kustomization.yaml` / `.yml`), retains the whole file outside `FilesByPath`,
+>    and suppresses its per-document index diagnostics. A *named* KRM record found
+>    inside an allowlisted file is retained **with** its identity so the gate refuses
+>    it (`IssueMixedFile`) rather than silently un-managing it. The plan's separate
+>    "mixed managed/allowlisted file" rule is thus split two ways: a (nameless)
+>    Kustomization document in a *non*-allowlisted managed file is just a non-KRM
+>    passenger → impure-managed-file; a *managed* document in an allowlisted file →
+>    mixed-file.
+> 3. **Scope is an injected predicate.** The runtime-independent gate takes
+>    `AcceptancePolicy.InScope func(types.ResourceIdentifier) bool` (nil = no scope
+>    restriction). The CLI passes nil; the controller will inject a namespace-aware
+>    predicate at M7.
+
 - **Depends on**: M3.
 - **Touches**: a distinct step between "build store" and "use as planning model"
   implementing the five-bucket classification and the refuse rules (duplicate
-  identity, non-KRM YAML, unwatched API-backed KRM, out-of-scope watched KRM, mixed
-  managed/allowlisted files); allowlist for non-API KRM (retained, not a
-  `FileModel`).
+  identity, non-KRM YAML, unwatched API-backed KRM, out-of-scope watched KRM, impure
+  managed files / mixed managed-allowlisted files); a filename-based allowlist for
+  non-API KRM (retained, not a `FileModel`).
 - **Unblocks**: M5, and gates M7/M8.
 - **Done when**: refusal produces file-naming diagnostics and reconciles nothing; a
-  clean folder passes; retained allowlisted files never enter `FilesByPath`.
+  clean folder passes; retained allowlisted files never enter `FilesByPath`. ✅
 
 ### M5 — Scan mode end-to-end
+
+> **Status: ✅ landed.**
+> [`manifestanalyzer.Scan(ctx, fsys, mapper, desired, ScanPolicy)`](../../../internal/manifestanalyzer/scan.go)
+> (and `ScanDir`) is the one dry-run pipeline shared by the CLI and the controller's
+> scan path: build store (with the allowlist) → `Accept` → `BuildPlan`, writing
+> nothing. It returns `ScanResult{Store, Acceptance, Plan}`. The plan is **always**
+> computed, even on refusal, so an operator sees what reconcile would do; the caller
+> (M7) gates the apply on `Acceptance.Accepted`.
+> [`RenderScanText` / `RenderScanJSON`](../../../internal/manifestanalyzer/render.go)
+> render acceptance + plan for the CLI and double as the machine-readable status
+> form. The `manifest-analyzer` CLI gains `--mode scan` (structure-only here: no
+> cluster, so the plan is empty, but the full acceptance gate runs — applying the
+> allowlist and the impure/mixed-file refusals). The full plan-with-drops path is
+> proven by the static-snapshot `Scan` unit tests, since the CLI has no cluster
+> access yet (the kubeconfig mapper is the deferred B2 item).
 
 - **Depends on**: M3, M4.
 - **Touches**: one planner shared by the `manifest-analyzer` CLI and a controller
@@ -356,7 +422,7 @@ dependency; it does not exist yet. Independent of Track A.
 - **Unblocks**: human review of destructive plans; precondition for arming any
   flush.
 - **Done when**: CLI renders the full plan (incl. managed drops) and refusals; same
-  renderer feeds GitTarget status. **This must exist before M7/M8 enable deletes.**
+  renderer feeds GitTarget status. **This must exist before M7/M8 enable deletes.** ✅
 
 ### M6 — Delete identity via the mapper
 
@@ -422,6 +488,10 @@ dependency; it does not exist yet. Independent of Track A.
    destructive depends on it.
 
 A2 ✅, B2 ✅, and B3 ✅ have followed; B3 joined the tracks (the store now builds
-with an injected mapper). M3 ✅ has now landed on top of them — the plan is a pure
-function of `(store, files, desired, policy)` — so **M4 (acceptance gate), M5 (scan
-mode), and M6 (delete identity) are now unblocked**. C1 ✅ landed independently.
+with an injected mapper). M3 ✅ landed on top of them — the plan is a pure function
+of `(store, files, desired, policy)`. **M4 (acceptance gate) ✅ and M5 (scan mode) ✅
+have now landed** — `Accept` is the distinct gate between build and plan, `Scan` is
+the shared write-nothing dry-run, and `DocumentModel.index` was dropped (M4 refuses
+any managed file that is not entirely valid KRM, so an accepted file is contiguous).
+That **unblocks M6 (delete identity) and M7 (live writer: plan-then-flush)**. C1 ✅
+landed independently and must precede M7.

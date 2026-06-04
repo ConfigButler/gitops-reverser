@@ -22,6 +22,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"sort"
 
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
@@ -72,6 +73,30 @@ type ManifestStore struct {
 	// the store, in scan order (scan diagnostics first, then per-document index
 	// diagnostics).
 	Diagnostics []manifestedit.Diagnostic
+
+	// Retained holds the allowlisted non-API KRM documents (build directives such as
+	// kustomization.yaml) recognised during the scan but deliberately kept OUT of
+	// FilesByPath and the indexes — exactly like non-YAML auxiliary files. They have
+	// no document set to empty, so they can never be swept, edited, or planned. They
+	// are recorded only so the acceptance gate can name them and refuse a managed
+	// file that illegally shares its bytes with one (a mixed file). It is empty
+	// unless the store was built with a non-empty allowlist.
+	Retained []RetainedDocument
+}
+
+// RetainedDocument records an allowlisted build-directive that is excluded from the
+// managed model. There are two shapes:
+//
+//   - a whole-file retention (the common case): Location.Path names an allowlisted
+//     file (e.g. kustomization.yaml), Identity is the zero value. The file is
+//     retained as auxiliary input and never materialised, planned, or swept.
+//   - a named record hiding in an allowlisted file: Location and Identity both set.
+//     A managed-looking resource must not live in a build-directive file, so the
+//     acceptance gate refuses it (IssueMixedFile) rather than silently un-managing it.
+type RetainedDocument struct {
+	Location manifestedit.Location
+	Identity manifestedit.Identity
+	GVK      schema.GroupVersionKind
 }
 
 // FileModel is one managed file under the scanned root. Its document set and
@@ -103,7 +128,13 @@ func (f *FileModel) Deleted() bool { return f.Current == nil && f.Original != ni
 // DocumentModel is one managed KRM document. It is byte-free: the full
 // manifestedit node tree is built only when a plan action touches the document
 // (Snapshot is the lazy handle), and it deliberately stores neither its file path
-// nor — in the target model — its position.
+// nor its position — both are derived top-down (the file path and the loop index
+// over FileModel.Documents). That derivation is sound because the M4 acceptance
+// gate refuses any managed file whose documents are not all valid KRM, so an
+// accepted file's managed documents are exactly its documents, contiguous from
+// index 0. manifestedit is given the document's position only at apply time. See
+// docs/design/manifest/current-manifest-support-review.md ("Concrete Data
+// Structures") and the M4 acceptance gate (acceptance.go).
 type DocumentModel struct {
 	// ManifestIdentity is the content identity (apiVersion + kind + namespace +
 	// name) as written in YAML.
@@ -131,22 +162,6 @@ type DocumentModel struct {
 	// Snapshot is the lazy body handle. It is unbuilt (zero) until a plan action
 	// touches the document; identity indexing needs only a cheap header parse.
 	Snapshot manifestedit.SnapshotRef
-
-	// index is the document position within its file.
-	//
-	// The target model derives position top-down (the loop index over
-	// FileModel.Documents) rather than storing it. That derivation only works once a
-	// managed file holds ONLY managed documents — which the M4 acceptance gate
-	// guarantees by refusing mixed files. The pre-acceptance, structure-only
-	// analyzer legitimately sees non-managed documents (non-KRM, empty, invalid)
-	// interspersed between managed ones, so the managed-only slice cannot recover a
-	// document's true file position, and gap-filling breaks on the disallowed-
-	// construct case where one index carries both a record and a diagnostic.
-	//
-	// So this field stays until M4 makes FileModel.Documents the complete,
-	// contiguous document list; it is harmless here because read-only analysis never
-	// shifts a slice. See docs/design/manifest/implementation-plan.md (A2 notes).
-	index int
 }
 
 // reasonUnresolvedMapping marks a build-time diagnostic for a KRM document whose
@@ -203,11 +218,23 @@ type RecordRef struct {
 // mapper resolves each document's GVK to a served resource identity. A nil mapper
 // is treated as structure-only, so the analyzer's no-cluster promise holds: no
 // resource identities are resolved and the resource index stays empty.
+//
+// allowlist names the build-directive files (kustomization.yaml and friends) that
+// are retained rather than materialised. The allowlist is filename-based, because a
+// real kustomization.yaml has no metadata.name and so is not a KRM record at all —
+// a GVK-based match would never see it. An allowlisted file never becomes a
+// FileModel, its per-document index diagnostics are suppressed (its nameless build
+// directives must not look like non-KRM refusals), and it is recorded in
+// store.Retained instead. A named KRM record found inside an allowlisted file is
+// retained WITH its identity so the acceptance gate can refuse the mixed file rather
+// than silently un-manage a resource. The empty allowlist (BuildStore / Analyze)
+// materialises every KRM record, the legacy structure-only behaviour.
 func buildStore(
 	ctx context.Context,
 	yamlFiles []manifestedit.FileContent,
 	scanDiags []manifestedit.Diagnostic,
 	mapper mapping.ResourceMapper,
+	allowlist Allowlist,
 ) *ManifestStore {
 	if mapper == nil {
 		mapper = mapping.NewStructureOnlyMapper()
@@ -219,48 +246,106 @@ func buildStore(
 		ByManifestIdentity: map[manifestedit.Identity]*DocumentModel{},
 		ByResourceIdentity: map[types.ResourceIdentifier]*DocumentModel{},
 		ByGVK:              map[schema.GroupVersionKind][]*DocumentModel{},
-		Diagnostics:        append(append([]manifestedit.Diagnostic(nil), scanDiags...), indexDiags...),
+		Diagnostics:        retainedDiagnostics(scanDiags, indexDiags, allowlist),
 	}
 
 	// inv.Records are exactly the KRM documents (editable or not), in stable scan
 	// order (path, then document index), so each managed file's Documents slice is
 	// built in document order and first-occurrence-wins is deterministic.
+	hasNamedRecord := map[string]bool{}
 	for _, r := range inv.Records {
-		fm := store.FilesByPath[r.Location.Path]
-		if fm == nil {
-			fm = &FileModel{Path: r.Location.Path}
-			store.FilesByPath[r.Location.Path] = fm
+		if allowlist.Allows(r.Location.Path) {
+			// A named KRM record inside an allowlisted build-directive file (a managed
+			// resource hiding in kustomization.yaml). We must not silently un-manage it,
+			// so retain it WITH its identity for the mixed-file refusal; never materialise.
+			hasNamedRecord[r.Location.Path] = true
+			store.Retained = append(store.Retained, RetainedDocument{
+				Location: r.Location, Identity: r.Identity, GVK: gvkOf(r.Identity),
+			})
+			continue
 		}
-		gvk := gvkOf(r.Identity)
-		dm := &DocumentModel{
-			ManifestIdentity: r.Identity,
-			Editable:         r.Editable && !r.Encrypted,
-			Cause:            causeFor(r),
-			index:            r.Location.DocumentIndex,
-		}
-		// resolveMapping is the sole owner of dm.Mapping: it sets the mapper's reported
-		// status on every path (including the error path), so a failed lookup is never
-		// left looking like intentional structure-only analysis.
-		store.resolveMapping(ctx, dm, gvk, mapper, r.Location)
-		fm.Documents = append(fm.Documents, dm)
-		store.ByGVK[gvk] = append(store.ByGVK[gvk], dm)
+		store.materialize(ctx, r, mapper)
+	}
 
-		// The manifest-identity index is the duplicate collapse: documents that claim
-		// their identity take it first-occurrence-wins; a later collision is therefore
-		// not the winner and is detectable via IsDuplicate. The resource-identity index
-		// collapses on exactly the same winners, so a resolved winner is reachable by
-		// either identity.
-		if dm.claimsIdentity() {
-			if _, taken := store.ByManifestIdentity[dm.ManifestIdentity]; !taken {
-				store.ByManifestIdentity[dm.ManifestIdentity] = dm
-				if dm.ResourceIdentity != nil {
-					store.ByResourceIdentity[*dm.ResourceIdentity] = dm
-				}
+	// Record every allowlisted file with no named record as a whole-file retention,
+	// so it is known to acceptance (and shown) but never becomes a FileModel.
+	for _, f := range yamlFiles {
+		if allowlist.Allows(f.Path) && !hasNamedRecord[f.Path] {
+			store.Retained = append(store.Retained, RetainedDocument{Location: manifestedit.Location{Path: f.Path}})
+		}
+	}
+	sortRetained(store.Retained)
+
+	return store
+}
+
+// materialize adds one managed KRM record to the store: its FileModel, the GVK
+// index, the resolved mapping, and the first-occurrence-wins identity indexes.
+func (s *ManifestStore) materialize(
+	ctx context.Context,
+	r manifestedit.DocumentRecord,
+	mapper mapping.ResourceMapper,
+) {
+	gvk := gvkOf(r.Identity)
+	fm := s.FilesByPath[r.Location.Path]
+	if fm == nil {
+		fm = &FileModel{Path: r.Location.Path}
+		s.FilesByPath[r.Location.Path] = fm
+	}
+	dm := &DocumentModel{
+		ManifestIdentity: r.Identity,
+		Editable:         r.Editable && !r.Encrypted,
+		Cause:            causeFor(r),
+	}
+	// resolveMapping is the sole owner of dm.Mapping: it sets the mapper's reported
+	// status on every path (including the error path), so a failed lookup is never
+	// left looking like intentional structure-only analysis.
+	s.resolveMapping(ctx, dm, gvk, mapper, r.Location)
+	fm.Documents = append(fm.Documents, dm)
+	s.ByGVK[gvk] = append(s.ByGVK[gvk], dm)
+
+	// The manifest-identity index is the duplicate collapse: documents that claim
+	// their identity take it first-occurrence-wins; a later collision is therefore
+	// not the winner and is detectable via IsDuplicate. The resource-identity index
+	// collapses on exactly the same winners, so a resolved winner is reachable by
+	// either identity.
+	if dm.claimsIdentity() {
+		if _, taken := s.ByManifestIdentity[dm.ManifestIdentity]; !taken {
+			s.ByManifestIdentity[dm.ManifestIdentity] = dm
+			if dm.ResourceIdentity != nil {
+				s.ByResourceIdentity[*dm.ResourceIdentity] = dm
 			}
 		}
 	}
+}
 
-	return store
+// retainedDiagnostics concatenates scan and index diagnostics, dropping the
+// per-document index diagnostics of allowlisted files: their nameless build
+// directives are retained, not classified, so they must not surface as non-KRM or
+// invalid-YAML refusals. Scan diagnostics (file access) are always kept.
+func retainedDiagnostics(
+	scanDiags, indexDiags []manifestedit.Diagnostic,
+	allowlist Allowlist,
+) []manifestedit.Diagnostic {
+	out := append([]manifestedit.Diagnostic(nil), scanDiags...)
+	for _, d := range indexDiags {
+		if allowlist.Allows(d.Path) {
+			continue
+		}
+		out = append(out, d)
+	}
+	return out
+}
+
+// sortRetained orders retained entries by path then document index, for stable
+// output regardless of the order records and files were visited.
+func sortRetained(retained []RetainedDocument) {
+	sort.Slice(retained, func(i, j int) bool {
+		if retained[i].Location.Path != retained[j].Location.Path {
+			return retained[i].Location.Path < retained[j].Location.Path
+		}
+		return retained[i].Location.DocumentIndex < retained[j].Location.DocumentIndex
+	})
 }
 
 // resolveMapping asks the injected mapper to resolve dm's GVK to a served GVR,

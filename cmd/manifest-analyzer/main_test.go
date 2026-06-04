@@ -105,6 +105,48 @@ func TestRun_GVKInventory(t *testing.T) {
 	}
 }
 
+func TestRun_ScanTextRefuses(t *testing.T) {
+	// fixtureDir contains a non-KRM values.yaml, so scan mode refuses under --policy
+	// refuse and prints the acceptance verdict and the (empty, structure-only) plan.
+	var out, errBuf bytes.Buffer
+	if code := run([]string{"--mode", "scan", "--policy", "refuse", fixtureDir(t)}, &out, &errBuf); code != 1 {
+		t.Fatalf("scan refuse with issues: exit = %d, want 1 (stderr=%s)", code, errBuf.String())
+	}
+	for _, want := range []string{"Acceptance: REFUSED", "Plan: no changes"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("scan output missing %q:\n%s", want, out.String())
+		}
+	}
+}
+
+func TestRun_ScanCleanPasses(t *testing.T) {
+	clean := t.TempDir()
+	write(t, clean, "deploy.yaml", deployYAML)
+
+	var out, errBuf bytes.Buffer
+	if code := run([]string{"--mode", "scan", "--policy", "refuse", clean}, &out, &errBuf); code != 0 {
+		t.Fatalf("scan refuse on clean tree: exit = %d, want 0 (stderr=%s)", code, errBuf.String())
+	}
+	if !strings.Contains(out.String(), "Acceptance: accepted") {
+		t.Errorf("expected accepted verdict: %s", out.String())
+	}
+}
+
+func TestRun_ScanJSON(t *testing.T) {
+	var out, errBuf bytes.Buffer
+	code := run([]string{"--mode", "scan", "--format", "json", fixtureDir(t)}, &out, &errBuf)
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr=%s", code, errBuf.String())
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(out.Bytes(), &parsed); err != nil {
+		t.Fatalf("scan JSON invalid: %v\n%s", err, out.String())
+	}
+	if _, ok := parsed["accepted"]; !ok {
+		t.Errorf("scan JSON missing accepted key: %s", out.String())
+	}
+}
+
 func TestRun_Errors(t *testing.T) {
 	cases := []struct {
 		name string
@@ -114,9 +156,11 @@ func TestRun_Errors(t *testing.T) {
 		{"no args", nil, 2},
 		{"too many args", []string{"a", "b"}, 2},
 		{"bad flag", []string{"--nope", "x"}, 2},
+		{"bad mode", []string{"--mode", "delete", "x"}, 2},
 		{"bad format", []string{"--format", "xml", "x"}, 2},
 		{"bad policy", []string{"--policy", "delete", "x"}, 2},
 		{"missing dir", []string{filepath.Join("definitely", "missing", "dir")}, 2},
+		{"scan missing dir", []string{"--mode", "scan", filepath.Join("definitely", "missing")}, 2},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

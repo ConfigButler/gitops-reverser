@@ -26,17 +26,26 @@ limitations under the License.
 //
 //	manifest-analyzer [flags] <dir>
 //
-//	--format text|json   output format (default text)
+//	--mode   analyze|scan  what to produce (default analyze)
+//	                       analyze: the structural report (files, GVK inventory)
+//	                       scan:    the adoption dry-run (acceptance + plan), the
+//	                                shared scan-mode pipeline with no flush
+//	--format text|json     output format (default text)
 //	--policy report|refuse
-//	                     report: always exit 0 (analysis only)
-//	                     refuse: exit 1 when any acceptance issue is found
+//	                       report: always exit 0 (analysis only)
+//	                       refuse: exit 1 when the folder would be refused
+//	                               (analyze: any acceptance issue; scan: not accepted)
 //
 // The tool is structure-only and needs no cluster: it reports duplicate
 // identities, KRM vs. non-KRM classification, multi-document files, and the
-// inventory of every GVK found.
+// inventory of every GVK found. Scan mode additionally applies the non-API KRM
+// allowlist (kustomization.yaml is retained, not flagged), runs the full adoption
+// acceptance gate, and renders the plan — which is empty here because no cluster
+// state is available to compare against.
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"io"
@@ -60,6 +69,7 @@ func main() {
 func run(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("manifest-analyzer", flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	mode := fs.String("mode", "analyze", "what to produce: analyze|scan")
 	format := fs.String("format", "text", "output format: text|json")
 	policy := fs.String("policy", "report", "adoption policy: report|refuse")
 	fs.Usage = func() {
@@ -68,6 +78,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if err := fs.Parse(args); err != nil {
+		return exitUsage
+	}
+	if *mode != "analyze" && *mode != "scan" {
+		fmt.Fprintf(stderr, "error: unknown mode %q (want analyze|scan)\n", *mode)
 		return exitUsage
 	}
 	if *format != "text" && *format != "json" {
@@ -84,13 +98,22 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return exitUsage
 	}
 
-	rep, err := manifestanalyzer.AnalyzeDir(fs.Arg(0))
+	if *mode == "scan" {
+		return runScan(fs.Arg(0), *format, *policy, stdout, stderr)
+	}
+	return runAnalyze(fs.Arg(0), *format, *policy, stdout, stderr)
+}
+
+// runAnalyze renders the structural report and applies the refuse policy over its
+// acceptance issues.
+func runAnalyze(dir, format, policy string, stdout, stderr io.Writer) int {
+	rep, err := manifestanalyzer.AnalyzeDir(dir)
 	if err != nil {
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		return exitUsage
 	}
 
-	if *format == "json" {
+	if format == "json" {
 		if err := manifestanalyzer.RenderJSON(stdout, rep); err != nil {
 			fmt.Fprintf(stderr, "error: %v\n", err)
 			return exitUsage
@@ -99,7 +122,36 @@ func run(args []string, stdout, stderr io.Writer) int {
 		manifestanalyzer.RenderText(stdout, rep)
 	}
 
-	if *policy == "refuse" && len(rep.Issues) > 0 {
+	if policy == "refuse" && len(rep.Issues) > 0 {
+		return exitRefused
+	}
+	return exitOK
+}
+
+// runScan runs the adoption dry-run (the shared scan-mode pipeline) and applies the
+// refuse policy over the acceptance decision. It is structure-only: no cluster
+// state, so the plan is empty, but the acceptance gate is the full one — it applies
+// the non-API KRM allowlist and the impure-managed-file / mixed-file refusals.
+func runScan(dir, format, policy string, stdout, stderr io.Writer) int {
+	scanPolicy := manifestanalyzer.ScanPolicy{
+		Acceptance: manifestanalyzer.AcceptancePolicy{Allowlist: manifestanalyzer.DefaultAllowlist()},
+	}
+	result, err := manifestanalyzer.ScanDir(context.Background(), dir, nil, nil, scanPolicy)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return exitUsage
+	}
+
+	if format == "json" {
+		if err := manifestanalyzer.RenderScanJSON(stdout, result); err != nil {
+			fmt.Fprintf(stderr, "error: %v\n", err)
+			return exitUsage
+		}
+	} else {
+		manifestanalyzer.RenderScanText(stdout, result)
+	}
+
+	if policy == "refuse" && !result.Acceptance.Accepted {
 		return exitRefused
 	}
 	return exitOK

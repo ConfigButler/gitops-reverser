@@ -116,10 +116,18 @@ func TestAnalyze_Summary(t *testing.T) {
 
 func TestAnalyze_Issues(t *testing.T) {
 	rep := Analyze(sampleFS())
+	// The structure-only Analyze report surfaces only the structure-only issue kinds;
+	// the acceptance gate's mapping-aware kinds never appear here, so they are 0. All
+	// kinds are listed so the exhaustive linter guards future additions.
 	want := map[IssueKind]int{
-		IssueDuplicate:   1,
-		IssueNonKRM:      1,
-		IssueInvalidYAML: 1,
+		IssueDuplicate:         1,
+		IssueNonKRM:            1,
+		IssueInvalidYAML:       1,
+		IssueImpureManagedFile: 0,
+		IssueMixedFile:         0,
+		IssueUnwatchedAPIKRM:   0,
+		IssueUnresolvedKRM:     0,
+		IssueOutOfScope:        0,
 	}
 	for kind, n := range want {
 		if got := countIssues(rep, kind); got != n {

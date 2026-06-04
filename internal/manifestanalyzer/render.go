@@ -26,6 +26,7 @@ import (
 	"strings"
 
 	"github.com/ConfigButler/gitops-reverser/internal/git/manifestedit"
+	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
 // RenderJSON writes the report as indented JSON. It is the machine-readable form
@@ -160,4 +161,139 @@ func diagCounts(m map[manifestedit.DiagnosticLevel]int) []kv {
 func sortKV(items []kv) []kv {
 	sort.Slice(items, func(i, j int) bool { return items[i].label < items[j].label })
 	return items
+}
+
+// RenderScanText writes a human-readable view of a scan: the acceptance decision and
+// its refusals, the retained allowlisted documents, and the full plan. It is the
+// M5 dry-run output for the CLI and doubles as a GitTarget status summary.
+func RenderScanText(w io.Writer, result ScanResult) {
+	renderAcceptanceText(w, result.Acceptance)
+	fmt.Fprintln(w)
+	renderPlanText(w, result.Plan)
+}
+
+// renderAcceptanceText writes the acceptance decision, refusals, and retained files.
+func renderAcceptanceText(w io.Writer, acc Acceptance) {
+	if acc.Accepted {
+		fmt.Fprintln(w, "Acceptance: accepted")
+	} else {
+		fmt.Fprintf(w, "Acceptance: REFUSED (%d issue(s))\n", len(acc.Issues))
+	}
+	for _, is := range acc.Issues {
+		fmt.Fprintf(w, "  %-22s %s#%d  %s\n", is.Kind, is.Path, is.DocumentIndex, is.Message)
+	}
+	if len(acc.Retained) > 0 {
+		fmt.Fprintf(w, "Retained (allowlisted, not materialized): %d\n", len(acc.Retained))
+		for _, rd := range acc.Retained {
+			fmt.Fprintf(w, "  %s#%d  %s\n", rd.Location.Path, rd.Location.DocumentIndex, identityRef(rd.Identity))
+		}
+	}
+}
+
+// renderPlanText writes the plan's actions and any planning diagnostics.
+func renderPlanText(w io.Writer, plan Plan) {
+	if len(plan.Actions) == 0 {
+		fmt.Fprintln(w, "Plan: no changes")
+	} else {
+		fmt.Fprintf(w, "Plan: %d action(s)\n", len(plan.Actions))
+		for _, a := range plan.Actions {
+			fmt.Fprintf(w, "  %-12s %-40s %s\n", a.Kind, planActionTarget(a), a.Reason)
+		}
+	}
+	for _, d := range plan.Diagnostics {
+		fmt.Fprintf(w, "  diag %-7s %s#%d  %s\n", d.Level, d.Path, d.DocumentIndex, d.Message)
+	}
+}
+
+// planActionTarget renders the file an action touches: the placement path for a
+// create (which has no existing location yet), the existing document otherwise.
+func planActionTarget(a PlanAction) string {
+	if a.Kind == PlanCreate {
+		return a.Resource.ToGitPath()
+	}
+	return fmt.Sprintf("%s#%d", a.Ref.FilePath, a.Ref.DocumentIndex)
+}
+
+// RenderScanJSON writes the scan as indented JSON: the machine-readable form shared
+// by the CLI and the GitTarget status path. It omits the live desired objects, which
+// are unbounded; it carries only the decided plan.
+func RenderScanJSON(w io.Writer, result ScanResult) error {
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(scanToJSON(result))
+}
+
+// scanJSON is the compact, bounded JSON projection of a ScanResult.
+type scanJSON struct {
+	Accepted bool              `json:"accepted"`
+	Issues   []AcceptanceIssue `json:"issues"`
+	Retained []retainedJSON    `json:"retained,omitempty"`
+	Plan     planJSON          `json:"plan"`
+}
+
+type retainedJSON struct {
+	Path          string                `json:"path"`
+	DocumentIndex int                   `json:"documentIndex"`
+	Identity      manifestedit.Identity `json:"identity"`
+}
+
+type planJSON struct {
+	Counts      map[string]int            `json:"counts"`
+	Actions     []planActionJSON          `json:"actions"`
+	Diagnostics []manifestedit.Diagnostic `json:"diagnostics,omitempty"`
+}
+
+type planActionJSON struct {
+	Kind          string                `json:"kind"`
+	Path          string                `json:"path,omitempty"`
+	DocumentIndex int                   `json:"documentIndex,omitempty"`
+	Identity      manifestedit.Identity `json:"identity"`
+	Resource      string                `json:"resource,omitempty"`
+	Reason        string                `json:"reason,omitempty"`
+}
+
+// scanToJSON builds the compact JSON projection.
+func scanToJSON(result ScanResult) scanJSON {
+	out := scanJSON{
+		Accepted: result.Acceptance.Accepted,
+		Issues:   result.Acceptance.Issues,
+		Plan: planJSON{
+			Counts:      planCounts(result.Plan),
+			Diagnostics: result.Plan.Diagnostics,
+		},
+	}
+	for _, rd := range result.Acceptance.Retained {
+		out.Retained = append(out.Retained, retainedJSON{
+			Path: rd.Location.Path, DocumentIndex: rd.Location.DocumentIndex, Identity: rd.Identity,
+		})
+	}
+	for _, a := range result.Plan.Actions {
+		out.Plan.Actions = append(out.Plan.Actions, planActionJSON{
+			Kind:          string(a.Kind),
+			Path:          planActionTarget(a),
+			DocumentIndex: a.Ref.DocumentIndex,
+			Identity:      a.Identity,
+			Resource:      resourceString(a.Resource),
+			Reason:        a.Reason,
+		})
+	}
+	return out
+}
+
+// planCounts converts the plan's per-kind counts to string keys for JSON.
+func planCounts(plan Plan) map[string]int {
+	out := map[string]int{}
+	for kind, n := range plan.Counts() {
+		out[string(kind)] = n
+	}
+	return out
+}
+
+// resourceString renders a resolved resource identity, or "" when it is the zero
+// value (a document a structure-only store never resolved).
+func resourceString(r types.ResourceIdentifier) string {
+	if r == (types.ResourceIdentifier{}) {
+		return ""
+	}
+	return r.Key()
 }

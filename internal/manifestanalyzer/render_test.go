@@ -20,9 +20,11 @@ package manifestanalyzer
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
+	"testing/fstest"
 
 	"github.com/ConfigButler/gitops-reverser/internal/git/manifestedit"
 )
@@ -106,5 +108,97 @@ func TestRenderJSON_RoundTrip(t *testing.T) {
 	}
 	if decoded.Summary.ByClass[ClassKRM] != rep.Summary.ByClass[ClassKRM] {
 		t.Errorf("round-trip class counts differ")
+	}
+}
+
+// scanWithRefusalAndPlan builds a scan with one create, one patch, a retained file,
+// and an unwatched-Secret refusal, so the renderers exercise every branch.
+func scanWithRefusalAndPlan(t *testing.T) ScanResult {
+	t.Helper()
+	fsys := fstest.MapFS{
+		"deploy.yaml":        {Data: []byte(deployYAML)},
+		"secret.yaml":        {Data: []byte(plainSecretYAML)},
+		"kustomization.yaml": {Data: []byte(kustomizationY)},
+	}
+	desired := []DesiredResource{desiredDeployWeb(3), desiredConfigMap("new")}
+	policy := ScanPolicy{Acceptance: AcceptancePolicy{Allowlist: DefaultAllowlist()}}
+	return Scan(context.Background(), fsys, snapMapper(), desired, policy)
+}
+
+func TestRenderScanText(t *testing.T) {
+	var buf bytes.Buffer
+	RenderScanText(&buf, scanWithRefusalAndPlan(t))
+	out := buf.String()
+
+	for _, want := range []string{
+		"Acceptance: REFUSED",
+		"unwatched-api-krm",
+		"Retained (allowlisted, not materialized): 1",
+		"kustomization.yaml",
+		"Plan: 2 action(s)",
+		"create",
+		"v1/configmaps/default/new.yaml",
+		"patch",
+		"deploy.yaml#0",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("scan text output missing %q\n---\n%s", want, out)
+		}
+	}
+}
+
+func TestRenderScanText_Accepted(t *testing.T) {
+	fsys := fstest.MapFS{"deploy.yaml": {Data: []byte(deployYAML)}}
+	desired := []DesiredResource{desiredDeployWeb(1)}
+	result := Scan(context.Background(), fsys, snapMapper(), desired, ScanPolicy{})
+
+	var buf bytes.Buffer
+	RenderScanText(&buf, result)
+	out := buf.String()
+	if !strings.Contains(out, "Acceptance: accepted") {
+		t.Errorf("expected accepted line: %s", out)
+	}
+	if !strings.Contains(out, "Plan: no changes") {
+		t.Errorf("expected no-changes plan line: %s", out)
+	}
+}
+
+func TestRenderScanJSON(t *testing.T) {
+	var buf bytes.Buffer
+	if err := RenderScanJSON(&buf, scanWithRefusalAndPlan(t)); err != nil {
+		t.Fatalf("RenderScanJSON: %v", err)
+	}
+
+	var parsed struct {
+		Accepted bool `json:"accepted"`
+		Issues   []struct {
+			Kind string `json:"kind"`
+		} `json:"issues"`
+		Retained []struct {
+			Path string `json:"path"`
+		} `json:"retained"`
+		Plan struct {
+			Counts  map[string]int `json:"counts"`
+			Actions []struct {
+				Kind     string `json:"kind"`
+				Path     string `json:"path"`
+				Resource string `json:"resource"`
+			} `json:"actions"`
+		} `json:"plan"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &parsed); err != nil {
+		t.Fatalf("scan JSON is invalid: %v\n%s", err, buf.String())
+	}
+	if parsed.Accepted {
+		t.Errorf("scan JSON should report refusal")
+	}
+	if len(parsed.Issues) == 0 || len(parsed.Retained) != 1 {
+		t.Errorf("scan JSON issues=%d retained=%d", len(parsed.Issues), len(parsed.Retained))
+	}
+	if parsed.Plan.Counts["create"] != 1 || parsed.Plan.Counts["patch"] != 1 {
+		t.Errorf("scan JSON plan counts = %+v", parsed.Plan.Counts)
+	}
+	if len(parsed.Plan.Actions) != 2 {
+		t.Errorf("scan JSON should carry both actions, got %+v", parsed.Plan.Actions)
 	}
 }
