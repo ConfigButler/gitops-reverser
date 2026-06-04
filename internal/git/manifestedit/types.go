@@ -33,10 +33,10 @@ package manifestedit
 // It is deliberately not the API-side resource identity (GVR); mapping a GVK to
 // a GVR needs a live RESTMapper and is out of scope for this POC.
 type Identity struct {
-	APIVersion string
-	Kind       string
-	Namespace  string
-	Name       string
+	APIVersion string `json:"apiVersion"`
+	Kind       string `json:"kind"`
+	Namespace  string `json:"namespace"`
+	Name       string `json:"name"`
 }
 
 // Location points at one document inside one file, relative to the scan root.
@@ -59,10 +59,10 @@ const (
 
 // Diagnostic explains an inventory or edit decision.
 type Diagnostic struct {
-	Level         DiagnosticLevel
-	Message       string
-	Path          string
-	DocumentIndex int
+	Level         DiagnosticLevel `json:"level"`
+	Message       string          `json:"message"`
+	Path          string          `json:"path"`
+	DocumentIndex int             `json:"documentIndex"`
 }
 
 // DocumentRecord is one indexed Kubernetes document.
