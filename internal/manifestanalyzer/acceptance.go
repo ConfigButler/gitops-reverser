@@ -178,8 +178,9 @@ func Accept(store *ManifestStore, policy AcceptancePolicy) Acceptance {
 }
 
 // duplicateRefusals refuses every duplicate manifest identity, naming the loser and
-// the first-occurrence winner. Positions come from top-down derivation: exact for an
-// accepted (contiguous) file, advisory for a file the gate is already refusing.
+// the first-occurrence winner. Positions come from documentLocations, which
+// reconstructs true file indices from record-less diagnostic gaps, so refused
+// non-contiguous files still name the right documents.
 func duplicateRefusals(store *ManifestStore) []AcceptanceIssue {
 	docLoc := documentLocations(store)
 	var out []AcceptanceIssue

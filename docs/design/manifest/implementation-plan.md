@@ -436,12 +436,63 @@ dependency; it does not exist yet. Independent of Track A.
 
 ### M6 — Delete identity via the mapper
 
+> **Status: ✅ landed.** The delete-identity resolution is the pure planning-layer
+> primitive
+> [`manifestanalyzer.PlanDelete(ctx, store, mapper, resource)`](../../../internal/manifestanalyzer/delete_plan.go)
+> returning `(PlanAction, emitted bool, error)`. It is the steady-state per-event
+> delete path of the design's "Two Paths, One Plan Type" — it targets exactly one
+> identity and **never sweeps**, so a lone delete intent can never be read as "every
+> other document is now an orphan." It emits a single `PlanDeleteDocument` (not a
+> `PlanDropOrphan`, which stays the resync sweep's kind), per the reconcile doc's "a
+> live `DELETED` event is an explicit delete-document." Covered by
+> [`delete_plan_test.go`](../../../internal/manifestanalyzer/delete_plan_test.go)
+> (by-resource-identity, moved manifest, multi-doc index, not-in-Git no-op, encrypted
+> still deletes, reverse-map fallback, unserved fallback no-op, mapper-error fail-closed,
+> duplicate suppressed).
+>
+> Judgment calls the plan left open:
+> 1. **The primary lookup is the content-derived `ByResourceIdentity` index, with the
+>    mapper as the explicit fallback** — a small clarification of the plan's "resolve
+>    delete-event GVR/name → identity *through the mapper*." A DELETE event carries no
+>    object body, so identity cannot come from content; but the resource-identity index
+>    B3 built *with* the mapper already keys exactly on the event's GVR/namespace/name,
+>    so it is the direct, content-derived bridge for the common case and is what makes a
+>    manifest **moved off its canonical path** resolvable (the review's "the writer
+>    should locate watched resources by `ResourceIdentifier`"). The mapper's
+>    `GVKForGVR` reverse-map is the fallback for a document the resource index never
+>    indexed (e.g. a structure-only store paired with a reverse-capable mapper); a GVR
+>    that does not reverse-map to a single served GVK names no manifest identity we can
+>    trust, so it resolves to "no managed document," never a guess.
+> 2. **Editability does not gate a delete.** `manifestedit.DeleteDocument` is
+>    content-agnostic (it never decrypts or merges), so an encrypted or non-editable
+>    document is still removed when its resource leaves the cluster — editability gates
+>    patches, not removals.
+> 3. **Fail closed when the API surface is unobservable, but no-op on trusted absence.**
+>    The fallback distinguishes two reasons `GVKForGVR` does not resolve. A Go error
+>    (discovery RPC failure / cancelled context) *and* a `MappingCatalogUnavailable` /
+>    `MappingDiscoveryDegraded` status both mean the surface could not be observed, so
+>    `PlanDelete` returns an error and the writer (M7) **holds and retries** — silently
+>    dropping the delete would leave a stale manifest exactly when discovery is flaky,
+>    and the mapping doc's Failure Policy forbids treating an unobservable surface as
+>    absence (gvk-gvr-mapping-layer.md, "Failure Policy"). A *trusted* "no served GVK"
+>    answer (`Unserved` / `Disallowed` / `Subresource`, or `StructureOnly`) is the
+>    opposite: it is a genuine no-op, stable under retry. (This refinement came from
+>    review — the first cut lumped the unobservable statuses in with trusted absence.)
+> 4. **A duplicate-identity collision is suppressed** defensively, even though M7 gates
+>    steady state on `Accept` (which refuses such a folder): deleting one arbitrary copy
+>    of a collided identity is the exact ambiguity the design refuses to guess at.
+> 5. **The writer half ("delete by `RecordRef`, never a regenerated path") lands in
+>    M7.** M6 delivers the `RecordRef`-producing resolution; the live writer that
+>    consumes it is the M7 cutover. `PlanDelete` already returns the true `RecordRef`
+>    (reusing `documentLocations`, so the index is correct even for a non-canonical or
+>    impure file), so M7 hands that position straight to `manifestedit.DeleteDocument`.
+
 - **Depends on**: M3, B2.
 - **Touches**: resolve delete-event GVR/name → identity through the mapper in the
   planning layer; the writer deletes by `RecordRef`, never by a regenerated path.
 - **Unblocks**: correct deletes for moved manifests in M7.
 - **Done when**: a delete with only GVR/name targets the right document even when
-  the manifest was moved off its canonical path.
+  the manifest was moved off its canonical path. ✅
 
 ### M7 — Live writer: plan-then-flush [runtime]
 
@@ -461,7 +512,15 @@ dependency; it does not exist yet. Independent of Track A.
   whole-replace decisions (`reconcileAgainstExisting`,
   `manifestsAreSemanticallyEqual`) survive as **plan decisions**; e2e green.
 - **Notes**: the largest cutover. Land it behind scan review (M5) and the topology
-  guard (C1).
+  guard (C1). The two planning halves it folds at the commit boundary already exist:
+  `BuildPlan` (M3) for a full-snapshot resync, and `PlanDelete` (M6) for a per-event
+  `DELETED` intent. The remaining steady-state piece M7 must add is the per-event
+  **create/patch** resolution (a `PendingChange` whose `Object` is non-nil) — the
+  single-identity twin of `BuildPlan`'s desired-side loop — plus the `PendingChanges`
+  coalescing buffer, commit-boundary hydration, and the `Flush` over
+  `Dirty()`/`Deleted()` files. M7 should also hoist the per-commit `documentLocations`
+  / `collidedIdentities` maps that `PlanDelete` recomputes per call, so folding many
+  intents stays bounded by the batch (M9 then caches across batches).
 
 ### M8 — Streaming mark-and-sweep resync [runtime]
 
@@ -503,5 +562,10 @@ of `(store, files, desired, policy)`. **M4 (acceptance gate) ✅ and M5 (scan mo
 have now landed** — `Accept` is the distinct gate between build and plan, `Scan` is
 the shared write-nothing dry-run, and `DocumentModel.index` was dropped (M4 refuses
 any managed file that is not entirely valid KRM, so an accepted file is contiguous).
-That **unblocks M6 (delete identity) and M7 (live writer: plan-then-flush)**. C1 ✅
+**M6 (delete identity) ✅ has now landed too** — `PlanDelete` resolves a GVR-only
+`DELETED` event to a single `delete-document` action over the content-derived store, so
+a moved manifest is still deleted by its true `RecordRef`. That leaves the critical
+path at **M7 (live writer: plan-then-flush)**, which folds `BuildPlan` (resync) and
+`PlanDelete` (per-event) at the commit boundary and still needs the per-event
+create/patch resolution, `PendingChanges` coalescing, and the dirty/deleted flush. C1 ✅
 landed independently and must precede M7.

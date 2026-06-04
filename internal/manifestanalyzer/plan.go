@@ -66,11 +66,12 @@ const (
 	// PlanReplace re-renders an existing document canonically (Decide could not
 	// patch field-by-field, e.g. a non-mapping root).
 	PlanReplace PlanActionKind = "replace"
-	// PlanDeleteDocument removes one document from a multi-document file. It is part
-	// of the apply vocabulary; the M3 planner does not emit it directly — a managed
-	// drop is expressed as PlanDropOrphan, and whether removing it empties the file
-	// is realized mechanically at apply time (M7). Reserved here so the kind set is
-	// complete and stable.
+	// PlanDeleteDocument removes one document from a multi-document file. The
+	// full-snapshot BuildPlan does not emit it — a resync managed drop is a
+	// PlanDropOrphan — but the steady-state per-event path does: PlanDelete (M6) emits
+	// it for a single live DELETE event, the design's "Two Paths, One Plan Type". Whether
+	// removing the document also empties the file (a follow-on file delete) is realized
+	// mechanically at apply time (M7), so a delete is one PlanDeleteDocument either way.
 	PlanDeleteDocument PlanActionKind = "delete-document"
 	// PlanDeleteFile removes a whole file (its last managed document was dropped).
 	// Like PlanDeleteDocument it is realized at apply time (M7), not emitted by the
@@ -146,7 +147,9 @@ func (p Plan) Counts() map[PlanActionKind]int {
 // planner mark-and-sweeps, skipping a nil entry would leave the matching managed
 // document unmatched and let the Git-only sweep DROP it. So BuildPlan instead
 // protects the matching document from the sweep (by resolved resource identity) and
-// emits a diagnostic, so a malformed entry never causes a destructive drop.
+// emits a diagnostic, so a malformed entry never causes a destructive drop. A genuine
+// per-event delete (a DELETED watch event) is resolved separately by PlanDelete, which
+// targets one identity and never sweeps.
 type DesiredResource struct {
 	Resource types.ResourceIdentifier
 	Object   *unstructured.Unstructured
@@ -174,7 +177,8 @@ type Policy struct {
 // resync): it mark-and-sweeps — every watched document with no entry in desired is a
 // managed drop — so desired MUST be the whole desired state, never a partial batch.
 // The steady-state path (one plan action per live event, where a DELETED event is an
-// explicit delete-document and nothing re-sweeps) is M7, not this function.
+// explicit delete-document and nothing re-sweeps) is PlanDelete for removals (M6); the
+// per-event create/patch twin and the writer that folds both arrive with M7.
 //
 // The store is expected to have been built with the same mapper whose watched set
 // produced desired; under a structure-only store (no resolved mappings) no managed
