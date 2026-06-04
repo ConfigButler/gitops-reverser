@@ -303,7 +303,11 @@ func (r *GitTargetReconciler) evaluateValidatedGate(
 		return false, fmt.Sprintf("Validated gate failed: %s", reason), result, nil
 	}
 
-	if conflict, conflictMsg, conflictReason, conflictResult := r.checkForConflicts(ctx, target, providerNS); conflict {
+	conflict, conflictMsg, conflictReason, conflictResult, conflictErr := r.checkForConflicts(ctx, target, providerNS)
+	if conflictErr != nil {
+		return false, "", nil, conflictErr
+	}
+	if conflict {
 		r.setCondition(target, GitTargetConditionValidated, metav1.ConditionFalse, conflictReason, conflictMsg)
 		return false, fmt.Sprintf("Validated gate failed: %s", conflictReason), &conflictResult, nil
 	}
@@ -621,17 +625,17 @@ func (r *GitTargetReconciler) checkForConflicts(
 	ctx context.Context,
 	target *configbutleraiv1alpha1.GitTarget,
 	providerNS string,
-) (bool, string, string, ctrl.Result) {
+) (bool, string, string, ctrl.Result, error) {
 	// A path the writer would reject (absolute, backslashes, ".." traversal) owns
 	// nothing, so it must neither block others nor be blocked here — its own write
 	// path fails it. Only well-formed paths participate in overlap detection.
 	if !git.IsValidTargetPath(target.Spec.Path) {
-		return false, "", "", ctrl.Result{}
+		return false, "", "", ctrl.Result{}, nil
 	}
 
 	var allTargets configbutleraiv1alpha1.GitTargetList
 	if err := r.List(ctx, &allTargets); err != nil {
-		return false, "", "", ctrl.Result{}
+		return false, "", "", ctrl.Result{}, fmt.Errorf("list GitTargets for conflict validation: %w", err)
 	}
 
 	for i := range allTargets.Items {
@@ -677,11 +681,11 @@ func (r *GitTargetReconciler) checkForConflicts(
 					target.Spec.Branch,
 				)
 			}
-			return true, msg, GitTargetReasonTargetConflict, ctrl.Result{RequeueAfter: RequeueShortInterval}
+			return true, msg, GitTargetReasonTargetConflict, ctrl.Result{RequeueAfter: RequeueShortInterval}, nil
 		}
 	}
 
-	return false, "", "", ctrl.Result{}
+	return false, "", "", ctrl.Result{}, nil
 }
 
 func (r *GitTargetReconciler) ensureEncryptionSecret(

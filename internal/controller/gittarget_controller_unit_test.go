@@ -20,12 +20,18 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	configbutleraiv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 )
@@ -157,4 +163,49 @@ func TestEvaluateSnapshotGate_RunsWhenSnapshotNotSynced(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, metav1.ConditionTrue, state)
+}
+
+// TestCheckForConflicts_ListErrorFailsClosed verifies the topology guard never
+// silently accepts a GitTarget when it cannot list peer targets. The non-overlap
+// invariant is a precondition for the destructive manifest writer, so cache/API
+// failures must requeue reconciliation rather than pass validation.
+func TestCheckForConflicts_ListErrorFailsClosed(t *testing.T) {
+	client := newGitTargetListErrorClient(t)
+	reconciler := &GitTargetReconciler{Client: client}
+	target := &configbutleraiv1alpha1.GitTarget{
+		ObjectMeta: metav1.ObjectMeta{Name: "target-a", Namespace: "default"},
+		Spec: configbutleraiv1alpha1.GitTargetSpec{
+			ProviderRef: configbutleraiv1alpha1.GitProviderReference{Name: "provider-a", Kind: "GitProvider"},
+			Branch:      "main",
+			Path:        "apps",
+		},
+	}
+
+	conflict, _, _, _, err := reconciler.checkForConflicts(context.Background(), target, target.Namespace)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "list GitTargets for conflict validation")
+	assert.False(t, conflict)
+}
+
+func newGitTargetListErrorClient(t *testing.T) ctrlclient.Client {
+	t.Helper()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, clientgoscheme.AddToScheme(scheme))
+	require.NoError(t, configbutleraiv1alpha1.AddToScheme(scheme))
+
+	return fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithInterceptorFuncs(interceptor.Funcs{
+			List: func(
+				context.Context,
+				ctrlclient.WithWatch,
+				ctrlclient.ObjectList,
+				...ctrlclient.ListOption,
+			) error {
+				return errors.New("simulated GitTarget list failure")
+			},
+		}).
+		Build()
 }

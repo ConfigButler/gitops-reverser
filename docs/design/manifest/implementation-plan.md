@@ -21,9 +21,12 @@ Each milestone lists:
 - **Unblocks** — what becomes possible once it lands.
 - **Done when** — the testable signal it is complete.
 
-Validation follows [AGENTS.md](../../../AGENTS.md): `task lint` + `task test` for
-every change; `task test-e2e` only for milestones that touch the controller runtime
-(flagged **[runtime]** below). Library and webhook milestones are unit-testable.
+Validation follows [AGENTS.md](../../../AGENTS.md): for any non-docs
+implementation change, `task lint`, `task test`, and `task test-e2e` must pass.
+Run e2e sequentially after confirming Docker is available. Docs-only edits can use
+the AGENTS markdown sanity-check exception. Milestones flagged **[runtime]** below
+are the ones where e2e coverage is especially meaningful, but they are not the
+only milestones that require the command.
 
 ## The shape of the work
 
@@ -240,7 +243,9 @@ dependency; it does not exist yet. Independent of Track A.
 > reconciler's existing `checkForConflicts` (which already rejected exact-path
 > duplicates) to also reject ancestor/descendant nesting. An overlapping target
 > goes `Validated=False` / `Ready=False`, reason `TargetConflict`, with a clear
-> message, and writes nothing.
+> message, and writes nothing. The guard now fails closed if the controller cannot
+> list peer GitTargets, so a cache/API list failure cannot silently pass the
+> one-owner check.
 
 - **Depends on**: nothing.
 - **Touches**: `checkForConflicts` in
@@ -263,6 +268,9 @@ dependency; it does not exist yet. Independent of Track A.
   equal `creationTimestamp` are broken deterministically by identity; e2e covers
   accept + reject. ✅
 - **Notes**: small and self-contained; landed before M7 as planned.
+- **Review hardening**: `checkForConflicts` must treat GitTarget list failures as
+  reconciliation errors, not "no conflict" results; this is covered by
+  `TestCheckForConflicts_ListErrorFailsClosed`.
 
 ---
 
