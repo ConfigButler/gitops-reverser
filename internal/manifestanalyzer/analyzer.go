@@ -43,6 +43,7 @@ a bounded summary, and acceptance issues on top.
 package manifestanalyzer
 
 import (
+	"context"
 	"fmt"
 	"io/fs"
 	"os"
@@ -50,6 +51,7 @@ import (
 	"strings"
 
 	"github.com/ConfigButler/gitops-reverser/internal/git/manifestedit"
+	"github.com/ConfigButler/gitops-reverser/internal/mapping"
 )
 
 // GVK is a parsed group/version/kind. Group is empty for core resources.
@@ -191,9 +193,12 @@ func AnalyzeDir(root string) (Report, error) {
 // FileModels and the scan/index diagnostics. It is the structure spine the Report
 // is projected from, and the entry point downstream layers (planner, live writer)
 // will consume directly. It is read-only and never fails.
-func BuildStore(fsys fs.FS) *ManifestStore {
+//
+// mapper resolves each managed document's GVK to a served resource identity; pass
+// nil (or a structure-only mapper) to keep the no-cluster, structure-only mode.
+func BuildStore(ctx context.Context, fsys fs.FS, mapper mapping.ResourceMapper) *ManifestStore {
 	yamlFiles, _, scanDiags := collectFiles(fsys)
-	return buildStore(yamlFiles, scanDiags)
+	return buildStore(ctx, yamlFiles, scanDiags, mapper)
 }
 
 // Analyze scans fsys and returns a Report. It is read-only and never fails: any
@@ -202,7 +207,9 @@ func BuildStore(fsys fs.FS) *ManifestStore {
 // ManifestStore built by buildStore.
 func Analyze(fsys fs.FS) Report {
 	yamlFiles, nonYAML, scanDiags := collectFiles(fsys)
-	store := buildStore(yamlFiles, scanDiags)
+	// Analyze is the no-cluster default: a nil mapper keeps it structure-only, so the
+	// resource index stays empty and no mapping diagnostics are emitted.
+	store := buildStore(context.Background(), yamlFiles, scanDiags, nil)
 	return projectReport(store, yamlFiles, nonYAML)
 }
 

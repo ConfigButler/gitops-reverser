@@ -19,19 +19,27 @@ limitations under the License.
 package manifestanalyzer
 
 import (
+	"context"
 	"testing"
 	"testing/fstest"
 
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	"github.com/ConfigButler/gitops-reverser/internal/git/manifestedit"
+	"github.com/ConfigButler/gitops-reverser/internal/mapping"
+	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
+
+// structureOnlyStore builds the canonical sample tree with no mapper (structure-only).
+func structureOnlyStore() *ManifestStore {
+	return BuildStore(context.Background(), sampleFS(), nil)
+}
 
 // TestBuildStore_ManagedFilesOnly proves the store carries exactly the managed
 // KRM documents the Report projection needs: non-YAML files and YAML files with no
 // KRM document never become FileModels.
 func TestBuildStore_ManagedFilesOnly(t *testing.T) {
-	store := BuildStore(sampleFS())
+	store := structureOnlyStore()
 
 	// plain.yaml (non-KRM), broken.yaml (invalid), empty.yaml (empty), and
 	// docs/notes.txt (non-yaml) hold no managed document, so they are absent.
@@ -54,7 +62,7 @@ func TestBuildStore_ManagedFilesOnly(t *testing.T) {
 // TestBuildStore_DocumentDetail checks the per-document classification carried by
 // the store: multi-document order, encryption, and the duplicate loser.
 func TestBuildStore_DocumentDetail(t *testing.T) {
-	store := BuildStore(sampleFS())
+	store := structureOnlyStore()
 
 	cm := store.FilesByPath["cm.yaml"]
 	if len(cm.Documents) != 2 {
@@ -68,8 +76,12 @@ func TestBuildStore_DocumentDetail(t *testing.T) {
 		)
 	}
 	for _, dm := range cm.Documents {
-		if dm.Mapping != MappingStructureOnly {
-			t.Errorf("structure-only analysis should leave Mapping=%q, got %q", MappingStructureOnly, dm.Mapping)
+		if dm.Mapping != mapping.MappingStructureOnly {
+			t.Errorf(
+				"structure-only analysis should leave Mapping=%q, got %q",
+				mapping.MappingStructureOnly,
+				dm.Mapping,
+			)
 		}
 		if dm.ResourceIdentity != nil {
 			t.Errorf("structure-only analysis should leave ResourceIdentity nil, got %+v", dm.ResourceIdentity)
@@ -89,10 +101,10 @@ func TestBuildStore_DocumentDetail(t *testing.T) {
 // occurrence wins; the second is a duplicate even though encrypted documents are
 // Editable=false (not patchable in place).
 func TestBuildStore_EncryptedDuplicate(t *testing.T) {
-	store := BuildStore(fstest.MapFS{
+	store := BuildStore(context.Background(), fstest.MapFS{
 		"a.sops.yaml": {Data: []byte(sopsSecretYAML)},
 		"b.sops.yaml": {Data: []byte(sopsSecretYAML)},
-	})
+	}, nil)
 	a := store.FilesByPath["a.sops.yaml"].Documents[0]
 	b := store.FilesByPath["b.sops.yaml"].Documents[0]
 
@@ -110,7 +122,7 @@ func TestBuildStore_EncryptedDuplicate(t *testing.T) {
 // TestBuildStore_Indexes checks the collapsed manifest-identity index and the
 // multi-valued GVK index.
 func TestBuildStore_Indexes(t *testing.T) {
-	store := BuildStore(sampleFS())
+	store := structureOnlyStore()
 
 	// The Deployment appears in deploy.yaml and dup.yaml; the index collapses to the
 	// first occurrence (deploy.yaml sorts first) and dup.yaml's copy is the loser.
@@ -132,6 +144,293 @@ func TestBuildStore_Indexes(t *testing.T) {
 	// Structure-only analysis resolves no resource identities.
 	if len(store.ByResourceIdentity) != 0 {
 		t.Errorf("structure-only ByResourceIdentity should be empty, got %d", len(store.ByResourceIdentity))
+	}
+}
+
+// sampleClusterSnapshot is a ready static snapshot that matches sampleFS: apps/v1
+// Deployment and core v1 ConfigMap are served and allowed; core v1 Secret is served
+// but excluded by policy, so it must resolve to Disallowed rather than Resolved.
+func sampleClusterSnapshot() mapping.Snapshot {
+	return mapping.Snapshot{
+		Generation: 1,
+		Entries: []mapping.Entry{
+			{
+				GVK:        schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"},
+				GVR:        schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"},
+				Namespaced: true,
+				Allowed:    true,
+			},
+			{
+				GVK:        schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"},
+				GVR:        schema.GroupVersionResource{Version: "v1", Resource: "configmaps"},
+				Namespaced: true,
+				Allowed:    true,
+			},
+			{
+				GVK:        schema.GroupVersionKind{Version: "v1", Kind: "Secret"},
+				GVR:        schema.GroupVersionResource{Version: "v1", Resource: "secrets"},
+				Namespaced: true,
+				Allowed:    false,
+			},
+		},
+	}
+}
+
+// TestBuildStore_StaticSnapshotMapper is the B3 milestone check: with a
+// static-snapshot mapper, resolved documents carry a ResourceIdentity + Resolved
+// status and populate ByResourceIdentity, while a disallowed kind stays unresolved
+// and surfaces an unresolved-mapping diagnostic.
+func TestBuildStore_StaticSnapshotMapper(t *testing.T) {
+	mapper := mapping.NewStaticSnapshotMapper(sampleClusterSnapshot())
+	store := BuildStore(context.Background(), sampleFS(), mapper)
+
+	// The Deployment resolves to apps/v1/deployments and carries both identities.
+	dep := store.FilesByPath["deploy.yaml"].Documents[0]
+	if dep.Mapping != mapping.MappingResolved {
+		t.Fatalf("deploy.yaml Mapping = %q, want Resolved", dep.Mapping)
+	}
+	wantRI := types.NewResourceIdentifier("apps", "v1", "deployments", "default", "web")
+	if dep.ResourceIdentity == nil || *dep.ResourceIdentity != wantRI {
+		t.Fatalf("deploy.yaml ResourceIdentity = %+v, want %+v", dep.ResourceIdentity, wantRI)
+	}
+	if store.ByResourceIdentity[wantRI] != dep {
+		t.Errorf("ByResourceIdentity[%s] should point at deploy.yaml's document", wantRI.Key())
+	}
+
+	// Both ConfigMaps resolve; the resource index collapses on the same winners as
+	// the manifest-identity index, so the three resolved winners are all present
+	// (Deployment web, ConfigMap a, ConfigMap b) and the disallowed Secret is not.
+	if got := len(store.ByResourceIdentity); got != 3 {
+		t.Errorf("ByResourceIdentity = %d resolved winners, want 3", got)
+	}
+
+	// The Secret is served but disallowed: no ResourceIdentity, Disallowed status.
+	secret := store.FilesByPath["secret.sops.yaml"].Documents[0]
+	if secret.Mapping != mapping.MappingDisallowed {
+		t.Errorf("secret Mapping = %q, want Disallowed", secret.Mapping)
+	}
+	if secret.ResourceIdentity != nil {
+		t.Errorf("disallowed secret should have no ResourceIdentity, got %+v", secret.ResourceIdentity)
+	}
+
+	// Exactly one unresolved-mapping diagnostic (the disallowed Secret).
+	var unresolved int
+	for _, d := range store.Diagnostics {
+		if d.Reason == reasonUnresolvedMapping {
+			unresolved++
+			if d.Path != "secret.sops.yaml" {
+				t.Errorf("unresolved-mapping diagnostic on %q, want secret.sops.yaml", d.Path)
+			}
+		}
+	}
+	if unresolved != 1 {
+		t.Errorf("unresolved-mapping diagnostics = %d, want 1", unresolved)
+	}
+}
+
+// TestBuildStore_DuplicateLoserResolves proves mapping is per-document: the
+// duplicate Deployment in dup.yaml still resolves to a ResourceIdentity, but it lost
+// the first-occurrence contest, so it is the IsDuplicate loser and never the
+// ByResourceIdentity winner (deploy.yaml's document holds that slot).
+func TestBuildStore_DuplicateLoserResolves(t *testing.T) {
+	store := BuildStore(context.Background(), sampleFS(), mapping.NewStaticSnapshotMapper(sampleClusterSnapshot()))
+
+	wantRI := types.NewResourceIdentifier("apps", "v1", "deployments", "default", "web")
+	dupDep := store.FilesByPath["dup.yaml"].Documents[0]
+	if dupDep.Mapping != mapping.MappingResolved || dupDep.ResourceIdentity == nil {
+		t.Fatalf(
+			"dup.yaml Deployment should still resolve, got Mapping=%q RI=%+v",
+			dupDep.Mapping,
+			dupDep.ResourceIdentity,
+		)
+	}
+	if !store.IsDuplicate(dupDep) {
+		t.Errorf("dup.yaml Deployment should be the duplicate loser")
+	}
+	if store.ByResourceIdentity[wantRI] == dupDep {
+		t.Errorf("ByResourceIdentity winner should be deploy.yaml's document, not dup.yaml's")
+	}
+}
+
+// TestBuildStore_ClusterScopedResolution covers the scope-correct ResourceIdentity:
+// a cluster-scoped resource is keyed with no namespace, and a manifest that
+// accidentally carries metadata.namespace has it dropped for indexing plus a
+// scope-mismatch diagnostic — never indexed under the wrong, namespaced key.
+func TestBuildStore_ClusterScopedResolution(t *testing.T) {
+	snap := mapping.Snapshot{
+		Generation: 1,
+		Entries: []mapping.Entry{
+			{
+				GVK: schema.GroupVersionKind{Group: "rbac.authorization.k8s.io", Version: "v1", Kind: "ClusterRole"},
+				GVR: schema.GroupVersionResource{
+					Group:    "rbac.authorization.k8s.io",
+					Version:  "v1",
+					Resource: "clusterroles",
+				},
+				Namespaced: false,
+				Allowed:    true,
+			},
+		},
+	}
+	const clusterRoleYAML = "apiVersion: rbac.authorization.k8s.io/v1\nkind: ClusterRole\nmetadata:\n  name: viewer\n"
+	const clusterRoleWithNS = "apiVersion: rbac.authorization.k8s.io/v1\nkind: ClusterRole\n" +
+		"metadata:\n  name: editor\n  namespace: oops\n"
+
+	store := BuildStore(context.Background(), fstest.MapFS{
+		"cr.yaml":    {Data: []byte(clusterRoleYAML)},
+		"cr-ns.yaml": {Data: []byte(clusterRoleWithNS)},
+	}, mapping.NewStaticSnapshotMapper(snap))
+
+	// Clean cluster-scoped: indexed with an empty namespace, no scope diagnostic.
+	clean := store.FilesByPath["cr.yaml"].Documents[0]
+	wantClean := types.NewResourceIdentifier("rbac.authorization.k8s.io", "v1", "clusterroles", "", "viewer")
+	if clean.ResourceIdentity == nil || *clean.ResourceIdentity != wantClean {
+		t.Fatalf("clean ClusterRole RI = %+v, want %+v", clean.ResourceIdentity, wantClean)
+	}
+	if store.ByResourceIdentity[wantClean] != clean {
+		t.Errorf("ByResourceIdentity should key the clean ClusterRole under an empty namespace")
+	}
+
+	// Accidental namespace: dropped for indexing (so it is NOT keyed under "oops"),
+	// and exactly one scope-mismatch diagnostic is emitted, naming the file.
+	dirty := store.FilesByPath["cr-ns.yaml"].Documents[0]
+	wantDirty := types.NewResourceIdentifier("rbac.authorization.k8s.io", "v1", "clusterroles", "", "editor")
+	if dirty.ResourceIdentity == nil || *dirty.ResourceIdentity != wantDirty {
+		t.Fatalf(
+			"accidentally-namespaced ClusterRole RI = %+v, want %+v (namespace dropped)",
+			dirty.ResourceIdentity,
+			wantDirty,
+		)
+	}
+	var scopeMismatch int
+	for _, d := range store.Diagnostics {
+		if d.Reason == reasonScopeMismatch {
+			scopeMismatch++
+			if d.Path != "cr-ns.yaml" {
+				t.Errorf("scope-mismatch diagnostic on %q, want cr-ns.yaml", d.Path)
+			}
+		}
+	}
+	if scopeMismatch != 1 {
+		t.Errorf("scope-mismatch diagnostics = %d, want 1", scopeMismatch)
+	}
+}
+
+// TestBuildStore_MapperError covers a mapper lookup that returns a Go error (here a
+// cancelled context): every document is recorded as CatalogUnavailable (the
+// fail-closed bucket) — never structure-only — resolves no identity, and emits a
+// DiagError mapping diagnostic.
+func TestBuildStore_MapperError(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // every subsequent GVRForGVK returns ctx.Err()
+
+	store := BuildStore(ctx, sampleFS(), mapping.NewStaticSnapshotMapper(sampleClusterSnapshot()))
+
+	for path, fm := range store.FilesByPath {
+		for _, dm := range fm.Documents {
+			if dm.Mapping != mapping.MappingCatalogUnavailable {
+				t.Errorf("%s: Mapping = %q, want CatalogUnavailable after cancel", path, dm.Mapping)
+			}
+			if dm.ResourceIdentity != nil {
+				t.Errorf("%s: cancelled lookup should resolve no identity, got %+v", path, dm.ResourceIdentity)
+			}
+		}
+	}
+	if len(store.ByResourceIdentity) != 0 {
+		t.Errorf("cancelled lookups should populate no resource index, got %d", len(store.ByResourceIdentity))
+	}
+	var errDiags int
+	for _, d := range store.Diagnostics {
+		if d.Reason == reasonUnresolvedMapping && d.Level == manifestedit.DiagError {
+			errDiags++
+		}
+	}
+	if errDiags == 0 {
+		t.Errorf("cancelled lookups should emit DiagError mapping diagnostics, got 0")
+	}
+}
+
+// TestBuildStore_UnresolvedStatusesDiagnose proves the store faithfully records each
+// non-resolved mapping.Status the reduction can produce and emits exactly one
+// unresolved-mapping diagnostic per document, resolving no identity.
+func TestBuildStore_UnresolvedStatusesDiagnose(t *testing.T) {
+	const widgetYAML = "apiVersion: example.com/v1\nkind: Widget\nmetadata:\n  name: w\n  namespace: default\n"
+	widgetGVK := schema.GroupVersionKind{Group: "example.com", Version: "v1", Kind: "Widget"}
+	widgetGVR := schema.GroupVersionResource{Group: "example.com", Version: "v1", Resource: "widgets"}
+	widgetGV := schema.GroupVersion{Group: "example.com", Version: "v1"}
+	allowed := mapping.Entry{GVK: widgetGVK, GVR: widgetGVR, Namespaced: true, Allowed: true}
+
+	cases := []struct {
+		name string
+		snap mapping.Snapshot
+		want mapping.Status
+	}{
+		{"unserved", mapping.Snapshot{}, mapping.MappingUnserved},
+		{
+			"disallowed",
+			mapping.Snapshot{
+				Entries: []mapping.Entry{{GVK: widgetGVK, GVR: widgetGVR, Namespaced: true, Allowed: false}},
+			},
+			mapping.MappingDisallowed,
+		},
+		{
+			"ambiguous",
+			mapping.Snapshot{Entries: []mapping.Entry{allowed, {
+				GVK:        widgetGVK,
+				GVR:        schema.GroupVersionResource{Group: "example.com", Version: "v1", Resource: "widgetz"},
+				Namespaced: true,
+				Allowed:    true,
+			}}},
+			mapping.MappingAmbiguous,
+		},
+		{
+			"subresource",
+			mapping.Snapshot{Entries: []mapping.Entry{
+				{
+					GVK: widgetGVK,
+					GVR: schema.GroupVersionResource{
+						Group:    "example.com",
+						Version:  "v1",
+						Resource: "widgets/status",
+					},
+					Subresource: true,
+					Allowed:     true,
+				},
+			}},
+			mapping.MappingSubresource,
+		},
+		{"catalog-unavailable", mapping.Snapshot{NotReady: true}, mapping.MappingCatalogUnavailable},
+		{
+			"discovery-degraded",
+			mapping.Snapshot{DegradedGroupVersions: []schema.GroupVersion{widgetGV}},
+			mapping.MappingDiscoveryDegraded,
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			store := BuildStore(
+				context.Background(),
+				fstest.MapFS{"w.yaml": {Data: []byte(widgetYAML)}},
+				mapping.NewStaticSnapshotMapper(c.snap),
+			)
+			dm := store.FilesByPath["w.yaml"].Documents[0]
+			if dm.Mapping != c.want {
+				t.Errorf("Mapping = %q, want %q", dm.Mapping, c.want)
+			}
+			if dm.ResourceIdentity != nil {
+				t.Errorf("unresolved status should leave ResourceIdentity nil, got %+v", dm.ResourceIdentity)
+			}
+			var diags int
+			for _, d := range store.Diagnostics {
+				if d.Reason == reasonUnresolvedMapping {
+					diags++
+				}
+			}
+			if diags != 1 {
+				t.Errorf("unresolved-mapping diagnostics = %d, want 1", diags)
+			}
+		})
 	}
 }
 

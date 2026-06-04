@@ -192,6 +192,33 @@ dependency; it does not exist yet. Independent of Track A.
 
 ### B3 — Wire the mapper into store construction
 
+> **Status: ✅ landed.** `buildStore`/`BuildStore` now take a `context.Context` and
+> an injected `mapping.ResourceMapper`
+> ([`store.go`](../../../internal/manifestanalyzer/store.go),
+> [`analyzer.go`](../../../internal/manifestanalyzer/analyzer.go)); a **nil mapper is
+> normalized to structure-only**, so the analyzer's no-cluster promise holds. Each
+> KRM document's GVK is resolved through `GVRForGVK`, the returned `mapping.Status`
+> is recorded on `DocumentModel.Mapping`, and a `Resolved` lookup builds the
+> `ResourceIdentity` (GVR + the manifest's namespace/name) and indexes it. The doc's
+> transitional local `MappingStatus`/`MappingStructureOnly` were folded into the
+> canonical `mapping.Status` now that Track B has landed.
+>
+> Judgment calls the plan left open: (1) `ByResourceIdentity` **collapses on the
+> same first-occurrence winners as `ByManifestIdentity`**, so a resolved winner is
+> reachable by either identity and duplicate losers never claim a slot; (2)
+> "unresolved GVKs become diagnostics" is implemented as a `reasonUnresolvedMapping`
+> `manifestedit.DiagReason` value **defined in `manifestanalyzer`, not added to
+> `manifestedit`** — keeping the API-mapping concept out of the YAML-editing package
+> while reusing its shared `Diagnostic` type; (3) the **mapper's scope is
+> authoritative** — a `Resolved` cluster-scoped resource is keyed with no namespace,
+> and a manifest that nonetheless sets `metadata.namespace` has it dropped for
+> indexing plus a `reasonScopeMismatch` diagnostic (refusal is M4's call), so it is
+> never indexed under a wrong namespaced key; (4) a **lookup that returns a Go error**
+> (impl failure / cancelled context, never an expected outcome) is recorded as
+> `MappingCatalogUnavailable` (the design's fail-closed bucket) with a `DiagError`,
+> so an error never masquerades as intentional structure-only analysis. `Analyze`
+> stays structure-only (passes nil), so its Report output is unchanged.
+
 - **Depends on**: A2, B2.
 - **Touches**: store builder takes an injected `ResourceMapper`; for each KRM
   document, resolve GVK→`ResourceIdentity` and populate `ByResourceIdentity`;
@@ -321,5 +348,6 @@ dependency; it does not exist yet. Independent of Track A.
 3. **C1** — GitTarget non-overlap admission. Cheap, self-contained, locks the
    one-owner invariant in before anything destructive depends on it.
 
-A2 ✅ and B2 ✅ have followed; **B3 is now unblocked** (A2 + B2 both landed) and
-joins the tracks, then M3 begins the tail. C1 remains independent.
+A2 ✅, B2 ✅, and B3 ✅ have followed; B3 joined the tracks (the store now builds
+with an injected mapper), so **M3 is now unblocked** and begins the tail. C1 remains
+independent.
