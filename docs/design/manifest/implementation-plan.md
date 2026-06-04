@@ -72,11 +72,13 @@ existing [`internal/manifestanalyzer`](../../../internal/manifestanalyzer).
 
 ### A1 — Store types + `Report` as a projection
 
-> **Status: ✅ landed.** `ManifestStore`/`FileModel`/`DocumentModel`/`RecordRef`
-> live in [`internal/manifestanalyzer/store.go`](../../../internal/manifestanalyzer/store.go);
-> `Analyze` builds the store and renders `Report` as a projection over it. CLI
-> text+JSON output is byte-identical and the existing analyzer tests pass
-> untouched.
+> **Status: ✅ landed** as a no-behavior-change refactor.
+> `ManifestStore`/`FileModel`/`DocumentModel`/`RecordRef` live in
+> [`internal/manifestanalyzer/store.go`](../../../internal/manifestanalyzer/store.go);
+> `Analyze` builds the store and renders `Report` as a projection over it. The A1
+> change itself kept CLI text+JSON output byte-identical and left the analyzer
+> tests untouched. **A2 (below) then deliberately changes that report contract** —
+> so the byte-identical property describes A1 in isolation, not the current tree.
 
 - **Depends on**: nothing.
 - **Touches**: new types in/beside `internal/manifestanalyzer`
@@ -97,7 +99,12 @@ existing [`internal/manifestanalyzer`](../../../internal/manifestanalyzer).
 
 ### A2 — Pointer indexes + structured cause, drop the old fields
 
-> **Status: 🚧 in progress.**
+> **Status: 🚧 in progress.** This milestone **intentionally changes the
+> analyzer/report output contract**: `DocumentReport` drops `Encrypted`/
+> `Duplicate`/`Reason` in favour of a structured `Cause`, and duplicate identity
+> moves out of the per-document report into diagnostics + acceptance issues. The
+> duplicate collapse mirrors `manifestedit` exactly — identity-claiming documents
+> (clean *and* encrypted) participate; disallowed-construct documents do not.
 
 - **Depends on**: A1.
 - **Touches**: `ManifestStore` indexes
@@ -112,6 +119,17 @@ existing [`internal/manifestanalyzer`](../../../internal/manifestanalyzer).
   No classification reads a diagnostic message string.
 - **Notes**: this is where the data-model decisions from the review land in code —
   encode them now while they are fresh.
+- **Known transitional field — `DocumentModel.index`.** The target model derives a
+  document's position top-down instead of storing it, but that only works when
+  `FileModel.Documents` is the complete, contiguous document list. The
+  pre-acceptance, structure-only analyzer legitimately sees non-managed documents
+  (non-KRM / empty / invalid) interspersed between managed ones, so the
+  managed-only slice cannot recover a document's true file position (and gap-filling
+  breaks on the disallowed-construct case, where one index carries both a record and
+  a diagnostic). The field is therefore retained through A2 and **dropped in M4**,
+  once the acceptance gate refuses mixed files and guarantees managed files hold
+  only managed documents. It is harmless in read-only analysis because no slice ever
+  shifts.
 
 ---
 

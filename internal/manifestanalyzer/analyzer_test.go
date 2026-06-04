@@ -187,6 +187,38 @@ data: &a
 	}
 }
 
+func TestAnalyze_EncryptedDuplicate(t *testing.T) {
+	rep := Analyze(fstest.MapFS{
+		"a.sops.yaml": {Data: []byte(sopsSecretYAML)},
+		"b.sops.yaml": {Data: []byte(sopsSecretYAML)},
+	})
+	if rep.Summary.Duplicates != 1 {
+		t.Errorf("encrypted duplicate should be counted: Duplicates = %d, want 1", rep.Summary.Duplicates)
+	}
+	if got := countIssues(rep, IssueDuplicate); got != 1 {
+		t.Errorf("encrypted duplicate should raise one duplicate-identity issue, got %d", got)
+	}
+}
+
+func TestAnalyze_MissingSopsKeyHasMessage(t *testing.T) {
+	// A .sops.yaml that parses as KRM but lacks a sops stanza is classified invalid;
+	// its acceptance issue must carry the diagnostic detail, not an empty message.
+	rep := Analyze(fstest.MapFS{"bad.sops.yaml": {Data: []byte(deployYAML)}})
+
+	var found bool
+	for _, is := range rep.Issues {
+		if is.Kind == IssueInvalidYAML && is.Path == "bad.sops.yaml" {
+			found = true
+			if is.Message == "" {
+				t.Errorf("missing-sops-key issue should carry a message")
+			}
+		}
+	}
+	if !found {
+		t.Errorf("expected an invalid-yaml issue for the sops file without a sops key: %+v", rep.Issues)
+	}
+}
+
 func TestAnalyze_EmptyTree(t *testing.T) {
 	rep := Analyze(fstest.MapFS{})
 	if rep.Summary.FilesTotal != 0 || len(rep.Issues) != 0 {

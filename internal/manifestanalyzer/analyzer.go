@@ -239,9 +239,12 @@ func projectReport(store *ManifestStore, yamlFiles []manifestedit.FileContent, n
 			}
 		}
 	}
+	// Capture the detail for every diagnostic classFromDiag maps to invalid-YAML
+	// (a parse failure or a .sops.yaml missing its sops stanza), so the resulting
+	// IssueInvalidYAML carries a message rather than an empty string.
 	invalidMsgs := map[RecordRef]string{}
 	for _, d := range store.Diagnostics {
-		if d.Reason == manifestedit.ReasonInvalidYAML {
+		if d.Reason == manifestedit.ReasonInvalidYAML || d.Reason == manifestedit.ReasonMissingSopsKey {
 			invalidMsgs[RecordRef{FilePath: d.Path, DocumentIndex: d.DocumentIndex}] = d.Message
 		}
 	}

@@ -50,9 +50,12 @@ type ManifestStore struct {
 	// document delete that shifts a file's slice never invalidates them.
 	//
 	// ByManifestIdentity is single-valued: it is collected first-occurrence-wins
-	// over editable documents (the collapse), so a later document that duplicates
-	// an earlier identity is not the winner and is detectable as such. The
-	// duplicate diagnostic is emitted by the manifestedit index pass that feeds the
+	// over the documents that CLAIM their identity (the collapse), so a later
+	// document that duplicates an earlier identity is not the winner and is
+	// detectable as such. Claiming mirrors manifestedit's duplicate rule exactly —
+	// cleanly-editable and encrypted documents claim, documents with disallowed
+	// constructs do not — so the collapse and manifestedit's duplicate diagnostic
+	// agree. The diagnostic is emitted by the manifestedit index pass that feeds the
 	// collapse.
 	ByManifestIdentity map[manifestedit.Identity]*DocumentModel
 	// ByResourceIdentity is populated once the GVK↔GVR mapper resolves resource
@@ -124,11 +127,20 @@ type DocumentModel struct {
 	// touches the document; identity indexing needs only a cheap header parse.
 	Snapshot manifestedit.SnapshotRef
 
-	// index is the document position within its file. The target model derives the
-	// position top-down rather than storing it (a stored index is fragile once
-	// document deletes shift a file's slice); under read-only analysis no slice
-	// ever shifts, so it is cached here until the mutable writer store lands and
-	// removes it.
+	// index is the document position within its file.
+	//
+	// The target model derives position top-down (the loop index over
+	// FileModel.Documents) rather than storing it. That derivation only works once a
+	// managed file holds ONLY managed documents — which the M4 acceptance gate
+	// guarantees by refusing mixed files. The pre-acceptance, structure-only
+	// analyzer legitimately sees non-managed documents (non-KRM, empty, invalid)
+	// interspersed between managed ones, so the managed-only slice cannot recover a
+	// document's true file position, and gap-filling breaks on the disallowed-
+	// construct case where one index carries both a record and a diagnostic.
+	//
+	// So this field stays until M4 makes FileModel.Documents the complete,
+	// contiguous document list; it is harmless here because read-only analysis never
+	// shifts a slice. See docs/design/manifest/implementation-plan.md (A2 notes).
 	index int
 }
 
@@ -206,10 +218,10 @@ func buildStore(yamlFiles []manifestedit.FileContent, scanDiags []manifestedit.D
 		fm.Documents = append(fm.Documents, dm)
 		store.ByGVK[gvkOf(r.Identity)] = append(store.ByGVK[gvkOf(r.Identity)], dm)
 
-		// The manifest-identity index is the duplicate collapse: editable documents
-		// claim their identity first-occurrence-wins; a later collision is therefore
+		// The manifest-identity index is the duplicate collapse: documents that claim
+		// their identity take it first-occurrence-wins; a later collision is therefore
 		// not the winner and is detectable via IsDuplicate.
-		if dm.Editable {
+		if dm.claimsIdentity() {
 			if _, taken := store.ByManifestIdentity[dm.ManifestIdentity]; !taken {
 				store.ByManifestIdentity[dm.ManifestIdentity] = dm
 			}
@@ -219,12 +231,22 @@ func buildStore(yamlFiles []manifestedit.FileContent, scanDiags []manifestedit.D
 	return store
 }
 
-// IsDuplicate reports whether dm is an editable document that lost the
+// claimsIdentity reports whether a document claims its manifest identity for the
+// duplicate-collapse contest. It mirrors manifestedit's rule precisely: a document
+// the editor cannot parse safely (a disallowed construct) does not claim an
+// identity, but an encrypted document — authoritative though never patched in
+// place, so Editable is false — still does.
+func (dm *DocumentModel) claimsIdentity() bool {
+	return dm.Cause.Kind != CauseNonEditable
+}
+
+// IsDuplicate reports whether dm is an identity-claiming document that lost the
 // first-occurrence-wins contest for its manifest identity — i.e. a duplicate the
 // GitTarget would refuse. It reads only the collapsed index, never a diagnostic
-// message.
+// message, and agrees with manifestedit's duplicate detection (encrypted documents
+// included).
 func (s *ManifestStore) IsDuplicate(dm *DocumentModel) bool {
-	return dm.Editable && s.ByManifestIdentity[dm.ManifestIdentity] != dm
+	return dm.claimsIdentity() && s.ByManifestIdentity[dm.ManifestIdentity] != dm
 }
 
 // causeFor maps a manifestedit record to the structured DocumentCause. It reads

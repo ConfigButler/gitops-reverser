@@ -20,6 +20,7 @@ package manifestanalyzer
 
 import (
 	"testing"
+	"testing/fstest"
 
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
@@ -80,6 +81,29 @@ func TestBuildStore_DocumentDetail(t *testing.T) {
 	}
 	if dup := store.FilesByPath["dup.yaml"]; !store.IsDuplicate(dup.Documents[0]) {
 		t.Errorf("dup.yaml document should be the duplicate loser")
+	}
+}
+
+// TestBuildStore_EncryptedDuplicate covers the edge the duplicate collapse must
+// match manifestedit on: two encrypted documents with the same identity. The first
+// occurrence wins; the second is a duplicate even though encrypted documents are
+// Editable=false (not patchable in place).
+func TestBuildStore_EncryptedDuplicate(t *testing.T) {
+	store := BuildStore(fstest.MapFS{
+		"a.sops.yaml": {Data: []byte(sopsSecretYAML)},
+		"b.sops.yaml": {Data: []byte(sopsSecretYAML)},
+	})
+	a := store.FilesByPath["a.sops.yaml"].Documents[0]
+	b := store.FilesByPath["b.sops.yaml"].Documents[0]
+
+	if a.Editable || b.Editable {
+		t.Fatalf("encrypted documents should be Editable=false")
+	}
+	if store.IsDuplicate(a) {
+		t.Errorf("first encrypted occurrence should win the identity, not be a duplicate")
+	}
+	if !store.IsDuplicate(b) {
+		t.Errorf("second encrypted occurrence should be detected as a duplicate")
 	}
 }
 
