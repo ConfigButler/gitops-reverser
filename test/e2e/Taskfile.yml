@@ -178,7 +178,7 @@ tasks:
       - _install-config-dir
 
   test-e2e:
-    desc: Run the full e2e suite (every spec — there is no smoke/full split)
+    desc: Run the standard e2e suite without CI-only workflow checks
     vars:
       # The whole suite at ~22s avg + ~6m cold prepare ≈ 25m, so it gets a 30m
       # timeout by default; a shorter budget times out mid-run and gives a
@@ -196,6 +196,7 @@ tasks:
         export E2E_AGE_KEY_FILE="{{.CS}}/age-key.txt"
         go run github.com/onsi/ginkgo/v2/ginkgo \
           --procs={{.E2E_GINKGO_PROCS}} --timeout="{{.E2E_FULL_TIMEOUT}}" -v \
+          --label-filter='!image-refresh' \
           --output-dir="{{.CS}}/{{.NAMESPACE}}" --json-report=ginkgo-report-full.json \
           ./test/e2e/
 

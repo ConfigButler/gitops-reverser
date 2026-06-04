@@ -104,9 +104,7 @@ These are the canonical Task entry points on the current worktree:
 
 | Command | Purpose |
 |---|---|
-| `task test-e2e` | Entire e2e package (no smoke/full split) |
-| `task test-e2e-manager` | Manager-focused scenarios |
-| `task test-e2e-signing` | Commit-signing scenarios |
+| `task test-e2e` | Standard e2e package, excluding CI-only workflow checks |
 | `task test-image-refresh` | Image rebuild / reload invalidation chain |
 | `task test-e2e-quickstart-helm` | Quickstart framework with Helm install |
 | `task test-e2e-quickstart-manifest` | Quickstart framework with manifest install |
@@ -118,10 +116,11 @@ installing the system under test.
 
 The intended interpretation of these entry points is:
 
-- `task test-e2e`, `task test-e2e-manager`, `task test-e2e-signing` and `task test-image-refresh` are standard controller behavior checks and should normally run on the default `config-dir` install
+- `task test-e2e`, `task test-e2e-manager`, and `task test-e2e-signing` are standard controller behavior checks and should normally run on the default `config-dir` install
+- `task test-image-refresh` validates the rebuild/reload workflow and is run explicitly by CI rather than as part of the normal `task test-e2e` path
 - `task test-e2e-quickstart-helm` is the important validation for the Helm install path
 - `task test-e2e-quickstart-manifest` is the important validation for the single-file manifest install path
-- `task test-e2e` is a full spec run that includes the bi-directional scenario, but it is not the primary way to validate every install mode
+- `task test-e2e` is a broad spec run that includes the bi-directional scenario, but it is not the primary way to validate every install mode
 
 ## Lifecycle Layers
 
@@ -372,9 +371,9 @@ The e2e package currently contains:
 
 ## Suite Definition
 
-`task test-e2e` runs the entire e2e package — there is no smoke-only subset and no
-`Label("smoke")`. The `smoke` label was removed from every spec, and `task test-e2e`
-executes all specs on a single run.
+`task test-e2e` runs the standard e2e package, excluding the rebuild-heavy `image-refresh`
+workflow check. There is no smoke-only subset and no `Label("smoke")`. The `smoke` label was
+removed from every spec.
 
 It stays anchored to the standard `config-dir` install. The default run is not meant to
 prove all install methods on every invocation; the dedicated `quickstart-*` tasks cover
@@ -404,8 +403,9 @@ Use:
 ```bash
 task test-e2e-manager
 task test-e2e-signing
-task test-image-refresh
 ```
+
+CI runs `task test-image-refresh` explicitly for the rebuild/reload workflow check.
 
 ### Install-path validation
 
