@@ -277,31 +277,6 @@ tasks:
       - task: allure-e2e-report
       - python3 -m http.server "{{.ALLURE_PORT}}" --bind 0.0.0.0 --directory "{{.ALLURE_REPORT_DIR}}"
 
-  test-e2e-manager:
-    desc: Run manager-focused e2e scenarios
-    cmds:
-      - |
-        export CTX="{{.CTX}}"
-        export INSTALL_MODE="{{.INSTALL_MODE}}"
-        export NAMESPACE="{{.NAMESPACE}}"
-        export E2E_AGE_KEY_FILE="{{.CS}}/age-key.txt"
-        go run github.com/onsi/ginkgo/v2/ginkgo \
-          --procs={{.E2E_GINKGO_PROCS}} --timeout="{{.E2E_GO_TEST_TIMEOUT}}" -v \
-          --label-filter=manager \
-          --output-dir="{{.CS}}/{{.NAMESPACE}}" --json-report=ginkgo-report-manager.json \
-          ./test/e2e/
-
-  test-e2e-signing:
-    desc: Run commit-signing e2e scenarios
-    cmds:
-      - |
-        export CTX="{{.CTX}}"
-        export INSTALL_MODE="{{.INSTALL_MODE}}"
-        export NAMESPACE="{{.NAMESPACE}}"
-        export E2E_AGE_KEY_FILE="{{.CS}}/age-key.txt"
-        go test -timeout "{{.E2E_GO_TEST_TIMEOUT}}" ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=signing \
-          -ginkgo.json-report="{{.CS}}/{{.NAMESPACE}}/ginkgo-report-signing.json"
-
   test-image-refresh:
     desc: Validate the image-refresh dependency chain
     cmds:

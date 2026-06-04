@@ -116,7 +116,7 @@ installing the system under test.
 
 The intended interpretation of these entry points is:
 
-- `task test-e2e`, `task test-e2e-manager`, and `task test-e2e-signing` are standard controller behavior checks and should normally run on the default `config-dir` install
+- `task test-e2e` is the standard controller behavior check and should normally run on the default `config-dir` install
 - `task test-image-refresh` validates the rebuild/reload workflow and is run explicitly by CI rather than as part of the normal `task test-e2e` path
 - `task test-e2e-quickstart-helm` is the important validation for the Helm install path
 - `task test-e2e-quickstart-manifest` is the important validation for the single-file manifest install path
@@ -395,15 +395,6 @@ Conceptually, this means:
 
 - validate the product end to end on the standard `config-dir` install
 - do not treat this as an install-matrix job
-
-### Feature-focused runs
-
-Use:
-
-```bash
-task test-e2e-manager
-task test-e2e-signing
-```
 
 CI runs `task test-image-refresh` explicitly for the rebuild/reload workflow check.
 

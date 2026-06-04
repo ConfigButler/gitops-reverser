@@ -88,8 +88,6 @@ k8s_resource(
 
 test_targets = [
     'test-e2e',
-    'test-e2e-signing',
-    'test-e2e-manager',
     'test-image-refresh',
 ]
 for name in test_targets:

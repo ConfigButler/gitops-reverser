@@ -79,7 +79,7 @@ This plan does not require:
 Minimum focused checks while working:
 
 ```bash
-task test-e2e-signing
+go test -timeout 15m ./test/e2e/ -v -ginkgo.v -ginkgo.label-filter=signing
 ```
 
 Required wrap-up:
