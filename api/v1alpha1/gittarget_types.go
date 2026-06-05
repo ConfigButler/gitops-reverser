@@ -42,17 +42,33 @@ type GitProviderReference struct {
 }
 
 // GitTargetSpec defines the desired state of GitTarget.
+//
+// The destination fields — providerRef, branch, and path — are immutable. A
+// GitTarget materializes the watched resources at exactly one (provider, branch,
+// folder); changing where it writes would orphan the old materialization and require
+// migrating manifests between repositories/branches/folders. Instead of reconciling
+// that move, the destination is fixed: to relocate a GitTarget, delete it and create a
+// new one. This keeps the one-owner-per-folder invariant and the initial-snapshot gate
+// simple — a successful snapshot can never be silently invalidated by a destination
+// change.
+//
+// +kubebuilder:validation:XValidation:rule="self.providerRef == oldSelf.providerRef",message="spec.providerRef is immutable; delete and recreate the GitTarget to change its destination"
+// +kubebuilder:validation:XValidation:rule="self.branch == oldSelf.branch",message="spec.branch is immutable; delete and recreate the GitTarget to change its destination"
+// +kubebuilder:validation:XValidation:rule="!has(self.path) && !has(oldSelf.path) || (has(self.path) && has(oldSelf.path) && self.path == oldSelf.path)",message="spec.path is immutable; delete and recreate the GitTarget to change its destination"
 type GitTargetSpec struct {
 	// ProviderRef references the GitProvider or Flux GitRepository.
+	// Immutable: delete and recreate the GitTarget to change its destination.
 	// +required
 	ProviderRef GitProviderReference `json:"providerRef"`
 
 	// Branch to use for this target.
 	// Must be one of the allowed branches in the provider.
+	// Immutable: delete and recreate the GitTarget to change its destination.
 	// +required
 	Branch string `json:"branch"`
 
 	// Path within the repository to write resources to.
+	// Immutable: delete and recreate the GitTarget to change its destination.
 	// +optional
 	Path string `json:"path,omitempty"`
 

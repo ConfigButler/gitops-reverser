@@ -238,6 +238,60 @@ func TestResync_FoldsCreateUpdateDropTogether(t *testing.T) {
 	assert.NoError(t, freshErr, "the created resource lands at its canonical path")
 }
 
+// A sensitive (SOPS) resource that the resync re-encrypts is counted as Updated, not
+// Skipped. The planner marks an encrypted document PlanSkip (it cannot patch it in
+// place), but applyUpsert re-encrypts and commits it — so stats must come from the
+// actual apply, or status would report a real Secret update as skipped and the commit
+// message count would omit it.
+func TestResync_SensitiveUpdateCountsAsUpdatedNotSkipped(t *testing.T) {
+	enc := &stubEncryptor{result: []byte(
+		"apiVersion: v1\nkind: Secret\nmetadata:\n  name: app\n  namespace: default\n" +
+			"data:\n  k: ENC[AES256,data:NEW,iv:cc,tag:dd]\nsops:\n  version: 3.9.0\n  mac: NEW\n")}
+	writer := newContentWriter(types.SensitiveResourcePolicy{})
+	writer.setEncryptor(enc, "test-scope")
+	worktree := newWorktreeForTest(t)
+
+	// An already-encrypted Secret in Git whose encrypted bytes differ from the new render.
+	seeded := "apiVersion: v1\nkind: Secret\nmetadata:\n  name: app\n  namespace: default\n" +
+		"data:\n  k: ENC[AES256,data:OLD,iv:aa,tag:bb]\nsops:\n  version: 3.9.0\n  mac: OLD\n"
+	full := seedPlacedManifest(t, worktree, "secrets/app.sops.yaml", seeded)
+
+	secretsMapper := mapping.NewStaticSnapshotMapper(mapping.Snapshot{Entries: []mapping.Entry{{
+		GVK:        schema.GroupVersionKind{Group: "", Version: "v1", Kind: "Secret"},
+		GVR:        schema.GroupVersionResource{Group: "", Version: "v1", Resource: "secrets"},
+		Namespaced: true,
+		Allowed:    true,
+	}}})
+	desired := manifestanalyzer.DesiredResource{
+		Resource: types.ResourceIdentifier{
+			Group: "", Version: "v1", Resource: "secrets", Namespace: "default", Name: "app",
+		},
+		Object: &unstructured.Unstructured{Object: map[string]interface{}{
+			"apiVersion": "v1",
+			"kind":       "Secret",
+			"metadata":   map[string]interface{}{"name": "app", "namespace": "default"},
+			"data":       map[string]interface{}{"k": "dg=="},
+		}},
+	}
+
+	w := &BranchWorker{contentWriter: writer, mapper: secretsMapper}
+	stats, changed, err := w.applyResyncToWorktree(
+		context.Background(),
+		worktree,
+		"",
+		[]manifestanalyzer.DesiredResource{desired},
+	)
+	require.NoError(t, err)
+	require.True(t, changed, "the secret is re-encrypted")
+	assert.Equal(t, 1, stats.Updated, "a re-encrypted sensitive resource is Updated, not Skipped")
+	assert.Zero(t, stats.Created)
+	assert.Zero(t, stats.Deleted)
+
+	got, err := os.ReadFile(full)
+	require.NoError(t, err)
+	assert.Equal(t, string(enc.result), string(got), "the secret is re-encrypted in place")
+}
+
 // Sweeping one document from a multi-document file removes only that document and keeps
 // the file when a managed sibling survives.
 func TestResync_DropsOneDocFromMultiDocKeepsSiblings(t *testing.T) {

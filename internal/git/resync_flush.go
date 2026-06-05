@@ -251,43 +251,62 @@ func (wb *writeBatch) applyResyncPlan(
 	desired []manifestanalyzer.DesiredResource,
 	plan manifestanalyzer.Plan,
 ) (ResyncStats, error) {
+	var stats ResyncStats
 	for _, dr := range desired {
 		if dr.Object == nil {
 			// A malformed snapshot entry is not a delete; BuildPlan already protected
 			// the matching document from the sweep and diagnosed it. Skip the upsert.
 			continue
 		}
-		if err := wb.applyUpsert(ctx, eventForDesired(dr)); err != nil {
+		// Count from what the upsert actually did, not from the plan: a sensitive
+		// resource is PlanSkip in the plan but applyUpsert re-encrypts and changes it,
+		// so plan-based stats would report a real commit as skipped.
+		outcome, err := wb.applyUpsert(ctx, eventForDesired(dr))
+		if err != nil {
 			return ResyncStats{}, err
+		}
+		switch outcome {
+		case upsertCreated:
+			stats.Created++
+		case upsertUpdated:
+			stats.Updated++
+		case upsertNoChange:
 		}
 	}
 	for _, action := range plan.Actions {
 		if action.Kind == manifestanalyzer.PlanDropOrphan {
-			wb.dropDocument(action.Ref.FilePath, action.Identity)
+			if wb.dropDocument(action.Ref.FilePath, action.Identity) {
+				stats.Deleted++
+			}
 		}
 	}
-	return statsFromPlan(plan), nil
+	// Skipped stays a plan view (documents present but not editable in place); it is
+	// informational only and not part of the GitTarget status.
+	stats.Skipped = plan.Counts()[manifestanalyzer.PlanSkip]
+	return stats, nil
 }
 
 // dropDocument removes the managed document for id from filePath, re-deriving its
 // position from the buffer's CURRENT bytes (an earlier drop in the same resync can
 // renumber a multi-document file). Removing the last document empties the file, which
-// flush turns into a file deletion. A document already absent is a no-op.
-func (wb *writeBatch) dropDocument(filePath string, id manifestedit.Identity) {
+// flush turns into a file deletion. It reports whether a document was actually removed;
+// a document already absent is a no-op.
+func (wb *writeBatch) dropDocument(filePath string, id manifestedit.Identity) bool {
 	buf := wb.buffer(filePath)
 	if buf.current == nil {
-		return
+		return false
 	}
 	idx, ok := currentDocIndex(filePath, buf.current, id)
 	if !ok {
-		return
+		return false
 	}
 	res, _ := manifestedit.DeleteDocument(buf.current, idx)
 	if res.FileEmpty {
 		buf.current = nil
-		return
+		return true
 	}
 	buf.current = res.Content
+	return true
 }
 
 // eventForDesired adapts a desired snapshot entry into the Event the content-derived
@@ -299,19 +318,6 @@ func eventForDesired(dr manifestanalyzer.DesiredResource) Event {
 		Object:     dr.Object,
 		Identifier: dr.Resource,
 		Operation:  "RECONCILE",
-	}
-}
-
-// statsFromPlan summarises a resync plan for GitTarget status. Updated folds patch and
-// replace together (both are an in-place content change); Deleted is the managed-drop
-// count. The counts come from the plan, the authoritative decision, not from the apply.
-func statsFromPlan(plan manifestanalyzer.Plan) ResyncStats {
-	counts := plan.Counts()
-	return ResyncStats{
-		Created: counts[manifestanalyzer.PlanCreate],
-		Updated: counts[manifestanalyzer.PlanPatch] + counts[manifestanalyzer.PlanReplace],
-		Deleted: counts[manifestanalyzer.PlanDropOrphan],
-		Skipped: counts[manifestanalyzer.PlanSkip],
 	}
 }
 

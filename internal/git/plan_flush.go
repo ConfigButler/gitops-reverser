@@ -137,14 +137,28 @@ func (wb *writeBatch) buffer(rel string) *fileBuffer {
 	return b
 }
 
+// upsertOutcome is what an upsert actually did to the worktree bytes, so a caller can
+// count create/update accurately from the apply rather than from a separate plan
+// estimate (which mislabels a re-encrypted sensitive resource as skipped).
+type upsertOutcome int
+
+const (
+	upsertNoChange upsertOutcome = iota
+	upsertCreated
+	upsertUpdated
+)
+
 // applyEvent folds one event into the batch: a DELETE removes a document, anything
 // else is an upsert (the object-bearing event the stream guarantees for non-deletes).
+// The steady-state writer does not need the upsert outcome (it flushes by byte state),
+// so it is discarded here; the resync planner consumes it for stats.
 func (wb *writeBatch) applyEvent(ctx context.Context, event Event) error {
 	if event.Operation == "DELETE" {
 		wb.applyDelete(ctx, event)
 		return nil
 	}
-	return wb.applyUpsert(ctx, event)
+	_, err := wb.applyUpsert(ctx, event)
+	return err
 }
 
 // applyUpsert resolves an object-bearing event against the subtree. When a managed
@@ -153,8 +167,9 @@ func (wb *writeBatch) applyEvent(ctx context.Context, event Event) error {
 // a sensitive document is re-encrypted wholesale AT ITS EXISTING PATH (never patched in
 // place — that would drop the SOPS metadata and write the secret back in cleartext, and
 // never at the canonical path, which would orphan the moved copy). A resource with no
-// existing document is a new file at the canonical placement path.
-func (wb *writeBatch) applyUpsert(ctx context.Context, event Event) error {
+// existing document is a new file at the canonical placement path. It returns what it
+// did to the bytes (created / updated / no change).
+func (wb *writeBatch) applyUpsert(ctx context.Context, event Event) (upsertOutcome, error) {
 	if id, ok := manifestIdentity(event.Object); ok {
 		if dm := wb.store.ByManifestIdentity[id]; dm != nil {
 			filePath := wb.docLoc[dm].FilePath
@@ -175,11 +190,16 @@ func (wb *writeBatch) applyUpsert(ctx context.Context, event Event) error {
 // same batch that shifted a multi-document file does not misdirect this edit. A
 // document the store located but an earlier event already removed is simply absent now,
 // so there is nothing to patch.
-func (wb *writeBatch) patchExisting(ctx context.Context, event Event, filePath string, id manifestedit.Identity) error {
+func (wb *writeBatch) patchExisting(
+	ctx context.Context,
+	event Event,
+	filePath string,
+	id manifestedit.Identity,
+) (upsertOutcome, error) {
 	buf := wb.buffer(filePath)
 	idx, ok := currentDocIndex(filePath, buf.current, id)
 	if !ok {
-		return nil
+		return upsertNoChange, nil
 	}
 	gitDoc, _ := manifestedit.NewDocumentAt(filePath, buf.current, idx)
 	c := manifestedit.Comparison{
@@ -191,6 +211,7 @@ func (wb *writeBatch) patchExisting(ctx context.Context, event Event, filePath s
 	switch res.Mode {
 	case manifestedit.EditPatched, manifestedit.EditWholeReplace:
 		buf.current = res.Content
+		return upsertUpdated, nil
 	case manifestedit.EditNoChange, manifestedit.EditSkipped, manifestedit.EditDeleted:
 		// No-op, an unsafe edit left untouched, or (impossible here) a delete: leave
 		// the bytes as they are. Surface a skip so an operator can see a document Git
@@ -199,7 +220,7 @@ func (wb *writeBatch) patchExisting(ctx context.Context, event Event, filePath s
 			logManifestDiagnostics(ctx, diags)
 		}
 	}
-	return nil
+	return upsertNoChange, nil
 }
 
 // writeWholeFile renders the event's clean content (sanitized, or SOPS-encrypted for a
@@ -209,7 +230,7 @@ func (wb *writeBatch) patchExisting(ctx context.Context, event Event, filePath s
 // would drop siblings — splicing a single rendered/encrypted document into a multi-doc
 // file is unsupported, so it is refused), and a write that matches the current bytes is a
 // no-op (the byte state machine, with the semantic-equality guard for comment-only diffs).
-func (wb *writeBatch) writeWholeFile(ctx context.Context, event Event, rel string) error {
+func (wb *writeBatch) writeWholeFile(ctx context.Context, event Event, rel string) (upsertOutcome, error) {
 	content, err := wb.writer.buildContentForWrite(ctx, event)
 	if err != nil {
 		if wb.writer.isSensitiveIdentifier(event.Identifier) {
@@ -219,10 +240,11 @@ func (wb *writeBatch) writeWholeFile(ctx context.Context, event Event, rel strin
 				"error", err.Error(),
 			)
 		}
-		return err
+		return upsertNoChange, err
 	}
 
 	buf := wb.buffer(rel)
+	isNew := buf.current == nil
 	if buf.current != nil {
 		if manifestedit.DocumentCount(buf.current) > 1 {
 			log.FromContext(ctx).Info(
@@ -230,14 +252,17 @@ func (wb *writeBatch) writeWholeFile(ctx context.Context, event Event, rel strin
 				"file", rel,
 				"resource", event.Identifier.String(),
 			)
-			return nil
+			return upsertNoChange, nil
 		}
 		if bytes.Equal(buf.current, content) || manifestsAreSemanticallyEqual(buf.current, content) {
-			return nil
+			return upsertNoChange, nil
 		}
 	}
 	buf.current = content
-	return nil
+	if isNew {
+		return upsertCreated, nil
+	}
+	return upsertUpdated, nil
 }
 
 // applyDelete removes the document a DELETE event targets. The document is located by

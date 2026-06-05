@@ -59,9 +59,15 @@ type ClusterSnapshot struct {
 // bookmark, which pins that type's resourceVersion. The snapshot is the JOIN of all
 // streams' bookmarks — and only the join. If any stream errors or closes before its
 // bookmark, the whole gather ABORTS and returns nothing: a partial mark must never
-// drive a sweep (the same fail-closed rule the old LIST snapshot used). There is
-// deliberately no LIST+WATCH fallback; an unobservable API surface fails the resync
-// rather than producing an incomplete snapshot.
+// drive a sweep (the same fail-closed rule the old LIST snapshot used).
+//
+// Streaming is the primary path. The one concession is a per-type consistent LIST
+// fallback (streamInitialEvents → listInitialEvents) for a server that cannot stream at
+// all — aggregated apiservers reject sendInitialEvents — so a single non-streaming type
+// no longer aborts the whole snapshot. This is NOT a return to the old LIST+WATCH
+// steady state (the informers still own live events); a transient watch error still
+// aborts, never silently turning an unobservable surface into an empty (destructive)
+// snapshot.
 //
 // An empty desired set is authoritative only because it can only be produced when
 // every stream reached its bookmark — the cluster genuinely holds no watched

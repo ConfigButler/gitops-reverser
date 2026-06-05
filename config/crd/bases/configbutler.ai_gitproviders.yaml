@@ -173,12 +173,18 @@ spec:
                 - name
                 type: object
               url:
-                description: URL of the repository (HTTP/SSH)
+                description: |-
+                  URL of the repository (HTTP/SSH).
+                  Immutable: delete and recreate the GitProvider to point at a different repository.
                 type: string
             required:
             - allowedBranches
             - url
             type: object
+            x-kubernetes-validations:
+            - message: spec.url is immutable; delete and recreate the GitProvider
+                to point at a different repository
+              rule: self.url == oldSelf.url
           status:
             description: status defines the observed state of GitProvider
             properties:

@@ -205,12 +205,18 @@ func (r *EventRouter) EmitResyncForGitDest(
 // It is the rule-change path's entry point: that path only needs each affected target's
 // resync STARTED (not its stats), so many targets' commits proceed in parallel at their
 // own workers instead of serializing on the single reconcile goroutine — matching the
-// old fire-and-forget snapshot behaviour. The worker's reply is drained in the
-// background only to log the outcome. The synchronous gather still fails closed, so an
-// unobservable API surface is returned as an error before anything is enqueued.
+// old fire-and-forget snapshot behaviour. The synchronous gather still fails closed, so
+// an unobservable API surface is returned as an error before anything is enqueued.
+//
+// onApplied is invoked exactly once from the background drain with the apply result: nil
+// when the worker committed (or had nothing to do), or an error when the resync failed
+// or timed out. The caller uses it to mark the target delivered ONLY on success, so a
+// failed resync stays pending and is retried — the marking must not race ahead of the
+// apply. A nil onApplied just logs.
 func (r *EventRouter) TriggerResyncForGitDest(
 	ctx context.Context,
 	gitDest types.ResourceReference,
+	onApplied func(error),
 ) error {
 	resultCh, err := r.gatherAndEnqueueResync(ctx, gitDest)
 	if err != nil {
@@ -221,11 +227,18 @@ func (r *EventRouter) TriggerResyncForGitDest(
 		case result := <-resultCh:
 			if result.Err != nil {
 				r.Log.Error(result.Err, "background resync failed", "gitDest", gitDest.String())
-				return
+			} else {
+				r.logResyncApplied(gitDest, result.Stats)
 			}
-			r.logResyncApplied(gitDest, result.Stats)
+			if onApplied != nil {
+				onApplied(result.Err)
+			}
 		case <-time.After(resyncSignalTimeout):
-			r.Log.Error(nil, "background resync timed out", "gitDest", gitDest.String())
+			timeoutErr := fmt.Errorf("timed out resyncing %s", gitDest.String())
+			r.Log.Error(timeoutErr, "background resync timed out", "gitDest", gitDest.String())
+			if onApplied != nil {
+				onApplied(timeoutErr)
+			}
 		}
 	}()
 	return nil

@@ -62,6 +62,7 @@ spec:
                 description: |-
                   Branch to use for this target.
                   Must be one of the allowed branches in the provider.
+                  Immutable: delete and recreate the GitTarget to change its destination.
                 type: string
               encryption:
                 description: Encryption defines encryption settings for Secret resource
@@ -129,10 +130,14 @@ spec:
                 - provider
                 type: object
               path:
-                description: Path within the repository to write resources to.
+                description: |-
+                  Path within the repository to write resources to.
+                  Immutable: delete and recreate the GitTarget to change its destination.
                 type: string
               providerRef:
-                description: ProviderRef references the GitProvider or Flux GitRepository.
+                description: |-
+                  ProviderRef references the GitProvider or Flux GitRepository.
+                  Immutable: delete and recreate the GitTarget to change its destination.
                 properties:
                   group:
                     default: configbutler.ai
@@ -154,6 +159,17 @@ spec:
             - branch
             - providerRef
             type: object
+            x-kubernetes-validations:
+            - message: spec.providerRef is immutable; delete and recreate the GitTarget
+                to change its destination
+              rule: self.providerRef == oldSelf.providerRef
+            - message: spec.branch is immutable; delete and recreate the GitTarget
+                to change its destination
+              rule: self.branch == oldSelf.branch
+            - message: spec.path is immutable; delete and recreate the GitTarget to
+                change its destination
+              rule: '!has(self.path) && !has(oldSelf.path) || (has(self.path) && has(oldSelf.path)
+                && self.path == oldSelf.path)'
           status:
             description: status defines the observed state of GitTarget
             properties:

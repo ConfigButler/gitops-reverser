@@ -702,6 +702,30 @@ dependency; it does not exist yet. Independent of Track A.
 >    has selected a resource yet) produces no commit, so it must not advance the push
 >    cooldown — otherwise the next real snapshot's push is delayed past its window. Only a
 >    resync that actually committed is retained and pushed.
+>
+> An external review then hardened three more points:
+> 11. **Destination identity is immutable** (CEL transition rules on the CRDs). A
+>    GitTarget writes at exactly one (provider, branch, folder), and a GitProvider's
+>    `spec.url` is the repository those targets resolve to; changing any of them would
+>    silently orphan the old materialization. So `GitTarget.spec.providerRef/branch/path`
+>    and `GitProvider.spec.url` are fixed — relocating is a delete + recreate. Everything
+>    operational stays mutable, deliberately: `GitProvider.spec.allowedBranches` (widening
+>    or narrowing the writable set must not require tearing down every GitTarget), plus
+>    auth, push tuning, and commit identity/signing. Rather than reconcile a destination
+>    *move* (which would need a generation-aware snapshot gate and event-stream/worker
+>    rebinding — the review's findings 2 and 3), the destination is fixed. This removes
+>    that whole bug class instead of handling it, and keeps the "SnapshotSynced ⇒ skip"
+>    gate correct (a successful snapshot can never be silently invalidated).
+> 12. **A rule-change resync is marked delivered only after it APPLIES.** Because the
+>    rule-change path is fire-and-forget, `TriggerResyncForGitDest` carries an
+>    apply-completion callback; the rule-set hash is marked delivered (and the reconcile
+>    counter incremented) only on a successful apply, so a failed/timed-out resync stays
+>    pending and the next reconcile retries it — the marking never races ahead of the
+>    commit.
+> 13. **Resync stats are counted from the apply, not the plan.** `applyUpsert` reports
+>    create/update/no-change, so a sensitive (SOPS) resource — `PlanSkip` in the plan but
+>    re-encrypted and committed by the apply — is reported as Updated, not Skipped, and is
+>    included in the commit-message count.
 
 - **Depends on**: M7.
 - **Touches**: the streaming-list watch (`sendInitialEvents`) folded over the

@@ -1165,12 +1165,15 @@ func (m *Manager) beginReconciliationForTargets(targets []ruleSetSnapshotTarget,
 // complete watched set is gathered via the streaming-list watch and applied at the
 // worker as a content-derived mark-and-sweep.
 //
-// A target is marked delivered and counted only once its resync has been applied: a
-// gather/apply failure leaves that target pending and is returned as an error so the
-// caller requeues with backoff and retries it promptly, rather than waiting out the 30s
-// periodic reconcile — which matters for the per-pod restart gate that blocks on the
-// reconcile counter reaching the new pod. Other targets in the batch are still
-// attempted so one bad target cannot starve the rest.
+// A target is marked delivered and counted only once its resync has actually been
+// APPLIED at the worker — the rule-change resync is fire-and-forget, so the marking
+// rides the apply-completion callback, not the enqueue. A gather failure (returned
+// synchronously) or an apply failure (delivered via the callback) leaves that target
+// pending so the next reconcile retries it, rather than marking a target delivered for a
+// resync that never committed. A gather error is also returned so the caller requeues
+// promptly — which matters for the per-pod restart gate that blocks on the reconcile
+// counter reaching the new pod. Other targets in the batch are still attempted so one
+// bad target cannot starve the rest.
 func (m *Manager) emitSnapshotForRuleChange(
 	ctx context.Context,
 	log logr.Logger,
@@ -1189,6 +1192,17 @@ func (m *Manager) emitSnapshotForRuleChange(
 	var errs []error
 	for _, target := range targets {
 		gitDest := target.gitDest
+		delivered := target // capture for the apply-completion callback
+		// Mark delivered + count the reconcile only once the worker has actually applied
+		// this resync. A failed/timed-out apply leaves the target pending so the next
+		// reconcile retries it.
+		onApplied := func(applyErr error) {
+			if applyErr != nil {
+				return
+			}
+			m.markRuleSetSnapshotDelivered(delivered)
+			m.recordTargetReconcileCompleted(gitDest, trigger)
+		}
 		// One content-derived, mark-and-sweep resync per target: gather the streaming
 		// snapshot and enqueue it at the worker without blocking on the commit, so many
 		// targets' commits proceed in parallel. A target whose GitTarget no longer exists
@@ -1196,7 +1210,7 @@ func (m *Manager) emitSnapshotForRuleChange(
 		// it must not poison the batch into a requeue storm. A target whose worker is not
 		// yet live, or whose snapshot could not be gathered, is left pending and retried
 		// by the next reconcile, exactly as the old two-snapshot path left it pending.
-		if err := m.EventRouter.TriggerResyncForGitDest(ctx, gitDest); err != nil {
+		if err := m.EventRouter.TriggerResyncForGitDest(ctx, gitDest, onApplied); err != nil {
 			if apierrors.IsNotFound(err) {
 				log.V(1).Info("GitTarget no longer exists; skipping resync", "gitDest", gitDest.String())
 				continue
@@ -1205,8 +1219,6 @@ func (m *Manager) emitSnapshotForRuleChange(
 			errs = append(errs, fmt.Errorf("resync %s: %w", gitDest, err))
 			continue
 		}
-		m.markRuleSetSnapshotDelivered(target)
-		m.recordTargetReconcileCompleted(gitDest, trigger)
 		emitted = true
 	}
 	if emitted {

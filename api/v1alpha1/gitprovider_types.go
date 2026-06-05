@@ -23,8 +23,20 @@ import (
 )
 
 // GitProviderSpec defines the desired state of GitProvider.
+//
+// Only the repository URL is immutable. The URL is the destination identity that every
+// referencing GitTarget materializes into; changing it would silently point those
+// targets at a different repository and orphan their existing materialization (the same
+// reason a GitTarget's destination is immutable). To repoint, delete and recreate the
+// GitProvider. Everything else here is operational and deliberately stays mutable —
+// notably allowedBranches (widening or narrowing the writable set is a normal change
+// that must not require tearing down every GitTarget), plus auth, push tuning, and
+// commit identity/signing.
+//
+// +kubebuilder:validation:XValidation:rule="self.url == oldSelf.url",message="spec.url is immutable; delete and recreate the GitProvider to point at a different repository"
 type GitProviderSpec struct {
-	// URL of the repository (HTTP/SSH)
+	// URL of the repository (HTTP/SSH).
+	// Immutable: delete and recreate the GitProvider to point at a different repository.
 	URL string `json:"url"`
 
 	// SecretRef for authentication credentials (may be nil for public repos)
