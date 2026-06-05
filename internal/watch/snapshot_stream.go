@@ -357,18 +357,12 @@ type snapshotGVR struct {
 	namespaces []string
 }
 
-// gvrSnapshotEntry accumulates the namespace scope for a GVR while resolving rules. A
-// cluster-wide entry overrides any namespaces (a cluster-wide stream sees them all).
-type gvrSnapshotEntry struct {
-	namespaces  map[string]struct{}
-	clusterWide bool
-}
-
-// resolveSnapshotGVRs resolves the GitTarget's WatchRules and ClusterWatchRules into the
-// concrete watched (GVR, namespace-scope) set to stream. It refreshes the trusted API
-// catalog first and fails closed on a blocking resolve miss (catalog unavailable or
-// discovery degraded), so a snapshot is never built from partial knowledge of the API
-// surface.
+// resolveSnapshotGVRs returns the GitTarget's watched (GVR, namespace-scope) set to
+// stream, read from the resident watched-type table (M10) rather than re-resolved
+// inline on every gather. It refreshes the trusted API catalog and the table first,
+// then fails closed on a blocking resolve miss (catalog unavailable or discovery
+// degraded) recorded on the table, so a snapshot is never built from partial
+// knowledge of the API surface.
 func (m *Manager) resolveSnapshotGVRs(
 	ctx context.Context,
 	gitDest types.ResourceReference,
@@ -376,95 +370,26 @@ func (m *Manager) resolveSnapshotGVRs(
 	if err := m.RefreshAPIResourceCatalog(ctx); err != nil {
 		return nil, fmt.Errorf("refresh API resource catalog for %s: %w", gitDest.String(), err)
 	}
-	resolver := m.ruleGVRResolver()
-	gvrMap := map[schema.GroupVersionResource]*gvrSnapshotEntry{}
+	m.refreshWatchedTypeTables()
 
-	blockingMisses := m.collectWatchRuleGVRs(gitDest, resolver, gvrMap)
-	blockingMisses = append(blockingMisses, m.collectClusterWatchRuleGVRs(gitDest, resolver, gvrMap)...)
-
-	if len(blockingMisses) > 0 {
+	table, _ := m.watchedTypeTableForGitDest(gitDest)
+	if blocking := table.BlockingMisses(); len(blocking) > 0 {
 		return nil, fmt.Errorf(
 			"aborting cluster snapshot for %s: %s; refusing to snapshot a partial cluster view",
-			gitDest.String(), FormatResolveMisses(blockingMisses))
+			gitDest.String(), FormatResolveMisses(blocking))
 	}
 
-	return sortedSnapshotGVRs(gvrMap), nil
+	return snapshotGVRsFromTable(table), nil
 }
 
-// collectWatchRuleGVRs folds this GitTarget's namespaced WatchRules into gvrMap,
-// scoping each resolved GVR to its rule's namespace, and returns any blocking misses.
-func (m *Manager) collectWatchRuleGVRs(
-	gitDest types.ResourceReference,
-	resolver *RuleGVRResolver,
-	gvrMap map[schema.GroupVersionResource]*gvrSnapshotEntry,
-) []ResolveMiss {
-	var blockingMisses []ResolveMiss
-	for _, rule := range m.RuleStore.SnapshotWatchRules() {
-		if rule.GitTargetRef != gitDest.Name || rule.GitTargetNamespace != gitDest.Namespace {
-			continue
-		}
-		for _, rr := range rule.ResourceRules {
-			gvrs, miss := m.gvrsFromResourceRule(rr, resolver)
-			blockingMisses = append(blockingMisses, blockingSnapshotMisses(miss)...)
-			for _, gvr := range gvrs {
-				entry := ensureSnapshotEntry(gvrMap, gvr.schema())
-				if !entry.clusterWide {
-					entry.namespaces[rule.Source.Namespace] = struct{}{}
-				}
-			}
-		}
-	}
-	return blockingMisses
-}
-
-// collectClusterWatchRuleGVRs folds this GitTarget's ClusterWatchRules into gvrMap as
-// cluster-wide entries, and returns any blocking misses.
-func (m *Manager) collectClusterWatchRuleGVRs(
-	gitDest types.ResourceReference,
-	resolver *RuleGVRResolver,
-	gvrMap map[schema.GroupVersionResource]*gvrSnapshotEntry,
-) []ResolveMiss {
-	var blockingMisses []ResolveMiss
-	for _, cwrRule := range m.RuleStore.SnapshotClusterWatchRules() {
-		if cwrRule.GitTargetRef != gitDest.Name || cwrRule.GitTargetNamespace != gitDest.Namespace {
-			continue
-		}
-		gvrs, miss := m.gvrsFromClusterRule(cwrRule, resolver)
-		blockingMisses = append(blockingMisses, blockingSnapshotMisses(miss)...)
-		for _, gvr := range gvrs {
-			ensureSnapshotEntry(gvrMap, gvr.schema()).clusterWide = true
-		}
-	}
-	return blockingMisses
-}
-
-// ensureSnapshotEntry returns the entry for a GVR, creating it on first sight.
-func ensureSnapshotEntry(
-	gvrMap map[schema.GroupVersionResource]*gvrSnapshotEntry,
-	gvr schema.GroupVersionResource,
-) *gvrSnapshotEntry {
-	entry := gvrMap[gvr]
-	if entry == nil {
-		entry = &gvrSnapshotEntry{namespaces: map[string]struct{}{}}
-		gvrMap[gvr] = entry
-	}
-	return entry
-}
-
-// sortedSnapshotGVRs converts the resolved entries into a deterministic, sorted slice so
-// the gathered snapshot and its diagnostics are stable across runs. A cluster-wide entry
-// yields no namespaces (it is streamed cluster-wide).
-func sortedSnapshotGVRs(gvrMap map[schema.GroupVersionResource]*gvrSnapshotEntry) []snapshotGVR {
-	out := make([]snapshotGVR, 0, len(gvrMap))
-	for gvr, entry := range gvrMap {
-		var namespaces []string
-		if !entry.clusterWide {
-			for ns := range entry.namespaces {
-				namespaces = append(namespaces, ns)
-			}
-			sort.Strings(namespaces)
-		}
-		out = append(out, snapshotGVR{gvr: gvr, namespaces: namespaces})
+// snapshotGVRsFromTable projects a watched-type table into the deterministic, sorted
+// (GVR, namespace-scope) stream set. A cluster-wide type yields no namespaces; the
+// per-type SnapshotNamespaces collapse preserves the historic gvrSnapshotEntry
+// behaviour (a cluster-wide selection overrides any named namespaces).
+func snapshotGVRsFromTable(table WatchedTypeTable) []snapshotGVR {
+	out := make([]snapshotGVR, 0, len(table.Types))
+	for _, wt := range table.Types {
+		out = append(out, snapshotGVR{gvr: wt.GVR, namespaces: wt.SnapshotNamespaces()})
 	}
 	sort.Slice(out, func(i, j int) bool {
 		return out[i].gvr.String() < out[j].gvr.String()

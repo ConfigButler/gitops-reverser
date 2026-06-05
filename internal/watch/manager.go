@@ -109,6 +109,14 @@ type Manager struct {
 	ruleSetSnapshotMu        sync.Mutex
 	lastDeliveredRuleSetHash map[string]uint64
 	pendingRuleSetHash       map[string]uint64
+
+	// watchedTypes is the resident, per-GitTarget watched-type table set (M10): the
+	// single source of "what each GitTarget watches", re-resolved only on a rule
+	// change or catalog generation bump and read by the snapshot, informer, and
+	// plan-hash paths instead of each re-resolving inline. watchedTypeInit guards
+	// its lazy construction for zero-value Managers in tests.
+	watchedTypeInit sync.Once
+	watchedTypes    *watchedTypeStore
 }
 
 // SnapshotEmitCount returns the number of times the manager has emitted a
@@ -386,154 +394,48 @@ func (m *Manager) dynamicClientFromConfig(log logr.Logger) dynamic.Interface {
 	return dc
 }
 
-// getNamespacesForGVR returns the list of namespaces to list for a given GVR.
-// Returns empty slice for cluster-scoped resources or ClusterWatchRules (meaning cluster-wide list).
-// Returns specific namespace(s) for namespaced resources from WatchRules.
+// getNamespacesForGVR returns the namespaces to list for a given GVR, derived from
+// the resident watched-type tables (M10) rather than re-matched against raw rules.
+// An empty slice means cluster-wide: a cluster-scoped resource, or a namespaced
+// resource any GitTarget follows cluster-wide. This unifies informer scoping with
+// the snapshot's collapse — a cluster-wide selection wins over named namespaces —
+// where the old pattern-match let a WatchRule namespace shadow a coexisting
+// cluster-wide ClusterWatchRule.
 func (m *Manager) getNamespacesForGVR(g GVR) []string {
-	// Cluster-scoped resources always list cluster-wide
 	if g.Scope == configv1alpha1.ResourceScopeCluster {
 		return nil
 	}
 
-	// Collect namespaces from WatchRules
-	namespacesSet := m.collectWatchRuleNamespaces(g)
+	namespaceSet := map[string]struct{}{}
+	for _, table := range m.allWatchedTypeTables() {
+		for _, wt := range table.Types {
+			if !watchedTypeMatchesGVR(wt, g) {
+				continue
+			}
+			if wt.ClusterWide() {
+				return nil
+			}
+			for _, ns := range wt.SnapshotNamespaces() {
+				namespaceSet[ns] = struct{}{}
+			}
+		}
+	}
 
-	// Convert set to slice
-	namespaces := make([]string, 0, len(namespacesSet))
-	for ns := range namespacesSet {
+	namespaces := make([]string, 0, len(namespaceSet))
+	for ns := range namespaceSet {
 		namespaces = append(namespaces, ns)
 	}
-
-	// Check ClusterWatchRules if no WatchRules matched
-	if len(namespaces) == 0 && m.hasMatchingClusterWatchRule(g) {
-		return nil // ClusterWatchRule with Namespaced scope - list cluster-wide
-	}
-
+	sort.Strings(namespaces)
 	return namespaces
 }
 
-// collectWatchRuleNamespaces collects namespaces from WatchRules that match the given GVR.
-func (m *Manager) collectWatchRuleNamespaces(g GVR) map[string]struct{} {
-	wrRules := m.RuleStore.SnapshotWatchRules()
-	namespacesSet := make(map[string]struct{})
-
-	for _, rule := range wrRules {
-		if m.compiledRuleMatchesGVR(rule.ResourceRules, g) {
-			namespacesSet[rule.Source.Namespace] = struct{}{}
-		}
-	}
-
-	return namespacesSet
-}
-
-// hasMatchingClusterWatchRule checks if any ClusterWatchRule with Namespaced scope matches the GVR.
-func (m *Manager) hasMatchingClusterWatchRule(g GVR) bool {
-	cwrRules := m.RuleStore.SnapshotClusterWatchRules()
-
-	for _, cwrRule := range cwrRules {
-		for _, rr := range cwrRule.Rules {
-			if rr.Scope != configv1alpha1.ResourceScopeNamespaced {
-				continue
-			}
-			if m.clusterResourceRuleMatchesGVR(rr, g) {
-				return true
-			}
-		}
-	}
-
-	return false
-}
-
-// compiledRuleMatchesGVR checks if any CompiledResourceRule in the slice matches the given GVR.
-func (m *Manager) compiledRuleMatchesGVR(resourceRules []rulestore.CompiledResourceRule, g GVR) bool {
-	for _, rr := range resourceRules {
-		if m.compiledResourceRuleMatchesGVR(rr, g) {
-			return true
-		}
-	}
-	return false
-}
-
-// compiledResourceRuleMatchesGVR checks if a CompiledResourceRule matches the given GVR.
-func (m *Manager) compiledResourceRuleMatchesGVR(rr rulestore.CompiledResourceRule, g GVR) bool {
-	if !m.matchesAPIGroups(rr.APIGroups, g.Group) {
-		return false
-	}
-	if !m.matchesAPIVersions(rr.APIVersions, g.Version) {
-		return false
-	}
-	return m.matchesResources(rr.Resources, g.Resource)
-}
-
-// clusterResourceRuleMatchesGVR checks if a CompiledClusterResourceRule matches the given GVR.
-func (m *Manager) clusterResourceRuleMatchesGVR(rr rulestore.CompiledClusterResourceRule, g GVR) bool {
-	if !m.matchesAPIGroups(rr.APIGroups, g.Group) {
-		return false
-	}
-	if !m.matchesAPIVersions(rr.APIVersions, g.Version) {
-		return false
-	}
-	return m.matchesResources(rr.Resources, g.Resource)
-}
-
-// matchesAPIGroups checks if the rule's API groups match the target group.
-func (m *Manager) matchesAPIGroups(groups []string, targetGroup string) bool {
-	if len(groups) == 0 {
-		return true
-	}
-	for _, grp := range groups {
-		if grp == "*" || grp == targetGroup {
-			return true
-		}
-	}
-	return false
-}
-
-// matchesAPIVersions checks if the rule's API versions match the target version.
-func (m *Manager) matchesAPIVersions(versions []string, targetVersion string) bool {
-	if len(versions) == 0 {
-		return true
-	}
-	for _, ver := range versions {
-		if ver == "*" || ver == targetVersion {
-			return true
-		}
-	}
-	return false
-}
-
-// matchesResources checks if the rule's resources match the target resource.
-func (m *Manager) matchesResources(resources []string, targetResource string) bool {
-	for _, res := range resources {
-		normalized := normalizeResource(res)
-		if normalized == "*" || normalized == targetResource {
-			return true
-		}
-	}
-	return false
-}
-
-// gvrsFromResourceRule returns the GVRs implied by a CompiledResourceRule.
-func (m *Manager) gvrsFromResourceRule(
-	rr rulestore.CompiledResourceRule,
-	resolver *RuleGVRResolver,
-) ([]GVR, []ResolveMiss) {
-	return resolver.Resolve(rr.APIGroups, rr.APIVersions, rr.Resources, configv1alpha1.ResourceScopeNamespaced)
-}
-
-// gvrsFromClusterRule returns the GVRs implied by a CompiledClusterRule.
-func (m *Manager) gvrsFromClusterRule(
-	cwrRule rulestore.CompiledClusterRule,
-	resolver *RuleGVRResolver,
-) ([]GVR, []ResolveMiss) {
-	var gvrs []GVR
-	var misses []ResolveMiss
-	for _, rr := range cwrRule.Rules {
-		ruleGVRs, ruleMiss := resolver.Resolve(rr.APIGroups, rr.APIVersions, rr.Resources, rr.Scope)
-		gvrs = append(gvrs, ruleGVRs...)
-		misses = append(misses, ruleMiss...)
-	}
-	return dedupeGVRs(gvrs), misses
+// watchedTypeMatchesGVR reports whether a watched type is the one named by an
+// informer GVR. GVR->GVK is 1:1, so group/version/resource identifies the type; the
+// scope is a function of that resource and is carried along for clarity.
+func watchedTypeMatchesGVR(wt WatchedType, g GVR) bool {
+	return wt.GVR.Group == g.Group &&
+		wt.GVR.Version == g.Version &&
+		wt.GVR.Resource == g.Resource
 }
 
 func blockingSnapshotMisses(misses []ResolveMiss) []ResolveMiss {
@@ -576,6 +478,12 @@ func (m *Manager) ReconcileForRuleChange(ctx context.Context) error {
 	if err := m.RefreshAPIResourceCatalog(ctx); err != nil {
 		return err
 	}
+
+	// Re-resolve the resident watched-type tables (M10) now that the catalog is
+	// fresh. This is gated on a rule-set change or catalog generation bump, so a
+	// periodic reconcile with neither reuses the resolved tables. Every consumer
+	// below (informer set, snapshot gather, plan hash) reads these tables.
+	m.refreshWatchedTypeTables()
 
 	// Compute desired GVRs from current rules. The resolver only emits GVRs that
 	// the trusted catalog confirms are served, listable, watchable and in scope,
@@ -1063,66 +971,18 @@ func (m *Manager) snapshotTargetsNeedingDelivery() []ruleSetSnapshotTarget {
 // rulestore TestGetMatchingRules_OverlappingRulesUnionOperations). A target with
 // rules that currently resolve to nothing is kept as an empty plan so transient
 // discovery gaps do not look like rule removal.
+//
+// As of M10 the resolved surface is read from the resident watched-type tables
+// rather than re-resolved here; watchPlanFromTable reconstructs the identical
+// effective-plan entries (and hash) from a table, so snapshot selection is
+// unchanged.
 func (m *Manager) currentRuleSetSnapshots() []ruleSetSnapshotTarget {
-	plans := make(map[string]*targetWatchPlan)
-	resolver := m.ruleGVRResolver()
-
-	plan := func(ref types.ResourceReference, providerNS, provider, branch, path string) *targetWatchPlan {
-		key := ref.Key()
-		p := plans[key]
-		if p == nil {
-			p = &targetWatchPlan{gitDest: ref, entries: make(map[string]map[string]struct{})}
-			plans[key] = p
-		}
-		// Destination is a property of the GitTarget, so it is identical across
-		// that target's rules; recording it on each rule is harmless.
-		p.dest = fmt.Sprintf("provider=%s/%s|branch=%q|path=%q", providerNS, provider, branch, path)
-		return p
-	}
-
-	// Namespaced WatchRules watch their own namespace (rule.Source.Namespace),
-	// so the namespace is part of the resolved scope even though the rule name is
-	// not part of the plan.
-	for _, rule := range m.RuleStore.SnapshotWatchRules() {
-		p := plan(
-			types.NewResourceReference(rule.GitTargetRef, rule.GitTargetNamespace),
-			rule.GitProviderNamespace, rule.GitProviderRef, rule.Branch, rule.Path,
-		)
-		for _, rr := range rule.ResourceRules {
-			gvrs, _ := resolver.Resolve(rr.APIGroups, rr.APIVersions, rr.Resources,
-				configv1alpha1.ResourceScopeNamespaced)
-			for _, gvr := range gvrs {
-				p.addEntry(gvr, rule.Source.Namespace, rr.Operations)
-			}
-		}
-	}
-
-	// ClusterWatchRules carry per-rule scope and watch all namespaces (or are
-	// cluster-scoped), so the plan namespace is empty.
-	for _, rule := range m.RuleStore.SnapshotClusterWatchRules() {
-		p := plan(
-			types.NewResourceReference(rule.GitTargetRef, rule.GitTargetNamespace),
-			rule.GitProviderNamespace, rule.GitProviderRef, rule.Branch, rule.Path,
-		)
-		for _, rr := range rule.Rules {
-			gvrs, _ := resolver.Resolve(rr.APIGroups, rr.APIVersions, rr.Resources, rr.Scope)
-			for _, gvr := range gvrs {
-				p.addEntry(gvr, "", rr.Operations)
-			}
-		}
-	}
-
-	keys := make([]string, 0, len(plans))
-	for key := range plans {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-
-	targets := make([]ruleSetSnapshotTarget, 0, len(keys))
-	for _, key := range keys {
-		p := plans[key]
+	tables := m.allWatchedTypeTables()
+	targets := make([]ruleSetSnapshotTarget, 0, len(tables))
+	for _, table := range tables {
+		p := watchPlanFromTable(table)
 		targets = append(targets, ruleSetSnapshotTarget{
-			gitDest:    p.gitDest,
+			gitDest:    table.GitDest,
 			hash:       p.hash(),
 			hasEntries: len(p.entries) > 0,
 		})

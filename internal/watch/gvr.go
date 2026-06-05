@@ -25,7 +25,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
-	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
 )
 
 // GVR represents a concrete Group/Version/Resource target with a scope.
@@ -52,51 +51,23 @@ func (m *Manager) computeRequestedGVRs() ([]GVR, []ResolveMiss) {
 		return nil, nil
 	}
 
+	// The informer GVR set is the union of every GitTarget's watched types (M10):
+	// the resolved surface read from the resident tables, not re-resolved inline.
 	var out []GVR
 	var misses []ResolveMiss
-	resolver := m.ruleGVRResolver()
-
-	// From WatchRule (namespaced-only)
-	for _, cr := range m.RuleStore.SnapshotWatchRules() {
-		gvrs, ruleMisses := gvrFromCompiledRule(resolver, cr, configv1alpha1.ResourceScopeNamespaced)
-		out = append(out, gvrs...)
-		misses = append(misses, ruleMisses...)
-	}
-
-	// From ClusterWatchRule (scope per rule)
-	for _, ccr := range m.RuleStore.SnapshotClusterWatchRules() {
-		for _, rr := range ccr.Rules {
-			gvrs, ruleMisses := gvrFromClusterRule(resolver, rr)
-			out = append(out, gvrs...)
-			misses = append(misses, ruleMisses...)
+	for _, table := range m.allWatchedTypeTables() {
+		for _, wt := range table.Types {
+			out = append(out, GVR{
+				Group:    wt.GVR.Group,
+				Version:  wt.GVR.Version,
+				Resource: wt.GVR.Resource,
+				Scope:    wt.Scope,
+			})
 		}
+		misses = append(misses, table.Misses...)
 	}
 
 	return dedupeGVRs(out), misses
-}
-
-// gvrFromCompiledRule extracts GVR entries from a compiled namespaced rule set.
-func gvrFromCompiledRule(
-	resolver *RuleGVRResolver,
-	cr rulestore.CompiledRule,
-	scope configv1alpha1.ResourceScope,
-) ([]GVR, []ResolveMiss) {
-	var out []GVR
-	var misses []ResolveMiss
-	for _, rr := range cr.ResourceRules {
-		gvrs, ruleMisses := resolver.Resolve(rr.APIGroups, rr.APIVersions, rr.Resources, scope)
-		out = append(out, gvrs...)
-		misses = append(misses, ruleMisses...)
-	}
-	return out, misses
-}
-
-// gvrFromClusterRule extracts GVR entries from a single cluster rule with scope.
-func gvrFromClusterRule(
-	resolver *RuleGVRResolver,
-	rr rulestore.CompiledClusterResourceRule,
-) ([]GVR, []ResolveMiss) {
-	return resolver.Resolve(rr.APIGroups, rr.APIVersions, rr.Resources, rr.Scope)
 }
 
 // normalizeResource lowercases the resource for consistent matching.

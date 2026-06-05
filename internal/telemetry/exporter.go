@@ -166,6 +166,12 @@ var (
 	APICatalogRefreshDurationSeconds metric.Float64Histogram
 	// APICatalogGeneration gauges the current APIResourceCatalog generation.
 	APICatalogGeneration metric.Int64Gauge
+	// WatchedTypes gauges the number of resolved watched types per GitTarget (M10),
+	// labelled by gittarget_namespace and gittarget_name.
+	WatchedTypes metric.Int64Gauge
+	// WatchedTypeConflicts gauges, per GitTarget, the number of GVKs refused for
+	// violating the GVK<->GVR 1:1 assumption (a kind served by multiple resources).
+	WatchedTypeConflicts metric.Int64Gauge
 	// SecretEncryptionAttemptsTotal counts total Secret encryption attempts.
 	SecretEncryptionAttemptsTotal metric.Int64Counter
 	// SecretEncryptionSuccessTotal counts successful Secret encryptions.
@@ -320,6 +326,8 @@ func registerInstruments() error {
 		{"gitopsreverser_api_catalog_resources", &APICatalogResources},
 		{"gitopsreverser_api_catalog_group_versions", &APICatalogGroupVersions},
 		{"gitopsreverser_api_catalog_generation", &APICatalogGeneration},
+		{"gitopsreverser_watched_types", &WatchedTypes},
+		{"gitopsreverser_watched_type_conflicts", &WatchedTypeConflicts},
 		{"gitopsreverser_audit_queue_stream_length", &AuditQueueStreamLength},
 		{"gitopsreverser_audit_queue_consumer_lag", &AuditQueueConsumerLag},
 		{"gitopsreverser_audit_queue_pending_entries", &AuditQueuePendingEntries},

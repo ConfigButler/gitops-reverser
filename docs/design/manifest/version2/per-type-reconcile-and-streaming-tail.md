@@ -517,6 +517,27 @@ dependency.
   inline. **Done when:** the table is the single source of "what this GitTarget
   watches," re-resolution is triggered (not per-gather), a catalog generation bump
   re-resolves it, and basic metrics exist.
+
+  > **Status (2026-06-05): landed.** The table and resident store live in
+  > [`internal/watch/watched_type_table.go`](../../../internal/watch/watched_type_table.go)
+  > and [`watched_type_resolver.go`](../../../internal/watch/watched_type_resolver.go).
+  > All three former inline resolvers now read it: the snapshot
+  > (`resolveSnapshotGVRs`), the effective-plan hash (`currentRuleSetSnapshots`, kept
+  > byte-identical via `watchPlanFromTable`), and the informer set
+  > (`computeRequestedGVRs` + `getNamespacesForGVR`) — the latter removing the old
+  > pattern-match path, which also fixes the divergence where a WatchRule namespace
+  > shadowed a coexisting cluster-wide rule. Re-resolution is gated on a rules
+  > fingerprint and the catalog `Generation()`. Metrics: `gitopsreverser_watched_types`
+  > and `gitopsreverser_watched_type_conflicts` per GitTarget.
+  >
+  > **One settled simplification adopted here:** GVK↔GVR is treated as **1:1**. A GVK
+  > the rules resolve to more than one served resource is recorded as a `TypeConflict`
+  > and **not watched** ("fix your cluster"), rather than watched ambiguously in
+  > GVR-space. GVR→GVK is already single-valued in the catalog, so this only refuses a
+  > pathological cluster; it is what lets the table be GVK-keyed losslessly, aligning
+  > the watch side with the already-GVK-keyed managed model (`ManifestStore.ByGVK`) and
+  > giving M12's per-type sweep and M13's GVR→GVK delete mapping an unambiguous
+  > bijection to lean on.
 - **M11 — Visibility summary.** A *bounded* `GitTargetStatus` roll-up derived from
   the table: total watched types, resolved-vs-failing counts, failing type names
   (capped), CRD versions; metrics carry the full per-type detail. Depends only on
