@@ -137,7 +137,7 @@ resources:
     memory: 128Mi
   limits:
     cpu: 1000m
-    memory: 512Mi
+    memory: 1Gi
 
 monitoring:
   serviceMonitor:
