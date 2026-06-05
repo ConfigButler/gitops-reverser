@@ -32,14 +32,10 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/mapping"
 )
 
-// mapperGVK / mapperGVR build v1 identities; every resource these tests exercise
-// is served at v1, so the version is fixed.
+// mapperGVK builds v1 identities; every resource these tests exercise is served at v1,
+// so the version is fixed.
 func mapperGVK(group, kind string) schema.GroupVersionKind {
 	return schema.GroupVersionKind{Group: group, Version: "v1", Kind: kind}
-}
-
-func mapperGVR(group, resource string) schema.GroupVersionResource {
-	return schema.GroupVersionResource{Group: group, Version: "v1", Resource: resource}
 }
 
 // TestCatalogMapper_Resolved verifies the live-catalog mapper resolves a served
@@ -51,22 +47,10 @@ func TestCatalogMapper_Resolved(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, mapping.MappingResolved, got.Status)
-	assert.Equal(t, mapperGVR("apps", "deployments"), got.GVR)
+	assert.Equal(t, schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}, got.GVR)
 	assert.True(t, got.Namespaced)
 	assert.Equal(t, mapping.MapperSourceLiveCatalog, mapper.Source())
 	assert.True(t, mapper.Ready().Ready)
-}
-
-// TestCatalogMapper_ReverseResolved verifies GVR->GVK for delete-event style
-// reverse lookups.
-func TestCatalogMapper_ReverseResolved(t *testing.T) {
-	mapper := NewCatalogMapper(newCommonTestCatalog(t))
-
-	got, err := mapper.GVKForGVR(context.Background(), mapperGVR("apps", "deployments"))
-	require.NoError(t, err)
-
-	assert.Equal(t, mapping.MappingResolved, got.Status)
-	assert.Equal(t, mapperGVK("apps", "Deployment"), got.GVK)
 }
 
 // TestCatalogMapper_Unserved verifies a ready catalog reports a missing kind as
@@ -111,10 +95,6 @@ func TestCatalogMapper_Disallowed(t *testing.T) {
 	byGVK, err := mapper.GVRForGVK(context.Background(), mapperGVK("", "Pod"))
 	require.NoError(t, err)
 	assert.Equal(t, mapping.MappingDisallowed, byGVK.Status)
-
-	byGVR, err := mapper.GVKForGVR(context.Background(), mapperGVR("", "pods"))
-	require.NoError(t, err)
-	assert.Equal(t, mapping.MappingDisallowed, byGVR.Status)
 }
 
 // TestCatalogMapper_DiscoveryDegraded verifies a lookup against a degraded

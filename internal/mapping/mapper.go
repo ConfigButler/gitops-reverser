@@ -16,11 +16,11 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package mapping is the GVK<->GVR resolver described in
+// Package mapping is the GVK->GVR resolver described in
 // docs/design/manifest/gvk-gvr-mapping-layer.md. It maps manifest identity
 // (apiVersion+kind, i.e. a GroupVersionKind) to served resource identity
-// (GroupVersionResource) and back, reporting whether the mapping is trusted,
-// unserved, ambiguous, disallowed, degraded, or unknowable.
+// (GroupVersionResource), reporting whether the mapping is trusted, unserved,
+// ambiguous, disallowed, degraded, or unknowable.
 //
 // The package owns only the contract and the runtime-independent implementations
 // (structure-only, static-snapshot). A catalog-backed implementation lives in
@@ -37,7 +37,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
-// ResourceMapper maps between manifest GVKs and served resource GVRs. It is an
+// ResourceMapper maps manifest GVKs to served resource GVRs. It is an
 // injected dependency: the controller backs it with the live discovery catalog, a
 // CLI can back it with a kubeconfig-built catalog, tests use a static snapshot,
 // and structure-only analysis uses a nil-equivalent mapper that always declines.
@@ -61,9 +61,6 @@ type ResourceMapper interface {
 	// never bridges API versions (extensions/v1beta1 Deployment does not map to
 	// apps/v1 Deployment).
 	GVRForGVK(ctx context.Context, gvk schema.GroupVersionKind) (Result, error)
-	// GVKForGVR resolves a resource GVR (delete events, snapshot objects) back to
-	// the served GVK used for manifest identity.
-	GVKForGVR(ctx context.Context, gvr schema.GroupVersionResource) (Result, error)
 }
 
 // MapperSource describes how the mapper obtained its API discovery data. It is
@@ -201,49 +198,11 @@ func ResolveGVK(gvk schema.GroupVersionKind, candidates []Entry, state LookupSta
 	return result
 }
 
-// ResolveGVR reduces the exact-GVR candidate (and trust state) into a
-// Result. A GVR is exact, so there is at most one candidate and ambiguity
-// cannot arise; a subresource GVR resolves to Subresource.
-func ResolveGVR(gvr schema.GroupVersionResource, candidates []Entry, state LookupState) Result {
-	result := Result{GVR: gvr}
-	if len(candidates) == 0 {
-		result.Status, result.Reason = emptyStatus(state)
-		return result
-	}
-
-	entry := candidates[0]
-	switch {
-	case entry.Subresource:
-		result.Status = MappingSubresource
-		result.Reason = "resource is a subresource"
-	case !entry.Allowed:
-		result.Status = MappingDisallowed
-		result.Reason = "served but excluded by resource policy"
-	default:
-		result = resolvedResultFromGVR(gvr, entry, state)
-	}
-	return result
-}
-
 // resolvedResult builds a Resolved GVK->GVR result.
 func resolvedResult(gvk schema.GroupVersionKind, entry Entry, state LookupState) Result {
 	return Result{
 		GVK:        gvk,
 		GVR:        entry.GVR,
-		Namespaced: entry.Namespaced,
-		Verbs:      sortedVerbs(entry.Verbs),
-		Preferred:  entry.Preferred,
-		Allowed:    entry.Allowed,
-		Status:     MappingResolved,
-		Reason:     reasonForGeneration(state),
-	}
-}
-
-// resolvedResultFromGVR builds a Resolved GVR->GVK result.
-func resolvedResultFromGVR(gvr schema.GroupVersionResource, entry Entry, state LookupState) Result {
-	return Result{
-		GVK:        entry.GVK,
-		GVR:        gvr,
 		Namespaced: entry.Namespaced,
 		Verbs:      sortedVerbs(entry.Verbs),
 		Preferred:  entry.Preferred,

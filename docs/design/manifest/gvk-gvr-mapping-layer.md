@@ -164,9 +164,9 @@ degraded.
 > **Status (2026-06-04): implemented.** The interface and the runtime-independent
 > implementations live in [`internal/mapping`](../../../internal/mapping)
 > (`ResourceMapper`, `StructureOnlyMapper`, `StaticSnapshotMapper`, and the shared
-> `ResolveGVK`/`ResolveGVR` reduction); the catalog-backed implementation is
+> `ResolveGVK` reduction); the catalog-backed implementation is
 > [`watch.CatalogMapper`](../../../internal/watch/catalog_mapper.go), built on the
-> catalog `byGVK`/`LookupGVK`/`LookupGVR` additions
+> catalog `byGVK`/`LookupGVK` additions
 > ([`api_resource_catalog.go`](../../../internal/watch/api_resource_catalog.go)).
 > The doc warned the concrete Go names could move, and two did: to satisfy the
 > repository's no-stutter lint, `MappingResult` is `mapping.Result` and
@@ -184,7 +184,6 @@ type ResourceMapper interface {
     Generation() uint64
 
     GVRForGVK(ctx context.Context, gvk schema.GroupVersionKind) (Result, error)
-    GVKForGVR(ctx context.Context, gvr schema.GroupVersionResource) (Result, error)
 }
 
 type MapperSource string
@@ -235,9 +234,10 @@ silently map `extensions/v1beta1 Deployment` to `apps/v1 Deployment`, even thoug
 a human understands the relationship. Version conversion is a later feature and
 requires a real conversion source, not a REST mapping guess.
 
-`GVKForGVR` must require a concrete resource entry. It is used for delete events,
-snapshot objects, and generated-path replacement where the system starts from
-resource identity and needs manifest identity.
+Resource-to-manifest identity is not part of this mapper contract. Delete planning
+starts from the GitTarget folder's `ByResourceIdentity` inventory; if that inventory
+does not already contain the resource, the planner does not re-derive a manifest
+identity through a reverse lookup.
 
 Errors should be reserved for implementation failures: discovery call failed,
 snapshot could not be loaded, malformed static data, context cancellation.
@@ -397,8 +397,8 @@ Startup rule:
 1. The catalog must have trusted initial data.
 2. The GitTarget's WatchRules and ClusterWatchRules must resolve through
    `RuleGVRResolver`.
-3. Every watched GVR needed for the initial snapshot must have a reverse mapping
-   to GVK.
+3. Every watched GVR needed for the initial snapshot must have a resolved watched-type
+   table entry carrying its GVK.
 4. Any manifest-store acceptance mode that needs watched/unwatched decisions must
    have a mapper source stronger than `structure-only`.
 5. If discovery is degraded for a lookup scope that could affect the target, hold

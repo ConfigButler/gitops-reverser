@@ -68,29 +68,6 @@ func TestPlanFlush_CreatesNewResourceAtCanonicalPath(t *testing.T) {
 	assert.Equal(t, string(want), string(got), "a new file is the canonical rendering")
 }
 
-// A DELETE event that carries no object (the production reconcile shape) is resolved
-// to the canonical placement path: a single-document canonical file is removed.
-func TestPlanFlush_DeleteWithoutObjectRemovesCanonicalFile(t *testing.T) {
-	writer := newContentWriter(types.SensitiveResourcePolicy{})
-	worktree := newWorktreeForTest(t)
-
-	seed := cmEvent("CREATE", "app", "blue")
-	canonicalRel := writer.filePathForIdentifier(seed.Identifier)
-	content, err := writer.buildContentForWrite(context.Background(), seed)
-	require.NoError(t, err)
-	full := seedPlacedManifest(t, worktree, canonicalRel, string(content))
-
-	del := Event{
-		Identifier: seed.Identifier,
-		Operation:  "DELETE",
-		// No Object: the writer must fall back to the canonical placement path.
-	}
-	changed := applyEventsViaPlanFlush(t, writer, worktree, del)
-	assert.True(t, changed, "the canonical file must be removed")
-	_, statErr := os.Stat(full)
-	assert.True(t, os.IsNotExist(statErr), "the canonical file must be deleted")
-}
-
 // Deleting one document from a multi-document file removes only that document and
 // keeps the file (and its siblings) when documents remain. The delete event carries
 // its object, so it content-matches the right document.

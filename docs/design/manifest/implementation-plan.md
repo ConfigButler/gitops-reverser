@@ -170,7 +170,7 @@ dependency; it does not exist yet. Independent of Track A.
 > **Status: ✅ landed.** The interface and runtime-independent impls live in the new
 > [`internal/mapping`](../../../internal/mapping) package (`ResourceMapper`,
 > `StructureOnlyMapper`, `StaticSnapshotMapper`, and the shared
-> `ResolveGVK`/`ResolveGVR` reduction); the catalog-backed impl is
+> `ResolveGVK` reduction); the catalog-backed impl is
 > [`watch.CatalogMapper`](../../../internal/watch/catalog_mapper.go). `mapping` does
 > not import `watch`, so the analyzer can resolve without pulling in the watch
 > manager. Naming note: the doc's `MappingResult`/`MappingStatus` are
@@ -187,8 +187,8 @@ dependency; it does not exist yet. Independent of Track A.
 
 - **Depends on**: B1.
 - **Touches**: new `ResourceMapper` interface (per
-  [gvk-gvr-mapping-layer.md](gvk-gvr-mapping-layer.md)) with `GVRForGVK` /
-  `GVKForGVR` returning `mapping.Result` (whose `Status` is a `mapping.Status`); a
+  [gvk-gvr-mapping-layer.md](gvk-gvr-mapping-layer.md)) with `GVRForGVK` returning
+  `mapping.Result` (whose `Status` is a `mapping.Status`); a
   **catalog-backed** impl (reads B1, never calls discovery directly), a
   **static-snapshot** impl for tests, and a **structure-only** impl returning
   `MappingStructureOnly`.
@@ -438,8 +438,8 @@ dependency; it does not exist yet. Independent of Track A.
 
 > **Status: ✅ landed.** The delete-identity resolution is the pure planning-layer
 > primitive
-> [`manifestanalyzer.PlanDelete(ctx, store, mapper, resource)`](../../../internal/manifestanalyzer/delete_plan.go)
-> returning `(PlanAction, emitted bool, error)`. It is the steady-state per-event
+> [`manifestanalyzer.PlanDelete(store, resource)`](../../../internal/manifestanalyzer/delete_plan.go)
+> returning `(PlanAction, emitted bool)`. It is the steady-state per-event
 > delete path of the design's "Two Paths, One Plan Type" — it targets exactly one
 > identity and **never sweeps**, so a lone delete intent can never be read as "every
 > other document is now an orphan." It emits a single `PlanDeleteDocument` (not a
@@ -447,41 +447,25 @@ dependency; it does not exist yet. Independent of Track A.
 > live `DELETED` event is an explicit delete-document." Covered by
 > [`delete_plan_test.go`](../../../internal/manifestanalyzer/delete_plan_test.go)
 > (by-resource-identity, moved manifest, multi-doc index, not-in-Git no-op, encrypted
-> still deletes, reverse-map fallback, unserved fallback no-op, mapper-error fail-closed,
-> duplicate suppressed).
+> still deletes, duplicate suppressed).
 >
 > Judgment calls the plan left open:
-> 1. **The primary lookup is the content-derived `ByResourceIdentity` index, with the
->    mapper as the explicit fallback** — a small clarification of the plan's "resolve
->    delete-event GVR/name → identity *through the mapper*." A DELETE event carries no
->    object body, so identity cannot come from content; but the resource-identity index
->    B3 built *with* the mapper already keys exactly on the event's GVR/namespace/name,
->    so it is the direct, content-derived bridge for the common case and is what makes a
->    manifest **moved off its canonical path** resolvable (the review's "the writer
->    should locate watched resources by `ResourceIdentifier`"). The mapper's
->    `GVKForGVR` reverse-map is the fallback for a document the resource index never
->    indexed (e.g. a structure-only store paired with a reverse-capable mapper); a GVR
->    that does not reverse-map to a single served GVK names no manifest identity we can
->    trust, so it resolves to "no managed document," never a guess.
+> 1. **The lookup is the content-derived `ByResourceIdentity` index.** A DELETE event
+>    carries no object body, so identity cannot come from the event; the resource-identity
+>    index B3 built *with* the mapper already keys exactly on the event's
+>    GVR/namespace/name. That direct inventory lookup is what makes a manifest
+>    **moved off its canonical path** resolvable (the review's "the writer should locate
+>    watched resources by `ResourceIdentifier`"). If the store has no resource-identity
+>    entry, there is no managed document to delete; the planner does not re-derive a
+>    manifest identity through a delete-time reverse mapper.
 > 2. **Editability does not gate a delete.** `manifestedit.DeleteDocument` is
 >    content-agnostic (it never decrypts or merges), so an encrypted or non-editable
 >    document is still removed when its resource leaves the cluster — editability gates
 >    patches, not removals.
-> 3. **Fail closed when the API surface is unobservable, but no-op on trusted absence.**
->    The fallback distinguishes two reasons `GVKForGVR` does not resolve. A Go error
->    (discovery RPC failure / cancelled context) *and* a `MappingCatalogUnavailable` /
->    `MappingDiscoveryDegraded` status both mean the surface could not be observed, so
->    `PlanDelete` returns an error and the writer (M7) **holds and retries** — silently
->    dropping the delete would leave a stale manifest exactly when discovery is flaky,
->    and the mapping doc's Failure Policy forbids treating an unobservable surface as
->    absence (gvk-gvr-mapping-layer.md, "Failure Policy"). A *trusted* "no served GVK"
->    answer (`Unserved` / `Disallowed` / `Subresource`, or `StructureOnly`) is the
->    opposite: it is a genuine no-op, stable under retry. (This refinement came from
->    review — the first cut lumped the unobservable statuses in with trusted absence.)
-> 4. **A duplicate-identity collision is suppressed** defensively, even though M7 gates
+> 3. **A duplicate-identity collision is suppressed** defensively, even though M7 gates
 >    steady state on `Accept` (which refuses such a folder): deleting one arbitrary copy
 >    of a collided identity is the exact ambiguity the design refuses to guess at.
-> 5. **The writer half ("delete by `RecordRef`, never a regenerated path") lands in
+> 4. **The writer half ("delete by `RecordRef`, never a regenerated path") lands in
 >    M7.** M6 delivers the `RecordRef`-producing resolution; the live writer that
 >    consumes it is the M7 cutover. `PlanDelete` already returns the true `RecordRef`
 >    (reusing `documentLocations`, so the index is correct even for a non-canonical or
@@ -536,9 +520,9 @@ dependency; it does not exist yet. Independent of Track A.
 > 3. **Sensitive (SOPS) resources keep the re-encrypting wholesale path** and are never
 >    patched in place — an in-place merge would drop the sops metadata and write the
 >    secret back in cleartext — exactly as the per-event writer did.
-> 4. **Deletes are content-first, and the mapper realises M6 in the writer — and is
->    wired in production.** A `DELETE` is matched by manifest identity when it still
->    carries its object — and the live watch path *does* carry the deleted object
+> 4. **Deletes are content-first, and the mapper builds the writer's inventory in
+>    production.** A `DELETE` is matched by manifest identity when it still carries its
+>    object — and the live watch path *does* carry the deleted object
 >    ([`informers.go`](../../../internal/watch/informers.go)), so a manifest moved off
 >    its canonical path is deleted correctly in steady state even before any mapper. A
 >    GVR-only delete (no object) is resolved through `PlanDelete` over the resolved
@@ -547,15 +531,9 @@ dependency; it does not exist yet. Independent of Track A.
 >    ([`worker_manager.go`](../../../internal/git/worker_manager.go),
 >    [`cmd/main.go`](../../../cmd/main.go)) — so the writer builds its store with the
 >    live catalog and a GVR-only moved delete resolves by content in production (covered
->    by a static-snapshot unit test and a wiring test). **One deliberate softening of the
->    mapping doc's fail-closed rule:** when the catalog cannot observe the API surface,
->    `PlanDelete` returns an error, but the writer *downgrades that to the canonical-path
->    fallback* rather than propagating it — the current commit path drops the whole window
->    on a write error, so propagating would lose unrelated writes in the batch. The
->    fallback is never worse than the pre-mapper behaviour (a moved manifest is left until
->    discovery recovers and a later reconcile retries). Proper fail-closed *hold-and-retry*
->    needs a per-intent retry the commit path does not yet have, and lands with M8, which
->    rebuilds this delete path.
+>    by a static-snapshot unit test and a wiring test). There is no delete-time reverse
+>    lookup or canonical-path fallback for an object-less delete: without a resource
+>    inventory entry, the writer has no managed document to delete.
 > 5. **Stale positions are re-derived, not trusted.** A document's index within a
 >    multi-document file can shift inside one batch (an earlier delete renumbers its
 >    successors), so every edit and delete recomputes the target document's position from

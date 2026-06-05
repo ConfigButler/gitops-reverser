@@ -198,62 +198,12 @@ func TestStaticSnapshotMapper_GVRForGVK_DiscoveryDegraded(t *testing.T) {
 	assert.True(t, mapper.Ready().Degraded)
 }
 
-func TestStaticSnapshotMapper_GVKForGVR_Resolved(t *testing.T) {
-	mapper := NewStaticSnapshotMapper(servedSnapshot())
-
-	got, err := mapper.GVKForGVR(context.Background(), gvr("apps", "deployments"))
-	require.NoError(t, err)
-
-	assert.Equal(t, MappingResolved, got.Status)
-	assert.Equal(t, gvk("apps", "v1", "Deployment"), got.GVK)
-	assert.True(t, got.Namespaced)
-}
-
-func TestStaticSnapshotMapper_GVKForGVR_Subresource(t *testing.T) {
-	snap := Snapshot{
-		Entries: []Entry{{
-			GVK:         gvk("apps", "v1", "Deployment"),
-			GVR:         gvr("apps", "deployments/status"),
-			Subresource: true,
-			Allowed:     true,
-		}},
-	}
-	mapper := NewStaticSnapshotMapper(snap)
-
-	got, err := mapper.GVKForGVR(context.Background(), gvr("apps", "deployments/status"))
-	require.NoError(t, err)
-
-	assert.Equal(t, MappingSubresource, got.Status)
-}
-
-func TestStaticSnapshotMapper_GVKForGVR_Disallowed(t *testing.T) {
-	mapper := NewStaticSnapshotMapper(servedSnapshot())
-
-	got, err := mapper.GVKForGVR(context.Background(), gvr("", "secrets"))
-	require.NoError(t, err)
-
-	assert.Equal(t, MappingDisallowed, got.Status)
-}
-
-func TestStaticSnapshotMapper_GVKForGVR_Unserved(t *testing.T) {
-	mapper := NewStaticSnapshotMapper(servedSnapshot())
-
-	got, err := mapper.GVKForGVR(context.Background(), gvr("apps", "statefulsets"))
-	require.NoError(t, err)
-
-	assert.Equal(t, MappingUnserved, got.Status)
-	assert.Equal(t, gvr("apps", "statefulsets"), got.GVR)
-}
-
 func TestStaticSnapshotMapper_ContextCancelled(t *testing.T) {
 	mapper := NewStaticSnapshotMapper(servedSnapshot())
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
 	_, err := mapper.GVRForGVK(ctx, gvk("apps", "v1", "Deployment"))
-	require.ErrorIs(t, err, context.Canceled)
-
-	_, err = mapper.GVKForGVR(ctx, gvr("apps", "deployments"))
 	require.ErrorIs(t, err, context.Canceled)
 }
 
@@ -280,11 +230,6 @@ func TestStructureOnlyMapper_AlwaysStructureOnly(t *testing.T) {
 	assert.Equal(t, MappingStructureOnly, got.Status)
 	assert.Equal(t, gvk("apps", "v1", "Deployment"), got.GVK)
 	assert.Empty(t, got.GVR.Resource)
-
-	rev, err := mapper.GVKForGVR(context.Background(), gvr("apps", "deployments"))
-	require.NoError(t, err)
-	assert.Equal(t, MappingStructureOnly, rev.Status)
-	assert.Equal(t, gvr("apps", "deployments"), rev.GVR)
 }
 
 func TestStructureOnlyMapper_ContextCancelled(t *testing.T) {
@@ -295,9 +240,6 @@ func TestStructureOnlyMapper_ContextCancelled(t *testing.T) {
 	// Cancellation is honored even though the mapper does no I/O, so every
 	// ResourceMapper reacts to a cancelled context identically.
 	_, err := mapper.GVRForGVK(ctx, gvk("apps", "v1", "Deployment"))
-	require.ErrorIs(t, err, context.Canceled)
-
-	_, err = mapper.GVKForGVR(ctx, gvr("apps", "deployments"))
 	require.ErrorIs(t, err, context.Canceled)
 }
 

@@ -42,9 +42,8 @@ func NewCatalogMapper(catalog *APIResourceCatalog) *CatalogMapper {
 
 // Mapper returns a live-catalog ResourceMapper backed by this manager's catalog. The
 // catalog is a stable pointer that the manager refreshes in place, so the returned
-// mapper tracks discovery updates; it is the injectable mapper the live writer uses to
-// resolve a GVR-only delete to a moved manifest. Before the catalog has trusted data,
-// lookups report CatalogUnavailable rather than false absence, so callers fall closed.
+// mapper tracks discovery updates. Before the catalog has trusted data, lookups report
+// CatalogUnavailable rather than false absence, so callers fall closed.
 func (m *Manager) Mapper() mapping.ResourceMapper {
 	return NewCatalogMapper(m.apiResourceCatalog())
 }
@@ -94,21 +93,6 @@ func (m *CatalogMapper) GVRForGVK(
 	}
 	lookup := m.catalog.LookupGVK(gvk)
 	return mapping.ResolveGVK(gvk, mappingEntries(lookup.Entries), lookupState(lookup)), nil
-}
-
-// GVKForGVR resolves an exact GVR back to its served GVK through the catalog.
-func (m *CatalogMapper) GVKForGVR(
-	ctx context.Context,
-	gvr schema.GroupVersionResource,
-) (mapping.Result, error) {
-	if err := ctx.Err(); err != nil {
-		return mapping.Result{}, err
-	}
-	if m.catalog == nil {
-		return mapping.ResolveGVR(gvr, nil, mapping.LookupState{}), nil
-	}
-	lookup := m.catalog.LookupGVR(gvr)
-	return mapping.ResolveGVR(gvr, mappingEntries(lookup.Entries), lookupState(lookup)), nil
 }
 
 // lookupState projects catalog trust state into the mapping reduction input.

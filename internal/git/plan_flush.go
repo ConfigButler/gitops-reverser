@@ -154,7 +154,7 @@ const (
 // so it is discarded here; the resync planner consumes it for stats.
 func (wb *writeBatch) applyEvent(ctx context.Context, event Event) error {
 	if event.Operation == "DELETE" {
-		wb.applyDelete(ctx, event)
+		wb.applyDelete(event)
 		return nil
 	}
 	_, err := wb.applyUpsert(ctx, event)
@@ -267,12 +267,12 @@ func (wb *writeBatch) writeWholeFile(ctx context.Context, event Event, rel strin
 
 // applyDelete removes the document a DELETE event targets. The document is located by
 // content (resolveDelete), so a manifest moved off its canonical path is still deleted.
-// The position is re-derived from the buffer's CURRENT bytes when the identity is known,
-// so an earlier delete in the same batch that shifted a multi-document file does not
-// misdirect this one. Removing the last document in a file marks it for deletion;
-// otherwise the surviving documents are kept byte-for-byte.
-func (wb *writeBatch) applyDelete(ctx context.Context, event Event) {
-	target, found := wb.resolveDelete(ctx, event)
+// The position is re-derived from the buffer's CURRENT bytes, so an earlier delete in
+// the same batch that shifted a multi-document file does not misdirect this one.
+// Removing the last document in a file marks it for deletion; otherwise the surviving
+// documents are kept byte-for-byte.
+func (wb *writeBatch) applyDelete(event Event) {
+	target, found := wb.resolveDelete(event)
 	if !found {
 		return
 	}
@@ -280,13 +280,9 @@ func (wb *writeBatch) applyDelete(ctx context.Context, event Event) {
 	if buf.current == nil {
 		return
 	}
-	idx := target.documentIndex
-	if target.idKnown {
-		i, ok := currentDocIndex(target.filePath, buf.current, target.id)
-		if !ok {
-			return
-		}
-		idx = i
+	idx, ok := currentDocIndex(target.filePath, buf.current, target.id)
+	if !ok {
+		return
 	}
 	res, _ := manifestedit.DeleteDocument(buf.current, idx)
 	if res.FileEmpty {
@@ -296,57 +292,30 @@ func (wb *writeBatch) applyDelete(ctx context.Context, event Event) {
 	buf.current = res.Content
 }
 
-// deleteTarget names the file a delete targets. When idKnown, id re-derives the
-// document position from the live bytes at apply time (a multi-document file's indices
-// can shift within a batch); idKnown is false only for the canonical-path fallback of an
-// object-less, mapper-less delete, where documentIndex (0) is used directly.
+// deleteTarget names the file and manifest identity a delete targets. The document
+// position is re-derived from the live bytes at apply time because a multi-document
+// file's indices can shift within a batch.
 type deleteTarget struct {
-	filePath      string
-	id            manifestedit.Identity
-	documentIndex int
-	idKnown       bool
+	filePath string
+	id       manifestedit.Identity
 }
 
 // resolveDelete locates the managed document a DELETE event targets, content-first:
 //
 //  1. A delete event that still carries its object is matched by manifest identity,
 //     so it follows a moved manifest (the placement guarantee the per-event writer had).
-//  2. With a mapper, a GVR-only delete is resolved through PlanDelete — the resolved
-//     resource-identity index (and the mapper's reverse map), so a moved manifest with
-//     no object body is still found.
-//  3. Otherwise (no object and no mapper, or the mapper could not observe the API
-//     surface) fall back to the canonical placement path (document 0), exactly as the
-//     per-event writer did for an object-less delete.
+//  2. A GVR-only delete is resolved through PlanDelete's resource-identity inventory.
 //
-// The mapper's fail-closed signal is deliberately downgraded to the canonical fallback
-// rather than propagated as an error: the current commit path drops the whole window on
-// a write error, so propagating would lose unrelated writes in the batch. The fallback
-// is never worse than the pre-mapper behaviour (a moved manifest is left until discovery
-// recovers and a later reconcile retries). Proper hold-and-retry lands with M8, which
-// rebuilds this delete path. found is false only when Git holds no managed document for
-// the resource (already converged, a trusted no-op).
-func (wb *writeBatch) resolveDelete(ctx context.Context, event Event) (deleteTarget, bool) {
+// found is false when Git holds no managed document for the resource.
+func (wb *writeBatch) resolveDelete(event Event) (deleteTarget, bool) {
 	if id, ok := manifestIdentity(event.Object); ok {
 		if dm := wb.store.ByManifestIdentity[id]; dm != nil {
-			return deleteTarget{filePath: wb.docLoc[dm].FilePath, id: id, idKnown: true}, true
+			return deleteTarget{filePath: wb.docLoc[dm].FilePath, id: id}, true
 		}
 	}
-	if wb.mapper != nil {
-		action, emitted, err := manifestanalyzer.PlanDelete(ctx, wb.store, wb.mapper, event.Identifier)
-		switch {
-		case err != nil:
-			log.FromContext(ctx).V(1).Info("delete mapper lookup failed; falling back to canonical path",
-				"resource", event.Identifier.String(), "error", err.Error())
-		case emitted:
-			return deleteTarget{filePath: action.Ref.FilePath, id: action.Identity, idKnown: true}, true
-		default:
-			// Trusted absence: the resource names no managed document. Nothing to delete.
-			return deleteTarget{}, false
-		}
-	}
-	rel := wb.writer.filePathForIdentifier(event.Identifier)
-	if _, ok := wb.contentByPath[rel]; ok {
-		return deleteTarget{filePath: rel, documentIndex: 0, idKnown: false}, true
+	action, emitted := manifestanalyzer.PlanDelete(wb.store, event.Identifier)
+	if emitted {
+		return deleteTarget{filePath: action.Ref.FilePath, id: action.Identity}, true
 	}
 	return deleteTarget{}, false
 }

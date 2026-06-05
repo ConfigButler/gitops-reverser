@@ -24,7 +24,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
-// StructureOnlyMapper is the no-cluster mapper used by the analyzer default. Every
+// StructureOnlyMapper is the no-cluster mapper used by the analyzer default. Its
 // lookup returns MappingStructureOnly: it is not a failure, it is the honest
 // answer for "this YAML looks like KRM, but no API surface was asked what serves
 // it". It never produces watched/unwatched or destructive conclusions.
@@ -57,15 +57,6 @@ func (StructureOnlyMapper) GVRForGVK(ctx context.Context, gvk schema.GroupVersio
 		return Result{}, err
 	}
 	return structureOnlyResult(Result{GVK: gvk}), nil
-}
-
-// GVKForGVR always returns MappingStructureOnly, echoing the requested GVR. As
-// with GVRForGVK, a cancelled context is honored as an error.
-func (StructureOnlyMapper) GVKForGVR(ctx context.Context, gvr schema.GroupVersionResource) (Result, error) {
-	if err := ctx.Err(); err != nil {
-		return Result{}, err
-	}
-	return structureOnlyResult(Result{GVR: gvr}), nil
 }
 
 func structureOnlyResult(result Result) Result {

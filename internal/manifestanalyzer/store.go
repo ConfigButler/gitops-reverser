@@ -62,7 +62,7 @@ type ManifestStore struct {
 	// agree. The diagnostic is emitted by the manifestedit index pass that feeds the
 	// collapse.
 	ByManifestIdentity map[manifestedit.Identity]*DocumentModel
-	// ByResourceIdentity is populated once the GVK↔GVR mapper resolves resource
+	// ByResourceIdentity is populated once the GVK->GVR mapper resolves resource
 	// identities (Track B / B3). It is empty under structure-only analysis.
 	ByResourceIdentity map[types.ResourceIdentifier]*DocumentModel
 	// ByGVK groups every managed document by its derived GroupVersionKind. It is
@@ -145,7 +145,7 @@ type DocumentModel struct {
 	ManifestIdentity manifestedit.Identity
 
 	// ResourceIdentity is the API-side identity (GVR + namespace + name). It is set
-	// only when the injected GVK↔GVR mapper resolves the document's GVK to a single
+	// only when the injected GVK->GVR mapper resolves the document's GVK to a single
 	// served, allowed resource; structure-only analysis (and any unresolved lookup)
 	// leaves it nil.
 	ResourceIdentity *types.ResourceIdentifier

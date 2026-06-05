@@ -23,8 +23,6 @@ import (
 	"testing"
 	"testing/fstest"
 
-	"k8s.io/apimachinery/pkg/runtime/schema"
-
 	"github.com/ConfigButler/gitops-reverser/internal/git/manifestedit"
 	"github.com/ConfigButler/gitops-reverser/internal/mapping"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
@@ -45,10 +43,7 @@ func configMapResource(name string) types.ResourceIdentifier {
 // delete-document action carrying the manifest (GVK) identity the writer needs.
 func TestPlanDelete_ByResourceIdentity(t *testing.T) {
 	store := planStore(t)
-	action, emitted, err := PlanDelete(context.Background(), store, nil, deployResource())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	action, emitted := PlanDelete(store, deployResource())
 	if !emitted {
 		t.Fatalf("a resource that exists in Git should emit a delete action")
 	}
@@ -79,9 +74,9 @@ func TestPlanDelete_MovedManifest(t *testing.T) {
 	fsys := fstest.MapFS{"legacy/foo.yaml": {Data: []byte(deployYAML)}}
 	store := BuildStore(context.Background(), fsys, mapping.NewStaticSnapshotMapper(sampleClusterSnapshot()))
 
-	action, emitted, err := PlanDelete(context.Background(), store, nil, deployResource())
-	if err != nil || !emitted {
-		t.Fatalf("moved manifest should resolve: emitted=%v err=%v", emitted, err)
+	action, emitted := PlanDelete(store, deployResource())
+	if !emitted {
+		t.Fatalf("moved manifest should resolve")
 	}
 	if action.Ref.FilePath != "legacy/foo.yaml" {
 		t.Errorf("ref path = %q, want the actual (moved) file legacy/foo.yaml", action.Ref.FilePath)
@@ -92,9 +87,9 @@ func TestPlanDelete_MovedManifest(t *testing.T) {
 // the right document index (cm.yaml holds ConfigMap a at #0 and b at #1).
 func TestPlanDelete_MultiDocIndex(t *testing.T) {
 	store := planStore(t)
-	action, emitted, err := PlanDelete(context.Background(), store, nil, configMapResource("b"))
-	if err != nil || !emitted {
-		t.Fatalf("ConfigMap b should resolve: emitted=%v err=%v", emitted, err)
+	action, emitted := PlanDelete(store, configMapResource("b"))
+	if !emitted {
+		t.Fatalf("ConfigMap b should resolve")
 	}
 	if action.Ref != (RecordRef{FilePath: "cm.yaml", DocumentIndex: 1}) {
 		t.Errorf("ref = %+v, want cm.yaml#1", action.Ref)
@@ -105,10 +100,7 @@ func TestPlanDelete_MultiDocIndex(t *testing.T) {
 // no action, no error. The cluster dropped something we do not track; already converged.
 func TestPlanDelete_NotInGit(t *testing.T) {
 	store := planStore(t)
-	action, emitted, err := PlanDelete(context.Background(), store, nil, configMapResource("ghost"))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	action, emitted := PlanDelete(store, configMapResource("ghost"))
 	if emitted {
 		t.Errorf("a resource absent from Git should emit no action, got %+v", action)
 	}
@@ -129,100 +121,24 @@ func TestPlanDelete_EncryptedStillDeletes(t *testing.T) {
 			dm.Editable, dm.Cause)
 	}
 
-	action, emitted, err := PlanDelete(context.Background(), store, nil, configMapResource("enc"))
-	if err != nil || !emitted {
-		t.Fatalf("an encrypted resource should still delete: emitted=%v err=%v", emitted, err)
+	action, emitted := PlanDelete(store, configMapResource("enc"))
+	if !emitted {
+		t.Fatalf("an encrypted resource should still delete")
 	}
 	if action.Kind != PlanDeleteDocument {
 		t.Errorf("kind = %q, want delete-document even for an encrypted document", action.Kind)
 	}
 }
 
-// TestPlanDelete_FallbackByManifestIdentity exercises the reverse-map fallback: a
-// structure-only store leaves ByResourceIdentity empty, so resolution falls back to the
-// mapper's GVR->GVK reverse map and matches by manifest identity instead.
-func TestPlanDelete_FallbackByManifestIdentity(t *testing.T) {
-	store := BuildStore(context.Background(), planFS(), nil) // structure-only: no resource index
+func TestPlanDelete_StructureOnlyStoreHasNoDeleteTarget(t *testing.T) {
+	store := BuildStore(context.Background(), planFS(), nil)
 	if len(store.ByResourceIdentity) != 0 {
 		t.Fatalf("structure-only store should have an empty resource index, got %d", len(store.ByResourceIdentity))
 	}
 
-	mapper := mapping.NewStaticSnapshotMapper(sampleClusterSnapshot())
-	action, emitted, err := PlanDelete(context.Background(), store, mapper, deployResource())
-	if err != nil || !emitted {
-		t.Fatalf("fallback should resolve via the mapper: emitted=%v err=%v", emitted, err)
-	}
-	if action.Ref != (RecordRef{FilePath: "deploy.yaml", DocumentIndex: 0}) {
-		t.Errorf("fallback ref = %+v, want deploy.yaml#0", action.Ref)
-	}
-}
-
-// TestPlanDelete_FallbackUnservedIsNoOp: when the resource index misses and the event
-// GVR does not reverse-map to a served GVK, there is no manifest identity we can trust,
-// so resolution yields "no managed document" — not a guess and not an error.
-func TestPlanDelete_FallbackUnservedIsNoOp(t *testing.T) {
-	store := BuildStore(context.Background(), planFS(), nil) // structure-only forces the fallback
-
-	mapper := mapping.NewStaticSnapshotMapper(sampleClusterSnapshot())
-	// apps/v1/statefulsets is not in the snapshot, so GVKForGVR returns Unserved.
-	unserved := types.NewResourceIdentifier("apps", "v1", "statefulsets", "default", "web")
-	_, emitted, err := PlanDelete(context.Background(), store, mapper, unserved)
-	if err != nil {
-		t.Fatalf("an unserved reverse-map is an expected outcome, not an error: %v", err)
-	}
+	_, emitted := PlanDelete(store, deployResource())
 	if emitted {
-		t.Errorf("an unservable delete GVR should resolve to no action")
-	}
-}
-
-// TestPlanDelete_FallbackUnobservableFailsClosed: when the resource index misses and the
-// fallback reverse-map cannot OBSERVE the API surface (CatalogUnavailable /
-// DiscoveryDegraded), PlanDelete fails closed — it returns an error so M7 holds and
-// retries, rather than silently dropping the delete and leaving a stale manifest. The
-// contrast with TestPlanDelete_FallbackUnservedIsNoOp (trusted absence -> no-op) is the
-// whole point: only an UNOBSERVABLE surface fails closed, a TRUSTED "no served GVK" does not.
-func TestPlanDelete_FallbackUnobservableFailsClosed(t *testing.T) {
-	store := BuildStore(context.Background(), planFS(), nil) // structure-only forces the fallback
-
-	cases := []struct {
-		name     string
-		snapshot mapping.Snapshot
-	}{
-		{name: "catalog unavailable", snapshot: mapping.Snapshot{NotReady: true}},
-		{name: "discovery degraded", snapshot: mapping.Snapshot{
-			Generation:            1,
-			DegradedGroupVersions: []schema.GroupVersion{{Group: "apps", Version: "v1"}},
-		}},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			mapper := mapping.NewStaticSnapshotMapper(c.snapshot)
-			_, emitted, err := PlanDelete(context.Background(), store, mapper, deployResource())
-			if err == nil {
-				t.Fatalf("an unobservable API surface must fail closed (error), got nil")
-			}
-			if emitted {
-				t.Errorf("no delete action may be emitted when the surface is unobservable")
-			}
-		})
-	}
-}
-
-// TestPlanDelete_MapperErrorFailsClosed: when the resource index misses and the mapper
-// returns a Go error (a cancelled context here), PlanDelete fails closed — it returns
-// the error and emits nothing. An unobservable API surface is never evidence to delete.
-func TestPlanDelete_MapperErrorFailsClosed(t *testing.T) {
-	store := BuildStore(context.Background(), planFS(), nil) // structure-only forces the fallback
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	mapper := mapping.NewStaticSnapshotMapper(sampleClusterSnapshot())
-	_, emitted, err := PlanDelete(ctx, store, mapper, deployResource())
-	if err == nil {
-		t.Fatalf("a mapper error must surface (fail closed), got nil")
-	}
-	if emitted {
-		t.Errorf("no delete action may be emitted when resolution failed closed")
+		t.Errorf("a store without resource inventory must not emit a delete")
 	}
 }
 
@@ -236,10 +152,7 @@ func TestPlanDelete_DuplicateSuppressed(t *testing.T) {
 	}
 	store := BuildStore(context.Background(), fsys, mapping.NewStaticSnapshotMapper(sampleClusterSnapshot()))
 
-	_, emitted, err := PlanDelete(context.Background(), store, nil, deployResource())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	_, emitted := PlanDelete(store, deployResource())
 	if emitted {
 		t.Errorf("a collided identity must produce no delete action")
 	}

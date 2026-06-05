@@ -49,10 +49,9 @@ type WorkerManager struct {
 	mu      sync.RWMutex
 	workers map[BranchKey]*BranchWorker
 	ctx     context.Context
-	// mapper is the GVK↔GVR resolver injected into every worker, so a GVR-only DELETE
-	// event resolves to a manifest moved off its canonical path. It is set once at
-	// startup (SetMapper) before any worker is created; a nil mapper keeps workers
-	// structure-only (canonical-path deletes), the test/default behaviour.
+	// mapper is the GVK->GVR resolver injected into every worker so store scans build a
+	// resource-identity inventory. It is set once at startup (SetMapper) before any
+	// worker is created; a nil mapper keeps workers structure-only.
 	mapper mapping.ResourceMapper
 }
 
@@ -77,7 +76,7 @@ func NewWorkerManager(
 	}
 }
 
-// SetMapper injects the GVK↔GVR resolver used by every worker's delete path. It is
+// SetMapper injects the GVK->GVR resolver used by every worker's store scan. It is
 // called once at startup, before any GitTarget registers a worker, so each worker
 // created by EnsureWorker carries it.
 func (m *WorkerManager) SetMapper(mapper mapping.ResourceMapper) {

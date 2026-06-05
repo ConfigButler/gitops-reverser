@@ -47,7 +47,6 @@ type Snapshot struct {
 // reduction logic as the live catalog mapper, so the two agree on every status.
 type StaticSnapshotMapper struct {
 	byGVK    map[schema.GroupVersionKind][]Entry
-	byGVR    map[schema.GroupVersionResource]Entry
 	degraded map[schema.GroupVersion]struct{}
 	ready    bool
 	gen      uint64
@@ -57,14 +56,12 @@ type StaticSnapshotMapper struct {
 func NewStaticSnapshotMapper(snap Snapshot) *StaticSnapshotMapper {
 	mapper := &StaticSnapshotMapper{
 		byGVK:    make(map[schema.GroupVersionKind][]Entry),
-		byGVR:    make(map[schema.GroupVersionResource]Entry),
 		degraded: make(map[schema.GroupVersion]struct{}, len(snap.DegradedGroupVersions)),
 		ready:    !snap.NotReady,
 		gen:      snap.Generation,
 	}
 	for _, entry := range snap.Entries {
 		mapper.byGVK[entry.GVK] = append(mapper.byGVK[entry.GVK], entry)
-		mapper.byGVR[entry.GVR] = entry
 	}
 	for _, gv := range snap.DegradedGroupVersions {
 		mapper.degraded[gv] = struct{}{}
@@ -99,22 +96,6 @@ func (m *StaticSnapshotMapper) GVRForGVK(
 	}
 	state := m.stateFor(schema.GroupVersion{Group: gvk.Group, Version: gvk.Version})
 	return ResolveGVK(gvk, m.byGVK[gvk], state), nil
-}
-
-// GVKForGVR resolves an exact GVR against the snapshot.
-func (m *StaticSnapshotMapper) GVKForGVR(
-	ctx context.Context,
-	gvr schema.GroupVersionResource,
-) (Result, error) {
-	if err := ctx.Err(); err != nil {
-		return Result{}, err
-	}
-	state := m.stateFor(schema.GroupVersion{Group: gvr.Group, Version: gvr.Version})
-	var candidates []Entry
-	if entry, ok := m.byGVR[gvr]; ok {
-		candidates = []Entry{entry}
-	}
-	return ResolveGVR(gvr, candidates, state), nil
 }
 
 func (m *StaticSnapshotMapper) stateFor(gv schema.GroupVersion) LookupState {

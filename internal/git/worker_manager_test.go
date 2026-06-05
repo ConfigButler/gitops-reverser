@@ -38,9 +38,9 @@ import (
 )
 
 // TestWorkerManager_SetMapperInjectsIntoWorkers proves the production wiring: a mapper
-// set on the manager is handed to every worker it creates, so the live writer's
-// GVR-only delete path can resolve a moved manifest. Without injection worker.mapper is
-// nil and that path falls back to canonical placement.
+// set on the manager is handed to every worker it creates, so the live writer builds a
+// resource-identity inventory. Without injection worker.mapper is nil and object-less
+// deletes have no resource index to target.
 func TestWorkerManager_SetMapperInjectsIntoWorkers(t *testing.T) {
 	client := fake.NewClientBuilder().WithScheme(setupScheme()).Build()
 	manager := NewWorkerManager(client, logr.Discard(), 0, types.SensitiveResourcePolicy{})

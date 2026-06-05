@@ -90,10 +90,9 @@ type BranchWorker struct {
 	Client        client.Client
 	Log           logr.Logger
 	contentWriter *contentWriter
-	// mapper resolves a GVR-only DELETE event to the managed document it targets,
-	// so a manifest moved off its canonical path is still deleted (M6 in the writer).
-	// It is nil until wired to the live-catalog mapper; a nil mapper keeps the writer
-	// structure-only and falls back to canonical-path deletes.
+	// mapper resolves manifest GVKs into resource identities while building the
+	// GitTarget inventory. A nil mapper keeps the writer structure-only, so
+	// object-less deletes have no resource index to target.
 	mapper mapping.ResourceMapper
 
 	// Event processing

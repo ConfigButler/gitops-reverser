@@ -34,9 +34,11 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	"github.com/ConfigButler/gitops-reverser/internal/mapping"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
@@ -213,7 +215,9 @@ func TestBranchWorker_DeleteSecretRemovesSOPSPath(t *testing.T) {
 	repo, worktree := initLocalRepo(t, seedPath, remoteURL, "master")
 	sopsPath := filepath.Join(seedPath, "v1", "secrets", "default", "test-secret.sops.yaml")
 	require.NoError(t, os.MkdirAll(filepath.Dir(sopsPath), 0o750))
-	require.NoError(t, os.WriteFile(sopsPath, []byte("encrypted"), 0o600))
+	seeded := "apiVersion: v1\nkind: Secret\nmetadata:\n  name: test-secret\n  namespace: default\n" +
+		"data:\n  k: ENC[AES256,data:OLD]\nsops:\n  version: 3.9.0\n"
+	require.NoError(t, os.WriteFile(sopsPath, []byte(seeded), 0o600))
 	_, err := worktree.Add("v1/secrets/default/test-secret.sops.yaml")
 	require.NoError(t, err)
 	_, err = worktree.Commit("seed", &gogit.CommitOptions{
@@ -226,6 +230,12 @@ func TestBranchWorker_DeleteSecretRemovesSOPSPath(t *testing.T) {
 
 	worker, err := newTestBranchWorker(remoteURL, "test-repo", "master")
 	require.NoError(t, err)
+	worker.mapper = mapping.NewStaticSnapshotMapper(mapping.Snapshot{Entries: []mapping.Entry{{
+		GVK:        schema.GroupVersionKind{Group: "", Version: "v1", Kind: "Secret"},
+		GVR:        schema.GroupVersionResource{Group: "", Version: "v1", Resource: "secrets"},
+		Namespaced: true,
+		Allowed:    true,
+	}}})
 
 	event := Event{
 		Identifier: types.ResourceIdentifier{
