@@ -372,11 +372,24 @@ func (m *Manager) resolveSnapshotGVRs(
 	}
 	m.refreshWatchedTypeTables()
 
-	table, _ := m.watchedTypeTableForGitDest(gitDest)
+	table, _ := m.residentWatchedTypeTable(gitDest)
 	if blocking := table.BlockingMisses(); len(blocking) > 0 {
 		return nil, fmt.Errorf(
 			"aborting cluster snapshot for %s: %s; refusing to snapshot a partial cluster view",
 			gitDest.String(), FormatResolveMisses(blocking))
+	}
+
+	// A type the catalog momentarily stopped serving while the rules still select it is
+	// retained in the table under a removal grace timer (see applyPersistentAbsence). A
+	// gather during that hold would observe a reduced cluster — the held type's resource
+	// no longer streams — and a mark-and-sweep over it would delete that type's KRM from
+	// git on a transient wobble. Fail closed until the absence is either trusted (grace
+	// elapsed, the type is gone) or cleared (the type reappeared).
+	if pending := table.PendingRemovals; len(pending) > 0 {
+		return nil, fmt.Errorf(
+			"aborting cluster snapshot for %s: %s pending removal within the grace window; "+
+				"refusing to sweep on a reduced cluster view",
+			gitDest.String(), pendingRemovalSummary(pending))
 	}
 
 	return snapshotGVRsFromTable(table), nil

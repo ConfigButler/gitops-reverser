@@ -268,6 +268,69 @@ So the type-removed sweep fires **only on a trusted absence**:
 A momentarily-flaky apiserver therefore delays a sweep; it never causes a wrong one.
 A genuinely uninstalled CRD, confirmed by a healthy catalog, sweeps.
 
+### Where the hold lives: the watched-type store, not the catalog
+
+"Delays a sweep" above needs a home. The hold belongs in the **watched-type store
+(Thread 1), on the table publish path — not in `APIResourceCatalog`.** The distinction
+is foundational and worth stating sharply:
+
+- The **catalog is discovery truth**: *what the API server says it serves right now.*
+- The **watched-type table is action policy**: *what this GitTarget is allowed to act
+  on.*
+
+A hold is a policy decision about whether an observed absence is yet *actionable*. If we
+put it in the catalog — keeping stale `byGVR`/`byGVK` entries for a now-absent CRD for 60s
+— **discovery would lie**: validation, the mapping layer, the resolver, and any status
+check would all believe the type is still served, producing spurious `404`/`list failed`
+behaviour downstream from a shared primitive. The catalog must stay honest and surface
+removals immediately; it may *later* expose timestamps, but it must never *suppress* a
+removal. So the catalog reports the type gone the instant discovery does, and the
+watched-type store decides what to do about it.
+
+**Persistent absence in the watched-type store.** The store compares the table it last
+published against a freshly resolved *candidate* table on every refresh, and applies one
+rule per previously-published type the candidate no longer lists:
+
+- **A new type appears** → publish immediately (no hold on additions).
+- **The rules no longer select it** (checked against the *raw compiled rules*, not the
+  catalog) → remove immediately. This is explicit user intent and is never delayed.
+- **The catalog is unavailable/degraded for it** → retain indefinitely and mark the table
+  blocking; the gather already fails closed on the table's blocking misses. An
+  unobservable surface is never a trusted absence (the guard above, verbatim).
+- **The rules still select it but a healthy catalog says it is gone** → start (or
+  continue) a **pending removal**: retain the last-published `WatchedType`, keep its
+  informers alive, and **block the gather** until either the type reappears (clear the
+  pending, no behaviour change) or the absence persists past a grace window
+  (`removalGrace`, default 60s), at which point the removal is published and teardown +
+  sweep may proceed.
+
+Mechanically this adds a small amount of state to the store, all touched only under the
+existing publish lock: `pendingRemovals` keyed by `(GitTarget → typeKey → since/reason)`,
+where `typeKey` is the `(GVK, GVR, scope)` identity (the namespace/operation scope stays
+*inside* the retained `WatchedType`, not in the key, so a held type matches its candidate
+regardless of how its namespaces were last gathered); a `removalGrace` duration; and an
+injectable `now` for deterministic tests. The published `WatchedTypeTable` grows a
+`PendingRemovals []PendingRemoval` slice, and `resolveSnapshotGVRs` **returns an error
+while it is non-empty** — the explicit fail-closed that stops a reduced or empty snapshot
+from sweeping git during the wobble. Because the grace is time-based, the re-resolution
+gate (rules fingerprint + catalog generation) is bypassed while any removal is pending, so
+the grace can actually elapse on a quiet cluster.
+
+The rule-intent check (`rulesStillSelectWatchedType`) is what keeps an explicit untrack
+*immediate* while a CRD wobble is *held*: it matches the held type's group/version/resource
+and its cluster-wide-vs-namespaced shape against the raw rules — a cluster-wide type only
+counts as still-selected if a `ClusterWatchRule` selects it at the same scope; a
+per-namespace type only if a `WatchRule` in one of its gathered namespaces does.
+
+This is the clean fix for the `resources: 7 → 0 → 7` wobble that motivated it: a transient
+discovery dip retains the types, holds the gather, and clears the moment discovery
+recovers — the mirror is never swept on a view it could not trust. Edge logs
+(`watched type absent; holding removal`, `… reappeared; clearing pending removal`,
+`… absence persisted past grace; removing`) and the
+`gitopsreverser_watched_type_pending_removals` gauge make the hold observable. When per-type
+reconcile (M12) lands, the same pending state scopes the block and the eventual sweep to
+the individual type instead of the whole GitTarget gather.
+
 ### This is not the adoption-time refusal — and does not contradict it
 
 [current-manifest-support-review.md](current-manifest-support-review.md) Decision #3
@@ -538,6 +601,19 @@ dependency.
   > the watch side with the already-GVK-keyed managed model (`ManifestStore.ByGVK`) and
   > giving M12's per-type sweep and M13's GVR→GVK delete mapping an unambiguous
   > bijection to lean on.
+  >
+  > **Persistent absence also landed (2026-06-05).** The store's publish path now holds a
+  > still-selected type the catalog momentarily stops serving rather than dropping it on
+  > the spot — see [Where the hold lives](#where-the-hold-lives-the-watched-type-store-not-the-catalog).
+  > A candidate-vs-published diff each refresh classifies every disappeared type as
+  > immediate-removal (rules no longer select it), indefinite blocking retention (catalog
+  > degraded/unavailable), or a grace-held **pending removal** (rules still select it, a
+  > healthy catalog says it is gone). A pending removal retains the `WatchedType` (informers
+  > stay up) and makes `resolveSnapshotGVRs` fail closed via the new
+  > `WatchedTypeTable.PendingRemovals`, so a `resources: 7 → 0 → 7` discovery wobble no
+  > longer sweeps git. State and grace (`removalGrace`, default 60s, injectable `now`) live
+  > in `watchedTypeStore`; observability is the three edge logs plus
+  > `gitopsreverser_watched_type_pending_removals`.
 - **M11 — Visibility summary.** A *bounded* `GitTargetStatus` roll-up derived from
   the table: total watched types, resolved-vs-failing counts, failing type names
   (capped), CRD versions; metrics carry the full per-type detail. Depends only on

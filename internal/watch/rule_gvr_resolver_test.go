@@ -262,8 +262,10 @@ func TestManager_NamespacesFollowResolvedNonCoreWatchRule(t *testing.T) {
 	}, "target", "apps-ns", "provider", "apps-ns", "main", "live")
 	manager := &Manager{RuleStore: store, resourceCatalog: newCommonTestCatalog(t)}
 
-	requested := manager.ComputeRequestedGVRs()
+	requested := manager.ComputeRequestedGVRs() // refreshes the resident tables
 
 	require.Len(t, requested, 1)
-	assert.Equal(t, []string{"apps-ns"}, manager.getNamespacesForGVR(requested[0]))
+	// desiredInformerScope is a pure read of the just-refreshed tables.
+	scope := manager.desiredInformerScope()
+	assert.Equal(t, map[string]struct{}{"apps-ns": {}}, scope[requested[0]])
 }

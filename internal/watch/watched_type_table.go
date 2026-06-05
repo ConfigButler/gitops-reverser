@@ -20,6 +20,7 @@ package watch
 
 import (
 	"sort"
+	"time"
 
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
@@ -121,6 +122,22 @@ type TypeConflict struct {
 	GVRs []schema.GroupVersionResource
 }
 
+// PendingRemoval is a watched type the catalog has temporarily stopped serving while
+// the GitTarget's rules still select it: it is retained in the published table (so
+// informers stay alive and git is not swept) under a grace timer, and removed only once
+// the absence persists past the grace. Since records when the absence was first observed
+// so the grace is measured from that instant, not reset on every refresh; Reason is the
+// edge-log/observability detail.
+//
+// While a table carries any PendingRemoval the snapshot gather fails closed (see
+// resolveSnapshotGVRs): a reduced or empty view must never drive a destructive sweep
+// during a transient discovery wobble.
+type PendingRemoval struct {
+	Type   WatchedType
+	Since  time.Time
+	Reason string
+}
+
 // WatchedTypeTable is a GitTarget's resident, resolved-once set of watched types.
 // It replaces the per-gather re-resolution the snapshot, informer, and plan-hash
 // paths each did inline; it is re-resolved only on a deliberate trigger (a rule-set
@@ -137,8 +154,13 @@ type WatchedTypeTable struct {
 	// blocking subset (catalog unavailable / discovery degraded) makes the snapshot
 	// gather fail closed; the rest (not served / ambiguous / disallowed) are
 	// reporting facts for visibility.
-	Misses     []ResolveMiss
-	ResolvedAt uint64
+	Misses []ResolveMiss
+	// PendingRemovals are types the catalog momentarily stopped serving that the rules
+	// still select, retained under a grace timer rather than swept (see PendingRemoval).
+	// Their types remain in Types so informers and the mirror are untouched during the
+	// hold; the gather fails closed while this is non-empty.
+	PendingRemovals []PendingRemoval
+	ResolvedAt      uint64
 }
 
 // BlockingMisses returns the misses that must make a snapshot gather fail closed

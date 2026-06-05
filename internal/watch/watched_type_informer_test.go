@@ -33,49 +33,48 @@ func noopCancel(called *bool) context.CancelFunc {
 	return func() { *called = true }
 }
 
-func TestFindObsoleteInformers_NamespaceShrinkTearsDownDroppedNamespace(t *testing.T) {
-	cm := nsGVR("", "configmaps")
-	m := &Manager{
-		activeInformers: map[GVR]map[string]context.CancelFunc{
-			cm: {"ns-a": func() {}, "ns-b": func() {}},
-		},
+func activeInformers(cm GVR, namespaces ...string) map[GVR]map[string]context.CancelFunc {
+	ns := map[string]context.CancelFunc{}
+	for _, n := range namespaces {
+		ns[n] = func() {}
 	}
-	desired := map[GVR]map[string]bool{cm: {"ns-a": true}}
+	return map[GVR]map[string]context.CancelFunc{cm: ns}
+}
 
-	obsolete := m.findObsoleteInformers(desired)
+func TestInformersObsolete_NamespaceShrinkTearsDownDroppedNamespace(t *testing.T) {
+	cm := nsGVR("", "configmaps")
+	obsolete := informersObsolete(activeInformers(cm, "ns-a", "ns-b"), map[GVR]map[string]struct{}{cm: {"ns-a": {}}})
 
 	require.Len(t, obsolete, 1)
 	assert.Equal(t, gvrNamespace{gvr: cm, ns: "ns-b"}, obsolete[0])
 }
 
-func TestFindObsoleteInformers_NamespaceToClusterWideTearsDownNamespaced(t *testing.T) {
+func TestInformersObsolete_NamespaceToClusterWideTearsDownNamespaced(t *testing.T) {
 	cm := nsGVR("", "configmaps")
-	m := &Manager{
-		activeInformers: map[GVR]map[string]context.CancelFunc{
-			cm: {"ns-a": func() {}},
-		},
-	}
-	// New scope is cluster-wide for the same GVR.
-	desired := map[GVR]map[string]bool{cm: {"": true}}
-
-	obsolete := m.findObsoleteInformers(desired)
+	// New scope is cluster-wide ("") for the same GVR.
+	obsolete := informersObsolete(activeInformers(cm, "ns-a"), map[GVR]map[string]struct{}{cm: {"": {}}})
 
 	require.Len(t, obsolete, 1)
 	assert.Equal(t, gvrNamespace{gvr: cm, ns: "ns-a"}, obsolete[0])
 }
 
-func TestFindObsoleteInformers_WholeGVRGoneTearsDownEveryNamespace(t *testing.T) {
+func TestInformersObsolete_WholeGVRGoneTearsDownEveryNamespace(t *testing.T) {
 	cm := nsGVR("", "configmaps")
-	m := &Manager{
-		activeInformers: map[GVR]map[string]context.CancelFunc{
-			cm: {"ns-a": func() {}, "": func() {}},
-		},
-	}
-	desired := map[GVR]map[string]bool{} // configmaps no longer watched at all
-
-	obsolete := m.findObsoleteInformers(desired)
+	obsolete := informersObsolete(activeInformers(cm, "ns-a", ""), map[GVR]map[string]struct{}{})
 
 	assert.Len(t, obsolete, 2)
+}
+
+func TestInformersToStart_StartsOnlyMissingNamespaces(t *testing.T) {
+	cm := nsGVR("", "configmaps")
+	toStart := informersToStart(activeInformers(cm, "ns-a"), map[GVR]map[string]struct{}{cm: {"ns-a": {}, "ns-b": {}}})
+
+	assert.Equal(
+		t,
+		[]gvrNamespace{{gvr: cm, ns: "ns-b"}},
+		toStart,
+		"only the added namespace ns-b is started; ns-a stays",
+	)
 }
 
 func TestStopInformerNamespace_IsIdempotentAndDropsEmptyGVR(t *testing.T) {
@@ -105,47 +104,67 @@ func TestStopInformerNamespace_IsIdempotentAndDropsEmptyGVR(t *testing.T) {
 	assert.NotPanics(t, func() { m.stopInformerNamespace(cm, "ns-a") })
 }
 
-func TestCompareGVRs_InitializesActiveInformersAndAddsAll(t *testing.T) {
+func TestDesiredInformerScope_ClusterWideWinsOverNamedNamespace(t *testing.T) {
 	manager, store := makeWatchedTypeManager(t)
-	store.AddOrUpdateClusterWatchRule(
-		clusterRuleForResource("rule-1", "test-target", "configmaps"),
+	// configmaps watched in ns-a (WatchRule) AND cluster-wide (ClusterWatchRule).
+	store.AddOrUpdateWatchRule(
+		watchRuleForTarget("rule-a", "test-target", "ns-a"),
 		"test-target", "test-ns", "test-provider", "test-ns", "main", "test-path",
 	)
-	cm := nsGVR("", "configmaps")
-	// activeInformers is nil — compareGVRs must lazily initialize it.
-	added, obsolete := manager.compareGVRs([]GVR{cm})
+	store.AddOrUpdateClusterWatchRule(
+		clusterRuleForResource("rule-cw", "test-target", "configmaps"),
+		"test-target", "test-ns", "test-provider", "test-ns", "main", "test-path",
+	)
+	manager.refreshWatchedTypeTables()
 
-	assert.Contains(t, added, cm)
-	assert.Empty(t, obsolete)
-	assert.NotNil(t, manager.activeInformers)
+	scope := manager.desiredInformerScope()
+	assert.Equal(t, map[string]struct{}{"": {}}, scope[nsGVR("", "configmaps")],
+		"a cluster-wide selection collapses the named namespace to a single cluster-wide stream")
 }
 
-func TestCompareGVRs_NamespaceToClusterWideAddsAndRetiresOldScope(t *testing.T) {
+func TestCompareInformerScope_NamespaceToClusterWideStartsAndRetires(t *testing.T) {
 	manager, store := makeWatchedTypeManager(t)
-	// A ClusterWatchRule with Namespaced scope makes configmaps cluster-wide.
 	store.AddOrUpdateClusterWatchRule(
 		clusterRuleForResource("rule-1", "test-target", "configmaps"),
 		"test-target", "test-ns", "test-provider", "test-ns", "main", "test-path",
 	)
+	manager.refreshWatchedTypeTables()
 	cm := nsGVR("", "configmaps")
 	// Pretend the old namespace-scoped informer is running.
-	manager.activeInformers = map[GVR]map[string]context.CancelFunc{
-		cm: {"ns-a": func() {}},
-	}
+	manager.activeInformers = map[GVR]map[string]context.CancelFunc{cm: {"ns-a": func() {}}}
 
-	added, obsolete := manager.compareGVRs([]GVR{cm})
+	toStart, obsolete := manager.compareInformerScope(manager.desiredInformerScope())
 
-	assert.Contains(t, added, cm, "the cluster-wide scope needs a new informer")
+	assert.Contains(t, toStart, gvrNamespace{gvr: cm, ns: ""}, "the cluster-wide scope needs a new informer")
 	require.Len(t, obsolete, 1)
 	assert.Equal(t, gvrNamespace{gvr: cm, ns: "ns-a"}, obsolete[0],
 		"the obsolete namespace-scoped informer must be retired, not left running")
 }
 
-func TestChangedInformerGVRs_DeduplicatesAcrossAddedAndObsolete(t *testing.T) {
+func TestCompareInformerScope_InitializesActiveInformers(t *testing.T) {
+	manager, store := makeWatchedTypeManager(t)
+	store.AddOrUpdateClusterWatchRule(
+		clusterRuleForResource("rule-1", "test-target", "configmaps"),
+		"test-target", "test-ns", "test-provider", "test-ns", "main", "test-path",
+	)
+	manager.refreshWatchedTypeTables()
+	cm := nsGVR("", "configmaps")
+	// activeInformers is nil — compareInformerScope must lazily initialize it.
+	toStart, obsolete := manager.compareInformerScope(manager.desiredInformerScope())
+
+	assert.Contains(t, toStart, gvrNamespace{gvr: cm, ns: ""})
+	assert.Empty(t, obsolete)
+	assert.NotNil(t, manager.activeInformers)
+}
+
+func TestChangedInformerGVRs_DeduplicatesAcrossStartAndObsolete(t *testing.T) {
 	cm := nsGVR("", "configmaps")
 	secrets := nsGVR("", "secrets")
 
-	got := changedInformerGVRs([]GVR{cm}, []gvrNamespace{{gvr: cm, ns: "ns-a"}, {gvr: secrets, ns: ""}})
+	got := changedInformerGVRs(
+		[]gvrNamespace{{gvr: cm, ns: "ns-b"}},
+		[]gvrNamespace{{gvr: cm, ns: "ns-a"}, {gvr: secrets, ns: ""}},
+	)
 
 	assert.ElementsMatch(t, []GVR{cm, secrets}, got)
 }
@@ -167,7 +186,7 @@ func TestRefreshWatchedTypeTables_ConcurrentRefreshesConverge(t *testing.T) {
 			defer wg.Done()
 			for range 50 {
 				manager.refreshWatchedTypeTables()
-				_ = manager.allWatchedTypeTables()
+				_ = manager.desiredInformerScope()
 			}
 		}()
 	}

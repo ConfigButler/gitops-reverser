@@ -394,48 +394,81 @@ func (m *Manager) dynamicClientFromConfig(log logr.Logger) dynamic.Interface {
 	return dc
 }
 
-// getNamespacesForGVR returns the namespaces to list for a given GVR, derived from
-// the resident watched-type tables (M10) rather than re-matched against raw rules.
-// An empty slice means cluster-wide: a cluster-scoped resource, or a namespaced
-// resource any GitTarget follows cluster-wide. This unifies informer scoping with
-// the snapshot's collapse — a cluster-wide selection wins over named namespaces —
-// where the old pattern-match let a WatchRule namespace shadow a coexisting
-// cluster-wide ClusterWatchRule.
-func (m *Manager) getNamespacesForGVR(g GVR) []string {
-	if g.Scope == configv1alpha1.ResourceScopeCluster {
-		return nil
-	}
-
-	namespaceSet := map[string]struct{}{}
-	for _, table := range m.allWatchedTypeTables() {
+// desiredInformerScope computes, in a single pass over the resident watched-type tables,
+// the informer surface every GitTarget wants: each GVR mapped to the namespaces to watch,
+// where the empty string is a cluster-wide stream. A cluster-wide selection wins over any
+// named namespace for the same GVR (the snapshot's collapse), so the informer scope and
+// the snapshot agree. It is a pure read — the caller refreshes the tables once per
+// reconcile — which keeps re-resolution off the per-type path the old per-GVR
+// getNamespacesForGVR walked once for every requested GVR.
+func (m *Manager) desiredInformerScope() map[GVR]map[string]struct{} {
+	desired := map[GVR]map[string]struct{}{}
+	clusterWide := map[GVR]struct{}{}
+	for _, table := range m.residentWatchedTypeTables() {
 		for _, wt := range table.Types {
-			if !watchedTypeMatchesGVR(wt, g) {
-				continue
+			gvr := GVR{Group: wt.GVR.Group, Version: wt.GVR.Version, Resource: wt.GVR.Resource, Scope: wt.Scope}
+			if desired[gvr] == nil {
+				desired[gvr] = map[string]struct{}{}
 			}
 			if wt.ClusterWide() {
-				return nil
+				clusterWide[gvr] = struct{}{}
+				continue
 			}
 			for _, ns := range wt.SnapshotNamespaces() {
-				namespaceSet[ns] = struct{}{}
+				desired[gvr][ns] = struct{}{}
 			}
 		}
 	}
-
-	namespaces := make([]string, 0, len(namespaceSet))
-	for ns := range namespaceSet {
-		namespaces = append(namespaces, ns)
+	// A cluster-wide selection for a GVR subsumes every named namespace for it.
+	for gvr := range clusterWide {
+		desired[gvr] = map[string]struct{}{"": {}}
 	}
-	sort.Strings(namespaces)
-	return namespaces
+	return desired
 }
 
-// watchedTypeMatchesGVR reports whether a watched type is the one named by an
-// informer GVR. GVR->GVK is 1:1, so group/version/resource identifies the type; the
-// scope is a function of that resource and is carried along for clarity.
-func watchedTypeMatchesGVR(wt WatchedType, g GVR) bool {
-	return wt.GVR.Group == g.Group &&
-		wt.GVR.Version == g.Version &&
-		wt.GVR.Resource == g.Resource
+// informersToStart returns the (GVR, namespace) informers in the desired scope that are
+// not yet active.
+func informersToStart(
+	active map[GVR]map[string]context.CancelFunc,
+	desired map[GVR]map[string]struct{},
+) []gvrNamespace {
+	var toStart []gvrNamespace
+	for gvr, namespaces := range desired {
+		for ns := range namespaces {
+			if _, ok := active[gvr][ns]; !ok {
+				toStart = append(toStart, gvrNamespace{gvr: gvr, ns: ns})
+			}
+		}
+	}
+	return toStart
+}
+
+// informersObsolete returns the active (GVR, namespace) informers no longer in the
+// desired scope — a whole GVR removed, or just a namespace scope narrowed.
+func informersObsolete(
+	active map[GVR]map[string]context.CancelFunc,
+	desired map[GVR]map[string]struct{},
+) []gvrNamespace {
+	var obsolete []gvrNamespace
+	for gvr, activeNS := range active {
+		want := desired[gvr]
+		for ns := range activeNS {
+			if _, ok := want[ns]; !ok {
+				obsolete = append(obsolete, gvrNamespace{gvr: gvr, ns: ns})
+			}
+		}
+	}
+	return obsolete
+}
+
+// compareInformerScope diffs the desired informer scope against the active informers
+// under informersMu, returning the (GVR, namespace) informers to start, then those to
+// retire.
+func (m *Manager) compareInformerScope(desired map[GVR]map[string]struct{}) ([]gvrNamespace, []gvrNamespace) {
+	m.informersMu.Lock()
+	defer m.informersMu.Unlock()
+	m.initializeInformerMaps()
+	return informersToStart(m.activeInformers, desired), informersObsolete(m.activeInformers, desired)
 }
 
 func blockingSnapshotMisses(misses []ResolveMiss) []ResolveMiss {
@@ -485,21 +518,18 @@ func (m *Manager) ReconcileForRuleChange(ctx context.Context) error {
 	// below (informer set, snapshot gather, plan hash) reads these tables.
 	m.refreshWatchedTypeTables()
 
-	// Compute desired GVRs from current rules. The resolver only emits GVRs that
-	// the trusted catalog confirms are served, listable, watchable and in scope,
-	// so the requested set is already the discoverable set.
-	requestedGVRs, misses := m.computeRequestedGVRs()
-	if len(misses) > 0 {
+	// Log any rule resources that did not resolve to a watched type.
+	if _, misses := m.computeRequestedGVRs(); len(misses) > 0 {
 		log.Info("rule resources were not planned", "misses", FormatResolveMisses(misses))
 	}
 
-	log.V(1).Info("Computed GVRs for reconciliation", "requested", len(requestedGVRs))
-
-	// Determine what changed. Removal is namespace-granular: obsolete is the exact
-	// (GVR, namespace) informers to tear down, so a narrowed scope (a namespace dropped,
-	// or a switch between namespaced and cluster-wide) does not leave the old informer
-	// running alongside the new one.
-	added, obsolete := m.compareGVRs(requestedGVRs)
+	// The informer surface is read from the resident watched-type tables in a single
+	// pass (refreshed once above), then diffed against the active informers at
+	// (GVR, namespace) granularity: toStart needs starting, obsolete needs retiring so
+	// a narrowed scope (a namespace dropped, or a switch between namespaced and
+	// cluster-wide) does not leave the old informer running alongside the new one.
+	desired := m.desiredInformerScope()
+	toStart, obsolete := m.compareInformerScope(desired)
 
 	// Log current active count for debugging
 	m.informersMu.Lock()
@@ -507,14 +537,14 @@ func (m *Manager) ReconcileForRuleChange(ctx context.Context) error {
 	m.informersMu.Unlock()
 
 	targets := m.snapshotTargetsNeedingDelivery()
-	if len(added) == 0 && len(obsolete) == 0 && len(targets) == 0 {
+	if len(toStart) == 0 && len(obsolete) == 0 && len(targets) == 0 {
 		log.V(1).Info("No GVR changes detected, skipping reconciliation",
 			"activeGVRs", activeCount)
 		return nil
 	}
 
 	log.Info("GVR changes detected",
-		"added", len(added),
+		"toStart", len(toStart),
 		"obsolete", len(obsolete),
 		"activeGVRs", activeCount)
 
@@ -528,16 +558,14 @@ func (m *Manager) ReconcileForRuleChange(ctx context.Context) error {
 	// rather than processed as N individual [CREATE] commits.
 	m.beginReconciliationForTargets(targets, log)
 
-	// Start informers for added GVRs
-	if len(added) > 0 {
-		if err := m.startInformersForGVRs(ctx, added); err != nil {
-			log.Error(err, "Failed to start informers for new GVRs")
-			return err
-		}
+	// Start the new (GVR, namespace) informers.
+	if err := m.startInformerScope(ctx, toStart); err != nil {
+		log.Error(err, "Failed to start informers for new GVRs")
+		return err
 	}
 
 	// Clear deduplication cache for changed GVRs to prevent false duplicates
-	m.clearDeduplicationCacheForGVRs(changedInformerGVRs(added, obsolete))
+	m.clearDeduplicationCacheForGVRs(changedInformerGVRs(toStart, obsolete))
 
 	// Run one streaming-snapshot resync per affected GitTarget so a single
 	// "reconcile: sync N resources" commit is produced instead of N individual
@@ -560,137 +588,24 @@ func (m *Manager) ReconcileForRuleChange(ctx context.Context) error {
 	}
 
 	log.V(1).Info("Watch manager reconciliation completed",
-		"addedGVRs", len(added),
+		"startedInformers", len(toStart),
 		"obsoleteInformers", len(obsolete))
 
 	return nil
 }
 
-// compareGVRs compares the desired (GVR, namespace) surface against the active
-// informers. It returns the GVRs that need an informer started (some desired namespace
-// is not yet active) and the exact (GVR, namespace) informers that are now obsolete.
-// Removal is namespace-granular so a narrowed scope — a dropped namespace, or a switch
-// between namespaced and cluster-wide — tears down the old informer instead of leaving
-// it running alongside the new one.
-func (m *Manager) compareGVRs(desired []GVR) ([]GVR, []gvrNamespace) {
-	m.informersMu.Lock()
-	defer m.informersMu.Unlock()
-
-	// Initialize if needed
-	if m.activeInformers == nil {
-		m.activeInformers = make(map[GVR]map[string]context.CancelFunc)
-	}
-
-	// Build map of desired GVR -> namespaces
-	desiredGVRNamespaces := m.buildDesiredGVRNamespaces(desired)
-
-	// Find added GVRs and obsolete (GVR, namespace) informers.
-	added := m.findAddedGVRs(desiredGVRNamespaces)
-	obsolete := m.findObsoleteInformers(desiredGVRNamespaces)
-
-	return added, obsolete
-}
-
 // changedInformerGVRs is the deduplicated set of GVRs touched by a reconcile (started or
 // torn down), used to clear the content-dedup cache for exactly those types.
-func changedInformerGVRs(added []GVR, obsolete []gvrNamespace) []GVR {
-	seen := make(map[GVR]struct{}, len(added)+len(obsolete))
-	out := make([]GVR, 0, len(added)+len(obsolete))
-	for _, gvr := range added {
-		if _, ok := seen[gvr]; !ok {
-			seen[gvr] = struct{}{}
-			out = append(out, gvr)
-		}
-	}
-	for _, gn := range obsolete {
+func changedInformerGVRs(toStart, obsolete []gvrNamespace) []GVR {
+	seen := make(map[GVR]struct{}, len(toStart)+len(obsolete))
+	out := make([]GVR, 0, len(toStart)+len(obsolete))
+	for _, gn := range append(append([]gvrNamespace{}, toStart...), obsolete...) {
 		if _, ok := seen[gn.gvr]; !ok {
 			seen[gn.gvr] = struct{}{}
 			out = append(out, gn.gvr)
 		}
 	}
 	return out
-}
-
-// buildDesiredGVRNamespaces constructs a map of desired GVR to their namespaces.
-func (m *Manager) buildDesiredGVRNamespaces(desired []GVR) map[GVR]map[string]bool {
-	desiredGVRNamespaces := make(map[GVR]map[string]bool)
-
-	for _, gvr := range desired {
-		namespaces := m.getNamespacesForGVRUnlocked(gvr)
-
-		if desiredGVRNamespaces[gvr] == nil {
-			desiredGVRNamespaces[gvr] = make(map[string]bool)
-		}
-
-		if len(namespaces) == 0 {
-			// Cluster-wide
-			desiredGVRNamespaces[gvr][""] = true
-		} else {
-			for _, ns := range namespaces {
-				desiredGVRNamespaces[gvr][ns] = true
-			}
-		}
-	}
-
-	return desiredGVRNamespaces
-}
-
-// findAddedGVRs identifies GVRs that need informers added.
-func (m *Manager) findAddedGVRs(desiredGVRNamespaces map[GVR]map[string]bool) []GVR {
-	var added []GVR
-	seenGVRs := make(map[GVR]bool)
-
-	for gvr, desiredNS := range desiredGVRNamespaces {
-		if m.hasNewNamespaces(gvr, desiredNS) && !seenGVRs[gvr] {
-			added = append(added, gvr)
-			seenGVRs[gvr] = true
-		}
-	}
-
-	return added
-}
-
-// hasNewNamespaces checks if a GVR has new namespaces compared to active informers.
-func (m *Manager) hasNewNamespaces(gvr GVR, desiredNS map[string]bool) bool {
-	activeNS, gvrExists := m.activeInformers[gvr]
-
-	if !gvrExists {
-		return true
-	}
-
-	for ns := range desiredNS {
-		if _, nsExists := activeNS[ns]; !nsExists {
-			return true
-		}
-	}
-
-	return false
-}
-
-// findObsoleteInformers identifies the active (GVR, namespace) informers no longer in
-// the desired surface — a whole GVR removed, or just a namespace scope narrowed. A nil
-// desiredNS (the GVR is entirely undesired) reports every active namespace obsolete.
-func (m *Manager) findObsoleteInformers(desiredGVRNamespaces map[GVR]map[string]bool) []gvrNamespace {
-	var obsolete []gvrNamespace
-
-	for gvr, activeNS := range m.activeInformers {
-		desiredNS := desiredGVRNamespaces[gvr]
-		for ns := range activeNS {
-			if !desiredNS[ns] {
-				obsolete = append(obsolete, gvrNamespace{gvr: gvr, ns: ns})
-			}
-		}
-	}
-
-	return obsolete
-}
-
-// getNamespacesForGVRUnlocked is like getNamespacesForGVR but assumes informersMu is already held.
-func (m *Manager) getNamespacesForGVRUnlocked(g GVR) []string {
-	// Temporarily unlock to call getNamespacesForGVR which doesn't need the lock
-	m.informersMu.Unlock()
-	defer m.informersMu.Lock()
-	return m.getNamespacesForGVR(g)
 }
 
 // stopInformerNamespace cancels one (GVR, namespace) informer and drops it from the
@@ -718,11 +633,15 @@ func (m *Manager) stopInformerNamespace(gvr GVR, ns string) {
 	}
 }
 
-// startInformersForGVRs starts watching specific GVRs.
-// Creates namespace-scoped factories for WatchRule GVRs and cluster-wide factory for ClusterWatchRule GVRs.
-func (m *Manager) startInformersForGVRs(ctx context.Context, gvrs []GVR) error {
+// startInformerScope starts the given (GVR, namespace) informers that are not already
+// running. It is the namespace-granular replacement for the old GVR-list start path:
+// the caller passes the exact (GVR, namespace) pairs computed once from the desired
+// scope, so there is no per-GVR namespace re-resolution here.
+func (m *Manager) startInformerScope(ctx context.Context, toStart []gvrNamespace) error {
+	if len(toStart) == 0 {
+		return nil
+	}
 	log := m.Log.WithName("reconcile")
-	log.V(1).Info("startInformersForGVRs called", "gvrCount", len(gvrs))
 
 	cfg := m.restConfig()
 	if cfg == nil {
@@ -741,15 +660,23 @@ func (m *Manager) startInformersForGVRs(ctx context.Context, gvrs []GVR) error {
 
 	m.initializeInformerMaps()
 
-	toStart := m.collectInformersToStart(gvrs)
-
-	if len(toStart) == 0 {
+	// Re-check under the lock: a concurrent reconcile may have started some already.
+	actual := make([]gvrNamespace, 0, len(toStart))
+	for _, gn := range toStart {
+		if m.activeInformers[gn.gvr] == nil {
+			m.activeInformers[gn.gvr] = make(map[string]context.CancelFunc)
+		}
+		if _, exists := m.activeInformers[gn.gvr][gn.ns]; !exists {
+			actual = append(actual, gn)
+		}
+	}
+	if len(actual) == 0 {
 		log.V(1).Info("All informers already running")
 		return nil
 	}
 
-	log.Info("Starting new informers", "count", len(toStart))
-	return m.startCollectedInformers(ctx, client, toStart)
+	log.Info("Starting new informers", "count", len(actual))
+	return m.startCollectedInformers(ctx, client, actual)
 }
 
 // initializeInformerMaps ensures informer tracking maps are initialized.
@@ -766,35 +693,6 @@ func (m *Manager) initializeInformerMaps() {
 type gvrNamespace struct {
 	gvr GVR
 	ns  string
-}
-
-// collectInformersToStart identifies which informers need to be started.
-func (m *Manager) collectInformersToStart(gvrs []GVR) []gvrNamespace {
-	var toStart []gvrNamespace
-
-	for _, gvr := range gvrs {
-		namespaces := m.getNamespacesForGVR(gvr)
-
-		if m.activeInformers[gvr] == nil {
-			m.activeInformers[gvr] = make(map[string]context.CancelFunc)
-		}
-
-		if len(namespaces) == 0 {
-			// Cluster-wide informer
-			if _, exists := m.activeInformers[gvr][""]; !exists {
-				toStart = append(toStart, gvrNamespace{gvr: gvr, ns: ""})
-			}
-		} else {
-			// Namespace-scoped informers
-			for _, ns := range namespaces {
-				if _, exists := m.activeInformers[gvr][ns]; !exists {
-					toStart = append(toStart, gvrNamespace{gvr: gvr, ns: ns})
-				}
-			}
-		}
-	}
-
-	return toStart
 }
 
 // startCollectedInformers starts all the collected informers.

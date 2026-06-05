@@ -172,6 +172,11 @@ var (
 	// WatchedTypeConflicts gauges, per GitTarget, the number of GVKs refused for
 	// violating the GVK<->GVR 1:1 assumption (a kind served by multiple resources).
 	WatchedTypeConflicts metric.Int64Gauge
+	// WatchedTypePendingRemovals gauges, per GitTarget, the number of watched types the
+	// catalog momentarily stopped serving that are held under a removal grace timer
+	// (rules still select them) rather than swept. A non-zero value means the GitTarget's
+	// snapshot is failing closed while a discovery wobble settles.
+	WatchedTypePendingRemovals metric.Int64Gauge
 	// SecretEncryptionAttemptsTotal counts total Secret encryption attempts.
 	SecretEncryptionAttemptsTotal metric.Int64Counter
 	// SecretEncryptionSuccessTotal counts successful Secret encryptions.
@@ -251,8 +256,21 @@ type (
 )
 
 // registerInstruments creates every metric instrument against the current
-// otelMeter and stores it in its package-level variable.
+// otelMeter and stores it in its package-level variable, one kind at a time.
 func registerInstruments() error {
+	if err := registerCounters(); err != nil {
+		return err
+	}
+	if err := registerHistograms(); err != nil {
+		return err
+	}
+	if err := registerGauges(); err != nil {
+		return err
+	}
+	return registerUpDownCounters()
+}
+
+func registerCounters() error {
 	counters := []cSpec{
 		{"gitopsreverser_git_operations_total", &GitOperationsTotal},
 		{"gitopsreverser_objects_scanned_total", &ObjectsScannedTotal},
@@ -292,7 +310,10 @@ func registerInstruments() error {
 		}
 		*s.dest = v
 	}
+	return nil
+}
 
+func registerHistograms() error {
 	// auditJoinBuckets span the wait budget (sub-second) and the parked-body TTL margin
 	// (seconds to minutes) so one set of boundaries fits both skew and gate-wait timings.
 	auditJoinBuckets := []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 5, 30, 300}
@@ -321,13 +342,17 @@ func registerInstruments() error {
 		}
 		*s.dest = v
 	}
+	return nil
+}
 
+func registerGauges() error {
 	gauges := []gSpec{
 		{"gitopsreverser_api_catalog_resources", &APICatalogResources},
 		{"gitopsreverser_api_catalog_group_versions", &APICatalogGroupVersions},
 		{"gitopsreverser_api_catalog_generation", &APICatalogGeneration},
 		{"gitopsreverser_watched_types", &WatchedTypes},
 		{"gitopsreverser_watched_type_conflicts", &WatchedTypeConflicts},
+		{"gitopsreverser_watched_type_pending_removals", &WatchedTypePendingRemovals},
 		{"gitopsreverser_audit_queue_stream_length", &AuditQueueStreamLength},
 		{"gitopsreverser_audit_queue_consumer_lag", &AuditQueueConsumerLag},
 		{"gitopsreverser_audit_queue_pending_entries", &AuditQueuePendingEntries},
@@ -343,7 +368,10 @@ func registerInstruments() error {
 		}
 		*s.dest = v
 	}
+	return nil
+}
 
+func registerUpDownCounters() error {
 	upDowns := []uSpec{
 		{"gitopsreverser_repo_branch_active_workers", &RepoBranchActiveWorkers},
 		{"gitopsreverser_repo_branch_queue_depth", &RepoBranchQueueDepth},

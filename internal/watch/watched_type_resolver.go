@@ -24,6 +24,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/cespare/xxhash/v2"
 	"go.opentelemetry.io/otel/attribute"
@@ -36,6 +37,12 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
+// defaultRemovalGrace is how long the watched-type store retains a still-selected type
+// the catalog momentarily stopped serving before publishing its removal. It absorbs a
+// transient discovery wobble (a CRD that flickers out of discovery, an apiserver that
+// briefly lists fewer resources) so the absence must persist before it sweeps git.
+const defaultRemovalGrace = 60 * time.Second
+
 // watchedTypeStore is the Manager's resident set of per-GitTarget watched-type
 // tables. It is the single source of "what each GitTarget watches", re-resolved
 // only on a deliberate trigger (a rule-set change or a catalog generation bump)
@@ -47,6 +54,12 @@ import (
 // refreshes (ReconcileForRuleChange runs from both watch-rule controllers and the
 // manager loop) cannot have a slow older resolution overwrite a newer one; mu
 // guards the published fields for concurrent readers.
+//
+// The pending-removal state implements "trusted, persistent absence": a type the
+// catalog momentarily stops serving while the rules still select it is held (retained
+// in the published table, snapshot blocked) until the absence persists past
+// removalGrace. pendingRemovals/removalGrace/now are only ever touched while refreshMu
+// is held, so they need no separate lock; now is injectable for deterministic tests.
 type watchedTypeStore struct {
 	refreshMu  sync.Mutex
 	mu         sync.Mutex
@@ -54,6 +67,31 @@ type watchedTypeStore struct {
 	generation uint64
 	rulesFP    uint64
 	resolved   bool
+
+	pendingRemovals map[string]map[typeKey]pendingRemoval
+	removalGrace    time.Duration
+	now             func() time.Time
+}
+
+// typeKey is a watched type's identity for absence tracking: the (GVK, GVR, scope)
+// triple. The namespace/operation scope is deliberately NOT part of the key — it lives
+// inside the retained WatchedType — so a type held while the catalog wobbles is matched
+// back to its candidate regardless of how its namespaces were last gathered.
+type typeKey struct {
+	gvk   schema.GroupVersionKind
+	gvr   schema.GroupVersionResource
+	scope configv1alpha1.ResourceScope
+}
+
+// pendingRemoval is the in-flight grace state for one held type: the retained
+// WatchedType (carried so informers keep its exact namespace scope), when the absence
+// was first observed (since), the catalog generation it was observed at, and the
+// human-readable reason for the edge logs.
+type pendingRemoval struct {
+	wt         WatchedType
+	since      time.Time
+	generation uint64
+	reason     string
 }
 
 // refreshWatchedTypeTables re-resolves the resident watched-type tables when a
@@ -72,22 +110,35 @@ func (m *Manager) refreshWatchedTypeTables() {
 	m.watchedTypes.refreshMu.Lock()
 	defer m.watchedTypes.refreshMu.Unlock()
 
+	if m.watchedTypes.now == nil {
+		m.watchedTypes.now = time.Now
+	}
+	if m.watchedTypes.removalGrace == 0 {
+		m.watchedTypes.removalGrace = defaultRemovalGrace
+	}
+
 	generation := m.apiResourceCatalog().Generation()
 	fingerprint := m.rulesFingerprint()
 
 	m.watchedTypes.mu.Lock()
+	previous := m.watchedTypes.tables
 	upToDate := m.watchedTypes.resolved &&
 		m.watchedTypes.generation == generation &&
 		m.watchedTypes.rulesFP == fingerprint
 	m.watchedTypes.mu.Unlock()
-	if upToDate {
+
+	// A pending removal is a time-based hold, so the change gate must not short-circuit
+	// while one is in flight even when neither the rules nor the catalog generation
+	// moved: the grace timer may have elapsed since the last refresh and the type now
+	// needs publishing as removed.
+	if upToDate && !m.hasPendingRemovals() {
 		return
 	}
 
-	tables := m.resolveWatchedTypeTables(generation)
+	candidate := m.resolveWatchedTypeTables(generation)
+	tables := m.applyPersistentAbsence(previous, candidate, generation)
 
 	m.watchedTypes.mu.Lock()
-	previous := m.watchedTypes.tables
 	m.watchedTypes.tables = tables
 	m.watchedTypes.generation = generation
 	m.watchedTypes.rulesFP = fingerprint
@@ -95,6 +146,257 @@ func (m *Manager) refreshWatchedTypeTables() {
 	m.watchedTypes.mu.Unlock()
 
 	recordWatchedTypeMetrics(previous, tables)
+}
+
+// hasPendingRemovals reports whether any GitTarget is currently holding a type under a
+// removal grace timer. Read under refreshMu (held by the only mutator), so it needs no
+// extra lock.
+func (m *Manager) hasPendingRemovals() bool {
+	for _, byType := range m.watchedTypes.pendingRemovals {
+		if len(byType) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// applyPersistentAbsence reconciles the freshly resolved candidate tables against the
+// previously published tables and the in-flight grace timers, then returns the tables to
+// publish. It is the watched-type layer's "trusted, persistent absence" policy and the
+// reason a discovery wobble (resources: 7 -> 0 -> 7) no longer sweeps git:
+//
+//   - A type the candidate still lists wins outright (fresh resolution). If it had been
+//     held, the hold is cleared — the type reappeared.
+//   - A previously published type the candidate no longer lists is judged by intent and
+//     trust, never by the bare absence:
+//   - the rules no longer select it          -> removed immediately (explicit untrack);
+//   - the catalog is unavailable/degraded     -> retained indefinitely (unobservable,
+//     snapshot already blocked by the table's blocking misses);
+//   - the rules still select it, healthy catalog says absent -> held under the grace
+//     timer, retained until the absence persists past removalGrace, then removed.
+//   - A GitTarget entirely absent from the candidate (all its rules deleted) is dropped
+//     with any pending state: rule deletion is an explicit, immediate untrack.
+//
+// It mutates the caller-owned candidate map in place and replaces the store's pending
+// state; it runs under refreshMu.
+func (m *Manager) applyPersistentAbsence(
+	previous, candidate map[string]WatchedTypeTable,
+	generation uint64,
+) map[string]WatchedTypeTable {
+	now := m.watchedTypes.now()
+	grace := m.watchedTypes.removalGrace
+	newPending := map[string]map[typeKey]pendingRemoval{}
+
+	for key := range candidate {
+		table := candidate[key]
+		oldPending := m.watchedTypes.pendingRemovals[key]
+		m.logReappearances(table, oldPending)
+
+		prev, hadPrev := previous[key]
+		if hadPrev {
+			retained, pending := m.holdAbsentTypes(table, prev, oldPending, now, grace, generation)
+			table.Types = append(table.Types, retained...)
+			sortWatchedTypes(table.Types)
+			table.PendingRemovals = pendingRemovalList(pending)
+			if len(pending) > 0 {
+				newPending[key] = pending
+			}
+		}
+		candidate[key] = table
+	}
+
+	m.watchedTypes.pendingRemovals = newPending
+	return candidate
+}
+
+// holdAbsentTypes walks the previously published types missing from the candidate and
+// decides each one's fate per the persistent-absence policy (see applyPersistentAbsence).
+// It returns the types to retain in the published table and the grace timers to keep
+// running. Blocking (unobservable) retention carries no timer — it is released only when
+// the catalog becomes trustworthy again — so it is retained but not added to pending.
+func (m *Manager) holdAbsentTypes(
+	cand, prev WatchedTypeTable,
+	oldPending map[typeKey]pendingRemoval,
+	now time.Time,
+	grace time.Duration,
+	generation uint64,
+) ([]WatchedType, map[typeKey]pendingRemoval) {
+	candByKey := indexTypesByKey(cand.Types)
+	blocking := len(cand.BlockingMisses()) > 0
+	var retained []WatchedType
+	pending := map[typeKey]pendingRemoval{}
+
+	for _, pt := range prev.Types {
+		key := watchedTypeKey(pt)
+		if _, present := candByKey[key]; present {
+			continue // candidate still serves it; the fresh entry already wins
+		}
+		if !m.rulesStillSelectWatchedType(cand.GitDest, pt) {
+			m.logAbsence(cand.GitDest, pt, "watched type no longer selected by any rule; removing immediately")
+			continue // explicit rule removal -> immediate untrack
+		}
+		if blocking {
+			m.logAbsence(cand.GitDest, pt,
+				"watched type absent but discovery is degraded/unavailable; retaining indefinitely (snapshot blocked)")
+			retained = append(retained, pt)
+			continue // unobservable surface is never a trusted absence
+		}
+		pr, existed := oldPending[key]
+		if !existed {
+			pr = pendingRemoval{
+				wt:         pt,
+				since:      now,
+				generation: generation,
+				reason:     "catalog no longer serves a still-selected type",
+			}
+			m.logAbsence(cand.GitDest, pt, "watched type absent; holding removal")
+		}
+		if now.Sub(pr.since) >= grace {
+			m.logAbsence(cand.GitDest, pt, "watched type absence persisted past grace; removing")
+			continue // grace elapsed -> the absence is trusted, allow the removal
+		}
+		retained = append(retained, pt)
+		pending[key] = pr
+	}
+	return retained, pending
+}
+
+// logReappearances emits the edge log for every held type the candidate now serves
+// again, so a recovered wobble is observable. The actual clearing of the hold is
+// implicit: a reappeared type is in the candidate, so holdAbsentTypes never re-adds it
+// to the pending set.
+func (m *Manager) logReappearances(cand WatchedTypeTable, oldPending map[typeKey]pendingRemoval) {
+	if len(oldPending) == 0 {
+		return
+	}
+	candByKey := indexTypesByKey(cand.Types)
+	for key, pr := range oldPending {
+		if _, present := candByKey[key]; present {
+			m.logAbsence(cand.GitDest, pr.wt, "watched type reappeared; clearing pending removal")
+		}
+	}
+}
+
+// logAbsence emits one persistent-absence edge log identifying the GitTarget and type.
+func (m *Manager) logAbsence(gitDest types.ResourceReference, wt WatchedType, msg string) {
+	m.Log.Info(msg,
+		"gitTarget", gitDest.String(),
+		"gvk", wt.GVK.String(),
+		"gvr", wt.GVR.String(),
+		"scope", string(wt.Scope))
+}
+
+// watchedTypeKey projects a WatchedType onto its absence-tracking identity.
+func watchedTypeKey(wt WatchedType) typeKey {
+	return typeKey{gvk: wt.GVK, gvr: wt.GVR, scope: wt.Scope}
+}
+
+// indexTypesByKey indexes a type slice by its absence-tracking identity.
+func indexTypesByKey(watched []WatchedType) map[typeKey]WatchedType {
+	out := make(map[typeKey]WatchedType, len(watched))
+	for _, wt := range watched {
+		out[watchedTypeKey(wt)] = wt
+	}
+	return out
+}
+
+// pendingRemovalList renders the grace-timer map as the table's stable, sorted
+// PendingRemovals slice.
+func pendingRemovalList(pending map[typeKey]pendingRemoval) []PendingRemoval {
+	out := make([]PendingRemoval, 0, len(pending))
+	for _, pr := range pending {
+		out = append(out, PendingRemoval{Type: pr.wt, Since: pr.since, Reason: pr.reason})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return gvkSortKey(out[i].Type.GVK) < gvkSortKey(out[j].Type.GVK)
+	})
+	return out
+}
+
+// pendingRemovalSummary renders the held types for the snapshot fail-closed error,
+// naming each GVK so a blocked gather log says exactly which wobbling types caused it.
+func pendingRemovalSummary(pending []PendingRemoval) string {
+	parts := make([]string, 0, len(pending))
+	for _, pr := range pending {
+		parts = append(parts, pr.Type.GVK.String())
+	}
+	if len(parts) == 1 {
+		return "watched type " + parts[0]
+	}
+	return fmt.Sprintf("%d watched types [%s]", len(parts), strings.Join(parts, ", "))
+}
+
+// rulesStillSelectWatchedType reports whether the GitTarget's raw compiled rules still
+// name the given watched type, using rule intent alone — never the catalog. This is what
+// separates an explicit untrack (the user edited the rules so nothing selects the type
+// any more -> remove immediately) from a catalog wobble (the rules still select it, the
+// apiserver momentarily stopped serving it -> hold under grace). Matching is by the
+// type's group/version/resource plus its cluster-wide-vs-namespaced shape: a cluster-wide
+// type can only be (re)produced by a ClusterWatchRule at the same scope; a per-namespace
+// type can only be (re)produced by a WatchRule in one of the namespaces it was gathered
+// under.
+func (m *Manager) rulesStillSelectWatchedType(gitDest types.ResourceReference, wt WatchedType) bool {
+	if m.RuleStore == nil {
+		return false
+	}
+	if wt.ClusterWide() {
+		return m.clusterRulesSelectType(gitDest, wt)
+	}
+	return m.watchRulesSelectType(gitDest, wt)
+}
+
+func (m *Manager) clusterRulesSelectType(gitDest types.ResourceReference, wt WatchedType) bool {
+	for _, rule := range m.RuleStore.SnapshotClusterWatchRules() {
+		if types.NewResourceReference(rule.GitTargetRef, rule.GitTargetNamespace).Key() != gitDest.Key() {
+			continue
+		}
+		for _, rr := range rule.Rules {
+			if rr.Scope == wt.Scope && resourceRuleSelectsType(rr.APIGroups, rr.APIVersions, rr.Resources, wt) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (m *Manager) watchRulesSelectType(gitDest types.ResourceReference, wt WatchedType) bool {
+	for _, rule := range m.RuleStore.SnapshotWatchRules() {
+		if types.NewResourceReference(rule.GitTargetRef, rule.GitTargetNamespace).Key() != gitDest.Key() {
+			continue
+		}
+		// A WatchRule scopes its resources to its own namespace, so it only keeps a
+		// per-namespace type selected if it lives in a namespace that type was gathered
+		// under.
+		if _, ok := wt.NamespaceOps[rule.Source.Namespace]; !ok {
+			continue
+		}
+		for _, rr := range rule.ResourceRules {
+			if resourceRuleSelectsType(rr.APIGroups, rr.APIVersions, rr.Resources, wt) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// resourceRuleSelectsType reports whether one rule's (apiGroups, apiVersions, resources)
+// selector names the watched type's GVR. Group/version selectors follow the resolver's
+// semantics — empty or "*" matches anything — while the resource must be named explicitly
+// or with "*", since a rule never selects every resource implicitly.
+func resourceRuleSelectsType(groups, versions, resources []string, wt WatchedType) bool {
+	return matchLookupValue(groups, wt.GVR.Group) &&
+		matchLookupValue(versions, wt.GVR.Version) &&
+		matchResourceSelector(resources, wt.GVR.Resource)
+}
+
+func matchResourceSelector(resources []string, resource string) bool {
+	for _, r := range resources {
+		n := normalizeResource(r)
+		if n == "*" || n == resource {
+			return true
+		}
+	}
+	return false
 }
 
 // recordWatchedTypeMetrics publishes the basic per-GitTarget watched-type gauges (M10)
@@ -114,6 +416,9 @@ func recordWatchedTypeMetrics(previous, current map[string]WatchedTypeTable) {
 		)
 		telemetry.WatchedTypes.Record(ctx, int64(len(table.Types)), attrs)
 		telemetry.WatchedTypeConflicts.Record(ctx, int64(len(table.Conflicts)), attrs)
+		if telemetry.WatchedTypePendingRemovals != nil {
+			telemetry.WatchedTypePendingRemovals.Record(ctx, int64(len(table.PendingRemovals)), attrs)
+		}
 	}
 	for key, table := range previous {
 		if _, ok := current[key]; ok {
@@ -125,6 +430,9 @@ func recordWatchedTypeMetrics(previous, current map[string]WatchedTypeTable) {
 		)
 		telemetry.WatchedTypes.Record(ctx, 0, attrs)
 		telemetry.WatchedTypeConflicts.Record(ctx, 0, attrs)
+		if telemetry.WatchedTypePendingRemovals != nil {
+			telemetry.WatchedTypePendingRemovals.Record(ctx, 0, attrs)
+		}
 	}
 }
 
@@ -153,10 +461,19 @@ func (m *Manager) watchedTypeTableForGitDest(gitDest types.ResourceReference) (W
 }
 
 // allWatchedTypeTables returns every resident table in a stable order, refreshing
-// first under the same change gate. It is the union the informer set, the plan hash,
-// and global visibility derive from.
+// first under the same change gate. It is the once-per-reconcile read the plan hash
+// and the requested-GVR set derive from (and the entry point direct-call tests use).
 func (m *Manager) allWatchedTypeTables() []WatchedTypeTable {
 	m.refreshWatchedTypeTables()
+	return m.residentWatchedTypeTables()
+}
+
+// residentWatchedTypeTables returns the currently published tables WITHOUT triggering a
+// refresh. Callers on the reconcile hot path read this after ReconcileForRuleChange (or
+// the snapshot gather) has already refreshed once, so per-read re-resolution and its
+// refreshMu contention stay off the path that runs per watched type.
+func (m *Manager) residentWatchedTypeTables() []WatchedTypeTable {
+	m.ensureWatchedTypeStore()
 	m.watchedTypes.mu.Lock()
 	out := make([]WatchedTypeTable, 0, len(m.watchedTypes.tables))
 	for _, table := range m.watchedTypes.tables {
@@ -165,6 +482,16 @@ func (m *Manager) allWatchedTypeTables() []WatchedTypeTable {
 	m.watchedTypes.mu.Unlock()
 	sort.Slice(out, func(i, j int) bool { return out[i].GitDest.Key() < out[j].GitDest.Key() })
 	return out
+}
+
+// residentWatchedTypeTable returns one GitTarget's published table without refreshing,
+// for callers that have already refreshed in the same operation.
+func (m *Manager) residentWatchedTypeTable(gitDest types.ResourceReference) (WatchedTypeTable, bool) {
+	m.ensureWatchedTypeStore()
+	m.watchedTypes.mu.Lock()
+	defer m.watchedTypes.mu.Unlock()
+	table, ok := m.watchedTypes.tables[gitDest.Key()]
+	return table, ok
 }
 
 // targetSelections accumulates one GitTarget's resolved selections, destination,
