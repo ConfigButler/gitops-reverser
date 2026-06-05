@@ -31,6 +31,26 @@ import (
 
 const targetReconcileCompletedMetric = "gitopsreverser_target_reconcile_completed_total"
 
+const resyncBackgroundFailuresMetric = "gitopsreverser_resync_background_failures_total"
+
+// recordBackgroundResyncFailure must count a fire-and-forget resync that failed at the
+// worker, labelled per GitTarget, so a silently-recovered failure is observable.
+func TestRecordBackgroundResyncFailure_IncrementsPerGitTarget(t *testing.T) {
+	reader, err := telemetry.InitTestExporter()
+	require.NoError(t, err)
+
+	r := &EventRouter{Log: logr.Discard()}
+	gitDest := types.NewResourceReference("my-target", "my-ns")
+
+	r.recordBackgroundResyncFailure(gitDest)
+	r.recordBackgroundResyncFailure(gitDest)
+
+	value, ok := telemetry.CollectInt64Sum(reader, resyncBackgroundFailuresMetric,
+		map[string]string{"gittarget_namespace": "my-ns", "gittarget_name": "my-target"})
+	require.True(t, ok, "expected a resync_background_failures_total sample")
+	assert.Equal(t, int64(2), value)
+}
+
 // recordTargetReconcileCompleted must increment the per-GitTarget counter and
 // carry the gittarget_* and trigger labels.
 func TestRecordTargetReconcileCompleted_IncrementsPerTrigger(t *testing.T) {

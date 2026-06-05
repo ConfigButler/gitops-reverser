@@ -25,11 +25,14 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/reconcile"
+	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
@@ -208,15 +211,19 @@ func (r *EventRouter) EmitResyncForGitDest(
 // old fire-and-forget snapshot behaviour. The synchronous gather still fails closed, so
 // an unobservable API surface is returned as an error before anything is enqueued.
 //
-// onApplied is invoked exactly once from the background drain with the apply result: nil
-// when the worker committed (or had nothing to do), or an error when the resync failed
-// or timed out. The caller uses it to mark the target delivered ONLY on success, so a
-// failed resync stays pending and is retried — the marking must not race ahead of the
-// apply. A nil onApplied just logs.
+// Delivery is marked by the caller as soon as the resync is ENQUEUED (not when it
+// commits). An earlier version gated delivery on the apply completing, but that turned a
+// slow or failed apply into an unbounded re-resync loop: the target stayed pending, so
+// every subsequent reconcile re-gathered the whole snapshot synchronously, starving the
+// reconcile goroutine and piling resync requests onto the worker. A failed resync is
+// instead recovered by the steady-state live-event path (which writes any subsequent
+// change) and by the next genuine rule-set change, not by re-running the whole snapshot
+// on a tight loop. The worker reply is drained in the background to log the outcome and,
+// on failure/timeout, increment ResyncBackgroundFailuresTotal so the silently-recovered
+// failures are observable/alertable without re-firing the gather.
 func (r *EventRouter) TriggerResyncForGitDest(
 	ctx context.Context,
 	gitDest types.ResourceReference,
-	onApplied func(error),
 ) error {
 	resultCh, err := r.gatherAndEnqueueResync(ctx, gitDest)
 	if err != nil {
@@ -227,21 +234,29 @@ func (r *EventRouter) TriggerResyncForGitDest(
 		case result := <-resultCh:
 			if result.Err != nil {
 				r.Log.Error(result.Err, "background resync failed", "gitDest", gitDest.String())
-			} else {
-				r.logResyncApplied(gitDest, result.Stats)
+				r.recordBackgroundResyncFailure(gitDest)
+				return
 			}
-			if onApplied != nil {
-				onApplied(result.Err)
-			}
+			r.logResyncApplied(gitDest, result.Stats)
 		case <-time.After(resyncSignalTimeout):
-			timeoutErr := fmt.Errorf("timed out resyncing %s", gitDest.String())
-			r.Log.Error(timeoutErr, "background resync timed out", "gitDest", gitDest.String())
-			if onApplied != nil {
-				onApplied(timeoutErr)
-			}
+			r.Log.Error(nil, "background resync timed out", "gitDest", gitDest.String())
+			r.recordBackgroundResyncFailure(gitDest)
 		}
 	}()
 	return nil
+}
+
+// recordBackgroundResyncFailure counts a fire-and-forget resync whose apply failed or
+// timed out at the worker, so the failure is observable even though delivery was already
+// marked on enqueue. No-op until the counter is registered.
+func (r *EventRouter) recordBackgroundResyncFailure(gitDest types.ResourceReference) {
+	if telemetry.ResyncBackgroundFailuresTotal == nil {
+		return
+	}
+	telemetry.ResyncBackgroundFailuresTotal.Add(context.Background(), 1, metric.WithAttributes(
+		attribute.String("gittarget_namespace", gitDest.Namespace),
+		attribute.String("gittarget_name", gitDest.Name),
+	))
 }
 
 // gatherAndEnqueueResync resolves the GitTarget's worker, gathers the revision-pinned

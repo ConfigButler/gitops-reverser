@@ -716,12 +716,19 @@ dependency; it does not exist yet. Independent of Track A.
 >    rebinding — the review's findings 2 and 3), the destination is fixed. This removes
 >    that whole bug class instead of handling it, and keeps the "SnapshotSynced ⇒ skip"
 >    gate correct (a successful snapshot can never be silently invalidated).
-> 12. **A rule-change resync is marked delivered only after it APPLIES.** Because the
->    rule-change path is fire-and-forget, `TriggerResyncForGitDest` carries an
->    apply-completion callback; the rule-set hash is marked delivered (and the reconcile
->    counter incremented) only on a successful apply, so a failed/timed-out resync stays
->    pending and the next reconcile retries it — the marking never races ahead of the
->    commit.
+> 12. **A rule-change resync is marked delivered on ENQUEUE, not on apply — deliberately.**
+>    The review's finding 1 (mark delivered only after the apply commits, so a failed
+>    resync retries) was tried and reverted: gating delivery on the apply turned a slow or
+>    failed apply into an unbounded re-resync loop. Because the target stayed pending,
+>    every subsequent reconcile re-gathered the whole snapshot *synchronously* (a
+>    cluster-wide CRD target re-streamed dozens of objects each pass), starving the single
+>    reconcile goroutine and piling resync requests onto the worker until commits stopped
+>    landing — the e2e went from green to five timeouts. Delivery is therefore marked once
+>    the resync is enqueued; a failed resync is recovered by the steady-state live-event
+>    path (which writes any later change) and the next genuine rule-set change, not by
+>    re-running the whole snapshot on a tight loop. The lesson: a *synchronous* gather on
+>    the reconcile goroutine must never be put behind a condition that can re-fire it every
+>    pass.
 > 13. **Resync stats are counted from the apply, not the plan.** `applyUpsert` reports
 >    create/update/no-change, so a sensitive (SOPS) resource — `PlanSkip` in the plan but
 >    re-encrypted and committed by the apply — is reported as Updated, not Skipped, and is
@@ -777,7 +784,8 @@ half-done: the path-derived two-snapshot GVR diff (`FolderReconciler.findDiffere
 over `listResourceIdentifiersInPath` / `parseIdentifierFromPath`) and the whole
 `internal/events` handshake are deleted, and the snapshot is now one revision-pinned
 streaming-list watch (`StreamClusterSnapshotForGitDest`, `sendInitialEvents`, no
-`LIST+WATCH` fallback) folded over the content-derived store and mark-and-swept by
+`LIST+WATCH` steady-state path — only a per-type LIST fallback for non-streaming servers)
+folded over the content-derived store and mark-and-swept by
 `BuildPlan`. Git identity is exclusively content-derived end to end, so a moved manifest
 is correct on the snapshot path too. That leaves the critical path at **M9 (cross-batch
 cache)**, the last remaining milestone — and the only optimisation work, after

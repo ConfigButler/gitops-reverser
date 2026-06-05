@@ -64,7 +64,8 @@ var (
 
 	// TargetReconcileCompletedTotal counts completed rule-set snapshot reconcile
 	// passes per GitTarget: each increment marks one pass where the streaming-snapshot
-	// resync was applied at the branch worker. Labelled by {gittarget_namespace,
+	// resync was gathered and ENQUEUED on the branch worker (not waited on to commit —
+	// see Manager.recordTargetReconcileCompleted). Labelled by {gittarget_namespace,
 	// gittarget_name, trigger} where trigger is `rule_change` (the GVR/rule reconcile
 	// path). A counter, not a
 	// latched gauge, on purpose: a counter resets to 0 on a fresh pod, so a
@@ -90,6 +91,16 @@ var (
 	// TargetReconcileCompletedTotal). Load-bearing for the restart-snapshot e2e
 	// spec's drain wait; treat the name/labels as a public observability contract.
 	BranchWorkerQueueDepth metric.Int64Gauge
+
+	// ResyncBackgroundFailuresTotal counts rule-change resyncs whose apply failed or
+	// timed out at the worker AFTER being enqueued. Delivery is marked on enqueue (the
+	// resync is fire-and-forget to avoid an unbounded re-gather loop — see
+	// Manager.recordTargetReconcileCompleted), so a failed background apply is otherwise
+	// only logged. This counter makes those failures observable/alertable without
+	// triggering an immediate re-gather. Labelled by {gittarget_namespace,
+	// gittarget_name}; a sustained increase means snapshots are not committing and the
+	// folder is relying on steady-state events to catch up.
+	ResyncBackgroundFailuresTotal metric.Int64Counter
 
 	// WatchDuplicatesSkippedTotal counts watch events skipped due to duplicate sanitized content.
 	WatchDuplicatesSkippedTotal metric.Int64Counter
@@ -266,6 +277,7 @@ func registerInstruments() error {
 		{"gitopsreverser_secret_encryption_cache_hits_total", &SecretEncryptionCacheHitsTotal},
 		{"gitopsreverser_secret_encryption_marker_skips_total", &SecretEncryptionMarkerSkipsTotal},
 		{"gitopsreverser_target_reconcile_completed_total", &TargetReconcileCompletedTotal},
+		{"gitopsreverser_resync_background_failures_total", &ResyncBackgroundFailuresTotal},
 	}
 	for _, s := range counters {
 		v, err := otelMeter.Int64Counter(s.name)

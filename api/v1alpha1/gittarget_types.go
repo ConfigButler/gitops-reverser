@@ -54,7 +54,7 @@ type GitProviderReference struct {
 //
 // +kubebuilder:validation:XValidation:rule="self.providerRef == oldSelf.providerRef",message="spec.providerRef is immutable; delete and recreate the GitTarget to change its destination"
 // +kubebuilder:validation:XValidation:rule="self.branch == oldSelf.branch",message="spec.branch is immutable; delete and recreate the GitTarget to change its destination"
-// +kubebuilder:validation:XValidation:rule="!has(self.path) && !has(oldSelf.path) || (has(self.path) && has(oldSelf.path) && self.path == oldSelf.path)",message="spec.path is immutable; delete and recreate the GitTarget to change its destination"
+// +kubebuilder:validation:XValidation:rule="self.path == oldSelf.path",message="spec.path is immutable; delete and recreate the GitTarget to change its destination"
 type GitTargetSpec struct {
 	// ProviderRef references the GitProvider or Flux GitRepository.
 	// Immutable: delete and recreate the GitTarget to change its destination.
@@ -67,9 +67,12 @@ type GitTargetSpec struct {
 	// +required
 	Branch string `json:"branch"`
 
-	// Path within the repository to write resources to.
+	// Path within the repository to write resources to. An empty path means the
+	// repository root; it defaults to "" so an absent path and an explicit "" are the
+	// same destination and the immutability check treats them identically.
 	// Immutable: delete and recreate the GitTarget to change its destination.
 	// +optional
+	// +kubebuilder:default=""
 	Path string `json:"path,omitempty"`
 
 	// Encryption defines encryption settings for Secret resource writes.

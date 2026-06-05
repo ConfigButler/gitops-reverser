@@ -130,8 +130,11 @@ spec:
                 - provider
                 type: object
               path:
+                default: ""
                 description: |-
-                  Path within the repository to write resources to.
+                  Path within the repository to write resources to. An empty path means the
+                  repository root; it defaults to "" so an absent path and an explicit "" are the
+                  same destination and the immutability check treats them identically.
                   Immutable: delete and recreate the GitTarget to change its destination.
                 type: string
               providerRef:
@@ -168,8 +171,7 @@ spec:
               rule: self.branch == oldSelf.branch
             - message: spec.path is immutable; delete and recreate the GitTarget to
                 change its destination
-              rule: '!has(self.path) && !has(oldSelf.path) || (has(self.path) && has(oldSelf.path)
-                && self.path == oldSelf.path)'
+              rule: self.path == oldSelf.path
           status:
             description: status defines the observed state of GitTarget
             properties:

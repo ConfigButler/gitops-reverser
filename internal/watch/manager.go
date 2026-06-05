@@ -1165,15 +1165,15 @@ func (m *Manager) beginReconciliationForTargets(targets []ruleSetSnapshotTarget,
 // complete watched set is gathered via the streaming-list watch and applied at the
 // worker as a content-derived mark-and-sweep.
 //
-// A target is marked delivered and counted only once its resync has actually been
-// APPLIED at the worker — the rule-change resync is fire-and-forget, so the marking
-// rides the apply-completion callback, not the enqueue. A gather failure (returned
-// synchronously) or an apply failure (delivered via the callback) leaves that target
-// pending so the next reconcile retries it, rather than marking a target delivered for a
-// resync that never committed. A gather error is also returned so the caller requeues
-// promptly — which matters for the per-pod restart gate that blocks on the reconcile
-// counter reaching the new pod. Other targets in the batch are still attempted so one
-// bad target cannot starve the rest.
+// A target is marked delivered and counted once its resync has been ENQUEUED at the
+// worker (the rule-change resync is fire-and-forget). Delivery is deliberately NOT gated
+// on the apply committing: doing so turned a slow or failed apply into an unbounded
+// re-resync loop that re-gathered the whole snapshot every reconcile and starved the
+// reconcile goroutine (see TriggerResyncForGitDest). A gather failure is returned
+// synchronously so the caller requeues promptly — which matters for the per-pod restart
+// gate that blocks on the reconcile counter reaching the new pod — and leaves the target
+// pending for retry. Other targets in the batch are still attempted so one bad target
+// cannot starve the rest.
 func (m *Manager) emitSnapshotForRuleChange(
 	ctx context.Context,
 	log logr.Logger,
@@ -1192,17 +1192,6 @@ func (m *Manager) emitSnapshotForRuleChange(
 	var errs []error
 	for _, target := range targets {
 		gitDest := target.gitDest
-		delivered := target // capture for the apply-completion callback
-		// Mark delivered + count the reconcile only once the worker has actually applied
-		// this resync. A failed/timed-out apply leaves the target pending so the next
-		// reconcile retries it.
-		onApplied := func(applyErr error) {
-			if applyErr != nil {
-				return
-			}
-			m.markRuleSetSnapshotDelivered(delivered)
-			m.recordTargetReconcileCompleted(gitDest, trigger)
-		}
 		// One content-derived, mark-and-sweep resync per target: gather the streaming
 		// snapshot and enqueue it at the worker without blocking on the commit, so many
 		// targets' commits proceed in parallel. A target whose GitTarget no longer exists
@@ -1210,7 +1199,7 @@ func (m *Manager) emitSnapshotForRuleChange(
 		// it must not poison the batch into a requeue storm. A target whose worker is not
 		// yet live, or whose snapshot could not be gathered, is left pending and retried
 		// by the next reconcile, exactly as the old two-snapshot path left it pending.
-		if err := m.EventRouter.TriggerResyncForGitDest(ctx, gitDest, onApplied); err != nil {
+		if err := m.EventRouter.TriggerResyncForGitDest(ctx, gitDest); err != nil {
 			if apierrors.IsNotFound(err) {
 				log.V(1).Info("GitTarget no longer exists; skipping resync", "gitDest", gitDest.String())
 				continue
@@ -1219,6 +1208,12 @@ func (m *Manager) emitSnapshotForRuleChange(
 			errs = append(errs, fmt.Errorf("resync %s: %w", gitDest, err))
 			continue
 		}
+		// Mark delivered + count the reconcile once the resync is ENQUEUED. Gating this
+		// on the apply completing caused an unbounded re-resync loop (see
+		// TriggerResyncForGitDest); a failed apply is recovered by steady-state events and
+		// the next rule-set change, not by re-running the whole snapshot every reconcile.
+		m.markRuleSetSnapshotDelivered(target)
+		m.recordTargetReconcileCompleted(gitDest, trigger)
 		emitted = true
 	}
 	if emitted {
@@ -1228,13 +1223,17 @@ func (m *Manager) emitSnapshotForRuleChange(
 }
 
 // recordTargetReconcileCompleted increments the per-GitTarget reconcile counter
-// once its snapshot decision has been made and the resulting write request
-// submitted to the branch worker, tagged with the trigger that drove the pass.
-// On a controller restart the new pod's counter starts at 0, so a per-pod
-// `{pod="<new>"} > 0` reading is the signal that the new pod's snapshot
-// reconcile reached the git write path — paired with a drained
-// BranchWorkerQueueDepth it proves the post-restart snapshot has fully landed.
-// No-op until the counter is registered.
+// once its snapshot decision has been made and the resync ENQUEUED on the branch
+// worker, tagged with the trigger that drove the pass. It deliberately does NOT wait
+// for the commit (see emitSnapshotForRuleChange / TriggerResyncForGitDest), so the
+// counter measures "the new pod gathered the snapshot and submitted it to the worker
+// queue", not "the commit landed in git". On a controller restart the new pod's counter
+// starts at 0, so a per-pod `{pod="<new>"} > 0` reading shows the new pod reached the
+// submit step; paired with a drained BranchWorkerQueueDepth it shows the worker then
+// processed everything it was handed. The apply itself can still fail (the worker logs
+// it and the steady-state path / next rule change recovers), so a rollout gate built on
+// this must accept "gathered + enqueued + queue drained", not "every snapshot commit
+// succeeded". No-op until the counter is registered.
 func (m *Manager) recordTargetReconcileCompleted(gitDest types.ResourceReference, trigger string) {
 	if telemetry.TargetReconcileCompletedTotal == nil {
 		return
