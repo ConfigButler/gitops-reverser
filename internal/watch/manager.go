@@ -495,8 +495,11 @@ func (m *Manager) ReconcileForRuleChange(ctx context.Context) error {
 
 	log.V(1).Info("Computed GVRs for reconciliation", "requested", len(requestedGVRs))
 
-	// Determine what changed
-	added, removed := m.compareGVRs(requestedGVRs)
+	// Determine what changed. Removal is namespace-granular: obsolete is the exact
+	// (GVR, namespace) informers to tear down, so a narrowed scope (a namespace dropped,
+	// or a switch between namespaced and cluster-wide) does not leave the old informer
+	// running alongside the new one.
+	added, obsolete := m.compareGVRs(requestedGVRs)
 
 	// Log current active count for debugging
 	m.informersMu.Lock()
@@ -504,7 +507,7 @@ func (m *Manager) ReconcileForRuleChange(ctx context.Context) error {
 	m.informersMu.Unlock()
 
 	targets := m.snapshotTargetsNeedingDelivery()
-	if len(added) == 0 && len(removed) == 0 && len(targets) == 0 {
+	if len(added) == 0 && len(obsolete) == 0 && len(targets) == 0 {
 		log.V(1).Info("No GVR changes detected, skipping reconciliation",
 			"activeGVRs", activeCount)
 		return nil
@@ -512,12 +515,12 @@ func (m *Manager) ReconcileForRuleChange(ctx context.Context) error {
 
 	log.Info("GVR changes detected",
 		"added", len(added),
-		"removed", len(removed),
+		"obsolete", len(obsolete),
 		"activeGVRs", activeCount)
 
-	// Stop informers for removed GVRs
-	for _, gvr := range removed {
-		m.stopInformer(gvr)
+	// Stop obsolete (GVR, namespace) informers.
+	for _, gn := range obsolete {
+		m.stopInformerNamespace(gn.gvr, gn.ns)
 	}
 
 	// Put affected GitTarget event streams into RECONCILING state BEFORE starting new
@@ -534,7 +537,7 @@ func (m *Manager) ReconcileForRuleChange(ctx context.Context) error {
 	}
 
 	// Clear deduplication cache for changed GVRs to prevent false duplicates
-	m.clearDeduplicationCacheForGVRs(append(added, removed...))
+	m.clearDeduplicationCacheForGVRs(changedInformerGVRs(added, obsolete))
 
 	// Run one streaming-snapshot resync per affected GitTarget so a single
 	// "reconcile: sync N resources" commit is produced instead of N individual
@@ -558,14 +561,18 @@ func (m *Manager) ReconcileForRuleChange(ctx context.Context) error {
 
 	log.V(1).Info("Watch manager reconciliation completed",
 		"addedGVRs", len(added),
-		"removedGVRs", len(removed))
+		"obsoleteInformers", len(obsolete))
 
 	return nil
 }
 
-// compareGVRs returns (added, removed) GVRs compared to current active set.
-// Now handles GVR+namespace combinations properly.
-func (m *Manager) compareGVRs(desired []GVR) ([]GVR, []GVR) {
+// compareGVRs compares the desired (GVR, namespace) surface against the active
+// informers. It returns the GVRs that need an informer started (some desired namespace
+// is not yet active) and the exact (GVR, namespace) informers that are now obsolete.
+// Removal is namespace-granular so a narrowed scope — a dropped namespace, or a switch
+// between namespaced and cluster-wide — tears down the old informer instead of leaving
+// it running alongside the new one.
+func (m *Manager) compareGVRs(desired []GVR) ([]GVR, []gvrNamespace) {
 	m.informersMu.Lock()
 	defer m.informersMu.Unlock()
 
@@ -577,11 +584,31 @@ func (m *Manager) compareGVRs(desired []GVR) ([]GVR, []GVR) {
 	// Build map of desired GVR -> namespaces
 	desiredGVRNamespaces := m.buildDesiredGVRNamespaces(desired)
 
-	// Find added and removed GVRs
+	// Find added GVRs and obsolete (GVR, namespace) informers.
 	added := m.findAddedGVRs(desiredGVRNamespaces)
-	removed := m.findRemovedGVRs(desiredGVRNamespaces)
+	obsolete := m.findObsoleteInformers(desiredGVRNamespaces)
 
-	return added, removed
+	return added, obsolete
+}
+
+// changedInformerGVRs is the deduplicated set of GVRs touched by a reconcile (started or
+// torn down), used to clear the content-dedup cache for exactly those types.
+func changedInformerGVRs(added []GVR, obsolete []gvrNamespace) []GVR {
+	seen := make(map[GVR]struct{}, len(added)+len(obsolete))
+	out := make([]GVR, 0, len(added)+len(obsolete))
+	for _, gvr := range added {
+		if _, ok := seen[gvr]; !ok {
+			seen[gvr] = struct{}{}
+			out = append(out, gvr)
+		}
+	}
+	for _, gn := range obsolete {
+		if _, ok := seen[gn.gvr]; !ok {
+			seen[gn.gvr] = struct{}{}
+			out = append(out, gn.gvr)
+		}
+	}
+	return out
 }
 
 // buildDesiredGVRNamespaces constructs a map of desired GVR to their namespaces.
@@ -640,17 +667,22 @@ func (m *Manager) hasNewNamespaces(gvr GVR, desiredNS map[string]bool) bool {
 	return false
 }
 
-// findRemovedGVRs identifies GVRs that should be removed.
-func (m *Manager) findRemovedGVRs(desiredGVRNamespaces map[GVR]map[string]bool) []GVR {
-	var removed []GVR
+// findObsoleteInformers identifies the active (GVR, namespace) informers no longer in
+// the desired surface — a whole GVR removed, or just a namespace scope narrowed. A nil
+// desiredNS (the GVR is entirely undesired) reports every active namespace obsolete.
+func (m *Manager) findObsoleteInformers(desiredGVRNamespaces map[GVR]map[string]bool) []gvrNamespace {
+	var obsolete []gvrNamespace
 
-	for gvr := range m.activeInformers {
-		if _, exists := desiredGVRNamespaces[gvr]; !exists {
-			removed = append(removed, gvr)
+	for gvr, activeNS := range m.activeInformers {
+		desiredNS := desiredGVRNamespaces[gvr]
+		for ns := range activeNS {
+			if !desiredNS[ns] {
+				obsolete = append(obsolete, gvrNamespace{gvr: gvr, ns: ns})
+			}
 		}
 	}
 
-	return removed
+	return obsolete
 }
 
 // getNamespacesForGVRUnlocked is like getNamespacesForGVR but assumes informersMu is already held.
@@ -661,20 +693,27 @@ func (m *Manager) getNamespacesForGVRUnlocked(g GVR) []string {
 	return m.getNamespacesForGVR(g)
 }
 
-// stopInformer cancels and removes all informers for a specific GVR (across all namespaces).
-func (m *Manager) stopInformer(gvr GVR) {
+// stopInformerNamespace cancels one (GVR, namespace) informer and drops it from the
+// active set, removing the GVR entry once its last namespace stops. It is idempotent: a
+// concurrent reconcile may have already stopped the same informer.
+func (m *Manager) stopInformerNamespace(gvr GVR, ns string) {
 	m.informersMu.Lock()
 	defer m.informersMu.Unlock()
 
-	if nsMap, exists := m.activeInformers[gvr]; exists {
-		for ns, cancel := range nsMap {
-			cancel() // Stop the informer
-			m.Log.V(1).Info("Stopped informer",
-				"group", gvr.Group,
-				"version", gvr.Version,
-				"resource", gvr.Resource,
-				"namespace", ns)
-		}
+	nsMap, exists := m.activeInformers[gvr]
+	if !exists {
+		return
+	}
+	if cancel, ok := nsMap[ns]; ok {
+		cancel() // Stop the informer
+		delete(nsMap, ns)
+		m.Log.V(1).Info("Stopped informer",
+			"group", gvr.Group,
+			"version", gvr.Version,
+			"resource", gvr.Resource,
+			"namespace", ns)
+	}
+	if len(nsMap) == 0 {
 		delete(m.activeInformers, gvr)
 	}
 }

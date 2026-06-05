@@ -28,6 +28,7 @@ import (
 	"github.com/cespare/xxhash/v2"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
@@ -41,7 +42,13 @@ import (
 // and read by the snapshot, informer, and plan-hash paths instead of each
 // re-resolving inline. The fingerprint/generation pair is the change gate: a
 // periodic reconcile that sees neither change reuses the resolved tables.
+//
+// Two locks: refreshMu serializes the whole compute-and-publish so two concurrent
+// refreshes (ReconcileForRuleChange runs from both watch-rule controllers and the
+// manager loop) cannot have a slow older resolution overwrite a newer one; mu
+// guards the published fields for concurrent readers.
 type watchedTypeStore struct {
+	refreshMu  sync.Mutex
 	mu         sync.Mutex
 	tables     map[string]WatchedTypeTable
 	generation uint64
@@ -55,11 +62,19 @@ type watchedTypeStore struct {
 // or upgraded). A periodic reconcile with neither change reuses the tables, which
 // is what keeps re-resolution off the hot path. Callers must have refreshed the
 // catalog first so the generation read here reflects the latest discovery.
+//
+// The whole compute-and-publish runs under refreshMu, so refreshes are serialized:
+// a slow older resolution can never overwrite a table a newer resolution already
+// published. Because refreshes complete in order, the final published state always
+// reflects the most recent (generation, fingerprint) any refresh observed.
 func (m *Manager) refreshWatchedTypeTables() {
+	m.ensureWatchedTypeStore()
+	m.watchedTypes.refreshMu.Lock()
+	defer m.watchedTypes.refreshMu.Unlock()
+
 	generation := m.apiResourceCatalog().Generation()
 	fingerprint := m.rulesFingerprint()
 
-	m.ensureWatchedTypeStore()
 	m.watchedTypes.mu.Lock()
 	upToDate := m.watchedTypes.resolved &&
 		m.watchedTypes.generation == generation &&
@@ -195,8 +210,34 @@ func (m *Manager) resolveWatchedTypeTables(generation uint64) map[string]Watched
 		table.Dest = ts.dest
 		table.Misses = ts.misses
 		tables[key] = table
+		m.logTypeConflicts(table)
 	}
 	return tables
+}
+
+// logTypeConflicts surfaces every GVK refused for the GVK<->GVR 1:1 assumption, so a
+// type that is silently not watched because a kind is served by more than one resource
+// is loud rather than invisible. This is the M10 observability surface for the refusal
+// (paired with the gitopsreverser_watched_type_conflicts gauge); a bounded per-GitTarget
+// status roll-up follows in M11.
+func (m *Manager) logTypeConflicts(table WatchedTypeTable) {
+	for _, conflict := range table.Conflicts {
+		m.Log.Info("refusing to watch a type: its GVK resolves to more than one served "+
+			"resource (GitOps Reverser requires GVK<->GVR to be 1:1) — disambiguate the watch "+
+			"rules or fix the cluster API surface",
+			"gitTarget", table.GitDest.String(),
+			"gvk", conflict.GVK.String(),
+			"resources", gvrStrings(conflict.GVRs))
+	}
+}
+
+// gvrStrings renders conflicting GVRs for logging.
+func gvrStrings(gvrs []schema.GroupVersionResource) []string {
+	out := make([]string, len(gvrs))
+	for i, gvr := range gvrs {
+		out[i] = gvr.String()
+	}
+	return out
 }
 
 // collectWatchRuleSelections folds every namespaced WatchRule into its GitTarget's
