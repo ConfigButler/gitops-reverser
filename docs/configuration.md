@@ -6,7 +6,7 @@ steps in the [root README](../README.md).
 The short version:
 
 - `GitProvider` defines where and how to push
-- `GitTarget` defines which branch and path to write into
+- `GitTarget` defines which branch and repository path to write into
 - `WatchRule` defines which namespaced resources should produce Git writes
 - `ClusterWatchRule` does the same for cluster-scoped or cross-namespace watching
 
@@ -36,7 +36,7 @@ resource still needs a `GitTarget` with `spec.encryption` configured before Git 
 The usual flow is:
 
 1. Create a `GitProvider` for repository access and commit behavior.
-2. Create a `GitTarget` that points at that provider plus a branch and path.
+2. Create a `GitTarget` that points at that provider plus a branch and repository path.
 3. Create one or more `WatchRule` or `ClusterWatchRule` objects that point at that target.
 
 That means one repository connection can back multiple targets, and one target can be fed by
@@ -273,7 +273,8 @@ The important fields are:
 
 - `spec.providerRef`: which `GitProvider` backs this target
 - `spec.branch`: which allowed branch to write to
-- `spec.path`: path inside the repository
+- `spec.path`: required relative path inside the repository; use `.` only when you deliberately
+  want the repository root
 - `spec.encryption`: how `Secret` resources should be encrypted before commit
 
 Example:
@@ -290,6 +291,14 @@ spec:
   branch: main
   path: live-cluster
 ```
+
+`spec.path` is required so a target never writes to the repository root by accident. Use a folder
+such as `live-cluster` for the first install. To deliberately target the repository root, set
+`path: "."`. Do not use a leading slash, and do not add a trailing slash.
+
+The target path is authoritative for snapshot reconciliation. A root target can create, update, and
+delete managed manifest files at the repository root, so use `.` only for a repository layout that is
+dedicated to this target.
 
 If you enable `spec.encryption`, that applies to `Secret` resource writes for this target. For SOPS
 and age details, see [sops-age-guide.md](sops-age-guide.md).
@@ -366,6 +375,9 @@ setups.
 Keep using the [root README quickstart](../README.md#quick-start) when you want the fastest install
 path. The chart's `quickstart` values create a starter `GitProvider`, `GitTarget`, and `WatchRule`
 for you.
+
+The starter `GitTarget` writes under `live-cluster` by default. Override
+`quickstart.gitTarget.path=.` only when you want the starter target to own the repository root.
 
 Move to hand-managed resources when you want:
 

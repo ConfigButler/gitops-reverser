@@ -81,7 +81,7 @@ One `(GitProvider, Branch, Path)` triple = one Git write destination.
 Key fields:
 - `spec.providerRef` — reference to a GitProvider in the same namespace
 - `spec.branch` — must match an allowed branch pattern in the provider
-- `spec.path` — subfolder inside the repo for all writes from this target
+- `spec.path` — required relative path inside the repo for all writes from this target; `.` means repo root
 - `spec.encryption` — optional SOPS/age encryption for Secrets
 
 The controller exposes a **four-gate lifecycle** via `status.conditions`:
@@ -467,6 +467,9 @@ Resources are stored following the Kubernetes REST API structure:
 ```
 {spec.path}/{group}/{version}/{resource}/{namespace}/{name}.yaml
 ```
+
+`spec.path` is required. Use a folder path for ordinary setups, and use `.` only when the
+`GitTarget` is meant to own the repository root.
 
 For core API resources (empty group), the group segment is omitted:
 

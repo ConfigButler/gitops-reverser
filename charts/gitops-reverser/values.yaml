@@ -267,6 +267,8 @@ quickstart:
   gitTarget:
     name: example-target
     branch: main
+    # Required relative repository path for the starter GitTarget. The chart
+    # default avoids repo-root writes; set "." only to deliberately target root.
     path: live-cluster
     encryption:
       provider: sops

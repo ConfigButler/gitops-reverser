@@ -169,7 +169,7 @@ nodeSelector:
 | `quickstart.namespace` | Namespace for the starter quickstart resources | `default` |
 | `quickstart.gitProvider.url` | Repository URL used by the starter `GitProvider` | `""` |
 | `quickstart.gitProvider.secretRef.name` | Existing Secret name used by the starter `GitProvider` | `git-creds` |
-| `quickstart.gitTarget.path` | Repository path used by the starter `GitTarget` | `live-cluster` |
+| `quickstart.gitTarget.path` | Repository path used by the starter `GitTarget`; set `.` only to deliberately target the repo root | `live-cluster` |
 | `quickstart.watchRule.rules` | Rules used by the starter `WatchRule` | `configmaps create/update/delete` |
 | `queue.redis.addr` | Redis endpoint (`host:port`) for required durable audit queueing | `valkey:6379` |
 | `queue.redis.auth.existingSecret` | Name of a pre-created Secret holding the Redis password | `valkey-auth` |

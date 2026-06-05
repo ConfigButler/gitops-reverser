@@ -180,6 +180,10 @@ helm upgrade gitops-reverser \
 The default quickstart namespace is `default`, so the `git-creds` Secret above should exist there
 unless you explicitly set `quickstart.namespace` to something else.
 
+The starter `GitTarget` writes under `live-cluster` by default. That keeps the first run away from
+the repository root. To deliberately target the root instead, add
+`--set quickstart.gitTarget.path=.` to the Helm command.
+
 Check that the starter resources become ready:
 
 ```bash

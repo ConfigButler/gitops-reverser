@@ -67,13 +67,17 @@ type GitTargetSpec struct {
 	// +required
 	Branch string `json:"branch"`
 
-	// Path within the repository to write resources to. An empty path means the
-	// repository root; it defaults to "" so an absent path and an explicit "" are the
-	// same destination and the immutability check treats them identically.
+	// Path within the repository to write resources to, relative to the repository
+	// root. Required and must be non-empty — there is no default, so a GitTarget can
+	// never silently write to the repository root. To deliberately target the
+	// repository root, set it to "." (the ArgoCD/Flux convention); an empty string is
+	// rejected because it is too easy to leave blank by accident to be a deliberate
+	// root choice. Any leading slash (absolute path) and ".." are rejected, and a
+	// trailing slash is normalized away.
 	// Immutable: delete and recreate the GitTarget to change its destination.
-	// +optional
-	// +kubebuilder:default=""
-	Path string `json:"path,omitempty"`
+	// +required
+	// +kubebuilder:validation:MinLength=1
+	Path string `json:"path"`
 
 	// Encryption defines encryption settings for Secret resource writes.
 	// +optional

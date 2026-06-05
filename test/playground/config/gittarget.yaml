@@ -8,6 +8,7 @@ spec:
     kind: GitProvider
     name: playground-provider
   branch: main
+  # Keep playground writes under a folder. Use "." only when testing repo-root ownership.
   path: live-cluster
   encryption:
     provider: sops

@@ -90,32 +90,37 @@ var _ = Describe("GitTarget Destination Immutability", func() {
 		}, "spec.providerRef is immutable")
 	})
 
-	It("treats an absent path and an explicit empty path as the same root destination", func() {
+	It("requires a non-empty path: rejects an omitted or empty path but allows an explicit \".\" root", func() {
 		ctx := context.Background()
-		key := types.NamespacedName{Name: "immutable-root-target", Namespace: "default"}
+		key := types.NamespacedName{Name: "root-policy-target", Namespace: "default"}
 
-		// Create with path omitted: it must default to "" (the repo root), not stay absent.
-		gitTarget := &configbutleraiv1alpha1.GitTarget{
+		base := &configbutleraiv1alpha1.GitTarget{
 			ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace},
 			Spec: configbutleraiv1alpha1.GitTargetSpec{
 				ProviderRef: configbutleraiv1alpha1.GitProviderReference{Name: "prov-a", Kind: "GitProvider"},
 				Branch:      "main",
-				// Path omitted.
 			},
 		}
-		Expect(k8sClient.Create(ctx, gitTarget)).Should(Succeed())
-		DeferCleanup(func() { _ = k8sClient.Delete(ctx, gitTarget) })
+
+		// Omitting the path is rejected: with no default, a GitTarget can never silently
+		// write to the repository root.
+		omitted := base.DeepCopy()
+		Expect(k8sClient.Create(ctx, omitted)).ShouldNot(Succeed())
+
+		// An explicit empty string is rejected too: "" is too easy to leave blank by
+		// accident to count as a deliberate root choice.
+		empty := base.DeepCopy()
+		empty.Spec.Path = ""
+		Expect(k8sClient.Create(ctx, empty)).ShouldNot(Succeed())
+
+		// "." is the deliberate, allowed way to target the repository root.
+		root := base.DeepCopy()
+		root.Spec.Path = "."
+		Expect(k8sClient.Create(ctx, root)).Should(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, root) })
 
 		stored := &configbutleraiv1alpha1.GitTarget{}
 		Expect(k8sClient.Get(ctx, key, stored)).To(Succeed())
-		Expect(stored.Spec.Path).To(Equal(""), "an omitted path must default to the empty (root) path")
-
-		// Re-applying with an explicit empty path is a no-op, not an immutable change.
-		Eventually(func(g Gomega) {
-			current := &configbutleraiv1alpha1.GitTarget{}
-			g.Expect(k8sClient.Get(ctx, key, current)).To(Succeed())
-			current.Spec.Path = ""
-			g.Expect(k8sClient.Update(ctx, current)).To(Succeed())
-		}, timeout, interval).Should(Succeed())
+		Expect(stored.Spec.Path).To(Equal("."), "an explicit \".\" must be stored as the root path")
 	})
 })
