@@ -43,6 +43,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
 	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
@@ -976,7 +977,7 @@ func TestEventLoop_AtomicRequest_RespectsCooldownAndUsesNormalPushPath(t *testin
 	loop.stopTimers()
 }
 
-func TestEventLoop_ListResourcesDuringCooldownPreservesDeferredEventCommits(t *testing.T) {
+func TestEventLoop_DeferredEventCommitsAndAtomicDuringCooldownPushTogether(t *testing.T) {
 	worker, serverRepo, _ := setupCommitPushSplitWorker(t)
 	createPlainGitTarget(t, worker, "target-a", "iso-a")
 	createPlainGitTarget(t, worker, "target-b", "iso-b")
@@ -996,17 +997,9 @@ func TestEventLoop_ListResourcesDuringCooldownPreservesDeferredEventCommits(t *t
 		Events:     []Event{configMapTargetEvent("live-b", "bob", "target-b")},
 		CommitMode: CommitModePerEvent,
 	}})
-	require.Len(t, loop.pendingWrites, 2)
+	require.Len(t, loop.pendingWrites, 2,
+		"deferred event commits during cooldown are retained as local commits, not lost")
 	loop.syncQueueDepthMetric()
-
-	resources, err := worker.ListResourcesInPath("iso-b")
-	require.NoError(t, err)
-	resourceNames := make([]string, 0, len(resources))
-	for _, resource := range resources {
-		resourceNames = append(resourceNames, resource.Name)
-	}
-	assert.Contains(t, resourceNames, "live-b",
-		"repo-state reads during cooldown must see retained local commits instead of resetting to remote")
 
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
 		Events:             []Event{configMapEvent("snapshot-only", "reconciler", "")},
@@ -1052,4 +1045,114 @@ func TestEventLoop_AtomicPushFailure_DoesNotAdvanceCooldownOrLosePendingWrite(t 
 
 	assert.True(t, loop.lastPushAt.IsZero(), "failed atomic push must not advance cooldown state")
 	assert.Len(t, loop.pendingWrites, 1, "failed atomic push must retain pending work for retry")
+}
+
+// TestResync_WorkerAppliesMarkAndSweepAndCommits drives a resync through the worker
+// queue end to end: a managed ConfigMap is seeded under the GitTarget path, then a
+// resync whose desired set replaces it with a different resource creates the new one
+// and sweeps the orphaned one — committing once and replying with the plan's stats.
+func TestResync_WorkerAppliesMarkAndSweepAndCommits(t *testing.T) {
+	worker, serverRepo, _ := setupCommitPushSplitWorker(t)
+	worker.mapper = configMapMapper()
+	createPlainGitTarget(t, worker, "target-a", "live")
+
+	initialRef, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
+	require.NoError(t, err)
+	initialHash := initialRef.Hash()
+
+	loop := newBranchWorkerEventLoop(worker, 0)
+	loop.lastPushAt = time.Now()
+
+	// Seed a managed ConfigMap under the GitTarget path with a normal per-event commit.
+	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
+		Events:     []Event{configMapTargetEvent("drop-me", "alice", "target-a")},
+		CommitMode: CommitModePerEvent,
+	}})
+	require.Len(t, loop.pendingWrites, 1)
+
+	// Resync: the cluster now has "keep" and no longer has "drop-me".
+	req := &ResyncRequest{
+		Desired:            []manifestanalyzer.DesiredResource{desiredCM("keep", "blue")},
+		Revision:           "42",
+		GitTargetName:      "target-a",
+		GitTargetNamespace: "default",
+		Result:             make(chan ResyncResult, 1),
+	}
+	loop.handleQueueItem(WorkItem{Resync: req})
+
+	result := <-req.Result
+	require.NoError(t, result.Err)
+	assert.Equal(t, 1, result.Stats.Created, "the new cluster resource is created")
+	assert.Equal(t, 1, result.Stats.Deleted, "the orphaned managed resource is swept")
+	require.Len(t, loop.pendingWrites, 2, "the resync is retained as a second local commit")
+
+	loop.pushPending()
+
+	finalRef, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
+	require.NoError(t, err)
+	commits := commitsAfterHash(t, serverRepo, finalRef.Hash(), initialHash)
+	require.Len(t, commits, 2)
+	assert.Equal(t, "[CREATE] v1/configmaps/drop-me", commits[0].Message)
+	assert.Equal(t, "reconcile: sync 2 resources", commits[1].Message,
+		"the resync commit counts the create and the managed drop")
+
+	loop.stopTimers()
+}
+
+// TestResync_WorkerNoopDoesNotRetainOrPush guards the regression where an empty initial
+// snapshot (no rules yet) still pushed: a no-op resync must not be retained or advance
+// the push cooldown, or it would delay the next real snapshot's push past its window.
+func TestResync_WorkerNoopDoesNotRetainOrPush(t *testing.T) {
+	worker, _, _ := setupCommitPushSplitWorker(t)
+	worker.mapper = configMapMapper()
+	createPlainGitTarget(t, worker, "target-a", "live")
+
+	loop := newBranchWorkerEventLoop(worker, 0)
+	// The worktree under live/ is empty and the desired set is empty: nothing to do.
+	req := &ResyncRequest{
+		GitTargetName:      "target-a",
+		GitTargetNamespace: "default",
+		Result:             make(chan ResyncResult, 1),
+	}
+	loop.handleQueueItem(WorkItem{Resync: req})
+
+	result := <-req.Result
+	require.NoError(t, result.Err)
+	assert.Zero(t, result.Stats.Created)
+	assert.Zero(t, result.Stats.Deleted)
+	assert.Empty(t, loop.pendingWrites, "a no-op resync must not be retained")
+	assert.True(t, loop.lastPushAt.IsZero(), "a no-op resync must not advance the push cooldown")
+
+	loop.stopTimers()
+}
+
+// TestResync_WorkerEmptyDesiredSweepsManagedResource proves the authoritative empty
+// snapshot: a resync with no desired resources sweeps every managed document and
+// commits the deletion.
+func TestResync_WorkerEmptyDesiredSweepsManagedResource(t *testing.T) {
+	worker, _, _ := setupCommitPushSplitWorker(t)
+	worker.mapper = configMapMapper()
+	createPlainGitTarget(t, worker, "target-a", "live")
+
+	loop := newBranchWorkerEventLoop(worker, 0)
+	loop.lastPushAt = time.Now()
+	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
+		Events:     []Event{configMapTargetEvent("orphan", "alice", "target-a")},
+		CommitMode: CommitModePerEvent,
+	}})
+	require.Len(t, loop.pendingWrites, 1)
+
+	req := &ResyncRequest{
+		GitTargetName:      "target-a",
+		GitTargetNamespace: "default",
+		Result:             make(chan ResyncResult, 1),
+	}
+	loop.handleQueueItem(WorkItem{Resync: req})
+
+	result := <-req.Result
+	require.NoError(t, result.Err)
+	assert.Equal(t, 1, result.Stats.Deleted, "an empty desired set sweeps the managed resource")
+	assert.Zero(t, result.Stats.Created)
+
+	loop.stopTimers()
 }

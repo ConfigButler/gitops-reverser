@@ -52,7 +52,6 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/controller"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/queue"
-	"github.com/ConfigButler/gitops-reverser/internal/reconcile"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
@@ -149,12 +148,6 @@ func main() {
 	)
 	fatalIfErr(mgr.Add(workerManager), "unable to add worker manager to manager")
 
-	// Create ReconcilerManager (will be set up as ControlEventEmitter)
-	reconcilerManager := reconcile.NewReconcilerManager(
-		nil, // eventRouter will be set after EventRouter is created
-		ctrl.Log.WithName("reconciler-manager"),
-	)
-
 	// Watch ingestion manager (placeholder, will get EventRouter set later)
 	watchMgr := &watch.Manager{
 		Client:                 mgr.GetClient(),
@@ -164,16 +157,15 @@ func main() {
 		AuditLiveEventsEnabled: true,
 	}
 
-	// Initialize EventRouter with all dependencies
+	// Initialize EventRouter with all dependencies. The streaming-snapshot resync
+	// (M8) is driven directly through the worker, so there is no longer a separate
+	// reconciler manager / two-snapshot handshake.
 	eventRouter := watch.NewEventRouter(
 		workerManager,
-		reconcilerManager,
 		watchMgr,
 		mgr.GetClient(),
 		ctrl.Log.WithName("event-router"),
 	)
-	reconcilerManager.SetEventRouter(eventRouter)
-	reconcilerManager.SetOnReconcilerCreated(watchMgr.MaybeReplaySnapshot)
 
 	// Set EventRouter reference in WatchManager
 	watchMgr.EventRouter = eventRouter

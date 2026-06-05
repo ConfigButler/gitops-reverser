@@ -45,24 +45,6 @@ import (
 	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
-func setupBranchWorkerTest() (*BranchWorker, func()) {
-	scheme := runtime.NewScheme()
-	_ = clientgoscheme.AddToScheme(scheme)
-	_ = configv1alpha1.AddToScheme(scheme)
-	client := fake.NewClientBuilder().WithScheme(scheme).Build()
-	log := logr.Discard()
-
-	worker := NewBranchWorker(client, log, "test-repo", "gitops-system", "main", nil, 0)
-
-	cleanup := func() {
-		if worker.started {
-			worker.Stop()
-		}
-	}
-
-	return worker, cleanup
-}
-
 func TestRepoCacheKey_DeterministicAndDistinct(t *testing.T) {
 	a := repoCacheKey("https://example.com/foo.git")
 	b := repoCacheKey("https://example.com/foo.git")
@@ -72,130 +54,6 @@ func TestRepoCacheKey_DeterministicAndDistinct(t *testing.T) {
 	require.Equal(t, a, b, "same URL should produce same cache key")
 	require.NotEqual(t, a, c, "different URL should produce different cache key")
 	require.Equal(t, a, d, "cache key should ignore surrounding whitespace")
-}
-
-// TestListResourcesInPath_BasicFunctionality verifies ListResourcesInPath can be called.
-func TestListResourcesInPath_BasicFunctionality(t *testing.T) {
-	worker, cleanup := setupBranchWorkerTest()
-	defer cleanup()
-
-	// This test verifies the method can be called without panicking
-	// In a real scenario, this would require setting up a Git repository
-	// For now, we just ensure the method signature and basic flow work
-	_, err := worker.ListResourcesInPath("apps")
-
-	// We expect an error since no GitProvider exists in the fake client
-	// But the important thing is that the method doesn't panic
-	if err == nil {
-		t.Error("Expected error due to missing GitProvider, but got nil")
-	}
-}
-
-// TestListResourcesInPath_WithGitProvider verifies resources are listed correctly.
-func TestListResourcesInPath_WithGitProvider(t *testing.T) {
-	worker, cleanup := setupBranchWorkerTest()
-	defer cleanup()
-
-	// Create a GitProvider in the fake client
-	repoConfig := &configv1alpha1.GitProvider{
-		Spec: configv1alpha1.GitProviderSpec{
-			URL:             "https://github.com/test/repo.git",
-			AllowedBranches: []string{"main"},
-		},
-	}
-	repoConfig.Name = "test-repo"
-	repoConfig.Namespace = "gitops-system"
-
-	err := worker.Client.Create(context.Background(), repoConfig)
-	if err != nil {
-		t.Fatalf("Failed to create GitProvider: %v", err)
-	}
-
-	// Call ListResourcesInPath - with new abstraction, initialization succeeds
-	// but listing resources will return empty list for fake repo
-	resources, err := worker.ListResourcesInPath("apps")
-
-	// With the new abstraction, we expect success but empty resource list
-	if err != nil {
-		t.Logf("Got expected error during fetch: %v", err)
-	} else {
-		// If no error (abstraction handles it gracefully), verify empty list
-		assert.Empty(t, resources, "Should return empty list for fake repository")
-	}
-}
-
-// TestListResourcesInPath_DifferentPaths verifies different paths are handled.
-func TestListResourcesInPath_DifferentPaths(t *testing.T) {
-	worker, cleanup := setupBranchWorkerTest()
-	defer cleanup()
-
-	// Create a GitProvider in the fake client
-	repoConfig := &configv1alpha1.GitProvider{
-		Spec: configv1alpha1.GitProviderSpec{
-			URL:             "https://github.com/test/repo.git",
-			AllowedBranches: []string{"main"},
-		},
-	}
-	repoConfig.Name = "test-repo"
-	repoConfig.Namespace = "gitops-system"
-
-	err := worker.Client.Create(context.Background(), repoConfig)
-	if err != nil {
-		t.Fatalf("Failed to create GitProvider: %v", err)
-	}
-
-	// Test different paths - with new abstraction, method handles them gracefully
-	paths := []string{"apps", "infra", "", "clusters/prod"}
-
-	for _, path := range paths {
-		resources, err := worker.ListResourcesInPath(path)
-
-		// With new abstraction, we either get an error during fetch or empty list
-		if err != nil {
-			t.Logf("Got expected error for path %q: %v", path, err)
-		} else {
-			// Method succeeded - verify it returns empty list for fake repo
-			assert.Empty(t, resources, "Should return empty list for path %q", path)
-		}
-	}
-}
-
-func TestListResourceIdentifiersInPath_PathPrefixParsesAsCoreGroup(t *testing.T) {
-	worker, cleanup := setupBranchWorkerTest()
-	defer cleanup()
-
-	repoPath := t.TempDir()
-	targetPath := "live-cluster"
-
-	resourcePath := filepath.Join(repoPath, targetPath, "v1", "configmaps", "ns1", "oeps3.yaml")
-	require.NoError(t, os.MkdirAll(filepath.Dir(resourcePath), 0o755))
-	require.NoError(t, os.WriteFile(resourcePath, []byte("apiVersion: v1\nkind: ConfigMap\n"), 0o600))
-
-	markerPath := filepath.Join(repoPath, targetPath, ".configbutler")
-	require.NoError(t, os.WriteFile(markerPath, []byte("marker"), 0o600))
-
-	resources, err := worker.listResourceIdentifiersInPath(repoPath, targetPath)
-	require.NoError(t, err)
-	require.Len(t, resources, 1, "marker files should be ignored")
-
-	assert.Empty(t, resources[0].Group)
-	assert.Equal(t, "v1", resources[0].Version)
-	assert.Equal(t, "configmaps", resources[0].Resource)
-	assert.Equal(t, "ns1", resources[0].Namespace)
-	assert.Equal(t, "oeps3", resources[0].Name)
-}
-
-// TestListResourcesInPath_MissingGitProvider verifies proper error when GitProvider is missing.
-func TestListResourcesInPath_MissingGitProvider(t *testing.T) {
-	worker, cleanup := setupBranchWorkerTest()
-	defer cleanup()
-
-	// Don't create GitProvider - should fail
-	_, err := worker.ListResourcesInPath("apps")
-
-	if err == nil {
-		t.Error("Expected error when GitProvider is missing, but got nil")
-	}
 }
 
 // TestBranchWorker_EmptyRepository tests that BranchWorker properly handles empty repositories
@@ -239,17 +97,6 @@ func TestBranchWorker_EmptyRepository(t *testing.T) {
 	assert.False(t, exists, "Branch should not exist remotely for empty repository")
 	assert.Empty(t, sha, "SHA should be empty while branch is unborn")
 	assert.False(t, fetchTime.IsZero(), "Fetch time should be set")
-
-	// Test ListResourcesInPath - should work with empty repo
-	resources, err := worker.ListResourcesInPath("")
-	require.NoError(t, err, "ListResourcesInPath should succeed with empty repository")
-	assert.Empty(t, resources, "Should return empty resources list for empty repository")
-
-	// Verify metadata was updated after ListResourcesInPath
-	exists2, sha2, fetchTime2 := worker.GetBranchMetadata()
-	assert.False(t, exists2, "Branch should remain unborn after listing")
-	assert.Empty(t, sha2, "SHA should remain empty after listing")
-	assert.False(t, fetchTime2.Before(fetchTime), "Fetch time should not move backwards")
 }
 
 // TestBranchWorker_IdentityFields verifies worker identity is set correctly.

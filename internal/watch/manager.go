@@ -31,7 +31,6 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	k8stypes "k8s.io/apimachinery/pkg/types"
@@ -47,7 +46,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
-	"github.com/ConfigButler/gitops-reverser/internal/events"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
 	"github.com/ConfigButler/gitops-reverser/internal/sanitize"
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
@@ -515,137 +513,6 @@ func (m *Manager) matchesResources(resources []string, targetResource string) bo
 	return false
 }
 
-// GetClusterStateForGitDest returns cluster resources for a GitTarget.
-// This is a synchronous service method called by EventRouter.
-// It returns both resource identifiers (for diff logic) and sanitized full objects
-// (keyed by ResourceIdentifier.Key()) for hydrating initial snapshot write events.
-//
-//nolint:gocognit,cyclop,funlen
-func (m *Manager) GetClusterStateForGitDest(
-	ctx context.Context,
-	gitDest types.ResourceReference,
-) ([]types.ResourceIdentifier, map[string]unstructured.Unstructured, error) {
-	log := m.Log.WithValues("gitDest", gitDest.String())
-
-	// Look up GitTarget to get path
-	var gitTargetObj configv1alpha1.GitTarget
-	if err := m.Client.Get(ctx, client.ObjectKey{
-		Name:      gitDest.Name,
-		Namespace: gitDest.Namespace,
-	}, &gitTargetObj); err != nil {
-		return nil, nil, fmt.Errorf("failed to get GitTarget: %w", err)
-	}
-
-	path := gitTargetObj.Spec.Path
-	log = log.WithValues("path", path)
-
-	// Get matching rules
-	wrRules := m.RuleStore.SnapshotWatchRules()
-	cwrRules := m.RuleStore.SnapshotClusterWatchRules()
-
-	// Build a map from GVR to the namespaces that should be listed for it.
-	// WatchRules are namespace-scoped: only list within rule.Source.Namespace.
-	// ClusterWatchRules are cluster-wide: clusterWide=true overrides any namespace set.
-	type gvrEntry struct {
-		namespaces  map[string]struct{}
-		clusterWide bool
-	}
-	gvrMap := make(map[schema.GroupVersionResource]*gvrEntry)
-
-	if err := m.RefreshAPIResourceCatalog(ctx); err != nil {
-		return nil, nil, fmt.Errorf("refresh API resource catalog for %s: %w", gitDest.String(), err)
-	}
-	resolver := m.ruleGVRResolver()
-	var blockingMisses []ResolveMiss
-
-	for _, rule := range wrRules {
-		if rule.GitTargetRef == gitTargetObj.Name &&
-			rule.GitTargetNamespace == gitTargetObj.Namespace {
-			ns := rule.Source.Namespace
-			for _, rr := range rule.ResourceRules {
-				gvrs, miss := m.gvrsFromResourceRule(rr, resolver)
-				blockingMisses = append(blockingMisses, blockingSnapshotMisses(miss)...)
-				for _, gvr := range gvrs {
-					entry := gvrMap[gvr.schema()]
-					if entry == nil {
-						entry = &gvrEntry{namespaces: make(map[string]struct{})}
-						gvrMap[gvr.schema()] = entry
-					}
-					if !entry.clusterWide {
-						entry.namespaces[ns] = struct{}{}
-					}
-				}
-			}
-		}
-	}
-
-	for _, cwrRule := range cwrRules {
-		if cwrRule.GitTargetRef == gitTargetObj.Name &&
-			cwrRule.GitTargetNamespace == gitTargetObj.Namespace {
-			gvrs, miss := m.gvrsFromClusterRule(cwrRule, resolver)
-			blockingMisses = append(blockingMisses, blockingSnapshotMisses(miss)...)
-			for _, gvr := range gvrs {
-				entry := gvrMap[gvr.schema()]
-				if entry == nil {
-					entry = &gvrEntry{namespaces: make(map[string]struct{})}
-					gvrMap[gvr.schema()] = entry
-				}
-				entry.clusterWide = true
-			}
-		}
-	}
-
-	if len(blockingMisses) > 0 {
-		return nil, nil, fmt.Errorf(
-			"aborting cluster snapshot for %s: %s; refusing to snapshot a partial cluster view",
-			gitDest.String(), FormatResolveMisses(blockingMisses),
-		)
-	}
-
-	// Query cluster for these GVRs
-	dc := m.dynamicClientFromConfig(log)
-	if dc == nil {
-		return nil, nil, errors.New("no dynamic client available")
-	}
-
-	var resources []types.ResourceIdentifier
-	objects := make(map[string]unstructured.Unstructured)
-	for gvr, entry := range gvrMap {
-		var namespaces []string
-		if !entry.clusterWide {
-			for ns := range entry.namespaces {
-				namespaces = append(namespaces, ns)
-			}
-		}
-		gvrResources, err := m.listResourcesForGVR(ctx, dc, gvr, namespaces, objects)
-		if err != nil {
-			// A NotFound means the type is no longer served — its CRD/APIService
-			// was removed between catalog resolution and this list. Drop that GVR
-			// and keep going: this is the same condition the resolver already
-			// treats as non-blocking (ResolveMissNotServed) one step earlier, so a
-			// type that vanishes in the resolve→list race must be handled the same
-			// way rather than aborting the whole snapshot (which wedges every
-			// wildcard target whenever any CRD churns). A type that is no longer
-			// served has no live resources to mistake for deletions.
-			if apierrors.IsNotFound(err) {
-				log.Info("Skipping resource type that is no longer served", "gvr", gvr.String())
-				continue
-			}
-			// Any other failed list (a served type we could not read — timeout,
-			// 5xx, connection) yields a partial cluster view. Abort rather than
-			// return it: a missing resource is indistinguishable from a deleted one
-			// and would wipe its tracked files on the next reconcile.
-			return nil, nil, fmt.Errorf(
-				"aborting cluster snapshot for %s: failed to list %s: %w",
-				gitDest.String(), gvr.String(), err)
-		}
-		resources = append(resources, gvrResources...)
-	}
-
-	log.Info("Retrieved cluster state", "resourceCount", len(resources))
-	return resources, objects, nil
-}
-
 // gvrsFromResourceRule returns the GVRs implied by a CompiledResourceRule.
 func (m *Manager) gvrsFromResourceRule(
 	rr rulestore.CompiledResourceRule,
@@ -695,54 +562,6 @@ func uniqueStrings(in []string) []string {
 		out = append(out, s)
 	}
 	return out
-}
-
-// listResourcesForGVR lists resources for a GVR, scoped to the given namespaces.
-// If namespaces is empty, a cluster-wide list is performed (for ClusterWatchRules).
-// Identifiers are returned; sanitized full objects are written into the provided objects map
-// (keyed by ResourceIdentifier.Key()) for hydrating initial snapshot write events.
-func (m *Manager) listResourcesForGVR(
-	ctx context.Context,
-	dc dynamic.Interface,
-	gvr schema.GroupVersionResource,
-	namespaces []string,
-	objects map[string]unstructured.Unstructured,
-) ([]types.ResourceIdentifier, error) {
-	var allItems []unstructured.Unstructured
-
-	if len(namespaces) == 0 {
-		// ClusterWatchRule or cluster-scoped resource: list cluster-wide
-		list, err := dc.Resource(gvr).List(ctx, metav1.ListOptions{})
-		if err != nil {
-			return nil, fmt.Errorf("failed to list %v: %w", gvr, err)
-		}
-		allItems = list.Items
-	} else {
-		// WatchRule: list only in the namespaces that have a matching rule
-		for _, ns := range namespaces {
-			list, err := dc.Resource(gvr).Namespace(ns).List(ctx, metav1.ListOptions{})
-			if err != nil {
-				return nil, fmt.Errorf("failed to list %v in namespace %s: %w", gvr, ns, err)
-			}
-			allItems = append(allItems, list.Items...)
-		}
-	}
-
-	var resources []types.ResourceIdentifier
-	for i := range allItems {
-		obj := &allItems[i]
-		id := types.NewResourceIdentifier(
-			gvr.Group,
-			gvr.Version,
-			gvr.Resource,
-			obj.GetNamespace(),
-			obj.GetName(),
-		)
-		resources = append(resources, id)
-		objects[id.Key()] = *sanitize.Sanitize(obj)
-	}
-
-	return resources, nil
 }
 
 // ReconcileForRuleChange reconciles the watch manager when rules change.
@@ -809,7 +628,7 @@ func (m *Manager) ReconcileForRuleChange(ctx context.Context) error {
 	// Clear deduplication cache for changed GVRs to prevent false duplicates
 	m.clearDeduplicationCacheForGVRs(append(added, removed...))
 
-	// Emit RequestClusterState for each affected GitTarget so that a single
+	// Run one streaming-snapshot resync per affected GitTarget so a single
 	// "reconcile: sync N resources" commit is produced instead of N individual
 	// [CREATE] commits from the informer ADDED events buffered above.
 	deliveryErr := m.emitSnapshotForRuleChange(ctx, log, targets, "rule_change")
@@ -1331,36 +1150,6 @@ func (m *Manager) markRuleSetSnapshotDelivered(target ruleSetSnapshotTarget) {
 	}
 }
 
-// MaybeReplaySnapshot emits a pending rule-change snapshot once a FolderReconciler
-// exists for gitDest. It is called by ReconcilerManager when a reconciler is
-// created; ctx is the originating reconcile context so the replay is cancellable.
-func (m *Manager) MaybeReplaySnapshot(ctx context.Context, gitDest types.ResourceReference) {
-	if m == nil {
-		return
-	}
-
-	key := gitDest.Key()
-	m.ruleSetSnapshotMu.Lock()
-	m.ensureRuleSetSnapshotMapsLocked()
-	hash, pending := m.pendingRuleSetHash[key]
-	lastDelivered := m.lastDeliveredRuleSetHash[key]
-	m.ruleSetSnapshotMu.Unlock()
-
-	if !pending || lastDelivered == hash || m.EventRouter == nil {
-		return
-	}
-
-	target := ruleSetSnapshotTarget{gitDest: gitDest, hash: hash}
-	log := m.Log.WithName("reconcile")
-	m.EventRouter.BeginReconciliationForStream(gitDest)
-	if err := m.emitSnapshotForRuleChange(ctx, log, []ruleSetSnapshotTarget{target}, "startup_replay"); err != nil {
-		// The target stays pending (not marked delivered), so the next reconcile
-		// or replay retries it; just record why this attempt did not land.
-		log.Error(err, "snapshot replay did not complete, leaving target pending", "gitDest", gitDest.String())
-	}
-	m.EventRouter.CompleteReconciliationForStream(gitDest)
-}
-
 func (m *Manager) beginReconciliationForTargets(targets []ruleSetSnapshotTarget, log logr.Logger) {
 	if m.EventRouter == nil {
 		return
@@ -1371,18 +1160,17 @@ func (m *Manager) beginReconciliationForTargets(targets []ruleSetSnapshotTarget,
 	}
 }
 
-// emitSnapshotForRuleChange emits fresh repo and cluster state requests for every affected
-// GitTarget so FolderReconciler diffs against current repository contents rather than a
-// stale cached repo snapshot from an earlier reconcile.
+// emitSnapshotForRuleChange runs one streaming-snapshot resync for every affected
+// GitTarget (M8), replacing the old repo+cluster two-snapshot handshake. Each target's
+// complete watched set is gathered via the streaming-list watch and applied at the
+// worker as a content-derived mark-and-sweep.
 //
-// A target is marked delivered and counted only once *both* its repo- and
-// cluster-state requests land on the worker queue: a partial emission would have
-// the reconciler diff against an incomplete cluster view. A transient failure on
-// either request leaves that target pending and is returned as an error so the
-// caller requeues with backoff and retries it promptly, rather than waiting out
-// the 30s periodic reconcile — which matters for the per-pod restart gate that
-// blocks on the reconcile counter reaching the new pod. Other targets in the
-// batch are still attempted so one bad target cannot starve the rest.
+// A target is marked delivered and counted only once its resync has been applied: a
+// gather/apply failure leaves that target pending and is returned as an error so the
+// caller requeues with backoff and retries it promptly, rather than waiting out the 30s
+// periodic reconcile — which matters for the per-pod restart gate that blocks on the
+// reconcile counter reaching the new pod. Other targets in the batch are still
+// attempted so one bad target cannot starve the rest.
 func (m *Manager) emitSnapshotForRuleChange(
 	ctx context.Context,
 	log logr.Logger,
@@ -1396,35 +1184,25 @@ func (m *Manager) emitSnapshotForRuleChange(
 		}
 		return nil
 	}
-	log.Info("Emitting fresh repo and cluster state for affected GitTargets after rule change", "count", len(targets))
+	log.Info("Resyncing affected GitTargets after rule change", "count", len(targets))
 	emitted := false
 	var errs []error
 	for _, target := range targets {
 		gitDest := target.gitDest
-		if m.EventRouter.ReconcilerManager == nil {
-			log.V(1).Info("ReconcilerManager not set, leaving snapshot pending", "gitDest", gitDest.String())
-			continue
-		}
-		reconciler, exists := m.EventRouter.ReconcilerManager.GetReconciler(gitDest)
-		if !exists {
-			log.V(1).Info("No reconciler registered, leaving snapshot pending", "gitDest", gitDest.String())
-			continue
-		}
-		reconciler.ResetState()
-		if err := m.EventRouter.ProcessControlEvent(ctx, events.ControlEvent{
-			Type:    events.RequestRepoState,
-			GitDest: gitDest,
-		}); err != nil {
-			log.Error(err, "failed to emit RequestRepoState for rule change", "gitDest", gitDest)
-			errs = append(errs, fmt.Errorf("emit RequestRepoState for %s: %w", gitDest, err))
-			continue
-		}
-		if err := m.EventRouter.ProcessControlEvent(ctx, events.ControlEvent{
-			Type:    events.RequestClusterState,
-			GitDest: gitDest,
-		}); err != nil {
-			log.Error(err, "failed to emit RequestClusterState for rule change", "gitDest", gitDest)
-			errs = append(errs, fmt.Errorf("emit RequestClusterState for %s: %w", gitDest, err))
+		// One content-derived, mark-and-sweep resync per target: gather the streaming
+		// snapshot and enqueue it at the worker without blocking on the commit, so many
+		// targets' commits proceed in parallel. A target whose GitTarget no longer exists
+		// is skipped benignly (a rule may briefly outlive its GitTarget during deletion);
+		// it must not poison the batch into a requeue storm. A target whose worker is not
+		// yet live, or whose snapshot could not be gathered, is left pending and retried
+		// by the next reconcile, exactly as the old two-snapshot path left it pending.
+		if err := m.EventRouter.TriggerResyncForGitDest(ctx, gitDest); err != nil {
+			if apierrors.IsNotFound(err) {
+				log.V(1).Info("GitTarget no longer exists; skipping resync", "gitDest", gitDest.String())
+				continue
+			}
+			log.Error(err, "failed to resync GitTarget for rule change", "gitDest", gitDest)
+			errs = append(errs, fmt.Errorf("resync %s: %w", gitDest, err))
 			continue
 		}
 		m.markRuleSetSnapshotDelivered(target)

@@ -63,11 +63,10 @@ var (
 	RepoBranchQueueDepth metric.Int64UpDownCounter
 
 	// TargetReconcileCompletedTotal counts completed rule-set snapshot reconcile
-	// passes per GitTarget: each increment marks one pass where the snapshot
-	// decision was made and its write request submitted to the branch worker
-	// queue. Labelled by {gittarget_namespace, gittarget_name, trigger} where
-	// trigger is `rule_change` (the GVR/rule reconcile path) or `startup_replay`
-	// (a snapshot replayed once a FolderReconciler is created). A counter, not a
+	// passes per GitTarget: each increment marks one pass where the streaming-snapshot
+	// resync was applied at the branch worker. Labelled by {gittarget_namespace,
+	// gittarget_name, trigger} where trigger is `rule_change` (the GVR/rule reconcile
+	// path). A counter, not a
 	// latched gauge, on purpose: a counter resets to 0 on a fresh pod, so a
 	// per-pod `{pod="<new>"} > 0` check after a rollout proves the new pod did
 	// its own reconcile — robust to the old pod's stale series that a Prometheus

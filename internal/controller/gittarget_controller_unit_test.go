@@ -116,7 +116,7 @@ func TestIsConditionTrue(t *testing.T) {
 
 // TestEvaluateSnapshotGate_SkipsWhenSnapshotSynced verifies that when a GitTarget
 // already has SnapshotSynced=True, evaluateSnapshotGate short-circuits and returns
-// ConditionTrue without calling StartReconciliation.
+// ConditionTrue without running another resync.
 //
 // This is the regression guard for Bug 2: an unrelated event (e.g. Flux touching the
 // encryption secret) must not trigger a second cluster snapshot after the first has
@@ -132,14 +132,13 @@ func TestEvaluateSnapshotGate_SkipsWhenSnapshotSynced(t *testing.T) {
 
 	target := makeGitTargetWithCondition(GitTargetConditionSnapshotSynced, metav1.ConditionTrue)
 
-	stream, state, msg, requeue, err := reconciler.evaluateSnapshotGate(
+	stream, state, msg, err := reconciler.evaluateSnapshotGate(
 		context.TODO(), target, "gitops-reverser", noopLogger(),
 	)
 
 	require.NoError(t, err)
 	assert.Equal(t, metav1.ConditionTrue, state, "gate should report SnapshotSynced=True")
 	assert.NotEmpty(t, msg)
-	assert.Zero(t, requeue, "no requeue needed once snapshot is complete")
 	assert.Nil(t, stream, "stream is nil when EventRouter is nil")
 }
 
@@ -157,7 +156,7 @@ func TestEvaluateSnapshotGate_RunsWhenSnapshotNotSynced(t *testing.T) {
 	// the one that fired.
 	target := makeGitTargetWithCondition(GitTargetConditionValidated, metav1.ConditionTrue)
 
-	_, state, _, _, err := reconciler.evaluateSnapshotGate(
+	_, state, _, err := reconciler.evaluateSnapshotGate(
 		context.TODO(), target, "gitops-reverser", noopLogger(),
 	)
 

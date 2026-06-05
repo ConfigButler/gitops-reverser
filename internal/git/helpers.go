@@ -22,7 +22,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"strings"
 
 	gogit "github.com/go-git/go-git/v5"
@@ -33,71 +32,7 @@ import (
 
 	"github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 	"github.com/ConfigButler/gitops-reverser/internal/ssh"
-	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
 )
-
-// Worker configuration constants shared across implementations.
-const (
-	// Path part counts for identifier parsing (avoid magic numbers).
-	minCoreClusterParts                 = 3
-	groupedClusterOrCoreNamespacedParts = 4
-	groupedNamespacedParts              = 5
-)
-
-// parseIdentifierFromPath parses "{group-or-core?}/{version}/{resource}/{namespace?}/{name}.yaml"
-// into a ResourceIdentifier. For core group, the path starts with version (e.g., "v1/...").
-// This is a shared helper used by both old and new worker implementations.
-func parseIdentifierFromPath(p string) (itypes.ResourceIdentifier, bool) {
-	parts := strings.Split(p, "/")
-	// Minimum cluster-scoped core: v1/{resource}/{name}.yaml => 3 parts
-	// Minimum cluster-scoped grouped: {group}/{version}/{resource}/{name}.yaml => 4 parts
-	if len(parts) < minCoreClusterParts {
-		return itypes.ResourceIdentifier{}, false
-	}
-	last := parts[len(parts)-1]
-	name := strings.TrimSuffix(last, filepath.Ext(last))
-	name = strings.TrimSuffix(name, ".sops")
-
-	var group, version, resource, namespace string
-	switch len(parts) {
-	case minCoreClusterParts: // core cluster-scoped: v1/resource/name.yaml
-		group = ""
-		version = parts[0]
-		resource = parts[1]
-		namespace = ""
-	case groupedClusterOrCoreNamespacedParts: // grouped cluster-scoped OR core namespaced
-		// Heuristic: if parts[0] looks like "v1" (starts with 'v' and digits), assume core namespaced is not possible with 4 parts.
-		// For our current mapping, core namespaced has 4 parts: v1/resource/namespace/name.yaml
-		// so handle that first.
-		if strings.HasPrefix(parts[0], "v") { // v1/...
-			group = ""
-			version = parts[0]
-			resource = parts[1]
-			namespace = parts[2]
-		} else {
-			group = parts[0]
-			version = parts[1]
-			resource = parts[2]
-			namespace = "" // cluster-scoped grouped
-		}
-	case groupedNamespacedParts: // grouped namespaced: group/version/resource/namespace/name.yaml
-		group = parts[0]
-		version = parts[1]
-		resource = parts[2]
-		namespace = parts[3]
-	default:
-		// Longer paths are not expected in current mapping
-		return itypes.ResourceIdentifier{}, false
-	}
-
-	return itypes.ResourceIdentifier{
-		Group:     group,
-		Version:   version,
-		Resource:  resource,
-		Namespace: namespace,
-		Name:      name,
-	}, true
-}
 
 // GetAuthFromSecret fetches authentication credentials from the specified secret.
 // This is a public wrapper that can be used by controllers.

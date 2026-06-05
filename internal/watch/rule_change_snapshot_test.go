@@ -266,11 +266,11 @@ func TestCurrentRuleSetSnapshots_NamespacedWatchRulePlanByNamespace(t *testing.T
 		"a redundant duplicate WatchRule in an already-watched namespace must not change the plan hash")
 }
 
-// TestReconcileForRuleChange_NoReconcilerLeavesSnapshotPending verifies that
-// rule-change reconciliation does not emit state events until a FolderReconciler
-// exists. The target remains pending so MaybeReplaySnapshot can retry when the
-// GitTarget reconciler registers the receiver.
-func TestReconcileForRuleChange_NoReconcilerLeavesSnapshotPending(t *testing.T) {
+// TestReconcileForRuleChange_NoWorkerReturnsErrorAndStaysPending verifies that
+// rule-change reconciliation cannot resync a target whose branch worker is not yet
+// live: the resync errors (so the caller requeues and retries promptly), and the
+// target stays pending so the next reconcile resyncs it once the worker exists.
+func TestReconcileForRuleChange_NoWorkerReturnsErrorAndStaysPending(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, clientgoscheme.AddToScheme(scheme))
 	require.NoError(t, configv1alpha1.AddToScheme(scheme))
@@ -313,23 +313,20 @@ func TestReconcileForRuleChange_NoReconcilerLeavesSnapshotPending(t *testing.T) 
 		},
 	}
 
-	// Wire EventRouter with no registered FolderReconciler. This is the state
-	// before the GitTarget controller has created the per-target receiver.
+	// The EventRouter has a worker manager but no worker registered for this target,
+	// the state before the GitTarget controller has ensured its branch worker.
 	manager.EventRouter = &EventRouter{
-		WorkerManager:     git.NewWorkerManager(fakeK8s, logr.Discard(), 0, types.SensitiveResourcePolicy{}),
-		ReconcilerManager: reconcile.NewReconcilerManager(nil, logr.Discard()),
-		WatchManager:      manager,
-		Client:            fakeK8s,
-		Log:               logr.Discard(),
-		gitTargetStreams:  map[string]*reconcile.GitTargetEventStream{},
+		WorkerManager:    git.NewWorkerManager(fakeK8s, logr.Discard(), 0, types.SensitiveResourcePolicy{}),
+		WatchManager:     manager,
+		Client:           fakeK8s,
+		Log:              logr.Discard(),
+		gitTargetStreams: map[string]*reconcile.GitTargetEventStream{},
 	}
 
-	require.NoError(t, manager.ReconcileForRuleChange(ctx()))
-
+	require.Error(t, manager.ReconcileForRuleChange(ctx()),
+		"a resync with no live worker must be returned as an error so the caller requeues")
 	assert.True(t, targetPending(manager, "test-target"),
-		"target must stay pending until a FolderReconciler exists")
-	assert.Zero(t, manager.EventRouter.SnapshotDeliveryDrops(),
-		"state events must not be emitted before a FolderReconciler exists")
+		"the target must stay pending until its worker exists")
 }
 
 // makeTwoTargetRuleChangeManager builds a Manager with two GitTargets,
@@ -603,11 +600,11 @@ func TestSnapshotTargets_RuleRemovalPrunesDeliveredHash(t *testing.T) {
 		"when the target truly has no rules, delivered state is pruned")
 }
 
-// A transient emit failure (here: RequestRepoState fails because no worker is
-// registered) must NOT mark the target delivered or bump the reconcile counter,
-// and must be returned to the caller so it requeues and retries promptly. Before
-// the fix the error was swallowed (counter and delivery were skipped silently),
-// so the per-pod restart gate could wait out its 90s timeout on a one-off error.
+// A transient resync failure (here: no BranchWorker is registered) must NOT mark the
+// target delivered or bump the reconcile counter, and must be returned to the caller
+// so it requeues and retries promptly. Before the fix the error was swallowed (counter
+// and delivery were skipped silently), so the per-pod restart gate could wait out its
+// 90s timeout on a one-off error.
 func TestEmitSnapshotForRuleChange_TransientFailureReturnsErrorAndStaysPending(t *testing.T) {
 	reader, err := telemetry.InitTestExporter()
 	require.NoError(t, err)
@@ -629,17 +626,13 @@ func TestEmitSnapshotForRuleChange_TransientFailureReturnsErrorAndStaysPending(t
 	manager := &Manager{Client: fakeK8s, Log: logr.Discard()}
 	gitDest := types.NewResourceReference("test-target", "test-ns")
 
-	// A FolderReconciler exists (so emission is attempted), but no BranchWorker is
-	// registered, so RequestRepoState fails with "no worker".
-	reconcilerManager := reconcile.NewReconcilerManager(nil, logr.Discard())
-	reconcilerManager.CreateReconciler(ctx(), gitDest, nil)
+	// No BranchWorker is registered, so the resync fails with "no worker".
 	manager.EventRouter = &EventRouter{
-		WorkerManager:     git.NewWorkerManager(fakeK8s, logr.Discard(), 0, types.SensitiveResourcePolicy{}),
-		ReconcilerManager: reconcilerManager,
-		WatchManager:      manager,
-		Client:            fakeK8s,
-		Log:               logr.Discard(),
-		gitTargetStreams:  map[string]*reconcile.GitTargetEventStream{},
+		WorkerManager:    git.NewWorkerManager(fakeK8s, logr.Discard(), 0, types.SensitiveResourcePolicy{}),
+		WatchManager:     manager,
+		Client:           fakeK8s,
+		Log:              logr.Discard(),
+		gitTargetStreams: map[string]*reconcile.GitTargetEventStream{},
 	}
 
 	target := ruleSetSnapshotTarget{gitDest: gitDest, hash: 0xABCD}
@@ -657,6 +650,38 @@ func TestEmitSnapshotForRuleChange_TransientFailureReturnsErrorAndStaysPending(t
 	_, counted := telemetry.CollectInt64Sum(reader, targetReconcileCompletedMetric,
 		map[string]string{"gittarget_namespace": "test-ns", "gittarget_name": "test-target", "trigger": "rule_change"})
 	assert.False(t, counted, "the reconcile counter must not fire when emission failed")
+}
+
+// A rule can briefly outlive its GitTarget during deletion, leaving a pending target
+// whose GitTarget no longer exists. That must be skipped benignly — NOT returned as an
+// error — so one deleted target cannot poison the whole rule-change reconcile into a
+// requeue storm that starves healthy targets.
+func TestEmitSnapshotForRuleChange_DeletedGitTargetIsSkippedNotErrored(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, clientgoscheme.AddToScheme(scheme))
+	require.NoError(t, configv1alpha1.AddToScheme(scheme))
+
+	// No GitTarget object exists, so the resync's GitTarget lookup returns NotFound.
+	fakeK8s := fake.NewClientBuilder().WithScheme(scheme).Build()
+	manager := &Manager{Client: fakeK8s, Log: logr.Discard()}
+	gitDest := types.NewResourceReference("gone-target", "test-ns")
+	manager.EventRouter = &EventRouter{
+		WorkerManager:    git.NewWorkerManager(fakeK8s, logr.Discard(), 0, types.SensitiveResourcePolicy{}),
+		WatchManager:     manager,
+		Client:           fakeK8s,
+		Log:              logr.Discard(),
+		gitTargetStreams: map[string]*reconcile.GitTargetEventStream{},
+	}
+
+	target := ruleSetSnapshotTarget{gitDest: gitDest, hash: 0x1234}
+	emitErr := manager.emitSnapshotForRuleChange(ctx(), logr.Discard(), []ruleSetSnapshotTarget{target}, "rule_change")
+
+	require.NoError(t, emitErr, "a deleted GitTarget must be skipped, not surfaced as a requeue-inducing error")
+
+	manager.ruleSetSnapshotMu.Lock()
+	_, ok := manager.lastDeliveredRuleSetHash[gitDest.Key()]
+	manager.ruleSetSnapshotMu.Unlock()
+	assert.False(t, ok, "a skipped (gone) target must not be marked delivered")
 }
 
 // ctx returns a background context. Wrapped for terse use in test setup.

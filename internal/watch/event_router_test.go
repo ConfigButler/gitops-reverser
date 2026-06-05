@@ -49,7 +49,7 @@ func TestFinalizeGitTargetWindow_GitTargetNotFound(t *testing.T) {
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 	workerManager := git.NewWorkerManager(client, logr.Discard(), 0, types.SensitiveResourcePolicy{})
 
-	router := NewEventRouter(workerManager, nil, nil, client, logr.Discard())
+	router := NewEventRouter(workerManager, nil, client, logr.Discard())
 
 	_, err := router.FinalizeGitTargetWindow(context.Background(), "alice", "missing", "team-a", "")
 	require.Error(t, err)
@@ -68,7 +68,7 @@ func TestFinalizeGitTargetWindow_NoWorkerYieldsNoOpenWindow(t *testing.T) {
 	client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(gitTarget).Build()
 	workerManager := git.NewWorkerManager(client, logr.Discard(), 0, types.SensitiveResourcePolicy{})
 
-	router := NewEventRouter(workerManager, nil, nil, client, logr.Discard())
+	router := NewEventRouter(workerManager, nil, client, logr.Discard())
 
 	result, err := router.FinalizeGitTargetWindow(context.Background(), "alice", "team-a-config", "team-a", "")
 	require.NoError(t, err)
@@ -99,7 +99,7 @@ func TestFinalizeGitTargetWindow_RegisteredWorkerProcessesSignal(t *testing.T) {
 
 	require.NoError(t, workerManager.EnsureWorker(ctx, "team-a-provider", "team-a", "main"))
 
-	router := NewEventRouter(workerManager, nil, nil, client, logr.Discard())
+	router := NewEventRouter(workerManager, nil, client, logr.Discard())
 
 	// No events were routed, so the worker has no open window: the signal is
 	// enqueued, processed by the worker loop, and reported as NoOpenWindow.

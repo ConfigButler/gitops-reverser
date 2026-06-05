@@ -108,6 +108,8 @@ func (w *BranchWorker) executePendingWrite(
 	pendingWrite PendingWrite,
 ) (int, error) {
 	switch pendingWrite.Kind {
+	case PendingWriteResync:
+		return w.executeResyncPendingWrite(ctx, repo, worktree, pendingWrite)
 	case PendingWriteCommit, PendingWriteAtomic:
 	default:
 		return 0, fmt.Errorf("unsupported pending write kind %q", pendingWrite.Kind)

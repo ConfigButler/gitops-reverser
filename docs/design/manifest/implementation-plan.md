@@ -615,17 +615,103 @@ dependency; it does not exist yet. Independent of Track A.
 
 ### M8 — Streaming mark-and-sweep resync [runtime]
 
+> **Status: ✅ landed.** The resync is now a content-derived, revision-pinned
+> mark-and-sweep over a streaming-list snapshot, and the path-derived two-snapshot
+> handshake is gone. Three pieces replace it:
+>
+> 1. **The streaming-list snapshot gatherer** —
+>    [`watch.Manager.StreamClusterSnapshotForGitDest`](../../../internal/watch/snapshot_stream.go)
+>    opens one Kubernetes streaming-list watch per watched `(GVR, namespace)` with
+>    `sendInitialEvents=true`, `resourceVersionMatch=NotOlderThan`,
+>    `allowWatchBookmarks=true`, folds every initial `ADDED` into the desired set, and
+>    returns at the joined `initial-events-end` bookmark (revision = max across types).
+>    If any stream errors or closes before its bookmark, the whole gather **aborts and
+>    returns nothing** — a partial mark never drives a sweep. Streaming is the primary
+>    path and there is **no return to the old LIST+WATCH steady-state architecture**; the
+>    one narrow concession is a per-type consistent LIST for a server that cannot stream
+>    at all (judgment call #6 below), needed because aggregated apiservers reject
+>    `sendInitialEvents`.
+> 2. **The content-derived apply** —
+>    [`BranchWorker.applyResyncToWorktree`](../../../internal/git/resync_flush.go) builds
+>    the byte-free `ManifestStore` for the GitTarget subtree, runs the M3 `BuildPlan`
+>    (the authoritative mark-and-sweep over the resolved resource-identity index), and
+>    applies it: every desired resource is upserted through M7's proven content-derived
+>    single-identity path (`applyUpsert` — moved-manifest patch, sensitive re-encrypt,
+>    canonical create), and every `PlanDropOrphan` is deleted by its true `RecordRef`.
+>    Nothing flushes until all actions apply, so a mid-resync error commits nothing.
+> 3. **The synchronous resync request** — a `ResyncRequest` rides the worker queue
+>    (`EnqueueResync` → `handleResyncRequest`), so it is applied in order with live
+>    events and replies with the plan's create/update/delete stats. The GitTarget
+>    snapshot gate and `ReconcileForRuleChange` both drive it through
+>    [`EventRouter.EmitResyncForGitDest`](../../../internal/watch/event_router.go).
+>
+> **The teardown (a real "new start").** Deleted outright: `FolderReconciler` and its
+> path-derived `findDifferences`, `ReconcilerManager`, the whole `internal/events`
+> package (the `ClusterState`/`RepoState` two-snapshot handshake + control events),
+> `Manager.GetClusterStateForGitDest` (the LIST snapshot), and the path-derived git
+> identity (`ListResourcesInPath` / `listResourceIdentifiersInPath` /
+> `parseIdentifierFromPath`). Git identity is now **exclusively content-derived**, so
+> the moved-manifest disease is cured for the snapshot path too — the only gap M7 left.
+>
+> Judgment calls the plan left open:
+> 1. **Desired-side via `applyUpsert`, sweep-side via `BuildPlan`'s `PlanDropOrphan`.**
+>    A pure plan-apply would regress sensitive resources (the planner emits `PlanSkip`
+>    for an encrypted document, but resync must still re-encrypt a changed Secret), so
+>    the upserts reuse the steady-state writer verbatim and only the destructive drops
+>    come from the plan. The two agree because both read the same store and `Decide`.
+> 2. **No worker yet is a hard error → prompt requeue.** With reconcilers gone there is
+>    one not-ready signal (no live `BranchWorker`); `EmitResyncForGitDest` errors so the
+>    caller requeues, and the target stays pending until its worker exists — self-healing
+>    and simpler than the old missing-reconciler/missing-worker split.
+> 3. **Two triggers, no replay callback.** The initial snapshot is the GitTarget
+>    controller's synchronous gate; rule-change re-snapshots flow through
+>    `ReconcileForRuleChange`. The reconciler-creation `MaybeReplaySnapshot` callback is
+>    removed; a pending target is retried by the periodic reconcile. A redundant no-op
+>    resync may run once at startup (it produces no commit).
+> 4. **Steady-state informers stay.** The streaming-list watch gathers only the
+>    consistent snapshot and is then closed; the existing informer pipeline remains the
+>    live-event watch (buffered during the snapshot window, flushed after). Folding both
+>    into one connection is a larger change than M8's resync swap.
+> 5. **Acceptance is not yet gated on the resync apply** (same deliberate deferral as
+>    M7): the store is built with the empty allowlist and the plan applied
+>    unconditionally. The sweep only drops `MappingResolved` documents, so it never
+>    prunes unclassified content even without the gate.
+>
+> Hardening the e2e surfaced (each pinned by its own spec):
+> 6. **Per-type LIST fallback for non-streaming servers.** Aggregated apiservers reject
+>    `sendInitialEvents` outright, so a streaming-only gather aborted the whole snapshot
+>    and poisoned every reconcile. The gatherer now falls back to one consistent LIST at
+>    the latest revision for a type whose `Watch` reports streaming unsupported — the
+>    design's "availability fallback", scoped per type. It is *not* LIST+WATCH steady
+>    state (the informers still own live events); a transient watch error still aborts.
+> 7. **The resync bootstraps the GitTarget path before applying**, so a first resync into
+>    a fresh subtree has the directory (and any `.sops.yaml`) SOPS needs to encrypt a
+>    Secret — the per-event path did this via `ensureBootstrapTemplateInPath`; the resync
+>    carries no events, so it calls it explicitly.
+> 8. **The resync renders the provider's snapshot commit template** (`SnapshotTemplate`,
+>    counting the changed resources) rather than a hardcoded message, so a custom snapshot
+>    template is honoured exactly as the old atomic snapshot honoured it.
+> 9. **The rule-change resync is fire-and-forget; a deleted GitTarget is skipped.**
+>    `ReconcileForRuleChange` enqueues each target's resync without blocking on the commit
+>    (`TriggerResyncForGitDest`), so many targets' commits proceed in parallel at their
+>    workers instead of serializing on the reconcile goroutine. A rule that briefly
+>    outlives its GitTarget (a `NotFound` lookup) is skipped benignly, never a hard error
+>    that would storm the reconcile. The GitTarget gate keeps the synchronous path (it
+>    needs the stats for status).
+> 10. **A no-op resync is never retained or pushed.** An empty initial snapshot (no rule
+>    has selected a resource yet) produces no commit, so it must not advance the push
+>    cooldown — otherwise the next real snapshot's push is delayed past its window. Only a
+>    resync that actually committed is retained and pushed.
+
 - **Depends on**: M7.
 - **Touches**: the streaming-list watch (`sendInitialEvents`) folded over the
-  managed model; set-difference orphan computation at the joined bookmark; the
-  `LIST+WATCH` fallback behind the API source. **Deletes** the two-snapshot
-  handshake and `FolderReconciler.findDifferences`
-  ([`folder_reconciler.go`](../../../internal/reconcile/folder_reconciler.go),
-  [`events.go`](../../../internal/events/events.go)).
+  managed model; set-difference orphan computation at the joined bookmark. **Deletes**
+  the two-snapshot handshake and `FolderReconciler.findDifferences`
+  (`folder_reconciler.go`, `events.go`).
 - **Unblocks**: M9.
 - **Done when**: initial reconcile/resync is one consistent snapshot; sweep gated on
   all bookmarks, aborts and drops nothing on a partial stream; e2e covers
-  create+update+managed-drop at a pinned revision.
+  create+update+managed-drop at a pinned revision. ✅
 
 ### M9 — Optimize after correctness
 
@@ -662,12 +748,13 @@ action, applying to hydrated file buffers, and flushing dirty/deleted files; the
 no-op/in-place/whole-replace/skip decisions survive as `manifestedit.Decide` plan
 decisions, the live-catalog mapper is wired end to end (so GVR-only moved deletes resolve
 by content in production), and e2e is green. C1 ✅ landed independently and preceded M7.
-**M7's scope boundary:** the *writer* is now content-derived, but the *upstream*
-snapshot reconcile (`FolderReconciler.findDifferences` over path-derived
-`listResourceIdentifiersInPath` / `parseIdentifierFromPath`) is still live and still
-path-derived, so the moved-manifest disease is only half cured for the snapshot path.
-That leaves the critical path at **M8 (streaming mark-and-sweep resync)**, which replaces
-that two-snapshot GVR diff (and its object-less orphan-prune deletes) with one
-streaming-list snapshot folded over the managed model, and upgrades the writer's
-delete fallback to the mapping doc's fail-closed hold-and-retry. M9 (cross-batch cache)
-follows.
+**M8 (streaming mark-and-sweep resync) ✅ has now landed**, finishing the cure M7 left
+half-done: the path-derived two-snapshot GVR diff (`FolderReconciler.findDifferences`
+over `listResourceIdentifiersInPath` / `parseIdentifierFromPath`) and the whole
+`internal/events` handshake are deleted, and the snapshot is now one revision-pinned
+streaming-list watch (`StreamClusterSnapshotForGitDest`, `sendInitialEvents`, no
+`LIST+WATCH` fallback) folded over the content-derived store and mark-and-swept by
+`BuildPlan`. Git identity is exclusively content-derived end to end, so a moved manifest
+is correct on the snapshot path too. That leaves the critical path at **M9 (cross-batch
+cache)**, the last remaining milestone — and the only optimisation work, after
+correctness.

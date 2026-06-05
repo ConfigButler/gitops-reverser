@@ -61,10 +61,11 @@ type GitTargetEventStream struct {
 	mu           sync.RWMutex
 }
 
-// EventEnqueuer interface for enqueuing events and requests (allows mocking).
+// EventEnqueuer enqueues live watch events onto a branch worker (allows mocking).
+// The streaming-snapshot resync (M8) is driven directly through the worker, so the
+// stream itself only ever forwards individual live events.
 type EventEnqueuer interface {
 	Enqueue(event git.Event)
-	EnqueueRequest(request *git.WriteRequest)
 }
 
 // NewGitTargetEventStream creates a new event stream for a GitTarget.
@@ -127,17 +128,6 @@ func (s *GitTargetEventStream) OnWatchEvent(event git.Event) {
 	default:
 		s.mu.Unlock()
 	}
-}
-
-// EmitWriteRequest forwards a complete reconcile write request to the
-// BranchWorker as a single work item. Called while in RECONCILING state by
-// FolderReconciler.
-func (s *GitTargetEventStream) EmitWriteRequest(request git.WriteRequest) error {
-	request.GitTargetName = s.gitTargetName
-	request.GitTargetNamespace = s.gitTargetNamespace
-	request.CommitMode = git.CommitModeAtomic
-	s.branchWorker.EnqueueRequest(&request)
-	return nil
 }
 
 // OnReconciliationComplete signals that reconciliation has finished.

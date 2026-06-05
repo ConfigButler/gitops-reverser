@@ -71,6 +71,20 @@ func renderSnapshotCommitMessage(
 	)
 }
 
+// renderResyncCommitMessage renders the snapshot commit message for a resync from the
+// provider's SnapshotTemplate, so a resync honours a custom snapshot template exactly
+// as the old atomic snapshot did. count is the number of resources in the snapshot.
+func renderResyncCommitMessage(count int, gitTarget string, config CommitConfig) (string, error) {
+	return renderCommitTemplate(
+		"snapshot",
+		config.Message.SnapshotTemplate,
+		SnapshotCommitMessageData{
+			Count:     count,
+			GitTarget: gitTarget,
+		},
+	)
+}
+
 func renderGroupCommitMessage(pendingWrite PendingWrite, config CommitConfig) (string, error) {
 	return renderCommitTemplate(
 		"group",

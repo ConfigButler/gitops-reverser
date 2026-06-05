@@ -26,6 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	v1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
@@ -135,6 +136,11 @@ const (
 	// PendingWriteAtomic is a caller-defined atomic request, typically from
 	// reconciliation.
 	PendingWriteAtomic PendingWriteKind = "atomic"
+	// PendingWriteResync is a streaming-snapshot resync (M8): it carries the COMPLETE
+	// desired resource set for one GitTarget, and the worker materialises it with a
+	// content-derived mark-and-sweep against the worktree (upsert every desired
+	// resource, drop every watched managed document the snapshot did not contain).
+	PendingWriteResync PendingWriteKind = "resync"
 )
 
 type pendingTargetKey struct {
@@ -163,6 +169,22 @@ type PendingWrite struct {
 	GitTargetNamespace string
 	Targets            map[pendingTargetKey]ResolvedTargetMetadata
 	ByteSize           int64
+
+	// Desired is the complete desired resource snapshot, set only for a
+	// PendingWriteResync. The worker folds it over the worktree's content-derived
+	// store to produce the resync plan (upserts + mark-and-sweep drops).
+	Desired []manifestanalyzer.DesiredResource
+	// Revision is the cluster snapshot resourceVersion the desired set is pinned to
+	// (the joined streaming-watch bookmark). Carried for diagnostics and logging.
+	Revision string
+	// ResyncStats, when non-nil, is populated during apply with the plan's
+	// create/update/delete/skip counts so a synchronous caller can report them.
+	ResyncStats *ResyncStats
+	// Committed, when non-nil, is set true during apply iff the resync produced a
+	// commit. A no-op resync (e.g. an empty initial snapshot) must not be retained or
+	// pushed: doing so would advance the push cooldown and delay the next real
+	// snapshot's push past its window.
+	Committed *bool
 }
 
 // CommitMessageKind determines which message/authorship path the executor uses.
@@ -175,12 +197,61 @@ const (
 )
 
 // WorkItem is the unit of work in the BranchWorker queue. Exactly one of
-// Request or Finalize is set.
+// Request, Finalize, or Resync is set.
 type WorkItem struct {
 	// Request is a resource-write request.
 	Request *WriteRequest
 	// Finalize is a "finalize the open commit window now" signal.
 	Finalize *FinalizeSignal
+	// Resync is a streaming-snapshot resync request (M8): a synchronous
+	// request/reply that materialises a GitTarget's complete desired set.
+	Resync *ResyncRequest
+}
+
+// ResyncRequest is a synchronous resync of one GitTarget against a complete,
+// revision-pinned desired snapshot (M8). It rides the worker queue so the single
+// git-mutating goroutine applies it in order with live events, and replies on
+// Result once the local commit is created. The desired set is the whole watched
+// resource state at Revision; the worker's content-derived mark-and-sweep drops
+// any managed document the snapshot did not contain.
+type ResyncRequest struct {
+	Desired            []manifestanalyzer.DesiredResource
+	Revision           string
+	GitTargetName      string
+	GitTargetNamespace string
+	// Result receives exactly one reply. It is buffered (cap 1) by the emitter so
+	// the worker never blocks delivering it.
+	Result chan ResyncResult
+}
+
+// ResyncResult is the reply to a ResyncRequest: the plan's change counts, or an
+// error if the resync could not be applied (in which case nothing was committed).
+type ResyncResult struct {
+	Stats ResyncStats
+	Err   error
+}
+
+// ResyncStats summarises what a resync changed, for GitTarget status. Created,
+// Updated, and Deleted are the materialised create / patch+replace / managed-drop
+// counts; Skipped is documents present but not safely editable (e.g. encrypted or
+// disallowed constructs).
+type ResyncStats struct {
+	Created int
+	Updated int
+	Deleted int
+	Skipped int
+}
+
+// reply delivers a result on the request's buffered channel without blocking, so a
+// caller that already gave up (timeout/ctx cancel) never wedges the worker loop.
+func (r *ResyncRequest) reply(result ResyncResult) {
+	if r.Result == nil {
+		return
+	}
+	select {
+	case r.Result <- result:
+	default:
+	}
 }
 
 // Event represents a resource change event to be processed by a branch worker.

@@ -22,14 +22,12 @@ import (
 	"context"
 	"fmt"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/go-logr/logr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
-	"github.com/ConfigButler/gitops-reverser/internal/events"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/reconcile"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
@@ -40,52 +38,39 @@ import (
 // rides the worker's event queue, so a healthy worker replies promptly.
 const finalizeSignalTimeout = 30 * time.Second
 
-// EventRouter orchestrates control flow between components.
-// It dispatches events to BranchWorkers, calls services synchronously,
-// and routes state events to reconcilers.
+// resyncSignalTimeout bounds how long a resync waits for the worker to apply and
+// commit the snapshot. It is generous because the first resync can clone/pull the
+// repository before committing; the reconcile context cancels sooner if it must.
+const resyncSignalTimeout = 5 * time.Minute
+
+// EventRouter orchestrates control flow between components. It dispatches live events
+// to BranchWorkers, routes them through per-GitTarget event streams for buffering and
+// deduplication, and drives the synchronous streaming-snapshot resync (M8).
 type EventRouter struct {
-	WorkerManager     *git.WorkerManager
-	ReconcilerManager *reconcile.ReconcilerManager
-	WatchManager      *Manager
-	Client            client.Client
-	Log               logr.Logger
+	WorkerManager *git.WorkerManager
+	WatchManager  *Manager
+	Client        client.Client
+	Log           logr.Logger
 
 	// Registry of GitTargetEventStreams by gitDest key
 	gitTargetStreams map[string]*reconcile.GitTargetEventStream
 	streamsMu        sync.RWMutex
-
-	// snapshotDeliveryDrops counts how many cluster/repo state events were
-	// produced but had no registered FolderReconciler to receive them. This
-	// happens, for example, when WatchManager.ReconcileForRuleChange fires its
-	// snapshot before the GitTargetReconciler has had a chance to create a
-	// FolderReconciler. Each drop is a silently-missed backfill. Exposed for
-	// tests and will be wired to a Prometheus gauge later.
-	snapshotDeliveryDrops atomic.Int64
 }
 
 // NewEventRouter creates a new event router.
 func NewEventRouter(
 	workerManager *git.WorkerManager,
-	reconcilerManager *reconcile.ReconcilerManager,
 	watchManager *Manager,
 	client client.Client,
 	log logr.Logger,
 ) *EventRouter {
 	return &EventRouter{
-		WorkerManager:     workerManager,
-		ReconcilerManager: reconcilerManager,
-		WatchManager:      watchManager,
-		Client:            client,
-		Log:               log,
-		gitTargetStreams:  make(map[string]*reconcile.GitTargetEventStream),
+		WorkerManager:    workerManager,
+		WatchManager:     watchManager,
+		Client:           client,
+		Log:              log,
+		gitTargetStreams: make(map[string]*reconcile.GitTargetEventStream),
 	}
-}
-
-// SnapshotDeliveryDrops returns the number of state events that were emitted
-// for a GitDest that had no registered FolderReconciler at the time. A
-// non-zero value indicates a missed snapshot delivery.
-func (r *EventRouter) SnapshotDeliveryDrops() int64 {
-	return r.snapshotDeliveryDrops.Load()
 }
 
 // RouteEvent sends an event to the worker for (provider, branch).
@@ -182,102 +167,118 @@ func (r *EventRouter) FinalizeGitTargetWindow(
 	}
 }
 
-// ProcessControlEvent handles control events from reconcilers.
-func (r *EventRouter) ProcessControlEvent(ctx context.Context, event events.ControlEvent) error {
-	r.Log.V(1).Info("Processing control event", "type", event.Type, "gitDest", event.GitDest.String())
-
-	switch event.Type {
-	case events.RequestClusterState:
-		return r.handleRequestClusterState(ctx, event)
-	case events.RequestRepoState:
-		return r.handleRequestRepoState(ctx, event)
-	case events.ReconcileResource:
-		return r.handleReconcileResource(ctx, event)
-	default:
-		return fmt.Errorf("unknown control event type: %s", event.Type)
-	}
-}
-
-// handleRequestClusterState processes RequestClusterState control events.
-func (r *EventRouter) handleRequestClusterState(ctx context.Context, event events.ControlEvent) error {
-	// Call WatchManager service (synchronous)
-	resources, objects, err := r.WatchManager.GetClusterStateForGitDest(ctx, event.GitDest)
+// EmitResyncForGitDest runs one content-derived, mark-and-sweep resync for gitDest and
+// blocks until the worker has applied it (M8). It is the replacement for the old
+// two-snapshot handshake: it gathers the GitTarget's complete watched resource set via
+// the streaming-list watch, hands that revision-pinned snapshot to the branch worker as
+// a synchronous resync request, and returns the change counts the worker computed.
+//
+// The gather fails closed on a partial stream (StreamClusterSnapshotForGitDest aborts),
+// so a resync is enqueued only for a complete snapshot — the worker can never sweep on
+// partial knowledge. The call is synchronous so the caller (the GitTarget snapshot gate
+// or ReconcileForRuleChange) learns the outcome and can order live-event flushing after
+// the snapshot commit.
+func (r *EventRouter) EmitResyncForGitDest(
+	ctx context.Context,
+	gitDest types.ResourceReference,
+) (git.ResyncStats, error) {
+	resultCh, err := r.gatherAndEnqueueResync(ctx, gitDest)
 	if err != nil {
-		return fmt.Errorf("failed to get cluster state: %w", err)
+		return git.ResyncStats{}, err
 	}
 
-	// Wrap in event and route
-	return r.RouteClusterStateEvent(events.ClusterStateEvent{
-		GitDest:   event.GitDest,
-		Resources: resources,
-		Objects:   objects,
-	})
+	select {
+	case result := <-resultCh:
+		if result.Err != nil {
+			return git.ResyncStats{}, result.Err
+		}
+		r.logResyncApplied(gitDest, result.Stats)
+		return result.Stats, nil
+	case <-ctx.Done():
+		return git.ResyncStats{}, ctx.Err()
+	case <-time.After(resyncSignalTimeout):
+		return git.ResyncStats{}, fmt.Errorf("timed out resyncing %s", gitDest.String())
+	}
 }
 
-// handleRequestRepoState processes RequestRepoState control events.
-func (r *EventRouter) handleRequestRepoState(ctx context.Context, event events.ControlEvent) error {
-	// Look up GitTarget
+// TriggerResyncForGitDest gathers and enqueues a resync without blocking on the commit.
+// It is the rule-change path's entry point: that path only needs each affected target's
+// resync STARTED (not its stats), so many targets' commits proceed in parallel at their
+// own workers instead of serializing on the single reconcile goroutine — matching the
+// old fire-and-forget snapshot behaviour. The worker's reply is drained in the
+// background only to log the outcome. The synchronous gather still fails closed, so an
+// unobservable API surface is returned as an error before anything is enqueued.
+func (r *EventRouter) TriggerResyncForGitDest(
+	ctx context.Context,
+	gitDest types.ResourceReference,
+) error {
+	resultCh, err := r.gatherAndEnqueueResync(ctx, gitDest)
+	if err != nil {
+		return err
+	}
+	go func() {
+		select {
+		case result := <-resultCh:
+			if result.Err != nil {
+				r.Log.Error(result.Err, "background resync failed", "gitDest", gitDest.String())
+				return
+			}
+			r.logResyncApplied(gitDest, result.Stats)
+		case <-time.After(resyncSignalTimeout):
+			r.Log.Error(nil, "background resync timed out", "gitDest", gitDest.String())
+		}
+	}()
+	return nil
+}
+
+// gatherAndEnqueueResync resolves the GitTarget's worker, gathers the revision-pinned
+// streaming snapshot, and enqueues the resync request, returning the buffered reply
+// channel. It does not wait for the commit. A missing GitTarget or worker, or an
+// unobservable API surface, is returned as an error before anything is enqueued.
+func (r *EventRouter) gatherAndEnqueueResync(
+	ctx context.Context,
+	gitDest types.ResourceReference,
+) (chan git.ResyncResult, error) {
 	var gitTarget configv1alpha1.GitTarget
 	if err := r.Client.Get(ctx, client.ObjectKey{
-		Name:      event.GitDest.Name,
-		Namespace: event.GitDest.Namespace,
+		Name:      gitDest.Name,
+		Namespace: gitDest.Namespace,
 	}, &gitTarget); err != nil {
-		return fmt.Errorf("failed to get GitTarget: %w", err)
+		return nil, fmt.Errorf("get GitTarget %s: %w", gitDest.String(), err)
 	}
 
-	// Get BranchWorker
 	worker, exists := r.WorkerManager.GetWorkerForTarget(
 		gitTarget.Spec.ProviderRef.Name,
-		gitTarget.Namespace, // Provider is in same namespace
+		gitTarget.Namespace, // provider is in the same namespace as the target
 		gitTarget.Spec.Branch,
 	)
 	if !exists {
-		return fmt.Errorf("no worker for %s", event.GitDest.String())
+		return nil, fmt.Errorf("no worker for %s", gitDest.String())
 	}
 
-	// Call BranchWorker service (synchronous)
-	resources, err := worker.ListResourcesInPath(gitTarget.Spec.Path)
+	snapshot, err := r.WatchManager.StreamClusterSnapshotForGitDest(ctx, gitDest)
 	if err != nil {
-		return fmt.Errorf("failed to list resources: %w", err)
+		return nil, err
 	}
 
-	// Wrap in event and route
-	return r.RouteRepoStateEvent(events.RepoStateEvent{
-		GitDest:   event.GitDest,
-		Resources: resources,
+	resultCh := make(chan git.ResyncResult, 1)
+	worker.EnqueueResync(&git.ResyncRequest{
+		Desired:            snapshot.Desired,
+		Revision:           snapshot.Revision,
+		GitTargetName:      gitDest.Name,
+		GitTargetNamespace: gitDest.Namespace,
+		Result:             resultCh,
 	})
+	return resultCh, nil
 }
 
-// handleReconcileResource processes ReconcileResource control events.
-func (r *EventRouter) handleReconcileResource(_ context.Context, event events.ControlEvent) error {
-	// This would handle individual resource reconciliation
-	// For now, just log it
-	r.Log.V(1).Info("ReconcileResource event", "gitDest", event.GitDest.String(), "resource", event.Resource)
-	return nil
-}
-
-// RouteRepoStateEvent routes RepoStateEvents to the appropriate FolderReconciler.
-func (r *EventRouter) RouteRepoStateEvent(event events.RepoStateEvent) error {
-	reconciler, exists := r.ReconcilerManager.GetReconciler(event.GitDest)
-	if !exists {
-		r.snapshotDeliveryDrops.Add(1)
-		r.Log.V(1).Info("No reconciler found", "gitDest", event.GitDest.String())
-		return nil
-	}
-	reconciler.OnRepoState(event)
-	return nil
-}
-
-// RouteClusterStateEvent routes ClusterStateEvents to the appropriate FolderReconciler.
-func (r *EventRouter) RouteClusterStateEvent(event events.ClusterStateEvent) error {
-	reconciler, exists := r.ReconcilerManager.GetReconciler(event.GitDest)
-	if !exists {
-		r.snapshotDeliveryDrops.Add(1)
-		r.Log.V(1).Info("No reconciler found", "gitDest", event.GitDest.String())
-		return nil
-	}
-	reconciler.OnClusterState(event)
-	return nil
+func (r *EventRouter) logResyncApplied(gitDest types.ResourceReference, stats git.ResyncStats) {
+	r.Log.V(1).Info("Resync applied",
+		"gitDest", gitDest.String(),
+		"created", stats.Created,
+		"updated", stats.Updated,
+		"deleted", stats.Deleted,
+		"skipped", stats.Skipped)
 }
 
 // RegisterGitTargetEventStream registers a GitTargetEventStream with the router.

@@ -45,7 +45,7 @@ var _ = Describe("GitTargetEventStream", func() {
 	)
 
 	BeforeEach(func() {
-		mockWorker = &mockBranchWorker{events: make([]git.Event, 0), batches: make([]*git.WriteRequest, 0)}
+		mockWorker = &mockBranchWorker{events: make([]git.Event, 0)}
 		logger = logr.Discard()
 		stream = NewGitTargetEventStream(gitTargetName, gitTargetNS, mockWorker, logger)
 	})
@@ -160,23 +160,6 @@ var _ = Describe("GitTargetEventStream", func() {
 		})
 	})
 
-	Describe("EmitWriteRequest", func() {
-		It("should enqueue request to worker and stamp GitTarget info", func() {
-			request := git.WriteRequest{
-				Events: []git.Event{
-					createTestEvent("pod", "pod1", "CREATE"),
-				},
-				CommitMessage: "reconcile: sync 1 resources",
-			}
-
-			err := stream.EmitWriteRequest(request)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(mockWorker.batches).To(HaveLen(1))
-			Expect(mockWorker.batches[0].GitTargetName).To(Equal(gitTargetName))
-			Expect(mockWorker.batches[0].GitTargetNamespace).To(Equal(gitTargetNS))
-		})
-	})
-
 	Describe("Event Hash Deduplication", func() {
 		It("should treat different operations as different events", func() {
 			event1 := createTestEvent("pod", "test-pod", "CREATE")
@@ -204,25 +187,13 @@ var _ = Describe("GitTargetEventStream", func() {
 	})
 })
 
-// mockBranchWorker implements EventEnqueuer interface for testing.
+// mockBranchWorker implements the EventEnqueuer interface for testing.
 type mockBranchWorker struct {
-	events  []git.Event
-	batches []*git.WriteRequest
+	events []git.Event
 }
 
 func (m *mockBranchWorker) Enqueue(event git.Event) {
 	m.events = append(m.events, event)
-}
-
-func (m *mockBranchWorker) EnqueueRequest(request *git.WriteRequest) {
-	if request == nil {
-		return
-	}
-	if request.CommitMode == git.CommitModeAtomic {
-		m.batches = append(m.batches, request)
-		return
-	}
-	m.events = append(m.events, request.Events...)
 }
 
 // createTestEvent creates a test event with minimal required fields.

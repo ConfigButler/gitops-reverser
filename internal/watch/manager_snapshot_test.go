@@ -20,27 +20,31 @@ package watch
 
 import (
 	"context"
-	"errors"
 	"sort"
 	"testing"
 
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	appsv1 "k8s.io/api/apps/v1"
-	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/watch"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	k8stesting "k8s.io/client-go/testing"
 	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
 	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
+)
+
+var (
+	secretsGVR = schema.GroupVersionResource{Group: "", Version: "v1", Resource: "secrets"}
+	nodesGVR   = schema.GroupVersionResource{Group: "", Version: "v1", Resource: "nodes"}
 )
 
 // makeScheme returns a scheme with core Kubernetes types registered.
@@ -52,650 +56,267 @@ func makeScheme(t *testing.T) *runtime.Scheme {
 	return s
 }
 
-// makeSecret creates a minimal Secret suitable for the fake dynamic client.
-func makeSecret(name, namespace string) *corev1.Secret {
-	return &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+// uns builds a core/v1 unstructured object an initial-events stream would replay.
+func uns(kind, namespace, name string) *unstructured.Unstructured {
+	u := &unstructured.Unstructured{Object: map[string]interface{}{
+		"apiVersion": "v1",
+		"kind":       kind,
+		"metadata":   map[string]interface{}{"name": name},
+	}}
+	if namespace != "" {
+		u.SetNamespace(namespace)
 	}
+	return u
 }
 
-// makeConfigMap creates a minimal ConfigMap suitable for the fake dynamic client.
-func makeConfigMap(name, namespace string) *corev1.ConfigMap {
-	return &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
-	}
-}
-
-// makeDeployment creates a minimal Deployment suitable for the fake dynamic client.
-func makeDeployment(name, namespace string) *appsv1.Deployment {
-	return &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
-	}
-}
-
-// makeNode creates a minimal Node (cluster-scoped) for the fake dynamic client.
-func makeNode(name string) *corev1.Node {
-	return &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
-	}
-}
-
-// setupManager creates a Manager wired with fake clients and a pre-populated RuleStore.
-func setupManager(
+// streamingManager builds a Manager whose dynamic client serves a streaming-list watch
+// from objectsByGVR: every Watch replays the matching objects (filtered to the watched
+// namespace) as initial ADDED events, then an initial-events-end bookmark. This is the
+// fake that lets StreamClusterSnapshotForGitDest run end to end without a cluster.
+func streamingManager(
 	t *testing.T,
-	scheme *runtime.Scheme,
 	gitTarget *configv1alpha1.GitTarget,
-	ruleStore *rulestore.RuleStore,
-	clusterObjects ...runtime.Object,
+	store *rulestore.RuleStore,
+	objectsByGVR map[schema.GroupVersionResource][]*unstructured.Unstructured,
 ) *Manager {
 	t.Helper()
-
-	// Controller-runtime fake client: used by m.Client.Get to resolve the GitTarget.
-	fakeK8s := fakeclient.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(gitTarget).
-		Build()
-
-	// Fake dynamic client: used by listResourcesForGVR.
-	fakeDyn := dynamicfake.NewSimpleDynamicClient(scheme, clusterObjects...)
-
+	scheme := makeScheme(t)
+	fakeK8s := fakeclient.NewClientBuilder().WithScheme(scheme).WithObjects(gitTarget).Build()
+	fakeDyn := dynamicfake.NewSimpleDynamicClient(scheme)
+	fakeDyn.PrependWatchReactor("*", func(action k8stesting.Action) (bool, watch.Interface, error) {
+		wa := action.(k8stesting.WatchActionImpl)
+		fw := watch.NewFakeWithChanSize(64, false)
+		for _, obj := range objectsByGVR[wa.Resource] {
+			if wa.Namespace == "" || obj.GetNamespace() == wa.Namespace {
+				fw.Add(obj.DeepCopy())
+			}
+		}
+		fw.Action(watch.Bookmark, initialEventsEndBookmark("1"))
+		return true, fw, nil
+	})
 	return &Manager{
 		Client:          fakeK8s,
 		Log:             logr.Discard(),
-		RuleStore:       ruleStore,
+		RuleStore:       store,
 		dynamicClient:   fakeDyn,
 		resourceCatalog: newCommonTestCatalog(t),
 		discoveryClient: commonTestDiscoveryClient(),
 	}
 }
 
-// resourceNames extracts sorted Name fields from a slice of ResourceIdentifiers for easy assertion.
-func resourceNames(ids []itypes.ResourceIdentifier) []string {
-	names := make([]string, len(ids))
-	for i, id := range ids {
-		names[i] = id.Name
-	}
-	sort.Strings(names)
-	return names
-}
-
-// resourceNamespaces extracts the unique namespaces from a slice of ResourceIdentifiers.
-func resourceNamespaces(ids []itypes.ResourceIdentifier) []string {
-	seen := map[string]struct{}{}
-	var out []string
-	for _, id := range ids {
-		if _, ok := seen[id.Namespace]; !ok {
-			seen[id.Namespace] = struct{}{}
-			out = append(out, id.Namespace)
-		}
-	}
-	sort.Strings(out)
-	return out
-}
-
-// TestSnapshotScopedToWatchRuleNamespace verifies that a WatchRule in namespace ns-a
-// causes GetClusterStateForGitDest to list only resources in ns-a, not in ns-b.
-func TestSnapshotScopedToWatchRuleNamespace(t *testing.T) {
-	scheme := makeScheme(t)
-
-	gitTarget := &configv1alpha1.GitTarget{
+// gitTargetFixture is the GitTarget the snapshot tests resolve rules against.
+func gitTargetFixture() *configv1alpha1.GitTarget {
+	return &configv1alpha1.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "my-target", Namespace: "gitops-reverser"},
 		Spec:       configv1alpha1.GitTargetSpec{Path: "live"},
 	}
+}
 
-	store := rulestore.NewStore()
+// addWatchRule registers a namespaced WatchRule for my-target watching one resource.
+func addWatchRule(store *rulestore.RuleStore, name, namespace, resource string) {
 	store.AddOrUpdateWatchRule(
 		configv1alpha1.WatchRule{
-			ObjectMeta: metav1.ObjectMeta{Name: "wr-ns-a", Namespace: "ns-a"},
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
 			Spec: configv1alpha1.WatchRuleSpec{
 				TargetRef: configv1alpha1.LocalTargetReference{Name: "my-target"},
 				Rules: []configv1alpha1.ResourceRule{{
-					APIGroups: []string{""}, APIVersions: []string{"v1"}, Resources: []string{"secrets"},
+					APIGroups: []string{""}, APIVersions: []string{"v1"}, Resources: []string{resource},
 				}},
 			},
 		},
 		"my-target", "gitops-reverser", "provider", "gitops-reverser", "main", "live",
 	)
-
-	m := setupManager(t, scheme, gitTarget, store,
-		makeSecret("secret-a1", "ns-a"),
-		makeSecret("secret-a2", "ns-a"),
-		makeSecret("secret-b1", "ns-b"), // should NOT appear
-	)
-
-	resources, _, err := m.GetClusterStateForGitDest(context.Background(),
-		itypes.NewResourceReference("my-target", "gitops-reverser"))
-
-	require.NoError(t, err)
-	assert.Equal(t, []string{"secret-a1", "secret-a2"}, resourceNames(resources),
-		"only secrets from ns-a should be returned")
-	assert.Equal(t, []string{"ns-a"}, resourceNamespaces(resources),
-		"no resources from ns-b should leak into the snapshot")
 }
 
-func TestSnapshotBareDeploymentRuleResolvesAppsGVR(t *testing.T) {
-	scheme := makeScheme(t)
-	gitTarget := &configv1alpha1.GitTarget{
-		ObjectMeta: metav1.ObjectMeta{Name: "my-target", Namespace: "gitops-reverser"},
-		Spec:       configv1alpha1.GitTargetSpec{Path: "live"},
-	}
-	store := rulestore.NewStore()
-	store.AddOrUpdateWatchRule(
-		configv1alpha1.WatchRule{
-			ObjectMeta: metav1.ObjectMeta{Name: "deployment-rule", Namespace: "ns-a"},
-			Spec: configv1alpha1.WatchRuleSpec{
-				TargetRef: configv1alpha1.LocalTargetReference{Name: "my-target"},
-				Rules: []configv1alpha1.ResourceRule{{
-					Resources: []string{"deployments"},
-				}},
-			},
-		},
-		"my-target", "gitops-reverser", "provider", "gitops-reverser", "main", "live",
-	)
-	manager := setupManager(t, scheme, gitTarget, store, makeDeployment("api", "ns-a"))
-
-	resources, _, err := manager.GetClusterStateForGitDest(
-		context.Background(),
-		itypes.NewResourceReference("my-target", "gitops-reverser"),
-	)
-
-	require.NoError(t, err)
-	assert.Equal(t, []string{"api"}, resourceNames(resources))
-}
-
-// TestSnapshotTwoWatchRulesInDifferentNamespaces verifies that when two WatchRules
-// target the same GitTarget from different namespaces, both are included and a third
-// namespace is excluded.
-func TestSnapshotTwoWatchRulesInDifferentNamespaces(t *testing.T) {
-	scheme := makeScheme(t)
-
-	gitTarget := &configv1alpha1.GitTarget{
-		ObjectMeta: metav1.ObjectMeta{Name: "my-target", Namespace: "gitops-reverser"},
-		Spec:       configv1alpha1.GitTargetSpec{Path: "live"},
-	}
-
-	store := rulestore.NewStore()
-	for _, ns := range []string{"ns-a", "ns-b"} {
-		store.AddOrUpdateWatchRule(
-			configv1alpha1.WatchRule{
-				ObjectMeta: metav1.ObjectMeta{Name: "wr-" + ns, Namespace: ns},
-				Spec: configv1alpha1.WatchRuleSpec{
-					TargetRef: configv1alpha1.LocalTargetReference{Name: "my-target"},
-					Rules: []configv1alpha1.ResourceRule{{
-						APIGroups: []string{""}, APIVersions: []string{"v1"}, Resources: []string{"configmaps"},
-					}},
-				},
-			},
-			"my-target", "gitops-reverser", "provider", "gitops-reverser", "main", "live",
-		)
-	}
-
-	m := setupManager(t, scheme, gitTarget, store,
-		makeConfigMap("cm-a", "ns-a"),
-		makeConfigMap("cm-b", "ns-b"),
-		makeConfigMap("cm-c", "ns-c"), // should NOT appear
-	)
-
-	resources, _, err := m.GetClusterStateForGitDest(context.Background(),
-		itypes.NewResourceReference("my-target", "gitops-reverser"))
-
-	require.NoError(t, err)
-	assert.Equal(t, []string{"cm-a", "cm-b"}, resourceNames(resources),
-		"configmaps from both ns-a and ns-b should be returned")
-	assert.Equal(t, []string{"ns-a", "ns-b"}, resourceNamespaces(resources),
-		"ns-c should be excluded")
-}
-
-// TestSnapshotClusterWatchRuleIsClusterWide verifies that a ClusterWatchRule causes
-// GetClusterStateForGitDest to list resources cluster-wide (nodes are cluster-scoped).
-func TestSnapshotClusterWatchRuleIsClusterWide(t *testing.T) {
-	scheme := makeScheme(t)
-
-	gitTarget := &configv1alpha1.GitTarget{
-		ObjectMeta: metav1.ObjectMeta{Name: "my-target", Namespace: "gitops-reverser"},
-		Spec:       configv1alpha1.GitTargetSpec{Path: "live"},
-	}
-
-	store := rulestore.NewStore()
+// addClusterWatchRule registers a cluster-scoped ClusterWatchRule for my-target.
+func addClusterWatchRule(store *rulestore.RuleStore, name, resource string) {
 	store.AddOrUpdateClusterWatchRule(
 		configv1alpha1.ClusterWatchRule{
-			ObjectMeta: metav1.ObjectMeta{Name: "cwr-nodes"},
+			ObjectMeta: metav1.ObjectMeta{Name: name},
 			Spec: configv1alpha1.ClusterWatchRuleSpec{
-				TargetRef: configv1alpha1.NamespacedTargetReference{
-					Name:      "my-target",
-					Namespace: "gitops-reverser",
-				},
+				TargetRef: configv1alpha1.NamespacedTargetReference{Name: "my-target", Namespace: "gitops-reverser"},
 				Rules: []configv1alpha1.ClusterResourceRule{{
-					APIGroups: []string{""}, APIVersions: []string{"v1"}, Resources: []string{"nodes"},
+					APIGroups: []string{""}, APIVersions: []string{"v1"}, Resources: []string{resource},
 					Scope: configv1alpha1.ResourceScopeCluster,
 				}},
 			},
 		},
 		"my-target", "gitops-reverser", "provider", "gitops-reverser", "main", "live",
 	)
-
-	m := setupManager(t, scheme, gitTarget, store,
-		makeNode("node-1"),
-		makeNode("node-2"),
-		makeNode("node-3"),
-	)
-
-	resources, _, err := m.GetClusterStateForGitDest(context.Background(),
-		itypes.NewResourceReference("my-target", "gitops-reverser"))
-
-	require.NoError(t, err)
-	assert.Equal(t, []string{"node-1", "node-2", "node-3"}, resourceNames(resources),
-		"all nodes should be returned from cluster-wide list")
 }
 
-// TestSnapshotEmptyNamespaceReturnsNoResources verifies that when a WatchRule points
-// to a namespace with no matching resources, the result is empty (not an error, and no
-// resources from other namespaces bleed in).
-func TestSnapshotEmptyNamespaceReturnsNoResources(t *testing.T) {
-	scheme := makeScheme(t)
+func myTargetRef() itypes.ResourceReference {
+	return itypes.NewResourceReference("my-target", "gitops-reverser")
+}
 
-	gitTarget := &configv1alpha1.GitTarget{
-		ObjectMeta: metav1.ObjectMeta{Name: "my-target", Namespace: "gitops-reverser"},
-		Spec:       configv1alpha1.GitTargetSpec{Path: "live"},
+// desiredNames returns the sorted resource names in a snapshot, for stable assertions.
+func desiredNames(desired []manifestanalyzer.DesiredResource) []string {
+	names := make([]string, len(desired))
+	for i, d := range desired {
+		names[i] = d.Resource.Name
+	}
+	sort.Strings(names)
+	return names
+}
+
+// desiredNamespaces returns the unique namespaces present in a snapshot.
+func desiredNamespaces(desired []manifestanalyzer.DesiredResource) []string {
+	seen := map[string]struct{}{}
+	var out []string
+	for _, d := range desired {
+		if _, ok := seen[d.Resource.Namespace]; !ok {
+			seen[d.Resource.Namespace] = struct{}{}
+			out = append(out, d.Resource.Namespace)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// A namespaced WatchRule scopes the streaming snapshot to its own namespace: objects in
+// other namespaces never leak into the desired set.
+func TestStreamSnapshot_ScopedToWatchRuleNamespace(t *testing.T) {
+	store := rulestore.NewStore()
+	addWatchRule(store, "wr-ns-a", "ns-a", "secrets")
+
+	m := streamingManager(t, gitTargetFixture(), store, map[schema.GroupVersionResource][]*unstructured.Unstructured{
+		secretsGVR: {
+			uns("Secret", "ns-a", "secret-a1"),
+			uns("Secret", "ns-a", "secret-a2"),
+			uns("Secret", "ns-b", "secret-b1"), // out of scope
+		},
+	})
+
+	snap, err := m.StreamClusterSnapshotForGitDest(context.Background(), myTargetRef())
+	require.NoError(t, err)
+	assert.Equal(t, []string{"secret-a1", "secret-a2"}, desiredNames(snap.Desired))
+	assert.Equal(t, []string{"ns-a"}, desiredNamespaces(snap.Desired), "ns-b must not leak in")
+}
+
+// Two WatchRules for the same target in different namespaces union their namespaces into
+// one snapshot.
+func TestStreamSnapshot_TwoNamespacesUnion(t *testing.T) {
+	store := rulestore.NewStore()
+	addWatchRule(store, "wr-ns-a", "ns-a", "secrets")
+	addWatchRule(store, "wr-ns-b", "ns-b", "secrets")
+
+	m := streamingManager(t, gitTargetFixture(), store, map[schema.GroupVersionResource][]*unstructured.Unstructured{
+		secretsGVR: {
+			uns("Secret", "ns-a", "secret-a"),
+			uns("Secret", "ns-b", "secret-b"),
+			uns("Secret", "ns-c", "secret-c"), // no rule for ns-c
+		},
+	})
+
+	snap, err := m.StreamClusterSnapshotForGitDest(context.Background(), myTargetRef())
+	require.NoError(t, err)
+	assert.Equal(t, []string{"secret-a", "secret-b"}, desiredNames(snap.Desired))
+}
+
+// A ClusterWatchRule streams a cluster-scoped resource cluster-wide.
+func TestStreamSnapshot_ClusterWatchRuleIsClusterWide(t *testing.T) {
+	store := rulestore.NewStore()
+	addClusterWatchRule(store, "cwr-nodes", "nodes")
+
+	m := streamingManager(t, gitTargetFixture(), store, map[schema.GroupVersionResource][]*unstructured.Unstructured{
+		nodesGVR: {uns("Node", "", "node-1"), uns("Node", "", "node-2")},
+	})
+
+	snap, err := m.StreamClusterSnapshotForGitDest(context.Background(), myTargetRef())
+	require.NoError(t, err)
+	assert.Equal(t, []string{"node-1", "node-2"}, desiredNames(snap.Desired))
+	assert.Equal(t, "1", snap.Revision, "the snapshot is pinned to the bookmark revision")
+}
+
+// An empty cluster (all streams reach their bookmark with no objects) yields an empty,
+// authoritative snapshot — the basis for sweeping the mirror clean.
+func TestStreamSnapshot_EmptyClusterYieldsEmptySnapshot(t *testing.T) {
+	store := rulestore.NewStore()
+	addWatchRule(store, "wr-ns-a", "ns-a", "secrets")
+
+	m := streamingManager(t, gitTargetFixture(), store, nil)
+
+	snap, err := m.StreamClusterSnapshotForGitDest(context.Background(), myTargetRef())
+	require.NoError(t, err)
+	assert.Empty(t, snap.Desired, "no objects streamed, but the snapshot is complete")
+}
+
+// If any type's stream fails before its bookmark, the whole snapshot aborts and returns
+// an error — a partial mark must never drive a sweep.
+func TestStreamSnapshot_PartialStreamAborts(t *testing.T) {
+	store := rulestore.NewStore()
+	addWatchRule(store, "wr-secrets", "ns-a", "secrets")
+	addWatchRule(store, "wr-configmaps", "ns-a", "configmaps")
+
+	scheme := makeScheme(t)
+	fakeK8s := fakeclient.NewClientBuilder().WithScheme(scheme).WithObjects(gitTargetFixture()).Build()
+	fakeDyn := dynamicfake.NewSimpleDynamicClient(scheme)
+	fakeDyn.PrependWatchReactor("*", func(action k8stesting.Action) (bool, watch.Interface, error) {
+		wa := action.(k8stesting.WatchActionImpl)
+		fw := watch.NewFakeWithChanSize(8, false)
+		if wa.Resource.Resource == "secrets" {
+			fw.Add(uns("Secret", "ns-a", "ok"))
+			fw.Stop() // closes before any bookmark
+			return true, fw, nil
+		}
+		fw.Action(watch.Bookmark, initialEventsEndBookmark("1"))
+		return true, fw, nil
+	})
+	m := &Manager{
+		Client: fakeK8s, Log: logr.Discard(), RuleStore: store,
+		dynamicClient: fakeDyn, resourceCatalog: newCommonTestCatalog(t),
+		discoveryClient: commonTestDiscoveryClient(),
 	}
 
+	_, err := m.StreamClusterSnapshotForGitDest(context.Background(), myTargetRef())
+	require.Error(t, err, "a stream that never reaches its bookmark must abort the snapshot")
+}
+
+// resolveSnapshotGVRs scopes a namespaced resource to its rule namespace and a
+// cluster-scoped resource cluster-wide (no namespaces).
+func TestResolveSnapshotGVRs_ScopesNamespacedAndClusterWide(t *testing.T) {
+	store := rulestore.NewStore()
+	addWatchRule(store, "wr-secrets", "ns-a", "secrets")
+	addClusterWatchRule(store, "cwr-nodes", "nodes")
+
+	m := streamingManager(t, gitTargetFixture(), store, nil)
+	gvrs, err := m.resolveSnapshotGVRs(context.Background(), myTargetRef())
+	require.NoError(t, err)
+
+	byGVR := map[schema.GroupVersionResource][]string{}
+	for _, sg := range gvrs {
+		byGVR[sg.gvr] = sg.namespaces
+	}
+	assert.Equal(t, []string{"ns-a"}, byGVR[secretsGVR], "namespaced resource scoped to its rule namespace")
+	assert.Empty(t, byGVR[nodesGVR], "cluster-scoped resource has no namespace scope (cluster-wide)")
+}
+
+// A wildcard resource pattern expands to every served namespaced resource in the group,
+// so the snapshot is not silently narrowed.
+func TestResolveSnapshotGVRs_WildcardResourceExpands(t *testing.T) {
 	store := rulestore.NewStore()
 	store.AddOrUpdateWatchRule(
 		configv1alpha1.WatchRule{
-			ObjectMeta: metav1.ObjectMeta{Name: "wr-empty", Namespace: "ns-empty"},
+			ObjectMeta: metav1.ObjectMeta{Name: "wr-all", Namespace: "ns-a"},
 			Spec: configv1alpha1.WatchRuleSpec{
 				TargetRef: configv1alpha1.LocalTargetReference{Name: "my-target"},
 				Rules: []configv1alpha1.ResourceRule{{
-					APIGroups: []string{""}, APIVersions: []string{"v1"}, Resources: []string{"configmaps"},
+					APIGroups: []string{""}, APIVersions: []string{"v1"}, Resources: []string{"*"},
 				}},
 			},
 		},
 		"my-target", "gitops-reverser", "provider", "gitops-reverser", "main", "live",
 	)
 
-	m := setupManager(t, scheme, gitTarget, store,
-		makeConfigMap("cm-other", "ns-other"), // other namespace, should not appear
-	)
-
-	resources, _, err := m.GetClusterStateForGitDest(context.Background(),
-		itypes.NewResourceReference("my-target", "gitops-reverser"))
-
+	m := streamingManager(t, gitTargetFixture(), store, nil)
+	gvrs, err := m.resolveSnapshotGVRs(context.Background(), myTargetRef())
 	require.NoError(t, err)
-	assert.Empty(t, resources, "no resources expected when watched namespace is empty")
-}
 
-// TestSnapshotRegressionNoFluxSystemLeakage directly reproduces the observed failure:
-// a WatchRule in a test namespace must not cause secrets from flux-system or other
-// namespaces to appear in the snapshot result.
-func TestSnapshotRegressionNoFluxSystemLeakage(t *testing.T) {
-	scheme := makeScheme(t)
-
-	gitTarget := &configv1alpha1.GitTarget{
-		ObjectMeta: metav1.ObjectMeta{Name: "bi-target", Namespace: "test-ns"},
-		Spec:       configv1alpha1.GitTargetSpec{Path: "live"},
+	resources := map[string]struct{}{}
+	for _, sg := range gvrs {
+		resources[sg.gvr.Resource] = struct{}{}
 	}
-
-	store := rulestore.NewStore()
-	store.AddOrUpdateWatchRule(
-		configv1alpha1.WatchRule{
-			ObjectMeta: metav1.ObjectMeta{Name: "bi-secret-watchrule", Namespace: "test-ns"},
-			Spec: configv1alpha1.WatchRuleSpec{
-				TargetRef: configv1alpha1.LocalTargetReference{Name: "bi-target"},
-				Rules: []configv1alpha1.ResourceRule{{
-					APIGroups: []string{""}, APIVersions: []string{"v1"}, Resources: []string{"secrets"},
-				}},
-			},
-		},
-		"bi-target", "test-ns", "provider", "test-ns", "main", "live",
-	)
-
-	// Cluster has secrets in the test namespace AND in system namespaces that
-	// should never be touched by this WatchRule.
-	m := setupManager(t, scheme, gitTarget, store,
-		makeSecret("bi-secret", "test-ns"),
-		makeSecret("git-creds", "test-ns"),
-		makeSecret("bi-controller-sops", "test-ns"),
-		makeSecret("cert-manager-webhook-ca", "cert-manager"),  // must NOT appear
-		makeSecret("bi-flux-auth", "flux-system"),              // must NOT appear
-		makeSecret("bi-sops", "flux-system"),                   // must NOT appear
-		makeSecret("k3s-serving", "kube-system"),               // must NOT appear
-		makeSecret("prometheus-shared", "prometheus-operator"), // must NOT appear
-	)
-
-	resources, _, err := m.GetClusterStateForGitDest(context.Background(),
-		itypes.NewResourceReference("bi-target", "test-ns"))
-
-	require.NoError(t, err)
-	assert.Equal(t, []string{"bi-controller-sops", "bi-secret", "git-creds"}, resourceNames(resources),
-		"only secrets in test-ns should be returned")
-	assert.Equal(t, []string{"test-ns"}, resourceNamespaces(resources),
-		"secrets from cert-manager, flux-system, kube-system, prometheus-operator must not appear")
-}
-
-// TestSnapshotClusterWatchRuleWildcardVersionNotSilentlyEmpty is a regression guard for
-// the "startup reconcile snapshots an empty cluster and deletes the tracked git tree"
-// data-loss bug.
-//
-// apiVersions: ["*"] is the documented "match all versions" form for a ClusterWatchRule
-// (see api/v1alpha1/clusterwatchrule_types.go). The live audit path honours it, so the
-// git mirror builds up normally. The startup snapshot path (gvrsFromClusterRule) skips
-// every "*" version, so it resolves zero GVRs, lists nothing, and GetClusterStateForGitDest
-// returns (empty, nil) — a silent empty snapshot that looks authoritative. On a controller
-// restart the FolderReconciler then diffs "cluster has 0" against the full git mirror and
-// deletes everything.
-//
-// The snapshot must NOT silently return an empty result for a wildcard rule while the
-// cluster has matching resources: it must either resolve the wildcard and list them, or
-// fail loudly with an error so the reconcile aborts.
-func TestSnapshotClusterWatchRuleWildcardVersionNotSilentlyEmpty(t *testing.T) {
-	scheme := makeScheme(t)
-
-	gitTarget := &configv1alpha1.GitTarget{
-		ObjectMeta: metav1.ObjectMeta{Name: "my-target", Namespace: "gitops-reverser"},
-		Spec:       configv1alpha1.GitTargetSpec{Path: "live"},
-	}
-
-	store := rulestore.NewStore()
-	store.AddOrUpdateClusterWatchRule(
-		configv1alpha1.ClusterWatchRule{
-			ObjectMeta: metav1.ObjectMeta{Name: "cwr-wildcard"},
-			Spec: configv1alpha1.ClusterWatchRuleSpec{
-				TargetRef: configv1alpha1.NamespacedTargetReference{
-					Name:      "my-target",
-					Namespace: "gitops-reverser",
-				},
-				Rules: []configv1alpha1.ClusterResourceRule{{
-					APIGroups:   []string{""},
-					APIVersions: []string{"*"}, // documented "all versions" wildcard
-					Resources:   []string{"nodes"},
-					Scope:       configv1alpha1.ResourceScopeCluster,
-				}},
-			},
-		},
-		"my-target", "gitops-reverser", "provider", "gitops-reverser", "main", "live",
-	)
-
-	m := setupManager(t, scheme, gitTarget, store,
-		makeNode("node-1"),
-		makeNode("node-2"),
-		makeNode("node-3"),
-	)
-
-	resources, _, err := m.GetClusterStateForGitDest(context.Background(),
-		itypes.NewResourceReference("my-target", "gitops-reverser"))
-
-	silentlyEmpty := err == nil && len(resources) == 0
-	require.False(t, silentlyEmpty,
-		"wildcard ClusterWatchRule produced a silent empty snapshot while the cluster has 3 nodes; "+
-			"on a controller restart this empty snapshot makes the FolderReconciler delete the whole git tree")
-}
-
-// TestSnapshotWatchRuleWildcardVersionNotSilentlyEmpty is the namespaced WatchRule
-// counterpart of the wildcard regression above: gvrsFromResourceRule skips "*" versions
-// just like gvrsFromClusterRule, so a wildcard WatchRule also yields a silent empty
-// snapshot.
-func TestSnapshotWatchRuleWildcardVersionNotSilentlyEmpty(t *testing.T) {
-	scheme := makeScheme(t)
-
-	gitTarget := &configv1alpha1.GitTarget{
-		ObjectMeta: metav1.ObjectMeta{Name: "my-target", Namespace: "gitops-reverser"},
-		Spec:       configv1alpha1.GitTargetSpec{Path: "live"},
-	}
-
-	store := rulestore.NewStore()
-	store.AddOrUpdateWatchRule(
-		configv1alpha1.WatchRule{
-			ObjectMeta: metav1.ObjectMeta{Name: "wr-wildcard", Namespace: "ns-a"},
-			Spec: configv1alpha1.WatchRuleSpec{
-				TargetRef: configv1alpha1.LocalTargetReference{Name: "my-target"},
-				Rules: []configv1alpha1.ResourceRule{{
-					APIGroups:   []string{""},
-					APIVersions: []string{"*"}, // documented "all versions" wildcard
-					Resources:   []string{"configmaps"},
-				}},
-			},
-		},
-		"my-target", "gitops-reverser", "provider", "gitops-reverser", "main", "live",
-	)
-
-	m := setupManager(t, scheme, gitTarget, store,
-		makeConfigMap("cm-a1", "ns-a"),
-		makeConfigMap("cm-a2", "ns-a"),
-	)
-
-	resources, _, err := m.GetClusterStateForGitDest(context.Background(),
-		itypes.NewResourceReference("my-target", "gitops-reverser"))
-
-	silentlyEmpty := err == nil && len(resources) == 0
-	require.False(t, silentlyEmpty,
-		"wildcard WatchRule produced a silent empty snapshot while the namespace has 2 configmaps; "+
-			"on a controller restart this empty snapshot makes the FolderReconciler delete the whole git tree")
-}
-
-// TestSnapshotWildcardGroupExpands verifies that a ClusterWatchRule with a "*"
-// apiGroups wildcard can enumerate the catalog and snapshot matching resources.
-func TestSnapshotWildcardGroupExpands(t *testing.T) {
-	scheme := makeScheme(t)
-
-	gitTarget := &configv1alpha1.GitTarget{
-		ObjectMeta: metav1.ObjectMeta{Name: "my-target", Namespace: "gitops-reverser"},
-		Spec:       configv1alpha1.GitTargetSpec{Path: "live"},
-	}
-
-	store := rulestore.NewStore()
-	store.AddOrUpdateClusterWatchRule(
-		configv1alpha1.ClusterWatchRule{
-			ObjectMeta: metav1.ObjectMeta{Name: "cwr-wildcard-group"},
-			Spec: configv1alpha1.ClusterWatchRuleSpec{
-				TargetRef: configv1alpha1.NamespacedTargetReference{
-					Name:      "my-target",
-					Namespace: "gitops-reverser",
-				},
-				Rules: []configv1alpha1.ClusterResourceRule{{
-					APIGroups:   []string{"*"},
-					APIVersions: []string{"v1"},
-					Resources:   []string{"configmaps"},
-					Scope:       configv1alpha1.ResourceScopeNamespaced,
-				}},
-			},
-		},
-		"my-target", "gitops-reverser", "provider", "gitops-reverser", "main", "live",
-	)
-
-	m := setupManager(t, scheme, gitTarget, store, makeConfigMap("cm-a", "ns-a"))
-
-	resources, _, err := m.GetClusterStateForGitDest(context.Background(),
-		itypes.NewResourceReference("my-target", "gitops-reverser"))
-	require.NoError(t, err)
-	assert.Equal(t, []string{"cm-a"}, resourceNames(resources))
-}
-
-// TestSnapshotWildcardResourceExpands verifies that a "*" resources wildcard can
-// enumerate listable/watchable catalog entries and snapshot the resources found.
-func TestSnapshotWildcardResourceExpands(t *testing.T) {
-	scheme := makeScheme(t)
-
-	gitTarget := &configv1alpha1.GitTarget{
-		ObjectMeta: metav1.ObjectMeta{Name: "my-target", Namespace: "gitops-reverser"},
-		Spec:       configv1alpha1.GitTargetSpec{Path: "live"},
-	}
-
-	store := rulestore.NewStore()
-	store.AddOrUpdateClusterWatchRule(
-		configv1alpha1.ClusterWatchRule{
-			ObjectMeta: metav1.ObjectMeta{Name: "cwr-wildcard-resource"},
-			Spec: configv1alpha1.ClusterWatchRuleSpec{
-				TargetRef: configv1alpha1.NamespacedTargetReference{
-					Name:      "my-target",
-					Namespace: "gitops-reverser",
-				},
-				Rules: []configv1alpha1.ClusterResourceRule{{
-					APIGroups:   []string{""},
-					APIVersions: []string{"v1"},
-					Resources:   []string{"*"},
-					Scope:       configv1alpha1.ResourceScopeNamespaced,
-				}},
-			},
-		},
-		"my-target", "gitops-reverser", "provider", "gitops-reverser", "main", "live",
-	)
-
-	m := setupManager(t, scheme, gitTarget, store, makeConfigMap("cm-a", "ns-a"))
-
-	resources, _, err := m.GetClusterStateForGitDest(context.Background(),
-		itypes.NewResourceReference("my-target", "gitops-reverser"))
-	require.NoError(t, err)
-	assert.Equal(t, []string{"cm-a"}, resourceNames(resources))
-}
-
-// TestSnapshotAbortsOnListError verifies that a failed List() call aborts the
-// snapshot with an error. A swallowed list error would drop that resource from
-// the snapshot, and the reconciler would then delete its tracked Git files.
-func TestSnapshotAbortsOnListError(t *testing.T) {
-	scheme := makeScheme(t)
-
-	gitTarget := &configv1alpha1.GitTarget{
-		ObjectMeta: metav1.ObjectMeta{Name: "my-target", Namespace: "gitops-reverser"},
-		Spec:       configv1alpha1.GitTargetSpec{Path: "live"},
-	}
-
-	store := rulestore.NewStore()
-	store.AddOrUpdateClusterWatchRule(
-		configv1alpha1.ClusterWatchRule{
-			ObjectMeta: metav1.ObjectMeta{Name: "cwr-nodes"},
-			Spec: configv1alpha1.ClusterWatchRuleSpec{
-				TargetRef: configv1alpha1.NamespacedTargetReference{
-					Name:      "my-target",
-					Namespace: "gitops-reverser",
-				},
-				Rules: []configv1alpha1.ClusterResourceRule{{
-					APIGroups:   []string{""},
-					APIVersions: []string{"v1"},
-					Resources:   []string{"nodes"},
-					Scope:       configv1alpha1.ResourceScopeCluster,
-				}},
-			},
-		},
-		"my-target", "gitops-reverser", "provider", "gitops-reverser", "main", "live",
-	)
-
-	m := setupManager(t, scheme, gitTarget, store, makeNode("node-1"))
-
-	fakeDyn, ok := m.dynamicClient.(*dynamicfake.FakeDynamicClient)
-	require.True(t, ok, "expected the fake dynamic client from setupManager")
-	fakeDyn.PrependReactor("list", "*",
-		func(k8stesting.Action) (bool, runtime.Object, error) {
-			return true, nil, errors.New("simulated API server outage")
-		})
-
-	_, _, err := m.GetClusterStateForGitDest(context.Background(),
-		itypes.NewResourceReference("my-target", "gitops-reverser"))
-	require.Error(t, err,
-		"a failed List() must abort the snapshot, not silently drop the resource")
-}
-
-func TestSnapshotWildcardResourceAbortsOnAnyListError(t *testing.T) {
-	scheme := makeScheme(t)
-
-	gitTarget := &configv1alpha1.GitTarget{
-		ObjectMeta: metav1.ObjectMeta{Name: "my-target", Namespace: "gitops-reverser"},
-		Spec:       configv1alpha1.GitTargetSpec{Path: "live"},
-	}
-
-	store := rulestore.NewStore()
-	store.AddOrUpdateClusterWatchRule(
-		configv1alpha1.ClusterWatchRule{
-			ObjectMeta: metav1.ObjectMeta{Name: "cwr-wildcard-resource"},
-			Spec: configv1alpha1.ClusterWatchRuleSpec{
-				TargetRef: configv1alpha1.NamespacedTargetReference{
-					Name:      "my-target",
-					Namespace: "gitops-reverser",
-				},
-				Rules: []configv1alpha1.ClusterResourceRule{{
-					APIGroups:   []string{""},
-					APIVersions: []string{"v1"},
-					Resources:   []string{"*"},
-					Scope:       configv1alpha1.ResourceScopeNamespaced,
-				}},
-			},
-		},
-		"my-target", "gitops-reverser", "provider", "gitops-reverser", "main", "live",
-	)
-
-	m := setupManager(t, scheme, gitTarget, store, makeConfigMap("cm-a", "ns-a"))
-
-	fakeDyn, ok := m.dynamicClient.(*dynamicfake.FakeDynamicClient)
-	require.True(t, ok, "expected the fake dynamic client from setupManager")
-	fakeDyn.PrependReactor("list", "services",
-		func(action k8stesting.Action) (bool, runtime.Object, error) {
-			if action.GetResource().Resource != "services" {
-				return false, nil, nil
-			}
-			return true, nil, errors.New("simulated service list failure")
-		})
-
-	_, _, err := m.GetClusterStateForGitDest(context.Background(),
-		itypes.NewResourceReference("my-target", "gitops-reverser"))
-	require.Error(t, err,
-		"a wildcard snapshot still aborts on a failed GVR list rather than emitting a partial view")
-}
-
-// TestSnapshotSkipsTypeNoLongerServed verifies that a type which is no longer
-// served (its CRD/APIService was removed between catalog resolution and the list,
-// surfacing as a NotFound) is dropped from the snapshot instead of aborting it.
-// This is the same condition the resolver already treats as non-blocking
-// (ResolveMissNotServed) one step earlier, just discovered in the resolve→list
-// race — so it is handled identically regardless of whether the GVR came from a
-// wildcard or a named rule. It is the failure mode that wedged wildcard targets in
-// e2e when a concurrent spec tore down a CRD mid-run. Any non-NotFound list error
-// (a served type we could not read) still aborts — see TestSnapshotAbortsOnListError
-// and TestSnapshotWildcardResourceAbortsOnAnyListError.
-func TestSnapshotSkipsTypeNoLongerServed(t *testing.T) {
-	scheme := makeScheme(t)
-
-	gitTarget := &configv1alpha1.GitTarget{
-		ObjectMeta: metav1.ObjectMeta{Name: "my-target", Namespace: "gitops-reverser"},
-		Spec:       configv1alpha1.GitTargetSpec{Path: "live"},
-	}
-
-	store := rulestore.NewStore()
-	store.AddOrUpdateClusterWatchRule(
-		configv1alpha1.ClusterWatchRule{
-			ObjectMeta: metav1.ObjectMeta{Name: "cwr-wildcard-resource"},
-			Spec: configv1alpha1.ClusterWatchRuleSpec{
-				TargetRef: configv1alpha1.NamespacedTargetReference{
-					Name:      "my-target",
-					Namespace: "gitops-reverser",
-				},
-				Rules: []configv1alpha1.ClusterResourceRule{{
-					APIGroups:   []string{""},
-					APIVersions: []string{"v1"},
-					Resources:   []string{"*"},
-					Scope:       configv1alpha1.ResourceScopeNamespaced,
-				}},
-			},
-		},
-		"my-target", "gitops-reverser", "provider", "gitops-reverser", "main", "live",
-	)
-
-	m := setupManager(t, scheme, gitTarget, store, makeConfigMap("cm-a", "ns-a"))
-
-	fakeDyn, ok := m.dynamicClient.(*dynamicfake.FakeDynamicClient)
-	require.True(t, ok, "expected the fake dynamic client from setupManager")
-	// services resolves from the wildcard but is reported as no-longer-served.
-	fakeDyn.PrependReactor("list", "services",
-		func(action k8stesting.Action) (bool, runtime.Object, error) {
-			if action.GetResource().Resource != "services" {
-				return false, nil, nil
-			}
-			return true, nil, apierrors.NewNotFound(
-				schema.GroupResource{Group: "", Resource: "services"}, "")
-		})
-
-	resources, _, err := m.GetClusterStateForGitDest(context.Background(),
-		itypes.NewResourceReference("my-target", "gitops-reverser"))
-	require.NoError(t, err,
-		"a type that 404s (no longer served) must be skipped, not abort the snapshot")
-	assert.Equal(t, []string{"cm-a"}, resourceNames(resources),
-		"the surviving resources must still be snapshotted")
+	assert.Contains(t, resources, "configmaps")
+	assert.Contains(t, resources, "secrets")
+	assert.Contains(t, resources, "services")
 }

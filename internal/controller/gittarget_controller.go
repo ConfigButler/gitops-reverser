@@ -194,7 +194,7 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{RequeueAfter: encryptionRequeueAfter}, nil
 	}
 
-	stream, snapshotState, snapshotMessage, snapshotRequeueAfter, snapshotErr := r.evaluateSnapshotGate(
+	stream, snapshotState, snapshotMessage, snapshotErr := r.evaluateSnapshotGate(
 		ctx,
 		&target,
 		providerNS,
@@ -250,7 +250,7 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		if err := r.updateStatusWithRetry(ctx, &target); err != nil {
 			return ctrl.Result{}, err
 		}
-		return ctrl.Result{RequeueAfter: snapshotRequeueAfter}, nil
+		return ctrl.Result{RequeueAfter: RequeueShortInterval}, nil
 	}
 	if snapshotState == metav1.ConditionTrue {
 		r.setCondition(
@@ -373,14 +373,14 @@ func (r *GitTargetReconciler) evaluateSnapshotGate(
 	target *configbutleraiv1alpha1.GitTarget,
 	providerNS string,
 	log logr.Logger,
-) (*reconcile.GitTargetEventStream, metav1.ConditionStatus, string, time.Duration, error) {
-	if r.EventRouter == nil || r.EventRouter.ReconcilerManager == nil {
+) (*reconcile.GitTargetEventStream, metav1.ConditionStatus, string, error) {
+	if r.EventRouter == nil {
 		now := metav1.Now()
 		if target.Status.Snapshot == nil {
 			target.Status.Snapshot = &configbutleraiv1alpha1.GitTargetSnapshotStatus{}
 		}
 		target.Status.Snapshot.LastCompletedTime = &now
-		return nil, metav1.ConditionTrue, MsgSnapshotCompleted, 0, nil
+		return nil, metav1.ConditionTrue, MsgSnapshotCompleted, nil
 	}
 
 	// Initial snapshot only. Re-snapshots on rule changes are triggered by the
@@ -390,36 +390,32 @@ func (r *GitTargetReconciler) evaluateSnapshotGate(
 	if isConditionTrue(target.Status.Conditions, GitTargetConditionSnapshotSynced) {
 		stream, err := r.ensureEventStream(target, providerNS, log)
 		if err != nil {
-			return nil, metav1.ConditionFalse, "", 0, err
+			return nil, metav1.ConditionFalse, "", err
 		}
-		gitDest := types.NewResourceReference(target.Name, target.Namespace)
-		r.EventRouter.ReconcilerManager.CreateReconciler(ctx, gitDest, stream)
-		return stream, metav1.ConditionTrue, MsgSnapshotCompleted, 0, nil
+		return stream, metav1.ConditionTrue, MsgSnapshotCompleted, nil
 	}
 
 	stream, err := r.ensureEventStream(target, providerNS, log)
 	if err != nil {
-		return nil, metav1.ConditionFalse, "", 0, err
+		return nil, metav1.ConditionFalse, "", err
 	}
 
-	// Enter buffering state before starting reconciliation so that live events
-	// arriving during the snapshot sync are queued and not interleaved.
+	// Enter buffering state before the resync so live events arriving during the
+	// snapshot are queued, not interleaved with the mark-and-sweep commit. The
+	// EventStreamLive gate flushes them once the stream goes live.
 	stream.BeginReconciliation()
 
+	// One synchronous, content-derived streaming-snapshot resync (M8): the worker
+	// gathers the GitTarget's complete watched set, materialises it (create / update),
+	// and mark-and-sweeps managed documents the cluster no longer has. It blocks until
+	// the resync commit lands, so the snapshot is complete before live events flush.
 	gitDest := types.NewResourceReference(target.Name, target.Namespace)
-	reconciler := r.EventRouter.ReconcilerManager.CreateReconciler(ctx, gitDest, stream)
-	if err := reconciler.StartReconciliation(ctx); err != nil {
-		return stream, metav1.ConditionFalse, "", 0, fmt.Errorf(
-			"failed to start initial snapshot reconciliation: %w",
-			err,
-		)
+	stats, err := r.EventRouter.EmitResyncForGitDest(ctx, gitDest)
+	if err != nil {
+		return stream, metav1.ConditionFalse, "", fmt.Errorf(
+			"failed to run initial snapshot resync: %w", err)
 	}
 
-	if !reconciler.HasBothStates() {
-		return stream, metav1.ConditionFalse, "Initial snapshot reconciliation in progress", RequeueShortInterval, nil
-	}
-
-	stats := reconciler.GetLastSnapshotStats()
 	now := metav1.Now()
 	if target.Status.Snapshot == nil {
 		target.Status.Snapshot = &configbutleraiv1alpha1.GitTargetSnapshotStatus{}
@@ -431,7 +427,7 @@ func (r *GitTargetReconciler) evaluateSnapshotGate(
 		Deleted: clampIntToInt32(stats.Deleted),
 	}
 
-	return stream, metav1.ConditionTrue, MsgSnapshotCompleted, 0, nil
+	return stream, metav1.ConditionTrue, MsgSnapshotCompleted, nil
 }
 
 func (r *GitTargetReconciler) evaluateEventStreamGate(
@@ -883,9 +879,6 @@ func (r *GitTargetReconciler) cleanupDeletedGitTarget(
 	gitDest := types.NewResourceReference(namespacedName.Name, namespacedName.Namespace)
 
 	r.EventRouter.UnregisterGitTargetEventStream(gitDest)
-	if r.EventRouter.ReconcilerManager != nil {
-		_ = r.EventRouter.ReconcilerManager.DeleteReconciler(gitDest)
-	}
 
 	log.V(1).Info("Cleaned up in-memory state for deleted GitTarget", "gitDest", gitDest.String())
 }

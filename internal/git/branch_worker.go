@@ -24,7 +24,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -288,6 +287,29 @@ func (w *BranchWorker) EnqueueFinalize(signal *FinalizeSignal) {
 	}
 }
 
+// EnqueueResync adds a resync request to this worker's queue. Like a finalize
+// signal it rides the same queue as resource events, so it is applied in order with
+// live events: a resync enqueued during the snapshot window lands before the buffered
+// live events that follow it. If the queue is full the request is dropped and its
+// caller is notified immediately via the result channel.
+func (w *BranchWorker) EnqueueResync(request *ResyncRequest) {
+	if request == nil {
+		return
+	}
+	w.inflightItems.Add(1)
+	select {
+	case w.eventQueue <- WorkItem{Resync: request}:
+		w.Log.V(1).Info("Resync request enqueued",
+			"resources", len(request.Desired),
+			"gitTarget", request.GitTargetNamespace+"/"+request.GitTargetName)
+	default:
+		w.inflightItems.Add(-1)
+		w.Log.Error(nil, "Event queue full, resync request dropped",
+			"gitTarget", request.GitTargetNamespace+"/"+request.GitTargetName)
+		request.reply(ResyncResult{Err: ErrFinalizeQueueFull})
+	}
+}
+
 func (w *BranchWorker) enqueueRequest(request *WriteRequest) {
 	if request == nil {
 		return
@@ -341,26 +363,6 @@ func (w *BranchWorker) recordQueueDepth() {
 		attribute.String("provider_name", w.GitProviderRef),
 		attribute.String("branch", w.Branch),
 	))
-}
-
-// ListResourcesInPath returns resource identifiers found in a Git folder.
-// This is a synchronous service method called by EventRouter.
-func (w *BranchWorker) ListResourcesInPath(path string) ([]itypes.ResourceIdentifier, error) {
-	w.repoMu.Lock()
-	defer w.repoMu.Unlock()
-
-	// Ensure repository is initialized and up-to-date
-	if err := w.ensureRepositoryInitialized(w.ctx); err != nil {
-		return nil, fmt.Errorf("failed to initialize repository: %w", err)
-	}
-
-	provider, err := w.getGitProvider(w.ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get GitProvider: %w", err)
-	}
-	repoPath := w.repoPathForRemote(provider.Spec.URL)
-
-	return w.listResourceIdentifiersInPath(repoPath, path)
 }
 
 // EnsurePathBootstrapped prepares bootstrap templates locally for a path.
@@ -492,54 +494,6 @@ func (w *BranchWorker) bootstrapPathIfNeeded(
 	return nil
 }
 
-// listResourceIdentifiersInPath lists resource identifiers in a specific path.
-func (w *BranchWorker) listResourceIdentifiersInPath(
-	repoPath, path string,
-) ([]itypes.ResourceIdentifier, error) {
-	var resources []itypes.ResourceIdentifier
-
-	basePath := repoPath
-	if path != "" {
-		basePath = filepath.Join(repoPath, path)
-	}
-
-	err := filepath.Walk(basePath, func(walkPath string, info os.FileInfo, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if info.IsDir() {
-			return nil
-		}
-
-		relPath, relErr := filepath.Rel(basePath, walkPath)
-		if relErr != nil {
-			return relErr
-		}
-		relPath = filepath.ToSlash(relPath)
-
-		// Skip marker files
-		if strings.Contains(relPath, ".configbutler") {
-			return nil
-		}
-
-		// Process YAML files
-		ext := filepath.Ext(relPath)
-		if strings.EqualFold(ext, ".yaml") || strings.EqualFold(ext, ".yml") {
-			if id, ok := parseIdentifierFromPath(relPath); ok {
-				resources = append(resources, id)
-			}
-		}
-
-		return nil
-	})
-
-	if err != nil && !os.IsNotExist(err) {
-		return nil, err
-	}
-
-	return resources, nil
-}
-
 // processEvents is the main event processing loop.
 //
 // The loop owns one live commit-shaped event window. A commit-window timer
@@ -647,6 +601,11 @@ func (l *branchWorkerEventLoop) totalRetainedBytes() int64 {
 func (l *branchWorkerEventLoop) handleQueueItem(item WorkItem) {
 	if item.Finalize != nil {
 		l.handleFinalizeSignal(item.Finalize)
+		return
+	}
+
+	if item.Resync != nil {
+		l.handleResyncRequest(item.Resync)
 		return
 	}
 
@@ -1387,4 +1346,4 @@ func buildBootstrapOptions(encryptionConfig *ResolvedEncryptionConfig) pathBoots
 	}
 }
 
-// parseIdentifierFromPath and getAuthFromSecret are defined in helpers.go
+// getAuthFromSecret is defined in helpers.go
