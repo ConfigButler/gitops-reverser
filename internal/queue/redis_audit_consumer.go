@@ -425,11 +425,12 @@ func (c *AuditConsumer) routeAuditEvent(
 	id := itypes.NewResourceIdentifier(apiGroup, apiVersion, resourcePlural, namespace, name)
 	userInfo := resolveUserInfo(auditEvent)
 
-	// A subresource event (e.g. deployments/scale) becomes a parent-manifest field
-	// patch routed against the SAME parent-GVR rules — never an object write, because
-	// the body is a subresource (an autoscaling/v1 Scale), not the parent object.
+	// A subresource event becomes a parent-manifest field patch routed against the SAME
+	// parent-GVR rules — never an object write, because the body is a subresource (an
+	// autoscaling/v1 Scale), not the parent object. Only /scale is translated; every
+	// other subresource is dropped inside routeScaleFieldPatch.
 	if ref.Subresource != "" {
-		return c.routeSubresourceFieldPatch(ctx, log, auditEvent, op, id, userInfo, gvr, wrRules, cwrRules)
+		return c.routeScaleFieldPatch(ctx, log, auditEvent, op, id, userInfo, gvr, wrRules, cwrRules)
 	}
 
 	fullAPIVersion := apiVersion
@@ -575,11 +576,14 @@ func (c *AuditConsumer) routeToMatchedRules(
 		})
 }
 
-// routeSubresourceFieldPatch translates a subresource audit event into a parent-manifest
-// field patch and routes it against the matched parent-GVR rules. A body with no usable
-// spec is dropped with a metric (never guessed); there is no hydration fallback, by
-// design — see the subresource resolution doc.
-func (c *AuditConsumer) routeSubresourceFieldPatch(
+// routeScaleFieldPatch translates a built-in /scale audit event into a parent-manifest
+// replicas field patch and routes it against the matched parent-GVR rules. Only the
+// scale subresource is supported, and only for a built-in scalable parent whose replica
+// path is known: every other subresource, and every scale on a CRD or aggregated API, is
+// dropped with a scale-specific metric and never guessed. There is no live-parent GET and
+// no field-presence gate — the accepted value comes straight from the standardized Scale
+// response. See docs/design/manifest/version2/subresource-scope-reduction.md.
+func (c *AuditConsumer) routeScaleFieldPatch(
 	ctx context.Context,
 	log logr.Logger,
 	auditEvent auditv1.Event,
@@ -590,11 +594,12 @@ func (c *AuditConsumer) routeSubresourceFieldPatch(
 	wrRules []rulestore.CompiledRule,
 	cwrRules []rulestore.CompiledClusterRule,
 ) error {
-	assignments, ok := translateSubresourceToAssignments(auditEvent)
+	assignments, dropOutcome, ok := translateScaleToAssignments(auditEvent, gvr.group, gvr.resource)
 	if !ok {
-		recordPipelineEvent(ctx, gvr, auditEvent.Verb, pipelineOutcomeDroppedSubresource)
-		log.V(1).Info("Dropping subresource: body carries no usable spec to translate",
-			"resource", id.Resource, "subresource", auditEvent.ObjectRef.Subresource, "verb", auditEvent.Verb)
+		recordPipelineEvent(ctx, gvr, auditEvent.Verb, dropOutcome)
+		log.V(1).Info("Dropping subresource: not a translatable built-in scale event",
+			"resource", id.Resource, "subresource", auditEvent.ObjectRef.Subresource,
+			"verb", auditEvent.Verb, "outcome", dropOutcome)
 		return nil
 	}
 
@@ -604,7 +609,7 @@ func (c *AuditConsumer) routeSubresourceFieldPatch(
 			return buildFieldPatchEvent(assignments, source, id, op, userInfo, path, gitTargetRef, gitTargetNamespace)
 		})
 	if routed > 0 {
-		recordPipelineEvent(ctx, gvr, auditEvent.Verb, pipelineOutcomeRoutedSubresource)
+		recordPipelineEvent(ctx, gvr, auditEvent.Verb, pipelineOutcomeRoutedScale)
 	} else {
 		recordPipelineEvent(ctx, gvr, auditEvent.Verb, pipelineOutcomeRouteFailed)
 	}
@@ -671,8 +676,20 @@ const (
 	pipelineOutcomeDroppedPartialObject = "dropped_partial_object"
 	pipelineOutcomeRouted               = "routed"
 	pipelineOutcomeRouteFailed          = "route_failed"
-	pipelineOutcomeRoutedSubresource    = "routed_subresource"
-	pipelineOutcomeDroppedSubresource   = "dropped_unsupported_subresource"
+
+	// Scale subresource outcomes. Only /scale on a built-in scalable parent routes;
+	// every other subresource and every scale with an unknown parent replica path is
+	// dropped with one of the explicit dropped outcomes so ignored subresources are
+	// visible. See docs/design/manifest/version2/subresource-scope-reduction.md.
+	pipelineOutcomeRoutedScale = "routed_scale_subresource"
+	// pipelineOutcomeDroppedNonScale marks a subresource event that is not /scale.
+	pipelineOutcomeDroppedNonScale = "dropped_non_scale_subresource"
+	// pipelineOutcomeDroppedScaleMissingReplicas marks a scale event whose
+	// responseObject carries no spec.replicas to commit.
+	pipelineOutcomeDroppedScaleMissingReplicas = "dropped_scale_missing_response_replicas"
+	// pipelineOutcomeDroppedScalePathUnresolved marks a scale event whose parent has no
+	// known replica path — a CRD or aggregated API in this pass.
+	pipelineOutcomeDroppedScalePathUnresolved = "dropped_scale_path_unresolved"
 
 	ruleKindWatchRule        = "watchrule"
 	ruleKindClusterWatchRule = "clusterwatchrule"

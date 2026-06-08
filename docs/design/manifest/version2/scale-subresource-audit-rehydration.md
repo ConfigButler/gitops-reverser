@@ -5,6 +5,11 @@
 > Trigger: `kubectl scale deployment` updates the live Deployment through the
 > `deployments/scale` subresource, but the committed Deployment manifest is not
 > updated today.
+>
+> Scope update: see
+> [subresource-scope-reduction.md](subresource-scope-reduction.md). Future work
+> should narrow this from generic subresource translation to built-in and CRD
+> `/scale` only.
 
 ## Problem
 
@@ -184,22 +189,26 @@ Hard-denied before Redis:
 | `*/approval` | Workflow decision. |
 | `*/token` | Credential/token request. |
 
-Everything else may reach the consumer, but it must still pass translation and
-the sanitized parent gate.
+> Superseded: the broad hard-deny taxonomy above and the sanitized parent gate
+> below were the generic-subresource design. The shipped behavior is scale-only —
+> see [subresource-scope-reduction.md](subresource-scope-reduction.md). Only
+> `/scale` reaches the consumer now; everything else is dropped at webhook ingress.
 
 ## Metrics
 
 Keep outcomes bounded by group/version/resource/verb/subresource/outcome. Never
 label by object name or request URI.
 
-- `routed_subresource`: translated, passed the sanitized parent gate, and routed.
-- `dropped_denied_subresource`: denied at webhook ingress.
+The shipped consumer outcomes are scale-specific (see the scope-reduction doc):
+
+- `routed_scale_subresource`: built-in scale translated and routed.
+- `dropped_non_scale_subresource`: subresource is not `scale`.
+- `dropped_scale_missing_response_replicas`: scale response lacks
+  `responseObject.spec.replicas`.
+- `dropped_scale_path_unresolved`: no known parent replica path (CRD / aggregated API).
 - `unmatched`: no parent-GVR rule matched.
-- `dropped_unsupported_subresource`: no usable `responseObject.spec`.
-- `dropped_subresource_field_not_in_parent`: assignment path absent from sanitized
-  parent projection.
-- `subresource_patch_no_parent`: parent manifest absent from Git.
-- `subresource_patch_unsafe`: parent encrypted or not field-patchable.
+- `subresource_patch_no_parent` / `subresource_patch_unsafe`: writer-side outcomes,
+  logged with those `reason` strings (not yet counters).
 
 There should be no `rehydrated_*` or `fallback_*` outcomes.
 
@@ -211,33 +220,53 @@ There should be no `rehydrated_*` or `fallback_*` outcomes.
 - [x] Teach `BranchWorker` to apply field patches to existing manifests.
 - [x] Forward non-denied mutating subresources through webhook ingress.
 - [x] Add consumer translation from subresource event to field-patch event.
-- [ ] Remove `FieldPatch.ParentKind` from `internal/git/types.go`.
-- [ ] Remove writer `ParentKind` / `ByManifestIdentity` fast path; resolve field
+- [x] Remove `FieldPatch.ParentKind` from `internal/git/types.go`.
+- [x] Remove writer `ParentKind` / `ByManifestIdentity` fast path; resolve field
   patches by GVR/resource identity only.
-- [ ] Update writer tests to use the production GVR/resource-identity path.
-- [ ] Require `responseObject.spec` in `internal/queue/subresource_translate.go`.
-- [ ] Drop request-only subresource events; no `requestObject.spec` fallback.
-- [ ] Update translator tests: response-only succeeds, request-only drops.
-- [ ] Add sanitized live parent projection gate in the audit consumer.
-- [ ] Add gate tests: `spec.replicas` passes; stripped fields such as Service
-  `spec.clusterIP` drop.
-- [ ] Add/drop metrics for the taxonomy above.
-- [ ] Add CRD scale path remap from `specReplicasPath`.
+- [x] Update writer tests to use the production GVR/resource-identity path.
+- [x] Require `responseObject.spec` in `internal/queue/subresource_translate.go`.
+- [x] Drop request-only subresource events; no `requestObject.spec` fallback.
+- [x] Update translator tests: response-only succeeds, request-only drops.
+- [x] **Superseded by the scope reduction** — the generic translator and the
+  sanitized live parent projection gate were replaced by a scale-only translator
+  (`translateScaleToAssignments`) keyed on `auditutil.BuiltinScaleReplicasPath`. The
+  gate, its tests, and `dropped_subresource_field_not_in_parent` were removed; the
+  scale-specific outcomes are in the Metrics section above. See
+  [subresource-scope-reduction.md](subresource-scope-reduction.md).
+- [ ] Add the writer outcome counters `subresource_patch_no_parent` /
+  `subresource_patch_unsafe` (today logged with those exact `reason` strings, not yet
+  counters).
+- [ ] Add CRD scale path remap from `specReplicasPath`. Until then a CRD scale is
+  **safely dropped** (`dropped_scale_path_unresolved`), never miswritten.
 - [ ] Run `task lint`.
 - [ ] Run `task test`.
 - [ ] Check Docker with `docker info`, then run `task test-e2e`.
 
 ## Current State
 
-The staged code proves the transport and writer mechanics, but it is still wider
-than the intended final design:
+The scope reduction has landed (see
+[subresource-scope-reduction.md](subresource-scope-reduction.md)). The shipped
+behavior is scale-only, and the generic translator plus the sanitized parent gate
+are gone:
 
-- `FieldPatch.ParentKind` still exists and should be removed.
-- The writer still has an optional `ParentKind` fast path and should use only the
-  GVR/resource-identity path.
-- The translator still falls back to `requestObject.spec`; that fallback should
-  be removed.
-- The sanitized live parent projection gate is not implemented yet.
+- `FieldPatch.ParentKind` is removed. The writer resolves a field patch's parent
+  solely by its objectRef GVR through the same resource-identity inventory the
+  GVR-only delete uses (`manifestanalyzer.PlanDelete`); the patch is then applied
+  with the parent document's own committed Kind.
+- The webhook forwards only `*/scale` mutating events (`IsScaleSubresource`); every
+  other subresource is dropped before Redis.
+- The consumer translator (`translateScaleToAssignments`) reads only
+  `responseObject.spec.replicas` and resolves the parent replica path from built-in
+  policy (`auditutil.BuiltinScaleReplicasPath`). A request-only event drops, and a
+  scale whose parent path is unknown (CRD / aggregated API) drops as
+  `dropped_scale_path_unresolved` — never defaulted to `.spec.replicas`.
+- The sanitized live parent projection gate has been **removed**: with scale-only
+  support the accepted value comes straight from the standardized Scale response, so
+  no live-parent GET is needed to authorize the patch.
 
-Until those items are done, the implementation remains deliberately marked
-partial.
+Still narrower-than-final:
+
+- The writer `subresource_patch_no_parent` / `subresource_patch_unsafe` outcomes are
+  logged with those `reason` strings, not yet counters.
+- CRD scale-path remap from `specReplicasPath` is not implemented. CRD scale is
+  safely dropped (`dropped_scale_path_unresolved`), never miswritten.

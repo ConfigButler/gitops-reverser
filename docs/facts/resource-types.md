@@ -1,0 +1,303 @@
+schemaVersion: 1
+kind: KubernetesResourceTypeFacts
+title: Kubernetes resource type read API facts
+lastChecked: "2026-06-08"
+
+scope:
+  description: >
+    Facts about discovering, reading, listing, watching, and content-negotiating
+    Kubernetes API resources through the raw HTTP API.
+  perspective: raw-kubernetes-http-api
+  excludes:
+    - Client-library helper abstractions.
+    - kubectl output aggregation except where it differs from API behavior.
+
+sources:
+  - name: Kubernetes API overview
+    url: https://kubernetes.io/docs/concepts/overview/kubernetes-api/
+    facts:
+      - Discovery API contents.
+      - Aggregated and unaggregated discovery endpoints.
+      - OpenAPI v3 schema publication.
+  - name: Kubernetes API concepts
+    url: https://kubernetes.io/docs/reference/using-api/api-concepts/
+    facts:
+      - Resource URI shapes.
+      - get, list, and watch read semantics.
+      - YAML, Table, and PartialObjectMetadata media negotiation.
+      - Chunked list semantics.
+      - List-watch and streaming-list behavior.
+
+facts:
+  readPrimitives:
+    - name: discovery
+      kubernetesVerb: null
+      httpMethod: GET
+      purpose: Discover which API groups, versions, resources, scopes, and verbs the cluster serves.
+    - name: get
+      kubernetesVerb: get
+      httpMethod: GET
+      purpose: Retrieve one resource instance.
+    - name: list
+      kubernetesVerb: list
+      httpMethod: GET
+      purpose: Retrieve a collection of resource instances.
+    - name: watch
+      kubernetesVerb: watch
+      httpMethod: GET
+      purpose: Stream changes for a resource or collection from a resourceVersion.
+    - name: contentNegotiatedRead
+      kubernetesVerb: get-or-list
+      httpMethod: GET
+      purpose: Retrieve the same logical object or collection using another supported representation.
+
+  discovery:
+    summary: Discovery answers what resources exist and what operations they support.
+    aggregated:
+      featureState: Kubernetes v1.30 stable, enabled by default
+      endpoints:
+        - /api
+        - /apis
+      acceptHeader: application/json;v=v2;g=apidiscovery.k8s.io;as=APIGroupDiscoveryList
+      returns:
+        - resource names
+        - cluster or namespace scope
+        - endpoint URLs
+        - supported verbs
+        - alternative names
+        - group, version, and kind
+      fact: Aggregated discovery publishes all cluster resources through /api and /apis.
+    unaggregated:
+      rootEndpoints:
+        - /api
+        - /apis
+      groupVersionEndpoints:
+        - /api/v1
+        - /apis/apps/v1
+        - /apis/batch/v1
+        - /apis/example.com/v1
+      fact: Unaggregated discovery requires a separate request for each served group-version.
+    schemaDiscovery:
+      endpoints:
+        - /openapi/v3
+        - /openapi/v3/apis/apps/v1?hash=...
+      fact: Discovery is a short resource summary; OpenAPI is the schema-level API description.
+
+  resourceUris:
+    coreGroup:
+      basePath: /api/v1
+      fact: Core resources use /api and omit the API group path segment.
+      examples:
+        - /api/v1/pods
+        - /api/v1/namespaces/default/pods/nginx
+        - /api/v1/nodes/worker-1
+    namedGroups:
+      basePathPattern: /apis/{group}/{version}
+      fact: Named API groups use /apis/{group}/{version}.
+      examples:
+        - /apis/apps/v1/deployments
+        - /apis/apps/v1/namespaces/default/deployments/nginx
+        - /apis/example.com/v1/widgets
+    clusterScoped:
+      collectionPattern: /apis/{group}/{version}/{resource}
+      instancePattern: /apis/{group}/{version}/{resource}/{name}
+      examples:
+        - /api/v1/nodes
+        - /api/v1/nodes/worker-1
+        - /apis/rbac.authorization.k8s.io/v1/clusterroles/admin
+    namespaceScoped:
+      allNamespacesCollectionPattern: /apis/{group}/{version}/{resource}
+      namespaceCollectionPattern: /apis/{group}/{version}/namespaces/{namespace}/{resource}
+      instancePattern: /apis/{group}/{version}/namespaces/{namespace}/{resource}/{name}
+      examples:
+        - /api/v1/pods
+        - /api/v1/namespaces/default/pods
+        - /api/v1/namespaces/default/pods/nginx
+        - /apis/apps/v1/deployments
+        - /apis/apps/v1/namespaces/default/deployments
+        - /apis/apps/v1/namespaces/default/deployments/nginx
+      fact: >
+        For a namespaced resource type, the collection path without
+        /namespaces/{namespace} lists instances across all namespaces; it does
+        not make the resource cluster-scoped.
+
+  get:
+    fact: A get request returns one resource instance.
+    examples:
+      - request: GET /api/v1/namespaces/default/pods/nginx
+        responseKind: Pod
+      - request: GET /apis/apps/v1/namespaces/default/deployments/nginx
+        responseKind: Deployment
+      - request: GET /api/v1/nodes/worker-1
+        responseKind: Node
+    responseShape:
+      requiredTopLevelFields:
+        - apiVersion
+        - kind
+        - metadata
+      commonTopLevelFields:
+        - spec
+        - status
+
+  list:
+    fact: A list request returns a collection kind for one resource type.
+    examples:
+      - request: GET /api/v1/pods
+        responseKind: PodList
+        scope: all namespaces
+      - request: GET /api/v1/namespaces/default/pods
+        responseKind: PodList
+        scope: namespace default
+      - request: GET /apis/apps/v1/deployments
+        responseKind: DeploymentList
+        scope: all namespaces
+      - request: GET /apis/example.com/v1/widgets
+        responseKind: WidgetList
+        scope: depends on resource discovery scope
+    responseShape:
+      metadata:
+        includes:
+          - resourceVersion
+          - continue
+          - remainingItemCount
+      items: Contains resource instances of the listed type.
+    collectionKindFacts:
+      - Kubernetes defines concrete collection kinds such as PodList, ServiceList, and DeploymentList.
+      - "`kind: List` is a kubectl or client-side aggregation shape, not a universal API response kind."
+
+  chunkedLists:
+    featureState: Kubernetes v1.29 stable, enabled by default
+    fact: List responses can be paged with limit and continue while preserving one consistent snapshot.
+    requestSequence:
+      - GET /api/v1/pods?limit=500
+      - GET /api/v1/pods?limit=500&continue=ENCODED_CONTINUE_TOKEN
+    guarantees:
+      - The collection resourceVersion remains constant across pages for the same list operation.
+      - Items created, updated, or deleted after that resourceVersion are not included in later pages.
+      - A client can finish the paged list and then watch from the collection resourceVersion.
+    failureMode:
+      status: 410 Gone
+      cause: The continue token expired before the client finished the paged list.
+      handling: Start the list again or omit the limit parameter.
+
+  watch:
+    fact: A watch streams changes after the requested resourceVersion.
+    classicPattern:
+      - step: list
+        request: GET /api/v1/namespaces/default/pods
+        result: Read metadata.resourceVersion from the PodList.
+      - step: watch
+        request: GET /api/v1/namespaces/default/pods?watch=1&resourceVersion=10245
+        result: Stream events after resourceVersion 10245.
+    eventTypes:
+      - ADDED
+      - MODIFIED
+      - DELETED
+      - BOOKMARK
+    bookmarkFacts:
+      - BOOKMARK events carry resourceVersion progress without a full object.
+      - Clients request bookmarks with allowWatchBookmarks=true.
+      - Clients must not assume bookmarks are returned at a specific interval.
+      - Clients must not assume the API server will send bookmarks even when requested.
+    compactionFailure:
+      status: 410 Gone
+      cause: The requested historical resourceVersion is no longer available.
+      handling: Clear the local cache, perform a fresh get or list, and restart the watch.
+
+  streamingLists:
+    featureState: Kubernetes v1.34 beta, enabled by default
+    fact: A watch can send synthetic initial ADDED events for current state before normal watch events.
+    request: >
+      GET /api/v1/namespaces/default/pods?watch=1&sendInitialEvents=true&
+      allowWatchBookmarks=true&resourceVersion=&resourceVersionMatch=NotOlderThan
+    requirements:
+      - sendInitialEvents=true
+      - resourceVersionMatch=NotOlderThan
+    sequence:
+      - Synthetic ADDED events for current objects.
+      - BOOKMARK event when requested and initial state is synced.
+      - Normal watch events after the synced resourceVersion.
+
+  subresources:
+    fact: A subresource is a separate API surface below a parent resource path.
+    pathPatterns:
+      clusterScoped: /apis/{group}/{version}/{resource}/{name}/{subresource}
+      namespaceScoped: /apis/{group}/{version}/namespaces/{namespace}/{resource}/{name}/{subresource}
+    examples:
+      - GET /api/v1/namespaces/default/pods/nginx/log
+      - GET /api/v1/namespaces/default/pods/nginx/status
+      - GET /apis/apps/v1/namespaces/default/deployments/nginx/status
+      - GET /apis/apps/v1/namespaces/default/deployments/nginx/scale
+    behaviorFacts:
+      - Supported verbs differ by subresource and parent resource type.
+      - A subresource can have a different response shape from the parent resource.
+      - It is not possible to access subresources across multiple parent resources with one generic subresource call.
+
+  mediaNegotiation:
+    fact: GET requests can use the Accept header to ask for alternate representations.
+    defaultJson:
+      request: GET /api/v1/pods
+      acceptHeader: application/json
+      responseKind: PodList
+    yaml:
+      request: GET /api/v1/pods
+      acceptHeader: application/yaml
+      responseKind: PodList
+      fact: Kubernetes supports application/yaml for requests and responses.
+    table:
+      request: GET /api/v1/pods
+      acceptHeader: application/json;as=Table;g=meta.k8s.io;v=v1
+      responseKind: Table
+      usefulFor:
+        - generic UIs
+        - kubectl-like tabular displays
+      fallbackHeader: application/json;as=Table;g=meta.k8s.io;v=v1, application/json
+      fallbackFact: Servers that do not support Table can return 406 unless another media type is accepted.
+    partialObjectMetadata:
+      singleObject:
+        request: GET /api/v1/namespaces/default/pods/nginx
+        acceptHeader: application/json;as=PartialObjectMetadata;g=meta.k8s.io;v=v1
+        responseKind: PartialObjectMetadata
+      collection:
+        request: GET /api/v1/pods
+        acceptHeader: application/json;as=PartialObjectMetadataList;g=meta.k8s.io;v=v1
+        responseKind: PartialObjectMetadataList
+      usefulFor:
+        - existence checks
+        - metadata indexes
+        - garbage collection
+        - inventory tools that do not need spec or status
+      fallbackHeader: >
+        application/json;as=PartialObjectMetadata;g=meta.k8s.io;v=v1,
+        application/json;q=0.9
+      fallbackFact: Aggregated APIs and extensions may not support partial metadata responses.
+
+  genericClientFlow:
+    - step: discover
+      requests:
+        - GET /api
+        - GET /apis
+        - GET /openapi/v3
+      result: Know resource names, scopes, verbs, and optionally schemas.
+    - step: inventory
+      requests:
+        - GET /apis/{group}/{version}/{resource}
+        - GET /apis/{group}/{version}/namespaces/{namespace}/{resource}
+      result: List the resource collection, usually in chunks for large clusters.
+    - step: readOne
+      request: GET .../{resource}/{name}
+      result: Fetch a single resource instance.
+    - step: continuousSync
+      pattern: LIST, record collection resourceVersion, then WATCH from that resourceVersion.
+      result: Maintain a local view without missing later changes.
+    - step: lighterReads
+      headers:
+        - application/json;as=Table;g=meta.k8s.io;v=v1, application/json
+        - application/json;as=PartialObjectMetadataList;g=meta.k8s.io;v=v1, application/json;q=0.9
+      result: Use server-side tabular or metadata-only responses when supported.
+
+  practicalModel:
+    - Kubernetes read operations are discover, get, list, and watch.
+    - Kubernetes commonly uses HTTP GET for get, list, and watch, but classifies them as different API verbs.
+    - resourceVersion ties list and watch together for continuous synchronization.
+    - The same API machinery applies to built-ins, CRDs, and many aggregated API resources when the server supports the same verbs and representations.

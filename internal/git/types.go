@@ -310,14 +310,15 @@ type FieldPatch struct {
 	// are disjoint; each owns only its own subtree, so the patch is additive and
 	// leaves every unmentioned field in Git untouched.
 	Assignments []manifestedit.FieldAssignment
-	// ParentKind is the manifest Kind of the parent (e.g. "Deployment"), resolved
-	// GVR->GVK from the discovery catalog. The audit objectRef carries only the GVR
-	// (plural resource), and the subresource body's own Kind (e.g. "Scale") is not
-	// the parent's, so the parent Kind must be supplied here for content-identity
-	// matching when the writer locates the document.
-	ParentKind string
 	// Source is a bounded origin label for commit messages and metrics, e.g.
 	// "deployments/scale". Never the request URI.
+	//
+	// The parent Kind is intentionally NOT carried here. The audit objectRef gives
+	// only the GVR (plural resource), and the subresource body's own Kind (e.g.
+	// "Scale") is not the parent's. The writer resolves the parent document from the
+	// objectRef GVR through the same resource-identity inventory the GVR-only delete
+	// uses — it already has the live-catalog mapper — so the consumer never needs
+	// GVR->GVK resolution.
 	Source string
 }
 

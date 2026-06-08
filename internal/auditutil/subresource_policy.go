@@ -18,38 +18,45 @@ limitations under the License.
 
 package auditutil
 
-// Subresource forwarding policy. The webhook gate forwards mutating subresource
-// audit events so the consumer can translate supported ones (e.g. deployments/scale)
-// into parent-manifest field patches. This hard-deny list names the subresources
-// that must NEVER be mirrored regardless of verb — observed state, runtime streams,
-// proxies, logs, and placement — so they are dropped before Redis. See
-// docs/design/manifest/version2/scale-subresource-audit-rehydration.md.
+// Subresource handling policy. GitOps Reverser mirrors exactly one Kubernetes
+// subresource: the built-in /scale. It is the single case where a subresource writes
+// the parent's desired state (the accepted replica count) AND Kubernetes exposes that
+// value in a standardized response object. Every other subresource is observed state, a
+// runtime stream, a credential, lifecycle control, a proxy, or an imperative action, so
+// it is ignored. The rule is deliberately narrow: only `scale` can route, and only when
+// the parent's replica path is known by built-in policy. See
+// docs/design/manifest/version2/subresource-scope-reduction.md.
 
-// IsHardDeniedSubresource reports whether a (resource, subresource) audit target is
-// on the hard-deny list: a subresource that must never be mirrored, regardless of
-// verb. A top-level resource (empty subresource) is never denied here — only the
-// subresource gate consults this. resource is the plural form from objectRef (e.g.
-// "pods", "deployments").
-func IsHardDeniedSubresource(resource, subresource string) bool {
-	if subresource == "" {
-		return false
+// IsScaleSubresource reports whether subresource is the built-in scale subresource. The
+// webhook forwards only scale subresource events; every other subresource is dropped
+// before Redis. A CRD or aggregated-API scale still passes this gate — it is the
+// consumer that drops it for an unresolved parent replica path.
+func IsScaleSubresource(subresource string) bool {
+	return subresource == "scale"
+}
+
+// BuiltinScaleReplicasPath returns the parent replica field path for a currently
+// served built-in scalable resource identified by API group and plural resource.
+// ok is false when the resource is not a known built-in scalable type — for
+// example a CRD or aggregated API resource — in which case the scale event must
+// be dropped, never defaulted to .spec.replicas.
+//
+// Kubernetes' currently served built-in scalable resources all map scale.spec.replicas
+// to the parent .spec.replicas field. The version is intentionally ignored because
+// this path is stable for these resources across their served versions.
+//
+// CRD scale needs the CRD definition, because the path comes from
+// spec.versions[*].subresources.scale.specReplicasPath. Aggregated APIs have no
+// generic discovery field that reveals the parent write path. Each call returns
+// a fresh slice the caller owns.
+func BuiltinScaleReplicasPath(group, resource string) ([]string, bool) {
+	switch {
+	case group == "apps" && resource == "deployments",
+		group == "apps" && resource == "statefulsets",
+		group == "apps" && resource == "replicasets",
+		group == "" && resource == "replicationcontrollers":
+		return []string{"spec", "replicas"}, true
+	default:
+		return nil, false
 	}
-	// Denied for ANY parent — none is a desired-state mutation worth committing:
-	//   status   — observed state, not desired manifest state
-	//   finalize — lifecycle control, not a normal desired manifest update
-	//   approval — workflow decision; do not infer parent desired state
-	//   token    — mints a credential (serviceaccounts/token); nothing to mirror
-	switch subresource {
-	case "status", "finalize", "approval", "token":
-		return true
-	}
-	// Denied for a specific parent: runtime command/stream endpoints, proxies, logs,
-	// eviction, and scheduler binding — none carry a parent desired-state mutation.
-	switch resource + "/" + subresource {
-	case "pods/exec", "pods/attach", "pods/portforward", "pods/proxy",
-		"pods/log", "pods/eviction", "pods/binding",
-		"services/proxy", "nodes/proxy":
-		return true
-	}
-	return false
 }

@@ -721,11 +721,12 @@ func TestProcessMessage_NoObjectRefIsACKed(t *testing.T) {
 	assertNoPendingMessages(t, mr)
 }
 
-// A deployments/scale event must be TRANSLATED into a parent-manifest field patch and
-// routed against the matching deployments rule — not written as its Scale body, and not
-// dropped. The routed event carries a FieldPatch (spec.replicas, no object), so the
-// writer patches only that field on the committed Deployment.
-func TestProcessMessage_SubresourceEventTranslatesToFieldPatch(t *testing.T) {
+// A deployments/scale event must be TRANSLATED into a parent-manifest replicas field
+// patch and routed against the matching deployments rule — not written as its Scale
+// body, and not dropped. The routed event carries a FieldPatch (spec.replicas, no
+// object), so the writer patches only that field on the committed Deployment. No live
+// parent GET is involved: the accepted value comes straight from the Scale response.
+func TestProcessMessage_ScaleEventTranslatesToFieldPatch(t *testing.T) {
 	mr := miniredis.RunT(t)
 	er := &fakeEventRouter{}
 
@@ -760,6 +761,37 @@ func TestProcessMessage_SubresourceEventTranslatesToFieldPatch(t *testing.T) {
 	require.Len(t, routed.FieldPatch.Assignments, 1, "only spec.replicas, never status")
 	assert.Equal(t, []string{"spec", "replicas"}, routed.FieldPatch.Assignments[0].Path)
 	assert.Equal(t, int64(3), routed.FieldPatch.Assignments[0].Value)
+	assertNoPendingMessages(t, mr)
+}
+
+// A scale on a CRD has no known parent replica path, so it is dropped (path unresolved)
+// rather than defaulting to .spec.replicas: nothing is routed, and the message is ACKed.
+func TestProcessMessage_CRDScaleDroppedPathUnresolved(t *testing.T) {
+	mr := miniredis.RunT(t)
+	er := &fakeEventRouter{}
+
+	rs := rulestore.NewStore()
+	rs.AddOrUpdateWatchRule(
+		makeWatchRule("widget-rule", []string{"widgets"}, []string{"v1"}, []string{"example.com"}),
+		"my-target", "default",
+		"my-provider", "default",
+		"main", "state/",
+	)
+
+	c := newTestConsumer(t, mr, rs, er)
+	require.NoError(t, c.ensureConsumerGroup(context.Background()))
+
+	ev := makeAuditEvent("patch", auditv1.StageResponseComplete, "widgets", "default", "w1")
+	ev.ObjectRef.APIGroup = "example.com"
+	ev.ObjectRef.Subresource = "scale"
+	ev.ResponseObject = &runtime.Unknown{
+		Raw: []byte(`{"kind":"Scale","apiVersion":"autoscaling/v1","spec":{"replicas":3}}`),
+	}
+	pushAuditMessage(t, mr, ev)
+
+	require.NoError(t, c.readAndProcessBatch(context.Background()))
+
+	assert.Empty(t, er.calls, "a CRD scale with no known parent replica path must not be routed")
 	assertNoPendingMessages(t, mr)
 }
 

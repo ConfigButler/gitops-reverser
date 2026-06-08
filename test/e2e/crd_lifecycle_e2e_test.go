@@ -29,7 +29,12 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-var _ = Describe("Manager CRD Lifecycle", Label("manager"), Ordered, func() {
+// Marked Serial because its specs mirror the IceCreamOrder CRD through an initial
+// snapshot/resync that lists CRDs cluster-wide; running concurrently with other specs
+// that create and delete CRDs (e.g. the bi-directional suite) caused the initial CRD
+// snapshot to flake under transient apiserver RBAC/list churn. Serial isolates it for
+// now — see docs/TODO.md for making this parallel-safe again.
+var _ = Describe("Manager CRD Lifecycle", Label("manager"), Serial, Ordered, func() {
 	var (
 		testNs           string
 		crdLifecycleRepo *RepoArtifacts

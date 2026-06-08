@@ -266,8 +266,7 @@ func createTestFieldPatchEvent(replicas int64) git.Event {
 			Assignments: []manifestedit.FieldAssignment{
 				{Path: []string{"spec", "replicas"}, Value: replicas},
 			},
-			ParentKind: "Deployment",
-			Source:     "deployments/scale",
+			Source: "deployments/scale",
 		},
 		Identifier: identifier,
 		Operation:  "UPDATE",

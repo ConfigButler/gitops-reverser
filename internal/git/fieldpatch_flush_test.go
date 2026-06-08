@@ -23,6 +23,7 @@ import (
 	"os"
 	"testing"
 
+	gogit "github.com/go-git/go-git/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -33,21 +34,45 @@ import (
 )
 
 // deploymentScalePatch builds a deployments/scale-shaped field-patch event: no
-// object, just a spec.replicas assignment against a parent Deployment identity.
+// object, just a spec.replicas assignment against a parent Deployment GVR identity.
+// It carries no parent Kind: the writer resolves the parent document from the GVR.
 func deploymentScalePatch(name string, replicas int64) Event {
 	return Event{
 		FieldPatch: &FieldPatch{
 			Assignments: []manifestedit.FieldAssignment{
 				{Path: []string{"spec", "replicas"}, Value: replicas},
 			},
-			ParentKind: "Deployment",
-			Source:     "deployments/scale",
+			Source: "deployments/scale",
 		},
 		Identifier: types.ResourceIdentifier{
 			Group: "apps", Version: "v1", Resource: "deployments", Namespace: "default", Name: name,
 		},
 		Operation: "UPDATE",
 	}
+}
+
+// deploymentsMapper resolves apps/v1 Deployment <-> deployments so the writer can
+// locate a field patch's parent by its objectRef GVR through the resource-identity
+// inventory (the production resolution path; the consumer never sends a Kind).
+func deploymentsMapper() mapping.ResourceMapper {
+	return mapping.NewStaticSnapshotMapper(mapping.Snapshot{
+		Entries: []mapping.Entry{{
+			GVK:        schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"},
+			GVR:        schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"},
+			Namespaced: true,
+			Allowed:    true,
+		}},
+	})
+}
+
+// applyScalePatch folds field-patch events over the worktree through a worker whose
+// mapper resolves the deployments GVR, exercising the production GVR-only resolution.
+func applyScalePatch(t *testing.T, writer *contentWriter, worktree *gogit.Worktree, events ...Event) bool {
+	t.Helper()
+	w := &BranchWorker{contentWriter: writer, mapper: deploymentsMapper()}
+	changed, err := w.flushEventsToWorktree(context.Background(), worktree, "", events)
+	require.NoError(t, err)
+	return changed
 }
 
 // A field-patch event scales an existing Deployment manifest in place: only
@@ -69,7 +94,7 @@ func TestPlanFlush_FieldPatchUpdatesExistingManifest(t *testing.T) {
 		"    spec:\n      containers:\n        - name: web\n          image: nginx:1.25\n"
 	full := seedPlacedManifest(t, worktree, rel, seeded)
 
-	changed := applyEventsViaPlanFlush(t, writer, worktree, deploymentScalePatch("web", 3))
+	changed := applyScalePatch(t, writer, worktree, deploymentScalePatch("web", 3))
 	require.True(t, changed, "scaling an existing manifest must write")
 
 	got, err := os.ReadFile(full)
@@ -83,11 +108,12 @@ func TestPlanFlush_FieldPatchUpdatesExistingManifest(t *testing.T) {
 	assert.Contains(t, out, "matchLabels", "the selector survives")
 }
 
-// The production path: a translator-emitted field patch leaves ParentKind empty (the
-// consumer cannot cheaply resolve GVR->GVK), so the writer must resolve the parent
-// Deployment from its objectRef GVR through the mapper-built resource index — the same
-// resolution the GVR-only delete uses — and patch only spec.replicas.
-func TestPlanFlush_FieldPatchResolvesParentByGVRWhenKindUnset(t *testing.T) {
+// The production path: a translator-emitted field patch carries no parent Kind, so the
+// writer must resolve the parent Deployment from its objectRef GVR through the
+// mapper-built resource index — the same resolution the GVR-only delete uses — and
+// patch only spec.replicas. The manifest is seeded off its canonical path to prove the
+// resolution is content-derived (resource identity), not path-derived.
+func TestPlanFlush_FieldPatchResolvesParentByGVR(t *testing.T) {
 	writer := newContentWriter(types.SensitiveResourcePolicy{})
 	worktree := newWorktreeForTest(t)
 
@@ -97,28 +123,7 @@ func TestPlanFlush_FieldPatchResolvesParentByGVRWhenKindUnset(t *testing.T) {
 		"spec:\n  replicas: 1\n  paused: false\n"
 	full := seedPlacedManifest(t, worktree, rel, seeded)
 
-	mapper := mapping.NewStaticSnapshotMapper(mapping.Snapshot{
-		Entries: []mapping.Entry{{
-			GVK:        schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"},
-			GVR:        schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"},
-			Namespaced: true,
-			Allowed:    true,
-		}},
-	})
-	w := &BranchWorker{contentWriter: writer, mapper: mapper}
-
-	patch := Event{
-		FieldPatch: &FieldPatch{
-			Assignments: []manifestedit.FieldAssignment{{Path: []string{"spec", "replicas"}, Value: int64(4)}},
-			Source:      "deployments/scale",
-		},
-		Identifier: types.ResourceIdentifier{
-			Group: "apps", Version: "v1", Resource: "deployments", Namespace: "default", Name: "web",
-		},
-		Operation: "UPDATE",
-	}
-	changed, err := w.flushEventsToWorktree(context.Background(), worktree, "", []Event{patch})
-	require.NoError(t, err)
+	changed := applyScalePatch(t, writer, worktree, deploymentScalePatch("web", 4))
 	require.True(t, changed, "the parent must be resolved by GVR and patched")
 
 	got, err := os.ReadFile(full)
@@ -133,7 +138,7 @@ func TestPlanFlush_FieldPatchWithNoParentIsNoOp(t *testing.T) {
 	writer := newContentWriter(types.SensitiveResourcePolicy{})
 	worktree := newWorktreeForTest(t)
 
-	changed := applyEventsViaPlanFlush(t, writer, worktree, deploymentScalePatch("ghost", 3))
+	changed := applyScalePatch(t, writer, worktree, deploymentScalePatch("ghost", 3))
 	assert.False(t, changed, "a field patch with no parent in Git writes nothing")
 }
 
@@ -150,7 +155,7 @@ func TestPlanFlush_FieldPatchEncryptedParentIsSkipped(t *testing.T) {
 		"sops:\n  mac: ENC[placeholder]\n"
 	full := seedPlacedManifest(t, worktree, rel, seeded)
 
-	changed := applyEventsViaPlanFlush(t, writer, worktree, deploymentScalePatch("web", 3))
+	changed := applyScalePatch(t, writer, worktree, deploymentScalePatch("web", 3))
 	assert.False(t, changed, "an encrypted parent is never patched in place")
 
 	got, err := os.ReadFile(full)

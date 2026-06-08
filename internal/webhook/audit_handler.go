@@ -656,12 +656,12 @@ func (h *AuditHandler) checkEvent(event *audit.Event) (bool, error) {
 
 // shouldForwardSubresource is the cheap subresource forwarding gate. Top-level
 // resource events always pass. A subresource event passes only when it is a mutating
-// verb and not hard-denied, so a supported subresource (e.g. deployments/scale)
-// reaches the consumer to be translated into a parent-manifest field patch, while
-// status, exec, proxy, log, and other non-desired-state subresources are dropped
-// before Redis. The consumer remains the authority for whether a forwarded
-// subresource can actually be resolved. See
-// docs/design/manifest/version2/scale-subresource-audit-rehydration.md.
+// /scale — the single subresource GitOps Reverser mirrors — so a deployments/scale
+// event reaches the consumer to be translated into a parent-manifest replicas patch,
+// while status, exec, proxy, log, and every other subresource is dropped before Redis.
+// The consumer remains the authority for whether a forwarded scale can actually be
+// resolved (it drops a scale whose parent replica path is unknown). See
+// docs/design/manifest/version2/subresource-scope-reduction.md.
 func shouldForwardSubresource(event *audit.Event) bool {
 	if event.ObjectRef == nil || event.ObjectRef.Subresource == "" {
 		return true
@@ -669,7 +669,7 @@ func shouldForwardSubresource(event *audit.Event) bool {
 	if _, ok := auditutil.VerbToOperation(event.Verb); !ok {
 		return false
 	}
-	return !auditutil.IsHardDeniedSubresource(event.ObjectRef.Resource, event.ObjectRef.Subresource)
+	return auditutil.IsScaleSubresource(event.ObjectRef.Subresource)
 }
 
 func hasAuditV1ObjectBody(event *auditv1.Event) bool {

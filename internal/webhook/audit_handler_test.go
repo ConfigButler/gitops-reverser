@@ -480,13 +480,26 @@ func TestAuditHandler_validateEvent(t *testing.T) {
 			expectedProcessed: false,
 		},
 		{
-			name: "services proxy subresource denied",
+			name: "services proxy subresource is dropped as non-scale",
 			event: audit.Event{
 				AuditID: "svc-proxy",
 				Verb:    "create",
 				ObjectRef: &audit.ObjectReference{
 					Resource:    "services",
 					Subresource: "proxy",
+				},
+			},
+			expectedErr:       "",
+			expectedProcessed: false,
+		},
+		{
+			name: "an arbitrary mutating subresource is dropped as non-scale",
+			event: audit.Event{
+				AuditID: "widget-throttle",
+				Verb:    "update",
+				ObjectRef: &audit.ObjectReference{
+					Resource:    "widgets",
+					Subresource: "throttle",
 				},
 			},
 			expectedErr:       "",

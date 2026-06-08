@@ -24,36 +24,58 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestIsHardDeniedSubresource(t *testing.T) {
+func TestIsScaleSubresource(t *testing.T) {
 	tests := []struct {
 		name        string
-		resource    string
 		subresource string
-		denied      bool
+		isScale     bool
 	}{
-		{"top-level resource is never denied", "deployments", "", false},
-		{"scale is allowed for built-ins", "deployments", "scale", false},
-		{"crd scale is allowed", "widgets", "scale", false},
-		{"status is denied for any parent", "deployments", "status", true},
-		{"crd status is denied", "widgets", "status", true},
-		{"finalize is denied for any parent", "namespaces", "finalize", true},
-		{"approval is denied", "certificatesigningrequests", "approval", true},
-		{"serviceaccount token is denied", "serviceaccounts", "token", true},
-		{"pods/exec is denied", "pods", "exec", true},
-		{"pods/attach is denied", "pods", "attach", true},
-		{"pods/portforward is denied", "pods", "portforward", true},
-		{"pods/log is denied", "pods", "log", true},
-		{"pods/eviction is denied", "pods", "eviction", true},
-		{"pods/binding is denied", "pods", "binding", true},
-		{"pods/proxy is denied", "pods", "proxy", true},
-		{"services/proxy is denied", "services", "proxy", true},
-		{"nodes/proxy is denied", "nodes", "proxy", true},
-		{"proxy is not denied for an arbitrary parent", "deployments", "proxy", false},
-		{"an unknown subresource is forwarded", "deployments", "throttle", false},
+		{"scale is the one supported subresource", "scale", true},
+		{"status is not scale", "status", false},
+		{"exec is not scale", "exec", false},
+		{"empty subresource is not scale", "", false},
+		{"an arbitrary subresource is not scale", "throttle", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.denied, IsHardDeniedSubresource(tt.resource, tt.subresource))
+			assert.Equal(t, tt.isScale, IsScaleSubresource(tt.subresource))
 		})
 	}
+}
+
+func TestBuiltinScaleReplicasPath(t *testing.T) {
+	tests := []struct {
+		name     string
+		group    string
+		resource string
+		wantPath []string
+		wantOK   bool
+	}{
+		{"apps deployments", "apps", "deployments", []string{"spec", "replicas"}, true},
+		{"apps statefulsets", "apps", "statefulsets", []string{"spec", "replicas"}, true},
+		{"apps replicasets", "apps", "replicasets", []string{"spec", "replicas"}, true},
+		{"core replicationcontrollers", "", "replicationcontrollers", []string{"spec", "replicas"}, true},
+		{"a CRD scalable type has no known path", "example.com", "widgets", nil, false},
+		{"an aggregated API scalable type has no known path", "metrics.k8s.io", "things", nil, false},
+		{"deployments outside the apps group are not built-in", "extensions", "deployments", nil, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path, ok := BuiltinScaleReplicasPath(tt.group, tt.resource)
+			assert.Equal(t, tt.wantOK, ok)
+			assert.Equal(t, tt.wantPath, path)
+		})
+	}
+}
+
+// The returned path is a copy: mutating it must not corrupt the shared policy for the
+// next caller.
+func TestBuiltinScaleReplicasPath_ReturnsCopy(t *testing.T) {
+	first, ok := BuiltinScaleReplicasPath("apps", "deployments")
+	assert.True(t, ok)
+	first[0] = "mutated"
+
+	second, ok := BuiltinScaleReplicasPath("apps", "deployments")
+	assert.True(t, ok)
+	assert.Equal(t, []string{"spec", "replicas"}, second, "the shared policy must be immutable")
 }

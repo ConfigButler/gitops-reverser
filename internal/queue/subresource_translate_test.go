@@ -29,6 +29,9 @@ import (
 	auditv1 "k8s.io/apiserver/pkg/apis/audit/v1"
 )
 
+// scaleEvent builds a deployments/scale audit event with the given response and request
+// bodies. The parent GVR (apps/deployments) is supplied by the caller to
+// translateScaleToAssignments; the objectRef here only needs to carry the subresource.
 func scaleEvent(responseBody, requestBody string) auditv1.Event {
 	ev := auditv1.Event{
 		ObjectRef: &auditv1.ObjectReference{Resource: "deployments", Subresource: "scale"},
@@ -42,10 +45,10 @@ func scaleEvent(responseBody, requestBody string) auditv1.Event {
 	return ev
 }
 
-// TestTranslateSubresource_RealScaleRecording feeds the actual recorded
-// deployments/scale responseObject (the design's reference capture) through the
-// translator and asserts it becomes exactly spec.replicas: 3.
-func TestTranslateSubresource_RealScaleRecording(t *testing.T) {
+// TestTranslateScale_RealScaleRecording feeds the actual recorded deployments/scale
+// responseObject (the design's reference capture) through the translator and asserts it
+// becomes exactly spec.replicas: 3.
+func TestTranslateScale_RealScaleRecording(t *testing.T) {
 	raw, err := os.ReadFile("../webhook/testdata/audit-events/deployment-scale-subresource.json")
 	require.NoError(t, err)
 
@@ -58,57 +61,104 @@ func TestTranslateSubresource_RealScaleRecording(t *testing.T) {
 		ResponseObject: &runtime.Unknown{Raw: recording["responseObject"]},
 	}
 
-	assignments, ok := translateSubresourceToAssignments(ev)
+	assignments, dropOutcome, ok := translateScaleToAssignments(ev, "apps", "deployments")
 	require.True(t, ok)
+	assert.Empty(t, dropOutcome)
 	require.Len(t, assignments, 1)
 	assert.Equal(t, []string{"spec", "replicas"}, assignments[0].Path)
 	assert.Equal(t, int64(3), assignments[0].Value)
 }
 
-func TestTranslateSubresource_PrefersResponseOverRequest(t *testing.T) {
+func TestTranslateScale_UsesResponseIgnoresRequest(t *testing.T) {
 	ev := scaleEvent(`{"spec":{"replicas":5}}`, `{"spec":{"replicas":3}}`)
 
-	assignments, ok := translateSubresourceToAssignments(ev)
+	assignments, _, ok := translateScaleToAssignments(ev, "apps", "deployments")
 	require.True(t, ok)
 	require.Len(t, assignments, 1)
-	assert.Equal(t, int64(5), assignments[0].Value, "the post-mutation responseObject wins")
+	assert.Equal(t, int64(5), assignments[0].Value, "only the post-mutation responseObject is read")
 }
 
-func TestTranslateSubresource_FallsBackToRequest(t *testing.T) {
+// A scale event carrying only a requestObject is dropped: a request body is
+// pre-admission intent, not confirmed accepted state, so there is no fallback to it.
+func TestTranslateScale_RequestOnlyIsDropped(t *testing.T) {
 	ev := scaleEvent("", `{"spec":{"replicas":3}}`)
 
-	assignments, ok := translateSubresourceToAssignments(ev)
-	require.True(t, ok)
-	require.Len(t, assignments, 1)
-	assert.Equal(t, int64(3), assignments[0].Value)
+	_, dropOutcome, ok := translateScaleToAssignments(ev, "apps", "deployments")
+	assert.False(t, ok, "a request-only scale event must not be translated")
+	assert.Equal(t, pipelineOutcomeDroppedScaleMissingReplicas, dropOutcome)
 }
 
-func TestTranslateSubresource_NeverReadsStatus(t *testing.T) {
+// Only spec.replicas is read; status (e.g. a Scale's status.replicas) never enters the
+// patch.
+func TestTranslateScale_NeverReadsStatus(t *testing.T) {
 	ev := scaleEvent(`{"spec":{"replicas":3},"status":{"replicas":0,"selector":"app=web"}}`, "")
 
-	assignments, ok := translateSubresourceToAssignments(ev)
+	assignments, _, ok := translateScaleToAssignments(ev, "apps", "deployments")
 	require.True(t, ok)
 	require.Len(t, assignments, 1, "status is never translated")
 	assert.Equal(t, []string{"spec", "replicas"}, assignments[0].Path)
 }
 
-func TestTranslateSubresource_NoSpecIsDropped(t *testing.T) {
+// A scale response with no spec.replicas is dropped with the missing-replicas outcome.
+func TestTranslateScale_NoReplicasIsDropped(t *testing.T) {
 	ev := scaleEvent(`{"status":{"replicas":0}}`, "")
 
-	_, ok := translateSubresourceToAssignments(ev)
-	assert.False(t, ok, "a body with no spec is not translatable")
+	_, dropOutcome, ok := translateScaleToAssignments(ev, "apps", "deployments")
+	assert.False(t, ok, "a body with no spec.replicas is not translatable")
+	assert.Equal(t, pipelineOutcomeDroppedScaleMissingReplicas, dropOutcome)
 }
 
-// A nested spec yields one assignment per leaf, in stable path order, so a CRD-shaped
-// subresource with several fields is supported without per-subresource code.
-func TestTranslateSubresource_NestedSpecYieldsLeafAssignments(t *testing.T) {
-	ev := scaleEvent(`{"spec":{"size":3,"config":{"mode":"fast"}}}`, "")
+// A non-scale subresource is dropped before any replica lookup: scale is the only
+// supported subresource.
+func TestTranslateScale_NonScaleSubresourceIsDropped(t *testing.T) {
+	ev := auditv1.Event{
+		ObjectRef:      &auditv1.ObjectReference{Resource: "deployments", Subresource: "status"},
+		ResponseObject: &runtime.Unknown{Raw: []byte(`{"spec":{"replicas":3}}`)},
+	}
 
-	assignments, ok := translateSubresourceToAssignments(ev)
+	_, dropOutcome, ok := translateScaleToAssignments(ev, "apps", "deployments")
+	assert.False(t, ok, "only the scale subresource is supported")
+	assert.Equal(t, pipelineOutcomeDroppedNonScale, dropOutcome)
+}
+
+// A scale on a CRD — whose parent has no known replica path — is dropped as
+// path-unresolved rather than defaulting to .spec.replicas, even when the body carries
+// spec.replicas.
+func TestTranslateScale_CRDParentPathUnresolved(t *testing.T) {
+	ev := auditv1.Event{
+		ObjectRef:      &auditv1.ObjectReference{Resource: "widgets", Subresource: "scale"},
+		ResponseObject: &runtime.Unknown{Raw: []byte(`{"spec":{"replicas":3}}`)},
+	}
+
+	_, dropOutcome, ok := translateScaleToAssignments(ev, "example.com", "widgets")
+	assert.False(t, ok, "a CRD scale has no known parent replica path")
+	assert.Equal(t, pipelineOutcomeDroppedScalePathUnresolved, dropOutcome)
+}
+
+// An aggregated API scale falls through the same unresolved-path drop as any other
+// non-built-in resource.
+func TestTranslateScale_AggregatedAPIPathUnresolved(t *testing.T) {
+	ev := auditv1.Event{
+		ObjectRef:      &auditv1.ObjectReference{Resource: "things", Subresource: "scale"},
+		ResponseObject: &runtime.Unknown{Raw: []byte(`{"spec":{"replicas":2}}`)},
+	}
+
+	_, dropOutcome, ok := translateScaleToAssignments(ev, "metrics.k8s.io", "things")
+	assert.False(t, ok, "an aggregated API scale has no known parent replica path")
+	assert.Equal(t, pipelineOutcomeDroppedScalePathUnresolved, dropOutcome)
+}
+
+// A StatefulSet scale routes to spec.replicas too — every built-in scalable parent
+// shares the path.
+func TestTranslateScale_StatefulSetRoutes(t *testing.T) {
+	ev := auditv1.Event{
+		ObjectRef:      &auditv1.ObjectReference{Resource: "statefulsets", Subresource: "scale"},
+		ResponseObject: &runtime.Unknown{Raw: []byte(`{"spec":{"replicas":7}}`)},
+	}
+
+	assignments, _, ok := translateScaleToAssignments(ev, "apps", "statefulsets")
 	require.True(t, ok)
-	require.Len(t, assignments, 2)
-	assert.Equal(t, []string{"spec", "config", "mode"}, assignments[0].Path)
-	assert.Equal(t, "fast", assignments[0].Value)
-	assert.Equal(t, []string{"spec", "size"}, assignments[1].Path)
-	assert.Equal(t, int64(3), assignments[1].Value)
+	require.Len(t, assignments, 1)
+	assert.Equal(t, []string{"spec", "replicas"}, assignments[0].Path)
+	assert.Equal(t, int64(7), assignments[0].Value)
 }

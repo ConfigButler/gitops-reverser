@@ -236,55 +236,19 @@ func (wb *writeBatch) applyFieldPatch(ctx context.Context, event Event) error {
 	return nil
 }
 
-// resolveFieldPatchTarget locates the parent manifest a field-patch event targets,
-// mirroring resolveDelete's two-step resolution:
-//
-//  1. When the parent Kind is known (FieldPatch.ParentKind set), the content-derived
-//     manifest-identity index resolves it directly — no mapper required.
-//  2. Otherwise the parent is resolved from its objectRef GVR through the same
-//     resource-identity inventory the GVR-only delete uses (PlanDelete), which the
-//     live-catalog mapper populates while scanning the GitTarget folder. This is the
-//     production path: the audit consumer cannot cheaply resolve GVR->GVK, so it leaves
-//     ParentKind empty and the writer — which already has the mapper — resolves it.
+// resolveFieldPatchTarget locates the parent manifest a field-patch event targets.
+// The parent is resolved from its objectRef GVR through the same resource-identity
+// inventory the GVR-only delete uses (PlanDelete), which the live-catalog mapper
+// populates while scanning the GitTarget folder. The returned identity is the parent
+// document's own manifest identity (full GVK from the committed YAML), so the patch
+// is applied with the parent's real Kind, never one guessed from the subresource body.
 //
 // found is false when Git holds no managed document for the parent identity.
 func (wb *writeBatch) resolveFieldPatchTarget(event Event) (string, manifestedit.Identity, bool) {
-	if id, ok := fieldPatchIdentity(event); ok {
-		if dm := wb.store.ByManifestIdentity[id]; dm != nil {
-			return wb.docLoc[dm].FilePath, id, true
-		}
-	}
 	if action, emitted := manifestanalyzer.PlanDelete(wb.store, event.Identifier); emitted {
 		return action.Ref.FilePath, action.Identity, true
 	}
 	return "", manifestedit.Identity{}, false
-}
-
-// fieldPatchIdentity builds the parent content identity (GVK + namespace + name) for a
-// field-patch event from its GVR identifier and the optional ParentKind. The audit
-// objectRef carries only the plural resource, and the subresource body's own Kind (e.g.
-// "Scale") is not the parent's, so the parent Kind must be supplied to use the
-// content-derived index. ok is false when the Kind or name is missing — the expected
-// case for a translator-emitted patch, which then resolves by GVR instead.
-func fieldPatchIdentity(event Event) (manifestedit.Identity, bool) {
-	patch := event.FieldPatch
-	if patch == nil || patch.ParentKind == "" {
-		return manifestedit.Identity{}, false
-	}
-	apiVersion := event.Identifier.Version
-	if event.Identifier.Group != "" {
-		apiVersion = event.Identifier.Group + "/" + event.Identifier.Version
-	}
-	id := manifestedit.Identity{
-		APIVersion: apiVersion,
-		Kind:       patch.ParentKind,
-		Namespace:  event.Identifier.Namespace,
-		Name:       event.Identifier.Name,
-	}
-	if id.APIVersion == "" || id.Name == "" {
-		return manifestedit.Identity{}, false
-	}
-	return id, true
 }
 
 // patchExisting edits the existing managed document for id in place via manifestedit,

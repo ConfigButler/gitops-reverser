@@ -29,6 +29,87 @@ The CRD documentation is explicit that custom resources support `/status` and
 `/scale`, enabled in the CRD definition. CRDs cannot define arbitrary
 subresources such as `/diff`, `/render`, `/logs`, `/restart`, or `/console`.
 
+---
+
+Scale subresource
+When the scale subresource is enabled, the /scale subresource for the custom resource is exposed. The autoscaling/v1.Scale object is sent as the payload for /scale.
+
+To enable the scale subresource, the following fields are defined in the CustomResourceDefinition.
+
+specReplicasPath defines the JSONPath inside of a custom resource that corresponds to scale.spec.replicas.
+
+It is a required value.
+Only JSONPaths under .spec and with the dot notation are allowed.
+If there is no value under the specReplicasPath in the custom resource, the /scale subresource will return an error on GET.
+statusReplicasPath defines the JSONPath inside of a custom resource that corresponds to scale.status.replicas.
+
+It is a required value.
+Only JSONPaths under .status and with the dot notation are allowed.
+If there is no value under the statusReplicasPath in the custom resource, the status replica value in the /scale subresource will default to 0.
+labelSelectorPath defines the JSONPath inside of a custom resource that corresponds to Scale.Status.Selector.
+
+It is an optional value.
+It must be set to work with HPA and VPA.
+Only JSONPaths under .status or .spec and with the dot notation are allowed.
+If there is no value under the labelSelectorPath in the custom resource, the status selector value in the /scale subresource will default to the empty string.
+The field pointed by this JSON path must be a string field (not a complex selector struct) which contains a serialized label selector in string form.
+In the following example, both status and scale subresources are enabled.
+
+Save the CustomResourceDefinition to resourcedefinition.yaml:
+
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: crontabs.stable.example.com
+spec:
+  group: stable.example.com
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                cronSpec:
+                  type: string
+                image:
+                  type: string
+                replicas:
+                  type: integer
+            status:
+              type: object
+              properties:
+                replicas:
+                  type: integer
+                labelSelector:
+                  type: string
+      # subresources describes the subresources for custom resources.
+      subresources:
+        # status enables the status subresource.
+        status: {}
+        # scale enables the scale subresource.
+        scale:
+          # specReplicasPath defines the JSONPath inside of a custom resource that corresponds to Scale.Spec.Replicas.
+          specReplicasPath: .spec.replicas
+          # statusReplicasPath defines the JSONPath inside of a custom resource that corresponds to Scale.Status.Replicas.
+          statusReplicasPath: .status.replicas
+          # labelSelectorPath defines the JSONPath inside of a custom resource that corresponds to Scale.Status.Selector.
+          labelSelectorPath: .status.labelSelector
+  scope: Namespaced
+  names:
+    plural: crontabs
+    singular: crontab
+    kind: CronTab
+    shortNames:
+    - ct
+
+---
+
+
 **Aggregated API servers** are needed for arbitrary subresources. The Kubernetes
 aggregation layer lets you register an `APIService` that claims an API path; the
 main kube-apiserver then proxies requests for that API group to your own API
@@ -185,11 +266,13 @@ When a user runs:
 kubectl scale deployment/scale-audit-target --replicas=3
 ```
 
-kubectl does **not** patch the Deployment object. It issues a `PATCH` against the
-Deployment's `scale` subresource, and the apiserver records exactly one audit
-event for it — keyed to the subresource and carrying an `autoscaling/v1.Scale`
-payload, not a Deployment. See
-[deployment-scale-subresource.json](internal/webhook/testdata/audit-events/deployment-scale-subresource.json)
+kubectl does **not** patch the main Deployment endpoint or send a full
+Deployment object. It issues a `PATCH` against the Deployment's `scale`
+subresource. The apiserver persists that as a real parent Deployment
+`.spec.replicas` change, but it records exactly one audit event for the request
+— keyed to the subresource and carrying an `autoscaling/v1.Scale` payload, not a
+Deployment. See
+[deployment-scale-subresource.json](../../internal/webhook/testdata/audit-events/deployment-scale-subresource.json)
 (abridged):
 
 ```jsonc
@@ -204,11 +287,21 @@ payload, not a Deployment. See
   "responseObject": {
     "kind": "Scale",
     "apiVersion": "autoscaling/v1",
+    "metadata": {
+      "resourceVersion": "6977"
+    },
     "spec":   { "replicas": 3 },
     "status": { "replicas": 0, "selector": "app=scale-audit-target" }
   }
 }
 ```
+
+In this capture, a normal Deployment read after the scale showed the parent
+Deployment at the same `metadata.resourceVersion` (`6977`) with
+`.spec.replicas: 3`. That is the key local proof for gitops-reverser: the
+`Scale` response is not a separate durable object to commit, but it does expose
+the accepted desired-state change that was just persisted onto the parent
+Deployment.
 
 **The important fact: no "normal", complete PATCH/UPDATE audit event against the
 Deployment itself ever arrives.** The apiserver does update the Deployment's
@@ -233,7 +326,7 @@ Pods expose the most:
 
 ```text
 pods/status              # controlled mutation of observed state
-pods/resize              # in-place resource resize (beta in recent releases)
+pods/resize              # in-place resource resize
 pods/ephemeralcontainers # add debug containers, not allowed at create time
 pods/log                 # derived read representation
 pods/exec                # streaming/interactive
@@ -288,9 +381,9 @@ rules:
 Concrete operations from that API group:
 
 ```http
-GET /apis/subresources.kubevirt.io/v1alpha3/namespaces/{ns}/virtualmachineinstances/{name}/console
-GET /apis/subresources.kubevirt.io/v1alpha3/namespaces/{ns}/virtualmachineinstances/{name}/vnc
-PUT /apis/subresources.kubevirt.io/v1alpha3/namespaces/{ns}/virtualmachines/{name}/restart
+GET /apis/subresources.kubevirt.io/v1/namespaces/{ns}/virtualmachineinstances/{name}/console
+GET /apis/subresources.kubevirt.io/v1/namespaces/{ns}/virtualmachineinstances/{name}/vnc
+PUT /apis/subresources.kubevirt.io/v1/namespaces/{ns}/virtualmachines/{name}/restart
 ```
 
 **metrics-server** also uses aggregation, but differently: it serves an entire
@@ -312,8 +405,8 @@ Across built-in APIs and CRDs, subresources fall into a few categories.
 | --- | --- | --- |
 | Controller-owned observed state | `/status` | `pods/status`, `deployments/status`, `gittargets/status` |
 | Standardized cross-type view | `/scale` | `deployments/scale`, `statefulsets/scale` |
-| Streaming / interactive | aggregated API | `pods/exec`, `pods/attach`, `pods/portforward`, `virtualmachineinstances/console` |
-| Alternate read representation | aggregated API (for custom types) | `pods/log` |
+| Streaming / interactive | built-in / aggregated API | `pods/exec`, `pods/attach`, `virtualmachineinstances/console` |
+| Alternate read representation | built-in / aggregated API | `pods/log` |
 | Policy-aware action | built-in / aggregated API | `pods/eviction`, `virtualmachines/restart` |
 | Special controlled mutation | built-in | `pods/ephemeralcontainers`, `pods/resize` |
 
