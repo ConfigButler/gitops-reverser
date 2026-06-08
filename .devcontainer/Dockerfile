@@ -135,6 +135,14 @@ RUN asset="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" \
     && install -m 0755 actionlint /usr/local/bin/actionlint \
     && rm -rf "${tmpdir}"
 
+# Install valkey-cli
+# Valkey only ships prebuilt binaries for Ubuntu jammy/noble; the jammy build
+# (glibc 2.35) is compatible with this bookworm image (glibc 2.36). Extract only
+# the CLI binary from the release tarball.
+RUN curl -fsSL "https://download.valkey.io/releases/valkey-${VALKEY_VERSION}-jammy-x86_64.tar.gz" \
+    | tar -xzO "valkey-${VALKEY_VERSION}-jammy-x86_64/bin/valkey-cli" > /usr/local/bin/valkey-cli \
+    && chmod +x /usr/local/bin/valkey-cli
+
 # Set working directory
 WORKDIR /workspaces
 
