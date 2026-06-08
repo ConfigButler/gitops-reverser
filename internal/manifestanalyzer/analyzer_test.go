@@ -125,7 +125,6 @@ func TestAnalyze_Issues(t *testing.T) {
 		IssueInvalidYAML:       1,
 		IssueImpureManagedFile: 0,
 		IssueMixedFile:         0,
-		IssueUnwatchedAPIKRM:   0,
 		IssueUnresolvedKRM:     0,
 		IssueOutOfScope:        0,
 	}

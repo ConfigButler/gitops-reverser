@@ -25,7 +25,6 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	"github.com/ConfigButler/gitops-reverser/internal/git/manifestedit"
-	"github.com/ConfigButler/gitops-reverser/internal/mapping"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
@@ -78,11 +77,11 @@ const (
 	// M3 planner. Reserved here for completeness.
 	PlanDeleteFile PlanActionKind = "delete-file"
 	// PlanDropOrphan deletes a watched resource the API no longer has — the managed
-	// drop. It is emitted only for a document whose GVK the mapper resolved to a
-	// served, policy-allowed resource (mapping.MappingResolved) that has no desired
-	// counterpart. Duplicate identities and unwatched API-backed KRM produce NO plan
-	// action: they are acceptance facts (M4), not planning outcomes. Allowlisted
-	// non-API KRM produces none either (it never resolves to a served resource).
+	// drop. It is emitted only for a document whose GVK the registry resolved to a
+	// followable resource (MappingFollowable) that has no desired counterpart.
+	// Duplicate identities and not-followable KRM produce NO plan action: they are
+	// acceptance facts (M4), not planning outcomes. Allowlisted non-API KRM produces
+	// none either (it never resolves to a followable resource).
 	PlanDropOrphan PlanActionKind = "drop-orphan"
 	// PlanSkip marks a document that exists but cannot be edited in place
 	// (encrypted, a disallowed construct, or a soft Decide skip). It is reported,
@@ -361,11 +360,11 @@ func (b *planBuilder) planGitOnly(dm *DocumentModel) {
 		})
 		return
 	}
-	// A claiming document with no desired counterpart. Only a watched resource — one
-	// the mapper resolved to a served, policy-allowed GVR — is dropped. Unwatched
-	// API-backed KRM, unserved KRM, and structure-only documents produce no action:
-	// they are refused at acceptance, never pruned.
-	if dm.Mapping == mapping.MappingResolved {
+	// A claiming document with no desired counterpart. Only a followable resource —
+	// one the registry resolved to a served, policy-allowed GVR — is dropped.
+	// Not-followable KRM and no-source documents produce no action: they are refused
+	// at acceptance, never pruned.
+	if dm.Mapping == MappingFollowable {
 		b.actions = append(b.actions, PlanAction{
 			Kind: PlanDropOrphan, Ref: ref, Identity: dm.ManifestIdentity, Resource: resourceOf(dm),
 			Reason: "watched resource absent from the cluster: managed drop",

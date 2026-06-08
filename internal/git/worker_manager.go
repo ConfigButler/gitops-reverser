@@ -27,8 +27,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
-	"github.com/ConfigButler/gitops-reverser/internal/mapping"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
+	"github.com/ConfigButler/gitops-reverser/internal/typeset"
 )
 
 // DefaultBranchBufferMaxBytes is the default cap on a worker's combined event
@@ -52,7 +52,7 @@ type WorkerManager struct {
 	// mapper is the GVK->GVR resolver injected into every worker so store scans build a
 	// resource-identity inventory. It is set once at startup (SetMapper) before any
 	// worker is created; a nil mapper keeps workers structure-only.
-	mapper mapping.ResourceMapper
+	mapper typeset.Lookup
 }
 
 // NewWorkerManager creates a new worker manager.
@@ -79,7 +79,7 @@ func NewWorkerManager(
 // SetMapper injects the GVK->GVR resolver used by every worker's store scan. It is
 // called once at startup, before any GitTarget registers a worker, so each worker
 // created by EnsureWorker carries it.
-func (m *WorkerManager) SetMapper(mapper mapping.ResourceMapper) {
+func (m *WorkerManager) SetMapper(mapper typeset.Lookup) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.mapper = mapper

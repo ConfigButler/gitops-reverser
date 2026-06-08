@@ -29,8 +29,8 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
-	"github.com/ConfigButler/gitops-reverser/internal/mapping"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
+	"github.com/ConfigButler/gitops-reverser/internal/typeset"
 )
 
 // cmEvent builds an event for an arbitrary ConfigMap identity/value.
@@ -118,8 +118,8 @@ func TestPlanFlush_DeleteByGVROnlyFollowsMovedManifestViaMapper(t *testing.T) {
 	// A ConfigMap a user moved off its canonical path.
 	placedFull := seedPlacedManifest(t, worktree, placedManifestPath, placedManifestBlue)
 
-	mapper := mapping.NewStaticSnapshotMapper(mapping.Snapshot{
-		Entries: []mapping.Entry{{
+	mapper := typeset.NewSnapshotRegistry(typeset.Snapshot{
+		Entries: []typeset.Entry{{
 			GVK:        schema.GroupVersionKind{Group: "", Version: "v1", Kind: "ConfigMap"},
 			GVR:        schema.GroupVersionResource{Group: "", Version: "v1", Resource: "configmaps"},
 			Namespaced: true,

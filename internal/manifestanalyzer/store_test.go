@@ -26,8 +26,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	"github.com/ConfigButler/gitops-reverser/internal/git/manifestedit"
-	"github.com/ConfigButler/gitops-reverser/internal/mapping"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
+	"github.com/ConfigButler/gitops-reverser/internal/typeset"
 )
 
 // structureOnlyStore builds the canonical sample tree with no mapper (structure-only).
@@ -76,10 +76,10 @@ func TestBuildStore_DocumentDetail(t *testing.T) {
 		)
 	}
 	for _, dm := range cm.Documents {
-		if dm.Mapping != mapping.MappingStructureOnly {
+		if dm.Mapping != MappingNoSource {
 			t.Errorf(
-				"structure-only analysis should leave Mapping=%q, got %q",
-				mapping.MappingStructureOnly,
+				"structure-only analysis should leave Mapping=%v, got %v",
+				MappingNoSource,
 				dm.Mapping,
 			)
 		}
@@ -150,10 +150,10 @@ func TestBuildStore_Indexes(t *testing.T) {
 // sampleClusterSnapshot is a ready static snapshot that matches sampleFS: apps/v1
 // Deployment and core v1 ConfigMap are served and allowed; core v1 Secret is served
 // but excluded by policy, so it must resolve to Disallowed rather than Resolved.
-func sampleClusterSnapshot() mapping.Snapshot {
-	return mapping.Snapshot{
+func sampleClusterSnapshot() typeset.Snapshot {
+	return typeset.Snapshot{
 		Generation: 1,
-		Entries: []mapping.Entry{
+		Entries: []typeset.Entry{
 			{
 				GVK:        schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"},
 				GVR:        schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"},
@@ -181,12 +181,12 @@ func sampleClusterSnapshot() mapping.Snapshot {
 // status and populate ByResourceIdentity, while a disallowed kind stays unresolved
 // and surfaces an unresolved-mapping diagnostic.
 func TestBuildStore_StaticSnapshotMapper(t *testing.T) {
-	mapper := mapping.NewStaticSnapshotMapper(sampleClusterSnapshot())
+	mapper := typeset.NewSnapshotRegistry(sampleClusterSnapshot())
 	store := BuildStore(context.Background(), sampleFS(), mapper)
 
 	// The Deployment resolves to apps/v1/deployments and carries both identities.
 	dep := store.FilesByPath["deploy.yaml"].Documents[0]
-	if dep.Mapping != mapping.MappingResolved {
+	if dep.Mapping != MappingFollowable {
 		t.Fatalf("deploy.yaml Mapping = %q, want Resolved", dep.Mapping)
 	}
 	wantRI := types.NewResourceIdentifier("apps", "v1", "deployments", "default", "web")
@@ -204,10 +204,10 @@ func TestBuildStore_StaticSnapshotMapper(t *testing.T) {
 		t.Errorf("ByResourceIdentity = %d resolved winners, want 3", got)
 	}
 
-	// The Secret is served but disallowed: no ResourceIdentity, Disallowed status.
+	// The Secret is served but policy-denied: no ResourceIdentity, not followable.
 	secret := store.FilesByPath["secret.sops.yaml"].Documents[0]
-	if secret.Mapping != mapping.MappingDisallowed {
-		t.Errorf("secret Mapping = %q, want Disallowed", secret.Mapping)
+	if secret.Mapping != MappingNotFollowable {
+		t.Errorf("secret Mapping = %v, want NotFollowable", secret.Mapping)
 	}
 	if secret.ResourceIdentity != nil {
 		t.Errorf("disallowed secret should have no ResourceIdentity, got %+v", secret.ResourceIdentity)
@@ -233,11 +233,11 @@ func TestBuildStore_StaticSnapshotMapper(t *testing.T) {
 // the first-occurrence contest, so it is the IsDuplicate loser and never the
 // ByResourceIdentity winner (deploy.yaml's document holds that slot).
 func TestBuildStore_DuplicateLoserResolves(t *testing.T) {
-	store := BuildStore(context.Background(), sampleFS(), mapping.NewStaticSnapshotMapper(sampleClusterSnapshot()))
+	store := BuildStore(context.Background(), sampleFS(), typeset.NewSnapshotRegistry(sampleClusterSnapshot()))
 
 	wantRI := types.NewResourceIdentifier("apps", "v1", "deployments", "default", "web")
 	dupDep := store.FilesByPath["dup.yaml"].Documents[0]
-	if dupDep.Mapping != mapping.MappingResolved || dupDep.ResourceIdentity == nil {
+	if dupDep.Mapping != MappingFollowable || dupDep.ResourceIdentity == nil {
 		t.Fatalf(
 			"dup.yaml Deployment should still resolve, got Mapping=%q RI=%+v",
 			dupDep.Mapping,
@@ -257,9 +257,9 @@ func TestBuildStore_DuplicateLoserResolves(t *testing.T) {
 // accidentally carries metadata.namespace has it dropped for indexing plus a
 // scope-mismatch diagnostic — never indexed under the wrong, namespaced key.
 func TestBuildStore_ClusterScopedResolution(t *testing.T) {
-	snap := mapping.Snapshot{
+	snap := typeset.Snapshot{
 		Generation: 1,
-		Entries: []mapping.Entry{
+		Entries: []typeset.Entry{
 			{
 				GVK: schema.GroupVersionKind{Group: "rbac.authorization.k8s.io", Version: "v1", Kind: "ClusterRole"},
 				GVR: schema.GroupVersionResource{
@@ -279,7 +279,7 @@ func TestBuildStore_ClusterScopedResolution(t *testing.T) {
 	store := BuildStore(context.Background(), fstest.MapFS{
 		"cr.yaml":    {Data: []byte(clusterRoleYAML)},
 		"cr-ns.yaml": {Data: []byte(clusterRoleWithNS)},
-	}, mapping.NewStaticSnapshotMapper(snap))
+	}, typeset.NewSnapshotRegistry(snap))
 
 	// Clean cluster-scoped: indexed with an empty namespace, no scope diagnostic.
 	clean := store.FilesByPath["cr.yaml"].Documents[0]
@@ -316,20 +316,19 @@ func TestBuildStore_ClusterScopedResolution(t *testing.T) {
 	}
 }
 
-// TestBuildStore_MapperError covers a mapper lookup that returns a Go error (here a
-// cancelled context): every document is recorded as CatalogUnavailable (the
-// fail-closed bucket) — never structure-only — resolves no identity, and emits a
-// DiagError mapping diagnostic.
-func TestBuildStore_MapperError(t *testing.T) {
+// TestBuildStore_CancelledContextIsNoSource covers a cancelled build context: every
+// document is recorded as MappingNoSource (no API source was consulted) — like
+// structure-only analysis — resolves no identity, and emits no mapping diagnostic.
+func TestBuildStore_CancelledContextIsNoSource(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // every subsequent GVRForGVK returns ctx.Err()
+	cancel()
 
-	store := BuildStore(ctx, sampleFS(), mapping.NewStaticSnapshotMapper(sampleClusterSnapshot()))
+	store := BuildStore(ctx, sampleFS(), typeset.NewSnapshotRegistry(sampleClusterSnapshot()))
 
 	for path, fm := range store.FilesByPath {
 		for _, dm := range fm.Documents {
-			if dm.Mapping != mapping.MappingCatalogUnavailable {
-				t.Errorf("%s: Mapping = %q, want CatalogUnavailable after cancel", path, dm.Mapping)
+			if dm.Mapping != MappingNoSource {
+				t.Errorf("%s: Mapping = %v, want NoSource after cancel", path, dm.Mapping)
 			}
 			if dm.ResourceIdentity != nil {
 				t.Errorf("%s: cancelled lookup should resolve no identity, got %+v", path, dm.ResourceIdentity)
@@ -339,53 +338,52 @@ func TestBuildStore_MapperError(t *testing.T) {
 	if len(store.ByResourceIdentity) != 0 {
 		t.Errorf("cancelled lookups should populate no resource index, got %d", len(store.ByResourceIdentity))
 	}
-	var errDiags int
 	for _, d := range store.Diagnostics {
-		if d.Reason == reasonUnresolvedMapping && d.Level == manifestedit.DiagError {
-			errDiags++
+		if d.Reason == reasonUnresolvedMapping {
+			t.Errorf("a cancelled (no-source) build should emit no mapping diagnostics, got %+v", d)
 		}
-	}
-	if errDiags == 0 {
-		t.Errorf("cancelled lookups should emit DiagError mapping diagnostics, got 0")
 	}
 }
 
-// TestBuildStore_UnresolvedStatusesDiagnose proves the store faithfully records each
-// non-resolved mapping.Status the reduction can produce and emits exactly one
-// unresolved-mapping diagnostic per document, resolving no identity.
-func TestBuildStore_UnresolvedStatusesDiagnose(t *testing.T) {
+// TestBuildStore_NotFollowableDiagnoses proves the store records a not-followable
+// outcome for every kind the registry refuses (unserved, denied, ambiguous,
+// subresource-only, degraded) and emits exactly one unresolved-mapping diagnostic,
+// resolving no identity. An unready registry is the no-source case: it judges
+// nothing and emits no diagnostic.
+func TestBuildStore_NotFollowableDiagnoses(t *testing.T) {
 	const widgetYAML = "apiVersion: example.com/v1\nkind: Widget\nmetadata:\n  name: w\n  namespace: default\n"
 	widgetGVK := schema.GroupVersionKind{Group: "example.com", Version: "v1", Kind: "Widget"}
 	widgetGVR := schema.GroupVersionResource{Group: "example.com", Version: "v1", Resource: "widgets"}
 	widgetGV := schema.GroupVersion{Group: "example.com", Version: "v1"}
-	allowed := mapping.Entry{GVK: widgetGVK, GVR: widgetGVR, Namespaced: true, Allowed: true}
+	allowed := typeset.Entry{GVK: widgetGVK, GVR: widgetGVR, Namespaced: true, Allowed: true}
 
 	cases := []struct {
-		name string
-		snap mapping.Snapshot
-		want mapping.Status
+		name      string
+		snap      typeset.Snapshot
+		want      MappingOutcome
+		wantDiags int
 	}{
-		{"unserved", mapping.Snapshot{}, mapping.MappingUnserved},
+		{"unserved", typeset.Snapshot{}, MappingNotFollowable, 1},
 		{
-			"disallowed",
-			mapping.Snapshot{
-				Entries: []mapping.Entry{{GVK: widgetGVK, GVR: widgetGVR, Namespaced: true, Allowed: false}},
+			"denied",
+			typeset.Snapshot{
+				Entries: []typeset.Entry{{GVK: widgetGVK, GVR: widgetGVR, Namespaced: true, Allowed: false}},
 			},
-			mapping.MappingDisallowed,
+			MappingNotFollowable, 1,
 		},
 		{
 			"ambiguous",
-			mapping.Snapshot{Entries: []mapping.Entry{allowed, {
+			typeset.Snapshot{Entries: []typeset.Entry{allowed, {
 				GVK:        widgetGVK,
 				GVR:        schema.GroupVersionResource{Group: "example.com", Version: "v1", Resource: "widgetz"},
 				Namespaced: true,
 				Allowed:    true,
 			}}},
-			mapping.MappingAmbiguous,
+			MappingNotFollowable, 1,
 		},
 		{
-			"subresource",
-			mapping.Snapshot{Entries: []mapping.Entry{
+			"subresource-only",
+			typeset.Snapshot{Entries: []typeset.Entry{
 				{
 					GVK: widgetGVK,
 					GVR: schema.GroupVersionResource{
@@ -397,14 +395,14 @@ func TestBuildStore_UnresolvedStatusesDiagnose(t *testing.T) {
 					Allowed:     true,
 				},
 			}},
-			mapping.MappingSubresource,
+			MappingNotFollowable, 1,
 		},
-		{"catalog-unavailable", mapping.Snapshot{NotReady: true}, mapping.MappingCatalogUnavailable},
 		{
-			"discovery-degraded",
-			mapping.Snapshot{DegradedGroupVersions: []schema.GroupVersion{widgetGV}},
-			mapping.MappingDiscoveryDegraded,
+			"degraded",
+			typeset.Snapshot{DegradedGroupVersions: []schema.GroupVersion{widgetGV}},
+			MappingNotFollowable, 1,
 		},
+		{"no-source", typeset.Snapshot{NotReady: true}, MappingNoSource, 0},
 	}
 
 	for _, c := range cases {
@@ -412,14 +410,14 @@ func TestBuildStore_UnresolvedStatusesDiagnose(t *testing.T) {
 			store := BuildStore(
 				context.Background(),
 				fstest.MapFS{"w.yaml": {Data: []byte(widgetYAML)}},
-				mapping.NewStaticSnapshotMapper(c.snap),
+				typeset.NewSnapshotRegistry(c.snap),
 			)
 			dm := store.FilesByPath["w.yaml"].Documents[0]
 			if dm.Mapping != c.want {
-				t.Errorf("Mapping = %q, want %q", dm.Mapping, c.want)
+				t.Errorf("Mapping = %v, want %v", dm.Mapping, c.want)
 			}
 			if dm.ResourceIdentity != nil {
-				t.Errorf("unresolved status should leave ResourceIdentity nil, got %+v", dm.ResourceIdentity)
+				t.Errorf("a refused kind should leave ResourceIdentity nil, got %+v", dm.ResourceIdentity)
 			}
 			var diags int
 			for _, d := range store.Diagnostics {
@@ -427,8 +425,8 @@ func TestBuildStore_UnresolvedStatusesDiagnose(t *testing.T) {
 					diags++
 				}
 			}
-			if diags != 1 {
-				t.Errorf("unresolved-mapping diagnostics = %d, want 1", diags)
+			if diags != c.wantDiags {
+				t.Errorf("unresolved-mapping diagnostics = %d, want %d", diags, c.wantDiags)
 			}
 		})
 	}

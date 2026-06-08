@@ -39,6 +39,7 @@ import (
 
 	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
+	"github.com/ConfigButler/gitops-reverser/internal/typeset"
 )
 
 // restConfig acquires the controller runtime REST config.
@@ -81,6 +82,9 @@ func (m *Manager) RefreshAPIResourceCatalog(ctx context.Context) error {
 	changed, refreshErr := catalog.Refresh(disco)
 	recordCatalogRefresh(ctx, changed, refreshErr, time.Since(start))
 	if refreshErr == nil {
+		// Re-derive the followability records from the fresh scan before logging, so
+		// the ready line can report how many served types are followable.
+		m.refreshTypeRegistry()
 		stats := catalog.Stats()
 		recordCatalogStats(ctx, stats)
 		m.logCatalogTransitions(catalog, stats)
@@ -102,6 +106,8 @@ func (m *Manager) logCatalogTransitions(catalog *APIResourceCatalog, stats Catal
 				"excludedResources", stats.ExcludedResources,
 				"trustedGroupVersions", stats.TrustedGroupVersions,
 				"degradedGroupVersions", stats.DegradedGroupVersions,
+				"followableTypes", len(m.FollowableTypeRecords()),
+				"knownTypes", len(m.TypeRecords()),
 				"generation", stats.Generation)
 		})
 	}
@@ -206,6 +212,81 @@ func (m *Manager) apiResourceCatalog() *APIResourceCatalog {
 		m.resourceCatalog = NewAPIResourceCatalog()
 	}
 	return m.resourceCatalog
+}
+
+// typeRegistryInstance returns the lazily-built followability registry, so a
+// zero-value Manager (used widely in tests) needs no explicit setup.
+func (m *Manager) typeRegistryInstance() *typeset.Registry {
+	m.typeRegistryInit.Do(func() {
+		if m.typeRegistry == nil {
+			m.typeRegistry = typeset.NewRegistry()
+		}
+	})
+	return m.typeRegistry
+}
+
+// refreshTypeRegistry re-derives the followability records from the current catalog
+// scan and republishes them at the catalog's generation. It runs after every catalog
+// refresh, so the registry tracks discovery (and the 60-second removal grace advances
+// on the same cadence the catalog does). It is the "Scan -> Observation -> Registry"
+// pipeline of docs/design/manifest/version2/type-followability.md.
+func (m *Manager) refreshTypeRegistry() {
+	catalog := m.apiResourceCatalog()
+	// Only publish once the catalog holds trusted data, so the registry's readiness
+	// tracks the catalog's: an unready catalog must leave the registry unready, which
+	// is what makes the live mapper fall closed (CatalogUnavailable) rather than treat
+	// an empty scan as a trusted "nothing is served".
+	if !catalog.Ready() {
+		return
+	}
+	reg := m.typeRegistryInstance()
+	reg.Update(catalog.Observations(m.SensitiveResources), catalog.Generation())
+	m.logTypeRefusals(reg)
+}
+
+// logTypeRefusals is the single central place that explains why a served type is not
+// followed. It emits one V(1) line per refused type, edge-triggered: keyed by GVK and
+// summary, so a stable refusal (a policy-excluded kind, a verb-poor type) is logged
+// once rather than on every refresh. The full machine-readable answer always lives on
+// the registry record (TypeRecords / FollowableTypeRecords), so callers that need it
+// read there rather than parse logs.
+func (m *Manager) logTypeRefusals(reg *typeset.Registry) {
+	log := m.Log.WithName("followability")
+	m.resourceCatalogMu.Lock()
+	defer m.resourceCatalogMu.Unlock()
+	current := map[string]string{}
+	for _, rec := range reg.All() {
+		if rec.Followable() {
+			continue
+		}
+		key := rec.Identity.GVK.String()
+		current[key] = rec.Followability.Summary
+		if prev, known := m.typeRefusalsLogged[key]; !known || prev != rec.Followability.Summary {
+			log.V(1).Info("type is not followable",
+				"gvk", key, "gvr", rec.Identity.GVR.String(), "reason", rec.Followability.Summary)
+		}
+	}
+	m.typeRefusalsLogged = current
+}
+
+// TypeRegistry returns the live followability registry, the single decision surface
+// (a typeset.Lookup). The git worker reads it to resolve manifest GVKs; the manager
+// refreshes it in place, so the returned pointer tracks discovery updates.
+func (m *Manager) TypeRegistry() *typeset.Registry {
+	return m.typeRegistryInstance()
+}
+
+// FollowableTypeRecords returns every currently-followable type record (verdict
+// followable or retained), sorted by identity. It is the inventory the status and
+// visibility surfaces read; it never recomputes followability.
+func (m *Manager) FollowableTypeRecords() []typeset.TypeRecord {
+	return m.typeRegistryInstance().Followable()
+}
+
+// TypeRecords returns every known type record — followable, retained, and refused —
+// for inventory and "why is this type not picked up?" views.
+func (m *Manager) TypeRecords() []typeset.TypeRecord {
+	return m.typeRegistryInstance().All()
 }
 
 func (m *Manager) ruleGVRResolver() *RuleGVRResolver {

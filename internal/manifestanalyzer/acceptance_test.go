@@ -23,8 +23,8 @@ import (
 	"testing"
 	"testing/fstest"
 
-	"github.com/ConfigButler/gitops-reverser/internal/mapping"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
+	"github.com/ConfigButler/gitops-reverser/internal/typeset"
 )
 
 const (
@@ -35,15 +35,15 @@ const (
 )
 
 // snapMapper is the ready static snapshot mapper used across acceptance tests.
-func snapMapper() mapping.ResourceMapper {
-	return mapping.NewStaticSnapshotMapper(sampleClusterSnapshot())
+func snapMapper() typeset.Lookup {
+	return typeset.NewSnapshotRegistry(sampleClusterSnapshot())
 }
 
 // acceptanceOf builds a store with the given allowlist and runs the gate.
 func acceptanceOf(
 	t *testing.T,
 	fsys fstest.MapFS,
-	mapper mapping.ResourceMapper,
+	mapper typeset.Lookup,
 	policy AcceptancePolicy,
 ) (*ManifestStore, Acceptance) {
 	t.Helper()
@@ -142,19 +142,19 @@ func TestAccept_StandaloneEmptyIgnored(t *testing.T) {
 	}
 }
 
-func TestAccept_UnwatchedAPIKRMRefuses(t *testing.T) {
-	// A Secret is served but disallowed by the sample snapshot's resource policy:
-	// unwatched API-backed KRM, refused rather than pruned.
+func TestAccept_PolicyDeniedKRMRefuses(t *testing.T) {
+	// A Secret is served but denied by the sample snapshot's resource policy, so it is
+	// not followable and the folder is refused (never pruned).
 	fsys := fstest.MapFS{"secret.yaml": {Data: []byte(plainSecretYAML)}}
 	_, acc := acceptanceOf(t, fsys, snapMapper(), AcceptancePolicy{})
-	onlyIssue(t, acc, IssueUnwatchedAPIKRM, "secret.yaml", 0)
+	onlyIssue(t, acc, IssueUnresolvedKRM, "secret.yaml", 0)
 }
 
 func TestAccept_UnresolvedKRMRefuses(t *testing.T) {
 	// An unserved kind (no snapshot entry) is recognised KRM the mapper cannot tie to
 	// a watched resource, and is not allowlisted.
 	fsys := fstest.MapFS{"w.yaml": {Data: []byte(widgetYAMLDoc)}}
-	mapper := mapping.NewStaticSnapshotMapper(mapping.Snapshot{Generation: 1})
+	mapper := typeset.NewSnapshotRegistry(typeset.Snapshot{Generation: 1})
 	_, acc := acceptanceOf(t, fsys, mapper, AcceptancePolicy{})
 	onlyIssue(t, acc, IssueUnresolvedKRM, "w.yaml", 0)
 }
@@ -250,7 +250,7 @@ func TestAccept_MultipleRetainedSorted(t *testing.T) {
 }
 
 func TestAccept_MappingRefusalIndexAfterGap(t *testing.T) {
-	// An empty document at file index 0, then an unwatched Secret at file index 1. The
+	// An empty document at file index 0, then a denied Secret at file index 1. The
 	// Secret is the only managed record (loop index 0), but its mapping refusal must
 	// name its TRUE file index 1 — proving mappingRefusals uses reconstructed
 	// positions, not the loop index.
@@ -261,17 +261,17 @@ func TestAccept_MappingRefusalIndexAfterGap(t *testing.T) {
 	if acc.Accepted {
 		t.Fatalf("expected refusal")
 	}
-	var unwatched *AcceptanceIssue
+	var unresolved *AcceptanceIssue
 	for i := range acc.Issues {
-		if acc.Issues[i].Kind == IssueUnwatchedAPIKRM {
-			unwatched = &acc.Issues[i]
+		if acc.Issues[i].Kind == IssueUnresolvedKRM {
+			unresolved = &acc.Issues[i]
 		}
 	}
-	if unwatched == nil {
-		t.Fatalf("expected an unwatched-api-krm refusal, got %+v", acc.Issues)
+	if unresolved == nil {
+		t.Fatalf("expected an unresolved-krm refusal, got %+v", acc.Issues)
 	}
-	if unwatched.DocumentIndex != 1 {
-		t.Errorf("unwatched refusal should carry the true file index 1, got %d", unwatched.DocumentIndex)
+	if unresolved.DocumentIndex != 1 {
+		t.Errorf("unresolved refusal should carry the true file index 1, got %d", unresolved.DocumentIndex)
 	}
 	// The empty document also makes the file impure, named at its own true index 0.
 	if countAcceptance(acc, IssueImpureManagedFile) != 1 {

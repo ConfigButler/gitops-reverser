@@ -50,6 +50,7 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/sanitize"
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
+	"github.com/ConfigButler/gitops-reverser/internal/typeset"
 )
 
 // RBAC permissions for dynamic watch manager - read-only access to watch all (also future ones!) resource types
@@ -70,6 +71,11 @@ type Manager struct {
 	// AuditLiveEventsEnabled makes the audit pipeline authoritative for live mutating events.
 	// Watchers still support discovery and snapshot/reconcile flows.
 	AuditLiveEventsEnabled bool
+	// SensitiveResources is the startup-configured policy classifying which types must
+	// use the encrypted Git write path. It is applied when the followability registry
+	// builds its observations, so each TypeRecord carries the right Sensitive fact. The
+	// zero value still treats core Secrets as sensitive.
+	SensitiveResources types.SensitiveResourcePolicy
 	// Deduplication: tracks last seen content hash per resource to skip status-only changes
 	lastSeenMu   sync.RWMutex
 	lastSeenHash map[string]uint64 // resourceKey → content hash (key uses types.ResourceIdentifier.Key)
@@ -117,6 +123,18 @@ type Manager struct {
 	// its lazy construction for zero-value Managers in tests.
 	watchedTypeInit sync.Once
 	watchedTypes    *watchedTypeStore
+
+	// typeRegistry is the followability decision surface (see
+	// docs/design/manifest/version2/type-followability.md): one typeset.TypeRecord
+	// per served type, refreshed from the catalog scan on every catalog refresh. It
+	// is the inventory/status surface ("is this type followable, and if not, why?");
+	// typeRegistryInit guards its lazy construction for zero-value Managers in tests.
+	typeRegistryInit sync.Once
+	typeRegistry     *typeset.Registry
+	// typeRefusalsLogged is the GVK->summary of every type the registry currently
+	// refuses, so the central "why is this not followable?" log is edge-triggered: a
+	// stable refusal is logged once, not on every refresh. Guarded by resourceCatalogMu.
+	typeRefusalsLogged map[string]string
 }
 
 // SnapshotEmitCount returns the number of times the manager has emitted a

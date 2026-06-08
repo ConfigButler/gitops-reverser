@@ -29,8 +29,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	"github.com/ConfigButler/gitops-reverser/internal/git/manifestedit"
-	"github.com/ConfigButler/gitops-reverser/internal/mapping"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
+	"github.com/ConfigButler/gitops-reverser/internal/typeset"
 )
 
 // deploymentScalePatch builds a deployments/scale-shaped field-patch event: no
@@ -54,9 +54,9 @@ func deploymentScalePatch(name string, replicas int64) Event {
 // deploymentsMapper resolves apps/v1 Deployment <-> deployments so the writer can
 // locate a field patch's parent by its objectRef GVR through the resource-identity
 // inventory (the production resolution path; the consumer never sends a Kind).
-func deploymentsMapper() mapping.ResourceMapper {
-	return mapping.NewStaticSnapshotMapper(mapping.Snapshot{
-		Entries: []mapping.Entry{{
+func deploymentsMapper() typeset.Lookup {
+	return typeset.NewSnapshotRegistry(typeset.Snapshot{
+		Entries: []typeset.Entry{{
 			GVK:        schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"},
 			GVR:        schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"},
 			Namespaced: true,

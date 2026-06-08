@@ -51,7 +51,7 @@ import (
 	"strings"
 
 	"github.com/ConfigButler/gitops-reverser/internal/git/manifestedit"
-	"github.com/ConfigButler/gitops-reverser/internal/mapping"
+	"github.com/ConfigButler/gitops-reverser/internal/typeset"
 )
 
 // GVK is a parsed group/version/kind. Group is empty for core resources.
@@ -194,14 +194,14 @@ func AnalyzeDir(root string) (Report, error) {
 // is projected from, and the entry point downstream layers (planner, live writer)
 // will consume directly. It is read-only and never fails.
 //
-// mapper resolves each managed document's GVK to a served resource identity; pass
-// nil (or a structure-only mapper) to keep the no-cluster, structure-only mode.
+// lookup resolves each managed document's GVK to a served resource identity; pass
+// nil (or an un-ready registry) to keep the no-cluster, structure-only mode.
 //
 // BuildStore materialises every KRM document (the empty-allowlist case). Scan mode
 // passes the acceptance policy's allowlist through buildStoreFS so non-API KRM such
 // as kustomization.yaml is retained outside the model rather than materialised.
-func BuildStore(ctx context.Context, fsys fs.FS, mapper mapping.ResourceMapper) *ManifestStore {
-	return buildStoreFS(ctx, fsys, mapper, Allowlist{})
+func BuildStore(ctx context.Context, fsys fs.FS, lookup typeset.Lookup) *ManifestStore {
+	return buildStoreFS(ctx, fsys, lookup, Allowlist{})
 }
 
 // buildStoreFS is BuildStore with an explicit allowlist: a record whose GVK the
@@ -209,11 +209,11 @@ func BuildStore(ctx context.Context, fsys fs.FS, mapper mapping.ResourceMapper) 
 func buildStoreFS(
 	ctx context.Context,
 	fsys fs.FS,
-	mapper mapping.ResourceMapper,
+	lookup typeset.Lookup,
 	allowlist Allowlist,
 ) *ManifestStore {
 	yamlFiles, _, scanDiags := collectFiles(fsys)
-	return buildStore(ctx, yamlFiles, scanDiags, mapper, allowlist)
+	return buildStore(ctx, yamlFiles, scanDiags, lookup, allowlist)
 }
 
 // Analyze scans fsys and returns a Report. It is read-only and never fails: any

@@ -24,7 +24,7 @@ import (
 	"io/fs"
 	"os"
 
-	"github.com/ConfigButler/gitops-reverser/internal/mapping"
+	"github.com/ConfigButler/gitops-reverser/internal/typeset"
 )
 
 // Scan is the M5 dry-run: the one planner shared by the manifest-analyzer CLI and
@@ -43,12 +43,12 @@ import (
 func Scan(
 	ctx context.Context,
 	fsys fs.FS,
-	mapper mapping.ResourceMapper,
+	lookup typeset.Lookup,
 	desired []DesiredResource,
 	policy ScanPolicy,
 ) ScanResult {
 	yamlFiles, _, scanDiags := collectFiles(fsys)
-	store := buildStore(ctx, yamlFiles, scanDiags, mapper, policy.Acceptance.Allowlist)
+	store := buildStore(ctx, yamlFiles, scanDiags, lookup, policy.Acceptance.Allowlist)
 	acc := Accept(store, policy.Acceptance)
 	plan := BuildPlan(store, yamlFiles, desired, policy.Plan)
 	return ScanResult{Store: store, Acceptance: acc, Plan: plan}
@@ -59,7 +59,7 @@ func Scan(
 func ScanDir(
 	ctx context.Context,
 	root string,
-	mapper mapping.ResourceMapper,
+	lookup typeset.Lookup,
 	desired []DesiredResource,
 	policy ScanPolicy,
 ) (ScanResult, error) {
@@ -70,7 +70,7 @@ func ScanDir(
 	if !info.IsDir() {
 		return ScanResult{}, fmt.Errorf("not a directory: %s", root)
 	}
-	res := Scan(ctx, os.DirFS(root), mapper, desired, policy)
+	res := Scan(ctx, os.DirFS(root), lookup, desired, policy)
 	res.Store.Root = root
 	return res, nil
 }

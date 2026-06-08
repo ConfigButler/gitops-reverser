@@ -13,14 +13,16 @@
 
 ## Decision
 
-For the first simplification pass, support only built-in Kubernetes `/scale`
-subresources whose parent replica path is known by built-in policy.
+For the first simplification pass, support only Kubernetes `/scale` subresources
+whose parent replica path is known. Built-in Kubernetes types get that path from
+a built-in scale pointer registry; CRDs eventually get the same fields from CRD
+`spec.versions[*].subresources.scale`.
 
 Ignore every other subresource for now.
 
-Do not add CRD scale support yet. CRD scale needs a better API resource object
-that can supply the parent `specReplicasPath`; until that exists, a CRD scale
-event must fail clearly as "scale path unresolved" rather than guessing
+Do not add CRD scale support until the richer API resource object exists. CRD
+scale needs that object to carry the parent `specReplicasPath`; until then, a CRD
+scale event must fail clearly as "scale path unresolved" rather than guessing
 `.spec.replicas`.
 
 Do not add special aggregated-API handling. Aggregated API subresources should
@@ -52,8 +54,10 @@ mirroring of behavior that is not durable desired state.
 
 ### In Scope
 
-- `*/scale` on built-in scalable resources whose parent path is known, such as
-  Deployments, StatefulSets, ReplicaSets, and ReplicationControllers.
+- `*/scale` on scalable resources whose parent path is known.
+- Built-in scalable resources whose paths come from the built-in scale pointer
+  registry, such as Deployments, StatefulSets, ReplicaSets, and
+  ReplicationControllers.
 - Metrics for dropped subresources.
 - Parent-resource WatchRule matching. Rules continue to name `deployments`, not
   `deployments/scale`.
@@ -65,7 +69,8 @@ mirroring of behavior that is not durable desired state.
 - Subresources in `WatchRule.resources`.
 - Subresources in `WatchedTypeTable`.
 - Writing subresource response objects to Git.
-- CRD scale support.
+- CRD scale support until CRD scale pointers are carried on the API resource
+  object.
 - Aggregated API subresource support.
 - Status, exec, attach, portforward, log, proxy, eviction, binding, finalize,
   approval, token, restart, console, VNC, or similar operation subresources.
@@ -102,7 +107,7 @@ Input requirements:
 - verb maps to a mutating operation;
 - `responseObject.spec.replicas` exists;
 - parent GVR matches at least one WatchRule or ClusterWatchRule;
-- parent replica path is known by the API resource object or built-in policy.
+- parent replica path is known by the API resource object.
 
 Translation:
 
@@ -111,7 +116,9 @@ autoscaling/v1 Scale responseObject.spec.replicas
   -> parent manifest assignment at resolved replicas path
 ```
 
-For built-in scalable resources:
+For built-in scalable resources, the API resource object should be populated from
+the built-in scale pointer registry, so the translator sees the same shape it
+will later see for CRDs:
 
 ```text
 responseObject.spec.replicas -> parent .spec.replicas
@@ -140,7 +147,8 @@ The desired future shape is a richer API resource object that can answer:
 parent GVR -> scale parent replica path
 ```
 
-For a built-in Deployment this answer is:
+For a built-in Deployment this answer should come from the built-in scale pointer
+registry:
 
 ```text
 apps/v1 deployments -> ["spec", "replicas"]
@@ -170,7 +178,7 @@ Recommended outcomes:
 
 | Outcome | Meaning |
 | --- | --- |
-| `routed_scale_subresource` | Built-in scale translated and routed. |
+| `routed_scale_subresource` | Scale translated and routed with a known parent path. |
 | `dropped_non_scale_subresource` | Subresource is not `scale` and is not supported. |
 | `dropped_scale_missing_response_replicas` | Scale response lacks `responseObject.spec.replicas`. |
 | `dropped_scale_path_unresolved` | No known parent replica path exists for this resource. |
@@ -186,14 +194,19 @@ but the explicit dropped outcomes are what make ignored subresources visible.
 2. Keep `manifestedit.PatchFields` and `git.FieldPatch`; they are the right write
    primitive for Scale.
 3. Remove the sanitized parent field-presence gate from subresource routing.
-4. Do not add CRD scale path indexing yet.
-5. Do not add aggregated API classification for subresource handling.
-6. Change webhook ingress to forward only candidate Scale events; drop and metric
+4. Add built-in scale paths through the same API resource field that CRD scale
+   will use later; do not scatter built-in path conditionals through the
+   translator.
+5. Do not add CRD scale path indexing yet.
+6. Do not add aggregated API classification for subresource handling.
+7. Change webhook ingress to forward only candidate Scale events; drop and metric
    non-scale subresources.
-7. Change consumer metrics from generic subresource outcomes to scale-specific
+8. Change consumer metrics from generic subresource outcomes to scale-specific
    outcomes.
-8. Add tests:
+9. Add tests:
    - built-in Deployment scale routes to `spec.replicas`;
+   - built-in Deployment scale path is read from the API resource scale fact, not
+     a translator-local conditional;
    - CRD scale is dropped with `dropped_scale_path_unresolved`;
    - generic `responseObject.spec.foo` subresource is dropped;
    - aggregated API scale is dropped with `dropped_scale_path_unresolved`;
@@ -206,6 +219,8 @@ but the explicit dropped outcomes are what make ignored subresources visible.
   subresources.
 - The sanitized parent field-presence gate for subresource routing.
 - A parallel CRD scale-path index.
+- Translator-local built-in scale conditionals once the built-in registry
+  populates the shared API resource scale fact.
 - Aggregated API subresource classification.
 - Any future work to add subresource entries to watched-type planning.
 - Any resolved type-surface API that treats subresources as first-class selected

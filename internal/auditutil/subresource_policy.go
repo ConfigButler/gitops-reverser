@@ -18,6 +18,8 @@ limitations under the License.
 
 package auditutil
 
+import "github.com/ConfigButler/gitops-reverser/internal/typeset"
+
 // Subresource handling policy. GitOps Reverser mirrors exactly one Kubernetes
 // subresource: the built-in /scale. It is the single case where a subresource writes
 // the parent's desired state (the accepted replica count) AND Kubernetes exposes that
@@ -41,22 +43,15 @@ func IsScaleSubresource(subresource string) bool {
 // example a CRD or aggregated API resource — in which case the scale event must
 // be dropped, never defaulted to .spec.replicas.
 //
-// Kubernetes' currently served built-in scalable resources all map scale.spec.replicas
-// to the parent .spec.replicas field. The version is intentionally ignored because
-// this path is stable for these resources across their served versions.
-//
-// CRD scale needs the CRD definition, because the path comes from
-// spec.versions[*].subresources.scale.specReplicasPath. Aggregated APIs have no
-// generic discovery field that reveals the parent write path. Each call returns
-// a fresh slice the caller owns.
+// It is a thin []string adapter over the single source of built-in scale facts,
+// typeset.BuiltinScale: the followability registry and the audit consumer read the
+// same binding, so the parent write path can never drift between them. typeset.
+// SplitFieldPath allocates a fresh slice each call, so the returned path is owned by
+// the caller (it may be mutated without corrupting the shared registry).
 func BuiltinScaleReplicasPath(group, resource string) ([]string, bool) {
-	switch {
-	case group == "apps" && resource == "deployments",
-		group == "apps" && resource == "statefulsets",
-		group == "apps" && resource == "replicasets",
-		group == "" && resource == "replicationcontrollers":
-		return []string{"spec", "replicas"}, true
-	default:
+	binding, ok := typeset.BuiltinScale(group, resource)
+	if !ok {
 		return nil, false
 	}
+	return typeset.SplitFieldPath(binding.SpecReplicasPath), true
 }

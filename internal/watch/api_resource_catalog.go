@@ -343,6 +343,15 @@ func (c *APIResourceCatalog) degradedForGroupVersionLocked(gv schema.GroupVersio
 	return c.groupVersion[gv].degraded
 }
 
+// GroupVersionDegraded reports whether discovery currently fails for an exact
+// group/version, so a caller can tell "unserved" apart from "could not be observed"
+// for a kind the followability registry does not know.
+func (c *APIResourceCatalog) GroupVersionDegraded(gv schema.GroupVersion) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.degradedForGroupVersionLocked(gv)
+}
+
 func (c *APIResourceCatalog) entriesForResource(resource string) []APIResourceEntry {
 	c.mu.RLock()
 	defer c.mu.RUnlock()

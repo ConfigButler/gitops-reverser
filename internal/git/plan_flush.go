@@ -32,7 +32,7 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/git/manifestedit"
 	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
 	"github.com/ConfigButler/gitops-reverser/internal/manifestreport"
-	"github.com/ConfigButler/gitops-reverser/internal/mapping"
+	"github.com/ConfigButler/gitops-reverser/internal/typeset"
 )
 
 // flushEventsToWorktree is the plan-then-flush write path (M7), described in
@@ -76,7 +76,7 @@ func (w *BranchWorker) flushEventsToWorktree(
 // a fileBuffer; buffers accumulates the mutations the events produce.
 type writeBatch struct {
 	writer        eventContentWriter
-	mapper        mapping.ResourceMapper
+	mapper        typeset.Lookup
 	store         *manifestanalyzer.ManifestStore
 	docLoc        map[*manifestanalyzer.DocumentModel]manifestanalyzer.RecordRef
 	contentByPath map[string][]byte
@@ -86,7 +86,7 @@ type writeBatch struct {
 func newWriteBatch(
 	ctx context.Context,
 	writer eventContentWriter,
-	mapper mapping.ResourceMapper,
+	mapper typeset.Lookup,
 	files []manifestedit.FileContent,
 ) *writeBatch {
 	// An empty allowlist materialises every KRM document — the live writer indexes

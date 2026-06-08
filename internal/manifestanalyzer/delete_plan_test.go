@@ -24,8 +24,8 @@ import (
 	"testing/fstest"
 
 	"github.com/ConfigButler/gitops-reverser/internal/git/manifestedit"
-	"github.com/ConfigButler/gitops-reverser/internal/mapping"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
+	"github.com/ConfigButler/gitops-reverser/internal/typeset"
 )
 
 // deployResource / configMapResource are the GVR-based identities a DELETE watch event
@@ -72,7 +72,7 @@ func TestPlanDelete_ByResourceIdentity(t *testing.T) {
 // invisible to the canonical-path lookup).
 func TestPlanDelete_MovedManifest(t *testing.T) {
 	fsys := fstest.MapFS{"legacy/foo.yaml": {Data: []byte(deployYAML)}}
-	store := BuildStore(context.Background(), fsys, mapping.NewStaticSnapshotMapper(sampleClusterSnapshot()))
+	store := BuildStore(context.Background(), fsys, typeset.NewSnapshotRegistry(sampleClusterSnapshot()))
 
 	action, emitted := PlanDelete(store, deployResource())
 	if !emitted {
@@ -113,7 +113,7 @@ func TestPlanDelete_EncryptedStillDeletes(t *testing.T) {
 	const encConfigMap = "apiVersion: v1\nkind: ConfigMap\nmetadata:\n" +
 		"  name: enc\n  namespace: default\nsops:\n  version: \"3\"\n"
 	fsys := fstest.MapFS{"cm.sops.yaml": {Data: []byte(encConfigMap)}}
-	store := BuildStore(context.Background(), fsys, mapping.NewStaticSnapshotMapper(sampleClusterSnapshot()))
+	store := BuildStore(context.Background(), fsys, typeset.NewSnapshotRegistry(sampleClusterSnapshot()))
 
 	dm := store.FilesByPath["cm.sops.yaml"].Documents[0]
 	if dm.Editable || dm.Cause.Kind != CauseEncrypted {
@@ -150,7 +150,7 @@ func TestPlanDelete_DuplicateSuppressed(t *testing.T) {
 		"deploy.yaml": {Data: []byte(deployYAML)},
 		"dup.yaml":    {Data: []byte(deployYAML)},
 	}
-	store := BuildStore(context.Background(), fsys, mapping.NewStaticSnapshotMapper(sampleClusterSnapshot()))
+	store := BuildStore(context.Background(), fsys, typeset.NewSnapshotRegistry(sampleClusterSnapshot()))
 
 	_, emitted := PlanDelete(store, deployResource())
 	if emitted {

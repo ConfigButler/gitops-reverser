@@ -26,8 +26,8 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	"github.com/ConfigButler/gitops-reverser/internal/git/manifestedit"
-	"github.com/ConfigButler/gitops-reverser/internal/mapping"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
+	"github.com/ConfigButler/gitops-reverser/internal/typeset"
 )
 
 // planFS is a duplicate-free tree (deploy.yaml, cm.yaml with two ConfigMaps, and an
@@ -57,7 +57,7 @@ func planFiles() []manifestedit.FileContent {
 // and ConfigMaps are watched/resolved; the Secret is served but disallowed).
 func planStore(t *testing.T) *ManifestStore {
 	t.Helper()
-	mapper := mapping.NewStaticSnapshotMapper(sampleClusterSnapshot())
+	mapper := typeset.NewSnapshotRegistry(sampleClusterSnapshot())
 	return BuildStore(context.Background(), planFS(), mapper)
 }
 
@@ -243,7 +243,7 @@ func TestBuildPlan_DuplicateSuppressed(t *testing.T) {
 		{Path: "deploy.yaml", Content: []byte(deployYAML)},
 		{Path: "dup.yaml", Content: []byte(deployYAML)},
 	}
-	store := BuildStore(context.Background(), fsys, mapping.NewStaticSnapshotMapper(sampleClusterSnapshot()))
+	store := BuildStore(context.Background(), fsys, typeset.NewSnapshotRegistry(sampleClusterSnapshot()))
 
 	// A desired update to the collided identity is suppressed: the winner is not
 	// patched.
@@ -282,7 +282,7 @@ func TestBuildPlan_NonEditableConstructSkips(t *testing.T) {
 		"  name: anchored\n  namespace: default\ndata: &d\n  k: v\nextra: *d\n"
 	fsys := fstest.MapFS{"anchored.yaml": {Data: []byte(anchoredYAML)}}
 	files := []manifestedit.FileContent{{Path: "anchored.yaml", Content: []byte(anchoredYAML)}}
-	store := BuildStore(context.Background(), fsys, mapping.NewStaticSnapshotMapper(sampleClusterSnapshot()))
+	store := BuildStore(context.Background(), fsys, typeset.NewSnapshotRegistry(sampleClusterSnapshot()))
 
 	dm := store.FilesByPath["anchored.yaml"].Documents[0]
 	if dm.claimsIdentity() {
@@ -404,7 +404,7 @@ func TestBuildPlan_ImpureFileTrueIndices(t *testing.T) {
 	impure := deployYAML + "---\n# comment\n---\n" + configMapCYAML
 	fsys := fstest.MapFS{"app.yaml": {Data: []byte(impure)}}
 	files := []manifestedit.FileContent{{Path: "app.yaml", Content: []byte(impure)}}
-	store := BuildStore(context.Background(), fsys, mapping.NewStaticSnapshotMapper(sampleClusterSnapshot()))
+	store := BuildStore(context.Background(), fsys, typeset.NewSnapshotRegistry(sampleClusterSnapshot()))
 
 	plan := BuildPlan(store, files, nil, Policy{})
 

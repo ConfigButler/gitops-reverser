@@ -38,8 +38,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
-	"github.com/ConfigButler/gitops-reverser/internal/mapping"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
+	"github.com/ConfigButler/gitops-reverser/internal/typeset"
 )
 
 func installFakeSOPSBinary(t *testing.T) {
@@ -230,7 +230,7 @@ func TestBranchWorker_DeleteSecretRemovesSOPSPath(t *testing.T) {
 
 	worker, err := newTestBranchWorker(remoteURL, "test-repo", "master")
 	require.NoError(t, err)
-	worker.mapper = mapping.NewStaticSnapshotMapper(mapping.Snapshot{Entries: []mapping.Entry{{
+	worker.mapper = typeset.NewSnapshotRegistry(typeset.Snapshot{Entries: []typeset.Entry{{
 		GVK:        schema.GroupVersionKind{Group: "", Version: "v1", Kind: "Secret"},
 		GVR:        schema.GroupVersionResource{Group: "", Version: "v1", Resource: "secrets"},
 		Namespaced: true,

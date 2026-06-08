@@ -229,13 +229,17 @@ There should be no `rehydrated_*` or `fallback_*` outcomes.
 - [x] Update translator tests: response-only succeeds, request-only drops.
 - [x] **Superseded by the scope reduction** — the generic translator and the
   sanitized live parent projection gate were replaced by a scale-only translator
-  (`translateScaleToAssignments`) keyed on `auditutil.BuiltinScaleReplicasPath`. The
-  gate, its tests, and `dropped_subresource_field_not_in_parent` were removed; the
+  (`translateScaleToAssignments`). Today it is keyed on
+  `auditutil.BuiltinScaleReplicasPath`; the target shape moves those built-in
+  paths into the same API resource scale fact that CRD scale will use. The gate,
+  its tests, and `dropped_subresource_field_not_in_parent` were removed; the
   scale-specific outcomes are in the Metrics section above. See
   [subresource-scope-reduction.md](subresource-scope-reduction.md).
 - [ ] Add the writer outcome counters `subresource_patch_no_parent` /
   `subresource_patch_unsafe` (today logged with those exact `reason` strings, not yet
   counters).
+- [ ] Move built-in scale paths into the shared API resource scale fact, so
+  built-ins and future CRD scale paths use the same translator input.
 - [ ] Add CRD scale path remap from `specReplicasPath`. Until then a CRD scale is
   **safely dropped** (`dropped_scale_path_unresolved`), never miswritten.
 - [ ] Run `task lint`.
@@ -256,9 +260,11 @@ are gone:
 - The webhook forwards only `*/scale` mutating events (`IsScaleSubresource`); every
   other subresource is dropped before Redis.
 - The consumer translator (`translateScaleToAssignments`) reads only
-  `responseObject.spec.replicas` and resolves the parent replica path from built-in
-  policy (`auditutil.BuiltinScaleReplicasPath`). A request-only event drops, and a
-  scale whose parent path is unknown (CRD / aggregated API) drops as
+  `responseObject.spec.replicas` and currently resolves the parent replica path
+  from built-in policy (`auditutil.BuiltinScaleReplicasPath`). The target shape is
+  to move that built-in path registry into the API resource scale fact, so
+  built-ins and CRDs are handled through the same input model. A request-only event
+  drops, and a scale whose parent path is unknown (CRD / aggregated API) drops as
   `dropped_scale_path_unresolved` — never defaulted to `.spec.replicas`.
 - The sanitized live parent projection gate has been **removed**: with scale-only
   support the accepted value comes straight from the standardized Scale response, so

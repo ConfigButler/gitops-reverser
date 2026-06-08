@@ -30,17 +30,17 @@ import (
 // a patch) alongside an acceptance refusal, computing both and writing nothing.
 func TestScan_FullPlanAndRefusals(t *testing.T) {
 	fsys := fstest.MapFS{
-		"deploy.yaml": {Data: []byte(deployYAML)},      // resolved; differs from desired → patch
-		"secret.yaml": {Data: []byte(plainSecretYAML)}, // served but unwatched → refusal
+		"deploy.yaml": {Data: []byte(deployYAML)},      // followable; differs from desired → patch
+		"secret.yaml": {Data: []byte(plainSecretYAML)}, // served but denied → refusal
 	}
 	desired := []DesiredResource{desiredDeployWeb(3), desiredConfigMap("new")} // patch + create
 	result := Scan(context.Background(), fsys, snapMapper(), desired, ScanPolicy{})
 
 	if result.Acceptance.Accepted {
-		t.Fatalf("the unwatched Secret should refuse the folder")
+		t.Fatalf("the denied Secret should refuse the folder")
 	}
-	if countAcceptance(result.Acceptance, IssueUnwatchedAPIKRM) != 1 {
-		t.Errorf("want one unwatched-api-krm refusal, got %+v", result.Acceptance.Issues)
+	if countAcceptance(result.Acceptance, IssueUnresolvedKRM) != 1 {
+		t.Errorf("want one unresolved-krm refusal, got %+v", result.Acceptance.Issues)
 	}
 
 	counts := result.Plan.Counts()

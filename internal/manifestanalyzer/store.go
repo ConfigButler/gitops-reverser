@@ -27,8 +27,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	"github.com/ConfigButler/gitops-reverser/internal/git/manifestedit"
-	"github.com/ConfigButler/gitops-reverser/internal/mapping"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
+	"github.com/ConfigButler/gitops-reverser/internal/typeset"
 )
 
 // ManifestStore is the byte-free, in-memory structure model of a GitTarget folder
@@ -150,10 +150,10 @@ type DocumentModel struct {
 	// leaves it nil.
 	ResourceIdentity *types.ResourceIdentifier
 
-	// Mapping records why ResourceIdentity is or is not set, as reported by the
-	// injected mapper. Structure-only analysis is always mapping.MappingStructureOnly
+	// Mapping records why ResourceIdentity is or is not set, derived from the
+	// followability registry. Structure-only analysis is always MappingNoSource
 	// because no API source is wired in.
-	Mapping mapping.Status
+	Mapping MappingOutcome
 
 	// Editable is false for SOPS-encrypted or otherwise non-patchable documents;
 	// Cause carries the structured reason.
@@ -168,12 +168,44 @@ type DocumentModel struct {
 	Snapshot manifestedit.SnapshotRef
 }
 
-// reasonUnresolvedMapping marks a build-time diagnostic for a KRM document whose
-// GVK a non-structure-only mapper could not reduce to a single served, allowed GVR
-// (unserved, ambiguous, disallowed, subresource, degraded, or unavailable), or
-// whose lookup failed outright. The structured mapping.Status on the DocumentModel
-// is authoritative; this diagnostic surfaces the same fact in the store's
-// diagnostic stream. Structure-only analysis never emits it.
+// MappingOutcome records why a document's ResourceIdentity is or is not set, derived
+// from the followability registry. It is the analyzer's view of the single
+// followability question — there is no status vocabulary to interpret, only three
+// outcomes: followable (resolved), not followable (a source said so), or no API
+// source at all (structure-only / the registry is not ready, so nothing is judged).
+type MappingOutcome int
+
+const (
+	// MappingNoSource means no API source was consulted (structure-only analysis, or a
+	// registry that is not ready). It is the honest "this looks like KRM but nothing was
+	// asked what serves it"; it never drives a watched/unwatched or destructive decision.
+	MappingNoSource MappingOutcome = iota
+	// MappingFollowable means the GVK resolved to a single served, followable resource;
+	// ResourceIdentity is set.
+	MappingFollowable
+	// MappingNotFollowable means a ready source was consulted but the kind is not
+	// followable (not served, denied, ambiguous, or missing a verb); ResourceIdentity
+	// is nil. Why it is not followable is recorded centrally by the registry, not here.
+	MappingNotFollowable
+)
+
+// String renders a MappingOutcome for diagnostics and tests.
+func (o MappingOutcome) String() string {
+	switch o {
+	case MappingNoSource:
+		return "no-source"
+	case MappingFollowable:
+		return "followable"
+	case MappingNotFollowable:
+		return "not-followable"
+	default:
+		return "unknown"
+	}
+}
+
+// reasonUnresolvedMapping marks a build-time diagnostic for a KRM document whose GVK
+// the followability registry could not resolve to a single served, followable
+// resource. Structure-only analysis never emits it.
 const reasonUnresolvedMapping manifestedit.DiagReason = "unresolved-mapping"
 
 // reasonScopeMismatch marks a build-time diagnostic for a resolved KRM document
@@ -237,11 +269,13 @@ func buildStore(
 	ctx context.Context,
 	yamlFiles []manifestedit.FileContent,
 	scanDiags []manifestedit.Diagnostic,
-	mapper mapping.ResourceMapper,
+	lookup typeset.Lookup,
 	allowlist Allowlist,
 ) *ManifestStore {
-	if mapper == nil {
-		mapper = mapping.NewStructureOnlyMapper()
+	if lookup == nil {
+		// A nil lookup is the structure-only mode: an unpublished registry is never
+		// ready, so it judges nothing.
+		lookup = typeset.NewRegistry()
 	}
 	inv, indexDiags := manifestedit.IndexFiles(yamlFiles)
 
@@ -268,7 +302,7 @@ func buildStore(
 			})
 			continue
 		}
-		store.materialize(ctx, r, mapper)
+		store.materialize(ctx, r, lookup)
 	}
 
 	// Record every allowlisted file with no named record as a whole-file retention,
@@ -289,17 +323,17 @@ func buildStore(
 // it needs the bytes anyway, to hydrate and apply — and hands the same FileContent
 // slice here, so the store and the bytes the plan is applied to are one snapshot.
 //
-// mapper resolves each document's GVK to a served resource identity; a nil mapper
+// lookup resolves each document's GVK to a served resource identity; a nil lookup
 // keeps it structure-only (no resource index), exactly as BuildStore. allowlist
 // names the build-directive files retained outside the model; pass the zero value
 // to materialise every KRM document.
 func BuildStoreFromFiles(
 	ctx context.Context,
 	files []manifestedit.FileContent,
-	mapper mapping.ResourceMapper,
+	lookup typeset.Lookup,
 	allowlist Allowlist,
 ) *ManifestStore {
-	return buildStore(ctx, files, nil, mapper, allowlist)
+	return buildStore(ctx, files, nil, lookup, allowlist)
 }
 
 // DocumentLocations returns the (file path, document index) of every managed
@@ -317,7 +351,7 @@ func (s *ManifestStore) DocumentLocations() map[*DocumentModel]RecordRef {
 func (s *ManifestStore) materialize(
 	ctx context.Context,
 	r manifestedit.DocumentRecord,
-	mapper mapping.ResourceMapper,
+	lookup typeset.Lookup,
 ) {
 	gvk := gvkOf(r.Identity)
 	fm := s.FilesByPath[r.Location.Path]
@@ -330,10 +364,10 @@ func (s *ManifestStore) materialize(
 		Editable:         r.Editable && !r.Encrypted,
 		Cause:            causeFor(r),
 	}
-	// resolveMapping is the sole owner of dm.Mapping: it sets the mapper's reported
-	// status on every path (including the error path), so a failed lookup is never
-	// left looking like intentional structure-only analysis.
-	s.resolveMapping(ctx, dm, gvk, mapper, r.Location)
+	// resolveMapping is the sole owner of dm.Mapping: it sets the followability
+	// outcome on every path, so an un-ready registry is never confused with a
+	// deliberately structure-only document.
+	s.resolveMapping(ctx, dm, gvk, lookup, r.Location)
 	fm.Documents = append(fm.Documents, dm)
 	s.ByGVK[gvk] = append(s.ByGVK[gvk], dm)
 
@@ -381,72 +415,56 @@ func sortRetained(retained []RetainedDocument) {
 	})
 }
 
-// resolveMapping asks the injected mapper to resolve dm's GVK to a served GVR,
-// recording the resulting mapping.Status on the document and, when resolved, its
-// ResourceIdentity. A non-structure-only mapper that cannot resolve the GVK emits a
-// build-time diagnostic; structure-only analysis resolves nothing and emits none.
-//
-// A lookup that returns a Go error (an implementation failure — discovery RPC,
-// cancelled context — never an expected outcome, which the mapper reports as a
-// Status) is recorded as MappingCatalogUnavailable, the design's fail-closed bucket:
-// no trustworthy mapping was obtained, so the document must not be mistaken for
-// intentional structure-only analysis. A DiagError carries the failure detail.
+// resolveMapping asks the followability registry whether dm's GVK is followable,
+// recording the outcome on the document and, when followable, its ResourceIdentity.
+// A ready registry that does not find the GVK followable emits a build-time
+// diagnostic; an un-ready registry (structure-only) resolves nothing and emits none.
+// The registry is the single, central owner of why a type is not followable, so this
+// path carries no per-type explanation — it records only the three outcomes.
 func (s *ManifestStore) resolveMapping(
 	ctx context.Context,
 	dm *DocumentModel,
 	gvk schema.GroupVersionKind,
-	mapper mapping.ResourceMapper,
+	lookup typeset.Lookup,
 	loc manifestedit.Location,
 ) {
-	res, err := mapper.GVRForGVK(ctx, gvk)
-	if err != nil {
-		dm.Mapping = mapping.MappingCatalogUnavailable
-		s.Diagnostics = append(s.Diagnostics, manifestedit.Diagnostic{
-			Level:         manifestedit.DiagError,
-			Reason:        reasonUnresolvedMapping,
-			Message:       fmt.Sprintf("mapping lookup for %s failed: %v", gvk, err),
-			Path:          loc.Path,
-			DocumentIndex: loc.DocumentIndex,
-		})
+	if ctx.Err() != nil || !lookup.Ready() {
+		dm.Mapping = MappingNoSource
 		return
 	}
 
-	dm.Mapping = res.Status
-	switch res.Status {
-	case mapping.MappingResolved:
-		dm.ResourceIdentity = s.resolvedIdentity(dm, gvk, res, loc)
-	case mapping.MappingStructureOnly:
-		// No API source was consulted: nothing to resolve and nothing to flag.
-	case mapping.MappingUnserved, mapping.MappingAmbiguous, mapping.MappingDisallowed,
-		mapping.MappingSubresource, mapping.MappingCatalogUnavailable, mapping.MappingDiscoveryDegraded:
-		s.Diagnostics = append(s.Diagnostics, manifestedit.Diagnostic{
-			Level:  manifestedit.DiagWarning,
-			Reason: reasonUnresolvedMapping,
-			Message: fmt.Sprintf(
-				"GVK %s not resolved to a served resource: %s (%s)",
-				gvk,
-				res.Status,
-				res.Reason,
-			),
-			Path:          loc.Path,
-			DocumentIndex: loc.DocumentIndex,
-		})
+	record, known := lookup.ByGVK(gvk)
+	if known && record.Followable() {
+		dm.Mapping = MappingFollowable
+		namespaced := record.Identity.Scope == typeset.ScopeNamespaced
+		dm.ResourceIdentity = s.resolvedIdentity(dm, gvk, record.Identity.GVR, namespaced, loc)
+		return
 	}
+
+	dm.Mapping = MappingNotFollowable
+	s.Diagnostics = append(s.Diagnostics, manifestedit.Diagnostic{
+		Level:         manifestedit.DiagWarning,
+		Reason:        reasonUnresolvedMapping,
+		Message:       fmt.Sprintf("GVK %s is not a followable resource type", gvk),
+		Path:          loc.Path,
+		DocumentIndex: loc.DocumentIndex,
+	})
 }
 
-// resolvedIdentity builds the ResourceIdentity for a resolved document. The mapper's
-// scope is authoritative: a cluster-scoped resource is keyed with no namespace, so a
-// manifest that nonetheless carries metadata.namespace would otherwise be indexed
-// under a wrong, namespaced resource key (internal/types treats empty namespace as
-// cluster-scoped). The namespace is dropped and the mismatch flagged.
+// resolvedIdentity builds the ResourceIdentity for a followable document. The
+// registry's scope is authoritative: a cluster-scoped resource is keyed with no
+// namespace, so a manifest that nonetheless carries metadata.namespace would otherwise
+// be indexed under a wrong, namespaced resource key (internal/types treats empty
+// namespace as cluster-scoped). The namespace is dropped and the mismatch flagged.
 func (s *ManifestStore) resolvedIdentity(
 	dm *DocumentModel,
 	gvk schema.GroupVersionKind,
-	res mapping.Result,
+	gvr schema.GroupVersionResource,
+	namespaced bool,
 	loc manifestedit.Location,
 ) *types.ResourceIdentifier {
 	namespace := dm.ManifestIdentity.Namespace
-	if !res.Namespaced && namespace != "" {
+	if !namespaced && namespace != "" {
 		s.Diagnostics = append(s.Diagnostics, manifestedit.Diagnostic{
 			Level:  manifestedit.DiagWarning,
 			Reason: reasonScopeMismatch,
@@ -460,9 +478,9 @@ func (s *ManifestStore) resolvedIdentity(
 		namespace = ""
 	}
 	ri := types.NewResourceIdentifier(
-		res.GVR.Group,
-		res.GVR.Version,
-		res.GVR.Resource,
+		gvr.Group,
+		gvr.Version,
+		gvr.Resource,
 		namespace,
 		dm.ManifestIdentity.Name,
 	)

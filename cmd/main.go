@@ -155,6 +155,7 @@ func main() {
 		RuleStore:              ruleStore,
 		EventRouter:            nil, // Will be set below
 		AuditLiveEventsEnabled: true,
+		SensitiveResources:     cfg.sensitiveResources,
 	}
 
 	// Initialize EventRouter with all dependencies. The streaming-snapshot resync
@@ -170,10 +171,10 @@ func main() {
 	// Set EventRouter reference in WatchManager
 	watchMgr.EventRouter = eventRouter
 
-	// Inject the live-catalog GVK↔GVR resolver into the writer, so a GVR-only DELETE
+	// Inject the live followability registry into the writer, so a GVR-only DELETE
 	// event resolves to a manifest moved off its canonical path (M6 in the writer).
-	// The catalog is a stable pointer the watch manager refreshes in place.
-	workerManager.SetMapper(watchMgr.Mapper())
+	// The registry is a stable pointer the watch manager refreshes in place.
+	workerManager.SetMapper(watchMgr.TypeRegistry())
 
 	// WatchRule controller (with WatchManager reference for dynamic reconciliation)
 	fatalIfErr((&controller.WatchRuleReconciler{

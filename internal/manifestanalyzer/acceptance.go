@@ -24,7 +24,6 @@ import (
 	"strings"
 
 	"github.com/ConfigButler/gitops-reverser/internal/git/manifestedit"
-	"github.com/ConfigButler/gitops-reverser/internal/mapping"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
@@ -95,12 +94,9 @@ const (
 	// IssueMixedFile marks a managed file that also holds an allowlisted non-API KRM
 	// document. Allowlisted KRM must be retained in its own file.
 	IssueMixedFile IssueKind = "mixed-managed-allowlisted"
-	// IssueUnwatchedAPIKRM marks a document of a served kind this GitTarget does not
-	// watch — API-backed KRM we have made no claim over. Refused, never pruned.
-	IssueUnwatchedAPIKRM IssueKind = "unwatched-api-krm"
-	// IssueUnresolvedKRM marks recognised KRM the mapper could not tie to a single
-	// served, watched resource and that is not allowlisted (unserved, ambiguous,
-	// subresource, or a degraded/unavailable catalog).
+	// IssueUnresolvedKRM marks recognised KRM the followability registry could not tie
+	// to a single served, followable resource and that is not allowlisted (not served,
+	// denied by policy, ambiguous, or missing a verb). It is refused, never pruned.
 	IssueUnresolvedKRM IssueKind = "unresolved-krm"
 	// IssueOutOfScope marks a watched kind whose resource falls outside this
 	// GitTarget's scope (right kind, wrong namespace).
@@ -307,27 +303,24 @@ func mappingRefusals(store *ManifestStore, policy AcceptancePolicy) []Acceptance
 	return out
 }
 
-// mappingRefusal classifies one document's mapping status into a refusal, or reports
-// that it is an accepted watched, in-scope resource.
+// mappingRefusal classifies one document's followability outcome into a refusal, or
+// reports that it is an accepted, in-scope, followable resource. The registry is the
+// single owner of *why* a type is not followable; acceptance only needs the verdict,
+// so every not-followable case collapses to one refusal.
 func mappingRefusal(ref RecordRef, dm *DocumentModel, policy AcceptancePolicy) (AcceptanceIssue, bool) {
 	switch dm.Mapping {
-	case mapping.MappingResolved:
+	case MappingFollowable:
 		if outOfScope(dm, policy) {
 			return refusal(IssueOutOfScope, ref,
-				"watched kind out of this GitTarget's scope: "+identityRef(dm.ManifestIdentity)), true
+				"followable kind out of this GitTarget's scope: "+identityRef(dm.ManifestIdentity)), true
 		}
 		return AcceptanceIssue{}, false
-	case mapping.MappingDisallowed:
-		return refusal(IssueUnwatchedAPIKRM, ref,
-			"unwatched API-backed KRM "+identityRef(dm.ManifestIdentity)+"; refuse rather than manage"), true
-	case mapping.MappingUnserved, mapping.MappingAmbiguous, mapping.MappingSubresource,
-		mapping.MappingCatalogUnavailable, mapping.MappingDiscoveryDegraded:
-		return refusal(IssueUnresolvedKRM, ref, fmt.Sprintf(
-			"KRM %s not resolved to a served, watched resource (%s)",
-			identityRef(dm.ManifestIdentity), dm.Mapping)), true
-	case mapping.MappingStructureOnly:
-		// hasAPISource gates this call, so a lone structure-only document among
-		// resolved ones is not judged on mapping grounds.
+	case MappingNotFollowable:
+		return refusal(IssueUnresolvedKRM, ref,
+			"KRM "+identityRef(dm.ManifestIdentity)+" is not a followable resource type"), true
+	case MappingNoSource:
+		// hasAPISource gates this call, so a lone no-source document among followable
+		// ones is not judged on followability grounds.
 		return AcceptanceIssue{}, false
 	}
 	return AcceptanceIssue{}, false
@@ -349,13 +342,13 @@ func refusal(kind IssueKind, ref RecordRef, message string) AcceptanceIssue {
 	}
 }
 
-// hasAPISource reports whether any managed document was resolved against an API
-// source. A structure-only store leaves every document MappingStructureOnly, so the
-// mapping-aware refusals are skipped.
+// hasAPISource reports whether any managed document was judged against a ready API
+// source. A structure-only store leaves every document MappingNoSource, so the
+// followability-aware refusals are skipped.
 func hasAPISource(store *ManifestStore) bool {
 	for _, fm := range store.FilesByPath {
 		for _, dm := range fm.Documents {
-			if dm.Mapping != mapping.MappingStructureOnly {
+			if dm.Mapping != MappingNoSource {
 				return true
 			}
 		}

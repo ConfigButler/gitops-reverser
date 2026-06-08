@@ -31,14 +31,14 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
-	"github.com/ConfigButler/gitops-reverser/internal/mapping"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
+	"github.com/ConfigButler/gitops-reverser/internal/typeset"
 )
 
 // configMapMapper resolves v1/ConfigMap to a served, allowed resource, so the resync
 // planner treats ConfigMap documents as watched, resolved, sweepable managed members.
-func configMapMapper() mapping.ResourceMapper {
-	return mapping.NewStaticSnapshotMapper(mapping.Snapshot{Entries: []mapping.Entry{{
+func configMapMapper() typeset.Lookup {
+	return typeset.NewSnapshotRegistry(typeset.Snapshot{Entries: []typeset.Entry{{
 		GVK:        schema.GroupVersionKind{Group: "", Version: "v1", Kind: "ConfigMap"},
 		GVR:        schema.GroupVersionResource{Group: "", Version: "v1", Resource: "configmaps"},
 		Namespaced: true,
@@ -74,7 +74,7 @@ func cmManifest(name, color string) string {
 func applyResyncViaWorktree(
 	t *testing.T,
 	writer *contentWriter,
-	mapper mapping.ResourceMapper,
+	mapper typeset.Lookup,
 	worktree *gogit.Worktree,
 	desired ...manifestanalyzer.DesiredResource,
 ) (ResyncStats, bool) {
@@ -256,7 +256,7 @@ func TestResync_SensitiveUpdateCountsAsUpdatedNotSkipped(t *testing.T) {
 		"data:\n  k: ENC[AES256,data:OLD,iv:aa,tag:bb]\nsops:\n  version: 3.9.0\n  mac: OLD\n"
 	full := seedPlacedManifest(t, worktree, "secrets/app.sops.yaml", seeded)
 
-	secretsMapper := mapping.NewStaticSnapshotMapper(mapping.Snapshot{Entries: []mapping.Entry{{
+	secretsMapper := typeset.NewSnapshotRegistry(typeset.Snapshot{Entries: []typeset.Entry{{
 		GVK:        schema.GroupVersionKind{Group: "", Version: "v1", Kind: "Secret"},
 		GVR:        schema.GroupVersionResource{Group: "", Version: "v1", Resource: "secrets"},
 		Namespaced: true,

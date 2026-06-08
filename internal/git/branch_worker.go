@@ -40,10 +40,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
-	"github.com/ConfigButler/gitops-reverser/internal/mapping"
 	"github.com/ConfigButler/gitops-reverser/internal/sanitize"
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
+	"github.com/ConfigButler/gitops-reverser/internal/typeset"
 )
 
 const (
@@ -93,7 +93,7 @@ type BranchWorker struct {
 	// mapper resolves manifest GVKs into resource identities while building the
 	// GitTarget inventory. A nil mapper keeps the writer structure-only, so
 	// object-less deletes have no resource index to target.
-	mapper mapping.ResourceMapper
+	mapper typeset.Lookup
 
 	// Event processing
 	eventQueue chan WorkItem

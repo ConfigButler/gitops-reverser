@@ -112,7 +112,7 @@ func TestRenderJSON_RoundTrip(t *testing.T) {
 }
 
 // scanWithRefusalAndPlan builds a scan with one create, one patch, a retained file,
-// and an unwatched-Secret refusal, so the renderers exercise every branch.
+// and a denied-Secret refusal, so the renderers exercise every branch.
 func scanWithRefusalAndPlan(t *testing.T) ScanResult {
 	t.Helper()
 	fsys := fstest.MapFS{
@@ -132,7 +132,7 @@ func TestRenderScanText(t *testing.T) {
 
 	for _, want := range []string{
 		"Acceptance: REFUSED",
-		"unwatched-api-krm",
+		"unresolved-krm",
 		"Retained (allowlisted, not materialized): 1",
 		"kustomization.yaml",
 		"Plan: 2 action(s)",

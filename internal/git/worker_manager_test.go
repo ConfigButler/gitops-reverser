@@ -33,8 +33,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
-	"github.com/ConfigButler/gitops-reverser/internal/mapping"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
+	"github.com/ConfigButler/gitops-reverser/internal/typeset"
 )
 
 // TestWorkerManager_SetMapperInjectsIntoWorkers proves the production wiring: a mapper
@@ -45,7 +45,7 @@ func TestWorkerManager_SetMapperInjectsIntoWorkers(t *testing.T) {
 	client := fake.NewClientBuilder().WithScheme(setupScheme()).Build()
 	manager := NewWorkerManager(client, logr.Discard(), 0, types.SensitiveResourcePolicy{})
 
-	mapper := mapping.NewStaticSnapshotMapper(mapping.Snapshot{})
+	mapper := typeset.NewSnapshotRegistry(typeset.Snapshot{})
 	manager.SetMapper(mapper)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -58,7 +58,7 @@ func TestWorkerManager_SetMapperInjectsIntoWorkers(t *testing.T) {
 	require.True(t, exists)
 	require.NotNil(t, worker)
 	assert.NotNil(t, worker.mapper, "the created worker must carry the injected mapper")
-	assert.Equal(t, mapping.ResourceMapper(mapper), worker.mapper)
+	assert.Equal(t, typeset.Lookup(mapper), worker.mapper)
 }
 
 const (
