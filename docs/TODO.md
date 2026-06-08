@@ -24,14 +24,6 @@ This file is meant to track the smaller current backlog, not historical notes.
   This should be addressed before the next feature that expands commit-message, snapshot, or
   write-window behavior, otherwise new failures will be hard to separate from existing timing debt.
 
-- [ ] Make `Manager CRD Lifecycle` e2e (`test/e2e/crd_lifecycle_e2e_test.go`) parallel-safe
-  and drop its `Serial` marker. It was marked `Serial` after the initial CRD snapshot/resync
-  flaked when running concurrently with other specs that create/delete CRDs (e.g. the
-  bi-directional suite), under a transient apiserver RBAC/list window. The spec passes
-  reliably in isolation; the goal is to make CRD mirroring robust to cluster-wide CRD churn
-  so this can run in parallel again. Likely the same root cause as the WatchRule/snapshot
-  convergence flakiness above.
-
 - [ ] Use [bestpractices.dev](https://www.bestpractices.dev/en) as a project maturity checklist.
   Review the current gaps, decide which items matter for this project, and turn the useful ones
   into concrete follow-up work instead of treating the badge as the goal.

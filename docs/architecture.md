@@ -1,894 +1,707 @@
 # GitOps Reverser Architecture
 
-> Last updated: May 2026
+> Last updated: June 2026
 
-GitOps Reverser is a Kubernetes operator that observes cluster mutations and writes their resulting
-object state to Git. It reverses the traditional GitOps flow: instead of Git driving the cluster,
-the cluster drives Git.
+GitOps Reverser is a Kubernetes operator that observes cluster mutations and writes the resulting
+desired object state to Git. It reverses the traditional GitOps direction: instead of Git driving
+the cluster, the Kubernetes API drives Git.
 
-This document is intended as the starting point for any new contributor.
+This document is the starting point for new contributors. It describes the current code, not only
+the original design intent.
 
 ---
 
 ## Core Philosophy
 
-**The Kubernetes API is the source of truth.** If a conflict occurs during a Git push, the operator
-checks out the latest remote commit and replays the stale events from scratch. A full reconcile may
-also be forced so that newly appeared resources are captured. The API always wins; Git is the
-derived artifact.
+**The Kubernetes API is the source of truth.** Git is a materialized mirror. When a push conflicts
+with a newer remote commit, the operator fetches the new remote state, resets the local clone, and
+replays retained writes. Snapshot and resync paths always derive their desired state from the live
+API, never from Git.
 
-This design is chosen for speed. The operator keeps the Git folder and the live API state equal as
-fast as possible, without needing distributed locking or multi-step conflict resolution.
+**Writes are serialized per Git branch.** One [BranchWorker](../internal/git/branch_worker.go) owns
+each `(GitProvider namespace, GitProvider name, branch)` tuple. Multiple `GitTarget`s may share one
+branch, but all writes funnel through that worker.
 
-**Single-threaded writes per branch.** A Git branch can only have one writer at a time. The
-[BranchWorker](internal/git/branch_worker.go) abstraction enforces this: one goroutine per
-`(GitProvider, Branch)` pair processes all write events sequentially. Multiple `GitTarget`s may
-share a branch (writing to different paths), but they all funnel through the same worker.
+**Audit is the authoritative live event source.** Audit events carry user identity, request intent,
+and response bodies. Dynamic watch/informer infrastructure is still essential, but it is used for
+API discovery, type followability, initial snapshots, rule-change resync, and cache/dedup support.
 
-**Redis queues for HA preparation.** All event ingestion flows through Redis streams. Today this
-runs single-instance, but the architecture is designed so that multiple pods can ingest events
-(audit webhook receivers) while a single leader-elected pod processes them. This is the foundation
-for future high-availability.
+**Manifest content is treated as structured YAML, not just generated files.** Existing manifests are
+scanned by identity. Updates patch an existing document in place when it is safe, moved manifests
+stay where they are, and resync uses mark-and-sweep only after a complete cluster snapshot.
 
-**One event source today, extensible tomorrow.** The audit webhook is the authoritative live event
-source. Watch/informer infrastructure exists and is fully functional, but is currently used only for
-snapshot/reconcile and GVR discovery. The architecture preserves watch as a future valid source of
-state information (it just lacks author attribution).
+**Redis/Valkey is the ingestion buffer.** Audit webhook receivers enqueue canonical audit events
+into Redis streams. The consumer group model is HA-ready, but deployments run one replica by
+default while full HA support remains unfinished.
 
 ---
 
-## Custom Resource Definitions
+## User-Facing API
 
-Four CRDs define the user-facing API.
+Five CRDs define the public API.
 
 ```mermaid
 graph LR
-    GP[GitProvider] -->|referenced by| GT[GitTarget]
-    GT -->|referenced by| WR[WatchRule]
-    GT -->|referenced by| CWR[ClusterWatchRule]
+    GP[GitProvider] -->|providerRef| GT[GitTarget]
+    GT -->|targetRef| WR[WatchRule]
+    GT -->|targetRef| CWR[ClusterWatchRule]
+    GT -->|gitTargetRef| CR[CommitRequest]
 
     style GP fill:#e8f4fd,stroke:#2196f3
     style GT fill:#e8f4fd,stroke:#2196f3
     style WR fill:#fff3e0,stroke:#ff9800
     style CWR fill:#fff3e0,stroke:#ff9800
+    style CR fill:#f3e5f5,stroke:#8e24aa
 ```
 
-### GitProvider (namespaced)
+### GitProvider
 
-Represents a Git remote and its credentials.
+- **Scope**: namespaced
+- **Source**: [api/v1alpha1/gitprovider_types.go](../api/v1alpha1/gitprovider_types.go)
+- **Controller**: [internal/controller/gitprovider_controller.go](../internal/controller/gitprovider_controller.go)
 
-- **Source**: [api/v1alpha1/gitprovider_types.go](api/v1alpha1/gitprovider_types.go)
-- **Controller**: [internal/controller/gitprovider_controller.go](internal/controller/gitprovider_controller.go)
-
-Key fields:
-- `spec.url` — repository URL (HTTP or SSH)
-- `spec.secretRef` — Kubernetes Secret with authentication credentials
-- `spec.allowedBranches` — glob patterns controlling which branches may be written to
-- `spec.push.commitWindow` — rolling silence window for coalescing events into one commit per (author, gitTarget); default `5s`. The push cooldown (5s) is fixed in code, and the per-pod buffer cap is operator-configured via `--branch-buffer-max-bytes` (default `8Mi`)
-- `spec.commit.committer` / `spec.commit.message` / `spec.commit.signing` — committer identity, Go template for messages, SSH signing config
-- `status.signingPublicKey` — populated when commit signing is active
-
-The controller verifies remote connectivity and manages SSH signing key lifecycle (including
-auto-generation and Gitea key registration via [internal/giteaclient/](internal/giteaclient/)).
-
-### GitTarget (namespaced)
-
-One `(GitProvider, Branch, Path)` triple = one Git write destination.
-
-- **Source**: [api/v1alpha1/gittarget_types.go](api/v1alpha1/gittarget_types.go)
-- **Controller**: [internal/controller/gittarget_controller.go](internal/controller/gittarget_controller.go)
+`GitProvider` represents a Git repository and the credentials/configuration used to write it.
 
 Key fields:
-- `spec.providerRef` — reference to a GitProvider in the same namespace
-- `spec.branch` — must match an allowed branch pattern in the provider
-- `spec.path` — required relative path inside the repo for all writes from this target; `.` means repo root
-- `spec.encryption` — optional SOPS/age encryption for Secrets
 
-The controller exposes a **four-gate lifecycle** via `status.conditions`:
+- `spec.url`: repository URL. It is immutable.
+- `spec.secretRef`: optional namespace-local Secret for HTTP/SSH authentication.
+- `spec.allowedBranches`: glob patterns that gate writable branches.
+- `spec.push.commitWindow`: rolling silence window for grouped commits, defaulting to `5s`.
+- `spec.commit.committer`: committer identity.
+- `spec.commit.message`: templates for event, snapshot, and grouped commit messages.
+- `spec.commit.signing`: SSH signing key reference and optional key generation.
+- `status.signingPublicKey`: populated when signing is configured and key material is available.
 
-1. **Validated** — GitProvider exists, branch is allowed, no path collision with other GitTargets
-2. **EncryptionConfigured** — age key Secret generated/validated (when encryption is requested)
-3. **SnapshotSynced** — initial cluster-to-git reconcile completed as a single atomic commit
-4. **EventStreamLive** — live event stream is processing; `Ready=True`
+The controller verifies repository reachability and manages signing key lifecycle. For Gitea, the
+helper client in [internal/giteaclient/](../internal/giteaclient/) can register generated signing
+keys.
 
-Note: the `providerRef` API schema allows referencing a Flux `GitRepository` as an alternative to
-`GitProvider` ([api/v1alpha1/gittarget_types.go:33](api/v1alpha1/gittarget_types.go#L33)). This is
-not yet supported end-to-end — the controller and rule wiring only handle `GitProvider` today.
+### GitTarget
 
-### WatchRule (namespaced)
+- **Scope**: namespaced
+- **Source**: [api/v1alpha1/gittarget_types.go](../api/v1alpha1/gittarget_types.go)
+- **Controller**: [internal/controller/gittarget_controller.go](../internal/controller/gittarget_controller.go)
 
-Defines which resources to watch **within the rule's own namespace**.
-
-- **Source**: [api/v1alpha1/watchrule_types.go](api/v1alpha1/watchrule_types.go)
-- **Controller**: [internal/controller/watchrule_controller.go](internal/controller/watchrule_controller.go)
-
-Key fields:
-- `spec.targetRef` — references a GitTarget in the same namespace
-- `spec.rules[]` — logical OR of resource rules, each with `operations`, `apiGroups`, `apiVersions`, `resources`
-
-Within a rule, omitted `apiGroups` / `apiVersions` mean *all* groups / versions: a bare resource
-name is resolved against the cluster's served API surface, not assumed to be core `/v1`. The
-controller reports resolution outcomes on a `ResourcesResolved` status condition — see
-[Watch / Informer System](#watch--informer-system).
-
-### ClusterWatchRule (cluster-scoped)
-
-Watches resources across namespaces or cluster-wide.
-
-- **Source**: [api/v1alpha1/clusterwatchrule_types.go](api/v1alpha1/clusterwatchrule_types.go)
-- **Controller**: [internal/controller/clusterwatchrule_controller.go](internal/controller/clusterwatchrule_controller.go)
+`GitTarget` is one materialization destination: `(provider, branch, path)`.
 
 Key fields:
-- `spec.targetRef` — references a GitTarget with explicit namespace
-- `spec.rules[].scope` — `Cluster` (cluster-scoped resources) or `Namespaced` (namespaced resources across all namespaces)
 
-### Controller dependency watches
+- `spec.providerRef`: currently implemented for namespace-local `GitProvider`.
+- `spec.branch`: immutable branch name, validated against `GitProvider.spec.allowedBranches`.
+- `spec.path`: immutable required path under the repository; `.` deliberately means repo root.
+- `spec.encryption`: optional SOPS/age encryption settings for sensitive resources.
 
-The reference chain above is also a *watch* chain. Each controller `Watches` the
-kind it references, so a freshly-applied or spec-changed dependency re-enqueues
-its dependents within milliseconds instead of waiting on the periodic requeue
-(~2 min):
+The destination fields `providerRef`, `branch`, and `path` are immutable so a target cannot silently
+orphan an old materialization. The controller also rejects path overlaps between GitTargets that
+share the same provider and branch.
 
-- `GitTargetReconciler` watches `GitProvider`
-- `WatchRuleReconciler` / `ClusterWatchRuleReconciler` watch `GitTarget` and `GitProvider`
+`GitTarget` status exposes readiness gates:
 
-These watches use a `GenerationChangedPredicate`: they fire on create and spec
-changes but ignore the status-only updates the controllers write to their own
-dependencies. Without the predicate, every dependency heartbeat would re-list
-and re-enqueue all dependents. The trade-off: a dependency that becomes *usable*
-via a status-only transition (e.g. a `GitProvider` whose credentials start
-working with no spec edit) re-enqueues dependents only on the next periodic
-requeue, not instantly. See
-[idea-cross-kind-dependency-watches.md](future/idea-cross-kind-dependency-watches.md).
+- `Validated`: provider exists, branch is allowed, and the target path is valid/non-overlapping.
+- `EncryptionConfigured`: required encryption material exists or has been generated.
+- `SnapshotSynced`: initial cluster-to-Git resync completed.
+- `EventStreamLive`: the target is ready for live audit-driven writes.
+- `Ready`: aggregate readiness.
+
+Snapshot stats are stored in `status.snapshot.stats`.
+
+The `providerRef` schema still mentions Flux `GitRepository`, but the controller path only supports
+`GitProvider` today.
+
+### WatchRule
+
+- **Scope**: namespaced
+- **Source**: [api/v1alpha1/watchrule_types.go](../api/v1alpha1/watchrule_types.go)
+- **Controller**: [internal/controller/watchrule_controller.go](../internal/controller/watchrule_controller.go)
+
+`WatchRule` selects resources in its own namespace and routes matching events to a namespace-local
+`GitTarget`.
+
+Key fields:
+
+- `spec.targetRef`: same-namespace `GitTarget`.
+- `spec.rules[]`: OR-ed resource rules.
+- `rules[].operations`: `CREATE`, `UPDATE`, `DELETE`, or `*`; omitted means all operations.
+- `rules[].apiGroups`: omitted means resolve the named resource across served API groups.
+- `rules[].apiVersions`: omitted means preferred served version.
+- `rules[].resources`: plural resource names or `*`.
+
+Subresources are intentionally rejected in rule resources. Snapshot and steady-state mirroring
+operate on top-level resources; selected subresource effects are translated separately when they can
+be safely mapped back to parent desired state.
+
+### ClusterWatchRule
+
+- **Scope**: cluster
+- **Source**: [api/v1alpha1/clusterwatchrule_types.go](../api/v1alpha1/clusterwatchrule_types.go)
+- **Controller**: [internal/controller/clusterwatchrule_controller.go](../internal/controller/clusterwatchrule_controller.go)
+
+`ClusterWatchRule` selects cluster-scoped resources or namespaced resources across the cluster.
+
+Key fields:
+
+- `spec.targetRef`: `GitTarget` reference with explicit namespace.
+- `spec.rules[].scope`: `Cluster` for cluster-scoped resources, `Namespaced` for namespaced
+  resources across all namespaces.
+- `spec.rules[]`: same operation/group/version/resource model as `WatchRule`.
+
+### CommitRequest
+
+- **Scope**: namespaced
+- **Source**: [api/v1alpha1/commitrequest_types.go](../api/v1alpha1/commitrequest_types.go)
+- **Controller**: [internal/controller/commitrequest_controller.go](../internal/controller/commitrequest_controller.go)
+- **Audit handling**: [internal/queue/commit_request.go](../internal/queue/commit_request.go)
+
+`CommitRequest` is a one-shot "save now" signal. Creating it finalizes the open commit window for a
+same-namespace `GitTarget` instead of waiting for the silence timer.
+
+Key fields:
+
+- `spec.gitTargetRef.name`: target whose open window should be finalized.
+- `spec.message`: optional verbatim commit message, bounded by CRD validation.
+- `status.phase`: `WaitingForAuditEvent`, `Committed`, `NoOpenWindow`, or `Failed`.
+- `status.branch` / `status.sha`: set when a commit was produced.
+
+The controller only stamps `WaitingForAuditEvent`. The actual finalize happens when the audit
+consumer processes the CommitRequest's own create audit event. That ordering is deliberate: by the
+time the CommitRequest audit event is consumed, earlier user mutations have already entered the open
+window.
 
 ---
 
-## Kubernetes API Concepts That Matter Here
+## Kubernetes Concepts That Matter
 
-A few Kubernetes API server concepts are central to how this operator works. This section is for
-contributors who may not be deeply familiar with these mechanisms.
+### Audit Webhook
 
-### Audit webhook
+The Kubernetes API server can POST audit `EventList` payloads to an external HTTP endpoint. The
+operator cannot configure that API server policy itself; it only receives what the cluster sends.
+Audit events are valuable because they include the original user, verb, object identity, response
+status, and often request/response bodies.
 
-The Kubernetes API server can be configured to send **audit events** to an external HTTP endpoint
-for every API request it processes. This is configured via two flags on the API server itself:
+GitOps Reverser exposes:
 
-- `--audit-policy-file` — defines which API requests are logged and at what detail level
-- `--audit-webhook-config-file` — points to a kubeconfig-style file that tells the API server where
-  to POST audit events
+```text
+POST /audit-webhook
+POST /audit-webhook-additional
+```
 
-This is external infrastructure: the operator cannot influence the API server configuration. It can
-only receive what the API server sends. Each audit event includes the full request and/or response
-object, the verb (create/update/delete), the user who performed the action, and a `resourceVersion`
-that identifies the exact version of the object in etcd.
+`/audit-webhook` is the canonical kube-apiserver source. `/audit-webhook-additional` is for
+supplementary body providers, especially aggregated API paths where the kube-apiserver audit events are shallow. Meaning that not the full body is available.
 
-### Informers (list/watch)
+### Discovery and Informers
 
-Kubernetes informers use the **list/watch** protocol to track resources. An informer first lists all
-existing objects of a given GVR (Group/Version/Resource), then opens a long-lived watch connection
-to receive incremental updates. Informers operate at GVR granularity — you subscribe to "all
-Deployments" or "all ConfigMaps", not to individual objects.
-
-Watch events also carry `resourceVersion`, which means audit events and watch events for the same
-mutation reference the same etcd version. In principle this could be used to correlate and
-deduplicate across sources. Today the operator uses content-hash deduplication instead, which is
-simpler but does not leverage this ordering guarantee.
+Discovery reports the served API surface. Dynamic informers and streaming-list watches observe
+resources by GVR `(group, version, resource)`. GitOps Reverser uses this to resolve user rules,
+decide which types are followable, start needed informers, and gather complete snapshots.
 
 ### resourceVersion
 
-Every Kubernetes object has a `metadata.resourceVersion` that is incremented on every write to
-etcd. Both audit events and watch events carry this version. The operator strips `resourceVersion`
-during [sanitization](internal/sanitize/sanitize.go) before writing to Git, since it is
-cluster-internal state that would cause spurious diffs.
+Kubernetes objects carry `metadata.resourceVersion`, but it is cluster-internal runtime state.
+[internal/sanitize/](../internal/sanitize/) strips it before writing to Git.
 
 ---
 
-## High-Level Event Flow
+## High-Level Flow
 
 ```mermaid
 flowchart TD
-    subgraph "Kubernetes API Server (external, pre-configured)"
-        ETCD[(etcd)] --> KAS[kube-apiserver]
-        KAS --- AUDIT_CFG["--audit-webhook-config-file\n--audit-policy-file"]
+    subgraph "Kubernetes API Server"
+        KAS[kube-apiserver]
+        DISC[Discovery + list/watch]
     end
 
-    subgraph "Watch / Informers (snapshot + discovery)"
-        WM[Watch Manager]
-        CAT[APIResourceCatalog]
-        WM -->|resolve rules| CAT
-        WM -->|GVR planning| RULE
-        WM -->|snapshot events| ER
+    subgraph "Audit Ingress"
+        OFF["/audit-webhook"]
+        ADD["/audit-webhook-additional"]
+        JOIN[Audit joiner + canonical gate]
+        OFF --> JOIN
+        ADD --> JOIN
     end
 
-    KAS -->|audit webhook POST| AH
-    KAS <-->|list/watch + discovery| WM
-
-    subgraph Ingestion
-        AH[AuditHandler] -->|XADD| RS[(Redis Stream)]
+    subgraph Redis
+        STREAM[(gitopsreverser.audit.events.v1)]
+        DEBUG[(optional debug stream)]
     end
 
-    subgraph Processing ["Processing (leader-elected)"]
-        RS -->|XREADGROUP| AC[AuditConsumer]
-        AC -->|filter + match| RULE[RuleStore]
-        AC -->|sanitize + route| ER[EventRouter]
+    subgraph "Processing"
+        CONS[AuditConsumer]
+        RULES[RuleStore]
+        ROUTER[EventRouter]
+        WATCH[Watch Manager]
+        TYPES[TypeRegistry + WatchedTypeTables]
     end
 
-    subgraph Routing
-        ER --> GTES[GitTargetEventStream]
-        GTES -->|dedup + enqueue| BW[BranchWorker]
+    subgraph "Git Writes"
+        GTES[GitTargetEventStream]
+        BW[BranchWorker]
+        PLAN[Manifest-aware plan/flush]
+        PUSH[Atomic push]
     end
 
-    subgraph "Git Write (single-threaded per branch)"
-        BW -->|coalesce by commitWindow| COMMIT[Generate Commits]
-        COMMIT --> PUSH[PushAtomic]
-        PUSH -->|conflict?| RETRY[Fetch Fresh + Replay]
-        RETRY --> COMMIT
-    end
+    KAS -->|official audit EventList| OFF
+    JOIN --> STREAM
+    JOIN -. raw decoded tap .-> DEBUG
+    STREAM -->|XREADGROUP| CONS
+    CONS --> RULES
+    CONS --> ROUTER
+    ROUTER --> GTES
+    GTES --> BW
+    BW --> PLAN
+    PLAN --> PUSH
+
+    DISC --> WATCH
+    WATCH --> TYPES
+    TYPES --> RULES
+    WATCH -->|snapshot/resync| ROUTER
 ```
 
-### Step-by-step: audit event to Git commit
+### Audit Event to Commit
 
-Audit events are inherently cluster-wide: the API server sends every matching mutation regardless
-of namespace. All namespace-level filtering must happen inside the operator.
-
-1. **Kubernetes API Server** sends audit events via webhook POST to `/audit-webhook`
-2. Supplementary audit sources can send matching `EventList` payloads to `/audit-webhook-additional`
-3. [AuditHandler](internal/webhook/audit_handler.go) deserializes each `EventList`, optionally appends every decoded event to a separate early debug Redis stream, lets the audit joiner park or merge body contributions by `auditID`, and calls `RedisAuditQueue.Enqueue()` for canonical events
-4. [RedisAuditQueue](internal/queue/redis_audit_queue.go) writes to Redis stream `gitopsreverser.audit.events.v1` via `XADD`
-5. [AuditConsumer](internal/queue/redis_audit_consumer.go) reads batches of 50 via `XREADGROUP` (consumer group for HA-readiness)
-6. For each message: filter to `ResponseComplete` stage + mutating verbs only, then call [RuleStore](internal/rulestore/store.go) to find matching rules
-7. Extract the response object (or request object for DELETE), run through [sanitize.Sanitize()](internal/sanitize/) to strip runtime fields
-8. For each matched rule: call [EventRouter.RouteToGitTargetEventStream()](internal/watch/event_router.go)
-9. [GitTargetEventStream](internal/reconcile/git_target_event_stream.go) deduplicates by content hash and enqueues to the BranchWorker
-10. [BranchWorker](internal/git/branch_worker.go) buffers events and flushes when the commit window expires, on shutdown, or when the buffer hits the operator's byte cap
-11. [BranchWorker](internal/git/branch_worker.go) converts retained writes into commit plans, executes local commits, and publishes them with [PushAtomic()](internal/git/git_atomic_push.go)
-12. If the remote has diverged: fetch fresh remote state, hard-reset, rebuild from retained pending writes, and retry
+1. The API server posts an audit `EventList` to `/audit-webhook`.
+2. Optional supplementary body providers post matching `EventList` payloads to
+   `/audit-webhook-additional`.
+3. [AuditHandler](../internal/webhook/audit_handler.go) decodes, classifies, joins, deduplicates,
+   and enqueues one canonical event per `auditID`.
+4. [RedisAuditQueue](../internal/queue/redis_audit_queue.go) writes to
+   `gitopsreverser.audit.events.v1`.
+5. [AuditConsumer](../internal/queue/redis_audit_consumer.go) reads batches via Redis consumer
+   groups.
+6. The consumer keeps `ResponseComplete` mutating events and drops unsupported shallow or
+   subresource-only shapes.
+7. [RuleStore](../internal/rulestore/store.go) finds matching `WatchRule` and `ClusterWatchRule`
+   entries.
+8. The event is sanitized, sensitive/subresource handling is applied, and
+   [EventRouter](../internal/watch/event_router.go) routes it to the target stream.
+9. [GitTargetEventStream](../internal/reconcile/git_target_event_stream.go) buffers during target
+   reconciliation and deduplicates live content.
+10. [BranchWorker](../internal/git/branch_worker.go) groups events by author and GitTarget inside
+    the commit window.
+11. The manifest-aware writer scans the target subtree, applies structured edits, commits, and
+    eventually pushes through [PushAtomic](../internal/git/git_atomic_push.go).
+12. If the remote moved, the worker fetches, resets, rebuilds retained pending writes, and retries.
 
 ---
 
-## Key Abstractions
-
-### BranchWorker
-
-- **Source**: [internal/git/branch_worker.go](internal/git/branch_worker.go)
-- **Managed by**: [WorkerManager](internal/git/worker_manager.go)
-
-One BranchWorker per `(GitProvider namespace, GitProvider name, Branch)`. Ensures all Git writes
-to a branch are serialized into a single goroutine.
-
-```
-BranchKey = {ProviderNamespace, ProviderName, Branch}
-```
-
-The worker runs a single `processEvents()` goroutine that reads from a buffered channel
-(capacity 100). Events are flushed as commits when either:
-- the rolling commit-window timer expires after `spec.push.commitWindow` of silence (default `5s`)
-- the per-worker buffer hits `--branch-buffer-max-bytes` (default `8Mi`, operator-tuned)
-- the worker shuts down
-
-A fixed 5s push cooldown bounds how often successful pushes hit the remote.
-
-Atomic requests (e.g., initial snapshot reconcile) bypass the buffer and commit everything in one
-commit.
-
-Local clones live under `/tmp/gitops-reverser-workers/{namespace}/{provider}/{branch}/repos/{hash}`.
-Branch metadata (exists, HEAD SHA, last fetch time) is cached for 30 seconds to avoid redundant
-fetches when multiple GitTargets share the same branch.
-
-### GitTargetEventStream
-
-- **Source**: [internal/reconcile/git_target_event_stream.go](internal/reconcile/git_target_event_stream.go)
-
-A two-state machine per GitTarget:
-
-| State | Behavior |
-|---|---|
-| `RECONCILING` | Buffer live events while an initial snapshot or rule-change reconcile is in flight |
-| `LIVE_PROCESSING` | Deduplicate by content hash (SHA-256 of sanitized YAML), then enqueue to BranchWorker |
-
-The transition from `RECONCILING` to `LIVE_PROCESSING` flushes all buffered events.
-
-### EventRouter
-
-- **Source**: [internal/watch/event_router.go](internal/watch/event_router.go)
-
-Central dispatch hub. Holds references to `WorkerManager`, `ReconcilerManager`, and `WatchManager`.
-Maintains a registry of `GitTargetEventStream`s keyed by `ResourceReference.Key()`.
-
-Responsibilities:
-- Route live events to the correct GitTargetEventStream
-- Dispatch control events (`RequestClusterState`, `RequestRepoState`, `ReconcileResource`)
-- Coordinate reconciliation state transitions
+## Rule and Type Resolution
 
 ### RuleStore
 
-- **Source**: [internal/rulestore/store.go](internal/rulestore/store.go)
+- **Source**: [internal/rulestore/store.go](../internal/rulestore/store.go)
 
-Thread-safe in-memory cache of compiled rules. Populated by WatchRule and ClusterWatchRule
-controllers at reconcile time. Each compiled rule stores the full reference chain:
-`WatchRule → GitTarget → GitProvider → branch + path`, including the source namespace of the rule.
+The RuleStore is an in-memory cache populated by the WatchRule and ClusterWatchRule controllers.
+Compiled rules include the full chain from rule to `GitTarget`, `GitProvider`, branch, and path.
 
-`GetMatchingRules()` matches by `{resource, operation, apiGroup, apiVersion, scope}`. Supports
-wildcards (`*`) and core API group matching (`""`).
+It is read by:
 
-This is an important architectural detail: **both the audit path and the watch/informer path depend
-on the same `GetMatchingRules` contract.** The RuleStore is also read by the Watch Manager's GVR
-planner (`ComputeRequestedGVRs`), which resolves the compiled rules against the API resource
-catalog (see [Watch / Informer System](#watch--informer-system)) to decide which informers to
-start. That means the RuleStore serves two different jobs through the same interface:
+- the audit consumer for live event routing;
+- the watch manager for target watch planning;
+- rule-change reconciliation for deciding which targets need resync.
 
-- **GVR planning** — which resource types need informers (works at GVR granularity)
-- **Event routing** — which concrete object event should route to which target (needs full context
-  including namespace)
+### APIResourceCatalog
 
-The compiled rule carries the rule's source namespace, but the matching contract does not accept or
-check namespace. See
-[watch-audit-rule-matching-improvement.md](design/watch-audit-rule-matching-improvement.md) for the
-design to address this.
+- **Source**: [internal/watch/api_resource_catalog.go](../internal/watch/api_resource_catalog.go)
+- **Observation projection**: [internal/watch/catalog_observe.go](../internal/watch/catalog_observe.go)
 
-### FolderReconciler
+`APIResourceCatalog` is the discovery-backed view of served resources. Trust is tracked per
+group/version. If one aggregated API group/version is degraded, the catalog keeps the last trusted
+entries for that group/version instead of treating it as an empty API surface and causing accidental
+Git deletions.
 
-- **Source**: [internal/reconcile/folder_reconciler.go](internal/reconcile/folder_reconciler.go)
+The catalog refreshes on startup, periodically, and when CRD/APIService trigger informers observe
+API-surface changes.
 
-Diffs cluster state against Git repository state during initial snapshot sync. Receives both
-a `ClusterStateEvent` (what exists in the cluster) and a `RepoStateEvent` (what exists in Git),
-then emits a single atomic `WriteRequest` that brings Git in line with the cluster.
+### TypeRegistry and Followability
+
+- **Source**: [internal/typeset/](../internal/typeset/)
+- **Design**: [docs/design/manifest/version2/type-followability.md](design/manifest/version2/type-followability.md)
+
+`internal/typeset` is the single decision surface for "can this type be followed?" The watch manager
+projects catalog entries into `typeset.Observation`s, then publishes one `TypeRecord` per known
+type in a `TypeRegistry`.
+
+Each record carries:
+
+- GVK and GVR identity;
+- scope and preferred version facts;
+- origin classification;
+- subresource facts, including usable `/scale` bindings;
+- sensitivity policy;
+- one `Followability` verdict and reason-code summary.
+
+Followability replaces older scattered checks. Snapshot planning, informer planning, manifest
+analysis, and GVR-only delete/scale resolution all read the same registry.
+
+### WatchedTypeTable
+
+- **Source**: [internal/watch/watched_type_table.go](../internal/watch/watched_type_table.go)
+
+A `WatchedTypeTable` is a per-GitTarget projection of the type registry filtered by that target's
+WatchRules and ClusterWatchRules. It records the resolved GVK/GVR/scope plus namespace and
+operation coverage.
+
+The table is the resident answer to "what does this GitTarget watch?" and feeds:
+
+- informer start/stop decisions;
+- streaming snapshot tasks;
+- effective rule-set hashing;
+- resync trigger decisions.
 
 ---
 
-## Redis Queue Architecture
+## Watch, Snapshot, and Resync
 
-```mermaid
-flowchart LR
-    subgraph "Pod A (webhook receiver)"
-        AH1[AuditHandler] -->|XADD| STREAM
-    end
+- **Manager**: [internal/watch/manager.go](../internal/watch/manager.go)
+- **Streaming snapshot**: [internal/watch/snapshot_stream.go](../internal/watch/snapshot_stream.go)
+- **Router resync path**: [internal/watch/event_router.go](../internal/watch/event_router.go)
+- **Worker resync apply**: [internal/git/resync_flush.go](../internal/git/resync_flush.go)
 
-    subgraph "Pod B (webhook receiver)"
-        AH2[AuditHandler] -->|XADD| STREAM
-    end
+The watch manager is a controller-runtime `Runnable`. Live audit events are authoritative, but the
+watch manager owns discovery, dynamic informers, and resync.
 
-    STREAM[(Redis Stream\ngitopsreverser.audit.events.v1)]
+On startup it bootstraps the RuleStore from existing rules before its first rule-change reconcile.
+Then it refreshes the API catalog, updates the TypeRegistry, builds watched-type tables, and starts
+the required informers.
 
-    subgraph "Leader Pod (consumer)"
-        AC[AuditConsumer] -->|XREADGROUP| STREAM
-        AC -->|XAUTOCLAIM idle > 60s| STREAM
-        AC -->|XACK| STREAM
-    end
+### Rule-Change Reconcile
+
+When a WatchRule, ClusterWatchRule, GitTarget, GitProvider, CRD, or APIService change requires a new
+watch plan, the manager:
+
+1. Refreshes discovery and the TypeRegistry.
+2. Rebuilds affected watched-type tables.
+3. Starts or stops dynamic informers for added/removed watched GVRs.
+4. Computes per-target rule-set hashes.
+5. Triggers a resync for targets whose effective watched set changed.
+
+Rule-change resync is fire-and-forget after the snapshot is gathered and enqueued. Initial
+GitTarget snapshot sync waits for the worker result so the GitTarget status can report stats.
+
+### Streaming Snapshot
+
+`StreamClusterSnapshotForGitDest` gathers a complete desired set for one GitTarget using
+Kubernetes streaming-list watch:
+
+- `sendInitialEvents=true`
+- `resourceVersionMatch=NotOlderThan`
+- `allowWatchBookmarks=true`
+
+Each watched type/namespace stream emits synthetic initial `ADDED` events and then an
+initial-events-end bookmark. The snapshot is accepted only after every stream reaches its bookmark.
+If any stream errors or closes early, the whole gather aborts and no sweep is enqueued.
+
+For API servers that cannot stream initial events, the code falls back to a consistent per-type
+LIST. This fallback is narrow; partial watch failures still fail closed.
+
+### Mark-and-Sweep Resync
+
+The BranchWorker applies resync by scanning the GitTarget subtree and building a manifest plan:
+
+- desired resources are upserted through the same content-derived path as live writes;
+- existing managed documents that are watched but absent from the complete snapshot are deleted;
+- untracked, non-Kubernetes, unresolved, or unsafe YAML is left alone according to analyzer policy;
+- nothing is committed if the apply cannot complete safely.
+
+An empty desired set is authoritative only because the gather completed for every watched type.
+
+---
+
+## Git Write Architecture
+
+### BranchWorker
+
+- **Source**: [internal/git/branch_worker.go](../internal/git/branch_worker.go)
+- **Worker manager**: [internal/git/worker_manager.go](../internal/git/worker_manager.go)
+
+`BranchWorker` owns a local clone and a single event loop for its branch. Events are buffered in a
+single open commit window.
+
+The open window accepts only one `(author, GitTarget)` pair at a time:
+
+- same author + same GitTarget: append to the window;
+- different author or GitTarget: finalize the current window first;
+- repeated writes to the same Git path inside a window are last-write-wins.
+
+The window finalizes when:
+
+- `spec.push.commitWindow` passes with no new matching event;
+- the retained buffer reaches `--branch-buffer-max-bytes` (default `8Mi`);
+- a `CommitRequest` finalize signal matches the open author and GitTarget;
+- the worker receives a resync request or shutdown.
+
+Successful local commits are retained until the push cooldown allows a push. The fixed cooldown
+prevents remote push storms during bursts.
+
+### Local Clones and Conflict Retry
+
+Local clones live under:
+
+```text
+/tmp/gitops-reverser-workers/{namespace}/{provider}/{branch}/repos/{hash}
 ```
 
-- **Producer**: [RedisAuditQueue](internal/queue/redis_audit_queue.go) — `XADD` with `MAXLEN ~` for bounded retention
-- **Consumer**: [AuditConsumer](internal/queue/redis_audit_consumer.go) — uses Redis consumer groups (`XREADGROUP`) so multiple replicas don't duplicate work
-- **Consumer ID**: set to the Pod name
-- **Batch size**: 50 messages per read, 2s block timeout
-- **Reclaim**: `XAUTOCLAIM` every 30s for messages idle > 60s (crashed consumer recovery)
-- **Poison pill**: messages are ACK'd regardless of processing outcome to prevent queue blockage
+`PushAtomic` checks the remote ref before pushing. If the remote diverged:
 
-### Current state and future direction
+1. smart-fetch the latest remote state;
+2. hard-reset the local clone to the remote tip;
+3. replay retained pending writes;
+4. retry, up to the configured attempt limit.
 
-Today there is a single Redis stream for all audit events. The consumer is leader-elected, meaning
-only one pod processes events at a time.
+This is valid because pending writes can be rebuilt from sanitized API-derived state.
 
-When `--audit-debug-redis-stream` is set, the handler also appends each successfully decoded
-audit event to that stream immediately after `EventList` decode. This tap runs before per-event
-validation, stage/verb filtering, shallow-body joins, deduplication, and canonical enqueueing.
-It uses the canonical stream fields plus `source` (`official` or `additional`) and retains the raw
-event as `payload_json`. The stream is diagnostic only; no consumer routes it to Git.
+### Manifest-Aware Writer
 
-**Desired future**: each GitTarget (or at minimum each Git destination) gets its own Redis queue.
-This way a GitHub outage only stalls commits for the affected destination — events keep
-accumulating in Redis and are committed once the remote is reachable again. Other Git destinations
-continue operating normally.
+- **Steady state**: [internal/git/plan_flush.go](../internal/git/plan_flush.go)
+- **YAML editor**: [internal/git/manifestedit/](../internal/git/manifestedit/)
+- **Analyzer/planner**: [internal/manifestanalyzer/](../internal/manifestanalyzer/)
+- **Object projection**: [internal/manifestreport/](../internal/manifestreport/)
 
----
+The writer no longer blindly regenerates one canonical file per event when a manifest already
+exists. For each commit it:
 
-## Watch / Informer System
+1. scans YAML files under the GitTarget path;
+2. builds a byte-free manifest store keyed by resource identity;
+3. resolves each event to one action;
+4. hydrates only touched files into commit-scoped buffers;
+5. flushes only changed/deleted files.
 
-- **Source**: [internal/watch/manager.go](internal/watch/manager.go), [internal/watch/informers.go](internal/watch/informers.go), [internal/watch/gvr.go](internal/watch/gvr.go), [internal/watch/api_resource_catalog.go](internal/watch/api_resource_catalog.go), [internal/watch/rule_gvr_resolver.go](internal/watch/rule_gvr_resolver.go)
+Upserts behave this way:
 
-The Watch Manager is a controller-runtime `Runnable` (leader-elected) that manages dynamic
-informers per GVR (Group/Version/Resource).
+- if a managed document for the resource already exists, patch it in place;
+- if it is sensitive/encrypted, re-encrypt the whole document at its existing path;
+- if no document exists, create a new file at the canonical placement path.
 
-### Current role
+Deletes use the manifest identity index, so a moved manifest can still be deleted even when it is
+not at the canonical path.
 
-Watch/informers are **not** used as the live event source (audit is). They serve three purposes:
+Field patches, currently used for supported subresource effects such as `/scale`, are intentionally
+narrow. They only patch existing parent manifests and never fabricate a parent object from partial
+subresource data.
 
-1. **Snapshot and reconcile** — provide cluster state for initial GitTarget sync and rule-change re-sync
-2. **GVR discovery and planning** — turn compiled rules into concrete GVRs against the API resource catalog
-3. **Content deduplication** — track last-seen content hashes to avoid redundant writes
+### Current File Placement
 
-### API resource catalog
+New resources still use the canonical REST-like path:
 
-- **Source**: [internal/watch/api_resource_catalog.go](internal/watch/api_resource_catalog.go), [internal/watch/rule_gvr_resolver.go](internal/watch/rule_gvr_resolver.go), [internal/watch/resource_policy.go](internal/watch/resource_policy.go)
-
-`APIResourceCatalog` is the single, trusted in-memory view of the API surface the cluster
-currently serves. It is built from `ServerGroupsAndResources()` discovery and is the only thing
-rule planning consults — snapshot planning, informer planning, and WatchRule status feedback all
-read the same catalog instead of each path running its own discovery lookup.
-
-Trust is tracked **per group/version**. A discovery refresh that fails for one aggregated API
-marks only that group/version `degraded` and keeps its last trusted entries; it never lets a
-flaky aggregated API erase a group and trigger spurious Git deletions. `Generation()` increments
-whenever trusted entries actually change. The catalog refreshes on startup, on the periodic
-reconcile, and on `CustomResourceDefinition` / `APIService` trigger informers
-(`startAPISurfaceTriggerInformers`, started with the Watch Manager runnable) whose events are
-coalesced into a single refresh signal.
-
-`RuleGVRResolver` applies WatchRule semantics to the catalog. A rule names resources, not
-necessarily their group or version:
-
-- Omitted `apiGroups` resolves the resource name across **all** served groups (so a bare
-  `resources: ["deployments"]` correctly resolves to `apps/v1`, not core `/v1`).
-- Omitted or `*` `apiVersions` picks the catalog's preferred served version.
-- A resource name served by more than one group is `Ambiguous` — the rule must name an
-  explicit `apiGroups` rather than have one guessed.
-- A resource absent from a cleanly discovered catalog is `NotServed`; one whose lookup scope is
-  degraded is `DiscoveryDegraded`; one excluded by built-in watch policy is `Disallowed`.
-
-Unresolved resources are reported on the WatchRule / ClusterWatchRule `ResourcesResolved` status
-condition rather than failing silently. Snapshot planning treats `NotServed` / `Ambiguous` /
-`Disallowed` as a skip (a resource type with no served objects cannot make the snapshot partial)
-but still aborts on `DiscoveryDegraded`, an unexpanded `*`, or a genuine list failure on a served
-GVR — a partial snapshot looks like deletions to the Git mirror.
-
-### Reconcile cycle
-
-When WatchRule/ClusterWatchRule controllers change rules, they call `WatchManager.ReconcileForRuleChange()`:
-
-1. Refresh the API resource catalog from discovery
-2. Resolve compiled rules to concrete GVRs via `RuleGVRResolver`; unresolved resources are logged and surfaced on rule status
-3. Start/stop informers for added/removed GVRs
-4. Put affected GitTargetEventStreams into `RECONCILING` state
-5. Wait for informer cache sync
-6. Emit snapshot events → FolderReconciler diffs → atomic commit
-7. Transition streams to `LIVE_PROCESSING`, flush buffered events
-
-A newly installed CRD is picked up by the CRD / `APIService` trigger informers, which refresh the
-catalog and re-run the cycle; the periodic reconcile (30s) is the backstop.
-
-### Future role
-
-The current mode is **audit for live events + watch for reconcile/snapshot**. This is a deliberate
-choice: audit events carry the original author, which we value highly.
-
-Watch should remain useful for:
-- Snapshot and reconcile (current)
-- Discovery and rule planning (current)
-- A future fallback source when audit is unavailable, accepting the loss of author attribution
-
----
-
-## Git Operations
-
-### File path convention
-
-Resources are stored following the Kubernetes REST API structure:
-
-```
+```text
 {spec.path}/{group}/{version}/{resource}/{namespace}/{name}.yaml
 ```
 
-`spec.path` is required. Use a folder path for ordinary setups, and use `.` only when the
-`GitTarget` is meant to own the repository root.
+For core resources, the empty group segment is omitted:
 
-For core API resources (empty group), the group segment is omitted:
-
-```
+```text
 {spec.path}/v1/configmaps/my-namespace/my-config.yaml
 ```
 
-Secrets with encryption enabled use `.sops.yaml`:
+Sensitive resources use `.sops.yaml`:
 
-```
+```text
 {spec.path}/v1/secrets/my-namespace/my-secret.sops.yaml
 ```
 
-Path generation: [internal/git/git.go:1013](internal/git/git.go#L1013), backed by
-[ResourceIdentifier.ToGitPath()](internal/types/identifier.go).
+Existing resources are match-first: once a document exists in Git, updates and deletes use that
+document's current location instead of recomputing placement.
 
-### Path bootstrap
+Future placement policy is tracked in
+[docs/design/manifest/version2/gittarget-new-file-placement-rules.md](design/manifest/version2/gittarget-new-file-placement-rules.md).
 
-When a GitTarget path is first written to, the BranchWorker bootstraps it with operator-managed
-template files to make the target path immediately usable. This currently includes a `README.md`
-and, when encryption is configured, a `.sops.yaml` configuration file that maps age recipients to
-the correct file patterns.
+### Bootstrap Files
 
-- **Templates**: [internal/git/bootstrapped-repo-template/](internal/git/bootstrapped-repo-template/)
-- **Logic**: [internal/git/bootstrapped_repo_template.go](internal/git/bootstrapped_repo_template.go)
+- **Templates**: [internal/git/bootstrapped-repo-template/](../internal/git/bootstrapped-repo-template/)
+- **Logic**: [internal/git/bootstrapped_repo_template.go](../internal/git/bootstrapped_repo_template.go)
 
-Bootstrap files are included in the **first commit that writes to the target path**. This is
-usually the initial snapshot sync, but if the snapshot produces no changes (empty cluster state for
-the matched rules), the bootstrap files will appear in the first live event commit instead. They
-are part of the actual repo content and should be expected when inspecting a GitTarget path.
+The first write to a GitTarget path stages operator-managed bootstrap content. That includes a
+`README.md` and, when encryption is configured, a `.sops.yaml` file with age recipient rules.
 
-### Conflict resolution
+### Sensitive Resources and Encryption
 
-The strategy is **checkout fresh + replay**:
+- **Encryption model**: [internal/git/encryption.go](../internal/git/encryption.go)
+- **SOPS implementation**: [internal/git/sops_encryptor.go](../internal/git/sops_encryptor.go)
+- **Sensitivity policy**: [internal/types/sensitive_resource.go](../internal/types/sensitive_resource.go)
 
-```mermaid
-flowchart TD
-    A[Generate commits from events] --> B[PushAtomic]
-    B -->|success| DONE[Done]
-    B -->|remote diverged| C[SmartFetch latest remote]
-    C --> D[Hard reset to remote tip]
-    D --> A
-    A -->|3 attempts exhausted| FAIL[Error]
-```
+Core Secrets are sensitive by default. Operators can mark additional resource types sensitive with
+`--additional-sensitive-resources`.
 
-1. [PushAtomic()](internal/git/git_atomic_push.go) checks remote refs via `AdvertisedReferences()` before pushing
-2. If the remote has moved, [SmartFetch()](internal/git/git_smart_fetch.go) fetches latest state
-3. Hard reset discards local commits, then the same events are replayed from scratch
-4. Up to 3 retry attempts; each failure is logged as a `PullReport` for observability
+Sensitive resources are never written in plaintext. If encryption is required and unavailable, the
+write fails before the plaintext file is created. The content writer also caches encrypted output by
+resource metadata and plaintext digest to avoid unnecessary SOPS work.
 
-This works because the API is the source of truth. Any stale commit can be regenerated from the
-current object state.
+### Commit Signing
 
-### Encryption
+- **Git signing**: [internal/git/signing.go](../internal/git/signing.go)
+- **SSH signatures**: [internal/sshsig/](../internal/sshsig/)
 
-- **Source**: [internal/git/encryption.go](internal/git/encryption.go), [internal/git/sops_encryptor.go](internal/git/sops_encryptor.go)
+Commit signing uses OpenSSH signatures. The signing key is read from
+`GitProvider.spec.commit.signing.secretRef` or generated when configured.
 
-**Secrets are never committed in plaintext.** If encryption fails or is not configured, the write
-is rejected and no Secret file is written to the worktree. This is enforced at two layers: the
-[content writer](internal/git/content_writer.go) refuses to produce plaintext Secret content, and
-the [write path](internal/git/git.go) aborts the entire request on encryption failure. Both
-invariants are covered by dedicated tests:
-- [TestBranchWorker_SecretEncryptionFailureDoesNotWritePlaintext](internal/git/secret_write_test.go#L101) — verifies no file appears on disk
-- [TestBuildContentForWrite_SecretRequiresEncryptor](internal/git/content_writer_test.go#L103) — verifies the content writer rejects unencrypted Secrets
+---
 
-When a GitTarget has `spec.encryption` configured, Secret resources are encrypted with SOPS using
-age keys. The age key is stored in a Kubernetes Secret and can be auto-generated by the GitTarget
-controller.
+## Audit Ingestion
 
-### Commit signing
+- **Handler**: [internal/webhook/audit_handler.go](../internal/webhook/audit_handler.go)
+- **Joiner**: [internal/webhook/audit_joiner.go](../internal/webhook/audit_joiner.go)
+- **Consumer**: [internal/queue/redis_audit_consumer.go](../internal/queue/redis_audit_consumer.go)
 
-- **Source**: [internal/git/signing.go](internal/git/signing.go), [internal/sshsig/](internal/sshsig/)
+The audit handler produces a canonical stream with at most one event per `auditID` inside the
+decision TTL.
 
-SSH commit signing using OpenSSH format. The signing key is read from the Secret referenced by
-`GitProvider.spec.commit.signing.secretRef`.
+### Source Roles
+
+| Endpoint | Role |
+|---|---|
+| `/audit-webhook` | Canonical source, normally kube-apiserver |
+| `/audit-webhook-additional` | Supplementary body source for matching `auditID`s |
+
+The endpoint encodes the source role. Cluster-ID path segments are rejected; multi-cluster routing
+is not modeled yet.
+
+### Joiner Behavior
+
+The joiner classifies audit shape:
+
+- body-rich official events emit as-is unless a parked body can fill missing fields;
+- bodyless single-resource deletes with complete `objectRef` emit as deletable deletes;
+- `deletecollection` events emit as collection audit facts, but per-item Git fan-out is still a
+  known downstream gap;
+- identity-shallow official events wait up to `--audit-event-body-wait` for a supplementary body;
+- malformed additional events are dropped;
+- late additional bodies are dropped once a decision has already committed.
+
+The official canonical gate is an in-pod mutex. It preserves per-pod official event order while an
+earlier shallow official waits for its body. It is not a global cross-pod ordering guarantee.
+
+Redis key families:
+
+| Key | Purpose | Default TTL |
+|---|---|---|
+| `audit:body:v1:<auditID>` | parked additional body | `5m` |
+| `audit:decision:v1:<auditID>` | dedupe/decision marker | `1h` |
+
+### Consumer Handling
+
+The consumer filters to mutating `ResponseComplete` events, matches rules, extracts objects, and
+routes Git events. It also handles special cases:
+
+- CommitRequest create events finalize open windows.
+- Safe `/scale` events become field patches to parent `spec.replicas` when the type registry has a
+  usable scale binding.
+- unsupported subresources are dropped before routing.
+- shallow events that reach the consumer are dropped with explicit warning/metrics instead of
+  creating stub manifests.
+
+### Redis Queue
+
+- **Queue producer**: [internal/queue/redis_audit_queue.go](../internal/queue/redis_audit_queue.go)
+- **Metrics reporter**: [internal/queue/queue_metrics.go](../internal/queue/queue_metrics.go)
+
+The canonical stream defaults to `gitopsreverser.audit.events.v1`. Consumers use Redis consumer
+groups with pod-name consumer IDs. Stale pending messages are reclaimed with `XAUTOCLAIM`, and
+messages are ACKed even on processing failure so one poison event cannot block the stream. The
+consumer and watch manager declare `NeedLeaderElection`, but the shipped deployment defaults to one
+replica while full HA behavior is still future work.
+
+An optional debug stream records every decoded audit event before normal filtering and joining.
+
+---
+
+## Controller Wiring
+
+Controllers also watch their dependencies so dependent resources reconcile quickly after spec
+changes:
+
+- `GitTargetReconciler` watches `GitProvider`.
+- `WatchRuleReconciler` watches `GitTarget` and `GitProvider`.
+- `ClusterWatchRuleReconciler` watches `GitTarget` and `GitProvider`.
+
+These dependency watches use generation-change predicates to avoid re-enqueuing on status-only
+heartbeat updates.
+
+GitProvider, GitTarget, and CommitRequest specs have immutability constraints where changing the
+spec would invalidate materialized state or delayed audit behavior.
 
 ---
 
 ## Startup Sequence
 
-Defined in [cmd/main.go](cmd/main.go):
+Defined in [cmd/main.go](../cmd/main.go):
 
 ```mermaid
 flowchart TD
-    A[Parse flags + init metrics] --> B[Create controller-runtime Manager]
-    B --> C[RuleStore - empty]
-    C --> D[WorkerManager - registered as Runnable]
-    D --> E[ReconcilerManager]
-    E --> F[Watch Manager - constructed]
-    F --> G[EventRouter - wires components together]
-    G --> H[Register WatchRule + ClusterWatchRule controllers]
-    H --> I[Redis audit queue + consumer]
-    I --> J[Audit HTTP server]
-    J --> K[Watch Manager setup]
-    K --> L[Register GitProvider + GitTarget controllers]
-    L --> M[mgr.Start - blocks forever]
+    A[Parse flags + init logger/build info] --> B[Init telemetry]
+    B --> C[Create controller-runtime manager]
+    C --> D[Create RuleStore]
+    D --> E[Create WorkerManager and register Runnable]
+    E --> F[Create Watch Manager]
+    F --> G[Create EventRouter]
+    G --> H[Inject TypeRegistry lookup into WorkerManager]
+    H --> I[Register WatchRule + ClusterWatchRule controllers]
+    I --> J[Create Redis audit queue/debug queue/joiner]
+    J --> K[Register AuditConsumer + queue metrics]
+    K --> L[Create audit HTTP server]
+    L --> M[Setup and register Watch Manager]
+    M --> N[Register GitProvider + GitTarget + CommitRequest controllers]
+    N --> O[Add cert watchers + health checks]
+    O --> P[mgr.Start]
 ```
 
-**Known issue**: the RuleStore is empty at startup until controllers reconcile existing
-WatchRule/ClusterWatchRule CRs. The Watch Manager's initial reconcile reads from this empty store.
-See [watch-audit-rule-matching-improvement.md](design/watch-audit-rule-matching-improvement.md) for
-the design to add explicit cache warm-up before startup reconcile.
+The watch manager bootstraps the RuleStore from existing rules during its `Start` path before the
+initial watch reconciliation.
 
 ---
 
-## Audit Ingestion Pipeline
+## Operational Boundaries
 
-The audit handler is the seam where everything that wants to drive a Git write enters the system.
-It accepts two semantic source roles, deduplicates by `auditID`, classifies event shape, recovers
-bodies for aggregated API requests, preserves official-event ordering, and writes one canonical
-event per `auditID` to the Redis stream.
+Current limitations:
 
-### What this pipeline exists for
-
-1. **Trustworthy audit identity.** The official kube-apiserver audit event is the authority for
-   who did what, when, and with what response status.
-2. **Unique canonical stream.** Within the decision-TTL window, one `auditID` produces at most
-   one stream entry.
-3. **No silent shallow writes.** A shallow event is either normalized by a matching additional
-   body or dropped — it never produces a stub Git commit.
-4. **Visibility.** Operators see counters for received events, event quality, parked bodies,
-   dedupe decisions, shallow drops, and late bodies, plus histograms for official↔additional
-   arrival skew and canonical-gate wait time. See [Interpreting metrics](interpreting-metrics.md)
-   for the query cookbook. (Orphan additional bodies still expire without a metric — see
-   [Known gaps](#known-gaps).)
-5. **Easy setup.** Deployment intent is the only knob; there are no API-group allowlists or
-   join-mode flags to maintain.
-
-### Endpoints
-
-```
-POST /audit-webhook              # canonical source: kube-apiserver audit webhook
-POST /audit-webhook-additional   # supplementary body source: apiservice-audit-proxy, etc.
-```
-
-Both accept `audit.k8s.io/v1 EventList`. Cluster-ID path segments and any trailing slash are
-rejected with `400`. The endpoint chosen by the sender is the source role — there is no in-payload
-marker. See [audit_handler.go:384](internal/webhook/audit_handler.go#L384).
-
-Cluster identity is intentionally not modeled in the stream. Multi-cluster support is a separate
-design problem: it needs source registration, rule-match semantics, metrics cardinality rules,
-and file-path semantics together. None of that exists today.
-
-### Deployment modes
-
-| Mode | Posts to /audit-webhook | Posts to /audit-webhook-additional | Notes |
-| --- | --- | --- | --- |
-| Official only | kube-apiserver | — | Core resources only; aggregated-API events arrive shallow |
-| Official + additional | kube-apiserver | `apiservice-audit-proxy` (or similar) | Recommended — recovers aggregated-API bodies |
-| Proxy as canonical | `apiservice-audit-proxy` | — | Point the source at `/audit-webhook` when it should drive the canonical stream |
-
-### Pipeline shape
-
-```mermaid
-flowchart TD
-    KAS[kube-apiserver] -->|official EventList| OFF["/audit-webhook"]
-    PROXY[apiservice-audit-proxy] -->|additional EventList| ADD["/audit-webhook-additional"]
-
-    OFF --> CLS[Classify event quality]
-    ADD --> CLS
-
-    CLS -->|official, complete or deletable or collection<br/>or shallow with parked body| CLM[Claim decision → emit]
-    CLS -->|official, identity_shallow with no parked body| WAIT_S[Hold official canonical gate<br/>briefly wait for body]
-    WAIT_S -->|additional body arrives| MERGE
-    WAIT_S -->|wait expires| DROP_S[Drop + shallow_dropped + WARN log]
-    CLS -->|additional with body, no committed decision| PARK_A[Park body, wait for official]
-    CLS -->|additional, decision committed| DROP_L[Drop + body_late]
-    CLS -->|malformed additional| DROP_M[Drop with log]
-
-    PARK_A -->|official arrives within TTL| MERGE[Merge → claim → emit]
-    PARK_A -.->|TTL expires silently| ORPHAN[(orphan body, silent)]
-
-    CLM --> STREAM[(Redis stream<br/>gitopsreverser.audit.events.v1)]
-    MERGE --> STREAM
-    STREAM --> CONS[AuditConsumer]
-    CONS --> RULES[Rule match → EventRouter → BranchWorker]
-```
-
-The official channel is strictly synchronous at the canonical boundary. A bodyless official event
-that needs an additional body holds the official canonical gate for a short grace period; later
-official events wait behind it so canonical Redis stream order cannot overtake the earlier event.
-The additional endpoint is not held by that gate, because it must remain able to park the missing
-body while the official event is waiting.
-
-The canonical gate is an **in-pod mutex** ([audit_handler.go](internal/webhook/audit_handler.go)),
-so this ordering guarantee holds per webhook-receiver pod. Under the future HA topology (multiple
-webhook-receiver pods behind one Service) there is no cross-pod ordering — two pods may interleave
-their canonical writes. This is acceptable because the leader-elected consumer does not depend on
-strict global stream order; the gate exists to keep a single pod's officials from leapfrogging an
-earlier official that is still waiting for its body.
-
-Only `Stage=ResponseComplete` events reach the joiner. kube-apiserver may emit other stages
-(`RequestReceived`, `ResponseStarted`, `Panic`) under the same `auditID`; if those were
-allowed to claim the dedupe key, the later `ResponseComplete` for the same audit ID would be
-silently dropped as a duplicate. The handler filters by stage at the boundary before the
-joiner sees the event.
-
-Audit events with a non-empty `objectRef.subresource` are rejected before the joiner too.
-Current WatchRule planning mirrors top-level resource state only. Subresource requests can
-carry mutating-looking audit verbs without describing a Git-writable object; for example a
-successful `pods/exec` stream is audited as `verb=create` with no request/response resource body.
-
-### Quality classification
-
-The classifier ([audit_joiner.go:507](internal/webhook/audit_joiner.go#L507)) decides what to do
-based on event shape, not API group:
-
-| Quality | Condition | Treatment |
-| --- | --- | --- |
-| `complete` | Request or response body present | Emit |
-| `body_shallow_deletable` | `verb=delete` with `objectRef.Resource` and `Name` set, no body | Emit (delete carve-out) |
-| `collection` | `verb=deletecollection` with body and `objectRef.Resource` | Emit (forwarded raw; per-item routing is a downstream gap) |
-| `identity_shallow` | No body, missing `objectRef` identity | On official: merge if body is parked; otherwise hold the official canonical gate for `--audit-event-body-wait`, then drop + `audit_shallow_dropped_total` + WARN log |
-| `malformed` | Additional event with no body at all | Drop with log |
-
-Two carve-outs are load-bearing:
-
-- **Bodyless delete with a complete `objectRef`** is kube-apiserver's normal shape for "I deleted
-  X by name." It must emit. The classifier mirrors
-  [allowsBodylessAuditV1Delete](internal/webhook/audit_joiner.go#L527) and the consumer mirrors
-  it again as [allowsBodylessSingleDelete](internal/queue/redis_audit_consumer.go#L512).
-- **`deletecollection`** carries a `*List` response body, not a single object, and is a
-  high-blast-radius operation that must be auditable. The event is forwarded raw. Per-item
-  rule matching from the `*List` body is a known downstream gap, not a reason to drop.
-
-### Joiner state machine
-
-```mermaid
-stateDiagram-v2
-    [*] --> AdditionalParked: additional with body, no committed decision
-    [*] --> EmittedAsIs: official body-rich, no parked body
-    [*] --> EmittedMerged: official body-rich, parked body exists
-    [*] --> EmittedMerged: official identity_shallow, parked body exists
-    [*] --> WaitingForBody: official identity_shallow, no parked body
-    WaitingForBody --> EmittedMerged: additional body arrives within grace
-    WaitingForBody --> ShallowDropped: grace expires
-    [*] --> DuplicateDropped: official matches committed decision
-    [*] --> BodyLateDropped: additional with body, decision already committed
-
-    AdditionalParked --> EmittedMerged: official arrives within TTL
-    AdditionalParked --> [*]: TTL expires silently (orphan body)
-
-    EmittedAsIs --> [*]
-    EmittedMerged --> [*]
-    ShallowDropped --> [*]
-    DuplicateDropped --> [*]
-    BodyLateDropped --> [*]
-```
-
-### Timing and ordering
-
-The joiner is optimized for the common case where `/audit-webhook-additional` arrives before the
-official kube-apiserver event. When CI or a cluster delivers the official event first by a few
-milliseconds, the handler waits up to `--audit-event-body-wait` before declaring the body missing.
-
-That wait is deliberately attached to the official canonical gate, not only to the individual
-event. This preserves canonical Redis stream order: later official events cannot enqueue while an
-earlier official event is waiting for its additional body. The additional endpoint is allowed to
-continue because blocking it would prevent the missing body from being parked.
-
-If the grace period expires, the cost is still explicit: a shallow drop where a longer wait would
-have merged. The corresponding audit fact is logged at WARN and counted in
-`audit_shallow_dropped_total` — operators see the failure, they don't lose it silently. Sustained
-`audit_join_body_late_total` or `audit_shallow_dropped_total` means the proxy/body path is slower
-than the configured grace period or missing entirely.
-
-The joiner uses two Redis key families:
-
-| Key | Purpose | TTL flag |
-| --- | --- | --- |
-| `audit:body:v1:<auditID>` | Parked additional-source body contribution only | `--audit-event-body-ttl` (default `5m`) |
-| `audit:decision:v1:<auditID>` | Dedupe marker; bounds the "at most one canonical entry" window | `--audit-event-decision-ttl` (default `1h`) |
-
-The handler uses a two-phase contract on the joiner:
-
-1. `Decide` claims the decision key via `SET NX` before any stream write.
-2. On enqueue success, `CommitDecision` promotes the claim to `state=emitted`.
-3. On enqueue failure, `ReleaseDecision` deletes the claim so a retry can claim again.
-
-This is what makes "at most one canonical entry per `auditID`" hold across crashes and retries.
-See [audit_joiner.go](internal/webhook/audit_joiner.go) and
-[audit_handler.go](internal/webhook/audit_handler.go).
-
-### Merge rules
-
-When a parked contribution merges into an official event:
-
-- The official remains authoritative for `auditID`, `level`, `stage`, `requestURI`, `verb`,
-  `user`, `impersonatedUser`, `sourceIPs`, `userAgent`, timestamps, and `responseStatus`.
-- The contribution can fill in `requestObject`, `responseObject`, missing `objectRef` fields
-  (`name`, `namespace`, `uid`, `resourceVersion`), and proxy truncation annotations.
-- For `delete` and `deletecollection`, request/response bodies are not merged — the proxy-side
-  body for deletes is `DeleteOptions`, not the deleted object.
-- The official body wins: parked bodies only fill in when the official body is empty. See
-  [mergeParkedObjects](internal/webhook/audit_joiner.go#L433).
-
-### Consumer-side drop is explicit
-
-The consumer used to emit a stub `apiVersion+kind+namespace+name` object straight into the Git
-pipeline when no body was present. That silent fallback is gone — `extractObject` now returns
-`errAuditEventObjectMissing` and emits a structured warning with copy-pasteable remediation
-([redis_audit_consumer.go:351](internal/queue/redis_audit_consumer.go#L351)). The classifier
-should have already kept these out, but the consumer enforces it as defense-in-depth.
-
-### Settings
-
-| Flag | Helm value | Default | Meaning |
-| --- | --- | --- | --- |
-| `--audit-event-body-ttl` | `auditEventJoin.bodyTTL` | `5m` | TTL for parked additional bodies waiting for the matching official |
-| `--audit-event-decision-ttl` | `auditEventJoin.decisionTTL` | `1h` | Bounds the dedupe window |
-| `--audit-event-body-wait` | `auditEventJoin.bodyWait` | `500ms` | Grace period for a bodyless official event to wait for a matching additional body while holding official canonical order |
-
-There is no API-group allowlist and no join-mode flag — both were removed because the endpoint
-already encodes intent and `wait-official` semantics are always correct.
-
-### Metrics
-
-Event GVR is carried as three labels — `group`, `version`, `resource` — so PromQL can
-aggregate to group/version without `label_replace`. The event-action label is `verb`
-(the Kubernetes audit `Verb` field) across the whole pipeline.
-
-| Metric | Labels | Meaning |
-| --- | --- | --- |
-| `gitopsreverser_audit_eventlists_total` | `source`, `outcome` | EventList request-boundary counter: `processed`, `empty`, `decode_error`, `process_error` |
-| `gitopsreverser_audit_eventlist_events_total` | `source`, `outcome` | Decoded audit event items delivered in EventLists (no `decode_error` sample) |
-| `gitopsreverser_audit_eventlist_duration_seconds` | `source`, `outcome` | Histogram of webhook request time, including in-pod join wait work |
-| `gitopsreverser_audit_events_received_total` | `source`, `group`, `version`, `resource`, `subresource`, `verb` | Receive counter (username is logged, not labelled). `subresource` is empty for top-level resources and a bounded value (`status`, `exec`, …) otherwise |
-| `gitopsreverser_audit_event_quality_total` | `source`, `quality`, `group`, `version`, `resource`, `verb` | First-class shape classification |
-| `gitopsreverser_audit_join_parked_total` | — | Parked additional bodies |
-| `gitopsreverser_audit_join_emitted_total` | `source`, `result` | Canonical emissions: `as_is`, `merged` |
-| `gitopsreverser_audit_join_duplicate_dropped_total` | `reason` | Drops from existing decision keys: `decision_exists`, `in_flight_claim` |
-| `gitopsreverser_audit_shallow_dropped_total` | `group`, `version`, `resource`, `verb` | Identity-shallow officials dropped because no parked body was available |
-| `gitopsreverser_audit_join_body_late_total` | `group`, `version`, `resource`, `verb` | Additional body arrived after the decision was committed |
-| `gitopsreverser_audit_join_skew_seconds` | `arrival`, `outcome` | Histogram of official↔additional arrival skew: `arrival=body_first` is the proxy's lead time, `arrival=official_first` is how long the official waited on the canonical gate |
-| `gitopsreverser_audit_official_gate_wait_seconds` | — | Histogram of how long an official event waited to acquire the in-pod canonical gate (backpressure signal) |
-| `gitopsreverser_audit_pipeline_events_total` | `group`, `version`, `resource`, `verb`, `outcome` | Consumer-stage counter: `unmatched`, `dropped_no_body`, `dropped_partial_object`, `routed`, `route_failed` |
-| `gitopsreverser_audit_pipeline_route_targets_total` | `git_target_namespace`, `git_target`, `rule_kind`, `outcome` | Per-GitTarget route attempts: `routed`, `route_failed` |
-
-Useful alerts: `audit_shallow_dropped_total` non-zero (operator misconfiguration — install
-proxy or update audit policy); `audit_join_duplicate_dropped_total` spikes (likely webhook
-retry storm); sustained `audit_join_body_late_total` (proxy timing slipping past the TTL);
-`audit_join_skew_seconds` p95 for `arrival=official_first` creeping toward `--audit-event-body-wait`
-(early warning that the grace period is about to be exhausted). The full query cookbook lives in
-[Interpreting metrics](interpreting-metrics.md).
-
-### Operator guidance
-
-A shallow event almost always means one of two things:
-
-- kube-apiserver's audit policy does not request bodies for that resource. See
-  [test/e2e/cluster/audit/policy.yaml](test/e2e/cluster/audit/policy.yaml) for a working policy.
-- The request traversed an aggregated API path where kube-apiserver cannot see the backend body.
-  Install `apiservice-audit-proxy` and point it at `/audit-webhook-additional`.
-
-### Known gaps
-
-These are explicit, tracked follow-ups — not hidden surprises:
-
-- **Orphan additional bodies expire silently.** A parked additional body that never finds
-  an official twin expires on its Redis TTL with no metric and no log. We accept this for
-  simplicity: surfacing it would require a periodic sweeper, and the operational signal —
-  proxy disconnected from official stream — is visible via the `audit_join_body_late_total`
-  pattern and from the proxy side directly. The identity-shallow drop case is *not* silent;
-  it surfaces synchronously via `audit_shallow_dropped_total` + WARN log.
-- **No per-item routing for `deletecollection`.** Collection events reach the canonical stream
-  intact. The consumer's `extractObject` unmarshals the `*List` envelope as a single object,
-  so downstream rule matching may not commit per-item deletes. Forwarding the audit fact is
-  correct; per-item Git fan-out is a separate design.
-- **Merge under two body writers is last-write-wins.** Today only `apiservice-audit-proxy`
-  writes additional bodies. If a future in-process aggregated-API handler also writes, the
-  body store has no source priority. Source-priority merge is deferred.
-- **Multi-cluster identity.** The removed `{clusterID}` path segment was a half-measure.
-  Multi-cluster needs a proper source-identity design across rule matching, metrics cardinality,
-  and file paths.
-
----
-
-## What We Don't Do (Yet)
-
-- **Pull request creation** — the operator writes directly to a branch, it does not create PRs
-- **Multi-cluster routing** — audit ingestion supports it, but rule matching and file paths do not
-- **High availability** — Redis queuing is the foundation, but the consumer and watch manager are leader-elected single-instance
-- **Per-destination queues** — all events flow through a single Redis stream; a Git remote outage stalls all processing
+- no pull-request creation; the operator writes directly to branches;
+- no multi-cluster routing or file identity;
+- no per-destination Redis streams, so a blocked destination can still stall the single consumer
+  path;
+- `deletecollection` reaches the canonical audit stream but does not yet fan out per item;
+- Flux `GitRepository` provider references are schema-visible but not implemented;
+- new-file placement is still canonical path based, not user-configurable.
 
 ---
 
 ## Package Map
 
-| Package | Role | Key types |
-|---|---|---|
-| [api/v1alpha1/](api/v1alpha1/) | CRD type definitions | `GitProvider`, `GitTarget`, `WatchRule`, `ClusterWatchRule` |
-| [cmd/](cmd/) | Operator entry point | `main()` |
-| [internal/controller/](internal/controller/) | Kubernetes reconcilers | `GitProviderReconciler`, `GitTargetReconciler`, `WatchRuleReconciler`, `ClusterWatchRuleReconciler` |
-| [internal/events/](internal/events/) | Control and state event types | `ClusterStateEvent`, `RepoStateEvent`, `ControlEvent` |
-| [internal/git/](internal/git/) | Git operations + BranchWorker | `BranchWorker`, `WorkerManager`, `WriteRequest`, `PushAtomic` |
-| [internal/giteaclient/](internal/giteaclient/) | Gitea API client for signing keys | `Client` |
-| [internal/queue/](internal/queue/) | Redis stream producer + consumer | `RedisAuditQueue`, `AuditConsumer` |
-| [internal/reconcile/](internal/reconcile/) | Folder reconciler + event stream | `FolderReconciler`, `GitTargetEventStream`, `ReconcilerManager` |
-| [internal/rulestore/](internal/rulestore/) | Compiled rule cache | `Store`, `CompiledRule`, `CompiledClusterRule` |
-| [internal/sanitize/](internal/sanitize/) | K8s object sanitization | `Sanitize()`, `MarshalToOrderedYAML()` |
-| [internal/ssh/](internal/ssh/) | SSH key helpers | |
-| [internal/sshsig/](internal/sshsig/) | SSH commit signing (OpenSSH format) | |
-| [internal/telemetry/](internal/telemetry/) | OpenTelemetry metrics | |
-| [internal/types/](internal/types/) | Shared domain types | `ResourceIdentifier`, `ResourceReference` |
-| [internal/watch/](internal/watch/) | Dynamic informers, API resource catalog + EventRouter | `Manager`, `EventRouter`, `GVR`, `APIResourceCatalog`, `RuleGVRResolver` |
-| [internal/webhook/](internal/webhook/) | Audit ingress handling | `AuditHandler`, `AuditEventJoiner`, `RedisAuditEventJoiner` |
+| Package | Role |
+|---|---|
+| [api/v1alpha1/](../api/v1alpha1/) | CRD types |
+| [cmd/](../cmd/) | operator entry point and server setup |
+| [internal/auditutil/](../internal/auditutil/) | audit identity, objectRef, and subresource helpers |
+| [internal/controller/](../internal/controller/) | Kubernetes reconcilers |
+| [internal/git/](../internal/git/) | branch workers, Git operations, commit/signing/encryption, manifest writer |
+| [internal/git/manifestedit/](../internal/git/manifestedit/) | YAML document editor |
+| [internal/giteaclient/](../internal/giteaclient/) | Gitea helper client |
+| [internal/manifestanalyzer/](../internal/manifestanalyzer/) | manifest inventory, acceptance, and resync planning |
+| [internal/manifestreport/](../internal/manifestreport/) | projection of Kubernetes objects into comparable manifest reports |
+| [internal/queue/](../internal/queue/) | Redis queues, audit consumer, CommitRequest audit handling |
+| [internal/reconcile/](../internal/reconcile/) | per-GitTarget event stream state |
+| [internal/rulestore/](../internal/rulestore/) | compiled rule cache |
+| [internal/sanitize/](../internal/sanitize/) | Kubernetes object sanitization and stable YAML marshal |
+| [internal/ssh/](../internal/ssh/) | SSH authentication helpers |
+| [internal/sshsig/](../internal/sshsig/) | SSH signature implementation |
+| [internal/telemetry/](../internal/telemetry/) | metrics and OTLP setup |
+| [internal/types/](../internal/types/) | shared resource identity/reference and sensitivity policy |
+| [internal/typeset/](../internal/typeset/) | type followability registry and lookup model |
+| [internal/watch/](../internal/watch/) | discovery catalog, watch manager, watched-type tables, event router, snapshots |
+| [internal/webhook/](../internal/webhook/) | audit ingress and audit event joiner |
 
 ---
 
 ## Design Documents
 
-For deeper context on specific decisions:
+Useful deeper dives:
 
-- [Audit ingestion decision record](design/audit-ingestion-decision-record.md) — why audit is the authoritative live source
-- [GitTarget lifecycle and repo architecture](design/gittarget-lifecycle-and-repo-architecture.md) — GitTarget state machine details
-- [Watch and audit rule matching improvement](design/watch-audit-rule-matching-improvement.md) — known issues with namespace matching and startup bootstrap
-- [Kubernetes API resource catalog](design/kubernetes-api-resource-catalog.md) — the served-resource discovery model behind `APIResourceCatalog`
-- [WatchRule GVR resolution](finished/watchrule-gvr-resolution-plan.md) — how bare rule resources resolve to concrete GVRs, and the snapshot trust model
-- [Multi-cluster audit ingestion implications](design/multi-cluster-audit-ingestion-implications.md) — what multi-cluster means beyond ingestion
-- [SOPS/age key management](design/sops-repo-bootstrap-and-key-management-architecture.md) — encryption architecture
-- [Audit webhook TLS design](design/audit-webhook-tls-design.md) — webhook transport security
-- [Status conditions guide](design/status-conditions-guide.md) — how status conditions are used across CRDs
+- [Audit ingestion decision record](design/audit-ingestion-decision-record.md)
+- [GitTarget lifecycle and repo architecture](design/gittarget-lifecycle-and-repo-architecture.md)
+- [Watch and catalog architecture](design/watch-and-catalog-architecture.md)
+- [Kubernetes API resource catalog](design/kubernetes-api-resource-catalog.md)
+- [Type followability](design/manifest/version2/type-followability.md)
+- [Type followability implementation log](design/manifest/version2/type-followability-implementation.md)
+- [Per-type reconcile and streaming tail](design/manifest/version2/per-type-reconcile-and-streaming-tail.md)
+- [Manifest current support review](design/manifest/current-manifest-support-review.md)
+- [Reconcile via watchlist mark-and-sweep](design/manifest/reconcile-via-watchlist-mark-and-sweep.md)
+- [SOPS/age key management](design/sops-repo-bootstrap-and-key-management-architecture.md)
+- [Commit signing](commit-signing.md)
+- [Interpreting metrics](interpreting-metrics.md)
