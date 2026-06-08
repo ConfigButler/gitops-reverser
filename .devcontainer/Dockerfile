@@ -50,6 +50,7 @@ RUN apt-get update \
 # TASK_VERSION -> https://github.com/go-task/task/releases
 # TILT_VERSION -> https://github.com/tilt-dev/tilt/releases
 # ACTIONLINT_VERSION -> https://github.com/rhysd/actionlint/releases
+# VALKEY_VERSION -> https://github.com/valkey-io/valkey/releases
 
 ENV PATH="/go/bin:/usr/local/go/bin:${PATH}" \
     KUBECTL_VERSION=v1.36.1 \
@@ -62,7 +63,8 @@ ENV PATH="/go/bin:/usr/local/go/bin:${PATH}" \
     FLUX_OPERATOR_VERSION=0.50.0 \
     TASK_VERSION=v3.51.1 \
     TILT_VERSION=v0.37.3 \
-    ACTIONLINT_VERSION=1.7.12
+    ACTIONLINT_VERSION=1.7.12 \
+    VALKEY_VERSION=9.1.0
 
 # https://github.com/fluxcd/flux2/releases
 # https://fluxoperator.dev/
