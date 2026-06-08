@@ -21,10 +21,16 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/discovery"
 )
 
 const deployYAML = `apiVersion: apps/v1
@@ -147,6 +153,68 @@ func TestRun_ScanJSON(t *testing.T) {
 	}
 }
 
+func TestRun_DiscoveryJSON(t *testing.T) {
+	client := fakeDiscovery{
+		groups: []*metav1.APIGroup{
+			{
+				Name: "apps",
+				Versions: []metav1.GroupVersionForDiscovery{
+					{GroupVersion: "apps/v1", Version: "v1"},
+				},
+				PreferredVersion: metav1.GroupVersionForDiscovery{GroupVersion: "apps/v1", Version: "v1"},
+			},
+		},
+		resources: []*metav1.APIResourceList{
+			{
+				GroupVersion: "apps/v1",
+				APIResources: []metav1.APIResource{
+					{Name: "deployments", SingularName: "deployment", Namespaced: true, Kind: "Deployment"},
+				},
+			},
+		},
+	}
+
+	var out, errBuf bytes.Buffer
+	if code := runWithDiscoveryClient([]string{"--mode", "discovery"}, &out, &errBuf, client); code != 0 {
+		t.Fatalf("exit = %d, want 0\nstderr=%s", code, errBuf.String())
+	}
+
+	var parsed discoveryDump
+	if err := json.Unmarshal(out.Bytes(), &parsed); err != nil {
+		t.Fatalf("discovery JSON invalid: %v\n%s", err, out.String())
+	}
+	if got := parsed.Resources[0].APIResources[0].Name; got != "deployments" {
+		t.Fatalf("resource name = %q, want deployments", got)
+	}
+}
+
+func TestRun_DiscoveryPartialFailureStillDumps(t *testing.T) {
+	failedGV := schema.GroupVersion{Group: "wardle.example.com", Version: "v1alpha1"}
+	client := fakeDiscovery{
+		resources: []*metav1.APIResourceList{{GroupVersion: "v1"}},
+		err: &discovery.ErrGroupDiscoveryFailed{
+			Groups: map[schema.GroupVersion]error{failedGV: errors.New("aggregated API unavailable")},
+		},
+	}
+
+	var out, errBuf bytes.Buffer
+	if code := runWithDiscoveryClient([]string{"--mode", "discovery"}, &out, &errBuf, client); code != 0 {
+		t.Fatalf("exit = %d, want 0\nstderr=%s", code, errBuf.String())
+	}
+
+	var parsed discoveryDump
+	if err := json.Unmarshal(out.Bytes(), &parsed); err != nil {
+		t.Fatalf("discovery JSON invalid: %v\n%s", err, out.String())
+	}
+	got := parsed.FailedGroupVersions[failedGV.String()]
+	if got != "aggregated API unavailable" {
+		t.Fatalf("failed group/version = %q, want aggregated API unavailable", got)
+	}
+	if parsed.Error == "" {
+		t.Fatal("expected partial discovery error to be included")
+	}
+}
+
 func TestRun_Errors(t *testing.T) {
 	cases := []struct {
 		name string
@@ -159,6 +227,7 @@ func TestRun_Errors(t *testing.T) {
 		{"bad mode", []string{"--mode", "delete", "x"}, 2},
 		{"bad format", []string{"--format", "xml", "x"}, 2},
 		{"bad policy", []string{"--policy", "delete", "x"}, 2},
+		{"discovery rejects dir", []string{"--mode", "discovery", "x"}, 2},
 		{"missing dir", []string{filepath.Join("definitely", "missing", "dir")}, 2},
 		{"scan missing dir", []string{"--mode", "scan", filepath.Join("definitely", "missing")}, 2},
 	}
@@ -170,6 +239,22 @@ func TestRun_Errors(t *testing.T) {
 			}
 		})
 	}
+}
+
+type fakeDiscovery struct {
+	groups    []*metav1.APIGroup
+	resources []*metav1.APIResourceList
+	err       error
+}
+
+func (f fakeDiscovery) ServerGroupsAndResources() ([]*metav1.APIGroup, []*metav1.APIResourceList, error) {
+	return f.groups, f.resources, f.err
+}
+
+func runWithDiscoveryClient(args []string, stdout, stderr io.Writer, client discoveryClient) int {
+	return runWithDiscoveryClientFactory(args, stdout, stderr, func(_, _ string) (discoveryClient, error) {
+		return client, nil
+	})
 }
 
 func write(t *testing.T, dir, name, content string) {

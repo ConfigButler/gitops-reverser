@@ -75,12 +75,12 @@ These catalog methods currently have no production caller except the old
 | --- | --- | --- |
 | `Entry` | No production caller found. | Delete unless a concrete new raw-entry consumer appears. |
 | `CatalogLookup`, `LookupGVK`, `LookupGVR` | No production caller found; leftover from mapper era. | Delete. `typeset.Registry.ByGVK` is the live lookup surface. |
-| `GroupVersionDegraded` | No production caller found. | Delete if unknown-kind diagnostics move fully to registry/status projection. |
+| `GroupVersionDegraded` / `DegradedGroupVersions` | No production caller found (degraded-GV state). | **Keep.** The registry-backed rule status needs the degraded group/version set to report `DiscoveryDegraded` for a selector that matches zero records (the registry has no record to carry that reason). Scan fact — stays on the catalog. |
 | `entriesForResource` | Only `RuleGVRResolver`. | Delete after rule status migration. |
 | `entriesForGroup` | Only `RuleGVRResolver`. | Delete after rule status migration. |
 | `entriesForGroupResource` | Only `RuleGVRResolver`. | Delete after rule status migration. |
 | `allEntries` | Only `RuleGVRResolver`. | Delete after rule status migration. |
-| `hasDegradedLookup` | Only `RuleGVRResolver`. | Delete after rule status migration. |
+| `hasDegradedLookup` | Only `RuleGVRResolver`. | **Re-home, don't delete.** The degraded-GV diagnostic (above) needs a "is this selector's group/version degraded?" check; move it onto the status projection over `DegradedGroupVersions()`. |
 | `byGVK`, `byResource`, `byGroupRes` indexes | Only support obsolete lookups/resolver. | Delete after methods above are gone. |
 
 After that cleanup, the catalog only needs a group/version-indexed raw scan plus
@@ -162,6 +162,7 @@ Proposed replacement:
 Rule selector
   -> registry.All() for diagnostics
   -> registry.Followable() for accepted matches
+  -> DiscoveryCatalog degraded group/versions for the "we can't tell" case
   -> status summary:
        matched N followable records
        refused matches by reason
@@ -170,6 +171,21 @@ Rule selector
 
 This should reuse the same matching semantics as `TargetTypeSet` construction, so
 the status answer and the active informer/snapshot answer cannot drift.
+
+**Keep the degraded-group/version diagnostic — it cannot live in the registry.**
+Today `RuleGVRResolver.emptyCandidateMiss` reports `DiscoveryDegraded` (rather than
+`NotServed`) when a selector matches *no* candidate and the selector's group/version is
+degraded — the operator-facing "your resource isn't found, but discovery is currently
+broken for its group/version, so we can't be sure it doesn't exist" signal. A registry-only
+status loses this: a degraded group/version with **zero successful observations produces no
+records**, so `registry.All()` has nothing to carry a `discovery-degraded` reason. This case
+is a *scan fact* (the group/version is degraded) crossed with a *rule selector* — not a
+per-type decision — so the registry structurally cannot own it. Do **not** synthesize fake
+degraded records into the registry (that would re-cross the boundary this document is drawing).
+Instead the rule-status projection must consult the `DiscoveryCatalog` degraded set
+(`DegradedGroupVersions()`, plus a thin "is this selector's group/version degraded?" helper)
+for the zero-record case. This means `hasDegradedLookup` is **re-homed onto the status
+projection, not deleted** with the rest of `RuleGVRResolver` (see the obsolete-APIs table).
 
 ### Policy application inside catalog entries
 
@@ -382,7 +398,10 @@ to keep selector matching in `internal/watch` but make it consume only
    scan counter. It was independent of the rule-status work below.
 1. Move WatchRule and ClusterWatchRule status to registry-backed matching.
    Preserve the existing user-facing status shape if possible, but source it from
-   `TypeRecord.Followability`.
+   `TypeRecord.Followability` — **and** preserve the degraded-group/version diagnostic by
+   consulting the catalog's `DegradedGroupVersions()` for selectors that match zero records
+   (the registry cannot represent a degraded GV with no observations; see "Keep the
+   degraded-group/version diagnostic" above).
 2. Delete `RuleGVRResolver` once no production caller remains.
 3. Delete catalog lookup/enumeration APIs and indexes that only existed for the old
    resolver.

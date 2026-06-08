@@ -244,17 +244,21 @@ code, and accept losing the per-GitTarget conflict/miss reporting.
   `logTypeConflicts`, and the local conflict detection are gone — the registry decides
   identity uniqueness globally, and an ambiguous kind is just absent from the table. The
   `gitopsreverser_watched_type_conflicts` and `_pending_removals` gauges were removed.
-- **The change-gate is kept (rule-fingerprint + registry generation).** An early cut
+- **The change-gate is kept, keyed on the registry's own `Revision()`.** An early cut
   dropped the gate and reprojected (and rebuilt the registry) on every
   `refreshWatchedTypeTables`; under parallel e2e that starved the controllers (every
   GitProvider/GitTarget/WatchRule reconcile timed out waiting for status). The gate is
-  restored, now keyed on `(registry.Generation(), rulesFingerprint)`, and the heavy
-  scan→registry rebuild stays where it always was — once per `RefreshAPIResourceCatalog`;
-  `refreshWatchedTypeTables` only rebuilds the registry lazily the first time (for unit
-  tests that drive it directly) and otherwise just reprojects on a real change. `refreshMu`
-  still serializes resolve-and-publish. (Edge: a type whose grace elapses without a
-  generation bump lingers in the table until the next discovery change — accepted detail
-  loss; the registry remains the single grace owner.)
+  restored and keyed on `(registry.Revision(), rulesFingerprint)` — **not** the catalog
+  generation. `Revision()` bumps when the followable membership changes (incl. a grace drop
+  at a stable generation, when the catalog generation does **not** move) or the scan
+  generation moves, so a grace-expired type leaves the table promptly — its phantom informer
+  stops and its target's snapshots recover, with no separate watched-type-layer absence
+  tracking. The heavy scan→registry rebuild stays where it always was — once per
+  `RefreshAPIResourceCatalog`; `refreshWatchedTypeTables` only rebuilds the registry lazily
+  the first time (for unit tests that drive it directly) and otherwise just reprojects on a
+  real change. `refreshMu` still serializes resolve-and-publish. See
+  [discovery-catalog-typeset-boundary.md](discovery-catalog-typeset-boundary.md) for the
+  boundary rationale (the table depends on the decision surface, not the scan counter).
 - **Snapshot fail-closed re-expressed on the registry verdict.** `WatchedTypeTable.{Misses,
   BlockingMisses}` were dropped; `resolveSnapshotGVRs` now fails closed on two registry
   signals: (1) `registry.Ready()` is false (the API surface has not been observed yet), and
@@ -262,15 +266,9 @@ code, and accept losing the per-GitTarget conflict/miss reporting.
   right now — a discovery wobble). The retained case is the old pending-removal fail-closed
   re-expressed in the registry's vocabulary: streaming a retained-but-unserved type would
   fail, and sweeping the reduced view would delete a still-valid mirror, so the gather aborts
-  until the type is served again or the grace elapses and the registry drops it (which the
-  `Revision()` bump then re-projects out of the table). (Deliberate detail loss: the old
-  discovery-degraded-while-still-selected abort is folded into the same grace/retained path.)
-- **Registry `Revision()` gates the table.** Re-projection is keyed on
-  `(registry.Revision(), rulesFingerprint)`, not the catalog generation. `Revision()` bumps
-  when the followable membership changes (incl. a grace drop at a stable generation) or the
-  scan generation moves, so a deleted type leaves the table promptly once its grace elapses —
-  its phantom informer stops and its target's snapshots recover. See
-  [discovery-catalog-typeset-boundary.md](discovery-catalog-typeset-boundary.md).
+  until the type is served again or the grace elapses and the `Revision()` bump re-projects it
+  out of the table. (Deliberate detail loss: the old discovery-degraded-while-still-selected
+  abort is folded into the same grace/retained path.)
 - `RuleGVRResolver` is unchanged and still backs the WatchRule/ClusterWatchRule controller
   *status* feedback (`ResolveWatchRuleResources`); only the table stopped using it.
 - Tests: `watched_type_table_test.go` now covers the pure fold + `matchFollowableRecords`
