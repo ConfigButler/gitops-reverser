@@ -41,16 +41,6 @@ type APIResourceEntry struct {
 	PolicyReason string
 }
 
-// Supports reports whether discovery advertised all requested verbs.
-func (e APIResourceEntry) Supports(verbs ...string) bool {
-	for _, verb := range verbs {
-		if _, ok := e.Verbs[verb]; !ok {
-			return false
-		}
-	}
-	return true
-}
-
 type apiResourceDiscovery interface {
 	ServerGroupsAndResources() ([]*metav1.APIGroup, []*metav1.APIResourceList, error)
 }
@@ -72,9 +62,6 @@ type APIResourceCatalog struct {
 	mu sync.RWMutex
 
 	byGVR        map[schema.GroupVersionResource]APIResourceEntry
-	byGVK        map[schema.GroupVersionKind][]APIResourceEntry
-	byResource   map[string][]APIResourceEntry
-	byGroupRes   map[string][]APIResourceEntry
 	byGroupVer   map[schema.GroupVersion][]APIResourceEntry
 	groupVersion map[schema.GroupVersion]catalogGroupVersionState
 	generation   uint64
@@ -85,9 +72,6 @@ type APIResourceCatalog struct {
 func NewAPIResourceCatalog() *APIResourceCatalog {
 	return &APIResourceCatalog{
 		byGVR:        make(map[schema.GroupVersionResource]APIResourceEntry),
-		byGVK:        make(map[schema.GroupVersionKind][]APIResourceEntry),
-		byResource:   make(map[string][]APIResourceEntry),
-		byGroupRes:   make(map[string][]APIResourceEntry),
 		byGroupVer:   make(map[schema.GroupVersion][]APIResourceEntry),
 		groupVersion: make(map[schema.GroupVersion]catalogGroupVersionState),
 	}
@@ -191,7 +175,7 @@ func (c *APIResourceCatalog) Refresh(disco apiResourceDiscovery) (bool, error) {
 		changed = true
 	}
 	if changed {
-		c.rebuildIndexesLocked()
+		c.rebuildGVRIndexLocked()
 		c.generation++
 	}
 	return changed, nil
@@ -277,143 +261,9 @@ func (c *APIResourceCatalog) removeUndiscoveredGroupVersions(supported map[schem
 	return changed
 }
 
-// Entry returns one concrete catalog entry.
-func (c *APIResourceCatalog) Entry(gvr schema.GroupVersionResource) (APIResourceEntry, bool) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	entry, ok := c.byGVR[gvr]
-	return cloneAPIResourceEntry(entry), ok
-}
-
-// CatalogLookup is the trusted local answer to an exact GVK or GVR question. It
-// carries the matched served entries plus enough catalog trust state for the
-// mapping layer to tell "not served" apart from "could not be observed":
-//
-//   - Entries are the served catalog entries that match exactly. A GVR lookup is
-//     single-valued (zero or one entry); a GVK lookup may return several (multiple
-//     groups/versions serving the same kind, or a resource and its subresources).
-//   - Degraded reports that discovery is currently failed for the looked-up
-//     group/version, so an empty Entries set must not be trusted as absence.
-//   - Ready mirrors the catalog readiness at lookup time; an empty result from a
-//     not-ready catalog is "catalog unavailable", not "unserved".
-//   - Generation is the published catalog generation the answer was read at.
-type CatalogLookup struct {
-	Entries    []APIResourceEntry
-	Degraded   bool
-	Ready      bool
-	Generation uint64
-}
-
-// LookupGVK answers an exact group/version/kind question against trusted catalog
-// data. It never infers a resource from the kind string; an unmatched GVK returns
-// empty Entries, and the caller distinguishes unserved, degraded, and unavailable
-// using Degraded/Ready. Subresource entries that share the kind are included so a
-// caller can recognise a subresource-only match.
-func (c *APIResourceCatalog) LookupGVK(gvk schema.GroupVersionKind) CatalogLookup {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return CatalogLookup{
-		Entries:    cloneAPIResourceEntries(c.byGVK[gvk]),
-		Degraded:   c.degradedForGroupVersionLocked(schema.GroupVersion{Group: gvk.Group, Version: gvk.Version}),
-		Ready:      c.ready,
-		Generation: c.generation,
-	}
-}
-
-// LookupGVR answers an exact group/version/resource question against trusted
-// catalog data. Entries holds the single matching served entry when present.
-func (c *APIResourceCatalog) LookupGVR(gvr schema.GroupVersionResource) CatalogLookup {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	var entries []APIResourceEntry
-	if entry, ok := c.byGVR[gvr]; ok {
-		entries = cloneAPIResourceEntries([]APIResourceEntry{entry})
-	}
-	return CatalogLookup{
-		Entries:    entries,
-		Degraded:   c.degradedForGroupVersionLocked(schema.GroupVersion{Group: gvr.Group, Version: gvr.Version}),
-		Ready:      c.ready,
-		Generation: c.generation,
-	}
-}
-
-// degradedForGroupVersionLocked reports whether discovery currently fails for an
-// exact group/version. Callers must hold the read lock.
-func (c *APIResourceCatalog) degradedForGroupVersionLocked(gv schema.GroupVersion) bool {
-	return c.groupVersion[gv].degraded
-}
-
-// GroupVersionDegraded reports whether discovery currently fails for an exact
-// group/version, so a caller can tell "unserved" apart from "could not be observed"
-// for a kind the followability registry does not know.
-func (c *APIResourceCatalog) GroupVersionDegraded(gv schema.GroupVersion) bool {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.degradedForGroupVersionLocked(gv)
-}
-
-func (c *APIResourceCatalog) entriesForResource(resource string) []APIResourceEntry {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return cloneAPIResourceEntries(c.byResource[resource])
-}
-
-func (c *APIResourceCatalog) entriesForGroup(group string) []APIResourceEntry {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	var out []APIResourceEntry
-	for gv, entries := range c.byGroupVer {
-		if gv.Group == group {
-			out = append(out, entries...)
-		}
-	}
-	sortCatalogEntries(out)
-	return cloneAPIResourceEntries(out)
-}
-
-func (c *APIResourceCatalog) entriesForGroupResource(group, resource string) []APIResourceEntry {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return cloneAPIResourceEntries(c.byGroupRes[groupResourceKey(group, resource)])
-}
-
-func (c *APIResourceCatalog) allEntries() []APIResourceEntry {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	out := make([]APIResourceEntry, 0, len(c.byGVR))
-	for _, entry := range c.byGVR {
-		out = append(out, entry)
-	}
-	sortCatalogEntries(out)
-	return cloneAPIResourceEntries(out)
-}
-
-func (c *APIResourceCatalog) hasDegradedLookup(groups, versions []string) bool {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	for gv, state := range c.groupVersion {
-		if !state.degraded {
-			continue
-		}
-		if matchLookupValue(groups, gv.Group) && matchLookupValue(versions, gv.Version) {
-			return true
-		}
-	}
-	return false
-}
-
 func (c *APIResourceCatalog) initializeMaps() {
 	if c.byGVR == nil {
 		c.byGVR = make(map[schema.GroupVersionResource]APIResourceEntry)
-	}
-	if c.byGVK == nil {
-		c.byGVK = make(map[schema.GroupVersionKind][]APIResourceEntry)
-	}
-	if c.byResource == nil {
-		c.byResource = make(map[string][]APIResourceEntry)
-	}
-	if c.byGroupRes == nil {
-		c.byGroupRes = make(map[string][]APIResourceEntry)
 	}
 	if c.byGroupVer == nil {
 		c.byGroupVer = make(map[schema.GroupVersion][]APIResourceEntry)
@@ -423,28 +273,15 @@ func (c *APIResourceCatalog) initializeMaps() {
 	}
 }
 
-func (c *APIResourceCatalog) rebuildIndexesLocked() {
+// rebuildGVRIndexLocked rebuilds the by-GVR index from the group/version-keyed scan.
+// The catalog keeps only this one raw index now; followability lookups (by GVK, by
+// resource, selector expansion) all live on the typeset registry the catalog feeds.
+func (c *APIResourceCatalog) rebuildGVRIndexLocked() {
 	c.byGVR = make(map[schema.GroupVersionResource]APIResourceEntry)
-	c.byGVK = make(map[schema.GroupVersionKind][]APIResourceEntry)
-	c.byResource = make(map[string][]APIResourceEntry)
-	c.byGroupRes = make(map[string][]APIResourceEntry)
 	for _, entries := range c.byGroupVer {
 		for _, entry := range entries {
 			c.byGVR[entry.GVR] = entry
-			c.byGVK[entry.GVK] = append(c.byGVK[entry.GVK], entry)
-			c.byResource[entry.GVR.Resource] = append(c.byResource[entry.GVR.Resource], entry)
-			key := groupResourceKey(entry.GVR.Group, entry.GVR.Resource)
-			c.byGroupRes[key] = append(c.byGroupRes[key], entry)
 		}
-	}
-	for key := range c.byGVK {
-		sortCatalogEntries(c.byGVK[key])
-	}
-	for key := range c.byResource {
-		sortCatalogEntries(c.byResource[key])
-	}
-	for key := range c.byGroupRes {
-		sortCatalogEntries(c.byGroupRes[key])
 	}
 }
 
@@ -550,27 +387,6 @@ func verbSetsEqual(left, right map[string]struct{}) bool {
 		}
 	}
 	return true
-}
-
-func cloneAPIResourceEntries(entries []APIResourceEntry) []APIResourceEntry {
-	out := make([]APIResourceEntry, len(entries))
-	for i := range entries {
-		out[i] = cloneAPIResourceEntry(entries[i])
-	}
-	return out
-}
-
-func cloneAPIResourceEntry(entry APIResourceEntry) APIResourceEntry {
-	entry.Verbs = resourceVerbs(metav1.Verbs(mapKeys(entry.Verbs)))
-	return entry
-}
-
-func mapKeys(values map[string]struct{}) []string {
-	out := make([]string, 0, len(values))
-	for value := range values {
-		out = append(out, value)
-	}
-	return out
 }
 
 func groupResourceKey(group, resource string) string {

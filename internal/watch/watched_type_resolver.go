@@ -273,8 +273,10 @@ func (m *Manager) collectClusterWatchRuleSelections(
 }
 
 // matchFollowableRecords returns the followable records a rule selector names, applying
-// the same group/version/resource/scope semantics as RuleGVRResolver but over the
-// registry's already-followable set. It resolves one resource entry at a time (deduping
+// group/version/resource/scope semantics over the registry's already-followable set — so
+// a refused type (gvk-not-unique, denied-by-policy, verb-poor) simply never matches. It is
+// the single rule-matching surface, shared by the per-GitTarget watched-type tables and by
+// WatchRule/ClusterWatchRule status. It resolves one resource entry at a time (deduping
 // records across entries) so it can preserve the resolver's ambiguity rule: when
 // apiGroups is omitted and a *named* resource is served in more than one group, it is
 // refused (watched in no group) rather than silently expanded across groups. A
@@ -334,9 +336,22 @@ func recordsForResourceEntry(
 	return choosePreferredRecordVersions(matched, versions)
 }
 
-// ambiguousAcrossGroups mirrors RuleGVRResolver's ambiguity rule: a named resource (not
+// matchesScope reports whether a discovery namespaced flag aligns with a declared
+// resource scope.
+func matchesScope(namespaced bool, scope configv1alpha1.ResourceScope) bool {
+	switch scope {
+	case configv1alpha1.ResourceScopeNamespaced:
+		return namespaced
+	case configv1alpha1.ResourceScopeCluster:
+		return !namespaced
+	default:
+		return false
+	}
+}
+
+// ambiguousAcrossGroups is the omitted-apiGroups ambiguity rule: a named resource (not
 // "*") selected without an apiGroups filter, matching records in more than one group, is
-// ambiguous — the operator must name the group.
+// ambiguous — the operator must name the group, so it is watched in none.
 func ambiguousAcrossGroups(groups []string, resource string, matched []typeset.TypeRecord) bool {
 	if len(groups) != 0 || resource == "*" {
 		return false

@@ -176,7 +176,10 @@ spec:
 				"jsonpath={.status.conditions[?(@.type=='ResourcesResolved')].message}",
 			)
 			g.Expect(getErr).NotTo(HaveOccurred())
-			g.Expect(output).To(ContainSubstring("wildcard expanded to"))
+			// Status reports only what the rule watches: a wildcard rule resolves to the
+			// followable types in the cluster (a non-zero count).
+			g.Expect(output).To(ContainSubstring("watching "))
+			g.Expect(output).NotTo(ContainSubstring("watching 0 resource type(s)"))
 		}, 90*time.Second, 2*time.Second).Should(Succeed())
 
 		By("verifying the initial wildcard snapshot committed core and custom resources")

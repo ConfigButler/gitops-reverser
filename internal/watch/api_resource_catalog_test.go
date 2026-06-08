@@ -52,14 +52,8 @@ func TestAPIResourceCatalog_RefreshPicksUpNewlyServedResource(t *testing.T) {
 	require.True(t, catalog.Ready())
 	gen1 := catalog.Generation()
 
-	resolver := NewRuleGVRResolver(catalog)
-	gvrs, misses := resolver.Resolve(
-		[]string{"shop.example.com"}, []string{"v1"},
-		[]string{"icecreamorders"}, configv1alpha1.ResourceScopeNamespaced,
-	)
-	assert.Empty(t, gvrs)
-	require.Len(t, misses, 1)
-	assert.Equal(t, ResolveMissNotServed, misses[0].Reason)
+	iceCream := schema.GroupVersionResource{Group: "shop.example.com", Version: "v1", Resource: "icecreamorders"}
+	assert.False(t, catalogServes(catalog, iceCream), "resource is not served yet")
 
 	// Generation 2: the CRD is now served.
 	changed, err := catalog.Refresh(staticCatalogDiscovery{
@@ -78,13 +72,15 @@ func TestAPIResourceCatalog_RefreshPicksUpNewlyServedResource(t *testing.T) {
 	assert.True(t, changed)
 	assert.Greater(t, catalog.Generation(), gen1)
 
-	gvrs, misses = resolver.Resolve(
-		[]string{"shop.example.com"}, []string{"v1"},
-		[]string{"icecreamorders"}, configv1alpha1.ResourceScopeNamespaced,
-	)
-	require.Empty(t, misses)
-	require.Len(t, gvrs, 1)
-	assert.Equal(t, "icecreamorders", gvrs[0].Resource)
+	assert.True(t, catalogServes(catalog, iceCream), "the newly-served resource is now in the raw scan")
+}
+
+// catalogServes reports whether the catalog's raw scan holds the exact resource.
+func catalogServes(catalog *APIResourceCatalog, gvr schema.GroupVersionResource) bool {
+	catalog.mu.RLock()
+	defer catalog.mu.RUnlock()
+	_, ok := catalog.byGVR[gvr]
+	return ok
 }
 
 // TestAPIResourceCatalog_PartialRefreshPreservesFailedGroupVersion verifies that
@@ -115,17 +111,13 @@ func TestAPIResourceCatalog_PartialRefreshPreservesFailedGroupVersion(t *testing
 	})
 	require.NoError(t, err)
 
-	entry, ok := catalog.Entry(schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"})
-	require.True(t, ok)
-	assert.Equal(t, "Deployment", entry.GVK.Kind)
-
-	gvrs, misses := NewRuleGVRResolver(catalog).Resolve(
-		[]string{"apps"}, nil,
-		[]string{"statefulsets"}, configv1alpha1.ResourceScopeNamespaced,
-	)
-	assert.Empty(t, gvrs)
-	require.Len(t, misses, 1)
-	assert.Equal(t, ResolveMissDiscoveryDegraded, misses[0].Reason)
+	// The failed apps group/version keeps its previously-trusted entries (deployments
+	// is still in the raw scan), and the group/version is marked degraded.
+	catalog.mu.RLock()
+	_, kept := catalog.byGVR[schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}]
+	catalog.mu.RUnlock()
+	assert.True(t, kept, "a degraded group/version retains its last trusted entries")
+	assert.Equal(t, []schema.GroupVersion{appsGV}, catalog.DegradedGroupVersions())
 }
 
 // TestNotServedResourceProducesNoGVR verifies catalog-backed resolution does not

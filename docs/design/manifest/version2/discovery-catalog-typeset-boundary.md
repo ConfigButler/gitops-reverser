@@ -1,7 +1,10 @@
 # Discovery catalog and typeset boundary
 
-> Status: proposal (migration step 0 — the registry change signal — has landed; see
-> [type-followability-implementation.md](type-followability-implementation.md) Stage 10)
+> Status: proposal, partly landed. Migration step 0 (the registry change signal, Stage 10)
+> and steps 1–3 (rule status moved onto the registry's followable set; `RuleGVRResolver` and
+> the dead catalog lookup/enumeration APIs deleted, Stage 11) have landed. Steps 4–6 are still
+> forward-looking. See
+> [type-followability-implementation.md](type-followability-implementation.md).
 >
 > Companion to [type-followability.md](type-followability.md),
 > [type-followability-implementation.md](type-followability-implementation.md), and
@@ -66,25 +69,23 @@ Search scope: `internal` and `cmd`, excluding `*_test.go`.
 | `Manager.ReconcileForRuleChange` | `RefreshAPIResourceCatalog` | Refreshes discovery before computing target type sets. | No. It should keep asking the manager to refresh discovery+registry. |
 | `resolveSnapshotGVRs` | `RefreshAPIResourceCatalog`, then registry readiness | Fails closed before snapshotting. | No direct catalog call is fine at manager level; snapshot should keep reading registry after refresh. |
 
-## APIs that appear obsolete after rule status moves
+## APIs that were obsolete after rule status moved (done — Stage 11)
 
-These catalog methods currently have no production caller except the old
-`RuleGVRResolver`, or no production caller at all:
+These catalog methods had no production caller except the old `RuleGVRResolver`, or no
+production caller at all. With rule status moved onto the registry (Stage 11) they are gone:
 
-| API | Current state | Proposed fate |
+| API | Old state | Fate |
 | --- | --- | --- |
-| `Entry` | No production caller found. | Delete unless a concrete new raw-entry consumer appears. |
-| `CatalogLookup`, `LookupGVK`, `LookupGVR` | No production caller found; leftover from mapper era. | Delete. `typeset.Registry.ByGVK` is the live lookup surface. |
-| `GroupVersionDegraded` / `DegradedGroupVersions` | No production caller found (degraded-GV state). | **Keep.** The registry-backed rule status needs the degraded group/version set to report `DiscoveryDegraded` for a selector that matches zero records (the registry has no record to carry that reason). Scan fact — stays on the catalog. |
-| `entriesForResource` | Only `RuleGVRResolver`. | Delete after rule status migration. |
-| `entriesForGroup` | Only `RuleGVRResolver`. | Delete after rule status migration. |
-| `entriesForGroupResource` | Only `RuleGVRResolver`. | Delete after rule status migration. |
-| `allEntries` | Only `RuleGVRResolver`. | Delete after rule status migration. |
-| `hasDegradedLookup` | Only `RuleGVRResolver`. | **Re-home, don't delete.** The degraded-GV diagnostic (above) needs a "is this selector's group/version degraded?" check; move it onto the status projection over `DegradedGroupVersions()`. |
-| `byGVK`, `byResource`, `byGroupRes` indexes | Only support obsolete lookups/resolver. | Delete after methods above are gone. |
+| `Entry` | No production caller found. | **Deleted.** |
+| `CatalogLookup`, `LookupGVK`, `LookupGVR` | No production caller found; leftover from mapper era. | **Deleted.** `typeset.Registry.ByGVK` is the live lookup surface. |
+| `GroupVersionDegraded` | No production caller found. | **Deleted.** A mapper-era leftover with no caller once rule status stopped probing the catalog. |
+| `DegradedGroupVersions` | Operator degraded/recovered log + catalog stats. | **Kept** — for the operator-facing degraded-group/version log line and the catalog gauges, *not* for rule status. |
+| `entriesForResource`, `entriesForGroup`, `entriesForGroupResource`, `allEntries` | Only `RuleGVRResolver`. | **Deleted.** |
+| `hasDegradedLookup` | Only `RuleGVRResolver`. | **Deleted** (not re-homed). Rule status reports only the followable types a rule watches; it raises no per-selector "discovery degraded" diagnostic — see "Rule status resolution" below. |
+| `byGVK`, `byResource`, `byGroupRes` indexes | Only supported the obsolete lookups/resolver. | **Deleted.** |
 
-After that cleanup, the catalog only needs a group/version-indexed raw scan plus
-group/version trust state.
+After this cleanup the catalog keeps only its group/version-keyed raw scan (`byGroupVer`), the
+derived `byGVR` index it feeds to `typeset`, and group/version trust state.
 
 ## What should not move
 
@@ -127,65 +128,46 @@ the API server, not about type followability.
 
 ## What should move
 
-### Rule status resolution
+### Rule status resolution — done (Stage 11)
 
-`ResolveWatchRuleResources` and `ResolveClusterWatchRuleResources` should stop
-using `RuleGVRResolver`. The status surface should report the same decision the
-actual watch/snapshot path uses.
+`ResolveWatchRuleResources` and `ResolveClusterWatchRuleResources` no longer use
+`RuleGVRResolver`; they report the same decision the actual watch/snapshot path uses,
+because they read the same surface.
 
-Today, actual watching does this:
-
-```text
-registry.Followable()
-  -> match rule selectors
-  -> TargetTypeSet
-  -> informers / snapshots / plan hash
-```
-
-Rule status still does this:
+Before, two paths could disagree:
 
 ```text
-APIResourceCatalog
-  -> RuleGVRResolver
-  -> ResolveMiss
-  -> status text
+actual watching:  registry.Followable() -> match rule selectors -> TargetTypeSet -> informers/snapshots
+rule status:      APIResourceCatalog -> RuleGVRResolver -> ResolveMiss -> status text
 ```
 
-That split can lie. A rule may appear "resolved" through `RuleGVRResolver` while
-the registry refuses the same type for identity, origin, scale, sensitivity, or a
-stricter verb requirement. Conversely, a retained type can be operationally live in
-the registry while the old resolver only sees catalog mechanics.
-
-Proposed replacement:
+That split could lie — a rule could read "resolved" through `RuleGVRResolver` while the
+registry refused the same type (identity, origin, scale, sensitivity, a stricter verb
+requirement), or the reverse. Now both paths share one matcher:
 
 ```text
-Rule selector
-  -> registry.All() for diagnostics
-  -> registry.Followable() for accepted matches
-  -> DiscoveryCatalog degraded group/versions for the "we can't tell" case
-  -> status summary:
-       matched N followable records
-       refused matches by reason
-       no served match / catalog not ready / degraded
+registry.Followable() -> matchFollowableRecords(rule selector) -> watched types
 ```
 
-This should reuse the same matching semantics as `TargetTypeSet` construction, so
-the status answer and the active informer/snapshot answer cannot drift.
+`matchFollowableRecords` (in `internal/watch/watched_type_resolver.go`) is the single
+rule-matching surface, used by both the per-GitTarget watched-type tables and rule status,
+so the status answer and the active informer/snapshot answer cannot drift.
 
-**Keep the degraded-group/version diagnostic — it cannot live in the registry.**
-Today `RuleGVRResolver.emptyCandidateMiss` reports `DiscoveryDegraded` (rather than
-`NotServed`) when a selector matches *no* candidate and the selector's group/version is
-degraded — the operator-facing "your resource isn't found, but discovery is currently
-broken for its group/version, so we can't be sure it doesn't exist" signal. A registry-only
-status loses this: a degraded group/version with **zero successful observations produces no
-records**, so `registry.All()` has nothing to carry a `discovery-degraded` reason. This case
-is a *scan fact* (the group/version is degraded) crossed with a *rule selector* — not a
-per-type decision — so the registry structurally cannot own it. Do **not** synthesize fake
-degraded records into the registry (that would re-cross the boundary this document is drawing).
-Instead the rule-status projection must consult the `DiscoveryCatalog` degraded set
-(`DegradedGroupVersions()`, plus a thin "is this selector's group/version degraded?" helper)
-for the zero-record case. This means `hasDegradedLookup` is **re-homed onto the status
-projection, not deleted** with the rest of `RuleGVRResolver` (see the obsolete-APIs table).
+**Report only what is watched — no refusal taxonomy, no degraded diagnostic.** The status is
+deliberately minimal: a rule's `ResourcesResolved` condition reports catalog readiness and how
+many distinct followable types the rule currently watches (`"watching N resource type(s)"`),
+and nothing more. It does *not* explain why an individual selector matched nothing — absent,
+denied-by-policy, verb-poor, ambiguous, and discovery-degraded are all the same to a mirror,
+and the application does not surface those distinctions. The only unresolved (`False`) case is
+a catalog that has not yet observed discovery (`"API resource catalog is not ready"`).
+
+This **reverses** the earlier proposal in this section, which kept a per-selector
+`DiscoveryDegraded` diagnostic and therefore wanted `hasDegradedLookup` re-homed onto the
+status projection. That diagnostic is gone — `hasDegradedLookup` was *deleted, not re-homed*.
+The full machine-readable "why is this type not followed?" answer still lives on the registry
+record (`Manager.TypeRecords()`) for anyone who needs it; it is simply not projected per rule
+selector into operator status. The catalog's `DegradedGroupVersions()` stays, but only for the
+manager's operator-facing degraded/recovered **log** line and the catalog gauges.
 
 ### Policy application inside catalog entries
 
@@ -396,15 +378,18 @@ to keep selector matching in `internal/watch` but make it consume only
    on it instead of the catalog generation. This was the smallest, highest-value step: it
    fixed the retention-grace lingering-type bug and removed the table's dependency on the
    scan counter. It was independent of the rule-status work below.
-1. Move WatchRule and ClusterWatchRule status to registry-backed matching.
-   Preserve the existing user-facing status shape if possible, but source it from
-   `TypeRecord.Followability` — **and** preserve the degraded-group/version diagnostic by
-   consulting the catalog's `DegradedGroupVersions()` for selectors that match zero records
-   (the registry cannot represent a degraded GV with no observations; see "Keep the
-   degraded-group/version diagnostic" above).
-2. Delete `RuleGVRResolver` once no production caller remains.
-3. Delete catalog lookup/enumeration APIs and indexes that only existed for the old
-   resolver.
+1. ✅ **Done (Stage 11).** Moved WatchRule and ClusterWatchRule status onto registry-backed
+   matching (`matchFollowableRecords` over `registry.Followable()`). The status now reports
+   only what the rule watches — catalog readiness plus a followable-type count — and drops the
+   refusal taxonomy entirely. The degraded-group/version diagnostic was *deliberately dropped*,
+   not preserved: the application does not surface per-selector discovery-degraded reasons (see
+   "Rule status resolution" above). This reverses the earlier sub-proposal to re-home
+   `hasDegradedLookup`.
+2. ✅ **Done (Stage 11).** Deleted `RuleGVRResolver` (and the `ResolveMiss` reason vocabulary).
+3. ✅ **Done (Stage 11).** Deleted the catalog lookup/enumeration APIs and indexes that only
+   existed for the old resolver (`Entry`, `CatalogLookup`/`LookupGVK`/`LookupGVR`,
+   `GroupVersionDegraded`, `hasDegradedLookup`, `entriesFor*`/`allEntries`, and the
+   `byGVK`/`byResource`/`byGroupRes` indexes).
 4. Move `Allowed`/`PolicyReason` out of `APIResourceEntry` and into the observation
    adapter.
 5. Split catalog stats into raw discovery stats and registry/type decision stats.

@@ -289,10 +289,6 @@ func (m *Manager) TypeRecords() []typeset.TypeRecord {
 	return m.typeRegistryInstance().All()
 }
 
-func (m *Manager) ruleGVRResolver() *RuleGVRResolver {
-	return NewRuleGVRResolver(m.apiResourceCatalog())
-}
-
 func (m *Manager) apiResourceDiscovery() (apiResourceDiscovery, error) {
 	if m.discoveryClient != nil {
 		return m.discoveryClient()
@@ -308,70 +304,65 @@ func (m *Manager) apiResourceDiscovery() (apiResourceDiscovery, error) {
 	return disco, nil
 }
 
-// ResolveWatchRuleResources resolves one WatchRule for controller status feedback.
+// ruleResourceSelector is one rule's (apiGroups, apiVersions, resources, scope) tuple,
+// the unit ResolveWatchRuleResources / ResolveClusterWatchRuleResources match against the
+// followable set.
+type ruleResourceSelector struct {
+	groups, versions, resources []string
+	scope                       configv1alpha1.ResourceScope
+}
+
+// ResolveWatchRuleResources reports one WatchRule's resource-resolution status for
+// controller feedback. See resolveRuleResourceStatus.
 func (m *Manager) ResolveWatchRuleResources(
 	_ context.Context,
 	rule configv1alpha1.WatchRule,
 ) (bool, string) {
-	var gvrs []GVR
-	var misses []ResolveMiss
-	wildcard := false
-	resolver := m.ruleGVRResolver()
-	for _, resourceRule := range rule.Spec.Rules {
-		ruleGVRs, ruleMisses := resolver.Resolve(
-			resourceRule.APIGroups,
-			resourceRule.APIVersions,
-			resourceRule.Resources,
-			configv1alpha1.ResourceScopeNamespaced,
-		)
-		gvrs = append(gvrs, ruleGVRs...)
-		misses = append(misses, ruleMisses...)
-		wildcard = wildcard || ruleSelectorsContainWildcard(
-			resourceRule.APIGroups,
-			resourceRule.APIVersions,
-			resourceRule.Resources,
-		)
+	selectors := make([]ruleResourceSelector, 0, len(rule.Spec.Rules))
+	for _, rr := range rule.Spec.Rules {
+		selectors = append(selectors, ruleResourceSelector{
+			groups: rr.APIGroups, versions: rr.APIVersions, resources: rr.Resources,
+			scope: configv1alpha1.ResourceScopeNamespaced,
+		})
 	}
-	return len(misses) == 0, formatResolutionStatus(dedupeGVRs(gvrs), misses, wildcard)
+	return m.resolveRuleResourceStatus(selectors)
 }
 
-// ResolveClusterWatchRuleResources resolves one ClusterWatchRule for status feedback.
+// ResolveClusterWatchRuleResources reports one ClusterWatchRule's resource-resolution
+// status for controller feedback. See resolveRuleResourceStatus.
 func (m *Manager) ResolveClusterWatchRuleResources(
 	_ context.Context,
 	rule configv1alpha1.ClusterWatchRule,
 ) (bool, string) {
-	var gvrs []GVR
-	var misses []ResolveMiss
-	wildcard := false
-	resolver := m.ruleGVRResolver()
-	for _, resourceRule := range rule.Spec.Rules {
-		ruleGVRs, ruleMisses := resolver.Resolve(
-			resourceRule.APIGroups,
-			resourceRule.APIVersions,
-			resourceRule.Resources,
-			resourceRule.Scope,
-		)
-		gvrs = append(gvrs, ruleGVRs...)
-		misses = append(misses, ruleMisses...)
-		wildcard = wildcard || ruleSelectorsContainWildcard(
-			resourceRule.APIGroups,
-			resourceRule.APIVersions,
-			resourceRule.Resources,
-		)
+	selectors := make([]ruleResourceSelector, 0, len(rule.Spec.Rules))
+	for _, rr := range rule.Spec.Rules {
+		selectors = append(selectors, ruleResourceSelector{
+			groups: rr.APIGroups, versions: rr.APIVersions, resources: rr.Resources, scope: rr.Scope,
+		})
 	}
-	return len(misses) == 0, formatResolutionStatus(dedupeGVRs(gvrs), misses, wildcard)
+	return m.resolveRuleResourceStatus(selectors)
 }
 
-func ruleSelectorsContainWildcard(groups, versions, resources []string) bool {
-	return hasWildcard(groups) || hasWildcard(versions) || hasWildcard(resources)
-}
-
-func formatResolutionStatus(gvrs []GVR, misses []ResolveMiss, wildcard bool) string {
-	message := FormatResolveMisses(misses)
-	if !wildcard {
-		return message
+// resolveRuleResourceStatus reports a rule's resource-resolution status from the type
+// registry's followable set — the exact records the watcher follows, so the status a rule
+// reports can never drift from what is actually mirrored. The app deliberately does not
+// explain why an individual selector matched nothing: absent, refused, and not-yet-served
+// are all the same to a mirror. Status only reports catalog readiness and how many distinct
+// followable types the rule currently watches.
+func (m *Manager) resolveRuleResourceStatus(selectors []ruleResourceSelector) (bool, string) {
+	m.refreshTypeRegistry()
+	reg := m.typeRegistryInstance()
+	if !reg.Ready() {
+		return false, "API resource catalog is not ready"
 	}
-	return fmt.Sprintf("wildcard expanded to %d GVRs; %s", len(gvrs), message)
+	records := reg.Followable()
+	watched := map[schema.GroupVersionResource]struct{}{}
+	for _, s := range selectors {
+		for _, rec := range matchFollowableRecords(records, s.groups, s.versions, s.resources, s.scope) {
+			watched[rec.Identity.GVR] = struct{}{}
+		}
+	}
+	return true, fmt.Sprintf("watching %d resource type(s)", len(watched))
 }
 
 func (m *Manager) signalCatalogRefresh() {

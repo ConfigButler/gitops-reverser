@@ -271,6 +271,8 @@ code, and accept losing the per-GitTarget conflict/miss reporting.
   abort is folded into the same grace/retained path.)
 - `RuleGVRResolver` is unchanged and still backs the WatchRule/ClusterWatchRule controller
   *status* feedback (`ResolveWatchRuleResources`); only the table stopped using it.
+  **(Superseded in Stage 11 — the controller status moved onto the registry too and
+  `RuleGVRResolver` was deleted.)**
 - Tests: `watched_type_table_test.go` now covers the pure fold + `matchFollowableRecords`
   (scope filter, wildcard, preferred-version collapse); `watched_type_resolver_test.go`
   covers the registry-driven resolution incl. an ambiguous-GVK exclusion;
@@ -278,6 +280,52 @@ code, and accept losing the per-GitTarget conflict/miss reporting.
   `watched_type_pending_removal_test.go` was deleted (the grace is covered by
   `internal/typeset/registry_test.go`); a new `resolveSnapshotGVRs` test covers the
   registry-not-ready fail-closed.
+
+### Stage 11 — rule status is a registry projection; `RuleGVRResolver` and the dead catalog APIs are gone
+
+The last consumer of the old catalog-mechanics path. WatchRule/ClusterWatchRule controller
+*status* was still computed by `RuleGVRResolver` over raw `APIResourceCatalog` entries, in
+parallel with — and able to disagree with — the registry-backed set the watchers actually
+follow. The user's direction: the application does not get to worry about *why* a type is or
+isn't followed; status should report only what is watched, and the duplicated resolver +
+catalog lookups should go.
+
+- **Status reports only what is watched.** `ResolveWatchRuleResources` /
+  `ResolveClusterWatchRuleResources` now match each rule's selectors with
+  `matchFollowableRecords` over `registry.Followable()` — the *same* matcher the per-GitTarget
+  watched-type tables use, so status and watching cannot drift. The `ResourcesResolved`
+  condition is `True` whenever the catalog is ready, with message `"watching N resource
+  type(s)"` (N = distinct followable types the rule selects); the only `False` case is an
+  unobserved catalog (`"API resource catalog is not ready"`).
+- **No refusal taxonomy, no degraded diagnostic (deliberate).** The whole `ResolveMiss`
+  vocabulary (`NotServed`/`Ambiguous`/`Disallowed`/`CatalogUnavailable`/`DiscoveryDegraded`)
+  and the per-selector "discovery degraded" signal are dropped: absent, denied-by-policy,
+  verb-poor, ambiguous, and discovery-degraded are all the same to a mirror. The full
+  machine-readable "why" still lives on the registry record (`Manager.TypeRecords()`); it is
+  just not projected into operator status. **This reverses** the
+  [boundary doc](discovery-catalog-typeset-boundary.md)'s earlier "keep the
+  degraded-group/version diagnostic / re-home `hasDegradedLookup`" sub-proposal — that doc was
+  updated to match.
+- **Deleted.** `internal/watch/rule_gvr_resolver.go` (the `RuleGVRResolver` struct, the
+  `ResolveMiss`/`ResolveMissReason` vocabulary, and all the catalog-candidate helpers);
+  `FormatResolveMisses`/`formatResolutionStatus`/`ruleSelectorsContainWildcard` and the
+  now-orphaned `uniqueStrings`. On the catalog: `Entry`, `CatalogLookup`/`LookupGVK`/
+  `LookupGVR`, `GroupVersionDegraded`/`degradedForGroupVersionLocked`, `entriesForResource`/
+  `entriesForGroup`/`entriesForGroupResource`/`allEntries`, `hasDegradedLookup`, the
+  `byGVK`/`byResource`/`byGroupRes` indexes (and their rebuild/sort), `APIResourceEntry.
+  Supports`, and the `cloneAPIResourceEntries`/`cloneAPIResourceEntry`/`mapKeys` helpers.
+  `rebuildIndexesLocked` became `rebuildGVRIndexLocked` (the catalog keeps only the one raw
+  `byGVR` index it feeds to `typeset`, plus `byGroupVer` + group/version trust state).
+- **Kept.** `APIResourceCatalog.DegradedGroupVersions()` — but only for the manager's
+  operator-facing degraded/recovered **log** line (`logCatalogTransitions`) and the catalog
+  gauges, no longer for rule status. `matchesScope` moved to `watched_type_resolver.go` and
+  `dedupeGVRs` to `gvr.go` (their surviving consumers).
+- Tests: `rule_gvr_resolver_test.go` and `api_resource_catalog_lookup_test.go` deleted; new
+  `rule_status_test.go` covers the followable-match count, the unmatched-but-ready case (still
+  resolved — the app does not flag it), the not-ready fail-closed, and a wildcard ClusterWatchRule;
+  `api_resource_catalog_test.go`'s newly-served and degraded-preservation tests now read the raw
+  scan (`byGVR`) instead of `Entry`/the resolver. The wildcard e2e status assertion changed from
+  `"wildcard expanded to"` to `"watching "`.
 
 ## Files touched
 

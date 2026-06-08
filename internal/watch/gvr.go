@@ -19,7 +19,6 @@ limitations under the License.
 package watch
 
 import (
-	"fmt"
 	"strings"
 
 	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
@@ -59,18 +58,16 @@ func normalizeResource(r string) string {
 	return strings.ToLower(strings.TrimSpace(r))
 }
 
-// FormatResolveMisses produces an actionable summary for status and logs.
-func FormatResolveMisses(misses []ResolveMiss) string {
-	if len(misses) == 0 {
-		return "all rule resources resolved"
-	}
-	parts := make([]string, 0, len(misses))
-	for _, miss := range misses {
-		detail := miss.Detail
-		if detail == "" {
-			detail = string(miss.Reason)
+// dedupeGVRs removes duplicate GVRs, preserving first-seen order.
+func dedupeGVRs(in []GVR) []GVR {
+	seen := make(map[GVR]struct{}, len(in))
+	out := make([]GVR, 0, len(in))
+	for _, gvr := range in {
+		if _, ok := seen[gvr]; ok {
+			continue
 		}
-		parts = append(parts, fmt.Sprintf("%q: %s", miss.Resource, detail))
+		seen[gvr] = struct{}{}
+		out = append(out, gvr)
 	}
-	return strings.Join(uniqueStrings(parts), "; ")
+	return out
 }

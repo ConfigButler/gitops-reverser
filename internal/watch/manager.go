@@ -489,20 +489,6 @@ func (m *Manager) compareInformerScope(desired map[GVR]map[string]struct{}) ([]g
 	return informersToStart(m.activeInformers, desired), informersObsolete(m.activeInformers, desired)
 }
 
-// uniqueStrings returns the input with duplicates removed, preserving order.
-func uniqueStrings(in []string) []string {
-	seen := make(map[string]struct{}, len(in))
-	out := make([]string, 0, len(in))
-	for _, s := range in {
-		if _, ok := seen[s]; ok {
-			continue
-		}
-		seen[s] = struct{}{}
-		out = append(out, s)
-	}
-	return out
-}
-
 // ReconcileForRuleChange reconciles the watch manager when rules change.
 // Called by WatchRule/ClusterWatchRule controllers after rule modifications.
 // Single-pod MVP: No debouncing needed since we control pod lifecycle.
