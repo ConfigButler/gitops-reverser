@@ -22,4 +22,5 @@ Boundries:
 * I don't believe that gitops-reverser should get knowledge on things like GitHub (so creating that PR is a respnsiblity for another layer, but pushing changes to a branch is fine).
 * We really shouldnt get into the details of kustomize or helm to soon: we can also start with a clean folder of yaml manifests.
 
-
+Follow-up investigation:
+* [contextual-namespace-and-kustomize-folder-editing.md](contextual-namespace-and-kustomize-folder-editing.md)

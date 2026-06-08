@@ -1,0 +1,22 @@
+# A human-authored multi-document file.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: folder-bundle
+  labels:
+    app.kubernetes.io/part-of: manifest-folder-edit
+data:
+  # e2e-folder-edit: preserve bundle data comment
+  color: blue
+  shape: round
+---
+# This sibling document should survive edits to folder-bundle untouched.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: folder-sibling
+  labels:
+    app.kubernetes.io/part-of: manifest-folder-edit
+data:
+  role: untouched
+  note: still-here

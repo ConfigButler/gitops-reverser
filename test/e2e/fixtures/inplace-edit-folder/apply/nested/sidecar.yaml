@@ -1,0 +1,12 @@
+# A managed manifest below the root folder to prove location follows content,
+# not the canonical generated path.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: folder-nested
+  labels:
+    app.kubernetes.io/part-of: manifest-folder-edit
+data:
+  # e2e-folder-edit: preserve nested data comment
+  mode: quiet
+  depth: subfolder
