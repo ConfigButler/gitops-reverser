@@ -1,10 +1,10 @@
-# CatalogMapper vs WatchedTypeTable: one abstraction, or two projections?
+# Raw catalog, resolved type surface, GitTarget selection
 
-> Status: design investigation, captured 2026-06-05
+> Status: design investigation, captured 2026-06-05 (draft 2 — reframed)
 > Question raised by: should we sunset `internal/watch/catalog_mapper.go` and let
-> `internal/watch/watched_type_table.go` (which already carries both GVK and GVR
-> and has well-tested hysteresis) serve as the single GVK/GVR abstraction —
-> including for the CLI?
+> `internal/watch/watched_type_table.go` serve as the single GVK/GVR abstraction,
+> including for the CLI? In the end it is "just a set of types with some functions"
+> — isn't the abstraction the same?
 > Related:
 > [../gvk-gvr-mapping-layer.md](../gvk-gvr-mapping-layer.md),
 > [per-type-reconcile-and-streaming-tail.md](per-type-reconcile-and-streaming-tail.md),
@@ -14,273 +14,240 @@
 > [`internal/watch/rule_gvr_resolver.go`](../../../../internal/watch/rule_gvr_resolver.go),
 > [`internal/watch/api_resource_catalog.go`](../../../../internal/watch/api_resource_catalog.go)
 
-## Verdict first
+> **Revision note (draft 2).** This document originally framed the choice as
+> "`CatalogMapper` vs `WatchedTypeTable`" and leaned on an "opposite directions"
+> argument. That framing was too defensive and contained an error. Corrections,
+> kept visible on purpose:
+> - **Direction is demoted.** GVK→GVR vs GVR→GVK is not a deep difference — the
+>   catalog indexes both ways from the same facts. The real difference is **scope,
+>   lifecycle, and dependency footprint**.
+> - **`TypeConflict` *is* `MappingAmbiguous`.** Draft 1 claimed the watched-type
+>   table's conflict refusal had no equivalent in `mapping.Status`. Wrong: "one GVK
+>   served by more than one resource" is exactly `MappingAmbiguous`
+>   ([mapper.go:192-194](../../../../internal/mapping/mapper.go#L192-L194)) and
+>   exactly the `len(accs) > 1` conflict
+>   ([watched_type_table.go:219](../../../../internal/watch/watched_type_table.go#L219)).
+>   Same condition, two names — which is the duplication this doc is really about.
+> - **The earlier "route the table through `ResolveGVK`" recommendation was
+>   imprecise.** The table starts from a rule-selected GVR and needs an exact
+>   GVR→entry lookup, not the GVK→GVR mapper path. The shareable thing is the
+>   *reduction*, not the GVK entry point.
 
-The instinct — *"use the same abstraction"* — is correct, and worth acting on. But
-the concrete proposal (retire `CatalogMapper`, resolve through `WatchedTypeTable`
-everywhere including the CLI) is the wrong direction, and would regress an
-architectural boundary the project deliberately built.
+## Verdict
 
-`CatalogMapper` and `WatchedTypeTable` are **not two implementations of one job**.
-They are two *projections* of a single shared substrate — the
-`APIResourceCatalog` — built for opposite questions, at different layers, with
-different dependency footprints:
-
-| | `CatalogMapper` (`mapping.ResourceMapper`) | `WatchedTypeTable` |
-|---|---|---|
-| Question it answers | "Given **any** GVK, what served GVR — and is that trustworthy?" | "What does **this GitTarget** watch, folded from its rules?" |
-| Direction | GVK → GVR | rule shape → GVR → GVK (folded by GVK) |
-| Scope | global, rule-agnostic | per-GitTarget, rule-scoped |
-| Layer / package | `internal/mapping` interface; impl in `internal/watch` | `internal/watch` only |
-| Dependencies | catalog only; **interface has no `internal/watch` dep** | rules + `RuleGVRResolver` + manager + informers + grace timers |
-| Backends | 4 (`structure-only`, `static-snapshot`, `kubeconfig`, `live-catalog`) | 1 (live discovery + a live rule set) |
-| Lifecycle state | none (stateless read) | `NamespaceOps`, `PendingRemovals` grace, `ResolvedAt` |
-| Consumers | `internal/git`, `internal/manifestanalyzer`, CLI, tests | snapshot / informer / plan-hash / per-type reconcile (M12+) |
-
-So: **do not collapse the mapper into the table.** Instead, collapse the *third
-thing neither file shows you*: the project currently has **three** reduction code
-paths and **two** status vocabularies over the one catalog. That duplication — not
-the existence of two projections — is the real "same abstraction" debt. The
-recommendation (§7) is to make the catalog's reduction the single authority and
-build *both* the mapper and the table on top of it.
-
-## 1. The question, stated precisely
-
-The opened file pair invites a tempting simplification. `WatchedType` carries both
-a `GVK` and a `GVR` in a documented 1:1 relationship
-([watched_type_table.go:76](../../../../internal/watch/watched_type_table.go#L76)),
-and `WatchedTypeTable` has matured into a resilient, hysteresis-aware structure
-(`PendingRemovals` under a grace timer,
-[watched_type_table.go:135](../../../../internal/watch/watched_type_table.go#L135)).
-`CatalogMapper`, by contrast, looks thin — a stateless read over the catalog.
-
-If the table already holds both coordinates and survives discovery wobble, why keep
-a second type whose stated future role is "also be implemented in the CLI"
-([gvk-gvr-mapping-layer.md → Kubeconfig Discovery Mapper](../gvk-gvr-mapping-layer.md))?
-
-The answer turns on four properties the two files do not advertise on their face.
-
-## 2. They run in opposite directions, and the mapper's direction is deliberate
-
-`CatalogMapper.GVRForGVK` resolves **GVK → GVR** via `catalog.LookupGVK`
-([catalog_mapper.go:84](../../../../internal/watch/catalog_mapper.go#L84)). This is
-the *document* direction: a manifest declares `apiVersion`/`kind` (a GVK), and the
-manifest store must learn the served resource identity to index and classify it
-([store.go:401](../../../../internal/manifestanalyzer/store.go#L401)).
-
-`buildWatchedTypeTable` runs the other way: it folds rule-resolved GVRs and then maps
-**GVR → GVK** via `lookupServedEntry` → `catalog.LookupGVR`
-([watched_type_table.go:263](../../../../internal/watch/watched_type_table.go#L263)).
-This is the *watch* direction: rules name resources, the cluster watches GVRs, and
-the GVK is recovered for manifest identity.
-
-The mapping-layer design **deliberately excludes** the reverse (GVR → GVK) from the
-mapper contract: *"Resource-to-manifest identity is not part of this mapper
-contract"* ([gvk-gvr-mapping-layer.md](../gvk-gvr-mapping-layer.md), Interface §).
-So the table needs exactly the direction the mapper intentionally does not expose.
-"Works in both directions" is a property of a *folded result* (each `WatchedType`
-happens to hold both coordinates), not of a general bidirectional resolver. Neither
-type is a drop-in for the other's direction.
-
-## 3. The table is rule-scoped; the analyzer must classify what no rule selects
-
-This is the load-bearing objection. `WatchedTypeTable.Types` contains **only** the
-types a GitTarget's rules resolved
-([watched_type_resolver.go:572-615](../../../../internal/watch/watched_type_resolver.go#L572-L615)
-fold rule selections into the table). It is, by construction, the *watched set*.
-
-But the manifest layer's central job is to classify documents the watched set does
-**not** contain — that is the entire `unwatched` / `unserved` / `ambiguous` /
-`disallowed` taxonomy ([gvk-gvr-mapping-layer.md → Watched Classification](../gvk-gvr-mapping-layer.md)):
+The instinct is right: there is one abstraction here, and it should live in the
+core. But it is **not** `WatchedTypeTable`, and it is not `CatalogMapper` either.
+Both are *consumers* of a smaller thing that is currently smeared across three code
+paths. The honest model is three layers, not two rivals:
 
 ```text
-document GVK -> mapper -> document GVR      (must work for ANY GVK in the repo)
-GitTarget rules -> watched GVR set          (a separate, narrower question)
-document GVR in watched set? -> tracked / unwatched / orphan
+  APIResourceCatalog                 raw discovery facts + trust state
+        |                            (byGVK / byGVR, ready, degraded, generation)
+        v
+  resolved type surface              the ONE abstraction to name in core:
+  (mapping.Entry + one reduction)    "given a GVK or a GVR, the served+allowed
+        |                             resolved type, or a refusal status"
+        +--------------------+
+        v                    v
+  ResourceMapper        WatchedTypeTable
+  (global, GVK->GVR,    (per-GitTarget, rule-selected subset
+   multi-backend,        of the surface + watch lifecycle:
+   manifest/CLI/test)    NamespaceOps, PendingRemovals, sweep)
 ```
 
-A `WatchedTypeTable` can answer step 2 (it *is* the watched set). It cannot answer
-step 1 for a GVK no rule selects — and step 1 over arbitrary GVKs is precisely what
-the manifest store and the CLI need. Asking the table to resolve an unwatched GVK is
-asking a set to describe its own complement: it has no entry to return.
+So:
 
-## 4. The dependency boundary the mapper protects is real and load-bearing
+1. **Do not push `WatchedTypeTable` into the CLI.** Not because the data is
+   different, but because the *object* carries GitTarget-specific operational
+   policy (rule selection, namespace ops, removal grace, sweep) and a dependency on
+   the watch manager. (§3)
+2. **Do not sunset `CatalogMapper`.** It is the rule-agnostic, multi-backend
+   GVK→GVR interface the offline tooling needs. (§3)
+3. **Extract the resolved type surface into core** — one reduction, one status
+   vocabulary, reusing `mapping.Entry` rather than inventing a new record. Both the
+   mapper and the table read it. (§4)
+4. **Ambiguous GVK→GVR is a hard, deterministic refusal**, not a supported mode.
+   (§5) This matches your conviction and is already how both paths behave.
 
-Verified in the tree today:
+The right reframe of the whole question: stop asking "mapper or table?" and ask
+"**raw catalog → resolved type surface → GitTarget selection**" — which makes the
+shared abstraction small and the differences obvious.
 
-- `internal/manifestanalyzer` and `internal/git` import `internal/mapping` but
-  **never** import `internal/watch`.
-- `internal/mapping` **never** imports `internal/watch` (only a doc comment names
-  it).
+## 1. You are right that the data is the same
 
-That clean cut is the explicit reason the interface lives in `internal/mapping`
-while only the *live* implementation lives in `internal/watch`
-([mapper.go:26-30](../../../../internal/mapping/mapper.go#L26-L30)): *"Keeping the
-interface free of any controller or discovery dependency preserves the manifest
-analyzer's no-cluster promise."*
-
-`WatchedTypeTable` is the opposite of dependency-free. To build one you need a live
-rule set (`RuleStore.SnapshotWatchRules`), a `RuleGVRResolver`, a `Manager`, and the
-grace/informer machinery around it. Routing CLI or analyzer resolution through the
-table would drag the entire watch manager — and a rule set the offline tool does not
-have — into a tool whose whole point is to run without a cluster or a controller.
-**This is the specific case raised in the question, and it is exactly where the table
-substitution breaks hardest.** The CLI does not want the watched set of some
-GitTarget; it wants "does this cluster's API surface serve this document's GVK?",
-which is the mapper's rule-agnostic question with a swappable backend.
-
-The mapper's four `MapperSource` backends
-([mapper.go:71-84](../../../../internal/mapping/mapper.go#L71-L84)) —
-`structure-only`, `static-snapshot`, `kubeconfig`, `live-catalog` — are that
-swappability. The CLI plugs in `kubeconfig` or `static-snapshot`; the controller
-plugs in `live-catalog` (`CatalogMapper`); tests plug in `static-snapshot`; the
-no-cluster analyzer keeps `structure-only`. A single concrete `WatchedTypeTable`
-has no equivalent polymorphism, and bolting one on would re-implement the mapper
-interface under a new name.
-
-## 5. The "hysteresis" is genuinely good — and the mapper already has its equivalent
-
-`PendingRemovals` retains a still-selected type the catalog momentarily stopped
-serving, under a grace timer, so a `7 → 0 → 7` discovery wobble never drives a
-destructive git sweep
-([watched_type_table.go:135](../../../../internal/watch/watched_type_table.go#L135),
-[per-type-reconcile-and-streaming-tail.md:613](per-type-reconcile-and-streaming-tail.md)).
-This is excellent and correct — but it is a **sweep-safety** mechanism. It protects
-a *destructive, stateful, time-extended* action: deleting files from git when a
-type appears to vanish.
-
-The mapper faces no such action. Its fail-closed need is a *point-in-time read*:
-"don't trust an absence I can't currently observe." It meets that need with the same
-catalog trust state, surfaced as status rather than retained as a timer:
-`MappingCatalogUnavailable`, `MappingDiscoveryDegraded`, and `Ready()/Degraded`
-([mapper.go:120-137](../../../../internal/mapping/mapper.go#L120-L137),
-[catalog_mapper.go:58-73](../../../../internal/watch/catalog_mapper.go#L58-L73)).
-A caller that sees `Degraded` falls closed on its own action; a caller that needs to
-*hold a resource alive over time* (the sweep) uses the grace timer.
-
-So the two are not "one has hysteresis, the other lacks it." They are **the same
-underlying catalog trust state expressed for two different action shapes** — a timer
-for a destructive time-extended sweep, a status for an instantaneous read. Both are
-correct; neither subsumes the other.
-
-## 6. The real duplication: three reductions, two vocabularies, one catalog
-
-Here is where the instinct pays off. Stepping back from the two files in question,
-the same catalog is reduced to "served, allowed, unambiguous resource" in **three**
-places:
-
-1. `mapping.ResolveGVK` — the shared reduction behind `CatalogMapper` and
-   `StaticSnapshotMapper`
-   ([mapper.go:173](../../../../internal/mapping/mapper.go#L173)). Output vocabulary:
-   `mapping.Status` (`Resolved` / `Unserved` / `Ambiguous` / `Disallowed` /
-   `Subresource` / `CatalogUnavailable` / `DiscoveryDegraded` / `StructureOnly`).
-2. `RuleGVRResolver.Resolve` — the watch-side rule reduction
-   ([rule_gvr_resolver.go:63](../../../../internal/watch/rule_gvr_resolver.go#L63)).
-   It applies its **own** scope/version/ambiguity/policy logic
-   (`gvrsForCandidates` filters `Allowed`, `Subresource`, `Supports("list","watch")`,
-   [rule_gvr_resolver.go:142-164](../../../../internal/watch/rule_gvr_resolver.go#L142-L164))
-   and emits a **parallel** vocabulary: `ResolveMissReason` (`NotServed` /
-   `Ambiguous` / `Disallowed` / `CatalogUnavailable` / `DiscoveryDegraded`).
-3. `buildWatchedTypeTable` / `lookupServedEntry` — takes `lookup.Entries[0]`
-   directly ([watched_type_table.go:263](../../../../internal/watch/watched_type_table.go#L263)),
-   bypassing `ResolveGVK` entirely and trusting that `RuleGVRResolver` already
-   filtered. Its own conflict refusal (one GVK claimed by >1 GVR →
-   `TypeConflict`) is a *fourth* outcome category that `mapping.Status` has no name
-   for.
-
-`mapping.Status` and `ResolveMissReason` are near-identical taxonomies of catalog
-trust outcomes maintained in two packages. *That* is the abstraction that is
-duplicated — not the projections. Unifying it is the high-value move the question is
-really pointing at.
-
-## 7. Recommendation
-
-**Keep both projections. Unify the resolution layer underneath them.** Concretely,
-in priority order:
-
-1. **Do not sunset `CatalogMapper`.** It is the cross-package, rule-agnostic,
-   multi-backend GVK→GVR interface that `internal/git`, `internal/manifestanalyzer`,
-   and the future CLI depend on. Retiring it re-couples the offline tooling to the
-   watch manager and deletes the `kubeconfig` / `static-snapshot` / `structure-only`
-   polymorphism the CLI and tests need. This directly answers the question: the CLI
-   case is the *strongest* reason to keep the mapper, not a weak one.
-
-2. **Make `buildWatchedTypeTable` resolve through the shared reduction.** Today its
-   GVR→GVK leg bypasses `mapping.ResolveGVK`. Route the table's per-type resolution
-   through the same reduction (or a shared catalog helper) so the live catalog and
-   the table agree on policy, subresource, and ambiguity handling by construction,
-   and the `lookupServedEntry`-takes-`[0]` shortcut disappears. This is the literal
-   "same abstraction" win for the two files in the question — the table built *on
-   top of* the resolver, not beside it.
-
-3. **Collapse `ResolveMissReason` and `mapping.Status` into one vocabulary.** Have
-   `RuleGVRResolver` express its outcomes in the `mapping` taxonomy (or a shared
-   enum both import) so there is exactly one set of names for "served / unserved /
-   ambiguous / disallowed / degraded / unavailable" across watch planning and
-   manifest classification. This removes the genuine duplication §6 identifies and
-   keeps the two surfaces from drifting.
-
-4. **Optional, later: add a reverse lookup to the contract only if a second consumer
-   needs it.** The mapper deliberately omits GVR→GVK. If/when a non-watch consumer
-   needs it, add it to the catalog reduction (where `LookupGVR` already lives), not
-   to `WatchedTypeTable`. Until then, the table's in-package GVR→GVK leg is fine.
-
-The mental model to adopt:
+At the level of facts, `CatalogMapper` and `WatchedTypeTable` traffic in identical
+material:
 
 ```text
-                 APIResourceCatalog            <- the one source of truth
-                 (byGVK / byGVR, trust state, generation, degraded GVs)
-                          |
-                 one reduction vocabulary       <- the abstraction to unify (§7.2, §7.3)
-                 (served? allowed? ambiguous? degraded? unavailable?)
-                 /                            \
-   ResourceMapper (GVK->GVR)            WatchedTypeTable (rule -> GVR -> GVK)
-   global, multi-backend,              per-GitTarget, rule-scoped,
-   document/CLI/test facing            sweep/informer/reconcile spine
+GVK <-> GVR   served?   allowed?   namespaced?   verbs?   preferred?   ambiguous?   degraded?
 ```
 
-Two projections, one substrate, one reduction. That is the same abstraction used
-twice — which is the right shape — rather than one type pressed into two
-incompatible jobs.
+That shape already has a name in the codebase: `mapping.Entry`
+([mapper.go:143-151](../../../../internal/mapping/mapper.go#L143-L151)), the
+catalog-neutral fact record, and `APIResourceEntry` inside the catalog. A
+`WatchedType` is `mapping.Entry` plus per-GitTarget scope; a `mapping.Result` is
+`mapping.Entry` plus a status. The draft-1 "opposite directions" argument obscured
+this: both are projections of the same `Entry`. So the question "isn't the
+abstraction the same?" is **yes at the data layer** — and the fix is to *name that
+data layer in core*, not to make one projection swallow the other.
 
-## 8. What this explicitly rejects, and why
+## 2. What is genuinely not shared: lifecycle and dependency
 
-- **"Resolve CLI/analyzer GVKs through `WatchedTypeTable`."** Rejected: the table is
-  the watched *set*; the CLI must classify GVKs outside any set, and the table would
-  drag `internal/watch` + a live rule set into a no-cluster tool (§3, §4).
-- **"Delete `CatalogMapper`, keep only the table."** Rejected: deletes the
-  interface boundary and the four-backend polymorphism; re-couples
-  `internal/manifestanalyzer` and `internal/git` to `internal/watch` (§4).
-- **"Give `WatchedTypeTable` the mapper's status surface so it can stand alone."**
-  Rejected as a *substitution* — that is just re-implementing `ResourceMapper` under
-  a new name. (Sharing one vocabulary, §7.3, is the supported version of this
-  instinct.)
+The part of `WatchedTypeTable` that is not "just a set of types" is its
+**operational lifecycle**, which a stateless resolver has no business carrying:
 
-## 9. Suggested sequencing
+- `NamespaceOps` — per-namespace operation filters folded from a GitTarget's rules
+  ([watched_type_table.go:88](../../../../internal/watch/watched_type_table.go#L88));
+- `PendingRemovals` — a grace-timer hold so a discovery wobble never sweeps git
+  ([watched_type_table.go:135](../../../../internal/watch/watched_type_table.go#L135));
+- `ResolvedAt` + deliberate re-resolution triggers, and the role as the spine the
+  per-type reconcile and untracking sweep iterate
+  ([per-type-reconcile-and-streaming-tail.md:350](per-type-reconcile-and-streaming-tail.md#L350)).
 
-1. Land §7.2 (table resolves through the shared reduction) — small, in-package,
-   removes the `Entries[0]` shortcut, fully unit-testable against the existing
-   watched-type-table tests.
-2. Land §7.3 (one trust-outcome vocabulary) — mechanical but cross-package; do it as
-   its own change so the diff is reviewable.
-3. Leave §7.4 unbuilt until a concrete second consumer of GVR→GVK appears outside
-   `internal/watch`.
+These are decisions about *what one GitTarget does over time*, not about *what the
+cluster serves*. They are correctly in `internal/watch`. The error would be letting
+them leak into the core surface — or dragging them into the CLI.
 
-None of this is on the critical path for the M12+ per-type reconcile — the table
-already serves as that spine
-([per-type-reconcile-and-streaming-tail.md:350](per-type-reconcile-and-streaming-tail.md#L350)).
-It is a consolidation that makes the per-type work rest on one resolution authority
-instead of three.
+## 3. Why neither projection moves into the other's job
+
+**`WatchedTypeTable` → CLI: no.** Verified in the tree: `internal/git` and
+`internal/manifestanalyzer` import `internal/mapping` but never `internal/watch`,
+and `internal/mapping` never imports `internal/watch`. Building a `WatchedTypeTable`
+needs a live rule set (`RuleStore`), a `RuleGVRResolver`, a `Manager`, and the
+informer/grace machinery. A no-cluster CLI has none of that and does not want it.
+The CLI also needs to classify GVKs **no rule selects** (the `unwatched` /
+`unserved` taxonomy), and the table — being the *selected subset* — has no entry
+for those. A subset cannot describe its own complement.
+
+**`CatalogMapper` → deleted: no.** It is already a thin adapter (it delegates to the
+shared reduction). Its value is the *interface* with four `MapperSource` backends —
+`structure-only`, `static-snapshot`, `kubeconfig`, `live-catalog`
+([mapper.go:71-84](../../../../internal/mapping/mapper.go#L71-L84)) — so the CLI,
+tests, and the controller swap the discovery source without touching callers.
+Deleting it deletes that polymorphism and re-couples the analyzer to the watch
+manager.
+
+The boundary the draft-1 doc defended is the right boundary. What it got wrong was
+implying the *abstractions underneath* must also stay apart. They should not.
+
+## 4. The one abstraction, stated minimally
+
+Put the resolved type surface in core (`internal/mapping`, where `Entry` and
+`ResolveGVK` already live) and reuse what exists:
+
+- **Record: `mapping.Entry`.** Do not introduce a new `ResolvedType` /
+  `TypeSurface` record — it would be a near-synonym of `Entry`. The pushback here is
+  against adding vocabulary, not against the idea.
+- **One reduction, two entry points.** `ResolveGVK(gvk, candidates, state)` already
+  reduces a candidate `[]Entry` + trust state into a `Result`-or-refusal, and its
+  reduction core (`partitionSubresources`, `allowedEntries`, ambiguity →
+  status, [mapper.go:173-199](../../../../internal/mapping/mapper.go#L173-L199)) is
+  **direction-agnostic**. Add a sibling exact-GVR reduction that feeds the *same*
+  core, so:
+  - `ForGVK(gvk)` → resolved GVR or refusal (today's mapper path);
+  - `ForGVR(gvr)` → resolved entry or refusal (what the table's fold needs;
+    GVR→GVK is single-valued in the catalog, so this is an exact lookup, not an
+    ambiguity search — see [watched_type_table.go:262](../../../../internal/watch/watched_type_table.go#L262)).
+- **One status vocabulary.** Collapse `ResolveMissReason`
+  ([rule_gvr_resolver.go:32-43](../../../../internal/watch/rule_gvr_resolver.go#L32-L43))
+  and `mapping.Status` ([mapper.go:120-137](../../../../internal/mapping/mapper.go#L120-L137))
+  into one set of names for `served / unserved / ambiguous / disallowed / degraded /
+  unavailable`. These are two hand-maintained spellings of the same outcomes today.
+
+Then the consumers shrink to what they actually are:
+
+- `CatalogMapper` = `ForGVK` over the live catalog (already nearly this).
+- `RuleGVRResolver` / `buildWatchedTypeTable` = `ForGVR` over the live catalog, plus
+  the GitTarget fold and lifecycle. The `lookupServedEntry`-takes-`Entries[0]`
+  shortcut ([watched_type_table.go:263](../../../../internal/watch/watched_type_table.go#L263))
+  becomes a call into the shared reduction, so the table and the mapper agree by
+  construction.
+
+This is the smallest version of "use the same abstraction": one record, one
+reduction, two lookups, one status vocabulary — and the watch-specific lifecycle
+stays out of it.
+
+## 5. Ambiguous GVK→GVR is a refusal, not a mode
+
+Endorsing the conviction directly: a cluster that serves one kind through more than
+one resource is misconfigured, and GitOps Reverser should **not** pick a winner,
+infer intent, or route around it. It refuses.
+
+The good news is the product already behaves this way, in both paths — which is why
+unifying is safe rather than a behavior change:
+
+- the mapper returns `MappingAmbiguous` and resolves nothing
+  ([mapper.go:192-194](../../../../internal/mapping/mapper.go#L192-L194));
+- the table records a `TypeConflict` and does not watch the type
+  ([watched_type_table.go:219-221](../../../../internal/watch/watched_type_table.go#L219-L221)).
+
+So ambiguity is not a "valid operating mode" the surface must support with
+tie-breaks; it is a single refusal status the surface *classifies*. The one
+requirement — the critique's caveat, which is correct — is that the refusal stay
+**observable**: a clear status and an edge-log/metric, not a silent gap. Fail-closed,
+but loudly. The shared status vocabulary (§4) is what makes that one well-named
+outcome instead of two.
+
+## 6. What this explicitly rejects
+
+- **Resolve CLI / analyzer GVKs through `WatchedTypeTable`** — it is the selected
+  subset and drags `internal/watch` into a no-cluster tool. (§3)
+- **Delete `CatalogMapper`** — deletes the multi-backend interface boundary. (§3)
+- **Add a new `ResolvedType` / `TypeSurface` record** — `mapping.Entry` already is
+  it; adding a synonym grows vocabulary instead of shrinking it. (§4)
+- **Add reverse GVR→GVK mapping to the *mapper interface* for delete planning** —
+  not needed; delete planning starts from the GitTarget folder's
+  `ByResourceIdentity` inventory ([../gvk-gvr-mapping-layer.md](../gvk-gvr-mapping-layer.md)).
+  A core `ForGVR` *reduction helper* (§4) is a different thing and is fine; the
+  table needs it internally.
+- **Treat ambiguity as a tie-breakable mode** — it is a refusal. (§5)
+
+## 7. Recommendation, in priority order
+
+1. **Keep `CatalogMapper` as the mapper interface/adapter.** (no change)
+2. **Extract the resolved type surface into `internal/mapping`:** keep `Entry`, keep
+   `ResolveGVK`, add a `ForGVR` reduction sharing the same reduction core, and one
+   status vocabulary.
+3. **Collapse `ResolveMissReason` into that vocabulary** so watch planning and
+   manifest classification name outcomes identically.
+4. **Make `buildWatchedTypeTable` / `RuleGVRResolver` resolve through the shared
+   reduction**, removing the `Entries[0]` shortcut, so live mapper and table agree
+   by construction.
+5. **Keep all watch lifecycle** (`NamespaceOps`, `PendingRemovals`, sweep,
+   re-resolution triggers) in `internal/watch`.
+6. **Keep ambiguity as a hard, observable refusal**; do not build tie-breaking.
+
+## 8. Sequencing
+
+1. §7.2 + §7.4 together (surface + table reads it) — in-package first where it
+   touches `internal/mapping`, then the watch wiring; both are unit-testable against
+   the existing mapper and watched-type-table tests.
+2. §7.3 (one vocabulary) as its own change — mechanical but cross-package, so a
+   reviewable diff on its own.
+3. None of this is on the M12+ per-type-reconcile critical path; the table already
+   serves as that spine
+   ([per-type-reconcile-and-streaming-tail.md:350](per-type-reconcile-and-streaming-tail.md#L350)).
+   It is consolidation, not a new feature.
+
+## 9. Unverified, on purpose
+
+This is a design argument, not a proven refactor. The load-bearing assumption is
+that the `ResolveGVK` reduction core is cleanly separable into a direction-agnostic
+helper that a `ForGVR` lookup can reuse without disturbing the table's conflict
+refusal or grace logic. That should be confirmed with a spike before §7.2 is
+treated as settled. If the reduction turns out to entangle the GVK entry point,
+the fallback is still valuable: share only the status vocabulary (§7.3) and keep two
+thin lookups.
 
 ## References
 
-- [gvk-gvr-mapping-layer.md](../gvk-gvr-mapping-layer.md) — the mapper contract,
-  `MapperSource` backends, and the watched-classification two-step.
+- [gvk-gvr-mapping-layer.md](../gvk-gvr-mapping-layer.md) — the mapper contract and
+  `MapperSource` backends.
 - [per-type-reconcile-and-streaming-tail.md](per-type-reconcile-and-streaming-tail.md)
-  — the table as the M12+ reconcile/sweep/visibility spine, and the grace-timer hold.
-- [`internal/mapping/mapper.go`](../../../../internal/mapping/mapper.go) —
-  `ResourceMapper`, `ResolveGVK`, `mapping.Status`.
+  — the table as the M12+ reconcile/sweep spine and the grace-timer hold.
+- [`internal/mapping/mapper.go`](../../../../internal/mapping/mapper.go) — `Entry`,
+  `ResolveGVK`, `mapping.Status`.
 - [`internal/watch/watched_type_table.go`](../../../../internal/watch/watched_type_table.go)
-  — `WatchedType`, `WatchedTypeTable`, `PendingRemoval`, `buildWatchedTypeTable`.
+  — `WatchedType`, `WatchedTypeTable`, `TypeConflict`, `PendingRemoval`.
 - [`internal/watch/rule_gvr_resolver.go`](../../../../internal/watch/rule_gvr_resolver.go)
-  — `RuleGVRResolver`, `ResolveMissReason` (the parallel vocabulary).
+  — `RuleGVRResolver`, `ResolveMissReason` (the parallel vocabulary to collapse).
