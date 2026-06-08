@@ -721,6 +721,48 @@ func TestProcessMessage_NoObjectRefIsACKed(t *testing.T) {
 	assertNoPendingMessages(t, mr)
 }
 
+// A deployments/scale event must be TRANSLATED into a parent-manifest field patch and
+// routed against the matching deployments rule — not written as its Scale body, and not
+// dropped. The routed event carries a FieldPatch (spec.replicas, no object), so the
+// writer patches only that field on the committed Deployment.
+func TestProcessMessage_SubresourceEventTranslatesToFieldPatch(t *testing.T) {
+	mr := miniredis.RunT(t)
+	er := &fakeEventRouter{}
+
+	rs := rulestore.NewStore()
+	rs.AddOrUpdateWatchRule(
+		makeWatchRule("scale-rule", []string{"deployments"}, []string{"v1"}, []string{"apps"}),
+		"my-target", "default",
+		"my-provider", "default",
+		"main", "state/",
+	)
+
+	c := newTestConsumer(t, mr, rs, er)
+	require.NoError(t, c.ensureConsumerGroup(context.Background()))
+
+	ev := makeAuditEvent("patch", auditv1.StageResponseComplete, "deployments", "default", "web")
+	ev.ObjectRef.APIGroup = "apps"
+	ev.ObjectRef.Subresource = "scale"
+	ev.ResponseObject = &runtime.Unknown{
+		Raw: []byte(`{"kind":"Scale","apiVersion":"autoscaling/v1","spec":{"replicas":3},"status":{"replicas":0}}`),
+	}
+	pushAuditMessage(t, mr, ev)
+
+	require.NoError(t, c.readAndProcessBatch(context.Background()))
+
+	require.Len(t, er.calls, 1, "a scale event must be translated and routed as a field patch")
+	routed := er.calls[0].Event
+	require.NotNil(t, routed.FieldPatch, "the routed event must be a field patch, not an object")
+	assert.Nil(t, routed.Object, "a field patch carries no object body")
+	assert.Equal(t, "deployments/scale", routed.FieldPatch.Source)
+	assert.Equal(t, "UPDATE", routed.Operation)
+	assert.Equal(t, "deployments", routed.Identifier.Resource)
+	require.Len(t, routed.FieldPatch.Assignments, 1, "only spec.replicas, never status")
+	assert.Equal(t, []string{"spec", "replicas"}, routed.FieldPatch.Assignments[0].Path)
+	assert.Equal(t, int64(3), routed.FieldPatch.Assignments[0].Value)
+	assertNoPendingMessages(t, mr)
+}
+
 func TestProcessMessage_NoMatchingRulesIsACKed(t *testing.T) {
 	mr := miniredis.RunT(t)
 	er := &fakeEventRouter{}

@@ -646,15 +646,30 @@ func isFailedAuditRequest(event *auditv1.Event) bool {
 
 // checkEvent validates an audit event before processing.
 func (h *AuditHandler) checkEvent(event *audit.Event) (bool, error) {
-	// Subresource audit verbs do not describe top-level object mutations that
-	// the current Git routing path can mirror. Some streaming subresources such
-	// as pods/exec are audited as verb=create with no resource body at all.
-	process := event.ObjectRef == nil || event.ObjectRef.Subresource == ""
+	process := shouldForwardSubresource(event)
 	if string(event.AuditID) == "" {
 		return process, errors.New("invalid audit event: auditID cannot be empty")
 	}
 
 	return process, nil
+}
+
+// shouldForwardSubresource is the cheap subresource forwarding gate. Top-level
+// resource events always pass. A subresource event passes only when it is a mutating
+// verb and not hard-denied, so a supported subresource (e.g. deployments/scale)
+// reaches the consumer to be translated into a parent-manifest field patch, while
+// status, exec, proxy, log, and other non-desired-state subresources are dropped
+// before Redis. The consumer remains the authority for whether a forwarded
+// subresource can actually be resolved. See
+// docs/design/manifest/version2/scale-subresource-audit-rehydration.md.
+func shouldForwardSubresource(event *audit.Event) bool {
+	if event.ObjectRef == nil || event.ObjectRef.Subresource == "" {
+		return true
+	}
+	if _, ok := auditutil.VerbToOperation(event.Verb); !ok {
+		return false
+	}
+	return !auditutil.IsHardDeniedSubresource(event.ObjectRef.Resource, event.ObjectRef.Subresource)
 }
 
 func hasAuditV1ObjectBody(event *auditv1.Event) bool {

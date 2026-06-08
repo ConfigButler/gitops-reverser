@@ -148,17 +148,22 @@ const (
 	upsertUpdated
 )
 
-// applyEvent folds one event into the batch: a DELETE removes a document, anything
-// else is an upsert (the object-bearing event the stream guarantees for non-deletes).
-// The steady-state writer does not need the upsert outcome (it flushes by byte state),
-// so it is discarded here; the resync planner consumes it for stats.
+// applyEvent folds one event into the batch: a field patch sets bounded fields on an
+// existing parent, a DELETE removes a document, anything else is an upsert (the
+// object-bearing event the stream guarantees for non-deletes). The steady-state
+// writer does not need the upsert outcome (it flushes by byte state), so it is
+// discarded here; the resync planner consumes it for stats.
 func (wb *writeBatch) applyEvent(ctx context.Context, event Event) error {
-	if event.Operation == "DELETE" {
+	switch {
+	case event.IsFieldPatch():
+		return wb.applyFieldPatch(ctx, event)
+	case event.Operation == "DELETE":
 		wb.applyDelete(event)
 		return nil
+	default:
+		_, err := wb.applyUpsert(ctx, event)
+		return err
 	}
-	_, err := wb.applyUpsert(ctx, event)
-	return err
 }
 
 // applyUpsert resolves an object-bearing event against the subtree. When a managed
@@ -180,6 +185,106 @@ func (wb *writeBatch) applyUpsert(ctx context.Context, event Event) (upsertOutco
 		}
 	}
 	return wb.writeWholeFile(ctx, event, wb.writer.filePathForIdentifier(event.Identifier))
+}
+
+// applyFieldPatch folds a subresource field-patch event into the batch: it locates the
+// existing managed parent document by content identity and sets only the patch's
+// declared field paths via manifestedit.PatchFields, preserving every other byte.
+//
+// Two deliberate refusals make this safe for a partial intent:
+//   - There is NO creation path. A patch whose parent is absent from Git is dropped,
+//     because fabricating the parent would mean guessing every unaudited field.
+//   - The renderer is NOT injected. A document that cannot be patched field-by-field
+//     is SKIPPED, not whole-replaced — a whole-replace from the partial desired would
+//     delete every field the subresource did not mention. An encrypted parent is
+//     likewise skipped (PatchFields inherits the SOPS refusal from Decide).
+//
+// The document index is re-derived from the buffer's CURRENT bytes so an earlier event
+// in the same batch that shifted a multi-document file does not misdirect the edit.
+func (wb *writeBatch) applyFieldPatch(ctx context.Context, event Event) error {
+	filePath, id, ok := wb.resolveFieldPatchTarget(event)
+	if !ok {
+		log.FromContext(ctx).Info("Dropping field patch: parent manifest not present in Git",
+			"resource", event.Identifier.String(), "source", event.FieldPatch.Source,
+			"reason", "subresource_patch_no_parent")
+		return nil
+	}
+
+	buf := wb.buffer(filePath)
+	idx, found := currentDocIndex(filePath, buf.current, id)
+	if !found {
+		// An earlier event in this batch already removed the document; nothing to patch.
+		return nil
+	}
+
+	res, diags := manifestedit.PatchFields(
+		buf.current, idx, id, event.FieldPatch.Assignments, manifestedit.EditOptions{},
+	)
+	switch res.Mode {
+	case manifestedit.EditPatched:
+		buf.current = res.Content
+	case manifestedit.EditNoChange, manifestedit.EditDeleted:
+		// No-op: the audited value already matched (or, impossible here, a delete).
+	case manifestedit.EditSkipped, manifestedit.EditWholeReplace:
+		// EditSkipped (encrypted, non-editable, or snapshot drift), or a defensive
+		// EditWholeReplace we must never apply from a partial desired.
+		log.FromContext(ctx).Info("Field patch not applied: parent is encrypted or not field-patchable",
+			"resource", event.Identifier.String(), "source", event.FieldPatch.Source,
+			"reason", "subresource_patch_unsafe")
+		logManifestDiagnostics(ctx, diags)
+	}
+	return nil
+}
+
+// resolveFieldPatchTarget locates the parent manifest a field-patch event targets,
+// mirroring resolveDelete's two-step resolution:
+//
+//  1. When the parent Kind is known (FieldPatch.ParentKind set), the content-derived
+//     manifest-identity index resolves it directly — no mapper required.
+//  2. Otherwise the parent is resolved from its objectRef GVR through the same
+//     resource-identity inventory the GVR-only delete uses (PlanDelete), which the
+//     live-catalog mapper populates while scanning the GitTarget folder. This is the
+//     production path: the audit consumer cannot cheaply resolve GVR->GVK, so it leaves
+//     ParentKind empty and the writer — which already has the mapper — resolves it.
+//
+// found is false when Git holds no managed document for the parent identity.
+func (wb *writeBatch) resolveFieldPatchTarget(event Event) (string, manifestedit.Identity, bool) {
+	if id, ok := fieldPatchIdentity(event); ok {
+		if dm := wb.store.ByManifestIdentity[id]; dm != nil {
+			return wb.docLoc[dm].FilePath, id, true
+		}
+	}
+	if action, emitted := manifestanalyzer.PlanDelete(wb.store, event.Identifier); emitted {
+		return action.Ref.FilePath, action.Identity, true
+	}
+	return "", manifestedit.Identity{}, false
+}
+
+// fieldPatchIdentity builds the parent content identity (GVK + namespace + name) for a
+// field-patch event from its GVR identifier and the optional ParentKind. The audit
+// objectRef carries only the plural resource, and the subresource body's own Kind (e.g.
+// "Scale") is not the parent's, so the parent Kind must be supplied to use the
+// content-derived index. ok is false when the Kind or name is missing — the expected
+// case for a translator-emitted patch, which then resolves by GVR instead.
+func fieldPatchIdentity(event Event) (manifestedit.Identity, bool) {
+	patch := event.FieldPatch
+	if patch == nil || patch.ParentKind == "" {
+		return manifestedit.Identity{}, false
+	}
+	apiVersion := event.Identifier.Version
+	if event.Identifier.Group != "" {
+		apiVersion = event.Identifier.Group + "/" + event.Identifier.Version
+	}
+	id := manifestedit.Identity{
+		APIVersion: apiVersion,
+		Kind:       patch.ParentKind,
+		Namespace:  event.Identifier.Namespace,
+		Name:       event.Identifier.Name,
+	}
+	if id.APIVersion == "" || id.Name == "" {
+		return manifestedit.Identity{}, false
+	}
+	return id, true
 }
 
 // patchExisting edits the existing managed document for id in place via manifestedit,

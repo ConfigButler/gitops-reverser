@@ -454,6 +454,45 @@ func TestAuditHandler_validateEvent(t *testing.T) {
 			expectedProcessed: false,
 		},
 		{
+			name: "scale subresource event forwards",
+			event: audit.Event{
+				AuditID: "some-scale",
+				Verb:    "patch",
+				ObjectRef: &audit.ObjectReference{
+					Resource:    "deployments",
+					Subresource: "scale",
+				},
+			},
+			expectedErr:       "",
+			expectedProcessed: true,
+		},
+		{
+			name: "read verb on a subresource is dropped",
+			event: audit.Event{
+				AuditID: "scale-read",
+				Verb:    "get",
+				ObjectRef: &audit.ObjectReference{
+					Resource:    "deployments",
+					Subresource: "scale",
+				},
+			},
+			expectedErr:       "",
+			expectedProcessed: false,
+		},
+		{
+			name: "services proxy subresource denied",
+			event: audit.Event{
+				AuditID: "svc-proxy",
+				Verb:    "create",
+				ObjectRef: &audit.ObjectReference{
+					Resource:    "services",
+					Subresource: "proxy",
+				},
+			},
+			expectedErr:       "",
+			expectedProcessed: false,
+		},
+		{
 			name: "empty auditID",
 			event: audit.Event{
 				AuditID: "",
@@ -503,6 +542,36 @@ func TestAuditHandler_validateEvent(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestAuditHandler_ForwardsRealScaleSubresourceRecording drives the real captured
+// kube-apiserver recording of a `kubectl scale deployment` through the full webhook
+// path — decode, the subresource forwarding gate, ingress classification, and
+// enqueue — and asserts the deployments/scale event reaches the canonical stream
+// (verb/resource/subresource intact) instead of being dropped as it was before the
+// gate change. This is the e2e-shaped proof at unit speed that the recording the
+// design is built around is actually forwarded.
+func TestAuditHandler_ForwardsRealScaleSubresourceRecording(t *testing.T) {
+	recording, err := os.ReadFile("testdata/audit-events/deployment-scale-subresource.json")
+	require.NoError(t, err, "the captured scale recording must be readable")
+
+	queue := &recordingAuditEventQueue{}
+	handler, err := NewAuditHandler(AuditHandlerConfig{Queue: queue})
+	require.NoError(t, err)
+
+	body := `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[` + string(recording) + `]}`
+	req := httptest.NewRequest(http.MethodPost, "/audit-webhook", bytes.NewReader([]byte(body)))
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Len(t, queue.events, 1, "the real deployments/scale recording must be forwarded to the canonical stream")
+	enqueued := queue.events[0]
+	require.NotNil(t, enqueued.ObjectRef)
+	assert.Equal(t, "deployments", enqueued.ObjectRef.Resource)
+	assert.Equal(t, "scale", enqueued.ObjectRef.Subresource)
+	assert.Equal(t, "patch", enqueued.Verb)
 }
 
 func TestAuditHandler_ReadYAMLToJSON(t *testing.T) {

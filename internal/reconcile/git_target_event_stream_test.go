@@ -27,6 +27,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	"github.com/ConfigButler/gitops-reverser/internal/git"
+	"github.com/ConfigButler/gitops-reverser/internal/git/manifestedit"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
@@ -185,6 +186,34 @@ var _ = Describe("GitTargetEventStream", func() {
 			Expect(mockWorker.events).To(HaveLen(2))
 		})
 	})
+
+	Describe("Field Patch Events", func() {
+		BeforeEach(func() {
+			stream.OnReconciliationComplete() // Live processing
+		})
+
+		It("forwards a field-patch event that carries no object", func() {
+			stream.OnWatchEvent(createTestFieldPatchEvent(3))
+
+			Expect(mockWorker.events).To(HaveLen(1))
+			Expect(mockWorker.events[0].IsFieldPatch()).To(BeTrue())
+			Expect(mockWorker.events[0].Object).To(BeNil())
+		})
+
+		It("deduplicates an identical redelivered field-patch event", func() {
+			stream.OnWatchEvent(createTestFieldPatchEvent(3))
+			stream.OnWatchEvent(createTestFieldPatchEvent(3)) // same content, e.g. Redis redelivery
+
+			Expect(mockWorker.events).To(HaveLen(1))
+		})
+
+		It("treats different field values for the same parent as distinct events", func() {
+			stream.OnWatchEvent(createTestFieldPatchEvent(3))
+			stream.OnWatchEvent(createTestFieldPatchEvent(5))
+
+			Expect(mockWorker.events).To(HaveLen(2))
+		})
+	})
 })
 
 // mockBranchWorker implements the EventEnqueuer interface for testing.
@@ -216,6 +245,32 @@ func createTestEvent(resourceType, name, operation string) git.Event {
 		Object:     obj,
 		Identifier: identifier,
 		Operation:  operation,
+		UserInfo:   git.UserInfo{Username: "test-user", UID: "test-uid"},
+		Path:       "test-folder",
+	}
+}
+
+// createTestFieldPatchEvent builds a deployments/scale-shaped field-patch event:
+// no Object, just a spec.replicas assignment against a parent Deployment identity.
+func createTestFieldPatchEvent(replicas int64) git.Event {
+	identifier := types.ResourceIdentifier{
+		Group:     "apps",
+		Version:   "v1",
+		Resource:  "deployments",
+		Name:      "web",
+		Namespace: "default",
+	}
+
+	return git.Event{
+		FieldPatch: &git.FieldPatch{
+			Assignments: []manifestedit.FieldAssignment{
+				{Path: []string{"spec", "replicas"}, Value: replicas},
+			},
+			ParentKind: "Deployment",
+			Source:     "deployments/scale",
+		},
+		Identifier: identifier,
+		Operation:  "UPDATE",
 		UserInfo:   git.UserInfo{Username: "test-user", UID: "test-uid"},
 		Path:       "test-folder",
 	}

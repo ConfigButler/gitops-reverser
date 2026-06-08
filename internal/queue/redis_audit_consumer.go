@@ -42,6 +42,7 @@ import (
 	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 	"github.com/ConfigButler/gitops-reverser/internal/auditutil"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
+	"github.com/ConfigButler/gitops-reverser/internal/git/manifestedit"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
 	"github.com/ConfigButler/gitops-reverser/internal/sanitize"
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
@@ -421,6 +422,16 @@ func (c *AuditConsumer) routeAuditEvent(
 		return nil
 	}
 
+	id := itypes.NewResourceIdentifier(apiGroup, apiVersion, resourcePlural, namespace, name)
+	userInfo := resolveUserInfo(auditEvent)
+
+	// A subresource event (e.g. deployments/scale) becomes a parent-manifest field
+	// patch routed against the SAME parent-GVR rules — never an object write, because
+	// the body is a subresource (an autoscaling/v1 Scale), not the parent object.
+	if ref.Subresource != "" {
+		return c.routeSubresourceFieldPatch(ctx, log, auditEvent, op, id, userInfo, gvr, wrRules, cwrRules)
+	}
+
 	fullAPIVersion := apiVersion
 	if apiGroup != "" {
 		fullAPIVersion = apiGroup + "/" + apiVersion
@@ -436,9 +447,6 @@ func (c *AuditConsumer) routeAuditEvent(
 		}
 		return fmt.Errorf("extracting object for %s/%s: %w", namespace, name, err)
 	}
-
-	id := itypes.NewResourceIdentifier(apiGroup, apiVersion, resourcePlural, namespace, name)
-	userInfo := resolveUserInfo(auditEvent)
 
 	routed := c.routeToMatchedRules(ctx, log, sanitized, id, op, userInfo, wrRules, cwrRules)
 
@@ -549,8 +557,8 @@ func (c *AuditConsumer) handleExtractObjectError(
 	}
 }
 
-// routeToMatchedRules dispatches git.Events to all matched WatchRule and ClusterWatchRule targets.
-// It returns the number of successfully routed events.
+// routeToMatchedRules dispatches object-bearing git.Events to all matched WatchRule and
+// ClusterWatchRule targets. It returns the number of successfully routed events.
 func (c *AuditConsumer) routeToMatchedRules(
 	ctx context.Context,
 	log logr.Logger,
@@ -561,45 +569,91 @@ func (c *AuditConsumer) routeToMatchedRules(
 	wrRules []rulestore.CompiledRule,
 	cwrRules []rulestore.CompiledClusterRule,
 ) int {
+	return c.routeEvents(ctx, log, wrRules, cwrRules,
+		func(path, gitTargetRef, gitTargetNamespace string) git.Event {
+			return buildGitEvent(sanitized, id, op, userInfo, path, gitTargetRef, gitTargetNamespace)
+		})
+}
+
+// routeSubresourceFieldPatch translates a subresource audit event into a parent-manifest
+// field patch and routes it against the matched parent-GVR rules. A body with no usable
+// spec is dropped with a metric (never guessed); there is no hydration fallback, by
+// design — see the subresource resolution doc.
+func (c *AuditConsumer) routeSubresourceFieldPatch(
+	ctx context.Context,
+	log logr.Logger,
+	auditEvent auditv1.Event,
+	op configv1alpha1.OperationType,
+	id itypes.ResourceIdentifier,
+	userInfo git.UserInfo,
+	gvr pipelineGVR,
+	wrRules []rulestore.CompiledRule,
+	cwrRules []rulestore.CompiledClusterRule,
+) error {
+	assignments, ok := translateSubresourceToAssignments(auditEvent)
+	if !ok {
+		recordPipelineEvent(ctx, gvr, auditEvent.Verb, pipelineOutcomeDroppedSubresource)
+		log.V(1).Info("Dropping subresource: body carries no usable spec to translate",
+			"resource", id.Resource, "subresource", auditEvent.ObjectRef.Subresource, "verb", auditEvent.Verb)
+		return nil
+	}
+
+	source := id.Resource + "/" + auditEvent.ObjectRef.Subresource
+	routed := c.routeEvents(ctx, log, wrRules, cwrRules,
+		func(path, gitTargetRef, gitTargetNamespace string) git.Event {
+			return buildFieldPatchEvent(assignments, source, id, op, userInfo, path, gitTargetRef, gitTargetNamespace)
+		})
+	if routed > 0 {
+		recordPipelineEvent(ctx, gvr, auditEvent.Verb, pipelineOutcomeRoutedSubresource)
+	} else {
+		recordPipelineEvent(ctx, gvr, auditEvent.Verb, pipelineOutcomeRouteFailed)
+	}
+	return nil
+}
+
+// routeEvents builds a per-rule git.Event via build and routes it to every matched
+// WatchRule and ClusterWatchRule target, returning the number successfully routed.
+func (c *AuditConsumer) routeEvents(
+	ctx context.Context,
+	log logr.Logger,
+	wrRules []rulestore.CompiledRule,
+	cwrRules []rulestore.CompiledClusterRule,
+	build func(path, gitTargetRef, gitTargetNamespace string) git.Event,
+) int {
 	routed := 0
 	for _, rule := range wrRules {
-		ev := buildGitEvent(sanitized, id, op, userInfo, rule.Path, rule.GitTargetRef, rule.GitTargetNamespace)
-		gitDest := itypes.NewResourceReference(rule.GitTargetRef, rule.GitTargetNamespace)
-		if err := c.eventRouter.RouteToGitTargetEventStream(ev, gitDest); err != nil {
-			log.V(1).Info("Failed to route audit event via WatchRule", "error", err,
-				"gitTarget", gitDest.String())
-			recordRouteTarget(
-				ctx,
-				rule.GitTargetNamespace,
-				rule.GitTargetRef,
-				ruleKindWatchRule,
-				pipelineOutcomeRouteFailed,
-			)
-			continue
+		if c.routeOne(ctx, log, build, rule.Path, rule.GitTargetRef, rule.GitTargetNamespace, ruleKindWatchRule) {
+			routed++
 		}
-		recordRouteTarget(ctx, rule.GitTargetNamespace, rule.GitTargetRef, ruleKindWatchRule, pipelineOutcomeRouted)
-		routed++
 	}
 	for _, rule := range cwrRules {
-		ev := buildGitEvent(sanitized, id, op, userInfo, rule.Path, rule.GitTargetRef, rule.GitTargetNamespace)
-		gitDest := itypes.NewResourceReference(rule.GitTargetRef, rule.GitTargetNamespace)
-		if err := c.eventRouter.RouteToGitTargetEventStream(ev, gitDest); err != nil {
-			log.V(1).Info("Failed to route audit event via ClusterWatchRule", "error", err,
-				"gitTarget", gitDest.String())
-			recordRouteTarget(
-				ctx, rule.GitTargetNamespace, rule.GitTargetRef, ruleKindClusterWatchRule, pipelineOutcomeRouteFailed)
-			continue
+		if c.routeOne(
+			ctx, log, build, rule.Path, rule.GitTargetRef, rule.GitTargetNamespace, ruleKindClusterWatchRule,
+		) {
+			routed++
 		}
-		recordRouteTarget(
-			ctx,
-			rule.GitTargetNamespace,
-			rule.GitTargetRef,
-			ruleKindClusterWatchRule,
-			pipelineOutcomeRouted,
-		)
-		routed++
 	}
 	return routed
+}
+
+// routeOne builds and routes one event to a single GitTarget, recording the per-target
+// outcome. It returns true on success.
+func (c *AuditConsumer) routeOne(
+	ctx context.Context,
+	log logr.Logger,
+	build func(path, gitTargetRef, gitTargetNamespace string) git.Event,
+	path, gitTargetRef, gitTargetNamespace, ruleKind string,
+) bool {
+	ev := build(path, gitTargetRef, gitTargetNamespace)
+	gitDest := itypes.NewResourceReference(gitTargetRef, gitTargetNamespace)
+	if err := c.eventRouter.RouteToGitTargetEventStream(ev, gitDest); err != nil {
+		log.V(1).Info("Failed to route audit event", "error", err,
+			"ruleKind", ruleKind, "gitTarget", gitDest.String())
+		recordRouteTarget(ctx, gitTargetNamespace, gitTargetRef, ruleKind, pipelineOutcomeRouteFailed)
+		return false
+	}
+	recordRouteTarget(ctx, gitTargetNamespace, gitTargetRef, ruleKind, pipelineOutcomeRouted)
+	return true
 }
 
 // pipelineGVR carries the bounded group/version/resource labels for the
@@ -617,6 +671,8 @@ const (
 	pipelineOutcomeDroppedPartialObject = "dropped_partial_object"
 	pipelineOutcomeRouted               = "routed"
 	pipelineOutcomeRouteFailed          = "route_failed"
+	pipelineOutcomeRoutedSubresource    = "routed_subresource"
+	pipelineOutcomeDroppedSubresource   = "dropped_unsupported_subresource"
 
 	ruleKindWatchRule        = "watchrule"
 	ruleKindClusterWatchRule = "clusterwatchrule"
@@ -665,6 +721,32 @@ func buildGitEvent(
 ) git.Event {
 	return git.Event{
 		Object:             sanitized.DeepCopy(),
+		Identifier:         id,
+		Operation:          string(op),
+		UserInfo:           userInfo,
+		Path:               path,
+		GitTargetName:      gitTargetRef,
+		GitTargetNamespace: gitTargetNamespace,
+	}
+}
+
+// buildFieldPatchEvent constructs a field-patch git.Event for a given rule match. The
+// parent Kind is intentionally left unset: the writer resolves the parent document from
+// the objectRef GVR (it has the live-catalog mapper; the consumer does not), so the
+// translator never needs GVR->GVK resolution.
+func buildFieldPatchEvent(
+	assignments []manifestedit.FieldAssignment,
+	source string,
+	id itypes.ResourceIdentifier,
+	op configv1alpha1.OperationType,
+	userInfo git.UserInfo,
+	path, gitTargetRef, gitTargetNamespace string,
+) git.Event {
+	return git.Event{
+		FieldPatch: &git.FieldPatch{
+			Assignments: assignments,
+			Source:      source,
+		},
 		Identifier:         id,
 		Operation:          string(op),
 		UserInfo:           userInfo,

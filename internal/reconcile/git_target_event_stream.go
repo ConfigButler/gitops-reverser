@@ -21,6 +21,8 @@ package reconcile
 import (
 	"crypto/sha256"
 	"fmt"
+	"sort"
+	"strings"
 	"sync"
 
 	"github.com/go-logr/logr"
@@ -165,7 +167,7 @@ func (s *GitTargetEventStream) OnReconciliationComplete() {
 
 // processEvent forwards the event to BranchWorker and updates deduplication state.
 func (s *GitTargetEventStream) processEvent(event git.Event, eventHash, resourceKey string) {
-	if event.Object == nil && event.Operation != "DELETE" {
+	if event.Object == nil && !event.IsFieldPatch() && event.Operation != "DELETE" {
 		s.logger.V(1).Info(
 			"Skipping event with no object payload",
 			"resource", resourceKey,
@@ -190,6 +192,13 @@ func (s *GitTargetEventStream) processEvent(event git.Event, eventHash, resource
 
 // computeEventHash calculates a hash of the event content that would be written to Git.
 func (s *GitTargetEventStream) computeEventHash(event git.Event) string {
+	if event.IsFieldPatch() {
+		// Field-patch events carry no Object. Hash the patch CONTENT (operation,
+		// parent identity, source, and assignments) — never the resourceVersion —
+		// so a redelivered identical patch dedups while two different values for the
+		// same parent stay distinct. This mirrors the object path's content-dedup.
+		return fmt.Sprintf("%x", sha256.Sum256([]byte(fieldPatchHashContent(event))))
+	}
 	if event.Object == nil {
 		// Control events - hash the operation and identifier
 		content := fmt.Sprintf("%s:%s", event.Operation, event.Identifier.String())
@@ -209,6 +218,22 @@ func (s *GitTargetEventStream) computeEventHash(event git.Event) string {
 	// Include operation in hash to distinguish CREATE from UPDATE/DELETE for same content
 	content := fmt.Sprintf("%s:%s", event.Operation, string(sanitized))
 	return fmt.Sprintf("%x", sha256.Sum256([]byte(content)))
+}
+
+// fieldPatchHashContent renders a field-patch event into a stable dedup string:
+// operation, parent identity, source, and the (path=value) assignments. Assignment
+// order is normalized so the key does not depend on the translator's emission
+// order, and the value is rendered with %v (which prints map keys in sorted order),
+// so two patches that set the same fields to the same values produce the same key.
+func fieldPatchHashContent(event git.Event) string {
+	patch := event.FieldPatch
+	parts := make([]string, 0, len(patch.Assignments))
+	for _, assignment := range patch.Assignments {
+		parts = append(parts, strings.Join(assignment.Path, ".")+"="+fmt.Sprintf("%v", assignment.Value))
+	}
+	sort.Strings(parts)
+	return fmt.Sprintf("%s:%s:%s:%s",
+		event.Operation, event.Identifier.String(), patch.Source, strings.Join(parts, "|"))
 }
 
 // GetState returns the current state of the event stream.

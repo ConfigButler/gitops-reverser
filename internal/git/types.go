@@ -26,6 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	v1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	"github.com/ConfigButler/gitops-reverser/internal/git/manifestedit"
 	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
@@ -258,8 +259,15 @@ func (r *ResyncRequest) reply(result ResyncResult) {
 // Branch comes from the worker context (not stored in event).
 // Path comes from the GitTarget that created this event.
 type Event struct {
-	// Object is the sanitized Kubernetes object.
+	// Object is the sanitized Kubernetes object. Exactly one of Object or
+	// FieldPatch is set for a resource mutation; a control or DELETE event may
+	// carry neither.
 	Object *unstructured.Unstructured
+
+	// FieldPatch, when set, replaces Object with a bounded in-place edit of an
+	// existing parent manifest (subresource audit resolution). It is mutually
+	// exclusive with Object.
+	FieldPatch *FieldPatch
 
 	// Identifier contains resource identification information.
 	Identifier types.ResourceIdentifier
@@ -283,6 +291,34 @@ type Event struct {
 
 	// BootstrapOptions controls path-scoped bootstrap file staging for this event.
 	BootstrapOptions pathBootstrapOptions
+}
+
+// IsFieldPatch reports whether the event carries a bounded field patch instead of
+// a full object. It is the single predicate the pipeline branches on to route a
+// patch to the in-place writer rather than the object writer.
+func (e Event) IsFieldPatch() bool {
+	return e.FieldPatch != nil
+}
+
+// FieldPatch is a bounded set of field assignments to an existing parent manifest,
+// carried in place of a full Object. It is how an author-preserving subresource
+// mutation (e.g. deployments/scale) reaches Git: set exactly the audited field
+// paths on the already committed parent, never reconstructing the whole object.
+// See docs/design/manifest/version2/scale-subresource-audit-rehydration.md.
+type FieldPatch struct {
+	// Assignments are the (path, value) pairs to set on the parent manifest. Paths
+	// are disjoint; each owns only its own subtree, so the patch is additive and
+	// leaves every unmentioned field in Git untouched.
+	Assignments []manifestedit.FieldAssignment
+	// ParentKind is the manifest Kind of the parent (e.g. "Deployment"), resolved
+	// GVR->GVK from the discovery catalog. The audit objectRef carries only the GVR
+	// (plural resource), and the subresource body's own Kind (e.g. "Scale") is not
+	// the parent's, so the parent Kind must be supplied here for content-identity
+	// matching when the writer locates the document.
+	ParentKind string
+	// Source is a bounded origin label for commit messages and metrics, e.g.
+	// "deployments/scale". Never the request URI.
+	Source string
 }
 
 // CommitConfig is the resolved commit behavior used by the git writer.
