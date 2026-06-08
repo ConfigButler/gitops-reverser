@@ -272,6 +272,51 @@ func TestStreamSnapshot_PartialStreamAborts(t *testing.T) {
 	require.Error(t, err, "a stream that never reaches its bookmark must abort the snapshot")
 }
 
+// A snapshot fails closed while the cluster API surface has not been observed yet (an
+// empty/unready discovery leaves the type registry unready): sweeping a mark over an
+// unobserved surface would delete the mirror.
+func TestResolveSnapshotGVRs_FailsClosedWhenRegistryNotReady(t *testing.T) {
+	store := rulestore.NewStore()
+	addWatchRule(store, "wr-secrets", "ns-a", "secrets")
+	empty := apiResourceDiscovery(staticCatalogDiscovery{})
+	m := &Manager{
+		Log:             logr.Discard(),
+		RuleStore:       store,
+		resourceCatalog: NewAPIResourceCatalog(),
+		discoveryClient: func() (apiResourceDiscovery, error) { return empty, nil },
+	}
+
+	_, err := m.resolveSnapshotGVRs(context.Background(), myTargetRef())
+	require.Error(t, err, "an unobserved API surface must abort the gather rather than sweep")
+	assert.Contains(t, err.Error(), "has not been observed yet")
+}
+
+// A normally-served target has no retained types, so the snapshot is not blocked.
+func TestRetainedWatchedTypes_NoneWhenAllServed(t *testing.T) {
+	store := rulestore.NewStore()
+	addWatchRule(store, "wr-secrets", "ns-a", "secrets")
+	m := streamingManager(t, gitTargetFixture(), store, nil)
+	require.NoError(t, m.RefreshAPIResourceCatalog(context.Background()))
+	m.refreshWatchedTypeTables()
+	table := m.residentWatchedTypeTable(myTargetRef())
+	require.NotEmpty(t, table.Types)
+	assert.Empty(t, m.retainedWatchedTypes(table), "served types are not retained")
+}
+
+func TestGVKListSummary(t *testing.T) {
+	one := []schema.GroupVersionKind{{Group: "apps", Version: "v1", Kind: "Deployment"}}
+	assert.Equal(t, "watched type apps/v1, Kind=Deployment", gvkListSummary(one))
+
+	two := []schema.GroupVersionKind{
+		{Version: "v1", Kind: "ConfigMap"},
+		{Group: "apps", Version: "v1", Kind: "Deployment"},
+	}
+	got := gvkListSummary(two)
+	assert.Contains(t, got, "2 watched types")
+	assert.Contains(t, got, "Kind=ConfigMap")
+	assert.Contains(t, got, "Kind=Deployment")
+}
+
 // resolveSnapshotGVRs scopes a namespaced resource to its rule namespace and a
 // cluster-scoped resource cluster-wide (no namespaces).
 func TestResolveSnapshotGVRs_ScopesNamespacedAndClusterWide(t *testing.T) {

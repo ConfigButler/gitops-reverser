@@ -52,7 +52,14 @@ type Registry struct {
 	byGVK      map[schema.GroupVersionKind][]recordKey
 	byGVR      map[schema.GroupVersionResource]recordKey
 	generation uint64
-	ready      bool
+	// revision is the registry's own change-of-decision signal: it bumps whenever the
+	// followable membership changes (a type appears, drops after the grace, or flips
+	// followable<->refused) or the backing scan generation moves. Consumers that cache
+	// a projection of the registry (the per-GitTarget watched-type set) gate on this,
+	// not on the catalog generation — so a retention-grace drop at a stable generation
+	// still invalidates their cache. See docs/.../discovery-catalog-typeset-boundary.md.
+	revision uint64
+	ready    bool
 }
 
 // recordKey is a record's stable identity for the live set: the (GVK, GVR, scope)
@@ -100,6 +107,10 @@ func (r *Registry) Update(observations []Observation, generation uint64) {
 	defer r.mu.Unlock()
 
 	now := r.now()
+	prevFollowable := r.followableKeysLocked()
+	prevGeneration := r.generation
+	wasReady := r.ready
+
 	next := make(map[recordKey]entry, len(observations))
 	for _, obs := range observations {
 		key := observationKey(obs)
@@ -113,6 +124,36 @@ func (r *Registry) Update(observations []Observation, generation uint64) {
 	r.rebuildIndexesLocked()
 	r.generation = generation
 	r.ready = true
+
+	// Bump the change-of-decision signal when the followable set changes (covers the
+	// time-based grace drop at a stable generation) or the scan generation moves.
+	if !wasReady || generation != prevGeneration || !sameKeySet(prevFollowable, r.followableKeysLocked()) {
+		r.revision++
+	}
+}
+
+// followableKeysLocked returns the identity keys of the records that are currently
+// followable. Caller holds r.mu.
+func (r *Registry) followableKeysLocked() map[recordKey]struct{} {
+	out := make(map[recordKey]struct{}, len(r.entries))
+	for key, e := range r.entries {
+		if e.record.Followable() {
+			out[key] = struct{}{}
+		}
+	}
+	return out
+}
+
+func sameKeySet(a, b map[recordKey]struct{}) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for key := range a {
+		if _, ok := b[key]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // retainAbsentLocked folds previously-live types missing from the next set back in as
@@ -168,6 +209,16 @@ func (r *Registry) Generation() uint64 {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.generation
+}
+
+// Revision reports the registry's change-of-decision counter. It bumps whenever the
+// followable membership changes or the scan generation moves, so a consumer that caches
+// a projection of the registry can gate its rebuild on this value and still react to a
+// retention-grace drop that happens without any discovery change.
+func (r *Registry) Revision() uint64 {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.revision
 }
 
 // ByGVK returns the record for a kind. The bool reports whether the kind is known to

@@ -20,12 +20,12 @@ package watch
 
 import (
 	"sort"
-	"time"
 
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
+	"github.com/ConfigButler/gitops-reverser/internal/typeset"
 )
 
 // OperationSet is the set of operation filters recorded for a watched type in one
@@ -63,16 +63,11 @@ func (s OperationSet) Sorted() []string {
 	return out
 }
 
-// WatchedType is one resolved type a GitTarget follows: a (GVK, GVR, scope) triple
-// plus the namespace scope and served-version metadata. It is the unit the post-M8
-// per-type reconcile (M12+) will iterate; in M10 it is the resolved-once, resident
-// description of "what this GitTarget watches" that the snapshot, informer, and
-// plan-hash paths all derive from.
-//
-// GitOps Reverser treats GVK and GVR as a 1:1 relationship: a type whose GVK does
-// not resolve to exactly one served GVR is refused, not watched (see
-// buildWatchedTypeTable), so a WatchedType always carries exactly one GVR for its
-// GVK.
+// WatchedType is one followable type a GitTarget watches: a (GVK, GVR, scope) triple
+// plus the namespace scope and served-version metadata, projected straight from the
+// type registry's followable set. The registry owns identity (GVK<->GVR is 1:1 there),
+// followability, and the removal grace, so a WatchedType is a copy of a registry fact,
+// never a re-decision.
 type WatchedType struct {
 	GVK           schema.GroupVersionKind
 	GVR           schema.GroupVersionResource
@@ -112,141 +107,52 @@ func (t WatchedType) SnapshotNamespaces() []string {
 	return out
 }
 
-// TypeConflict is a GVK refused for violating the GVK<->GVR 1:1 assumption: the
-// GitTarget's rules resolved it to more than one served resource (a pathological
-// cluster serving one kind from several resources). The type is not watched; the
-// operator must disambiguate. It is recorded so the refusal is observable rather
-// than a silent gap in the mirror.
-type TypeConflict struct {
-	GVK  schema.GroupVersionKind
-	GVRs []schema.GroupVersionResource
-}
-
-// PendingRemoval is a watched type the catalog has temporarily stopped serving while
-// the GitTarget's rules still select it: it is retained in the published table (so
-// informers stay alive and git is not swept) under a grace timer, and removed only once
-// the absence persists past the grace. Since records when the absence was first observed
-// so the grace is measured from that instant, not reset on every refresh; Reason is the
-// edge-log/observability detail.
-//
-// While a table carries any PendingRemoval the snapshot gather fails closed (see
-// resolveSnapshotGVRs): a reduced or empty view must never drive a destructive sweep
-// during a transient discovery wobble.
-type PendingRemoval struct {
-	Type   WatchedType
-	Since  time.Time
-	Reason string
-}
-
-// WatchedTypeTable is a GitTarget's resident, resolved-once set of watched types.
-// It replaces the per-gather re-resolution the snapshot, informer, and plan-hash
-// paths each did inline; it is re-resolved only on a deliberate trigger (a rule-set
-// change or a catalog generation bump). It is the spine the per-type reconcile,
-// untracking sweep, and visibility surfaces (M11-M14) hang on.
+// WatchedTypeTable is a GitTarget's resident, resolved-once set of watched types: the
+// subset of the type registry's followable set its WatchRules and ClusterWatchRules
+// select. It is re-resolved only on a deliberate trigger (a rule-set change or a
+// catalog/registry generation bump) and read by the snapshot, informer, and plan-hash
+// paths instead of each re-resolving inline.
 type WatchedTypeTable struct {
 	GitDest types.ResourceReference
 	// Dest is the GitTarget's write destination fingerprint (provider/branch/path),
 	// carried so the effective-plan hash can be derived from the table alone.
-	Dest      string
-	Types     []WatchedType
-	Conflicts []TypeConflict
-	// Misses are the rule resources that did not resolve to a watched type. The
-	// blocking subset (catalog unavailable / discovery degraded) makes the snapshot
-	// gather fail closed; the rest (not served / ambiguous / disallowed) are
-	// reporting facts for visibility.
-	Misses []ResolveMiss
-	// PendingRemovals are types the catalog momentarily stopped serving that the rules
-	// still select, retained under a grace timer rather than swept (see PendingRemoval).
-	// Their types remain in Types so informers and the mirror are untouched during the
-	// hold; the gather fails closed while this is non-empty.
-	PendingRemovals []PendingRemoval
-	ResolvedAt      uint64
+	Dest       string
+	Types      []WatchedType
+	ResolvedAt uint64
 }
 
-// BlockingMisses returns the misses that must make a snapshot gather fail closed
-// rather than sweep on a partial view: an unavailable catalog or degraded discovery
-// is an unobservable surface, never a trusted absence.
-func (t WatchedTypeTable) BlockingMisses() []ResolveMiss {
-	return blockingSnapshotMisses(t.Misses)
-}
-
-// resolvedSelection is one (resolved GVR, namespace, operations) tuple a rule
-// contributed to a GitTarget, before types are folded by GVK. The namespace is ""
-// for a cluster-wide stream.
-type resolvedSelection struct {
-	gvr       GVR
+// watchSelection is one followable registry record a rule selected for a GitTarget,
+// with the namespace it was selected under ("" = cluster-wide stream) and the rule's
+// operation filters.
+type watchSelection struct {
+	record    typeset.TypeRecord
 	namespace string
 	ops       []configv1alpha1.OperationType
 }
 
-// gvrAccum accumulates one GVR's namespace/operation scope while folding a
-// GitTarget's resolved selections.
-type gvrAccum struct {
-	gvr          GVR
+// watchedTypeAccum accumulates one followable record's namespace/operation scope while
+// folding a GitTarget's selections.
+type watchedTypeAccum struct {
+	record       typeset.TypeRecord
 	namespaceOps map[string]OperationSet
 }
 
-// buildWatchedTypeTable folds a GitTarget's resolved selections into its watched-type
-// table, enforcing the GVK<->GVR 1:1 assumption against trusted catalog data.
-//
-// It runs in three steps: fold selections into per-GVR namespace/operation scope;
-// map each GVR to its served GVK (GVR->GVK is single-valued in the catalog); group
-// GVRs by GVK and refuse any GVK claimed by more than one GVR as a TypeConflict.
-// A selection whose GVR no longer resolves against the catalog is skipped — the
-// resolver only emits served GVRs, so this only happens if discovery changed under
-// us, and the missing type is simply not watched rather than guessed.
+// buildWatchedTypeTable folds a GitTarget's selected followable records into its
+// watched-type table, unioning each record's per-namespace operation filters. Identity
+// and followability are already settled by the registry, so this is a pure fold with no
+// catalog lookup and no conflict decision.
 func buildWatchedTypeTable(
 	gitDest types.ResourceReference,
 	generation uint64,
-	selections []resolvedSelection,
-	catalog *APIResourceCatalog,
+	selections []watchSelection,
 ) WatchedTypeTable {
-	byGVR := foldSelectionsByGVR(selections)
-
-	byGVK := map[schema.GroupVersionKind][]*gvrAccum{}
-	gvkEntry := map[schema.GroupVersionKind]APIResourceEntry{}
-	for key, acc := range byGVR {
-		entry, ok := lookupServedEntry(catalog, key)
-		if !ok {
-			continue
-		}
-		byGVK[entry.GVK] = append(byGVK[entry.GVK], acc)
-		gvkEntry[entry.GVK] = entry
-	}
-
-	table := WatchedTypeTable{GitDest: gitDest, ResolvedAt: generation}
-	for gvk, accs := range byGVK {
-		if len(accs) > 1 {
-			table.Conflicts = append(table.Conflicts, typeConflict(gvk, accs))
-			continue
-		}
-		acc := accs[0]
-		entry := gvkEntry[gvk]
-		table.Types = append(table.Types, WatchedType{
-			GVK:           gvk,
-			GVR:           acc.gvr.schema(),
-			Namespaced:    entry.Namespaced,
-			Scope:         acc.gvr.Scope,
-			ServedVersion: acc.gvr.Version,
-			Preferred:     entry.Preferred,
-			NamespaceOps:  acc.namespaceOps,
-		})
-	}
-	sortWatchedTypes(table.Types)
-	sortTypeConflicts(table.Conflicts)
-	return table
-}
-
-// foldSelectionsByGVR groups selections by GVR, unioning each GVR's per-namespace
-// operation sets.
-func foldSelectionsByGVR(selections []resolvedSelection) map[schema.GroupVersionResource]*gvrAccum {
-	byGVR := map[schema.GroupVersionResource]*gvrAccum{}
+	byGVR := map[schema.GroupVersionResource]*watchedTypeAccum{}
 	for _, sel := range selections {
-		key := sel.gvr.schema()
-		acc := byGVR[key]
+		gvr := sel.record.Identity.GVR
+		acc := byGVR[gvr]
 		if acc == nil {
-			acc = &gvrAccum{gvr: sel.gvr, namespaceOps: map[string]OperationSet{}}
-			byGVR[key] = acc
+			acc = &watchedTypeAccum{record: sel.record, namespaceOps: map[string]OperationSet{}}
+			byGVR[gvr] = acc
 		}
 		opSet := acc.namespaceOps[sel.namespace]
 		if opSet == nil {
@@ -255,44 +161,41 @@ func foldSelectionsByGVR(selections []resolvedSelection) map[schema.GroupVersion
 		}
 		opSet.add(sel.ops)
 	}
-	return byGVR
+
+	table := WatchedTypeTable{GitDest: gitDest, ResolvedAt: generation}
+	for _, acc := range byGVR {
+		table.Types = append(table.Types, watchedTypeFromRecord(acc.record, acc.namespaceOps))
+	}
+	sortWatchedTypes(table.Types)
+	return table
 }
 
-// lookupServedEntry returns the single served catalog entry for a GVR, if present.
-// GVR->GVK is single-valued in the catalog, so the lookup yields zero or one entry.
-func lookupServedEntry(
-	catalog *APIResourceCatalog,
-	gvr schema.GroupVersionResource,
-) (APIResourceEntry, bool) {
-	if catalog == nil {
-		return APIResourceEntry{}, false
+// watchedTypeFromRecord copies a followable registry record's identity into a
+// WatchedType, attaching the per-namespace operation scope the rules folded.
+func watchedTypeFromRecord(rec typeset.TypeRecord, namespaceOps map[string]OperationSet) WatchedType {
+	return WatchedType{
+		GVK:           rec.Identity.GVK,
+		GVR:           rec.Identity.GVR,
+		Namespaced:    rec.Identity.Scope == typeset.ScopeNamespaced,
+		Scope:         resourceScopeFor(rec.Identity.Scope),
+		ServedVersion: rec.Identity.GVR.Version,
+		Preferred:     rec.Preferred,
+		NamespaceOps:  namespaceOps,
 	}
-	lookup := catalog.LookupGVR(gvr)
-	if len(lookup.Entries) == 0 {
-		return APIResourceEntry{}, false
-	}
-	return lookup.Entries[0], true
 }
 
-// typeConflict renders the refused GVRs of a conflicting GVK in a stable order.
-func typeConflict(gvk schema.GroupVersionKind, accs []*gvrAccum) TypeConflict {
-	gvrs := make([]schema.GroupVersionResource, 0, len(accs))
-	for _, acc := range accs {
-		gvrs = append(gvrs, acc.gvr.schema())
+// resourceScopeFor maps a typeset scope onto the API's ResourceScope. A followable
+// record always carries a concrete scope, so Unknown never reaches the table.
+func resourceScopeFor(scope typeset.Scope) configv1alpha1.ResourceScope {
+	if scope == typeset.ScopeCluster {
+		return configv1alpha1.ResourceScopeCluster
 	}
-	sort.Slice(gvrs, func(i, j int) bool { return gvrs[i].String() < gvrs[j].String() })
-	return TypeConflict{GVK: gvk, GVRs: gvrs}
+	return configv1alpha1.ResourceScopeNamespaced
 }
 
 func sortWatchedTypes(watched []WatchedType) {
 	sort.Slice(watched, func(i, j int) bool {
 		return gvkSortKey(watched[i].GVK) < gvkSortKey(watched[j].GVK)
-	})
-}
-
-func sortTypeConflicts(conflicts []TypeConflict) {
-	sort.Slice(conflicts, func(i, j int) bool {
-		return gvkSortKey(conflicts[i].GVK) < gvkSortKey(conflicts[j].GVK)
 	})
 }
 

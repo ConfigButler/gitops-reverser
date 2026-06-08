@@ -22,8 +22,6 @@ import (
 	"fmt"
 	"strings"
 
-	"k8s.io/apimachinery/pkg/runtime/schema"
-
 	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 )
 
@@ -36,25 +34,13 @@ type GVR struct {
 	Scope    configv1alpha1.ResourceScope
 }
 
-func (g GVR) schema() schema.GroupVersionResource {
-	return schema.GroupVersionResource{Group: g.Group, Version: g.Version, Resource: g.Resource}
-}
-
-// ComputeRequestedGVRs aggregates resolved GVRs from the active RuleStore.
+// ComputeRequestedGVRs aggregates the watched GVRs from the active RuleStore: the union
+// of every GitTarget's watched types, read from the resident tables.
 func (m *Manager) ComputeRequestedGVRs() []GVR {
-	out, _ := m.computeRequestedGVRs()
-	return out
-}
-
-func (m *Manager) computeRequestedGVRs() ([]GVR, []ResolveMiss) {
 	if m.RuleStore == nil {
-		return nil, nil
+		return nil
 	}
-
-	// The informer GVR set is the union of every GitTarget's watched types (M10):
-	// the resolved surface read from the resident tables, not re-resolved inline.
 	var out []GVR
-	var misses []ResolveMiss
 	for _, table := range m.allWatchedTypeTables() {
 		for _, wt := range table.Types {
 			out = append(out, GVR{
@@ -64,10 +50,8 @@ func (m *Manager) computeRequestedGVRs() ([]GVR, []ResolveMiss) {
 				Scope:    wt.Scope,
 			})
 		}
-		misses = append(misses, table.Misses...)
 	}
-
-	return dedupeGVRs(out), misses
+	return dedupeGVRs(out)
 }
 
 // normalizeResource lowercases the resource for consistent matching.

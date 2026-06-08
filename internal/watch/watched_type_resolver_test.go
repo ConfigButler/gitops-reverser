@@ -24,7 +24,9 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
@@ -97,7 +99,7 @@ func TestRefreshWatchedTypeTables_RuleChangeReResolves(t *testing.T) {
 	first, _ := manager.watchedTypeTableForGitDest(gitDestRef("test-target"))
 	require.Len(t, first.Types, 1)
 
-	// A second rule selecting a different resource is a deliberate trigger.
+	// A second rule selecting a different resource is reflected on the next refresh.
 	store.AddOrUpdateClusterWatchRule(
 		clusterRuleForResource("rule-2", "test-target", "secrets"),
 		"test-target", "test-ns", "test-provider", "test-ns", "main", "test-path",
@@ -109,6 +111,11 @@ func TestRefreshWatchedTypeTables_RuleChangeReResolves(t *testing.T) {
 	assert.ElementsMatch(t, []string{"ConfigMap", "Secret"}, kinds)
 }
 
+func TestResolveWatchedTypeTables_NilRuleStoreIsEmpty(t *testing.T) {
+	m := &Manager{Log: logr.Discard()}
+	assert.Empty(t, m.resolveWatchedTypeTables(0))
+}
+
 func TestRefreshWatchedTypeTables_NoChangeReusesResolvedTables(t *testing.T) {
 	manager, store := makeWatchedTypeManager(t)
 	store.AddOrUpdateClusterWatchRule(
@@ -117,14 +124,14 @@ func TestRefreshWatchedTypeTables_NoChangeReusesResolvedTables(t *testing.T) {
 	)
 	manager.refreshWatchedTypeTables()
 	manager.watchedTypes.mu.Lock()
-	firstResolveGen := manager.watchedTypes.generation
+	firstRev := manager.watchedTypes.revision
 	firstFP := manager.watchedTypes.rulesFP
 	manager.watchedTypes.mu.Unlock()
 
-	// A second refresh with no rule or catalog change must be a no-op gate hit.
+	// A second refresh with no rule or registry change is a no-op gate hit.
 	manager.refreshWatchedTypeTables()
 	manager.watchedTypes.mu.Lock()
-	assert.Equal(t, firstResolveGen, manager.watchedTypes.generation)
+	assert.Equal(t, firstRev, manager.watchedTypes.revision)
 	assert.Equal(t, firstFP, manager.watchedTypes.rulesFP)
 	manager.watchedTypes.mu.Unlock()
 }
@@ -145,12 +152,6 @@ func TestRulesFingerprint_StableUntilRuleChanges(t *testing.T) {
 	assert.NotEqual(t, fp1, manager.rulesFingerprint(), "a new rule must move the fingerprint")
 }
 
-func TestResolveWatchedTypeTables_NilRuleStoreIsEmpty(t *testing.T) {
-	m := &Manager{Log: logr.Discard()}
-	assert.Equal(t, uint64(0), m.rulesFingerprint())
-	assert.Empty(t, m.resolveWatchedTypeTables(0))
-}
-
 func TestRefreshWatchedTypeTables_KeepsTargetWithUnresolvableRulesAsEmptyTable(t *testing.T) {
 	manager, store := makeWatchedTypeManager(t)
 	// "ghosts" is not served by the common catalog: the rule resolves to nothing,
@@ -164,4 +165,56 @@ func TestRefreshWatchedTypeTables_KeepsTargetWithUnresolvableRulesAsEmptyTable(t
 	table, ok := manager.watchedTypeTableForGitDest(gitDestRef("test-target"))
 	require.True(t, ok, "a GitTarget with unresolvable rules must remain a (empty) table")
 	assert.Empty(t, table.Types)
+}
+
+// A GVK served by more than one resource is refused globally by the registry
+// (gvk-not-unique), so it never reaches a GitTarget's table even when a wildcard rule
+// selects both resources.
+func TestRefreshWatchedTypeTables_ExcludesAmbiguousGVK(t *testing.T) {
+	store := rulestore.NewStore()
+	manager := &Manager{Log: logr.Discard(), RuleStore: store, resourceCatalog: newWidgetConflictCatalog(t)}
+	store.AddOrUpdateClusterWatchRule(
+		configv1alpha1.ClusterWatchRule{
+			ObjectMeta: metav1.ObjectMeta{Name: "rule-widgets"},
+			Spec: configv1alpha1.ClusterWatchRuleSpec{
+				TargetRef: configv1alpha1.NamespacedTargetReference{Name: "test-target", Namespace: "test-ns"},
+				Rules: []configv1alpha1.ClusterResourceRule{{
+					APIGroups:   []string{"example.com"},
+					APIVersions: []string{"v1"},
+					Resources:   []string{"*"},
+					Scope:       configv1alpha1.ResourceScopeNamespaced,
+				}},
+			},
+		},
+		"test-target", "test-ns", "test-provider", "test-ns", "main", "test-path",
+	)
+
+	manager.refreshWatchedTypeTables()
+
+	table, ok := manager.watchedTypeTableForGitDest(gitDestRef("test-target"))
+	require.True(t, ok)
+	assert.Empty(t, table.Types, "a kind served by >1 resource is refused, not watched")
+}
+
+// newWidgetConflictCatalog builds a pathological catalog where one group/version serves
+// the same kind from two distinct resources, violating the GVK<->GVR 1:1 assumption.
+func newWidgetConflictCatalog(t *testing.T) *APIResourceCatalog {
+	t.Helper()
+	listWatch := metav1.Verbs{"get", "list", "watch"}
+	disco := staticCatalogDiscovery{
+		groups: []*metav1.APIGroup{testAPIGroup("example.com", "v1")},
+		resources: []*metav1.APIResourceList{
+			{
+				GroupVersion: "example.com/v1",
+				APIResources: []metav1.APIResource{
+					{Name: "widgets", Kind: "Widget", Namespaced: true, Verbs: listWatch},
+					{Name: "widgetslegacy", Kind: "Widget", Namespaced: true, Verbs: listWatch},
+				},
+			},
+		},
+	}
+	catalog := NewAPIResourceCatalog()
+	_, err := catalog.Refresh(disco)
+	require.NoError(t, err)
+	return catalog
 }

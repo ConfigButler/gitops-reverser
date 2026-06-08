@@ -3,6 +3,9 @@
 > Companion to [type-followability.md](type-followability.md). This file is the
 > running, append-only record of what the implementation actually changed, in the
 > order it changed it. The design doc says what we want; this says what we did.
+> Naming follow-up: [type-followability-naming-proposal.md](type-followability-naming-proposal.md).
+> Catalog/typeset boundary follow-up:
+> [discovery-catalog-typeset-boundary.md](discovery-catalog-typeset-boundary.md).
 
 ## Goal
 
@@ -214,19 +217,69 @@ model-correctness fix, not a behavior change.)
   type (configmaps) comes back `Sensitive`, core Secrets stay sensitive, and an unlisted
   type does not.
 
-### Still NOT migrated (the remaining follow-up)
+### Stage 10 — `WatchedTypeTable` is a registry projection; the duplicate grace is gone
 
-- **`WatchedTypeTable` identity/conflict + the live-set grace
-  (snapshot/informer/plan-hash).** The table flags a `TypeConflict` only among the GVRs
-  a GitTarget's *rules* selected (local scope); the registry decides identity
-  uniqueness *globally* (a kind served by >1 GVR anywhere is refused) — and the live
-  mapper now already enforces that global rule. The remaining swap moves the 60-second
-  removal grace out of `watchedTypeStore` into the registry and re-expresses the
-  pending-removal *fail-closed* snapshot path (the safety that stops a transient
-  discovery wobble from sweeping Git) in terms of the registry's `retained`/`refused`
-  states. That is the next milestone: make `BuildTargetView` consume
-  `registry.Followable()` and delete the duplicated identity/grace logic in
-  `rule_gvr_resolver.go` / `watched_type_table.go` / `watched_type_resolver.go`.
+The last duplicated decision surface. The table used to run its **own** identity/conflict
+check and its **own** 60-second removal grace (`watchedTypeStore.pendingRemovals`), in
+parallel with the registry's. The user asked to delete the duplication outright, keep less
+code, and accept losing the per-GitTarget conflict/miss reporting.
+
+- **`WatchedTypeTable` is now a subset of the typeset.** `resolveWatchedTypeTables` reads
+  `registry.Followable()` once and projects each GitTarget's WatchRules/ClusterWatchRules
+  onto it via `matchFollowableRecords` (the same group/version/resource/scope + preferred-
+  version + omitted-apiGroups ambiguity semantics as `RuleGVRResolver`, but over the
+  already-followable records, so a refused type — `gvk-not-unique`, `denied-by-policy`,
+  verb-poor — simply never matches). `buildWatchedTypeTable` is a pure fold of matched
+  records into `WatchedType` + `NamespaceOps`; it does no catalog lookup and makes no
+  decision.
+- **The 60-second grace lives only in the registry now.** Because selection reads
+  `registry.Followable()`, a type that briefly leaves discovery stays `retained` (and so
+  stays in the table, the informer set, and the snapshot) until the registry's grace
+  elapses — then it drops from `Followable()` and the table on the next refresh. No table
+  re-judges absence. **Deleted** `watchedTypeStore.{pendingRemovals,removalGrace,now}`,
+  `applyPersistentAbsence`, `holdAbsentTypes`, `pendingRemoval`/`PendingRemoval`,
+  `logReappearances`/`logAbsence`, `rulesStillSelectWatchedType` + the rule-vs-type
+  matchers, and `hasPendingRemovals`.
+- **Identity/conflict reporting dropped.** `TypeConflict`/`WatchedTypeTable.Conflicts`,
+  `logTypeConflicts`, and the local conflict detection are gone — the registry decides
+  identity uniqueness globally, and an ambiguous kind is just absent from the table. The
+  `gitopsreverser_watched_type_conflicts` and `_pending_removals` gauges were removed.
+- **The change-gate is kept (rule-fingerprint + registry generation).** An early cut
+  dropped the gate and reprojected (and rebuilt the registry) on every
+  `refreshWatchedTypeTables`; under parallel e2e that starved the controllers (every
+  GitProvider/GitTarget/WatchRule reconcile timed out waiting for status). The gate is
+  restored, now keyed on `(registry.Generation(), rulesFingerprint)`, and the heavy
+  scan→registry rebuild stays where it always was — once per `RefreshAPIResourceCatalog`;
+  `refreshWatchedTypeTables` only rebuilds the registry lazily the first time (for unit
+  tests that drive it directly) and otherwise just reprojects on a real change. `refreshMu`
+  still serializes resolve-and-publish. (Edge: a type whose grace elapses without a
+  generation bump lingers in the table until the next discovery change — accepted detail
+  loss; the registry remains the single grace owner.)
+- **Snapshot fail-closed re-expressed on the registry verdict.** `WatchedTypeTable.{Misses,
+  BlockingMisses}` were dropped; `resolveSnapshotGVRs` now fails closed on two registry
+  signals: (1) `registry.Ready()` is false (the API surface has not been observed yet), and
+  (2) any watched type is currently `retained` (followable under the grace but not served
+  right now — a discovery wobble). The retained case is the old pending-removal fail-closed
+  re-expressed in the registry's vocabulary: streaming a retained-but-unserved type would
+  fail, and sweeping the reduced view would delete a still-valid mirror, so the gather aborts
+  until the type is served again or the grace elapses and the registry drops it (which the
+  `Revision()` bump then re-projects out of the table). (Deliberate detail loss: the old
+  discovery-degraded-while-still-selected abort is folded into the same grace/retained path.)
+- **Registry `Revision()` gates the table.** Re-projection is keyed on
+  `(registry.Revision(), rulesFingerprint)`, not the catalog generation. `Revision()` bumps
+  when the followable membership changes (incl. a grace drop at a stable generation) or the
+  scan generation moves, so a deleted type leaves the table promptly once its grace elapses —
+  its phantom informer stops and its target's snapshots recover. See
+  [discovery-catalog-typeset-boundary.md](discovery-catalog-typeset-boundary.md).
+- `RuleGVRResolver` is unchanged and still backs the WatchRule/ClusterWatchRule controller
+  *status* feedback (`ResolveWatchRuleResources`); only the table stopped using it.
+- Tests: `watched_type_table_test.go` now covers the pure fold + `matchFollowableRecords`
+  (scope filter, wildcard, preferred-version collapse); `watched_type_resolver_test.go`
+  covers the registry-driven resolution incl. an ambiguous-GVK exclusion;
+  `watched_type_metrics_test.go` keeps only the `watched_types` gauge;
+  `watched_type_pending_removal_test.go` was deleted (the grace is covered by
+  `internal/typeset/registry_test.go`); a new `resolveSnapshotGVRs` test covers the
+  registry-not-ready fail-closed.
 
 ## Files touched
 
@@ -261,6 +314,28 @@ Modified:
   field/param is now `typeset.Lookup`.
 - `cmd/main.go` — `SetMapper(watchMgr.TypeRegistry())`.
 
+Stage 10:
+
+- `internal/typeset/registry.go` — added `Revision()` (the change-of-decision signal) +
+  `followableKeysLocked`/`sameKeySet`; `Update` bumps it on a followable-membership change
+  or generation move.
+- `internal/watch/watched_type_table.go` — `WatchedTypeTable` is now a registry projection
+  (`watchSelection`/`buildWatchedTypeTable`/`watchedTypeFromRecord`); dropped
+  `TypeConflict`, `PendingRemoval`, `Misses`, `BlockingMisses`.
+- `internal/watch/watched_type_resolver.go` — registry-driven `resolveWatchedTypeTables` +
+  `matchFollowableRecords` (group/version/resource/scope + preferred-version + ambiguity);
+  deleted the whole `watchedTypeStore` removal-grace machinery; gate keyed on
+  `(registry.Revision(), rulesFingerprint)`.
+- `internal/watch/snapshot_stream.go` — `resolveSnapshotGVRs` fails closed on
+  `!registry.Ready()` or any `retained` watched type (`retainedWatchedTypes`/`gvkListSummary`).
+- `internal/watch/gvr.go`, `manager.go` — `ComputeRequestedGVRs` drops misses; removed the
+  unplanned-resources log and `blockingSnapshotMisses`.
+- `internal/telemetry/exporter.go` — removed `WatchedTypeConflicts`/`WatchedTypePendingRemovals`.
+- **Deleted** `internal/watch/watched_type_pending_removal_test.go` (grace covered by
+  `registry_test.go`); `RuleGVRResolver` kept for controller status only.
+- `docs/design/manifest/version2/discovery-catalog-typeset-boundary.md` — added the
+  registry change-signal proposal.
+
 ## Validation
 
 - `task fmt` / `task generate` / `task manifests` — clean, no generated diffs (no API
@@ -269,11 +344,22 @@ Modified:
   gochecknoglobals on the verb list, gocognit on the scale test, nonamedreturns on
   `splitSubresource`, unparam on `newRegistry`, and the `exhaustive` map/switch checks
   — resolved with a phrase map + a boolean helper).
-- `task test` — all packages pass; `internal/typeset` 97.9%, `internal/watch` 83.0%
+- `task test` — all packages pass; `internal/typeset` 98.4%, `internal/watch` 81.7%
   (whole-package; the new code paths are covered).
 - `task test-e2e` — **44 Passed, 0 Failed, 8 Skipped — Test Suite Passed**, re-run
   green at each behavior-changing step: the registry as additive inventory (Stage 5),
-  the live mapper switched onto it (Stage 6), and `internal/mapping` deleted with the
-  worker + analyzer reading the registry directly (Stage 7). The worker resolves
-  manifest GVKs through the registry on the real k3d cluster, so e2e exercises the
-  whole pipeline end to end.
+  the live mapper switched onto it (Stage 6), `internal/mapping` deleted with the worker
+  + analyzer reading the registry directly (Stage 7), the gvr-not-unique (Stage 8) and
+  sensitivity-policy (Stage 9) follow-ups, and the `WatchedTypeTable`-as-registry-
+  projection migration (Stage 10). The worker resolves manifest GVKs through the registry
+  on the real k3d cluster, so e2e exercises the whole pipeline end to end.
+- **Stage 10 e2e note (lesson learned):** the suite must be run on a *fresh* k3d cluster.
+  Re-running it repeatedly on a long-lived cluster (≈2h, ~9 manager rollouts, accumulated
+  CRD/gitea/etcd state) produced spurious `status.conditions not found` controller-throughput
+  timeouts on the heavier specs (17/11 → 23/9 → 19/9 across reuses) that were **not** code
+  failures — `task clean-cluster` then `task test-e2e` returned a clean 44/0/8. The fixes
+  that did matter for Stage 10 (found via those runs) were: keeping the re-projection
+  change-gate (an early gate-less cut rebuilt the registry on every hot-path refresh and
+  starved the controllers), and re-expressing the snapshot fail-closed on the registry's
+  `retained` verdict + the `Revision()` gate (so a grace-held deleted type stops being
+  streamed and is dropped from the table promptly).

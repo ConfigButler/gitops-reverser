@@ -175,6 +175,43 @@ func TestRegistry_GraceRetainsThenDrops(t *testing.T) {
 	}
 }
 
+// TestRegistry_RevisionBumpsOnGraceDropAtStableGeneration is the regression that
+// motivated Revision(): a type whose retention grace elapses leaves the followable set
+// without any discovery change, so the catalog generation does not move. A consumer
+// gated on the generation would never notice; the revision must bump so it re-projects.
+func TestRegistry_RevisionBumpsOnGraceDropAtStableGeneration(t *testing.T) {
+	clock := &fakeClock{t: time.Unix(5_000, 0)}
+	r := newRegistry(clock.now)
+
+	// Generation stays 5 for the whole sequence — only time passes.
+	r.Update([]Observation{deploymentObs()}, 5)
+	afterFirst := r.Revision()
+	if afterFirst == 0 {
+		t.Fatal("the first ready Update must bump the revision")
+	}
+
+	// Within the grace: retained, same generation, followable set unchanged -> no bump.
+	clock.add(10 * time.Second)
+	r.Update(nil, 5)
+	clock.add(20 * time.Second)
+	r.Update(nil, 5)
+	if r.Revision() != afterFirst {
+		t.Errorf("a retained type within grace must not move the revision: %d != %d", r.Revision(), afterFirst)
+	}
+
+	// Grace elapses (70s absence >= 60s): the type drops at the SAME generation, so only
+	// the followable-set change can move the revision.
+	clock.add(40 * time.Second)
+	r.Update(nil, 5)
+	if r.Generation() != 5 {
+		t.Fatalf("generation must be stable at 5, got %d", r.Generation())
+	}
+	if r.Revision() <= afterFirst {
+		t.Errorf("the grace drop must bump the revision even at a stable generation: %d <= %d",
+			r.Revision(), afterFirst)
+	}
+}
+
 func TestRegistry_ReappearanceClearsGrace(t *testing.T) {
 	clock := &fakeClock{t: time.Unix(2_000, 0)}
 	r := newRegistry(clock.now)

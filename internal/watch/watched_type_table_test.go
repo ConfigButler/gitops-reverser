@@ -23,36 +23,47 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
+	"github.com/ConfigButler/gitops-reverser/internal/typeset"
 )
 
 func testGitDest() types.ResourceReference {
 	return types.NewResourceReference("git", "default")
 }
 
-// nsGVR / clGVR build watch GVRs for the v1 resources the common test catalog
-// serves; the version is fixed because every served test resource is v1.
-func nsGVR(group, resource string) GVR {
-	return GVR{Group: group, Version: "v1", Resource: resource, Scope: configv1alpha1.ResourceScopeNamespaced}
+// followableRecord builds a minimal followable typeset record for the given identity,
+// the shape resolveWatchedTypeTables folds into the table.
+func followableRecord(group, version, resource, kind string, scope typeset.Scope, preferred bool) typeset.TypeRecord {
+	return typeset.TypeRecord{
+		Identity: typeset.Identity{
+			GVK:   schema.GroupVersionKind{Group: group, Version: version, Kind: kind},
+			GVR:   schema.GroupVersionResource{Group: group, Version: version, Resource: resource},
+			Scope: scope,
+		},
+		Preferred: preferred,
+	}
 }
 
-func clGVR(group, resource string) GVR {
-	return GVR{Group: group, Version: "v1", Resource: resource, Scope: configv1alpha1.ResourceScopeCluster}
+func nsRecord(group, resource, kind string) typeset.TypeRecord {
+	return followableRecord(group, "v1", resource, kind, typeset.ScopeNamespaced, true)
 }
 
-func TestBuildWatchedTypeTable_NamespacedTypeCarriesServedMetadata(t *testing.T) {
-	catalog := newCommonTestCatalog(t)
-	selections := []resolvedSelection{
-		{gvr: nsGVR("apps", "deployments"), namespace: "team-a"},
+// namespaceRecord is the followable cluster-scoped Namespace record the matcher tests
+// use to exercise scope filtering.
+func namespaceRecord() typeset.TypeRecord {
+	return followableRecord("", "v1", "namespaces", "Namespace", typeset.ScopeCluster, true)
+}
+
+func TestBuildWatchedTypeTable_NamespacedTypeCarriesRecordMetadata(t *testing.T) {
+	selections := []watchSelection{
+		{record: nsRecord("apps", "deployments", "Deployment"), namespace: "team-a"},
 	}
 
-	table := buildWatchedTypeTable(testGitDest(), 7, selections, catalog)
+	table := buildWatchedTypeTable(testGitDest(), 7, selections)
 
-	require.Empty(t, table.Conflicts)
 	require.Len(t, table.Types, 1)
 	wt := table.Types[0]
 	assert.Equal(t, schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"}, wt.GVK)
@@ -67,16 +78,16 @@ func TestBuildWatchedTypeTable_NamespacedTypeCarriesServedMetadata(t *testing.T)
 }
 
 func TestBuildWatchedTypeTable_ClusterWideOverridesNamedNamespaces(t *testing.T) {
-	catalog := newCommonTestCatalog(t)
-	// The same GVR followed both in a specific namespace (WatchRule) and cluster-wide
-	// (ClusterWatchRule with Namespaced scope) collapses to one cluster-wide stream
-	// for the snapshot, but both namespace keys survive for the plan hash.
-	selections := []resolvedSelection{
-		{gvr: nsGVR("", "configmaps"), namespace: "team-a"},
-		{gvr: nsGVR("", "configmaps"), namespace: ""},
+	// The same record followed both in a specific namespace (WatchRule) and cluster-wide
+	// (ClusterWatchRule) collapses to one cluster-wide stream for the snapshot, but both
+	// namespace keys survive for the plan hash.
+	cm := nsRecord("", "configmaps", "ConfigMap")
+	selections := []watchSelection{
+		{record: cm, namespace: "team-a"},
+		{record: cm, namespace: ""},
 	}
 
-	table := buildWatchedTypeTable(testGitDest(), 1, selections, catalog)
+	table := buildWatchedTypeTable(testGitDest(), 1, selections)
 
 	require.Len(t, table.Types, 1)
 	wt := table.Types[0]
@@ -87,20 +98,14 @@ func TestBuildWatchedTypeTable_ClusterWideOverridesNamedNamespaces(t *testing.T)
 }
 
 func TestBuildWatchedTypeTable_OperationsUnionPerNamespace(t *testing.T) {
-	catalog := newCommonTestCatalog(t)
-	selections := []resolvedSelection{
-		{gvr: nsGVR("", "configmaps"), namespace: "team-a", ops: []configv1alpha1.OperationType{
-			configv1alpha1.OperationCreate,
-		}},
-		{gvr: nsGVR("", "configmaps"), namespace: "team-a", ops: []configv1alpha1.OperationType{
-			configv1alpha1.OperationUpdate,
-		}},
-		{gvr: nsGVR("", "configmaps"), namespace: "team-b", ops: []configv1alpha1.OperationType{
-			configv1alpha1.OperationAll,
-		}},
+	cm := nsRecord("", "configmaps", "ConfigMap")
+	selections := []watchSelection{
+		{record: cm, namespace: "team-a", ops: []configv1alpha1.OperationType{configv1alpha1.OperationCreate}},
+		{record: cm, namespace: "team-a", ops: []configv1alpha1.OperationType{configv1alpha1.OperationUpdate}},
+		{record: cm, namespace: "team-b", ops: []configv1alpha1.OperationType{configv1alpha1.OperationAll}},
 	}
 
-	table := buildWatchedTypeTable(testGitDest(), 1, selections, catalog)
+	table := buildWatchedTypeTable(testGitDest(), 1, selections)
 
 	require.Len(t, table.Types, 1)
 	wt := table.Types[0]
@@ -109,24 +114,22 @@ func TestBuildWatchedTypeTable_OperationsUnionPerNamespace(t *testing.T) {
 }
 
 func TestBuildWatchedTypeTable_EmptyOperationsAreAllOperations(t *testing.T) {
-	catalog := newCommonTestCatalog(t)
-	selections := []resolvedSelection{
-		{gvr: nsGVR("", "configmaps"), namespace: "team-a"},
+	selections := []watchSelection{
+		{record: nsRecord("", "configmaps", "ConfigMap"), namespace: "team-a"},
 	}
 
-	table := buildWatchedTypeTable(testGitDest(), 1, selections, catalog)
+	table := buildWatchedTypeTable(testGitDest(), 1, selections)
 
 	require.Len(t, table.Types, 1)
 	assert.Equal(t, []string{"*"}, table.Types[0].NamespaceOps["team-a"].Sorted())
 }
 
 func TestBuildWatchedTypeTable_ClusterScopedType(t *testing.T) {
-	catalog := newCommonTestCatalog(t)
-	selections := []resolvedSelection{
-		{gvr: clGVR("", "namespaces"), namespace: ""},
+	selections := []watchSelection{
+		{record: namespaceRecord(), namespace: ""},
 	}
 
-	table := buildWatchedTypeTable(testGitDest(), 1, selections, catalog)
+	table := buildWatchedTypeTable(testGitDest(), 1, selections)
 
 	require.Len(t, table.Types, 1)
 	wt := table.Types[0]
@@ -137,131 +140,106 @@ func TestBuildWatchedTypeTable_ClusterScopedType(t *testing.T) {
 	assert.Empty(t, wt.SnapshotNamespaces())
 }
 
-func TestBuildWatchedTypeTable_RefusesGVKServedByMultipleResources(t *testing.T) {
-	catalog := newWidgetConflictCatalog(t)
-	selections := []resolvedSelection{
-		{gvr: nsGVR("example.com", "widgets"), namespace: "team-a"},
-		{gvr: nsGVR("example.com", "widgetslegacy"), namespace: "team-a"},
-	}
-
-	table := buildWatchedTypeTable(testGitDest(), 1, selections, catalog)
-
-	assert.Empty(t, table.Types, "a GVK served by >1 resource must not be watched")
-	require.Len(t, table.Conflicts, 1)
-	conflict := table.Conflicts[0]
-	assert.Equal(t, schema.GroupVersionKind{Group: "example.com", Version: "v1", Kind: "Widget"}, conflict.GVK)
-	assert.Equal(t, []schema.GroupVersionResource{
-		{Group: "example.com", Version: "v1", Resource: "widgets"},
-		{Group: "example.com", Version: "v1", Resource: "widgetslegacy"},
-	}, conflict.GVRs)
-}
-
-func TestBuildWatchedTypeTable_SkipsGVRNotServedByCatalog(t *testing.T) {
-	catalog := newCommonTestCatalog(t)
-	selections := []resolvedSelection{
-		{gvr: nsGVR("nonexistent.example.com", "ghosts"), namespace: "team-a"},
-	}
-
-	table := buildWatchedTypeTable(testGitDest(), 1, selections, catalog)
-
-	assert.Empty(t, table.Types)
-	assert.Empty(t, table.Conflicts)
-}
-
 func TestBuildWatchedTypeTable_SortsTypesByGVK(t *testing.T) {
-	catalog := newCommonTestCatalog(t)
-	selections := []resolvedSelection{
-		{gvr: nsGVR("", "services"), namespace: "team-a"},
-		{gvr: nsGVR("apps", "deployments"), namespace: "team-a"},
-		{gvr: nsGVR("", "configmaps"), namespace: "team-a"},
+	selections := []watchSelection{
+		{record: nsRecord("", "services", "Service"), namespace: "team-a"},
+		{record: nsRecord("apps", "deployments", "Deployment"), namespace: "team-a"},
+		{record: nsRecord("", "configmaps", "ConfigMap"), namespace: "team-a"},
 	}
 
-	table := buildWatchedTypeTable(testGitDest(), 1, selections, catalog)
+	table := buildWatchedTypeTable(testGitDest(), 1, selections)
 
 	require.Len(t, table.Types, 3)
-	got := []string{
-		table.Types[0].GVK.Kind,
-		table.Types[1].GVK.Kind,
-		table.Types[2].GVK.Kind,
-	}
-	// Sorted by group|version|kind. The empty core group renders as a leading
-	// "|" (ASCII 124), which sorts after named groups like "apps" (ASCII 97) —
-	// the same convention as sortCatalogEntries.
+	got := []string{table.Types[0].GVK.Kind, table.Types[1].GVK.Kind, table.Types[2].GVK.Kind}
+	// Sorted by group|version|kind. The empty core group renders as a leading "|"
+	// (ASCII 124), which sorts after named groups like "apps" (ASCII 97).
 	assert.Equal(t, []string{"Deployment", "ConfigMap", "Service"}, got)
 }
 
-func TestBuildWatchedTypeTable_NilCatalogWatchesNothing(t *testing.T) {
-	selections := []resolvedSelection{
-		{gvr: nsGVR("apps", "deployments"), namespace: "team-a"},
+func TestMatchFollowableRecords_MatchesResourceGroupVersionScope(t *testing.T) {
+	records := []typeset.TypeRecord{
+		nsRecord("apps", "deployments", "Deployment"),
+		nsRecord("", "configmaps", "ConfigMap"),
+		namespaceRecord(),
 	}
 
-	table := buildWatchedTypeTable(testGitDest(), 1, selections, nil)
+	matched := matchFollowableRecords(
+		records, []string{"apps"}, []string{"v1"}, []string{"deployments"},
+		configv1alpha1.ResourceScopeNamespaced)
 
-	assert.Empty(t, table.Types, "without a catalog no GVR can be mapped to a GVK, so nothing is watched")
-	assert.Empty(t, table.Conflicts)
+	require.Len(t, matched, 1)
+	assert.Equal(t, "Deployment", matched[0].Identity.GVK.Kind)
 }
 
-func TestBuildWatchedTypeTable_SortsMultipleConflictsByGVK(t *testing.T) {
-	catalog := newTwoConflictCatalog(t)
-	selections := []resolvedSelection{
-		{gvr: nsGVR("example.com", "gadgets"), namespace: "team-a"},
-		{gvr: nsGVR("example.com", "gadgetslegacy"), namespace: "team-a"},
-		{gvr: nsGVR("example.com", "widgets"), namespace: "team-a"},
-		{gvr: nsGVR("example.com", "widgetslegacy"), namespace: "team-a"},
-	}
+func TestMatchFollowableRecords_ScopeFiltersClusterFromNamespaced(t *testing.T) {
+	records := []typeset.TypeRecord{namespaceRecord()}
 
-	table := buildWatchedTypeTable(testGitDest(), 1, selections, catalog)
-
-	require.Len(t, table.Conflicts, 2)
-	assert.Equal(t, "Gadget", table.Conflicts[0].GVK.Kind, "conflicts sort by GVK: Gadget before Widget")
-	assert.Equal(t, "Widget", table.Conflicts[1].GVK.Kind)
+	// A namespaced selector never matches a cluster-scoped record, and vice versa.
+	assert.Empty(t, matchFollowableRecords(
+		records, nil, nil, []string{"namespaces"}, configv1alpha1.ResourceScopeNamespaced))
+	assert.Len(t, matchFollowableRecords(
+		records, nil, nil, []string{"namespaces"}, configv1alpha1.ResourceScopeCluster), 1)
 }
 
-// newTwoConflictCatalog serves two kinds, each from two resources, so a wildcard
-// selection produces two GVK<->GVR conflicts to exercise conflict sorting.
-func newTwoConflictCatalog(t *testing.T) *APIResourceCatalog {
-	t.Helper()
-	listWatch := metav1.Verbs{"get", "list", "watch"}
-	disco := staticCatalogDiscovery{
-		groups: []*metav1.APIGroup{testAPIGroup("example.com", "v1")},
-		resources: []*metav1.APIResourceList{
-			{
-				GroupVersion: "example.com/v1",
-				APIResources: []metav1.APIResource{
-					{Name: "widgets", Kind: "Widget", Namespaced: true, Verbs: listWatch},
-					{Name: "widgetslegacy", Kind: "Widget", Namespaced: true, Verbs: listWatch},
-					{Name: "gadgets", Kind: "Gadget", Namespaced: true, Verbs: listWatch},
-					{Name: "gadgetslegacy", Kind: "Gadget", Namespaced: true, Verbs: listWatch},
-				},
-			},
-		},
+func TestMatchFollowableRecords_WildcardResourceExpandsWithinScope(t *testing.T) {
+	records := []typeset.TypeRecord{
+		nsRecord("", "configmaps", "ConfigMap"),
+		nsRecord("", "secrets", "Secret"),
+		namespaceRecord(),
 	}
-	catalog := NewAPIResourceCatalog()
-	_, err := catalog.Refresh(disco)
-	require.NoError(t, err)
-	return catalog
+
+	matched := matchFollowableRecords(
+		records, []string{""}, []string{"v1"}, []string{"*"}, configv1alpha1.ResourceScopeNamespaced)
+
+	kinds := map[string]bool{}
+	for _, rec := range matched {
+		kinds[rec.Identity.GVK.Kind] = true
+	}
+	assert.True(t, kinds["ConfigMap"] && kinds["Secret"])
+	assert.False(t, kinds["Namespace"], "a cluster-scoped record must not match a namespaced selector")
 }
 
-// newWidgetConflictCatalog builds a pathological catalog where one group/version
-// serves the same kind from two distinct resources, violating the GVK<->GVR 1:1
-// assumption the watched-type table enforces.
-func newWidgetConflictCatalog(t *testing.T) *APIResourceCatalog {
-	t.Helper()
-	listWatch := metav1.Verbs{"get", "list", "watch"}
-	disco := staticCatalogDiscovery{
-		groups: []*metav1.APIGroup{testAPIGroup("example.com", "v1")},
-		resources: []*metav1.APIResourceList{
-			{
-				GroupVersion: "example.com/v1",
-				APIResources: []metav1.APIResource{
-					{Name: "widgets", Kind: "Widget", Namespaced: true, Verbs: listWatch},
-					{Name: "widgetslegacy", Kind: "Widget", Namespaced: true, Verbs: listWatch},
-				},
-			},
-		},
+func TestMatchFollowableRecords_VersionlessSelectorCollapsesToPreferred(t *testing.T) {
+	records := []typeset.TypeRecord{
+		followableRecord("example.com", "v1", "widgets", "Widget", typeset.ScopeNamespaced, true),
+		followableRecord("example.com", "v1beta1", "widgets", "Widget", typeset.ScopeNamespaced, false),
 	}
-	catalog := NewAPIResourceCatalog()
-	_, err := catalog.Refresh(disco)
-	require.NoError(t, err)
-	return catalog
+
+	matched := matchFollowableRecords(
+		records, []string{"example.com"}, nil, []string{"widgets"}, configv1alpha1.ResourceScopeNamespaced)
+
+	require.Len(t, matched, 1, "a version-less selector must not watch the same object under two versions")
+	assert.Equal(t, "v1", matched[0].Identity.GVR.Version, "the preferred version wins")
+}
+
+func TestMatchFollowableRecords_OmittedGroupMultiGroupResourceIsAmbiguous(t *testing.T) {
+	// The same resource name served in two groups, selected without an apiGroups filter,
+	// is ambiguous: it must be watched in no group, not silently expanded across both.
+	records := []typeset.TypeRecord{
+		followableRecord("a.example.com", "v1", "widgets", "Widget", typeset.ScopeNamespaced, true),
+		followableRecord("b.example.com", "v1", "widgets", "Widget", typeset.ScopeNamespaced, true),
+	}
+
+	assert.Empty(t, matchFollowableRecords(
+		records, nil, nil, []string{"widgets"}, configv1alpha1.ResourceScopeNamespaced),
+		"an omitted apiGroups selector over a multi-group resource is ambiguous")
+
+	// Naming the group disambiguates it.
+	matched := matchFollowableRecords(
+		records, []string{"a.example.com"}, nil, []string{"widgets"}, configv1alpha1.ResourceScopeNamespaced)
+	require.Len(t, matched, 1)
+	assert.Equal(t, "a.example.com", matched[0].Identity.GVR.Group)
+}
+
+func TestMatchFollowableRecords_WildcardVersionKeepsEveryVersion(t *testing.T) {
+	records := []typeset.TypeRecord{
+		followableRecord("example.com", "v1", "widgets", "Widget", typeset.ScopeNamespaced, true),
+		followableRecord("example.com", "v1beta1", "widgets", "Widget", typeset.ScopeNamespaced, false),
+	}
+
+	matched := matchFollowableRecords(
+		records, []string{"example.com"}, []string{"*"}, []string{"widgets"},
+		configv1alpha1.ResourceScopeNamespaced)
+
+	assert.Len(t, matched, 2, "an explicit version wildcard keeps every served version")
 }

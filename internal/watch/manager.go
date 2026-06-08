@@ -116,11 +116,11 @@ type Manager struct {
 	lastDeliveredRuleSetHash map[string]uint64
 	pendingRuleSetHash       map[string]uint64
 
-	// watchedTypes is the resident, per-GitTarget watched-type table set (M10): the
-	// single source of "what each GitTarget watches", re-resolved only on a rule
-	// change or catalog generation bump and read by the snapshot, informer, and
-	// plan-hash paths instead of each re-resolving inline. watchedTypeInit guards
-	// its lazy construction for zero-value Managers in tests.
+	// watchedTypes is the resident, per-GitTarget watched-type table set: the single
+	// source of "what each GitTarget watches", a projection of the type registry's
+	// followable set onto each target's rules, read by the snapshot, informer, and
+	// plan-hash paths instead of each re-resolving inline. watchedTypeInit guards its
+	// lazy construction for zero-value Managers in tests.
 	watchedTypeInit sync.Once
 	watchedTypes    *watchedTypeStore
 
@@ -489,20 +489,6 @@ func (m *Manager) compareInformerScope(desired map[GVR]map[string]struct{}) ([]g
 	return informersToStart(m.activeInformers, desired), informersObsolete(m.activeInformers, desired)
 }
 
-func blockingSnapshotMisses(misses []ResolveMiss) []ResolveMiss {
-	var blocking []ResolveMiss
-	for _, miss := range misses {
-		switch miss.Reason {
-		case ResolveMissNotServed, ResolveMissAmbiguous, ResolveMissDisallowed:
-			continue
-		case ResolveMissCatalogUnavailable,
-			ResolveMissDiscoveryDegraded:
-			blocking = append(blocking, miss)
-		}
-	}
-	return blocking
-}
-
 // uniqueStrings returns the input with duplicates removed, preserving order.
 func uniqueStrings(in []string) []string {
 	seen := make(map[string]struct{}, len(in))
@@ -535,11 +521,6 @@ func (m *Manager) ReconcileForRuleChange(ctx context.Context) error {
 	// periodic reconcile with neither reuses the resolved tables. Every consumer
 	// below (informer set, snapshot gather, plan hash) reads these tables.
 	m.refreshWatchedTypeTables()
-
-	// Log any rule resources that did not resolve to a watched type.
-	if _, misses := m.computeRequestedGVRs(); len(misses) > 0 {
-		log.Info("rule resources were not planned", "misses", FormatResolveMisses(misses))
-	}
 
 	// The informer surface is read from the resident watched-type tables in a single
 	// pass (refreshed once above), then diffed against the active informers at

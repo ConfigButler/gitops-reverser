@@ -37,6 +37,7 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
 	"github.com/ConfigButler/gitops-reverser/internal/sanitize"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
+	"github.com/ConfigButler/gitops-reverser/internal/typeset"
 )
 
 // ClusterSnapshot is one consistent, revision-pinned view of every watched resource a
@@ -358,11 +359,12 @@ type snapshotGVR struct {
 }
 
 // resolveSnapshotGVRs returns the GitTarget's watched (GVR, namespace-scope) set to
-// stream, read from the resident watched-type table (M10) rather than re-resolved
-// inline on every gather. It refreshes the trusted API catalog and the table first,
-// then fails closed on a blocking resolve miss (catalog unavailable or discovery
-// degraded) recorded on the table, so a snapshot is never built from partial
-// knowledge of the API surface.
+// stream, read from the resident watched-type table rather than re-resolved inline on
+// every gather. It refreshes the trusted API catalog, the registry, and the table first,
+// then fails closed if the registry is not ready — a snapshot must never be built from
+// an unobserved API surface, and a mark-and-sweep over a reduced view would delete KRM
+// from git. A type that briefly leaves discovery stays followable (and so stays in the
+// table) for the registry's removal grace, so a transient wobble never sweeps git.
 func (m *Manager) resolveSnapshotGVRs(
 	ctx context.Context,
 	gitDest types.ResourceReference,
@@ -372,27 +374,56 @@ func (m *Manager) resolveSnapshotGVRs(
 	}
 	m.refreshWatchedTypeTables()
 
-	table, _ := m.residentWatchedTypeTable(gitDest)
-	if blocking := table.BlockingMisses(); len(blocking) > 0 {
+	if !m.typeRegistryInstance().Ready() {
 		return nil, fmt.Errorf(
-			"aborting cluster snapshot for %s: %s; refusing to snapshot a partial cluster view",
-			gitDest.String(), FormatResolveMisses(blocking))
+			"aborting cluster snapshot for %s: the cluster API surface has not been observed yet; "+
+				"refusing to snapshot a partial cluster view",
+			gitDest.String())
 	}
 
-	// A type the catalog momentarily stopped serving while the rules still select it is
-	// retained in the table under a removal grace timer (see applyPersistentAbsence). A
-	// gather during that hold would observe a reduced cluster — the held type's resource
-	// no longer streams — and a mark-and-sweep over it would delete that type's KRM from
-	// git on a transient wobble. Fail closed until the absence is either trusted (grace
-	// elapsed, the type is gone) or cleared (the type reappeared).
-	if pending := table.PendingRemovals; len(pending) > 0 {
+	table := m.residentWatchedTypeTable(gitDest)
+
+	// A watched type the registry holds as `retained` is followable under the removal
+	// grace but is not actually served right now (a discovery wobble). Streaming it would
+	// fail, and sweeping the reduced view would delete a still-valid mirror, so fail
+	// closed until the wobble resolves (the type is served again, or the grace elapses and
+	// the registry drops it from the table). This re-expresses the old pending-removal
+	// fail-closed in terms of the registry's verdict.
+	if retained := m.retainedWatchedTypes(table); len(retained) > 0 {
 		return nil, fmt.Errorf(
-			"aborting cluster snapshot for %s: %s pending removal within the grace window; "+
-				"refusing to sweep on a reduced cluster view",
-			gitDest.String(), pendingRemovalSummary(pending))
+			"aborting cluster snapshot for %s: %s within the removal grace (currently unserved); "+
+				"refusing to sweep a reduced cluster view",
+			gitDest.String(), gvkListSummary(retained))
 	}
 
 	return snapshotGVRsFromTable(table), nil
+}
+
+// retainedWatchedTypes returns the GVKs of the target's watched types the registry
+// currently holds as `retained` (followable under the grace, but not served right now).
+func (m *Manager) retainedWatchedTypes(table WatchedTypeTable) []schema.GroupVersionKind {
+	reg := m.typeRegistryInstance()
+	var out []schema.GroupVersionKind
+	for _, wt := range table.Types {
+		if rec, ok := reg.ByGVR(wt.GVR); ok && rec.Followability.Verdict == typeset.VerdictRetained {
+			out = append(out, wt.GVK)
+		}
+	}
+	return out
+}
+
+// gvkListSummary renders held GVKs for the fail-closed error, naming each so a blocked
+// gather log says exactly which wobbling types caused it.
+func gvkListSummary(gvks []schema.GroupVersionKind) string {
+	parts := make([]string, 0, len(gvks))
+	for _, gvk := range gvks {
+		parts = append(parts, gvk.String())
+	}
+	sort.Strings(parts)
+	if len(parts) == 1 {
+		return "watched type " + parts[0]
+	}
+	return fmt.Sprintf("%d watched types [%s]", len(parts), strings.Join(parts, ", "))
 }
 
 // snapshotGVRsFromTable projects a watched-type table into the deterministic, sorted
