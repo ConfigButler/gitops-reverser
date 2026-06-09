@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cm
+  namespace: explicit-ns
+data:
+  k: v

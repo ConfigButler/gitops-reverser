@@ -22,6 +22,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -150,6 +151,138 @@ var _ = Describe("Manager In-Place Manifest Editing", Label("manager", "inplace-
 	})
 })
 
+var _ = Describe(
+	"Manager Manifest Folder Editing",
+	Label("manager", "inplace-edit", "manifest-folder"),
+	Ordered,
+	func() {
+		var (
+			testNs       string
+			repo         *RepoArtifacts
+			providerName = "manifest-folder-provider"
+			destName     = "manifest-folder-dest"
+			ruleName     = "manifest-folder-rule"
+			gitPath      = "e2e/manifest-folder"
+		)
+
+		const (
+			fixtureRoot            = "test/e2e/fixtures/inplace-edit-folder"
+			bundleComment          = "# e2e-folder-edit: preserve bundle data comment"
+			nestedComment          = "# e2e-folder-edit: preserve nested data comment"
+			bundleConfigMapName    = "folder-bundle"
+			nestedConfigMapName    = "folder-nested"
+			siblingConfigMapName   = "folder-sibling"
+			bundleRepoPath         = "apply/bundle.yaml"
+			nestedRepoPath         = "apply/nested/sidecar.yaml"
+			kustomizationRepoPath  = "kustomization.yaml"
+			manifestFolderRepoName = "e2e-manifest-folder"
+		)
+
+		BeforeAll(func() {
+			By("creating the manifest-folder test namespace")
+			testNs = testNamespaceFor("manager-manifest-folder")
+			_, _ = kubectlRun("create", "namespace", testNs)
+
+			By("setting up Gitea repo and credentials")
+			repo = SetupRepo(
+				resolveE2EContext(),
+				testNs,
+				fmt.Sprintf("%s-%d", manifestFolderRepoName, GinkgoRandomSeed()),
+			)
+
+			_, err := kubectlRunInNamespace(testNs, "apply", "-f", repo.SecretsYAML)
+			Expect(err).NotTo(HaveOccurred(), "failed to apply git secrets to test namespace")
+
+			applySOPSAgeKeyToNamespace(testNs)
+
+			By("creating the GitProvider")
+			createGitProviderWithURLInNamespace(providerName, testNs, repo.GitSecretHTTP, repo.RepoURLHTTP)
+			verifyResourceStatus("gitprovider", providerName, testNs, "True", "Ready", "")
+		})
+
+		AfterAll(func() {
+			for _, name := range []string{bundleConfigMapName, nestedConfigMapName, siblingConfigMapName} {
+				_, _ = kubectlRunInNamespace(testNs, "delete", "configmap", name, "--ignore-not-found=true")
+			}
+			cleanupWatchRule(ruleName, testNs)
+			cleanupGitTarget(destName, testNs)
+			_, _ = kubectlRunInNamespace(testNs, "delete", "gitprovider", providerName, "--ignore-not-found=true")
+			cleanupNamespace(testNs)
+		})
+
+		It("edits existing manifests in a real folder without breaking sibling files", func() {
+			renderedFixture := renderInPlaceFixtureFolder(fixtureRoot, testNs)
+			DeferCleanup(func() { _ = os.RemoveAll(renderedFixture) })
+
+			By("seeding the Git repository with the rendered manifest folder")
+			seedRenderedFolderIntoRepo(repo, testNs, renderedFixture, gitPath)
+
+			By("applying the rendered fixture folder with Kustomize")
+			_, err := kubectlRunInNamespace(testNs, "apply", "-k", renderedFixture)
+			Expect(err).NotTo(HaveOccurred(), "failed to apply rendered fixture kustomization")
+
+			By("creating the GitTarget and ConfigMap WatchRule")
+			createGitTarget(destName, testNs, providerName, gitPath, "main")
+			err = applyFromTemplate("test/e2e/templates/manager/watchrule-configmap.tmpl", struct {
+				Name            string
+				Namespace       string
+				DestinationName string
+			}{Name: ruleName, Namespace: testNs, DestinationName: destName}, testNs)
+			Expect(err).NotTo(HaveOccurred(), "failed to apply ConfigMap WatchRule")
+			verifyResourceStatus("gittarget", destName, testNs, "True", "Ready", "")
+			verifyResourceStatus("watchrule", ruleName, testNs, "True", "Ready", "")
+
+			By("patching ConfigMaps that live in a multi-document file and a nested folder")
+			_, err = kubectlRunInNamespace(testNs, "patch", "configmap", bundleConfigMapName,
+				"--type=merge", "--patch", `{"data":{"color":"green"}}`)
+			Expect(err).NotTo(HaveOccurred(), "failed to patch bundle ConfigMap")
+
+			_, err = kubectlRunInNamespace(testNs, "patch", "configmap", nestedConfigMapName,
+				"--type=merge", "--patch", `{"data":{"mode":"loud"}}`)
+			Expect(err).NotTo(HaveOccurred(), "failed to patch nested ConfigMap")
+
+			By("verifying the existing files were edited in place and sibling content survived")
+			bundleFullPath := filepath.Join(repo.CheckoutDir, gitPath, bundleRepoPath)
+			nestedFullPath := filepath.Join(repo.CheckoutDir, gitPath, nestedRepoPath)
+			kustomizationFullPath := filepath.Join(repo.CheckoutDir, gitPath, kustomizationRepoPath)
+			renderedKustomization := filepath.Join(renderedFixture, kustomizationRepoPath)
+
+			Eventually(func(g Gomega) {
+				pullLatestRepoState(g, repo.CheckoutDir)
+
+				bundleBody := readRepoFile(g, bundleFullPath)
+				g.Expect(bundleBody).To(ContainSubstring(bundleComment))
+				g.Expect(bundleBody).To(ContainSubstring("name: " + bundleConfigMapName))
+				g.Expect(bundleBody).To(ContainSubstring("color: green"))
+				g.Expect(bundleBody).NotTo(ContainSubstring("color: blue"))
+				g.Expect(bundleBody).To(ContainSubstring("name: " + siblingConfigMapName))
+				g.Expect(bundleBody).To(ContainSubstring("role: untouched"))
+				g.Expect(bundleBody).To(ContainSubstring("note: still-here"))
+				g.Expect(bundleBody).NotTo(ContainSubstring("namespace:"))
+
+				nestedBody := readRepoFile(g, nestedFullPath)
+				g.Expect(nestedBody).To(ContainSubstring(nestedComment))
+				g.Expect(nestedBody).To(ContainSubstring("name: " + nestedConfigMapName))
+				g.Expect(nestedBody).To(ContainSubstring("mode: loud"))
+				g.Expect(nestedBody).NotTo(ContainSubstring("mode: quiet"))
+				g.Expect(nestedBody).NotTo(ContainSubstring("namespace:"))
+
+				kustomizationBody := readRepoFile(g, kustomizationFullPath)
+				g.Expect(kustomizationBody).To(Equal(readRepoFile(g, renderedKustomization)))
+
+				for _, name := range []string{bundleConfigMapName, nestedConfigMapName} {
+					canonicalPath := filepath.Join(repo.CheckoutDir, gitPath, "v1", "configmaps", testNs, name+".yaml")
+					_, statErr := os.Stat(canonicalPath)
+					g.Expect(os.IsNotExist(statErr)).
+						To(BeTrue(), "must not create canonical duplicate %s", canonicalPath)
+				}
+			}, 120*time.Second, 3*time.Second).Should(Succeed())
+
+			By("✅ fixture-backed manifest folder was edited in place")
+		})
+	},
+)
+
 // seedCommentIntoRepoFile inserts a YAML comment under the data block of the
 // committed manifest and pushes it to main, authenticating the local checkout's
 // origin from the GitTarget's Git Secret. It retries once over a remote race by
@@ -157,22 +290,20 @@ var _ = Describe("Manager In-Place Manifest Editing", Label("manager", "inplace-
 func seedCommentIntoRepoFile(repo *RepoArtifacts, namespace, relPath, comment string) {
 	GinkgoHelper()
 
-	username, password := inplaceReadGitCredentials(namespace, repo.GitSecretHTTP)
-	originOut, err := gitRun(repo.CheckoutDir, "remote", "get-url", "origin")
-	Expect(err).NotTo(HaveOccurred(), "failed to read origin URL")
-	parsed, err := url.Parse(strings.TrimSpace(originOut))
-	Expect(err).NotTo(HaveOccurred(), "failed to parse origin URL")
-	parsed.User = url.UserPassword(username, password)
+	configureRepoOriginWithCredentials(repo, namespace)
 
 	mustGit := func(args ...string) {
 		out, gitErr := gitRun(repo.CheckoutDir, args...)
 		Expect(gitErr).NotTo(HaveOccurred(), fmt.Sprintf("git %s: %s", strings.Join(args, " "), out))
 	}
 
-	mustGit("remote", "set-url", "origin", parsed.String())
-	mustGit("fetch", "origin", "main")
-	mustGit("checkout", "-B", "main", "origin/main")
-	mustGit("reset", "--hard", "origin/main")
+	if _, err := gitRun(repo.CheckoutDir, "fetch", "origin", "main"); err == nil {
+		mustGit("checkout", "-B", "main", "origin/main")
+		mustGit("reset", "--hard", "origin/main")
+	} else {
+		mustGit("checkout", "--orphan", "main")
+		_, _ = gitRun(repo.CheckoutDir, "rm", "-rf", ".")
+	}
 
 	full := filepath.Join(repo.CheckoutDir, relPath)
 	content, readErr := os.ReadFile(full)
@@ -191,6 +322,121 @@ func seedCommentIntoRepoFile(repo *RepoArtifacts, namespace, relPath, comment st
 		mustGit("rebase", "origin/main")
 		mustGit("push", "origin", "HEAD:main")
 	}
+}
+
+func renderInPlaceFixtureFolder(fixtureRoot, namespace string) string {
+	GinkgoHelper()
+
+	rendered, err := os.MkdirTemp("", "gitops-reverser-e2e-manifest-folder-*")
+	Expect(err).NotTo(HaveOccurred(), "failed to create rendered fixture directory")
+
+	err = filepath.WalkDir(fixtureRoot, func(src string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		rel, relErr := filepath.Rel(fixtureRoot, src)
+		if relErr != nil {
+			return relErr
+		}
+		if rel == "." {
+			return nil
+		}
+
+		dst := filepath.Join(rendered, rel)
+		if d.IsDir() {
+			return os.MkdirAll(dst, 0o750)
+		}
+
+		content, readErr := os.ReadFile(src)
+		if readErr != nil {
+			return readErr
+		}
+		content = []byte(strings.ReplaceAll(string(content), "__E2E_NAMESPACE__", namespace))
+		if err := os.MkdirAll(filepath.Dir(dst), 0o750); err != nil {
+			return err
+		}
+		return os.WriteFile(dst, content, 0o600)
+	})
+	Expect(err).NotTo(HaveOccurred(), "failed to render fixture folder")
+
+	return rendered
+}
+
+func seedRenderedFolderIntoRepo(repo *RepoArtifacts, namespace, renderedFolder, gitPath string) {
+	GinkgoHelper()
+
+	configureRepoOriginWithCredentials(repo, namespace)
+	mustGit := func(args ...string) {
+		out, gitErr := gitRun(repo.CheckoutDir, args...)
+		Expect(gitErr).NotTo(HaveOccurred(), fmt.Sprintf("git %s: %s", strings.Join(args, " "), out))
+	}
+
+	if _, err := gitRun(repo.CheckoutDir, "fetch", "origin", "main"); err == nil {
+		mustGit("checkout", "-B", "main", "origin/main")
+		mustGit("reset", "--hard", "origin/main")
+	} else {
+		mustGit("checkout", "--orphan", "main")
+		_, _ = gitRun(repo.CheckoutDir, "rm", "-rf", ".")
+	}
+
+	dest := filepath.Join(repo.CheckoutDir, gitPath)
+	Expect(os.RemoveAll(dest)).To(Succeed())
+	Expect(copyFixtureDir(renderedFolder, dest)).To(Succeed())
+
+	mustGit("add", gitPath)
+	mustGit("commit", "-m", "e2e: seed manifest folder fixture")
+	mustGit("push", "origin", "HEAD:main")
+}
+
+func copyFixtureDir(src, dst string) error {
+	return filepath.WalkDir(src, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		if rel == "." {
+			return os.MkdirAll(dst, 0o750)
+		}
+
+		target := filepath.Join(dst, rel)
+		if d.IsDir() {
+			return os.MkdirAll(target, 0o750)
+		}
+
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0o750); err != nil {
+			return err
+		}
+		return os.WriteFile(target, content, 0o600)
+	})
+}
+
+func readRepoFile(g Gomega, path string) string {
+	GinkgoHelper()
+
+	content, err := os.ReadFile(path)
+	g.Expect(err).NotTo(HaveOccurred(), "expected repo file %s to exist", path)
+	return string(content)
+}
+
+func configureRepoOriginWithCredentials(repo *RepoArtifacts, namespace string) {
+	GinkgoHelper()
+
+	username, password := inplaceReadGitCredentials(namespace, repo.GitSecretHTTP)
+	originOut, err := gitRun(repo.CheckoutDir, "remote", "get-url", "origin")
+	Expect(err).NotTo(HaveOccurred(), "failed to read origin URL")
+	parsed, err := url.Parse(strings.TrimSpace(originOut))
+	Expect(err).NotTo(HaveOccurred(), "failed to parse origin URL")
+	parsed.User = url.UserPassword(username, password)
+
+	out, err := gitRun(repo.CheckoutDir, "remote", "set-url", "origin", parsed.String())
+	Expect(err).NotTo(HaveOccurred(), "failed to configure authenticated origin: %s", out)
 }
 
 // inplaceReadGitCredentials reads username/password from a GitTarget Git Secret.

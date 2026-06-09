@@ -228,6 +228,144 @@ func TestBuildStore_StaticSnapshotMapper(t *testing.T) {
 	}
 }
 
+// TestBuildStore_KustomizeNamespaceFromResourcesGraph proves the supported case: a
+// namespace-less namespaced resource inherits its namespace from the kustomization that
+// references it through the resources graph — directly (app.yaml) and transitively via
+// a directory base whose own kustomization sets no namespace (base/cm.yaml). The
+// namespace follows the include graph, not filesystem proximity.
+func TestBuildStore_KustomizeNamespaceFromResourcesGraph(t *testing.T) {
+	mapper := typeset.NewSnapshotRegistry(sampleClusterSnapshot())
+	store := BuildStore(context.Background(), fstest.MapFS{
+		"kustomization.yaml": {Data: []byte(
+			"apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\n" +
+				"namespace: team-a\nresources:\n- app.yaml\n- base\n")},
+		"app.yaml": {Data: []byte("apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: app\n")},
+		"base/kustomization.yaml": {Data: []byte(
+			"apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\n" +
+				"resources:\n- cm.yaml\n")},
+		"base/cm.yaml": {Data: []byte("apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: nested\n")},
+	}, mapper)
+
+	app := store.ByManifestIdentity[manifestedit.Identity{APIVersion: "v1", Kind: "ConfigMap", Namespace: "team-a", Name: "app"}]
+	if app == nil {
+		t.Fatalf("ConfigMap app should be indexed under its effective kustomize namespace team-a")
+	}
+	if app.NamespaceSource.Kind != NamespaceKustomize || app.NamespaceSource.Path != "kustomization.yaml" {
+		t.Errorf("app NamespaceSource = %+v, want {Kustomize kustomization.yaml}", app.NamespaceSource)
+	}
+	if !app.NamespaceInheritedFromContext() {
+		t.Errorf("app should report its namespace was inherited from context")
+	}
+	appRI := types.NewResourceIdentifier("", "v1", "configmaps", "team-a", "app")
+	if app.ResourceIdentity == nil || *app.ResourceIdentity != appRI {
+		t.Fatalf("app ResourceIdentity = %+v, want %+v", app.ResourceIdentity, appRI)
+	}
+
+	nested := store.ByManifestIdentity[manifestedit.Identity{APIVersion: "v1", Kind: "ConfigMap", Namespace: "team-a", Name: "nested"}]
+	if nested == nil {
+		t.Fatalf("base/cm.yaml should inherit team-a through the parent's resources graph")
+	}
+	if nested.NamespaceSource.Kind != NamespaceKustomize || nested.NamespaceSource.Path != "kustomization.yaml" {
+		t.Errorf("nested NamespaceSource = %+v, want {Kustomize kustomization.yaml}", nested.NamespaceSource)
+	}
+}
+
+// TestBuildStore_AmbiguousKustomizeNamespaceRefused proves the safety rule the design
+// doc requires: when two render roots assign different namespaces to the same source
+// file, the store refuses to infer one, leaves the document namespace-less (None), and
+// emits an ambiguous-namespace diagnostic rather than guessing by proximity.
+func TestBuildStore_AmbiguousKustomizeNamespaceRefused(t *testing.T) {
+	mapper := typeset.NewSnapshotRegistry(sampleClusterSnapshot())
+	store := BuildStore(context.Background(), fstest.MapFS{
+		"kustomization.yaml": {Data: []byte(
+			"apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\n" +
+				"namespace: team-a\nresources:\n- shared.yaml\n")},
+		"other/kustomization.yaml": {Data: []byte(
+			"apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\n" +
+				"namespace: team-b\nresources:\n- ../shared.yaml\n")},
+		"shared.yaml": {Data: []byte("apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: shared\n")},
+	}, mapper)
+
+	for _, ns := range []string{"team-a", "team-b"} {
+		if store.ByManifestIdentity[manifestedit.Identity{APIVersion: "v1", Kind: "ConfigMap", Namespace: ns, Name: "shared"}] != nil {
+			t.Errorf("shared.yaml must not be indexed under %q when context is ambiguous", ns)
+		}
+	}
+	dm := store.ByManifestIdentity[manifestedit.Identity{APIVersion: "v1", Kind: "ConfigMap", Name: "shared"}]
+	if dm == nil {
+		t.Fatalf("shared.yaml should still be indexed by its raw namespace-less identity")
+	}
+	if dm.NamespaceSource.Kind != NamespaceNone {
+		t.Errorf("ambiguous shared.yaml NamespaceSource = %+v, want None", dm.NamespaceSource)
+	}
+	if dm.NamespaceInheritedFromContext() {
+		t.Errorf("ambiguous document must not be treated as context-namespaced")
+	}
+
+	var ambiguous int
+	for _, d := range store.Diagnostics {
+		if d.Reason == reasonAmbiguousNamespace {
+			ambiguous++
+			if d.Path != "shared.yaml" {
+				t.Errorf("ambiguous-namespace diagnostic on %q, want shared.yaml", d.Path)
+			}
+		}
+	}
+	if ambiguous != 1 {
+		t.Errorf("ambiguous-namespace diagnostics = %d, want 1", ambiguous)
+	}
+}
+
+// TestBuildStore_UnsupportedKustomizeIsNotANamespaceSource proves a kustomization using
+// a feature outside the supported subset (here patches) never supplies a namespace
+// context, so its referenced documents fall back to namespace-less (None).
+func TestBuildStore_UnsupportedKustomizeIsNotANamespaceSource(t *testing.T) {
+	mapper := typeset.NewSnapshotRegistry(sampleClusterSnapshot())
+	store := BuildStore(context.Background(), fstest.MapFS{
+		"kustomization.yaml": {Data: []byte(
+			"apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\n" +
+				"namespace: team-a\nresources:\n- app.yaml\npatches:\n- path: patch.yaml\n")},
+		"app.yaml": {Data: []byte("apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: app\n")},
+	}, mapper)
+
+	if store.ByManifestIdentity[manifestedit.Identity{APIVersion: "v1", Kind: "ConfigMap", Namespace: "team-a", Name: "app"}] != nil {
+		t.Errorf("a kustomization using patches must not supply a namespace context")
+	}
+	dm := store.ByManifestIdentity[manifestedit.Identity{APIVersion: "v1", Kind: "ConfigMap", Name: "app"}]
+	if dm == nil {
+		t.Fatalf("app.yaml should still be indexed by its raw namespace-less identity")
+	}
+	if dm.NamespaceSource.Kind != NamespaceNone {
+		t.Errorf("app.yaml NamespaceSource = %+v, want None (unsupported context)", dm.NamespaceSource)
+	}
+}
+
+// TestBuildStore_NamespaceSourceWithoutKustomize covers the two no-kustomize cases: an
+// explicit metadata.namespace is authoritative (Explicit), and a namespace-less
+// resource that no kustomization references stays namespace-less (None).
+func TestBuildStore_NamespaceSourceWithoutKustomize(t *testing.T) {
+	mapper := typeset.NewSnapshotRegistry(sampleClusterSnapshot())
+	store := BuildStore(context.Background(), fstest.MapFS{
+		"explicit.yaml": {Data: []byte("apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: a\n  namespace: team-x\n")},
+		"loose.yaml":    {Data: []byte("apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: b\n")},
+	}, mapper)
+
+	explicit := store.ByManifestIdentity[manifestedit.Identity{APIVersion: "v1", Kind: "ConfigMap", Namespace: "team-x", Name: "a"}]
+	if explicit == nil || explicit.NamespaceSource.Kind != NamespaceExplicit {
+		t.Errorf("explicit-namespace document should record NamespaceExplicit, got %+v", explicit)
+	}
+	loose := store.ByManifestIdentity[manifestedit.Identity{APIVersion: "v1", Kind: "ConfigMap", Name: "b"}]
+	if loose == nil {
+		t.Fatalf("namespace-less document with no context should be indexed by its raw identity")
+	}
+	if loose.NamespaceSource.Kind != NamespaceNone {
+		t.Errorf("namespace-less document with no context = %+v, want None", loose.NamespaceSource)
+	}
+	if loose.NamespaceInheritedFromContext() {
+		t.Errorf("no-context document must not be treated as context-namespaced")
+	}
+}
+
 // TestBuildStore_DuplicateLoserResolves proves mapping is per-document: the
 // duplicate Deployment in dup.yaml still resolves to a ResourceIdentity, but it lost
 // the first-occurrence contest, so it is the IsDuplicate loser and never the

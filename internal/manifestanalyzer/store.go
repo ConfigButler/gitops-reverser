@@ -22,9 +22,12 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"path"
 	"sort"
+	"strings"
 
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"sigs.k8s.io/yaml"
 
 	"github.com/ConfigButler/gitops-reverser/internal/git/manifestedit"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
@@ -140,9 +143,16 @@ func (f *FileModel) Deleted() bool { return f.Current == nil && f.Original != ni
 // apply time. See docs/design/manifest/current-manifest-support-review.md ("Concrete
 // Data Structures") and the M4 acceptance gate (acceptance.go).
 type DocumentModel struct {
-	// ManifestIdentity is the content identity (apiVersion + kind + namespace +
-	// name) as written in YAML.
+	// ManifestIdentity is the EFFECTIVE content identity (apiVersion + kind +
+	// namespace + name). For a namespace-less namespaced resource it may carry a
+	// namespace inherited from a kustomization.yaml that references the document
+	// through its resources graph; NamespaceSource records that provenance.
 	ManifestIdentity manifestedit.Identity
+
+	// NamespaceSource records where ManifestIdentity.Namespace came from: the file
+	// itself, a kustomization context, or nowhere (absent and unsupplied/ambiguous).
+	// See NamespaceSourceKind.
+	NamespaceSource NamespaceSource
 
 	// ResourceIdentity is the API-side identity (GVR + namespace + name). It is set
 	// only when the injected GVK->GVR mapper resolves the document's GVK to a single
@@ -166,6 +176,47 @@ type DocumentModel struct {
 	// Snapshot is the lazy body handle. It is unbuilt (zero) until a plan action
 	// touches the document; identity indexing needs only a cheap header parse.
 	Snapshot manifestedit.SnapshotRef
+}
+
+// NamespaceSourceKind classifies where a document's effective namespace comes from.
+// It replaces an earlier "namespace came from kustomize" boolean so the store can also
+// explain the no-context and ambiguous cases to status, duplicate diagnostics, and
+// future placement — see
+// docs/design/manifest/contextual-namespace-and-kustomize-folder-editing.md.
+type NamespaceSourceKind string
+
+const (
+	// NamespaceExplicit means the namespace is authoritative as written in the file
+	// (metadata.namespace present), or the document is cluster-scoped / not yet
+	// resolved so no context is consulted. The file bytes own the namespace.
+	NamespaceExplicit NamespaceSourceKind = "Explicit"
+	// NamespaceKustomize means the namespace was inherited from a kustomization.yaml
+	// that references the document through its resources graph. metadata.namespace is
+	// absent from the file and must stay absent on write; Path names the kustomization.
+	NamespaceKustomize NamespaceSourceKind = "Kustomize"
+	// NamespaceNone means a namespaced, followable document omits metadata.namespace
+	// and no single supported context supplies one — either nothing references it, or
+	// the references disagree (ambiguous). The document is left namespace-less rather
+	// than guessed; an ambiguous case also emits a reasonAmbiguousNamespace diagnostic
+	// for the repository-validity layer.
+	NamespaceNone NamespaceSourceKind = "None"
+)
+
+// NamespaceSource records where a document's effective namespace came from. Kind
+// drives the one write-time decision the live writer makes (keep metadata.namespace
+// out of the file and locate by raw identity only when Kind is Kustomize); Path is the
+// kustomization file that supplied the namespace, set only for NamespaceKustomize.
+type NamespaceSource struct {
+	Kind NamespaceSourceKind
+	Path string
+}
+
+// NamespaceInheritedFromContext reports whether the document's effective namespace
+// comes from build context (a kustomization.yaml) rather than metadata.namespace in
+// the file. The writer uses it to keep metadata.namespace out of the file and to
+// locate the document by its raw (namespace-less) identity in the file bytes.
+func (dm *DocumentModel) NamespaceInheritedFromContext() bool {
+	return dm.NamespaceSource.Kind == NamespaceKustomize
 }
 
 // MappingOutcome records why a document's ResourceIdentity is or is not set, derived
@@ -214,6 +265,14 @@ const reasonUnresolvedMapping manifestedit.DiagReason = "unresolved-mapping"
 // (the mapper's scope wins); whether the shape is refused is an M4 acceptance
 // decision. Structure-only analysis never resolves a scope, so never emits it.
 const reasonScopeMismatch manifestedit.DiagReason = "scope-mismatch"
+
+// reasonAmbiguousNamespace marks a build-time diagnostic for a namespace-less,
+// namespaced KRM document that supported kustomization contexts assign more than one
+// namespace (two render roots, or a parent/child namespace override). The store
+// refuses to infer a namespace and leaves the document namespace-less rather than
+// guess by filesystem proximity; the repository-validity layer is expected to fail the
+// GitTarget on this signal.
+const reasonAmbiguousNamespace manifestedit.DiagReason = "ambiguous-namespace"
 
 // CauseKind is the structured kind of a DocumentCause.
 type CauseKind string
@@ -278,6 +337,7 @@ func buildStore(
 		lookup = typeset.NewRegistry()
 	}
 	inv, indexDiags := manifestedit.IndexFiles(yamlFiles)
+	nsAssignments := kustomizeNamespaceAssignments(yamlFiles)
 
 	store := &ManifestStore{
 		FilesByPath:        map[string]*FileModel{},
@@ -302,7 +362,7 @@ func buildStore(
 			})
 			continue
 		}
-		store.materialize(ctx, r, lookup)
+		store.materialize(ctx, r, lookup, nsAssignments)
 	}
 
 	// Record every allowlisted file with no named record as a whole-file retention,
@@ -352,15 +412,22 @@ func (s *ManifestStore) materialize(
 	ctx context.Context,
 	r manifestedit.DocumentRecord,
 	lookup typeset.Lookup,
+	nsAssignments map[string]namespaceAssignment,
 ) {
 	gvk := gvkOf(r.Identity)
+	identity, nsSource, diag := resolveNamespaceContext(ctx, r.Identity, gvk, lookup, r.Location, nsAssignments)
+	if diag != nil {
+		s.Diagnostics = append(s.Diagnostics, *diag)
+	}
+
 	fm := s.FilesByPath[r.Location.Path]
 	if fm == nil {
 		fm = &FileModel{Path: r.Location.Path}
 		s.FilesByPath[r.Location.Path] = fm
 	}
 	dm := &DocumentModel{
-		ManifestIdentity: r.Identity,
+		ManifestIdentity: identity,
+		NamespaceSource:  nsSource,
 		Editable:         r.Editable && !r.Encrypted,
 		Cause:            causeFor(r),
 	}
@@ -413,6 +480,326 @@ func sortRetained(retained []RetainedDocument) {
 		}
 		return retained[i].Location.DocumentIndex < retained[j].Location.DocumentIndex
 	})
+}
+
+// resolveNamespaceContext determines a document's effective namespace and records
+// where it came from. A namespace written in the file is authoritative (Explicit). For
+// a namespace-less, followable, namespaced document it consults the kustomization
+// resources graph: exactly one assigning namespace is inherited (Kustomize); zero or
+// conflicting assignments leave the document namespace-less (None), with an ambiguity
+// diagnostic in the conflict case. It never guesses by filesystem proximity, so a file
+// is only given a namespace by a kustomization that actually references it.
+func resolveNamespaceContext(
+	ctx context.Context,
+	id manifestedit.Identity,
+	gvk schema.GroupVersionKind,
+	lookup typeset.Lookup,
+	loc manifestedit.Location,
+	assignments map[string]namespaceAssignment,
+) (manifestedit.Identity, NamespaceSource, *manifestedit.Diagnostic) {
+	if id.Namespace != "" {
+		return id, NamespaceSource{Kind: NamespaceExplicit}, nil
+	}
+	if ctx.Err() != nil || !lookup.Ready() {
+		return id, NamespaceSource{Kind: NamespaceExplicit}, nil
+	}
+	record, known := lookup.ByGVK(gvk)
+	if !known || !record.Followable() || record.Identity.Scope != typeset.ScopeNamespaced {
+		// Cluster-scoped or unresolved: a namespace context does not apply.
+		return id, NamespaceSource{Kind: NamespaceExplicit}, nil
+	}
+
+	a := assignments[filepathToSlash(loc.Path)]
+	switch len(a.namespaces) {
+	case 0:
+		return id, NamespaceSource{Kind: NamespaceNone}, nil
+	case 1:
+		ns := a.namespaces[0]
+		id.Namespace = ns
+		return id, NamespaceSource{Kind: NamespaceKustomize, Path: a.sourceByNamespace[ns]}, nil
+	default:
+		return id, NamespaceSource{Kind: NamespaceNone}, &manifestedit.Diagnostic{
+			Level:  manifestedit.DiagWarning,
+			Reason: reasonAmbiguousNamespace,
+			Message: fmt.Sprintf(
+				"namespace-less %s %q is assigned conflicting namespaces %v by kustomization context; refusing to infer one",
+				gvk.Kind,
+				id.Name,
+				a.namespaces,
+			),
+			Path:          loc.Path,
+			DocumentIndex: loc.DocumentIndex,
+		}
+	}
+}
+
+// namespaceAssignment is the set of distinct namespaces that supported kustomization
+// contexts assign to one resource file, with the kustomization that supplied each.
+// More than one distinct namespace is the ambiguous case resolveNamespaceContext
+// refuses.
+type namespaceAssignment struct {
+	namespaces        []string          // sorted, distinct
+	sourceByNamespace map[string]string // namespace -> kustomization file path that assigned it
+}
+
+// kustomizationDoc is the parsed, write-relevant view of one kustomization.yaml: its
+// namespace transformer, its resources/bases graph entries, and whether it uses any
+// feature outside the supported contextual-namespace subset (which disqualifies it as
+// a namespace source). See the "Kustomize subset proposal" in
+// docs/design/manifest/contextual-namespace-and-kustomize-folder-editing.md.
+type kustomizationDoc struct {
+	path        string   // kustomization file path (slash)
+	namespace   string   // the namespace: transformer value
+	resources   []string // resources + bases entries, raw and relative to the file's dir
+	unsupported bool     // uses generators/patches/components/remote bases/name(pre|suf)fix/...
+}
+
+// kustomizeNamespaceAssignments walks each supported kustomization as a render root and
+// attributes its namespace to every resource file reachable through its resources
+// graph. A file reached from two roots with different namespaces (or via a parent that
+// overrides a child's namespace) accumulates both, which resolveNamespaceContext then
+// refuses as ambiguous. Following the graph — not the nearest kustomization on disk —
+// is the safety property the design doc requires.
+func kustomizeNamespaceAssignments(files []manifestedit.FileContent) map[string]namespaceAssignment {
+	kusts := parseKustomizations(files)
+	resourceFiles := resourceFilePaths(files)
+
+	// nsByFile[file][namespace] = kustomization path that first assigned it.
+	nsByFile := map[string]map[string]string{}
+	for dir, root := range kusts {
+		if root.unsupported || root.namespace == "" {
+			continue
+		}
+		assignFromRoot(dir, root, kusts, resourceFiles, nsByFile)
+	}
+	return collapseAssignments(nsByFile)
+}
+
+// resourceFilePaths is the set of non-kustomization YAML paths (slash) — the resource
+// files a kustomization's resources graph can reference.
+func resourceFilePaths(files []manifestedit.FileContent) map[string]struct{} {
+	out := map[string]struct{}{}
+	for _, f := range files {
+		if !isKustomizationFile(f.Path) {
+			out[filepathToSlash(f.Path)] = struct{}{}
+		}
+	}
+	return out
+}
+
+// assignFromRoot walks one render root, attributing its namespace to every resource
+// file reachable through the resources graph, recursing into directory bases (where the
+// parent namespace still applies, which is exactly why a base with its own namespace
+// becomes ambiguous). The visited set bounds cycles and re-entry.
+func assignFromRoot(
+	dir string,
+	root *kustomizationDoc,
+	kusts map[string]*kustomizationDoc,
+	resourceFiles map[string]struct{},
+	nsByFile map[string]map[string]string,
+) {
+	visited := map[string]struct{}{}
+	var walk func(curDir string, cur *kustomizationDoc)
+	walk = func(curDir string, cur *kustomizationDoc) {
+		if cur == nil || cur.unsupported {
+			return
+		}
+		if _, seen := visited[curDir]; seen {
+			return
+		}
+		visited[curDir] = struct{}{}
+		for _, entry := range cur.resources {
+			target := cleanJoin(curDir, entry)
+			switch {
+			case target == "":
+				// empty, or escapes the scanned root: contributes no context.
+			case mapHasKey(resourceFiles, target):
+				addNamespace(nsByFile, target, root.namespace, root.path)
+			default:
+				walk(target, kusts[target]) // a directory base, or an unknown entry (no-op)
+			}
+		}
+	}
+	walk(dir, root)
+}
+
+func addNamespace(nsByFile map[string]map[string]string, file, namespace, source string) {
+	m := nsByFile[file]
+	if m == nil {
+		m = map[string]string{}
+		nsByFile[file] = m
+	}
+	if _, ok := m[namespace]; !ok {
+		m[namespace] = source
+	}
+}
+
+func mapHasKey(m map[string]struct{}, key string) bool {
+	_, ok := m[key]
+	return ok
+}
+
+// collapseAssignments turns the per-file namespace map into sorted, distinct
+// namespaceAssignments. A file with more than one distinct namespace is the ambiguous
+// case resolveNamespaceContext refuses.
+func collapseAssignments(nsByFile map[string]map[string]string) map[string]namespaceAssignment {
+	out := make(map[string]namespaceAssignment, len(nsByFile))
+	for file, m := range nsByFile {
+		namespaces := make([]string, 0, len(m))
+		for ns := range m {
+			namespaces = append(namespaces, ns)
+		}
+		sort.Strings(namespaces)
+		out[file] = namespaceAssignment{namespaces: namespaces, sourceByNamespace: m}
+	}
+	return out
+}
+
+// parseKustomizations reads every kustomization.yaml into a kustomizationDoc keyed by
+// its directory. An unparseable kustomization, or one using an unsupported feature, is
+// kept but marked unsupported so it never acts as a namespace source.
+func parseKustomizations(files []manifestedit.FileContent) map[string]*kustomizationDoc {
+	out := map[string]*kustomizationDoc{}
+	for _, f := range files {
+		if !isKustomizationFile(f.Path) {
+			continue
+		}
+		doc := &kustomizationDoc{path: filepathToSlash(f.Path)}
+		raw := map[string]interface{}{}
+		if err := yaml.Unmarshal(f.Content, &raw); err != nil {
+			doc.unsupported = true
+			out[slashDir(f.Path)] = doc
+			continue
+		}
+		doc.namespace = strings.TrimSpace(stringField(raw, "namespace"))
+		doc.resources = append(stringList(raw, "resources"), stringList(raw, "bases")...)
+		doc.unsupported = hasUnsupportedKustomizeFeature(raw) || hasRemoteResource(doc.resources)
+		out[slashDir(f.Path)] = doc
+	}
+	return out
+}
+
+// hasUnsupportedKustomizeFeature reports whether a kustomization uses a field that
+// creates resources or mutates resource identity (name/namespace) in ways the
+// contextual-namespace writer cannot map back to an editable source document. Their
+// presence disqualifies a kustomization as a namespace source; benign transformers
+// (labels, annotations, images) do not.
+func hasUnsupportedKustomizeFeature(raw map[string]interface{}) bool {
+	unsupported := []string{
+		"generators", "configMapGenerator", "secretGenerator",
+		"helmCharts", "helmGlobals", "helmChartInflationGenerator",
+		"patches", "patchesStrategicMerge", "patchesJson6902",
+		"replacements", "components", "transformers", "configurations",
+		"namePrefix", "nameSuffix",
+	}
+	for _, key := range unsupported {
+		if v, ok := raw[key]; ok && !isEmptyValue(v) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasRemoteResource(entries []string) bool {
+	for _, e := range entries {
+		if isRemoteResource(e) {
+			return true
+		}
+	}
+	return false
+}
+
+// isRemoteResource reports whether a resources entry is a remote base (a URL or a
+// git/host-qualified path) rather than a local file or directory.
+func isRemoteResource(entry string) bool {
+	e := strings.TrimSpace(entry)
+	if strings.Contains(e, "://") || strings.Contains(e, "git@") {
+		return true
+	}
+	for _, host := range []string{"github.com/", "gitlab.com/", "bitbucket.org/"} {
+		if strings.HasPrefix(e, host) {
+			return true
+		}
+	}
+	return false
+}
+
+func stringField(raw map[string]interface{}, key string) string {
+	if v, ok := raw[key].(string); ok {
+		return v
+	}
+	return ""
+}
+
+func stringList(raw map[string]interface{}, key string) []string {
+	v, ok := raw[key].([]interface{})
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(v))
+	for _, e := range v {
+		if s, ok := e.(string); ok {
+			if s = strings.TrimSpace(s); s != "" {
+				out = append(out, s)
+			}
+		}
+	}
+	return out
+}
+
+func isEmptyValue(v interface{}) bool {
+	switch t := v.(type) {
+	case nil:
+		return true
+	case string:
+		return strings.TrimSpace(t) == ""
+	case []interface{}:
+		return len(t) == 0
+	case map[string]interface{}:
+		return len(t) == 0
+	default:
+		return false
+	}
+}
+
+// cleanJoin resolves a kustomization resources entry against the kustomization's
+// directory into a clean slash path. A trailing slash is dropped so a directory base
+// keys the same as its kustomization dir. An entry that escapes the scanned root (via
+// "..") or resolves to the root itself returns "" — it points outside the subtree and
+// contributes no context.
+func cleanJoin(dir, entry string) string {
+	e := strings.TrimSuffix(filepathToSlash(strings.TrimSpace(entry)), "/")
+	var joined string
+	if dir == "." || dir == "" {
+		joined = path.Clean(e)
+	} else {
+		joined = path.Clean(dir + "/" + e)
+	}
+	if joined == "." || joined == ".." || strings.HasPrefix(joined, "../") {
+		return ""
+	}
+	return joined
+}
+
+func slashDir(filePath string) string {
+	dir := path.Dir(filepathToSlash(filePath))
+	if dir == "/" || dir == "" {
+		return "."
+	}
+	return dir
+}
+
+func filepathToSlash(filePath string) string {
+	return strings.ReplaceAll(filePath, "\\", "/")
+}
+
+func isKustomizationFile(filePath string) bool {
+	switch path.Base(filepathToSlash(filePath)) {
+	case "kustomization.yaml", "kustomization.yml":
+		return true
+	default:
+		return false
+	}
 }
 
 // resolveMapping asks the followability registry whether dm's GVK is followable,

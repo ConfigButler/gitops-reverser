@@ -28,8 +28,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	"github.com/ConfigButler/gitops-reverser/internal/types"
+	"github.com/ConfigButler/gitops-reverser/internal/typeset"
 )
 
 // inplaceCMEvent builds an UPDATE event for the default/app ConfigMap with its
@@ -71,6 +73,20 @@ func applyEventsViaPlanFlush(t *testing.T, writer *contentWriter, worktree *gogi
 	return changed
 }
 
+func applyEventsViaPlanFlushWithMapper(
+	t *testing.T,
+	writer *contentWriter,
+	worktree *gogit.Worktree,
+	mapper typeset.Lookup,
+	events ...Event,
+) bool {
+	t.Helper()
+	w := &BranchWorker{contentWriter: writer, mapper: mapper}
+	changed, err := w.flushEventsToWorktree(context.Background(), worktree, "", events)
+	require.NoError(t, err)
+	return changed
+}
+
 // When the file on disk is hand-authored (carries a comment), an update edits it
 // in place: the comment survives and only the changed field is rewritten. This is
 // the file-agnostic-placement "magic" landing in the live writer's plan-then-flush
@@ -100,6 +116,44 @@ func TestPlanFlush_PreservesHandAuthoredFormatting(t *testing.T) {
 		"the hand-authored comment must survive the in-place edit")
 	assert.Contains(t, string(got), "color: green", "the changed value is applied")
 	assert.NotContains(t, string(got), "color: blue")
+}
+
+func TestPlanFlush_PreservesKustomizeNamespaceStyle(t *testing.T) {
+	writer := newContentWriter(types.SensitiveResourcePolicy{})
+	worktree := newWorktreeForTest(t)
+	root := worktree.Filesystem.Root()
+
+	relPath := "apps/bundle.yaml"
+	full := filepath.Join(root, relPath)
+	seeded := "apiVersion: v1\n" +
+		"kind: ConfigMap\n" +
+		"metadata:\n  name: app\n" +
+		"data:\n  # keep this operator note across edits\n  color: blue\n"
+	require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o750))
+	require.NoError(t, os.WriteFile(full, []byte(seeded), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "kustomization.yaml"), []byte(
+		"apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\n"+
+			"namespace: default\nresources:\n- apps/bundle.yaml\n",
+	), 0o600))
+
+	mapper := typeset.NewSnapshotRegistry(typeset.Snapshot{
+		Entries: []typeset.Entry{{
+			GVK:        schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"},
+			GVR:        schema.GroupVersionResource{Version: "v1", Resource: "configmaps"},
+			Namespaced: true,
+			Allowed:    true,
+		}},
+	})
+	changed := applyEventsViaPlanFlushWithMapper(t, writer, worktree, mapper, inplaceCMEvent("green"))
+	require.True(t, changed, "a real value change must be written")
+
+	got, err := os.ReadFile(full)
+	require.NoError(t, err)
+	body := string(got)
+	assert.Contains(t, body, "# keep this operator note across edits")
+	assert.Contains(t, body, "color: green")
+	assert.NotContains(t, body, "color: blue")
+	assert.NotContains(t, body, "namespace:", "namespace should stay in kustomization.yaml, not the resource")
 }
 
 // A change against a canonical file applies the new value. The plan-then-flush path

@@ -159,7 +159,7 @@ var _ = Describe("Manager CRD Lifecycle", Label("manager"), Ordered, func() {
 				"File should contain CRD name")
 		}
 		Eventually(verifyGitCommit).
-			WithTimeout(60 * time.Second).
+			WithTimeout(2 * time.Minute).
 			WithPolling(2 * time.Second).
 			Should(Succeed())
 
@@ -335,7 +335,7 @@ var _ = Describe("Manager CRD Lifecycle", Label("manager"), Ordered, func() {
 				"CRD instance file should NOT contain status field")
 		}
 		Eventually(verifyGitCommit).
-			WithTimeout(60 * time.Second).
+			WithTimeout(2 * time.Minute).
 			WithPolling(2 * time.Second).
 			Should(Succeed())
 

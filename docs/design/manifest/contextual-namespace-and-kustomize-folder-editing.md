@@ -1,7 +1,10 @@
 # Contextual namespace support for real manifest folders
 
-> Status: investigation
+> Status: investigation → partially implemented (graph-aware namespace inference and
+> ambiguity refusal landed in the manifest store; GitTarget-level refusal and
+> kustomize scoping still pending)
 > Captured: 2026-06-08
+> Updated: 2026-06-08
 > Related:
 > [file-agnostic-placement.md](file-agnostic-placement.md),
 > [manifest-inventory-file-agnostic-placement.md](manifest-inventory-file-agnostic-placement.md),
@@ -225,6 +228,90 @@ First safe version:
 This lets existing real folders work without promising that gitops-reverser can
 author every Kustomize layout from scratch.
 
+## Kustomize defines the managed set (scope)
+
+When a `kustomization.yaml` is present, it — not the filesystem — decides which
+documents are in scope. The rule:
+
+- **Follow the `resources` graph.** A document is part of the kustomize-managed
+  set only if it is reachable from a kustomization through `resources` (directly,
+  or transitively via a child directory base). Namespace context is attributed by
+  that graph, never by "nearest file on disk".
+- **A document outside the graph is not kustomize-managed.** A YAML file sitting
+  in (or under) a kustomized folder that no `resources` entry references is not
+  part of the build. We do not invent a namespace for it from a nearby
+  kustomization.
+
+What to *do* with those out-of-graph documents is a deliberate, simple choice and
+yes, it is easy to implement because the graph is already computed:
+
+- If the document carries its own full identity (explicit `metadata.namespace`, or
+  it is cluster-scoped), it is just an ordinary managed document — independent of
+  kustomize. Manage it normally.
+- If it is a namespace-less namespaced document with no graph entry, we **cannot**
+  explain its effective identity, so we **refuse the GitTarget** rather than guess
+  or silently mismatch. (See "Strict by default" below.)
+
+The point: kustomize narrows scope, it does not widen it. We only ever *read*
+`kustomization.yaml` as context; we never treat it as a managed object, and we
+never traverse anything but its `resources`/bases edges.
+
+## Bidirectionality: every edit must round-trip
+
+The contextual-namespace model is constrained by a requirement that runs through
+the whole writer: **an edit must be expressible in both directions.** A change
+observed on the live object must map cleanly onto the *source document* in Git
+(live → Git), and the source document as written must map cleanly onto the live
+object's identity (Git → live). The store already encodes this as two identities:
+
+- raw identity = what is literally in the file (may be namespace-less);
+- effective identity = raw identity plus context (the namespace a kustomization
+  supplies).
+
+`NamespaceSource` records which transform was applied so the writer can invert it:
+on write it strips the context-supplied namespace back out, and on lookup it
+matches the live event's effective identity to the file's raw identity. That is a
+clean, reversible 1:1 mapping.
+
+This is the deeper reason the unsupported list is what it is. Generators, patches,
+replacements, Helm inflation, and `namePrefix`/`nameSuffix` are **lossy or
+one-way**: the rendered object has no stable, invertible source location, so a
+live change cannot be written back to "the" source document, and the source
+document does not determine a single live identity. A transform we cannot invert
+breaks round-tripping, so it is refused for write-capable contextual management —
+not because parsing it is hard, but because the edit could not travel back.
+
+A corollary, already decided elsewhere: one source document owns exactly one live
+object, and one live object has exactly one editable source document. Overlays
+that apply one base to several namespaces violate this and must be refused (see
+the open question on namespace overlays).
+
+## Strict by default: refuse, with clear GitTarget status
+
+Start by refusing the hard questions, loudly, rather than handling them softly.
+The default posture for anything outside the supported subset is **refuse the
+GitTarget**, not "manage what we can and ignore the rest". A half-managed folder
+is the dangerous state: it is where silent duplicates, wrong-namespace edits, and
+unexplained deletes come from.
+
+Concretely:
+
+- Unsupported kustomize features, ambiguous namespace context, out-of-graph
+  namespace-less documents, remote bases, and overlay fan-out all resolve to a
+  GitTarget that does **not** go live.
+- The refusal is surfaced as a specific, human-readable `RepositoryValid=False`
+  status: the condition names *what* is unsupported and *where* (the offending
+  file or `kustomization.yaml`), so an operator can fix the repo or narrow the
+  GitTarget path. Status must never dump the whole source graph; it names the
+  first/representative offenders and counts the rest.
+- The store side of this already exists as build-time diagnostics
+  (`ambiguous-namespace`, `unresolved-mapping`, `scope-mismatch`); the pending
+  work is the `RepositoryValid` projection that turns those diagnostics into the
+  refusing condition.
+
+It is always safe to *widen* support later. It is expensive to walk back a folder
+we promised to manage and then corrupted. Refuse first.
+
 ## API shape to consider
 
 A future API should separate namespace identity from output style:
@@ -284,23 +371,30 @@ writer should receive a store whose effective identities are already trustworthy
 
 ## Writer implications
 
-The manifest store likely needs to keep:
+What landed: the store keeps the **effective** identity on `DocumentModel`
+(`ManifestIdentity`, with the kustomize namespace already folded in) plus a
+`NamespaceSource` recording provenance. The raw identity is the effective identity
+with the context-supplied namespace stripped back out — derived on demand by the
+writer rather than stored twice:
 
 ```go
 type DocumentModel struct {
-    RawManifestIdentity       manifestedit.Identity
-    EffectiveManifestIdentity manifestedit.Identity
-    NamespaceSource           NamespaceSource
+    ManifestIdentity manifestedit.Identity // effective: raw + context namespace
+    NamespaceSource  NamespaceSource
+    // ...
 }
 
 type NamespaceSource struct {
-    Kind string // Explicit | Kustomize | Fixed | None
-    Path string // kustomization path when Kind=Kustomize
+    Kind NamespaceSourceKind // Explicit | Kustomize | None (Fixed reserved)
+    Path string              // kustomization path when Kind == Kustomize
 }
 ```
 
-The current spike's `NamespaceFromKustomize bool` captures the important output
-decision but is not enough for status, duplicate diagnostics, or future placement.
+`NamespaceSource` replaced the spike's `NamespaceFromKustomize bool`: the bool
+captured only the output decision, while the kind/path also explains the
+no-context and ambiguous cases to status, duplicate diagnostics, and future
+placement. `dm.NamespaceInheritedFromContext()` (Kind == Kustomize) is the single
+predicate the writer reads.
 
 Write rules:
 
@@ -335,6 +429,35 @@ namespace management.
 The important distinction: the implementation should follow the `resources`
 graph, not just search for the nearest `kustomization.yaml` by filesystem path.
 
+## Supported and unsupported example folders
+
+The supported/unsupported boundary is concrete, so it is pinned by a corpus of
+small example folders rather than prose alone. They live under
+`internal/manifestanalyzer/testdata/contextual-namespace/` and are exercised by a
+table-driven test that builds the store over each folder and asserts the outcome
+(effective namespace + `NamespaceSource`, or the refusing diagnostic). The corpus
+is meant to grow — every new "can we support X?" question should arrive as a new
+folder.
+
+| Folder | Shape | Expected outcome |
+|---|---|---|
+| `supported/flat-namespace` | one kustomization, `namespace:`, flat `resources` | namespace inherited (`Kustomize`) |
+| `supported/nested-base` | parent `namespace:` + child dir base with no namespace | namespace propagates through the graph |
+| `supported/multi-doc` | a multi-document file in `resources` | every document inherits |
+| `supported/explicit-namespace` | `metadata.namespace` written in the file | kept as-is (`Explicit`) |
+| `unsupported/ambiguous-two-roots` | two roots assign different namespaces to one file | refused (`ambiguous-namespace`) |
+| `unsupported/patches` | `patches:` present | not a namespace source (`None`) |
+| `unsupported/generators` | `configMapGenerator:` present | not a namespace source |
+| `unsupported/components` | `components:` present | not a namespace source |
+| `unsupported/helm` | `helmCharts:` present | not a namespace source |
+| `unsupported/remote-base` | `resources:` points at a remote base | not a namespace source |
+| `unsupported/name-prefix` | `namePrefix:` present (identity-mutating) | not a namespace source |
+| `unsupported/no-context` | namespace-less namespaced doc, no kustomization | `None` (GitTarget should refuse) |
+
+Today the store records the per-document outcome (`NamespaceSource` and the
+diagnostics); the `unsupported/*` folders that currently resolve to `None` are the
+inputs the pending `RepositoryValid` refusal will turn into a failed GitTarget.
+
 ## E2E test shape
 
 The fixture-backed e2e test is still the right acceptance test once the design is
@@ -350,7 +473,9 @@ implemented:
 - `kustomization.yaml` is unchanged;
 - resource YAML still omits `metadata.namespace`.
 
-The test should also add negative cases at unit or integration level:
+The negative cases live at unit level as the example-folder corpus
+(`internal/manifestanalyzer/testdata/contextual-namespace/`), so the one e2e stays
+a single happy-path acceptance test rather than a matrix:
 
 - namespace-less namespaced resource with no context;
 - two kustomizations assigning different namespaces to the same source file;

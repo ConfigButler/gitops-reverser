@@ -181,7 +181,7 @@ func (wb *writeBatch) applyUpsert(ctx context.Context, event Event) (upsertOutco
 			if wb.writer.isSensitiveIdentifier(event.Identifier) {
 				return wb.writeWholeFile(ctx, event, filePath)
 			}
-			return wb.patchExisting(ctx, event, filePath, id)
+			return wb.patchExisting(ctx, event, filePath, id, dm)
 		}
 	}
 	return wb.writeWholeFile(ctx, event, wb.writer.filePathForIdentifier(event.Identifier))
@@ -264,16 +264,22 @@ func (wb *writeBatch) patchExisting(
 	event Event,
 	filePath string,
 	id manifestedit.Identity,
+	dm *manifestanalyzer.DocumentModel,
 ) (upsertOutcome, error) {
 	buf := wb.buffer(filePath)
-	idx, ok := currentDocIndex(filePath, buf.current, id)
+	idx, ok := currentDocIndex(filePath, buf.current, rawManifestIDForCurrentBytes(id, dm))
 	if !ok {
 		return upsertNoChange, nil
 	}
 	gitDoc, _ := manifestedit.NewDocumentAt(filePath, buf.current, idx)
+	desired := event.Object
+	if dm.NamespaceInheritedFromContext() && desired != nil {
+		desired = desired.DeepCopy()
+		desired.SetNamespace("")
+	}
 	c := manifestedit.Comparison{
 		Git:     gitDoc,
-		Desired: manifestreport.Project(event.Object),
+		Desired: manifestreport.Project(desired),
 		Options: manifestreport.EditOptions(),
 	}
 	res, diags := manifestedit.Apply(c, manifestedit.Decide(c))
@@ -379,14 +385,32 @@ type deleteTarget struct {
 func (wb *writeBatch) resolveDelete(event Event) (deleteTarget, bool) {
 	if id, ok := manifestIdentity(event.Object); ok {
 		if dm := wb.store.ByManifestIdentity[id]; dm != nil {
-			return deleteTarget{filePath: wb.docLoc[dm].FilePath, id: id}, true
+			return deleteTarget{filePath: wb.docLoc[dm].FilePath, id: rawManifestIDForCurrentBytes(id, dm)}, true
 		}
 	}
 	action, emitted := manifestanalyzer.PlanDelete(wb.store, event.Identifier)
 	if emitted {
-		return deleteTarget{filePath: action.Ref.FilePath, id: action.Identity}, true
+		id := action.Identity
+		if dm := wb.store.ByManifestIdentity[id]; dm != nil {
+			id = rawManifestIDForCurrentBytes(id, dm)
+		}
+		return deleteTarget{filePath: action.Ref.FilePath, id: id}, true
 	}
 	return deleteTarget{}, false
+}
+
+// rawManifestIDForCurrentBytes maps an effective manifest identity back to the raw
+// identity as written in the file: when the namespace was inherited from kustomization
+// context, the file bytes carry no metadata.namespace, so the document is located by a
+// namespace-less identity.
+func rawManifestIDForCurrentBytes(
+	id manifestedit.Identity,
+	dm *manifestanalyzer.DocumentModel,
+) manifestedit.Identity {
+	if dm != nil && dm.NamespaceInheritedFromContext() {
+		id.Namespace = ""
+	}
+	return id
 }
 
 // currentDocIndex re-derives the position of the managed document for id within the
