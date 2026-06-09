@@ -10,7 +10,9 @@
       "Bash(go:*)",
       "Bash(ls:*)",
       "Bash(cat:*)",
-      "Bash(task test-e2e:*)"
+      "Bash(task test-e2e:*)",
+      "Bash(k3d cluster *)",
+      "Bash(kubectl config *)"
     ]
   }
 }

@@ -36,7 +36,6 @@ import (
 	k8stypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/dynamic/dynamicinformer"
-	"k8s.io/client-go/tools/cache"
 	ctrl "sigs.k8s.io/controller-runtime"
 
 	"github.com/cespare/xxhash/v2"
@@ -549,8 +548,10 @@ func (m *Manager) ReconcileForRuleChange(ctx context.Context) error {
 	}
 
 	// Put affected GitTarget event streams into RECONCILING state BEFORE starting new
-	// informers.  This ensures informer ADDED events fired during cache sync are buffered
-	// rather than processed as N individual [CREATE] commits.
+	// informers, so live events arriving during the snapshot are buffered rather than
+	// interleaved with the mark-and-sweep commit. Informer start is non-blocking now
+	// (no synchronous cache-sync wait), so an ADDED event may instead arrive after the
+	// flush below; it is then processed live and deduped against the snapshot content.
 	m.beginReconciliationForTargets(targets, log)
 
 	// Start the new (GVR, namespace) informers.
@@ -567,12 +568,11 @@ func (m *Manager) ReconcileForRuleChange(ctx context.Context) error {
 	// [CREATE] commits from the informer ADDED events buffered above.
 	deliveryErr := m.emitSnapshotForRuleChange(ctx, log, targets, "rule_change")
 
-	// Transition streams back to LIVE_PROCESSING and flush buffered events.
-	// startInformersForGVRs already waited for cache sync (WaitForCacheSync),
-	// so all initial ADDED events are guaranteed to be buffered before this point.
-	// The flushed events are no-ops at the git level because the snapshot batch
-	// just wrote those files. Run this even when a target failed delivery so the
-	// streams that did snapshot leave the buffering state.
+	// Transition streams back to LIVE_PROCESSING and flush events buffered during the
+	// snapshot. Informers sync in the background, so an initial ADDED event may not have
+	// arrived yet; when it does it is a no-op at the git level because the snapshot batch
+	// just wrote that file (content dedup). Run this even when a target failed delivery so
+	// the streams that did snapshot leave the buffering state.
 	m.completeReconciliationForTargets(targets, log)
 
 	if deliveryErr != nil {
@@ -671,7 +671,8 @@ func (m *Manager) startInformerScope(ctx context.Context, toStart []gvrNamespace
 	}
 
 	log.Info("Starting new informers", "count", len(actual))
-	return m.startCollectedInformers(ctx, client, actual)
+	m.startCollectedInformers(ctx, client, actual)
+	return nil
 }
 
 // initializeInformerMaps ensures informer tracking maps are initialized.
@@ -691,20 +692,21 @@ type gvrNamespace struct {
 }
 
 // startCollectedInformers starts all the collected informers.
-func (m *Manager) startCollectedInformers(ctx context.Context, client dynamic.Interface, toStart []gvrNamespace) error {
+func (m *Manager) startCollectedInformers(ctx context.Context, client dynamic.Interface, toStart []gvrNamespace) {
 	for _, item := range toStart {
-		if err := m.startSingleInformer(ctx, client, item.gvr, item.ns); err != nil {
-			return err
-		}
+		m.startSingleInformer(ctx, client, item.gvr, item.ns)
 	}
 
-	m.Log.WithName("reconcile").V(1).Info("All informers started and synced")
-	return nil
+	m.Log.WithName("reconcile").V(1).Info("All informers started")
 }
 
 // startSingleInformer starts a single informer for a GVR in a specific namespace (or cluster-wide if ns is empty).
-// Must be called with informersMu held.
-func (m *Manager) startSingleInformer(ctx context.Context, client dynamic.Interface, gvr GVR, ns string) error {
+// Must be called with informersMu held. It does NOT wait for the informer's cache to sync: a fresh
+// CRD whose API endpoint is briefly unservable would otherwise block the whole reconcile (and
+// informersMu) on WaitForCacheSync, which is the bootstrap deadlock M12 removes. The informer syncs
+// in the background; content for each type is materialised by its per-type reconcile, and live
+// events flow once the cache is up.
+func (m *Manager) startSingleInformer(ctx context.Context, client dynamic.Interface, gvr GVR, ns string) {
 	log := m.Log.WithName("reconcile").WithValues(
 		"group", gvr.Group,
 		"version", gvr.Version,
@@ -747,16 +749,9 @@ func (m *Manager) startSingleInformer(ctx context.Context, client dynamic.Interf
 
 	log.V(1).Info("Registered new informer")
 
-	// Start the factory (idempotent - starts new informers if factory already running)
+	// Start the factory (idempotent - starts new informers if factory already running). This
+	// does not block on cache sync; the informer syncs in the background.
 	factory.Start(ctx.Done())
-
-	// ALWAYS wait for this specific informer to sync
-	if !cache.WaitForCacheSync(ctx.Done(), informer.HasSynced) {
-		return fmt.Errorf("failed to sync cache for %v in namespace %s", resource, ns)
-	}
-	log.V(1).Info("Informer cache synced")
-
-	return nil
 }
 
 // clearDeduplicationCacheForGVRs removes hash entries for resources of the specified GVRs.
