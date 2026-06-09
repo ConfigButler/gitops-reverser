@@ -25,12 +25,14 @@ import (
 	"path/filepath"
 
 	gogit "github.com/go-git/go-git/v5"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/ConfigButler/gitops-reverser/internal/git/manifestedit"
 	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
 	"github.com/ConfigButler/gitops-reverser/internal/manifestreport"
 	"github.com/ConfigButler/gitops-reverser/internal/sanitize"
+	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
 // handleResyncRequest applies one revision-pinned resync in order on the worker
@@ -104,6 +106,7 @@ func (w *BranchWorker) buildResyncPendingWrite(
 		Kind:               PendingWriteResync,
 		Desired:            req.Desired,
 		Revision:           req.Revision,
+		ScopeGVR:           req.ScopeGVR,
 		ResyncStats:        stats,
 		CommitConfig:       ResolveCommitConfig(provider.Spec.Commit),
 		Signer:             signer,
@@ -157,7 +160,7 @@ func (w *BranchWorker) executeResyncPendingWrite(
 		return 0, fmt.Errorf("configure secret encryptor: %w", err)
 	}
 
-	stats, anyChanges, err := w.applyResyncToWorktree(ctx, worktree, base, pendingWrite.Desired)
+	stats, anyChanges, err := w.applyResyncToWorktree(ctx, worktree, base, pendingWrite.Desired, pendingWrite.ScopeGVR)
 	if err != nil {
 		return 0, err
 	}
@@ -219,6 +222,7 @@ func (w *BranchWorker) applyResyncToWorktree(
 	worktree *gogit.Worktree,
 	base string,
 	desired []manifestanalyzer.DesiredResource,
+	scopeGVR *schema.GroupVersionResource,
 ) (ResyncStats, bool, error) {
 	root := worktree.Filesystem.Root()
 	files, err := scanWorktreeYAML(filepath.Join(root, base))
@@ -227,10 +231,11 @@ func (w *BranchWorker) applyResyncToWorktree(
 	}
 
 	batch := newWriteBatch(ctx, w.contentWriter, w.mapper, files)
-	// The store is built from the same files BuildPlan reads, so the plan and the
-	// apply see identical bytes. BuildPlan is the authoritative mark-and-sweep over
-	// the resolved resource-identity index; the upserts reuse the steady-state writer.
-	plan := manifestanalyzer.BuildPlan(batch.store, files, desired, resyncPlanPolicy())
+	// The store is built from the same files the planner reads, so the plan and the apply
+	// see identical bytes. The planner is the authoritative mark-and-sweep over the resolved
+	// resource-identity index; the upserts reuse the steady-state writer. A scoped resync
+	// (M12 per-type) restricts the sweep to one type so no sibling document is dropped.
+	plan := resyncPlan(batch.store, files, desired, scopeGVR)
 
 	stats, err := batch.applyResyncPlan(ctx, desired, plan)
 	if err != nil {
@@ -319,6 +324,27 @@ func eventForDesired(dr manifestanalyzer.DesiredResource) Event {
 		Identifier: dr.Resource,
 		Operation:  "RECONCILE",
 	}
+}
+
+// resyncPlan builds the mark-and-sweep plan for a resync. A nil scopeGVR is the
+// whole-GitTarget resync (BuildPlan sweeps every managed document absent from desired); a
+// non-nil scopeGVR is the M12 per-type reconcile/sweep, where BuildScopedPlan restricts the
+// sweep to that type's (group, resource) so a removed type's documents drop while every
+// sibling type is left exactly as Git holds it. The upsert side is scoped by desired itself.
+func resyncPlan(
+	store *manifestanalyzer.ManifestStore,
+	files []manifestedit.FileContent,
+	desired []manifestanalyzer.DesiredResource,
+	scopeGVR *schema.GroupVersionResource,
+) manifestanalyzer.Plan {
+	if scopeGVR == nil {
+		return manifestanalyzer.BuildPlan(store, files, desired, resyncPlanPolicy())
+	}
+	gvr := *scopeGVR
+	inScope := func(ri types.ResourceIdentifier) bool {
+		return ri.Group == gvr.Group && ri.Resource == gvr.Resource
+	}
+	return manifestanalyzer.BuildScopedPlan(store, files, desired, resyncPlanPolicy(), inScope)
 }
 
 // resyncPlanPolicy is the planning policy for a resync: the same sanitized projection

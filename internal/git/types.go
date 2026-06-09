@@ -24,6 +24,7 @@ import (
 
 	gogit "github.com/go-git/go-git/v5"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	v1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 	"github.com/ConfigButler/gitops-reverser/internal/git/manifestedit"
@@ -175,6 +176,11 @@ type PendingWrite struct {
 	// PendingWriteResync. The worker folds it over the worktree's content-derived
 	// store to produce the resync plan (upserts + mark-and-sweep drops).
 	Desired []manifestanalyzer.DesiredResource
+	// ScopeGVR, when set, restricts the resync's mark-and-sweep to one type's
+	// (group, resource): the M12 per-type reconcile/sweep. Desired then carries only
+	// that type's objects (empty for a pure sweep), and no sibling type's document is
+	// ever dropped. Nil is the whole-GitTarget resync.
+	ScopeGVR *schema.GroupVersionResource
 	// Revision is the cluster snapshot resourceVersion the desired set is pinned to
 	// (the joined streaming-watch bookmark). Carried for diagnostics and logging.
 	Revision string
@@ -220,6 +226,10 @@ type ResyncRequest struct {
 	Revision           string
 	GitTargetName      string
 	GitTargetNamespace string
+	// ScopeGVR, when set, makes this a per-type (M12) reconcile/sweep: the mark-and-sweep
+	// is restricted to the named type's (group, resource) and Desired carries only that
+	// type's objects (empty = pure sweep of a removed type). Nil is a whole-GitTarget resync.
+	ScopeGVR *schema.GroupVersionResource
 	// Result receives exactly one reply. It is buffered (cap 1) by the emitter so
 	// the worker never blocks delivering it.
 	Result chan ResyncResult

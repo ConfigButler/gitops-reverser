@@ -80,7 +80,7 @@ func applyResyncViaWorktree(
 ) (ResyncStats, bool) {
 	t.Helper()
 	w := &BranchWorker{contentWriter: writer, mapper: mapper}
-	stats, changed, err := w.applyResyncToWorktree(context.Background(), worktree, "", desired)
+	stats, changed, err := w.applyResyncToWorktree(context.Background(), worktree, "", desired, nil)
 	require.NoError(t, err)
 	return stats, changed
 }
@@ -192,6 +192,54 @@ func TestResync_EmptyClusterSweepsAllManaged(t *testing.T) {
 	}
 }
 
+// twoTypeMapper resolves both ConfigMap and Secret as served, allowed members, so a
+// whole-folder sweep would drop either — isolating the scope as the only thing that
+// protects the sibling type in the per-type sweep test.
+func twoTypeMapper() typeset.Lookup {
+	return typeset.NewSnapshotRegistry(typeset.Snapshot{Entries: []typeset.Entry{
+		{
+			GVK:        schema.GroupVersionKind{Group: "", Version: "v1", Kind: "ConfigMap"},
+			GVR:        schema.GroupVersionResource{Group: "", Version: "v1", Resource: "configmaps"},
+			Namespaced: true, Allowed: true,
+		},
+		{
+			GVK:        schema.GroupVersionKind{Group: "", Version: "v1", Kind: "Secret"},
+			GVR:        schema.GroupVersionResource{Group: "", Version: "v1", Resource: "secrets"},
+			Namespaced: true, Allowed: true,
+		},
+	}})
+}
+
+// secretManifest renders a plain (unencrypted) Secret used only to prove a per-type sweep
+// leaves a sibling type alone; it is never upserted, so no encryption is involved.
+func secretManifest(name string) string {
+	return "apiVersion: v1\nkind: Secret\n" +
+		"metadata:\n  name: " + name + "\n  namespace: default\n" +
+		"data:\n  k: dg==\n"
+}
+
+// The M12 per-type sweep: a ScopeGVR'd resync with an empty desired set drops only the
+// removed type's documents and leaves every sibling type exactly as Git holds it — even
+// though under a whole-folder resync the sibling would also be an orphan.
+func TestResync_ScopedSweepDropsOnlyTargetType(t *testing.T) {
+	writer := newContentWriter(types.SensitiveResourcePolicy{})
+	worktree := newWorktreeForTest(t)
+	cmFull := seedPlacedManifest(t, worktree, "apps/cm.yaml", cmManifest("cfg", "blue"))
+	secretFull := seedPlacedManifest(t, worktree, "apps/secret.yaml", secretManifest("sec"))
+
+	w := &BranchWorker{contentWriter: writer, mapper: twoTypeMapper()}
+	scope := &schema.GroupVersionResource{Group: "", Version: "v1", Resource: "configmaps"}
+	stats, changed, err := w.applyResyncToWorktree(context.Background(), worktree, "", nil, scope)
+	require.NoError(t, err)
+	require.True(t, changed, "the removed type's document is swept")
+	assert.Equal(t, 1, stats.Deleted, "exactly the configmap is swept, not the secret")
+
+	_, cmErr := os.Stat(cmFull)
+	assert.True(t, os.IsNotExist(cmErr), "the removed type's document is deleted")
+	_, secErr := os.Stat(secretFull)
+	assert.NoError(t, secErr, "a sibling type's document is never touched by a per-type sweep")
+}
+
 // Without a mapper the store is structure-only: no document resolves to a watched
 // resource, so an empty desired snapshot sweeps nothing. This preserves the no-cluster
 // safety promise — a resync can never drop what it could not classify as watched.
@@ -280,6 +328,7 @@ func TestResync_SensitiveUpdateCountsAsUpdatedNotSkipped(t *testing.T) {
 		worktree,
 		"",
 		[]manifestanalyzer.DesiredResource{desired},
+		nil,
 	)
 	require.NoError(t, err)
 	require.True(t, changed, "the secret is re-encrypted")

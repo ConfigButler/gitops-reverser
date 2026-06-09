@@ -189,6 +189,33 @@ func BuildPlan(
 	desired []DesiredResource,
 	policy Policy,
 ) Plan {
+	return BuildScopedPlan(store, files, desired, policy, allInScope)
+}
+
+// allInScope is BuildPlan's whole-folder sweep predicate: every managed document is in
+// scope, so the Git-only sweep considers all of them. It makes BuildPlan a special case of
+// BuildScopedPlan with byte-identical behaviour.
+func allInScope(types.ResourceIdentifier) bool { return true }
+
+// BuildScopedPlan is BuildPlan restricted to the documents inScope reports: the desired set
+// is upserted as usual, but the Git-only mark-and-sweep only drops/skips a managed document
+// whose RESOLVED resource identity is in scope — every out-of-scope document is left
+// untouched, never swept. It is the per-type (M12) primitive: a reconcile passes that type's
+// desired objects with a predicate matching that type's (group, resource); a sweep passes an
+// EMPTY desired set with the same predicate, so a removed type's documents drop and no
+// sibling type is ever collaterally deleted. The caller MUST keep desired in scope, since
+// the desired set is the scope on the upsert side.
+//
+// With allInScope this is exactly BuildPlan — the full-snapshot mark-and-sweep — so the two
+// share one implementation and one set of safety guarantees. See
+// docs/design/manifest/version2/type-lifecycle-events-and-wobble-settling.md (Proposal 3 / M12).
+func BuildScopedPlan(
+	store *ManifestStore,
+	files []manifestedit.FileContent,
+	desired []DesiredResource,
+	policy Policy,
+	inScope func(types.ResourceIdentifier) bool,
+) Plan {
 	project := policy.Project
 	if project == nil {
 		project = func(obj *unstructured.Unstructured) *unstructured.Unstructured { return obj }
@@ -202,6 +229,7 @@ func BuildPlan(
 		nonClaiming:   nonClaimingIdentities(store),
 		collided:      collidedIdentities(store),
 		matched:       map[*DocumentModel]bool{},
+		inScope:       inScope,
 	}
 
 	// Desired side: create / patch / replace / skip for every cluster object, and
@@ -247,6 +275,10 @@ type planBuilder struct {
 	matched map[*DocumentModel]bool
 	actions []PlanAction
 	diags   []manifestedit.Diagnostic
+	// inScope gates the Git-only sweep to a subset of resolved resource identities. For the
+	// whole-folder BuildPlan it is allInScope (always true); for a per-type reconcile/sweep
+	// it matches one type's (group, resource), so out-of-scope documents are never dropped.
+	inScope func(types.ResourceIdentifier) bool
 }
 
 // planDesired classifies one desired resource against the store and appends its
@@ -343,6 +375,12 @@ func (b *planBuilder) protectFromSweep(dr DesiredResource) {
 // planGitOnly classifies one Git document that no desired object matched.
 func (b *planBuilder) planGitOnly(dm *DocumentModel) {
 	if b.matched[dm] {
+		return
+	}
+	if b.inScope != nil && !b.inScope(resourceOf(dm)) {
+		// A per-type plan only sweeps its own type. A document of any other type — and any
+		// unresolved/non-claiming document, whose resourceOf is the zero identity — is left
+		// exactly as Git holds it, never dropped or even reported.
 		return
 	}
 	if b.collided[dm.ManifestIdentity] {

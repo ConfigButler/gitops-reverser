@@ -27,10 +27,12 @@ import (
 	"github.com/go-logr/logr"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
+	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
 	"github.com/ConfigButler/gitops-reverser/internal/reconcile"
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
@@ -267,21 +269,9 @@ func (r *EventRouter) gatherAndEnqueueResync(
 	ctx context.Context,
 	gitDest types.ResourceReference,
 ) (chan git.ResyncResult, error) {
-	var gitTarget configv1alpha1.GitTarget
-	if err := r.Client.Get(ctx, client.ObjectKey{
-		Name:      gitDest.Name,
-		Namespace: gitDest.Namespace,
-	}, &gitTarget); err != nil {
-		return nil, fmt.Errorf("get GitTarget %s: %w", gitDest.String(), err)
-	}
-
-	worker, exists := r.WorkerManager.GetWorkerForTarget(
-		gitTarget.Spec.ProviderRef.Name,
-		gitTarget.Namespace, // provider is in the same namespace as the target
-		gitTarget.Spec.Branch,
-	)
-	if !exists {
-		return nil, fmt.Errorf("no worker for %s", gitDest.String())
+	worker, err := r.resolveWorkerForGitDest(ctx, gitDest)
+	if err != nil {
+		return nil, err
 	}
 
 	snapshot, err := r.WatchManager.StreamClusterSnapshotForGitDest(ctx, gitDest)
@@ -298,6 +288,125 @@ func (r *EventRouter) gatherAndEnqueueResync(
 		Result:             resultCh,
 	})
 	return resultCh, nil
+}
+
+// resolveWorkerForGitDest looks up the branch worker that owns a GitTarget's provider/branch.
+// A missing GitTarget (a rule briefly outliving its target during deletion) or a worker that
+// is not yet live is returned as an error, before anything is gathered or enqueued.
+func (r *EventRouter) resolveWorkerForGitDest(
+	ctx context.Context,
+	gitDest types.ResourceReference,
+) (*git.BranchWorker, error) {
+	var gitTarget configv1alpha1.GitTarget
+	if err := r.Client.Get(ctx, client.ObjectKey{
+		Name:      gitDest.Name,
+		Namespace: gitDest.Namespace,
+	}, &gitTarget); err != nil {
+		return nil, fmt.Errorf("get GitTarget %s: %w", gitDest.String(), err)
+	}
+	worker, exists := r.WorkerManager.GetWorkerForTarget(
+		gitTarget.Spec.ProviderRef.Name,
+		gitTarget.Namespace, // provider is in the same namespace as the target
+		gitTarget.Spec.Branch,
+	)
+	if !exists {
+		return nil, fmt.Errorf("no worker for %s", gitDest.String())
+	}
+	return worker, nil
+}
+
+// EmitTypeReconcileForGitDest runs one M12 per-type reconcile: it streams just gvr's resources
+// for the GitTarget and enqueues a type-scoped resync (upserts that type's objects, sweeps only
+// that type's orphans). It is fire-and-forget — the worker reply is drained in the background,
+// like the rule-change resync — so the registry's event-drain goroutine never blocks on a
+// commit. A type this GitTarget does not watch, or an unobservable surface, is returned as an
+// error before anything is enqueued.
+func (r *EventRouter) EmitTypeReconcileForGitDest(
+	ctx context.Context,
+	gitDest types.ResourceReference,
+	gvr schema.GroupVersionResource,
+) error {
+	snapshot, err := r.WatchManager.StreamSnapshotForType(ctx, gitDest, gvr)
+	if err != nil {
+		return err
+	}
+	resultCh, err := r.enqueueScopedResync(ctx, gitDest, gvr, snapshot.Desired, snapshot.Revision)
+	if err != nil {
+		return err
+	}
+	go r.drainScopedResync(gitDest, gvr, "reconcile", resultCh)
+	return nil
+}
+
+// EmitTypeSweepForGitDest runs one M12 per-type sweep: a type-scoped resync with an EMPTY
+// desired set, so a removed type's managed documents are dropped and no sibling type is
+// touched. It does NOT stream — the type is gone from the API, so its desired set is
+// definitionally empty. Like the reconcile it is fire-and-forget. A GitTarget that holds no
+// documents of the type produces a no-op commit.
+func (r *EventRouter) EmitTypeSweepForGitDest(
+	ctx context.Context,
+	gitDest types.ResourceReference,
+	gvr schema.GroupVersionResource,
+) error {
+	resultCh, err := r.enqueueScopedResync(ctx, gitDest, gvr, nil, "")
+	if err != nil {
+		return err
+	}
+	go r.drainScopedResync(gitDest, gvr, "sweep", resultCh)
+	return nil
+}
+
+// enqueueScopedResync resolves the GitTarget's worker and enqueues a type-scoped resync,
+// returning the buffered reply channel. The ScopeGVR restricts the worker's mark-and-sweep to
+// the one type, so desired must carry only that type's objects (empty for a sweep).
+func (r *EventRouter) enqueueScopedResync(
+	ctx context.Context,
+	gitDest types.ResourceReference,
+	gvr schema.GroupVersionResource,
+	desired []manifestanalyzer.DesiredResource,
+	revision string,
+) (chan git.ResyncResult, error) {
+	worker, err := r.resolveWorkerForGitDest(ctx, gitDest)
+	if err != nil {
+		return nil, err
+	}
+	scope := gvr
+	resultCh := make(chan git.ResyncResult, 1)
+	worker.EnqueueResync(&git.ResyncRequest{
+		Desired:            desired,
+		Revision:           revision,
+		GitTargetName:      gitDest.Name,
+		GitTargetNamespace: gitDest.Namespace,
+		ScopeGVR:           &scope,
+		Result:             resultCh,
+	})
+	return resultCh, nil
+}
+
+// drainScopedResync logs a per-type reconcile/sweep's outcome and, on failure or timeout,
+// counts it as a background resync failure so a silently-recovered fault stays observable. The
+// steady-state live-event path and the next type transition recover a failed apply, so this
+// never re-fires the gather.
+func (r *EventRouter) drainScopedResync(
+	gitDest types.ResourceReference,
+	gvr schema.GroupVersionResource,
+	kind string,
+	resultCh chan git.ResyncResult,
+) {
+	select {
+	case result := <-resultCh:
+		if result.Err != nil {
+			r.Log.Error(result.Err, "per-type "+kind+" failed", "gitDest", gitDest.String(), "gvr", gvr.String())
+			r.recordBackgroundResyncFailure(gitDest)
+			return
+		}
+		r.Log.V(1).Info("per-type "+kind+" applied",
+			"gitDest", gitDest.String(), "gvr", gvr.String(),
+			"created", result.Stats.Created, "updated", result.Stats.Updated, "deleted", result.Stats.Deleted)
+	case <-time.After(resyncSignalTimeout):
+		r.Log.Error(nil, "per-type "+kind+" timed out", "gitDest", gitDest.String(), "gvr", gvr.String())
+		r.recordBackgroundResyncFailure(gitDest)
+	}
 }
 
 func (r *EventRouter) logResyncApplied(gitDest types.ResourceReference, stats git.ResyncStats) {

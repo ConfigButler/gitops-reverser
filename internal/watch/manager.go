@@ -135,6 +135,12 @@ type Manager struct {
 	// refuses, so the central "why is this not followable?" log is edge-triggered: a
 	// stable refusal is logged once, not on every refresh. Guarded by resourceCatalogMu.
 	typeRefusalsLogged map[string]string
+
+	// lifecycleEvents carries per-type registry transitions (TypeActivated / TypeRemoved /
+	// …) from the registry's updater to the drain goroutine that drives the M12 per-type
+	// reconcile/sweep. lifecycleConsumerOnce guards the one-time subscribe + goroutine start.
+	lifecycleEvents       chan typeset.LifecycleEvent
+	lifecycleConsumerOnce sync.Once
 }
 
 // SnapshotEmitCount returns the number of times the manager has emitted a
@@ -222,6 +228,10 @@ func (m *Manager) Start(ctx context.Context) error {
 	defer log.Info("watch ingestion manager stopping")
 
 	m.initializeManagerState()
+
+	// Subscribe to the registry's per-type transitions before the first reconcile drives a
+	// registry Update, so cold-start activations drive the M12 per-type reconcile path.
+	m.startTypeLifecycleConsumer(ctx, log.WithName("type-lifecycle"))
 
 	if err := m.bootstrapRuleStore(ctx, log.WithName("bootstrap")); err != nil {
 		log.Error(err, "RuleStore bootstrap failed, continuing with current in-memory state")

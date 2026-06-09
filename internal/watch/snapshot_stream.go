@@ -106,6 +106,91 @@ func (m *Manager) StreamClusterSnapshotForGitDest(
 	return ClusterSnapshot{Desired: desired, Revision: revision}, nil
 }
 
+// StreamSnapshotForType gathers ONE watched type's complete resource set for a GitTarget via
+// the streaming-list watch — the M12 per-type reconcile's desired side. It is the per-type
+// twin of StreamClusterSnapshotForGitDest: it refreshes the catalog/registry/table and fails
+// closed on an unobserved surface, but it resolves and streams only the named GVR (scoped to
+// the namespaces the resident table watches it under). A type that is not watched by this
+// GitTarget yields an empty snapshot (the caller no-ops); a type currently held `retained` (a
+// discovery wobble) fails closed, so a per-type reconcile never streams — or sweeps — a
+// reduced view.
+func (m *Manager) StreamSnapshotForType(
+	ctx context.Context,
+	gitDest types.ResourceReference,
+	gvr schema.GroupVersionResource,
+) (ClusterSnapshot, error) {
+	log := m.Log.WithValues("gitDest", gitDest.String(), "gvr", gvr.String())
+
+	sg, watched, err := m.resolveSnapshotGVRForType(ctx, gitDest, gvr)
+	if err != nil {
+		return ClusterSnapshot{}, err
+	}
+	if !watched {
+		return ClusterSnapshot{}, nil
+	}
+
+	dc := m.dynamicClientFromConfig(log)
+	if dc == nil {
+		return ClusterSnapshot{}, errors.New("no dynamic client available")
+	}
+
+	tasks := snapshotStreamTasks([]snapshotGVR{sg})
+	if len(tasks) == 0 {
+		return ClusterSnapshot{}, nil
+	}
+	desired, revision, err := m.joinSnapshotStreams(ctx, dc, tasks)
+	if err != nil {
+		return ClusterSnapshot{}, fmt.Errorf(
+			"aborting per-type snapshot for %s %s: %w; refusing to reconcile on a partial stream",
+			gitDest.String(), gvr.String(), err)
+	}
+	log.Info("Streamed per-type snapshot", "resources", len(desired), "streams", len(tasks), "revision", revision)
+	return ClusterSnapshot{Desired: desired, Revision: revision}, nil
+}
+
+// resolveSnapshotGVRForType resolves one watched type's (GVR, namespace-scope) stream set for
+// a GitTarget, with the same fail-closed discipline as resolveSnapshotGVRs but scoped to the
+// single type. The bool is false when this GitTarget does not watch the type (so there is
+// nothing to reconcile). It refuses (error) when the surface is unobserved or the type is
+// currently `retained` (a wobble) — the per-type expression of the anti-sweep invariant.
+func (m *Manager) resolveSnapshotGVRForType(
+	ctx context.Context,
+	gitDest types.ResourceReference,
+	gvr schema.GroupVersionResource,
+) (snapshotGVR, bool, error) {
+	if err := m.RefreshAPIResourceCatalog(ctx); err != nil {
+		return snapshotGVR{}, false, fmt.Errorf("refresh API resource catalog for %s: %w", gitDest.String(), err)
+	}
+	m.refreshWatchedTypeTables()
+
+	if !m.typeRegistryInstance().Ready() {
+		return snapshotGVR{}, false, fmt.Errorf(
+			"aborting per-type snapshot for %s: the cluster API surface has not been observed yet",
+			gitDest.String())
+	}
+
+	table := m.residentWatchedTypeTable(gitDest)
+	var watched *WatchedType
+	for i := range table.Types {
+		if table.Types[i].GVR == gvr {
+			watched = &table.Types[i]
+			break
+		}
+	}
+	if watched == nil {
+		return snapshotGVR{}, false, nil
+	}
+
+	if m.typeWobbling(gvr) {
+		return snapshotGVR{}, false, fmt.Errorf(
+			"aborting per-type snapshot for %s: %s within the removal grace (currently unserved); "+
+				"refusing to reconcile a reduced view",
+			gitDest.String(), gvr.String())
+	}
+
+	return snapshotGVR{gvr: watched.GVR, namespaces: watched.SnapshotNamespaces()}, true, nil
+}
+
 // joinSnapshotStreams runs every stream concurrently and joins them at their bookmarks.
 // The first stream to fail cancels the rest (so a doomed gather stops promptly) and the
 // failure is returned; otherwise the desired sets are unioned and the revision is the
@@ -402,14 +487,24 @@ func (m *Manager) resolveSnapshotGVRs(
 // retainedWatchedTypes returns the GVKs of the target's watched types the registry
 // currently holds as `retained` (followable under the grace, but not served right now).
 func (m *Manager) retainedWatchedTypes(table WatchedTypeTable) []schema.GroupVersionKind {
-	reg := m.typeRegistryInstance()
 	var out []schema.GroupVersionKind
 	for _, wt := range table.Types {
-		if rec, ok := reg.ByGVR(wt.GVR); ok && rec.Followability.Verdict == typeset.VerdictRetained {
+		if m.typeWobbling(wt.GVR) {
 			out = append(out, wt.GVK)
 		}
 	}
 	return out
+}
+
+// typeWobbling reports whether the registry currently holds gvr as `retained` — followable
+// under the removal grace, but not actually served right now (a discovery wobble). It is the
+// single "do not stream or sweep this type" predicate, shared by the whole-GitTarget snapshot
+// gate (resolveSnapshotGVRs) and the per-type gate (resolveSnapshotGVRForType), so both fail
+// closed on exactly the same registry verdict instead of re-deriving it. This is the M12
+// consolidation: one read off the registry's decision, not a re-classification.
+func (m *Manager) typeWobbling(gvr schema.GroupVersionResource) bool {
+	rec, ok := m.typeRegistryInstance().ByGVR(gvr)
+	return ok && rec.Followability.Verdict == typeset.VerdictRetained
 }
 
 // gvkListSummary renders held GVKs for the fail-closed error, naming each so a blocked

@@ -44,13 +44,19 @@ const RemovalGrace = 60 * time.Second
 //
 // Registry is safe for concurrent readers and a single updater.
 type Registry struct {
-	mu    sync.RWMutex
-	grace time.Duration
-	now   func() time.Time
+	// dispatchMu serializes whole Updates and the lifecycle dispatch that follows each, so
+	// event batches are delivered to observers in generation order and never interleave. It
+	// is taken before mu; observers run after mu is released (so they may read the registry).
+	dispatchMu sync.Mutex
+	mu         sync.RWMutex
+	grace      time.Duration
+	settle     time.Duration
+	now        func() time.Time
 
 	entries    map[recordKey]entry
 	byGVK      map[schema.GroupVersionKind][]recordKey
 	byGVR      map[schema.GroupVersionResource]recordKey
+	observers  []Observer
 	generation uint64
 	// revision is the registry's own change-of-decision signal: it bumps whenever the
 	// followable membership changes (a type appears, drops after the grace, or flips
@@ -71,12 +77,17 @@ type recordKey struct {
 	scope Scope
 }
 
-// entry is one record plus the facts and grace bookkeeping needed to re-judge it when
-// it stops being observed.
+// entry is one record plus the facts, grace, and settle bookkeeping needed to re-judge it
+// when it stops being observed and to debounce its activation.
 type entry struct {
 	obs         Observation
 	record      TypeRecord
 	absentSince time.Time // zero while currently observed
+	// followableSince marks the start of the current continuous Followable streak (zero when
+	// not Followable); activated records whether TypeActivated has already been emitted for
+	// that streak. Together they implement the settle window and its flap coalescing.
+	followableSince time.Time
+	activated       bool
 }
 
 // NewRegistry builds an empty registry with the fixed removal grace and a real clock.
@@ -90,6 +101,7 @@ func NewRegistry() *Registry {
 func newRegistry(now func() time.Time) *Registry {
 	return &Registry{
 		grace:   RemovalGrace,
+		settle:  SettleWindow,
 		now:     now,
 		entries: map[recordKey]entry{},
 		byGVK:   map[schema.GroupVersionKind][]recordKey{},
@@ -103,9 +115,13 @@ func newRegistry(now func() time.Time) *Registry {
 // grace) or dropped (once the grace elapses). The first Update marks the registry
 // ready.
 func (r *Registry) Update(observations []Observation, generation uint64) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	// dispatchMu serializes the whole Update plus its post-publish dispatch, so concurrent
+	// updaters cannot interleave event batches and observers see transitions in generation
+	// order. The records themselves are still guarded by mu for concurrent readers.
+	r.dispatchMu.Lock()
+	defer r.dispatchMu.Unlock()
 
+	r.mu.Lock()
 	now := r.now()
 	prevFollowable := r.followableKeysLocked()
 	prevGeneration := r.generation
@@ -120,6 +136,10 @@ func (r *Registry) Update(observations []Observation, generation uint64) {
 
 	r.retainAbsentLocked(next, now, generation)
 
+	// Compute the lifecycle transitions while r.entries still holds the previous records, and
+	// finalize each next entry's settle bookkeeping, before publishing next.
+	events := r.computeLifecycleLocked(next, now, generation)
+
 	r.entries = next
 	r.rebuildIndexesLocked()
 	r.generation = generation
@@ -130,6 +150,12 @@ func (r *Registry) Update(observations []Observation, generation uint64) {
 	if !wasReady || generation != prevGeneration || !sameKeySet(prevFollowable, r.followableKeysLocked()) {
 		r.revision++
 	}
+	observers := r.observers
+	r.mu.Unlock()
+
+	// Dispatch outside mu (so an observer may read the registry) but still under dispatchMu
+	// (so batches stay ordered). Observers must not block — a real consumer enqueues and returns.
+	dispatchLifecycle(observers, events)
 }
 
 // followableKeysLocked returns the identity keys of the records that are currently

@@ -102,6 +102,19 @@ var (
 	// folder is relying on steady-state events to catch up.
 	ResyncBackgroundFailuresTotal metric.Int64Counter
 
+	// TypeLifecycleReconcileTotal counts M12 per-type reconciles driven by a registry
+	// TypeActivated transition: each increment is one (GitTarget, type) reconcile enqueued
+	// after the type settled into the followable set. Labelled by {gittarget_namespace,
+	// gittarget_name}; an increase tracks types coming online (e.g. a CRD installed) being
+	// mirrored without a whole-GitTarget resync.
+	TypeLifecycleReconcileTotal metric.Int64Counter
+	// TypeLifecycleSweepTotal counts M12 per-type sweeps driven by a registry TypeRemoved
+	// transition (a type whose removal grace elapsed): each increment is one (GitTarget,
+	// type) scoped sweep enqueued. Labelled by {gittarget_namespace, gittarget_name}; an
+	// increase tracks types going away (e.g. a CRD deleted) having only their own documents
+	// pruned.
+	TypeLifecycleSweepTotal metric.Int64Counter
+
 	// WatchDuplicatesSkippedTotal counts watch events skipped due to duplicate sanitized content.
 	WatchDuplicatesSkippedTotal metric.Int64Counter
 	// AuditEventsReceivedTotal counts audit events received from Kubernetes API server.
@@ -294,6 +307,8 @@ func registerCounters() error {
 		{"gitopsreverser_secret_encryption_marker_skips_total", &SecretEncryptionMarkerSkipsTotal},
 		{"gitopsreverser_target_reconcile_completed_total", &TargetReconcileCompletedTotal},
 		{"gitopsreverser_resync_background_failures_total", &ResyncBackgroundFailuresTotal},
+		{"gitopsreverser_type_lifecycle_reconcile_total", &TypeLifecycleReconcileTotal},
+		{"gitopsreverser_type_lifecycle_sweep_total", &TypeLifecycleSweepTotal},
 	}
 	for _, s := range counters {
 		v, err := otelMeter.Int64Counter(s.name)
