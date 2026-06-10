@@ -149,6 +149,11 @@ type Manager struct {
 	// production materializationSweepInterval (~1h).
 	materializationSweepOnce             sync.Once
 	materializationSweepIntervalOverride time.Duration
+	// materializationWork carries the Materializer's demand events (SyncRequested /
+	// Released / …) to the checkpoint driver goroutine — a second subscriber on the
+	// lifecycle-drain discipline (DEC-L4 / §5) so the LIST runs off the Materializer's
+	// dispatch. It is created and subscribed under lifecycleConsumerOnce.
+	materializationWork chan typeset.MaterializationEvent
 
 	// lifecycleEvents carries per-type registry transitions (TypeActivated / TypeRemoved /
 	// …) from the registry's updater to the drain goroutine that drives the M12 per-type

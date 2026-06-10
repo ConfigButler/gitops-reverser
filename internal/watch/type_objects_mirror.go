@@ -49,27 +49,29 @@ type objectEnvelope struct {
 	Object          json.RawMessage `json:"object"`
 }
 
-// mirrorTypeObjects loads the current set of objects for an activated type and replaces the
-// type's snapshot in the per-resource-type experiment keyspace. It runs once per activation
-// on the lifecycle drain goroutine (not per GitTarget), so the cluster is listed once when a
-// type starts being watched rather than every time a GitTarget changes. It is strictly
-// best-effort: a nil mirror, a missing dynamic client, or a list/write error is logged and
-// swallowed so the experiment never disturbs the watch/reconcile path. See
-// docs/design/stream/per-resource-type-rv-keyed-streams-experiment.md.
-func (m *Manager) mirrorTypeObjects(ctx context.Context, log logr.Logger, gvr schema.GroupVersionResource) {
+// mirrorTypeObjects lists the current set of objects for a type and replaces the type's
+// checkpoint in the per-resource-type keyspace, returning the list's resourceVersion — the rv
+// the checkpoint is pinned to, which the Materializer records as the type's Synced revision.
+// It is the demand-driven checkpoint LIST the materialization driver runs for a CLAIMED type
+// (L-3, runTypeCheckpointSync), no longer unconditionally on every activation. A nil mirror or
+// missing dynamic client is a benign no-op (empty rv, no error); a list or replace error is
+// returned so the driver records SyncFailed and the prior checkpoint (if any) keeps serving.
+// See docs/design/stream/per-resource-type-rv-keyed-streams-experiment.md.
+func (m *Manager) mirrorTypeObjects(
+	ctx context.Context, log logr.Logger, gvr schema.GroupVersionResource,
+) (string, error) {
 	if m.ObjectMirror == nil {
-		return
+		return "", nil
 	}
 	dc := m.dynamicClientFromConfig(log)
 	if dc == nil {
-		return
+		return "", nil
 	}
 
 	// Empty namespace lists across all namespaces (and is correct for cluster-scoped types).
 	list, err := dc.Resource(gvr).List(ctx, metav1.ListOptions{})
 	if err != nil {
-		log.Error(err, "objects-mirror: list failed", "gvr", gvr.String())
-		return
+		return "", fmt.Errorf("objects-mirror: list %s: %w", gvr.String(), err)
 	}
 
 	items := make(map[string]string, len(list.Items))
@@ -84,13 +86,12 @@ func (m *Manager) mirrorTypeObjects(ctx context.Context, log logr.Logger, gvr sc
 		items[objectIdentity(obj)] = raw
 	}
 
-	err = m.ObjectMirror.ReplaceTypeObjects(ctx, gvr.Group, gvr.Resource, items, list.GetResourceVersion())
-	if err != nil {
-		log.Error(err, "objects-mirror: replace failed", "gvr", gvr.String())
-		return
+	rv := list.GetResourceVersion()
+	if err := m.ObjectMirror.ReplaceTypeObjects(ctx, gvr.Group, gvr.Resource, items, rv); err != nil {
+		return "", fmt.Errorf("objects-mirror: replace %s: %w", gvr.String(), err)
 	}
-	log.Info("objects-mirror: snapshot loaded",
-		"gvr", gvr.String(), "count", len(items), "resourceVersion", list.GetResourceVersion())
+	log.Info("objects-mirror: snapshot loaded", "gvr", gvr.String(), "count", len(items), "resourceVersion", rv)
+	return rv, nil
 }
 
 // clearTypeObjects drops a removed type's stored object snapshot. Best-effort like the load.

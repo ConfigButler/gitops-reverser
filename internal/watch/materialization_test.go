@@ -25,11 +25,20 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	dynamicfake "k8s.io/client-go/dynamic/fake"
+	clienttesting "k8s.io/client-go/testing"
 
 	"github.com/ConfigButler/gitops-reverser/internal/typeset"
 )
+
+// activate is the followability edge the materializer gate consumes in these tests.
+func activate(gvr schema.GroupVersionResource) typeset.LifecycleEvent {
+	return typeset.LifecycleEvent{Kind: typeset.TypeActivated, GVR: gvr}
+}
 
 // secretsGVR is defined in manager_snapshot_test.go (same package): core v1 secrets.
 
@@ -125,4 +134,76 @@ func TestStartMaterializationSweep_AgesOutUnrenewedLease(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return len(manager.materializerInstance().Claimants(configMapGVR)) == 0
 	}, 2*time.Second, 5*time.Millisecond, "the periodic sweep must age out an unrenewed lease")
+}
+
+// TestRunTypeCheckpointSync_ListsClaimedTypeAndMarksSynced proves the L-3 checkpoint driver:
+// a claimed + activated type is listed into the checkpoint keyspace and reaches Synced at the
+// list revision.
+func TestRunTypeCheckpointSync_ListsClaimedTypeAndMarksSynced(t *testing.T) {
+	dc := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme(), streamedCM("default", "a", "10"))
+	mirror := &recordingObjectMirror{}
+	m := &Manager{Log: logr.Discard(), dynamicClient: dc, ObjectMirror: mirror}
+
+	// Claim + activate: the Materializer moves the type to Requested (demand ∩ followable).
+	m.materializerInstance().Declare(typeset.GitTargetRef("test-ns/t"), []schema.GroupVersionResource{configMapGVR})
+	m.materializerInstance().OnLifecycleEvent(activate(configMapGVR))
+
+	m.runTypeCheckpointSync(context.Background(), logr.Discard(), configMapGVR)
+
+	assert.Equal(t, "/configmaps", mirror.replacedKey, "a claimed, activated type is listed into the checkpoint")
+	ph, _ := m.materializerInstance().Phase(configMapGVR)
+	assert.Equal(t, typeset.PhaseSynced, ph)
+	rv, ok := m.materializerInstance().Checkpoint(configMapGVR)
+	assert.True(t, ok)
+	assert.NotEmpty(t, rv, "the checkpoint is pinned to the list revision")
+}
+
+// TestRunTypeCheckpointSync_SkipsUnclaimedFollowableType is the L-3 gate: a followable type
+// with no claim never lists — BeginSync is a no-op because the Materializer left it Dormant.
+func TestRunTypeCheckpointSync_SkipsUnclaimedFollowableType(t *testing.T) {
+	dc := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme(), streamedCM("default", "a", "10"))
+	mirror := &recordingObjectMirror{}
+	m := &Manager{Log: logr.Discard(), dynamicClient: dc, ObjectMirror: mirror}
+
+	m.materializerInstance().OnLifecycleEvent(activate(configMapGVR)) // activated, but unclaimed
+	m.runTypeCheckpointSync(context.Background(), logr.Discard(), configMapGVR)
+
+	assert.Empty(t, mirror.replacedKey, "an unclaimed followable type holds no checkpoint")
+	ph, _ := m.materializerInstance().Phase(configMapGVR)
+	assert.Equal(t, typeset.PhaseDormant, ph)
+}
+
+// TestRunTypeCheckpointSync_FailedListMarksFailing proves a checkpoint LIST error lands the
+// type in Failing with no checkpoint served (a first-sync failure → consumers hold).
+func TestRunTypeCheckpointSync_FailedListMarksFailing(t *testing.T) {
+	// Register an object so the fake knows the list kind, then force List to error.
+	dc := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme(), streamedCM("default", "a", "10"))
+	dc.PrependReactor("list", "*", func(clienttesting.Action) (bool, runtime.Object, error) {
+		return true, nil, errors.New("boom")
+	})
+	mirror := &recordingObjectMirror{}
+	m := &Manager{Log: logr.Discard(), dynamicClient: dc, ObjectMirror: mirror}
+
+	m.materializerInstance().Declare(typeset.GitTargetRef("test-ns/t"), []schema.GroupVersionResource{configMapGVR})
+	m.materializerInstance().OnLifecycleEvent(activate(configMapGVR))
+
+	m.runTypeCheckpointSync(context.Background(), logr.Discard(), configMapGVR)
+
+	ph, _ := m.materializerInstance().Phase(configMapGVR)
+	assert.Equal(t, typeset.PhaseFailing, ph, "a failed checkpoint list lands in Failing")
+	_, ok := m.materializerInstance().Checkpoint(configMapGVR)
+	assert.False(t, ok, "a first-sync failure serves no checkpoint")
+	assert.Empty(t, mirror.replacedKey, "nothing is written on a failed list")
+}
+
+// TestHandleMaterializationEvent_ReleasedClearsCheckpoint proves a Released event drops the
+// type's checkpoint keyspace (demand GC or followability loss).
+func TestHandleMaterializationEvent_ReleasedClearsCheckpoint(t *testing.T) {
+	mirror := &recordingObjectMirror{}
+	m := &Manager{Log: logr.Discard(), ObjectMirror: mirror}
+
+	m.handleMaterializationEvent(context.Background(), logr.Discard(),
+		typeset.MaterializationEvent{Kind: typeset.Released, GVR: configMapGVR})
+
+	assert.Equal(t, "/configmaps", mirror.deletedKey, "Released drops the type's checkpoint")
 }

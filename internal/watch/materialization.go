@@ -35,6 +35,12 @@ import (
 // its periodic sweep. The Materializer stays a leaf (no client-go / Redis); all cluster
 // resolution lives here in internal/watch.
 
+// materializationWorkBuffer bounds the channel between the Materializer's dispatch (the
+// observer enqueue) and the checkpoint driver goroutine. A full buffer drops the event rather
+// than stalling dispatch; the next lifecycle transition or sweep re-derives demand, and the
+// checkpoint is a cache, so a missed edge only delays a refresh — it never corrupts state.
+const materializationWorkBuffer = 256
+
 // materializationSweepInterval is the production cadence of the Materializer's periodic
 // pass (DEC-L5 / parent DEC-4: ~1h). The same pass GCs withdrawn leases and — once a driver
 // exists (L-3+) — re-anchors the still-claimed and releases the no-longer-claimed. Because a
@@ -116,8 +122,8 @@ func (m *Manager) startMaterializationSweep(ctx context.Context, log logr.Logger
 
 // runMaterializationSweep ticks the Materializer's one periodic pass until the context is
 // cancelled. Each tick GCs leases not renewed since the previous tick and branches per type
-// (DEC-L5); with no driver yet (L-2) there are no Synced types, so a tick only ages out
-// withdrawn claims and releases Requested -> Dormant.
+// (DEC-L5): a still-claimed Synced type is flagged for a re-anchor (the driver picks it up via
+// SyncRequested), a no-longer-claimed type is released.
 func (m *Manager) runMaterializationSweep(ctx context.Context, log logr.Logger, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -130,4 +136,70 @@ func (m *Manager) runMaterializationSweep(ctx context.Context, log logr.Logger, 
 			log.V(1).Info("materialization sweep tick")
 		}
 	}
+}
+
+// enqueueMaterializationWork is the Materializer observer: a non-blocking hand-off so the
+// Materializer's dispatch is never stalled by the checkpoint LIST. It runs on whatever
+// goroutine produced the event (the lifecycle drain for an activation, the GitTarget reconcile
+// for a Declare, the sweep ticker for a re-anchor/release), synchronously under the
+// Materializer's dispatch serialization.
+func (m *Manager) enqueueMaterializationWork(ev typeset.MaterializationEvent) {
+	if m.materializationWork == nil {
+		return
+	}
+	select {
+	case m.materializationWork <- ev:
+	default:
+		m.Log.V(1).Info("materialization work buffer full; dropping",
+			"kind", ev.Kind, "gvr", ev.GVR.String())
+	}
+}
+
+// driveMaterialization is the checkpoint driver goroutine: it consumes the Materializer's
+// demand events off the buffer (so a slow LIST never blocks the Materializer or the registry
+// updater) and turns them into checkpoint writes/drops. It mirrors drainTypeLifecycleEvents.
+func (m *Manager) driveMaterialization(ctx context.Context, log logr.Logger) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case ev := <-m.materializationWork:
+			m.handleMaterializationEvent(ctx, log, ev)
+		}
+	}
+}
+
+// handleMaterializationEvent acts on one demand event. SyncRequested drives the demand-gated
+// checkpoint LIST (T1/T4); Released drops the checkpoint (demand GC or followability loss). The
+// rest are observability for L-3 — the GitTarget wake on TypeSynced is the future
+// api-source-of-truth splice reconcile (R-steps), not wired here.
+func (m *Manager) handleMaterializationEvent(ctx context.Context, log logr.Logger, ev typeset.MaterializationEvent) {
+	switch ev.Kind {
+	case typeset.SyncRequested:
+		m.runTypeCheckpointSync(ctx, log, ev.GVR)
+	case typeset.Released:
+		m.clearTypeObjects(ctx, log, ev.GVR)
+	case typeset.SyncStarted, typeset.TypeSynced, typeset.SyncFailed:
+		log.V(1).Info("materialization event",
+			"kind", ev.Kind, "gvr", ev.GVR.String(), "phase", ev.Phase, "rv", ev.RV)
+	}
+}
+
+// runTypeCheckpointSync performs one demand-driven checkpoint sync for a type: it asks the
+// Materializer to begin (which gates on followable ∩ unfrozen ∩ the right phase, so a wobbling
+// type or an in-flight sync is a no-op), lists the type into the checkpoint keyspace, and
+// records the outcome. A failed LIST leaves the prior checkpoint serving (L5); a success pins
+// the new revision. This is the only place that lists a type for materialization — it runs for
+// CLAIMED types only, because the Materializer emits SyncRequested only for claimed types.
+func (m *Manager) runTypeCheckpointSync(ctx context.Context, log logr.Logger, gvr schema.GroupVersionResource) {
+	if !m.materializerInstance().BeginSync(gvr) {
+		return
+	}
+	rv, err := m.mirrorTypeObjects(ctx, log, gvr)
+	if err != nil {
+		log.Error(err, "materialization checkpoint sync failed", "gvr", gvr.String())
+		m.materializerInstance().SyncFailed(gvr)
+		return
+	}
+	m.materializerInstance().SyncSucceeded(gvr, rv)
 }

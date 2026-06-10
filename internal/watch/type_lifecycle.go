@@ -61,6 +61,16 @@ func (m *Manager) startTypeLifecycleConsumer(ctx context.Context, log logr.Logge
 		m.lifecycleEvents = make(chan typeset.LifecycleEvent, lifecycleEventBuffer)
 		m.typeRegistryInstance().Subscribe(m.enqueueLifecycleEvent)
 		go m.drainTypeLifecycleEvents(ctx, log)
+
+		// The materialization checkpoint driver is a second subscriber on the same
+		// buffered-drain discipline (DEC-L4 / §5): it consumes the Materializer's demand
+		// events and lists ONLY claimed types into the checkpoint keyspace, off the
+		// Materializer's dispatch (observers must not block). The Materializer's gate is fed
+		// from handleTypeLifecycleEvent below.
+		m.materializationWork = make(chan typeset.MaterializationEvent, materializationWorkBuffer)
+		m.materializerInstance().Subscribe(m.enqueueMaterializationWork)
+		go m.driveMaterialization(ctx, log)
+
 		log.V(1).Info("type-lifecycle consumer started")
 	})
 }
@@ -111,20 +121,24 @@ func (m *Manager) drainTypeLifecycleEvents(ctx context.Context, log logr.Logger)
 	}
 }
 
-// handleTypeLifecycleEvent turns one transition into per-type git work. Only the settled edges
-// act: TypeActivated reconciles the type into each synced GitTarget that watches it;
-// TypeRemoved (a settled absence-expired removal) sweeps only that type's documents. Wobbling,
-// Recovered, and Refused carry no git action here — they postpone/resume the reconcile, which
-// the absence of a TypeActivated already encodes.
+// handleTypeLifecycleEvent turns one registry transition into materialization gate + per-type
+// git work. Every transition feeds the Materializer's followability gate (DEC-L4): it decides,
+// per type, whether demand ∩ followability warrant a checkpoint and emits the demand events the
+// driver acts on, so the checkpoint LIST runs only for CLAIMED types (L-3) — no longer
+// unconditionally on every activation (the one behavioural change of §5).
+//
+// The git per-type reconcile/sweep (M12) still fires on the followability edge: TypeActivated
+// reconciles the type into each synced GitTarget that watches it; TypeRemoved sweeps only that
+// type's documents. That path streams its own data and commits, independent of the demand-gated
+// checkpoint; it moves onto the checkpoint handshake only once the api-source-of-truth reconcile
+// (R-steps) consumes it. Wobbling/Recovered/Refused carry no git action here.
 func (m *Manager) handleTypeLifecycleEvent(ctx context.Context, log logr.Logger, ev typeset.LifecycleEvent) {
+	m.materializerInstance().OnLifecycleEvent(ev)
+
 	switch ev.Kind {
 	case typeset.TypeActivated:
-		// Load the type's current objects into the per-type experiment keyspace once, here at
-		// activation — not per GitTarget — independent of the reconcile fan-out below.
-		m.mirrorTypeObjects(ctx, log, ev.GVR)
 		m.reconcileTypeForSyncedTargets(ctx, log, ev.GVR)
 	case typeset.TypeRemoved:
-		m.clearTypeObjects(ctx, log, ev.GVR)
 		m.sweepTypeFromSyncedTargets(ctx, log, ev.GVR)
 	case typeset.TypeWobbling, typeset.TypeRecovered, typeset.TypeRefused:
 		log.Info("type-lifecycle transition handled (no git action)",
