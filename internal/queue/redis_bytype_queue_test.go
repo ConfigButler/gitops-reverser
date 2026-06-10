@@ -581,6 +581,69 @@ func TestRedisByTypeStreamQueue_BoundedTrimsStreams(t *testing.T) {
 	assert.LessOrEqual(t, streamLen, int64(maxLen))
 }
 
+// TestRedisByTypeStreamQueue_TrimTypeAuditLog verifies the R1 re-anchor trim: XTRIM MINID drops
+// every entry strictly below the checkpoint cursor and keeps the entries at and after it (the §6
+// trim-cursor model). It runs on real Valkey because miniredis's XTRIM MINID does not faithfully
+// honour the partial "<rv>-0" completion the cursor relies on.
+func TestRedisByTypeStreamQueue_TrimTypeAuditLog(t *testing.T) {
+	q, client, prefix := valkeyByTypeQueue(t, 0)
+	ctx := context.Background()
+	stream := prefix + ":apps:deployments" + byTypeAuditStreamSuffix
+
+	for i, rv := range []string{"100", "200", "200", "300", "400"} {
+		require.NoError(t, q.Enqueue(ctx, ingestionEvent(rv, int64(1000+i))))
+	}
+	require.Equal(t, []string{"100-0", "200-0", "200-1", "300-0", "400-0"}, streamIDsOf(t, client, stream),
+		"precondition: five RV-ordered entries")
+
+	// Re-anchor at rv 300: everything strictly below 300 is dropped; the rv==300 and rv==400
+	// entries are kept (the splice's exclusive "(300 +" range skips the 300 one).
+	require.NoError(t, q.TrimTypeAuditLog(ctx, "apps", "deployments", "300"))
+	assert.Equal(t, []string{"300-0", "400-0"}, streamIDsOf(t, client, stream), "after trim to cursor 300")
+
+	// Idempotent and monotone: re-trimming to the same or an older cursor never grows the log.
+	require.NoError(t, q.TrimTypeAuditLog(ctx, "apps", "deployments", "300"))
+	require.NoError(t, q.TrimTypeAuditLog(ctx, "apps", "deployments", "100"))
+	assert.Equal(t, []string{"300-0", "400-0"}, streamIDsOf(t, client, stream), "re-trim is a no-op")
+
+	// A blank cursor (no checkpoint to anchor to) trims nothing.
+	require.NoError(t, q.TrimTypeAuditLog(ctx, "apps", "deployments", ""))
+	assert.Equal(t, []string{"300-0", "400-0"}, streamIDsOf(t, client, stream), "blank cursor is a no-op")
+}
+
+// TestRedisByTypeStreamQueue_AwaitTypeAuditEntry verifies the audit-arrival wake read: a read from
+// the beginning sees the existing entries and returns the newest ID; a follow-up read from that ID
+// blocks and times out with nothing new. Real Valkey, for faithful XREAD/stream-ID semantics.
+func TestRedisByTypeStreamQueue_AwaitTypeAuditEntry(t *testing.T) {
+	q, _, _ := valkeyByTypeQueue(t, 0)
+	ctx := context.Background()
+
+	require.NoError(t, q.Enqueue(ctx, ingestionEvent("100", 1000)))
+	require.NoError(t, q.Enqueue(ctx, ingestionEvent("200", 1001)))
+
+	id, hasNew, err := q.AwaitTypeAuditEntry(ctx, "apps", "deployments", "0", 500*time.Millisecond)
+	require.NoError(t, err)
+	assert.True(t, hasNew, "reading from the start sees the existing entries")
+	assert.Equal(t, "200-0", id, "resumes from the newest entry")
+
+	id2, hasNew2, err := q.AwaitTypeAuditEntry(ctx, "apps", "deployments", id, 100*time.Millisecond)
+	require.NoError(t, err)
+	assert.False(t, hasNew2, "a read past the head blocks and times out")
+	assert.Equal(t, id, id2, "the cursor does not advance on a timeout")
+}
+
+// TestRedisByTypeStreamQueue_AwaitTypeAuditEntry_FutureOnly proves the "$" default anchors at the
+// present: with only pre-existing entries, the read times out (it waits for FUTURE entries).
+func TestRedisByTypeStreamQueue_AwaitTypeAuditEntry_FutureOnly(t *testing.T) {
+	q, _, _ := valkeyByTypeQueue(t, 0)
+	ctx := context.Background()
+	require.NoError(t, q.Enqueue(ctx, ingestionEvent("100", 1000)))
+
+	_, hasNew, err := q.AwaitTypeAuditEntry(ctx, "apps", "deployments", "", 100*time.Millisecond)
+	require.NoError(t, err)
+	assert.False(t, hasNew, "an empty cursor anchors at the present, ignoring past entries")
+}
+
 func TestRedisByTypeStreamQueue_IndexErrorPropagates(t *testing.T) {
 	mr := miniredis.RunT(t)
 	q := newTestByTypeQueue(t, mr, 0)

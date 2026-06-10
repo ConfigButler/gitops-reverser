@@ -251,6 +251,31 @@ func main() {
 	fatalIfErr(err, "unable to initialize per-resource-type objects snapshot")
 	watchMgr.ObjectMirror = auditObjectsSnapshot
 
+	// The same per-type queue trims its audit log to the checkpoint cursor on each re-anchor
+	// (R1, §6 trim-cursor model), so a splice reconcile never scans more than one interval of
+	// history. Sharing the queue keeps one Redis connection and the same key prefix.
+	watchMgr.AuditLogTrimmer = auditByTypeQueue
+
+	// The splice reader (R2) folds each type's checkpoint + log into the desired set the per-type
+	// reconcile commits, off the same per-type keyspace. Wiring it makes GitTarget reconcile a
+	// CONSUMER of the materialized API — zero per-reconcile API calls. See
+	// docs/design/stream/api-source-of-truth-reconcile.md §6.
+	auditTypeSplicer, err := queue.NewRedisTypeSplicer(queue.RedisObjectsSnapshotConfig{
+		Addr:       cfg.auditRedisAddr,
+		Username:   cfg.auditRedisUsername,
+		AuthValue:  cfg.auditRedisPassword,
+		DB:         cfg.auditRedisDB,
+		Prefix:     cfg.auditByTypeStreamPrefix,
+		TLSEnabled: cfg.auditRedisTLS,
+	})
+	fatalIfErr(err, "unable to initialize per-resource-type splice reader")
+	watchMgr.TypeSplicer = auditTypeSplicer
+
+	// The audit-arrival wake (R2): the per-type queue's blocking read drives a per-type tail that
+	// re-splices a type the instant a mutating event lands, for sub-checkpoint-interval freshness.
+	// It shares the per-type queue's Redis connection. See api-source-of-truth-reconcile.md §8 (R2).
+	watchMgr.AuditTailReader = auditByTypeQueue
+
 	// Boot rebuild (DEC-L6): replay durable per-type checkpoints into the materializer so a
 	// restart resumes serving Synced types without re-listing them. Best-effort and decoupled —
 	// the queue owns the Redis read, the watch manager assembles the GVR and marks the phase, and

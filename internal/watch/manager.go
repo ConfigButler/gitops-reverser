@@ -167,6 +167,54 @@ type Manager struct {
 	// Nil disables it. Write-only experiment — see
 	// docs/design/stream/per-resource-type-rv-keyed-streams-experiment.md.
 	ObjectMirror ObjectMirror
+
+	// AuditLogTrimmer optionally bounds a type's per-type audit log to the checkpoint cursor on
+	// each successful re-anchor (R1, §6 trim-cursor model). It is satisfied by
+	// queue.RedisByTypeStreamQueue; nil disables trimming (the log just keeps growing under its
+	// own MaxLen). Best-effort from the driver's view — a trim failure is logged, never fatal.
+	AuditLogTrimmer AuditLogTrimmer
+
+	// TypeSplicer optionally serves the api-source-of-truth splice (R2): SpliceSnapshotForType
+	// reads the per-type checkpoint + log through it instead of streaming the API live. Nil means
+	// the splice consumer is not wired (the per-type reconcile then has no desired source).
+	TypeSplicer TypeSplicer
+
+	// AuditTailReader optionally drives the audit-arrival wake (R2): a per-type tail blocks on it
+	// and fires a splice reconcile when an event lands, for sub-checkpoint-interval freshness. Nil
+	// disables the wake (the periodic re-anchor still reconciles). auditTails holds each running
+	// tail's cancel, keyed by type, guarded by auditTailsMu.
+	AuditTailReader AuditTailReader
+	auditTails      map[schema.GroupVersionResource]context.CancelFunc
+	auditTailsMu    sync.Mutex
+
+	// Test seams for the audit tail: shrink the blocking-read and burst-settle windows so unit
+	// tests run fast, and substitute the per-burst reconcile so coalescing can be observed without
+	// a full reconcile stack. Zero/nil means use the production defaults / the real reconcile.
+	auditTailBlockOverride     time.Duration
+	auditTailSettleOverride    time.Duration
+	auditTailReconcileOverride func(context.Context, logr.Logger, schema.GroupVersionResource)
+}
+
+// AuditLogTrimmer bounds a type's main audit stream to the oldest currently-serving checkpoint
+// revision, so a splice reconcile never scans more than one checkpoint interval of history (R1).
+// It is satisfied by queue.RedisByTypeStreamQueue and is optional on the Manager (nil disables
+// trimming). See docs/design/stream/api-source-of-truth-reconcile.md §6 and
+// docs/design/stream/audit-log-ingestion-and-ordering.md §10.
+type AuditLogTrimmer interface {
+	// TrimTypeAuditLog evicts every entry of the (group, resource) audit stream whose
+	// resourceVersion is strictly below minRV. A blank minRV is a no-op.
+	TrimTypeAuditLog(ctx context.Context, group, resource, minRV string) error
+}
+
+// TypeSplicer reads the per-type materialization (checkpoint + log) and folds it into the current
+// desired object set — the read side of the api-source-of-truth splice (R2). It is satisfied by
+// queue.RedisTypeSplicer and is optional on the Manager (nil means no splice consumer is wired).
+// See docs/design/stream/api-source-of-truth-reconcile.md §6.
+type TypeSplicer interface {
+	// SpliceType returns the folded desired objects for a type (sanitized, sorted by identity,
+	// NOT scope-filtered) and the checkpoint revision they are anchored at. An absent checkpoint
+	// is an error, never an empty set, so the caller holds (fail-closed, R11).
+	SpliceType(ctx context.Context, group, resource string) ([]*unstructured.Unstructured, string, error)
 }
 
 // ObjectMirror mirrors the current set of objects for one resource type into the

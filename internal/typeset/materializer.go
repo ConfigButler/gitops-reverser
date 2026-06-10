@@ -538,3 +538,42 @@ func (m *Materializer) Claimants(gvr schema.GroupVersionResource) []GitTargetRef
 	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
 	return out
 }
+
+// TypeMaterialization is one type's materialization status for the visibility surface (L10):
+// its phase, the checkpoint revision it serves (empty when none), whether it is currently
+// followable, and the GitTargets claiming it (stale claims included, so a claim on a
+// non-followable type is visible as the claim-vs-refused mismatch).
+type TypeMaterialization struct {
+	GVR          schema.GroupVersionResource
+	Phase        Phase
+	CheckpointRV string
+	Followable   bool
+	Claimants    []GitTargetRef
+}
+
+// Inventory returns, sorted by GVR, the materialization status of every type the Materializer
+// tracks (claimed or ever-followable). It is the per-type visibility query (L10) the watch
+// layer turns into metrics and a bounded per-GitTarget status roll-up. It is bounded by the
+// catalog (~hundreds), never by demand history.
+func (m *Materializer) Inventory() []TypeMaterialization {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]TypeMaterialization, 0, len(m.types))
+	for gvr, st := range m.types {
+		refs := m.claims[gvr]
+		claimants := make([]GitTargetRef, 0, len(refs))
+		for ref := range refs {
+			claimants = append(claimants, ref)
+		}
+		sort.Slice(claimants, func(i, j int) bool { return claimants[i] < claimants[j] })
+		out = append(out, TypeMaterialization{
+			GVR:          gvr,
+			Phase:        st.phase,
+			CheckpointRV: st.checkpointRV,
+			Followable:   st.followable,
+			Claimants:    claimants,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].GVR.String() < out[j].GVR.String() })
+	return out
+}

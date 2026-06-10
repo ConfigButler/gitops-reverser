@@ -56,6 +56,21 @@ func (r *recordingObjectMirror) DeleteTypeObjects(_ context.Context, group, reso
 	return nil
 }
 
+// recordingTrimmer captures the audit-log trim calls the re-anchor path makes (R1).
+type recordingTrimmer struct {
+	trimmedKey string
+	trimmedRV  string
+	trimCount  int
+	err        error
+}
+
+func (r *recordingTrimmer) TrimTypeAuditLog(_ context.Context, group, resource, minRV string) error {
+	r.trimmedKey = group + "/" + resource
+	r.trimmedRV = minRV
+	r.trimCount++
+	return r.err
+}
+
 func TestMirrorTypeObjects_ListsAndReplaces(t *testing.T) {
 	dc := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme(),
 		streamedCM("default", "a", "10"),

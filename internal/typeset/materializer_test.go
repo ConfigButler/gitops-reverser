@@ -663,6 +663,39 @@ func TestMaterializer_RestoreSyncedResumesWithoutFill(t *testing.T) {
 	}
 }
 
+// TestMaterializer_InventoryReportsPerTypeStatus proves the L-6 visibility query: every tracked
+// type's phase, checkpoint rv, followability, and claimants — including a claim on a refused
+// type (the claim-vs-refused mismatch), surfaced sorted by GVR.
+func TestMaterializer_InventoryReportsPerTypeStatus(t *testing.T) {
+	clock := &fakeClock{t: time.Unix(1_000, 0)}
+	m := newMaterializer(clock.now)
+
+	m.Declare(aRef, []schema.GroupVersionResource{depGVR(), widgetGVR()})
+	m.OnLifecycleEvent(lc(TypeActivated, depGVR()))
+	m.BeginSync(depGVR())
+	m.SyncSucceeded(depGVR(), "R9")
+	m.OnLifecycleEvent(lc(TypeRefused, widgetGVR())) // claimed but refused -> mismatch
+
+	inv := m.Inventory()
+	if len(inv) != 2 {
+		t.Fatalf("inventory must cover both tracked types, got %d (%+v)", len(inv), inv)
+	}
+	dep := inv[0] // apps/v1 deployments sorts before example.com/v1 widgets
+	if dep.GVR != depGVR() || dep.Phase != PhaseSynced || dep.CheckpointRV != "R9" || !dep.Followable {
+		t.Errorf("dep status = %+v, want deployments Synced@R9 followable", dep)
+	}
+	if len(dep.Claimants) != 1 || dep.Claimants[0] != aRef {
+		t.Errorf("dep claimants = %v, want [%s]", dep.Claimants, aRef)
+	}
+	wid := inv[1]
+	if wid.GVR != widgetGVR() || wid.Followable {
+		t.Errorf("widget must be claimed-but-not-followable (mismatch), got %+v", wid)
+	}
+	if len(wid.Claimants) != 1 || wid.Claimants[0] != aRef {
+		t.Errorf("a claim on a refused type must remain visible, got %v", wid.Claimants)
+	}
+}
+
 // TestMaterializer_MultiClaimantLeaseGC proves the lease table tracks claimants
 // independently and a sweep keeps a checkpoint alive while any one claimant still renews.
 func TestMaterializer_MultiClaimantLeaseGC(t *testing.T) {

@@ -1,11 +1,14 @@
 # Demand-driven type materialization lifecycle
 
-> Status: **agreed direction — L-1→L-3 landed, L-4→L-6 ahead.** The demand-and-lifecycle
-> layer beneath [api-source-of-truth-reconcile.md](api-source-of-truth-reconcile.md): it
-> decides **which** types get the per-type checkpoint that doc reconciles against, and
-> **when** that checkpoint is filled, refreshed, and dropped. The Materializer leaf, the
-> GitTarget `Declare` wiring, the periodic Sweep, and the demand-gated checkpoint driver
-> (`TypeActivated` no longer fills unconditionally) are in (§8).
+> Status: **IMPLEMENTED — L-1→L-6 all landed** (uncommitted on `poc/redis-copy`). The
+> demand-and-lifecycle layer beneath
+> [api-source-of-truth-reconcile.md](api-source-of-truth-reconcile.md): it decides **which**
+> types get the per-type checkpoint that doc reconciles against, and **when** that checkpoint
+> is filled, refreshed, and dropped. In now: the Materializer leaf, the GitTarget `Declare`
+> wiring + periodic Sweep, the demand-gated checkpoint driver (`TypeActivated` no longer fills
+> unconditionally), the periodic re-anchor/release, durable `:objects:state` + boot rebuild
+> (the HA seam), and visibility (metrics + a bounded GitTarget status roll-up) — see §8. This
+> layer is complete; the next work lives in the parent reconcile doc (its R1→R2), not here.
 > Captured: 2026-06-10 · Updated: 2026-06-10
 > Owner: Simon
 > Related:
@@ -227,9 +230,10 @@ actioned until their `TypeSynced` wake arrives.
 
 ## 8. Implementation steps
 
-Ordered; each is independently shippable and ends green. **L-1, L-2, and L-3 have landed**
-(uncommitted on `poc/redis-copy`): the leaf, the `Declare` wiring + Sweep ticker, and the
-demand-gated checkpoint driver. **L-4 is next.**
+Ordered; each is independently shippable and ends green. **All six (L-1→L-6) have landed**
+(uncommitted on `poc/redis-copy`); lint + `task test` + `task test-e2e` (45/45) green. The
+remaining work for an end-to-end consumer is in the parent doc's R1 (RV-first log) and R2 (the
+splice), not here.
 
 1. **L-1 — Materializer skeleton (pure, leaf). ✅ LANDED.** Claim table + phase machine + injected clock,
    `Declare` / `Renew` / sweep, emitting `SyncRequested` / `SyncStarted` / `TypeSynced` /
@@ -246,30 +250,54 @@ demand-gated checkpoint driver. **L-4 is next.**
    type holds no checkpoint; e2e green. *(The `:objects` keyspace is write-only today, so this
    gating is e2e-invisible — pure efficiency. The `TypeSynced`→splice-reconcile wake is the
    api-source-of-truth R2 consumer, not wired here.)*
-4. **L-4 — Periodic pass (T4 + T5). ← NEXT.** Per-type timer; live-claim branch → re-anchor or release.
-   *Done when:* a still-wanted type refreshes hourly; a no-longer-wanted type is released at the
-   sweep after demand stops.
-5. **L-5 — Durable `:objects:state` + boot reconcile (DEC-L6).** Persist phase/rv; rebuild
-   in-memory phases on start. *Done when:* a restart resumes without re-LISTing `Synced` types.
-6. **L-6 — Visibility (L10).** Per-`(GitTarget, type)` demand + per-type phase as metrics and a
-   bounded status roll-up, including claim-vs-refused mismatches. *Done when:* an operator can
-   see what each GitTarget demands and each type's phase.
+4. **L-4 — Periodic pass (T4 + T5). ✅ LANDED.** Per-type live-claim branch → re-anchor or
+   release. The L-2 Sweep ticker + L-3 driver already wired the loop (sweep flags a still-claimed
+   `Synced` type → `SyncRequested` → driver re-fills `Synced→Resyncing→Synced`; an unclaimed type
+   → `Released` → checkpoint dropped), so this step was integration tests proving it end-to-end,
+   not new machinery. *Done:* a still-claimed type refreshes on the sweep; a no-longer-claimed
+   type is released at the sweep after demand stops.
+5. **L-5 — Durable `:objects:state` + boot rebuild (DEC-L6). ✅ LANDED.** `:objects:state` now
+   stores the full GVR (the base key drops the version, so the state doc carries it);
+   `LoadSyncedCheckpoints` reads it; the leaf `Materializer.RestoreSynced(gvr, rv)` replays it
+   (silent, no event); the composition root (`cmd/main.go`) joins them at boot before the manager
+   starts, keeping the `watch ⊥ queue` decoupling. *Done:* a restart resumes `Synced` types from
+   `:objects:state` without re-filling. *Known limit:* a type removed while down restores
+   `Synced` and would fail its next re-anchor (harmless — no consumer yet; cleaned at re-anchor).
+6. **L-6 — Visibility (L10). ✅ LANDED.** Leaf `Materializer.Inventory()` (per-type phase / rv /
+   followable / claimants); low-cardinality metrics (`materialization_type_phase` by phase,
+   `materialization_sync_events_total` by kind, `materialization_claimed_types`,
+   `materialization_claimed_unfollowable`); and a bounded `GitTargetStatus.Materialization`
+   roll-up the controller writes (claimed / synced / pending / failing / not-followable counts).
+   The claim-vs-refused mismatch is surfaced as both the `claimed_unfollowable` gauge and the
+   `notFollowableTypes` status count. *Done:* an operator can see each type's phase and what each
+   GitTarget demands.
 
 ## 9. Open questions
 
+**All open questions for this layer are now settled or pinned (L-1→L-6 shipped).** The only
+remaining items are explicitly **HA-deferred** (R10) or known, harmless limitations — nothing
+blocks the parent reconcile (R1→R2) from building on this.
+
 - **Settled — release grace = sweep-interval** (DEC-L5). No dedicated constant.
 - **Settled — no `Orphaned` phase yet** (DEC-L7). Add later if visibility demands it.
-- **Claim key granularity. *Pinned (L-2).*** A claim keys on `(GitTarget ref, GVR)`, and the
-  ref is the GitTarget's **namespaced name** (`gitDest.String()`) — stable across reconciles
-  and consistent with how the rulestore keys GitTargets. Per review, a future refinement is to
-  fold in the **UID when available** (namespaced name for readability, UID to disambiguate a
-  delete-then-recreate so stale claims cannot be silently inherited). Deferred, not a
-  correctness gap: claims age out within a sweep interval and a recreated GitTarget re-`Declare`s
-  the same set, so name-only is correct today; the UID seam is a precision upgrade.
-- **`Declare` transport.** In-process call (Materializer in the same controller) vs a Redis-
-  backed declaration (needed only once HA splits the consumer from the GitTarget owner). Start
-  in-process; the durable `:objects:state` (DEC-L6) already carries the HA seam.
-- **Renewal cadence vs sweep interval.** The GitTarget reconcile interval must be comfortably
-  shorter than the sweep interval so a healthy consumer always renews between sweeps. Default
-  reconcile is minutes, sweep is ~1h, so this holds — but it is the one coupling to keep honest
-  if either interval becomes tunable.
+- **Settled / pinned (L-2) — claim key granularity.** A claim keys on `(GitTarget ref, GVR)`,
+  and the ref is the GitTarget's **namespaced name** (`gitDest.String()`) — stable across
+  reconciles and consistent with how the rulestore keys GitTargets. A future refinement folds in
+  the **UID when available** (namespaced name for readability, UID to disambiguate a
+  delete-then-recreate so stale claims cannot be silently inherited). Deferred, not a correctness
+  gap: claims age out within a sweep interval and a recreated GitTarget re-`Declare`s the same
+  set, so name-only is correct today; the UID seam is a precision upgrade.
+- **Settled for now (HA-deferred) — `Declare` transport.** In-process call (Materializer in the
+  same controller), which is what shipped. A Redis-backed declaration is needed only once HA
+  splits the consumer from the GitTarget owner; the durable `:objects:state` (DEC-L6, L-5) already
+  carries the HA seam.
+- **Settled (a coupling to keep honest) — renewal cadence vs sweep interval.** The GitTarget
+  controller reconcile (`RequeueLongInterval`, minutes) renews comfortably inside the ~1h sweep,
+  so a healthy consumer always renews between sweeps. Revisit only if either interval becomes
+  tunable.
+- **Known limit (L-5), not blocking — restore of a removed-while-down type.** Boot rebuild
+  replays a durable `Synced` checkpoint as `Synced` + followable; if the type was removed from the
+  cluster while the controller was down, no `TypeRemoved` fires (it was never re-activated), so the
+  stale checkpoint lingers and fails its next re-anchor. Harmless today (no consumer reads the
+  checkpoint yet) and self-cleaning once it does; a precise fix (skip-or-clear non-followable
+  restores) lands naturally with the parent's R2 splice.

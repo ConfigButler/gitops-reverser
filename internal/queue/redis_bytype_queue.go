@@ -191,6 +191,73 @@ func (q *RedisByTypeStreamQueue) Enqueue(ctx context.Context, event auditv1.Even
 	return nil
 }
 
+// TrimTypeAuditLog bounds a type's main audit stream to the checkpoint cursor: it evicts every
+// entry whose resourceVersion is strictly below minRV (XTRIM ... MINID), so a reconcile never
+// scans more than one checkpoint interval of history. It is the trim half of R1, called on each
+// successful checkpoint re-anchor with the oldest currently-serving checkpoint rv (the §6
+// trim-cursor model of docs/design/stream/api-source-of-truth-reconcile.md) — normally the just-
+// pinned :objects:rv, since a single checkpoint serves a type.
+//
+// minRV is a bare resourceVersion; Valkey completes it to "<minRV>-0", so an entry at exactly
+// minRV (any subseq) is KEPT while everything strictly older is dropped. That is deliberately one
+// notch conservative: the splice replays the log with an exclusive "(R +" range, so it skips the
+// rv==R entries the checkpoint already contains, and they age out at the next re-anchor. Trimming
+// is safe, never lossy — a reconcile that finds the log trimmed past its cursor simply re-reads
+// the checkpoint and folds forward from there. A blank minRV is a no-op (nothing to anchor to).
+func (q *RedisByTypeStreamQueue) TrimTypeAuditLog(ctx context.Context, group, resource, minRV string) error {
+	if strings.TrimSpace(minRV) == "" {
+		return nil
+	}
+	streamKey := typeBaseKey(q.prefix, group, resource, "") + byTypeAuditStreamSuffix
+	if err := q.client.XTrimMinID(ctx, streamKey, minRV).Err(); err != nil {
+		return fmt.Errorf("failed to trim audit stream %q to minID %q: %w", streamKey, minRV, err)
+	}
+	return nil
+}
+
+// byTypeAuditReadCount bounds how many new entries one AwaitTypeAuditEntry read drains. A burst is
+// returned in a single read so the cursor advances past all of it at once, coalescing into one
+// reconcile (the splice reflects the whole log regardless of how many entries triggered it).
+const byTypeAuditReadCount = 1024
+
+// AwaitTypeAuditEntry blocks up to `block` for a new entry on a type's main audit stream after
+// lastID, returning the newest stream ID seen (to resume from) and whether anything new arrived. It
+// is the audit-arrival wake for the splice reconcile (R2): the per-type tail loops on it and
+// reconciles when an entry lands. lastID "" or "$" anchors at the present (only future entries);
+// thereafter the caller passes back the returned concrete ID so no entry is missed between reads. A
+// block timeout returns (lastID, false, nil); a Redis error is returned for the caller to back off
+// on. Best-effort and non-fatal, like the rest of the per-type mirror (IR8).
+func (q *RedisByTypeStreamQueue) AwaitTypeAuditEntry(
+	ctx context.Context,
+	group, resource, lastID string,
+	block time.Duration,
+) (string, bool, error) {
+	if strings.TrimSpace(lastID) == "" {
+		lastID = "$"
+	}
+	streamKey := typeBaseKey(q.prefix, group, resource, "") + byTypeAuditStreamSuffix
+	res, err := q.client.XRead(ctx, &redis.XReadArgs{
+		Streams: []string{streamKey, lastID},
+		Count:   byTypeAuditReadCount,
+		Block:   block,
+	}).Result()
+	if errors.Is(err, redis.Nil) {
+		return lastID, false, nil // block elapsed with nothing new
+	}
+	if err != nil {
+		return lastID, false, fmt.Errorf("await audit entry on %q: %w", streamKey, err)
+	}
+
+	newID := lastID
+	for i := range res {
+		msgs := res[i].Messages
+		if len(msgs) > 0 {
+			newID = msgs[len(msgs)-1].ID
+		}
+	}
+	return newID, true, nil
+}
+
 // byTypeAuditKeys bundles the three per-type audit keys one Enqueue touches.
 type byTypeAuditKeys struct {
 	stream  string // the strictly RV-ordered main stream

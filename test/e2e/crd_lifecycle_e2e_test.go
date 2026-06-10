@@ -29,7 +29,15 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-var _ = Describe("Manager CRD Lifecycle", Label("manager"), Ordered, func() {
+// Serial: this block both installs/deletes a cluster-scoped CRD and watches ALL
+// customresourcedefinitions cluster-wide, asserting exact Git file presence/absence. Run in
+// parallel (procs>1) it raced other CRD-churning specs (bi_directional installs/deletes its own
+// IceCreamOrder CRD, restart_snapshot mirrors CRDs) through the controller's global CRD-discovery
+// catalog: a concurrent CRD install/delete bumps the catalog generation and re-resolves every
+// GitTarget's watched-type tables, delaying this spec's reconcile so the CRD file appeared late
+// (verifyFileExists) or its post-delete sweep lagged (verifyFileDeleted) — the 649↔673 flake.
+// Serial pins it to the isolated serial phase, where no other spec churns cluster-scoped CRD state.
+var _ = Describe("Manager CRD Lifecycle", Label("manager"), Serial, Ordered, func() {
 	var (
 		testNs           string
 		crdLifecycleRepo *RepoArtifacts

@@ -251,6 +251,42 @@ spec:
                   reconcile attempt.
                 format: date-time
                 type: string
+              materialization:
+                description: |-
+                  Materialization is a bounded roll-up of the demand-driven checkpoint state for the
+                  resource types this GitTarget claims.
+                properties:
+                  claimedTypes:
+                    description: ClaimedTypes is how many resource types this GitTarget
+                      currently claims (demands).
+                    format: int32
+                    type: integer
+                  failingTypes:
+                    description: FailingTypes is how many claimed types last failed
+                      their checkpoint sync.
+                    format: int32
+                    type: integer
+                  notFollowableTypes:
+                    description: |-
+                      NotFollowableTypes is how many claimed types are not currently followable — the
+                      claim-vs-refused mismatch an operator should notice.
+                    format: int32
+                    type: integer
+                  observedTime:
+                    description: ObservedTime is when this roll-up was last computed.
+                    format: date-time
+                    type: string
+                  pendingTypes:
+                    description: PendingTypes is how many claimed types are awaiting,
+                      building, or refreshing a checkpoint.
+                    format: int32
+                    type: integer
+                  syncedTypes:
+                    description: SyncedTypes is how many claimed types have a current
+                      checkpoint and are serviceable.
+                    format: int32
+                    type: integer
+                type: object
               observedGeneration:
                 description: ObservedGeneration is the latest generation observed
                   by the controller.

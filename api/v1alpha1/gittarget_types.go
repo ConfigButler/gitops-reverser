@@ -111,6 +111,42 @@ type GitTargetStatus struct {
 	// Snapshot captures the latest initial snapshot reconciliation details.
 	// +optional
 	Snapshot *GitTargetSnapshotStatus `json:"snapshot,omitempty"`
+
+	// Materialization is a bounded roll-up of the demand-driven checkpoint state for the
+	// resource types this GitTarget claims.
+	// +optional
+	Materialization *GitTargetMaterializationStatus `json:"materialization,omitempty"`
+}
+
+// GitTargetMaterializationStatus is a bounded roll-up of the demand-driven materialization
+// state for the types this GitTarget claims: how many it demands and where they sit in the
+// per-type checkpoint lifecycle. It is a summary (counts), not a per-type list, so it stays
+// bounded regardless of how many types are watched.
+type GitTargetMaterializationStatus struct {
+	// ClaimedTypes is how many resource types this GitTarget currently claims (demands).
+	// +optional
+	ClaimedTypes int32 `json:"claimedTypes,omitempty"`
+
+	// SyncedTypes is how many claimed types have a current checkpoint and are serviceable.
+	// +optional
+	SyncedTypes int32 `json:"syncedTypes,omitempty"`
+
+	// PendingTypes is how many claimed types are awaiting, building, or refreshing a checkpoint.
+	// +optional
+	PendingTypes int32 `json:"pendingTypes,omitempty"`
+
+	// FailingTypes is how many claimed types last failed their checkpoint sync.
+	// +optional
+	FailingTypes int32 `json:"failingTypes,omitempty"`
+
+	// NotFollowableTypes is how many claimed types are not currently followable — the
+	// claim-vs-refused mismatch an operator should notice.
+	// +optional
+	NotFollowableTypes int32 `json:"notFollowableTypes,omitempty"`
+
+	// ObservedTime is when this roll-up was last computed.
+	// +optional
+	ObservedTime *metav1.Time `json:"observedTime,omitempty"`
 }
 
 // GitTargetSnapshotStatus captures initial snapshot progress details.

@@ -1,15 +1,18 @@
 # API as source of truth: checkpoint + log per-type reconcile
 
-> Status: **agreed direction — substrate landing, the pivot + demolition ahead.** The
-> capture substrate is real: the write-only per-type keyspace (R0) and the demand layer that
-> gates and drives the checkpoint
+> Status: **agreed direction — the demand substrate is COMPLETE; the pivot + demolition are
+> next.** The capture substrate is real and finished on the demand side: the write-only
+> per-type keyspace (R0) and the **entire** demand lifecycle
 > ([demand-driven-type-materialization-lifecycle.md](demand-driven-type-materialization-lifecycle.md),
-> steps **L-1→L-3**) have landed — so today only the types a GitTarget *claims* are listed
-> into the checkpoint. What remains is the **pivot** (make GitTarget reconcile a *consumer*
-> of the spliced materialization) and the **demolition** it unlocks (§5.1): the live informer
-> fabric, the per-reconcile gather, the RECONCILING handover, and content hashing all go.
-> This is a bold **cutover**, not a parallel path left to linger. Supersedes the always-open
-> "merged streaming tail" (M13) sketch in
+> steps **L-1→L-6** — all landed) are in. So today only the types a GitTarget *claims* are
+> filled into the checkpoint; the checkpoint is durable (`:objects:state` + boot rebuild) and
+> observable (metrics + a bounded GitTarget status roll-up). That already delivers parts of R1
+> (durable checkpoint state) and R4 (visibility). What remains here is the **pivot** (make
+> GitTarget reconcile a *consumer* of the spliced materialization — R2) plus R1's RV-first log,
+> and the **demolition** the pivot unlocks (§5.1): the live informer fabric, the per-reconcile
+> gather, the RECONCILING handover, and content hashing all go. This is a bold **cutover**, not
+> a parallel path left to linger. Supersedes the always-open "merged streaming tail" (M13)
+> sketch in
 > [../manifest/version2/per-type-reconcile-and-streaming-tail.md](../manifest/version2/per-type-reconcile-and-streaming-tail.md)
 > with a watch-free, periodic-reconcile model built on the per-type Redis keyspace.
 > Captured: 2026-06-10 · Updated: 2026-06-10
@@ -308,32 +311,36 @@ execution order is fixed by one rule the review made explicit: **do not delete t
 until the splice is proven the sole live truth** — build forward (R1→R2), prove it, then
 demolish (R3).
 
-**Landed already.** R0 (the write-only per-type keyspace). And the **demand layer** beneath
-this doc — [demand-driven-type-materialization-lifecycle.md](demand-driven-type-materialization-lifecycle.md)
-**L-1→L-3**: a `typeset.Materializer` owns per-`(GitTarget, type)` demand (claims as
-self-renewing leases), the GitTarget reconcile `Declare`s its watched-type set, a periodic
-**Sweep** ages out withdrawn demand, and a checkpoint **driver** in `internal/watch` now fills
-`:objects:items` for **only the claimed types** (`runTypeCheckpointSync` →
-[`mirrorTypeObjects`](../../../internal/watch/type_objects_mirror.go#L59), gated by the
-Materializer's `Synced` phase). `TypeActivated` no longer mirrors unconditionally — the big
-efficiency win is in. So the checkpoint half of the substrate is real and demand-gated; what
-remains is the RV-ordered log, the splice, and the demolition.
+**Landed already.** R0 (the write-only per-type keyspace) and the **entire demand layer** —
+[demand-driven-type-materialization-lifecycle.md](demand-driven-type-materialization-lifecycle.md)
+**L-1→L-6, all shipped**: a `typeset.Materializer` owns per-`(GitTarget, type)` demand (claims
+as self-renewing leases), the GitTarget reconcile `Declare`s its watched-type set, a periodic
+**Sweep** re-anchors the still-claimed and ages out withdrawn demand, and a checkpoint
+**driver** in `internal/watch` fills `:objects:items` for **only the claimed types**
+(`runTypeCheckpointSync` → [`mirrorTypeObjects`](../../../internal/watch/type_objects_mirror.go#L59),
+gated by the Materializer's `Synced` phase). `TypeActivated` no longer mirrors unconditionally —
+the big efficiency win is in. The demand layer also **pre-delivers two stage outcomes below**:
+its **L-5** gave R1's durable `:objects:state` + boot rebuild (the checkpoint survives a
+restart), and its **L-6** gave R4's visibility (phase/claim metrics + a bounded
+`GitTargetStatus.Materialization` roll-up). So the checkpoint half of the substrate is real,
+demand-gated, durable, and observable; what remains here is the **RV-ordered log** (the rest of
+R1), the **splice** (R2), and the **demolition** (R3).
 
-### R1 — Substrate: RV-ordered log + trimmable, durable checkpoint  *(R5, R8)*
+### R1 — Substrate: RV-ordered log + trimmable, durable checkpoint  *(R5, R8)* — *partly landed*
 
 Make the log replay-exact and the checkpoint durable enough to resume from.
-- Re-key `:audit:stream` from `<stage_millis>-<rv>` to **RV-first** and add the diagnostic
-  late lane — full producer spec in [audit-log-ingestion-and-ordering.md](audit-log-ingestion-and-ordering.md)
-  (the concrete change is to [`RedisByTypeStreamQueue`](../../../internal/queue/redis_bytype_queue.go)).
-- On each re-anchor, **trim** `:audit:stream` to the trim cursor (the oldest serving
-  checkpoint rv — the model is pinned in §6) and persist `:objects:state` — the durable
-  phase/rv a restart rebuilds from (demand-layer **L-5**; the HA seam, R10).
-- The periodic re-anchor/release that drives the writer is demand-layer **L-4**: the Sweep
-  already flags a still-claimed `Synced` type for re-anchor and the driver re-fills it; this
-  step adds the log trim + state persistence around it.
-- *Done when:* the log is RV-ordered and replay-rangeable by `:objects:rv`; checkpoints
-  re-anchor on schedule and trim the log to the cursor; a restart resumes from
-  `:objects:state` without re-filling the world. **Still no consumer.**
+- ✅ **Done (demand-layer L-4 + L-5).** The periodic re-anchor/release runs (the Sweep flags a
+  still-claimed `Synced` type and the driver re-fills it), and `:objects:state` now persists the
+  phase/rv (with the full GVR) and is replayed into the Materializer on boot — a restart resumes
+  `Synced` types without re-filling (the HA seam, R10).
+- ⬜ **Remaining — RV-ordered log + trim.** Re-key `:audit:stream` from `<stage_millis>-<rv>` to
+  **RV-first** and add the diagnostic late lane — full producer spec in
+  [audit-log-ingestion-and-ordering.md](audit-log-ingestion-and-ordering.md) (the concrete change
+  is to [`RedisByTypeStreamQueue`](../../../internal/queue/redis_bytype_queue.go)). On each
+  re-anchor, **trim** `:audit:stream` to the trim cursor (the oldest serving checkpoint rv — the
+  model is pinned in §6).
+- *Done when:* the log is RV-ordered and replay-rangeable by `:objects:rv`; checkpoints trim the
+  log to the cursor on re-anchor. (Durable resume already lands via L-5.) **Still no consumer.**
 
 ### R2 — The splice reconcile — THE PIVOT  *(R1, R2, R6 — headline)*
 
@@ -365,15 +372,18 @@ the splice reads. The full file-and-symbol list is **§5.1**.
   mostly red; e2e green. The hash-drop CPU check (R7) is measured before/after on a
   high-churn type; the last-position equality fallback is kept ready but unused.
 
-### R4 — Visibility + big-set hardening  *(R12, R13)*
+### R4 — Visibility + big-set hardening  *(R12, R13)* — *partly landed*
 
-Surface the keyspace that already exists — `__index__` + `:objects:state`
-(phase/count/rv/updated_at) — as per-`(GitTarget, type)` metrics and a bounded
-`GitTargetStatus` roll-up (total/synced/failing, CRD version, last position), plus an optional
-queryable inventory. Prove the **large-set** case in the same stage: a synthetic cluster-wide
-type with thousands of objects, asserting per-type commits, correct sweep, no lost tail event,
-bounded checkpoint duration + log lag. *Done when:* an operator can see what each GitTarget
-follows and each type's sync state, and the big-set e2e is green.
+- ✅ **Done (demand-layer L-6).** Per-type phase + demand are observable: low-cardinality metrics
+  (`materialization_type_phase` by phase, `materialization_sync_events_total` by kind,
+  `materialization_claimed_types`, `materialization_claimed_unfollowable`) and a bounded
+  `GitTargetStatus.Materialization` roll-up (claimed / synced / pending / failing /
+  not-followable). The claim-vs-refused mismatch is surfaced both ways.
+- ⬜ **Remaining — big-set hardening + reconcile-side counts.** Prove the **large-set** case: a
+  synthetic cluster-wide type with thousands of objects, asserting per-type commits, correct
+  sweep, no lost tail event, bounded checkpoint duration + log lag. Add the reconcile-side counts
+  (commit counts, last-applied log position) once R2 exists, plus an optional queryable inventory.
+- *Done when:* the operator-visibility above is complete **and** the big-set e2e is green.
 
 ### R5 — Commit coalescing  *(R14, follow-up)*
 
@@ -381,6 +391,12 @@ Debounce audit-triggered reconciles so co-arriving changes group per commit wind
 top of the BranchWorker's existing window, not new machinery (DEC-8).
 
 ## 9. Open questions
+
+**Status:** the **demand-layer** questions (claim key, release grace, `Declare` transport,
+renewal cadence, `Orphaned` phase) are all **settled** — see
+[demand-driven-type-materialization-lifecycle.md](demand-driven-type-materialization-lifecycle.md) §9.
+The questions below are **this doc's**, and three are still genuinely open because they depend on
+the splice (R2), which is not built yet — they are intentionally not answered now.
 
 - **Checkpoint interval.** *Settled: ~1h default.* Open only on whether it is per-type
   tunable. Freshness between checkpoints rides entirely on the log (R4); the interval only

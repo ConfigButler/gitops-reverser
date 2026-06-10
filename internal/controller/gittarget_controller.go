@@ -277,6 +277,18 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			log.V(1).Info("materialization declare skipped; surface not observable",
 				"gitDest", gitDest.String(), "err", declareErr.Error())
 		}
+		// Roll up the demand-axis state for visibility (L-6): bounded per-GitTarget counts,
+		// not a per-type list, so the object stays small however many types are watched.
+		sum := r.EventRouter.WatchManager.MaterializationSummaryForGitTarget(gitDest)
+		now := metav1.Now()
+		target.Status.Materialization = &configbutleraiv1alpha1.GitTargetMaterializationStatus{
+			ClaimedTypes:       clampIntToInt32(sum.Claimed),
+			SyncedTypes:        clampIntToInt32(sum.Synced),
+			PendingTypes:       clampIntToInt32(sum.Pending),
+			FailingTypes:       clampIntToInt32(sum.Failing),
+			NotFollowableTypes: clampIntToInt32(sum.NotFollowable),
+			ObservedTime:       &now,
+		}
 	}
 
 	streamReady, streamMessage := r.evaluateEventStreamGate(&target, stream, providerNS)

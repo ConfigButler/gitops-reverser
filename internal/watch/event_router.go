@@ -315,20 +315,31 @@ func (r *EventRouter) resolveWorkerForGitDest(
 	return worker, nil
 }
 
-// EmitTypeReconcileForGitDest runs one M12 per-type reconcile: it streams just gvr's resources
-// for the GitTarget and enqueues a type-scoped resync (upserts that type's objects, sweeps only
-// that type's orphans). It is fire-and-forget — the worker reply is drained in the background,
-// like the rule-change resync — so the registry's event-drain goroutine never blocks on a
-// commit. A type this GitTarget does not watch, or an unobservable surface, is returned as an
-// error before anything is enqueued.
+// EmitTypeReconcileForGitDest runs one per-type reconcile by SPLICING the materialized API in
+// Redis (checkpoint + log) into that type's desired set and enqueuing a type-scoped resync (upserts
+// the type's objects, sweeps only the type's orphans) — the R2 pivot. It replaces the live
+// per-reconcile streaming gather with a fold over Redis, so a reconcile makes ZERO API calls and N
+// GitTargets fan out from one capture. It is fire-and-forget — the worker reply is drained in the
+// background — so the wake goroutine never blocks on a commit.
+//
+// It is self-gating and idempotent (the splice is a pure function of checkpoint + log), so it is
+// safe to call from every wake: a type-activation edge, the materializer's TypeSynced, and an audit
+// arrival. When the splice holds — the GitTarget does not watch the type, or its checkpoint is not
+// yet Synced (§7 fail-closed) — it no-ops without enqueuing. A genuine fail-closed condition (an
+// unobserved surface, a wobbling type, or a Redis/splice failure) is returned as an error.
 func (r *EventRouter) EmitTypeReconcileForGitDest(
 	ctx context.Context,
 	gitDest types.ResourceReference,
 	gvr schema.GroupVersionResource,
 ) error {
-	snapshot, err := r.WatchManager.StreamSnapshotForType(ctx, gitDest, gvr)
+	snapshot, ready, err := r.WatchManager.SpliceSnapshotForType(ctx, gitDest, gvr)
 	if err != nil {
 		return err
+	}
+	if !ready {
+		// Benign hold: not watched, or the checkpoint is not Synced yet. The TypeSynced wake
+		// re-fires the reconcile the instant the checkpoint becomes serviceable.
+		return nil
 	}
 	resultCh, err := r.enqueueScopedResync(ctx, gitDest, gvr, snapshot.Desired, snapshot.Revision)
 	if err != nil {

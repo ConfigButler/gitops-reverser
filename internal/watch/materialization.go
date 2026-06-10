@@ -23,8 +23,11 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
+	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 	"github.com/ConfigButler/gitops-reverser/internal/typeset"
 )
@@ -102,6 +105,57 @@ func (m *Manager) RestoreSyncedCheckpoint(group, version, resource, rv string) {
 		schema.GroupVersionResource{Group: group, Version: version, Resource: resource}, rv)
 }
 
+// GitTargetMaterializationSummary is a bounded per-GitTarget roll-up of demand-axis state —
+// the data the GitTarget status surfaces (L-6/L10). Pending counts types awaiting, building, or
+// refreshing a checkpoint; Synced counts serviceable types; Failing counts per-type stalls;
+// NotFollowable counts claimed types the registry does not currently serve (claim-vs-refused).
+type GitTargetMaterializationSummary struct {
+	Claimed       int
+	Synced        int
+	Pending       int
+	Failing       int
+	NotFollowable int
+}
+
+// MaterializationSummaryForGitTarget rolls up, for one GitTarget, how many types it claims and
+// where they sit in the checkpoint lifecycle (L-6). It is bounded (counts, not a per-type list)
+// and scoped to the claims keyed by this GitTarget's ref (gitDest.String()).
+func (m *Manager) MaterializationSummaryForGitTarget(gitDest types.ResourceReference) GitTargetMaterializationSummary {
+	ref := typeset.GitTargetRef(gitDest.String())
+	var s GitTargetMaterializationSummary
+	for _, t := range m.materializerInstance().Inventory() {
+		if !claimantsInclude(t.Claimants, ref) {
+			continue
+		}
+		s.Claimed++
+		if !t.Followable {
+			s.NotFollowable++
+		}
+		switch t.Phase {
+		case typeset.PhaseSynced:
+			s.Synced++
+		case typeset.PhaseFailing:
+			s.Failing++
+		case typeset.PhaseRequested, typeset.PhaseSyncing, typeset.PhaseResyncing:
+			s.Pending++
+		case typeset.PhaseDormant:
+			// Claimed but not yet serviceable (typically not-yet-followable) — surfaced via
+			// Claimed and, when applicable, NotFollowable only.
+		}
+	}
+	return s
+}
+
+// claimantsInclude reports whether ref holds a claim in the sorted claimant slice.
+func claimantsInclude(claimants []typeset.GitTargetRef, ref typeset.GitTargetRef) bool {
+	for _, c := range claimants {
+		if c == ref {
+			return true
+		}
+	}
+	return false
+}
+
 // distinctClaimGVRs collapses the resolved (GVR, namespace-scope) stream set to the distinct
 // GVRs the claim table keys on, preserving the resolver's sorted order.
 func distinctClaimGVRs(gvrs []snapshotGVR) []schema.GroupVersionResource {
@@ -147,6 +201,7 @@ func (m *Manager) runMaterializationSweep(ctx context.Context, log logr.Logger, 
 			return
 		case <-ticker.C:
 			m.materializerInstance().Sweep()
+			m.recordMaterializationGauges(ctx)
 			log.V(1).Info("materialization sweep tick")
 		}
 	}
@@ -184,18 +239,71 @@ func (m *Manager) driveMaterialization(ctx context.Context, log logr.Logger) {
 }
 
 // handleMaterializationEvent acts on one demand event. SyncRequested drives the demand-gated
-// checkpoint LIST (T1/T4); Released drops the checkpoint (demand GC or followability loss). The
-// rest are observability for L-3 — the GitTarget wake on TypeSynced is the future
-// api-source-of-truth splice reconcile (R-steps), not wired here.
+// checkpoint LIST (T1/T4); Released drops the checkpoint (demand GC or followability loss);
+// TypeSynced is the R2 wake — a freshly-serviceable checkpoint fans a per-type splice reconcile to
+// every GitTarget watching the type. SyncStarted/SyncFailed are observability.
 func (m *Manager) handleMaterializationEvent(ctx context.Context, log logr.Logger, ev typeset.MaterializationEvent) {
+	if telemetry.MaterializationSyncEventsTotal != nil {
+		telemetry.MaterializationSyncEventsTotal.Add(ctx, 1,
+			metric.WithAttributes(attribute.String("kind", string(ev.Kind))))
+	}
 	switch ev.Kind {
 	case typeset.SyncRequested:
 		m.runTypeCheckpointSync(ctx, log, ev.GVR)
 	case typeset.Released:
+		m.stopTypeAuditTail(ev.GVR)
 		m.clearTypeObjects(ctx, log, ev.GVR)
-	case typeset.SyncStarted, typeset.TypeSynced, typeset.SyncFailed:
+	case typeset.TypeSynced:
+		// The checkpoint just became serviceable (first sync or a periodic re-anchor): wake the
+		// splice reconcile so every watching GitTarget reconciles off the fresh checkpoint + log,
+		// and start the audit tail so subsequent events reconcile within the interval.
+		log.V(1).Info("materialization event", "kind", ev.Kind, "gvr", ev.GVR.String(), "rv", ev.RV)
+		m.reconcileTypeForSyncedTargets(ctx, log, ev.GVR)
+		m.startTypeAuditTail(ctx, log, ev.GVR)
+	case typeset.SyncStarted, typeset.SyncFailed:
 		log.V(1).Info("materialization event",
 			"kind", ev.Kind, "gvr", ev.GVR.String(), "phase", ev.Phase, "rv", ev.RV)
+	}
+	// Refresh the phase-distribution / demand gauges after every transition — materialization
+	// events are per-type (rare), and a gauge only needs re-recording when state actually moved.
+	m.recordMaterializationGauges(ctx)
+}
+
+// recordMaterializationGauges publishes the current phase distribution and demand surface from
+// one Inventory snapshot (L-6/L10): how many types sit in each phase, how many are claimed, and
+// how many are claimed-but-not-followable (the claim-vs-refused mismatch). All zero phases are
+// re-recorded so an emptied phase reads 0 rather than a stale value.
+func (m *Manager) recordMaterializationGauges(ctx context.Context) {
+	if telemetry.MaterializationTypePhase == nil &&
+		telemetry.MaterializationClaimedTypes == nil &&
+		telemetry.MaterializationClaimedUnfollowable == nil {
+		return
+	}
+	phaseCounts := map[typeset.Phase]int64{
+		typeset.PhaseDormant: 0, typeset.PhaseRequested: 0, typeset.PhaseSyncing: 0,
+		typeset.PhaseSynced: 0, typeset.PhaseResyncing: 0, typeset.PhaseFailing: 0,
+	}
+	var claimed, claimedUnfollowable int64
+	for _, t := range m.materializerInstance().Inventory() {
+		phaseCounts[t.Phase]++
+		if len(t.Claimants) > 0 {
+			claimed++
+			if !t.Followable {
+				claimedUnfollowable++
+			}
+		}
+	}
+	if telemetry.MaterializationTypePhase != nil {
+		for phase, n := range phaseCounts {
+			telemetry.MaterializationTypePhase.Record(ctx, n,
+				metric.WithAttributes(attribute.String("phase", string(phase))))
+		}
+	}
+	if telemetry.MaterializationClaimedTypes != nil {
+		telemetry.MaterializationClaimedTypes.Record(ctx, claimed)
+	}
+	if telemetry.MaterializationClaimedUnfollowable != nil {
+		telemetry.MaterializationClaimedUnfollowable.Record(ctx, claimedUnfollowable)
 	}
 }
 
@@ -216,4 +324,21 @@ func (m *Manager) runTypeCheckpointSync(ctx context.Context, log logr.Logger, gv
 		return
 	}
 	m.materializerInstance().SyncSucceeded(gvr, rv)
+	m.trimTypeAuditLog(ctx, log, gvr, rv)
+}
+
+// trimTypeAuditLog bounds the type's audit log to the just-pinned checkpoint cursor (R1, §6).
+// It runs right after SyncSucceeded, when the new checkpoint is the single serving one, so the
+// trim cursor is exactly rv. Best-effort: a trim failure leaves a longer-than-necessary log (the
+// splice still replays correctly), so it is logged and swallowed, never failing the sync. A nil
+// trimmer or a blank rv is a no-op.
+func (m *Manager) trimTypeAuditLog(ctx context.Context, log logr.Logger, gvr schema.GroupVersionResource, rv string) {
+	if m.AuditLogTrimmer == nil || rv == "" {
+		return
+	}
+	if err := m.AuditLogTrimmer.TrimTypeAuditLog(ctx, gvr.Group, gvr.Resource, rv); err != nil {
+		log.Error(err, "materialization audit-log trim failed", "gvr", gvr.String(), "cursor", rv)
+		return
+	}
+	log.V(1).Info("materialization audit-log trimmed", "gvr", gvr.String(), "cursor", rv)
 }

@@ -115,6 +115,12 @@ var (
 	// pruned.
 	TypeLifecycleSweepTotal metric.Int64Counter
 
+	// MaterializationSyncEventsTotal counts demand-axis transitions the checkpoint driver
+	// handles, labelled by {kind} (SyncRequested/SyncStarted/TypeSynced/SyncFailed/Released).
+	// It tracks demand-driven checkpoint activity per the materialization lifecycle
+	// (docs/design/stream/demand-driven-type-materialization-lifecycle.md, L-6/L10).
+	MaterializationSyncEventsTotal metric.Int64Counter
+
 	// WatchDuplicatesSkippedTotal counts watch events skipped due to duplicate sanitized content.
 	WatchDuplicatesSkippedTotal metric.Int64Counter
 	// AuditEventsReceivedTotal counts audit events received from Kubernetes API server.
@@ -182,6 +188,16 @@ var (
 	// WatchedTypes gauges the number of watched types per GitTarget, labelled by
 	// gittarget_namespace and gittarget_name.
 	WatchedTypes metric.Int64Gauge
+	// MaterializationTypePhase gauges how many types sit in each materialization phase,
+	// labelled by {phase} (dormant/requested/syncing/synced/resyncing/failing) — the per-type
+	// phase distribution of the demand axis (L-6/L10).
+	MaterializationTypePhase metric.Int64Gauge
+	// MaterializationClaimedTypes gauges how many types currently hold ≥1 GitTarget claim
+	// (the demand surface: how much of the catalog is actually wanted).
+	MaterializationClaimedTypes metric.Int64Gauge
+	// MaterializationClaimedUnfollowable gauges how many claimed types are not currently
+	// followable — the claim-vs-refused mismatch an operator should notice (L10).
+	MaterializationClaimedUnfollowable metric.Int64Gauge
 	// SecretEncryptionAttemptsTotal counts total Secret encryption attempts.
 	SecretEncryptionAttemptsTotal metric.Int64Counter
 	// SecretEncryptionSuccessTotal counts successful Secret encryptions.
@@ -309,6 +325,7 @@ func registerCounters() error {
 		{"gitopsreverser_resync_background_failures_total", &ResyncBackgroundFailuresTotal},
 		{"gitopsreverser_type_lifecycle_reconcile_total", &TypeLifecycleReconcileTotal},
 		{"gitopsreverser_type_lifecycle_sweep_total", &TypeLifecycleSweepTotal},
+		{"gitopsreverser_materialization_sync_events_total", &MaterializationSyncEventsTotal},
 	}
 	for _, s := range counters {
 		v, err := otelMeter.Int64Counter(s.name)
@@ -358,6 +375,9 @@ func registerGauges() error {
 		{"gitopsreverser_api_catalog_group_versions", &APICatalogGroupVersions},
 		{"gitopsreverser_api_catalog_generation", &APICatalogGeneration},
 		{"gitopsreverser_watched_types", &WatchedTypes},
+		{"gitopsreverser_materialization_type_phase", &MaterializationTypePhase},
+		{"gitopsreverser_materialization_claimed_types", &MaterializationClaimedTypes},
+		{"gitopsreverser_materialization_claimed_unfollowable", &MaterializationClaimedUnfollowable},
 		{"gitopsreverser_audit_queue_stream_length", &AuditQueueStreamLength},
 		{"gitopsreverser_audit_queue_consumer_lag", &AuditQueueConsumerLag},
 		{"gitopsreverser_audit_queue_pending_entries", &AuditQueuePendingEntries},

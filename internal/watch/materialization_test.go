@@ -158,6 +158,43 @@ func TestRunTypeCheckpointSync_ListsClaimedTypeAndMarksSynced(t *testing.T) {
 	assert.NotEmpty(t, rv, "the checkpoint is pinned to the list revision")
 }
 
+// TestRunTypeCheckpointSync_TrimsAuditLogOnReAnchor proves R1's trim half: a successful
+// checkpoint sync trims the type's audit log to the just-pinned cursor (the §6 trim-cursor model),
+// and a nil/failed trimmer never disturbs the Synced outcome.
+func TestRunTypeCheckpointSync_TrimsAuditLogOnReAnchor(t *testing.T) {
+	dc := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme(), streamedCM("default", "a", "10"))
+	mirror := &recordingObjectMirror{}
+	trimmer := &recordingTrimmer{}
+	m := &Manager{Log: logr.Discard(), dynamicClient: dc, ObjectMirror: mirror, AuditLogTrimmer: trimmer}
+
+	m.materializerInstance().Declare(typeset.GitTargetRef("test-ns/t"), []schema.GroupVersionResource{configMapGVR})
+	m.materializerInstance().OnLifecycleEvent(activate(configMapGVR))
+	m.runTypeCheckpointSync(context.Background(), logr.Discard(), configMapGVR)
+
+	rv, _ := m.materializerInstance().Checkpoint(configMapGVR)
+	assert.Equal(t, 1, trimmer.trimCount, "a successful re-anchor trims the log exactly once")
+	assert.Equal(t, "/configmaps", trimmer.trimmedKey, "trims the type's own audit stream")
+	assert.Equal(t, rv, trimmer.trimmedRV, "trims to the just-pinned checkpoint cursor")
+}
+
+// TestRunTypeCheckpointSync_TrimFailureIsBenign proves a trim error is swallowed: the type stays
+// Synced at its new revision (the splice still replays correctly against an over-long log).
+func TestRunTypeCheckpointSync_TrimFailureIsBenign(t *testing.T) {
+	dc := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme(), streamedCM("default", "a", "10"))
+	m := &Manager{
+		Log: logr.Discard(), dynamicClient: dc,
+		ObjectMirror:    &recordingObjectMirror{},
+		AuditLogTrimmer: &recordingTrimmer{err: errors.New("trim boom")},
+	}
+
+	m.materializerInstance().Declare(typeset.GitTargetRef("test-ns/t"), []schema.GroupVersionResource{configMapGVR})
+	m.materializerInstance().OnLifecycleEvent(activate(configMapGVR))
+	m.runTypeCheckpointSync(context.Background(), logr.Discard(), configMapGVR)
+
+	ph, _ := m.materializerInstance().Phase(configMapGVR)
+	assert.Equal(t, typeset.PhaseSynced, ph, "a trim failure never unsettles the checkpoint")
+}
+
 // TestRunTypeCheckpointSync_SkipsUnclaimedFollowableType is the L-3 gate: a followable type
 // with no claim never lists — BeginSync is a no-op because the Materializer left it Dormant.
 func TestRunTypeCheckpointSync_SkipsUnclaimedFollowableType(t *testing.T) {
@@ -289,4 +326,30 @@ func TestRestoreSyncedCheckpoint_MarksSyncedWithoutFill(t *testing.T) {
 	m.RestoreSyncedCheckpoint("", "v1", "configmaps", "") // blank rv → ignored
 	_, ok = m.materializerInstance().Phase(schema.GroupVersionResource{Version: "v1", Resource: "configmaps"})
 	require.False(t, ok)
+}
+
+// TestMaterializationSummaryForGitTarget_RollsUpClaimedPhases proves the L-6 per-GitTarget
+// status roll-up: bounded counts over the types this GitTarget claims, including the
+// claim-vs-refused mismatch, and an empty summary for a GitTarget that claims nothing.
+func TestMaterializationSummaryForGitTarget_RollsUpClaimedPhases(t *testing.T) {
+	dc := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme(), streamedCM("default", "a", "10"))
+	mirror := &recordingObjectMirror{}
+	m := &Manager{Log: logr.Discard(), dynamicClient: dc, ObjectMirror: mirror}
+	mat := m.materializerInstance()
+	gitDest := gitDestRef("roll-target")
+	ref := typeset.GitTargetRef(gitDest.String())
+
+	// configmaps: claimed + synced. secrets: claimed but never followable (the mismatch).
+	mat.Declare(ref, []schema.GroupVersionResource{configMapGVR, secretsGVR})
+	mat.OnLifecycleEvent(activate(configMapGVR))
+	m.runTypeCheckpointSync(context.Background(), logr.Discard(), configMapGVR)
+
+	sum := m.MaterializationSummaryForGitTarget(gitDest)
+	require.Equal(t, 2, sum.Claimed)
+	require.Equal(t, 1, sum.Synced)
+	require.Equal(t, 1, sum.NotFollowable, "a claimed type that never became followable is a mismatch")
+	require.Zero(t, sum.Failing)
+
+	// A GitTarget that claims nothing has an empty roll-up.
+	require.Equal(t, GitTargetMaterializationSummary{}, m.MaterializationSummaryForGitTarget(gitDestRef("other")))
 }
