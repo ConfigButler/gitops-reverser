@@ -36,9 +36,18 @@ import (
 //
 // It stays a leaf exactly like the Registry: it depends only on apimachinery schema and
 // an injected clock. Followability enters as consumed LifecycleEvents (DEC-L4), not as a
-// client; the async LIST that actually fills a checkpoint is a future driver (L-2/L-3)
+// client; the async fill that actually builds a checkpoint is a future driver (L-2/L-3)
 // that calls BeginSync / SyncSucceeded / SyncFailed — this file owns only the phase
-// machine and the lease GC, not the LIST.
+// machine and the lease GC, not the fill itself.
+//
+// "The sync" in this file means that fill, and the modern path is a streaming-list WATCH,
+// NOT a plain LIST: the driver (internal/watch's StreamSnapshotForType /
+// StreamClusterSnapshotForGitDest) opens a WATCH with sendInitialEvents=true,
+// resourceVersionMatch=NotOlderThan, allowWatchBookmarks=true, folds the initial ADDED
+// events, and reads to the initial-events-end bookmark — that bookmark's resourceVersion
+// is the rv handed to SyncSucceeded. A consistent LIST is the per-type FALLBACK only, for
+// a server that cannot stream (e.g. an aggregated apiserver that rejects
+// sendInitialEvents). See docs/design/manifest/reconcile-via-watchlist-mark-and-sweep.md.
 
 // Phase is where a type sits on the materialization axis. It is orthogonal to the
 // followability Verdict: a Followable type may be Dormant (unclaimed) and a claimed type
@@ -49,18 +58,18 @@ const (
 	// PhaseDormant is the resting state: no live claim, or not yet followable. No
 	// checkpoint, not reconcile-serviceable.
 	PhaseDormant Phase = "Dormant"
-	// PhaseRequested has ≥1 claim and is followable, queued for a first LIST that has not
+	// PhaseRequested has ≥1 claim and is followable, queued for a first sync that has not
 	// started. No checkpoint yet.
 	PhaseRequested Phase = "Requested"
-	// PhaseSyncing has its first checkpoint LIST in flight. Still nothing to serve, so
-	// consumers hold (L4).
+	// PhaseSyncing has its first checkpoint sync (a streaming-list watch) in flight. Still
+	// nothing to serve, so consumers hold (L4).
 	PhaseSyncing Phase = "Syncing"
 	// PhaseSynced has a checkpoint at rv R and is reconcile-serviceable.
 	PhaseSynced Phase = "Synced"
-	// PhaseResyncing has a periodic re-anchor LIST in flight; the PRIOR checkpoint is
+	// PhaseResyncing has a periodic re-anchor sync in flight; the PRIOR checkpoint is
 	// still served until the new one swaps in (L5).
 	PhaseResyncing Phase = "Resyncing"
-	// PhaseFailing had its last LIST error and is awaiting a backoff retry. A prior
+	// PhaseFailing had its last sync error and is awaiting a backoff retry. A prior
 	// checkpoint (if any) keeps serving (L5/L6).
 	PhaseFailing Phase = "Failing"
 )
@@ -203,12 +212,12 @@ func (m *Materializer) OnLifecycleEvent(ev LifecycleEvent) {
 	dispatchMaterialization(observers, events)
 }
 
-// BeginSync advances a type into a LIST the driver is starting (T2/T4): Requested ->
+// BeginSync advances a type into a sync the driver is starting (T2/T4): Requested ->
 // Syncing for a first sync, Synced (with a pending re-anchor) -> Resyncing, or a Failing
 // retry into whichever of the two its checkpoint state implies. It reports whether a
-// sync actually started, so the driver only LISTs when the phase agreed. A frozen
-// (wobbling) type never starts a sync — a LIST against an unserved type is untrustworthy
-// (DEC-L4).
+// sync actually started, so the driver only opens its streaming-list watch when the phase
+// agreed. A frozen (wobbling) type never starts a sync — a fill against an unserved type
+// is untrustworthy (DEC-L4).
 func (m *Materializer) BeginSync(gvr schema.GroupVersionResource) bool {
 	m.dispatchMu.Lock()
 	defer m.dispatchMu.Unlock()
@@ -237,7 +246,7 @@ func (m *Materializer) BeginSync(gvr schema.GroupVersionResource) bool {
 			}
 			started = true
 		case PhaseDormant, PhaseSyncing, PhaseResyncing:
-			// Nothing to (re)start: not yet claimed-and-followable, or a LIST is in flight.
+			// Nothing to (re)start: not yet claimed-and-followable, or a sync is in flight.
 		}
 		if started {
 			events = append(events, m.event(SyncStarted, gvr, st, now))
@@ -250,8 +259,10 @@ func (m *Materializer) BeginSync(gvr schema.GroupVersionResource) bool {
 	return started
 }
 
-// SyncSucceeded lands a checkpoint at rv: Syncing/Resyncing -> Synced. On a re-anchor it
-// swaps the served revision to rv (L5). It is a no-op unless a LIST was in flight.
+// SyncSucceeded lands a checkpoint at rv: Syncing/Resyncing -> Synced. rv is the sync's
+// pinned revision — the initial-events-end bookmark resourceVersion of the streaming-list
+// watch (or the LIST revision on the fallback path). On a re-anchor it swaps the served
+// revision to rv (L5). It is a no-op unless a sync was in flight.
 func (m *Materializer) SyncSucceeded(gvr schema.GroupVersionResource, rv string) {
 	m.dispatchMu.Lock()
 	defer m.dispatchMu.Unlock()
@@ -271,10 +282,10 @@ func (m *Materializer) SyncSucceeded(gvr schema.GroupVersionResource, rv string)
 	dispatchMaterialization(observers, events)
 }
 
-// SyncFailed records a LIST error: Syncing/Resyncing -> Failing. The checkpointRV is left
+// SyncFailed records a sync error: Syncing/Resyncing -> Failing. The checkpointRV is left
 // untouched, so a first-sync failure serves nothing (consumers hold) while a re-anchor
 // failure keeps serving the prior checkpoint (L5). The type re-surfaces in PendingSyncs
-// for the driver to retry after its backoff. It is a no-op unless a LIST was in flight.
+// for the driver to retry after its backoff. It is a no-op unless a sync was in flight.
 func (m *Materializer) SyncFailed(gvr schema.GroupVersionResource) {
 	m.dispatchMu.Lock()
 	defer m.dispatchMu.Unlock()
@@ -297,7 +308,7 @@ func (m *Materializer) SyncFailed(gvr schema.GroupVersionResource) {
 // live claim remains — re-anchor the still-wanted, release the no-longer-wanted. The
 // caller drives the cadence (the ~1h interval), so the release grace is exactly one
 // interval with no dedicated constant. A frozen (wobbling) type is swept over: nothing is
-// LISTed or released against an unserved type.
+// re-synced or released against an unserved type.
 func (m *Materializer) Sweep() {
 	m.dispatchMu.Lock()
 	defer m.dispatchMu.Unlock()
@@ -364,7 +375,7 @@ func (m *Materializer) sweepTypeLocked(
 			return append(events, m.releaseLocked(gvr, st, now))
 		}
 	case PhaseDormant, PhaseSyncing, PhaseResyncing:
-		// Dormant: nothing materialized. Syncing/Resyncing: a LIST is in flight; let it
+		// Dormant: nothing materialized. Syncing/Resyncing: a sync is in flight; let it
 		// complete and be released, if still unwanted, at a later sweep.
 	}
 	return events
@@ -463,7 +474,7 @@ func (m *Materializer) Checkpoint(gvr schema.GroupVersionResource) (string, bool
 	return st.checkpointRV, st.checkpointRV != ""
 }
 
-// PendingSyncs returns, sorted, the types that need the driver to (re)start a LIST: a
+// PendingSyncs returns, sorted, the types that need the driver to (re)start a sync: a
 // Requested first sync, a Failing retry, or a Synced type the sweep flagged for a
 // re-anchor. A frozen (wobbling) type is never pending. This is the driver's "what needs
 // a (re)sync?" query (L4), the pull complement to the SyncRequested push.
@@ -483,7 +494,7 @@ func (m *Materializer) PendingSyncs() []schema.GroupVersionResource {
 				out = append(out, gvr)
 			}
 		case PhaseDormant, PhaseSyncing, PhaseResyncing:
-			// Not awaiting the driver: resting, or a LIST is already in flight.
+			// Not awaiting the driver: resting, or a sync is already in flight.
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].String() < out[j].String() })

@@ -262,6 +262,23 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		)
 	}
 
+	// Renew this GitTarget's demand on the materialization axis every reconcile (DEC-L3):
+	// an idempotent full-set declaration that claims new types, renews present ones, and
+	// lets a type dropped from a rule age out at the next sweep (DEC-L5). It shares the
+	// snapshot gather's resolve (StreamClusterSnapshotForGitDest -> resolveSnapshotGVRs), so
+	// it fails closed identically — an unobservable surface declares NOTHING rather than a
+	// withdrawal. The reconcile cadence (RequeueLongInterval, minutes) is comfortably shorter
+	// than the ~1h sweep, so a healthy target always renews between sweeps; a deleted target
+	// stops reconciling, so its claims age out. Demand bookkeeping only — it never gates
+	// readiness, so a transient resolve failure is logged and retried next reconcile.
+	if r.EventRouter != nil && r.EventRouter.WatchManager != nil {
+		gitDest := types.NewResourceReference(target.Name, target.Namespace)
+		if declareErr := r.EventRouter.WatchManager.DeclareForGitTarget(ctx, gitDest); declareErr != nil {
+			log.V(1).Info("materialization declare skipped; surface not observable",
+				"gitDest", gitDest.String(), "err", declareErr.Error())
+		}
+	}
+
 	streamReady, streamMessage := r.evaluateEventStreamGate(&target, stream, providerNS)
 	if !streamReady {
 		r.setReadyCondition(

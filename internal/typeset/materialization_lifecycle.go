@@ -37,16 +37,16 @@ const (
 	// SyncRequested fires when a claimed, followable type needs a (re)sync the driver
 	// should pick up: Dormant -> Requested on the first claim (T1), or a still-claimed
 	// Synced type flagged for a periodic re-anchor by the sweep (T4). The driver learns
-	// what to LIST from this event or from PendingSyncs.
+	// what to sync from this event or from PendingSyncs.
 	SyncRequested MaterializationEventKind = "SyncRequested"
-	// SyncStarted fires when the driver begins a LIST: Requested -> Syncing (first sync)
-	// or Synced -> Resyncing (re-anchor). A re-anchor keeps serving the prior checkpoint
-	// until it swaps in (DEC-L2 / L5).
+	// SyncStarted fires when the driver begins a sync — a streaming-list watch, LIST only
+	// as fallback: Requested -> Syncing (first sync) or Synced -> Resyncing (re-anchor). A
+	// re-anchor keeps serving the prior checkpoint until it swaps in (DEC-L2 / L5).
 	SyncStarted MaterializationEventKind = "SyncStarted"
 	// TypeSynced fires when a checkpoint lands: Syncing/Resyncing -> Synced at rv R. It is
 	// the completion handshake (L4) — the driver wakes every GitTarget claiming the type.
 	TypeSynced MaterializationEventKind = "TypeSynced"
-	// SyncFailed fires when a LIST errors: Syncing/Resyncing -> Failing. A first-sync
+	// SyncFailed fires when a sync errors: Syncing/Resyncing -> Failing. A first-sync
 	// failure leaves no checkpoint (consumers hold); a re-anchor failure keeps the prior
 	// checkpoint served (L5). Per-type isolation (L6): siblings are unaffected.
 	SyncFailed MaterializationEventKind = "SyncFailed"

@@ -135,6 +135,21 @@ type Manager struct {
 	// stable refusal is logged once, not on every refresh. Guarded by resourceCatalogMu.
 	typeRefusalsLogged map[string]string
 
+	// materializer is the demand-met second axis beside typeRegistry (see
+	// docs/design/stream/demand-driven-type-materialization-lifecycle.md): it owns the
+	// per-(GitTarget, type) claim table and the materialization phase machine. The
+	// registry answers "can we follow this type?"; the materializer answers "has any
+	// GitTarget claimed it, and have we listed it?". materializerInit guards its lazy
+	// construction for zero-value Managers in tests, mirroring typeRegistryInit.
+	materializerInit sync.Once
+	materializer     *typeset.Materializer
+	// materializationSweepOnce guards the one-time start of the periodic Materializer
+	// sweep goroutine (lease GC + per-type re-anchor/release, DEC-L5).
+	// materializationSweepIntervalOverride lets tests run the sweep fast; zero means the
+	// production materializationSweepInterval (~1h).
+	materializationSweepOnce             sync.Once
+	materializationSweepIntervalOverride time.Duration
+
 	// lifecycleEvents carries per-type registry transitions (TypeActivated / TypeRemoved /
 	// …) from the registry's updater to the drain goroutine that drives the M12 per-type
 	// reconcile/sweep. lifecycleConsumerOnce guards the one-time subscribe + goroutine start.
@@ -257,6 +272,11 @@ func (m *Manager) Start(ctx context.Context) error {
 	// Subscribe to the registry's per-type transitions before the first reconcile drives a
 	// registry Update, so cold-start activations drive the M12 per-type reconcile path.
 	m.startTypeLifecycleConsumer(ctx, log.WithName("type-lifecycle"))
+
+	// Tick the demand-axis sweep so withdrawn leases age out (DEC-L5). It is independent of
+	// the followability consumer above: a GitTarget renews its claims every reconcile, this
+	// pass releases whatever stopped being renewed since the previous tick.
+	m.startMaterializationSweep(ctx, log.WithName("materialization"))
 
 	if err := m.bootstrapRuleStore(ctx, log.WithName("bootstrap")); err != nil {
 		log.Error(err, "RuleStore bootstrap failed, continuing with current in-memory state")
