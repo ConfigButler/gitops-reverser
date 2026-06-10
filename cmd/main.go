@@ -77,6 +77,9 @@ const (
 	defaultAuditEventDecisionTTL   = time.Hour
 	defaultAuditEventBodyWait      = 500 * time.Millisecond
 	defaultBranchBufferMaxBytesStr = "8Mi"
+	// checkpointRestoreTimeout bounds the one-shot boot replay of durable per-type
+	// checkpoints into the materializer (DEC-L6); a cold/unreachable Redis must not stall startup.
+	checkpointRestoreTimeout = 30 * time.Second
 )
 
 func init() {
@@ -247,6 +250,22 @@ func main() {
 	})
 	fatalIfErr(err, "unable to initialize per-resource-type objects snapshot")
 	watchMgr.ObjectMirror = auditObjectsSnapshot
+
+	// Boot rebuild (DEC-L6): replay durable per-type checkpoints into the materializer so a
+	// restart resumes serving Synced types without re-listing them. Best-effort and decoupled —
+	// the queue owns the Redis read, the watch manager assembles the GVR and marks the phase, and
+	// this composition root joins them. A cold/empty Redis just yields nothing; types re-fill on
+	// demand. Runs before the manager starts, so it precedes the first followability Update.
+	restoreCtx, cancelRestore := context.WithTimeout(setupCtx, checkpointRestoreTimeout)
+	if checkpoints, loadErr := auditObjectsSnapshot.LoadSyncedCheckpoints(restoreCtx); loadErr != nil {
+		setupLog.Error(loadErr, "unable to load durable materialization checkpoints; starting cold")
+	} else {
+		for _, cp := range checkpoints {
+			watchMgr.RestoreSyncedCheckpoint(cp.Group, cp.Version, cp.Resource, cp.ResourceVersion)
+		}
+		setupLog.Info("restored materialization checkpoints from durable state", "count", len(checkpoints))
+	}
+	cancelRestore()
 
 	auditJoiner, err := webhookhandler.NewRedisAuditEventJoiner(webhookhandler.RedisAuditJoinerConfig{
 		Addr:             cfg.auditRedisAddr,

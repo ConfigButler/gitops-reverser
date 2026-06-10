@@ -59,7 +59,7 @@ func TestRedisObjectsSnapshot_ReplaceWritesItemsRVStateAndIndex(t *testing.T) {
 		"prod/web": `{"kind":"Deployment","metadata":{"name":"web"}}`,
 		"prod/api": `{"kind":"Deployment","metadata":{"name":"api"}}`,
 	}
-	require.NoError(t, q.ReplaceTypeObjects(ctx, "apps", "deployments", items, "184467"))
+	require.NoError(t, q.ReplaceTypeObjects(ctx, "apps", "v1", "deployments", items, "184467"))
 
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	base := testByTypePrefix + ":apps:deployments"
@@ -79,6 +79,9 @@ func TestRedisObjectsSnapshot_ReplaceWritesItemsRVStateAndIndex(t *testing.T) {
 	assert.Equal(t, objectsPhaseSynced, st.Phase)
 	assert.Equal(t, 2, st.Count)
 	assert.Equal(t, "184467", st.ResourceVersion)
+	assert.Equal(t, "apps", st.Group)
+	assert.Equal(t, "v1", st.APIVersion, "the version is recorded so the durable checkpoint is self-describing")
+	assert.Equal(t, "deployments", st.Resource)
 	assert.NotEmpty(t, st.UpdatedAt)
 
 	members, err := client.SMembers(ctx, testByTypePrefix+byTypeIndexSuffix).Result()
@@ -92,9 +95,9 @@ func TestRedisObjectsSnapshot_ReplaceIsFullReplace(t *testing.T) {
 	ctx := context.Background()
 	base := testByTypePrefix + ":apps:deployments"
 
-	require.NoError(t, q.ReplaceTypeObjects(ctx, "apps", "deployments",
+	require.NoError(t, q.ReplaceTypeObjects(ctx, "apps", "v1", "deployments",
 		map[string]string{"prod/a": "{}", "prod/b": "{}"}, "1"))
-	require.NoError(t, q.ReplaceTypeObjects(ctx, "apps", "deployments",
+	require.NoError(t, q.ReplaceTypeObjects(ctx, "apps", "v1", "deployments",
 		map[string]string{"prod/b": "{}", "prod/c": "{}"}, "2"))
 
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
@@ -110,9 +113,9 @@ func TestRedisObjectsSnapshot_ReplaceEmptyClearsItems(t *testing.T) {
 	ctx := context.Background()
 	base := testByTypePrefix + ":apps:deployments"
 
-	require.NoError(t, q.ReplaceTypeObjects(ctx, "apps", "deployments",
+	require.NoError(t, q.ReplaceTypeObjects(ctx, "apps", "v1", "deployments",
 		map[string]string{"prod/a": "{}"}, "1"))
-	require.NoError(t, q.ReplaceTypeObjects(ctx, "apps", "deployments", nil, "2"))
+	require.NoError(t, q.ReplaceTypeObjects(ctx, "apps", "v1", "deployments", nil, "2"))
 
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	n, err := client.HLen(ctx, base+objectsItemsSuffix).Result()
@@ -126,13 +129,35 @@ func TestRedisObjectsSnapshot_ReplaceEmptyClearsItems(t *testing.T) {
 	assert.Equal(t, 0, st.Count)
 }
 
+func TestRedisObjectsSnapshot_LoadSyncedCheckpoints(t *testing.T) {
+	mr := miniredis.RunT(t)
+	q := newTestObjectsSnapshot(t, mr)
+	ctx := context.Background()
+
+	// Two synced types (one core, one grouped) and one removed — only the synced ones load.
+	require.NoError(t, q.ReplaceTypeObjects(ctx, "apps", "v1", "deployments",
+		map[string]string{"prod/web": "{}"}, "100"))
+	require.NoError(t, q.ReplaceTypeObjects(ctx, "", "v1", "configmaps",
+		map[string]string{"prod/cm": "{}"}, "200"))
+	require.NoError(t, q.ReplaceTypeObjects(ctx, "apps", "v1", "statefulsets",
+		map[string]string{"prod/ss": "{}"}, "300"))
+	require.NoError(t, q.DeleteTypeObjects(ctx, "apps", "statefulsets")) // -> removed tombstone
+
+	got, err := q.LoadSyncedCheckpoints(ctx)
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []SyncedCheckpoint{
+		{Group: "apps", Version: "v1", Resource: "deployments", ResourceVersion: "100"},
+		{Group: "", Version: "v1", Resource: "configmaps", ResourceVersion: "200"},
+	}, got, "only synced types load, each with its full GVR + pinned rv; the removed type is skipped")
+}
+
 func TestRedisObjectsSnapshot_DeleteLeavesRemovedTombstone(t *testing.T) {
 	mr := miniredis.RunT(t)
 	q := newTestObjectsSnapshot(t, mr)
 	ctx := context.Background()
 	base := testByTypePrefix + ":apps:deployments"
 
-	require.NoError(t, q.ReplaceTypeObjects(ctx, "apps", "deployments",
+	require.NoError(t, q.ReplaceTypeObjects(ctx, "apps", "v1", "deployments",
 		map[string]string{"prod/a": "{}"}, "1"))
 	require.NoError(t, q.DeleteTypeObjects(ctx, "apps", "deployments"))
 

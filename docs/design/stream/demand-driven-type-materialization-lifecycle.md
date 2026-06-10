@@ -1,10 +1,12 @@
 # Demand-driven type materialization lifecycle
 
-> Status: **design proposal** — agreed direction, not yet implemented. The demand-and-
-> lifecycle layer beneath [api-source-of-truth-reconcile.md](api-source-of-truth-reconcile.md):
-> it decides **which** types get the per-type checkpoint that doc reconciles against, and
-> **when** that checkpoint is built, refreshed, and dropped.
-> Captured: 2026-06-10
+> Status: **agreed direction — L-1→L-3 landed, L-4→L-6 ahead.** The demand-and-lifecycle
+> layer beneath [api-source-of-truth-reconcile.md](api-source-of-truth-reconcile.md): it
+> decides **which** types get the per-type checkpoint that doc reconciles against, and
+> **when** that checkpoint is filled, refreshed, and dropped. The Materializer leaf, the
+> GitTarget `Declare` wiring, the periodic Sweep, and the demand-gated checkpoint driver
+> (`TypeActivated` no longer fills unconditionally) are in (§8).
+> Captured: 2026-06-10 · Updated: 2026-06-10
 > Owner: Simon
 > Related:
 > [api-source-of-truth-reconcile.md](api-source-of-truth-reconcile.md) (the per-type reconcile that **consumes** the checkpoint this doc decides to build),
@@ -225,19 +227,26 @@ actioned until their `TypeSynced` wake arrives.
 
 ## 8. Implementation steps
 
-Ordered; each is independently shippable and ends green.
+Ordered; each is independently shippable and ends green. **L-1, L-2, and L-3 have landed**
+(uncommitted on `poc/redis-copy`): the leaf, the `Declare` wiring + Sweep ticker, and the
+demand-gated checkpoint driver. **L-4 is next.**
 
-1. **L-1 — Materializer skeleton (pure, leaf).** Claim table + phase machine + injected clock,
+1. **L-1 — Materializer skeleton (pure, leaf). ✅ LANDED.** Claim table + phase machine + injected clock,
    `Declare` / `Renew` / sweep, emitting `SyncRequested` / `SyncStarted` / `TypeSynced` /
    `SyncFailed` / `Released`. Unit-tested with a fake clock like the followability lifecycle.
    No driver, no cluster. *Done when:* the state machine and lease GC are proven in tests.
-2. **L-2 — Wire `Declare` from GitTarget reconcile.** Each reconcile declares its full resolved
-   type-set. *Done when:* claims appear/renew/age-out as GitTargets come and go.
-3. **L-3 — Checkpoint driver + decouple `TypeActivated`.** Second subscriber on the drain;
-   `TypeActivated` stops LISTing unconditionally; demand-driven LIST; `TypeSynced` wake.
-   *Done when:* only claimed types are LISTed; an unclaimed followable type holds no checkpoint;
-   e2e green.
-4. **L-4 — Periodic pass (T4 + T5).** Per-type timer; live-claim branch → re-anchor or release.
+2. **L-2 — Wire `Declare` from GitTarget reconcile. ✅ LANDED.** Each reconcile declares its
+   full resolved type-set — wired into the GitTarget **controller** reconcile (the per-target
+   periodic loop), so a healthy lease is renewed every reconcile (minutes ≪ the ~1h sweep) and
+   a deleted GitTarget stops declaring and ages out. *Done when:* claims appear/renew/age-out
+   as GitTargets come and go.
+3. **L-3 — Checkpoint driver + decouple `TypeActivated`. ✅ LANDED.** Second subscriber on the
+   drain; `TypeActivated` stops filling unconditionally; demand-driven checkpoint fill;
+   `TypeSynced` emitted. *Done when:* only claimed types are filled; an unclaimed followable
+   type holds no checkpoint; e2e green. *(The `:objects` keyspace is write-only today, so this
+   gating is e2e-invisible — pure efficiency. The `TypeSynced`→splice-reconcile wake is the
+   api-source-of-truth R2 consumer, not wired here.)*
+4. **L-4 — Periodic pass (T4 + T5). ← NEXT.** Per-type timer; live-claim branch → re-anchor or release.
    *Done when:* a still-wanted type refreshes hourly; a no-longer-wanted type is released at the
    sweep after demand stops.
 5. **L-5 — Durable `:objects:state` + boot reconcile (DEC-L6).** Persist phase/rv; rebuild
@@ -250,9 +259,13 @@ Ordered; each is independently shippable and ends green.
 
 - **Settled — release grace = sweep-interval** (DEC-L5). No dedicated constant.
 - **Settled — no `Orphaned` phase yet** (DEC-L7). Add later if visibility demands it.
-- **Claim key granularity.** A claim keys on `(GitTarget ref, GVR)`. Whether the GitTarget ref
-  is the object UID, namespaced name, or a resolved internal id is an implementation detail to
-  pin in L-1.
+- **Claim key granularity. *Pinned (L-2).*** A claim keys on `(GitTarget ref, GVR)`, and the
+  ref is the GitTarget's **namespaced name** (`gitDest.String()`) — stable across reconciles
+  and consistent with how the rulestore keys GitTargets. Per review, a future refinement is to
+  fold in the **UID when available** (namespaced name for readability, UID to disambiguate a
+  delete-then-recreate so stale claims cannot be silently inherited). Deferred, not a
+  correctness gap: claims age out within a sweep interval and a recreated GitTarget re-`Declare`s
+  the same set, so name-only is correct today; the UID seam is a precision upgrade.
 - **`Declare` transport.** In-process call (Materializer in the same controller) vs a Redis-
   backed declaration (needed only once HA splits the consumer from the GitTarget owner). Start
   in-process; the durable `:objects:state` (DEC-L6) already carries the HA seam.

@@ -32,18 +32,22 @@ import (
 
 // recordingObjectMirror captures the calls mirrorTypeObjects / clearTypeObjects make.
 type recordingObjectMirror struct {
-	replacedItems map[string]string
-	replacedRV    string
-	replacedKey   string
-	deletedKey    string
+	replacedItems   map[string]string
+	replacedRV      string
+	replacedKey     string
+	replacedVersion string
+	replaceCount    int
+	deletedKey      string
 }
 
 func (r *recordingObjectMirror) ReplaceTypeObjects(
-	_ context.Context, group, resource string, items map[string]string, rv string,
+	_ context.Context, group, version, resource string, items map[string]string, rv string,
 ) error {
 	r.replacedKey = group + "/" + resource
+	r.replacedVersion = version
 	r.replacedItems = items
 	r.replacedRV = rv
+	r.replaceCount++
 	return nil
 }
 

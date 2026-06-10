@@ -207,3 +207,86 @@ func TestHandleMaterializationEvent_ReleasedClearsCheckpoint(t *testing.T) {
 
 	assert.Equal(t, "/configmaps", mirror.deletedKey, "Released drops the type's checkpoint")
 }
+
+// syncedViaDriver brings a freshly-claimed type to Synced through the real driver path
+// (Declare → activate → runTypeCheckpointSync), the common L-4 precondition.
+func syncedViaDriver(t *testing.T, m *Manager, gvr schema.GroupVersionResource) {
+	t.Helper()
+	mat := m.materializerInstance()
+	mat.Declare(typeset.GitTargetRef("test-ns/t"), []schema.GroupVersionResource{gvr})
+	mat.OnLifecycleEvent(activate(gvr))
+	m.runTypeCheckpointSync(context.Background(), logr.Discard(), gvr)
+	if ph, _ := mat.Phase(gvr); ph != typeset.PhaseSynced {
+		t.Fatalf("setup: phase = %q, want Synced", ph)
+	}
+}
+
+// TestMaterializationSweep_ReAnchorsClaimedSyncedType proves the L-4 re-anchor: a sweep flags a
+// still-claimed Synced type for a periodic re-anchor (SyncRequested), and driving it re-fills the
+// checkpoint (Synced → Resyncing → Synced).
+func TestMaterializationSweep_ReAnchorsClaimedSyncedType(t *testing.T) {
+	dc := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme(), streamedCM("default", "a", "10"))
+	mirror := &recordingObjectMirror{}
+	m := &Manager{Log: logr.Discard(), dynamicClient: dc, ObjectMirror: mirror}
+	syncedViaDriver(t, m, configMapGVR)
+	require.Equal(t, 1, mirror.replaceCount)
+
+	// The claim is still live, so the sweep flags a periodic re-anchor.
+	m.materializerInstance().Sweep()
+	require.Contains(t, m.materializerInstance().PendingSyncs(), configMapGVR,
+		"a still-claimed Synced type is flagged for re-anchor")
+
+	// Driving the flagged re-anchor re-lists the type and lands back on Synced.
+	m.runTypeCheckpointSync(context.Background(), logr.Discard(), configMapGVR)
+	require.Equal(t, 2, mirror.replaceCount, "the re-anchor re-fills the checkpoint")
+	ph, _ := m.materializerInstance().Phase(configMapGVR)
+	require.Equal(t, typeset.PhaseSynced, ph)
+}
+
+// TestMaterializationSweep_ReleasesAndClearsWhenDemandStops proves the L-4 release end-to-end:
+// once demand stops, a sweep releases the type and the driver drops its checkpoint. The emitted
+// events are drained synchronously here as a deterministic stand-in for the driver goroutine.
+func TestMaterializationSweep_ReleasesAndClearsWhenDemandStops(t *testing.T) {
+	dc := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme(), streamedCM("default", "a", "10"))
+	mirror := &recordingObjectMirror{}
+	m := &Manager{Log: logr.Discard(), dynamicClient: dc, ObjectMirror: mirror}
+	mat := m.materializerInstance()
+
+	var swept []typeset.MaterializationEvent
+	mat.Subscribe(func(ev typeset.MaterializationEvent) { swept = append(swept, ev) })
+	syncedViaDriver(t, m, configMapGVR)
+	swept = nil // drop setup events; keep only what the sweeps emit
+
+	// Demand stops (no further Declare). The first sweep still sees the claim live; the second,
+	// after the renewal predates the previous sweep, GCs the lease and releases the checkpoint.
+	mat.Sweep()
+	mat.Sweep()
+	for _, ev := range swept {
+		m.handleMaterializationEvent(context.Background(), logr.Discard(), ev)
+	}
+
+	ph, _ := mat.Phase(configMapGVR)
+	require.Equal(t, typeset.PhaseDormant, ph, "demand stopped → released to Dormant at the sweep")
+	require.Equal(t, "/configmaps", mirror.deletedKey, "the release drives a checkpoint clear")
+}
+
+// TestRestoreSyncedCheckpoint_MarksSyncedWithoutFill proves the L-5 boot rebuild seam: replaying
+// a durable checkpoint marks the type Synced at rv with no re-list, and a blank GVR/rv is ignored.
+func TestRestoreSyncedCheckpoint_MarksSyncedWithoutFill(t *testing.T) {
+	mirror := &recordingObjectMirror{}
+	m := &Manager{Log: logr.Discard(), ObjectMirror: mirror}
+	gvr := schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}
+
+	m.RestoreSyncedCheckpoint("apps", "v1", "deployments", "900")
+	ph, ok := m.materializerInstance().Phase(gvr)
+	require.True(t, ok)
+	require.Equal(t, typeset.PhaseSynced, ph)
+	rv, ok := m.materializerInstance().Checkpoint(gvr)
+	require.True(t, ok)
+	require.Equal(t, "900", rv)
+	require.Zero(t, mirror.replaceCount, "a boot restore must not re-list")
+
+	m.RestoreSyncedCheckpoint("", "v1", "configmaps", "") // blank rv → ignored
+	_, ok = m.materializerInstance().Phase(schema.GroupVersionResource{Version: "v1", Resource: "configmaps"})
+	require.False(t, ok)
+}

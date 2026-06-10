@@ -99,9 +99,13 @@ func NewRedisObjectsSnapshot(cfg RedisObjectsSnapshotConfig) (*RedisObjectsSnaps
 // resourceVersion. The whole replace runs in one transaction: register the base key,
 // drop the old items, write the new ones, then pin rv and state. Replace (not merge)
 // because the caller hands a complete snapshot — a deleted object must not linger.
+//
+// The (group, version, resource) is recorded in the state doc so the durable checkpoint is
+// self-describing — the base key drops the version, but the boot rebuild (LoadSyncedCheckpoints
+// → Materializer.RestoreSynced, DEC-L6) needs the full GVR.
 func (q *RedisObjectsSnapshot) ReplaceTypeObjects(
 	ctx context.Context,
-	group, resource string,
+	group, version, resource string,
 	items map[string]string,
 	resourceVersion string,
 ) error {
@@ -110,6 +114,9 @@ func (q *RedisObjectsSnapshot) ReplaceTypeObjects(
 
 	state, err := json.Marshal(objectsState{
 		Phase:           objectsPhaseSynced,
+		Group:           group,
+		APIVersion:      version,
+		Resource:        resource,
 		Count:           len(items),
 		ResourceVersion: resourceVersion,
 		UpdatedAt:       time.Now().UTC().Format(time.RFC3339),
@@ -141,6 +148,8 @@ func (q *RedisObjectsSnapshot) DeleteTypeObjects(ctx context.Context, group, res
 
 	state, err := json.Marshal(objectsState{
 		Phase:     objectsPhaseRemoved,
+		Group:     group,
+		Resource:  resource,
 		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
 	})
 	if err != nil {
@@ -158,12 +167,63 @@ func (q *RedisObjectsSnapshot) DeleteTypeObjects(ctx context.Context, group, res
 	return nil
 }
 
-// objectsState is the small JSON status doc stored at ":objects:state".
+// objectsState is the small JSON status doc stored at ":objects:state". It carries the full
+// (group, version, resource) so the durable checkpoint is self-describing for the boot rebuild
+// — the base key drops the version (DEC-L6).
 type objectsState struct {
 	Phase           string `json:"phase"`
+	Group           string `json:"group,omitempty"`
+	APIVersion      string `json:"api_version,omitempty"`
+	Resource        string `json:"resource,omitempty"`
 	Count           int    `json:"count,omitempty"`
 	ResourceVersion string `json:"resource_version,omitempty"`
 	UpdatedAt       string `json:"updated_at"`
+}
+
+// SyncedCheckpoint is one type's durable checkpoint identity + pinned revision, read back from
+// :objects:state on boot so the control plane can resume a Synced type without re-listing it.
+type SyncedCheckpoint struct {
+	Group           string
+	Version         string
+	Resource        string
+	ResourceVersion string
+}
+
+// LoadSyncedCheckpoints reads every type's :objects:state and returns those currently in the
+// "synced" phase with their full GVR and pinned rv — the read side of the durable checkpoint
+// (DEC-L6). The boot rebuild replays these into the Materializer (RestoreSynced) so a restart
+// resumes serving standing checkpoints. A missing, malformed, non-synced, or rv-less entry is
+// skipped; a Redis error is returned for the caller to log and start cold (types re-fill on
+// demand).
+func (q *RedisObjectsSnapshot) LoadSyncedCheckpoints(ctx context.Context) ([]SyncedCheckpoint, error) {
+	bases, err := q.client.SMembers(ctx, q.prefix+byTypeIndexSuffix).Result()
+	if err != nil {
+		return nil, fmt.Errorf("list type index: %w", err)
+	}
+	out := make([]SyncedCheckpoint, 0, len(bases))
+	for _, base := range bases {
+		raw, err := q.client.Get(ctx, base+objectsStateSuffix).Result()
+		if errors.Is(err, redis.Nil) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("read state %q: %w", base, err)
+		}
+		var st objectsState
+		if json.Unmarshal([]byte(raw), &st) != nil {
+			continue
+		}
+		if st.Phase != objectsPhaseSynced || st.ResourceVersion == "" || st.Resource == "" {
+			continue
+		}
+		out = append(out, SyncedCheckpoint{
+			Group:           st.Group,
+			Version:         st.APIVersion,
+			Resource:        st.Resource,
+			ResourceVersion: st.ResourceVersion,
+		})
+	}
+	return out, nil
 }
 
 // flattenHash turns an identity->json map into the field,value,... slice HSET expects.

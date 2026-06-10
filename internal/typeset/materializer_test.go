@@ -627,6 +627,42 @@ func TestMaterializer_PerTypeIsolation(t *testing.T) {
 	}
 }
 
+// TestMaterializer_RestoreSyncedResumesWithoutFill proves the DEC-L6 boot rebuild: replaying a
+// durable checkpoint marks the type Synced at rv with no fill, and a later activation of an
+// already-Synced type does not request one.
+func TestMaterializer_RestoreSyncedResumesWithoutFill(t *testing.T) {
+	clock := &fakeClock{t: time.Unix(1_000, 0)}
+	m := newMaterializer(clock.now)
+	rec := &matRecorder{}
+	m.Subscribe(rec.observe)
+
+	m.RestoreSynced(depGVR(), "R7")
+	if ph, _ := m.Phase(depGVR()); ph != PhaseSynced {
+		t.Fatalf("RestoreSynced must land Synced, got %q", ph)
+	}
+	if rv, ok := m.Checkpoint(depGVR()); !ok || rv != "R7" {
+		t.Fatalf("restored checkpoint rv = %q (ok=%v), want R7", rv, ok)
+	}
+	if rec.count(TypeSynced) != 0 {
+		t.Errorf("RestoreSynced is a silent boot restore, must emit no event, got %d", rec.count(TypeSynced))
+	}
+
+	// A subsequent activation for an already-Synced type is a no-op — no re-fill requested.
+	m.OnLifecycleEvent(lc(TypeActivated, depGVR()))
+	if ph, _ := m.Phase(depGVR()); ph != PhaseSynced {
+		t.Errorf("activation of a restored Synced type must stay Synced, got %q", ph)
+	}
+	if rec.count(SyncRequested) != 0 {
+		t.Errorf("a restored Synced type must not request a fill on activation, got %d", rec.count(SyncRequested))
+	}
+
+	// An empty rv is ignored (nothing durable to restore).
+	m.RestoreSynced(widgetGVR(), "")
+	if _, ok := m.Phase(widgetGVR()); ok {
+		t.Error("RestoreSynced with empty rv must not create state")
+	}
+}
+
 // TestMaterializer_MultiClaimantLeaseGC proves the lease table tracks claimants
 // independently and a sweep keeps a checkpoint alive while any one claimant still renews.
 func TestMaterializer_MultiClaimantLeaseGC(t *testing.T) {

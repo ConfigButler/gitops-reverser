@@ -88,6 +88,20 @@ func (m *Manager) DeclareForGitTarget(ctx context.Context, gitDest types.Resourc
 	return nil
 }
 
+// RestoreSyncedCheckpoint replays one durable per-type checkpoint into the Materializer on
+// boot (DEC-L6), marking the type Synced at rv so a restart resumes serving it without a
+// re-fill. It is the watch-side half of the HA seam: the composition root reads the checkpoints
+// from the mirror (queue.RedisObjectsSnapshot.LoadSyncedCheckpoints) and replays each here, so
+// neither typeset (a leaf) nor the queue (Redis-only) need to know about the other. Call it at
+// boot, before the manager starts its reconcile/sweep/driver. A blank resource or rv is ignored.
+func (m *Manager) RestoreSyncedCheckpoint(group, version, resource, rv string) {
+	if resource == "" || rv == "" {
+		return
+	}
+	m.materializerInstance().RestoreSynced(
+		schema.GroupVersionResource{Group: group, Version: version, Resource: resource}, rv)
+}
+
 // distinctClaimGVRs collapses the resolved (GVR, namespace-scope) stream set to the distinct
 // GVRs the claim table keys on, preserving the resolver's sorted order.
 func distinctClaimGVRs(gvrs []snapshotGVR) []schema.GroupVersionResource {

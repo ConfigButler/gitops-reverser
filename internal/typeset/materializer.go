@@ -303,6 +303,29 @@ func (m *Materializer) SyncFailed(gvr schema.GroupVersionResource) {
 	dispatchMaterialization(observers, events)
 }
 
+// RestoreSynced rebuilds a type's materialization phase from the durable checkpoint state on
+// boot (DEC-L6): it marks the type Synced at rv WITHOUT a fill, so a restart resumes serving a
+// standing checkpoint instead of re-listing the world. It is the in-memory half of the HA seam
+// — the authoritative phase/rv lives in Redis (:objects:state); the watch layer reads it and
+// replays it here, keeping this leaf free of any client. followable is set true so a later
+// periodic re-anchor can run and a subsequent TypeActivated for an already-Synced type is a
+// no-op. It emits no event (a silent boot restore is not a transition a driver should act on)
+// and is a no-op for an empty rv. The caller must invoke it at boot, before the first
+// followability Update and before the sweep/driver start, so it never races a live transition.
+func (m *Materializer) RestoreSynced(gvr schema.GroupVersionResource, rv string) {
+	if rv == "" {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	st := m.stateLocked(gvr)
+	st.phase = PhaseSynced
+	st.checkpointRV = rv
+	st.followable = true
+	st.frozen = false
+	st.pendingResync = false
+}
+
 // Sweep is the one periodic pass that does both jobs (DEC-L5): it first GCs leases that
 // were not renewed since the previous sweep, then for each type branches on whether a
 // live claim remains — re-anchor the still-wanted, release the no-longer-wanted. The

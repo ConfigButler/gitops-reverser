@@ -177,10 +177,11 @@ type Manager struct {
 type ObjectMirror interface {
 	// ReplaceTypeObjects replaces the stored object set for a type with items keyed by
 	// identity ("<namespace>/<name>", cluster-scoped: "<name>") -> object JSON, pinned to
-	// the list's resourceVersion.
+	// the list's resourceVersion. The version is recorded so the durable checkpoint is
+	// self-describing for the boot rebuild (DEC-L6); the keyspace itself is version-less.
 	ReplaceTypeObjects(
 		ctx context.Context,
-		group, resource string,
+		group, version, resource string,
 		items map[string]string,
 		resourceVersion string,
 	) error

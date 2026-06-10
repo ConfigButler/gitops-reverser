@@ -87,7 +87,7 @@ func (m *Manager) mirrorTypeObjects(
 	}
 
 	rv := list.GetResourceVersion()
-	if err := m.ObjectMirror.ReplaceTypeObjects(ctx, gvr.Group, gvr.Resource, items, rv); err != nil {
+	if err := m.ObjectMirror.ReplaceTypeObjects(ctx, gvr.Group, gvr.Version, gvr.Resource, items, rv); err != nil {
 		return "", fmt.Errorf("objects-mirror: replace %s: %w", gvr.String(), err)
 	}
 	log.Info("objects-mirror: snapshot loaded", "gvr", gvr.String(), "count", len(items), "resourceVersion", rv)
