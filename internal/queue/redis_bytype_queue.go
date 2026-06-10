@@ -223,13 +223,13 @@ func classifyRV(rv string) rvClass {
 	return rvNumeric
 }
 
-// ingestOrdered routes a numeric-RV event. The main-vs-late decision is ours, made by a
-// decimal-string compare against the cached high-water (IR6, §5.2 — never a lossy tonumber):
-// an RV strictly below the high-water is diverted to the late lane and never touches the main
-// stream (P1), while an RV equal to or above it is appended as "<rv>-*" so Valkey allocates the
-// subseq, disambiguating events at the same RV (IR2). The strong key still backstops the
-// multi-writer race where the top advanced between our read and our write (P2). Routing needs no
-// Lua; only the idstate counters/cache are best-effort and self-correcting (§9).
+// ingestOrdered writes a numeric-RV event to the main stream as "<rv>-*" and lets the strong
+// key arbitrate (P2): an RV at or above the high-water is accepted and Valkey allocates the
+// subseq, disambiguating events at the same RV (IR2); a strictly-older RV is rejected with
+// streamIDTooSmallMarker and diverted to the late lane (IR3/IR4). The routing is atomic per
+// XADD with no Lua and no read-then-write — Valkey's native 64-bit ID ordering is the arbiter,
+// so we never need a lossy tonumber or a decimal-string compare of our own (IR6). Only the
+// idstate counters/cache are best-effort and self-correcting (§9).
 func (q *RedisByTypeStreamQueue) ingestOrdered(
 	ctx context.Context,
 	keys byTypeAuditKeys,
@@ -237,11 +237,6 @@ func (q *RedisByTypeStreamQueue) ingestOrdered(
 	millis int64,
 	values map[string]any,
 ) error {
-	highWater := q.cachedHighWater(ctx, keys.idState)
-	if highWater != "" && decimalLess(rv, highWater) {
-		return q.divertLate(ctx, keys, lateReasonOlderThanHighWater, rv, highWater, values)
-	}
-
 	values[entryFieldRVPresent] = "true"
 	values[entryFieldPlacement] = placementResourceVersion
 
@@ -251,10 +246,9 @@ func (q *RedisByTypeStreamQueue) ingestOrdered(
 		q.recordMain(ctx, keys.idState, rv, id, millis)
 		return nil
 	case isIDTooSmall(err):
-		// Backstop: a concurrent writer advanced the top above rv between our read and write, so
-		// the strong key rejected it (P2). Divert to late — this only fires under the multi-writer
-		// race that §8.1's atomic ingestion closes.
-		return q.divertLate(ctx, keys, lateReasonOlderThanHighWater, rv, highWater, values)
+		// The strong key rejected a strictly-older RV — the late-lane signal (P2). The high-water
+		// for the diagnostic payload is the stream's authoritative top (§10).
+		return q.divertLate(ctx, keys, lateReasonOlderThanHighWater, rv, q.streamTopRV(ctx, keys.stream), values)
 	default:
 		return fmt.Errorf("failed to append entry to %q: %w", keys.stream, err)
 	}
@@ -271,7 +265,7 @@ func (q *RedisByTypeStreamQueue) ingestRVLess(
 	millis int64,
 	values map[string]any,
 ) error {
-	highWater := q.cachedHighWater(ctx, keys.idState)
+	highWater := q.streamTopRV(ctx, keys.stream)
 	if highWater == "" {
 		return q.divertLate(ctx, keys, lateReasonRVMissingBeforeHighWater, "", "", values)
 	}
@@ -308,39 +302,20 @@ func (q *RedisByTypeStreamQueue) divertLate(
 	return nil
 }
 
-// cachedHighWater returns the high-water resourceVersion from the idstate hash — the RV of the
-// last event placed in the main stream (IR7). It is the comparison basis for routing (§9) and
-// the value reported in late-lane diagnostics. The hash is a best-effort cache that can only lag
-// (it is written from the ingestion path after a main write, so it is never ahead of the true
-// top); the strong key (xaddID rejection) backstops a lagging cache under a multi-writer race.
-// Empty when no event has been placed yet.
-func (q *RedisByTypeStreamQueue) cachedHighWater(ctx context.Context, idStateKey string) string {
-	rv, err := q.client.HGet(ctx, idStateKey, idStateLastRV).Result()
+// streamTopRV returns the resourceVersion at the stream's high-water mark — the leading
+// component of its last-generated ID (XINFO STREAM), which is authoritative and survives
+// trimming (§10). It is the value reported in late-lane diagnostics and the mark RV-less events
+// attach to. Empty when the stream has no entries yet (or is unreachable).
+func (q *RedisByTypeStreamQueue) streamTopRV(ctx context.Context, streamKey string) string {
+	info, err := q.client.XInfoStream(ctx, streamKey).Result()
 	if err != nil {
 		return ""
 	}
+	if info.LastGeneratedID == "" || info.LastGeneratedID == "0-0" {
+		return ""
+	}
+	rv, _, _ := strings.Cut(info.LastGeneratedID, "-")
 	return rv
-}
-
-// decimalLess reports whether a < b for two non-negative decimal integer strings, matching
-// Valkey's native 64-bit stream-ID ordering without Lua's lossy tonumber (IR6, §5.2): strip
-// leading zeroes, then the shorter string is the smaller number and equal-length strings compare
-// lexically.
-func decimalLess(a, b string) bool {
-	a, b = stripLeadingZeros(a), stripLeadingZeros(b)
-	if len(a) != len(b) {
-		return len(a) < len(b)
-	}
-	return a < b
-}
-
-// stripLeadingZeros drops leading zeroes from a decimal string, leaving "0" for all-zero input.
-func stripLeadingZeros(s string) string {
-	i := 0
-	for i < len(s)-1 && s[i] == '0' {
-		i++
-	}
-	return s[i:]
 }
 
 // xaddID appends one entry under an explicit (possibly partial, e.g. "<rv>-*") ID, applying the

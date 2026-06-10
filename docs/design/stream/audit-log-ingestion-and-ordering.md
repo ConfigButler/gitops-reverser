@@ -143,10 +143,9 @@ records the event under the folded key.
 When an event's RV is **strictly below** the stream's high-water RV, the strong key (P2)
 makes the main-stream `XADD <rv>-*` fail with "equal or smaller" (an *equal* RV does not
 fail — Valkey allocates the next `subseq` and it lands in main, §5.1). That rejection is
-not an error to paper over — it is the signal we want. (In the shipped baseline the strictly-older case is decided up
-front by the §9 decimal-string pre-check; the rejection is kept as the backstop for the
-racing-writer case — and because miniredis clamps rather than rejects a partial `<rv>-*`,
-see §9.) The strictly-older event goes to
+not an error to paper over — it is the signal we want. (This rejection is what the baseline routes on directly — no
+self-comparison; see §9, including the testing note on why miniredis can't stand in for real
+Valkey here.) The strictly-older event goes to
 `<base>:audit:late` with `XADD * …` and a full context payload:
 
 ```text
@@ -199,6 +198,20 @@ with per-type counts and RV-gap data — exactly what to build and how to size i
 - **Output.** A recorded measurement that *justifies or refuses* each deferred improvement.
   No improvement ships without this evidence.
 
+**INV-1 — first result (2026-06-10, e2e).** First read of a populated keyspace; method and
+full numbers in
+[per-resource-type-rv-keyed-streams-experiment.md](per-resource-type-rv-keyed-streams-experiment.md)
+§12. Late ratio ≈ **4.3%** (112 / 2609 events), almost all `older-than-high-water` (102; 10
+`rv-missing-before-high-water`; 0 `non-numeric-rv`). The RV-gap is **large and heavy-tailed**:
+min 1, median 168, mean 1141, max 4650 — **63% of late events are >100 revisions behind**.
+Per the decision criteria this is **not** the "small, bounded RV-gap" case that would justify
+the pre-sorter (§8.2): a sane reorder window catches only the ~14% with gap ≤10, while the
+dominant large-gap tail is bootstrap / controller-re-apply delivery the **checkpoint backstops**
+anyway (reconcile DEC-5). **Decision on this evidence: do not build the pre-sorter.** Caveats:
+the e2e cluster is bursty (fixture churn + k3s bootstrap) — a worst case for reordering — so
+re-measure on a steady-state cluster, and assess the >1-pod delta (§8.1) separately, before
+revisiting. (Single pod here, so §8.1 is untested by this run.)
+
 ## 8. Deferred improvements (build only when §7 proves the need)
 
 Both are listed here so the design is complete and the triggers are explicit. Neither is in
@@ -235,8 +248,10 @@ else: XADD late * fields(reason=non-numeric-rv) ; return {late}
 **When to build.** We run >1 pod **and** §7 shows concurrency is materially inflating the
 late rate or corrupting counters / RV-less placement. **Tested against a real Valkey
 container**, not miniredis — miniredis's `EVAL` coverage is partial and will not exercise a
-non-trivial script faithfully (the baseline §5 logic *can* stay on miniredis, since it is
-plain `XADD`/`HINCRBY`).
+non-trivial script faithfully. (The baseline already needs that real-Valkey container too: its
+strictly-older→late routing depends on the strong-key rejection, which miniredis does not
+emulate — see the §9 testing note. Only the baseline's plain `XADD`/`HINCRBY` paths and
+error-injection stay on miniredis.)
 
 ### 8.2 Pre-sort buffer
 
@@ -265,40 +280,40 @@ rv := decimal RV from the event body, or "" (IR6 extraction order)
 key, lateKey, idstate := baseKey + ":audit:stream", + ":audit:late", + ":audit:idstate"
 
 if rv numeric:
-    lastRV := HGET idstate lastRV                        -- cached high-water (IR7)
-    if lastRV != "" and decimalCompare(rv, lastRV) < 0:  -- strictly older (IR6 — never tonumber)
-        XADD lateKey * fields(reason=older-than-high-water, rv, lastRV) ; HINCRBY idstate lateCount 1
-    else:                                                 -- at or above high-water → main
-        id, err := XADD key <rv>-* fields(rvPresent=true, placement=resource-version)
-        if err == "equal or smaller":                     -- backstop: a racing writer moved the top (P2)
-            XADD lateKey * fields(reason=older-than-high-water, rv, lastRV) ; HINCRBY idstate lateCount 1
-        else:
-            HINCRBY idstate mainCount 1
-            HSET idstate lastRV rv lastStreamID id lastEventAt now   -- best-effort cache
-elif rv == "":                                            -- RV-less (IR5)
-    lastRV := HGET idstate lastRV
-    if lastRV != "":
-        XADD key <lastRV>-* fields(rvPresent=false, placement=attached-to-last-rv) ; HINCRBY idstate rvMissingCount 1
+    id, err := XADD key <rv>-* fields(rvPresent=true, placement=resource-version)
+    if err == "equal or smaller":                  -- strong key rejected a strictly-older RV
+        topRV := first(XINFO STREAM key .last-generated-id)   -- authoritative high-water
+        XADD lateKey * fields(reason=older-than-high-water, rv, lastRV=topRV) ; HINCRBY idstate lateCount 1
+    else:
+        HINCRBY idstate mainCount 1
+        HSET idstate lastRV rv lastStreamID id lastEventAt now   -- best-effort observability cache
+elif rv == "":                                     -- RV-less (IR5)
+    topRV := first(XINFO STREAM key .last-generated-id)         -- authoritative high-water
+    if topRV != "":
+        XADD key <topRV>-* fields(rvPresent=false, placement=attached-to-last-rv) ; HINCRBY idstate rvMissingCount 1
     else:
         XADD lateKey * fields(reason=rv-missing-before-high-water) ; HINCRBY idstate lateCount 1
-else:                                                     -- non-numeric (IR6 / §5.3)
+else:                                              -- non-numeric (IR6 / §5.3)
     XADD lateKey * fields(reason=non-numeric-rv) ; HINCRBY idstate lateCount 1
 ```
 
-The main-vs-late decision is **ours**, made by an explicit decimal-string compare of `rv`
-against the cached high-water (IR6, §5.2 — never `tonumber`). We do **not** rely on the
-`XADD <rv>-*` rejection as the *sole* arbiter, for two reasons: (1) it makes the routing
-deterministic and unit-testable without a live Valkey, and (2) **miniredis silently clamps a
-partial `<rv>-*` ID whose leading component is below the top** (it returns `<top>-<seq+1>`
-rather than the "equal or smaller" rejection real Valkey gives), so a rejection-only baseline
-would mis-route strictly-older events under the test double. The strong key is kept as the
-**backstop** for the one case the pre-check cannot catch alone: a concurrent writer advancing
-the top between our `HGET` and our `XADD` (P2). The cache can only *lag* the true top (it is
-written after a main write), so the pre-check never wrongly diverts a current event to late —
-a lagging cache merely lets an out-of-order event reach the `XADD`, where the strong key
-rejects it. The non-atomic parts (`idstate` counters/cache) are best-effort and
-self-correcting; folding read-decide-write into one atomic step is exactly what Lua (§8.1)
-adds as an *improvement*, not a prerequisite.
+The main-vs-late routing is **atomic per `XADD` without Lua**: the strong key makes
+`XADD <rv>-*` itself the arbiter (Valkey's native 64-bit ID compare), so we never compare RVs
+ourselves and never touch a lossy `tonumber` (IR6). High-water reads — for the RV-less attach
+mark and the late-lane diagnostic `lastRV` — use `XINFO STREAM`'s `last-generated-id`, which is
+authoritative and survives trimming (§10), **not** the `idstate` cache. `idstate` is therefore
+written but never *read for routing*; it is best-effort observability (IR7) and the non-atomic
+counters/cache are self-correcting. Folding read-decide-write into one atomic step is exactly
+what Lua (§8.1) adds as an *improvement*, not a prerequisite.
+
+> **Testing note (miniredis vs. real Valkey).** The strictly-older→late branch hinges on Valkey
+> rejecting a below-high-water `<rv>-*`. **miniredis does not emulate this** — it silently
+> *clamps* a partial `<ms>-*` ID whose leading component is below the top (it returns
+> `<top>-<seq+1>` instead of the "equal or smaller" error), and only rejects *full* explicit
+> IDs. So the ordering/late-routing tests run against a **real Valkey testcontainer**
+> ([redis_bytype_queue_test.go](../../../internal/queue/redis_bytype_queue_test.go), one shared
+> container for the package); only error-injection and the MaxLen-wiring test stay on miniredis.
+> This is the same real-Valkey discipline §8.1 already requires for the deferred Lua.
 
 ## 10. Operational notes & failure modes
 

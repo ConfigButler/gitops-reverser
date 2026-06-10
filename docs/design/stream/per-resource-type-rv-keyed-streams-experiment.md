@@ -10,6 +10,9 @@
 > `internal/queue/redis_objects_snapshot.go` (objects sink) driven from
 > `internal/watch/type_objects_mirror.go` on the `TypeActivated`/`TypeRemoved`
 > lifecycle edges; both wired always-on in `cmd/main.go`.
+> **First e2e observations measured 2026-06-10 — see §12.** Headline correction: the
+> late lane is *not* empty — it carries ~4.3% of events and is the §7 INV-1 signal
+> firing exactly as designed (it is *why* the main stream stays RV-ordered).
 > Captured: 2026-06-09
 > Updated: 2026-06-09
 > Owner: Simon
@@ -367,3 +370,105 @@ SET  gitops-reverser:apps:deployments:objects:state {"phase":"synced","count":2,
 - **No live updates yet.** The snapshot is refreshed on activation/re-activation, not
   per watch event. Folding steady-state watch events into `:objects:items` is the
   natural next slice (and where `:audit:pending:rv` / `:audit:late` come in).
+
+### 11.5 Proposed refinement — gate the LIST on the followability / disallow checks
+
+> Status: **proposed, not implemented.**
+
+Today [`mirrorTypeObjects`](../../../internal/watch/type_objects_mirror.go#L59) lists
+**every** object of an activated type and stores all of them. Activation is already
+gated at the **type** level — `TypeActivated` only fires for a settled-Followable type
+([internal/typeset/lifecycle.go](../../../internal/typeset/lifecycle.go)) — so a
+disallowed *type* is never listed. The refinement pushes the same decision **down to the
+object**: include only the objects that pass the followability / disallow checks the
+rest of the pipeline applies, so large objects on the disallow list are not
+listed-and-stored for nothing.
+
+- **Why.** The snapshot is the desired-state anchor a reconcile splices against
+  ([reconcile doc §6](api-source-of-truth-reconcile.md)). Storing objects that will be
+  filtered out downstream wastes Valkey memory and payload size on exactly the big
+  objects we explicitly do **not** follow — pure overhead, no consumer benefit.
+- **Where.** Filter `list.Items` through the per-object disallow predicate before
+  building the envelope / `HSET`; the type-level gate stays where it is. It must be the
+  **same** predicate the audit/reconcile path uses, so the snapshot and the log agree on
+  what is in scope (typeset owns the *type* decision; the per-object disallow predicate
+  is the new seam).
+- **Open.** Whether the disallow is purely object-level (filter items) or can also skip
+  the `LIST` **entirely** for a type none of whose objects could pass — saving the API
+  call, not just the storage.
+
+## 12. First e2e observations (2026-06-10)
+
+First read of the populated keyspace, taken **read-only** with `valkey-cli` against the
+e2e Valkey (`valkey-e2e/valkey` in the k3d test cluster) after several `task test-e2e`
+runs. This is the experiment's deliverable (§2): measured, not guessed. The cluster is
+**bursty** — fixture create/delete plus k3s bootstrap — so these numbers are closer to a
+worst case for ordering than a steady-state cluster.
+
+### 12.1 Totals
+
+| metric | value |
+|---|---|
+| distinct type streams (`__index__`) | 98 |
+| main-stream entries (Σ `XLEN :audit:stream`) | 2497 |
+| ↳ RV-bearing (idstate `mainCount`) | 2290 |
+| ↳ RV-less, attached to high-water (idstate `rvMissingCount`) | 207 |
+| objects snapshot items (Σ `HLEN :objects:items`) | 589 |
+| late-lane entries (Σ `XLEN :audit:late` = idstate `lateCount`) | 112 |
+| `__unknown__` stream | absent (every event carried an ObjectRef) |
+
+The counters **reconcile exactly**: `mainCount 2290 + rvMissingCount 207 = 2497` main
+entries, and Σ`lateCount` = 112 late entries. The `idstate` cache is not drifting from
+the streams it summarizes.
+
+### 12.2 What held up
+
+- **Main stream is strictly RV-ordered.** IDs are `<rv>-<subseq>` (e.g. secrets top
+  `6485-0`), not millisecond-first — the §5.2 re-key landed and holds.
+- **Objects snapshot loads cleanly** per activated type (serviceaccounts 66, secrets 36,
+  replicasets 22, services 20 items …), keyed to the type and version-agnostic.
+- **RV availability is high** — ~91.7% of events carry a usable RV. The ~8.3% RV-less
+  (217 = 207 attached-to-main + 10 to late) are deletes / collection verbs, placed by the
+  declared policy (§5.3 / ingestion IR5), never crashing.
+- **Zero `non-numeric-rv`.** Even the wardle aggregated apiserver
+  (`wardle.example.com:flunders`) emitted numeric etcd RVs in this run.
+
+### 12.3 The late lane is NOT empty — and that is the point
+
+Correcting the field impression that "there were no late streams": there are **112**,
+~**4.3%** of all events. They are almost entirely `older-than-high-water` (102), plus
+10 `rv-missing-before-high-water` and 0 `non-numeric-rv`. This is the late lane
+**working as designed** — diverting genuinely out-of-order webhook delivery is exactly
+*why* the main stream stays RV-clean (ingestion doc P1/P2). It is also the §7 **INV-1**
+signal firing, so the figures below are an INV-1 result.
+
+Late-heavy types (late : stream): `k3s.cattle.io:addons` 22:26,
+`bi-directional…icecreamorders` 16:29, `apiextensions…customresourcedefinitions` 10:24,
+`wardle…flunders` 8:30, `core:secrets` 36:204.
+
+**RV-gap distribution** (`last_rv − resource_version`, over the 102
+`older-than-high-water` entries):
+
+| stat | value | | bucket | count |
+|---|---:|---|---|---:|
+| min | 1 | | ≤2 (trivial skew) | 7 |
+| median | 168 | | 3–10 | 7 |
+| mean | 1141 | | 11–100 | 24 |
+| max | 4650 | | >100 | 64 |
+
+The tail is **large and heavy** — 63% of late events are >100 revisions behind, not
+1–2-revision skew. Example: `k3s…addons/local-storage` arrived at `rv=383` when the
+addons high-water was already `2381` (gap ~2000) — a controller re-apply of an old
+object delivered long after the type advanced.
+
+### 12.4 Implication for the deferred pre-sorter (ingestion §7 / §8.2)
+
+This data **argues against** building the pre-sorter for now. A bounded reorder window
+only catches small gaps; here only ~14% of late events (gap ≤10) are window-catchable,
+while 63% are >100 revisions behind — bootstrap / re-apply replays a window of any sane
+size would miss. Those are exactly what the **checkpoint backstop** ([reconcile doc
+DEC-5](api-source-of-truth-reconcile.md)) is for: the next `LIST` already holds the
+object's current state, so the late event never needs to reach main. Net: the late lane
+is **correct, observable, and backstopped** — **no pre-sorter is justified by this run.**
+Re-measure on a steady-state cluster (and check the >1-pod delta, ingestion §8.1)
+before revisiting.

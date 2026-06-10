@@ -21,7 +21,11 @@ package queue
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net"
+	"os"
 	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -29,12 +33,86 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/testcontainers/testcontainers-go"
+	"github.com/testcontainers/testcontainers-go/wait"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	auditv1 "k8s.io/apiserver/pkg/apis/audit/v1"
 )
 
 const testByTypePrefix = "test.bytype.v1"
+
+// sharedValkeyAddr is the address of a single Valkey container shared by every test in this
+// package that needs real Redis stream-ID semantics — specifically the strong-key rejection of
+// a strictly-older "<rv>-*", which miniredis does not emulate (it silently clamps the ID rather
+// than rejecting it). It is empty when Docker is unavailable, in which case those tests skip
+// while the miniredis-backed tests still run.
+// See docs/design/stream/audit-log-ingestion-and-ordering.md §9.
+var (
+	sharedValkeyAddr string
+	valkeyPrefixSeq  atomic.Int64
+)
+
+func TestMain(m *testing.M) {
+	addr, terminate, err := startSharedValkey()
+	if err != nil {
+		fmt.Fprintf(os.Stderr,
+			"queue tests: real-Valkey container unavailable; real-semantics tests will skip: %v\n", err)
+	} else {
+		sharedValkeyAddr = addr
+	}
+	code := m.Run()
+	if terminate != nil {
+		terminate()
+	}
+	os.Exit(code)
+}
+
+// startSharedValkey boots one Valkey container for the package. Returns ("", nil, err) when the
+// container cannot be started (e.g. no Docker) so the caller can degrade to skipping.
+func startSharedValkey() (string, func(), error) {
+	ctx := context.Background()
+	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
+		ContainerRequest: testcontainers.ContainerRequest{
+			Image:        "valkey/valkey:8-alpine",
+			ExposedPorts: []string{"6379/tcp"},
+			WaitingFor:   wait.ForLog("Ready to accept connections").WithStartupTimeout(60 * time.Second),
+		},
+		Started: true,
+	})
+	if err != nil {
+		return "", nil, err
+	}
+	host, err := container.Host(ctx)
+	if err != nil {
+		_ = container.Terminate(ctx)
+		return "", nil, err
+	}
+	port, err := container.MappedPort(ctx, "6379/tcp")
+	if err != nil {
+		_ = container.Terminate(ctx)
+		return "", nil, err
+	}
+	return net.JoinHostPort(host, port.Port()),
+		func() { _ = container.Terminate(context.Background()) },
+		nil
+}
+
+// valkeyByTypeQueue returns a queue and an inspection client bound to the shared Valkey
+// container, under a prefix unique to this test so the shared keyspace stays isolated. It skips
+// the test when the container is unavailable.
+func valkeyByTypeQueue(t *testing.T, maxLen int64) (*RedisByTypeStreamQueue, *redis.Client, string) {
+	t.Helper()
+	if sharedValkeyAddr == "" {
+		t.Skip("real-Valkey container unavailable (Docker required); skipping real-semantics test")
+	}
+	prefix := fmt.Sprintf("test.bytype.%d", valkeyPrefixSeq.Add(1))
+	q, err := NewRedisByTypeStreamQueue(RedisByTypeStreamConfig{Addr: sharedValkeyAddr, Prefix: prefix, MaxLen: maxLen})
+	require.NoError(t, err)
+	client := redis.NewClient(&redis.Options{Addr: sharedValkeyAddr})
+	t.Cleanup(func() { _ = client.Close() })
+	return q, client, prefix
+}
 
 func newTestByTypeQueue(t *testing.T, mr *miniredis.Miniredis, maxLen int64) *RedisByTypeStreamQueue {
 	t.Helper()
@@ -109,8 +187,8 @@ func TestNewRedisByTypeStreamQueue_DefaultsPrefix(t *testing.T) {
 }
 
 func TestRedisByTypeStreamQueue_EnqueueWritesEntryAndIndex(t *testing.T) {
-	mr := miniredis.RunT(t)
-	q := newTestByTypeQueue(t, mr, 100)
+	q, client, prefix := valkeyByTypeQueue(t, 100)
+	ctx := context.Background()
 
 	stage := time.Date(2026, 6, 9, 10, 0, 0, 123_000_000, time.UTC)
 	event := auditv1.Event{
@@ -129,12 +207,9 @@ func TestRedisByTypeStreamQueue_EnqueueWritesEntryAndIndex(t *testing.T) {
 	}
 	event.User.Username = "alice"
 
-	require.NoError(t, q.Enqueue(context.Background(), event))
+	require.NoError(t, q.Enqueue(ctx, event))
 
-	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	ctx := context.Background()
-
-	baseKey := testByTypePrefix + ":apps:deployments"
+	baseKey := prefix + ":apps:deployments"
 	streamKey := baseKey + byTypeAuditStreamSuffix
 
 	entries, err := client.XRange(ctx, streamKey, "-", "+").Result()
@@ -164,7 +239,7 @@ func TestRedisByTypeStreamQueue_EnqueueWritesEntryAndIndex(t *testing.T) {
 	assert.Contains(t, v["payload_json"], "deployments",
 		"the full event JSON rides along on the same entry")
 
-	members, err := client.SMembers(ctx, testByTypePrefix+byTypeIndexSuffix).Result()
+	members, err := client.SMembers(ctx, prefix+byTypeIndexSuffix).Result()
 	require.NoError(t, err)
 	assert.Equal(t, []string{baseKey}, members,
 		"the type's base key is registered in the index set")
@@ -300,32 +375,6 @@ func TestClassifyRV(t *testing.T) {
 	}
 }
 
-func TestDecimalLess(t *testing.T) {
-	tests := []struct {
-		a, b string
-		want bool
-	}{
-		{"100", "200", true},
-		{"200", "100", false},
-		{"200", "200", false},
-		{"9", "10", true},  // shorter is smaller despite lexical "9" > "1"
-		{"10", "9", false}, // longer is larger
-		{"0", "0", false},  // equal
-		{"00200", "200", false},
-		{"200", "00200", false},
-		{"007", "10", true}, // leading zeroes stripped: 7 < 10
-		// Beyond 2^53, where a lossy float tonumber would mis-compare:
-		{"9007199254740992", "9007199254740993", true},
-		{"9007199254740993", "9007199254740992", false},
-		{"18446744073709551614", "18446744073709551615", true}, // 2^64-2 < 2^64-1
-	}
-	for _, tt := range tests {
-		t.Run(tt.a+"_vs_"+tt.b, func(t *testing.T) {
-			assert.Equal(t, tt.want, decimalLess(tt.a, tt.b))
-		})
-	}
-}
-
 // lateWant is the expected shape of one late-lane entry.
 type lateWant struct {
 	reason    string
@@ -334,9 +383,11 @@ type lateWant struct {
 	rvPresent string
 }
 
-// TestRedisByTypeStreamQueue_Ingestion drives a sequence of events through Enqueue and asserts
-// the resulting main-stream IDs, late-lane entries, and idstate counters — the §11 acceptance
-// criteria and the §7 observability counters in one table.
+// TestRedisByTypeStreamQueue_Ingestion drives a sequence of events through Enqueue against a real
+// Valkey and asserts the resulting main-stream IDs, late-lane entries, and idstate counters — the
+// §11 acceptance criteria and the §7 observability counters in one table. It runs against the
+// container (not miniredis) because the strictly-older→late criterion depends on Valkey's strong
+// key actually rejecting a below-high-water "<rv>-*".
 func TestRedisByTypeStreamQueue_Ingestion(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -363,10 +414,9 @@ func TestRedisByTypeStreamQueue_Ingestion(t *testing.T) {
 			wantLastRV:    "200",
 		},
 		{
-			name:        "an RV equal to the high-water stays in main, not late",
-			rvs:         []string{"200", "200"},
-			wantMainIDs: []string{"200-0", "200-1"},
-			// equal RV is explicitly not late: no late entries.
+			name:          "an RV equal to the high-water stays in main, not late",
+			rvs:           []string{"200", "200"},
+			wantMainIDs:   []string{"200-0", "200-1"},
 			wantMainCount: 2,
 			wantLastRV:    "200",
 		},
@@ -424,11 +474,9 @@ func TestRedisByTypeStreamQueue_Ingestion(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			mr := miniredis.RunT(t)
-			q := newTestByTypeQueue(t, mr, 0)
-			client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+			q, client, prefix := valkeyByTypeQueue(t, 0)
 			ctx := context.Background()
-			base := testByTypePrefix + ":apps:deployments"
+			base := prefix + ":apps:deployments"
 
 			for i, rv := range tt.rvs {
 				require.NoError(t, q.Enqueue(ctx, ingestionEvent(rv, int64(1000+i))))
@@ -465,11 +513,9 @@ func TestRedisByTypeStreamQueue_Ingestion(t *testing.T) {
 // TestRedisByTypeStreamQueue_IDStateObservability checks the full IR7 high-water field set is
 // written on a main-stream ingest: lastRV, lastStreamID, lastEventAt, and mainCount.
 func TestRedisByTypeStreamQueue_IDStateObservability(t *testing.T) {
-	mr := miniredis.RunT(t)
-	q := newTestByTypeQueue(t, mr, 0)
-	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	q, client, prefix := valkeyByTypeQueue(t, 0)
 	ctx := context.Background()
-	idState := testByTypePrefix + ":apps:deployments" + byTypeAuditIDStateSuffix
+	idState := prefix + ":apps:deployments" + byTypeAuditIDStateSuffix
 
 	require.NoError(t, q.Enqueue(ctx, ingestionEvent("500", 4242)))
 
@@ -481,6 +527,35 @@ func TestRedisByTypeStreamQueue_IDStateObservability(t *testing.T) {
 	assert.Equal(t, "1", state[idStateMainCount])
 }
 
+// An RV-less event with no objectRef has no high-water to attach to (the unknown bucket's stream
+// is empty), so it is recorded in the late lane with rv-missing-before-high-water.
+func TestRedisByTypeStreamQueue_EnqueueUnknownBucket(t *testing.T) {
+	q, client, prefix := valkeyByTypeQueue(t, 0)
+	ctx := context.Background()
+
+	require.NoError(t, q.Enqueue(ctx, auditv1.Event{
+		AuditID:        "no-ref",
+		Stage:          auditv1.StageResponseComplete,
+		StageTimestamp: metav1.MicroTime{Time: time.UnixMilli(2000)},
+	}))
+
+	base := prefix + ":" + byTypeUnknownBucket
+
+	mainEntries, err := client.XRange(ctx, base+byTypeAuditStreamSuffix, "-", "+").Result()
+	require.NoError(t, err)
+	assert.Empty(t, mainEntries, "an RV-less event with no high-water never enters the main stream")
+
+	lateEntries, err := client.XRange(ctx, base+byTypeAuditLateSuffix, "-", "+").Result()
+	require.NoError(t, err)
+	require.Len(t, lateEntries, 1)
+	assert.Equal(t, "no-ref", lateEntries[0].Values["audit_id"])
+	assert.Equal(t, lateReasonRVMissingBeforeHighWater, lateEntries[0].Values[entryFieldReason])
+	assert.Empty(t, lateEntries[0].Values["resource_version"])
+}
+
+// TestRedisByTypeStreamQueue_BoundedTrimsStreams verifies the MaxLen knob is plumbed onto every
+// XADD. It uses miniredis, whose trim is exact, because we are testing that the bound is applied
+// at all — not Valkey's approximate (macro-node) trim, which would not trim a stream this small.
 func TestRedisByTypeStreamQueue_BoundedTrimsStreams(t *testing.T) {
 	mr := miniredis.RunT(t)
 	const maxLen = 5
@@ -506,34 +581,6 @@ func TestRedisByTypeStreamQueue_BoundedTrimsStreams(t *testing.T) {
 	assert.LessOrEqual(t, streamLen, int64(maxLen))
 }
 
-// An RV-less event with no objectRef has no high-water to attach to (the unknown bucket's
-// stream is empty), so it is recorded in the late lane with rv-missing-before-high-water.
-func TestRedisByTypeStreamQueue_EnqueueUnknownBucket(t *testing.T) {
-	mr := miniredis.RunT(t)
-	q := newTestByTypeQueue(t, mr, 0)
-
-	require.NoError(t, q.Enqueue(context.Background(), auditv1.Event{
-		AuditID:        "no-ref",
-		Stage:          auditv1.StageResponseComplete,
-		StageTimestamp: metav1.MicroTime{Time: time.UnixMilli(2000)},
-	}))
-
-	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	ctx := context.Background()
-	base := testByTypePrefix + ":" + byTypeUnknownBucket
-
-	mainEntries, err := client.XRange(ctx, base+byTypeAuditStreamSuffix, "-", "+").Result()
-	require.NoError(t, err)
-	assert.Empty(t, mainEntries, "an RV-less event with no high-water never enters the main stream")
-
-	lateEntries, err := client.XRange(ctx, base+byTypeAuditLateSuffix, "-", "+").Result()
-	require.NoError(t, err)
-	require.Len(t, lateEntries, 1)
-	assert.Equal(t, "no-ref", lateEntries[0].Values["audit_id"])
-	assert.Equal(t, lateReasonRVMissingBeforeHighWater, lateEntries[0].Values[entryFieldReason])
-	assert.Empty(t, lateEntries[0].Values["resource_version"])
-}
-
 func TestRedisByTypeStreamQueue_IndexErrorPropagates(t *testing.T) {
 	mr := miniredis.RunT(t)
 	q := newTestByTypeQueue(t, mr, 0)
@@ -551,8 +598,8 @@ func TestRedisByTypeStreamQueue_XAddErrorPropagates(t *testing.T) {
 	mr := miniredis.RunT(t)
 	q := newTestByTypeQueue(t, mr, 0)
 
-	event := ingestionEvent("100", 3000)
-	require.NoError(t, q.Enqueue(context.Background(), event), "first enqueue indexes the key in-memory")
+	require.NoError(t, q.Enqueue(context.Background(), ingestionEvent("100", 3000)),
+		"first enqueue indexes the key in-memory")
 
 	mr.Close()
 	require.Error(t, q.Enqueue(context.Background(), ingestionEvent("101", 3001)),
