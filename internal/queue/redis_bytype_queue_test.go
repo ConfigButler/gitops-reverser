@@ -1,0 +1,379 @@
+/*
+SPDX-License-Identifier: Apache-2.0
+
+Copyright 2025 ConfigButler
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package queue
+
+import (
+	"context"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/alicebob/miniredis/v2"
+	"github.com/redis/go-redis/v9"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	auditv1 "k8s.io/apiserver/pkg/apis/audit/v1"
+)
+
+const testByTypePrefix = "test.bytype.v1"
+
+func newTestByTypeQueue(t *testing.T, mr *miniredis.Miniredis, maxLen int64) *RedisByTypeStreamQueue {
+	t.Helper()
+	q, err := NewRedisByTypeStreamQueue(RedisByTypeStreamConfig{
+		Addr:   mr.Addr(),
+		Prefix: testByTypePrefix,
+		MaxLen: maxLen,
+	})
+	require.NoError(t, err)
+	return q
+}
+
+func TestNewRedisByTypeStreamQueue_RequiresAddress(t *testing.T) {
+	_, err := NewRedisByTypeStreamQueue(RedisByTypeStreamConfig{})
+	require.Error(t, err)
+}
+
+func TestNewRedisByTypeStreamQueue_DefaultsPrefix(t *testing.T) {
+	q, err := NewRedisByTypeStreamQueue(RedisByTypeStreamConfig{Addr: "127.0.0.1:6379"})
+	require.NoError(t, err)
+	assert.Equal(t, DefaultRedisByTypeStreamPrefix, q.prefix)
+}
+
+func TestRedisByTypeStreamQueue_EnqueueWritesEntryAndIndex(t *testing.T) {
+	mr := miniredis.RunT(t)
+	q := newTestByTypeQueue(t, mr, 100)
+
+	stage := time.Date(2026, 6, 9, 10, 0, 0, 123_000_000, time.UTC)
+	event := auditv1.Event{
+		AuditID:        "audit-123",
+		Verb:           "update",
+		Stage:          auditv1.StageResponseComplete,
+		StageTimestamp: metav1.MicroTime{Time: stage},
+		ObjectRef: &auditv1.ObjectReference{
+			APIGroup:   "apps",
+			APIVersion: "v1",
+			Resource:   "deployments",
+			Namespace:  "prod",
+			Name:       "web",
+		},
+		ResponseObject: &runtime.Unknown{Raw: []byte(`{"metadata":{"resourceVersion":"184467"}}`)},
+	}
+	event.User.Username = "alice"
+
+	require.NoError(t, q.Enqueue(context.Background(), event))
+
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	ctx := context.Background()
+
+	baseKey := testByTypePrefix + ":apps:deployments"
+	streamKey := baseKey + byTypeAuditStreamSuffix
+
+	entries, err := client.XRange(ctx, streamKey, "-", "+").Result()
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+
+	wantMillis := stage.UnixMilli()
+	entry := entries[0]
+	assert.Equal(t, strconv.FormatInt(wantMillis, 10), strings.SplitN(entry.ID, "-", 2)[0],
+		"the stream ID must lead with the event's stage-timestamp millisecond")
+
+	v := entry.Values
+	assert.Equal(t, "audit-123", v["audit_id"])
+	assert.Equal(t, "ResponseComplete", v["stage"])
+	assert.Equal(t, "update", v["verb"])
+	assert.Equal(t, "apps", v["api_group"])
+	assert.Equal(t, "v1", v["api_version"])
+	assert.Equal(t, "deployments", v["resource"])
+	assert.Empty(t, v["subresource"])
+	assert.Equal(t, "prod", v["namespace"])
+	assert.Equal(t, "web", v["name"])
+	assert.Equal(t, "184467", v["resource_version"])
+	assert.Equal(t, strconv.FormatInt(wantMillis, 10), v["stage_millis"])
+	assert.Equal(t, "alice", v["user"])
+	assert.Contains(t, v["payload_json"], "deployments",
+		"the full event JSON rides along on the same entry")
+
+	members, err := client.SMembers(ctx, testByTypePrefix+byTypeIndexSuffix).Result()
+	require.NoError(t, err)
+	assert.Equal(t, []string{baseKey}, members,
+		"the type's base key is registered in the index set")
+}
+
+func TestRedisByTypeStreamQueue_BaseKey(t *testing.T) {
+	q := &RedisByTypeStreamQueue{prefix: testByTypePrefix}
+
+	tests := []struct {
+		name string
+		ref  *auditv1.ObjectReference
+		want string
+	}{
+		{
+			name: "core group renders as core",
+			ref:  &auditv1.ObjectReference{APIVersion: "v1", Resource: "configmaps"},
+			want: testByTypePrefix + ":core:configmaps",
+		},
+		{
+			name: "named group is preserved",
+			ref:  &auditv1.ObjectReference{APIGroup: "apps", APIVersion: "v1", Resource: "deployments"},
+			want: testByTypePrefix + ":apps:deployments",
+		},
+		{
+			name: "subresource is folded onto the resource segment",
+			ref:  &auditv1.ObjectReference{APIGroup: "apps", Resource: "deployments", Subresource: "scale"},
+			want: testByTypePrefix + ":apps:deployments.scale",
+		},
+		{
+			name: "nil objectRef collapses to the unknown bucket",
+			ref:  nil,
+			want: testByTypePrefix + ":" + byTypeUnknownBucket,
+		},
+		{
+			name: "empty resource collapses to the unknown bucket",
+			ref:  &auditv1.ObjectReference{APIGroup: "apps"},
+			want: testByTypePrefix + ":" + byTypeUnknownBucket,
+		},
+		{
+			name: "odd characters (including colons) are sanitized",
+			ref:  &auditv1.ObjectReference{APIGroup: "Weird:Group", Resource: "Things!"},
+			want: testByTypePrefix + ":weird_group:things_",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, q.baseKey(auditv1.Event{ObjectRef: tt.ref}))
+		})
+	}
+}
+
+func TestResourceVersionFromEvent(t *testing.T) {
+	tests := []struct {
+		name  string
+		event auditv1.Event
+		want  string
+	}{
+		{
+			name: "prefers the response object body",
+			event: auditv1.Event{
+				ResponseObject: &runtime.Unknown{Raw: []byte(`{"metadata":{"resourceVersion":"999"}}`)},
+				RequestObject:  &runtime.Unknown{Raw: []byte(`{"metadata":{"resourceVersion":"888"}}`)},
+				ObjectRef:      &auditv1.ObjectReference{ResourceVersion: "777"},
+			},
+			want: "999",
+		},
+		{
+			name: "falls back to the request object body",
+			event: auditv1.Event{
+				RequestObject: &runtime.Unknown{Raw: []byte(`{"metadata":{"resourceVersion":"888"}}`)},
+				ObjectRef:     &auditv1.ObjectReference{ResourceVersion: "777"},
+			},
+			want: "888",
+		},
+		{
+			name:  "falls back to the objectRef precondition RV",
+			event: auditv1.Event{ObjectRef: &auditv1.ObjectReference{ResourceVersion: "777"}},
+			want:  "777",
+		},
+		{
+			name:  "empty when no RV is available",
+			event: auditv1.Event{ObjectRef: &auditv1.ObjectReference{Resource: "configmaps"}},
+			want:  "",
+		},
+		{
+			name: "malformed body is ignored",
+			event: auditv1.Event{
+				ResponseObject: &runtime.Unknown{Raw: []byte(`not json`)},
+				ObjectRef:      &auditv1.ObjectReference{ResourceVersion: "777"},
+			},
+			want: "777",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, resourceVersionFromEvent(tt.event))
+		})
+	}
+}
+
+func TestStageMillis_Fallbacks(t *testing.T) {
+	stage := time.Date(2026, 6, 9, 10, 0, 0, 0, time.UTC)
+	withStage := auditv1.Event{StageTimestamp: metav1.MicroTime{Time: stage}}
+	assert.Equal(t, stage.UnixMilli(), stageMillis(withStage))
+
+	received := time.Date(2026, 6, 9, 9, 0, 0, 0, time.UTC)
+	withReceived := auditv1.Event{RequestReceivedTimestamp: metav1.MicroTime{Time: received}}
+	assert.Equal(t, received.UnixMilli(), stageMillis(withReceived))
+
+	before := time.Now().UnixMilli()
+	got := stageMillis(auditv1.Event{})
+	assert.GreaterOrEqual(t, got, before, "a timestamp-less event falls back to wall-clock")
+}
+
+func TestRedisByTypeStreamQueue_OutOfOrderMillisFallsBackToAutoID(t *testing.T) {
+	mr := miniredis.RunT(t)
+	q := newTestByTypeQueue(t, mr, 0)
+
+	newer := auditv1.Event{
+		AuditID:        "newer",
+		Stage:          auditv1.StageResponseComplete,
+		StageTimestamp: metav1.MicroTime{Time: time.UnixMilli(5000)},
+		ObjectRef:      &auditv1.ObjectReference{APIGroup: "apps", Resource: "deployments"},
+	}
+	older := auditv1.Event{
+		AuditID:        "older",
+		Stage:          auditv1.StageResponseComplete,
+		StageTimestamp: metav1.MicroTime{Time: time.UnixMilli(1000)},
+		ObjectRef:      &auditv1.ObjectReference{APIGroup: "apps", Resource: "deployments"},
+	}
+
+	require.NoError(t, q.Enqueue(context.Background(), newer))
+	require.NoError(t, q.Enqueue(context.Background(), older),
+		"an older event must not error; it falls back to a server-assigned ID")
+
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	entries, err := client.XRange(context.Background(),
+		testByTypePrefix+":apps:deployments"+byTypeAuditStreamSuffix, "-", "+").Result()
+	require.NoError(t, err)
+	require.Len(t, entries, 2, "both events are retained despite the out-of-order millisecond")
+}
+
+func TestRedisByTypeStreamQueue_FoldsResourceVersionIntoStreamID(t *testing.T) {
+	mr := miniredis.RunT(t)
+	q := newTestByTypeQueue(t, mr, 0)
+
+	event := auditv1.Event{
+		AuditID:        "rv-id",
+		Stage:          auditv1.StageResponseComplete,
+		StageTimestamp: metav1.MicroTime{Time: time.UnixMilli(1749470400123)},
+		ObjectRef:      &auditv1.ObjectReference{APIGroup: "apps", Resource: "deployments"},
+		ResponseObject: &runtime.Unknown{Raw: []byte(`{"metadata":{"resourceVersion":"184467"}}`)},
+	}
+	require.NoError(t, q.Enqueue(context.Background(), event))
+
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	entries, err := client.XRange(context.Background(),
+		testByTypePrefix+":apps:deployments"+byTypeAuditStreamSuffix, "-", "+").Result()
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	assert.Equal(t, "1749470400123-184467", entries[0].ID,
+		"the resourceVersion is folded into the sequence component, in place of the auto *")
+}
+
+// Two close deletecollection events can share both stage millisecond and resourceVersion (the
+// RV is a read/collection revision that repeats when nothing committed in between). The second
+// then collides on "<ms>-<rv>" and must fall back to an auto sequence within the millisecond
+// rather than being dropped.
+func TestRedisByTypeStreamQueue_SameMillisAndRVFallsBackWithinMillis(t *testing.T) {
+	mr := miniredis.RunT(t)
+	q := newTestByTypeQueue(t, mr, 0)
+
+	first := auditv1.Event{
+		AuditID:        "dc-1",
+		Verb:           "deletecollection",
+		Stage:          auditv1.StageResponseComplete,
+		StageTimestamp: metav1.MicroTime{Time: time.UnixMilli(2000)},
+		ObjectRef:      &auditv1.ObjectReference{APIGroup: "apps", Resource: "deployments", ResourceVersion: "777"},
+	}
+	second := first
+	second.AuditID = "dc-2"
+
+	require.NoError(t, q.Enqueue(context.Background(), first))
+	require.NoError(t, q.Enqueue(context.Background(), second))
+
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	entries, err := client.XRange(context.Background(),
+		testByTypePrefix+":apps:deployments"+byTypeAuditStreamSuffix, "-", "+").Result()
+	require.NoError(t, err)
+	require.Len(t, entries, 2, "the colliding second event falls back rather than being dropped")
+	assert.Equal(t, "2000-777", entries[0].ID, "first event folds rv into the ID")
+	assert.Equal(t, "2000-778", entries[1].ID, "second event reuses the millisecond with an auto sequence")
+}
+
+func TestRedisByTypeStreamQueue_BoundedTrimsStreams(t *testing.T) {
+	mr := miniredis.RunT(t)
+	const maxLen = 5
+	q := newTestByTypeQueue(t, mr, maxLen)
+
+	for i := range 50 {
+		event := auditv1.Event{
+			AuditID:        auditv1.Event{}.AuditID,
+			Stage:          auditv1.StageResponseComplete,
+			StageTimestamp: metav1.MicroTime{Time: time.Date(2026, 6, 9, 10, 0, 0, i*1_000_000, time.UTC)},
+			ObjectRef:      &auditv1.ObjectReference{APIVersion: "v1", Resource: "configmaps"},
+		}
+		require.NoError(t, q.Enqueue(context.Background(), event))
+	}
+
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	ctx := context.Background()
+	streamLen, err := client.XLen(ctx, testByTypePrefix+":core:configmaps"+byTypeAuditStreamSuffix).Result()
+	require.NoError(t, err)
+	assert.LessOrEqual(t, streamLen, int64(maxLen))
+}
+
+func TestRedisByTypeStreamQueue_EnqueueUnknownBucket(t *testing.T) {
+	mr := miniredis.RunT(t)
+	q := newTestByTypeQueue(t, mr, 0)
+
+	require.NoError(t, q.Enqueue(context.Background(), auditv1.Event{
+		AuditID:        "no-ref",
+		Stage:          auditv1.StageResponseComplete,
+		StageTimestamp: metav1.MicroTime{Time: time.UnixMilli(2000)},
+	}))
+
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	entries, err := client.XRange(context.Background(),
+		testByTypePrefix+":"+byTypeUnknownBucket+byTypeAuditStreamSuffix, "-", "+").Result()
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	assert.Equal(t, "no-ref", entries[0].Values["audit_id"])
+	assert.Empty(t, entries[0].Values["resource_version"])
+}
+
+func TestRedisByTypeStreamQueue_IndexErrorPropagates(t *testing.T) {
+	mr := miniredis.RunT(t)
+	q := newTestByTypeQueue(t, mr, 0)
+	mr.Close()
+
+	err := q.Enqueue(context.Background(), auditv1.Event{
+		AuditID:   "x",
+		Stage:     auditv1.StageResponseComplete,
+		ObjectRef: &auditv1.ObjectReference{APIGroup: "apps", Resource: "deployments"},
+	})
+	require.Error(t, err)
+}
+
+func TestRedisByTypeStreamQueue_XAddErrorPropagates(t *testing.T) {
+	mr := miniredis.RunT(t)
+	q := newTestByTypeQueue(t, mr, 0)
+
+	event := auditv1.Event{
+		AuditID:        "first",
+		Stage:          auditv1.StageResponseComplete,
+		StageTimestamp: metav1.MicroTime{Time: time.UnixMilli(3000)},
+		ObjectRef:      &auditv1.ObjectReference{APIGroup: "apps", Resource: "deployments"},
+	}
+	require.NoError(t, q.Enqueue(context.Background(), event), "first enqueue indexes the key in-memory")
+
+	mr.Close()
+	require.Error(t, q.Enqueue(context.Background(), event),
+		"once the index is cached, a later XADD failure must surface")
+}

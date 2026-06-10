@@ -140,6 +140,32 @@ type Manager struct {
 	// reconcile/sweep. lifecycleConsumerOnce guards the one-time subscribe + goroutine start.
 	lifecycleEvents       chan typeset.LifecycleEvent
 	lifecycleConsumerOnce sync.Once
+
+	// ObjectMirror optionally mirrors the current set of objects for a type into the
+	// per-resource-type experiment keyspace when the type activates (and clears it when the
+	// type is removed), so the snapshot is loaded once per type rather than per GitTarget.
+	// Nil disables it. Write-only experiment — see
+	// docs/design/stream/per-resource-type-rv-keyed-streams-experiment.md.
+	ObjectMirror ObjectMirror
+}
+
+// ObjectMirror mirrors the current set of objects for one resource type into the
+// per-resource-type experiment keyspace. It is satisfied by queue.RedisObjectsSnapshot and
+// is optional on the Manager (nil disables the mirror). Implementations must be best-effort
+// from the caller's view: the Manager logs and swallows errors so the mirror never disturbs
+// the watch/reconcile path.
+type ObjectMirror interface {
+	// ReplaceTypeObjects replaces the stored object set for a type with items keyed by
+	// identity ("<namespace>/<name>", cluster-scoped: "<name>") -> object JSON, pinned to
+	// the list's resourceVersion.
+	ReplaceTypeObjects(
+		ctx context.Context,
+		group, resource string,
+		items map[string]string,
+		resourceVersion string,
+	) error
+	// DeleteTypeObjects drops the stored object set for a removed type.
+	DeleteTypeObjects(ctx context.Context, group, resource string) error
 }
 
 // SnapshotEmitCount returns the number of times the manager has emitted a

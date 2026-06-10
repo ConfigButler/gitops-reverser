@@ -53,6 +53,7 @@ type auditHandlerFirsts struct {
 	officialEmit      sync.Once
 	additionalEmit    sync.Once
 	impersonatedEvent sync.Once
+	byTypeMirrorError sync.Once
 }
 
 // DefaultAuditMaxRequestBodyBytes limits incoming audit payload size.
@@ -70,6 +71,13 @@ type AuditHandlerConfig struct {
 	DebugQueue AuditDebugEventQueue
 	// Joiner optionally parks additional-source bodies and deduplicates canonical audit events.
 	Joiner AuditEventJoiner
+	// ByTypeQueue mirrors each canonical (StageResponseComplete, body-merged) event
+	// into per-resource-type streams for the offline analysis experiment. It runs only
+	// after the canonical enqueue succeeds and is strictly best-effort: a failure here
+	// never fails the audit request. If nil, per-type mirroring is disabled. It shares
+	// the AuditEventQueue shape — it receives the same fully-merged event. See
+	// docs/design/stream/per-resource-type-rv-keyed-streams-experiment.md.
+	ByTypeQueue AuditEventQueue
 }
 
 // AuditEventQueue persists accepted audit events for downstream processing.
@@ -497,7 +505,31 @@ func (h *AuditHandler) enqueueCanonicalEvent(
 		h.releaseJoinDecision(ctx, decision)
 		return fmt.Errorf("failed to enqueue audit event %q: %w", auditEvent.AuditID, err)
 	}
+	h.mirrorByType(ctx, event)
 	return nil
+}
+
+// mirrorByType best-effort mirrors the canonical event into its per-resource-type
+// streams. It runs only after the canonical enqueue has succeeded, so the per-type
+// streams reflect exactly what reached the canonical stream, and it only ever sees
+// StageResponseComplete events (earlier stages are dropped upstream). A failure here
+// must never fail the audit request or release the join decision; the first failure
+// is logged prominently, the rest at V(1).
+func (h *AuditHandler) mirrorByType(ctx context.Context, event *auditv1.Event) {
+	if h.config.ByTypeQueue == nil {
+		return
+	}
+	if err := h.config.ByTypeQueue.Enqueue(ctx, *event); err != nil {
+		log := logf.Log.WithName("audit-handler")
+		h.firsts.byTypeMirrorError.Do(func() {
+			log.Error(err,
+				"Failed to mirror audit event to per-resource-type streams "+
+					"(logged once; later failures at V(1))",
+				"auditID", event.AuditID)
+		})
+		log.V(1).Info("Failed to mirror audit event to per-resource-type streams",
+			"auditID", event.AuditID, "error", err.Error())
+	}
 }
 
 func (h *AuditHandler) commitJoinDecision(ctx context.Context, decision AuditJoinDecision) error {

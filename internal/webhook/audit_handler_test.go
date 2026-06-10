@@ -97,6 +97,29 @@ func (q *recordingAuditDebugQueue) auditIDs() []string {
 	return ids
 }
 
+type recordingByTypeQueue struct {
+	mu     sync.Mutex
+	err    error
+	events []auditv1.Event
+}
+
+func (q *recordingByTypeQueue) Enqueue(_ context.Context, event auditv1.Event) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.events = append(q.events, event)
+	return q.err
+}
+
+func (q *recordingByTypeQueue) auditIDs() []string {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	ids := make([]string, 0, len(q.events))
+	for _, event := range q.events {
+		ids = append(ids, string(event.AuditID))
+	}
+	return ids
+}
+
 type fakeAuditJoiner struct {
 	decision AuditJoinDecision
 	err      error
@@ -1159,4 +1182,76 @@ func TestAuditSourceFromPath(t *testing.T) {
 			assert.Equal(t, tt.expected, source)
 		})
 	}
+}
+
+// TestAuditHandler_ByTypeQueueMirrorsCanonicalEvent confirms that a canonical
+// ResponseComplete event is mirrored to the per-resource-type sink after it reaches
+// the canonical queue.
+func TestAuditHandler_ByTypeQueueMirrorsCanonicalEvent(t *testing.T) {
+	queue := &recordingAuditEventQueue{}
+	byType := &recordingByTypeQueue{}
+	handler, err := NewAuditHandler(AuditHandlerConfig{Queue: queue, ByTypeQueue: byType})
+	require.NoError(t, err)
+
+	body := `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[` +
+		`{"kind":"Event","auditID":"bytype-1","verb":"update","stage":"ResponseComplete",` +
+		`"user":{"username":"test-user"},"objectRef":{"resource":"deployments",` +
+		`"apiGroup":"apps","apiVersion":"v1","namespace":"prod","name":"web"},` +
+		`"responseObject":{"metadata":{"resourceVersion":"42"}}}]}`
+	req := httptest.NewRequest(http.MethodPost, "/audit-webhook", bytes.NewReader([]byte(body)))
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, []string{"bytype-1"}, queue.auditIDs())
+	assert.Equal(t, []string{"bytype-1"}, byType.auditIDs(),
+		"the canonical event must be mirrored to the per-resource-type sink")
+}
+
+// TestAuditHandler_ByTypeQueueSkipsNonResponseCompleteStages confirms the mirror is
+// only fed StageResponseComplete events: an earlier-stage event never reaches the
+// canonical enqueue, so it must not reach the per-type sink either.
+func TestAuditHandler_ByTypeQueueSkipsNonResponseCompleteStages(t *testing.T) {
+	queue := &recordingAuditEventQueue{}
+	byType := &recordingByTypeQueue{}
+	handler, err := NewAuditHandler(AuditHandlerConfig{Queue: queue, ByTypeQueue: byType})
+	require.NoError(t, err)
+
+	body := `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[` +
+		`{"kind":"Event","auditID":"req-received-1","verb":"update","stage":"RequestReceived",` +
+		`"user":{"username":"test-user"},"objectRef":{"resource":"deployments",` +
+		`"apiGroup":"apps","apiVersion":"v1","namespace":"prod","name":"web"}}]}`
+	req := httptest.NewRequest(http.MethodPost, "/audit-webhook", bytes.NewReader([]byte(body)))
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Empty(t, queue.events)
+	assert.Empty(t, byType.events, "non-ResponseComplete stages must not be mirrored")
+}
+
+// TestAuditHandler_ByTypeMirrorFailureDoesNotFailRequest confirms the mirror is
+// best-effort: an error from the per-type sink leaves the request successful and the
+// canonical enqueue intact.
+func TestAuditHandler_ByTypeMirrorFailureDoesNotFailRequest(t *testing.T) {
+	queue := &recordingAuditEventQueue{}
+	byType := &recordingByTypeQueue{err: errors.New("bytype stream down")}
+	handler, err := NewAuditHandler(AuditHandlerConfig{Queue: queue, ByTypeQueue: byType})
+	require.NoError(t, err)
+
+	body := `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[` +
+		`{"kind":"Event","auditID":"bytype-fail-1","verb":"update","stage":"ResponseComplete",` +
+		`"user":{"username":"test-user"},"objectRef":{"resource":"deployments",` +
+		`"apiGroup":"apps","apiVersion":"v1","namespace":"prod","name":"web"},` +
+		`"responseObject":{"metadata":{"resourceVersion":"42"}}}]}`
+	req := httptest.NewRequest(http.MethodPost, "/audit-webhook", bytes.NewReader([]byte(body)))
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code, "a mirror failure must not fail the audit request")
+	assert.Equal(t, []string{"bytype-fail-1"}, queue.auditIDs(),
+		"the canonical enqueue must still succeed when the mirror fails")
 }

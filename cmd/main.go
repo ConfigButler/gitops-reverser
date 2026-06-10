@@ -218,6 +218,36 @@ func main() {
 		fatalIfErr(err, "unable to initialize audit debug redis queue")
 	}
 
+	// Per-resource-type stream mirror: always active. It mirrors each canonical event
+	// into one stream per resource type for the offline analysis experiment and shares
+	// the producer's Redis connection and MaxLen bound. See
+	// docs/design/stream/per-resource-type-rv-keyed-streams-experiment.md.
+	auditByTypeQueue, err := queue.NewRedisByTypeStreamQueue(queue.RedisByTypeStreamConfig{
+		Addr:       cfg.auditRedisAddr,
+		Username:   cfg.auditRedisUsername,
+		AuthValue:  cfg.auditRedisPassword,
+		DB:         cfg.auditRedisDB,
+		Prefix:     cfg.auditByTypeStreamPrefix,
+		MaxLen:     cfg.auditRedisMaxLen,
+		TLSEnabled: cfg.auditRedisTLS,
+	})
+	fatalIfErr(err, "unable to initialize per-resource-type audit redis queue")
+
+	// Per-resource-type current-objects snapshot: loaded once when a type activates (not per
+	// GitTarget), beside the audit stream under the same base key. Shares the producer's Redis
+	// connection and key prefix. See
+	// docs/design/stream/per-resource-type-rv-keyed-streams-experiment.md.
+	auditObjectsSnapshot, err := queue.NewRedisObjectsSnapshot(queue.RedisObjectsSnapshotConfig{
+		Addr:       cfg.auditRedisAddr,
+		Username:   cfg.auditRedisUsername,
+		AuthValue:  cfg.auditRedisPassword,
+		DB:         cfg.auditRedisDB,
+		Prefix:     cfg.auditByTypeStreamPrefix,
+		TLSEnabled: cfg.auditRedisTLS,
+	})
+	fatalIfErr(err, "unable to initialize per-resource-type objects snapshot")
+	watchMgr.ObjectMirror = auditObjectsSnapshot
+
 	auditJoiner, err := webhookhandler.NewRedisAuditEventJoiner(webhookhandler.RedisAuditJoinerConfig{
 		Addr:             cfg.auditRedisAddr,
 		Username:         cfg.auditRedisUsername,
@@ -239,7 +269,8 @@ func main() {
 		"decisionTTL", cfg.auditEventDecisionTTL,
 		"officialBodyWait", cfg.auditEventBodyWait,
 		"redisMaxLen", cfg.auditRedisMaxLen,
-		"debugRedisMaxLen", cfg.auditDebugRedisMaxLen)
+		"debugRedisMaxLen", cfg.auditDebugRedisMaxLen,
+		"byTypeStreamPrefix", cfg.auditByTypeStreamPrefix)
 
 	if cfg.auditRedisMaxLen == 0 {
 		setupLog.Info(
@@ -303,6 +334,7 @@ func main() {
 		Queue:               auditQueue,
 		DebugQueue:          auditDebugQueue,
 		Joiner:              auditJoiner,
+		ByTypeQueue:         auditByTypeQueue,
 	})
 	fatalIfErr(err, "unable to create audit handler")
 
@@ -382,6 +414,7 @@ type appConfig struct {
 	auditRedisMaxLen         int64
 	auditDebugRedisStream    string
 	auditDebugRedisMaxLen    int64
+	auditByTypeStreamPrefix  string
 	auditRedisTLS            bool
 	auditEventBodyTTL        time.Duration
 	auditEventDecisionTTL    time.Duration
@@ -457,6 +490,9 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 		"Optional Redis stream name for every decoded audit event before normal audit processing.")
 	fs.Int64Var(&cfg.auditDebugRedisMaxLen, "audit-debug-redis-max-len", 0,
 		"Approximate max debug stream length (0 disables trimming).")
+	fs.StringVar(&cfg.auditByTypeStreamPrefix, "audit-bytype-stream-prefix", queue.DefaultRedisByTypeStreamPrefix,
+		"Root key prefix for the per-resource-type experiment "+
+			"(<prefix>:<group>:<resource>:audit:stream + :objects:items + :__index__).")
 	fs.BoolVar(&cfg.auditRedisTLS, "audit-redis-tls", false,
 		"If set, Redis connection for audit queueing uses TLS.")
 	fs.DurationVar(&cfg.auditEventBodyTTL, "audit-event-body-ttl", defaultAuditEventBodyTTL,

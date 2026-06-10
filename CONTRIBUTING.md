@@ -18,6 +18,12 @@ An optional repo-root `.env` file can provide read-only `gh` CLI access inside t
 checking PRs, Actions runs, and CI logs. Keep it local-only; the existing `.gitignore` already
 covers `.env`.
 
+## Defaults values
+
+You can access common services as part of the e2e cluster
+* gitea: http://localhost:13000/ (giteaadmin/giteapassword123)
+* redis://default:e2e-valkey-password@127.0.0.1:16379/0
+
 ## Before submitting a PR
 
 For small fixes, docs improvements, and obvious bug fixes, feel free to open a PR directly.

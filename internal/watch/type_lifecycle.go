@@ -67,17 +67,35 @@ func (m *Manager) startTypeLifecycleConsumer(ctx context.Context, log logr.Logge
 
 // enqueueLifecycleEvent is the registry Observer: a non-blocking hand-off so the registry's
 // updater is never stalled by per-type git work. It runs on whatever goroutine triggered the
-// registry Update.
+// registry Update, synchronously under the registry's dispatch serialization, so the log here
+// is the authoritative emission order of every transition the registry produced.
 func (m *Manager) enqueueLifecycleEvent(ev typeset.LifecycleEvent) {
 	if m.lifecycleEvents == nil {
 		return
 	}
+	logLifecycleEvent(m.Log, "type-lifecycle event emitted", ev)
 	select {
 	case m.lifecycleEvents <- ev:
 	default:
-		m.Log.V(1).Info("type-lifecycle event buffer full; dropping",
-			"kind", ev.Kind, "gvr", ev.GVR.String())
+		// A dropped edge is a real correctness signal (the recompute path must recover it), so
+		// it is logged at Info, not V(1).
+		logLifecycleEvent(m.Log, "type-lifecycle event buffer full; dropping", ev)
 	}
+}
+
+// logLifecycleEvent emits one structured Info line for a lifecycle transition. Transitions are
+// rare (per-type edges, not per-object), so Info volume is low and the stream is grep-able out
+// of the controller pod logs as an ordered timeline. Fields mirror typeset.LifecycleEvent.
+func logLifecycleEvent(log logr.Logger, msg string, ev typeset.LifecycleEvent) {
+	log.Info(msg,
+		"kind", ev.Kind,
+		"gvk", ev.GVK.String(),
+		"gvr", ev.GVR.String(),
+		"from", string(ev.From),
+		"to", string(ev.To),
+		"reason", string(ev.Reason),
+		"generation", ev.Generation,
+		"at", ev.At)
 }
 
 // drainTypeLifecycleEvents processes lifecycle events off the buffer on a dedicated goroutine,
@@ -101,11 +119,16 @@ func (m *Manager) drainTypeLifecycleEvents(ctx context.Context, log logr.Logger)
 func (m *Manager) handleTypeLifecycleEvent(ctx context.Context, log logr.Logger, ev typeset.LifecycleEvent) {
 	switch ev.Kind {
 	case typeset.TypeActivated:
+		// Load the type's current objects into the per-type experiment keyspace once, here at
+		// activation — not per GitTarget — independent of the reconcile fan-out below.
+		m.mirrorTypeObjects(ctx, log, ev.GVR)
 		m.reconcileTypeForSyncedTargets(ctx, log, ev.GVR)
 	case typeset.TypeRemoved:
+		m.clearTypeObjects(ctx, log, ev.GVR)
 		m.sweepTypeFromSyncedTargets(ctx, log, ev.GVR)
 	case typeset.TypeWobbling, typeset.TypeRecovered, typeset.TypeRefused:
-		log.V(1).Info("type-lifecycle transition (no git action)", "kind", ev.Kind, "gvr", ev.GVR.String())
+		log.Info("type-lifecycle transition handled (no git action)",
+			"kind", ev.Kind, "gvr", ev.GVR.String(), "reason", string(ev.Reason))
 	}
 }
 
@@ -117,7 +140,11 @@ func (m *Manager) reconcileTypeForSyncedTargets(ctx context.Context, log logr.Lo
 		if !tableWatchesGVR(table, gvr) {
 			continue
 		}
+		// The SnapshotSynced gate is the seam the per-type scheduler will remove; logging the
+		// skip makes visible how often a settled activation is currently suppressed by it.
 		if !m.gitTargetSnapshotSynced(ctx, table.GitDest) {
+			log.Info("per-type reconcile skipped: gitTarget not snapshot-synced",
+				"gitDest", table.GitDest.String(), "gvr", gvr.String())
 			continue
 		}
 		if err := m.EventRouter.EmitTypeReconcileForGitDest(ctx, table.GitDest, gvr); err != nil {
@@ -125,6 +152,7 @@ func (m *Manager) reconcileTypeForSyncedTargets(ctx context.Context, log logr.Lo
 				"gitDest", table.GitDest.String(), "gvr", gvr.String())
 			continue
 		}
+		log.Info("per-type reconcile enqueued", "gitDest", table.GitDest.String(), "gvr", gvr.String())
 		recordTypeLifecycleMetric(telemetry.TypeLifecycleReconcileTotal, table.GitDest)
 	}
 }
@@ -137,12 +165,15 @@ func (m *Manager) reconcileTypeForSyncedTargets(ctx context.Context, log logr.Lo
 func (m *Manager) sweepTypeFromSyncedTargets(ctx context.Context, log logr.Logger, gvr schema.GroupVersionResource) {
 	for _, table := range m.allWatchedTypeTables() {
 		if !m.gitTargetSnapshotSynced(ctx, table.GitDest) {
+			log.Info("per-type sweep skipped: gitTarget not snapshot-synced",
+				"gitDest", table.GitDest.String(), "gvr", gvr.String())
 			continue
 		}
 		if err := m.EventRouter.EmitTypeSweepForGitDest(ctx, table.GitDest, gvr); err != nil {
 			log.Error(err, "per-type sweep failed to enqueue", "gitDest", table.GitDest.String(), "gvr", gvr.String())
 			continue
 		}
+		log.Info("per-type sweep enqueued", "gitDest", table.GitDest.String(), "gvr", gvr.String())
 		recordTypeLifecycleMetric(telemetry.TypeLifecycleSweepTotal, table.GitDest)
 	}
 }
