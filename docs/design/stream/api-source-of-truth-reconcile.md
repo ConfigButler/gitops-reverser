@@ -7,6 +7,7 @@
 > Captured: 2026-06-10
 > Owner: Simon
 > Related:
+> [audit-log-ingestion-and-ordering.md](audit-log-ingestion-and-ordering.md) (the log producer / ordering / late-lane detail this doc leaves out),
 > [per-resource-type-rv-keyed-streams-experiment.md](per-resource-type-rv-keyed-streams-experiment.md) (the write-only prototype this consumes),
 > [../manifest/version2/dream.md](../manifest/version2/dream.md) (the origin),
 > [../manifest/reconcile-via-watchlist-mark-and-sweep.md](../manifest/reconcile-via-watchlist-mark-and-sweep.md) (the plan/sweep machinery, reused),
@@ -113,54 +114,21 @@ owns reconnect / `410 Gone` / fan-out-refcount lifecycle we no longer need.
 scoped, then `BuildScopedPlan` → one commit. Pure function of the materialized API (R1).
 No history replay (R6).
 
-### DEC-3 — RV-anchored synthetic stream position (drop millisecond-first ordering)  *(satisfies R8)*
+### DEC-3 — RV-ordered, replayable log (drop millisecond-first ordering)  *(satisfies R8)*
 
-**Chosen, recommended encoding.** Re-key the per-type log so its ordering component is a
-**self-assigned, strictly increasing sequence anchored to the resourceVersion**, instead
-of today's millisecond-first `<stage_millis>-<rv>`
-([`streamIDCandidates`](../../../internal/queue/redis_bytype_queue.go#L187)). Concretely the
-Redis stream ID becomes:
+**Chosen.** Re-key the per-type log from today's millisecond-first `<stage_millis>-<rv>`
+to **resourceVersion-first**, so the log is ordered by etcd commit order and a reconcile
+can replay exactly from a checkpoint (`XRANGE (R +`). This makes "is this event after
+checkpoint R?" a precise, delivery-order-independent test, which is what lets DEC-6 drop
+content hashing.
 
-```
-<objectRV> - <subseq>
-```
-
-- `objectRV` = the event's `metadata.resourceVersion` (the etcd revision the object was
-  written at) — the **primary** ordering key.
-- `subseq` = a small per-type counter that disambiguates several events sharing one RV
-  (e.g. a `deletecollection`) and **carries RV-less events** by reusing the last-seen RV
-  with an incrementing `subseq`.
-
-Why anchor to RV rather than use a free-running counter: **it makes the splice exact under
-asynchronous audit delivery.** An event's RV is fixed at the moment etcd committed it,
-regardless of when the webhook delivers it. So "is this event after checkpoint R?" is the
-precise, delivery-order-independent test `objectRV > R`, and the checkpoint's own
-`:objects:rv = R` *is* the replay cursor — no separate correlation step, no race window.
-A LIST at revision R and a per-object RV are both etcd revisions from one cluster, so they
-are directly comparable.
-
-The single-integer equivalent (for any non-stream store, e.g. folding a position into the
-`:objects` envelope) is the user's **"RV × K + subseq"** with `subseq < K` (K = 1000 for
-headroom) — the same total order, encoded in one number. Redis two-part stream IDs give
-this for free, so the stream uses `<rv>-<subseq>` and no multiplication is needed there.
-
-We keep `stage_millis` as a **field** (human scanning, metrics), just not as the ordering
-key.
-
-**The opacity caveat, addressed.** The corpus rightly warns that `resourceVersion` is
-opaque by Kubernetes contract and code must not depend on cross-version RV arithmetic
-([per-type-reconcile-and-streaming-tail.md](../manifest/version2/per-type-reconcile-and-streaming-tail.md),
-Thread 2). We respect that two ways: (a) we **assign our own** stream position at ingest —
-the reconcile range-scans *our* monotonic sequence, not the cluster's raw RV; (b) RV is
-only ever compared **within one type, within one cluster's etcd**, where it is a single
-global revision counter. If a future cluster ever violated per-type RV monotonicity, the
-fallback is DEC-3-alt with no other change to the design.
-
-**DEC-3-alt (fallback, not chosen):** a pure free-running per-type counter, decoupled from
-RV. Simpler invariant, but the checkpoint must then *record the counter value* it
-corresponds to, and because the audit webhook is async that correlation has a race window
-(width = delivery lag) that forces conservative-early cursors and idempotent double-apply.
-Workable, but strictly fuzzier than RV-anchoring. Kept as the escape hatch only.
+The encoding (`<rv>-*` with Valkey-allocated subsequence), the RV-comparison rules, the
+diagnostic **late lane** for out-of-order arrivals, RV-less placement, and the deferred
+Lua / pre-sorter improvements all live in the dedicated producer design:
+**[audit-log-ingestion-and-ordering.md](audit-log-ingestion-and-ordering.md)**. The
+load-bearing invariant that doc establishes, and that this reconcile relies on: **the main
+stream is strictly RV-ordered — we never knowingly insert an out-of-order event** — so the
+splice in §6 can fold by stream position.
 
 ### DEC-4 — Checkpoint trigger = periodic **and** event-driven  *(satisfies R2, R5, R9)*
 
@@ -172,11 +140,12 @@ one-shot load; this generalizes them to "(re)checkpoint this type."
 
 ### DEC-5 — RV-less events: best-effort in the log, correctness from the next checkpoint  *(satisfies R11, R13)*
 
-**Chosen consequence.** RV-bearing events (all creates/updates) replay exactly (DEC-3).
-RV-less events (some deletes, collection verbs) get a best-effort position (last-seen RV +
-`subseq`) for **freshness**; their **correctness** is guaranteed by the next checkpoint —
-the LIST will simply not contain a deleted object, and the type-scoped mark-and-sweep
-removes it. We therefore do not over-engineer the RV-less path; the checkpoint backstops it.
+**Chosen consequence.** RV-bearing events (all creates/updates) replay exactly. RV-less
+events (some deletes, collection verbs) get a best-effort placement in the log for
+**freshness**; their **correctness** is guaranteed by the next checkpoint — the LIST will
+simply not contain a deleted object, and the type-scoped mark-and-sweep removes it. We do
+not over-engineer the RV-less path; the checkpoint backstops it. The placement mechanics
+are in [audit-log-ingestion-and-ordering.md](audit-log-ingestion-and-ordering.md) (IR5).
 
 ### DEC-6 — Drop content hashing  *(satisfies R7)*
 
@@ -274,11 +243,12 @@ has landed.
    - Promote one-shot [`mirrorTypeObjects`](../../../internal/watch/type_objects_mirror.go#L59)
      to a scheduled re-anchor: per-type timer (default 1h) + the DEC-4 event triggers,
      driven from the lifecycle drain goroutine so a large LIST never blocks the registry.
-   - Re-key [`streamIDCandidates`](../../../internal/queue/redis_bytype_queue.go#L187) to
-     `<rv>-<subseq>` (DEC-3): per-type in-memory `subseq` + last-seen RV; move
-     `stage_millis` to a field-only role.
-   - On each re-anchor, trim `:audit:stream` to the new `:objects:rv` and update
-     `:objects:state`.
+   - Re-key the log to RV-first and add the diagnostic late lane — the full producer spec
+     is [audit-log-ingestion-and-ordering.md](audit-log-ingestion-and-ordering.md) (its
+     §9 baseline is the concrete change to
+     [`RedisByTypeStreamQueue`](../../../internal/queue/redis_bytype_queue.go)).
+   - On each re-anchor, trim `:audit:stream` to the new `:objects:rv` (never below the
+     oldest live checkpoint cursor) and update `:objects:state`.
    - *Done when:* checkpoints refresh on schedule and on type-set change; the log is
      RV-ordered and replay-rangeable by `:objects:rv`; still no consumer.
 
@@ -319,21 +289,19 @@ has landed.
 
 ## 9. Open questions
 
-- **Checkpoint interval & staleness budget.** What is the default, and is it per-type
-  tunable? Freshness between checkpoints rides entirely on the log (R4); the interval only
+- **Checkpoint interval.** *Settled: ~1h default.* Open only on whether it is per-type
+  tunable. Freshness between checkpoints rides entirely on the log (R4); the interval only
   bounds correctness drift and log size.
 - **Cross-type consistency.** Per-type gives one position per type; if any consumer needs a
   folder-wide consistent revision (status, a future audit join), define the "max position
   across types" interpretation.
-- **RV-less ordering edge.** Confirm the last-seen-RV + `subseq` assignment is sufficient in
-  practice, or whether some delete-heavy types want a tighter rule (vs. just leaning on the
-  next checkpoint, DEC-5).
 - **Trigger debounce shape (R14).** Per-type timer vs. audit-arrival-driven vs. both, and
   the debounce window that best matches the commit window.
 - **HA (R10, deferred).** Leader-elected single consumer today
   ([`NeedLeaderElection`](../../../internal/queue/redis_audit_consumer.go#L200)). Multi-
   replica fan-out, the never-stop audit intake across failover, and per-type cursor
   ownership are a separate plan; this design must not preclude them.
-- **`subseq` overflow / K sizing.** For the single-integer "RV × K" form, pick K and define
-  behavior if more than K events share an anchor RV (spill to next RV vs. reject — backstop
-  is the checkpoint either way).
+
+> Ordering / late-lane / ingestion open questions (the pre-sorter and Lua triggers, the
+> non-numeric-RV policy, the §7 investigation) live in
+> [audit-log-ingestion-and-ordering.md](audit-log-ingestion-and-ordering.md), not here.

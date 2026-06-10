@@ -38,21 +38,54 @@ import (
 const (
 	// DefaultRedisByTypeStreamPrefix is the default root key prefix for the
 	// per-resource-type experiment. Every key is "<prefix>:<group-or-core>:<resource>:…";
-	// the audit mirror writes "…:audit:stream" and the objects snapshot writes
-	// "…:objects:items" (etc.), with a ":__index__" set listing the per-type base keys.
-	// See docs/design/stream/per-resource-type-rv-keyed-streams-experiment.md.
+	// the audit mirror writes "…:audit:stream" (plus "…:audit:late"/"…:audit:idstate") and
+	// the objects snapshot writes "…:objects:items" (etc.), with a ":__index__" set listing
+	// the per-type base keys.
+	// See docs/design/stream/per-resource-type-rv-keyed-streams-experiment.md and
+	// docs/design/stream/audit-log-ingestion-and-ordering.md.
 	DefaultRedisByTypeStreamPrefix = "gitops-reverser"
 
-	// byTypeAuditStreamSuffix is appended to a type's base key for the audit event stream.
-	byTypeAuditStreamSuffix = ":audit:stream"
-	byTypeIndexSuffix       = ":__index__"
-	byTypeUnknownBucket     = "__unknown__"
-	byTypeCoreGroup         = "core"
+	// byTypeAuditStreamSuffix is the strictly RV-ordered main stream: IDs are
+	// "<resourceVersion>-<subseq>" (IR2). byTypeAuditLateSuffix is the diagnostic late lane
+	// for events that would break that order (IR4). byTypeAuditIDStateSuffix is the per-type
+	// observability hash — high-water mark plus counters (IR7).
+	byTypeAuditStreamSuffix  = ":audit:stream"
+	byTypeAuditLateSuffix    = ":audit:late"
+	byTypeAuditIDStateSuffix = ":audit:idstate"
+	byTypeIndexSuffix        = ":__index__"
+	byTypeUnknownBucket      = "__unknown__"
+	byTypeCoreGroup          = "core"
 
-	// streamIDTooSmallMarker is a substring of the XADD error returned by Redis
-	// (and miniredis) when an explicit stream ID is not strictly greater than the
-	// stream's current top entry. We fall back to a server-assigned ID in that case.
+	// streamIDTooSmallMarker is a substring of the XADD error returned by Redis (and
+	// miniredis) when an explicit stream ID is not strictly greater than the stream's current
+	// top entry. For the RV-first main stream this rejection is the signal that an event is
+	// strictly older than the high-water mark, so we divert it to the late lane (§6).
 	streamIDTooSmallMarker = "equal or smaller"
+)
+
+// Stream-entry and idstate field names. The entry fields extend the compact overview
+// (entryValues) with the routing decision; the idstate fields match the hash documented in
+// docs/design/stream/audit-log-ingestion-and-ordering.md §4.
+const (
+	entryFieldRVPresent = "rv_present"
+	entryFieldPlacement = "placement"
+	entryFieldReason    = "reason"
+	entryFieldLastRV    = "last_rv"
+
+	placementResourceVersion  = "resource-version"
+	placementAttachedToLastRV = "attached-to-last-rv"
+	placementLateLane         = "late-lane"
+
+	lateReasonOlderThanHighWater       = "older-than-high-water"
+	lateReasonRVMissingBeforeHighWater = "rv-missing-before-high-water"
+	lateReasonNonNumericRV             = "non-numeric-rv"
+
+	idStateLastRV         = "lastRV"
+	idStateLastStreamID   = "lastStreamID"
+	idStateLastEventAt    = "lastEventAt"
+	idStateMainCount      = "mainCount"
+	idStateLateCount      = "lateCount"
+	idStateRVMissingCount = "rvMissingCount"
 )
 
 // byTypeKeyDisallowed matches characters not allowed in a sanitized Redis key
@@ -71,13 +104,17 @@ type RedisByTypeStreamConfig struct {
 	TLSEnabled bool
 }
 
-// RedisByTypeStreamQueue mirrors canonical audit events into one Redis stream per
-// resource type at "<prefix>:<group-or-core>:<resource>:audit:stream". For each event
-// it writes a single entry — the compact overview fields plus the full event JSON in a
-// payload_json field — ID-prefixed by the event's stage timestamp in milliseconds, and
-// records the type's base key in a ":__index__" set so the type keyspace can be
-// enumerated later without SCAN. It is write-only: nothing reads these structures yet.
-// See docs/design/stream/per-resource-type-rv-keyed-streams-experiment.md.
+// RedisByTypeStreamQueue mirrors canonical audit events into one strictly RV-ordered Redis
+// stream per resource type at "<prefix>:<group-or-core>:<resource>:audit:stream". Each event
+// becomes one entry — the compact overview fields plus the full event JSON in a payload_json
+// field — keyed "<resourceVersion>-<subseq>" so the stream replays in etcd-commit order (IR2).
+// An event whose RV is strictly below the stream's high-water mark is never forced into the
+// main stream; it is diverted to the diagnostic late lane ":audit:late" (IR3/IR4). An RV-less
+// event attaches to the high-water mark, and per-type counters/high-water live in the
+// ":audit:idstate" hash (IR5/IR7). The type's base key is recorded in a ":__index__" set so the
+// keyspace can be enumerated without SCAN. Routing is atomic per XADD with no Lua and best-effort
+// throughout (IR8/IR9).
+// See docs/design/stream/audit-log-ingestion-and-ordering.md.
 type RedisByTypeStreamQueue struct {
 	client *redis.Client
 	prefix string
@@ -116,12 +153,15 @@ func NewRedisByTypeStreamQueue(cfg RedisByTypeStreamConfig) (*RedisByTypeStreamQ
 	}, nil
 }
 
-// Enqueue mirrors one canonical audit event into its per-resource-type stream as a
-// single entry. The error is returned so the caller can log/count it, but callers
-// treat the mirror as best-effort: a failure here must not fail the audit request.
+// Enqueue mirrors one canonical audit event into its per-resource-type audit log, routed by
+// the event's resourceVersion (§9): a numeric RV at or above the stream's high-water lands in
+// the strictly-ordered main stream as "<rv>-<subseq>"; a strictly-older RV is diverted to the
+// diagnostic late lane; an RV-less event attaches to the high-water mark; a present-but-non-
+// numeric RV is diverted to the late lane. The error is returned so the caller can log/count
+// it, but callers treat the mirror as best-effort: a failure here must not fail the audit
+// request (IR8).
 func (q *RedisByTypeStreamQueue) Enqueue(ctx context.Context, event auditv1.Event) error {
 	base := q.baseKey(event)
-	streamKey := base + byTypeAuditStreamSuffix
 	millis := stageMillis(event)
 	rv := resourceVersionFromEvent(event)
 
@@ -133,78 +173,224 @@ func (q *RedisByTypeStreamQueue) Enqueue(ctx context.Context, event auditv1.Even
 	if err != nil {
 		return err
 	}
-	if err := q.xadd(ctx, streamKey, millis, rv, values); err != nil {
-		return fmt.Errorf("failed to append entry to %q: %w", streamKey, err)
+
+	keys := byTypeAuditKeys{
+		stream:  base + byTypeAuditStreamSuffix,
+		late:    base + byTypeAuditLateSuffix,
+		idState: base + byTypeAuditIDStateSuffix,
 	}
+	switch classifyRV(rv) {
+	case rvNumeric:
+		return q.ingestOrdered(ctx, keys, rv, millis, values)
+	case rvAbsent:
+		return q.ingestRVLess(ctx, keys, millis, values)
+	case rvNonNumeric:
+		return q.divertLate(ctx, keys, lateReasonNonNumericRV, rv, "", values)
+	}
+	// classifyRV returns only the three cases above; this is unreachable.
 	return nil
 }
 
-// xadd appends one entry, choosing the stream ID per streamIDCandidates: the event
-// millisecond is the leading component and — as an experiment — the event's
-// resourceVersion is folded into the sequence component in place of the usual auto "*",
-// so the ID itself encodes (event-time, RV). Stream IDs must strictly increase, so on the
-// "equal or smaller" rejection we try the next, looser candidate (auto sequence within the
-// millisecond, then a fully server-assigned ID) and rely on the stage_millis/resource_version
-// fields for the true order.
-func (q *RedisByTypeStreamQueue) xadd(
+// byTypeAuditKeys bundles the three per-type audit keys one Enqueue touches.
+type byTypeAuditKeys struct {
+	stream  string // the strictly RV-ordered main stream
+	late    string // the diagnostic late lane
+	idState string // the observability hash (high-water + counters)
+}
+
+// rvClass partitions a resourceVersion into the three ingestion branches of §9.
+type rvClass int
+
+const (
+	rvAbsent     rvClass = iota // no usable RV (deletes, collection verbs, shallow bodies)
+	rvNumeric                   // a non-negative decimal integer ≤ 2^64-1: a valid stream-ID component
+	rvNonNumeric                // present but not a valid stream-ID component (aggregated apiservers)
+)
+
+// classifyRV decides which branch an RV takes. The numeric test is exactly the stream-ID
+// admission rule — a non-negative decimal integer that fits uint64 — so a value we classify
+// numeric is one Valkey will accept as the "<rv>" component of an ID. This is validation, not
+// comparison: in the baseline the RV ordering is delegated to Valkey's native 64-bit ID
+// ordering (the strong key), so we never compare RVs via a lossy tonumber and need no
+// decimal-string compare of our own (IR6).
+func classifyRV(rv string) rvClass {
+	if rv == "" {
+		return rvAbsent
+	}
+	if _, err := strconv.ParseUint(rv, 10, 64); err != nil {
+		return rvNonNumeric
+	}
+	return rvNumeric
+}
+
+// ingestOrdered routes a numeric-RV event. The main-vs-late decision is ours, made by a
+// decimal-string compare against the cached high-water (IR6, §5.2 — never a lossy tonumber):
+// an RV strictly below the high-water is diverted to the late lane and never touches the main
+// stream (P1), while an RV equal to or above it is appended as "<rv>-*" so Valkey allocates the
+// subseq, disambiguating events at the same RV (IR2). The strong key still backstops the
+// multi-writer race where the top advanced between our read and our write (P2). Routing needs no
+// Lua; only the idstate counters/cache are best-effort and self-correcting (§9).
+func (q *RedisByTypeStreamQueue) ingestOrdered(
 	ctx context.Context,
-	stream string,
-	millis int64,
+	keys byTypeAuditKeys,
 	rv string,
+	millis int64,
 	values map[string]any,
 ) error {
-	args := &redis.XAddArgs{Stream: stream, Values: values}
+	highWater := q.cachedHighWater(ctx, keys.idState)
+	if highWater != "" && decimalLess(rv, highWater) {
+		return q.divertLate(ctx, keys, lateReasonOlderThanHighWater, rv, highWater, values)
+	}
+
+	values[entryFieldRVPresent] = "true"
+	values[entryFieldPlacement] = placementResourceVersion
+
+	id, err := q.xaddID(ctx, keys.stream, rv+"-*", values)
+	switch {
+	case err == nil:
+		q.recordMain(ctx, keys.idState, rv, id, millis)
+		return nil
+	case isIDTooSmall(err):
+		// Backstop: a concurrent writer advanced the top above rv between our read and write, so
+		// the strong key rejected it (P2). Divert to late — this only fires under the multi-writer
+		// race that §8.1's atomic ingestion closes.
+		return q.divertLate(ctx, keys, lateReasonOlderThanHighWater, rv, highWater, values)
+	default:
+		return fmt.Errorf("failed to append entry to %q: %w", keys.stream, err)
+	}
+}
+
+// ingestRVLess places an event that carries no usable RV (IR5). It attaches to the stream's
+// current high-water mark — "<highWaterRV>-*", which Valkey accepts as a fresh subseq at the
+// top RV — and marks it rv_present=false so a consumer knows it is a declared policy placement,
+// not a claimed RV; the next checkpoint backstops it. Before any high-water exists there is
+// nothing to attach to, so the event is recorded in the late lane instead.
+func (q *RedisByTypeStreamQueue) ingestRVLess(
+	ctx context.Context,
+	keys byTypeAuditKeys,
+	millis int64,
+	values map[string]any,
+) error {
+	highWater := q.cachedHighWater(ctx, keys.idState)
+	if highWater == "" {
+		return q.divertLate(ctx, keys, lateReasonRVMissingBeforeHighWater, "", "", values)
+	}
+
+	values[entryFieldRVPresent] = "false"
+	values[entryFieldPlacement] = placementAttachedToLastRV
+
+	id, err := q.xaddID(ctx, keys.stream, highWater+"-*", values)
+	if err != nil {
+		return fmt.Errorf("failed to append entry to %q: %w", keys.stream, err)
+	}
+	q.recordRVMissing(ctx, keys.idState, id, millis)
+	return nil
+}
+
+// divertLate records an event in the diagnostic late lane with a server-assigned ID and full
+// context — the reason, the event RV, and the current high-water. The late lane is
+// observability only: never reordered into main, never a reconcile input (§6).
+func (q *RedisByTypeStreamQueue) divertLate(
+	ctx context.Context,
+	keys byTypeAuditKeys,
+	reason, rv, lastRV string,
+	values map[string]any,
+) error {
+	values[entryFieldReason] = reason
+	values[entryFieldPlacement] = placementLateLane
+	values[entryFieldRVPresent] = strconv.FormatBool(rv != "")
+	values[entryFieldLastRV] = lastRV
+
+	if _, err := q.xaddID(ctx, keys.late, "*", values); err != nil {
+		return fmt.Errorf("failed to append entry to %q: %w", keys.late, err)
+	}
+	q.incrIDState(ctx, keys.idState, idStateLateCount)
+	return nil
+}
+
+// cachedHighWater returns the high-water resourceVersion from the idstate hash — the RV of the
+// last event placed in the main stream (IR7). It is the comparison basis for routing (§9) and
+// the value reported in late-lane diagnostics. The hash is a best-effort cache that can only lag
+// (it is written from the ingestion path after a main write, so it is never ahead of the true
+// top); the strong key (xaddID rejection) backstops a lagging cache under a multi-writer race.
+// Empty when no event has been placed yet.
+func (q *RedisByTypeStreamQueue) cachedHighWater(ctx context.Context, idStateKey string) string {
+	rv, err := q.client.HGet(ctx, idStateKey, idStateLastRV).Result()
+	if err != nil {
+		return ""
+	}
+	return rv
+}
+
+// decimalLess reports whether a < b for two non-negative decimal integer strings, matching
+// Valkey's native 64-bit stream-ID ordering without Lua's lossy tonumber (IR6, §5.2): strip
+// leading zeroes, then the shorter string is the smaller number and equal-length strings compare
+// lexically.
+func decimalLess(a, b string) bool {
+	a, b = stripLeadingZeros(a), stripLeadingZeros(b)
+	if len(a) != len(b) {
+		return len(a) < len(b)
+	}
+	return a < b
+}
+
+// stripLeadingZeros drops leading zeroes from a decimal string, leaving "0" for all-zero input.
+func stripLeadingZeros(s string) string {
+	i := 0
+	for i < len(s)-1 && s[i] == '0' {
+		i++
+	}
+	return s[i:]
+}
+
+// xaddID appends one entry under an explicit (possibly partial, e.g. "<rv>-*") ID, applying the
+// approximate MaxLen bound when configured. It returns the server-assigned ID.
+func (q *RedisByTypeStreamQueue) xaddID(
+	ctx context.Context,
+	stream, id string,
+	values map[string]any,
+) (string, error) {
+	args := &redis.XAddArgs{Stream: stream, ID: id, Values: values}
 	if q.maxLen > 0 {
 		args.MaxLen = q.maxLen
 		args.Approx = true
 	}
-
-	var err error
-	for _, id := range streamIDCandidates(millis, rv) {
-		args.ID = id
-		if _, err = q.client.XAdd(ctx, args).Result(); err == nil {
-			return nil
-		}
-		if !strings.Contains(err.Error(), streamIDTooSmallMarker) {
-			return err
-		}
-		// The strict-increase constraint rejected this candidate; fall back to the next,
-		// looser one. TODO: emit a metric here (e.g. telemetry.ByTypeStreamIDFallbackTotal,
-		// labelled by the rejected candidate — <ms>-<rv> fold vs <ms>-* vs *) to measure how
-		// often the RV-in-ID fold fails and we degrade. Answers the "ordering reality"
-		// question in §9 of
-		// docs/design/stream/per-resource-type-rv-keyed-streams-experiment.md.
-	}
-	return err
+	return q.client.XAdd(ctx, args).Result()
 }
 
-// streamIDCandidates lists the stream IDs to try, in increasing looseness. The leading
-// millisecond is preserved where possible. The first candidate folds the event's
-// resourceVersion into the sequence component ("<millis>-<rv>"); the next drops to an auto
-// sequence within the same millisecond ("<millis>-*", e.g. when two events share an
-// (ms, rv) — close deletecollections do — or rv is absent); the last is a fully
-// server-assigned ID for a genuinely out-of-order (older) millisecond.
-func streamIDCandidates(millis int64, rv string) []string {
-	const maxCandidates = 3 // <ms>-<rv>, <ms>-*, *
-	candidates := make([]string, 0, maxCandidates)
-	if seq, ok := streamSeqFromRV(rv); ok {
-		candidates = append(candidates, fmt.Sprintf("%d-%d", millis, seq))
-	}
-	return append(candidates, fmt.Sprintf("%d-*", millis), "*")
+// recordMain advances the idstate observability hash after a main-stream write: it moves the
+// high-water (lastRV/lastStreamID/lastEventAt) and bumps mainCount. Best-effort and
+// self-correcting — the stream's true top is authoritative, idstate is only a cache (§10) — so
+// its errors are swallowed rather than surfaced as a mirror failure.
+func (q *RedisByTypeStreamQueue) recordMain(ctx context.Context, idStateKey, rv, id string, millis int64) {
+	_ = q.client.HSet(ctx, idStateKey,
+		idStateLastRV, rv,
+		idStateLastStreamID, id,
+		idStateLastEventAt, millis,
+	).Err()
+	q.incrIDState(ctx, idStateKey, idStateMainCount)
 }
 
-// streamSeqFromRV parses a resourceVersion into the uint64 sequence component of a stream ID.
-// RV is the etcd revision (an int64 that fits a stream sequence); it is absent or non-numeric
-// on deletes, collection verbs, and shallow bodies, in which case there is no RV to fold.
-func streamSeqFromRV(rv string) (uint64, bool) {
-	if rv == "" {
-		return 0, false
-	}
-	seq, err := strconv.ParseUint(rv, 10, 64)
-	if err != nil {
-		return 0, false
-	}
-	return seq, true
+// recordRVMissing updates the idstate hash after an RV-less attach: lastStreamID/lastEventAt
+// advance to the attached entry but lastRV does not (the high-water RV is unchanged), and
+// rvMissingCount is bumped. Best-effort (see recordMain).
+func (q *RedisByTypeStreamQueue) recordRVMissing(ctx context.Context, idStateKey, id string, millis int64) {
+	_ = q.client.HSet(ctx, idStateKey,
+		idStateLastStreamID, id,
+		idStateLastEventAt, millis,
+	).Err()
+	q.incrIDState(ctx, idStateKey, idStateRVMissingCount)
+}
+
+// incrIDState bumps a best-effort idstate counter by one, swallowing the error (IR7/IR8).
+func (q *RedisByTypeStreamQueue) incrIDState(ctx context.Context, idStateKey, field string) {
+	_ = q.client.HIncrBy(ctx, idStateKey, field, 1).Err()
+}
+
+// isIDTooSmall reports whether an XADD error is the strong-key rejection of an explicit ID that
+// is not strictly greater than the stream top — for the RV-first stream, a strictly-older event.
+func isIDTooSmall(err error) bool {
+	return err != nil && strings.Contains(err.Error(), streamIDTooSmallMarker)
 }
 
 // entryValues builds the single per-event entry: the compact, scannable summary

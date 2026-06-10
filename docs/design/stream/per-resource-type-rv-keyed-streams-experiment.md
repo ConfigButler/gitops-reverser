@@ -27,11 +27,11 @@ core API group renders as `core`; a subresource is folded onto the resource
 segment with a dot (`deployments.scale`); any colon inside a name is scrubbed.
 
 ```text
-# audit — the event history (implemented: stream; the rest are reserved for "more on this")
+# audit — the event history (stream + late lane + idstate implemented; pending:rv reserved)
 gitops-reverser:<group>:<resource>:audit:stream        # XADD per canonical event   ← implemented
+gitops-reverser:<group>:<resource>:audit:late          # diagnostic late lane        ← implemented
+gitops-reverser:<group>:<resource>:audit:idstate       # high-water + counters       ← implemented
 gitops-reverser:<group>:<resource>:audit:pending:rv    # (reserved)
-gitops-reverser:<group>:<resource>:audit:late          # (reserved)
-gitops-reverser:<group>:<resource>:audit:state         # (reserved)
 
 # objects — the current cluster state, loaded when the type starts being watched
 gitops-reverser:<group>:<resource>:objects:items       # HASH identity → object JSON ← implemented
@@ -142,6 +142,12 @@ ordered history (RV is an etcd-global revision, not per-apiVersion).
   (worth seeing how big it gets).
 
 ### 5.2 Millisecond value → leads the stream ID
+
+> **Superseded.** The shipped ingestion re-keys the main stream to `<resourceVersion>-<subseq>`
+> (RV-first), not millisecond-first, and routes strictly-older events to `:audit:late` instead
+> of falling back to a looser ID. The millisecond is kept as the `stage_millis` field only. See
+> [audit-log-ingestion-and-ordering.md](audit-log-ingestion-and-ordering.md) §5/§9 for the
+> current design; the rest of this subsection records the original experiment.
 
 `event.StageTimestamp` is a `metav1.MicroTime`; use
 `event.StageTimestamp.Time.UnixMilli()`. This is "the millisecond value first":
