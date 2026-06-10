@@ -7,6 +7,7 @@
 > Captured: 2026-06-10
 > Owner: Simon
 > Related:
+> [demand-driven-type-materialization-lifecycle.md](demand-driven-type-materialization-lifecycle.md) (**which** types get a checkpoint and the Dormant→Syncing→Synced lifecycle that governs it — the demand layer beneath this doc),
 > [audit-log-ingestion-and-ordering.md](audit-log-ingestion-and-ordering.md) (the log producer / ordering / late-lane detail this doc leaves out),
 > [per-resource-type-rv-keyed-streams-experiment.md](per-resource-type-rv-keyed-streams-experiment.md) (the write-only prototype this consumes),
 > [../manifest/version2/dream.md](../manifest/version2/dream.md) (the origin),
@@ -21,7 +22,9 @@ GitTarget re-derives the API for itself — a per-reconcile streaming-list gathe
 ([`StreamClusterSnapshotForGitDest`](../../../internal/watch/snapshot_stream.go#L76)) plus
 a second always-open informer feed. This design replaces both with a single, standing,
 **type-keyed materialization of the API in Redis** and makes GitTarget reconcile a
-**consumer** of it. The API is captured **once per type** by two decoupled writers — an
+**consumer** of it. The API is captured **once per type** — and only for the types a GitTarget
+actually follows ([demand-driven-type-materialization-lifecycle.md](demand-driven-type-materialization-lifecycle.md))
+— by two decoupled writers — an
 always-on audit-webhook **log** and a periodic LIST **checkpoint** — and every GitTarget
 reconciles by **splicing the checkpoint with the log**, per type, into one commit. No
 object watch stays open. Content hashing is dropped: a per-type, RV-anchored ordering
@@ -130,13 +133,16 @@ load-bearing invariant that doc establishes, and that this reconcile relies on: 
 stream is strictly RV-ordered — we never knowingly insert an out-of-order event** — so the
 splice in §6 can fold by stream position.
 
-### DEC-4 — Checkpoint trigger = periodic **and** event-driven  *(satisfies R2, R5, R9)*
+### DEC-4 — Checkpoint trigger = demand-gated, periodic **and** event-driven  *(satisfies R2, R5, R9)*
 
-**Chosen.** Re-anchor a type's checkpoint on a timer (default ~1h) **and** on a deliberate
-type-set change: a GitTarget rule change that adds the type, or a catalog generation bump
-(a CRD installed/upgraded). The existing lifecycle edges
-([`TypeActivated`/`TypeRemoved`](../../../internal/typeset/lifecycle.go)) already fire the
-one-shot load; this generalizes them to "(re)checkpoint this type."
+**Chosen.** A checkpoint is built **only for a type a GitTarget claims** — not for every
+followable type — and once built is re-anchored on a timer (default ~1h) **and** on a
+deliberate type-set change (a claim that adds the type, or a catalog generation bump from a
+CRD installed/upgraded). The phase machine that governs this — `Dormant → Requested → Syncing
+→ Synced ⇄ Resyncing`, the claim/lease demand model, and the single periodic pass that both
+re-anchors the still-wanted and releases the no-longer-wanted — is specified in
+**[demand-driven-type-materialization-lifecycle.md](demand-driven-type-materialization-lifecycle.md)**.
+This doc assumes a `Synced` checkpoint exists for the type being reconciled.
 
 ### DEC-5 — RV-less events: best-effort in the log, correctness from the next checkpoint  *(satisfies R11, R13)*
 
@@ -227,7 +233,9 @@ stateDiagram-v2
 
 - **Checkpoint not `synced`, or Redis unreachable → hold, sweep nothing** (R11). An
   unobservable surface is never a trusted absence — the same guard as M12's degraded-
-  catalog hold.
+  catalog hold. (The `Syncing`/`Synced`/`Resyncing`/`Failing` phase vocabulary and its own
+  first-sync-hold vs fail-closed-re-anchor handling live in
+  [demand-driven-type-materialization-lifecycle.md](demand-driven-type-materialization-lifecycle.md) §7.)
 - **Log trimmed past a cursor → wait for / force the next checkpoint** and reconcile from
   it. Bounded by the checkpoint interval, so rare by construction.
 - **A type whose checkpoint LIST fails holds itself**; siblings keep reconciling (R9).
@@ -240,9 +248,11 @@ Ordered; each step is independently shippable and ends green. R0 (the write-only
 has landed.
 
 1. **R1 — Periodic, re-keyed checkpoint.**
-   - Promote one-shot [`mirrorTypeObjects`](../../../internal/watch/type_objects_mirror.go#L59)
-     to a scheduled re-anchor: per-type timer (default 1h) + the DEC-4 event triggers,
-     driven from the lifecycle drain goroutine so a large LIST never blocks the registry.
+   - The *trigger* — when [`mirrorTypeObjects`](../../../internal/watch/type_objects_mirror.go#L59)
+     runs for which type, demand-gated and re-anchored on the per-type timer + event triggers —
+     is owned by
+     [demand-driven-type-materialization-lifecycle.md](demand-driven-type-materialization-lifecycle.md)
+     (its L-3/L-4). This step is the *writer mechanics* the checkpoint phase drives.
    - Re-key the log to RV-first and add the diagnostic late lane — the full producer spec
      is [audit-log-ingestion-and-ordering.md](audit-log-ingestion-and-ordering.md) (its
      §9 baseline is the concrete change to

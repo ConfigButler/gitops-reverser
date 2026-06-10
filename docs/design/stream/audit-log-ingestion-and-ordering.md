@@ -198,19 +198,24 @@ with per-type counts and RV-gap data — exactly what to build and how to size i
 - **Output.** A recorded measurement that *justifies or refuses* each deferred improvement.
   No improvement ships without this evidence.
 
-**INV-1 — first result (2026-06-10, e2e).** First read of a populated keyspace; method and
-full numbers in
+**INV-1 — first result (2026-06-10, e2e).** First read of a populated keyspace; method,
+full numbers, and the per-resource breakdown in
 [per-resource-type-rv-keyed-streams-experiment.md](per-resource-type-rv-keyed-streams-experiment.md)
-§12. Late ratio ≈ **4.3%** (112 / 2609 events), almost all `older-than-high-water` (102; 10
-`rv-missing-before-high-water`; 0 `non-numeric-rv`). The RV-gap is **large and heavy-tailed**:
-min 1, median 168, mean 1141, max 4650 — **63% of late events are >100 revisions behind**.
-Per the decision criteria this is **not** the "small, bounded RV-gap" case that would justify
-the pre-sorter (§8.2): a sane reorder window catches only the ~14% with gap ≤10, while the
-dominant large-gap tail is bootstrap / controller-re-apply delivery the **checkpoint backstops**
-anyway (reconcile DEC-5). **Decision on this evidence: do not build the pre-sorter.** Caveats:
-the e2e cluster is bursty (fixture churn + k3s bootstrap) — a worst case for reordering — so
-re-measure on a steady-state cluster, and assess the >1-pod delta (§8.1) separately, before
-revisiting. (Single pod here, so §8.1 is untested by this run.)
+§12. Measured on a **clean cluster** (fresh etcd, empty Valkey) so cross-run contamination
+is ruled out: late ratio ≈ **3.2%** (49 / 1524 events), **all `older-than-high-water`** (0
+`rv-missing-before-high-water`; 0 `non-numeric-rv`) — confirmed genuine within-run reordering.
+The RV-gap is **large and heavy-tailed**: min 1, median 152, mean 686, max 2732 — **~52% of
+late events are >100 revisions behind** (the earlier non-clean multi-run agreed: 4.3%, median
+168, max 4650, 63% >100). The late traffic is dominated by **controller re-apply of old
+objects** (k3s bootstrap addons, kubelet service, coredns/metrics-server — gaps >1000) and
+**burst patches on test fixtures**; many entries are repeated touches at an unchanged body RV
+(benign no-op writes). Per the decision criteria this is **not** the "small, bounded RV-gap"
+case that would justify the pre-sorter (§8.2): a sane reorder window catches only the ~10%
+with gap ≤10, while the dominant large-gap mass is re-apply delivery the **checkpoint
+backstops** anyway (reconcile DEC-5). **Decision on this evidence: do not build the
+pre-sorter.** Caveats: the e2e cluster is bursty (fixture churn + k3s bootstrap) — a worst
+case for reordering — so re-measure on a steady-state cluster, and assess the >1-pod delta
+(§8.1) separately. (Single pod here, so §8.1 is untested by this run.)
 
 ## 8. Deferred improvements (build only when §7 proves the need)
 
@@ -268,7 +273,36 @@ only when the late lane shows the freshness loss is real and worth the latency.
 
 **When to build.** §7 shows a non-trivial late ratio with RV-gaps that fit a small window.
 Size the window to the observed gap distribution (e.g. p99 reorder delay), not a guessed
-30s.
+30s. **But first weigh INV-1 below** — the late traffic a window would actually capture, in
+the measured run, did not need capturing.
+
+**Measured (INV-1, 2026-06-10): the catchable late traffic is mostly no-op write
+amplification, not lost state.** Zooming into the two burst-patch types whose RV-gaps *do*
+fit a ~30s window (`core:secrets` and `…icecreamorders` bi-directional fixtures), every late
+entry was **`redundant`** — the main stream already held that object at an **equal-or-higher**
+RV. The reason is a guarantee, not a guess: **etcd bumps `resourceVersion` on every real
+mutation**, so several late events carrying an *identical* body RV (e.g. `bi-bob-order` ×4 all
+at `rv=2782`, with main already at 2782) mean **at most one was a real write; the rest are
+no-op patches** — a controller re-applying identical content. They get a fresh
+`stageTimestamp` but the object's *old* body RV, so they sort "older-than-high-water." A
+window would pull these into main, but the splice already has the latest state from main (and
+the no-op detection would drop them at the commit boundary anyway). Event-time skew was 0–10s
+and delivery latency ~0.01s — so the reorder is a tight concurrent burst, not slow delivery.
+**Net: for this workload the window would add latency + per-type buffers to suppress a
+diagnostic signal that costs the consumer nothing.** Re-measure on a steady-state cluster
+before reconsidering.
+
+**Order by RV — never pre-sort on a time field (a correctness trap).** It is tempting to buffer
+and sort by the envelope's server-assigned time (`stage_millis` = `StageTimestamp`, the only
+trustworthy clock we have). **Do not.** The same no-op-patch mechanism makes *time order and RV
+order actively disagree*: a no-op patch carries a **fresh timestamp** but a **stale body RV**,
+so the measured low-RV late events were stamped **0.3–9s *later*** than the higher-RV events
+they lost to (`rv=2723` after `rv=2959`). Sorting the buffer by `stage_millis` would place that
+stale no-op *after* the real write → the RV-folding splice (reconcile §6) would then apply the
+**stale body as last-writer, silently overwriting fresh state** — precisely the corruption the
+strong RV key (P2) exists to prevent. The principle: **a time field may bound the buffer
+*duration* (how long to hold), but RV — the etcd commit order — must remain the *sort key*.**
+No envelope time field is more authoritative than RV for ordering; they are strictly less so.
 
 ## 9. Baseline ingestion (the first cut, no Lua)
 

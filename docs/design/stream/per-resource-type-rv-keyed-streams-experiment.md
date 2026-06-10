@@ -11,8 +11,9 @@
 > `internal/watch/type_objects_mirror.go` on the `TypeActivated`/`TypeRemoved`
 > lifecycle edges; both wired always-on in `cmd/main.go`.
 > **First e2e observations measured 2026-06-10 — see §12.** Headline correction: the
-> late lane is *not* empty — it carries ~4.3% of events and is the §7 INV-1 signal
-> firing exactly as designed (it is *why* the main stream stays RV-ordered).
+> late lane is *not* empty — it carries ~3–4% of events and is the §7 INV-1 signal
+> firing exactly as designed (it is *why* the main stream stays RV-ordered). Confirmed on
+> a **clean cluster** (§12.0) — genuine within-run reordering, not cross-run contamination.
 > Captured: 2026-06-09
 > Updated: 2026-06-09
 > Owner: Simon
@@ -399,76 +400,113 @@ listed-and-stored for nothing.
 
 ## 12. First e2e observations (2026-06-10)
 
-First read of the populated keyspace, taken **read-only** with `valkey-cli` against the
-e2e Valkey (`valkey-e2e/valkey` in the k3d test cluster) after several `task test-e2e`
-runs. This is the experiment's deliverable (§2): measured, not guessed. The cluster is
-**bursty** — fixture create/delete plus k3s bootstrap — so these numbers are closer to a
-worst case for ordering than a steady-state cluster.
+Read-only inspection with `valkey-cli` against the e2e Valkey
+(`valkey-e2e/valkey` in the k3d test cluster). This is the experiment's deliverable (§2):
+measured, not guessed. Measured **twice** — see §12.0 — to rule out cross-run
+contamination. The cluster is **bursty** (fixture create/delete plus k3s bootstrap), so
+these numbers are closer to a worst case for ordering than a steady-state cluster.
 
-### 12.1 Totals
+### 12.0 Two runs — contamination ruled out
 
-| metric | value |
-|---|---|
-| distinct type streams (`__index__`) | 98 |
-| main-stream entries (Σ `XLEN :audit:stream`) | 2497 |
-| ↳ RV-bearing (idstate `mainCount`) | 2290 |
-| ↳ RV-less, attached to high-water (idstate `rvMissingCount`) | 207 |
-| objects snapshot items (Σ `HLEN :objects:items`) | 589 |
-| late-lane entries (Σ `XLEN :audit:late` = idstate `lateCount`) | 112 |
-| `__unknown__` stream | absent (every event carried an ObjectRef) |
+The first read came after several back-to-back `task test-e2e` runs against a Valkey that
+was **not** flushed between them. That raised a fair question: are the late entries just a
+*previous* run's high-water rejecting a *fresh* cluster's low RVs? So the experiment was
+repeated on a **clean cluster** — namespace torn down, fresh etcd (RVs reset to ~1), empty
+Valkey (new `run_id`, 7-min-old pod). The late lane **still filled, with the same profile**.
+With no stale high-water possible, that is decisive: the late entries are **genuine
+within-run out-of-order webhook delivery**, not contamination. The clean run is the
+authoritative measurement below; the multi-run figures corroborate it.
 
-The counters **reconcile exactly**: `mainCount 2290 + rvMissingCount 207 = 2497` main
-entries, and Σ`lateCount` = 112 late entries. The `idstate` cache is not drifting from
-the streams it summarizes.
+| metric | clean single run | earlier multi-run |
+|---|---:|---:|
+| distinct type streams (`__index__`) | 98 | 98 |
+| main-stream entries (Σ `XLEN :audit:stream`) | 1475 | 2497 |
+| ↳ RV-bearing (idstate `mainCount`) | 1354 | 2290 |
+| ↳ RV-less, attached to high-water (`rvMissingCount`) | 121 | 207 |
+| objects snapshot items (Σ `HLEN :objects:items`) | 599 | 589 |
+| late-lane entries (= idstate `lateCount`) | 49 | 112 |
+| late ratio (late / all events) | **~3.2%** | ~4.3% |
+
+The counters **reconcile exactly** both runs: `mainCount + rvMissingCount = ` main entries
+(1354 + 121 = 1475), and Σ`lateCount` = late-lane length. The `idstate` cache is not
+drifting from the streams it summarizes.
 
 ### 12.2 What held up
 
-- **Main stream is strictly RV-ordered.** IDs are `<rv>-<subseq>` (e.g. secrets top
-  `6485-0`), not millisecond-first — the §5.2 re-key landed and holds.
-- **Objects snapshot loads cleanly** per activated type (serviceaccounts 66, secrets 36,
-  replicasets 22, services 20 items …), keyed to the type and version-agnostic.
-- **RV availability is high** — ~91.7% of events carry a usable RV. The ~8.3% RV-less
-  (217 = 207 attached-to-main + 10 to late) are deletes / collection verbs, placed by the
-  declared policy (§5.3 / ingestion IR5), never crashing.
-- **Zero `non-numeric-rv`.** Even the wardle aggregated apiserver
-  (`wardle.example.com:flunders`) emitted numeric etcd RVs in this run.
+- **Main stream is strictly RV-ordered.** IDs are `<rv>-<subseq>`, not millisecond-first —
+  the §5.2 re-key landed and holds.
+- **Objects snapshot loads cleanly** per activated type (serviceaccounts, secrets,
+  replicasets, services …), keyed to the type and version-agnostic.
+- **RV availability is high** — ~92% of events carry a usable RV. The RV-less remainder
+  (deletes / collection verbs) is placed by the declared policy (§5.3 / ingestion IR5),
+  never crashing.
+- **Zero `non-numeric-rv`** in both runs. Even the wardle aggregated apiserver
+  (`wardle.example.com:flunders`) emitted numeric etcd RVs.
 
 ### 12.3 The late lane is NOT empty — and that is the point
 
-Correcting the field impression that "there were no late streams": there are **112**,
-~**4.3%** of all events. They are almost entirely `older-than-high-water` (102), plus
-10 `rv-missing-before-high-water` and 0 `non-numeric-rv`. This is the late lane
-**working as designed** — diverting genuinely out-of-order webhook delivery is exactly
-*why* the main stream stays RV-clean (ingestion doc P1/P2). It is also the §7 **INV-1**
-signal firing, so the figures below are an INV-1 result.
+Correcting the field impression that "there were no late streams": the clean run has **49**,
+~**3.2%** of all events, **all `older-than-high-water`** (0 `rv-missing-before-high-water`,
+0 `non-numeric-rv`). This is the late lane **working as designed** — diverting genuinely
+out-of-order webhook delivery is exactly *why* the main stream stays RV-clean (ingestion
+doc P1/P2). It is the §7 **INV-1** signal firing.
 
-Late-heavy types (late : stream): `k3s.cattle.io:addons` 22:26,
-`bi-directional…icecreamorders` 16:29, `apiextensions…customresourcedefinitions` 10:24,
-`wardle…flunders` 8:30, `core:secrets` 36:204.
-
-**RV-gap distribution** (`last_rv − resource_version`, over the 102
-`older-than-high-water` entries):
+**RV-gap distribution** (`last_rv − resource_version`, clean run):
 
 | stat | value | | bucket | count |
 |---|---:|---|---|---:|
-| min | 1 | | ≤2 (trivial skew) | 7 |
-| median | 168 | | 3–10 | 7 |
-| mean | 1141 | | 11–100 | 24 |
-| max | 4650 | | >100 | 64 |
+| min | 1 | | ≤2 (trivial skew) | 1 |
+| median | 152 | | 3–10 | 4 |
+| mean | 686 | | 11–100 | 19 |
+| max | 2732 | | >100 | 26 |
 
-The tail is **large and heavy** — 63% of late events are >100 revisions behind, not
-1–2-revision skew. Example: `k3s…addons/local-storage` arrived at `rv=383` when the
-addons high-water was already `2381` (gap ~2000) — a controller re-apply of an old
-object delivered long after the type advanced.
+The tail is **large and heavy** — ~52% of late events are >100 revisions behind, not
+1–2-revision skew (the earlier multi-run agreed: median 168, max 4650, 63% >100).
 
-### 12.4 Implication for the deferred pre-sorter (ingestion §7 / §8.2)
+### 12.4 What the late entries actually *are* (which resources, and why)
 
-This data **argues against** building the pre-sorter for now. A bounded reorder window
-only catches small gaps; here only ~14% of late events (gap ≤10) are window-catchable,
-while 63% are >100 revisions behind — bootstrap / re-apply replays a window of any sane
-size would miss. Those are exactly what the **checkpoint backstop** ([reconcile doc
-DEC-5](api-source-of-truth-reconcile.md)) is for: the next `LIST` already holds the
-object's current state, so the late event never needs to reach main. Net: the late lane
-is **correct, observable, and backstopped** — **no pre-sorter is justified by this run.**
-Re-measure on a steady-state cluster (and check the >1-pod delta, ingestion §8.1)
-before revisiting.
+The clean-run late entries fall into two mechanisms, plus a tiny trivial-skew tail:
+
+- **A — controller re-apply of old objects (large gaps, >1000).** `k3s.cattle.io:addons`
+  (11 entries, `update`, gaps ~1785–2031: every k3s bootstrap addon —
+  `local-storage`, `ccm`, `metrics-server-*`, `auth-*`, …), `core:services`
+  (`kube-system/kubelet`, 3× the **same** body `rv=1438`, gaps 1557–2732), `apps:deployments`
+  (`coredns`, `metrics-server`, gaps ~1500). These are old objects (low body RV) re-touched
+  by their controllers and **delivered long after the type's high-water advanced**. No
+  reorder window of sane size catches a 2000-revision-old re-apply.
+- **B — burst writes on test fixtures (moderate gaps, 36–409).** `core:secrets` (19, mostly
+  `patch` on the bi-directional fixtures — `git-creds-*`, `sops-age-key`, `bi-secret`, plus
+  one `deletecollection`) and `bi-directional…icecreamorders` (6, `patch` on the alice/bob
+  orders). The test rapid-fires patches across many objects of one type, so per-type delivery
+  order scrambles vs. RV order.
+- **Trivial skew (≤10, window-catchable):** only ~5 entries —
+  `discovery…endpointslices` (gaps 9, 12), a CRD (5), `core:configmaps`/`coredns` (3), a
+  helmchart CRD (1).
+
+**Cross-cutting — these are no-op write amplification, and main already supersedes them.**
+Many late entries are *repeated touches of an object whose body `resourceVersion` never
+moved* — `kubelet` `rv=1438` ×3, `bob-order` `rv=2782` ×4, several secrets at the same RV ×2.
+Because **etcd bumps `resourceVersion` on every real mutation**, several events at an identical
+body RV mean **at most one was a real write; the rest are no-op patches** (a controller
+re-applying identical content). Per-object check of every bi-directional `core:secrets` /
+`…icecreamorders` late entry confirmed each was **`redundant`** — the main stream already held
+the object at an **equal-or-higher** RV — so the splice consumer loses no freshness, and the
+writer's no-op detection would drop them anyway. Event-time skew was 0–10s and delivery latency
+~0.01s (the reorder is a tight concurrent burst, not slow delivery). Two consequences for the
+pre-sorter, detailed in **ingestion [§8.2](audit-log-ingestion-and-ordering.md)**: a ≤30s window
+*would* catch mechanism B but would suppress a signal that costs the consumer nothing; and
+**you must never make a time field the sort key** — a no-op patch carries a *fresh* timestamp
+with a *stale* body RV, so time-ordering would let stale state overwrite fresh (RV is the only
+trustworthy order; time may bound the buffer, not order it).
+
+### 12.5 Implication for the deferred pre-sorter (ingestion §7 / §8.2)
+
+This data **argues against** building the pre-sorter for now. A bounded reorder window only
+catches small gaps; here only ~10% of late events (gap ≤10) are window-catchable, while the
+dominant mass is large-gap controller re-applies (mechanism A) a window of any sane size
+would miss. Those are exactly what the **checkpoint backstop** ([reconcile doc
+DEC-5](api-source-of-truth-reconcile.md)) is for: the next `LIST` already holds the object's
+current state, so the late event never needs to reach main. Net: the late lane is
+**correct, observable, and backstopped** — **no pre-sorter is justified by these runs.**
+Re-measure on a steady-state cluster (and check the >1-pod delta, ingestion §8.1) before
+revisiting.
