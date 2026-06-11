@@ -21,6 +21,7 @@ package watch
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -170,6 +171,31 @@ func (r *EventRouter) FinalizeGitTargetWindow(
 		return git.FinalizeResult{}, fmt.Errorf("timed out finalizing window for GitTarget %s/%s",
 			gitTargetNamespace, gitTargetName)
 	}
+}
+
+// FinalizeAtWatermark is the CommitRequest barrier primitive (C-B1,
+// docs/design/stream/canonical-stream-retirement.md §6): it drains the GitTarget's
+// per-type audit tails to the rv watermark — bounded by FinalizeBarrierTimeout — and then
+// finalizes the open window. Because each tail enqueues onto the GitTarget's single FIFO
+// BranchWorker, a finalize enqueued after the drain is guaranteed to include every
+// pre-watermark upsert already delivered to the streams. barrierReached=false reports the
+// bounded degrade (Option A, commitrequest-barrier-timeout-decision.md): the finalize
+// proceeded anyway and the caller must surface the missed guarantee in status.
+func (r *EventRouter) FinalizeAtWatermark(
+	ctx context.Context,
+	author, gitTargetName, gitTargetNamespace, message, rv string,
+) (git.FinalizeResult, bool, error) {
+	barrierReached := true
+	if r.WatchManager != nil && strings.TrimSpace(rv) != "" {
+		gitDest := types.NewResourceReference(gitTargetName, gitTargetNamespace)
+		barrierReached = r.WatchManager.DrainTailsToWatermark(ctx, gitDest, rv, FinalizeBarrierTimeout)
+		if !barrierReached {
+			r.Log.Info("finalize watermark barrier timed out; finalizing without the ordering guarantee",
+				"gitTarget", gitTargetNamespace+"/"+gitTargetName, "watermarkRV", rv)
+		}
+	}
+	result, err := r.FinalizeGitTargetWindow(ctx, author, gitTargetName, gitTargetNamespace, message)
+	return result, barrierReached, err
 }
 
 // recordBackgroundResyncFailure counts a fire-and-forget resync whose apply failed or

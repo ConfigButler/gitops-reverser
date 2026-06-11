@@ -506,6 +506,16 @@ func (q *RedisByTypeStreamQueue) streamTopRV(ctx context.Context, streamKey stri
 	return rv
 }
 
+// TypeAuditHighWater returns the resourceVersion at a type's main-stream high-water mark, or ""
+// when the stream has no entries (or is unreachable). It is the observation half of the
+// CommitRequest watermark barrier (canonical-stream-retirement.md §6): a stream whose high-water
+// is below the watermark has nothing pre-watermark left to wait for once its tail is drained.
+// Best-effort by design — a blank answer just denies the barrier its quiet-type shortcut.
+func (q *RedisByTypeStreamQueue) TypeAuditHighWater(ctx context.Context, group, resource string) string {
+	streamKey := typeBaseKey(q.prefix, group, resource, "") + byTypeAuditStreamSuffix
+	return q.streamTopRV(ctx, streamKey)
+}
+
 // xaddID appends one entry under an explicit (possibly partial, e.g. "<rv>-*") ID, applying the
 // approximate MaxLen bound when configured. It returns the server-assigned ID.
 func (q *RedisByTypeStreamQueue) xaddID(
