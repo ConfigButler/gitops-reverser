@@ -342,67 +342,68 @@ operation coverage.
 
 The table is the resident answer to "what does this GitTarget watch?" and feeds:
 
-- informer start/stop decisions;
-- streaming snapshot tasks;
-- effective rule-set hashing;
-- resync trigger decisions.
+- the demand `Declare` — the set of types the GitTarget claims for materialization;
+- the per-type splice's namespace scope — which of a type's objects this GitTarget mirrors;
+- the per-type audit tail's fan-out — which GitTargets a live event routes to.
 
 ---
 
-## Watch, Snapshot, and Resync
+## Watch, Checkpoint, and Reconcile
+
+> **Updated for the api-source-of-truth model (R3, landed 2026-06-11).** The long-lived object
+> informers and the per-reconcile streaming snapshot gather are **gone**; desired state now comes
+> from a per-type **checkpoint + audit-log splice**. For the full picture and the bootstrap
+> walk-through see [design/stream/architecture-and-bootstrap.md](design/stream/architecture-and-bootstrap.md)
+> and [design/stream/api-source-of-truth-reconcile.md](design/stream/api-source-of-truth-reconcile.md).
 
 - **Manager**: [internal/watch/manager.go](../internal/watch/manager.go)
-- **Streaming snapshot**: [internal/watch/snapshot_stream.go](../internal/watch/snapshot_stream.go)
+- **Checkpoint fill (LIST)**: [internal/watch/type_objects_mirror.go](../internal/watch/type_objects_mirror.go)
+- **Per-type audit tail (freshness)**: [internal/watch/audit_tail.go](../internal/watch/audit_tail.go)
+- **Splice (checkpoint + log → desired)**: [internal/queue/redis_type_splice.go](../internal/queue/redis_type_splice.go)
 - **Router resync path**: [internal/watch/event_router.go](../internal/watch/event_router.go)
 - **Worker resync apply**: [internal/git/resync_flush.go](../internal/git/resync_flush.go)
 
-The watch manager is a controller-runtime `Runnable`. Live audit events are authoritative, but the
-watch manager owns discovery, dynamic informers, and resync.
+The watch manager is a controller-runtime `Runnable`. It owns **type-level** discovery, the demand
+`Materializer`, the checkpoint driver, the per-type audit tails, and the splicer. There are **no
+object-watch informers** — the only watch it keeps is the type-level discovery watch (CRDs /
+APIServices). The API is captured **once per type**, only for the types a GitTarget claims, by two
+decoupled writers: an always-on audit-webhook **log** (`:audit:stream`) and a periodic LIST
+**checkpoint** (`:objects:items` @ `:objects:rv`).
 
-On startup it bootstraps the RuleStore from existing rules before its first rule-change reconcile.
-Then it refreshes the API catalog, updates the TypeRegistry, builds watched-type tables, and starts
-the required informers.
+On startup it bootstraps the RuleStore from existing rules, replays durable checkpoints into the
+Materializer (so a restart resumes serving without re-listing), refreshes the API catalog, updates
+the TypeRegistry, and builds watched-type tables.
 
 ### Rule-Change Reconcile
 
-When a WatchRule, ClusterWatchRule, GitTarget, GitProvider, CRD, or APIService change requires a new
-watch plan, the manager:
+A WatchRule / ClusterWatchRule / GitTarget / CRD / APIService change reaches a GitTarget through the
+**GitTarget controller**, which `Watches` those objects and re-enqueues the affected GitTarget. On
+reconcile the GitTarget re-`Declare`s its complete watched-type set to the Materializer; a type a new
+rule starts watching is claimed, materialized (checkpoint), and backfilled via the splice.
+`Manager.ReconcileForRuleChange` itself now only refreshes the API-resource catalog and the
+watched-type tables — there is no longer a whole-GitTarget rule-change snapshot gather.
 
-1. Refreshes discovery and the TypeRegistry.
-2. Rebuilds affected watched-type tables.
-3. Starts or stops dynamic informers for added/removed watched GVRs.
-4. Computes per-target rule-set hashes.
-5. Triggers a resync for targets whose effective watched set changed.
+### Checkpoint + Splice (the desired set)
 
-Rule-change resync is fire-and-forget after the snapshot is gathered and enqueued. Initial
-GitTarget snapshot sync waits for the worker result so the GitTarget status can report stats.
-
-### Streaming Snapshot
-
-`StreamClusterSnapshotForGitDest` gathers a complete desired set for one GitTarget using
-Kubernetes streaming-list watch:
-
-- `sendInitialEvents=true`
-- `resourceVersionMatch=NotOlderThan`
-- `allowWatchBookmarks=true`
-
-Each watched type/namespace stream emits synthetic initial `ADDED` events and then an
-initial-events-end bookmark. The snapshot is accepted only after every stream reaches its bookmark.
-If any stream errors or closes early, the whole gather aborts and no sweep is enqueued.
-
-For API servers that cannot stream initial events, the code falls back to a consistent per-type
-LIST. This fallback is narrow; partial watch failures still fail closed.
+Desired state for a reconcile is produced by the **splice**: it reads a type's checkpoint pinned at
+revision `R` and folds in every audit-log entry strictly after `R`, scoped to the GitTarget's
+namespaces, into the complete desired set. The checkpoint LIST uses a streaming-list watch
+(`sendInitialEvents=true`, `resourceVersionMatch=NotOlderThan`, `allowWatchBookmarks=true`) and
+falls back to a consistent LIST for servers that cannot stream; a missing checkpoint **fails closed**
+(the reconcile holds rather than sweeping against nothing). Between checkpoints, a per-type **audit
+tail** applies each new log entry as an incremental upsert/delete for freshness.
 
 ### Mark-and-Sweep Resync
 
-The BranchWorker applies resync by scanning the GitTarget subtree and building a manifest plan:
+The BranchWorker applies a reconcile by scanning the GitTarget subtree and building a manifest plan
+(this write side is **unchanged**):
 
 - desired resources are upserted through the same content-derived path as live writes;
-- existing managed documents that are watched but absent from the complete snapshot are deleted;
+- existing managed documents that are watched but absent from the desired set are deleted;
 - untracked, non-Kubernetes, unresolved, or unsafe YAML is left alone according to analyzer policy;
 - nothing is committed if the apply cannot complete safely.
 
-An empty desired set is authoritative only because the gather completed for every watched type.
+An empty desired set is authoritative only because the **checkpoint** completed for that type.
 
 ---
 

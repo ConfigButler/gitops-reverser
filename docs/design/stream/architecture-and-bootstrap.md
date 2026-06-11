@@ -256,7 +256,13 @@ sequenceDiagram
    `(provider, branch)` exists and registers the `GitTargetEventStream` — *before* declaring
    demand, so the very first reconcile/event has a writer to land on.
 8. **Declare.** `DeclareForGitTarget` resolves the GitTarget's complete watched-type set and
-   asserts it to the Materializer as one lease.
+   asserts it to the Materializer as one lease. **This is also the rule-change path:** the
+   GitTarget controller `Watches` WatchRules and ClusterWatchRules, so a rule added or changed
+   *after* a GitTarget is Ready re-enqueues the GitTarget, which re-runs the gates and
+   re-`Declare`s — that is how a type a new rule starts watching gets claimed and backfilled.
+   (`Manager.ReconcileForRuleChange` itself now only refreshes the API-resource catalog and the
+   watched-type tables; the old whole-GitTarget rule-change snapshot is gone, so the re-Declare
+   below is what drives the backfill.)
 9. **Two openings:**
    - *Type already Synced* (boot-restored, or another GitTarget already materialized it): the
      Declare path drives **one** backfill reconcile for this GitTarget and starts its tail,

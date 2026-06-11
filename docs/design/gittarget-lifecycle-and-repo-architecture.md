@@ -1,5 +1,15 @@
 # GitTarget Lifecycle And Repo Architecture
 
+> ## ⚠️ Partially superseded by R3 (2026-06-11)
+> The **`SnapshotSynced` condition and the `evaluateSnapshotGate` bootstrap gate referenced
+> throughout this doc were removed** in the api-source-of-truth rework (R3). The current GitTarget
+> readiness is: **`Validated` → ensure BranchWorker + register the `GitTargetEventStream` → `Ready`**;
+> there is no whole-GitTarget initial snapshot to gate on. Per-type serviceability is now the
+> **Materializer phase** (`Dormant → Requested → Syncing → Synced`), surfaced in
+> `GitTargetStatus.Materialization`. The repo-creation, SOPS-age-Secret, and bootstrap-template
+> sections below remain accurate. For the current readiness + bootstrap model read
+> [stream/architecture-and-bootstrap.md](stream/architecture-and-bootstrap.md).
+
 ## Purpose
 
 This document describes two things:

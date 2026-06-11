@@ -109,13 +109,13 @@ Metrics are declared and registered in
 | `audit_join_*` (parked/emitted/duplicate/shallow/body_late) | [audit_joiner.go](../../internal/webhook/audit_joiner.go) | Keep |
 | `audit_join_skew_seconds`, `audit_official_gate_wait_seconds` | [audit_joiner.go](../../internal/webhook/audit_joiner.go) | Keep |
 | `events_received_total` | nowhere (only tests) | **Delete — dead** |
-| `events_processed_total` | [informers.go:109](../../internal/watch/informers.go#L109) | **Delete — misleading** |
+| `events_processed_total` | informers.go:109 | **Delete — misleading** |
 | consumer pipeline output | — | **Missing — add** |
 
 `events_processed_total` is misleading on two counts: the name implies the
 ingestion pipeline but it is only touched by the watch/informer path, and that
 path increments it even when `AuditLiveEventsEnabled` skips routing entirely
-([informers.go:108-122](../../internal/watch/informers.go#L108-L122)) — so it
+(informers.go:108-122) — so it
 counts events that were never processed.
 
 ## Changes
@@ -301,12 +301,12 @@ those test references too.
 ### 8. Delete misleading watcher-path queue metrics
 
 Remove the `EventsProcessedTotal` instrument and its registration. Delete its
-use in [informers.go:108-111](../../internal/watch/informers.go#L108-L111).
+use in informers.go:108-111.
 `ObjectsScannedTotal` on the adjacent line already covers "objects seen by the
 informer path"; the audit pipeline is now covered by change 2.
 
 Delete `GitCommitQueueSize` too. Its current production increment is the same
-watcher-path line in [informers.go:110](../../internal/watch/informers.go#L110):
+watcher-path line in informers.go:110:
 it increments before the `AuditLiveEventsEnabled` skip, and it is not paired
 with a real queue-boundary decrement. A queue-depth gauge is useful only when
 owned by the queue it describes; reintroduce one at that boundary in separate

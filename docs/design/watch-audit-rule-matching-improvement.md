@@ -44,7 +44,7 @@ Implemented:
 - namespaced `WatchRule` matching is now namespace-aware in `RuleStore.GetMatchingRules`
   - [store.go](/workspaces/gitops-reverser/internal/rulestore/store.go:244)
 - both live routing paths now pass namespace context into the matcher
-  - watch/informer path: [informers.go](/workspaces/gitops-reverser/internal/watch/informers.go:63)
+  - watch/informer path: informers.go
   - audit consumer path: [redis_audit_consumer.go](/workspaces/gitops-reverser/internal/queue/redis_audit_consumer.go:317)
 - watch-manager startup now bootstraps the in-memory `RuleStore` from existing `WatchRule` and
   `ClusterWatchRule` objects before initial reconcile
@@ -151,16 +151,16 @@ turn green when the fix lands. Guard-rail tests already pass (green) and protect
 
 | Test | File | Asserts |
 |---|---|---|
-| `TestHandleEvent_NamespacedWatchRuleMustNotRouteForeignNamespaceObject` | [informers_test.go](/workspaces/gitops-reverser/internal/watch/informers_test.go) | watch path must NOT route a `Service` from `gitops-reverser` via a `WatchRule` in `tilt-playground` |
+| `TestHandleEvent_NamespacedWatchRuleMustNotRouteForeignNamespaceObject` | informers_test.go | watch path must NOT route a `Service` from `gitops-reverser` via a `WatchRule` in `tilt-playground` |
 | `TestProcessMessage_NamespacedWatchRuleMustNotRouteForeignNamespaceAuditEvent` | [redis_audit_consumer_test.go](/workspaces/gitops-reverser/internal/queue/redis_audit_consumer_test.go) | audit path must NOT route a `Service` from `gitops-reverser` via a `WatchRule` in `tilt-playground` |
-| `TestHandleEvent_MixedRules_OnlyClusterWatchRuleMatchesForeignNamespace` | [informers_test.go](/workspaces/gitops-reverser/internal/watch/informers_test.go) | event from `ns-b`: `WatchRule` in `ns-a` must NOT match, `ClusterWatchRule` MUST match |
+| `TestHandleEvent_MixedRules_OnlyClusterWatchRuleMatchesForeignNamespace` | informers_test.go | event from `ns-b`: `WatchRule` in `ns-a` must NOT match, `ClusterWatchRule` MUST match |
 | `TestProcessMessage_MixedRules_OnlyClusterWatchRuleMatchesForeignNamespace` | [redis_audit_consumer_test.go](/workspaces/gitops-reverser/internal/queue/redis_audit_consumer_test.go) | same as above via audit path |
 
 #### Guard-rail tests (green — pass today, protect against over-correction)
 
 | Test | File | Asserts |
 |---|---|---|
-| `TestHandleEvent_NamespacedWatchRuleRoutesOwnNamespaceObject` | [informers_test.go](/workspaces/gitops-reverser/internal/watch/informers_test.go) | watch path MUST route a `Service` from the same namespace as the `WatchRule` |
+| `TestHandleEvent_NamespacedWatchRuleRoutesOwnNamespaceObject` | informers_test.go | watch path MUST route a `Service` from the same namespace as the `WatchRule` |
 | `TestProcessMessage_NamespacedWatchRuleRoutesOwnNamespaceAuditEvent` | [redis_audit_consumer_test.go](/workspaces/gitops-reverser/internal/queue/redis_audit_consumer_test.go) | audit path MUST route a `Service` from the same namespace as the `WatchRule` |
 
 #### RuleStore contract tests (skipped — waiting for API change)
@@ -176,7 +176,7 @@ turn green when the fix lands. Guard-rail tests already pass (green) and protect
   leaves namespace filtering to callers
   - [store.go](/workspaces/gitops-reverser/internal/rulestore/store.go:242)
 - the live watch path does not perform a namespace check after calling `GetMatchingRules`
-  - [informers.go](/workspaces/gitops-reverser/internal/watch/informers.go:63)
+  - informers.go
 - the audit consumer also does not perform a namespace check after calling `GetMatchingRules`
   - [redis_audit_consumer.go](/workspaces/gitops-reverser/internal/queue/redis_audit_consumer.go:303)
 
@@ -457,7 +457,7 @@ These are the likely first-pass implementation touchpoints.
 ### Routing and matching
 
 - [internal/rulestore/store.go](/workspaces/gitops-reverser/internal/rulestore/store.go)
-- [internal/watch/informers.go](/workspaces/gitops-reverser/internal/watch/informers.go)
+- internal/watch/informers.go
 - [internal/queue/redis_audit_consumer.go](/workspaces/gitops-reverser/internal/queue/redis_audit_consumer.go)
 - [internal/watch/manager.go](/workspaces/gitops-reverser/internal/watch/manager.go)
 
@@ -472,7 +472,7 @@ These are the likely first-pass implementation touchpoints.
 
 Unit tests (red/green TDD — see "Red/Green Test Inventory" above for full matrix):
 
-- [internal/watch/informers_test.go](/workspaces/gitops-reverser/internal/watch/informers_test.go) — 3 new tests (2 red, 1 green guard rail)
+- internal/watch/informers_test.go — 3 new tests (2 red, 1 green guard rail)
 - [internal/queue/redis_audit_consumer_test.go](/workspaces/gitops-reverser/internal/queue/redis_audit_consumer_test.go) — 3 new tests (2 red, 1 green guard rail)
 - [internal/watch/manager_startup_test.go](/workspaces/gitops-reverser/internal/watch/manager_startup_test.go) — 2 new tests (both red)
 - [internal/rulestore/store_test.go](/workspaces/gitops-reverser/internal/rulestore/store_test.go) — 2 new tests (skipped, waiting for API change)

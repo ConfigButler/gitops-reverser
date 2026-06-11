@@ -101,7 +101,7 @@ EnqueueResync(Desired)       # one worker request
 Grounded in code:
 
 - the gather and the join are
-  [`Manager.StreamClusterSnapshotForGitDest`](../../../internal/watch/snapshot_stream.go)
+  `Manager.StreamClusterSnapshotForGitDest`
   and `joinSnapshotStreams`; the all-or-nothing rule is the `firstErr`/`cancel()`
   there;
 - the type set is re-resolved on every gather by `resolveSnapshotGVRs`
@@ -111,13 +111,13 @@ Grounded in code:
   one `BuildPlan` mark-and-sweep, one commit;
 - **steady state is a second, separate pipeline**: long-lived shared informers
   ([`startInformersForGVRs`](../../../internal/watch/manager.go),
-  [`addHandlers`](../../../internal/watch/informers.go)) feed the
+  `addHandlers`) feed the
   `GitTargetEventStream`, which **buffers** live events while the snapshot runs
   (`BeginReconciliation` / `OnReconciliationComplete` in
   [`event_router.go`](../../../internal/watch/event_router.go)) and flushes them
   after;
 - **change detection is content-hash dedup**: `isDuplicateContent`
-  ([`informers.go`](../../../internal/watch/informers.go)) and
+  (`informers.go`) and
   `computeEventHash` / `processedEventHashes`
   ([`git_target_event_stream.go`](../../../internal/reconcile/git_target_event_stream.go))
   both sha256 the sanitized YAML to drop status-only churn.
@@ -429,7 +429,7 @@ It collapses the two subsystems M8 left separate:
   the tail, after the bookmark.
 - **The informer pipeline for reconciled types is subsumed.**
   [`startInformersForGVRs`](../../../internal/watch/manager.go) +
-  [`addHandlers`](../../../internal/watch/informers.go) exist to deliver live
+  `addHandlers` exist to deliver live
   events; a merged per-type stream delivers them itself. (The informer cache also
   gives `DeletedFinalStateUnknown` handling and shared fan-out — see the fan-out
   bullet — so this is a careful swap, not a delete.)
@@ -462,7 +462,7 @@ milestone, sequenced well after per-type reconcile is proven.
 
 The two content hashes today are:
 
-- `isDuplicateContent` ([informers.go](../../../internal/watch/informers.go)) —
+- `isDuplicateContent` (informers.go) —
   drops status-only informer churn before it is routed;
 - `computeEventHash`/`processedEventHashes`
   ([git_target_event_stream.go](../../../internal/reconcile/git_target_event_stream.go))

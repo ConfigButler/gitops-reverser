@@ -523,7 +523,7 @@ dependency; it does not exist yet. Independent of Track A.
 > 4. **Deletes are content-first, and the mapper builds the writer's inventory in
 >    production.** A `DELETE` is matched by manifest identity when it still carries its
 >    object — and the live watch path *does* carry the deleted object
->    ([`informers.go`](../../../internal/watch/informers.go)), so a manifest moved off
+>    (`informers.go`), so a manifest moved off
 >    its canonical path is deleted correctly in steady state even before any mapper. A
 >    GVR-only delete (no object) is resolved through `PlanDelete` over the resolved
 >    resource-identity index. The live-catalog mapper is now injected end to end —
@@ -598,7 +598,7 @@ dependency; it does not exist yet. Independent of Track A.
 > handshake is gone. Three pieces replace it:
 >
 > 1. **The streaming-list snapshot gatherer** —
->    [`watch.Manager.StreamClusterSnapshotForGitDest`](../../../internal/watch/snapshot_stream.go)
+>    `watch.Manager.StreamClusterSnapshotForGitDest`
 >    opens one Kubernetes streaming-list watch per watched `(GVR, namespace)` with
 >    `sendInitialEvents=true`, `resourceVersionMatch=NotOlderThan`,
 >    `allowWatchBookmarks=true`, folds every initial `ADDED` into the desired set, and

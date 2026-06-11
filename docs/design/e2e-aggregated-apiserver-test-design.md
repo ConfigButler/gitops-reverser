@@ -486,7 +486,7 @@ rest of the suite.
 ### S5 — Watch/Informer: snapshot reconcile captures existing Flunders
 
 **What it validates:** informers can list+watch aggregated API resources for snapshot/reconcile,
-exercising [internal/watch/informers.go](../../internal/watch/informers.go).
+exercising internal/watch/informers.go.
 
 **Action:**
 1. Create two Flunder resources **before** the WatchRule exists

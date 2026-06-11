@@ -1,7 +1,18 @@
 # Where the events flow today — the dual-path picture and how close R3 is
 
-> Status: **explainer / snapshot after R1 + R2 landed** (commit `3d249e3`). Companion to the
-> three design docs; this one is the "you are here" map, not a spec.
+> ## ⚠️ HISTORICAL — the cutover is COMPLETE (R3 landed 2026-06-11)
+> This doc captured the **dual-path** moment *during* the cutover (R1+R2 landed, R3 pending).
+> **R3 ("the great deletion") has since landed**, so the "OLD live-truth path" described below
+> — the long-lived object informers, the single-canonical-stream resource fan, the
+> RECONCILING handover, the per-reconcile gather, and content hashing — **no longer exists**
+> (`informers.go` and `snapshot_stream.go` are deleted; the AuditConsumer now only handles
+> CommitRequest finalize + `/scale`). The per-type checkpoint+log **splice** (correctness) and
+> the per-type **audit tail** (freshness) are now the **sole** live-truth path. This file is
+> kept as the cutover record; **for the current single-path architecture read
+> [architecture-and-bootstrap.md](architecture-and-bootstrap.md).**
+>
+> Original status: **explainer / snapshot after R1 + R2 landed** (commit `3d249e3`). Companion
+> to the three design docs; this one is the "you are here" map, not a spec.
 > Captured: 2026-06-10
 > Related:
 > [api-source-of-truth-reconcile.md](api-source-of-truth-reconcile.md) (the plan + §5.1 demolition list),
@@ -10,15 +21,17 @@
 
 ## 1. One paragraph
 
-Right now **two pipelines run at once**. The *old* one — long-lived object **informers** plus the
-single-canonical-stream **AuditConsumer**, both feeding one `GitTargetEventStream` (deduped by a
-content hash), with a per-reconcile streaming **gather** for bootstrap/rule-change — is still the
-live truth path. The *new* one — the per-type `:audit:stream` log + the demand-gated `:objects`
-**checkpoint**, folded by the **splice** into a per-type reconcile — is fully built and running
-**beside** it. Every mutating event is **already** mirrored into the new per-type streams, and the
-splice **already** reconciles off them; what is left (R3, "the great deletion") is to **remove the
-old machinery** so the splice is the *sole* live feed — and to harden the splice's freshness wake,
-because the moment the old path is gone it loses its backstop.
+> *(Historical — describes the dual-path moment during the cutover. R3 has since landed; the old
+> path described here is now deleted. See the banner above.)*
+
+At the time of capture **two pipelines ran at once**. The *old* one — long-lived object
+**informers** plus the single-canonical-stream **AuditConsumer**, both feeding one
+`GitTargetEventStream` (deduped by a content hash), with a per-reconcile streaming **gather** for
+bootstrap/rule-change — was the live truth path. The *new* one — the per-type `:audit:stream` log
++ the demand-gated `:objects` **checkpoint**, folded by the **splice** into a per-type reconcile —
+was fully built and running **beside** it. R3 ("the great deletion") then **removed the old
+machinery** so the splice + per-type audit tail are the *sole* live feed, and hardened the
+freshness wake (the per-type tail) now that the old path's backstop is gone.
 
 ## 2. The current dual-path flow
 

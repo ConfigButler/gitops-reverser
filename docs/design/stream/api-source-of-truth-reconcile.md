@@ -1,5 +1,23 @@
 # API as source of truth: checkpoint + log per-type reconcile
 
+> ## ✅ LANDED (2026-06-11)
+> **R3 ("the great deletion") is implemented and green.** The pivot to the spliced per-type
+> materialization (R2) and the §5.1 demolition are done: the live object-informer fabric, the
+> per-reconcile streaming gather, the RECONCILING handover, and both content hashes are
+> **deleted**, and the per-type **checkpoint + audit-log splice** (correctness) plus the
+> per-type **audit tail** (freshness) are the **sole** live-truth path. The full e2e suite is
+> green at procs=1 and procs=4 (the only intermittent failure is the pre-existing IceCreamOrder
+> CRD-discovery wobble — see
+> [../startup-robustness-cert-and-crd-wobble.md](../startup-robustness-cert-and-crd-wobble.md)).
+> File/symbol references below to `snapshot_stream.go` and `informers.go` are **historical** —
+> those files no longer exist; they record what was removed (links to them have been delinked).
+> Minor deviation from the plan: the GVR *resolver* helpers (`resolveSnapshotGVRs`,
+> `resolveSnapshotGVRForType`, `snapshotGVRsFromTable`, …) were **moved** to
+> `internal/watch/scope_resolve.go`, not deleted (only the live *gather* was deleted).
+> **For the current runtime picture + the bootstrap walk-through, read
+> [architecture-and-bootstrap.md](architecture-and-bootstrap.md).** The original agreed-direction
+> status (for history) follows.
+>
 > Status: **agreed direction — the demand substrate is COMPLETE; the pivot + demolition are
 > next.** The capture substrate is real and finished on the demand side: the write-only
 > per-type keyspace (R0) and the **entire** demand lifecycle
@@ -30,7 +48,7 @@
 The Kubernetes API is the **ultimate** source of truth; Git is the durable mirror that
 follows it so closely it is the source of truth for everything downstream. Today each
 GitTarget re-derives the API for itself — a per-reconcile streaming-list gather
-([`StreamClusterSnapshotForGitDest`](../../../internal/watch/snapshot_stream.go#L76)) plus
+(`StreamClusterSnapshotForGitDest`) plus
 a second always-open informer feed. This design replaces both with a single, standing,
 **type-keyed materialization of the API in Redis** and makes GitTarget reconcile a
 **consumer** of it. The API is captured **once per type** — and only for the types a GitTarget
@@ -178,7 +196,7 @@ are in [audit-log-ingestion-and-ordering.md](audit-log-ingestion-and-ordering.md
 ### DEC-6 — Drop content hashing  *(satisfies R7)*
 
 **Chosen, and wanted.** Remove `isDuplicateContent`
-([informers.go](../../../internal/watch/informers.go)) and `computeEventHash` /
+(informers.go) and `computeEventHash` /
 `processedEventHashes`
 ([git_target_event_stream.go](../../../internal/reconcile/git_target_event_stream.go)).
 "Newer?" is answered by the stream position (DEC-3); "changed?" is answered by the writer's
@@ -193,8 +211,8 @@ check (string compare, not a hash).
 **Chosen.** With the audit push as the sole live feed and the checkpoint as the periodic
 truth, three things go: the informer **object-watch** pipeline (the `startInformerScope` /
 `startSingleInformer` lifecycle in [manager.go](../../../internal/watch/manager.go) +
-[`addHandlers`](../../../internal/watch/informers.go)), the per-reconcile **streaming
-gather** ([`StreamClusterSnapshotForGitDest`](../../../internal/watch/snapshot_stream.go#L76)
+`addHandlers`), the per-reconcile **streaming
+gather** (`StreamClusterSnapshotForGitDest`
 and its per-type twin), and the bootstrap/steady-state **handover** buffer
 (`BeginReconciliation`/`OnReconciliationComplete`). The checkpoint writer is the per-type
 fill ([`mirrorTypeObjects`](../../../internal/watch/type_objects_mirror.go#L59), now demand-
@@ -236,9 +254,9 @@ old path until the splice is the sole live truth). Grouped by the decision that 
 | Kill | Code (file · symbols) | Why dead | Replaced by |
 |---|---|---|---|
 | **Content hashing** (DEC-6/R7) | `isDuplicateContent` + `lastSeenHash`/`clearDeduplicationCacheForGVRs`/`resourceMatchesGVRs`/`splitResourceKey` ([manager.go](../../../internal/watch/manager.go)); `computeEventHash`/`processedEventHashes` ([git_target_event_stream.go](../../../internal/reconcile/git_target_event_stream.go)) | "newer?" = stream position (DEC-3); "changed?" = writer no-op detection | `manifestedit.Decide` at the commit boundary |
-| **Long-lived object informers** (DEC-7/R3) | the informer lifecycle in [manager.go](../../../internal/watch/manager.go) — `activeInformers`/`informerFactories`, `desiredInformerScope`, `informersToStart`/`informersObsolete`/`compareInformerScope`, `startInformerScope`/`startSingleInformer`/`startCollectedInformers`/`stopInformerNamespace`/`initializeInformerMaps`; the object-watch handlers in [informers.go](../../../internal/watch/informers.go) (`addHandlers` + funcs) | no object watch stays open (R3) | checkpoint (missed deletes) + audit push (live) + Redis fan-out |
+| **Long-lived object informers** (DEC-7/R3) | the informer lifecycle in [manager.go](../../../internal/watch/manager.go) — `activeInformers`/`informerFactories`, `desiredInformerScope`, `informersToStart`/`informersObsolete`/`compareInformerScope`, `startInformerScope`/`startSingleInformer`/`startCollectedInformers`/`stopInformerNamespace`/`initializeInformerMaps`; the object-watch handlers in informers.go (`addHandlers` + funcs) | no object watch stays open (R3) | checkpoint (missed deletes) + audit push (live) + Redis fan-out |
 | **RECONCILING handover** (DEC-7) | `GitTargetEventStream` buffering + `BeginReconciliation`/`OnReconciliationComplete` ([git_target_event_stream.go](../../../internal/reconcile/git_target_event_stream.go)); `EventRouter.BeginReconciliationForStream`/`CompleteReconciliationForStream`; `Manager.beginReconciliationForTargets`/`completeReconciliationForTargets` | no bootstrap-vs-steady race once there is no informer bootstrap | reconcile-off-checkpoint is uniform |
-| **Per-reconcile streaming gather** (R2) | most of [snapshot_stream.go](../../../internal/watch/snapshot_stream.go) — `StreamClusterSnapshotForGitDest`, `StreamSnapshotForType`, `resolveSnapshotGVRForType`, `joinSnapshotStreams`, `streamInitialEvents`, `listInitialEvents`, `streamingListOptions`, `snapshotStreamTasks` | desired is no longer gathered live per reconcile | the splice (§6) |
+| **Per-reconcile streaming gather** (R2) | most of snapshot_stream.go — `StreamClusterSnapshotForGitDest`, `StreamSnapshotForType`, `resolveSnapshotGVRForType`, `joinSnapshotStreams`, `streamInitialEvents`, `listInitialEvents`, `streamingListOptions`, `snapshotStreamTasks` | desired is no longer gathered live per reconcile | the splice (§6) |
 | **Whole-GitTarget resync + plan-hash selection** (R2) | [manager.go](../../../internal/watch/manager.go) — `emitSnapshotForRuleChange`, `snapshotTargetsNeedingDelivery`, `currentRuleSetSnapshots`/`watchPlanFromTable`, `ruleSetSnapshotTarget`/`targetWatchPlan`, `lastDeliveredRuleSetHash`/`pendingRuleSetHash`/`markRuleSetSnapshotDelivered`, `snapshotEmitCount`; [event_router.go](../../../internal/watch/event_router.go) — `EmitResyncForGitDest`, `TriggerResyncForGitDest`, `gatherAndEnqueueResync` | reconcile is per-type off the checkpoint, not a whole-target gather on rule churn | per-type splice (R2) + the demand `Declare` (L-2) for scope |
 | **Bootstrap `SnapshotSynced` gate** (R2) | [gittarget_controller.go](../../../internal/controller/gittarget_controller.go) — `evaluateSnapshotGate`'s resync + `GitTargetConditionSnapshotSynced`; `Manager.gitTargetSnapshotSynced` ([type_lifecycle.go](../../../internal/watch/type_lifecycle.go)) | no initial whole-target snapshot to gate; a type is serviceable when its checkpoint is `Synced` | the materializer phase **is** the readiness signal |
 | **Single-stream audit fan** (R2/R3) | the single-canonical-stream match/route in [redis_audit_consumer.go](../../../internal/queue/redis_audit_consumer.go) (`XREADGROUP` one stream → per-event `git.Event`) | capture is sharded per-type and consumed by the splice, not routed per event | per-type `:audit:stream` + splice |
