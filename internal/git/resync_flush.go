@@ -43,7 +43,14 @@ import (
 // nothing — the gatherer already guaranteed the snapshot is complete, so a failure
 // here is a write fault, never a partial-snapshot drop.
 func (l *branchWorkerEventLoop) handleResyncRequest(req *ResyncRequest) {
-	l.finalizeOpenWindow()
+	l.w.Log.V(1).Info("Handling resync request",
+		"resources", len(req.Desired),
+		"revision", req.Revision,
+		"scopeGVR", scopeGVRString(req.ScopeGVR),
+		"gitTarget", req.GitTargetNamespace+"/"+req.GitTargetName,
+		"openWindow", l.openWindow != nil,
+		"pendingWrites", len(l.pendingWrites))
+	closedWindow := l.finalizeOpenWindowWithReason(windowFinalizeReasonResyncBeforeApply)
 
 	stats := &ResyncStats{}
 	committed := false
@@ -69,7 +76,22 @@ func (l *branchWorkerEventLoop) handleResyncRequest(req *ResyncRequest) {
 		l.pendingWritesBytes += pendingWrite.ByteSize
 		l.maybeSchedulePush()
 	}
+	l.w.Log.V(1).Info("Resync request applied",
+		"committed", committed,
+		"closedWindow", closedWindow,
+		"created", stats.Created,
+		"updated", stats.Updated,
+		"deleted", stats.Deleted,
+		"skipped", stats.Skipped,
+		"pendingWrites", len(l.pendingWrites))
 	req.reply(ResyncResult{Stats: *stats})
+}
+
+func scopeGVRString(gvr *schema.GroupVersionResource) string {
+	if gvr == nil {
+		return ""
+	}
+	return gvr.String()
 }
 
 // buildResyncPendingWrite resolves the GitTarget's write metadata (path, encryption,

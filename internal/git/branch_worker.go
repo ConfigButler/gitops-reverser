@@ -158,6 +158,20 @@ type branchWorkerLogFirsts struct {
 	push   sync.Once
 }
 
+type windowFinalizeReason string
+
+const (
+	windowFinalizeReasonUnspecified       windowFinalizeReason = "unspecified"
+	windowFinalizeReasonTimer             windowFinalizeReason = "timer"
+	windowFinalizeReasonFinalizeSignal    windowFinalizeReason = "finalize-signal"
+	windowFinalizeReasonResyncBeforeApply windowFinalizeReason = "resync-before-apply"
+	windowFinalizeReasonAtomicBeforeApply windowFinalizeReason = "atomic-before-apply"
+	windowFinalizeReasonIdentityChange    windowFinalizeReason = "author-or-target-change"
+	windowFinalizeReasonBufferLimit       windowFinalizeReason = "buffer-limit"
+	windowFinalizeReasonCommitWindowZero  windowFinalizeReason = "commit-window-zero"
+	windowFinalizeReasonShutdown          windowFinalizeReason = "shutdown"
+)
+
 // NewBranchWorker creates a worker for a (provider, branch) combination.
 // Pass 0 (or a negative value) for branchBufferMaxBytes to use
 // DefaultBranchBufferMaxBytes.
@@ -275,7 +289,10 @@ func (w *BranchWorker) EnqueueFinalize(signal *FinalizeSignal) {
 	w.inflightItems.Add(1)
 	select {
 	case w.eventQueue <- WorkItem{Finalize: signal}:
-		w.Log.V(1).Info("Finalize signal enqueued")
+		w.Log.V(1).Info("Finalize signal enqueued",
+			"signalAuthor", signal.Author,
+			"signalTarget", signal.GitTargetNamespace+"/"+signal.GitTargetName,
+			"messageOverride", signal.CommitMessage != "")
 		// Depth is published only from the loop goroutine (syncQueueDepthMetric);
 		// the loop republishes on every received item, so the gauge converges
 		// without an enqueue-side write that could latch a stale value.
@@ -508,6 +525,10 @@ func (w *BranchWorker) processEvents() {
 	}
 
 	loop := newBranchWorkerEventLoop(w, w.getCommitWindow(provider))
+	w.Log.Info("Branch worker event loop configured",
+		"commitWindow", loop.commitWindow.String(),
+		"queueSize", cap(w.eventQueue),
+		"branchBufferMaxBytes", w.branchBufferMaxBytes)
 	loop.run()
 }
 
@@ -559,7 +580,7 @@ func (l *branchWorkerEventLoop) run() {
 			l.w.inflightItems.Add(-1)
 		case <-commitC:
 			l.commitTimer = nil
-			l.finalizeOpenWindow()
+			l.finalizeOpenWindowWithReason(windowFinalizeReasonTimer)
 			l.maybeSchedulePush()
 		case <-pushC:
 			l.pushTimer = nil
@@ -617,7 +638,7 @@ func (l *branchWorkerEventLoop) handleQueueItem(item WorkItem) {
 		// lifecycle. Finalize any open live work first so arrival order is
 		// preserved, then append the atomic write to pendingWrites and let the
 		// normal cooldown-driven push path decide when to publish.
-		l.finalizeOpenWindow()
+		l.finalizeOpenWindowWithReason(windowFinalizeReasonAtomicBeforeApply)
 
 		pendingWrite, err := l.w.buildAtomicPendingWrite(l.w.ctx, item.Request)
 		if err != nil {
@@ -638,11 +659,15 @@ func (l *branchWorkerEventLoop) handleQueueItem(item WorkItem) {
 
 	for _, event := range item.Request.Events {
 		if l.openWindow != nil && !l.openWindow.canAppend(event) {
-			l.finalizeOpenWindow()
+			l.finalizeOpenWindowWithReason(windowFinalizeReasonIdentityChange)
 			l.maybeSchedulePush()
 		}
 
 		if l.openWindow == nil {
+			l.w.Log.V(1).Info("Opening commit window",
+				"author", event.UserInfo.Username,
+				"gitTarget", event.GitTargetNamespace+"/"+event.GitTargetName,
+				"resource", event.Identifier.String())
 			l.openWindow = newOpenWindow(event, l.w.contentWriter)
 		}
 		l.openWindow.add(event)
@@ -654,7 +679,7 @@ func (l *branchWorkerEventLoop) handleQueueItem(item WorkItem) {
 			// commits. The push still respects the cooldown — a push that
 			// fails on a stuck remote will not free memory, but that's the
 			// known stuck-push pathology documented in the design.
-			l.finalizeOpenWindow()
+			l.finalizeOpenWindowWithReason(windowFinalizeReasonBufferLimit)
 			l.maybeSchedulePush()
 			continue
 		}
@@ -662,7 +687,7 @@ func (l *branchWorkerEventLoop) handleQueueItem(item WorkItem) {
 		if l.commitWindow == 0 {
 			// Honest per-event commits: every event arrival commits
 			// immediately. Push cadence is the only thing the cooldown affects.
-			l.finalizeOpenWindow()
+			l.finalizeOpenWindowWithReason(windowFinalizeReasonCommitWindowZero)
 			l.maybeSchedulePush()
 			continue
 		}
@@ -673,7 +698,7 @@ func (l *branchWorkerEventLoop) handleQueueItem(item WorkItem) {
 
 func (l *branchWorkerEventLoop) handleShutdown() {
 	l.w.Log.Info("Handling shutdown, finalizing open window and pushing pending commits")
-	l.finalizeOpenWindow()
+	l.finalizeOpenWindowWithReason(windowFinalizeReasonShutdown)
 	if len(l.pendingWrites) > 0 {
 		// Shutdown bypasses the cooldown — pending work needs to land before
 		// the worker exits, even if a push was just sent.
@@ -724,7 +749,11 @@ func (l *branchWorkerEventLoop) resetCommitTimer() {
 // grouped-commit message. It returns true when a commit-shaped pending write
 // was produced and retained.
 func (l *branchWorkerEventLoop) finalizeOpenWindow() bool {
-	return l.finalizeOpenWindowWithMessage("")
+	return l.finalizeOpenWindowWithReason(windowFinalizeReasonUnspecified)
+}
+
+func (l *branchWorkerEventLoop) finalizeOpenWindowWithReason(reason windowFinalizeReason) bool {
+	return l.finalizeOpenWindowWithMessage(reason, "")
 }
 
 // finalizeOpenWindowWithMessage closes the live event window into one retained
@@ -736,17 +765,32 @@ func (l *branchWorkerEventLoop) finalizeOpenWindow() bool {
 // unreachable or the events are otherwise unrecoverable, and we don't want to
 // keep retrying with the same broken state on every commit cycle — and the
 // method returns false.
-func (l *branchWorkerEventLoop) finalizeOpenWindowWithMessage(message string) bool {
+func (l *branchWorkerEventLoop) finalizeOpenWindowWithMessage(reason windowFinalizeReason, message string) bool {
 	if l.openWindow == nil {
 		return false
 	}
 
 	l.stopCommitTimer()
 	events := l.openWindow.orderedEvents()
+	windowAuthor := l.openWindow.Author
+	windowTarget := l.openWindow.GitTargetNamespace + "/" + l.openWindow.GitTarget
+
+	l.w.Log.V(1).Info("Finalizing open commit window",
+		"reason", string(reason),
+		"windowAuthor", windowAuthor,
+		"windowTarget", windowTarget,
+		"events", len(events),
+		"windowBytes", l.windowBytes,
+		"pendingWrites", len(l.pendingWrites),
+		"messageOverride", message != "")
 
 	pendingWrite, err := l.w.buildGroupedPendingWrite(l.w.ctx, events)
 	if err != nil {
-		l.w.Log.Error(err, "Failed to build pending write; dropping open window", "events", len(events))
+		l.w.Log.Error(err, "Failed to build pending write; dropping open window",
+			"reason", string(reason),
+			"windowAuthor", windowAuthor,
+			"windowTarget", windowTarget,
+			"events", len(events))
 		l.openWindow = nil
 		l.windowBytes = 0
 		return false
@@ -755,7 +799,11 @@ func (l *branchWorkerEventLoop) finalizeOpenWindowWithMessage(message string) bo
 
 	hasPendingCommits := len(l.pendingWrites) > 0
 	if err := l.w.commitPendingWrites([]PendingWrite{*pendingWrite}, hasPendingCommits); err != nil {
-		l.w.Log.Error(err, "Commit failed; dropping open window", "events", len(events))
+		l.w.Log.Error(err, "Commit failed; dropping open window",
+			"reason", string(reason),
+			"windowAuthor", windowAuthor,
+			"windowTarget", windowTarget,
+			"events", len(events))
 		l.openWindow = nil
 		l.windowBytes = 0
 		return false
@@ -765,6 +813,12 @@ func (l *branchWorkerEventLoop) finalizeOpenWindowWithMessage(message string) bo
 	l.pendingWritesBytes += pendingWrite.ByteSize
 	l.openWindow = nil
 	l.windowBytes = 0
+	l.w.Log.V(1).Info("Open commit window finalized",
+		"reason", string(reason),
+		"windowAuthor", windowAuthor,
+		"windowTarget", windowTarget,
+		"events", len(events),
+		"pendingWrites", len(l.pendingWrites))
 	return true
 }
 
@@ -780,11 +834,23 @@ func (l *branchWorkerEventLoop) finalizeOpenWindowWithMessage(message string) bo
 // unrelated window is left open for its own author to finalize.
 func (l *branchWorkerEventLoop) handleFinalizeSignal(signal *FinalizeSignal) {
 	if l.openWindow == nil {
-		l.w.Log.V(1).Info("Finalize signal: no open window to finalize")
+		l.w.Log.V(1).Info("Finalize signal: no open window to finalize",
+			"signalAuthor", signal.Author,
+			"signalTarget", signal.GitTargetNamespace+"/"+signal.GitTargetName,
+			"pendingWrites", len(l.pendingWrites),
+			"commitTimerActive", l.commitTimer != nil,
+			"pushTimerActive", l.pushTimer != nil)
 		signal.reply(FinalizeResult{Outcome: FinalizeNoOpenWindow, Branch: l.w.Branch})
 		return
 	}
 
+	l.w.Log.V(1).Info("Finalize signal inspecting open window",
+		"signalAuthor", signal.Author,
+		"signalTarget", signal.GitTargetNamespace+"/"+signal.GitTargetName,
+		"windowAuthor", l.openWindow.Author,
+		"windowTarget", l.openWindow.GitTargetNamespace+"/"+l.openWindow.GitTarget,
+		"windowEvents", len(l.openWindow.pathToEvent),
+		"pendingWrites", len(l.pendingWrites))
 	if !signal.matchesWindow(l.openWindow) {
 		l.w.Log.V(1).Info("Finalize signal: open window belongs to a different author/target; leaving it open",
 			"signalAuthor", signal.Author,
@@ -795,7 +861,7 @@ func (l *branchWorkerEventLoop) handleFinalizeSignal(signal *FinalizeSignal) {
 		return
 	}
 
-	if !l.finalizeOpenWindowWithMessage(signal.CommitMessage) {
+	if !l.finalizeOpenWindowWithMessage(windowFinalizeReasonFinalizeSignal, signal.CommitMessage) {
 		signal.reply(FinalizeResult{
 			Branch: l.w.Branch,
 			Err:    errors.New("finalize failed; open window was dropped"),
