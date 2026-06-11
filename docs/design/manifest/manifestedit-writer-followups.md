@@ -1,11 +1,11 @@
 # manifestedit writer: follow-ups after the file-agnostic placement fixes
 
 > Status: open follow-ups — captured 2026-06-03 on branch `poc/manifestedit`
-> Related: [manifestedit-new-file-placement-spike.md](manifestedit-new-file-placement-spike.md),
+> Related: [manifestedit-new-file-placement-spike.md](../../finished/manifestedit-new-file-placement-spike.md),
 > [manifest-inventory-file-agnostic-placement.md](manifest-inventory-file-agnostic-placement.md),
 > [file-agnostic-placement.md](file-agnostic-placement.md),
 > [manifestedit-integration-readonly-reconcile.md](manifestedit-integration-readonly-reconcile.md),
-> [manifestedit-field-ownership-spike.md](manifestedit-field-ownership-spike.md)
+> [manifestedit-field-ownership-spike.md](../../finished/manifestedit-field-ownership-spike.md)
 
 ## What this branch already fixed
 
@@ -66,7 +66,7 @@ base path **once per write batch** (the checked-out commit) and caches it; the b
 gets one locator in [commit_executor.go](../../../internal/git/commit_executor.go).
 Building the inventory once from the pre-batch state is also the semantically correct
 unit per decision 1 of
-[manifestedit-new-file-placement-spike.md](manifestedit-new-file-placement-spike.md)
+[manifestedit-new-file-placement-spike.md](../../finished/manifestedit-new-file-placement-spike.md)
 (location is valid for the checked-out commit).
 
 On top of that, `locate` takes a **stat fast-path**: the operator writes each

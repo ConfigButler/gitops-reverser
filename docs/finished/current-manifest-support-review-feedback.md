@@ -22,7 +22,7 @@ becomes a strong directional doc.
 ## 1. The blind spot: the review never mentions `FolderReconciler`, which is where the real disease lives
 
 The doc frames the problem as "the live writer in
-[git.go](../../../internal/git/git.go) processes events one at a time" and
+[git.go](../../internal/git/git.go) processes events one at a time" and
 proposes making the inventory authoritative *in the writer*. But the writer is
 **downstream** of the actual reconcile engine, which the doc never names:
 [folder_reconciler.go](../../../internal/reconcile/folder_reconciler.go).
@@ -77,7 +77,7 @@ integration package" and place the plan there too — but the writer only receiv
 events; it has no cluster snapshot to plan against.
 
 The clean answer that matches the existing `fs.FS` purity in
-[analyzer.go](../../../internal/manifestanalyzer/analyzer.go) is to make the
+[analyzer.go](../../internal/manifestanalyzer/analyzer.go) is to make the
 **Plan the cross-layer contract**, computed from pure inputs:
 
 ```text
@@ -199,13 +199,13 @@ exist), not a conviction the data model bakes in.
 - [`internal/reconcile/folder_reconciler.go`](../../../internal/reconcile/folder_reconciler.go)
   — the real production diff engine (cluster-as-source-of-truth), unmentioned by
   the reviewed doc.
-- [`internal/git/helpers.go`](../../../internal/git/helpers.go) —
+- [`internal/git/helpers.go`](../../internal/git/helpers.go) —
   `parseIdentifierFromPath`, the path-derived GVR identity to be deleted.
-- [`internal/git/branch_worker.go`](../../../internal/git/branch_worker.go) —
+- [`internal/git/branch_worker.go`](../../internal/git/branch_worker.go) —
   `listResourceIdentifiersInPath`, the path-derived git scan.
-- [`internal/git/git.go`](../../../internal/git/git.go) — `manifestLocator` and
+- [`internal/git/git.go`](../../internal/git/git.go) — `manifestLocator` and
   `reconcileAgainstExisting`, the content-derived second scan.
-- [`internal/manifestreport/report.go`](../../../internal/manifestreport/report.go)
+- [`internal/manifestreport/report.go`](../../internal/manifestreport/report.go)
   — `BuildReport`, the near-dead planner prototype to graduate.
-- [`internal/manifestanalyzer/analyzer.go`](../../../internal/manifestanalyzer/analyzer.go)
+- [`internal/manifestanalyzer/analyzer.go`](../../internal/manifestanalyzer/analyzer.go)
   — the existing pure `f(fs.FS)` boundary to extend.

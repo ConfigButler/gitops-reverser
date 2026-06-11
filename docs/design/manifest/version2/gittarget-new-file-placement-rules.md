@@ -4,8 +4,8 @@
 > Captured: 2026-06-05
 > Related:
 > [gittarget-repository-validity-and-placement.md](gittarget-repository-validity-and-placement.md),
-> [current-manifest-support-review.md](../current-manifest-support-review.md),
-> [manifestedit-new-file-placement-spike.md](../manifestedit-new-file-placement-spike.md),
+> [current-manifest-support-review.md](../../../finished/current-manifest-support-review.md),
+> [manifestedit-new-file-placement-spike.md](../../../finished/manifestedit-new-file-placement-spike.md),
 > [reconcile-via-watchlist-mark-and-sweep.md](../reconcile-via-watchlist-mark-and-sweep.md),
 > [per-type-reconcile-and-streaming-tail.md](per-type-reconcile-and-streaming-tail.md)
 
@@ -75,7 +75,7 @@ The current `GitTargetSpec` has `providerRef`, `branch`, `path`, and optional
 ([api/v1alpha1/gittarget_types.go](../../../../api/v1alpha1/gittarget_types.go)).
 
 The writer already uses the materialized-model direction described in
-[current-manifest-support-review.md](../current-manifest-support-review.md):
+[current-manifest-support-review.md](../../../finished/current-manifest-support-review.md):
 
 - steady-state writes scan the GitTarget subtree into a content-derived store,
   then apply a commit-scoped plan

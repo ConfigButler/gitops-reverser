@@ -8,7 +8,7 @@
 > Related:
 > [file-agnostic-placement.md](file-agnostic-placement.md),
 > [manifest-inventory-file-agnostic-placement.md](manifest-inventory-file-agnostic-placement.md),
-> [current-manifest-support-review.md](current-manifest-support-review.md),
+> [current-manifest-support-review.md](../../finished/current-manifest-support-review.md),
 > [version2/gittarget-repository-validity-and-placement.md](version2/gittarget-repository-validity-and-placement.md),
 > [version2/gittarget-new-file-placement-rules.md](version2/gittarget-new-file-placement-rules.md)
 

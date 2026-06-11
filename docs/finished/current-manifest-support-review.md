@@ -3,13 +3,13 @@
 > Status: architecture review, captured 2026-06-04
 > Related:
 > [implementation-plan.md](implementation-plan.md),
-> [reconcile-via-watchlist-mark-and-sweep.md](reconcile-via-watchlist-mark-and-sweep.md),
+> [reconcile-via-watchlist-mark-and-sweep.md](../design/manifest/reconcile-via-watchlist-mark-and-sweep.md),
 > [gvk-gvr-mapping-layer.md](gvk-gvr-mapping-layer.md),
 > [current-manifest-support-review-feedback.md](current-manifest-support-review-feedback.md),
-> [manifest-inventory-file-agnostic-placement.md](manifest-inventory-file-agnostic-placement.md),
-> [manifestedit-abstraction-plan.md](manifestedit-abstraction-plan.md),
-> [manifestedit-writer-followups.md](manifestedit-writer-followups.md),
-> [`internal/git/manifestedit/DECISION.md`](../../../internal/git/manifestedit/DECISION.md)
+> [manifest-inventory-file-agnostic-placement.md](../design/manifest/manifest-inventory-file-agnostic-placement.md),
+> [manifestedit-abstraction-plan.md](../design/manifest/manifestedit-abstraction-plan.md),
+> [manifestedit-writer-followups.md](../design/manifest/manifestedit-writer-followups.md),
+> [`internal/git/manifestedit/DECISION.md`](../../internal/git/manifestedit/DECISION.md)
 
 ## Summary
 
@@ -35,7 +35,7 @@ manifest-identity and a resource-identity index, fed by a first-class plan that 
 the same value for the writer, scan mode, the CLI, and status. The initial
 reconcile is driven by a streaming-list watch and a mark-and-sweep against that
 model — see
-[reconcile-via-watchlist-mark-and-sweep.md](reconcile-via-watchlist-mark-and-sweep.md).
+[reconcile-via-watchlist-mark-and-sweep.md](../design/manifest/reconcile-via-watchlist-mark-and-sweep.md).
 The feedback that drove this sharpening is in
 [current-manifest-support-review-feedback.md](current-manifest-support-review-feedback.md).
 
@@ -207,15 +207,15 @@ documents remain.
 
 ## Key Code Paths
 
-- [`internal/git/manifestedit`](../../../internal/git/manifestedit) owns YAML
+- [`internal/git/manifestedit`](../../internal/git/manifestedit) owns YAML
   splitting, inventory, comparison, in-place patching, and per-document deletion.
-- [`internal/manifestreport`](../../../internal/manifestreport) supplies the
+- [`internal/manifestreport`](../../internal/manifestreport) supplies the
   sanitizer/renderer policy and exposes the read-only report plus `EditInPlace`.
-- [`internal/git/git.go`](../../../internal/git/git.go) owns the production
+- [`internal/git/git.go`](../../internal/git/git.go) owns the production
   locator, create/update handling, and delete handling.
-- [`internal/git/commit_executor.go`](../../../internal/git/commit_executor.go)
+- [`internal/git/commit_executor.go`](../../internal/git/commit_executor.go)
   creates one `manifestLocator` per pending write batch.
-- [`internal/types/identifier.go`](../../../internal/types/identifier.go) defines
+- [`internal/types/identifier.go`](../../internal/types/identifier.go) defines
   the GVR-based `ResourceIdentifier` used by events and generated paths.
 
 ## What Works Well
@@ -480,7 +480,7 @@ store, and a **mark-and-sweep** drops the watched, in-scope documents the stream
 never touched. Untracked content is never a member of that swept model, so it can
 never be deleted by construction. Steady-state events are single plan actions over
 the maintained store, not a re-sweep. See
-[reconcile-via-watchlist-mark-and-sweep.md](reconcile-via-watchlist-mark-and-sweep.md).
+[reconcile-via-watchlist-mark-and-sweep.md](../design/manifest/reconcile-via-watchlist-mark-and-sweep.md).
 
 ### Two boundaries: cheap per event, materialize per commit
 
@@ -675,7 +675,7 @@ sweep can flip it per document. We deliberately do not: the durable model holds
   file, not the document. A multi-document file with one document dropped is dirty,
   not deleted; it becomes deleted only when its last document is dropped.
 - *The sweep needs no flag.* Per
-  [reconcile-via-watchlist-mark-and-sweep.md](reconcile-via-watchlist-mark-and-sweep.md),
+  [reconcile-via-watchlist-mark-and-sweep.md](../design/manifest/reconcile-via-watchlist-mark-and-sweep.md),
   the "mark" is the set of streamed identities and the "sweep" is a one-pass
   set-difference (`orphans = members − streamed`) computed at the bookmark, which
   then *emits* drop actions. This is isomorphic to per-document flag-toggling but
@@ -1030,7 +1030,7 @@ Implementation notes:
 - Run acceptance checks as a distinct step between "build the store" and "use it
   as the planning model", so a failing GitTarget never proceeds to create/update/
   delete planning with an ambiguous model. This is implemented as
-  [`manifestanalyzer.Accept`](../../../internal/manifestanalyzer/acceptance.go) (M4).
+  [`manifestanalyzer.Accept`](../../internal/manifestanalyzer/acceptance.go) (M4).
 - Surface the failure through GitTarget status/diagnostics with enough detail
   (offending identity + file paths) for a human to resolve it, then re-reconcile.
 - Treat the check list as extensible. Duplicate identity, non-KRM YAML,
@@ -1117,9 +1117,9 @@ adopting it, for debugging a GitTarget, and as a low-stakes way to exercise the
 core logic.
 
 > **Current role (2026-06-04).**
-> [`internal/manifestanalyzer`](../../../internal/manifestanalyzer) is the
+> [`internal/manifestanalyzer`](../../internal/manifestanalyzer) is the
 > runtime-independent analysis library, and
-> [`cmd/manifest-analyzer`](../../../cmd/manifest-analyzer) is the CLI. The
+> [`cmd/manifest-analyzer`](../../cmd/manifest-analyzer) is the CLI. The
 > library walks an `fs.FS`, classifies every file (non-yaml, empty, invalid-yaml,
 > non-krm, krm), detects duplicates, builds a bounded summary, reports the
 > inventory of every GVK found, and emits acceptance issues in text or JSON.

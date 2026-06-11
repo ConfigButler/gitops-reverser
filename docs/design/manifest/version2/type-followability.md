@@ -359,6 +359,6 @@ Greenfield names, but they land on existing packages:
 - [api-catalog-watched-type-architecture.md](api-catalog-watched-type-architecture.md)
 - [catalog-mapper-vs-watched-type-table.md](catalog-mapper-vs-watched-type-table.md)
 - [subresource-scope-reduction.md](subresource-scope-reduction.md)
-- [gvk-gvr-mapping-layer.md](../gvk-gvr-mapping-layer.md)
+- [gvk-gvr-mapping-layer.md](../../../finished/gvk-gvr-mapping-layer.md)
 - [resource-types.md](../../../facts/resource-types.md)
 - [subresources.md](../../../facts/subresources.md)

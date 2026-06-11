@@ -8,8 +8,8 @@
 > Captured: 2026-06-10
 > Owner: Simon
 > Related:
-> [demand-driven-type-materialization-lifecycle.md](demand-driven-type-materialization-lifecycle.md) (the demand/claim layer these notes extend — DEC-L3, DEC-L6, DEC-L8, §9),
-> [api-source-of-truth-reconcile.md](api-source-of-truth-reconcile.md) (R10 defers HA; the checkpoint is the failover resume point).
+> [demand-driven-type-materialization-lifecycle.md](../../finished/demand-driven-type-materialization-lifecycle.md) (the demand/claim layer these notes extend — DEC-L3, DEC-L6, DEC-L8, §9),
+> [api-source-of-truth-reconcile.md](../../finished/api-source-of-truth-reconcile.md) (R10 defers HA; the checkpoint is the failover resume point).
 
 ## 1. Why HA is close already
 

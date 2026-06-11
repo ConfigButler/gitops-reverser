@@ -3,10 +3,10 @@
 > Status: design direction, captured 2026-06-05.
 > Origin: [dream.md](dream.md).
 > Related:
-> [reconcile-via-watchlist-mark-and-sweep.md](reconcile-via-watchlist-mark-and-sweep.md),
-> [current-manifest-support-review.md](current-manifest-support-review.md),
-> [gvk-gvr-mapping-layer.md](gvk-gvr-mapping-layer.md),
-> [implementation-plan.md](implementation-plan.md).
+> [reconcile-via-watchlist-mark-and-sweep.md](../reconcile-via-watchlist-mark-and-sweep.md),
+> [current-manifest-support-review.md](../../../finished/current-manifest-support-review.md),
+> [gvk-gvr-mapping-layer.md](../../../finished/gvk-gvr-mapping-layer.md),
+> [implementation-plan.md](../../../finished/implementation-plan.md).
 
 ## What this document is
 
@@ -41,7 +41,7 @@ the tracked set, the mirror is wrong until that resource leaves git too.
 
 This is not a new conviction — it is the same source-of-truth duty the materialized
 model already discharges by **dropping a watched resource the API no longer has**
-([current-manifest-support-review.md](current-manifest-support-review.md)). This
+([current-manifest-support-review.md](../../../finished/current-manifest-support-review.md)). This
 document extends that duty to its logical edge: a resource also leaves the tracked
 set when its **type** does.
 
@@ -107,19 +107,19 @@ Grounded in code:
 - the type set is re-resolved on every gather by `resolveSnapshotGVRs`
   (`RefreshAPIResourceCatalog` + `ruleGVRResolver`);
 - the apply is the M8
-  [`BranchWorker.applyResyncToWorktree`](../../../internal/git/resync_flush.go),
+  [`BranchWorker.applyResyncToWorktree`](../../../../internal/git/resync_flush.go),
   one `BuildPlan` mark-and-sweep, one commit;
 - **steady state is a second, separate pipeline**: long-lived shared informers
-  ([`startInformersForGVRs`](../../../internal/watch/manager.go),
+  ([`startInformersForGVRs`](../../../../internal/watch/manager.go),
   `addHandlers`) feed the
   `GitTargetEventStream`, which **buffers** live events while the snapshot runs
   (`BeginReconciliation` / `OnReconciliationComplete` in
-  [`event_router.go`](../../../internal/watch/event_router.go)) and flushes them
+  [`event_router.go`](../../../../internal/watch/event_router.go)) and flushes them
   after;
 - **change detection is content-hash dedup**: `isDuplicateContent`
   (`informers.go`) and
   `computeEventHash` / `processedEventHashes`
-  ([`git_target_event_stream.go`](../../../internal/reconcile/git_target_event_stream.go))
+  ([`git_target_event_stream.go`](../../../../internal/reconcile/git_target_event_stream.go))
   both sha256 the sanitized YAML to drop status-only churn.
 
 Two structural costs fall out of "GitTarget-atomic":
@@ -262,7 +262,7 @@ So the type-removed sweep fires **only on a trusted absence**:
   observed — is **not** absence. It is fail-closed: hold, sweep nothing, retry when
   the catalog is trustworthy again. This is the same rule the mapping layer and M6
   `PlanDelete` already enforce ("never treat an unobservable surface as absence" —
-  [gvk-gvr-mapping-layer.md](gvk-gvr-mapping-layer.md), Failure Policy); the
+  [gvk-gvr-mapping-layer.md](../../../finished/gvk-gvr-mapping-layer.md), Failure Policy); the
   type-level sweep inherits it verbatim.
 
 A momentarily-flaky apiserver therefore delays a sweep; it never causes a wrong one.
@@ -333,7 +333,7 @@ the individual type instead of the whole GitTarget gather.
 
 ### This is not the adoption-time refusal — and does not contradict it
 
-[current-manifest-support-review.md](current-manifest-support-review.md) Decision #3
+[current-manifest-support-review.md](../../../finished/current-manifest-support-review.md) Decision #3
 *refuses* a GitTarget that, **at adoption**, contains API-backed KRM of a type it
 never watched: we never claimed it, so we will not silently prune content a human
 authored. That stays. The distinguishing question is **"was it ours?"**:
@@ -371,7 +371,7 @@ It is re-resolved on **deliberate triggers only**:
 
 - a GitTarget rule-set change (already the `ReconcileForRuleChange` path);
 - a catalog generation bump (`APIResourceCatalog.Generation()` already exists at
-  [api_resource_catalog.go:104](../../../internal/watch/api_resource_catalog.go#L104))
+  [api_resource_catalog.go:104](../../../../internal/watch/api_resource_catalog.go#L104))
   — a CRD installed/removed/upgraded changes what a GVK resolves to.
 
 The table is the spine the rest of the design hangs on:
@@ -428,7 +428,7 @@ It collapses the two subsystems M8 left separate:
   set is not lost and not buffered indefinitely — it is simply the first item on
   the tail, after the bookmark.
 - **The informer pipeline for reconciled types is subsumed.**
-  [`startInformersForGVRs`](../../../internal/watch/manager.go) +
+  [`startInformersForGVRs`](../../../../internal/watch/manager.go) +
   `addHandlers` exist to deliver live
   events; a merged per-type stream delivers them itself. (The informer cache also
   gives `DeletedFinalStateUnknown` handling and shared fan-out — see the fan-out
@@ -437,7 +437,7 @@ It collapses the two subsystems M8 left separate:
   how many GitTargets watch that type, with the watched-type tables (Thread 1) as
   the fan-out routing. This generalizes the informers' current shared-factory model
   (`informerFactories` keyed by namespace in
-  [manager.go](../../../internal/watch/manager.go)) to also carry the per-GitTarget
+  [manager.go](../../../../internal/watch/manager.go)) to also carry the per-GitTarget
   initial send.
 
 **The subtlety to respect:** stream order answers *"is this after the snapshot?"*
@@ -465,14 +465,14 @@ The two content hashes today are:
 - `isDuplicateContent` (informers.go) —
   drops status-only informer churn before it is routed;
 - `computeEventHash`/`processedEventHashes`
-  ([git_target_event_stream.go](../../../internal/reconcile/git_target_event_stream.go))
+  ([git_target_event_stream.go](../../../../internal/reconcile/git_target_event_stream.go))
   — drops a repeated identical event per identity.
 
 Both answer the **content-changed?** question, which stream order alone cannot (a
 status-only update is a real, ordered event). But there is already a *third* answer
 to that question, computed for free at the commit boundary: the writer's no-op
 detection (`manifestedit.Decide` → `EditNoChange`, and `manifestsAreSemanticallyEqual`
-in [plan_flush.go](../../../internal/git/plan_flush.go)). A status-only update that
+in [plan_flush.go](../../../../internal/git/plan_flush.go)). A status-only update that
 reaches the writer produces no commit today.
 
 So the hashes are **removable**, but removing them is a *trade*, not a free win:
@@ -509,10 +509,10 @@ per-type reconcile lands. Three surfaces, in increasing cost:
    count, last-synced revision, sync state, reconcile duration, drops. This is where
    the bulk per-type data belongs — it is unbounded-friendly, it is what admins
    already scrape, and the telemetry plumbing exists
-   ([`internal/telemetry`](../../../internal/telemetry), e.g. `ObjectsScannedTotal`,
+   ([`internal/telemetry`](../../../../internal/telemetry), e.g. `ObjectsScannedTotal`,
    `APICatalogGeneration`).
 2. **Bounded status summary.** Extend `GitTargetStatus`
-   ([gittarget_types.go:116](../../../api/v1alpha1/gittarget_types.go#L116), which
+   ([gittarget_types.go:116](../../../../api/v1alpha1/gittarget_types.go#L116), which
    already has `Snapshot`/`Stats`) with a **capped** per-type roll-up: total types,
    how many synced, the slowest/failing types, last sync time. Status carries the
    *summary and the exceptions*; metrics carry the *full table*. Status must stay
@@ -531,7 +531,7 @@ the catalog (`APIResourceEntry`), so it is a matter of *surfacing*, not
 
 Multiple commits and multiple writers stay safe because they remain serialized on
 the BranchWorker queue. The BranchWorker is a single-goroutine event loop
-([branch_worker.go](../../../internal/git/branch_worker.go)); resyncs already ride
+([branch_worker.go](../../../../internal/git/branch_worker.go)); resyncs already ride
 it as `ResyncRequest`s (`EnqueueResync` → `handleResyncRequest`), serialized with
 live events. Per-type reconcile (and the untracking sweep) change *how many*
 requests land, not the ordering discipline: every type's plan is enqueued on the
@@ -582,8 +582,8 @@ dependency.
   re-resolves it, and basic metrics exist.
 
   > **Status (2026-06-05): landed.** The table and resident store live in
-  > [`internal/watch/watched_type_table.go`](../../../internal/watch/watched_type_table.go)
-  > and [`watched_type_resolver.go`](../../../internal/watch/watched_type_resolver.go).
+  > [`internal/watch/watched_type_table.go`](../../../../internal/watch/watched_type_table.go)
+  > and [`watched_type_resolver.go`](../../../../internal/watch/watched_type_resolver.go).
   > All three former inline resolvers now read it: the snapshot
   > (`resolveSnapshotGVRs`), the effective-plan hash (`currentRuleSetSnapshots`, kept
   > byte-identical via `watchPlanFromTable`), and the informer set

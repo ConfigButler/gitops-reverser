@@ -1,9 +1,9 @@
 # GitTarget repository validity and placement controls
 
 > Status: proposed
-> Related: [manifest-inventory-file-agnostic-placement.md](manifest-inventory-file-agnostic-placement.md),
-> [manifestedit-new-file-placement-spike.md](manifestedit-new-file-placement-spike.md),
-> [manifestedit-integration-readonly-reconcile.md](manifestedit-integration-readonly-reconcile.md)
+> Related: [manifest-inventory-file-agnostic-placement.md](../manifest-inventory-file-agnostic-placement.md),
+> [manifestedit-new-file-placement-spike.md](../../../finished/manifestedit-new-file-placement-spike.md),
+> [manifestedit-integration-readonly-reconcile.md](../manifestedit-integration-readonly-reconcile.md)
 
 ## Summary
 

@@ -3,14 +3,14 @@
 > Status: **baseline implemented** (§9; single-pod, no Lua). The deferred improvements
 > (§8.1 atomic Lua, §8.2 pre-sorter) remain gated on the §7 investigation. The detailed
 > producer/ingestion path for the per-type audit log that
-> [api-source-of-truth-reconcile.md](api-source-of-truth-reconcile.md) consumes. That doc
+> [api-source-of-truth-reconcile.md](../../finished/api-source-of-truth-reconcile.md) consumes. That doc
 > holds the bigger picture (checkpoint + log reconcile); this one holds the ordering,
 > key, late-lane, and deferred-improvement detail it deliberately leaves out.
 > Captured: 2026-06-10
 > Owner: Simon
 > Related:
-> [api-source-of-truth-reconcile.md](api-source-of-truth-reconcile.md) (the consumer / bigger picture),
-> [per-resource-type-rv-keyed-streams-experiment.md](per-resource-type-rv-keyed-streams-experiment.md) (the write-only prototype this refines),
+> [api-source-of-truth-reconcile.md](../../finished/api-source-of-truth-reconcile.md) (the consumer / bigger picture),
+> [per-resource-type-rv-keyed-streams-experiment.md](../../finished/per-resource-type-rv-keyed-streams-experiment.md) (the write-only prototype this refines),
 > [../audit-ingestion-decision-record.md](../audit-ingestion-decision-record.md).
 
 ## 1. Scope and one paragraph
@@ -18,7 +18,7 @@
 This is the **producer** path only: how one mutating audit event becomes one entry in a
 per-Kubernetes-type Valkey/Redis Stream, **in resourceVersion order**, and what we do with
 the events that do not arrive in order. The reconcile that *reads* the log is a separate
-concern ([api-source-of-truth-reconcile.md](api-source-of-truth-reconcile.md)). The core
+concern ([api-source-of-truth-reconcile.md](../../finished/api-source-of-truth-reconcile.md)). The core
 stance: the main stream is **strictly RV-ordered and we never knowingly insert an
 out-of-order event into it**; anything that would break the order is diverted to a
 **purely diagnostic** late lane whose only job is to let us *see* that reordering is
@@ -45,7 +45,7 @@ These are convictions, not just choices; everything below obeys them.
 
 | # | Requirement |
 |---|---|
-| **IR1** | **Per-type key schema.** One stream per Kubernetes API *group + plural resource*. The core group renders as `core`. A `/scale` event keys onto the **parent** type's stream at the parent's post-scale RV with `subresource=scale` as an entry field (DEC-A of [canonical-stream-retirement.md](canonical-stream-retirement.md)); any other subresource — none is forwarded by the webhook — folds onto the resource segment with a dot, defensively. **No namespace** and **no apiVersion** in the key — apiVersion is stored as an event field. |
+| **IR1** | **Per-type key schema.** One stream per Kubernetes API *group + plural resource*. The core group renders as `core`. A `/scale` event keys onto the **parent** type's stream at the parent's post-scale RV with `subresource=scale` as an entry field (DEC-A of [canonical-stream-retirement.md](../../finished/canonical-stream-retirement.md)); any other subresource — none is forwarded by the webhook — folds onto the resource segment with a dot, defensively. **No namespace** and **no apiVersion** in the key — apiVersion is stored as an event field. |
 | **IR2** | **Strictly RV-ordered main stream.** Main-stream IDs are `<resourceVersion>-<subseq>`. Write with `XADD <key> <rv>-* …` so Valkey allocates the `subseq` atomically and monotonically within an RV. |
 | **IR3** | **Never knowingly insert out of order.** An event whose RV is **strictly below** the stream's high-water RV is never forced into the main stream (P1/P2). An event whose RV is **equal** to the high-water RV *does* go to main — the `subseq` disambiguates it — so only strictly-older events divert. |
 | **IR4** | **Diagnostic late lane.** Such an event is diverted to `:audit:late`, with full context, **never dropped and never reordered into main**. The late lane is observability only — no consumer treats it as reconcile input. |
@@ -132,7 +132,7 @@ crash** (IR6).
 
 ### 5.4 Subresources (IR1)
 
-**Revised by DEC-A ([canonical-stream-retirement.md](canonical-stream-retirement.md), stage
+**Revised by DEC-A ([canonical-stream-retirement.md](../../finished/canonical-stream-retirement.md), stage
 C-A, landed 2026-06-11):** a `/scale` event is a mutation of the parent object, so it lands
 in the **parent** type's stream — keyed at the parent's post-scale resourceVersion (the
 Scale body carries it), ordered among the parent's other writes — with the entry's
@@ -207,7 +207,7 @@ with per-type counts and RV-gap data — exactly what to build and how to size i
 
 **INV-1 — first result (2026-06-10, e2e).** First read of a populated keyspace; method,
 full numbers, and the per-resource breakdown in
-[per-resource-type-rv-keyed-streams-experiment.md](per-resource-type-rv-keyed-streams-experiment.md)
+[per-resource-type-rv-keyed-streams-experiment.md](../../finished/per-resource-type-rv-keyed-streams-experiment.md)
 §12. Measured on a **clean cluster** (fresh etcd, empty Valkey) so cross-run contamination
 is ruled out: late ratio ≈ **3.2%** (49 / 1524 events), **all `older-than-high-water`** (0
 `rv-missing-before-high-water`; 0 `non-numeric-rv`) — confirmed genuine within-run reordering.

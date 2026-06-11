@@ -358,7 +358,7 @@ The table is the resident answer to "what does this GitTarget watch?" and feeds:
 > informers and the per-reconcile streaming snapshot gather are **gone**; desired state now comes
 > from a per-type **checkpoint + audit-log splice**. For the full picture and the bootstrap
 > walk-through see [design/stream/architecture-and-bootstrap.md](design/stream/architecture-and-bootstrap.md)
-> and [design/stream/api-source-of-truth-reconcile.md](design/stream/api-source-of-truth-reconcile.md).
+> and [finished/api-source-of-truth-reconcile.md](finished/api-source-of-truth-reconcile.md).
 
 - **Manager**: [internal/watch/manager.go](../internal/watch/manager.go)
 - **Checkpoint fill (LIST)**: [internal/watch/type_objects_mirror.go](../internal/watch/type_objects_mirror.go)
@@ -705,7 +705,7 @@ Useful deeper dives:
 - [Type followability](design/manifest/version2/type-followability.md)
 - [Type followability implementation log](design/manifest/version2/type-followability-implementation.md)
 - [Per-type reconcile and streaming tail](design/manifest/version2/per-type-reconcile-and-streaming-tail.md)
-- [Manifest current support review](design/manifest/current-manifest-support-review.md)
+- [Manifest current support review](finished/current-manifest-support-review.md)
 - [Reconcile via watchlist mark-and-sweep](design/manifest/reconcile-via-watchlist-mark-and-sweep.md)
 - [SOPS/age key management](design/sops-repo-bootstrap-and-key-management-architecture.md)
 - [Commit signing](commit-signing.md)

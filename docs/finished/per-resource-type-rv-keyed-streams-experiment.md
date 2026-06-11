@@ -18,10 +18,10 @@
 > Updated: 2026-06-09
 > Owner: Simon
 > Related:
-> [../watch-and-catalog-architecture.md](../watch-and-catalog-architecture.md),
-> [../audit-ingestion-decision-record.md](../audit-ingestion-decision-record.md),
-> [../best-practices-webhook-ingress.md](../best-practices-webhook-ingress.md),
-> [../manifest/reconcile-via-watchlist-mark-and-sweep.md](../manifest/reconcile-via-watchlist-mark-and-sweep.md)
+> [../watch-and-catalog-architecture.md](../design/watch-and-catalog-architecture.md),
+> [../audit-ingestion-decision-record.md](../design/audit-ingestion-decision-record.md),
+> [../best-practices-webhook-ingress.md](../design/best-practices-webhook-ingress.md),
+> [../manifest/reconcile-via-watchlist-mark-and-sweep.md](../design/manifest/reconcile-via-watchlist-mark-and-sweep.md)
 
 ## 0. Key layout
 
@@ -90,7 +90,7 @@ notes below. The streams themselves are the structure we plan to consume later.
 ## 4. Where this plugs in — `enqueueCanonicalEvent`
 
 Current ingress path, in
-[internal/webhook/audit_handler.go](../../../internal/webhook/audit_handler.go):
+[internal/webhook/audit_handler.go](../../internal/webhook/audit_handler.go):
 
 1. API server (official) and the additional-source proxy POST an
    `auditv1.EventList` to `/audit-webhook` / `/audit-webhook-additional`.
@@ -98,7 +98,7 @@ Current ingress path, in
    event to the debug stream (unchanged).
 3. `processEvent` applies the gates and — importantly — **early-returns on any
    stage other than `StageResponseComplete`**
-   ([audit_handler.go:294](../../../internal/webhook/audit_handler.go#L294)),
+   ([audit_handler.go:294](../../internal/webhook/audit_handler.go#L294)),
    then runs the join pipeline (`eventForCanonicalStream`), which merges the
    additional-source **body** into the event.
 4. `enqueueCanonicalEvent` writes that fully-merged event to the canonical
@@ -150,7 +150,7 @@ ordered history (RV is an etcd-global revision, not per-apiVersion).
 > **Superseded.** The shipped ingestion re-keys the main stream to `<resourceVersion>-<subseq>`
 > (RV-first), not millisecond-first, and routes strictly-older events to `:audit:late` instead
 > of falling back to a looser ID. The millisecond is kept as the `stage_millis` field only. See
-> [audit-log-ingestion-and-ordering.md](audit-log-ingestion-and-ordering.md) §5/§9 for the
+> [audit-log-ingestion-and-ordering.md](../design/stream/audit-log-ingestion-and-ordering.md) §5/§9 for the
 > current design; the rest of this subsection records the original experiment.
 
 `event.StageTimestamp` is a `metav1.MicroTime`; use
@@ -166,7 +166,7 @@ int64 etcd revision).
 
 Stream IDs must strictly increase, so we try candidates in increasing looseness and
 fall back on the "equal or smaller" rejection (`streamIDCandidates` in
-[internal/queue/redis_bytype_queue.go](../../../internal/queue/redis_bytype_queue.go)):
+[internal/queue/redis_bytype_queue.go](../../internal/queue/redis_bytype_queue.go)):
 
 1. `<stageMillis>-<rv>` — the experiment (skipped when RV is absent/non-numeric —
    deletes, collection verbs, shallow bodies, §5.3).
@@ -183,7 +183,7 @@ Count how often we fall past candidate 1; together with `stage_millis` /
 
 RV is **not always present**, so it is **not** part of the key — it is just a
 field. When present it comes from the object body's `metadata.resourceVersion`
-(mirroring [internal/git/content_writer.go](../../../internal/git/content_writer.go)'s
+(mirroring [internal/git/content_writer.go](../../internal/git/content_writer.go)'s
 `event.Object.GetResourceVersion()`), because `ObjectRef.ResourceVersion` is
 usually empty on writes (it is the *precondition* RV).
 
@@ -254,7 +254,7 @@ SADD gitops-reverser:__index__ gitops-reverser:apps:deployments
 
 - **Always on.** No enable flag. Reuse the existing Redis connection
   (`RedisAuditQueueConfig`: addr, auth, DB, TLS) wired in
-  [cmd/main.go](../../../cmd/main.go).
+  [cmd/main.go](../../cmd/main.go).
 - **Bounded growth.** Streams support approximate trimming — set `MaxLen` with
   `Approx` per stream, exactly like the existing canonical/debug streams, so a
   busy type can't grow Valkey memory without limit. Reuse the same MaxLen knob.
@@ -302,21 +302,21 @@ until a consumer is built.
 
 The audit stream is *history*; the objects snapshot is *current state*. When a type
 becomes followable and **settles** (the `TypeActivated` lifecycle edge in
-[internal/typeset/lifecycle.go](../../../internal/typeset/lifecycle.go)), we list
+[internal/typeset/lifecycle.go](../../internal/typeset/lifecycle.go)), we list
 its objects **once** and write them under the same base key. This is loaded at the
 moment we start watching a type — not per GitTarget — so we do not re-list on every
 GitTarget change. `TypeRemoved` clears the snapshot (leaving a `removed` tombstone).
 
-- **Where.** [internal/watch/type_objects_mirror.go](../../../internal/watch/type_objects_mirror.go)
+- **Where.** [internal/watch/type_objects_mirror.go](../../internal/watch/type_objects_mirror.go)
   (`mirrorTypeObjects`), called from the Manager's lifecycle drain goroutine, so a
   large list never blocks the registry updater. The sink is
-  [internal/queue/redis_objects_snapshot.go](../../../internal/queue/redis_objects_snapshot.go)
+  [internal/queue/redis_objects_snapshot.go](../../internal/queue/redis_objects_snapshot.go)
   (`RedisObjectsSnapshot`), an optional `Manager.ObjectMirror` (nil disables it).
 - **Why activation, not every rule change.** `TypeActivated` fires off the full
   catalog scan for every served, stable type — so the snapshot is keyed to the type,
   not to any GitTarget. The same revision-pinned current state then serves every
   GitTarget that watches the type. This is the cluster-state half the
-  [mark-and-sweep reconcile](../manifest/reconcile-via-watchlist-mark-and-sweep.md)
+  [mark-and-sweep reconcile](../design/manifest/reconcile-via-watchlist-mark-and-sweep.md)
   needs, computed once per type instead of per target.
 
 ### 11.1 Keys
@@ -376,10 +376,10 @@ SET  gitops-reverser:apps:deployments:objects:state {"phase":"synced","count":2,
 
 > Status: **proposed, not implemented.**
 
-Today [`mirrorTypeObjects`](../../../internal/watch/type_objects_mirror.go#L59) lists
+Today [`mirrorTypeObjects`](../../internal/watch/type_objects_mirror.go#L59) lists
 **every** object of an activated type and stores all of them. Activation is already
 gated at the **type** level — `TypeActivated` only fires for a settled-Followable type
-([internal/typeset/lifecycle.go](../../../internal/typeset/lifecycle.go)) — so a
+([internal/typeset/lifecycle.go](../../internal/typeset/lifecycle.go)) — so a
 disallowed *type* is never listed. The refinement pushes the same decision **down to the
 object**: include only the objects that pass the followability / disallow checks the
 rest of the pipeline applies, so large objects on the disallow list are not
@@ -493,7 +493,7 @@ re-applying identical content). Per-object check of every bi-directional `core:s
 the object at an **equal-or-higher** RV — so the splice consumer loses no freshness, and the
 writer's no-op detection would drop them anyway. Event-time skew was 0–10s and delivery latency
 ~0.01s (the reorder is a tight concurrent burst, not slow delivery). Two consequences for the
-pre-sorter, detailed in **ingestion [§8.2](audit-log-ingestion-and-ordering.md)**: a ≤30s window
+pre-sorter, detailed in **ingestion [§8.2](../design/stream/audit-log-ingestion-and-ordering.md)**: a ≤30s window
 *would* catch mechanism B but would suppress a signal that costs the consumer nothing; and
 **you must never make a time field the sort key** — a no-op patch carries a *fresh* timestamp
 with a *stale* body RV, so time-ordering would let stale state overwrite fresh (RV is the only

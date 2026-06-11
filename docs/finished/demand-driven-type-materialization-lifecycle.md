@@ -13,19 +13,19 @@
 > Owner: Simon
 > Related:
 > [api-source-of-truth-reconcile.md](api-source-of-truth-reconcile.md) (the per-type reconcile that **consumes** the checkpoint this doc decides to build),
-> [audit-log-ingestion-and-ordering.md](audit-log-ingestion-and-ordering.md) (the always-on log feed the materialized type subscribes to),
-> [../manifest/version2/type-followability.md](../manifest/version2/type-followability.md) (the followability axis this layers on top of),
-> [../manifest/version2/type-lifecycle-events-and-wobble-settling.md](../manifest/version2/type-lifecycle-events-and-wobble-settling.md) (the lifecycle events this gates on).
+> [audit-log-ingestion-and-ordering.md](../design/stream/audit-log-ingestion-and-ordering.md) (the always-on log feed the materialized type subscribes to),
+> [../manifest/version2/type-followability.md](../design/manifest/version2/type-followability.md) (the followability axis this layers on top of),
+> [../manifest/version2/type-lifecycle-events-and-wobble-settling.md](type-lifecycle-events-and-wobble-settling.md) (the lifecycle events this gates on).
 
 ## 1. One paragraph
 
 The api-source-of-truth reconcile needs a standing, per-type **checkpoint** of the cluster in
 Redis. But not every type that *could* be followed deserves one. Today the trigger is
 collapsed onto followability: the registry's
-[`TypeActivated`](../../../internal/typeset/lifecycle.go#L45) fires for every healthy type and
+[`TypeActivated`](../../internal/typeset/lifecycle.go#L45) fires for every healthy type and
 eagerly LISTs it into the keyspace
-([`mirrorTypeObjects`](../../../internal/watch/type_objects_mirror.go#L59) at
-[type_lifecycle.go:124](../../../internal/watch/type_lifecycle.go#L124)). A cluster has ~200
+([`mirrorTypeObjects`](../../internal/watch/type_objects_mirror.go#L59) at
+[type_lifecycle.go:124](../../internal/watch/type_lifecycle.go#L124)). A cluster has ~200
 followable types; a GitTarget set typically mirrors a handful — so most of those LISTs are
 waste. This doc splits the concern into a **second axis**: a type is **materialized** (gets a
 checkpoint) only while at least one GitTarget **claims** it *and* it is followable. The claim
@@ -56,7 +56,7 @@ is the whole point.
 
 | Axis | Question | Source of truth | Nature |
 |---|---|---|---|
-| **Followability** *(exists)* | *Can* we follow this type? | Pure function of discovery — [`Evaluate(obs)`](../../../internal/typeset/registry.go#L316) | Recomputed wholesale every `Update` |
+| **Followability** *(exists)* | *Can* we follow this type? | Pure function of discovery — [`Evaluate(obs)`](../../internal/typeset/registry.go#L316) | Recomputed wholesale every `Update` |
 | **Materialization** *(new)* | *Have* we listed it, and does anyone still *want* it? | Demand (claims) ∩ async LIST results ∩ timers | Event-sourced, stateful, persisted in Redis |
 
 **Materialized = Followable ∩ Claimed.** Nothing outside that intersection ever holds a
@@ -96,8 +96,8 @@ owns the claim table and the per-type phase, and emits its own lifecycle events.
 `Registry` is unchanged.
 
 *Rejected:* adding `Syncing`/`Synced` to the followability `Verdict`
-([model.go:128](../../../internal/typeset/model.go#L128)). Followability is a **pure
-recompute** every `Update` ([registry.go:316](../../../internal/typeset/registry.go#L316))
+([model.go:128](../../internal/typeset/model.go#L128)). Followability is a **pure
+recompute** every `Update` ([registry.go:316](../../internal/typeset/registry.go#L316))
 with no external inputs — that purity is what keeps `typeset` a leaf with no cluster client.
 Materialization depends on demand and on the outcome of an async LIST, neither of which lives
 in an `Observation`. Folding them would break the recompute and drag a client into the leaf.
@@ -123,7 +123,7 @@ Why full-set:
 - **Self-healing release** — a dropped type is an implicit withdrawal, and a *dead* GitTarget
   stops declaring entirely, so all its claims age out with no teardown message to lose. This
   mirrors the registry's existing additions-fast / removals-slow grace
-  ([registry.go:38](../../../internal/typeset/registry.go#L38)).
+  ([registry.go:38](../../internal/typeset/registry.go#L38)).
 
 A claim is recorded **regardless of followability** (L9): a GitTarget may claim a `Refused`
 or not-yet-discovered type. Materialization simply waits; the moment the type becomes
@@ -133,16 +133,16 @@ claim-vs-refused mismatch is a status surface (L10).
 ### DEC-L4 — Materialization is gated by the existing followability events  *(satisfies L2, L6)*
 
 **Chosen.** The Materializer subscribes to the registry's existing lifecycle events
-([lifecycle.go:84](../../../internal/typeset/lifecycle.go#L84)) — no new followability
+([lifecycle.go:84](../../internal/typeset/lifecycle.go#L84)) — no new followability
 vocabulary. The gating:
 
 | Followability event | Effect on the materialization axis |
 |---|---|
-| [`TypeActivated`](../../../internal/typeset/lifecycle.go#L45) | **No longer LISTs unconditionally.** If claimed → proceed to `Requested`/sync; if unclaimed → `Dormant`. *(the one behavioral change to [type_lifecycle.go:124](../../../internal/watch/type_lifecycle.go#L124))* |
-| [`TypeWobbling`](../../../internal/typeset/lifecycle.go#L47) (→retained) | **Freeze:** suspend re-anchor (a LIST against an unserved type is untrustworthy), keep the existing checkpoint served, sweep nothing. Phase stays `Synced` (held). |
-| [`TypeRecovered`](../../../internal/typeset/lifecycle.go#L50) (→followable) | **Unfreeze:** resume the re-anchor schedule; a pending sync proceeds. |
-| [`TypeRemoved`](../../../internal/typeset/lifecycle.go#L53) (absence-expired) | **Force release:** drop checkpoint + audit subscription; the existing per-type Git sweep runs ([type_lifecycle.go:127](../../../internal/watch/type_lifecycle.go#L127)). The **claim survives** — a reappearance re-syncs. |
-| [`TypeRefused`](../../../internal/typeset/lifecycle.go#L57) (permanent) | Release as above; surface claim-vs-refused in status. |
+| [`TypeActivated`](../../internal/typeset/lifecycle.go#L45) | **No longer LISTs unconditionally.** If claimed → proceed to `Requested`/sync; if unclaimed → `Dormant`. *(the one behavioral change to [type_lifecycle.go:124](../../internal/watch/type_lifecycle.go#L124))* |
+| [`TypeWobbling`](../../internal/typeset/lifecycle.go#L47) (→retained) | **Freeze:** suspend re-anchor (a LIST against an unserved type is untrustworthy), keep the existing checkpoint served, sweep nothing. Phase stays `Synced` (held). |
+| [`TypeRecovered`](../../internal/typeset/lifecycle.go#L50) (→followable) | **Unfreeze:** resume the re-anchor schedule; a pending sync proceeds. |
+| [`TypeRemoved`](../../internal/typeset/lifecycle.go#L53) (absence-expired) | **Force release:** drop checkpoint + audit subscription; the existing per-type Git sweep runs ([type_lifecycle.go:127](../../internal/watch/type_lifecycle.go#L127)). The **claim survives** — a reappearance re-syncs. |
+| [`TypeRefused`](../../internal/typeset/lifecycle.go#L57) (permanent) | Release as above; surface claim-vs-refused in status. |
 
 ### DEC-L5 — One periodic pass: re-anchor the claimed, release the unclaimed (sweep-interval grace)  *(satisfies L1, L7)*
 
@@ -183,17 +183,17 @@ between `Synced` and `Dormant`. Kept implicit for now: it is easier to add than 
 
 Reused unchanged:
 - The **`Registry.Subscribe` → buffered drain** pattern
-  ([type_lifecycle.go:61](../../../internal/watch/type_lifecycle.go#L61)) — the Materializer's
+  ([type_lifecycle.go:61](../../internal/watch/type_lifecycle.go#L61)) — the Materializer's
   driver is a second subscriber on the same goroutine discipline.
-- [`mirrorTypeObjects`](../../../internal/watch/type_objects_mirror.go#L59) /
-  [`clearTypeObjects`](../../../internal/watch/type_objects_mirror.go#L98) as the checkpoint
+- [`mirrorTypeObjects`](../../internal/watch/type_objects_mirror.go#L59) /
+  [`clearTypeObjects`](../../internal/watch/type_objects_mirror.go#L98) as the checkpoint
   write/drop primitives, and the `:objects` keyspace
-  ([redis_bytype_queue.go](../../../internal/queue/redis_bytype_queue.go)).
+  ([redis_bytype_queue.go](../../internal/queue/redis_bytype_queue.go)).
 - The whole api-source-of-truth reconcile downstream of `Synced` — this doc only decides *that*
   a checkpoint exists.
 
 What changes:
-- [`TypeActivated`](../../../internal/watch/type_lifecycle.go#L121) **stops** calling
+- [`TypeActivated`](../../internal/watch/type_lifecycle.go#L121) **stops** calling
   `mirrorTypeObjects` directly. The LIST is routed through the Materializer and runs only for
   claimed types.
 

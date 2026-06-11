@@ -2,7 +2,7 @@
 
 > Status: in progress (the read-only report is implemented; writer wiring landed, narrowly — see below)
 > Related: [manifestedit-abstraction-plan.md](manifestedit-abstraction-plan.md)
-> (step 6), [manifestedit-field-ownership-spike.md](manifestedit-field-ownership-spike.md),
+> (step 6), [manifestedit-field-ownership-spike.md](../../finished/manifestedit-field-ownership-spike.md),
 > [manifest-inventory-file-agnostic-placement.md](manifest-inventory-file-agnostic-placement.md),
 > [architecture.md](../../architecture.md),
 > POC decision record: `internal/git/manifestedit/DECISION.md`

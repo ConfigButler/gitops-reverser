@@ -3,9 +3,9 @@
 > Status: implementation plan, captured 2026-06-04
 > Related:
 > [current-manifest-support-review.md](current-manifest-support-review.md),
-> [reconcile-via-watchlist-mark-and-sweep.md](reconcile-via-watchlist-mark-and-sweep.md),
+> [reconcile-via-watchlist-mark-and-sweep.md](../design/manifest/reconcile-via-watchlist-mark-and-sweep.md),
 > [gvk-gvr-mapping-layer.md](gvk-gvr-mapping-layer.md),
-> [`internal/git/manifestedit/DECISION.md`](../../../internal/git/manifestedit/DECISION.md)
+> [`internal/git/manifestedit/DECISION.md`](../../internal/git/manifestedit/DECISION.md)
 
 ## What this document is
 
@@ -21,7 +21,7 @@ Each milestone lists:
 - **Unblocks** — what becomes possible once it lands.
 - **Done when** — the testable signal it is complete.
 
-Validation follows [AGENTS.md](../../../AGENTS.md): for any non-docs
+Validation follows [AGENTS.md](../../AGENTS.md): for any non-docs
 implementation change, `task lint`, `task test`, and `task test-e2e` must pass.
 Run e2e sequentially after confirming Docker is available. Docs-only edits can use
 the AGENTS markdown sanity-check exception. Milestones flagged **[runtime]** below
@@ -71,13 +71,13 @@ independent — three people, or three sittings, can start at once.
 
 The byte-free structure model. No cluster, no controller runtime, fully
 unit-testable. This is the backbone everything else consumes. Seeded by the
-existing [`internal/manifestanalyzer`](../../../internal/manifestanalyzer).
+existing [`internal/manifestanalyzer`](../../internal/manifestanalyzer).
 
 ### A1 — Store types + `Report` as a projection
 
 > **Status: ✅ landed** as a no-behavior-change refactor.
 > `ManifestStore`/`FileModel`/`DocumentModel`/`RecordRef` live in
-> [`internal/manifestanalyzer/store.go`](../../../internal/manifestanalyzer/store.go);
+> [`internal/manifestanalyzer/store.go`](../../internal/manifestanalyzer/store.go);
 > `Analyze` builds the store and renders `Report` as a projection over it. The A1
 > change itself kept CLI text+JSON output byte-identical and left the analyzer
 > tests untouched. **A2 (below) then deliberately changes that report contract** —
@@ -87,8 +87,8 @@ existing [`internal/manifestanalyzer`](../../../internal/manifestanalyzer).
 - **Touches**: new types in/beside `internal/manifestanalyzer`
   (`ManifestStore`, `FileModel`, `DocumentModel`, `RecordRef`); build them from the
   `manifestedit.IndexFiles` data that
-  [`Analyze`](../../../internal/manifestanalyzer/analyzer.go) already produces;
-  re-express [`Report`](../../../internal/manifestanalyzer/analyzer.go) as a
+  [`Analyze`](../../internal/manifestanalyzer/analyzer.go) already produces;
+  re-express [`Report`](../../internal/manifestanalyzer/analyzer.go) as a
   projection over the store.
 - **Unblocks**: A2, and gives the CLI/tests a safety net for the refactor.
 - **Done when**: `Analyze` builds a `ManifestStore` and the existing
@@ -97,7 +97,7 @@ existing [`internal/manifestanalyzer`](../../../internal/manifestanalyzer).
 - **Notes**: zero behavior change. This PR proves the store carries everything the
   report needed. `DocumentModel` is byte-free; `manifestedit.SnapshotRef`
   (already exists in
-  [`decision.go`](../../../internal/git/manifestedit/decision.go)) is the lazy
+  [`decision.go`](../../internal/git/manifestedit/decision.go)) is the lazy
   handle.
 
 ### A2 — Pointer indexes + structured cause, drop the old fields
@@ -151,14 +151,14 @@ dependency; it does not exist yet. Independent of Track A.
 ### B1 — Catalog `byGVK` + exact GVK lookup
 
 > **Status: ✅ landed.** `byGVK[schema.GroupVersionKind][]APIResourceEntry` sits
-> beside `byGVR` in [`api_resource_catalog.go`](../../../internal/watch/api_resource_catalog.go);
+> beside `byGVR` in [`api_resource_catalog.go`](../../internal/watch/api_resource_catalog.go);
 > `LookupGVK`/`LookupGVR` return a `CatalogLookup` carrying matched entries plus
 > degraded/ready/generation trust state, so degraded discovery is reported, never
 > treated as absence. Covered by
 > [`api_resource_catalog_lookup_test.go`](../../../internal/watch/api_resource_catalog_lookup_test.go).
 
 - **Depends on**: nothing.
-- **Touches**: [`internal/watch/api_resource_catalog.go`](../../../internal/watch/api_resource_catalog.go)
+- **Touches**: [`internal/watch/api_resource_catalog.go`](../../internal/watch/api_resource_catalog.go)
   — add a `byGVK[schema.GroupVersionKind][]APIResourceEntry` index beside the
   existing `byGVR`, plus an exported exact-GVK lookup and generation-aware result.
 - **Unblocks**: B2.
@@ -202,8 +202,8 @@ dependency; it does not exist yet. Independent of Track A.
 
 > **Status: ✅ landed.** `buildStore`/`BuildStore` now take a `context.Context` and
 > an injected `mapping.ResourceMapper`
-> ([`store.go`](../../../internal/manifestanalyzer/store.go),
-> [`analyzer.go`](../../../internal/manifestanalyzer/analyzer.go)); a **nil mapper is
+> ([`store.go`](../../internal/manifestanalyzer/store.go),
+> [`analyzer.go`](../../internal/manifestanalyzer/analyzer.go)); a **nil mapper is
 > normalized to structure-only**, so the analyzer's no-cluster promise holds. Each
 > KRM document's GVK is resolved through `GVRForGVK`, the returned `mapping.Status`
 > is recorded on `DocumentModel.Mapping`, and a `Resolved` lookup builds the
@@ -254,11 +254,11 @@ dependency; it does not exist yet. Independent of Track A.
 
 - **Depends on**: nothing.
 - **Touches**: `checkForConflicts` in
-  [`gittarget_controller.go`](../../../internal/controller/gittarget_controller.go);
+  [`gittarget_controller.go`](../../internal/controller/gittarget_controller.go);
   segment-aware path helpers in
-  [`gittarget_path_overlap.go`](../../../internal/controller/gittarget_path_overlap.go)
+  [`gittarget_path_overlap.go`](../../internal/controller/gittarget_path_overlap.go)
   (`gitTargetPathsOverlap` + a deterministic `gitTargetLosesConflict` tie-breaker);
-  `git.IsValidTargetPath` in [`git.go`](../../../internal/git/git.go), which reuses
+  `git.IsValidTargetPath` in [`git.go`](../../internal/git/git.go), which reuses
   the writer's `sanitizePath` so the guard and the write path agree on what a target
   may own.
 - **Scope key**: overlap is evaluated within the same
@@ -285,10 +285,10 @@ dependency; it does not exist yet. Independent of Track A.
 
 > **Status: ✅ landed.** The first-class `Plan` / `PlanAction` / `PlanActionKind`
 > and the pure `BuildPlan(store, files, desired, policy)` live in
-> [`internal/manifestanalyzer/plan.go`](../../../internal/manifestanalyzer/plan.go),
+> [`internal/manifestanalyzer/plan.go`](../../internal/manifestanalyzer/plan.go),
 > graduating `manifestreport.BuildReport`'s read-only create/update/delete/skip into
 > the materialized model. Covered by
-> [`plan_test.go`](../../../internal/manifestanalyzer/plan_test.go) against the
+> [`plan_test.go`](../../internal/manifestanalyzer/plan_test.go) against the
 > static-snapshot fixtures (patch, create, no-op, drop-orphan, encrypted skip,
 > structure-only-never-drops, non-editable construct, injected projection, and
 > missing-hydration).
@@ -317,7 +317,7 @@ dependency; it does not exist yet. Independent of Track A.
 > acceptance (M4), so the planner must never edit or drop one arbitrary copy; (7)
 > **`BuildPlan` is the full-snapshot "Resync" planner, not the steady-state one** —
 > per the design's "Two Paths, One Plan Type"
-> ([reconcile-via-watchlist-mark-and-sweep.md](reconcile-via-watchlist-mark-and-sweep.md)),
+> ([reconcile-via-watchlist-mark-and-sweep.md](../design/manifest/reconcile-via-watchlist-mark-and-sweep.md)),
 > it mark-and-sweeps (every watched document absent from `desired` is a managed drop),
 > so `desired` is the **complete** `[]DesiredResource{Resource, Object}` snapshot, never
 > a partial batch. Each entry carries the API-side `ResourceIdentifier` the controller
@@ -335,7 +335,7 @@ dependency; it does not exist yet. Independent of Track A.
 - **Touches**: a first-class `Plan` / `PlanAction` (`create` / `patch` / `replace` /
   `delete-document` / `delete-file` / `drop-orphan` / `skip`), computed from
   `(ManifestStore, desired set, policy)`. Graduate
-  [`manifestreport.BuildReport`](../../../internal/manifestreport/report.go) into
+  [`manifestreport.BuildReport`](../../internal/manifestreport/report.go) into
   this — it already does create/update/delete/skip read-only.
 - **Unblocks**: M4, M5, M6.
 - **Done when**: the plan is a pure function of its inputs, carries enough detail to
@@ -346,7 +346,7 @@ dependency; it does not exist yet. Independent of Track A.
 ### M4 — Acceptance gate
 
 > **Status: ✅ landed.** The gate is
-> [`manifestanalyzer.Accept(store, AcceptancePolicy)`](../../../internal/manifestanalyzer/acceptance.go)
+> [`manifestanalyzer.Accept(store, AcceptancePolicy)`](../../internal/manifestanalyzer/acceptance.go)
 > returning `Acceptance{Accepted, Issues, Retained}`. It runs the five-bucket
 > classification and refuses: duplicate identity; an **impure managed file** (a file
 > holding managed resources that also holds an empty/comment/non-KRM/invalid
@@ -371,7 +371,7 @@ dependency; it does not exist yet. Independent of Track A.
 >    refuse any managed file that is not entirely valid KRM — exactly Non-Negotiable
 >    Decision #2. Positions are then **reconstructed from the record-less diagnostic
 >    gaps** (`reconstructManagedIndices` in
->    [analyzer.go](../../../internal/manifestanalyzer/analyzer.go), shared by the
+>    [analyzer.go](../../internal/manifestanalyzer/analyzer.go), shared by the
 >    `Analyze` report, the planner's `documentLocations`, and the acceptance gate's
 >    refusal messages): every empty/non-KRM/invalid document leaves a diagnostic at
 >    its position, so the managed documents fill the rest in order. This recovers the
@@ -411,13 +411,13 @@ dependency; it does not exist yet. Independent of Track A.
 ### M5 — Scan mode end-to-end
 
 > **Status: ✅ landed.**
-> [`manifestanalyzer.Scan(ctx, fsys, mapper, desired, ScanPolicy)`](../../../internal/manifestanalyzer/scan.go)
+> [`manifestanalyzer.Scan(ctx, fsys, mapper, desired, ScanPolicy)`](../../internal/manifestanalyzer/scan.go)
 > (and `ScanDir`) is the one dry-run pipeline shared by the CLI and the controller's
 > scan path: build store (with the allowlist) → `Accept` → `BuildPlan`, writing
 > nothing. It returns `ScanResult{Store, Acceptance, Plan}`. The plan is **always**
 > computed, even on refusal, so an operator sees what reconcile would do; the caller
 > (M7) gates the apply on `Acceptance.Accepted`.
-> [`RenderScanText` / `RenderScanJSON`](../../../internal/manifestanalyzer/render.go)
+> [`RenderScanText` / `RenderScanJSON`](../../internal/manifestanalyzer/render.go)
 > render acceptance + plan for the CLI and double as the machine-readable status
 > form. The `manifest-analyzer` CLI gains `--mode scan` (structure-only here: no
 > cluster, so the plan is empty, but the full acceptance gate runs — applying the
@@ -438,14 +438,14 @@ dependency; it does not exist yet. Independent of Track A.
 
 > **Status: ✅ landed.** The delete-identity resolution is the pure planning-layer
 > primitive
-> [`manifestanalyzer.PlanDelete(store, resource)`](../../../internal/manifestanalyzer/delete_plan.go)
+> [`manifestanalyzer.PlanDelete(store, resource)`](../../internal/manifestanalyzer/delete_plan.go)
 > returning `(PlanAction, emitted bool)`. It is the steady-state per-event
 > delete path of the design's "Two Paths, One Plan Type" — it targets exactly one
 > identity and **never sweeps**, so a lone delete intent can never be read as "every
 > other document is now an orphan." It emits a single `PlanDeleteDocument` (not a
 > `PlanDropOrphan`, which stays the resync sweep's kind), per the reconcile doc's "a
 > live `DELETED` event is an explicit delete-document." Covered by
-> [`delete_plan_test.go`](../../../internal/manifestanalyzer/delete_plan_test.go)
+> [`delete_plan_test.go`](../../internal/manifestanalyzer/delete_plan_test.go)
 > (by-resource-identity, moved manifest, multi-doc index, not-in-Git no-op, encrypted
 > still deletes, duplicate suppressed).
 >
@@ -482,7 +482,7 @@ dependency; it does not exist yet. Independent of Track A.
 
 > **Status: ✅ landed.** The per-event `locate → write` loop is replaced by
 > plan-then-flush in
-> [`internal/git/plan_flush.go`](../../../internal/git/plan_flush.go).
+> [`internal/git/plan_flush.go`](../../internal/git/plan_flush.go).
 > `applyPendingWriteEvents` now groups a batch by GitTarget base path and, per
 > subtree, builds the byte-free `ManifestStore` once
 > (`manifestanalyzer.BuildStoreFromFiles`), resolves each event to a
@@ -492,12 +492,12 @@ dependency; it does not exist yet. Independent of Track A.
 > design's `FileModel`). The replaced machinery — `manifestLocator` / `inventoryFor`
 > / `locate`, `applyEventToWorktree`, `handleCreateOrUpdateOperation` /
 > `handleDeleteOperation`, `reconcileAgainstExisting` / `preserveExistingFormatting`
-> — is deleted (~260 lines from [`git.go`](../../../internal/git/git.go)); the
+> — is deleted (~260 lines from [`git.go`](../../internal/git/git.go)); the
 > per-document mechanism (`manifestedit.Apply` / `DeleteDocument`),
 > `ResourceIdentifier.ToGitPath` placement, and the SOPS/no-op guards survive as plan
 > decisions. The model is reused via two new exported analyzer entry points,
 > `BuildStoreFromFiles` and `ManifestStore.DocumentLocations`
-> ([`store.go`](../../../internal/manifestanalyzer/store.go)). `task lint` / `test` /
+> ([`store.go`](../../internal/manifestanalyzer/store.go)). `task lint` / `test` /
 > `test-e2e` are all green.
 >
 > Judgment calls the plan left open:
@@ -528,8 +528,8 @@ dependency; it does not exist yet. Independent of Track A.
 >    GVR-only delete (no object) is resolved through `PlanDelete` over the resolved
 >    resource-identity index. The live-catalog mapper is now injected end to end —
 >    `watch.Manager.Mapper()` → `WorkerManager.SetMapper` → each `BranchWorker`
->    ([`worker_manager.go`](../../../internal/git/worker_manager.go),
->    [`cmd/main.go`](../../../cmd/main.go)) — so the writer builds its store with the
+>    ([`worker_manager.go`](../../internal/git/worker_manager.go),
+>    [`cmd/main.go`](../../cmd/main.go)) — so the writer builds its store with the
 >    live catalog and a GVR-only moved delete resolves by content in production (covered
 >    by a static-snapshot unit test and a wiring test). There is no delete-time reverse
 >    lookup or canonical-path fallback for an object-less delete: without a resource
@@ -570,9 +570,9 @@ dependency; it does not exist yet. Independent of Track A.
   flush-once. **Deletes** (per the reconcile doc):
   `manifestLocator` / `inventoryFor` / `locate`,
   `applyEventToWorktree` / `handleCreateOrUpdateOperation` /
-  `handleDeleteOperation` ([`git.go`](../../../internal/git/git.go)),
-  `parseIdentifierFromPath` ([`helpers.go`](../../../internal/git/helpers.go)),
-  `listResourceIdentifiersInPath` ([`branch_worker.go`](../../../internal/git/branch_worker.go)).
+  `handleDeleteOperation` ([`git.go`](../../internal/git/git.go)),
+  `parseIdentifierFromPath` ([`helpers.go`](../../internal/git/helpers.go)),
+  `listResourceIdentifiersInPath` ([`branch_worker.go`](../../internal/git/branch_worker.go)).
   **Keeps**: `manifestedit.Apply` / `DeleteDocument` as the per-document mechanism,
   `ResourceIdentifier.ToGitPath` as new-file placement.
   Introduce `PendingChanges` (per-event coalescing) and commit-boundary hydration.
@@ -610,7 +610,7 @@ dependency; it does not exist yet. Independent of Track A.
 >    at all (judgment call #6 below), needed because aggregated apiservers reject
 >    `sendInitialEvents`.
 > 2. **The content-derived apply** —
->    [`BranchWorker.applyResyncToWorktree`](../../../internal/git/resync_flush.go) builds
+>    [`BranchWorker.applyResyncToWorktree`](../../internal/git/resync_flush.go) builds
 >    the byte-free `ManifestStore` for the GitTarget subtree, runs the M3 `BuildPlan`
 >    (the authoritative mark-and-sweep over the resolved resource-identity index), and
 >    applies it: every desired resource is upserted through M7's proven content-derived
@@ -621,7 +621,7 @@ dependency; it does not exist yet. Independent of Track A.
 >    (`EnqueueResync` → `handleResyncRequest`), so it is applied in order with live
 >    events and replies with the plan's create/update/delete stats. The GitTarget
 >    snapshot gate and `ReconcileForRuleChange` both drive it through
->    [`EventRouter.EmitResyncForGitDest`](../../../internal/watch/event_router.go).
+>    [`EventRouter.EmitResyncForGitDest`](../../internal/watch/event_router.go).
 >
 > **The teardown (a real "new start").** Deleted outright: `FolderReconciler` and its
 > path-derived `findDifferences`, `ReconcilerManager`, the whole `internal/events`

@@ -2,9 +2,9 @@
 
 > Status: design direction, captured 2026-06-04.
 > Related:
-> [current-manifest-support-review.md](current-manifest-support-review.md),
-> [gvk-gvr-mapping-layer.md](gvk-gvr-mapping-layer.md),
-> [current-manifest-support-review-feedback.md](current-manifest-support-review-feedback.md),
+> [current-manifest-support-review.md](../../finished/current-manifest-support-review.md),
+> [gvk-gvr-mapping-layer.md](../../finished/gvk-gvr-mapping-layer.md),
+> [current-manifest-support-review-feedback.md](../../finished/current-manifest-support-review-feedback.md),
 > [`internal/git/manifestedit/DECISION.md`](../../../internal/git/manifestedit/DECISION.md)
 
 ## Summary

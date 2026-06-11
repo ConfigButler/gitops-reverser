@@ -2,12 +2,12 @@
 
 > Status: proposed (vision)
 > Related: [file-agnostic-placement.md](file-agnostic-placement.md),
-> [manifest-parser-poc.md](manifest-parser-poc.md),
+> [manifest-parser-poc.md](../../finished/manifest-parser-poc.md),
 > [bi-directional.md](../../bi-directional.md)
 
 This is the vision document. It holds the requirements and the bigger "why".
 The first concrete step is scoped separately in
-[manifest-parser-poc.md](manifest-parser-poc.md).
+[manifest-parser-poc.md](../../finished/manifest-parser-poc.md).
 
 ## Summary
 
@@ -274,7 +274,7 @@ indentation, quoting, and spacing across every document. So the baseline is
 decided: split a file into its documents textually and only re-render the one
 document that changed; unrelated documents are spliced back verbatim. The
 in-document editor and its parser are the subject of
-[manifest-parser-poc.md](manifest-parser-poc.md).
+[manifest-parser-poc.md](../../finished/manifest-parser-poc.md).
 
 ## Editing strategy: structural merge
 
@@ -366,7 +366,7 @@ the deleted document was the only document in the file, the file can be removed.
 ## Duplicate resources
 
 > Superseded for implementation: see
-> [gittarget-repository-validity-and-placement.md](gittarget-repository-validity-and-placement.md).
+> [gittarget-repository-validity-and-placement.md](version2/gittarget-repository-validity-and-placement.md).
 > Duplicate KRM should block `RepositoryValid` instead of being auto-pruned.
 
 The same Kubernetes object may appear in more than one file, or more than once

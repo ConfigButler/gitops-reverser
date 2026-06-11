@@ -1,22 +1,22 @@
 # Type lifecycle events, the wobble-settle phase, and consolidation
 
 > Status: design direction, captured 2026-06-09. **Implemented 2026-06-09 (M12 first
-> slices):** Proposals 1–2 in [internal/typeset/lifecycle.go](../../../../internal/typeset/lifecycle.go)
+> slices):** Proposals 1–2 in [internal/typeset/lifecycle.go](../../internal/typeset/lifecycle.go)
 > (`LifecycleEvent`/`Observer`/`Subscribe`, `SettleWindow`, settle + flap coalescing in
 > `Registry.Update`); M12 per-type reconcile/sweep via
 > `manifestanalyzer.BuildScopedPlan`, the `ScopeGVR` resync request, the registry
-> subscription + drain goroutine in [internal/watch/type_lifecycle.go](../../../../internal/watch/type_lifecycle.go),
+> subscription + drain goroutine in [internal/watch/type_lifecycle.go](../../internal/watch/type_lifecycle.go),
 > and `EventRouter.EmitTypeReconcile/SweepForGitDest`. Proposal 3's consolidation is the
 > shared `Manager.typeWobbling` predicate. The per-type path is gated on `SnapshotSynced`,
 > so bootstrap is unchanged; `Unknown` granularity and bootstrap-decoupling remain open.
-> Origin: the per-type reconcile track ([dream.md](dream.md),
-> [per-type-reconcile-and-streaming-tail.md](per-type-reconcile-and-streaming-tail.md))
-> and the [e2e flakiness findings](../../e2e-full-suite-flakiness-findings-2026-06.md).
+> Origin: the per-type reconcile track ([dream.md](../design/manifest/version2/dream.md),
+> [per-type-reconcile-and-streaming-tail.md](../design/manifest/version2/per-type-reconcile-and-streaming-tail.md))
+> and the [e2e flakiness findings](../design/manifest/e2e-full-suite-flakiness-findings-2026-06.md).
 > Related:
-> [discovery-catalog-typeset-boundary.md](discovery-catalog-typeset-boundary.md),
-> [type-followability.md](type-followability.md),
-> [catalog-mapper-vs-watched-type-table.md](catalog-mapper-vs-watched-type-table.md),
-> [api-catalog-watched-type-architecture.md](api-catalog-watched-type-architecture.md).
+> [discovery-catalog-typeset-boundary.md](../design/manifest/version2/discovery-catalog-typeset-boundary.md),
+> [type-followability.md](../design/manifest/version2/type-followability.md),
+> [catalog-mapper-vs-watched-type-table.md](../design/manifest/version2/catalog-mapper-vs-watched-type-table.md),
+> [api-catalog-watched-type-architecture.md](../design/manifest/version2/api-catalog-watched-type-architecture.md).
 
 ## Why now
 
@@ -45,7 +45,7 @@ simplification this document is also chasing.
 ## What we already have (the foundation — keep it)
 
 The typeset registry (`internal/typeset/registry.go`,
-[type-followability.md](type-followability.md)) is the single owner of type
+[type-followability.md](../design/manifest/version2/type-followability.md)) is the single owner of type
 identity and the live set. Per known type it computes one `TypeRecord` with a
 `Verdict`:
 
@@ -153,7 +153,7 @@ changed?" is currently answered in three layers that each re-derive a slice of i
    pending-removal.
 
 Layer 1 and 2 are the right boundary and stay (see
-[discovery-catalog-typeset-boundary.md](discovery-catalog-typeset-boundary.md)).
+[discovery-catalog-typeset-boundary.md](../design/manifest/version2/discovery-catalog-typeset-boundary.md)).
 **Layer 3's re-classification is the duplication to remove**: once the registry
 emits transitions, the watched-type store stops diffing and re-classifying — it
 *subscribes* to its types' transitions and updates membership directly. Concretely,

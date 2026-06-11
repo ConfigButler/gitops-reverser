@@ -1,7 +1,7 @@
 # Follow-up plan: the `manifestedit` package abstraction
 
 > Status: proposed (follow-up to the parser POC)
-> Related: [manifest-parser-poc.md](manifest-parser-poc.md),
+> Related: [manifest-parser-poc.md](../../finished/manifest-parser-poc.md),
 > [manifest-inventory-file-agnostic-placement.md](manifest-inventory-file-agnostic-placement.md),
 > POC decision record: `internal/git/manifestedit/DECISION.md`
 

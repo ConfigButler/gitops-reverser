@@ -7,7 +7,7 @@
 > updated today.
 >
 > Scope update: see
-> [subresource-scope-reduction.md](subresource-scope-reduction.md). Future work
+> [subresource-scope-reduction.md](../design/manifest/version2/subresource-scope-reduction.md). Future work
 > should narrow this from generic subresource translation to built-in and CRD
 > `/scale` only.
 
@@ -28,7 +28,7 @@ status writes, logs, streams, token requests, or proxy operations. GitOps
 Reverser must not treat all subresources as manifests.
 
 The concrete event is captured at
-[`internal/webhook/testdata/audit-events/deployment-scale-subresource.json`](../../../../internal/webhook/testdata/audit-events/deployment-scale-subresource.json).
+[`internal/webhook/testdata/audit-events/deployment-scale-subresource.json`](../../internal/webhook/testdata/audit-events/deployment-scale-subresource.json).
 Its `objectRef` identifies the parent Deployment, but its `responseObject` is an
 `autoscaling/v1 Scale`, not an `apps/v1 Deployment`.
 
@@ -191,7 +191,7 @@ Hard-denied before Redis:
 
 > Superseded: the broad hard-deny taxonomy above and the sanitized parent gate
 > below were the generic-subresource design. The shipped behavior is scale-only —
-> see [subresource-scope-reduction.md](subresource-scope-reduction.md). Only
+> see [subresource-scope-reduction.md](../design/manifest/version2/subresource-scope-reduction.md). Only
 > `/scale` reaches the consumer now; everything else is dropped at webhook ingress.
 
 ## Metrics
@@ -234,7 +234,7 @@ There should be no `rehydrated_*` or `fallback_*` outcomes.
   paths into the same API resource scale fact that CRD scale will use. The gate,
   its tests, and `dropped_subresource_field_not_in_parent` were removed; the
   scale-specific outcomes are in the Metrics section above. See
-  [subresource-scope-reduction.md](subresource-scope-reduction.md).
+  [subresource-scope-reduction.md](../design/manifest/version2/subresource-scope-reduction.md).
 - [ ] Add the writer outcome counters `subresource_patch_no_parent` /
   `subresource_patch_unsafe` (today logged with those exact `reason` strings, not yet
   counters).
@@ -249,7 +249,7 @@ There should be no `rehydrated_*` or `fallback_*` outcomes.
 ## Current State
 
 The scope reduction has landed (see
-[subresource-scope-reduction.md](subresource-scope-reduction.md)). The shipped
+[subresource-scope-reduction.md](../design/manifest/version2/subresource-scope-reduction.md)). The shipped
 behavior is scale-only, and the generic translator plus the sanitized parent gate
 are gone:
 

@@ -3,11 +3,11 @@
 > Status: design, captured 2026-06-04
 > Related:
 > [current-manifest-support-review.md](current-manifest-support-review.md),
-> [reconcile-via-watchlist-mark-and-sweep.md](reconcile-via-watchlist-mark-and-sweep.md),
-> [../kubernetes-api-resource-catalog.md](../kubernetes-api-resource-catalog.md),
-> [`internal/watch/api_resource_catalog.go`](../../../internal/watch/api_resource_catalog.go),
+> [reconcile-via-watchlist-mark-and-sweep.md](../design/manifest/reconcile-via-watchlist-mark-and-sweep.md),
+> [../kubernetes-api-resource-catalog.md](../design/kubernetes-api-resource-catalog.md),
+> [`internal/watch/api_resource_catalog.go`](../../internal/watch/api_resource_catalog.go),
 > [`internal/watch/rule_gvr_resolver.go`](../../../internal/watch/rule_gvr_resolver.go),
-> [`internal/manifestanalyzer/analyzer.go`](../../../internal/manifestanalyzer/analyzer.go)
+> [`internal/manifestanalyzer/analyzer.go`](../../internal/manifestanalyzer/analyzer.go)
 
 ## Summary
 
@@ -167,7 +167,7 @@ degraded.
 > `ResolveGVK` reduction); the catalog-backed implementation is
 > [`watch.CatalogMapper`](../../../internal/watch/catalog_mapper.go), built on the
 > catalog `byGVK`/`LookupGVK` additions
-> ([`api_resource_catalog.go`](../../../internal/watch/api_resource_catalog.go)).
+> ([`api_resource_catalog.go`](../../internal/watch/api_resource_catalog.go)).
 > The doc warned the concrete Go names could move, and two did: to satisfy the
 > repository's no-stutter lint, `MappingResult` is `mapping.Result` and
 > `MappingStatus` is `mapping.Status`. The `Mapping*` status constants below kept

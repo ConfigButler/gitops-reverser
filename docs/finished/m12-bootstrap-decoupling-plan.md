@@ -4,7 +4,7 @@
 > earlier "whole-target snapshot plus per-type escape hatch" plan. Sibling design:
 > [type-lifecycle-events-and-wobble-settling.md](type-lifecycle-events-and-wobble-settling.md);
 > flake forensics:
-> [../../e2e-full-suite-flakiness-findings-2026-06.md](../../e2e-full-suite-flakiness-findings-2026-06.md).
+> [../design/manifest/e2e-full-suite-flakiness-findings-2026-06.md](../design/manifest/e2e-full-suite-flakiness-findings-2026-06.md).
 
 ## Decision
 
@@ -351,7 +351,7 @@ teaches it exceptions. Per-type sweep already gives the correct safety boundary.
 - Tests under `internal/watch`, `internal/controller`, and `internal/git`: replace
   whole-target snapshot expectations with scoped scheduling expectations.
 - Docs:
-  `docs/design/manifest/version2/type-lifecycle-events-and-wobble-settling.md` and
+  `docs/finished/type-lifecycle-events-and-wobble-settling.md` and
   `docs/design/e2e-full-suite-flakiness-findings-2026-06.md`.
 
 ## Verification

@@ -14,14 +14,14 @@
 > per-type checkpoint+log **splice** (correctness) and the per-type **audit tail**
 > (freshness) are the **sole** path. This file is kept as the cutover record; **for the
 > current single-path architecture read
-> [architecture-and-bootstrap.md](architecture-and-bootstrap.md).**
+> [architecture-and-bootstrap.md](../design/stream/architecture-and-bootstrap.md).**
 >
 > Original status: **explainer / snapshot after R1 + R2 landed** (commit `3d249e3`). Companion
 > to the three design docs; this one is the "you are here" map, not a spec.
 > Captured: 2026-06-10
 > Related:
 > [api-source-of-truth-reconcile.md](api-source-of-truth-reconcile.md) (the plan + §5.1 demolition list),
-> [audit-log-ingestion-and-ordering.md](audit-log-ingestion-and-ordering.md) (the per-type log producer),
+> [audit-log-ingestion-and-ordering.md](../design/stream/audit-log-ingestion-and-ordering.md) (the per-type log producer),
 > [demand-driven-type-materialization-lifecycle.md](demand-driven-type-materialization-lifecycle.md) (the checkpoint demand layer).
 
 ## 1. One paragraph
@@ -163,7 +163,7 @@ sequenceDiagram
 
 1. **The old path is still live and backstops it.** In R2 the splice is *additive*; the informer/
    audit-consumer live path already wrote both objects, so even a bad splice sweep is corrected.
-2. **The burst-settle window** ([audit_tail.go](../../../internal/watch/audit_tail.go)). The tail no
+2. **The burst-settle window** ([audit_tail.go](../../internal/watch/audit_tail.go)). The tail no
    longer reconciles on the first arrival; it **drains until the stream is quiet for one settle
    window**, so a co-arriving burst (Alice+Bob land μs apart) is folded together → `desired =
    {Alice, Bob}` → no spurious sweep. Each arrival extends the window, so even a spread-out burst

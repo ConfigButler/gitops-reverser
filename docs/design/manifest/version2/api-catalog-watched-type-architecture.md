@@ -897,7 +897,7 @@ into accepted or refused type facts.
 
 - [catalog-mapper-vs-watched-type-table.md](catalog-mapper-vs-watched-type-table.md)
 - [subresource-scope-reduction.md](subresource-scope-reduction.md)
-- [gvk-gvr-mapping-layer.md](../gvk-gvr-mapping-layer.md)
+- [gvk-gvr-mapping-layer.md](../../../finished/gvk-gvr-mapping-layer.md)
 - [resource-types.md](../../../facts/resource-types.md)
 - [subresources.md](../../../facts/subresources.md)
 - [`internal/watch/api_resource_catalog.go`](../../../../internal/watch/api_resource_catalog.go)

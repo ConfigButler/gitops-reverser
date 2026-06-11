@@ -19,9 +19,9 @@
 > Related:
 > [api-source-of-truth-reconcile.md](api-source-of-truth-reconcile.md) (R2/R3, §5.1 demolition),
 > [current-flows-and-cutover.md](current-flows-and-cutover.md) (the dual-path "you are here" map),
-> [audit-log-ingestion-and-ordering.md](audit-log-ingestion-and-ordering.md) (the per-type log producer; IR1/§5.4 updated here),
-> [architecture-and-bootstrap.md](architecture-and-bootstrap.md) (the runtime map; the `CONS` node + §6 row this retires),
-> [../manifest/version2/subresource-scope-reduction.md](../manifest/version2/subresource-scope-reduction.md) (the scale-only subresource scope).
+> [audit-log-ingestion-and-ordering.md](../design/stream/audit-log-ingestion-and-ordering.md) (the per-type log producer; IR1/§5.4 updated here),
+> [architecture-and-bootstrap.md](../design/stream/architecture-and-bootstrap.md) (the runtime map; the `CONS` node + §6 row this retires),
+> [../manifest/version2/subresource-scope-reduction.md](../design/manifest/version2/subresource-scope-reduction.md) (the scale-only subresource scope).
 
 ## 1. One paragraph
 
@@ -61,7 +61,7 @@ Yes — with three things consciously handled. Tracing every current consumer of
 | **Joiner — `auditID` dedupe + "commit decision" anchor** | **no — droppable, the non-obvious win** | **DEC-C / §4.1** — the RV-keyed stream + idempotent splice make duplicate delivery free, exactly like content hashing (R7); delete the decision dance |
 
 The row people conflate with hashing is the last one. The
-[`AuditEventJoiner`](../../../internal/webhook/audit_joiner.go) is **two bundled jobs**, and they
+[`AuditEventJoiner`](../../internal/webhook/audit_joiner.go) is **two bundled jobs**, and they
 have opposite fates (full analysis + diagram + code in **§4.1**):
 
 - **Body merge** is load-bearing and *orthogonal* to this work — it exists because the official
@@ -81,7 +81,7 @@ have opposite fates (full analysis + diagram + code in **§4.1**):
 |---|---|
 | **CR1** | **No canonical stream.** `gitopsreverser.audit.events.v1` and the `AuditConsumer` are deleted, not left dormant. The webhook writes only per-type streams. |
 | **CR2** | **`/scale` lands in the parent type's log, in RV order.** A scale of `deployments/foo` is an entry in `…:deployments:audit:stream` at the parent's post-scale resourceVersion — consumed by the same freshness tail and splice as every other parent change. |
-| **CR3** | **`/scale` reuses the existing field-patch writer.** No new apply path: the entry resolves to a `git.FieldPatch` event ([`applyFieldPatch`](../../../internal/git/plan_flush.go#L204)) on the freshness side and a `spec.replicas` mutation on the splice side. Only the *source* of the field-patch changes. |
+| **CR3** | **`/scale` reuses the existing field-patch writer.** No new apply path: the entry resolves to a `git.FieldPatch` event ([`applyFieldPatch`](../../internal/git/plan_flush.go#L204)) on the freshness side and a `spec.replicas` mutation on the splice side. Only the *source* of the field-patch changes. |
 | **CR4** | **CommitRequest finalize preserves the ordering guarantee** that every mutation made before the CommitRequest is included in the finalized commit — now via the CommitRequest's `resourceVersion` as a cross-type watermark, not single-stream position. |
 | **CR5** | **CommitRequest leaves the audit *consumer*.** It is a control object — never checkpointed, never materialized, no stream consumer drives it; its finalize is driven by its own controller. Its per-type mirror entry remains (every mutating event is mirrored, IR8) and is read **on demand** by the controller as the attribution source: the author comes from the CR's own create audit event, exactly as in the consumer era. |
 | **CR6** | **Body completeness survives; the dedupe goes.** The official↔additional body merge keeps working; the `auditID` decision/dedupe dance is deleted because the RV-keyed stream absorbs duplicates (same basis as R7). |
@@ -92,25 +92,25 @@ have opposite fates (full analysis + diagram + code in **§4.1**):
 ### DEC-A — `/scale` becomes a marked field-patch entry in the **parent** stream *(CR2, CR3)*
 
 **Chosen.** Today a scale event folds onto a *sibling* key (`deployments.scale:audit:stream`,
-[`typeBaseKey`](../../../internal/queue/redis_bytype_queue.go#L573)) that nothing in the R2 path
+[`typeBaseKey`](../../internal/queue/redis_bytype_queue.go#L573)) that nothing in the R2 path
 reads — so when R3 deletes the consumer, scale freshness would vanish until the next checkpoint
 LIST happens to re-LIST the parent with its new replicas. Instead, mirror the scale event into the
 **parent** type's stream, keyed at the parent's post-scale `resourceVersion` (the `Scale`
 responseObject carries it), retaining `subresource=scale` as the discriminator field already
-present in [`entryValues`](../../../internal/queue/redis_bytype_queue.go#L511). It then orders
+present in [`entryValues`](../../internal/queue/redis_bytype_queue.go#L511). It then orders
 naturally among the parent's other writes (a scale always bumps the parent RV above its prior
 value) and both per-type consumers learn one new entry kind:
 
-- **Freshness tail** ([`auditChangeFromEntry`](../../../internal/queue/redis_bytype_queue.go#L289)):
+- **Freshness tail** ([`auditChangeFromEntry`](../../internal/queue/redis_bytype_queue.go#L289)):
   today it *skips* `subresource != ""`. Change it so `subresource == "scale"` is translated —
-  via the existing [`translateScaleToAssignments`](../../../internal/queue/subresource_translate.go#L47)
+  via the existing [`translateScaleToAssignments`](../../internal/queue/subresource_translate.go#L47)
   + `buildFieldPatchEvent` — into a `git.FieldPatch` `git.Event` (no `Path`; the tail stamps it per
   GitTarget, exactly as for object events). The writer's `applyFieldPatch` does the rest. **This is
   the same field-patch the `AuditConsumer` built; only the source stream changes.**
-- **Splice fold** ([`foldAuditEntry`](../../../internal/queue/redis_type_splice.go#L137)): today it
+- **Splice fold** ([`foldAuditEntry`](../../internal/queue/redis_type_splice.go#L137)): today it
   *skips* `subresource != ""`. Change it so `subresource == "scale"` mutates `spec.replicas` on the
   existing `desired[identity]` (the parent object from the checkpoint or an earlier log entry) at
-  the known [`BuiltinScaleReplicasPath`](../../../internal/auditutil/subresource_policy.go#L51). If
+  the known [`BuiltinScaleReplicasPath`](../../internal/auditutil/subresource_policy.go#L51). If
   the parent is not in `desired` yet, skip (the next checkpoint backstops it, DEC-5). **The splice
   must fold scale, or a correctness reconcile would revert replicas to the checkpoint value and
   flip-flop against the freshness tail** — see §5.
@@ -121,15 +121,15 @@ it only routes the scale event onto the parent key. The scale→replicas interpr
 GVR knowledge already are (the consumer side), so the webhook never imports `manifestedit`. A scale
 on a CRD/aggregated parent with no known replica path is dropped at translation, unchanged.
 
-*Doc impact:* this revises [audit-log-ingestion-and-ordering.md](audit-log-ingestion-and-ordering.md)
+*Doc impact:* this revises [audit-log-ingestion-and-ordering.md](../design/stream/audit-log-ingestion-and-ordering.md)
 **IR1/§5.4** for `/scale` specifically — scale no longer keys onto its own `…scale` segment; it is a
 parent-stream entry tagged `subresource=scale`. (Other subresources never reach Redis —
-[`shouldForwardSubresource`](../../../internal/webhook/audit_handler.go#L697) drops them — so scale
+[`shouldForwardSubresource`](../../internal/webhook/audit_handler.go#L697) drops them — so scale
 is the only subresource the change touches.)
 
 ### DEC-B — CommitRequest finalize = controller-driven, behind an RV watermark barrier *(CR4, CR5)*
 
-**Chosen.** The [`CommitRequestReconciler`](../../../internal/controller/commitrequest_controller.go)
+**Chosen.** The [`CommitRequestReconciler`](../../internal/controller/commitrequest_controller.go)
 already watches the CRD and today only stamps `WaitingForAuditEvent`, deliberately leaving the
 finalize to the audit consumer "so it runs after the author's earlier mutations." That rationale was
 **single-stream total order**. Sharded per type, the equivalent is the CommitRequest's own
@@ -148,7 +148,7 @@ So move the finalize *into the controller* and delete the consumer's CommitReque
    single FIFO writer, enqueuing the finalize *after* those upserts guarantees the commit contains
    them (§6).
 3. Enqueue the existing `FinalizeSignal`
-   ([`FinalizeGitTargetWindow`](../../../internal/watch/event_router.go#L123) → the worker's
+   ([`FinalizeGitTargetWindow`](../../internal/watch/event_router.go#L123) → the worker's
    finalize path) and write the terminal phase with the unchanged
    [`applyFinalizeResultToStatus`](../../../internal/queue/commit_request.go#L214).
 
@@ -192,10 +192,10 @@ small state machine:
 **Chosen.** With DEC-A and DEC-B landed the canonical stream has no reader. Then:
 
 - `cmd/main` stops constructing the canonical `Queue`
-  ([`NewRedisAuditQueue`](../../../internal/queue/redis_audit_queue.go)), the `AuditConsumer`
-  ([main.go:376](../../../cmd/main.go#L376)), and the canonical-stream metrics reporter; the
+  ([`NewRedisAuditQueue`](../../internal/queue/redis_audit_queue.go)), the `AuditConsumer`
+  ([main.go:376](../../cmd/main.go#L376)), and the canonical-stream metrics reporter; the
   `--audit-redis-stream` / decision-TTL-for-canonical flags retire.
-- [`enqueueCanonicalEvent`](../../../internal/webhook/audit_handler.go#L495) collapses to
+- [`enqueueCanonicalEvent`](../../internal/webhook/audit_handler.go#L495) collapses to
   `mirrorByType`. The webhook path becomes **decode → quality-classify → body-merge → mirror per-type**.
 - **Drop the join decision dance, don't re-anchor it (§4.1).** Delete `claimDecision` /
   `CommitDecision` / `ReleaseDecision` and the `audit:decision:v1:<auditID>` key; the Joiner keeps
@@ -271,7 +271,7 @@ is written to the *single* canonical stream once, even across retries and the tw
   decode to the same object → identical `desired`. The **freshness tail** upserts it twice → the
   second is an `EditNoChange` at the commit boundary. So a duplicate costs one redundant stream
   entry and **zero** Git effect — precisely the "no-op write amplification" the ingestion doc already
-  measured as benign ([audit-log-ingestion-and-ordering.md](audit-log-ingestion-and-ordering.md) §8.2).
+  measured as benign ([audit-log-ingestion-and-ordering.md](../design/stream/audit-log-ingestion-and-ordering.md) §8.2).
 
 So **drop** `claim`/`commit`/`release` and the decision key entirely. The Joiner reduces to:
 
@@ -370,7 +370,7 @@ that falls back to a plain finalize (degrade to "commit what's there," never han
 barrier guarantees every pre-C mutation *already delivered to its stream* is applied. It cannot
 include a pre-C mutation whose audit event is still in flight (webhook hasn't mirrored it) or
 arrived out of order into the **late lane** (measured ~3.2%,
-[audit-log-ingestion-and-ordering.md](audit-log-ingestion-and-ordering.md) §7). The canonical
+[audit-log-ingestion-and-ordering.md](../design/stream/audit-log-ingestion-and-ordering.md) §7). The canonical
 design had the same in-flight gap, but its *trigger* rode the same ingest path as the mutations
 (the CR's own audit event), which roughly equalized the delays. A controller watch event arrives
 **faster** than audit ingest, and the first C-B2 e2e run proved it immediately (the generateName
@@ -427,5 +427,5 @@ replaces is deleted** (the same discipline R2→R3 used).
   retiring the decision key is safe (the R7 analogue measurement).
 - **HA (R10, deferred).** The canonical consumer was the one leader-elected audit reader; the
   per-type tails + driver run under the watch.Manager. Multi-replica fan-out and per-type cursor
-  ownership stay in [ha-improvements.md](ha-improvements.md); this change must not preclude them,
+  ownership stay in [ha-improvements.md](../design/stream/ha-improvements.md); this change must not preclude them,
   and the controller-driven finalize already rides controller-runtime leader election.

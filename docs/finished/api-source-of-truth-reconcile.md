@@ -8,14 +8,14 @@
 > per-type **audit tail** (freshness) are the **sole** live-truth path. The full e2e suite is
 > green at procs=1 and procs=4 (the only intermittent failure is the pre-existing IceCreamOrder
 > CRD-discovery wobble — see
-> [../startup-robustness-cert-and-crd-wobble.md](../startup-robustness-cert-and-crd-wobble.md)).
+> [../startup-robustness-cert-and-crd-wobble.md](../design/startup-robustness-cert-and-crd-wobble.md)).
 > File/symbol references below to `snapshot_stream.go` and `informers.go` are **historical** —
 > those files no longer exist; they record what was removed (links to them have been delinked).
 > Minor deviation from the plan: the GVR *resolver* helpers (`resolveSnapshotGVRs`,
 > `resolveSnapshotGVRForType`, `snapshotGVRsFromTable`, …) were **moved** to
 > `internal/watch/scope_resolve.go`, not deleted (only the live *gather* was deleted).
 > **For the current runtime picture + the bootstrap walk-through, read
-> [architecture-and-bootstrap.md](architecture-and-bootstrap.md).** The original agreed-direction
+> [architecture-and-bootstrap.md](../design/stream/architecture-and-bootstrap.md).** The original agreed-direction
 > status (for history) follows.
 >
 > Status: **agreed direction — the demand substrate is COMPLETE; the pivot + demolition are
@@ -31,17 +31,17 @@
 > gather, the RECONCILING handover, and content hashing all go. This is a bold **cutover**, not
 > a parallel path left to linger. Supersedes the always-open "merged streaming tail" (M13)
 > sketch in
-> [../manifest/version2/per-type-reconcile-and-streaming-tail.md](../manifest/version2/per-type-reconcile-and-streaming-tail.md)
+> [../manifest/version2/per-type-reconcile-and-streaming-tail.md](../design/manifest/version2/per-type-reconcile-and-streaming-tail.md)
 > with a watch-free, periodic-reconcile model built on the per-type Redis keyspace.
 > Captured: 2026-06-10 · Updated: 2026-06-10
 > Owner: Simon
 > Related:
 > [demand-driven-type-materialization-lifecycle.md](demand-driven-type-materialization-lifecycle.md) (**which** types get a checkpoint and the Dormant→Syncing→Synced lifecycle that governs it — the demand layer beneath this doc),
-> [audit-log-ingestion-and-ordering.md](audit-log-ingestion-and-ordering.md) (the log producer / ordering / late-lane detail this doc leaves out),
+> [audit-log-ingestion-and-ordering.md](../design/stream/audit-log-ingestion-and-ordering.md) (the log producer / ordering / late-lane detail this doc leaves out),
 > [per-resource-type-rv-keyed-streams-experiment.md](per-resource-type-rv-keyed-streams-experiment.md) (the write-only prototype this consumes),
-> [../manifest/version2/dream.md](../manifest/version2/dream.md) (the origin),
-> [../manifest/reconcile-via-watchlist-mark-and-sweep.md](../manifest/reconcile-via-watchlist-mark-and-sweep.md) (the plan/sweep machinery, reused),
-> [../manifest/version2/per-type-reconcile-and-streaming-tail.md](../manifest/version2/per-type-reconcile-and-streaming-tail.md) (M10–M12 it builds on).
+> [../manifest/version2/dream.md](../design/manifest/version2/dream.md) (the origin),
+> [../manifest/reconcile-via-watchlist-mark-and-sweep.md](../design/manifest/reconcile-via-watchlist-mark-and-sweep.md) (the plan/sweep machinery, reused),
+> [../manifest/version2/per-type-reconcile-and-streaming-tail.md](../design/manifest/version2/per-type-reconcile-and-streaming-tail.md) (M10–M12 it builds on).
 
 ## 1. One paragraph
 
@@ -93,8 +93,8 @@ consumer that splices them. This is a **checkpoint + write-ahead-log** shape.
 > streaming-list WATCH** (`sendInitialEvents=true` + the initial-events-end bookmark), with a
 > consistent **LIST as the per-type fallback** for a server that cannot stream — never a
 > long-lived watch (R3). This is the modern path the Materializer documents
-> ([materializer.go](../../../internal/typeset/materializer.go)). The current writer
-> ([`mirrorTypeObjects`](../../../internal/watch/type_objects_mirror.go#L59)) uses the LIST
+> ([materializer.go](../../internal/typeset/materializer.go)). The current writer
+> ([`mirrorTypeObjects`](../../internal/watch/type_objects_mirror.go#L59)) uses the LIST
 > fallback; the streaming-list fast-path is an R1 upgrade. Where older text below says "LIST
 > checkpoint," read "checkpoint fill."
 
@@ -143,7 +143,7 @@ unchanged (§5).
 
 **Chosen.** The checkpoint is the only thing that touches the API on a schedule, and it
 closes immediately. The log is fed by the existing audit-webhook tap
-([`mirrorByType`](../../../internal/webhook/audit_handler.go#L518)). They are never wired
+([`mirrorByType`](../../internal/webhook/audit_handler.go#L518)). They are never wired
 to each other.
 
 *Rejected:* keep `:objects:items` live by folding the log into it — couples the two feeds,
@@ -168,7 +168,7 @@ content hashing.
 The encoding (`<rv>-*` with Valkey-allocated subsequence), the RV-comparison rules, the
 diagnostic **late lane** for out-of-order arrivals, RV-less placement, and the deferred
 Lua / pre-sorter improvements all live in the dedicated producer design:
-**[audit-log-ingestion-and-ordering.md](audit-log-ingestion-and-ordering.md)**. The
+**[audit-log-ingestion-and-ordering.md](../design/stream/audit-log-ingestion-and-ordering.md)**. The
 load-bearing invariant that doc establishes, and that this reconcile relies on: **the main
 stream is strictly RV-ordered — we never knowingly insert an out-of-order event** — so the
 splice in §6 can fold by stream position.
@@ -191,17 +191,17 @@ events (some deletes, collection verbs) get a best-effort placement in the log f
 **freshness**; their **correctness** is guaranteed by the next checkpoint — the LIST will
 simply not contain a deleted object, and the type-scoped mark-and-sweep removes it. We do
 not over-engineer the RV-less path; the checkpoint backstops it. The placement mechanics
-are in [audit-log-ingestion-and-ordering.md](audit-log-ingestion-and-ordering.md) (IR5).
+are in [audit-log-ingestion-and-ordering.md](../design/stream/audit-log-ingestion-and-ordering.md) (IR5).
 
 ### DEC-6 — Drop content hashing  *(satisfies R7)*
 
 **Chosen, and wanted.** Remove `isDuplicateContent`
 (informers.go) and `computeEventHash` /
 `processedEventHashes`
-([git_target_event_stream.go](../../../internal/reconcile/git_target_event_stream.go)).
+([git_target_event_stream.go](../../internal/reconcile/git_target_event_stream.go)).
 "Newer?" is answered by the stream position (DEC-3); "changed?" is answered by the writer's
 existing no-op detection (`manifestedit.Decide` → `EditNoChange`,
-`manifestsAreSemanticallyEqual` in [plan_flush.go](../../../internal/git/plan_flush.go)),
+`manifestsAreSemanticallyEqual` in [plan_flush.go](../../internal/git/plan_flush.go)),
 already computed for free at the commit boundary. Measured before/after on a high-churn
 type (R13); the cheap fallback if ever needed is a per-identity last-position equality
 check (string compare, not a hash).
@@ -210,17 +210,17 @@ check (string compare, not a hash).
 
 **Chosen.** With the audit push as the sole live feed and the checkpoint as the periodic
 truth, three things go: the informer **object-watch** pipeline (the `startInformerScope` /
-`startSingleInformer` lifecycle in [manager.go](../../../internal/watch/manager.go) +
+`startSingleInformer` lifecycle in [manager.go](../../internal/watch/manager.go) +
 `addHandlers`), the per-reconcile **streaming
 gather** (`StreamClusterSnapshotForGitDest`
 and its per-type twin), and the bootstrap/steady-state **handover** buffer
 (`BeginReconciliation`/`OnReconciliationComplete`). The checkpoint writer is the per-type
-fill ([`mirrorTypeObjects`](../../../internal/watch/type_objects_mirror.go#L59), now demand-
+fill ([`mirrorTypeObjects`](../../internal/watch/type_objects_mirror.go#L59), now demand-
 driven), **not** the whole-GitTarget gather — so that gather is deleted outright, not kept as
 a "checkpoint writer." Deleted-final-state handling and shared fan-out, which informers gave
 for free, are now provided by the checkpoint (catches missed deletes) and Redis fan-out (one
 capture, N consumers). The **type-level** discovery watch
-([`startAPISurfaceTriggerInformers`](../../../internal/watch/manager_catalog.go#L378)) stays
+([`startAPISurfaceTriggerInformers`](../../internal/watch/manager_catalog.go#L378)) stays
 — it watches resource *types*, not objects (R3). **Sequencing (per review): this deletion
 happens only after the splice (R2) is proven the sole live truth path.**
 
@@ -235,11 +235,11 @@ commit window already coalesces, so this is tuning, not new machinery.
 The entire write side stays. **Only the source of `Desired` changes** — from "a live API
 stream this reconcile opened" to "the spliced materialization."
 
-- [`BuildScopedPlan`](../../../internal/manifestanalyzer/plan.go#L210) — type-scoped
+- [`BuildScopedPlan`](../../internal/manifestanalyzer/plan.go#L210) — type-scoped
   mark-and-sweep; a reconcile passes that type's desired set + scope predicate, a pure
   sweep passes an empty desired set (M12).
-- [`ResyncRequest{Desired, Revision, ScopeGVR}`](../../../internal/git/types.go#L224) +
-  [`EnqueueResync`](../../../internal/git/branch_worker.go#L294) — the BranchWorker entry
+- [`ResyncRequest{Desired, Revision, ScopeGVR}`](../../internal/git/types.go#L224) +
+  [`EnqueueResync`](../../internal/git/branch_worker.go#L294) — the BranchWorker entry
   point; `ScopeGVR` already makes a resync per-type.
 - The BranchWorker single-writer queue, commit window, and `plan_flush` apply path.
 
@@ -253,15 +253,15 @@ old path until the splice is the sole live truth). Grouped by the decision that 
 
 | Kill | Code (file · symbols) | Why dead | Replaced by |
 |---|---|---|---|
-| **Content hashing** (DEC-6/R7) | `isDuplicateContent` + `lastSeenHash`/`clearDeduplicationCacheForGVRs`/`resourceMatchesGVRs`/`splitResourceKey` ([manager.go](../../../internal/watch/manager.go)); `computeEventHash`/`processedEventHashes` ([git_target_event_stream.go](../../../internal/reconcile/git_target_event_stream.go)) | "newer?" = stream position (DEC-3); "changed?" = writer no-op detection | `manifestedit.Decide` at the commit boundary |
-| **Long-lived object informers** (DEC-7/R3) | the informer lifecycle in [manager.go](../../../internal/watch/manager.go) — `activeInformers`/`informerFactories`, `desiredInformerScope`, `informersToStart`/`informersObsolete`/`compareInformerScope`, `startInformerScope`/`startSingleInformer`/`startCollectedInformers`/`stopInformerNamespace`/`initializeInformerMaps`; the object-watch handlers in informers.go (`addHandlers` + funcs) | no object watch stays open (R3) | checkpoint (missed deletes) + audit push (live) + Redis fan-out |
-| **RECONCILING handover** (DEC-7) | `GitTargetEventStream` buffering + `BeginReconciliation`/`OnReconciliationComplete` ([git_target_event_stream.go](../../../internal/reconcile/git_target_event_stream.go)); `EventRouter.BeginReconciliationForStream`/`CompleteReconciliationForStream`; `Manager.beginReconciliationForTargets`/`completeReconciliationForTargets` | no bootstrap-vs-steady race once there is no informer bootstrap | reconcile-off-checkpoint is uniform |
+| **Content hashing** (DEC-6/R7) | `isDuplicateContent` + `lastSeenHash`/`clearDeduplicationCacheForGVRs`/`resourceMatchesGVRs`/`splitResourceKey` ([manager.go](../../internal/watch/manager.go)); `computeEventHash`/`processedEventHashes` ([git_target_event_stream.go](../../internal/reconcile/git_target_event_stream.go)) | "newer?" = stream position (DEC-3); "changed?" = writer no-op detection | `manifestedit.Decide` at the commit boundary |
+| **Long-lived object informers** (DEC-7/R3) | the informer lifecycle in [manager.go](../../internal/watch/manager.go) — `activeInformers`/`informerFactories`, `desiredInformerScope`, `informersToStart`/`informersObsolete`/`compareInformerScope`, `startInformerScope`/`startSingleInformer`/`startCollectedInformers`/`stopInformerNamespace`/`initializeInformerMaps`; the object-watch handlers in informers.go (`addHandlers` + funcs) | no object watch stays open (R3) | checkpoint (missed deletes) + audit push (live) + Redis fan-out |
+| **RECONCILING handover** (DEC-7) | `GitTargetEventStream` buffering + `BeginReconciliation`/`OnReconciliationComplete` ([git_target_event_stream.go](../../internal/reconcile/git_target_event_stream.go)); `EventRouter.BeginReconciliationForStream`/`CompleteReconciliationForStream`; `Manager.beginReconciliationForTargets`/`completeReconciliationForTargets` | no bootstrap-vs-steady race once there is no informer bootstrap | reconcile-off-checkpoint is uniform |
 | **Per-reconcile streaming gather** (R2) | most of snapshot_stream.go — `StreamClusterSnapshotForGitDest`, `StreamSnapshotForType`, `resolveSnapshotGVRForType`, `joinSnapshotStreams`, `streamInitialEvents`, `listInitialEvents`, `streamingListOptions`, `snapshotStreamTasks` | desired is no longer gathered live per reconcile | the splice (§6) |
-| **Whole-GitTarget resync + plan-hash selection** (R2) | [manager.go](../../../internal/watch/manager.go) — `emitSnapshotForRuleChange`, `snapshotTargetsNeedingDelivery`, `currentRuleSetSnapshots`/`watchPlanFromTable`, `ruleSetSnapshotTarget`/`targetWatchPlan`, `lastDeliveredRuleSetHash`/`pendingRuleSetHash`/`markRuleSetSnapshotDelivered`, `snapshotEmitCount`; [event_router.go](../../../internal/watch/event_router.go) — `EmitResyncForGitDest`, `TriggerResyncForGitDest`, `gatherAndEnqueueResync` | reconcile is per-type off the checkpoint, not a whole-target gather on rule churn | per-type splice (R2) + the demand `Declare` (L-2) for scope |
-| **Bootstrap `SnapshotSynced` gate** (R2) | [gittarget_controller.go](../../../internal/controller/gittarget_controller.go) — `evaluateSnapshotGate`'s resync + `GitTargetConditionSnapshotSynced`; `Manager.gitTargetSnapshotSynced` ([type_lifecycle.go](../../../internal/watch/type_lifecycle.go)) | no initial whole-target snapshot to gate; a type is serviceable when its checkpoint is `Synced` | the materializer phase **is** the readiness signal |
+| **Whole-GitTarget resync + plan-hash selection** (R2) | [manager.go](../../internal/watch/manager.go) — `emitSnapshotForRuleChange`, `snapshotTargetsNeedingDelivery`, `currentRuleSetSnapshots`/`watchPlanFromTable`, `ruleSetSnapshotTarget`/`targetWatchPlan`, `lastDeliveredRuleSetHash`/`pendingRuleSetHash`/`markRuleSetSnapshotDelivered`, `snapshotEmitCount`; [event_router.go](../../internal/watch/event_router.go) — `EmitResyncForGitDest`, `TriggerResyncForGitDest`, `gatherAndEnqueueResync` | reconcile is per-type off the checkpoint, not a whole-target gather on rule churn | per-type splice (R2) + the demand `Declare` (L-2) for scope |
+| **Bootstrap `SnapshotSynced` gate** (R2) | [gittarget_controller.go](../../internal/controller/gittarget_controller.go) — `evaluateSnapshotGate`'s resync + `GitTargetConditionSnapshotSynced`; `Manager.gitTargetSnapshotSynced` ([type_lifecycle.go](../../internal/watch/type_lifecycle.go)) | no initial whole-target snapshot to gate; a type is serviceable when its checkpoint is `Synced` | the materializer phase **is** the readiness signal |
 | **Single-stream audit fan** (R2/R3) | the single-canonical-stream match/route in [redis_audit_consumer.go](../../../internal/queue/redis_audit_consumer.go) (`XREADGROUP` one stream → per-event `git.Event`) | capture is sharded per-type and consumed by the splice, not routed per event | per-type `:audit:stream` + splice |
 
-**Rewired, not deleted:** [`EmitTypeReconcileForGitDest`](../../../internal/watch/event_router.go#L324) and `reconcileTypeForSyncedTargets` lose their `StreamSnapshotForType` call and gain the splice as the desired source.
+**Rewired, not deleted:** [`EmitTypeReconcileForGitDest`](../../internal/watch/event_router.go#L324) and `reconcileTypeForSyncedTargets` lose their `StreamSnapshotForType` call and gain the splice as the desired source.
 
 **Kept (the load-bearing remainder):** the write side (§5 — `BuildScopedPlan`, `ResyncRequest`/`EnqueueResync`, BranchWorker + `plan_flush`); demand + scope resolution (`resolveSnapshotGVRs`, the watched-type tables, `snapshotGVRsFromTable`); the **type-level** discovery watch (`startAPISurfaceTriggerInformers` — CRDs/APIServices, allowed by R3); the audit-webhook tap (`mirrorByType`); and the per-type **checkpoint fill** (`mirrorTypeObjects`, to grow the streaming-list/watch+bookmark fast-path).
 
@@ -335,7 +335,7 @@ demolish (R3).
 as self-renewing leases), the GitTarget reconcile `Declare`s its watched-type set, a periodic
 **Sweep** re-anchors the still-claimed and ages out withdrawn demand, and a checkpoint
 **driver** in `internal/watch` fills `:objects:items` for **only the claimed types**
-(`runTypeCheckpointSync` → [`mirrorTypeObjects`](../../../internal/watch/type_objects_mirror.go#L59),
+(`runTypeCheckpointSync` → [`mirrorTypeObjects`](../../internal/watch/type_objects_mirror.go#L59),
 gated by the Materializer's `Synced` phase). `TypeActivated` no longer mirrors unconditionally —
 the big efficiency win is in. The demand layer also **pre-delivers two stage outcomes below**:
 its **L-5** gave R1's durable `:objects:state` + boot rebuild (the checkpoint survives a
@@ -353,8 +353,8 @@ Make the log replay-exact and the checkpoint durable enough to resume from.
   `Synced` types without re-filling (the HA seam, R10).
 - ⬜ **Remaining — RV-ordered log + trim.** Re-key `:audit:stream` from `<stage_millis>-<rv>` to
   **RV-first** and add the diagnostic late lane — full producer spec in
-  [audit-log-ingestion-and-ordering.md](audit-log-ingestion-and-ordering.md) (the concrete change
-  is to [`RedisByTypeStreamQueue`](../../../internal/queue/redis_bytype_queue.go)). On each
+  [audit-log-ingestion-and-ordering.md](../design/stream/audit-log-ingestion-and-ordering.md) (the concrete change
+  is to [`RedisByTypeStreamQueue`](../../internal/queue/redis_bytype_queue.go)). On each
   re-anchor, **trim** `:audit:stream` to the trim cursor (the oldest serving checkpoint rv — the
   model is pinned in §6).
 - *Done when:* the log is RV-ordered and replay-rangeable by `:objects:rv`; checkpoints trim the
@@ -369,7 +369,7 @@ every other desired-set source is **dead on arrival** (R3 then deletes it).
   function of the materialized API (R1); no history replay (R6).
 - Wake on the Materializer's `TypeSynced` (the type is now serviceable) and on audit arrival
   for a watched type — **rewire** the existing
-  [`EmitTypeReconcileForGitDest`](../../../internal/watch/event_router.go#L324) seam so it
+  [`EmitTypeReconcileForGitDest`](../../internal/watch/event_router.go#L324) seam so it
   *splices* instead of calling `StreamSnapshotForType`. Fail-closed per §7 (hold while the
   checkpoint phase ≠ `Synced`).
 - *Done when:* a GitTarget reconciles per type off Redis with **zero per-reconcile API
@@ -431,4 +431,4 @@ the splice (R2), which is not built yet — they are intentionally not answered 
 
 > Ordering / late-lane / ingestion open questions (the pre-sorter and Lua triggers, the
 > non-numeric-RV policy, the §7 investigation) live in
-> [audit-log-ingestion-and-ordering.md](audit-log-ingestion-and-ordering.md), not here.
+> [audit-log-ingestion-and-ordering.md](../design/stream/audit-log-ingestion-and-ordering.md), not here.

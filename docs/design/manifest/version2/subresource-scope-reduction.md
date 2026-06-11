@@ -5,7 +5,7 @@
 > Amends:
 > [api-catalog-watched-type-architecture.md](api-catalog-watched-type-architecture.md)
 > and
-> [scale-subresource-audit-rehydration.md](scale-subresource-audit-rehydration.md).
+> [scale-subresource-audit-rehydration.md](../../../finished/scale-subresource-audit-rehydration.md).
 >
 > Trigger: after reviewing Kubernetes subresource facts and the recorded
 > `deployments/scale` audit event, the previous generic-subresource direction is

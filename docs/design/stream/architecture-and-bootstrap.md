@@ -8,9 +8,9 @@ this codebase uses in very specific ways (*flush*, *snapshot*, *splice*, *reconc
 
 Companion design docs (the "why"):
 
-- [`api-source-of-truth-reconcile.md`](./api-source-of-truth-reconcile.md) — the per-type
+- [`api-source-of-truth-reconcile.md`](../../finished/api-source-of-truth-reconcile.md) — the per-type
   checkpoint + audit-log model and the splice.
-- [`demand-driven-type-materialization-lifecycle.md`](./demand-driven-type-materialization-lifecycle.md)
+- [`demand-driven-type-materialization-lifecycle.md`](../../finished/demand-driven-type-materialization-lifecycle.md)
   — the demand axis (claims, the materializer phase machine).
 - [`audit-log-ingestion-and-ordering.md`](./audit-log-ingestion-and-ordering.md) — how audit
   events become RV-ordered per-type streams.
@@ -289,7 +289,7 @@ sequenceDiagram
   by its own controller: it waits for the CR's create event in the commitrequests per-type
   stream (author attribution + ordering anchor), drains the GitTarget's tails to a per-type
   watermark snapshot, then finalizes the open window author-bound
-  ([canonical-stream-retirement.md](canonical-stream-retirement.md)).
+  ([canonical-stream-retirement.md](../../finished/canonical-stream-retirement.md)).
 
 ---
 

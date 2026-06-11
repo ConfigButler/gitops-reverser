@@ -3,10 +3,10 @@
 > Status: decided
 > Captured: 2026-06-08
 > Related:
-> [file-agnostic-placement.md](file-agnostic-placement.md),
-> [contextual-namespace-and-kustomize-folder-editing.md](contextual-namespace-and-kustomize-folder-editing.md),
-> [../sops-repo-bootstrap-and-key-management-architecture.md](../sops-repo-bootstrap-and-key-management-architecture.md),
-> [../sops-repo-bootstrap-out-of-scope.md](../sops-repo-bootstrap-out-of-scope.md)
+> [file-agnostic-placement.md](../design/manifest/file-agnostic-placement.md),
+> [contextual-namespace-and-kustomize-folder-editing.md](../design/manifest/contextual-namespace-and-kustomize-folder-editing.md),
+> [../sops-repo-bootstrap-and-key-management-architecture.md](../design/sops-repo-bootstrap-and-key-management-architecture.md),
+> [../sops-repo-bootstrap-out-of-scope.md](../design/sops-repo-bootstrap-out-of-scope.md)
 
 ## Decision
 
@@ -15,7 +15,7 @@ SOPS file**. We do **not** write SOPS-encrypted multi-document YAML (no
 `\n---\n`-separated documents inside an encrypted file).
 
 Plaintext manifests may still be multi-document where that is convenient (see
-[file-agnostic-placement.md](file-agnostic-placement.md)); this decision is
+[file-agnostic-placement.md](../design/manifest/file-agnostic-placement.md)); this decision is
 scoped to files we encrypt with SOPS.
 
 ## Why this came up
