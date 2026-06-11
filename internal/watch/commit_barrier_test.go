@@ -20,7 +20,6 @@ package watch
 
 import (
 	"context"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -28,104 +27,104 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
-	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
-// barrierTailReader is a blocking tail reader with the optional high-water capability the
-// barrier's quiet-type shortcut probes for.
-type barrierTailReader struct {
-	blockingTailReader
-
-	highWater atomic.Value // string
-}
-
-func (r *barrierTailReader) TypeAuditHighWater(_ context.Context, _, _ string) string {
-	if v, ok := r.highWater.Load().(string); ok {
-		return v
-	}
-	return ""
-}
-
-// barrierManager builds a Manager whose watched table for my-target holds core/v1 secrets
-// (the standard fixture), with the given reader wired as the tail reader.
-func barrierManager(
-	t *testing.T, reader AuditTailReader,
-) (*Manager, types.ResourceReference, schema.GroupVersionResource) {
+// barrierManager builds a Manager wired with the given reader. It returns the manager and
+// the secrets GVR that the fixture's WatchRule targets — the type all barrier tests use.
+func barrierManager(t *testing.T, reader AuditTailReader) (*Manager, schema.GroupVersionResource) {
 	t.Helper()
 	store := rulestore.NewStore()
 	addSecretsWatchRule(store)
 	m := streamingManager(t, gitTargetFixture(), store)
 	m.AuditTailReader = reader
-	gitDest := types.NewResourceReference("my-target", "gitops-reverser")
 	secrets := schema.GroupVersionResource{Group: "", Version: "v1", Resource: "secrets"}
-	return m, gitDest, secrets
+	return m, secrets
 }
 
-// TestDrainTailsToWatermark covers the §6 barrier condition (canonical-stream-retirement.md):
-// it holds while a tail's applied cursor is below the watermark, passes the moment the cursor
-// reaches it (the "finalize includes all pre-rv_C upserts" guarantee — the cursor only advances
-// after a batch is applied onto the FIFO worker), passes immediately for a quiet type whose
-// stream high-water is below the watermark, skips types with no running tail, and degrades to
-// false — never hangs — when a tail cannot reach the watermark in time (Option A).
-func TestDrainTailsToWatermark(t *testing.T) {
+// TestDrainTailsToSnapshot covers the §6 barrier condition (canonical-stream-retirement.md),
+// now using a per-type snapshot (map[GVR]string) instead of a single cross-type rv_C. Each
+// type's watermark is its own stream top taken at CommitRequest creation time, so no
+// cross-type RV ordering is assumed (correct for aggregated-API types with their own counters).
+func TestDrainTailsToSnapshot(t *testing.T) {
 	ctx := context.Background()
 
-	t.Run("cursor at or past the watermark passes immediately", func(t *testing.T) {
-		reader := &barrierTailReader{}
-		m, gitDest, secrets := barrierManager(t, reader)
+	t.Run("cursor at or past the per-type watermark passes immediately", func(t *testing.T) {
+		m, secrets := barrierManager(t, &blockingTailReader{})
 		m.setAuditTailCursor(secrets, "500-0")
-		assert.True(t, m.DrainTailsToWatermark(ctx, gitDest, "500", time.Second))
-		assert.True(t, m.DrainTailsToWatermark(ctx, gitDest, "499", time.Second))
+		// snapshot watermark = 500 → cursor rv 500 >= 500 ✓
+		assert.True(t, m.DrainTailsToSnapshot(ctx, snap(secrets, "500"), time.Second))
+		// snapshot watermark = 499 → cursor rv 500 >= 499 ✓
+		assert.True(t, m.DrainTailsToSnapshot(ctx, snap(secrets, "499"), time.Second))
 	})
 
 	t.Run("a lagging cursor blocks the barrier until it advances", func(t *testing.T) {
-		reader := &barrierTailReader{}
-		reader.highWater.Store("600") // entries past the watermark exist; no quiet shortcut
-		m, gitDest, secrets := barrierManager(t, reader)
+		m, secrets := barrierManager(t, &blockingTailReader{})
 		m.setAuditTailCursor(secrets, "100-0")
 
 		go func() {
 			time.Sleep(350 * time.Millisecond)
-			m.setAuditTailCursor(secrets, "505-0") // the tail applies past rv_C
+			m.setAuditTailCursor(secrets, "505-0") // tail applies past the watermark
 		}()
 		start := time.Now()
-		assert.True(t, m.DrainTailsToWatermark(ctx, gitDest, "500", 5*time.Second),
+		assert.True(t, m.DrainTailsToSnapshot(ctx, snap(secrets, "500"), 5*time.Second),
 			"the barrier must pass once the tail's applied cursor reaches the watermark")
 		assert.GreaterOrEqual(t, time.Since(start), 300*time.Millisecond,
 			"the barrier must actually have waited for the cursor")
 	})
 
-	t.Run("a quiet type passes via the high-water shortcut", func(t *testing.T) {
-		reader := &barrierTailReader{}
-		reader.highWater.Store("100") // nothing as new as the watermark exists
-		m, gitDest, secrets := barrierManager(t, reader)
-		m.setAuditTailCursor(secrets, "100-3") // drained to the high-water
-		assert.True(t, m.DrainTailsToWatermark(ctx, gitDest, "500", time.Second))
+	t.Run("a type whose stream top was its watermark passes once the tail drains to it", func(t *testing.T) {
+		// snapshot[secrets]="100": the stream top at CR creation time was 100.
+		// No cross-type rv_C comparison needed; the tail just needs to reach 100.
+		m, secrets := barrierManager(t, &blockingTailReader{})
+		m.setAuditTailCursor(secrets, "100-3")
+		assert.True(t, m.DrainTailsToSnapshot(ctx, snap(secrets, "100"), time.Second))
 	})
 
 	t.Run("a stuck tail degrades to false at the deadline, never hangs", func(t *testing.T) {
-		reader := &barrierTailReader{}
-		reader.highWater.Store("600")
-		m, gitDest, secrets := barrierManager(t, reader)
+		m, secrets := barrierManager(t, &blockingTailReader{})
 		m.setAuditTailCursor(secrets, "100-0")
 		start := time.Now()
-		assert.False(t, m.DrainTailsToWatermark(ctx, gitDest, "500", 600*time.Millisecond))
+		assert.False(t, m.DrainTailsToSnapshot(ctx, snap(secrets, "500"), 600*time.Millisecond))
 		assert.Less(t, time.Since(start), 3*time.Second, "the degrade is bounded")
 	})
 
 	t.Run("a type with no running tail is skipped", func(t *testing.T) {
-		reader := &barrierTailReader{}
-		reader.highWater.Store("600")
-		m, gitDest, _ := barrierManager(t, reader)
-		// No cursor seeded: no tail runs for secrets (e.g. not yet Synced). There is no
-		// freshness path to wait on; correctness rides the checkpoint.
-		assert.True(t, m.DrainTailsToWatermark(ctx, gitDest, "500", time.Second))
+		m, secrets := barrierManager(t, &blockingTailReader{})
+		// No cursor seeded: no tail runs for secrets. There is no freshness path to wait on;
+		// correctness rides the checkpoint. The barrier passes immediately.
+		assert.True(t, m.DrainTailsToSnapshot(ctx, snap(secrets, "500"), time.Second))
 	})
 
-	t.Run("a non-numeric watermark has nothing orderable to wait for", func(t *testing.T) {
-		reader := &barrierTailReader{}
-		m, gitDest, secrets := barrierManager(t, reader)
-		m.setAuditTailCursor(secrets, "100-0")
-		assert.True(t, m.DrainTailsToWatermark(ctx, gitDest, "not-an-rv", time.Second))
+	t.Run("a type absent from the snapshot is not waited on", func(t *testing.T) {
+		m, secrets := barrierManager(t, &blockingTailReader{})
+		m.setAuditTailCursor(secrets, "100-0") // low cursor, but secrets is not in the snapshot
+		other := schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}
+		// snapshot only covers deployments (no tail, skipped) → passes immediately
+		assert.True(t, m.DrainTailsToSnapshot(ctx, snap(other, "500"), time.Second))
 	})
+
+	t.Run("an empty snapshot has nothing to wait for", func(t *testing.T) {
+		m, _ := barrierManager(t, &blockingTailReader{})
+		assert.True(t, m.DrainTailsToSnapshot(ctx, map[schema.GroupVersionResource]string{}, time.Second))
+	})
+
+	t.Run("a blank per-type watermark means the stream was empty at snapshot time", func(t *testing.T) {
+		m, secrets := barrierManager(t, &blockingTailReader{})
+		m.setAuditTailCursor(secrets, "100-0")
+		// snapshot[secrets]="" → stream had no entries when the CR was created → nothing to wait for
+		assert.True(t, m.DrainTailsToSnapshot(ctx, snap(secrets, ""), time.Second))
+	})
+
+	t.Run("an opaque (non-numeric) per-type watermark is skipped", func(t *testing.T) {
+		// Aggregated-API types may have opaque RVs that cannot be compared numerically.
+		// The barrier skips them rather than blocking forever.
+		m, secrets := barrierManager(t, &blockingTailReader{})
+		m.setAuditTailCursor(secrets, "100-0")
+		assert.True(t, m.DrainTailsToSnapshot(ctx, snap(secrets, "not-an-rv"), time.Second))
+	})
+}
+
+// snap builds a single-type snapshot for the test helpers above.
+func snap(gvr schema.GroupVersionResource, hw string) map[schema.GroupVersionResource]string {
+	return map[schema.GroupVersionResource]string{gvr: hw}
 }

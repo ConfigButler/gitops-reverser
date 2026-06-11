@@ -30,12 +30,17 @@ import (
 )
 
 // This file is the CommitRequest watermark barrier — the C-B1 drain-coordinator of
-// docs/design/stream/canonical-stream-retirement.md §6. A CommitRequest's own
-// resourceVersion (rv_C) is a global etcd-revision watermark: every mutation its author
-// made before creating it has a smaller RV. The barrier blocks until, for each type the
-// GitTarget claims, the per-type audit tail has APPLIED (enqueued onto the GitTarget's
-// FIFO BranchWorker) every stream entry strictly below rv_C — after which a finalize
-// enqueued behind those upserts is guaranteed to commit them.
+// docs/design/stream/canonical-stream-retirement.md §6. At CommitRequest creation time the
+// reconciler takes a per-type snapshot of each claimed type's stream top (TakeTypeSnapshot),
+// building an independent watermark per type. The barrier (DrainTailsToSnapshot) then waits
+// until, for each type T in the snapshot, the per-type audit tail has APPLIED (enqueued onto
+// the GitTarget's FIFO BranchWorker) every entry at or below that type's watermark. Because
+// each tail feeds a single FIFO writer, a finalize enqueued after the drain is guaranteed to
+// commit every pre-watermark mutation.
+//
+// Using per-type watermarks (not a single cross-type rv_C) means no cross-type RV ordering
+// is assumed: each comparison stays within the same type's RV space, so aggregated-API types
+// with their own RV counters are handled correctly.
 
 const (
 	// FinalizeBarrierTimeout bounds one watermark wait. Decided (Option A,
@@ -50,41 +55,62 @@ const (
 	barrierPollInterval = 200 * time.Millisecond
 )
 
-// auditHighWaterReader is the optional observation capability the barrier's quiet-type
-// shortcut uses: a type whose stream high-water is already below the watermark has no
-// pre-watermark entry left to deliver once its tail has caught up to that high-water.
-// queue.RedisByTypeStreamQueue implements it; a reader that does not simply denies the
-// shortcut (the barrier then needs cursor ≥ watermark, or times out).
+// auditHighWaterReader is the capability TakeTypeSnapshot uses to read each type's current
+// stream top. queue.RedisByTypeStreamQueue implements it; a reader that does not causes
+// TakeTypeSnapshot to leave the type's watermark blank (the barrier then skips the type —
+// safe because the checkpoint backstops it).
 type auditHighWaterReader interface {
 	TypeAuditHighWater(ctx context.Context, group, resource string) string
 }
 
-// DrainTailsToWatermark blocks until every per-type audit tail of the GitTarget's watched
-// types has applied all stream entries strictly below rv, or until timeout/ctx-cancel.
-// It returns true when the watermark was reached and false on the bounded degrade — the
+// TakeTypeSnapshot returns the current stream-top RV for each type the GitTarget currently
+// claims. It is called at CommitRequest creation time — before the first status stamp — to
+// build the per-type watermark map that DrainTailsToSnapshot will wait on.
+//
+// Each type's watermark is read from its own stream (via the optional auditHighWaterReader
+// capability), so no cross-type RV comparison is ever made. A type whose stream is empty or
+// whose reader does not implement the capability is recorded as "" — the barrier treats ""
+// as "nothing to wait for" and skips the type.
+func (m *Manager) TakeTypeSnapshot(
+	ctx context.Context, gitDest types.ResourceReference,
+) map[schema.GroupVersionResource]string {
+	gvrs := m.watchedGVRsForGitDest(gitDest)
+	snapshot := make(map[schema.GroupVersionResource]string, len(gvrs))
+	reader, hasHW := m.AuditTailReader.(auditHighWaterReader)
+	for _, gvr := range gvrs {
+		if hasHW {
+			snapshot[gvr] = reader.TypeAuditHighWater(ctx, gvr.Group, gvr.Resource)
+		}
+		// Without the capability the entry is left as "": barrier skips the type.
+	}
+	return snapshot
+}
+
+// DrainTailsToSnapshot blocks until every type in the snapshot has had its per-type audit
+// tail apply all entries up to the type's own watermark, or until timeout/ctx-cancel.
+// It returns true when all watermarks were reached and false on the bounded degrade — the
 // caller finalizes either way and reports the degrade (Option A).
 //
-// Per type T, the §6 condition: cursor_T ≥ rv, OR (highWater_T < rv AND cursor_T ≥
-// highWater_T) — i.e. the tail consumed everything pre-watermark, or nothing that new
-// exists and the tail is fully drained. A type with NO running tail is skipped: there is
-// no freshness path to wait on (the type rides checkpoints; e.g. claimed-but-unfollowable),
-// and waiting on something that cannot move would turn every finalize into a timeout. A
-// non-numeric rv carries no orderable watermark, so there is nothing to wait for.
-func (m *Manager) DrainTailsToWatermark(
-	ctx context.Context, gitDest types.ResourceReference, rv string, timeout time.Duration,
+// Per type T in the snapshot:
+//   - "" or non-numeric watermark → skip (empty stream or opaque RV such as aggregated API)
+//   - no running tail → skip (correctness rides the checkpoint)
+//   - streamIDRV(cursor_T) >= numericValue(snapshot[T]) → passed
+//
+// Types absent from the snapshot were not claimed at CommitRequest creation time and are
+// not waited on. The snapshot IS the wait set — DrainTailsToSnapshot reads only the
+// in-memory cursor map on each poll, making no Redis calls.
+func (m *Manager) DrainTailsToSnapshot(
+	ctx context.Context,
+	snapshot map[schema.GroupVersionResource]string,
+	timeout time.Duration,
 ) bool {
-	watermark, err := strconv.ParseUint(strings.TrimSpace(rv), 10, 64)
-	if err != nil {
-		return true
-	}
-	gvrs := m.watchedGVRsForGitDest(gitDest)
-	if len(gvrs) == 0 {
+	if len(snapshot) == 0 {
 		return true
 	}
 
 	deadline := time.Now().Add(timeout)
 	for {
-		if m.tailsReachedWatermark(ctx, gvrs, watermark) {
+		if m.snapshotReached(snapshot) {
 			return true
 		}
 		if ctx.Err() != nil || time.Now().After(deadline) {
@@ -100,47 +126,28 @@ func (m *Manager) DrainTailsToWatermark(
 	}
 }
 
-// tailsReachedWatermark evaluates the per-type barrier condition once across all types.
-func (m *Manager) tailsReachedWatermark(
-	ctx context.Context, gvrs []schema.GroupVersionResource, watermark uint64,
-) bool {
-	for _, gvr := range gvrs {
+// snapshotReached evaluates the per-type barrier condition once. It reads only the
+// in-memory cursor map — no Redis calls — so it is safe to call on every poll tick.
+func (m *Manager) snapshotReached(snapshot map[schema.GroupVersionResource]string) bool {
+	for gvr, hwRaw := range snapshot {
+		if hwRaw == "" {
+			continue // stream was empty at snapshot time — nothing to wait for
+		}
+		hw, err := strconv.ParseUint(strings.TrimSpace(hwRaw), 10, 64)
+		if err != nil {
+			continue // opaque RV (e.g. aggregated API) — can't compare, skip
+		}
 		cursorID, running := m.auditTailCursor(gvr)
 		if !running {
-			continue // no tail to wait on; correctness rides the checkpoint
+			continue // no tail running — correctness rides the checkpoint
 		}
 		cursor, ok := streamIDRV(cursorID)
-		if ok && cursor >= watermark {
-			continue
-		}
-		highWater, hwKnown := m.typeAuditHighWater(ctx, gvr)
-		drained := highWater == 0 || (ok && cursor >= highWater)
-		if hwKnown && highWater < watermark && drained {
-			continue // nothing pre-watermark exists beyond what the tail already applied
+		if ok && cursor >= hw {
+			continue // tail has consumed up to or past this type's snapshot watermark
 		}
 		return false
 	}
 	return true
-}
-
-// typeAuditHighWater reads a type stream's high-water RV through the optional capability
-// on the tail reader. known is false when the capability is absent, the stream is empty,
-// or the RV is not numeric (an aggregated apiserver's opaque RVs never gate the barrier).
-func (m *Manager) typeAuditHighWater(ctx context.Context, gvr schema.GroupVersionResource) (uint64, bool) {
-	reader, ok := m.AuditTailReader.(auditHighWaterReader)
-	if !ok {
-		return 0, false
-	}
-	raw := reader.TypeAuditHighWater(ctx, gvr.Group, gvr.Resource)
-	if raw == "" {
-		// An empty stream genuinely has nothing pre-watermark: report 0/known.
-		return 0, true
-	}
-	rv, err := strconv.ParseUint(raw, 10, 64)
-	if err != nil {
-		return 0, false
-	}
-	return rv, true
 }
 
 // streamIDRV parses the leading resourceVersion component of a stream ID (or of the
@@ -154,8 +161,8 @@ func streamIDRV(id string) (uint64, bool) {
 	return rv, true
 }
 
-// watchedGVRsForGitDest returns the distinct types the GitTarget currently watches — the
-// claim set the barrier must drain.
+// watchedGVRsForGitDest returns the distinct types the GitTarget currently watches.
+// Used by TakeTypeSnapshot to determine which types to include in the per-type snapshot.
 func (m *Manager) watchedGVRsForGitDest(gitDest types.ResourceReference) []schema.GroupVersionResource {
 	for _, table := range m.allWatchedTypeTables() {
 		if table.GitDest != gitDest {
