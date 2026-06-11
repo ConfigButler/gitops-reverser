@@ -63,20 +63,16 @@ const DefaultAuditMaxRequestBodyBytes = int64(10 * 1024 * 1024)
 type AuditHandlerConfig struct {
 	// MaxRequestBodyBytes is the maximum accepted HTTP request body size.
 	MaxRequestBodyBytes int64
-	// Queue enqueues accepted audit events to a durable backend.
-	// If nil, queueing is disabled.
-	Queue AuditEventQueue
 	// DebugQueue enqueues every decoded event before audit processing begins.
 	// If nil, early debug stream queueing is disabled.
 	DebugQueue AuditDebugEventQueue
-	// Joiner optionally parks additional-source bodies and deduplicates canonical audit events.
+	// Joiner optionally merges parked additional-source bodies into shallow
+	// official events before they are mirrored.
 	Joiner AuditEventJoiner
-	// ByTypeQueue mirrors each canonical (StageResponseComplete, body-merged) event
-	// into per-resource-type streams for the offline analysis experiment. It runs only
-	// after the canonical enqueue succeeds and is strictly best-effort: a failure here
-	// never fails the audit request. If nil, per-type mirroring is disabled. It shares
-	// the AuditEventQueue shape — it receives the same fully-merged event. See
-	// docs/design/stream/per-resource-type-rv-keyed-streams-experiment.md.
+	// ByTypeQueue mirrors each accepted (StageResponseComplete, body-merged) event
+	// into its per-resource-type stream — the substrate every consumer reads
+	// (docs/design/stream/api-source-of-truth-reconcile.md). Best-effort: a failure
+	// here never fails the audit request. If nil, per-type mirroring is disabled.
 	ByTypeQueue AuditEventQueue
 }
 
@@ -296,13 +292,15 @@ func (h *AuditHandler) processEvent(ctx context.Context, source AuditSource, aud
 		return err
 	}
 
-	// Only ResponseComplete drives the canonical stream. Earlier stages share the same auditID
-	// and must not claim the dedupe key; if they did, the later ResponseComplete event for the
-	// same auditID would be dropped as a duplicate before reaching Git.
+	// Only ResponseComplete carries the post-commit object state; earlier
+	// stages of the same request never reach the per-type mirror.
 	if auditEventV1.Stage != auditv1.StageResponseComplete {
 		return nil
 	}
 
+	// Serialize official-source mirroring within the pod: the per-type streams
+	// are RV-keyed, and concurrent handler goroutines appending out of arrival
+	// order would divert in-order events to the diagnostic late lane.
 	if source == AuditSourceOfficial {
 		gateStart := time.Now()
 		h.canonicalMu.Lock()
@@ -323,17 +321,15 @@ func (h *AuditHandler) processEvent(ctx context.Context, source AuditSource, aud
 		return nil
 	}
 
-	eventToWrite, joinDecision, shouldEmit, err := h.eventForCanonicalStream(
+	eventToWrite, joinDecision, shouldEmit, err := h.eventToMirror(
 		ctx, source, &auditEventV1, auditEvent, quality,
 	)
 	if err != nil || !shouldEmit {
 		return err
 	}
-	if err := h.enqueueCanonicalEvent(ctx, eventToWrite, auditEvent, joinDecision); err != nil {
-		return err
-	}
-	if err := h.commitJoinDecision(ctx, joinDecision); err != nil {
-		return err
+	h.mirrorByType(ctx, eventToWrite)
+	if joinDecision.Action == AuditJoinActionEmit {
+		addEmittedMetric(ctx, joinDecision.Source, joinDecision.Result)
 	}
 
 	h.logFirstAuditEmit(log, source, auditEvent)
@@ -444,7 +440,7 @@ func (h *AuditHandler) recordReceivedMetric(
 	))
 }
 
-func (h *AuditHandler) eventForCanonicalStream(
+func (h *AuditHandler) eventToMirror(
 	ctx context.Context,
 	source AuditSource,
 	auditEventV1 *auditv1.Event,
@@ -492,29 +488,10 @@ func (h *AuditHandler) eventForCanonicalStream(
 	}
 }
 
-func (h *AuditHandler) enqueueCanonicalEvent(
-	ctx context.Context,
-	event *auditv1.Event,
-	auditEvent audit.Event,
-	decision AuditJoinDecision,
-) error {
-	if h.config.Queue == nil {
-		return nil
-	}
-	if err := h.config.Queue.Enqueue(ctx, *event); err != nil {
-		h.releaseJoinDecision(ctx, decision)
-		return fmt.Errorf("failed to enqueue audit event %q: %w", auditEvent.AuditID, err)
-	}
-	h.mirrorByType(ctx, event)
-	return nil
-}
-
-// mirrorByType best-effort mirrors the canonical event into its per-resource-type
-// streams. It runs only after the canonical enqueue has succeeded, so the per-type
-// streams reflect exactly what reached the canonical stream, and it only ever sees
-// StageResponseComplete events (earlier stages are dropped upstream). A failure here
-// must never fail the audit request or release the join decision; the first failure
-// is logged prominently, the rest at V(1).
+// mirrorByType best-effort mirrors the accepted, body-merged event into its
+// per-resource-type stream. It only ever sees StageResponseComplete events
+// (earlier stages are dropped upstream). A failure here must never fail the
+// audit request; the first failure is logged prominently, the rest at V(1).
 func (h *AuditHandler) mirrorByType(ctx context.Context, event *auditv1.Event) {
 	if h.config.ByTypeQueue == nil {
 		return
@@ -529,28 +506,6 @@ func (h *AuditHandler) mirrorByType(ctx context.Context, event *auditv1.Event) {
 		})
 		log.V(1).Info("Failed to mirror audit event to per-resource-type streams",
 			"auditID", event.AuditID, "error", err.Error())
-	}
-}
-
-func (h *AuditHandler) commitJoinDecision(ctx context.Context, decision AuditJoinDecision) error {
-	if h.config.Joiner == nil || decision.Action != AuditJoinActionEmit {
-		return nil
-	}
-	if err := h.config.Joiner.CommitDecision(ctx, decision.AuditID, decision.Result); err != nil {
-		return fmt.Errorf("failed to commit audit event decision %q: %w", decision.AuditID, err)
-	}
-	addEmittedMetric(ctx, decision.Source, decision.Result)
-	return nil
-}
-
-func (h *AuditHandler) releaseJoinDecision(ctx context.Context, decision AuditJoinDecision) {
-	if h.config.Joiner == nil || decision.Action != AuditJoinActionEmit {
-		return
-	}
-	if err := h.config.Joiner.ReleaseDecision(ctx, decision.AuditID); err != nil {
-		logf.Log.WithName("audit-handler").Error(err,
-			"Failed to release audit join decision after enqueue failure",
-			"auditID", decision.AuditID)
 	}
 }
 

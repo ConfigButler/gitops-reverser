@@ -1,14 +1,19 @@
 # Where the events flow today — the dual-path picture and how close R3 is
 
-> ## ⚠️ HISTORICAL — the cutover is COMPLETE (R3 landed 2026-06-11)
+> ## ⚠️ HISTORICAL — the cutover is COMPLETE (R3 landed 2026-06-11; C-track too)
 > This doc captured the **dual-path** moment *during* the cutover (R1+R2 landed, R3 pending).
 > **R3 ("the great deletion") has since landed**, so the "OLD live-truth path" described below
 > — the long-lived object informers, the single-canonical-stream resource fan, the
 > RECONCILING handover, the per-reconcile gather, and content hashing — **no longer exists**
-> (`informers.go` and `snapshot_stream.go` are deleted; the AuditConsumer now only handles
-> CommitRequest finalize + `/scale`). The per-type checkpoint+log **splice** (correctness) and
-> the per-type **audit tail** (freshness) are now the **sole** live-truth path. This file is
-> kept as the cutover record; **for the current single-path architecture read
+> (`informers.go` and `snapshot_stream.go` are deleted). The §4 "AuditConsumer side-jobs"
+> were then relocated and the canonical stream itself deleted
+> ([canonical-stream-retirement.md](canonical-stream-retirement.md), all stages landed
+> 2026-06-11): `/scale` rides the parent type's stream, CommitRequest finalize is
+> controller-driven behind audit attribution + the watermark barrier, and the
+> `AuditConsumer`, the canonical stream, and the Joiner's auditID dedupe are gone. The
+> per-type checkpoint+log **splice** (correctness) and the per-type **audit tail**
+> (freshness) are the **sole** path. This file is kept as the cutover record; **for the
+> current single-path architecture read
 > [architecture-and-bootstrap.md](architecture-and-bootstrap.md).**
 >
 > Original status: **explainer / snapshot after R1 + R2 landed** (commit `3d249e3`). Companion

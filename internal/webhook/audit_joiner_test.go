@@ -20,7 +20,6 @@ package webhook
 
 import (
 	"context"
-	"encoding/json"
 	"os"
 	"strings"
 	"sync/atomic"
@@ -29,7 +28,6 @@ import (
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/go-logr/logr/funcr"
-	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -60,7 +58,6 @@ func TestRedisAuditEventJoiner_WaitOfficialParksAdditionalBody(t *testing.T) {
 
 	assert.Equal(t, AuditJoinActionParked, decision.Action)
 	assert.True(t, mr.Exists(bodyKey("audit-1")))
-	assert.False(t, mr.Exists(decisionKey("audit-1")))
 }
 
 func TestRedisAuditEventJoiner_WaitOfficialMergesParkedBody(t *testing.T) {
@@ -86,10 +83,7 @@ func TestRedisAuditEventJoiner_WaitOfficialMergesParkedBody(t *testing.T) {
 	assert.Equal(t, "flunder-a", decision.Event.ObjectRef.Name)
 	assert.Equal(t, "team-a", decision.Event.ObjectRef.Namespace)
 	assert.Equal(t, "true", decision.Event.Annotations["audit.k8s.io/proxy.requestObject.truncated"])
-
-	require.NoError(t, joiner.CommitDecision(ctx, decision.AuditID, decision.Result))
-	assert.True(t, mr.Exists(decisionKey("audit-2")))
-	assert.False(t, mr.Exists(bodyKey("audit-2")))
+	assert.False(t, mr.Exists(bodyKey("audit-2")), "the merged parked body is deleted eagerly")
 }
 
 func TestRedisAuditEventJoiner_CompleteOfficialDoesNotPeekOrMergeParkedBody(t *testing.T) {
@@ -149,7 +143,6 @@ func TestRedisAuditEventJoiner_ShallowOfficialWithoutParkedBodyDropsImmediately(
 
 	assert.Equal(t, AuditJoinActionDrop, decision.Action)
 	assert.False(t, mr.Exists(bodyKey("audit-shallow-1")), "shallow official must not park")
-	assert.False(t, mr.Exists(decisionKey("audit-shallow-1")), "shallow drop must not claim a decision")
 }
 
 func TestRedisAuditEventJoiner_ShallowOfficialWaitsForLateAdditionalBody(t *testing.T) {
@@ -197,7 +190,6 @@ func TestRedisAuditEventJoiner_ShallowOfficialTimesOutWaitingForBody(t *testing.
 		"shallow official should hold the canonical gate for the full body wait before dropping")
 	assert.Equal(t, AuditJoinActionDrop, decision.Action)
 	assert.False(t, mr.Exists(bodyKey("audit-wait-timeout-1")), "timed-out wait must not park")
-	assert.False(t, mr.Exists(decisionKey("audit-wait-timeout-1")), "shallow drop must not claim a decision")
 }
 
 // TestRedisAuditEventJoiner_WaitForBodyHonorsInjectedClock demonstrates PR #149
@@ -283,7 +275,6 @@ func TestRedisAuditEventJoiner_ParksAdditionalForAnyAPIGroup(t *testing.T) {
 
 	assert.Equal(t, AuditJoinActionParked, decision.Action)
 	assert.True(t, mr.Exists(bodyKey("audit-6")))
-	assert.False(t, mr.Exists(decisionKey("audit-6")))
 }
 
 func TestRedisAuditEventJoiner_DropsAdditionalWithoutBodyAsMalformed(t *testing.T) {
@@ -296,7 +287,6 @@ func TestRedisAuditEventJoiner_DropsAdditionalWithoutBodyAsMalformed(t *testing.
 
 	assert.Equal(t, AuditJoinActionDrop, decision.Action)
 	assert.False(t, mr.Exists(bodyKey("audit-malformed")))
-	assert.False(t, mr.Exists(decisionKey("audit-malformed")))
 }
 
 func TestClassifyAuditEventQuality_DeleteCollectionFixture(t *testing.T) {
@@ -328,7 +318,10 @@ func TestRedisAuditEventJoiner_CollectionEventEmitsAsIsWithListBody(t *testing.T
 	assert.Contains(t, string(decision.Event.ResponseObject.Raw), "ConfigMapList")
 }
 
-func TestRedisAuditEventJoiner_ReleaseDecisionAllowsReclaim(t *testing.T) {
+// The decision-key dedupe is retired (C-C §4.1): a duplicate official delivery
+// re-emits, lands in the per-type stream at the same resourceVersion, and is
+// absorbed by the idempotent splice fold and the writer's no-op detection.
+func TestRedisAuditEventJoiner_DuplicateOfficialReEmits(t *testing.T) {
 	mr := miniredis.RunT(t)
 	joiner := newTestJoiner(t, mr)
 	ctx := context.Background()
@@ -340,35 +333,13 @@ func TestRedisAuditEventJoiner_ReleaseDecisionAllowsReclaim(t *testing.T) {
 
 	duplicate, err := decide(ctx, t, joiner, AuditSourceOfficial, &event)
 	require.NoError(t, err)
-	require.Equal(t, AuditJoinActionDrop, duplicate.Action)
-
-	require.NoError(t, joiner.ReleaseDecision(ctx, decision.AuditID))
-	reclaimed, err := decide(ctx, t, joiner, AuditSourceOfficial, &event)
-	require.NoError(t, err)
-	assert.Equal(t, AuditJoinActionEmit, reclaimed.Action)
+	assert.Equal(t, AuditJoinActionEmit, duplicate.Action,
+		"a webhook retry must re-emit; the RV-keyed stream absorbs the duplicate")
 }
 
-func TestRedisAuditEventJoiner_CommitDecisionStoresEmittedState(t *testing.T) {
-	mr := miniredis.RunT(t)
-	joiner := newTestJoiner(t, mr)
-	ctx := context.Background()
-
-	event := testAuditEvent("audit-8", "wardle.example.com", true)
-	decision, err := decide(ctx, t, joiner, AuditSourceOfficial, &event)
-	require.NoError(t, err)
-	require.NoError(t, joiner.CommitDecision(ctx, decision.AuditID, decision.Result))
-
-	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	raw, err := client.Get(ctx, decisionKey("audit-8")).Bytes()
-	require.NoError(t, err)
-
-	var envelope auditDecisionEnvelope
-	require.NoError(t, json.Unmarshal(raw, &envelope))
-	assert.Equal(t, "emitted", envelope.State)
-	assert.Equal(t, AuditJoinResultAsIs, envelope.Result)
-}
-
-func TestRedisAuditEventJoiner_AdditionalAfterCommittedDecisionIsBodyLate(t *testing.T) {
+// An additional body whose official has already been processed simply parks
+// and ages out by TTL — there is no decision state left to consult.
+func TestRedisAuditEventJoiner_AdditionalAfterOfficialEmitParksAndExpires(t *testing.T) {
 	mr := miniredis.RunT(t)
 	joiner := newTestJoiner(t, mr)
 	ctx := context.Background()
@@ -377,31 +348,12 @@ func TestRedisAuditEventJoiner_AdditionalAfterCommittedDecisionIsBodyLate(t *tes
 	decision, err := decide(ctx, t, joiner, AuditSourceOfficial, &official)
 	require.NoError(t, err)
 	require.Equal(t, AuditJoinActionEmit, decision.Action)
-	require.NoError(t, joiner.CommitDecision(ctx, decision.AuditID, decision.Result))
 
 	additional := testAuditEvent("audit-late-1", "wardle.example.com", true)
 	late, err := decide(ctx, t, joiner, AuditSourceAdditional, &additional)
 	require.NoError(t, err)
-	assert.Equal(t, AuditJoinActionDrop, late.Action)
-	assert.False(t, mr.Exists(bodyKey("audit-late-1")), "late additional must not park")
-}
-
-func TestRedisAuditEventJoiner_AdditionalDuringClaimedDecisionDropsAsInFlight(t *testing.T) {
-	mr := miniredis.RunT(t)
-	joiner := newTestJoiner(t, mr)
-	ctx := context.Background()
-
-	// Claim but do not commit; mimics the handler having claimed and being mid-enqueue.
-	official := testAuditEvent("audit-inflight-1", "wardle.example.com", true)
-	decision, err := decide(ctx, t, joiner, AuditSourceOfficial, &official)
-	require.NoError(t, err)
-	require.Equal(t, AuditJoinActionEmit, decision.Action)
-
-	additional := testAuditEvent("audit-inflight-1", "wardle.example.com", true)
-	mid, err := decide(ctx, t, joiner, AuditSourceAdditional, &additional)
-	require.NoError(t, err)
-	assert.Equal(t, AuditJoinActionDrop, mid.Action)
-	assert.False(t, mr.Exists(bodyKey("audit-inflight-1")), "in-flight sibling must not park")
+	assert.Equal(t, AuditJoinActionParked, late.Action)
+	assert.True(t, mr.Exists(bodyKey("audit-late-1")), "the orphan body parks and expires by TTL")
 }
 
 func newTestJoiner(
@@ -421,7 +373,6 @@ func newTestJoinerWithOfficialBodyWait(
 	joiner, err := NewRedisAuditEventJoiner(RedisAuditJoinerConfig{
 		Addr:             mr.Addr(),
 		BodyTTL:          time.Minute,
-		DecisionTTL:      time.Hour,
 		OfficialBodyWait: officialBodyWait,
 	})
 	require.NoError(t, err)

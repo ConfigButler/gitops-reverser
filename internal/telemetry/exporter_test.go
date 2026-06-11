@@ -52,8 +52,6 @@ func TestInitOTLPExporter_Success(t *testing.T) {
 	assert.NotNil(t, AuditEventListsTotal)
 	assert.NotNil(t, AuditEventListEventsTotal)
 	assert.NotNil(t, AuditEventListDurationSeconds)
-	assert.NotNil(t, AuditPipelineEventsTotal)
-	assert.NotNil(t, AuditPipelineRouteTargetsTotal)
 	assert.NotNil(t, APICatalogResources)
 	assert.NotNil(t, APICatalogGroupVersions)
 	assert.NotNil(t, APICatalogRefreshTotal)
@@ -100,12 +98,6 @@ func TestMetricsInitialization(t *testing.T) {
 		})
 	})
 
-	t.Run("AuditPipelineEventsTotal", func(t *testing.T) {
-		assert.NotPanics(t, func() {
-			AuditPipelineEventsTotal.Add(ctx, 1)
-		})
-	})
-
 	t.Run("APICatalogResources", func(t *testing.T) {
 		assert.NotPanics(t, func() {
 			APICatalogResources.Record(ctx, 42)
@@ -149,8 +141,7 @@ func TestAuditPipelineMetricUsage(t *testing.T) {
 		AuditEventListEventsTotal.Add(ctx, 5)
 		AuditEventListDurationSeconds.Record(ctx, 0.12)
 		AuditEventsReceivedTotal.Add(ctx, 5)
-		AuditPipelineEventsTotal.Add(ctx, 5)
-		AuditPipelineRouteTargetsTotal.Add(ctx, 3)
+		AuditJoinEmittedTotal.Add(ctx, 5)
 	})
 }
 
@@ -200,7 +191,7 @@ func TestConcurrentMetricsUsage(t *testing.T) {
 	go func() {
 		defer func() { done <- true }()
 		for range 100 {
-			AuditPipelineEventsTotal.Add(ctx, 1)
+			AuditJoinEmittedTotal.Add(ctx, 1)
 		}
 	}()
 
@@ -298,27 +289,27 @@ func TestInitTestExporterAndCollect(t *testing.T) {
 	require.NotNil(t, reader)
 
 	t.Run("counter sum by attributes", func(t *testing.T) {
-		AuditPipelineEventsTotal.Add(ctx, 2, metricAttrs("outcome", "routed"))
-		AuditPipelineEventsTotal.Add(ctx, 3, metricAttrs("outcome", "routed"))
-		AuditPipelineEventsTotal.Add(ctx, 7, metricAttrs("outcome", "unmatched"))
+		AuditJoinEmittedTotal.Add(ctx, 2, metricAttrs("result", "as_is"))
+		AuditJoinEmittedTotal.Add(ctx, 3, metricAttrs("result", "as_is"))
+		AuditJoinEmittedTotal.Add(ctx, 7, metricAttrs("result", "merged"))
 
-		routed, ok := CollectInt64Sum(reader, "gitopsreverser_audit_pipeline_events_total",
-			map[string]string{"outcome": "routed"})
+		asIs, ok := CollectInt64Sum(reader, "gitopsreverser_audit_join_emitted_total",
+			map[string]string{"result": "as_is"})
 		require.True(t, ok)
-		assert.Equal(t, int64(5), routed)
+		assert.Equal(t, int64(5), asIs)
 
-		unmatched, ok := CollectInt64Sum(reader, "gitopsreverser_audit_pipeline_events_total",
-			map[string]string{"outcome": "unmatched"})
+		merged, ok := CollectInt64Sum(reader, "gitopsreverser_audit_join_emitted_total",
+			map[string]string{"result": "merged"})
 		require.True(t, ok)
-		assert.Equal(t, int64(7), unmatched)
+		assert.Equal(t, int64(7), merged)
 	})
 
 	t.Run("missing metric and attribute", func(t *testing.T) {
 		_, ok := CollectInt64Sum(reader, "gitopsreverser_does_not_exist", nil)
 		assert.False(t, ok)
 
-		_, ok = CollectInt64Sum(reader, "gitopsreverser_audit_pipeline_events_total",
-			map[string]string{"outcome": "never_recorded"})
+		_, ok = CollectInt64Sum(reader, "gitopsreverser_audit_join_emitted_total",
+			map[string]string{"result": "never_recorded"})
 		assert.False(t, ok)
 	})
 
@@ -341,7 +332,7 @@ func TestInitTestExporterAndCollect(t *testing.T) {
 		require.True(t, ok)
 		assert.Equal(t, uint64(2), count)
 
-		_, ok = CollectHistogramCount(reader, "gitopsreverser_audit_pipeline_events_total", nil)
+		_, ok = CollectHistogramCount(reader, "gitopsreverser_audit_join_emitted_total", nil)
 		assert.False(t, ok, "a counter is not a histogram")
 	})
 }
@@ -374,7 +365,7 @@ func TestNoOpMeterProvider(t *testing.T) {
 	assert.NotPanics(t, func() {
 		GitOperationsTotal.Add(ctx, 1)
 		GitPushDurationSeconds.Record(ctx, 1.0)
-		AuditPipelineEventsTotal.Add(ctx, 1)
+		AuditJoinEmittedTotal.Add(ctx, 1)
 		APICatalogResources.Record(ctx, 1)
 	})
 

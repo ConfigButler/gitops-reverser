@@ -137,19 +137,15 @@ var (
 	AuditEventQualityTotal metric.Int64Counter
 	// AuditJoinParkedTotal counts additional audit body contributions parked for later joining.
 	AuditJoinParkedTotal metric.Int64Counter
-	// AuditJoinEmittedTotal counts audit events emitted to the canonical stream after join decisions.
+	// AuditJoinEmittedTotal counts audit events emitted to the per-type mirror after join decisions.
 	AuditJoinEmittedTotal metric.Int64Counter
-	// AuditJoinDuplicateDroppedTotal counts audit events dropped because a decision already exists.
-	AuditJoinDuplicateDroppedTotal metric.Int64Counter
 	// AuditShallowDroppedTotal counts identity-shallow officials dropped because no parked body was available.
 	AuditShallowDroppedTotal metric.Int64Counter
-	// AuditJoinBodyLateTotal counts additional bodies that arrived after a canonical decision.
-	AuditJoinBodyLateTotal metric.Int64Counter
 	// AuditJoinSkewSeconds records the arrival skew between an official audit event and its
 	// matching additional body, labelled by which arrived first and how the join resolved.
 	AuditJoinSkewSeconds metric.Float64Histogram
 	// AuditOfficialGateWaitSeconds records how long an official audit event waited to acquire
-	// the in-pod canonical ordering gate before processing.
+	// the in-pod mirror ordering gate before processing.
 	AuditOfficialGateWaitSeconds metric.Float64Histogram
 	// AuditEventListsTotal counts inbound audit EventList requests at the webhook boundary,
 	// labelled by source and bounded outcome.
@@ -160,27 +156,6 @@ var (
 	// AuditEventListDurationSeconds records how long the webhook takes to answer an
 	// EventList request, including in-pod join wait work.
 	AuditEventListDurationSeconds metric.Float64Histogram
-	// AuditPipelineEventsTotal counts canonical audit events at the consumer, labelled by
-	// GVR, verb, and the consumer-stage outcome.
-	AuditPipelineEventsTotal metric.Int64Counter
-	// AuditPipelineRouteTargetsTotal counts per-GitTarget route attempts at the consumer.
-	AuditPipelineRouteTargetsTotal metric.Int64Counter
-
-	// AuditQueueStreamLength gauges the current entry count of the canonical audit Redis stream.
-	AuditQueueStreamLength metric.Int64Gauge
-	// AuditQueueConsumerLag gauges the consumer-group lag of the canonical audit Redis stream
-	// — entries not yet read by the consumer group. -1 when the lag cannot be determined.
-	AuditQueueConsumerLag metric.Int64Gauge
-	// AuditQueuePendingEntries gauges claimed-but-unacked entries for the consumer group.
-	AuditQueuePendingEntries metric.Int64Gauge
-	// AuditQueueOldestEntryAgeSeconds gauges the age in seconds of the oldest entry in the
-	// canonical audit Redis stream.
-	AuditQueueOldestEntryAgeSeconds metric.Int64Gauge
-	// AuditQueueOldestPendingAgeSeconds gauges the age in seconds of the oldest pending
-	// (claimed-but-unacked) entry for the consumer group.
-	AuditQueueOldestPendingAgeSeconds metric.Int64Gauge
-	// AuditDebugStreamLength gauges the current entry count of the optional debug stream.
-	AuditDebugStreamLength metric.Int64Gauge
 
 	// APICatalogResources gauges the count of served top-level resources in the catalog,
 	// split by the default-watch-policy allowed/excluded state.
@@ -316,13 +291,9 @@ func registerCounters() error {
 		{"gitopsreverser_audit_event_quality_total", &AuditEventQualityTotal},
 		{"gitopsreverser_audit_join_parked_total", &AuditJoinParkedTotal},
 		{"gitopsreverser_audit_join_emitted_total", &AuditJoinEmittedTotal},
-		{"gitopsreverser_audit_join_duplicate_dropped_total", &AuditJoinDuplicateDroppedTotal},
 		{"gitopsreverser_audit_shallow_dropped_total", &AuditShallowDroppedTotal},
-		{"gitopsreverser_audit_join_body_late_total", &AuditJoinBodyLateTotal},
 		{"gitopsreverser_audit_eventlists_total", &AuditEventListsTotal},
 		{"gitopsreverser_audit_eventlist_events_total", &AuditEventListEventsTotal},
-		{"gitopsreverser_audit_pipeline_events_total", &AuditPipelineEventsTotal},
-		{"gitopsreverser_audit_pipeline_route_targets_total", &AuditPipelineRouteTargetsTotal},
 		{"gitopsreverser_api_catalog_refresh_total", &APICatalogRefreshTotal},
 		{"gitopsreverser_secret_encryption_attempts_total", &SecretEncryptionAttemptsTotal},
 		{"gitopsreverser_secret_encryption_success_total", &SecretEncryptionSuccessTotal},
@@ -387,12 +358,6 @@ func registerGauges() error {
 		{"gitopsreverser_materialization_type_phase", &MaterializationTypePhase},
 		{"gitopsreverser_materialization_claimed_types", &MaterializationClaimedTypes},
 		{"gitopsreverser_materialization_claimed_unfollowable", &MaterializationClaimedUnfollowable},
-		{"gitopsreverser_audit_queue_stream_length", &AuditQueueStreamLength},
-		{"gitopsreverser_audit_queue_consumer_lag", &AuditQueueConsumerLag},
-		{"gitopsreverser_audit_queue_pending_entries", &AuditQueuePendingEntries},
-		{"gitopsreverser_audit_queue_oldest_entry_age_seconds", &AuditQueueOldestEntryAgeSeconds},
-		{"gitopsreverser_audit_queue_oldest_pending_age_seconds", &AuditQueueOldestPendingAgeSeconds},
-		{"gitopsreverser_audit_debug_stream_length", &AuditDebugStreamLength},
 		{"gitopsreverser_branch_worker_queue_depth", &BranchWorkerQueueDepth},
 	}
 	for _, s := range gauges {

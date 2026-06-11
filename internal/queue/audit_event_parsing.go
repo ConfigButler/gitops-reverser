@@ -19,47 +19,26 @@ limitations under the License.
 package queue
 
 import (
-	"context"
-	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
-	"time"
 
-	"github.com/go-logr/logr"
-	"github.com/redis/go-redis/v9"
 	authnv1 "k8s.io/api/authentication/v1"
-	auditv1 "k8s.io/apiserver/pkg/apis/audit/v1"
-
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	auditv1 "k8s.io/apiserver/pkg/apis/audit/v1"
 
 	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/sanitize"
 )
 
-const (
-	// defaultConsumerGroup is the consumer group name used for the audit stream.
-	defaultConsumerGroup = "gitopsreverser-consumer"
-
-	// consumerReadCount is the maximum number of messages fetched per XREADGROUP call.
-	consumerReadCount = 50
-
-	// consumerBlockDuration is how long XREADGROUP blocks waiting for new messages.
-	consumerBlockDuration = 2 * time.Second
-
-	// autoClaimMinIdle is the minimum idle time before a pending entry is reclaimed.
-	autoClaimMinIdle = 60 * time.Second
-
-	// autoClaimInterval controls how often XAUTOCLAIM runs.
-	autoClaimInterval = 30 * time.Second
-
-	// consumerRetryDelay controls how long the consumer waits before retrying Redis setup or reads.
-	consumerRetryDelay = time.Second
-)
+// This file is the audit-event → Kubernetes-object interpretation layer shared
+// by every per-type stream consumer: the splice (redis_type_splice.go), the
+// freshness tail (redis_bytype_queue.go), and the CommitRequest attribution
+// lookup (commitrequest_author.go). It survived the canonical-stream consumer
+// it was extracted from (C-C, docs/design/stream/canonical-stream-retirement.md).
 
 var errAuditEventObjectMissing = errors.New("audit event has no requestObject or responseObject")
 
@@ -74,237 +53,6 @@ var errAuditEventObjectIsStatus = errors.New("audit event object is a metav1.Sta
 // merge-patch fragment such as {"metadata":{"finalizers":null}} recorded as the
 // requestObject of a finalizer-removal PATCH.
 var errAuditEventObjectPartial = errors.New("audit event object body is a partial object (no kind)")
-
-// AuditConsumerConfig configures the Redis stream consumer.
-type AuditConsumerConfig struct {
-	Addr       string
-	Username   string
-	AuthValue  string
-	DB         int
-	Stream     string
-	TLSEnabled bool
-
-	// Group is the Redis consumer group name. Defaults to defaultConsumerGroup.
-	Group string
-
-	// ConsumerID uniquely identifies this consumer replica (e.g. pod name).
-	ConsumerID string
-}
-
-// AuditConsumer drains the canonical audit stream. Every job the stream had
-// has been relocated onto the per-type substrate (object mirroring → splice,
-// R2/R3; /scale → parent per-type stream, C-A2; CommitRequest finalize →
-// CommitRequestReconciler, C-B2), so the consumer only ACKs entries to keep
-// the stream's pending list bounded until C-C deletes the stream, the
-// producer's canonical enqueue, and this consumer outright
-// (docs/design/stream/canonical-stream-retirement.md).
-type AuditConsumer struct {
-	client     *redis.Client
-	stream     string
-	group      string
-	consumerID string
-	log        logr.Logger
-
-	// One-shot log gates for startup-milestone visibility.
-	firstGroupReady sync.Once
-	firstMessage    sync.Once
-}
-
-// NewAuditConsumer creates a new AuditConsumer. It does not start consuming;
-// call Start to begin the consume loop.
-func NewAuditConsumer(
-	cfg AuditConsumerConfig,
-	log logr.Logger,
-) (*AuditConsumer, error) {
-	if strings.TrimSpace(cfg.Addr) == "" {
-		return nil, errors.New("redis address is required")
-	}
-
-	stream := strings.TrimSpace(cfg.Stream)
-	if stream == "" {
-		stream = DefaultRedisAuditStream
-	}
-
-	group := strings.TrimSpace(cfg.Group)
-	if group == "" {
-		group = defaultConsumerGroup
-	}
-
-	consumerID := strings.TrimSpace(cfg.ConsumerID)
-	if consumerID == "" {
-		consumerID = "gitopsreverser-consumer-0"
-	}
-
-	options := &redis.Options{
-		Addr:     cfg.Addr,
-		Username: cfg.Username,
-		Password: cfg.AuthValue,
-		DB:       cfg.DB,
-	}
-	if cfg.TLSEnabled {
-		options.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
-	}
-
-	return &AuditConsumer{
-		client:     redis.NewClient(options),
-		stream:     stream,
-		group:      group,
-		consumerID: consumerID,
-		log:        log.WithName("audit-consumer"),
-	}, nil
-}
-
-// NeedLeaderElection returns true so only the elected leader runs the consumer.
-func (c *AuditConsumer) NeedLeaderElection() bool {
-	return true
-}
-
-// Start implements manager.Runnable. It bootstraps the consumer group and
-// enters the read loop until ctx is cancelled.
-func (c *AuditConsumer) Start(ctx context.Context) error {
-	c.log.Info("Starting audit stream consumer",
-		"stream", c.stream,
-		"group", c.group,
-		"consumer", c.consumerID)
-
-	for {
-		if err := c.ensureConsumerGroup(ctx); err != nil {
-			c.log.Error(err, "Failed to ensure consumer group, retrying")
-			select {
-			case <-ctx.Done():
-				c.log.Info("Audit stream consumer stopping before consumer group became ready")
-				return nil
-			case <-time.After(consumerRetryDelay):
-			}
-			continue
-		}
-		break
-	}
-
-	autoClaimTicker := time.NewTicker(autoClaimInterval)
-	defer autoClaimTicker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			c.log.Info("Audit stream consumer stopping")
-			return nil
-		case <-autoClaimTicker.C:
-			c.runAutoClaimCycle(ctx)
-		default:
-			if err := c.readAndProcessBatch(ctx); err != nil {
-				// Log but do not exit — transient Redis errors should not crash the process.
-				c.log.Error(err, "Error reading from audit stream, retrying")
-				select {
-				case <-ctx.Done():
-					return nil
-				case <-time.After(consumerRetryDelay):
-				}
-			}
-		}
-	}
-}
-
-// ensureConsumerGroup creates the consumer group if it does not already exist.
-// MKSTREAM also creates the stream itself when missing.
-func (c *AuditConsumer) ensureConsumerGroup(ctx context.Context) error {
-	err := c.client.XGroupCreateMkStream(ctx, c.stream, c.group, "$").Err()
-	if err != nil && !isAlreadyExistsErr(err) {
-		return err
-	}
-	c.firstGroupReady.Do(func() {
-		c.log.Info("Consumer group ready", "stream", c.stream, "group", c.group)
-	})
-	return nil
-}
-
-// readAndProcessBatch fetches up to consumerReadCount messages from the stream
-// and processes each one, ACKing only after successful routing.
-func (c *AuditConsumer) readAndProcessBatch(ctx context.Context) error {
-	streams, err := c.client.XReadGroup(ctx, &redis.XReadGroupArgs{
-		Group:    c.group,
-		Consumer: c.consumerID,
-		Streams:  []string{c.stream, ">"},
-		Count:    consumerReadCount,
-		Block:    consumerBlockDuration,
-	}).Result()
-
-	if errors.Is(err, redis.Nil) {
-		// No new messages within the block window; this is normal.
-		return nil
-	}
-	if err != nil {
-		if isNoGroupErr(err) {
-			if ensureErr := c.ensureConsumerGroup(ctx); ensureErr != nil {
-				return fmt.Errorf("XREADGROUP failed with NOGROUP and group recreation failed: %w", ensureErr)
-			}
-			return nil
-		}
-		return fmt.Errorf("XREADGROUP failed: %w", err)
-	}
-
-	for _, stream := range streams {
-		for _, msg := range stream.Messages {
-			c.processMessage(ctx, msg)
-		}
-	}
-	return nil
-}
-
-// runAutoClaimCycle reclaims pending entries that have been idle longer than
-// autoClaimMinIdle, then processes them.
-func (c *AuditConsumer) runAutoClaimCycle(ctx context.Context) {
-	start := "0-0"
-	for {
-		messages, nextStart, err := c.client.XAutoClaim(ctx, &redis.XAutoClaimArgs{
-			Stream:   c.stream,
-			Group:    c.group,
-			Consumer: c.consumerID,
-			MinIdle:  autoClaimMinIdle,
-			Start:    start,
-			Count:    consumerReadCount,
-		}).Result()
-
-		if err != nil {
-			if isNoGroupErr(err) {
-				if ensureErr := c.ensureConsumerGroup(ctx); ensureErr != nil {
-					c.log.Error(ensureErr, "XAUTOCLAIM failed with NOGROUP and group recreation failed")
-					return
-				}
-				return
-			}
-			c.log.Error(err, "XAUTOCLAIM failed")
-			return
-		}
-
-		for _, msg := range messages {
-			c.processMessage(ctx, msg)
-		}
-
-		// "0-0" is returned when there are no more pending entries to scan.
-		if nextStart == "0-0" || len(messages) == 0 {
-			return
-		}
-		start = nextStart
-	}
-}
-
-// processMessage drains a single stream entry. Nothing routes from the
-// canonical stream any more: full-object writes are reconciled by the per-type
-// splice (R3), the /scale field patch rides the PARENT type's :audit:stream
-// since DEC-A (C-A2), and the CommitRequest finalize is driven by the
-// CommitRequestReconciler behind the watermark barrier (C-B2). The parse is
-// kept only so a poison-pill payload stays visible in the logs before its ACK.
-func (c *AuditConsumer) processMessage(ctx context.Context, msg redis.XMessage) {
-	c.firstMessage.Do(func() {
-		c.log.Info("First audit message consumed from stream", "msgID", msg.ID, "stream", c.stream)
-	})
-
-	if _, err := parseAuditEvent(msg.Values); err != nil {
-		c.log.Error(err, "Failed to parse audit event; ACKing to avoid poison-pill", "msgID", msg.ID)
-	}
-	c.ackMessage(ctx, msg.ID)
-}
 
 // Scale-translation drop outcomes. translateScaleToAssignments labels why a scale
 // event could not become a replicas assignment; since DEC-A the per-type consumers
@@ -357,13 +105,6 @@ func firstExtraValue(extra map[string]authnv1.ExtraValue, key string) string {
 		return ""
 	}
 	return values[0]
-}
-
-// ackMessage ACKs a single message, logging any error.
-func (c *AuditConsumer) ackMessage(ctx context.Context, msgID string) {
-	if err := c.client.XAck(ctx, c.stream, c.group, msgID).Err(); err != nil {
-		c.log.Error(err, "Failed to ACK stream message", "msgID", msgID)
-	}
 }
 
 // parseAuditEvent unmarshals the audit event from the stream entry's payload_json field.
@@ -530,14 +271,4 @@ func stringField(values map[string]interface{}, key string) string {
 	default:
 		return fmt.Sprintf("%v", v)
 	}
-}
-
-// isAlreadyExistsErr returns true when the Redis error indicates that the consumer
-// group already exists (BUSYGROUP).
-func isAlreadyExistsErr(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "BUSYGROUP")
-}
-
-func isNoGroupErr(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "NOGROUP")
 }

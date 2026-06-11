@@ -74,7 +74,6 @@ const (
 	defaultAuditIdleTimeout        = 60 * time.Second
 	defaultAuditShutdownTimeout    = 10 * time.Second
 	defaultAuditEventBodyTTL       = 5 * time.Minute
-	defaultAuditEventDecisionTTL   = time.Hour
 	defaultAuditEventBodyWait      = 500 * time.Millisecond
 	defaultBranchBufferMaxBytesStr = "8Mi"
 	// checkpointRestoreTimeout bounds the one-shot boot replay of durable per-type
@@ -200,18 +199,6 @@ func main() {
 		WatchManager: watchMgr,
 	}).SetupWithManager(mgr), "unable to create controller", "controller", "ClusterWatchRule")
 
-	// Register audit webhook receiver for metrics collection
-	auditQueue, err := queue.NewRedisAuditQueue(queue.RedisAuditQueueConfig{
-		Addr:       cfg.auditRedisAddr,
-		Username:   cfg.auditRedisUsername,
-		AuthValue:  cfg.auditRedisPassword,
-		DB:         cfg.auditRedisDB,
-		Stream:     cfg.auditRedisStream,
-		MaxLen:     cfg.auditRedisMaxLen,
-		TLSEnabled: cfg.auditRedisTLS,
-	})
-	fatalIfErr(err, "unable to initialize audit redis queue")
-
 	var auditDebugQueue webhookhandler.AuditDebugEventQueue
 	if cfg.auditDebugRedisStream != "" {
 		auditDebugQueue, err = queue.NewRedisAuditDebugQueue(queue.RedisAuditQueueConfig{
@@ -325,18 +312,15 @@ func main() {
 		DB:               cfg.auditRedisDB,
 		TLSEnabled:       cfg.auditRedisTLS,
 		BodyTTL:          cfg.auditEventBodyTTL,
-		DecisionTTL:      cfg.auditEventDecisionTTL,
 		OfficialBodyWait: cfg.auditEventBodyWait,
 	})
 	fatalIfErr(err, "unable to initialize audit event joiner")
 	setupLog.Info("Audit pipeline configured",
 		"redisAddress", cfg.auditRedisAddr,
-		"stream", cfg.auditRedisStream,
 		"debugStream", cfg.auditDebugRedisStream,
 		"db", cfg.auditRedisDB,
 		"tlsEnabled", cfg.auditRedisTLS,
 		"bodyTTL", cfg.auditEventBodyTTL,
-		"decisionTTL", cfg.auditEventDecisionTTL,
 		"officialBodyWait", cfg.auditEventBodyWait,
 		"redisMaxLen", cfg.auditRedisMaxLen,
 		"debugRedisMaxLen", cfg.auditDebugRedisMaxLen,
@@ -344,10 +328,9 @@ func main() {
 
 	if cfg.auditRedisMaxLen == 0 {
 		setupLog.Info(
-			"audit redis stream max length is 0; queue retention is unbounded — "+
-				"Valkey/Redis memory and restart/reload time can grow without limit. "+
+			"audit redis stream max length is 0; per-type stream retention is unbounded — " +
+				"Valkey/Redis memory and restart/reload time can grow without limit. " +
 				"Set --audit-redis-max-len (queue.redis.maxLen in the Helm chart) to a bounded value.",
-			"stream", cfg.auditRedisStream,
 		)
 	}
 	if cfg.auditDebugRedisStream != "" && cfg.auditDebugRedisMaxLen == 0 {
@@ -360,44 +343,8 @@ func main() {
 		)
 	}
 
-	// Register the audit stream consumer. It shares the same Redis config as the
-	// producer but uses a dedicated consumer group and ID (pod-name-scoped so that
-	// multiple replicas do not share a consumer identity).
-	consumerID := os.Getenv("POD_NAME")
-	if consumerID == "" {
-		consumerID = "gitopsreverser-consumer-0"
-	}
-	queueMetrics, queueMetricsErr := queue.NewMetricsReporter(queue.MetricsConfig{
-		Addr:        cfg.auditRedisAddr,
-		Username:    cfg.auditRedisUsername,
-		AuthValue:   cfg.auditRedisPassword,
-		DB:          cfg.auditRedisDB,
-		TLSEnabled:  cfg.auditRedisTLS,
-		Stream:      cfg.auditRedisStream,
-		DebugStream: cfg.auditDebugRedisStream,
-	}, ctrl.Log.WithName("queue-metrics"))
-	fatalIfErr(queueMetricsErr, "unable to initialize audit queue metrics reporter")
-	fatalIfErr(mgr.Add(queueMetrics), "unable to add audit queue metrics reporter to manager")
-
-	auditConsumer, consumerErr := queue.NewAuditConsumer(
-		queue.AuditConsumerConfig{
-			Addr:       cfg.auditRedisAddr,
-			Username:   cfg.auditRedisUsername,
-			AuthValue:  cfg.auditRedisPassword,
-			DB:         cfg.auditRedisDB,
-			Stream:     cfg.auditRedisStream,
-			TLSEnabled: cfg.auditRedisTLS,
-			ConsumerID: consumerID,
-		},
-		ctrl.Log.WithName("audit-consumer"),
-	)
-	fatalIfErr(consumerErr, "unable to initialize audit stream consumer")
-	fatalIfErr(mgr.Add(auditConsumer), "unable to add audit stream consumer to manager")
-	setupLog.Info("Audit stream consumer registered", "consumerID", consumerID)
-
 	auditHandler, err := webhookhandler.NewAuditHandler(webhookhandler.AuditHandlerConfig{
 		MaxRequestBodyBytes: cfg.auditMaxRequestBodyBytes,
-		Queue:               auditQueue,
 		DebugQueue:          auditDebugQueue,
 		Joiner:              auditJoiner,
 		ByTypeQueue:         auditByTypeQueue,
@@ -479,14 +426,12 @@ type appConfig struct {
 	auditRedisUsername       string
 	auditRedisPassword       string
 	auditRedisDB             int
-	auditRedisStream         string
 	auditRedisMaxLen         int64
 	auditDebugRedisStream    string
 	auditDebugRedisMaxLen    int64
 	auditByTypeStreamPrefix  string
 	auditRedisTLS            bool
 	auditEventBodyTTL        time.Duration
-	auditEventDecisionTTL    time.Duration
 	auditEventBodyWait       time.Duration
 	branchBufferMaxBytes     int64
 	sensitiveResources       types.SensitiveResourcePolicy
@@ -551,8 +496,6 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 	)
 	fs.IntVar(&cfg.auditRedisDB, "audit-redis-db", 0,
 		"Redis database index for audit event queueing.")
-	fs.StringVar(&cfg.auditRedisStream, "audit-redis-stream", queue.DefaultRedisAuditStream,
-		"Redis stream name for audit event queueing.")
 	fs.Int64Var(&cfg.auditRedisMaxLen, "audit-redis-max-len", 0,
 		"Approximate max stream length (0 disables trimming).")
 	fs.StringVar(&cfg.auditDebugRedisStream, "audit-debug-redis-stream", "",
@@ -566,8 +509,6 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 		"If set, Redis connection for audit queueing uses TLS.")
 	fs.DurationVar(&cfg.auditEventBodyTTL, "audit-event-body-ttl", defaultAuditEventBodyTTL,
 		"TTL for parked additional audit body contributions.")
-	fs.DurationVar(&cfg.auditEventDecisionTTL, "audit-event-decision-ttl", defaultAuditEventDecisionTTL,
-		"TTL for audit decision keys that deduplicate canonical stream events.")
 	fs.DurationVar(&cfg.auditEventBodyWait, "audit-event-body-wait", defaultAuditEventBodyWait,
 		"Grace period for a bodyless official audit event to wait for a matching additional body.")
 	branchBufferMaxBytesStr := os.Getenv("BRANCH_BUFFER_MAX_BYTES")
@@ -663,9 +604,6 @@ func validateAuditConfig(cfg appConfig) error {
 	}
 	if cfg.auditEventBodyTTL <= 0 {
 		return fmt.Errorf("audit-event-body-ttl must be > 0, got %s", cfg.auditEventBodyTTL)
-	}
-	if cfg.auditEventDecisionTTL <= 0 {
-		return fmt.Errorf("audit-event-decision-ttl must be > 0, got %s", cfg.auditEventDecisionTTL)
 	}
 	if cfg.auditEventBodyWait < 0 {
 		return fmt.Errorf("audit-event-body-wait must be >= 0, got %s", cfg.auditEventBodyWait)

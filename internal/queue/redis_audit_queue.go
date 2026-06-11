@@ -33,14 +33,10 @@ import (
 	auditv1 "k8s.io/apiserver/pkg/apis/audit/v1"
 )
 
-const (
-	// DefaultRedisAuditStream is the default stream used for audit ingestion events.
-	DefaultRedisAuditStream = "gitopsreverser.audit.events.v1"
-	// DefaultRedisAuditDebugStream is the default stream used for early audit debug events.
-	DefaultRedisAuditDebugStream = "gitopsreverser.audit.debug.events.v1"
-)
+// DefaultRedisAuditDebugStream is the default stream used for early audit debug events.
+const DefaultRedisAuditDebugStream = "gitopsreverser.audit.debug.events.v1"
 
-// RedisAuditQueueConfig configures a Redis-backed audit queue.
+// RedisAuditQueueConfig configures the Redis-backed audit debug queue.
 type RedisAuditQueueConfig struct {
 	Addr       string
 	Username   string
@@ -51,8 +47,11 @@ type RedisAuditQueueConfig struct {
 	TLSEnabled bool
 }
 
-// RedisAuditQueue enqueues audit events into a Redis stream.
-type RedisAuditQueue struct {
+// redisAuditStreamQueue appends audit events to one flat Redis stream. The
+// canonical audit stream this once backed is retired (C-C,
+// docs/design/stream/canonical-stream-retirement.md); the diagnostic debug
+// stream below is its only remaining user.
+type redisAuditStreamQueue struct {
 	client *redis.Client
 	stream string
 	maxLen int64
@@ -60,18 +59,18 @@ type RedisAuditQueue struct {
 
 // RedisAuditDebugQueue enqueues early audit debug events into a Redis stream.
 type RedisAuditDebugQueue struct {
-	queue *RedisAuditQueue
+	queue *redisAuditStreamQueue
 }
 
-// NewRedisAuditQueue creates a Redis stream-backed audit queue.
-func NewRedisAuditQueue(cfg RedisAuditQueueConfig) (*RedisAuditQueue, error) {
+// NewRedisAuditDebugQueue creates a Redis stream-backed early audit debug queue.
+func NewRedisAuditDebugQueue(cfg RedisAuditQueueConfig) (*RedisAuditDebugQueue, error) {
 	if strings.TrimSpace(cfg.Addr) == "" {
 		return nil, errors.New("redis address is required")
 	}
 
 	stream := strings.TrimSpace(cfg.Stream)
 	if stream == "" {
-		stream = DefaultRedisAuditStream
+		stream = DefaultRedisAuditDebugStream
 	}
 
 	options := &redis.Options{
@@ -80,34 +79,15 @@ func NewRedisAuditQueue(cfg RedisAuditQueueConfig) (*RedisAuditQueue, error) {
 		Password: cfg.AuthValue,
 		DB:       cfg.DB,
 	}
-
 	if cfg.TLSEnabled {
 		options.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
 	}
 
-	return &RedisAuditQueue{
+	return &RedisAuditDebugQueue{queue: &redisAuditStreamQueue{
 		client: redis.NewClient(options),
 		stream: stream,
 		maxLen: cfg.MaxLen,
-	}, nil
-}
-
-// Enqueue writes one audit event to Redis stream storage.
-func (q *RedisAuditQueue) Enqueue(ctx context.Context, event auditv1.Event) error {
-	return q.enqueue(ctx, event, nil)
-}
-
-// NewRedisAuditDebugQueue creates a Redis stream-backed early audit debug queue.
-func NewRedisAuditDebugQueue(cfg RedisAuditQueueConfig) (*RedisAuditDebugQueue, error) {
-	if strings.TrimSpace(cfg.Stream) == "" {
-		cfg.Stream = DefaultRedisAuditDebugStream
-	}
-
-	redisQueue, err := NewRedisAuditQueue(cfg)
-	if err != nil {
-		return nil, err
-	}
-	return &RedisAuditDebugQueue{queue: redisQueue}, nil
+	}}, nil
 }
 
 // Enqueue writes one early audit debug event to Redis stream storage.
@@ -115,7 +95,7 @@ func (q *RedisAuditDebugQueue) Enqueue(ctx context.Context, source string, event
 	return q.queue.enqueue(ctx, event, map[string]any{"source": source})
 }
 
-func (q *RedisAuditQueue) enqueue(ctx context.Context, event auditv1.Event, extraValues map[string]any) error {
+func (q *redisAuditStreamQueue) enqueue(ctx context.Context, event auditv1.Event, extraValues map[string]any) error {
 	payload, err := json.Marshal(event)
 	if err != nil {
 		return fmt.Errorf("failed to marshal audit event payload: %w", err)

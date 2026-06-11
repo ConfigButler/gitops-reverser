@@ -175,14 +175,12 @@ nodeSelector:
 | `queue.redis.auth.existingSecret` | Name of a pre-created Secret holding the Redis password | `valkey-auth` |
 | `queue.redis.auth.existingSecretKey` | Key within the Secret that holds the password | `password` |
 | `queue.redis.auth.username` | Optional Redis ACL username | `""` |
-| `queue.redis.stream` | Redis stream name for audit events | `gitopsreverser.audit.events.v1` |
 | `queue.redis.maxLen` | Approximate stream max length (`0` disables trim, allowing unbounded growth) | `10000` |
 | `queue.redis.tls.enabled` | Enable TLS for Redis connection | `false` |
 | `webhook.audit.debugStream.enabled` | Append every decoded audit event to the early Redis debug stream | `false` |
 | `webhook.audit.debugStream.stream` | Redis stream name for early decoded audit event debugging | `gitopsreverser.audit.debug.events.v1` |
 | `webhook.audit.debugStream.maxLen` | Approximate early debug stream max length (`0` disables trim, allowing unbounded growth) | `10000` |
 | `auditEventJoin.bodyTTL` | TTL for parked additional audit bodies waiting for the matching official event | `5m` |
-| `auditEventJoin.decisionTTL` | TTL for audit decision dedupe keys | `1h` |
 | `auditEventJoin.bodyWait` | Grace period for a bodyless official audit event to wait for a matching additional body while preserving official event order | `500ms` |
 | `servers.metrics.bindAddress` | Metrics listener bind address | `:8080` |
 | `servers.metrics.tls.enabled` | Serve metrics with TLS | `false` |

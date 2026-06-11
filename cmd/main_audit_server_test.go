@@ -54,13 +54,11 @@ func TestParseFlagsWithArgs_Defaults(t *testing.T) {
 	assert.Equal(t, 30*time.Second, cfg.auditWriteTimeout)
 	assert.Equal(t, 60*time.Second, cfg.auditIdleTimeout)
 	assert.Equal(t, "valkey:6379", cfg.auditRedisAddr)
-	assert.Equal(t, "gitopsreverser.audit.events.v1", cfg.auditRedisStream)
 	assert.Equal(t, int64(0), cfg.auditRedisMaxLen)
 	assert.Empty(t, cfg.auditDebugRedisStream)
 	assert.Equal(t, int64(0), cfg.auditDebugRedisMaxLen)
 	assert.False(t, cfg.auditRedisTLS)
 	assert.Equal(t, 5*time.Minute, cfg.auditEventBodyTTL)
-	assert.Equal(t, time.Hour, cfg.auditEventDecisionTTL)
 	assert.Equal(t, 500*time.Millisecond, cfg.auditEventBodyWait)
 	assert.False(t, cfg.zapOpts.Development)
 	assert.Equal(t, []string{"secrets"}, cfg.sensitiveResources.Entries())
@@ -95,13 +93,11 @@ func TestParseFlagsWithArgs_CustomAuditValues(t *testing.T) {
 		"--audit-redis-username=user",
 		"--audit-redis-password=pass",
 		"--audit-redis-db=2",
-		"--audit-redis-stream=gitopsreverser.audit.custom",
 		"--audit-redis-max-len=1000",
 		"--audit-debug-redis-stream=gitopsreverser.audit.debug.custom",
 		"--audit-debug-redis-max-len=2000",
 		"--audit-redis-tls",
 		"--audit-event-body-ttl=2m",
-		"--audit-event-decision-ttl=30m",
 		"--audit-event-body-wait=250ms",
 	}
 
@@ -123,13 +119,11 @@ func TestParseFlagsWithArgs_CustomAuditValues(t *testing.T) {
 	assert.Equal(t, "user", cfg.auditRedisUsername)
 	assert.Equal(t, "pass", cfg.auditRedisPassword)
 	assert.Equal(t, 2, cfg.auditRedisDB)
-	assert.Equal(t, "gitopsreverser.audit.custom", cfg.auditRedisStream)
 	assert.Equal(t, int64(1000), cfg.auditRedisMaxLen)
 	assert.Equal(t, "gitopsreverser.audit.debug.custom", cfg.auditDebugRedisStream)
 	assert.Equal(t, int64(2000), cfg.auditDebugRedisMaxLen)
 	assert.True(t, cfg.auditRedisTLS)
 	assert.Equal(t, 2*time.Minute, cfg.auditEventBodyTTL)
-	assert.Equal(t, 30*time.Minute, cfg.auditEventDecisionTTL)
 	assert.Equal(t, 250*time.Millisecond, cfg.auditEventBodyWait)
 }
 
@@ -188,10 +182,6 @@ func TestParseFlagsWithArgs_InvalidAuditSettings(t *testing.T) {
 		{
 			name: "invalid audit event body ttl",
 			args: []string{"--audit-event-body-ttl=0s"},
-		},
-		{
-			name: "invalid audit event decision ttl",
-			args: []string{"--audit-event-decision-ttl=0s"},
 		},
 		{
 			name: "invalid audit event body wait",

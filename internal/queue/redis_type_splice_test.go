@@ -123,6 +123,34 @@ func TestRedisTypeSplicer_FoldsCheckpointAndLog(t *testing.T) {
 	assert.Equal(t, "vc", configMapData(t, objs[1].Object), "c was created from the log")
 }
 
+// TestRedisTypeSplicer_DuplicateDeliveryFoldsOnce is the C-C duplicate-absorption proof
+// (canonical-stream-retirement.md §4.1/§9): with the webhook's auditID decision key retired, a
+// doubly-delivered audit event re-mirrors at the SAME resourceVersion (a fresh sub-sequence of
+// the same stream ID — never the late lane). The fold is last-writer-wins by position and both
+// entries decode to the same object, so the spliced desired set is identical to single delivery:
+// one object, one Git effect. This is the same argument that retired content hashing (R7).
+func TestRedisTypeSplicer_DuplicateDeliveryFoldsOnce(t *testing.T) {
+	splicer, snap, q := spliceFixture(t)
+	ctx := context.Background()
+
+	require.NoError(t, snap.ReplaceTypeObjects(ctx, "", "v1", "configmaps", map[string]string{
+		"default/a": checkpointEnvelope("a"),
+	}, "100"))
+
+	// The same post-checkpoint update delivered twice (a webhook retry).
+	require.NoError(t, q.Enqueue(ctx, configMapAuditEvent("update", "a", "150", "v2")))
+	require.NoError(t, q.Enqueue(ctx, configMapAuditEvent("update", "a", "150", "v2")))
+
+	objs, rv, err := splicer.SpliceType(ctx, "", "configmaps")
+	require.NoError(t, err)
+	assert.Equal(t, "100", rv)
+
+	require.Len(t, objs, 1, "a duplicate delivery must not produce a second desired object")
+	assert.Equal(t, "default/a", objs[0].GetNamespace()+"/"+objs[0].GetName())
+	assert.Equal(t, "v2", configMapData(t, objs[0].Object),
+		"both entries fold to the same content — zero extra Git effect")
+}
+
 // deploymentCheckpointEnvelope builds one :objects:items value for an apps/v1 Deployment at the
 // given replica count — the pre-scale checkpoint state the scale fold must override.
 func deploymentCheckpointEnvelope(name string, replicas int) string {

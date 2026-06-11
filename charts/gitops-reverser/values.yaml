@@ -125,7 +125,6 @@ queue:
       # Optional Redis username for ACL-based auth (Redis 6+). Not sensitive; stays as a plain value.
       username: ""
     db: 0
-    stream: "gitopsreverser.audit.events.v1"
     # Approximate max stream length; 0 disables trimming and allows unbounded growth.
     # 10000 is a production-safe starting point — large enough to absorb short consumer
     # outages, small enough to keep Valkey memory and reload time predictable. Size based
@@ -137,7 +136,6 @@ queue:
 
 auditEventJoin:
   bodyTTL: "5m"
-  decisionTTL: "1h"
   bodyWait: "500ms"
 
 # TLS certificate management (Kubernetes requires this for API server callbacks)

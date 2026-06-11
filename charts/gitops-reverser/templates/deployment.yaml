@@ -70,7 +70,6 @@ spec:
             - --audit-redis-username={{ . | quote }}
             {{- end }}
             - --audit-redis-db={{ .Values.queue.redis.db }}
-            - --audit-redis-stream={{ .Values.queue.redis.stream }}
             - --audit-redis-max-len={{ .Values.queue.redis.maxLen }}
             {{- if .Values.webhook.audit.debugStream.enabled }}
             - --audit-debug-redis-stream={{ .Values.webhook.audit.debugStream.stream }}
@@ -83,7 +82,6 @@ spec:
             - {{ printf "--additional-sensitive-resources=%s" (join "," .) | quote }}
             {{- end }}
             - --audit-event-body-ttl={{ .Values.auditEventJoin.bodyTTL }}
-            - --audit-event-decision-ttl={{ .Values.auditEventJoin.decisionTTL }}
             - --audit-event-body-wait={{ .Values.auditEventJoin.bodyWait }}
             {{- if .Values.logging.level }}
             - --zap-log-level={{ .Values.logging.level }}

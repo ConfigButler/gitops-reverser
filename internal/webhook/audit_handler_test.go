@@ -43,12 +43,6 @@ import (
 	audit "k8s.io/apiserver/pkg/apis/audit"
 )
 
-type errorAuditEventQueue struct{ err error }
-
-func (q errorAuditEventQueue) Enqueue(_ context.Context, _ auditv1.Event) error {
-	return q.err
-}
-
 type recordingAuditEventQueue struct {
 	mu     sync.Mutex
 	events []auditv1.Event
@@ -123,8 +117,6 @@ func (q *recordingByTypeQueue) auditIDs() []string {
 type fakeAuditJoiner struct {
 	decision AuditJoinDecision
 	err      error
-	commits  []AuditJoinResult
-	releases []string
 	calls    int
 	sources  []AuditSource
 	quality  []AuditEventQuality
@@ -146,20 +138,7 @@ func (j *fakeAuditJoiner) Decide(
 	if decision.Action == AuditJoinActionEmit && decision.Event == nil {
 		decision.Event = event
 	}
-	if decision.AuditID == "" && event != nil {
-		decision.AuditID = string(event.AuditID)
-	}
 	return decision, nil
-}
-
-func (j *fakeAuditJoiner) CommitDecision(_ context.Context, _ string, result AuditJoinResult) error {
-	j.commits = append(j.commits, result)
-	return nil
-}
-
-func (j *fakeAuditJoiner) ReleaseDecision(_ context.Context, auditID string) error {
-	j.releases = append(j.releases, auditID)
-	return nil
 }
 
 type orderingAuditJoiner struct {
@@ -203,20 +182,11 @@ func (j *orderingAuditJoiner) Decide(
 	}
 
 	return AuditJoinDecision{
-		Action:  AuditJoinActionEmit,
-		Event:   event,
-		AuditID: string(event.AuditID),
-		Result:  AuditJoinResultAsIs,
-		Source:  AuditSourceOfficial,
+		Action: AuditJoinActionEmit,
+		Event:  event,
+		Result: AuditJoinResultAsIs,
+		Source: AuditSourceOfficial,
 	}, nil
-}
-
-func (j *orderingAuditJoiner) CommitDecision(_ context.Context, _ string, _ AuditJoinResult) error {
-	return nil
-}
-
-func (j *orderingAuditJoiner) ReleaseDecision(_ context.Context, _ string) error {
-	return nil
 }
 
 func TestMain(m *testing.M) {
@@ -335,8 +305,8 @@ func TestAuditHandler_DebugQueueCapturesAllDecodedEventsBeforeProcessing(t *test
 func TestAuditHandler_DebugQueueFailureStopsEventProcessing(t *testing.T) {
 	queue := &recordingAuditEventQueue{}
 	handler, err := NewAuditHandler(AuditHandlerConfig{
-		Queue:      queue,
-		DebugQueue: errorAuditDebugQueue{err: errors.New("debug stream down")},
+		ByTypeQueue: queue,
+		DebugQueue:  errorAuditDebugQueue{err: errors.New("debug stream down")},
 	})
 	require.NoError(t, err)
 
@@ -592,7 +562,7 @@ func TestAuditHandler_ForwardsRealScaleSubresourceRecording(t *testing.T) {
 	require.NoError(t, err, "the captured scale recording must be readable")
 
 	queue := &recordingAuditEventQueue{}
-	handler, err := NewAuditHandler(AuditHandlerConfig{Queue: queue})
+	handler, err := NewAuditHandler(AuditHandlerConfig{ByTypeQueue: queue})
 	require.NoError(t, err)
 
 	body := `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[` + string(recording) + `]}`
@@ -602,7 +572,7 @@ func TestAuditHandler_ForwardsRealScaleSubresourceRecording(t *testing.T) {
 	handler.ServeHTTP(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
-	require.Len(t, queue.events, 1, "the real deployments/scale recording must be forwarded to the canonical stream")
+	require.Len(t, queue.events, 1, "the real deployments/scale recording must be mirrored to its per-type stream")
 	enqueued := queue.events[0]
 	require.NotNil(t, enqueued.ObjectRef)
 	assert.Equal(t, "deployments", enqueued.ObjectRef.Resource)
@@ -652,28 +622,12 @@ func TestAuditHandler_RejectsOversizedBody(t *testing.T) {
 	assert.Contains(t, w.Body.String(), "request body too large")
 }
 
-func TestAuditHandler_EnqueueFailureReturnsInternalServerError(t *testing.T) {
-	handler, err := NewAuditHandler(AuditHandlerConfig{
-		Queue: errorAuditEventQueue{err: errors.New("queue down")},
-	})
-	require.NoError(t, err)
-
-	body := `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[{"kind":"Event","auditID":"queued-1","verb":"create","stage":"ResponseComplete","user":{"username":"test-user"},"objectRef":{"resource":"secrets","namespace":"default","name":"secret-a","apiVersion":"v1"},"responseObject":{"apiVersion":"v1","kind":"Secret","metadata":{"name":"secret-a","namespace":"default"}}}]}`
-	req := httptest.NewRequest(http.MethodPost, "/audit-webhook", bytes.NewReader([]byte(body)))
-	w := httptest.NewRecorder()
-
-	handler.ServeHTTP(w, req)
-
-	assert.Equal(t, http.StatusInternalServerError, w.Code)
-	assert.Contains(t, w.Body.String(), "failed to enqueue audit event")
-}
-
 func TestAuditHandler_JoinerParkedSkipsQueue(t *testing.T) {
 	queue := &recordingAuditEventQueue{}
 	joiner := &fakeAuditJoiner{decision: AuditJoinDecision{Action: AuditJoinActionParked}}
 	handler, err := NewAuditHandler(AuditHandlerConfig{
-		Queue:  queue,
-		Joiner: joiner,
+		ByTypeQueue: queue,
+		Joiner:      joiner,
 	})
 	require.NoError(t, err)
 
@@ -685,8 +639,6 @@ func TestAuditHandler_JoinerParkedSkipsQueue(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.Empty(t, queue.events)
-	assert.Empty(t, joiner.commits)
-	assert.Empty(t, joiner.releases)
 }
 
 // TestAuditHandler_ShallowOfficialReachesJoinerWithoutRuleKnowledge locks in the
@@ -699,7 +651,7 @@ func TestAuditHandler_JoinerParkedSkipsQueue(t *testing.T) {
 func TestAuditHandler_ShallowOfficialReachesJoinerWithoutRuleKnowledge(t *testing.T) {
 	queue := &recordingAuditEventQueue{}
 	joiner := &fakeAuditJoiner{decision: AuditJoinDecision{Action: AuditJoinActionEmit}}
-	handler, err := NewAuditHandler(AuditHandlerConfig{Queue: queue, Joiner: joiner})
+	handler, err := NewAuditHandler(AuditHandlerConfig{ByTypeQueue: queue, Joiner: joiner})
 	require.NoError(t, err)
 
 	body := `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[` +
@@ -724,7 +676,7 @@ func TestAuditHandler_ShallowOfficialReachesJoinerWithoutRuleKnowledge(t *testin
 func TestAuditHandler_CompleteOfficialReachesJoinerWithoutRuleKnowledge(t *testing.T) {
 	queue := &recordingAuditEventQueue{}
 	joiner := &fakeAuditJoiner{decision: AuditJoinDecision{Action: AuditJoinActionEmit}}
-	handler, err := NewAuditHandler(AuditHandlerConfig{Queue: queue, Joiner: joiner})
+	handler, err := NewAuditHandler(AuditHandlerConfig{ByTypeQueue: queue, Joiner: joiner})
 	require.NoError(t, err)
 
 	body := `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[` +
@@ -750,7 +702,7 @@ func TestAuditHandler_CompleteOfficialReachesJoinerWithoutRuleKnowledge(t *testi
 func TestAuditHandler_AdditionalCompleteEventReachesJoiner(t *testing.T) {
 	queue := &recordingAuditEventQueue{}
 	joiner := &fakeAuditJoiner{decision: AuditJoinDecision{Action: AuditJoinActionParked}}
-	handler, err := NewAuditHandler(AuditHandlerConfig{Queue: queue, Joiner: joiner})
+	handler, err := NewAuditHandler(AuditHandlerConfig{ByTypeQueue: queue, Joiner: joiner})
 	require.NoError(t, err)
 
 	body := `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[` +
@@ -777,7 +729,7 @@ func TestAuditHandler_AdditionalCompleteEventReachesJoiner(t *testing.T) {
 func TestAuditHandler_AdditionalReadOnlyVerbBypassesJoiner(t *testing.T) {
 	queue := &recordingAuditEventQueue{}
 	joiner := &fakeAuditJoiner{decision: AuditJoinDecision{Action: AuditJoinActionParked}}
-	handler, err := NewAuditHandler(AuditHandlerConfig{Queue: queue, Joiner: joiner})
+	handler, err := NewAuditHandler(AuditHandlerConfig{ByTypeQueue: queue, Joiner: joiner})
 	require.NoError(t, err)
 
 	body := `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[` +
@@ -802,7 +754,7 @@ func TestAuditHandler_AdditionalReadOnlyVerbBypassesJoiner(t *testing.T) {
 func TestAuditHandler_AdditionalShallowEventBypassesJoiner(t *testing.T) {
 	queue := &recordingAuditEventQueue{}
 	joiner := &fakeAuditJoiner{decision: AuditJoinDecision{Action: AuditJoinActionParked}}
-	handler, err := NewAuditHandler(AuditHandlerConfig{Queue: queue, Joiner: joiner})
+	handler, err := NewAuditHandler(AuditHandlerConfig{ByTypeQueue: queue, Joiner: joiner})
 	require.NoError(t, err)
 
 	body := `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[` +
@@ -823,8 +775,8 @@ func TestAuditHandler_OfficialCanonicalEventsAreOrderedWhileAdditionalCanPark(t 
 	queue := &recordingAuditEventQueue{}
 	joiner := newOrderingAuditJoiner()
 	handler, err := NewAuditHandler(AuditHandlerConfig{
-		Queue:  queue,
-		Joiner: joiner,
+		ByTypeQueue: queue,
+		Joiner:      joiner,
 	})
 	require.NoError(t, err)
 
@@ -896,35 +848,12 @@ func TestAuditHandler_OfficialCanonicalEventsAreOrderedWhileAdditionalCanPark(t 
 	assert.Equal(t, []string{"first", "second"}, queue.auditIDs())
 }
 
-func TestAuditHandler_JoinerReleasesDecisionOnEnqueueFailure(t *testing.T) {
-	joiner := &fakeAuditJoiner{decision: AuditJoinDecision{
-		Action: AuditJoinActionEmit,
-		Result: AuditJoinResultMerged,
-		Source: AuditSourceOfficial,
-	}}
-	handler, err := NewAuditHandler(AuditHandlerConfig{
-		Queue:  errorAuditEventQueue{err: errors.New("queue down")},
-		Joiner: joiner,
-	})
-	require.NoError(t, err)
-
-	body := `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[{"kind":"Event","auditID":"release-1","verb":"create","stage":"ResponseComplete","user":{"username":"test-user"},"objectRef":{"resource":"flunders","apiGroup":"wardle.example.com","apiVersion":"v1alpha1"}}]}`
-	req := httptest.NewRequest(http.MethodPost, "/audit-webhook", bytes.NewReader([]byte(body)))
-	w := httptest.NewRecorder()
-
-	handler.ServeHTTP(w, req)
-
-	assert.Equal(t, http.StatusInternalServerError, w.Code)
-	assert.Equal(t, []string{"release-1"}, joiner.releases)
-	assert.Empty(t, joiner.commits)
-}
-
 func TestAuditHandler_NonResponseCompleteStageBypassesJoiner(t *testing.T) {
 	queue := &recordingAuditEventQueue{}
 	joiner := &fakeAuditJoiner{decision: AuditJoinDecision{Action: AuditJoinActionEmit, Result: AuditJoinResultAsIs}}
 	handler, err := NewAuditHandler(AuditHandlerConfig{
-		Queue:  queue,
-		Joiner: joiner,
+		ByTypeQueue: queue,
+		Joiner:      joiner,
 	})
 	require.NoError(t, err)
 
@@ -943,9 +872,9 @@ func TestAuditHandler_NonResponseCompleteStageBypassesJoiner(t *testing.T) {
 	handler.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusOK, w.Code)
-	require.Len(t, queue.events, 1, "only the ResponseComplete event should be enqueued")
+	require.Len(t, queue.events, 1, "only the ResponseComplete event should be mirrored")
 	assert.Equal(t, auditv1.StageResponseComplete, queue.events[0].Stage)
-	require.Len(t, joiner.commits, 1, "joiner should only have committed for ResponseComplete")
+	require.Equal(t, 1, joiner.calls, "only the ResponseComplete event should reach the joiner")
 }
 
 // TestAuditHandler_ConflictResponseNeverReachesGit reproduces a real
@@ -965,7 +894,7 @@ func TestAuditHandler_NonResponseCompleteStageBypassesJoiner(t *testing.T) {
 func TestAuditHandler_ConflictResponseNeverReachesGit(t *testing.T) {
 	queue := &recordingAuditEventQueue{}
 	joiner := &fakeAuditJoiner{decision: AuditJoinDecision{Action: AuditJoinActionEmit}}
-	handler, err := NewAuditHandler(AuditHandlerConfig{Queue: queue, Joiner: joiner})
+	handler, err := NewAuditHandler(AuditHandlerConfig{ByTypeQueue: queue, Joiner: joiner})
 	require.NoError(t, err)
 
 	// An update to helmreleases.helm.toolkit.fluxcd.io that lost an
@@ -1001,7 +930,7 @@ func TestAuditHandler_ConflictResponseNeverReachesGit(t *testing.T) {
 func TestAuditHandler_SuccessfulUpdateStillReachesGit(t *testing.T) {
 	queue := &recordingAuditEventQueue{}
 	joiner := &fakeAuditJoiner{decision: AuditJoinDecision{Action: AuditJoinActionEmit}}
-	handler, err := NewAuditHandler(AuditHandlerConfig{Queue: queue, Joiner: joiner})
+	handler, err := NewAuditHandler(AuditHandlerConfig{ByTypeQueue: queue, Joiner: joiner})
 	require.NoError(t, err)
 
 	body := `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[` +
@@ -1025,7 +954,7 @@ func TestAuditHandler_SuccessfulUpdateStillReachesGit(t *testing.T) {
 func TestAuditHandler_PodExecCreateDoesNotEnterJoinPipeline(t *testing.T) {
 	queue := &recordingAuditEventQueue{}
 	joiner := &fakeAuditJoiner{decision: AuditJoinDecision{Action: AuditJoinActionEmit}}
-	handler, err := NewAuditHandler(AuditHandlerConfig{Queue: queue, Joiner: joiner})
+	handler, err := NewAuditHandler(AuditHandlerConfig{ByTypeQueue: queue, Joiner: joiner})
 	require.NoError(t, err)
 
 	body := `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[
@@ -1184,13 +1113,11 @@ func TestAuditSourceFromPath(t *testing.T) {
 	}
 }
 
-// TestAuditHandler_ByTypeQueueMirrorsCanonicalEvent confirms that a canonical
-// ResponseComplete event is mirrored to the per-resource-type sink after it reaches
-// the canonical queue.
-func TestAuditHandler_ByTypeQueueMirrorsCanonicalEvent(t *testing.T) {
-	queue := &recordingAuditEventQueue{}
+// TestAuditHandler_ByTypeQueueMirrorsAcceptedEvent confirms that an accepted
+// ResponseComplete event is mirrored to the per-resource-type sink.
+func TestAuditHandler_ByTypeQueueMirrorsAcceptedEvent(t *testing.T) {
 	byType := &recordingByTypeQueue{}
-	handler, err := NewAuditHandler(AuditHandlerConfig{Queue: queue, ByTypeQueue: byType})
+	handler, err := NewAuditHandler(AuditHandlerConfig{ByTypeQueue: byType})
 	require.NoError(t, err)
 
 	body := `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[` +
@@ -1204,18 +1131,15 @@ func TestAuditHandler_ByTypeQueueMirrorsCanonicalEvent(t *testing.T) {
 	handler.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusOK, w.Code)
-	assert.Equal(t, []string{"bytype-1"}, queue.auditIDs())
 	assert.Equal(t, []string{"bytype-1"}, byType.auditIDs(),
-		"the canonical event must be mirrored to the per-resource-type sink")
+		"the accepted event must be mirrored to the per-resource-type sink")
 }
 
 // TestAuditHandler_ByTypeQueueSkipsNonResponseCompleteStages confirms the mirror is
-// only fed StageResponseComplete events: an earlier-stage event never reaches the
-// canonical enqueue, so it must not reach the per-type sink either.
+// only fed StageResponseComplete events.
 func TestAuditHandler_ByTypeQueueSkipsNonResponseCompleteStages(t *testing.T) {
-	queue := &recordingAuditEventQueue{}
 	byType := &recordingByTypeQueue{}
-	handler, err := NewAuditHandler(AuditHandlerConfig{Queue: queue, ByTypeQueue: byType})
+	handler, err := NewAuditHandler(AuditHandlerConfig{ByTypeQueue: byType})
 	require.NoError(t, err)
 
 	body := `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[` +
@@ -1228,17 +1152,14 @@ func TestAuditHandler_ByTypeQueueSkipsNonResponseCompleteStages(t *testing.T) {
 	handler.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusOK, w.Code)
-	assert.Empty(t, queue.events)
 	assert.Empty(t, byType.events, "non-ResponseComplete stages must not be mirrored")
 }
 
 // TestAuditHandler_ByTypeMirrorFailureDoesNotFailRequest confirms the mirror is
-// best-effort: an error from the per-type sink leaves the request successful and the
-// canonical enqueue intact.
+// best-effort: an error from the per-type sink leaves the request successful.
 func TestAuditHandler_ByTypeMirrorFailureDoesNotFailRequest(t *testing.T) {
-	queue := &recordingAuditEventQueue{}
 	byType := &recordingByTypeQueue{err: errors.New("bytype stream down")}
-	handler, err := NewAuditHandler(AuditHandlerConfig{Queue: queue, ByTypeQueue: byType})
+	handler, err := NewAuditHandler(AuditHandlerConfig{ByTypeQueue: byType})
 	require.NoError(t, err)
 
 	body := `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[` +
@@ -1252,6 +1173,31 @@ func TestAuditHandler_ByTypeMirrorFailureDoesNotFailRequest(t *testing.T) {
 	handler.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusOK, w.Code, "a mirror failure must not fail the audit request")
-	assert.Equal(t, []string{"bytype-fail-1"}, queue.auditIDs(),
-		"the canonical enqueue must still succeed when the mirror fails")
+}
+
+// TestAuditHandler_DuplicateOfficialDeliveryMirrorsTwice pins the C-C contract
+// that replaced the auditID decision key: a webhook retry re-mirrors the event
+// at the same resourceVersion, and the RV-keyed per-type stream + idempotent
+// splice fold absorb it downstream (zero extra Git effect — see the splice's
+// duplicate-delivery test).
+func TestAuditHandler_DuplicateOfficialDeliveryMirrorsTwice(t *testing.T) {
+	byType := &recordingByTypeQueue{}
+	handler, err := NewAuditHandler(AuditHandlerConfig{ByTypeQueue: byType})
+	require.NoError(t, err)
+
+	body := `{"kind":"EventList","apiVersion":"audit.k8s.io/v1","items":[` +
+		`{"kind":"Event","auditID":"dup-1","verb":"update","stage":"ResponseComplete",` +
+		`"user":{"username":"test-user"},"objectRef":{"resource":"deployments",` +
+		`"apiGroup":"apps","apiVersion":"v1","namespace":"prod","name":"web"},` +
+		`"responseObject":{"metadata":{"resourceVersion":"42"}}}]}`
+
+	for range 2 {
+		req := httptest.NewRequest(http.MethodPost, "/audit-webhook", bytes.NewReader([]byte(body)))
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		require.Equal(t, http.StatusOK, w.Code)
+	}
+
+	assert.Equal(t, []string{"dup-1", "dup-1"}, byType.auditIDs(),
+		"duplicate delivery is no longer suppressed at the webhook; the stream absorbs it")
 }

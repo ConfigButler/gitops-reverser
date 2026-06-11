@@ -49,7 +49,7 @@ These terms are used precisely throughout the code and the rest of this doc.
 | **Materialization phase** | Where a type sits on the demand axis: `Dormant → Requested → Syncing → Synced ⇄ Resyncing / Failing`. Only a `Synced` type has a serving checkpoint. |
 | **Snapshot / Checkpoint** | A point-in-time, **complete** capture of all objects of one type, taken by a consistent LIST and stored in Redis as `:objects:items` pinned at the LIST revision `:objects:rv`. "Checkpoint" and "object snapshot" are the same thing. (Not to be confused with a *snapshot commit* — see below.) |
 | **Audit log / per-type stream** | The RV-ordered Redis stream `…:audit:stream` of every mutating event for a type, stream-ID `<resourceVersion>-<subseq>` so it replays in etcd-commit order. The freshness source. |
-| **Mirror** (`mirrorByType`) | The webhook step that copies each canonical audit event into its per-type `:audit:stream`. "Mirror" = *write the event into the per-type log*. |
+| **Mirror** (`mirrorByType`) | The webhook step that writes each accepted (body-merged) audit event into its per-type `:audit:stream`. "Mirror" = *write the event into the per-type log*. |
 | **Tail** | A long-lived goroutine per (Synced, claimed) type that does a blocking `XREAD` on `:audit:stream` and applies each new entry as an incremental change. The freshness engine. |
 | **Splice** (`SpliceType`) | Folding a type's checkpoint (`:objects:items` @ R) with every audit-log entry strictly after R into the *current complete desired set*. The correctness engine's read step. |
 | **Reconcile** | A type-scoped **resync**: take the spliced desired set, run mark-and-sweep against the GitTarget's subtree, and commit the difference. Drives the correctness plane. Compare to a per-event apply (freshness). |
@@ -78,9 +78,8 @@ flowchart LR
         direction TB
 
         subgraph INGEST["Audit ingestion (freshness source)"]
-            WH["AuditHandler<br/>(decode · classify · dedupe)"]
+            WH["AuditHandler<br/>(decode · classify · body-merge)"]
             MIR["mirrorByType"]
-            CONS["AuditConsumer<br/>(CommitRequest finalize · /scale<br/>· leader-elected)"]
         end
 
         subgraph TYPESET["typeset leaf (no I/O)"]
@@ -100,6 +99,7 @@ flowchart LR
             GTC["GitTarget controller<br/>(gates · Declare)"]
             GPC["GitProvider controller"]
             WRC["WatchRule controllers"]
+            CRC["CommitRequest controller<br/>(attribute · barrier · finalize)"]
         end
 
         subgraph WRITE["Git write side (single writer per branch)"]
@@ -109,7 +109,6 @@ flowchart LR
     end
 
     subgraph REDIS["Redis / Valkey (per-type keyspace)"]
-        CANON["gitopsreverser.audit.events.v1<br/>(canonical stream)"]
         LOG[":audit:stream<br/>(RV-ordered log)"]
         CKPT[":objects:items @ :objects:rv<br/>:objects:state (checkpoint)"]
     end
@@ -117,9 +116,7 @@ flowchart LR
     GIT["Git remote<br/>(Gitea / GitHub / …)"]
 
     AUD -->|"audit events"| WH
-    WH --> CANON
     WH --> MIR --> LOG
-    CANON --> CONS
 
     DISC -->|"served types"| REG
     REG -->|"lifecycle events"| MAT
@@ -135,7 +132,7 @@ flowchart LR
     LOG --> SPL
     TAIL -->|"incremental upsert/delete<br/>(freshness)"| RTR
     SPL -->|"complete desired set<br/>(reconcile/correctness)"| RTR
-    CONS -->|"finalize / scale patch"| BW
+    CRC -->|"attribute (read :audit:stream)<br/>barrier · finalize"| BW
 
     RTR --> STREAM --> BW
     BW -->|"commit + push"| GIT
@@ -230,10 +227,9 @@ sequenceDiagram
 
 ### 4.1 Process half — rebuild and arm (steps 1–7)
 
-1. **Compose Redis clients.** `cmd/main` builds the canonical-stream queue, the per-type
-   *mirror* queue, a **separate** per-type *tail-reader* client (large pool, isolated so the
-   tails' blocking reads never starve mirror writes), the objects-snapshot reader, the
-   splicer, and the audit joiner.
+1. **Compose Redis clients.** `cmd/main` builds the per-type *mirror* queue, a **separate**
+   per-type *tail-reader* client (large pool, isolated so the tails' blocking reads never
+   starve mirror writes), the objects-snapshot reader, the splicer, and the audit joiner.
 2. **Boot-restore (DEC-L6).** `LoadSyncedCheckpoints` reads every durable `:objects:state`
    and `RestoreSyncedCheckpoint` marks each type **Synced @ rv** in the materializer
    *silently* — a restart resumes serving standing checkpoints without re-listing the world.
@@ -288,9 +284,12 @@ sequenceDiagram
   **re-anchor** (a fresh LIST + checkpoint swap + re-splice reconcile) and **releases**
   no-longer-claimed types (checkpoint dropped, tail stopped). Re-anchoring backstops any event
   the freshness plane dropped.
-- **CommitRequest / scale:** the `AuditConsumer` (leader-elected) reads the canonical stream
-  and turns a CommitRequest into a **finalize** of the open window, and a `/scale` subresource
-  edit into a field-patch.
+- **CommitRequest / scale:** a `/scale` edit rides the **parent type's** stream as a marked
+  field-patch entry (translated by the tail, folded by the splice). A CommitRequest is driven
+  by its own controller: it waits for the CR's create event in the commitrequests per-type
+  stream (author attribution + ordering anchor), drains the GitTarget's tails to a per-type
+  watermark snapshot, then finalizes the open window author-bound
+  ([canonical-stream-retirement.md](canonical-stream-retirement.md)).
 
 ---
 
@@ -317,10 +316,11 @@ them together: the tail resumes exactly where the checkpoint ended.
 | "Can we follow this type?" | `typeset.Registry` | leaf, no I/O |
 | "Who wants it, and is it listed?" | `typeset.Materializer` | leaf; claims + phase machine |
 | LIST → checkpoint | `watch` checkpoint driver | the only place that LISTs for materialization |
-| Audit event → per-type log | `webhook` `mirrorByType` | inline after canonical enqueue |
+| Audit event → per-type log | `webhook` `mirrorByType` | inline in the audit handler |
 | Per-event freshness apply | `watch` audit tail | blocking `XREAD`, own Redis pool |
 | Checkpoint + log → desired | `queue` `RedisTypeSplicer` | fail-closed if no checkpoint |
 | Route events / scoped resync | `watch.EventRouter` | per GitTarget |
 | Commit window, flush, push | `git.BranchWorker` | single writer per branch |
 | Gates, Declare, status | `controller` GitTarget reconciler | worker-before-declare |
-| CommitRequest finalize, `/scale` | `queue` AuditConsumer | leader-elected |
+| CommitRequest finalize | `controller` CommitRequest reconciler | attribute → barrier → author-bound finalize |
+| `/scale` field-patch | parent type's tail + splice | a marked entry in the parent's stream |
