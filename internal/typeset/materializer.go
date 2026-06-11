@@ -194,6 +194,23 @@ func (m *Materializer) OnLifecycleEvent(ev LifecycleEvent) {
 		st.followable = true
 		st.frozen = false
 		events = m.maybeRequestLocked(ev.GVR, st, now, events)
+		// A type that is already Synced when (re)activated — most notably a checkpoint restored
+		// from durable state on boot (DEC-L6), whose original TypeSynced was consumed before any
+		// consumer existed, or a wobbled type recovering — re-announces TypeSynced so the driver
+		// re-establishes its per-type reconcile and its audit-replay tail. Both consumer actions are
+		// idempotent, so re-announcing is safe; without it, a restored checkpoint would serve but
+		// never wake a consumer (no replay), which is the post-restart "mirror goes silent" bug.
+		//
+		// Gate on a live CLAIM: an unclaimed restored checkpoint (a type a prior, now-deleted
+		// GitTarget materialized — a boot restores every durable checkpoint, dozens of them) has no
+		// consumer to wake, and waking one would start a per-type audit tail — a parked blocking Redis
+		// read — for a type nobody follows. Dozens of those exhaust the shared connection pool and
+		// starve the mirror's writes (the per-type streams stop filling). A claim that lands AFTER
+		// activation re-announces via the Declare path (the watch layer starts the tail for a
+		// newly-claimed already-Synced type), so both boot orderings still converge.
+		if st.phase == PhaseSynced && len(m.claims[ev.GVR]) > 0 {
+			events = append(events, m.event(TypeSynced, ev.GVR, st, now))
+		}
 	case TypeWobbling:
 		// Freeze: suspend re-anchor and sweep, keep the existing checkpoint served.
 		if st, ok := m.types[ev.GVR]; ok {

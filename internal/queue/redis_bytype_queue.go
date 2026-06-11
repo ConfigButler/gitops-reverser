@@ -33,6 +33,11 @@ import (
 	"github.com/redis/go-redis/v9"
 	"k8s.io/apimachinery/pkg/runtime"
 	auditv1 "k8s.io/apiserver/pkg/apis/audit/v1"
+
+	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	"github.com/ConfigButler/gitops-reverser/internal/auditutil"
+	"github.com/ConfigButler/gitops-reverser/internal/git"
+	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
 const (
@@ -102,6 +107,13 @@ type RedisByTypeStreamConfig struct {
 	Prefix     string
 	MaxLen     int64
 	TLSEnabled bool
+	// PoolSize overrides the go-redis connection-pool size (0 = library default, 10×GOMAXPROCS).
+	// The audit TAIL reader needs a large pool: every followed type runs one tail parked in a
+	// blocking XREAD, so it holds one connection continuously, and a wildcard GitTarget follows
+	// dozens of types at once. Sizing the reader's pool above that count keeps those blocking
+	// reads from starving each other — and, by giving the reader its OWN client, keeps them from
+	// ever starving the mirror's writes (which run on a separate, default-pooled client).
+	PoolSize int
 }
 
 // RedisByTypeStreamQueue mirrors canonical audit events into one strictly RV-ordered Redis
@@ -140,6 +152,9 @@ func NewRedisByTypeStreamQueue(cfg RedisByTypeStreamConfig) (*RedisByTypeStreamQ
 		Username: cfg.Username,
 		Password: cfg.AuthValue,
 		DB:       cfg.DB,
+	}
+	if cfg.PoolSize > 0 {
+		options.PoolSize = cfg.PoolSize
 	}
 	if cfg.TLSEnabled {
 		options.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
@@ -215,23 +230,28 @@ func (q *RedisByTypeStreamQueue) TrimTypeAuditLog(ctx context.Context, group, re
 	return nil
 }
 
-// byTypeAuditReadCount bounds how many new entries one AwaitTypeAuditEntry read drains. A burst is
-// returned in a single read so the cursor advances past all of it at once, coalescing into one
-// reconcile (the splice reflects the whole log regardless of how many entries triggered it).
+// byTypeAuditReadCount bounds how many new entries one ReadTypeAuditChanges read drains.
 const byTypeAuditReadCount = 1024
 
-// AwaitTypeAuditEntry blocks up to `block` for a new entry on a type's main audit stream after
-// lastID, returning the newest stream ID seen (to resume from) and whether anything new arrived. It
-// is the audit-arrival wake for the splice reconcile (R2): the per-type tail loops on it and
-// reconciles when an entry lands. lastID "" or "$" anchors at the present (only future entries);
-// thereafter the caller passes back the returned concrete ID so no entry is missed between reads. A
-// block timeout returns (lastID, false, nil); a Redis error is returned for the caller to back off
-// on. Best-effort and non-fatal, like the rest of the per-type mirror (IR8).
-func (q *RedisByTypeStreamQueue) AwaitTypeAuditEntry(
+// ReadTypeAuditChanges blocks up to `block` for new entries on a type's main audit stream after
+// lastID, parses each into a per-event git.Event, and returns them with the newest stream ID to
+// resume from. It is the freshness half of the R3 split: the per-type tail loops on it and applies
+// each change as a sweep-free UPSERT/DELETE (the old per-event apply, re-sourced from the per-type
+// stream), so a partial burst can never delete an unseen object — correctness (orphan/missed-delete
+// detection) is the checkpoint sweep's job, not the log's. lastID "" or "$" anchors at the present;
+// thereafter the caller passes back the returned concrete ID so no entry is missed between reads.
+//
+// Each returned event carries Object (for an upsert) or just the Identifier (for a DELETE), with no
+// Path/GitTarget set — the tail fills those per watching GitTarget. Entries that are non-mutating, a
+// subresource (the /scale parent-patch is the consumer's job; the parent stream carries only parent
+// objects), name-less (a deletecollection — backstopped by the next checkpoint, DEC-5), or whose
+// body is a Status/partial/missing object are skipped here and healed by the next checkpoint. A
+// block timeout returns (nil, lastID, nil); a Redis error is returned for the caller to back off on.
+func (q *RedisByTypeStreamQueue) ReadTypeAuditChanges(
 	ctx context.Context,
 	group, resource, lastID string,
 	block time.Duration,
-) (string, bool, error) {
+) ([]git.Event, string, error) {
 	if strings.TrimSpace(lastID) == "" {
 		lastID = "$"
 	}
@@ -242,20 +262,69 @@ func (q *RedisByTypeStreamQueue) AwaitTypeAuditEntry(
 		Block:   block,
 	}).Result()
 	if errors.Is(err, redis.Nil) {
-		return lastID, false, nil // block elapsed with nothing new
+		return nil, lastID, nil // block elapsed with nothing new
 	}
 	if err != nil {
-		return lastID, false, fmt.Errorf("await audit entry on %q: %w", streamKey, err)
+		return nil, lastID, fmt.Errorf("read audit changes on %q: %w", streamKey, err)
 	}
 
 	newID := lastID
+	var changes []git.Event
 	for i := range res {
-		msgs := res[i].Messages
-		if len(msgs) > 0 {
-			newID = msgs[len(msgs)-1].ID
+		for j := range res[i].Messages {
+			msg := res[i].Messages[j]
+			newID = msg.ID
+			if ev, ok := auditChangeFromEntry(msg.Values); ok {
+				changes = append(changes, ev)
+			}
 		}
 	}
-	return newID, true, nil
+	return changes, newID, nil
+}
+
+// auditChangeFromEntry parses one per-type audit-stream entry into a per-event git.Event (no Path /
+// GitTarget — the tail fills those), reusing the consumer's parse/extract path so a spliced upsert
+// is byte-identical to what the live pipeline wrote. It returns ok=false for entries the incremental
+// freshness path must not act on (see ReadTypeAuditChanges); their correctness is the checkpoint's.
+func auditChangeFromEntry(values map[string]interface{}) (git.Event, bool) {
+	event, err := parseAuditEvent(values)
+	if err != nil {
+		return git.Event{}, false
+	}
+	if event.Stage != auditv1.StageResponseComplete || event.ObjectRef == nil {
+		return git.Event{}, false
+	}
+	op, ok := auditutil.VerbToOperation(event.Verb)
+	if !ok {
+		return git.Event{}, false
+	}
+	op = effectiveAuditOperation(event, op)
+
+	ref := event.ObjectRef
+	if ref.Subresource != "" {
+		return git.Event{}, false
+	}
+	id := auditutil.IdentityFromAuditEvent(event, op)
+	if id.Name == "" {
+		return git.Event{}, false
+	}
+	apiGroup, apiVersion := auditutil.ObjectRefGroupVersion(ref)
+	identifier := itypes.NewResourceIdentifier(apiGroup, apiVersion, ref.Resource, id.Namespace, id.Name)
+	userInfo := resolveUserInfo(event)
+
+	if op == configv1alpha1.OperationDelete {
+		return git.Event{Identifier: identifier, Operation: string(op), UserInfo: userInfo}, true
+	}
+
+	fullAPIVersion := apiVersion
+	if apiGroup != "" {
+		fullAPIVersion = apiGroup + "/" + apiVersion
+	}
+	obj, err := extractObject(event, op, fullAPIVersion, ref.Resource, id.Namespace, id.Name)
+	if err != nil {
+		return git.Event{}, false
+	}
+	return git.Event{Object: obj, Identifier: identifier, Operation: string(op), UserInfo: userInfo}, true
 }
 
 // byTypeAuditKeys bundles the three per-type audit keys one Enqueue touches.

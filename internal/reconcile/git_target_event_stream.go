@@ -19,53 +19,32 @@ limitations under the License.
 package reconcile
 
 import (
-	"crypto/sha256"
 	"fmt"
-	"sort"
-	"strings"
-	"sync"
 
 	"github.com/go-logr/logr"
 
 	"github.com/ConfigButler/gitops-reverser/internal/git"
-	"github.com/ConfigButler/gitops-reverser/internal/sanitize"
 )
 
-// EventStreamState represents the state of the event stream processing.
-type EventStreamState string
-
-const (
-	// Reconciling buffers live events while a reconcile write request is in flight.
-	Reconciling EventStreamState = "RECONCILING"
-	// LiveProcessing processes all events normally.
-	LiveProcessing EventStreamState = "LIVE_PROCESSING"
-)
-
-// GitTargetEventStream synchronizes live event stream with reconciliation process.
-// It provides deterministic state machine behavior and event deduplication.
+// GitTargetEventStream forwards a GitTarget's live field-patch events to its branch worker.
+//
+// With the api-source-of-truth pivot (R3) the resource mirror is the per-type splice reconcile,
+// not a live per-event stream: the long-lived object informers, the RECONCILING handover buffer,
+// and the content-hash deduplication this type used to own are all gone. What remains is a thin
+// route for the events the splice deliberately does not own — the /scale subresource translated
+// into a parent-manifest field patch (redis_audit_consumer.routeScaleFieldPatch). "Newer?" is now
+// answered by the audit stream's RV ordering and "changed?" by the writer's no-op detection
+// (manifestedit.Decide at the commit boundary), so no hash is computed here. See
+// docs/design/stream/api-source-of-truth-reconcile.md (DEC-6, DEC-7).
 type GitTargetEventStream struct {
-	// Identity
 	gitTargetName      string
 	gitTargetNamespace string
 
-	// State machine
-	state EventStreamState
-
-	// Event buffering during reconciliation
-	bufferedEvents []git.Event
-
-	// Event hash deduplication (ResourceIdentifier -> lastEventHash)
-	processedEventHashes map[string]string
-
-	// Dependencies
 	branchWorker EventEnqueuer
 	logger       logr.Logger
-	mu           sync.RWMutex
 }
 
-// EventEnqueuer enqueues live watch events onto a branch worker (allows mocking).
-// The streaming-snapshot resync (M8) is driven directly through the worker, so the
-// stream itself only ever forwards individual live events.
+// EventEnqueuer enqueues live events onto a branch worker (allows mocking).
 type EventEnqueuer interface {
 	Enqueue(event git.Event)
 }
@@ -77,190 +56,29 @@ func NewGitTargetEventStream(
 	logger logr.Logger,
 ) *GitTargetEventStream {
 	return &GitTargetEventStream{
-		gitTargetName:        gitTargetName,
-		gitTargetNamespace:   gitTargetNamespace,
-		state:                Reconciling,
-		bufferedEvents:       make([]git.Event, 0),
-		processedEventHashes: make(map[string]string),
-		branchWorker:         branchWorker,
-		logger:               logger.WithValues("gitTarget", fmt.Sprintf("%s/%s", gitTargetNamespace, gitTargetName)),
+		gitTargetName:      gitTargetName,
+		gitTargetNamespace: gitTargetNamespace,
+		branchWorker:       branchWorker,
+		logger:             logger.WithValues("gitTarget", fmt.Sprintf("%s/%s", gitTargetNamespace, gitTargetName)),
 	}
 }
 
-// BeginReconciliation transitions the stream to RECONCILING state (buffering live events).
-// Safe to call when already in RECONCILING state (no-op).
-func (s *GitTargetEventStream) BeginReconciliation() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.state == Reconciling {
-		return
-	}
-	s.state = Reconciling
-	s.bufferedEvents = make([]git.Event, 0)
-	s.logger.Info("Transitioned to RECONCILING state")
-}
-
-// OnWatchEvent processes incoming watch events from the cluster.
+// OnWatchEvent forwards a live event to the GitTarget's branch worker. An event with no object
+// payload that is neither a DELETE nor a field patch carries nothing to write and is dropped.
 func (s *GitTargetEventStream) OnWatchEvent(event git.Event) {
-	s.mu.Lock()
-	switch s.state {
-	case Reconciling:
-		// Buffer all events during reconciliation (no deduplication)
-		s.bufferedEvents = append(s.bufferedEvents, event)
-		bufferSize := len(s.bufferedEvents)
-		s.mu.Unlock()
-		s.logger.V(1).
-			Info("Buffered event during reconciliation", "resource", event.Identifier.String(), "bufferSize", bufferSize)
-
-	case LiveProcessing:
-		// Check for duplicates using event hash
-		eventHash := s.computeEventHash(event)
-		resourceKey := event.Identifier.Key()
-
-		if lastHash, exists := s.processedEventHashes[resourceKey]; exists && lastHash == eventHash {
-			s.mu.Unlock()
-			s.logger.V(1).Info("Skipping duplicate event", "resource", resourceKey, "hash", eventHash)
-			return
-		}
-		s.mu.Unlock()
-
-		// Process immediately
-		s.processEvent(event, eventHash, resourceKey)
-
-	default:
-		s.mu.Unlock()
-	}
-}
-
-// OnReconciliationComplete signals that reconciliation has finished.
-// Transitions to LIVE_PROCESSING and flushes buffered live events.
-func (s *GitTargetEventStream) OnReconciliationComplete() {
-	s.mu.Lock()
-	if s.state != Reconciling {
-		currentState := s.state
-		s.mu.Unlock()
-		s.logger.Info(
-			"Reconciliation complete signal received but not in RECONCILING state",
-			"currentState",
-			currentState,
-		)
-		return
-	}
-
-	bufferedEvents := append([]git.Event(nil), s.bufferedEvents...)
-	s.logger.Info("Reconciliation completed, transitioning to LIVE_PROCESSING", "bufferedEvents", len(bufferedEvents))
-
-	// Transition to live processing
-	s.state = LiveProcessing
-	s.bufferedEvents = nil
-	s.mu.Unlock()
-
-	// Process all buffered events
-	for _, event := range bufferedEvents {
-		eventHash := s.computeEventHash(event)
-		resourceKey := event.Identifier.Key()
-		s.processEvent(event, eventHash, resourceKey)
-	}
-
-	s.logger.Info("Finished processing buffered events")
-}
-
-// processEvent forwards the event to BranchWorker and updates deduplication state.
-func (s *GitTargetEventStream) processEvent(event git.Event, eventHash, resourceKey string) {
 	if event.Object == nil && !event.IsFieldPatch() && event.Operation != "DELETE" {
-		s.logger.V(1).Info(
-			"Skipping event with no object payload",
-			"resource", resourceKey,
-			"operation", event.Operation,
-		)
+		s.logger.V(1).Info("Skipping event with no object payload",
+			"resource", event.Identifier.Key(), "operation", event.Operation)
 		return
 	}
 
 	event.GitTargetName = s.gitTargetName
 	event.GitTargetNamespace = s.gitTargetNamespace
-
-	// Forward to BranchWorker
 	s.branchWorker.Enqueue(event)
-
-	// Update deduplication state
-	s.mu.Lock()
-	s.processedEventHashes[resourceKey] = eventHash
-	s.mu.Unlock()
-
-	s.logger.V(1).Info("Processed event", "resource", resourceKey, "hash", eventHash)
-}
-
-// computeEventHash calculates a hash of the event content that would be written to Git.
-func (s *GitTargetEventStream) computeEventHash(event git.Event) string {
-	if event.IsFieldPatch() {
-		// Field-patch events carry no Object. Hash the patch CONTENT (operation,
-		// parent identity, source, and assignments) — never the resourceVersion —
-		// so a redelivered identical patch dedups while two different values for the
-		// same parent stay distinct. This mirrors the object path's content-dedup.
-		return fmt.Sprintf("%x", sha256.Sum256([]byte(fieldPatchHashContent(event))))
-	}
-	if event.Object == nil {
-		// Control events - hash the operation and identifier
-		content := fmt.Sprintf("%s:%s", event.Operation, event.Identifier.String())
-		return fmt.Sprintf("%x", sha256.Sum256([]byte(content)))
-	}
-
-	// For resource events, hash the operation + sanitized YAML content that would be committed
-	// This ensures CREATE and UPDATE operations for the same final content are treated as duplicates
-	sanitized, err := sanitize.MarshalToOrderedYAML(event.Object)
-	if err != nil {
-		// Fallback to object hash if sanitization fails
-		s.logger.Error(err, "Failed to sanitize object for hash, using fallback", "resource", event.Identifier.String())
-		content := fmt.Sprintf("%s:%s:%v", event.Operation, event.Identifier.String(), event.Object.Object)
-		return fmt.Sprintf("%x", sha256.Sum256([]byte(content)))
-	}
-
-	// Include operation in hash to distinguish CREATE from UPDATE/DELETE for same content
-	content := fmt.Sprintf("%s:%s", event.Operation, string(sanitized))
-	return fmt.Sprintf("%x", sha256.Sum256([]byte(content)))
-}
-
-// fieldPatchHashContent renders a field-patch event into a stable dedup string:
-// operation, parent identity, source, and the (path=value) assignments. Assignment
-// order is normalized so the key does not depend on the translator's emission
-// order, and the value is rendered with %v (which prints map keys in sorted order),
-// so two patches that set the same fields to the same values produce the same key.
-func fieldPatchHashContent(event git.Event) string {
-	patch := event.FieldPatch
-	parts := make([]string, 0, len(patch.Assignments))
-	for _, assignment := range patch.Assignments {
-		parts = append(parts, strings.Join(assignment.Path, ".")+"="+fmt.Sprintf("%v", assignment.Value))
-	}
-	sort.Strings(parts)
-	return fmt.Sprintf("%s:%s:%s:%s",
-		event.Operation, event.Identifier.String(), patch.Source, strings.Join(parts, "|"))
-}
-
-// GetState returns the current state of the event stream.
-func (s *GitTargetEventStream) GetState() EventStreamState {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.state
-}
-
-// GetBufferedEventCount returns the number of events currently buffered.
-func (s *GitTargetEventStream) GetBufferedEventCount() int {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return len(s.bufferedEvents)
-}
-
-// GetProcessedEventCount returns the number of unique events processed.
-func (s *GitTargetEventStream) GetProcessedEventCount() int {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return len(s.processedEventHashes)
+	s.logger.V(1).Info("Forwarded event", "resource", event.Identifier.Key(), "operation", event.Operation)
 }
 
 // String returns a string representation for debugging.
 func (s *GitTargetEventStream) String() string {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return fmt.Sprintf("GitTargetEventStream(gitTarget=%s/%s, state=%s, buffered=%d, processed=%d)",
-		s.gitTargetNamespace, s.gitTargetName, s.state, len(s.bufferedEvents), len(s.processedEventHashes))
+	return fmt.Sprintf("GitTargetEventStream(gitTarget=%s/%s)", s.gitTargetNamespace, s.gitTargetName)
 }

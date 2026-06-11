@@ -74,24 +74,19 @@ var errAuditEventObjectMissing = errors.New("audit event has no requestObject or
 // errAuditEventObjectIsStatus marks an audit event whose extracted body is a
 // metav1.Status error response (apiVersion: v1, kind: Status) rather than a
 // real resource. The API server emits such a body when a request fails — most
-// commonly a 409 Conflict from an optimistic-concurrency clash. The ingress
-// gate in internal/webhook drops failed requests by responseStatus.code, so a
-// well-formed pipeline never reaches here; this is a defense-in-depth guard
-// against an event that lost its responseStatus (e.g. an additional-source
-// proxy body) so the Status is never written to Git as if it were the resource.
+// commonly a 409 Conflict from an optimistic-concurrency clash.
 var errAuditEventObjectIsStatus = errors.New("audit event object is a metav1.Status error body")
 
 // errAuditEventObjectPartial marks an audit event whose body is valid JSON but
 // lacks the apiVersion/kind identity of a full Kubernetes object — typically a
 // merge-patch fragment such as {"metadata":{"finalizers":null}} recorded as the
-// requestObject of a finalizer-removal PATCH. It carries no routable resource
-// state, so it is dropped before git routing rather than treated as a decode
-// failure. The resource's real mutation is mirrored from its own (delete or
-// full-body) audit event.
+// requestObject of a finalizer-removal PATCH.
 var errAuditEventObjectPartial = errors.New("audit event object body is a partial object (no kind)")
 
 // AuditEventRouter is the subset of watch.EventRouter used by the consumer.
-// watch.EventRouter satisfies this interface without modification.
+// watch.EventRouter satisfies this interface without modification. RouteToGitTargetEventStream
+// now carries only the /scale subresource → parent field-patch (R3): object mirroring moved to
+// the per-type splice, so the consumer no longer routes full-object events.
 type AuditEventRouter interface {
 	RouteToGitTargetEventStream(event git.Event, gitDest itypes.ResourceReference) error
 	FinalizeGitTargetWindow(
@@ -135,12 +130,8 @@ type AuditConsumer struct {
 	apiReader  client.Reader
 
 	// One-shot log gates for startup-milestone visibility.
-	firstGroupReady     sync.Once
-	firstMessage        sync.Once
-	firstRouted         sync.Once
-	firstShallowDropped sync.Once
-	firstStatusDropped  sync.Once
-	firstPartialDropped sync.Once
+	firstGroupReady sync.Once
+	firstMessage    sync.Once
 }
 
 // NewAuditConsumer creates a new AuditConsumer. It does not start consuming;
@@ -379,7 +370,11 @@ func (c *AuditConsumer) processMessage(ctx context.Context, msg redis.XMessage) 
 	c.ackMessage(ctx, msg.ID)
 }
 
-// routeAuditEvent performs rule matching, object extraction, and routing for one audit event.
+// routeAuditEvent handles the one audit-stream responsibility the consumer still owns after
+// the api-source-of-truth pivot (R3): the /scale subresource → parent-manifest field patch.
+// Full-object creates/updates/deletes are NOT routed here — they are captured into the per-type
+// :audit:stream by the webhook (mirrorByType) and reconciled by the splice, so the consumer
+// simply ACKs them. Only a /scale subresource event matches rules and routes a field patch.
 func (c *AuditConsumer) routeAuditEvent(
 	ctx context.Context,
 	log logr.Logger,
@@ -387,6 +382,12 @@ func (c *AuditConsumer) routeAuditEvent(
 	op configv1alpha1.OperationType,
 ) error {
 	ref := auditEvent.ObjectRef
+
+	// Object mirroring belongs to the splice; the consumer only carries subresource patches.
+	if ref.Subresource == "" {
+		return nil
+	}
+
 	apiGroup, apiVersion := auditutil.ObjectRefGroupVersion(ref)
 	resourcePlural := ref.Resource
 	op = effectiveAuditOperation(auditEvent, op)
@@ -429,151 +430,7 @@ func (c *AuditConsumer) routeAuditEvent(
 	// parent-GVR rules — never an object write, because the body is a subresource (an
 	// autoscaling/v1 Scale), not the parent object. Only /scale is translated; every
 	// other subresource is dropped inside routeScaleFieldPatch.
-	if ref.Subresource != "" {
-		return c.routeScaleFieldPatch(ctx, log, auditEvent, op, id, userInfo, gvr, wrRules, cwrRules)
-	}
-
-	fullAPIVersion := apiVersion
-	if apiGroup != "" {
-		fullAPIVersion = apiGroup + "/" + apiVersion
-	}
-
-	sanitized, err := extractObject(auditEvent, op, fullAPIVersion, ref.Resource, namespace, name)
-	if err != nil {
-		if outcome, handled := c.handleExtractObjectError(
-			log, auditEvent, err, fullAPIVersion+"/"+ref.Resource, namespace, name,
-		); handled {
-			recordPipelineEvent(ctx, gvr, auditEvent.Verb, outcome)
-			return nil
-		}
-		return fmt.Errorf("extracting object for %s/%s: %w", namespace, name, err)
-	}
-
-	routed := c.routeToMatchedRules(ctx, log, sanitized, id, op, userInfo, wrRules, cwrRules)
-
-	if routed > 0 {
-		recordPipelineEvent(ctx, gvr, auditEvent.Verb, pipelineOutcomeRouted)
-	} else {
-		recordPipelineEvent(ctx, gvr, auditEvent.Verb, pipelineOutcomeRouteFailed)
-	}
-
-	if routed > 0 {
-		c.firstRouted.Do(func() {
-			c.log.Info("First audit event routed to BranchWorker",
-				"resource", resourcePlural,
-				"namespace", namespace,
-				"name", name,
-				"operation", op,
-				"routedTargets", routed)
-		})
-	}
-
-	log.V(1).Info("Processed audit stream entry",
-		"resource", resourcePlural, "namespace", namespace, "name", name,
-		"operation", op, "user", userInfo.Username,
-		"routed", routed)
-	return nil
-}
-
-// handleExtractObjectError classifies an extractObject failure. For a benign
-// drop — a shallow event with no body, a metav1.Status error body from a failed
-// API request, or a partial object such as a finalizer-removal patch fragment —
-// it logs and returns (outcome, true): the audit_pipeline_events_total outcome
-// the caller should record, and a handled flag so the event is ACK'd without
-// routing. For any other error it returns ("", false), leaving the caller to
-// surface it.
-func (c *AuditConsumer) handleExtractObjectError(
-	log logr.Logger,
-	auditEvent auditv1.Event,
-	err error,
-	gvr, namespace, name string,
-) (string, bool) {
-	switch {
-	case errors.Is(err, errAuditEventObjectMissing):
-		c.firstShallowDropped.Do(func() {
-			c.log.Info(
-				"First audit event dropped before git routing — missing requestObject/responseObject. "+
-					"Install apiservice-audit-proxy or update kube-apiserver audit policy to include bodies. "+
-					"Further drops will log at V(1) only.",
-				"auditID", auditEvent.AuditID,
-				"gvr", gvr,
-				"verb", auditEvent.Verb,
-			)
-		})
-		log.V(1).Info(
-			"audit event dropped before git routing: missing requestObject/responseObject",
-			"auditID", auditEvent.AuditID,
-			"gvr", gvr,
-			"verb", auditEvent.Verb,
-			"namespace", namespace,
-			"name", name,
-			"hasRequestObject", hasAuditObjectRaw(auditEvent.RequestObject),
-			"hasResponseObject", hasAuditObjectRaw(auditEvent.ResponseObject),
-		)
-		return pipelineOutcomeDroppedNoBody, true
-	case errors.Is(err, errAuditEventObjectIsStatus):
-		c.firstStatusDropped.Do(func() {
-			c.log.Info(
-				"First audit event dropped before git routing — body is a metav1.Status error "+
-					"response, not a resource. This indicates a failed API request (e.g. a 409 "+
-					"Conflict) that should have been filtered at ingress. Further drops will log "+
-					"at V(1) only.",
-				"auditID", auditEvent.AuditID,
-				"gvr", gvr,
-				"verb", auditEvent.Verb,
-			)
-		})
-		log.V(1).Info(
-			"audit event dropped before git routing: body is a metav1.Status error response",
-			"auditID", auditEvent.AuditID,
-			"gvr", gvr,
-			"verb", auditEvent.Verb,
-			"namespace", namespace,
-			"name", name,
-		)
-		return pipelineOutcomeDroppedNoBody, true
-	case errors.Is(err, errAuditEventObjectPartial):
-		c.firstPartialDropped.Do(func() {
-			c.log.Info(
-				"First audit event dropped before git routing — body is a partial object "+
-					"(no kind), typically a finalizer-removal PATCH fragment. The resource's "+
-					"real change is mirrored from its own audit event; this fragment is not "+
-					"routable. Further drops will log at V(1) only.",
-				"auditID", auditEvent.AuditID,
-				"gvr", gvr,
-				"verb", auditEvent.Verb,
-			)
-		})
-		log.V(1).Info(
-			"audit event dropped before git routing: partial object body (no kind)",
-			"auditID", auditEvent.AuditID,
-			"gvr", gvr,
-			"verb", auditEvent.Verb,
-			"namespace", namespace,
-			"name", name,
-		)
-		return pipelineOutcomeDroppedPartialObject, true
-	default:
-		return "", false
-	}
-}
-
-// routeToMatchedRules dispatches object-bearing git.Events to all matched WatchRule and
-// ClusterWatchRule targets. It returns the number of successfully routed events.
-func (c *AuditConsumer) routeToMatchedRules(
-	ctx context.Context,
-	log logr.Logger,
-	sanitized *unstructured.Unstructured,
-	id itypes.ResourceIdentifier,
-	op configv1alpha1.OperationType,
-	userInfo git.UserInfo,
-	wrRules []rulestore.CompiledRule,
-	cwrRules []rulestore.CompiledClusterRule,
-) int {
-	return c.routeEvents(ctx, log, wrRules, cwrRules,
-		func(path, gitTargetRef, gitTargetNamespace string) git.Event {
-			return buildGitEvent(sanitized, id, op, userInfo, path, gitTargetRef, gitTargetNamespace)
-		})
+	return c.routeScaleFieldPatch(ctx, log, auditEvent, op, id, userInfo, gvr, wrRules, cwrRules)
 }
 
 // routeScaleFieldPatch translates a built-in /scale audit event into a parent-manifest
@@ -671,11 +528,9 @@ type pipelineGVR struct {
 
 // Audit pipeline consumer-stage outcome and rule-kind label values.
 const (
-	pipelineOutcomeUnmatched            = "unmatched"
-	pipelineOutcomeDroppedNoBody        = "dropped_no_body"
-	pipelineOutcomeDroppedPartialObject = "dropped_partial_object"
-	pipelineOutcomeRouted               = "routed"
-	pipelineOutcomeRouteFailed          = "route_failed"
+	pipelineOutcomeUnmatched   = "unmatched"
+	pipelineOutcomeRouted      = "routed"
+	pipelineOutcomeRouteFailed = "route_failed"
 
 	// Scale subresource outcomes. Only /scale on a built-in scalable parent routes;
 	// every other subresource and every scale with an unknown parent replica path is
@@ -726,25 +581,6 @@ func recordRouteTarget(ctx context.Context, gitTargetNamespace, gitTarget, ruleK
 		attribute.String("rule_kind", ruleKind),
 		attribute.String("outcome", outcome),
 	))
-}
-
-// buildGitEvent constructs a git.Event for a given rule match.
-func buildGitEvent(
-	sanitized *unstructured.Unstructured,
-	id itypes.ResourceIdentifier,
-	op configv1alpha1.OperationType,
-	userInfo git.UserInfo,
-	path, gitTargetRef, gitTargetNamespace string,
-) git.Event {
-	return git.Event{
-		Object:             sanitized.DeepCopy(),
-		Identifier:         id,
-		Operation:          string(op),
-		UserInfo:           userInfo,
-		Path:               path,
-		GitTargetName:      gitTargetRef,
-		GitTargetNamespace: gitTargetNamespace,
-	}
 }
 
 // buildFieldPatchEvent constructs a field-patch git.Event for a given rule match. The
@@ -841,8 +677,10 @@ func parseAuditEvent(values map[string]interface{}) (auditv1.Event, error) {
 	return event, nil
 }
 
-// extractObject obtains the Kubernetes object from the audit event and sanitizes it.
-// For DELETE operations the RequestObject is used; otherwise the ResponseObject.
+// extractObject obtains the Kubernetes object from the audit event and sanitizes it. For DELETE
+// operations the RequestObject is used; otherwise the ResponseObject. It is the audit-body→object
+// conversion the per-type splice reuses verbatim (redis_type_splice.foldAuditEntry) to turn a
+// logged audit entry into the Git-writable object the reconcile commits (DEC-5/§6).
 func extractObject(
 	event auditv1.Event,
 	op configv1alpha1.OperationType,
@@ -877,11 +715,8 @@ func extractObject(
 	return backfillSanitizedIdentity(sanitize.Sanitize(obj), apiVersion, resource, namespace, name), nil
 }
 
-// isPartialObjectBody reports whether raw is well-formed JSON describing an
-// object that lacks a "kind" — the condition that makes
-// (*Unstructured).UnmarshalJSON fail on an otherwise valid body. A merge-patch
-// fragment such as {"metadata":{"finalizers":null}} matches; malformed bytes do
-// not, so a genuine decode failure still surfaces as an error.
+// isPartialObjectBody reports whether raw is well-formed JSON describing an object that lacks a
+// "kind" — the condition that makes (*Unstructured).UnmarshalJSON fail on an otherwise valid body.
 func isPartialObjectBody(raw []byte) bool {
 	var m map[string]any
 	if err := json.Unmarshal(raw, &m); err != nil {
@@ -891,11 +726,8 @@ func isPartialObjectBody(raw []byte) bool {
 	return kind == ""
 }
 
-// isStatusObject reports whether obj is a core metav1.Status error response
-// (apiVersion: v1, kind: Status) rather than a real Kubernetes resource. The
-// API server returns such a body when a request fails — for example the
-// "the object has been modified" message of a 409 Conflict — and it must never
-// be written to Git as the resource's desired state.
+// isStatusObject reports whether obj is a core metav1.Status error response (apiVersion: v1,
+// kind: Status) rather than a real Kubernetes resource, so it is never written to Git.
 func isStatusObject(obj *unstructured.Unstructured) bool {
 	return obj != nil && obj.GetAPIVersion() == "v1" && obj.GetKind() == "Status"
 }
@@ -922,10 +754,6 @@ func firstAuditObjectRaw(objects ...*runtime.Unknown) []byte {
 	}
 
 	return nil
-}
-
-func hasAuditObjectRaw(object *runtime.Unknown) bool {
-	return object != nil && len(object.Raw) > 0
 }
 
 func backfillSanitizedIdentity(

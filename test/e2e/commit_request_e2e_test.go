@@ -80,17 +80,11 @@ var _ = Describe("Commit Request", Label("commit-request", "audit-consumer"), Or
 		createGitTarget(gitTargetName, testNs, gitProvName, "e2e/commit-request-test", "main")
 		verifyResourceStatus("gittarget", gitTargetName, testNs, "True", "Ready", "")
 
-		watchRuleData := struct {
-			Name            string
-			Namespace       string
-			DestinationName string
-		}{
-			Name:            watchRuleName,
-			Namespace:       testNs,
-			DestinationName: gitTargetName,
-		}
-		err = applyFromTemplate("test/e2e/templates/manager/watchrule-configmap.tmpl", watchRuleData, testNs)
-		Expect(err).NotTo(HaveOccurred(), "failed to apply WatchRule")
+		// Watch Deployments, not ConfigMaps: a fresh namespace contains NO Deployments, whereas every
+		// namespace is pre-populated with a kube-root-ca.crt ConfigMap that a configmaps WatchRule
+		// would match — its initial reconcile would establish main before the spec's own edit, hiding
+		// the pure "branch not even created until something is finalized" behaviour this suite tests.
+		applyDeploymentWatchRule(testNs, watchRuleName, gitTargetName)
 		verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Ready", "")
 	})
 
@@ -104,19 +98,21 @@ var _ = Describe("Commit Request", Label("commit-request", "audit-consumer"), Or
 	It("finalizes the open commit window on demand and reports the resulting SHA", func() {
 		basePath := "e2e/commit-request-test"
 		seed := GinkgoRandomSeed()
-		cmName := fmt.Sprintf("commit-request-cm-%d", seed)
+		deployName := fmt.Sprintf("commit-request-deploy-%d", seed)
 		commitRequestName := fmt.Sprintf("commit-request-save-%d", seed)
 		message := fmt.Sprintf("save: commit request from e2e seed %d", seed)
 
-		By("editing a ConfigMap to open a commit window")
-		applyConfigMap(testNs, cmName)
+		By("creating a Deployment to open a commit window")
+		applyScaleTestDeployment(testNs, deployName, 0)
 
-		By("confirming the edit has NOT been committed yet (long commitWindow)")
+		By("confirming nothing is committed yet — the branch is not even created")
+		// The namespace has no Deployments until now, so a brand-new GitTarget whose only edit is
+		// still inside the open window has committed nothing at all: main does not exist. This is the
+		// pure "defer committing as long as possible / keep the branch clean" behaviour — the initial
+		// reconcile had nothing to materialise, so it created no branch.
 		Consistently(func(g Gomega) {
-			pullLatestRepoState(g, repo.CheckoutDir)
-			expected := filepath.Join(repo.CheckoutDir, basePath, "v1", "configmaps", testNs, cmName+".yaml")
-			_, statErr := os.Stat(expected)
-			g.Expect(statErr).To(HaveOccurred(), "edit should still be pending inside the open commit window")
+			g.Expect(remoteBranchHead(g, repo.CheckoutDir)).To(BeEmpty(),
+				"the open commit window must hold the edit; main must not exist until the window is finalized")
 		}, 10*time.Second, 2*time.Second).Should(Succeed())
 
 		By("creating a CommitRequest to finalize the open window now")
@@ -136,13 +132,14 @@ var _ = Describe("Commit Request", Label("commit-request", "audit-consumer"), Or
 			g.Expect(branch).To(Equal("main"))
 		}, 2*time.Minute, 3*time.Second).Should(Succeed())
 
-		By("verifying the commit landed in Git with the explicit message and the edited file")
+		By("verifying the commit landed in Git with the explicit message and the Deployment manifest")
 		Eventually(func(g Gomega) {
 			pullLatestRepoState(g, repo.CheckoutDir)
 
-			expectedFile := filepath.Join(repo.CheckoutDir, basePath, "v1", "configmaps", testNs, cmName+".yaml")
+			expectedFile := filepath.Join(repo.CheckoutDir, basePath,
+				fmt.Sprintf("apps/v1/deployments/%s/%s.yaml", testNs, deployName))
 			info, statErr := os.Stat(expectedFile)
-			g.Expect(statErr).NotTo(HaveOccurred(), fmt.Sprintf("ConfigMap file should exist at %s", expectedFile))
+			g.Expect(statErr).NotTo(HaveOccurred(), fmt.Sprintf("Deployment file should exist at %s", expectedFile))
 			g.Expect(info.Size()).To(BeNumerically(">", 0))
 
 			subject, logErr := gitRun(repo.CheckoutDir, "log", "-1", "--pretty=%B")
@@ -156,8 +153,60 @@ var _ = Describe("Commit Request", Label("commit-request", "audit-consumer"), Or
 				"status.sha should match the SHA of the commit on the branch")
 		}, 2*time.Minute, 3*time.Second).Should(Succeed())
 
-		By("cleaning up the test ConfigMap and CommitRequest")
-		_, _ = kubectlRunInNamespace(testNs, "delete", "configmap", cmName, "--ignore-not-found=true")
+		By("cleaning up the test Deployment and CommitRequest")
+		_, _ = kubectlRunInNamespace(testNs, "delete", "deployment", deployName, "--ignore-not-found=true")
+		_, _ = kubectlRunInNamespace(testNs, "delete", "commitrequest", commitRequestName, "--ignore-not-found=true")
+	})
+
+	// The companion path: once a branch HAS been established (the previous spec's finalize created
+	// main), a fresh edit must STILL be held in the open window — an existing branch must not
+	// advance until a CommitRequest finalizes it. Together with the spec above this covers both
+	// cases of "defer committing as long as possible": an absent branch and an established one.
+	It("holds a new edit in the open window without advancing an already-established branch", func() {
+		basePath := "e2e/commit-request-test"
+		seed := GinkgoRandomSeed()
+		deployName := fmt.Sprintf("commit-request-hold-%d", seed)
+		commitRequestName := fmt.Sprintf("commit-request-hold-save-%d", seed)
+		message := fmt.Sprintf("save: held edit from e2e seed %d", seed)
+
+		By("capturing the branch HEAD the previous spec established")
+		var baseSHA string
+		Eventually(func(g Gomega) {
+			baseSHA = remoteBranchHead(g, repo.CheckoutDir)
+			g.Expect(baseSHA).NotTo(BeEmpty(),
+				"main must already exist from the previous spec's finalized commit")
+		}, 30*time.Second, 2*time.Second).Should(Succeed())
+
+		By("creating a Deployment to open a new commit window on the existing branch")
+		applyScaleTestDeployment(testNs, deployName, 0)
+
+		By("confirming the branch HEAD does NOT advance while the window is open")
+		Consistently(func(g Gomega) {
+			g.Expect(remoteBranchHead(g, repo.CheckoutDir)).To(Equal(baseSHA),
+				"the open commit window must hold the new edit; main must not advance until finalized")
+		}, 10*time.Second, 2*time.Second).Should(Succeed())
+
+		By("creating a CommitRequest and confirming the branch then advances with the held edit")
+		applyCommitRequest(testNs, commitRequestName, gitTargetName, message)
+		Eventually(func(g Gomega) {
+			phase := commitRequestField(g, testNs, commitRequestName, "{.status.phase}")
+			g.Expect(phase).To(Equal("Committed"), "CommitRequest should finalize the open window")
+			g.Expect(remoteBranchHead(g, repo.CheckoutDir)).NotTo(Equal(baseSHA),
+				"finalizing must advance main past the previously-established HEAD")
+		}, 2*time.Minute, 3*time.Second).Should(Succeed())
+
+		By("verifying the previously-held edit is now present in Git")
+		Eventually(func(g Gomega) {
+			pullLatestRepoState(g, repo.CheckoutDir)
+			expected := filepath.Join(repo.CheckoutDir, basePath,
+				fmt.Sprintf("apps/v1/deployments/%s/%s.yaml", testNs, deployName))
+			_, statErr := os.Stat(expected)
+			g.Expect(statErr).NotTo(HaveOccurred(),
+				fmt.Sprintf("the held Deployment should exist after finalize at %s", expected))
+		}, 2*time.Minute, 3*time.Second).Should(Succeed())
+
+		By("cleaning up the held Deployment and CommitRequest")
+		_, _ = kubectlRunInNamespace(testNs, "delete", "deployment", deployName, "--ignore-not-found=true")
 		_, _ = kubectlRunInNamespace(testNs, "delete", "commitrequest", commitRequestName, "--ignore-not-found=true")
 	})
 
@@ -169,12 +218,12 @@ var _ = Describe("Commit Request", Label("commit-request", "audit-consumer"), Or
 	It("finalizes a CommitRequest created with metadata.generateName", func() {
 		basePath := "e2e/commit-request-test"
 		seed := GinkgoRandomSeed()
-		cmName := fmt.Sprintf("commit-request-gen-cm-%d", seed)
+		deployName := fmt.Sprintf("commit-request-gen-deploy-%d", seed)
 		commitRequestPrefix := fmt.Sprintf("commit-request-gen-%d-", seed)
 		message := fmt.Sprintf("save: generateName commit request from e2e seed %d", seed)
 
-		By("editing a ConfigMap to open a commit window")
-		applyConfigMap(testNs, cmName)
+		By("creating a Deployment to open a commit window")
+		applyScaleTestDeployment(testNs, deployName, 0)
 
 		By("creating a CommitRequest with metadata.generateName")
 		generatedName := applyCommitRequestWithGenerateName(testNs, commitRequestPrefix, gitTargetName, message)
@@ -194,9 +243,10 @@ var _ = Describe("Commit Request", Label("commit-request", "audit-consumer"), Or
 		Eventually(func(g Gomega) {
 			pullLatestRepoState(g, repo.CheckoutDir)
 
-			expectedFile := filepath.Join(repo.CheckoutDir, basePath, "v1", "configmaps", testNs, cmName+".yaml")
+			expectedFile := filepath.Join(repo.CheckoutDir, basePath,
+				fmt.Sprintf("apps/v1/deployments/%s/%s.yaml", testNs, deployName))
 			info, statErr := os.Stat(expectedFile)
-			g.Expect(statErr).NotTo(HaveOccurred(), fmt.Sprintf("ConfigMap file should exist at %s", expectedFile))
+			g.Expect(statErr).NotTo(HaveOccurred(), fmt.Sprintf("Deployment file should exist at %s", expectedFile))
 			g.Expect(info.Size()).To(BeNumerically(">", 0))
 
 			subject, logErr := gitRun(repo.CheckoutDir, "log", "-1", "--pretty=%B")
@@ -205,8 +255,8 @@ var _ = Describe("Commit Request", Label("commit-request", "audit-consumer"), Or
 				"the explicit spec.message should be used verbatim")
 		}, 2*time.Minute, 3*time.Second).Should(Succeed())
 
-		By("cleaning up the generateName ConfigMap and CommitRequest")
-		_, _ = kubectlRunInNamespace(testNs, "delete", "configmap", cmName, "--ignore-not-found=true")
+		By("cleaning up the generateName Deployment and CommitRequest")
+		_, _ = kubectlRunInNamespace(testNs, "delete", "deployment", deployName, "--ignore-not-found=true")
 		_, _ = kubectlRunInNamespace(testNs, "delete", "commitrequest", generatedName, "--ignore-not-found=true")
 	})
 })

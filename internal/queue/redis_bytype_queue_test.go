@@ -611,37 +611,53 @@ func TestRedisByTypeStreamQueue_TrimTypeAuditLog(t *testing.T) {
 	assert.Equal(t, []string{"300-0", "400-0"}, streamIDsOf(t, client, stream), "blank cursor is a no-op")
 }
 
-// TestRedisByTypeStreamQueue_AwaitTypeAuditEntry verifies the audit-arrival wake read: a read from
-// the beginning sees the existing entries and returns the newest ID; a follow-up read from that ID
-// blocks and times out with nothing new. Real Valkey, for faithful XREAD/stream-ID semantics.
-func TestRedisByTypeStreamQueue_AwaitTypeAuditEntry(t *testing.T) {
+// fullDeploymentEvent is an apps/v1 deployments update carrying a full object body, so
+// ReadTypeAuditChanges can extract it into an upsert git.Event (the partial ingestionEvent body is
+// skipped as a no-kind fragment).
+func fullDeploymentEvent(rv string) auditv1.Event {
+	e := ingestionEvent(rv, 1000)
+	e.ObjectRef.APIVersion = "v1"
+	e.ResponseObject = &runtime.Unknown{Raw: []byte(
+		`{"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"web","namespace":"prod","resourceVersion":"` +
+			rv + `"}}`)}
+	return e
+}
+
+// TestRedisByTypeStreamQueue_ReadTypeAuditChanges verifies the freshness read: a read from the
+// beginning returns the entries as per-event upsert changes and the newest ID to resume from; a
+// follow-up read from that ID blocks and times out with no changes. Real Valkey, for faithful
+// XREAD/stream-ID semantics.
+func TestRedisByTypeStreamQueue_ReadTypeAuditChanges(t *testing.T) {
 	q, _, _ := valkeyByTypeQueue(t, 0)
 	ctx := context.Background()
 
-	require.NoError(t, q.Enqueue(ctx, ingestionEvent("100", 1000)))
-	require.NoError(t, q.Enqueue(ctx, ingestionEvent("200", 1001)))
+	require.NoError(t, q.Enqueue(ctx, fullDeploymentEvent("100")))
+	require.NoError(t, q.Enqueue(ctx, fullDeploymentEvent("200")))
 
-	id, hasNew, err := q.AwaitTypeAuditEntry(ctx, "apps", "deployments", "0", 500*time.Millisecond)
+	changes, id, err := q.ReadTypeAuditChanges(ctx, "apps", "deployments", "0", 500*time.Millisecond)
 	require.NoError(t, err)
-	assert.True(t, hasNew, "reading from the start sees the existing entries")
+	require.Len(t, changes, 2, "both entries become per-event upsert changes")
+	assert.Equal(t, "web", changes[0].Identifier.Name)
+	assert.Equal(t, "deployments", changes[0].Identifier.Resource)
+	assert.NotNil(t, changes[0].Object, "an upsert carries the extracted object")
 	assert.Equal(t, "200-0", id, "resumes from the newest entry")
 
-	id2, hasNew2, err := q.AwaitTypeAuditEntry(ctx, "apps", "deployments", id, 100*time.Millisecond)
+	changes2, id2, err := q.ReadTypeAuditChanges(ctx, "apps", "deployments", id, 100*time.Millisecond)
 	require.NoError(t, err)
-	assert.False(t, hasNew2, "a read past the head blocks and times out")
+	assert.Empty(t, changes2, "a read past the head blocks and times out with no changes")
 	assert.Equal(t, id, id2, "the cursor does not advance on a timeout")
 }
 
-// TestRedisByTypeStreamQueue_AwaitTypeAuditEntry_FutureOnly proves the "$" default anchors at the
+// TestRedisByTypeStreamQueue_ReadTypeAuditChanges_FutureOnly proves the "$" default anchors at the
 // present: with only pre-existing entries, the read times out (it waits for FUTURE entries).
-func TestRedisByTypeStreamQueue_AwaitTypeAuditEntry_FutureOnly(t *testing.T) {
+func TestRedisByTypeStreamQueue_ReadTypeAuditChanges_FutureOnly(t *testing.T) {
 	q, _, _ := valkeyByTypeQueue(t, 0)
 	ctx := context.Background()
-	require.NoError(t, q.Enqueue(ctx, ingestionEvent("100", 1000)))
+	require.NoError(t, q.Enqueue(ctx, fullDeploymentEvent("100")))
 
-	_, hasNew, err := q.AwaitTypeAuditEntry(ctx, "apps", "deployments", "", 100*time.Millisecond)
+	changes, _, err := q.ReadTypeAuditChanges(ctx, "apps", "deployments", "", 100*time.Millisecond)
 	require.NoError(t, err)
-	assert.False(t, hasNew, "an empty cursor anchors at the present, ignoring past entries")
+	assert.Empty(t, changes, "an empty cursor anchors at the present, ignoring past entries")
 }
 
 func TestRedisByTypeStreamQueue_IndexErrorPropagates(t *testing.T) {

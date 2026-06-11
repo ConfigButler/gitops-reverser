@@ -135,6 +135,54 @@ func TestMaterializer_ClaimDrivesSyncRegardlessOfOrder(t *testing.T) {
 	})
 }
 
+// TestMaterializer_ReactivatingSyncedReannouncesTypeSynced is the post-restart "mirror goes
+// silent" guard: a checkpoint restored from durable state on boot is Synced but its original
+// TypeSynced was already consumed (RestoreSynced is silent). When the registry re-activates a
+// still-CLAIMED Synced type after the restart, the Materializer re-announces TypeSynced so the
+// driver re-establishes the per-type reconcile + audit-replay tail. The re-announce is gated on
+// a live claim: an unclaimed restored checkpoint has no consumer to wake (waking one would start
+// a blocking per-type tail for a type nobody follows and starve the mirror), and a fresh Dormant
+// type is never Synced, so neither announces TypeSynced.
+func TestMaterializer_ReactivatingSyncedReannouncesTypeSynced(t *testing.T) {
+	clock := &fakeClock{t: time.Unix(1_000, 0)}
+	m := newMaterializer(clock.now)
+	rec := &matRecorder{}
+	m.Subscribe(rec.observe)
+
+	// Boot restore: Synced, but emits nothing.
+	m.RestoreSynced(depGVR(), "R7")
+	if rec.count(TypeSynced) != 0 {
+		t.Fatalf("RestoreSynced must be silent, got %d TypeSynced", rec.count(TypeSynced))
+	}
+
+	// Re-activation of an UNCLAIMED restored-Synced type must NOT re-announce: nobody follows it,
+	// so waking a consumer (and its blocking tail) is pure waste.
+	m.OnLifecycleEvent(lc(TypeActivated, depGVR()))
+	if rec.count(TypeSynced) != 0 {
+		t.Fatalf("re-activating an UNCLAIMED Synced type must not re-announce, got %d", rec.count(TypeSynced))
+	}
+	if ph, _ := m.Phase(depGVR()); ph != PhaseSynced {
+		t.Fatalf("phase must stay Synced, got %q", ph)
+	}
+
+	// Once a GitTarget claims it, re-activation re-announces exactly one TypeSynced (phase stays
+	// Synced — the claim does not re-drive a sync because there is already a checkpoint).
+	m.Declare(aRef, []schema.GroupVersionResource{depGVR()})
+	m.OnLifecycleEvent(lc(TypeActivated, depGVR()))
+	if rec.count(TypeSynced) != 1 {
+		t.Fatalf("re-activating a CLAIMED Synced type must re-announce one TypeSynced, got %d", rec.count(TypeSynced))
+	}
+	if ph, _ := m.Phase(depGVR()); ph != PhaseSynced {
+		t.Fatalf("phase must stay Synced, got %q", ph)
+	}
+
+	// Activating a fresh, Dormant (unclaimed) type announces no TypeSynced.
+	m.OnLifecycleEvent(lc(TypeActivated, widgetGVR()))
+	if rec.count(TypeSynced) != 1 {
+		t.Fatalf("activating a Dormant type must not announce TypeSynced, got %d total", rec.count(TypeSynced))
+	}
+}
+
 // TestMaterializer_FirstSyncOkReachesSynced walks the happy path Requested -> Syncing ->
 // Synced and checks the checkpoint becomes serviceable at the reported rv.
 func TestMaterializer_FirstSyncOkReachesSynced(t *testing.T) {

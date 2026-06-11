@@ -31,38 +31,20 @@ import (
 )
 
 // TestGitTargetEventStream_MultipleStreamsWithSharedWorker tests that multiple
-// GitTargetEventStream instances can share a single BranchWorker without interference.
-// Expected behavior:
-// - Each stream maintains its own path
-// - Events are properly isolated by path
-// - All events converge at the shared worker.
+// GitTargetEventStream instances can share a single BranchWorker without interference:
+// each stamps its own identity and all events converge at the shared worker.
 func TestGitTargetEventStream_MultipleStreamsWithSharedWorker(t *testing.T) {
-	// Create shared mock worker
 	mockWorker := &mockEventEnqueuer{events: make([]git.Event, 0)}
 	logger := logr.Discard()
 
-	// Create first GitTargetEventStream for "apps" folder
 	stream1 := NewGitTargetEventStream("target1", "default", mockWorker, logger)
-
-	// Create second GitTargetEventStream for "infra" folder
 	stream2 := NewGitTargetEventStream("target2", "default", mockWorker, logger)
 
-	// Complete reconciliation for both streams
-	stream1.OnReconciliationComplete()
-	stream2.OnReconciliationComplete()
+	stream1.OnWatchEvent(createTestEventWithPath("pod", "app-pod", "CREATE", "apps"))
+	stream2.OnWatchEvent(createTestEventWithPath("deployment", "nginx", "CREATE", "infra"))
 
-	// Send events to first stream
-	event1 := createTestEventWithPath("pod", "app-pod", "CREATE", "apps")
-	stream1.OnWatchEvent(event1)
-
-	// Send events to second stream
-	event2 := createTestEventWithPath("deployment", "nginx", "CREATE", "infra")
-	stream2.OnWatchEvent(event2)
-
-	// Verify both events reached the shared worker
 	assert.Len(t, mockWorker.events, 2, "Both events should reach shared worker")
 
-	// Verify path isolation
 	foundApps := false
 	foundInfra := false
 	for _, evt := range mockWorker.events {
@@ -78,35 +60,20 @@ func TestGitTargetEventStream_MultipleStreamsWithSharedWorker(t *testing.T) {
 }
 
 // TestGitTargetEventStream_DuplicateEventsAcrossStreams tests that the same cluster
-// resource observed by multiple streams produces separate events for each stream.
-// Expected behavior:
-// - Same resource → multiple Git paths (one per stream's path)
-// - Event duplication is intentional for multi-cluster scenarios.
+// resource observed by multiple streams produces separate events for each stream
+// (intentional for multi-target scenarios).
 func TestGitTargetEventStream_DuplicateEventsAcrossStreams(t *testing.T) {
-	// Create shared mock worker
 	mockWorker := &mockEventEnqueuer{events: make([]git.Event, 0)}
 	logger := logr.Discard()
 
-	// Create two streams watching the same resources but writing to different folders
 	streamClusterA := NewGitTargetEventStream("cluster-a-target", "default", mockWorker, logger)
 	streamClusterB := NewGitTargetEventStream("cluster-b-target", "default", mockWorker, logger)
 
-	// Complete reconciliation
-	streamClusterA.OnReconciliationComplete()
-	streamClusterB.OnReconciliationComplete()
+	streamClusterA.OnWatchEvent(createTestEventWithPath("configmap", "shared-config", "UPDATE", "cluster-a"))
+	streamClusterB.OnWatchEvent(createTestEventWithPath("configmap", "shared-config", "UPDATE", "cluster-b"))
 
-	// Simulate same resource change observed by both streams
-	// This represents a scenario where both GitTargets watch the same cluster
-	eventForClusterA := createTestEventWithPath("configmap", "shared-config", "UPDATE", "cluster-a")
-	eventForClusterB := createTestEventWithPath("configmap", "shared-config", "UPDATE", "cluster-b")
-
-	streamClusterA.OnWatchEvent(eventForClusterA)
-	streamClusterB.OnWatchEvent(eventForClusterB)
-
-	// Verify both events were enqueued (duplication is intentional)
 	assert.Len(t, mockWorker.events, 2, "Both duplicate events should be enqueued")
 
-	// Verify both paths are represented
 	foundClusterA := false
 	foundClusterB := false
 	for _, evt := range mockWorker.events {
@@ -121,47 +88,26 @@ func TestGitTargetEventStream_DuplicateEventsAcrossStreams(t *testing.T) {
 	assert.True(t, foundClusterB, "Event for 'cluster-b' should be present")
 }
 
-// TestGitTargetEventStream_StreamDeletion tests what happens when a
-// GitTargetEventStream is deleted (no longer sending events).
-// Expected behavior:
-// - Other streams continue to operate normally
-// - Shared worker continues processing events from remaining streams
-// - Files from deleted stream remain in Git (no automatic cleanup).
+// TestGitTargetEventStream_StreamDeletion tests that a stream that stops sending events
+// does not affect the others sharing the worker.
 func TestGitTargetEventStream_StreamDeletion(t *testing.T) {
-	// Create shared mock worker
 	mockWorker := &mockEventEnqueuer{events: make([]git.Event, 0)}
 	logger := logr.Discard()
 
-	// Create two streams
 	stream1 := NewGitTargetEventStream("target1", "default", mockWorker, logger)
 	stream2 := NewGitTargetEventStream("target2", "default", mockWorker, logger)
 
-	// Complete reconciliation
-	stream1.OnReconciliationComplete()
-	stream2.OnReconciliationComplete()
-
-	// Send events to both streams
-	event1 := createTestEventWithPath("pod", "app-pod", "CREATE", "apps")
-	event2 := createTestEventWithPath("deployment", "infra-deploy", "CREATE", "infra")
-
-	stream1.OnWatchEvent(event1)
-	stream2.OnWatchEvent(event2)
+	stream1.OnWatchEvent(createTestEventWithPath("pod", "app-pod", "CREATE", "apps"))
+	stream2.OnWatchEvent(createTestEventWithPath("deployment", "infra-deploy", "CREATE", "infra"))
 
 	initialEventCount := len(mockWorker.events)
 	assert.Equal(t, 2, initialEventCount, "Both initial events should be enqueued")
 
-	// Simulate deletion of stream1 by stopping sending events to it
-	// In reality, the stream object would be garbage collected and no longer receive events
-	// We test this by only sending events to stream2 from this point forward
+	// stream1 is "deleted" (no longer used); stream2 keeps sending.
+	stream2.OnWatchEvent(createTestEventWithPath("service", "infra-svc", "CREATE", "infra"))
 
-	// Stream2 continues to send events (stream1 is "deleted" - no longer used)
-	event3 := createTestEventWithPath("service", "infra-svc", "CREATE", "infra")
-	stream2.OnWatchEvent(event3)
-
-	// Verify worker continues processing events from remaining stream
 	assert.Greater(t, len(mockWorker.events), initialEventCount, "Worker should continue processing events")
 
-	// Verify the new event has correct path from remaining stream
 	foundInfraService := false
 	for i := initialEventCount; i < len(mockWorker.events); i++ {
 		evt := mockWorker.events[i]
@@ -170,35 +116,18 @@ func TestGitTargetEventStream_StreamDeletion(t *testing.T) {
 		}
 	}
 	assert.True(t, foundInfraService, "Event for remaining stream should be processed")
-
-	// Note: This test does not verify Git file cleanup because:
-	// 1. GitTargetEventStream deletion does not trigger cleanup
-	// 2. Files remain in Git history even after stream deletion
-	// 3. WorkerManager handles the actual worker lifecycle, not the stream
 }
 
-// TestGitTargetEventStream_EventConvergence tests that events from multiple
-// streams converge at a shared worker for batched commit processing.
-// Expected behavior:
-// - Multiple streams can send events concurrently
-// - All events converge at the shared worker
-// - Events from different paths are batched together.
+// TestGitTargetEventStream_EventConvergence tests that events from multiple streams
+// converge at a shared worker for batched commit processing.
 func TestGitTargetEventStream_EventConvergence(t *testing.T) {
-	// Create shared mock worker
 	mockWorker := &mockEventEnqueuer{events: make([]git.Event, 0)}
 	logger := logr.Discard()
 
-	// Create multiple streams
 	streamTeamA := NewGitTargetEventStream("team-a-target", "default", mockWorker, logger)
 	streamTeamB := NewGitTargetEventStream("team-b-target", "default", mockWorker, logger)
 	streamTeamC := NewGitTargetEventStream("team-c-target", "default", mockWorker, logger)
 
-	// Complete reconciliation for all streams
-	streamTeamA.OnReconciliationComplete()
-	streamTeamB.OnReconciliationComplete()
-	streamTeamC.OnReconciliationComplete()
-
-	// Send events from different streams concurrently
 	var wg sync.WaitGroup
 	streams := []*GitTargetEventStream{streamTeamA, streamTeamB, streamTeamC}
 	paths := []string{"team-a", "team-b", "team-c"}
@@ -207,93 +136,46 @@ func TestGitTargetEventStream_EventConvergence(t *testing.T) {
 		wg.Add(1)
 		go func(idx int, s *GitTargetEventStream, path string) {
 			defer wg.Done()
-			event := createTestEventWithPath("pod", "pod-"+string(rune('a'+idx)), "CREATE", path)
-			s.OnWatchEvent(event)
+			s.OnWatchEvent(createTestEventWithPath("pod", "pod-"+string(rune('a'+idx)), "CREATE", path))
 		}(i, stream, paths[i])
 	}
 
 	wg.Wait()
 
-	// Verify all events converged at the worker
 	assert.GreaterOrEqual(t, len(mockWorker.events), 3, "All events should converge at shared worker")
 
-	// Verify events from all streams are present
 	pathsFound := make(map[string]bool)
 	for _, evt := range mockWorker.events {
 		pathsFound[evt.Path] = true
 	}
-
 	assert.True(t, pathsFound["team-a"], "Events from team-a should converge")
 	assert.True(t, pathsFound["team-b"], "Events from team-b should converge")
 	assert.True(t, pathsFound["team-c"], "Events from team-c should converge")
 }
 
-// TestGitTargetEventStream_DeduplicationPerStream tests that each stream
-// performs its own deduplication independently.
-// Expected behavior:
-// - Duplicate events within a stream are deduplicated
-// - Same event sent to different streams is NOT deduplicated (intentional).
-func TestGitTargetEventStream_DeduplicationPerStream(t *testing.T) {
-	// Create shared mock worker
+// TestGitTargetEventStream_ForwardsWithoutDeduplication confirms the R3 pivot dropped
+// content-hash dedup: the stream forwards every call, leaving "did it change?" to the
+// writer's no-op detection at the commit boundary.
+func TestGitTargetEventStream_ForwardsWithoutDeduplication(t *testing.T) {
 	mockWorker := &mockEventEnqueuer{events: make([]git.Event, 0)}
-	logger := logr.Discard()
+	stream := NewGitTargetEventStream("target1", "default", mockWorker, logr.Discard())
 
-	// Create two streams
-	stream1 := NewGitTargetEventStream("target1", "default", mockWorker, logger)
-	stream2 := NewGitTargetEventStream("target2", "default", mockWorker, logger)
+	stream.OnWatchEvent(createTestEventWithPath("pod", "test-pod", "UPDATE", "apps"))
+	stream.OnWatchEvent(createTestEventWithPath("pod", "test-pod", "UPDATE", "apps")) // identical
 
-	// Complete reconciliation
-	stream1.OnReconciliationComplete()
-	stream2.OnReconciliationComplete()
-
-	// Send same event twice to stream1 (should be deduplicated)
-	event1a := createTestEventWithPath("pod", "test-pod", "UPDATE", "apps")
-	event1b := createTestEventWithPath("pod", "test-pod", "UPDATE", "apps")
-
-	stream1.OnWatchEvent(event1a)
-	stream1.OnWatchEvent(event1b) // Duplicate - should be ignored
-
-	// Send same resource to stream2 (should NOT be deduplicated across streams)
-	event2 := createTestEventWithPath("pod", "test-pod", "UPDATE", "infra")
-	stream2.OnWatchEvent(event2)
-
-	// Verify: 1 from stream1 (deduplicated) + 1 from stream2 = 2 total
-	assert.Len(t, mockWorker.events, 2, "Should have 2 events (1 per stream, stream1 deduplicated)")
-
-	// Verify both paths are present (not deduplicated across streams)
-	pathsFound := make(map[string]bool)
-	for _, evt := range mockWorker.events {
-		pathsFound[evt.Path] = true
-	}
-
-	assert.True(t, pathsFound["apps"], "Event from stream1 should be present")
-	assert.True(t, pathsFound["infra"], "Event from stream2 should be present")
+	assert.Len(t, mockWorker.events, 2, "every call is forwarded; no content-hash dedup remains")
 }
 
 // mockEventEnqueuer implements EventEnqueuer interface for testing.
 type mockEventEnqueuer struct {
-	mu      sync.Mutex
-	events  []git.Event
-	batches []*git.WriteRequest
+	mu     sync.Mutex
+	events []git.Event
 }
 
 func (m *mockEventEnqueuer) Enqueue(event git.Event) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.events = append(m.events, event)
-}
-
-func (m *mockEventEnqueuer) EnqueueRequest(request *git.WriteRequest) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if request == nil {
-		return
-	}
-	if request.CommitMode == git.CommitModeAtomic {
-		m.batches = append(m.batches, request)
-		return
-	}
-	m.events = append(m.events, request.Events...)
 }
 
 // createTestEventWithPath creates a test event with a specific path.

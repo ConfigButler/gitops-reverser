@@ -48,11 +48,11 @@ func activate(gvr schema.GroupVersionResource) typeset.LifecycleEvent {
 func TestDeclareForGitTarget_ClaimsResolvedSetAndIsIdempotent(t *testing.T) {
 	manager, store := makeWatchedTypeManager(t)
 	store.AddOrUpdateClusterWatchRule(
-		clusterRuleForResource("rule-cm", "test-target", "configmaps"),
+		clusterRuleForResource("rule-cm", "configmaps"),
 		"test-target", "test-ns", "test-provider", "test-ns", "main", "test-path",
 	)
 	store.AddOrUpdateClusterWatchRule(
-		clusterRuleForResource("rule-sec", "test-target", "secrets"),
+		clusterRuleForResource("rule-sec", "secrets"),
 		"test-target", "test-ns", "test-provider", "test-ns", "main", "test-path",
 	)
 	gitDest := gitDestRef("test-target")
@@ -76,7 +76,7 @@ func TestDeclareForGitTarget_ClaimsResolvedSetAndIsIdempotent(t *testing.T) {
 func TestDeclareForGitTarget_OnlyClaimsResolvedTypes(t *testing.T) {
 	manager, store := makeWatchedTypeManager(t)
 	store.AddOrUpdateClusterWatchRule(
-		clusterRuleForResource("rule-cm", "test-target", "configmaps"),
+		clusterRuleForResource("rule-cm", "configmaps"),
 		"test-target", "test-ns", "test-provider", "test-ns", "main", "test-path",
 	)
 	gitDest := gitDestRef("test-target")

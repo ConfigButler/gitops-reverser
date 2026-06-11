@@ -35,7 +35,7 @@ func TestRefreshWatchedTypeTables_RecordsResolvedTypeGauge(t *testing.T) {
 
 	manager, store := makeWatchedTypeManager(t)
 	store.AddOrUpdateClusterWatchRule(
-		clusterRuleForResource("rule-1", "test-target", "configmaps"),
+		clusterRuleForResource("rule-1", "configmaps"),
 		"test-target", "test-ns", "test-provider", "test-ns", "main", "test-path",
 	)
 

@@ -36,183 +36,61 @@ func TestGitTargetEventStream(t *testing.T) {
 	RunSpecs(t, "GitTargetEventStream Suite")
 }
 
+// With the R3 pivot the stream is a thin pass-through to the branch worker: no buffering, no
+// state machine, no content-hash dedup. "Newer?" is the audit RV order and "changed?" is the
+// writer's no-op detection at the commit boundary, so the only behaviour left to assert is that
+// an event is forwarded with the GitTarget identity stamped on it (and that an empty-payload
+// control event is dropped).
 var _ = Describe("GitTargetEventStream", func() {
 	var (
 		stream        *GitTargetEventStream
 		mockWorker    *mockBranchWorker
-		logger        logr.Logger
 		gitTargetName = "test-gittarget"
 		gitTargetNS   = "test-ns"
 	)
 
 	BeforeEach(func() {
 		mockWorker = &mockBranchWorker{events: make([]git.Event, 0)}
-		logger = logr.Discard()
-		stream = NewGitTargetEventStream(gitTargetName, gitTargetNS, mockWorker, logger)
+		stream = NewGitTargetEventStream(gitTargetName, gitTargetNS, mockWorker, logr.Discard())
 	})
 
-	Describe("Initial State", func() {
-		It("should start in RECONCILING state", func() {
-			Expect(stream.GetState()).To(Equal(Reconciling))
-		})
+	It("forwards an object event immediately, stamped with the GitTarget identity", func() {
+		stream.OnWatchEvent(createTestEvent("pod", "test-pod", "UPDATE"))
 
-		It("should have empty buffers initially", func() {
-			Expect(stream.GetBufferedEventCount()).To(Equal(0))
-			Expect(stream.GetProcessedEventCount()).To(Equal(0))
-		})
+		Expect(mockWorker.events).To(HaveLen(1))
+		Expect(mockWorker.events[0].GitTargetName).To(Equal(gitTargetName))
+		Expect(mockWorker.events[0].GitTargetNamespace).To(Equal(gitTargetNS))
 	})
 
-	Describe("Event Buffering During Reconciliation", func() {
-		It("should buffer events during RECONCILING", func() {
-			event := createTestEvent("pod", "test-pod", "CREATE")
+	It("forwards a field-patch event that carries no object", func() {
+		stream.OnWatchEvent(createTestFieldPatchEvent(3))
 
-			stream.OnWatchEvent(event)
-
-			Expect(stream.GetBufferedEventCount()).To(Equal(1))
-			Expect(mockWorker.events).To(BeEmpty()) // Not forwarded yet
-		})
-
-		It("should deduplicate buffered events", func() {
-			event1 := createTestEvent("pod", "test-pod", "CREATE")
-			event2 := createTestEvent("pod", "test-pod", "CREATE") // Same content
-
-			stream.OnWatchEvent(event1)
-			stream.OnWatchEvent(event2)
-
-			Expect(stream.GetBufferedEventCount()).To(Equal(2)) // Both buffered (no deduplication during buffering)
-		})
+		Expect(mockWorker.events).To(HaveLen(1))
+		Expect(mockWorker.events[0].IsFieldPatch()).To(BeTrue())
+		Expect(mockWorker.events[0].Object).To(BeNil())
 	})
 
-	Describe("Reconciliation Completion", func() {
-		It("should process buffered events when reconciliation completes", func() {
-			event1 := createTestEvent("pod", "pod1", "CREATE")
-			event2 := createTestEvent("service", "svc1", "CREATE")
+	It("forwards a DELETE event even when it carries no object payload", func() {
+		ev := createTestEvent("pod", "gone", "DELETE")
+		ev.Object = nil
+		stream.OnWatchEvent(ev)
 
-			// Buffer events
-			stream.OnWatchEvent(event1)
-			stream.OnWatchEvent(event2)
-			Expect(stream.GetBufferedEventCount()).To(Equal(2))
-
-			// Complete reconciliation
-			stream.OnReconciliationComplete()
-
-			// Should transition to LIVE_PROCESSING
-			Expect(stream.GetState()).To(Equal(LiveProcessing))
-			Expect(stream.GetBufferedEventCount()).To(Equal(0))
-
-			// Should forward events to worker
-			Expect(mockWorker.events).To(HaveLen(2))
-		})
-
-		It("should transition state correctly", func() {
-			Expect(stream.GetState()).To(Equal(Reconciling))
-
-			stream.OnReconciliationComplete()
-
-			Expect(stream.GetState()).To(Equal(LiveProcessing))
-		})
+		Expect(mockWorker.events).To(HaveLen(1))
 	})
 
-	Describe("Live Processing", func() {
-		BeforeEach(func() {
-			stream.OnReconciliationComplete() // Transition to live processing
-		})
+	It("drops a non-delete, non-field-patch event with no object payload", func() {
+		ev := createTestEvent("pod", "empty", "UPDATE")
+		ev.Object = nil
+		stream.OnWatchEvent(ev)
 
-		It("should process events immediately in LIVE_PROCESSING", func() {
-			event := createTestEvent("pod", "test-pod", "UPDATE")
-
-			stream.OnWatchEvent(event)
-
-			Expect(mockWorker.events).To(HaveLen(1))
-			Expect(stream.GetProcessedEventCount()).To(Equal(1))
-		})
-
-		It("should deduplicate events in live processing", func() {
-			event1 := createTestEvent("pod", "test-pod", "UPDATE")
-			event2 := createTestEvent("pod", "test-pod", "UPDATE") // Duplicate
-
-			stream.OnWatchEvent(event1)
-			stream.OnWatchEvent(event2)
-
-			Expect(mockWorker.events).To(HaveLen(1)) // Only one forwarded
-			Expect(stream.GetProcessedEventCount()).To(Equal(1))
-		})
+		Expect(mockWorker.events).To(BeEmpty())
 	})
 
-	Describe("BeginReconciliation", func() {
-		It("should be a no-op when already in RECONCILING", func() {
-			Expect(stream.GetState()).To(Equal(Reconciling))
-			stream.BeginReconciliation()
-			Expect(stream.GetState()).To(Equal(Reconciling))
-		})
+	It("forwards each call without deduplication (RV order + writer no-op detection own that now)", func() {
+		stream.OnWatchEvent(createTestFieldPatchEvent(3))
+		stream.OnWatchEvent(createTestFieldPatchEvent(3)) // identical redelivery is forwarded too
 
-		It("should re-enter RECONCILING from LIVE_PROCESSING and buffer new events", func() {
-			stream.OnReconciliationComplete() // → LiveProcessing
-			Expect(stream.GetState()).To(Equal(LiveProcessing))
-
-			stream.BeginReconciliation() // → Reconciling again
-			Expect(stream.GetState()).To(Equal(Reconciling))
-
-			event := createTestEvent("pod", "test-pod", "UPDATE")
-			stream.OnWatchEvent(event)
-
-			Expect(stream.GetBufferedEventCount()).To(Equal(1))
-			Expect(mockWorker.events).To(BeEmpty()) // buffered, not forwarded
-		})
-	})
-
-	Describe("Event Hash Deduplication", func() {
-		It("should treat different operations as different events", func() {
-			event1 := createTestEvent("pod", "test-pod", "CREATE")
-			event2 := createTestEvent("pod", "test-pod", "UPDATE")
-
-			stream.OnReconciliationComplete() // Live processing
-
-			stream.OnWatchEvent(event1)
-			stream.OnWatchEvent(event2)
-
-			Expect(mockWorker.events).To(HaveLen(2))
-		})
-
-		It("should treat different resources as different events", func() {
-			event1 := createTestEvent("pod", "pod1", "CREATE")
-			event2 := createTestEvent("pod", "pod2", "CREATE")
-
-			stream.OnReconciliationComplete() // Live processing
-
-			stream.OnWatchEvent(event1)
-			stream.OnWatchEvent(event2)
-
-			Expect(mockWorker.events).To(HaveLen(2))
-		})
-	})
-
-	Describe("Field Patch Events", func() {
-		BeforeEach(func() {
-			stream.OnReconciliationComplete() // Live processing
-		})
-
-		It("forwards a field-patch event that carries no object", func() {
-			stream.OnWatchEvent(createTestFieldPatchEvent(3))
-
-			Expect(mockWorker.events).To(HaveLen(1))
-			Expect(mockWorker.events[0].IsFieldPatch()).To(BeTrue())
-			Expect(mockWorker.events[0].Object).To(BeNil())
-		})
-
-		It("deduplicates an identical redelivered field-patch event", func() {
-			stream.OnWatchEvent(createTestFieldPatchEvent(3))
-			stream.OnWatchEvent(createTestFieldPatchEvent(3)) // same content, e.g. Redis redelivery
-
-			Expect(mockWorker.events).To(HaveLen(1))
-		})
-
-		It("treats different field values for the same parent as distinct events", func() {
-			stream.OnWatchEvent(createTestFieldPatchEvent(3))
-			stream.OnWatchEvent(createTestFieldPatchEvent(5))
-
-			Expect(mockWorker.events).To(HaveLen(2))
-		})
+		Expect(mockWorker.events).To(HaveLen(2))
 	})
 })
 

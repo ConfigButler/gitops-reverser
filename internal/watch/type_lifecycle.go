@@ -24,11 +24,8 @@ import (
 	"github.com/go-logr/logr"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
-	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	k8stypes "k8s.io/apimachinery/pkg/types"
 
-	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 	"github.com/ConfigButler/gitops-reverser/internal/typeset"
@@ -40,13 +37,6 @@ import (
 // stalling the updater; the periodic whole-GitTarget reconcile and the next transition recover
 // any missed edge, so the per-type path is an accelerator, never the sole source of truth.
 const lifecycleEventBuffer = 256
-
-// gitTargetSnapshotSyncedCondition mirrors the controller's GitTargetConditionSnapshotSynced.
-// It is duplicated as a string (rather than imported) because the controller package imports
-// watch, so watch must not import controller. The per-type path only acts on a GitTarget that
-// has completed its initial whole-GitTarget snapshot, so a transition during bootstrap does
-// not race or double-commit with the bootstrap resync.
-const gitTargetSnapshotSyncedCondition = "SnapshotSynced"
 
 // startTypeLifecycleConsumer subscribes to the registry's lifecycle transitions and launches
 // the drain goroutine that drives M12 per-type reconcile/sweep. It is a no-op without an
@@ -127,11 +117,11 @@ func (m *Manager) drainTypeLifecycleEvents(ctx context.Context, log logr.Logger)
 // driver acts on, so the checkpoint LIST runs only for CLAIMED types (L-3) — no longer
 // unconditionally on every activation (the one behavioural change of §5).
 //
-// The git per-type reconcile/sweep (M12) still fires on the followability edge: TypeActivated
-// reconciles the type into each synced GitTarget that watches it; TypeRemoved sweeps only that
-// type's documents. That path streams its own data and commits, independent of the demand-gated
-// checkpoint; it moves onto the checkpoint handshake only once the api-source-of-truth reconcile
-// (R-steps) consumes it. Wobbling/Recovered/Refused carry no git action here.
+// The git per-type reconcile/sweep fires on the followability edge: TypeActivated splice-
+// reconciles the type into each GitTarget that watches it; TypeRemoved sweeps only that type's
+// documents. The reconcile is self-gating — SpliceSnapshotForType holds unless the type's
+// checkpoint is Synced (§7) — so no separate readiness gate is needed. Wobbling/Recovered/
+// Refused carry no git action here.
 func (m *Manager) handleTypeLifecycleEvent(ctx context.Context, log logr.Logger, ev typeset.LifecycleEvent) {
 	m.materializerInstance().OnLifecycleEvent(ev)
 
@@ -146,19 +136,14 @@ func (m *Manager) handleTypeLifecycleEvent(ctx context.Context, log logr.Logger,
 	}
 }
 
-// reconcileTypeForSyncedTargets fans a per-type reconcile to every snapshot-synced GitTarget
-// whose resident table watches the activated type. A type the GitTarget does not watch is
-// skipped; a target still mid-bootstrap is skipped (its whole-GitTarget resync covers the type).
+// reconcileTypeForSyncedTargets fans a per-type splice reconcile to every GitTarget whose
+// resident table watches the type. A type a GitTarget does not watch is skipped; the splice
+// itself holds (no-op, no sweep) unless the type's checkpoint is Synced (§7 fail-closed), so
+// there is no separate readiness gate. It is the wake for a TypeActivated edge, the
+// materializer's TypeSynced, and an audit-arrival burst.
 func (m *Manager) reconcileTypeForSyncedTargets(ctx context.Context, log logr.Logger, gvr schema.GroupVersionResource) {
 	for _, table := range m.allWatchedTypeTables() {
 		if !tableWatchesGVR(table, gvr) {
-			continue
-		}
-		// The SnapshotSynced gate is the seam the per-type scheduler will remove; logging the
-		// skip makes visible how often a settled activation is currently suppressed by it.
-		if !m.gitTargetSnapshotSynced(ctx, table.GitDest) {
-			log.Info("per-type reconcile skipped: gitTarget not snapshot-synced",
-				"gitDest", table.GitDest.String(), "gvr", gvr.String())
 			continue
 		}
 		if err := m.EventRouter.EmitTypeReconcileForGitDest(ctx, table.GitDest, gvr); err != nil {
@@ -166,48 +151,25 @@ func (m *Manager) reconcileTypeForSyncedTargets(ctx context.Context, log logr.Lo
 				"gitDest", table.GitDest.String(), "gvr", gvr.String())
 			continue
 		}
-		log.Info("per-type reconcile enqueued", "gitDest", table.GitDest.String(), "gvr", gvr.String())
+		log.V(1).Info("per-type reconcile enqueued", "gitDest", table.GitDest.String(), "gvr", gvr.String())
 		recordTypeLifecycleMetric(telemetry.TypeLifecycleReconcileTotal, table.GitDest)
 	}
 }
 
-// sweepTypeFromSyncedTargets fans a per-type sweep to every snapshot-synced GitTarget. The
-// removed type is no longer in any resident table, so the fan is over all targets; the sweep is
-// idempotent and self-limiting — a GitTarget holding no documents of the type commits nothing —
-// so this is safe even though it touches targets that never mirrored the type. Removals are
-// rare (a CRD deletion), so the broad fan is acceptable.
+// sweepTypeFromSyncedTargets fans a per-type sweep to every GitTarget. The removed type is no
+// longer in any resident table, so the fan is over all targets; the sweep is idempotent and
+// self-limiting — a GitTarget holding no documents of the type commits nothing — so this is safe
+// even though it touches targets that never mirrored the type. Removals are rare (a CRD
+// deletion), so the broad fan is acceptable.
 func (m *Manager) sweepTypeFromSyncedTargets(ctx context.Context, log logr.Logger, gvr schema.GroupVersionResource) {
 	for _, table := range m.allWatchedTypeTables() {
-		if !m.gitTargetSnapshotSynced(ctx, table.GitDest) {
-			log.Info("per-type sweep skipped: gitTarget not snapshot-synced",
-				"gitDest", table.GitDest.String(), "gvr", gvr.String())
-			continue
-		}
 		if err := m.EventRouter.EmitTypeSweepForGitDest(ctx, table.GitDest, gvr); err != nil {
 			log.Error(err, "per-type sweep failed to enqueue", "gitDest", table.GitDest.String(), "gvr", gvr.String())
 			continue
 		}
-		log.Info("per-type sweep enqueued", "gitDest", table.GitDest.String(), "gvr", gvr.String())
+		log.V(1).Info("per-type sweep enqueued", "gitDest", table.GitDest.String(), "gvr", gvr.String())
 		recordTypeLifecycleMetric(telemetry.TypeLifecycleSweepTotal, table.GitDest)
 	}
-}
-
-// gitTargetSnapshotSynced reports whether a GitTarget has completed its initial snapshot, the
-// gate that keeps the per-type path additive to (never racing) the bootstrap resync. A
-// GitTarget that cannot be read is treated as not synced, so the per-type path waits.
-func (m *Manager) gitTargetSnapshotSynced(ctx context.Context, gitDest types.ResourceReference) bool {
-	if m.Client == nil {
-		return false
-	}
-	var gt configv1alpha1.GitTarget
-	if err := m.Client.Get(
-		ctx,
-		k8stypes.NamespacedName{Name: gitDest.Name, Namespace: gitDest.Namespace},
-		&gt,
-	); err != nil {
-		return false
-	}
-	return apimeta.IsStatusConditionTrue(gt.Status.Conditions, gitTargetSnapshotSyncedCondition)
 }
 
 // tableWatchesGVR reports whether a GitTarget's resident table includes the given type.

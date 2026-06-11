@@ -87,8 +87,77 @@ func (m *Manager) DeclareForGitTarget(ctx context.Context, gitDest types.Resourc
 	// the GitTarget's namespaced name (gitDest.String()), consistent with how rulestore keys
 	// GitTargets and stable across reconciles; the object UID is the rejected alternative (it
 	// would re-key on recreate and orphan the prior claims).
-	m.materializerInstance().Declare(typeset.GitTargetRef(gitDest.String()), distinctClaimGVRs(gvrs))
+	claimed := distinctClaimGVRs(gvrs)
+	m.materializerInstance().Declare(typeset.GitTargetRef(gitDest.String()), claimed)
+
+	// Drive ONE initial-backfill splice reconcile per (GitTarget, type) — only for a type this
+	// GitTarget NEWLY claims that is already Synced. That is the initial sync of an already-
+	// materialized type (a newly-Ready target, a new rule, or a restored-Synced type after a
+	// restart); after it the per-event audit tail owns live changes (with their authorship), so we
+	// do NOT re-fold the log on every Declare (that would re-attribute live changes to the bulk
+	// reconcile's default author and churn Git). A not-yet-Synced claimed type needs no trigger
+	// here: its eventual TypeSynced fans the reconcile to every watcher. EmitTypeReconcileForGitDest
+	// is idempotent and self-gating, so a one-shot per claim is sufficient and a re-anchor backstops.
+	if m.EventRouter != nil {
+		for _, gvr := range m.newlyDeclaredSyncedGVRs(gitDest, claimed) {
+			if reconcileErr := m.EventRouter.EmitTypeReconcileForGitDest(ctx, gitDest, gvr); reconcileErr != nil {
+				m.Log.V(1).Info("declare reconcile failed",
+					"gitDest", gitDest.String(), "gvr", gvr.String(), "err", reconcileErr.Error())
+			}
+			// Start the freshness tail for this newly-claimed already-Synced type, anchored at its
+			// checkpoint rv. TypeSynced is re-announced on (re)activation only for a type ALREADY
+			// claimed when discovery activates it; the common boot order is the reverse — a GitTarget
+			// Declares a restored-Synced type AFTER its activation — so without this the tail would not
+			// start until the next discovery resync (minutes). Idempotent: a no-op if already running.
+			rv, _ := m.materializerInstance().Checkpoint(gvr)
+			m.startTypeAuditTail(ctx, m.Log, gvr, rv)
+		}
+	}
 	return nil
+}
+
+// newlyDeclaredSyncedGVRs records this GitTarget's current claimed set and returns the subset that
+// is BOTH newly claimed (absent from the prior Declare) AND already Synced — the types whose one
+// initial-backfill splice this Declare should drive (see DeclareForGitTarget). Recording every
+// current claim (Synced or not) is correct: a not-yet-Synced new claim is covered by its eventual
+// TypeSynced fan, so it never needs a Declare-time backfill even after it later becomes Synced.
+func (m *Manager) newlyDeclaredSyncedGVRs(
+	gitDest types.ResourceReference,
+	claimed []schema.GroupVersionResource,
+) []schema.GroupVersionResource {
+	key := gitDest.String()
+	m.declaredGVRsMu.Lock()
+	defer m.declaredGVRsMu.Unlock()
+	prior := m.declaredGVRs[key]
+	current := make(map[schema.GroupVersionResource]struct{}, len(claimed))
+	var newlySynced []schema.GroupVersionResource
+	for _, gvr := range claimed {
+		current[gvr] = struct{}{}
+		if _, had := prior[gvr]; had {
+			continue
+		}
+		if phase, _ := m.materializerInstance().Phase(gvr); phase == typeset.PhaseSynced {
+			newlySynced = append(newlySynced, gvr)
+		}
+	}
+	if m.declaredGVRs == nil {
+		m.declaredGVRs = map[string]map[schema.GroupVersionResource]struct{}{}
+	}
+	m.declaredGVRs[key] = current
+	return newlySynced
+}
+
+// ForgetGitTargetDeclaration drops the watch-side record of a GitTarget's last-Declared type-set
+// (the diff-wake's newly-claimed cache, newlyDeclaredSyncedGVRs) when the GitTarget is deleted.
+// Without it a GitTarget recreated with the same namespaced name inherits the dead one's
+// declaration, so its types read as "already declared" and its initial backfill splice never
+// fires — the recreate silently produces no snapshot commit. Clearing on delete makes a recreate a
+// genuine fresh claim. The materializer claim itself ages out on its own lease (sweep), so this
+// only resets the diff-wake cache. A no-op for an unknown GitTarget.
+func (m *Manager) ForgetGitTargetDeclaration(gitDest types.ResourceReference) {
+	m.declaredGVRsMu.Lock()
+	defer m.declaredGVRsMu.Unlock()
+	delete(m.declaredGVRs, gitDest.String())
 }
 
 // RestoreSyncedCheckpoint replays one durable per-type checkpoint into the Materializer on
@@ -259,7 +328,7 @@ func (m *Manager) handleMaterializationEvent(ctx context.Context, log logr.Logge
 		// and start the audit tail so subsequent events reconcile within the interval.
 		log.V(1).Info("materialization event", "kind", ev.Kind, "gvr", ev.GVR.String(), "rv", ev.RV)
 		m.reconcileTypeForSyncedTargets(ctx, log, ev.GVR)
-		m.startTypeAuditTail(ctx, log, ev.GVR)
+		m.startTypeAuditTail(ctx, log, ev.GVR, ev.RV)
 	case typeset.SyncStarted, typeset.SyncFailed:
 		log.V(1).Info("materialization event",
 			"kind", ev.Kind, "gvr", ev.GVR.String(), "phase", ev.Phase, "rv", ev.RV)

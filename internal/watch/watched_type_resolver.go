@@ -398,41 +398,6 @@ func preferredRecord(records []typeset.TypeRecord) typeset.TypeRecord {
 	return selected
 }
 
-// watchPlanFromTable reconstructs a GitTarget's effective-watch-plan hash input from its
-// resident watched-type table. It re-emits the (GVR, scope, namespace, operations)
-// entries via addEntry, so the plan hash that drives snapshot selection is byte-identical
-// to the pre-table hash. Each (type, namespace) pair maps to one plan entry; the empty
-// namespace is a cluster-wide stream.
-func watchPlanFromTable(table WatchedTypeTable) *targetWatchPlan {
-	p := &targetWatchPlan{
-		gitDest: table.GitDest,
-		entries: make(map[string]map[string]struct{}),
-		dest:    table.Dest,
-	}
-	for _, wt := range table.Types {
-		gvr := GVR{Group: wt.GVR.Group, Version: wt.GVR.Version, Resource: wt.GVR.Resource, Scope: wt.Scope}
-		for ns, opSet := range wt.NamespaceOps {
-			p.addEntry(gvr, ns, operationSetToTypes(opSet))
-		}
-	}
-	return p
-}
-
-// operationSetToTypes converts a normalised OperationSet back into the OperationType
-// slice addEntry expects, mapping the "*" sentinel to OperationAll. addEntry
-// re-normalises identically, so the round trip is lossless.
-func operationSetToTypes(s OperationSet) []configv1alpha1.OperationType {
-	out := make([]configv1alpha1.OperationType, 0, len(s))
-	for op := range s {
-		if op == "*" {
-			out = append(out, configv1alpha1.OperationAll)
-			continue
-		}
-		out = append(out, configv1alpha1.OperationType(op))
-	}
-	return out
-}
-
 // watchPlanDest renders a GitTarget's write destination fingerprint in the exact form
 // the effective-plan hash uses, so the hash is byte-identical whether built from the
 // table or inline.

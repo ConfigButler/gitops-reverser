@@ -29,28 +29,28 @@ import (
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
+	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
 )
 
-// channelTailReader is a fake AuditTailReader whose "arrivals" are values pushed onto a channel.
-// It returns the next buffered arrival immediately (hasNew), or a timeout (no new) once the channel
-// is quiet for the block window — exactly the shape the settle/coalesce loop reads.
+// channelTailReader is a fake AuditTailReader whose reads return batches of per-event changes pushed
+// onto a channel, or a timeout (no changes) once the channel is quiet for the block window.
 type channelTailReader struct {
-	events chan string
-	calls  atomic.Int32
+	batches chan []git.Event
+	calls   atomic.Int32
 }
 
-func (r *channelTailReader) AwaitTypeAuditEntry(
+func (r *channelTailReader) ReadTypeAuditChanges(
 	ctx context.Context, _, _, lastID string, block time.Duration,
-) (string, bool, error) {
+) ([]git.Event, string, error) {
 	r.calls.Add(1)
 	select {
 	case <-ctx.Done():
-		return lastID, false, ctx.Err()
-	case id := <-r.events:
-		return id, true, nil
+		return nil, lastID, ctx.Err()
+	case b := <-r.batches:
+		return b, "1-0", nil
 	case <-time.After(block):
-		return lastID, false, nil
+		return nil, lastID, nil
 	}
 }
 
@@ -58,11 +58,11 @@ func (r *channelTailReader) AwaitTypeAuditEntry(
 // about start/stop bookkeeping, not arrivals.
 type blockingTailReader struct{}
 
-func (blockingTailReader) AwaitTypeAuditEntry(
+func (blockingTailReader) ReadTypeAuditChanges(
 	ctx context.Context, _, _, lastID string, _ time.Duration,
-) (string, bool, error) {
+) ([]git.Event, string, error) {
 	<-ctx.Done()
-	return lastID, false, ctx.Err()
+	return nil, lastID, ctx.Err()
 }
 
 func (m *Manager) auditTailCount() int {
@@ -72,47 +72,43 @@ func (m *Manager) auditTailCount() int {
 }
 
 // tailTestManager builds a Manager that resolves a secrets WatchRule but tails an UNWATCHED type, so
-// the real reconcile (when not overridden) is a safe no-op. Block/settle windows are shrunk so the
-// loop runs fast.
+// the real apply (when not overridden) is a safe no-op. The block window is shrunk so the loop runs
+// fast.
 func tailTestManager(t *testing.T, reader AuditTailReader) *Manager {
 	t.Helper()
 	store := rulestore.NewStore()
-	addWatchRule(store, "wr-secrets", "ns-a", "secrets")
-	m := streamingManager(t, gitTargetFixture(), store, nil)
+	addSecretsWatchRule(store)
+	m := streamingManager(t, gitTargetFixture(), store)
 	m.AuditTailReader = reader
 	m.auditTailBlockOverride = 40 * time.Millisecond
-	m.auditTailSettleOverride = 25 * time.Millisecond
 	return m
 }
 
-// TestAuditTail_CoalescesBurstIntoOneReconcile is the regression guard for the bi-directional race:
-// two events that arrive within the settle window must drive ONE reconcile, not one each — so a
-// mark-and-sweep never runs on a half-seen burst (which would sweep the not-yet-seen object).
-func TestAuditTail_CoalescesBurstIntoOneReconcile(t *testing.T) {
-	reader := &channelTailReader{events: make(chan string, 16)}
-	var reconciles atomic.Int32
+// TestAuditTail_AppliesChangesPerEvent proves the tail applies each batch of changes it reads (the
+// sweep-free freshness apply), and keeps applying subsequent batches.
+func TestAuditTail_AppliesChangesPerEvent(t *testing.T) {
+	reader := &channelTailReader{batches: make(chan []git.Event, 16)}
+	var applied atomic.Int32
 	m := tailTestManager(t, reader)
-	m.auditTailReconcileOverride = func(context.Context, logr.Logger, schema.GroupVersionResource) {
-		reconciles.Add(1)
+	m.auditTailApplyOverride = func(_ context.Context, _ logr.Logger, _ schema.GroupVersionResource, changes []git.Event) {
+		for range changes {
+			applied.Add(1)
+		}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	m.startTypeAuditTail(ctx, logr.Discard(), configmapsGVR)
+	m.startTypeAuditTail(ctx, logr.Discard(), configmapsGVR, "100")
 
-	// A two-event burst arriving together coalesces into one reconcile.
-	reader.events <- "1-0"
-	reader.events <- "2-0"
-	require.Eventually(t, func() bool { return reconciles.Load() == 1 }, time.Second, 5*time.Millisecond,
-		"the co-arriving burst drives exactly one reconcile")
-	// It stays one — the settled burst is not re-reconciled.
-	time.Sleep(60 * time.Millisecond)
-	assert.Equal(t, int32(1), reconciles.Load(), "no second reconcile for the same burst")
+	// A two-event batch is applied as two per-event changes.
+	reader.batches <- []git.Event{{Operation: "CREATE"}, {Operation: "CREATE"}}
+	require.Eventually(t, func() bool { return applied.Load() == 2 }, time.Second, 5*time.Millisecond,
+		"both changes in the batch are applied")
 
-	// A later, separate event drives a second reconcile.
-	reader.events <- "3-0"
-	require.Eventually(t, func() bool { return reconciles.Load() == 2 }, time.Second, 5*time.Millisecond,
-		"a later event reconciles again")
+	// A later batch keeps being applied (the tail loops).
+	reader.batches <- []git.Event{{Operation: "DELETE"}}
+	require.Eventually(t, func() bool { return applied.Load() == 3 }, time.Second, 5*time.Millisecond,
+		"a later batch is applied too")
 
 	m.stopTypeAuditTail(configmapsGVR)
 }
@@ -124,7 +120,7 @@ func TestStartTypeAuditTail_StopsCleanly(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	m.startTypeAuditTail(ctx, logr.Discard(), configmapsGVR)
+	m.startTypeAuditTail(ctx, logr.Discard(), configmapsGVR, "100")
 	assert.Equal(t, 1, m.auditTailCount(), "one tail is running")
 
 	m.stopTypeAuditTail(configmapsGVR)
@@ -138,9 +134,9 @@ func TestStartTypeAuditTail_Idempotent(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	m.startTypeAuditTail(ctx, logr.Discard(), configmapsGVR)
-	m.startTypeAuditTail(ctx, logr.Discard(), configmapsGVR)
-	m.startTypeAuditTail(ctx, logr.Discard(), configmapsGVR)
+	m.startTypeAuditTail(ctx, logr.Discard(), configmapsGVR, "100")
+	m.startTypeAuditTail(ctx, logr.Discard(), configmapsGVR, "100")
+	m.startTypeAuditTail(ctx, logr.Discard(), configmapsGVR, "100")
 
 	assert.Equal(t, 1, m.auditTailCount(), "repeat starts are no-ops")
 	m.stopTypeAuditTail(configmapsGVR)
@@ -149,7 +145,7 @@ func TestStartTypeAuditTail_Idempotent(t *testing.T) {
 // TestStartTypeAuditTail_NilReaderIsNoop proves the wake is cleanly disabled when no reader is wired.
 func TestStartTypeAuditTail_NilReaderIsNoop(t *testing.T) {
 	m := &Manager{Log: logr.Discard()}
-	m.startTypeAuditTail(context.Background(), logr.Discard(), configmapsGVR)
+	m.startTypeAuditTail(context.Background(), logr.Discard(), configmapsGVR, "100")
 	assert.Equal(t, 0, m.auditTailCount(), "no tail without a reader")
 }
 
@@ -158,4 +154,14 @@ func TestStopTypeAuditTail_UnknownIsNoop(t *testing.T) {
 	m := &Manager{Log: logr.Discard()}
 	m.stopTypeAuditTail(configmapsGVR) // must not panic
 	assert.Equal(t, 0, m.auditTailCount())
+}
+
+// TestAuditTailAnchor proves the tail resumes strictly after the checkpoint revision (so an event
+// between the checkpoint LIST and the tail starting is replayed), and falls back to present-only
+// when there is no checkpoint rv.
+func TestAuditTailAnchor(t *testing.T) {
+	assert.Equal(t, "$", auditTailAnchor(""))
+	assert.Equal(t, "$", auditTailAnchor("   "))
+	assert.Equal(t, "4928-18446744073709551615", auditTailAnchor("4928"),
+		"anchor is strictly after every entry at rv 4928")
 }

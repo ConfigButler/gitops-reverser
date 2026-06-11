@@ -172,82 +172,6 @@ func (r *EventRouter) FinalizeGitTargetWindow(
 	}
 }
 
-// EmitResyncForGitDest runs one content-derived, mark-and-sweep resync for gitDest and
-// blocks until the worker has applied it (M8). It is the replacement for the old
-// two-snapshot handshake: it gathers the GitTarget's complete watched resource set via
-// the streaming-list watch, hands that revision-pinned snapshot to the branch worker as
-// a synchronous resync request, and returns the change counts the worker computed.
-//
-// The gather fails closed on a partial stream (StreamClusterSnapshotForGitDest aborts),
-// so a resync is enqueued only for a complete snapshot — the worker can never sweep on
-// partial knowledge. The call is synchronous so the caller (the GitTarget snapshot gate
-// or ReconcileForRuleChange) learns the outcome and can order live-event flushing after
-// the snapshot commit.
-func (r *EventRouter) EmitResyncForGitDest(
-	ctx context.Context,
-	gitDest types.ResourceReference,
-) (git.ResyncStats, error) {
-	resultCh, err := r.gatherAndEnqueueResync(ctx, gitDest)
-	if err != nil {
-		return git.ResyncStats{}, err
-	}
-
-	select {
-	case result := <-resultCh:
-		if result.Err != nil {
-			return git.ResyncStats{}, result.Err
-		}
-		r.logResyncApplied(gitDest, result.Stats)
-		return result.Stats, nil
-	case <-ctx.Done():
-		return git.ResyncStats{}, ctx.Err()
-	case <-time.After(resyncSignalTimeout):
-		return git.ResyncStats{}, fmt.Errorf("timed out resyncing %s", gitDest.String())
-	}
-}
-
-// TriggerResyncForGitDest gathers and enqueues a resync without blocking on the commit.
-// It is the rule-change path's entry point: that path only needs each affected target's
-// resync STARTED (not its stats), so many targets' commits proceed in parallel at their
-// own workers instead of serializing on the single reconcile goroutine — matching the
-// old fire-and-forget snapshot behaviour. The synchronous gather still fails closed, so
-// an unobservable API surface is returned as an error before anything is enqueued.
-//
-// Delivery is marked by the caller as soon as the resync is ENQUEUED (not when it
-// commits). An earlier version gated delivery on the apply completing, but that turned a
-// slow or failed apply into an unbounded re-resync loop: the target stayed pending, so
-// every subsequent reconcile re-gathered the whole snapshot synchronously, starving the
-// reconcile goroutine and piling resync requests onto the worker. A failed resync is
-// instead recovered by the steady-state live-event path (which writes any subsequent
-// change) and by the next genuine rule-set change, not by re-running the whole snapshot
-// on a tight loop. The worker reply is drained in the background to log the outcome and,
-// on failure/timeout, increment ResyncBackgroundFailuresTotal so the silently-recovered
-// failures are observable/alertable without re-firing the gather.
-func (r *EventRouter) TriggerResyncForGitDest(
-	ctx context.Context,
-	gitDest types.ResourceReference,
-) error {
-	resultCh, err := r.gatherAndEnqueueResync(ctx, gitDest)
-	if err != nil {
-		return err
-	}
-	go func() {
-		select {
-		case result := <-resultCh:
-			if result.Err != nil {
-				r.Log.Error(result.Err, "background resync failed", "gitDest", gitDest.String())
-				r.recordBackgroundResyncFailure(gitDest)
-				return
-			}
-			r.logResyncApplied(gitDest, result.Stats)
-		case <-time.After(resyncSignalTimeout):
-			r.Log.Error(nil, "background resync timed out", "gitDest", gitDest.String())
-			r.recordBackgroundResyncFailure(gitDest)
-		}
-	}()
-	return nil
-}
-
 // recordBackgroundResyncFailure counts a fire-and-forget resync whose apply failed or
 // timed out at the worker, so the failure is observable even though delivery was already
 // marked on enqueue. No-op until the counter is registered.
@@ -259,35 +183,6 @@ func (r *EventRouter) recordBackgroundResyncFailure(gitDest types.ResourceRefere
 		attribute.String("gittarget_namespace", gitDest.Namespace),
 		attribute.String("gittarget_name", gitDest.Name),
 	))
-}
-
-// gatherAndEnqueueResync resolves the GitTarget's worker, gathers the revision-pinned
-// streaming snapshot, and enqueues the resync request, returning the buffered reply
-// channel. It does not wait for the commit. A missing GitTarget or worker, or an
-// unobservable API surface, is returned as an error before anything is enqueued.
-func (r *EventRouter) gatherAndEnqueueResync(
-	ctx context.Context,
-	gitDest types.ResourceReference,
-) (chan git.ResyncResult, error) {
-	worker, err := r.resolveWorkerForGitDest(ctx, gitDest)
-	if err != nil {
-		return nil, err
-	}
-
-	snapshot, err := r.WatchManager.StreamClusterSnapshotForGitDest(ctx, gitDest)
-	if err != nil {
-		return nil, err
-	}
-
-	resultCh := make(chan git.ResyncResult, 1)
-	worker.EnqueueResync(&git.ResyncRequest{
-		Desired:            snapshot.Desired,
-		Revision:           snapshot.Revision,
-		GitTargetName:      gitDest.Name,
-		GitTargetNamespace: gitDest.Namespace,
-		Result:             resultCh,
-	})
-	return resultCh, nil
 }
 
 // resolveWorkerForGitDest looks up the branch worker that owns a GitTarget's provider/branch.
@@ -414,19 +309,16 @@ func (r *EventRouter) drainScopedResync(
 		r.Log.V(1).Info("per-type "+kind+" applied",
 			"gitDest", gitDest.String(), "gvr", gvr.String(),
 			"created", result.Stats.Created, "updated", result.Stats.Updated, "deleted", result.Stats.Deleted)
+		// Count an applied per-type RECONCILE as a completed GitTarget reconcile so the
+		// per-pod counter advances after a restart — the drain signal the restart-snapshot
+		// e2e gate reads (a sweep is excluded; it is a removal, not a steady-state reconcile).
+		if kind == "reconcile" && r.WatchManager != nil {
+			r.WatchManager.recordTargetReconcileCompleted(gitDest, "type_reconcile")
+		}
 	case <-time.After(resyncSignalTimeout):
 		r.Log.Error(nil, "per-type "+kind+" timed out", "gitDest", gitDest.String(), "gvr", gvr.String())
 		r.recordBackgroundResyncFailure(gitDest)
 	}
-}
-
-func (r *EventRouter) logResyncApplied(gitDest types.ResourceReference, stats git.ResyncStats) {
-	r.Log.V(1).Info("Resync applied",
-		"gitDest", gitDest.String(),
-		"created", stats.Created,
-		"updated", stats.Updated,
-		"deleted", stats.Deleted,
-		"skipped", stats.Skipped)
 }
 
 // RegisterGitTargetEventStream registers a GitTargetEventStream with the router.
@@ -450,34 +342,6 @@ func (r *EventRouter) GetGitTargetEventStream(gitDest types.ResourceReference) *
 	r.streamsMu.RLock()
 	defer r.streamsMu.RUnlock()
 	return r.gitTargetStreams[key]
-}
-
-// BeginReconciliationForStream transitions the registered GitTargetEventStream for the
-// given gitDest into RECONCILING state so that live informer ADDED events are buffered
-// rather than processed individually.  It is a no-op when no stream is registered yet.
-func (r *EventRouter) BeginReconciliationForStream(gitDest types.ResourceReference) {
-	stream := r.GetGitTargetEventStream(gitDest)
-	if stream == nil {
-		r.Log.V(1).Info("No GitTargetEventStream registered, skipping BeginReconciliation",
-			"gitDest", gitDest.String())
-		return
-	}
-	stream.BeginReconciliation()
-	r.Log.Info("BeginReconciliation called for GitTargetEventStream", "gitDest", gitDest.String())
-}
-
-// CompleteReconciliationForStream transitions the registered GitTargetEventStream for the
-// given gitDest out of RECONCILING state and flushes any buffered live events.
-// It is a no-op when no stream is registered.
-func (r *EventRouter) CompleteReconciliationForStream(gitDest types.ResourceReference) {
-	stream := r.GetGitTargetEventStream(gitDest)
-	if stream == nil {
-		r.Log.V(1).Info("No GitTargetEventStream registered, skipping CompleteReconciliation",
-			"gitDest", gitDest.String())
-		return
-	}
-	stream.OnReconciliationComplete()
-	r.Log.Info("CompleteReconciliation called for GitTargetEventStream", "gitDest", gitDest.String())
 }
 
 // UnregisterGitTargetEventStream removes a GitTargetEventStream from the router.

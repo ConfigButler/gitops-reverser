@@ -80,6 +80,12 @@ const (
 	// checkpointRestoreTimeout bounds the one-shot boot replay of durable per-type
 	// checkpoints into the materializer (DEC-L6); a cold/unreachable Redis must not stall startup.
 	checkpointRestoreTimeout = 30 * time.Second
+	// auditTailReaderPoolSize is the connection-pool size for the dedicated audit-tail-reader client.
+	// Each followed type runs one tail parked in a blocking XREAD (one held connection), and a
+	// wildcard GitTarget can follow every namespaced type at once, so the reader needs far more than
+	// the default 10×GOMAXPROCS. Sized well above the catalog's namespaced-type count and comfortably
+	// under Redis maxclients; it is the reader's own client, so it never competes with mirror writes.
+	auditTailReaderPoolSize = 256
 )
 
 func init() {
@@ -153,12 +159,11 @@ func main() {
 
 	// Watch ingestion manager (placeholder, will get EventRouter set later)
 	watchMgr := &watch.Manager{
-		Client:                 mgr.GetClient(),
-		Log:                    ctrl.Log.WithName("watch"),
-		RuleStore:              ruleStore,
-		EventRouter:            nil, // Will be set below
-		AuditLiveEventsEnabled: true,
-		SensitiveResources:     cfg.sensitiveResources,
+		Client:             mgr.GetClient(),
+		Log:                ctrl.Log.WithName("watch"),
+		RuleStore:          ruleStore,
+		EventRouter:        nil, // Will be set below
+		SensitiveResources: cfg.sensitiveResources,
 	}
 
 	// Initialize EventRouter with all dependencies. The streaming-snapshot resync
@@ -271,10 +276,25 @@ func main() {
 	fatalIfErr(err, "unable to initialize per-resource-type splice reader")
 	watchMgr.TypeSplicer = auditTypeSplicer
 
-	// The audit-arrival wake (R2): the per-type queue's blocking read drives a per-type tail that
-	// re-splices a type the instant a mutating event lands, for sub-checkpoint-interval freshness.
-	// It shares the per-type queue's Redis connection. See api-source-of-truth-reconcile.md §8 (R2).
-	watchMgr.AuditTailReader = auditByTypeQueue
+	// The audit-arrival wake (R2): a per-type tail re-applies events the instant they land, for
+	// sub-checkpoint-interval freshness. Each followed type holds ONE connection parked in a blocking
+	// XREAD, so the reader gets its OWN client with a large pool — isolated from the mirror's writes
+	// (auditByTypeQueue above) so dozens of blocking reads (a wildcard GitTarget follows many types)
+	// can never starve the webhook's per-type mirror append. One multiplexed XREAD across all streams
+	// is the eventual scale answer (audit_tail.go, R10/HA); until then this sizing covers it. See
+	// api-source-of-truth-reconcile.md §8 (R2).
+	auditTailReaderQueue, err := queue.NewRedisByTypeStreamQueue(queue.RedisByTypeStreamConfig{
+		Addr:       cfg.auditRedisAddr,
+		Username:   cfg.auditRedisUsername,
+		AuthValue:  cfg.auditRedisPassword,
+		DB:         cfg.auditRedisDB,
+		Prefix:     cfg.auditByTypeStreamPrefix,
+		MaxLen:     cfg.auditRedisMaxLen,
+		TLSEnabled: cfg.auditRedisTLS,
+		PoolSize:   auditTailReaderPoolSize,
+	})
+	fatalIfErr(err, "unable to initialize per-resource-type audit tail reader")
+	watchMgr.AuditTailReader = auditTailReaderQueue
 
 	// Boot rebuild (DEC-L6): replay durable per-type checkpoints into the materializer so a
 	// restart resumes serving Synced types without re-listing them. Best-effort and decoupled —

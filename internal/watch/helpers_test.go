@@ -21,10 +21,6 @@ package watch
 import (
 	"testing"
 
-	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/client-go/tools/cache"
-
 	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 )
 
@@ -55,37 +51,5 @@ func TestKeyFunction(t *testing.T) {
 	want := "apps|v1|deployments"
 	if got != want {
 		t.Fatalf("key() = %q, want %q", got, want)
-	}
-}
-
-func TestToUnstructuredFromInformer(t *testing.T) {
-	// Direct Unstructured
-	u := &unstructured.Unstructured{}
-	u.SetAPIVersion("v1")
-	u.SetKind("ConfigMap")
-	u.SetName("cm1")
-	if got := toUnstructuredFromInformer(u); got == nil {
-		t.Fatalf("expected non-nil for direct *unstructured.Unstructured")
-	}
-
-	// DeletedFinalStateUnknown (value)
-	dfsu := cache.DeletedFinalStateUnknown{Obj: u}
-	if got := toUnstructuredFromInformer(dfsu); got == nil {
-		t.Fatalf("expected non-nil for DeletedFinalStateUnknown value")
-	}
-
-	// DeletedFinalStateUnknown (pointer)
-	dfsuPtr := &cache.DeletedFinalStateUnknown{Obj: u}
-	if got := toUnstructuredFromInformer(dfsuPtr); got == nil {
-		t.Fatalf("expected non-nil for *DeletedFinalStateUnknown pointer")
-	}
-
-	// Typed object convertible to Unstructured
-	cm := &corev1.ConfigMap{}
-	cm.APIVersion = "v1"
-	cm.Kind = "ConfigMap"
-	cm.Name = "cm-typed"
-	if got := toUnstructuredFromInformer(cm); got == nil {
-		t.Fatalf("expected non-nil for typed object convertible to Unstructured")
 	}
 }

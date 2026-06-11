@@ -20,58 +20,63 @@ package watch
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	k8stypes "k8s.io/apimachinery/pkg/types"
+
+	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	"github.com/ConfigButler/gitops-reverser/internal/git"
+	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
-// The audit-arrival wake (R2): for every Synced type, a per-type tail blocks on its audit stream
-// and fires a splice reconcile when a mutating event lands, so a GitTarget reflects a change well
-// inside the checkpoint interval instead of waiting for the next re-anchor. It is the freshness
-// half of the splice (the TypeSynced wake in materialization.go is the correctness half). Each tail
-// is started when its type first becomes Synced and stopped when the type is Released; it is
-// idempotent, so a periodic re-anchor's repeated TypeSynced never spawns a second tail.
+// The audit-arrival wake is the FRESHNESS half of the R3 split (see
+// docs/design/stream/api-source-of-truth-reconcile.md): for every Synced type a per-type tail loops
+// on its :audit:stream and applies each change as a sweep-free per-event UPSERT/DELETE — the old
+// per-event apply, re-sourced from the canonical stream onto the per-type stream. Because it never
+// sweeps, it cannot delete an object whose create is still in flight, so the partial-burst race is
+// gone by construction (not by a settle-window crutch). CORRECTNESS — catching orphans and missed
+// deletes — is the checkpoint sweep's job (the TypeSynced / declare / boot-restore full splice in
+// type_lifecycle.go + materialization.go), which runs only off an authoritative full LIST.
 //
-// Each tail holds one (pooled) Redis connection parked in a blocking read. That is fine for the
-// per-type fan-out at the scale this runs (one pod, tens of claimed types); a single multiplexed
-// reader is a later optimisation (R10/HA).
+// Each tail holds one (pooled) Redis connection parked in a blocking read; one multiplexed XREAD
+// across all type streams is a later optimisation (R10/HA) for the per-type fan-out at scale.
 
 const (
 	// auditTailBlock bounds one blocking read. A finite block keeps a single Redis connection from
 	// parking forever and lets the loop re-check its context promptly; the cursor still never
 	// misses an entry, because after the first read the tail resumes from a concrete stream ID.
 	auditTailBlock = 5 * time.Second
-	// auditTailSettle is the quiet window the tail waits out after the last event before
-	// reconciling, so a burst of co-arriving events is folded into ONE reconcile. This is not just
-	// efficiency: the splice mark-and-sweep needs the WHOLE burst in the log first. Reconciling on
-	// a partial burst could sweep an object whose create event is still microseconds away in the
-	// stream — exactly the bi-directional sharing race (Flux writes two objects to the shared path;
-	// a reconcile that has seen only the first would delete the second). One settle window closes
-	// that gap; the periodic re-anchor backstops anything slower. Each arrival within the window
-	// extends it, so a whole burst (even one spread over several windows) coalesces into one
-	// reconcile. Sized with margin over the sub-100ms gap co-applied objects actually show, since
-	// freshness rides the still-live audit path in R2 and is not on this latency.
-	auditTailSettle = 2 * time.Second
 	// auditTailBackoff is the pause after a transient read error before retrying, so a flapping
 	// Redis does not hot-loop the tail.
 	auditTailBackoff = 2 * time.Second
 )
 
-// AuditTailReader blocks for the next entry on a type's audit stream. It is satisfied by
-// queue.RedisByTypeStreamQueue and is optional on the Manager (nil disables the audit-arrival
-// wake; the periodic re-anchor still reconciles). See api-source-of-truth-reconcile.md §8 (R2).
+// AuditTailReader reads new entries on a type's audit stream as per-event git.Events. It is
+// satisfied by queue.RedisByTypeStreamQueue and is optional on the Manager (nil disables the
+// audit-arrival wake; the periodic checkpoint still reconciles). See
+// docs/design/stream/api-source-of-truth-reconcile.md §8.
 type AuditTailReader interface {
-	// AwaitTypeAuditEntry blocks up to `block` for a new entry after lastID, returning the newest
-	// stream ID to resume from and whether anything new arrived. "" or "$" anchors at the present.
-	AwaitTypeAuditEntry(ctx context.Context, group, resource, lastID string, block time.Duration) (string, bool, error)
+	// ReadTypeAuditChanges blocks up to `block` for new entries after lastID and returns them as
+	// per-event git.Events (Object for an upsert, Identifier-only for a DELETE; no Path/GitTarget
+	// set), plus the newest stream ID to resume from. "" or "$" anchors at the present.
+	ReadTypeAuditChanges(
+		ctx context.Context, group, resource, lastID string, block time.Duration,
+	) ([]git.Event, string, error)
 }
 
-// startTypeAuditTail launches the per-type audit tail once for gvr, under a child of the driver's
-// context so a Released type (or shutdown) cancels it. It is idempotent: a repeat call for a tail
-// already running is a no-op, so a periodic re-anchor's TypeSynced never spawns a duplicate. A nil
-// reader (the wake not wired) is a no-op.
-func (m *Manager) startTypeAuditTail(ctx context.Context, log logr.Logger, gvr schema.GroupVersionResource) {
+// startTypeAuditTail launches the per-type audit tail once for gvr, anchored at the type's
+// checkpoint revision so it replays every audit event strictly after the checkpoint — closing the
+// gap where an event that lands between the checkpoint LIST and the tail starting would otherwise be
+// missed (e.g. a CRD/Secret created right after its type is first claimed). It runs under a child of
+// the driver's context so a Released type (or shutdown) cancels it, and is idempotent: a repeat call
+// for a tail already running is a no-op, so a periodic re-anchor's TypeSynced never spawns a
+// duplicate. A nil reader (the wake not wired) is a no-op.
+func (m *Manager) startTypeAuditTail(
+	ctx context.Context, log logr.Logger, gvr schema.GroupVersionResource, checkpointRV string,
+) {
 	if m.AuditTailReader == nil {
 		return
 	}
@@ -85,8 +90,19 @@ func (m *Manager) startTypeAuditTail(ctx context.Context, log logr.Logger, gvr s
 	}
 	tailCtx, cancel := context.WithCancel(ctx) //nolint:gosec // cancel is stored below and invoked by stopTypeAuditTail
 	m.auditTails[gvr] = cancel
-	go m.runTypeAuditTail(tailCtx, log, gvr)
-	log.V(1).Info("audit tail started", "gvr", gvr.String())
+	go m.runTypeAuditTail(tailCtx, log, gvr, checkpointRV)
+	log.V(1).Info("audit tail started", "gvr", gvr.String(), "anchorRV", checkpointRV)
+}
+
+// auditTailAnchor turns a checkpoint resourceVersion R into the stream-ID cursor the tail resumes
+// from: "<R>-<maxuint64>", which is strictly greater than every entry at rv R (whose IDs are
+// "<R>-<subseq>"), so the tail reads only entries with rv > R — exactly the events not already in
+// the checkpoint @ R. A blank rv falls back to "$" (only entries arriving after the tail starts).
+func auditTailAnchor(checkpointRV string) string {
+	if strings.TrimSpace(checkpointRV) == "" {
+		return "$"
+	}
+	return checkpointRV + "-18446744073709551615"
 }
 
 // stopTypeAuditTail cancels and forgets a type's audit tail (the type was Released — checkpoint
@@ -100,18 +116,20 @@ func (m *Manager) stopTypeAuditTail(gvr schema.GroupVersionResource) {
 	}
 }
 
-// runTypeAuditTail loops on the type's audit stream and fires a per-type splice reconcile whenever a
-// burst of mutating events settles. The reconcile is self-gating (it holds unless the checkpoint is
-// Synced) and idempotent (the splice folds the whole log), so a coalesced burst yields one correct
-// reconcile. It exits when its context is cancelled (Release or shutdown).
-func (m *Manager) runTypeAuditTail(ctx context.Context, log logr.Logger, gvr schema.GroupVersionResource) {
-	block, settle := m.auditTailBlockDuration(), m.auditTailSettleDuration()
-	reconcile := m.auditTailReconcileFn()
-	// "$" anchors at the present so the tail only reacts to entries after it starts; the TypeSynced
-	// wake already reconciled the log up to here. After the first read the cursor is a concrete ID.
-	lastID := "$"
+// runTypeAuditTail loops on the type's audit stream and applies each batch of changes as sweep-free
+// per-event upserts/deletes to every watching GitTarget. It exits when its context is cancelled
+// (Release or shutdown).
+func (m *Manager) runTypeAuditTail(
+	ctx context.Context, log logr.Logger, gvr schema.GroupVersionResource, checkpointRV string,
+) {
+	block := m.auditTailBlockDuration()
+	apply := m.auditTailApplyFn()
+	// Anchor at the checkpoint revision so the tail replays every audit entry strictly after it — an
+	// entry that arrived between the checkpoint LIST and this tail starting is then NOT missed. After
+	// the first read the cursor is a concrete stream ID. A blank rv falls back to "$" (present-only).
+	lastID := auditTailAnchor(checkpointRV)
 	for ctx.Err() == nil {
-		newID, hasNew, err := m.AuditTailReader.AwaitTypeAuditEntry(ctx, gvr.Group, gvr.Resource, lastID, block)
+		changes, newID, err := m.AuditTailReader.ReadTypeAuditChanges(ctx, gvr.Group, gvr.Resource, lastID, block)
 		if err != nil {
 			if ctx.Err() != nil {
 				return
@@ -123,42 +141,83 @@ func (m *Manager) runTypeAuditTail(ctx context.Context, log logr.Logger, gvr sch
 			continue
 		}
 		lastID = newID
-		if !hasNew {
+		if len(changes) > 0 {
+			apply(ctx, log, gvr, changes)
+		}
+	}
+}
+
+// applyAuditChangesForType fans a batch of per-event changes to every GitTarget that watches the
+// type, as sweep-free upserts/deletes routed through the GitTarget's event stream (the worker's
+// commit window coalesces them into commits). Each change is scoped to the GitTarget's watched
+// namespaces and stamped with the GitTarget's write path, exactly as the live event path did. It
+// never sweeps, so an object whose create has not yet landed in the log is never deleted.
+func (m *Manager) applyAuditChangesForType(
+	ctx context.Context,
+	log logr.Logger,
+	gvr schema.GroupVersionResource,
+	changes []git.Event,
+) {
+	if m.EventRouter == nil {
+		return
+	}
+	for _, table := range m.allWatchedTypeTables() {
+		watched := watchedTypeForGVR(table, gvr)
+		if watched == nil {
 			continue
 		}
-		// Drain the rest of the burst before reconciling, so the splice sees the whole co-arriving
-		// set and never sweeps an object whose create event is still in flight.
-		lastID = m.drainAuditBurst(ctx, gvr, lastID, settle)
-		reconcile(ctx, log, gvr)
+		if m.EventRouter.GetGitTargetEventStream(table.GitDest) == nil {
+			continue // the GitTarget's stream is not registered yet; its first checkpoint splice covers it
+		}
+		path, ok := m.gitTargetPath(ctx, table.GitDest)
+		if !ok {
+			continue
+		}
+		inScope := namespaceScopePredicate(watched.SnapshotNamespaces())
+		for _, change := range changes {
+			if !inScope(change.Identifier.Namespace) {
+				continue
+			}
+			ev := change
+			ev.Path = path
+			if err := m.EventRouter.RouteToGitTargetEventStream(ev, table.GitDest); err != nil {
+				log.V(1).Info("audit-tail route failed",
+					"gitDest", table.GitDest.String(), "resource", ev.Identifier.String(), "err", err.Error())
+			}
+		}
 	}
 }
 
-// drainAuditBurst keeps reading until the stream is quiet for one settle window, returning the
-// cursor to resume from. Each further arrival extends the window; a settle-length gap with nothing
-// new ends the burst. A read error (including context cancellation) ends the drain with the cursor
-// reached so far — the caller still reconciles on what it has, and the next loop iteration handles
-// the cancellation.
-func (m *Manager) drainAuditBurst(
-	ctx context.Context,
-	gvr schema.GroupVersionResource,
-	lastID string,
-	settle time.Duration,
-) string {
-	for ctx.Err() == nil {
-		id, hasNew, err := m.AuditTailReader.AwaitTypeAuditEntry(ctx, gvr.Group, gvr.Resource, lastID, settle)
-		if err != nil {
-			return lastID
-		}
-		lastID = id
-		if !hasNew {
-			return lastID // quiet for one settle window → the burst has settled
+// watchedTypeForGVR returns the table's WatchedType for gvr, or nil if the GitTarget does not watch
+// it. It is the membership-plus-scope lookup the audit-tail apply needs (tableWatchesGVR is the
+// bool-only twin used where the scope is not needed).
+func watchedTypeForGVR(table WatchedTypeTable, gvr schema.GroupVersionResource) *WatchedType {
+	for i := range table.Types {
+		if table.Types[i].GVR == gvr {
+			return &table.Types[i]
 		}
 	}
-	return lastID
+	return nil
 }
 
-// auditTailBlockDuration / auditTailSettleDuration return the configured blocking-read and
-// burst-settle windows, honouring the test overrides so unit tests run fast.
+// gitTargetPath reads a GitTarget's write path (spec.path) — the folder its mirrored documents live
+// under, the same path the live event route stamped onto each git.Event. A GitTarget that cannot be
+// read yields ok=false, so the tail skips it (its next checkpoint splice still covers it).
+func (m *Manager) gitTargetPath(ctx context.Context, gitDest types.ResourceReference) (string, bool) {
+	if m.Client == nil {
+		return "", false
+	}
+	var gt configv1alpha1.GitTarget
+	if err := m.Client.Get(
+		ctx, k8stypes.NamespacedName{Name: gitDest.Name, Namespace: gitDest.Namespace}, &gt,
+	); err != nil {
+		return "", false
+	}
+	return gt.Spec.Path, true
+}
+
+// auditTailBlockDuration returns the configured blocking-read window, honouring the test override so
+// unit tests run fast.
 func (m *Manager) auditTailBlockDuration() time.Duration {
 	if m.auditTailBlockOverride > 0 {
 		return m.auditTailBlockOverride
@@ -166,20 +225,13 @@ func (m *Manager) auditTailBlockDuration() time.Duration {
 	return auditTailBlock
 }
 
-func (m *Manager) auditTailSettleDuration() time.Duration {
-	if m.auditTailSettleOverride > 0 {
-		return m.auditTailSettleOverride
+// auditTailApplyFn returns the per-batch action, defaulting to the sweep-free per-event apply and
+// overridable in tests so the tail's read/apply loop can be observed without a full worker stack.
+func (m *Manager) auditTailApplyFn() func(context.Context, logr.Logger, schema.GroupVersionResource, []git.Event) {
+	if m.auditTailApplyOverride != nil {
+		return m.auditTailApplyOverride
 	}
-	return auditTailSettle
-}
-
-// auditTailReconcileFn returns the per-burst action, defaulting to the per-type splice reconcile and
-// overridable in tests so the tail's coalescing can be observed without a full reconcile stack.
-func (m *Manager) auditTailReconcileFn() func(context.Context, logr.Logger, schema.GroupVersionResource) {
-	if m.auditTailReconcileOverride != nil {
-		return m.auditTailReconcileOverride
-	}
-	return m.reconcileTypeForSyncedTargets
+	return m.applyAuditChangesForType
 }
 
 // sleepOrDone waits for d or for ctx to cancel, reporting false if the context cancelled first.

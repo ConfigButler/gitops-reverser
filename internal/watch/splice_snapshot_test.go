@@ -53,8 +53,8 @@ func (f *fakeTypeSplicer) SpliceType(
 // folded set, filtered to the GitTarget's watched namespace and pinned to the checkpoint revision.
 func TestSpliceSnapshotForType_SyncedFoldsAndScopes(t *testing.T) {
 	store := rulestore.NewStore()
-	addWatchRule(store, "wr-secrets", "ns-a", "secrets")
-	m := streamingManager(t, gitTargetFixture(), store, nil)
+	addSecretsWatchRule(store)
+	m := streamingManager(t, gitTargetFixture(), store)
 
 	splicer := &fakeTypeSplicer{
 		objs: []*unstructured.Unstructured{uns("Secret", "ns-a", "s-a"), uns("Secret", "ns-b", "s-b")},
@@ -77,8 +77,8 @@ func TestSpliceSnapshotForType_SyncedFoldsAndScopes(t *testing.T) {
 // is not Synced holds (ready=false) and never even consults the splicer — no sweep on a partial view.
 func TestSpliceSnapshotForType_HoldsWhenNotSynced(t *testing.T) {
 	store := rulestore.NewStore()
-	addWatchRule(store, "wr-secrets", "ns-a", "secrets")
-	m := streamingManager(t, gitTargetFixture(), store, nil)
+	addSecretsWatchRule(store)
+	m := streamingManager(t, gitTargetFixture(), store)
 	splicer := &fakeTypeSplicer{rv: "100"}
 	m.TypeSplicer = splicer
 	// No RestoreSynced: the type is Dormant.
@@ -94,8 +94,8 @@ func TestSpliceSnapshotForType_HoldsWhenNotSynced(t *testing.T) {
 // (ready=false, no error), so the caller no-ops rather than reconciling something out of scope.
 func TestSpliceSnapshotForType_UnwatchedTypeHolds(t *testing.T) {
 	store := rulestore.NewStore()
-	addWatchRule(store, "wr-secrets", "ns-a", "secrets")
-	m := streamingManager(t, gitTargetFixture(), store, nil)
+	addSecretsWatchRule(store)
+	m := streamingManager(t, gitTargetFixture(), store)
 	splicer := &fakeTypeSplicer{rv: "100"}
 	m.TypeSplicer = splicer
 	m.materializerInstance().RestoreSynced(configmapsGVR, "100") // synced but unwatched
@@ -110,8 +110,8 @@ func TestSpliceSnapshotForType_UnwatchedTypeHolds(t *testing.T) {
 // error (caller holds), never a silent empty desired set that would sweep the mirror.
 func TestSpliceSnapshotForType_SplicerErrorFailsClosed(t *testing.T) {
 	store := rulestore.NewStore()
-	addWatchRule(store, "wr-secrets", "ns-a", "secrets")
-	m := streamingManager(t, gitTargetFixture(), store, nil)
+	addSecretsWatchRule(store)
+	m := streamingManager(t, gitTargetFixture(), store)
 	m.TypeSplicer = &fakeTypeSplicer{err: errors.New("redis down")}
 	m.materializerInstance().RestoreSynced(secretsGVR, "100")
 
@@ -126,7 +126,7 @@ func TestSpliceSnapshotForType_SplicerErrorFailsClosed(t *testing.T) {
 func TestSpliceSnapshotForType_ClusterWideKeepsAllNamespaces(t *testing.T) {
 	store := rulestore.NewStore()
 	addClusterWatchRule(store, "cwr-nodes", "nodes")
-	m := streamingManager(t, gitTargetFixture(), store, nil)
+	m := streamingManager(t, gitTargetFixture(), store)
 	m.TypeSplicer = &fakeTypeSplicer{
 		objs: []*unstructured.Unstructured{uns("Node", "", "node-a"), uns("Node", "", "node-b")},
 		rv:   "200",
@@ -143,8 +143,8 @@ func TestSpliceSnapshotForType_ClusterWideKeepsAllNamespaces(t *testing.T) {
 // error (rather than silently reconciling nothing) — a misconfiguration, not a hold.
 func TestSpliceSnapshotForType_NoSplicerWiredErrors(t *testing.T) {
 	store := rulestore.NewStore()
-	addWatchRule(store, "wr-secrets", "ns-a", "secrets")
-	m := streamingManager(t, gitTargetFixture(), store, nil)
+	addSecretsWatchRule(store)
+	m := streamingManager(t, gitTargetFixture(), store)
 
 	_, ready, err := m.SpliceSnapshotForType(context.Background(), myTargetRef(), secretsGVR)
 	require.Error(t, err)

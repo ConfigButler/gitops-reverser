@@ -53,7 +53,6 @@ const (
 	GitTargetConditionReady                = ConditionTypeReady
 	GitTargetConditionValidated            = "Validated"
 	GitTargetConditionEncryptionConfigured = "EncryptionConfigured"
-	GitTargetConditionSnapshotSynced       = "SnapshotSynced"
 	GitTargetConditionEventStreamLive      = "EventStreamLive"
 )
 
@@ -136,13 +135,6 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		)
 		r.setCondition(
 			&target,
-			GitTargetConditionSnapshotSynced,
-			metav1.ConditionUnknown,
-			GitTargetReasonNotStarted,
-			"Initial snapshot sync has not started",
-		)
-		r.setCondition(
-			&target,
 			GitTargetConditionEventStreamLive,
 			metav1.ConditionUnknown,
 			GitTargetReasonNotStarted,
@@ -170,13 +162,6 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	if !encryptionReady {
 		r.setCondition(
 			&target,
-			GitTargetConditionSnapshotSynced,
-			metav1.ConditionUnknown,
-			GitTargetReasonNotStarted,
-			"Initial snapshot sync has not started",
-		)
-		r.setCondition(
-			&target,
 			GitTargetConditionEventStreamLive,
 			metav1.ConditionUnknown,
 			GitTargetReasonNotStarted,
@@ -194,83 +179,35 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{RequeueAfter: encryptionRequeueAfter}, nil
 	}
 
-	stream, snapshotState, snapshotMessage, snapshotErr := r.evaluateSnapshotGate(
-		ctx,
-		&target,
-		providerNS,
-		log,
-	)
-	if snapshotErr != nil {
-		r.setCondition(
-			&target,
-			GitTargetConditionSnapshotSynced,
-			metav1.ConditionFalse,
-			GitTargetReasonSnapshotFailed,
-			snapshotErr.Error(),
-		)
-		r.setCondition(
-			&target,
-			GitTargetConditionEventStreamLive,
-			metav1.ConditionUnknown,
-			GitTargetReasonBlocked,
-			"Blocked until SnapshotSynced=True",
-		)
+	// Ensure the branch worker exists and register the GitTarget's event stream BEFORE declaring
+	// demand: the demand Declare drives the initial per-type splice reconcile (EnqueueResync needs
+	// the worker), so the worker must be live first or the very first reconcile of an already-Synced
+	// type would be dropped and not retried until the next ~10m reconcile.
+	streamReady, streamMessage := r.evaluateEventStreamGate(&target, providerNS, log)
+	if !streamReady {
 		r.setReadyCondition(
 			&target,
 			metav1.ConditionFalse,
-			GitTargetReadyReasonInitialSyncInProgress,
-			"SnapshotSynced gate failed: SnapshotFailed",
+			GitTargetReadyReasonStreamNotLive,
+			streamMessage,
 		)
 		if err := r.updateStatusWithRetry(ctx, &target); err != nil {
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{RequeueAfter: RequeueShortInterval}, nil
-	}
-	if snapshotState == metav1.ConditionFalse {
-		r.setCondition(
-			&target,
-			GitTargetConditionSnapshotSynced,
-			metav1.ConditionFalse,
-			GitTargetReasonRunning,
-			snapshotMessage,
-		)
-		r.setCondition(
-			&target,
-			GitTargetConditionEventStreamLive,
-			metav1.ConditionUnknown,
-			GitTargetReasonBlocked,
-			"Blocked until SnapshotSynced=True",
-		)
-		r.setReadyCondition(
-			&target,
-			metav1.ConditionFalse,
-			GitTargetReadyReasonInitialSyncInProgress,
-			"SnapshotSynced gate is still running",
-		)
-		if err := r.updateStatusWithRetry(ctx, &target); err != nil {
-			return ctrl.Result{}, err
-		}
-		return ctrl.Result{RequeueAfter: RequeueShortInterval}, nil
-	}
-	if snapshotState == metav1.ConditionTrue {
-		r.setCondition(
-			&target,
-			GitTargetConditionSnapshotSynced,
-			metav1.ConditionTrue,
-			GitTargetReasonCompleted,
-			snapshotMessage,
-		)
 	}
 
-	// Renew this GitTarget's demand on the materialization axis every reconcile (DEC-L3):
-	// an idempotent full-set declaration that claims new types, renews present ones, and
-	// lets a type dropped from a rule age out at the next sweep (DEC-L5). It shares the
-	// snapshot gather's resolve (StreamClusterSnapshotForGitDest -> resolveSnapshotGVRs), so
-	// it fails closed identically — an unobservable surface declares NOTHING rather than a
-	// withdrawal. The reconcile cadence (RequeueLongInterval, minutes) is comfortably shorter
-	// than the ~1h sweep, so a healthy target always renews between sweeps; a deleted target
-	// stops reconciling, so its claims age out. Demand bookkeeping only — it never gates
-	// readiness, so a transient resolve failure is logged and retried next reconcile.
+	// Renew this GitTarget's demand on the materialization axis every reconcile (DEC-L3): an
+	// idempotent full-set declaration that claims new types, renews present ones, and lets a type
+	// dropped from a rule age out at the next sweep (DEC-L5). It shares the splice scope resolve
+	// (resolveSnapshotGVRs), so it fails closed identically — an unobservable surface declares
+	// NOTHING rather than a withdrawal — and it drives the per-type splice reconcile for every
+	// watched type whose checkpoint is Synced (the worker is now live), so a newly-Ready target
+	// mirrors already-Synced types at once and, after a restart, re-reconciles off the durable
+	// checkpoint. The reconcile cadence (RequeueLongInterval) is comfortably shorter than the ~1h
+	// sweep, so a healthy target always renews between sweeps; a deleted target stops reconciling,
+	// so its claims age out. Demand bookkeeping only — it never gates readiness, so a transient
+	// resolve failure is logged and retried next reconcile.
 	if r.EventRouter != nil && r.EventRouter.WatchManager != nil {
 		gitDest := types.NewResourceReference(target.Name, target.Namespace)
 		if declareErr := r.EventRouter.WatchManager.DeclareForGitTarget(ctx, gitDest); declareErr != nil {
@@ -289,20 +226,6 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			NotFollowableTypes: clampIntToInt32(sum.NotFollowable),
 			ObservedTime:       &now,
 		}
-	}
-
-	streamReady, streamMessage := r.evaluateEventStreamGate(&target, stream, providerNS)
-	if !streamReady {
-		r.setReadyCondition(
-			&target,
-			metav1.ConditionFalse,
-			GitTargetReadyReasonStreamNotLive,
-			streamMessage,
-		)
-		if err := r.updateStatusWithRetry(ctx, &target); err != nil {
-			return ctrl.Result{}, err
-		}
-		return ctrl.Result{RequeueAfter: RequeueShortInterval}, nil
 	}
 
 	r.setReadyCondition(
@@ -397,72 +320,17 @@ func (r *GitTargetReconciler) evaluateEncryptionGate(
 	return true, "", 0
 }
 
-func (r *GitTargetReconciler) evaluateSnapshotGate(
-	ctx context.Context,
+// evaluateEventStreamGate ensures the GitTarget's branch worker exists and registers its
+// GitTargetEventStream — the route the slim audit consumer uses for /scale field patches. With
+// the api-source-of-truth pivot (R3) there is no bootstrap snapshot gate: a type is serviceable
+// the moment its checkpoint is Synced (the materializer phase is the readiness signal), and the
+// per-type splice reconcile does the mirroring. So this gate is just "is the worker/stream
+// wired?" — registering the stream marks EventStreamLive=True and the GitTarget Ready. A
+// nil EventRouter (test/standalone) reports live without a stream.
+func (r *GitTargetReconciler) evaluateEventStreamGate(
 	target *configbutleraiv1alpha1.GitTarget,
 	providerNS string,
 	log logr.Logger,
-) (*reconcile.GitTargetEventStream, metav1.ConditionStatus, string, error) {
-	if r.EventRouter == nil {
-		now := metav1.Now()
-		if target.Status.Snapshot == nil {
-			target.Status.Snapshot = &configbutleraiv1alpha1.GitTargetSnapshotStatus{}
-		}
-		target.Status.Snapshot.LastCompletedTime = &now
-		return nil, metav1.ConditionTrue, MsgSnapshotCompleted, nil
-	}
-
-	// Initial snapshot only. Re-snapshots on rule changes are triggered by the
-	// WatchRule controller via ReconcileForRuleChange, not via this gate.
-	// Without this guard, unrelated events (e.g. Flux touching the encryption
-	// secret) can re-trigger a cluster-wide snapshot and produce spurious commits.
-	if isConditionTrue(target.Status.Conditions, GitTargetConditionSnapshotSynced) {
-		stream, err := r.ensureEventStream(target, providerNS, log)
-		if err != nil {
-			return nil, metav1.ConditionFalse, "", err
-		}
-		return stream, metav1.ConditionTrue, MsgSnapshotCompleted, nil
-	}
-
-	stream, err := r.ensureEventStream(target, providerNS, log)
-	if err != nil {
-		return nil, metav1.ConditionFalse, "", err
-	}
-
-	// Enter buffering state before the resync so live events arriving during the
-	// snapshot are queued, not interleaved with the mark-and-sweep commit. The
-	// EventStreamLive gate flushes them once the stream goes live.
-	stream.BeginReconciliation()
-
-	// One synchronous, content-derived streaming-snapshot resync (M8): the worker
-	// gathers the GitTarget's complete watched set, materialises it (create / update),
-	// and mark-and-sweeps managed documents the cluster no longer has. It blocks until
-	// the resync commit lands, so the snapshot is complete before live events flush.
-	gitDest := types.NewResourceReference(target.Name, target.Namespace)
-	stats, err := r.EventRouter.EmitResyncForGitDest(ctx, gitDest)
-	if err != nil {
-		return stream, metav1.ConditionFalse, "", fmt.Errorf(
-			"failed to run initial snapshot resync: %w", err)
-	}
-
-	now := metav1.Now()
-	if target.Status.Snapshot == nil {
-		target.Status.Snapshot = &configbutleraiv1alpha1.GitTargetSnapshotStatus{}
-	}
-	target.Status.Snapshot.LastCompletedTime = &now
-	target.Status.Snapshot.Stats = configbutleraiv1alpha1.GitTargetSnapshotStats{
-		Created: clampIntToInt32(stats.Created),
-		Updated: clampIntToInt32(stats.Updated),
-		Deleted: clampIntToInt32(stats.Deleted),
-	}
-
-	return stream, metav1.ConditionTrue, MsgSnapshotCompleted, nil
-}
-
-func (r *GitTargetReconciler) evaluateEventStreamGate(
-	target *configbutleraiv1alpha1.GitTarget,
-	stream *reconcile.GitTargetEventStream,
-	providerNS string,
 ) (bool, string) {
 	if r.EventRouter == nil {
 		r.setCondition(
@@ -475,37 +343,18 @@ func (r *GitTargetReconciler) evaluateEventStreamGate(
 		return true, ""
 	}
 
-	if stream == nil {
+	if _, err := r.ensureEventStream(target, providerNS, log); err != nil {
 		r.setCondition(
 			target,
 			GitTargetConditionEventStreamLive,
 			metav1.ConditionFalse,
 			GitTargetReasonRegistrationFailed,
-			fmt.Sprintf(
-				"Failed to register GitTargetEventStream for %s/%s",
-				target.Namespace,
-				target.Name,
-			),
+			fmt.Sprintf("Failed to register GitTargetEventStream for %s/%s: %v",
+				target.Namespace, target.Name, err),
 		)
 		return false, "EventStreamLive gate failed: RegistrationFailed"
 	}
 
-	if stream.GetState() != reconcile.LiveProcessing {
-		stream.OnReconciliationComplete()
-	}
-
-	if stream.GetState() != reconcile.LiveProcessing {
-		r.setCondition(
-			target,
-			GitTargetConditionEventStreamLive,
-			metav1.ConditionFalse,
-			GitTargetReasonDisconnected,
-			"GitTarget event stream failed to transition to live processing",
-		)
-		return false, "EventStreamLive gate failed: Disconnected"
-	}
-
-	_ = providerNS // kept for function parity and future diagnostics
 	r.setCondition(
 		target,
 		GitTargetConditionEventStreamLive,
@@ -909,6 +758,13 @@ func (r *GitTargetReconciler) cleanupDeletedGitTarget(
 
 	r.EventRouter.UnregisterGitTargetEventStream(gitDest)
 
+	// Forget the diff-wake's last-Declared cache so a GitTarget recreated with the same name is a
+	// fresh claim and re-drives its initial backfill splice (otherwise the recreate inherits the
+	// dead one's declaration and never snapshots).
+	if r.EventRouter.WatchManager != nil {
+		r.EventRouter.WatchManager.ForgetGitTargetDeclaration(gitDest)
+	}
+
 	log.V(1).Info("Cleaned up in-memory state for deleted GitTarget", "gitDest", gitDest.String())
 }
 
@@ -972,8 +828,49 @@ func (r *GitTargetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			handler.EnqueueRequestsFromMapFunc(r.gitProviderToGitTargets),
 			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
 		).
+		// React to a GitTarget's WatchRule/ClusterWatchRule set changing so it re-reconciles and
+		// re-Declares its watched-type set promptly (the R3 replacement for the deleted whole-target
+		// rule-change resync). Without this a rule added after the GitTarget went Ready would not be
+		// claimed — and so never materialised/mirrored — until the next ~10m periodic reconcile.
+		// GenerationChangedPredicate ignores the status-only updates the rule controllers write.
+		Watches(
+			&configbutleraiv1alpha1.WatchRule{},
+			handler.EnqueueRequestsFromMapFunc(r.watchRuleToGitTarget),
+			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
+		).
+		Watches(
+			&configbutleraiv1alpha1.ClusterWatchRule{},
+			handler.EnqueueRequestsFromMapFunc(r.clusterWatchRuleToGitTarget),
+			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
+		).
 		Named("gittarget").
 		Complete(r)
+}
+
+// watchRuleToGitTarget enqueues the GitTarget a WatchRule targets (a WatchRule targets a GitTarget
+// in its own namespace), so the GitTarget re-Declares its watched-type set when a rule changes.
+func (r *GitTargetReconciler) watchRuleToGitTarget(_ context.Context, obj client.Object) []ctrlreconcile.Request {
+	wr, ok := obj.(*configbutleraiv1alpha1.WatchRule)
+	if !ok || wr.Spec.TargetRef.Name == "" {
+		return nil
+	}
+	return []ctrlreconcile.Request{{NamespacedName: k8stypes.NamespacedName{
+		Name: wr.Spec.TargetRef.Name, Namespace: wr.Namespace,
+	}}}
+}
+
+// clusterWatchRuleToGitTarget enqueues the GitTarget a ClusterWatchRule targets (its TargetRef
+// carries the namespace), for the same reason as watchRuleToGitTarget.
+func (r *GitTargetReconciler) clusterWatchRuleToGitTarget(
+	_ context.Context, obj client.Object,
+) []ctrlreconcile.Request {
+	cwr, ok := obj.(*configbutleraiv1alpha1.ClusterWatchRule)
+	if !ok || cwr.Spec.TargetRef.Name == "" {
+		return nil
+	}
+	return []ctrlreconcile.Request{{NamespacedName: k8stypes.NamespacedName{
+		Name: cwr.Spec.TargetRef.Name, Namespace: cwr.Spec.TargetRef.Namespace,
+	}}}
 }
 
 // encryptionSecretToGitTargets maps a Secret event to the GitTargets that reference it as their

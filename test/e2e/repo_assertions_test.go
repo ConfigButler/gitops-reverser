@@ -50,6 +50,26 @@ func pullLatestRepoState(g Gomega, checkoutDir string) {
 	}
 }
 
+// remoteBranchHead returns the commit SHA at the tip of origin/main, or "" when main does not
+// exist on the remote yet — an empty repo or an unborn branch, which is a valid "nothing has been
+// committed" state. Unlike pullLatestRepoState it never requires the branch to exist, so it is the
+// right probe for the commit-window behaviour: the controller defers committing for as long as
+// possible, so an edit still inside the open window leaves main ABSENT (== "") before the first
+// commit, and UNCHANGED (== the prior SHA) for an already-established branch.
+func remoteBranchHead(g Gomega, checkoutDir string) string {
+	GinkgoHelper()
+
+	output, err := gitRun(checkoutDir, "ls-remote", "--heads", "origin", "main")
+	g.Expect(err).NotTo(HaveOccurred(),
+		fmt.Sprintf("git ls-remote must succeed even when the branch is absent. Output: %s", output))
+
+	fields := strings.Fields(strings.TrimSpace(output))
+	if len(fields) == 0 {
+		return "" // branch does not exist yet — nothing committed
+	}
+	return fields[0] // ls-remote prints "<sha>\trefs/heads/main"
+}
+
 func assertLatestCommitForPathTouchesOnlyWithOptional(
 	g Gomega,
 	checkoutDir string,

@@ -24,40 +24,10 @@ import (
 
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
-	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
 	"github.com/ConfigButler/gitops-reverser/internal/typeset"
 )
-
-// gitTargetSnapshotSynced gates the per-type path on the GitTarget's bootstrap: only a target
-// whose SnapshotSynced condition is True is acted on, so a transition during bootstrap never
-// races the whole-GitTarget resync. A missing or not-yet-synced target reports false.
-func TestGitTargetSnapshotSynced(t *testing.T) {
-	scheme := makeScheme(t)
-	synced := &configv1alpha1.GitTarget{
-		ObjectMeta: metav1.ObjectMeta{Name: "synced", Namespace: "gitops-reverser"},
-		Status: configv1alpha1.GitTargetStatus{Conditions: []metav1.Condition{{
-			Type: gitTargetSnapshotSyncedCondition, Status: metav1.ConditionTrue,
-			Reason: "OK", LastTransitionTime: metav1.Now(),
-		}}},
-	}
-	pending := &configv1alpha1.GitTarget{
-		ObjectMeta: metav1.ObjectMeta{Name: "pending", Namespace: "gitops-reverser"},
-	}
-	client := fakeclient.NewClientBuilder().WithScheme(scheme).WithObjects(synced, pending).Build()
-	m := &Manager{Client: client, Log: logr.Discard()}
-	ctx := context.Background()
-
-	assert.True(t, m.gitTargetSnapshotSynced(ctx, itypes.NewResourceReference("synced", "gitops-reverser")))
-	assert.False(t, m.gitTargetSnapshotSynced(ctx, itypes.NewResourceReference("pending", "gitops-reverser")),
-		"a target still mid-bootstrap is not yet eligible for per-type reconcile")
-	assert.False(t, m.gitTargetSnapshotSynced(ctx, itypes.NewResourceReference("absent", "gitops-reverser")),
-		"an unreadable target is treated as not synced, so the per-type path waits")
-}
 
 // The transitions that carry no git action (Wobbling/Recovered/Refused) are inert in the
 // handler: they neither reconcile nor sweep, so a Manager with no EventRouter handles them
