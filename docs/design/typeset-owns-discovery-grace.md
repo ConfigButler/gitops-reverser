@@ -45,6 +45,35 @@ The registry then applies its *own* time-based judgement on top: `RemovalGrace =
 (absent → `Retained` → `Refused`), the `SettleWindow` activation debounce, and the
 `TypeWobbling` freeze that the Materializer honours.
 
+### 2.1 The exact typeset surface today, and who reads it
+
+The full public surface, grouped by contract (everything else in the package is
+unexported):
+
+| Surface | Methods / types | Consumers |
+|---|---|---|
+| **`Lookup`** (the minimal cross-package contract) | `Ready()`, `ByGVK(gvk) (TypeRecord, bool)` | `internal/git` (`worker_manager.go`, `plan_flush.go` — resolve manifest GVKs on the write path), `internal/manifestanalyzer` (`store.go`, `scan.go`, `analyzer.go`) |
+| **Registry queries** | `ByGVR`, `Followable()`, `All()`, `Ready()`, `Generation()`, `Revision()` | `internal/watch` only: `manager_catalog.go` (refresh + refusal logging + status projections), `watched_type_resolver.go` / `watched_type_table.go` (rule matching → per-GitTarget watched-type table), `scope_resolve.go` (`VerdictRetained` = the wobble check) |
+| **Registry feed** | `Update(observations, generation)`, `Entry`, `ObservationsFromEntries` | the catalog bridge only (`catalog_observe.go` → `refreshTypeRegistry`) |
+| **Lifecycle** | `Subscribe(Observer)`, `LifecycleEvent` (`TypeActivated` / `TypeWobbling` / `TypeRecovered` / `TypeRemoved` / `TypeRefused`) | `internal/watch/type_lifecycle.go` (drain → git actions + Materializer) |
+| **Materializer** (demand axis) | `Declare`, `OnLifecycleEvent`, `BeginSync`, `SyncSucceeded`, `SyncFailed`, `RestoreSynced`, `RequestResync`, `Sweep`, `Phase`, `Checkpoint`, `Claimants`, `PendingSyncs`, `Inventory`, `Subscribe` | `internal/watch/materialization.go` (driver, declare, sweep, status roll-up, late-event nudge) |
+| **Fixtures / static** | `NewSnapshotRegistry(Snapshot)`, `BuiltinScale`, `SplitFieldPath` | tests, `internal/auditutil/subresource_policy.go` |
+
+Two observations worth pinning:
+
+- **Controllers never touch typeset directly** — `GitTargetReconciler` & co. read
+  `watch.Manager` projections (`MaterializationSummaryForGitTarget`,
+  `FollowableTypeRecords`, rule resolution). The typeset blast radius of any change here
+  is `internal/watch` + the two `Lookup` consumers, nothing wider.
+- **Every consumer call is already version-complete.** `ByGVK`/`ByGVR` take a full
+  group/version/kind-or-resource and return one `TypeRecord` whose `Identity` carries the
+  version. Nobody asks "what versions exist?" today; rule planning matches a rule's
+  `apiVersions` selector by iterating records, which already works per version. The only
+  *version-less* questions in the codebase are `(group, resource) → GVR` resolutions
+  (the per-type stream keys drop the version): the late-event nudge's
+  `claimedGVRForGroupResource` (scans Materializer inventory) and the catalog-side
+  preferred-version data that rule planning reads indirectly.
+
 So today the "removals" story is split across two layers with different rules: an
 **errored** group is retained indefinitely by the catalog, while an **omitted** group is
 pruned instantly by the catalog and only then graced for 60 s by the registry. That split
@@ -89,27 +118,44 @@ checkpoint, keep the tail) is the only consumer-visible effect — no force-rele
 `snapshot cleared`, no lost CR. Tuning happens in exactly one place (grace, settle,
 wobble) instead of two.
 
-### 3.3 Served versions become a registry concept
+### 3.3 Served versions: one narrow index, no version plumbing
 
-Today a registry record is keyed `(GVK, GVR, scope)` — one record per *version*. The
-registry cannot answer "which versions of `(group, resource)` are served, and which is
-preferred?"; that question still requires the catalog's `byGroupVer`/`Preferred` data.
-That forces version-needing consumers (rule planning's `apiVersions` matching, any
-`(group, resource) → GVR` resolution like the per-type stream keys, which drop the
-version) toward the catalog.
+**Constraint (steering):** versions change rarely, and the cure must not be worse than
+the disease — do **not** thread version parameters or version lists through consumer
+signatures. The registry already carries the version inside every record's `Identity`
+(records are keyed `(GVK, GVR, scope)` — one per version), and as §2.1 shows, every
+existing consumer call is already version-complete. So "served versions" is not a new
+concept to spread around; it is **one missing index** over records the registry already
+holds.
 
-Extend the registry with a per-`(group, resource)` index over its own records:
+The whole addition:
 
 ```go
-// sketch
-func (r *Registry) ServedVersions(group, resource string) []VersionInfo // version, preferred, followable, verdict
-func (r *Registry) PreferredGVR(group, resource string) (schema.GroupVersionResource, bool)
+// ByGroupResource returns the records (one per served version) for a version-less
+// (group, resource) pair — the shape per-type stream keys carry. Existing TypeRecord
+// fields answer everything else: Identity.GVR.Version, Preferred, Followable().
+func (r *Registry) ByGroupResource(group, resource string) []TypeRecord
 ```
 
-Because records already carry per-version identity, this is an index + two lookups, not
-new state. With the grace unified (3.2), "served versions" naturally means *last-known
-versions under grace* during a blink — which is precisely the wobble-friendly answer a
-consumer wants.
+No `VersionInfo` type, no `ServedVersions`/`PreferredGVR` pair, no change to the
+`Lookup` interface, no change to `TypeRecord`, no consumer signature changes. A caller
+that wants "the GVR to use" picks the `Preferred` record (or the single followable one);
+a caller that wants "is any version served" checks `len > 0`. The two known users:
+
+- the late-event nudge's `(group, resource) → GVR` resolution (replaces the
+  Materializer-inventory scan in `claimedGVRForGroupResource`);
+- whatever S3 needs when the catalog's `byGroupVer`/preferred data stops being readable
+  directly.
+
+The index is maintained where `byGVK`/`byGVR` already are (`rebuildIndexesLocked`), so
+it costs one map rebuild per Update and nothing at read time. With the grace unified
+(3.2), the records it returns are *last-known versions under grace* during a blink —
+the wobble-friendly answer — without any consumer being version-aware beyond what it
+already is.
+
+If a real multi-version need ever appears (it has not: conversion, storage-version
+migration, and version deprecation are all out of scope today), it composes on top of
+`ByGroupResource` as a caller-side concern — it does not change this surface.
 
 ### 3.4 Consumers use typeset only
 
@@ -157,24 +203,48 @@ dependencies on.
   (`api_catalog_*` gauges, `DegradedGroupVersions` logging) must keep working from
   whichever layer currently owns the fact.
 
-## 5. Plan
+## 5. Plan — the exact interface delta per stage
 
 Each stage is independently shippable and e2e-validated; later stages only start when a
 stage proves out.
 
-1. **S1 — Registry index for served versions.** Add the per-`(group, resource)` index +
-   `ServedVersions`/`PreferredGVR` lookups over existing records. Move the late-event
-   nudge's GVR resolution (`claimedGVRForGroupResource`) onto it. No behaviour change.
-2. **S2 — Raw-scan `Update`.** Introduce `Registry.UpdateFromScan(entries, failedGVs,
-   complete, generation)` that performs the retain-on-error and omission-grace merge
-   internally (keeping last-known facts for degraded/retained records). The catalog's
-   `Observations()` path becomes a thin call into it. The catalog's *instant prune on
-   complete-scan omission is removed* — this is the wobble fix, now in the right layer.
-   Port the catalog's retention tests to registry tests with a fake clock.
+**What never changes, at any stage:** the `Lookup` interface (`Ready` + `ByGVK`), the
+`TypeRecord` shape, the lifecycle vocabulary and `Subscribe`, the whole Materializer
+surface, and every consumer outside `internal/watch`. The churn is confined to the
+catalog→registry *feed* and the catalog's own innards.
+
+1. **S1 — `Registry.ByGroupResource(group, resource) []TypeRecord`.** One new index in
+   `rebuildIndexesLocked` + one query (§3.3). Move the late-event nudge's GVR resolution
+   (`watch.Manager.claimedGVRForGroupResource`) onto it. Additive; no behaviour change;
+   no other signature touched.
+2. **S2 — Raw-scan feed.** The registry gains one method and one input type; the catalog
+   bridge stops pre-merging:
+
+   ```go
+   // Scan is one normalized discovery result — per-scan facts, no judgement.
+   type Scan struct {
+       Entries             []Entry              // what this scan serves (existing Entry type)
+       FailedGroupVersions []schema.GroupVersion // reported failed (IsGroupDiscoveryFailedError)
+       Complete            bool                 // err == nil: omissions are meaningful
+       Generation          uint64
+   }
+   func (r *Registry) UpdateFromScan(scan Scan)
+   ```
+
+   Internally it does what the catalog + `Update` together do today, in one place:
+   failed group/versions keep their last-known entry facts (marked untrusted/degraded);
+   entries omitted by a complete scan go absent and ride the **existing** `RemovalGrace`;
+   an incomplete scan removes nothing. `Update(observations, generation)` stays (the
+   fixture path `NewSnapshotRegistry` uses it; it may become unexported later). The
+   catalog's instant prune on complete-scan omission is **deleted** — this is the wobble
+   fix, in the right layer. Port the catalog's retention tests (`PartialRefreshPreserves…`)
+   to registry tests with the fake clock.
 3. **S3 — Shrink the catalog.** Strip `trusted`/`degraded`/merge state from
-   `APIResourceCatalog` until it is a per-scan normalizer; move the `api_catalog_*`
-   stats and degraded-transition logging onto registry-derived data. Audit that no
-   component outside the refresh path imports the catalog type.
+   `APIResourceCatalog` until it is a per-scan normalizer (`Refresh` → produce a `Scan`,
+   call `UpdateFromScan`); move the `api_catalog_*` stats and degraded-transition logging
+   onto registry-derived data (`All()` + verdicts; the `Trusted`/`Degraded` facts are
+   already on the records). Audit that no component outside the refresh path imports the
+   catalog type — per §2.1 that is already true; the audit pins it.
 4. **S4 — Re-evaluate the remaining wobble surface.** With omission-grace unified, rerun
    the crd-lifecycle wobble analysis: if a blink can still exceed 60 s under load, decide
    *in typeset* whether the grace for freshly-settled CRDs needs staging (the old B3),
