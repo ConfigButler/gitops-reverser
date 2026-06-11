@@ -1,6 +1,22 @@
 # Typeset owns discovery grace: thinning the API-resource catalog
 
-**Status: proposal (steering captured 2026-06-11, not yet implemented).**
+**Status: S1–S3 IMPLEMENTED (2026-06-11); S4 open.** As-built deltas from the plan below
+(all minor, same shape):
+
+- The catalog kept its `Refresh(disco) (bool, error)` signature; the scan is read back
+  via `Scan(sensitive) (typeset.Scan, bool)` — the sensitive policy stays a
+  projection-time concern (the direct successor of `Observations(sensitive)`, which is
+  deleted along with `catalog_observe.go` and `APIResourceEntry`).
+- `typeset.Scan` gained `ScannedGroupVersions` (the GVs the scan returned a — possibly
+  empty — resource list for), so "missing from a GV this scan actually listed" starts
+  the grace even on an incomplete scan, exactly matching the old per-record behaviour.
+- The catalog keeps the last normalized scan as its only cross-scan state — mechanical,
+  per §3.1's allowance: it is the change fingerprint (generation bumps only on changed
+  facts, so registry revisions don't churn on steady rescans) and the re-derive source
+  for `refreshTypeRegistry`'s lazy callers (rule status, watched-type tables).
+- `Stats()`/`DegradedGroupVersions()` survive as per-scan facts (gauge/log surfaces
+  unchanged); registry tests for the relocated semantics live in
+  `internal/typeset/scan_test.go`.
 
 ## 1. Steering
 

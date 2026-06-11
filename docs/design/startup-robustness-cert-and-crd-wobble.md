@@ -214,6 +214,12 @@ live mirror. B5 is a reasonable interim to keep CI green.
 > mechanism moves into the typeset registry instead; see
 > [typeset-owns-discovery-grace.md](./typeset-owns-discovery-grace.md) for the revised
 > plan (B2 lives on there as stage S4).
+>
+> **Implemented (same day):** the relocation landed (S1–S3) — the catalog is now a
+> per-scan normalizer and `Registry.UpdateFromScan` owns retain-on-error + the omission
+> grace, with the instant prune gone. Mechanism-B gap 1 above is therefore CLOSED; gap 2
+> (fresh-CRD settling under a tight test budget) and the B2 force-release confirmation
+> remain open as S4.
 
 ---
 

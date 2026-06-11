@@ -327,6 +327,32 @@ catalog lookups should go.
   scan (`byGVR`) instead of `Entry`/the resolver. The wildcard e2e status assertion changed from
   `"wildcard expanded to"` to `"watching "`.
 
+### Stage 12 — typeset owns discovery grace (2026-06-11)
+
+Implemented per [typeset-owns-discovery-grace.md](../../typeset-owns-discovery-grace.md)
+(S1–S3; S4 remains an open re-evaluation):
+
+- **`Registry.ByGroupResource(group, resource)`** — the one version-less index (S1);
+  the late-event nudge's stream-key→GVR resolution moved onto it.
+- **`Registry.UpdateFromScan(typeset.Scan)`** (S2) — the registry now receives raw
+  per-scan facts and owns ALL cross-scan judgement in one place: a failed
+  group/version's records are carried forward untrusted (`VerdictRetained`,
+  indefinitely — retain-on-error relocated from the catalog), a record missing from a
+  scanned (or completely-scanned-away) group/version rides the existing
+  `RemovalGrace`, and an incomplete scan judges nothing it did not see. The catalog's
+  instant prune on complete-scan omission is gone.
+- **`APIResourceCatalog` shrunk to a per-scan normalizer** (S3) — produces a
+  `typeset.Scan`; keeps only the last scan (change fingerprint + the
+  `refreshTypeRegistry` re-derive source), generation, readiness. Deleted:
+  `Observations()`/`catalog_observe.go`, `APIResourceEntry`, the `byGVR`/`byGroupVer`
+  merge state and trust flags, `applyCleanGroupVersions`/`markFailedGroupVersions`/
+  `removeUndiscoveredGroupVersions`. `Stats()`/`DegradedGroupVersions()` are per-scan
+  facts now. The Stage-11 note above about the catalog keeping a raw `byGVR` index is
+  superseded by this stage.
+- Tests: leaf semantics in `typeset/scan_test.go` (retain-on-error outlives the grace,
+  complete-omission rides the grace, incomplete scans judge only what they saw);
+  `api_resource_catalog_test.go` re-expressed against the scan + registry.
+
 ## Files touched
 
 New:

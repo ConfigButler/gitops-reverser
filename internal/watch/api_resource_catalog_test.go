@@ -30,6 +30,8 @@ import (
 
 	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
+	"github.com/ConfigButler/gitops-reverser/internal/types"
+	"github.com/ConfigButler/gitops-reverser/internal/typeset"
 )
 
 // TestAPIResourceCatalog_RefreshPicksUpNewlyServedResource is the honest
@@ -75,21 +77,36 @@ func TestAPIResourceCatalog_RefreshPicksUpNewlyServedResource(t *testing.T) {
 	assert.True(t, catalogServes(catalog, iceCream), "the newly-served resource is now in the raw scan")
 }
 
-// catalogServes reports whether the catalog's raw scan holds the exact resource.
+// catalogServes reports whether the catalog's latest normalized scan holds the exact
+// resource as a served entry.
 func catalogServes(catalog *APIResourceCatalog, gvr schema.GroupVersionResource) bool {
-	catalog.mu.RLock()
-	defer catalog.mu.RUnlock()
-	_, ok := catalog.byGVR[gvr]
-	return ok
+	scan, ok := catalog.Scan(types.SensitiveResourcePolicy{})
+	if !ok {
+		return false
+	}
+	for _, e := range scan.Entries {
+		if e.GVR == gvr {
+			return true
+		}
+	}
+	return false
 }
 
-// TestAPIResourceCatalog_PartialRefreshPreservesFailedGroupVersion verifies that
-// a discovery refresh which fails for one group/version keeps that group's last
-// trusted entries instead of dropping them, while a rule that targets the failed
-// group resolves as DiscoveryDegraded rather than NotServed.
+// TestAPIResourceCatalog_PartialRefreshPreservesFailedGroupVersion verifies the
+// retain-on-error pipeline post-relocation: the catalog reports the failed
+// group/version as a per-scan fact (no entries for it, listed degraded), and the
+// REGISTRY — which now owns all cross-scan judgement — keeps that group's last
+// trusted records serving as retained/DiscoveryDegraded rather than dropping them.
+// The pure leaf-level semantics are covered in typeset (TestUpdateFromScan_*).
 func TestAPIResourceCatalog_PartialRefreshPreservesFailedGroupVersion(t *testing.T) {
 	catalog := newCommonTestCatalog(t)
 	appsGV := schema.GroupVersion{Group: "apps", Version: "v1"}
+	deployments := schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}
+
+	reg := registryFromCatalog(t, catalog, types.SensitiveResourcePolicy{})
+	if rec, ok := reg.ByGVR(deployments); !ok || !rec.Followable() {
+		t.Fatalf("seed: deployments should be followable, ok=%v", ok)
+	}
 
 	_, err := catalog.Refresh(staticCatalogDiscovery{
 		groups: []*metav1.APIGroup{
@@ -111,13 +128,20 @@ func TestAPIResourceCatalog_PartialRefreshPreservesFailedGroupVersion(t *testing
 	})
 	require.NoError(t, err)
 
-	// The failed apps group/version keeps its previously-trusted entries (deployments
-	// is still in the raw scan), and the group/version is marked degraded.
-	catalog.mu.RLock()
-	_, kept := catalog.byGVR[schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}]
-	catalog.mu.RUnlock()
-	assert.True(t, kept, "a degraded group/version retains its last trusted entries")
+	// The catalog's scan carries the failure as a fact: no apps entries, listed degraded.
+	assert.False(t, catalogServes(catalog, deployments),
+		"a failed group/version contributes no entries to the per-scan facts")
 	assert.Equal(t, []schema.GroupVersion{appsGV}, catalog.DegradedGroupVersions())
+
+	// The registry retains the last trusted record, refused only as DiscoveryDegraded.
+	scan, ok := catalog.Scan(types.SensitiveResourcePolicy{})
+	require.True(t, ok)
+	reg.UpdateFromScan(scan)
+	rec, ok := reg.ByGVR(deployments)
+	require.True(t, ok, "a degraded group/version retains its last trusted records")
+	assert.Equal(t, typeset.VerdictRetained, rec.Followability.Verdict)
+	check, _ := rec.Followability.Check(typeset.RequirementTrusted)
+	assert.Equal(t, typeset.ReasonDiscoveryDegraded, check.Reason)
 }
 
 // TestNotServedResourceProducesNoGVR verifies catalog-backed resolution does not

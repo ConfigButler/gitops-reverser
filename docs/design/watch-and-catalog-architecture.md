@@ -197,11 +197,12 @@ Beyond the four beliefs above, a complete design needs:
 ## 2.1 Components
 
 - **`APIResourceCatalog`** ([api_resource_catalog.go](../../internal/watch/api_resource_catalog.go))
-  — in-memory index of served resources (`byGVR`, `byResource`, `byGroupRes`,
-  `byGroupVer`) with per-GV state (`trusted`/`degraded`) and a `generation`
-  counter. Refreshed from discovery; **already preserves entries for degraded
-  GVs** (`markFailedGroupVersions`) and removes confirmed-gone GVs only when
-  discovery is complete (`removeUndiscoveredGroupVersions`).
+  — since the typeset-grace relocation
+  ([typeset-owns-discovery-grace.md](../typeset-owns-discovery-grace.md)): a thin
+  per-scan normalizer producing a `typeset.Scan` (entries + scanned/failed
+  group/versions + completeness) with only mechanical state (last scan as the
+  change fingerprint, `generation`, readiness). Degraded-GV retention and the
+  removal grace for omitted GVs both live in `typeset.Registry.UpdateFromScan`.
 - **`RuleGVRResolver`** ([rule_gvr_resolver.go](../../internal/watch/rule_gvr_resolver.go))
   — maps one rule selector to concrete GVRs via the catalog, returning
   `ResolveMiss` values classified by reason. **Refuses wildcards** in

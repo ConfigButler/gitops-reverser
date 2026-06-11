@@ -27,54 +27,34 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/discovery"
-)
 
-// APIResourceEntry is one served Kubernetes API resource in the local catalog.
-type APIResourceEntry struct {
-	GVR          schema.GroupVersionResource
-	GVK          schema.GroupVersionKind
-	Namespaced   bool
-	Verbs        map[string]struct{}
-	Preferred    bool
-	Subresource  bool
-	Allowed      bool
-	PolicyReason string
-}
+	"github.com/ConfigButler/gitops-reverser/internal/types"
+	"github.com/ConfigButler/gitops-reverser/internal/typeset"
+)
 
 type apiResourceDiscovery interface {
 	ServerGroupsAndResources() ([]*metav1.APIGroup, []*metav1.APIResourceList, error)
 }
 
-type catalogGroupVersionState struct {
-	trusted  bool
-	degraded bool
-}
-
-type catalogRefreshCandidate struct {
-	entries   map[schema.GroupVersion][]APIResourceEntry
-	failed    map[schema.GroupVersion]error
-	supported map[schema.GroupVersion]struct{}
-	complete  bool
-}
-
-// APIResourceCatalog is GitOps Reverser's trusted in-memory Kubernetes API surface.
+// APIResourceCatalog is the per-scan normalizer between Kubernetes discovery and the
+// typeset registry: it turns one ServerGroupsAndResources() result into a
+// policy-annotated typeset.Scan. It holds NO judgement and no time-sensitive state —
+// retain-on-error and the removal grace for omissions both live in
+// typeset.Registry.UpdateFromScan (see docs/design/typeset-owns-discovery-grace.md).
+// The only state kept is mechanical bookkeeping: the last normalized scan (the change
+// fingerprint, and the registry's re-derive source for refreshes without a discovery
+// round-trip), the scan generation, and readiness.
 type APIResourceCatalog struct {
 	mu sync.RWMutex
 
-	byGVR        map[schema.GroupVersionResource]APIResourceEntry
-	byGroupVer   map[schema.GroupVersion][]APIResourceEntry
-	groupVersion map[schema.GroupVersion]catalogGroupVersionState
-	generation   uint64
-	ready        bool
+	lastScan   typeset.Scan
+	generation uint64
+	ready      bool
 }
 
 // NewAPIResourceCatalog constructs an empty API resource catalog.
 func NewAPIResourceCatalog() *APIResourceCatalog {
-	return &APIResourceCatalog{
-		byGVR:        make(map[schema.GroupVersionResource]APIResourceEntry),
-		byGroupVer:   make(map[schema.GroupVersion][]APIResourceEntry),
-		groupVersion: make(map[schema.GroupVersion]catalogGroupVersionState),
-	}
+	return &APIResourceCatalog{}
 }
 
 // Ready reports whether the catalog has accepted any trusted discovery data.
@@ -84,14 +64,70 @@ func (c *APIResourceCatalog) Ready() bool {
 	return c.ready
 }
 
-// Generation reports the current published catalog generation.
+// Generation reports the current scan generation. It bumps only when the normalized
+// scan facts change, so downstream consumers gated on it do not churn on steady
+// rescans.
 func (c *APIResourceCatalog) Generation() uint64 {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.generation
 }
 
-// CatalogStats is a point-in-time summary of the catalog used to set the
+// Refresh normalizes one discovery scan and stores it as the latest. It returns
+// whether the normalized facts changed from the previous scan. It makes no retention
+// decision of any kind: a group/version this scan failed on or no longer lists is
+// simply reported as such in the scan; the registry judges what that means.
+func (c *APIResourceCatalog) Refresh(disco apiResourceDiscovery) (bool, error) {
+	scan, err := normalizeDiscoveryScan(disco)
+	if err != nil {
+		return false, err
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	changed := !c.ready || !scansEquivalent(c.lastScan, scan)
+	if changed {
+		c.generation++
+	}
+	c.lastScan = scan
+	if len(scan.ScannedGroupVersions) > 0 {
+		c.ready = true
+	}
+	return changed, nil
+}
+
+// Scan returns the last normalized scan, policy-annotated and stamped with the
+// current generation — the registry's one input (UpdateFromScan). ok is false before
+// the first trusted scan. sensitive is the operator-configured
+// SensitiveResourcePolicy, applied at projection exactly like the allow/deny resource
+// policy is applied at normalization: a startup-known fact typeset never infers.
+func (c *APIResourceCatalog) Scan(sensitive types.SensitiveResourcePolicy) (typeset.Scan, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if !c.ready {
+		return typeset.Scan{}, false
+	}
+	scan := c.lastScan
+	scan.Generation = c.generation
+	scan.Entries = make([]typeset.Entry, len(c.lastScan.Entries))
+	for i, e := range c.lastScan.Entries {
+		e.Sensitive = sensitive.IsSensitive(e.GVR.Group, e.GVR.Resource)
+		scan.Entries[i] = e
+	}
+	return scan, true
+}
+
+// DegradedGroupVersions returns the group/versions the latest scan reported as
+// failed, sorted for stable logging.
+func (c *APIResourceCatalog) DegradedGroupVersions() []schema.GroupVersion {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	out := append([]schema.GroupVersion(nil), c.lastScan.FailedGroupVersions...)
+	sortGroupVersions(out)
+	return out
+}
+
+// CatalogStats is a point-in-time summary of the latest scan used to set the
 // api_catalog_* gauges. All counts exclude subresources.
 type CatalogStats struct {
 	// AllowedResources is the count of served top-level resources the default
@@ -100,111 +136,57 @@ type CatalogStats struct {
 	// ExcludedResources is the count of served top-level resources the default
 	// watch policy excludes (pods, events, leases, …).
 	ExcludedResources int
-	// TrustedGroupVersions is the count of group/versions discovery served cleanly.
+	// TrustedGroupVersions is the count of group/versions the latest scan served cleanly.
 	TrustedGroupVersions int
-	// DegradedGroupVersions is the count of group/versions discovery reported as failed.
+	// DegradedGroupVersions is the count of group/versions the latest scan reported as failed.
 	DegradedGroupVersions int
-	// Generation is the current published catalog generation.
+	// Generation is the current scan generation.
 	Generation uint64
 }
 
-// Stats returns a point-in-time summary of the catalog for metrics. Counts are
-// computed under the existing read lock.
+// Stats returns a point-in-time summary of the latest scan for metrics.
 func (c *APIResourceCatalog) Stats() CatalogStats {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	stats := CatalogStats{Generation: c.generation}
-	for _, entry := range c.byGVR {
-		if entry.Subresource {
+	stats := CatalogStats{
+		TrustedGroupVersions:  len(c.lastScan.ScannedGroupVersions),
+		DegradedGroupVersions: len(c.lastScan.FailedGroupVersions),
+		Generation:            c.generation,
+	}
+	for _, e := range c.lastScan.Entries {
+		if e.Subresource {
 			continue
 		}
-		if entry.Allowed {
+		if e.Allowed {
 			stats.AllowedResources++
 		} else {
 			stats.ExcludedResources++
 		}
 	}
-	for _, state := range c.groupVersion {
-		switch {
-		case state.degraded:
-			stats.DegradedGroupVersions++
-		case state.trusted:
-			stats.TrustedGroupVersions++
-		}
-	}
 	return stats
 }
 
-// DegradedGroupVersions returns the group/versions discovery currently reports
-// as failed, sorted for stable logging.
-func (c *APIResourceCatalog) DegradedGroupVersions() []schema.GroupVersion {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	out := make([]schema.GroupVersion, 0)
-	for gv, state := range c.groupVersion {
-		if state.degraded {
-			out = append(out, gv)
-		}
-	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Group != out[j].Group {
-			return out[i].Group < out[j].Group
-		}
-		return out[i].Version < out[j].Version
-	})
-	return out
-}
-
-// Refresh updates clean group/versions and preserves entries for group/versions
-// that discovery reports as failed.
-func (c *APIResourceCatalog) Refresh(disco apiResourceDiscovery) (bool, error) {
-	candidate, err := discoverCatalogRefresh(disco)
-	if err != nil || candidate == nil {
-		return false, err
-	}
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	c.initializeMaps()
-	changed := c.applyCleanGroupVersions(candidate.entries)
-	if c.markFailedGroupVersions(candidate.failed) {
-		changed = true
-	}
-	if candidate.complete && c.removeUndiscoveredGroupVersions(candidate.supported) {
-		changed = true
-	}
-	if changed {
-		c.rebuildGVRIndexLocked()
-		c.generation++
-	}
-	return changed, nil
-}
-
-func discoverCatalogRefresh(disco apiResourceDiscovery) (*catalogRefreshCandidate, error) {
+// normalizeDiscoveryScan reduces one ServerGroupsAndResources() result to per-scan
+// facts: the served entries (policy-annotated, sorted), which group/versions were
+// cleanly scanned, which failed, and whether the scan was complete. Sensitivity is
+// applied later, at Scan() projection.
+func normalizeDiscoveryScan(disco apiResourceDiscovery) (typeset.Scan, error) {
 	groups, resources, err := disco.ServerGroupsAndResources()
 	if err != nil && !discovery.IsGroupDiscoveryFailedError(err) {
-		return nil, fmt.Errorf("discover server API resources: %w", err)
+		return typeset.Scan{}, fmt.Errorf("discover server API resources: %w", err)
 	}
 	if groups == nil && len(resources) == 0 {
 		if err != nil {
-			return nil, fmt.Errorf("discover server API resources: %w", err)
+			return typeset.Scan{}, fmt.Errorf("discover server API resources: %w", err)
 		}
-		return &catalogRefreshCandidate{
-			entries:   map[schema.GroupVersion][]APIResourceEntry{},
-			failed:    map[schema.GroupVersion]error{},
-			supported: map[schema.GroupVersion]struct{}{},
-			complete:  true,
-		}, nil
+		return typeset.Scan{Complete: true}, nil
 	}
 
 	failed, _ := discovery.GroupDiscoveryFailedErrorGroups(err)
 	preferred := preferredVersions(groups)
-	candidate := &catalogRefreshCandidate{
-		entries:   make(map[schema.GroupVersion][]APIResourceEntry, len(resources)),
-		failed:    failed,
-		supported: supportedGroupVersions(groups),
-		complete:  err == nil,
+	scan := typeset.Scan{Complete: err == nil}
+	for gv := range failed {
+		scan.FailedGroupVersions = append(scan.FailedGroupVersions, gv)
 	}
 	for _, resourceList := range resources {
 		if resourceList == nil {
@@ -214,75 +196,116 @@ func discoverCatalogRefresh(disco apiResourceDiscovery) (*catalogRefreshCandidat
 		if _, failedGV := failed[gv]; failedGV {
 			continue
 		}
-		candidate.entries[gv] = catalogEntriesForResourceList(resourceList, preferred[gv.Group] == gv.Version)
+		scan.ScannedGroupVersions = append(scan.ScannedGroupVersions, gv)
+		scan.Entries = append(scan.Entries,
+			scanEntriesForResourceList(resourceList, preferred[gv.Group] == gv.Version)...)
 	}
-	return candidate, nil
+	sortGroupVersions(scan.ScannedGroupVersions)
+	sortGroupVersions(scan.FailedGroupVersions)
+	sortScanEntries(scan.Entries)
+	return scan, nil
 }
 
-func (c *APIResourceCatalog) applyCleanGroupVersions(
-	candidate map[schema.GroupVersion][]APIResourceEntry,
-) bool {
-	changed := false
-	for gv, entries := range candidate {
-		if !catalogEntriesEqual(c.byGroupVer[gv], entries) ||
-			c.groupVersion[gv] != (catalogGroupVersionState{trusted: true}) {
-			changed = true
-		}
-		c.byGroupVer[gv] = entries
-		c.groupVersion[gv] = catalogGroupVersionState{trusted: true}
-		c.ready = true
-	}
-	return changed
-}
-
-func (c *APIResourceCatalog) markFailedGroupVersions(failed map[schema.GroupVersion]error) bool {
-	changed := false
-	for gv := range failed {
-		state := c.groupVersion[gv]
-		if !state.degraded {
-			changed = true
-		}
-		state.degraded = true
-		c.groupVersion[gv] = state
-	}
-	return changed
-}
-
-func (c *APIResourceCatalog) removeUndiscoveredGroupVersions(supported map[schema.GroupVersion]struct{}) bool {
-	changed := false
-	for gv := range c.byGroupVer {
-		if _, ok := supported[gv]; ok {
+// scanEntriesForResourceList converts one group/version's discovery resource list to
+// neutral typeset entries, applying the served-resource (allow/deny) policy.
+func scanEntriesForResourceList(resourceList *metav1.APIResourceList, preferred bool) []typeset.Entry {
+	gv := parseGroupVersion(resourceList.GroupVersion).schema()
+	entries := make([]typeset.Entry, 0, len(resourceList.APIResources))
+	for _, resource := range resourceList.APIResources {
+		name := normalizeResource(resource.Name)
+		if name == "" {
 			continue
 		}
-		delete(c.byGroupVer, gv)
-		delete(c.groupVersion, gv)
-		changed = true
+		allowed, reason := allowedResource(gv.Group, name)
+		entries = append(entries, typeset.Entry{
+			GVK: schema.GroupVersionKind{
+				Group:   gv.Group,
+				Version: gv.Version,
+				Kind:    resource.Kind,
+			},
+			GVR: schema.GroupVersionResource{
+				Group:    gv.Group,
+				Version:  gv.Version,
+				Resource: name,
+			},
+			Namespaced:   resource.Namespaced,
+			Verbs:        sortedVerbs(resource.Verbs),
+			Preferred:    preferred,
+			Subresource:  strings.Contains(name, "/"),
+			Allowed:      allowed,
+			PolicyReason: reason,
+		})
 	}
-	return changed
+	return entries
 }
 
-func (c *APIResourceCatalog) initializeMaps() {
-	if c.byGVR == nil {
-		c.byGVR = make(map[schema.GroupVersionResource]APIResourceEntry)
-	}
-	if c.byGroupVer == nil {
-		c.byGroupVer = make(map[schema.GroupVersion][]APIResourceEntry)
-	}
-	if c.groupVersion == nil {
-		c.groupVersion = make(map[schema.GroupVersion]catalogGroupVersionState)
-	}
+func sortedVerbs(verbs metav1.Verbs) []string {
+	out := append([]string(nil), verbs...)
+	sort.Strings(out)
+	return out
 }
 
-// rebuildGVRIndexLocked rebuilds the by-GVR index from the group/version-keyed scan.
-// The catalog keeps only this one raw index now; followability lookups (by GVK, by
-// resource, selector expansion) all live on the typeset registry the catalog feeds.
-func (c *APIResourceCatalog) rebuildGVRIndexLocked() {
-	c.byGVR = make(map[schema.GroupVersionResource]APIResourceEntry)
-	for _, entries := range c.byGroupVer {
-		for _, entry := range entries {
-			c.byGVR[entry.GVR] = entry
+func sortScanEntries(entries []typeset.Entry) {
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].GVR.String() < entries[j].GVR.String()
+	})
+}
+
+func sortGroupVersions(gvs []schema.GroupVersion) {
+	sort.Slice(gvs, func(i, j int) bool {
+		if gvs[i].Group != gvs[j].Group {
+			return gvs[i].Group < gvs[j].Group
+		}
+		return gvs[i].Version < gvs[j].Version
+	})
+}
+
+// scansEquivalent reports whether two normalized scans carry the same facts. Both
+// sides are sorted by normalizeDiscoveryScan, so this is a plain ordered compare.
+// Generation is bookkeeping, not a fact, and is excluded.
+func scansEquivalent(a, b typeset.Scan) bool {
+	if a.Complete != b.Complete ||
+		!groupVersionsEqual(a.ScannedGroupVersions, b.ScannedGroupVersions) ||
+		!groupVersionsEqual(a.FailedGroupVersions, b.FailedGroupVersions) ||
+		len(a.Entries) != len(b.Entries) {
+		return false
+	}
+	for i := range a.Entries {
+		if !scanEntriesEqual(a.Entries[i], b.Entries[i]) {
+			return false
 		}
 	}
+	return true
+}
+
+func groupVersionsEqual(a, b []schema.GroupVersion) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func scanEntriesEqual(a, b typeset.Entry) bool {
+	if a.GVK != b.GVK || a.GVR != b.GVR ||
+		a.Namespaced != b.Namespaced ||
+		a.Preferred != b.Preferred ||
+		a.Subresource != b.Subresource ||
+		a.Allowed != b.Allowed ||
+		a.PolicyReason != b.PolicyReason ||
+		len(a.Verbs) != len(b.Verbs) {
+		return false
+	}
+	for i := range a.Verbs {
+		if a.Verbs[i] != b.Verbs[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func preferredVersions(groups []*metav1.APIGroup) map[string]string {
@@ -296,97 +319,6 @@ func preferredVersions(groups []*metav1.APIGroup) map[string]string {
 		}
 	}
 	return out
-}
-
-func supportedGroupVersions(groups []*metav1.APIGroup) map[schema.GroupVersion]struct{} {
-	out := make(map[schema.GroupVersion]struct{})
-	for _, group := range groups {
-		if group == nil {
-			continue
-		}
-		for _, version := range group.Versions {
-			out[schema.GroupVersion{Group: group.Name, Version: version.Version}] = struct{}{}
-		}
-	}
-	return out
-}
-
-func catalogEntriesForResourceList(resourceList *metav1.APIResourceList, preferred bool) []APIResourceEntry {
-	gv := parseGroupVersion(resourceList.GroupVersion).schema()
-	entries := make([]APIResourceEntry, 0, len(resourceList.APIResources))
-	for _, resource := range resourceList.APIResources {
-		name := normalizeResource(resource.Name)
-		if name == "" {
-			continue
-		}
-		allowed, reason := allowedResource(gv.Group, name)
-		entries = append(entries, APIResourceEntry{
-			GVR: schema.GroupVersionResource{
-				Group:    gv.Group,
-				Version:  gv.Version,
-				Resource: name,
-			},
-			GVK: schema.GroupVersionKind{
-				Group:   gv.Group,
-				Version: gv.Version,
-				Kind:    resource.Kind,
-			},
-			Namespaced:   resource.Namespaced,
-			Verbs:        resourceVerbs(resource.Verbs),
-			Preferred:    preferred,
-			Subresource:  strings.Contains(name, "/"),
-			Allowed:      allowed,
-			PolicyReason: reason,
-		})
-	}
-	sortCatalogEntries(entries)
-	return entries
-}
-
-func resourceVerbs(verbs metav1.Verbs) map[string]struct{} {
-	out := make(map[string]struct{}, len(verbs))
-	for _, verb := range verbs {
-		out[verb] = struct{}{}
-	}
-	return out
-}
-
-func sortCatalogEntries(entries []APIResourceEntry) {
-	sort.Slice(entries, func(i, j int) bool {
-		return key(entries[i].GVR.Group, entries[i].GVR.Version, entries[i].GVR.Resource) <
-			key(entries[j].GVR.Group, entries[j].GVR.Version, entries[j].GVR.Resource)
-	})
-}
-
-func catalogEntriesEqual(left, right []APIResourceEntry) bool {
-	if len(left) != len(right) {
-		return false
-	}
-	for i := range left {
-		if left[i].GVR != right[i].GVR ||
-			left[i].GVK != right[i].GVK ||
-			left[i].Namespaced != right[i].Namespaced ||
-			left[i].Preferred != right[i].Preferred ||
-			left[i].Subresource != right[i].Subresource ||
-			left[i].Allowed != right[i].Allowed ||
-			left[i].PolicyReason != right[i].PolicyReason ||
-			!verbSetsEqual(left[i].Verbs, right[i].Verbs) {
-			return false
-		}
-	}
-	return true
-}
-
-func verbSetsEqual(left, right map[string]struct{}) bool {
-	if len(left) != len(right) {
-		return false
-	}
-	for verb := range left {
-		if _, ok := right[verb]; !ok {
-			return false
-		}
-	}
-	return true
 }
 
 func groupResourceKey(group, resource string) string {
@@ -425,9 +357,4 @@ func parseGroupVersion(gvString string) groupVersion {
 		return groupVersion{group: "", version: parts[0]}
 	}
 	return groupVersion{group: parts[0], version: parts[1]}
-}
-
-// key builds a stable group|version|resource index key.
-func key(group, version, resource string) string {
-	return group + "|" + version + "|" + resource
 }

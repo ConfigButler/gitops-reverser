@@ -53,11 +53,12 @@ type Registry struct {
 	settle     time.Duration
 	now        func() time.Time
 
-	entries    map[recordKey]entry
-	byGVK      map[schema.GroupVersionKind][]recordKey
-	byGVR      map[schema.GroupVersionResource]recordKey
-	observers  []Observer
-	generation uint64
+	entries         map[recordKey]entry
+	byGVK           map[schema.GroupVersionKind][]recordKey
+	byGVR           map[schema.GroupVersionResource]recordKey
+	byGroupResource map[groupResource][]recordKey
+	observers       []Observer
+	generation      uint64
 	// revision is the registry's own change-of-decision signal: it bumps whenever the
 	// followable membership changes (a type appears, drops after the grace, or flips
 	// followable<->refused) or the backing scan generation moves. Consumers that cache
@@ -75,6 +76,13 @@ type recordKey struct {
 	gvk   schema.GroupVersionKind
 	gvr   schema.GroupVersionResource
 	scope Scope
+}
+
+// groupResource is the version-less index key for ByGroupResource — the shape
+// per-type audit-stream keys carry (they drop the version).
+type groupResource struct {
+	group    string
+	resource string
 }
 
 // entry is one record plus the facts, grace, and settle bookkeeping needed to re-judge it
@@ -120,7 +128,12 @@ func (r *Registry) Update(observations []Observation, generation uint64) {
 	// order. The records themselves are still guarded by mu for concurrent readers.
 	r.dispatchMu.Lock()
 	defer r.dispatchMu.Unlock()
+	r.update(observations, generation)
+}
 
+// update is the publish path shared by Update and UpdateFromScan. Caller holds
+// dispatchMu.
+func (r *Registry) update(observations []Observation, generation uint64) {
 	r.mu.Lock()
 	now := r.now()
 	prevFollowable := r.followableKeysLocked()
@@ -212,13 +225,21 @@ func (r *Registry) retainAbsentLocked(next map[recordKey]entry, now time.Time, g
 func (r *Registry) rebuildIndexesLocked() {
 	r.byGVK = make(map[schema.GroupVersionKind][]recordKey, len(r.entries))
 	r.byGVR = make(map[schema.GroupVersionResource]recordKey, len(r.entries))
+	r.byGroupResource = make(map[groupResource][]recordKey, len(r.entries))
 	for key := range r.entries {
 		r.byGVK[key.gvk] = append(r.byGVK[key.gvk], key)
 		r.byGVR[key.gvr] = key
+		gr := groupResource{group: key.gvr.Group, resource: key.gvr.Resource}
+		r.byGroupResource[gr] = append(r.byGroupResource[gr], key)
 	}
 	for gvk := range r.byGVK {
 		sort.Slice(r.byGVK[gvk], func(i, j int) bool {
 			return r.byGVK[gvk][i].gvr.String() < r.byGVK[gvk][j].gvr.String()
+		})
+	}
+	for gr := range r.byGroupResource {
+		sort.Slice(r.byGroupResource[gr], func(i, j int) bool {
+			return r.byGroupResource[gr][i].gvr.String() < r.byGroupResource[gr][j].gvr.String()
 		})
 	}
 }
@@ -271,6 +292,24 @@ func (r *Registry) ByGVR(gvr schema.GroupVersionResource) (TypeRecord, bool) {
 		return TypeRecord{}, false
 	}
 	return r.entries[key].record, true
+}
+
+// ByGroupResource returns the records — one per served version, sorted by GVR — for a
+// version-less (group, resource) pair, the shape per-type audit-stream keys carry.
+// Existing TypeRecord fields answer everything else a caller needs: the version is
+// Identity.GVR.Version, plus Preferred and Followable(). Records held under the removal
+// grace are included (last-known versions), which is exactly the wobble-friendly answer
+// a stream-key resolution wants during a discovery blink. Deliberately the WHOLE
+// version surface: no version parameters thread through any other signature.
+func (r *Registry) ByGroupResource(group, resource string) []TypeRecord {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	keys := r.byGroupResource[groupResource{group: group, resource: resource}]
+	out := make([]TypeRecord, 0, len(keys))
+	for _, key := range keys {
+		out = append(out, r.entries[key].record)
+	}
+	return out
 }
 
 // Followable returns every live record (verdict followable or retained), sorted by

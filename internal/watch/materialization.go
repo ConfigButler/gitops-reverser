@@ -93,13 +93,16 @@ func (m *Manager) NudgeTypeResyncForLateEvent(group, resource string) {
 }
 
 // claimedGVRForGroupResource resolves the (group, resource) pair a per-type stream key
-// carries back to the full claimed GVR via the Materializer inventory (bounded by the
-// catalog). Only a claimed type is returned — an unclaimed one has no consumer whose
-// mirror could go stale.
+// carries back to the full claimed GVR: the registry's version-less index supplies the
+// served versions (including retained-under-grace ones, so a wobble does not break the
+// resolution), and the claim table picks the one a GitTarget actually demands. Only a
+// claimed type is returned — an unclaimed one has no consumer whose mirror could go
+// stale.
 func (m *Manager) claimedGVRForGroupResource(group, resource string) (schema.GroupVersionResource, bool) {
-	for _, t := range m.materializerInstance().Inventory() {
-		if t.GVR.Group == group && t.GVR.Resource == resource && len(t.Claimants) > 0 {
-			return t.GVR, true
+	for _, rec := range m.typeRegistryInstance().ByGroupResource(group, resource) {
+		gvr := rec.Identity.GVR
+		if len(m.materializerInstance().Claimants(gvr)) > 0 {
+			return gvr, true
 		}
 	}
 	return schema.GroupVersionResource{}, false

@@ -45,11 +45,3 @@ func TestMatchesScope(t *testing.T) {
 		t.Fatalf("did not expect namespaced=true to match Cluster scope")
 	}
 }
-
-func TestKeyFunction(t *testing.T) {
-	got := key("apps", "v1", "deployments")
-	want := "apps|v1|deployments"
-	if got != want {
-		t.Fatalf("key() = %q, want %q", got, want)
-	}
-}

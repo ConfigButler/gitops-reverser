@@ -225,22 +225,23 @@ func (m *Manager) typeRegistryInstance() *typeset.Registry {
 	return m.typeRegistry
 }
 
-// refreshTypeRegistry re-derives the followability records from the current catalog
-// scan and republishes them at the catalog's generation. It runs after every catalog
-// refresh, so the registry tracks discovery (and the 60-second removal grace advances
-// on the same cadence the catalog does). It is the "Scan -> Observation -> Registry"
-// pipeline of docs/design/manifest/version2/type-followability.md.
+// refreshTypeRegistry publishes the catalog's latest normalized scan to the typeset
+// registry, which owns ALL cross-scan judgement (retain-on-error, the removal grace
+// for omissions — docs/design/typeset-owns-discovery-grace.md). It runs after every
+// catalog refresh, so the registry tracks discovery and its grace clocks advance on
+// the same cadence the catalog scans do. It is the "Scan -> Registry" pipeline of
+// docs/design/manifest/version2/type-followability.md.
 func (m *Manager) refreshTypeRegistry() {
-	catalog := m.apiResourceCatalog()
 	// Only publish once the catalog holds trusted data, so the registry's readiness
 	// tracks the catalog's: an unready catalog must leave the registry unready, which
 	// is what makes the live mapper fall closed (CatalogUnavailable) rather than treat
 	// an empty scan as a trusted "nothing is served".
-	if !catalog.Ready() {
+	scan, ok := m.apiResourceCatalog().Scan(m.SensitiveResources)
+	if !ok {
 		return
 	}
 	reg := m.typeRegistryInstance()
-	reg.Update(catalog.Observations(m.SensitiveResources), catalog.Generation())
+	reg.UpdateFromScan(scan)
 	m.logTypeRefusals(reg)
 }
 

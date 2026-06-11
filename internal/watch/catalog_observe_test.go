@@ -84,8 +84,7 @@ func TestObservations_FollowabilityFromCatalog(t *testing.T) {
 	_, err := catalog.Refresh(followableDiscovery())
 	require.NoError(t, err)
 
-	reg := typeset.NewRegistry()
-	reg.Update(catalog.Observations(types.SensitiveResourcePolicy{}), catalog.Generation())
+	reg := registryFromCatalog(t, catalog, types.SensitiveResourcePolicy{})
 
 	// Deployment: followable built-in with a usable scale binding folded in.
 	dep := recordByGVR(t, reg, "apps", "v1", "deployments")
@@ -134,8 +133,7 @@ func TestObservations_AppliesConfiguredSensitivePolicy(t *testing.T) {
 	policy, err := types.ParseSensitiveResourcePolicy("configmaps")
 	require.NoError(t, err)
 
-	reg := typeset.NewRegistry()
-	reg.Update(catalog.Observations(policy), catalog.Generation())
+	reg := registryFromCatalog(t, catalog, policy)
 
 	cm := recordByGVR(t, reg, "", "v1", "configmaps")
 	assert.True(t, cm.Sensitive, "an operator-configured sensitive type must be marked sensitive")
@@ -161,8 +159,7 @@ func TestObservations_AmbiguousGVKMarkedNonUnique(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	reg := typeset.NewRegistry()
-	reg.Update(catalog.Observations(types.SensitiveResourcePolicy{}), catalog.Generation())
+	reg := registryFromCatalog(t, catalog, types.SensitiveResourcePolicy{})
 
 	rec, ok := reg.ByGVK(schema.GroupVersionKind{Group: "shop.example.com", Version: "v1", Kind: "Widget"})
 	require.True(t, ok)

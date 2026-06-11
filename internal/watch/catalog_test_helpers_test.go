@@ -23,6 +23,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"github.com/ConfigButler/gitops-reverser/internal/types"
+	"github.com/ConfigButler/gitops-reverser/internal/typeset"
 )
 
 type staticCatalogDiscovery struct {
@@ -119,4 +122,19 @@ func commonTestDiscoveryClient() func() (apiResourceDiscovery, error) {
 	return func() (apiResourceDiscovery, error) {
 		return newCommonTestDiscovery(), nil
 	}
+}
+
+// registryFromCatalog builds a registry from the catalog's latest scan under the given
+// sensitive policy — the test-side equivalent of refreshTypeRegistry.
+func registryFromCatalog(
+	t *testing.T,
+	catalog *APIResourceCatalog,
+	sensitive types.SensitiveResourcePolicy,
+) *typeset.Registry {
+	t.Helper()
+	scan, ok := catalog.Scan(sensitive)
+	require.True(t, ok, "catalog should hold a trusted scan")
+	reg := typeset.NewRegistry()
+	reg.UpdateFromScan(scan)
+	return reg
 }

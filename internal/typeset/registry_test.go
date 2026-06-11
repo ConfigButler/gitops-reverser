@@ -134,6 +134,49 @@ func TestRegistry_AmbiguousGVKRefused(t *testing.T) {
 	}
 }
 
+// TestRegistry_ByGroupResource covers the version-less index (S1 of
+// typeset-owns-discovery-grace): all served versions of a (group, resource) pair come
+// back sorted, a retained-under-grace record is still listed (the wobble-friendly
+// answer a stream-key resolution needs), and an unknown pair returns nothing.
+func TestRegistry_ByGroupResource(t *testing.T) {
+	v1 := widgetObs()
+	v2 := widgetObs()
+	v2.Identity.GVK.Version = "v2"
+	v2.Identity.GVR.Version = "v2"
+	v2.Preferred = true
+
+	clock := &fakeClock{t: time.Unix(1_000, 0)}
+	r := newRegistry(clock.now)
+	r.Update([]Observation{v1, v2}, 1)
+
+	recs := r.ByGroupResource("example.com", "widgets")
+	if len(recs) != 2 {
+		t.Fatalf("ByGroupResource = %d records, want both served versions", len(recs))
+	}
+	if recs[0].Identity.GVR.Version != "v1" || recs[1].Identity.GVR.Version != "v2" {
+		t.Errorf("records must be GVR-sorted, got %q then %q",
+			recs[0].Identity.GVR.Version, recs[1].Identity.GVR.Version)
+	}
+	if !recs[1].Preferred {
+		t.Error("the preferred fact must ride the record unchanged")
+	}
+
+	// One version vanishes: within the grace it is retained and still listed.
+	clock.add(10 * time.Second)
+	r.Update([]Observation{v2}, 2)
+	recs = r.ByGroupResource("example.com", "widgets")
+	if len(recs) != 2 {
+		t.Fatalf("a retained version must still be listed, got %d records", len(recs))
+	}
+	if recs[0].Followability.Verdict != VerdictRetained {
+		t.Errorf("vanished version verdict = %q, want retained", recs[0].Followability.Verdict)
+	}
+
+	if got := r.ByGroupResource("example.com", "nonexistent"); len(got) != 0 {
+		t.Errorf("unknown pair must return no records, got %d", len(got))
+	}
+}
+
 func TestRegistry_GraceRetainsThenDrops(t *testing.T) {
 	clock := &fakeClock{t: time.Unix(1_000, 0)}
 	r := newRegistry(clock.now)

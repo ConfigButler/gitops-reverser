@@ -301,12 +301,16 @@ It is read by:
 ### APIResourceCatalog
 
 - **Source**: [internal/watch/api_resource_catalog.go](../internal/watch/api_resource_catalog.go)
-- **Observation projection**: [internal/watch/catalog_observe.go](../internal/watch/catalog_observe.go)
 
-`APIResourceCatalog` is the discovery-backed view of served resources. Trust is tracked per
-group/version. If one aggregated API group/version is degraded, the catalog keeps the last trusted
-entries for that group/version instead of treating it as an empty API surface and causing accidental
-Git deletions.
+`APIResourceCatalog` is a thin per-scan normalizer: it turns one discovery result into a
+policy-annotated `typeset.Scan` (served entries, cleanly-scanned group/versions, failed
+group/versions, completeness) and keeps only mechanical bookkeeping (the last scan as a change
+fingerprint, the generation, readiness). All cross-scan judgement lives in the typeset registry
+(`Registry.UpdateFromScan`): a failed group/version's records keep serving with last-known facts
+(retained/degraded) instead of being treated as an empty API surface, and a group/version that
+vanishes from a complete scan rides the registry's removal grace rather than being pruned — both
+protect against accidental Git deletions on a discovery blink. See
+[typeset-owns-discovery-grace.md](design/typeset-owns-discovery-grace.md).
 
 The catalog refreshes on startup, periodically, and when CRD/APIService trigger informers observe
 API-surface changes.
