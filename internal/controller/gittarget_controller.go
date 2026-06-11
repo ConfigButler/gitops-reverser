@@ -214,6 +214,11 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		if declareErr := r.EventRouter.WatchManager.DeclareForGitTarget(ctx, gitDest); declareErr != nil {
 			log.V(1).Info("materialization declare skipped; surface not observable",
 				"gitDest", gitDest.String(), "err", declareErr.Error())
+			// A failed Declare claimed NOTHING (fail-closed: e.g. a watched type's discovery is
+			// wobbling), so nothing downstream — no claim, no checkpoint, no tail — will wake this
+			// target when the surface recovers. Retry on the settle cadence rather than stalling
+			// the whole target for RequeueLongInterval; Declare is idempotent and cheap.
+			materializationSettling = true
 		}
 		// Roll up the demand-axis state for visibility (L-6): bounded per-GitTarget counts,
 		// not a per-type list, so the object stays small however many types are watched.
@@ -227,7 +232,7 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			NotFollowableTypes: clampIntToInt32(sum.NotFollowable),
 			ObservedTime:       &now,
 		}
-		materializationSettling = sum.Pending > 0
+		materializationSettling = materializationSettling || sum.Pending > 0
 	}
 
 	r.setReadyCondition(
