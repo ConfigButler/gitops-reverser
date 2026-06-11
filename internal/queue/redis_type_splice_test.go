@@ -28,6 +28,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	auditv1 "k8s.io/apiserver/pkg/apis/audit/v1"
 )
@@ -120,6 +121,65 @@ func TestRedisTypeSplicer_FoldsCheckpointAndLog(t *testing.T) {
 	assert.Equal(t, "default/c", objs[1].GetNamespace()+"/"+objs[1].GetName())
 	assert.Equal(t, "v2", configMapData(t, objs[0].Object), "a reflects the post-checkpoint update")
 	assert.Equal(t, "vc", configMapData(t, objs[1].Object), "c was created from the log")
+}
+
+// deploymentCheckpointEnvelope builds one :objects:items value for an apps/v1 Deployment at the
+// given replica count — the pre-scale checkpoint state the scale fold must override.
+func deploymentCheckpointEnvelope(name string, replicas int) string {
+	body := fmt.Sprintf(
+		`{"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":%q,"namespace":"default"},`+
+			`"spec":{"replicas":%d}}`, name, replicas)
+	env, _ := json.Marshal(map[string]any{"object": json.RawMessage(body)})
+	return string(env)
+}
+
+// deploymentScaleAuditEvent builds a deployments/scale audit event whose Scale body carries the
+// parent's post-scale RV and the accepted replica count — the parent-stream entry DEC-A produces.
+func deploymentScaleAuditEvent(name, rv string, replicas int) auditv1.Event {
+	return auditv1.Event{
+		Verb:           "patch",
+		Stage:          auditv1.StageResponseComplete,
+		StageTimestamp: metav1.MicroTime{Time: time.Now()},
+		ObjectRef: &auditv1.ObjectReference{
+			APIGroup:    "apps",
+			APIVersion:  "v1",
+			Resource:    "deployments",
+			Subresource: "scale",
+			Namespace:   "default",
+			Name:        name,
+		},
+		ResponseObject: &runtime.Unknown{Raw: []byte(fmt.Sprintf(
+			`{"kind":"Scale","apiVersion":"autoscaling/v1",`+
+				`"metadata":{"name":%q,"namespace":"default","resourceVersion":%q},`+
+				`"spec":{"replicas":%d},"status":{"replicas":0}}`, name, rv, replicas))},
+	}
+}
+
+// TestRedisTypeSplicer_FoldsScaleIntoParent is the splice half of DEC-A
+// (canonical-stream-retirement.md §5): a parent-stream scale entry after the checkpoint mutates
+// the parent's desired spec.replicas — without the fold, a correctness reconcile would revert the
+// live scale to the checkpoint value and flip-flop against the freshness tail. A scale for a
+// parent absent from desired is skipped (next checkpoint backstops it, DEC-5).
+func TestRedisTypeSplicer_FoldsScaleIntoParent(t *testing.T) {
+	splicer, snap, q := spliceFixture(t)
+	ctx := context.Background()
+
+	require.NoError(t, snap.ReplaceTypeObjects(ctx, "apps", "v1", "deployments", map[string]string{
+		"default/web": deploymentCheckpointEnvelope("web", 1),
+	}, "100"))
+
+	require.NoError(t, q.Enqueue(ctx, deploymentScaleAuditEvent("web", "150", 5)))
+	require.NoError(t, q.Enqueue(ctx, deploymentScaleAuditEvent("ghost", "160", 7))) // parent not in desired
+
+	objs, rv, err := splicer.SpliceType(ctx, "apps", "deployments")
+	require.NoError(t, err)
+	assert.Equal(t, "100", rv)
+
+	require.Len(t, objs, 1, "the absent-parent scale folds nothing in")
+	replicas, found, err := unstructured.NestedInt64(objs[0].Object, "spec", "replicas")
+	require.NoError(t, err)
+	require.True(t, found)
+	assert.Equal(t, int64(5), replicas, "the scale entry overrides the checkpoint's replicas")
 }
 
 // TestRedisTypeSplicer_NoCheckpointHolds proves the fail-closed contract: with no pinned

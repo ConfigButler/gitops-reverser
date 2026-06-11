@@ -45,7 +45,7 @@ These are convictions, not just choices; everything below obeys them.
 
 | # | Requirement |
 |---|---|
-| **IR1** | **Per-type key schema.** One stream per Kubernetes API *group + plural resource*. The core group renders as `core`; a subresource is folded onto the resource segment with a dot (`deployments.scale`). **No namespace** and **no apiVersion** in the key — apiVersion is stored as an event field. |
+| **IR1** | **Per-type key schema.** One stream per Kubernetes API *group + plural resource*. The core group renders as `core`. A `/scale` event keys onto the **parent** type's stream at the parent's post-scale RV with `subresource=scale` as an entry field (DEC-A of [canonical-stream-retirement.md](canonical-stream-retirement.md)); any other subresource — none is forwarded by the webhook — folds onto the resource segment with a dot, defensively. **No namespace** and **no apiVersion** in the key — apiVersion is stored as an event field. |
 | **IR2** | **Strictly RV-ordered main stream.** Main-stream IDs are `<resourceVersion>-<subseq>`. Write with `XADD <key> <rv>-* …` so Valkey allocates the `subseq` atomically and monotonically within an RV. |
 | **IR3** | **Never knowingly insert out of order.** An event whose RV is **strictly below** the stream's high-water RV is never forced into the main stream (P1/P2). An event whose RV is **equal** to the high-water RV *does* go to main — the `subseq` disambiguates it — so only strictly-older events divert. |
 | **IR4** | **Diagnostic late lane.** Such an event is diverted to `:audit:late`, with full context, **never dropped and never reordered into main**. The late lane is observability only — no consumer treats it as reconcile input. |
@@ -132,11 +132,18 @@ crash** (IR6).
 
 ### 5.4 Subresources (IR1)
 
-A subresource event keys onto the parent type's segment with a dot (`deployments.scale`),
-exactly as the prototype already does. The `/scale` translation into a parent field-patch
-is a reconcile-side concern (already implemented in
-[routeScaleFieldPatch](../../../internal/queue/redis_audit_consumer.go#L586)); the log just
-records the event under the folded key.
+**Revised by DEC-A ([canonical-stream-retirement.md](canonical-stream-retirement.md), stage
+C-A, landed 2026-06-11):** a `/scale` event is a mutation of the parent object, so it lands
+in the **parent** type's stream — keyed at the parent's post-scale resourceVersion (the
+Scale body carries it), ordered among the parent's other writes — with the entry's
+`subresource=scale` field as the discriminator. The sibling `deployments.scale` stream no
+longer exists. The translation into a parent `spec.replicas` field patch stays a
+consume-side concern: the freshness tail builds the FieldPatch event
+([auditChangeFromEntry](../../../internal/queue/redis_bytype_queue.go)) and the splice folds
+the replicas into the parent's desired object
+([foldScaleEntry](../../../internal/queue/redis_type_splice.go)). Scale is the only
+subresource the webhook forwards; a hypothetical other subresource still folds onto the
+resource segment with a dot, defensively.
 
 ## 6. The late lane (IR3, IR4) — diagnostic by design
 

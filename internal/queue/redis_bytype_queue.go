@@ -207,9 +207,12 @@ func (q *RedisByTypeStreamQueue) Enqueue(ctx context.Context, event auditv1.Even
 		late:    base + byTypeAuditLateSuffix,
 		idState: base + byTypeAuditIDStateSuffix,
 	}
-	if event.ObjectRef != nil && event.ObjectRef.Subresource == "" {
-		keys.group = event.ObjectRef.APIGroup
-		keys.resource = event.ObjectRef.Resource
+	if ref := event.ObjectRef; ref != nil &&
+		(ref.Subresource == "" || auditutil.IsScaleSubresource(ref.Subresource)) {
+		// A scale entry lives in the parent's stream (DEC-A), so a late-diverted scale
+		// nudges the PARENT type's resync like any other parent write.
+		keys.group = ref.APIGroup
+		keys.resource = ref.Resource
 	}
 	switch classifyRV(rv) {
 	case rvNumeric:
@@ -258,12 +261,12 @@ const byTypeAuditReadCount = 1024
 // detection) is the checkpoint sweep's job, not the log's. lastID "" or "$" anchors at the present;
 // thereafter the caller passes back the returned concrete ID so no entry is missed between reads.
 //
-// Each returned event carries Object (for an upsert) or just the Identifier (for a DELETE), with no
-// Path/GitTarget set — the tail fills those per watching GitTarget. Entries that are non-mutating, a
-// subresource (the /scale parent-patch is the consumer's job; the parent stream carries only parent
-// objects), name-less (a deletecollection — backstopped by the next checkpoint, DEC-5), or whose
-// body is a Status/partial/missing object are skipped here and healed by the next checkpoint. A
-// block timeout returns (nil, lastID, nil); a Redis error is returned for the caller to back off on.
+// Each returned event carries Object (for an upsert), just the Identifier (for a DELETE), or a
+// FieldPatch (for a parent-stream scale entry, DEC-A), with no Path/GitTarget set — the tail fills
+// those per watching GitTarget. Entries that are non-mutating, a non-scale subresource, name-less
+// (a deletecollection — backstopped by the next checkpoint, DEC-5), or whose body is a
+// Status/partial/missing object are skipped here and healed by the next checkpoint. A block
+// timeout returns (nil, lastID, nil); a Redis error is returned for the caller to back off on.
 func (q *RedisByTypeStreamQueue) ReadTypeAuditChanges(
 	ctx context.Context,
 	group, resource, lastID string,
@@ -318,7 +321,7 @@ func auditChangeFromEntry(values map[string]interface{}) (git.Event, bool) {
 	op = effectiveAuditOperation(event, op)
 
 	ref := event.ObjectRef
-	if ref.Subresource != "" {
+	if ref.Subresource != "" && !auditutil.IsScaleSubresource(ref.Subresource) {
 		return git.Event{}, false
 	}
 	id := auditutil.IdentityFromAuditEvent(event, op)
@@ -328,6 +331,27 @@ func auditChangeFromEntry(values map[string]interface{}) (git.Event, bool) {
 	apiGroup, apiVersion := auditutil.ObjectRefGroupVersion(ref)
 	identifier := itypes.NewResourceIdentifier(apiGroup, apiVersion, ref.Resource, id.Namespace, id.Name)
 	userInfo := resolveUserInfo(event)
+
+	if ref.Subresource != "" {
+		// A parent-stream scale entry (DEC-A, canonical-stream-retirement.md) becomes the
+		// same parent-manifest replicas field patch the canonical consumer used to build —
+		// the writer's applyFieldPatch does the rest; only the source stream changed. A
+		// scale whose parent replica path is unknown (CRD/aggregated parent) is dropped
+		// here, never guessed, and the next checkpoint backstops it.
+		assignments, _, ok := translateScaleToAssignments(event, apiGroup, ref.Resource)
+		if !ok {
+			return git.Event{}, false
+		}
+		return git.Event{
+			FieldPatch: &git.FieldPatch{
+				Assignments: assignments,
+				Source:      ref.Resource + "/" + ref.Subresource,
+			},
+			Identifier: identifier,
+			Operation:  string(op),
+			UserInfo:   userInfo,
+		}, true
+	}
 
 	if op == configv1alpha1.OperationDelete {
 		return git.Event{Identifier: identifier, Operation: string(op), UserInfo: userInfo}, true
@@ -583,11 +607,22 @@ func (q *RedisByTypeStreamQueue) ensureIndexed(ctx context.Context, streamKey st
 // baseKey is the per-type base key for an event: "<prefix>:<group-or-core>:<resource>".
 // The audit stream is this key plus ":audit:stream". An event without an objectRef or
 // resource collapses to a single "__unknown__" bucket.
+//
+// A /scale event keys onto its PARENT type (DEC-A, canonical-stream-retirement.md): a
+// scale is a mutation of the parent object, so it lands in the parent's stream at the
+// parent's post-scale resourceVersion (the Scale body carries it), ordered among the
+// parent's other writes; the entry's subresource=scale field stays the discriminator
+// for the consumers. The sibling "<resource>.scale" stream no longer exists. Scale is
+// the only subresource the webhook forwards (shouldForwardSubresource), so the
+// subresource fold below is defensive only.
 func (q *RedisByTypeStreamQueue) baseKey(event auditv1.Event) string {
 	if event.ObjectRef == nil {
 		return typeBaseKey(q.prefix, "", "", "")
 	}
 	ref := event.ObjectRef
+	if auditutil.IsScaleSubresource(ref.Subresource) {
+		return typeBaseKey(q.prefix, ref.APIGroup, ref.Resource, "")
+	}
 	return typeBaseKey(q.prefix, ref.APIGroup, ref.Resource, ref.Subresource)
 }
 

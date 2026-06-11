@@ -264,9 +264,17 @@ func TestRedisByTypeStreamQueue_BaseKey(t *testing.T) {
 			want: testByTypePrefix + ":apps:deployments",
 		},
 		{
-			name: "subresource is folded onto the resource segment",
+			// DEC-A (canonical-stream-retirement.md): a scale is a mutation of the parent,
+			// so it lands in the PARENT type's stream, ordered at the parent's RV.
+			name: "scale subresource keys onto the parent type",
 			ref:  &auditv1.ObjectReference{APIGroup: "apps", Resource: "deployments", Subresource: "scale"},
-			want: testByTypePrefix + ":apps:deployments.scale",
+			want: testByTypePrefix + ":apps:deployments",
+		},
+		{
+			// Defensive only: the webhook forwards no other subresource.
+			name: "a non-scale subresource is folded onto the resource segment",
+			ref:  &auditv1.ObjectReference{APIGroup: "apps", Resource: "deployments", Subresource: "status"},
+			want: testByTypePrefix + ":apps:deployments.status",
 		},
 		{
 			name: "nil objectRef collapses to the unknown bucket",
@@ -646,6 +654,46 @@ func TestRedisByTypeStreamQueue_ReadTypeAuditChanges(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, changes2, "a read past the head blocks and times out with no changes")
 	assert.Equal(t, id, id2, "the cursor does not advance on a timeout")
+}
+
+// scaleEventForParent is a deployments/scale audit event whose Scale body carries the parent's
+// post-scale resourceVersion — the shape DEC-A routes into the PARENT type's stream.
+func scaleEventForParent(rv string, replicas int) auditv1.Event {
+	e := ingestionEvent(rv, 1000)
+	e.Verb = "patch"
+	e.ObjectRef.APIVersion = "v1"
+	e.ObjectRef.Subresource = "scale"
+	e.ResponseObject = &runtime.Unknown{Raw: []byte(fmt.Sprintf(
+		`{"kind":"Scale","apiVersion":"autoscaling/v1",`+
+			`"metadata":{"name":"web","namespace":"prod","resourceVersion":%q},`+
+			`"spec":{"replicas":%d},"status":{"replicas":0}}`, rv, replicas))}
+	return e
+}
+
+// TestRedisByTypeStreamQueue_ScaleRidesTheParentStream is DEC-A end to end at the queue level
+// (canonical-stream-retirement.md, C-A1+C-A2): a /scale event is mirrored into the PARENT
+// type's stream at the parent's post-scale RV, ordered among the parent's writes, and the
+// freshness read translates it into a spec.replicas FieldPatch change — never an object write.
+func TestRedisByTypeStreamQueue_ScaleRidesTheParentStream(t *testing.T) {
+	q, _, _ := valkeyByTypeQueue(t, 0)
+	ctx := context.Background()
+
+	require.NoError(t, q.Enqueue(ctx, fullDeploymentEvent("100")))
+	require.NoError(t, q.Enqueue(ctx, scaleEventForParent("150", 5)))
+
+	changes, id, err := q.ReadTypeAuditChanges(ctx, "apps", "deployments", "0", 500*time.Millisecond)
+	require.NoError(t, err)
+	require.Len(t, changes, 2, "the scale entry lives in the parent stream, after the parent write")
+	assert.Equal(t, "150-0", id, "the scale entry is ordered at the parent's post-scale RV")
+
+	scale := changes[1]
+	require.NotNil(t, scale.FieldPatch, "a scale entry becomes a field patch, not an object write")
+	assert.Nil(t, scale.Object)
+	assert.Equal(t, "deployments/scale", scale.FieldPatch.Source)
+	assert.Equal(t, "web", scale.Identifier.Name, "the patch targets the parent identity")
+	require.Len(t, scale.FieldPatch.Assignments, 1, "only spec.replicas, never status")
+	assert.Equal(t, []string{"spec", "replicas"}, scale.FieldPatch.Assignments[0].Path)
+	assert.Equal(t, int64(5), scale.FieldPatch.Assignments[0].Value)
 }
 
 // TestRedisByTypeStreamQueue_ReadTypeAuditChanges_FutureOnly proves the "$" default anchors at the

@@ -30,8 +30,6 @@ import (
 
 	"github.com/go-logr/logr"
 	"github.com/redis/go-redis/v9"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/metric"
 	authnv1 "k8s.io/api/authentication/v1"
 	auditv1 "k8s.io/apiserver/pkg/apis/audit/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -42,10 +40,8 @@ import (
 	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 	"github.com/ConfigButler/gitops-reverser/internal/auditutil"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
-	"github.com/ConfigButler/gitops-reverser/internal/git/manifestedit"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
 	"github.com/ConfigButler/gitops-reverser/internal/sanitize"
-	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
@@ -364,179 +360,22 @@ func (c *AuditConsumer) processMessage(ctx context.Context, msg redis.XMessage) 
 		return
 	}
 
-	if err := c.routeAuditEvent(ctx, log, auditEvent, op); err != nil {
-		log.Error(err, "Failed to route audit event; ACKing to avoid poison-pill")
-	}
+	// Nothing else routes from the canonical stream any more: full-object writes are
+	// reconciled by the per-type splice (R3), and the /scale field patch rides the
+	// PARENT type's :audit:stream since DEC-A (canonical-stream-retirement.md, C-A2) —
+	// translated by the freshness tail and folded by the splice. The consumer's one
+	// remaining job is the CommitRequest finalize above (relocated in C-B, after which
+	// the canonical stream and this consumer are deleted outright, C-C).
+	_ = op
 	c.ackMessage(ctx, msg.ID)
 }
 
-// routeAuditEvent handles the one audit-stream responsibility the consumer still owns after
-// the api-source-of-truth pivot (R3): the /scale subresource → parent-manifest field patch.
-// Full-object creates/updates/deletes are NOT routed here — they are captured into the per-type
-// :audit:stream by the webhook (mirrorByType) and reconciled by the splice, so the consumer
-// simply ACKs them. Only a /scale subresource event matches rules and routes a field patch.
-func (c *AuditConsumer) routeAuditEvent(
-	ctx context.Context,
-	log logr.Logger,
-	auditEvent auditv1.Event,
-	op configv1alpha1.OperationType,
-) error {
-	ref := auditEvent.ObjectRef
-
-	// Object mirroring belongs to the splice; the consumer only carries subresource patches.
-	if ref.Subresource == "" {
-		return nil
-	}
-
-	apiGroup, apiVersion := auditutil.ObjectRefGroupVersion(ref)
-	resourcePlural := ref.Resource
-	op = effectiveAuditOperation(auditEvent, op)
-
-	// Cluster vs namespaced scope is a property of the resource kind, so it
-	// must come from the URL-level objectRef, not from the body — a body that
-	// happens to omit metadata.namespace must not turn a namespaced event into
-	// a cluster-scoped one.
-	isClusterScoped := ref.Namespace == ""
-
-	// Resolve the (namespace, name, uid) of the event through the shared
-	// audit-identity helper so generateName creates (objectRef.name=="") and
-	// other partial objectRefs are handled the same way the CommitRequest
-	// finalize path handles them.
-	identity := auditutil.IdentityFromAuditEvent(auditEvent, op)
-	namespace := identity.Namespace
-	name := identity.Name
-
-	var matchObj *unstructured.Unstructured
-	if !isClusterScoped {
-		matchObj = &unstructured.Unstructured{}
-		matchObj.SetNamespace(namespace)
-		matchObj.SetName(name)
-	}
-
-	wrRules := c.ruleStore.GetMatchingRules(matchObj, resourcePlural, op, apiGroup, apiVersion, isClusterScoped)
-	cwrRules := c.ruleStore.GetMatchingClusterRules(resourcePlural, op, apiGroup, apiVersion, isClusterScoped, nil)
-
-	gvr := pipelineGVR{group: apiGroup, version: apiVersion, resource: resourcePlural}
-
-	if len(wrRules) == 0 && len(cwrRules) == 0 {
-		recordPipelineEvent(ctx, gvr, auditEvent.Verb, pipelineOutcomeUnmatched)
-		return nil
-	}
-
-	id := itypes.NewResourceIdentifier(apiGroup, apiVersion, resourcePlural, namespace, name)
-	userInfo := resolveUserInfo(auditEvent)
-
-	// A subresource event becomes a parent-manifest field patch routed against the SAME
-	// parent-GVR rules — never an object write, because the body is a subresource (an
-	// autoscaling/v1 Scale), not the parent object. Only /scale is translated; every
-	// other subresource is dropped inside routeScaleFieldPatch.
-	return c.routeScaleFieldPatch(ctx, log, auditEvent, op, id, userInfo, gvr, wrRules, cwrRules)
-}
-
-// routeScaleFieldPatch translates a built-in /scale audit event into a parent-manifest
-// replicas field patch and routes it against the matched parent-GVR rules. Only the
-// scale subresource is supported, and only for a built-in scalable parent whose replica
-// path is known: every other subresource, and every scale on a CRD or aggregated API, is
-// dropped with a scale-specific metric and never guessed. There is no live-parent GET and
-// no field-presence gate — the accepted value comes straight from the standardized Scale
-// response. See docs/design/manifest/version2/subresource-scope-reduction.md.
-func (c *AuditConsumer) routeScaleFieldPatch(
-	ctx context.Context,
-	log logr.Logger,
-	auditEvent auditv1.Event,
-	op configv1alpha1.OperationType,
-	id itypes.ResourceIdentifier,
-	userInfo git.UserInfo,
-	gvr pipelineGVR,
-	wrRules []rulestore.CompiledRule,
-	cwrRules []rulestore.CompiledClusterRule,
-) error {
-	assignments, dropOutcome, ok := translateScaleToAssignments(auditEvent, gvr.group, gvr.resource)
-	if !ok {
-		recordPipelineEvent(ctx, gvr, auditEvent.Verb, dropOutcome)
-		log.V(1).Info("Dropping subresource: not a translatable built-in scale event",
-			"resource", id.Resource, "subresource", auditEvent.ObjectRef.Subresource,
-			"verb", auditEvent.Verb, "outcome", dropOutcome)
-		return nil
-	}
-
-	source := id.Resource + "/" + auditEvent.ObjectRef.Subresource
-	routed := c.routeEvents(ctx, log, wrRules, cwrRules,
-		func(path, gitTargetRef, gitTargetNamespace string) git.Event {
-			return buildFieldPatchEvent(assignments, source, id, op, userInfo, path, gitTargetRef, gitTargetNamespace)
-		})
-	if routed > 0 {
-		recordPipelineEvent(ctx, gvr, auditEvent.Verb, pipelineOutcomeRoutedScale)
-	} else {
-		recordPipelineEvent(ctx, gvr, auditEvent.Verb, pipelineOutcomeRouteFailed)
-	}
-	return nil
-}
-
-// routeEvents builds a per-rule git.Event via build and routes it to every matched
-// WatchRule and ClusterWatchRule target, returning the number successfully routed.
-func (c *AuditConsumer) routeEvents(
-	ctx context.Context,
-	log logr.Logger,
-	wrRules []rulestore.CompiledRule,
-	cwrRules []rulestore.CompiledClusterRule,
-	build func(path, gitTargetRef, gitTargetNamespace string) git.Event,
-) int {
-	routed := 0
-	for _, rule := range wrRules {
-		if c.routeOne(ctx, log, build, rule.Path, rule.GitTargetRef, rule.GitTargetNamespace, ruleKindWatchRule) {
-			routed++
-		}
-	}
-	for _, rule := range cwrRules {
-		if c.routeOne(
-			ctx, log, build, rule.Path, rule.GitTargetRef, rule.GitTargetNamespace, ruleKindClusterWatchRule,
-		) {
-			routed++
-		}
-	}
-	return routed
-}
-
-// routeOne builds and routes one event to a single GitTarget, recording the per-target
-// outcome. It returns true on success.
-func (c *AuditConsumer) routeOne(
-	ctx context.Context,
-	log logr.Logger,
-	build func(path, gitTargetRef, gitTargetNamespace string) git.Event,
-	path, gitTargetRef, gitTargetNamespace, ruleKind string,
-) bool {
-	ev := build(path, gitTargetRef, gitTargetNamespace)
-	gitDest := itypes.NewResourceReference(gitTargetRef, gitTargetNamespace)
-	if err := c.eventRouter.RouteToGitTargetEventStream(ev, gitDest); err != nil {
-		log.V(1).Info("Failed to route audit event", "error", err,
-			"ruleKind", ruleKind, "gitTarget", gitDest.String())
-		recordRouteTarget(ctx, gitTargetNamespace, gitTargetRef, ruleKind, pipelineOutcomeRouteFailed)
-		return false
-	}
-	recordRouteTarget(ctx, gitTargetNamespace, gitTargetRef, ruleKind, pipelineOutcomeRouted)
-	return true
-}
-
-// pipelineGVR carries the bounded group/version/resource labels for the
-// audit pipeline consumer metric.
-type pipelineGVR struct {
-	group    string
-	version  string
-	resource string
-}
-
-// Audit pipeline consumer-stage outcome and rule-kind label values.
+// Scale-translation drop outcomes. translateScaleToAssignments labels why a scale
+// event could not become a replicas assignment; since DEC-A the per-type consumers
+// (freshness tail, splice fold) drop silently with the next checkpoint as backstop,
+// so these are diagnostic strings only.
+// See docs/design/manifest/version2/subresource-scope-reduction.md.
 const (
-	pipelineOutcomeUnmatched   = "unmatched"
-	pipelineOutcomeRouted      = "routed"
-	pipelineOutcomeRouteFailed = "route_failed"
-
-	// Scale subresource outcomes. Only /scale on a built-in scalable parent routes;
-	// every other subresource and every scale with an unknown parent replica path is
-	// dropped with one of the explicit dropped outcomes so ignored subresources are
-	// visible. See docs/design/manifest/version2/subresource-scope-reduction.md.
-	pipelineOutcomeRoutedScale = "routed_scale_subresource"
 	// pipelineOutcomeDroppedNonScale marks a subresource event that is not /scale.
 	pipelineOutcomeDroppedNonScale = "dropped_non_scale_subresource"
 	// pipelineOutcomeDroppedScaleMissingReplicas marks a scale event whose
@@ -545,69 +384,7 @@ const (
 	// pipelineOutcomeDroppedScalePathUnresolved marks a scale event whose parent has no
 	// known replica path — a CRD or aggregated API in this pass.
 	pipelineOutcomeDroppedScalePathUnresolved = "dropped_scale_path_unresolved"
-
-	ruleKindWatchRule        = "watchrule"
-	ruleKindClusterWatchRule = "clusterwatchrule"
 )
-
-// recordPipelineEvent emits one audit_pipeline_events_total sample for a
-// canonical audit event that reached the consumer.
-func recordPipelineEvent(ctx context.Context, gvr pipelineGVR, verb, outcome string) {
-	if telemetry.AuditPipelineEventsTotal == nil {
-		return
-	}
-	resource := gvr.resource
-	if resource == "" {
-		resource = "unknown"
-	}
-	telemetry.AuditPipelineEventsTotal.Add(ctx, 1, metric.WithAttributes(
-		attribute.String("group", gvr.group),
-		attribute.String("version", gvr.version),
-		attribute.String("resource", resource),
-		attribute.String("verb", verb),
-		attribute.String("outcome", outcome),
-	))
-}
-
-// recordRouteTarget emits one audit_pipeline_route_targets_total sample for a
-// per-GitTarget route attempt.
-func recordRouteTarget(ctx context.Context, gitTargetNamespace, gitTarget, ruleKind, outcome string) {
-	if telemetry.AuditPipelineRouteTargetsTotal == nil {
-		return
-	}
-	telemetry.AuditPipelineRouteTargetsTotal.Add(ctx, 1, metric.WithAttributes(
-		attribute.String("git_target_namespace", gitTargetNamespace),
-		attribute.String("git_target", gitTarget),
-		attribute.String("rule_kind", ruleKind),
-		attribute.String("outcome", outcome),
-	))
-}
-
-// buildFieldPatchEvent constructs a field-patch git.Event for a given rule match. The
-// parent Kind is intentionally left unset: the writer resolves the parent document from
-// the objectRef GVR (it has the live-catalog mapper; the consumer does not), so the
-// translator never needs GVR->GVK resolution.
-func buildFieldPatchEvent(
-	assignments []manifestedit.FieldAssignment,
-	source string,
-	id itypes.ResourceIdentifier,
-	op configv1alpha1.OperationType,
-	userInfo git.UserInfo,
-	path, gitTargetRef, gitTargetNamespace string,
-) git.Event {
-	return git.Event{
-		FieldPatch: &git.FieldPatch{
-			Assignments: assignments,
-			Source:      source,
-		},
-		Identifier:         id,
-		Operation:          string(op),
-		UserInfo:           userInfo,
-		Path:               path,
-		GitTargetName:      gitTargetRef,
-		GitTargetNamespace: gitTargetNamespace,
-	}
-}
 
 const (
 	// displayNameExtraKey is the audit-event user.extra key carrying the OIDC

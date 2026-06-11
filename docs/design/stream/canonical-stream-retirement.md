@@ -369,8 +369,8 @@ replaces is deleted** (the same discipline R2→R3 used).
 
 | Stage | Change | Done when |
 |---|---|---|
-| **C-A1** | Producer: route `/scale` onto the parent key, keep `subresource=scale` field (revise IR1/§5.4). | scale events appear in the parent `:audit:stream` at the parent RV; the `…scale` sibling stream is gone. |
-| **C-A2** | Consumers: `auditChangeFromEntry` (tail) and `foldAuditEntry` (splice) handle `subresource=scale`; move `translateScaleToAssignments`/`buildFieldPatchEvent` out of the consumer. | a scale is reflected in Git via the freshness tail within a window **and** survives a correctness reconcile (no replicas flip-flop); e2e for `/scale` green with the consumer's scale path disabled. |
+| **C-A1** ✅ *(landed 2026-06-11)* | Producer: route `/scale` onto the parent key, keep `subresource=scale` field (revise IR1/§5.4). | scale events appear in the parent `:audit:stream` at the parent RV; the `…scale` sibling stream is gone. |
+| **C-A2** ✅ *(landed 2026-06-11)* | Consumers: `auditChangeFromEntry` (tail) and `foldAuditEntry` (splice — via `foldScaleEntry`) handle `subresource=scale`; `translateScaleToAssignments` already lived in `subresource_translate.go`. The consumer's scale routing was deleted outright (routeAuditEvent/routeScaleFieldPatch/routeEvents/routeOne/buildFieldPatchEvent + the pipeline metrics they alone emitted) rather than left disabled — less to demolish in C-C. | a scale is reflected in Git via the freshness tail within a window **and** survives a correctness reconcile (no replicas flip-flop); e2e for `/scale` green with the consumer's scale path disabled. |
 | **C-B1** | Add the watermark drain-coordinator (per-tail cursor + `FinalizeAtWatermark`). | a barrier unit test proves "finalize includes all pre-`rv_C` upserts across types." |
 | **C-B2** | Move finalize into `CommitRequestReconciler` (capture `rv_C`, barrier, finalize, status); delete the consumer's `isCommitRequestCreate`/`handleCommitRequest`. | the CommitRequest e2e is green driven entirely by the controller; the consumer no longer references CommitRequest. |
 | **C-C** | Delete the canonical `Queue`, `AuditConsumer`, canonical metrics, and flags; delete the Joiner's `claim`/`commit`/`release` + decision key (§4.1), keeping only `parkBody`/`waitForBody`/`mergeParkedBody`; webhook = decode→classify→merge→mirror. | nothing constructs or reads `gitopsreverser.audit.events.v1`; no `audit:decision:v1:*` keys; a duplicate-delivery test shows zero extra commits; full suite + e2e green; the diff is mostly red. |
@@ -379,7 +379,8 @@ replaces is deleted** (the same discipline R2→R3 used).
 
 - **Barrier timeout shape.** The fallback bound for "a tail never reaches `rv_C`" (a wobbly/removed
   type that `G` still claims). Proposal: a per-finalize deadline that degrades to a plain finalize +
-  a recorded metric, never a hang.
+  a recorded metric, never a hang. **Decision memo with options/consequences:**
+  [commitrequest-barrier-timeout-decision.md](commitrequest-barrier-timeout-decision.md).
 - **Drop the dual-source body merge entirely? (§4.1).** If we can mandate full-body audit
   (`RequestResponse` policy) and declare aggregated-API mirroring out of scope, the whole Joiner +
   `/audit-webhook-additional` proxy can go, not just the dedupe half. This is a deployment-contract

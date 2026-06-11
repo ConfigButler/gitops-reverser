@@ -707,12 +707,11 @@ func TestProcessMessage_NoObjectRefIsACKed(t *testing.T) {
 	assertNoPendingMessages(t, mr)
 }
 
-// A deployments/scale event must be TRANSLATED into a parent-manifest replicas field
-// patch and routed against the matching deployments rule — not written as its Scale
-// body, and not dropped. The routed event carries a FieldPatch (spec.replicas, no
-// object), so the writer patches only that field on the committed Deployment. No live
-// parent GET is involved: the accepted value comes straight from the Scale response.
-func TestProcessMessage_ScaleEventTranslatesToFieldPatch(t *testing.T) {
+// Since DEC-A (canonical-stream-retirement.md, stage C-A2) the /scale field patch rides
+// the PARENT type's :audit:stream — translated by the freshness tail and folded by the
+// splice. The consumer must therefore route NOTHING for a scale event (only ACK it);
+// the relocated path is covered by the by-type queue and splice tests.
+func TestProcessMessage_ScaleEventNoLongerRoutedByConsumer(t *testing.T) {
 	mr := miniredis.RunT(t)
 	er := &fakeEventRouter{}
 
@@ -737,47 +736,7 @@ func TestProcessMessage_ScaleEventTranslatesToFieldPatch(t *testing.T) {
 
 	require.NoError(t, c.readAndProcessBatch(context.Background()))
 
-	require.Len(t, er.calls, 1, "a scale event must be translated and routed as a field patch")
-	routed := er.calls[0].Event
-	require.NotNil(t, routed.FieldPatch, "the routed event must be a field patch, not an object")
-	assert.Nil(t, routed.Object, "a field patch carries no object body")
-	assert.Equal(t, "deployments/scale", routed.FieldPatch.Source)
-	assert.Equal(t, "UPDATE", routed.Operation)
-	assert.Equal(t, "deployments", routed.Identifier.Resource)
-	require.Len(t, routed.FieldPatch.Assignments, 1, "only spec.replicas, never status")
-	assert.Equal(t, []string{"spec", "replicas"}, routed.FieldPatch.Assignments[0].Path)
-	assert.Equal(t, int64(3), routed.FieldPatch.Assignments[0].Value)
-	assertNoPendingMessages(t, mr)
-}
-
-// A scale on a CRD has no known parent replica path, so it is dropped (path unresolved)
-// rather than defaulting to .spec.replicas: nothing is routed, and the message is ACKed.
-func TestProcessMessage_CRDScaleDroppedPathUnresolved(t *testing.T) {
-	mr := miniredis.RunT(t)
-	er := &fakeEventRouter{}
-
-	rs := rulestore.NewStore()
-	rs.AddOrUpdateWatchRule(
-		makeWatchRule("widget-rule", []string{"widgets"}, []string{"v1"}, []string{"example.com"}),
-		"my-target", "default",
-		"my-provider", "default",
-		"main", "state/",
-	)
-
-	c := newTestConsumer(t, mr, rs, er)
-	require.NoError(t, c.ensureConsumerGroup(context.Background()))
-
-	ev := makeAuditEvent("patch", auditv1.StageResponseComplete, "widgets", "w1")
-	ev.ObjectRef.APIGroup = "example.com"
-	ev.ObjectRef.Subresource = "scale"
-	ev.ResponseObject = &runtime.Unknown{
-		Raw: []byte(`{"kind":"Scale","apiVersion":"autoscaling/v1","spec":{"replicas":3}}`),
-	}
-	pushAuditMessage(t, mr, ev)
-
-	require.NoError(t, c.readAndProcessBatch(context.Background()))
-
-	assert.Empty(t, er.calls, "a CRD scale with no known parent replica path must not be routed")
+	assert.Empty(t, er.calls, "the consumer's scale routing is disabled (DEC-A); the per-type tail owns it")
 	assertNoPendingMessages(t, mr)
 }
 
@@ -883,9 +842,9 @@ func makeWatchRule(
 func TestRunAutoClaimCycle_ReclaimsIdleMessages(t *testing.T) {
 	mr := miniredis.RunT(t)
 
-	// A /scale event is used so the reclaimed entry both routes (a field patch) and ACKs —
-	// object events are no longer routed by the consumer (the splice owns mirroring, R3), so a
-	// subresource event is the surviving route that proves processMessage runs on a reclaim.
+	// A /scale event is reclaimed and ACKed. Nothing routes any more (object mirroring is
+	// the splice's job since R3, and the scale field patch rides the parent per-type
+	// stream since DEC-A), so the ACK below is the proof processMessage ran on a reclaim.
 	rs := rulestore.NewStore()
 	rs.AddOrUpdateWatchRule(
 		makeWatchRule("scale-rule", []string{"deployments"}, []string{"v1"}, []string{"apps"}),
@@ -939,7 +898,7 @@ func TestRunAutoClaimCycle_ReclaimsIdleMessages(t *testing.T) {
 		c.processMessage(context.Background(), msg)
 	}
 
-	require.Len(t, er.calls, 1)
+	assert.Empty(t, er.calls, "no consumer route is left for audit events")
 	assertNoPendingMessages(t, mr)
 }
 

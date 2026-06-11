@@ -159,10 +159,14 @@ func foldAuditEntry(desired map[string]*unstructured.Unstructured, values map[st
 	}
 
 	ref := event.ObjectRef
-	// A subresource event keys onto its own stream, never the parent type's, so this is a
-	// defensive skip: the parent stream carries only parent-object writes (a /scale body would
-	// not be a valid parent object).
 	if ref.Subresource != "" {
+		// A parent-stream scale entry (DEC-A, canonical-stream-retirement.md) folds into the
+		// parent's desired object. The splice MUST fold scale: otherwise a correctness
+		// reconcile would rebuild desired from checkpoint@R, see replicas@R, and REVERT the
+		// live scale the freshness tail already wrote — flip-flopping against it (§5 of the
+		// retirement doc). A parent not in desired yet, an unknown replica path, or any
+		// other subresource is skipped; the next checkpoint backstops (DEC-5).
+		foldScaleEntry(desired, event, identity)
 		return
 	}
 	apiGroup, apiVersion := auditutil.ObjectRefGroupVersion(ref)
@@ -177,6 +181,31 @@ func foldAuditEntry(desired map[string]*unstructured.Unstructured, values map[st
 		return
 	}
 	desired[identity] = obj
+}
+
+// foldScaleEntry applies a parent-stream scale entry to the desired set: it mutates the
+// already-present parent object's replicas at the parent's known replica path, using the
+// same translation the freshness tail uses (translateScaleToAssignments), so the splice's
+// desired set agrees with what the tail already wrote. Best-effort by design: a non-scale
+// subresource, an unknown replica path (CRD/aggregated parent), a missing Scale body, or
+// a parent absent from desired all skip — the next checkpoint LIST reflects the parent's
+// true state (DEC-5).
+func foldScaleEntry(desired map[string]*unstructured.Unstructured, event auditv1.Event, identity string) {
+	obj, present := desired[identity]
+	if !present {
+		return
+	}
+	ref := event.ObjectRef
+	apiGroup, _ := auditutil.ObjectRefGroupVersion(ref)
+	assignments, _, ok := translateScaleToAssignments(event, apiGroup, ref.Resource)
+	if !ok {
+		return
+	}
+	for _, a := range assignments {
+		if err := unstructured.SetNestedField(obj.Object, a.Value, a.Path...); err != nil {
+			return
+		}
+	}
 }
 
 // decodeCheckpointObject extracts the stored object body from one :objects:items envelope. The
