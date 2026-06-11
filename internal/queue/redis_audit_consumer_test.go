@@ -37,56 +37,7 @@ import (
 	auditv1 "k8s.io/apiserver/pkg/apis/audit/v1"
 
 	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
-	"github.com/ConfigButler/gitops-reverser/internal/git"
-	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
-	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
 )
-
-// fakeEventRouter records calls to RouteToGitTargetEventStream and
-// FinalizeGitTargetWindow.
-type fakeEventRouter struct {
-	calls  []routeCall
-	errFor map[string]error // keyed by gitDest.Key()
-
-	finalizeCalls  []finalizeCall
-	finalizeResult git.FinalizeResult
-	finalizeErr    error
-}
-
-type routeCall struct {
-	Event   git.Event
-	GitDest itypes.ResourceReference
-}
-
-type finalizeCall struct {
-	Author             string
-	GitTargetName      string
-	GitTargetNamespace string
-	Message            string
-}
-
-func (f *fakeEventRouter) RouteToGitTargetEventStream(event git.Event, gitDest itypes.ResourceReference) error {
-	f.calls = append(f.calls, routeCall{Event: event, GitDest: gitDest})
-	if f.errFor != nil {
-		if err, ok := f.errFor[gitDest.Key()]; ok {
-			return err
-		}
-	}
-	return nil
-}
-
-func (f *fakeEventRouter) FinalizeGitTargetWindow(
-	_ context.Context,
-	author, gitTargetName, gitTargetNamespace, message string,
-) (git.FinalizeResult, error) {
-	f.finalizeCalls = append(f.finalizeCalls, finalizeCall{
-		Author:             author,
-		GitTargetName:      gitTargetName,
-		GitTargetNamespace: gitTargetNamespace,
-		Message:            message,
-	})
-	return f.finalizeResult, f.finalizeErr
-}
 
 // --- parseAuditEvent ---
 
@@ -586,28 +537,14 @@ func TestStringField(t *testing.T) {
 // --- NewAuditConsumer ---
 
 func TestNewAuditConsumer_RequiresAddress(t *testing.T) {
-	_, err := NewAuditConsumer(
-		AuditConsumerConfig{},
-		rulestore.NewStore(),
-		&fakeEventRouter{},
-		nil,
-		nil,
-		logr.Discard(),
-	)
+	_, err := NewAuditConsumer(AuditConsumerConfig{}, logr.Discard())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "redis address")
 }
 
 func TestNewAuditConsumer_DefaultsApplied(t *testing.T) {
 	mr := miniredis.RunT(t)
-	c, err := NewAuditConsumer(
-		AuditConsumerConfig{Addr: mr.Addr()},
-		rulestore.NewStore(),
-		&fakeEventRouter{},
-		nil,
-		nil,
-		logr.Discard(),
-	)
+	c, err := NewAuditConsumer(AuditConsumerConfig{Addr: mr.Addr()}, logr.Discard())
 	require.NoError(t, err)
 	assert.Equal(t, DefaultRedisAuditStream, c.stream)
 	assert.Equal(t, defaultConsumerGroup, c.group)
@@ -616,12 +553,7 @@ func TestNewAuditConsumer_DefaultsApplied(t *testing.T) {
 
 // --- processMessage integration using miniredis ---
 
-func newTestConsumer(
-	t *testing.T,
-	mr *miniredis.Miniredis,
-	rs *rulestore.RuleStore,
-	er AuditEventRouter,
-) *AuditConsumer {
+func newTestConsumer(t *testing.T, mr *miniredis.Miniredis) *AuditConsumer {
 	t.Helper()
 	c, err := NewAuditConsumer(
 		AuditConsumerConfig{
@@ -630,10 +562,6 @@ func newTestConsumer(
 			Group:      "test-group",
 			ConsumerID: "test-consumer",
 		},
-		rs,
-		er,
-		nil,
-		nil,
 		logr.Discard(),
 	)
 	require.NoError(t, err)
@@ -656,109 +584,26 @@ func pushAuditMessage(t *testing.T, mr *miniredis.Miniredis, ev auditv1.Event) {
 	require.NoError(t, err)
 }
 
-func TestProcessMessage_NonResponseCompleteStageIsACKed(t *testing.T) {
+// Every entry is drained and ACKed without routing anywhere: object mirroring
+// is the splice's job (R3), /scale rides the parent per-type stream (C-A2),
+// and the CommitRequest finalize is controller-driven (C-B2). The consumer is
+// a pure drainer until C-C deletes the canonical stream outright.
+func TestProcessMessage_DrainsAndACKsEveryEntry(t *testing.T) {
 	mr := miniredis.RunT(t)
-	er := &fakeEventRouter{}
-	c := newTestConsumer(t, mr, rulestore.NewStore(), er)
+	c := newTestConsumer(t, mr)
 	require.NoError(t, c.ensureConsumerGroup(context.Background()))
 
-	ev := makeAuditEvent("create", auditv1.StageRequestReceived, "configmaps", "cm")
-	pushAuditMessage(t, mr, ev)
+	pushAuditMessage(t, mr, makeAuditEvent("create", auditv1.StageResponseComplete, "configmaps", "cm"))
+	pushAuditMessage(t, mr, makeAuditEvent("get", auditv1.StageRequestReceived, "configmaps", "cm"))
 
 	require.NoError(t, c.readAndProcessBatch(context.Background()))
 
-	// No routing happened.
-	assert.Empty(t, er.calls)
-	// Message is ACKed (pending count = 0).
-	assertNoPendingMessages(t, mr)
-}
-
-func TestProcessMessage_ReadOnlyVerbIsACKed(t *testing.T) {
-	mr := miniredis.RunT(t)
-	er := &fakeEventRouter{}
-	c := newTestConsumer(t, mr, rulestore.NewStore(), er)
-	require.NoError(t, c.ensureConsumerGroup(context.Background()))
-
-	ev := makeAuditEvent("get", auditv1.StageResponseComplete, "configmaps", "cm")
-	pushAuditMessage(t, mr, ev)
-
-	require.NoError(t, c.readAndProcessBatch(context.Background()))
-
-	assert.Empty(t, er.calls)
-	assertNoPendingMessages(t, mr)
-}
-
-func TestProcessMessage_NoObjectRefIsACKed(t *testing.T) {
-	mr := miniredis.RunT(t)
-	er := &fakeEventRouter{}
-	c := newTestConsumer(t, mr, rulestore.NewStore(), er)
-	require.NoError(t, c.ensureConsumerGroup(context.Background()))
-
-	ev := auditv1.Event{
-		Verb:  "create",
-		Stage: auditv1.StageResponseComplete,
-		// ObjectRef intentionally nil
-	}
-	pushAuditMessage(t, mr, ev)
-
-	require.NoError(t, c.readAndProcessBatch(context.Background()))
-
-	assert.Empty(t, er.calls)
-	assertNoPendingMessages(t, mr)
-}
-
-// Since DEC-A (canonical-stream-retirement.md, stage C-A2) the /scale field patch rides
-// the PARENT type's :audit:stream — translated by the freshness tail and folded by the
-// splice. The consumer must therefore route NOTHING for a scale event (only ACK it);
-// the relocated path is covered by the by-type queue and splice tests.
-func TestProcessMessage_ScaleEventNoLongerRoutedByConsumer(t *testing.T) {
-	mr := miniredis.RunT(t)
-	er := &fakeEventRouter{}
-
-	rs := rulestore.NewStore()
-	rs.AddOrUpdateWatchRule(
-		makeWatchRule("scale-rule", []string{"deployments"}, []string{"v1"}, []string{"apps"}),
-		"my-target", "default",
-		"my-provider", "default",
-		"main", "state/",
-	)
-
-	c := newTestConsumer(t, mr, rs, er)
-	require.NoError(t, c.ensureConsumerGroup(context.Background()))
-
-	ev := makeAuditEvent("patch", auditv1.StageResponseComplete, "deployments", "web")
-	ev.ObjectRef.APIGroup = "apps"
-	ev.ObjectRef.Subresource = "scale"
-	ev.ResponseObject = &runtime.Unknown{
-		Raw: []byte(`{"kind":"Scale","apiVersion":"autoscaling/v1","spec":{"replicas":3},"status":{"replicas":0}}`),
-	}
-	pushAuditMessage(t, mr, ev)
-
-	require.NoError(t, c.readAndProcessBatch(context.Background()))
-
-	assert.Empty(t, er.calls, "the consumer's scale routing is disabled (DEC-A); the per-type tail owns it")
-	assertNoPendingMessages(t, mr)
-}
-
-func TestProcessMessage_NoMatchingRulesIsACKed(t *testing.T) {
-	mr := miniredis.RunT(t)
-	er := &fakeEventRouter{}
-	c := newTestConsumer(t, mr, rulestore.NewStore(), er) // empty rule store
-	require.NoError(t, c.ensureConsumerGroup(context.Background()))
-
-	ev := makeAuditEvent("create", auditv1.StageResponseComplete, "configmaps", "cm")
-	pushAuditMessage(t, mr, ev)
-
-	require.NoError(t, c.readAndProcessBatch(context.Background()))
-
-	assert.Empty(t, er.calls)
 	assertNoPendingMessages(t, mr)
 }
 
 func TestProcessMessage_PoisonPillIsACKed(t *testing.T) {
 	mr := miniredis.RunT(t)
-	er := &fakeEventRouter{}
-	c := newTestConsumer(t, mr, rulestore.NewStore(), er)
+	c := newTestConsumer(t, mr)
 	require.NoError(t, c.ensureConsumerGroup(context.Background()))
 
 	// Push an entry with invalid payload_json.
@@ -773,13 +618,12 @@ func TestProcessMessage_PoisonPillIsACKed(t *testing.T) {
 
 	require.NoError(t, c.readAndProcessBatch(context.Background()))
 
-	assert.Empty(t, er.calls)
 	assertNoPendingMessages(t, mr)
 }
 
 func TestEnsureConsumerGroup_IdempotentOnExistingGroup(t *testing.T) {
 	mr := miniredis.RunT(t)
-	c := newTestConsumer(t, mr, rulestore.NewStore(), &fakeEventRouter{})
+	c := newTestConsumer(t, mr)
 
 	require.NoError(t, c.ensureConsumerGroup(context.Background()))
 	// Second call must not return an error.
@@ -793,7 +637,7 @@ func TestNeedLeaderElection(t *testing.T) {
 
 func TestStartCancellation(t *testing.T) {
 	mr := miniredis.RunT(t)
-	c := newTestConsumer(t, mr, rulestore.NewStore(), &fakeEventRouter{})
+	c := newTestConsumer(t, mr)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
@@ -819,51 +663,15 @@ func makeAuditEvent(verb string, stage auditv1.Stage, resource, name string) aud
 	return ev
 }
 
-func makeWatchRule(
-	name string,
-	resources, versions, groups []string,
-) configv1alpha1.WatchRule {
-	ops := []configv1alpha1.OperationType{configv1alpha1.OperationAll}
-	return configv1alpha1.WatchRule{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
-		Spec: configv1alpha1.WatchRuleSpec{
-			Rules: []configv1alpha1.ResourceRule{
-				{
-					Operations:  ops,
-					APIGroups:   groups,
-					APIVersions: versions,
-					Resources:   resources,
-				},
-			},
-		},
-	}
-}
-
 func TestRunAutoClaimCycle_ReclaimsIdleMessages(t *testing.T) {
 	mr := miniredis.RunT(t)
 
-	// A /scale event is reclaimed and ACKed. Nothing routes any more (object mirroring is
-	// the splice's job since R3, and the scale field patch rides the parent per-type
-	// stream since DEC-A), so the ACK below is the proof processMessage ran on a reclaim.
-	rs := rulestore.NewStore()
-	rs.AddOrUpdateWatchRule(
-		makeWatchRule("scale-rule", []string{"deployments"}, []string{"v1"}, []string{"apps"}),
-		"my-target", "default",
-		"my-provider", "default",
-		"main", "",
-	)
-
-	er := &fakeEventRouter{}
-	c := newTestConsumer(t, mr, rs, er)
+	// The ACK below is the proof processMessage ran on a reclaim — nothing
+	// routes from the canonical stream any more.
+	c := newTestConsumer(t, mr)
 	require.NoError(t, c.ensureConsumerGroup(context.Background()))
 
-	ev := makeAuditEvent("patch", auditv1.StageResponseComplete, "deployments", "web")
-	ev.ObjectRef.APIGroup = "apps"
-	ev.ObjectRef.Subresource = "scale"
-	ev.ResponseObject = &runtime.Unknown{
-		Raw: []byte(`{"kind":"Scale","apiVersion":"autoscaling/v1","spec":{"replicas":3}}`),
-	}
-	pushAuditMessage(t, mr, ev)
+	pushAuditMessage(t, mr, makeAuditEvent("create", auditv1.StageResponseComplete, "configmaps", "cm"))
 
 	// Read but do NOT ACK — simulates a crashed consumer leaving a pending entry.
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
@@ -898,13 +706,12 @@ func TestRunAutoClaimCycle_ReclaimsIdleMessages(t *testing.T) {
 		c.processMessage(context.Background(), msg)
 	}
 
-	assert.Empty(t, er.calls, "no consumer route is left for audit events")
 	assertNoPendingMessages(t, mr)
 }
 
 func TestRunAutoClaimCycle_NoopWhenNoPendingMessages(t *testing.T) {
 	mr := miniredis.RunT(t)
-	c := newTestConsumer(t, mr, rulestore.NewStore(), &fakeEventRouter{})
+	c := newTestConsumer(t, mr)
 	require.NoError(t, c.ensureConsumerGroup(context.Background()))
 
 	// Should not panic or error with an empty stream.
@@ -920,10 +727,6 @@ func TestStart_EnsureGroupRetriesUntilContextCancelled(t *testing.T) {
 			Group:      "test-group",
 			ConsumerID: "test-consumer",
 		},
-		rulestore.NewStore(),
-		&fakeEventRouter{},
-		nil,
-		nil,
 		logr.Discard(),
 	)
 	require.NoError(t, err)
@@ -944,10 +747,6 @@ func TestReadAndProcessBatch_XReadGroupErrorReturnsError(t *testing.T) {
 			Group:      "test-group",
 			ConsumerID: "test-consumer",
 		},
-		rulestore.NewStore(),
-		&fakeEventRouter{},
-		nil,
-		nil,
 		logr.Discard(),
 	)
 	require.NoError(t, err)
@@ -958,8 +757,7 @@ func TestReadAndProcessBatch_XReadGroupErrorReturnsError(t *testing.T) {
 
 func TestReadAndProcessBatch_RecreatesGroupOnNoGroup(t *testing.T) {
 	mr := miniredis.RunT(t)
-	er := &fakeEventRouter{}
-	c := newTestConsumer(t, mr, rulestore.NewStore(), er)
+	c := newTestConsumer(t, mr)
 	require.NoError(t, c.ensureConsumerGroup(context.Background()))
 
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
@@ -979,7 +777,7 @@ func TestReadAndProcessBatch_RecreatesGroupOnNoGroup(t *testing.T) {
 
 func TestRunAutoClaimCycle_RecreatesGroupOnNoGroup(t *testing.T) {
 	mr := miniredis.RunT(t)
-	c := newTestConsumer(t, mr, rulestore.NewStore(), &fakeEventRouter{})
+	c := newTestConsumer(t, mr)
 	require.NoError(t, c.ensureConsumerGroup(context.Background()))
 
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})

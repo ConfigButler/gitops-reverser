@@ -77,7 +77,7 @@ have opposite fates (full analysis + diagram + code in **§4.1**):
 | **CR2** | **`/scale` lands in the parent type's log, in RV order.** A scale of `deployments/foo` is an entry in `…:deployments:audit:stream` at the parent's post-scale resourceVersion — consumed by the same freshness tail and splice as every other parent change. |
 | **CR3** | **`/scale` reuses the existing field-patch writer.** No new apply path: the entry resolves to a `git.FieldPatch` event ([`applyFieldPatch`](../../../internal/git/plan_flush.go#L204)) on the freshness side and a `spec.replicas` mutation on the splice side. Only the *source* of the field-patch changes. |
 | **CR4** | **CommitRequest finalize preserves the ordering guarantee** that every mutation made before the CommitRequest is included in the finalized commit — now via the CommitRequest's `resourceVersion` as a cross-type watermark, not single-stream position. |
-| **CR5** | **CommitRequest leaves the audit pipeline.** It is a control object, never mirrored, never checkpointed; its finalize is driven by its own controller, not by a stream consumer. |
+| **CR5** | **CommitRequest leaves the audit *consumer*.** It is a control object — never checkpointed, never materialized, no stream consumer drives it; its finalize is driven by its own controller. Its per-type mirror entry remains (every mutating event is mirrored, IR8) and is read **on demand** by the controller as the attribution source: the author comes from the CR's own create audit event, exactly as in the consumer era. |
 | **CR6** | **Body completeness survives; the dedupe goes.** The official↔additional body merge keeps working; the `auditID` decision/dedupe dance is deleted because the RV-keyed stream absorbs duplicates (same basis as R7). |
 | **CR7** | **Subtractive.** The net diff is red: the consumer, its CommitRequest handler, the canonical queue/metrics, and the scale routing on the consumer all go. |
 
@@ -154,6 +154,32 @@ same RV barrier, but the stream variant re-derives the object (and `rv_C`) the c
 holds, and re-implements retry/leader-election the controller already has. The barrier — not the
 trigger's location — is the load-bearing part. See §7 for the "typed handler" generalization, which
 the barrier makes optional rather than necessary.
+
+*As landed (C-B2, revised in-session) — the author gate STAYS; attribution rides the audit path.*
+A first cut dropped the author match ("the controller can't know the creator"), and was rejected:
+a CommitRequest must never finish someone else's window. The insight that restores the gate:
+**every request enters through the audit ingestion path — the CommitRequest's create included** —
+and `mirrorByType` already lands it in `…commitrequests:audit:stream`. So the controller runs a
+small state machine:
+
+1. **ATTRIBUTE** — `WaitingForAuditEvent` is literal: poll the commitrequests per-type stream
+   (newest-first, matched by namespace/name + UID guard, late lane included) until the CR's own
+   create event appears; take the author from it (`resolveUserInfo`, impersonation-aware). Not
+   observed within 60s → terminal `Failed` ("could not attribute") — an unattributable save is an
+   error, fail closed. Attribution doubles as the **ordering pacer**: everything the author did
+   before creating the CR entered the ingest path before the CR's own event, so once attribution
+   succeeds those mutations are already mirrored and the snapshot+barrier provably covers them.
+   This closed the race the first e2e run exposed (a controller watch event outruns audit ingest;
+   the finalize either found no window or a window missing the just-made edit).
+2. **DELAY (optional)** — `spec.delaySeconds` (0–300) holds the finalize after creation as an
+   extra collect window; the author's further changes still join the open window. The window can
+   still be closed earlier by another author's change (the window-roll behaviour is untouched) or
+   by the provider's commit-window timer.
+3. **FINALIZE, author-bound** — fresh snapshot, barrier, then the strict author+target match. An
+   open window belonging to a different author/GitTarget replies with the distinct
+   `FinalizeWindowMismatch` outcome: the foreign window is left open and the CommitRequest
+   terminates as `NoOpenWindow` with the message "the open commit window belongs to a different
+   author or GitTarget".
 
 ### DEC-C — delete the canonical Queue + AuditConsumer; re-anchor the Joiner *(CR1, CR6, CR7)*
 
@@ -334,17 +360,21 @@ last-applied stream-ID (a cursor read); a small drain-coordinator the reconciler
 condition above across `G`'s claimed types (from the watched-type table), with a bounded timeout
 that falls back to a plain finalize (degrade to "commit what's there," never hang a reconcile).
 
-**Residual race — honestly, the same one we have today.** The barrier guarantees every pre-C
-mutation *already delivered to its stream* is applied. It cannot include a pre-C mutation whose
-audit event is still in flight (webhook hasn't mirrored it) or arrived out of order into the **late
-lane** (measured ~3.2%, [audit-log-ingestion-and-ordering.md](audit-log-ingestion-and-ordering.md)
-§7). The **current** canonical design has the identical gap — it relies on "by the time the
-CommitRequest's audit event is processed, the earlier events were processed," which is itself a
-delivery-order assumption. We do not make it worse and we do not pretend to close it: the next
-checkpoint sweep is the correctness backstop (a missed mutation is caught at re-anchor, attributed
-to the bulk author rather than the user — a known, accepted limitation, R11/DEC-5). A short
-quiescence on `G`'s streams past `rv_C` (reusing the tail's existing burst-settle) is the pragmatic
-narrower if measurement ever shows it matters; it is **not** in the first cut.
+**Residual race — honestly, the same one we have today, and how the trigger gap closed.** The
+barrier guarantees every pre-C mutation *already delivered to its stream* is applied. It cannot
+include a pre-C mutation whose audit event is still in flight (webhook hasn't mirrored it) or
+arrived out of order into the **late lane** (measured ~3.2%,
+[audit-log-ingestion-and-ordering.md](audit-log-ingestion-and-ordering.md) §7). The canonical
+design had the same in-flight gap, but its *trigger* rode the same ingest path as the mutations
+(the CR's own audit event), which roughly equalized the delays. A controller watch event arrives
+**faster** than audit ingest, and the first C-B2 e2e run proved it immediately (the generateName
+spec's edit + save back-to-back produced a finalize that ran before the edit was mirrored).
+**Landed answer: re-anchor the trigger on the audit path** — the controller does not finalize
+until the CommitRequest's *own* create event is observed in its per-type stream (the DEC-B
+attribution step). Mutations made before the CR entered the ingest path before the CR's event,
+so observation of the CR's event implies theirs are mirrored; the snapshot+barrier then orders
+them into the window. What remains uncovered is exactly the old gap: ingest-path *reordering*
+(late lane), backstopped by the next checkpoint sweep (bulk attribution, R11/DEC-5).
 
 ## 7. The generalization (optional, not required)
 
@@ -372,7 +402,7 @@ replaces is deleted** (the same discipline R2→R3 used).
 | **C-A1** ✅ *(landed 2026-06-11)* | Producer: route `/scale` onto the parent key, keep `subresource=scale` field (revise IR1/§5.4). | scale events appear in the parent `:audit:stream` at the parent RV; the `…scale` sibling stream is gone. |
 | **C-A2** ✅ *(landed 2026-06-11)* | Consumers: `auditChangeFromEntry` (tail) and `foldAuditEntry` (splice — via `foldScaleEntry`) handle `subresource=scale`; `translateScaleToAssignments` already lived in `subresource_translate.go`. The consumer's scale routing was deleted outright (routeAuditEvent/routeScaleFieldPatch/routeEvents/routeOne/buildFieldPatchEvent + the pipeline metrics they alone emitted) rather than left disabled — less to demolish in C-C. | a scale is reflected in Git via the freshness tail within a window **and** survives a correctness reconcile (no replicas flip-flop); e2e for `/scale` green with the consumer's scale path disabled. |
 | **C-B1** ✅ *(landed 2026-06-11; snapshot API revised 2026-06-11)* | Add the watermark drain-coordinator (per-tail cursor + `FinalizeAtWatermark`). Implemented: each tail records its last-APPLIED stream ID (anchor at start, advanced only after a batch's apply returns); **`Manager.TakeTypeSnapshot(ctx, gitDest)`** reads each claimed type's current stream top via the optional `auditHighWaterReader` capability — per-type, no cross-type RV comparison, correct for aggregated-API types; **`Manager.DrainTailsToSnapshot(ctx, snapshot, timeout)`** polls the §6 condition per type in the snapshot (cursor ≥ snapshot[T]; empty/opaque → skip; no-tail → skip; polls only in-memory cursor map — no Redis during wait loop); **`EventRouter.FinalizeAtWatermark(…, snapshot)`** = drain + finalize, returning `barrierReached` for the Option-A degrade; **`EventRouter.TakeTypeSnapshot`** exposes the snapshot builder to the future CommitRequestReconciler (C-B2). Design rationale: [commitrequest-multi-finalize-design.md](commitrequest-multi-finalize-design.md). | a barrier unit test proves "finalize includes all pre-snapshot upserts per type." |
-| **C-B2** | Move finalize into `CommitRequestReconciler` (capture `rv_C`, barrier, finalize, status); delete the consumer's `isCommitRequestCreate`/`handleCommitRequest`. | the CommitRequest e2e is green driven entirely by the controller; the consumer no longer references CommitRequest. |
+| **C-B2** ✅ *(landed 2026-06-11)* | Finalize moved into `CommitRequestReconciler` as the DEC-B state machine: uncached re-read (stale-cache guard) → stamp → **ATTRIBUTE** (poll the CR's own create event in `…commitrequests:audit:stream` via `LookupCommitRequestAuthor`; 60s bound → `Failed` fail-closed) → optional **`spec.delaySeconds`** collect window (new CRD field, 0–300) → fresh `TakeTypeSnapshot` → `FinalizeAtWatermark` with the **attributed author** (Option-A 15s bound, `commitrequest_barrier_timeouts_total`, visible degrade in `status.message`) → terminal status with bounded conflict retry. The author gate is strict; a foreign window replies `FinalizeWindowMismatch` → phase `NoOpenWindow` + explanatory message. Landed **simpler** than the coordinator proposal (delta in [commitrequest-multi-finalize-design.md](commitrequest-multi-finalize-design.md) §12): `MaxConcurrentReconciles=1` IS the multi-CommitRequest serialization; the snapshot is re-taken fresh per attempt (no annotation persistence); attribution-on-the-audit-path replaces any rv_C capture AND closes the §6 trigger race the first e2e run exposed. The consumer's `isCommitRequestCreate`/`handleCommitRequest`/`writeCommitRequestStatus` were deleted along with its dead `ruleStore`/`eventRouter`/kube-client fields; the consumer is now a pure ACK-drainer awaiting C-C. | the CommitRequest e2e is green driven entirely by the controller; the consumer no longer references CommitRequest. |
 | **C-C** | Delete the canonical `Queue`, `AuditConsumer`, canonical metrics, and flags; delete the Joiner's `claim`/`commit`/`release` + decision key (§4.1), keeping only `parkBody`/`waitForBody`/`mergeParkedBody`; webhook = decode→classify→merge→mirror. | nothing constructs or reads `gitopsreverser.audit.events.v1`; no `audit:decision:v1:*` keys; a duplicate-delivery test shows zero extra commits; full suite + e2e green; the diff is mostly red. |
 
 ## 9. Open questions

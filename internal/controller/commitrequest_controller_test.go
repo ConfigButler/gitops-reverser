@@ -32,6 +32,9 @@ import (
 var _ = Describe("CommitRequest controller", func() {
 	const namespace = "default"
 
+	// The suite registers the reconciler without a Finalizer, so these specs
+	// cover the stamp-only path; the full barrier+finalize flow is covered by
+	// the unit tests in commitrequest_controller_unit_test.go.
 	It("stamps a freshly created CommitRequest as WaitingForAuditEvent", func() {
 		commitRequest := &configbutleraiv1alpha1.CommitRequest{
 			ObjectMeta: metav1.ObjectMeta{
@@ -56,7 +59,7 @@ var _ = Describe("CommitRequest controller", func() {
 		}, 10*time.Second, 200*time.Millisecond).Should(Succeed())
 	})
 
-	It("does not overwrite a terminal phase written by the audit consumer", func() {
+	It("does not overwrite a terminal phase that is already recorded", func() {
 		commitRequest := &configbutleraiv1alpha1.CommitRequest{
 			ObjectMeta: metav1.ObjectMeta{
 				GenerateName: "save-",
@@ -79,7 +82,7 @@ var _ = Describe("CommitRequest controller", func() {
 				configbutleraiv1alpha1.CommitRequestPhaseWaitingForAuditEvent))
 		}, 10*time.Second, 200*time.Millisecond).Should(Succeed())
 
-		// Simulate the audit consumer writing the terminal phase.
+		// Simulate a finalize having recorded the terminal phase.
 		var fetched configbutleraiv1alpha1.CommitRequest
 		Expect(k8sClient.Get(ctx, key, &fetched)).To(Succeed())
 		fetched.Status.Phase = configbutleraiv1alpha1.CommitRequestPhaseCommitted

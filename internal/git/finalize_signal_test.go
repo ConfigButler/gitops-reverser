@@ -256,7 +256,7 @@ func TestHandleFinalizeSignal_DifferentAuthorLeavesWindowOpen(t *testing.T) {
 
 	res := <-resultCh
 	require.NoError(t, res.Err)
-	assert.Equal(t, FinalizeNoOpenWindow, res.Outcome, "another author's save must not finalize alice's window")
+	assert.Equal(t, FinalizeWindowMismatch, res.Outcome, "another author's save must not finalize alice's window")
 	assert.NotNil(t, loop.openWindow, "alice's open window must be left open")
 	assert.Equal(t, "alice", loop.openWindow.Author)
 }
@@ -288,7 +288,7 @@ func TestHandleFinalizeSignal_DifferentTargetLeavesWindowOpen(t *testing.T) {
 
 	res := <-resultCh
 	require.NoError(t, res.Err)
-	assert.Equal(t, FinalizeNoOpenWindow, res.Outcome, "a finalize for another target must not finalize this window")
+	assert.Equal(t, FinalizeWindowMismatch, res.Outcome, "a finalize for another target must not finalize this window")
 	assert.NotNil(t, loop.openWindow, "the team-a window must be left open")
 	assert.Equal(t, "team-a", loop.openWindow.GitTarget)
 }

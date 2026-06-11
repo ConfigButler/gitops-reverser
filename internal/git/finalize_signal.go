@@ -37,6 +37,10 @@ const (
 	FinalizeCommitted FinalizeOutcome = "Committed"
 	// FinalizeNoOpenWindow means there was no open commit window to finalize.
 	FinalizeNoOpenWindow FinalizeOutcome = "NoOpenWindow"
+	// FinalizeWindowMismatch means an open window exists but belongs to a
+	// different author or GitTarget than the signal, so it was left open. The
+	// caller can surface "not your window" distinctly from "nothing pending".
+	FinalizeWindowMismatch FinalizeOutcome = "WindowMismatch"
 )
 
 // FinalizeSignal is the "finalize the open commit window now" work item. It
@@ -47,9 +51,11 @@ type FinalizeSignal struct {
 	// window. An empty string keeps the generated grouped-commit message.
 	CommitMessage string
 
-	// Author is the effective user that requested the finalize. The signal
-	// only finalizes an open window whose author matches; this binds "the
-	// open window" to "the requesting author's open window".
+	// Author is the effective user that requested the finalize, attributed
+	// from the requester's own audit event (for a CommitRequest: its create
+	// event in the commitrequests per-type stream). The signal only finalizes
+	// an open window whose author matches; this binds "the open window" to
+	// "the requesting author's open window".
 	Author string
 	// GitTargetName is the name of the GitTarget the finalize is scoped to.
 	GitTargetName string

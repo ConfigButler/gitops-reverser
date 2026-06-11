@@ -389,10 +389,6 @@ func main() {
 			TLSEnabled: cfg.auditRedisTLS,
 			ConsumerID: consumerID,
 		},
-		ruleStore,
-		eventRouter,
-		mgr.GetClient(),
-		mgr.GetAPIReader(),
 		ctrl.Log.WithName("audit-consumer"),
 	)
 	fatalIfErr(consumerErr, "unable to initialize audit stream consumer")
@@ -436,8 +432,11 @@ func main() {
 		os.Exit(1)
 	}
 	if err := (&controller.CommitRequestReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:       mgr.GetClient(),
+		Scheme:       mgr.GetScheme(),
+		APIReader:    mgr.GetAPIReader(),
+		Finalizer:    eventRouter,
+		AuthorLookup: auditByTypeQueue,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "CommitRequest")
 		os.Exit(1)

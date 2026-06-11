@@ -791,7 +791,7 @@ func (l *branchWorkerEventLoop) handleFinalizeSignal(signal *FinalizeSignal) {
 			"signalTarget", signal.GitTargetNamespace+"/"+signal.GitTargetName,
 			"windowAuthor", l.openWindow.Author,
 			"windowTarget", l.openWindow.GitTargetNamespace+"/"+l.openWindow.GitTarget)
-		signal.reply(FinalizeResult{Outcome: FinalizeNoOpenWindow, Branch: l.w.Branch})
+		signal.reply(FinalizeResult{Outcome: FinalizeWindowMismatch, Branch: l.w.Branch})
 		return
 	}
 

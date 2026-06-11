@@ -6,6 +6,11 @@
 > [canonical-stream-retirement.md](canonical-stream-retirement.md) §9. The same session
 > also settled the other §9 questions: body merge KEPT (re-decide once the Joiner is
 > merge-only after C-C), duplicate-absorption test goes in with C-C.
+> **IMPLEMENTED with C-B2 (2026-06-11):** `watch.FinalizeBarrierTimeout` (15 s constant),
+> `gitopsreverser_commitrequest_barrier_timeouts_total` (incremented in
+> `EventRouter.FinalizeAtWatermark`), and the degrade sentence in `CommitRequest`
+> `status.message` (`barrierDegradeMessage` in `internal/controller`); the phase stays
+> `Committed`/`NoOpenWindow` — a timeout never fails the request.
 > Captured: 2026-06-11 · Decided by: Simon
 
 ## 1. The promise a CommitRequest makes

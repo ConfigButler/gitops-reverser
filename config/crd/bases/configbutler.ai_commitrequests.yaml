@@ -61,6 +61,19 @@ spec:
           spec:
             description: spec defines the desired state of CommitRequest
             properties:
+              delaySeconds:
+                description: |-
+                  DelaySeconds optionally holds the finalize for this many seconds after
+                  the CommitRequest's creation, acting as an extra collect window:
+                  changes the author makes in the meantime still join the open commit
+                  window and are included in the finalized commit. Omitted or 0 finalizes
+                  as soon as the CommitRequest is attributed to its author. The window
+                  can still be closed earlier by another author's change or by the
+                  provider's commit window timer, exactly as without a CommitRequest.
+                format: int32
+                maximum: 300
+                minimum: 0
+                type: integer
               gitTargetRef:
                 description: |-
                   GitTargetRef names the GitTarget whose open commit window to finalize.
@@ -101,8 +114,12 @@ spec:
                 type: string
               message:
                 description: |-
-                  Message is a human-readable detail for the terminal phase. It is set when
-                  Phase is Failed and carries the reason the finalize could not complete.
+                  Message is a human-readable detail for the terminal phase. When Phase is
+                  Failed it carries the reason the finalize could not complete. On a
+                  Committed or NoOpenWindow finalize it may note that the commit was made
+                  without the full ordering guarantee (the audit pipeline did not drain
+                  within the barrier timeout, so an edit made just before this
+                  CommitRequest may land in the next commit).
                 type: string
               observedTime:
                 description: ObservedTime is the timestamp at which the terminal phase

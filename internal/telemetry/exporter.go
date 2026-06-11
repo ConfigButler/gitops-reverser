@@ -115,6 +115,14 @@ var (
 	// pruned.
 	TypeLifecycleSweepTotal metric.Int64Counter
 
+	// CommitRequestBarrierTimeoutsTotal counts CommitRequest finalizes that proceeded
+	// after the watermark barrier timed out (Option A,
+	// docs/design/stream/commitrequest-barrier-timeout-decision.md): the commit was
+	// still made, but without the "every pre-CommitRequest mutation is included"
+	// ordering guarantee — the degrade is also surfaced in the CommitRequest status.
+	// A sustained increase means per-type tails are not draining within the 15s bound.
+	CommitRequestBarrierTimeoutsTotal metric.Int64Counter
+
 	// MaterializationSyncEventsTotal counts demand-axis transitions the checkpoint driver
 	// handles, labelled by {kind} (SyncRequested/SyncStarted/TypeSynced/SyncFailed/Released).
 	// It tracks demand-driven checkpoint activity per the materialization lifecycle
@@ -326,6 +334,7 @@ func registerCounters() error {
 		{"gitopsreverser_type_lifecycle_reconcile_total", &TypeLifecycleReconcileTotal},
 		{"gitopsreverser_type_lifecycle_sweep_total", &TypeLifecycleSweepTotal},
 		{"gitopsreverser_materialization_sync_events_total", &MaterializationSyncEventsTotal},
+		{"gitopsreverser_commitrequest_barrier_timeouts_total", &CommitRequestBarrierTimeoutsTotal},
 	}
 	for _, s := range counters {
 		v, err := otelMeter.Int64Counter(s.name)

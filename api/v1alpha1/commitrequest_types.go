@@ -26,19 +26,22 @@ import (
 type CommitRequestPhase string
 
 const (
-	// CommitRequestPhaseWaitingForAuditEvent is the initial phase: the object
-	// was created but gitops-reverser has not yet observed its audit event.
+	// CommitRequestPhaseWaitingForAuditEvent is the initial phase: the
+	// CommitRequest's own create audit event — the source its author is
+	// attributed from, and the anchor that orders the finalize after the
+	// author's earlier changes — has not been observed yet, or the finalize
+	// it gates (optional delay + audit-pipeline drain + commit) has not
+	// completed.
 	CommitRequestPhaseWaitingForAuditEvent CommitRequestPhase = "WaitingForAuditEvent"
 	// CommitRequestPhaseCommitted is terminal: the open commit window was
 	// finalized and status.branch / status.sha are set.
 	CommitRequestPhaseCommitted CommitRequestPhase = "Committed"
-	// CommitRequestPhaseNoOpenWindow is terminal: the audit event arrived but
-	// there was no open commit window to finalize. This is not an error.
+	// CommitRequestPhaseNoOpenWindow is terminal: there was no open commit
+	// window to finalize. This is not an error.
 	CommitRequestPhaseNoOpenWindow CommitRequestPhase = "NoOpenWindow"
-	// CommitRequestPhaseFailed is terminal: the audit event arrived but the
-	// open commit window could not be finalized (for example a failed local
-	// commit or a saturated branch-worker queue). status.message carries the
-	// failure detail.
+	// CommitRequestPhaseFailed is terminal: the open commit window could not
+	// be finalized (for example a failed local commit or a saturated
+	// branch-worker queue). status.message carries the failure detail.
 	CommitRequestPhaseFailed CommitRequestPhase = "Failed"
 )
 
@@ -76,6 +79,18 @@ type CommitRequestSpec struct {
 	// +kubebuilder:validation:MaxLength=1024
 	// +kubebuilder:validation:Pattern=`^[^\x00-\x09\x0B-\x1F\x7F]*$`
 	Message string `json:"message,omitempty"`
+
+	// DelaySeconds optionally holds the finalize for this many seconds after
+	// the CommitRequest's creation, acting as an extra collect window:
+	// changes the author makes in the meantime still join the open commit
+	// window and are included in the finalized commit. Omitted or 0 finalizes
+	// as soon as the CommitRequest is attributed to its author. The window
+	// can still be closed earlier by another author's change or by the
+	// provider's commit window timer, exactly as without a CommitRequest.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=300
+	DelaySeconds int32 `json:"delaySeconds,omitempty"`
 }
 
 // CommitRequestStatus defines the observed state of CommitRequest.
@@ -85,8 +100,12 @@ type CommitRequestStatus struct {
 	// +kubebuilder:validation:Enum=WaitingForAuditEvent;Committed;NoOpenWindow;Failed
 	Phase CommitRequestPhase `json:"phase,omitempty"`
 
-	// Message is a human-readable detail for the terminal phase. It is set when
-	// Phase is Failed and carries the reason the finalize could not complete.
+	// Message is a human-readable detail for the terminal phase. When Phase is
+	// Failed it carries the reason the finalize could not complete. On a
+	// Committed or NoOpenWindow finalize it may note that the commit was made
+	// without the full ordering guarantee (the audit pipeline did not drain
+	// within the barrier timeout, so an edit made just before this
+	// CommitRequest may land in the next commit).
 	// +optional
 	Message string `json:"message,omitempty"`
 

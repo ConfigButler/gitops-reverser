@@ -191,6 +191,7 @@ func (r *EventRouter) FinalizeAtWatermark(
 		if !barrierReached {
 			r.Log.Info("finalize watermark barrier timed out; finalizing without the ordering guarantee",
 				"gitTarget", gitTargetNamespace+"/"+gitTargetName)
+			recordBarrierTimeout(gitTargetName, gitTargetNamespace)
 		}
 	}
 	result, err := r.FinalizeGitTargetWindow(ctx, author, gitTargetName, gitTargetNamespace, message)
@@ -207,6 +208,18 @@ func (r *EventRouter) TakeTypeSnapshot(
 		return nil
 	}
 	return r.WatchManager.TakeTypeSnapshot(ctx, types.NewResourceReference(gitTargetName, gitTargetNamespace))
+}
+
+// recordBarrierTimeout counts an Option-A barrier degrade (the finalize went ahead
+// after the watermark wait expired). No-op until the counter is registered.
+func recordBarrierTimeout(gitTargetName, gitTargetNamespace string) {
+	if telemetry.CommitRequestBarrierTimeoutsTotal == nil {
+		return
+	}
+	telemetry.CommitRequestBarrierTimeoutsTotal.Add(context.Background(), 1, metric.WithAttributes(
+		attribute.String("gittarget_namespace", gitTargetNamespace),
+		attribute.String("gittarget_name", gitTargetName),
+	))
 }
 
 // recordBackgroundResyncFailure counts a fire-and-forget resync whose apply failed or

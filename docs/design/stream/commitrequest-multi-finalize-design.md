@@ -1,6 +1,10 @@
 # C-B2: per-GitTarget finalize coordinator (Option A design)
 
-> Status: **design — proposed before C-B2 implementation**
+> Status: **superseded in part — C-B2 LANDED 2026-06-11 in a simpler form; see §12.**
+> The per-type snapshot analysis (§3) and the ordering invariant (§1) are the parts that
+> shipped; the coordinator goroutine, the annotation persistence, and the requeue-poll
+> state machine did not — `MaxConcurrentReconciles=1` plus a fresh snapshot per attempt
+> deliver the same guarantees with less machinery.
 > Context: [canonical-stream-retirement.md](canonical-stream-retirement.md) §8 C-B2 row
 > + the multi-CommitRequest ordering hazard raised 2026-06-11
 
@@ -328,6 +332,9 @@ today; it would be wired in `cmd/main.go` where the reconciler is registered).
 
 ## 10. What changes in the audit consumer
 
+*(Landed with C-B2 — `commit_request.go` was deleted outright; `applyFinalizeResultToStatus`
+and friends moved to `internal/controller/commitrequest_finalize.go`.)*
+
 After C-B2 lands:
 
 - `isCommitRequestCreate` — **deleted**
@@ -351,3 +358,46 @@ C-A2). After C-B2 it returns early for everything. C-C then deletes the file ent
 | Q4 | The annotation `configbutler.ai/finalize-watermark-rv` — is a separate `metadata` Patch acceptable, or should rv_C go into the CRD status (requires schema bump)? | CRD versioning |
 
 The answers to Q3 and Q4 are the most load-bearing before writing the implementation.
+
+---
+
+## 12. As landed (C-B2, 2026-06-11): the simplifications
+
+The implementation kept this doc's per-type snapshot (§3) and ordering invariant (§1)
+but dropped three pieces of machinery. The reasoning mirrors the Option-A timeout memo's
+own rejection of its option C: CommitRequests are rare, so blocking one dedicated
+reconcile worker for ≤15 s is fine, and everything built to avoid that blocking was
+weight without benefit.
+
+1. **No FinalizeCoordinator.** The reconciler runs barrier → finalize → status **inline**
+   in one `Reconcile` invocation, and the controller is registered with
+   `MaxConcurrentReconciles: 1`. A single worker serializes concurrent CommitRequests in
+   workqueue (≈ creation) order — exactly the FIFO the coordinator channel would have
+   provided, because the channel was filled in reconcile order anyway. The §1 invariant
+   holds by construction: no two barrier/finalize pairs ever interleave.
+2. **No annotation, no persisted rv_C.** Every attempt (first reconcile, conflict retry,
+   post-restart redelivery) calls `TakeTypeSnapshot` fresh. A later snapshot waits on a
+   **superset** of the create-time entries — conservative, still bounded by the 15 s
+   timeout, and correct without any cross-restart state. (§8's own fallback analysis
+   already proved this safe; landing made the fallback the only path.)
+3. **The author comes from the CR's own audit event — attribution as a state.** §3's
+   `finalizeRequest.author` field never named its source; the landed design makes it
+   explicit: the reconciler polls `…commitrequests:audit:stream` (which `mirrorByType`
+   already fills) for the CR's create event, takes `resolveUserInfo(event).Username`,
+   and only then finalizes with the strict author match. Unattributable within 60s →
+   `Failed`, fail closed. The same wait re-anchors the trigger on the audit ingest path,
+   closing the watch-event-outruns-ingest race the first e2e run exposed — see the DEC-B
+   "as landed" note in [canonical-stream-retirement.md](canonical-stream-retirement.md) §4.
+   A new `spec.delaySeconds` (0–300) optionally holds the finalize as an extra collect
+   window after creation.
+
+The stale-cache hazard that motivated the coordinator's UID bookkeeping is handled by an
+**uncached APIReader re-read** before any work: a watch echo whose cached object still
+says `WaitingForAuditEvent` after the terminal phase was written short-circuits on the
+live read. A crash between finalize and status write re-runs the idempotent flow on
+redelivery and lands `NoOpenWindow` — the same behaviour the consumer's XAUTOCLAIM
+redelivery had.
+
+The §11 questions resolve as: **Q1** — the metric increments in
+`EventRouter.FinalizeAtWatermark` next to the degrade log (one place, covers any future
+caller); **Q2/Q3/Q4** — moot (no channel, no annotation, no persisted watermark).

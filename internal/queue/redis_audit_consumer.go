@@ -32,17 +32,13 @@ import (
 	"github.com/redis/go-redis/v9"
 	authnv1 "k8s.io/api/authentication/v1"
 	auditv1 "k8s.io/apiserver/pkg/apis/audit/v1"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 
 	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
-	"github.com/ConfigButler/gitops-reverser/internal/auditutil"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
-	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
 	"github.com/ConfigButler/gitops-reverser/internal/sanitize"
-	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
 const (
@@ -79,18 +75,6 @@ var errAuditEventObjectIsStatus = errors.New("audit event object is a metav1.Sta
 // requestObject of a finalizer-removal PATCH.
 var errAuditEventObjectPartial = errors.New("audit event object body is a partial object (no kind)")
 
-// AuditEventRouter is the subset of watch.EventRouter used by the consumer.
-// watch.EventRouter satisfies this interface without modification. RouteToGitTargetEventStream
-// now carries only the /scale subresource → parent field-patch (R3): object mirroring moved to
-// the per-type splice, so the consumer no longer routes full-object events.
-type AuditEventRouter interface {
-	RouteToGitTargetEventStream(event git.Event, gitDest itypes.ResourceReference) error
-	FinalizeGitTargetWindow(
-		ctx context.Context,
-		author, gitTargetName, gitTargetNamespace, message string,
-	) (git.FinalizeResult, error)
-}
-
 // AuditConsumerConfig configures the Redis stream consumer.
 type AuditConsumerConfig struct {
 	Addr       string
@@ -107,23 +91,19 @@ type AuditConsumerConfig struct {
 	ConsumerID string
 }
 
-// AuditConsumer reads audit events from a Redis stream and routes them into
-// the existing git write pipeline via EventRouter.
+// AuditConsumer drains the canonical audit stream. Every job the stream had
+// has been relocated onto the per-type substrate (object mirroring → splice,
+// R2/R3; /scale → parent per-type stream, C-A2; CommitRequest finalize →
+// CommitRequestReconciler, C-B2), so the consumer only ACKs entries to keep
+// the stream's pending list bounded until C-C deletes the stream, the
+// producer's canonical enqueue, and this consumer outright
+// (docs/design/stream/canonical-stream-retirement.md).
 type AuditConsumer struct {
-	client      *redis.Client
-	stream      string
-	group       string
-	consumerID  string
-	ruleStore   *rulestore.RuleStore
-	eventRouter AuditEventRouter
-	log         logr.Logger
-
-	// kubeClient writes CommitRequest status subresources. apiReader performs
-	// uncached reads of CommitRequest objects so a freshly-created object is
-	// visible even before the controller-runtime cache has synced it. Both may
-	// be nil, in which case CommitRequest handling is disabled.
-	kubeClient client.Client
-	apiReader  client.Reader
+	client     *redis.Client
+	stream     string
+	group      string
+	consumerID string
+	log        logr.Logger
 
 	// One-shot log gates for startup-milestone visibility.
 	firstGroupReady sync.Once
@@ -131,14 +111,9 @@ type AuditConsumer struct {
 }
 
 // NewAuditConsumer creates a new AuditConsumer. It does not start consuming;
-// call Start to begin the consume loop. kubeClient and apiReader are used for
-// CommitRequest handling and may be nil to disable it.
+// call Start to begin the consume loop.
 func NewAuditConsumer(
 	cfg AuditConsumerConfig,
-	ruleStore *rulestore.RuleStore,
-	eventRouter AuditEventRouter,
-	kubeClient client.Client,
-	apiReader client.Reader,
 	log logr.Logger,
 ) (*AuditConsumer, error) {
 	if strings.TrimSpace(cfg.Addr) == "" {
@@ -171,15 +146,11 @@ func NewAuditConsumer(
 	}
 
 	return &AuditConsumer{
-		client:      redis.NewClient(options),
-		stream:      stream,
-		group:       group,
-		consumerID:  consumerID,
-		ruleStore:   ruleStore,
-		eventRouter: eventRouter,
-		log:         log.WithName("audit-consumer"),
-		kubeClient:  kubeClient,
-		apiReader:   apiReader,
+		client:     redis.NewClient(options),
+		stream:     stream,
+		group:      group,
+		consumerID: consumerID,
+		log:        log.WithName("audit-consumer"),
 	}, nil
 }
 
@@ -318,55 +289,20 @@ func (c *AuditConsumer) runAutoClaimCycle(ctx context.Context) {
 	}
 }
 
-// processMessage handles a single stream entry: parses the audit event,
-// matches rules, builds git.Event(s), routes them, and ACKs.
+// processMessage drains a single stream entry. Nothing routes from the
+// canonical stream any more: full-object writes are reconciled by the per-type
+// splice (R3), the /scale field patch rides the PARENT type's :audit:stream
+// since DEC-A (C-A2), and the CommitRequest finalize is driven by the
+// CommitRequestReconciler behind the watermark barrier (C-B2). The parse is
+// kept only so a poison-pill payload stays visible in the logs before its ACK.
 func (c *AuditConsumer) processMessage(ctx context.Context, msg redis.XMessage) {
 	c.firstMessage.Do(func() {
 		c.log.Info("First audit message consumed from stream", "msgID", msg.ID, "stream", c.stream)
 	})
-	log := c.log.WithValues("msgID", msg.ID)
 
-	auditEvent, err := parseAuditEvent(msg.Values)
-	if err != nil {
-		log.Error(err, "Failed to parse audit event; skipping and ACKing to avoid poison-pill")
-		c.ackMessage(ctx, msg.ID)
-		return
+	if _, err := parseAuditEvent(msg.Values); err != nil {
+		c.log.Error(err, "Failed to parse audit event; ACKing to avoid poison-pill", "msgID", msg.ID)
 	}
-
-	// Only process ResponseComplete entries to avoid duplicates across stages.
-	if auditEvent.Stage != auditv1.StageResponseComplete {
-		c.ackMessage(ctx, msg.ID)
-		return
-	}
-
-	// Only process mutating verbs.
-	op, ok := auditutil.VerbToOperation(auditEvent.Verb)
-	if !ok {
-		c.ackMessage(ctx, msg.ID)
-		return
-	}
-
-	if auditEvent.ObjectRef == nil {
-		c.ackMessage(ctx, msg.ID)
-		return
-	}
-
-	// CommitRequest create events drive the "finalize the open window now"
-	// path. They are handled before rule matching and never flow into the
-	// resource-write pipeline.
-	if c.isCommitRequestCreate(auditEvent) {
-		c.handleCommitRequest(ctx, log, auditEvent)
-		c.ackMessage(ctx, msg.ID)
-		return
-	}
-
-	// Nothing else routes from the canonical stream any more: full-object writes are
-	// reconciled by the per-type splice (R3), and the /scale field patch rides the
-	// PARENT type's :audit:stream since DEC-A (canonical-stream-retirement.md, C-A2) —
-	// translated by the freshness tail and folded by the splice. The consumer's one
-	// remaining job is the CommitRequest finalize above (relocated in C-B, after which
-	// the canonical stream and this consumer are deleted outright, C-C).
-	_ = op
 	c.ackMessage(ctx, msg.ID)
 }
 
