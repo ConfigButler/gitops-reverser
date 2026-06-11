@@ -343,6 +343,36 @@ func (m *Materializer) RestoreSynced(gvr schema.GroupVersionResource, rv string)
 	st.pendingResync = false
 }
 
+// RequestResync flags a claimed, Synced, unfrozen type for an immediate re-anchor and
+// emits SyncRequested — the same transition the periodic sweep applies, available on
+// demand. The ingestion layer uses it as the late-event nudge: an audit event whose RV
+// arrived below its type stream's high-water is diverted to the diagnostic late lane
+// and never replayed, so only a fresh checkpoint folds its effect in; without the nudge
+// the next periodic sweep (~1h) is the backstop and the mirror serves stale state until
+// then. It reports whether a resync was actually requested; any other phase is a no-op
+// (a sync already in flight or pending re-anchor will land at a revision at or above
+// the late event's, which already covers it).
+func (m *Materializer) RequestResync(gvr schema.GroupVersionResource) bool {
+	m.dispatchMu.Lock()
+	defer m.dispatchMu.Unlock()
+
+	m.mu.Lock()
+	now := m.now()
+	var events []MaterializationEvent
+	requested := false
+	if st, ok := m.types[gvr]; ok && !st.frozen &&
+		st.phase == PhaseSynced && !st.pendingResync && len(m.claims[gvr]) > 0 {
+		st.pendingResync = true
+		requested = true
+		events = append(events, m.event(SyncRequested, gvr, st, now))
+	}
+	observers := m.observers
+	m.mu.Unlock()
+
+	dispatchMaterialization(observers, events)
+	return requested
+}
+
 // Sweep is the one periodic pass that does both jobs (DEC-L5): it first GCs leases that
 // were not renewed since the previous sweep, then for each type branches on whether a
 // live claim remains — re-anchor the still-wanted, release the no-longer-wanted. The

@@ -51,6 +51,12 @@ const (
 	RequeueMediumInterval = 5 * time.Minute
 	// RequeueLongInterval is the requeue interval for periodic revalidation.
 	RequeueLongInterval = 10 * time.Minute
+	// RequeueMaterializationSettleInterval is the requeue interval while a Ready GitTarget
+	// still has claimed types pending their checkpoint sync. The materialization roll-up in
+	// status is only computed during reconcile, so a Ready target would otherwise report a
+	// stale pending state for up to RequeueLongInterval; pending phases settle within
+	// seconds, so this keeps status.materialization honest while it converges.
+	RequeueMaterializationSettleInterval = 10 * time.Second
 
 	// RetryInitialDuration is the initial duration for exponential backoff retry.
 	RetryInitialDuration = 100 * time.Millisecond

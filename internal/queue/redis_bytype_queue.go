@@ -134,6 +134,14 @@ type RedisByTypeStreamQueue struct {
 
 	indexedMu sync.Mutex
 	indexed   map[string]struct{}
+
+	// lateNotify, when set, is called after an ordered (numeric-RV) event is diverted to
+	// the late lane because its RV was strictly below the stream's high-water. The late
+	// lane is diagnostic-only — the ordered log never replays the event — so the notifier
+	// lets the materialization layer pull the next checkpoint forward instead of leaving
+	// the mirror stale until the periodic sweep. Best-effort: it must be fast and
+	// non-blocking (it runs on the audit ingest path).
+	lateNotify func(group, resource string)
 }
 
 // NewRedisByTypeStreamQueue creates a per-resource-type Redis stream mirror.
@@ -168,6 +176,11 @@ func NewRedisByTypeStreamQueue(cfg RedisByTypeStreamConfig) (*RedisByTypeStreamQ
 	}, nil
 }
 
+// SetLateEventNotifier wires the late-lane diversion hook; see the lateNotify field.
+func (q *RedisByTypeStreamQueue) SetLateEventNotifier(notify func(group, resource string)) {
+	q.lateNotify = notify
+}
+
 // Enqueue mirrors one canonical audit event into its per-resource-type audit log, routed by
 // the event's resourceVersion (§9): a numeric RV at or above the stream's high-water lands in
 // the strictly-ordered main stream as "<rv>-<subseq>"; a strictly-older RV is diverted to the
@@ -193,6 +206,10 @@ func (q *RedisByTypeStreamQueue) Enqueue(ctx context.Context, event auditv1.Even
 		stream:  base + byTypeAuditStreamSuffix,
 		late:    base + byTypeAuditLateSuffix,
 		idState: base + byTypeAuditIDStateSuffix,
+	}
+	if event.ObjectRef != nil && event.ObjectRef.Subresource == "" {
+		keys.group = event.ObjectRef.APIGroup
+		keys.resource = event.ObjectRef.Resource
 	}
 	switch classifyRV(rv) {
 	case rvNumeric:
@@ -327,11 +344,16 @@ func auditChangeFromEntry(values map[string]interface{}) (git.Event, bool) {
 	return git.Event{Object: obj, Identifier: identifier, Operation: string(op), UserInfo: userInfo}, true
 }
 
-// byTypeAuditKeys bundles the three per-type audit keys one Enqueue touches.
+// byTypeAuditKeys bundles the three per-type audit keys one Enqueue touches, plus the
+// raw (group, resource) identity they were derived from, so the late-lane hook can name
+// the type without re-parsing a key.
 type byTypeAuditKeys struct {
 	stream  string // the strictly RV-ordered main stream
 	late    string // the diagnostic late lane
 	idState string // the observability hash (high-water + counters)
+
+	group    string
+	resource string
 }
 
 // rvClass partitions a resourceVersion into the three ingestion branches of §9.
@@ -383,8 +405,14 @@ func (q *RedisByTypeStreamQueue) ingestOrdered(
 		return nil
 	case isIDTooSmall(err):
 		// The strong key rejected a strictly-older RV — the late-lane signal (P2). The high-water
-		// for the diagnostic payload is the stream's authoritative top (§10).
-		return q.divertLate(ctx, keys, lateReasonOlderThanHighWater, rv, q.streamTopRV(ctx, keys.stream), values)
+		// for the diagnostic payload is the stream's authoritative top (§10). The ordered log will
+		// never replay this event, so nudge the materialization layer to pull the type's next
+		// checkpoint forward (the notifier is best-effort; the periodic sweep stays the backstop).
+		divertErr := q.divertLate(ctx, keys, lateReasonOlderThanHighWater, rv, q.streamTopRV(ctx, keys.stream), values)
+		if divertErr == nil && q.lateNotify != nil && keys.resource != "" {
+			q.lateNotify(keys.group, keys.resource)
+		}
+		return divertErr
 	default:
 		return fmt.Errorf("failed to append entry to %q: %w", keys.stream, err)
 	}

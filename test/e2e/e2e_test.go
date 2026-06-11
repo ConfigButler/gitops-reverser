@@ -224,6 +224,32 @@ func verifyResourceStatus(resourceType, name, ns, expectedStatus, expectedReason
 	Eventually(verifyStatus, "90s", "2s").Should(Succeed())
 }
 
+// waitForGitTargetMaterializationSettled waits until the GitTarget's materialization
+// roll-up reports at least minClaimed claimed types, none of them pending, and all of
+// them synced. A spec that needs live events attributed (authorship, ordering) must
+// create its resources only after this point: anything created while the type's first
+// checkpoint LIST is still running is folded into the unattributed baseline splice and
+// is then — correctly — skipped by the audit tail, which anchors at the checkpoint rv.
+func waitForGitTargetMaterializationSettled(name, ns string, minClaimed int64) {
+	By(fmt.Sprintf("waiting for gittarget '%s' in ns '%s' materialization to settle (>=%d claimed, all synced)",
+		name, ns, minClaimed))
+	Eventually(func(g Gomega) {
+		output, err := kubectlRunInNamespace(ns, "get", "gittarget", name, "-o", "json")
+		g.Expect(err).NotTo(HaveOccurred())
+
+		var obj unstructured.Unstructured
+		g.Expect(json.Unmarshal([]byte(output), &obj)).To(Succeed())
+
+		claimed, _, _ := unstructured.NestedInt64(obj.Object, "status", "materialization", "claimedTypes")
+		synced, _, _ := unstructured.NestedInt64(obj.Object, "status", "materialization", "syncedTypes")
+		pending, _, _ := unstructured.NestedInt64(obj.Object, "status", "materialization", "pendingTypes")
+
+		g.Expect(claimed).To(BeNumerically(">=", minClaimed), "claimed types")
+		g.Expect(pending).To(BeZero(), "pending types")
+		g.Expect(synced).To(Equal(claimed), "synced types should cover all claimed types")
+	}, "120s", "2s").Should(Succeed())
+}
+
 // showControllerLogs displays the current controller logs to help with debugging during test execution.
 func showControllerLogs(context string) {
 	By(fmt.Sprintf("📋 Controller logs %s:", context))

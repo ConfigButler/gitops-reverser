@@ -209,6 +209,12 @@ before the Deployment. The kubelet retry already self-heals; the goal is to make
 catalog's prune decision and the materializer's release — so a discovery blink can never drop a
 live mirror. B5 is a reasonable interim to keep CI green.
 
+> **Steering update (2026-06-11):** B1 will NOT be implemented inside the catalog — the
+> catalog stays a thin discovery wrapper with no time-sensitive state. The omission-grace
+> mechanism moves into the typeset registry instead; see
+> [typeset-owns-discovery-grace.md](./typeset-owns-discovery-grace.md) for the revised
+> plan (B2 lives on there as stage S4).
+
 ---
 
 ## 6. Scope

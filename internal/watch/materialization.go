@@ -53,6 +53,58 @@ const materializationWorkBuffer = 256
 // sweeps (§9).
 const materializationSweepInterval = time.Hour
 
+// lateNudgeMinInterval is the per-type floor between late-event resync nudges, so a
+// sustained run of out-of-order arrivals coalesces into bounded LIST work instead of a
+// re-anchor per event. Within the floor the type's phase gate (pendingResync / a sync in
+// flight) already absorbs repeats; the periodic sweep remains the final backstop.
+const lateNudgeMinInterval = 15 * time.Second
+
+// NudgeTypeResyncForLateEvent is the ingestion layer's late-event hook (wired in cmd):
+// the per-type mirror diverted an audit event below its stream's high-water to the
+// diagnostic late lane, so the ordered log will never replay it and only a fresh
+// checkpoint can fold its effect in promptly — without the nudge the ~1h sweep is the
+// backstop and the mirror serves stale state until then. The per-type stream key carries
+// only (group, resource), so the claimed GVR is resolved off the Materializer inventory;
+// an unclaimed or not-currently-Synced type is a no-op (its next sync covers the event).
+// Best-effort and non-blocking: it runs on the audit webhook's request goroutine.
+func (m *Manager) NudgeTypeResyncForLateEvent(group, resource string) {
+	gvr, ok := m.claimedGVRForGroupResource(group, resource)
+	if !ok {
+		return
+	}
+
+	m.lateNudgeMu.Lock()
+	now := time.Now()
+	if m.lateNudgeAt == nil {
+		m.lateNudgeAt = make(map[schema.GroupVersionResource]time.Time)
+	}
+	limited := now.Sub(m.lateNudgeAt[gvr]) < lateNudgeMinInterval
+	if !limited {
+		m.lateNudgeAt[gvr] = now
+	}
+	m.lateNudgeMu.Unlock()
+	if limited {
+		return
+	}
+
+	if m.materializerInstance().RequestResync(gvr) {
+		m.Log.V(1).Info("late audit event nudged a type resync", "gvr", gvr.String())
+	}
+}
+
+// claimedGVRForGroupResource resolves the (group, resource) pair a per-type stream key
+// carries back to the full claimed GVR via the Materializer inventory (bounded by the
+// catalog). Only a claimed type is returned — an unclaimed one has no consumer whose
+// mirror could go stale.
+func (m *Manager) claimedGVRForGroupResource(group, resource string) (schema.GroupVersionResource, bool) {
+	for _, t := range m.materializerInstance().Inventory() {
+		if t.GVR.Group == group && t.GVR.Resource == resource && len(t.Claimants) > 0 {
+			return t.GVR, true
+		}
+	}
+	return schema.GroupVersionResource{}, false
+}
+
 // materializerInstance returns the lazily-built demand/materialization sibling to the
 // followability registry, so a zero-value Manager (used widely in tests) needs no explicit
 // setup. It mirrors typeRegistryInstance (manager_catalog.go).

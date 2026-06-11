@@ -135,6 +135,52 @@ func TestMaterializer_ClaimDrivesSyncRegardlessOfOrder(t *testing.T) {
 	})
 }
 
+// TestMaterializer_RequestResyncIsTheLateEventNudge proves the on-demand re-anchor: a
+// claimed Synced type can be flagged for an immediate resync (one SyncRequested, consumed
+// by the next BeginSync into Resyncing), repeats coalesce while the resync is pending, and
+// an unclaimed or non-Synced type is a no-op — exactly the late-lane diversion contract.
+func TestMaterializer_RequestResyncIsTheLateEventNudge(t *testing.T) {
+	clock := &fakeClock{t: time.Unix(3_000, 0)}
+	m := syncedFixture(t, clock, depGVR())
+	rec := &matRecorder{}
+	m.Subscribe(rec.observe)
+
+	if !m.RequestResync(depGVR()) {
+		t.Fatalf("a claimed Synced type must accept a resync request")
+	}
+	if rec.count(SyncRequested) != 1 {
+		t.Fatalf("the nudge must emit one SyncRequested, got %d", rec.count(SyncRequested))
+	}
+	// A second nudge before the driver picks it up coalesces into the pending one.
+	if m.RequestResync(depGVR()) {
+		t.Fatalf("a repeat nudge with a resync already pending must be a no-op")
+	}
+	if rec.count(SyncRequested) != 1 {
+		t.Fatalf("a coalesced nudge must not emit another SyncRequested, got %d", rec.count(SyncRequested))
+	}
+
+	// The driver consumes the pending resync: Synced -> Resyncing; a nudge mid-flight is a
+	// no-op (the in-flight sync lands at a revision at or above the late event's).
+	if !m.BeginSync(depGVR()) {
+		t.Fatalf("BeginSync must consume the pending resync")
+	}
+	if ph, _ := m.Phase(depGVR()); ph != PhaseResyncing {
+		t.Fatalf("phase = %q, want Resyncing", ph)
+	}
+	if m.RequestResync(depGVR()) {
+		t.Fatalf("a nudge while Resyncing must be a no-op")
+	}
+	m.SyncSucceeded(depGVR(), "R2")
+
+	// An unclaimed Synced type never resyncs on a nudge: no consumer's mirror can go stale.
+	unclaimed := widgetGVR()
+	mu := newMaterializer(clock.now)
+	mu.OnLifecycleEvent(lc(TypeActivated, unclaimed))
+	if mu.RequestResync(unclaimed) {
+		t.Fatalf("an unclaimed type must not accept a resync request")
+	}
+}
+
 // TestMaterializer_ReactivatingSyncedReannouncesTypeSynced is the post-restart "mirror goes
 // silent" guard: a checkpoint restored from durable state on boot is Synced but its original
 // TypeSynced was already consumed (RestoreSynced is silent). When the registry re-activates a

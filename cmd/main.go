@@ -241,6 +241,12 @@ func main() {
 	})
 	fatalIfErr(err, "unable to initialize per-resource-type audit redis queue")
 
+	// Late-event nudge: an ordered event diverted to the diagnostic late lane (its RV arrived
+	// below the stream high-water, e.g. concurrent audit batches interleaving) will never be
+	// replayed by the per-type tail, so let the materialization layer pull the type's next
+	// checkpoint forward instead of serving a silently stale mirror until the ~1h sweep.
+	auditByTypeQueue.SetLateEventNotifier(watchMgr.NudgeTypeResyncForLateEvent)
+
 	// Per-resource-type current-objects snapshot: loaded once when a type activates (not per
 	// GitTarget), beside the audit stream under the same base key. Shares the producer's Redis
 	// connection and key prefix. See

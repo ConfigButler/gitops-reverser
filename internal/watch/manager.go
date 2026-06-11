@@ -135,6 +135,12 @@ type Manager struct {
 	declaredGVRsMu sync.Mutex
 	declaredGVRs   map[string]map[schema.GroupVersionResource]struct{}
 
+	// lateNudgeMu guards lateNudgeAt: the last time a late-lane diversion nudged a type's
+	// resync (NudgeTypeResyncForLateEvent), the per-type floor that keeps sustained
+	// out-of-order arrivals from churning checkpoint LISTs.
+	lateNudgeMu sync.Mutex
+	lateNudgeAt map[schema.GroupVersionResource]time.Time
+
 	// lifecycleEvents carries per-type registry transitions (TypeActivated / TypeRemoved /
 	// …) from the registry's updater to the drain goroutine that drives the per-type
 	// reconcile/sweep. lifecycleConsumerOnce guards the one-time subscribe + goroutine start.

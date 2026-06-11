@@ -208,6 +208,7 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// sweep, so a healthy target always renews between sweeps; a deleted target stops reconciling,
 	// so its claims age out. Demand bookkeeping only — it never gates readiness, so a transient
 	// resolve failure is logged and retried next reconcile.
+	materializationSettling := false
 	if r.EventRouter != nil && r.EventRouter.WatchManager != nil {
 		gitDest := types.NewResourceReference(target.Name, target.Namespace)
 		if declareErr := r.EventRouter.WatchManager.DeclareForGitTarget(ctx, gitDest); declareErr != nil {
@@ -226,6 +227,7 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			NotFollowableTypes: clampIntToInt32(sum.NotFollowable),
 			ObservedTime:       &now,
 		}
+		materializationSettling = sum.Pending > 0
 	}
 
 	r.setReadyCondition(
@@ -238,6 +240,12 @@ func (r *GitTargetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, err
 	}
 
+	// While claimed types are still pending their checkpoint sync, requeue fast so the
+	// materialization roll-up converges with the actual phase transitions (which complete
+	// within seconds) instead of going stale until the next periodic revalidation.
+	if materializationSettling {
+		return ctrl.Result{RequeueAfter: RequeueMaterializationSettleInterval}, nil
+	}
 	return ctrl.Result{RequeueAfter: RequeueLongInterval}, nil
 }
 

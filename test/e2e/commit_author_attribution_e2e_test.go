@@ -97,6 +97,12 @@ var _ = Describe("Commit Author Attribution", Label("manager"), Ordered, func() 
 		err = applyFromTemplate("test/e2e/templates/manager/watchrule-configmap.tmpl", data, testNs)
 		Expect(err).NotTo(HaveOccurred(), "failed to apply WatchRule")
 		verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Ready", "")
+
+		// Authorship only flows through the per-event audit tail. A ConfigMap created
+		// while the configmaps type is still building its first checkpoint would land in
+		// the unattributed baseline splice instead (fallback author), so wait until the
+		// claimed type is Synced before producing the impersonated writes.
+		waitForGitTargetMaterializationSettled(gitTargetName, testNs, 1)
 	})
 
 	AfterAll(func() {
