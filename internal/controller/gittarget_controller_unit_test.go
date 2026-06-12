@@ -46,31 +46,31 @@ func TestIsConditionTrue(t *testing.T) {
 		{
 			name:          "empty conditions returns false",
 			conditions:    nil,
-			conditionType: GitTargetConditionEventStreamLive,
+			conditionType: GitTargetConditionSynced,
 			want:          false,
 		},
 		{
 			name: "condition present with status True returns true",
 			conditions: []metav1.Condition{
-				{Type: GitTargetConditionEventStreamLive, Status: metav1.ConditionTrue},
+				{Type: GitTargetConditionSynced, Status: metav1.ConditionTrue},
 			},
-			conditionType: GitTargetConditionEventStreamLive,
+			conditionType: GitTargetConditionSynced,
 			want:          true,
 		},
 		{
 			name: "condition present with status False returns false",
 			conditions: []metav1.Condition{
-				{Type: GitTargetConditionEventStreamLive, Status: metav1.ConditionFalse},
+				{Type: GitTargetConditionSynced, Status: metav1.ConditionFalse},
 			},
-			conditionType: GitTargetConditionEventStreamLive,
+			conditionType: GitTargetConditionSynced,
 			want:          false,
 		},
 		{
 			name: "condition present with status Unknown returns false",
 			conditions: []metav1.Condition{
-				{Type: GitTargetConditionEventStreamLive, Status: metav1.ConditionUnknown},
+				{Type: GitTargetConditionSynced, Status: metav1.ConditionUnknown},
 			},
-			conditionType: GitTargetConditionEventStreamLive,
+			conditionType: GitTargetConditionSynced,
 			want:          false,
 		},
 		{
@@ -78,16 +78,16 @@ func TestIsConditionTrue(t *testing.T) {
 			conditions: []metav1.Condition{
 				{Type: GitTargetConditionValidated, Status: metav1.ConditionTrue},
 			},
-			conditionType: GitTargetConditionEventStreamLive,
+			conditionType: GitTargetConditionSynced,
 			want:          false,
 		},
 		{
 			name: "target condition true alongside other conditions",
 			conditions: []metav1.Condition{
 				{Type: GitTargetConditionValidated, Status: metav1.ConditionTrue},
-				{Type: GitTargetConditionEventStreamLive, Status: metav1.ConditionTrue},
+				{Type: GitTargetConditionSynced, Status: metav1.ConditionTrue},
 			},
-			conditionType: GitTargetConditionEventStreamLive,
+			conditionType: GitTargetConditionSynced,
 			want:          true,
 		},
 	}

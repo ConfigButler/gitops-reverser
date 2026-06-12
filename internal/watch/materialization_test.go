@@ -353,3 +353,81 @@ func TestMaterializationSummaryForGitTarget_RollsUpClaimedPhases(t *testing.T) {
 	// A GitTarget that claims nothing has an empty roll-up.
 	require.Equal(t, GitTargetMaterializationSummary{}, m.MaterializationSummaryForGitTarget(gitDestRef("other")))
 }
+
+// TestMaterializationSummary_ServiceabilityDoesNotFlapOnReAnchor is the Gap-6 regression: the
+// roll-up buckets on serviceability (a usable checkpoint), not on phase == Synced, so a periodic
+// re-anchor (Synced → Resyncing → Synced) keeps the type counted as Synced and Pending at zero
+// throughout. Before the fix a Resyncing type was bucketed as Pending, flapping every liveness
+// signal built on the roll-up on every ~1h re-anchor.
+func TestMaterializationSummary_ServiceabilityDoesNotFlapOnReAnchor(t *testing.T) {
+	m := &Manager{Log: logr.Discard()}
+	gitDest := gitDestRef("svc-target")
+	ref := typeset.GitTargetRef(gitDest.String())
+	mat := m.materializerInstance()
+
+	mat.Declare(ref, []schema.GroupVersionResource{configMapGVR})
+	mat.OnLifecycleEvent(activate(configMapGVR))
+	require.True(t, mat.BeginSync(configMapGVR)) // Requested → Syncing
+	mat.SyncSucceeded(configMapGVR, "10")        // Syncing → Synced, serves rv 10
+
+	atSynced := m.MaterializationSummaryForGitTarget(gitDest)
+	require.Equal(t, 1, atSynced.Synced)
+	require.Zero(t, atSynced.Pending)
+
+	// Periodic re-anchor begins: still serves the prior checkpoint, so still serviceable.
+	require.True(t, mat.RequestResync(configMapGVR)) // pending re-anchor + SyncRequested
+	require.True(t, mat.BeginSync(configMapGVR))     // Synced(pending) → Resyncing
+	atResyncing := m.MaterializationSummaryForGitTarget(gitDest)
+	require.Equal(t, 1, atResyncing.Synced, "a Resyncing type still serves its prior checkpoint")
+	require.Zero(t, atResyncing.Pending, "a re-anchor must not read as not-yet-serviceable")
+
+	mat.SyncSucceeded(configMapGVR, "20") // Resyncing → Synced at the refreshed rv
+	atReSynced := m.MaterializationSummaryForGitTarget(gitDest)
+	require.Equal(t, 1, atReSynced.Synced)
+	require.Zero(t, atReSynced.Pending)
+}
+
+// TestMaterializationSummary_FailingWithPriorCheckpointStaysServiceable proves a re-anchor that
+// errors keeps serving its prior checkpoint: the type is counted as Synced (serviceable) AND
+// Failing (the operator stall signal), but not as a degraded first-sync stall.
+func TestMaterializationSummary_FailingWithPriorCheckpointStaysServiceable(t *testing.T) {
+	m := &Manager{Log: logr.Discard()}
+	gitDest := gitDestRef("fail-after-synced")
+	ref := typeset.GitTargetRef(gitDest.String())
+	mat := m.materializerInstance()
+
+	mat.Declare(ref, []schema.GroupVersionResource{configMapGVR})
+	mat.OnLifecycleEvent(activate(configMapGVR))
+	require.True(t, mat.BeginSync(configMapGVR))
+	mat.SyncSucceeded(configMapGVR, "10")
+	require.True(t, mat.RequestResync(configMapGVR))
+	require.True(t, mat.BeginSync(configMapGVR)) // → Resyncing
+	mat.SyncFailed(configMapGVR)                 // → Failing, prior checkpoint retained
+
+	sum := m.MaterializationSummaryForGitTarget(gitDest)
+	assert.Equal(t, 1, sum.Synced, "still serves its prior checkpoint")
+	assert.Equal(t, 1, sum.Failing)
+	assert.Zero(t, sum.FailingNoCheckpoint, "it has a checkpoint, so not a degraded first-sync stall")
+	assert.Zero(t, sum.Pending)
+}
+
+// TestMaterializationSummary_FailingWithoutCheckpointIsDegradedSignal proves a first-sync failure
+// (no prior checkpoint to serve) is counted as Failing AND FailingNoCheckpoint and NOT as Synced —
+// the signal the controller turns into phase=Degraded.
+func TestMaterializationSummary_FailingWithoutCheckpointIsDegradedSignal(t *testing.T) {
+	m := &Manager{Log: logr.Discard()}
+	gitDest := gitDestRef("fail-first-sync")
+	ref := typeset.GitTargetRef(gitDest.String())
+	mat := m.materializerInstance()
+
+	mat.Declare(ref, []schema.GroupVersionResource{configMapGVR})
+	mat.OnLifecycleEvent(activate(configMapGVR))
+	require.True(t, mat.BeginSync(configMapGVR)) // → Syncing
+	mat.SyncFailed(configMapGVR)                 // → Failing, never landed a checkpoint
+
+	sum := m.MaterializationSummaryForGitTarget(gitDest)
+	assert.Zero(t, sum.Synced)
+	assert.Equal(t, 1, sum.Failing)
+	assert.Equal(t, 1, sum.FailingNoCheckpoint)
+	assert.Zero(t, sum.Pending)
+}

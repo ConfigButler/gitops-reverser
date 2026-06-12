@@ -287,6 +287,60 @@ var _ = Describe("GitTarget Controller Security", func() {
 			Expect(k8sClient.Delete(ctx, gitProvider)).Should(Succeed())
 		})
 
+		It("Should surface the two-axis status (Ready + Synced/phase) and no EventStreamLive", func() {
+			ctx := context.Background()
+
+			gitProvider := &configbutleraiv1alpha1.GitProvider{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-provider-two-axis",
+					Namespace: "default",
+				},
+				Spec: configbutleraiv1alpha1.GitProviderSpec{
+					URL:             "https://github.com/test-org/test-repo.git",
+					AllowedBranches: []string{"main"},
+					SecretRef: &configbutleraiv1alpha1.LocalSecretReference{
+						Name: "test-secret",
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, gitProvider)).Should(Succeed())
+
+			gitTarget := &configbutleraiv1alpha1.GitTarget{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-target-two-axis",
+					Namespace: "default",
+				},
+				Spec: configbutleraiv1alpha1.GitTargetSpec{
+					ProviderRef: configbutleraiv1alpha1.GitProviderReference{
+						Name: "test-provider-two-axis",
+						Kind: "GitProvider",
+					},
+					Branch: "main",
+					Path:   "two-axis-folder",
+				},
+			}
+			Expect(k8sClient.Create(ctx, gitTarget)).Should(Succeed())
+
+			key := types.NamespacedName{Name: "test-target-two-axis", Namespace: "default"}
+			// With no EventRouter wired in the suite, a validated target claims nothing, so the
+			// data plane is trivially current: Ready=True, Synced=True, phase=Synced. The point is
+			// that BOTH axes are present and the retired EventStreamLive condition / snapshot are
+			// not.
+			Eventually(func(g Gomega) {
+				var got configbutleraiv1alpha1.GitTarget
+				g.Expect(k8sClient.Get(ctx, key, &got)).To(Succeed())
+				g.Expect(isConditionTrue(got.Status.Conditions, GitTargetConditionReady)).To(BeTrue())
+				g.Expect(isConditionTrue(got.Status.Conditions, GitTargetConditionSynced)).To(BeTrue())
+				g.Expect(got.Status.Phase).To(Equal(GitTargetPhaseSynced))
+				for _, c := range got.Status.Conditions {
+					g.Expect(c.Type).NotTo(Equal("EventStreamLive"), "EventStreamLive condition was removed")
+				}
+			}, timeout, interval).Should(Succeed())
+
+			Expect(k8sClient.Delete(ctx, gitTarget)).Should(Succeed())
+			Expect(k8sClient.Delete(ctx, gitProvider)).Should(Succeed())
+		})
+
 		It("Should support glob patterns in allowedBranches", func() {
 			ctx := context.Background()
 

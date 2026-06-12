@@ -598,6 +598,17 @@ type TypeMaterialization struct {
 	Claimants    []GitTargetRef
 }
 
+// Serviceable reports whether the type currently holds a usable checkpoint and so can
+// answer a reconcile read now. It is true exactly when CheckpointRV is set: a Synced type,
+// a Resyncing type (still serving the prior checkpoint while it refreshes), and a Failing
+// type that has a prior checkpoint. It is false for Dormant/Requested/Syncing and for a
+// Failing type that never landed a first checkpoint. This is the single predicate the
+// status roll-up buckets on, so a periodic re-anchor (Synced→Resyncing→Synced) never flaps
+// the derived liveness signal. See docs/design/status-design-git-target.md §3.2.
+func (t TypeMaterialization) Serviceable() bool {
+	return t.CheckpointRV != ""
+}
+
 // Inventory returns, sorted by GVR, the materialization status of every type the Materializer
 // tracks (claimed or ever-followable). It is the per-type visibility query (L10) the watch
 // layer turns into metrics and a bounded per-GitTarget status roll-up. It is bounded by the

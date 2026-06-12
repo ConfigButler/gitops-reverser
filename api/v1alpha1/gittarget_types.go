@@ -96,6 +96,13 @@ type GitTargetStatus struct {
 	// +patchStrategy=merge
 	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
 
+	// Phase is a small, derived, human-facing summary of the GitTarget's state —
+	// purely a projection of the conditions (Pending / Initializing / Synced /
+	// Degraded), informational only. Automation must gate on the conditions, never
+	// on phase. See docs/design/status-design-git-target.md §3.3.
+	// +optional
+	Phase string `json:"phase,omitempty"`
+
 	// LastReconcileTime is the timestamp of the most recent reconcile attempt.
 	// +optional
 	LastReconcileTime metav1.Time `json:"lastReconcileTime,omitempty"`
@@ -107,10 +114,6 @@ type GitTargetStatus struct {
 	// LastPushTime is the timestamp of the last successful push.
 	// +optional
 	LastPushTime *metav1.Time `json:"lastPushTime,omitempty"`
-
-	// Snapshot captures the latest initial snapshot reconciliation details.
-	// +optional
-	Snapshot *GitTargetSnapshotStatus `json:"snapshot,omitempty"`
 
 	// Materialization is a bounded roll-up of the demand-driven checkpoint state for the
 	// resource types this GitTarget claims.
@@ -149,38 +152,13 @@ type GitTargetMaterializationStatus struct {
 	ObservedTime *metav1.Time `json:"observedTime,omitempty"`
 }
 
-// GitTargetSnapshotStatus captures initial snapshot progress details.
-type GitTargetSnapshotStatus struct {
-	// LastCompletedTime is the timestamp of the latest completed snapshot reconciliation.
-	// +optional
-	LastCompletedTime *metav1.Time `json:"lastCompletedTime,omitempty"`
-
-	// Stats records counts from the latest snapshot reconciliation diff.
-	// +optional
-	Stats GitTargetSnapshotStats `json:"stats,omitempty"`
-}
-
-// GitTargetSnapshotStats records create/update/delete counts for snapshot sync.
-type GitTargetSnapshotStats struct {
-	// Created is the number of resources created in Git during snapshot sync.
-	// +optional
-	Created int32 `json:"created,omitempty"`
-
-	// Updated is the number of existing resources reconciled during snapshot sync.
-	// +optional
-	Updated int32 `json:"updated,omitempty"`
-
-	// Deleted is the number of stale resources deleted from Git during snapshot sync.
-	// +optional
-	Deleted int32 `json:"deleted,omitempty"`
-}
-
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Provider",type=string,JSONPath=`.spec.providerRef.name`
 // +kubebuilder:printcolumn:name="Branch",type=string,JSONPath=`.spec.branch`
 // +kubebuilder:printcolumn:name="Path",type=string,JSONPath=`.spec.path`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
+// +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="Status",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].message`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 

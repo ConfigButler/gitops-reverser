@@ -224,30 +224,19 @@ func verifyResourceStatus(resourceType, name, ns, expectedStatus, expectedReason
 	Eventually(verifyStatus, "90s", "2s").Should(Succeed())
 }
 
-// waitForGitTargetMaterializationSettled waits until the GitTarget's materialization
-// roll-up reports at least minClaimed claimed types, none of them pending, and all of
-// them synced. A spec that needs live events attributed (authorship, ordering) must
-// create its resources only after this point: anything created while the type's first
-// checkpoint LIST is still running is folded into the unattributed baseline splice and
-// is then — correctly — skipped by the audit tail, which anchors at the checkpoint rv.
-func waitForGitTargetMaterializationSettled(name, ns string, minClaimed int64) {
-	By(fmt.Sprintf("waiting for gittarget '%s' in ns '%s' materialization to settle (>=%d claimed, all synced)",
-		name, ns, minClaimed))
-	Eventually(func(g Gomega) {
-		output, err := kubectlRunInNamespace(ns, "get", "gittarget", name, "-o", "json")
-		g.Expect(err).NotTo(HaveOccurred())
-
-		var obj unstructured.Unstructured
-		g.Expect(json.Unmarshal([]byte(output), &obj)).To(Succeed())
-
-		claimed, _, _ := unstructured.NestedInt64(obj.Object, "status", "materialization", "claimedTypes")
-		synced, _, _ := unstructured.NestedInt64(obj.Object, "status", "materialization", "syncedTypes")
-		pending, _, _ := unstructured.NestedInt64(obj.Object, "status", "materialization", "pendingTypes")
-
-		g.Expect(claimed).To(BeNumerically(">=", minClaimed), "claimed types")
-		g.Expect(pending).To(BeZero(), "pending types")
-		g.Expect(synced).To(Equal(claimed), "synced types should cover all claimed types")
-	}, "120s", "2s").Should(Succeed())
+// waitForGitTargetSynced blocks until the GitTarget reports its data-plane Synced condition
+// True — every followable claimed type is serviceable. It is the first-class replacement for the
+// old roll-up-counting helper: the controller now derives one Synced condition on a serviceability
+// basis (status-design §3.2/§3.3), so tests gate on it via `kubectl wait` instead of re-deriving a
+// settle predicate from raw counts. A spec that needs live events attributed (authorship,
+// ordering) must create its resources only after this point: anything created while a type's first
+// checkpoint is still building is folded into the unattributed baseline splice and is then —
+// correctly — skipped by the audit tail, which anchors at the checkpoint rv.
+func waitForGitTargetSynced(name, ns string) {
+	By(fmt.Sprintf("waiting for gittarget '%s' in ns '%s' to report Synced=True", name, ns))
+	_, err := kubectlRunInNamespace(ns, "wait", "--for=condition=Synced=true",
+		"gittarget/"+name, "--timeout=120s")
+	Expect(err).NotTo(HaveOccurred(), "gittarget %s/%s did not reach Synced=True", ns, name)
 }
 
 // showControllerLogs displays the current controller logs to help with debugging during test execution.

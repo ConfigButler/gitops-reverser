@@ -230,20 +230,32 @@ func (m *Manager) RestoreSyncedCheckpoint(group, version, resource, rv string) {
 }
 
 // GitTargetMaterializationSummary is a bounded per-GitTarget roll-up of demand-axis state —
-// the data the GitTarget status surfaces (L-6/L10). Pending counts types awaiting, building, or
-// refreshing a checkpoint; Synced counts serviceable types; Failing counts per-type stalls;
-// NotFollowable counts claimed types the registry does not currently serve (claim-vs-refused).
+// the data the GitTarget status surfaces (L-6/L10). It buckets on SERVICEABILITY (a usable
+// checkpoint), not on phase == Synced, so a periodic re-anchor (Synced→Resyncing→Synced) does
+// not flap any liveness signal built on it (Gap 6 / status-design §3.2):
+//
+//   - Synced counts serviceable types (Synced, Resyncing, or Failing-with-a-prior-checkpoint);
+//   - Pending counts followable claimed types still building their FIRST checkpoint
+//     (Dormant/Requested/Syncing) — genuinely not-yet-serviceable progressing work;
+//   - Failing counts claimed types whose last sync errored (with or without a checkpoint), the
+//     operator-visible stall signal; a Failing type WITH a checkpoint is also counted in Synced;
+//   - NotFollowable counts claimed types the registry does not currently serve (claim-vs-refused);
+//   - FailingNoCheckpoint is the subset of Failing with no checkpoint to serve — together with
+//     NotFollowable it is what makes the data plane Degraded rather than merely Initializing. It
+//     is not surfaced on the CR; it only feeds the controller's phase derivation.
 type GitTargetMaterializationSummary struct {
-	Claimed       int
-	Synced        int
-	Pending       int
-	Failing       int
-	NotFollowable int
+	Claimed             int
+	Synced              int
+	Pending             int
+	Failing             int
+	NotFollowable       int
+	FailingNoCheckpoint int
 }
 
 // MaterializationSummaryForGitTarget rolls up, for one GitTarget, how many types it claims and
-// where they sit in the checkpoint lifecycle (L-6). It is bounded (counts, not a per-type list)
-// and scoped to the claims keyed by this GitTarget's ref (gitDest.String()).
+// where they sit in the checkpoint lifecycle (L-6), bucketed on serviceability (§3.2). It is
+// bounded (counts, not a per-type list) and scoped to the claims keyed by this GitTarget's ref
+// (gitDest.String()).
 func (m *Manager) MaterializationSummaryForGitTarget(gitDest types.ResourceReference) GitTargetMaterializationSummary {
 	ref := typeset.GitTargetRef(gitDest.String())
 	var s GitTargetMaterializationSummary
@@ -252,19 +264,24 @@ func (m *Manager) MaterializationSummaryForGitTarget(gitDest types.ResourceRefer
 			continue
 		}
 		s.Claimed++
-		if !t.Followable {
+		switch {
+		case !t.Followable:
+			// A type the registry does not currently serve (a claim on a not-installed CRD or a
+			// typo'd rule). Followability loss force-releases the checkpoint, so it is never
+			// serviceable here — surfaced as the claim-vs-refused mismatch only.
 			s.NotFollowable++
-		}
-		switch t.Phase {
-		case typeset.PhaseSynced:
+		case t.Serviceable():
 			s.Synced++
-		case typeset.PhaseFailing:
+			if t.Phase == typeset.PhaseFailing {
+				s.Failing++
+			}
+		case t.Phase == typeset.PhaseFailing:
+			// Failing with no prior checkpoint to serve — a first-sync stall, a degraded signal.
 			s.Failing++
-		case typeset.PhaseRequested, typeset.PhaseSyncing, typeset.PhaseResyncing:
+			s.FailingNoCheckpoint++
+		default:
+			// Dormant/Requested/Syncing and followable: the first checkpoint is in flight.
 			s.Pending++
-		case typeset.PhaseDormant:
-			// Claimed but not yet serviceable (typically not-yet-followable) — surfaced via
-			// Claimed and, when applicable, NotFollowable only.
 		}
 	}
 	return s
