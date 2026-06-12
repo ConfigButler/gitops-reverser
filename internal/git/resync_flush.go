@@ -68,12 +68,22 @@ func (l *branchWorkerEventLoop) handleResyncRequest(req *ResyncRequest) {
 		return
 	}
 
-	// Only retain and push when the resync actually committed. A no-op resync (e.g.
-	// the empty initial snapshot before any rule selects a resource) must not push: an
-	// empty push would advance the cooldown and delay the next real snapshot's push.
+	// Only retain the resync's own pending write when it actually committed. A no-op
+	// resync (e.g. the empty initial snapshot before any rule selects a resource)
+	// retains nothing of its own.
 	if committed {
 		l.pendingWrites = append(l.pendingWrites, *pendingWrite)
 		l.pendingWritesBytes += pendingWrite.ByteSize
+	}
+	// Schedule a push whenever this request CLOSED a live window — that window's
+	// commit is now in pendingWrites and must reach the remote — or the resync itself
+	// committed. Any finalize that closes a window must schedule its push, or the
+	// window's commit is stranded: committed locally but never pushed (the
+	// stranded-write fix, docs/design/stream/commitrequest-design.md §6.4.2; the
+	// failure analyzed in github-e2e-per-type-tail-failure-investigation.md).
+	// maybeSchedulePush no-ops when nothing is pending, so a pure no-op resync that
+	// closed no window stays a no-op and does not disturb the push cooldown.
+	if committed || closedWindow {
 		l.maybeSchedulePush()
 	}
 	l.w.Log.Info("Resync request applied",
