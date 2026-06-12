@@ -19,7 +19,6 @@ limitations under the License.
 package git
 
 import (
-	"fmt"
 	"time"
 )
 
@@ -202,18 +201,6 @@ func (l *branchWorkerEventLoop) resolveCommitRequest(id commitRequestID, result 
 		"outcome", string(result.Outcome),
 		"sha", result.SHA,
 		"err", result.Err)
-}
-
-// resolveFinalizedCommitRequest resolves a request whose window just committed,
-// reading the resulting commit SHA from the branch HEAD. (§6.5 moves this to the
-// push success path with the per-write SHA.)
-func (l *branchWorkerEventLoop) resolveFinalizedCommitRequest(id commitRequestID) {
-	sha, err := l.w.writeBranchHeadSHA()
-	if err != nil {
-		l.resolveCommitRequest(id, FinalizeResult{Branch: l.w.Branch, Err: fmt.Errorf("read commit SHA: %w", err)})
-		return
-	}
-	l.resolveCommitRequest(id, FinalizeResult{Outcome: FinalizeCommitted, SHA: sha, Branch: l.w.Branch})
 }
 
 // rearmAttachTimer arms the deadline timer for the earliest pending finalize, so an

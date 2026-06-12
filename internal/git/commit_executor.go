@@ -27,6 +27,7 @@ import (
 	"time"
 
 	gogit "github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/plumbing"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
@@ -42,11 +43,16 @@ func (w *BranchWorker) executePendingWrites(
 
 	commitsCreated := 0
 
-	for _, pendingWrite := range pendingWrites {
-		created, err := w.executePendingWrite(ctx, repo, worktree, pendingWrite)
+	// Index over the slice so the per-write commit hash is written back onto the
+	// caller's PendingWrite (§6.5): a CommitRequest riding a write resolves to this
+	// SHA on push, and a rebase-replay (which re-runs this loop on the retained
+	// writes) refreshes it to the post-rebase hash.
+	for i := range pendingWrites {
+		created, hash, err := w.executePendingWrite(ctx, repo, worktree, pendingWrites[i])
 		if err != nil {
 			return commitsCreated, err
 		}
+		pendingWrites[i].CommitSHA = hash
 		commitsCreated += created
 	}
 
@@ -106,17 +112,20 @@ func (w *BranchWorker) executePendingWrite(
 	repo *gogit.Repository,
 	worktree *gogit.Worktree,
 	pendingWrite PendingWrite,
-) (int, error) {
+) (int, plumbing.Hash, error) {
 	switch pendingWrite.Kind {
 	case PendingWriteResync:
-		return w.executeResyncPendingWrite(ctx, repo, worktree, pendingWrite)
+		// Resync writes never carry a CommitRequest, so their commit hash is unused;
+		// report ZeroHash to keep the per-write SHA bookkeeping uniform.
+		created, err := w.executeResyncPendingWrite(ctx, repo, worktree, pendingWrite)
+		return created, plumbing.ZeroHash, err
 	case PendingWriteCommit, PendingWriteAtomic:
 	default:
-		return 0, fmt.Errorf("unsupported pending write kind %q", pendingWrite.Kind)
+		return 0, plumbing.ZeroHash, fmt.Errorf("unsupported pending write kind %q", pendingWrite.Kind)
 	}
 
 	if len(pendingWrite.Events) == 0 {
-		return 0, nil
+		return 0, plumbing.ZeroHash, nil
 	}
 
 	target := pendingWrite.Target()
@@ -126,24 +135,25 @@ func (w *BranchWorker) executePendingWrite(
 		encryptionPath,
 		target.EncryptionConfig,
 	); err != nil {
-		return 0, fmt.Errorf("configure secret encryptor: %w", err)
+		return 0, plumbing.ZeroHash, fmt.Errorf("configure secret encryptor: %w", err)
 	}
 
 	anyChanges, err := w.applyPendingWriteEvents(ctx, repo, worktree, pendingWrite.Events)
 	if err != nil {
-		return 0, err
+		return 0, plumbing.ZeroHash, err
 	}
 	if !anyChanges {
-		return 0, nil
+		return 0, plumbing.ZeroHash, nil
 	}
 
 	commitMessage, commitOptions, err := pendingWrite.commitMetadata()
 	if err != nil {
-		return 0, err
+		return 0, plumbing.ZeroHash, err
 	}
 
-	if _, err := worktree.Commit(commitMessage, commitOptions); err != nil {
-		return 0, fmt.Errorf("failed to create commit: %w", err)
+	hash, err := worktree.Commit(commitMessage, commitOptions)
+	if err != nil {
+		return 0, plumbing.ZeroHash, fmt.Errorf("failed to create commit: %w", err)
 	}
 
 	log.FromContext(ctx).Info(
@@ -155,7 +165,7 @@ func (w *BranchWorker) executePendingWrite(
 		"message",
 		commitMessage,
 	)
-	return 1, nil
+	return 1, hash, nil
 }
 
 func (w *BranchWorker) applyPendingWriteEvents(

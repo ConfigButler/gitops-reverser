@@ -23,6 +23,7 @@ import (
 	"strings"
 
 	gogit "github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/plumbing"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
@@ -192,6 +193,17 @@ type PendingWrite struct {
 	// pushed: doing so would advance the push cooldown and delay the next real
 	// snapshot's push past its window.
 	Committed *bool
+
+	// CommitRequest, when set, is the CommitRequest claiming this write: it is
+	// resolved Committed (with CommitSHA) once this write is pushed (§6.5 of
+	// docs/design/stream/commitrequest-design.md). It rides the write through the
+	// push cooldown and the conflict rebase-replay, so the result follows the data.
+	CommitRequest *commitRequestID
+	// CommitSHA is the hash of the commit this write created, captured in
+	// executePendingWrite and refreshed when the write is re-executed on a
+	// rebase-replay (so it is never a stale pre-rebase hash). Zero when the write
+	// produced no commit (no diff).
+	CommitSHA plumbing.Hash
 }
 
 // CommitMessageKind determines which message/authorship path the executor uses.

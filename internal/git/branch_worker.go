@@ -829,9 +829,16 @@ func (l *branchWorkerEventLoop) finalizeOpenWindowWithMessage(reason windowFinal
 		return false
 	}
 	pendingWrite.CommitMessage = effectiveMessage
+	// Carry the claiming CommitRequest onto the write so its result follows the
+	// data: it is resolved Committed once this write is pushed (§6.5).
+	pendingWrite.CommitRequest = pendingCR
 
+	// Commit on a single-element batch so executePendingWrites threads the resulting
+	// commit hash back onto batch[0]; the retained write then carries the real SHA
+	// into the push (and the rebase-replay refreshes it).
+	batch := []PendingWrite{*pendingWrite}
 	hasPendingCommits := len(l.pendingWrites) > 0
-	if err := l.w.commitPendingWrites([]PendingWrite{*pendingWrite}, hasPendingCommits); err != nil {
+	if err := l.w.commitPendingWrites(batch, hasPendingCommits); err != nil {
 		l.w.Log.Error(err, "Commit failed; dropping open window",
 			"reason", string(reason),
 			"windowAuthor", windowAuthor,
@@ -841,15 +848,23 @@ func (l *branchWorkerEventLoop) finalizeOpenWindowWithMessage(reason windowFinal
 		return false
 	}
 
-	l.pendingWrites = append(l.pendingWrites, *pendingWrite)
-	l.pendingWritesBytes += pendingWrite.ByteSize
+	l.pendingWrites = append(l.pendingWrites, batch[0])
+	l.pendingWritesBytes += batch[0].ByteSize
 	l.openWindow = nil
 	l.windowBytes = 0
 
-	// Resolve a claiming CommitRequest. (§6.5 moves this to the push success path
-	// with the per-write SHA; for now resolve at finalize from the local HEAD.)
 	if pendingCR != nil {
-		l.resolveFinalizedCommitRequest(*pendingCR)
+		if batch[0].CommitSHA.IsZero() {
+			// No diff: the change already matches the remote, so no commit was made and
+			// there is nothing to push. Resolve now rather than wait on a push that never
+			// comes. (Stage 6 distinguishes this as Rejected/AlreadyPresent.)
+			l.pendingWrites[len(l.pendingWrites)-1].CommitRequest = nil
+			l.resolveCommitRequest(*pendingCR, FinalizeResult{Outcome: FinalizeNoOpenWindow})
+		} else {
+			// A real commit: resolution moves to the push success path (§6.5). It is no
+			// longer window-pending — it now rides the retained write.
+			delete(l.pendingCRs, *pendingCR)
+		}
 	}
 
 	l.w.Log.Info("Open commit window finalized",
@@ -908,15 +923,38 @@ func (l *branchWorkerEventLoop) pushPending() {
 		l.w.Log.Error(err, "Push failed; pending writes retained for retry",
 			"pendingWrites", len(l.pendingWrites))
 		// Leave pendingWrites in place; do NOT advance lastPushAt — the
-		// design specifies lastPushAt only advances on a successful push.
+		// design specifies lastPushAt only advances on a successful push. A
+		// CommitRequest riding a retained write stays unresolved while we retry.
 		l.stopPushTimer()
 		return
 	}
+
+	// The writes are now on the remote: resolve every CommitRequest riding one with
+	// the pushed commit's own SHA (§6.5) — "Committed" means "on the remote".
+	l.resolvePushedCommitRequests()
 
 	l.pendingWrites = nil
 	l.pendingWritesBytes = 0
 	l.lastPushAt = time.Now()
 	l.stopPushTimer()
+}
+
+// resolvePushedCommitRequests resolves Committed every CommitRequest carried by a
+// just-pushed write, using that write's own commit SHA (per-write, not branch HEAD,
+// since a batched push may stack a later commit on top). A write with no commit (a
+// zero SHA, e.g. a no-diff window) is never sent here — it was resolved at finalize.
+func (l *branchWorkerEventLoop) resolvePushedCommitRequests() {
+	for i := range l.pendingWrites {
+		pw := l.pendingWrites[i]
+		if pw.CommitRequest == nil || pw.CommitSHA.IsZero() {
+			continue
+		}
+		l.resolveCommitRequest(*pw.CommitRequest, FinalizeResult{
+			Outcome: FinalizeCommitted,
+			SHA:     pw.CommitSHA.String(),
+			Branch:  l.w.Branch,
+		})
+	}
 }
 
 func (l *branchWorkerEventLoop) stopPushTimer() {
@@ -1174,31 +1212,6 @@ func (w *BranchWorker) ensureWriteBranch(repo *gogit.Repository) (plumbing.Refer
 	}
 
 	return baseBranch, baseHash, nil
-}
-
-// writeBranchHeadSHA returns the current HEAD SHA of the worker's branch in
-// the local repository. It is called right after finalizeOpenWindow creates a
-// local commit so the resulting SHA can be reported back to a CommitRequest.
-func (w *BranchWorker) writeBranchHeadSHA() (string, error) {
-	w.repoMu.Lock()
-	defer w.repoMu.Unlock()
-
-	provider, err := w.getGitProvider(w.ctx)
-	if err != nil {
-		return "", fmt.Errorf("get GitProvider: %w", err)
-	}
-
-	repo, err := gogit.PlainOpen(w.repoPathForRemote(provider.Spec.URL))
-	if err != nil {
-		return "", fmt.Errorf("open repository: %w", err)
-	}
-
-	ref, err := repo.Reference(plumbing.NewBranchReferenceName(w.Branch), true)
-	if err != nil {
-		return "", fmt.Errorf("resolve branch %q: %w", w.Branch, err)
-	}
-
-	return ref.Hash().String(), nil
 }
 
 func (w *BranchWorker) recordPendingWritesMetrics(pendingWrites []PendingWrite, commitsCreated int) {

@@ -24,11 +24,13 @@ import (
 	"time"
 
 	gogit "github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -126,8 +128,9 @@ func TestAttach_CommitsOpenWindow(t *testing.T) {
 	worker, _, remoteURL := setupCommitPushSplitWorker(t)
 	createPlainGitTarget(t, worker, "team-a", "team-a")
 
+	// lastPushAt left zero so the finalize's push fires immediately; the request is
+	// resolved on that push (§6.5).
 	loop := newBranchWorkerEventLoop(worker, time.Hour)
-	loop.lastPushAt = time.Now()
 	defer loop.stopTimers()
 
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
@@ -150,9 +153,10 @@ func TestAttach_CommitsOpenWindow(t *testing.T) {
 	assert.Equal(t, FinalizeCommitted, res.Outcome)
 	require.NotEmpty(t, res.SHA)
 	assert.Nil(t, loop.openWindow, "the open window must be finalized")
-	require.Len(t, loop.pendingWrites, 1)
+	assert.Empty(t, loop.pendingWrites, "the pushed write is cleared on success")
 
-	// The reported SHA must match local HEAD and carry the attached message verbatim.
+	// The reported SHA must match local HEAD (Committed means on the remote) and
+	// carry the attached message verbatim.
 	repo, err := gogit.PlainOpen(worker.repoPathForRemote(remoteURL))
 	require.NoError(t, err)
 	ref, err := repo.Reference(plumbing.NewBranchReferenceName("main"), true)
@@ -171,7 +175,6 @@ func TestAttach_EmptyMessageUsesGeneratedMessage(t *testing.T) {
 	createPlainGitTarget(t, worker, "team-a", "team-a")
 
 	loop := newBranchWorkerEventLoop(worker, time.Hour)
-	loop.lastPushAt = time.Now()
 	defer loop.stopTimers()
 
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
@@ -205,7 +208,6 @@ func TestAttach_CollectGraceJoinsLaterWindow(t *testing.T) {
 	createPlainGitTarget(t, worker, "team-a", "team-a")
 
 	loop := newBranchWorkerEventLoop(worker, time.Hour)
-	loop.lastPushAt = time.Now()
 	defer loop.stopTimers()
 
 	// Attach first, with a non-zero grace, before any window exists.
@@ -341,4 +343,123 @@ func TestFinalizeOpenWindow_ReturnsCommittedFlag(t *testing.T) {
 
 	assert.True(t, loop.finalizeOpenWindow(), "open window finalized → true")
 	assert.Nil(t, loop.openWindow)
+}
+
+// pushCompetingCommit advances the remote's main from a second clone, so a worker's
+// next push conflicts and rebase-replays.
+func pushCompetingCommit(t *testing.T, remoteURL string) {
+	t.Helper()
+	dir := t.TempDir()
+	repo, worktree := initLocalRepo(t, dir, remoteURL, "main")
+	commitFileChange(t, worktree, dir, "competing.txt", "from another writer\n")
+	require.NoError(t, repo.Push(&gogit.PushOptions{
+		RefSpecs: []config.RefSpec{config.RefSpec("refs/heads/main:refs/heads/main")},
+	}))
+}
+
+// TestAttach_ResyncCutOffCarriesMessageAndResolvesOnPush is the §8.3 intent-
+// durability pin: a resync that cuts an Attached window before its deadline still
+// commits the user's message, and the request resolves Committed once that
+// carrying write is pushed — with the SHA actually on the remote.
+func TestAttach_ResyncCutOffCarriesMessageAndResolvesOnPush(t *testing.T) {
+	worker, serverRepo, _ := setupCommitPushSplitWorker(t)
+	createPlainGitTarget(t, worker, "team-a", "team-a")
+
+	loop := newBranchWorkerEventLoop(worker, time.Hour)
+	defer loop.stopTimers()
+
+	// Open alice's window with one edit.
+	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
+		Events:     []Event{configMapTargetEvent("held", "alice", "team-a")},
+		CommitMode: CommitModePerEvent,
+	}})
+	require.NotNil(t, loop.openWindow)
+
+	// Attach with a distinctive message and a long grace, so the window is Attached
+	// but its finalize deadline has not fired.
+	const message = "save: intent must survive a resync"
+	req := attachReq("alice", 300)
+	req.Message = message
+	serviceAttach(loop, req)
+	require.NotNil(t, loop.openWindow.pendingCR, "the window must be attached")
+	_, resolved := outcome(t, worker)
+	require.False(t, resolved, "the request must not resolve before its window is finalized")
+
+	// Before the deadline, a resync for a different type cuts the window
+	// (resync-before-apply). The cut commit must carry the attached message.
+	scope := schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}
+	resultCh := make(chan ResyncResult, 1)
+	loop.handleResyncRequest(&ResyncRequest{
+		GitTargetName:      "team-a",
+		GitTargetNamespace: "default",
+		ScopeGVR:           &scope,
+		Result:             resultCh,
+	})
+	require.NoError(t, (<-resultCh).Err)
+
+	res, ok := outcome(t, worker)
+	require.True(t, ok, "the cut-off commit's push must resolve the request")
+	require.NoError(t, res.Err)
+	assert.Equal(t, FinalizeCommitted, res.Outcome)
+	require.NotEmpty(t, res.SHA)
+
+	// The commit on the remote carries the user's message verbatim (not the generated
+	// grouped message), and its SHA equals the reported SHA.
+	ref, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
+	require.NoError(t, err)
+	assert.Equal(t, ref.Hash().String(), res.SHA, "the reported SHA must be the commit on the remote")
+	commit, err := serverRepo.CommitObject(ref.Hash())
+	require.NoError(t, err)
+	assert.Equal(t, message, commit.Message, "the cut-off commit must carry the user's message verbatim")
+}
+
+// TestAttach_ConflictReplayResolvesToPostReplaySHA is the §8.3 complementary pin:
+// when the push hits a conflict and rebase-replays, the request resolves to the
+// post-replay commit actually on the remote — never a stale pre-rebase hash.
+func TestAttach_ConflictReplayResolvesToPostReplaySHA(t *testing.T) {
+	worker, serverRepo, remoteURL := setupCommitPushSplitWorker(t)
+	createPlainGitTarget(t, worker, "team-a", "team-a")
+
+	// lastPushAt set so the finalize's push is deferred (a cooldown timer): the
+	// window commits locally, then we move the remote, then push explicitly.
+	loop := newBranchWorkerEventLoop(worker, time.Hour)
+	loop.lastPushAt = time.Now()
+	defer loop.stopTimers()
+
+	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
+		Events:     []Event{configMapTargetEvent("held", "alice", "team-a")},
+		CommitMode: CommitModePerEvent,
+	}})
+	const message = "save: survive a conflict replay"
+	req := attachReq("alice", 0)
+	req.Message = message
+	serviceAttach(loop, req) // finalize now; the push is deferred by the cooldown
+
+	require.Len(t, loop.pendingWrites, 1, "the window commit is retained, awaiting push")
+	_, resolved := outcome(t, worker)
+	require.False(t, resolved, "the request resolves on push, not at finalize")
+	localSHA := loop.pendingWrites[0].CommitSHA
+	require.False(t, localSHA.IsZero())
+
+	// A competing writer advances the remote, so the worker's push conflicts and
+	// rebase-replays onto the new base, producing a fresh commit hash.
+	pushCompetingCommit(t, remoteURL)
+
+	loop.pushPending()
+	require.Empty(t, loop.pendingWrites, "a successful replayed push clears the retained writes")
+
+	res, ok := outcome(t, worker)
+	require.True(t, ok)
+	require.NoError(t, res.Err)
+	assert.Equal(t, FinalizeCommitted, res.Outcome)
+
+	// The reported SHA is the POST-replay commit on the remote, not the stale
+	// pre-replay local hash.
+	ref, err := serverRepo.Reference(plumbing.NewBranchReferenceName("main"), true)
+	require.NoError(t, err)
+	assert.Equal(t, ref.Hash().String(), res.SHA, "the reported SHA must be the commit on the remote")
+	assert.NotEqual(t, localSHA.String(), res.SHA, "the SHA must be refreshed to the post-replay hash")
+	commit, err := serverRepo.CommitObject(ref.Hash())
+	require.NoError(t, err)
+	assert.Equal(t, message, commit.Message, "the replayed commit keeps the user's message")
 }
