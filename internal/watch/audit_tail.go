@@ -106,8 +106,10 @@ func auditTailAnchor(checkpointRV string) string {
 }
 
 // isAuditTailRunning reports whether a per-type audit tail is already running for gvr. It is
-// the "this is not the first time the type became serviceable" signal: once the tail is up it
-// owns live changes, so a periodic re-anchor's TypeSynced must not re-fan a backfill reconcile.
+// the "this is not the first time the type became serviceable" signal: the first TypeSynced (tail
+// not yet running) fans an initial backfill, while a later one (a periodic re-anchor / late-event
+// nudge, tail already live) re-fans the reconcile as a HEAL — deferred by the worker until the
+// commit window is idle — to correct drift the in-order tail cannot express.
 func (m *Manager) isAuditTailRunning(gvr schema.GroupVersionResource) bool {
 	m.auditTailsMu.Lock()
 	defer m.auditTailsMu.Unlock()

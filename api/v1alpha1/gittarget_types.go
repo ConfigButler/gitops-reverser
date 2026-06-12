@@ -134,7 +134,9 @@ type GitTargetMaterializationStatus struct {
 	// +optional
 	SyncedTypes int32 `json:"syncedTypes,omitempty"`
 
-	// PendingTypes is how many claimed types are awaiting, building, or refreshing a checkpoint.
+	// PendingTypes is how many claimed types are still building their FIRST checkpoint and so are
+	// not yet serviceable (Requested/Syncing). A type refreshing an existing checkpoint (Resyncing)
+	// is NOT pending — it still serves the prior checkpoint and counts as Synced.
 	// +optional
 	PendingTypes int32 `json:"pendingTypes,omitempty"`
 

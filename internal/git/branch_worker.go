@@ -686,6 +686,10 @@ func (l *branchWorkerEventLoop) handleQueueItem(item WorkItem) {
 		// preserved, then append the atomic write to pendingWrites and let the
 		// normal cooldown-driven push path decide when to publish.
 		l.finalizeOpenWindowWithReason(windowFinalizeReasonAtomicBeforeApply)
+		// Finalizing the window opened an idle boundary: a heal parked behind that window
+		// arrived BEFORE this atomic, so drain it here to keep arrival order (window, then heal,
+		// then atomic) rather than letting the atomic overtake it.
+		l.applyDeferredHeals()
 
 		pendingWrite, err := l.w.buildAtomicPendingWrite(l.w.ctx, item.Request)
 		if err != nil {

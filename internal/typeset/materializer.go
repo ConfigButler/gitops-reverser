@@ -63,8 +63,8 @@ const (
 	// PhaseRequested has ≥1 claim and is followable, queued for a first sync that has not
 	// started. No checkpoint yet.
 	PhaseRequested Phase = "Requested"
-	// PhaseSyncing has its first checkpoint sync (a streaming-list watch) in flight. Still
-	// nothing to serve, so consumers hold (L4).
+	// PhaseSyncing has its first checkpoint sync (a consistent LIST today; a streaming-list watch
+	// once Rec 6 lands) in flight. Still nothing to serve, so consumers hold (L4).
 	PhaseSyncing Phase = "Syncing"
 	// PhaseSynced has a checkpoint at rv R and is reconcile-serviceable.
 	PhaseSynced Phase = "Synced"

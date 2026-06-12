@@ -84,6 +84,48 @@ func TestHandleResyncRequest_HealDefersWhileWindowOpenThenApplies(t *testing.T) 
 	require.NoError(t, res.Err, "the deferred heal applies cleanly once it gets its turn")
 }
 
+// TestHandleResyncRequest_AtomicDrainsDeferredHealFirst proves the atomic-ordering fix: when an
+// atomic request finalizes an open window (an idle boundary), a heal parked behind that window —
+// which arrived BEFORE the atomic — is drained at that boundary rather than being overtaken by the
+// atomic write.
+func TestHandleResyncRequest_AtomicDrainsDeferredHealFirst(t *testing.T) {
+	worker, _, _ := setupCommitPushSplitWorker(t)
+	createPlainGitTarget(t, worker, "team-a", "team-a")
+
+	loop := newBranchWorkerEventLoop(worker, time.Hour)
+	loop.lastPushAt = time.Now() // avoid an immediate push; we only assert in-memory ordering
+	defer loop.stopTimers()
+
+	// A live edit opens a window, then a heal (for a different type) parks behind it.
+	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
+		Events:     []Event{configMapTargetEvent("held", "alice", "team-a")},
+		CommitMode: CommitModePerEvent,
+	}})
+	require.NotNil(t, loop.openWindow)
+	scope := schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}
+	healCh := make(chan ResyncResult, 1)
+	loop.handleResyncRequest(&ResyncRequest{
+		GitTargetName: "team-a", GitTargetNamespace: "default",
+		ScopeGVR: &scope, Heal: true, Result: healCh,
+	})
+	require.Len(t, loop.deferredHeals, 1, "the heal parks behind the open window")
+
+	// An atomic request arrives: it finalizes the window, and the parked heal must drain at that
+	// boundary (it arrived first) — not be left behind the atomic.
+	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
+		Events:     []Event{configMapTargetEvent("atomic", "reconciler", "team-a")},
+		CommitMode: CommitModeAtomic,
+	}})
+
+	require.Empty(t, loop.deferredHeals, "the atomic finalize drained the parked heal at its idle boundary")
+	select {
+	case res := <-healCh:
+		require.NoError(t, res.Err, "the drained heal applied")
+	default:
+		t.Fatal("the heal must have applied when the atomic finalized the window")
+	}
+}
+
 // TestHandleResyncRequest_HealDoesNotStealSiblingCommitRequestWindow is the shared-worker case of
 // Rec 1: one BranchWorker serves N GitTargets and the commit window is a worker singleton, so a
 // force-finalizing heal could finalize a DIFFERENT GitTarget's held window. A heal scoped to one

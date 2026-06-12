@@ -280,8 +280,10 @@ spec:
                     format: date-time
                     type: string
                   pendingTypes:
-                    description: PendingTypes is how many claimed types are awaiting,
-                      building, or refreshing a checkpoint.
+                    description: |-
+                      PendingTypes is how many claimed types are still building their FIRST checkpoint and so are
+                      not yet serviceable (Requested/Syncing). A type refreshing an existing checkpoint (Resyncing)
+                      is NOT pending — it still serves the prior checkpoint and counts as Synced.
                     format: int32
                     type: integer
                   syncedTypes:
