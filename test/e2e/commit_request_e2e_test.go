@@ -151,6 +151,12 @@ var _ = Describe("Commit Request", Label("commit-request", "audit-consumer"), Or
 			g.Expect(shaErr).NotTo(HaveOccurred())
 			g.Expect(strings.TrimSpace(headSHA)).To(Equal(reportedSHA),
 				"status.sha should match the SHA of the commit on the branch")
+
+			// Exactly one new commit (UC1, §8.1): this is the first commit on a fresh
+			// repo, so main holds exactly one commit — the save did not also trigger a
+			// stray second commit.
+			g.Expect(mustCommitCount(repo.CheckoutDir)).To(Equal(1),
+				"the save must produce exactly one commit on main")
 		}, 2*time.Minute, 3*time.Second).Should(Succeed())
 
 		By("cleaning up the test Deployment and CommitRequest")
@@ -260,6 +266,192 @@ var _ = Describe("Commit Request", Label("commit-request", "audit-consumer"), Or
 		_, _ = kubectlRunInNamespace(testNs, "delete", "commitrequest", generatedName, "--ignore-not-found=true")
 	})
 })
+
+// The UC2 suite exercises a `kubectl apply` bundle that includes a CommitRequest
+// as its FIRST document — the deliberately-hard ordering where the save intent
+// arrives before the work it is meant to save (docs/design/stream/commitrequest-design.md
+// §2 UC2, §6.2, §8.2). A non-zero spec.delaySeconds is the collect-grace that
+// lets the bundle's resources arrive and join the same window after the
+// CommitRequest is attributed, so the whole bundle lands in ONE commit carrying
+// the CommitRequest's message.
+//
+// Its own dedicated Gitea repo (own GitProvider → GitTarget → namespace-scoped
+// Deployment WatchRule) makes the one-commit assertion unambiguous: main does not
+// exist until the bundle is finalized, so the bundle commit is the only commit on
+// main.
+var _ = Describe("Commit Request Bundle (UC2)", Label("commit-request", "audit-consumer"), Ordered, func() {
+	var (
+		testNs        string
+		repo          *RepoArtifacts
+		gitProvName   string
+		gitTargetName string
+		watchRuleName string
+	)
+
+	// A long commitWindow so the silence timer can never be what produces the
+	// commit — only the CommitRequest finalize may (A1).
+	const commitWindow = "300s"
+
+	BeforeAll(func() {
+		By("creating commit-request-bundle test namespace and applying git secrets")
+		testNs = testNamespaceFor("commit-request-bundle")
+		_, _ = kubectlRun("create", "namespace", testNs)
+		repo = SetupRepo(
+			resolveE2EContext(),
+			testNs,
+			fmt.Sprintf("e2e-commit-request-bundle-%d", GinkgoRandomSeed()),
+		)
+		_, err := kubectlRunInNamespace(testNs, "apply", "-f", repo.SecretsYAML)
+		Expect(err).NotTo(HaveOccurred(), "failed to apply git secrets to namespace")
+		applySOPSAgeKeyToNamespace(testNs)
+
+		seed := GinkgoRandomSeed()
+		gitProvName = fmt.Sprintf("commit-request-bundle-gitprovider-%d", seed)
+		gitTargetName = fmt.Sprintf("commit-request-bundle-gittarget-%d", seed)
+		watchRuleName = fmt.Sprintf("commit-request-bundle-watchrule-%d", seed)
+
+		By(fmt.Sprintf("creating GitProvider with commitWindow=%s", commitWindow))
+		createGitProviderWithCommitWindow(gitProvName, testNs, repo.GitSecretHTTP, repo.RepoURLHTTP, commitWindow)
+		verifyResourceStatus("gitprovider", gitProvName, testNs, "True", "Ready", "")
+
+		createGitTarget(gitTargetName, testNs, gitProvName, "e2e/commit-request-bundle", "main")
+		verifyResourceStatus("gittarget", gitTargetName, testNs, "True", "Ready", "")
+
+		// Deployments only (no ConfigMaps): a fresh namespace has no Deployments, so
+		// main stays absent until the bundle is finalized — unlike a ConfigMap rule,
+		// which would mirror the pre-existing kube-root-ca.crt and establish main early.
+		applyDeploymentWatchRule(testNs, watchRuleName, gitTargetName)
+		verifyResourceStatus("watchrule", watchRuleName, testNs, "True", "Ready", "")
+	})
+
+	AfterAll(func() {
+		cleanupWatchRule(watchRuleName, testNs)
+		cleanupGitTarget(gitTargetName, testNs)
+		cleanupNamespacedResource(testNs, "gitprovider", gitProvName)
+		cleanupNamespace(testNs)
+	})
+
+	It("lands a kubectl-apply bundle (CommitRequest first) in one commit with the request's message", func() {
+		basePath := "e2e/commit-request-bundle"
+		seed := GinkgoRandomSeed()
+		message := fmt.Sprintf("bundle save: apply from e2e seed %d", seed)
+		commitRequestName := fmt.Sprintf("commit-request-bundle-save-%d", seed)
+		deployNames := []string{
+			fmt.Sprintf("bundle-deploy-a-%d", seed),
+			fmt.Sprintf("bundle-deploy-b-%d", seed),
+			fmt.Sprintf("bundle-deploy-c-%d", seed),
+		}
+
+		By("confirming nothing is committed yet — the branch does not exist")
+		Consistently(func(g Gomega) {
+			g.Expect(remoteBranchHead(g, repo.CheckoutDir)).To(BeEmpty(),
+				"main must not exist before the bundle is finalized")
+		}, 5*time.Second, 1*time.Second).Should(Succeed())
+
+		By("applying a bundle whose FIRST document is a CommitRequest, then three Deployments")
+		// delaySeconds is sized to comfortably exceed the bundle's per-type ingestion
+		// spread so the collect-grace (§6.2) is deterministic.
+		var bundle strings.Builder
+		bundle.WriteString(commitRequestManifest(testNs, commitRequestName, gitTargetName, message, 8))
+		for _, name := range deployNames {
+			bundle.WriteString("---\n")
+			bundle.WriteString(deploymentManifest(testNs, name))
+		}
+		_, err := kubectlRunWithStdin(testNs, bundle.String(), "apply", "-f", "-")
+		Expect(err).NotTo(HaveOccurred(), "failed to apply the CommitRequest+Deployments bundle")
+
+		By("waiting for the CommitRequest to reach the Committed phase")
+		var reportedSHA string
+		Eventually(func(g Gomega) {
+			phase := commitRequestField(g, testNs, commitRequestName, "{.status.phase}")
+			g.Expect(phase).To(Equal("Committed"),
+				"the bundle's CommitRequest should finalize the collected window and report Committed")
+
+			reportedSHA = commitRequestField(g, testNs, commitRequestName, "{.status.sha}")
+			g.Expect(reportedSHA).NotTo(BeEmpty(), "status.sha should be populated")
+
+			branch := commitRequestField(g, testNs, commitRequestName, "{.status.branch}")
+			g.Expect(branch).To(Equal("main"))
+		}, 2*time.Minute, 3*time.Second).Should(Succeed())
+
+		By("verifying the whole bundle landed in exactly one commit with the request's message")
+		Eventually(func(g Gomega) {
+			pullLatestRepoState(g, repo.CheckoutDir)
+
+			// Exactly one commit on the fresh repo's main: the entire bundle — applied
+			// across the CommitRequest's attribution and the per-type Deployment stream —
+			// collapsed into a single commit (§8.2 step 4).
+			g.Expect(mustCommitCount(repo.CheckoutDir)).To(Equal(1),
+				"the whole bundle must land in exactly one commit")
+
+			subject, logErr := gitRun(repo.CheckoutDir, "log", "-1", "--pretty=%B")
+			g.Expect(logErr).NotTo(HaveOccurred())
+			g.Expect(strings.TrimSpace(subject)).To(Equal(message),
+				"the single commit must carry the CommitRequest's message verbatim")
+
+			headSHA, shaErr := gitRun(repo.CheckoutDir, "rev-parse", "HEAD")
+			g.Expect(shaErr).NotTo(HaveOccurred())
+			g.Expect(strings.TrimSpace(headSHA)).To(Equal(reportedSHA),
+				"status.sha should match the single bundle commit")
+
+			for _, name := range deployNames {
+				expected := filepath.Join(repo.CheckoutDir, basePath,
+					fmt.Sprintf("apps/v1/deployments/%s/%s.yaml", testNs, name))
+				_, statErr := os.Stat(expected)
+				g.Expect(statErr).NotTo(HaveOccurred(),
+					fmt.Sprintf("every bundled Deployment must be present in the one commit: %s", expected))
+			}
+		}, 2*time.Minute, 3*time.Second).Should(Succeed())
+
+		By("cleaning up the bundle Deployments and CommitRequest")
+		for _, name := range deployNames {
+			_, _ = kubectlRunInNamespace(testNs, "delete", "deployment", name, "--ignore-not-found=true")
+		}
+		_, _ = kubectlRunInNamespace(testNs, "delete", "commitrequest", commitRequestName, "--ignore-not-found=true")
+	})
+})
+
+// commitRequestManifest renders a single CommitRequest document with an explicit
+// message and delaySeconds (the collect-grace). It is used to build multi-document
+// `kubectl apply` bundles where the CommitRequest is the first document.
+func commitRequestManifest(namespace, name, gitTargetName, message string, delaySeconds int) string {
+	return fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha1
+kind: CommitRequest
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  gitTargetRef:
+    name: %s
+  message: %q
+  delaySeconds: %d
+`, name, namespace, gitTargetName, message, delaySeconds)
+}
+
+// deploymentManifest renders a single zero-replica Deployment document for use in
+// `kubectl apply` bundles. It mirrors applyScaleTestDeployment but returns the YAML
+// instead of applying it.
+func deploymentManifest(namespace, name string) string {
+	return fmt.Sprintf(`apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  replicas: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: %s
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: %s
+    spec:
+      containers:
+      - name: pause
+        image: registry.k8s.io/pause:3.10
+`, name, namespace, name, name)
+}
 
 // applyCommitRequestWithGenerateName creates a CommitRequest using
 // metadata.generateName and returns the server-allocated name.
