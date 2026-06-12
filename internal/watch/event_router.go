@@ -197,10 +197,15 @@ func (r *EventRouter) resolveWorkerForGitDest(
 // arrival. When the splice holds — the GitTarget does not watch the type, or its checkpoint is not
 // yet Synced (§7 fail-closed) — it no-ops without enqueuing. A genuine fail-closed condition (an
 // unobserved surface, a wobbling type, or a Redis/splice failure) is returned as an error.
+// The heal flag marks a non-urgent drift-correcting re-anchor (a periodic sweep or late-event
+// nudge after the audit tail is already live): the worker DEFERS it while a commit window is open
+// rather than force-finalizing (stealing) it (Rec 1 / the 8f2ad84 regression). A first-sync backfill
+// passes heal=false — it must establish initial state promptly and is ordered before the tail.
 func (r *EventRouter) EmitTypeReconcileForGitDest(
 	ctx context.Context,
 	gitDest types.ResourceReference,
 	gvr schema.GroupVersionResource,
+	heal bool,
 ) error {
 	snapshot, ready, err := r.WatchManager.SpliceSnapshotForType(ctx, gitDest, gvr)
 	if err != nil {
@@ -211,7 +216,7 @@ func (r *EventRouter) EmitTypeReconcileForGitDest(
 		// re-fires the reconcile the instant the checkpoint becomes serviceable.
 		return nil
 	}
-	resultCh, err := r.enqueueScopedResync(ctx, gitDest, gvr, snapshot.Desired, snapshot.Revision)
+	resultCh, err := r.enqueueScopedResync(ctx, gitDest, gvr, snapshot.Desired, snapshot.Revision, heal)
 	if err != nil {
 		return err
 	}
@@ -224,12 +229,17 @@ func (r *EventRouter) EmitTypeReconcileForGitDest(
 // touched. It does NOT stream — the type is gone from the API, so its desired set is
 // definitionally empty. Like the reconcile it is fire-and-forget. A GitTarget that holds no
 // documents of the type produces a no-op commit.
+//
+// A sweep is always a HEAL: a CRD removal is rare housekeeping fanned to EVERY GitTarget (even those
+// that never watched the type), so force-finalizing would steal the open commit window of an
+// unrelated GitTarget sharing the branch worker. Deferring it until the worker is idle drops the
+// orphaned documents without disturbing a held window.
 func (r *EventRouter) EmitTypeSweepForGitDest(
 	ctx context.Context,
 	gitDest types.ResourceReference,
 	gvr schema.GroupVersionResource,
 ) error {
-	resultCh, err := r.enqueueScopedResync(ctx, gitDest, gvr, nil, "")
+	resultCh, err := r.enqueueScopedResync(ctx, gitDest, gvr, nil, "", true)
 	if err != nil {
 		return err
 	}
@@ -239,13 +249,15 @@ func (r *EventRouter) EmitTypeSweepForGitDest(
 
 // enqueueScopedResync resolves the GitTarget's worker and enqueues a type-scoped resync,
 // returning the buffered reply channel. The ScopeGVR restricts the worker's mark-and-sweep to
-// the one type, so desired must carry only that type's objects (empty for a sweep).
+// the one type, so desired must carry only that type's objects (empty for a sweep). heal marks a
+// drift-correcting resync the worker defers while a commit window is open (see EmitType*ForGitDest).
 func (r *EventRouter) enqueueScopedResync(
 	ctx context.Context,
 	gitDest types.ResourceReference,
 	gvr schema.GroupVersionResource,
 	desired []manifestanalyzer.DesiredResource,
 	revision string,
+	heal bool,
 ) (chan git.ResyncResult, error) {
 	worker, err := r.resolveWorkerForGitDest(ctx, gitDest)
 	if err != nil {
@@ -259,6 +271,7 @@ func (r *EventRouter) enqueueScopedResync(
 		GitTargetName:      gitDest.Name,
 		GitTargetNamespace: gitDest.Namespace,
 		ScopeGVR:           &scope,
+		Heal:               heal,
 		Result:             resultCh,
 	})
 	return resultCh, nil

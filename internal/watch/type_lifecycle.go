@@ -127,7 +127,9 @@ func (m *Manager) handleTypeLifecycleEvent(ctx context.Context, log logr.Logger,
 
 	switch ev.Kind {
 	case typeset.TypeActivated:
-		m.reconcileTypeForSyncedTargets(ctx, log, ev.GVR)
+		// A followability (re)activation backfill, not a periodic heal: establish the reconcile
+		// promptly (heal=false).
+		m.reconcileTypeForSyncedTargets(ctx, log, ev.GVR, false)
 	case typeset.TypeRemoved:
 		m.sweepTypeFromSyncedTargets(ctx, log, ev.GVR)
 	case typeset.TypeWobbling, typeset.TypeRecovered, typeset.TypeRefused:
@@ -140,13 +142,26 @@ func (m *Manager) handleTypeLifecycleEvent(ctx context.Context, log logr.Logger,
 // resident table watches the type. A type a GitTarget does not watch is skipped; the splice
 // itself holds (no-op, no sweep) unless the type's checkpoint is Synced (§7 fail-closed), so
 // there is no separate readiness gate. It is the wake for a TypeActivated edge, the
-// materializer's TypeSynced, and an audit-arrival burst.
-func (m *Manager) reconcileTypeForSyncedTargets(ctx context.Context, log logr.Logger, gvr schema.GroupVersionResource) {
+// materializer's TypeSynced, and an audit-arrival burst. heal marks a periodic re-anchor (the
+// audit tail is already live) the worker defers while a commit window is open, versus a first-sync
+// backfill (heal=false) that establishes initial state and is ordered before the tail.
+// reconcileTypeFan returns the per-type reconcile fan, honouring the test seam so the TypeSynced
+// handler's first-sync-vs-heal routing can be observed without a full EventRouter/worker stack.
+func (m *Manager) reconcileTypeFan() func(context.Context, logr.Logger, schema.GroupVersionResource, bool) {
+	if m.reconcileTypeFanOverride != nil {
+		return m.reconcileTypeFanOverride
+	}
+	return m.reconcileTypeForSyncedTargets
+}
+
+func (m *Manager) reconcileTypeForSyncedTargets(
+	ctx context.Context, log logr.Logger, gvr schema.GroupVersionResource, heal bool,
+) {
 	for _, table := range m.allWatchedTypeTables() {
 		if !tableWatchesGVR(table, gvr) {
 			continue
 		}
-		if err := m.EventRouter.EmitTypeReconcileForGitDest(ctx, table.GitDest, gvr); err != nil {
+		if err := m.EventRouter.EmitTypeReconcileForGitDest(ctx, table.GitDest, gvr, heal); err != nil {
 			log.Error(err, "per-type reconcile failed to enqueue",
 				"gitDest", table.GitDest.String(), "gvr", gvr.String())
 			continue

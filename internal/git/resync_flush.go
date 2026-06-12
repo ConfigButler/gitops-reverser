@@ -35,22 +35,85 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
-// handleResyncRequest applies one revision-pinned resync in order on the worker
-// goroutine. It mirrors the atomic-commit path: any open live window is finalized
-// first so arrival order is preserved, the resync is committed as one local commit,
-// retained for the normal cooldown-driven push, and the caller is replied to with the
-// plan's change counts. A build or commit failure replies with the error and commits
-// nothing — the gatherer already guaranteed the snapshot is complete, so a failure
-// here is a write fault, never a partial-snapshot drop.
+// handleResyncRequest applies one revision-pinned resync in order on the worker goroutine, or —
+// for a HEAL resync that arrives while a commit window is open — defers it until the worker is idle
+// so it never force-finalizes (steals) that window (Rec 1 / the 8f2ad84 regression). A non-heal
+// resync, and a heal that arrives with no open window, applies immediately via applyResync.
 func (l *branchWorkerEventLoop) handleResyncRequest(req *ResyncRequest) {
+	if req.Heal && l.openWindow != nil {
+		l.stashDeferredHeal(req)
+		return
+	}
+	l.applyResync(req)
+}
+
+// stashDeferredHeal parks a heal resync until the commit window is idle (applyDeferredHeals drains
+// it). It keeps one heal per (GitTarget, scope): a newer heal for the same key folds a fresher
+// checkpoint, so the older one is superseded and its caller replied to immediately — otherwise the
+// drainScopedResync goroutine waiting on the old request's channel would leak.
+func (l *branchWorkerEventLoop) stashDeferredHeal(req *ResyncRequest) {
+	key := resyncHealKey(req)
+	for i := range l.deferredHeals {
+		if resyncHealKey(l.deferredHeals[i]) == key {
+			l.deferredHeals[i].reply(ResyncResult{})
+			l.deferredHeals[i] = req
+			return
+		}
+	}
+	l.deferredHeals = append(l.deferredHeals, req)
+	l.w.Log.V(1).Info("heal resync deferred until the commit window is idle",
+		"scopeGVR", scopeGVRString(req.ScopeGVR),
+		"gitTarget", req.GitTargetNamespace+"/"+req.GitTargetName,
+		"deferred", len(l.deferredHeals))
+}
+
+// applyDeferredHeals drains every parked heal once no commit window is open, so a heal never
+// force-finalizes a window and never steals a sibling GitTarget's held CommitRequest window on a
+// shared branch worker. A no-op while a window is still open or nothing is parked; the loop calls it
+// at every idle boundary (silence timeout, identity switch, shutdown).
+func (l *branchWorkerEventLoop) applyDeferredHeals() {
+	if l.openWindow != nil || len(l.deferredHeals) == 0 {
+		return
+	}
+	heals := l.deferredHeals
+	l.deferredHeals = nil
+	for _, req := range heals {
+		l.applyResync(req)
+	}
+}
+
+// resyncHealKey identifies a deferred heal by the (GitTarget, scope) it corrects, so a re-stashed
+// heal for the same target+type replaces rather than duplicates the parked one.
+func resyncHealKey(req *ResyncRequest) healKey {
+	return healKey{
+		name:      req.GitTargetName,
+		namespace: req.GitTargetNamespace,
+		scope:     scopeGVRString(req.ScopeGVR),
+	}
+}
+
+// applyResync applies one revision-pinned resync in order on the worker goroutine. It mirrors the
+// atomic-commit path: for a non-heal resync any open live window is finalized first so arrival order
+// is preserved (a heal reaches here only when no window is open, so it finalizes nothing); the
+// resync is committed as one local commit, retained for the normal cooldown-driven push, and the
+// caller is replied to with the plan's change counts. A build or commit failure replies with the
+// error and commits nothing — the gatherer already guaranteed the snapshot is complete, so a failure
+// here is a write fault, never a partial-snapshot drop.
+func (l *branchWorkerEventLoop) applyResync(req *ResyncRequest) {
 	l.w.Log.Info("Handling resync request",
 		"resources", len(req.Desired),
 		"revision", req.Revision,
 		"scopeGVR", scopeGVRString(req.ScopeGVR),
+		"heal", req.Heal,
 		"gitTarget", req.GitTargetNamespace+"/"+req.GitTargetName,
 		"openWindow", l.openWindow != nil,
 		"pendingWrites", len(l.pendingWrites))
-	closedWindow := l.finalizeOpenWindowWithReason(windowFinalizeReasonResyncBeforeApply)
+	// A heal must never finalize a window (it only ever runs at idle); only a non-heal resync
+	// force-finalizes the open window to preserve arrival order before its mark-and-sweep.
+	closedWindow := false
+	if !req.Heal {
+		closedWindow = l.finalizeOpenWindowWithReason(windowFinalizeReasonResyncBeforeApply)
+	}
 
 	stats := &ResyncStats{}
 	committed := false

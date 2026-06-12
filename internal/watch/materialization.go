@@ -155,7 +155,14 @@ func (m *Manager) DeclareForGitTarget(ctx context.Context, gitDest types.Resourc
 	// is idempotent and self-gating, so a one-shot per claim is sufficient and a re-anchor backstops.
 	if m.EventRouter != nil {
 		for _, gvr := range m.newlyDeclaredSyncedGVRs(gitDest, claimed) {
-			if reconcileErr := m.EventRouter.EmitTypeReconcileForGitDest(ctx, gitDest, gvr); reconcileErr != nil {
+			// A newly-claimed already-Synced type's initial backfill (heal=false): establish the
+			// mirror promptly, not deferred as housekeeping.
+			if reconcileErr := m.EventRouter.EmitTypeReconcileForGitDest(
+				ctx,
+				gitDest,
+				gvr,
+				false,
+			); reconcileErr != nil {
 				m.Log.V(1).Info("declare reconcile failed",
 					"gitDest", gitDest.String(), "gvr", gvr.String(), "err", reconcileErr.Error())
 			}
@@ -395,18 +402,16 @@ func (m *Manager) handleMaterializationEvent(ctx context.Context, log logr.Logge
 		m.stopTypeAuditTail(ev.GVR)
 		m.clearTypeObjects(ctx, log, ev.GVR)
 	case typeset.TypeSynced:
-		// The checkpoint just became serviceable. Fan the initial-backfill splice reconcile to
-		// every watching GitTarget ONLY the first time — when the audit tail is not yet running.
-		// A periodic re-anchor's TypeSynced (the sweep, or a late-event nudge) must NOT re-fold the
-		// log into git: once the tail is up it owns live changes with their authorship, so a
-		// re-fan would churn Git, re-attribute live edits to the bulk reconcile's default author,
-		// and — the symptom that surfaced this — finalize (steal) an open commit window a user's
-		// CommitRequest was holding. This mirrors the one-shot principle the Declare path already
-		// states ("we do NOT re-fold the log on every Declare"). The tail keeps git fresh from here.
+		// The checkpoint just became serviceable. The FIRST TypeSynced (tail not yet running) fans
+		// the initial backfill splice to every watching GitTarget. A LATER TypeSynced — a periodic
+		// sweep re-anchor or a late-event nudge, with the tail already live — re-folds the refreshed
+		// checkpoint as a HEAL resync: it catches drift the in-order tail cannot express (orphans, a
+		// deletecollection, a late-lane event) and was DISABLED by 8f2ad84 because a force-finalizing
+		// re-splice stole an open CommitRequest window. Routing it through heal=true lets the worker
+		// DEFER it until no window is open, restoring the checkpoint's correctness role without the
+		// steal (Rec 1). The tail keeps git fresh for in-order live edits between re-anchors.
 		log.V(1).Info("materialization event", "kind", ev.Kind, "gvr", ev.GVR.String(), "rv", ev.RV)
-		if !m.isAuditTailRunning(ev.GVR) {
-			m.reconcileTypeForSyncedTargets(ctx, log, ev.GVR)
-		}
+		m.reconcileTypeFan()(ctx, log, ev.GVR, m.isAuditTailRunning(ev.GVR))
 		m.startTypeAuditTail(ctx, log, ev.GVR, ev.RV)
 	case typeset.SyncStarted, typeset.SyncFailed:
 		log.V(1).Info("materialization event",

@@ -245,6 +245,45 @@ func TestHandleMaterializationEvent_ReleasedClearsCheckpoint(t *testing.T) {
 	assert.Equal(t, "/configmaps", mirror.deletedKey, "Released drops the type's checkpoint")
 }
 
+// TestHandleMaterializationEvent_ReAnchorReFansAsDeferredHeal is the 8f2ad84 regression: a
+// TypeSynced that arrives AFTER the per-type audit tail is running (a periodic sweep re-anchor or a
+// late-event nudge) must NOT be skipped — it must re-fan the per-type reconcile so refreshed
+// checkpoint state (orphans, a deletecollection, a late-lane event) reaches git. Before the fix the
+// re-splice was disabled outright to avoid stealing an open commit window; now it is re-enabled and
+// routed as a HEAL (heal=true), which the worker defers until the window is idle instead of stealing
+// it. The first TypeSynced (tail not yet running) is an initial backfill (heal=false).
+func TestHandleMaterializationEvent_ReAnchorReFansAsDeferredHeal(t *testing.T) {
+	m := &Manager{Log: logr.Discard()}
+	var gotHeal []bool
+	var gotGVR []schema.GroupVersionResource
+	m.reconcileTypeFanOverride = func(
+		_ context.Context, _ logr.Logger, gvr schema.GroupVersionResource, heal bool,
+	) {
+		gotGVR = append(gotGVR, gvr)
+		gotHeal = append(gotHeal, heal)
+	}
+
+	// First TypeSynced: the tail is not yet running, so this is the initial backfill.
+	m.handleMaterializationEvent(context.Background(), logr.Discard(),
+		typeset.MaterializationEvent{Kind: typeset.TypeSynced, GVR: configMapGVR, RV: "10"})
+	require.Equal(t, []bool{false}, gotHeal, "the first TypeSynced fans an initial backfill, not a heal")
+
+	// The first sync has started the per-type audit tail; simulate it being live.
+	m.auditTailsMu.Lock()
+	if m.auditTails == nil {
+		m.auditTails = map[schema.GroupVersionResource]context.CancelFunc{}
+	}
+	m.auditTails[configMapGVR] = func() {}
+	m.auditTailsMu.Unlock()
+
+	// A later TypeSynced (re-anchor) must re-fan — and as a deferred heal, not be skipped.
+	m.handleMaterializationEvent(context.Background(), logr.Discard(),
+		typeset.MaterializationEvent{Kind: typeset.TypeSynced, GVR: configMapGVR, RV: "20"})
+	require.Equal(t, []bool{false, true}, gotHeal,
+		"a re-anchor while the tail runs re-fans the reconcile as a heal (8f2ad84 regression), not a skip")
+	require.Equal(t, []schema.GroupVersionResource{configMapGVR, configMapGVR}, gotGVR)
+}
+
 // syncedViaDriver brings a freshly-claimed type to Synced through the real driver path
 // (Declare → activate → runTypeCheckpointSync), the common L-4 precondition.
 func syncedViaDriver(t *testing.T, m *Manager, gvr schema.GroupVersionResource) {

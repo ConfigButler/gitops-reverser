@@ -243,6 +243,15 @@ type ResyncRequest struct {
 	// is restricted to the named type's (group, resource) and Desired carries only that
 	// type's objects (empty = pure sweep of a removed type). Nil is a whole-GitTarget resync.
 	ScopeGVR *schema.GroupVersionResource
+	// Heal marks a non-urgent drift-correcting resync (a periodic checkpoint re-anchor or a
+	// removed-type sweep) that the worker DEFERS while a commit window is open, instead of
+	// force-finalizing it. Because one worker serves N GitTargets and the commit window is a
+	// worker singleton, a force-finalizing heal can steal a DIFFERENT GitTarget's held
+	// CommitRequest window — the 8f2ad84 regression. A heal therefore waits for the worker to be
+	// idle (no open window), a boundary that recurs on every silence timeout and identity switch,
+	// so it never starves and, when it runs, has no window to steal. A first-sync backfill is NOT
+	// a heal: it must establish initial state promptly and is ordered before the audit tail.
+	Heal bool
 	// Result receives exactly one reply. It is buffered (cap 1) by the emitter so
 	// the worker never blocks delivering it.
 	Result chan ResyncResult

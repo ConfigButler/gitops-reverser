@@ -166,6 +166,14 @@ type branchWorkerLogFirsts struct {
 	push   sync.Once
 }
 
+// healKey identifies a deferred heal by the (GitTarget, scope) it corrects, so re-stashing a heal
+// for the same target+type replaces the parked one rather than queuing a duplicate.
+type healKey struct {
+	name      string
+	namespace string
+	scope     string
+}
+
 type windowFinalizeReason string
 
 const (
@@ -566,6 +574,12 @@ type branchWorkerEventLoop struct {
 	commitTimer *time.Timer
 	pushTimer   *time.Timer
 
+	// deferredHeals holds heal resyncs (periodic re-anchors, removed-type sweeps) parked while a
+	// commit window is open, so a heal never force-finalizes (steals) that window — including a
+	// sibling GitTarget's held CommitRequest window on this shared worker (Rec 1 / 8f2ad84). They
+	// are drained by applyDeferredHeals at every idle boundary. Loop-goroutine only.
+	deferredHeals []*ResyncRequest
+
 	// pendingCRs holds CommitRequests registered (via AttachCommitRequest) but not
 	// yet resolved, keyed by identity. A request is parked here until a same-author
 	// window opens (then it attaches to it) and until its finalize deadline fires.
@@ -612,6 +626,10 @@ func (l *branchWorkerEventLoop) run() {
 		// After every wake: bind any waiting CommitRequest to an open window,
 		// finalize/reject any whose grace has elapsed, and re-arm the deadline timer.
 		l.serviceCommitRequests()
+		// Drain any heal resync parked while a window was open, now that this wake may have
+		// finalized it (a silence timeout, a CommitRequest finalize). A no-op while a window
+		// is still open or nothing is parked.
+		l.applyDeferredHeals()
 		l.syncQueueDepthMetric()
 	}
 }
@@ -690,6 +708,10 @@ func (l *branchWorkerEventLoop) handleQueueItem(item WorkItem) {
 		if l.openWindow != nil && !l.openWindow.canAppend(event) {
 			l.finalizeOpenWindowWithReason(windowFinalizeReasonIdentityChange)
 			l.maybeSchedulePush()
+			// The window just closed and a new one for this event has not opened yet: an idle
+			// boundary. Drain any parked heal here so it gets a turn even under sustained,
+			// author-alternating load that never lets the silence timer fire (Rec 1 non-starvation).
+			l.applyDeferredHeals()
 		}
 
 		if l.openWindow == nil {
@@ -728,6 +750,9 @@ func (l *branchWorkerEventLoop) handleQueueItem(item WorkItem) {
 func (l *branchWorkerEventLoop) handleShutdown() {
 	l.w.Log.Info("Handling shutdown, finalizing open window and pushing pending commits")
 	l.finalizeOpenWindowWithReason(windowFinalizeReasonShutdown)
+	// The window is closed: drain any parked heal so its drift commits (and pushes below) on a
+	// clean shutdown rather than leaking its caller's reply channel.
+	l.applyDeferredHeals()
 	if len(l.pendingWrites) > 0 {
 		// Shutdown bypasses the cooldown — pending work needs to land before
 		// the worker exits, even if a push was just sent.

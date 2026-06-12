@@ -178,6 +178,11 @@ type Manager struct {
 	// stack. Zero/nil means use the production default / the real sweep-free apply.
 	auditTailBlockOverride time.Duration
 	auditTailApplyOverride func(context.Context, logr.Logger, schema.GroupVersionResource, []git.Event)
+
+	// reconcileTypeFanOverride substitutes the per-type reconcile fan so a test can observe the
+	// TypeSynced handler's decision (first-sync backfill vs. deferred re-anchor heal) without a
+	// full EventRouter/worker stack. Nil means use the real reconcileTypeForSyncedTargets.
+	reconcileTypeFanOverride func(context.Context, logr.Logger, schema.GroupVersionResource, bool)
 }
 
 // AuditLogTrimmer bounds a type's main audit stream to the oldest currently-serving checkpoint
