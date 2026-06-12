@@ -284,8 +284,14 @@ var _ = Describe("Manager CRD Lifecycle", Label("manager"), Serial, Ordered, fun
 		verifyReconciliationLogs := func(g Gomega) {
 			output, err := controllerLogs(2000)
 			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(output).To(ContainSubstring("git commit"),
-				"Should see git commit operation in logs")
+			// The instance may be committed by the per-event path ("git commit created")
+			// or by a backfill resync ("git resync commit created") depending on whether a
+			// type-activation/checkpoint reconcile lands first; both satisfy "a commit
+			// happened for the instance". Matching only "git commit" missed the resync path.
+			g.Expect(output).To(Or(
+				ContainSubstring("git commit created"),
+				ContainSubstring("git resync commit created"),
+			), "Should see a git commit operation (per-event or resync) in logs")
 		}
 		Eventually(verifyReconciliationLogs, 45*time.Second, 2*time.Second).Should(Succeed())
 
