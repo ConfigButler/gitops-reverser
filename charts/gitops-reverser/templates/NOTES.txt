@@ -42,6 +42,12 @@ Recommended kube-apiserver settings:
 - use `--audit-webhook-mode=batch`
 - do NOT start with `blocking` or `blocking-strict`
 
+Audit-pipeline readiness:
+- The pod reports NotReady on `/readyz` until the audit ingress listener is accepting{{ if .Values.servers.audit.tls.enabled }} with a loaded TLS cert{{ end }} and it has made its first connection to Redis/Valkey.
+- Because kube-apiserver reaches the controller through the audit Service (`{{ $auditServiceName }}`), a NotReady pod is removed from the Service endpoints. With `--audit-webhook-mode=batch` the apiserver then buffers and retries during a rollout or cert rotation instead of dropping the first events into a pod that cannot yet receive them.
+- This endpoint gating only helps when the apiserver targets the Service. If you point `--audit-webhook-config-file` at a node URL or an external load balancer that bypasses endpoint health, readiness does NOT gate routing — rely on `batch` mode + the apiserver retry buffer.
+- Liveness (`/healthz`) stays a bare process check, so a Redis or cert outage never crashloops the pod.
+
 {{- if .Values.servers.audit.tls.enabled }}
 Suggested audit webhook server URL from the control-plane node:
 {{- if eq .Values.auditService.type "NodePort" }}

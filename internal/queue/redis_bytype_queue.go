@@ -176,6 +176,14 @@ func NewRedisByTypeStreamQueue(cfg RedisByTypeStreamConfig) (*RedisByTypeStreamQ
 	}, nil
 }
 
+// Ping checks liveness of the underlying Redis/Valkey connection with a single PING. It is used
+// by the audit-pipeline readiness gate at startup: the pod stays not-ready until the first PING
+// succeeds, so it never joins the audit Service's endpoints before it can enqueue events. The
+// error is returned verbatim so the caller can surface it in the readiness reason.
+func (q *RedisByTypeStreamQueue) Ping(ctx context.Context) error {
+	return q.client.Ping(ctx).Err()
+}
+
 // SetLateEventNotifier wires the late-lane diversion hook; see the lateNotify field.
 func (q *RedisByTypeStreamQueue) SetLateEventNotifier(notify func(group, resource string)) {
 	q.lateNotify = notify

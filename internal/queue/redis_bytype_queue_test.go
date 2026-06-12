@@ -186,6 +186,16 @@ func TestNewRedisByTypeStreamQueue_DefaultsPrefix(t *testing.T) {
 	assert.Equal(t, DefaultRedisByTypeStreamPrefix, q.prefix)
 }
 
+func TestRedisByTypeStreamQueue_Ping(t *testing.T) {
+	mr := miniredis.RunT(t)
+	q := newTestByTypeQueue(t, mr, 0)
+
+	require.NoError(t, q.Ping(context.Background()), "PING succeeds against a live server")
+
+	mr.Close()
+	require.Error(t, q.Ping(context.Background()), "PING fails once the server is gone")
+}
+
 func TestRedisByTypeStreamQueue_EnqueueWritesEntryAndIndex(t *testing.T) {
 	q, client, prefix := valkeyByTypeQueue(t, 100)
 	ctx := context.Background()

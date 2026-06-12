@@ -30,6 +30,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
@@ -43,7 +44,6 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
-	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
@@ -393,8 +393,13 @@ func main() {
 	// Cert watchers
 	addCertWatchersToManager(mgr, metricsCertWatcher, auditCertWatcher)
 
-	// Health checks
-	addHealthChecks(mgr)
+	// Startup-only Redis readiness gate: a Runnable that PINGs the audit producer until the first
+	// success, keeping the pod not-ready (out of the audit Service endpoints) until it can enqueue.
+	redisGate := newRedisReadinessGate(auditByTypeQueue)
+	fatalIfErr(mgr.Add(redisGate), "unable to add audit redis readiness gate")
+
+	// Health checks: liveness stays a bare Ping; readiness reflects audit-serving preconditions.
+	addHealthChecks(mgr, auditRunnable, auditCertWatcher, redisGate)
 
 	// Start manager
 	setupLog.Info("starting manager")
@@ -670,6 +675,17 @@ func buildMetricsServerOptions(
 type auditServerRunnable struct {
 	server     *http.Server
 	tlsEnabled bool
+
+	// serving is true while the listener socket is bound and accepting. It gates the audit
+	// half of the readiness probe (see auditServingReadyCheck): because the kube-apiserver
+	// reaches this server through a Service, readiness controls endpoint membership, so the
+	// apiserver must not route audit events here until the listener is actually open.
+	serving atomic.Bool
+}
+
+// Serving reports whether the audit ingress listener is bound and accepting connections.
+func (r *auditServerRunnable) Serving() bool {
+	return r.serving.Load()
 }
 
 type serverTimeouts struct {
@@ -680,6 +696,17 @@ type serverTimeouts struct {
 
 func (r *auditServerRunnable) Start(ctx context.Context) error {
 	setupLog.Info("Starting dedicated audit ingress server", "address", r.server.Addr)
+
+	// Bind the listener explicitly (rather than via ListenAndServe) so the "serving" flag flips
+	// only once the socket is actually open — the precise moment the apiserver can be allowed to
+	// route audit traffic here. A bind failure surfaces before Serve, so readiness never reports
+	// ready for a server that never came up.
+	listener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", r.server.Addr)
+	if err != nil {
+		return fmt.Errorf("audit ingress server failed to bind %q: %w", r.server.Addr, err)
+	}
+	r.serving.Store(true)
+	defer r.serving.Store(false)
 
 	shutdownDone := make(chan struct{})
 	go func() {
@@ -692,11 +719,10 @@ func (r *auditServerRunnable) Start(ctx context.Context) error {
 		}
 	}()
 
-	var err error
 	if r.tlsEnabled {
-		err = r.server.ListenAndServeTLS("", "")
+		err = r.server.ServeTLS(listener, "", "")
 	} else {
-		err = r.server.ListenAndServe()
+		err = r.server.Serve(listener)
 	}
 	<-shutdownDone
 	if errors.Is(err, http.ErrServerClosed) {
@@ -886,10 +912,4 @@ func addCertWatchersToManager(
 		setupLog.Info("Adding certificate watcher to manager", "component", item.component)
 		fatalIfErr(mgr.Add(item.watcher), "unable to add certificate watcher to manager", "component", item.component)
 	}
-}
-
-// addHealthChecks registers health and readiness checks.
-func addHealthChecks(mgr ctrl.Manager) {
-	fatalIfErr(mgr.AddHealthzCheck("healthz", healthz.Ping), "unable to set up health check")
-	fatalIfErr(mgr.AddReadyzCheck("readyz", healthz.Ping), "unable to set up ready check")
 }
