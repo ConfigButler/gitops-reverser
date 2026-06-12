@@ -950,6 +950,7 @@ tasks:
       - |
         CTX="{{.CTX}}" CLUSTER_NAME="{{.CLUSTER_NAME}}" NAMESPACE="{{.NAMESPACE}}" \
           WEBHOOK_CONFIG="{{.AUDIT_WEBHOOK_CONFIG_PATH}}" \
+          CONTROLLER_DEPLOY_SELECTOR="{{.CONTROLLER_DEPLOY_SELECTOR}}" \
           bash hack/e2e/inject-webhook-tls.sh
         touch "{{.CS}}/{{.NAMESPACE}}/webhook-tls.ready"
 
