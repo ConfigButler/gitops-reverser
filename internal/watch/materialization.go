@@ -378,11 +378,18 @@ func (m *Manager) handleMaterializationEvent(ctx context.Context, log logr.Logge
 		m.stopTypeAuditTail(ev.GVR)
 		m.clearTypeObjects(ctx, log, ev.GVR)
 	case typeset.TypeSynced:
-		// The checkpoint just became serviceable (first sync or a periodic re-anchor): wake the
-		// splice reconcile so every watching GitTarget reconciles off the fresh checkpoint + log,
-		// and start the audit tail so subsequent events reconcile within the interval.
+		// The checkpoint just became serviceable. Fan the initial-backfill splice reconcile to
+		// every watching GitTarget ONLY the first time — when the audit tail is not yet running.
+		// A periodic re-anchor's TypeSynced (the sweep, or a late-event nudge) must NOT re-fold the
+		// log into git: once the tail is up it owns live changes with their authorship, so a
+		// re-fan would churn Git, re-attribute live edits to the bulk reconcile's default author,
+		// and — the symptom that surfaced this — finalize (steal) an open commit window a user's
+		// CommitRequest was holding. This mirrors the one-shot principle the Declare path already
+		// states ("we do NOT re-fold the log on every Declare"). The tail keeps git fresh from here.
 		log.V(1).Info("materialization event", "kind", ev.Kind, "gvr", ev.GVR.String(), "rv", ev.RV)
-		m.reconcileTypeForSyncedTargets(ctx, log, ev.GVR)
+		if !m.isAuditTailRunning(ev.GVR) {
+			m.reconcileTypeForSyncedTargets(ctx, log, ev.GVR)
+		}
 		m.startTypeAuditTail(ctx, log, ev.GVR, ev.RV)
 	case typeset.SyncStarted, typeset.SyncFailed:
 		log.V(1).Info("materialization event",

@@ -105,6 +105,16 @@ func auditTailAnchor(checkpointRV string) string {
 	return checkpointRV + "-18446744073709551615"
 }
 
+// isAuditTailRunning reports whether a per-type audit tail is already running for gvr. It is
+// the "this is not the first time the type became serviceable" signal: once the tail is up it
+// owns live changes, so a periodic re-anchor's TypeSynced must not re-fan a backfill reconcile.
+func (m *Manager) isAuditTailRunning(gvr schema.GroupVersionResource) bool {
+	m.auditTailsMu.Lock()
+	defer m.auditTailsMu.Unlock()
+	_, running := m.auditTails[gvr]
+	return running
+}
+
 // stopTypeAuditTail cancels and forgets a type's audit tail (the type was Released — checkpoint
 // dropped, so there is nothing fresh to serve). It is a no-op when no tail is running.
 func (m *Manager) stopTypeAuditTail(gvr schema.GroupVersionResource) {
