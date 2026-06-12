@@ -163,8 +163,18 @@ func (m *Manager) DeclareForGitTarget(ctx context.Context, gitDest types.Resourc
 				gvr,
 				false,
 			); reconcileErr != nil {
-				m.Log.V(1).Info("declare reconcile failed",
+				// Rec 2 / Gap 2: a failed initial backfill must be RETRIED, not silently recorded as
+				// done. Un-record the type so the NEXT GitTarget reconcile re-classifies it as
+				// newly-declared and re-attempts the backfill, and do NOT start the freshness tail for a
+				// target whose baseline never landed (no event-tail ahead of an un-backfilled target).
+				// Without this the type stays recorded as declared forever and the hole is permanent.
+				// The next reconcile (RequeueLongInterval, or sooner on any rule/provider change) retries
+				// it; the periodic re-anchor heal (Slice C), which re-fans the reconcile to every watcher,
+				// is the longer backstop.
+				m.Log.V(1).Info("declare reconcile failed; will retry next reconcile",
 					"gitDest", gitDest.String(), "gvr", gvr.String(), "err", reconcileErr.Error())
+				m.forgetDeclaredGVR(gitDest, gvr)
+				continue
 			}
 			// Start the freshness tail for this newly-claimed already-Synced type, anchored at its
 			// checkpoint rv. TypeSynced is re-announced on (re)activation only for a type ALREADY
@@ -176,6 +186,18 @@ func (m *Manager) DeclareForGitTarget(ctx context.Context, gitDest types.Resourc
 		}
 	}
 	return nil
+}
+
+// forgetDeclaredGVR removes a single type from a GitTarget's recorded declaration so a failed
+// initial backfill is re-attempted on the next reconcile (Rec 2): newlyDeclaredSyncedGVRs records the
+// whole claimed set up front, which would otherwise mark a type whose backfill then errored as
+// "already declared" and never retry it. A no-op for an unknown GitTarget or a type it never recorded.
+func (m *Manager) forgetDeclaredGVR(gitDest types.ResourceReference, gvr schema.GroupVersionResource) {
+	m.declaredGVRsMu.Lock()
+	defer m.declaredGVRsMu.Unlock()
+	if set := m.declaredGVRs[gitDest.String()]; set != nil {
+		delete(set, gvr)
+	}
 }
 
 // newlyDeclaredSyncedGVRs records this GitTarget's current claimed set and returns the subset that

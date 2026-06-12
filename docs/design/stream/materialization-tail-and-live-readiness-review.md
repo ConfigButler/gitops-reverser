@@ -351,6 +351,18 @@ retry a failed per-target backfill instead of recording it as "declared." This c
 failed-backfill hole and makes the invariant robust to refactors. Once Rec 1 lands this is
 belt-and-suspenders, but it is cheap and removes the fragility.
 
+**Implementation note (landed):** the **retry half** is implemented — a failed Declare-time
+backfill is un-recorded (`forgetDeclaredGVR`) so the next reconcile re-classifies the type as
+newly-declared and re-attempts it, and the Declare path no longer starts the per-type freshness
+tail for a target whose backfill just errored. The broader "tail does not *deliver* to an
+un-backfilled target" per-target gate was deliberately **not** added: with Rec 1 landed, the
+periodic re-anchor heal re-fans the reconcile to *every* watcher (~1h backstop) and the next
+reconcile retries within minutes, while the tail's per-event apply is benign for a momentarily
+un-backfilled target — an upsert simply creates the file, and a delete for an object the target
+never held is a no-op. The only genuine hole is unchanging baseline objects, which the retry and
+the heal both fill; tracking per-(GitTarget, type) tail-delivery state to gate that narrow,
+self-healing window is not worth the new state and the risk of dropping legitimate events.
+
 ### Rec 3 — (Optional) capture one explicit fold tip and anchor the tail there (the start-RV ask, cleaner)
 
 Have the backfill return the concrete stream tip `H` it folded to and anchor the tail at

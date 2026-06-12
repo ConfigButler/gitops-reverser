@@ -106,6 +106,40 @@ func TestDeclareForGitTarget_FailsClosedDeclaresNothing(t *testing.T) {
 		"a failed resolve must declare nothing")
 }
 
+// TestDeclareBackfillRetry_FailedBackfillIsReDeclared proves Rec 2 / Gap 2: when a Declare-time
+// initial backfill fails, forgetDeclaredGVR un-records the type so the NEXT Declare re-classifies it
+// as newly-declared and re-attempts the backfill — instead of recording it as done up front and
+// leaving a permanent per-target hole.
+func TestDeclareBackfillRetry_FailedBackfillIsReDeclared(t *testing.T) {
+	m := &Manager{Log: logr.Discard()}
+	gitDest := gitDestRef("retry-target")
+	ref := typeset.GitTargetRef(gitDest.String())
+
+	// The type is claimed and Synced, so a Declare classifies it as a newly-declared already-Synced
+	// type that needs an initial backfill.
+	mat := m.materializerInstance()
+	mat.Declare(ref, []schema.GroupVersionResource{configMapGVR})
+	mat.OnLifecycleEvent(activate(configMapGVR))
+	require.True(t, mat.BeginSync(configMapGVR))
+	mat.SyncSucceeded(configMapGVR, "10")
+
+	claimed := []schema.GroupVersionResource{configMapGVR}
+	require.Equal(t, claimed, m.newlyDeclaredSyncedGVRs(gitDest, claimed),
+		"the first Declare classifies the Synced type as needing a backfill")
+
+	// Its backfill failed: un-record it — exactly what DeclareForGitTarget does on an
+	// EmitTypeReconcileForGitDest error.
+	m.forgetDeclaredGVR(gitDest, configMapGVR)
+
+	// The next Declare re-classifies it as newly-declared, so the backfill is retried.
+	require.Equal(t, claimed, m.newlyDeclaredSyncedGVRs(gitDest, claimed),
+		"a failed backfill is retried on the next reconcile, not recorded as done")
+
+	// A backfill that SUCCEEDS (no forget) records the type, so it is not re-driven.
+	require.Empty(t, m.newlyDeclaredSyncedGVRs(gitDest, claimed),
+		"a succeeded backfill is recorded and not re-driven")
+}
+
 // TestDistinctClaimGVRs_CollapsesScopes proves the claim keys on (ref, GVR) only, so the
 // resolved (GVR, namespace-scope) stream set collapses to its distinct GVRs in resolver order.
 func TestDistinctClaimGVRs_CollapsesScopes(t *testing.T) {
