@@ -39,6 +39,10 @@ const (
 	// FinalizeWindowMismatch means the open window belonged to a different author
 	// or GitTarget than the request, so it was left untouched.
 	FinalizeWindowMismatch FinalizeOutcome = "WindowMismatch"
+	// FinalizeAlreadyPresent means a matching window was finalized but its events
+	// produced no diff — the change already matches the remote, so no commit was
+	// made (loop prevention). Resolved at finalize, never waiting on a push.
+	FinalizeAlreadyPresent FinalizeOutcome = "AlreadyPresent"
 )
 
 // FinalizeResult carries the resolved outcome of a CommitRequest back to the

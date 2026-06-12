@@ -313,6 +313,15 @@ func (r *CommitRequestReconciler) writeTerminalStatus(
 // GitTarget are serialized exactly as a dedicated finalize-coordinator
 // goroutine would serialize them, without the extra moving parts (see
 // docs/design/stream/commitrequest-multi-finalize-design.md).
+//
+// Restart recovery is best-effort by design (commitrequest-design.md §6.6): the
+// message is durable in spec.message, so on restart any non-terminal request is
+// re-reconciled — re-attributed from its durable audit event and re-attached —
+// which heals the common cases. The one knowingly-accepted gap is a request whose
+// commit was already pushed but whose terminal status was not yet written: the
+// in-memory outcome is gone, the re-driven attach finds the work already mirrored,
+// and it resolves Rejected/AlreadyPresent. We do not build a durable record to
+// close that.
 func (r *CommitRequestReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&configbutleraiv1alpha1.CommitRequest{}).

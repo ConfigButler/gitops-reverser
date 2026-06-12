@@ -345,6 +345,46 @@ func TestFinalizeOpenWindow_ReturnsCommittedFlag(t *testing.T) {
 	assert.Nil(t, loop.openWindow)
 }
 
+// TestAttach_NoDiffResolvesAlreadyPresentPromptly is the §8.4 pin: a finalize whose
+// events re-assert already-present state produces no diff, so the request resolves
+// AlreadyPresent at finalize — promptly, never blocking on a push that never comes.
+func TestAttach_NoDiffResolvesAlreadyPresentPromptly(t *testing.T) {
+	worker, _, _ := setupCommitPushSplitWorker(t)
+	createPlainGitTarget(t, worker, "team-a", "team-a")
+
+	loop := newBranchWorkerEventLoop(worker, time.Hour)
+	defer loop.stopTimers()
+
+	// First, commit the ConfigMap (no CommitRequest) and push it, so it is already
+	// present in Git.
+	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
+		Events:     []Event{configMapTargetEvent("present", "alice", "team-a")},
+		CommitMode: CommitModePerEvent,
+	}})
+	require.True(t, loop.finalizeOpenWindow())
+	loop.pushPending()
+	require.Empty(t, loop.pendingWrites)
+
+	// Defer any further push so we can prove the resolution does NOT wait on one.
+	loop.lastPushAt = time.Now()
+
+	// A second window re-asserts the SAME object: no diff. Attach a CommitRequest and
+	// finalize it (delaySeconds 0).
+	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
+		Events:     []Event{configMapTargetEvent("present", "alice", "team-a")},
+		CommitMode: CommitModePerEvent,
+	}})
+	require.NotNil(t, loop.openWindow)
+	serviceAttach(loop, attachReq("alice", 0))
+
+	res, ok := outcome(t, worker)
+	require.True(t, ok, "a no-diff finalize must resolve promptly, not wait on a push")
+	require.NoError(t, res.Err)
+	assert.Equal(t, FinalizeAlreadyPresent, res.Outcome,
+		"a finalize that produces no diff resolves AlreadyPresent")
+	assert.Empty(t, res.SHA, "no commit was made, so there is no SHA")
+}
+
 // pushCompetingCommit advances the remote's main from a second clone, so a worker's
 // next push conflicts and rebase-replays.
 func pushCompetingCommit(t *testing.T, remoteURL string) {

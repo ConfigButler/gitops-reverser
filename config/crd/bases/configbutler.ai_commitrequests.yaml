@@ -21,6 +21,9 @@ spec:
     - jsonPath: .status.phase
       name: Phase
       type: string
+    - jsonPath: .status.reason
+      name: Reason
+      type: string
     - jsonPath: .status.branch
       name: Branch
       type: string
@@ -115,11 +118,8 @@ spec:
               message:
                 description: |-
                   Message is a human-readable detail for the terminal phase. When Phase is
-                  Failed it carries the reason the finalize could not complete. On a
-                  Committed or NoOpenWindow finalize it may note that the commit was made
-                  without the full ordering guarantee (the audit pipeline did not drain
-                  within the barrier timeout, so an edit made just before this
-                  CommitRequest may land in the next commit).
+                  Failed it carries the reason the finalize could not complete; when Phase is
+                  Rejected it carries the prose for status.reason.
                 type: string
               observedTime:
                 description: ObservedTime is the timestamp at which the terminal phase
@@ -131,8 +131,17 @@ spec:
                 enum:
                 - WaitingForAuditEvent
                 - Committed
-                - NoOpenWindow
+                - Rejected
                 - Failed
+                type: string
+              reason:
+                description: |-
+                  Reason explains a Rejected phase: the machine-readable discriminator that
+                  status consumers and tests assert on. Empty for non-Rejected phases.
+                enum:
+                - NoWindowInGrace
+                - WindowMismatch
+                - AlreadyPresent
                 type: string
               sha:
                 description: SHA is the resulting commit SHA. Set when Phase is Committed.

@@ -34,15 +34,34 @@ const (
 	// completed.
 	CommitRequestPhaseWaitingForAuditEvent CommitRequestPhase = "WaitingForAuditEvent"
 	// CommitRequestPhaseCommitted is terminal: the open commit window was
-	// finalized and status.branch / status.sha are set.
+	// finalized, pushed to the remote, and status.branch / status.sha are set.
 	CommitRequestPhaseCommitted CommitRequestPhase = "Committed"
-	// CommitRequestPhaseNoOpenWindow is terminal: there was no open commit
-	// window to finalize. This is not an error.
-	CommitRequestPhaseNoOpenWindow CommitRequestPhase = "NoOpenWindow"
-	// CommitRequestPhaseFailed is terminal: the open commit window could not
-	// be finalized (for example a failed local commit or a saturated
-	// branch-worker queue). status.message carries the failure detail.
+	// CommitRequestPhaseRejected is terminal: the request was handled correctly
+	// but produced no commit. status.reason distinguishes why (NoWindowInGrace,
+	// WindowMismatch, AlreadyPresent). This is not an error.
+	CommitRequestPhaseRejected CommitRequestPhase = "Rejected"
+	// CommitRequestPhaseFailed is terminal: the finalize could not be completed
+	// (for example a failed local commit, a push that can never land, or
+	// attribution that never arrived). status.message carries the failure detail.
 	CommitRequestPhaseFailed CommitRequestPhase = "Failed"
+)
+
+// CommitRequestRejectReason explains a Rejected CommitRequest: the request was
+// handled correctly but produced no commit. It is set only when phase is Rejected.
+// +kubebuilder:validation:Enum=NoWindowInGrace;WindowMismatch;AlreadyPresent
+type CommitRequestRejectReason string
+
+const (
+	// RejectNoWindowInGrace means the grace period elapsed with no matching
+	// same-author window — nothing was pending to save.
+	RejectNoWindowInGrace CommitRequestRejectReason = "NoWindowInGrace"
+	// RejectWindowMismatch means an open window existed but belonged to a different
+	// author or GitTarget, so it was deliberately left untouched.
+	RejectWindowMismatch CommitRequestRejectReason = "WindowMismatch"
+	// RejectAlreadyPresent means a matching window was finalized but produced no
+	// diff — the change already matches the remote, so the commit was dropped (loop
+	// prevention).
+	RejectAlreadyPresent CommitRequestRejectReason = "AlreadyPresent"
 )
 
 // CommitRequestGitTargetReference references the GitTarget whose open commit
@@ -97,15 +116,17 @@ type CommitRequestSpec struct {
 type CommitRequestStatus struct {
 	// Phase is the lifecycle state of this CommitRequest.
 	// +optional
-	// +kubebuilder:validation:Enum=WaitingForAuditEvent;Committed;NoOpenWindow;Failed
+	// +kubebuilder:validation:Enum=WaitingForAuditEvent;Committed;Rejected;Failed
 	Phase CommitRequestPhase `json:"phase,omitempty"`
 
+	// Reason explains a Rejected phase: the machine-readable discriminator that
+	// status consumers and tests assert on. Empty for non-Rejected phases.
+	// +optional
+	Reason CommitRequestRejectReason `json:"reason,omitempty"`
+
 	// Message is a human-readable detail for the terminal phase. When Phase is
-	// Failed it carries the reason the finalize could not complete. On a
-	// Committed or NoOpenWindow finalize it may note that the commit was made
-	// without the full ordering guarantee (the audit pipeline did not drain
-	// within the barrier timeout, so an edit made just before this
-	// CommitRequest may land in the next commit).
+	// Failed it carries the reason the finalize could not complete; when Phase is
+	// Rejected it carries the prose for status.reason.
 	// +optional
 	Message string `json:"message,omitempty"`
 
@@ -126,6 +147,7 @@ type CommitRequestStatus struct {
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="GitTarget",type=string,JSONPath=`.spec.gitTargetRef.name`
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
+// +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=`.status.reason`
 // +kubebuilder:printcolumn:name="Branch",type=string,JSONPath=`.status.branch`
 // +kubebuilder:printcolumn:name="SHA",type=string,JSONPath=`.status.sha`
 // +kubebuilder:printcolumn:name="Message",type=string,JSONPath=`.spec.message`

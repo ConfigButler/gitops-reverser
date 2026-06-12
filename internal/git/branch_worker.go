@@ -856,10 +856,10 @@ func (l *branchWorkerEventLoop) finalizeOpenWindowWithMessage(reason windowFinal
 	if pendingCR != nil {
 		if batch[0].CommitSHA.IsZero() {
 			// No diff: the change already matches the remote, so no commit was made and
-			// there is nothing to push. Resolve now rather than wait on a push that never
-			// comes. (Stage 6 distinguishes this as Rejected/AlreadyPresent.)
+			// there is nothing to push. Resolve AlreadyPresent now rather than wait on a
+			// push that never comes (§6.7).
 			l.pendingWrites[len(l.pendingWrites)-1].CommitRequest = nil
-			l.resolveCommitRequest(*pendingCR, FinalizeResult{Outcome: FinalizeNoOpenWindow})
+			l.resolveCommitRequest(*pendingCR, FinalizeResult{Outcome: FinalizeAlreadyPresent})
 		} else {
 			// A real commit: resolution moves to the push success path (§6.5). It is no
 			// longer window-pending — it now rides the retained write.

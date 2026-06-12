@@ -162,13 +162,13 @@ func TestCommitRequestReconcile_NoOpenWindow(t *testing.T) {
 	reconcileCommitRequest(t, r, "save-now")
 
 	got := fetchCommitRequest(t, c, "save-now")
-	assert.Equal(t, configv1alpha1.CommitRequestPhaseNoOpenWindow, got.Status.Phase)
+	assert.Equal(t, configv1alpha1.CommitRequestPhaseRejected, got.Status.Phase)
+	assert.Equal(t, configv1alpha1.RejectNoWindowInGrace, got.Status.Reason)
 	assert.Empty(t, got.Status.SHA)
-	assert.Empty(t, got.Status.Message)
 }
 
 // The author-bound refusal: an open window belonging to someone else is left
-// open and the CommitRequest terminates with the explanatory message.
+// open and the CommitRequest is Rejected with the WindowMismatch reason.
 func TestCommitRequestReconcile_WindowMismatchIsExplained(t *testing.T) {
 	cr := newCommitRequest("save-foreign", "")
 	c := newCommitRequestClient(t, nil, cr)
@@ -181,8 +181,28 @@ func TestCommitRequestReconcile_WindowMismatchIsExplained(t *testing.T) {
 	reconcileCommitRequest(t, r, "save-foreign")
 
 	got := fetchCommitRequest(t, c, "save-foreign")
-	assert.Equal(t, configv1alpha1.CommitRequestPhaseNoOpenWindow, got.Status.Phase)
+	assert.Equal(t, configv1alpha1.CommitRequestPhaseRejected, got.Status.Phase)
+	assert.Equal(t, configv1alpha1.RejectWindowMismatch, got.Status.Reason)
 	assert.Equal(t, windowMismatchMessage, got.Status.Message)
+	assert.Empty(t, got.Status.SHA)
+}
+
+// A matching window that finalized with no diff (loop prevention) is Rejected with
+// the AlreadyPresent reason — never left hanging.
+func TestCommitRequestReconcile_AlreadyPresentRejected(t *testing.T) {
+	cr := newCommitRequest("save-noop", "")
+	c := newCommitRequestClient(t, nil, cr)
+	f := &fakeFinalizer{
+		result:   git.FinalizeResult{Outcome: git.FinalizeAlreadyPresent, Branch: "main"},
+		resolved: true,
+	}
+	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
+
+	reconcileCommitRequest(t, r, "save-noop")
+
+	got := fetchCommitRequest(t, c, "save-noop")
+	assert.Equal(t, configv1alpha1.CommitRequestPhaseRejected, got.Status.Phase)
+	assert.Equal(t, configv1alpha1.RejectAlreadyPresent, got.Status.Reason)
 	assert.Empty(t, got.Status.SHA)
 }
 
@@ -398,11 +418,12 @@ func TestApplyFinalizeResultToStatus(t *testing.T) {
 		assert.Empty(t, cr.Status.Message)
 	})
 
-	t.Run("no open window", func(t *testing.T) {
+	t.Run("no window in grace is rejected", func(t *testing.T) {
 		var cr configv1alpha1.CommitRequest
 		applyFinalizeResultToStatus(&cr,
 			git.FinalizeResult{Outcome: git.FinalizeNoOpenWindow, Branch: "main"}, nil, now)
-		assert.Equal(t, configv1alpha1.CommitRequestPhaseNoOpenWindow, cr.Status.Phase)
+		assert.Equal(t, configv1alpha1.CommitRequestPhaseRejected, cr.Status.Phase)
+		assert.Equal(t, configv1alpha1.RejectNoWindowInGrace, cr.Status.Reason)
 		assert.Empty(t, cr.Status.SHA)
 	})
 
@@ -410,8 +431,18 @@ func TestApplyFinalizeResultToStatus(t *testing.T) {
 		var cr configv1alpha1.CommitRequest
 		applyFinalizeResultToStatus(&cr,
 			git.FinalizeResult{Outcome: git.FinalizeWindowMismatch, Branch: "main"}, nil, now)
-		assert.Equal(t, configv1alpha1.CommitRequestPhaseNoOpenWindow, cr.Status.Phase)
+		assert.Equal(t, configv1alpha1.CommitRequestPhaseRejected, cr.Status.Phase)
+		assert.Equal(t, configv1alpha1.RejectWindowMismatch, cr.Status.Reason)
 		assert.Equal(t, windowMismatchMessage, cr.Status.Message)
+	})
+
+	t.Run("already present is rejected", func(t *testing.T) {
+		var cr configv1alpha1.CommitRequest
+		applyFinalizeResultToStatus(&cr,
+			git.FinalizeResult{Outcome: git.FinalizeAlreadyPresent, Branch: "main"}, nil, now)
+		assert.Equal(t, configv1alpha1.CommitRequestPhaseRejected, cr.Status.Phase)
+		assert.Equal(t, configv1alpha1.RejectAlreadyPresent, cr.Status.Reason)
+		assert.Empty(t, cr.Status.SHA)
 	})
 
 	t.Run("finalize error wins", func(t *testing.T) {
@@ -435,7 +466,7 @@ func TestIsTerminalCommitRequestPhase(t *testing.T) {
 	assert.False(t, isTerminalCommitRequestPhase(""))
 	assert.False(t, isTerminalCommitRequestPhase(configv1alpha1.CommitRequestPhaseWaitingForAuditEvent))
 	assert.True(t, isTerminalCommitRequestPhase(configv1alpha1.CommitRequestPhaseCommitted))
-	assert.True(t, isTerminalCommitRequestPhase(configv1alpha1.CommitRequestPhaseNoOpenWindow))
+	assert.True(t, isTerminalCommitRequestPhase(configv1alpha1.CommitRequestPhaseRejected))
 	assert.True(t, isTerminalCommitRequestPhase(configv1alpha1.CommitRequestPhaseFailed))
 }
 
