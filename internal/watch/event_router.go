@@ -172,56 +172,6 @@ func (r *EventRouter) FinalizeGitTargetWindow(
 	}
 }
 
-// FinalizeAtWatermark is the CommitRequest barrier primitive (C-B1,
-// docs/design/stream/canonical-stream-retirement.md §6): it drains the GitTarget's
-// per-type audit tails to the per-type watermarks in snapshot — bounded by
-// FinalizeBarrierTimeout — and then finalizes the open window. snapshot is assembled by
-// TakeTypeSnapshot at CommitRequest creation time, giving each type its own independent
-// watermark so no cross-type RV ordering is assumed. barrierReached=false reports the
-// bounded degrade (Option A, commitrequest-barrier-timeout-decision.md): the finalize
-// proceeded anyway and the caller must surface the missed guarantee in status.
-func (r *EventRouter) FinalizeAtWatermark(
-	ctx context.Context,
-	author, gitTargetName, gitTargetNamespace, message string,
-	snapshot map[schema.GroupVersionResource]string,
-) (git.FinalizeResult, bool, error) {
-	barrierReached := true
-	if r.WatchManager != nil && len(snapshot) > 0 {
-		barrierReached = r.WatchManager.DrainTailsToSnapshot(ctx, snapshot, FinalizeBarrierTimeout)
-		if !barrierReached {
-			r.Log.Info("finalize watermark barrier timed out; finalizing without the ordering guarantee",
-				"gitTarget", gitTargetNamespace+"/"+gitTargetName)
-			recordBarrierTimeout(gitTargetName, gitTargetNamespace)
-		}
-	}
-	result, err := r.FinalizeGitTargetWindow(ctx, author, gitTargetName, gitTargetNamespace, message)
-	return result, barrierReached, err
-}
-
-// TakeTypeSnapshot returns the current stream-top RV for each type the GitTarget claims.
-// Delegates to WatchManager.TakeTypeSnapshot; call this at CommitRequest creation time to
-// build the per-type watermark map that FinalizeAtWatermark will wait on.
-func (r *EventRouter) TakeTypeSnapshot(
-	ctx context.Context, gitTargetName, gitTargetNamespace string,
-) map[schema.GroupVersionResource]string {
-	if r.WatchManager == nil {
-		return nil
-	}
-	return r.WatchManager.TakeTypeSnapshot(ctx, types.NewResourceReference(gitTargetName, gitTargetNamespace))
-}
-
-// recordBarrierTimeout counts an Option-A barrier degrade (the finalize went ahead
-// after the watermark wait expired). No-op until the counter is registered.
-func recordBarrierTimeout(gitTargetName, gitTargetNamespace string) {
-	if telemetry.CommitRequestBarrierTimeoutsTotal == nil {
-		return
-	}
-	telemetry.CommitRequestBarrierTimeoutsTotal.Add(context.Background(), 1, metric.WithAttributes(
-		attribute.String("gittarget_namespace", gitTargetNamespace),
-		attribute.String("gittarget_name", gitTargetName),
-	))
-}
-
 // recordBackgroundResyncFailure counts a fire-and-forget resync whose apply failed or
 // timed out at the worker, so the failure is observable even though delivery was already
 // marked on enqueue. No-op until the counter is registered.

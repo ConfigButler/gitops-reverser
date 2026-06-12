@@ -171,12 +171,7 @@ type Manager struct {
 	// tail's cancel, keyed by type, guarded by auditTailsMu.
 	AuditTailReader AuditTailReader
 	auditTails      map[schema.GroupVersionResource]context.CancelFunc
-	// auditTailCursors is each running tail's last-applied stream ID (anchor at start,
-	// advanced after every applied batch). It is the cursor read the CommitRequest
-	// watermark barrier blocks on (commit_barrier.go, canonical-stream-retirement.md §6).
-	// Guarded by auditTailsMu alongside auditTails.
-	auditTailCursors map[schema.GroupVersionResource]string
-	auditTailsMu     sync.Mutex
+	auditTailsMu    sync.Mutex
 
 	// Test seams for the audit tail: shrink the blocking-read window so unit tests run fast, and
 	// substitute the per-batch apply so the read/apply loop can be observed without a full worker

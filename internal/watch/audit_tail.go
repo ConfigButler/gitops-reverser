@@ -90,12 +90,6 @@ func (m *Manager) startTypeAuditTail(
 	}
 	tailCtx, cancel := context.WithCancel(ctx) //nolint:gosec // cancel is stored below and invoked by stopTypeAuditTail
 	m.auditTails[gvr] = cancel
-	if m.auditTailCursors == nil {
-		m.auditTailCursors = map[schema.GroupVersionResource]string{}
-	}
-	// The anchor is the initial cursor: everything at or below the checkpoint revision is
-	// covered by the checkpoint splice, which rides the same FIFO worker the tail feeds.
-	m.auditTailCursors[gvr] = auditTailAnchor(checkpointRV)
 	go m.runTypeAuditTail(tailCtx, log, gvr, checkpointRV)
 	log.V(1).Info("audit tail started", "gvr", gvr.String(), "anchorRV", checkpointRV)
 }
@@ -119,29 +113,7 @@ func (m *Manager) stopTypeAuditTail(gvr schema.GroupVersionResource) {
 	if cancel, ok := m.auditTails[gvr]; ok {
 		cancel()
 		delete(m.auditTails, gvr)
-		delete(m.auditTailCursors, gvr)
 	}
-}
-
-// setAuditTailCursor records a tail's last-applied stream ID — set only after the batch's
-// apply returned (every change enqueued onto its workers), which is exactly the "applied"
-// the watermark barrier's condition is defined on.
-func (m *Manager) setAuditTailCursor(gvr schema.GroupVersionResource, id string) {
-	m.auditTailsMu.Lock()
-	defer m.auditTailsMu.Unlock()
-	if m.auditTailCursors == nil {
-		m.auditTailCursors = map[schema.GroupVersionResource]string{}
-	}
-	m.auditTailCursors[gvr] = id
-}
-
-// auditTailCursor returns a tail's last-applied stream ID; ok is false when no tail is
-// running for the type.
-func (m *Manager) auditTailCursor(gvr schema.GroupVersionResource) (string, bool) {
-	m.auditTailsMu.Lock()
-	defer m.auditTailsMu.Unlock()
-	id, ok := m.auditTailCursors[gvr]
-	return id, ok
 }
 
 // runTypeAuditTail loops on the type's audit stream and applies each batch of changes as sweep-free
@@ -172,9 +144,6 @@ func (m *Manager) runTypeAuditTail(
 		if len(changes) > 0 {
 			apply(ctx, log, gvr, changes)
 		}
-		// Advance the barrier cursor only after the batch is applied (enqueued FIFO onto the
-		// workers); a read that returned nothing still advances past skipped entries.
-		m.setAuditTailCursor(gvr, lastID)
 	}
 }
 

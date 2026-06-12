@@ -42,15 +42,12 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 )
 
-// fakeFinalizer records the reconciler's barrier+finalize calls and replies
-// with a canned outcome.
+// fakeFinalizer records the reconciler's finalize calls and replies with a
+// canned outcome.
 type fakeFinalizer struct {
-	snapshot       map[schema.GroupVersionResource]string
-	result         git.FinalizeResult
-	barrierReached bool
-	err            error
+	result git.FinalizeResult
+	err    error
 
-	snapshotCalls int
 	finalizeCalls []fakeFinalizeCall
 }
 
@@ -59,29 +56,19 @@ type fakeFinalizeCall struct {
 	GitTargetName      string
 	GitTargetNamespace string
 	Message            string
-	Snapshot           map[schema.GroupVersionResource]string
 }
 
-func (f *fakeFinalizer) TakeTypeSnapshot(
-	_ context.Context, _, _ string,
-) map[schema.GroupVersionResource]string {
-	f.snapshotCalls++
-	return f.snapshot
-}
-
-func (f *fakeFinalizer) FinalizeAtWatermark(
+func (f *fakeFinalizer) FinalizeGitTargetWindow(
 	_ context.Context,
 	author, gitTargetName, gitTargetNamespace, message string,
-	snapshot map[schema.GroupVersionResource]string,
-) (git.FinalizeResult, bool, error) {
+) (git.FinalizeResult, error) {
 	f.finalizeCalls = append(f.finalizeCalls, fakeFinalizeCall{
 		Author:             author,
 		GitTargetName:      gitTargetName,
 		GitTargetNamespace: gitTargetNamespace,
 		Message:            message,
-		Snapshot:           snapshot,
 	})
-	return f.result, f.barrierReached, f.err
+	return f.result, f.err
 }
 
 // fakeAuthorLookup is the attribution source stub: found=false models the
@@ -150,13 +137,8 @@ func fetchCommitRequest(t *testing.T, c client.Client, name string) configv1alph
 func TestCommitRequestReconcile_Committed(t *testing.T) {
 	cr := newCommitRequest("save-1", "")
 	c := newCommitRequestClient(t, nil, cr)
-	snapshot := map[schema.GroupVersionResource]string{
-		{Version: "v1", Resource: "configmaps"}: "1234",
-	}
 	f := &fakeFinalizer{
-		snapshot:       snapshot,
-		result:         git.FinalizeResult{Outcome: git.FinalizeCommitted, SHA: "abc123", Branch: "main"},
-		barrierReached: true,
+		result: git.FinalizeResult{Outcome: git.FinalizeCommitted, SHA: "abc123", Branch: "main"},
 	}
 	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
 
@@ -176,15 +158,13 @@ func TestCommitRequestReconcile_Committed(t *testing.T) {
 	assert.Equal(t, "team-a-config", call.GitTargetName)
 	assert.Equal(t, "default", call.GitTargetNamespace)
 	assert.Equal(t, "save: save-1", call.Message)
-	assert.Equal(t, snapshot, call.Snapshot, "the snapshot from TakeTypeSnapshot must drive the barrier")
 }
 
 func TestCommitRequestReconcile_NoOpenWindow(t *testing.T) {
 	cr := newCommitRequest("save-now", "")
 	c := newCommitRequestClient(t, nil, cr)
 	f := &fakeFinalizer{
-		result:         git.FinalizeResult{Outcome: git.FinalizeNoOpenWindow, Branch: "main"},
-		barrierReached: true,
+		result: git.FinalizeResult{Outcome: git.FinalizeNoOpenWindow, Branch: "main"},
 	}
 	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
 
@@ -202,8 +182,7 @@ func TestCommitRequestReconcile_WindowMismatchIsExplained(t *testing.T) {
 	cr := newCommitRequest("save-foreign", "")
 	c := newCommitRequestClient(t, nil, cr)
 	f := &fakeFinalizer{
-		result:         git.FinalizeResult{Outcome: git.FinalizeWindowMismatch, Branch: "main"},
-		barrierReached: true,
+		result: git.FinalizeResult{Outcome: git.FinalizeWindowMismatch, Branch: "main"},
 	}
 	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
 
@@ -219,8 +198,7 @@ func TestCommitRequestReconcile_FinalizeErrorBecomesFailed(t *testing.T) {
 	cr := newCommitRequest("save-fail", "")
 	c := newCommitRequestClient(t, nil, cr)
 	f := &fakeFinalizer{
-		barrierReached: true,
-		err:            errors.New("worker queue saturated"),
+		err: errors.New("worker queue saturated"),
 	}
 	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
 
@@ -231,25 +209,6 @@ func TestCommitRequestReconcile_FinalizeErrorBecomesFailed(t *testing.T) {
 	assert.Contains(t, got.Status.Message, "worker queue saturated")
 }
 
-func TestCommitRequestReconcile_BarrierDegradeIsVisibleInStatus(t *testing.T) {
-	cr := newCommitRequest("save-slow", "")
-	c := newCommitRequestClient(t, nil, cr)
-	f := &fakeFinalizer{
-		result:         git.FinalizeResult{Outcome: git.FinalizeCommitted, SHA: "fff000", Branch: "main"},
-		barrierReached: false, // Option A: finalize proceeded after the timeout
-	}
-	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
-
-	reconcileCommitRequest(t, r, "save-slow")
-
-	got := fetchCommitRequest(t, c, "save-slow")
-	assert.Equal(t, configv1alpha1.CommitRequestPhaseCommitted, got.Status.Phase,
-		"a barrier timeout must degrade, never fail the CommitRequest")
-	assert.Equal(t, "fff000", got.Status.SHA)
-	assert.Equal(t, barrierDegradeMessage, got.Status.Message,
-		"the degrade must be visible in status (Option A)")
-}
-
 // A young CommitRequest whose audit event has not been ingested yet polls for
 // attribution instead of finalizing: the event is both the author source and
 // the ordering anchor (the author's earlier edits entered the audit path
@@ -258,7 +217,7 @@ func TestCommitRequestReconcile_AttributionPendingRetries(t *testing.T) {
 	cr := newCommitRequest("save-fresh", "")
 	cr.CreationTimestamp = metav1.Now()
 	c := newCommitRequestClient(t, nil, cr)
-	f := &fakeFinalizer{barrierReached: true}
+	f := &fakeFinalizer{}
 	lookup := &fakeAuthorLookup{found: false}
 	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: lookup}
 
@@ -278,7 +237,7 @@ func TestCommitRequestReconcile_AttributionTimeoutFailsClosed(t *testing.T) {
 	// The zero CreationTimestamp puts the object far past the bound.
 	cr := newCommitRequest("save-unattributed", "")
 	c := newCommitRequestClient(t, nil, cr)
-	f := &fakeFinalizer{barrierReached: true}
+	f := &fakeFinalizer{}
 	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: &fakeAuthorLookup{}}
 
 	reconcileCommitRequest(t, r, "save-unattributed")
@@ -296,7 +255,7 @@ func TestCommitRequestReconcile_DelaySecondsHoldsFinalize(t *testing.T) {
 	cr.CreationTimestamp = metav1.Now()
 	cr.Spec.DelaySeconds = 30
 	c := newCommitRequestClient(t, nil, cr)
-	f := &fakeFinalizer{barrierReached: true}
+	f := &fakeFinalizer{}
 	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
 
 	res := reconcileCommitRequest(t, r, "save-linger")
@@ -315,8 +274,7 @@ func TestCommitRequestReconcile_DelayElapsedProceeds(t *testing.T) {
 	cr.Spec.DelaySeconds = 5
 	c := newCommitRequestClient(t, nil, cr)
 	f := &fakeFinalizer{
-		result:         git.FinalizeResult{Outcome: git.FinalizeCommitted, SHA: "eee222", Branch: "main"},
-		barrierReached: true,
+		result: git.FinalizeResult{Outcome: git.FinalizeCommitted, SHA: "eee222", Branch: "main"},
 	}
 	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
 
@@ -330,13 +288,12 @@ func TestCommitRequestReconcile_DelayElapsedProceeds(t *testing.T) {
 func TestCommitRequestReconcile_TerminalPhaseShortCircuits(t *testing.T) {
 	cr := newCommitRequest("save-done", configv1alpha1.CommitRequestPhaseCommitted)
 	c := newCommitRequestClient(t, nil, cr)
-	f := &fakeFinalizer{barrierReached: true}
+	f := &fakeFinalizer{}
 	lookup := attributedAlice()
 	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: lookup}
 
 	reconcileCommitRequest(t, r, "save-done")
 
-	assert.Zero(t, f.snapshotCalls)
 	assert.Zero(t, lookup.calls)
 	assert.Empty(t, f.finalizeCalls, "a terminal CommitRequest must never re-finalize")
 }
@@ -350,7 +307,7 @@ func TestCommitRequestReconcile_StaleCacheEchoDoesNotRefinalize(t *testing.T) {
 	terminal := newCommitRequest("save-echo", configv1alpha1.CommitRequestPhaseCommitted)
 	live := newCommitRequestClient(t, nil, terminal)
 
-	f := &fakeFinalizer{barrierReached: true}
+	f := &fakeFinalizer{}
 	r := &CommitRequestReconciler{Client: cached, APIReader: live, Finalizer: f, AuthorLookup: attributedAlice()}
 
 	reconcileCommitRequest(t, r, "save-echo")
@@ -371,7 +328,7 @@ func TestCommitRequestReconcile_NilSeamsLeaveWaiting(t *testing.T) {
 
 func TestCommitRequestReconcile_ObjectDeletedIsBenign(t *testing.T) {
 	c := newCommitRequestClient(t, nil)
-	f := &fakeFinalizer{barrierReached: true}
+	f := &fakeFinalizer{}
 	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
 
 	reconcileCommitRequest(t, r, "gone")
@@ -404,8 +361,7 @@ func TestCommitRequestReconcile_TerminalWriteRetriesOnConflict(t *testing.T) {
 	}
 	c := newCommitRequestClient(t, &fns, cr)
 	f := &fakeFinalizer{
-		result:         git.FinalizeResult{Outcome: git.FinalizeCommitted, SHA: "ddd111", Branch: "main"},
-		barrierReached: true,
+		result: git.FinalizeResult{Outcome: git.FinalizeCommitted, SHA: "ddd111", Branch: "main"},
 	}
 	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
 

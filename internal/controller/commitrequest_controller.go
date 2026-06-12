@@ -27,7 +27,6 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -38,18 +37,18 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 )
 
-// CommitRequestFinalizer is the EventRouter seam the reconciler drives: take a
-// per-type watermark snapshot of the GitTarget's claimed streams, drain the
-// per-type tails to it (bounded by the fixed 15s barrier timeout, Option A of
-// docs/design/stream/commitrequest-barrier-timeout-decision.md), then finalize
-// the open commit window. watch.EventRouter satisfies it without adaptation.
+// CommitRequestFinalizer is the EventRouter seam the reconciler drives: finalize
+// the open commit window bound to the attributed author for a GitTarget.
+// watch.EventRouter satisfies it without adaptation via FinalizeGitTargetWindow.
+//
+// There is no watermark barrier (docs/design/stream/commitrequest-design.md §6.3):
+// UC1 is covered by the human gap between the edit and the save, UC2 by the
+// collect-grace. The honest claim "Committed" comes from the finalize itself, not
+// from a best-effort drain.
 type CommitRequestFinalizer interface {
-	TakeTypeSnapshot(ctx context.Context, gitTargetName, gitTargetNamespace string,
-	) map[schema.GroupVersionResource]string
-	FinalizeAtWatermark(ctx context.Context,
+	FinalizeGitTargetWindow(ctx context.Context,
 		author, gitTargetName, gitTargetNamespace, message string,
-		snapshot map[schema.GroupVersionResource]string,
-	) (git.FinalizeResult, bool, error)
+	) (git.FinalizeResult, error)
 }
 
 // CommitRequestAuthorLookup resolves the author of a CommitRequest from its
@@ -58,13 +57,6 @@ type CommitRequestFinalizer interface {
 type CommitRequestAuthorLookup interface {
 	LookupCommitRequestAuthor(ctx context.Context, namespace, name string, uid types.UID) (string, bool)
 }
-
-// barrierDegradeMessage is the Option-A visible degrade: the finalize went
-// ahead after the 15s barrier timeout, so an edit made just before the
-// CommitRequest may land in the next commit instead of this one.
-const barrierDegradeMessage = "finalized without the full ordering guarantee: " +
-	"the audit pipeline did not drain within the barrier timeout; " +
-	"an edit made just before this CommitRequest may land in the next commit"
 
 // windowMismatchMessage explains the author-bound refusal: an open window
 // existed but was not this requester's, so it was deliberately left alone.
@@ -100,9 +92,8 @@ const (
 //     event that never arrives fails the request (fail closed).
 //  2. DELAY (optional) — spec.delaySeconds holds the finalize as an extra
 //     collect window after creation.
-//  3. BARRIER + FINALIZE — drain the GitTarget's per-type tails to a fresh
-//     snapshot, then finalize the open window bound to the attributed author.
-//     A window belonging to someone else (or no window) terminates as
+//  3. FINALIZE — finalize the open window bound to the attributed author. A
+//     window belonging to someone else (or no window) terminates as
 //     NoOpenWindow with an explanatory message; the foreign window stays open.
 type CommitRequestReconciler struct {
 	client.Client
@@ -114,8 +105,8 @@ type CommitRequestReconciler struct {
 	// terminal phase. Nil falls back to the (cached) Client.
 	APIReader client.Reader
 
-	// Finalizer drives the barrier + finalize; AuthorLookup attributes the
-	// author from the audit stream. When either is nil (partial test setups),
+	// Finalizer finalizes the author-bound open window; AuthorLookup attributes
+	// the author from the audit stream. When either is nil (partial test setups),
 	// freshly created objects are stamped WaitingForAuditEvent and left there.
 	Finalizer    CommitRequestFinalizer
 	AuthorLookup CommitRequestAuthorLookup
@@ -124,12 +115,12 @@ type CommitRequestReconciler struct {
 // +kubebuilder:rbac:groups=configbutler.ai,resources=commitrequests,verbs=get;list;watch
 // +kubebuilder:rbac:groups=configbutler.ai,resources=commitrequests/status,verbs=get;update;patch
 
-// Reconcile advances one CommitRequest through attribute → delay → barrier →
-// finalize → terminal status. The barrier and finalize run inline in this one
-// invocation; with MaxConcurrentReconciles=1 that serializes concurrent
-// CommitRequests by construction — no two barrier/finalize pairs ever
-// interleave, so an earlier CommitRequest's finalize is always enqueued before
-// a later one's barrier begins (the multi-CommitRequest ordering invariant).
+// Reconcile advances one CommitRequest through attribute → delay → finalize →
+// terminal status. The finalize runs inline in this one invocation; with
+// MaxConcurrentReconciles=1 that serializes concurrent CommitRequests by
+// construction — no two finalizes ever interleave, so an earlier CommitRequest's
+// finalize is always enqueued before a later one's (the multi-CommitRequest
+// ordering invariant).
 func (r *CommitRequestReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx).WithName("CommitRequestReconciler")
 
@@ -155,7 +146,7 @@ func (r *CommitRequestReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		}
 		log.Info("CommitRequest attribution timed out; failing closed", "name", req.NamespacedName)
 		r.writeTerminalStatus(ctx, log, commitRequest,
-			git.FinalizeResult{}, errors.New(attributionFailedMessage), true)
+			git.FinalizeResult{}, errors.New(attributionFailedMessage))
 		return ctrl.Result{}, nil
 	}
 
@@ -168,26 +159,24 @@ func (r *CommitRequestReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		}
 	}
 
-	// 3. BARRIER + FINALIZE: the snapshot is taken fresh on every attempt
-	// (first pass, retry, post-restart redelivery) — a later snapshot waits
-	// on a superset of the entries, conservative and bounded.
+	// 3. FINALIZE: every earlier write for the GitTarget's worker already rode
+	// the FIFO audit path ahead of this finalize, so "the open window" is
+	// whichever window is open now (§6.1). No barrier — UC1 is covered by the
+	// human gap, UC2 by the collect-grace.
 	gitTargetName := commitRequest.Spec.GitTargetRef.Name
-	snapshot := r.Finalizer.TakeTypeSnapshot(ctx, gitTargetName, commitRequest.Namespace)
-
-	result, barrierReached, finalizeErr := r.Finalizer.FinalizeAtWatermark(
+	result, finalizeErr := r.Finalizer.FinalizeGitTargetWindow(
 		ctx,
 		author,
 		gitTargetName,
 		commitRequest.Namespace,
 		capCommitRequestMessage(commitRequest.Spec.Message),
-		snapshot,
 	)
 	if finalizeErr != nil {
 		log.Error(finalizeErr, "Failed to finalize commit window for CommitRequest",
 			"gitTarget", gitTargetName, "name", req.NamespacedName)
 	}
 
-	r.writeTerminalStatus(ctx, log, commitRequest, result, finalizeErr, barrierReached)
+	r.writeTerminalStatus(ctx, log, commitRequest, result, finalizeErr)
 	return ctrl.Result{}, nil
 }
 
@@ -245,7 +234,6 @@ func (r *CommitRequestReconciler) writeTerminalStatus(
 	commitRequest *configbutleraiv1alpha1.CommitRequest,
 	result git.FinalizeResult,
 	finalizeErr error,
-	barrierReached bool,
 ) {
 	now := metav1.Now()
 	expectedUID := commitRequest.UID
@@ -257,19 +245,13 @@ func (r *CommitRequestReconciler) writeTerminalStatus(
 	current := commitRequest
 	for attempt := 1; attempt <= commitRequestStatusUpdateAttempts; attempt++ {
 		applyFinalizeResultToStatus(current, result, finalizeErr, now)
-		if !barrierReached && current.Status.Message == "" {
-			// Option A: the degrade must be visible in status, not only in a
-			// metric. A Failed phase keeps its error message instead.
-			current.Status.Message = barrierDegradeMessage
-		}
 
 		err := r.Status().Update(ctx, current)
 		if err == nil {
 			log.Info("CommitRequest finalized",
 				"phase", current.Status.Phase,
 				"branch", current.Status.Branch,
-				"sha", current.Status.SHA,
-				"barrierReached", barrierReached)
+				"sha", current.Status.SHA)
 			return
 		}
 		if !apierrors.IsConflict(err) {
