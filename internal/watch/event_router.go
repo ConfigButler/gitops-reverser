@@ -38,11 +38,6 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
-// finalizeSignalTimeout bounds how long FinalizeGitTargetWindow waits for a
-// branch worker to process a finalize signal before giving up. The signal
-// rides the worker's event queue, so a healthy worker replies promptly.
-const finalizeSignalTimeout = 30 * time.Second
-
 // resyncSignalTimeout bounds how long a resync waits for the worker to apply and
 // commit the snapshot. It is generous because the first resync can clone/pull the
 // repository before committing; the reconcile context cancels sooner if it must.
@@ -107,30 +102,28 @@ func (r *EventRouter) RouteEvent(
 	return nil
 }
 
-// FinalizeGitTargetWindow finalizes the open commit window for the branch
-// worker backing the named GitTarget. It resolves the GitTarget's
-// (provider, branch), enqueues a finalize signal on that worker's event
-// queue, and blocks until the worker reports the outcome.
+// ServiceCommitRequest is the controller's attach-then-poll seam (§6.4.3): it
+// resolves the GitTarget's branch worker, registers the CommitRequest attach
+// idempotently on that worker's FIFO event queue (bind the message to the author's
+// open window, finalize after the grace), and returns the request's current
+// outcome. resolved=false means the worker has not finished — the controller
+// requeues and polls again.
 //
-// The signal is bound to author and target: a worker is keyed only by
-// provider and branch, so it finalizes the window only when the open window
-// belongs to the same author and GitTarget.
-//
-// When no worker exists for the GitTarget there is, by definition, no open
-// commit window, so the result is NoOpenWindow rather than an error. When the
-// worker reports a finalize failure (e.g. a failed local commit or a
-// saturated queue) that failure is returned as an error.
-func (r *EventRouter) FinalizeGitTargetWindow(
+// attach.GitTargetName/GitTargetNamespace name the GitTarget; the worker is keyed
+// by its provider+branch. When no worker exists there is, by definition, no window
+// to collect into, so the request resolves NoOpenWindow (as before). A GitTarget
+// that cannot be read is a transient error the controller surfaces and retries.
+func (r *EventRouter) ServiceCommitRequest(
 	ctx context.Context,
-	author, gitTargetName, gitTargetNamespace, message string,
-) (git.FinalizeResult, error) {
+	attach git.AttachCommitRequest,
+) (git.FinalizeResult, bool, error) {
 	var gitTarget configv1alpha1.GitTarget
 	if err := r.Client.Get(ctx, client.ObjectKey{
-		Name:      gitTargetName,
-		Namespace: gitTargetNamespace,
+		Name:      attach.GitTargetName,
+		Namespace: attach.GitTargetNamespace,
 	}, &gitTarget); err != nil {
-		return git.FinalizeResult{}, fmt.Errorf("get GitTarget %s/%s: %w",
-			gitTargetNamespace, gitTargetName, err)
+		return git.FinalizeResult{}, false, fmt.Errorf("get GitTarget %s/%s: %w",
+			attach.GitTargetNamespace, attach.GitTargetName, err)
 	}
 
 	worker, exists := r.WorkerManager.GetWorkerForTarget(
@@ -139,37 +132,19 @@ func (r *EventRouter) FinalizeGitTargetWindow(
 		gitTarget.Spec.Branch,
 	)
 	if !exists {
-		r.Log.V(1).Info("FinalizeGitTargetWindow: no worker for GitTarget, nothing to finalize",
-			"gitTarget", gitTargetNamespace+"/"+gitTargetName)
+		r.Log.V(1).Info("ServiceCommitRequest: no worker for GitTarget, nothing to collect into",
+			"gitTarget", attach.GitTargetNamespace+"/"+attach.GitTargetName)
 		return git.FinalizeResult{
 			Outcome: git.FinalizeNoOpenWindow,
 			Branch:  gitTarget.Spec.Branch,
-		}, nil
+		}, true, nil
 	}
 
-	resultCh := make(chan git.FinalizeResult, 1)
-	worker.EnqueueFinalize(&git.FinalizeSignal{
-		CommitMessage:      message,
-		Author:             author,
-		GitTargetName:      gitTargetName,
-		GitTargetNamespace: gitTargetNamespace,
-		Result:             resultCh,
-	})
-
-	select {
-	case result := <-resultCh:
-		// A finalize failure (failed commit, saturated queue) must surface as
-		// an error so callers do not mistake it for a benign terminal outcome.
-		if result.Err != nil {
-			return result, result.Err
-		}
-		return result, nil
-	case <-ctx.Done():
-		return git.FinalizeResult{}, ctx.Err()
-	case <-time.After(finalizeSignalTimeout):
-		return git.FinalizeResult{}, fmt.Errorf("timed out finalizing window for GitTarget %s/%s",
-			gitTargetNamespace, gitTargetName)
-	}
+	// Idempotent register (the worker keys by request identity and keeps the first
+	// finalize deadline), then poll the outcome.
+	worker.EnqueueAttach(&attach)
+	result, resolved := worker.LookupCommitRequestOutcome(attach.Namespace, attach.Name, attach.UID)
+	return result, resolved, nil
 }
 
 // recordBackgroundResyncFailure counts a fire-and-forget resync whose apply failed or

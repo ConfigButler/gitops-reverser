@@ -44,19 +44,31 @@ func eventRouterScheme(t *testing.T) *runtime.Scheme {
 	return scheme
 }
 
-func TestFinalizeGitTargetWindow_GitTargetNotFound(t *testing.T) {
+func saveAttach(gitTargetName, gitTargetNamespace string) git.AttachCommitRequest {
+	return git.AttachCommitRequest{
+		Namespace:          gitTargetNamespace,
+		Name:               "save",
+		UID:                "uid-save",
+		Author:             "alice",
+		GitTargetName:      gitTargetName,
+		GitTargetNamespace: gitTargetNamespace,
+	}
+}
+
+func TestServiceCommitRequest_GitTargetNotFound(t *testing.T) {
 	scheme := eventRouterScheme(t)
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 	workerManager := git.NewWorkerManager(client, logr.Discard(), 0, types.SensitiveResourcePolicy{})
 
 	router := NewEventRouter(workerManager, nil, client, logr.Discard())
 
-	_, err := router.FinalizeGitTargetWindow(context.Background(), "alice", "missing", "team-a", "")
+	_, resolved, err := router.ServiceCommitRequest(context.Background(), saveAttach("missing", "team-a"))
 	require.Error(t, err)
+	assert.False(t, resolved)
 	assert.Contains(t, err.Error(), "get GitTarget")
 }
 
-func TestFinalizeGitTargetWindow_NoWorkerYieldsNoOpenWindow(t *testing.T) {
+func TestServiceCommitRequest_NoWorkerResolvesNoOpenWindow(t *testing.T) {
 	scheme := eventRouterScheme(t)
 	gitTarget := &configv1alpha1.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "team-a-config", Namespace: "team-a"},
@@ -70,13 +82,14 @@ func TestFinalizeGitTargetWindow_NoWorkerYieldsNoOpenWindow(t *testing.T) {
 
 	router := NewEventRouter(workerManager, nil, client, logr.Discard())
 
-	result, err := router.FinalizeGitTargetWindow(context.Background(), "alice", "team-a-config", "team-a", "")
+	result, resolved, err := router.ServiceCommitRequest(context.Background(), saveAttach("team-a-config", "team-a"))
 	require.NoError(t, err)
+	assert.True(t, resolved, "no worker means no window to collect into; resolve immediately")
 	assert.Equal(t, git.FinalizeNoOpenWindow, result.Outcome)
 	assert.Equal(t, "main", result.Branch)
 }
 
-func TestFinalizeGitTargetWindow_RegisteredWorkerProcessesSignal(t *testing.T) {
+func TestServiceCommitRequest_RegisteredWorkerResolvesNoOpenWindow(t *testing.T) {
 	scheme := eventRouterScheme(t)
 	provider := &configv1alpha1.GitProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: "team-a-provider", Namespace: "team-a"},
@@ -101,10 +114,18 @@ func TestFinalizeGitTargetWindow_RegisteredWorkerProcessesSignal(t *testing.T) {
 
 	router := NewEventRouter(workerManager, nil, client, logr.Discard())
 
-	// No events were routed, so the worker has no open window: the signal is
-	// enqueued, processed by the worker loop, and reported as NoOpenWindow.
-	result, err := router.FinalizeGitTargetWindow(context.Background(), "alice", "team-a-config", "team-a", "ignored")
-	require.NoError(t, err)
+	// No events routed and delaySeconds 0, so the worker has no window: the attach
+	// is enqueued, processed by the worker loop, and resolves NoOpenWindow. The
+	// controller polls via repeated (idempotent) ServiceCommitRequest calls.
+	attach := saveAttach("team-a-config", "team-a")
+	var result git.FinalizeResult
+	require.Eventually(t, func() bool {
+		var resolved bool
+		var err error
+		result, resolved, err = router.ServiceCommitRequest(context.Background(), attach)
+		require.NoError(t, err)
+		return resolved
+	}, 5*time.Second, 50*time.Millisecond, "the worker must resolve the attached request")
 	assert.Equal(t, git.FinalizeNoOpenWindow, result.Outcome)
 	assert.Equal(t, "main", result.Branch)
 }

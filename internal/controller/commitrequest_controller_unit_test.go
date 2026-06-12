@@ -23,7 +23,6 @@ import (
 	"errors"
 	"strings"
 	"testing"
-	"time"
 	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
@@ -42,33 +41,21 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 )
 
-// fakeFinalizer records the reconciler's finalize calls and replies with a
-// canned outcome.
+// fakeFinalizer records the reconciler's attach calls and replies with a canned
+// outcome. resolved=false models the worker still collecting (the controller polls).
 type fakeFinalizer struct {
-	result git.FinalizeResult
-	err    error
+	result   git.FinalizeResult
+	resolved bool
+	err      error
 
-	finalizeCalls []fakeFinalizeCall
+	calls []git.AttachCommitRequest
 }
 
-type fakeFinalizeCall struct {
-	Author             string
-	GitTargetName      string
-	GitTargetNamespace string
-	Message            string
-}
-
-func (f *fakeFinalizer) FinalizeGitTargetWindow(
-	_ context.Context,
-	author, gitTargetName, gitTargetNamespace, message string,
-) (git.FinalizeResult, error) {
-	f.finalizeCalls = append(f.finalizeCalls, fakeFinalizeCall{
-		Author:             author,
-		GitTargetName:      gitTargetName,
-		GitTargetNamespace: gitTargetNamespace,
-		Message:            message,
-	})
-	return f.result, f.err
+func (f *fakeFinalizer) ServiceCommitRequest(
+	_ context.Context, attach git.AttachCommitRequest,
+) (git.FinalizeResult, bool, error) {
+	f.calls = append(f.calls, attach)
+	return f.result, f.resolved, f.err
 }
 
 // fakeAuthorLookup is the attribution source stub: found=false models the
@@ -138,7 +125,8 @@ func TestCommitRequestReconcile_Committed(t *testing.T) {
 	cr := newCommitRequest("save-1", "")
 	c := newCommitRequestClient(t, nil, cr)
 	f := &fakeFinalizer{
-		result: git.FinalizeResult{Outcome: git.FinalizeCommitted, SHA: "abc123", Branch: "main"},
+		result:   git.FinalizeResult{Outcome: git.FinalizeCommitted, SHA: "abc123", Branch: "main"},
+		resolved: true,
 	}
 	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
 
@@ -151,20 +139,23 @@ func TestCommitRequestReconcile_Committed(t *testing.T) {
 	assert.Empty(t, got.Status.Message)
 	assert.NotNil(t, got.Status.ObservedTime)
 
-	require.Len(t, f.finalizeCalls, 1)
-	call := f.finalizeCalls[0]
+	require.Len(t, f.calls, 1)
+	call := f.calls[0]
 	assert.Equal(t, "alice", call.Author,
-		"the finalize must carry the author attributed from the audit event")
+		"the attach must carry the author attributed from the audit event")
 	assert.Equal(t, "team-a-config", call.GitTargetName)
 	assert.Equal(t, "default", call.GitTargetNamespace)
 	assert.Equal(t, "save: save-1", call.Message)
+	assert.Equal(t, "save-1", call.Name)
+	assert.Equal(t, "uid-save-1", call.UID)
 }
 
 func TestCommitRequestReconcile_NoOpenWindow(t *testing.T) {
 	cr := newCommitRequest("save-now", "")
 	c := newCommitRequestClient(t, nil, cr)
 	f := &fakeFinalizer{
-		result: git.FinalizeResult{Outcome: git.FinalizeNoOpenWindow, Branch: "main"},
+		result:   git.FinalizeResult{Outcome: git.FinalizeNoOpenWindow, Branch: "main"},
+		resolved: true,
 	}
 	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
 
@@ -182,7 +173,8 @@ func TestCommitRequestReconcile_WindowMismatchIsExplained(t *testing.T) {
 	cr := newCommitRequest("save-foreign", "")
 	c := newCommitRequestClient(t, nil, cr)
 	f := &fakeFinalizer{
-		result: git.FinalizeResult{Outcome: git.FinalizeWindowMismatch, Branch: "main"},
+		result:   git.FinalizeResult{Outcome: git.FinalizeWindowMismatch, Branch: "main"},
+		resolved: true,
 	}
 	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
 
@@ -194,11 +186,13 @@ func TestCommitRequestReconcile_WindowMismatchIsExplained(t *testing.T) {
 	assert.Empty(t, got.Status.SHA)
 }
 
+// A resolved outcome that carries an error becomes a Failed CommitRequest.
 func TestCommitRequestReconcile_FinalizeErrorBecomesFailed(t *testing.T) {
 	cr := newCommitRequest("save-fail", "")
 	c := newCommitRequestClient(t, nil, cr)
 	f := &fakeFinalizer{
-		err: errors.New("worker queue saturated"),
+		result:   git.FinalizeResult{Err: errors.New("commit failed: unreachable remote")},
+		resolved: true,
 	}
 	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
 
@@ -206,7 +200,7 @@ func TestCommitRequestReconcile_FinalizeErrorBecomesFailed(t *testing.T) {
 
 	got := fetchCommitRequest(t, c, "save-fail")
 	assert.Equal(t, configv1alpha1.CommitRequestPhaseFailed, got.Status.Phase)
-	assert.Contains(t, got.Status.Message, "worker queue saturated")
+	assert.Contains(t, got.Status.Message, "unreachable remote")
 }
 
 // A young CommitRequest whose audit event has not been ingested yet polls for
@@ -225,7 +219,7 @@ func TestCommitRequestReconcile_AttributionPendingRetries(t *testing.T) {
 
 	assert.Equal(t, commitRequestAttributionRetryDelay, res.RequeueAfter,
 		"an unattributed young CommitRequest must poll for its audit event")
-	assert.Empty(t, f.finalizeCalls, "no finalize may run before attribution")
+	assert.Empty(t, f.calls, "no attach may run before attribution")
 	got := fetchCommitRequest(t, c, "save-fresh")
 	assert.Equal(t, configv1alpha1.CommitRequestPhaseWaitingForAuditEvent, got.Status.Phase)
 	assert.Equal(t, 1, lookup.calls)
@@ -245,44 +239,59 @@ func TestCommitRequestReconcile_AttributionTimeoutFailsClosed(t *testing.T) {
 	got := fetchCommitRequest(t, c, "save-unattributed")
 	assert.Equal(t, configv1alpha1.CommitRequestPhaseFailed, got.Status.Phase)
 	assert.Equal(t, attributionFailedMessage, got.Status.Message)
-	assert.Empty(t, f.finalizeCalls)
+	assert.Empty(t, f.calls)
 }
 
-// spec.delaySeconds holds the finalize as an extra collect window, anchored at
-// the creation time.
-func TestCommitRequestReconcile_DelaySecondsHoldsFinalize(t *testing.T) {
+// The collect-grace is the worker's job now: the controller does not hold the
+// finalize itself. While the worker has not resolved the attach, the controller
+// polls — and spec.delaySeconds is passed through to the worker, not consumed here.
+func TestCommitRequestReconcile_NotResolvedPollsAndPassesDelay(t *testing.T) {
 	cr := newCommitRequest("save-linger", "")
 	cr.CreationTimestamp = metav1.Now()
 	cr.Spec.DelaySeconds = 30
 	c := newCommitRequestClient(t, nil, cr)
-	f := &fakeFinalizer{}
+	f := &fakeFinalizer{resolved: false}
 	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
 
 	res := reconcileCommitRequest(t, r, "save-linger")
 
-	assert.Greater(t, res.RequeueAfter, time.Duration(0),
-		"the finalize must be held for the requested collect window")
-	assert.LessOrEqual(t, res.RequeueAfter, 30*time.Second)
-	assert.Empty(t, f.finalizeCalls)
+	assert.Equal(t, commitRequestPollInterval, res.RequeueAfter,
+		"an unresolved attach must be polled, not held by a controller-side delay")
+	require.Len(t, f.calls, 1, "the attach is sent the instant the author is known")
+	assert.Equal(t, int32(30), f.calls[0].DelaySeconds, "delaySeconds is passed to the worker, not consumed here")
 	got := fetchCommitRequest(t, c, "save-linger")
 	assert.Equal(t, configv1alpha1.CommitRequestPhaseWaitingForAuditEvent, got.Status.Phase)
 }
 
-func TestCommitRequestReconcile_DelayElapsedProceeds(t *testing.T) {
-	// Zero CreationTimestamp: the delay window has long passed.
-	cr := newCommitRequest("save-lingered", "")
-	cr.Spec.DelaySeconds = 5
+// A transient service error (e.g. the GitTarget momentarily unreadable) keeps the
+// request polling within the safety window rather than failing it outright.
+func TestCommitRequestReconcile_ServiceErrorPolls(t *testing.T) {
+	cr := newCommitRequest("save-transient", "")
+	cr.CreationTimestamp = metav1.Now()
 	c := newCommitRequestClient(t, nil, cr)
-	f := &fakeFinalizer{
-		result: git.FinalizeResult{Outcome: git.FinalizeCommitted, SHA: "eee222", Branch: "main"},
-	}
+	f := &fakeFinalizer{err: errors.New("get GitTarget: not found")}
 	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
 
-	reconcileCommitRequest(t, r, "save-lingered")
+	res := reconcileCommitRequest(t, r, "save-transient")
 
-	got := fetchCommitRequest(t, c, "save-lingered")
-	assert.Equal(t, configv1alpha1.CommitRequestPhaseCommitted, got.Status.Phase)
-	require.Len(t, f.finalizeCalls, 1)
+	assert.Equal(t, commitRequestPollInterval, res.RequeueAfter)
+	got := fetchCommitRequest(t, c, "save-transient")
+	assert.Equal(t, configv1alpha1.CommitRequestPhaseWaitingForAuditEvent, got.Status.Phase)
+}
+
+// Past the resolve safety window an attach the worker never resolved fails closed.
+func TestCommitRequestReconcile_ResolveTimeoutFailsClosed(t *testing.T) {
+	// Zero CreationTimestamp: far past the resolve bound.
+	cr := newCommitRequest("save-stuck", "")
+	c := newCommitRequestClient(t, nil, cr)
+	f := &fakeFinalizer{resolved: false}
+	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
+
+	reconcileCommitRequest(t, r, "save-stuck")
+
+	got := fetchCommitRequest(t, c, "save-stuck")
+	assert.Equal(t, configv1alpha1.CommitRequestPhaseFailed, got.Status.Phase)
+	assert.Equal(t, resolveTimeoutMessage, got.Status.Message)
 }
 
 func TestCommitRequestReconcile_TerminalPhaseShortCircuits(t *testing.T) {
@@ -295,7 +304,7 @@ func TestCommitRequestReconcile_TerminalPhaseShortCircuits(t *testing.T) {
 	reconcileCommitRequest(t, r, "save-done")
 
 	assert.Zero(t, lookup.calls)
-	assert.Empty(t, f.finalizeCalls, "a terminal CommitRequest must never re-finalize")
+	assert.Empty(t, f.calls, "a terminal CommitRequest must never re-attach")
 }
 
 // A reconcile triggered by a stale cache echo (the cached object still says
@@ -312,7 +321,7 @@ func TestCommitRequestReconcile_StaleCacheEchoDoesNotRefinalize(t *testing.T) {
 
 	reconcileCommitRequest(t, r, "save-echo")
 
-	assert.Empty(t, f.finalizeCalls)
+	assert.Empty(t, f.calls)
 }
 
 func TestCommitRequestReconcile_NilSeamsLeaveWaiting(t *testing.T) {
@@ -333,7 +342,7 @@ func TestCommitRequestReconcile_ObjectDeletedIsBenign(t *testing.T) {
 
 	reconcileCommitRequest(t, r, "gone")
 
-	assert.Empty(t, f.finalizeCalls)
+	assert.Empty(t, f.calls)
 }
 
 func TestCommitRequestReconcile_TerminalWriteRetriesOnConflict(t *testing.T) {
@@ -361,7 +370,8 @@ func TestCommitRequestReconcile_TerminalWriteRetriesOnConflict(t *testing.T) {
 	}
 	c := newCommitRequestClient(t, &fns, cr)
 	f := &fakeFinalizer{
-		result: git.FinalizeResult{Outcome: git.FinalizeCommitted, SHA: "ddd111", Branch: "main"},
+		result:   git.FinalizeResult{Outcome: git.FinalizeCommitted, SHA: "ddd111", Branch: "main"},
+		resolved: true,
 	}
 	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
 
@@ -370,7 +380,7 @@ func TestCommitRequestReconcile_TerminalWriteRetriesOnConflict(t *testing.T) {
 	got := fetchCommitRequest(t, c, "save-retry")
 	assert.Equal(t, configv1alpha1.CommitRequestPhaseCommitted, got.Status.Phase)
 	assert.Equal(t, "ddd111", got.Status.SHA)
-	require.Len(t, f.finalizeCalls, 1, "the conflict retry must re-write status, not re-finalize")
+	require.Len(t, f.calls, 1, "the conflict retry must re-write status, not re-attach")
 }
 
 // --- pure helpers (formerly internal/queue/commit_request_test.go) ---

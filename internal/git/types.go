@@ -204,12 +204,13 @@ const (
 )
 
 // WorkItem is the unit of work in the BranchWorker queue. Exactly one of
-// Request, Finalize, or Resync is set.
+// Request, Attach, or Resync is set.
 type WorkItem struct {
 	// Request is a resource-write request.
 	Request *WriteRequest
-	// Finalize is a "finalize the open commit window now" signal.
-	Finalize *FinalizeSignal
+	// Attach is a CommitRequest attach: bind a message to the author's window and
+	// finalize it after the grace.
+	Attach *AttachCommitRequest
 	// Resync is a streaming-snapshot resync request (M8): a synchronous
 	// request/reply that materialises a GitTarget's complete desired set.
 	Resync *ResyncRequest

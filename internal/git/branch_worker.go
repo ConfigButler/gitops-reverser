@@ -148,6 +148,14 @@ type BranchWorker struct {
 	// hasUnpushedWork, so it reads 0 only once every accepted item has been
 	// handled and nothing is retained.
 	inflightItems atomic.Int64
+
+	// crOutcomes holds resolved CommitRequest outcomes for the controller to poll
+	// via LookupCommitRequestOutcome. The event loop is the only writer (on its
+	// goroutine), the controller the only reader (on a reconcile goroutine), so the
+	// mutex guards the cross-goroutine handoff. Entries are GC'd by age. The
+	// accessors live in commit_request_attach_loop.go alongside the attach logic.
+	crOutcomesMu sync.Mutex
+	crOutcomes   map[commitRequestID]commitRequestOutcomeEntry
 }
 
 // branchWorkerLogFirsts logs the first successful commit and push of a worker's
@@ -276,30 +284,32 @@ func (w *BranchWorker) EnqueueRequest(request *WriteRequest) {
 	w.enqueueRequest(request)
 }
 
-// EnqueueFinalize adds a finalize signal to this worker's queue. Riding the
-// same queue as resource events is what makes the signal process in audit
-// order, after every earlier write. If the queue is full the signal is
-// dropped and its caller is notified immediately via the result channel.
-func (w *BranchWorker) EnqueueFinalize(signal *FinalizeSignal) {
-	if signal == nil {
+// EnqueueAttach adds a CommitRequest attach to this worker's queue. Riding the
+// same queue as resource events is what makes it process in audit order, after
+// every earlier write. The attach is fire-and-forget: the controller polls the
+// outcome via LookupCommitRequestOutcome and re-sends idempotently, so a queue-
+// full drop is recovered by the next poll rather than a synchronous reply.
+func (w *BranchWorker) EnqueueAttach(req *AttachCommitRequest) {
+	if req == nil {
 		return
 	}
 	// Increment before the send so inflightItems can never lag the loop's
 	// receive; roll back if the queue is full and the item is dropped.
 	w.inflightItems.Add(1)
 	select {
-	case w.eventQueue <- WorkItem{Finalize: signal}:
-		w.Log.Info("Finalize signal enqueued",
-			"signalAuthor", signal.Author,
-			"signalTarget", signal.GitTargetNamespace+"/"+signal.GitTargetName,
-			"messageOverride", signal.CommitMessage != "")
+	case w.eventQueue <- WorkItem{Attach: req}:
+		w.Log.Info("CommitRequest attach enqueued",
+			"request", req.Namespace+"/"+req.Name,
+			"author", req.Author,
+			"target", req.GitTargetNamespace+"/"+req.GitTargetName,
+			"delaySeconds", req.DelaySeconds,
+			"messageOverride", req.Message != "")
 		// Depth is published only from the loop goroutine (syncQueueDepthMetric);
 		// the loop republishes on every received item, so the gauge converges
 		// without an enqueue-side write that could latch a stale value.
 	default:
 		w.inflightItems.Add(-1)
-		w.Log.Error(nil, "Event queue full, finalize signal dropped")
-		signal.reply(FinalizeResult{Branch: w.Branch, Err: ErrFinalizeQueueFull})
+		w.Log.Error(nil, "Event queue full, CommitRequest attach dropped (controller will re-send)")
 	}
 }
 
@@ -555,6 +565,15 @@ type branchWorkerEventLoop struct {
 	lastPushAt  time.Time
 	commitTimer *time.Timer
 	pushTimer   *time.Timer
+
+	// pendingCRs holds CommitRequests registered (via AttachCommitRequest) but not
+	// yet resolved, keyed by identity. A request is parked here until a same-author
+	// window opens (then it attaches to it) and until its finalize deadline fires.
+	// Loop-goroutine only.
+	pendingCRs map[commitRequestID]*pendingCommitRequest
+	// attachTimer fires at the earliest pending finalize deadline, so an attached
+	// window is finalized at the end of its grace even with no further events.
+	attachTimer *time.Timer
 }
 
 func newBranchWorkerEventLoop(w *BranchWorker, commitWindow time.Duration) *branchWorkerEventLoop {
@@ -566,7 +585,7 @@ func (l *branchWorkerEventLoop) run() {
 
 	l.syncQueueDepthMetric()
 	for {
-		commitC, pushC := l.timerChannels()
+		commitC, pushC, attachC := l.timerChannels()
 		select {
 		case <-l.w.ctx.Done():
 			l.handleShutdown()
@@ -585,7 +604,14 @@ func (l *branchWorkerEventLoop) run() {
 		case <-pushC:
 			l.pushTimer = nil
 			l.pushPending()
+		case <-attachC:
+			l.attachTimer = nil
+			// The work (attach waiting requests, finalize due ones) is done by
+			// serviceCommitRequests below.
 		}
+		// After every wake: bind any waiting CommitRequest to an open window,
+		// finalize/reject any whose grace has elapsed, and re-arm the deadline timer.
+		l.serviceCommitRequests()
 		l.syncQueueDepthMetric()
 	}
 }
@@ -600,15 +626,18 @@ func (l *branchWorkerEventLoop) syncQueueDepthMetric() {
 	l.w.recordQueueDepth()
 }
 
-func (l *branchWorkerEventLoop) timerChannels() (<-chan time.Time, <-chan time.Time) {
-	var commitC, pushC <-chan time.Time
+func (l *branchWorkerEventLoop) timerChannels() (<-chan time.Time, <-chan time.Time, <-chan time.Time) {
+	var commitC, pushC, attachC <-chan time.Time
 	if l.commitTimer != nil {
 		commitC = l.commitTimer.C
 	}
 	if l.pushTimer != nil {
 		pushC = l.pushTimer.C
 	}
-	return commitC, pushC
+	if l.attachTimer != nil {
+		attachC = l.attachTimer.C
+	}
+	return commitC, pushC, attachC
 }
 
 // totalRetainedBytes is what the operator-level byte cap is enforced against:
@@ -619,8 +648,8 @@ func (l *branchWorkerEventLoop) totalRetainedBytes() int64 {
 }
 
 func (l *branchWorkerEventLoop) handleQueueItem(item WorkItem) {
-	if item.Finalize != nil {
-		l.handleFinalizeSignal(item.Finalize)
+	if item.Attach != nil {
+		l.handleAttachCommitRequest(item.Attach)
 		return
 	}
 
@@ -712,18 +741,14 @@ func (l *branchWorkerEventLoop) handleShutdown() {
 // and is decremented only by the loop after handling, so without this drain the
 // final syncQueueDepthMetric would publish a non-zero depth for the exiting
 // worker that never clears — the loop has stopped, so nothing republishes a
-// corrected value. A buffered finalize signal is answered with
-// ErrWorkerShuttingDown so its caller unblocks instead of waiting out its
-// timeout. The depth gauge then settles to 0 once the open window is finalized
-// and pending writes are pushed (any genuinely-unpushed work keeps it non-zero,
-// which is correct).
+// corrected value. A buffered CommitRequest attach is simply dropped (it is
+// fire-and-forget; the controller re-sends on its next poll). The depth gauge
+// then settles to 0 once the open window is finalized and pending writes are
+// pushed (any genuinely-unpushed work keeps it non-zero, which is correct).
 func (l *branchWorkerEventLoop) drainUnhandledQueueItems() {
 	for {
 		select {
-		case item := <-l.w.eventQueue:
-			if item.Finalize != nil {
-				item.Finalize.reply(FinalizeResult{Branch: l.w.Branch, Err: ErrWorkerShuttingDown})
-			}
+		case <-l.w.eventQueue:
 			l.w.inflightItems.Add(-1)
 		default:
 			return
@@ -757,14 +782,15 @@ func (l *branchWorkerEventLoop) finalizeOpenWindowWithReason(reason windowFinali
 }
 
 // finalizeOpenWindowWithMessage closes the live event window into one retained
-// commit-shaped pending write and creates the corresponding local commit. When
-// message is non-empty it is used verbatim as the commit message instead of
-// the generated grouped-commit message. On success the events move from
-// openWindow to pendingWrites (retained until a push succeeds) and the method
-// returns true. On failure the window is dropped — either the repo is
-// unreachable or the events are otherwise unrecoverable, and we don't want to
-// keep retrying with the same broken state on every commit cycle — and the
-// method returns false.
+// commit-shaped pending write and creates the corresponding local commit. The
+// commit message precedence is: an explicit override, else the window's attached
+// CommitRequest message (pendingMessage, §6.4.2), else the generated grouped
+// message. On success the events move from openWindow to pendingWrites (retained
+// until a push succeeds) and the method returns true; any CommitRequest claiming
+// the window is resolved Committed. On failure the window is dropped — either the
+// repo is unreachable or the events are otherwise unrecoverable, and we don't want
+// to keep retrying with the same broken state on every commit cycle — and a
+// claiming CommitRequest is resolved Failed.
 func (l *branchWorkerEventLoop) finalizeOpenWindowWithMessage(reason windowFinalizeReason, message string) bool {
 	if l.openWindow == nil {
 		return false
@@ -774,6 +800,13 @@ func (l *branchWorkerEventLoop) finalizeOpenWindowWithMessage(reason windowFinal
 	events := l.openWindow.orderedEvents()
 	windowAuthor := l.openWindow.Author
 	windowTarget := l.openWindow.GitTargetNamespace + "/" + l.openWindow.GitTarget
+	pendingCR := l.openWindow.pendingCR
+	// Message precedence (§6.4.2): explicit override, else the attached
+	// CommitRequest message, else the generated grouped-commit message (empty).
+	effectiveMessage := message
+	if effectiveMessage == "" {
+		effectiveMessage = l.openWindow.pendingMessage
+	}
 
 	l.w.Log.Info("Finalizing open commit window",
 		"reason", string(reason),
@@ -782,7 +815,8 @@ func (l *branchWorkerEventLoop) finalizeOpenWindowWithMessage(reason windowFinal
 		"events", len(events),
 		"windowBytes", l.windowBytes,
 		"pendingWrites", len(l.pendingWrites),
-		"messageOverride", message != "")
+		"messageOverride", message != "",
+		"attachedCR", pendingCR != nil)
 
 	pendingWrite, err := l.w.buildGroupedPendingWrite(l.w.ctx, events)
 	if err != nil {
@@ -791,11 +825,10 @@ func (l *branchWorkerEventLoop) finalizeOpenWindowWithMessage(reason windowFinal
 			"windowAuthor", windowAuthor,
 			"windowTarget", windowTarget,
 			"events", len(events))
-		l.openWindow = nil
-		l.windowBytes = 0
+		l.dropOpenWindow(pendingCR, fmt.Errorf("build pending write: %w", err))
 		return false
 	}
-	pendingWrite.CommitMessage = message
+	pendingWrite.CommitMessage = effectiveMessage
 
 	hasPendingCommits := len(l.pendingWrites) > 0
 	if err := l.w.commitPendingWrites([]PendingWrite{*pendingWrite}, hasPendingCommits); err != nil {
@@ -804,8 +837,7 @@ func (l *branchWorkerEventLoop) finalizeOpenWindowWithMessage(reason windowFinal
 			"windowAuthor", windowAuthor,
 			"windowTarget", windowTarget,
 			"events", len(events))
-		l.openWindow = nil
-		l.windowBytes = 0
+		l.dropOpenWindow(pendingCR, fmt.Errorf("commit failed: %w", err))
 		return false
 	}
 
@@ -813,6 +845,13 @@ func (l *branchWorkerEventLoop) finalizeOpenWindowWithMessage(reason windowFinal
 	l.pendingWritesBytes += pendingWrite.ByteSize
 	l.openWindow = nil
 	l.windowBytes = 0
+
+	// Resolve a claiming CommitRequest. (§6.5 moves this to the push success path
+	// with the per-write SHA; for now resolve at finalize from the local HEAD.)
+	if pendingCR != nil {
+		l.resolveFinalizedCommitRequest(*pendingCR)
+	}
+
 	l.w.Log.Info("Open commit window finalized",
 		"reason", string(reason),
 		"windowAuthor", windowAuthor,
@@ -822,62 +861,14 @@ func (l *branchWorkerEventLoop) finalizeOpenWindowWithMessage(reason windowFinal
 	return true
 }
 
-// handleFinalizeSignal processes a FinalizeSignal dequeued from the event
-// queue. By audit-stream ordering every earlier write for this worker has
-// already been applied, so "the open window" is simply whichever window is
-// open right now. When no window is open the result is NoOpenWindow — the
-// author pressed save with nothing pending, which is not an error.
-//
-// A worker is keyed by provider and branch only, so the open window may
-// belong to a different author or GitTarget than this signal. In that case
-// the signal must not finalize it: the result is NoOpenWindow and the
-// unrelated window is left open for its own author to finalize.
-func (l *branchWorkerEventLoop) handleFinalizeSignal(signal *FinalizeSignal) {
-	if l.openWindow == nil {
-		l.w.Log.Info("Finalize signal: no open window to finalize",
-			"signalAuthor", signal.Author,
-			"signalTarget", signal.GitTargetNamespace+"/"+signal.GitTargetName,
-			"pendingWrites", len(l.pendingWrites),
-			"commitTimerActive", l.commitTimer != nil,
-			"pushTimerActive", l.pushTimer != nil)
-		signal.reply(FinalizeResult{Outcome: FinalizeNoOpenWindow, Branch: l.w.Branch})
-		return
+// dropOpenWindow discards a window whose finalize failed, resolving any claiming
+// CommitRequest as Failed so the controller does not poll forever.
+func (l *branchWorkerEventLoop) dropOpenWindow(pendingCR *commitRequestID, cause error) {
+	l.openWindow = nil
+	l.windowBytes = 0
+	if pendingCR != nil {
+		l.resolveCommitRequest(*pendingCR, FinalizeResult{Branch: l.w.Branch, Err: cause})
 	}
-
-	l.w.Log.Info("Finalize signal inspecting open window",
-		"signalAuthor", signal.Author,
-		"signalTarget", signal.GitTargetNamespace+"/"+signal.GitTargetName,
-		"windowAuthor", l.openWindow.Author,
-		"windowTarget", l.openWindow.GitTargetNamespace+"/"+l.openWindow.GitTarget,
-		"windowEvents", len(l.openWindow.pathToEvent),
-		"pendingWrites", len(l.pendingWrites))
-	if !signal.matchesWindow(l.openWindow) {
-		l.w.Log.Info("Finalize signal: open window belongs to a different author/target; leaving it open",
-			"signalAuthor", signal.Author,
-			"signalTarget", signal.GitTargetNamespace+"/"+signal.GitTargetName,
-			"windowAuthor", l.openWindow.Author,
-			"windowTarget", l.openWindow.GitTargetNamespace+"/"+l.openWindow.GitTarget)
-		signal.reply(FinalizeResult{Outcome: FinalizeWindowMismatch, Branch: l.w.Branch})
-		return
-	}
-
-	if !l.finalizeOpenWindowWithMessage(windowFinalizeReasonFinalizeSignal, signal.CommitMessage) {
-		signal.reply(FinalizeResult{
-			Branch: l.w.Branch,
-			Err:    errors.New("finalize failed; open window was dropped"),
-		})
-		return
-	}
-	l.maybeSchedulePush()
-
-	sha, err := l.w.writeBranchHeadSHA()
-	if err != nil {
-		signal.reply(FinalizeResult{Branch: l.w.Branch, Err: fmt.Errorf("read commit SHA: %w", err)})
-		return
-	}
-
-	l.w.Log.Info("Finalize signal committed open window", "sha", sha)
-	signal.reply(FinalizeResult{Outcome: FinalizeCommitted, SHA: sha, Branch: l.w.Branch})
 }
 
 // maybeSchedulePush is the post-commit hook: it pushes immediately when the
@@ -957,6 +948,7 @@ func (l *branchWorkerEventLoop) stopCommitTimer() {
 func (l *branchWorkerEventLoop) stopTimers() {
 	l.stopCommitTimer()
 	l.stopPushTimer()
+	l.stopAttachTimer()
 }
 
 // commitPendingWrites creates local commits for the provided pending writes

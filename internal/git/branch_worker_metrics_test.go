@@ -160,27 +160,20 @@ func TestHandleShutdown_DrainsBufferedItemsToZeroDepth(t *testing.T) {
 	assert.Equal(t, int64(0), depth, "a drained, exiting worker must publish depth 0")
 }
 
-// A finalize signal still buffered at shutdown must be answered with
-// ErrWorkerShuttingDown so its caller unblocks instead of waiting out its
-// timeout, and its inflight slot must be released.
-func TestHandleShutdown_RepliesToBufferedFinalize(t *testing.T) {
+// A CommitRequest attach still buffered at shutdown is fire-and-forget: it is
+// simply drained from the inflight count (the controller re-sends on its next
+// poll), so the exiting worker's depth gauge settles to 0.
+func TestHandleShutdown_DrainsBufferedAttach(t *testing.T) {
 	_, err := telemetry.InitTestExporter()
 	require.NoError(t, err)
 
 	w := newMetricsTestWorker()
-	result := make(chan FinalizeResult, 1)
-	w.EnqueueFinalize(&FinalizeSignal{Result: result})
+	w.EnqueueAttach(&AttachCommitRequest{Namespace: "default", Name: "save", Author: "alice"})
 	require.Equal(t, int64(1), w.inflightItems.Load())
 
 	loop := newBranchWorkerEventLoop(w, time.Second)
 	loop.handleShutdown()
 
-	assert.Equal(t, int64(0), w.inflightItems.Load())
-	select {
-	case res := <-result:
-		require.ErrorIs(t, res.Err, ErrWorkerShuttingDown)
-		assert.Equal(t, "main", res.Branch)
-	default:
-		t.Fatal("expected a finalize reply on shutdown, got none")
-	}
+	assert.Equal(t, int64(0), w.inflightItems.Load(),
+		"a buffered attach must be drained from the inflight count on shutdown")
 }

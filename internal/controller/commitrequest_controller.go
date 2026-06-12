@@ -37,18 +37,19 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 )
 
-// CommitRequestFinalizer is the EventRouter seam the reconciler drives: finalize
-// the open commit window bound to the attributed author for a GitTarget.
-// watch.EventRouter satisfies it without adaptation via FinalizeGitTargetWindow.
+// CommitRequestFinalizer is the EventRouter seam the reconciler drives, using the
+// attach-then-poll protocol (docs/design/stream/commitrequest-design.md §6.4.3):
+// ServiceCommitRequest registers the attach idempotently on the GitTarget's branch
+// worker (bind the message to the author's open window, finalize after the grace)
+// and returns the request's current outcome — resolved=false means keep polling.
+// watch.EventRouter satisfies it without adaptation.
 //
-// There is no watermark barrier (docs/design/stream/commitrequest-design.md §6.3):
-// UC1 is covered by the human gap between the edit and the save, UC2 by the
-// collect-grace. The honest claim "Committed" comes from the finalize itself, not
-// from a best-effort drain.
+// There is no watermark barrier (§6.3): UC1 is covered by the human gap between the
+// edit and the save, UC2 by the collect-grace. The grace is anchored at attribution
+// — the worker stamps finalizeAt = receipt + delaySeconds (§6.4.4) — so the
+// controller no longer holds the finalize itself.
 type CommitRequestFinalizer interface {
-	FinalizeGitTargetWindow(ctx context.Context,
-		author, gitTargetName, gitTargetNamespace, message string,
-	) (git.FinalizeResult, error)
+	ServiceCommitRequest(ctx context.Context, attach git.AttachCommitRequest) (git.FinalizeResult, bool, error)
 }
 
 // CommitRequestAuthorLookup resolves the author of a CommitRequest from its
@@ -69,6 +70,11 @@ const windowMismatchMessage = "the open commit window belongs to a different aut
 const attributionFailedMessage = "could not attribute the CommitRequest to an author: " +
 	"its create audit event was not observed within the attribution window"
 
+// resolveTimeoutMessage explains the fail-closed resolve bound: the worker never
+// reported an outcome for the attached request within the safety window (e.g. the
+// branch worker vanished), so the request fails closed rather than poll forever.
+const resolveTimeoutMessage = "the CommitRequest finalize did not resolve within the safety window"
+
 const (
 	// commitRequestAttributionTimeout bounds the wait for the CommitRequest's
 	// own create audit event. The audit ingest path normally delivers within
@@ -79,22 +85,34 @@ const (
 	// commitRequestAttributionRetryDelay is the requeue cadence while waiting
 	// for the audit event to be ingested.
 	commitRequestAttributionRetryDelay = 2 * time.Second
+
+	// commitRequestPollInterval is the requeue cadence while polling the worker
+	// for the attached request's outcome (attach-then-poll, §6.4.3).
+	commitRequestPollInterval = 2 * time.Second
+
+	// commitRequestResolveTimeout bounds the attach-then-poll wait, measured from
+	// object creation: it must cover attribution latency, the maximum collect-grace
+	// (delaySeconds ≤ 300s, anchored at attribution), and the push cooldown plus
+	// retries. Past it, a request the worker never resolved (e.g. a vanished worker)
+	// fails closed instead of polling forever.
+	commitRequestResolveTimeout = commitRequestAttributionTimeout + 300*time.Second + 120*time.Second
 )
 
 // CommitRequestReconciler drives a CommitRequest through its state machine
-// (C-B2 of docs/design/stream/canonical-stream-retirement.md):
+// (docs/design/stream/commitrequest-design.md §6.4):
 //
-//  1. ATTRIBUTE — wait until the CommitRequest's own create audit event
-//     appears in the commitrequests per-type stream and take the author from
-//     it. Every request enters through the audit ingestion path, so this also
-//     ORDERS the finalize after the author's earlier changes: those entered
-//     the path first and are already mirrored once attribution succeeds. An
-//     event that never arrives fails the request (fail closed).
-//  2. DELAY (optional) — spec.delaySeconds holds the finalize as an extra
-//     collect window after creation.
-//  3. FINALIZE — finalize the open window bound to the attributed author. A
-//     window belonging to someone else (or no window) terminates as
-//     NoOpenWindow with an explanatory message; the foreign window stays open.
+//  1. ATTRIBUTE — wait until the CommitRequest's own create audit event appears
+//     in the commitrequests per-type stream and take the author from it. Every
+//     request enters through the audit ingestion path, so this also ORDERS the
+//     finalize after the author's earlier changes: those entered the path first
+//     and are already mirrored once attribution succeeds. An event that never
+//     arrives fails the request (fail closed).
+//  2. ATTACH + POLL — the instant the author is known, send the attach to the
+//     GitTarget's worker (bind the message to the author's open window, finalize
+//     after the grace) and poll the outcome. The grace is anchored at attribution
+//     by the worker (finalizeAt = receipt + delaySeconds), so there is no
+//     controller-side delay. A window belonging to someone else (or no window)
+//     resolves NoOpenWindow; the foreign window stays open.
 type CommitRequestReconciler struct {
 	client.Client
 
@@ -105,9 +123,10 @@ type CommitRequestReconciler struct {
 	// terminal phase. Nil falls back to the (cached) Client.
 	APIReader client.Reader
 
-	// Finalizer finalizes the author-bound open window; AuthorLookup attributes
-	// the author from the audit stream. When either is nil (partial test setups),
-	// freshly created objects are stamped WaitingForAuditEvent and left there.
+	// Finalizer attaches the request to the author-bound open window and reports
+	// its outcome; AuthorLookup attributes the author from the audit stream. When
+	// either is nil (partial test setups), freshly created objects are stamped
+	// WaitingForAuditEvent and left there.
 	Finalizer    CommitRequestFinalizer
 	AuthorLookup CommitRequestAuthorLookup
 }
@@ -115,12 +134,10 @@ type CommitRequestReconciler struct {
 // +kubebuilder:rbac:groups=configbutler.ai,resources=commitrequests,verbs=get;list;watch
 // +kubebuilder:rbac:groups=configbutler.ai,resources=commitrequests/status,verbs=get;update;patch
 
-// Reconcile advances one CommitRequest through attribute → delay → finalize →
-// terminal status. The finalize runs inline in this one invocation; with
-// MaxConcurrentReconciles=1 that serializes concurrent CommitRequests by
-// construction — no two finalizes ever interleave, so an earlier CommitRequest's
-// finalize is always enqueued before a later one's (the multi-CommitRequest
-// ordering invariant).
+// Reconcile advances one CommitRequest through attribute → attach + poll →
+// terminal status. With MaxConcurrentReconciles=1 concurrent CommitRequests are
+// serialized by construction, and the worker keys attaches by request identity so
+// re-sends across poll requeues are idempotent.
 func (r *CommitRequestReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx).WithName("CommitRequestReconciler")
 
@@ -150,33 +167,38 @@ func (r *CommitRequestReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, nil
 	}
 
-	// 2. DELAY: the optional extra collect window, anchored at creation time
-	// so the total hold is what the user asked for regardless of attribution
-	// latency.
-	if delay := time.Duration(commitRequest.Spec.DelaySeconds) * time.Second; delay > 0 {
-		if remaining := time.Until(commitRequest.CreationTimestamp.Add(delay)); remaining > 0 {
-			return ctrl.Result{RequeueAfter: remaining}, nil
+	// 2. ATTACH + POLL: register the attach idempotently the instant we attribute
+	// (no controller-side delay — the worker anchors the grace at attribution,
+	// §6.4.4) and poll the outcome.
+	result, resolved, serviceErr := r.Finalizer.ServiceCommitRequest(ctx, git.AttachCommitRequest{
+		Namespace:          commitRequest.Namespace,
+		Name:               commitRequest.Name,
+		UID:                string(commitRequest.UID),
+		Author:             author,
+		GitTargetName:      commitRequest.Spec.GitTargetRef.Name,
+		GitTargetNamespace: commitRequest.Namespace,
+		Message:            capCommitRequestMessage(commitRequest.Spec.Message),
+		DelaySeconds:       commitRequest.Spec.DelaySeconds,
+	})
+	if serviceErr != nil || !resolved {
+		if serviceErr != nil {
+			log.V(1).Info("CommitRequest attach not yet serviceable; will retry",
+				"name", req.NamespacedName, "err", serviceErr.Error())
 		}
+		if time.Since(commitRequest.CreationTimestamp.Time) < commitRequestResolveTimeout {
+			return ctrl.Result{RequeueAfter: commitRequestPollInterval}, nil
+		}
+		log.Info("CommitRequest did not resolve within the safety window; failing closed",
+			"name", req.NamespacedName)
+		r.writeTerminalStatus(ctx, log, commitRequest, git.FinalizeResult{}, errors.New(resolveTimeoutMessage))
+		return ctrl.Result{}, nil
 	}
 
-	// 3. FINALIZE: every earlier write for the GitTarget's worker already rode
-	// the FIFO audit path ahead of this finalize, so "the open window" is
-	// whichever window is open now (§6.1). No barrier — UC1 is covered by the
-	// human gap, UC2 by the collect-grace.
-	gitTargetName := commitRequest.Spec.GitTargetRef.Name
-	result, finalizeErr := r.Finalizer.FinalizeGitTargetWindow(
-		ctx,
-		author,
-		gitTargetName,
-		commitRequest.Namespace,
-		capCommitRequestMessage(commitRequest.Spec.Message),
-	)
-	if finalizeErr != nil {
-		log.Error(finalizeErr, "Failed to finalize commit window for CommitRequest",
-			"gitTarget", gitTargetName, "name", req.NamespacedName)
+	if result.Err != nil {
+		log.Error(result.Err, "CommitRequest finalize failed",
+			"gitTarget", commitRequest.Spec.GitTargetRef.Name, "name", req.NamespacedName)
 	}
-
-	r.writeTerminalStatus(ctx, log, commitRequest, result, finalizeErr)
+	r.writeTerminalStatus(ctx, log, commitRequest, result, result.Err)
 	return ctrl.Result{}, nil
 }
 

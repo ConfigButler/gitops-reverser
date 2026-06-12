@@ -44,6 +44,14 @@ type openWindow struct {
 	// writer resolves an event's destination Git path so re-edits inside the
 	// window collapse onto the same path key.
 	writer eventContentWriter
+
+	// pendingMessage is the CommitRequest message attached to this window (§6.4).
+	// Once set, whichever path finalizes the window uses it instead of the
+	// generated grouped-commit message, so an early cut-off still carries intent.
+	pendingMessage string
+	// pendingCR identifies the CommitRequest claiming this window; at most one. On
+	// finalize its outcome is resolved (Committed once the carrying write pushes).
+	pendingCR *commitRequestID
 }
 
 const groupedCommitOperationKinds = 3
