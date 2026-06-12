@@ -438,6 +438,24 @@ chosen blindly. Until that lands, fix the stale `materializer.go` comment so it 
 describing behaviour that is not there. This is independent of Recs 1–5 and can be done on
 its own.
 
+**Status (landed / deferred):** the **stale comment is fixed** — `materializer.go` now describes the
+actual consistent-LIST fill and frames the watch-list as the planned optimisation, instead of naming
+`StreamSnapshotForType` / `StreamClusterSnapshotForGitDest` (functions that do not exist) and
+behaviour that is not there. The **watch-first LIST replacement itself is deliberately deferred**:
+it is the lowest-priority item here ("whenever LIST cost matters"), no current consumer needs the
+bookmark-pinned `R` (the LIST collection rv works), and — decisively for "test both paths" — the
+`client-go` dynamic **fake client cannot simulate a `sendInitialEvents` watch-list** (no initial
+`ADDED` replay, no `initial-events-end` bookmark), so a watch-first `mirrorTypeObjects` would block
+forever in the ~10 existing fake-client tests that drive it, and new tests could only exercise a
+hand-rolled synthetic watcher (testing our fold/bookmark consumption, not real server behaviour).
+Shipping an under-tested watch loop that can hang the controller, for an optimisation nothing needs
+yet, is the wrong trade. **A future implementation needs:** (1) `streamTypeObjects(ctx, dc, gvr)`
+that folds `ADDED` until the `initial-events-end` bookmark and returns `(items, bookmarkRV)`;
+(2) a `sendInitialEventsUnsupported(err)` classifier driving the LIST fallback; (3) a shared test
+helper that installs a `PrependWatchReactor` on the fake client to replay tracker objects as initial
+`ADDED` + an `initial-events-end` bookmark, which the existing `mirrorTypeObjects` tests migrate to
+so they exercise the watch path instead of hanging; (4) an e2e assertion against a real apiserver.
+
 ---
 
 ## 5. Priority

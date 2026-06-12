@@ -40,14 +40,16 @@ import (
 // that calls BeginSync / SyncSucceeded / SyncFailed — this file owns only the phase
 // machine and the lease GC, not the fill itself.
 //
-// "The sync" in this file means that fill, and the modern path is a streaming-list WATCH,
-// NOT a plain LIST: the driver (internal/watch's StreamSnapshotForType /
-// StreamClusterSnapshotForGitDest) opens a WATCH with sendInitialEvents=true,
-// resourceVersionMatch=NotOlderThan, allowWatchBookmarks=true, folds the initial ADDED
-// events, and reads to the initial-events-end bookmark — that bookmark's resourceVersion
-// is the rv handed to SyncSucceeded. A consistent LIST is the per-type FALLBACK only, for
-// a server that cannot stream (e.g. an aggregated apiserver that rejects
-// sendInitialEvents). See docs/design/manifest/reconcile-via-watchlist-mark-and-sweep.md.
+// "The sync" in this file means that fill. As implemented today it is a consistent LIST: the
+// driver (internal/watch's mirrorTypeObjects, called from runTypeCheckpointSync) lists the type and
+// hands the list's collection resourceVersion to SyncSucceeded as the checkpoint rv R. The
+// streaming-list WATCH variant — open a watch with sendInitialEvents=true,
+// resourceVersionMatch=NotOlderThan, allowWatchBookmarks=true, fold the initial ADDED events, and
+// pin the initial-events-end bookmark's resourceVersion as R, falling back to the consistent LIST
+// only when the server rejects sendInitialEvents — is a planned optimisation, not yet built (Gap 5 /
+// Rec 6 in docs/design/stream/materialization-tail-and-live-readiness-review.md). This leaf is
+// agnostic to which path produced the rv; it owns only the phase machine and the lease GC, never the
+// fill. See docs/design/manifest/reconcile-via-watchlist-mark-and-sweep.md.
 
 // Phase is where a type sits on the materialization axis. It is orthogonal to the
 // followability Verdict: a Followable type may be Dormant (unclaimed) and a claimed type
