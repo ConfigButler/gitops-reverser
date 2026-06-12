@@ -289,7 +289,7 @@ func (w *BranchWorker) EnqueueFinalize(signal *FinalizeSignal) {
 	w.inflightItems.Add(1)
 	select {
 	case w.eventQueue <- WorkItem{Finalize: signal}:
-		w.Log.V(1).Info("Finalize signal enqueued",
+		w.Log.Info("Finalize signal enqueued",
 			"signalAuthor", signal.Author,
 			"signalTarget", signal.GitTargetNamespace+"/"+signal.GitTargetName,
 			"messageOverride", signal.CommitMessage != "")
@@ -664,7 +664,7 @@ func (l *branchWorkerEventLoop) handleQueueItem(item WorkItem) {
 		}
 
 		if l.openWindow == nil {
-			l.w.Log.V(1).Info("Opening commit window",
+			l.w.Log.Info("Opening commit window",
 				"author", event.UserInfo.Username,
 				"gitTarget", event.GitTargetNamespace+"/"+event.GitTargetName,
 				"resource", event.Identifier.String())
@@ -775,7 +775,7 @@ func (l *branchWorkerEventLoop) finalizeOpenWindowWithMessage(reason windowFinal
 	windowAuthor := l.openWindow.Author
 	windowTarget := l.openWindow.GitTargetNamespace + "/" + l.openWindow.GitTarget
 
-	l.w.Log.V(1).Info("Finalizing open commit window",
+	l.w.Log.Info("Finalizing open commit window",
 		"reason", string(reason),
 		"windowAuthor", windowAuthor,
 		"windowTarget", windowTarget,
@@ -813,7 +813,7 @@ func (l *branchWorkerEventLoop) finalizeOpenWindowWithMessage(reason windowFinal
 	l.pendingWritesBytes += pendingWrite.ByteSize
 	l.openWindow = nil
 	l.windowBytes = 0
-	l.w.Log.V(1).Info("Open commit window finalized",
+	l.w.Log.Info("Open commit window finalized",
 		"reason", string(reason),
 		"windowAuthor", windowAuthor,
 		"windowTarget", windowTarget,
@@ -834,7 +834,7 @@ func (l *branchWorkerEventLoop) finalizeOpenWindowWithMessage(reason windowFinal
 // unrelated window is left open for its own author to finalize.
 func (l *branchWorkerEventLoop) handleFinalizeSignal(signal *FinalizeSignal) {
 	if l.openWindow == nil {
-		l.w.Log.V(1).Info("Finalize signal: no open window to finalize",
+		l.w.Log.Info("Finalize signal: no open window to finalize",
 			"signalAuthor", signal.Author,
 			"signalTarget", signal.GitTargetNamespace+"/"+signal.GitTargetName,
 			"pendingWrites", len(l.pendingWrites),
@@ -844,7 +844,7 @@ func (l *branchWorkerEventLoop) handleFinalizeSignal(signal *FinalizeSignal) {
 		return
 	}
 
-	l.w.Log.V(1).Info("Finalize signal inspecting open window",
+	l.w.Log.Info("Finalize signal inspecting open window",
 		"signalAuthor", signal.Author,
 		"signalTarget", signal.GitTargetNamespace+"/"+signal.GitTargetName,
 		"windowAuthor", l.openWindow.Author,
@@ -852,7 +852,7 @@ func (l *branchWorkerEventLoop) handleFinalizeSignal(signal *FinalizeSignal) {
 		"windowEvents", len(l.openWindow.pathToEvent),
 		"pendingWrites", len(l.pendingWrites))
 	if !signal.matchesWindow(l.openWindow) {
-		l.w.Log.V(1).Info("Finalize signal: open window belongs to a different author/target; leaving it open",
+		l.w.Log.Info("Finalize signal: open window belongs to a different author/target; leaving it open",
 			"signalAuthor", signal.Author,
 			"signalTarget", signal.GitTargetNamespace+"/"+signal.GitTargetName,
 			"windowAuthor", l.openWindow.Author,

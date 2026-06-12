@@ -43,7 +43,7 @@ import (
 // nothing — the gatherer already guaranteed the snapshot is complete, so a failure
 // here is a write fault, never a partial-snapshot drop.
 func (l *branchWorkerEventLoop) handleResyncRequest(req *ResyncRequest) {
-	l.w.Log.V(1).Info("Handling resync request",
+	l.w.Log.Info("Handling resync request",
 		"resources", len(req.Desired),
 		"revision", req.Revision,
 		"scopeGVR", scopeGVRString(req.ScopeGVR),
@@ -76,7 +76,7 @@ func (l *branchWorkerEventLoop) handleResyncRequest(req *ResyncRequest) {
 		l.pendingWritesBytes += pendingWrite.ByteSize
 		l.maybeSchedulePush()
 	}
-	l.w.Log.V(1).Info("Resync request applied",
+	l.w.Log.Info("Resync request applied",
 		"committed", committed,
 		"closedWindow", closedWindow,
 		"created", stats.Created,

@@ -282,14 +282,7 @@ var _ = Describe("Manager CRD Lifecycle", Label("manager"), Serial, Ordered, fun
 
 		By("waiting for controller reconciliation of CRD instance event")
 		verifyReconciliationLogs := func(g Gomega) {
-			output, err := kubectlRunInNamespace(
-				namespace,
-				"logs",
-				"-l",
-				"control-plane=gitops-reverser",
-				"--tail=500",
-				"--prefix=true",
-			)
+			output, err := controllerLogs(2000)
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(output).To(ContainSubstring("git commit"),
 				"Should see git commit operation in logs")

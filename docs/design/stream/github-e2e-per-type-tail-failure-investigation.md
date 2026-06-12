@@ -1,14 +1,17 @@
 # GitHub E2E failure investigation: CommitRequest after canonical stream removal
 
-> Status: investigation note, updated 2026-06-11.
+> Status: investigation note, updated 2026-06-12.
 > Context: GitHub Actions run
 > [27371711951](https://github.com/ConfigButler/gitops-reverser/actions/runs/27371711951),
 > attempt 1, commit `0c0a526b6a7368c88bf4a58c20bb4e8b0cd9cb9b`
 > (`chore: finish deletion of the single big audit queue`).
-> Related decision:
-> [commitrequest-barrier-timeout-decision.md](../../finished/commitrequest-barrier-timeout-decision.md).
-> Scope: facts, findings, and advised fixes for the full E2E failure seen after
-> the old canonical audit queue/consumer path was removed.
+> Related: [commitrequest-barrier-timeout-decision.md](../../finished/commitrequest-barrier-timeout-decision.md)
+> (Option A), and **[commitrequest-design.md](./commitrequest-design.md)** — the
+> CommitRequest design this failure motivated now lives there.
+> Scope: the facts and root cause of the full E2E failure seen after the old canonical
+> audit queue/consumer path was removed, plus the narrow worker fix it needs. The
+> CommitRequest design (how the feature should work) is **not** in this note — it is in
+> commitrequest-design.md.
 
 ## 1. Executive summary
 
@@ -166,158 +169,41 @@ commit-window value or a stale provider view.
 The code currently does not log the parsed commit window when a branch worker
 starts, so the GitHub log cannot distinguish this from the resync hypothesis.
 
-## 6. Secondary tail/barrier risk still worth fixing
+## 6. The narrow fix this failure needs
 
-The earlier global-cursor finding is still valid as a design risk, but it is not
-the best explanation for this exact GitHub failure.
+The actionable, worker-local conclusion is simple: a background close — the
+`resync-before-apply` finalize, or any other path — must not be able to **strand** a
+just-closed live window. Whatever finalizes a window into a pending write must also
+schedule its push (`maybeSchedulePush`), so the local event commit reaches the remote
+even when the resync that closed it was a no-op. That alone prevents the worst version
+of the bug: a user-authored commit that is neither pushed nor still open for the
+CommitRequest.
 
-The tail stores one cursor per GVR:
+Two diagnostics make this provable in CI rather than inferred: log the **reason** a
+window is finalized (timer / finalize-signal / resync-before-apply / buffer-limit /
+author-change / shutdown — most of this already exists via `windowFinalizeReason`), and
+log the parsed `commitWindow` when a branch worker starts.
 
-```go
-m.auditTailCursors[gvr] = auditTailAnchor(checkpointRV)
-```
+A regression test should pin it: a no-op resync that closes an open live window must
+not strand its pending write. The fuller test plan — including the intent-durability
+case where a cut-off still carries the CommitRequest's message — lives in
+commitrequest-design.md §8.
 
-Delivery, however, is per GitTarget:
+## 7. The design this failure motivated (moved)
 
-```go
-if m.EventRouter.GetGitTargetEventStream(table.GitDest) == nil {
-    continue
-}
-```
+This failure raised a deeper question than "how long should the barrier wait?": **what
+does a CommitRequest mean now that the single canonical stream has been replaced by one
+audit stream per Kubernetes type?** Earlier revisions of this note explored answers
+inline — a target-aware watermark barrier, a "tail picture" of per-type
+resourceVersions, a baseline finalize algorithm, and a state model. That exploration is
+superseded and now lives, reworked, in:
 
-After `apply(ctx, log, gvr, changes)` returns, the global cursor advances even if
-a particular GitTarget was skipped. That makes `auditTailCursors[gvr]` a
-type-global read/apply marker, not a target-local applied marker. A future
-CommitRequest can therefore get `barrierReached=true` even though the target did
-not receive all entries the barrier is supposed to protect.
+> **[commitrequest-design.md](./commitrequest-design.md)**
 
-The recent Option-A timeout decision makes this distinction more important:
-
-- timeout (`barrierReached=false`) is visible and bounded;
-- false-positive success (`barrierReached=true` for a target that missed delivery)
-  is invisible.
-
-So the barrier should eventually read a target-local applied watermark, or the
-tail must not advance a value used as "applied" when any target delivery is
-skipped.
-
-## 7. Advised fixes
-
-### 7.1 Add reasoned worker diagnostics first
-
-Add low-noise logs around the exact state transitions that matter:
-
-- branch worker start: parsed `commitWindow`, provider name/namespace/branch;
-- every `finalizeOpenWindow()` call: reason (`timer`, `finalize-signal`,
-  `resync-before-apply`, `atomic-before-apply`, `author-or-target-change`,
-  `buffer-limit`, `shutdown`), window author, GitTarget, event count;
-- every CommitRequest finalize signal: signal author/target and whether the
-  worker had an open window or only pending writes;
-- every `handleResyncRequest`: whether it closed a live window and whether the
-  resync committed anything.
-
-Without this, CI can prove symptoms but not the closer that stole the window.
-
-### 7.2 Fix `handleResyncRequest` so it cannot strand a just-closed window
-
-At minimum, if `handleResyncRequest` closes an open window, it must schedule or
-perform the normal push path even when the resync itself is a no-op:
-
-```go
-closedWindow := l.finalizeOpenWindow()
-...
-if committed {
-    ...
-    l.maybeSchedulePush()
-    return
-}
-if closedWindow {
-    l.maybeSchedulePush()
-}
-```
-
-That would not make the CommitRequest status become `Committed`, but it prevents
-the worst version of the bug: a local user-authored event commit that neither
-gets pushed nor remains open for the CommitRequest.
-
-### 7.3 Decide the semantic fix for "save" racing a background close
-
-The stronger fix is to preserve the CommitRequest promise:
-
-> edits made before the CommitRequest should be finalized by that CommitRequest,
-> not preempted by a background resync or surprise timer.
-
-Viable directions:
-
-- make background resync avoid closing an open live window unless it can prove
-  the close is required;
-- add a worker-level "finalize matching pending live commit" path, so a
-  CommitRequest can claim a window that was closed into pending writes but not
-  pushed yet;
-- serialize per-target background resync and CommitRequest finalize with an
-  explicit priority/fence so a finalize requested by the user is not overtaken
-  by maintenance work.
-
-Do not solve this by treating `NoOpenWindow` as success in the controller. That
-would hide cases where nothing was committed at all, and it would lose the
-explicit CommitRequest message/SHA contract.
-
-### 7.4 Keep Option A as-is
-
-Do not lengthen `FinalizeBarrierTimeout` for this failure. The observed failure
-had `barrierReached=true`, so timeout policy was not the limiting factor.
-
-The right use of the Option-A decision here is diagnostic: when the barrier
-times out, status must say so; when the barrier succeeds, we need the downstream
-worker invariant to be true.
-
-### 7.5 Make the barrier target-aware
-
-After the immediate worker/window fix, address the tail cursor mismatch:
-
-- treat the current GVR cursor as a read cursor only;
-- add per `(GitTarget, GVR)` applied watermarks, or a skipped-target catch-up
-  marker;
-- make `DrainTailsToSnapshot` wait on target-local applied state for the
-  CommitRequest's GitTarget;
-- add a regression test where the tail reads an event while a target stream is
-  absent, then the target registers and a CommitRequest is created.
-
-The invariant should be:
-
-> an event is "applied" for a CommitRequest only after the target either received
-> it on the worker FIFO or completed an authoritative later catch-up covering it.
-
-## 8. Regression tests to add
-
-1. **Worker unit test:** a resync request arrives while a live window is open; the
-   resync is a no-op. Assert the window's pending write is pushed or at least has
-   a push timer scheduled.
-2. **CommitRequest integration/unit test:** a Deployment event opens a window; a
-   background resync closes it before finalize. Assert the chosen semantic fix:
-   either CommitRequest still reports `Committed`, or the worker prevents the
-   background close from stealing the window.
-3. **Commit-window config test:** worker creation logs or exposes the parsed
-   `commitWindow`; an E2E/helper assertion confirms the CommitRequest suite's
-   provider really uses `300s`.
-4. **Target-local barrier test:** force skip-before-registration and assert
-   `DrainTailsToSnapshot` cannot report success for that GitTarget until catch-up
-   has covered the skipped event.
-
-## 9. Proposed order of work
-
-1. Add the worker diagnostics in §7.1.
-2. Add the focused `handleResyncRequest` regression test and fix the stranded
-   pending-write bug.
-3. Decide and implement the CommitRequest semantic fix for background-close races.
-4. Add the target-local barrier regression and then implement target-local applied
-   watermarks/catch-up.
-5. Re-run full E2E with `E2E_GINKGO_PROCS=4` and rerun the GitHub workflow.
-
-## 10. Bottom line
-
-The GitHub failure is not a reason to revisit Option A's 15 s timeout. It is a
-reason to tighten the contract between the successful barrier and the branch
-worker: once a CommitRequest's barrier passes, the worker must still have a
-finalizable user window, or an explicitly handled equivalent, for the edits the
-barrier protected.
+In brief, that design drops the watermark barrier entirely (it was best-effort and
+could report false-positive success), attaches the CommitRequest's message to the
+author's open window as early as possible so any cut-off still commits with the user's
+message, resolves the request on push (so `Committed` means "on the remote"), and
+renames the `NoOpenWindow` phase to `Rejected` with a structured reason. Treat that
+document as the source of truth for CommitRequest behavior; this note is only the
+record of the failure that prompted it.
