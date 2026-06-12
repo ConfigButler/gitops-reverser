@@ -323,7 +323,7 @@ Metrics for the path from matched event to pushed commit. Background:
 | Metric | Type | Notes |
 | --- | --- | --- |
 | `git_operations_total` | counter | Git operations attempted. |
-| `commits_total` | counter | Commit batches pushed. |
+| `commits_total` | counter | Commit batches pushed. Labelled by `provider_namespace`, `provider_name`, `branch` (the recording `BranchWorker`'s identity). |
 | `commit_bytes_total` | counter | Approximate bytes written across commits. |
 | `objects_scanned_total` | counter | Objects seen by list/informer paths. |
 | `objects_written_total` | counter | Objects that resulted in a file write. |
@@ -336,6 +336,14 @@ Metrics for the path from matched event to pushed commit. Background:
 | `git_push_duration_seconds` | histogram | End-to-end push latency. |
 | `repo_branch_active_workers` | gauge | Active `BranchWorker` goroutines. |
 | `repo_branch_queue_depth` | gauge | Per-`(provider,branch)` pending-event depth. |
+
+`commits_total` carries the branch worker's `{provider_namespace, provider_name, branch}`
+identity — the same prefixed-key convention as the branch-worker gauges, chosen so a pod
+scrape with `honor_labels=false` cannot overwrite a bare `namespace`/`name` attribute. A
+commit batch is produced at the branch-worker layer (one worker can serve several GitTargets
+sharing a provider+branch), so the worker, not a single GitTarget, is the attribution unit.
+Both the per-event and backfill-resync commit paths feed this one counter, so
+`sum(...)` over it counts every commit regardless of path.
 
 **Push latency p95:**
 

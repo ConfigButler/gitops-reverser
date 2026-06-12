@@ -113,23 +113,9 @@ var _ = Describe("Manager Controller Basics", Label("manager"), Ordered, func() 
 		}
 		Eventually(verifyMetricsEndpointReady).Should(Succeed())
 
-		By("verifying that the controller manager is serving the metrics server")
-		verifyMetricsServerStarted := func(g Gomega) {
-			output, err := kubectlRunInNamespace(namespace, "logs", controllerPodName)
-			g.Expect(err).NotTo(HaveOccurred())
-			jsonMetricsLogLine := "\"logger\":\"controller-runtime.metrics\"," +
-				"\"msg\":\"Serving metrics server\""
-			g.Expect(output).To(
-				SatisfyAny(
-					ContainSubstring("controller-runtime.metrics\tServing metrics server"),
-					ContainSubstring(jsonMetricsLogLine),
-				),
-				"Metrics server not yet started",
-			)
-		}
-		Eventually(verifyMetricsServerStarted).Should(Succeed())
-
 		By("waiting for Prometheus to scrape controller metrics")
+		// A successful scrape of up == 1 proves the metrics server is serving, so the
+		// prior operator-log check for "Serving metrics server" was redundant.
 		waitForMetric("sum(up{job='gitops-reverser'})",
 			func(v float64) bool { return v == 1 },
 			"metrics endpoint should be up")

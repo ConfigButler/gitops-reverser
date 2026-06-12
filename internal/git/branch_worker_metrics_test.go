@@ -32,6 +32,7 @@ import (
 )
 
 const branchWorkerQueueDepthMetric = "gitopsreverser_branch_worker_queue_depth"
+const commitsTotalMetric = "gitopsreverser_commits_total"
 
 func newMetricsTestWorker() *BranchWorker {
 	return &BranchWorker{
@@ -52,6 +53,40 @@ func queueDepthLabels() map[string]string {
 		"provider_name":      "test-provider",
 		"branch":             "main",
 	}
+}
+
+// recordPendingWritesMetrics must label commits_total with the recording worker's
+// identity {provider_namespace, provider_name, branch} — the same key set as
+// branch_worker_queue_depth (queueDepthLabels), since both are branch-worker metrics.
+// Without labels the counter is a single global series; with them, concurrent workers
+// (and parallel e2e specs, isolated by their per-suite GitProvider namespace) count
+// separately.
+func TestRecordPendingWritesMetrics_LabelsCommitsByWorkerIdentity(t *testing.T) {
+	reader, err := telemetry.InitTestExporter()
+	require.NoError(t, err)
+
+	w := newMetricsTestWorker()
+	w.recordPendingWritesMetrics(nil, 2)
+
+	commits, ok := telemetry.CollectInt64Sum(reader, commitsTotalMetric, queueDepthLabels())
+	require.True(t, ok, "expected a commits_total sample labelled by the worker identity")
+	assert.Equal(t, int64(2), commits)
+}
+
+// A query scoped to a different provider_namespace must not see this worker's
+// commits — this is the property that lets parallel e2e specs each assert on only
+// their own commits (each suite mints its GitProvider in a unique namespace).
+func TestRecordPendingWritesMetrics_CommitsIsolatedByProviderNamespace(t *testing.T) {
+	reader, err := telemetry.InitTestExporter()
+	require.NoError(t, err)
+
+	w := newMetricsTestWorker()
+	w.recordPendingWritesMetrics(nil, 1)
+
+	otherNamespace := queueDepthLabels()
+	otherNamespace["provider_namespace"] = "other-suite-ns"
+	_, ok := telemetry.CollectInt64Sum(reader, commitsTotalMetric, otherNamespace)
+	assert.False(t, ok, "a different provider_namespace must not match this worker's commits")
 }
 
 // recordQueueDepth must report 0 for a freshly drained worker: empty queue and

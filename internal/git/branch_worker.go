@@ -1224,7 +1224,19 @@ func (w *BranchWorker) recordPendingWritesMetrics(pendingWrites []PendingWrite, 
 		telemetry.GitOperationsTotal.Add(w.ctx, int64(eventCount))
 	}
 	if telemetry.CommitsTotal != nil {
-		telemetry.CommitsTotal.Add(w.ctx, int64(commitsCreated))
+		// Label by the recording BranchWorker's own identity {provider_namespace,
+		// provider_name, branch} — matching BranchWorkerQueueDepth (recordQueueDepth).
+		// The commit batch is produced at the branch-worker layer (one worker can
+		// serve multiple GitTargets sharing a provider+branch), so the worker, not a
+		// single GitTarget, is the honest attribution unit. The prefixed key names
+		// avoid the reserved Prometheus pod-scrape labels `namespace`/`name`, which a
+		// scrape with honor_labels=false would overwrite. Treat name/labels as a
+		// public observability contract (see telemetry.TargetReconcileCompletedTotal).
+		telemetry.CommitsTotal.Add(w.ctx, int64(commitsCreated), metric.WithAttributes(
+			attribute.String("provider_namespace", w.GitProviderNamespace),
+			attribute.String("provider_name", w.GitProviderRef),
+			attribute.String("branch", w.Branch),
+		))
 	}
 	if telemetry.ObjectsWrittenTotal != nil {
 		telemetry.ObjectsWrittenTotal.Add(w.ctx, int64(eventCount))

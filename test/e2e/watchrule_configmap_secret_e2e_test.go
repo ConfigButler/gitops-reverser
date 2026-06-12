@@ -511,15 +511,10 @@ spec:
 		Expect(err3).NotTo(HaveOccurred(), "Failed to apply ConfigMap")
 
 		By("waiting for controller reconciliation of ConfigMap event")
-		verifyReconciliationLogs := func(g Gomega) {
-			output, err := controllerLogs(500)
-			g.Expect(err).NotTo(HaveOccurred())
-
-			// Check for git commit operation in logs
-			g.Expect(output).To(ContainSubstring("git commit"),
-				"Should see git commit operation in controller logs")
-		}
-		Eventually(verifyReconciliationLogs).Should(Succeed())
+		// Progress gate: assert a commit landed via gitopsreverser_commits_total scoped
+		// to this suite's GitProvider namespace, instead of scraping operator logs. The
+		// authoritative per-object check is the file-existence assertion below.
+		waitForCommitInNamespace(testNs)
 
 		By("verifying ConfigMap YAML file exists in Gitea repository")
 		verifyGitCommit := func(g Gomega) {

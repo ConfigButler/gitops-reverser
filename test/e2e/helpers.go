@@ -127,6 +127,37 @@ func getPrometheusURL() string {
 	return "http://localhost:19090"
 }
 
+// ensurePrometheusClient lazily initializes the shared Prometheus client so a spec
+// can assert on metrics without its suite having wired setupPrometheusClient() in a
+// BeforeAll. The Prometheus port-forward is global to the e2e run, so this is safe
+// from any suite.
+func ensurePrometheusClient() {
+	if promAPI == nil {
+		setupPrometheusClient()
+	}
+}
+
+// waitForCommitInNamespace blocks until gitopsreverser_commits_total reports at least
+// one commit for a BranchWorker whose GitProvider lives in providerNamespace. Because
+// each e2e suite creates its GitProvider in a unique namespace (testNamespaceFor), this
+// isolates the calling spec's commits from any other spec committing in parallel — the
+// robust replacement for scraping operator logs for "git commit created". The metric
+// helper's Eventually poll absorbs the ~5s Prometheus scrape interval, and the per-event
+// and backfill-resync commit paths both feed this one counter.
+func waitForCommitInNamespace(providerNamespace string) {
+	ensurePrometheusClient()
+	query := fmt.Sprintf(
+		`sum(gitopsreverser_commits_total{provider_namespace=%q}) or vector(0)`,
+		providerNamespace,
+	)
+	waitForMetricWithTimeout(
+		query,
+		func(v float64) bool { return v > 0 },
+		fmt.Sprintf("a commit was created for GitProvider namespace %q", providerNamespace),
+		45*time.Second, //nolint:mnd // matches the prior log-scrape Eventually budget
+	)
+}
+
 // renderTemplate loads and executes a Go template file with the given data
 // Returns the rendered string or an error if loading or execution fails.
 func renderTemplate(templatePath string, data interface{}) (string, error) {
@@ -302,30 +333,6 @@ func controllerPodNames() ([]string, error) {
 	podNames := utils.GetNonEmptyLines(output)
 	sort.Strings(podNames)
 	return podNames, nil
-}
-
-func controllerLogs(tailLines int) (string, error) {
-	podNames, err := controllerPodNames()
-	if err != nil {
-		return "", err
-	}
-
-	logs := make([]string, 0, len(podNames))
-	for _, podName := range podNames {
-		output, logErr := kubectlRunInNamespace(
-			namespace,
-			"logs",
-			podName,
-			fmt.Sprintf("--tail=%d", tailLines),
-			"--prefix=true",
-		)
-		if logErr != nil {
-			return "", logErr
-		}
-		logs = append(logs, output)
-	}
-
-	return strings.Join(logs, "\n"), nil
 }
 
 // gitRun runs a git command in the given directory and returns combined output.
