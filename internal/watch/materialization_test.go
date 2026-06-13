@@ -177,6 +177,7 @@ func TestRunTypeCheckpointSync_ListsClaimedTypeAndMarksSynced(t *testing.T) {
 	dc := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme(), streamedCM("default", "a", "10"))
 	mirror := &recordingObjectMirror{}
 	m := &Manager{Log: logr.Discard(), dynamicClient: dc, ObjectMirror: mirror}
+	m.watchCheckpointObjects = streamSeam(streamedCM("default", "a", "10"))
 
 	// Claim + activate: the Materializer moves the type to Requested (demand ∩ followable).
 	m.materializerInstance().Declare(typeset.GitTargetRef("test-ns/t"), []schema.GroupVersionResource{configMapGVR})
@@ -200,6 +201,7 @@ func TestRunTypeCheckpointSync_TrimsAuditLogOnReAnchor(t *testing.T) {
 	mirror := &recordingObjectMirror{}
 	trimmer := &recordingTrimmer{}
 	m := &Manager{Log: logr.Discard(), dynamicClient: dc, ObjectMirror: mirror, AuditLogTrimmer: trimmer}
+	m.watchCheckpointObjects = streamSeam(streamedCM("default", "a", "10"))
 
 	m.materializerInstance().Declare(typeset.GitTargetRef("test-ns/t"), []schema.GroupVersionResource{configMapGVR})
 	m.materializerInstance().OnLifecycleEvent(activate(configMapGVR))
@@ -220,6 +222,7 @@ func TestRunTypeCheckpointSync_TrimFailureIsBenign(t *testing.T) {
 		ObjectMirror:    &recordingObjectMirror{},
 		AuditLogTrimmer: &recordingTrimmer{err: errors.New("trim boom")},
 	}
+	m.watchCheckpointObjects = streamSeam(streamedCM("default", "a", "10"))
 
 	m.materializerInstance().Declare(typeset.GitTargetRef("test-ns/t"), []schema.GroupVersionResource{configMapGVR})
 	m.materializerInstance().OnLifecycleEvent(activate(configMapGVR))
@@ -254,6 +257,8 @@ func TestRunTypeCheckpointSync_FailedListMarksFailing(t *testing.T) {
 	})
 	mirror := &recordingObjectMirror{}
 	m := &Manager{Log: logr.Discard(), dynamicClient: dc, ObjectMirror: mirror}
+	// The watch rejects streaming-list, so the fill falls back to the (failing) LIST.
+	m.watchCheckpointObjects = rejectWatchSeam()
 
 	m.materializerInstance().Declare(typeset.GitTargetRef("test-ns/t"), []schema.GroupVersionResource{configMapGVR})
 	m.materializerInstance().OnLifecycleEvent(activate(configMapGVR))
@@ -338,6 +343,7 @@ func TestMaterializationSweep_ReAnchorsClaimedSyncedType(t *testing.T) {
 	dc := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme(), streamedCM("default", "a", "10"))
 	mirror := &recordingObjectMirror{}
 	m := &Manager{Log: logr.Discard(), dynamicClient: dc, ObjectMirror: mirror}
+	m.watchCheckpointObjects = streamSeam(streamedCM("default", "a", "10"))
 	syncedViaDriver(t, m, configMapGVR)
 	require.Equal(t, 1, mirror.replaceCount)
 
@@ -360,6 +366,7 @@ func TestMaterializationSweep_ReleasesAndClearsWhenDemandStops(t *testing.T) {
 	dc := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme(), streamedCM("default", "a", "10"))
 	mirror := &recordingObjectMirror{}
 	m := &Manager{Log: logr.Discard(), dynamicClient: dc, ObjectMirror: mirror}
+	m.watchCheckpointObjects = streamSeam(streamedCM("default", "a", "10"))
 	mat := m.materializerInstance()
 
 	var swept []typeset.MaterializationEvent
@@ -408,6 +415,7 @@ func TestMaterializationSummaryForGitTarget_RollsUpClaimedPhases(t *testing.T) {
 	dc := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme(), streamedCM("default", "a", "10"))
 	mirror := &recordingObjectMirror{}
 	m := &Manager{Log: logr.Discard(), dynamicClient: dc, ObjectMirror: mirror}
+	m.watchCheckpointObjects = streamSeam(streamedCM("default", "a", "10"))
 	mat := m.materializerInstance()
 	gitDest := gitDestRef("roll-target")
 	ref := typeset.GitTargetRef(gitDest.String())

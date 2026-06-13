@@ -52,6 +52,7 @@ func TestInitOTLPExporter_Success(t *testing.T) {
 	assert.NotNil(t, AuditEventListsTotal)
 	assert.NotNil(t, AuditEventListEventsTotal)
 	assert.NotNil(t, AuditEventListDurationSeconds)
+	assert.NotNil(t, MaterializationCheckpointFillsTotal)
 	assert.NotNil(t, APICatalogResources)
 	assert.NotNil(t, APICatalogGroupVersions)
 	assert.NotNil(t, APICatalogRefreshTotal)

@@ -30,8 +30,10 @@ import (
 	"github.com/go-logr/logr"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/dynamic"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -70,6 +72,18 @@ type Manager struct {
 	// dynamicClient overrides the config-built dynamic client when non-nil.
 	// Used in tests to inject a fake client without a real REST config.
 	dynamicClient dynamic.Interface
+
+	// watchCheckpointObjects overrides how the WATCH-first checkpoint fill opens its
+	// streaming-list watch (see streamTypeObjects). nil → built from the dynamic client.
+	// It is a test seam: the dynamic fake client does not implement streaming-list
+	// (sendInitialEvents / the initial-events-end bookmark), so tests inject a fake watcher.
+	watchCheckpointObjects func(
+		ctx context.Context, gvr schema.GroupVersionResource, opts metav1.ListOptions,
+	) (watch.Interface, error)
+	// streamCheckpointTimeoutOverride shortens the WATCH-first initial-events deadline in tests
+	// so the timeout→LIST-fallback path is exercisable without waiting the production backstop.
+	// Zero uses streamCheckpointTimeout.
+	streamCheckpointTimeoutOverride time.Duration
 
 	// resourceCatalog is the shared discovery-backed API surface used by rule planning.
 	resourceCatalogMu sync.Mutex

@@ -120,6 +120,15 @@ var (
 	// It tracks demand-driven checkpoint activity per the materialization lifecycle
 	// (docs/design/stream/demand-driven-type-materialization-lifecycle.md, L-6/L10).
 	MaterializationSyncEventsTotal metric.Int64Counter
+	// MaterializationCheckpointFillsTotal counts completed per-type checkpoint fills, labelled by
+	// {path}: "watch" for the WATCH-first streaming-list (sendInitialEvents + the
+	// initial-events-end bookmark) and "list" for the consistent-LIST fallback taken when a
+	// backend does not honor streaming-list (e.g. an aggregated API that never emits the
+	// bookmark). A rising "list" share is the fallback surface — which clusters/types are not on
+	// the cheaper streaming path. Pair it with the per-GVR `objects-mirror: snapshot loaded ...
+	// path=...` log line to identify the specific type. See
+	// docs/design/stream/watch-list-checkpoint-plan.md.
+	MaterializationCheckpointFillsTotal metric.Int64Counter
 
 	// WatchDuplicatesSkippedTotal counts watch events skipped due to duplicate sanitized content.
 	WatchDuplicatesSkippedTotal metric.Int64Counter
@@ -297,6 +306,7 @@ func registerCounters() error {
 		{"gitopsreverser_type_lifecycle_reconcile_total", &TypeLifecycleReconcileTotal},
 		{"gitopsreverser_type_lifecycle_sweep_total", &TypeLifecycleSweepTotal},
 		{"gitopsreverser_materialization_sync_events_total", &MaterializationSyncEventsTotal},
+		{"gitopsreverser_materialization_checkpoint_fills_total", &MaterializationCheckpointFillsTotal},
 	}
 	for _, s := range counters {
 		v, err := otelMeter.Int64Counter(s.name)
