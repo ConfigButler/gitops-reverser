@@ -115,10 +115,10 @@ func TestRedisTypeSplicer_FoldsCheckpointAndLog(t *testing.T) {
 	objs, rv, hc, err := splicer.SpliceType(ctx, "", "configmaps")
 	require.NoError(t, err)
 	assert.Equal(t, "100", rv, "the splice is anchored at the checkpoint revision")
-	// The delete carries no body and so no RV: it ingests rv-less, attached to the stream high-water
-	// (the create @160), not at 170. The coverage head is therefore the highest MAIN-stream entry
-	// (160) — exactly the position the tail would read that delete at, so the gate stays consistent.
-	assert.Equal(t, "160", hc, "coverage head is the highest main-stream rv (the rv-less delete rides @160)")
+	// The delete carries no body and so no rv: it ingests rv-less, attached to the stream high-water
+	// (the create @160), as "160-1" — not at 170. The coverage head is the full stream position of
+	// that last entry, exactly where the tail reads it, so the gate stays consistent down to the seq.
+	assert.Equal(t, "160-1", hc, "coverage head is the last main-stream position (the rv-less delete rides 160-1)")
 
 	require.Len(t, objs, 2, "b was deleted; a and c remain")
 	assert.Equal(t, "default/a", objs[0].GetNamespace()+"/"+objs[0].GetName(), "sorted by identity")
@@ -147,7 +147,7 @@ func TestRedisTypeSplicer_CoverageHeadGatesTailReplay(t *testing.T) {
 	objs, rv, hc, err := splicer.SpliceType(ctx, "", "configmaps")
 	require.NoError(t, err)
 	assert.Equal(t, "100", rv, "checkpoint rv is unchanged — it still serves commit-message continuity")
-	assert.Equal(t, "117", hc, "coverage head folds through the post-checkpoint create; rv=100 would re-route it")
+	assert.Equal(t, "117-0", hc, "coverage head is the post-checkpoint create's position; rv 100 would re-route it")
 	require.Len(t, objs, 2, "seed + the folded create are both in the desired set")
 }
 
@@ -172,7 +172,7 @@ func TestRedisTypeSplicer_DuplicateDeliveryFoldsOnce(t *testing.T) {
 	objs, rv, hc, err := splicer.SpliceType(ctx, "", "configmaps")
 	require.NoError(t, err)
 	assert.Equal(t, "100", rv)
-	assert.Equal(t, "150", hc, "both deliveries fold at rv 150 — the coverage head is 150, once")
+	assert.Equal(t, "150-1", hc, "both deliveries land at rv 150 with fresh seqs; the coverage head is the last, 150-1")
 
 	require.Len(t, objs, 1, "a duplicate delivery must not produce a second desired object")
 	assert.Equal(t, "default/a", objs[0].GetNamespace()+"/"+objs[0].GetName())
@@ -231,7 +231,7 @@ func TestRedisTypeSplicer_FoldsScaleIntoParent(t *testing.T) {
 	objs, rv, hc, err := splicer.SpliceType(ctx, "apps", "deployments")
 	require.NoError(t, err)
 	assert.Equal(t, "100", rv)
-	assert.Equal(t, "160", hc, "the coverage head reaches the last log entry read (the skipped ghost scale @160)")
+	assert.Equal(t, "160-0", hc, "coverage head reaches the last log position read (the skipped ghost scale at 160-0)")
 
 	require.Len(t, objs, 1, "the absent-parent scale folds nothing in")
 	replicas, found, err := unstructured.NestedInt64(objs[0].Object, "spec", "replicas")
@@ -267,7 +267,8 @@ func TestRedisTypeSplicer_EmptyLogReturnsCheckpoint(t *testing.T) {
 	objs, rv, hc, err := splicer.SpliceType(ctx, "", "configmaps")
 	require.NoError(t, err)
 	assert.Equal(t, "100", rv)
-	assert.Equal(t, "100", hc, "with no post-checkpoint log the coverage head is the checkpoint rv")
+	assert.Equal(t, "100-18446744073709551615", hc,
+		"with no post-checkpoint log the coverage head is the top of the checkpoint rv (R-maxseq)")
 	require.Len(t, objs, 1)
 	assert.Equal(t, "a", objs[0].GetName())
 }
@@ -292,8 +293,9 @@ func TestRedisTypeSplicer_SkipsUnconvertibleBodies(t *testing.T) {
 	require.NoError(t, err)
 	// The Status body carries no resourceVersion, so it ingests rv-less; with the main stream still
 	// empty it diverts to the late lane rather than the main stream. The main stream stays empty, so
-	// the coverage head holds at the checkpoint rv — the entry the tail will never replay anyway.
-	assert.Equal(t, "100", hc, "an rv-less body diverts to the late lane; the coverage head stays at the checkpoint")
+	// the coverage head holds at the top of the checkpoint rv — the entry the tail will never replay.
+	assert.Equal(t, "100-18446744073709551615", hc,
+		"an rv-less body diverts to the late lane; the coverage head stays at the checkpoint top")
 	require.Len(t, objs, 1, "the Status body is not folded as an object")
 	assert.Equal(t, "v1", configMapData(t, objs[0].Object), "a keeps its checkpoint state")
 }

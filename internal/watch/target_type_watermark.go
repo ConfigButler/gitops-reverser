@@ -20,6 +20,7 @@ package watch
 
 import (
 	"strconv"
+	"strings"
 
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
@@ -34,23 +35,30 @@ import (
 // otherwise reconcile-only history. The watermark closes that: each target carries the highest rv
 // its own reconcile for the type covered, and the fan-out routes only strictly-newer entries to it.
 //
+// Hc is a FULL Redis stream position "<rv>-<seq>", not a bare rv. Distinct audit entries can share
+// an rv — an rv-less DELETE/Status rides the high-water as "<rv>-<seq>", and duplicate or same-rv
+// writes get fresh seqs — so the gate compares full positions. A bare-rv compare would suppress a
+// legitimate same-rv live entry that arrived after the reconcile's fold (the stale-high watermark
+// hazard, §7.3), which is more dangerous than the over-routing it was meant to prevent.
+//
 // Lifecycle (§7.1/§7.3): NotReconciled (no map entry) -> Reconciling/LiveFrom(Hc) (an entry). The
-// gate treats Reconciling and LiveFrom identically (both suppress rv <= Hc, route rv > Hc), so the
+// gate treats Reconciling and LiveFrom identically (both suppress id <= Hc, route id > Hc), so the
 // boundary is modelled as one Hc value rather than two states. Publishing happens only after the
 // scoped reconcile is enqueued; advances are monotonic; clearing (the safe NotReconciled reset) is
 // the only backward move and happens on delete/recreate.
 
-// publishTargetTypeWatermark records the coverage head Hc a GitTarget's reconcile for a type has
-// covered, after that reconcile has been enqueued (event_router.EmitTypeReconcileForGitDest). It
-// advances the boundary monotonically: a lower (or unparseable) Hc than the one already held is
-// ignored, because a stale-high-then-lowered watermark could suppress a legitimate live event and
-// leave a file missing until the next heal (§7.3). A blank Hc is a no-op — never publish a boundary
-// the gate cannot compare against. The mutex is shared with the fan-out gate so the worker queue
-// gets the happens-before edge described in §7.4.
+// publishTargetTypeWatermark records the coverage head Hc (a full "<rv>-<seq>" stream position) a
+// GitTarget's reconcile for a type has covered, after that reconcile has been enqueued
+// (event_router.EmitTypeReconcileForGitDest). It advances the boundary monotonically: a lower Hc
+// than the one already held is ignored, because a stale-high-then-lowered watermark could suppress a
+// legitimate live event and leave a file missing until the next heal (§7.3). An unparseable Hc is a
+// no-op — never publish a boundary the gate cannot compare against, so the target stays NotReconciled
+// (suppress all) rather than degrading to route-all. The mutex is shared with the fan-out gate so the
+// worker queue gets the happens-before edge described in §7.4.
 func (m *Manager) publishTargetTypeWatermark(
 	gitDest types.ResourceReference, gvr schema.GroupVersionResource, hc string,
 ) {
-	if hc == "" {
+	if _, _, ok := parseStreamID(hc); !ok {
 		return
 	}
 	key := gitDest.String()
@@ -64,7 +72,7 @@ func (m *Manager) publishTargetTypeWatermark(
 		byGVR = map[schema.GroupVersionResource]string{}
 		m.targetTypeWatermark[key] = byGVR
 	}
-	if prior, ok := byGVR[gvr]; ok && !rvGreater(hc, prior) {
+	if prior, ok := byGVR[gvr]; ok && !streamIDStrictlyAfter(hc, prior) {
 		// Already at or beyond hc — hold the higher boundary (monotonic, §7.3).
 		return
 	}
@@ -99,32 +107,76 @@ func (m *Manager) clearTargetTypeWatermarks(gitDest types.ResourceReference) {
 	delete(m.targetTypeWatermark, gitDest.String())
 }
 
-// rvAboveWatermark reports whether an audit-tail entry at rvE is strictly newer than the coverage
-// head hc — i.e. live for this target and routable. The decision belongs to the API resourceVersion
-// boundary (§8.2): rvE <= hc was already covered by the target's reconcile and must be suppressed.
-// When the comparison cannot be made safely (an unparseable rv), it prefers routing over
-// suppressing — a redundant commit is recoverable, a wrongly-suppressed live event needs the next
-// heal to fix (§7.3). In practice both are uint64 stream-ID components, so the fallback is defensive.
-func rvAboveWatermark(rvE, hc string) bool {
-	e, errE := strconv.ParseUint(rvE, 10, 64)
-	h, errH := strconv.ParseUint(hc, 10, 64)
-	if errE != nil || errH != nil {
+// streamIDAfterWatermark reports whether an audit-tail entry at stream position entryID is strictly
+// after the coverage head hc — i.e. live for this target and routable. The decision belongs to the
+// API-rv-ordered stream position (§8.2): entryID <= hc was already covered by the target's reconcile
+// and must be suppressed; entryID > hc is live. The comparison is by (rv, seq), so a same-rv entry
+// that arrived after the fold (a higher seq than hc) is correctly treated as live. When the
+// comparison cannot be made safely (an unparseable id), it prefers routing over suppressing — a
+// redundant commit is recoverable, a wrongly-suppressed live event needs the next heal to fix (§7.3).
+func streamIDAfterWatermark(entryID, hc string) bool {
+	order, ok := streamIDOrder(entryID, hc)
+	if !ok {
 		return true
 	}
-	return e > h
+	return order > 0
 }
 
-// rvGreater reports whether decimal resourceVersion a is numerically greater than b. An unparseable
-// a is treated as not-greater so publishTargetTypeWatermark never advances onto a boundary it
-// cannot later compare against (§7.3: never advance from an uncertain RV).
-func rvGreater(a, b string) bool {
-	av, aerr := strconv.ParseUint(a, 10, 64)
-	bv, berr := strconv.ParseUint(b, 10, 64)
-	if aerr != nil {
-		return false
-	}
-	if berr != nil {
+// streamIDStrictlyAfter reports whether stream position a is strictly after b, used to keep the
+// published watermark monotonic. An unparseable a is treated as not-after so the watermark never
+// advances onto a boundary it cannot later compare against (§7.3: never advance from an uncertain
+// position); an unparseable b (should not occur — only parseable ids are stored) yields after=true.
+func streamIDStrictlyAfter(a, b string) bool {
+	order, ok := streamIDOrder(a, b)
+	if !ok {
+		// Distinguish "a is bad" (do not advance) from "b is bad" (a wins).
+		if _, _, aok := parseStreamID(a); !aok {
+			return false
+		}
 		return true
 	}
-	return av > bv
+	return order > 0
+}
+
+// streamIDOrder compares two FULL Redis stream positions "<rv>-<seq>" by (rv, then seq), returning
+// -1/0/1 and ok=false when either side is not a parseable "<uint64>-<uint64>".
+func streamIDOrder(a, b string) (int, bool) {
+	am, as, aok := parseStreamID(a)
+	bm, bs, bok := parseStreamID(b)
+	if !aok || !bok {
+		return 0, false
+	}
+	switch {
+	case am != bm:
+		if am > bm {
+			return 1, true
+		}
+		return -1, true
+	case as != bs:
+		if as > bs {
+			return 1, true
+		}
+		return -1, true
+	default:
+		return 0, true
+	}
+}
+
+// parseStreamID splits a Redis stream ID "<rv>-<seq>" into its rv and seq uint64 components, with
+// ok=false for anything that is not a non-negative decimal in each present component. A bare "<rv>"
+// (no "-seq") is accepted as seq 0 for robustness, though XRANGE/XREAD always report the full form.
+func parseStreamID(id string) (uint64, uint64, bool) {
+	major, sub, found := strings.Cut(id, "-")
+	rv, errMajor := strconv.ParseUint(major, 10, 64)
+	if errMajor != nil {
+		return 0, 0, false
+	}
+	if !found {
+		return rv, 0, true
+	}
+	seq, errSeq := strconv.ParseUint(sub, 10, 64)
+	if errSeq != nil {
+		return 0, 0, false
+	}
+	return rv, seq, true
 }

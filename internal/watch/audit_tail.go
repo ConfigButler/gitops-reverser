@@ -203,9 +203,11 @@ func (m *Manager) routeAuditChangesToTarget(
 	}
 	// Per-(GitTarget, GVR) coverage watermark (§7.2): an absent boundary is NotReconciled — the
 	// target's first reconcile owns the type's initial history, so suppress every entry until one
-	// exists. With a boundary Hc, an entry at rv <= Hc was already covered by this target's reconcile
-	// and must not be re-delivered as a live per-event commit; only rv > Hc is live for it. This is
-	// what makes the type-global tail's delivery target-local.
+	// exists. With a boundary Hc (a full "<rv>-<seq>" stream position), an entry at id <= Hc was
+	// already covered by this target's reconcile and must not be re-delivered as a live per-event
+	// commit; only id > Hc is live for it. Comparing full positions (not bare rvs) is what keeps a
+	// same-rv entry that arrived after the fold from being wrongly suppressed. This is what makes the
+	// type-global tail's delivery target-local.
 	hc, hasWatermark := m.targetTypeWatermarkFor(table.GitDest, gvr)
 	if !hasWatermark {
 		return
@@ -215,8 +217,8 @@ func (m *Manager) routeAuditChangesToTarget(
 		if !inScope(change.Identifier.Namespace) {
 			continue
 		}
-		if !rvAboveWatermark(change.AuditRV, hc) {
-			continue // rv <= Hc: historical for this target, already covered by its reconcile
+		if !streamIDAfterWatermark(change.AuditStreamID, hc) {
+			continue // id <= Hc: historical for this target, already covered by its reconcile
 		}
 		ev := change
 		ev.Path = path

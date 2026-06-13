@@ -193,13 +193,38 @@ events the reconcile folded.
 The freshness gate must therefore use:
 
 ```text
-Hc = max(Rcp, highest folded audit-log entry RV)
+Hc = full stream position of the highest folded audit-log entry
+   = the last entry the splice's "(Rcp +" XRANGE returned,
+     or "<Rcp>-<maxseq>" (the top of the checkpoint rv) when nothing was folded
 ```
 
-When no log entries are folded, `Hc == Rcp`. When entries are folded from the
-audit log, `Hc` is the head of that fold. Using `Rcp` as the target watermark
-would reproduce the bug for exactly the common case where the desired set came
-from checkpoint `Rcp` plus log entries in `(Rcp, Hc]`.
+When no log entries are folded, `Hc` is the top of `Rcp`. When entries are
+folded from the audit log, `Hc` is the head of that fold. Using `Rcp` as the
+target watermark would reproduce the bug for exactly the common case where the
+desired set came from checkpoint `Rcp` plus log entries in `(Rcp, Hc]`.
+
+**`Hc` is a full Redis stream position `<rv>-<seq>`, not a bare resourceVersion.**
+The per-type audit stream uses `<rv>-<seq>` IDs precisely because distinct entries
+can share an `rv`: an rv-less event (a DELETE or `Status` body with no extractable
+resourceVersion) is ingested attached to the stream's high-water as `<rv>-<seq>`,
+and duplicate or genuinely same-`rv` writes get fresh sub-sequences. If the gate
+compared bare `rv` with `>`, it would do one of two wrong things at the boundary
+`rv`:
+
+- gating on the checkpoint `Rcp` re-delivers the post-checkpoint log entries the
+  reconcile already folded (the original bug);
+- gating on the bare `rv` of `Hc` (e.g. suppressing every `rv <= 124`) would
+  **suppress a legitimate same-`rv` live entry that arrived after the fold** — for
+  example an rv-less DELETE that landed at `124-7` when the fold head was `124-3`.
+  That silently drops a live event and leaves a file wrong until the next heal,
+  which §7.3 flags as the more dangerous failure.
+
+Comparing full stream positions is exact: the splice's XRANGE has no count bound,
+so every entry in `(Rcp, head]` is folded, and therefore an entry at stream
+position `id <= Hc` was covered by this reconcile while `id > Hc` is genuinely
+later. This matches the existing tail anchor, which already treats the checkpoint
+as `Rcp-<maxseq>` rather than a bare `Rcp`. The RV-only examples below are
+illustrative of the band logic; the implementation compares `(rv, seq)`.
 
 Concrete examples:
 
@@ -302,20 +327,21 @@ Use an explicit watermark for each `(GitTarget, GVR)`:
 targetTypeWatermark[GitTarget, GVR] = Hc
 ```
 
-`Hc` is the highest Kubernetes resourceVersion this GitTarget's reconcile for
-that type has covered. It is the splice coverage head:
+`Hc` is the full stream position (`<rv>-<seq>`) this GitTarget's reconcile for
+that type has covered. It is the splice coverage head: the last entry the splice
+folded, or the top of the checkpoint rv (`<Rcp>-<maxseq>`) when nothing was
+folded.
+
+Tail fan-out then becomes target-local, comparing full stream positions:
 
 ```text
-Hc = max(checkpoint RV, highest folded audit-log entry RV)
+For audit-tail entry e at stream position id_e:
+  id_e <= Hc  => historical for this target; suppress
+  id_e > Hc   => live for this target; route as a per-event write
 ```
 
-Tail fan-out then becomes target-local:
-
-```text
-For audit-tail entry e with rv_e:
-  rv_e <= Hc  => historical for this target; suppress
-  rv_e > Hc   => live for this target; route as a per-event write
-```
+The comparison is by `(rv, seq)`, not bare `rv` (see §5): an entry that shares
+`Hc`'s `rv` but has a higher `seq` arrived after the fold and is live.
 
 This is the clean model because it matches the contract directly. A type-global
 tail can stay type-global, but delivery is only live relative to a specific
@@ -410,8 +436,8 @@ the reconcile write is already in the target's queue before the tail can observe
 `Hc` and route `rv > Hc` events behind it.
 
 Watermarks should advance monotonically per `(GitTarget, GVR)` while a boundary is
-held; they must never move backward to a lower RV while still claiming to be a
-boundary. Clearing the boundary outright — resetting to `NotReconciled` on a failed
+held; they must never move backward to an earlier stream position while still
+claiming to be a boundary. Clearing the boundary outright — resetting to `NotReconciled` on a failed
 or recreated reconcile (the `Reconciling -> NotReconciled` transition above) — is
 the safe exception, not a violation: with no boundary the gate suppresses every
 tail entry rather than over-routing, and the next reconcile/heal re-establishes
@@ -421,7 +447,7 @@ are:
 
 - never reuse a watermark across GitTarget delete/recreate; clear it alongside
   `ForgetGitTargetDeclaration`;
-- never advance a watermark from an uncertain or unparsable RV;
+- never advance a watermark from an uncertain or unparsable stream position;
 - once a target has a usable boundary, prefer routing over suppressing when the
   comparison cannot be made safely;
 - rely on the periodic/heal reconcile as the backstop for a wrongly suppressed
@@ -618,18 +644,20 @@ flowchart LR
 
 The intuitive rule "start watching only after the first reconcile commit is
 finished" is close, but too tied to Git wall-clock time. The system should use
-the API resourceVersion boundary:
+the audit-stream position boundary (rv-ordered, with the sub-sequence breaking
+ties within an rv — see §5):
 
 ```text
 For target B and ConfigMaps:
-  rv <= Hc  => historical for B; reconcile owns it
-  rv > Hc   => live for B; tail may route it
+  id <= Hc  => historical for B; reconcile owns it
+  id > Hc   => live for B; tail may route it
 ```
 
-That means an event created while the reconcile commit is still being written can
-still be a legitimate live event if its RV is greater than `Hc`. The branch
-worker should preserve write ordering, but the freshness decision itself belongs
-to the API RV boundary, not to the moment the Git commit finishes.
+That means an event recorded while the reconcile commit is still being written
+can still be a legitimate live event if its stream position is after `Hc` —
+including a same-`rv` entry with a higher sub-sequence. The branch worker should
+preserve write ordering, but the freshness decision itself belongs to the stream
+position boundary, not to the moment the Git commit finishes.
 
 Also, making the test too large can make failures noisy. Prefer a moderate
 `seedCount` with strict RV/history assertions over a very large count that mostly

@@ -658,8 +658,8 @@ func TestRedisByTypeStreamQueue_ReadTypeAuditChanges(t *testing.T) {
 	assert.Equal(t, "web", changes[0].Identifier.Name)
 	assert.Equal(t, "deployments", changes[0].Identifier.Resource)
 	assert.NotNil(t, changes[0].Object, "an upsert carries the extracted object")
-	assert.Equal(t, "100", changes[0].AuditRV, "each change is stamped with its stream-ID rv for the watermark gate")
-	assert.Equal(t, "200", changes[1].AuditRV)
+	assert.Equal(t, "100-0", changes[0].AuditStreamID, "each change carries its full stream position for the gate")
+	assert.Equal(t, "200-0", changes[1].AuditStreamID)
 	assert.Equal(t, "200-0", id, "resumes from the newest entry")
 
 	changes2, id2, err := q.ReadTypeAuditChanges(ctx, "apps", "deployments", id, 100*time.Millisecond)

@@ -90,14 +90,14 @@ func registerRecordingStream(t *testing.T, m *Manager) *recordingEnqueuer {
 	return rec
 }
 
-// tailChange builds one per-event audit-tail change for configmaps, stamped with its stream rv —
-// the shape ReadTypeAuditChanges hands applyAuditChangesForType.
-func tailChange(namespace, name, rv string) git.Event {
+// tailChange builds one per-event audit-tail change for configmaps, stamped with its full stream
+// position "<rv>-<seq>" — the shape ReadTypeAuditChanges hands applyAuditChangesForType.
+func tailChange(namespace, name, streamID string) git.Event {
 	return git.Event{
-		Object:     uns("ConfigMap", namespace, name),
-		Identifier: itypes.NewResourceIdentifier("", "v1", "configmaps", namespace, name),
-		Operation:  "CREATE",
-		AuditRV:    rv,
+		Object:        uns("ConfigMap", namespace, name),
+		Identifier:    itypes.NewResourceIdentifier("", "v1", "configmaps", namespace, name),
+		Operation:     "CREATE",
+		AuditStreamID: streamID,
 	}
 }
 
@@ -112,17 +112,17 @@ func TestAuditTailFanout_SuppressesHistoricalForReconciledTarget(t *testing.T) {
 	m := streamingManager(t, gitTargetFixture(), store)
 	rec := registerRecordingStream(t, m)
 
-	// The target's reconcile through coverage head Hc=117 has been enqueued; its watermark is now
+	// The target's reconcile through coverage head Hc=117-0 has been enqueued; its watermark is now
 	// published (the batch-cm-2 @117 case from §4 of the doc).
-	m.publishTargetTypeWatermark(myTargetRef(), configmapsGVR, "117")
+	m.publishTargetTypeWatermark(myTargetRef(), configmapsGVR, "117-0")
 
 	m.applyAuditChangesForType(context.Background(), logr.Discard(), configmapsGVR, []git.Event{
-		tailChange("ns-a", "batch-cm-2", "117"), // rv == Hc: already reconciled -> suppress
-		tailChange("ns-a", "cm-live", "130"),    // rv  > Hc: live for this target -> route
+		tailChange("ns-a", "batch-cm-2", "117-0"), // id == Hc: already reconciled -> suppress
+		tailChange("ns-a", "cm-live", "130-0"),    // id  > Hc: live for this target -> route
 	})
 
 	assert.Equal(t, []string{"cm-live"}, rec.names(),
-		"the reconciled-through entry (rv<=Hc) must be suppressed; only the strictly-newer entry is live")
+		"the reconciled-through entry (id<=Hc) must be suppressed; only the strictly-newer entry is live")
 }
 
 // TestAuditTailFanout_SuppressesUntilReconciled proves the NotReconciled state (§7.1): a target that
@@ -136,10 +136,32 @@ func TestAuditTailFanout_SuppressesUntilReconciled(t *testing.T) {
 
 	// No publishTargetTypeWatermark: the target is NotReconciled.
 	m.applyAuditChangesForType(context.Background(), logr.Discard(), configmapsGVR, []git.Event{
-		tailChange("ns-a", "cm-early", "200"),
+		tailChange("ns-a", "cm-early", "200-0"),
 	})
 
 	assert.Empty(t, rec.names(), "a NotReconciled target suppresses every tail entry until its first reconcile")
+}
+
+// TestAuditTailFanout_RoutesSameRVHigherSeq is the seq-sensitivity guard: an entry that shares the
+// coverage head's rv but has a HIGHER sub-sequence arrived after the reconcile's fold, so it is live
+// and must be routed. A bare-rv comparison would wrongly suppress it (it would compute rv<=Hc),
+// silently dropping e.g. an rv-less DELETE riding the high-water — the more dangerous failure of §7.3.
+func TestAuditTailFanout_RoutesSameRVHigherSeq(t *testing.T) {
+	store := rulestore.NewStore()
+	addConfigmapsWatchRule(store)
+	m := streamingManager(t, gitTargetFixture(), store)
+	rec := registerRecordingStream(t, m)
+
+	// The reconcile folded the log through 150-3.
+	m.publishTargetTypeWatermark(myTargetRef(), configmapsGVR, "150-3")
+
+	m.applyAuditChangesForType(context.Background(), logr.Discard(), configmapsGVR, []git.Event{
+		tailChange("ns-a", "cm-folded", "150-3"),  // == Hc: already folded -> suppress
+		tailChange("ns-a", "cm-same-rv", "150-7"), // same rv, higher seq: arrived after the fold -> route
+	})
+
+	assert.Equal(t, []string{"cm-same-rv"}, rec.names(),
+		"a same-rv entry with a higher seq than Hc is live and must be routed, not suppressed")
 }
 
 // TestAuditTailFanout_RoutesAllAboveWatermark proves the live side of the gate: once a boundary is
@@ -151,12 +173,12 @@ func TestAuditTailFanout_RoutesAllAboveWatermark(t *testing.T) {
 	m := streamingManager(t, gitTargetFixture(), store)
 	rec := registerRecordingStream(t, m)
 
-	m.publishTargetTypeWatermark(myTargetRef(), configmapsGVR, "100")
+	m.publishTargetTypeWatermark(myTargetRef(), configmapsGVR, "100-0")
 
 	m.applyAuditChangesForType(context.Background(), logr.Discard(), configmapsGVR, []git.Event{
-		tailChange("ns-a", "cm-a", "101"),
-		tailChange("ns-a", "cm-b", "102"),
-		tailChange("ns-a", "cm-c", "103"),
+		tailChange("ns-a", "cm-a", "101-0"),
+		tailChange("ns-a", "cm-b", "102-0"),
+		tailChange("ns-a", "cm-c", "103-0"),
 	})
 
 	assert.Equal(t, []string{"cm-a", "cm-b", "cm-c"}, rec.names(), "every entry above Hc is live and routed")
@@ -170,46 +192,55 @@ func TestAuditTailFanout_RespectsNamespaceScope(t *testing.T) {
 	m := streamingManager(t, gitTargetFixture(), store)
 	rec := registerRecordingStream(t, m)
 
-	m.publishTargetTypeWatermark(myTargetRef(), configmapsGVR, "100")
+	m.publishTargetTypeWatermark(myTargetRef(), configmapsGVR, "100-0")
 
 	m.applyAuditChangesForType(context.Background(), logr.Discard(), configmapsGVR, []git.Event{
-		tailChange("ns-a", "cm-in", "200"),      // in scope, above Hc -> route
-		tailChange("ns-other", "cm-out", "201"), // out of scope -> drop
+		tailChange("ns-a", "cm-in", "200-0"),      // in scope, above Hc -> route
+		tailChange("ns-other", "cm-out", "201-0"), // out of scope -> drop
 	})
 
 	assert.Equal(t, []string{"cm-in"}, rec.names(), "an out-of-scope entry is dropped even above Hc")
 }
 
 // TestPublishTargetTypeWatermark_Monotonic proves a published watermark advances but never retreats
-// while a boundary is held (§7.3): a re-anchor with a higher Hc moves it forward, a lower Hc is
-// ignored so a stale-low value can never start suppressing legitimate live events.
+// while a boundary is held (§7.3), by full stream position: a re-anchor with a later Hc moves it
+// forward (including a same-rv higher seq), an earlier Hc is ignored so a stale value can never start
+// suppressing legitimate live events, and an unparseable Hc is a no-op.
 func TestPublishTargetTypeWatermark_Monotonic(t *testing.T) {
 	m := &Manager{Log: logr.Discard()}
 
-	m.publishTargetTypeWatermark(myTargetRef(), configmapsGVR, "100")
+	m.publishTargetTypeWatermark(myTargetRef(), configmapsGVR, "100-0")
 	hc, ok := m.targetTypeWatermarkFor(myTargetRef(), configmapsGVR)
 	require.True(t, ok)
-	assert.Equal(t, "100", hc)
+	assert.Equal(t, "100-0", hc)
 
-	m.publishTargetTypeWatermark(myTargetRef(), configmapsGVR, "150") // a re-anchor advances it
+	m.publishTargetTypeWatermark(myTargetRef(), configmapsGVR, "150-0") // a re-anchor advances it
 	hc, _ = m.targetTypeWatermarkFor(myTargetRef(), configmapsGVR)
-	assert.Equal(t, "150", hc)
+	assert.Equal(t, "150-0", hc)
 
-	m.publishTargetTypeWatermark(myTargetRef(), configmapsGVR, "120") // a lower Hc must not retreat it
+	m.publishTargetTypeWatermark(myTargetRef(), configmapsGVR, "150-3") // same rv, higher seq advances
 	hc, _ = m.targetTypeWatermarkFor(myTargetRef(), configmapsGVR)
-	assert.Equal(t, "150", hc, "the watermark holds the higher boundary")
+	assert.Equal(t, "150-3", hc, "a later sub-sequence at the same rv advances the boundary")
 
-	m.publishTargetTypeWatermark(myTargetRef(), configmapsGVR, "") // a blank Hc is a no-op
+	m.publishTargetTypeWatermark(myTargetRef(), configmapsGVR, "150-1") // earlier seq must not retreat it
 	hc, _ = m.targetTypeWatermarkFor(myTargetRef(), configmapsGVR)
-	assert.Equal(t, "150", hc)
+	assert.Equal(t, "150-3", hc, "an earlier sub-sequence does not retreat the boundary")
+
+	m.publishTargetTypeWatermark(myTargetRef(), configmapsGVR, "120-9") // a lower rv must not retreat it
+	hc, _ = m.targetTypeWatermarkFor(myTargetRef(), configmapsGVR)
+	assert.Equal(t, "150-3", hc, "the watermark holds the higher boundary")
+
+	m.publishTargetTypeWatermark(myTargetRef(), configmapsGVR, "") // an unparseable Hc is a no-op
+	hc, _ = m.targetTypeWatermarkFor(myTargetRef(), configmapsGVR)
+	assert.Equal(t, "150-3", hc)
 }
 
 // TestClearTargetTypeWatermarks_ResetsToNotReconciled proves a delete clears the boundary so a
 // recreate restarts at NotReconciled rather than inheriting a stale-high Hc (§7.3).
 func TestClearTargetTypeWatermarks_ResetsToNotReconciled(t *testing.T) {
 	m := &Manager{Log: logr.Discard()}
-	m.publishTargetTypeWatermark(myTargetRef(), configmapsGVR, "100")
-	m.publishTargetTypeWatermark(myTargetRef(), secretsGVR, "200")
+	m.publishTargetTypeWatermark(myTargetRef(), configmapsGVR, "100-0")
+	m.publishTargetTypeWatermark(myTargetRef(), secretsGVR, "200-0")
 
 	m.clearTargetTypeWatermarks(myTargetRef())
 
@@ -223,7 +254,7 @@ func TestClearTargetTypeWatermarks_ResetsToNotReconciled(t *testing.T) {
 // clears the coverage watermarks, so the two recreate-safety resets stay together.
 func TestForgetGitTargetDeclaration_ClearsWatermarks(t *testing.T) {
 	m := &Manager{Log: logr.Discard()}
-	m.publishTargetTypeWatermark(myTargetRef(), configmapsGVR, "100")
+	m.publishTargetTypeWatermark(myTargetRef(), configmapsGVR, "100-0")
 
 	m.ForgetGitTargetDeclaration(myTargetRef())
 
@@ -231,12 +262,15 @@ func TestForgetGitTargetDeclaration_ClearsWatermarks(t *testing.T) {
 	assert.False(t, ok, "ForgetGitTargetDeclaration clears the per-type watermarks too")
 }
 
-// TestRVAboveWatermark proves the boundary comparison: rv<=Hc is historical (suppress), rv>Hc is
-// live (route), and an unparseable rv prefers routing over suppressing (§7.3).
-func TestRVAboveWatermark(t *testing.T) {
-	assert.False(t, rvAboveWatermark("100", "100"), "rv == Hc is historical")
-	assert.False(t, rvAboveWatermark("99", "100"), "rv < Hc is historical")
-	assert.True(t, rvAboveWatermark("101", "100"), "rv > Hc is live")
-	assert.True(t, rvAboveWatermark("", "100"), "an unparseable rv prefers routing")
-	assert.True(t, rvAboveWatermark("abc", "100"), "a non-numeric rv prefers routing")
+// TestStreamIDAfterWatermark proves the boundary comparison is by full stream position (rv, seq):
+// id<=Hc is historical (suppress), id>Hc is live (route) — crucially a same-rv higher-seq entry is
+// live — and an unparseable id prefers routing over suppressing (§7.3).
+func TestStreamIDAfterWatermark(t *testing.T) {
+	assert.False(t, streamIDAfterWatermark("100-0", "100-0"), "id == Hc is historical")
+	assert.False(t, streamIDAfterWatermark("100-2", "100-3"), "same rv, lower seq is historical")
+	assert.False(t, streamIDAfterWatermark("99-9", "100-0"), "lower rv is historical")
+	assert.True(t, streamIDAfterWatermark("100-4", "100-3"), "same rv, HIGHER seq is live (the seq is load-bearing)")
+	assert.True(t, streamIDAfterWatermark("101-0", "100-9"), "higher rv is live")
+	assert.True(t, streamIDAfterWatermark("", "100-0"), "an unparseable id prefers routing")
+	assert.True(t, streamIDAfterWatermark("abc", "100-0"), "a non-numeric id prefers routing")
 }

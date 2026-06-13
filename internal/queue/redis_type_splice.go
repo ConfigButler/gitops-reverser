@@ -25,7 +25,6 @@ import (
 	"errors"
 	"fmt"
 	"sort"
-	"strconv"
 	"strings"
 
 	"github.com/redis/go-redis/v9"
@@ -90,12 +89,16 @@ func NewRedisTypeSplicer(cfg RedisObjectsSnapshotConfig) (*RedisTypeSplicer, err
 // (R11); a malformed checkpoint entry or an unconvertible audit body is skipped best-effort, since
 // the next checkpoint backstops it (DEC-5).
 //
-// The coverage head is Hc = max(checkpoint rv, highest folded audit-log entry rv): the major part
-// of the last entry the "(R +" XRANGE returned, falling back to the checkpoint rv when nothing was
-// folded. It is NOT the checkpoint rv when post-checkpoint log entries were folded — that
-// distinction is the whole point: the per-(GitTarget, GVR) freshness watermark must gate the audit
-// tail on Hc, not on the checkpoint rv, or it re-delivers already-reconciled objects as live
-// per-event commits (signing-snapshot-tail-replay-failure-investigation.md §5/§7).
+// The coverage head Hc is a full Redis stream position "<rv>-<seq>", NOT a bare rv: the ID of the
+// last entry the "(R +" XRANGE returned, or "<R>-<maxseq>" (the top of the checkpoint rv) when
+// nothing was folded. The per-(GitTarget, GVR) freshness watermark gates the audit tail on Hc, and
+// it MUST keep the sub-sequence: multiple distinct entries can share an rv (an rv-less DELETE/Status
+// attaches to the high-water as "<rv>-<seq>", duplicate or same-rv writes get fresh seqs), so a
+// bare-rv compare would either re-deliver already-reconciled objects (gating on the checkpoint rv,
+// §5) or, worse, SUPPRESS a legitimate same-rv live entry that arrived after the fold (the
+// stale-high watermark hazard, §7.3). Comparing full stream positions is exact because the XRANGE
+// has no Count bound — every entry in (R, head] is folded, so an entry id <= Hc was covered by this
+// reconcile and id > Hc is live (signing-snapshot-tail-replay-failure-investigation.md §5/§7).
 func (s *RedisTypeSplicer) SpliceType(
 	ctx context.Context,
 	group, resource string,
@@ -134,47 +137,23 @@ func (s *RedisTypeSplicer) SpliceType(
 		foldAuditEntry(desired, msgs[i].Values)
 	}
 
-	// Coverage head: with the log read in ascending ID order the last entry carries the highest
-	// rv, so its major part is the head the fold covered. With no post-checkpoint entries the head
-	// is the checkpoint rv. maxRV keeps it monotone even if a malformed ID slips through.
-	coverageHead := rv
+	// Coverage head as a full stream position. The log is read in ascending ID order, so the last
+	// entry is the head the fold covered — keep its whole "<rv>-<seq>". With no post-checkpoint
+	// entries the head is the top of the checkpoint rv ("<R>-<maxseq>"): the checkpoint @ R already
+	// covers every entry at rv R (the exclusive "(R" fold and the tail anchor agree), so only
+	// strictly-later stream positions are live for a consumer of this splice.
+	coverageHead := rv + "-" + streamIDMaxSeq
 	if n := len(msgs); n > 0 {
-		coverageHead = maxRV(rv, streamIDMajorRV(msgs[n-1].ID))
+		coverageHead = msgs[n-1].ID
 	}
 
 	return sortedDesiredObjects(desired), rv, coverageHead, nil
 }
 
-// streamIDMajorRV returns the resourceVersion (major) component of a Redis stream ID "<rv>-<seq>".
-// A blank or malformed ID yields "".
-func streamIDMajorRV(id string) string {
-	major, _, _ := strings.Cut(id, "-")
-	return major
-}
-
-// maxRV returns the numerically larger of two decimal resourceVersion strings. It falls back to
-// the parseable side when one is not a uint64 (defensive only — both the checkpoint rv and a
-// stream-ID major are admitted as uint64 stream-ID components), and to a (rare) string compare
-// when neither parses.
-func maxRV(a, b string) string {
-	av, aerr := strconv.ParseUint(a, 10, 64)
-	bv, berr := strconv.ParseUint(b, 10, 64)
-	switch {
-	case aerr != nil && berr != nil:
-		if b > a {
-			return b
-		}
-		return a
-	case aerr != nil:
-		return b
-	case berr != nil:
-		return a
-	case bv > av:
-		return b
-	default:
-		return a
-	}
-}
+// streamIDMaxSeq is the largest sub-sequence a Redis stream ID can carry (2^64-1). Appended to a
+// checkpoint rv R it names the TOP of rv R ("R-<maxseq>") — the coverage head when the splice folded
+// no post-checkpoint log, mirroring the tail's own checkpoint anchor.
+const streamIDMaxSeq = "18446744073709551615"
 
 // foldAuditEntry applies one audit-log entry to the desired set: a delete drops the identity, any
 // other mutating verb upserts the extracted (sanitized) object. It reuses the consumer's
