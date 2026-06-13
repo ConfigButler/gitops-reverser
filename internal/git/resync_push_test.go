@@ -23,10 +23,35 @@ import (
 	"time"
 
 	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
+
+// TestEnqueueResync_ReportsEnqueueOutcome pins the contract the per-target coverage watermark relies
+// on (signing-snapshot-tail-replay-failure-investigation.md §7.4): EnqueueResync reports whether the
+// request actually entered the FIFO. A queue-full DROP must report enqueued=false (and still notify
+// the caller via the result channel) so the watch layer never marks a target reconciled-through-Hc
+// for a reconcile that never queued. Before the fix EnqueueResync swallowed the drop, so a caller
+// could only learn of it asynchronously on the channel — too late to gate the watermark publish.
+func TestEnqueueResync_ReportsEnqueueOutcome(t *testing.T) {
+	w := &BranchWorker{Log: logr.Discard(), Branch: "main", eventQueue: make(chan WorkItem, 1)}
+
+	require.True(t, w.EnqueueResync(&ResyncRequest{Result: make(chan ResyncResult, 1)}),
+		"a resync that fits the empty queue reports enqueued=true")
+
+	dropped := make(chan ResyncResult, 1)
+	require.False(t, w.EnqueueResync(&ResyncRequest{Result: dropped}),
+		"a full queue drops the resync and reports enqueued=false")
+	select {
+	case res := <-dropped:
+		require.ErrorIs(t, res.Err, ErrFinalizeQueueFull,
+			"the dropped resync's caller is still notified via the result channel")
+	default:
+		t.Fatal("expected a queue-full result on the dropped resync's channel")
+	}
+}
 
 // TestHandleResyncRequest_ClosedWindowIsPushedEvenWhenNoOpResync pins the
 // stranded-write fix (docs/design/stream/commitrequest-design.md §6.4.2, §9.5): a

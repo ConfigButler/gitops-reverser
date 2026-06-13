@@ -180,6 +180,97 @@ func TestRedisTypeSplicer_DuplicateDeliveryFoldsOnce(t *testing.T) {
 		"both entries fold to the same content — zero extra Git effect")
 }
 
+// TestRedisTypeSplicer_EmptyFoldHighWaterAtCheckpoint pins the empty-fold coverage head when the
+// stream high-water sits exactly at the checkpoint rv (signing-snapshot-tail-replay-failure-
+// investigation.md §7.3): the "(R" fold reads nothing (no rv > R), but a later rv-less event will
+// ride the high-water as "R-<seq+1>", so the coverage head must anchor at the actual high-water
+// (R-0), NOT R-maxseq — otherwise R-maxseq would suppress that live entry.
+func TestRedisTypeSplicer_EmptyFoldHighWaterAtCheckpoint(t *testing.T) {
+	splicer, snap, q := spliceFixture(t)
+	ctx := context.Background()
+
+	require.NoError(t, snap.ReplaceTypeObjects(ctx, "", "v1", "configmaps", map[string]string{
+		"default/a": checkpointEnvelope("a"),
+	}, "100"))
+	// An entry exactly AT the checkpoint rv: high-water becomes 100-0, but the exclusive "(100" fold
+	// reads nothing, so the empty-fold branch runs.
+	require.NoError(t, q.Enqueue(ctx, configMapAuditEvent("update", "a", "100", "v2")))
+
+	_, rv, hc, err := splicer.SpliceType(ctx, "", "configmaps")
+	require.NoError(t, err)
+	assert.Equal(t, "100", rv)
+	assert.Equal(t, "100-0", hc,
+		"empty fold with high-water at the checkpoint rv anchors at the high-water, not R-maxseq")
+}
+
+// TestRedisTypeSplicer_EmptyFoldHighWaterBelowCheckpointKeepsRMaxseq is the other empty-fold branch:
+// when the high-water is BELOW the checkpoint rv (the common case — the checkpoint rv is a global
+// etcd revision, often ahead of this type's last audited event), the checkpoint covers the whole rv
+// band, so the coverage head stays at R-maxseq.
+func TestRedisTypeSplicer_EmptyFoldHighWaterBelowCheckpointKeepsRMaxseq(t *testing.T) {
+	splicer, snap, q := spliceFixture(t)
+	ctx := context.Background()
+
+	require.NoError(t, q.Enqueue(ctx, configMapAuditEvent("update", "a", "150", "v2"))) // high-water 150-0
+	require.NoError(t, snap.ReplaceTypeObjects(ctx, "", "v1", "configmaps", map[string]string{
+		"default/a": checkpointEnvelope("a"),
+	}, "200")) // checkpoint AHEAD of the stream high-water
+
+	_, rv, hc, err := splicer.SpliceType(ctx, "", "configmaps")
+	require.NoError(t, err)
+	assert.Equal(t, "200", rv)
+	assert.Equal(t, "200-18446744073709551615", hc,
+		"a high-water below the checkpoint rv means the checkpoint covers the whole band — R-maxseq")
+}
+
+// TestRedisTypeSplicer_CoverageHeadAndTailShareCoordinateSystem is the cross-layer integration proof
+// the e2e cannot give deterministically (signing-snapshot-tail-replay-failure-investigation.md §8.1):
+// the splice's coverage head Hc and the audit tail's ReadTypeAuditChanges entry IDs are the SAME
+// Redis stream positions, so the historical/live boundary is exact down to the sub-sequence. An
+// overlap entry folded by the splice is read back by the tail at EXACTLY Hc (historical → the
+// watermark gate suppresses id <= Hc), while a create after the splice lands beyond Hc and the tail
+// reads it as id > Hc (live → routed). This pins the bug's shape — a coordinate mismatch between the
+// checkpoint rv, the fold head, and the stream seq — with no Kubernetes timing. The gate's
+// id-vs-Hc comparison itself is unit-tested in watch (TestStreamIDAfterWatermark).
+func TestRedisTypeSplicer_CoverageHeadAndTailShareCoordinateSystem(t *testing.T) {
+	splicer, snap, q := spliceFixture(t)
+	ctx := context.Background()
+
+	// Checkpoint @100 with a seed object; an "overlap" create lands at 117 BEFORE the splice runs.
+	require.NoError(t, snap.ReplaceTypeObjects(ctx, "", "v1", "configmaps", map[string]string{
+		"default/seed": checkpointEnvelope("seed"),
+	}, "100"))
+	require.NoError(t, q.Enqueue(ctx, configMapAuditEvent("create", "overlap", "117", "vo")))
+
+	// The splice folds the overlap entry into desired and reports its coverage head.
+	objs, rv, hc, err := splicer.SpliceType(ctx, "", "configmaps")
+	require.NoError(t, err)
+	require.Equal(t, "100", rv)
+	require.Equal(t, "117-0", hc, "Hc is the folded overlap entry's full stream position")
+	require.Len(t, objs, 2, "seed + the folded overlap create are both in desired")
+	assert.Equal(t, "overlap", objs[0].GetName(), "sorted by identity: default/overlap < default/seed")
+	assert.Equal(t, "seed", objs[1].GetName())
+
+	// The tail, anchored at the checkpoint, reads the SAME overlap entry back — at exactly Hc, so it
+	// is historical (already in the splice's desired set) and the watermark gate suppresses it.
+	anchor := "100-18446744073709551615" // auditTailAnchor("100"): strictly after every entry at rv 100
+	changes, resume, err := q.ReadTypeAuditChanges(ctx, "", "configmaps", anchor, 200*time.Millisecond)
+	require.NoError(t, err)
+	require.Len(t, changes, 1)
+	assert.Equal(t, "overlap", changes[0].Identifier.Name)
+	assert.Equal(t, hc, changes[0].AuditStreamID,
+		"the tail reads the overlap entry at EXACTLY Hc — same coordinate system; the gate suppresses id <= Hc")
+
+	// A create AFTER the splice lands beyond Hc; the tail reads it at id > Hc → live, so it routes.
+	require.NoError(t, q.Enqueue(ctx, configMapAuditEvent("create", "live", "130", "vl")))
+	liveChanges, _, err := q.ReadTypeAuditChanges(ctx, "", "configmaps", resume, 200*time.Millisecond)
+	require.NoError(t, err)
+	require.Len(t, liveChanges, 1)
+	assert.Equal(t, "live", liveChanges[0].Identifier.Name)
+	assert.Equal(t, "130-0", liveChanges[0].AuditStreamID,
+		"the post-splice create is at rv 130 > Hc's rv 117 — id > Hc, routed as live")
+}
+
 // deploymentCheckpointEnvelope builds one :objects:items value for an apps/v1 Deployment at the
 // given replica count — the pre-scale checkpoint state the scale fold must override.
 func deploymentCheckpointEnvelope(name string, replicas int) string {

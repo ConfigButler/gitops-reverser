@@ -81,6 +81,10 @@ Early-stage software. CRDs and behavior may still change.
 - Tests run against Kubernetes `1.35`. Other versions may work but are not part of the current matrix.
 - Runtime behavior is deterministic; there is no AI or heuristic mutation at runtime.
 
+GitOps Reverser is a good fit for pilots, lab clusters, brownfield discovery, and design-partner
+users who can tolerate API and behavior changes. Production use should happen only after an
+environment-specific review.
+
 Directions we may revisit later live in [docs/TODO.md](docs/TODO.md) and [docs/future/](docs/future/).
 
 ## Quick start
@@ -223,6 +227,12 @@ Start here for the stable docs surface:
 
 If you are evaluating alternatives or deciding when another approach is a better fit, start with
 [`docs/alternatives.md`](docs/alternatives.md).
+
+## Looking for early users
+
+If you run self-managed Kubernetes and this workflow matches a real problem, feedback is very
+welcome. The most useful reports are install attempts, audit delivery issues, Git output shape,
+CRD ergonomics, and security or operational concerns.
 
 ## Get in touch
 

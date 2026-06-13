@@ -216,17 +216,27 @@ func (r *EventRouter) EmitTypeReconcileForGitDest(
 		// re-fires the reconcile the instant the checkpoint becomes serviceable.
 		return nil
 	}
-	resultCh, err := r.enqueueScopedResync(ctx, gitDest, gvr, snapshot.Desired, snapshot.Revision, heal)
+	resultCh, enqueued, err := r.enqueueScopedResync(ctx, gitDest, gvr, snapshot.Desired, snapshot.Revision, heal)
 	if err != nil {
 		return err
 	}
-	// Publish the per-(GitTarget, GVR) coverage watermark ONLY after the scoped reconcile is on the
-	// worker's FIFO queue (§7.3/§7.4): the resync through Hc is now ordered before any tail event the
-	// gate will let through at rv > Hc, so a later live write can never race ahead of the reconcile
-	// that made the target live for the type. Hc is the splice coverage head (max(checkpoint rv,
-	// highest folded log rv)), NOT snapshot.Revision (the checkpoint rv) — gating on the checkpoint rv
-	// would re-route the post-checkpoint log entries the reconcile already folded
-	// (signing-snapshot-tail-replay-failure-investigation.md §5). A heal re-anchor republishes a
+	if !enqueued {
+		// The worker's queue was full and dropped the resync (its ErrFinalizeQueueFull is already on
+		// the buffered resultCh, which we leave there). Surface it as an error, not nil: the
+		// initial-backfill caller (DeclareForGitTarget) then forgets the type so the NEXT GitTarget
+		// reconcile retries it, and crucially does NOT start the freshness tail ahead of a baseline
+		// that never landed; the TypeSynced/heal fan logs it and lets the next re-anchor retry.
+		// Returning nil here would silently rely on a heal while the tail runs over an un-backfilled
+		// target. We also do NOT publish the watermark — there is no reconcile queued through Hc.
+		return fmt.Errorf("scoped reconcile for %s on %s dropped: %w",
+			gvr.String(), gitDest.String(), git.ErrFinalizeQueueFull)
+	}
+	// Publish the per-(GitTarget, GVR) coverage watermark only now that the scoped reconcile is on the
+	// worker's FIFO queue (§7.3/§7.4): the resync through Hc is ordered before any tail event the gate
+	// will let through at id > Hc, so a later live write can never race ahead of the reconcile that
+	// made the target live for the type. Hc is the splice coverage head (a full stream position), NOT
+	// snapshot.Revision (the checkpoint rv): gating on the checkpoint rv would re-route the
+	// post-checkpoint log entries the reconcile already folded (§5). A heal re-anchor republishes a
 	// monotonically advancing Hc; publishTargetTypeWatermark holds the higher boundary.
 	r.WatchManager.publishTargetTypeWatermark(gitDest, gvr, snapshot.CoverageHead)
 	go r.drainScopedResync(gitDest, gvr, "reconcile", resultCh)
@@ -248,7 +258,7 @@ func (r *EventRouter) EmitTypeSweepForGitDest(
 	gitDest types.ResourceReference,
 	gvr schema.GroupVersionResource,
 ) error {
-	resultCh, err := r.enqueueScopedResync(ctx, gitDest, gvr, nil, "", true)
+	resultCh, _, err := r.enqueueScopedResync(ctx, gitDest, gvr, nil, "", true)
 	if err != nil {
 		return err
 	}
@@ -257,9 +267,11 @@ func (r *EventRouter) EmitTypeSweepForGitDest(
 }
 
 // enqueueScopedResync resolves the GitTarget's worker and enqueues a type-scoped resync,
-// returning the buffered reply channel. The ScopeGVR restricts the worker's mark-and-sweep to
-// the one type, so desired must carry only that type's objects (empty for a sweep). heal marks a
-// drift-correcting resync the worker defers while a commit window is open (see EmitType*ForGitDest).
+// returning the buffered reply channel and whether the resync actually entered the FIFO. The
+// ScopeGVR restricts the worker's mark-and-sweep to the one type, so desired must carry only that
+// type's objects (empty for a sweep). heal marks a drift-correcting resync the worker defers while
+// a commit window is open (see EmitType*ForGitDest). enqueued is false when the worker's queue was
+// full and dropped the request (its failure is still delivered on resultCh for the drain to record).
 func (r *EventRouter) enqueueScopedResync(
 	ctx context.Context,
 	gitDest types.ResourceReference,
@@ -267,14 +279,14 @@ func (r *EventRouter) enqueueScopedResync(
 	desired []manifestanalyzer.DesiredResource,
 	revision string,
 	heal bool,
-) (chan git.ResyncResult, error) {
+) (chan git.ResyncResult, bool, error) {
 	worker, err := r.resolveWorkerForGitDest(ctx, gitDest)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	scope := gvr
 	resultCh := make(chan git.ResyncResult, 1)
-	worker.EnqueueResync(&git.ResyncRequest{
+	enqueued := worker.EnqueueResync(&git.ResyncRequest{
 		Desired:            desired,
 		Revision:           revision,
 		GitTargetName:      gitDest.Name,
@@ -283,7 +295,7 @@ func (r *EventRouter) enqueueScopedResync(
 		Heal:               heal,
 		Result:             resultCh,
 	})
-	return resultCh, nil
+	return resultCh, enqueued, nil
 }
 
 // drainScopedResync logs a per-type reconcile/sweep's outcome and, on failure or timeout,

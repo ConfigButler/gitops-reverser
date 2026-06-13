@@ -1,7 +1,6 @@
 # GitOps Reverser Helm Chart
 
 GitOps Reverser enables synchronization from Kubernetes to one or more Git repositories.
-This Helm chart provides a production-ready single-pod deployment.
 
 ## Quick Start
 
@@ -119,12 +118,12 @@ helm install gitops-reverser \
   --values minimal-values.yaml
 ```
 
-#### Production (Recommended)
+#### Hardened Single-Replica
 
-Hardened single-replica deployment:
+Hardened settings for a controlled pilot or environment-specific production review:
 
 ```yaml
-# production-values.yaml
+# hardened-values.yaml
 replicaCount: 1
 
 podDisruptionBudget:

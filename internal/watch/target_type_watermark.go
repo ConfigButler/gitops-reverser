@@ -107,6 +107,30 @@ func (m *Manager) clearTargetTypeWatermarks(gitDest types.ResourceReference) {
 	delete(m.targetTypeWatermark, gitDest.String())
 }
 
+// pruneTargetTypeWatermarks drops a GitTarget's watermarks for every GVR not in keep — the set it
+// currently claims. A GitTarget that stops watching a type (a rule change) keeps no boundary for it,
+// so if it later re-adds that GVR it restarts at NotReconciled rather than gating against a stale
+// boundary the fan-out would honor before the fresh reconcile re-publishes one (§7.3.7). It is
+// called from DeclareForGitTarget with the authoritative claimed set, so it only ever runs on a
+// successful, observable resolve — a transient discovery gap declares nothing and prunes nothing.
+func (m *Manager) pruneTargetTypeWatermarks(gitDest types.ResourceReference, keep []schema.GroupVersionResource) {
+	m.targetTypeWatermarkMu.Lock()
+	defer m.targetTypeWatermarkMu.Unlock()
+	byGVR := m.targetTypeWatermark[gitDest.String()]
+	if byGVR == nil {
+		return
+	}
+	keepSet := make(map[schema.GroupVersionResource]struct{}, len(keep))
+	for _, gvr := range keep {
+		keepSet[gvr] = struct{}{}
+	}
+	for gvr := range byGVR {
+		if _, ok := keepSet[gvr]; !ok {
+			delete(byGVR, gvr)
+		}
+	}
+}
+
 // streamIDAfterWatermark reports whether an audit-tail entry at stream position entryID is strictly
 // after the coverage head hc — i.e. live for this target and routable. The decision belongs to the
 // API-rv-ordered stream position (§8.2): entryID <= hc was already covered by the target's reconcile

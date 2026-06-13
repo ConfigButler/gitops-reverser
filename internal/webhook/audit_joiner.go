@@ -72,7 +72,10 @@ const (
 	AuditEventQualityComplete AuditEventQuality = "complete"
 	// AuditEventQualityBodyShallowDeletable means a bodyless delete has enough objectRef identity to emit.
 	AuditEventQualityBodyShallowDeletable AuditEventQuality = "body_shallow_deletable"
-	// AuditEventQualityCollection means a deletecollection event carries the collection response object.
+	// AuditEventQualityCollection means a deletecollection event with resource identity: emittable
+	// as-is whether or not it carries a body, because a deletecollection is name-less (the per-type
+	// tail and the splice skip it) and its removals are reconciled by the checkpoint sweep (DEC-5),
+	// so its body is never consumed.
 	AuditEventQualityCollection AuditEventQuality = "collection"
 	// AuditEventQualityIdentityShallow means the event cannot drive a high-quality Git write without a body.
 	AuditEventQualityIdentityShallow AuditEventQuality = "identity_shallow"
@@ -564,8 +567,16 @@ func classifyAuditEventQuality(source AuditSource, event *auditv1.Event) AuditEv
 	if event == nil {
 		return AuditEventQualityIdentityShallow
 	}
-	if event.Verb == "deletecollection" && hasAuditV1ObjectBody(event) &&
-		event.ObjectRef != nil && event.ObjectRef.Resource != "" {
+	if event.Verb == "deletecollection" && event.ObjectRef != nil && event.ObjectRef.Resource != "" {
+		// A deletecollection is name-less: the per-type tail and the splice skip it and the checkpoint
+		// sweep reconciles its removals (DEC-5), so its body is never consumed downstream — even a
+		// successful proxy-body merge emits a bodyless, objectRef-only event. The objectRef identity
+		// (resource + scope) is therefore all the consumer needs, so a deletecollection emits as-is
+		// whether or not it carries a body — like a bodyless delete (BodyShallowDeletable). Demanding a
+		// body made an aggregated-apiserver deletecollection (hollow at the kube-apiserver proxy
+		// boundary) race the proxy's parked-body contribution against officialBodyWait and falsely
+		// shallow-drop under namespace-teardown bursts. An ADDITIONAL (proxy) contribution that is
+		// itself bodyless is still useless and is caught as Malformed by the source check above.
 		return AuditEventQualityCollection
 	}
 	if hasAuditV1ObjectBody(event) {

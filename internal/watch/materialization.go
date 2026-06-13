@@ -145,6 +145,12 @@ func (m *Manager) DeclareForGitTarget(ctx context.Context, gitDest types.Resourc
 	claimed := distinctClaimGVRs(gvrs)
 	m.materializerInstance().Declare(typeset.GitTargetRef(gitDest.String()), claimed)
 
+	// Drop coverage watermarks for types this GitTarget no longer claims (a rule change), so a later
+	// re-add restarts at NotReconciled instead of gating the tail against a stale boundary the fan-out
+	// would honor before the fresh reconcile re-publishes one (§7.3.7). This runs only on a successful,
+	// observable resolve above, matching the Declare's own fail-closed discipline.
+	m.pruneTargetTypeWatermarks(gitDest, claimed)
+
 	// Drive ONE initial-backfill splice reconcile per (GitTarget, type) — only for a type this
 	// GitTarget NEWLY claims that is already Synced. That is the initial sync of an already-
 	// materialized type (a newly-Ready target, a new rule, or a restored-Synced type after a

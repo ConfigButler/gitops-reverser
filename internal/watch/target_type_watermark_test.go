@@ -250,6 +250,28 @@ func TestClearTargetTypeWatermarks_ResetsToNotReconciled(t *testing.T) {
 	assert.False(t, ok, "every type's boundary for the target is cleared")
 }
 
+// TestDeclareForGitTarget_PrunesWatermarksForDeclaimedTypes proves a watched-type-set change drops
+// the boundary for a type the GitTarget no longer claims (§7.3.7): otherwise a later re-add would
+// gate the tail against the stale boundary before the fresh reconcile re-publishes one. Here the
+// GitTarget watches only configmaps, so a stale secrets watermark must be pruned while configmaps
+// is kept. EventRouter is nil, so Declare just resolves + claims + prunes (no backfill).
+func TestDeclareForGitTarget_PrunesWatermarksForDeclaimedTypes(t *testing.T) {
+	store := rulestore.NewStore()
+	addConfigmapsWatchRule(store) // the GitTarget now claims configmaps only — secrets was dropped
+	m := streamingManager(t, gitTargetFixture(), store)
+
+	// Boundaries left over from a prior rule set that also watched secrets.
+	m.publishTargetTypeWatermark(myTargetRef(), configmapsGVR, "100-0")
+	m.publishTargetTypeWatermark(myTargetRef(), secretsGVR, "200-0")
+
+	require.NoError(t, m.DeclareForGitTarget(context.Background(), myTargetRef()))
+
+	_, ok := m.targetTypeWatermarkFor(myTargetRef(), configmapsGVR)
+	assert.True(t, ok, "a still-claimed type keeps its boundary")
+	_, ok = m.targetTypeWatermarkFor(myTargetRef(), secretsGVR)
+	assert.False(t, ok, "a de-claimed type's stale boundary is pruned so a re-add restarts NotReconciled")
+}
+
 // TestForgetGitTargetDeclaration_ClearsWatermarks proves the delete hook the controller calls also
 // clears the coverage watermarks, so the two recreate-safety resets stay together.
 func TestForgetGitTargetDeclaration_ClearsWatermarks(t *testing.T) {

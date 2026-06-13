@@ -138,22 +138,43 @@ func (s *RedisTypeSplicer) SpliceType(
 	}
 
 	// Coverage head as a full stream position. The log is read in ascending ID order, so the last
-	// entry is the head the fold covered — keep its whole "<rv>-<seq>". With no post-checkpoint
-	// entries the head is the top of the checkpoint rv ("<R>-<maxseq>"): the checkpoint @ R already
-	// covers every entry at rv R (the exclusive "(R" fold and the tail anchor agree), so only
-	// strictly-later stream positions are live for a consumer of this splice.
+	// folded entry is the head the fold covered — keep its whole "<rv>-<seq>".
+	//
+	// With no post-checkpoint entries folded the head defaults to the top of the checkpoint rv
+	// ("<R>-<maxseq>"): the checkpoint @ R covers every entry at rv R (the exclusive "(R" fold and the
+	// tail anchor agree). The ONE exception is when the stream's high-water sits exactly at rv R: a
+	// later rv-less event (a DELETE/Status with no extractable rv) attaches to that high-water as
+	// "<R>-<seq+1>", and "<R>-<maxseq>" would suppress it as historical even though it is live. So
+	// anchor the empty-fold head at the actual high-water when it is at R — a high-water BELOW R means
+	// the checkpoint genuinely covers the whole rv band, so "<R>-<maxseq>" stays.
 	coverageHead := rv + "-" + streamIDMaxSeq
 	if n := len(msgs); n > 0 {
 		coverageHead = msgs[n-1].ID
+	} else if hw, ok := s.streamHighWater(ctx, base+byTypeAuditStreamSuffix); ok {
+		if major, _, found := strings.Cut(hw, "-"); found && major == rv {
+			coverageHead = hw
+		}
 	}
 
 	return sortedDesiredObjects(desired), rv, coverageHead, nil
 }
 
 // streamIDMaxSeq is the largest sub-sequence a Redis stream ID can carry (2^64-1). Appended to a
-// checkpoint rv R it names the TOP of rv R ("R-<maxseq>") — the coverage head when the splice folded
-// no post-checkpoint log, mirroring the tail's own checkpoint anchor.
+// checkpoint rv R it names the TOP of rv R ("R-<maxseq>") — the default coverage head when the
+// splice folded no post-checkpoint log, mirroring the tail's own checkpoint anchor.
 const streamIDMaxSeq = "18446744073709551615"
+
+// streamHighWater returns the stream's high-water position (its last-generated ID), or ("", false)
+// when the stream is empty or unreachable. It is the position a later rv-less event would attach to,
+// so the splice anchors the empty-fold coverage head there when the high-water sits at the
+// checkpoint rv (see SpliceType).
+func (s *RedisTypeSplicer) streamHighWater(ctx context.Context, streamKey string) (string, bool) {
+	info, err := s.client.XInfoStream(ctx, streamKey).Result()
+	if err != nil || info.LastGeneratedID == "" || info.LastGeneratedID == "0-0" {
+		return "", false
+	}
+	return info.LastGeneratedID, true
+}
 
 // foldAuditEntry applies one audit-log entry to the desired set: a delete drops the identity, any
 // other mutating verb upserts the extracted (sanitized) object. It reuses the consumer's

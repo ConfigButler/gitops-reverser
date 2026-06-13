@@ -326,9 +326,14 @@ func (w *BranchWorker) EnqueueAttach(req *AttachCommitRequest) {
 // live events: a resync enqueued during the snapshot window lands before the buffered
 // live events that follow it. If the queue is full the request is dropped and its
 // caller is notified immediately via the result channel.
-func (w *BranchWorker) EnqueueResync(request *ResyncRequest) {
+//
+// It reports whether the request actually entered the FIFO. A dropped request never reached
+// the queue, so a caller that gates downstream state on the resync's ordering (the per-type
+// coverage watermark, signing-snapshot-tail-replay-failure-investigation.md §7.4) must not treat
+// a drop as success — it would mark the target reconciled-through-Hc with no reconcile ever queued.
+func (w *BranchWorker) EnqueueResync(request *ResyncRequest) bool {
 	if request == nil {
-		return
+		return false
 	}
 	w.inflightItems.Add(1)
 	select {
@@ -336,11 +341,13 @@ func (w *BranchWorker) EnqueueResync(request *ResyncRequest) {
 		w.Log.V(1).Info("Resync request enqueued",
 			"resources", len(request.Desired),
 			"gitTarget", request.GitTargetNamespace+"/"+request.GitTargetName)
+		return true
 	default:
 		w.inflightItems.Add(-1)
 		w.Log.Error(nil, "Event queue full, resync request dropped",
 			"gitTarget", request.GitTargetNamespace+"/"+request.GitTargetName)
 		request.reply(ResyncResult{Err: ErrFinalizeQueueFull})
+		return false
 	}
 }
 

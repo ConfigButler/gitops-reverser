@@ -20,21 +20,23 @@ package webhook
 
 // These tests pin the shallow-detector and joiner behaviour for aggregated-API
 // `deletecollection`, using exact copies of real audit events captured by
-// apiservice-audit-proxy (see its docs/examples). deletecollection is the
-// awkward verb: the kube-apiserver's own (Lane A) event for an aggregated
-// resource is hollow — it has the objectRef but no request/response body — and
-// the only body comes from the proxy (Lane B). Two flavours matter:
+// apiservice-audit-proxy (see its docs/examples). deletecollection is name-less:
+// the per-type tail and the splice skip it, and the checkpoint sweep reconciles
+// its removals (DEC-5), so its body is never consumed downstream — even a
+// successful proxy-body merge emits a bodyless, objectRef-only event. A hollow
+// kube-apiserver (Lane A) deletecollection therefore carries enough identity
+// (resource + scope) to act on by itself, so it emits AS-IS whether or not the
+// proxy (Lane B) body arrives. This removes the body-join race that previously
+// shallow-dropped teardown deletecollections under namespace-deletion bursts (the
+// proxy body raced the 0.5s officialBodyWait and sometimes lost).
 //
-//   - "raw"      — `kubectl delete flunder --all`; the proxy captures a real
-//                  FlunderList responseObject.
-//   - "teardown" — namespace deletion; the namespace-controller issues the
-//                  deletecollection and the proxy only ever sees a DeleteOptions
-//                  requestObject (no list body at all).
+// Two real proxy-body flavours still park harmlessly when they happen to arrive:
 //
-// The teardown flavour is the trap: its only proxy body is DeleteOptions. These
-// tests assert that such an event is still NOT dropped as shallow (the proxy
-// body is enough to take the merge/emit path), while a deletecollection with no
-// proxy body at all IS correctly dropped.
+//   - "raw"      — `kubectl delete flunder --all`; a real FlunderList responseObject.
+//   - "teardown" — namespace deletion; only a DeleteOptions requestObject.
+//
+// A bodyless ADDITIONAL (proxy) contribution remains useless and is discarded as
+// Malformed; only an OFFICIAL hollow deletecollection is actionable on its objectRef.
 
 import (
 	"context"
@@ -80,18 +82,20 @@ func TestClassifyAuditEventQuality_DeleteCollectionFixtures(t *testing.T) {
 		want    AuditEventQuality
 	}{
 		{
-			// Lane A, namespace teardown: hollow. Alone it has no body, so it is
-			// correctly identity-shallow — it must rely on a parked proxy body.
-			name:    "official teardown (hollow) is identity-shallow",
+			// Lane A, namespace teardown: hollow (objectRef, no body). It is emittable
+			// as-is on its objectRef identity — a deletecollection's body is never
+			// consumed — so it is Collection, not identity-shallow, and never waits for
+			// or depends on a parked proxy body.
+			name:    "official teardown (hollow) is collection on objectRef identity",
 			fixture: deletecollectionOfficialTeardownFixture,
 			source:  AuditSourceOfficial,
-			want:    AuditEventQualityIdentityShallow,
+			want:    AuditEventQualityCollection,
 		},
 		{
-			name:    "official raw (hollow) is identity-shallow",
+			name:    "official raw (hollow) is collection on objectRef identity",
 			fixture: deletecollectionOfficialRawFixture,
 			source:  AuditSourceOfficial,
-			want:    AuditEventQualityIdentityShallow,
+			want:    AuditEventQualityCollection,
 		},
 		{
 			// Lane B, namespace teardown: only a DeleteOptions requestObject. It
@@ -121,8 +125,10 @@ func TestClassifyAuditEventQuality_DeleteCollectionFixtures(t *testing.T) {
 }
 
 // TestRedisAuditEventJoiner_DeleteCollectionTeardownNotDroppedAsShallow is the
-// core namespace-deletion check: the hollow official deletecollection plus the
-// proxy's DeleteOptions-only body must be emitted, not dropped as shallow.
+// core namespace-deletion check: even when the proxy's DeleteOptions-only body has
+// parked, the hollow official deletecollection emits AS-IS on its objectRef — the
+// parked body is harmless and unused (a deletecollection's body is never merged or
+// consumed). The official no longer depends on that body, so the join no longer races.
 func TestRedisAuditEventJoiner_DeleteCollectionTeardownNotDroppedAsShallow(t *testing.T) {
 	mr := miniredis.RunT(t)
 	joiner := newTestJoiner(t, mr)
@@ -131,31 +137,30 @@ func TestRedisAuditEventJoiner_DeleteCollectionTeardownNotDroppedAsShallow(t *te
 	proxy := loadAuditEventListItem(t, deletecollectionProxyTeardownFixture)
 	parked, err := decide(ctx, t, joiner, AuditSourceAdditional, &proxy)
 	require.NoError(t, err)
-	require.Equal(t, AuditJoinActionParked, parked.Action, "proxy teardown body must park")
+	require.Equal(t, AuditJoinActionParked, parked.Action, "proxy teardown body parks harmlessly")
 
 	official := loadAuditEventListItem(t, deletecollectionOfficialTeardownFixture)
-	require.Equal(t, proxy.AuditID, official.AuditID, "fixtures must share an auditID to join")
+	require.Equal(t, proxy.AuditID, official.AuditID, "fixtures share an auditID")
 
 	decision, err := decide(ctx, t, joiner, AuditSourceOfficial, &official)
 	require.NoError(t, err)
 
-	require.Equal(t, AuditJoinActionEmit, decision.Action,
-		"a deletecollection with a parked proxy body must be emitted, not dropped as shallow")
-	// The objectRef identifies the collection to remove (resource + namespace,
-	// no name). The DeleteOptions body is intentionally not merged onto a
-	// deletecollection, so the emitted event stays bodyless and the consumer
-	// acts on the objectRef.
+	require.Equal(t, AuditJoinActionEmit, decision.Action, "the hollow deletecollection emits, not dropped as shallow")
+	assert.Equal(t, AuditJoinResultAsIs, decision.Result, "emitted as-is; the parked DeleteOptions body is not merged")
+	// The objectRef identifies the collection to remove (resource + namespace, no
+	// name); the consumer acts on it and the checkpoint sweep does the removal.
 	require.NotNil(t, decision.Event.ObjectRef)
 	assert.Equal(t, "flunders", decision.Event.ObjectRef.Resource)
 	assert.Equal(t, "example-teardown", decision.Event.ObjectRef.Namespace)
 	assert.Empty(t, decision.Event.ObjectRef.Name)
-	assert.Nil(t, decision.Event.RequestObject, "DeleteOptions must not be merged onto a deletecollection")
+	assert.Nil(t, decision.Event.RequestObject, "a deletecollection emits bodyless — no body is merged onto it")
 	assert.Nil(t, decision.Event.ResponseObject)
 }
 
 // TestRedisAuditEventJoiner_DeleteCollectionRawNotDroppedAsShallow covers the
 // `kubectl delete flunder --all` flavour, where the proxy supplies a real
-// FlunderList responseObject.
+// FlunderList responseObject. As with teardown, the parked body is unused: the
+// hollow official emits as-is on its objectRef.
 func TestRedisAuditEventJoiner_DeleteCollectionRawNotDroppedAsShallow(t *testing.T) {
 	mr := miniredis.RunT(t)
 	joiner := newTestJoiner(t, mr)
@@ -164,28 +169,28 @@ func TestRedisAuditEventJoiner_DeleteCollectionRawNotDroppedAsShallow(t *testing
 	proxy := loadAuditEventListItem(t, deletecollectionProxyRawFixture)
 	parked, err := decide(ctx, t, joiner, AuditSourceAdditional, &proxy)
 	require.NoError(t, err)
-	require.Equal(t, AuditJoinActionParked, parked.Action, "proxy raw body must park")
+	require.Equal(t, AuditJoinActionParked, parked.Action, "proxy raw body parks harmlessly")
 
 	official := loadAuditEventListItem(t, deletecollectionOfficialRawFixture)
-	require.Equal(t, proxy.AuditID, official.AuditID, "fixtures must share an auditID to join")
+	require.Equal(t, proxy.AuditID, official.AuditID, "fixtures share an auditID")
 
 	decision, err := decide(ctx, t, joiner, AuditSourceOfficial, &official)
 	require.NoError(t, err)
 
-	require.Equal(t, AuditJoinActionEmit, decision.Action,
-		"a deletecollection with a parked proxy body must be emitted, not dropped as shallow")
+	require.Equal(t, AuditJoinActionEmit, decision.Action, "the hollow deletecollection emits, not dropped as shallow")
+	assert.Equal(t, AuditJoinResultAsIs, decision.Result, "emitted as-is; the parked FlunderList body is not merged")
 	require.NotNil(t, decision.Event.ObjectRef)
 	assert.Equal(t, "flunders", decision.Event.ObjectRef.Resource)
 	assert.Equal(t, "example-raw", decision.Event.ObjectRef.Namespace)
 	assert.Empty(t, decision.Event.ObjectRef.Name)
 }
 
-// TestRedisAuditEventJoiner_DeleteCollectionWithoutProxyBodyIsShallow is the
-// negative control: with no proxy (Lane B) body parked, the hollow official
-// deletecollection has nothing to act on and is correctly dropped as shallow.
-// This is the pre-0.6.0 / proxy-missing behaviour and the boundary the proxy
-// fix moves the teardown case across.
-func TestRedisAuditEventJoiner_DeleteCollectionWithoutProxyBodyIsShallow(t *testing.T) {
+// TestRedisAuditEventJoiner_HollowDeleteCollectionEmitsAsIsWithoutProxyBody is the core race fix:
+// with NO proxy (Lane B) body parked, a hollow official deletecollection still emits as-is on its
+// objectRef identity — it is NOT dropped as shallow and never waits for a body it does not consume
+// (the checkpoint sweep removes the collection). This is exactly the case that raced and flaked the
+// aggregated-api e2e under namespace-teardown bursts (the proxy body lost the 0.5s officialBodyWait).
+func TestRedisAuditEventJoiner_HollowDeleteCollectionEmitsAsIsWithoutProxyBody(t *testing.T) {
 	mr := miniredis.RunT(t)
 	joiner := newTestJoiner(t, mr)
 
@@ -193,9 +198,15 @@ func TestRedisAuditEventJoiner_DeleteCollectionWithoutProxyBodyIsShallow(t *test
 	decision, err := decide(context.Background(), t, joiner, AuditSourceOfficial, &official)
 	require.NoError(t, err)
 
-	assert.Equal(t, AuditJoinActionDrop, decision.Action,
-		"a hollow deletecollection with no proxy body must be dropped as shallow")
-	assert.False(t, mr.Exists(bodyKey(string(official.AuditID))), "shallow official must not park")
+	assert.Equal(t, AuditJoinActionEmit, decision.Action,
+		"a hollow deletecollection emits as-is on its objectRef identity, not dropped as shallow")
+	assert.Equal(t, AuditJoinResultAsIs, decision.Result, "emitted as-is — no body merged or required")
+	require.NotNil(t, decision.Event.ObjectRef)
+	assert.Equal(t, "flunders", decision.Event.ObjectRef.Resource)
+	assert.Empty(t, decision.Event.ObjectRef.Name, "name-less; the consumer acts on the objectRef")
+	assert.Nil(t, decision.Event.RequestObject)
+	assert.Nil(t, decision.Event.ResponseObject)
+	assert.False(t, mr.Exists(bodyKey(string(official.AuditID))), "emit-as-is parks nothing")
 }
 
 // TestClassifyAuditEventQuality_DeleteCollectionBodyShapeIndependent guards the
