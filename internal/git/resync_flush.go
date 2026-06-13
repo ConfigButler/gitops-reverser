@@ -266,12 +266,14 @@ func (w *BranchWorker) executeResyncPendingWrite(
 		return 0, nil
 	}
 
-	// Render the provider's snapshot commit template (e.g. a custom snapshot message),
-	// counting the resources the resync changed — the resync carries no events, so it
-	// cannot reuse the event-count snapshot path. Setting the rendered message as the
-	// pending write's literal message routes commitMetadata through the verbatim path.
+	// Render the provider's reconcile commit template (e.g. a custom reconcile message),
+	// counting the resources the resync changed and naming the scoped type + pinned
+	// revision — the resync carries no events, so it cannot reuse the event-count path.
+	// Setting the rendered message as the pending write's literal message routes
+	// commitMetadata through the verbatim path.
 	changed := stats.Created + stats.Updated + stats.Deleted
-	rendered, err := renderResyncCommitMessage(changed, target.Name, pendingWrite.CommitConfig)
+	rendered, err := renderReconcileCommitMessage(
+		changed, target.Name, pendingWrite.ScopeGVR, pendingWrite.Revision, pendingWrite.CommitConfig)
 	if err != nil {
 		return 0, err
 	}

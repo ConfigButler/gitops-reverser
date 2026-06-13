@@ -30,7 +30,7 @@ import (
 // This spec is the e2e regression for GitTarget isolation on rule changes (see
 // docs/design/gittarget-isolation-on-rule-change.md). The original symptom was a
 // parallel-run flake: one GitTarget's ConfigMap event commit ("[CREATE] ...")
-// was replaced by a snapshot commit ("reconcile: sync N resources") because an
+// was replaced by a snapshot commit ("reconciled N <type>") because an
 // unrelated spec changed a *different* target's rules at the same time, dragging
 // every target into rule-change snapshot mode.
 //
@@ -112,7 +112,7 @@ var _ = Describe("Manager GitTarget Isolation", Label("manager"), Ordered, func(
 		// extra GVR on/off, which also churns the global informer set) and then
 		// creates a brand-new ConfigMap that target A must commit. If isolation
 		// holds, target A always produces an event commit; pre-fix, target B's
-		// churn would force target A into a "reconcile: sync" snapshot.
+		// churn would force target A into a "reconciled" snapshot.
 		for i := range 3 {
 			cmName := fmt.Sprintf("iso-cm-%d", i)
 
@@ -136,7 +136,7 @@ var _ = Describe("Manager GitTarget Isolation", Label("manager"), Ordered, func(
 					"target A's commit for %s must be a [CREATE] event commit", cmName)
 				g.Expect(msg).To(ContainSubstring(fmt.Sprintf("v1/configmaps/%s", cmName)),
 					"target A's commit message must name the resource path")
-				g.Expect(msg).NotTo(ContainSubstring("reconcile: sync"),
+				g.Expect(msg).NotTo(ContainSubstring("reconciled"),
 					"target A must not enter snapshot mode because of target B's unrelated rule change "+
 						"(GitTarget isolation — see docs/design/gittarget-isolation-on-rule-change.md)")
 			}

@@ -25,6 +25,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	v1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
@@ -36,7 +37,7 @@ func TestResolveCommitConfig_Defaults(t *testing.T) {
 	assert.Equal(t, DefaultCommitterName, config.Committer.Name)
 	assert.Equal(t, DefaultCommitterEmail, config.Committer.Email)
 	assert.Equal(t, DefaultEventCommitMessageTemplate, config.Message.EventTemplate)
-	assert.Equal(t, DefaultSnapshotCommitMessageTemplate, config.Message.SnapshotTemplate)
+	assert.Equal(t, DefaultReconcileCommitMessageTemplate, config.Message.ReconcileTemplate)
 	assert.Equal(t, DefaultGroupCommitMessageTemplate, config.Message.GroupTemplate)
 }
 
@@ -47,16 +48,16 @@ func TestResolveCommitConfig_CustomValues(t *testing.T) {
 			Email: "audit@example.com",
 		},
 		Message: &v1alpha1.CommitMessageSpec{
-			EventTemplate:    "audit: {{.Operation}} {{.Name}}",
-			SnapshotTemplate: "snapshot: {{.Count}} {{.GitTarget}}",
-			GroupTemplate:    "grouped: {{.Author}} {{.Count}}",
+			EventTemplate:     "audit: {{.Operation}} {{.Name}}",
+			ReconcileTemplate: "reconcile: {{.Count}} {{.GitTarget}}",
+			GroupTemplate:     "grouped: {{.Author}} {{.Count}}",
 		},
 	})
 
 	assert.Equal(t, "Audit Bot", config.Committer.Name)
 	assert.Equal(t, "audit@example.com", config.Committer.Email)
 	assert.Equal(t, "audit: {{.Operation}} {{.Name}}", config.Message.EventTemplate)
-	assert.Equal(t, "snapshot: {{.Count}} {{.GitTarget}}", config.Message.SnapshotTemplate)
+	assert.Equal(t, "reconcile: {{.Count}} {{.GitTarget}}", config.Message.ReconcileTemplate)
 	assert.Equal(t, "grouped: {{.Author}} {{.Count}}", config.Message.GroupTemplate)
 }
 
@@ -107,15 +108,109 @@ func TestRenderEventCommitMessage_CustomTemplate(t *testing.T) {
 	assert.Equal(t, "audit(platform): alice UPDATE prod/api", message)
 }
 
-func TestRenderSnapshotCommitMessage_DefaultTemplate(t *testing.T) {
-	message, err := renderSnapshotCommitMessage(
+func TestRenderReconcileCommitMessageFromEvents_DefaultTemplate(t *testing.T) {
+	// The events-based path carries no type or revision, so the default falls back to the
+	// type-less subject with no resourceVersion suffix.
+	message, err := renderReconcileCommitMessageFromEvents(
 		[]Event{{Operation: "CREATE"}, {Operation: "DELETE"}},
 		"",
 		"demo",
 		ResolveCommitConfig(nil),
 	)
 	require.NoError(t, err)
-	assert.Equal(t, "reconcile: sync 2 resources", message)
+	assert.Equal(t, "reconciled 2 resources", message)
+}
+
+func TestRenderReconcileCommitMessage_DefaultTemplateNamesScopedTypeAndRevision(t *testing.T) {
+	cases := []struct {
+		name     string
+		count    int
+		gvr      schema.GroupVersionResource
+		revision string
+		expected string
+	}{
+		{
+			name:     "core type names the plural resource and revision",
+			count:    1,
+			gvr:      schema.GroupVersionResource{Version: "v1", Resource: "configmaps"},
+			revision: "1331",
+			expected: "reconciled 1 configmaps (last resourceVersion: 1331)",
+		},
+		{
+			name:  "grouped type names the plural resource and revision",
+			count: 4,
+			gvr: schema.GroupVersionResource{
+				Group:    "rbac.authorization.k8s.io",
+				Version:  "v1",
+				Resource: "rolebindings",
+			},
+			revision: "2980",
+			expected: "reconciled 4 rolebindings (last resourceVersion: 2980)",
+		},
+		{
+			name:     "empty revision (pure sweep) drops the resourceVersion suffix",
+			count:    0,
+			gvr:      schema.GroupVersionResource{Version: "v1", Resource: "secrets"},
+			revision: "",
+			expected: "reconciled 0 secrets",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gvr := tc.gvr
+			message, err := renderReconcileCommitMessage(tc.count, "demo", &gvr, tc.revision, ResolveCommitConfig(nil))
+			require.NoError(t, err)
+			assert.Equal(t, tc.expected, message)
+		})
+	}
+}
+
+func TestRenderReconcileCommitMessage_NilScopeRendersCleanly(t *testing.T) {
+	// A whole-target reconcile carries no ScopeGVR, so the default template must fall back to
+	// the type-less subject rather than emit an empty "/" token.
+	message, err := renderReconcileCommitMessage(6, "demo", nil, "", ResolveCommitConfig(nil))
+	require.NoError(t, err)
+	assert.Equal(t, "reconciled 6 resources", message)
+}
+
+func TestRenderReconcileCommitMessage_CustomTemplateUsesTypeAndRevisionFields(t *testing.T) {
+	gvr := schema.GroupVersionResource{Version: "v1", Resource: "secrets"}
+	message, err := renderReconcileCommitMessage(
+		6,
+		"signing-snapshot-dest",
+		&gvr,
+		"1331",
+		ResolveCommitConfig(&v1alpha1.CommitSpec{
+			Message: &v1alpha1.CommitMessageSpec{
+				ReconcileTemplate: "e2e-snapshot: synced {{.Count}} {{.APIVersion}}/{{.Resource}}" +
+					"@{{.Revision}} to {{.GitTarget}}",
+			},
+		}),
+	)
+	require.NoError(t, err)
+	assert.Equal(t, "e2e-snapshot: synced 6 v1/secrets@1331 to signing-snapshot-dest", message)
+}
+
+func TestValidateCommitConfig_CustomReconcileTemplateReferencingTypeAndRevision(t *testing.T) {
+	config := ResolveCommitConfig(&v1alpha1.CommitSpec{
+		Message: &v1alpha1.CommitMessageSpec{
+			ReconcileTemplate: "reconcile: {{.Count}} {{.APIVersion}}/{{.Resource}}@{{.Revision}} on {{.GitTarget}}",
+		},
+	})
+
+	require.NoError(t, ValidateCommitConfig(config))
+}
+
+func TestValidateCommitConfig_InvalidReconcileTemplate(t *testing.T) {
+	config := ResolveCommitConfig(&v1alpha1.CommitSpec{
+		Message: &v1alpha1.CommitMessageSpec{
+			ReconcileTemplate: "{{.Resource",
+		},
+	})
+
+	err := ValidateCommitConfig(config)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "parse reconcile commit template")
 }
 
 func TestRenderGroupCommitMessage_CustomTemplate(t *testing.T) {

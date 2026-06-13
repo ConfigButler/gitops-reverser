@@ -152,9 +152,9 @@ func TestExecutor_GroupedMultiEvent_UsesGroupTemplate(t *testing.T) {
 	assert.Equal(t, DefaultCommitterName, options.Committer.Name)
 }
 
-func TestExecutor_AtomicUnit_UsesSnapshotMessage(t *testing.T) {
+func TestExecutor_AtomicUnit_UsesReconcileMessage(t *testing.T) {
 	config := ResolveCommitConfig(nil)
-	config.Message.SnapshotTemplate = "snapshot: {{.Count}} {{.GitTarget}}"
+	config.Message.ReconcileTemplate = "reconcile: {{.Count}} {{.GitTarget}}"
 
 	pendingWrite := PendingWrite{
 		Kind:          PendingWriteAtomic,
@@ -170,7 +170,7 @@ func TestExecutor_AtomicUnit_UsesSnapshotMessage(t *testing.T) {
 
 	message, options, err := pendingWrite.commitMetadata()
 	require.NoError(t, err)
-	assert.Equal(t, "snapshot: 2 team-a", message)
+	assert.Equal(t, "reconcile: 2 team-a", message)
 	assert.Equal(t, DefaultCommitterName, options.Author.Name)
 	assert.Equal(t, DefaultCommitterName, options.Committer.Name)
 }

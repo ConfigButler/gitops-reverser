@@ -90,8 +90,13 @@ func (p PendingWrite) commitMetadata() (string, *gogit.CommitOptions, error) {
 			return "", nil, err
 		}
 		return message, commitOptionsFor(p, p.CommitConfig, p.Signer, when), nil
-	case CommitMessageSnapshot:
-		message, err := renderSnapshotCommitMessage(p.Events, p.CommitMessage, p.Target().Name, p.CommitConfig)
+	case CommitMessageReconcile:
+		message, err := renderReconcileCommitMessageFromEvents(
+			p.Events,
+			p.CommitMessage,
+			p.Target().Name,
+			p.CommitConfig,
+		)
 		if err != nil {
 			return "", nil, err
 		}

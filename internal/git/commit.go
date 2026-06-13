@@ -29,6 +29,7 @@ import (
 
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing/object"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
@@ -51,7 +52,11 @@ func renderEventCommitMessage(event Event, config CommitConfig) (string, error) 
 	)
 }
 
-func renderSnapshotCommitMessage(
+// renderReconcileCommitMessageFromEvents renders the reconcile commit message for the
+// events-based atomic path from the provider's ReconcileTemplate. It carries no single
+// type or revision, so those template fields stay empty (the default guards them). An
+// explicit override (a literal CommitRequest message) is used verbatim.
+func renderReconcileCommitMessageFromEvents(
 	events []Event,
 	override string,
 	gitTarget string,
@@ -62,27 +67,41 @@ func renderSnapshotCommitMessage(
 	}
 
 	return renderCommitTemplate(
-		"snapshot",
-		config.Message.SnapshotTemplate,
-		SnapshotCommitMessageData{
+		"reconcile",
+		config.Message.ReconcileTemplate,
+		ReconcileCommitMessageData{
 			Count:     len(events),
 			GitTarget: gitTarget,
 		},
 	)
 }
 
-// renderResyncCommitMessage renders the snapshot commit message for a resync from the
-// provider's SnapshotTemplate, so a resync honours a custom snapshot template exactly
-// as the old atomic snapshot did. count is the number of resources in the snapshot.
-func renderResyncCommitMessage(count int, gitTarget string, config CommitConfig) (string, error) {
-	return renderCommitTemplate(
-		"snapshot",
-		config.Message.SnapshotTemplate,
-		SnapshotCommitMessageData{
-			Count:     count,
-			GitTarget: gitTarget,
-		},
-	)
+// renderReconcileCommitMessage renders the reconcile commit message for a resync from the
+// provider's ReconcileTemplate, so a resync honours a custom reconcile template. count is
+// the number of resources the reconcile changed; scopeGVR names the synced type for a
+// per-type splice (the M12/R2 per-type reconcile) and a nil scopeGVR (whole-target
+// reconcile) leaves the type fields empty; revision is the cluster resourceVersion the
+// desired set was pinned to (empty for a pure sweep). The default template guards the
+// type and revision fields so it still renders cleanly when either is absent.
+func renderReconcileCommitMessage(
+	count int,
+	gitTarget string,
+	scopeGVR *schema.GroupVersionResource,
+	revision string,
+	config CommitConfig,
+) (string, error) {
+	data := ReconcileCommitMessageData{
+		Count:     count,
+		GitTarget: gitTarget,
+		Revision:  revision,
+	}
+	if scopeGVR != nil {
+		data.Group = scopeGVR.Group
+		data.Version = scopeGVR.Version
+		data.Resource = scopeGVR.Resource
+		data.APIVersion = buildAPIVersion(scopeGVR.Group, scopeGVR.Version)
+	}
+	return renderCommitTemplate("reconcile", config.Message.ReconcileTemplate, data)
 }
 
 func renderGroupCommitMessage(pendingWrite PendingWrite, config CommitConfig) (string, error) {
@@ -133,12 +152,20 @@ func ValidateCommitConfig(config CommitConfig) error {
 		return err
 	}
 
-	if _, err := renderSnapshotCommitMessage(
+	if _, err := renderReconcileCommitMessageFromEvents(
 		[]Event{sampleEvent},
 		"",
 		"example-target",
 		config,
 	); err != nil {
+		return err
+	}
+
+	// Validate the per-type splice reconcile path with the type and revision fields populated,
+	// so a custom reconcile template that names its synced type ({{.Resource}} / {{.APIVersion}})
+	// or pins the {{.Revision}} is exercised at admission exactly as a per-type reconcile renders it.
+	sampleScope := schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}
+	if _, err := renderReconcileCommitMessage(1, "example-target", &sampleScope, "12345", config); err != nil {
 		return err
 	}
 

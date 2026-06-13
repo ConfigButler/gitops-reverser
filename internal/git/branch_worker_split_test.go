@@ -1017,7 +1017,7 @@ func TestEventLoop_DeferredEventCommitsAndAtomicDuringCooldownPushTogether(t *te
 	require.Len(t, commits, 3)
 	assert.Equal(t, "[CREATE] v1/configmaps/live-a", commits[0].Message)
 	assert.Equal(t, "[CREATE] v1/configmaps/live-b", commits[1].Message)
-	assert.Equal(t, "reconcile: sync 1 resources", commits[2].Message)
+	assert.Equal(t, "reconciled 1 resources", commits[2].Message)
 
 	loop.stopTimers()
 }
@@ -1093,8 +1093,8 @@ func TestResync_WorkerAppliesMarkAndSweepAndCommits(t *testing.T) {
 	commits := commitsAfterHash(t, serverRepo, finalRef.Hash(), initialHash)
 	require.Len(t, commits, 2)
 	assert.Equal(t, "[CREATE] v1/configmaps/drop-me", commits[0].Message)
-	assert.Equal(t, "reconcile: sync 2 resources", commits[1].Message,
-		"the resync commit counts the create and the managed drop")
+	assert.Equal(t, "reconciled 2 resources (last resourceVersion: 42)", commits[1].Message,
+		"the resync commit counts the create and the managed drop and pins the revision")
 
 	loop.stopTimers()
 }

@@ -43,7 +43,7 @@ type signingGitProviderData struct {
 	CommitterName       string
 	CommitterEmail      string
 	EventTemplate       string
-	SnapshotTemplate    string
+	ReconcileTemplate   string
 	SigningSecretName   string
 	GenerateWhenMissing bool
 }
@@ -118,7 +118,7 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 				CommitterName:       committerName,
 				CommitterEmail:      committerEmail,
 				EventTemplate:       "[{{.Operation}}] {{.APIVersion}}/{{.Resource}}/{{.Name}}",
-				SnapshotTemplate:    "reconcile: sync {{.Count}} resources",
+				ReconcileTemplate:   "reconciled {{.Count}} {{.Resource}}",
 				SigningSecretName:   signingSecretName,
 				GenerateWhenMissing: true,
 			}
@@ -255,7 +255,7 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 			CommitterName:       committerName,
 			CommitterEmail:      committerEmail,
 			EventTemplate:       "[{{.Operation}}] {{.APIVersion}}/{{.Resource}}/{{.Name}}",
-			SnapshotTemplate:    "reconcile: sync {{.Count}} resources",
+			ReconcileTemplate:   "reconciled {{.Count}} {{.Resource}}",
 			SigningSecretName:   signingSecretName,
 			GenerateWhenMissing: false,
 		}
@@ -351,7 +351,7 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 			CommitterName:       customName,
 			CommitterEmail:      customEmail,
 			EventTemplate:       customTemplate,
-			SnapshotTemplate:    "reconcile: sync {{.Count}} resources",
+			ReconcileTemplate:   "reconciled {{.Count}} {{.Resource}}",
 			SigningSecretName:   "signing-key-committer",
 			GenerateWhenMissing: true,
 		}
@@ -395,12 +395,16 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 
 	// ── Test 4: batch/atomic commit uses batch message template ─────────────
 
-	It("should produce a snapshot commit with the custom snapshot message template", func() {
+	It("should produce a reconcile commit with the custom reconcile message template", func() {
 		providerName := "signing-snapshot"
 		destName := providerName + "-dest"
 		watchRuleName := providerName + "-wr"
 		commitPath := "e2e/signing-snapshot"
-		customSnapshotTemplate := "e2e-snapshot: synced {{.Count}} resources to {{.GitTarget}}"
+		// The reconcile template names the synced type ({{.APIVersion}}/{{.Resource}}) and pins the
+		// {{.Revision}} so the per-type splice commits are self-describing — the §9 "name the synced
+		// type" improvement in docs/design/stream/signing-snapshot-tail-replay-failure-investigation.md.
+		customReconcileTemplate := "e2e-snapshot: synced {{.Count}} {{.APIVersion}}/{{.Resource}}" +
+			"@{{.Revision}} to {{.GitTarget}}"
 
 		DeferCleanup(func() {
 			if skipCleanupBecauseResourcesArePreserved(
@@ -437,7 +441,7 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 			CommitterName:       committerName,
 			CommitterEmail:      committerEmail,
 			EventTemplate:       "[{{.Operation}}] {{.APIVersion}}/{{.Resource}}/{{.Name}}",
-			SnapshotTemplate:    customSnapshotTemplate,
+			ReconcileTemplate:   customReconcileTemplate,
 			SigningSecretName:   "signing-key-batch",
 			GenerateWhenMissing: true,
 		}
@@ -481,6 +485,10 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 			g.Expect(logErr).NotTo(HaveOccurred())
 			g.Expect(logOutput).NotTo(ContainSubstring("["),
 				"expected snapshot path %s not to contain per-event template subjects", commitPath)
+			// The per-type splice names its type, so the configmaps batch is committed as a
+			// self-describing "synced N v1/configmaps" snapshot rather than an anonymous count.
+			g.Expect(logOutput).To(ContainSubstring("v1/configmaps"),
+				"expected snapshot subjects in %s to name the synced type (§9 improvement)", commitPath)
 		}, "30s", "3s").Should(Succeed())
 	})
 })

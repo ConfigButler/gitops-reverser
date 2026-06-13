@@ -819,7 +819,7 @@ func TestBranchWorker_CommitAndPushRequest_UsesBatchTemplateForAtomicRequest(t *
 			URL: remoteURL,
 			Commit: &configv1alpha1.CommitSpec{
 				Message: &configv1alpha1.CommitMessageSpec{
-					SnapshotTemplate: "snapshot({{.GitTarget}}): {{.Count}} resources",
+					ReconcileTemplate: "reconcile({{.GitTarget}}): {{.Count}} resources",
 				},
 			},
 		},
@@ -892,7 +892,7 @@ func TestBranchWorker_CommitAndPushRequest_UsesBatchTemplateForAtomicRequest(t *
 
 	commit, err := serverRepo.CommitObject(remoteHeadRef.Hash())
 	require.NoError(t, err)
-	assert.Equal(t, "snapshot(demo-target): 2 resources", commit.Message)
+	assert.Equal(t, "reconcile(demo-target): 2 resources", commit.Message)
 	assert.Equal(t, DefaultCommitterName, commit.Committer.Name)
 	assert.Equal(t, DefaultCommitterEmail, commit.Committer.Email)
 	assert.Equal(t, DefaultCommitterName, commit.Author.Name)

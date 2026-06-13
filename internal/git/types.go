@@ -40,8 +40,19 @@ const (
 	DefaultCommitterEmail = "noreply@configbutler.ai"
 	// DefaultEventCommitMessageTemplate reproduces the current per-event commit message shape.
 	DefaultEventCommitMessageTemplate = "[{{.Operation}}] {{.APIVersion}}/{{.Resource}}/{{.Name}}"
-	// DefaultSnapshotCommitMessageTemplate is the default atomic snapshot commit message shape.
-	DefaultSnapshotCommitMessageTemplate = "reconcile: sync {{.Count}} resources"
+	// DefaultReconcileCommitMessageTemplate is the default reconcile commit message shape.
+	// It names the synced type for a per-type splice (e.g. "reconciled 6 secrets (last
+	// resourceVersion: 1331)"), so the otherwise-indistinguishable per-type reconciles a single
+	// GitTarget produces become self-describing — and the pinned resourceVersion shows exactly
+	// how fresh the reconcile is, which is useful for demos and first-user trust. The plural
+	// resource alone (no group/version) is chosen for readability; a custom template can add
+	// {{.APIVersion}} when cross-group plural collisions matter. The {{if .Resource}} and
+	// {{if .Revision}} guards fall back to "reconciled N resources" for a whole-target reconcile
+	// (nil ScopeGVR) or the events-based atomic path, where the type/revision fields are empty —
+	// so the subject never degrades to a trailing-space, identity-less "reconciled N ".
+	DefaultReconcileCommitMessageTemplate = "reconciled {{.Count}} " +
+		"{{if .Resource}}{{.Resource}}{{else}}resources{{end}}" +
+		"{{if .Revision}} (last resourceVersion: {{.Revision}}){{end}}"
 	// DefaultGroupCommitMessageTemplate is the default message shape for
 	// finalized commit-window commits that contain multiple events.
 	DefaultGroupCommitMessageTemplate = "{{.Author}} on {{.GitTarget}}: {{.Count}} resource(s)"
@@ -210,9 +221,9 @@ type PendingWrite struct {
 type CommitMessageKind string
 
 const (
-	CommitMessagePerEvent CommitMessageKind = "event"
-	CommitMessageSnapshot CommitMessageKind = "snapshot"
-	CommitMessageGrouped  CommitMessageKind = "group"
+	CommitMessagePerEvent  CommitMessageKind = "event"
+	CommitMessageReconcile CommitMessageKind = "reconcile"
+	CommitMessageGrouped   CommitMessageKind = "group"
 )
 
 // WorkItem is the unit of work in the BranchWorker queue. Exactly one of
@@ -366,11 +377,11 @@ type CommitterConfig struct {
 	Email string
 }
 
-// CommitMessageConfig contains the resolved per-event, snapshot, and grouped templates.
+// CommitMessageConfig contains the resolved per-event, reconcile, and grouped templates.
 type CommitMessageConfig struct {
-	EventTemplate    string
-	SnapshotTemplate string
-	GroupTemplate    string
+	EventTemplate     string
+	ReconcileTemplate string
+	GroupTemplate     string
 }
 
 // CommitMessageData is the template context for per-event commit messages.
@@ -386,10 +397,23 @@ type CommitMessageData struct {
 	GitTarget  string
 }
 
-// SnapshotCommitMessageData is the template context for atomic snapshot commit messages.
-type SnapshotCommitMessageData struct {
-	Count     int
-	GitTarget string
+// ReconcileCommitMessageData is the template context for reconcile commit messages.
+//
+// Group, Version, Resource, and APIVersion name the synced type, mirroring the per-event
+// CommitMessageData fields so a reconcile template can identify its type exactly as a per-event
+// template does. They are populated for a per-type splice (M12/R2 per-type reconcile, whose
+// ResyncRequest carries a non-nil ScopeGVR) and left empty for a whole-target reconcile or the
+// events-based atomic path. Revision is the cluster resourceVersion the desired set was pinned to
+// (empty for a pure sweep or the events-based path). Any template that references these fields
+// must render cleanly when they are absent — the default guards both with {{if}}.
+type ReconcileCommitMessageData struct {
+	Count      int
+	GitTarget  string
+	Group      string
+	Version    string
+	Resource   string
+	APIVersion string
+	Revision   string
 }
 
 // ResourceRef is the lightweight resource identifier emitted to grouped commit
@@ -450,9 +474,9 @@ func ResolveCommitConfig(spec *v1alpha1.CommitSpec) CommitConfig {
 			Email: DefaultCommitterEmail,
 		},
 		Message: CommitMessageConfig{
-			EventTemplate:    DefaultEventCommitMessageTemplate,
-			SnapshotTemplate: DefaultSnapshotCommitMessageTemplate,
-			GroupTemplate:    DefaultGroupCommitMessageTemplate,
+			EventTemplate:     DefaultEventCommitMessageTemplate,
+			ReconcileTemplate: DefaultReconcileCommitMessageTemplate,
+			GroupTemplate:     DefaultGroupCommitMessageTemplate,
 		},
 	}
 
@@ -473,8 +497,8 @@ func ResolveCommitConfig(spec *v1alpha1.CommitSpec) CommitConfig {
 		if eventTemplate := strings.TrimSpace(spec.Message.EventTemplate); eventTemplate != "" {
 			config.Message.EventTemplate = eventTemplate
 		}
-		if snapshotTemplate := strings.TrimSpace(spec.Message.SnapshotTemplate); snapshotTemplate != "" {
-			config.Message.SnapshotTemplate = snapshotTemplate
+		if reconcileTemplate := strings.TrimSpace(spec.Message.ReconcileTemplate); reconcileTemplate != "" {
+			config.Message.ReconcileTemplate = reconcileTemplate
 		}
 		if groupTemplate := strings.TrimSpace(spec.Message.GroupTemplate); groupTemplate != "" {
 			config.Message.GroupTemplate = groupTemplate

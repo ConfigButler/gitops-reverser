@@ -180,11 +180,15 @@ type CommitMessageSpec struct {
 	// +optional
 	EventTemplate string `json:"eventTemplate,omitempty"`
 
-	// SnapshotTemplate is a Go text/template string for atomic snapshot commit
-	// messages (the initial-sync reconcile path; one commit covers the snapshot).
-	// Available variables: Count, GitTarget.
+	// ReconcileTemplate is a Go text/template string for reconcile commit messages
+	// (the mark-and-sweep reconcile path; one commit per synced type).
+	// Available variables: Count, GitTarget, Group, Version, Resource, APIVersion, Revision.
+	// Group/Version/Resource/APIVersion name the synced type for a per-type reconcile and
+	// Revision is the cluster resourceVersion the reconcile was pinned to; both are empty
+	// for a whole-target reconcile or a pure sweep, so a template referencing them must
+	// render cleanly when they are absent (the default guards them with {{if}}).
 	// +optional
-	SnapshotTemplate string `json:"snapshotTemplate,omitempty"`
+	ReconcileTemplate string `json:"reconcileTemplate,omitempty"`
 
 	// GroupTemplate is a Go text/template string for grouped commit messages
 	// (the commit-window path; one commit per (author, gitTarget) group

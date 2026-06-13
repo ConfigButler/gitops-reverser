@@ -185,7 +185,7 @@ func (w *BranchWorker) resolveTargetMetadata(
 // MessageKind is derived from the pending write's shape.
 func (p PendingWrite) MessageKind() CommitMessageKind {
 	if p.Kind == PendingWriteAtomic || p.Kind == PendingWriteResync {
-		return CommitMessageSnapshot
+		return CommitMessageReconcile
 	}
 	if len(p.Events) == 1 {
 		return CommitMessagePerEvent

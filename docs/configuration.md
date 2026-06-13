@@ -142,7 +142,8 @@ There are three templates, one per commit shape:
 - `spec.commit.message.eventTemplate`: per-event commits (only used when `commitWindow` is `0s`).
 - `spec.commit.message.groupTemplate`: grouped commits produced by the commit window (the
   common case).
-- `spec.commit.message.snapshotTemplate`: atomic snapshot commits (initial reconcile).
+- `spec.commit.message.reconcileTemplate`: reconcile commits (the mark-and-sweep reconcile
+  path; one commit per synced type).
 
 ```yaml
 spec:
@@ -150,7 +151,7 @@ spec:
     message:
       eventTemplate: "[{{.Operation}}] {{.APIVersion}}/{{.Resource}}/{{.Name}}"
       groupTemplate: "{{.Author}} on {{.GitTarget}}: {{.Count}} resource(s)"
-      snapshotTemplate: "reconcile: sync {{.Count}} resources"
+      reconcileTemplate: "reconciled {{.Count}} {{.Resource}}"
 ```
 
 `eventTemplate` can use:
@@ -173,10 +174,22 @@ spec:
 - `Operations` (map of `CREATE`/`UPDATE`/`DELETE` counts)
 - `Resources` (slice of `{Group, Version, Resource, Namespace, Name}`)
 
-`snapshotTemplate` can use:
+`reconcileTemplate` can use:
 
 - `Count`
 - `GitTarget`
+- `Group`
+- `Version`
+- `Resource`
+- `APIVersion`
+- `Revision`
+
+`Group`/`Version`/`Resource`/`APIVersion` name the synced type for a per-type reconcile and
+`Revision` is the cluster `resourceVersion` the reconcile was pinned to. The default,
+`reconciled {{.Count}} {{if .Resource}}{{.Resource}}{{else}}resources{{end}}{{if .Revision}} (last resourceVersion: {{.Revision}}){{end}}`,
+renders e.g. `reconciled 6 secrets (last resourceVersion: 1331)`. The type and revision fields are
+empty for a whole-target reconcile or a pure sweep, so guard a template that references them
+(the default uses `{{if .Resource}}` / `{{if .Revision}}`) to avoid an identity-less subject.
 
 Examples:
 
@@ -198,7 +211,7 @@ spec:
 spec:
   commit:
     message:
-      snapshotTemplate: "snapshot: {{.Count}} resources"
+      reconcileTemplate: "reconciled {{.Count}} {{.Resource}}@{{.Revision}}"
 ```
 
 #### Commit signing
