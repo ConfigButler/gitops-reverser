@@ -270,10 +270,21 @@ func (r *CommitRequestReconciler) writeTerminalStatus(
 
 		err := r.Status().Update(ctx, current)
 		if err == nil {
+			finalizeError := ""
+			if finalizeErr != nil {
+				finalizeError = finalizeErr.Error()
+			}
 			log.Info("CommitRequest finalized",
+				"name", client.ObjectKeyFromObject(current),
 				"phase", current.Status.Phase,
+				"reason", current.Status.Reason,
+				"message", current.Status.Message,
 				"branch", current.Status.Branch,
-				"sha", current.Status.SHA)
+				"sha", current.Status.SHA,
+				"outcome", result.Outcome,
+				"finalizeError", finalizeError,
+				"gitTarget", current.Spec.GitTargetRef.Name,
+				"age", time.Since(current.CreationTimestamp.Time).String())
 			return
 		}
 		if !apierrors.IsConflict(err) {

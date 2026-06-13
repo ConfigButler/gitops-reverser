@@ -393,6 +393,20 @@ func dumpFailureDiagnostics() {
 		_, _ = fmt.Fprintf(GinkgoWriter, "Failed to get Kubernetes events: %s\n", err)
 	}
 
+	By("Fetching CommitRequest diagnostics")
+	commitRequestsOutput, err := kubectlRun(
+		"get",
+		"commitrequests.configbutler.ai",
+		"--all-namespaces",
+		"-o",
+		"yaml",
+	)
+	if err == nil {
+		_, _ = fmt.Fprintf(GinkgoWriter, "CommitRequests:\n%s", commitRequestsOutput)
+	} else {
+		_, _ = fmt.Fprintf(GinkgoWriter, "Failed to get CommitRequests: %s\n", err)
+	}
+
 	podNames, err := controllerPodNames()
 	if err != nil {
 		_, _ = fmt.Fprintf(GinkgoWriter, "Failed to get controller pod names: %s\n", err)
@@ -414,10 +428,10 @@ func dumpFailureDiagnostics() {
 			namespace,
 			"logs",
 			podName,
-			"--tail=200",
+			"--since=10m",
 		)
 		if logsErr == nil {
-			_, _ = fmt.Fprintf(GinkgoWriter, "Last 200 lines of controller logs for %s:\n%s", podName, controllerLogs)
+			_, _ = fmt.Fprintf(GinkgoWriter, "Controller logs for %s from the last 10m:\n%s", podName, controllerLogs)
 		} else {
 			_, _ = fmt.Fprintf(GinkgoWriter, "Failed to get controller logs for %s: %s\n", podName, logsErr)
 		}
