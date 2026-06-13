@@ -75,14 +75,15 @@ func (m *Manager) SpliceSnapshotForType(
 		return ClusterSnapshot{}, false, nil
 	}
 
-	objs, revision, err := m.TypeSplicer.SpliceType(ctx, gvr.Group, gvr.Resource)
+	objs, revision, coverageHead, err := m.TypeSplicer.SpliceType(ctx, gvr.Group, gvr.Resource)
 	if err != nil {
 		return ClusterSnapshot{}, false, fmt.Errorf("splice %s for %s: %w", gvr.String(), gitDest.String(), err)
 	}
 
 	desired := scopeAndProjectSplicedObjects(gvr, objs, sg.namespaces)
-	log.Info("Spliced per-type snapshot", "resources", len(desired), "revision", revision)
-	return ClusterSnapshot{Desired: desired, Revision: revision}, true, nil
+	log.Info("Spliced per-type snapshot",
+		"resources", len(desired), "revision", revision, "coverageHead", coverageHead)
+	return ClusterSnapshot{Desired: desired, Revision: revision, CoverageHead: coverageHead}, true, nil
 }
 
 // scopeAndProjectSplicedObjects filters the folded objects to the GitTarget's namespaces and maps

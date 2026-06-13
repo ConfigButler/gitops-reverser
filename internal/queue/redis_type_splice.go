@@ -25,6 +25,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/redis/go-redis/v9"
@@ -78,32 +79,40 @@ func NewRedisTypeSplicer(cfg RedisObjectsSnapshotConfig) (*RedisTypeSplicer, err
 	return &RedisTypeSplicer{client: redis.NewClient(options), prefix: prefix}, nil
 }
 
-// SpliceType returns the current desired object set for one resource type and the checkpoint
-// revision it was anchored at. It reads the checkpoint @R, then folds every audit-log entry with
-// stream position strictly after R (an exclusive "(R +" XRANGE — exact under async delivery because
-// position is the resourceVersion, not arrival time, DEC-3): a delete drops the identity, any other
-// mutating verb upserts the extracted object, last-writer-wins by stream order (§6). The returned
-// objects are sanitized and sorted by identity for a deterministic plan; they are NOT scope-filtered
-// (the caller restricts them to the GitTarget's namespaces). A missing checkpoint returns
-// ErrSpliceNoCheckpoint so the caller holds (R11); a malformed checkpoint entry or an unconvertible
-// audit body is skipped best-effort, since the next checkpoint backstops it (DEC-5).
+// SpliceType returns the current desired object set for one resource type, the checkpoint
+// revision it was anchored at, and the coverage head Hc the fold reached. It reads the checkpoint
+// @R, then folds every audit-log entry with stream position strictly after R (an exclusive "(R +"
+// XRANGE — exact under async delivery because position is the resourceVersion, not arrival time,
+// DEC-3): a delete drops the identity, any other mutating verb upserts the extracted object,
+// last-writer-wins by stream order (§6). The returned objects are sanitized and sorted by identity
+// for a deterministic plan; they are NOT scope-filtered (the caller restricts them to the
+// GitTarget's namespaces). A missing checkpoint returns ErrSpliceNoCheckpoint so the caller holds
+// (R11); a malformed checkpoint entry or an unconvertible audit body is skipped best-effort, since
+// the next checkpoint backstops it (DEC-5).
+//
+// The coverage head is Hc = max(checkpoint rv, highest folded audit-log entry rv): the major part
+// of the last entry the "(R +" XRANGE returned, falling back to the checkpoint rv when nothing was
+// folded. It is NOT the checkpoint rv when post-checkpoint log entries were folded — that
+// distinction is the whole point: the per-(GitTarget, GVR) freshness watermark must gate the audit
+// tail on Hc, not on the checkpoint rv, or it re-delivers already-reconciled objects as live
+// per-event commits (signing-snapshot-tail-replay-failure-investigation.md §5/§7).
 func (s *RedisTypeSplicer) SpliceType(
 	ctx context.Context,
 	group, resource string,
-) ([]*unstructured.Unstructured, string, error) {
+) ([]*unstructured.Unstructured, string, string, error) {
 	base := typeBaseKey(s.prefix, group, resource, "")
 
 	rv, err := s.client.Get(ctx, base+objectsRVSuffix).Result()
 	if errors.Is(err, redis.Nil) || strings.TrimSpace(rv) == "" {
-		return nil, "", ErrSpliceNoCheckpoint
+		return nil, "", "", ErrSpliceNoCheckpoint
 	}
 	if err != nil {
-		return nil, "", fmt.Errorf("type-splice: read checkpoint rv for %q: %w", base, err)
+		return nil, "", "", fmt.Errorf("type-splice: read checkpoint rv for %q: %w", base, err)
 	}
 
 	items, err := s.client.HGetAll(ctx, base+objectsItemsSuffix).Result()
 	if err != nil {
-		return nil, "", fmt.Errorf("type-splice: read checkpoint items for %q: %w", base, err)
+		return nil, "", "", fmt.Errorf("type-splice: read checkpoint items for %q: %w", base, err)
 	}
 	desired := make(map[string]*unstructured.Unstructured, len(items))
 	for identity, envJSON := range items {
@@ -119,13 +128,52 @@ func (s *RedisTypeSplicer) SpliceType(
 	// rv==R entries the checkpoint already contains are skipped; "+" reads to the stream head.
 	msgs, err := s.client.XRange(ctx, base+byTypeAuditStreamSuffix, "("+rv, "+").Result()
 	if err != nil {
-		return nil, "", fmt.Errorf("type-splice: read audit log for %q: %w", base, err)
+		return nil, "", "", fmt.Errorf("type-splice: read audit log for %q: %w", base, err)
 	}
 	for i := range msgs {
 		foldAuditEntry(desired, msgs[i].Values)
 	}
 
-	return sortedDesiredObjects(desired), rv, nil
+	// Coverage head: with the log read in ascending ID order the last entry carries the highest
+	// rv, so its major part is the head the fold covered. With no post-checkpoint entries the head
+	// is the checkpoint rv. maxRV keeps it monotone even if a malformed ID slips through.
+	coverageHead := rv
+	if n := len(msgs); n > 0 {
+		coverageHead = maxRV(rv, streamIDMajorRV(msgs[n-1].ID))
+	}
+
+	return sortedDesiredObjects(desired), rv, coverageHead, nil
+}
+
+// streamIDMajorRV returns the resourceVersion (major) component of a Redis stream ID "<rv>-<seq>".
+// A blank or malformed ID yields "".
+func streamIDMajorRV(id string) string {
+	major, _, _ := strings.Cut(id, "-")
+	return major
+}
+
+// maxRV returns the numerically larger of two decimal resourceVersion strings. It falls back to
+// the parseable side when one is not a uint64 (defensive only — both the checkpoint rv and a
+// stream-ID major are admitted as uint64 stream-ID components), and to a (rare) string compare
+// when neither parses.
+func maxRV(a, b string) string {
+	av, aerr := strconv.ParseUint(a, 10, 64)
+	bv, berr := strconv.ParseUint(b, 10, 64)
+	switch {
+	case aerr != nil && berr != nil:
+		if b > a {
+			return b
+		}
+		return a
+	case aerr != nil:
+		return b
+	case berr != nil:
+		return a
+	case bv > av:
+		return b
+	default:
+		return a
+	}
 }
 
 // foldAuditEntry applies one audit-log entry to the desired set: a delete drops the identity, any

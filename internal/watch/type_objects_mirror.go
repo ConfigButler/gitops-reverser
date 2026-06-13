@@ -96,15 +96,20 @@ func (m *Manager) mirrorTypeObjects(
 		return "", nil
 	}
 
+	started := time.Now()
+	timeout := m.streamTypeObjectsTimeout()
 	path := "watch"
+	log.Info("objects-mirror: snapshot load started",
+		"gvr", gvr.String(), "path", path, "timeout", timeout.String())
+
 	items, rv, err := m.streamTypeObjects(ctx, log, dc, gvr)
 	if err != nil {
 		if !errors.Is(err, errStreamFallback) {
 			// Shutdown/cancellation: end the sync, do not fall back.
 			return "", err
 		}
-		log.V(1).Info("objects-mirror: WATCH-first unavailable, falling back to LIST",
-			"gvr", gvr.String(), "reason", err.Error())
+		log.Info("objects-mirror: WATCH-first unavailable, falling back to LIST",
+			"gvr", gvr.String(), "reason", err.Error(), "elapsed", time.Since(started).String())
 		path = "list"
 		items, rv, err = m.listTypeObjects(ctx, log, dc, gvr)
 		if err != nil {
@@ -120,8 +125,16 @@ func (m *Manager) mirrorTypeObjects(
 			metric.WithAttributes(attribute.String("path", path)))
 	}
 	log.Info("objects-mirror: snapshot loaded",
-		"gvr", gvr.String(), "count", len(items), "resourceVersion", rv, "path", path)
+		"gvr", gvr.String(), "count", len(items), "resourceVersion", rv,
+		"path", path, "elapsed", time.Since(started).String())
 	return rv, nil
+}
+
+func (m *Manager) streamTypeObjectsTimeout() time.Duration {
+	if m.streamCheckpointTimeoutOverride > 0 {
+		return m.streamCheckpointTimeoutOverride
+	}
+	return streamCheckpointTimeout
 }
 
 // streamTypeObjects fills the checkpoint with a Kubernetes streaming-list watch
@@ -137,10 +150,7 @@ func (m *Manager) mirrorTypeObjects(
 func (m *Manager) streamTypeObjects(
 	ctx context.Context, log logr.Logger, dc dynamic.Interface, gvr schema.GroupVersionResource,
 ) (map[string]string, string, error) {
-	timeout := streamCheckpointTimeout
-	if m.streamCheckpointTimeoutOverride > 0 {
-		timeout = m.streamCheckpointTimeoutOverride
-	}
+	timeout := m.streamTypeObjectsTimeout()
 	streamCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 

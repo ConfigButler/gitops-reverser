@@ -303,6 +303,11 @@ func (q *RedisByTypeStreamQueue) ReadTypeAuditChanges(
 			msg := res[i].Messages[j]
 			newID = msg.ID
 			if ev, ok := auditChangeFromEntry(msg.Values); ok {
+				// Stamp the entry's resourceVersion (the stream-ID major) so the tail fan-out's
+				// per-(GitTarget, GVR) coverage-watermark gate can classify it as historical
+				// (rv <= Hc) or live (rv > Hc). The stream position IS the rv (DEC-3), so this is
+				// exact even under async delivery.
+				ev.AuditRV = streamIDMajorRV(msg.ID)
 				changes = append(changes, ev)
 			}
 		}

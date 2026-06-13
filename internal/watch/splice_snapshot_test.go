@@ -31,22 +31,29 @@ import (
 )
 
 // fakeTypeSplicer is a Manager-injectable TypeSplicer that returns a canned fold (or error),
-// counting calls so a test can prove the splice is NOT consulted while the checkpoint holds.
+// counting calls so a test can prove the splice is NOT consulted while the checkpoint holds. When
+// coverageHead is unset it defaults to rv (the empty-log steady state), so a test that does not
+// care about Hc keeps the old two-value intent.
 type fakeTypeSplicer struct {
-	objs  []*unstructured.Unstructured
-	rv    string
-	err   error
-	calls int
+	objs         []*unstructured.Unstructured
+	rv           string
+	coverageHead string
+	err          error
+	calls        int
 }
 
 func (f *fakeTypeSplicer) SpliceType(
 	_ context.Context, _, _ string,
-) ([]*unstructured.Unstructured, string, error) {
+) ([]*unstructured.Unstructured, string, string, error) {
 	f.calls++
 	if f.err != nil {
-		return nil, "", f.err
+		return nil, "", "", f.err
 	}
-	return f.objs, f.rv, nil
+	hc := f.coverageHead
+	if hc == "" {
+		hc = f.rv
+	}
+	return f.objs, f.rv, hc, nil
 }
 
 // TestSpliceSnapshotForType_SyncedFoldsAndScopes is the happy R2 path: a Synced type splices its

@@ -491,7 +491,161 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 				"expected reconcile subjects in %s to name the synced type (§9 improvement)", commitPath)
 		}, "30s", "3s").Should(Succeed())
 	})
+
+	// ── Test 5: late-joining target suppresses already-reconciled tail entries ──
+	//
+	// User-path guard for the per-(GitTarget, GVR) coverage watermark
+	// (signing-snapshot-tail-replay-failure-investigation.md §8.1). Two GitTargets track the same
+	// v1/configmaps into different paths off one commitWindow:0s signing provider. Target A starts
+	// the shared ConfigMap tail; target B joins later. The strict red-first proof is the unit test
+	// (internal/watch TestAuditTailFanout_*); a full e2e cannot classify the overlap band without an
+	// observable Hc or a tail-pause hook, so this only asserts the robust user-visible guarantees:
+	// the pre-existing seed set is reconcile-only for B (no per-event subject), content converges
+	// under B regardless of which path delivered it, and live events created after B is Synced still
+	// flow as per-event commits. It deliberately does NOT wait for A to commit the overlap band
+	// before B exists — that consumes the entries before B joins and erases the very bug path (§8.1).
+	It("should not replay already-reconciled configmaps as per-event commits to a late-joining target", func() {
+		providerName := "signing-overlap"
+		watchRuleNameA := providerName + "-wr-a"
+		watchRuleNameB := providerName + "-wr-b"
+		destNameA := providerName + "-a"
+		destNameB := providerName + "-b"
+		commitPathA := "e2e/signing-overlap/a"
+		commitPathB := "e2e/signing-overlap/b"
+
+		const seedCount = 40
+		seedNames := make([]string, seedCount)
+		for i := range seedNames {
+			seedNames[i] = fmt.Sprintf("seed-cm-%04d", i)
+		}
+		overlapNames := make([]string, 20)
+		for i := range overlapNames {
+			overlapNames[i] = fmt.Sprintf("overlap-b-cm-%02d", i)
+		}
+		liveNames := []string{"live-b-cm-0", "live-b-cm-1", "live-b-cm-2"}
+
+		DeferCleanup(func() {
+			if skipCleanupBecauseResourcesArePreserved(
+				fmt.Sprintf("commit signing overlap resources for GitProvider %s/%s", testNs, providerName),
+				testNs,
+			) {
+				return
+			}
+			_, _ = kubectlRunInNamespace(testNs, "delete", "configmap",
+				"-l", "app.kubernetes.io/part-of=signing-overlap", "--ignore-not-found=true")
+			cleanupWatchRule(watchRuleNameA, testNs)
+			cleanupWatchRule(watchRuleNameB, testNs)
+			cleanupGitTarget(destNameA, testNs)
+			cleanupGitTarget(destNameB, testNs)
+			cleanupNamespacedResource(testNs, "gitprovider", providerName)
+		})
+
+		By("pre-creating the seed ConfigMaps before any target exists")
+		_, err := kubectlRunWithStdin(testNs, signingOverlapConfigMapsManifest(testNs, seedNames),
+			"apply", "-f", "-")
+		Expect(err).NotTo(HaveOccurred(), "failed to create seed configmaps")
+
+		By("creating the signing GitProvider (commitWindow 0s) with the reconcile/per-event templates")
+		committerName, committerEmail := signingRepoCommitter()
+		Expect(applyFromTemplate("test/e2e/templates/gitprovider-signing.tmpl", signingGitProviderData{
+			Name:           providerName,
+			Namespace:      testNs,
+			RepoURL:        signingRepo.RepoURLHTTP,
+			Branch:         "main",
+			SecretName:     signingRepo.GitSecretHTTP,
+			CommitterName:  committerName,
+			CommitterEmail: committerEmail,
+			EventTemplate:  "[{{.Operation}}] {{.APIVersion}}/{{.Resource}}/{{.Name}}",
+			ReconcileTemplate: "e2e-reconcile: synced {{.Count}} {{.APIVersion}}/{{.Resource}}" +
+				"@{{.Revision}} to {{.GitTarget}}",
+			SigningSecretName:   "signing-key-overlap",
+			GenerateWhenMissing: true,
+		}, testNs)).To(Succeed())
+		verifyResourceStatus("gitprovider", providerName, testNs, "True", "Ready", "")
+
+		By("creating target A and its WatchRule, then waiting for A to reconcile the seed band")
+		createGitTarget(destNameA, testNs, providerName, commitPathA, "main")
+		verifyResourceStatus("gittarget", destNameA, testNs, "True", "Ready", "")
+		Expect(applyFromTemplate("test/e2e/templates/watchrule.tmpl", struct {
+			Name, Namespace, DestinationName string
+		}{watchRuleNameA, testNs, destNameA}, testNs)).To(Succeed())
+		verifyResourceStatus("watchrule", watchRuleNameA, testNs, "True", "Ready", "")
+		waitForGitTargetSynced(destNameA, testNs)
+
+		By("proving the shared ConfigMap tail is live for A via a probe per-event commit")
+		_, err = kubectlRunInNamespace(testNs, "create", "configmap", "probe-a", "--from-literal=k=v")
+		Expect(err).NotTo(HaveOccurred())
+		_, _ = kubectlRunInNamespace(testNs, "label", "configmap", "probe-a",
+			"app.kubernetes.io/part-of=signing-overlap", "--overwrite")
+		Eventually(func(g Gomega) {
+			pullLatestRepoState(g, signingRepo.CheckoutDir)
+			logOut, logErr := gitRun(signingRepo.CheckoutDir, "log", "--format=%s", "--", commitPathA)
+			g.Expect(logErr).NotTo(HaveOccurred())
+			g.Expect(logOut).To(ContainSubstring("[CREATE] v1/configmaps/probe-a"),
+				"target A's per-event tail must be live before B joins")
+		}).Should(Succeed())
+
+		By("creating the overlap band and IMMEDIATELY target B + its WatchRule (widen the join window)")
+		_, err = kubectlRunWithStdin(testNs, signingOverlapConfigMapsManifest(testNs, overlapNames),
+			"apply", "-f", "-")
+		Expect(err).NotTo(HaveOccurred(), "failed to create overlap-b configmaps")
+		createGitTarget(destNameB, testNs, providerName, commitPathB, "main")
+		Expect(applyFromTemplate("test/e2e/templates/watchrule.tmpl", struct {
+			Name, Namespace, DestinationName string
+		}{watchRuleNameB, testNs, destNameB}, testNs)).To(Succeed())
+		verifyResourceStatus("gittarget", destNameB, testNs, "True", "Ready", "")
+		verifyResourceStatus("watchrule", watchRuleNameB, testNs, "True", "Ready", "")
+		waitForGitTargetSynced(destNameB, testNs)
+
+		By("asserting seed + overlap content converges under path B with no seed leaked as a per-event commit")
+		Eventually(func(g Gomega) {
+			pullLatestRepoState(g, signingRepo.CheckoutDir)
+			files, lsErr := gitRun(signingRepo.CheckoutDir, "ls-files", "--", commitPathB)
+			g.Expect(lsErr).NotTo(HaveOccurred())
+			for _, n := range seedNames {
+				g.Expect(files).To(ContainSubstring("/"+n+".yaml"), "seed %s must be present under path B", n)
+			}
+			for _, n := range overlapNames {
+				g.Expect(files).To(ContainSubstring("/"+n+".yaml"), "overlap %s must be present under path B", n)
+			}
+			logOut, logErr := gitRun(signingRepo.CheckoutDir, "log", "--format=%s", "--", commitPathB)
+			g.Expect(logErr).NotTo(HaveOccurred())
+			// A seed object name can only reach a commit SUBJECT through the per-event template
+			// ("[CREATE] .../seed-cm-…"); the reconcile template names the TYPE, never an object. So
+			// any "seed-cm-" in the subject log is a re-delivered historical entry — the bug this fix
+			// closes.
+			g.Expect(logOut).NotTo(ContainSubstring("seed-cm-"),
+				"a pre-existing seed object must never appear as a per-event commit under path B")
+		}).Should(Succeed())
+
+		By("creating the live-b band after B is Synced and asserting it flows as per-event commits")
+		_, err = kubectlRunWithStdin(testNs, signingOverlapConfigMapsManifest(testNs, liveNames),
+			"apply", "-f", "-")
+		Expect(err).NotTo(HaveOccurred(), "failed to create live-b configmaps")
+		Eventually(func(g Gomega) {
+			pullLatestRepoState(g, signingRepo.CheckoutDir)
+			logOut, logErr := gitRun(signingRepo.CheckoutDir, "log", "--format=%s", "--", commitPathB)
+			g.Expect(logErr).NotTo(HaveOccurred())
+			for _, n := range liveNames {
+				g.Expect(logOut).To(ContainSubstring("[CREATE] v1/configmaps/"+n),
+					"a post-Synced create must reach path B as a live per-event commit")
+			}
+		}).Should(Succeed())
+	})
 })
+
+// signingOverlapConfigMapsManifest builds a multi-document ConfigMap manifest for the overlap guard,
+// each labelled app.kubernetes.io/part-of=signing-overlap for one-shot delete-by-label cleanup.
+func signingOverlapConfigMapsManifest(namespace string, names []string) string {
+	var b strings.Builder
+	for _, n := range names {
+		fmt.Fprintf(&b,
+			"apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: %s\n  namespace: %s\n"+
+				"  labels:\n    app.kubernetes.io/part-of: signing-overlap\ndata:\n  k: v\n---\n",
+			n, namespace)
+	}
+	return b.String()
+}
 
 // ── helpers specific to the signing suite ────────────────────────────────────
 

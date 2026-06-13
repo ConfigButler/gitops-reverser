@@ -318,6 +318,15 @@ type Event struct {
 	// Operation is the admission operation (CREATE, UPDATE, DELETE).
 	Operation string
 
+	// AuditRV is the Kubernetes resourceVersion this change was recorded at on the
+	// per-type audit stream — the major part of its Redis stream ID "<rv>-<seq>". It is
+	// set ONLY on the audit-tail path (ReadTypeAuditChanges) and read by the per-(GitTarget,
+	// GVR) coverage-watermark gate in applyAuditChangesForType to decide whether the entry is
+	// historical for a target (rv <= Hc, suppress) or live (rv > Hc, route). Empty on the live
+	// admission path; not used by the writer. See
+	// docs/design/stream/signing-snapshot-tail-replay-failure-investigation.md §7.
+	AuditRV string
+
 	// UserInfo contains user information for commit messages.
 	UserInfo UserInfo
 

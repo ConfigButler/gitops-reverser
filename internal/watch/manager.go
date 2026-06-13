@@ -197,6 +197,21 @@ type Manager struct {
 	// TypeSynced handler's decision (first-sync backfill vs. deferred re-anchor heal) without a
 	// full EventRouter/worker stack. Nil means use the real reconcileTypeForSyncedTargets.
 	reconcileTypeFanOverride func(context.Context, logr.Logger, schema.GroupVersionResource, bool)
+
+	// targetTypeWatermark is the per-(GitTarget, GVR) coverage watermark Hc that gates the audit
+	// tail fan-out: an entry at rv <= Hc is historical for that target (already covered by its
+	// reconcile) and is suppressed; rv > Hc is live and routed. Presence of an entry is the
+	// "Reconciling/LiveFrom(Hc)" state; absence is "NotReconciled" (suppress every tail entry until
+	// the first reconcile establishes a boundary). It is published only AFTER the scoped reconcile
+	// is enqueued (publishTargetTypeWatermark), advances monotonically, and is cleared on GitTarget
+	// delete/recreate alongside ForgetGitTargetDeclaration — a stale-high watermark is silent data
+	// loss, so resetting to NotReconciled is the safe direction. In-memory only: a restart degrades
+	// to NotReconciled, and the boot reconcile re-establishes it. targetTypeWatermarkMu is shared
+	// between the publish and the fan-out gate so the worker queue gets a happens-before edge
+	// (the reconcile is enqueued before the tail can observe Hc). See
+	// docs/design/stream/signing-snapshot-tail-replay-failure-investigation.md §7.
+	targetTypeWatermarkMu sync.Mutex
+	targetTypeWatermark   map[string]map[schema.GroupVersionResource]string
 }
 
 // AuditLogTrimmer bounds a type's main audit stream to the oldest currently-serving checkpoint
@@ -216,9 +231,12 @@ type AuditLogTrimmer interface {
 // See docs/design/stream/api-source-of-truth-reconcile.md §6.
 type TypeSplicer interface {
 	// SpliceType returns the folded desired objects for a type (sanitized, sorted by identity,
-	// NOT scope-filtered) and the checkpoint revision they are anchored at. An absent checkpoint
-	// is an error, never an empty set, so the caller holds (fail-closed, R11).
-	SpliceType(ctx context.Context, group, resource string) ([]*unstructured.Unstructured, string, error)
+	// NOT scope-filtered), the checkpoint revision they are anchored at, and the coverage head Hc
+	// the fold reached (max(checkpoint rv, highest folded audit-log entry rv)). The checkpoint rv
+	// keeps serving commit-message continuity; the coverage head is what the per-(GitTarget, GVR)
+	// freshness watermark gates the audit tail on. An absent checkpoint is an error, never an empty
+	// set, so the caller holds (fail-closed, R11).
+	SpliceType(ctx context.Context, group, resource string) ([]*unstructured.Unstructured, string, string, error)
 }
 
 // ObjectMirror mirrors the current set of objects for one resource type into the

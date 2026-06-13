@@ -238,7 +238,14 @@ func (m *Manager) newlyDeclaredSyncedGVRs(
 // fires — the recreate silently produces no snapshot commit. Clearing on delete makes a recreate a
 // genuine fresh claim. The materializer claim itself ages out on its own lease (sweep), so this
 // only resets the diff-wake cache. A no-op for an unknown GitTarget.
+//
+// It also clears the GitTarget's per-type coverage watermarks (clearTargetTypeWatermarks): a
+// recreated target must restart at NotReconciled so the audit tail suppresses every entry until its
+// fresh reconcile re-establishes a boundary — inheriting a dead target's stale-high Hc would
+// silently suppress the recreate's legitimate live events
+// (signing-snapshot-tail-replay-failure-investigation.md §7.3).
 func (m *Manager) ForgetGitTargetDeclaration(gitDest types.ResourceReference) {
+	m.clearTargetTypeWatermarks(gitDest)
 	m.declaredGVRsMu.Lock()
 	defer m.declaredGVRsMu.Unlock()
 	delete(m.declaredGVRs, gitDest.String())

@@ -174,28 +174,55 @@ func (m *Manager) applyAuditChangesForType(
 		return
 	}
 	for _, table := range m.allWatchedTypeTables() {
-		watched := watchedTypeForGVR(table, gvr)
-		if watched == nil {
+		m.routeAuditChangesToTarget(ctx, log, gvr, table, changes)
+	}
+}
+
+// routeAuditChangesToTarget fans one audit-tail batch to a single GitTarget, applying the
+// membership, stream-registration, namespace-scope, and per-(GitTarget, GVR) coverage-watermark
+// gates before routing each surviving change as a live per-event write stamped with the target's
+// path. It is a no-op for any gate the target fails — those changes are either out of this target's
+// concern or already covered by its reconcile.
+func (m *Manager) routeAuditChangesToTarget(
+	ctx context.Context,
+	log logr.Logger,
+	gvr schema.GroupVersionResource,
+	table WatchedTypeTable,
+	changes []git.Event,
+) {
+	watched := watchedTypeForGVR(table, gvr)
+	if watched == nil {
+		return
+	}
+	if m.EventRouter.GetGitTargetEventStream(table.GitDest) == nil {
+		return // the GitTarget's stream is not registered yet; its first checkpoint splice covers it
+	}
+	path, ok := m.gitTargetPath(ctx, table.GitDest)
+	if !ok {
+		return
+	}
+	// Per-(GitTarget, GVR) coverage watermark (§7.2): an absent boundary is NotReconciled — the
+	// target's first reconcile owns the type's initial history, so suppress every entry until one
+	// exists. With a boundary Hc, an entry at rv <= Hc was already covered by this target's reconcile
+	// and must not be re-delivered as a live per-event commit; only rv > Hc is live for it. This is
+	// what makes the type-global tail's delivery target-local.
+	hc, hasWatermark := m.targetTypeWatermarkFor(table.GitDest, gvr)
+	if !hasWatermark {
+		return
+	}
+	inScope := namespaceScopePredicate(watched.SnapshotNamespaces())
+	for _, change := range changes {
+		if !inScope(change.Identifier.Namespace) {
 			continue
 		}
-		if m.EventRouter.GetGitTargetEventStream(table.GitDest) == nil {
-			continue // the GitTarget's stream is not registered yet; its first checkpoint splice covers it
+		if !rvAboveWatermark(change.AuditRV, hc) {
+			continue // rv <= Hc: historical for this target, already covered by its reconcile
 		}
-		path, ok := m.gitTargetPath(ctx, table.GitDest)
-		if !ok {
-			continue
-		}
-		inScope := namespaceScopePredicate(watched.SnapshotNamespaces())
-		for _, change := range changes {
-			if !inScope(change.Identifier.Namespace) {
-				continue
-			}
-			ev := change
-			ev.Path = path
-			if err := m.EventRouter.RouteToGitTargetEventStream(ev, table.GitDest); err != nil {
-				log.V(1).Info("audit-tail route failed",
-					"gitDest", table.GitDest.String(), "resource", ev.Identifier.String(), "err", err.Error())
-			}
+		ev := change
+		ev.Path = path
+		if err := m.EventRouter.RouteToGitTargetEventStream(ev, table.GitDest); err != nil {
+			log.V(1).Info("audit-tail route failed",
+				"gitDest", table.GitDest.String(), "resource", ev.Identifier.String(), "err", err.Error())
 		}
 	}
 }

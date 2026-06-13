@@ -112,15 +112,43 @@ func TestRedisTypeSplicer_FoldsCheckpointAndLog(t *testing.T) {
 	require.NoError(t, q.Enqueue(ctx, configMapAuditEvent("create", "c", "160", "vc")))
 	require.NoError(t, q.Enqueue(ctx, configMapAuditEvent("delete", "b", "170", "")))
 
-	objs, rv, err := splicer.SpliceType(ctx, "", "configmaps")
+	objs, rv, hc, err := splicer.SpliceType(ctx, "", "configmaps")
 	require.NoError(t, err)
 	assert.Equal(t, "100", rv, "the splice is anchored at the checkpoint revision")
+	// The delete carries no body and so no RV: it ingests rv-less, attached to the stream high-water
+	// (the create @160), not at 170. The coverage head is therefore the highest MAIN-stream entry
+	// (160) — exactly the position the tail would read that delete at, so the gate stays consistent.
+	assert.Equal(t, "160", hc, "coverage head is the highest main-stream rv (the rv-less delete rides @160)")
 
 	require.Len(t, objs, 2, "b was deleted; a and c remain")
 	assert.Equal(t, "default/a", objs[0].GetNamespace()+"/"+objs[0].GetName(), "sorted by identity")
 	assert.Equal(t, "default/c", objs[1].GetNamespace()+"/"+objs[1].GetName())
 	assert.Equal(t, "v2", configMapData(t, objs[0].Object), "a reflects the post-checkpoint update")
 	assert.Equal(t, "vc", configMapData(t, objs[1].Object), "c was created from the log")
+}
+
+// TestRedisTypeSplicer_CoverageHeadGatesTailReplay is the queue half of the per-target watermark
+// red-first proof (signing-snapshot-tail-replay-failure-investigation.md §8): a checkpoint @R0 with
+// one post-checkpoint create @R1 must expose a coverage head Hc == R1, NOT the checkpoint R0. The
+// watch-layer fan-out gates the audit tail on this Hc, so returning R0 here would re-route the very
+// log entry the splice just folded as a stray live per-event commit. The checkpoint rv stays R0 for
+// commit-message continuity.
+func TestRedisTypeSplicer_CoverageHeadGatesTailReplay(t *testing.T) {
+	splicer, snap, q := spliceFixture(t)
+	ctx := context.Background()
+
+	require.NoError(t, snap.ReplaceTypeObjects(ctx, "", "v1", "configmaps", map[string]string{
+		"default/seed": checkpointEnvelope("seed"),
+	}, "100"))
+
+	// One create strictly after the checkpoint — exactly the batch-cm-2 case from §4.
+	require.NoError(t, q.Enqueue(ctx, configMapAuditEvent("create", "batch-cm-2", "117", "vc")))
+
+	objs, rv, hc, err := splicer.SpliceType(ctx, "", "configmaps")
+	require.NoError(t, err)
+	assert.Equal(t, "100", rv, "checkpoint rv is unchanged — it still serves commit-message continuity")
+	assert.Equal(t, "117", hc, "coverage head folds through the post-checkpoint create; rv=100 would re-route it")
+	require.Len(t, objs, 2, "seed + the folded create are both in the desired set")
 }
 
 // TestRedisTypeSplicer_DuplicateDeliveryFoldsOnce is the C-C duplicate-absorption proof
@@ -141,9 +169,10 @@ func TestRedisTypeSplicer_DuplicateDeliveryFoldsOnce(t *testing.T) {
 	require.NoError(t, q.Enqueue(ctx, configMapAuditEvent("update", "a", "150", "v2")))
 	require.NoError(t, q.Enqueue(ctx, configMapAuditEvent("update", "a", "150", "v2")))
 
-	objs, rv, err := splicer.SpliceType(ctx, "", "configmaps")
+	objs, rv, hc, err := splicer.SpliceType(ctx, "", "configmaps")
 	require.NoError(t, err)
 	assert.Equal(t, "100", rv)
+	assert.Equal(t, "150", hc, "both deliveries fold at rv 150 — the coverage head is 150, once")
 
 	require.Len(t, objs, 1, "a duplicate delivery must not produce a second desired object")
 	assert.Equal(t, "default/a", objs[0].GetNamespace()+"/"+objs[0].GetName())
@@ -199,9 +228,10 @@ func TestRedisTypeSplicer_FoldsScaleIntoParent(t *testing.T) {
 	require.NoError(t, q.Enqueue(ctx, deploymentScaleAuditEvent("web", "150", 5)))
 	require.NoError(t, q.Enqueue(ctx, deploymentScaleAuditEvent("ghost", "160", 7))) // parent not in desired
 
-	objs, rv, err := splicer.SpliceType(ctx, "apps", "deployments")
+	objs, rv, hc, err := splicer.SpliceType(ctx, "apps", "deployments")
 	require.NoError(t, err)
 	assert.Equal(t, "100", rv)
+	assert.Equal(t, "160", hc, "the coverage head reaches the last log entry read (the skipped ghost scale @160)")
 
 	require.Len(t, objs, 1, "the absent-parent scale folds nothing in")
 	replicas, found, err := unstructured.NestedInt64(objs[0].Object, "spec", "replicas")
@@ -220,7 +250,7 @@ func TestRedisTypeSplicer_NoCheckpointHolds(t *testing.T) {
 	// Audit entries exist, but no checkpoint has been pinned.
 	require.NoError(t, q.Enqueue(ctx, configMapAuditEvent("create", "a", "10", "v1")))
 
-	_, _, err := splicer.SpliceType(ctx, "", "configmaps")
+	_, _, _, err := splicer.SpliceType(ctx, "", "configmaps")
 	require.ErrorIs(t, err, ErrSpliceNoCheckpoint)
 }
 
@@ -234,9 +264,10 @@ func TestRedisTypeSplicer_EmptyLogReturnsCheckpoint(t *testing.T) {
 		"default/a": checkpointEnvelope("a"),
 	}, "100"))
 
-	objs, rv, err := splicer.SpliceType(ctx, "", "configmaps")
+	objs, rv, hc, err := splicer.SpliceType(ctx, "", "configmaps")
 	require.NoError(t, err)
 	assert.Equal(t, "100", rv)
+	assert.Equal(t, "100", hc, "with no post-checkpoint log the coverage head is the checkpoint rv")
 	require.Len(t, objs, 1)
 	assert.Equal(t, "a", objs[0].GetName())
 }
@@ -257,8 +288,12 @@ func TestRedisTypeSplicer_SkipsUnconvertibleBodies(t *testing.T) {
 	}
 	require.NoError(t, q.Enqueue(ctx, statusEvent))
 
-	objs, _, err := splicer.SpliceType(ctx, "", "configmaps")
+	objs, _, hc, err := splicer.SpliceType(ctx, "", "configmaps")
 	require.NoError(t, err)
+	// The Status body carries no resourceVersion, so it ingests rv-less; with the main stream still
+	// empty it diverts to the late lane rather than the main stream. The main stream stays empty, so
+	// the coverage head holds at the checkpoint rv — the entry the tail will never replay anyway.
+	assert.Equal(t, "100", hc, "an rv-less body diverts to the late lane; the coverage head stays at the checkpoint")
 	require.Len(t, objs, 1, "the Status body is not folded as an object")
 	assert.Equal(t, "v1", configMapData(t, objs[0].Object), "a keeps its checkpoint state")
 }

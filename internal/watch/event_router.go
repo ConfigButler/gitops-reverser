@@ -220,6 +220,15 @@ func (r *EventRouter) EmitTypeReconcileForGitDest(
 	if err != nil {
 		return err
 	}
+	// Publish the per-(GitTarget, GVR) coverage watermark ONLY after the scoped reconcile is on the
+	// worker's FIFO queue (§7.3/§7.4): the resync through Hc is now ordered before any tail event the
+	// gate will let through at rv > Hc, so a later live write can never race ahead of the reconcile
+	// that made the target live for the type. Hc is the splice coverage head (max(checkpoint rv,
+	// highest folded log rv)), NOT snapshot.Revision (the checkpoint rv) — gating on the checkpoint rv
+	// would re-route the post-checkpoint log entries the reconcile already folded
+	// (signing-snapshot-tail-replay-failure-investigation.md §5). A heal re-anchor republishes a
+	// monotonically advancing Hc; publishTargetTypeWatermark holds the higher boundary.
+	r.WatchManager.publishTargetTypeWatermark(gitDest, gvr, snapshot.CoverageHead)
 	go r.drainScopedResync(gitDest, gvr, "reconcile", resultCh)
 	return nil
 }

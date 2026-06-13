@@ -43,10 +43,15 @@ import (
 
 // ClusterSnapshot is one type's revision-pinned desired set for a GitTarget: Desired is the
 // scoped object set the worker folds over the git folder; Revision is the checkpoint
-// resourceVersion the set is anchored at.
+// resourceVersion the set is anchored at (it stays the commit-message {{.Revision}} and the
+// resync request revision); CoverageHead is the splice coverage head Hc = max(checkpoint rv,
+// highest folded audit-log entry rv), the value the per-(GitTarget, GVR) freshness watermark gates
+// the audit tail on. CoverageHead >= Revision, and is strictly greater whenever post-checkpoint
+// log entries were folded. See signing-snapshot-tail-replay-failure-investigation.md §5/§7.
 type ClusterSnapshot struct {
-	Desired  []manifestanalyzer.DesiredResource
-	Revision string
+	Desired      []manifestanalyzer.DesiredResource
+	Revision     string
+	CoverageHead string
 }
 
 // snapshotGVR is one resolved watched resource type with the namespace scope to gather it
