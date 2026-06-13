@@ -101,8 +101,8 @@ var biDirectionalRepo *RepoArtifacts
 // own per-file CRD group, so the only writer to its main branch is its own
 // GitTarget. The historical +2-commits-under-parallelism flake came from
 // cluster-wide GVR catalog churn (another spec installing/deleting a CRD)
-// dragging unrelated targets into a resnapshot; that is fixed — a target now
-// only resnapshots when its *resolved* plan hash changes (manager.go) — so a
+// dragging unrelated targets into a re-reconcile; that is fixed — a target now
+// only re-reconciles when its *resolved* plan hash changes (manager.go) — so a
 // foreign catalog refresh no longer perturbs this repo's commit count. See
 // docs/design/e2e-serial-registry.md.
 var _ = Describe("Bi Directional", Label("bi-directional"), Ordered, func() {

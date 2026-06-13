@@ -76,7 +76,7 @@ var (
 	// The label keys avoid the reserved `namespace`/`name`: a pod scrape with
 	// honor_labels=false would overwrite a metric's `namespace` attribute with the
 	// scraped pod's own namespace, making a per-GitTarget `namespace` selector
-	// silently match nothing. Load-bearing for the restart-snapshot e2e spec and
+	// silently match nothing. Load-bearing for the restart-reconcile e2e spec and
 	// useful long-term for spotting excessive reconciles via increase(...[5m]);
 	// treat the name/labels as a public observability contract.
 	TargetReconcileCompletedTotal metric.Int64Counter
@@ -88,7 +88,7 @@ var (
 	// commit/push is still in flight. Labelled by {provider_namespace,
 	// provider_name, branch}; the namespace/name keys are prefixed to avoid the
 	// reserved Prometheus pod-scrape target labels (see
-	// TargetReconcileCompletedTotal). Load-bearing for the restart-snapshot e2e
+	// TargetReconcileCompletedTotal). Load-bearing for the restart-reconcile e2e
 	// spec's drain wait; treat the name/labels as a public observability contract.
 	BranchWorkerQueueDepth metric.Int64Gauge
 

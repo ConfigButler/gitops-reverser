@@ -182,7 +182,7 @@ spec:
 			g.Expect(output).NotTo(ContainSubstring("watching 0 resource type(s)"))
 		}, 90*time.Second, 2*time.Second).Should(Succeed())
 
-		By("verifying the initial wildcard snapshot committed core and custom resources")
+		By("verifying the initial wildcard reconcile committed core and custom resources")
 		expectedConfigMap := filepath.Join(
 			watchRuleRepo.CheckoutDir,
 			gitTargetPath,
@@ -608,11 +608,11 @@ spec:
 	// land in git once the rule becomes Ready. Today this fails because
 	// ReconcileForRuleChange takes the early-return at manager.go:660
 	// when the new rule's GVR is already covered by other rules (and on
-	// fresh-target installs the snapshot output can be dropped because no
+	// fresh-target installs the reconcile output can be dropped because no
 	// FolderReconciler is registered yet). The unit-level coverage lives
 	// in internal/watch/rule_change_snapshot_test.go; this spec locks the
 	// observable in at the user-visible layer so a future revamp of the
-	// snapshot trigger logic can't silently regress it.
+	// reconcile trigger logic can't silently regress it.
 	//
 	It("should backfill pre-existing ConfigMap when WatchRule is added afterwards", func() {
 		gitProviderName := "gitprovider-normal"

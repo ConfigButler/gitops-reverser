@@ -101,12 +101,12 @@ established and in production use in the suite:
   [`queryPrometheus(query)`](../../test/e2e/helpers.go#L82),
   [`waitForMetric(...)`](../../test/e2e/helpers.go#L105) /
   [`waitForMetricWithTimeout(...)`](../../test/e2e/helpers.go#L110).
-- Precedent: [restart_snapshot_e2e_test.go:185-205](../../test/e2e/restart_snapshot_e2e_test.go#L185)
+- Precedent: [restart_reconcile_e2e_test.go:185-205](../../test/e2e/restart_reconcile_e2e_test.go#L185)
   already gates on `gitopsreverser_target_reconcile_completed_total` and
   `gitopsreverser_branch_worker_queue_depth`; `controller_basics` and
   `aggregated_apiserver` already query `up{job='gitops-reverser'}`.
 
-A commit-existence check is the same shape as the restart-snapshot reconcile
+A commit-existence check is the same shape as the restart-reconcile spec's reconcile
 check that already ships.
 
 ## The gap in `gitopsreverser_commits_total`
@@ -205,7 +205,7 @@ helper added next to the other metric helpers in
 waitForCommitInNamespace(testNs)
 
 // the helper (helpers.go): or vector(0) keeps the query scalar before any series
-// exists; the Go-side `> 0` matches the restart-snapshot idiom. It also lazily
+// exists; the Go-side `> 0` matches the restart-reconcile idiom. It also lazily
 // sets up the Prometheus client so a suite need not wire setupPrometheusClient().
 func waitForCommitInNamespace(providerNamespace string) {
     ensurePrometheusClient()

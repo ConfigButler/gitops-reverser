@@ -32,13 +32,13 @@ import (
 )
 
 // This suite is a regression guard for the "startup reconcile wipes the tracked
-// git tree" data-loss bug: on a plain controller restart the startup snapshot
+// git tree" data-loss bug: on a plain controller restart the startup reconcile
 // could observe an empty cluster and the FolderReconciler would faithfully
 // delete every previously committed file.
 //
 // The trigger is a ClusterWatchRule that uses the documented wildcard
 // `apiVersions: ["*"]`. The live audit path honours that wildcard, so the
-// mirror builds up normally; the startup snapshot path did not, so it resolved
+// mirror builds up normally; the startup reconcile path did not, so it resolved
 // zero GVRs, listed zero resources, and the reconciler diffed "cluster has 0"
 // against "git has N" -> N deletions.
 //
@@ -47,17 +47,17 @@ import (
 // present — which is exactly why the existing e2e suite never caught this.
 // Serial: rolls the controller deployment, which disrupts any spec running
 // concurrently on another process. See docs/design/e2e-serial-registry.md.
-var _ = Describe("Restart Snapshot Safety", Label("restart-snapshot"), Serial, Ordered, func() {
+var _ = Describe("Restart Reconcile Safety", Label("restart-reconcile"), Serial, Ordered, func() {
 	var (
 		testNs        string
 		restartRepo   *RepoArtifacts
-		gitTargetPath = "e2e/restart-snapshot"
+		gitTargetPath = "e2e/restart-reconcile"
 	)
 
 	const (
-		providerName         = "restart-snapshot-provider"
-		gitTargetName        = "restart-snapshot-target"
-		clusterWatchRuleName = "restart-snapshot-wildcard"
+		providerName         = "restart-reconcile-provider"
+		gitTargetName        = "restart-reconcile-target"
+		clusterWatchRuleName = "restart-reconcile-wildcard"
 	)
 
 	// orderNames are "quiet" resources: created once and never touched again.
@@ -70,15 +70,15 @@ var _ = Describe("Restart Snapshot Safety", Label("restart-snapshot"), Serial, O
 		setupPrometheusClient()
 		verifyPrometheusAvailable()
 
-		By("creating the restart-snapshot test namespace")
-		testNs = testNamespaceFor("restart-snapshot")
+		By("creating the restart-reconcile test namespace")
+		testNs = testNamespaceFor("restart-reconcile")
 		_, _ = kubectlRun("create", "namespace", testNs) // idempotent; ignore AlreadyExists
 
 		By("setting up a dedicated Gitea repo and credentials")
 		restartRepo = SetupRepo(
 			resolveE2EContext(),
 			testNs,
-			fmt.Sprintf("e2e-restart-snapshot-%d", GinkgoRandomSeed()),
+			fmt.Sprintf("e2e-restart-reconcile-%d", GinkgoRandomSeed()),
 		)
 
 		By("applying git secrets to the test namespace")
@@ -98,11 +98,11 @@ var _ = Describe("Restart Snapshot Safety", Label("restart-snapshot"), Serial, O
 
 	It("keeps the git mirror intact when the controller restarts", func() {
 		By("installing the IceCreamOrder CRD")
-		err := applyIceCreamCRD(crdGroupRestartSnapshot)
+		err := applyIceCreamCRD(crdGroupRestartReconcile)
 		Expect(err).NotTo(HaveOccurred(), "failed to install IceCreamOrder CRD")
 		Eventually(func(g Gomega) {
 			output, getErr := kubectlRun(
-				"get", "crd", iceCreamCRDName(crdGroupRestartSnapshot),
+				"get", "crd", iceCreamCRDName(crdGroupRestartReconcile),
 				"-o", "jsonpath={.status.conditions[?(@.type=='Established')].status}",
 			)
 			g.Expect(getErr).NotTo(HaveOccurred())
@@ -122,7 +122,7 @@ var _ = Describe("Restart Snapshot Safety", Label("restart-snapshot"), Serial, O
 			Name:            clusterWatchRuleName,
 			DestinationName: gitTargetName,
 			Namespace:       testNs,
-			Group:           crdGroupRestartSnapshot,
+			Group:           crdGroupRestartReconcile,
 		}
 		Expect(applyFromTemplate(
 			"test/e2e/templates/restart/clusterwatchrule-wildcard.tmpl", cwrData, "",
@@ -133,13 +133,13 @@ var _ = Describe("Restart Snapshot Safety", Label("restart-snapshot"), Serial, O
 
 		By("creating quiet IceCreamOrder resources to build up the git mirror")
 		for _, name := range orderNames {
-			createIceCreamOrder(crdGroupRestartSnapshot, testNs, name)
+			createIceCreamOrder(crdGroupRestartReconcile, testNs, name)
 		}
 
 		expectedFiles := make([]string, 0, len(orderNames))
 		for _, name := range orderNames {
 			expectedFiles = append(expectedFiles, filepath.Join(
-				gitTargetPath, iceCreamInstanceDir(crdGroupRestartSnapshot), testNs, name+".yaml",
+				gitTargetPath, iceCreamInstanceDir(crdGroupRestartReconcile), testNs, name+".yaml",
 			))
 		}
 
@@ -174,7 +174,7 @@ var _ = Describe("Restart Snapshot Safety", Label("restart-snapshot"), Serial, O
 		// Phase 3 drain signals replace a 75 s blind wait. The reconcile counter
 		// is scoped to the new pod via its `pod` target label: a counter resets to
 		// 0 on a fresh pod, so `{pod="<new>"} > 0` proves the new pod completed its
-		// own post-restart snapshot reconcile. A sum() over a pre-restart baseline
+		// own post-restart reconcile. A sum() over a pre-restart baseline
 		// cannot prove this — once Prometheus marks the old pod's series stale, the
 		// new pod's first increment can bring the cross-pod sum back to the old
 		// total rather than above it, so `> baseline` could never pass.
@@ -215,7 +215,7 @@ var _ = Describe("Restart Snapshot Safety", Label("restart-snapshot"), Serial, O
 			for _, relPath := range expectedFiles {
 				_, statErr := os.Stat(filepath.Join(restartRepo.CheckoutDir, relPath))
 				g.Expect(statErr).NotTo(HaveOccurred(),
-					"file %q disappeared after the controller restart — startup snapshot wiped the mirror", relPath)
+					"file %q disappeared after the controller restart — startup reconcile wiped the mirror", relPath)
 			}
 		}, 15*time.Second, 5*time.Second).Should(Succeed())
 

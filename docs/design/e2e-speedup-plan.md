@@ -24,7 +24,7 @@ The authoritative list of which specs still run `Serial` (and why) is the living
 
 ```
   Duration     %  Spec
-   128.4 s  30.8  Restart Snapshot Safety keeps the git mirror intact when the controller restarts
+   128.4 s  30.8  Restart Reconcile Safety keeps the git mirror intact when the controller restarts
     40.9 s   9.8  Commit Window Batching collapses a burst of events into one grouped commit and one push
     34.1 s   8.2  Aggregated API server should install and serve flunders through the aggregation layer
     28.9 s   6.9  Manager should create Git commit when IceCreamOrder CRD is installed via ClusterWatchRule
@@ -44,7 +44,7 @@ The authoritative list of which specs still run `Serial` (and why) is the living
 ```
 
 **Findings that shaped the plan:** the top 5 specs are ~62 % of smoke wallclock;
-`Restart Snapshot Safety` alone is 31 %, of which ~75 s was a passive
+`Restart Reconcile Safety` alone is 31 %, of which ~75 s was a passive
 negative-assertion wait; namespace teardown is a consistent 20–25 s per spec
 (finalizer waits); per-spec setup is ~5–10 s. The structural blockers to
 parallelism were the shared `Manager` Describe and cluster-scoped resources.
@@ -96,7 +96,7 @@ Parallelism is driven by the `ginkgo` CLI (`--procs=$E2E_GINKGO_PROCS`, default
 `2`), not `go test`. `SynchronizedBeforeSuite` runs `prepare-e2e` + CRD
 pre-cleanup once on process #1. Per-file CRD-group isolation
 ([test/e2e/icecream.go](../../test/e2e/icecream.go)) gives `crd_lifecycle`,
-`restart_snapshot`, and `bi_directional` their own API groups so they never
+`restart_reconcile`, and `bi_directional` their own API groups so they never
 collide by name. The [e2e-serial-registry.md](e2e-serial-registry.md) captures
 the specs that still need `Serial`.
 
@@ -106,7 +106,7 @@ runners the singleton controller is CPU-starved under two concurrent streams plu
 its own signing/git work, so a different spec timed out each run. Local/default
 stays `procs=2`.
 
-### Phase 3 — Drain-signal metrics for `Restart Snapshot Safety`
+### Phase 3 — Drain-signal metrics for `Restart Reconcile Safety`
 
 Replaced the ~75 s blind negative-assertion wait with two metrics, both gated on
 the *new* controller pod (`pod="<new>"`) so a rollout's brief two-series overlap
@@ -114,7 +114,7 @@ can't produce a false pass:
 
 - `gitopsreverser_target_reconcile_completed_total{gittarget_namespace,gittarget_name,trigger}`
   — a **counter** (not a latched gauge): on a fresh pod it starts at 0, so
-  `> 0` proves *that pod* completed its own post-restart snapshot reconcile.
+  `> 0` proves *that pod* completed its own post-restart reconcile.
 - `gitopsreverser_branch_worker_queue_depth{provider_namespace,provider_name,branch}`
   — a gauge that reaches 0 only once every accepted item is fully handled and a
   successful push has cleared `pendingWrites` (depth counts in-flight items via

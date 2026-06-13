@@ -27,7 +27,7 @@ row below.
 
 | File | Container | Shared state it touches | Why name isolation can't fix it |
 |---|---|---|---|
-| [test/e2e/restart_snapshot_e2e_test.go](../../test/e2e/restart_snapshot_e2e_test.go) | `Restart Snapshot Safety` | Rollout-restarts the controller deployment. | The controller is a singleton; restarting it disrupts in-flight reconciles/commits for every other spec. |
+| [test/e2e/restart_reconcile_e2e_test.go](../../test/e2e/restart_reconcile_e2e_test.go) | `Restart Reconcile Safety` | Rollout-restarts the controller deployment. | The controller is a singleton; restarting it disrupts in-flight reconciles/commits for every other spec. |
 | [test/e2e/image_refresh_test.go](../../test/e2e/image_refresh_test.go) | `image refresh dependency chain` | Changes the controller image / redeploys the controller. | Same singleton controller; an image swap perturbs all concurrent specs. |
 
 ### De-serialized
@@ -43,7 +43,7 @@ assertions). It now runs parallel (`Ordered`, not `Serial`) because:
   refresh no longer perturbs targets that do not match the new GVR.
 - Per-file CRD groups ([icecream.go:30](../../test/e2e/icecream.go#L30)) keep the
   `IceCreamOrder` CRD name-isolated, and the only other wildcard-ish
-  `ClusterWatchRule` (`restart_snapshot`) is itself `Serial`, so no concurrent
+  `ClusterWatchRule` (`restart_reconcile`) is itself `Serial`, so no concurrent
   spec has a rule matching the icecream group.
 
 The former `Audit Redis Queue` / `Audit Redis Consumer` containers were retired:

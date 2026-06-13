@@ -75,7 +75,7 @@ func (p PendingWrite) commitMetadata() (string, *gogit.CommitOptions, error) {
 	when := time.Now()
 
 	// An explicit literal message (e.g. from a CommitRequest's spec.message)
-	// is used verbatim, bypassing the per-event / grouped / snapshot templates.
+	// is used verbatim, bypassing the configured templates.
 	if message := strings.TrimSpace(p.CommitMessage); message != "" {
 		return p.CommitMessage, commitOptionsFor(p, p.CommitConfig, p.Signer, when), nil
 	}

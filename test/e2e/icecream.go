@@ -27,10 +27,10 @@ package e2e
 // "icecreamorders.<group>" (see iceCreamCRDName) to avoid ambiguity when more
 // than one of these CRDs is installed concurrently.
 const (
-	crdGroupCRDLifecycle    = "crd-lifecycle.e2e.example.com"
-	crdGroupRestartSnapshot = "restart-snapshot.e2e.example.com"
-	crdGroupBiDirectional   = "bi-directional.e2e.example.com"
-	crdGroupWildcardRule    = "wildcard-watchrule.e2e.example.com"
+	crdGroupCRDLifecycle     = "crd-lifecycle.e2e.example.com"
+	crdGroupRestartReconcile = "restart-reconcile.e2e.example.com"
+	crdGroupBiDirectional    = "bi-directional.e2e.example.com"
+	crdGroupWildcardRule     = "wildcard-watchrule.e2e.example.com"
 )
 
 // iceCreamCRDName returns the fully-qualified CRD name for the given group. This

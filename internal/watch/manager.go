@@ -349,7 +349,7 @@ func (m *Manager) ReconcileForRuleChange(ctx context.Context) error {
 // per-type splice reconcile has been APPLIED on the branch worker, tagged with the trigger
 // that drove the pass. On a controller restart the new pod's counter starts at 0, so a
 // per-pod `{pod="<new>"} > 0` reading shows the new pod completed a reconcile off the
-// restored checkpoint — the drain signal the restart-snapshot e2e gate reads. No-op until
+// restored checkpoint — the drain signal the restart-reconcile e2e gate reads. No-op until
 // the counter is registered.
 func (m *Manager) recordTargetReconcileCompleted(gitDest types.ResourceReference, trigger string) {
 	if telemetry.TargetReconcileCompletedTotal == nil {

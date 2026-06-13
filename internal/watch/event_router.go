@@ -298,7 +298,7 @@ func (r *EventRouter) drainScopedResync(
 			"gitDest", gitDest.String(), "gvr", gvr.String(),
 			"created", result.Stats.Created, "updated", result.Stats.Updated, "deleted", result.Stats.Deleted)
 		// Count an applied per-type RECONCILE as a completed GitTarget reconcile so the
-		// per-pod counter advances after a restart — the drain signal the restart-snapshot
+		// per-pod counter advances after a restart — the drain signal the restart-reconcile
 		// e2e gate reads (a sweep is excluded; it is a removal, not a steady-state reconcile).
 		if kind == "reconcile" && r.WatchManager != nil {
 			r.WatchManager.recordTargetReconcileCompleted(gitDest, "type_reconcile")

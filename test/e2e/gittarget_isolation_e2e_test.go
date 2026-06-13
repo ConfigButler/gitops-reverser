@@ -30,9 +30,9 @@ import (
 // This spec is the e2e regression for GitTarget isolation on rule changes (see
 // docs/design/gittarget-isolation-on-rule-change.md). The original symptom was a
 // parallel-run flake: one GitTarget's ConfigMap event commit ("[CREATE] ...")
-// was replaced by a snapshot commit ("reconciled N <type>") because an
+// was replaced by a reconcile commit ("reconciled N <type>") because an
 // unrelated spec changed a *different* target's rules at the same time, dragging
-// every target into rule-change snapshot mode.
+// every target into rule-change reconcile mode.
 //
 // It is deliberately NOT Serial — the whole point is that isolation must hold
 // under parallel execution. It runs as part of the single e2e suite, the same
@@ -104,7 +104,7 @@ var _ = Describe("Manager GitTarget Isolation", Label("manager"), Ordered, func(
 
 	It("keeps target A's commits as events while target B's rules churn", func() {
 		// Let any in-flight reconciles from setup drain before we begin, so the
-		// baseline snapshot commits are settled and only our event commits land
+		// baseline reconcile commits are settled and only our event commits land
 		// next on target A's path.
 		time.Sleep(5 * time.Second)
 
@@ -112,7 +112,7 @@ var _ = Describe("Manager GitTarget Isolation", Label("manager"), Ordered, func(
 		// extra GVR on/off, which also churns the global informer set) and then
 		// creates a brand-new ConfigMap that target A must commit. If isolation
 		// holds, target A always produces an event commit; pre-fix, target B's
-		// churn would force target A into a "reconciled" snapshot.
+		// churn would force target A into a "reconciled" reconcile commit.
 		for i := range 3 {
 			cmName := fmt.Sprintf("iso-cm-%d", i)
 
@@ -126,7 +126,7 @@ var _ = Describe("Manager GitTarget Isolation", Label("manager"), Ordered, func(
 			By(fmt.Sprintf("creating ConfigMap %q for target A", cmName))
 			applyIsolationConfigMap(cmName, testNs)
 
-			By("asserting target A commits it as an event commit, not a snapshot")
+			By("asserting target A commits it as an event commit, not a reconcile")
 			relPath := path.Join(pathA, fmt.Sprintf("v1/configmaps/%s/%s.yaml", testNs, cmName))
 			assertEventCommit := func(g Gomega) {
 				pullLatestRepoState(g, isoRepo.CheckoutDir)
@@ -137,7 +137,7 @@ var _ = Describe("Manager GitTarget Isolation", Label("manager"), Ordered, func(
 				g.Expect(msg).To(ContainSubstring(fmt.Sprintf("v1/configmaps/%s", cmName)),
 					"target A's commit message must name the resource path")
 				g.Expect(msg).NotTo(ContainSubstring("reconciled"),
-					"target A must not enter snapshot mode because of target B's unrelated rule change "+
+					"target A must not enter reconcile mode because of target B's unrelated rule change "+
 						"(GitTarget isolation — see docs/design/gittarget-isolation-on-rule-change.md)")
 			}
 			Eventually(assertEventCommit).Should(Succeed())

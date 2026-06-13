@@ -183,7 +183,7 @@ func prepareE2EClusterOnce() {
 	By("ensuring IceCreamOrder CRDs are removed before tests")
 	for _, group := range []string{
 		crdGroupCRDLifecycle,
-		crdGroupRestartSnapshot,
+		crdGroupRestartReconcile,
 		crdGroupBiDirectional,
 		crdGroupWildcardRule,
 		"shop.example.com", // legacy pre-isolation group

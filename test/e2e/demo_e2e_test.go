@@ -108,7 +108,7 @@ var _ = Describe("Demo", Label("demo"), Ordered, func() {
 		By("touching the CoffeeConfig so demo-test is created when the repo was reset")
 		run.touchCoffeeConfig()
 
-		By("waiting for the CoffeeConfig snapshot to seed the demo-test branch")
+		By("waiting for the CoffeeConfig reconcile to seed the demo-test branch")
 		run.verifyCoffeeConfigBranchSeeded()
 
 		By("verifying the CoffeeConfig Flux resources become Ready")
