@@ -18,21 +18,6 @@ limitations under the License.
 
 package v1alpha1
 
-// NamespacedName represents a reference to a namespaced resource.
-// Used by both WatchRule and ClusterWatchRule to reference GitRepoConfig.
-type NamespacedName struct {
-	// Name of the GitRepoConfig.
-	// +required
-	// +kubebuilder:validation:MinLength=1
-	Name string `json:"name"`
-
-	// Namespace containing the GitRepoConfig.
-	// For WatchRule: Optional, defaults to WatchRule's namespace if not specified.
-	// For ClusterWatchRule: Required, must be explicitly specified.
-	// +optional
-	Namespace string `json:"namespace,omitempty"`
-}
-
 // PushStrategy defines how events are coalesced into commits before pushing.
 type PushStrategy struct {
 	// CommitWindow is the rolling silence window used to coalesce events into

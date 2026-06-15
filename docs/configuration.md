@@ -51,6 +51,7 @@ The important fields are:
 
 - `spec.url`: repository URL
 - `spec.secretRef.name`: Secret with Git credentials such as SSH or HTTPS auth
+- `spec.knownHostsRef`: optional ConfigMap/Secret with SSH `known_hosts` shared across providers
 - `spec.allowedBranches`: branches this provider is allowed to write
 - `spec.push.commitWindow`: rolling silence window that coalesces events into one commit per author
 - `spec.commit`: committer identity, commit templates, and signing
@@ -70,6 +71,34 @@ spec:
   allowedBranches:
     - main
 ```
+
+### `GitProvider.spec.secretRef` — the credentials Secret
+
+The referenced Secret holds the Git credentials. The examples use the **Kubernetes-native** keys,
+which match the built-in Secret types and the tooling around them (`kubectl create secret generic
+--type=…`, Sealed Secrets, External Secrets, SOPS):
+
+| Auth | Keys |
+|---|---|
+| SSH | `ssh-privatekey` (+ optional `ssh-password` passphrase, `known_hosts`) |
+| HTTP basic | `username` + `password` |
+| HTTP bearer token | `bearerToken` (GitHub fine-grained PAT, GitLab access token; no username) |
+
+For interop, the reader also accepts the Flux and Argo CD key names, so you do not have to re-author
+a Secret you already have: **HTTP basic-auth and bearer-token Secrets work directly** (the keys are
+identical across all three); **Flux SSH key Secrets work directly** (`identity` / `identity.pub` are
+read; the passphrase under `password` is recognized); and **Argo CD SSH key Secrets** (`sshPrivateKey`)
+work once you supply host trust via a neutral `known_hosts` source, because Argo keeps host keys in a
+ConfigMap outside the repository Secret.
+
+SSH host keys are resolved in priority order: the credentials Secret's own `known_hosts`, then
+`spec.knownHostsRef` (a namespace-local ConfigMap or Secret keyed `known_hosts`, or `ssh_known_hosts`
+for data copied out of Argo's `argocd-ssh-known-hosts-cm`), then an install-level default known-hosts
+ConfigMap in the controller's namespace (`--default-known-hosts-configmap`). If none yields a valid
+host key, SSH fails closed. Host-key rotation is an admin-owned declarative update; verify
+fingerprints out of band. The controller flag `--insecure-allow-missing-known-hosts` relaxes this for
+throwaway/dev clusters only — it permits SSH when **no** source provided any `known_hosts`; a
+`known_hosts` that is present but unparseable is always a hard error.
 
 ### `GitProvider.spec.push`
 
@@ -316,8 +345,8 @@ dedicated to this target.
 If you enable `spec.encryption`, that applies to `Secret` resource writes for this target. For SOPS
 and age details, see [sops-age-guide.md](sops-age-guide.md).
 
-`spec.providerRef.kind` also allows `GitRepository`, but support for reading from Flux
-`GitRepository` is not implemented yet.
+`spec.providerRef` references a `GitProvider` in the same namespace as the `GitTarget`. Its `group`
+and `kind` default to `configbutler.ai` / `GitProvider`, so in practice you only set `name`.
 
 ## `WatchRule`
 

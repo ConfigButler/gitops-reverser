@@ -28,10 +28,13 @@ import (
 	"testing"
 
 	"github.com/go-git/go-git/v5/plumbing/transport/ssh"
+	gossh "golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/knownhosts"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	configbutleraiv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	gitpkg "github.com/ConfigButler/gitops-reverser/internal/git"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -60,8 +63,11 @@ var _ = Describe("SSH Authentication", func() {
 		}
 		privateKey = pem.EncodeToMemory(privateKeyPEM)
 
-		// Mock known_hosts content
-		knownHosts = []byte("gitea-ssh.gitea-e2e.svc.cluster.local ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC...")
+		// Derive a valid known_hosts line from the generated key so host key
+		// verification parses cleanly (fail-closed rejects malformed known_hosts).
+		pubKey, err := gossh.NewPublicKey(&rsaKey.PublicKey)
+		Expect(err).NotTo(HaveOccurred())
+		knownHosts = []byte(knownhosts.Line([]string{"gitea-ssh.gitea-e2e.svc.cluster.local"}, pubKey))
 
 		// Create valid SSH secret
 		validSSHSecret = &corev1.Secret{
@@ -91,7 +97,11 @@ var _ = Describe("SSH Authentication", func() {
 	Describe("extractCredentials", func() {
 		Context("with valid SSH secret", func() {
 			It("should successfully create SSH authentication", func() {
-				auth, err := reconciler.extractCredentials(validSSHSecret)
+				auth, err := reconciler.extractCredentials(
+					context.Background(),
+					&configbutleraiv1alpha1.GitProvider{},
+					validSSHSecret,
+				)
 
 				Expect(err).NotTo(HaveOccurred())
 				Expect(auth).NotTo(BeNil())
@@ -104,8 +114,8 @@ var _ = Describe("SSH Authentication", func() {
 			})
 		})
 
-		Context("with SSH secret without known_hosts", func() {
-			It("should create SSH auth with insecure host key callback", func() {
+		Context("with SSH secret without known_hosts and no opt-out", func() {
+			It("should fail closed", func() {
 				secretWithoutKnownHosts := &corev1.Secret{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "ssh-no-known-hosts",
@@ -116,15 +126,42 @@ var _ = Describe("SSH Authentication", func() {
 					},
 				}
 
-				auth, err := reconciler.extractCredentials(secretWithoutKnownHosts)
+				auth, err := reconciler.extractCredentials(
+					context.Background(),
+					&configbutleraiv1alpha1.GitProvider{},
+					secretWithoutKnownHosts,
+				)
+
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("known_hosts is required"))
+				Expect(auth).To(BeNil())
+			})
+		})
+
+		Context("with the --insecure-allow-missing-known-hosts controller opt-out", func() {
+			It("should create SSH auth without known_hosts", func() {
+				secret := &corev1.Secret{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "ssh-insecure-optout",
+						Namespace: "test",
+					},
+					Data: map[string][]byte{
+						"ssh-privatekey": privateKey,
+					},
+				}
+
+				reconciler.SSHHostKeys.AllowMissingKnownHosts = true
+				auth, err := reconciler.extractCredentials(
+					context.Background(),
+					&configbutleraiv1alpha1.GitProvider{},
+					secret,
+				)
 
 				Expect(err).NotTo(HaveOccurred())
 				Expect(auth).NotTo(BeNil())
 				Expect(auth).To(BeAssignableToTypeOf(&ssh.PublicKeys{}))
 
 				sshAuth := auth.(*ssh.PublicKeys)
-				Expect(sshAuth.User).To(Equal("git"))
-				Expect(sshAuth.Signer).NotTo(BeNil())
 				Expect(sshAuth.HostKeyCallback).NotTo(BeNil())
 			})
 		})
@@ -139,7 +176,11 @@ var _ = Describe("SSH Authentication", func() {
 
 		Context("with invalid SSH secret", func() {
 			It("should return error for malformed private key", func() {
-				auth, err := reconciler.extractCredentials(invalidSSHSecret)
+				auth, err := reconciler.extractCredentials(
+					context.Background(),
+					&configbutleraiv1alpha1.GitProvider{},
+					invalidSSHSecret,
+				)
 
 				Expect(err).To(HaveOccurred())
 				Expect(err.Error()).To(ContainSubstring("failed to create SSH public keys"))
@@ -160,7 +201,11 @@ var _ = Describe("SSH Authentication", func() {
 					},
 				}
 
-				auth, err := reconciler.extractCredentials(httpSecret)
+				auth, err := reconciler.extractCredentials(
+					context.Background(),
+					&configbutleraiv1alpha1.GitProvider{},
+					httpSecret,
+				)
 
 				Expect(err).NotTo(HaveOccurred())
 				Expect(auth).NotTo(BeNil())
@@ -169,7 +214,11 @@ var _ = Describe("SSH Authentication", func() {
 
 		Context("with empty secret", func() {
 			It("should return nil auth for anonymous access", func() {
-				auth, err := reconciler.extractCredentials(nil)
+				auth, err := reconciler.extractCredentials(
+					context.Background(),
+					&configbutleraiv1alpha1.GitProvider{},
+					nil,
+				)
 
 				Expect(err).NotTo(HaveOccurred())
 				Expect(auth).To(BeNil())
@@ -189,10 +238,14 @@ var _ = Describe("SSH Authentication", func() {
 					},
 				}
 
-				auth, err := reconciler.extractCredentials(incompleteSecret)
+				auth, err := reconciler.extractCredentials(
+					context.Background(),
+					&configbutleraiv1alpha1.GitProvider{},
+					incompleteSecret,
+				)
 
 				Expect(err).To(HaveOccurred())
-				Expect(err.Error()).To(ContainSubstring("username but missing password"))
+				Expect(err.Error()).To(ContainSubstring("contains username but no password"))
 				Expect(auth).To(BeNil())
 			})
 		})
@@ -207,12 +260,16 @@ var _ = Describe("SSH Authentication", func() {
 					Data: map[string][]byte{},
 				}
 
-				auth, err := reconciler.extractCredentials(emptySecret)
+				auth, err := reconciler.extractCredentials(
+					context.Background(),
+					&configbutleraiv1alpha1.GitProvider{},
+					emptySecret,
+				)
 
 				Expect(err).To(HaveOccurred())
 				Expect(
 					err.Error(),
-				).To(ContainSubstring("must contain either 'ssh-privatekey' or both 'username' and 'password'"))
+				).To(ContainSubstring("does not contain valid authentication data"))
 				Expect(auth).To(BeNil())
 			})
 		})
@@ -254,7 +311,9 @@ var _ = Describe("SSH Authentication", func() {
 
 // TestSSHCredentials tests SSH credential extraction functionality.
 func TestSSHCredentials(t *testing.T) {
-	reconciler := &GitProviderReconciler{}
+	// AllowMissingKnownHosts mirrors the controller's --insecure-allow-missing-known-hosts dev
+	// opt-out; these credential-parsing cases supply no known_hosts.
+	reconciler := &GitProviderReconciler{SSHHostKeys: gitpkg.SSHHostKeyConfig{AllowMissingKnownHosts: true}}
 
 	// Test with valid SSH key
 	t.Run("Valid SSH Key", func(t *testing.T) {
@@ -272,11 +331,10 @@ func TestSSHCredentials(t *testing.T) {
 		secret := &corev1.Secret{
 			Data: map[string][]byte{
 				"ssh-privatekey": privateKeyBytes,
-				"known_hosts":    []byte("example.com ssh-rsa AAAAB3..."),
 			},
 		}
 
-		auth, err := reconciler.extractCredentials(secret)
+		auth, err := reconciler.extractCredentials(context.Background(), &configbutleraiv1alpha1.GitProvider{}, secret)
 		if err != nil {
 			t.Errorf("Expected no error, got: %v", err)
 		}
@@ -296,7 +354,7 @@ func TestSSHCredentials(t *testing.T) {
 			},
 		}
 
-		auth, err := reconciler.extractCredentials(secret)
+		auth, err := reconciler.extractCredentials(context.Background(), &configbutleraiv1alpha1.GitProvider{}, secret)
 		if err == nil {
 			t.Error("Expected error for invalid SSH key")
 		}
@@ -314,7 +372,7 @@ func TestSSHCredentials(t *testing.T) {
 			},
 		}
 
-		auth, err := reconciler.extractCredentials(secret)
+		auth, err := reconciler.extractCredentials(context.Background(), &configbutleraiv1alpha1.GitProvider{}, secret)
 		if err != nil {
 			t.Errorf("Expected no error, got: %v", err)
 		}
@@ -325,7 +383,7 @@ func TestSSHCredentials(t *testing.T) {
 
 	// Test with nil secret (anonymous access)
 	t.Run("Anonymous Access", func(t *testing.T) {
-		auth, err := reconciler.extractCredentials(nil)
+		auth, err := reconciler.extractCredentials(context.Background(), &configbutleraiv1alpha1.GitProvider{}, nil)
 		if err != nil {
 			t.Errorf("Expected no error, got: %v", err)
 		}

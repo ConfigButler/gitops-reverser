@@ -84,7 +84,6 @@ func secretTargetObjects(t *testing.T, providerName, branch, path string) []clie
 			},
 			Spec: configv1alpha1.GitTargetSpec{
 				ProviderRef: configv1alpha1.GitProviderReference{
-					Kind: "GitProvider",
 					Name: providerName,
 				},
 				Branch: branch,

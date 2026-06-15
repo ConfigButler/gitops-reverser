@@ -193,8 +193,6 @@ metadata:
   namespace: default
 spec:
   providerRef:
-    group: configbutler.ai
-    kind: GitProvider
     name: platform-config
   branch: main
   path: clusters/dev

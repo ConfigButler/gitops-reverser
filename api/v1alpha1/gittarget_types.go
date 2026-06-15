@@ -22,17 +22,21 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// GitProviderReference references the GitProvider or Flux GitRepository.
+// GitProviderReference references the GitProvider that backs a GitTarget. Many GitTargets may
+// reference the same GitProvider; the reference is always to a GitProvider in the GitTarget's own
+// namespace. Group and Kind are typed (with defaults) for consistency with the project's other
+// local references and so the schema is explicit about what it accepts — currently only
+// configbutler.ai/GitProvider.
 type GitProviderReference struct {
 	// API Group of the referent.
-	// +kubebuilder:enum=configbutler.ai,source.toolkit.fluxcd.io
 	// +kubebuilder:default=configbutler.ai
 	Group string `json:"group,omitempty"`
 
 	// Kind of the referent.
-	// NOTE: Support for reading from Flux GitRepository is not yet implemented!
+	// Optional because this reference currently only supports a single kind (GitProvider).
+	// Keeping it optional allows users to omit it while still benefiting from CRD defaulting.
 	// +optional
-	// +kubebuilder:enum=GitProvider,GitRepository
+	// +kubebuilder:validation:Enum=GitProvider
 	// +kubebuilder:default=GitProvider
 	Kind string `json:"kind,omitempty"`
 
@@ -56,7 +60,7 @@ type GitProviderReference struct {
 // +kubebuilder:validation:XValidation:rule="self.branch == oldSelf.branch",message="spec.branch is immutable; delete and recreate the GitTarget to change its destination"
 // +kubebuilder:validation:XValidation:rule="self.path == oldSelf.path",message="spec.path is immutable; delete and recreate the GitTarget to change its destination"
 type GitTargetSpec struct {
-	// ProviderRef references the GitProvider or Flux GitRepository.
+	// ProviderRef references the GitProvider that backs this target.
 	// Immutable: delete and recreate the GitTarget to change its destination.
 	// +required
 	ProviderRef GitProviderReference `json:"providerRef"`

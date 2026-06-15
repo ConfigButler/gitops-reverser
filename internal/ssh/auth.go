@@ -32,10 +32,18 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
+// InsecureAllowMissingKnownHostsFlag is the controller flag, surfaced in error text, that opts
+// out of SSH host key verification when no host-key source produced any known_hosts at all.
+const InsecureAllowMissingKnownHostsFlag = "--insecure-allow-missing-known-hosts"
+
 // GetAuthMethod returns an SSH public key authentication method from a private key.
-// If knownHosts is provided, it will be used for host key verification.
-// If knownHosts is empty, host key verification will be disabled (insecure but functional).
-func GetAuthMethod(privateKey, password, knownHosts string) (transport.AuthMethod, error) {
+//
+// Host key verification fails closed: a known_hosts source is required. A known_hosts value that
+// is present but cannot be parsed is always a hard error — if a host key is declared it must be
+// valid. When no known_hosts is available at all, GetAuthMethod returns an error unless
+// allowMissingKnownHosts is set (the controller's --insecure-allow-missing-known-hosts flag),
+// which disables host key verification and is intended for throwaway/dev clusters only.
+func GetAuthMethod(privateKey, password, knownHosts string, allowMissingKnownHosts bool) (transport.AuthMethod, error) {
 	logger := log.FromContext(context.Background())
 
 	if privateKey == "" {
@@ -48,23 +56,35 @@ func GetAuthMethod(privateKey, password, knownHosts string) (transport.AuthMetho
 		return nil, fmt.Errorf("failed to create SSH public keys: %w", err)
 	}
 
-	// Configure host key verification
 	if knownHosts != "" {
+		// A declared host key must parse: this is a hard error regardless of the
+		// allow-missing opt-out, which only ever covers the no-key-at-all case.
 		callback, err := setupKnownHostsCallback(logger, knownHosts)
 		if err != nil {
-			//nolint:gosec // Intentional fallback for missing known_hosts
-			publicKeys.HostKeyCallback = gossh.InsecureIgnoreHostKey()
-		} else {
-			publicKeys.HostKeyCallback = callback
+			return nil, fmt.Errorf("failed to parse known_hosts for SSH host key verification: %w", err)
 		}
-	} else {
-		logger.Info("Warning: No known_hosts provided in secret, using insecure SSH " +
-			"host key verification. For production, add 'known_hosts' field to your secret.")
-		//nolint:gosec // Intentional when known_hosts not provided
-		publicKeys.HostKeyCallback = gossh.InsecureIgnoreHostKey()
+		publicKeys.HostKeyCallback = callback
+		return publicKeys, nil
 	}
 
+	if !allowMissingKnownHosts {
+		return nil, errors.New(
+			"known_hosts is required for SSH host key verification: add a 'known_hosts' entry to the " +
+				"Git credentials Secret, point spec.knownHostsRef at a ConfigMap/Secret, or configure an " +
+				"install-level default known-hosts ConfigMap; set '" + InsecureAllowMissingKnownHostsFlag +
+				"' on the controller for throwaway/dev clusters only",
+		)
+	}
+	logInsecureHostKey(logger, "no known_hosts provided")
+	//nolint:gosec // explicit development opt-out via --insecure-allow-missing-known-hosts
+	publicKeys.HostKeyCallback = gossh.InsecureIgnoreHostKey()
 	return publicKeys, nil
+}
+
+// logInsecureHostKey emits a loud warning whenever SSH host key verification is disabled.
+func logInsecureHostKey(logger logr.Logger, reason string) {
+	logger.Info("INSECURE: SSH host key verification disabled via "+InsecureAllowMissingKnownHostsFlag+
+		"; do not use in production", "reason", reason)
 }
 
 // setupKnownHostsCallback creates a host key callback from known_hosts content.

@@ -109,7 +109,7 @@ func TestCheckForConflicts_ListErrorFailsClosed(t *testing.T) {
 	target := &configbutleraiv1alpha1.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "target-a", Namespace: "default"},
 		Spec: configbutleraiv1alpha1.GitTargetSpec{
-			ProviderRef: configbutleraiv1alpha1.GitProviderReference{Name: "provider-a", Kind: "GitProvider"},
+			ProviderRef: configbutleraiv1alpha1.GitProviderReference{Name: "provider-a"},
 			Branch:      "main",
 			Path:        "apps",
 		},

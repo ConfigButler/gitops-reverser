@@ -451,6 +451,7 @@ curl -s https://api.github.com/repos/ConfigButler/gitops-reverser/releases | jq 
 
 - **Issues**: [GitHub Issues](https://github.com/ConfigButler/gitops-reverser/issues)
 - **Documentation**: [Project README and quickstart](https://github.com/ConfigButler/gitops-reverser)
+- **Security model**: [docs/security-model.md](https://github.com/ConfigButler/gitops-reverser/blob/main/docs/security-model.md)
 - **Contributing**: See [CONTRIBUTING.md](https://github.com/ConfigButler/gitops-reverser/blob/main/CONTRIBUTING.md)
 
 ## License

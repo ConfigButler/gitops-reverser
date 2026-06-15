@@ -155,23 +155,10 @@ func (r *WatchRuleReconciler) reconcileWatchRuleViaTarget(
 		return r.updateStatusAndRequeue(ctx, watchRule, RequeueShortInterval)
 	}
 
-	// Resolve GitProvider from target.Provider
-	// TODO: Handle Flux GitRepository
-	if target.Spec.ProviderRef.Kind != "" && target.Spec.ProviderRef.Kind != "GitProvider" {
-		// For now, only GitProvider is supported
-		log.Info("Unsupported provider kind", "kind", target.Spec.ProviderRef.Kind)
-		// Continue for now, assuming GitProvider if not specified or default
-	}
-
+	// Resolve the GitProvider named by the target. A GitProviderReference is a
+	// name-only reference to a GitProvider in the GitTarget's own namespace.
 	providerName := target.Spec.ProviderRef.Name
-	// Provider is cluster-scoped (or namespaced? GitProvider is Namespaced in my implementation? No, let's check)
-	// GitProvider is Namespaced in my implementation (api/v1alpha1/gitprovider_types.go says +kubebuilder:resource:scope=Namespaced)
-	// But wait, GitProvider is usually cluster scoped in many systems, but here it seems namespaced.
-	// Let's assume it's in the same namespace as GitTarget for now, or we need to check if GitProviderReference has Namespace.
-	// GitProviderReference in gittarget_types.go does NOT have Namespace.
-	// So it must be in the same namespace as GitTarget.
-
-	providerNS := target.Namespace // Same as GitTarget
+	providerNS := target.Namespace // GitProvider is namespace-local to the GitTarget
 
 	var provider configbutleraiv1alpha1.GitProvider
 	providerKey := types.NamespacedName{Name: providerName, Namespace: providerNS}

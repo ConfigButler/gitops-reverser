@@ -93,7 +93,6 @@ func createPlainGitTarget(t *testing.T, worker *BranchWorker, name, path string)
 		},
 		Spec: configv1alpha1.GitTargetSpec{
 			ProviderRef: configv1alpha1.GitProviderReference{
-				Kind: "GitProvider",
 				Name: worker.GitProviderRef,
 			},
 			Branch: worker.Branch,

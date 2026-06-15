@@ -42,6 +42,15 @@ type GitProviderSpec struct {
 	// SecretRef for authentication credentials (may be nil for public repos)
 	SecretRef *LocalSecretReference `json:"secretRef,omitempty"`
 
+	// KnownHostsRef optionally points at a namespace-local ConfigMap or Secret holding SSH
+	// known_hosts, so host trust can be centralized across GitProviders on the same host instead
+	// of repeated in every credentials Secret. It is used only for SSH and ignored for HTTP auth.
+	// Host keys are resolved in priority order: the credentials Secret's own known_hosts, then this
+	// ref, then the install-level default known-hosts ConfigMap; if none yields valid keys, SSH
+	// fails closed.
+	// +optional
+	KnownHostsRef *KnownHostsReference `json:"knownHostsRef,omitempty"`
+
 	// AllowedBranches restricts which branches can be written to.
 	// +required
 	AllowedBranches []string `json:"allowedBranches"`
@@ -69,6 +78,23 @@ type LocalSecretReference struct {
 	Kind string `json:"kind,omitempty"`
 
 	// Name of the Secret.
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+}
+
+// KnownHostsReference points at a namespace-local ConfigMap or Secret that holds SSH known_hosts
+// host-trust material. The data is read from the "known_hosts" key, falling back to
+// "ssh_known_hosts" (the key Argo CD's argocd-ssh-known-hosts-cm ConfigMap uses, for host keys
+// copied out of it).
+type KnownHostsReference struct {
+	// Kind of the referent: ConfigMap (default) or Secret.
+	// +optional
+	// +kubebuilder:validation:Enum=ConfigMap;Secret
+	// +kubebuilder:default=ConfigMap
+	Kind string `json:"kind,omitempty"`
+
+	// Name of the ConfigMap or Secret.
+	// +required
 	// +kubebuilder:validation:MinLength=1
 	Name string `json:"name"`
 }

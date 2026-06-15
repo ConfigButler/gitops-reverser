@@ -1,74 +1,111 @@
-# Git config interop: drop the `GitRepository` providerRef, align the credentials Secret
+# Git config interop: rollout plan
 
-Status: investigation + recommendation. No implementation yet. Supersedes the earlier
-"`GitRepository` as a `providerRef`" feasibility note: it broadens the question from "consume one
-Flux object" to "interoperate with the Git credentials people already have" — whether those come
-from Flux **or** Argo CD — without coupling to, advertising, or requiring either.
+Status: **this is the plan we execute in one go.** We are pre-1.0 with no existing users, so there
+are no migration shims, compatibility windows, or deprecation steps — we change the schema and the
+credentials reader directly and ship them as one change set. The rollout plan section lists the
+concrete, ordered changes; the sections before it are the rationale. It supersedes the earlier
+"`GitRepository` as a `providerRef`" feasibility note by widening the question from "consume one Flux
+object" to "interoperate with the Git credentials a GitOps user already has," whether those come from
+Flux **or** Argo CD, without coupling to, advertising, or requiring either.
 
-## TL;DR
+The framing constraint throughout: **never require Flux or Argo, never advertise a preference, and
+never make an Argo CD user read the word "Flux" to use the product.** Internally (this doc) we name
+names freely; the user-facing schema and docs stay vendor-neutral.
 
-- **Drop** `GitRepository` / `source.toolkit.fluxcd.io` from `GitProviderReference` (the `Kind` and
-  `Group` enums). It is a trap today (the controller cannot honor it), it is semantically wrong (a
-  read object used as a write target), and — counter-intuitively — keeping it would make us *more*
-  coupled to Flux, not less. Removing it also removes Flux from every user's CRD schema, which is
-  what makes Argo CD users feel at home.
-- **Align the credentials Secret instead.** Our Secret keys are already the **Kubernetes-native**
-  ones (`ssh-privatekey`, `username`, `password` — the field names of the built-in
-  `kubernetes.io/ssh-auth` and `kubernetes.io/basic-auth` Secret types). Accept the small set of
-  Flux/Argo alias keys as fallbacks so a Secret authored for either ecosystem works unchanged. This
-  is the real interop win, it serves *both* audiences, and it names no vendor in the user-facing
-  surface.
-- **Document the Git write-back landscape** (Flux's `ImageUpdateAutomation`, Argo CD Image Updater)
-  separately — these are the only controllers in either ecosystem that *write* to Git, they are our
-  nearest analogues, and they share our bi-directional hazard. We neither consume nor depend on
-  them; we document them for positioning and for a guardrail note.
+## The change in one paragraph
 
-The framing requirement throughout: **never require Flux, never advertise a preference, never make
-an Argo CD user read the word "Flux" to use the product.** Internally (this doc) we name names
-freely; the user-facing schema and docs stay vendor-neutral.
+We drop the Flux `GitRepository` option from `GitProviderReference` entirely (it is a trap, it is
+semantically wrong, and keeping it would couple us *to* Flux). The portable thing across ecosystems
+is not the repo object — it is the **credentials Secret** — so we make a `GitProvider`'s referenced
+Secret read cleanly whether it was authored in the Kubernetes-native shape, the Flux shape, or the
+Argo CD shape. Our own examples stay in the vendor-neutral Kubernetes-native shape; the reader also
+accepts the Flux and Argo key names. The reader gains the credential keys it lacks today — the
+SSH-key aliases, the passphrase fallback, and the **HTTP bearer token** (`bearerToken`, used by both
+Flux and Argo for token auth without a username). HTTP **basic-auth** Secrets and Flux-shaped SSH
+Secrets then read directly; Argo-origin SSH Secrets need host-trust data supplied through our neutral
+`known_hosts` path because Argo stores host keys outside the repository Secret.
 
 ---
 
-## 1. Current affairs — the trap in the schema today
+## How Flux is set up to track a repo
 
-`GitTarget.spec.providerRef` and the shared `GitProviderReference`
-([gittarget_types.go](../../api/v1alpha1/gittarget_types.go)) already advertise a Flux
-`GitRepository`:
+A Flux user registers each repository as a namespaced **`GitRepository`** custom resource
+(source-controller, group `source.toolkit.fluxcd.io`; verified against
+`github.com/fluxcd/source-controller/api@v1.8.5`). Its spec is `url` + `ref` (exactly one of
+`branch` / `tag` / `semver` / `name` / `commit`) + `secretRef` (a Secret **in the same namespace**
+holding the credentials) + `interval` (how often source-controller re-checks) + optional
+`verify` / `ignore` / `sparseCheckout` / `proxySecretRef`. source-controller polls on that interval,
+clones the repo **read-only**, optionally verifies its signature, and publishes the checked-out tree
+as an **Artifact** (a tarball + digest) that other Flux controllers (Kustomization, HelmRelease)
+consume and apply. Two properties matter for us: (a) the repo registration is a first-class CRD —
+**one object per repository**; (b) credentials live in a **separate, explicitly named Secret** with
+no inheritance — every `GitRepository` names its own `secretRef`. Push-based refresh exists via
+notification-controller `Receiver`s, but the default is interval polling. Flux never writes through
+a `GitRepository`; the one Flux controller that *does* write to Git layers its own spec on top (see
+the write-back landscape below).
 
-- `Group` enum includes `source.toolkit.fluxcd.io`
-- `Kind` enum includes `GitRepository`
-- the field comment says: "Support for reading from Flux GitRepository is not yet implemented!"
+## How Argo CD is set up to track a repo
 
-But resolution ignores `Kind` and `Group`. `validateProviderAndBranch`
-([gittarget_controller.go](../../internal/controller/gittarget_controller.go)) unconditionally does
-a `Get` for a `GitProvider` named `providerRef.Name`. So a user who follows the schema and sets
+Argo CD has **no repository CRD**. A repository is registered as a plain Kubernetes **Secret**
+labeled `argocd.argoproj.io/secret-type: repository`, living in the Argo CD namespace; the Secret
+itself carries both the connection (`url`, `type`) and the credentials (`sshPrivateKey`,
+`username`/`password`, …) **inline**. An `Application` then refers to a repo only by URL
+(`spec.source.repoURL`), and Argo resolves the credentials at apply time. Resolution has two layers,
+and the second is the "trick" worth remembering:
+
+1. **Exact repository match.** Argo lists the `repository`-labelled Secrets and picks the one whose
+   `url` matches the requested URL (normalized), scoped by `project`
+   (`secretsRepositoryBackend.getRepositorySecret`).
+2. **Credential templates by URL prefix.** If no repository Secret matches, Argo falls back to
+   **credential templates** — Secrets labeled `argocd.argoproj.io/secret-type: repo-creds` whose
+   `url` is treated as a **prefix**. The template whose URL is the **longest prefix** of the repo URL
+   wins (`getRepositoryCredentialIndex`:
+   `strings.HasPrefix(NormalizeGitURL(repoURL), NormalizeGitURL(credURL))`, longest match). So you
+   declare **one** `repo-creds` Secret with `url: https://github.com/my-org` and every repository
+   under that org inherits its credentials without a per-repo Secret. *(This is the "define the first
+   part of the URL and it covers the repos beneath it" behaviour.)*
+
+Host keys and CAs are **not** per-repo in Argo: SSH host keys live globally in the
+`argocd-ssh-known-hosts-cm` ConfigMap, and custom CA certificates in the `argocd-tls-certs-cm`
+ConfigMap (both verified in `common/common.go`). The repository Secret therefore has no
+`known_hosts` key at all. Argo's public docs expose three management paths for SSH known hosts:
+CLI, UI, and declarative management of that ConfigMap.
+
+The contrast is itself informative: **Flux = an explicit per-repo CRD plus a per-repo named Secret;
+Argo = label-discovered Secrets with URL-prefix credential inheritance and global host-key/CA
+config.** Our `GitProvider` is closest to Flux's split (a named connection object that references a
+Secret), but the *Secret* is the one portable artifact across all three worlds — which is exactly
+what the plan leans on.
+
+---
+
+## The trap in our schema today
+
+`GitTarget.spec.providerRef` / the shared `GitProviderReference`
+([gittarget_types.go](../../api/v1alpha1/gittarget_types.go)) advertise a Flux `GitRepository`:
+the `Group` enum includes `source.toolkit.fluxcd.io`, the `Kind` enum includes `GitRepository`, and
+the field comment admits "Support for reading from Flux GitRepository is not yet implemented!"
+(The reference is "shared" only in that many `GitTarget`s may point at the same `GitProvider`; it is
+not a Flux↔ours indirection.)
+
+But resolution ignores `Kind`/`Group`: `validateProviderAndBranch`
+([gittarget_controller.go](../../internal/controller/gittarget_controller.go)) unconditionally
+`Get`s a `GitProvider` named `providerRef.Name`. A user who follows the schema and sets
 `kind: GitRepository` gets `Referenced GitProvider '<ns>/<name>' not found` — the schema accepts a
-shape the controller can never satisfy. A schema must not advertise inputs that always fail. This
-alone is worth fixing, and it is already flagged as a maturity-plan item
-([maturity-and-adoption-plan.md](../maturity-and-adoption-plan.md)) and in
-[configuration.md](../configuration.md) ("support … is not implemented yet").
+shape the controller can never satisfy. A schema must not advertise inputs that always fail.
 
-## 2. The read/write truth — why a `GitRepository` can never be a write target
+## Why a `GitRepository` can never be a write target
 
-A Flux `GitRepository`
-(`source.toolkit.fluxcd.io`, source-controller `api@v1.8.5`,
-[`gitrepository_types.go`](https://github.com/fluxcd/source-controller)) is a **read/source**
-object. source-controller clones the repo **read-only** at a `ref`, optionally verifies it, and
-publishes an **Artifact** (a tarball + checksum) for downstream Flux controllers to consume. Its
-spec is `url` + `secretRef` + `ref` (`branch`/`tag`/`semver`/`name`/`commit`) + `interval` +
-`verify`/`ignore`/`sparseCheckout`/… It never pushes and grants no write path.
+A Flux `GitRepository` is a **read/source** object: clone read-only at a `ref`, publish an Artifact,
+never push. GitOps Reverser **writes** (pushes commits), so there is no artifact for us to consume.
+The only reusable part is its connection config (`url`, the branch under `ref`, `secretRef`).
+Everything that makes a write target a write target — a writable-branch allowlist, commit identity,
+signing, push tuning — has no counterpart on a `GitRepository`.
 
-GitOps Reverser **writes** (pushes commits). So a `GitRepository` cannot be "consumed" the way Flux
-consumes it — there is no artifact we want. The only reusable part is its **connection
-configuration**: `spec.url`, the branch under `spec.ref`, and `spec.secretRef`. Everything that
-makes a write target a write target — a writable-branch allowlist, commit identity, signing, push
-tuning — has no counterpart on a `GitRepository`.
-
-**Flux's own writer proves the layering.** Flux *does* write to Git in exactly one place: the
-image-automation-controller's `ImageUpdateAutomation` (`api@v1.1.4`,
-[`git.go`](https://github.com/fluxcd/image-automation-controller) `v1beta2`). Crucially, it does
-**not** write *through* a `GitRepository`. It *references* a `GitRepository` purely for the
-connection config (url + secretRef + ref) and then layers its **own** write spec on top:
+**Flux's own writer proves the layering.** Flux writes to Git in exactly one place: the
+image-automation-controller's `ImageUpdateAutomation` (`api@v1.1.4`, `v1beta2/git.go`). It does
+**not** write through a `GitRepository`; it *references* one for connection config and layers its
+own write spec on top:
 
 ```go
 // image-automation-controller/api v1beta2 GitSpec (paraphrased)
@@ -80,172 +117,201 @@ type GitSpec struct {
 ```
 
 That is the same architecture our `GitProvider` already is: connection config (`url`, `secretRef`)
-**plus** write identity (`allowedBranches`, `spec.commit` identity/signing, `spec.push` tuning).
-Even Flux treats "where to read connection details" and "how to write" as two different objects. So
-consuming a `GitRepository` would not save us a single piece of write configuration — we would still
-need a companion object for commit/signing/push/branch-allowlist, i.e. a `GitProvider` in all but
-name. The "one fewer object to declare" benefit evaporates on inspection.
+**plus** write identity (`allowedBranches`, `spec.commit` identity/signing, `spec.push` tuning). Even
+Flux treats "where to read connection details" and "how to write" as two different objects — so
+consuming a `GitRepository` would save us no write configuration. The "one fewer object to declare"
+benefit evaporates on inspection.
 
-## 3. What is actually reusable: the credentials Secret (three-ecosystem comparison)
+## The credentials Secret: three-ecosystem comparison
 
-The genuinely portable artifact is the **Git credentials Secret**. Here is where the three
-ecosystems land. Verified against source where available: ours
-([helpers.go](../../internal/git/helpers.go), [ssh/auth.go](../../internal/ssh/auth.go),
-[security-model.md](../security-model.md)); Flux (`fluxcd/pkg/runtime@v0.108.0/secrets` constants +
-`flux2` `pkg/manifestgen/sourcesecret`); Argo CD (declarative-setup / private-repositories docs,
-see Sources).
+The genuinely portable artifact is the **Git credentials Secret**. Every row below is verified
+against source: ours ([helpers.go](../../internal/git/helpers.go),
+[ssh/auth.go](../../internal/ssh/auth.go), [security-model.md](../security-model.md)); Flux
+(`fluxcd/pkg/runtime@v0.108.0/secrets` constants + `flux2/pkg/manifestgen/sourcesecret`); Argo CD
+(`argo-cd` `util/db/repository_secrets.go` + `common/common.go`). The "Ours" column is the **target**
+shape this rollout lands, not what the reader accepts today.
 
 | Concept | **Ours — Kubernetes-native** | **Flux** | **Argo CD** |
 |---|---|---|---|
-| How the Secret is found | typed `secretRef` (name) | typed `secretRef` (name) | label `argocd.argoproj.io/secret-type: repository`, `url` key inside |
+| How the Secret is found | typed `secretRef` (name) | typed `secretRef` (name) | label `…/secret-type: repository`; or `repo-creds` template by longest URL prefix |
 | SSH private key | `ssh-privatekey` *(`kubernetes.io/ssh-auth`)* | `identity` | `sshPrivateKey` |
 | SSH public key | — (derived from private) | `identity.pub` *(optional)* | — |
 | SSH key passphrase | `ssh-password` | `password` *(shared with HTTP)* | — *(passphrase keys unsupported)* |
-| Host keys | `known_hosts` | `known_hosts` *(required)* | **ConfigMap** `argocd-ssh-known-hosts-cm` (not in the Secret) |
-| Disable host-key check | `insecure_ignore_host_key: "true"` | — (host key via spec) | `insecureIgnoreHostKey` |
+| SSH host keys | `known_hosts` | `known_hosts` *(required)* | **ConfigMap** `argocd-ssh-known-hosts-cm` *(not in the Secret)* |
+| Disable host-key check | controller flag, *missing* `known_hosts` only (a present `known_hosts` must parse) | — *(no opt-out; `known_hosts` required)* | `insecureIgnoreHostKey: "true"` |
 | HTTP basic user | `username` *(`kubernetes.io/basic-auth`)* | `username` | `username` |
 | HTTP basic password | `password` | `password` | `password` |
-| HTTP bearer token | — | `bearerToken` | — (cluster secrets only) |
-| Custom CA | — | `ca.crt` (legacy `caFile`) | via TLS config / mTLS |
+| HTTP bearer token | `bearerToken` | `bearerToken` | `bearerToken` |
 | Client cert (mTLS) | — | `tls.crt` / `tls.key` | `tlsClientCertData` / `tlsClientCertKey` |
+| Custom CA | — | `ca.crt` (legacy `caFile`) | **ConfigMap** `argocd-tls-certs-cm` *(not in the Secret)* |
 | GitHub App | — | `githubAppID`, `githubAppInstallationID`, `githubAppPrivateKey`, `githubAppBaseURL` | `githubAppID`, `githubAppInstallationID`, `githubAppPrivateKey`, `githubAppEnterpriseBaseUrl` |
 
-Two observations drive the whole recommendation:
+Two observations drive everything:
 
 1. **Our keys are not "a third dialect" — they are the Kubernetes built-in ones.** `ssh-privatekey`
    is the field of the core `kubernetes.io/ssh-auth` Secret type; `username`/`password` are the
-   fields of `kubernetes.io/basic-auth`. That is the perfect neutral ground: we can document "we use
-   Kubernetes-native Secret types" and never name Flux or Argo. Flux and Argo each invented their
-   own key names; we did not.
+   fields of `kubernetes.io/basic-auth`. (Honest caveat: the built-in `ssh-auth` type defines *only*
+   `ssh-privatekey` — `known_hosts`, the passphrase, and any insecure development opt-out are ours
+   to define. For those, `known_hosts` already matches Flux, and the insecure opt-out moves out of
+   the ordinary credential Secret to a controller flag.) Neither Flux nor Argo uses the built-in
+   Secret *types*; each invented its own key names. So "Kubernetes-native" is genuinely neutral
+   ground.
 2. **HTTP basic auth is already identical across all three** (`username` + `password`). The only real
-   deltas are the **SSH key field name** and the **passphrase field name** — both trivial to bridge.
+   SSH deltas are the key field name and the passphrase field name — both trivial to bridge.
 
-## 4. Decision: drop the providerRef enum, align the Secret
+---
 
-### 4.1 Dropping `GitRepository` *reduces* Flux coupling
+## The rollout plan
 
-The earlier note framed the choice as "implement a thin config-source adapter later." On reflection,
-keeping the enum is the more Flux-coupled path, because honoring it would require:
+We ship the following as **one change set**. Validation per AGENTS.md (`task fmt` → `task generate` →
+`task manifests` → `task vet` → `task lint` → `task test` → `task test-e2e`) runs once over the whole
+set, not per step.
 
-- importing/RBAC for `gitrepositories.source.toolkit.fluxcd.io` (a hard dependency on
-  source-controller's CRD being installed — i.e. **requiring Flux**, which is explicitly off the
-  table), and
-- a `ref` → writable-branch translation that rejects tag/semver/commit/name (only `ref.branch` is
-  writable), and
-- inheriting the bi-directional footgun: source-controller re-clones on its interval and a
-  downstream Kustomization/HelmRelease may apply the branch, so pointing a *writer* at a
-  Flux-tracked branch invites a write→pull→apply→audit→write loop (see
-  [bi-directional.md](../bi-directional.md)).
+### Step 1 — Drop the `GitRepository` trap from the schema
 
-Dropping the enum deletes all three problems at once and removes Flux from the user-facing schema.
+In [gittarget_types.go](../../api/v1alpha1/gittarget_types.go), remove every trace of Flux from
+`GitProviderReference`:
 
-### 4.2 Neutrality requirements
+- Remove `source.toolkit.fluxcd.io` from the `Group` enum and `GitRepository` from the `Kind` enum.
+- Delete the "Support for reading from Flux GitRepository is not yet implemented!" comment and the
+  "the GitProvider or Flux GitRepository" field comments — they become just "the GitProvider".
+- With Flux gone, `Group` and `Kind` each have exactly one legal value (`configbutler.ai` /
+  `GitProvider`). **Keep the typed `Group`/`Kind` fields with those as defaults** (and `Kind`
+  constrained to a single-value enum), matching the project's other local references
+  (`LocalTargetReference`, `LocalSecretReference`) rather than collapsing to a name-only reference.
+  Many `GitTarget`s may reference the same `GitProvider`; in practice a user only sets `name`, since
+  `group`/`kind` default. (Pre-1.0, we change the schema directly; nothing to migrate.)
 
-- **No Flux in the CRD.** A `providerRef.kind: GitRepository` enum literally prints "Flux" into every
-  user's `kubectl explain`. Removing it means an Argo CD user never encounters Flux to use the
-  product. This is the single highest-leverage neutrality fix.
-- **No vendor in the docs.** The Secret-key docs present alternate accepted key names in a neutral
-  table ("also accepted: …"), not "Flux keys" / "Argo keys." We are happy to interoperate; we do not
-  advertise a house style. (Internally, in this doc, we are candid about provenance.)
-- **No required install of either tool.** Alias support is pure string matching on Secret data — it
-  works whether or not source-controller or Argo is present in the cluster.
+Then regenerate — `task generate` (deepcopy) and `task manifests` (CRDs under
+[config/crd/bases](../../config/crd/bases)) — and update any example manifests/docs that still write
+`group:` / `kind:` under `providerRef`.
 
-## 5. The Secret-alignment plan
+Rationale (from "The trap" above): the schema today accepts an input the controller can never
+honor — `validateProviderAndBranch` unconditionally `Get`s a `GitProvider` and ignores
+`Kind`/`Group`, so `kind: GitRepository` always returns `Referenced GitProvider '<ns>/<name>' not
+found`. Removing the enum also removes the only place the word "Flux" prints into a user's
+`kubectl explain`.
 
-Keep **Kubernetes-native keys canonical**; accept a minimal alias set as fallbacks. Today the auth
-method is picked by the keys present in the Secret
-([helpers.go](../../internal/git/helpers.go) `getAuthFromSecret`): SSH if `ssh-privatekey` is
-present, else HTTP basic if `username`/`password` are present. Generalize that:
+### Step 2 — Read all three credential dialects, and add the bearer token
 
-- **SSH private key**, read in priority order:
-  `ssh-privatekey` → `identity` → `sshPrivateKey`.
-- **SSH key passphrase**: `ssh-password` → `password`, but the `password` fallback is consulted
-  **only when an SSH key is present** (this matches Flux exactly — Flux stores the passphrase under
-  `password` and disambiguates by the presence of `identity`). When no SSH key is present,
-  `password` is the HTTP basic password. Transport is otherwise unambiguous: it follows the repo
-  URL scheme, and SSH vs HTTP key presence never overlaps for one provider.
-- **Host keys**: keep `known_hosts`. This is already shared with Flux. The one genuine gap is **Argo
-  CD**, which keeps host keys in the `argocd-ssh-known-hosts-cm` ConfigMap rather than the Secret —
-  an Argo-origin Secret will have no `known_hosts`. Document that those users copy their
-  `known_hosts` entry into the Secret (or use `insecure_ignore_host_key` for throwaway envs). We do
-  **not** read Argo's ConfigMap (that would be Argo coupling).
-- **HTTP basic**: `username`/`password` — already universal, zero work.
-- **SSH host-key verification** is already hardened to fail closed on this branch
-  ([ssh/auth.go](../../internal/ssh/auth.go): `known_hosts` required unless
-  `insecure_ignore_host_key: "true"`). No change needed; the alignment work is purely the key-name
-  fallbacks above.
+In the Secret reader ([helpers.go](../../internal/git/helpers.go)), resolve in this order:
 
-Out of scope for the first cut, documented as "not yet read" so nobody is trapped a second time:
-`bearerToken`, `ca.crt`/`caFile`, `tls.crt`/`tls.key`/`tlsClientCert*`, GitHub App keys. These are
-HTTPS-auth refinements; add them on demand. (`identity.pub` is never needed — go-git derives the
-public key from the private key.)
+- **SSH private key**, in priority order: `ssh-privatekey` → `identity` → `sshPrivateKey`.
+- **SSH key passphrase**: `ssh-password`, falling back to `password` **only when an SSH key is
+  present** — exactly Flux's own disambiguation (Flux stores the passphrase under `password` and
+  tells it apart by the presence of `identity`). With no SSH key present, `password` is the HTTP
+  basic password.
+- **HTTP basic**: `username` / `password` — already universal, no change.
+- **HTTP bearer token** *(new — the gap we are closing)*: read `bearerToken` and authenticate with
+  it (go-git `http.TokenAuth`). Bearer tokens are the common HTTPS path in both ecosystems (GitHub
+  fine-grained PATs, GitLab project/group access tokens) and our reader has no path for them today —
+  a `bearerToken`-only Secret currently falls through to "does not contain valid authentication
+  data".
 
-Net effect: a Secret a user already wrote for **either** Flux **or** Argo CD's SSH/HTTPS-basic auth
-works against a `GitProvider` unchanged, with the single documented exception of Argo's externalized
-`known_hosts`. No vendor named in the schema; no vendor required in the cluster.
+Overall auth precedence stays: SSH key (if present) → HTTP basic (`username`+`password`) → bearer
+token (`bearerToken`).
 
-## 6. Git write-back landscape (documented, not consumed)
+### Step 3 — Make SSH host trust centralizable
 
-The user asked that Flux's image write-back be written down somewhere; for symmetry here is the Argo
-analogue too. These are the **only** controllers in either ecosystem that push to Git, which makes
-them our nearest cousins and the place our bi-directional hazard overlaps reality.
+`known_hosts` is security-critical trust material, not credential material. Keeping it only inside
+each credentials Secret is Flux-compatible and fine for one repo, but repetitive across many
+`GitProvider`s on the same host. Resolution order:
+
+1. **Secret-level `known_hosts`** — highest priority; keeps Flux-authored SSH Secrets working
+   directly.
+2. **`GitProvider.spec.knownHostsRef`** — a namespace-local ConfigMap or Secret holding `known_hosts`
+   (and optionally `ssh_known_hosts` for Argo-shaped data copied out of its ConfigMap).
+3. **An install-level default known-hosts ConfigMap** in the controller's namespace, for
+   cluster-admin-managed Git hosts.
+4. If none yields valid host keys, SSH auth **fails closed**.
+
+We do **not** read Argo's `argocd-ssh-known-hosts-cm` directly (that would be Argo coupling), and we
+do **not** auto-refresh host keys with `ssh-keyscan` — that only reports "what the network showed me
+right now." Host-key rotation is an admin-owned declarative update; admins verify fingerprints
+out-of-band (GitHub/GitLab publish them; self-hosted services publish via their platform team).
+
+### Step 4 — Flag-gate the insecure opt-out, and require a present `known_hosts` to be valid
+
+Today the insecure opt-out is a per-Secret key `insecure_ignore_host_key`
+([ssh/auth.go](../../internal/ssh/auth.go)) that also swallows an *unparseable* `known_hosts`.
+Replace it:
+
+- **Remove the per-Secret `insecure_ignore_host_key` key entirely** (pre-1.0, nothing to migrate).
+- Add a controller flag **`--insecure-allow-missing-known-hosts`**, default off, for throwaway/dev
+  clusters only. It is deliberately **narrow**: it permits SSH only when **no** host-key source
+  produced any `known_hosts` at all.
+- A `known_hosts` that **is** present but fails to parse is a **hard error regardless of the flag** —
+  if a key is defined it must be valid. (This narrows current behavior on purpose: today the opt-out
+  also bypasses an unparseable key; it no longer will.)
+- The insecure path stays harder than adding a key to a Secret, and user-facing docs never show it in
+  normal setup examples.
+
+### Out of scope for this rollout
+
+Custom CA / client certs (mTLS) and GitHub App keys stay **unread** — they are HTTPS-auth refinements
+we can add later without reshaping anything here; the schema just doesn't pretend to accept them.
+`identity.pub` is never needed (go-git derives the public key from the private key). Argo's external
+`argocd-tls-certs-cm` / `argocd-ssh-known-hosts-cm` ConfigMaps are never read directly.
+
+## Why Kubernetes-native is the canonical shape (and we still read the others)
+
+This is the choice worth settling, because "be like Flux and Argo" and "be Kubernetes-native"
+really are different choices — *neither* competitor took the native path (Flux reads opaque Secrets
+keyed `identity`; Argo reads opaque Secrets keyed `sshPrivateKey` and discovers them by label). It
+helps to split the decision into two independent halves:
+
+- **What we read** (interop) is settled by real demand: early adopters are GitOps-minded and will
+  arrive with Flux *or* Argo Secrets, so we accept **all three** dialects. The canonical choice does
+  not change this — accepting one more alias costs nothing.
+- **What we *show*** (our own examples, and anything we ever generate) is the only real choice, and
+  there Kubernetes-native wins:
+  1. **It is an actual standard with tooling.** `kubectl create secret generic --type=kubernetes.io/ssh-auth`,
+     Sealed Secrets, External Secrets, and SOPS all understand the built-in types; `identity` /
+     `sshPrivateKey` are just opaque blobs.
+  2. **Neutral by construction.** "Kubernetes-native" names no competitor, so an Argo user reading
+     our example never sees a Flux key (or the word Flux), and we can't be accused of adopting a
+     house style.
+  3. **Lowest churn.** It is already our documented shape (README, [security-model.md](../security-model.md)).
+
+The counter-argument for "just do both dialects, skip native" is honesty about provenance (almost
+nobody has a `kubernetes.io/ssh-auth` Secret lying around) and one fewer concept. But that argument
+is entirely about *reading*, which we already solve by accepting aliases — so it does not actually
+push against a native canonical. **Net rule: read all three; show native; tell Flux/Argo users in
+one line that HTTP basic-auth and bearer-token Secrets work directly, Flux SSH keys work directly,
+and Argo SSH keys need a neutral `known_hosts` source.**
+
+## On naming our connection object
+
+(We have no `GitRepository` kind of our own — our connection object is **`GitProvider`**, and the
+write target is `GitTarget`.) `GitProvider` is already distinct from both ecosystems: Flux's read
+object is `GitRepository`, and Argo has no kind at all. The plan keeps `GitProvider`. The one
+naming rule worth stating explicitly: **do not rename it to anything containing "Repository"** — that
+would invite exactly the Flux confusion we are removing from the schema. ("Provider" leans slightly
+toward "the hosting service" rather than "this repo + branch + write identity," but an API-kind
+rename churns every doc and example and buys nothing the neutrality goal needs.)
+
+## Git write-back landscape (documented, not consumed)
+
+The only controllers in either ecosystem that *push* to Git — our nearest analogues, and where our
+bi-directional hazard meets reality:
 
 - **Flux — `ImageUpdateAutomation`** (image-automation-controller), driven by `ImagePolicy` /
   `ImageRepository` (image-reflector-controller). It clones the repo named by a `GitRepository`,
-  rewrites image tags in-place in the checked-out manifests, then **commits** (author identity,
-  optional GPG signing via a `git.asc` key in `spec.commit.signingKey.secretRef`, `messageTemplate`)
-  and **pushes** (`spec.push.branch` / `refspec` / `options`). Scope: image tags only.
+  rewrites image tags in place, then **commits** (author identity, optional GPG signing via a
+  `git.asc` key in `spec.commit.signingKey.secretRef`, `messageTemplate`) and **pushes**
+  (`spec.push.branch` / `refspec` / `options`). Scope: image tags only.
 - **Argo CD — Argo CD Image Updater** (a separate project; Argo CD core never writes to Git). With
-  the **`git` write-back method** it commits the new image to a branch using a Git credentials Secret
-  (its own `argocd-image-updater` config / SSH creds); with the **`argocd` method** it mutates the
-  `Application` instead and writes nothing to Git. Scope: image tags only.
+  the **`git` write-back method** it commits the new image to a branch using its own Git credentials;
+  with the **`argocd` method** it mutates the `Application` and writes nothing to Git. Scope: image
+  tags only.
 
-Relevance to us:
-
-- **Positioning.** Both are narrow, single-purpose writers (image tags). GitOps Reverser writes
-  arbitrary watched resources back to Git — a strictly broader "reverse GitOps" surface. Useful
-  framing for README/positioning, again statable without preference ("like image write-back, but for
-  any watched type").
-- **Guardrail.** If a GitTarget writes the same branch/path that an image-updater also writes, you
-  have two competing writers on one branch — the shared-path hazard in
-  [bi-directional.md](../bi-directional.md). Worth a docs warning, not code: the conflict is the same
-  whether the other writer is Flux, Argo, or a human.
-- **Non-dependency.** We consume none of these and import none of their types. They are documented
-  for the map, not the build.
-
-## 7. Staged plan / action items
-
-1. **Remove the trap (schema).** Drop `GitRepository` from the `Kind` enum and
-   `source.toolkit.fluxcd.io` from the `Group` enum in `GitProviderReference`
-   ([gittarget_types.go](../../api/v1alpha1/gittarget_types.go)); regenerate CRDs (`task manifests`).
-   Update the now-stale references in [configuration.md](../configuration.md) (the "`GitRepository` …
-   not implemented yet" lines) and the open item in
-   [maturity-and-adoption-plan.md](../maturity-and-adoption-plan.md). Net: Flux disappears from the
-   user-facing schema.
-2. **Secret-key fallbacks (code).** Generalize `getAuthFromSecret`
-   ([helpers.go](../../internal/git/helpers.go)) to the priority order in §5: SSH key
-   `ssh-privatekey`→`identity`→`sshPrivateKey`; passphrase `ssh-password`→`password` (SSH-present
-   only). Table-driven tests for each origin (k8s-native / Flux-style / Argo-style) plus the
-   passphrase-disambiguation case. No new RBAC, no new imports.
-3. **Document the Secret neutrally.** Extend the Git-credentials-Secret table in
-   [security-model.md](../security-model.md) and [configuration.md](../configuration.md) with an
-   "also accepted" column for the alias keys, and a one-line note that Argo CD's externalized
-   `known_hosts` must be copied into the Secret. No vendor named as the "right" one.
-4. **Write down the write-back landscape.** Land §6 (Flux `ImageUpdateAutomation` + Argo CD Image
-   Updater) into a positioning/landscape doc and cross-link the bi-directional guardrail.
-5. **Defer on demand:** `bearerToken`, CA/TLS, GitHub App keys — add when a real user needs HTTPS
-   push to a custom-CA/GitHub-App-auth server; track as a follow-up, advertised as "not yet read."
-
-## 8. Open questions
-
-- **Canonical vs alias surface in docs.** Do we present k8s-native as "the" shape with aliases in a
-  footnote, or a flat "any of these keys" table? Leaning k8s-native-canonical so our own examples
-  stay vendor-neutral and copy-pasteable.
-- **Should step 1 ship before step 2?** Removing the enum is a clean, independent maturity fix and
-  can land first; the secret fallbacks are additive and can follow without re-touching the schema.
-- **Argo `known_hosts` ergonomics.** Copy-into-Secret is the simple answer. If Argo interop becomes a
-  real ask, revisit whether a documented `known_hosts`-from-ConfigMap convenience is worth the Argo
-  coupling (current answer: no).
+Relevance: both are narrow single-purpose writers (image tags), whereas GitOps Reverser writes
+arbitrary watched resources back to Git — a strictly broader "reverse GitOps" surface, statable
+without preference ("like image write-back, but for any watched type"). If a GitTarget writes the
+same branch/path an image-updater also writes, that is two competing writers on one branch — the
+shared-path hazard in [bi-directional.md](../bi-directional.md), worth a docs warning regardless of
+who the other writer is. We consume none of these and import none of their types; they are here for
+the map, not the build.
 
 ---
 
@@ -254,10 +320,18 @@ Relevance to us:
 - Flux secret keys: `github.com/fluxcd/pkg/runtime@v0.108.0/secrets` (`secrets.go`, `factory.go`
   `MakeSSHSecret`), `flux2/pkg/manifestgen/sourcesecret` (`options.go`, `sourcesecret.go`).
 - Flux `GitRepository`: `github.com/fluxcd/source-controller/api@v1.8.5/v1/gitrepository_types.go`.
+- Flux docs: [GitRepositories](https://fluxcd.io/flux/components/source/gitrepositories/),
+  [`flux create secret git`](https://fluxcd.io/flux/cmd/flux_create_secret_git/).
 - Flux image write-back: `github.com/fluxcd/image-automation-controller/api@v1.1.4/v1beta2/git.go`.
-- Argo CD repository Secret / SSH known-hosts:
+- Argo CD repository / repo-creds Secrets and URL-prefix matching:
+  `argo-cd` `util/db/repository_secrets.go` (`secretToRepository`, `getRepositoryCredentialIndex`),
+  `util/db/repository.go` (`RepoURLToSecretName`), `common/common.go`
+  (`LabelKeySecretType`, `ArgoCDKnownHostsConfigMapName`, `ArgoCDTLSCertsConfigMapName`).
+- Argo CD docs:
   [Declarative Setup](https://argo-cd.readthedocs.io/en/stable/operator-manual/declarative-setup/),
   [Private Repositories](https://argo-cd.readthedocs.io/en/stable/user-guide/private-repositories/),
-  [`argocd-ssh-known-hosts-cm`](https://argo-cd.readthedocs.io/en/stable/operator-manual/argocd-ssh-known-hosts-cm-yaml/).
-- Argo CD Image Updater (Git write-back):
-  [Image Updater docs](https://argocd-image-updater.readthedocs.io/en/stable/).
+  [Argo CD Image Updater](https://argocd-image-updater.readthedocs.io/en/stable/).
+- SSH host-key verification sources:
+  [`ssh-keyscan(1)`](https://man.openbsd.org/ssh-keyscan.1),
+  [GitHub SSH key fingerprints](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/githubs-ssh-key-fingerprints),
+  [GitLab SSH key setup and host-key verification](https://docs.gitlab.com/user/ssh/).

@@ -414,6 +414,9 @@ func writeRepoSecretsManifest(
 			},
 			Type: corev1.SecretTypeOpaque,
 			Data: map[string][]byte{
+				// The in-cluster Gitea host key is not pinned in tests; the controller runs
+				// with --insecure-allow-missing-known-hosts (see config/deployment.yaml), the
+				// development-only escape hatch, so no known_hosts is supplied here.
 				"ssh-privatekey": privateKeyPEM,
 			},
 		},

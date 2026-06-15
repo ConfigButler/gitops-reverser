@@ -53,6 +53,10 @@ type WorkerManager struct {
 	// resource-identity inventory. It is set once at startup (SetMapper) before any
 	// worker is created; a nil mapper keeps workers structure-only.
 	mapper typeset.Lookup
+
+	// sshHostKeys configures SSH host-key resolution for every worker's credential reads. Set
+	// once at startup (SetSSHHostKeyConfig) before any worker is created.
+	sshHostKeys SSHHostKeyConfig
 }
 
 // NewWorkerManager creates a new worker manager.
@@ -83,6 +87,14 @@ func (m *WorkerManager) SetMapper(mapper typeset.Lookup) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.mapper = mapper
+}
+
+// SetSSHHostKeyConfig injects the SSH host-key resolution config used by every worker's credential
+// reads. Like SetMapper, it is called once at startup before any worker is created.
+func (m *WorkerManager) SetSSHHostKeyConfig(cfg SSHHostKeyConfig) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.sshHostKeys = cfg
 }
 
 // RegisterTarget ensures a worker exists for the target's (provider, branch)
@@ -141,6 +153,7 @@ func (m *WorkerManager) EnsureWorker(
 		// goroutine Start spawns, so setting it here (under m.mu, before that goroutine
 		// exists) is race-free.
 		worker.mapper = m.mapper
+		worker.sshHostKeys = m.sshHostKeys
 
 		if err := worker.Start(m.ctx); err != nil {
 			return fmt.Errorf("failed to start worker for %s: %w", key.String(), err)

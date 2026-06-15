@@ -71,8 +71,8 @@ type ClusterWatchRuleSpec struct {
 }
 
 // ClusterResourceRule defines which resources to watch with scope control.
-// Each rule can independently specify whether it watches cluster-scoped or
-// namespaced resources, with optional namespace filtering for namespaced resources.
+// Each rule independently specifies whether it watches cluster-scoped or
+// namespaced resources.
 type ClusterResourceRule struct {
 	// Operations to watch. If empty, watches all operations (CREATE, UPDATE, DELETE).
 	// Supports: CREATE, UPDATE, DELETE, or * (wildcard for all operations).
@@ -121,10 +121,8 @@ type ClusterResourceRule struct {
 
 	// Scope defines whether this rule watches Cluster-scoped or Namespaced resources.
 	// - "Cluster": For cluster-scoped resources (Nodes, ClusterRoles, CRDs, etc.).
-	//              The namespaceSelector field is ignored for cluster-scoped rules.
-	// - "Namespaced": For namespaced resources (Pods, Deployments, Secrets, etc.).
-	//                 Optionally filtered by namespaceSelector.
-	//                 If namespaceSelector is omitted, watches resources in ALL namespaces.
+	// - "Namespaced": For namespaced resources (Pods, Deployments, Secrets, etc.),
+	//                 across all namespaces.
 	// +required
 	// +kubebuilder:validation:Enum=Cluster;Namespaced
 	Scope ResourceScope `json:"scope"`
@@ -153,9 +151,8 @@ type ClusterWatchRuleStatus struct {
 //
 // Security model:
 //   - ClusterWatchRule is cluster-scoped and requires cluster-admin permissions
-//   - Referenced GitRepoConfig must have accessPolicy.allowClusterRules set to true
+//   - It references a GitTarget via targetRef (namespace required)
 //   - Each rule can independently specify Cluster or Namespaced scope
-//   - Namespaced rules can optionally filter by namespace labels
 //
 // Use cases:
 //   - Audit cluster infrastructure (Nodes, PersistentVolumes, StorageClasses)

@@ -51,7 +51,6 @@ var _ = Describe("GitTarget Controller Security", func() {
 				Spec: configbutleraiv1alpha1.GitTargetSpec{
 					ProviderRef: configbutleraiv1alpha1.GitProviderReference{
 						Name: "missing-provider",
-						Kind: "GitProvider",
 					},
 					Branch: "main",
 					Path:   "test-folder",
@@ -133,7 +132,6 @@ var _ = Describe("GitTarget Controller Security", func() {
 				Spec: configbutleraiv1alpha1.GitTargetSpec{
 					ProviderRef: configbutleraiv1alpha1.GitProviderReference{
 						Name: "test-provider-security",
-						Kind: "GitProvider",
 					},
 					Branch: unauthorizedBranch,
 					Path:   "test-folder",
@@ -228,7 +226,6 @@ var _ = Describe("GitTarget Controller Security", func() {
 				Spec: configbutleraiv1alpha1.GitTargetSpec{
 					ProviderRef: configbutleraiv1alpha1.GitProviderReference{
 						Name: "test-provider-allowed",
-						Kind: "GitProvider",
 					},
 					Branch: "feature/allowed",
 					Path:   "allowed-folder",
@@ -313,7 +310,6 @@ var _ = Describe("GitTarget Controller Security", func() {
 				Spec: configbutleraiv1alpha1.GitTargetSpec{
 					ProviderRef: configbutleraiv1alpha1.GitProviderReference{
 						Name: "test-provider-two-axis",
-						Kind: "GitProvider",
 					},
 					Branch: "main",
 					Path:   "two-axis-folder",
@@ -392,7 +388,6 @@ var _ = Describe("GitTarget Controller Security", func() {
 					Spec: configbutleraiv1alpha1.GitTargetSpec{
 						ProviderRef: configbutleraiv1alpha1.GitProviderReference{
 							Name: "test-provider-glob",
-							Kind: "GitProvider",
 						},
 						Branch: tc.branch,
 						Path:   "glob-test",
@@ -488,7 +483,6 @@ var _ = Describe("GitTarget Controller Security", func() {
 				Spec: configbutleraiv1alpha1.GitTargetSpec{
 					ProviderRef: configbutleraiv1alpha1.GitProviderReference{
 						Name: "test-provider-conflict",
-						Kind: "GitProvider",
 					},
 					Branch: "main",
 					Path:   "conflict-folder",
@@ -524,7 +518,6 @@ var _ = Describe("GitTarget Controller Security", func() {
 				Spec: configbutleraiv1alpha1.GitTargetSpec{
 					ProviderRef: configbutleraiv1alpha1.GitProviderReference{
 						Name: "test-provider-conflict",
-						Kind: "GitProvider",
 					},
 					Branch: "main",
 					Path:   "conflict-folder",
@@ -609,7 +602,6 @@ var _ = Describe("GitTarget Controller Security", func() {
 				Spec: configbutleraiv1alpha1.GitTargetSpec{
 					ProviderRef: configbutleraiv1alpha1.GitProviderReference{
 						Name: "test-provider-no-conflict",
-						Kind: "GitProvider",
 					},
 					Branch: "main",
 					Path:   "folder-a",
@@ -626,7 +618,6 @@ var _ = Describe("GitTarget Controller Security", func() {
 				Spec: configbutleraiv1alpha1.GitTargetSpec{
 					ProviderRef: configbutleraiv1alpha1.GitProviderReference{
 						Name: "test-provider-no-conflict",
-						Kind: "GitProvider",
 					},
 					Branch: "main",
 					Path:   "folder-b", // Different!
@@ -699,7 +690,6 @@ var _ = Describe("GitTarget Controller Security", func() {
 				Spec: configbutleraiv1alpha1.GitTargetSpec{
 					ProviderRef: configbutleraiv1alpha1.GitProviderReference{
 						Name: "test-provider-nested",
-						Kind: "GitProvider",
 					},
 					Branch: "main",
 					Path:   "team",
@@ -734,7 +724,6 @@ var _ = Describe("GitTarget Controller Security", func() {
 				Spec: configbutleraiv1alpha1.GitTargetSpec{
 					ProviderRef: configbutleraiv1alpha1.GitProviderReference{
 						Name: "test-provider-nested",
-						Kind: "GitProvider",
 					},
 					Branch: "main",
 					Path:   "team/app",
@@ -815,7 +804,6 @@ var _ = Describe("GitTarget Controller Security", func() {
 				Spec: configbutleraiv1alpha1.GitTargetSpec{
 					ProviderRef: configbutleraiv1alpha1.GitProviderReference{
 						Name: "test-provider-generate-enc-secret",
-						Kind: "GitProvider",
 					},
 					Branch: "main",
 					Path:   "test-path",
@@ -881,7 +869,6 @@ var _ = Describe("GitTarget Controller Security", func() {
 				Spec: configbutleraiv1alpha1.GitTargetSpec{
 					ProviderRef: configbutleraiv1alpha1.GitProviderReference{
 						Name: "test-provider-no-generate-enc-secret",
-						Kind: "GitProvider",
 					},
 					Branch: "main",
 					Path:   "test-path",
@@ -959,7 +946,6 @@ var _ = Describe("GitTarget Controller Security", func() {
 					Spec: configbutleraiv1alpha1.GitTargetSpec{
 						ProviderRef: configbutleraiv1alpha1.GitProviderReference{
 							Name: "test-provider-no-enc-recipients",
-							Kind: "GitProvider",
 						},
 						Branch: "main",
 						Path:   "test-path",
@@ -1053,7 +1039,6 @@ var _ = Describe("GitTarget Controller Security", func() {
 				Spec: configbutleraiv1alpha1.GitTargetSpec{
 					ProviderRef: configbutleraiv1alpha1.GitProviderReference{
 						Name: "test-provider-update-enc-secret",
-						Kind: "GitProvider",
 					},
 					Branch: "main",
 					Path:   "test-path",
@@ -1114,7 +1099,6 @@ var _ = Describe("GitTarget Controller Security", func() {
 				Spec: configbutleraiv1alpha1.GitTargetSpec{
 					ProviderRef: configbutleraiv1alpha1.GitProviderReference{
 						Name: "test-provider-recreate-enc-secret",
-						Kind: "GitProvider",
 					},
 					Branch: "main",
 					Path:   "test-path",
@@ -1203,7 +1187,6 @@ var _ = Describe("GitTarget Controller Security", func() {
 				Spec: configbutleraiv1alpha1.GitTargetSpec{
 					ProviderRef: configbutleraiv1alpha1.GitProviderReference{
 						Name: "test-provider-existing-agekey",
-						Kind: "GitProvider",
 					},
 					Branch: "main",
 					Path:   "test-path",

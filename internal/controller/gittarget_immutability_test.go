@@ -49,7 +49,7 @@ var _ = Describe("GitTarget Destination Immutability", func() {
 		gitTarget := &configbutleraiv1alpha1.GitTarget{
 			ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace},
 			Spec: configbutleraiv1alpha1.GitTargetSpec{
-				ProviderRef: configbutleraiv1alpha1.GitProviderReference{Name: "prov-a", Kind: "GitProvider"},
+				ProviderRef: configbutleraiv1alpha1.GitProviderReference{Name: "prov-a"},
 				Branch:      "main",
 				Path:        "apps",
 			},
@@ -97,7 +97,7 @@ var _ = Describe("GitTarget Destination Immutability", func() {
 		base := &configbutleraiv1alpha1.GitTarget{
 			ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace},
 			Spec: configbutleraiv1alpha1.GitTargetSpec{
-				ProviderRef: configbutleraiv1alpha1.GitProviderReference{Name: "prov-a", Kind: "GitProvider"},
+				ProviderRef: configbutleraiv1alpha1.GitProviderReference{Name: "prov-a"},
 				Branch:      "main",
 			},
 		}

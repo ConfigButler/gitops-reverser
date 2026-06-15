@@ -37,6 +37,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/transport/ssh"
 
 	configbutleraiv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	gitpkg "github.com/ConfigButler/gitops-reverser/internal/git"
 )
 
 var _ = Describe("GitProvider Controller", func() {
@@ -47,6 +48,9 @@ var _ = Describe("GitProvider Controller", func() {
 			reconciler = &GitProviderReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
+				// These cases focus on dialect parsing, not host-key policy; the SSH
+				// secrets carry no known_hosts, so allow the missing-key dev opt-out.
+				SSHHostKeys: gitpkg.SSHHostKeyConfig{AllowMissingKnownHosts: true},
 			}
 		})
 
@@ -61,7 +65,11 @@ var _ = Describe("GitProvider Controller", func() {
 					},
 				}
 
-				auth, err := reconciler.extractCredentials(secret)
+				auth, err := reconciler.extractCredentials(
+					context.Background(),
+					&configbutleraiv1alpha1.GitProvider{},
+					secret,
+				)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(auth).To(BeAssignableToTypeOf(&ssh.PublicKeys{}))
 
@@ -81,7 +89,11 @@ var _ = Describe("GitProvider Controller", func() {
 					},
 				}
 
-				auth, err := reconciler.extractCredentials(secret)
+				auth, err := reconciler.extractCredentials(
+					context.Background(),
+					&configbutleraiv1alpha1.GitProvider{},
+					secret,
+				)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(auth).To(BeAssignableToTypeOf(&ssh.PublicKeys{}))
 			})
@@ -93,7 +105,11 @@ var _ = Describe("GitProvider Controller", func() {
 					},
 				}
 
-				_, err := reconciler.extractCredentials(secret)
+				_, err := reconciler.extractCredentials(
+					context.Background(),
+					&configbutleraiv1alpha1.GitProvider{},
+					secret,
+				)
 				Expect(err).To(HaveOccurred())
 				Expect(err.Error()).To(ContainSubstring("failed to create SSH public keys"))
 			})
@@ -109,7 +125,11 @@ var _ = Describe("GitProvider Controller", func() {
 					},
 				}
 
-				auth, err := reconciler.extractCredentials(secret)
+				auth, err := reconciler.extractCredentials(
+					context.Background(),
+					&configbutleraiv1alpha1.GitProvider{},
+					secret,
+				)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(auth).To(BeAssignableToTypeOf(&ssh.PublicKeys{}))
 			})
@@ -124,7 +144,11 @@ var _ = Describe("GitProvider Controller", func() {
 					},
 				}
 
-				auth, err := reconciler.extractCredentials(secret)
+				auth, err := reconciler.extractCredentials(
+					context.Background(),
+					&configbutleraiv1alpha1.GitProvider{},
+					secret,
+				)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(auth).To(BeAssignableToTypeOf(&http.BasicAuth{}))
 
@@ -140,9 +164,13 @@ var _ = Describe("GitProvider Controller", func() {
 					},
 				}
 
-				_, err := reconciler.extractCredentials(secret)
+				_, err := reconciler.extractCredentials(
+					context.Background(),
+					&configbutleraiv1alpha1.GitProvider{},
+					secret,
+				)
 				Expect(err).To(HaveOccurred())
-				Expect(err.Error()).To(ContainSubstring("secret contains username but missing password"))
+				Expect(err.Error()).To(ContainSubstring("contains username but no password"))
 			})
 		})
 
@@ -152,11 +180,15 @@ var _ = Describe("GitProvider Controller", func() {
 					Data: map[string][]byte{},
 				}
 
-				_, err := reconciler.extractCredentials(secret)
+				_, err := reconciler.extractCredentials(
+					context.Background(),
+					&configbutleraiv1alpha1.GitProvider{},
+					secret,
+				)
 				Expect(err).To(HaveOccurred())
 				Expect(
 					err.Error(),
-				).To(ContainSubstring("secret must contain either 'ssh-privatekey' or both 'username' and 'password'"))
+				).To(ContainSubstring("does not contain valid authentication data"))
 			})
 
 			It("should fail with irrelevant data", func() {
@@ -166,11 +198,15 @@ var _ = Describe("GitProvider Controller", func() {
 					},
 				}
 
-				_, err := reconciler.extractCredentials(secret)
+				_, err := reconciler.extractCredentials(
+					context.Background(),
+					&configbutleraiv1alpha1.GitProvider{},
+					secret,
+				)
 				Expect(err).To(HaveOccurred())
 				Expect(
 					err.Error(),
-				).To(ContainSubstring("secret must contain either 'ssh-privatekey' or both 'username' and 'password'"))
+				).To(ContainSubstring("does not contain valid authentication data"))
 			})
 		})
 	})

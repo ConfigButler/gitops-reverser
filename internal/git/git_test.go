@@ -234,7 +234,7 @@ xmyh+iFc9TAPNkGSIb2z
 -----END RSA PRIVATE KEY-----`
 
 	// Test that the function handles invalid keys properly
-	auth, err := ssh.GetAuthMethod(privateKey, "", "")
+	auth, err := ssh.GetAuthMethod(privateKey, "", "", false)
 	require.Error(t, err) // Expect error with test key
 	assert.Nil(t, auth)
 }
@@ -276,7 +276,7 @@ JEOwQJmkOnyoBJEOwQJmkOnyoBJEOwQJmkOnyoBJEOwQJmkOnyoBJEOwQJmkOnyoB
 
 	// Since this is a fake encrypted key, it will still fail
 	// Let's change this test to expect an error for now
-	auth, err := ssh.GetAuthMethod(privateKey, passphrase, "")
+	auth, err := ssh.GetAuthMethod(privateKey, passphrase, "", false)
 	require.Error(t, err) // Expect error with fake key
 	assert.Nil(t, auth)
 }
@@ -284,13 +284,13 @@ JEOwQJmkOnyoBJEOwQJmkOnyoBJEOwQJmkOnyoBJEOwQJmkOnyoBJEOwQJmkOnyoB
 func TestGetAuthMethod_InvalidKey(t *testing.T) {
 	invalidKey := "this-is-not-a-valid-ssh-key"
 
-	auth, err := ssh.GetAuthMethod(invalidKey, "", "")
+	auth, err := ssh.GetAuthMethod(invalidKey, "", "", false)
 	require.Error(t, err)
 	assert.Nil(t, auth)
 }
 
 func TestGetAuthMethod_EmptyKey(t *testing.T) {
-	auth, err := ssh.GetAuthMethod("", "", "")
+	auth, err := ssh.GetAuthMethod("", "", "", false)
 	require.Error(t, err)
 	assert.Nil(t, auth)
 }

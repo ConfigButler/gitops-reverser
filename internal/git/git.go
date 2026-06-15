@@ -66,6 +66,17 @@ func GetHTTPAuthMethod(username, password string) (transport.AuthMethod, error) 
 	}, nil
 }
 
+// GetHTTPTokenAuthMethod returns an HTTP bearer-token authentication method. Both Flux and Argo
+// CD store token credentials (GitHub fine-grained PATs, GitLab project/group access tokens) under
+// a "bearerToken" Secret key and authenticate without a username; go-git's TokenAuth sends the
+// token as an Authorization: Bearer header.
+func GetHTTPTokenAuthMethod(token string) (transport.AuthMethod, error) {
+	if token == "" {
+		return nil, errors.New("bearer token cannot be empty")
+	}
+	return &http.TokenAuth{Token: token}, nil
+}
+
 // CheckRepo performs lightweight connectivity checks and gathers repository metadata.
 func CheckRepo(ctx context.Context, repoURL string, auth transport.AuthMethod) (*RepoInfo, error) {
 	logger := log.FromContext(ctx)

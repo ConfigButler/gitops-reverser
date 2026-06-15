@@ -39,12 +39,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	"github.com/go-git/go-git/v5/plumbing/transport"
-	"github.com/go-git/go-git/v5/plumbing/transport/http"
 	"github.com/go-logr/logr"
 
 	configbutleraiv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 	gitpkg "github.com/ConfigButler/gitops-reverser/internal/git"
-	"github.com/ConfigButler/gitops-reverser/internal/ssh"
 )
 
 // GitProviderReconciler reconciles a GitProvider object.
@@ -53,6 +51,11 @@ type GitProviderReconciler struct {
 
 	Scheme *runtime.Scheme
 	firsts gitProviderLogFirsts
+
+	// SSHHostKeys configures SSH host-key resolution (install-level default ConfigMap and the
+	// dev-only missing-key opt-out) for the connectivity check's credential read, so it matches
+	// what the write path uses.
+	SSHHostKeys gitpkg.SSHHostKeyConfig
 }
 
 // gitProviderLogFirsts keeps startup progress visible without turning every
@@ -198,7 +201,7 @@ func (r *GitProviderReconciler) getAuthFromSecret(
 	secret *corev1.Secret,
 ) (transport.AuthMethod, ctrl.Result, bool) {
 	log.V(1).Info("Extracting credentials from secret")
-	auth, err := r.extractCredentials(secret)
+	auth, err := r.extractCredentials(ctx, gitProvider, secret)
 	if err != nil {
 		log.Error(err, "Failed to extract credentials from secret")
 		secretName := gitProvider.Spec.SecretRef.Name
@@ -275,39 +278,17 @@ func (r *GitProviderReconciler) fetchSecret(
 	return &secret, nil
 }
 
-// extractCredentials extracts Git authentication from secret data.
-func (r *GitProviderReconciler) extractCredentials(secret *corev1.Secret) (transport.AuthMethod, error) {
-	// If no secret is provided, return nil auth (for public repositories)
-	if secret == nil {
-		return nil, nil //nolint:nilnil // nil auth means public repository
-	}
-
-	// Try SSH key authentication first
-	if privateKey, exists := secret.Data["ssh-privatekey"]; exists {
-		keyPassword := ""
-		if passData, hasPass := secret.Data["ssh-password"]; hasPass {
-			keyPassword = string(passData)
-		}
-		// Get known_hosts if available
-		knownHosts := ""
-		if knownHostsData, hasKnownHosts := secret.Data["known_hosts"]; hasKnownHosts {
-			knownHosts = string(knownHostsData)
-		}
-		return ssh.GetAuthMethod(string(privateKey), keyPassword, knownHosts)
-	}
-
-	// Try username/password authentication
-	if username, hasUser := secret.Data["username"]; hasUser {
-		if password, hasPass := secret.Data["password"]; hasPass {
-			return &http.BasicAuth{
-				Username: string(username),
-				Password: string(password),
-			}, nil
-		}
-		return nil, ErrMissingPassword
-	}
-
-	return nil, ErrInvalidSecretFormat
+// extractCredentials resolves Git authentication from the credentials Secret, accepting the
+// Kubernetes-native, Flux, and Argo CD key dialects. It delegates to the same reader the write
+// path uses (internal/git), so the connectivity check validates exactly what a worker would use —
+// including SSH host-key resolution via the GitProvider's knownHostsRef and the install-level
+// default ConfigMap.
+func (r *GitProviderReconciler) extractCredentials(
+	ctx context.Context,
+	gitProvider *configbutleraiv1alpha1.GitProvider,
+	secret *corev1.Secret,
+) (transport.AuthMethod, error) {
+	return gitpkg.AuthFromSecretData(ctx, r.Client, gitProvider, secret, r.SSHHostKeys)
 }
 
 // checkRemoteConnectivity performs a lightweight check of repository connectivity and returns branch count.

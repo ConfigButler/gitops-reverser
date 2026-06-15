@@ -142,6 +142,29 @@ spec:
                     - secretRef
                     type: object
                 type: object
+              knownHostsRef:
+                description: |-
+                  KnownHostsRef optionally points at a namespace-local ConfigMap or Secret holding SSH
+                  known_hosts, so host trust can be centralized across GitProviders on the same host instead
+                  of repeated in every credentials Secret. It is used only for SSH and ignored for HTTP auth.
+                  Host keys are resolved in priority order: the credentials Secret's own known_hosts, then this
+                  ref, then the install-level default known-hosts ConfigMap; if none yields valid keys, SSH
+                  fails closed.
+                properties:
+                  kind:
+                    default: ConfigMap
+                    description: 'Kind of the referent: ConfigMap (default) or Secret.'
+                    enum:
+                    - ConfigMap
+                    - Secret
+                    type: string
+                  name:
+                    description: Name of the ConfigMap or Secret.
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
               push:
                 description: Push controls how events are coalesced into commits before
                   pushing.

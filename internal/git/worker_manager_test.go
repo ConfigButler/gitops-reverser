@@ -105,7 +105,6 @@ func createTargetForRegister(
 	target.Name = name
 	target.Namespace = testTargetNamespace
 	target.Spec.ProviderRef = configv1alpha1.GitProviderReference{
-		Kind: "GitProvider",
 		Name: providerName,
 	}
 	target.Spec.Branch = branch

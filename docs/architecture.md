@@ -87,7 +87,8 @@ keys.
 
 Key fields:
 
-- `spec.providerRef`: currently implemented for namespace-local `GitProvider`.
+- `spec.providerRef`: reference to a namespace-local `GitProvider` (`group`/`kind` default to
+  `configbutler.ai`/`GitProvider`).
 - `spec.branch`: immutable branch name, validated against `GitProvider.spec.allowedBranches`.
 - `spec.path`: immutable required path under the repository; `.` deliberately means repo root.
 - `spec.encryption`: optional SOPS/age encryption settings for sensitive resources.
@@ -106,8 +107,11 @@ share the same provider and branch.
 
 Snapshot stats are stored in `status.snapshot.stats`.
 
-The `providerRef` schema still mentions Flux `GitRepository`, but the controller path only supports
-`GitProvider` today.
+`providerRef` references a `GitProvider` (`group`/`kind` default to `configbutler.ai`/`GitProvider`,
+the only accepted values — there is no Flux `GitRepository` option). The portable artifact across
+GitOps ecosystems is the credentials Secret, not a foreign repository object — the credentials reader
+accepts the Kubernetes-native, Flux, and Argo CD Secret key dialects (see
+[configuration.md](configuration.md) and [design/git-credentials-interop.md](design/git-credentials-interop.md)).
 
 ### WatchRule
 
@@ -662,7 +666,6 @@ Current limitations:
 - no per-destination Redis streams, so a blocked destination can still stall the single consumer
   path;
 - `deletecollection` reaches the canonical audit stream but does not yet fan out per item;
-- Flux `GitRepository` provider references are schema-visible but not implemented;
 - new-file placement is still canonical path based, not user-configurable.
 
 ---

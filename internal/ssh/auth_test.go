@@ -19,11 +19,17 @@ limitations under the License.
 package ssh
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/pem"
 	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	gossh "golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/knownhosts"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 )
@@ -45,7 +51,7 @@ MIIEowIBAAKCAQEAyVSi0fDJKlQnPCXjY9QGFmPuLbVFLPwuFP3KBYLTrQZ0M5n5
 
 func TestGetAuthMethod(t *testing.T) {
 	privateKey := testSSHPrivateKey
-	auth, err := GetAuthMethod(privateKey, "", "")
+	auth, err := GetAuthMethod(privateKey, "", "", false)
 
 	// Expect error because test key is truncated/invalid
 	require.Error(t, err)
@@ -57,7 +63,7 @@ func TestGetAuthMethod_WithKnownHosts(t *testing.T) {
 	privateKey := testSSHPrivateKey
 	knownHosts := "github.com ssh-rsa AAAAB3NzaC1yc2EAAAABIwAAAQEAq2A7hRGmdnm9tUDbO9IDSwBK6TbQa+PXYPCPy6rbTrTtw7PHkccKrpp0yVhp5HdEIcKr6pLlVDBfOLX9QUsyCOV0wzfjIJNlGEYsdlLJizHhbn2mUjvSAHQqZETYP03HR+xYPVY/wDHEL0w1vXw1g7VQAN+5SZG1yQ+Qr2lnJbj5+6zP+Yr5s6CJXZ1F4OG8E7eHdOd5MFBjv9D9rLJvQjk5FVMzqZ+mZJ+W8Xj5MQP6vYzZh7cC9qPqJ8bQP8YB+KCJ3oGxZ8F8bQP8YB+KCJ3oGxZ8F8bQP8YB+KCJ3oGxZ8F8bQP8YB+KCJ3oGxZ8F8bQP8YB+KCJ3oGxZ8F8"
 
-	auth, err := GetAuthMethod(privateKey, "", knownHosts)
+	auth, err := GetAuthMethod(privateKey, "", knownHosts, false)
 	// Expect error because test key is truncated/invalid
 	require.Error(t, err)
 	assert.Nil(t, auth)
@@ -67,14 +73,64 @@ func TestGetAuthMethod_WithKnownHosts(t *testing.T) {
 func TestGetAuthMethod_InvalidKey(t *testing.T) {
 	invalidKey := "this-is-not-a-valid-ssh-key"
 
-	auth, err := GetAuthMethod(invalidKey, "", "")
+	auth, err := GetAuthMethod(invalidKey, "", "", false)
 	require.Error(t, err)
 	assert.Nil(t, auth)
 }
 
 func TestGetAuthMethod_EmptyKey(t *testing.T) {
-	auth, err := GetAuthMethod("", "", "")
+	auth, err := GetAuthMethod("", "", "", false)
 	require.Error(t, err)
 	assert.Nil(t, auth)
 	assert.Contains(t, err.Error(), "private key cannot be empty")
+}
+
+// generateTestSSHKey returns a valid PEM-encoded RSA private key and a matching known_hosts line.
+func generateTestSSHKey(t *testing.T) (string, string) {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+	pemBytes := pem.EncodeToMemory(&pem.Block{
+		Type:  "RSA PRIVATE KEY",
+		Bytes: x509.MarshalPKCS1PrivateKey(key),
+	})
+	pub, err := gossh.NewPublicKey(&key.PublicKey)
+	require.NoError(t, err)
+	return string(pemBytes), knownhosts.Line([]string{"example.com"}, pub)
+}
+
+func TestGetAuthMethod_FailsClosedWithoutKnownHosts(t *testing.T) {
+	privateKey, _ := generateTestSSHKey(t)
+
+	auth, err := GetAuthMethod(privateKey, "", "", false)
+	require.Error(t, err)
+	assert.Nil(t, auth)
+	assert.Contains(t, err.Error(), "known_hosts is required")
+}
+
+func TestGetAuthMethod_InsecureOptOutWithoutKnownHosts(t *testing.T) {
+	privateKey, _ := generateTestSSHKey(t)
+
+	auth, err := GetAuthMethod(privateKey, "", "", true)
+	require.NoError(t, err)
+	assert.NotNil(t, auth)
+}
+
+func TestGetAuthMethod_WithValidKnownHosts(t *testing.T) {
+	privateKey, knownHosts := generateTestSSHKey(t)
+
+	auth, err := GetAuthMethod(privateKey, "", knownHosts, false)
+	require.NoError(t, err)
+	assert.NotNil(t, auth)
+}
+
+// A known_hosts that is present but unparseable is a hard error regardless of the missing-key
+// opt-out: a declared host key must be valid. The opt-out only ever covers the no-key-at-all case.
+func TestGetAuthMethod_UnparseableKnownHostsIsHardErrorEvenWithOptOut(t *testing.T) {
+	privateKey, _ := generateTestSSHKey(t)
+
+	auth, err := GetAuthMethod(privateKey, "", "this is not a valid known_hosts line", true)
+	require.Error(t, err)
+	assert.Nil(t, auth)
+	assert.Contains(t, err.Error(), "failed to parse known_hosts")
 }

@@ -453,7 +453,6 @@ func TestBranchWorker_EnsurePathBootstrapped_RendersAllResolvedRecipients(t *tes
 	target.Name = "bootstrap-target"
 	target.Namespace = "default"
 	target.Spec.ProviderRef = configv1alpha1.GitProviderReference{
-		Kind: "GitProvider",
 		Name: "test-repo",
 	}
 	target.Spec.Branch = "main"
@@ -1107,7 +1106,6 @@ func createTargetWithEncryption(
 	target.Name = name
 	target.Namespace = namespace
 	target.Spec.ProviderRef = configv1alpha1.GitProviderReference{
-		Kind: "GitProvider",
 		Name: providerName,
 	}
 	target.Spec.Branch = branch
@@ -1138,7 +1136,6 @@ func createTargetWithoutEncryption(
 	target.Name = name
 	target.Namespace = namespace
 	target.Spec.ProviderRef = configv1alpha1.GitProviderReference{
-		Kind: "GitProvider",
 		Name: providerName,
 	}
 	target.Spec.Branch = branch
@@ -1165,7 +1162,6 @@ func createTargetWithEncryptionSecretData(
 	target.Name = name
 	target.Namespace = namespace
 	target.Spec.ProviderRef = configv1alpha1.GitProviderReference{
-		Kind: "GitProvider",
 		Name: providerName,
 	}
 	target.Spec.Branch = branch

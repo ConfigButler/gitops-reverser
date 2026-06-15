@@ -146,7 +146,7 @@ spec:
                 type: string
               providerRef:
                 description: |-
-                  ProviderRef references the GitProvider or Flux GitRepository.
+                  ProviderRef references the GitProvider that backs this target.
                   Immutable: delete and recreate the GitTarget to change its destination.
                 properties:
                   group:
@@ -157,7 +157,10 @@ spec:
                     default: GitProvider
                     description: |-
                       Kind of the referent.
-                      NOTE: Support for reading from Flux GitRepository is not yet implemented!
+                      Optional because this reference currently only supports a single kind (GitProvider).
+                      Keeping it optional allows users to omit it while still benefiting from CRD defaulting.
+                    enum:
+                    - GitProvider
                     type: string
                   name:
                     description: Name of the referent.

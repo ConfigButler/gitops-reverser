@@ -5,6 +5,9 @@ credentials, and optionally encrypted Secret material. Security findings are ver
 project should not be introduced into production without a proper review of the code, deployment
 model, and operational risks for your environment.
 
+For what the controller can access and which pieces are sensitive, see
+[`docs/security-model.md`](docs/security-model.md).
+
 ## Reporting a vulnerability
 
 Please do not open a public GitHub issue for security-sensitive reports.

@@ -154,6 +154,7 @@ func main() {
 		cfg.branchBufferMaxBytes,
 		cfg.sensitiveResources,
 	)
+	workerManager.SetSSHHostKeyConfig(cfg.sshHostKeys)
 	fatalIfErr(mgr.Add(workerManager), "unable to add worker manager to manager")
 
 	// Watch ingestion manager (placeholder, will get EventRouter set later)
@@ -363,8 +364,9 @@ func main() {
 	fatalIfErr(mgr.Add(watchMgr), "unable to add watch ingestion manager")
 
 	if err := (&controller.GitProviderReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:      mgr.GetClient(),
+		Scheme:      mgr.GetScheme(),
+		SSHHostKeys: cfg.sshHostKeys,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "GitProvider")
 		os.Exit(1)
@@ -440,6 +442,7 @@ type appConfig struct {
 	auditEventBodyWait       time.Duration
 	branchBufferMaxBytes     int64
 	sensitiveResources       types.SensitiveResourcePolicy
+	sshHostKeys              git.SSHHostKeyConfig
 	zapOpts                  zap.Options
 }
 
@@ -531,6 +534,12 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 		"",
 		"Comma-separated additional sensitive resources in resource or group/resource form.",
 	)
+	fs.StringVar(&cfg.sshHostKeys.DefaultKnownHostsConfigMap, "default-known-hosts-configmap", "",
+		"Optional install-level ConfigMap (in the controller's namespace) supplying SSH known_hosts "+
+			"for Git hosts when neither the credentials Secret nor the GitProvider's knownHostsRef does.")
+	fs.BoolVar(&cfg.sshHostKeys.AllowMissingKnownHosts, "insecure-allow-missing-known-hosts", false,
+		"INSECURE, dev/throwaway clusters only: permit SSH when no host-key source produced any "+
+			"known_hosts at all. A present-but-unparseable known_hosts is always a hard error.")
 	cfg.zapOpts = zap.Options{
 		// Production mode defaults to JSON encoding, which is easier for log processors to parse.
 		Development: false,
@@ -558,6 +567,10 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 	if err != nil {
 		return appConfig{}, err
 	}
+
+	// The install-level default known-hosts ConfigMap lives in the controller's own namespace,
+	// supplied via the downward API. Without it, that resolution layer is simply unavailable.
+	cfg.sshHostKeys.ControllerNamespace = os.Getenv("POD_NAMESPACE")
 
 	return cfg, nil
 }

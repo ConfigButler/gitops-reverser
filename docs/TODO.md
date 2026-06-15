@@ -72,9 +72,10 @@ This file is meant to track the smaller current backlog, not historical notes.
 
 - [ ] Simpler setup flows, including more Git provider bootstrap automation.
 
-- [ ] Implement real `GitTarget.spec.providerRef` support for Flux `GitRepository`.
-  The API shape already allows it, but the controller path is still effectively GitProvider-first.
-  That would make the "bring your own Flux repo" story real instead of only partially modeled.
+- [x] Resolved: we do **not** consume a Flux `GitRepository` as a `providerRef`. The portable
+  artifact is the credentials Secret, not the repo object, so `providerRef` is now a name-only
+  reference to a `GitProvider` and the credentials reader instead interoperates with Flux/Argo CD
+  Secret shapes. See [design/git-credentials-interop.md](design/git-credentials-interop.md).
 
 - [ ] A mode that commits changes without end-user author attribution, using the watch/reconcile
   path instead of kube-apiserver audit integration.

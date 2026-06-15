@@ -21,7 +21,6 @@ package controller
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
@@ -79,11 +78,4 @@ const (
 	ReasonCommitConfigInvalid = "CommitConfigInvalid"
 	// ReasonEncryptionConfigInvalid indicates encryption configuration is invalid.
 	ReasonEncryptionConfigInvalid = "EncryptionConfigInvalid"
-)
-
-var (
-	// ErrMissingPassword indicates that the password field is missing in the secret.
-	ErrMissingPassword = errors.New("secret contains username but missing password")
-	// ErrInvalidSecretFormat indicates that the secret format is invalid.
-	ErrInvalidSecretFormat = errors.New("secret must contain either 'ssh-privatekey' or both 'username' and 'password'")
 )

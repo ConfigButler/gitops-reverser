@@ -95,6 +95,11 @@ type BranchWorker struct {
 	// object-less deletes have no resource index to target.
 	mapper typeset.Lookup
 
+	// sshHostKeys configures SSH host-key resolution (install-level default ConfigMap and the
+	// dev-only missing-key opt-out) for this worker's credential reads. Set by the WorkerManager
+	// before Start, on the same goroutine the event loop reads it from.
+	sshHostKeys SSHHostKeyConfig
+
 	// Event processing
 	eventQueue chan WorkItem
 	ctx        context.Context
@@ -503,7 +508,7 @@ func (w *BranchWorker) prepareBootstrapRepository(
 		return "", fmt.Errorf("failed to get GitProvider: %w", err)
 	}
 
-	auth, err := getAuthFromSecret(ctx, w.Client, provider)
+	auth, err := getAuthFromSecret(ctx, w.Client, provider, w.sshHostKeys)
 	if err != nil {
 		return "", fmt.Errorf("failed to get auth: %w", err)
 	}
@@ -1042,7 +1047,7 @@ func (w *BranchWorker) commitPendingWrites(pendingWrites []PendingWrite, hasPend
 		return fmt.Errorf("get GitProvider: %w", err)
 	}
 
-	auth, err := getAuthFromSecret(w.ctx, w.Client, provider)
+	auth, err := getAuthFromSecret(w.ctx, w.Client, provider, w.sshHostKeys)
 	if err != nil {
 		return fmt.Errorf("resolve auth: %w", err)
 	}
@@ -1105,7 +1110,7 @@ func (w *BranchWorker) pushPendingCommits(pendingWrites []PendingWrite) error {
 		return fmt.Errorf("get GitProvider: %w", err)
 	}
 
-	auth, err := getAuthFromSecret(w.ctx, w.Client, provider)
+	auth, err := getAuthFromSecret(w.ctx, w.Client, provider, w.sshHostKeys)
 	if err != nil {
 		return fmt.Errorf("resolve auth: %w", err)
 	}
@@ -1369,7 +1374,7 @@ func (w *BranchWorker) syncWithRemote(ctx context.Context) (*PullReport, error) 
 		return nil, fmt.Errorf("failed to get GitProvider: %w", err)
 	}
 
-	auth, err := getAuthFromSecret(ctx, w.Client, provider)
+	auth, err := getAuthFromSecret(ctx, w.Client, provider, w.sshHostKeys)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get auth: %w", err)
 	}
@@ -1406,7 +1411,7 @@ func (w *BranchWorker) ensureRepositoryInitialized(ctx context.Context) error {
 		return nil
 	}
 
-	auth, err := getAuthFromSecret(ctx, w.Client, provider)
+	auth, err := getAuthFromSecret(ctx, w.Client, provider, w.sshHostKeys)
 	if err != nil {
 		return fmt.Errorf("failed to get auth: %w", err)
 	}

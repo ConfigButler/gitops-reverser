@@ -25,74 +25,12 @@ import (
 	"strings"
 
 	gogit "github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/plumbing/transport"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/ConfigButler/gitops-reverser/api/v1alpha1"
-	"github.com/ConfigButler/gitops-reverser/internal/ssh"
 )
-
-// GetAuthFromSecret fetches authentication credentials from the specified secret.
-// This is a public wrapper that can be used by controllers.
-func GetAuthFromSecret(
-	ctx context.Context,
-	k8sClient client.Client,
-	provider *v1alpha1.GitProvider,
-) (transport.AuthMethod, error) {
-	return getAuthFromSecret(ctx, k8sClient, provider)
-}
-
-// getAuthFromSecret fetches authentication credentials from the specified secret.
-// Shared helper used by both old and new worker implementations.
-func getAuthFromSecret(
-	ctx context.Context,
-	k8sClient client.Client,
-	provider *v1alpha1.GitProvider,
-) (transport.AuthMethod, error) {
-	// If no secret reference is provided, return nil auth (for public repositories)
-	if provider.Spec.SecretRef == nil || provider.Spec.SecretRef.Name == "" {
-		return nil, nil //nolint:nilnil // Returning nil auth for public repos is semantically correct
-	}
-
-	secretName := types.NamespacedName{
-		Name:      provider.Spec.SecretRef.Name,
-		Namespace: provider.Namespace,
-	}
-
-	var secret corev1.Secret
-	if err := k8sClient.Get(ctx, secretName, &secret); err != nil {
-		return nil, fmt.Errorf("failed to get secret %s: %w", secretName, err)
-	}
-
-	// Check for SSH authentication first
-	if privateKey, ok := secret.Data["ssh-privatekey"]; ok {
-		keyPassword := ""
-		if passData, hasPass := secret.Data["ssh-password"]; hasPass {
-			keyPassword = string(passData)
-		}
-		// Get known_hosts if available
-		knownHosts := ""
-		if knownHostsData, hasKnownHosts := secret.Data["known_hosts"]; hasKnownHosts {
-			knownHosts = string(knownHostsData)
-		}
-		return ssh.GetAuthMethod(string(privateKey), keyPassword, knownHosts)
-	}
-
-	// Check for HTTP basic authentication
-	if username, hasUsername := secret.Data["username"]; hasUsername {
-		if password, hasPassword := secret.Data["password"]; hasPassword {
-			return GetHTTPAuthMethod(string(username), string(password))
-		}
-		return nil, fmt.Errorf("secret %s contains username but no password for HTTP auth", secretName)
-	}
-
-	return nil, fmt.Errorf(
-		"secret %s does not contain valid authentication data (ssh-privatekey or username/password)",
-		secretName,
-	)
-}
 
 // GetCommitSigner fetches commit signing material from the specified secret.
 func GetCommitSigner(
