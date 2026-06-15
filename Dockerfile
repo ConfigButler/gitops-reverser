@@ -1,5 +1,5 @@
 # Build the manager binary
-FROM golang:1.26.3 AS builder
+FROM golang:1.26.4 AS builder
 
 # Automatic platform arguments provided by Docker BuildKit
 ARG TARGETOS
@@ -29,7 +29,7 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
     -ldflags "-X main.version=${VERSION} -X main.gitCommit=${GIT_COMMIT} -X main.gitDirty=${GIT_DIRTY} -X main.buildDate=${BUILD_DATE}" \
     -o manager ./cmd
 
-FROM alpine:3.23 AS sops-downloader
+FROM alpine:3.24 AS sops-downloader
 ARG TARGETARCH
 ARG SOPS_VERSION=v3.11.0
 RUN apk add --no-cache curl
