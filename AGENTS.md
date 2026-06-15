@@ -20,7 +20,7 @@ Run the e2e commands sequentially, not in parallel!
 
 ```bash
 task lint      # Must pass golangci-lint checks
-task test      # Must pass all unit tests with >90% coverage
+task test      # Must pass all unit tests + the coverage ratchet (see TESTING REQUIREMENTS)
 task test-e2e  # Must pass end-to-end tests
 ```
 
@@ -40,7 +40,7 @@ ship in the devcontainer image.
 - Follow Go naming conventions and add godoc comments for exports
 - Maintain 120-character line limit (enforced by `.golangci.yml`)
 - Use consistent error handling patterns from existing codebase
-- Achieve >90% test coverage for all new code
+- Cover new code with tests; total coverage must not regress (see TESTING REQUIREMENTS)
 - Write table-driven tests where appropriate
 
 ## COMPONENT-SPECIFIC RULES
@@ -76,10 +76,20 @@ ship in the devcontainer image.
 
 ## TESTING REQUIREMENTS
 
-- Write unit tests with >90% coverage
+- Cover new code with tests (both positive and negative cases)
 - Add integration tests for complex workflows
-- Include both positive and negative test cases
 - Follow naming convention: `TestFunctionName_Scenario(t *testing.T)`
+
+### Coverage
+
+- `task test` runs `cover-check`, a self-ratcheting gate: it fails if total unit coverage drops
+  more than a small tolerance below `.coverage-baseline` (a committed high-water mark).
+- When coverage improves, `cover-check` auto-raises `.coverage-baseline`. **Commit the bumped file**
+  so the floor advances; otherwise the change is just discarded.
+- e2e coverage of the deployed controller: `E2E_COVERAGE=1 task test-e2e` then
+  `task e2e-coverage-collect` (writes `e2e-cover.out`).
+- On PRs, Codecov reports the merged `unit` + `e2e` coverage (`codecov.yml`); its project status is
+  a non-regression ratchet (compared to the base commit).
 
 ## DOCUMENTATION UPDATES
 
@@ -104,7 +114,8 @@ describes behavior you also changed in code/config during the same task.
 ## FAILURE HANDLING
 
 - If `task lint` fails: Run `task lint-fix` first
-- If tests fail: Fix issues and ensure >90% coverage maintained
+- If tests fail: Fix issues; keep total coverage at or above `.coverage-baseline` (commit the bump
+  when it auto-raises)
 - If e2e fails: Check k3d cluster setup and Docker availability
 - If Docker not available: Ask user to start Docker daemon before running e2e tests
 

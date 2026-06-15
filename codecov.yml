@@ -1,0 +1,45 @@
+# Codecov configuration.
+#
+# Coverage is treated as a guardrail, not a target:
+#   - project status uses target: auto, so each commit is compared to its base
+#     and coverage can only ratchet up (a small threshold absorbs noise).
+#   - patch status reports coverage of the lines changed in a PR. It is
+#     informational for now (visible, not blocking) until the baseline settles.
+#
+# Two independent uploads are combined per commit via flags:
+#   - unit: `task test` (cover.out)
+#   - e2e:  covdata from the deployed controller, folded in by the e2e job
+# carryforward keeps the last known upload for a flag if a commit is missing one
+# (e.g. a flaky e2e run), so the combined number stays meaningful.
+coverage:
+  precision: 1
+  round: down
+  status:
+    project:
+      default:
+        target: auto
+        threshold: 1%
+        informational: false
+    patch:
+      default:
+        target: 70%
+        informational: true
+
+flags:
+  unit:
+    carryforward: true
+  e2e:
+    carryforward: true
+
+comment:
+  layout: "reach, diff, flags, files"
+  require_changes: true
+
+# Generated, boilerplate, and non-shipping code is excluded from the denominator
+# so the percentage reflects hand-written logic.
+ignore:
+  - "api/v1alpha1/zz_generated.deepcopy.go"
+  - "cmd/gitea-signing-debug/**"
+  - "cmd/manifest-analyzer/**"
+  - "test/**"
+  - "**/*_test.go"

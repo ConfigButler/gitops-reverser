@@ -123,6 +123,34 @@ tasks:
       - |
         export KUBEBUILDER_ASSETS="$({{.ENVTEST}} use {{.ENVTEST_K8S_VERSION}} --bin-dir "$(pwd)/bin" -p path)"
         go test $(go list ./... | grep -Ev '/test/e2e$') -coverprofile cover.out
+      - task: cover-check
+
+  cover-check:
+    desc: Self-ratcheting local coverage gate; fails if total drops below the high-water baseline
+    cmds:
+      - |
+        set -eu
+        if [ ! -f cover.out ]; then
+          echo "cover.out not found; run 'task test' first" >&2
+          exit 1
+        fi
+        # .coverage-baseline is a committed high-water mark (local equivalent of
+        # Codecov's project ratchet). The gate fails only on a drop beyond TOL%
+        # (noise slack); any improvement auto-raises the baseline so it climbs on
+        # its own. Commit the bumped file to advance the floor for everyone.
+        tol=0.5
+        baseline="$(cat .coverage-baseline 2>/dev/null || echo 0)"
+        total="$(go tool cover -func=cover.out | awk '/^total:/ {gsub("%","",$3); print $3}')"
+        if awk -v t="${total}" -v b="${baseline}" -v tol="${tol}" 'BEGIN{exit !(t+0 < b-tol)}'; then
+          printf "❌ unit coverage %s%% dropped more than %s%% below baseline %s%%\n" "${total}" "${tol}" "${baseline}"
+          exit 1
+        fi
+        if awk -v t="${total}" -v b="${baseline}" 'BEGIN{exit !(t+0 > b+0)}'; then
+          printf '%s\n' "${total}" > .coverage-baseline
+          printf "✅ unit coverage %s%% — raised baseline %s%% → %s%% (commit .coverage-baseline)\n" "${total}" "${baseline}" "${total}"
+        else
+          printf "✅ unit coverage %s%% (baseline %s%%, tolerance %s%%)\n" "${total}" "${baseline}" "${tol}"
+        fi
 
   lint:
     desc: Run golangci-lint

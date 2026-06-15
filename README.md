@@ -4,6 +4,7 @@
 [![Go](https://img.shields.io/badge/go-1.26-blue?logo=go)](go.mod)
 [![Platforms](https://img.shields.io/badge/platforms-amd64%20%7C%20arm64-2ea44f?logo=docker)](#)
 [![Go Report Card](https://goreportcard.com/badge/github.com/ConfigButler/gitops-reverser)](https://goreportcard.com/report/github.com/ConfigButler/gitops-reverser)
+[![codecov](https://codecov.io/gh/ConfigButler/gitops-reverser/graph/badge.svg)](https://codecov.io/gh/ConfigButler/gitops-reverser)
 [![Container](https://img.shields.io/badge/container-ghcr.io%2Fconfigbutler%2Fgitops--reverser-2ea44f?logo=docker)](https://github.com/ConfigButler/gitops-reverser/pkgs/container/gitops-reverser)
 [![Open Issues](https://img.shields.io/github/issues/ConfigButler/gitops-reverser)](https://github.com/ConfigButler/gitops-reverser/issues)
 
@@ -218,6 +219,7 @@ Start here for the stable docs surface:
 
 - [`docs/README.md`](docs/README.md)
 - [`docs/configuration.md`](docs/configuration.md)
+- [`docs/security-model.md`](docs/security-model.md)
 - [`docs/commit-signing.md`](docs/commit-signing.md)
 - [`docs/github-setup-guide.md`](docs/github-setup-guide.md)
 - [`docs/sops-age-guide.md`](docs/sops-age-guide.md)

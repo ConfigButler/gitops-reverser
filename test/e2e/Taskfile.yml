@@ -200,6 +200,48 @@ tasks:
           --output-dir="{{.CS}}/{{.NAMESPACE}}" --json-report=ginkgo-report-full.json \
           ./test/e2e/
 
+  e2e-coverage-collect:
+    desc: >-
+      Flush and collect e2e coverage from the deployed controller into
+      e2e-cover.out (requires a -cover image; run the suite with E2E_COVERAGE=1).
+    cmds:
+      - |
+        set -euo pipefail
+        ctx="{{.CTX}}"
+        ns="{{.NAMESPACE}}"
+        covdir=".stamps/coverage"
+        rm -rf "${covdir}"; mkdir -p "${covdir}"
+        pod="$(kubectl --context "${ctx}" -n "${ns}" get pod \
+          -l app.kubernetes.io/name=gitops-reverser -o jsonpath='{.items[0].metadata.name}')"
+        [ -n "${pod}" ] || { echo "no controller pod in ${ns}" >&2; exit 1; }
+        before="$(kubectl --context "${ctx}" -n "${ns}" get pod "${pod}" \
+          -o jsonpath='{.status.containerStatuses[?(@.name=="manager")].restartCount}')"
+        # The Go runtime writes integration coverage to GOCOVERDIR on exit, so
+        # SIGTERM the manager (PID 1). The kubelet restarts it; the GOCOVERDIR
+        # emptyDir survives the restart, so the counters remain readable.
+        echo "🧹 Flushing coverage: SIGTERM manager (PID 1) in ${ns}/${pod}…"
+        kubectl --context "${ctx}" -n "${ns}" exec "${pod}" -c manager -- /busybox/sh -c 'kill -TERM 1' || true
+        for _ in $(seq 1 30); do
+          now="$(kubectl --context "${ctx}" -n "${ns}" get pod "${pod}" \
+            -o jsonpath='{.status.containerStatuses[?(@.name=="manager")].restartCount}' 2>/dev/null || echo "${before}")"
+          [ "${now}" != "${before}" ] && break
+          sleep 2
+        done
+        kubectl --context "${ctx}" -n "${ns}" wait --for=condition=Ready "pod/${pod}" --timeout=90s || true
+        # Stream GOCOVERDIR out via the image's bundled busybox tar (absolute
+        # path avoids PATH assumptions; kubectl exec without a TTY is binary-safe).
+        kubectl --context "${ctx}" -n "${ns}" exec "${pod}" -c manager -- \
+          /busybox/tar cf - -C /var/gocoverage . > "${covdir}/cov.tar"
+        tar xf "${covdir}/cov.tar" -C "${covdir}" && rm -f "${covdir}/cov.tar"
+        files="$(find "${covdir}" -name 'covcounters.*' 2>/dev/null | wc -l | tr -d ' ')"
+        if [ "${files}" = "0" ]; then
+          echo "No coverage counters collected. Was the image built with GOCOVER=1 (E2E_COVERAGE=1)?" >&2
+          exit 1
+        fi
+        go tool covdata textfmt -i="${covdir}" -o=e2e-cover.out
+        echo "✅ Wrote e2e-cover.out"
+        go tool cover -func=e2e-cover.out | tail -1
+
   allure-e2e-results:
     desc: Convert local e2e Ginkgo JSON reports into Allure results
     aliases:
@@ -716,6 +758,9 @@ tasks:
       - '{{.IS}}/controller.id'
     status:
       - test -f "{{.IS}}/controller.id"
+      # Rebuild when the coverage mode is toggled (E2E_COVERAGE on/off), since
+      # the Go sources are unchanged but the binary must be (de)instrumented.
+      - test "$(cat {{.IS}}/controller.cover 2>/dev/null)" = "${E2E_COVERAGE:-}"
     cmds:
       - mkdir -p "{{.IS}}"
       - |
@@ -724,6 +769,9 @@ tasks:
         [ -z "$(git status --porcelain 2>/dev/null)" ] || GIT_DIRTY=1
         BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
         VERSION="$(git describe --tags --always --dirty 2>/dev/null || echo dev)"
+        # E2E_COVERAGE=1 builds a coverage-instrumented controller (see Dockerfile).
+        COVER_ARG=""
+        [ -n "${E2E_COVERAGE:-}" ] && COVER_ARG="--build-arg GOCOVER=1"
         {{.CONTAINER_TOOL}} build \
           --build-arg TARGETOS="$(go env GOOS)" \
           --build-arg TARGETARCH="$(go env GOARCH)" \
@@ -731,9 +779,11 @@ tasks:
           --build-arg GIT_COMMIT="${GIT_COMMIT}" \
           --build-arg GIT_DIRTY="${GIT_DIRTY}" \
           --build-arg BUILD_DATE="${BUILD_DATE}" \
+          ${COVER_ARG} \
           -t "{{.E2E_LOCAL_IMAGE}}" \
           .
         {{.CONTAINER_TOOL}} inspect --format='{{"{{"}}.Id{{"}}"}}' "{{.E2E_LOCAL_IMAGE}}" > "{{.IS}}/controller.id"
+        printf '%s' "${E2E_COVERAGE:-}" > "{{.IS}}/controller.cover"
 
   _project-image-ready-local:
     method: timestamp

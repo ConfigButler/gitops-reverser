@@ -224,6 +224,14 @@ jobs:
       - name: Run tests
         run: task test
 
+      - name: Upload unit coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          files: cover.out
+          flags: unit
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
+
   docker-build:
     name: Build
     runs-on: ubuntu-latest
@@ -257,6 +265,7 @@ jobs:
             GIT_COMMIT=${{ steps.image.outputs.git_commit }}
             GIT_DIRTY=0
             BUILD_DATE=${{ steps.image.outputs.build_date }}
+            GOCOVER=1
 
   e2e:
     name: E2E (${{ matrix.name }})
@@ -275,9 +284,14 @@ jobs:
             needs_artifact: true
             e2e_ginkgo_procs: "2"
             k3d_agent_count: "0"
+            # Helm/manifest installs don't carry the GOCOVERDIR overlay, so no
+            # coverage is collected here.
+            coverage: ""
           - name: full
             script: "task test-e2e"
             needs_artifact: false
+            # config-dir install carries the GOCOVERDIR overlay; collect e2e coverage.
+            coverage: "1"
             # Bumped 1 -> 4: the full suite was serialized to avoid the
             # cross-target rule-change snapshot coupling, now fixed (per-target
             # effective watch plan — docs/design/gittarget-isolation-on-rule-change.md).
@@ -367,6 +381,31 @@ jobs:
               git config --global --add safe.directory ${{ env.CI_WORKDIR }}
               ${{ matrix.script }}
             "
+
+      - name: Collect E2E coverage
+        if: matrix.coverage == '1'
+        # Fail-safe: a coverage hiccup must never fail the e2e gate.
+        run: |
+          docker run --rm \
+            --network host \
+            -v "${GITHUB_WORKSPACE}:${{ env.CI_WORKDIR }}" \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -w "${{ env.CI_WORKDIR }}" \
+            -e KUBECONFIG=${{ env.CI_WORKDIR }}/.stamps/cluster/k3d-gitops-reverser-test-e2e/.kube/config \
+            ${{ env.CI_CONTAINER }} \
+            bash -c "
+              git config --global --add safe.directory ${{ env.CI_WORKDIR }}
+              task e2e-coverage-collect
+            " || echo "e2e coverage collection failed (non-fatal)"
+
+      - name: Upload E2E coverage to Codecov
+        if: matrix.coverage == '1'
+        uses: codecov/codecov-action@v5
+        with:
+          files: e2e-cover.out
+          flags: e2e
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
 
       - name: Report disk usage (peak + final)
         if: always()

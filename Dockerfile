@@ -11,6 +11,10 @@ ARG GIT_COMMIT=unknown
 ARG GIT_DIRTY=0
 ARG BUILD_DATE=unknown
 
+# When non-empty, build a coverage-instrumented binary (Go 1.20+ integration
+# coverage). Used only for e2e coverage collection; release images leave it unset.
+ARG GOCOVER=
+
 WORKDIR /workspaces
 
 # Copy the Go Modules manifests
@@ -24,8 +28,10 @@ COPY cmd/ cmd/
 COPY api/ api/
 COPY internal/ internal/
 
-# Build for the target platform
+# Build for the target platform. ${GOCOVER:+...} expands to the coverage flags
+# only when GOCOVER is non-empty, instrumenting every package in the module.
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
+    ${GOCOVER:+-cover -covermode=atomic -coverpkg=github.com/ConfigButler/gitops-reverser/...} \
     -ldflags "-X main.version=${VERSION} -X main.gitCommit=${GIT_COMMIT} -X main.gitDirty=${GIT_DIRTY} -X main.buildDate=${BUILD_DATE}" \
     -o manager ./cmd
 

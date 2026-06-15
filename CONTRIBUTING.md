@@ -54,6 +54,12 @@ assets, and runs all packages except `test/e2e`. Coverage is written to `cover.o
 go tool cover -html=cover.out
 ```
 
+`task test` also enforces a coverage ratchet (`task cover-check`): it fails if total coverage drops
+more than ~0.5% below `.coverage-baseline`, a committed high-water mark. When your change improves
+coverage the baseline **auto-raises** — commit the updated `.coverage-baseline` alongside your
+change so the floor advances. On PRs, [Codecov](https://codecov.io/gh/ConfigButler/gitops-reverser)
+reports the merged unit + e2e coverage.
+
 Run a single package or test:
 
 ```bash
@@ -72,6 +78,18 @@ E2E runs against a real k3d cluster with Gitea and Prometheus. The cluster is
 Tests are written to append to existing state rather than require a clean slate.
 
 For deeper debugging, see [`test/e2e/E2E_DEBUGGING.md`](test/e2e/E2E_DEBUGGING.md).
+
+### E2E coverage
+
+To measure how much of the controller the e2e suite exercises, build an instrumented image and
+flush coverage from the running pod after the suite:
+
+```bash
+E2E_COVERAGE=1 task test-e2e
+task e2e-coverage-collect   # writes e2e-cover.out
+```
+
+CI does this automatically on the `full` matrix and uploads it to Codecov under the `e2e` flag.
 
 ## Tilt loop
 
