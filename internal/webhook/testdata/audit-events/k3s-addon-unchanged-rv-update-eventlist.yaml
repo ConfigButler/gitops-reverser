@@ -1,0 +1,56 @@
+kind: EventList
+apiVersion: audit.k8s.io/v1
+items:
+  - kind: Event
+    apiVersion: audit.k8s.io/v1
+    level: RequestResponse
+    auditID: 14b03863-03c3-4527-b291-64efbc8eb73d
+    stage: ResponseComplete
+    requestURI: /apis/k3s.cattle.io/v1/namespaces/kube-system/addons/ccm
+    verb: update
+    user:
+      username: system:k3s-supervisor
+      groups:
+        - system:masters
+        - system:authenticated
+    userAgent: deploy@k3d-gitops-reverser-test-e2e-server-0/v1.35.2+k3s1 (linux/amd64) k3s/13563feb
+    objectRef:
+      resource: addons
+      namespace: kube-system
+      name: ccm
+      uid: 361bb922-f1ab-488b-8bf5-2ed7c64c1374
+      apiGroup: k3s.cattle.io
+      apiVersion: v1
+      resourceVersion: "281"
+    responseStatus:
+      metadata: {}
+      code: 200
+    requestObject:
+      apiVersion: k3s.cattle.io/v1
+      kind: Addon
+      metadata:
+        name: ccm
+        namespace: kube-system
+        uid: 361bb922-f1ab-488b-8bf5-2ed7c64c1374
+        resourceVersion: "281"
+        generation: 2
+      spec:
+        checksum: 15c8482702cd79ec145e960ab92791a0e73b6e7577df7729ae8b523483e3cc93
+        source: /var/lib/rancher/k3s/server/manifests/ccm.yaml
+    responseObject:
+      apiVersion: k3s.cattle.io/v1
+      kind: Addon
+      metadata:
+        name: ccm
+        namespace: kube-system
+        uid: 361bb922-f1ab-488b-8bf5-2ed7c64c1374
+        resourceVersion: "281"
+        generation: 2
+      spec:
+        checksum: 15c8482702cd79ec145e960ab92791a0e73b6e7577df7729ae8b523483e3cc93
+        source: /var/lib/rancher/k3s/server/manifests/ccm.yaml
+    requestReceivedTimestamp: "2026-06-16T08:51:20.975381Z"
+    stageTimestamp: "2026-06-16T08:51:20.977994Z"
+    annotations:
+      authorization.k8s.io/decision: allow
+      authorization.k8s.io/reason: ""

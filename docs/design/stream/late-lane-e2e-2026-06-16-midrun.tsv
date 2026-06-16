@@ -1,0 +1,21 @@
+base	id	reason	verb	api_group	resource	namespace	name	rv	last_rv	rv_gap	user	stage_millis
+gitops-reverser:apiextensions.k8s.io:customresourcedefinitions	1781599889449-0	older-than-high-water	update	apiextensions.k8s.io	customresourcedefinitions		etcdsnapshotfiles.k3s.cattle.io	217	219	2	system:k3s-supervisor	1781599879316
+gitops-reverser:apiextensions.k8s.io:customresourcedefinitions	1781599889452-0	older-than-high-water	update	apiextensions.k8s.io	customresourcedefinitions		helmchartconfigs.helm.cattle.io	223	227	4	system:k3s-supervisor	1781599879338
+gitops-reverser:core:configmaps	1781599890077-0	older-than-high-water	create		configmaps	gitops-reverser-audit-warmup	audit-warmup	2295	2351	56	system:admin	1781599877528
+gitops-reverser:core:configmaps	1781599890078-0	older-than-high-water	patch		configmaps	gitops-reverser-audit-warmup	audit-warmup	2296	2351	55	system:admin	1781599877563
+gitops-reverser:core:namespaces	1781599890076-0	older-than-high-water	create		namespaces		gitops-reverser-audit-warmup	2293	2337	44	system:admin	1781599877495
+gitops-reverser:k3s.cattle.io:addons	1781599888839-0	older-than-high-water	update	k3s.cattle.io	addons	kube-system	auth-delegator	394	2355	1961	system:k3s-supervisor	1781599883803
+gitops-reverser:k3s.cattle.io:addons	1781599888839-1	older-than-high-water	update	k3s.cattle.io	addons	kube-system	rolebindings	514	2355	1841	system:k3s-supervisor	1781599886503
+gitops-reverser:k3s.cattle.io:addons	1781599888840-0	older-than-high-water	update	k3s.cattle.io	addons	kube-system	runtimes	529	2355	1826	system:k3s-supervisor	1781599886867
+gitops-reverser:k3s.cattle.io:addons	1781599888842-0	older-than-high-water	update	k3s.cattle.io	addons	kube-system	auth-reader	400	2355	1955	system:k3s-supervisor	1781599883906
+gitops-reverser:k3s.cattle.io:addons	1781599888844-0	older-than-high-water	update	k3s.cattle.io	addons	kube-system	metrics-apiservice	405	2355	1950	system:k3s-supervisor	1781599883992
+gitops-reverser:k3s.cattle.io:addons	1781599888848-0	older-than-high-water	update	k3s.cattle.io	addons	kube-system	metrics-server-deployment	439	2355	1916	system:k3s-supervisor	1781599884457
+gitops-reverser:k3s.cattle.io:addons	1781599888849-0	older-than-high-water	update	k3s.cattle.io	addons	kube-system	ccm	281	2355	2074	system:k3s-supervisor	1781599880977
+gitops-reverser:k3s.cattle.io:addons	1781599888850-0	older-than-high-water	update	k3s.cattle.io	addons	kube-system	metrics-server-service	453	2355	1902	system:k3s-supervisor	1781599884584
+gitops-reverser:wardle.example.com:flunders	1781599901657-0	rv-missing-before-high-water	deletecollection	wardle.example.com	flunders	gitops-reverser-audit-warmup				0	system:serviceaccount:kube-system:namespace-controller	1781599901519
+gitops-reverser:wardle.example.com:flunders	1781599921510-0	rv-missing-before-high-water	deletecollection	wardle.example.com	flunders	1781599706-test-manager-overlap				0	system:serviceaccount:kube-system:namespace-controller	1781599921142
+gitops-reverser:wardle.example.com:flunders	1781599937550-0	rv-missing-before-high-water	deletecollection	wardle.example.com	flunders	1781599706-test-deployment-scale				0	system:serviceaccount:kube-system:namespace-controller	1781599936919
+gitops-reverser:wardle.example.com:flunders	1781599959744-0	rv-missing-before-high-water	deletecollection	wardle.example.com	flunders	1781599706-test-manager-isolation				0	system:serviceaccount:kube-system:namespace-controller	1781599959696
+gitops-reverser:wardle.example.com:flunders	1781599962555-0	rv-missing-before-high-water	deletecollection	wardle.example.com	flunders	1781599706-test-commit-request				0	system:serviceaccount:kube-system:namespace-controller	1781599962455
+gitops-reverser:wardle.example.com:flunders	1781599976648-0	rv-missing-before-high-water	deletecollection	wardle.example.com	flunders	1781599706-test-commit-request-bundle				0	system:serviceaccount:kube-system:namespace-controller	1781599976641
+gitops-reverser:wardle.example.com:flunders	1781599990454-0	rv-missing-before-high-water	deletecollection	wardle.example.com	flunders	1781599706-test-manager-watchrule				0	system:serviceaccount:kube-system:namespace-controller	1781599989534

@@ -52,6 +52,7 @@ func TestInitOTLPExporter_Success(t *testing.T) {
 	assert.NotNil(t, AuditEventListsTotal)
 	assert.NotNil(t, AuditEventListEventsTotal)
 	assert.NotNil(t, AuditEventListDurationSeconds)
+	assert.NotNil(t, AuditEventsFilteredTotal)
 	assert.NotNil(t, MaterializationCheckpointFillsTotal)
 	assert.NotNil(t, APICatalogResources)
 	assert.NotNil(t, APICatalogGroupVersions)
@@ -99,6 +100,12 @@ func TestMetricsInitialization(t *testing.T) {
 		})
 	})
 
+	t.Run("AuditEventsFilteredTotal", func(t *testing.T) {
+		assert.NotPanics(t, func() {
+			AuditEventsFilteredTotal.Add(ctx, 1)
+		})
+	})
+
 	t.Run("APICatalogResources", func(t *testing.T) {
 		assert.NotPanics(t, func() {
 			APICatalogResources.Record(ctx, 42)
@@ -142,6 +149,7 @@ func TestAuditPipelineMetricUsage(t *testing.T) {
 		AuditEventListEventsTotal.Add(ctx, 5)
 		AuditEventListDurationSeconds.Record(ctx, 0.12)
 		AuditEventsReceivedTotal.Add(ctx, 5)
+		AuditEventsFilteredTotal.Add(ctx, 1)
 		AuditJoinEmittedTotal.Add(ctx, 5)
 	})
 }

@@ -101,7 +101,7 @@ You should see a new commit appear in GitHub within seconds.
 
 If your organization blocks deploy keys, use HTTPS credentials instead.
 
-Create a Secret with `username` and `password` keys:
+Create a Secret with `username` and `password` keys (use a PAT as the password):
 
 ```bash
 kubectl -n default create secret generic git-creds \
@@ -109,6 +109,13 @@ kubectl -n default create secret generic git-creds \
   --from-literal=password=<token> \
   --dry-run=client -o yaml | kubectl apply -f -
 ```
+
+A `bearerToken` key is also accepted for token auth without a username (handy for fine-grained PATs
+and GitLab access tokens). Already have a Flux or Argo CD Git credentials Secret? It is accepted
+as-is — just make sure its key or token has **write** access, since GitOps Reverser pushes commits
+(Flux/Argo only clone, so their credentials are often read-only). See
+[`configuration.md`](configuration.md#reusing-a-flux-or-argo-cd-credentials-secret) for the full key
+mapping.
 
 Then point the quickstart `GitProvider` at an HTTPS repository URL:
 

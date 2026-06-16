@@ -1,0 +1,39 @@
+kind: EventList
+apiVersion: audit.k8s.io/v1
+items:
+  - kind: Event
+    apiVersion: audit.k8s.io/v1
+    level: RequestResponse
+    auditID: aggregated-flunder-create
+    stage: ResponseComplete
+    requestURI: /apis/wardle.example.com/v1alpha1/namespaces/default/flunders
+    verb: create
+    user:
+      username: jane@acme.com
+    objectRef:
+      resource: flunders
+      namespace: default
+      name: aggregated-shallow-flunder
+      apiGroup: wardle.example.com
+      apiVersion: v1alpha1
+      resourceVersion: "456"
+    responseStatus:
+      metadata: {}
+      code: 201
+    requestObject:
+      kind: Flunder
+      apiVersion: wardle.example.com/v1alpha1
+      metadata:
+        name: aggregated-shallow-flunder
+        namespace: default
+      spec:
+        flavor: vanilla
+    responseObject:
+      kind: Flunder
+      apiVersion: wardle.example.com/v1alpha1
+      metadata:
+        name: aggregated-shallow-flunder
+        namespace: default
+        resourceVersion: "456"
+      spec:
+        flavor: vanilla

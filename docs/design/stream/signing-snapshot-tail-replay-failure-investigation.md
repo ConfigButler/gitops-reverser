@@ -518,6 +518,11 @@ Today `@{{.Revision}}` is the checkpoint RV, not `Hc`.
 
 ### 8.1 E2E Shape
 
+> **Follow-up (2026-06-15):** the content-convergence claim below ("Present eventually … regardless
+> of which path delivers it", step 8) was observed to **break** — one `overlap-b` object was
+> permanently absent under target B. See
+> [`signing-overlap-band-coverage-drop-investigation.md`](signing-overlap-band-coverage-drop-investigation.md).
+
 A ConfigMap E2E is useful, but it should be framed as a user-path guard, not as
 the only proof of the watermark logic. The red-first proof should be the
 deterministic unit/integration test above. A full e2e cannot strictly classify

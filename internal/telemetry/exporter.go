@@ -142,6 +142,8 @@ var (
 	AuditJoinEmittedTotal metric.Int64Counter
 	// AuditShallowDroppedTotal counts identity-shallow officials dropped because no parked body was available.
 	AuditShallowDroppedTotal metric.Int64Counter
+	// AuditEventsFilteredTotal counts audit events filtered before the join/mirror pipeline.
+	AuditEventsFilteredTotal metric.Int64Counter
 	// AuditJoinSkewSeconds records the arrival skew between an official audit event and its
 	// matching additional body, labelled by which arrived first and how the join resolved.
 	AuditJoinSkewSeconds metric.Float64Histogram
@@ -293,6 +295,7 @@ func registerCounters() error {
 		{"gitopsreverser_audit_join_parked_total", &AuditJoinParkedTotal},
 		{"gitopsreverser_audit_join_emitted_total", &AuditJoinEmittedTotal},
 		{"gitopsreverser_audit_shallow_dropped_total", &AuditShallowDroppedTotal},
+		{"gitopsreverser_audit_events_filtered_total", &AuditEventsFilteredTotal},
 		{"gitopsreverser_audit_eventlists_total", &AuditEventListsTotal},
 		{"gitopsreverser_audit_eventlist_events_total", &AuditEventListEventsTotal},
 		{"gitopsreverser_api_catalog_refresh_total", &APICatalogRefreshTotal},

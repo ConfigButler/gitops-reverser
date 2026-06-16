@@ -84,12 +84,27 @@ which match the built-in Secret types and the tooling around them (`kubectl crea
 | HTTP basic | `username` + `password` |
 | HTTP bearer token | `bearerToken` (GitHub fine-grained PAT, GitLab access token; no username) |
 
-For interop, the reader also accepts the Flux and Argo CD key names, so you do not have to re-author
-a Secret you already have: **HTTP basic-auth and bearer-token Secrets work directly** (the keys are
-identical across all three); **Flux SSH key Secrets work directly** (`identity` / `identity.pub` are
-read; the passphrase under `password` is recognized); and **Argo CD SSH key Secrets** (`sshPrivateKey`)
-work once you supply host trust via a neutral `known_hosts` source, because Argo keeps host keys in a
-ConfigMap outside the repository Secret.
+#### Reusing a Flux or Argo CD credentials Secret
+
+The credential reader's design is **inspired by both Flux and Argo CD**: it accepts their Secret key
+names alongside the native ones, so you can reuse a Git credentials Secret you already have instead of
+re-authoring it. The keys read for each auth method:
+
+| Credential | Native key (recommended) | Flux key (also read) | Argo CD key (also read) |
+|---|---|---|---|
+| SSH private key | `ssh-privatekey` | `identity` | `sshPrivateKey` |
+| SSH key passphrase | `ssh-password` | `password` *(when an SSH key is present)* | — *(unsupported by Argo)* |
+| SSH host keys | `known_hosts` | `known_hosts` | external ConfigMap → supply via `spec.knownHostsRef` |
+| HTTP basic auth | `username` + `password` | `username` + `password` | `username` + `password` |
+| HTTP bearer token | `bearerToken` | `bearerToken` | `bearerToken` |
+
+Auth precedence is SSH key → HTTP basic → bearer token. Client certificates (mTLS), custom CA
+certificates, and GitHub App credentials are **not supported**.
+
+> **A reused Secret needs write access.** Flux and Argo CD only *clone*, so their Git credentials are
+> often read-only (a read-only deploy key, a read-scoped token). GitOps Reverser **pushes** commits,
+> so a reused Secret's key or token must have **write** access on the repository — otherwise the
+> commits will fail to push.
 
 SSH host keys are resolved in priority order: the credentials Secret's own `known_hosts`, then
 `spec.knownHostsRef` (a namespace-local ConfigMap or Secret keyed `known_hosts`, or `ssh_known_hosts`

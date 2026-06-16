@@ -325,12 +325,19 @@ func TestResourceVersionFromEvent(t *testing.T) {
 			want: "999",
 		},
 		{
-			name: "falls back to the request object body",
+			name: "ignores the request object body",
 			event: auditv1.Event{
 				RequestObject: &runtime.Unknown{Raw: []byte(`{"metadata":{"resourceVersion":"888"}}`)},
 				ObjectRef:     &auditv1.ObjectReference{ResourceVersion: "777"},
 			},
-			want: "888",
+			want: "777",
+		},
+		{
+			name: "request object body alone is not enough",
+			event: auditv1.Event{
+				RequestObject: &runtime.Unknown{Raw: []byte(`{"metadata":{"resourceVersion":"888"}}`)},
+			},
+			want: "",
 		},
 		{
 			name:  "falls back to the objectRef precondition RV",

@@ -141,6 +141,18 @@ func (j *fakeAuditJoiner) Decide(
 	return decision, nil
 }
 
+func eventListFixtureBody(t *testing.T, path string) string {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	require.NoError(t, err)
+
+	var list auditv1.EventList
+	require.NoError(t, yaml.Unmarshal(raw, &list))
+	body, err := json.Marshal(&list)
+	require.NoError(t, err)
+	return string(body)
+}
+
 type orderingAuditJoiner struct {
 	firstStarted        chan struct{}
 	releaseFirst        chan struct{}
@@ -1062,6 +1074,109 @@ func TestClassifyAuditIngress_RejectsFailedRequests(t *testing.T) {
 			if !tc.wantProcess {
 				assert.Equal(t, tc.wantReason, decision.Reason)
 			}
+		})
+	}
+}
+
+func TestAuditHandler_FiltersDryRunAndUnchangedRVEvents(t *testing.T) {
+	const filteredMetric = "gitopsreverser_audit_events_filtered_total"
+
+	tests := []struct {
+		name       string
+		fixture    string
+		wantReason string
+		wantMatch  map[string]string
+	}{
+		{
+			name:       "dry-run patch is acknowledged but never mirrored",
+			fixture:    "testdata/audit-events/flux-secret-dryrun-patch-eventlist.yaml",
+			wantReason: "dry_run",
+			wantMatch: map[string]string{
+				"source": "official", "reason": "dry_run",
+				"group": "", "version": "v1", "resource": "secrets", "verb": "patch",
+			},
+		},
+		{
+			name:       "unchanged request and response RV is acknowledged but never mirrored",
+			fixture:    "testdata/audit-events/k3s-addon-unchanged-rv-update-eventlist.yaml",
+			wantReason: "unchanged_resource_version",
+			wantMatch: map[string]string{
+				"source": "official", "reason": "unchanged_resource_version",
+				"group": "k3s.cattle.io", "version": "v1", "resource": "addons", "verb": "update",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reader, err := telemetry.InitTestExporter()
+			require.NoError(t, err)
+
+			byType := &recordingByTypeQueue{}
+			joiner := &fakeAuditJoiner{decision: AuditJoinDecision{Action: AuditJoinActionEmit}}
+			handler, err := NewAuditHandler(AuditHandlerConfig{ByTypeQueue: byType, Joiner: joiner})
+			require.NoError(t, err)
+
+			req := httptest.NewRequest(
+				http.MethodPost,
+				"/audit-webhook",
+				bytes.NewReader([]byte(eventListFixtureBody(t, tt.fixture))),
+			)
+			w := httptest.NewRecorder()
+
+			handler.ServeHTTP(w, req)
+
+			assert.Equal(t, http.StatusOK, w.Code)
+			assert.Zero(t, joiner.calls, "filtered events must not enter the join pipeline")
+			assert.Empty(t, byType.events, "filtered events must not enter the per-type mirror")
+
+			got, ok := telemetry.CollectInt64Sum(reader, filteredMetric, tt.wantMatch)
+			require.True(t, ok, "expected filtered metric sample for %s", tt.wantReason)
+			assert.Equal(t, int64(1), got)
+		})
+	}
+}
+
+func TestAuditHandler_ChangedOrCreatedEventsStillMirror(t *testing.T) {
+	tests := []struct {
+		name     string
+		fixture  string
+		wantIDs  []string
+		whyAlive string
+	}{
+		{
+			name:     "persisted patch has changed request and response RVs",
+			fixture:  "testdata/audit-events/flux-secret-persisted-patch-eventlist.yaml",
+			wantIDs:  []string{"persisted-secret-patch"},
+			whyAlive: "persisted changed-RV events still enter the join pipeline",
+		},
+		{
+			name:     "create has objectRef RV but no request-body RV",
+			fixture:  "testdata/audit-events/aggregated-flunder-create-eventlist.yaml",
+			wantIDs:  []string{"aggregated-flunder-create"},
+			whyAlive: "create events must not be treated as unchanged from objectRef RV alone",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			byType := &recordingByTypeQueue{}
+			joiner := &fakeAuditJoiner{decision: AuditJoinDecision{Action: AuditJoinActionEmit}}
+			handler, err := NewAuditHandler(AuditHandlerConfig{ByTypeQueue: byType, Joiner: joiner})
+			require.NoError(t, err)
+
+			req := httptest.NewRequest(
+				http.MethodPost,
+				"/audit-webhook",
+				bytes.NewReader([]byte(eventListFixtureBody(t, tt.fixture))),
+			)
+			w := httptest.NewRecorder()
+
+			handler.ServeHTTP(w, req)
+
+			assert.Equal(t, http.StatusOK, w.Code)
+			assert.Equal(t, 1, joiner.calls, tt.whyAlive)
+			assert.Equal(t, tt.wantIDs, byType.auditIDs())
 		})
 	}
 }

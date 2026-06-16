@@ -163,8 +163,10 @@ kubectl create secret generic git-creds \
   --dry-run=client -o yaml | kubectl apply -f -
 ```
 
-See [`docs/github-setup-guide.md`](docs/github-setup-guide.md) for a focused GitHub setup path and
-the HTTPS/PAT fallback.
+SSH host-key verification fails closed, so the `known_hosts` line is required. Existing Flux or Argo
+CD Git credentials Secrets are accepted as-is (they just need **write** access). See
+[`docs/configuration.md`](docs/configuration.md) for accepted Secret shapes and
+[`docs/github-setup-guide.md`](docs/github-setup-guide.md) for the GitHub path and HTTPS/PAT fallback.
 
 **6. Enable the starter configuration**
 

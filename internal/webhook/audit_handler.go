@@ -20,10 +20,12 @@ package webhook
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -31,6 +33,7 @@ import (
 	"github.com/go-logr/logr"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
@@ -312,6 +315,7 @@ func (h *AuditHandler) processEvent(ctx context.Context, source AuditSource, aud
 	addQualityMetric(ctx, source, &auditEventV1, quality)
 	decision := classifyAuditIngress(source, &auditEventV1, quality)
 	if !decision.Process {
+		addFilteredMetric(ctx, source, &auditEventV1, decision.Reason)
 		logAuditJoinSkip(
 			"Dropped audit event before join pipeline",
 			source,
@@ -592,6 +596,13 @@ func (h *AuditHandler) extractGVR(event *audit.Event) string {
 //     Conflict from an optimistic-concurrency failure) changed nothing in etcd.
 //     Its responseObject is a metav1.Status error body, not the resource, so it
 //     must never reach Git; it is rejected for both sources.
+//   - A dry-run request (`dryRun=All`) completed admission/defaulting but was not
+//     persisted, so it is rejected for both sources before it can enter either
+//     the ordered stream or the late lane.
+//   - A mutation-shaped update/patch whose request-side RV equals the response RV
+//     did not advance stored object state. Re-applying such unchanged objects
+//     produces stale RVs that pollute the late lane, so it is rejected for both
+//     sources.
 //   - An additional-source event is only worth parking when it actually carries a
 //     request/response body; a shallow (malformed) one has nothing to contribute.
 //
@@ -614,6 +625,12 @@ func classifyAuditIngress(
 	if isFailedAuditRequest(event) {
 		return auditIngressDecision{Reason: "failed_request"}
 	}
+	if isDryRunAllRequest(event) {
+		return auditIngressDecision{Reason: "dry_run"}
+	}
+	if hasUnchangedResourceVersion(event) {
+		return auditIngressDecision{Reason: "unchanged_resource_version"}
+	}
 	if source == AuditSourceAdditional && quality == AuditEventQualityMalformed {
 		return auditIngressDecision{Reason: "malformed_additional"}
 	}
@@ -629,6 +646,49 @@ func classifyAuditIngress(
 // that drives the canonical stream.
 func isFailedAuditRequest(event *auditv1.Event) bool {
 	return event != nil && event.ResponseStatus != nil && event.ResponseStatus.Code >= 300
+}
+
+func isDryRunAllRequest(event *auditv1.Event) bool {
+	if event == nil || event.RequestURI == "" {
+		return false
+	}
+	parsed, err := url.Parse(event.RequestURI)
+	if err != nil {
+		return false
+	}
+	for _, value := range parsed.Query()["dryRun"] {
+		if value == metav1.DryRunAll {
+			return true
+		}
+	}
+	return false
+}
+
+func hasUnchangedResourceVersion(event *auditv1.Event) bool {
+	if event == nil {
+		return false
+	}
+	responseRV := metadataResourceVersion(event.ResponseObject)
+	if responseRV == "" {
+		return false
+	}
+	requestRV := metadataResourceVersion(event.RequestObject)
+	return requestRV != "" && requestRV == responseRV
+}
+
+func metadataResourceVersion(object *runtime.Unknown) string {
+	if object == nil || len(object.Raw) == 0 {
+		return ""
+	}
+	var probe struct {
+		Metadata struct {
+			ResourceVersion string `json:"resourceVersion"`
+		} `json:"metadata"`
+	}
+	if err := json.Unmarshal(object.Raw, &probe); err != nil {
+		return ""
+	}
+	return probe.Metadata.ResourceVersion
 }
 
 // checkEvent validates an audit event before processing.

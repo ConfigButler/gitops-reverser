@@ -687,13 +687,12 @@ func stageMillis(event auditv1.Event) int64 {
 
 // resourceVersionFromEvent returns the event's ResourceVersion when one is available,
 // or "" when it is not (deletes, collection verbs, shallow bodies). The post-write RV
-// lives in the object body's metadata.resourceVersion; objectRef.resourceVersion is
-// usually the empty precondition RV on writes, so it is only the last resort.
+// lives in the response object's metadata.resourceVersion; requestObject.resourceVersion
+// is the pre-write RV on update-style requests, so it is intentionally ignored.
+// objectRef.resourceVersion is usually the empty precondition RV on writes, so it is only
+// the last resort.
 func resourceVersionFromEvent(event auditv1.Event) string {
 	if rv := rvFromRawObject(event.ResponseObject); rv != "" {
-		return rv
-	}
-	if rv := rvFromRawObject(event.RequestObject); rv != "" {
 		return rv
 	}
 	if event.ObjectRef != nil {

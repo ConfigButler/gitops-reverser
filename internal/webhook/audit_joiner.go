@@ -677,6 +677,20 @@ func addShallowDroppedMetric(ctx context.Context, event *auditv1.Event) {
 	}
 }
 
+func addFilteredMetric(ctx context.Context, source AuditSource, event *auditv1.Event, reason string) {
+	if telemetry.AuditEventsFilteredTotal != nil {
+		group, version, resource := auditEventGVRParts(event)
+		telemetry.AuditEventsFilteredTotal.Add(ctx, 1, metric.WithAttributes(
+			attribute.String("source", string(source)),
+			attribute.String("reason", reason),
+			attribute.String("group", group),
+			attribute.String("version", version),
+			attribute.String("resource", resource),
+			attribute.String("verb", eventVerb(event)),
+		))
+	}
+}
+
 const (
 	// joinArrivalBodyFirst marks a join where the additional body was parked before the
 	// official event arrived (the common, healthy case).

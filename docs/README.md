@@ -19,8 +19,7 @@ If you only want the supported product docs, start with the files below.
 - [`aggregated-api-guide.md`](aggregated-api-guide.md): capturing aggregated API server objects
 - [`bi-directional.md`](bi-directional.md): safe shared-path and handoff patterns
 - [`alternatives.md`](alternatives.md): nearby tools and when another approach fits better
-- [`maturity-and-adoption-plan.md`](maturity-and-adoption-plan.md): current maturity stance and
-  steps toward wider adoption
+- [`UPGRADING.md`](UPGRADING.md): breaking changes and migration steps, newest first
 - [`../CONTRIBUTING.md`](../CONTRIBUTING.md): contributor workflow and validation commands
 - [`../test/e2e/E2E_DEBUGGING.md`](../test/e2e/E2E_DEBUGGING.md): e2e troubleshooting, reuse,
   and `.stamps`
