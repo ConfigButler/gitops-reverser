@@ -432,10 +432,17 @@ func (m *Manager) handleMaterializationEvent(ctx context.Context, log logr.Logge
 	}
 	switch ev.Kind {
 	case typeset.SyncRequested:
+		// Demand gate: mark the type wanted BEFORE the LIST (add-early, DG1) so the audit webhook
+		// is already mirroring it by the time the checkpoint rv C is pinned. Idempotent for re-anchors.
+		m.requireTypeMirror(ctx, log, ev.GVR)
 		m.runTypeCheckpointSync(ctx, log, ev.GVR)
 	case typeset.Released:
 		m.stopTypeAuditTail(ev.GVR)
 		m.clearTypeObjects(ctx, log, ev.GVR)
+		// Demand gate: stop new mirroring across pods, then reclaim the audit footprint (DG2) — the
+		// audit-side twin of clearTypeObjects, on the same grace-protected Released event.
+		m.unrequireTypeMirror(ctx, log, ev.GVR)
+		m.deleteTypeAuditKeys(ctx, log, ev.GVR)
 	case typeset.TypeSynced:
 		// The checkpoint just became serviceable. The FIRST TypeSynced (tail not yet running) fans
 		// the initial backfill splice to every watching GitTarget. A LATER TypeSynced — a periodic
@@ -529,4 +536,40 @@ func (m *Manager) trimTypeAuditLog(ctx context.Context, log logr.Logger, gvr sch
 		return
 	}
 	log.V(1).Info("materialization audit-log trimmed", "gvr", gvr.String(), "cursor", rv)
+}
+
+// requireTypeMirror marks a type as wanted in the shared demand gate at SyncRequested — added early,
+// before the first LIST, so the audit webhook is already mirroring by the time the checkpoint rv is
+// pinned (DG1). Idempotent: a re-anchor's SyncRequested re-Requires a present type, which adds
+// nothing and does not ping. Best-effort and nil-safe — a gate write failure is logged and retried
+// on the next SyncRequested, never fatal.
+func (m *Manager) requireTypeMirror(ctx context.Context, log logr.Logger, gvr schema.GroupVersionResource) {
+	if m.MirrorGate == nil {
+		return
+	}
+	if err := m.MirrorGate.Require(ctx, gvr); err != nil {
+		log.Error(err, "demand-gate require failed", "gvr", gvr.String())
+	}
+}
+
+// unrequireTypeMirror marks a type as no longer wanted on Released, stopping new mirroring across
+// pods within a ping. Best-effort and nil-safe.
+func (m *Manager) unrequireTypeMirror(ctx context.Context, log logr.Logger, gvr schema.GroupVersionResource) {
+	if m.MirrorGate == nil {
+		return
+	}
+	if err := m.MirrorGate.Unrequire(ctx, gvr); err != nil {
+		log.Error(err, "demand-gate unrequire failed", "gvr", gvr.String())
+	}
+}
+
+// deleteTypeAuditKeys reclaims a released type's audit footprint (DG2) — the audit-side twin of
+// clearTypeObjects, fired on the same grace-protected Released event. Best-effort and nil-safe.
+func (m *Manager) deleteTypeAuditKeys(ctx context.Context, log logr.Logger, gvr schema.GroupVersionResource) {
+	if m.AuditKeyDeleter == nil {
+		return
+	}
+	if err := m.AuditKeyDeleter.DeleteType(ctx, gvr.Group, gvr.Resource); err != nil {
+		log.Error(err, "demand-gate delete-type failed", "gvr", gvr.String())
+	}
 }

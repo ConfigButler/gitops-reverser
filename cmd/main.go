@@ -40,6 +40,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -50,6 +51,7 @@ import (
 
 	configbutleraiv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 	"github.com/ConfigButler/gitops-reverser/internal/controller"
+	"github.com/ConfigButler/gitops-reverser/internal/gate"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 	"github.com/ConfigButler/gitops-reverser/internal/queue"
 	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
@@ -255,6 +257,31 @@ func main() {
 	// history. Sharing the queue keeps one Redis connection and the same key prefix.
 	watchMgr.AuditLogTrimmer = auditByTypeQueue
 
+	// Demand gate: the shared required-types set + ping stream that bounds the per-type mirror to
+	// claimed ∩ followable types — so we stop creating a stream for every cluster type ("the Redis
+	// explosion"). The watch driver Requires a type at SyncRequested (early, before the LIST) and
+	// Unrequires + DeleteTypes it on Released; the audit webhook reads the gate before mirroring.
+	// Multi-pod-ready: the signal is shared, the read side is an in-memory cache fanned out by the
+	// ping stream. See docs/finished/demand-gated-audit-ingestion.md.
+	mirrorGate, err := gate.New(gate.Config{
+		Addr:       cfg.auditRedisAddr,
+		Username:   cfg.auditRedisUsername,
+		AuthValue:  cfg.auditRedisPassword,
+		DB:         cfg.auditRedisDB,
+		Prefix:     cfg.auditByTypeStreamPrefix,
+		TLSEnabled: cfg.auditRedisTLS,
+		// commitrequests has an INTERNAL consumer — the CommitRequest author attribution scans its
+		// per-type audit stream for the request's own create event — but no GitTarget claims it, so
+		// it must be allowed regardless of demand or attribution fails closed. See the demand-gating
+		// design doc and internal/queue/commitrequest_author.go.
+		AlwaysAllow: []schema.GroupVersionResource{
+			{Group: configbutleraiv1alpha1.GroupVersion.Group, Resource: "commitrequests"},
+		},
+	})
+	fatalIfErr(err, "unable to initialize demand gate")
+	watchMgr.MirrorGate = mirrorGate
+	watchMgr.AuditKeyDeleter = auditByTypeQueue
+
 	// The splice reader (R2) folds each type's checkpoint + log into the desired set the per-type
 	// reconcile commits, off the same per-type keyspace. Wiring it makes GitTarget reconcile a
 	// CONSUMER of the materialized API — zero per-reconcile API calls. See
@@ -349,6 +376,7 @@ func main() {
 		DebugQueue:          auditDebugQueue,
 		Joiner:              auditJoiner,
 		ByTypeQueue:         auditByTypeQueue,
+		MirrorGate:          mirrorGate,
 	})
 	fatalIfErr(err, "unable to create audit handler")
 
@@ -394,6 +422,11 @@ func main() {
 
 	// Cert watchers
 	addCertWatchersToManager(mgr, metricsCertWatcher, auditCertWatcher)
+
+	// Demand gate runnable: seeds the required-types set, then runs the ping-stream subscriber so
+	// every pod converges on the shared demand signal. Added to the manager so it shares the run
+	// context and shuts down cleanly.
+	fatalIfErr(mgr.Add(mirrorGate), "unable to add demand gate runnable")
 
 	// Startup-only Redis readiness gate: a Runnable that PINGs the audit producer until the first
 	// success, keeping the pod not-ready (out of the audit Service endpoints) until it can enqueue.

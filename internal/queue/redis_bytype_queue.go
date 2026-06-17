@@ -258,6 +258,31 @@ func (q *RedisByTypeStreamQueue) TrimTypeAuditLog(ctx context.Context, group, re
 	return nil
 }
 
+// DeleteType removes a type's entire audit footprint from Redis: it DELs the per-type
+// "…:audit:stream", "…:audit:late", and "…:audit:idstate" keys and SREMs the base key from the
+// "…:__index__" set. It is the audit-side twin of the watch layer's clearTypeObjects (which drops
+// "…:objects:*") and is called on the demand `Released` lifecycle event, so a type that is no longer
+// claimed ∩ followable stops costing Redis space — the inverse of the per-type explosion
+// (docs/finished/demand-gated-audit-ingestion.md §7). The in-memory index guard is cleared too,
+// so a later re-Require re-registers the base. A delete failure is returned for the caller to log.
+func (q *RedisByTypeStreamQueue) DeleteType(ctx context.Context, group, resource string) error {
+	base := typeBaseKey(q.prefix, group, resource, "")
+	if err := q.client.Del(ctx,
+		base+byTypeAuditStreamSuffix,
+		base+byTypeAuditLateSuffix,
+		base+byTypeAuditIDStateSuffix,
+	).Err(); err != nil {
+		return fmt.Errorf("failed to delete audit keys for %q: %w", base, err)
+	}
+	if err := q.client.SRem(ctx, q.prefix+byTypeIndexSuffix, base).Err(); err != nil {
+		return fmt.Errorf("failed to de-index %q: %w", base, err)
+	}
+	q.indexedMu.Lock()
+	delete(q.indexed, base)
+	q.indexedMu.Unlock()
+	return nil
+}
+
 // byTypeAuditReadCount bounds how many new entries one ReadTypeAuditChanges read drains.
 const byTypeAuditReadCount = 1024
 
@@ -659,6 +684,14 @@ func typeBaseKey(prefix, group, resource, subresource string) string {
 		res += "." + sanitizeKeySegment(subresource)
 	}
 	return prefix + ":" + sanitizeKeySegment(group) + ":" + res
+}
+
+// TypeBaseKey is the exported form of typeBaseKey: the canonical per-type base key
+// "<prefix>:<group-or-core>:<resource>" (a subresource folds onto the resource with a dot). It is
+// exported so the demand gate (internal/gate) computes membership keys byte-identically to the
+// mirror — the two must never drift (docs/finished/demand-gated-audit-ingestion.md §7).
+func TypeBaseKey(prefix, group, resource, subresource string) string {
+	return typeBaseKey(prefix, group, resource, subresource)
 }
 
 func sanitizeKeySegment(s string) string {

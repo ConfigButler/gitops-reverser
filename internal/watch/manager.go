@@ -173,6 +173,17 @@ type Manager struct {
 	// own MaxLen). Best-effort from the driver's view — a trim failure is logged, never fatal.
 	AuditLogTrimmer AuditLogTrimmer
 
+	// MirrorGate is the write side of the demand gate: the driver marks a type wanted when its
+	// first sync is requested (SyncRequested) and unwanted on release (Released), so the audit
+	// webhook mirrors only claimed ∩ followable types. Satisfied by *gate.Gate; nil disables
+	// demand-gating writes. See docs/finished/demand-gated-audit-ingestion.md §7.
+	MirrorGate TypeMirrorGate
+
+	// AuditKeyDeleter removes a type's audit footprint on release (DG2), the audit-side twin of
+	// ObjectMirror.DeleteTypeObjects. Satisfied by queue.RedisByTypeStreamQueue; nil disables
+	// release cleanup. Best-effort — a delete failure is logged, never fatal.
+	AuditKeyDeleter TypeKeyDeleter
+
 	// TypeSplicer serves the api-source-of-truth splice (R2): SpliceSnapshotForType reads the
 	// per-type checkpoint + log through it to compute desired state with zero per-reconcile API
 	// calls. Nil means the splice consumer is not wired (the per-type reconcile then holds).
@@ -223,6 +234,20 @@ type AuditLogTrimmer interface {
 	// TrimTypeAuditLog evicts every entry of the (group, resource) audit stream whose
 	// resourceVersion is strictly below minRV. A blank minRV is a no-op.
 	TrimTypeAuditLog(ctx context.Context, group, resource, minRV string) error
+}
+
+// TypeMirrorGate is the write side of the demand gate (docs/finished/demand-gated-audit-ingestion.md):
+// the driver marks a type wanted at SyncRequested (added early, before the first LIST) and unwanted
+// at Released. Satisfied by *gate.Gate; optional on the Manager (nil disables demand-gating writes).
+type TypeMirrorGate interface {
+	Require(ctx context.Context, gvr schema.GroupVersionResource) error
+	Unrequire(ctx context.Context, gvr schema.GroupVersionResource) error
+}
+
+// TypeKeyDeleter removes a type's audit keyspace (:audit:stream/late/idstate + __index__) on
+// release (DG2). Satisfied by queue.RedisByTypeStreamQueue; optional (nil disables release cleanup).
+type TypeKeyDeleter interface {
+	DeleteType(ctx context.Context, group, resource string) error
 }
 
 // TypeSplicer reads the per-type materialization (checkpoint + log) and folds it into the current

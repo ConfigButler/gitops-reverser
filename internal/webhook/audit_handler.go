@@ -77,11 +77,22 @@ type AuditHandlerConfig struct {
 	// (docs/design/stream/api-source-of-truth-reconcile.md). Best-effort: a failure
 	// here never fails the audit request. If nil, per-type mirroring is disabled.
 	ByTypeQueue AuditEventQueue
+	// MirrorGate, when set, demand-gates ByTypeQueue: only events for a type currently in
+	// the shared required-set are mirrored, so we stop creating a stream for every cluster
+	// type (docs/finished/demand-gated-audit-ingestion.md). Nil disables gating —
+	// mirror everything (the pre-gate behaviour). Allow is an in-memory lookup on the hot path.
+	MirrorGate MirrorGate
 }
 
 // AuditEventQueue persists accepted audit events for downstream processing.
 type AuditEventQueue interface {
 	Enqueue(ctx context.Context, event auditv1.Event) error
+}
+
+// MirrorGate is the read side of the demand gate: it decides whether a type's audit events should
+// be mirrored. Allow must be safe for concurrent use and must not block (it runs per event).
+type MirrorGate interface {
+	Allow(group, resource string) bool
 }
 
 // AuditDebugEventQueue persists decoded events for early audit debugging.
@@ -500,6 +511,12 @@ func (h *AuditHandler) mirrorByType(ctx context.Context, event *auditv1.Event) {
 	if h.config.ByTypeQueue == nil {
 		return
 	}
+	if !h.mirrorGateAllows(event) {
+		// The type is not currently wanted (no live claim ∩ followable). Skipping the mirror
+		// here is the whole point of demand-gating; a brief miss after a fresh Require is healed
+		// by the next checkpoint (docs/finished/demand-gated-audit-ingestion.md §6).
+		return
+	}
 	if err := h.config.ByTypeQueue.Enqueue(ctx, *event); err != nil {
 		log := logf.Log.WithName("audit-handler")
 		h.firsts.byTypeMirrorError.Do(func() {
@@ -511,6 +528,22 @@ func (h *AuditHandler) mirrorByType(ctx context.Context, event *auditv1.Event) {
 		log.V(1).Info("Failed to mirror audit event to per-resource-type streams",
 			"auditID", event.AuditID, "error", err.Error())
 	}
+}
+
+// mirrorGateAllows reports whether the event's type is currently wanted. A nil gate means gating is
+// disabled (mirror everything — the pre-gate behaviour). The gate keys on the PARENT (group,
+// resource): a scale subresource folds to its parent in the mirror's baseKey, and Allow is keyed
+// the same way, so passing the objectRef's group/resource is correct for both scale and non-scale
+// events. A missing objectRef (the __unknown__ bucket) is never wanted.
+func (h *AuditHandler) mirrorGateAllows(event *auditv1.Event) bool {
+	if h.config.MirrorGate == nil {
+		return true
+	}
+	ref := event.ObjectRef
+	if ref == nil {
+		return false
+	}
+	return h.config.MirrorGate.Allow(ref.APIGroup, ref.Resource)
 }
 
 func effectiveAuditUsername(event audit.Event) string {
