@@ -83,10 +83,45 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 })
 
 // Release the cluster lock once every parallel process has finished. The second
-// function runs only on process #1, where the lock was taken.
+// function runs only on process #1, AFTER every parallel process has completed its
+// specs — so it is the last thing the suite does and the right place for a global,
+// end-of-run invariant. assertLateLaneEmpty runs here (defer releases the lock even
+// if the assertion fails — it also releases on process exit).
 var _ = SynchronizedAfterSuite(func() {}, func() {
-	releaseE2ERunLock()
+	defer releaseE2ERunLock()
+	assertLateLaneEmpty()
 })
+
+// assertLateLaneEmpty is the headline invariant of demand-gated audit ingestion: after a full run,
+// no audit event was ever diverted to a type's diagnostic late lane. It asserts on the
+// operator-facing metric (the same signal you would alert on in production) rather than poking Redis,
+// so it verifies the metric is wired AND the lane is empty. The counter resets when the controller
+// restarts (the restart-reconcile spec does this), but Prometheus retains the pre-restart samples, so
+// max_over_time over the run window catches any diversion that ever happened, on any pod.
+// See docs/finished/demand-gated-audit-ingestion.md §8/§11.
+func assertLateLaneEmpty() {
+	By("verifying the audit late lane stayed empty for the whole run (demand-gating invariant)")
+	ensurePrometheusClient()
+	verifyPrometheusAvailable()
+
+	// Liveness guard: prove the audit metric pipeline actually produced data, so a 0 late-lane
+	// reading means "genuinely empty", not "metric never scraped / pipeline dead → vacuous 0".
+	received, err := queryPrometheus(`sum(max_over_time(gitopsreverser_audit_events_received_total[2h]))`)
+	Expect(err).NotTo(HaveOccurred(), "failed to query the audit-events-received metric")
+	Expect(received).To(BeNumerically(">", 0),
+		"audit metrics pipeline produced no data — the late-lane check below would be vacuous")
+
+	const lateLaneQuery = `sum(max_over_time(gitopsreverser_audit_late_lane_diverted_total[2h]))`
+	value, err := queryPrometheus(lateLaneQuery)
+	Expect(err).NotTo(HaveOccurred(), "failed to query the late-lane diversion metric")
+	Expect(value).To(BeZero(),
+		"audit late lane must be empty after a clean run, but %.0f event(s) were diverted "+
+			"(query %q). Any non-zero value is a real out-of-order delivery that demand-gating "+
+			"should have prevented — inspect the per-type *:audit:late streams and the "+
+			"gitopsreverser_audit_late_lane_diverted_total{reason=...} breakdown.",
+		value, lateLaneQuery)
+	_, _ = fmt.Fprintf(GinkgoWriter, "✅ audit late lane is empty (0 diversions across the run)\n")
+}
 
 var _ = AfterEach(func() {
 	dumpFailureDiagnostics()

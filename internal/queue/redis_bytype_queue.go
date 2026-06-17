@@ -31,12 +31,15 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 	"k8s.io/apimachinery/pkg/runtime"
 	auditv1 "k8s.io/apiserver/pkg/apis/audit/v1"
 
 	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 	"github.com/ConfigButler/gitops-reverser/internal/auditutil"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
+	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
@@ -521,6 +524,13 @@ func (q *RedisByTypeStreamQueue) divertLate(
 	values[entryFieldPlacement] = placementLateLane
 	values[entryFieldRVPresent] = strconv.FormatBool(rv != "")
 	values[entryFieldLastRV] = lastRV
+
+	// Count the diversion (labelled by reason) — the operator-facing "is the late lane empty?"
+	// signal and the e2e end-of-run invariant. With demand gating this should never fire. Nil-guarded
+	// so it is a no-op when telemetry is not initialized (unit tests).
+	if telemetry.AuditLateLaneDivertedTotal != nil {
+		telemetry.AuditLateLaneDivertedTotal.Add(ctx, 1, metric.WithAttributes(attribute.String("reason", reason)))
+	}
 
 	if _, err := q.xaddID(ctx, keys.late, "*", values); err != nil {
 		return fmt.Errorf("failed to append entry to %q: %w", keys.late, err)
