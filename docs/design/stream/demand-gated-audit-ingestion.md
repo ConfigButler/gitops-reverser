@@ -1,37 +1,40 @@
 # Demand-gated audit ingestion: only mirror types that are actually wanted
 
-Status: **proposal / no code change yet.** 2026-06-17.
+Status: **agreed design / no code yet.** 2026-06-17.
 
 Author note: this grew out of the late-lane diagnostics work
 ([`late-lane-e2e-2026-06-16-investigation.md`](late-lane-e2e-2026-06-16-investigation.md)
 and the 2026-06-16 fresh-run follow-up). Chasing "why is anything in the late lane" surfaced a
 bigger, dumber problem underneath it, described in §2.
 
-**Start here (implementing in a fresh context):** read §6 (the load-bearing correctness rule),
-then §12 (code map — every file/symbol to touch, with line anchors) and §13 (red-first
-implementation order). Background context: the demand lifecycle
+**Start here (implementing in a fresh context):** read §3 (principles — especially "over-capture is
+free, under-capture is rare and self-healed") and §6–§7 (coverage model + the shared-list /
+ping-stream mechanism), then §11–§13 (acceptance, code map with line anchors, red-first order).
+Background: the demand lifecycle
 ([`demand-driven-type-materialization-lifecycle.md`](../../finished/demand-driven-type-materialization-lifecycle.md))
-and the reconcile model ([`api-source-of-truth-reconcile.md`](../../finished/api-source-of-truth-reconcile.md)).
+and the reconcile model ([`api-source-of-truth-reconcile.md`](../../finished/api-source-of-truth-reconcile.md)),
+whose **checkpoint is the correctness authority this design leans on** (§6).
 
 ## 1. Scope and one paragraph
 
 Today the audit webhook mirrors **every** audited, body-merged event into a per-resource-type
-Redis stream — unconditionally, for every type the cluster emits, whether or not any GitTarget
-will ever follow it ([`audit_handler.go` `mirrorByType`](../../../internal/webhook/audit_handler.go#L499)
+Redis stream — unconditionally, for every type the cluster emits, whether or not any GitTarget will
+ever follow it ([`audit_handler.go` `mirrorByType`](../../../internal/webhook/audit_handler.go#L499)
 → [`RedisByTypeStreamQueue.Enqueue`](../../../internal/queue/redis_bytype_queue.go#L199)). The
-**checkpoint/objects** sink is already demand-driven — the materializer only LISTs *claimed*
-types (L-3, `mirrorTypeObjects`) — but the **audit-log** sink is not. This doc proposes closing
-that gap: gate the per-type audit mirror on the same demand signal the checkpoint already uses,
-so a type's stream is created only when its materialization begins, and torn down when its demand
-goes away. The one non-obvious part is correctness: the gate must open *before* the checkpoint's
-LIST revision, or the log has a hole. §6 is about exactly that.
+**checkpoint/objects** sink is already demand-driven — the materializer only LISTs *claimed* types
+(L-3, `mirrorTypeObjects`) — but the **audit-log** sink is not. This doc closes that gap: gate the
+per-type audit mirror on a **shared required-types set in Redis**, kept fresh on every ingest pod via
+a tiny **ping stream**, so a type is mirrored only while it is wanted and torn down when it is not.
+The design is **multi-pod-ready from day one** (any pod may receive any type's audit events), and it
+deliberately favours *over*-capture, because the periodic checkpoint is the correctness backstop
+(§6).
 
 ## 2. Motivation
 
 ### 2.1 Mirroring every type is the perfect way to make Redis explode
 
-The per-type stream model is great for a *followed* type and pure overhead for an *unfollowed*
-one. We currently pay, for every type the cluster ever audits:
+The per-type stream model is great for a *followed* type and pure overhead for an *unfollowed* one.
+We currently pay, for every type the cluster ever audits:
 
 - a `…:audit:stream` (RV-ordered, `MAXLEN`-bounded — but bounded × N types),
 - a `…:audit:late` lane (never trimmed),
@@ -40,12 +43,12 @@ one. We currently pay, for every type the cluster ever audits:
 
 The cost scales with **the cluster's type cardinality and churn**, not with **demand**. That is
 backwards. A real cluster has hundreds of CRDs plus the high-churn core/system types
-(`events.k8s.io/events`, `discovery.k8s.io/endpointslices`, leases, `controllerrevisions`, …),
-and a typical install follows a *handful* of them. Every unfollowed type is a stream we write,
-index, and never read.
+(`events.k8s.io/events`, `discovery.k8s.io/endpointslices`, leases, `controllerrevisions`, …), and a
+typical install follows a *handful* of them. Every unfollowed type is a stream we write, index, and
+never read.
 
-Measured on a fresh `task test-e2e` run (2026-06-17), which is already **wildcard-heavy** (most
-types get claimed), the waste is still plain:
+Measured on a fresh `task test-e2e` run (2026-06-17), which is already **wildcard-heavy** (most types
+get claimed), the waste is still plain:
 
 | | types | stream entries |
 |---|---:|---:|
@@ -54,10 +57,10 @@ types get claimed), the waste is still plain:
 
 The 13 unclaimed types carrying ~half the stream volume are exactly the high-churn ones nobody
 follows — `discovery.k8s.io:endpointslices` (38), `core:namespaces` (34), `events.k8s.io:events`
-(24), `monitoring.coreos.com:prometheuses/alertmanagers/...` (18 each), `batch:jobs/cronjobs`
-(18 each), `apps:controllerrevisions` (18). On a cluster with **targeted** WatchRules instead of
-wildcards the ratio inverts: a few claimed types out of hundreds, the rest pure waste. There is
-no `MAXLEN` that fixes this — the leak is in the **number of streams**, not their length.
+(24), `monitoring.coreos.com:prometheuses/alertmanagers/...` (18 each), `batch:jobs/cronjobs` (18
+each), `apps:controllerrevisions` (18). On a cluster with **targeted** WatchRules instead of
+wildcards the ratio inverts: a few claimed types out of hundreds, the rest pure waste. There is no
+`MAXLEN` that fixes this — the leak is in the **number of streams**, not their length.
 
 ### 2.2 It is also a late-lane noise source
 
@@ -68,289 +71,325 @@ machinery *before any object of that type was ever materialized*:
 - `core:namespaces` / `core:configmaps` warmup creates (the e2e `gitops-reverser-audit-warmup`
   primer) — and `namespaces` is **unclaimed** here, so today it gets a stream + a late entry for a
   type nobody follows.
-- `wardle.example.com:flunders` namespace-GC `deletecollection`s, all stamped **13:05–13:07**,
-  while the first real flunder is not mirrored until **13:12** — i.e. they all land *before*
-  flunders materialization starts.
+- `wardle.example.com:flunders` namespace-GC `deletecollection`s, all stamped **13:05–13:07**, while
+  the first real flunder is not mirrored until **13:12** — i.e. they all land *before* flunders
+  materialization starts.
 
-Both classes vanish if the mirror only exists during a type's active materialization window (§7).
-What is left in the late lane after that is the genuinely interesting case — a real recent
-reorder on an actively-materialized type — which the floor/empty-stream guard in
-[`api-source-of-truth-reconcile`](../../finished/api-source-of-truth-reconcile.md)'s late-lane cleanup then
-classifies (§8). The two changes are complementary: demand-gating removes the *surface*, the
-guard cleans the *residual*.
+Both classes vanish when the mirror only exists during a type's active materialization window (§5).
+What is left in the late lane after that is the genuinely interesting case — a real recent reorder on
+an actively-materialized type — which the floor/empty-stream guard in
+[`api-source-of-truth-reconcile`](../../finished/api-source-of-truth-reconcile.md)'s late-lane
+cleanup then classifies (§8). The two changes are complementary: demand-gating removes the *surface*,
+the guard cleans the *residual*.
 
 ## 3. Principles
 
 1. **Demand, not cardinality, decides what we mirror.** A type stream exists iff some GitTarget
    currently wants it. (Mirrors the checkpoint sink's existing rule.)
-2. **One demand signal.** The audit-log gate and the checkpoint sink read the *same* claimed ∩
-   followable set from the materializer — they can never disagree about whether a type is wanted.
-3. **No gap, ever.** Turning the mirror on must not lose any event the checkpoint does not already
-   contain. This is the load-bearing invariant (§6).
-4. **Best-effort, like all ingestion.** The gate is an in-memory fast check on the audit hot path;
-   a stale gate never fails an audit request and self-corrects (§9, §10).
-5. **Release reclaims space.** Losing demand for a type tears its streams down, so Redis shrinks
-   when WatchRules narrow — the inverse of the explosion.
+2. **One shared signal in Redis.** The set of required types lives in Redis (`__required__`) and is
+   readable by every ingest pod; a tiny ping stream (`__required__:updates`) keeps each pod's local
+   copy fresh. There is exactly one definition of "wanted", shared, with no per-pod divergence.
+3. **Over-capture is free; under-capture is rare and self-healed.** Mirroring a type slightly *too
+   early* only writes entries with `rv ≤ C` that the next trim drops — harmless. Mirroring slightly
+   *too late* can miss an event, but **the periodic checkpoint re-LIST captures it at the next
+   re-anchor** — so a miss costs *freshness*, never *correctness*. We therefore bias hard toward
+   early/over-capture (§6). The checkpoint, not the gate, is the correctness authority.
+4. **Best-effort on the hot path.** `Allow` is an in-memory lookup against the locally-cached set; a
+   stale cache or a Redis hiccup never fails an audit request and self-corrects on the next ping or
+   slow-poll (§7, §10).
+5. **Release reclaims space.** Losing demand for a type removes it from `__required__` and a janitor
+   deletes its keys, so Redis shrinks when WatchRules narrow — the inverse of the explosion.
 
 ## 4. Invariants
 
-- **DG1 (coverage, load-bearing).** For every type, the earliest resourceVersion the log captures,
-  `L`, must sit **at or just below** the first checkpoint revision `C` of that materialization
-  window: `L ≤ C`, and ideally `C − L` small. Two separate requirements:
-  - **`L ≤ C` is mandatory (correctness).** If `L > C`, the events in `(C, L)` are in neither the
-    checkpoint (which only holds `rv ≤ C`) nor the log (which only holds `rv ≥ L`) → silent loss
-    until the next full checkpoint. So the gate must open **before** the LIST that pins `C`.
-  - **`C − L` small is the goal (efficiency).** Every captured entry with `rv < C` is redundant
-    with the checkpoint and exists only to be trimmed ([`TrimTypeAuditLog`](../../../internal/queue/redis_bytype_queue.go#L250)).
-    We want the log to begin *a hair* below the checkpoint, not far below it.
+- **DG1 (coverage — best-effort, checkpoint-backstopped).** For a type's materialization window with
+  first checkpoint revision `C`, the log *should* contain every event with `rv > C`. We make that
+  hold in practice by adding the type to `__required__` **early** (at the `Requested` transition,
+  well before the LIST that pins `C`) and propagating via the ping stream, so by the time `C` exists
+  every pod is already mirroring (§6). When a miss does occur (a pod that has not yet seen the ping
+  processes an `rv > C` event), the gap is **bounded by one re-anchor interval and healed by the next
+  checkpoint** — never permanent loss. (Contrast DG1's *hard* form, which would require a synchronous
+  cross-pod lead before every first LIST; we deliberately do not pay that — see §14.)
+- **DG2 (no orphan streams).** A type not in `__required__` ends up with no `…:audit:*` keys and no
+  `__index__` membership after a bounded delay — enforced by a janitor that reconciles actual stream
+  keys against `__required__` (§7), so the cleanup tolerates lagging writers and dead pods.
+- **DG3 (membership ⊆ checkpoint demand).** A type is only ever in `__required__` while it is
+  claimed ∩ followable — i.e. a subset of what the checkpoint driver syncs. Over-capture lives
+  *within* a type's own window (early add), never across types that are not wanted at all.
 
-  We get both by opening the gate **a little earlier than the LIST, but no earlier than necessary**:
-  early enough guarantees `L ≤ C`; no-earlier-than-needed keeps `C − L` small. §6 makes "a little
-  earlier" concrete (the `BeginSync → LIST` seam) and proves the coverage half.
-- **DG2 (no orphan streams).** A type with no live claim has no audit stream/late/idstate keys and
-  no `__index__` membership after a bounded delay (the release sweep).
-- **DG3 (parity with checkpoint demand).** The set of mirrored types ⊆ the set of types the
-  checkpoint driver will sync, at all times. (Subset, not equality — see DG1: the mirror opens
-  slightly *before* the first checkpoint exists.)
+## 5. What "wanted" means and when it flips
 
-## 5. What "wanted" means
+A type is wanted exactly when it is **claimed ∩ followable** — precisely the set of phases past
+`PhaseDormant` in the materializer
+([`materializer.go`](../../../internal/typeset/materializer.go#L84-L132)):
 
-The materializer already owns the demand table and the followability gate
-([`materializer.go`](../../../internal/typeset/materializer.go#L84-L132)): a type is mirror-worthy
-exactly when it is **claimed ∩ followable**, which is precisely the set of types not in
-`PhaseDormant`. The phase machine already computes this:
-
-| Phase | Mirrored? | Why |
+| Phase | In `__required__`? | Why |
 |---|:--:|---|
 | `Dormant` | no | no live claim, or not followable — nothing wants it |
-| `Requested` | wanted, not yet open | claimed + followable, first sync queued; the gate opens when the sync starts (§6), and any event arriving in this brief window has `rv ≤ C` so the checkpoint covers it |
-| `Syncing` | **yes** | gate opened at the `BeginSync → LIST` seam; first checkpoint LIST in flight |
-| `Synced` / `Resyncing` / `Failing` | yes | serving (or last-served) a checkpoint; gate stays open |
+| `Requested` | **yes (added here)** | claimed + followable; added *early*, before the first LIST, to maximise propagation slack (§6) |
+| `Syncing` / `Synced` / `Resyncing` / `Failing` | yes | actively materializing or serving a checkpoint |
 
-Mirror membership is "any phase past `Dormant`", but the **open call is placed precisely at the
-first sync's `BeginSync → LIST` seam** (§6), not literally at the `Dormant → Requested` transition
-— that placement is what lands the log floor `L` just below `C` (DG1). The gate is **closed** on
-release (last claim ages out → back to `Dormant`, keys deleted).
+Membership is added on `Dormant → Requested` and removed on release (`→ Dormant`). The materializer
+leaf stays Redis-free: it emits phase events; the watch/driver layer (which already owns Redis)
+translates them into `Require`/`Unrequire` writes (§7).
 
-## 6. The ordering that makes it safe (DG1)
+## 6. Coverage model: add early, heal late
 
-This is the heart of the user's instinct — *"ideally the first log entry is a little below the
-last materialization; to get that we start it a bit earlier."* That is exactly right, and it has a
-precise place in the code.
+The whole correctness argument rests on one asymmetry (Principle 3): **over-capture is free,
+under-capture is self-healed.** That lets the gate be a cheap, eventually-consistent shared cache
+instead of a synchronously-coordinated lock.
 
-Timeline for one type's first sync:
+Timeline for one type's first sync, across pods:
 
 ```
-        gate opens          checkpoint LIST taken              later writes
-   (log floor L ⪅ C)              (rv = C)                   (rv > C, captured)
-            │                        │                         │    │    │
-  ──────────●────────────────────────●───────────●────────────●────●────●────►  etcd RV / time
-            └─ tiny window: writes here          └──── tail folds log entries with rv > C ────┘
-               land at rv ≤ C, trimmed
+  type enters Requested        checkpoint LIST taken            later writes
+  SADD __required__ + ping          (rv = C)                  (rv > C, captured)
+        │   ── ping propagates ──▶        │                     │    │    │
+  ──────●───────────●──────────●──────────●───────────●─────────●────●────●────►  time
+        │           │          │          │
+        │     pod A sees it  pod B sees it │   (all pods mirroring well before C)
+        └───────────── slack ─────────────┘
 ```
 
-- The checkpoint is a consistent LIST at revision `C`; it already reflects every write with
-  `rv ≤ C`.
-- The tail replays log entries with `rv > C` (exclusive), folding forward from the checkpoint
-  ([`auditTailAnchor`](../../../internal/watch/audit_tail.go#L101)).
-- So **every event with `rv > C` must be in the log**, and the log may *also* hold some `rv ≤ C`
-  entries (the tiny window between gate-open and the LIST) — those are redundant and get trimmed.
-  The target is therefore `L ⪅ C`: a hair below, never above.
+- **Add early.** Membership is written when the type enters `Requested`, which is *before* the driver
+  runs the LIST (the LIST is downstream of `BeginSync`, which is downstream of `Requested`). The
+  natural latency between "claim observed" and "LIST issued" is the propagation slack — no explicit
+  sleep or lead-time constant needed. The entries this captures with `rv ≤ C` are redundant and are
+  dropped by the normal trim ([`TrimTypeAuditLog`](../../../internal/queue/redis_bytype_queue.go#L250)).
+- **Fast propagation via a stream, not pub/sub.** A Redis *stream* is replayable: a pod resumes from
+  its last-read ID, so a brief disconnect never silently loses a wakeup (pub/sub would). Each entry is
+  a trivial "changed" ping (an epoch counter); pods react by re-reading the *whole* `__required__`
+  set, so the update is idempotent and a pod that missed many pings still converges from the latest
+  one. `MAXLEN` can be tiny.
+- **The rare miss is healed by the checkpoint.** If a pod processes an `rv > C` event before its cache
+  reflects the open, that one event is absent from the log. Between `C` and the next checkpoint `C'`
+  the mirror is briefly stale; at `C'` (≥ that event's rv) the consistent LIST re-reads the world and
+  the state is captured. The log/tail is a *freshness optimisation over* the checkpoint, which is the
+  correctness floor (the api-source-of-truth model) — so a gate miss degrades latency, not integrity.
 
-**Why "a hair before the LIST" both guarantees `L ≤ C` and keeps `C − L` small — with no clock
-reasoning.** An event with `rv > C` was committed to etcd *after* `C`, and an audit event reaches
-the webhook *after* its own commit (delivery can be delayed, never advanced — that delay is the
-entire late-lane phenomenon). The gate is checked at *mirror time*. Since it opened before the LIST
-produced `C`, it is already open by the time any `rv > C` event can possibly arrive — so none is
-ever dropped (`L ≤ C`). And because we open it only just before the LIST, the only `rv ≤ C` entries
-the log captures are those committed in the gate-open→LIST window — a handful — so `C − L` stays
-small. ∎ (Note the asymmetry below: a *larger* lead is still safe, just wasteful; opening *after*
-the LIST is unsafe.)
+Why this is sound rather than just convenient: the cost of a miss is exactly "a change is reflected
+in the GitTarget mirror one re-anchor later than ideal," and re-anchors already run on a timer (and
+are nudged by late-lane events). For a GitOps-reversal mirror that is an acceptable, bounded
+staleness — and it removes an entire class of cross-pod coordination from the hot path.
 
-**The exact insertion point.** The first-sync driver is
-[`runTypeCheckpointSync`](../../../internal/watch/materialization.go#L504):
-
-```go
-func (m *Manager) runTypeCheckpointSync(ctx, log, gvr) {
-    if !m.materializerInstance().BeginSync(gvr) { return }   // L505  Requested → Syncing
-    //  ◀── OPEN THE GATE HERE: gate.Open(gvr) (idempotent; a re-anchor finds it already open)
-    rv, err := m.mirrorTypeObjects(ctx, log, gvr)            // L508  the LIST → rv = C
-    if err != nil { m.materializerInstance().SyncFailed(gvr); return }
-    m.materializerInstance().SyncSucceeded(gvr, rv)          // L514  pin checkpoint C
-    m.trimTypeAuditLog(ctx, log, gvr, rv)                    // L515  trim log to C
-}
-```
-
-Opening between `BeginSync` (L505) and `mirrorTypeObjects` (L508) is the "a bit earlier" the user
-means: earlier than the LIST (so `L ≤ C`), but as late as the control flow allows (so `C − L` is
-just the gate-open→LIST window). For a re-anchor the gate is already open, so `Open` is a no-op and
-the floor does not reset. The `[L, C]` entries are trimmed at L515 by the normal re-anchor
-([`TrimTypeAuditLog`](../../../internal/queue/redis_bytype_queue.go#L250)).
-
-**The asymmetry, restated:** opening *too early* costs at most one checkpoint-interval of redundant
-captured-then-trimmed entries (cheap, self-cleaning); opening *too late* — after the LIST, or "when
-the materializer finished" — costs silent data loss in `(C, L)`. When the exact lead is uncertain,
-**err early**.
-
-## 7. Mechanism
-
-A small, concurrency-safe membership oracle sits between the materializer (writer) and the audit
-handler (reader):
+## 7. Mechanism — shared required-set + ping stream
 
 ```
-  driver runTypeCheckpointSync ──Open(gvr)──▶                          ◀──Allow(group,resource)── audit handler
-   (BeginSync → Open → LIST, §6)              TypeMirrorGate            (mirrorByType, before Enqueue)
-  release observer ──Close(gvr)+DeleteType──▶ (map[key]struct{}, RWMutex/sync.Map)
-   (MaterializationEvent: release)
+                 Redis (shared)
+   ┌────────────────────────────────────────────┐
+   │ <prefix>:__required__          SET of base  │
+   │ <prefix>:__required__:updates  ping stream  │
+   └───▲───────────────────────────────┬────────┘
+       │ SADD/SREM + XADD ping          │ SMEMBERS (seed) + XREAD BLOCK (wakeup) + slow poll
+   writer: watch/driver               reader: every ingest pod
+   (Require/Unrequire on phase)       (maintains local set; Allow() reads it)
+       │                                   │
+   janitor: reconcile keys vs set     mirrorByType: Allow(group,resource) before Enqueue
 ```
 
-- **Reader (hot path).** [`mirrorByType`](../../../internal/webhook/audit_handler.go#L499) computes
-  the type key from the event's objectRef and consults `Allow` before `Enqueue`. The key derivation
-  must match [`baseKey`](../../../internal/queue/redis_bytype_queue.go#L632) /
-  [`typeBaseKey`](../../../internal/queue/redis_bytype_queue.go#L650) — notably a `scale`
-  subresource gates on the **parent** type (DEC-A), and a missing resource (`__unknown__`) is never
-  wanted. `Allow` is an O(1) in-memory lookup; on `false` we skip `Enqueue` entirely (and may skip
-  the body-join/park machinery too — the joined event has no consumer but this mirror since the
-  canonical stream was retired, so gating *early* in
-  [`processEvent`](../../../internal/webhook/audit_handler.go#L290) is a pure win, with the minimal
-  correct placement being right before `Enqueue`).
-- **Writer — open (control path).** The gate is opened by the **driver**, not the materializer leaf:
-  [`runTypeCheckpointSync`](../../../internal/watch/materialization.go#L504) calls `gate.Open(gvr)`
-  between [`BeginSync`](../../../internal/typeset/materializer.go#L240) and
-  [`mirrorTypeObjects`](../../../internal/watch/materialization.go#L508) (§6). Keeping the leaf
-  ([`internal/typeset`](../../../internal/typeset/materializer.go)) free of any Redis/gate dependency
-  preserves its purity — it stays the demand source of truth and emits phase events; the
-  watch/driver layer (which already owns Redis) translates them into gate calls.
-- **Writer — close (control path).** Release is driven by the materializer's lease GC
-  ([`Sweep`](../../../internal/typeset/materializer.go#L384) →
-  [`releaseLocked`](../../../internal/typeset/materializer.go#L503)), which emits a release
-  `MaterializationEvent`. The watch layer already observes that event to stop the per-type tail;
-  the same observer calls `gate.Close(gvr)` and `DeleteType(gvr)` (DG2). Tail-stop precedes
-  deletion, so nothing races the `DEL`.
-- **Wiring.** [`cmd/main.go`](../../../cmd/main.go) constructs the gate, hands the reader half to
-  [`NewAuditHandler`](../../../internal/webhook/audit_handler.go#L112)'s config (alongside
-  [`ByTypeQueue`](../../../internal/webhook/audit_handler.go#L79), wired at
-  [`cmd/main.go:351`](../../../cmd/main.go#L351)) and the writer half to the watch `Manager`
-  (alongside the existing [`AuditLogTrimmer`](../../../cmd/main.go#L256) /
-  [`SetLateEventNotifier`](../../../cmd/main.go#L236) wiring).
+**Keys.** Two shared keys under the existing prefix (`gitops-reverser`):
+- `…:__required__` — a SET whose members are per-type **base keys** (`<prefix>:<group>:<resource>`,
+  same shape as [`__index__`](../../../internal/queue/redis_bytype_queue.go#L60) /
+  [`typeBaseKey`](../../../internal/queue/redis_bytype_queue.go#L650)).
+- `…:__required__:updates` — a Redis stream; each entry is a small ping (e.g. `epoch=<n>`). Trimmed
+  to a tiny `MAXLEN` (only the latest entry matters; older ones are wakeups already consumed).
 
-`DeleteType(group, resource)` is a new [`RedisByTypeStreamQueue`](../../../internal/queue/redis_bytype_queue.go#L130)
-method that `DEL`s `…:audit:stream`, `…:audit:late`, `…:audit:idstate` and `SREM`s the base key
-from [`…:__index__`](../../../internal/queue/redis_bytype_queue.go#L60) (mirror of
-[`ensureIndexed`](../../../internal/queue/redis_bytype_queue.go#L603)); the `…:objects:*` keys are
-already released by the demand lifecycle. This is what makes Redis shrink (DG2).
+**Reader (every ingest pod, hot path stays in-memory).**
+- On startup: read the stream's current last ID, then `SMEMBERS __required__` to seed a local
+  `map[baseKey]struct{}`, then begin `XREAD BLOCK` from that last ID (this ordering can't miss an
+  update between seed and subscribe).
+- A background goroutine blocks on `XREAD`; on *any* new entry it re-reads `SMEMBERS __required__`
+  and swaps the local set. A **slow poll** (re-`SMEMBERS` every ~30s regardless) backstops a missed
+  wakeup or a silent period.
+- [`mirrorByType`](../../../internal/webhook/audit_handler.go#L499) calls `Allow(group, resource)` —
+  an O(1) local lookup — before `Enqueue`. The key is derived exactly like
+  [`baseKey`](../../../internal/queue/redis_bytype_queue.go#L632): a `scale` subresource maps to the
+  **parent** type (DEC-A), a missing resource (`__unknown__`) is never allowed. On `false` we skip
+  `Enqueue` (and can skip the body-join/park work earlier in
+  [`processEvent`](../../../internal/webhook/audit_handler.go#L290), since the joined event has no
+  consumer but this mirror now that the canonical stream is retired).
+
+**Writer (the materialization owner; single-pod = the one pod, multi-pod = the per-type owner, §9).**
+- `Require(gvr)` on `Dormant → Requested`: `SADD __required__ <base>` then `XADD …:updates * epoch <n>`.
+  Idempotent — re-adding an already-required type is a no-op `SADD` + a cheap ping (skip the ping if
+  the `SADD` added nothing).
+- `Unrequire(gvr)` on release: `SREM __required__ <base>` + ping. This stops *new* mirroring across
+  pods within a ping (or the slow-poll) — fast. It does **not** delete the type's data keys; the
+  janitor does (below), which avoids racing a lagging pod that is still mid-flush.
+
+**Cleanup (janitor, race-tolerant — replaces "delete synchronously on release").** A periodic pass on
+the writer reconciles the keyspace against demand: for each base in
+[`__index__`](../../../internal/queue/redis_bytype_queue.go#L60) (or scanned stream keys) that is
+**absent from `__required__` for a full grace period** and idle (no recent writes), call
+`DeleteType(group, resource)`. This:
+- reclaims released types (DG2) without depending on precise release timing;
+- cleans an orphan a lagging pod may have re-created after `SREM` (deleted next pass);
+- cleans entries left by a crashed writer once a new owner runs the janitor (§9).
+
+`DeleteType(group, resource)` is a new
+[`RedisByTypeStreamQueue`](../../../internal/queue/redis_bytype_queue.go#L130) method: `DEL`s
+`…:audit:stream`, `…:audit:late`, `…:audit:idstate` and `SREM`s the base key from `__index__` (mirror
+of [`ensureIndexed`](../../../internal/queue/redis_bytype_queue.go#L603)); the `…:objects:*` keys are
+released by the demand lifecycle.
+
+**The gate type.** All of the above sits behind one small `TypeMirrorGate`:
+`Allow(group, resource) bool` (reader), `Require(gvr)` / `Unrequire(gvr)` (writer), plus the internal
+subscriber goroutine and seed/slow-poll. There is a single Redis-backed implementation — this is the
+design from day one, single-pod included (the one pod is both the writer and the sole subscriber, at
+negligible cost). No in-memory-only variant is kept.
 
 ## 8. Interaction with the late-lane guard
 
 These compose; neither subsumes the other:
 
 - **Demand-gating (this doc)** removes (a) all streams for never-claimed types — the bulk of the
-  explosion and incidental noise like the `namespaces` warmup entry, and (b) all
-  *pre-materialization* events for claimed types — e.g. the flunders `deletecollection`s that
-  arrive before flunders' gate opens (DG1's "err early" window is small; anything older than the
-  gate is simply not mirrored).
+  explosion and incidental noise like the `namespaces` warmup entry, and (b) all *pre-materialization*
+  events for claimed types — e.g. the flunders `deletecollection`s that arrive before flunders is in
+  `__required__` (anything before the early add is simply not mirrored).
 - **The floor / empty-stream guard** (separate proposal) then classifies the *residual* on
-  actively-materialized types: events below the checkpoint floor → provably superseded (drop +
-  count), RV-less-before-high-water → no-op (drop + count), leaving the late lane holding only
-  genuine recent reorders with a `lag` field for triage.
+  actively-materialized types: events below the checkpoint floor → provably superseded (drop + count),
+  RV-less-before-high-water → no-op (drop + count), leaving the late lane holding only genuine recent
+  reorders with a `lag` field for triage.
 
-End state: the late lane is empty in a clean run, and any entry in it is actionable — which was the
-original goal.
+End state: the late lane is empty in a clean run, and any entry in it is actionable — the original
+goal.
 
-## 9. Boot & HA seam
+## 9. Multi-pod operation, ownership, and boot
 
-- **Boot.** On startup the materializer leaf replays durable claimed checkpoints (L-5
-  `LoadSyncedCheckpoints`); the watch/driver layer must then `gate.Open` every persisted-claimed
-  type **before** the audit handler starts accepting events, so a restart does not drop a window.
-  (If the handler starts first, the worst case is a brief gap healed by the first post-boot
-  checkpoint — acceptable but avoidable by ordering.)
-- **HA.** With multiple pods the wanted-set must be shared, or each pod must derive it
-  independently. Out of scope here (consistent with the project's current single-writer posture),
-  but the seam is clean: the durable `…:objects:state` already records the claimed GVR set, so a
-  shared gate can be sourced from Redis later without changing the hot-path reader. See
-  [`ha-improvements.md`](ha-improvements.md).
+The design is multi-pod from day one; the open questions are *who writes* `__required__` and how a
+restart recovers.
+
+- **Writers are single per type.** Each type's membership is written by that type's materialization
+  owner. In single-pod that is trivially the one pod; in multi-pod it rides the **per-type
+  single-writer ownership** that HA needs anyway for the LIST/trim
+  ([`ha-improvements.md` §5](ha-improvements.md), genuinely deferred). One owner per type means no
+  `SADD`/`SREM` fights. The ping stream and the `__required__` set themselves are plain shared
+  structures — no per-entry TTL/lease — because a single writer per type is the simpler liveness
+  story than N self-expiring leases.
+- **Failover rebuilds membership from durable state.** On a new owner taking over (or any boot), it
+  reconstructs the set of required types it owns from the durable claim + checkpoint state
+  (`:objects:state`, the demand records — [`ha-improvements.md` §3](ha-improvements.md#L86)) and
+  re-asserts `Require` for each, then the janitor reclaims anything no longer owned/required. No
+  handoff message to lose.
+- **Readers seed before serving.** An ingest pod completes its initial `SMEMBERS` seed before the
+  audit handler starts accepting events, so a restart does not begin in a blind state. (Even if it
+  did, Principle 3 bounds the damage to a checkpoint-healed miss.)
+- **Stream stays tiny by nature.** The update rate is bounded by *claim churn* (types entering/leaving
+  the followed set — rare, controller-paced), not by event rate. With ping-not-payload entries and a
+  small `MAXLEN`, `__required__:updates` cannot become hot.
 
 ## 10. Edge cases & failure modes
 
-- **Gate opens slightly late (stale reader).** Bounded by in-process visibility (a map write
-  before a network LIST). Worst case a handful of `[L,C]`-adjacent entries are missed and healed
-  by the next checkpoint — not silent loss of `rv > C` (DG1 holds because the *write* precedes the
-  LIST even if a concurrent reader lags by microseconds).
-- **Claim flaps (Dormant→Requested→Dormant).** Open then close + delete; a re-claim re-opens and
-  re-LISTs fresh. No stale stream survives (DG2).
+- **Cache lags a fresh open (the DG1 miss).** A pod processes an `rv > C` event before its ping
+  arrives → that event is absent from the log → mirror briefly stale → healed at the next checkpoint
+  (§6). Made rare by early-add + stream wakeup; never unbounded.
+- **Release race (lagging writer).** After `SREM` + ping, a slow pod may `Enqueue` one more entry for
+  the now-unwanted type, re-creating its stream. The janitor's "absent for a grace period + idle"
+  rule deletes it on a later pass (DG2). No synchronous delete to race.
+- **Writer/owner crash.** `__required__` entries it owned persist until a new owner rebuilds (and may
+  re-assert them) and the janitor reclaims any that are no longer wanted. Plain set + janitor, no TTL
+  needed.
+- **Reader disconnect.** `XREAD` resumes from the last ID (stream replay); the slow poll covers a long
+  outage; a full restart re-seeds via `SMEMBERS`.
 - **Followable churn / CRD wobble.** A wobble freezes sync but keeps serving the checkpoint
-  (`frozen`); the gate stays **open** while frozen (we still want freshness for a served type) and
-  only closes on actual release.
+  (`frozen`); the type stays in `__required__` (we still want freshness for a served type) and is
+  removed only on actual release.
 - **Unknown / no-objectRef events.** Never wanted → never mirrored (today they pollute the
   `__unknown__` bucket).
-- **Mirror failure is still best-effort.** Unchanged from
-  [`mirrorByType`](../../../internal/webhook/audit_handler.go#L499): a gate miss or a Redis error
-  never fails the audit request.
+- **Redis unavailable for the gate read.** Hot path uses the last-known local set, so ingestion keeps
+  working on the most recent membership; it converges when Redis returns. A gate write failure is
+  logged and retried on the next phase event / janitor pass.
 
 ## 11. Acceptance criteria
 
-1. A type with no live claim produces **zero** `…:audit:*` keys and no `__index__` membership.
-2. For a freshly claimed type, no event with `rv > C` (the first checkpoint revision) is ever
-   absent from both the checkpoint and the log (DG1) — covered by an integration test that claims a
-   type, races writes around the LIST, and asserts the tail sees every post-`C` write.
-3. Releasing a type's last claim deletes its `…:audit:stream`, `…:audit:late`, `…:audit:idstate`
-   and removes it from `…:__index__` within one release-sweep interval (DG2).
-4. On a clean `task test-e2e` run, the set of `__index__` types equals the set of claimed types
-   (no unclaimed streams), and the unclaimed-waste row in §2.1 is **0 types / 0 entries**.
-5. No regression in tail freshness for claimed types; full suite + e2e green.
+1. A type never added to `__required__` produces **zero** `…:audit:*` keys and no `__index__`
+   membership.
+2. **Happy-path coverage:** a freshly claimed type added at `Requested` captures every `rv > C` write
+   — integration test: claim → (early add) → race writes around the LIST → assert the tail sees every
+   post-`C` write.
+3. **Heal-on-miss (soundness of the best-effort posture):** with membership *forced* to arrive late
+   (simulate a slow pod) so an `rv > C` event is missed, the next checkpoint re-anchor restores the
+   missing state — assert the mirror converges after one re-anchor.
+4. **Propagation:** a second subscriber updates its local set within one ping (and, with pings
+   suppressed, within the slow-poll interval) of a `Require`/`Unrequire`.
+5. **Release + janitor:** `Unrequire` stops new mirroring across pods within a ping; the janitor then
+   deletes `…:audit:stream` / `…:audit:late` / `…:audit:idstate` and the `__index__` entry within the
+   grace period (DG2).
+6. On a clean `task test-e2e` run, `__index__` equals `__required__` (no unclaimed streams); the
+   unclaimed-waste row in §2.1 is **0 types / 0 entries**.
+7. No regression in tail freshness for claimed types; full suite + e2e green.
 
 ## 12. Code map (read these first)
 
-Everything this change touches, grouped by role. Line anchors are correct as of 2026-06-17
-(`poc/redis-copy`); re-grep the symbol if they drift.
+Line anchors correct as of 2026-06-17 (`poc/redis-copy`); re-grep if they drift.
 
-**Reader — the audit hot path (gate consultation):** [`internal/webhook/audit_handler.go`](../../../internal/webhook/audit_handler.go)
-- `AuditHandlerConfig` struct [L66](../../../internal/webhook/audit_handler.go#L66); `ByTypeQueue` field [L79](../../../internal/webhook/audit_handler.go#L79); `AuditEventQueue` interface [L83](../../../internal/webhook/audit_handler.go#L83) — add the gate alongside.
-- `NewAuditHandler` [L112](../../../internal/webhook/audit_handler.go#L112); `processEvent` [L290](../../../internal/webhook/audit_handler.go#L290) (early-gate candidate); `eventToMirror` [L447](../../../internal/webhook/audit_handler.go#L447); `mirrorByType` [L499](../../../internal/webhook/audit_handler.go#L499) (**minimal correct gate point, before `Enqueue`**); `extractGVR` [L580](../../../internal/webhook/audit_handler.go#L580).
+**New — the gate:** `TypeMirrorGate` (suggested `internal/queue` or a new `internal/gate`): the
+`__required__` SET + `__required__:updates` stream ops, the subscriber goroutine (seed + `XREAD` +
+slow poll), `Allow` / `Require` / `Unrequire`, and the janitor. Model its tests on
+[`internal/queue/redis_bytype_queue_test.go`](../../../internal/queue/redis_bytype_queue_test.go)
+(miniredis supports streams + sets).
 
-**Queue — per-type key schema, writes, and new cleanup:** [`internal/queue/redis_bytype_queue.go`](../../../internal/queue/redis_bytype_queue.go)
-- Key suffixes [L57-60](../../../internal/queue/redis_bytype_queue.go#L57) (`:audit:stream` / `:audit:late` / `:audit:idstate` / `:__index__`); `baseKey` [L632](../../../internal/queue/redis_bytype_queue.go#L632) + `typeBaseKey` [L650](../../../internal/queue/redis_bytype_queue.go#L650) — **the gate key must match this** (scale→parent, `__unknown__`).
-- `Enqueue` [L199](../../../internal/queue/redis_bytype_queue.go#L199); `ensureIndexed` [L603](../../../internal/queue/redis_bytype_queue.go#L603) (mirror for the new delete); `TrimTypeAuditLog` [L250](../../../internal/queue/redis_bytype_queue.go#L250).
-- **New:** `DeleteType(group, resource)` — `DEL` the three keys + `SREM` from `:__index__`.
+**Reader — audit hot path:** [`internal/webhook/audit_handler.go`](../../../internal/webhook/audit_handler.go)
+- `AuditHandlerConfig` [L66](../../../internal/webhook/audit_handler.go#L66); `ByTypeQueue` [L79](../../../internal/webhook/audit_handler.go#L79); `AuditEventQueue` [L83](../../../internal/webhook/audit_handler.go#L83) — add the gate alongside.
+- `processEvent` [L290](../../../internal/webhook/audit_handler.go#L290) (early-gate candidate); `mirrorByType` [L499](../../../internal/webhook/audit_handler.go#L499) (**minimal correct gate point, before `Enqueue`**); `extractGVR` [L580](../../../internal/webhook/audit_handler.go#L580).
+
+**Queue — key schema + new cleanup:** [`internal/queue/redis_bytype_queue.go`](../../../internal/queue/redis_bytype_queue.go)
+- Suffixes [L57-60](../../../internal/queue/redis_bytype_queue.go#L57); `baseKey` [L632](../../../internal/queue/redis_bytype_queue.go#L632) + `typeBaseKey` [L650](../../../internal/queue/redis_bytype_queue.go#L650) — **gate key must match** (scale→parent, `__unknown__`).
+- `Enqueue` [L199](../../../internal/queue/redis_bytype_queue.go#L199); `ensureIndexed` [L603](../../../internal/queue/redis_bytype_queue.go#L603); `TrimTypeAuditLog` [L250](../../../internal/queue/redis_bytype_queue.go#L250).
+- **New:** `DeleteType(group, resource)` — `DEL` the three keys + `SREM` from `__index__`.
 
 **Demand leaf — phase machine (stays Redis-free):** [`internal/typeset/materializer.go`](../../../internal/typeset/materializer.go)
-- Phases [L59-77](../../../internal/typeset/materializer.go#L59); `typeState` [L116](../../../internal/typeset/materializer.go#L116); `Declare` [L157](../../../internal/typeset/materializer.go#L157); `BeginSync` [L240](../../../internal/typeset/materializer.go#L240); `SyncSucceeded` [L285](../../../internal/typeset/materializer.go#L285); `SyncFailed` [L308](../../../internal/typeset/materializer.go#L308); `Sweep` [L384](../../../internal/typeset/materializer.go#L384); `releaseLocked` [L503](../../../internal/typeset/materializer.go#L503); `Inventory` [L618](../../../internal/typeset/materializer.go#L618). Emits `MaterializationEvent`s to observers — do **not** add a gate dependency here.
+- Phases [L59-77](../../../internal/typeset/materializer.go#L59); `Declare` [L157](../../../internal/typeset/materializer.go#L157); `BeginSync` [L240](../../../internal/typeset/materializer.go#L240); `SyncSucceeded` [L285](../../../internal/typeset/materializer.go#L285); `Sweep` [L384](../../../internal/typeset/materializer.go#L384); `releaseLocked` [L503](../../../internal/typeset/materializer.go#L503); `Inventory` [L618](../../../internal/typeset/materializer.go#L618). Emits `MaterializationEvent`s — do **not** add a gate dependency here.
 
-**Driver + tail — where the gate is opened/closed:** [`internal/watch/materialization.go`](../../../internal/watch/materialization.go), [`internal/watch/audit_tail.go`](../../../internal/watch/audit_tail.go)
-- `runTypeCheckpointSync` [L504](../../../internal/watch/materialization.go#L504) — **`gate.Open(gvr)` between `BeginSync` (L505) and `mirrorTypeObjects` (L508)** (§6); `mirrorTypeObjects` is the LIST.
-- `Declare` wiring [L146](../../../internal/watch/materialization.go#L146); `trimTypeAuditLog` [L523](../../../internal/watch/materialization.go#L523); `NudgeTypeResyncForLateEvent` [L70](../../../internal/watch/materialization.go#L70).
-- Release observer (stops the tail today) — add `gate.Close` + `DeleteType` there; `runTypeAuditTail` [L134](../../../internal/watch/audit_tail.go#L134), `auditTailAnchor` [L101](../../../internal/watch/audit_tail.go#L101).
+**Driver + tail — where `Require`/`Unrequire` fire:** [`internal/watch/materialization.go`](../../../internal/watch/materialization.go), [`internal/watch/audit_tail.go`](../../../internal/watch/audit_tail.go)
+- `Require(gvr)` on the `Requested` phase event (earliest) — at latest at the top of
+  `runTypeCheckpointSync` [L504](../../../internal/watch/materialization.go#L504) **before** `BeginSync`
+  (L505), so it precedes `mirrorTypeObjects` (the LIST, L508).
+- `Unrequire(gvr)` on the release `MaterializationEvent` (the observer that already stops the tail);
+  `runTypeAuditTail` [L134](../../../internal/watch/audit_tail.go#L134).
+- Existing wiring nearby: `Declare` [L146](../../../internal/watch/materialization.go#L146); `trimTypeAuditLog` [L523](../../../internal/watch/materialization.go#L523); `NudgeTypeResyncForLateEvent` [L70](../../../internal/watch/materialization.go#L70).
 
-**Wiring:** [`cmd/main.go`](../../../cmd/main.go) — `NewRedisByTypeStreamQueue` [L221](../../../cmd/main.go#L221); `SetLateEventNotifier` [L236](../../../cmd/main.go#L236); `AuditLogTrimmer` [L256](../../../cmd/main.go#L256); `NewAuditHandler` [L347](../../../cmd/main.go#L347) + `ByTypeQueue` [L351](../../../cmd/main.go#L351). Construct the gate here; reader half → handler config, writer half → watch `Manager`.
-
-**Tests to model after:** [`internal/queue/redis_bytype_queue_test.go`](../../../internal/queue/redis_bytype_queue_test.go) (miniredis), [`internal/typeset/materializer_test.go`](../../../internal/typeset/materializer_test.go), [`internal/watch/materialization_test.go`](../../../internal/watch/materialization_test.go).
+**Wiring:** [`cmd/main.go`](../../../cmd/main.go) — `NewRedisByTypeStreamQueue` [L221](../../../cmd/main.go#L221); `AuditLogTrimmer` [L256](../../../cmd/main.go#L256); `NewAuditHandler` [L347](../../../cmd/main.go#L347) + `ByTypeQueue` [L351](../../../cmd/main.go#L351). Construct the gate; reader half → handler config; writer half + janitor → watch `Manager`.
 
 ## 13. Implementation order (red-first)
 
-1. **`TypeMirrorGate`** (new, `internal/queue` or `internal/watch`): `Allow(group, resource) bool`,
-   `Open(gvr)`, `Close(gvr)`, keyed exactly like `typeBaseKey`. Unit test the concurrency + the
-   scale→parent / `__unknown__` key derivation. *Red first.*
-2. **DG1 integration test (the load-bearing one):** claim a type, open the gate, race writes
-   *around* the LIST, assert the tail sees every `rv > C` write; and assert a *closed* gate drops
-   events for an unwanted type. This is acceptance criterion #2 — write it before the wiring so the
-   ordering bug (open-after-LIST) is caught.
-3. **Reader wiring:** `mirrorByType` consults `Allow` before `Enqueue` (then optionally hoist the
-   gate earlier in `processEvent` to skip the body-join).
-4. **Open wiring:** `gate.Open(gvr)` in `runTypeCheckpointSync` between `BeginSync` and
-   `mirrorTypeObjects` (§6). Idempotent for re-anchors.
-5. **`DeleteType` + close wiring:** new queue method (+ test), called with `gate.Close` from the
-   release observer after tail-stop.
-6. **`cmd/main.go`** construction + boot replay ordering (§9): open gates for persisted-claimed
-   types before the handler serves.
-7. **e2e acceptance (§11 #1, #3, #4):** `__index__` == claimed set; release deletes keys.
+1. **Gate substrate** (`TypeMirrorGate`, Redis-backed): `__required__` SET + `__required__:updates`
+   stream; `Require`/`Unrequire` (`SADD`/`SREM` + ping), reader (seed `SMEMBERS` → `XREAD` loop →
+   slow poll) maintaining the local set, `Allow`. Unit tests (miniredis): membership, key derivation
+   (scale→parent, `__unknown__`), ping→refresh, slow-poll backstop, reconnect/replay. *Red first.*
+2. **Coverage tests:** (a) happy-path — early add → every post-`C` write captured; (b) heal-on-miss —
+   forced-late membership → missed `rv > C` event restored by the next checkpoint (acceptance #2, #3).
+3. **Reader wiring:** `mirrorByType` consults `Allow` before `Enqueue` (then optionally hoist earlier
+   in `processEvent`).
+4. **Writer wiring:** `Require` on `Requested` (phase-event observer, or top of `runTypeCheckpointSync`
+   before `BeginSync`); `Unrequire` on the release observer.
+5. **`DeleteType` + janitor:** new queue method (+ test); leader janitor reconciling `__index__` vs
+   `__required__` (absent-for-grace + idle → delete), race/crash tolerant.
+6. **`cmd/main.go`** construction; boot ordering (reader seeds before the handler serves; writer
+   rebuilds `__required__` from durable state).
+7. **e2e acceptance (§11 #1, #5, #6):** `__index__` == `__required__`; release → janitor deletes keys.
 8. `task fmt → generate → manifests → vet → lint → test → test-e2e` (e2e sequential).
 
-## 14. Open questions
+## 14. Alternatives rejected (for the record — do not re-propose without new reasons)
 
-- **Gate granularity:** key by `(group, resource)` (matches `baseKey`) — confirmed sufficient;
-  subresource folds onto the parent. Revisit only if a non-scale subresource ever becomes a sink.
-- **Early vs minimal gating point:** skip the body-join for unwanted types (cheaper) vs gate only
-  at `Enqueue` (smaller change). Recommend early once DG1 tests are in place.
-- **Eager vs lazy delete on release:** delete synchronously on release vs let a janitor sweep
-  orphans. Recommend synchronous delete on release + a periodic `__index__`-vs-claims janitor as a
-  backstop for crashes.
+- **Per-type ZSET+TTL leases as the gate signal** ([`ha-improvements.md` §2](ha-improvements.md#L33)
+  for the *claim* layer). Rejected for the gate: N self-expiring leases are more moving parts than one
+  shared set + a single writer-per-type, and the TTL's only real benefit (auto-cleanup on writer
+  death) is covered here by failover-rebuild + janitor. (The claim layer may still use leases; that is
+  a separate concern.)
+- **Synchronous "open-and-confirm-visible" lead before every first LIST** (block `Open` until all
+  pods' caches reflect the open). It would make DG1 a *hard* guarantee, but it puts a cross-pod
+  propagation wait on the first-sync path and a constant to tune — and the checkpoint already heals
+  the rare miss, so the hard guarantee is not worth its cost (§6, Principle 3).
+- **Per-event Redis `SISMEMBER`.** Linearizable and lead-free, but a Redis read on *every* audit event
+  — including a read per event for *unwanted* high-churn types (no negative cache possible) — which
+  defeats the cost win that motivated gating.
+
+## 15. Open questions
+
+- **Gate package home:** `internal/gate` vs folding into `internal/queue`. Leaning standalone so the
+  audit handler depends on the gate, not the whole queue.
+- **Early gating point:** gate at `Enqueue` (smallest change) vs hoist into `processEvent` to also
+  skip the body-join for unwanted types (cheaper). Do the hoist once the coverage tests are green.
+- **Janitor grace + cadence:** concrete values for "absent-for-grace" and the scan interval; pick once
+  measured, default to a couple of janitor passes.
