@@ -1,4 +1,15 @@
-# Audit log ingestion: strong RV ordering + a diagnostic late lane
+# Audit log ingestion: strong RV ordering (the late lane has been removed)
+
+> **⚠️ Superseded in part (2026-06-18): the per-type late lane is removed.** §1–§11 below
+> describe the original design, in which an out-of-order event was diverted to a per-type
+> `:audit:late` stream. That lane is **gone**: a diverted event is now rejected from the main
+> stream and written to no stream — it is signalled by its `outcome` on
+> `gitopsreverser_audit_events_total`, by the `lateNotify` checkpoint nudge, and (when the opt-in
+> `diag_all` firehose is enabled) by its record there. The reason: the lane was nominally
+> "diagnostic only" but had become a correctness input (`LookupCommitRequestAuthor` scanned it),
+> contradicting principle P-IR4. The current model is the **§12 outcome catalog** and
+> [audit-diagnostic-streams-plan.md](audit-diagnostic-streams-plan.md); read those for what the
+> code does today. The §5–§8 late-lane mechanics are retained as design history.
 
 > Status: **baseline implemented** (§9; single-pod, no Lua). The deferred improvements
 > (§8.1 atomic Lua, §8.2 pre-sorter) remain gated on the §7 investigation. The detailed
@@ -384,3 +395,55 @@ what Lua (§8.1) adds as an *improvement*, not a prerequisite.
 - RV comparison never uses `tonumber`; large-RV-string comparison is correct.
 - The late lane is observable per type and is the documented trigger for §8.1 and §8.2.
 - Baseline ingestion needs no Lua and is correct on one pod.
+
+## 12. Event outcomes (the disposition catalog)
+
+Every audit event that is successfully decoded, converted, and validated ends in **exactly one
+ingestion outcome**, recorded once on `gitopsreverser_audit_events_total{outcome, category, group,
+version, resource, verb}` by the layer that terminates it (the webhook handler for pre-queue
+outcomes, the per-type queue inside `Enqueue` for queue-side ones). This is the canonical list of
+"where, and why, an event does or does not reach the per-type log." The Git-materialization fate
+(read-time tail/splice skips) is deliberately **not** an outcome — those are repeatable per
+(GitTarget, GVR) and the checkpoint backstops them. See the design rationale and the diagnostic
+streams in [audit-diagnostic-streams-plan.md](audit-diagnostic-streams-plan.md).
+
+`category` is a coarse, alert-friendly grouping derivable from `outcome`: **stored** = in the log;
+**held** = kept for later; **dropped** = not in the log (the "Recovered by" column says whether
+that is safe); **error** = should never happen (the e2e invariant gates on `category="error" == 0`).
+
+| Outcome | Category | Recorded at | Why | Recovered by |
+| --- | --- | --- | --- | --- |
+| `queued` | stored | queue `Enqueue` | written to the type stream (numeric in-order, or RV-less pinned to the high-water; a merged official body is also just `queued`) | — |
+| `parked` | held | handler (joiner) | an additional body kept until its official event arrives | re-emitted on match |
+| `not_needed` | dropped | handler (`mirrorGateAllows`) | type not claimed ∩ followable (demand gate) | — (re-anchored on a later claim) |
+| `nil_event` | dropped | handler (`classifyAuditIngress`) | no event | — |
+| `stage` | dropped | handler | not the ResponseComplete stage | — |
+| `read_only_or_unknown_verb` | dropped | handler | get/list/watch (or an unmapped verb) — no mutation | — |
+| `failed_request` | dropped | handler | mutation never reached etcd (responseStatus ≥ 300) | — |
+| `dry_run` | dropped | handler | a dry-run request; nothing persisted | — |
+| `unchanged_resource_version` | dropped | handler | no state change | — |
+| `malformed_additional` | dropped | handler | an additional body without a usable body; the official drives | official event |
+| `non_scale_subresource` | dropped | handler (`shouldForwardSubresource`) | only `/scale` is mirrored; status/exec/log/… dropped before Redis | — |
+| `shallow_dropped` | dropped | handler (joiner) | identity-shallow official, no body, not deletable | next checkpoint |
+| `rvless_empty_highwater` | dropped | queue `Enqueue` | an RV-less event before any high-water exists → no-op | next checkpoint |
+| `older_than_high_water` | dropped | queue `Enqueue` | RV below the stream high-water (external batch-delivery reorder) | next checkpoint + `lateNotify` nudge |
+| `non_numeric_rv` | dropped | queue `Enqueue` | RV not a uint64 (aggregated apiservers) | next checkpoint |
+| `write_error` | **error** | queue `Enqueue` | redis/enqueue failure — the event never reached the log | retry / next checkpoint |
+
+### Divert handling and the diagnostic stream
+
+A diverted event (`older_than_high_water` / `non_numeric_rv`) is rejected from the main stream and
+written to **no stream**. There is no per-type late lane (§5–§6 below describe the original
+late-lane design, now removed — see the banner at the top). A divert is signalled by its `outcome`
+on the counter, by the `lateNotify` nudge (which pulls the type's next checkpoint forward — the
+correctness backstop), and by its full record in `diag_all` when that firehose is enabled.
+
+- **`diag_all`** (`<prefix>:diag_all`, **opt-in** via `--audit-bytype-diag`) — one annotated record
+  (`record_kind=ingestion`) per event that reaches the queue: the entry payload plus its `outcome`
+  and `category`, including the full payload of every divert. The firehose for deep
+  ingestion/ordering investigation; bounded by `--audit-bytype-diag-max-len`.
+
+Outcomes inherent to delivery timing (`older_than_high_water`) or internal failure
+(`shallow_dropped`, `write_error`) are proven by unit tests; the externally-triggerable ones
+(`dry_run`, `unchanged_resource_version`, `non_scale_subresource`, …) by unit tests and the e2e
+suite, which also prints the per-outcome breakdown in its teardown.

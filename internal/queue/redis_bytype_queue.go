@@ -44,7 +44,7 @@ import (
 const (
 	// DefaultRedisByTypeStreamPrefix is the default root key prefix for the
 	// per-resource-type experiment. Every key is "<prefix>:<group-or-core>:<resource>:…";
-	// the audit mirror writes "…:audit:stream" (plus "…:audit:late"/"…:audit:idstate") and
+	// the audit mirror writes "…:audit:stream" (plus "…:audit:idstate") and
 	// the objects snapshot writes "…:objects:items" (etc.), with a ":__index__" set listing
 	// the per-type base keys.
 	// See docs/design/stream/per-resource-type-rv-keyed-streams-experiment.md and
@@ -52,20 +52,25 @@ const (
 	DefaultRedisByTypeStreamPrefix = "gitops-reverser"
 
 	// byTypeAuditStreamSuffix is the strictly RV-ordered main stream: IDs are
-	// "<resourceVersion>-<subseq>" (IR2). byTypeAuditLateSuffix is the diagnostic late lane
-	// for events that would break that order (IR4). byTypeAuditIDStateSuffix is the per-type
-	// observability hash — high-water mark plus counters (IR7).
+	// "<resourceVersion>-<subseq>" (IR2). An event that would break that order is diverted: rejected
+	// from the main stream, signalled by its outcome (older_than_high_water / non_numeric_rv) plus the
+	// lateNotify nudge, and captured in the opt-in diag_all firehose — there is no per-type late-lane
+	// stream. byTypeAuditIDStateSuffix is the per-type observability hash (IR7).
 	byTypeAuditStreamSuffix  = ":audit:stream"
-	byTypeAuditLateSuffix    = ":audit:late"
 	byTypeAuditIDStateSuffix = ":audit:idstate"
 	byTypeIndexSuffix        = ":__index__"
 	byTypeUnknownBucket      = "__unknown__"
 	byTypeCoreGroup          = "core"
 
+	// byTypeDiagAllSuffix is the OPT-IN, GLOBAL firehose appended to the prefix (not a per-type
+	// base key): "<prefix>:diag_all". One annotated record per event that reaches the queue. Off by
+	// default; bounded by DiagMaxLen. See docs/design/stream/audit-diagnostic-streams-plan.md §3.
+	byTypeDiagAllSuffix = ":diag_all"
+
 	// streamIDTooSmallMarker is a substring of the XADD error returned by Redis (and
 	// miniredis) when an explicit stream ID is not strictly greater than the stream's current
 	// top entry. For the RV-first main stream this rejection is the signal that an event is
-	// strictly older than the high-water mark, so we divert it to the late lane (§6).
+	// strictly older than the high-water mark, so we divert it — reject it from the main stream (§12).
 	streamIDTooSmallMarker = "equal or smaller"
 )
 
@@ -78,9 +83,15 @@ const (
 	entryFieldReason    = "reason"
 	entryFieldLastRV    = "last_rv"
 
+	// diag_all annotations: a record_kind=ingestion record reuses the per-event entry plus these.
+	entryFieldOutcome    = "outcome"
+	entryFieldCategory   = "category"
+	entryFieldRecordKind = "record_kind"
+	recordKindIngestion  = "ingestion"
+
 	placementResourceVersion  = "resource-version"
 	placementAttachedToLastRV = "attached-to-last-rv"
-	placementLateLane         = "late-lane"
+	placementDiverted         = "diverted"
 
 	lateReasonOlderThanHighWater = "older-than-high-water"
 	lateReasonNonNumericRV       = "non-numeric-rv"
@@ -110,6 +121,11 @@ type RedisByTypeStreamConfig struct {
 	Prefix     string
 	MaxLen     int64
 	TLSEnabled bool
+	// DiagStreams enables the opt-in global "<prefix>:diag_all" firehose — one annotated record per
+	// event that reaches the queue (off by default; investigation only). DiagMaxLen bounds it via
+	// XADD MAXLEN ~ (0 = unbounded). See docs/design/stream/audit-diagnostic-streams-plan.md §3.
+	DiagStreams bool
+	DiagMaxLen  int64
 	// PoolSize overrides the go-redis connection-pool size (0 = library default, 10×GOMAXPROCS).
 	// The audit TAIL reader needs a large pool: every followed type runs one tail parked in a
 	// blocking XREAD, so it holds one connection continuously, and a wildcard GitTarget follows
@@ -124,7 +140,8 @@ type RedisByTypeStreamConfig struct {
 // becomes one entry — the compact overview fields plus the full event JSON in a payload_json
 // field — keyed "<resourceVersion>-<subseq>" so the stream replays in etcd-commit order (IR2).
 // An event whose RV is strictly below the stream's high-water mark is never forced into the
-// main stream; it is diverted to the diagnostic late lane ":audit:late" (IR3/IR4). An RV-less
+// main stream; it is diverted — rejected from the log, signalled by its outcome and the lateNotify
+// nudge, and captured in the opt-in diag_all firehose (IR3/IR4). An RV-less
 // event attaches to the high-water mark, and per-type counters/high-water live in the
 // ":audit:idstate" hash (IR5/IR7). The type's base key is recorded in a ":__index__" set so the
 // keyspace can be enumerated without SCAN. Routing is atomic per XADD with no Lua and best-effort
@@ -135,12 +152,17 @@ type RedisByTypeStreamQueue struct {
 	prefix string
 	maxLen int64
 
+	// diagEnabled/diagMaxLen/diagKey drive the opt-in "<prefix>:diag_all" firehose (off by default).
+	diagEnabled bool
+	diagMaxLen  int64
+	diagKey     string
+
 	indexedMu sync.Mutex
 	indexed   map[string]struct{}
 
-	// lateNotify, when set, is called after an ordered (numeric-RV) event is diverted to
-	// the late lane because its RV was strictly below the stream's high-water. The late
-	// lane is diagnostic-only — the ordered log never replays the event — so the notifier
+	// lateNotify, when set, is called after an ordered (numeric-RV) event is diverted
+	// (rejected from the main stream) because its RV was strictly below the high-water. The
+	// ordered log never replays such an event, so the notifier
 	// lets the materialization layer pull the next checkpoint forward instead of leaving
 	// the mirror stale until the periodic sweep. Best-effort: it must be fast and
 	// non-blocking (it runs on the audit ingest path).
@@ -172,10 +194,13 @@ func NewRedisByTypeStreamQueue(cfg RedisByTypeStreamConfig) (*RedisByTypeStreamQ
 	}
 
 	return &RedisByTypeStreamQueue{
-		client:  redis.NewClient(options),
-		prefix:  prefix,
-		maxLen:  cfg.MaxLen,
-		indexed: make(map[string]struct{}),
+		client:      redis.NewClient(options),
+		prefix:      prefix,
+		maxLen:      cfg.MaxLen,
+		diagEnabled: cfg.DiagStreams,
+		diagMaxLen:  cfg.DiagMaxLen,
+		diagKey:     prefix + byTypeDiagAllSuffix,
+		indexed:     make(map[string]struct{}),
 	}, nil
 }
 
@@ -187,16 +212,16 @@ func (q *RedisByTypeStreamQueue) Ping(ctx context.Context) error {
 	return q.client.Ping(ctx).Err()
 }
 
-// SetLateEventNotifier wires the late-lane diversion hook; see the lateNotify field.
+// SetLateEventNotifier wires the divert-event notifier hook; see the lateNotify field.
 func (q *RedisByTypeStreamQueue) SetLateEventNotifier(notify func(group, resource string)) {
 	q.lateNotify = notify
 }
 
 // Enqueue mirrors one canonical audit event into its per-resource-type audit log, routed by
 // the event's resourceVersion (§9): a numeric RV at or above the stream's high-water lands in
-// the strictly-ordered main stream as "<rv>-<subseq>"; a strictly-older RV is diverted to the
-// diagnostic late lane; an RV-less event attaches to the high-water mark; a present-but-non-
-// numeric RV is diverted to the late lane. The error is returned so the caller can log/count
+// the strictly-ordered main stream as "<rv>-<subseq>"; a strictly-older RV is diverted (rejected
+// from the main stream); an RV-less event attaches to the high-water mark; a present-but-non-
+// numeric RV is diverted too. The error is returned so the caller can log/count
 // it, but callers treat the mirror as best-effort: a failure here must not fail the audit
 // request (IR8).
 func (q *RedisByTypeStreamQueue) Enqueue(ctx context.Context, event auditv1.Event) error {
@@ -217,12 +242,11 @@ func (q *RedisByTypeStreamQueue) Enqueue(ctx context.Context, event auditv1.Even
 
 	keys := byTypeAuditKeys{
 		stream:  base + byTypeAuditStreamSuffix,
-		late:    base + byTypeAuditLateSuffix,
 		idState: base + byTypeAuditIDStateSuffix,
 	}
 	if ref := event.ObjectRef; ref != nil &&
 		(ref.Subresource == "" || auditutil.IsScaleSubresource(ref.Subresource)) {
-		// A scale entry lives in the parent's stream (DEC-A), so a late-diverted scale
+		// A scale entry lives in the parent's stream (DEC-A), so a diverted scale
 		// nudges the PARENT type's resync like any other parent write.
 		keys.group = ref.APIGroup
 		keys.resource = ref.Resource
@@ -235,12 +259,37 @@ func (q *RedisByTypeStreamQueue) Enqueue(ctx context.Context, event auditv1.Even
 	case rvAbsent:
 		oc, ingestErr = q.ingestRVLess(ctx, keys, millis, values)
 	case rvNonNumeric:
-		oc, ingestErr = outcome.NonNumericRV, q.divertLate(ctx, keys, lateReasonNonNumericRV, rv, "", values)
+		q.markDiverted(ctx, keys, lateReasonNonNumericRV, rv, "", values)
+		oc = outcome.NonNumericRV
 	}
 	// Record the one census outcome for this event (the queue is the single owner for
 	// queue-side outcomes; the webhook handler owns the pre-queue ones).
 	outcome.Record(ctx, &event, oc)
+	// Opt-in firehose: capture the full annotated record for investigation (no-op when disabled).
+	q.writeDiagAll(ctx, values, oc)
 	return ingestErr
+}
+
+// writeDiagAll appends one annotated record to the opt-in global "<prefix>:diag_all" firehose: the
+// per-event entry (the same overview fields + payload_json the ingest path built into values) plus
+// the outcome, its category, and record_kind=ingestion. It is a no-op unless DiagStreams is enabled,
+// and best-effort (a diag write failure must never affect ingestion). MAXLEN ~ bounds it.
+func (q *RedisByTypeStreamQueue) writeDiagAll(ctx context.Context, values map[string]any, oc outcome.Outcome) {
+	if !q.diagEnabled {
+		return
+	}
+	// values is local to Enqueue and already written to the main stream by now (for a queued event),
+	// so annotating
+	// it in place is safe and avoids copying the (large) payload_json.
+	values[entryFieldOutcome] = string(oc)
+	values[entryFieldCategory] = string(oc.Category())
+	values[entryFieldRecordKind] = recordKindIngestion
+	_ = q.client.XAdd(ctx, &redis.XAddArgs{
+		Stream: q.diagKey,
+		MaxLen: q.diagMaxLen,
+		Approx: true,
+		Values: values,
+	}).Err()
 }
 
 // TrimTypeAuditLog bounds a type's main audit stream to the checkpoint cursor: it evicts every
@@ -268,7 +317,7 @@ func (q *RedisByTypeStreamQueue) TrimTypeAuditLog(ctx context.Context, group, re
 }
 
 // DeleteType removes a type's entire audit footprint from Redis: it DELs the per-type
-// "…:audit:stream", "…:audit:late", and "…:audit:idstate" keys and SREMs the base key from the
+// "…:audit:stream" and "…:audit:idstate" keys and SREMs the base key from the
 // "…:__index__" set. It is the audit-side twin of the watch layer's clearTypeObjects (which drops
 // "…:objects:*") and is called on the demand `Released` lifecycle event, so a type that is no longer
 // claimed ∩ followable stops costing Redis space — the inverse of the per-type explosion
@@ -278,7 +327,6 @@ func (q *RedisByTypeStreamQueue) DeleteType(ctx context.Context, group, resource
 	base := typeBaseKey(q.prefix, group, resource, "")
 	if err := q.client.Del(ctx,
 		base+byTypeAuditStreamSuffix,
-		base+byTypeAuditLateSuffix,
 		base+byTypeAuditIDStateSuffix,
 	).Err(); err != nil {
 		return fmt.Errorf("failed to delete audit keys for %q: %w", base, err)
@@ -416,12 +464,11 @@ func auditChangeFromEntry(values map[string]interface{}) (git.Event, bool) {
 	return git.Event{Object: obj, Identifier: identifier, Operation: string(op), UserInfo: userInfo}, true
 }
 
-// byTypeAuditKeys bundles the three per-type audit keys one Enqueue touches, plus the
-// raw (group, resource) identity they were derived from, so the late-lane hook can name
+// byTypeAuditKeys bundles the per-type audit keys one Enqueue touches, plus the
+// raw (group, resource) identity they were derived from, so the divert notifier can name
 // the type without re-parsing a key.
 type byTypeAuditKeys struct {
 	stream  string // the strictly RV-ordered main stream
-	late    string // the diagnostic late lane
 	idState string // the observability hash (high-water + counters)
 
 	group    string
@@ -456,7 +503,7 @@ func classifyRV(rv string) rvClass {
 // ingestOrdered writes a numeric-RV event to the main stream as "<rv>-*" and lets the strong
 // key arbitrate (P2): an RV at or above the high-water is accepted and Valkey allocates the
 // subseq, disambiguating events at the same RV (IR2); a strictly-older RV is rejected with
-// streamIDTooSmallMarker and diverted to the late lane (IR3/IR4). The routing is atomic per
+// streamIDTooSmallMarker and diverted — rejected from the main stream (IR3/IR4). The routing is atomic per
 // XADD with no Lua and no read-then-write — Valkey's native 64-bit ID ordering is the arbiter,
 // so we never need a lossy tonumber or a decimal-string compare of our own (IR6). Only the
 // idstate counters/cache are best-effort and self-correcting (§9).
@@ -476,15 +523,15 @@ func (q *RedisByTypeStreamQueue) ingestOrdered(
 		q.recordMain(ctx, keys.idState, rv, id, millis)
 		return outcome.Queued, nil
 	case isIDTooSmall(err):
-		// The strong key rejected a strictly-older RV — the late-lane signal (P2). The high-water
-		// for the diagnostic payload is the stream's authoritative top (§10). The ordered log will
-		// never replay this event, so nudge the materialization layer to pull the type's next
-		// checkpoint forward (the notifier is best-effort; the periodic sweep stays the backstop).
-		divertErr := q.divertLate(ctx, keys, lateReasonOlderThanHighWater, rv, q.streamTopRV(ctx, keys.stream), values)
-		if divertErr == nil && q.lateNotify != nil && keys.resource != "" {
+		// The strong key rejected a strictly-older RV (P2): the ordered log will never replay this
+		// event. The high-water for the diag payload is the stream's authoritative top (§10). Mark it
+		// diverted (counter + diag_all fields, no stream write) and nudge the materialization layer to
+		// pull the type's next checkpoint forward (best-effort; the periodic sweep stays the backstop).
+		q.markDiverted(ctx, keys, lateReasonOlderThanHighWater, rv, q.streamTopRV(ctx, keys.stream), values)
+		if q.lateNotify != nil && keys.resource != "" {
 			q.lateNotify(keys.group, keys.resource)
 		}
-		return outcome.OlderThanHighWater, divertErr
+		return outcome.OlderThanHighWater, nil
 	default:
 		return outcome.WriteError, fmt.Errorf("failed to append entry to %q: %w", keys.stream, err)
 	}
@@ -496,13 +543,13 @@ func (q *RedisByTypeStreamQueue) ingestOrdered(
 // not a claimed RV; the next checkpoint backstops it.
 //
 // Before any high-water exists the type's mirror is empty, so an RV-less event (a delete,
-// deletecollection, or shallow body) has nothing to act on — it is a NO-OP, not a late event. We
-// drop it (counting it as rv-missing) rather than diverting it to the diagnostic late lane: the
-// checkpoint LIST is the correctness backstop for deletes (DEC-5 / the api-source model), so dropping
-// loses nothing, and it keeps the late lane reserved for genuine out-of-order deliveries (the
-// "empty-stream guard", docs/finished/demand-gated-audit-ingestion.md §8). Without this, RV-less
-// system-controller deletes — GC of an owned object, an aggregated-API delete — that race ahead of
-// their type's first numeric write land in the late lane as noise even under demand gating.
+// deletecollection, or shallow body) has nothing to act on — it is a NO-OP. We drop it (counting it
+// as rv-missing) rather than diverting it: the checkpoint LIST is the correctness backstop for
+// deletes (DEC-5 / the api-source model), so dropping loses nothing, and it keeps the divert path
+// (the outcome metric + nudge) reserved for genuine out-of-order deliveries (the "empty-stream
+// guard", docs/finished/demand-gated-audit-ingestion.md §8). Without this, RV-less system-controller
+// deletes — GC of an owned object, an aggregated-API delete — that race ahead of their type's first
+// numeric write would be counted as diverts (noise) even under demand gating.
 func (q *RedisByTypeStreamQueue) ingestRVLess(
 	ctx context.Context,
 	keys byTypeAuditKeys,
@@ -526,33 +573,28 @@ func (q *RedisByTypeStreamQueue) ingestRVLess(
 	return outcome.Queued, nil
 }
 
-// divertLate records an event in the diagnostic late lane with a server-assigned ID and full
-// context — the reason, the event RV, and the current high-water. The late lane is
-// observability only: never reordered into main, never a reconcile input (§6).
-func (q *RedisByTypeStreamQueue) divertLate(
+// markDiverted annotates the event entry (reason, placement, the event RV, and the current
+// high-water — consumed by the opt-in diag_all firehose) and bumps the per-type divert counter. The
+// event is intentionally NOT written to any stream: it was rejected from the strictly-ordered main
+// log, the outcome metric is the divert signal, the lateNotify nudge pulls the next checkpoint
+// forward (the correctness backstop), and diag_all captures the full payload when enabled. In-memory
+// + a best-effort counter only, so it cannot fail — there is no per-type late lane any more.
+func (q *RedisByTypeStreamQueue) markDiverted(
 	ctx context.Context,
 	keys byTypeAuditKeys,
 	reason, rv, lastRV string,
 	values map[string]any,
-) error {
+) {
 	values[entryFieldReason] = reason
-	values[entryFieldPlacement] = placementLateLane
+	values[entryFieldPlacement] = placementDiverted
 	values[entryFieldRVPresent] = strconv.FormatBool(rv != "")
 	values[entryFieldLastRV] = lastRV
-
-	// The diverted-event census count is recorded once by Enqueue via outcome.Record
-	// (older_than_high_water / non_numeric_rv); this lane is the diagnostic payload only
-	// (retired to diag_all in a later slice).
-	if _, err := q.xaddID(ctx, keys.late, "*", values); err != nil {
-		return fmt.Errorf("failed to append entry to %q: %w", keys.late, err)
-	}
 	q.incrIDState(ctx, keys.idState, idStateLateCount)
-	return nil
 }
 
 // streamTopRV returns the resourceVersion at the stream's high-water mark — the leading
 // component of its last-generated ID (XINFO STREAM), which is authoritative and survives
-// trimming (§10). It is the value reported in late-lane diagnostics and the mark RV-less events
+// trimming (§10). It is the high-water reported in divert diagnostics and the mark RV-less events
 // attach to. Empty when the stream has no entries yet (or is unreachable).
 func (q *RedisByTypeStreamQueue) streamTopRV(ctx context.Context, streamKey string) string {
 	info, err := q.client.XInfoStream(ctx, streamKey).Result()

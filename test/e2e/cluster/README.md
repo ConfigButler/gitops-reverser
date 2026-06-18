@@ -86,7 +86,7 @@ docker exec k3d-gitops-reverser-test-e2e-server-0 ls -l /etc/kubernetes/audit
 Confirm audit metrics are incrementing:
 
 ```promql
-gitopsreverser_audit_events_received_total
+gitopsreverser_audit_events_total
 ```
 
 ## Troubleshooting

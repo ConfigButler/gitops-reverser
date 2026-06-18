@@ -108,6 +108,15 @@ webhook:
       # debug stream stores every decoded event before filtering/joining, so unbounded mode
       # here is especially dangerous.
       maxLen: 10000
+    # Opt-in <prefix>:diag_all firehose — one annotated record per ingested audit event
+    # (the entry payload plus its outcome/category), for investigating ingestion/ordering.
+    # Off by default; enable only while investigating. See
+    # docs/design/stream/audit-diagnostic-streams-plan.md.
+    diagStreams:
+      enabled: false
+      # Approximate max <prefix>:diag_all stream length; 0 disables trimming (unbounded — risky,
+      # this captures every ingested event).
+      maxLen: 100000
 
 # Durable audit queue configuration.
 queue:

@@ -348,7 +348,7 @@ func (m *Materializer) RestoreSynced(gvr schema.GroupVersionResource, rv string)
 // RequestResync flags a claimed, Synced, unfrozen type for an immediate re-anchor and
 // emits SyncRequested — the same transition the periodic sweep applies, available on
 // demand. The ingestion layer uses it as the late-event nudge: an audit event whose RV
-// arrived below its type stream's high-water is diverted to the diagnostic late lane
+// arrived below its type stream's high-water is diverted (rejected from the main stream)
 // and never replayed, so only a fresh checkpoint folds its effect in; without the nudge
 // the next periodic sweep (~1h) is the backstop and the mirror serves stale state until
 // then. It reports whether a resync was actually requested; any other phase is a no-op

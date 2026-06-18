@@ -60,8 +60,8 @@ const materializationSweepInterval = time.Hour
 const lateNudgeMinInterval = 15 * time.Second
 
 // NudgeTypeResyncForLateEvent is the ingestion layer's late-event hook (wired in cmd):
-// the per-type mirror diverted an audit event below its stream's high-water to the
-// diagnostic late lane, so the ordered log will never replay it and only a fresh
+// the per-type mirror diverted an audit event whose RV was below its stream's high-water
+// (rejected from the main stream), so the ordered log will never replay it and only a fresh
 // checkpoint can fold its effect in promptly — without the nudge the ~1h sweep is the
 // backstop and the mirror serves stale state until then. The per-type stream key carries
 // only (group, resource), so the claimed GVR is resolved off the Materializer inventory;
@@ -448,7 +448,7 @@ func (m *Manager) handleMaterializationEvent(ctx context.Context, log logr.Logge
 		// the initial backfill splice to every watching GitTarget. A LATER TypeSynced — a periodic
 		// sweep re-anchor or a late-event nudge, with the tail already live — re-folds the refreshed
 		// checkpoint as a HEAL resync: it catches drift the in-order tail cannot express (orphans, a
-		// deletecollection, a late-lane event) and was DISABLED by 8f2ad84 because a force-finalizing
+		// deletecollection, a diverted event) and was DISABLED by 8f2ad84 because a force-finalizing
 		// re-splice stole an open CommitRequest window. Routing it through heal=true lets the worker
 		// DEFER it until no window is open, restoring the checkpoint's correctness role without the
 		// steal (Rec 1). The tail keeps git fresh for in-order live edits between re-anchors.

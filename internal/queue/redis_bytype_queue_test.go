@@ -402,27 +402,19 @@ func TestClassifyRV(t *testing.T) {
 	}
 }
 
-// lateWant is the expected shape of one late-lane entry.
-type lateWant struct {
-	reason    string
-	rv        string // the resource_version field (the event RV)
-	lastRV    string
-	rvPresent string
-}
-
 // TestRedisByTypeStreamQueue_Ingestion drives a sequence of events through Enqueue against a real
-// Valkey and asserts the resulting main-stream IDs, late-lane entries, and idstate counters — the
-// §11 acceptance criteria and the §7 observability counters in one table. It runs against the
-// container (not miniredis) because the strictly-older→late criterion depends on Valkey's strong
-// key actually rejecting a below-high-water "<rv>-*".
+// Valkey and asserts the resulting main-stream IDs and idstate counters — the §11 acceptance
+// criteria and the §7 observability counters in one table. It runs against the container (not
+// miniredis) because the strictly-older→divert criterion depends on Valkey's strong key actually
+// rejecting a below-high-water "<rv>-*". A diverted event is rejected from the main stream and only
+// counted (lateCount); its full payload, when needed, is in the opt-in diag_all firehose.
 func TestRedisByTypeStreamQueue_Ingestion(t *testing.T) {
 	tests := []struct {
 		name          string
 		rvs           []string // one Enqueue per element ("" = RV-less)
 		wantMainIDs   []string
-		wantLate      []lateWant
 		wantMainCount int64
-		wantLateCount int64
+		wantLateCount int64 // diverted-event counter; the event is written to no stream
 		wantRVMissing int64
 		wantLastRV    string
 	}{
@@ -448,21 +440,17 @@ func TestRedisByTypeStreamQueue_Ingestion(t *testing.T) {
 			wantLastRV:    "200",
 		},
 		{
-			name:        "a strictly-older RV is never in main; it is fully recorded in late",
-			rvs:         []string{"200", "100"},
-			wantMainIDs: []string{"200-0"},
-			wantLate: []lateWant{
-				{reason: lateReasonOlderThanHighWater, rv: "100", lastRV: "200", rvPresent: "true"},
-			},
+			name:          "a strictly-older RV is rejected from main and counted as diverted",
+			rvs:           []string{"200", "100"},
+			wantMainIDs:   []string{"200-0"},
 			wantMainCount: 1,
 			wantLateCount: 1,
 			wantLastRV:    "200",
 		},
 		{
-			name: "an RV-less event before any high-water is a no-op (empty-stream guard), not late",
+			name: "an RV-less event before any high-water is a no-op (empty-stream guard)",
 			rvs:  []string{""},
-			// Empty mirror, nothing to act on → dropped and counted as rv-missing, never diverted
-			// to the late lane (which stays reserved for genuine out-of-order events).
+			// Empty mirror, nothing to act on → dropped and counted as rv-missing, not diverted.
 			wantRVMissing: 1,
 		},
 		{
@@ -474,9 +462,8 @@ func TestRedisByTypeStreamQueue_Ingestion(t *testing.T) {
 			wantLastRV:    "150",
 		},
 		{
-			name:          "a present-but-non-numeric RV is diverted to late, never crashes",
+			name:          "a present-but-non-numeric RV is diverted, never crashes",
 			rvs:           []string{"abc"},
-			wantLate:      []lateWant{{reason: lateReasonNonNumericRV, rv: "abc", lastRV: "", rvPresent: "true"}},
 			wantLateCount: 1,
 		},
 		{
@@ -486,12 +473,7 @@ func TestRedisByTypeStreamQueue_Ingestion(t *testing.T) {
 				"9007199254740992-0", // 2^53
 				"9007199254740993-0", // 2^53 + 1
 			},
-			wantLate: []lateWant{{
-				reason:    lateReasonOlderThanHighWater,
-				rv:        "9007199254740991", // 2^53 - 1, strictly below the high-water
-				lastRV:    "9007199254740993",
-				rvPresent: "true",
-			}},
+			// "9007199254740991" (2^53 - 1) is strictly below the high-water → diverted.
 			wantMainCount: 2,
 			wantLateCount: 1,
 			wantLastRV:    "9007199254740993",
@@ -511,21 +493,10 @@ func TestRedisByTypeStreamQueue_Ingestion(t *testing.T) {
 			assert.Equal(t, tt.wantMainIDs, streamIDsOf(t, client, base+byTypeAuditStreamSuffix),
 				"main-stream IDs")
 
-			lateEntries, err := client.XRange(ctx, base+byTypeAuditLateSuffix, "-", "+").Result()
-			require.NoError(t, err)
-			require.Len(t, lateEntries, len(tt.wantLate), "late-lane entry count")
-			for i, want := range tt.wantLate {
-				v := lateEntries[i].Values
-				assert.Equal(t, want.reason, v[entryFieldReason], "late reason")
-				assert.Equal(t, want.rv, v["resource_version"], "late event RV")
-				assert.Equal(t, want.lastRV, v[entryFieldLastRV], "late high-water")
-				assert.Equal(t, want.rvPresent, v[entryFieldRVPresent], "late rv_present")
-				assert.Equal(t, placementLateLane, v[entryFieldPlacement], "late placement")
-			}
-
 			idState := base + byTypeAuditIDStateSuffix
 			assert.Equal(t, tt.wantMainCount, counterValue(t, client, idState, idStateMainCount), "mainCount")
-			assert.Equal(t, tt.wantLateCount, counterValue(t, client, idState, idStateLateCount), "lateCount")
+			assert.Equal(t, tt.wantLateCount,
+				counterValue(t, client, idState, idStateLateCount), "lateCount (diverted)")
 			assert.Equal(t, tt.wantRVMissing, counterValue(t, client, idState, idStateRVMissingCount), "rvMissingCount")
 			if tt.wantLastRV != "" {
 				lastRV, err := client.HGet(ctx, idState, idStateLastRV).Result()
@@ -571,10 +542,6 @@ func TestRedisByTypeStreamQueue_EnqueueUnknownBucket(t *testing.T) {
 	mainEntries, err := client.XRange(ctx, base+byTypeAuditStreamSuffix, "-", "+").Result()
 	require.NoError(t, err)
 	assert.Empty(t, mainEntries, "an RV-less event with no high-water never enters the main stream")
-
-	lateEntries, err := client.XRange(ctx, base+byTypeAuditLateSuffix, "-", "+").Result()
-	require.NoError(t, err)
-	assert.Empty(t, lateEntries, "an RV-less event with no high-water is a no-op, not a late entry")
 
 	rvMissing, err := client.HGet(ctx, base+byTypeAuditIDStateSuffix, idStateRVMissingCount).Result()
 	require.NoError(t, err)
@@ -780,15 +747,79 @@ func TestRedisByTypeStreamQueue_RecordsOutcomeMetric(t *testing.T) {
 	assert.Equal(t, int64(1), diverted)
 }
 
-func TestRedisByTypeStreamQueue_LateXAddErrorPropagates(t *testing.T) {
+func TestRedisByTypeStreamQueue_RecordsDropOutcomes(t *testing.T) {
+	reader, err := telemetry.InitTestExporter()
+	require.NoError(t, err)
+
+	q, _, _ := valkeyByTypeQueue(t, 0)
+	ctx := context.Background()
+
+	// RV-less into an empty stream → rvless_empty_highwater (no-op drop, empty-stream guard).
+	require.NoError(t, q.Enqueue(ctx, ingestionEvent("", 3000)))
+	// A present-but-non-numeric RV → non_numeric_rv (out of the strong-ordering domain).
+	require.NoError(t, q.Enqueue(ctx, ingestionEvent("not-a-number", 3001)))
+
+	for outc := range map[string]struct{}{"rvless_empty_highwater": {}, "non_numeric_rv": {}} {
+		n, ok := telemetry.CollectInt64Sum(reader, "gitopsreverser_audit_events_total",
+			map[string]string{"outcome": outc, "category": "dropped"})
+		require.Truef(t, ok, "expected an %s outcome sample", outc)
+		assert.Equalf(t, int64(1), n, "%s count", outc)
+	}
+}
+
+func TestRedisByTypeStreamQueue_RecordsWriteErrorOutcome(t *testing.T) {
+	reader, err := telemetry.InitTestExporter()
+	require.NoError(t, err)
+
 	mr := miniredis.RunT(t)
 	q := newTestByTypeQueue(t, mr, 0)
+	ctx := context.Background()
 
-	require.NoError(t, q.Enqueue(context.Background(), ingestionEvent("100", 3000)),
-		"first enqueue indexes the key in-memory")
-
+	require.NoError(t, q.Enqueue(ctx, ingestionEvent("100", 3000)), "first enqueue indexes the key")
 	mr.Close()
-	// A present-but-non-numeric RV routes straight to the late lane; with Redis down that
-	// late-lane XADD must surface as an error for the caller to log/count.
-	require.Error(t, q.Enqueue(context.Background(), ingestionEvent("not-a-number", 3001)))
+	require.Error(t, q.Enqueue(ctx, ingestionEvent("101", 3001)), "a main-stream XADD failure surfaces")
+
+	n, ok := telemetry.CollectInt64Sum(reader, "gitopsreverser_audit_events_total",
+		map[string]string{"outcome": "write_error", "category": "error"})
+	require.True(t, ok, "expected a write_error outcome sample")
+	assert.Equal(t, int64(1), n)
+}
+
+func TestRedisByTypeStreamQueue_DiagAllCapturesIngestion(t *testing.T) {
+	if sharedValkeyAddr == "" {
+		t.Skip("real-Valkey container unavailable (Docker required); skipping diag_all test")
+	}
+	prefix := fmt.Sprintf("test.bytype.%d", valkeyPrefixSeq.Add(1))
+	q, err := NewRedisByTypeStreamQueue(RedisByTypeStreamConfig{
+		Addr: sharedValkeyAddr, Prefix: prefix, DiagStreams: true, DiagMaxLen: 1000,
+	})
+	require.NoError(t, err)
+	client := redis.NewClient(&redis.Options{Addr: sharedValkeyAddr})
+	t.Cleanup(func() { _ = client.Close() })
+	ctx := context.Background()
+
+	require.NoError(t, q.Enqueue(ctx, ingestionEvent("100", 3000))) // queued
+	require.NoError(t, q.Enqueue(ctx, ingestionEvent("90", 3001)))  // below high-water → diverted
+
+	entries, err := client.XRange(ctx, prefix+byTypeDiagAllSuffix, "-", "+").Result()
+	require.NoError(t, err)
+	require.Len(t, entries, 2, "diag_all captures every queue-reaching event")
+
+	assert.Equal(t, "queued", entries[0].Values[entryFieldOutcome], "first record outcome")
+	assert.Equal(t, "stored", entries[0].Values[entryFieldCategory], "first record category")
+	assert.Equal(t, recordKindIngestion, entries[0].Values[entryFieldRecordKind], "record_kind")
+
+	assert.Equal(t, "older_than_high_water", entries[1].Values[entryFieldOutcome], "divert outcome")
+	assert.Equal(t, "dropped", entries[1].Values[entryFieldCategory], "divert category")
+}
+
+func TestRedisByTypeStreamQueue_DiagAllDisabledByDefault(t *testing.T) {
+	q, client, prefix := valkeyByTypeQueue(t, 0)
+	ctx := context.Background()
+
+	require.NoError(t, q.Enqueue(ctx, ingestionEvent("100", 3000)))
+
+	exists, err := client.Exists(ctx, prefix+byTypeDiagAllSuffix).Result()
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), exists, "diag_all must not be written when DiagStreams is off (default)")
 }

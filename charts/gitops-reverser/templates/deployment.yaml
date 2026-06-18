@@ -75,6 +75,10 @@ spec:
             - --audit-debug-redis-stream={{ .Values.webhook.audit.debugStream.stream }}
             - --audit-debug-redis-max-len={{ .Values.webhook.audit.debugStream.maxLen }}
             {{- end }}
+            {{- if .Values.webhook.audit.diagStreams.enabled }}
+            - --audit-bytype-diag
+            - --audit-bytype-diag-max-len={{ .Values.webhook.audit.diagStreams.maxLen }}
+            {{- end }}
             {{- if .Values.queue.redis.tls.enabled }}
             - --audit-redis-tls
             {{- end }}

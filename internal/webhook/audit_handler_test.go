@@ -1316,3 +1316,30 @@ func TestAuditHandler_DuplicateOfficialDeliveryMirrorsTwice(t *testing.T) {
 	assert.Equal(t, []string{"dup-1", "dup-1"}, byType.auditIDs(),
 		"duplicate delivery is no longer suppressed at the webhook; the stream absorbs it")
 }
+
+// TestEventToMirror_NilJoinerShallowIsDropNotParked guards the no-joiner construction path: an
+// identity-shallow event (no body, not deletable) must surface as a Drop action — the caller maps
+// that to outcome.ShallowDropped. Returning the zero-value AuditJoinDecision{} would be Parked.
+func TestEventToMirror_NilJoinerShallowIsDropNotParked(t *testing.T) {
+	handler, err := NewAuditHandler(AuditHandlerConfig{}) // no joiner wired
+	require.NoError(t, err)
+
+	ev := &auditv1.Event{
+		AuditID:   "shallow",
+		ObjectRef: &auditv1.ObjectReference{APIVersion: "v1", Resource: "configmaps"},
+	}
+
+	_, decision, shouldEmit, err := handler.eventToMirror(
+		context.Background(), AuditSourceOfficial, ev, audit.Event{}, AuditEventQualityIdentityShallow)
+	require.NoError(t, err)
+	assert.False(t, shouldEmit, "a shallow event without a joiner is not emitted")
+	assert.Equal(t, AuditJoinActionDrop, decision.Action,
+		"shallow-with-no-joiner must be a Drop (→ shallow_dropped), not the zero-value Parked")
+
+	// A complete event still emits.
+	_, decision, shouldEmit, err = handler.eventToMirror(
+		context.Background(), AuditSourceOfficial, ev, audit.Event{}, AuditEventQualityComplete)
+	require.NoError(t, err)
+	assert.True(t, shouldEmit, "a complete event without a joiner emits as-is")
+	assert.Equal(t, AuditJoinActionEmit, decision.Action)
+}

@@ -321,7 +321,7 @@ func (h *AuditHandler) processEvent(ctx context.Context, source AuditSource, aud
 
 	// Serialize official-source mirroring within the pod: the per-type streams
 	// are RV-keyed, and concurrent handler goroutines appending out of arrival
-	// order would divert in-order events to the diagnostic late lane.
+	// order would divert in-order events (reject them from the main stream).
 	if source == AuditSourceOfficial {
 		gateStart := time.Now()
 		h.canonicalMu.Lock()
@@ -479,7 +479,13 @@ func (h *AuditHandler) eventToMirror(
 		emit := quality == AuditEventQualityComplete ||
 			quality == AuditEventQualityBodyShallowDeletable ||
 			quality == AuditEventQualityCollection
-		return auditEventV1, AuditJoinDecision{}, emit, nil
+		if !emit {
+			// An identity-shallow event with no joiner to await a body is a shallow drop. Return an
+			// explicit Drop action: the zero-value AuditJoinAction is Parked, which the caller would
+			// otherwise mis-record as outcome.Parked instead of outcome.ShallowDropped.
+			return nil, AuditJoinDecision{Action: AuditJoinActionDrop}, false, nil
+		}
+		return auditEventV1, AuditJoinDecision{Action: AuditJoinActionEmit}, true, nil
 	}
 
 	decision, err := h.config.Joiner.Decide(ctx, source, auditEventV1, quality)
@@ -646,11 +652,11 @@ func (h *AuditHandler) extractGVR(event *audit.Event) string {
 //     Its responseObject is a metav1.Status error body, not the resource, so it
 //     must never reach Git; it is rejected for both sources.
 //   - A dry-run request (`dryRun=All`) completed admission/defaulting but was not
-//     persisted, so it is rejected for both sources before it can enter either
-//     the ordered stream or the late lane.
+//     persisted, so it is rejected for both sources before it can reach the
+//     per-type log at all.
 //   - A mutation-shaped update/patch whose request-side RV equals the response RV
 //     did not advance stored object state. Re-applying such unchanged objects
-//     produces stale RVs that pollute the late lane, so it is rejected for both
+//     produces stale RVs that would be diverted as noise, so it is rejected for both
 //     sources.
 //   - An additional-source event is only worth parking when it actually carries a
 //     request/response body; a shallow (malformed) one has nothing to contribute.

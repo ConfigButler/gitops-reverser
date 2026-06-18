@@ -39,8 +39,8 @@ const (
 	commitRequestAuthorScanCount = 512
 )
 
-// LookupCommitRequestAuthor scans the CommitRequest type's per-type audit
-// streams backwards for the `create` event of the object identified by
+// LookupCommitRequestAuthor scans the CommitRequest type's main audit stream
+// backwards for the `create` event of the object identified by
 // namespace/name (and UID, when both sides carry one) and returns the
 // audit-resolved author username. ok=false means the event has not been
 // observed yet — the webhook may still be ingesting it — or a transient Redis
@@ -49,18 +49,15 @@ const (
 // This is the attribution source for the controller-driven CommitRequest
 // finalize (C-B2): every request enters through the audit ingestion path, the
 // CommitRequest's own create included, and mirrorByType lands it in
-// `…commitrequests:audit:stream`. The diagnostic late lane is scanned too so
-// an out-of-order delivery can still attribute.
+// `…commitrequests:audit:stream`. Only the main ordered stream is scanned: a
+// CommitRequest create whose audit event was diverted (RV below the high-water)
+// is rejected from that stream and stays unattributable, so the finalize fails
+// closed — the documented behaviour (rare, since CommitRequests are low-volume).
 func (q *RedisByTypeStreamQueue) LookupCommitRequestAuthor(
 	ctx context.Context, namespace, name string, uid types.UID,
 ) (string, bool) {
 	base := typeBaseKey(q.prefix, configv1alpha1.GroupVersion.Group, commitRequestResource, "")
-	for _, streamKey := range []string{base + byTypeAuditStreamSuffix, base + byTypeAuditLateSuffix} {
-		if author, ok := q.scanForCommitRequestCreate(ctx, streamKey, namespace, name, uid); ok {
-			return author, true
-		}
-	}
-	return "", false
+	return q.scanForCommitRequestCreate(ctx, base+byTypeAuditStreamSuffix, namespace, name, uid)
 }
 
 // scanForCommitRequestCreate reads one stream backwards and returns the author

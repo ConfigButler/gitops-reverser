@@ -149,7 +149,7 @@ type Manager struct {
 	declaredGVRsMu sync.Mutex
 	declaredGVRs   map[string]map[schema.GroupVersionResource]struct{}
 
-	// lateNudgeMu guards lateNudgeAt: the last time a late-lane diversion nudged a type's
+	// lateNudgeMu guards lateNudgeAt: the last time a divert nudged a type's
 	// resync (NudgeTypeResyncForLateEvent), the per-type floor that keeps sustained
 	// out-of-order arrivals from churning checkpoint LISTs.
 	lateNudgeMu sync.Mutex
@@ -244,7 +244,7 @@ type TypeMirrorGate interface {
 	Unrequire(ctx context.Context, gvr schema.GroupVersionResource) error
 }
 
-// TypeKeyDeleter removes a type's audit keyspace (:audit:stream/late/idstate + __index__) on
+// TypeKeyDeleter removes a type's audit keyspace (:audit:stream/idstate + __index__) on
 // release (DG2). Satisfied by queue.RedisByTypeStreamQueue; optional (nil disables release cleanup).
 type TypeKeyDeleter interface {
 	DeleteType(ctx context.Context, group, resource string) error

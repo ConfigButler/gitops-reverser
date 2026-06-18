@@ -113,6 +113,18 @@ func assertNoAnomalousAuditOutcomes() {
 	Expect(total).To(BeNumerically(">", 0),
 		"audit metrics pipeline produced no data — the error-outcome check below would be vacuous")
 
+	// Diagnostic, non-gating: print the outcome breakdown so a flaky run (e.g. an inherent
+	// older_than_high_water reorder, which is dropped/recovered and does NOT fail the gate) is
+	// self-explaining in the artifacts. diag_all (when --audit-bytype-diag is on, as in e2e) holds
+	// the full per-event records in Redis for deeper inspection.
+	for _, oc := range []string{"queued", "older_than_high_water", "non_numeric_rv", "rvless_empty_highwater", "not_needed", "shallow_dropped", "write_error"} {
+		n, qErr := queryPrometheus(fmt.Sprintf(
+			`sum(max_over_time(gitopsreverser_audit_events_total{outcome=%q}[2h])) or vector(0)`, oc))
+		if qErr == nil {
+			_, _ = fmt.Fprintf(GinkgoWriter, "   audit outcome %-24s = %.0f\n", oc, n)
+		}
+	}
+
 	const errorQuery = `sum(max_over_time(gitopsreverser_audit_events_total{category="error"}[2h]))`
 	value, err := queryPrometheus(errorQuery)
 	Expect(err).NotTo(HaveOccurred(), "failed to query the audit error-outcome metric")

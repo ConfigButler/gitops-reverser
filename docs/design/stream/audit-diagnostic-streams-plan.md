@@ -42,8 +42,8 @@ fold ([redis_type_splice.go:185](../../../internal/queue/redis_type_splice.go)) 
 once per (GitTarget, GVR)**. Some stored entries are intentionally not turned into Git there
 (a name-less deletecollection, a Status-only body, an unresolvable scale). Those are a **separate,
 read-time concern**: counting them per event would multi-count the same entry on every replay and
-every following GitTarget. They are listed below as **read-time skips**, kept out of the counter,
-and shown in `diag_all` + recovered by the checkpoint instead.
+every following GitTarget. They are listed below as **read-time skips**, kept out of the counter and
+recovered by the checkpoint (a `diag_all` `read_skip` capture for them is a deferred follow-up).
 
 ## Why "capture earlier" is the wrong axis
 
@@ -103,7 +103,7 @@ flowchart TD
     class PARK defer;
 ```
 
-(The diagram is today's shape; this plan renames the per-type late lane and folds the scattered
+(The diagram is today's shape; this plan removes the per-type late lane and folds the scattered
 metrics — see below.)
 
 ## The outcomes (counted, one per event)
@@ -151,11 +151,12 @@ records it once). Each received event hits exactly one of these — official→`
 additional→`parked`; two events, two rows. No read-time path records into this counter. (`Enqueue`'s
 public signature stays `error`, so the queue's many callers are unaffected.)
 
-## Read-time skips (NOT counted; documented + shown in `diag_all`)
+## Read-time skips (NOT counted; documented — `diag_all` stamping deferred)
 
 These happen when the tail/splice reads a *stored* log entry to build Git. They are
 per-(GitTarget, GVR), **repeatable on every replay**, and recovered by the checkpoint — so they
-are documented and shown in `diag_all` on read, but never counted. `pipelineOutcome*`
+are documented here and never counted. (Stamping them into `diag_all` as `record_kind=read_skip`
+is a deferred follow-up: the tail and splice parse via separate paths.) `pipelineOutcome*`
 ([audit_event_parsing.go:60](../../../internal/queue/audit_event_parsing.go)) are the existing
 "diagnostic strings only" for the scale cases — strings, **not** a metric.
 
@@ -222,32 +223,36 @@ Because it counts `queued` too, `sum(...)` is the total event rate, so the liven
 `audit_official_gate_wait_seconds`. The `pipelineOutcome*` scale strings stay as-is (read-time,
 diagnostic only).
 
-### 3. Opt-in capture stream (depth, bounded) — one stream
+### 3. One opt-in diagnostic stream; the per-type late lane is removed
 
-Off by default. When enabled, a single **global** `diag_all` stream under the key prefix
-(`<prefix>:diag_all`, `XADD MAXLEN ~`-bounded) — the simplification over the earlier two-stream
-draft: the second `diag_late` stream and its dual-write are gone. `diag_all` holds **two record
-kinds**, told apart by a `record_kind` field (so it is *not* "one entry per event"):
+There is **no per-type late lane**. A diverted event (`older_than_high_water` / `non_numeric_rv`) is
+rejected from the strictly-ordered main stream and written to no stream at all; it is signalled by
+its **outcome** on the always-on counter, by the **`lateNotify` nudge** (which pulls the type's next
+checkpoint forward — the correctness backstop), and, when the firehose is enabled, by its record in
+**`diag_all`**.
 
-- `record_kind=ingestion` — one per event: identity, verb, rv, rv_class, category, outcome, source,
-  placement (`resource-version`/`attached-to-last-rv`), assigned stream id, high-water, stage_millis.
-- `record_kind=read_skip` — stamped when the tail/splice skips a stored entry; repeatable per
-  (GitTarget, GVR) read, by design — the multi-count cases the counter excludes, kept here because
-  per-read visibility is exactly what investigation needs.
+> **Why removed (this supersedes the earlier "rename + keep" decision).** The per-type `:audit:late`
+> lane was nominally "diagnostic only," but `LookupCommitRequestAuthor` had quietly come to *scan* it
+> for author attribution — making a "diagnostic" surface part of correctness, contradicting the
+> design (a late entry is "never a reconcile input"). That is a leak to remove, not bless: keeping the
+> lane only because a consumer reads it proves a *current* dependency, not a good one. So the lane is
+> gone, and `LookupCommitRequestAuthor` scans only the main stream (a diverted CommitRequest create —
+> rare, since CommitRequests are low-volume — is unattributable and fails closed, the documented
+> behaviour). If durable out-of-band CommitRequest authorship is ever needed, it should be a
+> narrowly-scoped author-attribution store, not the late lane.
 
-"diag_late" is now just a documented *view* — `diag_all` filtered to `outcome ∈ {older_than_high_water,
-non_numeric_rv}` — not a second stream. The existing raw `RedisAuditDebugQueue` (raw, pre-decision,
-per-source) is orthogonal and stays. The divert *decision* (metric + `lateNotify` nudge) stays
-always-on; only the *capture* is opt-in.
+- **`diag_all`** (`<prefix>:diag_all`, `XADD MAXLEN ~`-bounded): **off by default**, global, one
+  annotated record per event that reaches the queue — the same entry payload plus `outcome`,
+  `category`, and a `record_kind` field. The firehose for deep investigation, including the full
+  payload of every divert. It captures queue-reaching events (queued + diverts + rv-less); pre-queue
+  handler drops (`not_needed`, `stage`, filter reasons, `parked`, `shallow_dropped`) are already in
+  the existing raw `RedisAuditDebugQueue` firehose and the metric, so `diag_all` is the *annotated,
+  routing-decision* view that complements them.
 
-### 4. Retire the per-type late lane
-
-The always-on per-type `:audit:late` lane (`byTypeAuditLateSuffix`) is **removed**: a diverted
-event's lasting record is the always-on counter (`outcome=older_than_high_water|non_numeric_rv`)
-plus the `lateNotify` resync nudge; its full payload is in `diag_all` when diag is on. In code,
-`placementLateLane`, `divertLate`, `lateReason*`, idstate `lateCount` lose the always-on stream
-write and adopt the `diag_all` path. (This drops one per-type key and the unconditional late write
-— the main simplification of this revision.)
+`record_kind` is `ingestion` for the per-event records. A `read_skip` kind (consume-side tail/splice
+skips — Catalog B) is **reserved**: the tail and the splice parse via *separate* paths
+(`auditChangeFromEntry` vs `foldAuditEntry`) and skip silently, so stamping them is a follow-up, not
+part of this slice (the records are diagnostic-only and the metric/counter never counts them).
 
 ### 5. e2e invariant — reframed honestly
 
@@ -255,10 +260,10 @@ Replace the flaky `late_lane_diverted_total == 0` with:
 
 - **Hard gate:** `sum(max_over_time(gitopsreverser_audit_events_total{category="error"}[2h])) == 0`.
   Only `write_error` (genuine ingest failure) fails the build.
-- **Diagnostic, non-gating:** the `SynchronizedAfterSuite` dumps the full
-  `audit_events_total{outcome,category}` breakdown, plus an `XRANGE` of `diag_all` (filtered to the
-  divert outcomes and a window around each diverted RV) into the artifacts — so every red/flaky
-  run is self-explaining without re-running.
+- **Diagnostic, non-gating:** the `SynchronizedAfterSuite` prints the per-outcome
+  `audit_events_total{outcome}` breakdown (queued / diverts / drops / errors) into the artifacts, so
+  a flaky run is self-explaining without re-running. `diag_all` is enabled in e2e, so the full
+  per-event records are also in Redis for manual `XRANGE` when a run needs deeper inspection.
 - **Optional regression ceiling:** a generous upper bound on the divert outcomes (not 0) catches a
   change that makes reorder pathological, without failing on the inherent 1–2.
 - **Liveness guard:** `sum(audit_events_total) > 0` (was `audit_events_received_total`).
@@ -307,10 +312,11 @@ and the doc states why they can't be e2e-forced — so the table is honest about
    truth.
 2. **e2e reframe.** Switch the invariant to `category="error" == 0` + the diagnostic dumps. This is
    what turns the build green honestly.
-3. **Opt-in `diag_all` + retire the late lane.** Add the global `diag_all` (with `record_kind`,
-   ingestion + read-skip stamping), the `--audit-bytype-diag` (+ `-max-len`) flags and Helm
-   `webhook.audit.diagStreams.*`, enable in e2e; remove the per-type `:audit:late` write; expose
-   `diag_late` as a documented filter.
+3. **Opt-in `diag_all` + remove the per-type late lane.** Add the global `diag_all`
+   (`record_kind=ingestion`, opt-in, outcome-annotated), the `--audit-bytype-diag` (+ `-max-len`)
+   flags and Helm `webhook.audit.diagStreams.*`, enable in e2e. **Remove** the per-type `:audit:late`
+   lane (a diverted event is now write-to-no-stream: outcome + nudge + diag_all), and simplify
+   `LookupCommitRequestAuthor` to scan only the main stream. `read_skip` stamping is reserved/deferred.
 4. **Catalog doc + example-YAML fixtures.** Fill the matrix with real fixtures; fold the
    per-outcome rationale into [`audit-log-ingestion-and-ordering.md`](audit-log-ingestion-and-ordering.md)
    as the canonical reference, linking back here.
@@ -321,8 +327,8 @@ Slices 1–2 fix the red build; 3–4 reach the documented/tested end state.
 
 - No change to *when* we drop — only to how outcomes are named, counted, captured, and tested.
   (Making `older_than_high_water` non-fatal is reclassification, not a logic change.)
-- **The Git result is out of the counter** — read-time skips are documented and shown in
-  `diag_all` (`record_kind=read_skip`), not counted, to keep `audit_events_total` once-per-event.
+- **The Git result is out of the counter** — read-time skips are documented, not counted, to keep
+  `audit_events_total` once-per-event (a `diag_all` `record_kind=read_skip` capture is deferred).
 - Conversion/validation failures are out of the counter by definition — they fail the request and
   show on `audit_eventlists_total{outcome=process_error}`.
 - No change to the checkpoint/sweep backstop or the `lateNotify` nudge.
@@ -334,6 +340,6 @@ Slices 1–2 fix the red build; 3–4 reach the documented/tested end state.
 
 Go + manifest change → full gate (`task lint`, `task test`, `task test-e2e`, e2e sequential).
 With `--audit-bytype-diag` off, runtime behaviour is unchanged except the metric swap and the
-retired late-lane write; with it on (e2e), artifacts gain the `diag_all` dumps. Each outcome gets
-a unit test; each externally-triggerable one gets an e2e fixture that asserts its
-`audit_events_total` label.
+removal of the per-type late-lane write; with it on (e2e), artifacts gain the `diag_all` records.
+Each outcome gets a unit test; the externally-triggerable ones are covered by the existing e2e specs
+plus the suite's per-outcome breakdown print.

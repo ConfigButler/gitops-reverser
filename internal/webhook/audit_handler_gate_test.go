@@ -26,6 +26,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/types"
 	auditv1 "k8s.io/apiserver/pkg/apis/audit/v1"
+
+	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 )
 
 type fakeMirrorGate struct{ allowed map[string]bool }
@@ -56,6 +58,28 @@ func TestMirrorByType_DemandGated(t *testing.T) {
 
 	assert.Equal(t, []string{"wanted"}, q.auditIDs(),
 		"only the required type is mirrored; unwanted types and ref-less events are skipped")
+}
+
+// TestMirrorByType_GateDenyRecordsNotNeeded proves a demand-gated-out event is recorded once on
+// audit_events_total as the not_needed outcome (the previously-silent gate drop now has a signal).
+func TestMirrorByType_GateDenyRecordsNotNeeded(t *testing.T) {
+	reader, err := telemetry.InitTestExporter()
+	require.NoError(t, err)
+
+	q := &recordingAuditEventQueue{}
+	gate := fakeMirrorGate{allowed: map[string]bool{"apps/deployments": true}}
+	handler, err := NewAuditHandler(AuditHandlerConfig{ByTypeQueue: q, MirrorGate: gate})
+	require.NoError(t, err)
+
+	handler.mirrorByType(context.Background(), &auditv1.Event{
+		AuditID:   types.UID("unwanted"),
+		ObjectRef: &auditv1.ObjectReference{APIGroup: "apps", APIVersion: "v1", Resource: "statefulsets"},
+	})
+
+	n, ok := telemetry.CollectInt64Sum(reader, "gitopsreverser_audit_events_total",
+		map[string]string{"outcome": "not_needed", "category": "dropped", "resource": "statefulsets"})
+	require.True(t, ok, "expected a not_needed outcome sample")
+	assert.Equal(t, int64(1), n)
 }
 
 // TestMirrorByType_NilGateMirrorsEverything keeps the pre-gate behaviour: a nil gate disables

@@ -221,20 +221,22 @@ func main() {
 	// the producer's Redis connection and MaxLen bound. See
 	// docs/design/stream/per-resource-type-rv-keyed-streams-experiment.md.
 	auditByTypeQueue, err := queue.NewRedisByTypeStreamQueue(queue.RedisByTypeStreamConfig{
-		Addr:       cfg.auditRedisAddr,
-		Username:   cfg.auditRedisUsername,
-		AuthValue:  cfg.auditRedisPassword,
-		DB:         cfg.auditRedisDB,
-		Prefix:     cfg.auditByTypeStreamPrefix,
-		MaxLen:     cfg.auditRedisMaxLen,
-		TLSEnabled: cfg.auditRedisTLS,
+		Addr:        cfg.auditRedisAddr,
+		Username:    cfg.auditRedisUsername,
+		AuthValue:   cfg.auditRedisPassword,
+		DB:          cfg.auditRedisDB,
+		Prefix:      cfg.auditByTypeStreamPrefix,
+		MaxLen:      cfg.auditRedisMaxLen,
+		TLSEnabled:  cfg.auditRedisTLS,
+		DiagStreams: cfg.auditByTypeDiag,
+		DiagMaxLen:  cfg.auditByTypeDiagMaxLen,
 	})
 	fatalIfErr(err, "unable to initialize per-resource-type audit redis queue")
 
-	// Late-event nudge: an ordered event diverted to the diagnostic late lane (its RV arrived
-	// below the stream high-water, e.g. concurrent audit batches interleaving) will never be
-	// replayed by the per-type tail, so let the materialization layer pull the type's next
-	// checkpoint forward instead of serving a silently stale mirror until the ~1h sweep.
+	// Divert nudge: an ordered event whose RV arrived below the stream high-water (e.g. concurrent
+	// audit batches interleaving) is diverted — rejected from the main stream and never replayed by
+	// the per-type tail — so let the materialization layer pull the type's next checkpoint forward
+	// instead of serving a silently stale mirror until the ~1h sweep.
 	auditByTypeQueue.SetLateEventNotifier(watchMgr.NudgeTypeResyncForLateEvent)
 
 	// Per-resource-type current-objects snapshot: loaded once when a type activates (not per
@@ -470,6 +472,8 @@ type appConfig struct {
 	auditDebugRedisStream    string
 	auditDebugRedisMaxLen    int64
 	auditByTypeStreamPrefix  string
+	auditByTypeDiag          bool
+	auditByTypeDiagMaxLen    int64
 	auditRedisTLS            bool
 	auditEventBodyTTL        time.Duration
 	auditEventBodyWait       time.Duration
@@ -546,6 +550,11 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 	fs.StringVar(&cfg.auditByTypeStreamPrefix, "audit-bytype-stream-prefix", queue.DefaultRedisByTypeStreamPrefix,
 		"Root key prefix for the per-resource-type experiment "+
 			"(<prefix>:<group>:<resource>:audit:stream + :objects:items + :__index__).")
+	fs.BoolVar(&cfg.auditByTypeDiag, "audit-bytype-diag", false,
+		"Enable the opt-in global <prefix>:diag_all firehose — one annotated record per ingested "+
+			"audit event, for investigation. Off by default.")
+	fs.Int64Var(&cfg.auditByTypeDiagMaxLen, "audit-bytype-diag-max-len", 0,
+		"Approximate max <prefix>:diag_all stream length (0 disables trimming).")
 	fs.BoolVar(&cfg.auditRedisTLS, "audit-redis-tls", false,
 		"If set, Redis connection for audit queueing uses TLS.")
 	fs.DurationVar(&cfg.auditEventBodyTTL, "audit-event-body-ttl", defaultAuditEventBodyTTL,
@@ -652,6 +661,9 @@ func validateAuditConfig(cfg appConfig) error {
 	}
 	if cfg.auditDebugRedisMaxLen < 0 {
 		return fmt.Errorf("audit-debug-redis-max-len must be >= 0, got %d", cfg.auditDebugRedisMaxLen)
+	}
+	if cfg.auditByTypeDiagMaxLen < 0 {
+		return fmt.Errorf("audit-bytype-diag-max-len must be >= 0, got %d", cfg.auditByTypeDiagMaxLen)
 	}
 	if cfg.auditEventBodyTTL <= 0 {
 		return fmt.Errorf("audit-event-body-ttl must be > 0, got %s", cfg.auditEventBodyTTL)
