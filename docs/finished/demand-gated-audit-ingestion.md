@@ -17,8 +17,18 @@ a clean cluster**.
   `Require`s at `SyncRequested` and `Unrequire`+`DeleteType`s at `Released`.
 - [`cmd/main.go`](../../cmd/main.go) constructs the gate, seeds `AlwaysAllow` with
   `configbutler.ai/commitrequests`, and adds it as a manager runnable.
-- **Regression the e2e suite caught (units passed in isolation):** CommitRequest author attribution
-  reads the unclaimed `commitrequests` stream — fixed with the `AlwaysAllow` set (§5).
+- **Empty-stream guard** (§8): `ingestRVLess` now DROPS an RV-less event that arrives before its
+  type has any numeric high-water (a no-op on an empty mirror, checkpoint-backstopped) instead of
+  diverting it to the late lane. Without this, RV-less system-controller deletes (GC of an owned
+  object, an aggregated-API delete) racing ahead of their type's first numeric write still landed in
+  the late lane under gating — the e2e late-lane assertion caught this.
+- **Late-lane metric + e2e invariant:** `telemetry.AuditLateLaneDivertedTotal{reason}`
+  (`gitopsreverser_audit_late_lane_diverted_total`) is incremented in `divertLate`; the e2e suite's
+  `SynchronizedAfterSuite` asserts it stayed 0 for the whole run (with a liveness guard so a dead
+  metrics pipeline can't pass vacuously) — the operator-facing "is the late lane empty?" signal.
+- **Two regressions the e2e suite caught (units passed in isolation):** (1) CommitRequest author
+  attribution reads the unclaimed `commitrequests` stream — fixed with the `AlwaysAllow` set (§5);
+  (2) RV-less-before-high-water deletes still hit the late lane — fixed with the empty-stream guard.
 
 Author note: this grew out of the late-lane diagnostics work
 ([`late-lane-e2e-2026-06-16-investigation.md`](../design/stream/late-lane-e2e-2026-06-16-investigation.md)
@@ -303,10 +313,18 @@ These compose; neither subsumes the other:
   explosion and incidental noise like the `namespaces` warmup entry, and (b) all *pre-materialization*
   events for claimed types — e.g. the flunders `deletecollection`s that arrive before flunders is in
   `__required__` (anything before the early add is simply not mirrored).
-- **The floor / empty-stream guard** (separate proposal) then classifies the *residual* on
-  actively-materialized types: events below the checkpoint floor → provably superseded (drop + count),
-  RV-less-before-high-water → no-op (drop + count), leaving the late lane holding only genuine recent
-  reorders with a `lag` field for triage.
+- **The floor / empty-stream guard** then classifies the *residual* on actively-materialized types.
+  Two parts, with different status:
+  - **Empty-stream (RV-less-before-high-water → no-op): IMPLEMENTED here** in `ingestRVLess`. This was
+    not optional after all — the e2e late-lane assertion showed that even under gating, RV-less
+    system-controller deletes (GC, aggregated-API) that race ahead of their type's first numeric write
+    still hit the late lane. Dropping them as no-ops (checkpoint-backstopped) is what actually makes
+    the late lane reliably empty.
+  - **Floor (numeric RV below the checkpoint cursor → provably superseded → drop): still future.** Not
+    needed for what e2e exhibits today (0 `older-than-high-water` observed), but it is the catch for a
+    genuine stale-replay/dry-run reorder on a populated stream. Until it lands, such an event (rare)
+    would still divert and the e2e invariant would flag it — which is the correct, investigate-worthy
+    signal.
 
 End state: the late lane is empty in a clean run, and any entry in it is actionable — the original
 goal.

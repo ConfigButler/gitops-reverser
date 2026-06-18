@@ -145,7 +145,8 @@ var (
 	// AuditEventsFilteredTotal counts audit events filtered before the join/mirror pipeline.
 	AuditEventsFilteredTotal metric.Int64Counter
 	// AuditLateLaneDivertedTotal counts audit events diverted to a type's diagnostic late lane,
-	// labelled by {reason} (older-than-high-water / rv-missing-before-high-water / non-numeric-rv).
+	// labelled by {reason} (older-than-high-water / non-numeric-rv — an RV-less event before any
+	// high-water is a no-op dropped by the empty-stream guard, not a late diversion).
 	// With demand-gated ingestion it should stay 0 in a clean run — anything non-zero is a real
 	// out-of-order delivery worth investigating, so it is the operator's "is the late lane empty?"
 	// signal and the e2e suite's end-of-run invariant. See

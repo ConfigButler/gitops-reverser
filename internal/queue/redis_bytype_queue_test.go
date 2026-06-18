@@ -457,12 +457,11 @@ func TestRedisByTypeStreamQueue_Ingestion(t *testing.T) {
 			wantLastRV:    "200",
 		},
 		{
-			name: "an RV-less event before any high-water goes to late",
+			name: "an RV-less event before any high-water is a no-op (empty-stream guard), not late",
 			rvs:  []string{""},
-			wantLate: []lateWant{
-				{reason: lateReasonRVMissingBeforeHighWater, rv: "", lastRV: "", rvPresent: "false"},
-			},
-			wantLateCount: 1,
+			// Empty mirror, nothing to act on → dropped and counted as rv-missing, never diverted
+			// to the late lane (which stays reserved for genuine out-of-order events).
+			wantRVMissing: 1,
 		},
 		{
 			name:          "an RV-less event after a high-water attaches to it",
@@ -553,7 +552,8 @@ func TestRedisByTypeStreamQueue_IDStateObservability(t *testing.T) {
 }
 
 // An RV-less event with no objectRef has no high-water to attach to (the unknown bucket's stream
-// is empty), so it is recorded in the late lane with rv-missing-before-high-water.
+// is empty), so it is a no-op under the empty-stream guard: dropped and counted as rv-missing,
+// NOT diverted to the late lane (which stays reserved for genuine out-of-order events).
 func TestRedisByTypeStreamQueue_EnqueueUnknownBucket(t *testing.T) {
 	q, client, prefix := valkeyByTypeQueue(t, 0)
 	ctx := context.Background()
@@ -572,10 +572,11 @@ func TestRedisByTypeStreamQueue_EnqueueUnknownBucket(t *testing.T) {
 
 	lateEntries, err := client.XRange(ctx, base+byTypeAuditLateSuffix, "-", "+").Result()
 	require.NoError(t, err)
-	require.Len(t, lateEntries, 1)
-	assert.Equal(t, "no-ref", lateEntries[0].Values["audit_id"])
-	assert.Equal(t, lateReasonRVMissingBeforeHighWater, lateEntries[0].Values[entryFieldReason])
-	assert.Empty(t, lateEntries[0].Values["resource_version"])
+	assert.Empty(t, lateEntries, "an RV-less event with no high-water is a no-op, not a late entry")
+
+	rvMissing, err := client.HGet(ctx, base+byTypeAuditIDStateSuffix, idStateRVMissingCount).Result()
+	require.NoError(t, err)
+	assert.Equal(t, "1", rvMissing, "the dropped RV-less event is counted as rv-missing")
 }
 
 // TestRedisByTypeStreamQueue_BoundedTrimsStreams verifies the MaxLen knob is plumbed onto every

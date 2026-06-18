@@ -84,9 +84,11 @@ const (
 	placementAttachedToLastRV = "attached-to-last-rv"
 	placementLateLane         = "late-lane"
 
-	lateReasonOlderThanHighWater       = "older-than-high-water"
-	lateReasonRVMissingBeforeHighWater = "rv-missing-before-high-water"
-	lateReasonNonNumericRV             = "non-numeric-rv"
+	lateReasonOlderThanHighWater = "older-than-high-water"
+	lateReasonNonNumericRV       = "non-numeric-rv"
+	// (An RV-less event before any high-water is no longer a late reason: the empty-stream guard in
+	// ingestRVLess drops it as a no-op rather than diverting it, since there is nothing in the mirror
+	// for it to act on — docs/finished/demand-gated-audit-ingestion.md §8.)
 
 	idStateLastRV         = "lastRV"
 	idStateLastStreamID   = "lastStreamID"
@@ -487,8 +489,16 @@ func (q *RedisByTypeStreamQueue) ingestOrdered(
 // ingestRVLess places an event that carries no usable RV (IR5). It attaches to the stream's
 // current high-water mark — "<highWaterRV>-*", which Valkey accepts as a fresh subseq at the
 // top RV — and marks it rv_present=false so a consumer knows it is a declared policy placement,
-// not a claimed RV; the next checkpoint backstops it. Before any high-water exists there is
-// nothing to attach to, so the event is recorded in the late lane instead.
+// not a claimed RV; the next checkpoint backstops it.
+//
+// Before any high-water exists the type's mirror is empty, so an RV-less event (a delete,
+// deletecollection, or shallow body) has nothing to act on — it is a NO-OP, not a late event. We
+// drop it (counting it as rv-missing) rather than diverting it to the diagnostic late lane: the
+// checkpoint LIST is the correctness backstop for deletes (DEC-5 / the api-source model), so dropping
+// loses nothing, and it keeps the late lane reserved for genuine out-of-order deliveries (the
+// "empty-stream guard", docs/finished/demand-gated-audit-ingestion.md §8). Without this, RV-less
+// system-controller deletes — GC of an owned object, an aggregated-API delete — that race ahead of
+// their type's first numeric write land in the late lane as noise even under demand gating.
 func (q *RedisByTypeStreamQueue) ingestRVLess(
 	ctx context.Context,
 	keys byTypeAuditKeys,
@@ -497,7 +507,8 @@ func (q *RedisByTypeStreamQueue) ingestRVLess(
 ) error {
 	highWater := q.streamTopRV(ctx, keys.stream)
 	if highWater == "" {
-		return q.divertLate(ctx, keys, lateReasonRVMissingBeforeHighWater, "", "", values)
+		q.incrIDState(ctx, keys.idState, idStateRVMissingCount)
+		return nil
 	}
 
 	values[entryFieldRVPresent] = "false"
