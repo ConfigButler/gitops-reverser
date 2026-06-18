@@ -174,7 +174,7 @@ spec:
 	It("should never drop aggregated audit events as shallow", func() {
 		// A "shallow" audit event is one whose request/response body never
 		// arrived, so it cannot drive a high-quality Git write and is dropped,
-		// incrementing gitopsreverser_audit_shallow_dropped_total. In a correctly
+		// incrementing gitopsreverser_audit_events_total{outcome="shallow_dropped"}. In a correctly
 		// configured environment every audit event is paired with its body, so
 		// that counter must stay at zero — for this scenario and for every other
 		// test sharing the cluster. Asserting it here is the externally
@@ -223,10 +223,11 @@ spec:
 		// failed to join its official event, so this assertion stays absolute
 		// (not a baseline delta) on purpose.
 		Consistently(func(g Gomega) {
-			dropped, queryErr := queryPrometheus("sum(gitopsreverser_audit_shallow_dropped_total) or vector(0)")
+			dropped, queryErr := queryPrometheus(
+				`sum(gitopsreverser_audit_events_total{outcome="shallow_dropped"}) or vector(0)`)
 			g.Expect(queryErr).NotTo(HaveOccurred())
 			g.Expect(dropped).To(BeZero(),
-				"gitopsreverser_audit_shallow_dropped_total must stay at zero in a healthy e2e environment")
+				`gitopsreverser_audit_events_total{outcome="shallow_dropped"} must stay at zero in a healthy e2e environment`)
 		}, 10*time.Second, 2*time.Second).Should(Succeed())
 	})
 

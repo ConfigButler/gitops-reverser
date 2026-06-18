@@ -43,8 +43,8 @@ would want captured in Git.
 
 GitOps Reverser needs the object body to write YAML to Git. A shallow audit event has no body, so
 it cannot be turned into a manifest. To avoid writing meaningless stub commits, events that arrive
-with no object body are dropped, counted in `gitopsreverser_audit_shallow_dropped_total` and
-logged at WARN.
+with no object body are dropped, counted as `gitopsreverser_audit_events_total{outcome="shallow_dropped"}`
+and logged at WARN.
 
 The practical consequence: **out of the box, changes to aggregated-API objects are not written to
 Git.**

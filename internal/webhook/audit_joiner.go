@@ -194,7 +194,7 @@ func NewRedisAuditEventJoiner(cfg RedisAuditJoinerConfig) (*RedisAuditEventJoine
 
 // Decide examines an event and selects park, emit, or drop. Officials never park.
 // An identity-shallow official with no matching parked body waits briefly for an
-// additional body contribution, then drops with audit_shallow_dropped_total if
+// additional body contribution, then drops as audit_events_total{outcome="shallow_dropped"} if
 // none arrives.
 func (j *RedisAuditEventJoiner) Decide(
 	ctx context.Context,
@@ -256,12 +256,13 @@ func officialCanEmitAsIs(quality AuditEventQuality) bool {
 }
 
 func (j *RedisAuditEventJoiner) dropShallowOfficial(
-	ctx context.Context,
+	_ context.Context,
 	auditID string,
 	event *auditv1.Event,
 	quality AuditEventQuality,
 ) AuditJoinDecision {
-	addShallowDroppedMetric(ctx, event)
+	// The shallow-drop outcome is recorded once by the handler (it maps this Drop action to
+	// outcome.ShallowDropped); here we only log.
 	joinerLog := j.logger
 	j.firsts.shallowDropped.Do(func() {
 		joinerLog.Info(
@@ -427,7 +428,8 @@ func (j *RedisAuditEventJoiner) handleAdditional(
 	if err := j.parkBody(ctx, event); err != nil {
 		return AuditJoinDecision{}, err
 	}
-	addParkedMetric(ctx)
+	// The parked outcome is recorded once by the handler (it maps this Parked action to
+	// outcome.Parked); here we only log.
 	j.firsts.additionalBodyParked.Do(func() {
 		joinerLog.Info("First additional audit body parked (awaiting matching official event)",
 			"auditID", auditID,
@@ -621,74 +623,6 @@ func auditEventGVR(event *auditv1.Event) string {
 		return fmt.Sprintf("/%s/%s", version, resource)
 	}
 	return fmt.Sprintf("%s/%s/%s", group, version, resource)
-}
-
-// gvrVerbAttrs builds the shared group/version/resource/verb label set used by
-// the audit pipeline metrics.
-func gvrVerbAttrs(event *auditv1.Event) metric.MeasurementOption {
-	group, version, resource := auditEventGVRParts(event)
-	return metric.WithAttributes(
-		attribute.String("group", group),
-		attribute.String("version", version),
-		attribute.String("resource", resource),
-		attribute.String("verb", eventVerb(event)),
-	)
-}
-
-func addQualityMetric(ctx context.Context, source AuditSource, event *auditv1.Event, quality AuditEventQuality) {
-	if telemetry.AuditEventQualityTotal != nil {
-		group, version, resource := auditEventGVRParts(event)
-		telemetry.AuditEventQualityTotal.Add(ctx, 1, metric.WithAttributes(
-			attribute.String("source", string(source)),
-			attribute.String("quality", string(quality)),
-			attribute.String("group", group),
-			attribute.String("version", version),
-			attribute.String("resource", resource),
-			attribute.String("verb", eventVerb(event)),
-		))
-	}
-}
-
-func eventVerb(event *auditv1.Event) string {
-	if event == nil {
-		return ""
-	}
-	return event.Verb
-}
-
-func addParkedMetric(ctx context.Context) {
-	if telemetry.AuditJoinParkedTotal != nil {
-		telemetry.AuditJoinParkedTotal.Add(ctx, 1)
-	}
-}
-
-func addEmittedMetric(ctx context.Context, source AuditSource, result AuditJoinResult) {
-	if telemetry.AuditJoinEmittedTotal != nil {
-		telemetry.AuditJoinEmittedTotal.Add(ctx, 1, metric.WithAttributes(
-			attribute.String("source", string(source)),
-			attribute.String("result", string(result)),
-		))
-	}
-}
-
-func addShallowDroppedMetric(ctx context.Context, event *auditv1.Event) {
-	if telemetry.AuditShallowDroppedTotal != nil {
-		telemetry.AuditShallowDroppedTotal.Add(ctx, 1, gvrVerbAttrs(event))
-	}
-}
-
-func addFilteredMetric(ctx context.Context, source AuditSource, event *auditv1.Event, reason string) {
-	if telemetry.AuditEventsFilteredTotal != nil {
-		group, version, resource := auditEventGVRParts(event)
-		telemetry.AuditEventsFilteredTotal.Add(ctx, 1, metric.WithAttributes(
-			attribute.String("source", string(source)),
-			attribute.String("reason", reason),
-			attribute.String("group", group),
-			attribute.String("version", version),
-			attribute.String("resource", resource),
-			attribute.String("verb", eventVerb(event)),
-		))
-	}
 }
 
 const (

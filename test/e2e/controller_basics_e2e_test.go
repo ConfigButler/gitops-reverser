@@ -136,14 +136,9 @@ var _ = Describe("Manager Controller Basics", Label("manager"), Ordered, func() 
 
 	It("should receive audit webhook events from kube-apiserver", func() {
 		By("recording baseline audit event count")
-		baselineAuditEvents, err := queryPrometheus("sum(gitopsreverser_audit_events_received_total) or vector(0)")
+		baselineAuditEvents, err := queryPrometheus("sum(gitopsreverser_audit_events_total) or vector(0)")
 		Expect(err).NotTo(HaveOccurred())
 		fmt.Printf("📊 Baseline audit events: %.0f\n", baselineAuditEvents)
-		baselineOfficialAuditEvents, err := queryPrometheus(
-			"sum(gitopsreverser_audit_events_received_total{source='official'}) or vector(0)",
-		)
-		Expect(err).NotTo(HaveOccurred())
-		fmt.Printf("📊 Baseline official audit events: %.0f\n", baselineOfficialAuditEvents)
 
 		By("creating a ConfigMap to trigger audit events")
 		_, err = kubectlRunInNamespace(
@@ -166,17 +161,12 @@ var _ = Describe("Manager Controller Basics", Label("manager"), Ordered, func() 
 		Expect(err).NotTo(HaveOccurred(), "ConfigMap update should succeed")
 
 		By("waiting for audit event metric to increment")
-		waitForMetricWithTimeout("sum(gitopsreverser_audit_events_received_total) or vector(0)",
+		waitForMetricWithTimeout("sum(gitopsreverser_audit_events_total) or vector(0)",
 			func(v float64) bool { return v > baselineAuditEvents },
 			"audit events should increment", 2*time.Minute)
-		waitForMetricWithTimeout(
-			"sum(gitopsreverser_audit_events_received_total{source='official'}) or vector(0)",
-			func(v float64) bool { return v > baselineOfficialAuditEvents },
-			"audit events should increment for source=official", 2*time.Minute,
-		)
 
 		By("verifying audit events were received")
-		currentAuditEvents, err := queryPrometheus("sum(gitopsreverser_audit_events_received_total) or vector(0)")
+		currentAuditEvents, err := queryPrometheus("sum(gitopsreverser_audit_events_total) or vector(0)")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(currentAuditEvents).To(BeNumerically(">", baselineAuditEvents),
 			"Should have received audit events from kube-apiserver")

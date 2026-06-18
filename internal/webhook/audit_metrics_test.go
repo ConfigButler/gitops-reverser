@@ -159,36 +159,26 @@ func TestServeHTTP_EventListIngressMetrics(t *testing.T) {
 	}
 }
 
-// TestServeHTTP_ReceivedMetricCarriesSubresource confirms audit_events_received_total
-// labels objectRef.subresource, so a pods/exec flood is distinguishable from
-// real pod mutations rather than collapsing into resource="pods".
-func TestServeHTTP_ReceivedMetricCarriesSubresource(t *testing.T) {
+// TestServeHTTP_NonScaleSubresourceDropped confirms a non-/scale subresource
+// (pods/exec) is dropped before Redis and recorded on audit_events_total as the
+// non_scale_subresource outcome (resource="pods"), so a pods/exec flood is
+// distinguishable rather than collapsing into a mirrored pod mutation.
+func TestServeHTTP_NonScaleSubresourceDropped(t *testing.T) {
 	reader, err := telemetry.InitTestExporter()
 	require.NoError(t, err)
 
 	handler, err := NewAuditHandler(AuditHandlerConfig{})
 	require.NoError(t, err)
 
-	// One top-level configmap create, one pods/exec streaming subresource.
-	for _, body := range []string{validCreateEventList, subresourceExecEventList} {
-		req := httptest.NewRequest(http.MethodPost, "/audit-webhook", bytes.NewReader([]byte(body)))
-		w := httptest.NewRecorder()
-		handler.ServeHTTP(w, req)
-		require.Equal(t, http.StatusOK, w.Code)
-	}
+	req := httptest.NewRequest(http.MethodPost, "/audit-webhook", bytes.NewReader([]byte(subresourceExecEventList)))
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
 
-	const receivedMetric = "gitopsreverser_audit_events_received_total"
-
-	exec, ok := telemetry.CollectInt64Sum(reader, receivedMetric, map[string]string{
-		"resource": "pods", "subresource": "exec", "verb": "create",
+	exec, ok := telemetry.CollectInt64Sum(reader, "gitopsreverser_audit_events_total", map[string]string{
+		"outcome": "non_scale_subresource", "category": "dropped",
+		"resource": "pods", "verb": "create",
 	})
-	require.True(t, ok, "expected a subresource=exec received sample")
+	require.True(t, ok, "expected a non_scale_subresource outcome sample for pods/exec")
 	assert.Equal(t, int64(1), exec)
-
-	// A top-level resource carries an empty subresource label.
-	top, ok := telemetry.CollectInt64Sum(reader, receivedMetric, map[string]string{
-		"resource": "configmaps", "subresource": "", "verb": "create",
-	})
-	require.True(t, ok, `expected a subresource="" received sample for a top-level resource`)
-	assert.Equal(t, int64(1), top)
 }

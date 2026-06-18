@@ -52,7 +52,7 @@ func TestInitOTLPExporter_Success(t *testing.T) {
 	assert.NotNil(t, AuditEventListsTotal)
 	assert.NotNil(t, AuditEventListEventsTotal)
 	assert.NotNil(t, AuditEventListDurationSeconds)
-	assert.NotNil(t, AuditEventsFilteredTotal)
+	assert.NotNil(t, AuditEventsTotal)
 	assert.NotNil(t, MaterializationCheckpointFillsTotal)
 	assert.NotNil(t, APICatalogResources)
 	assert.NotNil(t, APICatalogGroupVersions)
@@ -100,9 +100,9 @@ func TestMetricsInitialization(t *testing.T) {
 		})
 	})
 
-	t.Run("AuditEventsFilteredTotal", func(t *testing.T) {
+	t.Run("AuditEventsTotal", func(t *testing.T) {
 		assert.NotPanics(t, func() {
-			AuditEventsFilteredTotal.Add(ctx, 1)
+			AuditEventsTotal.Add(ctx, 1)
 		})
 	})
 
@@ -148,9 +148,8 @@ func TestAuditPipelineMetricUsage(t *testing.T) {
 		AuditEventListsTotal.Add(ctx, 1)
 		AuditEventListEventsTotal.Add(ctx, 5)
 		AuditEventListDurationSeconds.Record(ctx, 0.12)
-		AuditEventsReceivedTotal.Add(ctx, 5)
-		AuditEventsFilteredTotal.Add(ctx, 1)
-		AuditJoinEmittedTotal.Add(ctx, 5)
+		AuditEventsTotal.Add(ctx, 5, metricAttrs("outcome", "queued"))
+		AuditEventsTotal.Add(ctx, 1, metricAttrs("outcome", "dry_run"))
 	})
 }
 
@@ -200,7 +199,7 @@ func TestConcurrentMetricsUsage(t *testing.T) {
 	go func() {
 		defer func() { done <- true }()
 		for range 100 {
-			AuditJoinEmittedTotal.Add(ctx, 1)
+			AuditEventsTotal.Add(ctx, 1, metricAttrs("outcome", "queued"))
 		}
 	}()
 
@@ -298,27 +297,27 @@ func TestInitTestExporterAndCollect(t *testing.T) {
 	require.NotNil(t, reader)
 
 	t.Run("counter sum by attributes", func(t *testing.T) {
-		AuditJoinEmittedTotal.Add(ctx, 2, metricAttrs("result", "as_is"))
-		AuditJoinEmittedTotal.Add(ctx, 3, metricAttrs("result", "as_is"))
-		AuditJoinEmittedTotal.Add(ctx, 7, metricAttrs("result", "merged"))
+		AuditEventsTotal.Add(ctx, 2, metricAttrs("outcome", "queued"))
+		AuditEventsTotal.Add(ctx, 3, metricAttrs("outcome", "queued"))
+		AuditEventsTotal.Add(ctx, 7, metricAttrs("outcome", "older_than_high_water"))
 
-		asIs, ok := CollectInt64Sum(reader, "gitopsreverser_audit_join_emitted_total",
-			map[string]string{"result": "as_is"})
+		queued, ok := CollectInt64Sum(reader, "gitopsreverser_audit_events_total",
+			map[string]string{"outcome": "queued"})
 		require.True(t, ok)
-		assert.Equal(t, int64(5), asIs)
+		assert.Equal(t, int64(5), queued)
 
-		merged, ok := CollectInt64Sum(reader, "gitopsreverser_audit_join_emitted_total",
-			map[string]string{"result": "merged"})
+		diverted, ok := CollectInt64Sum(reader, "gitopsreverser_audit_events_total",
+			map[string]string{"outcome": "older_than_high_water"})
 		require.True(t, ok)
-		assert.Equal(t, int64(7), merged)
+		assert.Equal(t, int64(7), diverted)
 	})
 
 	t.Run("missing metric and attribute", func(t *testing.T) {
 		_, ok := CollectInt64Sum(reader, "gitopsreverser_does_not_exist", nil)
 		assert.False(t, ok)
 
-		_, ok = CollectInt64Sum(reader, "gitopsreverser_audit_join_emitted_total",
-			map[string]string{"result": "never_recorded"})
+		_, ok = CollectInt64Sum(reader, "gitopsreverser_audit_events_total",
+			map[string]string{"outcome": "never_recorded"})
 		assert.False(t, ok)
 	})
 
@@ -341,7 +340,7 @@ func TestInitTestExporterAndCollect(t *testing.T) {
 		require.True(t, ok)
 		assert.Equal(t, uint64(2), count)
 
-		_, ok = CollectHistogramCount(reader, "gitopsreverser_audit_join_emitted_total", nil)
+		_, ok = CollectHistogramCount(reader, "gitopsreverser_audit_events_total", nil)
 		assert.False(t, ok, "a counter is not a histogram")
 	})
 }
@@ -374,7 +373,7 @@ func TestNoOpMeterProvider(t *testing.T) {
 	assert.NotPanics(t, func() {
 		GitOperationsTotal.Add(ctx, 1)
 		GitPushDurationSeconds.Record(ctx, 1.0)
-		AuditJoinEmittedTotal.Add(ctx, 1)
+		AuditEventsTotal.Add(ctx, 1, metricAttrs("outcome", "queued"))
 		APICatalogResources.Record(ctx, 1)
 	})
 

@@ -132,26 +132,13 @@ var (
 
 	// WatchDuplicatesSkippedTotal counts watch events skipped due to duplicate sanitized content.
 	WatchDuplicatesSkippedTotal metric.Int64Counter
-	// AuditEventsReceivedTotal counts audit events received from Kubernetes API server.
-	AuditEventsReceivedTotal metric.Int64Counter
-	// AuditEventQualityTotal counts audit events by source and shape quality.
-	AuditEventQualityTotal metric.Int64Counter
-	// AuditJoinParkedTotal counts additional audit body contributions parked for later joining.
-	AuditJoinParkedTotal metric.Int64Counter
-	// AuditJoinEmittedTotal counts audit events emitted to the per-type mirror after join decisions.
-	AuditJoinEmittedTotal metric.Int64Counter
-	// AuditShallowDroppedTotal counts identity-shallow officials dropped because no parked body was available.
-	AuditShallowDroppedTotal metric.Int64Counter
-	// AuditEventsFilteredTotal counts audit events filtered before the join/mirror pipeline.
-	AuditEventsFilteredTotal metric.Int64Counter
-	// AuditLateLaneDivertedTotal counts audit events diverted to a type's diagnostic late lane,
-	// labelled by {reason} (older-than-high-water / non-numeric-rv — an RV-less event before any
-	// high-water is a no-op dropped by the empty-stream guard, not a late diversion).
-	// With demand-gated ingestion it should stay 0 in a clean run — anything non-zero is a real
-	// out-of-order delivery worth investigating, so it is the operator's "is the late lane empty?"
-	// signal and the e2e suite's end-of-run invariant. See
-	// docs/finished/demand-gated-audit-ingestion.md and audit-log-ingestion-and-ordering.md.
-	AuditLateLaneDivertedTotal metric.Int64Counter
+	// AuditEventsTotal is the single per-event census: every successfully decoded, converted, and
+	// validated audit event increments it exactly once, labelled by {outcome, category, group,
+	// version, resource, verb}. It subsumes the former received/quality/parked/emitted/shallow/
+	// filtered/late-lane counters — see internal/audit/outcome and
+	// docs/design/stream/audit-diagnostic-streams-plan.md. Liveness = sum(...) > 0; the e2e
+	// invariant gates on category="error" == 0.
+	AuditEventsTotal metric.Int64Counter
 	// AuditJoinSkewSeconds records the arrival skew between an official audit event and its
 	// matching additional body, labelled by which arrived first and how the join resolved.
 	AuditJoinSkewSeconds metric.Float64Histogram
@@ -298,13 +285,7 @@ func registerCounters() error {
 		{"gitopsreverser_lease_acquire_failures_total", &LeaseAcquireFailuresTotal},
 		{"gitopsreverser_marker_conflicts_total", &MarkerConflictsTotal},
 		{"gitopsreverser_watch_duplicates_skipped_total", &WatchDuplicatesSkippedTotal},
-		{"gitopsreverser_audit_events_received_total", &AuditEventsReceivedTotal},
-		{"gitopsreverser_audit_event_quality_total", &AuditEventQualityTotal},
-		{"gitopsreverser_audit_join_parked_total", &AuditJoinParkedTotal},
-		{"gitopsreverser_audit_join_emitted_total", &AuditJoinEmittedTotal},
-		{"gitopsreverser_audit_shallow_dropped_total", &AuditShallowDroppedTotal},
-		{"gitopsreverser_audit_events_filtered_total", &AuditEventsFilteredTotal},
-		{"gitopsreverser_audit_late_lane_diverted_total", &AuditLateLaneDivertedTotal},
+		{"gitopsreverser_audit_events_total", &AuditEventsTotal},
 		{"gitopsreverser_audit_eventlists_total", &AuditEventListsTotal},
 		{"gitopsreverser_audit_eventlist_events_total", &AuditEventListEventsTotal},
 		{"gitopsreverser_api_catalog_refresh_total", &APICatalogRefreshTotal},

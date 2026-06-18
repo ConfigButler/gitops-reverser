@@ -88,8 +88,8 @@ flowchart TD
     ROUTE --> GIT
 
     M0["audit_eventlists_total<br/>audit_eventlist_events_total<br/>audit_eventlist_duration_seconds"]
-    M1["audit_events_received_total<br/>audit_event_quality_total"]
-    M2["audit_join_parked / emitted / duplicate_dropped_total<br/>audit_shallow_dropped / body_late_total<br/>audit_join_skew_seconds<br/>audit_official_gate_wait_seconds"]
+    M1["audit_events_total<br/>(outcome, category)"]
+    M2["audit_events_total{outcome=parked/shallow_dropped/…}<br/>audit_join_skew_seconds<br/>audit_official_gate_wait_seconds"]
     M3["audit_pipeline_events_total<br/>audit_pipeline_route_targets_total"]
     M4["git_operations_total · commits_total<br/>objects_written_total · git_push_duration_seconds"]
 
@@ -116,18 +116,21 @@ additional body arriving first and parking; when the official wins the race it w
 
 ### The metrics
 
+> **Per-event census (2026-06):** the former per-event audit counters
+> (`audit_events_received_total`, `audit_event_quality_total`, `audit_join_parked_total`,
+> `audit_join_emitted_total`, `audit_shallow_dropped_total`, `audit_events_filtered_total`,
+> `audit_late_lane_diverted_total`) are unified into a single counter,
+> `gitopsreverser_audit_events_total`, where every event increments exactly once labelled by its
+> `outcome` and `category`. Use `outcome="…"` instead of the old metric names (e.g.
+> `outcome="shallow_dropped"` for the old `audit_shallow_dropped_total`). See the outcome catalog
+> in [docs/design/stream/audit-diagnostic-streams-plan.md](design/stream/audit-diagnostic-streams-plan.md).
+
 | Metric | Type | Labels | Stage |
 | --- | --- | --- | --- |
 | `audit_eventlists_total` | counter | `source`, `outcome` | ① ingress |
 | `audit_eventlist_events_total` | counter | `source`, `outcome` | ① ingress |
 | `audit_eventlist_duration_seconds` | histogram | `source`, `outcome` | ① ingress |
-| `audit_events_received_total` | counter | `source`, `group`, `version`, `resource`, `subresource`, `verb` | ① ingress |
-| `audit_event_quality_total` | counter | `source`, `quality`, `group`, `version`, `resource`, `verb` | ① ingress |
-| `audit_join_parked_total` | counter | — | ② join |
-| `audit_join_emitted_total` | counter | `source`, `result` (`as_is`, `merged`) | ② join |
-| `audit_join_duplicate_dropped_total` | counter | `reason` | ② join |
-| `audit_shallow_dropped_total` | counter | `group`, `version`, `resource`, `verb` | ② join |
-| `audit_join_body_late_total` | counter | `group`, `version`, `resource`, `verb` | ② join |
+| `audit_events_total` | counter | `outcome`, `category` (`stored`/`held`/`dropped`/`error`), `group`, `version`, `resource`, `verb` | per-event census (① ingress → ② join → enqueue) |
 | `audit_join_skew_seconds` | histogram | `arrival` (`body_first`/`official_first`), `outcome` (`merged`/`timed_out`) | ② join |
 | `audit_official_gate_wait_seconds` | histogram | — | ② join |
 | `audit_pipeline_events_total` | counter | `group`, `version`, `resource`, `verb`, `outcome` | ③ consume |
@@ -137,15 +140,13 @@ additional body arriving first and parking; when the official wins the race it w
 count request attempts at the webhook's two audit endpoints; `audit_eventlist_events_total`
 counts the decoded event items inside them. `outcome` is bounded: `processed`, `empty`,
 `decode_error`, `process_error`. This is the raw delivery boundary — it answers "are EventLists
-arriving?" before any join or rule logic runs. `audit_events_received_total` and
-`audit_event_quality_total` then describe individual decoded events.
+arriving?" before any join or rule logic runs. `audit_events_total` then describes individual
+decoded events by `outcome`.
 
-`audit_events_received_total` carries a `subresource` label: empty for top-level resources, and
-a bounded value (`exec`, `status`, `scale`, `log`, …) for subresource requests. Subresource
-events are counted here but then dropped at ingress — they do not describe a top-level object
-the Git pipeline can mirror — so any non-empty `subresource` row is "received then dropped". The
-label exists so a `pods/exec` flood is visible as exactly that, rather than collapsing into
-`resource="pods"` and looking like real pod mutations.
+A non-`/scale` subresource (`exec`, `status`, `log`, …) cannot describe a top-level object the
+Git pipeline can mirror, so it is dropped at ingress as `audit_events_total{outcome="non_scale_subresource"}`.
+That outcome makes a `pods/exec` flood visible as exactly that (with `resource="pods"`), rather
+than looking like real pod mutations.
 
 **Stage ③ — consumer output.** `audit_pipeline_events_total` is recorded once per canonical
 event in the consumer, after rule matching. `outcome` tells you which resource events reach the
@@ -161,8 +162,8 @@ produces one observation:
   The value is the proxy's *lead time*: how long the body sat parked. Always `outcome="merged"`.
 - **`arrival="official_first"`** — the official arrived first and waited on the canonical gate.
   The value is the wait duration. `outcome="merged"` if the body arrived in time,
-  `outcome="timed_out"` if the grace period expired (that event is also counted in
-  `audit_shallow_dropped_total`).
+  `outcome="timed_out"` if the grace period expired (that event is also counted as
+  `audit_events_total{outcome="shallow_dropped"}`).
 
 ### Query cookbook
 
@@ -179,24 +180,22 @@ sum by (source, outcome) (rate(gitopsreverser_audit_eventlists_total[5m]))
 sum by (source) (rate(gitopsreverser_audit_eventlist_events_total[5m]))
 ```
 
-**What strange or high-volume traffic is the webhook receiving?** The top received event shapes —
-this surfaces an unexpected resource flood at a glance, and because the result is split by
-`subresource`, a streaming `pods/exec` storm shows up as its own row instead of hiding inside
-`resource="pods"`:
+**What strange or high-volume traffic is the webhook receiving?** The top event shapes by outcome —
+this surfaces an unexpected resource flood at a glance:
 
 ```promql
-topk(15, sum by (resource, subresource, verb) (
-  rate(gitopsreverser_audit_events_received_total[5m])))
+topk(15, sum by (resource, verb, outcome) (
+  rate(gitopsreverser_audit_events_total[5m])))
 ```
 
-Any row with a non-empty `subresource` is received-then-dropped at ingress (subresources are not
-mirrorable top-level objects). A large `pods`/`exec` row is the canonical example — see
+A non-`/scale` subresource is dropped at ingress as `outcome="non_scale_subresource"`. A large
+`pods`/`exec` row is the canonical example — see
 [shallow-audit-event-misclassification.md](finished/shallow-audit-event-misclassification.md). To
 look only at the dropped subresource traffic:
 
 ```promql
-topk(10, sum by (resource, subresource, verb) (
-  rate(gitopsreverser_audit_events_received_total{subresource!=""}[5m])))
+topk(10, sum by (resource, verb) (
+  rate(gitopsreverser_audit_events_total{outcome="non_scale_subresource"}[5m])))
 ```
 
 **Are EventLists failing to decode?** Should be zero — non-zero means a sender is posting
@@ -206,14 +205,15 @@ something that is not an `audit.k8s.io/v1 EventList`:
 sum by (source) (rate(gitopsreverser_audit_eventlists_total{outcome="decode_error"}[5m]))
 ```
 
-**Is the join working at all?** Rate of canonical emissions, split by how they resolved:
+**Are events being stored?** Rate of events that reached the per-type log:
 
 ```promql
-sum by (result) (rate(gitopsreverser_audit_join_emitted_total[5m]))
+sum(rate(gitopsreverser_audit_events_total{outcome="queued"}[5m]))
 ```
 
-`result="merged"` means an official was completed by a parked/awaited body; `as_is` means the
-official already carried its own body.
+A merged event (an official completed by a parked/awaited body) is also `outcome="queued"` — the
+merge is provenance, not a separate fate; `outcome="parked"` counts the bodies awaiting their
+official, and `outcome="shallow_dropped"` staying zero confirms the merge path is healthy.
 
 **How often does the race go the "wrong" way?** Fraction of joins where the official arrived
 before its body:
@@ -242,7 +242,7 @@ is the early-warning signal. If it sits near zero, the wait budget has plenty of
 sum by (outcome) (rate(gitopsreverser_audit_join_skew_seconds_count{arrival="official_first"}[5m]))
 ```
 
-`outcome="timed_out"` here equals `rate(audit_shallow_dropped_total[5m])` — two views of the
+`outcome="timed_out"` here equals `rate(gitopsreverser_audit_events_total{outcome="shallow_dropped"}[5m])` — two views of the
 same failure.
 
 **What's the margin against `--audit-event-body-ttl` (5m)?** p99 of the proxy's lead time:
@@ -259,7 +259,7 @@ early (or the official stream has stalled) and orphan expiry is imminent.
 policy that omits bodies:
 
 ```promql
-sum by (resource, verb) (rate(gitopsreverser_audit_shallow_dropped_total[5m]))
+sum by (resource, verb) (rate(gitopsreverser_audit_events_total{outcome="shallow_dropped"}[5m]))
 ```
 
 **Is the canonical gate causing backpressure?** A shallow official holds the in-pod gate for up
@@ -306,7 +306,7 @@ sum by (git_target_namespace, git_target, outcome) (
 
 | Condition | Meaning |
 | --- | --- |
-| `rate(audit_shallow_dropped_total[10m]) > 0` | Bodies are being lost — install the proxy or fix the audit policy. |
+| `rate(gitopsreverser_audit_events_total{outcome="shallow_dropped"}[10m]) > 0` | Bodies are being lost — install the proxy or fix the audit policy. |
 | `histogram_quantile(0.95, ...skew_seconds_bucket{arrival="official_first"}...) > 0.4` (with `bodyWait=500ms`) | Grace period about to be exhausted; raise `--audit-event-body-wait`. |
 | `rate(audit_join_body_late_total[15m]) > 0` sustained | Additional bodies arriving after the decision — proxy slower than `bodyTTL`. |
 | `rate(audit_join_duplicate_dropped_total[5m])` spike | Likely webhook retry storm. |

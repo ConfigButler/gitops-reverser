@@ -1079,7 +1079,7 @@ func TestClassifyAuditIngress_RejectsFailedRequests(t *testing.T) {
 }
 
 func TestAuditHandler_FiltersDryRunAndUnchangedRVEvents(t *testing.T) {
-	const filteredMetric = "gitopsreverser_audit_events_filtered_total"
+	const filteredMetric = "gitopsreverser_audit_events_total"
 
 	tests := []struct {
 		name       string
@@ -1092,7 +1092,7 @@ func TestAuditHandler_FiltersDryRunAndUnchangedRVEvents(t *testing.T) {
 			fixture:    "testdata/audit-events/flux-secret-dryrun-patch-eventlist.yaml",
 			wantReason: "dry_run",
 			wantMatch: map[string]string{
-				"source": "official", "reason": "dry_run",
+				"outcome": "dry_run", "category": "dropped",
 				"group": "", "version": "v1", "resource": "secrets", "verb": "patch",
 			},
 		},
@@ -1101,7 +1101,7 @@ func TestAuditHandler_FiltersDryRunAndUnchangedRVEvents(t *testing.T) {
 			fixture:    "testdata/audit-events/k3s-addon-unchanged-rv-update-eventlist.yaml",
 			wantReason: "unchanged_resource_version",
 			wantMatch: map[string]string{
-				"source": "official", "reason": "unchanged_resource_version",
+				"outcome": "unchanged_resource_version", "category": "dropped",
 				"group": "k3s.cattle.io", "version": "v1", "resource": "addons", "verb": "update",
 			},
 		},

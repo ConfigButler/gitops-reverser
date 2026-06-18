@@ -38,6 +38,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	auditv1 "k8s.io/apiserver/pkg/apis/audit/v1"
+
+	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 )
 
 const testByTypePrefix = "test.bytype.v1"
@@ -751,6 +753,31 @@ func TestRedisByTypeStreamQueue_XAddErrorPropagates(t *testing.T) {
 	mr.Close()
 	require.Error(t, q.Enqueue(context.Background(), ingestionEvent("101", 3001)),
 		"once the index is cached, a later main-stream XADD failure must surface")
+}
+
+func TestRedisByTypeStreamQueue_RecordsOutcomeMetric(t *testing.T) {
+	reader, err := telemetry.InitTestExporter()
+	require.NoError(t, err)
+
+	// Real Valkey: the older-than-high-water divert relies on native stream-ID arbitration,
+	// which miniredis does not enforce for the "<rv>-*" form.
+	q, _, _ := valkeyByTypeQueue(t, 0)
+	ctx := context.Background()
+
+	// Two in-order numeric RVs are queued; a third below the high-water is diverted.
+	require.NoError(t, q.Enqueue(ctx, ingestionEvent("100", 3000)))
+	require.NoError(t, q.Enqueue(ctx, ingestionEvent("200", 3001)))
+	require.NoError(t, q.Enqueue(ctx, ingestionEvent("150", 3002)))
+
+	queued, ok := telemetry.CollectInt64Sum(reader, "gitopsreverser_audit_events_total",
+		map[string]string{"outcome": "queued", "category": "stored"})
+	require.True(t, ok, "expected queued outcome samples")
+	assert.Equal(t, int64(2), queued)
+
+	diverted, ok := telemetry.CollectInt64Sum(reader, "gitopsreverser_audit_events_total",
+		map[string]string{"outcome": "older_than_high_water", "category": "dropped"})
+	require.True(t, ok, "expected an older_than_high_water outcome sample")
+	assert.Equal(t, int64(1), diverted)
 }
 
 func TestRedisByTypeStreamQueue_LateXAddErrorPropagates(t *testing.T) {

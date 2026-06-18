@@ -4,8 +4,9 @@
 
 A `deletecollection` audit event removes many objects at once but is **name-less**:
 the per-type live tail skips it, and only a later checkpoint reconcile removes the
-deleted objects from git. Today nothing prompts that reconcile, so a collection
-delete lingers in git until the ~1h periodic sweep. This plan is **two tiers**:
+deleted objects from git. For a mirrored warm stream, today nothing prompts that
+reconcile, so a collection delete lingers in git until the ~1h periodic sweep. This
+plan is **two tiers**:
 
 - **Tier 2 — correctness floor (do first):** fire the resync nudge that already
   exists, so the wired `RequestResync → TypeSynced → deferred heal → scoped sweep`
@@ -31,8 +32,8 @@ attribution) when it is not. We never make the body the *correctness* source —
   ([audit_joiner.go:573-579](../../../internal/webhook/audit_joiner.go#L573-L579)). It
   does **not** strip a real body: `ResponseObject` is carried through the envelope and
   merge ([audit_joiner.go:476-504](../../../internal/webhook/audit_joiner.go#L476-L504)).
-- **The deleted-items list is already captured and stored.** The audit policy captures
-  `delete`/`deletecollection` at `level: RequestResponse`
+- **For events that are mirrored, the deleted-items list is already captured and
+  stored.** The audit policy captures `delete`/`deletecollection` at `level: RequestResponse`
   ([policy.yaml](../../../test/e2e/cluster/audit/policy.yaml)), so for a standard
   etcd-backed core type (and CRDs via apiextensions) the response — a `List` of the
   removed items, names included — rides in the event. The full event, including
@@ -42,8 +43,16 @@ attribution) when it is not. We never make the body the *correctness* source —
   and round-trips via `parseAuditEvent`
   ([audit_event_parsing.go:111](../../../internal/queue/audit_event_parsing.go#L111)).
   **So Tier 1 needs no joiner/ingestion change — the body is already in the mirror;
-  only the consumer must learn to read it.** And the actor is never lost (load-bearing
-  for §7).
+  only the consumer must learn to read it.**
+- **Demand-gated ingestion now deliberately removes some audit events before they reach
+  the mirror.** See
+  [demand-gated-audit-ingestion.md](../../finished/demand-gated-audit-ingestion.md):
+  we stopped mirroring never-wanted and pre-materialization types, and `ingestRVLess`
+  now drops RV-less events before a type has any numeric high-water instead of sending
+  them to the late lane. That removed a lot of diagnostic noise and Redis waste; for
+  `deletecollection`, we may be removing a little too much. This plan accepts that
+  practical tradeoff for now: dropped events do **not** nudge, and the periodic
+  checkpoint remains the only backstop for that edge. Revisit under §10.
 - The live per-type tail **skips it**: `auditChangeFromEntry` returns `ok=false` for any
   name-less entry (`id.Name == ""`) —
   [redis_bytype_queue.go:342](../../../internal/queue/redis_bytype_queue.go#L342).
@@ -79,29 +88,38 @@ attribution) when it is not. We never make the body the *correctness* source —
   never replaces it.
 - **The deferred-until-idle heal** (heal=true, Rec 1) — the nudge inherits it.
 - **The collection event emitting with or without a body**, and the aggregated shallow-
-  drop fix (2026-06-13). Tier 1 reads the body *when present* and degrades to Tier 2
-  when it is hollow/absent — it does not re-introduce a body demand at ingress.
+  drop fix (2026-06-13). Tier 1 reads the body *when present in a mirrored event* and
+  degrades to Tier 2 when it is hollow/absent — it does not re-introduce a body demand
+  at ingress.
 - **The 15s per-type nudge floor** (`lateNudgeMinInterval`,
   [materialization.go:60](../../../internal/watch/materialization.go#L60)) already
   coalesces teardown bursts. We lean on it explicitly.
+- **The empty-stream RV-less drop stays for now.** It keeps the late lane meaningful.
+  We do not nudge for events that `ingestRVLess` drops before a high-water exists.
 
 ## 4. The gap, located precisely (Tier 2)
 
-A successful `deletecollection` enqueue does not request a resync, so the deleted
-objects linger in git for up to one sweep interval (~1h).
+A successful warm-stream `deletecollection` enqueue does not request a resync, so the
+deleted objects linger in git for up to one sweep interval (~1h).
 
 The gap is in **`ingestRVLess`, not the late lane.** A `deletecollection` is RV-less,
-so it never reaches the one branch that nudges. Two outcomes, neither nudges:
+so it never reaches the one branch that nudges. Three outcomes matter after
+demand-gated ingestion:
 
-- **Warm stream (the common case):** attaches to the high-water with `rv_present=false`;
-  the tail then skips it (name-less) → silent ~1h wait. The original analysis framed
-  "lands in the late lane before high-water" as dominant — that is the **cold-start
-  edge**; the everyday path is this warm attach.
-- **Cold stream (the edge):** diverts to the late lane → also no nudge.
+- **Demand-gate skip:** if the type is not wanted yet, `mirrorByType` never calls
+  `Enqueue`. No event, no nudge. The next checkpoint after demand opens is the
+  correctness backstop.
+- **Empty stream (accepted edge):** if the type is wanted but has no numeric
+  high-water yet, `ingestRVLess` drops the RV-less event as a no-op. No event, no
+  nudge. This was introduced to prevent late-lane noise; it may drop too much for
+  collection-delete promptness, but we accept that for v1.
+- **Warm stream (the common case):** once a numeric high-water exists, the event
+  attaches to the high-water with `rv_present=false`; the tail then skips it
+  (name-less) → silent ~1h wait. This is the case Tier 2 fixes.
 
-The fix nudges on **both** outcomes, scoped to **name-less / `verb == deletecollection`**,
-not all RV-less events — ordinary single deletes are RV-less too and the tail already
-applies them by name
+The fix nudges only for the **successful warm-stream ingest**, scoped to
+**name-less / `verb == deletecollection`**, not all RV-less events — ordinary single
+deletes are RV-less too and the tail already applies them by name
 ([redis_bytype_queue.go:370-372](../../../internal/queue/redis_bytype_queue.go#L370-L372));
 nudging those would fire a checkpoint LIST per delete.
 
@@ -117,7 +135,8 @@ nudging those would fire a checkpoint LIST per delete.
    existing site. `Subresource == ""` for a collection delete, so `keys.group`/`resource`
    are already populated
    ([redis_bytype_queue.go:218-224](../../../internal/queue/redis_bytype_queue.go#L218-L224)).
-   Fire on **both** RV-less outcomes. Best-effort, non-blocking (IR8).
+   Fire only after the event attaches to an existing high-water. If `ingestRVLess` drops
+   on an empty stream, do not nudge for now. Best-effort, non-blocking (IR8).
 3. **Nothing downstream changes** — `RequestResync → TypeSynced → deferred heal → scoped
    sweep` is unchanged; the 15s floor coalesces; unclaimed/not-Synced is a no-op.
 
@@ -126,9 +145,10 @@ Net: a handful of lines plus the Enqueue→`ingestRVLess` signal.
 ## 6. Why the body is an attribution *hint*, never the correctness plane
 
 The user's question — "if I delete a bunch of configmaps, isn't the deleted set in the
-body? shouldn't we parse it?" — is right for the common case, and §2 shows the body is
-already there. But the body must stay a Tier-1 *hint* under the Tier-2 sweep, because as
-a *correctness* source it fails in ways that silently corrupt git:
+body? shouldn't we parse it?" — is right for the mirrored warm-stream common case, and
+§2 shows the body is already there for that case. But the body must stay a Tier-1 *hint*
+under the Tier-2 sweep, because as a *correctness* source it fails in ways that silently
+corrupt git:
 
 - **Finalizers (the headline risk).** `deletecollection` does not remove an object that
   has a finalizer — it sets `deletionTimestamp`. The returned list item is that object
@@ -195,10 +215,12 @@ the existing message builder
   unattributable cause leaves a generic trailer-less portion ("…and other unattributed
   changes"), never an invented author.
 
-**The reassurance:** even before Tier 1 ships, the actor is never lost — the
-`deletecollection` event with `user` is in the mirror (§2). So a v1 that ships only Tier
-2 already records *who* via the `Co-authored-by` floor; Tier 1 then upgrades the common
-case from "co-authored heal" to "precise named delete."
+**The reassurance, scoped honestly:** for mirrored warm-stream events, even before Tier 1
+ships, the actor is not lost — the `deletecollection` event with `user` is in the mirror
+(§2). So a v1 that ships only Tier 2 already records *who* via the `Co-authored-by`
+floor for that case; Tier 1 then upgrades the common case from "co-authored heal" to
+"precise named delete." Dropped demand-gate / empty-stream events have no stored cause
+today; §10 records that as a later-improvement target, not a v1 requirement.
 
 ## 8. Unit tests — red-first
 
@@ -206,7 +228,8 @@ Tier 2 (`internal/queue`; red against current code, green after §5):
 
 1. **RED → GREEN:** `deletecollection` enqueue fires the nudge on the warm high-water
    path (the common case).
-2. **RED → GREEN:** fires on the cold late-lane path (first write to the stream).
+2. **GREEN guard:** empty-stream `deletecollection` is dropped and does **not** nudge
+   for now (documents the accepted edge from demand-gated ingestion).
 3. **RED → GREEN:** the Enqueue→`ingestRVLess` collection signal is wired (guards the
    plumbing against a silent refactor drop).
 
@@ -225,7 +248,8 @@ Tier 1 (body fan-out):
 5. **A finalizer-pending item (deletionTimestamp + finalizers) is skipped**, not deleted
    from git (the headline §6 rule) — the sweep is left to handle it.
 6. **A hollow / `Status` / absent body no-ops Tier 1** and falls through to the Tier-2
-   nudge (aggregated and `Metadata`-policy cases).
+   nudge when the event was mirrored on a warm stream (aggregated and `Metadata`-policy
+   cases).
 7. **A partial list under-deletes safely** — Tier 1 emits what it has, Tier 2 reconciles
    the rest.
 
@@ -242,10 +266,14 @@ The policy already captures `deletecollection` at RequestResponse
 hinges on **promptness** (the only backstop today is the ~1h sweep), so "objects gone
 from git within a bounded window" fails today and passes after §5.
 
-**Flake warning:** the known aggregated-`deletecollection` shallow-drop / absolute-drop-
-count flake means new e2e must run on a **fresh cluster** and assert **convergence**
-("these specific objects gone, these siblings remain"), never a global drop count on
-aggregated paths.
+**Assertion discipline:** assert **convergence** — "these specific objects gone, these
+siblings remain" — never an absolute / global drop count. A convergence assert depends
+only on the objects the test created, not on whatever else already lives in the cluster,
+so these scenarios run correctly against a **reused** cluster and need **no** fresh-cluster
+precondition. The old aggregated-`deletecollection` absolute-drop-count flake is not a
+reason to clean first: it was fixed at the source by the 2026-06-13 shallow-drop fix
+(deletecollection now emits as-is whether or not it carries a body), so there is no
+remaining drop-count signal to keep at zero.
 
 Scenarios (`test/e2e/deletecollection_e2e_test.go`):
 
@@ -261,11 +289,29 @@ Scenarios (`test/e2e/deletecollection_e2e_test.go`):
 5. **Aggregated-API path — already covered** by existing fixtures (hardened 2026-06-13);
    confirm green, no new aggregated assert.
 
-## 10. Definition of done
+## 10. Later improvements
 
-- **Tier 2 first:** §8.1–8.3 written red-first then green; guards green throughout; §9.1
-   demonstrated RED→GREEN on a fresh cluster with convergence asserts. The `Co-authored-by`
-   floor (§8.8) lands with Tier 2 so v1 already records *who*.
+- **Prove the accepted dropped-event edge with a red e2e.** Invent an e2e where a
+  followed type has no numeric high-water yet, then an RV-less `deletecollection` lands
+  before the first numeric write. Expected current behavior: the event is dropped, no
+  nudge fires, attribution is absent, and git converges only at the periodic checkpoint.
+  That gives us a concrete regression test if we later decide the tradeoff is too
+  expensive.
+- **Consider a safe nudge-before-drop path.** If the red e2e shows meaningful user pain,
+  revisit carrying a minimal `{group, resource, actor, auditID}` cause into a resync
+  request before the empty-stream drop. That is intentionally deferred because the
+  current practical goal is to keep late-lane noise suppressed.
+- **Re-evaluate demand-gate skip behavior for collection deletes.** Demand gating removed
+  a lot of useless events, but `deletecollection` is the sharp case where it may remove
+  too much. Any future relaxation should be narrow and checkpoint-backed.
+
+## 11. Definition of done
+
+- **Tier 2 first:** §8.1 and §8.3 written red-first then green; §8.2 and the other
+   guards stay green; §9.1 demonstrated RED→GREEN with convergence asserts (no
+   fresh-cluster precondition — convergence asserts run against a reused cluster). The
+   `Co-authored-by` floor (§8.8) lands with Tier 2 so v1 records *who*
+   for mirrored warm-stream collection deletes.
 - **Tier 1 second, on the Tier-2 floor:** §8.4–8.7 (esp. the finalizer-skip rule) and
    §9.1's attributed-delete assert + §9.3 finalizer survivor.
 - Full validation per AGENTS.md: `task fmt → generate → manifests → vet → lint → test →

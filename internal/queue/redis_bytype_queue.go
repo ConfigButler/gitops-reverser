@@ -31,15 +31,13 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/metric"
 	"k8s.io/apimachinery/pkg/runtime"
 	auditv1 "k8s.io/apiserver/pkg/apis/audit/v1"
 
 	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	"github.com/ConfigButler/gitops-reverser/internal/audit/outcome"
 	"github.com/ConfigButler/gitops-reverser/internal/auditutil"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
-	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
@@ -207,11 +205,13 @@ func (q *RedisByTypeStreamQueue) Enqueue(ctx context.Context, event auditv1.Even
 	rv := resourceVersionFromEvent(event)
 
 	if err := q.ensureIndexed(ctx, base); err != nil {
+		outcome.Record(ctx, &event, outcome.WriteError)
 		return err
 	}
 
 	values, err := q.entryValues(event, millis, rv)
 	if err != nil {
+		outcome.Record(ctx, &event, outcome.WriteError)
 		return err
 	}
 
@@ -227,16 +227,20 @@ func (q *RedisByTypeStreamQueue) Enqueue(ctx context.Context, event auditv1.Even
 		keys.group = ref.APIGroup
 		keys.resource = ref.Resource
 	}
+	var oc outcome.Outcome
+	var ingestErr error
 	switch classifyRV(rv) {
 	case rvNumeric:
-		return q.ingestOrdered(ctx, keys, rv, millis, values)
+		oc, ingestErr = q.ingestOrdered(ctx, keys, rv, millis, values)
 	case rvAbsent:
-		return q.ingestRVLess(ctx, keys, millis, values)
+		oc, ingestErr = q.ingestRVLess(ctx, keys, millis, values)
 	case rvNonNumeric:
-		return q.divertLate(ctx, keys, lateReasonNonNumericRV, rv, "", values)
+		oc, ingestErr = outcome.NonNumericRV, q.divertLate(ctx, keys, lateReasonNonNumericRV, rv, "", values)
 	}
-	// classifyRV returns only the three cases above; this is unreachable.
-	return nil
+	// Record the one census outcome for this event (the queue is the single owner for
+	// queue-side outcomes; the webhook handler owns the pre-queue ones).
+	outcome.Record(ctx, &event, oc)
+	return ingestErr
 }
 
 // TrimTypeAuditLog bounds a type's main audit stream to the checkpoint cursor: it evicts every
@@ -462,7 +466,7 @@ func (q *RedisByTypeStreamQueue) ingestOrdered(
 	rv string,
 	millis int64,
 	values map[string]any,
-) error {
+) (outcome.Outcome, error) {
 	values[entryFieldRVPresent] = "true"
 	values[entryFieldPlacement] = placementResourceVersion
 
@@ -470,7 +474,7 @@ func (q *RedisByTypeStreamQueue) ingestOrdered(
 	switch {
 	case err == nil:
 		q.recordMain(ctx, keys.idState, rv, id, millis)
-		return nil
+		return outcome.Queued, nil
 	case isIDTooSmall(err):
 		// The strong key rejected a strictly-older RV — the late-lane signal (P2). The high-water
 		// for the diagnostic payload is the stream's authoritative top (§10). The ordered log will
@@ -480,9 +484,9 @@ func (q *RedisByTypeStreamQueue) ingestOrdered(
 		if divertErr == nil && q.lateNotify != nil && keys.resource != "" {
 			q.lateNotify(keys.group, keys.resource)
 		}
-		return divertErr
+		return outcome.OlderThanHighWater, divertErr
 	default:
-		return fmt.Errorf("failed to append entry to %q: %w", keys.stream, err)
+		return outcome.WriteError, fmt.Errorf("failed to append entry to %q: %w", keys.stream, err)
 	}
 }
 
@@ -504,11 +508,11 @@ func (q *RedisByTypeStreamQueue) ingestRVLess(
 	keys byTypeAuditKeys,
 	millis int64,
 	values map[string]any,
-) error {
+) (outcome.Outcome, error) {
 	highWater := q.streamTopRV(ctx, keys.stream)
 	if highWater == "" {
 		q.incrIDState(ctx, keys.idState, idStateRVMissingCount)
-		return nil
+		return outcome.RVLessEmptyHighWater, nil
 	}
 
 	values[entryFieldRVPresent] = "false"
@@ -516,10 +520,10 @@ func (q *RedisByTypeStreamQueue) ingestRVLess(
 
 	id, err := q.xaddID(ctx, keys.stream, highWater+"-*", values)
 	if err != nil {
-		return fmt.Errorf("failed to append entry to %q: %w", keys.stream, err)
+		return outcome.WriteError, fmt.Errorf("failed to append entry to %q: %w", keys.stream, err)
 	}
 	q.recordRVMissing(ctx, keys.idState, id, millis)
-	return nil
+	return outcome.Queued, nil
 }
 
 // divertLate records an event in the diagnostic late lane with a server-assigned ID and full
@@ -536,13 +540,9 @@ func (q *RedisByTypeStreamQueue) divertLate(
 	values[entryFieldRVPresent] = strconv.FormatBool(rv != "")
 	values[entryFieldLastRV] = lastRV
 
-	// Count the diversion (labelled by reason) — the operator-facing "is the late lane empty?"
-	// signal and the e2e end-of-run invariant. With demand gating this should never fire. Nil-guarded
-	// so it is a no-op when telemetry is not initialized (unit tests).
-	if telemetry.AuditLateLaneDivertedTotal != nil {
-		telemetry.AuditLateLaneDivertedTotal.Add(ctx, 1, metric.WithAttributes(attribute.String("reason", reason)))
-	}
-
+	// The diverted-event census count is recorded once by Enqueue via outcome.Record
+	// (older_than_high_water / non_numeric_rv); this lane is the diagnostic payload only
+	// (retired to diag_all in a later slice).
 	if _, err := q.xaddID(ctx, keys.late, "*", values); err != nil {
 		return fmt.Errorf("failed to append entry to %q: %w", keys.late, err)
 	}

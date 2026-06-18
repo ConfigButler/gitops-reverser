@@ -42,6 +42,7 @@ import (
 	auditv1 "k8s.io/apiserver/pkg/apis/audit/v1"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
+	"github.com/ConfigButler/gitops-reverser/internal/audit/outcome"
 	"github.com/ConfigButler/gitops-reverser/internal/auditutil"
 	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 )
@@ -302,13 +303,19 @@ func (h *AuditHandler) processEvent(ctx context.Context, source AuditSource, aud
 	log := logf.Log.WithName("audit-handler")
 
 	auditEvent, process, err := h.prepareAuditEvent(ctx, source, auditEventV1)
-	if err != nil || !process {
+	if err != nil {
 		return err
+	}
+	if !process {
+		// A non-/scale subresource (or an unmapped-verb subresource): dropped before Redis.
+		outcome.Record(ctx, &auditEventV1, outcome.NonScaleSubresource)
+		return nil
 	}
 
 	// Only ResponseComplete carries the post-commit object state; earlier
 	// stages of the same request never reach the per-type mirror.
 	if auditEventV1.Stage != auditv1.StageResponseComplete {
+		outcome.Record(ctx, &auditEventV1, outcome.Stage)
 		return nil
 	}
 
@@ -323,10 +330,11 @@ func (h *AuditHandler) processEvent(ctx context.Context, source AuditSource, aud
 	}
 
 	quality := classifyAuditEventQuality(source, &auditEventV1)
-	addQualityMetric(ctx, source, &auditEventV1, quality)
 	decision := classifyAuditIngress(source, &auditEventV1, quality)
 	if !decision.Process {
-		addFilteredMetric(ctx, source, &auditEventV1, decision.Reason)
+		// decision.Reason is one of the dropped-outcome label values (read_only_or_unknown_verb,
+		// failed_request, dry_run, unchanged_resource_version, malformed_additional, nil_event).
+		outcome.Record(ctx, &auditEventV1, outcome.Outcome(decision.Reason))
 		logAuditJoinSkip(
 			"Dropped audit event before join pipeline",
 			source,
@@ -339,13 +347,23 @@ func (h *AuditHandler) processEvent(ctx context.Context, source AuditSource, aud
 	eventToWrite, joinDecision, shouldEmit, err := h.eventToMirror(
 		ctx, source, &auditEventV1, auditEvent, quality,
 	)
-	if err != nil || !shouldEmit {
+	if err != nil {
 		return err
 	}
-	h.mirrorByType(ctx, eventToWrite)
-	if joinDecision.Action == AuditJoinActionEmit {
-		addEmittedMetric(ctx, joinDecision.Source, joinDecision.Result)
+	if !shouldEmit {
+		switch joinDecision.Action {
+		case AuditJoinActionParked:
+			outcome.Record(ctx, &auditEventV1, outcome.Parked)
+		case AuditJoinActionDrop:
+			outcome.Record(ctx, &auditEventV1, outcome.ShallowDropped)
+		case AuditJoinActionEmit:
+			// unreachable: shouldEmit is false here, so the action is never Emit.
+		}
+		return nil
 	}
+	// The accepted event's census outcome (queued / a divert / write_error) is recorded by the
+	// queue inside Enqueue; a demand-gate drop (not_needed) is recorded by mirrorByType.
+	h.mirrorByType(ctx, eventToWrite)
 
 	h.logFirstAuditEmit(log, source, auditEvent)
 
@@ -396,7 +414,7 @@ func (h *AuditHandler) logFirstAuditEmit(log logr.Logger, source AuditSource, ev
 }
 
 func (h *AuditHandler) prepareAuditEvent(
-	ctx context.Context,
+	_ context.Context,
 	source AuditSource,
 	auditEventV1 auditv1.Event,
 ) (audit.Event, bool, error) {
@@ -409,12 +427,15 @@ func (h *AuditHandler) prepareAuditEvent(
 	if err != nil {
 		return audit.Event{}, false, fmt.Errorf("failed to check audit event: %w", err)
 	}
-	h.recordReceivedMetric(ctx, source, auditEvent)
+	h.logAuditEventReceived(source, auditEvent)
 	return auditEvent, process, nil
 }
 
-func (h *AuditHandler) recordReceivedMetric(
-	ctx context.Context,
+// logAuditEventReceived emits the structured "audit event received" logs (and the first-
+// impersonation banner). The per-event count is recorded once downstream as the event's
+// outcome on gitopsreverser_audit_events_total (internal/audit/outcome), so there is no
+// separate received counter here.
+func (h *AuditHandler) logAuditEventReceived(
 	source AuditSource,
 	auditEvent audit.Event,
 ) {
@@ -433,7 +454,7 @@ func (h *AuditHandler) recordReceivedMetric(
 		)
 	}
 
-	// The username is intentionally not a metric label (cardinality bomb); it
+	// The username is intentionally not logged as a metric label (cardinality bomb); it
 	// stays in the structured logs only.
 	group, version, resource := gvrParts(&auditEvent)
 	subresource := subresourcePart(&auditEvent)
@@ -445,14 +466,6 @@ func (h *AuditHandler) recordReceivedMetric(
 		"subresource", subresource,
 		"verb", auditEvent.Verb,
 		"user", effectiveAuditUsername(auditEvent))
-	telemetry.AuditEventsReceivedTotal.Add(ctx, 1, metric.WithAttributes(
-		attribute.String("source", string(source)),
-		attribute.String("group", group),
-		attribute.String("version", version),
-		attribute.String("resource", resource),
-		attribute.String("subresource", subresource),
-		attribute.String("verb", auditEvent.Verb),
-	))
 }
 
 func (h *AuditHandler) eventToMirror(
@@ -515,8 +528,11 @@ func (h *AuditHandler) mirrorByType(ctx context.Context, event *auditv1.Event) {
 		// The type is not currently wanted (no live claim ∩ followable). Skipping the mirror
 		// here is the whole point of demand-gating; a brief miss after a fresh Require is healed
 		// by the next checkpoint (docs/finished/demand-gated-audit-ingestion.md §6).
+		outcome.Record(ctx, event, outcome.NotNeeded)
 		return
 	}
+	// queued / a divert / write_error are recorded once by Enqueue (the queue is the single owner
+	// of queue-side outcomes); here we only surface a write failure to the operator log.
 	if err := h.config.ByTypeQueue.Enqueue(ctx, *event); err != nil {
 		log := logf.Log.WithName("audit-handler")
 		h.firsts.byTypeMirrorError.Do(func() {

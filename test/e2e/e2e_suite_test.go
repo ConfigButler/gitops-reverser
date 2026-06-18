@@ -89,38 +89,39 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 // if the assertion fails — it also releases on process exit).
 var _ = SynchronizedAfterSuite(func() {}, func() {
 	defer releaseE2ERunLock()
-	assertLateLaneEmpty()
+	assertNoAnomalousAuditOutcomes()
 })
 
-// assertLateLaneEmpty is the headline invariant of demand-gated audit ingestion: after a full run,
-// no audit event was ever diverted to a type's diagnostic late lane. It asserts on the
-// operator-facing metric (the same signal you would alert on in production) rather than poking Redis,
-// so it verifies the metric is wired AND the lane is empty. The counter resets when the controller
-// restarts (the restart-reconcile spec does this), but Prometheus retains the pre-restart samples, so
-// max_over_time over the run window catches any diversion that ever happened, on any pod.
-// See docs/finished/demand-gated-audit-ingestion.md §8/§11.
-func assertLateLaneEmpty() {
-	By("verifying the audit late lane stayed empty for the whole run (demand-gating invariant)")
+// assertNoAnomalousAuditOutcomes is the headline invariant of the audit-event-outcome taxonomy:
+// after a full run, no audit event ended in an error outcome (category="error" — a write_error,
+// where the event never reached the per-type log). It asserts on the operator-facing
+// gitopsreverser_audit_events_total counter (the same signal you would alert on) rather than
+// poking Redis. dropped/diverted outcomes (e.g. older_than_high_water — inherent out-of-order
+// audit delivery, recovered by the next checkpoint) are expected and deliberately NOT gated. The
+// counter resets when the controller restarts (the restart-reconcile spec does this), but
+// Prometheus retains the pre-restart samples, so max_over_time over the run window catches any
+// error that ever happened, on any pod. See docs/design/stream/audit-diagnostic-streams-plan.md.
+func assertNoAnomalousAuditOutcomes() {
+	By("verifying no audit event ended in an error outcome (audit-outcome invariant)")
 	ensurePrometheusClient()
 	verifyPrometheusAvailable()
 
-	// Liveness guard: prove the audit metric pipeline actually produced data, so a 0 late-lane
-	// reading means "genuinely empty", not "metric never scraped / pipeline dead → vacuous 0".
-	received, err := queryPrometheus(`sum(max_over_time(gitopsreverser_audit_events_received_total[2h]))`)
-	Expect(err).NotTo(HaveOccurred(), "failed to query the audit-events-received metric")
-	Expect(received).To(BeNumerically(">", 0),
-		"audit metrics pipeline produced no data — the late-lane check below would be vacuous")
+	// Liveness guard: prove the audit pipeline actually produced data, so a 0 error reading means
+	// "genuinely none", not "metric never scraped / pipeline dead → vacuous 0".
+	total, err := queryPrometheus(`sum(max_over_time(gitopsreverser_audit_events_total[2h]))`)
+	Expect(err).NotTo(HaveOccurred(), "failed to query the audit-events counter")
+	Expect(total).To(BeNumerically(">", 0),
+		"audit metrics pipeline produced no data — the error-outcome check below would be vacuous")
 
-	const lateLaneQuery = `sum(max_over_time(gitopsreverser_audit_late_lane_diverted_total[2h]))`
-	value, err := queryPrometheus(lateLaneQuery)
-	Expect(err).NotTo(HaveOccurred(), "failed to query the late-lane diversion metric")
+	const errorQuery = `sum(max_over_time(gitopsreverser_audit_events_total{category="error"}[2h]))`
+	value, err := queryPrometheus(errorQuery)
+	Expect(err).NotTo(HaveOccurred(), "failed to query the audit error-outcome metric")
 	Expect(value).To(BeZero(),
-		"audit late lane must be empty after a clean run, but %.0f event(s) were diverted "+
-			"(query %q). Any non-zero value is a real out-of-order delivery that demand-gating "+
-			"should have prevented — inspect the per-type *:audit:late streams and the "+
-			"gitopsreverser_audit_late_lane_diverted_total{reason=...} breakdown.",
-		value, lateLaneQuery)
-	_, _ = fmt.Fprintf(GinkgoWriter, "✅ audit late lane is empty (0 diversions across the run)\n")
+		"audit events must never end in an error outcome, but %.0f did (query %q). category=\"error\" "+
+			"is a write_error — the event never reached the per-type log. Inspect the "+
+			"gitopsreverser_audit_events_total{category=\"error\",outcome=...} breakdown and controller logs.",
+		value, errorQuery)
+	_, _ = fmt.Fprintf(GinkgoWriter, "✅ no anomalous audit outcomes (0 error-category events across the run)\n")
 }
 
 var _ = AfterEach(func() {
