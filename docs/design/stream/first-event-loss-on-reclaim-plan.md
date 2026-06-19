@@ -157,6 +157,48 @@ The fix should make the system behave the way the leaf already promises, not add
 Capture (gate) is cheap and lossless to start early; baseline (checkpoint) can follow. Today we have it
 backwards: we gate-open only after we have a baseline.
 
+### 4.1 Design lesson: capture before baseline (why this took two tries)
+
+This reverses an earlier instinct, and it is worth stating plainly because it is easy to get backwards.
+
+The original vision was **materialize-first**: when a type becomes wanted, *first* build its checkpoint
+(LIST the type to get a complete baseline), *then* layer live changes on top. That is the intuitive
+shape of a reconciler — you reconcile against a known snapshot — and it keeps the audit footprint tidy
+(you only ever mirror a type you have already listed).
+
+The flaw is **the first events**. A type becomes wanted (claimed) and its first live events can arrive
+*before* the first LIST completes. If capture waits for materialization, those first events are gated
+out and **lost** — and materialization cannot recover them, for two reasons:
+
+- a checkpoint LIST captures **state, not events**: it sees *what exists at LIST time*, not *what
+  happened*. The author of a change, the fact that a specific mutation occurred, a create-then-delete
+  that happened *between* two LISTs — none of that survives a state snapshot;
+- the very first object can be created **and gone** before the first LIST ever runs, so the snapshot
+  shows nothing at all.
+
+So "materialize-first" trades a real, unrecoverable loss (a missed first event) for a cosmetic tidiness
+(never mirroring a type before listing it). For a system whose invariant is *events can't get lost*,
+that trade is backwards.
+
+**Capture-first** inverts it: the moment a type is **claimed**, open the gate and start capturing its
+events into the per-type stream — *independent of, and before,* materialization. The checkpoint LIST
+then runs asynchronously to establish the baseline, and the captured log folds onto it. The two are
+orthogonal: capture records *what changed* (with authorship/ordering), the checkpoint records *what
+exists* — and neither gates the other.
+
+The asymmetry that makes this safe and cheap:
+
+| | start it early | end it late |
+| --- | --- | --- |
+| **capture** (gate ON) | **must** — an event before it is lost | over-capture is free (entries trim away) |
+| **baseline** (checkpoint) | nice-to-have | fine — the folded log keeps it current |
+
+Concretely that is the `Required ⟺ claimed` invariant above: *claimed ⇒ captured immediately; synced
+follows*. The fix below (S2 Require-on-claim, S3 claim-stably-from-the-rule-spec) is just the machinery
+that makes the system actually behave this way; the materialize-first residue — gating capture behind
+the sync — was the bug. (See also the demand-driven materialization lifecycle doc, which now records
+this ordering as a first-class principle.)
+
 ---
 
 ## 5. Solution options
@@ -206,32 +248,33 @@ Two changes, each honoring an existing abstraction:
   `Released` event — `Released` also fires on followability loss while the claim survives (force-release),
   and we must keep mirroring a still-claimed type through a wobble. Handled in §6.
 
-### Option C — Bounded heal ticker (defense in depth)
+### Option C — Bounded heal ticker — REJECTED (do not build)
 
-A fast periodic pass (seconds, not ~1 h) that force-requests a sync for any **claimed ∧ followable ∧
-no-checkpoint** type. Catches *any* stall regardless of cause.
+A fast periodic pass that force-requests a sync for any **claimed ∧ followable ∧ no-checkpoint** type
+was considered as defence-in-depth, and is **rejected**. It would be a *second, polling reconciliation
+engine* layered on top of the demand-driven one — exactly the compensate-for-loss mindset this whole
+investigation argued out of. With Option B making the claim reliable (so the Materializer reliably drives
+the first sync) **and** the splice reconcile being diff-based — once a checkpoint lands it commits only
+what is not already applied (§4.1) — the normal pipeline self-corrects. A blunt backstop ticker would add
+no correctness, only a quiet engine that could mask a regression in B. If a stall ever proves real, fix
+*it*, don't poll around it.
 
-```
-   every N s:  for gvr in claimed ∧ followable ∧ checkpointRV=="":  RequestFirstSync(gvr)
-```
-
-- ✅ A blunt safety net that closes **G3** for all causes (including ones we haven't foreseen).
-- ❌ A band-aid if used alone (it papers over G1/G2 rather than fixing them); best as a *backstop* under
-  B, not a substitute.
+> Note this is distinct from the existing **event-driven late-event/`deletecollection` nudge**
+> (`RequestResync`), which is **not** a polling engine: it is a one-shot *trigger* that makes the
+> demand-driven re-anchor (the same engine) fire **promptly** for the two cases the per-event log cannot
+> express — an out-of-order divert and a name-less `deletecollection`. That nudge accelerates the
+> self-correction; it does not duplicate it. See [`deletecollection-resync-nudge-plan.md`](deletecollection-resync-nudge-plan.md).
 
 ### Recommendation
 
-**Option B as the fix; land it first.** Add Option C as a backstop **only after** B's core invariant is
-in and a test can demonstrate a real stalled `claimed ∧ followable ∧ no-checkpoint` state — and keep C
-**scoped and observable** (a metric/log on every forced sync) so it never quietly becomes a second
-reconciliation engine masking a regression in B. B removes the actual fragility and activates an
-abstraction we already paid for; C only bounds the worst case for a residual or future stall. Reject the
+**Option B is the fix — and it is the whole fix.** No backstop ticker (Option C, above). Reject the
 early-ingestion attribution store (§9.2 of the facts doc) — it is a workaround for one symptom and leaves
-the pipeline lossy.
+the pipeline lossy. The correctness backstop for everything B does not directly capture is the existing
+diff-based splice reconcile (§4.1), not a new engine.
 
 ---
 
-## 6. Detailed design (Option B + C backstop)
+## 6. Detailed design (Option B)
 
 ### 6.1 Claim from the rule spec, not from discovery (G1)
 
@@ -288,17 +331,17 @@ This is simpler than emitting both `Claimed` and `Unclaimed` (no redundant `Clai
 synchronous one) and keeps the gate honest: **Required ⟺ claimed**. A test asserts the gate is `Required`
 **by the time `DeclareForGitTarget` returns**, not "eventually."
 
-### 6.3 Bounded first-sync backstop (G3)
+### 6.3 No bounded first-sync backstop (G3 closed by the pipeline, not a new engine)
 
-Add a fast backstop (seconds-scale, injectable like `materializationSweepIntervalOverride`) that calls a
-new `Materializer.RequestFirstSyncIfStalled(gvr)` for every **claimed ∧ followable ∧ `checkpointRV==""` ∧
-phase∈{Dormant,Requested}** type — i.e. a claimed type that *should* have a checkpoint but doesn't yet.
-It re-emits `SyncRequested` (idempotent; a no-op once Syncing/Synced). This is the only timing knob; keep
-it boring and well-tested.
+G3 (an unbounded stall for a claimed-but-uncheckpointed type) is closed by B itself: the claim is now
+reliable, so the Materializer reliably drives the first sync, and the diff-based splice converges the end
+state when it lands (§4.1). A standing periodic re-anchor remains the eventual floor, and the existing
+event-driven nudge makes it prompt for diverts/`deletecollection`. We deliberately do **not** add a
+polling backstop ticker (Option C, rejected) — it would be a redundant second reconciliation engine.
 
 ### 6.4 What we do NOT change
 
-- The Materializer phase machine (`materializer.go`) — correct as is; B/C only *call* it more honestly.
+- The Materializer phase machine (`materializer.go`) — correct as is; B only *calls* it more honestly.
 - The fail-closed discipline for **discovered** (wildcard/version-less) claims and for the snapshot
   *sweep* scope (deleting KRM from git on a reduced view must still fail closed — that is a different,
   correct guard).
@@ -364,6 +407,11 @@ gate-out window.
 
 ## 8. Slices (land incrementally, each green before the next)
 
+**Status (2026-06-19): S0–S3 LANDED + the signing test hardened (all uncommitted).** Unit gate green
+(lint 0, `task test` 74.9%); e2e green on a clean cluster **and** on the warm cluster that previously
+failed (48/0). S0's proof run confirmed **W1** live (a `retained` watched type aborting a whole Declare).
+**S4 (bounded backstop) and S5 (the warm 3× re-confirmation + scoped-firehose-off) remain.**
+
 0. **S0 — prove the *why* (reviewer's ask).** Add a single structured log in `DeclareForGitTarget` that
    records the resolved/claimed GVR set for each GitTarget (count + names) at V(0)/info, and the §7.2
    red unit test `…SpecifiedGVRClaimedWhenNotYetFollowable` (which fails on `main` by asserting the claim
@@ -381,13 +429,14 @@ gate-out window.
    change with immediate value: a claimed type's events stop being dropped.
 3. **S3 — claim the specified GVRs unconditionally (G1).** Implement §6.1 + the §7.2 run-3 reproducer.
    This is the heart of the fix.
-4. **S4 — bounded first-sync backstop (G3).** Implement §6.3 + its test. Defense in depth.
-5. **S5 — e2e (§7.4) + full gate.** `task lint/test/test-e2e`; re-run the warm 3× experiment with scoped
-   `diag_all` still on to confirm the firehose now shows the first create `queued` (not `not_needed`),
-   then turn the scoped firehose back off.
+4. **S4 — ~~bounded first-sync backstop~~ — DROPPED.** Option C is rejected (§5/§6.3): the diff-based
+   splice self-corrects, so a polling backstop would be a redundant second engine. Not built.
+5. **S5 — re-confirm + clean up (optional).** Re-run the warm 3× experiment with scoped `diag_all` on to
+   watch the first create land as `queued` (not `not_needed`), then turn the scoped firehose back off.
 
 Each slice is independently revertable and independently valuable; **S0 proves the cause**, S2+S3
-together close the bug, S1/S4 harden it, S5 proves it on the cluster that produced the failure.
+together close the bug, S1 locks the leaf contract, S5 re-confirms on the cluster that produced the
+failure. **There is no backstop slice** — the pipeline is the backstop.
 
 ---
 
@@ -399,7 +448,8 @@ together close the bug, S1/S4 harden it, S5 proves it on the cluster that produc
   `Unrequire` is driven by a **new `Unclaimed` event** from the sweep's last-claim GC, **never** from
   `Released` (a wobble force-release keeps the claim). This refines the reviewer's b1 down to its
   loss-critical core: prompt synchronous open, eventually-consistent close.
-- **Sequencing:** land **B first** (S0→S3), add **C** only after, scoped + observable.
+- **No backstop engine:** Option C (polling first-sync ticker) is **rejected** — the diff-based splice is
+  the correctness backstop (§4.1/§5/§6.3). (Distinct from the existing event-driven nudge, which stays.)
 - **Diagnosis:** prove the *why* (S0) before the behavioural fix lands — log the declared claim set + the
   red test, re-run the warm experiment.
 
@@ -408,8 +458,7 @@ together close the bug, S1/S4 harden it, S5 proves it on the cluster that produc
   (simplest, covers the e2e), or also handle **group+resource** (version-less → collapse to the preferred
   served version) at the cost of a `Followable()`/catalog round-trip? Recommend starting narrow and
   widening only if a real rule needs it.
-- **Backstop interval (§6.3):** ~10 s prod, sub-second test override. It only ever *re-requests*
-  idempotently, so it is cheap — but confirm the metric/log shape so it stays observable.
+- ~~**Backstop interval:**~~ moot — Option C is rejected, there is no backstop ticker.
 - Should `Unrequire`-on-withdrawal also delete the per-type audit keys immediately, or keep the existing
   grace-protected `Released` deletion? (Lean: keep deletion on `Released`; only the gate flag moves with
   the claim.)

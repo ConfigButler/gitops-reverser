@@ -373,20 +373,35 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		By("waiting for commit and verifying committer identity and message template")
+		// Scope the assertion to the ConfigMap's OWN file, and look for the per-event ("e2e:") commit
+		// anywhere in its history — not just the single latest commit on the whole path. The WatchRule
+		// also watches secrets, so when the target is created the namespace's pre-existing secrets get a
+		// one-time INITIAL BACKFILL ("reconciled N secrets") whose commit can legitimately land after the
+		// per-event ConfigMap commit. That backfill touches a different file, so scoping to the ConfigMap
+		// file (and matching the per-event commit explicitly) asserts the per-event behaviour without
+		// being fragile to that acceptable setup-time ordering.
+		cmFile := fmt.Sprintf("%s/v1/configmaps/%s/%s.yaml", commitPath, testNs, cmName)
 		Eventually(func(g Gomega) {
 			_, pullErr := gitRun(signingRepo.CheckoutDir, "pull")
 			g.Expect(pullErr).NotTo(HaveOccurred())
 
-			logLine, logErr := gitRun(signingRepo.CheckoutDir, "log", "-1", "--format=%cn|%ce|%s", "--", commitPath)
+			logOut, logErr := gitRun(signingRepo.CheckoutDir, "log", "--format=%cn|%ce|%s", "--", cmFile)
 			g.Expect(logErr).NotTo(HaveOccurred())
-			g.Expect(strings.TrimSpace(logLine)).NotTo(BeEmpty(), "expected a commit in %s", commitPath)
+			g.Expect(strings.TrimSpace(logOut)).NotTo(BeEmpty(), "expected a commit for the ConfigMap %s", cmFile)
 
-			parts := strings.SplitN(strings.TrimSpace(logLine), "|", 3)
-			g.Expect(parts).To(HaveLen(3))
-			g.Expect(parts[0]).To(Equal(customName), "committer name should match configured value")
-			g.Expect(parts[1]).To(Equal(customEmail), "committer email should match configured value")
-			g.Expect(parts[2]).To(HavePrefix("e2e:"), "commit subject should use custom template prefix")
-			g.Expect(parts[2]).To(ContainSubstring("configmaps"), "commit subject should include resource type")
+			var found bool
+			for _, line := range strings.Split(strings.TrimSpace(logOut), "\n") {
+				parts := strings.SplitN(strings.TrimSpace(line), "|", 3)
+				if len(parts) != 3 || !strings.HasPrefix(parts[2], "e2e:") {
+					continue // tolerate a later heal/reconcile commit on the same file
+				}
+				g.Expect(parts[0]).To(Equal(customName), "committer name should match configured value")
+				g.Expect(parts[1]).To(Equal(customEmail), "committer email should match configured value")
+				g.Expect(parts[2]).To(ContainSubstring("configmaps"), "commit subject should include resource type")
+				found = true
+			}
+			g.Expect(found).To(BeTrue(),
+				"a per-event 'e2e:' commit for the ConfigMap must exist with the custom committer identity")
 			// 90s: signing does the slowest per-event work (commit + SSH sign +
 			// push); under Ginkgo parallelism the shared controller can push this
 			// past 60s on a contended run.

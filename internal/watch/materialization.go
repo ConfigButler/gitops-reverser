@@ -133,27 +133,49 @@ func (m *Manager) materializerInstance() *typeset.Materializer {
 // legitimately empty set on an OBSERVABLE surface (the GitTarget watches nothing) is
 // authoritative, so it is declared and withdraws all of that GitTarget's claims.
 func (m *Manager) DeclareForGitTarget(ctx context.Context, gitDest types.ResourceReference) error {
+	ref := typeset.GitTargetRef(gitDest.String())
+	// The rule's FULLY-SPECIFIED GVRs (concrete group+version+resource) are known from the spec alone,
+	// so they are claimed UNCONDITIONALLY — independent of discovery (G1, first-event-loss-on-reclaim-
+	// plan.md §6.1). This is the fix for the run-3 loss: a freshly (re)installed CRD whose discovery has
+	// not yet settled to Followable would otherwise resolve to an empty set and be dropped; claiming it
+	// from the spec keeps the claim stable, and the Materializer drives its first sync the moment it
+	// activates (DEC-L9). Wildcard/version-less entries are NOT here — they stay discovery-driven below.
+	specified := m.fullySpecifiedClaimGVRs(gitDest)
+
 	gvrs, err := m.resolveSnapshotGVRs(ctx, gitDest)
 	if err != nil {
-		// Diagnostic (first-event-loss-on-reclaim-plan.md S0): a fail-closed resolve claims NOTHING,
-		// so a freshly (re)claimed type can be silently missed and its first events gated out. Logged
-		// at info so a real run shows it without V(1), to pin which trigger (W1–W4) actually fired.
-		m.Log.Info("materialization declare resolved nothing (surface not observable / wobbling)",
-			"gitDest", gitDest.String(), "err", err.Error())
+		// Fail-closed: the discovered (wildcard/version-less) set is unknown while the surface is
+		// unobserved or a watched type is wobbling. The fully-specified set does NOT depend on it, so
+		// still claim + Require those — a wobbling/not-yet-discovered fully-specified type stays claimed
+		// and converges on activation. Return the error so the controller retries the discovered part on
+		// the settle cadence; declaring only `specified` renews them without withdrawing them.
+		if len(specified) > 0 {
+			m.Log.Info("materialization declare (fully-specified only; discovered resolve failed closed)",
+				"gitDest", gitDest.String(), "claimedCount", len(specified),
+				"claimed", gvrsToStrings(specified), "err", err.Error())
+			m.materializerInstance().Declare(ref, specified)
+			for _, gvr := range specified {
+				m.requireTypeMirror(ctx, m.Log, gvr)
+			}
+		} else {
+			m.Log.Info("materialization declare resolved nothing (surface not observable / wobbling)",
+				"gitDest", gitDest.String(), "err", err.Error())
+		}
 		return err
 	}
 	// The claim key is (GitTargetRef, GVR), scope-independent (DEC-L3 / §9 open Q), so the
-	// resolved (GVR, namespace-scope) stream set collapses to its distinct GVRs. The ref is
+	// resolved (GVR, namespace-scope) stream set collapses to its distinct GVRs, unioned with the
+	// fully-specified GVRs (so a not-yet-Followable specified type is still claimed). The ref is
 	// the GitTarget's namespaced name (gitDest.String()), consistent with how rulestore keys
 	// GitTargets and stable across reconciles; the object UID is the rejected alternative (it
 	// would re-key on recreate and orphan the prior claims).
-	claimed := distinctClaimGVRs(gvrs)
+	claimed := unionClaimGVRs(distinctClaimGVRs(gvrs), specified)
 	// Diagnostic (first-event-loss-on-reclaim-plan.md S0): record exactly which GVRs this GitTarget
 	// claims, so an empty (or wrong-GVR) claim set for a fully-specified rule — the suspected
 	// first-event-loss trigger — is visible in a real run. Per-reconcile (minutes) info volume.
 	m.Log.Info("materialization declare",
 		"gitDest", gitDest.String(), "claimedCount", len(claimed), "claimed", gvrsToStrings(claimed))
-	m.materializerInstance().Declare(typeset.GitTargetRef(gitDest.String()), claimed)
+	m.materializerInstance().Declare(ref, claimed)
 
 	// Open the demand gate SYNCHRONOUSLY for every claimed type (G2, first-event-loss-on-reclaim-plan.md
 	// §6.2): a claimed type must be mirrored from its FIRST audit event, before any checkpoint sync — so
@@ -358,6 +380,87 @@ func claimantsInclude(claimants []typeset.GitTargetRef, ref typeset.GitTargetRef
 		}
 	}
 	return false
+}
+
+// fullySpecifiedClaimGVRs returns the GVRs a GitTarget's rules name with a CONCRETE group AND version
+// AND resource (no "*", no omitted version) — claims fully determined by the rule spec, so they can be
+// claimed WITHOUT consulting discovery. Claiming these unconditionally (rather than only the currently-
+// Followable subset) is the G1 fix (first-event-loss-on-reclaim-plan.md §6.1): a not-yet-discovered or
+// transiently-wobbling type stays claimed, and the Materializer drives its first sync the moment it
+// becomes followable (DEC-L9). Wildcard/version-less entries are excluded — they are inherently
+// discovery-driven and still resolve through the followable table. Group "" (core) is concrete.
+func (m *Manager) fullySpecifiedClaimGVRs(gitDest types.ResourceReference) []schema.GroupVersionResource {
+	if m.RuleStore == nil {
+		return nil
+	}
+	acc := &gvrAccumulator{seen: map[schema.GroupVersionResource]struct{}{}}
+	for _, rule := range m.RuleStore.SnapshotWatchRules() {
+		if rule.GitTargetRef != gitDest.Name || rule.GitTargetNamespace != gitDest.Namespace {
+			continue
+		}
+		for _, rr := range rule.ResourceRules {
+			acc.addFullySpecified(rr.APIGroups, rr.APIVersions, rr.Resources)
+		}
+	}
+	for _, rule := range m.RuleStore.SnapshotClusterWatchRules() {
+		if rule.GitTargetRef != gitDest.Name || rule.GitTargetNamespace != gitDest.Namespace {
+			continue
+		}
+		for _, rr := range rule.Rules {
+			acc.addFullySpecified(rr.APIGroups, rr.APIVersions, rr.Resources)
+		}
+	}
+	return acc.out
+}
+
+// gvrAccumulator collects distinct GVRs across rule entries for fullySpecifiedClaimGVRs.
+type gvrAccumulator struct {
+	seen map[schema.GroupVersionResource]struct{}
+	out  []schema.GroupVersionResource
+}
+
+// addFullySpecified appends every concrete GVR named by one (groups, versions, resources) rule entry,
+// skipping any "*"/blank component (those are discovery-driven, not claimable from the spec alone).
+// Group "" (core) is concrete. Duplicates across entries are dropped.
+func (a *gvrAccumulator) addFullySpecified(groups, versions, resources []string) {
+	for _, g := range groups {
+		for _, v := range versions {
+			for _, r := range resources {
+				a.addOne(g, v, r)
+			}
+		}
+	}
+}
+
+func (a *gvrAccumulator) addOne(group, version, resource string) {
+	if group == "*" || version == "" || version == "*" || resource == "" || resource == "*" {
+		return
+	}
+	gvr := schema.GroupVersionResource{Group: group, Version: version, Resource: normalizeResource(resource)}
+	if _, dup := a.seen[gvr]; dup {
+		return
+	}
+	a.seen[gvr] = struct{}{}
+	a.out = append(a.out, gvr)
+}
+
+// unionClaimGVRs returns a ∪ b de-duplicated, preserving a's order then b's new entries.
+func unionClaimGVRs(a, b []schema.GroupVersionResource) []schema.GroupVersionResource {
+	if len(b) == 0 {
+		return a
+	}
+	seen := make(map[schema.GroupVersionResource]struct{}, len(a)+len(b))
+	out := make([]schema.GroupVersionResource, 0, len(a)+len(b))
+	for _, set := range [][]schema.GroupVersionResource{a, b} {
+		for _, gvr := range set {
+			if _, ok := seen[gvr]; ok {
+				continue
+			}
+			seen[gvr] = struct{}{}
+			out = append(out, gvr)
+		}
+	}
+	return out
 }
 
 // gvrsToStrings renders a GVR slice as strings for diagnostic logging (S0), preserving order.

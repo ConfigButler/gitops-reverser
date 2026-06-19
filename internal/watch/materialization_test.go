@@ -34,6 +34,7 @@ import (
 	clienttesting "k8s.io/client-go/testing"
 
 	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
+	"github.com/ConfigButler/gitops-reverser/internal/rulestore"
 	"github.com/ConfigButler/gitops-reverser/internal/typeset"
 )
 
@@ -126,17 +127,17 @@ func fullySpecifiedClusterRule(name, group, version, resource string) configv1al
 	}
 }
 
-// TestDeclareForGitTarget_FullySpecifiedNotYetDiscoveredTypeClaimsNothing is the S0 reproducer
-// (first-event-loss-on-reclaim-plan.md §1.1, W2): a rule that names a type by full
-// group+version+resource is NOT claimed when that type is not (yet) in the registry's Followable set —
-// because the claim is resolved through Followable() rather than from the rule spec. This is the
-// deterministic, in-code shape of the run-3 loss: a freshly (re)installed CRD whose discovery has not
-// settled is silently un-claimed, so the gate never Requires it and its first events are dropped.
-//
-// It documents TODAY's behaviour (claims nothing); slice S3 inverts the assertion — the same
-// fully-specified rule must claim its GVR unconditionally — which is the heart of the fix.
-func TestDeclareForGitTarget_FullySpecifiedNotYetDiscoveredTypeClaimsNothing(t *testing.T) {
+// TestDeclareForGitTarget_ClaimsFullySpecifiedTypeEvenWhenNotYetDiscovered is the S3 heart (G1,
+// first-event-loss-on-reclaim-plan.md §6.1) — and the inverted S0 reproducer. A rule that names a type
+// by full group+version+resource MUST claim it (and Require it in the gate) even when that type is not
+// (yet) in the registry's Followable set, because the claim is taken from the rule spec, not from
+// discovery. This is the run-3 fix: a freshly (re)installed CRD whose discovery has not settled is still
+// claimed, so the gate mirrors it and the Materializer drives its first sync the moment it activates.
+// On S0-only (pre-S3) code this fails — the claim set is empty.
+func TestDeclareForGitTarget_ClaimsFullySpecifiedTypeEvenWhenNotYetDiscovered(t *testing.T) {
 	manager, store := makeWatchedTypeManager(t)
+	gate := &recordingGate{}
+	manager.MirrorGate = gate
 	// crd-lifecycle.e2e.example.com/v1 icecreamorders is NOT in the common test catalog (which only
 	// serves icecreamorders under shop.example.com), so it stands in for a not-yet-discovered CRD.
 	store.AddOrUpdateClusterWatchRule(
@@ -147,12 +148,51 @@ func TestDeclareForGitTarget_FullySpecifiedNotYetDiscoveredTypeClaimsNothing(t *
 	notYetDiscovered := schema.GroupVersionResource{
 		Group: "crd-lifecycle.e2e.example.com", Version: "v1", Resource: "icecreamorders",
 	}
+	ref := typeset.GitTargetRef(gitDest.String())
 
-	require.NoError(t, manager.DeclareForGitTarget(context.Background(), gitDest),
-		"an observable surface that simply lacks the type is not an error — it resolves to empty")
-	require.Empty(t, manager.materializerInstance().Claimants(notYetDiscovered),
-		"TODAY (the bug): a fully-specified rule for a not-yet-discovered type claims NOTHING; "+
-			"S3 will invert this to require the claim unconditionally")
+	require.NoError(t, manager.DeclareForGitTarget(context.Background(), gitDest))
+
+	require.Equal(t, []typeset.GitTargetRef{ref}, manager.materializerInstance().Claimants(notYetDiscovered),
+		"a fully-specified rule must claim its GVR even when the type is not yet discovered/Followable")
+	require.Contains(t, gate.required, notYetDiscovered,
+		"and the demand gate must Require it synchronously, so its first event is mirrored, not gated out")
+	// It stays Dormant (not yet followable) — the claim simply waits for activation to drive the sync.
+	ph, _ := manager.materializerInstance().Phase(notYetDiscovered)
+	require.Equal(t, typeset.PhaseDormant, ph,
+		"the claim is recorded but the sync waits for the type to become followable (DEC-L9)")
+}
+
+// TestDeclareForGitTarget_FullySpecifiedClaimedEvenOnFailClosedResolve proves the fail-closed branch of
+// G1: when the discovered resolve aborts (an unobservable surface / a wobbling watched type), the
+// fully-specified rule GVRs are STILL claimed and Required — only the discovered (wildcard/version-less)
+// part is deferred. Before S3 a fail-closed resolve claimed nothing at all (the confirmed W1 trigger).
+func TestDeclareForGitTarget_FullySpecifiedClaimedEvenOnFailClosedResolve(t *testing.T) {
+	store := rulestore.NewStore()
+	gate := &recordingGate{}
+	manager := &Manager{
+		Log:        logr.Discard(),
+		RuleStore:  store,
+		MirrorGate: gate,
+		// No catalog/discovery wired → resolveSnapshotGVRs fails closed (surface not observable).
+		discoveryClient: func() (apiResourceDiscovery, error) {
+			return nil, errors.New("discovery unavailable")
+		},
+	}
+	store.AddOrUpdateClusterWatchRule(
+		fullySpecifiedClusterRule("rule-crd-lifecycle", "crd-lifecycle.e2e.example.com", "v1", "icecreamorders"),
+		"test-target", "test-ns", "test-provider", "test-ns", "main", "test-path",
+	)
+	gitDest := gitDestRef("test-target")
+	gvr := schema.GroupVersionResource{
+		Group: "crd-lifecycle.e2e.example.com", Version: "v1", Resource: "icecreamorders",
+	}
+
+	// The resolve errors (the discovered part is retried by the controller), but the fully-specified
+	// claim is still made — that is the whole point: a fail-closed resolve must not drop a spec'd type.
+	require.Error(t, manager.DeclareForGitTarget(context.Background(), gitDest))
+	require.NotEmpty(t, manager.materializerInstance().Claimants(gvr),
+		"a fully-specified type is claimed even when the discovered resolve fails closed (W1 fix)")
+	require.Contains(t, gate.required, gvr, "and it is Required so its first event is mirrored")
 }
 
 // recordingGate is a fake TypeMirrorGate that records Require/Unrequire calls in order.

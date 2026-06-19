@@ -7,10 +7,12 @@ Status: PROPOSAL — 2026-06-18
 Demand-gated ingestion only mirrors an audit type when **something demands it**. Today there are
 two demand sources, and they are lopsided:
 
-- **GitTarget claims** → the materialization layer calls `gate.Require(gvr)` when a claimed type
-  becomes `SyncRequested`, and `Unrequire` on `Released`. This is dynamic, Redis-backed, multi-pod,
-  and releasable ([gate.go `Require`/`Unrequire`](../../../internal/gate/gate.go),
-  [materialization.go:550](../../../internal/watch/materialization.go)).
+- **GitTarget claims** → the materialization layer calls `gate.Require(gvr)` synchronously the moment
+  a type is **claimed** (`DeclareForGitTarget`), and `Unrequire` on the `Unclaimed` event (the sweep's
+  GC of the last claim) — capture-before-baseline, see
+  [first-event-loss-on-reclaim-plan.md](first-event-loss-on-reclaim-plan.md). This is dynamic,
+  Redis-backed, multi-pod, and releasable ([gate.go `Require`/`Unrequire`](../../../internal/gate/gate.go),
+  [materialization.go](../../../internal/watch/materialization.go)).
 - **Internal consumers** → a **static `AlwaysAllow` list hardcoded in `cmd`**
   ([cmd/main.go:279-281](../../../cmd/main.go)) that force-allows `commitrequests`, because the
   CommitRequest finalizer's author attribution scans that type's audit stream

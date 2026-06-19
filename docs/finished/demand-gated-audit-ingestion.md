@@ -13,8 +13,10 @@ a clean cluster**.
 - `queue.DeleteType` + exported `queue.TypeBaseKey` ([`redis_bytype_queue.go`](../../internal/queue/redis_bytype_queue.go)), with a `DeleteType` unit test.
 - Reader wiring: [`mirrorByType`](../../internal/webhook/audit_handler.go#L499) gates via the
   nil-safe `MirrorGate` interface (a nil gate keeps the legacy mirror-everything behaviour).
-- Writer wiring: [`handleMaterializationEvent`](../../internal/watch/materialization.go#L428)
-  `Require`s at `SyncRequested` and `Unrequire`+`DeleteType`s at `Released`.
+- Writer wiring: [`handleMaterializationEvent`](../../internal/watch/materialization.go) — originally
+  `Require`d at `SyncRequested` and `Unrequire`+`DeleteType`d at `Released`. **Superseded — see §0:**
+  `Require` is now synchronous on claim (`DeclareForGitTarget`), `Unrequire` moved to the `Unclaimed`
+  event, and `Released` keeps only `DeleteType`.
 - [`cmd/main.go`](../../cmd/main.go) constructs the gate, seeds `AlwaysAllow` with
   `configbutler.ai/commitrequests`, and adds it as a manager runnable.
 - **Empty-stream guard** (§8): `ingestRVLess` now DROPS an RV-less event that arrives before its
@@ -42,6 +44,25 @@ Background: the demand lifecycle
 ([`demand-driven-type-materialization-lifecycle.md`](demand-driven-type-materialization-lifecycle.md))
 and the reconcile model ([`api-source-of-truth-reconcile.md`](api-source-of-truth-reconcile.md)),
 whose **checkpoint is the correctness authority this design leans on** (§6).
+
+## 0. Refinement (2026-06-19): the gate opens on CLAIM, not on sync — capture before baseline
+
+The original wiring (the "As built" bullet above) `Require`d a type at **`SyncRequested`** — i.e. only
+once its checkpoint sync had begun. That is **materialize-first**, and it loses a freshly (re)claimed
+type's **first events**: between a GitTarget claiming a type and its first LIST completing, live events
+were gated `not_needed` and dropped, with nothing to heal them (a state snapshot captures *what exists*,
+not *what happened* — authorship, a create-then-delete, the very first event before any LIST). This was
+diagnosed and fixed as a real loss bug — see
+[`first-event-loss-on-reclaim-plan.md`](first-event-loss-on-reclaim-plan.md).
+
+**Principle (capture before baseline):** the demand gate is now opened the moment a type is **claimed**
+— synchronously, in `DeclareForGitTarget`, independent of and before any checkpoint sync — and closed
+only when the **last claim is withdrawn** (the sweep's `Unclaimed` event), *not* on the checkpoint
+`Released` event (a followability wobble force-releases the checkpoint while the claim survives, and such
+a type must keep being mirrored). The invariant is **`Required ⟺ claimed`**. Capture must start early
+(an event before it is unrecoverable); baseline can follow (the folded log keeps it current); over-
+capture is free (§3). This supersedes the §5/§6 "wanted flips at sync" wording and the
+`Require@SyncRequested`/`Unrequire@Released` line in the intro.
 
 ## 1. Scope and one paragraph
 
@@ -140,14 +161,16 @@ the guard cleans the *residual*.
   processes an `rv > C` event), the gap is **bounded by one re-anchor interval and healed by the next
   checkpoint** — never permanent loss. (Contrast DG1's *hard* form, which would require a synchronous
   cross-pod lead before every first LIST; we deliberately do not pay that — see §14.)
-- **DG2 (no orphan streams), driven by the `Released` event.** When a type is no longer wanted, the
-  materializer emits **`Released`** ([`materialization_lifecycle.go`](../../internal/typeset/materialization_lifecycle.go#L56)
-  — "checkpoint dropped: Synced/Requested/Failing → Dormant"). The watch layer already handles it by
-  stopping the tail and deleting the `:objects:*` keys (`clearTypeObjects`,
-  [`materialization.go:438`](../../internal/watch/materialization.go#L438)); we add `Unrequire`
-  (SREM from `__required__`) + `DeleteType` (the `:audit:*` keys) in the same place. `Released` is
-  **grace-protected upstream on both axes** (§5), so by the time it fires the type has been cold for
-  the grace — no inactivity scan needed.
+- **DG2 (no orphan streams).** When a type is no longer wanted, its `:objects:*`/`:audit:*` keyspace is
+  reclaimed. **Updated by §0 (capture-before-baseline):** the keyspace cleanup (`clearTypeObjects` +
+  `DeleteType`) stays on the **`Released`** event (a checkpoint drop), but the gate flag (`Unrequire`,
+  SREM from `__required__`) **moved to the `Unclaimed` event** — the sweep's GC of the *last claim* —
+  because `Released` also fires on a followability wobble while the claim survives, and a still-claimed
+  type must keep being mirrored. So the gate tracks the **claim** (`Required ⟺ claimed`), the keyspace
+  cleanup tracks the **checkpoint**. (Originally both were on `Released`; see
+  [`first-event-loss-on-reclaim-plan.md` §6.2](../design/stream/first-event-loss-on-reclaim-plan.md).)
+  `Released`/`Unclaimed` are **grace-protected upstream** (§5), so by the time they fire the type has
+  been cold for the grace — no inactivity scan needed.
 - **DG3 (membership ⊆ checkpoint demand).** A type is only ever in `__required__` while it is
   claimed ∩ followable — i.e. a subset of what the checkpoint driver syncs. Over-capture lives
   *within* a type's own window (early add), never across types that are not wanted at all.
