@@ -72,11 +72,18 @@ func (m *Manager) publishTargetTypeWatermark(
 		byGVR = map[schema.GroupVersionResource]string{}
 		m.targetTypeWatermark[key] = byGVR
 	}
-	if prior, ok := byGVR[gvr]; ok && !streamIDStrictlyAfter(hc, prior) {
+	prior, had := byGVR[gvr]
+	if had && !streamIDStrictlyAfter(hc, prior) {
 		// Already at or beyond hc — hold the higher boundary (monotonic, §7.3).
+		// Diagnostic (residual-e2e-flakes-2026-06-19.md, Flake B): a held (not advanced) boundary is
+		// where a late-join object can land below Hc and be tail-suppressed — log so a repro shows it.
+		m.Log.V(1).Info("target-type watermark held (not advanced)",
+			"gitDest", key, "gvr", gvr.String(), "held", prior, "offered", hc)
 		return
 	}
 	byGVR[gvr] = hc
+	m.Log.Info("target-type watermark published",
+		"gitDest", key, "gvr", gvr.String(), "prior", prior, "new", hc)
 }
 
 // targetTypeWatermarkFor reports the coverage head a GitTarget holds for a type and whether a

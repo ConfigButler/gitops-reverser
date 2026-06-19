@@ -213,19 +213,39 @@ func (m *Manager) routeAuditChangesToTarget(
 		return
 	}
 	inScope := namespaceScopePredicate(watched.SnapshotNamespaces())
+	// Diagnostic counters (residual-e2e-flakes-2026-06-19.md, Flake B): a per-batch summary makes the
+	// late-join boundary observable — whether a missing object reached this tail and was SUPPRESSED at
+	// or below Hc (a watermark-boundary gap) or never appeared in the batch at all (an upstream divert).
+	var outOfScope, suppressed, routed, routeErrors int
+	var firstID, lastID string
 	for _, change := range changes {
+		if firstID == "" {
+			firstID = change.AuditStreamID
+		}
+		lastID = change.AuditStreamID
 		if !inScope(change.Identifier.Namespace) {
+			outOfScope++
 			continue
 		}
 		if !streamIDAfterWatermark(change.AuditStreamID, hc) {
+			suppressed++
 			continue // id <= Hc: historical for this target, already covered by its reconcile
 		}
 		ev := change
 		ev.Path = path
 		if err := m.EventRouter.RouteToGitTargetEventStream(ev, table.GitDest); err != nil {
+			routeErrors++
 			log.V(1).Info("audit-tail route failed",
 				"gitDest", table.GitDest.String(), "resource", ev.Identifier.String(), "err", err.Error())
+			continue
 		}
+		routed++
+	}
+	if len(changes) > 0 {
+		log.V(1).Info("audit-tail routed batch to target",
+			"gitDest", table.GitDest.String(), "gvr", gvr.String(), "hc", hc,
+			"total", len(changes), "routed", routed, "suppressedAtOrBelowHc", suppressed,
+			"outOfScope", outOfScope, "routeErrors", routeErrors, "firstID", firstID, "lastID", lastID)
 	}
 }
 

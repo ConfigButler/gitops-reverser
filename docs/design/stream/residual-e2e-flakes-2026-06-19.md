@@ -121,66 +121,78 @@ reproduction. The durable fix candidate (deferred) is the early-ingestion author
 - It is intermittent: passed 3 of 4 warm validation runs and did **not** fail the CI run that Flake A
   failed; a re-run after the missing-16 reproduction passed.
 
-### What the spec does
+### What the spec does — and what the code actually guarantees at the join
 
-B, joining late on a type A already tails, gets the object set under its own path from **two** sources
-that must meet exactly at the join: its **initial backfill** (a snapshot of the type at revision `S`,
-written as a reconcile commit) and the **coverage-watermarked tail** (live events with revision `> Hc`,
-the per-(GitTarget,GVR) watermark). For no gap and no double-count, the backfill snapshot `S` and the
-watermark `Hc` must be **contiguous**. The observed split is the signature of them **not** being:
+B, joining late on a type A already tails, gets the object set under its own path from **two** sources:
+its **initial backfill** (the splice folds the checkpoint `(R, head]` and writes a reconcile commit) and
+the **coverage-watermarked tail** (forwards live entries with stream id `> Hc`).
+
+**Key code fact (checked this session):** the splice sets `coverageHead = the last entry it folded`
+([redis_type_splice.go](../../../internal/queue/redis_type_splice.go)), and the watermark is published
+as **exactly that value** — `publishTargetTypeWatermark(gitDest, gvr, snapshot.CoverageHead)`
+([event_router.go:241](../../../internal/watch/event_router.go#L241)) — and the tail forwards id `> Hc`
+([audit_tail.go](../../../internal/watch/audit_tail.go)). So `Hc` is **contiguous with the fold by
+construction**: everything `≤ coverageHead` is in the backfill, everything `> coverageHead` is forwarded
+by the tail. There is no `(S, Hc]` window for an object to fall into — *unless its stream entry is
+missing entirely*. **This demotes the "watermark set ahead of the backfill" boundary-gap I hypothesised
+in the first two drafts.**
+
+The split that was actually observed (`00–15` backfilled, **`16` missing**, `17–19` live) fits a
+**diverted cm-16** far better — the overlap band is one batch `kubectl apply`, so audit events can
+arrive **out of RV order**; an event whose RV lands **below the stream high-water** is **diverted**
+(rejected from the per-type stream, [redis_bytype_queue.go](../../../internal/queue/redis_bytype_queue.go)).
+A diverted cm-16 is in **neither** the fold (not in the stream) **nor** the tail (not in the stream),
+and is healed only when the **divert nudge** re-anchors the type — which races the 90 s deadline:
 
 ```
-   overlap band created at revisions:   …00 01 … 15 │ 16 │ 17 18 19…
-                                         └──────────┘   ▲   └────────┘
-   B's backfill snapshot (≤ S) ─────────▶ 00 … 15       │   (S = rv of cm-15)
-   B's tail (rev > Hc) ─────────────────▶            17 … 19   (Hc = rv of cm-16)
-                                                      ▲
-                              cm-16 ∈ (S, Hc]  →  in NEITHER source  →  MISSING under B
+  overlap band applied in ONE batch → audit events arrive out of order
+        cm-00..15 ingested in order ─▶ in stream  ─▶ folded by B's backfill (≤ coverageHead) ✅
+        cm-16 arrives AFTER cm-17 (rv below high-water) ─▶ DIVERTED, never in stream
+                 └─▶ not folded, not tailed ─▶ MISSING under B
+                 └─▶ divert nudge → RequestResync → re-anchor re-LIST ─▶ heals cm-16  ⏱ races 90s
+        cm-17..19 ingested in order ─▶ in stream, id > coverageHead ─▶ forwarded by tail ✅
 ```
-
-When `Hc` is set **ahead of** `S` (the watermark covers more than the backfill captured), any object
-created in the window `(S, Hc]` is **backfilled-too-late and tail-suppressed-too-early** — covered by
-neither. That is an **ordering / coverage-watermark boundary gap**, not "the pipeline was slow": at
-90 s the object is still absent, and it stays absent under B until the next periodic re-anchor re-LISTs
-the type (~1 h). This is the per-(GitTarget,GVR) coverage-watermark machinery the spec's own comment
-points at ([signing-snapshot-tail-replay-failure-investigation.md]).
 
 ### Interpretation
 
-- **This is a distinct, pre-existing race — not the first-event-loss bug and not caused by the fix.**
-  **Certainty: 90%.** `configmaps` is a common, already-Synced type (never the freshly-(re)claimed case
-  the fix addresses); the failing path is the late-join backfill/coverage machinery; the per-event
-  ConfigMap commits themselves work (the no-replay half passes); the fix did not touch the
-  snapshot/coverage code. *Residual 10%: the fix makes a claimed type mirror slightly earlier, which
-  could marginally shift the join timing — not demonstrated, not excluded.*
+- **Distinct, pre-existing race — not the first-event-loss bug, not caused by the fix.**
+  **Certainty: 90%.** `configmaps` is a common, already-Synced type; the per-event commits work (no-replay
+  half passes); the fix touched neither the splice/coverage code nor the divert path. *Residual 10%: the
+  fix mirrors a claimed type slightly earlier — could marginally shift join timing; not demonstrated.*
 
-- **It is a coverage-watermark / backfill-boundary GAP (an ordering bug), not mere deadline latency.**
-  **Certainty: 65%** *(up from a wrong "latency, 80%" in the first draft).* The split pattern
-  (`00–15` backfilled, `16` missing, `17–19` live) is the textbook signature of `Hc` set ahead of the
-  backfill snapshot `S`, leaving `(S, Hc]` uncovered — and it reproduced at **90 s**, which rules out
-  "just slow." *Why only 65%: I have not yet instrumented the actual `S` and `Hc` values for the missing
-  object, so the exact boundary mechanism (off-by-one in watermark publish vs backfill pin) is inferred
-  from the commit-split shape, not measured. The agent has added the live "last 5 commits" diagnostic
-  (below) to capture more of this on the next reproduction.*
+- **Leading mechanism: a diverted overlap object (out-of-order ingestion), healed late by the nudge.**
+  **Certainty: 55%** *(this REPLACES the earlier "boundary gap, 65%", which the code fact above largely
+  rules out).* The split fits divert; batch applies produce out-of-order arrivals; the divert→nudge→
+  re-anchor path exists. *Why only 55%: not yet confirmed on a repro — I have not seen cm-16 recorded as
+  diverted (`older_than_high_water`) in the firehose with the nudge firing and the object absent from the
+  tail batch. The instrumentation added this session (below) is meant to show exactly that.*
 
-- **It is NOT simple deadline pressure.** **Certainty: 70%** *(this is a deliberate down-weighting of
-  the earlier claim).* 90 s is ample and the object was still absent; widening the timeout would only
-  hide a real gap. *Residual 30%: a single split observation; conceivably a different per-run timing
-  produced it and pure latency still contributes on other runs.*
+- **Secondary mechanism: a watermark-publish anomaly (e.g. a stale-high `Hc` held from an earlier
+  reconcile, or a same-rv `seq` compare edge).** **Certainty: 20%** *(down from 65%).* Possible despite
+  the contiguous-by-construction argument if `publishTargetTypeWatermark` holds a higher prior `Hc` than
+  this reconcile's `coverageHead`; the new "watermark held (not advanced)" log will surface that.
 
-- **Correctness impact: a bounded, self-healing completeness gap — not permanent corruption.**
-  **Certainty: 65%** *(down from "converges, 80%").* A gap object is missing under B until the next
-  periodic re-anchor re-LISTs the type (~1 h), so within the test window (and for up to a sweep
-  interval) B's git is genuinely **incomplete**, not merely late. The re-run passing shows it heals /
-  does not always occur, but "converges within the live window" is *not* established — only "eventually,
-  at re-anchor." The no-replay invariant did hold (no over-replay).
+- **On "just widen the timeout":** **partly legitimate now** *(I was too absolute before).* If the
+  mechanism is divert + nudge-heal racing 90 s, the heal *does* complete — just sometimes after the
+  deadline — so a wider deadline is a **defensible CI stabiliser**, not necessarily hiding a defect.
+  Whether it is the *right* durable answer depends on which mechanism the repro shows. **Certainty that
+  widening is at least a safe stabiliser: 70%.**
 
-### What would raise certainty
-Capture `S` (backfill snapshot rv) and `Hc` (published coverage watermark) for the missing object on one
-live reproduction — the §"Where to add logs" instrumentation the parallel agent proposed
-(`EmitTypeReconcileForGitDest` / `SpliceSnapshotForType` / `publishTargetTypeWatermark` /
-`routeAuditChangesToTarget`). If `Hc > S` at the gap, the boundary-gap hypothesis is confirmed and the
-fix is to pin `Hc := S` (contiguous), **not** to widen the timeout.
+- **Correctness: a bounded, self-healing completeness gap, not permanent corruption.** **Certainty:
+  70%.** A divert is checkpoint/re-anchor-healed by design (the nudge accelerates it); the object lands
+  under B at the next re-anchor. So within the live window B can be transiently **incomplete**, but it
+  converges; the no-replay invariant held (no over-replay).
+
+### What would raise certainty — and the instrumentation added this session
+On the next reproduction, these now-added logs disambiguate divert vs boundary in one read:
+- **`late audit event nudged a type resync`** (now **info**, [materialization.go](../../../internal/watch/materialization.go)) — fires iff a divert happened; if it names `configmaps` around the join, the divert mechanism is confirmed.
+- the scoped **`diag_all`** firehose already captures `configmaps`, so a diverted cm-16 shows as `outcome=older_than_high_water`.
+- **`target-type watermark published / held`** ([target_type_watermark.go](../../../internal/watch/target_type_watermark.go)) — shows B's actual `Hc` and whether a stale-high prior was held (the secondary hypothesis).
+- **`audit-tail routed batch to target`** (V(1), [audit_tail.go](../../../internal/watch/audit_tail.go)) — per-batch `routed / suppressedAtOrBelowHc / firstID / lastID`; if cm-16 appears here and is `suppressedAtOrBelowHc`, it is the boundary case; if it never appears, it was diverted upstream.
+
+If the repro shows divert: the durable answer is faster/again-reliable nudge-heal (or accept + widen the
+test deadline). If it shows a held stale-high `Hc`: fix the publish to not hold a boundary ahead of the
+fold. **No fix is applied yet — the mechanism is not confirmed (trust gate not met).**
 
 ---
 
@@ -192,15 +204,18 @@ fix is to pin `Hc := S` (contiguous), **not** to widen the timeout.
 | Symptom | `phase==Committed` not reached in 120 s | one `overlap-b-cm-NN` missing under B (at **90 s**) |
 | Observed in | CI `27830248680`; era run-2 | local f3 + run-3 + a fresh split repro (00–15/✗16/17–19) |
 | Pre-existing, not the fix | **90%** | **90%** |
-| Likely mechanism | attribution-scan miss (§2, root OPEN) — **55%**; ordering a secondary — **30%** | coverage-watermark / backfill **boundary gap** (ordering) — **65%**; *not* mere latency — **70%** |
-| Correctness | fail-closed, not mis-attributed — **95%** | bounded gap, heals only at re-anchor (~1 h) — **65%** |
+| Likely mechanism | attribution-scan miss (§2, root OPEN) — **55%**; ordering a secondary — **30%** | **divert** of an out-of-order overlap object, healed late by the nudge — **55%**; watermark-publish anomaly — **20%** |
+| Correctness | fail-closed, not mis-attributed — **95%** | bounded gap, checkpoint/re-anchor-healed — **70%** |
 
-**Bottom line (certainty 80%):** the first-event-loss fix is sound and landed; `E2E (full)` will keep
-intermittently red until these two *independent, pre-existing* flakes are addressed. **Neither is
-evidence against the fix.** But the earlier "just widen the timeout for B" suggestion was wrong: B is now
-best explained as an **ordering / coverage-boundary gap** (an object in `(S, Hc]` covered by neither the
-backfill nor the watermarked tail), which reproduced at the real 90 s timeout — so it is a real
-completeness gap to *fix at the boundary* (`Hc := S`), not to hide. **Instrument one reproduction
-first** (the "last 5 commits" diagnostic is now in; add the `S`/`Hc` logs next) before choosing a durable
-fix. Flake A's leading hypothesis stays the attribution-scan miss (55%), with ordering a tracked
-secondary (30%). A CI re-run still usually goes green — useful as a stabiliser, not as the diagnosis.
+**Bottom line (certainty 80%):** the first-event-loss fix is sound and landed; `E2E (full)` stays
+intermittently red on these two *independent, pre-existing* flakes (the same commit `5d85e7d` failed
+E2E(full) on attempt 1 and **passed on re-run** — direct proof they are flaky, not deterministic).
+**Neither is evidence against the fix.** Reading the code this session corrected my own earlier draft on
+Flake B: the watermark is published *as* the splice's `coverageHead`, so the boundary is contiguous by
+construction and the "fix at the boundary (`Hc := S`)" I had proposed is largely moot — the split is more
+likely a **diverted overlap object** healed late by the nudge. That also re-legitimises "widen the 90 s
+deadline" as a *safe CI stabiliser* if the repro shows heal-latency. I deliberately **did not apply a
+fix** (the mechanism is unconfirmed — the trust gate is not met); instead I added targeted instrumentation
+(nudge→info, watermark publish/held, per-batch tail-route summary) so the next reproduction names the
+mechanism in one read. Flake A's leading hypothesis stays the attribution-scan miss (55%), ordering a
+tracked secondary (30%).

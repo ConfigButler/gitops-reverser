@@ -88,7 +88,11 @@ func (m *Manager) NudgeTypeResyncForLateEvent(group, resource string) {
 	}
 
 	if m.materializerInstance().RequestResync(gvr) {
-		m.Log.V(1).Info("late audit event nudged a type resync", "gvr", gvr.String())
+		// Info (not V(1)): a divert nudge is rare (15s floor per type) and is the signal that a
+		// type's tail missed an out-of-order event and needs a re-anchor heal. Surfacing it at info
+		// lets an incidental e2e/CI failure show whether a missing late-join object was diverted
+		// (residual-e2e-flakes-2026-06-19.md, Flake B), without enabling debug logging.
+		m.Log.Info("late audit event nudged a type resync", "gvr", gvr.String())
 	}
 }
 
