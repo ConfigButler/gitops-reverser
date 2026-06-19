@@ -22,11 +22,14 @@ import (
 	"fmt"
 	"path"
 	"sort"
+	"strconv"
 	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
+
+const recentCommitDiagnosticLimit = 5
 
 func pullLatestRepoState(g Gomega, checkoutDir string) {
 	GinkgoHelper()
@@ -68,6 +71,44 @@ func remoteBranchHead(g Gomega, checkoutDir string) string {
 		return "" // branch does not exist yet — nothing committed
 	}
 	return fields[0] // ls-remote prints "<sha>\trefs/heads/main"
+}
+
+func recentCommitDiagnostics(checkoutDir, pathspec string) string {
+	GinkgoHelper()
+
+	_, _ = gitRun(checkoutDir, "fetch", "origin", "main")
+	if out, err := gitRun(checkoutDir, "rev-parse", "--verify", "origin/main"); err != nil {
+		return fmt.Sprintf("recent commits: origin/main is absent or unreadable: %s", strings.TrimSpace(out))
+	}
+
+	args := []string{
+		"log",
+		"--decorate=short",
+		"--date=iso-strict",
+		"--pretty=format:%h %cI %an <%ae> %s",
+		"-n",
+		strconv.Itoa(recentCommitDiagnosticLimit),
+		"origin/main",
+	}
+	if strings.TrimSpace(pathspec) != "" {
+		args = append(args, "--", pathspec)
+	}
+
+	out, err := gitRun(checkoutDir, args...)
+	if err != nil {
+		return fmt.Sprintf("recent commits: git log failed: %s", strings.TrimSpace(out))
+	}
+	out = strings.TrimSpace(out)
+	if out == "" {
+		if strings.TrimSpace(pathspec) != "" {
+			return fmt.Sprintf("recent commits: no commits touch %q", pathspec)
+		}
+		return "recent commits: origin/main has no commits"
+	}
+	if strings.TrimSpace(pathspec) != "" {
+		return fmt.Sprintf("recent commits touching %q:\n%s", pathspec, out)
+	}
+	return "recent commits:\n" + out
 }
 
 func assertLatestCommitForPathTouchesOnlyWithOptional(

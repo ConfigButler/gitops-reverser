@@ -123,7 +123,8 @@ var _ = Describe("Commit Request", Label("commit-request", "audit-consumer"), Or
 		Eventually(func(g Gomega) {
 			phase := commitRequestField(g, testNs, commitRequestName, "{.status.phase}")
 			g.Expect(phase).To(Equal("Committed"),
-				"CommitRequest should finalize the window and report Committed")
+				"CommitRequest should finalize the window and report Committed\n%s",
+				recentCommitDiagnostics(repo.CheckoutDir, basePath))
 
 			reportedSHA = commitRequestField(g, testNs, commitRequestName, "{.status.sha}")
 			g.Expect(reportedSHA).NotTo(BeEmpty(), "status.sha should be populated")
@@ -145,18 +146,21 @@ var _ = Describe("Commit Request", Label("commit-request", "audit-consumer"), Or
 			subject, logErr := gitRun(repo.CheckoutDir, "log", "-1", "--pretty=%B")
 			g.Expect(logErr).NotTo(HaveOccurred())
 			g.Expect(strings.TrimSpace(subject)).To(Equal(message),
-				"the explicit spec.message should be used verbatim as the commit message")
+				"the explicit spec.message should be used verbatim as the commit message\n%s",
+				recentCommitDiagnostics(repo.CheckoutDir, basePath))
 
 			headSHA, shaErr := gitRun(repo.CheckoutDir, "rev-parse", "HEAD")
 			g.Expect(shaErr).NotTo(HaveOccurred())
 			g.Expect(strings.TrimSpace(headSHA)).To(Equal(reportedSHA),
-				"status.sha should match the SHA of the commit on the branch")
+				"status.sha should match the SHA of the commit on the branch\n%s",
+				recentCommitDiagnostics(repo.CheckoutDir, basePath))
 
 			// Exactly one new commit (UC1, §8.1): this is the first commit on a fresh
 			// repo, so main holds exactly one commit — the save did not also trigger a
 			// stray second commit.
 			g.Expect(mustCommitCount(repo.CheckoutDir)).To(Equal(1),
-				"the save must produce exactly one commit on main")
+				"the save must produce exactly one commit on main\n%s",
+				recentCommitDiagnostics(repo.CheckoutDir, basePath))
 		}, 2*time.Minute, 3*time.Second).Should(Succeed())
 
 		By("cleaning up the test Deployment and CommitRequest")
@@ -239,7 +243,8 @@ var _ = Describe("Commit Request", Label("commit-request", "audit-consumer"), Or
 		Eventually(func(g Gomega) {
 			phase := commitRequestField(g, testNs, generatedName, "{.status.phase}")
 			g.Expect(phase).To(Equal("Committed"),
-				"a CommitRequest created via generateName must reach Committed")
+				"a CommitRequest created via generateName must reach Committed\n%s",
+				recentCommitDiagnostics(repo.CheckoutDir, basePath))
 
 			reportedSHA = commitRequestField(g, testNs, generatedName, "{.status.sha}")
 			g.Expect(reportedSHA).NotTo(BeEmpty(), "status.sha should be populated")
@@ -258,7 +263,8 @@ var _ = Describe("Commit Request", Label("commit-request", "audit-consumer"), Or
 			subject, logErr := gitRun(repo.CheckoutDir, "log", "-1", "--pretty=%B")
 			g.Expect(logErr).NotTo(HaveOccurred())
 			g.Expect(strings.TrimSpace(subject)).To(Equal(message),
-				"the explicit spec.message should be used verbatim")
+				"the explicit spec.message should be used verbatim\n%s",
+				recentCommitDiagnostics(repo.CheckoutDir, basePath))
 		}, 2*time.Minute, 3*time.Second).Should(Succeed())
 
 		By("cleaning up the generateName Deployment and CommitRequest")
@@ -365,7 +371,8 @@ var _ = Describe("Commit Request Bundle (UC2)", Label("commit-request", "audit-c
 		Eventually(func(g Gomega) {
 			phase := commitRequestField(g, testNs, commitRequestName, "{.status.phase}")
 			g.Expect(phase).To(Equal("Committed"),
-				"the bundle's CommitRequest should finalize the collected window and report Committed")
+				"the bundle's CommitRequest should finalize the collected window and report Committed\n%s",
+				recentCommitDiagnostics(repo.CheckoutDir, basePath))
 
 			reportedSHA = commitRequestField(g, testNs, commitRequestName, "{.status.sha}")
 			g.Expect(reportedSHA).NotTo(BeEmpty(), "status.sha should be populated")
@@ -382,17 +389,20 @@ var _ = Describe("Commit Request Bundle (UC2)", Label("commit-request", "audit-c
 			// across the CommitRequest's attribution and the per-type Deployment stream —
 			// collapsed into a single commit (§8.2 step 4).
 			g.Expect(mustCommitCount(repo.CheckoutDir)).To(Equal(1),
-				"the whole bundle must land in exactly one commit")
+				"the whole bundle must land in exactly one commit\n%s",
+				recentCommitDiagnostics(repo.CheckoutDir, basePath))
 
 			subject, logErr := gitRun(repo.CheckoutDir, "log", "-1", "--pretty=%B")
 			g.Expect(logErr).NotTo(HaveOccurred())
 			g.Expect(strings.TrimSpace(subject)).To(Equal(message),
-				"the single commit must carry the CommitRequest's message verbatim")
+				"the single commit must carry the CommitRequest's message verbatim\n%s",
+				recentCommitDiagnostics(repo.CheckoutDir, basePath))
 
 			headSHA, shaErr := gitRun(repo.CheckoutDir, "rev-parse", "HEAD")
 			g.Expect(shaErr).NotTo(HaveOccurred())
 			g.Expect(strings.TrimSpace(headSHA)).To(Equal(reportedSHA),
-				"status.sha should match the single bundle commit")
+				"status.sha should match the single bundle commit\n%s",
+				recentCommitDiagnostics(repo.CheckoutDir, basePath))
 
 			for _, name := range deployNames {
 				expected := filepath.Join(repo.CheckoutDir, basePath,

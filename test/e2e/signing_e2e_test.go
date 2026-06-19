@@ -597,7 +597,8 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 			logOut, logErr := gitRun(signingRepo.CheckoutDir, "log", "--format=%s", "--", commitPathA)
 			g.Expect(logErr).NotTo(HaveOccurred())
 			g.Expect(logOut).To(ContainSubstring("[CREATE] v1/configmaps/probe-a"),
-				"target A's per-event tail must be live before B joins")
+				"target A's per-event tail must be live before B joins\n%s",
+				recentCommitDiagnostics(signingRepo.CheckoutDir, commitPathA))
 		}).Should(Succeed())
 
 		By("creating the overlap band and IMMEDIATELY target B + its WatchRule (widen the join window)")
@@ -617,11 +618,16 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 			pullLatestRepoState(g, signingRepo.CheckoutDir)
 			files, lsErr := gitRun(signingRepo.CheckoutDir, "ls-files", "--", commitPathB)
 			g.Expect(lsErr).NotTo(HaveOccurred())
+			commitDiagnostics := recentCommitDiagnostics(signingRepo.CheckoutDir, commitPathB)
 			for _, n := range seedNames {
-				g.Expect(files).To(ContainSubstring("/"+n+".yaml"), "seed %s must be present under path B", n)
+				g.Expect(files).To(ContainSubstring("/"+n+".yaml"),
+					"seed %s must be present under path B\n%s",
+					n, commitDiagnostics)
 			}
 			for _, n := range overlapNames {
-				g.Expect(files).To(ContainSubstring("/"+n+".yaml"), "overlap %s must be present under path B", n)
+				g.Expect(files).To(ContainSubstring("/"+n+".yaml"),
+					"overlap %s must be present under path B\n%s",
+					n, commitDiagnostics)
 			}
 			logOut, logErr := gitRun(signingRepo.CheckoutDir, "log", "--format=%s", "--", commitPathB)
 			g.Expect(logErr).NotTo(HaveOccurred())
@@ -630,7 +636,8 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 			// any "seed-cm-" in the subject log is a re-delivered historical entry — the bug this fix
 			// closes.
 			g.Expect(logOut).NotTo(ContainSubstring("seed-cm-"),
-				"a pre-existing seed object must never appear as a per-event commit under path B")
+				"a pre-existing seed object must never appear as a per-event commit under path B\n%s",
+				commitDiagnostics)
 		}).Should(Succeed())
 
 		By("creating the live-b band after B is Synced and asserting it flows as per-event commits")
@@ -643,7 +650,8 @@ var _ = Describe("Commit Signing", Label("signing"), Ordered, func() {
 			g.Expect(logErr).NotTo(HaveOccurred())
 			for _, n := range liveNames {
 				g.Expect(logOut).To(ContainSubstring("[CREATE] v1/configmaps/"+n),
-					"a post-Synced create must reach path B as a live per-event commit")
+					"a post-Synced create must reach path B as a live per-event commit\n%s",
+					recentCommitDiagnostics(signingRepo.CheckoutDir, commitPathB))
 			}
 		}).Should(Succeed())
 	})
