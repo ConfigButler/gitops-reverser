@@ -237,8 +237,9 @@ type AuditLogTrimmer interface {
 }
 
 // TypeMirrorGate is the write side of the demand gate (docs/finished/demand-gated-audit-ingestion.md):
-// the driver marks a type wanted at SyncRequested (added early, before the first LIST) and unwanted
-// at Released. Satisfied by *gate.Gate; optional on the Manager (nil disables demand-gating writes).
+// the driver marks a type wanted SYNCHRONOUSLY when it is claimed (DeclareForGitTarget, so a claimed
+// type is mirrored before its first event) and unwanted on the Unclaimed event (the sweep's GC of the
+// last claim). Satisfied by *gate.Gate; optional on the Manager (nil disables demand-gating writes).
 type TypeMirrorGate interface {
 	Require(ctx context.Context, gvr schema.GroupVersionResource) error
 	Unrequire(ctx context.Context, gvr schema.GroupVersionResource) error

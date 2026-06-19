@@ -78,6 +78,9 @@ spec:
             {{- if .Values.webhook.audit.diagStreams.enabled }}
             - --audit-bytype-diag
             - --audit-bytype-diag-max-len={{ .Values.webhook.audit.diagStreams.maxLen }}
+            {{- with .Values.webhook.audit.diagStreams.resources }}
+            - --audit-bytype-diag-resources={{ join "," . }}
+            {{- end }}
             {{- end }}
             {{- if .Values.queue.redis.tls.enabled }}
             - --audit-redis-tls

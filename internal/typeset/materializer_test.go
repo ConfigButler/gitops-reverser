@@ -398,6 +398,75 @@ func TestMaterializer_DemandStopsReleasedAtSweep(t *testing.T) {
 	}
 }
 
+// TestMaterializer_ReclaimAfterSweepReleaseReRequestsSync is the leaf-side contract behind the
+// warm-cluster reclaim (first-event-loss-on-reclaim-plan.md S1): a type that was Synced, then fully
+// released by the sweep when its claim was withdrawn (Dormant, no claimant), must — when a NEW
+// GitTarget re-claims the still-followable type — promptly re-request a first sync from Dormant, not
+// sit unsynced. followable survives a release (only TypeRemoved/TypeRefused clear it), so the standing
+// claim path applies. This proves the leaf is NOT where the run-3 stall lived: at this layer a reclaim
+// always re-syncs — the gap is the watch layer not making the claim (S2/S3).
+func TestMaterializer_ReclaimAfterSweepReleaseReRequestsSync(t *testing.T) {
+	clock := &fakeClock{t: time.Unix(1_000, 0)}
+	m := syncedFixture(t, clock, depGVR())
+
+	// Demand stops (no renew): one sweep keeps the live claim, the next GCs the lapsed lease and
+	// releases the checkpoint to Dormant.
+	clock.add(time.Second)
+	m.Sweep()
+	clock.add(time.Second)
+	m.Sweep()
+	if ph, _ := m.Phase(depGVR()); ph != PhaseDormant {
+		t.Fatalf("after demand stops the sweep must release to Dormant, got %q", ph)
+	}
+	if got := m.Claimants(depGVR()); len(got) != 0 {
+		t.Fatalf("the withdrawn lease must be GC'd before the re-claim, got %v", got)
+	}
+
+	// A different GitTarget re-claims the same, still-followable type. From Dormant it must re-request
+	// a first sync — exactly once. (Subscribe only now, so the sweep's re-anchor request is excluded.)
+	rec := &matRecorder{}
+	m.Subscribe(rec.observe)
+	const bRef GitTargetRef = "git-target-b"
+	m.Declare(bRef, []schema.GroupVersionResource{depGVR()})
+	if ph, _ := m.Phase(depGVR()); ph != PhaseRequested {
+		t.Fatalf("a re-claim of a released, still-followable type must re-request a sync, got %q", ph)
+	}
+	if rec.count(SyncRequested) != 1 {
+		t.Errorf("the re-claim must emit exactly one SyncRequested, got %d", rec.count(SyncRequested))
+	}
+}
+
+// TestMaterializer_SweepEmitsUnclaimedOnLastClaimWithdrawal proves the demand-gate close edge (S2):
+// when the sweep's lease GC removes a type's LAST claimant, the Materializer emits an Unclaimed event
+// (the watch driver maps it to gate.Unrequire). It fires once, on the ≥1→0 transition — a sweep that
+// keeps a live claim emits none.
+func TestMaterializer_SweepEmitsUnclaimedOnLastClaimWithdrawal(t *testing.T) {
+	clock := &fakeClock{t: time.Unix(1_000, 0)}
+	m := syncedFixture(t, clock, depGVR())
+	rec := &matRecorder{}
+	m.Subscribe(rec.observe)
+
+	// A sweep with the claim still live emits no Unclaimed (and keeps the type).
+	clock.add(time.Second)
+	m.Sweep()
+	if rec.count(Unclaimed) != 0 {
+		t.Fatalf("a live claim must not emit Unclaimed, got %d", rec.count(Unclaimed))
+	}
+
+	// Demand stops: the next sweep GCs the last claimant, emitting exactly one Unclaimed for the GVR.
+	clock.add(time.Second)
+	m.Sweep()
+	if rec.count(Unclaimed) != 1 {
+		t.Fatalf("withdrawing the last claim must emit exactly one Unclaimed, got %d", rec.count(Unclaimed))
+	}
+	if ev := rec.last(Unclaimed); ev.GVR != depGVR() {
+		t.Errorf("Unclaimed must name the withdrawn GVR, got %v", ev.GVR)
+	}
+	if got := m.Claimants(depGVR()); len(got) != 0 {
+		t.Errorf("the withdrawn lease must be GC'd, got %v", got)
+	}
+}
+
 // TestMaterializer_RenewalKeepsCheckpointAcrossSweeps proves a healthy consumer that
 // re-declares every interval is never released.
 func TestMaterializer_RenewalKeepsCheckpointAcrossSweeps(t *testing.T) {

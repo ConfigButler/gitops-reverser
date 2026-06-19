@@ -126,6 +126,12 @@ type RedisByTypeStreamConfig struct {
 	// XADD MAXLEN ~ (0 = unbounded). See docs/design/stream/audit-diagnostic-streams-plan.md §3.
 	DiagStreams bool
 	DiagMaxLen  int64
+	// DiagResources, when non-empty, scopes the firehose to these resource names (e.g.
+	// "commitrequests", "configmaps"): an event whose objectRef.Resource is not listed is not
+	// captured. Empty means capture every event that reaches the queue (the firehose's default,
+	// global behaviour). It exists to bound the firehose — and its in-lock XADD load — to a few
+	// suspect types when chasing a specific failure. See e2e-flakes-2026-06-18-investigation.md §9.
+	DiagResources []string
 	// PoolSize overrides the go-redis connection-pool size (0 = library default, 10×GOMAXPROCS).
 	// The audit TAIL reader needs a large pool: every followed type runs one tail parked in a
 	// blocking XREAD, so it holds one connection continuously, and a wildcard GitTarget follows
@@ -153,9 +159,11 @@ type RedisByTypeStreamQueue struct {
 	maxLen int64
 
 	// diagEnabled/diagMaxLen/diagKey drive the opt-in "<prefix>:diag_all" firehose (off by default).
-	diagEnabled bool
-	diagMaxLen  int64
-	diagKey     string
+	// diagResources, when non-empty, restricts the firehose to those resource names (empty = all).
+	diagEnabled   bool
+	diagMaxLen    int64
+	diagKey       string
+	diagResources map[string]struct{}
 
 	indexedMu sync.Mutex
 	indexed   map[string]struct{}
@@ -193,14 +201,25 @@ func NewRedisByTypeStreamQueue(cfg RedisByTypeStreamConfig) (*RedisByTypeStreamQ
 		options.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
 	}
 
+	var diagResources map[string]struct{}
+	if len(cfg.DiagResources) > 0 {
+		diagResources = make(map[string]struct{}, len(cfg.DiagResources))
+		for _, r := range cfg.DiagResources {
+			if r = strings.TrimSpace(r); r != "" {
+				diagResources[r] = struct{}{}
+			}
+		}
+	}
+
 	return &RedisByTypeStreamQueue{
-		client:      redis.NewClient(options),
-		prefix:      prefix,
-		maxLen:      cfg.MaxLen,
-		diagEnabled: cfg.DiagStreams,
-		diagMaxLen:  cfg.DiagMaxLen,
-		diagKey:     prefix + byTypeDiagAllSuffix,
-		indexed:     make(map[string]struct{}),
+		client:        redis.NewClient(options),
+		prefix:        prefix,
+		maxLen:        cfg.MaxLen,
+		diagEnabled:   cfg.DiagStreams,
+		diagMaxLen:    cfg.DiagMaxLen,
+		diagKey:       prefix + byTypeDiagAllSuffix,
+		diagResources: diagResources,
+		indexed:       make(map[string]struct{}),
 	}, nil
 }
 
@@ -277,6 +296,13 @@ func (q *RedisByTypeStreamQueue) Enqueue(ctx context.Context, event auditv1.Even
 func (q *RedisByTypeStreamQueue) writeDiagAll(ctx context.Context, values map[string]any, oc outcome.Outcome) {
 	if !q.diagEnabled {
 		return
+	}
+	if len(q.diagResources) > 0 {
+		// Scoped firehose: only capture the suspect resources (keeps the in-lock XADD load bounded).
+		res, _ := values["resource"].(string)
+		if _, ok := q.diagResources[res]; !ok {
+			return
+		}
 	}
 	// values is local to Enqueue and already written to the main stream by now (for a queued event),
 	// so annotating

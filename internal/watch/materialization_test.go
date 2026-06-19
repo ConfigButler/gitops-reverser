@@ -27,11 +27,13 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 	clienttesting "k8s.io/client-go/testing"
 
+	configv1alpha1 "github.com/ConfigButler/gitops-reverser/api/v1alpha1"
 	"github.com/ConfigButler/gitops-reverser/internal/typeset"
 )
 
@@ -104,6 +106,124 @@ func TestDeclareForGitTarget_FailsClosedDeclaresNothing(t *testing.T) {
 	require.Error(t, err, "an unobservable API surface must fail closed")
 	require.Empty(t, manager.materializerInstance().Claimants(configMapGVR),
 		"a failed resolve must declare nothing")
+}
+
+// fullySpecifiedClusterRule builds a ClusterWatchRule naming a single type by its full
+// group+version+resource — the shape of the e2e WatchRule that flaked
+// (apiGroups:[crd-lifecycle…], apiVersions:[v1], resources:[icecreamorders]).
+func fullySpecifiedClusterRule(name, group, version, resource string) configv1alpha1.ClusterWatchRule {
+	return configv1alpha1.ClusterWatchRule{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Spec: configv1alpha1.ClusterWatchRuleSpec{
+			TargetRef: configv1alpha1.NamespacedTargetReference{Name: "test-target", Namespace: "test-ns"},
+			Rules: []configv1alpha1.ClusterResourceRule{{
+				APIGroups:   []string{group},
+				APIVersions: []string{version},
+				Resources:   []string{resource},
+				Scope:       configv1alpha1.ResourceScopeNamespaced,
+			}},
+		},
+	}
+}
+
+// TestDeclareForGitTarget_FullySpecifiedNotYetDiscoveredTypeClaimsNothing is the S0 reproducer
+// (first-event-loss-on-reclaim-plan.md §1.1, W2): a rule that names a type by full
+// group+version+resource is NOT claimed when that type is not (yet) in the registry's Followable set —
+// because the claim is resolved through Followable() rather than from the rule spec. This is the
+// deterministic, in-code shape of the run-3 loss: a freshly (re)installed CRD whose discovery has not
+// settled is silently un-claimed, so the gate never Requires it and its first events are dropped.
+//
+// It documents TODAY's behaviour (claims nothing); slice S3 inverts the assertion — the same
+// fully-specified rule must claim its GVR unconditionally — which is the heart of the fix.
+func TestDeclareForGitTarget_FullySpecifiedNotYetDiscoveredTypeClaimsNothing(t *testing.T) {
+	manager, store := makeWatchedTypeManager(t)
+	// crd-lifecycle.e2e.example.com/v1 icecreamorders is NOT in the common test catalog (which only
+	// serves icecreamorders under shop.example.com), so it stands in for a not-yet-discovered CRD.
+	store.AddOrUpdateClusterWatchRule(
+		fullySpecifiedClusterRule("rule-crd-lifecycle", "crd-lifecycle.e2e.example.com", "v1", "icecreamorders"),
+		"test-target", "test-ns", "test-provider", "test-ns", "main", "test-path",
+	)
+	gitDest := gitDestRef("test-target")
+	notYetDiscovered := schema.GroupVersionResource{
+		Group: "crd-lifecycle.e2e.example.com", Version: "v1", Resource: "icecreamorders",
+	}
+
+	require.NoError(t, manager.DeclareForGitTarget(context.Background(), gitDest),
+		"an observable surface that simply lacks the type is not an error — it resolves to empty")
+	require.Empty(t, manager.materializerInstance().Claimants(notYetDiscovered),
+		"TODAY (the bug): a fully-specified rule for a not-yet-discovered type claims NOTHING; "+
+			"S3 will invert this to require the claim unconditionally")
+}
+
+// recordingGate is a fake TypeMirrorGate that records Require/Unrequire calls in order.
+type recordingGate struct {
+	required   []schema.GroupVersionResource
+	unrequired []schema.GroupVersionResource
+}
+
+func (g *recordingGate) Require(_ context.Context, gvr schema.GroupVersionResource) error {
+	g.required = append(g.required, gvr)
+	return nil
+}
+
+func (g *recordingGate) Unrequire(_ context.Context, gvr schema.GroupVersionResource) error {
+	g.unrequired = append(g.unrequired, gvr)
+	return nil
+}
+
+// TestDeclareForGitTarget_OpensGateSynchronouslyForClaimedType is the S2 core (G2,
+// first-event-loss-on-reclaim-plan.md §6.2): a claimed type must be Required in the demand gate BY THE
+// TIME DeclareForGitTarget returns — synchronously, before any checkpoint sync — so the audit webhook is
+// already mirroring it when its first event arrives. Before S2 the gate was only Required later, off the
+// async SyncRequested hop, so a claimed type's first events could be gated out and lost.
+func TestDeclareForGitTarget_OpensGateSynchronouslyForClaimedType(t *testing.T) {
+	manager, store := makeWatchedTypeManager(t)
+	gate := &recordingGate{}
+	manager.MirrorGate = gate
+	store.AddOrUpdateClusterWatchRule(
+		clusterRuleForResource("rule-cm", "configmaps"),
+		"test-target", "test-ns", "test-provider", "test-ns", "main", "test-path",
+	)
+
+	require.NoError(t, manager.DeclareForGitTarget(context.Background(), gitDestRef("test-target")))
+
+	// Synchronous: the gate is Required already, with no sync having run.
+	require.Contains(t, gate.required, configMapGVR,
+		"a claimed type must be Required synchronously by the time Declare returns")
+	ph, _ := manager.materializerInstance().Phase(configMapGVR)
+	require.NotEqual(t, typeset.PhaseSynced, ph, "the gate opens before any checkpoint sync")
+}
+
+// TestHandleMaterializationEvent_UnclaimedUnrequires proves the demand-gate CLOSE edge: an Unclaimed
+// event (the sweep's GC of the last claim) Unrequires the type so it stops being mirrored.
+func TestHandleMaterializationEvent_UnclaimedUnrequires(t *testing.T) {
+	gate := &recordingGate{}
+	m := &Manager{Log: logr.Discard(), MirrorGate: gate}
+
+	m.handleMaterializationEvent(context.Background(), logr.Discard(),
+		typeset.MaterializationEvent{Kind: typeset.Unclaimed, GVR: configMapGVR})
+
+	require.Equal(t, []schema.GroupVersionResource{configMapGVR}, gate.unrequired,
+		"Unclaimed must Unrequire the type")
+	require.Empty(t, gate.required)
+}
+
+// TestHandleMaterializationEvent_ReleasedDoesNotUnrequire is the key S2 regression (reviewer): a
+// Released event is a CHECKPOINT drop, which also fires on a followability wobble (TypeRemoved force-
+// release) WHILE THE CLAIM SURVIVES. Such a type must keep being mirrored, so Released must NOT touch the
+// gate. The gate flag moves only with the claim (Unclaimed). Before S2, Released Unrequired — silently
+// stopping mirroring of a still-claimed type through a wobble.
+func TestHandleMaterializationEvent_ReleasedDoesNotUnrequire(t *testing.T) {
+	gate := &recordingGate{}
+	mirror := &recordingObjectMirror{}
+	m := &Manager{Log: logr.Discard(), MirrorGate: gate, ObjectMirror: mirror}
+
+	m.handleMaterializationEvent(context.Background(), logr.Discard(),
+		typeset.MaterializationEvent{Kind: typeset.Released, GVR: configMapGVR})
+
+	require.Empty(t, gate.unrequired,
+		"Released (a checkpoint drop, possibly a wobble with the claim surviving) must NOT Unrequire")
+	require.Equal(t, "/configmaps", mirror.deletedKey, "Released still clears the checkpoint keyspace")
 }
 
 // TestDeclareBackfillRetry_FailedBackfillIsReDeclared proves Rec 2 / Gap 2: when a Declare-time

@@ -813,6 +813,40 @@ func TestRedisByTypeStreamQueue_DiagAllCapturesIngestion(t *testing.T) {
 	assert.Equal(t, "dropped", entries[1].Values[entryFieldCategory], "divert category")
 }
 
+func TestRedisByTypeStreamQueue_DiagAllResourcesScopesCapture(t *testing.T) {
+	if sharedValkeyAddr == "" {
+		t.Skip("real-Valkey container unavailable (Docker required); skipping diag_all scope test")
+	}
+	prefix := fmt.Sprintf("test.bytype.%d", valkeyPrefixSeq.Add(1))
+	q, err := NewRedisByTypeStreamQueue(RedisByTypeStreamConfig{
+		Addr: sharedValkeyAddr, Prefix: prefix, DiagStreams: true, DiagMaxLen: 1000,
+		// ingestionEvent is a "deployments" event; scope the firehose to a different resource.
+		DiagResources: []string{"configmaps", "commitrequests"},
+	})
+	require.NoError(t, err)
+	client := redis.NewClient(&redis.Options{Addr: sharedValkeyAddr})
+	t.Cleanup(func() { _ = client.Close() })
+	ctx := context.Background()
+
+	require.NoError(t, q.Enqueue(ctx, ingestionEvent("100", 3000)))
+
+	exists, err := client.Exists(ctx, prefix+byTypeDiagAllSuffix).Result()
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), exists,
+		"an out-of-scope resource (deployments) must not be captured when DiagResources is set")
+
+	// An in-scope resource is captured.
+	cm := ingestionEvent("101", 3001)
+	cm.ObjectRef.APIGroup = ""
+	cm.ObjectRef.Resource = "configmaps"
+	require.NoError(t, q.Enqueue(ctx, cm))
+
+	entries, err := client.XRange(ctx, prefix+byTypeDiagAllSuffix, "-", "+").Result()
+	require.NoError(t, err)
+	require.Len(t, entries, 1, "only the in-scope (configmaps) event is captured")
+	assert.Equal(t, "configmaps", entries[0].Values["resource"])
+}
+
 func TestRedisByTypeStreamQueue_DiagAllDisabledByDefault(t *testing.T) {
 	q, client, prefix := valkeyByTypeQueue(t, 0)
 	ctx := context.Background()

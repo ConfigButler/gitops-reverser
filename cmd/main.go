@@ -221,15 +221,16 @@ func main() {
 	// the producer's Redis connection and MaxLen bound. See
 	// docs/design/stream/per-resource-type-rv-keyed-streams-experiment.md.
 	auditByTypeQueue, err := queue.NewRedisByTypeStreamQueue(queue.RedisByTypeStreamConfig{
-		Addr:        cfg.auditRedisAddr,
-		Username:    cfg.auditRedisUsername,
-		AuthValue:   cfg.auditRedisPassword,
-		DB:          cfg.auditRedisDB,
-		Prefix:      cfg.auditByTypeStreamPrefix,
-		MaxLen:      cfg.auditRedisMaxLen,
-		TLSEnabled:  cfg.auditRedisTLS,
-		DiagStreams: cfg.auditByTypeDiag,
-		DiagMaxLen:  cfg.auditByTypeDiagMaxLen,
+		Addr:          cfg.auditRedisAddr,
+		Username:      cfg.auditRedisUsername,
+		AuthValue:     cfg.auditRedisPassword,
+		DB:            cfg.auditRedisDB,
+		Prefix:        cfg.auditByTypeStreamPrefix,
+		MaxLen:        cfg.auditRedisMaxLen,
+		TLSEnabled:    cfg.auditRedisTLS,
+		DiagStreams:   cfg.auditByTypeDiag,
+		DiagMaxLen:    cfg.auditByTypeDiagMaxLen,
+		DiagResources: splitCSV(cfg.auditByTypeDiagResources),
 	})
 	fatalIfErr(err, "unable to initialize per-resource-type audit redis queue")
 
@@ -474,6 +475,7 @@ type appConfig struct {
 	auditByTypeStreamPrefix  string
 	auditByTypeDiag          bool
 	auditByTypeDiagMaxLen    int64
+	auditByTypeDiagResources string
 	auditRedisTLS            bool
 	auditEventBodyTTL        time.Duration
 	auditEventBodyWait       time.Duration
@@ -555,6 +557,10 @@ func parseFlagsWithArgs(fs *flag.FlagSet, args []string) (appConfig, error) {
 			"audit event, for investigation. Off by default.")
 	fs.Int64Var(&cfg.auditByTypeDiagMaxLen, "audit-bytype-diag-max-len", 0,
 		"Approximate max <prefix>:diag_all stream length (0 disables trimming).")
+	fs.StringVar(&cfg.auditByTypeDiagResources, "audit-bytype-diag-resources", "",
+		"Comma-separated resource names to scope the <prefix>:diag_all firehose to (e.g. "+
+			"\"commitrequests,configmaps\"). Empty captures every queued event. Bounds the "+
+			"firehose (and its in-lock XADD load) to a few suspect types when investigating.")
 	fs.BoolVar(&cfg.auditRedisTLS, "audit-redis-tls", false,
 		"If set, Redis connection for audit queueing uses TLS.")
 	fs.DurationVar(&cfg.auditEventBodyTTL, "audit-event-body-ttl", defaultAuditEventBodyTTL,
@@ -672,6 +678,20 @@ func validateAuditConfig(cfg appConfig) error {
 		return fmt.Errorf("audit-event-body-wait must be >= 0, got %s", cfg.auditEventBodyWait)
 	}
 	return nil
+}
+
+// splitCSV splits a comma-separated flag value into trimmed, non-empty entries (nil when blank).
+func splitCSV(s string) []string {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	var out []string
+	for _, part := range strings.Split(s, ",") {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
 }
 
 // fatalIfErr logs and exits the process if err is not nil.

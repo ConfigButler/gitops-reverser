@@ -135,6 +135,11 @@ func (m *Manager) materializerInstance() *typeset.Materializer {
 func (m *Manager) DeclareForGitTarget(ctx context.Context, gitDest types.ResourceReference) error {
 	gvrs, err := m.resolveSnapshotGVRs(ctx, gitDest)
 	if err != nil {
+		// Diagnostic (first-event-loss-on-reclaim-plan.md S0): a fail-closed resolve claims NOTHING,
+		// so a freshly (re)claimed type can be silently missed and its first events gated out. Logged
+		// at info so a real run shows it without V(1), to pin which trigger (W1–W4) actually fired.
+		m.Log.Info("materialization declare resolved nothing (surface not observable / wobbling)",
+			"gitDest", gitDest.String(), "err", err.Error())
 		return err
 	}
 	// The claim key is (GitTargetRef, GVR), scope-independent (DEC-L3 / §9 open Q), so the
@@ -143,7 +148,23 @@ func (m *Manager) DeclareForGitTarget(ctx context.Context, gitDest types.Resourc
 	// GitTargets and stable across reconciles; the object UID is the rejected alternative (it
 	// would re-key on recreate and orphan the prior claims).
 	claimed := distinctClaimGVRs(gvrs)
+	// Diagnostic (first-event-loss-on-reclaim-plan.md S0): record exactly which GVRs this GitTarget
+	// claims, so an empty (or wrong-GVR) claim set for a fully-specified rule — the suspected
+	// first-event-loss trigger — is visible in a real run. Per-reconcile (minutes) info volume.
+	m.Log.Info("materialization declare",
+		"gitDest", gitDest.String(), "claimedCount", len(claimed), "claimed", gvrsToStrings(claimed))
 	m.materializerInstance().Declare(typeset.GitTargetRef(gitDest.String()), claimed)
+
+	// Open the demand gate SYNCHRONOUSLY for every claimed type (G2, first-event-loss-on-reclaim-plan.md
+	// §6.2): a claimed type must be mirrored from its FIRST audit event, before any checkpoint sync — so
+	// Require here on the control-plane reconcile goroutine, never deferred to the async SyncRequested
+	// hop where the first event could be gated out and lost. Idempotent and self-healing: gate.Require is
+	// an SADD that only pings on a real change, so re-asserting the full claimed set each reconcile is
+	// cheap and recovers from a transient gate-write failure. The gate is closed on the Unclaimed event
+	// (sweep GC of the last claim), so Required tracks claimed-ness exactly.
+	for _, gvr := range claimed {
+		m.requireTypeMirror(ctx, m.Log, gvr)
+	}
 
 	// Drop coverage watermarks for types this GitTarget no longer claims (a rule change), so a later
 	// re-add restarts at NotReconciled instead of gating the tail against a stale boundary the fan-out
@@ -339,6 +360,15 @@ func claimantsInclude(claimants []typeset.GitTargetRef, ref typeset.GitTargetRef
 	return false
 }
 
+// gvrsToStrings renders a GVR slice as strings for diagnostic logging (S0), preserving order.
+func gvrsToStrings(gvrs []schema.GroupVersionResource) []string {
+	out := make([]string, 0, len(gvrs))
+	for _, g := range gvrs {
+		out = append(out, g.String())
+	}
+	return out
+}
+
 // distinctClaimGVRs collapses the resolved (GVR, namespace-scope) stream set to the distinct
 // GVRs the claim table keys on, preserving the resolver's sorted order.
 func distinctClaimGVRs(gvrs []snapshotGVR) []schema.GroupVersionResource {
@@ -421,10 +451,12 @@ func (m *Manager) driveMaterialization(ctx context.Context, log logr.Logger) {
 	}
 }
 
-// handleMaterializationEvent acts on one demand event. SyncRequested drives the demand-gated
-// checkpoint LIST (T1/T4); Released drops the checkpoint (demand GC or followability loss);
-// TypeSynced is the R2 wake — a freshly-serviceable checkpoint fans a per-type splice reconcile to
-// every GitTarget watching the type. SyncStarted/SyncFailed are observability.
+// handleMaterializationEvent acts on one demand event. SyncRequested drives the checkpoint LIST
+// (T1/T4); Unclaimed closes the demand gate when the last claim is withdrawn; Released drops the
+// checkpoint keyspace (demand GC or followability loss); TypeSynced is the R2 wake — a freshly-
+// serviceable checkpoint fans a per-type splice reconcile to every GitTarget watching the type.
+// SyncStarted/SyncFailed are observability. The demand-gate OPEN edge is not here — it is synchronous
+// on the claim (DeclareForGitTarget), so a claimed type is mirrored before any sync.
 func (m *Manager) handleMaterializationEvent(ctx context.Context, log logr.Logger, ev typeset.MaterializationEvent) {
 	if telemetry.MaterializationSyncEventsTotal != nil {
 		telemetry.MaterializationSyncEventsTotal.Add(ctx, 1,
@@ -432,16 +464,22 @@ func (m *Manager) handleMaterializationEvent(ctx context.Context, log logr.Logge
 	}
 	switch ev.Kind {
 	case typeset.SyncRequested:
-		// Demand gate: mark the type wanted BEFORE the LIST (add-early, DG1) so the audit webhook
-		// is already mirroring it by the time the checkpoint rv C is pinned. Idempotent for re-anchors.
-		m.requireTypeMirror(ctx, log, ev.GVR)
+		// Drive the demand-gated checkpoint LIST. The gate was already opened synchronously when the
+		// type was claimed (DeclareForGitTarget Requires it), so it is mirroring by now — we do NOT
+		// gate here, so a claimed type's first events are never lost to the async SyncRequested hop
+		// (first-event-loss-on-reclaim-plan.md §6.2).
 		m.runTypeCheckpointSync(ctx, log, ev.GVR)
+	case typeset.Unclaimed:
+		// Demand-gate CLOSE edge: the last claim was withdrawn (sweep GC), so stop mirroring this type
+		// across pods. This tracks the CLAIM, not the checkpoint — a followability wobble force-releases
+		// the checkpoint (Released) while the claim survives, and such a type must keep being mirrored.
+		m.unrequireTypeMirror(ctx, log, ev.GVR)
 	case typeset.Released:
 		m.stopTypeAuditTail(ev.GVR)
 		m.clearTypeObjects(ctx, log, ev.GVR)
-		// Demand gate: stop new mirroring across pods, then reclaim the audit footprint (DG2) — the
-		// audit-side twin of clearTypeObjects, on the same grace-protected Released event.
-		m.unrequireTypeMirror(ctx, log, ev.GVR)
+		// Reclaim the released checkpoint's audit footprint (DG2) — the audit-side twin of
+		// clearTypeObjects. The gate flag is NOT touched here (it moves with the claim, via Unclaimed):
+		// a wobble force-release keeps the claim, so the type stays Required and keeps mirroring.
 		m.deleteTypeAuditKeys(ctx, log, ev.GVR)
 	case typeset.TypeSynced:
 		// The checkpoint just became serviceable. The FIRST TypeSynced (tail not yet running) fans
@@ -538,11 +576,11 @@ func (m *Manager) trimTypeAuditLog(ctx context.Context, log logr.Logger, gvr sch
 	log.V(1).Info("materialization audit-log trimmed", "gvr", gvr.String(), "cursor", rv)
 }
 
-// requireTypeMirror marks a type as wanted in the shared demand gate at SyncRequested — added early,
-// before the first LIST, so the audit webhook is already mirroring by the time the checkpoint rv is
-// pinned (DG1). Idempotent: a re-anchor's SyncRequested re-Requires a present type, which adds
-// nothing and does not ping. Best-effort and nil-safe — a gate write failure is logged and retried
-// on the next SyncRequested, never fatal.
+// requireTypeMirror marks a type as wanted in the shared demand gate. It is called synchronously for
+// every claimed GVR on each GitTarget reconcile (DeclareForGitTarget), so the audit webhook is already
+// mirroring a claimed type by the time its first event arrives — before any checkpoint sync. Idempotent:
+// re-asserting a present type adds nothing and does not ping. Best-effort and nil-safe — a gate write
+// failure is logged and retried on the next reconcile, never fatal.
 func (m *Manager) requireTypeMirror(ctx context.Context, log logr.Logger, gvr schema.GroupVersionResource) {
 	if m.MirrorGate == nil {
 		return
@@ -552,8 +590,10 @@ func (m *Manager) requireTypeMirror(ctx context.Context, log logr.Logger, gvr sc
 	}
 }
 
-// unrequireTypeMirror marks a type as no longer wanted on Released, stopping new mirroring across
-// pods within a ping. Best-effort and nil-safe.
+// unrequireTypeMirror marks a type as no longer wanted on the Unclaimed event (the sweep's GC of the
+// last claim), stopping new mirroring across pods within a ping. It is keyed to the CLAIM, not the
+// checkpoint Released event — a followability wobble force-releases the checkpoint while the claim
+// survives, and such a type must keep being mirrored. Best-effort and nil-safe.
 func (m *Manager) unrequireTypeMirror(ctx context.Context, log logr.Logger, gvr schema.GroupVersionResource) {
 	if m.MirrorGate == nil {
 		return

@@ -39,7 +39,7 @@ attribution) when it is not. We never make the body the *correctness* source —
   removed items, names included — rides in the event. The full event, including
   `user` and the complete `payload_json` (request + response bodies), is stored in the
   per-type stream entry
-  ([redis_bytype_queue.go:595-596](../../../internal/queue/redis_bytype_queue.go#L595-L596))
+  ([redis_bytype_queue.go:665](../../../internal/queue/redis_bytype_queue.go#L665))
   and round-trips via `parseAuditEvent`
   ([audit_event_parsing.go:111](../../../internal/queue/audit_event_parsing.go#L111)).
   **So Tier 1 needs no joiner/ingestion change — the body is already in the mirror;
@@ -48,27 +48,29 @@ attribution) when it is not. We never make the body the *correctness* source —
   the mirror.** See
   [demand-gated-audit-ingestion.md](../../finished/demand-gated-audit-ingestion.md):
   we stopped mirroring never-wanted and pre-materialization types, and `ingestRVLess`
-  now drops RV-less events before a type has any numeric high-water instead of sending
-  them to the late lane. That removed a lot of diagnostic noise and Redis waste; for
+  now drops an RV-less event that arrives before a type has any numeric high-water — the
+  `rvless_empty_highwater` outcome, a no-op (the empty mirror has nothing to act on),
+  checkpoint-backstopped. That removed a lot of noise and Redis waste; for
   `deletecollection`, we may be removing a little too much. This plan accepts that
   practical tradeoff for now: dropped events do **not** nudge, and the periodic
   checkpoint remains the only backstop for that edge. Revisit under §10.
 - The live per-type tail **skips it**: `auditChangeFromEntry` returns `ok=false` for any
   name-less entry (`id.Name == ""`) —
-  [redis_bytype_queue.go:342](../../../internal/queue/redis_bytype_queue.go#L342).
+  [redis_bytype_queue.go:424](../../../internal/queue/redis_bytype_queue.go#L424).
   Intentional (DEC-5) and correct.
 - A `deletecollection` carries no usable RV, so `Enqueue` routes it through
   `ingestRVLess` —
-  [redis_bytype_queue.go:464](../../../internal/queue/redis_bytype_queue.go#L464).
+  [redis_bytype_queue.go:553](../../../internal/queue/redis_bytype_queue.go#L553).
 - The resync nudge already exists end-to-end and is already the backstop, invoked from
-  **exactly one** call site — the `isIDTooSmall` branch of `ingestOrdered`
-  ([redis_bytype_queue.go:450-451](../../../internal/queue/redis_bytype_queue.go#L450-L451)).
+  **exactly one** call site today — the `isIDTooSmall` branch of `ingestOrdered`, where a
+  numeric event whose RV is below the high-water is diverted (rejected from the main stream)
+  ([redis_bytype_queue.go:529-532](../../../internal/queue/redis_bytype_queue.go#L529-L532)).
   The chain it drives: `NudgeTypeResyncForLateEvent`
   ([materialization.go:70](../../../internal/watch/materialization.go#L70)) →
-  `RequestResync` ([materializer.go:348](../../../internal/typeset/materializer.go#L348))
+  `RequestResync` ([materializer.go:357](../../../internal/typeset/materializer.go#L357))
   → `TypeSynced` deferred heal + scoped sweep
-  ([materialization.go:439-450](../../../internal/watch/materialization.go#L439-L450)),
-  wired in cmd ([main.go:235](../../../cmd/main.go#L235)).
+  ([materialization.go](../../../internal/watch/materialization.go)),
+  wired in cmd ([main.go:240](../../../cmd/main.go#L240)).
 - Backstop today: `materializationSweepInterval = time.Hour`
   ([materialization.go:54](../../../internal/watch/materialization.go#L54)).
 - Commits already author from the actor: `Author` ← `AuthorUserInfo`, with
@@ -81,7 +83,7 @@ attribution) when it is not. We never make the body the *correctness* source —
 ## 3. What is already correct — do not "fix" these
 
 - **The tail skipping name-less entries** stays
-  ([redis_bytype_queue.go:342](../../../internal/queue/redis_bytype_queue.go#L342)).
+  ([redis_bytype_queue.go:424](../../../internal/queue/redis_bytype_queue.go#L424)).
   Tier 1's per-object deletes come from the body expansion, not from un-skipping the
   name-less entry.
 - **The checkpoint/sweep as the correctness plane.** Tier 2 reuses it as-is; Tier 1
@@ -94,25 +96,27 @@ attribution) when it is not. We never make the body the *correctness* source —
 - **The 15s per-type nudge floor** (`lateNudgeMinInterval`,
   [materialization.go:60](../../../internal/watch/materialization.go#L60)) already
   coalesces teardown bursts. We lean on it explicitly.
-- **The empty-stream RV-less drop stays for now.** It keeps the late lane meaningful.
-  We do not nudge for events that `ingestRVLess` drops before a high-water exists.
+- **The empty-stream RV-less drop stays for now** (the `rvless_empty_highwater` outcome — a
+  no-op, checkpoint-backstopped). We do not nudge for events that `ingestRVLess` drops before
+  a high-water exists.
 
 ## 4. The gap, located precisely (Tier 2)
 
 A successful warm-stream `deletecollection` enqueue does not request a resync, so the
 deleted objects linger in git for up to one sweep interval (~1h).
 
-The gap is in **`ingestRVLess`, not the late lane.** A `deletecollection` is RV-less,
-so it never reaches the one branch that nudges. Three outcomes matter after
-demand-gated ingestion:
+The gap is in **`ingestRVLess`.** A `deletecollection` is RV-less, so it never reaches the
+one branch that nudges today (the numeric-RV divert in `ingestOrdered`). Three outcomes
+matter after demand-gated ingestion:
 
 - **Demand-gate skip:** if the type is not wanted yet, `mirrorByType` never calls
   `Enqueue`. No event, no nudge. The next checkpoint after demand opens is the
   correctness backstop.
 - **Empty stream (accepted edge):** if the type is wanted but has no numeric
-  high-water yet, `ingestRVLess` drops the RV-less event as a no-op. No event, no
-  nudge. This was introduced to prevent late-lane noise; it may drop too much for
-  collection-delete promptness, but we accept that for v1.
+  high-water yet, `ingestRVLess` drops the RV-less event as a no-op (`rvless_empty_highwater`).
+  No event, no nudge. This was introduced to avoid counting harmless RV-less system deletes
+  (GC, aggregated-API) as diverts; it may drop too much for collection-delete promptness, but
+  we accept that for v1.
 - **Warm stream (the common case):** once a numeric high-water exists, the event
   attaches to the high-water with `rv_present=false`; the tail then skips it
   (name-less) → silent ~1h wait. This is the case Tier 2 fixes.
@@ -120,21 +124,21 @@ demand-gated ingestion:
 The fix nudges only for the **successful warm-stream ingest**, scoped to
 **name-less / `verb == deletecollection`**, not all RV-less events — ordinary single
 deletes are RV-less too and the tail already applies them by name
-([redis_bytype_queue.go:370-372](../../../internal/queue/redis_bytype_queue.go#L370-L372));
+([redis_bytype_queue.go:453](../../../internal/queue/redis_bytype_queue.go#L453));
 nudging those would fire a checkpoint LIST per delete.
 
 ## 5. Tier 2 — the nudge (do first)
 
 1. **Thread the collection signal from `Enqueue` into `ingestRVLess`.** `byTypeAuditKeys`
    carries only `group`/`resource`, not verb/name
-   ([redis_bytype_queue.go:385-395](../../../internal/queue/redis_bytype_queue.go#L385-L395)),
+   ([redis_bytype_queue.go:470](../../../internal/queue/redis_bytype_queue.go#L470)),
    so `Enqueue` must detect `verb == deletecollection` and pass that down (a param or a
    `byTypeAuditKeys` field). Small but real plumbing — call it out in review.
 2. **Fire the existing nudge for that case only.** On a successful RV-less ingest of a
-   `deletecollection`, call `q.lateNotify(keys.group, keys.resource)`, guarded like the
-   existing site. `Subresource == ""` for a collection delete, so `keys.group`/`resource`
-   are already populated
-   ([redis_bytype_queue.go:218-224](../../../internal/queue/redis_bytype_queue.go#L218-L224)).
+   `deletecollection`, call `q.lateNotify(keys.group, keys.resource)` (the same divert-notifier
+   hook the `isIDTooSmall` branch uses). `Subresource == ""` for a collection delete, so
+   `keys.group`/`resource` are already populated
+   ([redis_bytype_queue.go:247-253](../../../internal/queue/redis_bytype_queue.go#L247-L253)).
    Fire only after the event attaches to an existing high-water. If `ingestRVLess` drops
    on an empty stream, do not nudge for now. Best-effort, non-blocking (IR8).
 3. **Nothing downstream changes** — `RequestResync → TypeSynced → deferred heal → scoped
@@ -300,7 +304,7 @@ Scenarios (`test/e2e/deletecollection_e2e_test.go`):
 - **Consider a safe nudge-before-drop path.** If the red e2e shows meaningful user pain,
   revisit carrying a minimal `{group, resource, actor, auditID}` cause into a resync
   request before the empty-stream drop. That is intentionally deferred because the
-  current practical goal is to keep late-lane noise suppressed.
+  current practical goal is to avoid counting harmless RV-less system deletes as divert noise.
 - **Re-evaluate demand-gate skip behavior for collection deletes.** Demand gating removed
   a lot of useless events, but `deletecollection` is the sharp case where it may remove
   too much. Any future relaxation should be narrow and checkpoint-backed.

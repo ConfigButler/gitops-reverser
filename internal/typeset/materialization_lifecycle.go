@@ -54,6 +54,14 @@ const (
 	// Either the sweep found no live claim (demand GC, T5) or a followability event
 	// force-released the type (TypeRemoved/TypeRefused). The claim itself may survive.
 	Released MaterializationEventKind = "Released"
+	// Unclaimed fires when a type's LAST claim is withdrawn — the sweep's lease GC removed the
+	// final claimant (>=1 -> 0). It is the demand-gate CLOSE edge: the driver maps it to
+	// gate.Unrequire, so a type stops being mirrored once no GitTarget wants it. It is deliberately
+	// distinct from Released, which is a CHECKPOINT drop: a followability wobble (TypeRemoved) force-
+	// releases the checkpoint while the claim survives, and such a type must keep being mirrored — so
+	// the gate flag tracks the claim (Unclaimed), never the checkpoint (Released). The open edge has
+	// no event: the watch layer Requires synchronously on Declare (see DeclareForGitTarget).
+	Unclaimed MaterializationEventKind = "Unclaimed"
 )
 
 // MaterializationEvent is one named transition on the materialization axis for a single

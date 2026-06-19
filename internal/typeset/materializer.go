@@ -389,8 +389,11 @@ func (m *Materializer) Sweep() {
 	now := m.now()
 	var events []MaterializationEvent
 
-	// Lease GC first, so a non-empty claim set for a GVR afterwards means a live claim.
-	m.gcLeasesLocked(m.lastSweepAt)
+	// Lease GC first, so a non-empty claim set for a GVR afterwards means a live claim. A GVR whose
+	// last claimant ages out emits Unclaimed — the demand-gate close edge (the watch driver Unrequires).
+	for _, gvr := range m.gcLeasesLocked(m.lastSweepAt) {
+		events = append(events, m.event(Unclaimed, gvr, m.stateLocked(gvr), now))
+	}
 	for gvr, st := range m.types {
 		events = m.sweepTypeLocked(gvr, st, now, events)
 	}
@@ -403,10 +406,12 @@ func (m *Materializer) Sweep() {
 }
 
 // gcLeasesLocked drops every claim not renewed since the previous sweep — that is
-// withdrawn demand (DEC-L3). A GVR whose last claimant ages out is removed entirely.
-// Caller holds m.mu.
-func (m *Materializer) gcLeasesLocked(previousSweepAt time.Time) {
+// withdrawn demand (DEC-L3). A GVR whose last claimant ages out is removed entirely, and
+// returned so the caller can emit its Unclaimed (demand-gate close) event. Caller holds m.mu.
+func (m *Materializer) gcLeasesLocked(previousSweepAt time.Time) []schema.GroupVersionResource {
+	var unclaimed []schema.GroupVersionResource
 	for gvr, refs := range m.claims {
+		had := len(refs) > 0
 		for ref, renewedAt := range refs {
 			if renewedAt.Before(previousSweepAt) {
 				delete(refs, ref)
@@ -414,8 +419,12 @@ func (m *Materializer) gcLeasesLocked(previousSweepAt time.Time) {
 		}
 		if len(refs) == 0 {
 			delete(m.claims, gvr)
+			if had {
+				unclaimed = append(unclaimed, gvr)
+			}
 		}
 	}
+	return unclaimed
 }
 
 // sweepTypeLocked runs the per-type live-claim branch of one sweep pass: re-anchor a

@@ -117,6 +117,10 @@ webhook:
       # Approximate max <prefix>:diag_all stream length; 0 disables trimming (unbounded — risky,
       # this captures every ingested event).
       maxLen: 100000
+      # Optional list of resource names to scope the firehose to (e.g. ["commitrequests",
+      # "configmaps"]). Empty captures every queued event; a non-empty list bounds the firehose
+      # (and its in-lock XADD load) to those suspect types when investigating a specific failure.
+      resources: []
 
 # Durable audit queue configuration.
 queue:

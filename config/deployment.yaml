@@ -30,10 +30,14 @@ spec:
         - --audit-cert-path=/tmp/k8s-audit-server/audit-server-certs
         - --audit-client-ca-path=/tmp/k8s-audit-server/audit-client-ca
         - --audit-redis-addr=valkey.valkey-e2e.svc.cluster.local:6379
-        # e2e: exercise the opt-in diag_all firehose end-to-end (bounded) so the per-event
-        # disposition records are captured and the suite teardown can dump them on a failure.
+        # diag_all firehose, SCOPED to the resource types whose specs have flaked (so we can dump the
+        # full ingestion record for the failing object and see whether its event was ingested+queued
+        # or lost/stalled). Scoping to a handful of types bounds the firehose's load — the in-lock
+        # second XADD per event runs only for these resources, not every claimed type. This is an
+        # active investigation per docs/design/stream/e2e-flakes-2026-06-18-investigation.md §9;
+        # turn it off (drop both flags) once the situation is found.
         - --audit-bytype-diag
-        - --audit-bytype-diag-max-len=100000
+        - --audit-bytype-diag-resources=commitrequests,configmaps,secrets,deployments,icecreamorders
         # Dev/e2e only: the in-cluster Gitea SSH host key is not pinned, so permit SSH
         # when no known_hosts source exists. Never set this in production.
         - --insecure-allow-missing-known-hosts
