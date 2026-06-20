@@ -1,7 +1,8 @@
 # Residual e2e flakes after the first-event-loss fix (2026-06-19)
 
-Status: FACTS + diagnosis. After the capture-before-baseline fix
-([first-event-loss-on-reclaim-plan.md](first-event-loss-on-reclaim-plan.md), committed in `5d85e7d`),
+Status: ACTIVE FOR FLAKE B; FLAKE A CLOSED BY THE 2026-06-20 ATTRIBUTION FIX. After the
+capture-before-baseline fix
+([first-event-loss-on-reclaim-plan.md](../../finished/first-event-loss-on-reclaim-plan.md), committed in `5d85e7d`),
 the IceCreamOrder / first-event-loss flake is gone (it passed every one of 4 warm validation runs). Two
 **other**, pre-existing flaky specs remain and intermittently fail the `E2E (full)` job. This doc
 explains both, leading with what was *observed*, then the *interpretation* with an explicit **certainty
@@ -63,7 +64,7 @@ find that event within its 60 s attribution window.
   *directly* confirmed the failure reason for this exact instance.*
 
 - **The likely root is the CommitRequest attribution-scan miss documented in
-  [e2e-flakes-2026-06-18-investigation.md §2](e2e-flakes-2026-06-18-investigation.md).** **Certainty:
+  [e2e-flakes-2026-06-18-investigation.md §2](../../finished/e2e-flakes-2026-06-18-investigation.md).** **Certainty:
   55%.** That investigation proved, for a sibling commit_request spec, that the CR's create event was
   *provably present* in the scanned stream for the whole 60 s window — correct RV, within the 512-entry
   scan bound, matching uid/name, not diverted, not trimmed — yet **missed by ~30 successive scans**.
@@ -95,7 +96,7 @@ next reproduction makes "wrong / older / later commit, or a gap" obvious at a gl
 one-line `scanForCommitRequestCreate` diagnostic from §2.3 (entries-scanned + whether a create-for-name
 was seen on a miss) to separate attribution-miss from sequencing; or read the controller log on the next
 reproduction. The durable fix candidate (deferred) is the early-ingestion author store
-([internal-audit-type-demand.md](internal-audit-type-demand.md)), which removes the scan entirely.
+([internal-audit-type-demand.md](../../finished/internal-audit-type-demand.md)), which removes the scan entirely.
 
 ---
 

@@ -168,7 +168,7 @@ the guard cleans the *residual*.
   because `Released` also fires on a followability wobble while the claim survives, and a still-claimed
   type must keep being mirrored. So the gate tracks the **claim** (`Required ⟺ claimed`), the keyspace
   cleanup tracks the **checkpoint**. (Originally both were on `Released`; see
-  [`first-event-loss-on-reclaim-plan.md` §6.2](../design/stream/first-event-loss-on-reclaim-plan.md).)
+  [`first-event-loss-on-reclaim-plan.md` §6.2](first-event-loss-on-reclaim-plan.md).)
   `Released`/`Unclaimed` are **grace-protected upstream** (§5), so by the time they fire the type has
   been cold for the grace — no inactivity scan needed.
 - **DG3 (membership ⊆ checkpoint demand).** A type is only ever in `__required__` while it is

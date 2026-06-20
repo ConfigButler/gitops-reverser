@@ -1,7 +1,7 @@
 # Two e2e failures during the late-lane removal — facts & root-cause (2026-06-18)
 
-Status: INVESTIGATION (facts-first). Records what actually happened in the e2e runs that validated
-the late-lane removal ([audit-diagnostic-streams-plan.md](audit-diagnostic-streams-plan.md)), so the
+Status: FINISHED / HISTORICAL INVESTIGATION. Records what actually happened in the e2e runs that validated
+the late-lane removal ([audit-diagnostic-streams-plan.md](../design/stream/audit-diagnostic-streams-plan.md)), so the
 two failures are diagnosed, not waved away as "flakes." One is a known timing flake; **the other is
 a genuine, unexplained attribution anomaly that pre-dates and is independent of the late-lane
 removal, and deserves its own fix.**
@@ -363,13 +363,13 @@ the first object of a freshly re-claimed type.
 
 > **Reframed since (2026-06-19/20) — do not trust the "snapshot/coverage-completeness latency" wording
 > above.** A dedicated deep-dive,
-> [`signing-overlap-band-coverage-drop-investigation.md`](signing-overlap-band-coverage-drop-investigation.md),
+> [`signing-overlap-band-coverage-drop-investigation.md`](../design/stream/signing-overlap-band-coverage-drop-investigation.md),
 > proved the missing object was **not a normally-ordered main-stream entry within B's reconcile cut** and
 > was **permanently absent** (not merely late) — so it is a real coverage *gap*, and the assertion's
 > timeout (90 s by the suite default, not 30 s) is not the cause. Which path off the stream is
 > **unconfirmed**; the intuitive "divert" explanation is **contradicted** by `lateCount=0` for the type.
 > It is tracked as **Flake B** in
-> [`residual-e2e-flakes-2026-06-19.md`](residual-e2e-flakes-2026-06-19.md); instrumentation to capture
+> [`residual-e2e-flakes-2026-06-19.md`](../design/stream/residual-e2e-flakes-2026-06-19.md); instrumentation to capture
 > it on the next reproduction has landed (`2bd5303`).
 
 ### 10.5 Recommendation — UPDATED (fix landed; residual flakes split out)
@@ -379,7 +379,7 @@ the first object of a freshly re-claimed type.
   claim the rule's fully-specified GVR unconditionally + open the gate on the claim (capture before
   baseline). The formerly-flaky IceCreamOrder/backfill specs now pass 7/7 across two validation rounds.
 - **The two remaining `E2E (full)` flakes are unrelated and pre-existing**, tracked in
-  [`residual-e2e-flakes-2026-06-19.md`](residual-e2e-flakes-2026-06-19.md): **Flake A** = the
+  [`residual-e2e-flakes-2026-06-19.md`](../design/stream/residual-e2e-flakes-2026-06-19.md): **Flake A** = the
   CommitRequest finalize/attribution-scan miss (this §2's anomaly, still root-OPEN); **Flake B** = the
   late-join overlap drop (§10.4, deep-dive above). Neither is caused by the fix; both are instrumented,
   awaiting a reproduction to confirm the mechanism before any fix.

@@ -1,6 +1,6 @@
 # First-event loss on a freshly (re)claimed type — root cause & fix plan
 
-Status: PROPOSAL (2026-06-19). Companion to the evidence in
+Status: FINISHED / IMPLEMENTED (2026-06-20). Companion to the evidence in
 [e2e-flakes-2026-06-18-investigation.md §10](e2e-flakes-2026-06-18-investigation.md). That doc proves
 *what* happened from a live run; this doc explains *why* in code, draws the current shape and the
 candidate fixes, and proposes a concrete, test-first plan.
@@ -263,7 +263,8 @@ no correctness, only a quiet engine that could mask a regression in B. If a stal
 > (`RequestResync`), which is **not** a polling engine: it is a one-shot *trigger* that makes the
 > demand-driven re-anchor (the same engine) fire **promptly** for the two cases the per-event log cannot
 > express — an out-of-order divert and a name-less `deletecollection`. That nudge accelerates the
-> self-correction; it does not duplicate it. See [`deletecollection-resync-nudge-plan.md`](deletecollection-resync-nudge-plan.md).
+> self-correction; it does not duplicate it. See
+> [`deletecollection-resync-nudge-plan.md`](../design/stream/deletecollection-resync-nudge-plan.md).
 
 ### Recommendation
 
@@ -413,9 +414,9 @@ whole Declare). **The fix holds:** across two validation rounds (clean + 3 warm,
 the formerly-flaky Manager CRD / IceCreamOrder + backfill specs passed **7/7**, and CI on `5d85e7d`
 passed `E2E (full)` on re-run. **S4 (bounded backstop) is REJECTED** (§5/§6.3 — the diff-based splice is
 the backstop, not a polling engine). **S5 done.** The two *unrelated, pre-existing* flakes that remain on
-`E2E (full)` are tracked in [`residual-e2e-flakes-2026-06-19.md`](residual-e2e-flakes-2026-06-19.md)
+`E2E (full)` are tracked in [`residual-e2e-flakes-2026-06-19.md`](../design/stream/residual-e2e-flakes-2026-06-19.md)
 (commit_request finalize; signing late-join overlap drop — the latter's deep-dive is
-[`signing-overlap-band-coverage-drop-investigation.md`](signing-overlap-band-coverage-drop-investigation.md)).
+[`signing-overlap-band-coverage-drop-investigation.md`](../design/stream/signing-overlap-band-coverage-drop-investigation.md)).
 Neither is caused by this fix.
 
 0. **S0 — prove the *why* (reviewer's ask).** Add a single structured log in `DeclareForGitTarget` that

@@ -1,6 +1,6 @@
 # Markdown Triage Inventory
 
-Snapshot taken from branch `poc/redis-copy` on 2026-06-18.
+Snapshot taken from branch `poc/redis-copy` on 2026-06-20.
 
 This inventory was generated from Git metadata only. The files listed here were not opened or read
 for this pass; the provisional grouping is based only on current path and filename.
@@ -15,11 +15,33 @@ canonical doc, or be removed.
 git log --diff-filter=A --name-only --format='' origin/main..HEAD -- '*.md' \
   | sed '/^$/d' | sort -u
 
-git diff --name-status --diff-filter=A origin/main...HEAD -- '*.md' | sort
+git diff --name-status --diff-filter=A origin/main -- '*.md' | sort
 ```
 
-At this snapshot, both views found 68 newly added Markdown paths. Some commit-history paths differ
-from the current paths because documents were moved after being created.
+At this snapshot, both views found 75 newly added Markdown paths. Some commit-history paths differ
+from the current working-tree paths because documents were moved after being created.
+
+## Last-six-commit delta
+
+The previous snapshot did not include the latest six commits:
+
+```text
+91cc317 chore: let's do commit attribution simpler (should prevent flakes)
+a7c4dcd feat(api)!: rename API group version v1alpha1 -> v1alpha2
+90a1e7e docs: reconcile residual-flake findings across the stream design docs
+2bd5303 chore: instrument late-join/divert path for residual e2e flake B; correct analysis
+153a0f2 test: last-5-commits diagnostic for commit-request/signing asserts + residual-flake analysis
+5d85e7d chore: we appear to have found something at least
+```
+
+Markdown impact from those commits:
+
+- Added `docs/design/stream/residual-e2e-flakes-2026-06-19.md`.
+- Added `docs/finished/commitrequest-attribution-divert-reliability.md`.
+- Moved `docs/design/stream/internal-audit-type-demand.md` to
+  `docs/finished/internal-audit-type-demand.md`.
+- Touched 28 Markdown paths in total, mostly to align API references with `v1alpha2` and reconcile
+  the residual e2e flake findings across stream design docs.
 
 ## Triage legend
 
@@ -37,6 +59,13 @@ from the current paths because documents were moved after being created.
 | --- | --- | --- | --- |
 | [ ] | `docs/UPGRADING.md` |  |  |
 | [ ] | `docs/security-model.md` |  |  |
+
+### Inventory and merge-readiness docs
+
+| Done | File | Decision | Notes |
+| --- | --- | --- | --- |
+| [ ] | `docs/markdown-triage-inventory.md` |  | Branch-local cleanup control doc. |
+| [ ] | `docs/merge-readiness-inventory.md` |  | Branch-local cleanup/readiness control doc. |
 
 ### Active design docs
 
@@ -76,6 +105,7 @@ from the current paths because documents were moved after being created.
 | [ ] | `docs/design/stream/implementation-prompt-materialization-and-status.md` |  |  |
 | [ ] | `docs/design/stream/late-lane-e2e-2026-06-16-investigation.md` |  |  |
 | [ ] | `docs/design/stream/materialization-tail-and-live-readiness-review.md` |  |  |
+| [ ] | `docs/design/stream/residual-e2e-flakes-2026-06-19.md` |  | Added in latest six commits. |
 | [ ] | `docs/design/stream/signing-overlap-band-coverage-drop-investigation.md` |  |  |
 | [ ] | `docs/design/stream/signing-snapshot-tail-replay-failure-investigation.md` |  |  |
 | [ ] | `docs/design/stream/watch-list-checkpoint-plan.md` |  |  |
@@ -99,6 +129,7 @@ remain as historical context, be summarized into a canonical doc, or be removed.
 | --- | --- | --- | --- |
 | [ ] | `docs/finished/api-source-of-truth-reconcile.md` |  |  |
 | [ ] | `docs/finished/canonical-stream-retirement.md` |  |  |
+| [ ] | `docs/finished/commitrequest-attribution-divert-reliability.md` |  | Added in latest six commits; moved from wrap-up during cleanup. |
 | [ ] | `docs/finished/commitrequest-barrier-timeout-decision.md` |  |  |
 | [ ] | `docs/finished/commitrequest-multi-finalize-design.md` |  |  |
 | [ ] | `docs/finished/current-flows-and-cutover.md` |  |  |
@@ -106,8 +137,11 @@ remain as historical context, be summarized into a canonical doc, or be removed.
 | [ ] | `docs/finished/current-manifest-support-review.md` |  |  |
 | [ ] | `docs/finished/demand-driven-type-materialization-lifecycle.md` |  |  |
 | [ ] | `docs/finished/demand-gated-audit-ingestion.md` |  |  |
+| [ ] | `docs/finished/e2e-flakes-2026-06-18-investigation.md` |  | Historical investigation; moved from active stream docs during cleanup. |
+| [ ] | `docs/finished/first-event-loss-on-reclaim-plan.md` |  | Implemented and validated; moved from active stream docs during cleanup. |
 | [ ] | `docs/finished/gvk-gvr-mapping-layer.md` |  |  |
 | [ ] | `docs/finished/implementation-plan.md` |  |  |
+| [ ] | `docs/finished/internal-audit-type-demand.md` |  | Moved from `docs/design/stream/internal-audit-type-demand.md` in latest six commits, then to finished. |
 | [ ] | `docs/finished/m12-bootstrap-decoupling-plan.md` |  |  |
 | [ ] | `docs/finished/manifest-parser-poc.md` |  |  |
 | [ ] | `docs/finished/manifestedit-field-ownership-spike.md` |  |  |
@@ -159,6 +193,9 @@ docs/design/stream/commitrequest-multi-finalize-design.md
 docs/design/stream/current-flows-and-cutover.md
 docs/design/stream/demand-driven-type-materialization-lifecycle.md
 docs/design/stream/demand-gated-audit-ingestion.md
+docs/design/stream/e2e-flakes-2026-06-18-investigation.md
+docs/design/stream/first-event-loss-on-reclaim-plan.md
+docs/design/stream/internal-audit-type-demand.md
 docs/design/stream/per-resource-type-rv-keyed-streams-experiment.md
 docs/future/file-agnostic-placement.md
 docs/future/manifest-inventory-file-agnostic-placement.md
@@ -186,6 +223,7 @@ docs/design/manifest/version2/gittarget-repository-validity-and-placement.md
 docs/design/manifest/version2/per-type-reconcile-and-streaming-tail.md
 docs/finished/api-source-of-truth-reconcile.md
 docs/finished/canonical-stream-retirement.md
+docs/finished/commitrequest-attribution-divert-reliability.md
 docs/finished/commitrequest-barrier-timeout-decision.md
 docs/finished/commitrequest-multi-finalize-design.md
 docs/finished/current-flows-and-cutover.md
@@ -193,8 +231,11 @@ docs/finished/current-manifest-support-review-feedback.md
 docs/finished/current-manifest-support-review.md
 docs/finished/demand-driven-type-materialization-lifecycle.md
 docs/finished/demand-gated-audit-ingestion.md
+docs/finished/e2e-flakes-2026-06-18-investigation.md
+docs/finished/first-event-loss-on-reclaim-plan.md
 docs/finished/gvk-gvr-mapping-layer.md
 docs/finished/implementation-plan.md
+docs/finished/internal-audit-type-demand.md
 docs/finished/m12-bootstrap-decoupling-plan.md
 docs/finished/manifest-parser-poc.md
 docs/finished/manifestedit-field-ownership-spike.md

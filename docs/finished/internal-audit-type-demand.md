@@ -19,7 +19,7 @@ two demand sources, and they are lopsided:
 - **GitTarget claims** → the materialization layer calls `gate.Require(gvr)` synchronously the moment
   a type is **claimed** (`DeclareForGitTarget`), and `Unrequire` on the `Unclaimed` event (the sweep's
   GC of the last claim) — capture-before-baseline, see
-  [first-event-loss-on-reclaim-plan.md](../design/stream/first-event-loss-on-reclaim-plan.md). This is dynamic,
+  [first-event-loss-on-reclaim-plan.md](first-event-loss-on-reclaim-plan.md). This is dynamic,
   Redis-backed, multi-pod, and releasable ([gate.go `Require`/`Unrequire`](../../internal/gate/gate.go),
   [materialization.go](../../internal/watch/materialization.go)).
 - **Internal consumers** → a **static `AlwaysAllow` list hardcoded in `cmd`**
@@ -61,7 +61,7 @@ shape at all.
      demonstrably **`queued` to the correct main stream and present for the whole 60s window** was
      still missed by ~30 successive scans → fail closed. Ingestion lag, the 512 scan bound, the UID
      guard, MaxLen trimming, and a restart were all ruled out; the root cause is still open. See
-     [e2e-flakes-2026-06-18-investigation.md §2](../design/stream/e2e-flakes-2026-06-18-investigation.md).
+     [e2e-flakes-2026-06-18-investigation.md §2](e2e-flakes-2026-06-18-investigation.md).
   The upshot: **scanning the shared, ordered audit stream for attribution is fragile in ways we
   cannot even fully diagnose** — which is the strongest possible argument for not doing it.
   - **Update (2026-06-19): this bit CI.** Run `27830248680` on `5d85e7d` failed `E2E (full)` on
@@ -149,7 +149,7 @@ exactly Option B made **always-on and demand-free**, and it is the right shape:
   is immune to *both* evidenced failure modes (divert **and** the unexplained scan miss) — there is
   no scan and no dependency on the event landing in the ordered stream. This also avoids re-creating
   the throughput cost of an in-lock second write
-  ([e2e-flakes-2026-06-18-investigation.md §6](../design/stream/e2e-flakes-2026-06-18-investigation.md)).
+  ([e2e-flakes-2026-06-18-investigation.md §6](e2e-flakes-2026-06-18-investigation.md)).
 - **Store the attribution _fact_, not the full event.** We only need
   `{ns,name,uid}→{author,auditID,ts}` (a tiny keyed record), not a mirror of every CommitRequest
   body. "Full store of all events" would re-introduce the per-type stream we are trying to delete;
